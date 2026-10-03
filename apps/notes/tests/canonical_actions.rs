@@ -1,1002 +1,1194 @@
 use crate::component_support::*;
-use automerge::{ReadDoc, transaction::Transactable};
+use automerge::transaction::Transactable;
 use notes::{
     actions::{self, NotesAction},
     doc::NotesDoc,
 };
 use tilo_actions::Action;
 
-// Catches metadata-only/Markdown copies, lost native marks, wrong link remaps,
-// reused identifiers and nondeterministic replay.
+#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
-fn duplicate_subtree_roundtrips_and_preserves_rich_native_content() {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
-    let mut doc = f.records.read(&checkout.id, Clone::clone).unwrap();
-    let list = NotesDoc::page_blocks_list(&doc, f.child).unwrap();
-    let text = NotesDoc::block_text_obj(&doc, &list, 0).unwrap();
-    for (name, value) in [("foreign.review", "approved"), ("author", "fixture-author")] {
-        doc.mark(
-            &text,
-            automerge::marks::Mark::new(name.into(), value, 0, 2),
-            automerge::marks::ExpandMark::After,
+fn duplicate_subtree_round_trips_rich_content_and_refuses_stale_or_reused_ids() {
+    // Catches metadata-only/Markdown copies, lost native marks, wrong link remaps,
+    // reused identifiers and nondeterministic replay.
+    eprintln!("phase duplicate_subtree_roundtrips_and_preserves_rich_native_content");
+    {
+        let f = LegacyFixture::rich();
+        let checkout = imported(&f);
+        let doc = f.records.read(&checkout.id, Clone::clone).unwrap();
+        let action = actions::duplicate_subtree_action(&doc, f.root).unwrap();
+        let encoded = actions::encode(&action);
+        let decoded: NotesAction = serde_json::from_slice(&encoded.payload).unwrap();
+        assert_eq!(decoded, action);
+        let NotesAction::DuplicateSubtree { pages, .. } = &action else {
+            panic!("copy action");
+        };
+        assert_eq!(pages.len(), 2);
+        let copied_root = pages
+            .iter()
+            .find(|p| p.source == f.root.to_string())
+            .unwrap()
+            .destination
+            .parse()
+            .unwrap();
+        let copied_child = pages
+            .iter()
+            .find(|p| p.source == f.child.to_string())
+            .unwrap()
+            .destination
+            .parse()
+            .unwrap();
+        let mut a = doc.clone();
+        let mut b = doc.clone();
+        let mut registry = tilo_actions::ActionRegistry::new();
+        actions::register(&mut registry);
+        let dispatched = tilo_actions::dispatch(
+            &mut a,
+            &action,
+            encoded,
+            &mut tilo_actions::LocalTransport::new(),
         )
         .unwrap();
-    }
-    doc.commit();
-    let action = actions::duplicate_subtree_action(&doc, f.root).unwrap();
-    let encoded = actions::encode(&action);
-    let decoded: NotesAction = serde_json::from_slice(&encoded.payload).unwrap();
-    assert_eq!(decoded, action);
-    let NotesAction::DuplicateSubtree { pages, .. } = &action else {
-        panic!("copy action");
-    };
-    assert_eq!(pages.len(), 2);
-    let copied_root = pages
-        .iter()
-        .find(|p| p.source == f.root.to_string())
-        .unwrap()
-        .destination
-        .parse()
-        .unwrap();
-    let copied_child = pages
-        .iter()
-        .find(|p| p.source == f.child.to_string())
-        .unwrap()
-        .destination
-        .parse()
-        .unwrap();
-    let mut a = doc.clone();
-    let mut b = doc.clone();
-    let mut registry = tilo_actions::ActionRegistry::new();
-    actions::register(&mut registry);
-    let dispatched = tilo_actions::dispatch(
-        &mut a,
-        &action,
-        encoded,
-        &mut tilo_actions::LocalTransport::new(),
-    )
-    .unwrap();
-    tilo_actions::replay(&mut b, dispatched.envelope(), &registry).unwrap();
-    assert_eq!(a.get_heads(), b.get_heads());
-    let projected = notes::notebook::project(&a, None).unwrap();
-    assert_eq!(projected.pages().len(), 5);
-    assert_eq!(projected.get(copied_root).unwrap().title, "Projects copy");
-    assert_eq!(projected.get(copied_root).unwrap().order, 1);
-    assert_eq!(projected.get(f.empty).unwrap().order, 2);
-    assert_eq!(
-        projected.get(copied_child).unwrap().parent,
-        Some(copied_root)
-    );
-    assert_eq!(
-        projected
-            .tags_for_page(copied_child)
-            .iter()
-            .map(|tag| tag.id)
-            .collect::<Vec<_>>(),
-        vec![f.tag]
-    );
-    for (source, destination) in [(f.root, copied_root), (f.child, copied_child)] {
-        let src = NotesDoc::page_block_snapshots(&doc, source);
-        let dst = NotesDoc::page_block_snapshots(&a, destination);
+        tilo_actions::replay(&mut b, dispatched.envelope(), &registry).unwrap();
+        assert_eq!(a.get_heads(), b.get_heads());
+        let projected = notes::notebook::project(&a, None).unwrap();
+        assert_eq!(projected.pages().len(), 5);
+        assert_eq!(projected.get(copied_root).unwrap().title, "Projects copy");
+        assert_eq!(projected.get(copied_root).unwrap().order, 1);
+        assert_eq!(projected.get(f.empty).unwrap().order, 2);
         assert_eq!(
-            src.iter().map(|(_, t)| t).collect::<Vec<_>>(),
-            dst.iter().map(|(_, t)| t).collect::<Vec<_>>()
+            projected.get(copied_child).unwrap().parent,
+            Some(copied_root)
         );
-        let sl = NotesDoc::page_blocks_list(&doc, source).unwrap();
-        let dl = NotesDoc::page_blocks_list(&a, destination).unwrap();
         assert_eq!(
-            (0..doc.length(&sl))
-                .map(|i| NotesDoc::block_kind(&doc, &sl, i))
+            projected
+                .tags_for_page(copied_child)
+                .iter()
+                .map(|tag| tag.id)
                 .collect::<Vec<_>>(),
-            (0..a.length(&dl))
-                .map(|i| NotesDoc::block_kind(&a, &dl, i))
-                .collect::<Vec<_>>()
+            vec![f.tag]
         );
-        for ((old, _), (new, _)) in src.iter().zip(&dst) {
-            assert_ne!(old, new);
-        }
-        for index in 0..doc.length(&sl) {
-            let source_text = NotesDoc::block_text_obj(&doc, &sl, index).unwrap();
-            let destination_text = NotesDoc::block_text_obj(&a, &dl, index).unwrap();
-            assert_remapped_marks(
-                doc.marks(&source_text).unwrap(),
-                a.marks(&destination_text).unwrap(),
+        for (source, destination) in [(f.root, copied_root), (f.child, copied_child)] {
+            let src = NotesDoc::page_block_snapshots(&doc, source);
+            let dst = NotesDoc::page_block_snapshots(&a, destination);
+            assert_eq!(
+                src.iter().map(|(_, t)| t).collect::<Vec<_>>(),
+                dst.iter().map(|(_, t)| t).collect::<Vec<_>>()
+            );
+            assert_remapped_blocks(
+                NotesDoc::page_blocks(&doc, source),
+                NotesDoc::page_blocks(&a, destination),
                 pages,
             );
         }
     }
+
+    // Reject a mapping captured before a new source block/descendant appears.
+    eprintln!("phase duplicate_subtree_stale_mapping_is_refused_without_partial_writes");
+    {
+        let f = LegacyFixture::rich();
+        let checkout = imported(&f);
+        let mut doc = f.records.read(&checkout.id, Clone::clone).unwrap();
+        let action = actions::duplicate_subtree_action(&doc, f.root).unwrap();
+        NotesDoc::upsert_page_meta(
+            &mut doc,
+            &notes::PageMeta {
+                id: uuid::Uuid::from_u128(0x1004),
+                title: "new child".into(),
+                parent: Some(f.root),
+                order: 1,
+            },
+        );
+        doc.commit();
+        let before = (doc.base_heads(), doc.pending_ops());
+        assert!(action.apply(&mut doc).is_err());
+        assert_eq!((doc.base_heads(), doc.pending_ops()), before);
+    }
+
+    eprintln!("phase duplicate_subtree_reused_destination_ids_are_refused_before_writes");
+    {
+        let f = LegacyFixture::rich();
+        let checkout = imported(&f);
+        let doc = f.records.read(&checkout.id, Clone::clone).unwrap();
+        for field in ["page", "existing", "nil", "missing-page"] {
+            let NotesAction::DuplicateSubtree { source, mut pages } =
+                actions::duplicate_subtree_action(&doc, f.root).unwrap()
+            else {
+                panic!("copy action");
+            };
+            match field {
+                "page" => pages[1].destination = pages[0].destination.clone(),
+                "existing" => pages[0].destination = f.empty.to_string(),
+                "nil" => pages[0].destination = uuid::Uuid::nil().to_string(),
+                "missing-page" => {
+                    pages.pop();
+                }
+                _ => unreachable!(),
+            }
+            let mut changed = doc.clone();
+            let before = (changed.base_heads(), changed.pending_ops());
+            assert!(
+                NotesAction::DuplicateSubtree { source, pages }
+                    .apply(&mut changed)
+                    .is_err(),
+                "{field}"
+            );
+            assert_eq!(
+                (changed.base_heads(), changed.pending_ops()),
+                before,
+                "{field}"
+            );
+        }
+    }
 }
 
-fn assert_remapped_marks(
-    source: Vec<automerge::marks::Mark>,
-    destination: Vec<automerge::marks::Mark>,
+/// The copy's blocks are the source's, with links into the copied subtree
+/// following the copy, under ids of its own.
+fn assert_remapped_blocks(
+    source: Vec<ui::widget::BlockContent>,
+    destination: Vec<ui::widget::BlockContent>,
     pages: &[actions::DuplicatePage],
 ) {
-    let mut expected = source;
-    for mark in &mut expected {
-        for page in pages {
-            if mark.name.as_str() == format!("notes.inline.link:{}", page.source) {
-                mark.name = format!("notes.inline.link:{}", page.destination).into();
-                mark.value = automerge::ScalarValue::Str(page.destination.clone().into());
-            }
-        }
-    }
-    let mut actual = destination;
-    expected.sort_by_key(|mark| (mark.start, mark.end, mark.name.clone()));
-    actual.sort_by_key(|mark| (mark.start, mark.end, mark.name.clone()));
-    assert_eq!(actual, expected);
-}
-
-// Reject a mapping captured before a new source block/descendant appears.
-#[test]
-fn duplicate_subtree_stale_mapping_is_refused_without_partial_writes() {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
-    let mut doc = f.records.read(&checkout.id, Clone::clone).unwrap();
-    let action = actions::duplicate_subtree_action(&doc, f.root).unwrap();
-    NotesDoc::upsert_page_meta(
-        &mut doc,
-        &notes::PageMeta {
-            id: uuid::Uuid::from_u128(0x1004),
-            title: "new child".into(),
-            parent: Some(f.root),
-            order: 1,
-        },
-    );
-    doc.commit();
-    let before = (doc.base_heads(), doc.pending_ops());
-    assert!(action.apply(&mut doc).is_err());
-    assert_eq!((doc.base_heads(), doc.pending_ops()), before);
-}
-
-#[test]
-fn duplicate_subtree_reused_destination_ids_are_refused_before_writes() {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
-    let doc = f.records.read(&checkout.id, Clone::clone).unwrap();
-    for field in ["page", "block", "existing", "nil", "missing-block"] {
-        let NotesAction::DuplicateSubtree { source, mut pages } =
-            actions::duplicate_subtree_action(&doc, f.root).unwrap()
-        else {
-            panic!("copy action");
-        };
-        match field {
-            "page" => pages[1].destination = pages[0].destination.clone(),
-            "block" => pages[1].blocks[0].1 = pages[0].blocks[0].1.clone(),
-            "existing" => pages[0].destination = f.empty.to_string(),
-            "nil" => pages[0].destination = uuid::Uuid::nil().to_string(),
-            "missing-block" => {
-                pages[0].blocks.pop();
-            }
-            _ => unreachable!(),
-        }
-        let mut changed = doc.clone();
-        let before = (changed.base_heads(), changed.pending_ops());
-        assert!(
-            NotesAction::DuplicateSubtree { source, pages }
-                .apply(&mut changed)
-                .is_err(),
-            "{field}"
-        );
-        assert_eq!(
-            (changed.base_heads(), changed.pending_ops()),
-            before,
-            "{field}"
-        );
-    }
-}
-
-#[test]
-fn bound_first_typing_split_and_block_move_keep_schema_and_one_history_entry() {
-    let f = LegacyFixture::rich();
-    let component = component(&f, 11, ui::application::LaunchTarget::New);
-    let checkout = component.record().clone();
-    let mut driver =
-        ui::headless::Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
-    invoke(&mut driver, 11, "notes.notebook", "new-page", Some("First"));
-    let page = f
-        .records
-        .read(&checkout.id, |doc| NotesDoc::list_pages(doc)[0].id)
-        .unwrap();
-    invoke(
-        &mut driver,
-        11,
-        actions::page_resource_id(page),
-        "open",
-        None,
-    );
-    driver
-        .expect(&ui::headless::SemanticExpectation::named("note_title").value("First"))
-        .unwrap();
-    driver
-        .perform_named("note_title", &ui::a11y::Action::Focus)
-        .unwrap();
-    driver
-        .expect(
-            &ui::headless::SemanticExpectation::named("block_editor")
-                .role(ui::a11y::Role::Document),
-        )
-        .unwrap();
-    driver
-        .perform_named("block_editor", &ui::a11y::Action::Focus)
-        .unwrap();
-    let before = revision(&f, &checkout);
-    assert_eq!(before, 1, "creation only; title/editor focus is local");
-    driver.type_text("a");
-    f.records
-        .read(&checkout.id, |doc| {
-            notes::notebook::validate(doc).unwrap();
-            assert_eq!(
-                NotesDoc::page_block_snapshots(doc, page)
-                    .iter()
-                    .map(|(_, text)| text.as_str())
-                    .collect::<Vec<_>>(),
-                vec!["a"]
-            );
-        })
-        .unwrap();
-    assert_eq!(revision(&f, &checkout), before + 1);
-    driver.key("Enter");
-    assert_eq!(revision(&f, &checkout), before + 2);
-    driver.type_text("b");
-    assert_eq!(revision(&f, &checkout), before + 3);
-    let blocks = f
-        .records
-        .read(&checkout.id, |doc| {
-            NotesDoc::page_block_snapshots(doc, page)
-        })
-        .unwrap();
-    assert_eq!(
-        blocks
+    use ui::widget::marks::Mark;
+    let follow = |page: uuid::Uuid| {
+        pages
             .iter()
-            .map(|(_, text)| text.as_str())
-            .collect::<Vec<_>>(),
-        vec!["a", "b"]
-    );
-    driver
-        .perform_semantic_named(
-            "block_editor",
-            Some(&format!("notes.block-move:{}:up", blocks[1].0)),
-            &ui::a11y::Action::Activate,
-        )
-        .unwrap();
-    assert_eq!(revision(&f, &checkout), before + 4);
-    f.records
-        .read(&checkout.id, |doc| {
-            notes::notebook::validate(doc).unwrap();
-            assert_eq!(
-                NotesDoc::page_block_snapshots(doc, page)
-                    .iter()
-                    .map(|(_, text)| text.as_str())
-                    .collect::<Vec<_>>(),
-                vec!["b", "a"]
-            );
-        })
-        .unwrap();
-    assert_eq!(driver.state_mut().doc.pending_ops(), 0);
-    assert!(driver.state_mut().doc.base_heads().is_empty());
-    close_driver(&mut driver);
-}
-
-#[test]
-fn bound_same_author_interleaving_undo_redo_is_per_instance() {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
-    let source = f.source_bytes();
-    let mut a = driver(&f, 11, &checkout);
-    let mut b = driver(&f, 12, &checkout);
-    let original = f
-        .records
-        .read(&checkout.id, |doc| {
-            NotesDoc::page_block_snapshots(doc, f.child)[0].clone()
-        })
-        .unwrap();
-    assert_eq!(revision(&f, &checkout), 0);
-    invoke(
-        &mut a,
-        11,
-        actions::page_resource_id(f.root),
-        "rename",
-        Some("A title"),
-    );
-    assert_eq!(revision(&f, &checkout), 1);
-    invoke(
-        &mut b,
-        12,
-        actions::block_resource_id(f.child, &original.0),
-        "replace-text",
-        Some("B text"),
-    );
-    assert_eq!(revision(&f, &checkout), 2);
-    invoke(
-        &mut a,
-        11,
-        actions::page_resource_id(f.root),
-        format!("assign-tag:{}", f.tag),
-        None,
-    );
-    assert_eq!(revision(&f, &checkout), 3);
-    f.records
-        .with_history(&checkout.id, |doc, history| {
-            for instance in [11, 12] {
-                let last = history.next_undo_in(&f.author, instance).unwrap();
-                assert_eq!(last.author.as_ref(), Some(&f.author));
-                assert_eq!(last.instance_id, Some(instance));
-            }
-            history.undo_in(doc, &f.author, 11, None, None).unwrap();
-            assert!(!NotesDoc::list_tag_assignments(doc).contains(&(f.root, f.tag)));
-            assert_eq!(
-                NotesDoc::list_pages(doc)
-                    .iter()
-                    .find(|p| p.id == f.root)
-                    .unwrap()
-                    .title,
-                "A title"
-            );
-            assert_eq!(NotesDoc::page_block_snapshots(doc, f.child)[0].1, "B text");
-            history.undo_in(doc, &f.author, 12, None, None).unwrap();
-            assert_eq!(
-                NotesDoc::page_block_snapshots(doc, f.child)[0].1,
-                original.1
-            );
-            history.redo_in(doc, &f.author, 11, None, None).unwrap();
-            history.redo_in(doc, &f.author, 12, None, None).unwrap();
-            assert!(NotesDoc::list_tag_assignments(doc).contains(&(f.root, f.tag)));
-            assert_eq!(NotesDoc::page_block_snapshots(doc, f.child)[0].1, "B text");
-        })
-        .unwrap();
-    // A's redo remains available after B creates a new action.
-    f.records
-        .with_history(&checkout.id, |doc, history| {
-            history.undo_in(doc, &f.author, 11, None, None).unwrap();
-        })
-        .unwrap();
-    invoke(
-        &mut b,
-        12,
-        actions::page_resource_id(f.child),
-        "rename",
-        Some("B child"),
-    );
-    f.records
-        .with_history(&checkout.id, |doc, history| {
-            history.redo_in(doc, &f.author, 11, None, None).unwrap();
-            assert!(NotesDoc::list_tag_assignments(doc).contains(&(f.root, f.tag)));
-            assert_eq!(
-                NotesDoc::list_pages(doc)
-                    .iter()
-                    .find(|p| p.id == f.child)
-                    .unwrap()
-                    .title,
-                "B child"
-            );
-        })
-        .unwrap();
-    assert_eq!(source, f.source_bytes());
-    close_driver(&mut a);
-    close_driver(&mut b);
-}
-
-#[test]
-fn bound_tree_reorder_is_one_logical_history_entry() {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
-    let mut driver = driver(&f, 11, &checkout);
-    let rect = page_rect(&driver, f.empty);
-    driver.click_at(rect.center().x, rect.center().y);
-    let before = revision(&f, &checkout);
-    driver.set_modifiers(&["alt".into()]);
-    driver.key("ArrowUp");
-    driver.set_modifiers(&[]);
-    assert_eq!(revision(&f, &checkout), before + 1);
-    f.records
-        .read(&checkout.id, |doc| {
-            let workspace = notes::notebook::project(doc, None).unwrap();
-            assert_eq!(workspace.get(f.empty).unwrap().order, 0);
-            assert_eq!(workspace.get(f.root).unwrap().order, 1);
-        })
-        .unwrap();
-    close_driver(&mut driver);
-}
-
-#[test]
-fn app_and_driver_use_real_notes_registry_and_revoked_authority_refuses() {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
-    let mut app =
-        ui::App::from_component(component(&f, 11, existing(&checkout)), runner_inputs()).unwrap();
-    app.init_layout();
-    app.refresh_semantic_tree();
-    let id = app
-        .semantic_tree()
-        .iter()
-        .find(|node| node.name.as_deref() == Some("Projects") && node.action("rename").is_some())
-        .unwrap()
-        .id
-        .clone();
-    assert!(
-        app.invoke_semantic_action(&id, "rename", Some("App title"))
-            .unwrap()
-    );
-    assert_eq!(revision(&f, &checkout), 1);
-    let mut b = driver(&f, 12, &checkout);
-    invoke(
-        &mut b,
-        12,
-        actions::page_resource_id(f.child),
-        "rename",
-        Some("Driver title"),
-    );
-    assert_eq!(revision(&f, &checkout), 2);
-    let stale = id;
-    *f.authority.borrow_mut() = ui::permissions::PermissionContext::from_capabilities(
-        ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), &f.author.0),
-        vec![],
-    )
-    .at_unix_time(100);
-    let before = f
-        .records
-        .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
-        .unwrap();
-    assert!(
-        app.invoke_semantic_action(&stale, "rename", Some("denied"))
-            .is_err()
-    );
-    let address = ui::bound_dispatch::BoundActionAddress {
-        instance_id: 12,
-        address: actions::open_page_address(f.child),
+            .find(|copy| copy.source == page.to_string())
+            .map_or(page, |copy| copy.destination.parse().unwrap())
     };
-    b.invoke_bound_action(&address, &serde_json::Map::new())
-        .unwrap();
-    assert!(
-        b.invoke_bound_action(
-            &ui::bound_dispatch::BoundActionAddress {
-                instance_id: 12,
-                address: tilo_actions::ActionAddress::new(
-                    actions::page_resource_id(f.child),
-                    "rename"
-                )
-            },
-            serde_json::json!({"value":"denied"}).as_object().unwrap()
-        )
-        .is_err()
-    );
-    assert!(
-        b.invoke_bound_action_confirmed(
-            &ui::bound_dispatch::BoundActionAddress {
-                instance_id: 12,
-                address: tilo_actions::ActionAddress::new(
-                    actions::page_resource_id(f.child),
-                    "delete"
-                )
-            },
-            &serde_json::Map::new()
-        )
-        .is_err()
-    );
-    assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
-            .unwrap(),
-        before
-    );
-    app.close_components();
-    let reports = app.take_component_close_reports();
-    assert!(!reports.is_empty());
-    for report in reports {
-        assert_closed(&report);
-    }
-    close_driver(&mut b);
-}
-
-#[test]
-fn tree_update_is_atomic_exact_and_replayable_without_touching_rich_content() {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
-    let doc = f.records.read(&checkout.id, Clone::clone).unwrap();
-    let mut workspace = notes::notebook::project(&doc, None).unwrap();
-    let mut before = workspace
-        .pages()
-        .iter()
-        .map(actions::PageData::from_meta)
-        .collect::<Vec<_>>();
-    before.sort_by(|a, b| a.id.cmp(&b.id));
-    workspace.move_to(f.child, Some(f.empty), None);
-    let mut after = workspace
-        .pages()
-        .iter()
-        .map(actions::PageData::from_meta)
-        .collect::<Vec<_>>();
-    after.sort_by(|a, b| a.id.cmp(&b.id));
-    let action = NotesAction::UpdatePageTree {
-        before: before.clone(),
-        after: after.clone(),
-    };
-    let mut a = doc.clone();
-    let mut b = doc.clone();
-    let dispatched = tilo_actions::dispatch(
-        &mut a,
-        &action,
-        actions::encode(&action),
-        &mut tilo_actions::LocalTransport::new(),
-    )
-    .unwrap();
-    let mut registry = tilo_actions::ActionRegistry::new();
-    actions::register(&mut registry);
-    tilo_actions::replay(&mut b, dispatched.envelope(), &registry).unwrap();
-    assert_eq!(a.get_heads(), b.get_heads());
-    notes::notebook::validate(&a).unwrap();
-    for page in [f.root, f.child, f.empty] {
-        assert_eq!(
-            NotesDoc::page_block_snapshots(&a, page),
-            NotesDoc::page_block_snapshots(&doc, page)
-        );
-        let list = NotesDoc::page_blocks_list(&doc, page).unwrap();
-        assert_eq!(NotesDoc::page_blocks_list(&a, page), Some(list.clone()));
-        for index in 0..doc.length(&list) {
-            let text = NotesDoc::block_text_obj(&doc, &list, index).unwrap();
-            assert_eq!(a.marks(&text).unwrap(), doc.marks(&text).unwrap());
+    assert_eq!(source.len(), destination.len());
+    for (old, new) in source.into_iter().zip(destination) {
+        assert_ne!(old.id, new.id, "a copy has ids of its own");
+        let mut expected = old;
+        for span in &mut expected.marks {
+            span.mark = match &span.mark {
+                Mark::Link(page) => Mark::Link(follow(*page)),
+                Mark::Transclusion(page) => Mark::Transclusion(follow(*page)),
+                other => other.clone(),
+            };
         }
-    }
-    assert_eq!(
-        NotesDoc::list_tag_assignments(&a),
-        NotesDoc::list_tag_assignments(&doc)
-    );
-    for invalid in ["stale", "cycle", "missing", "nil", "bad-parent", "order"] {
-        let mut candidate = doc.clone();
-        let mut result = after.clone();
-        match invalid {
-            "stale" => {
-                let mut page = workspace.get(f.root).unwrap().clone();
-                page.title = "concurrent".into();
-                NotesDoc::upsert_page_meta(&mut candidate, &page);
-                candidate.commit();
-            }
-            "cycle" => {
-                result
-                    .iter_mut()
-                    .find(|p| p.id == f.empty.to_string())
-                    .unwrap()
-                    .parent = f.child.to_string();
-            }
-            "missing" => {
-                result.pop();
-            }
-            "nil" => result[0].id = uuid::Uuid::nil().to_string(),
-            "bad-parent" => result[0].parent = "malformed".into(),
-            "order" => result[0].order = 99,
-            _ => unreachable!(),
+        expected.id.clone_from(&new.id);
+        // A copied fence is a fence of its own.
+        assert_eq!(new.code_group.is_some(), expected.code_group.is_some());
+        if new.code_group.is_some() {
+            assert_ne!(new.code_group, expected.code_group);
         }
-        let untouched = (candidate.base_heads(), candidate.pending_ops());
-        assert!(
-            NotesAction::UpdatePageTree {
-                before: before.clone(),
-                after: result
-            }
-            .apply(&mut candidate)
-            .is_err(),
-            "{invalid}"
-        );
-        assert_eq!(
-            (candidate.base_heads(), candidate.pending_ops()),
-            untouched,
-            "{invalid}"
-        );
+        expected.code_group.clone_from(&new.code_group);
+        assert_eq!(new, expected);
     }
 }
 
+#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
-fn bound_views_stale_page_refusal_and_close_reopen_keep_other_instance_live() {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
-    let mut a = driver(&f, 11, &checkout);
-    let mut b = driver(&f, 12, &checkout);
-    let before = f
-        .records
-        .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
-        .unwrap();
-    invoke(&mut a, 11, actions::page_resource_id(f.child), "open", None);
-    f.records
-        .read_history(&checkout.id, |doc, history| {
-            assert_eq!(
-                history.revision(),
-                0,
-                "after OpenPage marks {:?}",
-                NotesDoc::page_block_marks(doc, f.root)
-            );
-        })
-        .unwrap();
-    let child_marks = f
-        .records
-        .read(&checkout.id, |doc| NotesDoc::page_block_marks(doc, f.child))
-        .unwrap();
-    invoke(&mut a, 11, actions::tag_resource_id(f.tag), "open", None);
-    assert_eq!(
+fn bound_edits_are_one_owned_history_entry_each() {
+    eprintln!("phase bound_first_typing_split_and_block_move_keep_schema_and_one_history_entry");
+    {
+        let f = LegacyFixture::rich();
+        let component = component(&f, 11, ui::application::LaunchTarget::New);
+        let checkout = component.record().clone();
+        let mut driver =
+            ui::headless::Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
+        invoke(&mut driver, 11, "notes.notebook", "new-page", Some("First"));
+        let page = f
+            .records
+            .read(&checkout.id, |doc| NotesDoc::list_pages(doc)[0].id)
+            .unwrap();
+        invoke(
+            &mut driver,
+            11,
+            actions::page_resource_id(page),
+            "open",
+            None,
+        );
+        driver
+            .expect(&ui::headless::SemanticExpectation::named("note_title").value("First"))
+            .unwrap();
+        driver
+            .perform_named("note_title", &ui::a11y::Action::Focus)
+            .unwrap();
+        driver
+            .expect(
+                &ui::headless::SemanticExpectation::named("block_editor")
+                    .role(ui::a11y::Role::Document),
+            )
+            .unwrap();
+        driver
+            .perform_named("block_editor", &ui::a11y::Action::Focus)
+            .unwrap();
+        let before = revision(&f, &checkout);
+        assert_eq!(before, 1, "creation only; title/editor focus is local");
+        driver.type_text("a");
         f.records
-            .read(&checkout.id, |doc| NotesDoc::page_block_marks(doc, f.child))
-            .unwrap(),
-        child_marks
-    );
-    assert_eq!(revision(&f, &checkout), 0);
-    assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
-            .unwrap(),
-        before
-    );
-    invoke_confirmed(&mut b, 12, actions::page_resource_id(f.child), "delete");
-    let denied = ui::bound_dispatch::BoundActionAddress {
-        instance_id: 11,
-        address: tilo_actions::ActionAddress::new(actions::page_resource_id(f.child), "rename"),
-    };
-    assert!(
-        a.invoke_bound_action(
-            &denied,
-            serde_json::json!({"value":"phantom"}).as_object().unwrap()
-        )
-        .is_err()
-    );
-    a.relayout();
-    assert!(
-        f.records
-            .read(&checkout.id, |doc| NotesDoc::list_pages(doc)
-                .iter()
-                .all(|p| p.id != f.child))
-            .unwrap()
-    );
-    close_driver(&mut a);
-    let stale = ui::bound_dispatch::BoundActionAddress {
-        instance_id: 11,
-        address: tilo_actions::ActionAddress::new(actions::page_resource_id(f.root), "rename"),
-    };
-    let mut reopened = driver(&f, 11, &checkout);
-    assert!(
-        a.invoke_bound_action_confirmed(
-            &stale,
-            serde_json::json!({"value":"stale lifetime"})
-                .as_object()
-                .unwrap()
-        )
-        .is_err()
-    );
-    invoke(
-        &mut b,
-        12,
-        actions::page_resource_id(f.root),
-        "rename",
-        Some("B survives"),
-    );
-    invoke(
-        &mut reopened,
-        11,
-        actions::page_resource_id(f.empty),
-        "rename",
-        Some("New A"),
-    );
-    f.records
-        .read(&checkout.id, |doc| {
-            let workspace = notes::notebook::project(doc, None).unwrap();
-            assert_eq!(workspace.get(f.root).unwrap().title, "B survives");
-            assert_eq!(workspace.get(f.empty).unwrap().title, "New A");
-        })
-        .unwrap();
-    assert_eq!(revision(&f, &checkout), 3);
-    close_driver(&mut b);
-    close_driver(&mut reopened);
-}
-
-#[test]
-fn first_undo_after_import_preserves_every_imported_value_and_receipt() {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
-    let before = f
-        .records
-        .read(&checkout.id, |doc| {
-            serde_json::to_value(automerge::AutoSerde::from(doc)).unwrap()
-        })
-        .unwrap();
-    let mut a = driver(&f, 11, &checkout);
-    invoke(
-        &mut a,
-        11,
-        actions::page_resource_id(f.root),
-        "rename",
-        Some("first user edit"),
-    );
-    f.records
-        .with_history(&checkout.id, |doc, history| {
-            assert_eq!(history.revision(), 1);
-            history.undo_in(doc, &f.author, 11, None, None).unwrap();
-            assert_eq!(
-                serde_json::to_value(automerge::AutoSerde::from(&*doc)).unwrap(),
-                before
-            );
-            assert!(history.next_undo_in(&f.author, 11).is_none());
-        })
-        .unwrap();
-    close_driver(&mut a);
-}
-
-#[test]
-fn mounting_same_author_peer_preserves_pending_typing_owner_and_stale_callback_refuses() {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
-    let mut a = BoundNotes::new(component(&f, 11, existing(&checkout)));
-    let original = f
-        .records
-        .read(&checkout.id, |doc| {
-            NotesDoc::page_block_snapshots(doc, f.root)[0].1.clone()
-        })
-        .unwrap();
-    a.pending_edit(|doc| {
-        let list = NotesDoc::page_blocks_list(doc, f.root).unwrap();
-        let text = NotesDoc::block_text_obj(doc, &list, 0).unwrap();
-        doc.splice_text(&text, 0, 0, "A pending ").unwrap();
-    })
-    .unwrap();
-    let before = f
-        .records
-        .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
-        .unwrap();
-    assert!(before.1 > 0);
-    let prepared = component(&f, 12, existing(&checkout));
-    assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
-            .unwrap(),
-        before,
-        "factory mount"
-    );
-    let mut b =
-        ui::headless::Driver::from_component(prepared, (1000, 700), runner_inputs()).unwrap();
-
-    for _ in 0..3 {
-        b.relayout();
-    }
-    assert_eq!(revision(&f, &checkout), 0);
-    assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| NotesDoc::page_block_snapshots(
-                doc, f.root
-            )[0]
-            .1
-            .clone())
-            .unwrap(),
-        format!("A pending {original}")
-    );
-    a.pending_edit(|doc| {
-        let list = NotesDoc::page_blocks_list(doc, f.root).unwrap();
-        let text = NotesDoc::block_text_obj(doc, &list, 0).unwrap();
-        doc.splice_text(&text, 0, 0, "A continued ").unwrap();
-    })
-    .unwrap();
-    assert_eq!(revision(&f, &checkout), 0);
-    invoke(
-        &mut b,
-        12,
-        actions::page_resource_id(f.child),
-        "rename",
-        Some("B action"),
-    );
-    f.records
-        .with_history(&checkout.id, |doc, history| {
-            let pending = history.next_undo_in(&f.author, 11).unwrap();
-            assert_eq!(pending.instance_id, Some(11));
-            assert_eq!(pending.author.as_ref(), Some(&f.author));
-            assert_eq!(pending.before, before.0);
-            history.undo_in(doc, &f.author, 11, None, None).unwrap();
-            assert_eq!(NotesDoc::page_block_snapshots(doc, f.root)[0].1, original);
-            assert_eq!(
-                NotesDoc::list_pages(doc)
-                    .iter()
-                    .find(|p| p.id == f.child)
-                    .unwrap()
-                    .title,
-                "B action"
-            );
-        })
-        .unwrap();
-    a.close();
-    let mut reopened = driver(&f, 11, &checkout);
-    assert!(
-        a.pending_edit(|_| panic!("closed callback was delivered"))
-            .is_err()
-    );
-    invoke(
-        &mut b,
-        12,
-        actions::page_resource_id(f.child),
-        "rename",
-        Some("B still live"),
-    );
-    close_driver(&mut b);
-    close_driver(&mut reopened);
-}
-
-#[test]
-fn bound_rich_split_preserves_both_halves_in_one_history_entry() {
-    let f = LegacyFixture::rich();
-    let component = component(&f, 11, ui::application::LaunchTarget::New);
-    let checkout = component.record().clone();
-    let mut a =
-        ui::headless::Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
-    invoke(&mut a, 11, "notes.notebook", "new-page", Some("Rich"));
-    let page = f
-        .records
-        .read(&checkout.id, |doc| NotesDoc::list_pages(doc)[0].id)
-        .unwrap();
-    a.perform_named("block_editor", &ui::a11y::Action::Focus)
-        .unwrap();
-    a.type_text("abcd");
-    f.records
-        .read(&checkout.id, |doc| {
-            assert_eq!(NotesDoc::page_block_snapshots(doc, page)[0].1, "abcd");
-        })
-        .unwrap();
-    a.set_modifiers(&["shift".into()]);
-    a.key("Home");
-    a.set_modifiers(&[]);
-    let before = revision(&f, &checkout);
-    a.set_modifiers(&["ctrl".into()]);
-    a.key("b");
-    a.set_modifiers(&[]);
-    assert_eq!(revision(&f, &checkout), before + 1);
-    f.records
-        .read(&checkout.id, |doc| {
-            assert_eq!(
-                NotesDoc::page_block_marks(doc, page)[0].1,
-                vec![actions::InlineMarkSpan {
-                    start: 0,
-                    end: 4,
-                    mark: actions::InlineMark::Bold
-                }]
-            );
-        })
-        .unwrap();
-    a.key("ArrowLeft");
-    a.key("Home");
-    a.key("ArrowRight");
-    a.key("ArrowRight");
-    let before = revision(&f, &checkout);
-    a.key("Enter");
-    assert_eq!(revision(&f, &checkout), before + 1);
-    f.records
-        .read(&checkout.id, |doc| {
-            notes::notebook::validate(doc).unwrap();
-            assert_eq!(
-                NotesDoc::page_block_snapshots(doc, page)
-                    .iter()
-                    .map(|(_, text)| text.as_str())
-                    .collect::<Vec<_>>(),
-                vec!["a", "bcd"]
-            );
-            for ((_, marks), end) in NotesDoc::page_block_marks(doc, page)
-                .into_iter()
-                .zip([1, 3])
-            {
+            .read(&checkout.id, |doc| {
+                notes::notebook::validate(doc).unwrap();
                 assert_eq!(
-                    marks,
+                    NotesDoc::page_block_snapshots(doc, page)
+                        .iter()
+                        .map(|(_, text)| text.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["a"]
+                );
+            })
+            .unwrap();
+        // Typing a word is one history entry, recorded once the word ends.
+        assert_eq!(revision(&f, &checkout), before);
+        driver.key("Enter");
+        assert_eq!(
+            revision(&f, &checkout),
+            before + 2,
+            "the word, then the split"
+        );
+        driver.type_text("b");
+        assert_eq!(revision(&f, &checkout), before + 2);
+        let blocks = f
+            .records
+            .read(&checkout.id, |doc| {
+                NotesDoc::page_block_snapshots(doc, page)
+            })
+            .unwrap();
+        assert_eq!(
+            blocks
+                .iter()
+                .map(|(_, text)| text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        driver
+            .perform_semantic_named(
+                "block_editor",
+                Some(&format!("notes.block-move:{}:up", blocks[1].0)),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
+        assert_eq!(
+            revision(&f, &checkout),
+            before + 4,
+            "the word, then the move"
+        );
+        f.records
+            .read(&checkout.id, |doc| {
+                notes::notebook::validate(doc).unwrap();
+                assert_eq!(
+                    NotesDoc::page_block_snapshots(doc, page)
+                        .iter()
+                        .map(|(_, text)| text.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["b", "a"]
+                );
+            })
+            .unwrap();
+        assert_eq!(driver.state_mut().doc.pending_ops(), 0);
+        assert!(driver.state_mut().doc.base_heads().is_empty());
+        close_driver(&mut driver);
+    }
+
+    eprintln!("phase bound_tree_reorder_is_one_logical_history_entry");
+    {
+        let f = LegacyFixture::rich();
+        let checkout = imported(&f);
+        let mut driver = driver(&f, 11, &checkout);
+        let rect = page_rect(&driver, f.empty);
+        driver.click_at(rect.center().x, rect.center().y);
+        let before = revision(&f, &checkout);
+        driver.set_modifiers(&["alt".into()]);
+        driver.key("ArrowUp");
+        driver.set_modifiers(&[]);
+        assert_eq!(revision(&f, &checkout), before + 1);
+        f.records
+            .read(&checkout.id, |doc| {
+                let workspace = notes::notebook::project(doc, None).unwrap();
+                assert_eq!(workspace.get(f.empty).unwrap().order, 0);
+                assert_eq!(workspace.get(f.root).unwrap().order, 1);
+            })
+            .unwrap();
+        close_driver(&mut driver);
+    }
+
+    eprintln!("phase bound_rich_split_preserves_both_halves_in_one_history_entry");
+    {
+        let f = LegacyFixture::rich();
+        let component = component(&f, 11, ui::application::LaunchTarget::New);
+        let checkout = component.record().clone();
+        let mut a =
+            ui::headless::Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
+        invoke(&mut a, 11, "notes.notebook", "new-page", Some("Rich"));
+        let page = f
+            .records
+            .read(&checkout.id, |doc| NotesDoc::list_pages(doc)[0].id)
+            .unwrap();
+        a.perform_named("block_editor", &ui::a11y::Action::Focus)
+            .unwrap();
+        a.type_text("abcd");
+        f.records
+            .read(&checkout.id, |doc| {
+                assert_eq!(NotesDoc::page_block_snapshots(doc, page)[0].1, "abcd");
+            })
+            .unwrap();
+        a.set_modifiers(&["shift".into()]);
+        a.key("Home");
+        a.set_modifiers(&[]);
+        let before = revision(&f, &checkout);
+        a.set_modifiers(&["ctrl".into()]);
+        a.key("b");
+        a.set_modifiers(&[]);
+        assert_eq!(
+            revision(&f, &checkout),
+            before + 2,
+            "the typed word closes, then the format"
+        );
+        f.records
+            .read(&checkout.id, |doc| {
+                assert_eq!(
+                    NotesDoc::page_block_marks(doc, page)[0].1,
                     vec![actions::InlineMarkSpan {
                         start: 0,
-                        end,
+                        end: 4,
                         mark: actions::InlineMark::Bold
                     }]
                 );
-            }
-        })
-        .unwrap();
-    f.records
-        .with_history(&checkout.id, |doc, history| {
-            history.undo_in(doc, &f.author, 11, None, None).unwrap();
-            assert_eq!(
-                NotesDoc::page_block_snapshots(doc, page)
+            })
+            .unwrap();
+        a.key("ArrowLeft");
+        a.key("Home");
+        a.key("ArrowRight");
+        a.key("ArrowRight");
+        let before = revision(&f, &checkout);
+        a.key("Enter");
+        assert_eq!(revision(&f, &checkout), before + 1);
+        f.records
+            .read(&checkout.id, |doc| {
+                notes::notebook::validate(doc).unwrap();
+                assert_eq!(
+                    NotesDoc::page_block_snapshots(doc, page)
+                        .iter()
+                        .map(|(_, text)| text.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["ab", "cd"],
+                    "each arrow press moves the caret one character"
+                );
+                for ((_, marks), end) in NotesDoc::page_block_marks(doc, page)
+                    .into_iter()
+                    .zip([2, 2])
+                {
+                    assert_eq!(
+                        marks,
+                        vec![actions::InlineMarkSpan {
+                            start: 0,
+                            end,
+                            mark: actions::InlineMark::Bold
+                        }]
+                    );
+                }
+            })
+            .unwrap();
+        f.records
+            .with_history(&checkout.id, |doc, history| {
+                history.undo_in(doc, &f.author, 11, None, None).unwrap();
+                assert_eq!(
+                    NotesDoc::page_block_snapshots(doc, page)
+                        .iter()
+                        .map(|(_, text)| text.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["abcd"]
+                );
+                assert_eq!(
+                    NotesDoc::page_block_marks(doc, page)[0].1,
+                    vec![actions::InlineMarkSpan {
+                        start: 0,
+                        end: 4,
+                        mark: actions::InlineMark::Bold
+                    }]
+                );
+            })
+            .unwrap();
+        close_driver(&mut a);
+    }
+
+    eprintln!("phase bound_pointer_reparent_duplicate_and_checklist_are_owned_actions");
+    {
+        use winit::event::{ElementState, MouseButton};
+        let f = LegacyFixture::rich();
+        let checkout = imported(&f);
+        let source = f.source_bytes();
+        let mut a = driver(&f, 11, &checkout);
+        let from = page_rect(&a, f.empty).center();
+        let to = page_rect(&a, f.root).center();
+        move_pointer(&mut a, from);
+        mouse(&mut a, MouseButton::Left, ElementState::Pressed);
+        move_pointer(&mut a, from + vello::kurbo::Vec2::new(0.0, -10.0));
+        move_pointer(&mut a, to);
+        mouse(&mut a, MouseButton::Left, ElementState::Released);
+        assert_eq!(revision(&f, &checkout), 1);
+        f.records
+            .read(&checkout.id, |doc| {
+                let workspace = notes::notebook::project(doc, None).unwrap();
+                assert_eq!(workspace.get(f.empty).unwrap().parent, Some(f.root));
+                assert_eq!(workspace.get(f.empty).unwrap().order, 1);
+            })
+            .unwrap();
+        context_menu_select(&mut a, f.root, "Duplicate");
+        assert_eq!(revision(&f, &checkout), 2);
+        let copied_root = f
+            .records
+            .read(&checkout.id, |doc| {
+                let workspace = notes::notebook::project(doc, None).unwrap();
+                assert_eq!(workspace.pages().len(), 6);
+                let copy = workspace
+                    .pages()
                     .iter()
-                    .map(|(_, text)| text.as_str())
-                    .collect::<Vec<_>>(),
-                vec!["abcd"]
+                    .find(|p| p.title == "Projects copy")
+                    .unwrap();
+                assert_eq!(copy.order, 1);
+                assert_eq!(workspace.children_of(Some(copy.id)).len(), 2);
+                copy.id
+            })
+            .unwrap();
+        let (block, index) = f
+            .records
+            .read(&checkout.id, |doc| {
+                let index = NotesDoc::page_blocks(doc, f.child)
+                    .iter()
+                    .position(|block| block.kind.stored() == "checklist:0:0")
+                    .unwrap();
+                (
+                    NotesDoc::page_block_snapshots(doc, f.child)[index]
+                        .0
+                        .clone(),
+                    index,
+                )
+            })
+            .unwrap();
+        invoke(
+            &mut a,
+            11,
+            actions::block_resource_id(f.child, &block),
+            "open",
+            None,
+        );
+        assert_eq!(revision(&f, &checkout), 2);
+        let rect = semantic_rect(&a, &format!("notes.block:{block}"));
+        assert!(
+            rect.center().y >= 0.0 && rect.center().y < 700.0,
+            "revealed checklist bounds {rect:?}"
+        );
+        a.click_at(rect.x0 - 12.0, rect.center().y);
+        assert_eq!(revision(&f, &checkout), 3);
+        f.records
+            .read(&checkout.id, |doc| {
+                assert_eq!(
+                    NotesDoc::page_blocks(doc, f.child)[index].kind.stored(),
+                    "checklist:0:1"
+                );
+                notes::notebook::validate(doc).unwrap();
+            })
+            .unwrap();
+        context_menu_select(&mut a, copied_root, "Delete");
+        assert_eq!(revision(&f, &checkout), 4);
+        f.records
+            .read(&checkout.id, |doc| {
+                let workspace = notes::notebook::project(doc, None).unwrap();
+                assert_eq!(workspace.pages().len(), 3);
+                assert!(workspace.get(copied_root).is_none());
+                notes::notebook::validate(doc).unwrap();
+            })
+            .unwrap();
+        assert_eq!(source, f.source_bytes());
+        close_driver(&mut a);
+    }
+
+    eprintln!("phase tree_update_is_atomic_exact_and_replayable_without_touching_rich_content");
+    {
+        let f = LegacyFixture::rich();
+        let checkout = imported(&f);
+        let doc = f.records.read(&checkout.id, Clone::clone).unwrap();
+        let mut workspace = notes::notebook::project(&doc, None).unwrap();
+        let mut before = workspace
+            .pages()
+            .iter()
+            .map(actions::PageData::from_meta)
+            .collect::<Vec<_>>();
+        before.sort_by(|a, b| a.id.cmp(&b.id));
+        workspace.move_to(f.child, Some(f.empty), None);
+        let mut after = workspace
+            .pages()
+            .iter()
+            .map(actions::PageData::from_meta)
+            .collect::<Vec<_>>();
+        after.sort_by(|a, b| a.id.cmp(&b.id));
+        let action = NotesAction::UpdatePageTree {
+            before: before.clone(),
+            after: after.clone(),
+        };
+        let mut a = doc.clone();
+        let mut b = doc.clone();
+        let dispatched = tilo_actions::dispatch(
+            &mut a,
+            &action,
+            actions::encode(&action),
+            &mut tilo_actions::LocalTransport::new(),
+        )
+        .unwrap();
+        let mut registry = tilo_actions::ActionRegistry::new();
+        actions::register(&mut registry);
+        tilo_actions::replay(&mut b, dispatched.envelope(), &registry).unwrap();
+        assert_eq!(a.get_heads(), b.get_heads());
+        notes::notebook::validate(&a).unwrap();
+        for page in [f.root, f.child, f.empty] {
+            assert_eq!(
+                NotesDoc::page_block_snapshots(&a, page),
+                NotesDoc::page_block_snapshots(&doc, page)
             );
             assert_eq!(
-                NotesDoc::page_block_marks(doc, page)[0].1,
-                vec![actions::InlineMarkSpan {
-                    start: 0,
-                    end: 4,
-                    mark: actions::InlineMark::Bold
-                }]
+                NotesDoc::page_blocks(&a, page),
+                NotesDoc::page_blocks(&doc, page)
             );
-        })
-        .unwrap();
-    close_driver(&mut a);
+            assert_eq!(
+                NotesDoc::page_body(&a, page),
+                NotesDoc::page_body(&doc, page)
+            );
+        }
+        assert_eq!(
+            NotesDoc::list_tag_assignments(&a),
+            NotesDoc::list_tag_assignments(&doc)
+        );
+        for invalid in ["stale", "cycle", "missing", "nil", "bad-parent", "order"] {
+            let mut candidate = doc.clone();
+            let mut result = after.clone();
+            match invalid {
+                "stale" => {
+                    let mut page = workspace.get(f.root).unwrap().clone();
+                    page.title = "concurrent".into();
+                    NotesDoc::upsert_page_meta(&mut candidate, &page);
+                    candidate.commit();
+                }
+                "cycle" => {
+                    result
+                        .iter_mut()
+                        .find(|p| p.id == f.empty.to_string())
+                        .unwrap()
+                        .parent = f.child.to_string();
+                }
+                "missing" => {
+                    result.pop();
+                }
+                "nil" => result[0].id = uuid::Uuid::nil().to_string(),
+                "bad-parent" => result[0].parent = "malformed".into(),
+                "order" => result[0].order = 99,
+                _ => unreachable!(),
+            }
+            let untouched = (candidate.base_heads(), candidate.pending_ops());
+            assert!(
+                NotesAction::UpdatePageTree {
+                    before: before.clone(),
+                    after: result
+                }
+                .apply(&mut candidate)
+                .is_err(),
+                "{invalid}"
+            );
+            assert_eq!(
+                (candidate.base_heads(), candidate.pending_ops()),
+                untouched,
+                "{invalid}"
+            );
+        }
+    }
 }
 
+#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
-fn bound_pointer_reparent_duplicate_and_checklist_are_owned_actions() {
-    use winit::event::{ElementState, MouseButton};
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
-    let source = f.source_bytes();
-    let mut a = driver(&f, 11, &checkout);
-    let from = page_rect(&a, f.empty).center();
-    let to = page_rect(&a, f.root).center();
-    move_pointer(&mut a, from);
-    mouse(&mut a, MouseButton::Left, ElementState::Pressed);
-    move_pointer(&mut a, from + vello::kurbo::Vec2::new(0.0, -10.0));
-    move_pointer(&mut a, to);
-    mouse(&mut a, MouseButton::Left, ElementState::Released);
-    assert_eq!(revision(&f, &checkout), 1);
-    f.records
-        .read(&checkout.id, |doc| {
-            let workspace = notes::notebook::project(doc, None).unwrap();
-            assert_eq!(workspace.get(f.empty).unwrap().parent, Some(f.root));
-            assert_eq!(workspace.get(f.empty).unwrap().order, 1);
-        })
-        .unwrap();
-    context_menu_select(&mut a, f.root, "Duplicate");
-    assert_eq!(revision(&f, &checkout), 2);
-    let copied_root = f
-        .records
-        .read(&checkout.id, |doc| {
-            let workspace = notes::notebook::project(doc, None).unwrap();
-            assert_eq!(workspace.pages().len(), 6);
-            let copy = workspace
-                .pages()
-                .iter()
-                .find(|p| p.title == "Projects copy")
+fn bound_undo_is_per_instance_and_retypes_once() {
+    eprintln!("phase bound_same_author_interleaving_undo_redo_is_per_instance");
+    {
+        let f = LegacyFixture::rich();
+        let checkout = imported(&f);
+        let source = f.source_bytes();
+        let mut a = driver(&f, 11, &checkout);
+        let mut b = driver(&f, 12, &checkout);
+        let original = f
+            .records
+            .read(&checkout.id, |doc| {
+                NotesDoc::page_block_snapshots(doc, f.child)[0].clone()
+            })
+            .unwrap();
+        assert_eq!(revision(&f, &checkout), 0);
+        invoke(
+            &mut a,
+            11,
+            actions::page_resource_id(f.root),
+            "rename",
+            Some("A title"),
+        );
+        assert_eq!(revision(&f, &checkout), 1);
+        invoke(
+            &mut b,
+            12,
+            actions::block_resource_id(f.child, &original.0),
+            "replace-text",
+            Some("B text"),
+        );
+        assert_eq!(revision(&f, &checkout), 2);
+        invoke(
+            &mut a,
+            11,
+            actions::page_resource_id(f.root),
+            format!("assign-tag:{}", f.tag),
+            None,
+        );
+        assert_eq!(revision(&f, &checkout), 3);
+        f.records
+            .with_history(&checkout.id, |doc, history| {
+                for instance in [11, 12] {
+                    let last = history.next_undo_in(&f.author, instance).unwrap();
+                    assert_eq!(last.author.as_ref(), Some(&f.author));
+                    assert_eq!(last.instance_id, Some(instance));
+                }
+                history.undo_in(doc, &f.author, 11, None, None).unwrap();
+                assert!(!NotesDoc::list_tag_assignments(doc).contains(&(f.root, f.tag)));
+                assert_eq!(
+                    NotesDoc::list_pages(doc)
+                        .iter()
+                        .find(|p| p.id == f.root)
+                        .unwrap()
+                        .title,
+                    "A title"
+                );
+                assert_eq!(NotesDoc::page_block_snapshots(doc, f.child)[0].1, "B text");
+                history.undo_in(doc, &f.author, 12, None, None).unwrap();
+                assert_eq!(
+                    NotesDoc::page_block_snapshots(doc, f.child)[0].1,
+                    original.1
+                );
+                history.redo_in(doc, &f.author, 11, None, None).unwrap();
+                history.redo_in(doc, &f.author, 12, None, None).unwrap();
+                assert!(NotesDoc::list_tag_assignments(doc).contains(&(f.root, f.tag)));
+                assert_eq!(NotesDoc::page_block_snapshots(doc, f.child)[0].1, "B text");
+            })
+            .unwrap();
+        // A's redo remains available after B creates a new action.
+        f.records
+            .with_history(&checkout.id, |doc, history| {
+                history.undo_in(doc, &f.author, 11, None, None).unwrap();
+            })
+            .unwrap();
+        invoke(
+            &mut b,
+            12,
+            actions::page_resource_id(f.child),
+            "rename",
+            Some("B child"),
+        );
+        f.records
+            .with_history(&checkout.id, |doc, history| {
+                history.redo_in(doc, &f.author, 11, None, None).unwrap();
+                assert!(NotesDoc::list_tag_assignments(doc).contains(&(f.root, f.tag)));
+                assert_eq!(
+                    NotesDoc::list_pages(doc)
+                        .iter()
+                        .find(|p| p.id == f.child)
+                        .unwrap()
+                        .title,
+                    "B child"
+                );
+            })
+            .unwrap();
+        assert_eq!(source, f.source_bytes());
+        close_driver(&mut a);
+        close_driver(&mut b);
+    }
+
+    eprintln!("phase bound_first_type_undo_to_empty_retypes_once");
+    {
+        let f = LegacyFixture::rich();
+        let component = component(&f, 11, ui::application::LaunchTarget::New);
+        let checkout = component.record().clone();
+        let mut a =
+            ui::headless::Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
+        invoke(
+            &mut a,
+            11,
+            "notes.notebook",
+            "new-page",
+            Some("Empty again"),
+        );
+        let page = f
+            .records
+            .read(&checkout.id, |doc| NotesDoc::list_pages(doc)[0].id)
+            .unwrap();
+        a.perform_named("block_editor", &ui::a11y::Action::Focus)
+            .unwrap();
+        a.type_text("a");
+        a.set_modifiers(&["ctrl".into()]);
+        a.key("z");
+        a.set_modifiers(&[]);
+
+        f.records
+            .read(&checkout.id, |doc| {
+                assert!(
+                    NotesDoc::page_block_snapshots(doc, page)
+                        .iter()
+                        .all(|(_, text)| text.is_empty())
+                );
+            })
+            .unwrap();
+        assert_empty_retypes_once(&f, &checkout, page, &mut a);
+        close_driver(&mut a);
+    }
+
+    eprintln!("phase bound_peer_undo_to_empty_retypes_once");
+    {
+        let f = LegacyFixture::rich();
+        let component = component(&f, 11, ui::application::LaunchTarget::New);
+        let checkout = component.record().clone();
+        let mut a =
+            ui::headless::Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
+        invoke(&mut a, 11, "notes.notebook", "new-page", Some("Peer page"));
+        let page = f
+            .records
+            .read(&checkout.id, |doc| NotesDoc::list_pages(doc)[0].id)
+            .unwrap();
+        a.perform_named("block_editor", &ui::a11y::Action::Focus)
+            .unwrap();
+        a.type_text("a");
+        // B binds a nonempty page; A's undo of its typing empties it again.
+        let mut b = driver(&f, 12, &checkout);
+        a.set_modifiers(&["ctrl".into()]);
+        a.key("z");
+        a.set_modifiers(&[]);
+        f.records
+            .read(&checkout.id, |doc| {
+                assert!(
+                    NotesDoc::page_block_snapshots(doc, page)
+                        .iter()
+                        .all(|(_, text)| text.is_empty())
+                );
+            })
+            .unwrap();
+        assert_empty_retypes_once(&f, &checkout, page, &mut b);
+        close_driver(&mut a);
+        close_driver(&mut b);
+    }
+
+    eprintln!("phase first_undo_after_import_preserves_every_imported_value_and_receipt");
+    {
+        let f = LegacyFixture::rich();
+        let checkout = imported(&f);
+        let before = f
+            .records
+            .read(&checkout.id, |doc| {
+                serde_json::to_value(automerge::AutoSerde::from(doc)).unwrap()
+            })
+            .unwrap();
+        let mut a = driver(&f, 11, &checkout);
+        invoke(
+            &mut a,
+            11,
+            actions::page_resource_id(f.root),
+            "rename",
+            Some("first user edit"),
+        );
+        f.records
+            .with_history(&checkout.id, |doc, history| {
+                assert_eq!(history.revision(), 1);
+                history.undo_in(doc, &f.author, 11, None, None).unwrap();
+                assert_eq!(
+                    serde_json::to_value(automerge::AutoSerde::from(&*doc)).unwrap(),
+                    before
+                );
+                assert!(history.next_undo_in(&f.author, 11).is_none());
+            })
+            .unwrap();
+        close_driver(&mut a);
+    }
+}
+
+#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+#[test]
+fn registry_authority_and_stale_page_views_keep_other_instances_live() {
+    eprintln!("phase app_and_driver_use_real_notes_registry_and_revoked_authority_refuses");
+    {
+        let f = LegacyFixture::rich();
+        let checkout = imported(&f);
+        let mut app =
+            ui::App::from_component(component(&f, 11, existing(&checkout)), runner_inputs())
                 .unwrap();
-            assert_eq!(copy.order, 1);
-            assert_eq!(workspace.children_of(Some(copy.id)).len(), 2);
-            copy.id
-        })
-        .unwrap();
-    let (block, index) = f
-        .records
-        .read(&checkout.id, |doc| {
-            let list = NotesDoc::page_blocks_list(doc, f.child).unwrap();
-            let index = (0..doc.length(&list))
-                .find(|&index| NotesDoc::block_kind(doc, &list, index) == "checklist:0:0")
-                .unwrap();
-            (
-                NotesDoc::page_block_snapshots(doc, f.child)[index]
-                    .0
-                    .clone(),
-                index,
+        app.init_layout();
+        app.refresh_semantic_tree();
+        let id = app
+            .semantic_tree()
+            .iter()
+            .find(|node| {
+                node.name.as_deref() == Some("Projects") && node.action("rename").is_some()
+            })
+            .unwrap()
+            .id
+            .clone();
+        assert!(
+            app.invoke_semantic_action(&id, "rename", Some("App title"))
+                .unwrap()
+        );
+        assert_eq!(revision(&f, &checkout), 1);
+        let mut b = driver(&f, 12, &checkout);
+        invoke(
+            &mut b,
+            12,
+            actions::page_resource_id(f.child),
+            "rename",
+            Some("Driver title"),
+        );
+        assert_eq!(revision(&f, &checkout), 2);
+        let stale = id;
+        *f.authority.borrow_mut() = ui::permissions::PermissionContext::from_capabilities(
+            ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), &f.author.0),
+            vec![],
+        )
+        .at_unix_time(100);
+        let before = f
+            .records
+            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            .unwrap();
+        assert!(
+            app.invoke_semantic_action(&stale, "rename", Some("denied"))
+                .is_err()
+        );
+        let address = ui::bound_dispatch::BoundActionAddress {
+            instance_id: 12,
+            address: actions::open_page_address(f.child),
+        };
+        b.invoke_bound_action(&address, &serde_json::Map::new())
+            .unwrap();
+        assert!(
+            b.invoke_bound_action(
+                &ui::bound_dispatch::BoundActionAddress {
+                    instance_id: 12,
+                    address: tilo_actions::ActionAddress::new(
+                        actions::page_resource_id(f.child),
+                        "rename"
+                    )
+                },
+                serde_json::json!({"value":"denied"}).as_object().unwrap()
             )
-        })
-        .unwrap();
-    invoke(
-        &mut a,
-        11,
-        actions::block_resource_id(f.child, &block),
-        "open",
-        None,
+            .is_err()
+        );
+        assert!(
+            b.invoke_bound_action_confirmed(
+                &ui::bound_dispatch::BoundActionAddress {
+                    instance_id: 12,
+                    address: tilo_actions::ActionAddress::new(
+                        actions::page_resource_id(f.child),
+                        "delete"
+                    )
+                },
+                &serde_json::Map::new()
+            )
+            .is_err()
+        );
+        assert_eq!(
+            f.records
+                .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+                .unwrap(),
+            before
+        );
+        app.close_components();
+        let reports = app.take_component_close_reports();
+        assert!(!reports.is_empty());
+        for report in reports {
+            assert_closed(&report);
+        }
+        close_driver(&mut b);
+    }
+
+    eprintln!("phase bound_views_stale_page_refusal_and_close_reopen_keep_other_instance_live");
+    {
+        let f = LegacyFixture::rich();
+        let checkout = imported(&f);
+        let mut a = driver(&f, 11, &checkout);
+        let mut b = driver(&f, 12, &checkout);
+        let before = f
+            .records
+            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            .unwrap();
+        invoke(&mut a, 11, actions::page_resource_id(f.child), "open", None);
+        f.records
+            .read_history(&checkout.id, |doc, history| {
+                assert_eq!(
+                    history.revision(),
+                    0,
+                    "after OpenPage marks {:?}",
+                    NotesDoc::page_block_marks(doc, f.root)
+                );
+            })
+            .unwrap();
+        let child_marks = f
+            .records
+            .read(&checkout.id, |doc| NotesDoc::page_block_marks(doc, f.child))
+            .unwrap();
+        invoke(&mut a, 11, actions::tag_resource_id(f.tag), "open", None);
+        assert_eq!(
+            f.records
+                .read(&checkout.id, |doc| NotesDoc::page_block_marks(doc, f.child))
+                .unwrap(),
+            child_marks
+        );
+        assert_eq!(revision(&f, &checkout), 0);
+        assert_eq!(
+            f.records
+                .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+                .unwrap(),
+            before
+        );
+        invoke_confirmed(&mut b, 12, actions::page_resource_id(f.child), "delete");
+        let denied = ui::bound_dispatch::BoundActionAddress {
+            instance_id: 11,
+            address: tilo_actions::ActionAddress::new(actions::page_resource_id(f.child), "rename"),
+        };
+        assert!(
+            a.invoke_bound_action(
+                &denied,
+                serde_json::json!({"value":"phantom"}).as_object().unwrap()
+            )
+            .is_err()
+        );
+        a.relayout();
+        assert!(
+            f.records
+                .read(&checkout.id, |doc| NotesDoc::list_pages(doc)
+                    .iter()
+                    .all(|p| p.id != f.child))
+                .unwrap()
+        );
+        close_driver(&mut a);
+        let stale = ui::bound_dispatch::BoundActionAddress {
+            instance_id: 11,
+            address: tilo_actions::ActionAddress::new(actions::page_resource_id(f.root), "rename"),
+        };
+        let mut reopened = driver(&f, 11, &checkout);
+        assert!(
+            a.invoke_bound_action_confirmed(
+                &stale,
+                serde_json::json!({"value":"stale lifetime"})
+                    .as_object()
+                    .unwrap()
+            )
+            .is_err()
+        );
+        invoke(
+            &mut b,
+            12,
+            actions::page_resource_id(f.root),
+            "rename",
+            Some("B survives"),
+        );
+        invoke(
+            &mut reopened,
+            11,
+            actions::page_resource_id(f.empty),
+            "rename",
+            Some("New A"),
+        );
+        f.records
+            .read(&checkout.id, |doc| {
+                let workspace = notes::notebook::project(doc, None).unwrap();
+                assert_eq!(workspace.get(f.root).unwrap().title, "B survives");
+                assert_eq!(workspace.get(f.empty).unwrap().title, "New A");
+            })
+            .unwrap();
+        assert_eq!(revision(&f, &checkout), 3);
+        close_driver(&mut b);
+        close_driver(&mut reopened);
+    }
+}
+
+/// Type `text` at the start of `page`'s first paragraph.
+fn prepend(doc: &mut automerge::AutoCommit, page: notes::PageId, text: &str) {
+    let block = NotesDoc::page_block_snapshots(doc, page)[0].0.clone();
+    NotesDoc::edit_page_body(
+        doc,
+        page,
+        &tilo_document::RichTextAction::SpliceText {
+            region: tilo_document::action::RegionKind::Body,
+            block,
+            at: 0,
+            del: 0,
+            ins: text.into(),
+        },
+    )
+    .unwrap();
+}
+
+#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+#[test]
+fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
+    eprintln!(
+        "phase mounting_same_author_peer_preserves_pending_typing_owner_and_stale_callback_refuses"
     );
-    assert_eq!(revision(&f, &checkout), 2);
-    let rect = semantic_rect(&a, &format!("notes.block:{block}"));
-    assert!(
-        rect.center().y >= 0.0 && rect.center().y < 700.0,
-        "revealed checklist bounds {rect:?}"
-    );
-    a.click_at(rect.x0 - 12.0, rect.center().y);
-    assert_eq!(revision(&f, &checkout), 3);
-    f.records
-        .read(&checkout.id, |doc| {
-            let list = NotesDoc::page_blocks_list(doc, f.child).unwrap();
-            assert_eq!(NotesDoc::block_kind(doc, &list, index), "checklist:0:1");
-            notes::notebook::validate(doc).unwrap();
-        })
-        .unwrap();
-    context_menu_select(&mut a, copied_root, "Delete");
-    assert_eq!(revision(&f, &checkout), 4);
-    f.records
-        .read(&checkout.id, |doc| {
-            let workspace = notes::notebook::project(doc, None).unwrap();
-            assert_eq!(workspace.pages().len(), 3);
-            assert!(workspace.get(copied_root).is_none());
-            notes::notebook::validate(doc).unwrap();
-        })
-        .unwrap();
-    assert_eq!(source, f.source_bytes());
-    close_driver(&mut a);
+    {
+        let f = LegacyFixture::rich();
+        let checkout = imported(&f);
+        let mut a = BoundNotes::new(component(&f, 11, existing(&checkout)));
+        let original = f
+            .records
+            .read(&checkout.id, |doc| {
+                NotesDoc::page_block_snapshots(doc, f.root)[0].1.clone()
+            })
+            .unwrap();
+        a.pending_edit(|doc| prepend(doc, f.root, "A pending "))
+            .unwrap();
+        let before = f
+            .records
+            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            .unwrap();
+        assert!(before.1 > 0);
+        let prepared = component(&f, 12, existing(&checkout));
+        assert_eq!(
+            f.records
+                .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+                .unwrap(),
+            before,
+            "factory mount"
+        );
+        let mut b =
+            ui::headless::Driver::from_component(prepared, (1000, 700), runner_inputs()).unwrap();
+
+        for _ in 0..3 {
+            b.relayout();
+        }
+        assert_eq!(revision(&f, &checkout), 0);
+        assert_eq!(
+            f.records
+                .read(&checkout.id, |doc| NotesDoc::page_block_snapshots(
+                    doc, f.root
+                )[0]
+                .1
+                .clone())
+                .unwrap(),
+            format!("A pending {original}")
+        );
+        a.pending_edit(|doc| prepend(doc, f.root, "A continued "))
+            .unwrap();
+        assert_eq!(revision(&f, &checkout), 0);
+        invoke(
+            &mut b,
+            12,
+            actions::page_resource_id(f.child),
+            "rename",
+            Some("B action"),
+        );
+        f.records
+            .with_history(&checkout.id, |doc, history| {
+                let pending = history.next_undo_in(&f.author, 11).unwrap();
+                assert_eq!(pending.instance_id, Some(11));
+                assert_eq!(pending.author.as_ref(), Some(&f.author));
+                assert_eq!(pending.before, before.0);
+                history.undo_in(doc, &f.author, 11, None, None).unwrap();
+                assert_eq!(NotesDoc::page_block_snapshots(doc, f.root)[0].1, original);
+                assert_eq!(
+                    NotesDoc::list_pages(doc)
+                        .iter()
+                        .find(|p| p.id == f.child)
+                        .unwrap()
+                        .title,
+                    "B action"
+                );
+            })
+            .unwrap();
+        a.close();
+        let mut reopened = driver(&f, 11, &checkout);
+        assert!(
+            a.pending_edit(|_| panic!("closed callback was delivered"))
+                .is_err()
+        );
+        invoke(
+            &mut b,
+            12,
+            actions::page_resource_id(f.child),
+            "rename",
+            Some("B still live"),
+        );
+        close_driver(&mut b);
+        close_driver(&mut reopened);
+    }
+
+    eprintln!("phase bound_rejected_editor_delta_after_last_page_delete_shows_empty_cta");
+    {
+        let f = LegacyFixture::rich();
+        let component = component(&f, 12, ui::application::LaunchTarget::New);
+        let checkout = component.record().clone();
+        let mut b =
+            ui::headless::Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
+        invoke(&mut b, 12, "notes.notebook", "new-page", Some("Last page"));
+        let page = f
+            .records
+            .read(&checkout.id, |doc| NotesDoc::list_pages(doc)[0].id)
+            .unwrap();
+        b.perform_named("block_editor", &ui::a11y::Action::Focus)
+            .unwrap();
+        b.type_text("a");
+        b.key("Enter");
+        b.type_text("b");
+        let blocks = f
+            .records
+            .read(&checkout.id, |doc| {
+                NotesDoc::page_block_snapshots(doc, page)
+            })
+            .unwrap();
+        let mut a = BoundNotes::new(crate::component_support::component(
+            &f,
+            11,
+            existing(&checkout),
+        ));
+        let queued_before = f
+            .records
+            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            .unwrap();
+        let queued_revision = revision(&f, &checkout);
+        a.queue_block_move(&blocks[1].0);
+        assert_eq!(
+            f.records
+                .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+                .unwrap(),
+            queued_before
+        );
+        assert_eq!(revision(&f, &checkout), queued_revision);
+        invoke_confirmed(&mut b, 12, actions::page_resource_id(page), "delete");
+        let deleted = f
+            .records
+            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            .unwrap();
+        let deleted_revision = revision(&f, &checkout);
+        // Driver construction syncs the existing A widget; it does not replace NotesApp.
+        let mut a = a.into_driver(f.author.clone());
+        for _ in 0..3 {
+            a.relayout();
+            a.expect(
+                &ui::headless::SemanticExpectation::named("notes.first_note")
+                    .role(ui::a11y::Role::Button)
+                    .name("New note"),
+            )
+            .unwrap();
+            let snapshot = a.inspection();
+            assert!(!has_selected_node(&snapshot.root));
+            let panel = inspected_widget(&snapshot.root, "notes.first_note").unwrap();
+            assert!(panel.children.is_empty());
+            assert!(panel.semantics.as_ref().unwrap().value.is_none());
+            assert!(inspected_widget(&snapshot.root, "note_title").is_none());
+            assert!(inspected_widget(&snapshot.root, "block_editor").is_none());
+            f.records
+                .read(&checkout.id, |doc| {
+                    assert!(
+                        notes::notebook::project(doc, None)
+                            .unwrap()
+                            .pages()
+                            .is_empty()
+                    );
+                    assert_eq!((doc.base_heads(), doc.pending_ops()), deleted);
+                })
+                .unwrap();
+            assert_eq!(revision(&f, &checkout), deleted_revision);
+        }
+        close_driver(&mut a);
+        close_driver(&mut b);
+    }
 }
 
 fn context_menu_select(driver: &mut ui::headless::Driver, page: notes::PageId, label: &str) {
@@ -1049,66 +1241,6 @@ fn context_menu_select(driver: &mut ui::headless::Driver, page: notes::PageId, l
         driver.key("ArrowDown");
     }
     panic!("keyboard navigation never focused {label}");
-}
-
-#[test]
-fn bound_first_type_undo_to_empty_retypes_once() {
-    let f = LegacyFixture::rich();
-    let component = component(&f, 11, ui::application::LaunchTarget::New);
-    let checkout = component.record().clone();
-    let mut a =
-        ui::headless::Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
-    invoke(
-        &mut a,
-        11,
-        "notes.notebook",
-        "new-page",
-        Some("Empty again"),
-    );
-    let page = f
-        .records
-        .read(&checkout.id, |doc| NotesDoc::list_pages(doc)[0].id)
-        .unwrap();
-    a.perform_named("block_editor", &ui::a11y::Action::Focus)
-        .unwrap();
-    a.type_text("a");
-    assert_eq!(revision(&f, &checkout), 2);
-    f.records
-        .with_history(&checkout.id, |doc, history| {
-            history.undo_in(doc, &f.author, 11, None, None).unwrap();
-            assert!(NotesDoc::page_block_snapshots(doc, page).is_empty());
-        })
-        .unwrap();
-    assert_empty_retypes_once(&f, &checkout, page, &mut a);
-    close_driver(&mut a);
-}
-
-#[test]
-fn bound_peer_undo_to_empty_retypes_once() {
-    let f = LegacyFixture::rich();
-    let component = component(&f, 11, ui::application::LaunchTarget::New);
-    let checkout = component.record().clone();
-    let mut a =
-        ui::headless::Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
-    invoke(&mut a, 11, "notes.notebook", "new-page", Some("Peer page"));
-    let page = f
-        .records
-        .read(&checkout.id, |doc| NotesDoc::list_pages(doc)[0].id)
-        .unwrap();
-    a.perform_named("block_editor", &ui::a11y::Action::Focus)
-        .unwrap();
-    a.type_text("a");
-    // B binds a nonempty list; A's actual insertion undo removes its sole block.
-    let mut b = driver(&f, 12, &checkout);
-    f.records
-        .with_history(&checkout.id, |doc, history| {
-            history.undo_in(doc, &f.author, 11, None, None).unwrap();
-            assert!(NotesDoc::page_block_snapshots(doc, page).is_empty());
-        })
-        .unwrap();
-    assert_empty_retypes_once(&f, &checkout, page, &mut b);
-    close_driver(&mut a);
-    close_driver(&mut b);
 }
 
 fn inspected_widget<'a>(
@@ -1196,91 +1328,11 @@ fn assert_empty_retypes_once(
         .unwrap();
     assert_eq!(
         revision(f, checkout),
-        revision_before.checked_add(1).unwrap()
+        revision_before,
+        "the typed word is one step, still open"
     );
     assert!(driver.state_mut().doc.base_heads().is_empty());
     assert_eq!(driver.state_mut().doc.pending_ops(), 0);
-}
-
-#[test]
-fn bound_rejected_editor_delta_after_last_page_delete_shows_empty_cta() {
-    let f = LegacyFixture::rich();
-    let component = component(&f, 12, ui::application::LaunchTarget::New);
-    let checkout = component.record().clone();
-    let mut b =
-        ui::headless::Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
-    invoke(&mut b, 12, "notes.notebook", "new-page", Some("Last page"));
-    let page = f
-        .records
-        .read(&checkout.id, |doc| NotesDoc::list_pages(doc)[0].id)
-        .unwrap();
-    b.perform_named("block_editor", &ui::a11y::Action::Focus)
-        .unwrap();
-    b.type_text("a");
-    b.key("Enter");
-    b.type_text("b");
-    let blocks = f
-        .records
-        .read(&checkout.id, |doc| {
-            NotesDoc::page_block_snapshots(doc, page)
-        })
-        .unwrap();
-    let mut a = BoundNotes::new(crate::component_support::component(
-        &f,
-        11,
-        existing(&checkout),
-    ));
-    let queued_before = f
-        .records
-        .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
-        .unwrap();
-    let queued_revision = revision(&f, &checkout);
-    a.queue_block_move(&blocks[1].0);
-    assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
-            .unwrap(),
-        queued_before
-    );
-    assert_eq!(revision(&f, &checkout), queued_revision);
-    invoke_confirmed(&mut b, 12, actions::page_resource_id(page), "delete");
-    let deleted = f
-        .records
-        .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
-        .unwrap();
-    let deleted_revision = revision(&f, &checkout);
-    // Driver construction syncs the existing A widget; it does not replace NotesApp.
-    let mut a = a.into_driver(f.author.clone());
-    for _ in 0..3 {
-        a.relayout();
-        a.expect(
-            &ui::headless::SemanticExpectation::named("notes.first_note")
-                .role(ui::a11y::Role::Button)
-                .name("New note"),
-        )
-        .unwrap();
-        let snapshot = a.inspection();
-        assert!(!has_selected_node(&snapshot.root));
-        let panel = inspected_widget(&snapshot.root, "notes.first_note").unwrap();
-        assert!(panel.children.is_empty());
-        assert!(panel.semantics.as_ref().unwrap().value.is_none());
-        assert!(inspected_widget(&snapshot.root, "note_title").is_none());
-        assert!(inspected_widget(&snapshot.root, "block_editor").is_none());
-        f.records
-            .read(&checkout.id, |doc| {
-                assert!(
-                    notes::notebook::project(doc, None)
-                        .unwrap()
-                        .pages()
-                        .is_empty()
-                );
-                assert_eq!((doc.base_heads(), doc.pending_ops()), deleted);
-            })
-            .unwrap();
-        assert_eq!(revision(&f, &checkout), deleted_revision);
-    }
-    close_driver(&mut a);
-    close_driver(&mut b);
 }
 
 #[test]

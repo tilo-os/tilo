@@ -12,10 +12,7 @@ pub struct LocalFile {
 impl LocalFile {
     pub(crate) fn open(input: &str, previous: Option<&Self>) -> Result<Self, String> {
         let path = if input.to_ascii_lowercase().starts_with("file:") {
-            url::Url::parse(input)
-                .map_err(|error| format!("Invalid file URI: {error}"))?
-                .to_file_path()
-                .map_err(|()| "The file URI does not name a local file".to_string())?
+            media::source::file_uri_to_path(input).map_err(|error| error.to_string())?
         } else {
             // A Windows drive letter is a path, not a URL scheme. All other
             // explicit URL schemes belong to a different launch capability.
@@ -32,8 +29,7 @@ impl LocalFile {
         let path = path
             .canonicalize()
             .map_err(|error| format!("Cannot open audio file: {error}"))?;
-        let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
-        if !metadata.is_file() || metadata.len() == 0 {
+        if !crate::files::is_nonempty_file(&path) {
             return Err("Choose a non-empty audio file".into());
         }
         let extension = path
@@ -60,7 +56,8 @@ impl LocalFile {
         }
         // Validate readability without copying or hashing the media on the UI
         // thread. Codec errors remain the asynchronous decoder's authority.
-        std::fs::File::open(&path).map_err(|error| format!("Cannot read audio file: {error}"))?;
+        crate::files::metadata(&path)
+            .map_err(|error| format!("Cannot read audio file: {error}"))?;
         media::source::path_to_file_uri(&path).map_err(|error| error.to_string())?;
         let id = previous.filter(|file| file.path == path).map_or_else(
             || format!("local-{}", uuid::Uuid::new_v4()),

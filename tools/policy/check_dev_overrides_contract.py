@@ -5,7 +5,9 @@ The shell's `dev-overrides` feature makes a release binary honour a fixed
 lock-screen password (`TILO_LOCK_TEST_PASSWORD`), a replacement unlock helper
 and a socket that drives the session as the user (`TILO_TEST_CONTROL`).
 `dev-session` stamps the marker the host developer-session entry requires.
-Both exist for dev images only. `--all-features` would turn them on too.
+Both exist for dev images only. `agent-control` binds a socket that drives a
+headless session for hosted agent machines; it is not for the desktop or OS
+images either. `--all-features` would turn them on too.
 
 Every `os/Containerfile*` is a production build except the dev image
 (`os/Containerfile.dev`), which is the one place these features belong.
@@ -21,7 +23,9 @@ import re
 ROOT = Path(__file__).resolve().parents[2]
 OS_DIR = ROOT / "os"
 DEV_IMAGE_FILES = frozenset({"Containerfile.dev"})
-FORBIDDEN = re.compile(r"(?<![\w-])(dev-overrides|dev-session|--all-features)(?![\w-])")
+FORBIDDEN = re.compile(
+    r"(?<![\w-])(dev-overrides|dev-session|agent-control|--all-features)(?![\w-])"
+)
 
 
 @dataclass(frozen=True)
@@ -35,7 +39,8 @@ class Violation:
             f"{self.path}:{self.line}: production image build enables `{self.token}`.\n"
             "  Why: `dev-overrides` binaries accept a fixed lock-screen password and open a\n"
             "  socket that drives the session as the user; `dev-session` marks a binary as\n"
-            "  loggable by the developer session entry. Neither may ship in a production image.\n"
+            "  loggable by the developer session entry; `agent-control` lets a local socket drive\n"
+            "  the session. None may ship in a production image.\n"
             "  Fix: remove the feature from this build. Dev-only binaries belong in\n"
             "  os/Containerfile.dev (the dev image), never in a production Containerfile."
         )

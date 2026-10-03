@@ -54,6 +54,7 @@ pub mod history_store;
 pub mod images;
 pub mod model;
 pub mod recommend;
+pub mod resource;
 pub mod sample;
 pub mod screens;
 pub mod search_type;
@@ -83,6 +84,17 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(TubeApp::empty())
 }
 
+/// The app as every host mounts it: the live root, which fetches the
+/// catalogue where the network worker can run.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    fn live_root() -> Box<dyn Widget> {
+        Box::new(TubeApp::new().online())
+    }
+    ui::launch::LaunchSpec::new("so.tilo.tube", live_root)
+        .component_actions(actions::register)
+        .as_definition("Tube")
+}
+
 /// `--shots` variant for a narrow viewport: the nav rail is forced open as an
 /// overlay flap with its dimming scrim, and starts from [`TubeApp::new`] (the
 /// sample catalogue) since a shot of an empty grid says nothing about the
@@ -100,56 +112,60 @@ pub fn app_root_route_shot(route: model::Route) -> Box<dyn Widget> {
     Box::new(TubeApp::new().with_route_shot(route))
 }
 
+pub use resource::{Tube, TubeShared, TubeShell, launch_spec, standalone_launch};
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::search_type::{CHANNEL_TYPE_ID, HISTORY_TYPE_ID, PLAYLIST_TYPE_ID, VIDEO_TYPE_ID};
 
     #[test]
-    fn registers_all_tube_searchable_types() {
-        let types = searchable_types();
-        let ids: Vec<&str> = types.iter().map(|t| t.id).collect();
-        assert!(
-            ids.contains(&VIDEO_TYPE_ID),
-            "video type registered: {ids:?}"
-        );
-        assert!(
-            ids.contains(&CHANNEL_TYPE_ID),
-            "channel type registered: {ids:?}"
-        );
-        assert!(
-            ids.contains(&PLAYLIST_TYPE_ID),
-            "playlist type registered: {ids:?}"
-        );
-        assert!(
-            ids.contains(&HISTORY_TYPE_ID),
-            "history type registered: {ids:?}"
-        );
-        // Every result can carry a thumbnail, so an OS palette reserves image space.
-        assert!(types.iter().all(|t| t.has_thumbnail));
-    }
-
-    /// A host embedding Tube the documented way must not be handed the
-    /// bundled sample catalogue (invented channels, subscriber and view
-    /// counts) as though it were real.
-    #[test]
-    fn app_root_starts_with_no_catalogue() {
-        let app = TubeApp::empty();
-        let m = app.model_for_test();
-        assert!(
-            m.videos.is_empty(),
-            "app_root must not hand a host {} invented videos",
-            m.videos.len()
-        );
-        assert!(
-            m.channels.is_empty(),
-            "app_root must not hand a host {} invented channels",
-            m.channels.len()
-        );
-        assert!(
-            !m.feed_loading,
-            "with nothing fetching, Home must show its empty state rather \
+    fn app_root_registers_search_types_and_starts_empty() {
+        // Case `registers_all_tube_searchable_types`.
+        {
+            let types = searchable_types();
+            let ids: Vec<&str> = types.iter().map(|t| t.id).collect();
+            assert!(
+                ids.contains(&VIDEO_TYPE_ID),
+                "video type registered: {ids:?}"
+            );
+            assert!(
+                ids.contains(&CHANNEL_TYPE_ID),
+                "channel type registered: {ids:?}"
+            );
+            assert!(
+                ids.contains(&PLAYLIST_TYPE_ID),
+                "playlist type registered: {ids:?}"
+            );
+            assert!(
+                ids.contains(&HISTORY_TYPE_ID),
+                "history type registered: {ids:?}"
+            );
+            // Every result can carry a thumbnail, so an OS palette reserves image space.
+            assert!(types.iter().all(|t| t.has_thumbnail));
+        }
+        // Case `app_root_starts_with_no_catalogue`:
+        // A host embedding Tube the documented way must not be handed the
+        // bundled sample catalogue (invented channels, subscriber and view
+        // counts) as though it were real.
+        {
+            let app = TubeApp::empty();
+            let m = app.model_for_test();
+            assert!(
+                m.videos.is_empty(),
+                "app_root must not hand a host {} invented videos",
+                m.videos.len()
+            );
+            assert!(
+                m.channels.is_empty(),
+                "app_root must not hand a host {} invented channels",
+                m.channels.len()
+            );
+            assert!(
+                !m.feed_loading,
+                "with nothing fetching, Home must show its empty state rather \
              than a skeleton that never resolves"
-        );
+            );
+        }
     }
 }

@@ -5,7 +5,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use tilo_vm_protocol::{BuildJob, CiJob, Manifest};
 use tilo_vmd::apply::{Apply, RecordingApply};
 use tilo_vmd::systemd::SystemdApply;
-use tilo_vmd::{Daemon, input, jobs, server};
+use tilo_vmd::{Daemon, display, input, jobs, server};
 
 /// Guest daemon for Tilo dev VMs. Humans and agents use `tilo-vm` on the host.
 #[derive(Parser)]
@@ -66,7 +66,42 @@ enum Command {
         seat: String,
         #[arg(long)]
         socket: PathBuf,
+        /// Absolute pointer range, e.g. 3200x1080: the slot's logical
+        /// desktop (default: the seat's first connected output's mode).
+        #[arg(long, value_parser = parse_extent, requires = "touch_extent")]
+        extent: Option<(u32, u32)>,
+        /// Touchscreen and pen range: the slot's first output's mode.
+        #[arg(long, value_parser = parse_extent, requires = "extent")]
+        touch_extent: Option<(u32, u32)>,
     },
+    /// Install distribution packages into the VM's /usr with its package
+    /// manager (a transient overlay on bootc images); output streams.
+    InstallPackages {
+        /// Seconds before the install is stopped (exit 124).
+        #[arg(long, default_value_t = tilo_vm_protocol::INSTALL_TIMEOUT_SECONDS)]
+        timeout: u64,
+        /// Package names, e.g. xterm zenity.
+        #[arg(required = true)]
+        packages: Vec<String>,
+    },
+    /// Give the slot's outputs these modes and scales through the display
+    /// settings, as the Settings app does (run by tilo-vmd as the slot user).
+    DisplayApply {
+        /// Outputs left to right, e.g. 2560x1600@2,1920x1080@1.
+        #[arg(long, value_delimiter = ',', required = true)]
+        outputs: Vec<tilo_vm_protocol::OutputSpec>,
+        /// Seconds to wait for the compositor at each step.
+        #[arg(long, default_value_t = 30)]
+        timeout: u64,
+    },
+}
+
+fn parse_extent(text: &str) -> Result<(u32, u32), String> {
+    let (width, height) = text
+        .split_once('x')
+        .ok_or_else(|| format!("'{text}' is not WIDTHxHEIGHT"))?;
+    let number = |v: &str| v.parse::<u32>().map_err(|e| format!("'{text}': {e}"));
+    Ok((number(width)?, number(height)?))
 }
 
 #[derive(Args)]
@@ -117,6 +152,48 @@ fn exit(ok: bool) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+fn install_packages(packages: &[String], timeout: u64) -> ExitCode {
+    let argv = match tilo_vmd::packages::install_argv(packages, std::path::Path::exists) {
+        Ok(argv) => argv,
+        Err(error) => {
+            eprintln!("tilo-vmd: {error}");
+            return ExitCode::from(126);
+        }
+    };
+    let Some((program, flags)) = argv.split_first() else {
+        return ExitCode::from(126);
+    };
+    eprintln!("tilo-vmd: {}", argv.join(" "));
+    let mut command = std::process::Command::new(program);
+    command.args(flags);
+    match tilo_vmd::exec::run_bounded(
+        command,
+        std::time::Duration::from_secs(timeout),
+        16 << 20,
+        std::io::stdout(),
+        std::io::stderr(),
+    ) {
+        Ok(ended) => ExitCode::from(ended.code()),
+        Err(error) => {
+            eprintln!("tilo-vmd: could not run {program}: {error}");
+            ExitCode::from(126)
+        }
+    }
+}
+
+fn display_apply(outputs: &[tilo_vm_protocol::OutputSpec], timeout: u64) -> ExitCode {
+    match display::apply(outputs, std::time::Duration::from_secs(timeout)) {
+        Ok(done) => {
+            println!("{done}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -198,12 +275,25 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Command::InputServe { seat, socket } => match input::serve(&seat, &socket) {
+        Command::InputServe {
+            seat,
+            socket,
+            extent,
+            touch_extent,
+        } => match input::serve(
+            &seat,
+            &socket,
+            extent
+                .zip(touch_extent)
+                .map(|(desktop, touch)| input::Geometry { desktop, touch }),
+        ) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("tilo-vmd: {error}");
                 ExitCode::FAILURE
             }
         },
+        Command::DisplayApply { outputs, timeout } => display_apply(&outputs, timeout),
+        Command::InstallPackages { timeout, packages } => install_packages(&packages, timeout),
     }
 }

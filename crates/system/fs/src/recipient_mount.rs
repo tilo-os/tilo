@@ -468,154 +468,155 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn child_argv_is_secret_free_and_uri_is_delivered_only_on_stdin() {
-        let temp = tempfile::tempdir().unwrap();
-        let args_path = temp.path().join("args");
-        let stdin_path = temp.path().join("stdin");
-        let script = temp.path().join("fake-fs");
-        write_executable_script(
-            &script,
-            &format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n/bin/cat > '{}'\nprintf '%s\\n' '{}'\n",
-                args_path.display(),
-                stdin_path.display(),
-                RECIPIENT_MOUNT_READY_LINE,
-            ),
-        );
-        let subscribed = subscription(&temp.path().join("subscriptions.json"));
-        let uri = subscribed.link().encode_uri_at(1).unwrap();
-        let secret = hex::encode(subscribed.link().bearer_secret());
-        let supervisor = RecipientMountSupervisor::new(
-            &script,
-            temp.path().join("mounts"),
-            temp.path().join("cache"),
-        );
-        let info = supervisor.start(&subscribed).unwrap();
-        assert!(supervisor.wait(subscribed.key).unwrap().unwrap().success());
-        let args = std::fs::read_to_string(args_path).unwrap();
-        let stdin = std::fs::read_to_string(stdin_path).unwrap();
-        assert!(!args.contains(&uri));
-        assert!(!args.contains(&secret));
-        assert!(args.contains("--link-stdin"));
-        assert_eq!(stdin.trim_end(), uri);
-        assert!(info.mount_point.starts_with(temp.path().join("mounts")));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_live_mount_is_reused_without_redelivering_its_bearer_secret() {
-        let temp = tempfile::tempdir().unwrap();
-        let calls_path = temp.path().join("calls");
-        let payloads_path = temp.path().join("payloads");
-        let script = temp.path().join("fake-fs");
-        write_executable_script(
-            &script,
-            &format!(
-                "#!/bin/sh\nprintf 'call\\n' >> '{}'\nIFS= read -r payload\nprintf '%s\\n' \"$payload\" >> '{}'\nprintf '%s\\n' '{}'\nsleep 30\n",
-                calls_path.display(),
-                payloads_path.display(),
-                RECIPIENT_MOUNT_READY_LINE,
-            ),
-        );
-        let subscribed = subscription(&temp.path().join("subscriptions.json"));
-        let expected_payload = subscribed.link().encode_uri_at(1).unwrap();
-        let supervisor = RecipientMountSupervisor::new(
-            &script,
-            temp.path().join("mounts"),
-            temp.path().join("cache"),
-        );
-
-        let first = supervisor.start(&subscribed).unwrap();
-        let second = supervisor.start(&subscribed).unwrap();
-
-        assert_eq!(second, first);
-        assert_eq!(std::fs::read_to_string(calls_path).unwrap(), "call\n");
-        assert_eq!(
-            std::fs::read_to_string(payloads_path).unwrap(),
-            format!("{expected_payload}\n")
-        );
-        assert!(supervisor.stop(subscribed.key).unwrap());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn concurrent_start_is_rejected_before_a_duplicate_child_can_launch() {
-        let temp = tempfile::tempdir().unwrap();
-        let release_path = temp.path().join("release");
-        let calls_path = temp.path().join("calls");
-        let script = temp.path().join("fake-fs");
-        write_executable_script(
-            &script,
-            &format!(
-                "#!/bin/sh\nprintf 'call\\n' >> '{}'\n/bin/cat >/dev/null\nwhile [ ! -f '{}' ]; do sleep 0.01; done\nprintf '%s\\n' '{}'\nsleep 30\n",
-                calls_path.display(),
-                release_path.display(),
-                RECIPIENT_MOUNT_READY_LINE,
-            ),
-        );
-        let subscribed = Arc::new(subscription(&temp.path().join("subscriptions.json")));
-        let supervisor = Arc::new(RecipientMountSupervisor::new(
-            &script,
-            temp.path().join("mounts"),
-            temp.path().join("cache"),
-        ));
-        let starter = {
-            let subscribed = Arc::clone(&subscribed);
-            let supervisor = Arc::clone(&supervisor);
-            std::thread::spawn(move || supervisor.start(&subscribed))
-        };
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        while !supervisor
-            .starting
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(&subscribed.key)
-            && std::time::Instant::now() < deadline
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn recipient_mount_children_get_secrets_once_and_starts_are_exclusive() {
+        // Phase `child_argv_is_secret_free_and_uri_is_delivered_only_on_stdin`.
         {
-            std::thread::park_timeout(Duration::from_millis(5));
+            let temp = tempfile::tempdir().unwrap();
+            let args_path = temp.path().join("args");
+            let stdin_path = temp.path().join("stdin");
+            let script = temp.path().join("fake-fs");
+            write_executable_script(
+                &script,
+                &format!(
+                    "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n/bin/cat > '{}'\nprintf '%s\\n' '{}'\n",
+                    args_path.display(),
+                    stdin_path.display(),
+                    RECIPIENT_MOUNT_READY_LINE,
+                ),
+            );
+            let subscribed = subscription(&temp.path().join("subscriptions.json"));
+            let uri = subscribed.link().encode_uri_at(1).unwrap();
+            let secret = hex::encode(subscribed.link().bearer_secret());
+            let supervisor = RecipientMountSupervisor::new(
+                &script,
+                temp.path().join("mounts"),
+                temp.path().join("cache"),
+            );
+            let info = supervisor.start(&subscribed).unwrap();
+            assert!(supervisor.wait(subscribed.key).unwrap().unwrap().success());
+            let args = std::fs::read_to_string(args_path).unwrap();
+            let stdin = std::fs::read_to_string(stdin_path).unwrap();
+            assert!(!args.contains(&uri));
+            assert!(!args.contains(&secret));
+            assert!(args.contains("--link-stdin"));
+            assert_eq!(stdin.trim_end(), uri);
+            assert!(info.mount_point.starts_with(temp.path().join("mounts")));
         }
-        assert!(
-            supervisor
+        // Phase `a_live_mount_is_reused_without_redelivering_its_bearer_secret`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let calls_path = temp.path().join("calls");
+            let payloads_path = temp.path().join("payloads");
+            let script = temp.path().join("fake-fs");
+            write_executable_script(
+                &script,
+                &format!(
+                    "#!/bin/sh\nprintf 'call\\n' >> '{}'\nIFS= read -r payload\nprintf '%s\\n' \"$payload\" >> '{}'\nprintf '%s\\n' '{}'\nsleep 30\n",
+                    calls_path.display(),
+                    payloads_path.display(),
+                    RECIPIENT_MOUNT_READY_LINE,
+                ),
+            );
+            let subscribed = subscription(&temp.path().join("subscriptions.json"));
+            let expected_payload = subscribed.link().encode_uri_at(1).unwrap();
+            let supervisor = RecipientMountSupervisor::new(
+                &script,
+                temp.path().join("mounts"),
+                temp.path().join("cache"),
+            );
+
+            let first = supervisor.start(&subscribed).unwrap();
+            let second = supervisor.start(&subscribed).unwrap();
+
+            assert_eq!(second, first);
+            assert_eq!(std::fs::read_to_string(calls_path).unwrap(), "call\n");
+            assert_eq!(
+                std::fs::read_to_string(payloads_path).unwrap(),
+                format!("{expected_payload}\n")
+            );
+            assert!(supervisor.stop(subscribed.key).unwrap());
+        }
+        // Phase `concurrent_start_is_rejected_before_a_duplicate_child_can_launch`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let release_path = temp.path().join("release");
+            let calls_path = temp.path().join("calls");
+            let script = temp.path().join("fake-fs");
+            write_executable_script(
+                &script,
+                &format!(
+                    "#!/bin/sh\nprintf 'call\\n' >> '{}'\n/bin/cat >/dev/null\nwhile [ ! -f '{}' ]; do sleep 0.01; done\nprintf '%s\\n' '{}'\nsleep 30\n",
+                    calls_path.display(),
+                    release_path.display(),
+                    RECIPIENT_MOUNT_READY_LINE,
+                ),
+            );
+            let subscribed = Arc::new(subscription(&temp.path().join("subscriptions.json")));
+            let supervisor = Arc::new(RecipientMountSupervisor::new(
+                &script,
+                temp.path().join("mounts"),
+                temp.path().join("cache"),
+            ));
+            let starter = {
+                let subscribed = Arc::clone(&subscribed);
+                let supervisor = Arc::clone(&supervisor);
+                std::thread::spawn(move || supervisor.start(&subscribed))
+            };
+            let deadline = tilo_test_env::hang_deadline();
+            while !supervisor
                 .starting
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .contains(&subscribed.key),
-            "mount start did not acquire its reservation"
-        );
+                .contains(&subscribed.key)
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::park_timeout(Duration::from_millis(5));
+            }
+            assert!(
+                supervisor
+                    .starting
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .contains(&subscribed.key),
+                "mount start did not acquire its reservation"
+            );
 
-        assert!(matches!(
-            supervisor.start(&subscribed),
-            Err(RecipientMountError::StartInProgress)
-        ));
-        std::fs::write(release_path, b"release").unwrap();
-        let info = starter.join().unwrap().unwrap();
-        assert_eq!(std::fs::read_to_string(calls_path).unwrap(), "call\n");
-        assert_eq!(info.key, subscribed.key);
-        assert!(supervisor.stop(subscribed.key).unwrap());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn readiness_timeout_releases_the_start_reservation_for_retry() {
-        let temp = tempfile::tempdir().unwrap();
-        let script = temp.path().join("fake-fs");
-        write_executable_script(&script, "#!/bin/sh\n/bin/cat >/dev/null\nsleep 30\n");
-        let subscribed = subscription(&temp.path().join("subscriptions.json"));
-        let supervisor = RecipientMountSupervisor::new(
-            &script,
-            temp.path().join("mounts"),
-            temp.path().join("cache"),
-        )
-        .with_ready_timeout(Duration::from_millis(50));
-
-        for _ in 0..2 {
             assert!(matches!(
                 supervisor.start(&subscribed),
-                Err(RecipientMountError::ReadinessFailed)
+                Err(RecipientMountError::StartInProgress)
             ));
+            std::fs::write(release_path, b"release").unwrap();
+            let info = starter.join().unwrap().unwrap();
+            assert_eq!(std::fs::read_to_string(calls_path).unwrap(), "call\n");
+            assert_eq!(info.key, subscribed.key);
+            assert!(supervisor.stop(subscribed.key).unwrap());
         }
+        // Phase `readiness_timeout_releases_the_start_reservation_for_retry`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let script = temp.path().join("fake-fs");
+            write_executable_script(&script, "#!/bin/sh\n/bin/cat >/dev/null\nsleep 30\n");
+            let subscribed = subscription(&temp.path().join("subscriptions.json"));
+            let supervisor = RecipientMountSupervisor::new(
+                &script,
+                temp.path().join("mounts"),
+                temp.path().join("cache"),
+            )
+            .with_ready_timeout(Duration::from_millis(50));
 
-        assert!(!supervisor.is_running(subscribed.key).unwrap());
+            for _ in 0..2 {
+                assert!(matches!(
+                    supervisor.start(&subscribed),
+                    Err(RecipientMountError::ReadinessFailed)
+                ));
+            }
+
+            assert!(!supervisor.is_running(subscribed.key).unwrap());
+        }
     }
 
     #[test]

@@ -129,62 +129,63 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn a_file_round_trips_through_the_store() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = ContentStore::open(dir.path().join("store")).await.unwrap();
-        let source = dir.path().join("source.bin");
-        let bytes: Vec<u8> = (0..200_000u32).map(|n| (n % 251) as u8).collect();
-        std::fs::write(&source, &bytes).unwrap();
+    async fn files_round_trip_through_a_reopenable_store_without_clobbering_exports() {
+        // Phase `a_file_round_trips_through_the_store`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = ContentStore::open(dir.path().join("store")).await.unwrap();
+            let source = dir.path().join("source.bin");
+            let bytes: Vec<u8> = (0..200_000u32).map(|n| (n % 251) as u8).collect();
+            std::fs::write(&source, &bytes).unwrap();
 
-        let hash = store.ingest_file(&source).await.unwrap();
-        assert_eq!(hash, Hash::new(&bytes));
-        assert_eq!(
-            store.complete_len(hash).await.unwrap(),
-            Some(bytes.len() as u64)
-        );
-        assert!(store.blob_hashes().await.unwrap().contains(&hash));
+            let hash = store.ingest_file(&source).await.unwrap();
+            assert_eq!(hash, Hash::new(&bytes));
+            assert_eq!(
+                store.complete_len(hash).await.unwrap(),
+                Some(bytes.len() as u64)
+            );
+            assert!(store.blob_hashes().await.unwrap().contains(&hash));
 
-        let target = dir.path().join("out/nested/copy.bin");
-        let written = store.export_file(hash, &target).await.unwrap();
-        assert_eq!(written, bytes.len() as u64);
-        assert_eq!(std::fs::read(&target).unwrap(), bytes);
+            let target = dir.path().join("out/nested/copy.bin");
+            let written = store.export_file(hash, &target).await.unwrap();
+            assert_eq!(written, bytes.len() as u64);
+            assert_eq!(std::fs::read(&target).unwrap(), bytes);
 
-        // The export is its own file: changing it leaves the stored blob intact.
-        std::fs::write(&target, b"changed").unwrap();
-        let again = dir.path().join("again.bin");
-        store.export_file(hash, &again).await.unwrap();
-        assert_eq!(std::fs::read(&again).unwrap(), bytes);
-        store.close().await.unwrap();
-    }
+            // The export is its own file: changing it leaves the stored blob intact.
+            std::fs::write(&target, b"changed").unwrap();
+            let again = dir.path().join("again.bin");
+            store.export_file(hash, &again).await.unwrap();
+            assert_eq!(std::fs::read(&again).unwrap(), bytes);
+            store.close().await.unwrap();
+        }
+        // Phase `export_refuses_to_replace_an_existing_file`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = ContentStore::open(dir.path().join("store")).await.unwrap();
+            let hash = store.ingest(bytes::Bytes::from_static(b"x")).await.unwrap();
+            let target = dir.path().join("taken");
+            std::fs::write(&target, b"mine").unwrap();
+            assert!(store.export_file(hash, &target).await.is_err());
+            assert_eq!(std::fs::read(&target).unwrap(), b"mine");
+            store.close().await.unwrap();
+        }
+        // Phase `a_closed_store_can_be_reopened_with_its_blobs`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("store");
+            let store = ContentStore::open(&root).await.unwrap();
+            let source = dir.path().join("f");
+            std::fs::write(&source, vec![7u8; 70_000]).unwrap();
+            let hash = store.ingest_file(&source).await.unwrap();
+            store.close().await.unwrap();
 
-    #[tokio::test]
-    async fn export_refuses_to_replace_an_existing_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = ContentStore::open(dir.path().join("store")).await.unwrap();
-        let hash = store.ingest(bytes::Bytes::from_static(b"x")).await.unwrap();
-        let target = dir.path().join("taken");
-        std::fs::write(&target, b"mine").unwrap();
-        assert!(store.export_file(hash, &target).await.is_err());
-        assert_eq!(std::fs::read(&target).unwrap(), b"mine");
-        store.close().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn a_closed_store_can_be_reopened_with_its_blobs() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("store");
-        let store = ContentStore::open(&root).await.unwrap();
-        let source = dir.path().join("f");
-        std::fs::write(&source, vec![7u8; 70_000]).unwrap();
-        let hash = store.ingest_file(&source).await.unwrap();
-        store.close().await.unwrap();
-
-        let reopened = ContentStore::open(&root).await.unwrap();
-        assert_eq!(reopened.complete_len(hash).await.unwrap(), Some(70_000));
-        assert_eq!(
-            reopened.complete_len(Hash::new(b"absent")).await.unwrap(),
-            None
-        );
-        reopened.close().await.unwrap();
+            let reopened = ContentStore::open(&root).await.unwrap();
+            assert_eq!(reopened.complete_len(hash).await.unwrap(), Some(70_000));
+            assert_eq!(
+                reopened.complete_len(Hash::new(b"absent")).await.unwrap(),
+                None
+            );
+            reopened.close().await.unwrap();
+        }
     }
 }

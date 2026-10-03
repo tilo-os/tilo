@@ -5,8 +5,7 @@
 //! not JSON snapshots: two collaborators changing the hostname and keyboard
 //! must not win/lose a whole profile race. Device inventory, a selected drive,
 //! destructive confirmation, progress and worker handles are machine/window
-//! local facts. The legacy scalar fields remain readable as a one-way migration
-//! source, but no new writer emits them.
+//! local facts.
 //!
 //! ```text
 //! root
@@ -39,7 +38,6 @@ impl ImagerDoc {
     /// Idempotent: only writes fields that are missing.
     pub fn seed(doc: &mut AutoCommit, _targets: &[TargetDrive]) {
         let _ = doc.put(&ROOT, "imager_schema", 2i64);
-        Self::migrate_legacy(doc);
         if Self::source_map_read(doc).is_none() {
             Self::set_source(doc, None);
         }
@@ -83,7 +81,6 @@ impl ImagerDoc {
         Self::source_map_read(doc)
             .and_then(|map| (!read_bool(doc, &map, "deleted").unwrap_or(false)).then_some(map))
             .and_then(|map| Self::read_source_fields(doc, &map))
-            .or_else(|| Self::read_json::<Option<Source>>(doc, "source").flatten())
     }
 
     /// Stable resource identity for a reviewed source. Prefer immutable digest,
@@ -129,7 +126,7 @@ impl ImagerDoc {
     // ---- recent sources ---------------------------------------------------
     pub fn recent(doc: &AutoCommit) -> Vec<Source> {
         let Some(recent) = Self::map_read(doc, &ROOT, "recent_v2") else {
-            return Self::read_json(doc, "recent").unwrap_or_default();
+            return Vec::new();
         };
         let mut rows: Vec<(i64, String, Source)> = doc
             .keys(&recent)
@@ -214,10 +211,9 @@ impl ImagerDoc {
 
     // ---- live install profile --------------------------------------------
     pub fn profile(doc: &AutoCommit) -> InstallProfile {
-        Self::profile_map_read(doc).map_or_else(
-            || Self::read_json(doc, "profile").unwrap_or_default(),
-            |map| Self::read_profile_fields(doc, &map),
-        )
+        Self::profile_map_read(doc)
+            .map(|map| Self::read_profile_fields(doc, &map))
+            .unwrap_or_default()
     }
     pub fn set_profile(doc: &mut AutoCommit, profile: &InstallProfile) {
         let Some(map) = Self::profile_map(doc) else {
@@ -238,6 +234,11 @@ impl ImagerDoc {
             ui::doc::put_if_changed(doc, &map, "filesystem", filesystem.key());
         }
     }
+    pub fn set_profile_enroll_local_identity(doc: &mut AutoCommit, on: bool) {
+        if let Some(map) = Self::profile_map(doc) {
+            ui::doc::put_if_changed(doc, &map, "enroll_local_identity", on);
+        }
+    }
     pub fn set_profile_encrypt(doc: &mut AutoCommit, on: bool) {
         if let Some(map) = Self::profile_map(doc) {
             ui::doc::put_if_changed(doc, &map, "encrypt", on);
@@ -255,7 +256,7 @@ impl ImagerDoc {
             return;
         };
         match key {
-            "hostname" | "locale" | "timezone" | "keyboard" => {
+            "hostname" | "locale" | "timezone" | "keyboard" | "wifi_ssid" | "device_label" => {
                 ui::doc::put_if_changed(doc, &map, key, value);
             }
             "full_name" | "username" => {
@@ -360,6 +361,14 @@ impl ImagerDoc {
         ui::doc::put_if_changed(doc, map, "filesystem", profile.filesystem.key());
         ui::doc::put_if_changed(doc, map, "encrypt", profile.encrypt);
         ui::doc::put_if_changed(doc, map, "persist_mb", profile.persist_mb as i64);
+        ui::doc::put_if_changed(doc, map, "wifi_ssid", profile.wifi_ssid.as_str());
+        ui::doc::put_if_changed(doc, map, "device_label", profile.device_label.as_str());
+        ui::doc::put_if_changed(
+            doc,
+            map,
+            "enroll_local_identity",
+            profile.enroll_local_identity,
+        );
         let Some(user) = Self::map(doc, map, "user") else {
             return;
         };
@@ -388,13 +397,20 @@ impl ImagerDoc {
         if let Some(timezone) = read_str(doc, map, "timezone") {
             profile.timezone = timezone;
         }
-        let filesystem = read_str(doc, map, "filesystem").or_else(|| read_str(doc, map, "layout"));
-        if let Some(filesystem) =
-            filesystem.and_then(|value| crate::model::Filesystem::from_key(&value))
+        if let Some(filesystem) = read_str(doc, map, "filesystem")
+            .and_then(|value| crate::model::Filesystem::from_key(&value))
         {
             profile.filesystem = filesystem;
         }
         profile.encrypt = read_bool(doc, map, "encrypt").unwrap_or(false);
+        if let Some(ssid) = read_str(doc, map, "wifi_ssid") {
+            profile.wifi_ssid = ssid;
+        }
+        if let Some(label) = read_str(doc, map, "device_label") {
+            profile.device_label = label;
+        }
+        profile.enroll_local_identity =
+            read_bool(doc, map, "enroll_local_identity").unwrap_or(false);
         profile.persist_mb = read_i64_coerced(doc, map, "persist_mb")
             .unwrap_or_default()
             .max(0) as u64;
@@ -410,34 +426,6 @@ impl ImagerDoc {
         }
         profile
     }
-
-    fn migrate_legacy(doc: &mut AutoCommit) {
-        if Self::profile_map_read(doc).is_none()
-            && let Some(profile) = Self::read_json::<InstallProfile>(doc, "profile")
-        {
-            Self::set_profile(doc, &profile);
-        }
-        if Self::source_map_read(doc).is_none()
-            && let Some(source) = Self::read_json::<Option<Source>>(doc, "source").flatten()
-        {
-            Self::set_source(doc, Some(&source));
-        }
-        if Self::map_read(doc, &ROOT, "recent_v2").is_none()
-            && let Some(recent) = Self::read_json::<Vec<Source>>(doc, "recent")
-        {
-            Self::set_recent(doc, &recent);
-        }
-    }
-
-    #[cfg(test)]
-    fn write_json<T: serde::Serialize>(doc: &mut AutoCommit, key: &str, val: &T) {
-        let json = serde_json::to_string(val).unwrap_or_else(|_| "null".into());
-        let _ = doc.put(&ROOT, key, json);
-    }
-    fn read_json<T: serde::de::DeserializeOwned>(doc: &AutoCommit, key: &str) -> Option<T> {
-        let raw = read_str(doc, &ROOT, key)?;
-        serde_json::from_str(&raw).ok()
-    }
 }
 
 #[cfg(test)]
@@ -452,108 +440,94 @@ mod tests {
         doc
     }
 
+    /// Blank, demo and idempotent seeding.
     #[test]
-    fn seed_starts_blank_no_fake_content() {
-        // The default seed is EMPTY: real drives fill in from a live probe, and
-        // there is no fabricated image or recent history.
-        let doc = seeded();
-        assert!(!ImagerDoc::is_empty(&doc));
-        assert!(doc.get(&ROOT, "targets").unwrap().is_none());
-        assert!(ImagerDoc::source(&doc).is_none(), "no fabricated image");
-        assert!(
-            ImagerDoc::recent(&doc).is_empty(),
-            "no fabricated recent history"
-        );
+    fn seeds_start_blank_or_demo_and_are_idempotent() {
+        // Phase `seed_starts_blank_no_fake_content`.
+        {
+            // The default seed is EMPTY: real drives fill in from a live probe, and
+            // there is no fabricated image or recent history.
+            let doc = seeded();
+            assert!(!ImagerDoc::is_empty(&doc));
+            assert!(doc.get(&ROOT, "targets").unwrap().is_none());
+            assert!(ImagerDoc::source(&doc).is_none(), "no fabricated image");
+            assert!(
+                ImagerDoc::recent(&doc).is_empty(),
+                "no fabricated recent history"
+            );
+        }
+
+        // Phase `seed_demo_populates_sample_content`.
+        {
+            // The opt-in demo seed is the only place sample content comes from.
+            let mut doc = AutoCommit::new();
+            ImagerDoc::seed_demo(&mut doc);
+            assert!(ImagerDoc::source(&doc).is_some());
+            assert!(!ImagerDoc::recent(&doc).is_empty());
+        }
+
+        // Phase `an_unseeded_document_names_no_drive_and_no_release`.
+        // The collaborative document contains no device/release inventory.
+        {
+            let doc = AutoCommit::new();
+            assert!(ImagerDoc::is_empty(&doc));
+            assert!(doc.get(&ROOT, "targets").unwrap().is_none());
+            assert!(doc.get(&ROOT, "releases").unwrap().is_none());
+        }
+
+        // Phase `plain_seed_offers_no_machine_catalogue`.
+        {
+            let doc = seeded();
+            assert!(doc.get(&ROOT, "releases").unwrap().is_none());
+        }
+
+        // Phase `seed_is_idempotent_for_collaborative_state`.
+        {
+            let mut doc = seeded();
+            let source = sample_source();
+            ImagerDoc::set_source(&mut doc, Some(&source));
+            ImagerDoc::seed(&mut doc, &sample_targets()); // re-seed must not clobber
+            assert_eq!(ImagerDoc::source(&doc).unwrap().name, source.name);
+        }
     }
 
+    /// Source and profile persistence.
     #[test]
-    fn seed_demo_populates_sample_content() {
-        // The opt-in demo seed is the only place sample content comes from.
-        let mut doc = AutoCommit::new();
-        ImagerDoc::seed_demo(&mut doc);
-        assert!(ImagerDoc::source(&doc).is_some());
-        assert!(!ImagerDoc::recent(&doc).is_empty());
-    }
+    fn document_state_round_trips() {
+        // Phase `source_round_trips`.
+        {
+            let mut doc = seeded();
+            assert!(ImagerDoc::source(&doc).is_none());
+            let sample = sample_source();
+            ImagerDoc::set_source(&mut doc, Some(&sample));
+            let src = ImagerDoc::source(&doc).unwrap();
+            assert_eq!(src.kind, SourceKind::TiloImage);
+            ImagerDoc::set_source(&mut doc, None);
+            assert!(ImagerDoc::source(&doc).is_none());
+        }
 
-    /// The collaborative document contains no device/release inventory.
-    #[test]
-    fn an_unseeded_document_names_no_drive_and_no_release() {
-        let doc = AutoCommit::new();
-        assert!(ImagerDoc::is_empty(&doc));
-        assert!(doc.get(&ROOT, "targets").unwrap().is_none());
-        assert!(doc.get(&ROOT, "releases").unwrap().is_none());
-    }
-
-    #[test]
-    fn plain_seed_offers_no_machine_catalogue() {
-        let doc = seeded();
-        assert!(doc.get(&ROOT, "releases").unwrap().is_none());
-    }
-
-    #[test]
-    fn source_round_trips() {
-        let mut doc = seeded();
-        assert!(ImagerDoc::source(&doc).is_none());
-        let sample = sample_source();
-        ImagerDoc::set_source(&mut doc, Some(&sample));
-        let src = ImagerDoc::source(&doc).unwrap();
-        assert_eq!(src.kind, SourceKind::TiloImage);
-        ImagerDoc::set_source(&mut doc, None);
-        assert!(ImagerDoc::source(&doc).is_none());
-    }
-
-    #[test]
-    fn profile_edits_persist() {
-        let mut doc = seeded();
-        let mut prof = ImagerDoc::profile(&doc);
-        prof.hostname = "edited-host".into();
-        prof.mode = InstallMode::Persistent;
-        prof.filesystem = crate::model::Filesystem::Xfs;
-        prof.encrypt = true;
-        ImagerDoc::set_profile(&mut doc, &prof);
-        let back = ImagerDoc::profile(&doc);
-        assert_eq!(back.hostname, "edited-host");
-        assert_eq!(back.mode, InstallMode::Persistent);
-        assert_eq!(back.filesystem, crate::model::Filesystem::Xfs);
-        assert!(back.encrypt);
-        assert!(matches!(
-            doc.get(&ROOT, "profile_v2").unwrap(),
-            Some((Value::Object(ObjType::Map), _))
-        ));
-        assert!(
-            doc.get(&ROOT, "profile").unwrap().is_none(),
-            "fresh profile writes never emit an opaque JSON scalar"
-        );
-    }
-
-    #[test]
-    fn legacy_json_migrates_without_replicating_secrets() {
-        let mut doc = AutoCommit::new();
-        let legacy = InstallProfile {
-            hostname: "migrated".into(),
-            user: crate::model::UserAccount {
-                password: "do-not-share".into(),
-                ..crate::model::UserAccount::default()
-            },
-            ..InstallProfile::default()
-        };
-        ImagerDoc::write_json(&mut doc, "profile", &legacy);
-        ImagerDoc::seed(&mut doc, &[]);
-        let migrated = ImagerDoc::profile(&doc);
-        assert_eq!(migrated.hostname, "migrated");
-        assert!(migrated.user.password.is_empty());
-        assert!(matches!(
-            doc.get(&ROOT, "profile_v2").unwrap(),
-            Some((Value::Object(ObjType::Map), _))
-        ));
-    }
-
-    #[test]
-    fn seed_is_idempotent_for_collaborative_state() {
-        let mut doc = seeded();
-        let source = sample_source();
-        ImagerDoc::set_source(&mut doc, Some(&source));
-        ImagerDoc::seed(&mut doc, &sample_targets()); // re-seed must not clobber
-        assert_eq!(ImagerDoc::source(&doc).unwrap().name, source.name);
+        // Phase `profile_edits_persist`.
+        {
+            let mut doc = seeded();
+            let mut prof = ImagerDoc::profile(&doc);
+            prof.hostname = "edited-host".into();
+            prof.mode = InstallMode::Persistent;
+            prof.filesystem = crate::model::Filesystem::Xfs;
+            prof.encrypt = true;
+            ImagerDoc::set_profile(&mut doc, &prof);
+            let back = ImagerDoc::profile(&doc);
+            assert_eq!(back.hostname, "edited-host");
+            assert_eq!(back.mode, InstallMode::Persistent);
+            assert_eq!(back.filesystem, crate::model::Filesystem::Xfs);
+            assert!(back.encrypt);
+            assert!(matches!(
+                doc.get(&ROOT, "profile_v2").unwrap(),
+                Some((Value::Object(ObjType::Map), _))
+            ));
+            assert!(
+                doc.get(&ROOT, "profile").unwrap().is_none(),
+                "fresh profile writes never emit an opaque JSON scalar"
+            );
+        }
     }
 }

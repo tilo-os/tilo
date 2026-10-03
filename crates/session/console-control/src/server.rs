@@ -52,9 +52,7 @@ impl Endpoint {
     /// virtio port when the hypervisor attached one.
     pub fn discover(app: &str) -> Vec<Self> {
         let mut endpoints = Vec::new();
-        if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)
-            && runtime.is_absolute()
-        {
+        if let Some(runtime) = xdg_paths::xdg::runtime_dir() {
             endpoints.push(Self::Socket(socket_path(&runtime, app)));
         }
         if std::fs::metadata(VIRTIO_PORT).is_ok_and(|meta| meta.file_type().is_char_device()) {
@@ -356,7 +354,7 @@ mod tests {
     /// Answer queued requests on this thread, as the UI thread would.
     fn answer_until(server: &ConsoleServer, count: usize) -> Vec<String> {
         let mut seen = Vec::new();
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         while seen.len() < count && std::time::Instant::now() < deadline {
             for pending in server.take_pending() {
                 seen.push(pending.line().to_owned());
@@ -369,106 +367,106 @@ mod tests {
     }
 
     #[test]
-    fn loopback_submission_is_answered_by_the_owner() {
-        let server = ConsoleServer::new();
-        let answer = server.submit(r#"{"op":"state_dump"}"#);
-        let pending = server.take_pending();
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].line(), r#"{"op":"state_dump"}"#);
-        for p in pending {
-            p.respond("ok".into());
-        }
-        assert_eq!(answer.recv().unwrap(), "ok");
-        assert!(server.take_pending().is_empty());
-    }
-
-    #[test]
-    fn a_private_socket_round_trips_lines_through_the_owner() {
-        let runtime = tempfile::tempdir().unwrap();
-        std::fs::set_permissions(runtime.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let path = socket_path(runtime.path(), "installer");
-        let server = ConsoleServer::new();
-        server
-            .serve(&Endpoint::Socket(path.clone()), noop())
-            .unwrap();
-
-        let dir_mode = std::fs::metadata(path.parent().unwrap()).unwrap().mode() & 0o777;
-        let sock_mode = std::fs::metadata(&path).unwrap().mode() & 0o777;
-        assert_eq!((dir_mode, sock_mode), (0o700, 0o600));
-
-        let client = std::thread::spawn(move || {
-            let mut stream = UnixStream::connect(&path).unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut replies = Vec::new();
-            for request in [r#"{"op":"state_dump"}"#, r#"{"op":"actions_enumerate"}"#] {
-                writeln!(stream, "{request}").unwrap();
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                replies.push(line);
+    fn console_server_answers_only_through_its_owner_and_never_hangs() {
+        // Phase `loopback_submission_is_answered_by_the_owner`.
+        {
+            let server = ConsoleServer::new();
+            let answer = server.submit(r#"{"op":"state_dump"}"#);
+            let pending = server.take_pending();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].line(), r#"{"op":"state_dump"}"#);
+            for p in pending {
+                p.respond("ok".into());
             }
-            replies
-        });
-        let seen = answer_until(&server, 2);
-        let replies = client.join().unwrap();
-        assert_eq!(seen.len(), 2);
-        assert!(replies[0].contains("state_dump"), "{replies:?}");
-        assert!(replies[1].contains("actions_enumerate"), "{replies:?}");
-    }
+            assert_eq!(answer.recv().unwrap(), "ok");
+            assert!(server.take_pending().is_empty());
+        }
+        // Phase `a_private_socket_round_trips_lines_through_the_owner`.
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(runtime.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+            let path = socket_path(runtime.path(), "installer");
+            let server = ConsoleServer::new();
+            server
+                .serve(&Endpoint::Socket(path.clone()), noop())
+                .unwrap();
 
-    #[test]
-    fn a_shared_or_foreign_socket_directory_is_refused() {
-        let runtime = tempfile::tempdir().unwrap();
-        let dir = runtime.path().join("tilo-console");
-        std::fs::create_dir(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let error = ConsoleServer::new()
-            .serve(&Endpoint::Socket(dir.join("installer.sock")), noop())
-            .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            let dir_mode = std::fs::metadata(path.parent().unwrap()).unwrap().mode() & 0o777;
+            let sock_mode = std::fs::metadata(&path).unwrap().mode() & 0o777;
+            assert_eq!((dir_mode, sock_mode), (0o700, 0o600));
 
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::fs::write(dir.join("installer.sock"), b"not a socket").unwrap();
-        let error = ConsoleServer::new()
-            .serve(&Endpoint::Socket(dir.join("installer.sock")), noop())
-            .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
-    }
+            let client = std::thread::spawn(move || {
+                let mut stream = UnixStream::connect(&path).unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut replies = Vec::new();
+                for request in [r#"{"op":"state_dump"}"#, r#"{"op":"actions_enumerate"}"#] {
+                    writeln!(stream, "{request}").unwrap();
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    replies.push(line);
+                }
+                replies
+            });
+            let seen = answer_until(&server, 2);
+            let replies = client.join().unwrap();
+            assert_eq!(seen.len(), 2);
+            assert!(replies[0].contains("state_dump"), "{replies:?}");
+            assert!(replies[1].contains("actions_enumerate"), "{replies:?}");
+        }
+        // Phase `a_shared_or_foreign_socket_directory_is_refused`.
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            let dir = runtime.path().join("tilo-console");
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let error = ConsoleServer::new()
+                .serve(&Endpoint::Socket(dir.join("installer.sock")), noop())
+                .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
 
-    #[test]
-    fn a_stream_answers_each_line_and_stops_at_oversized_input() {
-        let server = ConsoleServer::new();
-        let (mut client, host) = UnixStream::pair().unwrap();
-        let serving = {
-            let server = server.clone();
-            std::thread::spawn(move || {
-                let reader = host.try_clone().unwrap();
-                server.serve_stream(reader, host, &noop())
-            })
-        };
-        writeln!(client, "{{\"op\":\"state_dump\"}}\n").unwrap();
-        let seen = answer_until(&server, 1);
-        assert_eq!(seen, [r#"{"op":"state_dump"}"#]);
-        let mut reader = BufReader::new(client.try_clone().unwrap());
-        let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
-        assert!(line.contains("echo"));
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::write(dir.join("installer.sock"), b"not a socket").unwrap();
+            let error = ConsoleServer::new()
+                .serve(&Endpoint::Socket(dir.join("installer.sock")), noop())
+                .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        }
+        // Phase `a_stream_answers_each_line_and_stops_at_oversized_input`.
+        {
+            let server = ConsoleServer::new();
+            let (mut client, host) = UnixStream::pair().unwrap();
+            let serving = {
+                let server = server.clone();
+                std::thread::spawn(move || {
+                    let reader = host.try_clone().unwrap();
+                    server.serve_stream(reader, host, &noop())
+                })
+            };
+            writeln!(client, "{{\"op\":\"state_dump\"}}\n").unwrap();
+            let seen = answer_until(&server, 1);
+            assert_eq!(seen, [r#"{"op":"state_dump"}"#]);
+            let mut reader = BufReader::new(client.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert!(line.contains("echo"));
 
-        client
-            .write_all(&vec![b'x'; wire::MAX_LINE_BYTES + 10])
-            .unwrap();
-        line.clear();
-        reader.read_line(&mut line).unwrap();
-        assert!(line.contains("too long"), "{line}");
-        serving.join().unwrap().unwrap();
-    }
-
-    #[test]
-    fn an_unanswered_request_times_out_rather_than_hanging_forever() {
-        // Dropping the pending entry closes its reply channel immediately,
-        // which the listener reports instead of waiting out the timeout.
-        let server = ConsoleServer::new();
-        let answer = server.submit("{}");
-        drop(server.take_pending());
-        assert!(answer.recv().is_err());
+            client
+                .write_all(&vec![b'x'; wire::MAX_LINE_BYTES + 10])
+                .unwrap();
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            assert!(line.contains("too long"), "{line}");
+            serving.join().unwrap().unwrap();
+        }
+        // Phase `an_unanswered_request_times_out_rather_than_hanging_forever`.
+        {
+            // Dropping the pending entry closes its reply channel immediately,
+            // which the listener reports instead of waiting out the timeout.
+            let server = ConsoleServer::new();
+            let answer = server.submit("{}");
+            drop(server.take_pending());
+            assert!(answer.recv().is_err());
+        }
     }
 }

@@ -40,6 +40,9 @@ use winit::keyboard::{
 };
 use winit::platform::scancode::PhysicalKeyExtScancode as _;
 
+use super::access_keys::{
+    BounceKeys, BounceVerdict, ButtonEdge, MouseKeys, MouseKeysOutput, PointerButton,
+};
 use super::devices::{ModeInfo, filter_kms_nodes, is_kms_node, order_by_connected_connectors};
 #[cfg(test)]
 use super::gestures::GestureAction;
@@ -49,6 +52,7 @@ use super::input_config;
 use super::input_config::{
     AccessibilityInputSettings, DeviceCaps, InputSettings, KeyboardSettings,
 };
+use super::output_signal::{HdrRequest, OutputSignalStatus};
 use super::outputs::{ConnectorInfo, DrmOutputKey, OutputRegistry};
 use super::scale::resolve_scale;
 use super::scanout::{
@@ -59,7 +63,8 @@ use super::scanout::{
 use super::session::{SeatTick, SessionAction, SessionState};
 use crate::compositor::backend::layout;
 use crate::compositor::backend::{
-    BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, TouchEvent as TiloTouchEvent,
+    BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, PointerConstraintRegion,
+    TabletPhase, TouchEvent as TiloTouchEvent,
 };
 
 /// One held repeatable key. Kept independent of xkb translation so timing is
@@ -230,6 +235,10 @@ pub struct DrmDispatchState {
     pub slow_pending: HashMap<xkb::Keycode, std::time::Instant>,
     /// Sticky modifiers stay logically down through the next non-modifier.
     pub sticky_latched: ModifiersState,
+    /// Swallows contact bounce ahead of every other key handling.
+    bounce_keys: BounceKeys,
+    /// The numeric keypad as a pointer, while mouse keys is on.
+    mouse_keys: MouseKeys,
     pub physical_modifiers: ModifiersState,
     /// Winit synthesises repeat presses for the hosted backend. Bare libinput
     /// only supplies key edges, so the DRM adapter mirrors that established
@@ -252,10 +261,19 @@ pub struct DrmDispatchState {
     /// touch, but the third simultaneous contact transfers it to shell
     /// gestures and cancels the client stream that began before that upgrade.
     direct_touch: DirectTouchOwnership,
+    /// Class of the last physical input reported as [`BackendEvent::InputUsed`],
+    /// so a stream of key presses or pointer motion reports it once.
+    last_input_used: Option<ui::InputModality>,
     /// Set whenever the output set changed, so the backend refreshes its cached list and the compositor re-syncs its `wl_output` globals.
     pub outputs_changed: bool,
     /// Per-device output metadata, keyed by the public `OutputId`.
     pub output_meta: HashMap<OutputId, Output>,
+    /// The capability snapshot last published for Settings, kept so
+    /// output-management heads never force-probe connectors themselves.
+    pub display_capabilities: Vec<settings_store::hardware::DisplayOutputSnapshot>,
+    /// The built-in panel's orientation from the accelerometer, overriding
+    /// its configured transform while set. `None` on machines without one.
+    pub device_rotation: Option<settings_store::hardware::OutputTransform>,
     /// Current pointer position in scene coordinates (physical pixels of
     /// the combined texture): where the cursor is drawn and what the shell
     /// hit-tests. Always derived from [`Self::logical_pointer`].
@@ -278,6 +296,12 @@ pub struct DrmDispatchState {
     /// What the pointer shows, applied to every scanout (including ones a
     /// hotplug adds later).
     pub pointer_image: crate::compositor::cursor::PointerImage,
+    /// Where local motion may take the pointer while a client locks or
+    /// confines it.
+    pub pointer_constraint: crate::compositor::backend::PointerConstraintRegion,
+    /// Drawing tablets: their saved settings, the shortcut table their
+    /// buttons press, their pads and where each pad's rings and strips are.
+    pub tablets: TabletRuntime,
     /// Per-user xkb keymap + state translating libinput keycodes into winit
     /// `KeyboardInput` events (`FrameBuilder::dispatch_event`'s wire); `None`
     /// when the keymap couldn't compile, running pointer-only. The persisted
@@ -289,6 +313,180 @@ pub struct DrmDispatchState {
     /// already be inside a page flip when the libseat callback returns; the
     /// callback must not drop DRM master until that presentation has retired.
     pub present_gate: Option<Arc<Mutex<()>>>,
+    /// The output showing a fullscreen client, which is where adaptive sync
+    /// may engage.
+    pub fullscreen_output: Option<OutputId>,
+    /// Runtime signalling facts from the presenter, keyed by the output's
+    /// configuration key so they survive a replug of the same connector.
+    pub signal_status: BTreeMap<String, OutputSignalStatus>,
+    /// Receiving end of the presenter's signalling reports.
+    pub signal_reports: Option<Receiver<SignalReport>>,
+}
+
+/// What the DRM backend keeps for drawing tablets.
+#[derive(Default)]
+pub struct TabletRuntime {
+    /// Per-tablet settings, keyed by device identity.
+    pub configs: BTreeMap<String, settings_store::hardware::TabletConfig>,
+    /// The shortcut table, so a pen or pad button presses the chord the user
+    /// bound to its shortcut.
+    pub shortcuts: settings_store::hardware::ShortcutConfig,
+    /// Pads opened a second time, for their buttons, rings and strips.
+    pub pads: Option<PadInput>,
+    /// Ring and strip travel not yet turned into a whole step.
+    pub dials: crate::compositor::tablet_pad::DialSteps,
+}
+
+impl TabletRuntime {
+    fn load() -> Self {
+        Self {
+            configs: settings_store::hardware::tablets_from_section(&settings_store::load_section(
+                input_config::SECTION,
+            )),
+            shortcuts: settings_store::hardware::ShortcutConfig::load(),
+            pads: None,
+            dials: crate::compositor::tablet_pad::DialSteps::default(),
+        }
+    }
+
+    /// Re-read the settings, keeping the open pads and touches in progress.
+    fn reload(&mut self) {
+        let pads = self.pads.take();
+        let dials = std::mem::take(&mut self.dials);
+        *self = Self {
+            pads,
+            dials,
+            ..Self::load()
+        };
+    }
+
+    fn config_for(
+        &self,
+        device: &smithay::reexports::input::Device,
+    ) -> settings_store::hardware::TabletConfig {
+        self.configs
+            .get(&libinput_device_key(device))
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+/// Tablet pads' buttons, rings and strips. Smithay's libinput backend drops
+/// pad events, so each pad is opened again in a path context of its own
+/// that is read only for them.
+pub struct PadInput {
+    context: Libinput,
+    /// Pad handles in `context`, by the udev context's device id.
+    devices: HashMap<String, smithay::reexports::input::Device>,
+}
+
+impl PadInput {
+    fn new(seat: LibSeatSession) -> Self {
+        Self {
+            context: Libinput::new_from_path(LibinputSessionInterface::from(seat)),
+            devices: HashMap::new(),
+        }
+    }
+
+    fn add(&mut self, pad: &smithay::reexports::input::Device) {
+        let path = Path::new("/dev/input").join(pad.sysname());
+        let Some(path) = path.to_str() else {
+            return;
+        };
+        let Some(device) = self.context.path_add_device(path) else {
+            tracing::warn!(pad = pad.name(), "DRM input: could not open tablet pad");
+            return;
+        };
+        tracing::info!(pad = pad.name(), "DRM input: listening to tablet pad");
+        self.devices.insert(pad.id(), device);
+    }
+
+    fn remove(&mut self, pad: &smithay::reexports::input::Device) {
+        if let Some(device) = self.devices.remove(&pad.id()) {
+            self.context.path_remove_device(device);
+        }
+    }
+
+    /// Read pending pad events.
+    fn take_events(&mut self) -> Vec<RawPadEvent> {
+        use settings_store::hardware::PadDial;
+        use smithay::reexports::input::event::tablet_pad::{
+            ButtonState as PadButtonState, RingAxisSource, StripAxisSource, TabletPadEvent,
+            TabletPadEventTrait as _,
+        };
+        use smithay::reexports::input::event::{Event as LibinputEvent, EventTrait as _};
+        if let Err(error) = self.context.dispatch() {
+            tracing::debug!(%error, "DRM input: tablet pad dispatch failed");
+        }
+        // libinput reports a lifted finger as a negative position.
+        let touching = |position: f64| (position >= 0.0).then_some(position);
+        let mut events = Vec::new();
+        for event in &mut self.context {
+            let LibinputEvent::TabletPad(event) = event else {
+                continue;
+            };
+            match event {
+                TabletPadEvent::Button(button) => {
+                    let number = button.button_number();
+                    let pressed = button.button_state() == PadButtonState::Pressed;
+                    let group = button.mode_group();
+                    events.push(RawPadEvent::Button {
+                        pad: libinput_device_key(&button.device()),
+                        button: number,
+                        pressed,
+                        time: button.time(),
+                        mode_switch: (pressed && group.button_is_toggle(number))
+                            .then(|| (group.index(), button.mode(), group.number_of_modes())),
+                        mode_button: group.button_is_toggle(number),
+                    });
+                }
+                TabletPadEvent::Ring(ring) => events.push(RawPadEvent::Dial {
+                    pad: libinput_device_key(&ring.device()),
+                    dial: PadDial::Ring(ring.number()),
+                    position: touching(ring.position()),
+                    finger: ring.source() == RingAxisSource::Finger,
+                    mode: ring.mode(),
+                    time: ring.time(),
+                }),
+                TabletPadEvent::Strip(strip) => events.push(RawPadEvent::Dial {
+                    pad: libinput_device_key(&strip.device()),
+                    dial: PadDial::Strip(strip.number()),
+                    position: touching(strip.position()),
+                    finger: strip.source() == StripAxisSource::Finger,
+                    mode: strip.mode(),
+                    time: strip.time(),
+                }),
+                _ => {}
+            }
+        }
+        events
+    }
+}
+
+/// One pad event as libinput reported it.
+enum RawPadEvent {
+    Button {
+        pad: String,
+        button: u32,
+        pressed: bool,
+        time: u32,
+        /// `(group, new mode, modes)` when the button is its group's mode
+        /// switch.
+        mode_switch: Option<(u32, u32, u32)>,
+        /// Whether the button switches its group's mode, pressed or not.
+        mode_button: bool,
+    },
+    /// A ring (degrees) or strip (`0.0..=1.0`) moved, or `None`: the finger
+    /// lifted.
+    Dial {
+        pad: String,
+        dial: settings_store::hardware::PadDial,
+        position: Option<f64>,
+        finger: bool,
+        /// The mode of the control's group.
+        mode: u32,
+        time: u32,
+    },
 }
 
 /// The direct-touch equivalent of the pointer-gesture ownership tracker.
@@ -468,6 +666,11 @@ fn distance(a: (f64, f64), b: (f64, f64)) -> f64 {
 }
 
 /// One output the backend is currently driving, from the loop thread's view — the scanout itself lives on the render thread; this is the identity, geometry and crtc needed to reconcile a hotplug.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about one output (adaptive sync support, the user's allowance, \
+              its engagement, HDR driver readiness), each read on its own"
+)]
 pub struct LiveEntry {
     pub key: DrmOutputKey,
     pub id: OutputId,
@@ -476,6 +679,11 @@ pub struct LiveEntry {
     /// Collision-resolved key used for display persistence and layout.
     pub config_key: String,
     pub size: (u32, u32),
+    /// The mode this output is driven at.
+    pub mode: settings_store::hardware::OutputMode,
+    /// The configured mode it was brought up under, if any; a rescan keeps
+    /// `mode` while this is unchanged (see [`hotplug::retained_mode`]).
+    pub mode_intent: Option<settings_store::hardware::OutputMode>,
     pub physical_mm: Option<(u32, u32)>,
     /// EDID identity, advertised to clients through `wl_output`.
     pub monitor: Option<settings_store::hardware::MonitorIdentity>,
@@ -488,6 +696,51 @@ pub struct LiveEntry {
     pub transform: settings_store::hardware::OutputTransform,
     /// This output's presentation interval, captured when brought up — kept here rather than read from the scanout, since scanouts move to the render thread and would start returning `None`.
     pub refresh: Option<std::time::Duration>,
+    /// Sink and driver both support adaptive sync, captured at bring-up.
+    pub adaptive_sync_supported: bool,
+    /// The user allows adaptive sync on this output (on unless turned off).
+    pub adaptive_sync_allowed: bool,
+    /// Adaptive sync was last asked for on this output's CRTC.
+    pub adaptive_sync_engaged: bool,
+    /// The sink's HDR description, when its EDID advertises PQ.
+    pub hdr_display: Option<crate::wayland::edid::HdrDisplayInfo>,
+    /// The connector has every property HDR signalling needs.
+    pub hdr_driver_ready: bool,
+    /// HDR as the user configured it: SDR white in cd/m² when on.
+    pub hdr_setting: Option<f32>,
+    /// The HDR request last sent to the scanout owner.
+    pub hdr_requested: Option<HdrRequest>,
+}
+
+/// HDR is requested only for a sink whose EDID advertises PQ, on a connector
+/// with the HDR properties, when the user turned it on and no earlier attempt
+/// failed on this output.
+pub(crate) fn hdr_request_for(
+    display: Option<&crate::wayland::edid::HdrDisplayInfo>,
+    driver_ready: bool,
+    setting: Option<f32>,
+    failed: bool,
+) -> Option<HdrRequest> {
+    let display = display?;
+    let sdr_white_nits = setting?;
+    (driver_ready && !failed).then(|| HdrRequest {
+        display: display.clone(),
+        sdr_white_nits,
+    })
+}
+
+/// Adaptive sync engages only for fullscreen content on an output that allows
+/// and supports it. The desktop stays at the fixed rate: uneven UI frame times
+/// make many panels flicker in brightness when the refresh rate follows them.
+pub(crate) fn adaptive_sync_wanted(supported: bool, allowed: bool, fullscreen_here: bool) -> bool {
+    supported && allowed && fullscreen_here
+}
+
+/// What the presenter reports about one output's signalling.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignalReport {
+    pub output: OutputId,
+    pub status: OutputSignalStatus,
 }
 
 /// What the loop thread asks the owner of the scanouts to do.
@@ -515,6 +768,21 @@ pub enum ScanoutCommand {
     },
     SetCursorSize(u32),
     SetPointerImage(crate::compositor::cursor::PointerImage),
+    /// Switch one panel off or back on for an output-power client.
+    SetOutputPower {
+        output: OutputId,
+        on: bool,
+    },
+    /// Turn adaptive sync on or off on one output's CRTC.
+    SetAdaptiveSync {
+        output: OutputId,
+        on: bool,
+    },
+    /// Drive one output in HDR with this request, or in SDR.
+    SetHdr {
+        output: OutputId,
+        request: Option<HdrRequest>,
+    },
 }
 
 /// The ownership state for one card across a udev remove/re-add race.  This
@@ -671,8 +939,15 @@ fn display_set_of<'a>(
 /// key does not depend on connector keys, so the layout found under the raw
 /// labels decides key qualification, and the final keys then place each
 /// remembered monitor.
+///
+/// A connector already lit keeps its current mode unless its configured
+/// mode changed (see [`hotplug::retained_mode`]), so `live` is the outputs
+/// being driven now and `lit_for` the set of monitors they were configured
+/// for (empty and `None` at startup).
 fn configured_connectors(
     cards: &BTreeMap<u64, CardHandle>,
+    live: &[LiveEntry],
+    lit_for: Option<&settings_store::hardware::DisplaySet>,
 ) -> (
     BTreeMap<u64, Vec<ConnectorSnapshot>>,
     settings_store::hardware::DisplaySet,
@@ -715,9 +990,31 @@ fn configured_connectors(
     }
     let set = display_set_of(snapshots.values().flatten());
     let config = settings_store::hardware::DisplayConfig::load_effective(&set);
-    for output in snapshots.values_mut().flatten() {
-        let config_key = output.config_key.clone();
-        CardHandle::apply_output_config(output, config_key, &config);
+    let set_changed = lit_for.is_some_and(|lit_for| *lit_for != set);
+    for (&device_id, outputs) in &mut snapshots {
+        for output in outputs {
+            let config_key = output.config_key.clone();
+            CardHandle::apply_output_config(output, config_key, &config);
+            let key = DrmOutputKey {
+                device: device_id,
+                connector: output.connector_id,
+            };
+            let lit = live
+                .iter()
+                .find(|entry| entry.key == key)
+                .map(|entry| hotplug::LiveMode {
+                    mode: entry.mode,
+                    intent: entry.mode_intent,
+                });
+            if let Some(mode) = hotplug::retained_mode(
+                lit,
+                output.mode_intent,
+                set_changed,
+                &output.advertised_modes(),
+            ) {
+                output.retain_mode(mode);
+            }
+        }
     }
     (snapshots, set)
 }
@@ -727,20 +1024,42 @@ fn configured_connectors(
 /// independently re-enable a colliding connector.
 fn display_capabilities(
     cards: &BTreeMap<u64, CardHandle>,
+    live: &[LiveEntry],
+    lit_for: &settings_store::hardware::DisplaySet,
     profiles: &BTreeMap<String, String>,
+    signal_status: &BTreeMap<String, OutputSignalStatus>,
+    scale_override: Option<f64>,
 ) -> Vec<settings_store::hardware::DisplayOutputSnapshot> {
-    let (snapshots, _) = configured_connectors(cards);
+    let (snapshots, _) = configured_connectors(cards, live, Some(lit_for));
     let mut outputs: Vec<_> = cards
         .iter()
         .flat_map(|(&device_id, card)| {
             card.display_capabilities(
                 snapshots.get(&device_id).map_or(&[], Vec::as_slice),
                 profiles,
+                signal_status,
+                scale_override,
             )
         })
         .collect();
     outputs.sort_by(|a, b| a.descriptor.connector.cmp(&b.descriptor.connector));
     outputs
+}
+
+/// Put each live output's actual scale over the one its capability entry
+/// was given for running unconfigured, keyed by configuration key.
+fn apply_live_scales<'a>(
+    outputs: &mut [settings_store::hardware::DisplayOutputSnapshot],
+    live: impl IntoIterator<Item = (&'a str, f64)>,
+) {
+    for (key, scale) in live {
+        if let Some(output) = outputs
+            .iter_mut()
+            .find(|output| output.descriptor.connector == key)
+        {
+            output.scale = scale;
+        }
+    }
 }
 
 /// Rebind already-modeset entries to the collision-resolved key from the
@@ -799,10 +1118,6 @@ impl DrmDispatchState {
     /// starts at its zero value; [`Self::finalize_startup_scanouts`] is
     /// what actually populates `live`/`output_meta`/`pointer`. Extracted
     /// from that constructor to keep it a readable top-level sequence.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "startup inputs are independently acquired resources; bundling them would obscure their ownership transfer into the dispatch loop"
-    )]
     fn new(
         session_state: SessionState,
         cards: BTreeMap<u64, CardHandle>,
@@ -837,6 +1152,8 @@ impl DrmDispatchState {
             accessibility,
             slow_pending: HashMap::new(),
             sticky_latched: ModifiersState::empty(),
+            bounce_keys: BounceKeys::default(),
+            mouse_keys: MouseKeys::default(),
             physical_modifiers: ModifiersState::empty(),
             key_repeat: KeyRepeat::default(),
             devices: Vec::new(),
@@ -847,16 +1164,24 @@ impl DrmDispatchState {
                 ..GestureConfig::default()
             }),
             direct_touch: DirectTouchOwnership::default(),
+            last_input_used: None,
             outputs_changed: false,
             output_meta: HashMap::new(),
+            display_capabilities: Vec::new(),
+            device_rotation: None,
             pointer: (0.0, 0.0),
             logical_pointer: (0.0, 0.0),
             output_size: (0, 0),
             display_set: settings_store::hardware::DisplaySet::default(),
             hw_cursor: CursorPlanes::default(),
             pointer_image: crate::compositor::cursor::PointerImage::default(),
+            pointer_constraint: crate::compositor::backend::PointerConstraintRegion::Free,
+            tablets: TabletRuntime::load(),
             keyboard,
             present_gate: Some(Arc::new(Mutex::new(()))),
+            fullscreen_output: None,
+            signal_status: BTreeMap::new(),
+            signal_reports: None,
         }
     }
 
@@ -864,7 +1189,8 @@ impl DrmDispatchState {
     /// hot-plug takes, so a display present at boot and one plugged in
     /// later end up configured identically. Each is interned by `(device,
     /// connector)` so its `OutputId` is stable, and the first gets
-    /// `OutputId(0)`, preserving the "primary == `OutputId(0)`" contract.
+    /// `OutputId(0)`: the last tie-break for the primary when Settings names
+    /// none and no built-in panel is attached (see `relayout_with`).
     /// Also seeds the pointer at the center of the combined space and
     /// publishes the initial display snapshot. Extracted from
     /// [`DrmRuntime::new`] to keep that constructor a readable top-level
@@ -914,11 +1240,34 @@ impl DrmDispatchState {
         self.events.push(ev);
     }
 
+    /// Report the class of a physical event when it differs from the last
+    /// one. Emitted ahead of the event itself, so the compositor has already
+    /// switched modality when it handles that event.
+    fn note_input_used(&mut self, modality: ui::InputModality) {
+        if self.last_input_used != Some(modality) {
+            self.last_input_used = Some(modality);
+            self.push(BackendEvent::InputUsed(modality));
+        }
+    }
+
     /// Publish the live hardware contract for Settings. Failure is benign in
     /// test/headless sessions (usually no `XDG_RUNTIME_DIR`) and never changes
     /// the output plan itself.
-    fn publish_display_snapshot(&self) {
-        let outputs = display_capabilities(&self.cards, &self.color_profiles);
+    fn publish_display_snapshot(&mut self) {
+        let mut outputs = display_capabilities(
+            &self.cards,
+            &self.live,
+            &self.display_set,
+            &self.color_profiles,
+            &self.signal_status,
+            self.scale_override,
+        );
+        apply_live_scales(
+            &mut outputs,
+            self.live
+                .iter()
+                .map(|entry| (entry.config_key.as_str(), entry.scale)),
+        );
         let layout = self
             .live
             .iter()
@@ -933,13 +1282,26 @@ impl DrmDispatchState {
                 }
             })
             .collect();
+        if outputs != self.display_capabilities {
+            self.display_capabilities.clone_from(&outputs);
+            // A disabled connector appearing changes the heads external
+            // configuration tools see, even with no modeset to report.
+            self.outputs_changed = true;
+            self.push(BackendEvent::OutputsChanged);
+        }
+        let (publisher_pid, publisher_start_ticks) =
+            match settings_store::hardware::publisher_identity() {
+                Ok(identity) => identity,
+                Err(error) => {
+                    tracing::debug!(%error, "DRM display: no publisher lease for the snapshot");
+                    return;
+                }
+            };
         let snapshot = settings_store::hardware::DisplayHardwareSnapshot {
             generated_unix_ms: unix_now_ms(),
             backend: "drm-kms-xrgb8888".into(),
-            publisher_pid: std::process::id(),
-            publisher_start_ticks:
-                settings_store::hardware::process_start_ticks(std::process::id())
-                    .unwrap_or_default(),
+            publisher_pid,
+            publisher_start_ticks,
             outputs,
             layout,
         };
@@ -978,9 +1340,21 @@ impl DrmDispatchState {
         reason: &str,
         removal_ack: Option<(u64, Sender<u64>)>,
     ) {
-        let (snapshots, display_set) = configured_connectors(&self.cards);
+        let (snapshots, display_set) =
+            configured_connectors(&self.cards, &self.live, Some(&self.display_set));
         let display_set_changed = self.display_set != display_set;
         self.display_set = display_set;
+        // A surviving output now answers to the configuration of this set
+        // of monitors, whether it kept its mode or is re-modeset below.
+        for entry in &mut self.live {
+            if let Some(snapshot) = snapshots.get(&entry.key.device).and_then(|snapshots| {
+                snapshots
+                    .iter()
+                    .find(|snapshot| snapshot.connector_id == entry.key.connector)
+            }) {
+                entry.mode_intent = snapshot.mode_intent;
+            }
+        }
         let config_keys: BTreeMap<_, _> = snapshots
             .iter()
             .flat_map(|(&device_id, snapshots)| {
@@ -1159,12 +1533,17 @@ impl DrmDispatchState {
                 self.hw_cursor
                     .insert(CursorPlanes::output_cursor(id, (0, 0, w, h), mover));
             }
+            // A replugged or rebuilt output gets a fresh chance at what an
+            // earlier generation of it failed to drive.
+            self.signal_status.remove(&build.config_key);
             self.live.push(LiveEntry {
                 key,
                 id,
                 connector_name: build.connector_name,
                 config_key: build.config_key,
                 size: build.scanout.size(),
+                mode: build.scanout.output_mode(),
+                mode_intent: build.mode_intent,
                 physical_mm: build.physical_mm,
                 monitor: build.monitor,
                 crtc: build.crtc,
@@ -1173,6 +1552,13 @@ impl DrmDispatchState {
                 scale: 1.0,
                 transform: settings_store::hardware::OutputTransform::Normal,
                 refresh: build.scanout.refresh_interval(),
+                adaptive_sync_supported: build.scanout.adaptive_sync_supported(),
+                adaptive_sync_allowed: true,
+                adaptive_sync_engaged: false,
+                hdr_driver_ready: build.scanout.hdr_driver_missing().is_none(),
+                hdr_display: build.hdr_display,
+                hdr_setting: None,
+                hdr_requested: None,
             });
             entries.push(ScanoutEntry {
                 id,
@@ -1184,6 +1570,10 @@ impl DrmDispatchState {
                 color_buffer: Vec::new(),
                 direct_targets: None,
                 direct_unavailable: None,
+                hdr_direct_unavailable: None,
+                hdr_failure: None,
+                powered_off: false,
+                signal_reported: OutputSignalStatus::default(),
                 scanout: build.scanout,
             });
         }
@@ -1217,6 +1607,13 @@ impl DrmDispatchState {
                 .map_or(settings_store::hardware::OutputTransform::Normal, |c| {
                     c.transform
                 });
+            // The accelerometer is in the built-in panel's lid: its reading
+            // turns that panel and never an external monitor.
+            if let Some(rotation) = self.device_rotation
+                && is_builtin_connector(&entry.connector_name)
+            {
+                entry.transform = rotation;
+            }
         }
         // Scale first: an output's logical extent — what the arrangement
         // is made of — is its mode over its scale.
@@ -1254,8 +1651,127 @@ impl DrmDispatchState {
         let logical_pointer = layout::clamp_to_outputs(&self.placements(), self.logical_pointer);
         self.set_pointer_logical(logical_pointer);
 
+        for entry in &mut self.live {
+            let output = config.outputs.get(&entry.config_key);
+            entry.adaptive_sync_allowed = output.is_none_or(|output| output.vrr);
+            entry.hdr_setting = output
+                .filter(|output| output.hdr)
+                .map(|output| f32::from(output.sdr_brightness_nits));
+        }
         self.output_meta = self.output_meta_for(config);
         self.rebuild_cursor_routing();
+        self.reconcile_adaptive_sync();
+        self.reconcile_hdr();
+    }
+
+    /// Tell the scanout owner about every output whose HDR request changed.
+    /// An output whose HDR attempt failed is not asked again until it is
+    /// rebuilt.
+    fn reconcile_hdr(&mut self) {
+        let mut changes = Vec::new();
+        for entry in &mut self.live {
+            let failed = self
+                .signal_status
+                .get(&entry.config_key)
+                .is_some_and(|status| status.hdr_failure.is_some());
+            let request = hdr_request_for(
+                entry.hdr_display.as_ref(),
+                entry.hdr_driver_ready,
+                entry.hdr_setting,
+                failed,
+            );
+            if request != entry.hdr_requested {
+                entry.hdr_requested.clone_from(&request);
+                changes.push((entry.id, request));
+            }
+        }
+        for (output, request) in changes {
+            self.command(ScanoutCommand::SetHdr { output, request });
+        }
+    }
+
+    /// Record which output shows a fullscreen client and engage or release
+    /// adaptive sync to match.
+    pub fn set_fullscreen_output(&mut self, output: Option<OutputId>) {
+        if self.fullscreen_output != output {
+            self.fullscreen_output = output;
+            self.reconcile_adaptive_sync();
+        }
+    }
+
+    /// Tell the scanout owner about every output whose adaptive-sync wish
+    /// changed. An output the driver refused is not asked again.
+    fn reconcile_adaptive_sync(&mut self) {
+        let mut changes = Vec::new();
+        for entry in &mut self.live {
+            let refused = self
+                .signal_status
+                .get(&entry.config_key)
+                .is_some_and(|status| status.adaptive_sync_rejected);
+            let wanted = adaptive_sync_wanted(
+                entry.adaptive_sync_supported && !refused,
+                entry.adaptive_sync_allowed,
+                self.fullscreen_output == Some(entry.id),
+            );
+            if wanted != entry.adaptive_sync_engaged {
+                entry.adaptive_sync_engaged = wanted;
+                changes.push((entry.id, wanted));
+            }
+        }
+        for (output, on) in changes {
+            self.command(ScanoutCommand::SetAdaptiveSync { output, on });
+        }
+    }
+
+    /// The HDR signal `output` is driven with: the request the presenter
+    /// reports active.
+    pub fn output_hdr(&self, output: OutputId) -> Option<crate::compositor::backend::OutputHdr> {
+        let entry = self.live.iter().find(|entry| entry.id == output)?;
+        let active = self
+            .signal_status
+            .get(&entry.config_key)
+            .is_some_and(|status| status.hdr_active);
+        let request = entry.hdr_requested.as_ref().filter(|_| active)?;
+        Some(crate::compositor::backend::OutputHdr {
+            display: request.display.clone(),
+            sdr_white_nits: request.sdr_white_nits,
+        })
+    }
+
+    /// Adaptive sync is engaged on at least one output, so frames should be
+    /// paced by content rather than by a fixed refresh deadline.
+    pub fn adaptive_sync_engaged(&self) -> bool {
+        self.live.iter().any(|entry| entry.adaptive_sync_engaged)
+    }
+
+    /// Fold the presenter's signalling reports into the runtime status.
+    /// Returns whether anything changed, so the caller republishes the
+    /// Settings snapshot.
+    fn drain_signal_reports(&mut self) -> bool {
+        let Some(reports) = self.signal_reports.as_ref() else {
+            return false;
+        };
+        let reports: Vec<SignalReport> = reports.try_iter().collect();
+        let mut changed = false;
+        for report in reports {
+            let Some(key) = self
+                .live
+                .iter()
+                .find(|entry| entry.id == report.output)
+                .map(|entry| entry.config_key.clone())
+            else {
+                continue;
+            };
+            if self.signal_status.get(&key) != Some(&report.status) {
+                self.signal_status.insert(key, report.status);
+                changed = true;
+            }
+        }
+        if changed {
+            self.reconcile_adaptive_sync();
+            self.reconcile_hdr();
+        }
+        changed
     }
 
     /// Where each live output sits in the logical layout: its configured
@@ -1345,8 +1861,10 @@ impl DrmDispatchState {
                             .filter(|profile| self.color_profiles.contains_key(*profile))
                             .cloned(),
                         refresh_mhz: l.refresh.and_then(crate::compositor::backend::interval_to_mhz),
+                        // The collision-free key, so the `wl_output` name
+                        // is the output-management head's name.
                         identity: OutputIdentity::from_monitor(
-                            &l.connector_name,
+                            &l.config_key,
                             l.monitor.as_ref(),
                             l.physical_mm,
                         ),
@@ -1385,6 +1903,19 @@ impl DrmDispatchState {
 
     /// Relative pointer motion, in logical pixels. Returns the new scene
     /// position.
+    /// Keep a confined pointer inside its region after it moved from
+    /// `previous`, returning where it ends up (scene coordinates).
+    fn confine_pointer(&mut self, previous: (f64, f64)) -> (f64, f64) {
+        let moved = self.pointer;
+        match self.pointer_constraint.constrain(previous, moved) {
+            Some(confined) if confined != moved => {
+                self.set_pointer_scene(confined);
+                confined
+            }
+            _ => moved,
+        }
+    }
+
     fn move_pointer_by(&mut self, delta: (f64, f64)) -> (f64, f64) {
         let logical = layout::move_pointer(&self.placements(), self.logical_pointer, delta);
         self.set_pointer_logical(logical);
@@ -1412,10 +1943,14 @@ impl DrmDispatchState {
     }
 
     /// The public output table, in `OutputId` order.
-    fn output_table(&self) -> Vec<Output> {
-        let mut outs: Vec<Output> = self.output_meta.values().cloned().collect();
-        outs.sort_by_key(|o| o.id.0);
-        outs
+    /// The published outputs in the order [`Self::relayout_with`] keeps the
+    /// live set: the primary chosen in Settings first, else the built-in
+    /// panel, then by id. Everything downstream takes the first as primary.
+    pub(super) fn output_table(&self) -> Vec<Output> {
+        self.live
+            .iter()
+            .filter_map(|l| self.output_meta.get(&l.id).cloned())
+            .collect()
     }
 
     /// Perform one step of the pause/resume sequence the session state machine asked for.
@@ -1478,6 +2013,8 @@ impl DrmDispatchState {
         self.handle_direct_touch_cancel();
         self.key_repeat.cancel();
         self.slow_pending.clear();
+        self.bounce_keys.reset();
+        self.release_mouse_keys();
         self.sticky_latched = ModifiersState::empty();
         self.physical_modifiers = ModifiersState::empty();
         if let Some(keyboard) = self.keyboard.as_mut() {
@@ -1506,57 +2043,40 @@ impl DrmDispatchState {
     }
 
     /// Apply the current input settings to one libinput device.
-    ///
-    /// Every failure is logged at debug and ignored: libinput errors on an
-    /// unsupported setting, and [`input_config::plan_for`]'s capability gates already avoid asking — anything left is a driver quirk that must not take the session down.
     fn configure_device(&self, device: &mut smithay::reexports::input::Device) {
-        let caps = device_caps(device);
-        let plan = input_config::plan_for(&self.input, &caps);
-        if let Some(on) = plan.tap {
-            let _ = device.config_tap_set_enabled(on);
-        }
-        if let Some(on) = plan.tap_drag {
-            let _ = device.config_tap_set_drag_enabled(on);
-        }
-        if let Some(on) = plan.natural_scroll {
-            let _ = device.config_scroll_set_natural_scroll_enabled(on);
-        }
-        if let Some(on) = plan.disable_while_typing {
-            let _ = device.config_dwt_set_enabled(on);
-        }
-        if let Some(on) = plan.middle_emulation {
-            let _ = device.config_middle_emulation_set_enabled(on);
-        }
-        if let Some(speed) = plan.accel_speed() {
-            let _ = device.config_accel_set_speed(speed);
-        }
-        if let Some(on) = plan.left_handed {
-            let _ = device.config_left_handed_set(on);
-        }
-        if let Some(on) = plan.send_events {
-            use smithay::reexports::input::SendEventsMode;
-            let _ = device.config_send_events_set_mode(if on {
-                SendEventsMode::ENABLED
-            } else {
-                SendEventsMode::DISABLED
-            });
-        }
-        if let Some(flat) = plan.flat_acceleration {
-            use smithay::reexports::input::AccelProfile;
-            let _ = device.config_accel_set_profile(if flat {
-                AccelProfile::Flat
-            } else {
-                AccelProfile::Adaptive
-            });
-        }
+        let plan = input_config::configure(&self.input, device);
         tracing::info!(
             device = device.name(),
-            touchpad = caps.is_touchpad(),
+            kind = ?device_caps(device).kind(),
             tap = ?plan.tap,
             natural_scroll = ?plan.natural_scroll,
             accel = ?plan.accel_speed(),
+            click_method = ?plan.click_method,
+            scroll_method = ?plan.scroll_method,
             "DRM input: configured device"
         );
+    }
+
+    /// Tell Settings which kinds of input device are attached, so it shows
+    /// only the sections that apply. Failure is benign: no runtime
+    /// directory in a test session, and the devices themselves are unaffected.
+    fn publish_input_snapshot(&self) {
+        let (publisher_pid, publisher_start_ticks) =
+            match settings_store::hardware::publisher_identity() {
+                Ok(identity) => identity,
+                Err(error) => {
+                    tracing::debug!(%error, "DRM input: no publisher lease for the snapshot");
+                    return;
+                }
+            };
+        let snapshot = settings_store::hardware::InputHardwareSnapshot {
+            publisher_pid,
+            publisher_start_ticks,
+            devices: self.devices.iter().map(input_device_snapshot).collect(),
+        };
+        if let Err(error) = snapshot.save() {
+            tracing::debug!(%error, "DRM input: could not publish device snapshot");
+        }
     }
 
     /// Remember libinput's output association while the device is live.
@@ -1654,6 +2174,28 @@ impl DrmDispatchState {
     ///
     /// `keycode` is smithay's [`KeyboardKeyEvent::key_code`], already including the +8 evdev→xkb offset, so it feeds straight into xkb state.
     fn handle_keyboard_key(&mut self, keycode: xkb::Keycode, pressed: bool) {
+        let evdev = keycode.raw().saturating_sub(8);
+        let now = std::time::Instant::now();
+        if self.accessibility.bounce_keys {
+            let verdict = if pressed {
+                self.bounce_keys
+                    .press(evdev, now, self.accessibility.bounce_window())
+            } else {
+                self.bounce_keys.release(evdev, now)
+            };
+            if verdict == BounceVerdict::Reject {
+                if pressed && self.accessibility.bounce_keys_alert {
+                    self.push(BackendEvent::VisualAlert);
+                }
+                return;
+            }
+        }
+        if self.accessibility.mouse_keys
+            && let Some(output) = self.mouse_keys.key(evdev, pressed, now)
+        {
+            self.apply_mouse_keys(output);
+            return;
+        }
         if self.accessibility.slow_keys {
             if pressed {
                 self.slow_pending.insert(keycode, std::time::Instant::now());
@@ -1680,6 +2222,61 @@ impl DrmDispatchState {
             }
         } else {
             self.key_repeat.release(keycode);
+        }
+    }
+
+    /// Deliver what mouse keys produced: a nudge moves the pointer exactly as
+    /// relative device motion would, and button edges arrive as clicks.
+    fn apply_mouse_keys(&mut self, output: MouseKeysOutput) {
+        self.move_pointer_from_keys(output.motion);
+        for edge in output.buttons {
+            self.push_mouse_keys_button(edge);
+        }
+    }
+
+    fn move_pointer_from_keys(&mut self, (dx, dy): (f64, f64)) {
+        if dx == 0.0 && dy == 0.0 {
+            return;
+        }
+        let (x, y) = self.move_pointer_by((dx, dy));
+        // Synthetic motion has no acceleration curve, and libinput stamps
+        // real motion on CLOCK_MONOTONIC, so the keys do the same.
+        self.push(BackendEvent::RelativePointerMotion {
+            dx,
+            dy,
+            dx_unaccel: dx,
+            dy_unaccel: dy,
+            time_usec: crate::shell::network::fabric_monotonic_us(),
+        });
+        self.push(BackendEvent::Input(cursor_moved_event(x, y)));
+    }
+
+    fn push_mouse_keys_button(&mut self, edge: ButtonEdge) {
+        let button = match edge.button {
+            PointerButton::Left => MouseButton::Left,
+            PointerButton::Middle => MouseButton::Middle,
+            PointerButton::Right => MouseButton::Right,
+        };
+        let state = if edge.pressed {
+            ElementState::Pressed
+        } else {
+            ElementState::Released
+        };
+        self.push(BackendEvent::Input(mouse_input_event(state, button)));
+    }
+
+    /// Stop any glide and release every button mouse keys is holding, so
+    /// switching it off mid-drag never leaves a button stuck down.
+    fn release_mouse_keys(&mut self) {
+        for edge in self.mouse_keys.reset() {
+            self.push_mouse_keys_button(edge);
+        }
+    }
+
+    fn pump_mouse_keys(&mut self, now: std::time::Instant) {
+        if self.accessibility.mouse_keys {
+            let motion = self.mouse_keys.motion(now);
+            self.move_pointer_from_keys(motion);
         }
     }
 
@@ -2064,6 +2661,7 @@ impl DrmDispatchState {
             | InputEvent::PointerMotion { .. }
             | InputEvent::PointerButton { .. }
             | InputEvent::PointerAxis { .. } => {
+                self.note_input_used(ui::InputModality::Pointer);
                 self.handle_libinput_pointer_event(event);
             }
             // Keyboard: run the libinput keycode through xkb to get a
@@ -2072,6 +2670,9 @@ impl DrmDispatchState {
             // — the same wire the winit backend feeds, so `dispatch_event` handles DRM keystrokes identically to hosted-mode ones.
             InputEvent::Keyboard { event } => {
                 let pressed = matches!(event.state(), KeyState::Pressed);
+                if pressed {
+                    self.note_input_used(ui::InputModality::Keyboard);
+                }
                 self.handle_keyboard_key(event.key_code(), pressed);
             }
             InputEvent::GestureSwipeBegin { .. }
@@ -2082,17 +2683,306 @@ impl DrmDispatchState {
             | InputEvent::GesturePinchEnd { .. }
             | InputEvent::GestureHoldBegin { .. }
             | InputEvent::GestureHoldEnd { .. } => {
+                self.note_input_used(ui::InputModality::Pointer);
                 self.handle_libinput_gesture_event(event);
             }
-            InputEvent::TouchDown { .. }
-            | InputEvent::TouchMotion { .. }
+            InputEvent::TouchDown { .. } => {
+                self.note_input_used(ui::InputModality::Touch);
+                self.handle_libinput_touch_event(event);
+            }
+            InputEvent::TouchMotion { .. }
             | InputEvent::TouchUp { .. }
             | InputEvent::TouchCancel { .. }
             | InputEvent::TouchFrame { .. } => {
                 self.handle_libinput_touch_event(event);
             }
-            // Switches (lid, tablet mode) and tablet-tool events are handled elsewhere or not at all; unlike the gestures above they were never advertised to clients, so dropping them promises nothing undelivered.
-            _ => {}
+            // Using a stylus means the person is pointing rather than typing
+            // or touching.
+            InputEvent::TabletToolAxis { .. }
+            | InputEvent::TabletToolProximity { .. }
+            | InputEvent::TabletToolTip { .. }
+            | InputEvent::TabletToolButton { .. } => {
+                self.note_input_used(ui::InputModality::Pointer);
+                self.handle_libinput_tablet_event(&event);
+            }
+            // Only the tablet-mode switch matters here. Other switches (the
+            // lid) are handled elsewhere or not at all; unlike the tools above
+            // they were never advertised to clients, so dropping them promises
+            // nothing undelivered.
+            InputEvent::SwitchToggle { event } => {
+                use smithay::backend::input::{Switch, SwitchState, SwitchToggleEvent};
+                if SwitchToggleEvent::switch(&event) == Some(Switch::TabletMode) {
+                    self.push(BackendEvent::TabletMode(matches!(
+                        SwitchToggleEvent::state(&event),
+                        SwitchState::On
+                    )));
+                }
+            }
+            // Tablet pads are read from their own context (`PadInput`), since
+            // this backend drops their events.
+            InputEvent::Special(_) => {}
+        }
+    }
+
+    /// Tablet-tool half of [`Self::handle_libinput_event`]: every axis the
+    /// tool reports, shaped by that tablet's saved settings — the display it
+    /// maps onto, aspect ratio, orientation, pressure curve — and its barrel
+    /// buttons remapped, or turned into a shortcut.
+    fn handle_libinput_tablet_event(&mut self, event: &InputEvent<LibinputInputBackend>) {
+        use smithay::backend::input::{
+            ProximityState, TabletToolButtonEvent, TabletToolProximityEvent, TabletToolTipEvent,
+            TabletToolTipState,
+        };
+        let device = match event {
+            InputEvent::TabletToolAxis { event } => event.device(),
+            InputEvent::TabletToolProximity { event } => event.device(),
+            InputEvent::TabletToolTip { event } => event.device(),
+            InputEvent::TabletToolButton { event } => event.device(),
+            _ => return,
+        };
+        let config = self.tablets.config_for(&device);
+        let Some(target) = super::tablet::pen_target(
+            self.live.iter().map(|output| {
+                (
+                    output.connector_name.as_str(),
+                    output.config_key.as_str(),
+                    output.position,
+                    logical_output_size(output.size, output.transform),
+                )
+            }),
+            config.output.as_deref(),
+        ) else {
+            return;
+        };
+        let input = match event {
+            InputEvent::TabletToolAxis { event } => {
+                super::tablet::tablet_input(event, TabletPhase::Motion, target, &config)
+            }
+            InputEvent::TabletToolProximity { event } => super::tablet::tablet_input(
+                event,
+                match TabletToolProximityEvent::state(event) {
+                    ProximityState::In => TabletPhase::ProximityIn,
+                    ProximityState::Out => TabletPhase::ProximityOut,
+                },
+                target,
+                &config,
+            ),
+            InputEvent::TabletToolTip { event } => super::tablet::tablet_input(
+                event,
+                match TabletToolTipEvent::tip_state(event) {
+                    TabletToolTipState::Down => TabletPhase::TipDown,
+                    TabletToolTipState::Up => TabletPhase::TipUp,
+                },
+                target,
+                &config,
+            ),
+            InputEvent::TabletToolButton { event } => {
+                let pressed = matches!(
+                    TabletToolButtonEvent::button_state(event),
+                    ButtonState::Pressed
+                );
+                let button = match super::tablet::stylus_button(
+                    &config,
+                    TabletToolButtonEvent::button(event),
+                ) {
+                    super::tablet::ButtonOutcome::Button(button) => button,
+                    super::tablet::ButtonOutcome::Shortcut(action) => {
+                        if pressed {
+                            self.press_shortcut(action);
+                        }
+                        return;
+                    }
+                    super::tablet::ButtonOutcome::Ignore => return,
+                };
+                super::tablet::tablet_input(
+                    event,
+                    TabletPhase::Button { button, pressed },
+                    target,
+                    &config,
+                )
+            }
+            _ => return,
+        };
+        if input.tool.kind == crate::compositor::backend::TabletToolKind::Eraser {
+            let tip = match super::tablet::eraser_route(&config) {
+                super::tablet::EraserRoute::Native => {
+                    self.push(BackendEvent::Tablet(input));
+                    return;
+                }
+                super::tablet::EraserRoute::Pointer(button) => Some(button),
+                super::tablet::EraserRoute::Shortcut(action) => {
+                    if input.phase == TabletPhase::TipDown {
+                        self.press_shortcut(action);
+                    }
+                    None
+                }
+            };
+            // A remapped eraser is a pointer in every app, never an eraser.
+            for event in crate::compositor::tablet::tool_pointer_events(&input, tip) {
+                self.push(BackendEvent::Input(event));
+            }
+            return;
+        }
+        self.push(BackendEvent::Tablet(input));
+    }
+
+    /// The pad half of a tablet. A mapped button presses its shortcut's
+    /// chord; everything else goes to the compositor, which hands it to a
+    /// focused tablet-aware app or applies the fallback built here from the
+    /// pad's settings: a ring or strip scrolling, zooming, resizing the
+    /// brush, or stepping the volume or brightness.
+    fn handle_pad_events(&mut self) {
+        use crate::compositor::backend::{PadAction, PadEvent};
+        use settings_store::hardware::PadDial;
+        let Some(pads) = self.tablets.pads.as_mut() else {
+            return;
+        };
+        for event in pads.take_events() {
+            match event {
+                RawPadEvent::Button {
+                    pad,
+                    button,
+                    pressed,
+                    time,
+                    mode_switch,
+                    mode_button,
+                } => {
+                    if let Some((group, mode, modes)) = mode_switch {
+                        self.push(BackendEvent::TabletPad(PadEvent {
+                            pad: pad.clone(),
+                            action: PadAction::ModeSwitch { group, mode, modes },
+                            time_msec: time,
+                            fallback: Vec::new(),
+                        }));
+                    }
+                    // Holding a mode button, or the button picked for it,
+                    // shows what every control does.
+                    let config = self.tablets.configs.get(&pad);
+                    let map_button = config.is_some_and(|c| c.pad_map_button == Some(button));
+                    if mode_button || map_button {
+                        let shown = pressed.then(|| Box::new(config.cloned().unwrap_or_default()));
+                        self.push(BackendEvent::TabletPadMap {
+                            pad: pad.clone(),
+                            shown,
+                            time_msec: time,
+                        });
+                    }
+                    if map_button {
+                        continue;
+                    }
+                    let shortcut = self
+                        .tablets
+                        .configs
+                        .get(&pad)
+                        .and_then(|config| super::tablet::pad_button(config, button));
+                    if let Some(action) = shortcut {
+                        if pressed {
+                            self.press_shortcut(action);
+                        }
+                        continue;
+                    }
+                    self.push(BackendEvent::TabletPad(PadEvent {
+                        pad,
+                        action: PadAction::Button { button, pressed },
+                        time_msec: time,
+                        fallback: Vec::new(),
+                    }));
+                }
+                RawPadEvent::Dial {
+                    pad,
+                    dial,
+                    position,
+                    finger,
+                    mode,
+                    time,
+                } => {
+                    let steps = self.tablets.dials.advance(&pad, dial, position);
+                    let mapped = self
+                        .tablets
+                        .configs
+                        .get(&pad)
+                        .map(|config| config.dial_action(dial, mode))
+                        .unwrap_or_default();
+                    let fallback =
+                        crate::compositor::tablet_pad::dial_events(mapped, steps, |step| {
+                            self.dial_key_events(step)
+                        });
+                    let action = match dial {
+                        PadDial::Ring(ring) => PadAction::Ring {
+                            ring,
+                            angle: position,
+                            finger,
+                        },
+                        PadDial::Strip(strip) => PadAction::Strip {
+                            strip,
+                            position,
+                            finger,
+                        },
+                    };
+                    self.push(BackendEvent::TabletPad(PadEvent {
+                        pad,
+                        action,
+                        time_msec: time,
+                        fallback,
+                    }));
+                }
+            }
+        }
+    }
+
+    /// The keyboard events one ring or strip step presses and releases,
+    /// kept aside rather than queued: they apply only if no tablet-aware app
+    /// takes the step itself.
+    fn dial_key_events(
+        &mut self,
+        step: &crate::compositor::tablet_pad::DialStep,
+    ) -> Vec<BackendEvent> {
+        let codes = match step {
+            crate::compositor::tablet_pad::DialStep::Key(code) => vec![*code],
+            crate::compositor::tablet_pad::DialStep::Chord(chord) => {
+                let keyboard = self.keyboard.as_ref();
+                let Some(codes) = super::tablet::chord_keycodes(chord, |ch| {
+                    keyboard.and_then(|keyboard| keyboard.keycode_for_char(ch))
+                }) else {
+                    tracing::debug!(?chord, "DRM input: pad key is not on this layout");
+                    return Vec::new();
+                };
+                codes
+            }
+        };
+        let start = self.events.len();
+        for code in &codes {
+            self.process_keyboard_key(evdev_to_xkb(*code), true);
+        }
+        for code in codes.iter().rev() {
+            self.process_keyboard_key(evdev_to_xkb(*code), false);
+        }
+        self.events.split_off(start)
+    }
+
+    /// Press and release the chord bound to `action`, through the ordinary
+    /// keyboard path, so the one shortcut resolver decides what it does and
+    /// a rebound shortcut moves its pen and pad buttons with it.
+    fn press_shortcut(&mut self, action: settings_store::hardware::ShortcutAction) {
+        let Some(chord) = self.tablets.shortcuts.bindings.get(&action) else {
+            tracing::debug!(?action, "DRM input: pen shortcut has no chord bound");
+            return;
+        };
+        let keyboard = self.keyboard.as_ref();
+        let Some(codes) = super::tablet::chord_keycodes(chord, |ch| {
+            keyboard.and_then(|keyboard| keyboard.keycode_for_char(ch))
+        }) else {
+            tracing::debug!(
+                ?action,
+                "DRM input: pen shortcut chord is not on this layout"
+            );
+            return;
+        };
+        for code in &codes {
+            self.process_keyboard_key(evdev_to_xkb(*code), true);
+        }
+        for code in codes.iter().rev() {
+            self.process_keyboard_key(evdev_to_xkb(*code), false);
         }
     }
 
@@ -2106,7 +2996,18 @@ impl DrmDispatchState {
             InputEvent::DeviceAdded { mut device } => {
                 self.configure_device(&mut device);
                 self.remember_touch_output_binding(&device);
+                self.push(BackendEvent::InputDeviceAdded {
+                    id: device.id(),
+                    capabilities: device_input_capabilities(&device),
+                });
+                if device.has_capability(smithay::reexports::input::DeviceCapability::TabletPad) {
+                    if let Some(pads) = self.tablets.pads.as_mut() {
+                        pads.add(&device);
+                    }
+                    self.push(BackendEvent::TabletPadAdded(pad_description(&device)));
+                }
                 self.devices.push(device);
+                self.publish_input_snapshot();
             }
             InputEvent::DeviceRemoved { device } => {
                 tracing::info!(device = device.name(), "DRM input: device removed");
@@ -2116,6 +3017,8 @@ impl DrmDispatchState {
                 self.key_repeat.cancel();
                 self.slow_pending.clear();
                 if device.has_capability(smithay::reexports::input::DeviceCapability::Keyboard) {
+                    self.bounce_keys.reset();
+                    self.release_mouse_keys();
                     // A vanished keyboard cannot send the releases which
                     // clear Smithay's seat XKB state. Tell the compositor
                     // boundary to retire those keys before another device
@@ -2128,8 +3031,16 @@ impl DrmDispatchState {
                     // risking a stale device-local slot being reused.
                     self.handle_direct_touch_source_removed();
                 }
+                if device.has_capability(smithay::reexports::input::DeviceCapability::TabletPad) {
+                    self.push(BackendEvent::TabletPadRemoved(libinput_device_key(&device)));
+                }
+                if let Some(pads) = self.tablets.pads.as_mut() {
+                    pads.remove(&device);
+                }
                 self.touch_output_bindings.remove(&device.id());
+                self.push(BackendEvent::InputDeviceRemoved { id: device.id() });
                 self.devices.retain(|d| *d != device);
+                self.publish_input_snapshot();
             }
             _ => {}
         }
@@ -2155,19 +3066,34 @@ impl DrmDispatchState {
                         .map(|p| p.logical_size)
                         .collect::<Vec<_>>(),
                 );
+                if self.pointer_constraint == PointerConstraintRegion::Locked {
+                    return;
+                }
+                let previous = self.pointer;
                 let requested = (event.x_transformed(w.max(1)), event.y_transformed(h.max(1)));
                 self.set_pointer_logical(layout::clamp_to_outputs(&placements, requested));
-                let (x, y) = self.pointer;
+                let (x, y) = self.confine_pointer(previous);
                 self.push(BackendEvent::Input(cursor_moved_event(x, y)));
             }
             // Relative motion (mouse): accumulate in logical pixels, clamp to
             // the logical outputs, then present in the scene.
             InputEvent::PointerMotion { event } => {
-                let (x, y) = self.move_pointer_by((event.delta_x(), event.delta_y()));
                 self.push(BackendEvent::RelativePointerMotion {
                     dx: event.delta_x(),
                     dy: event.delta_y(),
+                    dx_unaccel: event.delta_x_unaccel(),
+                    dy_unaccel: event.delta_y_unaccel(),
+                    time_usec: event.time(),
                 });
+                // A locked pointer stays put; a confined one slides along
+                // its region's edge. Relative motion above is reported
+                // either way — that is what a game reads.
+                if self.pointer_constraint == PointerConstraintRegion::Locked {
+                    return;
+                }
+                let previous = self.pointer;
+                self.move_pointer_by((event.delta_x(), event.delta_y()));
+                let (x, y) = self.confine_pointer(previous);
                 self.push(BackendEvent::Input(cursor_moved_event(x, y)));
             }
             InputEvent::PointerButton { event } => {
@@ -2180,8 +3106,11 @@ impl DrmDispatchState {
                 }
             }
             InputEvent::PointerAxis { event } => {
-                let dx = event.amount(Axis::Horizontal).unwrap_or(0.0);
-                let dy = event.amount(Axis::Vertical).unwrap_or(0.0);
+                // The user's scroll speed scales wheel and finger scrolling
+                // alike, before either becomes a line or pixel delta.
+                let speed = self.input.scroll_speed;
+                let dx = event.amount(Axis::Horizontal).unwrap_or(0.0) * speed;
+                let dy = event.amount(Axis::Vertical).unwrap_or(0.0) * speed;
                 // Keep finger/continuous scrolling in pixel units. Converting
                 // it to line deltas quantises short touchpad movements and
                 // makes kinetic scrolling look laggy; only a wheel has a
@@ -2457,6 +3386,8 @@ pub struct DrmRuntime {
     pub scanouts: Vec<ScanoutEntry>,
     /// Receiving end of the reconfiguration channel — held here while the backend owns the scanouts inline; moved into the presenter along with them by [`super::Backend::take_presenter`].
     pub commands: Option<Receiver<ScanoutCommand>>,
+    /// Sending end of the signalling reports, travelling with the scanouts.
+    pub signal_reports: Option<Sender<SignalReport>>,
     /// Bounded watchdog for unconfirmed display changes. It lives in the
     /// compositor rather than Settings so closing/crashing the app cannot
     /// strand the session on a blank mode.
@@ -2483,10 +3414,88 @@ pub struct ScanoutEntry {
     /// Permanent failure for this output generation. Cleared only when a
     /// lifecycle/topology boundary makes reprobe meaningful.
     pub direct_unavailable: Option<String>,
+    /// HDR direct targets could not be made; HDR uses the readback path.
+    pub hdr_direct_unavailable: Option<String>,
+    /// HDR could not be driven at all; the output fell back to SDR.
+    pub hdr_failure: Option<settings_store::hardware::HdrUnavailable>,
+    /// An output-power client switched this panel off. It is neither
+    /// painted nor lit by a session wake until switched back on.
+    pub powered_off: bool,
+    /// Signalling status last reported to the loop thread.
+    pub signal_reported: OutputSignalStatus,
     pub scanout: DrmScanout,
 }
 
 impl ScanoutEntry {
+    /// The signalling facts this output would report now.
+    pub fn signal_status(&self) -> OutputSignalStatus {
+        OutputSignalStatus {
+            adaptive_sync_rejected: self.scanout.adaptive_sync_rejected(),
+            hdr_active: self.scanout.hdr_active(),
+            hdr_failure: self.hdr_failure,
+        }
+    }
+
+    /// HDR is requested and has not failed on this output.
+    pub fn hdr_wanted(&self) -> bool {
+        self.scanout.hdr_request().is_some() && self.hdr_failure.is_none()
+    }
+
+    /// Adopt the loop thread's HDR request. Direct targets in the wrong
+    /// format are released first, after the CRTC is back on the dumb front.
+    pub fn set_hdr_request(&mut self, request: Option<HdrRequest>) {
+        if self
+            .direct_targets
+            .as_ref()
+            .is_some_and(|targets| targets.format().is_hdr() != request.is_some())
+        {
+            self.scanout.restore_legacy_front();
+            self.direct_targets = None;
+        }
+        if request.is_some() {
+            self.hdr_direct_unavailable = None;
+        }
+        self.scanout.set_hdr_request(request);
+    }
+
+    /// HDR could not be shown: return to 8-bit SDR and remember why, for
+    /// Settings.
+    pub fn fail_hdr(&mut self, reason: settings_store::hardware::HdrUnavailable, detail: &str) {
+        tracing::warn!(?reason, detail, "DRM HDR failed; falling back to 8-bit SDR");
+        eprintln!(
+            "tilo compositor: DRM HDR failed output={} reason={reason:?} detail={detail:?}",
+            self.id.0,
+        );
+        if self
+            .direct_targets
+            .as_ref()
+            .is_some_and(|targets| targets.format().is_hdr())
+        {
+            self.scanout.restore_legacy_front();
+            self.direct_targets = None;
+        }
+        self.hdr_failure = Some(reason);
+        self.scanout.set_hdr_request(None);
+    }
+
+    /// Put the readback path's dumb buffers in the format HDR needs, or back
+    /// in SDR. Returns whether the readback path presents HDR now.
+    pub fn sync_hdr_readback(&mut self) -> bool {
+        if self.hdr_wanted() {
+            if !self.scanout.format().is_hdr() {
+                match self.scanout.enter_hdr_readback() {
+                    // The CRTC moved onto the 10-bit dumb pair, so direct
+                    // targets are no longer what it shows.
+                    Ok(()) => self.direct_targets = None,
+                    Err((reason, detail)) => self.fail_hdr(reason, &detail),
+                }
+            }
+        } else if self.scanout.format().is_hdr() {
+            self.scanout.leave_hdr();
+        }
+        self.scanout.format().is_hdr()
+    }
+
     pub fn set_color_profile(&mut self, profile: Option<String>) {
         if self.color_profile == profile {
             return;
@@ -2579,7 +3588,7 @@ fn bring_up_all_devices(
     // Every card must be open before configuration is selected: a connector
     // name that looked unique on card0 may collide with one on card1. This is
     // the startup counterpart to `rescan_outputs`' card-wide reconciliation.
-    let (snapshots, display_set) = configured_connectors(&cards);
+    let (snapshots, display_set) = configured_connectors(&cards, &[], None);
     let mut all_builds = Vec::new();
     for (device_id, path) in card_order {
         let Some(card) = cards.get(&device_id) else {
@@ -2691,7 +3700,17 @@ impl DrmRuntime {
     /// source today; exposing it lets the parent compositor block on the
     /// nested calloop fd when otherwise idle without delaying held keys.
     pub fn next_service_deadline(&self) -> Option<std::time::Instant> {
-        self.dispatch.key_repeat.next_deadline()
+        let repeat = self.dispatch.key_repeat.next_deadline();
+        let glide = self
+            .dispatch
+            .accessibility
+            .mouse_keys
+            .then(|| self.dispatch.mouse_keys.next_deadline())
+            .flatten();
+        match (repeat, glide) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// Acquire the session, enumerate DRM devices, attach libinput, and wire everything onto an internal calloop — returns `Err`, not a panic, matching the binary entry point's `eprintln!` + `exit(1)` contract.
@@ -2780,6 +3799,7 @@ impl DrmRuntime {
 
         // The scanout side and the loop side talk over one channel, so a reconfiguration is ordered against the frames around it.
         let (tx, rx) = channel::<ScanoutCommand>();
+        let (signal_tx, signal_rx) = channel::<SignalReport>();
         let icc_profiles = IccProfileWorker::new()?;
         icc_profiles.request_refresh();
 
@@ -2794,6 +3814,23 @@ impl DrmRuntime {
             keyboard,
         );
         dispatch.display_set = display_set;
+        dispatch.signal_reports = Some(signal_rx);
+        // Tablet pads are read from a context of their own; see `PadInput`.
+        let pads = PadInput::new(session.clone());
+        handle
+            .insert_source(
+                smithay::reexports::calloop::generic::Generic::new(
+                    pads.context.clone(),
+                    smithay::reexports::calloop::Interest::READ,
+                    smithay::reexports::calloop::Mode::Level,
+                ),
+                |_, _, state: &mut DrmDispatchState| {
+                    state.handle_pad_events();
+                    Ok(smithay::reexports::calloop::PostAction::Continue)
+                },
+            )
+            .map_err(|e| DrmBackendError::Calloop(format!("{e}")))?;
+        dispatch.tablets.pads = Some(pads);
         // Adopt the connectors already live at startup — the same path a
         // hot-plug takes — and seed the pointer/snapshot; see the helper's
         // doc comment.
@@ -2806,6 +3843,7 @@ impl DrmRuntime {
             primary_gpu,
             scanouts,
             commands: Some(rx),
+            signal_reports: Some(signal_tx),
             last_display_transaction_check: std::time::Instant::now(),
             last_icc_profile_refresh: std::time::Instant::now(),
             icc_profiles,
@@ -2849,6 +3887,22 @@ impl DrmRuntime {
             .command(ScanoutCommand::SetPointerImage(image));
     }
 
+    pub fn set_pointer_constraint(
+        &mut self,
+        constraint: crate::compositor::backend::PointerConstraintRegion,
+    ) {
+        self.dispatch.pointer_constraint = constraint;
+    }
+
+    /// Place the pointer at global `(x, y)` (clamped to the outputs) and
+    /// tell the compositor, as if it had moved there.
+    pub fn warp_pointer(&mut self, x: f64, y: f64) {
+        let dispatch = &mut self.dispatch;
+        dispatch.set_pointer_scene((x, y));
+        let (x, y) = dispatch.pointer;
+        dispatch.push(BackendEvent::Input(cursor_moved_event(x, y)));
+    }
+
     pub fn cancel_touch(&mut self) {
         self.dispatch.handle_direct_touch_cancel();
     }
@@ -2858,6 +3912,13 @@ impl DrmRuntime {
     ///
     /// Devices appearing later pick up new settings from their
     /// `DeviceAdded`; already-attached ones are re-configured here from the dispatch state's handles, so a pointer-speed change is felt on the touchpad the user is holding, not the next one plugged in.
+    /// Switch the physical keyboard to input source `index` at once.
+    pub fn set_keyboard_source(&mut self, index: usize) {
+        if let Some(keyboard) = self.dispatch.keyboard.as_mut() {
+            keyboard.set_active_layout(index);
+        }
+    }
+
     pub fn reload_input_settings(&mut self) {
         let input = InputSettings::load();
         let keyboard_settings = KeyboardSettings::load();
@@ -2865,7 +3926,17 @@ impl DrmRuntime {
         let accessibility = AccessibilityInputSettings::load();
         self.dispatch.input = input;
         self.dispatch.key_repeat.cancel();
-        if let Some(keyboard) = KeyboardXkb::from_settings(&keyboard_settings) {
+        if let Some(keyboard) = self
+            .dispatch
+            .keyboard
+            .as_mut()
+            .filter(|keyboard| keyboard.compiles_to_same_keymap(&keyboard_settings))
+        {
+            // Only the active source moved (the input-source chord persists
+            // its choice): switch groups without a recompile, which would
+            // forget the modifiers the person is still holding.
+            keyboard.set_active_layout(keyboard_settings.active_index);
+        } else if let Some(keyboard) = KeyboardXkb::from_settings(&keyboard_settings) {
             self.dispatch.keyboard = Some(keyboard);
             self.dispatch.slow_pending.clear();
             self.dispatch.physical_modifiers = ModifiersState::empty();
@@ -2887,6 +3958,7 @@ impl DrmRuntime {
             );
         }
         self.dispatch.accessibility = accessibility;
+        self.dispatch.tablets.reload();
         if accessibility.effective_cursor_size() != previous_cursor_size {
             self.dispatch.command(ScanoutCommand::SetCursorSize(
                 accessibility.effective_cursor_size(),
@@ -2899,15 +3971,17 @@ impl DrmRuntime {
         if !accessibility.slow_keys {
             self.dispatch.slow_pending.clear();
         }
+        if !accessibility.bounce_keys {
+            self.dispatch.bounce_keys.reset();
+        }
+        if !accessibility.mouse_keys {
+            self.dispatch.release_mouse_keys();
+        }
         self.dispatch.gestures.set_config(GestureConfig {
             natural_scroll: input.natural_scroll_for(true),
             ..GestureConfig::default()
         });
-        let mut devices = std::mem::take(&mut self.dispatch.devices);
-        for device in &mut devices {
-            self.dispatch.configure_device(device);
-        }
-        self.dispatch.devices = devices;
+        input_config::reconfigure_all(&self.dispatch.input, &mut self.dispatch.devices);
         let scale_override = load_display_scale_override();
         if scale_override != self.dispatch.scale_override {
             self.dispatch.scale_override = scale_override;
@@ -2943,6 +4017,9 @@ impl DrmRuntime {
     /// connector, and doing that periodically on this input-thread path can
     /// stall pointer and keyboard dispatch for seconds on real hardware.
     pub fn poll_display_transaction(&mut self) {
+        if self.dispatch.drain_signal_reports() {
+            self.dispatch.publish_display_snapshot();
+        }
         let now = std::time::Instant::now();
         if now.duration_since(self.last_display_transaction_check)
             < std::time::Duration::from_millis(250)
@@ -2994,11 +4071,17 @@ impl DrmRuntime {
         }
         match transaction.state {
             DisplayTransactionState::Requested => {
-                let descriptors: Vec<_> =
-                    display_capabilities(&self.dispatch.cards, &self.dispatch.color_profiles)
-                        .into_iter()
-                        .map(|output| output.descriptor)
-                        .collect();
+                let descriptors: Vec<_> = display_capabilities(
+                    &self.dispatch.cards,
+                    &self.dispatch.live,
+                    &self.dispatch.display_set,
+                    &self.dispatch.color_profiles,
+                    &self.dispatch.signal_status,
+                    self.dispatch.scale_override,
+                )
+                .into_iter()
+                .map(|output| output.descriptor)
+                .collect();
                 if descriptors.is_empty() {
                     transaction.state = DisplayTransactionState::Rejected;
                     transaction.message =
@@ -3056,6 +4139,62 @@ impl DrmRuntime {
         }
     }
 
+    /// Every attached connector as output-management heads: the cached
+    /// capability snapshot joined with the outputs being driven and the
+    /// effective intent for the ones that are off.
+    pub fn output_heads(&self) -> Vec<crate::compositor::output_heads::OutputHead> {
+        let live: Vec<crate::compositor::output_heads::LiveHead> = self
+            .dispatch
+            .live
+            .iter()
+            .filter_map(|entry| {
+                let output = self.dispatch.output_meta.get(&entry.id)?;
+                Some(crate::compositor::output_heads::LiveHead {
+                    key: entry.config_key.clone(),
+                    output: output.clone(),
+                    physical_size_mm: entry.physical_mm,
+                })
+            })
+            .collect();
+        crate::compositor::output_heads::heads_from_capabilities(
+            &self.dispatch.display_capabilities,
+            &settings_store::hardware::DisplayConfig::load_effective(&self.dispatch.display_set),
+            &live,
+        )
+    }
+
+    /// Turn the built-in panel to follow the device. Touch input follows
+    /// automatically: it is mapped through each live output's transform.
+    pub fn set_device_rotation(
+        &mut self,
+        rotation: Option<settings_store::hardware::OutputTransform>,
+    ) {
+        if self.dispatch.device_rotation == rotation {
+            return;
+        }
+        self.dispatch.device_rotation = rotation;
+        self.dispatch.relayout_outputs();
+        self.dispatch.command(ScanoutCommand::Reconfigure {
+            remove: Vec::new(),
+            add: Vec::new(),
+            outputs: self.dispatch.output_table(),
+            removal_ack: None,
+        });
+        self.dispatch.outputs_changed = true;
+        self.dispatch.push(BackendEvent::OutputsChanged);
+        self.dispatch.push(BackendEvent::Redraw);
+    }
+
+    /// Ask the scanout owner to switch one panel off or on.
+    pub fn set_fullscreen_output(&mut self, output: Option<OutputId>) {
+        self.dispatch.set_fullscreen_output(output);
+    }
+
+    pub fn set_output_power(&self, output: OutputId, on: bool) {
+        self.dispatch
+            .command(ScanoutCommand::SetOutputPower { output, on });
+    }
+
     /// Drain pending events from the internal calloop — non-blocking, a zero timeout so the outer compositor loop owns the cadence.
     pub fn dispatch_pending(&mut self) {
         use std::time::Duration;
@@ -3067,8 +4206,9 @@ impl DrmRuntime {
             self.dispatch
                 .rescan_outputs("udev card re-added after teardown");
         }
-        self.dispatch
-            .pump_keyboard_repeat(std::time::Instant::now());
+        let now = std::time::Instant::now();
+        self.dispatch.pump_keyboard_repeat(now);
+        self.dispatch.pump_mouse_keys(now);
     }
 
     /// Test-only seam: construct a `DrmRuntime`-shaped dispatch state with the given output set already populated, used by `super::mod` tests to verify `DrmBackend::outputs()` without real hardware.
@@ -3092,6 +4232,181 @@ impl DrmRuntime {
 
 /// Ask one libinput device what it can be configured to do — every
 /// question is a capability query, asked before setting to keep the path free of error returns for settings a device never accepted.
+/// libinput half of [`input_config::ConfigurableDevice`].
+///
+/// Every failure is ignored: libinput errors on an unsupported setting, and
+/// [`input_config::plan_for`]'s capability gates already avoid asking —
+/// anything left is a driver quirk that must not take the session down.
+impl input_config::ConfigurableDevice for smithay::reexports::input::Device {
+    fn caps(&self) -> DeviceCaps {
+        device_caps(self)
+    }
+
+    fn apply(&mut self, plan: &input_config::DevicePlan) {
+        if let Some(on) = plan.tap {
+            let _ = self.config_tap_set_enabled(on);
+        }
+        if let Some(on) = plan.tap_drag {
+            let _ = self.config_tap_set_drag_enabled(on);
+        }
+        if let Some(on) = plan.tap_drag_lock {
+            let _ = self.config_tap_set_drag_lock_enabled(on);
+        }
+        if let Some(on) = plan.natural_scroll {
+            let _ = self.config_scroll_set_natural_scroll_enabled(on);
+        }
+        if let Some(on) = plan.disable_while_typing {
+            let _ = self.config_dwt_set_enabled(on);
+        }
+        if let Some(on) = plan.middle_emulation {
+            let _ = self.config_middle_emulation_set_enabled(on);
+        }
+        if let Some(speed) = plan.accel_speed() {
+            let _ = self.config_accel_set_speed(speed);
+        }
+        if let Some(on) = plan.left_handed {
+            let _ = self.config_left_handed_set(on);
+        }
+        if let Some(mode) = plan.send_events {
+            use smithay::reexports::input::SendEventsMode;
+            let _ = self.config_send_events_set_mode(match mode {
+                input_config::SendEvents::Enabled => SendEventsMode::ENABLED,
+                input_config::SendEvents::Disabled => SendEventsMode::DISABLED,
+                input_config::SendEvents::DisabledOnExternalMouse => {
+                    SendEventsMode::DISABLED_ON_EXTERNAL_MOUSE
+                }
+            });
+        }
+        if let Some(flat) = plan.flat_acceleration {
+            use smithay::reexports::input::AccelProfile;
+            let _ = self.config_accel_set_profile(if flat {
+                AccelProfile::Flat
+            } else {
+                AccelProfile::Adaptive
+            });
+        }
+        if let Some(method) = plan.click_method {
+            use smithay::reexports::input::ClickMethod;
+            let _ = self.config_click_set_method(match method {
+                input_config::ClickMethod::ButtonAreas => ClickMethod::ButtonAreas,
+                input_config::ClickMethod::Clickfinger => ClickMethod::Clickfinger,
+            });
+        }
+        if let Some(method) = plan.scroll_method {
+            use smithay::reexports::input::ScrollMethod;
+            let _ = self.config_scroll_set_method(match method {
+                input_config::ScrollMethod::TwoFinger => ScrollMethod::TwoFinger,
+                input_config::ScrollMethod::Edge => ScrollMethod::Edge,
+            });
+        }
+    }
+}
+
+/// The identity input settings are keyed by, for a libinput device.
+fn libinput_device_key(device: &smithay::reexports::input::Device) -> String {
+    settings_store::hardware::input_device_key(
+        device.id_vendor(),
+        device.id_product(),
+        device.name(),
+    )
+}
+
+/// libinput reports evdev keycodes; xkb numbers the same keys eight higher.
+fn evdev_to_xkb(code: u32) -> xkb::Keycode {
+    xkb::Keycode::new(code.saturating_add(8))
+}
+
+/// One attached device as Settings sees it.
+fn input_device_snapshot(
+    device: &smithay::reexports::input::Device,
+) -> settings_store::hardware::InputDeviceSnapshot {
+    let caps = device_caps(device);
+    let mut snapshot = settings_store::hardware::InputDeviceSnapshot {
+        key: libinput_device_key(device),
+        name: device.name().to_string(),
+        kind: caps.kind(),
+        ..Default::default()
+    };
+    if caps.is_tablet_pad {
+        let pad = pad_description(device);
+        snapshot.pad_buttons = pad.buttons;
+        let modes_of = |control: &dyn Fn(&crate::compositor::backend::PadGroup) -> bool| {
+            pad.groups
+                .iter()
+                .find(|group| control(group))
+                .map_or(1, |group| group.modes.max(1))
+        };
+        snapshot.pad_rings = (0..pad_count(device.tablet_pad_number_of_rings()))
+            .map(|ring| modes_of(&|group| group.rings.contains(&ring)))
+            .collect();
+        snapshot.pad_strips = (0..pad_count(device.tablet_pad_number_of_strips()))
+            .map(|strip| modes_of(&|group| group.strips.contains(&strip)))
+            .collect();
+        snapshot.pad_mode_buttons = pad_mode_buttons(device);
+    }
+    snapshot
+}
+
+/// A libinput count, which is negative for a device that is not a pad.
+fn pad_count(count: i32) -> u32 {
+    u32::try_from(count).unwrap_or(0)
+}
+
+/// A pad's buttons, rings and strips, grouped by the mode groups libinput
+/// reports for it.
+fn pad_description(
+    device: &smithay::reexports::input::Device,
+) -> crate::compositor::backend::PadDescription {
+    let buttons = pad_count(device.tablet_pad_number_of_buttons());
+    let rings = pad_count(device.tablet_pad_number_of_rings());
+    let strips = pad_count(device.tablet_pad_number_of_strips());
+    let groups = (0..pad_count(device.tablet_pad_number_of_mode_groups()))
+        .filter_map(|index| device.tablet_pad_mode_group(index))
+        .map(|group| crate::compositor::backend::PadGroup {
+            buttons: (0..buttons).filter(|b| group.has_button(*b)).collect(),
+            mode_buttons: (0..buttons)
+                .filter(|b| group.button_is_toggle(*b))
+                .collect(),
+            rings: (0..rings).filter(|r| group.has_ring(*r)).collect(),
+            strips: (0..strips).filter(|s| group.has_strip(*s)).collect(),
+            modes: group.number_of_modes(),
+        })
+        .collect();
+    let dirs: Vec<PathBuf> = crate::compositor::pad_layout::LIBWACOM_DIRS
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+    let layout = crate::compositor::pad_layout::find_layout(
+        &dirs,
+        (device.id_vendor(), device.id_product()),
+        buttons,
+        rings,
+        strips,
+    );
+    crate::compositor::backend::PadDescription {
+        key: libinput_device_key(device),
+        device: crate::compositor::backend::TabletDevice {
+            name: device.name().to_string(),
+            usb_id: Some((device.id_vendor(), device.id_product())),
+            syspath: InputDevice::syspath(device),
+        },
+        buttons,
+        groups,
+        layout,
+    }
+}
+
+/// The pad buttons that switch their group's mode.
+fn pad_mode_buttons(device: &smithay::reexports::input::Device) -> Vec<u32> {
+    let buttons = pad_count(device.tablet_pad_number_of_buttons());
+    let groups: Vec<_> = (0..pad_count(device.tablet_pad_number_of_mode_groups()))
+        .filter_map(|index| device.tablet_pad_mode_group(index))
+        .collect();
+    (0..buttons)
+        .filter(|button| groups.iter().any(|group| group.button_is_toggle(*button)))
+        .collect()
+}
+
 fn device_caps(device: &smithay::reexports::input::Device) -> DeviceCaps {
     DeviceCaps {
         supports_tap: device.config_tap_finger_count() > 0,
@@ -3104,6 +4419,36 @@ fn device_caps(device: &smithay::reexports::input::Device) -> DeviceCaps {
         supports_flat_acceleration: device
             .config_accel_profiles()
             .contains(&smithay::reexports::input::AccelProfile::Flat),
+        supports_click_areas: device
+            .config_click_methods()
+            .contains(&smithay::reexports::input::ClickMethod::ButtonAreas),
+        supports_clickfinger: device
+            .config_click_methods()
+            .contains(&smithay::reexports::input::ClickMethod::Clickfinger),
+        default_click_method: match device.config_click_default_method() {
+            Some(smithay::reexports::input::ClickMethod::ButtonAreas) => {
+                Some(input_config::ClickMethod::ButtonAreas)
+            }
+            Some(smithay::reexports::input::ClickMethod::Clickfinger) => {
+                Some(input_config::ClickMethod::Clickfinger)
+            }
+            _ => None,
+        },
+        supports_two_finger_scroll: device
+            .config_scroll_methods()
+            .contains(&smithay::reexports::input::ScrollMethod::TwoFinger),
+        supports_disable_on_external_mouse: device
+            .config_send_events_modes()
+            .contains(smithay::reexports::input::SendEventsMode::DISABLED_ON_EXTERNAL_MOUSE),
+        supports_edge_scroll: device
+            .config_scroll_methods()
+            .contains(&smithay::reexports::input::ScrollMethod::Edge),
+        is_keyboard: device.has_capability(smithay::reexports::input::DeviceCapability::Keyboard),
+        is_touch: device.has_capability(smithay::reexports::input::DeviceCapability::Touch),
+        is_tablet_tool: device
+            .has_capability(smithay::reexports::input::DeviceCapability::TabletTool),
+        is_tablet_pad: device
+            .has_capability(smithay::reexports::input::DeviceCapability::TabletPad),
     }
 }
 
@@ -3270,6 +4615,31 @@ fn touch_input_event(slot: u32, x: f64, y: f64, phase: TouchPhase) -> WindowEven
     })
 }
 
+/// What a libinput device contributes to the session's input availability.
+///
+/// Power buttons, lid switches and video-bus hotkeys all claim the keyboard
+/// capability; only a device that can type letters counts as a keyboard, or
+/// every tablet would appear to have one. A drawing tablet steers the pointer.
+fn device_input_capabilities(device: &smithay::reexports::input::Device) -> ui::InputAvailability {
+    use smithay::reexports::input::DeviceCapability;
+    const KEY_A: u32 = 30;
+    let mut capabilities = ui::InputAvailability::NONE;
+    if device.has_capability(DeviceCapability::Keyboard)
+        && device.keyboard_has_key(KEY_A).unwrap_or(false)
+    {
+        capabilities = capabilities.with(ui::InputDevice::Keyboard);
+    }
+    if device.has_capability(DeviceCapability::Pointer)
+        || device.has_capability(DeviceCapability::TabletTool)
+    {
+        capabilities = capabilities.with(ui::InputDevice::Pointer);
+    }
+    if device.has_capability(DeviceCapability::Touch) {
+        capabilities = capabilities.with(ui::InputDevice::Touch);
+    }
+    capabilities
+}
+
 /// Build a `WindowEvent::MouseInput`.
 fn mouse_input_event(state: ElementState, button: MouseButton) -> WindowEvent {
     WindowEvent::MouseInput {
@@ -3331,6 +4701,10 @@ pub struct KeyboardXkb {
     state: xkb::State,
     /// Last modifier mask we emitted — we only push `ModifiersChanged` when it actually flips, matching winit's behaviour.
     mods: ModifiersState,
+    /// The layouts, variants and options this keymap was compiled from, so
+    /// a settings reload that only moves the active source switches groups
+    /// instead of recompiling and dropping held modifiers.
+    compiled: (String, String, Option<String>),
 }
 
 /// What translating one key event yields: an optional `KeyboardInput` (absent for keys with no logical mapping, e.g. bare modifiers) and an optional `ModifiersChanged` (present only when the mask flips).
@@ -3373,11 +4747,61 @@ impl KeyboardXkb {
             keymap,
             state,
             mods: ModifiersState::empty(),
+            compiled: Self::keymap_names(settings),
         })
+    }
+
+    fn keymap_names(settings: &KeyboardSettings) -> (String, String, Option<String>) {
+        (
+            settings.layouts.clone(),
+            settings.variants.clone(),
+            settings.options.clone(),
+        )
+    }
+
+    /// Whether `settings` compile to exactly this keymap.
+    fn compiles_to_same_keymap(&self, settings: &KeyboardSettings) -> bool {
+        self.compiled == Self::keymap_names(settings)
+    }
+
+    /// Switch to input source `index`, keeping every held and locked
+    /// modifier. An index past the configured sources is ignored.
+    pub fn set_active_layout(&mut self, index: usize) {
+        let Ok(group) = u32::try_from(index) else {
+            return;
+        };
+        if group >= self.keymap.num_layouts() {
+            return;
+        }
+        let depressed = self.state.serialize_mods(xkb::STATE_MODS_DEPRESSED);
+        let latched = self.state.serialize_mods(xkb::STATE_MODS_LATCHED);
+        let locked = self.state.serialize_mods(xkb::STATE_MODS_LOCKED);
+        let _ = self
+            .state
+            .update_mask(depressed, latched, locked, 0, 0, group);
+    }
+
+    /// The active input source, counting from 0.
+    pub fn active_layout(&self) -> usize {
+        usize::try_from(self.state.serialize_layout(xkb::STATE_LAYOUT_EFFECTIVE)).unwrap_or(0)
     }
 
     fn key_repeats(&self, keycode: xkb::Keycode) -> bool {
         self.keymap.key_repeats(keycode)
+    }
+
+    /// The evdev keycode that types `ch` without modifiers on the active
+    /// layout, if any key does.
+    fn keycode_for_char(&self, ch: char) -> Option<u32> {
+        let wanted = xkb::utf32_to_keysym(u32::from(ch.to_ascii_lowercase()));
+        let layout = self.state.serialize_layout(xkb::STATE_LAYOUT_EFFECTIVE);
+        (self.keymap.min_keycode().raw()..=self.keymap.max_keycode().raw())
+            .find(|raw| {
+                self.keymap
+                    .key_get_syms_by_level(xkb::Keycode::new(*raw), layout, 0)
+                    .contains(&wanted)
+            })
+            .map(|raw| raw.saturating_sub(8))
     }
 
     /// Forget keys and modifiers which may have been released while input
@@ -3779,155 +5203,174 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_state_starts_empty() {
-        let s = DrmDispatchState::default();
-        assert!(s.events.is_empty());
-        assert!(s.outputs.is_empty());
-        assert!(s.output_meta.is_empty());
-    }
-
-    #[test]
-    fn push_appends_event() {
-        let mut s = DrmDispatchState::default();
-        // `BackendEvent::Input` carries the actual `WindowEvent`; synthesise a minimal CursorMoved so the variant constructs.
-        let fake = winit::event::WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(0.0, 0.0),
-        };
-        s.push(BackendEvent::Input(fake));
-        s.push(BackendEvent::Redraw);
-        assert_eq!(s.events.len(), 2);
-        assert!(matches!(s.events[0], BackendEvent::Input(_)));
-        assert!(matches!(s.events[1], BackendEvent::Redraw));
-    }
-
-    #[test]
-    fn enumerate_connectors_returns_empty_when_no_devices() {
-        let mut session = StubSession {
-            seat_name: "seat0".into(),
-        };
-        let conns = enumerate_connectors(&mut session, &[]);
-        assert!(
-            conns.is_empty(),
-            "no card nodes → no connectors (got {} entries)",
-            conns.len()
-        );
-    }
-
-    #[test]
-    fn enumerate_connectors_skips_devices_that_fail_to_open() {
-        // The stub session refuses every open(), so even with paths supplied, we must end up with zero connectors and a warn-log, not a panic.
-        let mut session = StubSession {
-            seat_name: "seat0".into(),
-        };
-        let conns = enumerate_connectors(
-            &mut session,
-            &[
-                PathBuf::from("/dev/dri/card0"),
-                PathBuf::from("/dev/dri/card1"),
-            ],
-        );
-        assert!(
-            conns.is_empty(),
-            "failed-to-open devices must be skipped, not crash"
-        );
+    fn dispatch_state_and_connector_enumeration() {
+        // Phase `dispatch_state_starts_empty`.
+        {
+            let s = DrmDispatchState::default();
+            assert!(s.events.is_empty());
+            assert!(s.outputs.is_empty());
+            assert!(s.output_meta.is_empty());
+        }
+        // Phase `push_appends_event`.
+        {
+            let mut s = DrmDispatchState::default();
+            // `BackendEvent::Input` carries the actual `WindowEvent`; synthesise a minimal CursorMoved so the variant constructs.
+            let fake = winit::event::WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(0.0, 0.0),
+            };
+            s.push(BackendEvent::Input(fake));
+            s.push(BackendEvent::Redraw);
+            assert_eq!(s.events.len(), 2);
+            assert!(matches!(s.events[0], BackendEvent::Input(_)));
+            assert!(matches!(s.events[1], BackendEvent::Redraw));
+        }
+        // Phase `enumerate_connectors_returns_empty_when_no_devices`.
+        {
+            let mut session = StubSession {
+                seat_name: "seat0".into(),
+            };
+            let conns = enumerate_connectors(&mut session, &[]);
+            assert!(
+                conns.is_empty(),
+                "no card nodes → no connectors (got {} entries)",
+                conns.len()
+            );
+        }
+        // Phase `enumerate_connectors_skips_devices_that_fail_to_open`.
+        {
+            // The stub session refuses every open(), so even with paths supplied, we must end up with zero connectors and a warn-log, not a panic.
+            let mut session = StubSession {
+                seat_name: "seat0".into(),
+            };
+            let conns = enumerate_connectors(
+                &mut session,
+                &[
+                    PathBuf::from("/dev/dri/card0"),
+                    PathBuf::from("/dev/dri/card1"),
+                ],
+            );
+            assert!(
+                conns.is_empty(),
+                "failed-to-open devices must be skipped, not crash"
+            );
+        }
     }
 
     // Keyboard: xkb keycode → winit key translation
 
-    /// Pure mapping: named special keys and printable characters resolve to the winit `Key` the chrome matches on — no real keymap needed, mirroring the `preferred_mode`/pointer-helper tests.
     #[test]
-    fn keysym_mapping_named_and_character() {
-        use smithay::input::keyboard::keysyms as ks;
-        assert!(matches!(
-            keysym_to_winit_key(ks::KEY_Return),
-            Key::Named(NamedKey::Enter)
-        ));
-        assert!(matches!(
-            keysym_to_winit_key(ks::KEY_Escape),
-            Key::Named(NamedKey::Escape)
-        ));
-        assert!(matches!(
-            keysym_to_winit_key(ks::KEY_Tab),
-            Key::Named(NamedKey::Tab)
-        ));
-        assert!(matches!(
-            keysym_to_winit_key(ks::KEY_BackSpace),
-            Key::Named(NamedKey::Backspace)
-        ));
-        assert!(matches!(
-            keysym_to_winit_key(ks::KEY_Left),
-            Key::Named(NamedKey::ArrowLeft)
-        ));
-        assert!(matches!(
-            keysym_to_winit_key(ks::KEY_space),
-            Key::Named(NamedKey::Space)
-        ));
-        assert_eq!(
-            keysym_to_winit_key(ks::KEY_Print),
-            Key::Named(NamedKey::PrintScreen)
-        );
-        // Letter keysyms carry case from the keysym itself (US 'a' vs 'A').
-        match keysym_to_winit_key(ks::KEY_a) {
-            Key::Character(s) => assert_eq!(s.as_str(), "a"),
-            other => panic!("KEY_a mapped to {other:?}"),
-        }
-        match keysym_to_winit_key(ks::KEY_A) {
-            Key::Character(s) => assert_eq!(s.as_str(), "A"),
-            other => panic!("KEY_A mapped to {other:?}"),
-        }
-        assert_eq!(
-            keysym_to_winit_key(ks::KEY_Control_L),
-            Key::Named(NamedKey::Control)
-        );
-        assert_eq!(
-            keysym_to_winit_key(ks::KEY_Shift_L),
-            Key::Named(NamedKey::Shift)
-        );
-        assert_eq!(keysym_to_winit_key(ks::KEY_F11), Key::Named(NamedKey::F11));
-        assert_eq!(
-            keysym_to_winit_key(ks::KEY_Caps_Lock),
-            Key::Named(NamedKey::CapsLock)
-        );
-        assert_eq!(
-            keysym_to_winit_key(ks::KEY_Multi_key),
-            Key::Named(NamedKey::Compose)
-        );
-        assert_eq!(
-            keysym_to_winit_key(ks::KEY_ISO_Level3_Shift),
-            Key::Named(NamedKey::AltGraph)
-        );
-        assert!(matches!(
-            keysym_to_winit_key(0xffff_0bad),
-            Key::Unidentified(NativeKey::Xkb(0xffff_0bad))
-        ));
-    }
-
-    /// The function row has to survive the keysym translation — these keysyms have no character, so anything not in this table falls through `key_char()` and is dropped before a handler runs.
-    #[test]
-    fn media_and_brightness_keysyms_reach_a_named_key() {
-        use smithay::input::keyboard::keysyms as ks;
-        for (raw, want) in [
-            (ks::KEY_XF86AudioRaiseVolume, NamedKey::AudioVolumeUp),
-            (ks::KEY_XF86AudioLowerVolume, NamedKey::AudioVolumeDown),
-            (ks::KEY_XF86AudioMute, NamedKey::AudioVolumeMute),
-            (ks::KEY_XF86AudioMicMute, NamedKey::MicrophoneVolumeMute),
-            (ks::KEY_XF86MonBrightnessUp, NamedKey::BrightnessUp),
-            (ks::KEY_XF86MonBrightnessDown, NamedKey::BrightnessDown),
-            (ks::KEY_XF86AudioPlay, NamedKey::MediaPlayPause),
-            (ks::KEY_XF86AudioNext, NamedKey::MediaTrackNext),
-            (ks::KEY_XF86AudioPrev, NamedKey::MediaTrackPrevious),
-            (ks::KEY_XF86AudioStop, NamedKey::MediaStop),
-            (ks::KEY_XF86Sleep, NamedKey::Standby),
-            (ks::KEY_XF86Suspend, NamedKey::Standby),
-            (ks::KEY_XF86Standby, NamedKey::Standby),
-            (ks::KEY_XF86Calculator, NamedKey::LaunchApplication2),
-        ] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn keysyms_map_to_named_keys_and_modifier_aware_text() {
+        // Phase `keysym_mapping_named_and_character`.
+        // Pure mapping: named special keys and printable characters resolve to the winit `Key` the chrome matches on — no real keymap needed, mirroring the `preferred_mode`/pointer-helper tests.
+        {
+            use smithay::input::keyboard::keysyms as ks;
+            assert!(matches!(
+                keysym_to_winit_key(ks::KEY_Return),
+                Key::Named(NamedKey::Enter)
+            ));
+            assert!(matches!(
+                keysym_to_winit_key(ks::KEY_Escape),
+                Key::Named(NamedKey::Escape)
+            ));
+            assert!(matches!(
+                keysym_to_winit_key(ks::KEY_Tab),
+                Key::Named(NamedKey::Tab)
+            ));
+            assert!(matches!(
+                keysym_to_winit_key(ks::KEY_BackSpace),
+                Key::Named(NamedKey::Backspace)
+            ));
+            assert!(matches!(
+                keysym_to_winit_key(ks::KEY_Left),
+                Key::Named(NamedKey::ArrowLeft)
+            ));
+            assert!(matches!(
+                keysym_to_winit_key(ks::KEY_space),
+                Key::Named(NamedKey::Space)
+            ));
             assert_eq!(
-                keysym_to_winit_key(raw),
-                Key::Named(want),
-                "keysym {raw:#x} must map to {want:?}"
+                keysym_to_winit_key(ks::KEY_Print),
+                Key::Named(NamedKey::PrintScreen)
             );
+            // Letter keysyms carry case from the keysym itself (US 'a' vs 'A').
+            match keysym_to_winit_key(ks::KEY_a) {
+                Key::Character(s) => assert_eq!(s.as_str(), "a"),
+                other => panic!("KEY_a mapped to {other:?}"),
+            }
+            match keysym_to_winit_key(ks::KEY_A) {
+                Key::Character(s) => assert_eq!(s.as_str(), "A"),
+                other => panic!("KEY_A mapped to {other:?}"),
+            }
+            assert_eq!(
+                keysym_to_winit_key(ks::KEY_Control_L),
+                Key::Named(NamedKey::Control)
+            );
+            assert_eq!(
+                keysym_to_winit_key(ks::KEY_Shift_L),
+                Key::Named(NamedKey::Shift)
+            );
+            assert_eq!(keysym_to_winit_key(ks::KEY_F11), Key::Named(NamedKey::F11));
+            assert_eq!(
+                keysym_to_winit_key(ks::KEY_Caps_Lock),
+                Key::Named(NamedKey::CapsLock)
+            );
+            assert_eq!(
+                keysym_to_winit_key(ks::KEY_Multi_key),
+                Key::Named(NamedKey::Compose)
+            );
+            assert_eq!(
+                keysym_to_winit_key(ks::KEY_ISO_Level3_Shift),
+                Key::Named(NamedKey::AltGraph)
+            );
+            assert!(matches!(
+                keysym_to_winit_key(0xffff_0bad),
+                Key::Unidentified(NativeKey::Xkb(0xffff_0bad))
+            ));
+        }
+        // Phase `media_and_brightness_keysyms_reach_a_named_key`.
+        // The function row has to survive the keysym translation — these keysyms have no character, so anything not in this table falls through `key_char()` and is dropped before a handler runs.
+        {
+            use smithay::input::keyboard::keysyms as ks;
+            for (raw, want) in [
+                (ks::KEY_XF86AudioRaiseVolume, NamedKey::AudioVolumeUp),
+                (ks::KEY_XF86AudioLowerVolume, NamedKey::AudioVolumeDown),
+                (ks::KEY_XF86AudioMute, NamedKey::AudioVolumeMute),
+                (ks::KEY_XF86AudioMicMute, NamedKey::MicrophoneVolumeMute),
+                (ks::KEY_XF86MonBrightnessUp, NamedKey::BrightnessUp),
+                (ks::KEY_XF86MonBrightnessDown, NamedKey::BrightnessDown),
+                (ks::KEY_XF86AudioPlay, NamedKey::MediaPlayPause),
+                (ks::KEY_XF86AudioNext, NamedKey::MediaTrackNext),
+                (ks::KEY_XF86AudioPrev, NamedKey::MediaTrackPrevious),
+                (ks::KEY_XF86AudioStop, NamedKey::MediaStop),
+                (ks::KEY_XF86Sleep, NamedKey::Standby),
+                (ks::KEY_XF86Suspend, NamedKey::Standby),
+                (ks::KEY_XF86Standby, NamedKey::Standby),
+                (ks::KEY_XF86Calculator, NamedKey::LaunchApplication2),
+            ] {
+                assert_eq!(
+                    keysym_to_winit_key(raw),
+                    Key::Named(want),
+                    "keysym {raw:#x} must map to {want:?}"
+                );
+            }
+        }
+        // Phase `text_for_respects_modifiers_and_control_chars`.
+        // Text is produced for plain printable keys, suppressed under Ctrl (chords) and for control characters.
+        {
+            let none = ModifiersState::empty();
+            let ctrl = ModifiersState::CONTROL;
+            assert_eq!(text_for(Some('a'), none).as_deref(), Some("a"));
+            assert_eq!(text_for(Some('A'), none).as_deref(), Some("A"));
+            // Ctrl held → no typed text (Ctrl+K must not insert a glyph).
+            assert_eq!(text_for(Some('a'), ctrl), None);
+            // ESC (0x1b) is a control char and never becomes text.
+            assert_eq!(text_for(Some('\u{1b}'), none), None);
+            assert_eq!(text_for(None, none), None);
         }
     }
 
@@ -3977,312 +5420,333 @@ mod tests {
         }
     }
 
-    /// Text is produced for plain printable keys, suppressed under Ctrl (chords) and for control characters.
     #[test]
-    fn text_for_respects_modifiers_and_control_chars() {
-        let none = ModifiersState::empty();
-        let ctrl = ModifiersState::CONTROL;
-        assert_eq!(text_for(Some('a'), none).as_deref(), Some("a"));
-        assert_eq!(text_for(Some('A'), none).as_deref(), Some("A"));
-        // Ctrl held → no typed text (Ctrl+K must not insert a glyph).
-        assert_eq!(text_for(Some('a'), ctrl), None);
-        // ESC (0x1b) is a control char and never becomes text.
-        assert_eq!(text_for(Some('\u{1b}'), none), None);
-        assert_eq!(text_for(None, none), None);
-    }
-
-    /// End-to-end through a real keymap: pressing/releasing Left Shift flips the modifier mask — layout-independent; soft-skips if no xkb data installed.
-    #[test]
-    fn xkb_left_shift_toggles_modifier_mask() {
-        let Some(mut kbd) = KeyboardXkb::from_settings(&test_keyboard_settings()) else {
-            eprintln!("xkb keymap unavailable (no xkeyboard-config?); skipping");
-            return;
-        };
-        // evdev KEY_LEFTSHIFT (42) + 8 = xkb keycode 50.
-        let shift = xkb::Keycode::new(50);
-        let down = kbd.process(shift, true);
-        let m = down
-            .modifiers_changed
-            .expect("shift press should flip the modifier mask");
-        assert!(m.state().shift_key(), "left shift down -> shift active");
-        let WindowEvent::KeyboardInput { event, .. } = down.input.expect("modifier key input")
-        else {
-            panic!("expected keyboard input")
-        };
-        assert_eq!(event.logical_key, Key::Named(NamedKey::Shift));
-        assert_eq!(event.physical_key.to_scancode(), Some(42));
-
-        let up = kbd.process(shift, false);
-        let m = up
-            .modifiers_changed
-            .expect("shift release should flip the modifier mask");
-        assert!(!m.state().shift_key(), "left shift up -> shift cleared");
-    }
-
-    #[test]
-    fn xkb_shift_event_itself_is_named_and_following_text_is_shifted() {
-        let Some(mut kbd) = KeyboardXkb::from_settings(&test_keyboard_settings()) else {
-            eprintln!("xkb keymap unavailable; skipping");
-            return;
-        };
-        let down = kbd.process(xkb::Keycode::new(50), true);
-        let WindowEvent::KeyboardInput { event, .. } = down.input.expect("shift input") else {
-            panic!("expected keyboard input")
-        };
-        assert_eq!(event.logical_key, Key::Named(NamedKey::Shift));
-
-        let letter = kbd.process(xkb::Keycode::new(38), true);
-        let WindowEvent::KeyboardInput { event, .. } = letter.input.expect("letter input") else {
-            panic!("expected keyboard input")
-        };
-        assert_eq!(event.logical_key, Key::Character("A".into()));
-        assert_eq!(event.text.as_deref(), Some("A"));
-    }
-
-    /// End-to-end: an alpha-row keycode yields a `Character` `KeyboardInput` carrying text — QWERTY 'a' is a letter on every Latin layout, so layout-independent; soft-skips without xkb data.
-    #[test]
-    fn xkb_alpha_key_produces_character_input() {
-        let Some(mut kbd) = KeyboardXkb::from_settings(&test_keyboard_settings()) else {
-            eprintln!("xkb keymap unavailable; skipping");
-            return;
-        };
-        // evdev KEY_A (30) + 8 = 38.
-        let key_a = xkb::Keycode::new(38);
-        let out = kbd.process(key_a, true);
-        let input = out
-            .input
-            .expect("alpha key down should yield a KeyboardInput");
-        match input {
-            WindowEvent::KeyboardInput { event, .. } => {
-                assert!(
-                    matches!(event.logical_key, Key::Character(_)),
-                    "alpha key should map to a Character logical key, got {:?}",
-                    event.logical_key
-                );
-                assert_eq!(event.state, ElementState::Pressed);
-                assert!(event.text.is_some(), "typed alpha key carries text");
-                assert_eq!(event.physical_key.to_scancode(), Some(30));
-            }
-            other => panic!("expected KeyboardInput, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn xkb_uses_the_persisted_active_group_without_reordering_sources() {
-        let settings = KeyboardSettings {
-            source_ids: vec!["us".into(), "de".into()],
-            layouts: "us,de".into(),
-            variants: ",".into(),
-            options: Some("grp:alt_shift_toggle".into()),
-            active_index: 1,
-        };
-        let Some(mut keyboard) = KeyboardXkb::from_settings(&settings) else {
-            eprintln!("xkb keymap unavailable; skipping");
-            return;
-        };
-        // AD06 is Y in US and Z in German.
-        let output = keyboard.process(xkb::Keycode::new(29), true);
-        let WindowEvent::KeyboardInput { event, .. } = output.input.expect("key input") else {
-            panic!("expected keyboard input")
-        };
-        assert_eq!(event.logical_key, Key::Character("z".into()));
-        assert_eq!(event.physical_key.to_scancode(), Some(21));
-    }
-
-    /// Exercise the exact German symbols and Shift handling that failed in
-    /// Electron/Xwayland during the host-session trial. This runs through the
-    /// production xkb translator using physical evdev positions, not a
-    /// pre-translated character fixture.
-    #[test]
-    fn german_xkb_shift_and_punctuation_keep_physical_positions() {
-        let settings = KeyboardSettings {
-            source_ids: vec!["de".into()],
-            layouts: "de".into(),
-            variants: String::new(),
-            options: None,
-            active_index: 0,
-        };
-        let Some(mut keyboard) = KeyboardXkb::from_settings(&settings) else {
-            eprintln!("German xkb keymap unavailable; skipping");
-            return;
-        };
-        let character = |outcome: KeyOutcome| {
-            let WindowEvent::KeyboardInput { event, .. } = outcome.input.expect("key input") else {
+    fn xkb_shift_state_tracks_modifier_events_and_character_input() {
+        // Phase `xkb_left_shift_toggles_modifier_mask`.
+        // End-to-end through a real keymap: pressing/releasing Left Shift flips the modifier mask — layout-independent; soft-skips if no xkb data installed.
+        fn xkb_left_shift_toggles_modifier_mask() {
+            let Some(mut kbd) = KeyboardXkb::from_settings(&test_keyboard_settings()) else {
+                eprintln!("xkb keymap unavailable (no xkeyboard-config?); skipping");
+                return;
+            };
+            // evdev KEY_LEFTSHIFT (42) + 8 = xkb keycode 50.
+            let shift = xkb::Keycode::new(50);
+            let down = kbd.process(shift, true);
+            let m = down
+                .modifiers_changed
+                .expect("shift press should flip the modifier mask");
+            assert!(m.state().shift_key(), "left shift down -> shift active");
+            let WindowEvent::KeyboardInput { event, .. } = down.input.expect("modifier key input")
+            else {
                 panic!("expected keyboard input")
             };
-            let Key::Character(value) = event.logical_key else {
-                panic!("expected character key, got {:?}", event.logical_key)
-            };
-            (
-                value.to_string(),
-                event.text.map(|text| text.to_string()),
-                event.physical_key,
-            )
-        };
+            assert_eq!(event.logical_key, Key::Named(NamedKey::Shift));
+            assert_eq!(event.physical_key.to_scancode(), Some(42));
 
-        // German key left of Backspace: ß unshifted, ? shifted (evdev 12).
-        let eszett = xkb::Keycode::new(20);
-        let (plain, text, physical) = character(keyboard.process(eszett, true));
-        assert_eq!((plain.as_str(), text.as_deref()), ("ß", Some("ß")));
-        assert_eq!(physical.to_scancode(), Some(12));
-        let _ = keyboard.process(eszett, false);
-
-        let shift = xkb::Keycode::new(50); // evdev KEY_LEFTSHIFT + 8
-        let down = keyboard.process(shift, true);
-        assert!(
-            down.modifiers_changed
-                .expect("Shift must update modifiers")
-                .state()
-                .shift_key()
-        );
-        let (question, text, physical) = character(keyboard.process(eszett, true));
-        assert_eq!((question.as_str(), text.as_deref()), ("?", Some("?")));
-        assert_eq!(physical.to_scancode(), Some(12));
-        let _ = keyboard.process(eszett, false);
-
-        // German hash/apostrophe position (evdev 43) and uppercase letter.
-        let apostrophe = xkb::Keycode::new(51);
-        let (value, text, physical) = character(keyboard.process(apostrophe, true));
-        assert_eq!((value.as_str(), text.as_deref()), ("'", Some("'")));
-        assert_eq!(physical.to_scancode(), Some(43));
-        let _ = keyboard.process(apostrophe, false);
-        let a = xkb::Keycode::new(38);
-        let (upper, text, physical) = character(keyboard.process(a, true));
-        assert_eq!((upper.as_str(), text.as_deref()), ("A", Some("A")));
-        assert_eq!(physical.to_scancode(), Some(30));
-        let _ = keyboard.process(a, false);
-        let up = keyboard.process(shift, false);
-        assert!(
-            !up.modifiers_changed
-                .expect("Shift release must update modifiers")
-                .state()
-                .shift_key()
-        );
-    }
-
-    #[test]
-    fn xkb_alt_shift_cycles_configured_sources() {
-        let settings = KeyboardSettings {
-            source_ids: vec!["us".into(), "de".into()],
-            layouts: "us,de".into(),
-            variants: ",".into(),
-            options: Some("grp:alt_shift_toggle".into()),
-            active_index: 0,
-        };
-        let Some(mut keyboard) = KeyboardXkb::from_settings(&settings) else {
-            eprintln!("xkb keymap unavailable; skipping");
-            return;
-        };
-        // evdev Left Alt 56 / Left Shift 42, each plus the XKB offset 8.
-        for (keycode, pressed) in [(64, true), (50, true), (50, false), (64, false)] {
-            let _ = keyboard.process(xkb::Keycode::new(keycode), pressed);
+            let up = kbd.process(shift, false);
+            let m = up
+                .modifiers_changed
+                .expect("shift release should flip the modifier mask");
+            assert!(!m.state().shift_key(), "left shift up -> shift cleared");
         }
-        let output = keyboard.process(xkb::Keycode::new(29), true);
-        let WindowEvent::KeyboardInput { event, .. } = output.input.expect("key input") else {
-            panic!("expected keyboard input")
-        };
-        assert_eq!(event.logical_key, Key::Character("z".into()));
-    }
-
-    #[test]
-    fn xkb_german_nodeadkeys_preserves_shifted_symbols_and_physical_codes() {
-        let settings = KeyboardSettings {
-            source_ids: vec!["de:nodeadkeys".into()],
-            layouts: "de".into(),
-            variants: "nodeadkeys".into(),
-            options: None,
-            active_index: 0,
-        };
-        let Some(mut keyboard) = KeyboardXkb::from_settings(&settings) else {
-            eprintln!("xkb keymap unavailable; skipping");
-            return;
-        };
-        // Hold the physical left Shift (evdev 42, xkb 50), then use the
-        // physical German `#` key (evdev 43) for apostrophe and the `ß` key
-        // (evdev 12) for question mark. These are the symbols that exposed
-        // the old logical-US fallback in Electron clients.
-        let _ = keyboard.process(xkb::Keycode::new(50), true);
-        let apostrophe = keyboard
-            .process(xkb::Keycode::new(51), true)
-            .input
-            .expect("German apostrophe key should produce input");
-        let question = keyboard
-            .process(xkb::Keycode::new(20), true)
-            .input
-            .expect("German question-mark key should produce input");
-        let logical_text = |event: WindowEvent| {
-            let WindowEvent::KeyboardInput { event, .. } = event else {
-                panic!("expected a keyboard input")
+        // Phase `xkb_shift_event_itself_is_named_and_following_text_is_shifted`.
+        fn xkb_shift_event_itself_is_named_and_following_text_is_shifted() {
+            let Some(mut kbd) = KeyboardXkb::from_settings(&test_keyboard_settings()) else {
+                eprintln!("xkb keymap unavailable; skipping");
+                return;
             };
-            (
-                event.logical_key,
-                event.text,
-                event.physical_key.to_scancode(),
-            )
-        };
-        assert_eq!(
-            logical_text(apostrophe),
-            (Key::Character("'".into()), Some("'".into()), Some(43))
-        );
-        assert_eq!(
-            logical_text(question),
-            (Key::Character("?".into()), Some("?".into()), Some(12))
-        );
+            let down = kbd.process(xkb::Keycode::new(50), true);
+            let WindowEvent::KeyboardInput { event, .. } = down.input.expect("shift input") else {
+                panic!("expected keyboard input")
+            };
+            assert_eq!(event.logical_key, Key::Named(NamedKey::Shift));
+
+            let letter = kbd.process(xkb::Keycode::new(38), true);
+            let WindowEvent::KeyboardInput { event, .. } = letter.input.expect("letter input")
+            else {
+                panic!("expected keyboard input")
+            };
+            assert_eq!(event.logical_key, Key::Character("A".into()));
+            assert_eq!(event.text.as_deref(), Some("A"));
+        }
+        // Phase `xkb_alpha_key_produces_character_input`.
+        // End-to-end: an alpha-row keycode yields a `Character` `KeyboardInput` carrying text — QWERTY 'a' is a letter on every Latin layout, so layout-independent; soft-skips without xkb data.
+        fn xkb_alpha_key_produces_character_input() {
+            let Some(mut kbd) = KeyboardXkb::from_settings(&test_keyboard_settings()) else {
+                eprintln!("xkb keymap unavailable; skipping");
+                return;
+            };
+            // evdev KEY_A (30) + 8 = 38.
+            let key_a = xkb::Keycode::new(38);
+            let out = kbd.process(key_a, true);
+            let input = out
+                .input
+                .expect("alpha key down should yield a KeyboardInput");
+            match input {
+                WindowEvent::KeyboardInput { event, .. } => {
+                    assert!(
+                        matches!(event.logical_key, Key::Character(_)),
+                        "alpha key should map to a Character logical key, got {:?}",
+                        event.logical_key
+                    );
+                    assert_eq!(event.state, ElementState::Pressed);
+                    assert!(event.text.is_some(), "typed alpha key carries text");
+                    assert_eq!(event.physical_key.to_scancode(), Some(30));
+                }
+                other => panic!("expected KeyboardInput, got {other:?}"),
+            }
+        }
+        // Phase `xkb_left_shift_toggles_modifier_mask` (defined above).
+        xkb_left_shift_toggles_modifier_mask();
+        // Phase `xkb_shift_event_itself_is_named_and_following_text_is_shifted` (defined above).
+        xkb_shift_event_itself_is_named_and_following_text_is_shifted();
+        // Phase `xkb_alpha_key_produces_character_input` (defined above).
+        xkb_alpha_key_produces_character_input();
     }
 
     #[test]
-    fn german_altgr_produces_text_without_becoming_a_shell_alt_chord() {
-        let settings = KeyboardSettings {
-            source_ids: vec!["de:nodeadkeys".into()],
-            layouts: "de".into(),
-            variants: "nodeadkeys".into(),
-            options: None,
-            active_index: 0,
-        };
-        let Some(mut keyboard) = KeyboardXkb::from_settings(&settings) else {
-            eprintln!("German xkb keymap unavailable; skipping");
-            return;
-        };
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn xkb_layout_sources_and_german_symbols_keep_physical_positions() {
+        // Phase `xkb_uses_the_persisted_active_group_without_reordering_sources`.
+        fn xkb_uses_the_persisted_active_group_without_reordering_sources() {
+            let settings = KeyboardSettings {
+                source_ids: vec!["us".into(), "de".into()],
+                layouts: "us,de".into(),
+                variants: ",".into(),
+                options: None,
+                active_index: 1,
+            };
+            let Some(mut keyboard) = KeyboardXkb::from_settings(&settings) else {
+                eprintln!("xkb keymap unavailable; skipping");
+                return;
+            };
+            // AD06 is Y in US and Z in German.
+            let output = keyboard.process(xkb::Keycode::new(29), true);
+            let WindowEvent::KeyboardInput { event, .. } = output.input.expect("key input") else {
+                panic!("expected keyboard input")
+            };
+            assert_eq!(event.logical_key, Key::Character("z".into()));
+            assert_eq!(event.physical_key.to_scancode(), Some(21));
+        }
+        // Phase `german_xkb_shift_and_punctuation_keep_physical_positions`.
+        // Exercise the exact German symbols and Shift handling that failed in
+        // Electron/Xwayland during the host-session trial. This runs through the
+        // production xkb translator using physical evdev positions, not a
+        // pre-translated character fixture.
+        fn german_xkb_shift_and_punctuation_keep_physical_positions() {
+            let settings = KeyboardSettings {
+                source_ids: vec!["de".into()],
+                layouts: "de".into(),
+                variants: String::new(),
+                options: None,
+                active_index: 0,
+            };
+            let Some(mut keyboard) = KeyboardXkb::from_settings(&settings) else {
+                eprintln!("German xkb keymap unavailable; skipping");
+                return;
+            };
+            let character = |outcome: KeyOutcome| {
+                let WindowEvent::KeyboardInput { event, .. } = outcome.input.expect("key input")
+                else {
+                    panic!("expected keyboard input")
+                };
+                let Key::Character(value) = event.logical_key else {
+                    panic!("expected character key, got {:?}", event.logical_key)
+                };
+                (
+                    value.to_string(),
+                    event.text.map(|text| text.to_string()),
+                    event.physical_key,
+                )
+            };
 
-        // Right Alt is ISO_Level3_Shift in the German map. It must select
-        // level three for Q → @ without being represented as the ordinary
-        // Alt modifier used by shell shortcuts such as Alt+Tab/Alt+F4.
-        let altgr = xkb::Keycode::new(100 + 8);
-        let down = keyboard.process(altgr, true);
-        let WindowEvent::KeyboardInput { event, .. } = down.input.expect("AltGr key input") else {
-            panic!("expected keyboard input")
-        };
-        assert_eq!(event.logical_key, Key::Named(NamedKey::AltGraph));
-        assert!(
-            down.modifiers_changed.is_none(),
-            "AltGr is a level selector, not the shell's Alt modifier"
-        );
+            // German key left of Backspace: ß unshifted, ? shifted (evdev 12).
+            let eszett = xkb::Keycode::new(20);
+            let (plain, text, physical) = character(keyboard.process(eszett, true));
+            assert_eq!((plain.as_str(), text.as_deref()), ("ß", Some("ß")));
+            assert_eq!(physical.to_scancode(), Some(12));
+            let _ = keyboard.process(eszett, false);
 
-        let q = keyboard.process(xkb::Keycode::new(16 + 8), true);
-        let WindowEvent::KeyboardInput { event, .. } = q.input.expect("AltGr+Q input") else {
-            panic!("expected keyboard input")
-        };
-        assert_eq!(event.logical_key, Key::Character("@".into()));
-        assert_eq!(event.text.as_deref(), Some("@"));
-        assert_eq!(event.physical_key.to_scancode(), Some(16));
+            let shift = xkb::Keycode::new(50); // evdev KEY_LEFTSHIFT + 8
+            let down = keyboard.process(shift, true);
+            assert!(
+                down.modifiers_changed
+                    .expect("Shift must update modifiers")
+                    .state()
+                    .shift_key()
+            );
+            let (question, text, physical) = character(keyboard.process(eszett, true));
+            assert_eq!((question.as_str(), text.as_deref()), ("?", Some("?")));
+            assert_eq!(physical.to_scancode(), Some(12));
+            let _ = keyboard.process(eszett, false);
+
+            // German hash/apostrophe position (evdev 43) and uppercase letter.
+            let apostrophe = xkb::Keycode::new(51);
+            let (value, text, physical) = character(keyboard.process(apostrophe, true));
+            assert_eq!((value.as_str(), text.as_deref()), ("'", Some("'")));
+            assert_eq!(physical.to_scancode(), Some(43));
+            let _ = keyboard.process(apostrophe, false);
+            let a = xkb::Keycode::new(38);
+            let (upper, text, physical) = character(keyboard.process(a, true));
+            assert_eq!((upper.as_str(), text.as_deref()), ("A", Some("A")));
+            assert_eq!(physical.to_scancode(), Some(30));
+            let _ = keyboard.process(a, false);
+            let up = keyboard.process(shift, false);
+            assert!(
+                !up.modifiers_changed
+                    .expect("Shift release must update modifiers")
+                    .state()
+                    .shift_key()
+            );
+        }
+        // Phase `switching_the_active_source_keeps_held_modifiers`.
+        fn switching_the_active_source_keeps_held_modifiers() {
+            let settings = KeyboardSettings {
+                source_ids: vec!["us".into(), "de".into()],
+                layouts: "us,de".into(),
+                variants: ",".into(),
+                options: None,
+                active_index: 0,
+            };
+            let Some(mut keyboard) = KeyboardXkb::from_settings(&settings) else {
+                eprintln!("xkb keymap unavailable; skipping");
+                return;
+            };
+            // Hold Left Super (evdev 125 + XKB offset 8), as the chord does.
+            let _ = keyboard.process(xkb::Keycode::new(133), true);
+            keyboard.set_active_layout(1);
+            assert_eq!(keyboard.active_layout(), 1);
+            assert!(
+                keyboard.current_mods().super_key(),
+                "the chord's own modifier survives the switch"
+            );
+            let _ = keyboard.process(xkb::Keycode::new(133), false);
+            // AD06 is Y in US and Z in German.
+            let output = keyboard.process(xkb::Keycode::new(29), true);
+            let WindowEvent::KeyboardInput { event, .. } = output.input.expect("key input") else {
+                panic!("expected keyboard input")
+            };
+            assert_eq!(event.logical_key, Key::Character("z".into()));
+
+            keyboard.set_active_layout(7);
+            assert_eq!(keyboard.active_layout(), 1, "an unknown source is ignored");
+            assert!(keyboard.compiles_to_same_keymap(&KeyboardSettings {
+                active_index: 0,
+                ..settings
+            }));
+        }
+        // Phase `xkb_german_nodeadkeys_preserves_shifted_symbols_and_physical_codes`.
+        fn xkb_german_nodeadkeys_preserves_shifted_symbols_and_physical_codes() {
+            let settings = KeyboardSettings {
+                source_ids: vec!["de:nodeadkeys".into()],
+                layouts: "de".into(),
+                variants: "nodeadkeys".into(),
+                options: None,
+                active_index: 0,
+            };
+            let Some(mut keyboard) = KeyboardXkb::from_settings(&settings) else {
+                eprintln!("xkb keymap unavailable; skipping");
+                return;
+            };
+            // Hold the physical left Shift (evdev 42, xkb 50), then use the
+            // physical German `#` key (evdev 43) for apostrophe and the `ß` key
+            // (evdev 12) for question mark. These are the symbols that exposed
+            // the old logical-US fallback in Electron clients.
+            let _ = keyboard.process(xkb::Keycode::new(50), true);
+            let apostrophe = keyboard
+                .process(xkb::Keycode::new(51), true)
+                .input
+                .expect("German apostrophe key should produce input");
+            let question = keyboard
+                .process(xkb::Keycode::new(20), true)
+                .input
+                .expect("German question-mark key should produce input");
+            let logical_text = |event: WindowEvent| {
+                let WindowEvent::KeyboardInput { event, .. } = event else {
+                    panic!("expected a keyboard input")
+                };
+                (
+                    event.logical_key,
+                    event.text,
+                    event.physical_key.to_scancode(),
+                )
+            };
+            assert_eq!(
+                logical_text(apostrophe),
+                (Key::Character("'".into()), Some("'".into()), Some(43))
+            );
+            assert_eq!(
+                logical_text(question),
+                (Key::Character("?".into()), Some("?".into()), Some(12))
+            );
+        }
+        // Phase `german_altgr_produces_text_without_becoming_a_shell_alt_chord`.
+        fn german_altgr_produces_text_without_becoming_a_shell_alt_chord() {
+            let settings = KeyboardSettings {
+                source_ids: vec!["de:nodeadkeys".into()],
+                layouts: "de".into(),
+                variants: "nodeadkeys".into(),
+                options: None,
+                active_index: 0,
+            };
+            let Some(mut keyboard) = KeyboardXkb::from_settings(&settings) else {
+                eprintln!("German xkb keymap unavailable; skipping");
+                return;
+            };
+
+            // Right Alt is ISO_Level3_Shift in the German map. It must select
+            // level three for Q → @ without being represented as the ordinary
+            // Alt modifier used by shell shortcuts such as Alt+Tab/Alt+F4.
+            let altgr = xkb::Keycode::new(100 + 8);
+            let down = keyboard.process(altgr, true);
+            let WindowEvent::KeyboardInput { event, .. } = down.input.expect("AltGr key input")
+            else {
+                panic!("expected keyboard input")
+            };
+            assert_eq!(event.logical_key, Key::Named(NamedKey::AltGraph));
+            assert!(
+                down.modifiers_changed.is_none(),
+                "AltGr is a level selector, not the shell's Alt modifier"
+            );
+
+            let q = keyboard.process(xkb::Keycode::new(16 + 8), true);
+            let WindowEvent::KeyboardInput { event, .. } = q.input.expect("AltGr+Q input") else {
+                panic!("expected keyboard input")
+            };
+            assert_eq!(event.logical_key, Key::Character("@".into()));
+            assert_eq!(event.text.as_deref(), Some("@"));
+            assert_eq!(event.physical_key.to_scancode(), Some(16));
+        }
+        // Phase `xkb_uses_the_persisted_active_group_without_reordering_sources` (defined above).
+        xkb_uses_the_persisted_active_group_without_reordering_sources();
+        // Phase `german_xkb_shift_and_punctuation_keep_physical_positions` (defined above).
+        german_xkb_shift_and_punctuation_keep_physical_positions();
+        // Phase `switching_the_active_source_keeps_held_modifiers` (defined above).
+        switching_the_active_source_keeps_held_modifiers();
+        // Phase `xkb_german_nodeadkeys_preserves_shifted_symbols_and_physical_codes` (defined above).
+        xkb_german_nodeadkeys_preserves_shifted_symbols_and_physical_codes();
+        // Phase `german_altgr_produces_text_without_becoming_a_shell_alt_chord` (defined above).
+        german_altgr_produces_text_without_becoming_a_shell_alt_chord();
     }
 
     #[test]
-    fn side_by_side_layout_single_output_at_origin() {
-        // The single-output case must place the one output at (0, 0).
-        let positions = side_by_side_layout(&[(1920, 1080)]);
-        assert_eq!(positions, vec![(0, 0)]);
-    }
-
-    #[test]
-    fn side_by_side_layout_places_outputs_left_to_right() {
-        // Each output's x is the sum of prior widths; y stays 0.
-        let positions = side_by_side_layout(&[(1920, 1080), (1280, 1024), (2560, 1440)]);
-        assert_eq!(positions, vec![(0, 0), (1920, 0), (3200, 0)]);
-    }
-
-    #[test]
-    fn side_by_side_layout_empty_is_empty() {
+    fn side_by_side_layout_packs_outputs_left_to_right() {
+        // Phase `side_by_side_layout_single_output_at_origin`.
+        {
+            // The single-output case must place the one output at (0, 0).
+            let positions = side_by_side_layout(&[(1920, 1080)]);
+            assert_eq!(positions, vec![(0, 0)]);
+        }
+        // Phase `side_by_side_layout_places_outputs_left_to_right`.
+        {
+            // Each output's x is the sum of prior widths; y stays 0.
+            let positions = side_by_side_layout(&[(1920, 1080), (1280, 1024), (2560, 1440)]);
+            assert_eq!(positions, vec![(0, 0), (1920, 0), (3200, 0)]);
+        }
+        // Phase `side_by_side_layout_empty_is_empty`.
         assert!(side_by_side_layout(&[]).is_empty());
     }
 
@@ -4303,139 +5767,142 @@ mod tests {
     }
 
     #[test]
-    fn touchscreen_output_binding_routes_panel_corners_without_crossing_monitors() {
-        use settings_store::hardware::OutputTransform::Normal;
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn touchscreen_binding_follows_the_named_output_and_calibration() {
+        // Phase `touchscreen_output_binding_routes_panel_corners_without_crossing_monitors`.
+        {
+            use settings_store::hardware::OutputTransform::Normal;
 
-        // eDP-1's right edge is adjacent to HDMI-A-1, which is the precise
-        // layout that exposed a panel spanning the combined desktop.
-        let outputs = [
-            touch_geometry("eDP-1", "eDP-1", (0, 0), (1920, 1080), Normal),
-            touch_geometry("HDMI-A-1", "HDMI-A-1", (1920, 0), (2560, 1440), Normal),
-        ];
-        let panel = touch_output_for_name(outputs, Some("eDP-1")).expect("bound panel");
+            // eDP-1's right edge is adjacent to HDMI-A-1, which is the precise
+            // layout that exposed a panel spanning the combined desktop.
+            let outputs = [
+                touch_geometry("eDP-1", "eDP-1", (0, 0), (1920, 1080), Normal),
+                touch_geometry("HDMI-A-1", "HDMI-A-1", (1920, 0), (2560, 1440), Normal),
+            ];
+            let panel = touch_output_for_name(outputs, Some("eDP-1")).expect("bound panel");
 
-        assert_eq!(calibrate_touch_position(panel, 0.0, 0.0), (0.0, 0.0));
-        assert_eq!(
-            calibrate_touch_position(panel, 1.0, 1.0),
-            (1919.0, 1079.0),
-            "the panel corner remains inside eDP-1, not on HDMI's first pixel"
-        );
-        assert_eq!(calibrate_touch_position(panel, 0.5, 0.5), (959.5, 539.5));
-    }
+            assert_eq!(calibrate_touch_position(panel, 0.0, 0.0), (0.0, 0.0));
+            assert_eq!(
+                calibrate_touch_position(panel, 1.0, 1.0),
+                (1919.0, 1079.0),
+                "the panel corner remains inside eDP-1, not on HDMI's first pixel"
+            );
+            assert_eq!(calibrate_touch_position(panel, 0.5, 0.5), (959.5, 539.5));
+        }
+        // Phase `touchscreen_binding_uses_the_named_output_in_a_nontrivial_layout`.
+        {
+            use settings_store::hardware::OutputTransform::Normal;
 
-    #[test]
-    fn touchscreen_binding_uses_the_named_output_in_a_nontrivial_layout() {
-        use settings_store::hardware::OutputTransform::Normal;
+            let outputs = [
+                touch_geometry("eDP-1", "eDP-1", (0, 360), (1920, 1080), Normal),
+                touch_geometry("DP-1", "DP-1", (1920, 0), (2560, 1440), Normal),
+            ];
+            let dock_touch = touch_output_for_name(outputs, Some("DP-1")).expect("bound dock");
 
-        let outputs = [
-            touch_geometry("eDP-1", "eDP-1", (0, 360), (1920, 1080), Normal),
-            touch_geometry("DP-1", "DP-1", (1920, 0), (2560, 1440), Normal),
-        ];
-        let dock_touch = touch_output_for_name(outputs, Some("DP-1")).expect("bound dock");
+            assert_eq!(
+                calibrate_touch_position(dock_touch, 0.0, 0.0),
+                (1920.0, 0.0)
+            );
+            assert_eq!(
+                calibrate_touch_position(dock_touch, 1.0, 1.0),
+                (4479.0, 1439.0)
+            );
+        }
+        // Phase `missing_or_hot_unplugged_touch_output_falls_back_to_current_primary`.
+        {
+            use settings_store::hardware::OutputTransform::Normal;
 
-        assert_eq!(
-            calibrate_touch_position(dock_touch, 0.0, 0.0),
-            (1920.0, 0.0)
-        );
-        assert_eq!(
-            calibrate_touch_position(dock_touch, 1.0, 1.0),
-            (4479.0, 1439.0)
-        );
-    }
-
-    #[test]
-    fn missing_or_hot_unplugged_touch_output_falls_back_to_current_primary() {
-        use settings_store::hardware::OutputTransform::Normal;
-
-        // A connected eDP touchscreen loses its named output during a
-        // hot-unplug. Resolving against the *current* layout must not retain
-        // an old output id or re-expand across a now-gone desktop extent.
-        let after_unplug = [touch_geometry(
-            "HDMI-A-1",
-            "HDMI-A-1",
-            (0, 0),
-            (2560, 1440),
-            Normal,
-        )];
-        let fallback =
-            touch_output_for_name(after_unplug, Some("eDP-1")).expect("primary fallback");
-        assert_eq!(fallback.connector_name, "HDMI-A-1");
-        assert_eq!(
-            calibrate_touch_position(fallback, 0.5, 0.5),
-            (1279.5, 719.5)
-        );
-
-        // Libinput is also allowed to report no association. It follows the
-        // same deterministic primary rule instead of the combined extent.
-        let no_metadata = [
-            touch_geometry("eDP-1", "eDP-1", (0, 0), (1920, 1080), Normal),
-            touch_geometry("HDMI-A-1", "HDMI-A-1", (1920, 0), (2560, 1440), Normal),
-        ];
-        let fallback = touch_output_for_name(no_metadata, None).expect("primary fallback");
-        assert_eq!(calibrate_touch_position(fallback, 0.5, 0.5), (959.5, 539.5));
-    }
-
-    #[test]
-    fn ambiguous_libinput_connector_name_never_picks_a_secondary_gpu_by_order() {
-        use settings_store::hardware::OutputTransform::Normal;
-
-        // The raw libinput metadata has no card/bus component. Even though
-        // the second entry happens to be an HDMI match too, it must not win
-        // merely because it was encountered last (or first after a map
-        // re-order); the configured primary is the safe fallback.
-        let outputs = [
-            touch_geometry("eDP-1", "eDP-1", (0, 0), (1920, 1080), Normal),
-            touch_geometry(
+            // A connected eDP touchscreen loses its named output during a
+            // hot-unplug. Resolving against the *current* layout must not retain
+            // an old output id or re-expand across a now-gone desktop extent.
+            let after_unplug = [touch_geometry(
                 "HDMI-A-1",
-                "pci:0000:01:00.0/HDMI-A-1",
-                (1920, 0),
+                "HDMI-A-1",
+                (0, 0),
                 (2560, 1440),
                 Normal,
-            ),
-            touch_geometry(
-                "HDMI-A-1",
-                "pci:0000:03:00.0/HDMI-A-1",
-                (4480, 0),
-                (2560, 1440),
-                Normal,
-            ),
-        ];
-        let fallback = touch_output_for_name(outputs, Some("HDMI-A-1"))
-            .expect("primary fallback for ambiguous raw connector");
-        assert_eq!(fallback.config_key, "eDP-1");
+            )];
+            let fallback =
+                touch_output_for_name(after_unplug, Some("eDP-1")).expect("primary fallback");
+            assert_eq!(fallback.connector_name, "HDMI-A-1");
+            assert_eq!(
+                calibrate_touch_position(fallback, 0.5, 0.5),
+                (1279.5, 719.5)
+            );
 
-        // A caller that can supply the compositor's qualified key is still
-        // precise; only libinput's raw legacy metadata is ambiguous.
-        let qualified = touch_output_for_name(outputs, Some("pci:0000:03:00.0/HDMI-A-1"))
-            .expect("qualified output");
-        assert_eq!(qualified.position, (4480, 0));
-    }
+            // Libinput is also allowed to report no association. It follows the
+            // same deterministic primary rule instead of the combined extent.
+            let no_metadata = [
+                touch_geometry("eDP-1", "eDP-1", (0, 0), (1920, 1080), Normal),
+                touch_geometry("HDMI-A-1", "HDMI-A-1", (1920, 0), (2560, 1440), Normal),
+            ];
+            let fallback = touch_output_for_name(no_metadata, None).expect("primary fallback");
+            assert_eq!(calibrate_touch_position(fallback, 0.5, 0.5), (959.5, 539.5));
+        }
+        // Phase `ambiguous_libinput_connector_name_never_picks_a_secondary_gpu_by_order`.
+        {
+            use settings_store::hardware::OutputTransform::Normal;
 
-    #[test]
-    fn rotated_touch_calibration_and_synthesized_pointer_share_coordinates() {
-        use settings_store::hardware::OutputTransform::Rotate90;
+            // The raw libinput metadata has no card/bus component. Even though
+            // the second entry happens to be an HDMI match too, it must not win
+            // merely because it was encountered last (or first after a map
+            // re-order); the configured primary is the safe fallback.
+            let outputs = [
+                touch_geometry("eDP-1", "eDP-1", (0, 0), (1920, 1080), Normal),
+                touch_geometry(
+                    "HDMI-A-1",
+                    "pci:0000:01:00.0/HDMI-A-1",
+                    (1920, 0),
+                    (2560, 1440),
+                    Normal,
+                ),
+                touch_geometry(
+                    "HDMI-A-1",
+                    "pci:0000:03:00.0/HDMI-A-1",
+                    (4480, 0),
+                    (2560, 1440),
+                    Normal,
+                ),
+            ];
+            let fallback = touch_output_for_name(outputs, Some("HDMI-A-1"))
+                .expect("primary fallback for ambiguous raw connector");
+            assert_eq!(fallback.config_key, "eDP-1");
 
-        let output = touch_geometry("eDP-1", "eDP-1", (100, 50), (1920, 1080), Rotate90);
-        // The physical panel's top-left maps to the post-transform logical
-        // top-right corner; this is the inverse of scanout's rotation.
-        let (x, y) = calibrate_touch_position(output, 0.0, 0.0);
-        assert_eq!((x, y), (100.0, 1969.0));
+            // A caller that can supply the compositor's qualified key is still
+            // precise; only libinput's raw legacy metadata is ambiguous.
+            let qualified = touch_output_for_name(outputs, Some("pci:0000:03:00.0/HDMI-A-1"))
+                .expect("qualified output");
+            assert_eq!(qualified.position, (4480, 0));
+        }
+        // Phase `rotated_touch_calibration_and_synthesized_pointer_share_coordinates`.
+        {
+            use settings_store::hardware::OutputTransform::Rotate90;
 
-        // The runtime feeds these exact values to both delivery paths.
-        let touch = TiloTouchEvent::Motion { slot: 4, x, y };
-        let pointer = cursor_moved_event(x, y);
-        assert_eq!(
-            touch,
-            TiloTouchEvent::Motion {
-                slot: 4,
-                x: 100.0,
-                y: 1969.0
-            }
-        );
-        let WindowEvent::CursorMoved { position, .. } = pointer else {
-            panic!("expected synthesized cursor movement")
-        };
-        assert_eq!((position.x, position.y), (x, y));
+            let output = touch_geometry("eDP-1", "eDP-1", (100, 50), (1920, 1080), Rotate90);
+            // The physical panel's top-left maps to the post-transform logical
+            // top-right corner; this is the inverse of scanout's rotation.
+            let (x, y) = calibrate_touch_position(output, 0.0, 0.0);
+            assert_eq!((x, y), (100.0, 1969.0));
+
+            // The runtime feeds these exact values to both delivery paths.
+            let touch = TiloTouchEvent::Motion { slot: 4, x, y };
+            let pointer = cursor_moved_event(x, y);
+            assert_eq!(
+                touch,
+                TiloTouchEvent::Motion {
+                    slot: 4,
+                    x: 100.0,
+                    y: 1969.0
+                }
+            );
+            let WindowEvent::CursorMoved { position, .. } = pointer else {
+                panic!("expected synthesized cursor movement")
+            };
+            assert_eq!((position.x, position.y), (x, y));
+        }
     }
 
     // Hotplug + session reconciliation, on the production methods
@@ -4469,6 +5936,12 @@ mod tests {
             connector_name: format!("TEST-{connector}"),
             config_key: format!("TEST-{connector}"),
             size,
+            mode: settings_store::hardware::OutputMode {
+                width: size.0,
+                height: size.1,
+                refresh_mhz: 60_000,
+            },
+            mode_intent: None,
             physical_mm: mm,
             monitor: None,
             // Test ids are always small literals; `saturating_add` just
@@ -4479,157 +5952,166 @@ mod tests {
             scale: 1.0,
             transform: settings_store::hardware::OutputTransform::Normal,
             refresh: None,
+            adaptive_sync_supported: false,
+            adaptive_sync_allowed: true,
+            adaptive_sync_engaged: false,
+            hdr_display: None,
+            hdr_driver_ready: false,
+            hdr_setting: None,
+            hdr_requested: None,
         }
     }
 
     #[test]
-    fn duplicate_plug_rekeys_an_unchanged_live_output_before_layout_reads_config() {
-        use settings_store::hardware::{DisplayConfig, OutputConfig, OutputMode};
+    fn connector_replug_rekeys_and_refreshes_without_scanout_work() {
+        // Phase `duplicate_plug_rekeys_an_unchanged_live_output_before_layout_reads_config`.
+        {
+            use settings_store::hardware::{DisplayConfig, OutputConfig, OutputMode};
 
-        let key = DrmOutputKey {
-            device: 11,
-            connector: 7,
-        };
-        let qualified = "pci:0000:01:00.0/HDMI-A-1";
-        let intent = OutputConfig {
-            enabled: true,
-            primary: true,
-            x: 640,
-            y: 240,
-            scale: 1.5,
-            mode: Some(OutputMode {
-                width: 2560,
-                height: 1440,
-                refresh_mhz: 120_000,
-            }),
-            mirror_of: Some("pci:0000:03:00.0/HDMI-A-1".into()),
-            ..Default::default()
-        };
-        let mut config = DisplayConfig::default();
-        config.outputs.insert(qualified.into(), intent.clone());
+            let key = DrmOutputKey {
+                device: 11,
+                connector: 7,
+            };
+            let qualified = "pci:0000:01:00.0/HDMI-A-1";
+            let intent = OutputConfig {
+                enabled: true,
+                primary: true,
+                x: 640,
+                y: 240,
+                scale: 1.5,
+                mode: Some(OutputMode {
+                    width: 2560,
+                    height: 1440,
+                    refresh_mhz: 120_000,
+                }),
+                mirror_of: Some("pci:0000:03:00.0/HDMI-A-1".into()),
+                ..Default::default()
+            };
+            let mut config = DisplayConfig::default();
+            config.outputs.insert(qualified.into(), intent.clone());
 
-        // Card A was already modeset before card B's same-named connector
-        // appeared. Its OutputId/CRTC/size stay untouched; only settings
-        // identity changes before `relayout_outputs` reads it.
-        let mut live = vec![entry_on_device(11, 4, 7, (2560, 1440), None)];
-        live[0].connector_name = "HDMI-A-1".into();
-        live[0].config_key = "HDMI-A-1".into();
-        let keys = BTreeMap::from([(key, qualified.to_string())]);
-        assert!(reconcile_live_config_keys(&mut live, &keys));
-        assert_eq!(live[0].id, OutputId(4), "no output replug/re-id");
-        assert_eq!(live[0].crtc, crtc(5), "no re-modeset required");
-        assert_eq!(live[0].config_key, qualified);
-        assert_eq!(config.output_for(&live[0].config_key), Some(&intent));
+            // Card A was already modeset before card B's same-named connector
+            // appeared. Its OutputId/CRTC/size stay untouched; only settings
+            // identity changes before `relayout_outputs` reads it.
+            let mut live = vec![entry_on_device(11, 4, 7, (2560, 1440), None)];
+            live[0].connector_name = "HDMI-A-1".into();
+            live[0].config_key = "HDMI-A-1".into();
+            let keys = BTreeMap::from([(key, qualified.to_string())]);
+            assert!(reconcile_live_config_keys(&mut live, &keys));
+            assert_eq!(live[0].id, OutputId(4), "no output replug/re-id");
+            assert_eq!(live[0].crtc, crtc(5), "no re-modeset required");
+            assert_eq!(live[0].config_key, qualified);
+            assert_eq!(config.output_for(&live[0].config_key), Some(&intent));
 
-        // The resolver retains the existing qualified key after card B is
-        // removed, so the unchanged survivor never falls back to raw intent.
-        assert!(!reconcile_live_config_keys(&mut live, &keys));
-        assert_eq!(config.output_for(&live[0].config_key), Some(&intent));
+            // The resolver retains the existing qualified key after card B is
+            // removed, so the unchanged survivor never falls back to raw intent.
+            assert!(!reconcile_live_config_keys(&mut live, &keys));
+            assert_eq!(config.output_for(&live[0].config_key), Some(&intent));
+        }
+        // Phase `disabled_connector_replug_and_removal_refresh_capabilities_without_scanout_work`.
+        {
+            let disabled = DrmOutputKey {
+                device: 12,
+                connector: 9,
+            };
+            let mut published = BTreeSet::new();
+
+            // A disabled connector is absent from `ConnectedOutput`, so there is
+            // no active plan to add/remove. Capability topology still changes and
+            // drives the Settings snapshot publication path.
+            assert!(hotplug::plan(&[], &[]).is_noop());
+            assert!(reconcile_capability_topology(
+                &mut published,
+                BTreeSet::from([disabled])
+            ));
+            assert!(published.contains(&disabled));
+            assert!(hotplug::plan(&[], &[]).is_noop());
+            assert!(reconcile_capability_topology(
+                &mut published,
+                BTreeSet::new()
+            ));
+            assert!(published.is_empty());
+        }
     }
 
     #[test]
-    fn disabled_connector_replug_and_removal_refresh_capabilities_without_scanout_work() {
-        let disabled = DrmOutputKey {
-            device: 12,
-            connector: 9,
-        };
-        let mut published = BTreeSet::new();
-
-        // A disabled connector is absent from `ConnectedOutput`, so there is
-        // no active plan to add/remove. Capability topology still changes and
-        // drives the Settings snapshot publication path.
-        assert!(hotplug::plan(&[], &[]).is_noop());
-        assert!(reconcile_capability_topology(
-            &mut published,
-            BTreeSet::from([disabled])
-        ));
-        assert!(published.contains(&disabled));
-        assert!(hotplug::plan(&[], &[]).is_noop());
-        assert!(reconcile_capability_topology(
-            &mut published,
-            BTreeSet::new()
-        ));
-        assert!(published.is_empty());
-    }
-
-    #[test]
-    fn fake_card_remove_readd_waits_for_presenter_before_closing_and_reopening_libseat() {
-        // This models an eGPU/cardN that disappears and comes back before a
-        // render frame drains its removal command.  The actual fd stays in
-        // `retiring_cards`; the pure state machine proves the required
-        // ownership order without a real seat or presenter thread.
-        let mut cards = CardLeaseLifecycle::from_active([42]);
-        assert_eq!(cards.remove_requested(42), CardLeaseAction::DetachPresenter);
-        assert_eq!(cards.add_requested(42), CardLeaseAction::DeferReadd);
-        assert_eq!(
-            cards.presenter_detached(42),
-            CardLeaseAction::CloseSessionFd,
-            "the original Session::open fd must remain owned until presenter scanouts are gone"
-        );
-        assert_eq!(
-            cards.session_close_finished(42, true),
-            CardLeaseAction::ReopenDeferred
-        );
-        cards.opened(42);
-        assert_eq!(cards.add_requested(42), CardLeaseAction::AlreadyOpen);
-    }
-
-    #[test]
-    fn fake_card_close_failure_discards_deferred_readd_until_fresh_session() {
-        let mut cards = CardLeaseLifecycle::from_active([42]);
-        assert_eq!(cards.remove_requested(42), CardLeaseAction::DetachPresenter);
-        assert_eq!(cards.add_requested(42), CardLeaseAction::DeferReadd);
-        assert_eq!(
-            cards.presenter_detached(42),
-            CardLeaseAction::CloseSessionFd
-        );
-        assert_eq!(
-            cards.session_close_finished(42, false),
-            CardLeaseAction::Noop,
-            "a failed libseat close must never reopen a possibly orphaned device"
-        );
-        assert_eq!(
-            cards.add_requested(42),
-            CardLeaseAction::BlockedByCloseFailure,
-            "only a fresh session clears a failed card close"
-        );
-    }
-
-    #[test]
-    fn duplicate_open_close_error_blocks_the_same_physical_card_after_cardn_churn() {
-        // The duplicate-open cleanup and retired-card close share this guard.
-        // A later card1/dev_t must be blocked by physical identity even
-        // though the failed duplicate was card0/dev_t 226.
-        let mut state = DrmDispatchState::default();
-        state.block_card_after_close_failure(
-            226,
-            Path::new("/dev/dri/card0"),
-            Some("sysfs-0000:03:00.0"),
-        );
-        let reenumerated_identity = "sysfs-0000:03:00.0";
-        assert!(
-            state
-                .failed_card_close_identities
-                .contains(reenumerated_identity),
-            "card1's new path/dev_t cannot bypass a failed card0 close"
-        );
-        assert_eq!(
-            state.card_leases.add_requested(226),
-            CardLeaseAction::BlockedByCloseFailure
-        );
-    }
-
-    #[test]
-    fn unidentified_close_error_blocks_all_card_adds_until_fresh_session() {
-        let mut state = DrmDispatchState::default();
-        state.block_card_after_close_failure(226, Path::new("/dev/dri/card0"), None);
-        assert!(state.unidentified_card_close_failure);
-        assert!(
-            state
-                .failed_card_close_paths
-                .contains(Path::new("/dev/dri/card0")),
-            "the original path stays diagnostic, but unknown new paths are blocked too"
-        );
+    fn card_remove_readd_and_close_errors_gate_reopening() {
+        // Phase `fake_card_remove_readd_waits_for_presenter_before_closing_and_reopening_libseat`.
+        {
+            // This models an eGPU/cardN that disappears and comes back before a
+            // render frame drains its removal command.  The actual fd stays in
+            // `retiring_cards`; the pure state machine proves the required
+            // ownership order without a real seat or presenter thread.
+            let mut cards = CardLeaseLifecycle::from_active([42]);
+            assert_eq!(cards.remove_requested(42), CardLeaseAction::DetachPresenter);
+            assert_eq!(cards.add_requested(42), CardLeaseAction::DeferReadd);
+            assert_eq!(
+                cards.presenter_detached(42),
+                CardLeaseAction::CloseSessionFd,
+                "the original Session::open fd must remain owned until presenter scanouts are gone"
+            );
+            assert_eq!(
+                cards.session_close_finished(42, true),
+                CardLeaseAction::ReopenDeferred
+            );
+            cards.opened(42);
+            assert_eq!(cards.add_requested(42), CardLeaseAction::AlreadyOpen);
+        }
+        // Phase `fake_card_close_failure_discards_deferred_readd_until_fresh_session`.
+        {
+            let mut cards = CardLeaseLifecycle::from_active([42]);
+            assert_eq!(cards.remove_requested(42), CardLeaseAction::DetachPresenter);
+            assert_eq!(cards.add_requested(42), CardLeaseAction::DeferReadd);
+            assert_eq!(
+                cards.presenter_detached(42),
+                CardLeaseAction::CloseSessionFd
+            );
+            assert_eq!(
+                cards.session_close_finished(42, false),
+                CardLeaseAction::Noop,
+                "a failed libseat close must never reopen a possibly orphaned device"
+            );
+            assert_eq!(
+                cards.add_requested(42),
+                CardLeaseAction::BlockedByCloseFailure,
+                "only a fresh session clears a failed card close"
+            );
+        }
+        // Phase `duplicate_open_close_error_blocks_the_same_physical_card_after_cardn_churn`.
+        {
+            // The duplicate-open cleanup and retired-card close share this guard.
+            // A later card1/dev_t must be blocked by physical identity even
+            // though the failed duplicate was card0/dev_t 226.
+            let mut state = DrmDispatchState::default();
+            state.block_card_after_close_failure(
+                226,
+                Path::new("/dev/dri/card0"),
+                Some("sysfs-0000:03:00.0"),
+            );
+            let reenumerated_identity = "sysfs-0000:03:00.0";
+            assert!(
+                state
+                    .failed_card_close_identities
+                    .contains(reenumerated_identity),
+                "card1's new path/dev_t cannot bypass a failed card0 close"
+            );
+            assert_eq!(
+                state.card_leases.add_requested(226),
+                CardLeaseAction::BlockedByCloseFailure
+            );
+        }
+        // Phase `unidentified_close_error_blocks_all_card_adds_until_fresh_session`.
+        {
+            let mut state = DrmDispatchState::default();
+            state.block_card_after_close_failure(226, Path::new("/dev/dri/card0"), None);
+            assert!(state.unidentified_card_close_failure);
+            assert!(
+                state
+                    .failed_card_close_paths
+                    .contains(Path::new("/dev/dri/card0")),
+                "the original path stays diagnostic, but unknown new paths are blocked too"
+            );
+        }
     }
 
     /// A dispatch state with a command channel attached, plus the receiving end so a test can assert on what was sent.
@@ -4640,6 +6122,152 @@ mod tests {
             ..Default::default()
         };
         (state, rx)
+    }
+
+    fn adaptive_sync_commands(rx: &Receiver<ScanoutCommand>) -> Vec<(u32, bool)> {
+        rx.try_iter()
+            .filter_map(|command| match command {
+                ScanoutCommand::SetAdaptiveSync { output, on } => Some((output.0, on)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn hdr_commands(rx: &Receiver<ScanoutCommand>) -> Vec<(u32, Option<f32>)> {
+        rx.try_iter()
+            .filter_map(|command| match command {
+                ScanoutCommand::SetHdr { output, request } => {
+                    Some((output.0, request.map(|request| request.sdr_white_nits)))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hdr_is_requested_only_where_sink_driver_and_setting_agree() {
+        let hdr_sink = crate::wayland::edid::HdrDisplayInfo {
+            supported_transfers: vec![
+                crate::collab::colorimetry::TransferCharacteristics::SmpteSt2084,
+            ],
+            ..crate::wayland::edid::HdrDisplayInfo::default_sdr()
+        };
+        // Phase `each_missing_piece_withholds_the_request`.
+        assert!(hdr_request_for(None, true, Some(203.0), false).is_none());
+        assert!(hdr_request_for(Some(&hdr_sink), false, Some(203.0), false).is_none());
+        assert!(hdr_request_for(Some(&hdr_sink), true, None, false).is_none());
+        assert!(hdr_request_for(Some(&hdr_sink), true, Some(203.0), true).is_none());
+        assert_eq!(
+            hdr_request_for(Some(&hdr_sink), true, Some(250.0), false)
+                .map(|request| request.sdr_white_nits),
+            Some(250.0)
+        );
+
+        let (mut state, rx) = dispatch_with_channel();
+        let mut monitor = entry(0, 10, (3840, 2160), None);
+        monitor.hdr_display = Some(hdr_sink);
+        monitor.hdr_driver_ready = true;
+        state.live = vec![monitor, entry(1, 11, (1920, 1080), None)];
+
+        // Phase `turning_hdr_on_requests_it_once_and_brightness_resends`.
+        state.reconcile_hdr();
+        assert!(hdr_commands(&rx).is_empty(), "off by default");
+        for live in &mut state.live {
+            live.hdr_setting = Some(203.0);
+        }
+        state.reconcile_hdr();
+        assert_eq!(
+            hdr_commands(&rx),
+            vec![(0, Some(203.0))],
+            "SDR sink ignored"
+        );
+        state.reconcile_hdr();
+        assert!(hdr_commands(&rx).is_empty(), "no repeat");
+        if let Some(first) = state.live.first_mut() {
+            first.hdr_setting = Some(320.0);
+        }
+        state.reconcile_hdr();
+        assert_eq!(hdr_commands(&rx), vec![(0, Some(320.0))]);
+
+        // Phase `a_failure_report_returns_the_output_to_sdr_for_good`.
+        let (report_tx, report_rx) = channel();
+        state.signal_reports = Some(report_rx);
+        report_tx
+            .send(SignalReport {
+                output: OutputId(0),
+                status: OutputSignalStatus {
+                    hdr_failure: Some(settings_store::hardware::HdrUnavailable::DriverRejected),
+                    ..OutputSignalStatus::default()
+                },
+            })
+            .expect("report channel open");
+        assert!(state.drain_signal_reports());
+        assert_eq!(hdr_commands(&rx), vec![(0, None)]);
+        state.reconcile_hdr();
+        assert!(hdr_commands(&rx).is_empty(), "not retried");
+    }
+
+    #[test]
+    fn adaptive_sync_follows_the_fullscreen_output_and_respects_refusals() {
+        let (mut state, rx) = dispatch_with_channel();
+        let mut capable = entry(0, 10, (2560, 1440), None);
+        capable.adaptive_sync_supported = true;
+        let plain = entry(1, 11, (1920, 1080), None);
+        state.live = vec![capable, plain];
+
+        // Phase `desktop_content_keeps_the_fixed_rate`.
+        state.reconcile_adaptive_sync();
+        assert!(adaptive_sync_commands(&rx).is_empty());
+        assert!(!state.adaptive_sync_engaged());
+
+        // Phase `fullscreen_on_a_capable_output_engages_it_once`.
+        state.set_fullscreen_output(Some(OutputId(0)));
+        assert_eq!(adaptive_sync_commands(&rx), vec![(0, true)]);
+        assert!(state.adaptive_sync_engaged());
+        state.set_fullscreen_output(Some(OutputId(0)));
+        assert!(adaptive_sync_commands(&rx).is_empty(), "no repeat");
+
+        // Phase `moving_fullscreen_to_an_output_without_vrr_releases_it`.
+        state.set_fullscreen_output(Some(OutputId(1)));
+        assert_eq!(adaptive_sync_commands(&rx), vec![(0, false)]);
+        assert!(!state.adaptive_sync_engaged());
+
+        // Phase `turning_it_off_in_settings_wins`.
+        if let Some(first) = state.live.first_mut() {
+            first.adaptive_sync_allowed = false;
+        }
+        state.set_fullscreen_output(Some(OutputId(0)));
+        assert!(adaptive_sync_commands(&rx).is_empty());
+
+        // Phase `a_driver_refusal_releases_and_is_not_retried`.
+        if let Some(first) = state.live.first_mut() {
+            first.adaptive_sync_allowed = true;
+        }
+        state.reconcile_adaptive_sync();
+        assert_eq!(adaptive_sync_commands(&rx), vec![(0, true)]);
+        let (report_tx, report_rx) = channel();
+        state.signal_reports = Some(report_rx);
+        report_tx
+            .send(SignalReport {
+                output: OutputId(0),
+                status: OutputSignalStatus {
+                    adaptive_sync_rejected: true,
+                    ..OutputSignalStatus::default()
+                },
+            })
+            .expect("report channel open");
+        assert!(state.drain_signal_reports());
+        assert_eq!(adaptive_sync_commands(&rx), vec![(0, false)]);
+        assert_eq!(
+            state
+                .signal_status
+                .get("TEST-10")
+                .map(|status| status.adaptive_sync_rejected),
+            Some(true)
+        );
+        state.set_fullscreen_output(None);
+        state.set_fullscreen_output(Some(OutputId(0)));
+        assert!(adaptive_sync_commands(&rx).is_empty());
     }
 
     #[derive(Clone)]
@@ -4663,161 +6291,194 @@ mod tests {
     }
 
     #[test]
-    fn session_master_transition_is_planned_for_every_retained_card() {
-        // No DRM fd or libseat session: this fake records the exact fan-out
-        // used by `perform` between PauseScanout and Resume. A one-card loop
-        // here would silently reproduce the hybrid-GPU VT/resume regression.
-        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let cards = [
-            FakeMasterCard {
+    fn drm_master_transitions_wait_for_presenter_retirement() {
+        // Phase `session_master_transition_is_planned_for_every_retained_card`.
+        {
+            // No DRM fd or libseat session: this fake records the exact fan-out
+            // used by `perform` between PauseScanout and Resume. A one-card loop
+            // here would silently reproduce the hybrid-GPU VT/resume regression.
+            let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let cards = [
+                FakeMasterCard {
+                    id: 11,
+                    calls: std::rc::Rc::clone(&calls),
+                },
+                FakeMasterCard {
+                    id: 22,
+                    calls: std::rc::Rc::clone(&calls),
+                },
+            ];
+            apply_master_action(cards.iter(), MasterAction::Release);
+            apply_master_action(cards.iter(), MasterAction::Acquire);
+            assert_eq!(
+                *calls.borrow(),
+                vec![
+                    (11, MasterAction::Release),
+                    (22, MasterAction::Release),
+                    (11, MasterAction::Acquire),
+                    (22, MasterAction::Acquire),
+                ]
+            );
+        }
+        // Phase `vt_pause_after_card_remove_releases_retiring_master_before_presenter_ack`.
+        {
+            // Card 22 was removed from the active map, but its presenter
+            // scanout/fd has not acknowledged teardown yet. Dropping master on
+            // only card 11 would leave the old KMS lease alive across the VT
+            // handoff. Resume acquires only active card 11; card 22 is closing.
+            let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let active = [FakeMasterCard {
                 id: 11,
                 calls: std::rc::Rc::clone(&calls),
-            },
-            FakeMasterCard {
+            }];
+            let retiring = [FakeMasterCard {
                 id: 22,
                 calls: std::rc::Rc::clone(&calls),
-            },
-        ];
-        apply_master_action(cards.iter(), MasterAction::Release);
-        apply_master_action(cards.iter(), MasterAction::Acquire);
-        assert_eq!(
-            *calls.borrow(),
-            vec![
-                (11, MasterAction::Release),
-                (22, MasterAction::Release),
-                (11, MasterAction::Acquire),
-                (22, MasterAction::Acquire),
-            ]
-        );
+            }];
+            release_masters_for_pause(active.iter(), retiring.iter());
+            apply_master_action(active.iter(), MasterAction::Acquire);
+            assert_eq!(
+                *calls.borrow(),
+                vec![
+                    (11, MasterAction::Release),
+                    (22, MasterAction::Release),
+                    (11, MasterAction::Acquire),
+                ]
+            );
+        }
+        // Phase `dropping_master_waits_for_an_in_flight_present_to_retire`.
+        {
+            // The presenter and the libseat callback run on different threads in
+            // production. A queued Pause alone is insufficient: the callback
+            // must wait for a frame that already entered KMS before releasing
+            // DRM master, or the kernel can reject that flip with EACCES.
+            let gate = Arc::new(Mutex::new(()));
+            let in_flight = gate.lock().expect("hold a present in flight");
+            let (released_tx, released_rx) = channel();
+            let callback_gate = Arc::clone(&gate);
+            let callback = std::thread::spawn(move || {
+                DrmDispatchState::with_presentations_quiesced(Some(&callback_gate), || {
+                    released_tx
+                        .send(())
+                        .expect("callback receiver remains alive");
+                });
+            });
+
+            assert!(
+                released_rx
+                    .recv_timeout(std::time::Duration::from_millis(20))
+                    .is_err(),
+                "master release must not run while a present still owns the gate"
+            );
+            drop(in_flight);
+            tilo_test_env::recv(
+                "master release proceeds once the present retires",
+                &released_rx,
+            );
+            callback.join().expect("callback must finish");
+        }
     }
 
     #[test]
-    fn vt_pause_after_card_remove_releases_retiring_master_before_presenter_ack() {
-        // Card 22 was removed from the active map, but its presenter
-        // scanout/fd has not acknowledged teardown yet. Dropping master on
-        // only card 11 would leave the old KMS lease alive across the VT
-        // handoff. Resume acquires only active card 11; card 22 is closing.
-        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let active = [FakeMasterCard {
-            id: 11,
-            calls: std::rc::Rc::clone(&calls),
-        }];
-        let retiring = [FakeMasterCard {
-            id: 22,
-            calls: std::rc::Rc::clone(&calls),
-        }];
-        release_masters_for_pause(active.iter(), retiring.iter());
-        apply_master_action(active.iter(), MasterAction::Acquire);
-        assert_eq!(
-            *calls.borrow(),
-            vec![
-                (11, MasterAction::Release),
-                (22, MasterAction::Release),
-                (11, MasterAction::Acquire),
-            ]
-        );
-    }
+    fn relayout_after_unplug_repacks_outputs_and_rehomes_the_pointer() {
+        // Phase `relayout_packs_outputs_side_by_side_and_publishes_the_table`.
+        {
+            let (mut state, _rx) = dispatch_with_channel();
+            state.live = vec![
+                entry(0, 10, (1920, 1080), None),
+                entry(1, 11, (2560, 1440), None),
+            ];
+            state.relayout_outputs();
 
-    #[test]
-    fn relayout_packs_outputs_side_by_side_and_publishes_the_table() {
-        let (mut state, _rx) = dispatch_with_channel();
-        state.live = vec![
-            entry(0, 10, (1920, 1080), None),
-            entry(1, 11, (2560, 1440), None),
-        ];
-        state.relayout_outputs();
+            assert_eq!(state.live[0].position, (0, 0));
+            assert_eq!(state.live[1].position, (1920, 0));
+            assert_eq!(state.output_size, (4480, 1440));
+            let table = state.output_table();
+            assert_eq!(table.len(), 2);
+            assert_eq!(table[0].position, (0, 0));
+            assert_eq!(table[1].position, (1920, 0));
+            assert_eq!(table[1].size, (2560, 1440));
+        }
+        // Phase `unplugging_the_right_monitor_brings_the_pointer_back_onto_the_left_one`.
+        {
+            // The concrete "windows stranded off-screen" symptom that is actually load-bearing: windows re-flow (not pinned to an output), but the pointer lives in absolute combined coordinates and would be left on a gone panel.
+            let (mut state, _rx) = dispatch_with_channel();
+            state.live = vec![
+                entry(0, 10, (1920, 1080), None),
+                entry(1, 11, (1920, 1080), None),
+            ];
+            state.relayout_outputs();
+            state.set_pointer_scene((3000.0, 500.0));
 
-        assert_eq!(state.live[0].position, (0, 0));
-        assert_eq!(state.live[1].position, (1920, 0));
-        assert_eq!(state.output_size, (4480, 1440));
-        let table = state.output_table();
-        assert_eq!(table.len(), 2);
-        assert_eq!(table[0].position, (0, 0));
-        assert_eq!(table[1].position, (1920, 0));
-        assert_eq!(table[1].size, (2560, 1440));
-    }
+            state.live.retain(|l| l.id == OutputId(0));
+            state.relayout_outputs();
 
-    #[test]
-    fn unplugging_the_right_monitor_brings_the_pointer_back_onto_the_left_one() {
-        // The concrete "windows stranded off-screen" symptom that is actually load-bearing: windows re-flow (not pinned to an output), but the pointer lives in absolute combined coordinates and would be left on a gone panel.
-        let (mut state, _rx) = dispatch_with_channel();
-        state.live = vec![
-            entry(0, 10, (1920, 1080), None),
-            entry(1, 11, (1920, 1080), None),
-        ];
-        state.relayout_outputs();
-        state.set_pointer_scene((3000.0, 500.0));
+            assert_eq!(state.output_size, (1920, 1080));
+            assert_eq!(
+                state.pointer,
+                (1919.0, 500.0),
+                "the pointer must land on the surviving panel, not off it"
+            );
+        }
+        // Phase `unplugging_the_left_monitor_slides_the_survivor_to_the_origin`.
+        {
+            // Leaving the survivor at x=1920 would open a 1920px hole in the combined space that no panel displays, and every click into it would land on nothing.
+            let (mut state, _rx) = dispatch_with_channel();
+            state.live = vec![
+                entry(0, 10, (1920, 1080), None),
+                entry(1, 11, (2560, 1440), None),
+            ];
+            state.relayout_outputs();
+            assert_eq!(state.live[1].position, (1920, 0));
 
-        state.live.retain(|l| l.id == OutputId(0));
-        state.relayout_outputs();
+            state.live.retain(|l| l.id == OutputId(1));
+            state.relayout_outputs();
+            assert_eq!(state.live[0].position, (0, 0));
+            assert_eq!(state.output_size, (2560, 1440));
+        }
+        // Phase `fake_hybrid_gpu_layout_reflows_after_secondary_card_unplug`.
+        {
+            // Pure fake KMS state: connector and CRTC ids intentionally overlap
+            // across the two cards.  The runtime's card-scoped identity must
+            // still publish both outputs, route the combined layout across them,
+            // and retract only the dock output when that card disappears.
+            let (mut state, _rx) = dispatch_with_channel();
+            state.live = vec![
+                entry_on_device(41, 0, 10, (1920, 1080), Some((294, 165))),
+                entry_on_device(99, 1, 10, (2560, 1440), Some((597, 336))),
+            ];
+            state.relayout_outputs();
 
-        assert_eq!(state.output_size, (1920, 1080));
-        assert_eq!(
-            state.pointer,
-            (1919.0, 500.0),
-            "the pointer must land on the surviving panel, not off it"
-        );
-    }
+            let table = state.output_table();
+            assert_eq!(
+                table.iter().map(|output| output.id).collect::<Vec<_>>(),
+                [OutputId(0), OutputId(1)]
+            );
+            assert_eq!(table[0].position, (0, 0));
+            assert_eq!(table[1].position, (1920, 0));
+            assert_eq!(state.output_size, (4480, 1440));
 
-    #[test]
-    fn unplugging_the_left_monitor_slides_the_survivor_to_the_origin() {
-        // Leaving the survivor at x=1920 would open a 1920px hole in the combined space that no panel displays, and every click into it would land on nothing.
-        let (mut state, _rx) = dispatch_with_channel();
-        state.live = vec![
-            entry(0, 10, (1920, 1080), None),
-            entry(1, 11, (2560, 1440), None),
-        ];
-        state.relayout_outputs();
-        assert_eq!(state.live[1].position, (1920, 0));
-
-        state.live.retain(|l| l.id == OutputId(1));
-        state.relayout_outputs();
-        assert_eq!(state.live[0].position, (0, 0));
-        assert_eq!(state.output_size, (2560, 1440));
-    }
-
-    #[test]
-    fn fake_hybrid_gpu_layout_reflows_after_secondary_card_unplug() {
-        // Pure fake KMS state: connector and CRTC ids intentionally overlap
-        // across the two cards.  The runtime's card-scoped identity must
-        // still publish both outputs, route the combined layout across them,
-        // and retract only the dock output when that card disappears.
-        let (mut state, _rx) = dispatch_with_channel();
-        state.live = vec![
-            entry_on_device(41, 0, 10, (1920, 1080), Some((294, 165))),
-            entry_on_device(99, 1, 10, (2560, 1440), Some((597, 336))),
-        ];
-        state.relayout_outputs();
-
-        let table = state.output_table();
-        assert_eq!(
-            table.iter().map(|output| output.id).collect::<Vec<_>>(),
-            [OutputId(0), OutputId(1)]
-        );
-        assert_eq!(table[0].position, (0, 0));
-        assert_eq!(table[1].position, (1920, 0));
-        assert_eq!(state.output_size, (4480, 1440));
-
-        // This is the same layout record used by wl_output globals and by
-        // cursor/touch routing.  A secondary-card unplug must leave no gap
-        // and clamp an input position that was on the dock back onto the
-        // laptop panel.
-        state.set_pointer_scene((3300.0, 900.0));
-        state.live.retain(|output| output.key.device == 41);
-        state.relayout_outputs();
-        assert_eq!(
-            state
-                .output_table()
-                .iter()
-                .map(|output| output.id)
-                .collect::<Vec<_>>(),
-            [OutputId(0)]
-        );
-        assert_eq!(state.output_size, (1920, 1080));
-        // The 1.5x panel is 1280x720 logical; the pointer lands on its
-        // nearest logical pixel and is drawn at that pixel's scene position.
-        assert_eq!(state.logical_pointer, (1279.0, 719.0));
-        assert_eq!(state.pointer, (1918.5, 1078.5));
+            // This is the same layout record used by wl_output globals and by
+            // cursor/touch routing.  A secondary-card unplug must leave no gap
+            // and clamp an input position that was on the dock back onto the
+            // laptop panel.
+            state.set_pointer_scene((3300.0, 900.0));
+            state.live.retain(|output| output.key.device == 41);
+            state.relayout_outputs();
+            assert_eq!(
+                state
+                    .output_table()
+                    .iter()
+                    .map(|output| output.id)
+                    .collect::<Vec<_>>(),
+                [OutputId(0)]
+            );
+            assert_eq!(state.output_size, (1920, 1080));
+            // The 1.5x panel is 1280x720 logical; the pointer lands on its
+            // nearest logical pixel and is drawn at that pixel's scene position.
+            assert_eq!(state.logical_pointer, (1279.0, 719.0));
+            assert_eq!(state.pointer, (1918.5, 1078.5));
+        }
     }
 
     /// A 13.3" 2560x1600 panel (scale 2) docked beside a 24" 1080p monitor.
@@ -4874,21 +6535,46 @@ mod tests {
     }
 
     #[test]
-    fn each_output_gets_the_scale_its_panel_calls_for() {
-        // A laptop docked to a desktop monitor: one dense panel, one sparse — a single session-wide scale is wrong for one of them.
-        let (mut state, _rx) = dispatch_with_channel();
-        state.live = vec![
-            // 13.3" 1080p laptop panel.
-            entry(0, 10, (1920, 1080), Some((294, 165))),
-            // 24" 1080p desktop monitor.
-            entry(1, 11, (1920, 1080), Some((527, 296))),
-        ];
-        state.relayout_outputs();
-        assert_eq!(state.live[0].scale, 1.5);
-        assert_eq!(state.live[1].scale, 1.0);
-        let table = state.output_table();
-        assert_eq!(table[0].scale, 1.5);
-        assert_eq!(table[1].scale, 1.0);
+    fn output_scale_and_metadata_come_from_panel_or_setting() {
+        // Phase `each_output_gets_the_scale_its_panel_calls_for`.
+        {
+            // A laptop docked to a desktop monitor: one dense panel, one sparse — a single session-wide scale is wrong for one of them.
+            let (mut state, _rx) = dispatch_with_channel();
+            state.live = vec![
+                // 13.3" 1080p laptop panel.
+                entry(0, 10, (1920, 1080), Some((294, 165))),
+                // 24" 1080p desktop monitor.
+                entry(1, 11, (1920, 1080), Some((527, 296))),
+            ];
+            state.relayout_outputs();
+            assert_eq!(state.live[0].scale, 1.5);
+            assert_eq!(state.live[1].scale, 1.0);
+            let table = state.output_table();
+            assert_eq!(table[0].scale, 1.5);
+            assert_eq!(table[1].scale, 1.0);
+        }
+        // Phase `a_display_scale_setting_overrides_every_output`.
+        {
+            let (mut state, _rx) = dispatch_with_channel();
+            state.scale_override = Some(1.25);
+            state.live = vec![entry(0, 10, (1920, 1080), Some((294, 165)))];
+            state.relayout_outputs();
+            assert_eq!(
+                state.live[0].scale, 1.25,
+                "a user who set a scale is not asking for a second opinion"
+            );
+        }
+        // Phase `synthesize_for_tests_populates_output_meta`.
+        {
+            let outs = vec![
+                (OutputId(0), Output::new(OutputId(0), (1920, 1080), 1.0)),
+                (OutputId(1), Output::new(OutputId(1), (1280, 720), 1.0)),
+            ];
+            let state = DrmRuntime::synthesize_for_tests(outs);
+            assert_eq!(state.output_meta.len(), 2);
+            assert!(state.output_meta.contains_key(&OutputId(0)));
+            assert!(state.output_meta.contains_key(&OutputId(1)));
+        }
     }
 
     fn named(mut entry: LiveEntry, connector: &str) -> LiveEntry {
@@ -4931,6 +6617,83 @@ mod tests {
         assert_eq!(external.logical_position, (1280, 0));
         assert_eq!(panel.scale, 1.5);
         assert_eq!(external.scale, 1.0);
+    }
+
+    #[test]
+    fn the_published_snapshot_carries_each_live_outputs_own_scale() {
+        use settings_store::hardware::{DisplayConfig, DisplayOutputSnapshot, OutputDescriptor};
+
+        let (mut state, _rx) = dispatch_with_channel();
+        state.live = vec![
+            named(entry(0, 10, (2560, 1440), Some((597, 336))), "DP-1"),
+            named(entry(1, 11, (1920, 1080), Some((294, 165))), "eDP-1"),
+        ];
+        // Nothing saved: the compositor picks each scale itself.
+        state.relayout_with(&DisplayConfig::default());
+        let capability = |connector: &str| DisplayOutputSnapshot {
+            descriptor: OutputDescriptor {
+                connector: connector.into(),
+                connector_label: connector.into(),
+                modes: Vec::new(),
+                hdr: false,
+                vrr: false,
+                color_profiles: Vec::new(),
+                monitor: None,
+            },
+            current_mode: settings_store::hardware::OutputMode {
+                width: 1920,
+                height: 1080,
+                refresh_mhz: 60_000,
+            },
+            scale: 1.0,
+            builtin: false,
+            sink_hdr: false,
+            hdr_unavailable_reason: None,
+            sink_vrr: false,
+            vrr_unavailable_reason: None,
+            color_profile_labels: BTreeMap::new(),
+        };
+        let mut outputs = vec![
+            capability("DP-1"),
+            capability("eDP-1"),
+            capability("HDMI-A-1"),
+        ];
+        apply_live_scales(
+            &mut outputs,
+            state
+                .live
+                .iter()
+                .map(|entry| (entry.config_key.as_str(), entry.scale)),
+        );
+        assert_eq!(outputs[1].scale, 1.5, "the panel's own 1.5x");
+        assert_eq!(outputs[0].scale, 1.0);
+        assert_eq!(outputs[2].scale, 1.0, "an output that is off keeps its own");
+    }
+
+    #[test]
+    fn the_output_table_lists_the_primary_chosen_in_settings_first() {
+        use settings_store::hardware::{DisplayConfig, OutputConfig};
+
+        let (mut state, _rx) = dispatch_with_channel();
+        state.live = vec![
+            entry(0, 10, (1920, 1080), Some((527, 296))),
+            entry(1, 11, (2560, 1440), Some((597, 336))),
+        ];
+        let mut config = DisplayConfig::default();
+        config.outputs.insert(
+            "TEST-11".into(),
+            OutputConfig {
+                primary: true,
+                ..OutputConfig::default()
+            },
+        );
+        state.relayout_with(&config);
+        let table = state.output_table();
+        assert_eq!(
+            table.iter().map(|output| output.id).collect::<Vec<_>>(),
+            [OutputId(1), OutputId(0)],
+            "the shell, the lock screen and pointer clamping take the first output as primary"
+        );
     }
 
     #[test]
@@ -5008,677 +6771,839 @@ mod tests {
         assert_eq!(at(&state, "eDP-1"), ((2560, 0), 1.25));
     }
 
-    #[test]
-    fn a_display_scale_setting_overrides_every_output() {
+    fn keyboard_dispatch(accessibility: AccessibilityInputSettings) -> DrmDispatchState {
         let (mut state, _rx) = dispatch_with_channel();
-        state.scale_override = Some(1.25);
-        state.live = vec![entry(0, 10, (1920, 1080), Some((294, 165)))];
-        state.relayout_outputs();
-        assert_eq!(
-            state.live[0].scale, 1.25,
-            "a user who set a scale is not asking for a second opinion"
-        );
-    }
-
-    #[test]
-    fn a_vt_switch_away_pauses_the_scanouts() {
-        // The end-to-end of what the session state machine decided: the scanout owner is told to stop before anything else happens.
-        let (mut state, rx) = dispatch_with_channel();
-        state.session = Some(SessionState::new_active());
-        let actions = state
-            .session
-            .as_ref()
-            .expect("session")
-            .apply_with_actions(SeatTick::Pause);
-        state.perform_all(actions);
-
-        let sent: Vec<ScanoutCommand> = rx.try_iter().collect();
-        assert!(
-            matches!(sent.as_slice(), [ScanoutCommand::Pause]),
-            "a pause must reach the scanout owner"
-        );
-    }
-
-    #[test]
-    fn a_vt_switch_back_tells_the_scanouts_to_re_modeset_and_forces_a_repaint() {
-        let (mut state, rx) = dispatch_with_channel();
-        state.session = Some(SessionState::new_active());
-        let pause = state
-            .session
-            .as_ref()
-            .expect("session")
-            .apply_with_actions(SeatTick::Pause);
-        state.perform_all(pause);
-        let _ = rx.try_iter().count();
-        state.events.clear();
-
-        let activate = state
-            .session
-            .as_ref()
-            .expect("session")
-            .apply_with_actions(SeatTick::Activate);
-        state.perform_all(activate);
-
-        let sent: Vec<ScanoutCommand> = rx.try_iter().collect();
-        assert!(
-            matches!(sent.as_slice(), [ScanoutCommand::Resume { dpms_on: true }]),
-            "activation must ask for a re-modeset, not just flip a flag"
-        );
-        assert!(
-            state
-                .events
-                .iter()
-                .any(|e| matches!(e, BackendEvent::Redraw)),
-            "the scanout buffers hold the other session's pixels; the \
-             compositor has to be told to repaint"
-        );
-    }
-
-    #[test]
-    fn dropping_master_waits_for_an_in_flight_present_to_retire() {
-        // The presenter and the libseat callback run on different threads in
-        // production. A queued Pause alone is insufficient: the callback
-        // must wait for a frame that already entered KMS before releasing
-        // DRM master, or the kernel can reject that flip with EACCES.
-        let gate = Arc::new(Mutex::new(()));
-        let in_flight = gate.lock().expect("hold a present in flight");
-        let (released_tx, released_rx) = channel();
-        let callback_gate = Arc::clone(&gate);
-        let callback = std::thread::spawn(move || {
-            DrmDispatchState::with_presentations_quiesced(Some(&callback_gate), || {
-                released_tx
-                    .send(())
-                    .expect("callback receiver remains alive");
-            });
-        });
-
-        assert!(
-            released_rx
-                .recv_timeout(std::time::Duration::from_millis(20))
-                .is_err(),
-            "master release must not run while a present still owns the gate"
-        );
-        drop(in_flight);
-        released_rx
-            .recv_timeout(std::time::Duration::from_secs(1))
-            .expect("master release proceeds once the present retires");
-        callback.join().expect("callback must finish");
-    }
-
-    #[test]
-    fn a_session_blanked_for_idle_resumes_blanked() {
-        // Coming back from a VT switch must restore the power state the session had, not light a screen the user had turned off.
-        let (mut state, rx) = dispatch_with_channel();
-        let session = SessionState::new_active();
-        session.set_dpms(false);
-        state.session = Some(session.clone());
-        state.perform_all(session.apply_with_actions(SeatTick::Pause));
-        let _ = rx.try_iter().count();
-        state.perform_all(session.apply_with_actions(SeatTick::Activate));
-
-        let sent: Vec<ScanoutCommand> = rx.try_iter().collect();
-        assert!(
-            matches!(sent.as_slice(), [ScanoutCommand::Resume { dpms_on: false }]),
-            "the restored power state must be the one the session had"
-        );
-    }
-
-    #[test]
-    fn resume_from_sleep_asks_for_the_same_rebuild_a_vt_switch_does() {
-        // A suspend never pauses the seat, so nothing marks the session inactive — a handler that only acts on transitions does nothing at all, which is the black-screen-after-lid-open bug.
-        let (mut state, rx) = dispatch_with_channel();
-        let session = SessionState::new_active();
-        state.session = Some(session.clone());
-        assert!(session.is_active(), "a suspend leaves the session active");
-
-        state.perform_all(session.resume_actions());
-
-        let sent: Vec<ScanoutCommand> = rx.try_iter().collect();
-        assert!(
-            matches!(sent.as_slice(), [ScanoutCommand::Resume { .. }]),
-            "resume must re-modeset even though no state transition happened"
-        );
-        assert!(
-            state
-                .events
-                .iter()
-                .any(|e| matches!(e, BackendEvent::Redraw)),
-            "and force a full repaint"
-        );
-    }
-
-    #[test]
-    fn resume_retires_held_shift_and_backspace_before_the_next_key() {
-        // Model the failure mode exactly: both keys go down, then the machine
-        // sleeps before libinput can report either release.  The first input
-        // after resume must be a clean `a`, not Shift+A, and the pending
-        // Backspace repeat must be gone.
-        let (mut state, _rx) = dispatch_with_channel();
-        state.session = Some(SessionState::new_active());
         state.keyboard = Some(
             KeyboardXkb::from_settings(&KeyboardSettings::default())
                 .expect("the default test keymap must compile"),
         );
+        state.accessibility = accessibility;
+        state
+    }
 
-        state.handle_keyboard_key(xkb::Keycode::new(50), true); // KEY_LEFTSHIFT + 8
-        state.handle_keyboard_key(xkb::Keycode::new(22), true); // KEY_BACKSPACE + 8
-        assert!(
-            state
-                .keyboard
-                .as_ref()
-                .is_some_and(|keyboard| keyboard.current_mods().shift_key()),
-            "the adapter's XKB state must see the held Shift before sleep"
-        );
-        assert!(
-            state.key_repeat.held.is_some(),
-            "Backspace must be repeating before sleep"
-        );
-        state.events.clear(); // The pre-sleep input was already dispatched.
-
-        state.resume_from_sleep();
-
-        assert!(
-            matches!(state.events.first(), Some(BackendEvent::InputStateReset)),
-            "the compositor's canonical seat reset must precede resumed input"
-        );
-        assert!(state.physical_modifiers.is_empty());
-        assert!(state.sticky_latched.is_empty());
-        assert!(
-            state
-                .key_repeat
-                .due(std::time::Instant::now() + std::time::Duration::from_secs(2))
-                .is_empty(),
-            "a Backspace held across sleep must not repeat after resume"
-        );
-
-        state.events.clear();
-        state.handle_keyboard_key(xkb::Keycode::new(38), true); // KEY_A + 8
-        assert!(
-            !state
-                .events
-                .iter()
-                .any(|event| matches!(event, BackendEvent::ModifiersChanged(_))),
-            "the first post-resume key must not inherit Shift"
-        );
-        let Some(BackendEvent::Input(WindowEvent::KeyboardInput { event, .. })) =
-            state.events.first()
-        else {
-            panic!("the first post-resume key must be dispatched")
-        };
-        assert_eq!(event.logical_key, Key::Character("a".into()));
-        assert_eq!(event.text.as_deref(), Some("a"));
-        assert!(!event.repeat, "the first post-resume key is a fresh press");
+    fn typed_keys(state: &DrmDispatchState) -> usize {
+        state
+            .events
+            .iter()
+            .filter(|e| matches!(e, BackendEvent::Input(WindowEvent::KeyboardInput { .. })))
+            .count()
     }
 
     #[test]
-    fn a_headless_drm_session_survives_a_vt_switch_with_no_channel() {
-        // No output came up, so there is nobody to send commands to — performing the sequence anyway must not panic.
-        let mut state = DrmDispatchState::default();
-        let session = SessionState::new_active();
-        state.session = Some(session.clone());
-        state.perform_all(session.apply_with_actions(SeatTick::Pause));
-        state.perform_all(session.apply_with_actions(SeatTick::Activate));
+    fn bounce_keys_swallow_a_rebound_press_and_flash_when_asked() {
+        let mut state = keyboard_dispatch(AccessibilityInputSettings {
+            bounce_keys: true,
+            bounce_keys_alert: true,
+            ..Default::default()
+        });
+        let a = xkb::Keycode::new(38); // KEY_A + 8
+        state.handle_keyboard_key(a, true);
+        state.handle_keyboard_key(a, false);
+        assert_eq!(typed_keys(&state), 2, "the first keystroke is real");
+        state.events.clear();
+
+        // Pressed again well inside the 300 ms default window.
+        state.handle_keyboard_key(a, true);
+        state.handle_keyboard_key(a, false);
+        assert_eq!(typed_keys(&state), 0, "press and release both swallowed");
+        assert_eq!(
+            state
+                .events
+                .iter()
+                .filter(|e| matches!(e, BackendEvent::VisualAlert))
+                .count(),
+            1,
+            "one flash per swallowed press"
+        );
+    }
+
+    #[test]
+    fn mouse_keys_turn_the_keypad_into_clicks_instead_of_typing() {
+        let mut state = keyboard_dispatch(AccessibilityInputSettings {
+            mouse_keys: true,
+            ..Default::default()
+        });
+        let kp5 = xkb::Keycode::new(76 + 8);
+        state.handle_keyboard_key(kp5, true);
+        state.handle_keyboard_key(kp5, false);
+        let clicks: Vec<_> = state
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                BackendEvent::Input(WindowEvent::MouseInput { state, button, .. }) => {
+                    Some((*state, *button))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            clicks,
+            [
+                (ElementState::Pressed, MouseButton::Left),
+                (ElementState::Released, MouseButton::Left)
+            ]
+        );
+        assert_eq!(typed_keys(&state), 0);
+
+        state.events.clear();
+        state.accessibility.mouse_keys = false;
+        state.handle_keyboard_key(kp5, true);
+        state.handle_keyboard_key(kp5, false);
+        assert_eq!(
+            typed_keys(&state),
+            2,
+            "with mouse keys off the keypad types"
+        );
+    }
+
+    #[test]
+    fn switching_mouse_keys_off_mid_drag_releases_the_button() {
+        let mut state = keyboard_dispatch(AccessibilityInputSettings {
+            mouse_keys: true,
+            ..Default::default()
+        });
+        let kp0 = xkb::Keycode::new(82 + 8);
+        state.handle_keyboard_key(kp0, true);
+        state.events.clear();
+        state.release_mouse_keys();
+        assert!(state.events.iter().any(|e| matches!(
+            e,
+            BackendEvent::Input(WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            })
+        )));
+    }
+
+    #[test]
+    fn vt_switch_and_resume_pause_and_rebuild_scanout() {
+        // Phase `a_vt_switch_away_pauses_the_scanouts`.
+        {
+            // The end-to-end of what the session state machine decided: the scanout owner is told to stop before anything else happens.
+            let (mut state, rx) = dispatch_with_channel();
+            state.session = Some(SessionState::new_active());
+            let actions = state
+                .session
+                .as_ref()
+                .expect("session")
+                .apply_with_actions(SeatTick::Pause);
+            state.perform_all(actions);
+
+            let sent: Vec<ScanoutCommand> = rx.try_iter().collect();
+            assert!(
+                matches!(sent.as_slice(), [ScanoutCommand::Pause]),
+                "a pause must reach the scanout owner"
+            );
+        }
+        // Phase `a_vt_switch_back_tells_the_scanouts_to_re_modeset_and_forces_a_repaint`.
+        {
+            let (mut state, rx) = dispatch_with_channel();
+            state.session = Some(SessionState::new_active());
+            let pause = state
+                .session
+                .as_ref()
+                .expect("session")
+                .apply_with_actions(SeatTick::Pause);
+            state.perform_all(pause);
+            let _ = rx.try_iter().count();
+            state.events.clear();
+
+            let activate = state
+                .session
+                .as_ref()
+                .expect("session")
+                .apply_with_actions(SeatTick::Activate);
+            state.perform_all(activate);
+
+            let sent: Vec<ScanoutCommand> = rx.try_iter().collect();
+            assert!(
+                matches!(sent.as_slice(), [ScanoutCommand::Resume { dpms_on: true }]),
+                "activation must ask for a re-modeset, not just flip a flag"
+            );
+            assert!(
+                state
+                    .events
+                    .iter()
+                    .any(|e| matches!(e, BackendEvent::Redraw)),
+                "the scanout buffers hold the other session's pixels; the \
+                 compositor has to be told to repaint"
+            );
+        }
+        // Phase `a_session_blanked_for_idle_resumes_blanked`.
+        {
+            // Coming back from a VT switch must restore the power state the session had, not light a screen the user had turned off.
+            let (mut state, rx) = dispatch_with_channel();
+            let session = SessionState::new_active();
+            session.set_dpms(false);
+            state.session = Some(session.clone());
+            state.perform_all(session.apply_with_actions(SeatTick::Pause));
+            let _ = rx.try_iter().count();
+            state.perform_all(session.apply_with_actions(SeatTick::Activate));
+
+            let sent: Vec<ScanoutCommand> = rx.try_iter().collect();
+            assert!(
+                matches!(sent.as_slice(), [ScanoutCommand::Resume { dpms_on: false }]),
+                "the restored power state must be the one the session had"
+            );
+        }
+        // Phase `resume_from_sleep_asks_for_the_same_rebuild_a_vt_switch_does`.
+        {
+            // A suspend never pauses the seat, so nothing marks the session inactive — a handler that only acts on transitions does nothing at all, which is the black-screen-after-lid-open bug.
+            let (mut state, rx) = dispatch_with_channel();
+            let session = SessionState::new_active();
+            state.session = Some(session.clone());
+            assert!(session.is_active(), "a suspend leaves the session active");
+
+            state.perform_all(session.resume_actions());
+
+            let sent: Vec<ScanoutCommand> = rx.try_iter().collect();
+            assert!(
+                matches!(sent.as_slice(), [ScanoutCommand::Resume { .. }]),
+                "resume must re-modeset even though no state transition happened"
+            );
+            assert!(
+                state
+                    .events
+                    .iter()
+                    .any(|e| matches!(e, BackendEvent::Redraw)),
+                "and force a full repaint"
+            );
+        }
+        // Phase `a_headless_drm_session_survives_a_vt_switch_with_no_channel`.
+        {
+            // No output came up, so there is nobody to send commands to — performing the sequence anyway must not panic.
+            let mut state = DrmDispatchState::default();
+            let session = SessionState::new_active();
+            state.session = Some(session.clone());
+            state.perform_all(session.apply_with_actions(SeatTick::Pause));
+            state.perform_all(session.apply_with_actions(SeatTick::Activate));
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn key_repeat_and_held_keys_follow_the_winit_contract() {
+        // Phase `drm_repeat_event_matches_winit_contract_without_repressing_xkb`.
+        fn drm_repeat_event_matches_winit_contract_without_repressing_xkb() {
+            let Some(mut keyboard) = KeyboardXkb::from_settings(&KeyboardSettings::default())
+            else {
+                return;
+            };
+            let key = xkb::Keycode::new(38); // evdev KEY_A + 8
+            assert!(keyboard.key_repeats(key));
+            let _ = keyboard.process(key, true);
+            let WindowEvent::KeyboardInput { event, .. } = keyboard.repeat_event(key) else {
+                panic!("repeat must use the keyboard-input wire")
+            };
+            assert_eq!(event.logical_key, Key::Character("a".into()));
+            assert_eq!(event.state, ElementState::Pressed);
+            assert!(
+                event.repeat,
+                "native widgets distinguish the synthetic edge"
+            );
+            let _ = keyboard.process(key, false);
+        }
+        // Phase `key_repeat_waits_for_delay_ticks_at_rate_and_stops_on_release`.
+        {
+            let start = std::time::Instant::now();
+            let key = xkb::Keycode::new(38); // evdev KEY_A + 8
+            let mut repeat = KeyRepeat::default();
+            assert_eq!(repeat.next_deadline(), None);
+            repeat.press(key, start, std::time::Duration::from_millis(300), 20);
+            assert_eq!(
+                repeat.next_deadline(),
+                Some(start + std::time::Duration::from_millis(300))
+            );
+            assert!(
+                repeat
+                    .due(start + std::time::Duration::from_millis(299))
+                    .is_empty()
+            );
+            assert_eq!(
+                repeat.due(start + std::time::Duration::from_millis(300)),
+                [key]
+            );
+            assert_eq!(
+                repeat.next_deadline(),
+                Some(start + std::time::Duration::from_millis(350))
+            );
+            assert_eq!(
+                repeat.due(start + std::time::Duration::from_millis(401)),
+                [key, key]
+            );
+            repeat.release(key);
+            assert_eq!(repeat.next_deadline(), None);
+            assert!(
+                repeat
+                    .due(start + std::time::Duration::from_secs(1))
+                    .is_empty()
+            );
+        }
+        // Phase `key_repeat_rate_zero_is_disabled_and_transient_loss_cancels`.
+        {
+            let start = std::time::Instant::now();
+            let key = xkb::Keycode::new(22); // evdev KEY_BACKSPACE + 8
+            let mut repeat = KeyRepeat::default();
+
+            repeat.press(key, start, std::time::Duration::ZERO, 0);
+            assert!(
+                repeat
+                    .due(start + std::time::Duration::from_secs(2))
+                    .is_empty(),
+                "rate 0 is the protocol-level disabled value, not a 1 Hz repeat"
+            );
+
+            repeat.press(key, start, std::time::Duration::ZERO, 30);
+            assert_eq!(repeat.due(start), [key]);
+            repeat.cancel();
+            assert!(
+                repeat
+                    .due(start + std::time::Duration::from_secs(2))
+                    .is_empty(),
+                "seat/device loss must retire a held destructive key"
+            );
+        }
+        // Phase `drm_repeat_event_matches_winit_contract_without_repressing_xkb` (defined above).
+        drm_repeat_event_matches_winit_contract_without_repressing_xkb();
+        // Phase `resume_retires_held_shift_and_backspace_before_the_next_key`.
+        {
+            // Model the failure mode exactly: both keys go down, then the machine
+            // sleeps before libinput can report either release.  The first input
+            // after resume must be a clean `a`, not Shift+A, and the pending
+            // Backspace repeat must be gone.
+            let (mut state, _rx) = dispatch_with_channel();
+            state.session = Some(SessionState::new_active());
+            state.keyboard = Some(
+                KeyboardXkb::from_settings(&KeyboardSettings::default())
+                    .expect("the default test keymap must compile"),
+            );
+
+            state.handle_keyboard_key(xkb::Keycode::new(50), true); // KEY_LEFTSHIFT + 8
+            state.handle_keyboard_key(xkb::Keycode::new(22), true); // KEY_BACKSPACE + 8
+            assert!(
+                state
+                    .keyboard
+                    .as_ref()
+                    .is_some_and(|keyboard| keyboard.current_mods().shift_key()),
+                "the adapter's XKB state must see the held Shift before sleep"
+            );
+            assert!(
+                state.key_repeat.held.is_some(),
+                "Backspace must be repeating before sleep"
+            );
+            state.events.clear(); // The pre-sleep input was already dispatched.
+
+            state.resume_from_sleep();
+
+            assert!(
+                matches!(state.events.first(), Some(BackendEvent::InputStateReset)),
+                "the compositor's canonical seat reset must precede resumed input"
+            );
+            assert!(state.physical_modifiers.is_empty());
+            assert!(state.sticky_latched.is_empty());
+            assert!(
+                state
+                    .key_repeat
+                    .due(std::time::Instant::now() + std::time::Duration::from_secs(2))
+                    .is_empty(),
+                "a Backspace held across sleep must not repeat after resume"
+            );
+
+            state.events.clear();
+            state.handle_keyboard_key(xkb::Keycode::new(38), true); // KEY_A + 8
+            assert!(
+                !state
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, BackendEvent::ModifiersChanged(_))),
+                "the first post-resume key must not inherit Shift"
+            );
+            let Some(BackendEvent::Input(WindowEvent::KeyboardInput { event, .. })) =
+                state.events.first()
+            else {
+                panic!("the first post-resume key must be dispatched")
+            };
+            assert_eq!(event.logical_key, Key::Character("a".into()));
+            assert_eq!(event.text.as_deref(), Some("a"));
+            assert!(!event.repeat, "the first post-resume key is a fresh press");
+        }
     }
 
     // Gesture routing, on the production `handle_gesture`
 
     #[test]
-    fn a_three_finger_swipe_becomes_a_shell_gesture_and_never_reaches_a_client() {
-        let mut state = DrmDispatchState::default();
-        state.handle_gesture(GestureEvent::SwipeBegin { fingers: 3 });
-        state.handle_gesture(GestureEvent::SwipeUpdate {
-            dx: 0.0,
-            dy: -150.0,
-        });
-        state.handle_gesture(GestureEvent::SwipeEnd { cancelled: false });
-
-        let shell: Vec<_> = state
-            .events
-            .iter()
-            .filter_map(|e| match e {
-                BackendEvent::ShellGesture(a) => Some(*a),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(shell, vec![GestureAction::SwitchWorkspace(-1)]);
-        assert!(
-            !state
-                .events
-                .iter()
-                .any(|e| matches!(e, BackendEvent::Gesture(_))),
-            "a gesture the shell acted on must not also be delivered to a \
-             client — the app would scroll under the workspace switch"
-        );
-    }
-
-    #[test]
-    fn horizontal_three_finger_updates_stream_to_the_shell_until_end() {
-        let mut state = DrmDispatchState::default();
-        for event in [
-            GestureEvent::SwipeBegin { fingers: 3 },
-            GestureEvent::SwipeUpdate { dx: -12.0, dy: 0.0 },
-            GestureEvent::SwipeUpdate { dx: -28.0, dy: 2.0 },
-            GestureEvent::SwipeEnd { cancelled: false },
-        ] {
-            state.handle_gesture(event);
-        }
-
-        let shell: Vec<_> = state
-            .events
-            .iter()
-            .filter_map(|event| match event {
-                BackendEvent::ShellGesture(action) => Some(*action),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            shell,
-            vec![
-                GestureAction::StripPanUpdate {
-                    travel: 12.0,
-                    began: true,
-                },
-                GestureAction::StripPanUpdate {
-                    travel: 40.0,
-                    began: false,
-                },
-                GestureAction::StripPanEnd { cancelled: false },
-            ]
-        );
-        assert!(
-            !state
-                .events
-                .iter()
-                .any(|event| matches!(event, BackendEvent::Gesture(_))),
-            "no frame of a shell-owned direct pan may leak to the client"
-        );
-    }
-
-    #[test]
-    fn the_closing_event_of_a_shell_gesture_does_not_leak_to_the_client() {
-        // Ownership is read from the tracker, and `end` clears it — so deciding after the mutation sends a client a `swipe_end` for a swipe it never saw begin, a protocol violation.
-        let mut state = DrmDispatchState::default();
-        for ev in [
-            GestureEvent::SwipeBegin { fingers: 4 },
-            GestureEvent::SwipeUpdate {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn touchpad_gestures_route_between_shell_and_client() {
+        // Phase `a_three_finger_swipe_becomes_a_shell_gesture_and_never_reaches_a_client`.
+        {
+            let mut state = DrmDispatchState::default();
+            state.handle_gesture(GestureEvent::SwipeBegin { fingers: 3 });
+            state.handle_gesture(GestureEvent::SwipeUpdate {
                 dx: 0.0,
                 dy: -150.0,
-            },
-            GestureEvent::SwipeEnd { cancelled: false },
-        ] {
-            state.handle_gesture(ev);
+            });
+            state.handle_gesture(GestureEvent::SwipeEnd { cancelled: false });
+
+            let shell: Vec<_> = state
+                .events
+                .iter()
+                .filter_map(|e| match e {
+                    BackendEvent::ShellGesture(a) => Some(*a),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(shell, vec![GestureAction::SwitchStrip(-1)]);
+            assert!(
+                !state
+                    .events
+                    .iter()
+                    .any(|e| matches!(e, BackendEvent::Gesture(_))),
+                "a gesture the shell acted on must not also be delivered to a \
+                 client — the app would scroll under the workspace switch"
+            );
         }
-        assert!(
-            !state
+        // Phase `horizontal_three_finger_updates_stream_to_the_shell_until_end`.
+        {
+            let mut state = DrmDispatchState::default();
+            for event in [
+                GestureEvent::SwipeBegin { fingers: 3 },
+                GestureEvent::SwipeUpdate { dx: -12.0, dy: 0.0 },
+                GestureEvent::SwipeUpdate { dx: -28.0, dy: 2.0 },
+                GestureEvent::SwipeEnd { cancelled: false },
+            ] {
+                state.handle_gesture(event);
+            }
+
+            let shell: Vec<_> = state
                 .events
                 .iter()
-                .any(|e| matches!(e, BackendEvent::Gesture(_))),
-            "no part of a shell-owned gesture may reach a client: {:?}",
-            state.events
-        );
-    }
+                .filter_map(|event| match event {
+                    BackendEvent::ShellGesture(action) => Some(*action),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                shell,
+                vec![
+                    GestureAction::StripPanUpdate {
+                        travel: 12.0,
+                        began: true,
+                    },
+                    GestureAction::StripPanUpdate {
+                        travel: 40.0,
+                        began: false,
+                    },
+                    GestureAction::StripPanEnd { cancelled: false },
+                ]
+            );
+            assert!(
+                !state
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, BackendEvent::Gesture(_))),
+                "no frame of a shell-owned direct pan may leak to the client"
+            );
+        }
+        // Phase `the_closing_event_of_a_shell_gesture_does_not_leak_to_the_client`.
+        {
+            // Ownership is read from the tracker, and `end` clears it — so deciding after the mutation sends a client a `swipe_end` for a swipe it never saw begin, a protocol violation.
+            let mut state = DrmDispatchState::default();
+            for ev in [
+                GestureEvent::SwipeBegin { fingers: 4 },
+                GestureEvent::SwipeUpdate {
+                    dx: 0.0,
+                    dy: -150.0,
+                },
+                GestureEvent::SwipeEnd { cancelled: false },
+            ] {
+                state.handle_gesture(ev);
+            }
+            assert!(
+                !state
+                    .events
+                    .iter()
+                    .any(|e| matches!(e, BackendEvent::Gesture(_))),
+                "no part of a shell-owned gesture may reach a client: {:?}",
+                state.events
+            );
+        }
+        // Phase `a_hold_gesture_ends_where_it_began`.
+        {
+            // A hold carries its finger count only on `begin` too, and has no shell meaning — a three-finger hold must be swallowed whole, not half-delivered.
+            let mut state = DrmDispatchState::default();
+            state.handle_gesture(GestureEvent::HoldBegin { fingers: 3 });
+            state.handle_gesture(GestureEvent::HoldEnd { cancelled: false });
+            assert!(
+                !state
+                    .events
+                    .iter()
+                    .any(|e| matches!(e, BackendEvent::Gesture(_)))
+            );
 
-    #[test]
-    fn a_hold_gesture_ends_where_it_began() {
-        // A hold carries its finger count only on `begin` too, and has no shell meaning — a three-finger hold must be swallowed whole, not half-delivered.
-        let mut state = DrmDispatchState::default();
-        state.handle_gesture(GestureEvent::HoldBegin { fingers: 3 });
-        state.handle_gesture(GestureEvent::HoldEnd { cancelled: false });
-        assert!(
-            !state
-                .events
-                .iter()
-                .any(|e| matches!(e, BackendEvent::Gesture(_)))
-        );
+            let mut state = DrmDispatchState::default();
+            state.handle_gesture(GestureEvent::HoldBegin { fingers: 1 });
+            state.handle_gesture(GestureEvent::HoldEnd { cancelled: false });
+            assert_eq!(
+                state
+                    .events
+                    .iter()
+                    .filter(|e| matches!(e, BackendEvent::Gesture(_)))
+                    .count(),
+                2,
+                "a one-finger hold is the client's, both halves of it"
+            );
+        }
+        // Phase `a_two_finger_pinch_is_forwarded_to_the_client_and_drives_nothing`.
+        {
+            // Browser zoom — `zwp_pointer_gestures_v1` has been advertised all along with nothing ever emitted into it.
+            let mut state = DrmDispatchState::default();
+            state.handle_gesture(GestureEvent::PinchBegin { fingers: 2 });
+            state.handle_gesture(GestureEvent::PinchUpdate {
+                dx: 0.0,
+                dy: 0.0,
+                scale: 2.0,
+                rotation: 0.0,
+            });
+            state.handle_gesture(GestureEvent::PinchEnd { cancelled: false });
 
-        let mut state = DrmDispatchState::default();
-        state.handle_gesture(GestureEvent::HoldBegin { fingers: 1 });
-        state.handle_gesture(GestureEvent::HoldEnd { cancelled: false });
-        assert_eq!(
-            state
+            let forwarded = state
                 .events
                 .iter()
                 .filter(|e| matches!(e, BackendEvent::Gesture(_)))
-                .count(),
-            2,
-            "a one-finger hold is the client's, both halves of it"
-        );
-    }
-
-    #[test]
-    fn a_two_finger_pinch_is_forwarded_to_the_client_and_drives_nothing() {
-        // Browser zoom — `zwp_pointer_gestures_v1` has been advertised all along with nothing ever emitted into it.
-        let mut state = DrmDispatchState::default();
-        state.handle_gesture(GestureEvent::PinchBegin { fingers: 2 });
-        state.handle_gesture(GestureEvent::PinchUpdate {
-            dx: 0.0,
-            dy: 0.0,
-            scale: 2.0,
-            rotation: 0.0,
-        });
-        state.handle_gesture(GestureEvent::PinchEnd { cancelled: false });
-
-        let forwarded = state
-            .events
-            .iter()
-            .filter(|e| matches!(e, BackendEvent::Gesture(_)))
-            .count();
-        assert_eq!(forwarded, 3, "every event of the gesture must be forwarded");
-        assert!(
-            !state
-                .events
-                .iter()
-                .any(|e| matches!(e, BackendEvent::ShellGesture(_))),
-            "two fingers is the client's gesture"
-        );
-    }
-
-    #[test]
-    fn three_finger_touch_cancels_the_partial_client_stream_and_never_clicks_or_drags() {
-        let mut state = DrmDispatchState::default();
-        for (slot, x) in [(1, 100.0), (2, 140.0), (3, 180.0)] {
-            state.handle_direct_touch_down(test_touch_key("panel", slot), x, 80.0);
+                .count();
+            assert_eq!(forwarded, 3, "every event of the gesture must be forwarded");
+            assert!(
+                !state
+                    .events
+                    .iter()
+                    .any(|e| matches!(e, BackendEvent::ShellGesture(_))),
+                "two fingers is the client's gesture"
+            );
         }
-        for (slot, x) in [(1, 40.0), (2, 80.0), (3, 120.0)] {
-            state.handle_direct_touch_motion(&test_touch_key("panel", slot), x, 80.0);
+        // Phase `natural_scroll_flips_the_gesture_direction_through_the_dispatch_state`.
+        {
+            let mut state = DrmDispatchState {
+                gestures: GestureTracker::new(GestureConfig {
+                    natural_scroll: true,
+                    ..GestureConfig::default()
+                }),
+                ..Default::default()
+            };
+            state.handle_gesture(GestureEvent::SwipeBegin { fingers: 3 });
+            state.handle_gesture(GestureEvent::SwipeUpdate {
+                dx: 0.0,
+                dy: -150.0,
+            });
+            assert!(
+                state.events.iter().any(|e| matches!(
+                    e,
+                    BackendEvent::ShellGesture(GestureAction::SwitchStrip(1))
+                )),
+                "the same preference that inverts scrolling inverts gestures"
+            );
         }
-        for slot in [1, 2, 3] {
-            state.handle_direct_touch_up(&test_touch_key("panel", slot));
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn touch_streams_split_client_touch_from_chrome_clicks() {
+        // Phase `three_finger_touch_cancels_the_partial_client_stream_and_never_clicks_or_drags`.
+        {
+            let mut state = DrmDispatchState::default();
+            for (slot, x) in [(1, 100.0), (2, 140.0), (3, 180.0)] {
+                state.handle_direct_touch_down(test_touch_key("panel", slot), x, 80.0);
+            }
+            for (slot, x) in [(1, 40.0), (2, 80.0), (3, 120.0)] {
+                state.handle_direct_touch_motion(&test_touch_key("panel", slot), x, 80.0);
+            }
+            for slot in [1, 2, 3] {
+                state.handle_direct_touch_up(&test_touch_key("panel", slot));
+            }
+
+            let client_touch: Vec<_> = state
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    BackendEvent::Touch(touch) => Some(*touch),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                client_touch,
+                [
+                    TiloTouchEvent::Down {
+                        slot: 0,
+                        x: 100.0,
+                        y: 80.0,
+                    },
+                    TiloTouchEvent::Down {
+                        slot: 1,
+                        x: 140.0,
+                        y: 80.0,
+                    },
+                    TiloTouchEvent::Cancel,
+                ],
+                "the early contacts are explicitly cancelled; no third contact, motion, or release reaches the client"
+            );
+            assert!(
+                !state.events.iter().any(|event| matches!(
+                    event,
+                    BackendEvent::Input(
+                        WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+                    ) | BackendEvent::TouchTap { .. }
+                )),
+                "a shell-owned multi-touch stream must not synthesize client/chrome pointer motion, press, drag, or click"
+            );
+            let shell_touch_phases: Vec<_> = state
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    BackendEvent::Input(WindowEvent::Touch(touch)) => Some(touch.phase),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                shell_touch_phases,
+                [
+                    TouchPhase::Started,
+                    TouchPhase::Started,
+                    TouchPhase::Started,
+                    TouchPhase::Moved,
+                    TouchPhase::Moved,
+                    TouchPhase::Moved,
+                    TouchPhase::Ended,
+                    TouchPhase::Ended,
+                    TouchPhase::Ended,
+                ],
+                "the shell still receives the complete raw stream needed by its three-finger arena"
+            );
         }
+        // Phase `a_single_touch_keeps_client_touch_and_reports_one_tap_at_release`.
+        {
+            let mut state = DrmDispatchState::default();
+            let key = test_touch_key("panel", 7);
+            state.handle_direct_touch_down(key.clone(), 320.0, 240.0);
+            state.handle_direct_touch_motion(&key, 324.0, 242.0);
+            state.handle_direct_touch_up(&key);
 
-        let client_touch: Vec<_> = state
-            .events
-            .iter()
-            .filter_map(|event| match event {
-                BackendEvent::Touch(touch) => Some(*touch),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            client_touch,
-            [
-                TiloTouchEvent::Down {
-                    slot: 0,
-                    x: 100.0,
-                    y: 80.0,
-                },
-                TiloTouchEvent::Down {
-                    slot: 1,
-                    x: 140.0,
-                    y: 80.0,
-                },
-                TiloTouchEvent::Cancel,
-            ],
-            "the early contacts are explicitly cancelled; no third contact, motion, or release reaches the client"
-        );
-        assert!(
-            !state.events.iter().any(|event| matches!(
+            let client_touch: Vec<_> = state
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    BackendEvent::Touch(touch) => Some(*touch),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                client_touch,
+                [
+                    TiloTouchEvent::Down {
+                        slot: 0,
+                        x: 320.0,
+                        y: 240.0,
+                    },
+                    TiloTouchEvent::Motion {
+                        slot: 0,
+                        x: 324.0,
+                        y: 242.0,
+                    },
+                    TiloTouchEvent::Up { slot: 0 },
+                ]
+            );
+            let taps: Vec<_> = state
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    BackendEvent::TouchTap { x, y } => Some((*x, *y)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                taps,
+                [(324.0, 242.0)],
+                "the release-confirmed tap is reported once, at the release position"
+            );
+            assert!(
+                !state.events.iter().any(|event| matches!(
+                    event,
+                    BackendEvent::Input(
+                        WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+                    )
+                )),
+                "the backend must not click on its own: only the compositor knows whether the tap already reached a client"
+            );
+        }
+        // Phase `moved_single_touch_never_becomes_a_release_position_click`.
+        {
+            let mut state = DrmDispatchState::default();
+            let key = test_touch_key("panel", 0);
+            state.handle_direct_touch_down(key.clone(), 10.0, 20.0);
+            state.handle_direct_touch_motion(&key, 80.0, 20.0);
+            state.handle_direct_touch_up(&key);
+            assert!(
+                !state.events.iter().any(|event| matches!(
+                    event,
+                    BackendEvent::Input(
+                        WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+                    ) | BackendEvent::TouchTap { .. }
+                )),
+                "a movement beyond touch slop is deliberately not converted into a late click"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn touch_slots_are_global_and_cancelled_before_reuse() {
+        // Phase `touch_ids_are_global_across_devices_that_both_report_slot_zero`.
+        {
+            let mut state = DrmDispatchState::default();
+            state.handle_direct_touch_down(test_touch_key("panel-a", 0), 10.0, 20.0);
+            state.handle_direct_touch_down(test_touch_key("panel-b", 0), 30.0, 40.0);
+
+            let ids: Vec<_> = state
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    BackendEvent::Touch(TiloTouchEvent::Down { slot, .. }) => Some(*slot),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(ids, [0, 1]);
+            let shell_ids: Vec<_> = state
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    BackendEvent::Input(WindowEvent::Touch(touch)) => Some(touch.id),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(shell_ids, [0, 1]);
+        }
+        // Phase `final_touch_up_and_cancel_each_keep_their_closing_frame`.
+        {
+            let mut state = DrmDispatchState::default();
+            let key = test_touch_key("panel", 0);
+            state.handle_direct_touch_down(key.clone(), 10.0, 20.0);
+            state.flush_direct_touch_frame();
+            state.handle_direct_touch_up(&key);
+            state.flush_direct_touch_frame();
+            let client_events: Vec<_> = state
+                .events
+                .iter()
+                .filter(|event| matches!(event, BackendEvent::Touch(_)))
+                .collect();
+            assert!(matches!(
+                client_events.as_slice(),
+                [
+                    BackendEvent::Touch(TiloTouchEvent::Down { .. }),
+                    BackendEvent::Touch(TiloTouchEvent::Frame),
+                    BackendEvent::Touch(TiloTouchEvent::Up { .. }),
+                    BackendEvent::Touch(TiloTouchEvent::Frame),
+                ]
+            ));
+
+            let mut state = DrmDispatchState::default();
+            state.handle_direct_touch_down(test_touch_key("panel", 0), 10.0, 20.0);
+            state.flush_direct_touch_frame();
+            state.handle_direct_touch_cancel();
+            state.flush_direct_touch_frame();
+            assert!(matches!(
+                state.events.as_slice(),
+                [
+                    BackendEvent::Input(WindowEvent::Touch(_)),
+                    BackendEvent::Touch(TiloTouchEvent::Down { .. }),
+                    BackendEvent::Touch(TiloTouchEvent::Frame),
+                    BackendEvent::Input(WindowEvent::Touch(touch)),
+                    BackendEvent::Touch(TiloTouchEvent::Cancel),
+                ] if touch.phase == TouchPhase::Cancelled
+            ));
+        }
+        // Phase `session_pause_and_suspend_resume_cancel_active_touch_before_slot_reuse`.
+        {
+            let mut state = DrmDispatchState::default();
+            let key = test_touch_key("panel", 0);
+            state.handle_direct_touch_down(key, 10.0, 20.0);
+            state.handle_session_event(smithay::backend::session::Event::PauseSession);
+            assert!(state.events.iter().any(|event| matches!(
                 event,
-                BackendEvent::Input(
-                    WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
-                ) | BackendEvent::TouchTap { .. }
-            )),
-            "a shell-owned multi-touch stream must not synthesize client/chrome pointer motion, press, drag, or click"
-        );
-        let shell_touch_phases: Vec<_> = state
-            .events
-            .iter()
-            .filter_map(|event| match event {
-                BackendEvent::Input(WindowEvent::Touch(touch)) => Some(touch.phase),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            shell_touch_phases,
-            [
-                TouchPhase::Started,
-                TouchPhase::Started,
-                TouchPhase::Started,
-                TouchPhase::Moved,
-                TouchPhase::Moved,
-                TouchPhase::Moved,
-                TouchPhase::Ended,
-                TouchPhase::Ended,
-                TouchPhase::Ended,
-            ],
-            "the shell still receives the complete raw stream needed by its three-finger arena"
-        );
-    }
+                BackendEvent::Input(WindowEvent::Touch(touch)) if touch.phase == TouchPhase::Cancelled
+            )));
+            assert!(
+                state
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, BackendEvent::Touch(TiloTouchEvent::Cancel)))
+            );
+            assert!(
+                !state
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, BackendEvent::Touch(TiloTouchEvent::Frame)))
+            );
 
-    #[test]
-    fn a_single_touch_keeps_client_touch_and_reports_one_tap_at_release() {
-        let mut state = DrmDispatchState::default();
-        let key = test_touch_key("panel", 7);
-        state.handle_direct_touch_down(key.clone(), 320.0, 240.0);
-        state.handle_direct_touch_motion(&key, 324.0, 242.0);
-        state.handle_direct_touch_up(&key);
-
-        let client_touch: Vec<_> = state
-            .events
-            .iter()
-            .filter_map(|event| match event {
-                BackendEvent::Touch(touch) => Some(*touch),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            client_touch,
-            [
-                TiloTouchEvent::Down {
-                    slot: 0,
-                    x: 320.0,
-                    y: 240.0,
-                },
-                TiloTouchEvent::Motion {
-                    slot: 0,
-                    x: 324.0,
-                    y: 242.0,
-                },
-                TiloTouchEvent::Up { slot: 0 },
-            ]
-        );
-        let taps: Vec<_> = state
-            .events
-            .iter()
-            .filter_map(|event| match event {
-                BackendEvent::TouchTap { x, y } => Some((*x, *y)),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            taps,
-            [(324.0, 242.0)],
-            "the release-confirmed tap is reported once, at the release position"
-        );
-        assert!(
-            !state.events.iter().any(|event| matches!(
+            state.events.clear();
+            state.handle_direct_touch_down(test_touch_key("panel", 0), 30.0, 40.0);
+            state.resume_from_sleep();
+            assert!(state.events.iter().any(|event| matches!(
                 event,
-                BackendEvent::Input(
-                    WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
-                )
-            )),
-            "the backend must not click on its own: only the compositor knows whether the tap already reached a client"
-        );
-    }
-
-    #[test]
-    fn touch_ids_are_global_across_devices_that_both_report_slot_zero() {
-        let mut state = DrmDispatchState::default();
-        state.handle_direct_touch_down(test_touch_key("panel-a", 0), 10.0, 20.0);
-        state.handle_direct_touch_down(test_touch_key("panel-b", 0), 30.0, 40.0);
-
-        let ids: Vec<_> = state
-            .events
-            .iter()
-            .filter_map(|event| match event {
-                BackendEvent::Touch(TiloTouchEvent::Down { slot, .. }) => Some(*slot),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(ids, [0, 1]);
-        let shell_ids: Vec<_> = state
-            .events
-            .iter()
-            .filter_map(|event| match event {
-                BackendEvent::Input(WindowEvent::Touch(touch)) => Some(touch.id),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(shell_ids, [0, 1]);
-    }
-
-    #[test]
-    fn final_touch_up_and_cancel_each_keep_their_closing_frame() {
-        let mut state = DrmDispatchState::default();
-        let key = test_touch_key("panel", 0);
-        state.handle_direct_touch_down(key.clone(), 10.0, 20.0);
-        state.flush_direct_touch_frame();
-        state.handle_direct_touch_up(&key);
-        state.flush_direct_touch_frame();
-        let client_events: Vec<_> = state
-            .events
-            .iter()
-            .filter(|event| matches!(event, BackendEvent::Touch(_)))
-            .collect();
-        assert!(matches!(
-            client_events.as_slice(),
-            [
-                BackendEvent::Touch(TiloTouchEvent::Down { .. }),
-                BackendEvent::Touch(TiloTouchEvent::Frame),
-                BackendEvent::Touch(TiloTouchEvent::Up { .. }),
-                BackendEvent::Touch(TiloTouchEvent::Frame),
-            ]
-        ));
-
-        let mut state = DrmDispatchState::default();
-        state.handle_direct_touch_down(test_touch_key("panel", 0), 10.0, 20.0);
-        state.flush_direct_touch_frame();
-        state.handle_direct_touch_cancel();
-        state.flush_direct_touch_frame();
-        assert!(matches!(
-            state.events.as_slice(),
-            [
-                BackendEvent::Input(WindowEvent::Touch(_)),
-                BackendEvent::Touch(TiloTouchEvent::Down { .. }),
-                BackendEvent::Touch(TiloTouchEvent::Frame),
-                BackendEvent::Input(WindowEvent::Touch(touch)),
-                BackendEvent::Touch(TiloTouchEvent::Cancel),
-            ] if touch.phase == TouchPhase::Cancelled
-        ));
-    }
-
-    #[test]
-    fn session_pause_and_suspend_resume_cancel_active_touch_before_slot_reuse() {
-        let mut state = DrmDispatchState::default();
-        let key = test_touch_key("panel", 0);
-        state.handle_direct_touch_down(key, 10.0, 20.0);
-        state.handle_session_event(smithay::backend::session::Event::PauseSession);
-        assert!(state.events.iter().any(|event| matches!(
-            event,
-            BackendEvent::Input(WindowEvent::Touch(touch)) if touch.phase == TouchPhase::Cancelled
-        )));
-        assert!(
-            state
+                BackendEvent::Input(WindowEvent::Touch(touch)) if touch.phase == TouchPhase::Cancelled
+            )));
+            assert!(
+                state
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, BackendEvent::Touch(TiloTouchEvent::Cancel)))
+            );
+            assert!(
+                !state
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, BackendEvent::Touch(TiloTouchEvent::Frame)))
+            );
+        }
+        // Phase `touchscreen_removal_cancels_the_seat_stream_before_reusing_its_slot`.
+        {
+            let mut state = DrmDispatchState::default();
+            state.handle_direct_touch_down(test_touch_key("removed-panel", 0), 10.0, 20.0);
+            state.handle_direct_touch_source_removed();
+            state.flush_direct_touch_frame();
+            state.handle_direct_touch_down(test_touch_key("replacement-panel", 0), 30.0, 40.0);
+            let touches: Vec<_> = state
                 .events
                 .iter()
-                .any(|event| matches!(event, BackendEvent::Touch(TiloTouchEvent::Cancel)))
-        );
-        assert!(
-            !state
-                .events
-                .iter()
-                .any(|event| matches!(event, BackendEvent::Touch(TiloTouchEvent::Frame)))
-        );
-
-        state.events.clear();
-        state.handle_direct_touch_down(test_touch_key("panel", 0), 30.0, 40.0);
-        state.resume_from_sleep();
-        assert!(state.events.iter().any(|event| matches!(
-            event,
-            BackendEvent::Input(WindowEvent::Touch(touch)) if touch.phase == TouchPhase::Cancelled
-        )));
-        assert!(
-            state
-                .events
-                .iter()
-                .any(|event| matches!(event, BackendEvent::Touch(TiloTouchEvent::Cancel)))
-        );
-        assert!(
-            !state
-                .events
-                .iter()
-                .any(|event| matches!(event, BackendEvent::Touch(TiloTouchEvent::Frame)))
-        );
+                .filter_map(|event| match event {
+                    BackendEvent::Touch(touch) => Some(*touch),
+                    _ => None,
+                })
+                .collect();
+            assert!(matches!(
+                touches.as_slice(),
+                [
+                    TiloTouchEvent::Down { slot: 0, .. },
+                    TiloTouchEvent::Cancel,
+                    TiloTouchEvent::Down { slot: 1, .. },
+                ]
+            ));
+        }
     }
 
     #[test]
-    fn touchscreen_removal_cancels_the_seat_stream_before_reusing_its_slot() {
-        let mut state = DrmDispatchState::default();
-        state.handle_direct_touch_down(test_touch_key("removed-panel", 0), 10.0, 20.0);
-        state.handle_direct_touch_source_removed();
-        state.flush_direct_touch_frame();
-        state.handle_direct_touch_down(test_touch_key("replacement-panel", 0), 30.0, 40.0);
-        let touches: Vec<_> = state
-            .events
-            .iter()
-            .filter_map(|event| match event {
-                BackendEvent::Touch(touch) => Some(*touch),
-                _ => None,
-            })
-            .collect();
-        assert!(matches!(
-            touches.as_slice(),
-            [
-                TiloTouchEvent::Down { slot: 0, .. },
-                TiloTouchEvent::Cancel,
-                TiloTouchEvent::Down { slot: 1, .. },
-            ]
-        ));
-    }
-
-    #[test]
-    fn moved_single_touch_never_becomes_a_release_position_click() {
-        let mut state = DrmDispatchState::default();
-        let key = test_touch_key("panel", 0);
-        state.handle_direct_touch_down(key.clone(), 10.0, 20.0);
-        state.handle_direct_touch_motion(&key, 80.0, 20.0);
-        state.handle_direct_touch_up(&key);
-        assert!(
-            !state.events.iter().any(|event| matches!(
-                event,
-                BackendEvent::Input(
-                    WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
-                ) | BackendEvent::TouchTap { .. }
-            )),
-            "a movement beyond touch slop is deliberately not converted into a late click"
-        );
-    }
-
-    #[test]
-    fn natural_scroll_flips_the_gesture_direction_through_the_dispatch_state() {
-        let mut state = DrmDispatchState {
-            gestures: GestureTracker::new(GestureConfig {
-                natural_scroll: true,
-                ..GestureConfig::default()
-            }),
-            ..Default::default()
-        };
-        state.handle_gesture(GestureEvent::SwipeBegin { fingers: 3 });
-        state.handle_gesture(GestureEvent::SwipeUpdate {
-            dx: 0.0,
-            dy: -150.0,
-        });
-        assert!(
-            state.events.iter().any(|e| matches!(
-                e,
-                BackendEvent::ShellGesture(GestureAction::SwitchWorkspace(1))
-            )),
-            "the same preference that inverts scrolling inverts gestures"
-        );
-    }
-
-    #[test]
-    fn drm_button_mapping_preserves_back_and_forward() {
+    fn pointer_buttons_scroll_units_and_touchpad_plan() {
+        // Phase `drm_button_mapping_preserves_back_and_forward`.
         assert_eq!(map_mouse_button(0x110), Some(MouseButton::Left));
         assert_eq!(map_mouse_button(0x111), Some(MouseButton::Right));
         assert_eq!(map_mouse_button(0x112), Some(MouseButton::Middle));
@@ -5687,144 +7612,48 @@ mod tests {
         assert_eq!(map_mouse_button(0x115), Some(MouseButton::Forward));
         assert_eq!(map_mouse_button(0x116), Some(MouseButton::Back));
         assert_eq!(map_mouse_button(0x117), None);
-    }
-
-    #[test]
-    fn touchpad_scroll_keeps_pixel_precision_and_sign() {
-        let WindowEvent::MouseWheel { delta, .. } =
-            mouse_wheel_event(AxisSource::Finger, 1.25, -2.5)
-        else {
-            panic!("expected a mouse-wheel event")
-        };
-        assert_eq!(
-            delta,
-            MouseScrollDelta::PixelDelta(PhysicalPosition::new(-1.25, 2.5))
-        );
-    }
-
-    #[test]
-    fn wheel_scroll_uses_line_units_without_losing_high_resolution_steps() {
-        let WindowEvent::MouseWheel { delta, .. } =
-            mouse_wheel_event(AxisSource::Wheel, 7.5, -30.0)
-        else {
-            panic!("expected a mouse-wheel event")
-        };
-        assert_eq!(delta, MouseScrollDelta::LineDelta(-0.5, 2.0));
-    }
-
-    #[test]
-    fn key_repeat_waits_for_delay_ticks_at_rate_and_stops_on_release() {
-        let start = std::time::Instant::now();
-        let key = xkb::Keycode::new(38); // evdev KEY_A + 8
-        let mut repeat = KeyRepeat::default();
-        assert_eq!(repeat.next_deadline(), None);
-        repeat.press(key, start, std::time::Duration::from_millis(300), 20);
-        assert_eq!(
-            repeat.next_deadline(),
-            Some(start + std::time::Duration::from_millis(300))
-        );
-        assert!(
-            repeat
-                .due(start + std::time::Duration::from_millis(299))
-                .is_empty()
-        );
-        assert_eq!(
-            repeat.due(start + std::time::Duration::from_millis(300)),
-            [key]
-        );
-        assert_eq!(
-            repeat.next_deadline(),
-            Some(start + std::time::Duration::from_millis(350))
-        );
-        assert_eq!(
-            repeat.due(start + std::time::Duration::from_millis(401)),
-            [key, key]
-        );
-        repeat.release(key);
-        assert_eq!(repeat.next_deadline(), None);
-        assert!(
-            repeat
-                .due(start + std::time::Duration::from_secs(1))
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn key_repeat_rate_zero_is_disabled_and_transient_loss_cancels() {
-        let start = std::time::Instant::now();
-        let key = xkb::Keycode::new(22); // evdev KEY_BACKSPACE + 8
-        let mut repeat = KeyRepeat::default();
-
-        repeat.press(key, start, std::time::Duration::ZERO, 0);
-        assert!(
-            repeat
-                .due(start + std::time::Duration::from_secs(2))
-                .is_empty(),
-            "rate 0 is the protocol-level disabled value, not a 1 Hz repeat"
-        );
-
-        repeat.press(key, start, std::time::Duration::ZERO, 30);
-        assert_eq!(repeat.due(start), [key]);
-        repeat.cancel();
-        assert!(
-            repeat
-                .due(start + std::time::Duration::from_secs(2))
-                .is_empty(),
-            "seat/device loss must retire a held destructive key"
-        );
-    }
-
-    #[test]
-    fn drm_repeat_event_matches_winit_contract_without_repressing_xkb() {
-        let Some(mut keyboard) = KeyboardXkb::from_settings(&KeyboardSettings::default()) else {
-            return;
-        };
-        let key = xkb::Keycode::new(38); // evdev KEY_A + 8
-        assert!(keyboard.key_repeats(key));
-        let _ = keyboard.process(key, true);
-        let WindowEvent::KeyboardInput { event, .. } = keyboard.repeat_event(key) else {
-            panic!("repeat must use the keyboard-input wire")
-        };
-        assert_eq!(event.logical_key, Key::Character("a".into()));
-        assert_eq!(event.state, ElementState::Pressed);
-        assert!(
-            event.repeat,
-            "native widgets distinguish the synthetic edge"
-        );
-        let _ = keyboard.process(key, false);
+        // Phase `touchpad_scroll_keeps_pixel_precision_and_sign`.
+        {
+            let WindowEvent::MouseWheel { delta, .. } =
+                mouse_wheel_event(AxisSource::Finger, 1.25, -2.5)
+            else {
+                panic!("expected a mouse-wheel event")
+            };
+            assert_eq!(
+                delta,
+                MouseScrollDelta::PixelDelta(PhysicalPosition::new(-1.25, 2.5))
+            );
+        }
+        // Phase `wheel_scroll_uses_line_units_without_losing_high_resolution_steps`.
+        {
+            let WindowEvent::MouseWheel { delta, .. } =
+                mouse_wheel_event(AxisSource::Wheel, 7.5, -30.0)
+            else {
+                panic!("expected a mouse-wheel event")
+            };
+            assert_eq!(delta, MouseScrollDelta::LineDelta(-0.5, 2.0));
+        }
+        // Phase `a_touchpad_plan_turns_tapping_on_by_default`.
+        {
+            // The applier is one `config_*` call per `Some` in the plan, so the plan is what decides what a laptop touchpad comes up as.
+            let state = DrmDispatchState::default();
+            let caps = DeviceCaps {
+                supports_tap: true,
+                supports_natural_scroll: true,
+                supports_accel: true,
+                supports_dwt: true,
+                supports_middle_emulation: true,
+                is_pointer: true,
+                supports_left_handed: true,
+                supports_flat_acceleration: true,
+                ..DeviceCaps::default()
+            };
+            let plan = input_config::plan_for(&state.input, &caps);
+            assert_eq!(plan.tap, Some(true));
+            assert_eq!(plan.disable_while_typing, Some(true));
+            assert_eq!(plan.accel_speed(), Some(0.0));
+        }
     }
 
     // libinput device configuration, on the production plan
-
-    #[test]
-    fn a_touchpad_plan_turns_tapping_on_by_default() {
-        // The applier is one `config_*` call per `Some` in the plan, so the plan is what decides what a laptop touchpad comes up as.
-        let state = DrmDispatchState::default();
-        let caps = DeviceCaps {
-            supports_tap: true,
-            supports_natural_scroll: true,
-            supports_accel: true,
-            supports_dwt: true,
-            supports_middle_emulation: true,
-            is_pointer: true,
-            supports_left_handed: true,
-            supports_flat_acceleration: true,
-        };
-        let plan = input_config::plan_for(&state.input, &caps);
-        assert_eq!(plan.tap, Some(true));
-        assert_eq!(plan.disable_while_typing, Some(true));
-        assert_eq!(plan.accel_speed(), Some(0.0));
-    }
-
-    #[test]
-    fn synthesize_for_tests_populates_output_meta() {
-        let outs = vec![
-            (OutputId(0), Output::new(OutputId(0), (1920, 1080), 1.0)),
-            (OutputId(1), Output::new(OutputId(1), (1280, 720), 1.0)),
-        ];
-        let state = DrmRuntime::synthesize_for_tests(outs);
-        assert_eq!(state.output_meta.len(), 2);
-        assert!(state.output_meta.contains_key(&OutputId(0)));
-        assert!(state.output_meta.contains_key(&OutputId(1)));
-    }
 }

@@ -1,15 +1,23 @@
 //! The shell's fixed keyboard chords: the ones Settings cannot rebind.
 //!
-//! One table answers every question about them. Client-input routing
-//! withholds them from a focused app ([`crate::shell::input_policy::shell_owns_chord`]),
-//! the session-lock pre-router accepts the lock alias, the shortcut guide
-//! prints their labels and key names, the `GlobalShortcuts` portal refuses to
-//! grant them to an app, and `docs/shell-navigation-keyboard-map.md` carries
-//! a rendering of this table that a test keeps identical.
+//! The chords themselves, their ids and their names are
+//! [`settings_store::keyboard_shortcuts::FIXED_SHORTCUTS`], the catalogue the
+//! action door, Settings and the shortcut guide list. This module turns that
+//! table into the form input routing matches against and answers every
+//! routing question about it: client-input routing withholds these chords
+//! from a focused app ([`crate::shell::input_policy::shell_owns_chord`]), the
+//! session-lock pre-router accepts the lock alias, the `GlobalShortcuts`
+//! portal refuses to grant them to an app, and
+//! `docs/shell-navigation-keyboard-map.md` carries a rendering of the table
+//! that a test keeps identical.
 //!
 //! Editable navigation and search bindings live in
 //! `settings_store::hardware::ShortcutConfig`, never here: listing a default
 //! here would keep blocking it after the user rebinds the action.
+
+use std::sync::LazyLock;
+
+use settings_store::keyboard_shortcuts::{FIXED_SHORTCUTS, FixedKey};
 
 use crate::shell::input_policy::{ChordKey, ChordMods};
 
@@ -20,6 +28,7 @@ pub enum FixedChordAction {
     Screenshot,
     SwitchWindows,
     SwitchWindowsBackwards,
+    SwitchAppWindows,
     CloseTab,
     ChangeWorkspace,
     NewWindow,
@@ -37,6 +46,38 @@ pub enum FixedChordAction {
     ExploreWorkspaceHistory,
     ShortcutGuide,
     StopRemoteInput,
+    ToggleMouseKeys,
+}
+
+impl FixedChordAction {
+    /// The action the catalogue's fixed shortcut `id` performs.
+    fn from_fixed_id(id: &str) -> Option<Self> {
+        Some(match id {
+            "fixed-screenshot" => Self::Screenshot,
+            "fixed-switch-windows" => Self::SwitchWindows,
+            "fixed-switch-windows-backwards" => Self::SwitchWindowsBackwards,
+            "fixed-switch-app-windows" => Self::SwitchAppWindows,
+            "fixed-close-tab" => Self::CloseTab,
+            "fixed-change-workspace" => Self::ChangeWorkspace,
+            "fixed-new-window" => Self::NewWindow,
+            "fixed-add-tab" => Self::AddTab,
+            "fixed-duplicate-tab" => Self::DuplicateTab,
+            "fixed-open-terminal" => Self::OpenTerminal,
+            "fixed-global-search" => Self::GlobalSearch,
+            "fixed-lock" => Self::LockSession,
+            "fixed-workspace-wheel" => Self::WorkspaceWheel,
+            "fixed-display-layout" => Self::DisplayLayout,
+            "fixed-capture-screenshot" => Self::CaptureScreenshot,
+            "fixed-picture-in-picture" => Self::PictureInPicture,
+            "fixed-save-recent-replay" => Self::SaveRecentReplay,
+            "fixed-workspace-history" => Self::WorkspaceHistory,
+            "fixed-explore-workspace-history" => Self::ExploreWorkspaceHistory,
+            "fixed-shortcut-guide" => Self::ShortcutGuide,
+            "fixed-stop-remote-input" => Self::StopRemoteInput,
+            "fixed-toggle-mouse-keys" => Self::ToggleMouseKeys,
+            _ => return None,
+        })
+    }
 }
 
 /// One key under one exact modifier mask.
@@ -52,64 +93,115 @@ impl FixedChord {
         self.key == key && self.mods == mods
     }
 
-    /// Human key names, modifiers first (`Super+Shift+S`).
+    /// The chord as the active keyboard layout's keycaps spell it, modifiers
+    /// first (`Super+Shift+S`, `Strg+Alt+Entf` on a German layout).
     pub fn display(self) -> String {
-        let key = key_name(self.key);
-        let mut parts: Vec<&str> = Vec::new();
-        if self.mods.logo {
-            parts.push("Super");
-        }
-        if self.mods.ctrl {
-            parts.push("Ctrl");
-        }
-        if self.mods.alt {
-            parts.push("Alt");
-        }
-        if self.mods.shift {
-            parts.push("Shift");
-        }
-        parts.push(&key);
-        parts.join("+")
+        let modifiers = [
+            (self.mods.logo, "Super"),
+            (self.mods.ctrl, "Ctrl"),
+            (self.mods.alt, "Alt"),
+            (self.mods.shift, "Shift"),
+        ];
+        ui::keycaps::active().chord(
+            modifiers
+                .into_iter()
+                .filter_map(|(held, name)| held.then_some(name)),
+            &key_name(self.key),
+        )
     }
 }
 
+/// A catalogue chord as routing matches it, when routing can match it at
+/// all.
+pub fn routed(chord: &settings_store::hardware::KeyChord) -> Option<FixedChord> {
+    route(chord.modifiers.iter().map(String::as_str), &chord.key)
+}
+
+fn routed_chord(key: FixedKey) -> Option<FixedChord> {
+    route(key.modifiers.iter().copied(), key.key)
+}
+
+fn route<'a>(modifiers: impl Iterator<Item = &'a str>, key: &str) -> Option<FixedChord> {
+    let mut mods = NONE;
+    for modifier in modifiers {
+        match modifier {
+            "Super" => mods.logo = true,
+            "Ctrl" => mods.ctrl = true,
+            "Alt" => mods.alt = true,
+            "Shift" => mods.shift = true,
+            _ => return None,
+        }
+    }
+    let routed = match key {
+        "space" => ChordKey::Space,
+        "tab" => ChordKey::Tab,
+        "enter" => ChordKey::Enter,
+        "pageup" => ChordKey::PageUp,
+        "pagedown" => ChordKey::PageDown,
+        "printscreen" => ChordKey::PrintScreen,
+        "left" => ChordKey::ArrowLeft,
+        "right" => ChordKey::ArrowRight,
+        "up" => ChordKey::ArrowUp,
+        "down" => ChordKey::ArrowDown,
+        "escape" => ChordKey::Escape,
+        "delete" => ChordKey::Delete,
+        "numlock" => ChordKey::NumLock,
+        name => {
+            let mut chars = name.chars();
+            match (chars.next(), chars.next()) {
+                (Some(character), None) => ChordKey::Char(character.to_ascii_lowercase()),
+                (Some('f'), Some(_)) => ChordKey::Function(name.get(1..)?.parse().ok()?),
+                _ => return None,
+            }
+        }
+    };
+    Some(chord(routed, mods))
+}
+
+/// The canonical name of `key`, the one [`route`] reads back.
 fn key_name(key: ChordKey) -> String {
     match key {
-        ChordKey::Space => "Space".into(),
-        ChordKey::Tab => "Tab".into(),
-        ChordKey::Enter => "Enter".into(),
-        ChordKey::PageUp => "Page Up".into(),
-        ChordKey::PageDown => "Page Down".into(),
-        ChordKey::PrintScreen => "Print Screen".into(),
-        ChordKey::ArrowLeft => "Left".into(),
-        ChordKey::ArrowRight => "Right".into(),
-        ChordKey::ArrowUp => "Up".into(),
-        ChordKey::ArrowDown => "Down".into(),
-        ChordKey::Escape => "Esc".into(),
-        ChordKey::Delete => "Delete".into(),
-        ChordKey::Function(n) => format!("F{n}"),
-        ChordKey::Char(c) => c.to_ascii_uppercase().to_string(),
+        ChordKey::Space => "space".into(),
+        ChordKey::Tab => "tab".into(),
+        ChordKey::Enter => "enter".into(),
+        ChordKey::PageUp => "pageup".into(),
+        ChordKey::PageDown => "pagedown".into(),
+        ChordKey::PrintScreen => "printscreen".into(),
+        ChordKey::ArrowLeft => "left".into(),
+        ChordKey::ArrowRight => "right".into(),
+        ChordKey::ArrowUp => "up".into(),
+        ChordKey::ArrowDown => "down".into(),
+        ChordKey::Escape => "escape".into(),
+        ChordKey::Delete => "delete".into(),
+        ChordKey::NumLock => "numlock".into(),
+        ChordKey::Function(n) => format!("f{n}"),
+        ChordKey::Char(c) => c.to_string(),
         ChordKey::Modifier | ChordKey::Other => String::new(),
     }
 }
 
 /// One action with its chords and the words people see for it.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct FixedChordEntry {
     pub action: FixedChordAction,
-    /// Stable identifier for the label, usable as a localisation key.
+    /// The catalogue id ([`settings_store::keyboard_shortcuts::FixedShortcut::id`]).
+    pub id: &'static str,
+    /// The shell catalogue key of the words the shortcut guide shows.
     pub label_key: &'static str,
-    /// The English label the shortcut guide and the keyboard map show.
-    pub label: &'static str,
-    pub chords: &'static [FixedChord],
+    pub chords: Vec<FixedChord>,
 }
 
 impl FixedChordEntry {
+    /// What this action is called in the user's language.
+    pub fn label(&self) -> String {
+        crate::shell::i18n::t(self.label_key)
+    }
+
     /// Every chord of this action, joined for display. Two chords that
     /// differ only in the last word of the key share the rest
     /// (`Super+Page Up / Down`); unrelated chords are listed in full.
     pub fn display(&self) -> String {
-        if let [first, second] = self.chords
+        if let [first, second] = self.chords.as_slice()
             && first.mods == second.mods
         {
             let (a, b) = (first.display(), second.display());
@@ -134,161 +226,30 @@ const NONE: ChordMods = ChordMods {
     alt: false,
     logo: false,
 };
-const ALT: ChordMods = ChordMods { alt: true, ..NONE };
-const ALT_SHIFT: ChordMods = ChordMods { shift: true, ..ALT };
-const SUPER: ChordMods = ChordMods { logo: true, ..NONE };
-const SUPER_SHIFT: ChordMods = ChordMods {
-    shift: true,
-    ..SUPER
-};
 
 const fn chord(key: ChordKey, mods: ChordMods) -> FixedChord {
     FixedChord { key, mods }
 }
 
-const fn entry(
-    action: FixedChordAction,
-    label_key: &'static str,
-    label: &'static str,
-    chords: &'static [FixedChord],
-) -> FixedChordEntry {
-    FixedChordEntry {
-        action,
-        label_key,
-        label,
-        chords,
-    }
-}
-
-/// Every fixed shell chord.
-pub static FIXED_CHORDS: &[FixedChordEntry] = &[
-    entry(
-        FixedChordAction::Screenshot,
-        "shortcut-screenshot",
-        "Screenshot",
-        &[chord(ChordKey::PrintScreen, NONE)],
-    ),
-    entry(
-        FixedChordAction::SwitchWindows,
-        "shortcut-switch-windows",
-        "Switch windows",
-        &[chord(ChordKey::Tab, ALT)],
-    ),
-    entry(
-        FixedChordAction::SwitchWindowsBackwards,
-        "shortcut-switch-windows-backwards",
-        "Switch windows backwards",
-        &[chord(ChordKey::Tab, ALT_SHIFT)],
-    ),
-    entry(
-        FixedChordAction::CloseTab,
-        "shortcut-close-tab",
-        "Close tab",
-        &[
-            chord(ChordKey::Function(4), ALT),
-            chord(ChordKey::Char('w'), SUPER),
-        ],
-    ),
-    entry(
-        FixedChordAction::ChangeWorkspace,
-        "shortcut-change-workspace",
-        "Change workspace",
-        &[
-            chord(ChordKey::PageUp, SUPER),
-            chord(ChordKey::PageDown, SUPER),
-        ],
-    ),
-    entry(
-        FixedChordAction::NewWindow,
-        "shortcut-new-window",
-        "New window",
-        &[chord(ChordKey::Char('n'), SUPER)],
-    ),
-    entry(
-        FixedChordAction::AddTab,
-        "shortcut-add-tab",
-        "Add tab here",
-        &[chord(ChordKey::Char('t'), SUPER)],
-    ),
-    entry(
-        FixedChordAction::DuplicateTab,
-        "shortcut-duplicate-tab",
-        "Duplicate tab",
-        &[chord(ChordKey::Char('d'), SUPER)],
-    ),
-    entry(
-        FixedChordAction::OpenTerminal,
-        "shortcut-open-terminal",
-        "Open terminal",
-        &[chord(ChordKey::Enter, SUPER)],
-    ),
-    entry(
-        FixedChordAction::GlobalSearch,
-        "shortcut-global-search",
-        "Global search",
-        &[chord(ChordKey::Space, SUPER)],
-    ),
-    entry(
-        FixedChordAction::LockSession,
-        "shortcut-lock",
-        "Lock",
-        &[chord(ChordKey::Char('l'), SUPER)],
-    ),
-    entry(
-        FixedChordAction::WorkspaceWheel,
-        "shortcut-workspace-wheel",
-        "Workspace wheel",
-        &[chord(ChordKey::Char('s'), SUPER)],
-    ),
-    entry(
-        FixedChordAction::DisplayLayout,
-        "shortcut-display-layout",
-        "Display layout",
-        &[chord(ChordKey::Char('p'), SUPER)],
-    ),
-    entry(
-        FixedChordAction::CaptureScreenshot,
-        "shortcut-capture-screenshot",
-        "Capture screenshot",
-        &[chord(ChordKey::Char('s'), SUPER_SHIFT)],
-    ),
-    entry(
-        FixedChordAction::PictureInPicture,
-        "shortcut-picture-in-picture",
-        "Picture in picture",
-        &[chord(ChordKey::Char('p'), SUPER_SHIFT)],
-    ),
-    entry(
-        FixedChordAction::SaveRecentReplay,
-        "shortcut-save-recent-replay",
-        "Save recent replay",
-        &[chord(ChordKey::Char('r'), SUPER_SHIFT)],
-    ),
-    entry(
-        FixedChordAction::WorkspaceHistory,
-        "shortcut-workspace-history",
-        "Workspace history",
-        &[chord(ChordKey::Char('h'), SUPER)],
-    ),
-    entry(
-        FixedChordAction::ExploreWorkspaceHistory,
-        "shortcut-explore-workspace-history",
-        "Explore workspace history",
-        &[chord(ChordKey::Char('h'), SUPER_SHIFT)],
-    ),
-    entry(
-        FixedChordAction::ShortcutGuide,
-        "shortcut-guide",
-        "Keyboard guide",
-        &[chord(ChordKey::Function(1), NONE)],
-    ),
-    entry(
-        FixedChordAction::StopRemoteInput,
-        "shortcut-stop-remote-input",
-        "Stop all remote input",
-        &[chord(ChordKey::Escape, SUPER)],
-    ),
-];
+/// Every fixed shell chord, in the catalogue's order.
+pub static FIXED_CHORDS: LazyLock<Vec<FixedChordEntry>> = LazyLock::new(|| {
+    FIXED_SHORTCUTS
+        .iter()
+        .filter_map(|fixed| {
+            Some(FixedChordEntry {
+                action: FixedChordAction::from_fixed_id(fixed.id)?,
+                id: fixed.id,
+                label_key: fixed.label_key,
+                chords: fixed
+                    .keys
+                    .iter()
+                    .copied()
+                    .filter_map(routed_chord)
+                    .collect(),
+            })
+        })
+        .collect()
+});
 
 /// The table entry for `action`. Every action has exactly one entry
 /// (pinned by a test), so `None` never happens for a listed action.
@@ -319,8 +280,8 @@ pub fn all_chords() -> impl Iterator<Item = FixedChord> {
 pub fn keyboard_map_markdown() -> String {
     use std::fmt::Write as _;
     let mut out = String::from("| Intent | Keyboard |\n|---|---|\n");
-    for entry in FIXED_CHORDS {
-        let _ = writeln!(out, "| {} | {} |", entry.label, entry.display());
+    for entry in FIXED_CHORDS.iter() {
+        let _ = writeln!(out, "| {} | {} |", entry.label(), entry.display());
     }
     out
 }
@@ -328,6 +289,57 @@ pub fn keyboard_map_markdown() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SUPER: ChordMods = ChordMods { logo: true, ..NONE };
+    const SUPER_SHIFT: ChordMods = ChordMods {
+        shift: true,
+        ..SUPER
+    };
+    const ALT_SHIFT: ChordMods = ChordMods {
+        alt: true,
+        shift: true,
+        ..NONE
+    };
+
+    #[test]
+    fn every_catalogue_chord_is_routed() {
+        assert_eq!(FIXED_CHORDS.len(), FIXED_SHORTCUTS.len());
+        for (entry, fixed) in FIXED_CHORDS.iter().zip(FIXED_SHORTCUTS) {
+            assert_eq!(entry.id, fixed.id);
+            assert_eq!(
+                entry.chords.len(),
+                fixed.keys.len(),
+                "{} has a chord routing cannot match",
+                fixed.id
+            );
+        }
+        for action in [
+            FixedChordAction::Screenshot,
+            FixedChordAction::SwitchWindows,
+            FixedChordAction::SwitchWindowsBackwards,
+            FixedChordAction::SwitchAppWindows,
+            FixedChordAction::CloseTab,
+            FixedChordAction::ChangeWorkspace,
+            FixedChordAction::NewWindow,
+            FixedChordAction::AddTab,
+            FixedChordAction::DuplicateTab,
+            FixedChordAction::OpenTerminal,
+            FixedChordAction::GlobalSearch,
+            FixedChordAction::LockSession,
+            FixedChordAction::WorkspaceWheel,
+            FixedChordAction::DisplayLayout,
+            FixedChordAction::CaptureScreenshot,
+            FixedChordAction::PictureInPicture,
+            FixedChordAction::SaveRecentReplay,
+            FixedChordAction::WorkspaceHistory,
+            FixedChordAction::ExploreWorkspaceHistory,
+            FixedChordAction::ShortcutGuide,
+            FixedChordAction::StopRemoteInput,
+            FixedChordAction::ToggleMouseKeys,
+        ] {
+            assert!(entry_for(action).is_some(), "{action:?} has no chord");
+        }
+    }
 
     const DOC: &str = include_str!("../../../../../docs/shell-navigation-keyboard-map.md");
     const START: &str = "<!-- fixed-shell-chords:start -->\n";
@@ -352,7 +364,7 @@ mod tests {
 
     #[test]
     fn every_action_has_one_entry_and_no_chord_is_listed_twice() {
-        for entry in FIXED_CHORDS {
+        for entry in FIXED_CHORDS.iter() {
             assert_eq!(
                 FIXED_CHORDS
                     .iter()
@@ -392,6 +404,40 @@ mod tests {
         assert_eq!(
             display(FixedChordAction::Screenshot).as_deref(),
             Some("Print Screen")
+        );
+        assert_eq!(
+            display(FixedChordAction::ToggleMouseKeys).as_deref(),
+            Some("Alt+Shift+Num Lock")
+        );
+    }
+
+    #[test]
+    fn display_names_follow_the_active_keyboard_layout() {
+        let display = |action| entry_for(action).map(FixedChordEntry::display);
+        ui::keycaps::set_active(ui::Keycaps::from_xkb("de", ""));
+        let german = [
+            display(FixedChordAction::ChangeWorkspace),
+            display(FixedChordAction::ToggleMouseKeys),
+            display(FixedChordAction::Screenshot),
+            display(FixedChordAction::CloseTab),
+        ];
+        ui::keycaps::set_active(ui::Keycaps::from_xkb("us", "mac"));
+        let mac = display(FixedChordAction::CaptureScreenshot);
+        ui::keycaps::set_active(ui::Keycaps::US);
+        assert_eq!(
+            german.map(Option::unwrap_or_default),
+            [
+                "Super+Bild↑  /  Super+Bild↓",
+                "Alt+Umschalt+Num",
+                "Druck",
+                "Alt+F4  /  Super+W",
+            ]
+        );
+        assert_eq!(mac.as_deref(), Some("⌘⇧S"));
+        // Routing is untouched: the chord is still the canonical one.
+        assert_eq!(
+            fixed_action(ChordKey::PageUp, SUPER),
+            Some(FixedChordAction::ChangeWorkspace)
         );
     }
 

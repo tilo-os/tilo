@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 use settings_store::display_identify::IdentifyRequest;
 use settings_store::hardware::{
     DisplayHardwareSnapshot, DisplayOutputSnapshot, DisplayTransaction, DisplayTransactionState,
-    LiveOutputPlacement, OutputDescriptor, OutputMode, process_start_ticks,
+    LiveOutputPlacement, OutputDescriptor, OutputMode, publisher_identity,
 };
 use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::overlay_host::OutputGeometry;
@@ -44,6 +44,7 @@ fn output(connector: &str, builtin: bool, modes: &[OutputMode]) -> DisplayOutput
             monitor: None,
         },
         current_mode: modes[0],
+        scale: 1.0,
         builtin,
         sink_hdr: false,
         hdr_unavailable_reason: None,
@@ -66,12 +67,13 @@ fn placement(connector: &str, x: i32, width: u32, height: u32) -> LiveOutputPlac
 /// Publish a laptop panel and an HDMI monitor exactly as the compositor
 /// does: the runtime snapshot, stamped with a live publisher identity.
 fn publish_laptop_with_monitor() {
-    let pid = std::process::id();
+    let (publisher_pid, publisher_start_ticks) =
+        publisher_identity().expect("hold the publisher lease, as the compositor does");
     DisplayHardwareSnapshot {
         generated_unix_ms: 1,
         backend: "drm".into(),
-        publisher_pid: pid,
-        publisher_start_ticks: process_start_ticks(pid).expect("own /proc stat"),
+        publisher_pid,
+        publisher_start_ticks,
         outputs: vec![
             output("eDP-1", true, &[mode(2560, 1600), mode(1920, 1080)]),
             output("HDMI-A-1", false, &[mode(3840, 2160), mode(1920, 1080)]),
@@ -89,7 +91,7 @@ fn publish_laptop_with_monitor() {
     );
 }
 
-fn layout_host(host: &mut ShellOverlayHost) -> (TaffyTree<()>, NodeId) {
+pub(crate) fn layout_host(host: &mut ShellOverlayHost) -> (TaffyTree<()>, NodeId) {
     use taffy::{Dimension, Style};
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -133,7 +135,7 @@ fn layout_host(host: &mut ShellOverlayHost) -> (TaffyTree<()>, NodeId) {
 /// Route a pressed logical key through the host dispatcher. `KeyEvent` has
 /// no public constructor, so its opaque platform payload is zeroed and every
 /// public field set, as the compositor's own harness does.
-fn press(
+pub(crate) fn press(
     host: &mut ShellOverlayHost,
     layout: &(TaffyTree<()>, NodeId),
     key: Key,
@@ -157,14 +159,16 @@ fn press(
     let mut focus_target = None;
     host.handle_event(
         &event,
-        1.0,
-        &Modifiers::from(mods),
-        &mut state,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus_target,
-        layout.1,
-        &layout.0,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::from(mods),
+            state: &mut state,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: layout.1,
+            taffy: &layout.0,
+        },
     );
     assert!(handled, "{event:?} must be consumed by the shell");
 }

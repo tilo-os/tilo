@@ -418,70 +418,63 @@ mod tests {
     fn contains(widget: &dyn Widget, id: &str) -> bool {
         widget.test_id() == Some(id) || widget.children().iter().any(|child| contains(*child, id))
     }
+    /// Download records, open and reveal.
     #[test]
-    fn download_records_survive_origin_close_and_permissions_stay_local() {
-        let first_engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
-        let second_capture = ui::webview::test_engine::TestEngine::new();
-        let second_engine: SharedEngine = second_capture.clone();
-        let mut first = Capabilities::default();
-        let mut second = Capabilities::default();
-        second.share_downloads(&first);
-        first.apply(WebViewEvent::PermissionRequested {
-            id: 1,
-            origin: "https://site.test".into(),
-            permissions: "camera".into(),
-        });
-        assert!(first.prompt(&first_engine).is_some());
-        assert!(second.prompt(&second_engine).is_none());
-        first.apply(WebViewEvent::DownloadUpdated {
-            id: 7,
-            state: "progress".into(),
-            path: "/tmp/file".into(),
-            name: "file".into(),
-            url: "https://downloads.test/file".into(),
-            retryable: true,
-            received: 10,
-            total: 20,
-            error: String::new(),
-        });
-        assert!(second.downloads_changed());
-        let mut rows = second.downloads(&second_engine);
-        assert!(contains(rows.as_ref(), "browser.download.cancel.7"));
-        let result = rows
-            .start_resource_operation(
-                ui::tilo_actions::InvocationId::new(),
-                ui::tilo_actions::OperationKind::Effect,
-                "tilo.ui.control.invoke",
-                &serde_json::to_vec("browser.download.cancel.7").unwrap(),
-                &automerge::AutoCommit::new(),
-                &automerge::ROOT,
-            )
-            .unwrap();
-        assert!(result.is_some());
-        assert!(
-            second_capture
-                .commands()
-                .contains(&WebViewCommand::CancelNativeDownload { id: 7 })
-        );
-        drop(first);
-        second.apply(WebViewEvent::DownloadUpdated {
-            id: 7,
-            state: "complete".into(),
-            path: "/tmp/file".into(),
-            name: "file".into(),
-            url: "https://downloads.test/file".into(),
-            retryable: true,
-            received: 20,
-            total: 20,
-            error: String::new(),
-        });
-        assert!(contains(
-            second.downloads(&second_engine).as_ref(),
-            "browser.download.open.7"
-        ));
-        for id in 8..150 {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn download_records_outlive_origin_and_offer_host_actions_when_complete() {
+        // Phase `download_records_survive_origin_close_and_permissions_stay_local`.
+        {
+            let first_engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
+            let second_capture = ui::webview::test_engine::TestEngine::new();
+            let second_engine: SharedEngine = second_capture.clone();
+            let mut first = Capabilities::default();
+            let mut second = Capabilities::default();
+            second.share_downloads(&first);
+            first.apply(WebViewEvent::PermissionRequested {
+                id: 1,
+                origin: "https://site.test".into(),
+                permissions: "camera".into(),
+            });
+            assert!(first.prompt(&first_engine).is_some());
+            assert!(second.prompt(&second_engine).is_none());
+            first.apply(WebViewEvent::DownloadUpdated {
+                id: 7,
+                state: "progress".into(),
+                path: "/tmp/file".into(),
+                name: "file".into(),
+                url: "https://downloads.test/file".into(),
+                retryable: true,
+                received: 10,
+                total: 20,
+                error: String::new(),
+            });
+            assert!(second.downloads_changed());
+            let mut rows = second.downloads(&second_engine);
+            assert!(contains(rows.as_ref(), "browser.download.cancel.7"));
+            let result = rows
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        ui::tilo_actions::OperationKind::Effect,
+                        "tilo.ui.control.invoke",
+                        &serde_json::to_vec("browser.download.cancel.7").unwrap(),
+                    ),
+                    &mut automerge::AutoCommit::new(),
+                    &automerge::ROOT,
+                )
+                .unwrap();
+            assert!(result.is_some());
+            assert!(
+                second_capture
+                    .commands()
+                    .contains(&WebViewCommand::CancelNativeDownload { id: 7 })
+            );
+            drop(first);
             second.apply(WebViewEvent::DownloadUpdated {
-                id,
+                id: 7,
                 state: "complete".into(),
                 path: "/tmp/file".into(),
                 name: "file".into(),
@@ -491,181 +484,208 @@ mod tests {
                 total: 20,
                 error: String::new(),
             });
+            assert!(contains(
+                second.downloads(&second_engine).as_ref(),
+                "browser.download.open.7"
+            ));
+            for id in 8..150 {
+                second.apply(WebViewEvent::DownloadUpdated {
+                    id,
+                    state: "complete".into(),
+                    path: "/tmp/file".into(),
+                    name: "file".into(),
+                    url: "https://downloads.test/file".into(),
+                    retryable: true,
+                    received: 20,
+                    total: 20,
+                    error: String::new(),
+                });
+            }
+            assert_eq!(second.downloads.borrow().records.len(), 100);
         }
-        assert_eq!(second.downloads.borrow().records.len(), 100);
+
+        // Phase `open_and_reveal_go_to_the_host_for_an_existing_download`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("download.txt");
+            std::fs::write(&path, b"done").unwrap();
+            let (services, recorder) = ui::host::HostServices::recording();
+            let _host = ui::host::enter(&services);
+            recorder.respond_to_launch(ui::portal::LaunchOutcome::Failed("no handler".into()));
+            let opened = open_download(&path, false).unwrap();
+            assert_eq!(
+                opened.recv(),
+                Ok(ui::portal::LaunchOutcome::Failed("no handler".into()))
+            );
+            let revealed = open_download(&path, true).unwrap();
+            assert_eq!(revealed.recv(), Ok(ui::portal::LaunchOutcome::Opened));
+            let requests = recorder.launch_requests();
+            assert_eq!(requests.len(), 2);
+            assert!(!requests[0].is_reveal() && requests[1].is_reveal());
+            assert_eq!(requests[0].path(), path.as_path());
+            assert!(
+                open_download(&dir.path().join("missing.txt"), false).is_err(),
+                "a vanished download never reaches the host"
+            );
+            assert_eq!(recorder.launch_requests().len(), 2);
+        }
+
+        // Phase `only_completed_downloads_offer_explicit_open_and_reveal`.
+        {
+            let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
+            let mut capabilities = Capabilities::default();
+            for state in ["progress", "failed", "complete"] {
+                capabilities.apply(WebViewEvent::DownloadUpdated {
+                    id: 7,
+                    state: state.into(),
+                    path: "/tmp/test-download.txt".into(),
+                    name: "test".into(),
+                    url: "https://downloads.test/file".into(),
+                    retryable: true,
+                    received: 8,
+                    total: 8,
+                    error: String::new(),
+                });
+                let view = capabilities.downloads(&engine);
+                assert_eq!(
+                    contains(view.as_ref(), "browser.download.open.7"),
+                    state == "complete"
+                );
+                assert_eq!(
+                    contains(view.as_ref(), "browser.download.reveal.7"),
+                    state == "complete"
+                );
+            }
+        }
     }
 
+    /// Progress aggregation, sparse updates and runtime disconnect.
     #[test]
-    fn open_and_reveal_go_to_the_host_for_an_existing_download() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("download.txt");
-        std::fs::write(&path, b"done").unwrap();
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
-        recorder.respond_to_launch(ui::portal::LaunchOutcome::Failed("no handler".into()));
-        let opened = open_download(&path, false).unwrap();
-        assert_eq!(
-            opened.recv(),
-            Ok(ui::portal::LaunchOutcome::Failed("no handler".into()))
-        );
-        let revealed = open_download(&path, true).unwrap();
-        assert_eq!(revealed.recv(), Ok(ui::portal::LaunchOutcome::Opened));
-        let requests = recorder.launch_requests();
-        assert_eq!(requests.len(), 2);
-        assert!(!requests[0].is_reveal() && requests[1].is_reveal());
-        assert_eq!(requests[0].path(), path.as_path());
-        assert!(
-            open_download(&dir.path().join("missing.txt"), false).is_err(),
-            "a vanished download never reaches the host"
-        );
-        assert_eq!(recorder.launch_requests().len(), 2);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn download_progress_aggregates_and_runtime_disconnect_fails_truthfully() {
+        // Phase `aggregate_progress_handles_large_valid_native_byte_counts`.
+        {
+            let mut capabilities = Capabilities::default();
+            for id in 1..=4 {
+                capabilities.apply(WebViewEvent::DownloadUpdated {
+                    id,
+                    state: "progress".into(),
+                    path: "/tmp/large-download".into(),
+                    name: "large".into(),
+                    url: "https://downloads.test/large".into(),
+                    retryable: true,
+                    received: 1_u64 << 61,
+                    total: 1_u64 << 62,
+                    error: String::new(),
+                });
+            }
+            assert_eq!(
+                capabilities.toolbar_status().as_deref(),
+                Some("4 downloads · 50%")
+            );
+        }
 
-    #[test]
-    fn only_completed_downloads_offer_explicit_open_and_reveal() {
-        let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
-        let mut capabilities = Capabilities::default();
-        for state in ["progress", "failed", "complete"] {
+        // Phase `sparse_terminal_updates_preserve_retry_metadata_and_aggregate_status`.
+        {
+            let capture = ui::webview::test_engine::TestEngine::new();
+            let engine: SharedEngine = capture.clone();
+            let mut capabilities = Capabilities::default();
+            capabilities.apply(WebViewEvent::DownloadUpdated {
+                id: 41,
+                state: "progress".into(),
+                path: "/tmp/archive.zip".into(),
+                name: "archive.zip".into(),
+                url: "https://downloads.test/archive.zip".into(),
+                retryable: true,
+                received: 256,
+                total: 1024,
+                error: String::new(),
+            });
+            assert_eq!(
+                capabilities.toolbar_status().as_deref(),
+                Some("1 download · 25%")
+            );
+
+            capabilities.apply(WebViewEvent::DownloadUpdated {
+                id: 41,
+                state: "failed".into(),
+                path: String::new(),
+                name: String::new(),
+                url: String::new(),
+                retryable: false,
+                received: 0,
+                total: 0,
+                error: "connection reset".into(),
+            });
+            let mut rows = capabilities.downloads(&engine);
+            assert!(contains(rows.as_ref(), "browser.download.retry.41"));
+            let result = rows
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        ui::tilo_actions::OperationKind::Effect,
+                        "tilo.ui.control.invoke",
+                        &serde_json::to_vec("browser.download.retry.41").unwrap(),
+                    ),
+                    &mut automerge::AutoCommit::new(),
+                    &automerge::ROOT,
+                )
+                .unwrap();
+            assert!(result.is_some());
+            assert!(
+                capture
+                    .commands()
+                    .contains(&WebViewCommand::RetryDownload { id: 41 })
+            );
+            assert_eq!(
+                capabilities.toolbar_status().as_deref(),
+                Some("Download failed")
+            );
+        }
+
+        // Phase `runtime_disconnect_fails_in_progress_records_and_exit_waits_for_detached_owner`.
+        {
+            let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
+            let mut capabilities = Capabilities::default();
             capabilities.apply(WebViewEvent::DownloadUpdated {
                 id: 7,
-                state: state.into(),
-                path: "/tmp/test-download.txt".into(),
-                name: "test".into(),
+                state: "progress".into(),
+                path: "/tmp/file".into(),
+                name: "file".into(),
                 url: "https://downloads.test/file".into(),
                 retryable: true,
-                received: 8,
-                total: 8,
+                received: 10,
+                total: 20,
                 error: String::new(),
             });
-            let view = capabilities.downloads(&engine);
-            assert_eq!(
-                contains(view.as_ref(), "browser.download.open.7"),
-                state == "complete"
-            );
-            assert_eq!(
-                contains(view.as_ref(), "browser.download.reveal.7"),
-                state == "complete"
-            );
-        }
-    }
-
-    #[test]
-    fn aggregate_progress_handles_large_valid_native_byte_counts() {
-        let mut capabilities = Capabilities::default();
-        for id in 1..=4 {
-            capabilities.apply(WebViewEvent::DownloadUpdated {
-                id,
-                state: "progress".into(),
-                path: "/tmp/large-download".into(),
-                name: "large".into(),
-                url: "https://downloads.test/large".into(),
-                retryable: true,
-                received: 1_u64 << 61,
-                total: 1_u64 << 62,
+            capabilities.apply(WebViewEvent::DownloadRuntime {
+                admitted: 1,
+                detached: 1,
+                accepting: true,
                 error: String::new(),
             });
+            assert!(capabilities.exit_requires_choice());
+            capabilities.apply(WebViewEvent::DownloadRuntime {
+                admitted: 0,
+                detached: 1,
+                accepting: false,
+                error: String::new(),
+            });
+            assert!(!capabilities.exit_cleanup_complete());
+            capabilities.apply(WebViewEvent::DownloadRuntime {
+                admitted: 0,
+                detached: 0,
+                accepting: false,
+                error: "Chromium engine disconnected".into(),
+            });
+            assert!(capabilities.exit_cleanup_complete());
+            assert!(contains(
+                capabilities.downloads(&engine).as_ref(),
+                "browser.download.terminal-status"
+            ));
         }
-        assert_eq!(
-            capabilities.toolbar_status().as_deref(),
-            Some("4 downloads · 50%")
-        );
-    }
-
-    #[test]
-    fn sparse_terminal_updates_preserve_retry_metadata_and_aggregate_status() {
-        let capture = ui::webview::test_engine::TestEngine::new();
-        let engine: SharedEngine = capture.clone();
-        let mut capabilities = Capabilities::default();
-        capabilities.apply(WebViewEvent::DownloadUpdated {
-            id: 41,
-            state: "progress".into(),
-            path: "/tmp/archive.zip".into(),
-            name: "archive.zip".into(),
-            url: "https://downloads.test/archive.zip".into(),
-            retryable: true,
-            received: 256,
-            total: 1024,
-            error: String::new(),
-        });
-        assert_eq!(
-            capabilities.toolbar_status().as_deref(),
-            Some("1 download · 25%")
-        );
-
-        capabilities.apply(WebViewEvent::DownloadUpdated {
-            id: 41,
-            state: "failed".into(),
-            path: String::new(),
-            name: String::new(),
-            url: String::new(),
-            retryable: false,
-            received: 0,
-            total: 0,
-            error: "connection reset".into(),
-        });
-        let mut rows = capabilities.downloads(&engine);
-        assert!(contains(rows.as_ref(), "browser.download.retry.41"));
-        let result = rows
-            .start_resource_operation(
-                ui::tilo_actions::InvocationId::new(),
-                ui::tilo_actions::OperationKind::Effect,
-                "tilo.ui.control.invoke",
-                &serde_json::to_vec("browser.download.retry.41").unwrap(),
-                &automerge::AutoCommit::new(),
-                &automerge::ROOT,
-            )
-            .unwrap();
-        assert!(result.is_some());
-        assert!(
-            capture
-                .commands()
-                .contains(&WebViewCommand::RetryDownload { id: 41 })
-        );
-        assert_eq!(
-            capabilities.toolbar_status().as_deref(),
-            Some("Download failed")
-        );
-    }
-
-    #[test]
-    fn runtime_disconnect_fails_in_progress_records_and_exit_waits_for_detached_owner() {
-        let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
-        let mut capabilities = Capabilities::default();
-        capabilities.apply(WebViewEvent::DownloadUpdated {
-            id: 7,
-            state: "progress".into(),
-            path: "/tmp/file".into(),
-            name: "file".into(),
-            url: "https://downloads.test/file".into(),
-            retryable: true,
-            received: 10,
-            total: 20,
-            error: String::new(),
-        });
-        capabilities.apply(WebViewEvent::DownloadRuntime {
-            admitted: 1,
-            detached: 1,
-            accepting: true,
-            error: String::new(),
-        });
-        assert!(capabilities.exit_requires_choice());
-        capabilities.apply(WebViewEvent::DownloadRuntime {
-            admitted: 0,
-            detached: 1,
-            accepting: false,
-            error: String::new(),
-        });
-        assert!(!capabilities.exit_cleanup_complete());
-        capabilities.apply(WebViewEvent::DownloadRuntime {
-            admitted: 0,
-            detached: 0,
-            accepting: false,
-            error: "Chromium engine disconnected".into(),
-        });
-        assert!(capabilities.exit_cleanup_complete());
-        assert!(contains(
-            capabilities.downloads(&engine).as_ref(),
-            "browser.download.terminal-status"
-        ));
     }
 }

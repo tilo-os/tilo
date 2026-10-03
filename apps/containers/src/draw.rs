@@ -171,47 +171,10 @@ pub fn text_clip(
         weight,
     } = *style;
     let size = px(tr, size);
-    let (w, _) = tr.measure_weighted(s, size, None, weight);
-    if f64::from(w) <= max_width {
-        tr.draw_text_weighted(
-            scene,
-            s,
-            size,
-            color,
-            base() * Affine::translate((at.x, at.y)),
-            None,
-            weight,
-        );
-        return;
-    }
-    // Binary-search the longest prefix that fits with an ellipsis.
-    let chars: Vec<char> = s.chars().collect();
-    let ell = "…";
-    let mut lo = 0usize;
-    let mut hi = chars.len();
-    let mut best = String::new();
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        let candidate: String = chars
-            .get(..mid)
-            .unwrap_or_default()
-            .iter()
-            .collect::<String>()
-            + ell;
-        let (cw, _) = tr.measure_weighted(&candidate, size, None, weight);
-        if f64::from(cw) <= max_width {
-            best = candidate;
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    if best.is_empty() {
-        best = ell.to_string();
-    }
+    let clipped = tr.elide_to_width_weighted(s, size, ui::num::f32_of_f64(max_width), weight);
     tr.draw_text_weighted(
         scene,
-        &best,
+        &clipped,
         size,
         color,
         base() * Affine::translate((at.x, at.y)),
@@ -586,117 +549,121 @@ pub enum Icon {
 mod tests {
     use super::*;
 
-    /// A theme type token already carries the active text scale; the legacy
-    /// renderer-relative APIs scale again. `px` folds the token back once, so
-    /// a 28px token at 200% paints 28px glyphs (not 56px) and measures the
-    /// same width it paints.
+    /// Token sizes apply once at 200%, status pills match their painted width, card edges register on every ground and tinted pills are edged in their hue.
     #[test]
-    fn token_sizes_are_applied_exactly_once_at_200_percent() {
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let token = theme.tokens.typography.scale.base;
-        assert!((token - 28.0).abs() < 0.01, "base token is 14 * 2");
-        assert!((px(&tr, token) - 14.0).abs() < 0.01);
+    fn painted_metrics_and_edges_follow_tokens_and_hues() {
+        // --- phase: token_sizes_are_applied_exactly_once_at_200_percent ---
+        // A theme type token already carries the active text scale; the legacy
+        // renderer-relative APIs scale again. `px` folds the token back once, so
+        // a 28px token at 200% paints 28px glyphs (not 56px) and measures the
+        // same width it paints.
+        {
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(2.0);
+            let token = theme.tokens.typography.scale.base;
+            assert!((token - 28.0).abs() < 0.01, "base token is 14 * 2");
+            assert!((px(&tr, token) - 14.0).abs() < 0.01);
 
-        set_base(Affine::IDENTITY);
-        let mut scene = Scene::new();
-        let painted_w = text(
-            &mut scene,
-            &mut tr,
-            "Containers",
-            token,
-            Color::WHITE,
-            Point::ZERO,
-            TextWeight::Semibold,
-        );
-        let runs = &scene.encoding().resources.glyph_runs;
-        assert!(!runs.is_empty(), "text painted at least one glyph run");
-        for run in runs {
-            assert!(
-                (run.font_size - 28.0).abs() < 0.5,
-                "glyph run painted at {}px for a 28px token",
-                run.font_size
+            set_base(Affine::IDENTITY);
+            let mut scene = Scene::new();
+            let painted_w = text(
+                &mut scene,
+                &mut tr,
+                "Containers",
+                token,
+                Color::WHITE,
+                Point::ZERO,
+                TextWeight::Semibold,
             );
-        }
-        let (measured_w, _) = measure(&mut tr, "Containers", token, TextWeight::Semibold);
-        assert!(
-            (painted_w - measured_w).abs() < 0.01,
-            "measure and paint agree"
-        );
-        // And the unscaled renderer is untouched: a 14px token stays 14px.
-        let plain = TextRenderer::new();
-        assert!((px(&plain, 14.0) - 14.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn status_pill_width_matches_the_painted_pill() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        set_base(Affine::IDENTITY);
-        let mut scene = Scene::new();
-        let painted = status_pill(
-            &mut scene,
-            &mut tr,
-            &theme,
-            ContainerStatus::Running,
-            ContainerStatus::Running.label(),
-            Point::new(10.0, 10.0),
-            20.0,
-        );
-        let predicted = status_pill_width(&mut tr, &theme, ContainerStatus::Running.label());
-        assert!((painted - predicted).abs() < 0.01);
-    }
-
-    /// HIG §9.5: every surface the manager closes with [`card`] — the base
-    /// log console, raised banners, lifted rows, the Panel ground of its
-    /// dialogs — gets an edge that visibly moves that surface on dark, light
-    /// and high-contrast alike. A declared `border_standard` did not.
-    #[test]
-    fn card_edges_register_on_every_containers_ground() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let c = &theme.tokens.colors;
-            for (name, ground) in [
-                ("base", c.surfaces.base),
-                ("raised", c.surfaces.raised),
-                ("lift 0.35", c.lift(0.35)),
-                ("lift 0.72", c.lift(0.72)),
-                ("panel", ui::chrome::panel_ground(&theme)),
-            ] {
-                let moved = ui::surface::edge_delta(edge(ground), ground);
+            let runs = &scene.encoding().resources.glyph_runs;
+            assert!(!runs.is_empty(), "text painted at least one glyph run");
+            for run in runs {
                 assert!(
-                    moved >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
-                    "{}: {name} edge moved only {moved:.4}",
-                    theme.name
+                    (run.font_size - 28.0).abs() < 0.5,
+                    "glyph run painted at {}px for a 28px token",
+                    run.font_size
                 );
             }
+            let (measured_w, _) = measure(&mut tr, "Containers", token, TextWeight::Semibold);
+            assert!(
+                (painted_w - measured_w).abs() < 0.01,
+                "measure and paint agree"
+            );
+            // And the unscaled renderer is untouched: a 14px token stays 14px.
+            let plain = TextRenderer::new();
+            assert!((px(&plain, 14.0) - 14.0).abs() < 0.01);
         }
-    }
 
-    /// A tinted status pill / port chip is a closed shape: its edge is the
-    /// same hue as its fill at a higher alpha, so it never dissolves into a
-    /// raised ground the way a translucent fill alone did.
-    #[test]
-    fn tinted_pills_and_chips_are_edged_in_their_own_hue() {
-        const { assert!(TINT_EDGE_ALPHA > TINT_FILL_ALPHA) };
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        set_base(Affine::IDENTITY);
-        let mut scene = Scene::new();
-        status_pill(
-            &mut scene,
-            &mut tr,
-            &theme,
-            ContainerStatus::Running,
-            "Running",
-            Point::new(10.0, 10.0),
-            20.0,
-        );
-        // Fill, edge stroke, dot, glyph run: the stroke is the second path.
-        let paths = scene.encoding().n_paths;
-        assert!(
-            paths >= 3,
-            "pill paints a fill, an edge and a dot ({paths} paths)"
-        );
+        // --- phase: status_pill_width_matches_the_painted_pill ---
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            set_base(Affine::IDENTITY);
+            let mut scene = Scene::new();
+            let painted = status_pill(
+                &mut scene,
+                &mut tr,
+                &theme,
+                ContainerStatus::Running,
+                ContainerStatus::Running.label(),
+                Point::new(10.0, 10.0),
+                20.0,
+            );
+            let predicted = status_pill_width(&mut tr, &theme, ContainerStatus::Running.label());
+            assert!((painted - predicted).abs() < 0.01);
+        }
+
+        // --- phase: card_edges_register_on_every_containers_ground ---
+        // HIG §9.5: every surface the manager closes with [`card`] — the base
+        // log console, raised banners, lifted rows, the Panel ground of its
+        // dialogs — gets an edge that visibly moves that surface on dark, light
+        // and high-contrast alike. A declared `border_standard` did not.
+        {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let c = &theme.tokens.colors;
+                for (name, ground) in [
+                    ("base", c.surfaces.base),
+                    ("raised", c.surfaces.raised),
+                    ("lift 0.35", c.lift(0.35)),
+                    ("lift 0.72", c.lift(0.72)),
+                    ("panel", ui::chrome::panel_ground(&theme)),
+                ] {
+                    let moved = ui::surface::edge_delta(edge(ground), ground);
+                    assert!(
+                        moved >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                        "{}: {name} edge moved only {moved:.4}",
+                        theme.name
+                    );
+                }
+            }
+        }
+
+        // --- phase: tinted_pills_and_chips_are_edged_in_their_own_hue ---
+        // A tinted status pill / port chip is a closed shape: its edge is the
+        // same hue as its fill at a higher alpha, so it never dissolves into a
+        // raised ground the way a translucent fill alone did.
+        {
+            const { assert!(TINT_EDGE_ALPHA > TINT_FILL_ALPHA) };
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            set_base(Affine::IDENTITY);
+            let mut scene = Scene::new();
+            status_pill(
+                &mut scene,
+                &mut tr,
+                &theme,
+                ContainerStatus::Running,
+                "Running",
+                Point::new(10.0, 10.0),
+                20.0,
+            );
+            // Fill, edge stroke, dot, glyph run: the stroke is the second path.
+            let paths = scene.encoding().n_paths;
+            assert!(
+                paths >= 3,
+                "pill paints a fill, an edge and a dot ({paths} paths)"
+            );
+        }
     }
 }

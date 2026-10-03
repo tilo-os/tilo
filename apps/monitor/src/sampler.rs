@@ -3,7 +3,7 @@
 //! the app's throttle — so the very first `--shots` frame, which never
 //! ticks the throttle, renders the seeded sample data untouched.
 
-use std::time::Instant;
+use ui::time::Instant;
 
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
@@ -138,7 +138,7 @@ impl Sampler {
     /// computed as byte deltas since the previous call divided by the
     /// elapsed wall time.
     pub fn refresh(&mut self, model: &mut MonitorModel) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = self.last.map_or(1.0, |l| (now - l).as_secs_f32()).max(0.05);
 
         self.sys.refresh_cpu_all();
@@ -239,14 +239,17 @@ impl Sampler {
                 status: p.status().to_string(),
                 cmd,
                 run_secs: p.run_time(),
-                open_files: count_open_files(pid_u32),
+                open_files: host_info::process::open_file_count(pid_u32),
                 // Kernel worker threads have no resident memory.
                 kernel: mem == 0,
             });
         }
         model.processes = procs;
         model.process_status =
-            process_snapshot_status(model.processes.len(), process_source_probe());
+            // `sysinfo`'s refresh is infallible, so an empty listing is paired
+            // with a probe of the process table: readable plus no rows is a
+            // genuine empty snapshot, an access failure is surfaced.
+            process_snapshot_status(model.processes.len(), host_info::process::probe_process_table());
 
         self.last = Some(now);
     }
@@ -286,21 +289,6 @@ impl Sampler {
     }
 }
 
-/// `sysinfo` exposes its process refresh as an infallible API. On Linux we
-/// therefore pair its empty result with a direct `/proc` probe: a readable
-/// `/proc` plus no rows is a genuine empty snapshot, while an access failure
-/// is surfaced explicitly to the app. This is intentionally independent of
-/// per-process `/proc/<pid>/fd` access, which is optional enrichment only.
-#[cfg(target_os = "linux")]
-fn process_source_probe() -> std::io::Result<()> {
-    std::fs::read_dir("/proc").map(|_| ())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn process_source_probe() -> std::io::Result<()> {
-    Ok(())
-}
-
 fn process_snapshot_status(
     process_count: usize,
     source_probe: std::io::Result<()>,
@@ -323,41 +311,51 @@ impl Default for Sampler {
     }
 }
 
-/// Count a process's open file descriptors by listing `/proc/<pid>/fd`.
-/// `None` when the platform doesn't expose it or the directory can't be read
-/// (permission denied, the process just exited) — never a fabricated zero.
-#[cfg(target_os = "linux")]
-fn count_open_files(pid: u32) -> Option<usize> {
-    std::fs::read_dir(format!("/proc/{pid}/fd"))
-        .ok()
-        .map(|it| it.flatten().count())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn count_open_files(_pid: u32) -> Option<usize> {
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::MonitorModel;
 
+    /// The sampler reports empty, permission and failure states distinctly, and signal
+    /// effects on an unknown or stale PID dispatch nothing.
     #[test]
-    fn process_source_status_distinguishes_empty_permission_and_failure() {
-        assert_eq!(process_snapshot_status(1, Ok(())), ProcessDataStatus::Ready);
-        assert_eq!(process_snapshot_status(0, Ok(())), ProcessDataStatus::Empty);
-        assert_eq!(
-            process_snapshot_status(
-                0,
-                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
-            ),
-            ProcessDataStatus::PermissionDenied
-        );
-        assert_eq!(
-            process_snapshot_status(0, Err(std::io::Error::other("source offline"))),
-            ProcessDataStatus::Unavailable
-        );
+    fn process_source_status_and_signals_refuse_to_pretend() {
+        // Phase `process_source_status_distinguishes_empty_permission_and_failure`.
+        {
+            assert_eq!(process_snapshot_status(1, Ok(())), ProcessDataStatus::Ready);
+            assert_eq!(process_snapshot_status(0, Ok(())), ProcessDataStatus::Empty);
+            assert_eq!(
+                process_snapshot_status(
+                    0,
+                    Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+                ),
+                ProcessDataStatus::PermissionDenied
+            );
+            assert_eq!(
+                process_snapshot_status(0, Err(std::io::Error::other("source offline"))),
+                ProcessDataStatus::Unavailable
+            );
+        }
+
+        // Phase `signal_and_kill_reject_unknown_or_stale_pid`.
+        // Signal effects route through a generation-checked real process handle:
+        // an unknown or stale PID dispatches nothing rather than pretending to
+        // succeed.
+        {
+            let mut s = Sampler::new();
+            assert!(
+                !s.signal_if_current(u32::MAX, 0, StopKind::Term),
+                "no such process to SIGTERM"
+            );
+            assert!(
+                !s.signal_if_current(u32::MAX, 0, StopKind::Kill),
+                "no such process to SIGKILL"
+            );
+            assert!(
+                !s.kill_if_current(u32::MAX, 0),
+                "no such process to hard-kill"
+            );
+        }
     }
 
     /// A live refresh folds real metrics into the model and ties the
@@ -397,26 +395,6 @@ mod tests {
         assert_eq!(
             model.metrics.disk_write_hist.last(),
             model.metrics.disk_write
-        );
-    }
-
-    /// Signal effects route through a generation-checked real process handle:
-    /// an unknown or stale PID dispatches nothing rather than pretending to
-    /// succeed.
-    #[test]
-    fn signal_and_kill_reject_unknown_or_stale_pid() {
-        let mut s = Sampler::new();
-        assert!(
-            !s.signal_if_current(u32::MAX, 0, StopKind::Term),
-            "no such process to SIGTERM"
-        );
-        assert!(
-            !s.signal_if_current(u32::MAX, 0, StopKind::Kill),
-            "no such process to SIGKILL"
-        );
-        assert!(
-            !s.kill_if_current(u32::MAX, 0),
-            "no such process to hard-kill"
         );
     }
 }

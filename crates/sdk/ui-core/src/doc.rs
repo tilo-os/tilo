@@ -16,9 +16,47 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, Prop, ReadDoc, ScalarValue, Value};
+use std::any::Any;
 
-/// Shared fractional ordering for projections whose storage objects stay fixed.
-pub use qdoc::order as fractional_order;
+/// The document and object a widget pass lent as its
+/// [`AppModel`](crate::widget::AppModel) and [`ModelPath`](crate::widget::ModelPath).
+///
+/// # Panics
+///
+/// Panics if the host lent another model: a document runtime lends an
+/// `AutoCommit` and an `ObjId` in it.
+#[allow(
+    clippy::panic,
+    reason = "a document host lends its document; any other model is a host bug"
+)]
+pub fn document<'a>(model: &'a mut dyn Any, path: &'a dyn Any) -> (&'a mut AutoCommit, &'a ObjId) {
+    let (Some(doc), Some(path)) = (
+        model.downcast_mut::<AutoCommit>(),
+        path.downcast_ref::<ObjId>(),
+    ) else {
+        panic!("the host lent a model that is not an Automerge document");
+    };
+    (doc, path)
+}
+
+/// Read-only [`document`].
+///
+/// # Panics
+///
+/// Panics if the host lent another model.
+#[allow(
+    clippy::panic,
+    reason = "a document host lends its document; any other model is a host bug"
+)]
+pub fn document_ref<'a>(model: &'a dyn Any, path: &'a dyn Any) -> (&'a AutoCommit, &'a ObjId) {
+    let (Some(doc), Some(path)) = (
+        model.downcast_ref::<AutoCommit>(),
+        path.downcast_ref::<ObjId>(),
+    ) else {
+        panic!("the host lent a model that is not an Automerge document");
+    };
+    (doc, path)
+}
 
 /// The splice [`splice_text_diffed`] applied, in *characters* — Automerge `Text`
 /// is char-addressed, not byte-addressed. A no-op reports `{pos:0, del:0, ins:0}`.
@@ -276,8 +314,10 @@ mod tests {
     }
 
     #[test]
-    fn string_readers_distinguish_scalars_from_text_objects() {
+    fn readers_distinguish_types_and_apply_documented_coercions() {
+        // All readers are pure, so one fixture serves every probe.
         let doc = reader_fixture();
+        // String readers distinguish scalars from text objects.
         assert_eq!(read_str(&doc, &ROOT, "str").as_deref(), Some("plain"));
         assert_eq!(read_str(&doc, &ROOT, "text"), None);
         assert_eq!(read_text(&doc, &ROOT, "text").as_deref(), Some("rich"));
@@ -293,11 +333,8 @@ mod tests {
         for missing in ["absent", "yes", "map"] {
             assert_eq!(read_str_or_text(&doc, &ROOT, missing), None, "{missing}");
         }
-    }
 
-    #[test]
-    fn scalar_readers_report_a_mismatched_type_as_absent() {
-        let doc = reader_fixture();
+        // Scalar readers report a mismatched type as absent.
         assert_eq!(read_bool(&doc, &ROOT, "yes"), Some(true));
         assert_eq!(read_bool(&doc, &ROOT, "int"), None);
         assert_eq!(read_f64(&doc, &ROOT, "float"), Some(2.5));
@@ -305,11 +342,8 @@ mod tests {
         assert_eq!(read_scalar(&doc, &ROOT, "map"), None);
         assert_eq!(read_scalar(&doc, &ROOT, "absent"), None);
         assert_eq!(read_scalar(&doc, &ROOT, "uint"), Some(ScalarValue::Uint(9)));
-    }
 
-    #[test]
-    fn numeric_readers_apply_their_documented_coercions() {
-        let doc = reader_fixture();
+        // Numeric readers apply their documented coercions.
         assert_eq!(read_number(&doc, &ROOT, "float"), Some(2.5));
         assert_eq!(read_number(&doc, &ROOT, "int"), Some(-7.0));
         assert_eq!(read_number(&doc, &ROOT, "uint"), Some(9.0));
@@ -334,10 +368,8 @@ mod tests {
         assert_eq!(read_u64(&doc, &ROOT, "huge"), Some(u64::MAX));
         assert_eq!(read_u64(&doc, &ROOT, "int"), None, "negative Int");
         assert_eq!(read_u64(&doc, &ROOT, "float"), None);
-    }
 
-    #[test]
-    fn readers_accept_list_indices() {
+        // Readers accept list indices.
         let mut doc = AutoCommit::new();
         let list = doc.put_object(&ROOT, "list", ObjType::List).unwrap();
         doc.insert(&list, 0, "first").unwrap();
@@ -352,168 +384,174 @@ mod tests {
     }
 
     #[test]
-    fn single_char_append_splices_only_the_new_char() {
-        let mut doc = AutoCommit::new();
-        let long = "abcdefghijklmnopqrstuvwxyz0123456789";
-        let id = seed_text(&mut doc, "t", long);
-        let mut target = long.to_string();
-        target.push('!');
+    fn text_writes_splice_only_the_changed_span_and_stay_bounded() {
+        // Appending one char splices only the new char.
+        {
+            let mut doc = AutoCommit::new();
+            let long = "abcdefghijklmnopqrstuvwxyz0123456789";
+            let id = seed_text(&mut doc, "t", long);
+            let mut target = long.to_string();
+            target.push('!');
 
-        let edit = splice_text_diffed(&mut doc, &id, &target);
+            let edit = splice_text_diffed(&mut doc, &id, &target);
 
-        assert_eq!(
-            edit,
-            TextEdit {
-                pos: long.chars().count(),
-                del: 0,
-                ins: 1
-            },
-            "appending one char must splice exactly one char, not rewrite the text"
-        );
-        assert!(edit.ins < long.chars().count());
-        assert_eq!(
-            doc.text(&id).unwrap(),
-            target,
-            "must round-trip to the new value"
-        );
-    }
-
-    #[test]
-    fn middle_edit_splices_only_the_changed_span() {
-        let mut doc = AutoCommit::new();
-        let before = "the quick brown fox";
-        let id = seed_text(&mut doc, "t", before);
-
-        let edit = splice_text_diffed(&mut doc, &id, "the slow brown fox");
-
-        assert_eq!(edit.pos, 4, "prefix 'the ' is common");
-        assert_eq!(edit.del, 5, "'quick' is deleted");
-        assert_eq!(edit.ins, 4, "'slow' is inserted");
-        assert!(
-            edit.del < before.chars().count() && edit.ins < before.chars().count(),
-            "the splice must be bounded well under the full text length"
-        );
-        assert_eq!(doc.text(&id).unwrap(), "the slow brown fox");
-    }
-
-    #[test]
-    fn identical_value_is_a_noop() {
-        let mut doc = AutoCommit::new();
-        let id = seed_text(&mut doc, "t", "unchanged");
-        let before = doc.save().len();
-
-        let edit = splice_text_diffed(&mut doc, &id, "unchanged");
-
-        assert!(edit.is_noop(), "re-storing the same value must be a no-op");
-        assert_eq!(
-            edit,
-            TextEdit {
-                pos: 0,
-                del: 0,
-                ins: 0
-            }
-        );
-        assert_eq!(
-            doc.save().len(),
-            before,
-            "an idempotent no-op must not grow the document"
-        );
-    }
-
-    #[test]
-    fn put_text_diffed_creates_then_diffs() {
-        let mut doc = AutoCommit::new();
-
-        let e0 = put_text_diffed(&mut doc, &ROOT, "body", "hello world");
-        assert_eq!(
-            e0,
-            TextEdit {
-                pos: 0,
-                del: 0,
-                ins: 11
-            }
-        );
-
-        let e1 = put_text_diffed(&mut doc, &ROOT, "body", "hello world!");
-        assert_eq!(
-            e1,
-            TextEdit {
-                pos: 11,
-                del: 0,
-                ins: 1
-            }
-        );
-
-        let (v, tid) = doc.get(&ROOT, "body").unwrap().unwrap();
-        assert!(
-            matches!(v, Value::Object(ObjType::Text)),
-            "field is a CRDT Text"
-        );
-        assert_eq!(doc.text(&tid).unwrap(), "hello world!");
-    }
-
-    #[test]
-    fn typing_char_by_char_keeps_the_doc_bounded() {
-        let mut doc = AutoCommit::new();
-        let mut s = String::new();
-        for i in 0..500 {
-            s.push(if i % 7 == 6 { ' ' } else { 'x' });
-            put_text_diffed(&mut doc, &ROOT, "b", &s);
+            assert_eq!(
+                edit,
+                TextEdit {
+                    pos: long.chars().count(),
+                    del: 0,
+                    ins: 1
+                },
+                "appending one char must splice exactly one char, not rewrite the text"
+            );
+            assert!(edit.ins < long.chars().count());
+            assert_eq!(
+                doc.text(&id).unwrap(),
+                target,
+                "must round-trip to the new value"
+            );
         }
-        let size = doc.save().len();
-        assert!(
-            size < 12 * s.len(),
-            "document is {size} bytes for {} typed chars — CRDT churn regressed",
-            s.len()
-        );
-        let (_, tid) = doc.get(&ROOT, "b").unwrap().unwrap();
-        assert_eq!(
-            doc.text(&tid).unwrap(),
-            s,
-            "typed value must round-trip exactly"
-        );
+
+        // A middle edit splices only the changed span.
+        {
+            let mut doc = AutoCommit::new();
+            let before = "the quick brown fox";
+            let id = seed_text(&mut doc, "t", before);
+
+            let edit = splice_text_diffed(&mut doc, &id, "the slow brown fox");
+
+            assert_eq!(edit.pos, 4, "prefix 'the ' is common");
+            assert_eq!(edit.del, 5, "'quick' is deleted");
+            assert_eq!(edit.ins, 4, "'slow' is inserted");
+            assert!(
+                edit.del < before.chars().count() && edit.ins < before.chars().count(),
+                "the splice must be bounded well under the full text length"
+            );
+            assert_eq!(doc.text(&id).unwrap(), "the slow brown fox");
+        }
+
+        // Re-storing an identical value is a no-op.
+        {
+            let mut doc = AutoCommit::new();
+            let id = seed_text(&mut doc, "t", "unchanged");
+            let before = doc.save().len();
+
+            let edit = splice_text_diffed(&mut doc, &id, "unchanged");
+
+            assert!(edit.is_noop(), "re-storing the same value must be a no-op");
+            assert_eq!(
+                edit,
+                TextEdit {
+                    pos: 0,
+                    del: 0,
+                    ins: 0
+                }
+            );
+            assert_eq!(
+                doc.save().len(),
+                before,
+                "an idempotent no-op must not grow the document"
+            );
+        }
+
+        // `put_text_diffed` creates the Text, then diffs into it.
+        {
+            let mut doc = AutoCommit::new();
+
+            let e0 = put_text_diffed(&mut doc, &ROOT, "body", "hello world");
+            assert_eq!(
+                e0,
+                TextEdit {
+                    pos: 0,
+                    del: 0,
+                    ins: 11
+                }
+            );
+
+            let e1 = put_text_diffed(&mut doc, &ROOT, "body", "hello world!");
+            assert_eq!(
+                e1,
+                TextEdit {
+                    pos: 11,
+                    del: 0,
+                    ins: 1
+                }
+            );
+
+            let (v, tid) = doc.get(&ROOT, "body").unwrap().unwrap();
+            assert!(
+                matches!(v, Value::Object(ObjType::Text)),
+                "field is a CRDT Text"
+            );
+            assert_eq!(doc.text(&tid).unwrap(), "hello world!");
+        }
+
+        // Typing char by char keeps the document bounded.
+        {
+            let mut doc = AutoCommit::new();
+            let mut s = String::new();
+            for i in 0..500 {
+                s.push(if i % 7 == 6 { ' ' } else { 'x' });
+                put_text_diffed(&mut doc, &ROOT, "b", &s);
+            }
+            let size = doc.save().len();
+            assert!(
+                size < 12 * s.len(),
+                "document is {size} bytes for {} typed chars — CRDT churn regressed",
+                s.len()
+            );
+            let (_, tid) = doc.get(&ROOT, "b").unwrap().unwrap();
+            assert_eq!(
+                doc.text(&tid).unwrap(),
+                s,
+                "typed value must round-trip exactly"
+            );
+        }
     }
 
     #[test]
-    fn put_if_changed_guards_redundant_writes() {
-        let mut doc = AutoCommit::new();
+    fn put_if_changed_skips_redundant_writes_for_every_scalar_kind() {
+        // Integers: the first write happens, an unchanged re-put is a no-op.
+        {
+            let mut doc = AutoCommit::new();
 
-        assert!(
-            put_if_changed(&mut doc, &ROOT, "n", 1i64),
-            "first write happens"
-        );
-        let before = doc.save().len();
+            assert!(
+                put_if_changed(&mut doc, &ROOT, "n", 1i64),
+                "first write happens"
+            );
+            let before = doc.save().len();
 
-        assert!(
-            !put_if_changed(&mut doc, &ROOT, "n", 1i64),
-            "unchanged re-put is a no-op"
-        );
-        assert_eq!(
-            doc.save().len(),
-            before,
-            "unchanged re-put must not grow the doc"
-        );
+            assert!(
+                !put_if_changed(&mut doc, &ROOT, "n", 1i64),
+                "unchanged re-put is a no-op"
+            );
+            assert_eq!(
+                doc.save().len(),
+                before,
+                "unchanged re-put must not grow the doc"
+            );
 
-        assert!(
-            put_if_changed(&mut doc, &ROOT, "n", 2i64),
-            "changed value writes"
-        );
-        let got = match doc.get(&ROOT, "n").unwrap().unwrap().0 {
-            Value::Scalar(v) => v.as_i64(),
-            Value::Object(_) => None,
-        };
-        assert_eq!(got, Some(2));
-    }
+            assert!(
+                put_if_changed(&mut doc, &ROOT, "n", 2i64),
+                "changed value writes"
+            );
+            let got = match doc.get(&ROOT, "n").unwrap().unwrap().0 {
+                Value::Scalar(v) => v.as_i64(),
+                Value::Object(_) => None,
+            };
+            assert_eq!(got, Some(2));
+        }
 
-    #[test]
-    fn put_if_changed_handles_strings_and_bools() {
-        let mut doc = AutoCommit::new();
-        assert!(put_if_changed(&mut doc, &ROOT, "s", "a"));
-        assert!(!put_if_changed(&mut doc, &ROOT, "s", "a"));
-        assert!(put_if_changed(&mut doc, &ROOT, "s", "b"));
+        // Strings and bools.
+        {
+            let mut doc = AutoCommit::new();
+            assert!(put_if_changed(&mut doc, &ROOT, "s", "a"));
+            assert!(!put_if_changed(&mut doc, &ROOT, "s", "a"));
+            assert!(put_if_changed(&mut doc, &ROOT, "s", "b"));
 
-        assert!(put_if_changed(&mut doc, &ROOT, "flag", true));
-        assert!(!put_if_changed(&mut doc, &ROOT, "flag", true));
-        assert!(put_if_changed(&mut doc, &ROOT, "flag", false));
+            assert!(put_if_changed(&mut doc, &ROOT, "flag", true));
+            assert!(!put_if_changed(&mut doc, &ROOT, "flag", true));
+            assert!(put_if_changed(&mut doc, &ROOT, "flag", false));
+        }
     }
 }

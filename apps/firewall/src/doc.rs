@@ -1,7 +1,6 @@
 //! Native, field-addressable Automerge schema for firewall configuration.
 //!
-//! New data lives at `firewall.zones[zone].rules[rule-id]`; the old
-//! `config` JSON text is a read-only migration input. Rules have independent
+//! Data lives at `firewall.zones[zone].rules[rule-id]`. Rules have independent
 //! fields, an Automerge order list, and a separate delete-wins tombstone map.
 
 use automerge::transaction::Transactable;
@@ -11,7 +10,6 @@ use ui::doc::{read_bool, read_str, read_str_or_text};
 use crate::model::{Action, FirewallConfig, Matcher, Proto, Rule, RuleId, Target, Zone, ZoneKind};
 
 const ROOT_KEY: &str = "firewall";
-const LEGACY_KEY: &str = "config";
 pub struct FirewallDoc;
 
 fn get_map(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
@@ -119,20 +117,12 @@ fn read_rule(doc: &AutoCommit, row: &ObjId, id: RuleId) -> Option<Rule> {
 }
 
 impl FirewallDoc {
-    /// The compatibility JSON payload. New writers never call this.
-    pub fn load_json(doc: &AutoCommit) -> Option<String> {
-        let id = get_text(doc, &ROOT, LEGACY_KEY)?;
-        let value = doc.text(&id).ok()?;
-        (!value.is_empty()).then_some(value)
-    }
     pub fn has_native(doc: &AutoCommit) -> bool {
         get_map(doc, &ROOT, ROOT_KEY).is_some()
     }
     pub fn load(doc: &AutoCommit) -> Option<FirewallConfig> {
-        match get_map(doc, &ROOT, ROOT_KEY) {
-            Some(root) => Self::read_native(doc, &root),
-            None => Self::load_json(doc).and_then(|v| FirewallConfig::from_json(&v)),
-        }
+        let root = get_map(doc, &ROOT, ROOT_KEY)?;
+        Self::read_native(doc, &root)
     }
     fn read_native(doc: &AutoCommit, root: &ObjId) -> Option<FirewallConfig> {
         let enabled = read_bool(doc, root, "enabled")?;
@@ -495,135 +485,131 @@ mod tests {
     use super::*;
     use crate::sample::sample_config;
     use tilo_automerge::ApplyIncoming;
+    /// The native document round-trips and probe reconciliation removes absent members and rules.
     #[test]
-    fn native_round_trip() {
-        let mut d = AutoCommit::new();
-        let c = sample_config();
-        FirewallDoc::store(&mut d, &c);
-        assert!(FirewallDoc::has_native(&d));
-        let restored = FirewallDoc::load(&d).unwrap();
-        assert_eq!(restored.enabled, c.enabled);
-        assert_eq!(restored.panic_mode, c.panic_mode);
-        assert_eq!(restored.default_zone, c.default_zone);
-        assert_eq!(
-            restored
-                .zones
-                .iter()
-                .map(|zone| zone.rules.len())
-                .sum::<usize>(),
-            c.zones.iter().map(|zone| zone.rules.len()).sum::<usize>()
-        );
-    }
-    #[test]
-    fn legacy_json_is_read_without_becoming_a_write_target() {
-        let mut doc = AutoCommit::new();
-        let config = sample_config();
-        let legacy = doc.put_object(&ROOT, LEGACY_KEY, ObjType::Text).unwrap();
-        ui::doc::splice_text_diffed(&mut doc, &legacy, &config.to_json());
-        assert_eq!(FirewallDoc::load(&doc), Some(config.clone()));
-        FirewallDoc::store(&mut doc, &config);
-        assert!(FirewallDoc::has_native(&doc));
-        assert_eq!(FirewallDoc::load_json(&doc), Some(config.to_json()));
-    }
-    #[test]
-    fn probe_reconciliation_removes_absent_members_and_rules() {
-        let mut doc = AutoCommit::new();
-        let before = sample_config();
-        FirewallDoc::store(&mut doc, &before);
-        let zone_kind = before.default_zone;
-        let stale_rule = before.zone(zone_kind).unwrap().rules[0].id;
-        let mut probe = before.clone();
-        let zone = probe.zone_mut(zone_kind).unwrap();
-        zone.services.retain(|service| service != "ssh");
-        zone.interfaces.retain(|interface| interface != "eth0");
-        zone.rules.retain(|rule| rule.id != stale_rule);
+    fn document_round_trips_and_reconciles_probe_state() {
+        // --- phase: native_round_trip ---
+        {
+            let mut d = AutoCommit::new();
+            let c = sample_config();
+            FirewallDoc::store(&mut d, &c);
+            assert!(FirewallDoc::has_native(&d));
+            let restored = FirewallDoc::load(&d).unwrap();
+            assert_eq!(restored.enabled, c.enabled);
+            assert_eq!(restored.panic_mode, c.panic_mode);
+            assert_eq!(restored.default_zone, c.default_zone);
+            assert_eq!(
+                restored
+                    .zones
+                    .iter()
+                    .map(|zone| zone.rules.len())
+                    .sum::<usize>(),
+                c.zones.iter().map(|zone| zone.rules.len()).sum::<usize>()
+            );
+        }
 
-        FirewallDoc::reconcile_probe(&mut doc, &probe);
-        let restored = FirewallDoc::load(&doc).unwrap();
-        let zone = restored.zone(zone_kind).unwrap();
-        assert!(!zone.has_service("ssh"));
-        assert!(!zone.interfaces.iter().any(|interface| interface == "eth0"));
-        assert!(!zone.rules.iter().any(|rule| rule.id == stale_rule));
+        // --- phase: probe_reconciliation_removes_absent_members_and_rules ---
+        {
+            let mut doc = AutoCommit::new();
+            let before = sample_config();
+            FirewallDoc::store(&mut doc, &before);
+            let zone_kind = before.default_zone;
+            let stale_rule = before.zone(zone_kind).unwrap().rules[0].id;
+            let mut probe = before.clone();
+            let zone = probe.zone_mut(zone_kind).unwrap();
+            zone.services.retain(|service| service != "ssh");
+            zone.interfaces.retain(|interface| interface != "eth0");
+            zone.rules.retain(|rule| rule.id != stale_rule);
+
+            FirewallDoc::reconcile_probe(&mut doc, &probe);
+            let restored = FirewallDoc::load(&doc).unwrap();
+            let zone = restored.zone(zone_kind).unwrap();
+            assert!(!zone.has_service("ssh"));
+            assert!(!zone.interfaces.iter().any(|interface| interface == "eth0"));
+            assert!(!zone.rules.iter().any(|rule| rule.id == stale_rule));
+        }
     }
+    /// Concurrent edits to independent fields, rules and services merge; a delete wins over a stale edit.
     #[allow(
         clippy::many_single_char_names,
         reason = "two replicas, a config, a zone and a rule read best as a, b, c, z and r"
     )]
     #[test]
-    fn independent_fields_merge() {
-        let mut a = AutoCommit::new();
-        let c = sample_config();
-        FirewallDoc::store(&mut a, &c);
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let z = c.default_zone;
-        let mut r = c.zone(z).unwrap().rules[0].clone();
-        r.source = "10.0.0.0/8".into();
-        FirewallDoc::edit_rule(&mut a, z, &r);
-        FirewallDoc::set_rule_enabled(&mut b, z, r.id, false);
-        a.merge_incoming(&mut b).unwrap();
-        let merged = FirewallDoc::load(&a).unwrap();
-        let r = merged
-            .zone(z)
-            .unwrap()
-            .rules
-            .iter()
-            .find(|x| x.id == r.id)
-            .unwrap();
-        assert_eq!(r.source, "10.0.0.0/8");
-        assert!(!r.enabled);
-    }
-    #[test]
-    fn different_rule_and_service_edits_merge() {
-        let mut a = AutoCommit::new();
-        let c = sample_config();
-        FirewallDoc::store(&mut a, &c);
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let z = c.default_zone;
-        let ids: Vec<_> = c.zone(z).unwrap().rules.iter().map(|r| r.id).collect();
-        FirewallDoc::set_rule_enabled(&mut a, z, ids[0], false);
-        FirewallDoc::set_rule_enabled(&mut b, z, ids[1], false);
-        FirewallDoc::set_service(&mut a, z, "ssh", true);
-        FirewallDoc::set_service(&mut b, z, "https", true);
-        a.merge_incoming(&mut b).unwrap();
-        let merged = FirewallDoc::load(&a).unwrap();
-        let z = merged.zone(z).unwrap();
-        let states: Vec<_> = z
-            .rules
-            .iter()
-            .filter(|rule| ids.contains(&rule.id))
-            .map(|rule| (rule.id, rule.enabled))
-            .collect();
-        assert_eq!(
-            states.iter().filter(|(_, enabled)| !enabled).count(),
-            2,
-            "{states:?}"
-        );
-        assert!(z.has_service("ssh") && z.has_service("https"));
-    }
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "two replicas, a config, a zone and a rule read best as a, b, c, z and r"
-    )]
-    #[test]
-    fn delete_wins_stale_edit() {
-        let mut a = AutoCommit::new();
-        let c = sample_config();
-        FirewallDoc::store(&mut a, &c);
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let z = c.default_zone;
-        let mut r = c.zone(z).unwrap().rules[0].clone();
-        r.source = "192.168.1.0/24".into();
-        FirewallDoc::delete_rule(&mut a, z, r.id);
-        FirewallDoc::edit_rule(&mut b, z, &r);
-        a.merge_incoming(&mut b).unwrap();
-        assert!(
-            !FirewallDoc::load(&a)
-                .unwrap()
+    fn concurrent_edits_merge_per_field_and_delete_wins() {
+        // --- phase: independent_fields_merge ---
+        {
+            let mut a = AutoCommit::new();
+            let c = sample_config();
+            FirewallDoc::store(&mut a, &c);
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            let z = c.default_zone;
+            let mut r = c.zone(z).unwrap().rules[0].clone();
+            r.source = "10.0.0.0/8".into();
+            FirewallDoc::edit_rule(&mut a, z, &r);
+            FirewallDoc::set_rule_enabled(&mut b, z, r.id, false);
+            a.merge_incoming(&mut b).unwrap();
+            let merged = FirewallDoc::load(&a).unwrap();
+            let r = merged
                 .zone(z)
                 .unwrap()
                 .rules
                 .iter()
-                .any(|x| x.id == r.id)
-        );
+                .find(|x| x.id == r.id)
+                .unwrap();
+            assert_eq!(r.source, "10.0.0.0/8");
+            assert!(!r.enabled);
+        }
+
+        // --- phase: different_rule_and_service_edits_merge ---
+        {
+            let mut a = AutoCommit::new();
+            let c = sample_config();
+            FirewallDoc::store(&mut a, &c);
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            let z = c.default_zone;
+            let ids: Vec<_> = c.zone(z).unwrap().rules.iter().map(|r| r.id).collect();
+            FirewallDoc::set_rule_enabled(&mut a, z, ids[0], false);
+            FirewallDoc::set_rule_enabled(&mut b, z, ids[1], false);
+            FirewallDoc::set_service(&mut a, z, "ssh", true);
+            FirewallDoc::set_service(&mut b, z, "https", true);
+            a.merge_incoming(&mut b).unwrap();
+            let merged = FirewallDoc::load(&a).unwrap();
+            let z = merged.zone(z).unwrap();
+            let states: Vec<_> = z
+                .rules
+                .iter()
+                .filter(|rule| ids.contains(&rule.id))
+                .map(|rule| (rule.id, rule.enabled))
+                .collect();
+            assert_eq!(
+                states.iter().filter(|(_, enabled)| !enabled).count(),
+                2,
+                "{states:?}"
+            );
+            assert!(z.has_service("ssh") && z.has_service("https"));
+        }
+
+        // --- phase: delete_wins_stale_edit ---
+        {
+            let mut a = AutoCommit::new();
+            let c = sample_config();
+            FirewallDoc::store(&mut a, &c);
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            let z = c.default_zone;
+            let mut r = c.zone(z).unwrap().rules[0].clone();
+            r.source = "192.168.1.0/24".into();
+            FirewallDoc::delete_rule(&mut a, z, r.id);
+            FirewallDoc::edit_rule(&mut b, z, &r);
+            a.merge_incoming(&mut b).unwrap();
+            assert!(
+                !FirewallDoc::load(&a)
+                    .unwrap()
+                    .zone(z)
+                    .unwrap()
+                    .rules
+                    .iter()
+                    .any(|x| x.id == r.id)
+            );
+        }
     }
 }

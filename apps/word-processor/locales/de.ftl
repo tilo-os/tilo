@@ -179,6 +179,7 @@ toast-style-duplicated = Stil dupliziert
 toast-saved = Dokument gespeichert
 toast-save-failed = Dokument konnte nicht gespeichert werden
 toast-open-failed = Dokument konnte nicht geöffnet werden. Das aktuelle Dokument bleibt unverändert.
+toast-view-only = Dieses Dokument ist nur zum Ansehen geöffnet.
 unsaved-title = Speichern?
 unsaved-body = Dieses Dokument vor dem Ersetzen speichern?
 unsaved-save = Speichern

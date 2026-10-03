@@ -120,12 +120,22 @@ expect_refusal 'could not read the kernel command line' installed disk0 "$esp" "
 echo 'ok: an unreadable kernel command line fails closed'
 
 printf 'root=tilo-auto quiet\n' >"$work/cmdline"
+: >"$work/initrd-release"
 mkdir -p "$work/generator"
-TILO_ROOT_CMDLINE_FILE="$work/cmdline" \
+TILO_ROOT_CMDLINE_FILE="$work/cmdline" TILO_ROOT_INITRD_RELEASE="$work/initrd-release" \
   "$repo/os/usr/lib/systemd/system-generators/tilo-root-generator" "$work/generator"
 grep -q 'What=/run/tilo-root/device' "$work/generator/sysroot.mount"
 grep -q 'ExecStart=/usr/libexec/tilo-root-discover' "$work/generator/tilo-root-discover.service"
+grep -qx 'RemainAfterExit=yes' "$work/generator/tilo-root-discover.service"
 echo 'ok: target-independent initrd units generated'
+
+# The booted system runs its generators with the same command line; the root is
+# already mounted there, and the units must not appear.
+mkdir -p "$work/generator-booted"
+TILO_ROOT_CMDLINE_FILE="$work/cmdline" TILO_ROOT_INITRD_RELEASE="$work/no-initrd-release" \
+  "$repo/os/usr/lib/systemd/system-generators/tilo-root-generator" "$work/generator-booted"
+[ -z "$(ls -A "$work/generator-booted")" ]
+echo 'ok: no root discovery units outside the initrd'
 
 # The install preflight binds both the PCR policy and the exact target UKI to
 # the offline authority. A signed policy beside a substituted UKI is refused.

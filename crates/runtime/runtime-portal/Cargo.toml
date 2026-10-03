@@ -2,8 +2,11 @@
 name = "runtime-portal"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Service discovery and connected-transport RPC plumbing for Tilo runtime services."
 
 # Tilo runtime — portal foundation: env-driven service discovery and a
 # thin wrapper that lifts a connected Unix-socket file descriptor into
@@ -14,25 +17,49 @@ license.workspace = true
 name = "runtime_portal"
 path = "src/lib.rs"
 
+[features]
+default = ["rpc"]
+# `CapnpClient` and the service-opening helpers. Without it the crate is the
+# discovery half only — `service_fd`, `is_tilo_native`, `NotAvailable` and the
+# native attachment metadata — for callers such as `cli` that never speak RPC.
+rpc = ["dep:capnp", "dep:capnp-rpc", "dep:tokio", "dep:tokio-util"]
+
 [dependencies]
 # Pinned: capnp 0.26 ships with capnp-rpc 0.26 and capnpc 0.26. The
 # whole 0.26 line shares a generator + RPC ABI.
-capnp.workspace = true
-capnp-rpc.workspace = true
+capnp = { workspace = true, optional = true }
+capnp-rpc = { workspace = true, optional = true }
 # tokio 1.x. We use the runtime + net + io + macros features only;
 # heavy features like `signal` or `full` belong in the binary.
-tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "sync"] }
-tokio-util.workspace = true
+tokio = { workspace = true, optional = true, features = ["rt", "io-util", "macros", "sync"] }
+tokio-util = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 # `fcntl(F_GETFD)` probes whether a fd is open before handing it to tokio.
 rustix.workspace = true
+# Service descriptors are Unix sockets; other hosts report `NotAvailable`.
+tokio = { workspace = true, optional = true, features = ["net"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
 tilo-test-env = { path = "../../dev/test-env" }
 
+[[test]]
+name = "native"
+path = "tests/native.rs"
+required-features = ["rpc"]
+
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["net"] }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+# The browser has no local service sockets; `local_socket::Stream` is still
+# a tokio stream type there.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = { workspace = true, features = ["io-util"] }

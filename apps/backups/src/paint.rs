@@ -6,8 +6,9 @@
 //! here hard-codes a palette.
 
 use ui::ColorCompat;
+use ui::paint::PaintCtx;
 pub use ui::paint::{fill_rect, fill_round, stroke_round};
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use vello::Scene;
 use vello::kurbo::{Affine, Arc, BezPath, Cap, Circle, Line, Point, Rect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
@@ -52,15 +53,6 @@ pub fn ring_dot(scene: &mut Scene, t: Affine, center: Point, r: f64, fill: Color
     scene.fill(Fill::NonZero, t, fill, None, &Circle::new(center, r));
 }
 
-// These leaf adapters deliberately mirror Vello's immediate-mode vocabulary:
-// target, renderer, transform, content, style, then geometry. The values are
-// independent per draw and carry no domain invariant; wrapping each call's
-// coordinates and colours in one-use structs would add ceremony without making
-// invalid states unrepresentable. Higher-level view helpers use typed contexts.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "leaf graphics adapter exposes independent Vello text and anchor values"
-)]
 /// Left-top anchored text on a single line.
 pub fn text(
     scene: &mut Scene,
@@ -75,10 +67,6 @@ pub fn text(
     tr.draw_text(scene, s, size, color, t * Affine::translate((x, y)), None);
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "leaf graphics adapter exposes independent Vello text and anchor values"
-)]
 pub fn text_bold(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -100,10 +88,6 @@ pub fn text_bold(
     );
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "leaf graphics adapter exposes independent Vello text and anchor values"
-)]
 /// Text whose right edge sits at `x_right`.
 pub fn text_right(
     scene: &mut Scene,
@@ -126,46 +110,30 @@ pub fn text_right(
     );
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "leaf graphics adapter exposes independent Vello text and bounds values"
-)]
-/// Text centred horizontally within `[x0, x1]`.
-pub fn text_center(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
-    s: &str,
-    size: f32,
-    color: Color,
-    x0: f64,
-    x1: f64,
-    y: f64,
-) {
-    let (w, _) = tr.measure(s, size, None);
-    let cx = x0 + ((x1 - x0) - f64::from(w)) / 2.0;
-    tr.draw_text(scene, s, size, color, t * Affine::translate((cx, y)), None);
+/// Text centred horizontally on `top_center.x`, its top at `top_center.y`.
+pub fn text_center(ctx: &mut PaintCtx<'_>, s: &str, size: f32, color: Color, top_center: Point) {
+    let (w, _) = ctx.text.measure(s, size, None);
+    let x = top_center.x - f64::from(w) / 2.0;
+    ctx.text(
+        s,
+        &TextStyle::new(size),
+        color,
+        Point::new(x, top_center.y),
+        None,
+    );
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "leaf graphics adapter exposes independent Vello text and row values"
-)]
-/// Vertically-centred left text within a row of height `h` starting at `y0`.
-pub fn text_vc(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
-    s: &str,
-    size: f32,
-    color: Color,
-    x: f64,
-    y0: f64,
-    h: f64,
-) {
-    let (_, th) = tr.measure(s, size, None);
-    let ty = y0 + (h - f64::from(th)) / 2.0;
-    tr.draw_text(scene, s, size, color, t * Affine::translate((x, ty)), None);
+/// Left text starting at `row.x0`, vertically centred within `row`.
+pub fn text_vc(ctx: &mut PaintCtx<'_>, s: &str, size: f32, color: Color, row: Rect) {
+    let (_, th) = ctx.text.measure(s, size, None);
+    let ty = row.y0 + (row.height() - f64::from(th)) / 2.0;
+    ctx.text(
+        s,
+        &TextStyle::new(size),
+        color,
+        Point::new(row.x0, ty),
+        None,
+    );
 }
 
 /// Vertical padding a pill adds around its measured label. Both pill styles
@@ -173,38 +141,32 @@ pub fn text_vc(
 const PILL_PAD_Y: f64 = 3.0;
 
 /// Draw a pill (rounded chip) with a centred label. Returns the pill width so
-/// callers can lay out chips left-to-right. The pill is vertically centred on
-/// `cy`; its height comes from the label the renderer will paint, so it grows
-/// with the accessibility text scale instead of clipping the glyphs.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "The pill painter takes its scene, text renderer, transform, position, label size, and foreground/background colors independently."
-)] // one arg per independent knob; see `text` above.
+/// callers can lay out chips left-to-right. The pill starts at `left_mid.x`
+/// and is vertically centred on `left_mid.y`; its height comes from the label
+/// the renderer will paint, so it grows with the accessibility text scale
+/// instead of clipping the glyphs.
 pub fn pill(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
-    x: f64,
-    cy: f64,
+    ctx: &mut PaintCtx<'_>,
+    left_mid: Point,
     label: &str,
     size: f32,
     fg: Color,
     bg: Color,
 ) -> f64 {
-    let (tw, th) = tr.measure(label, size, None);
+    let (x, cy) = (left_mid.x, left_mid.y);
+    let (tw, th) = ctx.text.measure(label, size, None);
     let pad = 8.0;
     let h = f64::from(th) + PILL_PAD_Y * 2.0;
     let w = f64::from(tw) + pad * 2.0;
     let rect = Rect::new(x, cy - h / 2.0, x + w, cy + h / 2.0);
     // A tinted capsule: the tint is its contrast step against the row.
-    ui::surface::pill(scene, t, rect, bg, None, None);
+    ui::surface::pill(ctx.scene, ctx.transform, rect, bg, None, None);
     let ty = rect.y0 + PILL_PAD_Y;
-    tr.draw_text(
-        scene,
+    ctx.text(
         label,
-        size,
+        &TextStyle::new(size),
         fg,
-        t * Affine::translate((x + pad, ty)),
+        Point::new(x + pad, ty),
         None,
     );
     w
@@ -212,20 +174,20 @@ pub fn pill(
 
 /// Pill with a translucent fill derived from `accent` plus a matching
 /// stroke — the "tag" look used for retention classes.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "leaf graphics adapter exposes independent label, anchor, and accent values"
-)]
 pub fn tag_pill(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
-    x: f64,
-    cy: f64,
+    ctx: &mut PaintCtx<'_>,
+    left_mid: Point,
     label: &str,
     size: f32,
     accent: Color,
 ) -> f64 {
+    let PaintCtx {
+        scene,
+        transform: t,
+        text: tr,
+        ..
+    } = ctx;
+    let (t, x, cy) = (*t, left_mid.x, left_mid.y);
     let (tw, th) = tr.measure(label, size, None);
     let pad = 8.0;
     let h = f64::from(th) + PILL_PAD_Y * 2.0;
@@ -265,10 +227,6 @@ pub fn bar(scene: &mut Scene, t: Affine, rect: Rect, frac: f64, fill: Color, tra
 
 /// Circular gauge: a faint full ring plus an arc sweeping `frac` of the way
 /// round from 12 o'clock, clockwise.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "leaf graphics adapter exposes independent ring geometry and palette values"
-)]
 pub fn ring(
     scene: &mut Scene,
     t: Affine,

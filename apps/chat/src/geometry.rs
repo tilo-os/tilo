@@ -131,24 +131,25 @@ mod tests {
     }
 
     #[test]
-    fn centered_band_shares_the_container_centre() {
-        let box_ = Rect::new(0.0, 100.0, 400.0, 176.0);
-        let band = centered_band(box_, 19.0, 8.0);
-        assert!(approx(band.height(), 35.0));
-        assert!(approx(band.center().y, box_.center().y));
-        assert_eq!((band.x0, band.x1), (box_.x0, box_.x1));
-    }
-
-    #[test]
-    fn centered_band_never_exceeds_its_container() {
-        let box_ = Rect::new(0.0, 0.0, 400.0, 60.0);
-        let band = centered_band(box_, 200.0, 8.0);
-        assert_eq!(band, box_);
-    }
-
-    #[test]
-    fn line_top_centres_the_measured_line_box() {
-        assert!(approx(line_top(26.0, 20.0), 16.0));
+    fn centered_band_and_line_top_centre_inside_their_container() {
+        // Phase: centered_band_shares_the_container_centre.
+        {
+            let box_ = Rect::new(0.0, 100.0, 400.0, 176.0);
+            let band = centered_band(box_, 19.0, 8.0);
+            assert!(approx(band.height(), 35.0));
+            assert!(approx(band.center().y, box_.center().y));
+            assert_eq!((band.x0, band.x1), (box_.x0, box_.x1));
+        }
+        // Phase: centered_band_never_exceeds_its_container.
+        {
+            let box_ = Rect::new(0.0, 0.0, 400.0, 60.0);
+            let band = centered_band(box_, 200.0, 8.0);
+            assert_eq!(band, box_);
+        }
+        // Phase: line_top_centres_the_measured_line_box.
+        {
+            assert!(approx(line_top(26.0, 20.0), 16.0));
+        }
     }
 
     fn spec(side_w: f64, pill: Option<(f64, f64)>) -> SidebarHeaderSpec {
@@ -165,40 +166,41 @@ mod tests {
     }
 
     #[test]
-    fn pill_is_reserved_before_the_title_is_budgeted() {
-        let l = sidebar_header_layout(&spec(248.0, Some((96.0, 18.0))));
-        let pill = l.pill.expect("pill shown");
-        // Pill hugs the right inset and sits on the row's centre line.
-        assert!(approx(pill.x1, 68.0 + 248.0 - 12.0));
-        assert!(approx(pill.center().y, 26.0));
-        // The title stops a full gap before the pill; they cannot overlap.
-        assert!(approx(l.title_x + l.title_max_w + 8.0, pill.x0));
-        // Title and pill share one centre line.
-        assert!(approx(l.title_y + 10.0, pill.center().y));
-        assert!(approx(l.header.height(), 52.0));
-    }
-
-    #[test]
-    fn a_wide_pill_on_a_narrow_sidebar_stacks_under_the_title() {
-        let l = sidebar_header_layout(&spec(180.0, Some((120.0, 18.0))));
-        let pill = l.pill.expect("pill shown");
-        assert!(
-            approx(pill.x0, l.title_x),
-            "stacked pill shares the title's left edge"
-        );
-        assert!(
-            pill.y0 >= l.title_y + 20.0,
-            "pill sits below the title line"
-        );
-        assert!(l.header.y1 >= pill.y1, "header band includes the pill row");
-        assert!(approx(l.title_max_w, 180.0 - 16.0 - 12.0));
-    }
-
-    #[test]
-    fn without_a_pill_the_title_owns_the_row() {
-        let l = sidebar_header_layout(&spec(248.0, None));
-        assert!(l.pill.is_none());
-        assert!(approx(l.title_max_w, 248.0 - 16.0 - 12.0));
-        assert!(approx(l.header.height(), 52.0));
+    fn sidebar_header_reserves_the_pill_before_budgeting_the_title() {
+        // Phase: pill_is_reserved_before_the_title_is_budgeted.
+        {
+            let l = sidebar_header_layout(&spec(248.0, Some((96.0, 18.0))));
+            let pill = l.pill.expect("pill shown");
+            // Pill hugs the right inset and sits on the row's centre line.
+            assert!(approx(pill.x1, 68.0 + 248.0 - 12.0));
+            assert!(approx(pill.center().y, 26.0));
+            // The title stops a full gap before the pill; they cannot overlap.
+            assert!(approx(l.title_x + l.title_max_w + 8.0, pill.x0));
+            // Title and pill share one centre line.
+            assert!(approx(l.title_y + 10.0, pill.center().y));
+            assert!(approx(l.header.height(), 52.0));
+        }
+        // Phase: a_wide_pill_on_a_narrow_sidebar_stacks_under_the_title.
+        {
+            let l = sidebar_header_layout(&spec(180.0, Some((120.0, 18.0))));
+            let pill = l.pill.expect("pill shown");
+            assert!(
+                approx(pill.x0, l.title_x),
+                "stacked pill shares the title's left edge"
+            );
+            assert!(
+                pill.y0 >= l.title_y + 20.0,
+                "pill sits below the title line"
+            );
+            assert!(l.header.y1 >= pill.y1, "header band includes the pill row");
+            assert!(approx(l.title_max_w, 180.0 - 16.0 - 12.0));
+        }
+        // Phase: without_a_pill_the_title_owns_the_row.
+        {
+            let l = sidebar_header_layout(&spec(248.0, None));
+            assert!(l.pill.is_none());
+            assert!(approx(l.title_max_w, 248.0 - 16.0 - 12.0));
+            assert!(approx(l.header.height(), 52.0));
+        }
     }
 }

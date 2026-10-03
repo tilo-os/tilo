@@ -2,6 +2,12 @@
 #
 # Run: cargo deny check
 
+# crates/workspace-hack (cargo hakari) names every feature-unified crate only to
+# fix its features. Pruned from the graph, deny sees the dependency edges members
+# really have, so `workspace` scoped advisories stay about direct dependencies.
+[graph]
+exclude = ["workspace-hack"]
+
 [advisories]
 # Both remaining quick-xml versions are selected by current upstream releases:
 # citationberg (Typst 0.15.1) uses 0.38 and zbus_xml (AccessKit 0.34) uses 0.39.
@@ -57,6 +63,12 @@ allow = [
 ]
 confidence-threshold = 0.9
 
+# This standalone helper links pinned NTFS-3G; no other workspace crate links it.
+# Its staging layout includes COPYING and the helper, protocol, and NTFS sources.
+[[licenses.exceptions]]
+crate = "tilo-ntfs-helper@=0.1.0"
+allow = ["GPL-2.0-or-later"]
+
 [bans]
 # Duplicate major versions of one crate are the dependency tree's own bloat
 # report: each is a separate compilation. `warn` until the tree is cleaned up,
@@ -81,7 +93,7 @@ unknown-git = "deny"
 # in `[patch.crates-io]` may come from git; any other git dependency appearing
 # is something to look at.
 allow-git = [
-    "ssh://git@code.tilo.so/tilo/accesskit.git",
-    "ssh://git@code.tilo.so/tilo/atspi.git",
-    "ssh://git@code.tilo.so/tilo/rustypipe.git",
+    "https://code.tilo.so/tilo/accesskit.git",
+    "https://code.tilo.so/tilo/atspi.git",
+    "https://code.tilo.so/tilo/rustypipe.git",
 ]

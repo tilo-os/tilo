@@ -1,0 +1,30 @@
+[package]
+name = "tilo-paths"
+version = "0.1.0"
+edition = "2024"
+# Published: the SDK's platform layer (tools/sdk/publish_check.py).
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Per-user and per-app locations on Linux, macOS and the web: XDG base directories and xdg-user-dirs, the macOS Library folders, and virtual browser storage roots."
+
+[lib]
+name = "tilo_paths"
+path = "src/lib.rs"
+
+# Deliberately std-only on Unix and the web: every app and service that
+# stores anything resolves one of these locations, so this stays a leaf.
+# Windows asks the shell for its known folders, which follow redirection and
+# cannot be spoofed through the environment.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_Com", "Win32_UI_Shell"] }
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

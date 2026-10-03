@@ -11,12 +11,13 @@
 //! [`Intent`]s for anything that needs a sibling pane or an overlay.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::Widget;
@@ -26,9 +27,10 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::webview::{SharedEngine, WebViewCommand};
-use ui::widget::{Button, ButtonFace, EmptyState, TextInput, WebView};
+use ui::widget::{Button, ButtonFace, EmptyState, EmptyStateContent, TextInput, WebView};
 
 use crate::account::AccountStore;
+use ui::paint::PaintCtx;
 use ui::surface::{card, edge_on, pill, separator};
 
 use crate::draw::{
@@ -872,16 +874,18 @@ impl Pane {
             pill(scene, t, *rect, col, None, Some(10.0));
             let label = "Compose";
             let (w, _) = tr.measure_weighted(label, 14.0, None, TextWeight::Semibold);
-            // Icon + label centred as a unit.
+            // Icon + label centred as a unit. Ink is the accent's own, so a
+            // bright accent does not leave white type on a light fill.
+            let ink = c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
             let group_w = 18.0 + 8.0 + f64::from(w);
             let gx = f64::midpoint(rect.x0, rect.x1) - group_w / 2.0;
             let icon_box = Rect::new(gx, rect.y0 + 11.0, gx + 18.0, rect.y0 + 29.0);
-            Icon::Pencil.draw(scene, t, icon_box, Color::WHITE);
+            Icon::Pencil.draw(scene, t, icon_box, ink);
             tr.draw_text_weighted(
                 scene,
                 label,
                 14.0,
-                Color::WHITE,
+                ink,
                 t * Affine::translate((icon_box.x1 + 8.0, rect.y0 + 11.0)),
                 None,
                 TextWeight::Semibold,
@@ -1157,7 +1161,7 @@ impl Pane {
             scene,
             &txt,
             11.0,
-            Color::WHITE,
+            c.on_surface(bg).ink,
             t * Affine::translate((badge.center().x - twd / 2.0, badge.center().y - th / 2.0)),
             None,
             TextWeight::Semibold,
@@ -1404,15 +1408,14 @@ impl Pane {
                 &st.search,
             );
             EmptyState::paint(
-                scene,
-                t,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 Rect::new(r.x0, self.list_content_y(), r.x1, r.y1),
-                Some(icon),
-                title,
-                Some(message),
-                None,
+                &EmptyStateContent {
+                    icon: Some(icon),
+                    title,
+                    message: Some(message),
+                    action_label: None,
+                },
                 Point::new(-1.0, -1.0),
             );
             return;
@@ -1504,17 +1507,18 @@ impl Pane {
             } else {
                 rect.x1 - 90.0
             };
+            let ink = c.on_surface(col).ink;
             icon.draw(
                 scene,
                 t,
                 Rect::new(gx, rect.y0 + 20.0, gx + 18.0, rect.y0 + 38.0),
-                Color::WHITE,
+                ink,
             );
             tr.draw_text_weighted(
                 scene,
                 label,
                 12.0,
-                Color::WHITE,
+                ink,
                 t * Affine::translate((gx + 26.0, rect.y0 + 22.0)),
                 None,
                 TextWeight::Semibold,
@@ -1612,7 +1616,7 @@ impl Pane {
                     row.x0 + 20.0 * self.scale(),
                     row.y0 + self.list_row_h() / 2.0 + 6.0 * self.scale(),
                 ),
-                Color::WHITE,
+                c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             );
         } else if unread {
             scene.fill(
@@ -3171,14 +3175,16 @@ impl Pane {
         if let Some(view) = self.html_view.as_mut() {
             view.handle_event(
                 event,
-                ctx.scale_factor,
-                &ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                ctx.handled,
-                ctx.focus_target,
-                ctx.node_id,
-                ctx.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: &ctx.modifiers,
+                    state: ctx.state,
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
             );
         }
     }
@@ -3198,14 +3204,16 @@ impl Pane {
             if let Some(inp) = self.search_input.as_mut() {
                 inp.handle_event(
                     event,
-                    ctx.scale_factor,
-                    &ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    ctx.handled,
-                    ctx.focus_target,
-                    ctx.node_id,
-                    ctx.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: ctx.scale_factor,
+                        modifiers: &ctx.modifiers,
+                        state: ctx.state,
+                        path: ctx.path,
+                        handled: ctx.handled,
+                        focus_target: ctx.focus_target,
+                        node_id: ctx.node_id,
+                        taffy: ctx.taffy,
+                    },
                 );
             }
             // Reflect the field into the query + first-row selection.
@@ -3225,7 +3233,7 @@ impl Pane {
 }
 
 impl Widget for Pane {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if let Some(i) = self.search_input.as_mut() {
             i.sync(state, path);
         }
@@ -3419,19 +3427,8 @@ impl Widget for Pane {
             })
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if *handled {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if *ctx.handled {
             return;
         }
         self.rebuild_hits();
@@ -3439,31 +3436,31 @@ impl Widget for Pane {
         self.forward_html_view_event(
             event,
             &mut EventContext {
-                scale_factor,
-                modifiers: *modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                scale_factor: ctx.scale_factor,
+                modifiers: *ctx.modifiers,
+                state: ctx.state,
+                path: ctx.path,
+                handled: ctx.handled,
+                focus_target: ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
             },
         );
-        if *handled {
+        if *ctx.handled {
             return;
         }
 
         if self.handle_search_keyboard(
             event,
             &mut EventContext {
-                scale_factor,
-                modifiers: *modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                scale_factor: ctx.scale_factor,
+                modifiers: *ctx.modifiers,
+                state: ctx.state,
+                path: ctx.path,
+                handled: ctx.handled,
+                focus_target: ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
             },
         ) {
             return;
@@ -3481,7 +3478,7 @@ impl Widget for Pane {
                         self.shared
                             .borrow_mut()
                             .push_intent(Intent::ContextMenu(id, pt));
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
             }
@@ -3491,7 +3488,7 @@ impl Widget for Pane {
                 ..
             } => {
                 let pt = self.shared.borrow().last_mouse;
-                self.on_left_press(state, pt, handled);
+                self.on_left_press(ctx.state, pt, ctx.handled);
             }
             WindowEvent::CursorMoved { .. } => {
                 if self.role == Role::List
@@ -3513,18 +3510,18 @@ impl Widget for Pane {
                 if let Some(s) = self.swipe.take() {
                     if s.dx <= -SWIPE_THRESHOLD {
                         self.shared.borrow_mut().apply_message_action(
-                            state,
+                            ctx.state,
                             s.id,
                             CtxAction::Archive,
                         );
                     } else if s.dx >= SWIPE_THRESHOLD {
                         self.shared.borrow_mut().apply_message_action(
-                            state,
+                            ctx.state,
                             s.id,
                             CtxAction::Delete,
                         );
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 self.mouse_down_row = None;
             }
@@ -3600,46 +3597,53 @@ mod tests {
     }
 
     #[test]
-    fn empty_message_states_explain_the_next_useful_step() {
-        let (_, title, body) = list_zero_state(false, false, "");
-        assert_eq!(title, "Connect your email");
-        assert!(body.contains("Add account"));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn empty_states_and_tooltips_explain_compact_controls() {
+        // Phase `empty_message_states_explain_the_next_useful_step`.
+        {
+            let (_, title, body) = list_zero_state(false, false, "");
+            assert_eq!(title, "Connect your email");
+            assert!(body.contains("Add account"));
 
-        let (_, title, body) = list_zero_state(false, true, "");
-        assert_eq!(title, "Your inbox is ready");
-        assert!(body.contains("next sync"));
+            let (_, title, body) = list_zero_state(false, true, "");
+            assert_eq!(title, "Your inbox is ready");
+            assert!(body.contains("next sync"));
 
-        let (_, title, body) = list_zero_state(true, true, "roadmap");
-        assert_eq!(title, "No matching messages");
-        assert!(body.contains("keyword"));
+            let (_, title, body) = list_zero_state(true, true, "roadmap");
+            assert_eq!(title, "No matching messages");
+            assert!(body.contains("keyword"));
 
-        let (_, title, _) = list_zero_state(true, true, "");
-        assert_eq!(title, "No messages in this folder");
-    }
+            let (_, title, _) = list_zero_state(true, true, "");
+            assert_eq!(title, "No messages in this folder");
+        }
 
-    #[test]
-    fn tooltips_keep_compact_and_icon_only_mail_controls_discoverable() {
-        let sh = shared();
-        let target = Rect::new(10.0, 10.0, 40.0, 40.0);
-        sh.borrow_mut().last_mouse = target.center();
+        // Phase `tooltips_keep_compact_and_icon_only_mail_controls_discoverable`.
+        {
+            let sh = shared();
+            let target = Rect::new(10.0, 10.0, 40.0, 40.0);
+            sh.borrow_mut().last_mouse = target.center();
 
-        let mut sidebar = Pane::new(Role::Sidebar, sh.clone());
-        sidebar.hits = vec![(target, Hit::Compose)];
-        assert_eq!(ui::Widget::tooltip(&sidebar), Some("Compose (C)"));
+            let mut sidebar = Pane::new(Role::Sidebar, sh.clone());
+            sidebar.hits = vec![(target, Hit::Compose)];
+            assert_eq!(ui::Widget::tooltip(&sidebar), Some("Compose (C)"));
 
-        let mut list = Pane::new(Role::List, sh.clone());
-        list.hits = vec![(target, Hit::Refresh)];
-        assert_eq!(ui::Widget::tooltip(&list), Some("Refresh (F5)"));
+            let mut list = Pane::new(Role::List, sh.clone());
+            list.hits = vec![(target, Hit::Refresh)];
+            assert_eq!(ui::Widget::tooltip(&list), Some("Refresh (F5)"));
 
-        let mut reader = Pane::new(Role::Reader, sh);
-        // On a narrow reader the button itself is an icon, so its tooltip is
-        // the only textual explanation of this privacy-sensitive control.
-        reader.html_toggle_rect = Some(target);
-        reader.hits = vec![(target, Hit::Unread)];
-        assert_eq!(
-            ui::Widget::tooltip(&reader),
-            Some("Load or block remote images")
-        );
+            let mut reader = Pane::new(Role::Reader, sh);
+            // On a narrow reader the button itself is an icon, so its tooltip is
+            // the only textual explanation of this privacy-sensitive control.
+            reader.html_toggle_rect = Some(target);
+            reader.hits = vec![(target, Hit::Unread)];
+            assert_eq!(
+                ui::Widget::tooltip(&reader),
+                Some("Load or block remote images")
+            );
+        }
     }
 
     fn reader_for(sh: &Shared, id: MessageId, w: f64, h: f64) -> Pane {
@@ -3670,14 +3674,16 @@ mod tests {
         let mut focus = None;
         p.handle_event(
             ev,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -3720,537 +3726,614 @@ mod tests {
     }
 
     #[test]
-    fn reader_action_bar_star_toggles_star() {
-        let sh = shared();
-        let id = {
-            let st = sh.borrow();
-            st.mailbox.messages_in(Folder::Inbox)[0].id
-        };
-        let mut p = reader_for(&sh, id, 900.0, 800.0);
-        let before = sh.borrow().mailbox.get(id).unwrap().starred;
-        let star = p
-            .hits
-            .iter()
-            .find(|(_, h)| matches!(h, Hit::Star))
-            .map(|(r, _)| *r)
-            .expect("star button present");
-        sh.borrow_mut().last_mouse = star.center();
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        p.on_left_press(&mut doc, star.center(), &mut handled);
-        assert!(handled, "reader Star click consumed");
-        assert_eq!(
-            sh.borrow().mailbox.get(id).unwrap().starred,
-            !before,
-            "Star button toggled the flag"
-        );
-    }
-
-    #[test]
-    fn list_header_and_avatar_keep_their_one_x_sizes_before_the_first_paint() {
-        // The pre-paint rules are the authored 1× header band, control
-        // height and avatar radius, so nothing moves at 1×.
-        let m = ListRowMetrics::fallback();
-        assert_eq!(m.header_h, HEADER_H);
-        assert_eq!(m.ctl_h, HEADER_CTL_H);
-        assert_eq!(m.avatar_r, LIST_AVATAR_R);
-        // A scaled control pushes the rows down instead of under the search
-        // box: the header is the controls plus their inset above and below.
-        let mut big = m;
-        big.ctl_h = 49.0;
-        big.header_h = (2.0 * HEADER_CTL_INSET + big.ctl_h).max(HEADER_H);
-        assert_eq!(big.header_h, 73.0);
-        assert!(big.header_h > HEADER_H);
-    }
-
-    #[test]
-    fn list_row_bands_stack_without_overlap_and_the_star_hit_covers_its_glyph() {
-        let m = ListRowMetrics::fallback();
-        // 1× keeps the authored row height (rounded up to a whole pixel).
-        assert_eq!(m.row_h, 79.0);
-        // Sender, subject and snippet are separate bands, top to bottom.
-        assert!(m.subj_y >= m.name_y + m.name_h);
-        assert!(m.snippet_y >= m.subj_y + m.subj_h);
-        assert!(m.snippet_y + m.snippet_h <= m.row_h);
-        // The star target contains the painted 16px glyph on the snippet line.
-        let row = Rect::new(0.0, 100.0, 340.0, 100.0 + m.row_h);
-        let hit = m.star_hit(row);
-        let right = row.x1 - 14.0;
-        let glyph = Rect::new(
-            right - 24.0,
-            row.y0 + m.icon_cy - 8.0,
-            right - 8.0,
-            row.y0 + m.icon_cy + 8.0,
-        );
-        assert_eq!(hit.union(glyph), hit, "star hit rect contains the glyph");
-        assert!(
-            hit.y0 > row.y0 + m.name_y,
-            "the target is not over the date line"
-        );
-
-        // Doubled line boxes (200% text) grow the row instead of overlapping.
-        let big = ListRowMetrics::from_line_boxes(33.75, 31.25, 28.75, 4.0, 12.0);
-        assert!(big.row_h > m.row_h);
-        assert!(big.subj_y >= big.name_y + big.name_h);
-        assert!(big.snippet_y >= big.subj_y + big.subj_h);
-        assert!(big.snippet_y + big.snippet_h + 12.0 <= big.row_h);
-    }
-
-    #[test]
-    fn card_header_right_column_shares_one_edge_and_centres_on_the_avatar() {
-        let m = CardHeaderMetrics {
-            x: 100.0,
-            y: 200.0,
-            width: 500.0,
-            avatar_r: 17.0,
-            name_h: 16.875,
-            email_h: 14.375,
-            date_w: 110.0,
-            to_w: 40.0,
-            gap: 12.0,
-        };
-        let l = card_header_layout(&m);
-        // Date and recipients end on the same right edge — the card's.
-        assert!((l.date_x + m.date_w - 600.0).abs() < 1e-6);
-        assert!((l.to_x + m.to_w - 600.0).abs() < 1e-6);
-        // Name + email block is centred on the avatar's centre line.
-        let block_mid = (l.name_y + l.email_y + l.email_h) / 2.0;
-        assert!((block_mid - l.avatar_c.y).abs() < 1e-6);
-        // The sender column stops one gap before the wider right-column line.
-        assert!((l.text_x + l.from_budget + m.gap - l.date_x).abs() < 1e-6);
-        // 1× keeps the authored 48px header rhythm.
-        assert!((l.bottom - (m.y + 48.0)).abs() < 1e-6);
-        // Larger text grows the header instead of overlapping the body.
-        let tall = CardHeaderMetrics {
-            name_h: 33.75,
-            email_h: 28.75,
-            ..m
-        };
-        let lt = card_header_layout(&tall);
-        assert!(lt.bottom >= lt.email_y + tall.email_h + tall.gap);
-    }
-
-    #[test]
-    fn list_title_is_centered_on_and_spaced_from_the_collapse_chip() {
-        // The folder title must line up vertically with the NavShell collapse
-        // chip beside it and sit a consistent gap past it — not a few px off.
-        let rect = Rect::new(0.0, 0.0, 420.0, 900.0);
-        let gap = 12.0;
-        // The 1× line box of the 18 px bold title; the layout centres whatever
-        // box it is handed, so a 200% box (45) lands on the same centre.
-        let title_h = 22.5;
-        let (title_x, title_y, header_cy) =
-            list_header_layout(rect, mirrored_chip(rect), true, gap, title_h);
-        let chip_cy = rect.y0 + CHIP_INSET + CHIP_SIZE / 2.0;
-        let chip_right = rect.x0 + CHIP_INSET + CHIP_SIZE;
-        // Vertically centred on the chip's centre line from the measured box.
-        let title_center = title_y + title_h / 2.0;
-        let (_, big_y, _) = list_header_layout(rect, mirrored_chip(rect), true, gap, 45.0);
-        assert!(
-            (big_y + 22.5 - chip_cy).abs() < 0.001,
-            "a scaled title box still centres on the chip"
-        );
-        assert!(
-            (title_center - chip_cy).abs() < 0.001,
-            "title centre {title_center} != chip centre {chip_cy}"
-        );
-        assert!(
-            (header_cy - chip_cy).abs() < 0.001,
-            "header centre line is the chip centre"
-        );
-        // Spaced exactly one gap past the chip, and not crowding it.
-        assert!(
-            (title_x - (chip_right + gap)).abs() < 0.001,
-            "title starts one gap past the chip"
-        );
-        assert!(
-            title_x - chip_right >= 10.0,
-            "title does not crowd the collapse button"
-        );
-        // With no chip over the header, the title returns to the plain inset.
-        let (nx, _, _) = list_header_layout(rect, mirrored_chip(rect), false, gap, title_h);
-        // The shell's real chip at 2x is larger than the 1x mirror; the title
-        // follows it, centred on its centre line and spaced past its edge.
-        let big_chip = Rect::new(12.0, 12.0, 12.0 + 53.5, 12.0 + 53.5);
-        let (bx, by, bcy) = list_header_layout(rect, big_chip, true, gap, 45.0);
-        assert!(
-            (bcy - big_chip.center().y).abs() < 1e-9,
-            "centre line follows the real chip"
-        );
-        assert!(
-            (bx - (big_chip.x1 + gap)).abs() < 1e-9,
-            "title clears the real chip"
-        );
-        assert!((by + 22.5 - bcy).abs() < 1e-9);
-        assert_eq!(nx, rect.x0 + 20.0);
-    }
-
-    #[test]
-    fn reader_shows_one_card_for_a_refetched_message() {
-        // The confirmed defect: re-fetching a message stacked N header copies in
-        // the reader. With stable ids the thread the reader iterates holds one.
-        let sh = MailState::shared(MailState::new_live(
-            crate::account::AccountStore::new(),
-            crate::app::avatar_store_offline(),
-        ));
-        let raw = b"From: Ada <ada@x.example>\r\nTo: you@example.test\r\n\
-Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
-        let id = {
-            let mut st = sh.borrow_mut();
-            let m = crate::transport::parse_eml(raw, 100, Folder::Inbox).unwrap();
-            let id = m.id;
-            st.mailbox.insert(m);
-            // A second and third fetch of the very same server message.
-            st.mailbox
-                .insert(crate::transport::parse_eml(raw, 200, Folder::Inbox).unwrap());
-            st.mailbox
-                .insert(crate::transport::parse_eml(raw, 300, Folder::Inbox).unwrap());
-            st.selected = Some(id);
-            id
-        };
-        assert_eq!(
-            sh.borrow().mailbox.count(Folder::Inbox),
-            1,
-            "one message, not three"
-        );
-        assert_eq!(
-            sh.borrow().selected_thread_messages().len(),
-            1,
-            "the reader draws exactly one card for a re-fetched mail"
-        );
-        let _ = id;
-    }
-
-    #[test]
-    fn html_mail_renders_in_sandboxed_webview_with_remote_blocked() {
-        use ui::webview::WebViewCommand;
-        use ui::webview::test_engine::TestEngine;
-        let sh = shared();
-        let id = {
-            let st = sh.borrow();
-            st.mailbox
-                .messages
-                .values()
-                .find(|m| m.from.email == "news@weekly.example.test")
-                .expect("the sample HTML newsletter is present")
-                .id
-        };
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn reader_renders_bodies_safely_and_routes_star_and_attachments() {
+        // Phase `reader_action_bar_star_toggles_star`.
         {
-            let mut doc = AutoCommit::new();
-            sh.borrow_mut().select_message(&mut doc, id);
-            sh.borrow_mut().take_intents();
-        }
-        let mut p = Pane::new(Role::Reader, sh);
-        // Inject a concrete engine we can inspect for the commands the reader sends.
-        let te = TestEngine::new();
-        p.set_html_engine(te.clone());
-        p.rect = Rect::new(0.0, 0.0, 960.0, 820.0);
-        p.rebuild_hits();
-        draw(&mut p);
-
-        // The HTML body was loaded, remote content blocked by default.
-        assert_eq!(
-            p.html_loaded_key(),
-            Some((id, true)),
-            "HTML body loaded with remote blocked"
-        );
-        let cmds = te.commands();
-        let nav = cmds
-            .iter()
-            .find_map(|c| {
-                if let WebViewCommand::Navigate(u) = c {
-                    Some(u.clone())
-                } else {
-                    None
-                }
-            })
-            .expect("the reader navigates the HTML body");
-        assert!(
-            nav.starts_with("data:text/html"),
-            "renders a sandboxed data: document, not a remote URL: {nav}"
-        );
-        assert!(
-            cmds.iter()
-                .any(|c| matches!(c, WebViewCommand::SetContentFilter(Some(_)))),
-            "a remote-blocking content filter is installed"
-        );
-        // The remote-images affordance is shown (blocked by default).
-        assert!(
-            p.html_toggle_rect.is_some(),
-            "the remote-images toggle is shown"
-        );
-    }
-
-    #[test]
-    fn plain_text_mail_does_not_use_the_webview() {
-        let sh = shared();
-        // The Apollo message is plain text/plain (no HTML part).
-        let id = {
-            let st = sh.borrow();
-            st.mailbox
-                .messages
-                .values()
-                .find(|m| m.from.email == "margaret@apollo.example")
-                .expect("plain-text sample present")
-                .id
-        };
-        let mut p = reader_for(&sh, id, 900.0, 800.0);
-        draw(&mut p);
-        assert!(
-            p.html_loaded_key().is_none(),
-            "a plain-text mail never loads the webview"
-        );
-        assert!(
-            p.html_toggle_rect.is_none(),
-            "no remote-images toggle for plain text"
-        );
-    }
-
-    #[test]
-    fn loading_remote_images_reloads_the_body_unblocked() {
-        use ui::webview::test_engine::TestEngine;
-        let sh = shared();
-        let id = {
-            let st = sh.borrow();
-            st.mailbox
-                .messages
-                .values()
-                .find(|m| m.from.email == "news@weekly.example.test")
-                .unwrap()
-                .id
-        };
-        {
-            let mut doc = AutoCommit::new();
-            sh.borrow_mut().select_message(&mut doc, id);
-            sh.borrow_mut().take_intents();
-        }
-        let mut p = Pane::new(Role::Reader, sh.clone());
-        p.set_html_engine(TestEngine::new());
-        p.rect = Rect::new(0.0, 0.0, 960.0, 820.0);
-        p.rebuild_hits();
-        draw(&mut p);
-        assert_eq!(p.html_loaded_key(), Some((id, true)), "blocked by default");
-
-        // Click the remote-images toggle → opt in, reload unblocked.
-        let toggle = p.html_toggle_rect.expect("toggle shown");
-        sh.borrow_mut().last_mouse = toggle.center();
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        p.on_left_press(&mut doc, toggle.center(), &mut handled);
-        assert!(handled, "toggle click consumed");
-        draw(&mut p);
-        assert_eq!(
-            p.html_loaded_key(),
-            Some((id, false)),
-            "opting in reloads the body with remote content allowed"
-        );
-    }
-
-    #[test]
-    fn reader_star_action_reflects_the_starred_state() {
-        // Toggling the reader Star flips the flag that selects the filled vs
-        // outline glyph (the draw path picks the fill purely from this state).
-        let sh = shared();
-        let id = {
-            let st = sh.borrow();
-            st.mailbox.messages_in(Folder::Inbox)[0].id
-        };
-        // Force a known starting state.
-        {
-            sh.borrow_mut().mailbox.get_mut(id).unwrap().starred = false;
-        }
-        let mut p = reader_for(&sh, id, 900.0, 800.0);
-        let star = p
-            .hits
-            .iter()
-            .find(|(_, h)| matches!(h, Hit::Star))
-            .map(|(r, _)| *r)
-            .unwrap();
-        sh.borrow_mut().last_mouse = star.center();
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        p.on_left_press(&mut doc, star.center(), &mut handled);
-        assert!(
-            sh.borrow().mailbox.get(id).unwrap().starred,
-            "starring sets the flag the filled glyph keys on"
-        );
-    }
-
-    #[test]
-    fn reader_attachment_chip_click_requests_the_root_portal_save() {
-        let sh = shared();
-        // The Radia message is parsed from real MIME and carries a hydrated PDF.
-        let id = {
-            let st = sh.borrow();
-            st.mailbox
-                .messages
-                .values()
-                .find(|m| m.from.email == "radia@spanning.example")
-                .unwrap()
-                .id
-        };
-        let mut p = reader_for(&sh, id, 760.0, 900.0);
-        // The chip layout is only known after a draw.
-        draw(&mut p);
-        assert!(
-            !p.reader_attachment_hits.is_empty(),
-            "attachment chip has a hit region"
-        );
-        let (rect, mid, ai) = p.reader_attachment_hits[0];
-        assert_eq!(mid, id);
-
-        sh.borrow_mut().last_mouse = rect.center();
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        p.on_left_press(&mut doc, rect.center(), &mut handled);
-        assert!(handled, "chip click consumed");
-
-        assert!(
-            sh.borrow_mut()
-                .take_intents()
+            let sh = shared();
+            let id = {
+                let st = sh.borrow();
+                st.mailbox.messages_in(Folder::Inbox)[0].id
+            };
+            let mut p = reader_for(&sh, id, 900.0, 800.0);
+            let before = sh.borrow().mailbox.get(id).unwrap().starred;
+            let star = p
+                .hits
                 .iter()
-                .any(|intent| matches!(intent, Intent::SaveAttachment(found, found_index) if *found == id && *found_index == ai)),
-            "a pane hands the stable attachment address to MailApp; only the root opens the host portal and writes bytes"
-        );
-    }
-
-    #[test]
-    fn list_swipe_left_archives_the_row() {
-        let sh = shared();
-        let mut p = Pane::new(Role::List, sh.clone());
-        p.rect = Rect::new(0.0, 0.0, 420.0, 900.0);
-        p.rebuild_hits();
-        let (id, row) = p
-            .hits
-            .iter()
-            .rev()
-            .find_map(|(r, h)| {
-                if let Hit::Row(i) = h {
-                    Some((*i, *r))
-                } else {
-                    None
-                }
-            })
-            .expect("a list row");
-        let before = sh.borrow().mailbox.count(Folder::Archive);
-        let start = row.center();
-
-        sh.borrow_mut().last_mouse = start;
-        dispatch(&mut p, &press());
-        // Drag left past the threshold.
-        let far = Point::new(start.x - (SWIPE_THRESHOLD + 24.0), start.y);
-        sh.borrow_mut().last_mouse = far;
-        dispatch(&mut p, &moved(far));
-        dispatch(&mut p, &release());
-
-        assert_eq!(
-            sh.borrow().mailbox.count(Folder::Archive),
-            before + 1,
-            "swipe-left archived the row"
-        );
-        assert_eq!(sh.borrow().mailbox.get(id).unwrap().folder, Folder::Archive);
-    }
-
-    #[test]
-    fn search_typing_filters_then_clear_resets() {
-        let sh = shared();
-        let mut p = Pane::new(Role::List, sh.clone());
-        p.rect = Rect::new(0.0, 0.0, 420.0, 900.0);
-        p.rebuild_hits();
-        let full_rows = sh.borrow().list_rows().len();
-
-        // Focus the search field via its real hit.
-        let sr = p
-            .hits
-            .iter()
-            .find(|(_, h)| matches!(h, Hit::SearchFocus))
-            .map(|(r, _)| *r)
-            .unwrap();
-        sh.borrow_mut().last_mouse = sr.center();
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        p.on_left_press(&mut doc, sr.center(), &mut handled);
-        assert!(
-            sh.borrow().search_focused,
-            "clicking the field focuses search"
-        );
-
-        // Put a query in the field and drive the pane's reflect path.
-        if let Some(i) = p.search_input.as_mut() {
-            i.set_text("trajectory");
+                .find(|(_, h)| matches!(h, Hit::Star))
+                .map(|(r, _)| *r)
+                .expect("star button present");
+            sh.borrow_mut().last_mouse = star.center();
+            let mut doc = AutoCommit::new();
+            let mut handled = false;
+            p.on_left_press(&mut doc, star.center(), &mut handled);
+            assert!(handled, "reader Star click consumed");
+            assert_eq!(
+                sh.borrow().mailbox.get(id).unwrap().starred,
+                !before,
+                "Star button toggled the flag"
+            );
         }
-        dispatch(&mut p, &named(NamedKey::ArrowRight));
-        assert_eq!(
-            sh.borrow().search,
-            "trajectory",
-            "field value reflected into the query"
-        );
-        let filtered = sh.borrow().list_rows();
-        assert!(
-            !filtered.is_empty() && filtered.len() < full_rows,
-            "results narrowed to matches"
-        );
-        assert!(filtered.iter().all(|(mid, _)| {
-            let st = sh.borrow();
-            let m = st.mailbox.get(*mid).unwrap();
-            m.subject.to_ascii_lowercase().contains("trajectory")
-                || m.body.to_ascii_lowercase().contains("trajectory")
-        }));
 
-        // Clear (X) resets the query and rows.
-        p.rebuild_hits();
-        let clr = p
-            .hits
-            .iter()
-            .find(|(_, h)| matches!(h, Hit::SearchClear))
-            .map(|(r, _)| *r)
-            .expect("clear button appears");
-        let mut handled = false;
-        p.on_left_press(&mut doc, clr.center(), &mut handled);
-        assert!(sh.borrow().search.is_empty(), "clear reset the query");
-        assert_eq!(
-            sh.borrow().list_rows().len(),
-            full_rows,
-            "rows restored after clear"
-        );
+        // Phase `reader_shows_one_card_for_a_refetched_message`.
+        {
+            // The confirmed defect: re-fetching a message stacked N header copies in
+            // the reader. With stable ids the thread the reader iterates holds one.
+            let sh = MailState::shared(MailState::new_live(
+                crate::account::AccountStore::new(),
+                crate::app::avatar_store_offline(),
+            ));
+            let raw = b"From: Ada <ada@x.example>\r\nTo: you@example.test\r\n\
+    Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
+            let id = {
+                let mut st = sh.borrow_mut();
+                let m = crate::transport::parse_eml(raw, 100, Folder::Inbox).unwrap();
+                let id = m.id;
+                st.mailbox.insert(m);
+                // A second and third fetch of the very same server message.
+                st.mailbox
+                    .insert(crate::transport::parse_eml(raw, 200, Folder::Inbox).unwrap());
+                st.mailbox
+                    .insert(crate::transport::parse_eml(raw, 300, Folder::Inbox).unwrap());
+                st.selected = Some(id);
+                id
+            };
+            assert_eq!(
+                sh.borrow().mailbox.count(Folder::Inbox),
+                1,
+                "one message, not three"
+            );
+            assert_eq!(
+                sh.borrow().selected_thread_messages().len(),
+                1,
+                "the reader draws exactly one card for a re-fetched mail"
+            );
+            let _ = id;
+        }
+
+        // Phase `html_mail_renders_in_sandboxed_webview_with_remote_blocked`.
+        {
+            use ui::webview::WebViewCommand;
+            use ui::webview::test_engine::TestEngine;
+            let sh = shared();
+            let id = {
+                let st = sh.borrow();
+                st.mailbox
+                    .messages
+                    .values()
+                    .find(|m| m.from.email == "news@weekly.example.test")
+                    .expect("the sample HTML newsletter is present")
+                    .id
+            };
+            {
+                let mut doc = AutoCommit::new();
+                sh.borrow_mut().select_message(&mut doc, id);
+                sh.borrow_mut().take_intents();
+            }
+            let mut p = Pane::new(Role::Reader, sh);
+            // Inject a concrete engine we can inspect for the commands the reader sends.
+            let te = TestEngine::new();
+            p.set_html_engine(te.clone());
+            p.rect = Rect::new(0.0, 0.0, 960.0, 820.0);
+            p.rebuild_hits();
+            draw(&mut p);
+
+            // The HTML body was loaded, remote content blocked by default.
+            assert_eq!(
+                p.html_loaded_key(),
+                Some((id, true)),
+                "HTML body loaded with remote blocked"
+            );
+            let cmds = te.commands();
+            let nav = cmds
+                .iter()
+                .find_map(|c| {
+                    if let WebViewCommand::Navigate(u) = c {
+                        Some(u.clone())
+                    } else {
+                        None
+                    }
+                })
+                .expect("the reader navigates the HTML body");
+            assert!(
+                nav.starts_with("data:text/html"),
+                "renders a sandboxed data: document, not a remote URL: {nav}"
+            );
+            assert!(
+                cmds.iter()
+                    .any(|c| matches!(c, WebViewCommand::SetContentFilter(Some(_)))),
+                "a remote-blocking content filter is installed"
+            );
+            // The remote-images affordance is shown (blocked by default).
+            assert!(
+                p.html_toggle_rect.is_some(),
+                "the remote-images toggle is shown"
+            );
+        }
+
+        // Phase `plain_text_mail_does_not_use_the_webview`.
+        {
+            let sh = shared();
+            // The Apollo message is plain text/plain (no HTML part).
+            let id = {
+                let st = sh.borrow();
+                st.mailbox
+                    .messages
+                    .values()
+                    .find(|m| m.from.email == "margaret@apollo.example")
+                    .expect("plain-text sample present")
+                    .id
+            };
+            let mut p = reader_for(&sh, id, 900.0, 800.0);
+            draw(&mut p);
+            assert!(
+                p.html_loaded_key().is_none(),
+                "a plain-text mail never loads the webview"
+            );
+            assert!(
+                p.html_toggle_rect.is_none(),
+                "no remote-images toggle for plain text"
+            );
+        }
+
+        // Phase `loading_remote_images_reloads_the_body_unblocked`.
+        {
+            use ui::webview::test_engine::TestEngine;
+            let sh = shared();
+            let id = {
+                let st = sh.borrow();
+                st.mailbox
+                    .messages
+                    .values()
+                    .find(|m| m.from.email == "news@weekly.example.test")
+                    .unwrap()
+                    .id
+            };
+            {
+                let mut doc = AutoCommit::new();
+                sh.borrow_mut().select_message(&mut doc, id);
+                sh.borrow_mut().take_intents();
+            }
+            let mut p = Pane::new(Role::Reader, sh.clone());
+            p.set_html_engine(TestEngine::new());
+            p.rect = Rect::new(0.0, 0.0, 960.0, 820.0);
+            p.rebuild_hits();
+            draw(&mut p);
+            assert_eq!(p.html_loaded_key(), Some((id, true)), "blocked by default");
+
+            // Click the remote-images toggle → opt in, reload unblocked.
+            let toggle = p.html_toggle_rect.expect("toggle shown");
+            sh.borrow_mut().last_mouse = toggle.center();
+            let mut doc = AutoCommit::new();
+            let mut handled = false;
+            p.on_left_press(&mut doc, toggle.center(), &mut handled);
+            assert!(handled, "toggle click consumed");
+            draw(&mut p);
+            assert_eq!(
+                p.html_loaded_key(),
+                Some((id, false)),
+                "opting in reloads the body with remote content allowed"
+            );
+        }
+
+        // Phase `reader_star_action_reflects_the_starred_state`.
+        {
+            // Toggling the reader Star flips the flag that selects the filled vs
+            // outline glyph (the draw path picks the fill purely from this state).
+            let sh = shared();
+            let id = {
+                let st = sh.borrow();
+                st.mailbox.messages_in(Folder::Inbox)[0].id
+            };
+            // Force a known starting state.
+            {
+                sh.borrow_mut().mailbox.get_mut(id).unwrap().starred = false;
+            }
+            let mut p = reader_for(&sh, id, 900.0, 800.0);
+            let star = p
+                .hits
+                .iter()
+                .find(|(_, h)| matches!(h, Hit::Star))
+                .map(|(r, _)| *r)
+                .unwrap();
+            sh.borrow_mut().last_mouse = star.center();
+            let mut doc = AutoCommit::new();
+            let mut handled = false;
+            p.on_left_press(&mut doc, star.center(), &mut handled);
+            assert!(
+                sh.borrow().mailbox.get(id).unwrap().starred,
+                "starring sets the flag the filled glyph keys on"
+            );
+        }
+
+        // Phase `reader_attachment_chip_click_requests_the_root_portal_save`.
+        {
+            let sh = shared();
+            // The Radia message is parsed from real MIME and carries a hydrated PDF.
+            let id = {
+                let st = sh.borrow();
+                st.mailbox
+                    .messages
+                    .values()
+                    .find(|m| m.from.email == "radia@spanning.example")
+                    .unwrap()
+                    .id
+            };
+            let mut p = reader_for(&sh, id, 760.0, 900.0);
+            // The chip layout is only known after a draw.
+            draw(&mut p);
+            assert!(
+                !p.reader_attachment_hits.is_empty(),
+                "attachment chip has a hit region"
+            );
+            let (rect, mid, ai) = p.reader_attachment_hits[0];
+            assert_eq!(mid, id);
+
+            sh.borrow_mut().last_mouse = rect.center();
+            let mut doc = AutoCommit::new();
+            let mut handled = false;
+            p.on_left_press(&mut doc, rect.center(), &mut handled);
+            assert!(handled, "chip click consumed");
+
+            assert!(
+                sh.borrow_mut()
+                    .take_intents()
+                    .iter()
+                    .any(|intent| matches!(intent, Intent::SaveAttachment(found, found_index) if *found == id && *found_index == ai)),
+                "a pane hands the stable attachment address to MailApp; only the root opens the host portal and writes bytes"
+            );
+        }
     }
 
     #[test]
-    fn drafts_row_click_opens_editor_not_reader() {
-        let sh = shared();
-        // Put a message into the Drafts folder and switch to it.
-        let id = {
-            let mut st = sh.borrow_mut();
-            let some = *st.mailbox.messages.keys().next().unwrap();
-            st.mailbox.move_to(some, Folder::Drafts);
-            st.folder = Folder::Drafts;
-            some
-        };
-        let mut p = Pane::new(Role::List, sh.clone());
-        p.rect = Rect::new(0.0, 0.0, 420.0, 900.0);
-        p.rebuild_hits();
-        let row = p
-            .hits
-            .iter()
-            .rev()
-            .find(|(_, h)| matches!(h, Hit::Row(_)))
-            .map(|(r, _)| *r)
-            .unwrap();
-        sh.borrow_mut().last_mouse = row.center();
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        p.on_left_press(&mut doc, row.center(), &mut handled);
-        let intents = sh.borrow_mut().take_intents();
-        assert!(
-            intents
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn list_and_card_geometry_hold_their_authored_sizes() {
+        // Phase `list_header_and_avatar_keep_their_one_x_sizes_before_the_first_paint`.
+        {
+            // The pre-paint rules are the authored 1× header band, control
+            // height and avatar radius, so nothing moves at 1×.
+            let m = ListRowMetrics::fallback();
+            assert_eq!(m.header_h, HEADER_H);
+            assert_eq!(m.ctl_h, HEADER_CTL_H);
+            assert_eq!(m.avatar_r, LIST_AVATAR_R);
+            // A scaled control pushes the rows down instead of under the search
+            // box: the header is the controls plus their inset above and below.
+            let mut big = m;
+            big.ctl_h = 49.0;
+            big.header_h = (2.0 * HEADER_CTL_INSET + big.ctl_h).max(HEADER_H);
+            assert_eq!(big.header_h, 73.0);
+            assert!(big.header_h > HEADER_H);
+        }
+
+        // Phase `list_row_bands_stack_without_overlap_and_the_star_hit_covers_its_glyph`.
+        {
+            let m = ListRowMetrics::fallback();
+            // 1× keeps the authored row height (rounded up to a whole pixel).
+            assert_eq!(m.row_h, 79.0);
+            // Sender, subject and snippet are separate bands, top to bottom.
+            assert!(m.subj_y >= m.name_y + m.name_h);
+            assert!(m.snippet_y >= m.subj_y + m.subj_h);
+            assert!(m.snippet_y + m.snippet_h <= m.row_h);
+            // The star target contains the painted 16px glyph on the snippet line.
+            let row = Rect::new(0.0, 100.0, 340.0, 100.0 + m.row_h);
+            let hit = m.star_hit(row);
+            let right = row.x1 - 14.0;
+            let glyph = Rect::new(
+                right - 24.0,
+                row.y0 + m.icon_cy - 8.0,
+                right - 8.0,
+                row.y0 + m.icon_cy + 8.0,
+            );
+            assert_eq!(hit.union(glyph), hit, "star hit rect contains the glyph");
+            assert!(
+                hit.y0 > row.y0 + m.name_y,
+                "the target is not over the date line"
+            );
+
+            // Doubled line boxes (200% text) grow the row instead of overlapping.
+            let big = ListRowMetrics::from_line_boxes(33.75, 31.25, 28.75, 4.0, 12.0);
+            assert!(big.row_h > m.row_h);
+            assert!(big.subj_y >= big.name_y + big.name_h);
+            assert!(big.snippet_y >= big.subj_y + big.subj_h);
+            assert!(big.snippet_y + big.snippet_h + 12.0 <= big.row_h);
+        }
+
+        // Phase `card_header_right_column_shares_one_edge_and_centres_on_the_avatar`.
+        {
+            let m = CardHeaderMetrics {
+                x: 100.0,
+                y: 200.0,
+                width: 500.0,
+                avatar_r: 17.0,
+                name_h: 16.875,
+                email_h: 14.375,
+                date_w: 110.0,
+                to_w: 40.0,
+                gap: 12.0,
+            };
+            let l = card_header_layout(&m);
+            // Date and recipients end on the same right edge — the card's.
+            assert!((l.date_x + m.date_w - 600.0).abs() < 1e-6);
+            assert!((l.to_x + m.to_w - 600.0).abs() < 1e-6);
+            // Name + email block is centred on the avatar's centre line.
+            let block_mid = (l.name_y + l.email_y + l.email_h) / 2.0;
+            assert!((block_mid - l.avatar_c.y).abs() < 1e-6);
+            // The sender column stops one gap before the wider right-column line.
+            assert!((l.text_x + l.from_budget + m.gap - l.date_x).abs() < 1e-6);
+            // 1× keeps the authored 48px header rhythm.
+            assert!((l.bottom - (m.y + 48.0)).abs() < 1e-6);
+            // Larger text grows the header instead of overlapping the body.
+            let tall = CardHeaderMetrics {
+                name_h: 33.75,
+                email_h: 28.75,
+                ..m
+            };
+            let lt = card_header_layout(&tall);
+            assert!(lt.bottom >= lt.email_y + tall.email_h + tall.gap);
+        }
+
+        // Phase `list_title_is_centered_on_and_spaced_from_the_collapse_chip`.
+        {
+            // The folder title must line up vertically with the NavShell collapse
+            // chip beside it and sit a consistent gap past it — not a few px off.
+            let rect = Rect::new(0.0, 0.0, 420.0, 900.0);
+            let gap = 12.0;
+            // The 1× line box of the 18 px bold title; the layout centres whatever
+            // box it is handed, so a 200% box (45) lands on the same centre.
+            let title_h = 22.5;
+            let (title_x, title_y, header_cy) =
+                list_header_layout(rect, mirrored_chip(rect), true, gap, title_h);
+            let chip_cy = rect.y0 + CHIP_INSET + CHIP_SIZE / 2.0;
+            let chip_right = rect.x0 + CHIP_INSET + CHIP_SIZE;
+            // Vertically centred on the chip's centre line from the measured box.
+            let title_center = title_y + title_h / 2.0;
+            let (_, big_y, _) = list_header_layout(rect, mirrored_chip(rect), true, gap, 45.0);
+            assert!(
+                (big_y + 22.5 - chip_cy).abs() < 0.001,
+                "a scaled title box still centres on the chip"
+            );
+            assert!(
+                (title_center - chip_cy).abs() < 0.001,
+                "title centre {title_center} != chip centre {chip_cy}"
+            );
+            assert!(
+                (header_cy - chip_cy).abs() < 0.001,
+                "header centre line is the chip centre"
+            );
+            // Spaced exactly one gap past the chip, and not crowding it.
+            assert!(
+                (title_x - (chip_right + gap)).abs() < 0.001,
+                "title starts one gap past the chip"
+            );
+            assert!(
+                title_x - chip_right >= 10.0,
+                "title does not crowd the collapse button"
+            );
+            // With no chip over the header, the title returns to the plain inset.
+            let (nx, _, _) = list_header_layout(rect, mirrored_chip(rect), false, gap, title_h);
+            // The shell's real chip at 2x is larger than the 1x mirror; the title
+            // follows it, centred on its centre line and spaced past its edge.
+            let big_chip = Rect::new(12.0, 12.0, 12.0 + 53.5, 12.0 + 53.5);
+            let (bx, by, bcy) = list_header_layout(rect, big_chip, true, gap, 45.0);
+            assert!(
+                (bcy - big_chip.center().y).abs() < 1e-9,
+                "centre line follows the real chip"
+            );
+            assert!(
+                (bx - (big_chip.x1 + gap)).abs() < 1e-9,
+                "title clears the real chip"
+            );
+            assert!((by + 22.5 - bcy).abs() < 1e-9);
+            assert_eq!(nx, rect.x0 + 20.0);
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn list_and_sidebar_pointer_paths_route_to_their_own_targets() {
+        // Phase `list_swipe_left_archives_the_row`.
+        {
+            let sh = shared();
+            let mut p = Pane::new(Role::List, sh.clone());
+            p.rect = Rect::new(0.0, 0.0, 420.0, 900.0);
+            p.rebuild_hits();
+            let (id, row) = p
+                .hits
                 .iter()
-                .any(|i| matches!(i, Intent::EditDraft(mid) if *mid == id)),
-            "a Drafts row raises EditDraft"
-        );
-        assert!(
-            !intents.iter().any(|i| matches!(i, Intent::ShowDetail)),
-            "it does not open the reader"
-        );
+                .rev()
+                .find_map(|(r, h)| {
+                    if let Hit::Row(i) = h {
+                        Some((*i, *r))
+                    } else {
+                        None
+                    }
+                })
+                .expect("a list row");
+            let before = sh.borrow().mailbox.count(Folder::Archive);
+            let start = row.center();
+
+            sh.borrow_mut().last_mouse = start;
+            dispatch(&mut p, &press());
+            // Drag left past the threshold.
+            let far = Point::new(start.x - (SWIPE_THRESHOLD + 24.0), start.y);
+            sh.borrow_mut().last_mouse = far;
+            dispatch(&mut p, &moved(far));
+            dispatch(&mut p, &release());
+
+            assert_eq!(
+                sh.borrow().mailbox.count(Folder::Archive),
+                before + 1,
+                "swipe-left archived the row"
+            );
+            assert_eq!(sh.borrow().mailbox.get(id).unwrap().folder, Folder::Archive);
+        }
+
+        // Phase `search_typing_filters_then_clear_resets`.
+        {
+            let sh = shared();
+            let mut p = Pane::new(Role::List, sh.clone());
+            p.rect = Rect::new(0.0, 0.0, 420.0, 900.0);
+            p.rebuild_hits();
+            let full_rows = sh.borrow().list_rows().len();
+
+            // Focus the search field via its real hit.
+            let sr = p
+                .hits
+                .iter()
+                .find(|(_, h)| matches!(h, Hit::SearchFocus))
+                .map(|(r, _)| *r)
+                .unwrap();
+            sh.borrow_mut().last_mouse = sr.center();
+            let mut doc = AutoCommit::new();
+            let mut handled = false;
+            p.on_left_press(&mut doc, sr.center(), &mut handled);
+            assert!(
+                sh.borrow().search_focused,
+                "clicking the field focuses search"
+            );
+
+            // Put a query in the field and drive the pane's reflect path.
+            if let Some(i) = p.search_input.as_mut() {
+                i.set_text("trajectory");
+            }
+            dispatch(&mut p, &named(NamedKey::ArrowRight));
+            assert_eq!(
+                sh.borrow().search,
+                "trajectory",
+                "field value reflected into the query"
+            );
+            let filtered = sh.borrow().list_rows();
+            assert!(
+                !filtered.is_empty() && filtered.len() < full_rows,
+                "results narrowed to matches"
+            );
+            assert!(filtered.iter().all(|(mid, _)| {
+                let st = sh.borrow();
+                let m = st.mailbox.get(*mid).unwrap();
+                m.subject.to_ascii_lowercase().contains("trajectory")
+                    || m.body.to_ascii_lowercase().contains("trajectory")
+            }));
+
+            // Clear (X) resets the query and rows.
+            p.rebuild_hits();
+            let clr = p
+                .hits
+                .iter()
+                .find(|(_, h)| matches!(h, Hit::SearchClear))
+                .map(|(r, _)| *r)
+                .expect("clear button appears");
+            let mut handled = false;
+            p.on_left_press(&mut doc, clr.center(), &mut handled);
+            assert!(sh.borrow().search.is_empty(), "clear reset the query");
+            assert_eq!(
+                sh.borrow().list_rows().len(),
+                full_rows,
+                "rows restored after clear"
+            );
+        }
+
+        // Phase `drafts_row_click_opens_editor_not_reader`.
+        {
+            let sh = shared();
+            // Put a message into the Drafts folder and switch to it.
+            let id = {
+                let mut st = sh.borrow_mut();
+                let some = *st.mailbox.messages.keys().next().unwrap();
+                st.mailbox.move_to(some, Folder::Drafts);
+                st.folder = Folder::Drafts;
+                some
+            };
+            let mut p = Pane::new(Role::List, sh.clone());
+            p.rect = Rect::new(0.0, 0.0, 420.0, 900.0);
+            p.rebuild_hits();
+            let row = p
+                .hits
+                .iter()
+                .rev()
+                .find(|(_, h)| matches!(h, Hit::Row(_)))
+                .map(|(r, _)| *r)
+                .unwrap();
+            sh.borrow_mut().last_mouse = row.center();
+            let mut doc = AutoCommit::new();
+            let mut handled = false;
+            p.on_left_press(&mut doc, row.center(), &mut handled);
+            let intents = sh.borrow_mut().take_intents();
+            assert!(
+                intents
+                    .iter()
+                    .any(|i| matches!(i, Intent::EditDraft(mid) if *mid == id)),
+                "a Drafts row raises EditDraft"
+            );
+            assert!(
+                !intents.iter().any(|i| matches!(i, Intent::ShowDetail)),
+                "it does not open the reader"
+            );
+        }
+
+        // Phase `account_row_gear_opens_that_accounts_settings_not_the_active`.
+        {
+            let (mut p, sh) = sidebar();
+            assert_eq!(
+                sh.borrow().accounts.active,
+                0,
+                "account #1 is not the active one"
+            );
+            // The gear on account #1 (you@hooli.example) must scope settings to #1.
+            let gear = p
+                .hits
+                .iter()
+                .find_map(|(r, h)| matches!(h, Hit::AccountSettings(1)).then_some(*r))
+                .expect("account #1 has a per-account settings gear");
+            let intents = click_sidebar(&mut p, &sh, gear.center());
+            assert!(
+                intents
+                    .iter()
+                    .any(|i| matches!(i, Intent::Settings(Some(1)))),
+                "the gear opens settings scoped to account #1, got {intents:?}"
+            );
+            assert!(
+                !intents
+                    .iter()
+                    .any(|i| matches!(i, Intent::Settings(Some(0) | None))),
+                "it must not fall back to the active account or the add-account flow"
+            );
+        }
+
+        // Phase `sidebar_offers_a_separate_add_account_action`.
+        {
+            let (mut p, sh) = sidebar();
+            let add = p
+                .hits
+                .iter()
+                .find_map(|(r, h)| matches!(h, Hit::AddAccount).then_some(*r))
+                .expect("a distinct Add-account action");
+            let intents = click_sidebar(&mut p, &sh, add.center());
+            assert!(
+                intents.iter().any(|i| matches!(i, Intent::Settings(None))),
+                "Add account opens the blank add-account sheet, got {intents:?}"
+            );
+        }
+
+        // Phase `sidebar_header_has_no_global_settings_gear`.
+        {
+            let (p, _sh) = sidebar();
+            // The old global-looking gear sat at the top-right of the header. Account
+            // settings are per-account now, so there must be no hit there.
+            assert!(
+                p.hit_at(Point::new(p.rect.x1 - 24.0, p.rect.y0 + 28.0))
+                    .is_none(),
+                "no global settings control in the sidebar header"
+            );
+        }
     }
 
     fn sidebar() -> (Pane, Shared) {
@@ -4268,61 +4351,5 @@ Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
         p.on_left_press(&mut doc, pt, &mut handled);
         assert!(handled, "sidebar click at {pt:?} consumed");
         sh.borrow_mut().take_intents()
-    }
-
-    #[test]
-    fn account_row_gear_opens_that_accounts_settings_not_the_active() {
-        let (mut p, sh) = sidebar();
-        assert_eq!(
-            sh.borrow().accounts.active,
-            0,
-            "account #1 is not the active one"
-        );
-        // The gear on account #1 (you@hooli.example) must scope settings to #1.
-        let gear = p
-            .hits
-            .iter()
-            .find_map(|(r, h)| matches!(h, Hit::AccountSettings(1)).then_some(*r))
-            .expect("account #1 has a per-account settings gear");
-        let intents = click_sidebar(&mut p, &sh, gear.center());
-        assert!(
-            intents
-                .iter()
-                .any(|i| matches!(i, Intent::Settings(Some(1)))),
-            "the gear opens settings scoped to account #1, got {intents:?}"
-        );
-        assert!(
-            !intents
-                .iter()
-                .any(|i| matches!(i, Intent::Settings(Some(0) | None))),
-            "it must not fall back to the active account or the add-account flow"
-        );
-    }
-
-    #[test]
-    fn sidebar_offers_a_separate_add_account_action() {
-        let (mut p, sh) = sidebar();
-        let add = p
-            .hits
-            .iter()
-            .find_map(|(r, h)| matches!(h, Hit::AddAccount).then_some(*r))
-            .expect("a distinct Add-account action");
-        let intents = click_sidebar(&mut p, &sh, add.center());
-        assert!(
-            intents.iter().any(|i| matches!(i, Intent::Settings(None))),
-            "Add account opens the blank add-account sheet, got {intents:?}"
-        );
-    }
-
-    #[test]
-    fn sidebar_header_has_no_global_settings_gear() {
-        let (p, _sh) = sidebar();
-        // The old global-looking gear sat at the top-right of the header. Account
-        // settings are per-account now, so there must be no hit there.
-        assert!(
-            p.hit_at(Point::new(p.rect.x1 - 24.0, p.rect.y0 + 28.0))
-                .is_none(),
-            "no global settings control in the sidebar header"
-        );
     }
 }

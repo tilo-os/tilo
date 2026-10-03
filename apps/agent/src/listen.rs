@@ -378,6 +378,7 @@ mod tests {
             author: author.into(),
             ts,
             text: text.into(),
+            body: vec![],
             edited: false,
             history: vec![],
             parent: None,
@@ -404,160 +405,173 @@ mod tests {
     }
 
     #[test]
-    fn a_mention_of_the_agent_addresses_it_and_a_mention_of_someone_else_does_not() {
-        let mine = mentioning(msg("m1", "u_ada", "@Claude crop this", 100));
-        assert_eq!(addressed(&mine, ME, NAME), Some(Address::Mentioned));
+    fn a_message_addresses_the_agent_by_mention_or_name_and_the_request_drops_the_address() {
+        // Case `a_mention_of_the_agent_addresses_it_and_a_mention_of_someone_else_does_not`.
+        {
+            let mine = mentioning(msg("m1", "u_ada", "@Claude crop this", 100));
+            assert_eq!(addressed(&mine, ME, NAME), Some(Address::Mentioned));
 
-        let mut theirs = mentioning(msg("m2", "u_ada", "@Ada crop this", 100));
-        theirs.mentions[0].user = "u_ada".into();
-        assert_eq!(addressed(&theirs, ME, NAME), None);
+            let mut theirs = mentioning(msg("m2", "u_ada", "@Ada crop this", 100));
+            theirs.mentions[0].user = "u_ada".into();
+            assert_eq!(addressed(&theirs, ME, NAME), None);
+        }
+
+        // Case `the_name_rule_is_the_documents_rule`.
+        {
+            let named = msg("m1", "u_ada", "Claude: make a table", 100);
+            assert_eq!(addressed(&named, ME, NAME), Some(Address::Named));
+            // Merely containing the name is not addressing it — the same rule the
+            // document path applies, so the two cannot disagree.
+            let about = msg("m2", "u_ada", "I asked Claude about it", 100);
+            assert_eq!(addressed(&about, ME, NAME), None);
+        }
+
+        // Case `the_request_is_the_body_without_the_token_that_addressed_it`.
+        {
+            let m = mentioning(msg("m1", "u_ada", "@Claude crop this square", 100));
+            assert_eq!(
+                asked_of(&m, ME, NAME, Address::Mentioned),
+                "crop this square"
+            );
+            let n = msg("m2", "u_ada", "Claude: crop this square", 100);
+            assert_eq!(asked_of(&n, ME, NAME, Address::Named), "crop this square");
+        }
     }
 
     #[test]
-    fn the_name_rule_is_the_documents_rule() {
-        let named = msg("m1", "u_ada", "Claude: make a table", 100);
-        assert_eq!(addressed(&named, ME, NAME), Some(Address::Named));
-        // Merely containing the name is not addressing it — the same rule the
-        // document path applies, so the two cannot disagree.
-        let about = msg("m2", "u_ada", "I asked Claude about it", 100);
-        assert_eq!(addressed(&about, ME, NAME), None);
+    fn the_subject_is_the_carried_address_or_a_recent_last_action_and_nothing_else() {
+        // Case `a_carried_address_beats_anything_recent`.
+        {
+            let mut m = mentioning(msg("m1", "u_ada", "@Claude crop this", 100));
+            m.reference = Some(ResourceRef::whole(
+                "files.entry",
+                "files.entry:/var/workspace/harbour.png",
+                "harbour.png",
+            ));
+            let last = LastAction::new("word-processor.block:blk_1", 99);
+            let s = subject_of(&m, Some(&last), 100);
+            assert_eq!(
+                s.resource(),
+                Some("files.entry:/var/workspace/harbour.png"),
+                "the address the author selected, not the one the agent last touched"
+            );
+        }
+
+        // Case `recency_bounds_the_inferred_subject_on_both_sides`.
+        {
+            let m = mentioning(msg("m1", "u_ada", "@Claude do that again", 1_000));
+            let near = LastAction::new("word-processor.block:blk_1", 1_000 - RECENCY_SECS + 1);
+            assert_eq!(
+                subject_of(&m, Some(&near), 1_000).resource(),
+                Some("word-processor.block:blk_1")
+            );
+            let far = LastAction::new("word-processor.block:blk_1", 1_000 - RECENCY_SECS - 1);
+            assert_eq!(
+                subject_of(&m, Some(&far), 1_000),
+                Subject::Nothing,
+                "past the window there is nothing to infer from, and guessing is the bug"
+            );
+        }
     }
 
     #[test]
-    fn the_request_is_the_body_without_the_token_that_addressed_it() {
-        let m = mentioning(msg("m1", "u_ada", "@Claude crop this square", 100));
-        assert_eq!(
-            asked_of(&m, ME, NAME, Address::Mentioned),
-            "crop this square"
-        );
-        let n = msg("m2", "u_ada", "Claude: crop this square", 100);
-        assert_eq!(asked_of(&n, ME, NAME, Address::Named), "crop this square");
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each case keeps its original fixture and assertions"
+    )]
+    fn the_next_summons_is_the_oldest_addressed_message_the_agent_has_not_answered() {
+        // Case `a_reply_the_agent_already_wrote_marks_its_parent_answered`.
+        {
+            let mut reply = msg("m2", ME, "Claude: I can't do that here.", 101);
+            reply.parent = Some("m1".into());
+            let done = answered(&[msg("m1", "u_ada", "@Claude x", 100), reply], ME);
+            assert!(done.contains("m1"), "a refusal is an answer, not a retry");
+        }
 
-    #[test]
-    fn a_carried_address_beats_anything_recent() {
-        let mut m = mentioning(msg("m1", "u_ada", "@Claude crop this", 100));
-        m.reference = Some(ResourceRef::whole(
-            "files.entry",
-            "files.entry:/var/workspace/harbour.png",
-            "harbour.png",
-        ));
-        let last = LastAction::new("word-processor.block:blk_1", 99);
-        let s = subject_of(&m, Some(&last), 100);
-        assert_eq!(
-            s.resource(),
-            Some("files.entry:/var/workspace/harbour.png"),
-            "the address the author selected, not the one the agent last touched"
-        );
-    }
+        // Case `a_summons_the_agent_took_but_has_not_finished_still_counts_as_answered`.
+        // The conservative half of `answered`: a summons the agent took and has
+        // not finished still counts as spoken for, so a restart does not repeat
+        // work that may already have landed.
+        {
+            let mut reply = msg("m2", ME, "", 101);
+            reply.parent = Some("m1".into());
+            reply.work = Some(chat::model::AgentWork::new(
+                chat::model::AgentWorkState::Taken,
+                101,
+            ));
+            let done = answered(&[msg("m1", "u_ada", "@Claude x", 100), reply], ME);
+            assert!(
+                done.contains("m1"),
+                "an in-flight record is not untouched work"
+            );
+        }
 
-    #[test]
-    fn recency_bounds_the_inferred_subject_on_both_sides() {
-        let m = mentioning(msg("m1", "u_ada", "@Claude do that again", 1_000));
-        let near = LastAction::new("word-processor.block:blk_1", 1_000 - RECENCY_SECS + 1);
-        assert_eq!(
-            subject_of(&m, Some(&near), 1_000).resource(),
-            Some("word-processor.block:blk_1")
-        );
-        let far = LastAction::new("word-processor.block:blk_1", 1_000 - RECENCY_SECS - 1);
-        assert_eq!(
-            subject_of(&m, Some(&far), 1_000),
-            Subject::Nothing,
-            "past the window there is nothing to infer from, and guessing is the bug"
-        );
-    }
+        // Case `a_wait_is_not_an_answer_and_the_summons_stays_open`.
+        // The one state that is not an answer: nothing has been dispatched and
+        // the record exists to say a wait is in progress, not that one happened.
+        {
+            let mut reply = msg("m2", ME, "", 101);
+            reply.parent = Some("m1".into());
+            reply.work = Some(chat::model::AgentWork::new(
+                chat::model::AgentWorkState::Waiting {
+                    app: "Photos".into(),
+                },
+                101,
+            ));
+            let done = answered(&[msg("m1", "u_ada", "@Claude x", 100), reply], ME);
+            assert!(
+                !done.contains("m1"),
+                "a wait must not permanently close the summons it belongs to"
+            );
+        }
 
-    #[test]
-    fn a_reply_the_agent_already_wrote_marks_its_parent_answered() {
-        let mut reply = msg("m2", ME, "Claude: I can't do that here.", 101);
-        reply.parent = Some("m1".into());
-        let done = answered(&[msg("m1", "u_ada", "@Claude x", 100), reply], ME);
-        assert!(done.contains("m1"), "a refusal is an answer, not a retry");
-    }
+        // Case `record_of_finds_the_agents_own_reply_and_nobody_elses`.
+        // `record_of` finds the agent's own reply under a parent, the other way
+        // round from `answered` — the id to keep writing into rather than the
+        // set of questions to skip.
+        {
+            let mut reply = msg("m2", ME, "Claude: done.", 101);
+            reply.parent = Some("m1".into());
+            let mut someone_elses = msg("m3", "u_bob", "congrats", 102);
+            someone_elses.parent = Some("m1".into());
+            let msgs = [msg("m1", "u_ada", "@Claude x", 100), reply, someone_elses];
+            let found = record_of(&msgs, ME, "m1").expect("the agent's own reply");
+            assert_eq!(found.id, "m2");
+            assert!(record_of(&msgs, ME, "nonexistent").is_none());
+        }
 
-    /// The conservative half of `answered`: a summons the agent took and has
-    /// not finished still counts as spoken for, so a restart does not repeat
-    /// work that may already have landed.
-    #[test]
-    fn a_summons_the_agent_took_but_has_not_finished_still_counts_as_answered() {
-        let mut reply = msg("m2", ME, "", 101);
-        reply.parent = Some("m1".into());
-        reply.work = Some(chat::model::AgentWork::new(
-            chat::model::AgentWorkState::Taken,
-            101,
-        ));
-        let done = answered(&[msg("m1", "u_ada", "@Claude x", 100), reply], ME);
-        assert!(
-            done.contains("m1"),
-            "an in-flight record is not untouched work"
-        );
-    }
+        // Case `the_oldest_unanswered_summons_is_taken_and_the_agents_own_words_are_not_one`.
+        {
+            let msgs = vec![
+                mentioning(msg("m1", "u_ada", "@Claude first", 100)),
+                mentioning(msg("m2", "u_ada", "@Claude second", 200)),
+                // The agent addressing itself must never be work.
+                mentioning(msg("m3", ME, "@Claude done", 150)),
+            ];
+            let s = next_summons(&msgs, ME, NAME, None, 300, &HashSet::new()).expect("a summons");
+            assert_eq!(s.message, "m1");
 
-    /// The one state that is not an answer: nothing has been dispatched and
-    /// the record exists to say a wait is in progress, not that one happened.
-    #[test]
-    fn a_wait_is_not_an_answer_and_the_summons_stays_open() {
-        let mut reply = msg("m2", ME, "", 101);
-        reply.parent = Some("m1".into());
-        reply.work = Some(chat::model::AgentWork::new(
-            chat::model::AgentWorkState::Waiting {
-                app: "Photos".into(),
-            },
-            101,
-        ));
-        let done = answered(&[msg("m1", "u_ada", "@Claude x", 100), reply], ME);
-        assert!(
-            !done.contains("m1"),
-            "a wait must not permanently close the summons it belongs to"
-        );
-    }
+            let done: HashSet<String> = ["m1".to_string()].into_iter().collect();
+            let s = next_summons(&msgs, ME, NAME, None, 300, &done).expect("the next one");
+            assert_eq!(
+                s.message, "m2",
+                "answered ones are skipped, the rest keep their order"
+            );
+        }
 
-    #[test]
-    fn the_oldest_unanswered_summons_is_taken_and_the_agents_own_words_are_not_one() {
-        let msgs = vec![
-            mentioning(msg("m1", "u_ada", "@Claude first", 100)),
-            mentioning(msg("m2", "u_ada", "@Claude second", 200)),
-            // The agent addressing itself must never be work.
-            mentioning(msg("m3", ME, "@Claude done", 150)),
-        ];
-        let s = next_summons(&msgs, ME, NAME, None, 300, &HashSet::new()).expect("a summons");
-        assert_eq!(s.message, "m1");
-
-        let done: HashSet<String> = ["m1".to_string()].into_iter().collect();
-        let s = next_summons(&msgs, ME, NAME, None, 300, &done).expect("the next one");
-        assert_eq!(
-            s.message, "m2",
-            "answered ones are skipped, the rest keep their order"
-        );
-    }
-
-    #[test]
-    fn a_message_that_says_nothing_to_the_agent_is_never_a_summons() {
-        let msgs = vec![
-            msg("m1", "u_ada", "shipping the run sheet now", 100),
-            msg("m2", "u_bob", "nice one", 110),
-        ];
-        // Even sitting right on top of the agent's own last action.
-        let last = LastAction::new("word-processor.block:blk_1", 105);
-        assert_eq!(
-            next_summons(&msgs, ME, NAME, Some(&last), 120, &HashSet::new()),
-            None,
-            "being near the agent's work is not the same as speaking to it"
-        );
-    }
-
-    /// `record_of` finds the agent's own reply under a parent, the other way
-    /// round from `answered` — the id to keep writing into rather than the
-    /// set of questions to skip.
-    #[test]
-    fn record_of_finds_the_agents_own_reply_and_nobody_elses() {
-        let mut reply = msg("m2", ME, "Claude: done.", 101);
-        reply.parent = Some("m1".into());
-        let mut someone_elses = msg("m3", "u_bob", "congrats", 102);
-        someone_elses.parent = Some("m1".into());
-        let msgs = [msg("m1", "u_ada", "@Claude x", 100), reply, someone_elses];
-        let found = record_of(&msgs, ME, "m1").expect("the agent's own reply");
-        assert_eq!(found.id, "m2");
-        assert!(record_of(&msgs, ME, "nonexistent").is_none());
+        // Case `a_message_that_says_nothing_to_the_agent_is_never_a_summons`.
+        {
+            let msgs = vec![
+                msg("m1", "u_ada", "shipping the run sheet now", 100),
+                msg("m2", "u_bob", "nice one", 110),
+            ];
+            // Even sitting right on top of the agent's own last action.
+            let last = LastAction::new("word-processor.block:blk_1", 105);
+            assert_eq!(
+                next_summons(&msgs, ME, NAME, Some(&last), 120, &HashSet::new()),
+                None,
+                "being near the agent's work is not the same as speaking to it"
+            );
+        }
     }
 }

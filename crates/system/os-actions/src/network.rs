@@ -357,10 +357,17 @@ pub fn set_wifi(enabled: bool) -> Result<(), String> {
 /// Returns an error message if `nmcli` is not installed, the command fails, or its output is
 /// neither `enabled` nor `disabled`.
 pub fn get_wifi() -> Result<bool, String> {
-    let out = run_capture("nmcli", &["radio", "wifi"])?;
-    parse_nmcli_radio(&out)
+    wifi_from_radios(&get_radio_state()?)
 }
 
+fn wifi_from_radios(radios: &RadioState) -> Result<bool, String> {
+    if !radios.wifi_available {
+        return Err("no Wi-Fi adapter on this machine".into());
+    }
+    Ok(radios.wifi_enabled)
+}
+
+#[cfg(test)]
 fn parse_nmcli_radio(stdout: &str) -> Result<bool, String> {
     let line = stdout
         .lines()
@@ -1488,69 +1495,71 @@ mod profile_tests {
     use super::*;
 
     #[test]
-    fn networkmanager_connectivity_keeps_portal_distinct_from_limited() {
-        assert_eq!(parse_connectivity("portal\n"), ConnectivityState::Portal);
-        assert_eq!(parse_connectivity("limited\n"), ConnectivityState::Limited);
-        assert_eq!(parse_connectivity("full\n"), ConnectivityState::Full);
+    fn networkmanager_output_parses_connectivity_profiles_hotspots_and_clients() {
+        // Phase `networkmanager_connectivity_keeps_portal_distinct_from_limited`.
+        {
+            assert_eq!(parse_connectivity("portal\n"), ConnectivityState::Portal);
+            assert_eq!(parse_connectivity("limited\n"), ConnectivityState::Limited);
+            assert_eq!(parse_connectivity("full\n"), ConnectivityState::Full);
+        }
+        // Phase `saved_profiles_preserve_escaped_colons_and_autoconnect`.
+        {
+            let parsed = parse_saved_profiles(
+                "Office\\: Lab:12345678-1234-1234-1234-123456789abc:802-11-wireless:yes\n",
+            );
+            assert_eq!(parsed.len(), 1);
+            assert_eq!(parsed[0].name, "Office: Lab");
+            assert!(parsed[0].autoconnect);
+        }
+        // Phase `hotspot_qr_escapes_schema_delimiters`.
+        {
+            let config = HotspotConfiguration {
+                ssid: "Tilo; Guest".into(),
+                password: "hello:world".into(),
+                band: HotspotBand::Automatic,
+            };
+            assert_eq!(
+                config.qr_payload().unwrap(),
+                "WIFI:T:WPA;S:Tilo\\; Guest;P:hello\\:world;;"
+            );
+        }
+        // Phase `station_dump_yields_clients_without_inventing_names`.
+        {
+            let clients =
+                parse_hotspot_clients("Station aa:bb:cc:dd:ee:ff (on wlan0)\n\tsignal: -51 dBm\n");
+            assert_eq!(clients[0].mac, "AA:BB:CC:DD:EE:FF");
+            assert_eq!(clients[0].signal_dbm, Some(-51));
+        }
     }
 
     #[test]
-    fn saved_profiles_preserve_escaped_colons_and_autoconnect() {
-        let parsed = parse_saved_profiles(
-            "Office\\: Lab:12345678-1234-1234-1234-123456789abc:802-11-wireless:yes\n",
-        );
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].name, "Office: Lab");
-        assert!(parsed[0].autoconnect);
-    }
-
-    #[test]
-    fn hotspot_qr_escapes_schema_delimiters() {
-        let config = HotspotConfiguration {
-            ssid: "Tilo; Guest".into(),
-            password: "hello:world".into(),
-            band: HotspotBand::Automatic,
-        };
-        assert_eq!(
-            config.qr_payload().unwrap(),
-            "WIFI:T:WPA;S:Tilo\\; Guest;P:hello\\:world;;"
-        );
-    }
-
-    #[test]
-    fn station_dump_yields_clients_without_inventing_names() {
-        let clients =
-            parse_hotspot_clients("Station aa:bb:cc:dd:ee:ff (on wlan0)\n\tsignal: -51 dBm\n");
-        assert_eq!(clients[0].mac, "AA:BB:CC:DD:EE:FF");
-        assert_eq!(clients[0].signal_dbm, Some(-51));
-    }
-
-    #[test]
-    fn manual_ipv4_validation_rejects_shellish_and_missing_addresses() {
-        assert!(!valid_ip_token("1.2.3.4;reboot"));
-        let config = IpConfiguration {
-            automatic: false,
-            ..Default::default()
-        };
-        // Validate the pure precondition without invoking nmcli by using a
-        // syntactically valid UUID; it fails before spawning.
-        let err = configure_ipv4("12345678-1234-1234-1234-123456789abc", &config).unwrap_err();
-        assert!(err.contains("at least one address"));
-    }
-
-    #[test]
-    fn connection_policy_rejects_unsafe_pac_before_invoking_networkmanager() {
-        // This must fail during validation, before an external process can run.
-        let policy = ConnectionPolicy {
-            proxy: ProxyConfiguration {
-                automatic_url: Some("file:///tmp/proxy.pac".into()),
-                browser_only: false,
-            },
-            ..Default::default()
-        };
-        let err = configure_connection_policy("12345678-1234-1234-1234-123456789abc", &policy)
-            .unwrap_err();
-        assert!(err.contains("HTTP or HTTPS"));
+    fn connection_settings_are_validated_before_invoking_networkmanager() {
+        // Phase `manual_ipv4_validation_rejects_shellish_and_missing_addresses`.
+        {
+            assert!(!valid_ip_token("1.2.3.4;reboot"));
+            let config = IpConfiguration {
+                automatic: false,
+                ..Default::default()
+            };
+            // Validate the pure precondition without invoking nmcli by using a
+            // syntactically valid UUID; it fails before spawning.
+            let err = configure_ipv4("12345678-1234-1234-1234-123456789abc", &config).unwrap_err();
+            assert!(err.contains("at least one address"));
+        }
+        // Phase `connection_policy_rejects_unsafe_pac_before_invoking_networkmanager`.
+        {
+            // This must fail during validation, before an external process can run.
+            let policy = ConnectionPolicy {
+                proxy: ProxyConfiguration {
+                    automatic_url: Some("file:///tmp/proxy.pac".into()),
+                    browser_only: false,
+                },
+                ..Default::default()
+            };
+            let err = configure_connection_policy("12345678-1234-1234-1234-123456789abc", &policy)
+                .unwrap_err();
+            assert!(err.contains("HTTP or HTTPS"));
+        }
     }
 }
 
@@ -1791,129 +1800,147 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_editable_networkmanager_profile_values() {
-        let parsed = parse_connection_profile_settings(concat!(
-            "connection.metered:yes\n",
-            "802-11-wireless.cloned-mac-address:stable-ssid\n",
-            "proxy.method:auto\n",
-            "proxy.pac-url:https\\://proxy.example/pac\n",
-            "proxy.browser-only:yes\n",
-            "ipv4.method:manual\n",
-            "ipv4.addresses:192.0.2.10/24\n",
-            "ipv4.gateway:192.0.2.1\n",
-            "ipv4.dns:1.1.1.1,9.9.9.9\n",
-        ))
-        .unwrap();
-        assert_eq!(parsed.metered, Some(MeteredPolicy::Metered));
-        assert_eq!(parsed.mac, Some(MacPolicy::Stable));
-        assert_eq!(
-            parsed.proxy.unwrap().automatic_url.as_deref(),
-            Some("https://proxy.example/pac")
-        );
-        assert_eq!(parsed.ipv4.unwrap().addresses, ["192.0.2.10/24"]);
-    }
-
-    #[test]
-    fn preserves_unrecognized_profile_properties() {
-        let parsed = parse_connection_profile_settings(concat!(
-            "connection.metered:vendor-value\n",
-            "802-11-wireless.cloned-mac-address:02\\:00\\:00\\:00\\:00\\:01\n",
-            "proxy.method:manual\n",
-            "ipv4.method:shared\n",
-        ))
-        .unwrap();
-        assert_eq!(parsed, ConnectionProfileSettings::default());
-    }
-
-    #[test]
-    fn parse_nmcli_radio_states() {
-        assert!(parse_nmcli_radio("enabled\n").unwrap());
-        assert!(!parse_nmcli_radio("disabled\n").unwrap());
-        assert!(parse_nmcli_radio("garbled").is_err());
-    }
-
-    #[test]
-    fn split_terse_handles_escaped_colons() {
-        let line = r"*:Home\:Network:75:WPA2";
-        let fields = split_terse(line);
-        assert_eq!(fields, vec!["*", "Home:Network", "75", "WPA2"]);
-    }
-
-    #[test]
-    fn signal_bucket_maps_quartiles() {
-        assert_eq!(signal_pct_to_bucket(0), 1);
-        assert_eq!(signal_pct_to_bucket(20), 1);
-        assert_eq!(signal_pct_to_bucket(35), 2);
-        assert_eq!(signal_pct_to_bucket(60), 3);
-        assert_eq!(signal_pct_to_bucket(95), 4);
-    }
-
-    #[test]
-    fn parse_nmcli_wifi_list_basic() {
-        let stdout = "\
-*:Home_Network:80:WPA2\n\
-:Cafe_Guest:55:--\n\
-:Neighbour_5G:30:WPA2\n\
-";
-        let nets = parse_nmcli_wifi_list(stdout);
-        assert_eq!(nets.len(), 3);
-        assert_eq!(nets[0].ssid, "Home_Network");
-        assert!(nets[0].connected);
-        assert!(nets[0].secure);
-        assert_eq!(nets[0].security, WifiSecurity::Wpa2);
-        assert_eq!(nets[0].signal, 4);
-        assert!(!nets[1].connected);
-        assert!(!nets[1].secure);
-        assert_eq!(nets[1].security, WifiSecurity::Open);
-        assert_eq!(nets[1].signal, 3);
-        assert_eq!(nets[2].signal, 2);
-    }
-
-    #[test]
-    fn wifi_security_preserves_supported_authentication_modes() {
-        for (nmcli, expected) in [
-            ("--", WifiSecurity::Open),
-            ("WPA2", WifiSecurity::Wpa2),
-            ("WPA3 SAE", WifiSecurity::Wpa3),
-            ("OWE", WifiSecurity::Owe),
-            ("WPA2 802.1X", WifiSecurity::Enterprise),
-            ("WEP", WifiSecurity::Unknown),
-        ] {
-            assert_eq!(WifiSecurity::from_nmcli(nmcli), expected, "{nmcli}");
+    fn nmcli_profiles_radios_and_terse_fields_parse_exactly() {
+        // Phase `parses_editable_networkmanager_profile_values`.
+        {
+            let parsed = parse_connection_profile_settings(concat!(
+                "connection.metered:yes\n",
+                "802-11-wireless.cloned-mac-address:stable-ssid\n",
+                "proxy.method:auto\n",
+                "proxy.pac-url:https\\://proxy.example/pac\n",
+                "proxy.browser-only:yes\n",
+                "ipv4.method:manual\n",
+                "ipv4.addresses:192.0.2.10/24\n",
+                "ipv4.gateway:192.0.2.1\n",
+                "ipv4.dns:1.1.1.1,9.9.9.9\n",
+            ))
+            .unwrap();
+            assert_eq!(parsed.metered, Some(MeteredPolicy::Metered));
+            assert_eq!(parsed.mac, Some(MacPolicy::Stable));
+            assert_eq!(
+                parsed.proxy.unwrap().automatic_url.as_deref(),
+                Some("https://proxy.example/pac")
+            );
+            assert_eq!(parsed.ipv4.unwrap().addresses, ["192.0.2.10/24"]);
         }
-        assert!(WifiSecurity::Wpa2.supports_portable_passphrase());
-        assert!(WifiSecurity::Wpa3.supports_portable_passphrase());
-        assert!(!WifiSecurity::Enterprise.supports_portable_passphrase());
-        assert!(!WifiSecurity::Owe.supports_portable_passphrase());
+        // Phase `preserves_unrecognized_profile_properties`.
+        {
+            let parsed = parse_connection_profile_settings(concat!(
+                "connection.metered:vendor-value\n",
+                "802-11-wireless.cloned-mac-address:02\\:00\\:00\\:00\\:00\\:01\n",
+                "proxy.method:manual\n",
+                "ipv4.method:shared\n",
+            ))
+            .unwrap();
+            assert_eq!(parsed, ConnectionProfileSettings::default());
+        }
+        // Phase `parse_nmcli_radio_states`.
+        {
+            assert!(parse_nmcli_radio("enabled\n").unwrap());
+            assert!(!parse_nmcli_radio("disabled\n").unwrap());
+            assert!(parse_nmcli_radio("garbled").is_err());
+        }
+        // Phase `split_terse_handles_escaped_colons`.
+        {
+            let line = r"*:Home\:Network:75:WPA2";
+            let fields = split_terse(line);
+            assert_eq!(fields, vec!["*", "Home:Network", "75", "WPA2"]);
+        }
+        // Phase `signal_bucket_maps_quartiles`.
+        {
+            assert_eq!(signal_pct_to_bucket(0), 1);
+            assert_eq!(signal_pct_to_bucket(20), 1);
+            assert_eq!(signal_pct_to_bucket(35), 2);
+            assert_eq!(signal_pct_to_bucket(60), 3);
+            assert_eq!(signal_pct_to_bucket(95), 4);
+        }
+        // Phase `wifi_read_is_unavailable_without_an_adapter`.
+        {
+            let radios = RadioState::default();
+            assert_eq!(
+                wifi_from_radios(&radios).unwrap_err(),
+                "no Wi-Fi adapter on this machine"
+            );
+            let on = RadioState {
+                wifi_available: true,
+                wifi_enabled: true,
+                ..RadioState::default()
+            };
+            assert!(wifi_from_radios(&on).unwrap());
+            let off = RadioState {
+                wifi_available: true,
+                wifi_enabled: false,
+                ..RadioState::default()
+            };
+            assert!(!wifi_from_radios(&off).unwrap());
+        }
     }
 
     #[test]
-    fn connected_bssid_supplies_security_when_ssids_are_deduplicated() {
-        let nets = parse_nmcli_wifi_list(":Transition:90:WPA2\n*:Transition:40:WPA3 SAE\n");
-        assert_eq!(nets.len(), 1);
-        assert_eq!(nets[0].security, WifiSecurity::Wpa3);
-        assert!(nets[0].connected);
-        assert_eq!(nets[0].signal, 4);
-    }
-
-    #[test]
-    fn parse_nmcli_wifi_list_dedupes_ssids() {
-        let stdout = "\
-:DualBand:30:WPA2\n\
-*:DualBand:75:WPA2\n\
-";
-        let nets = parse_nmcli_wifi_list(stdout);
-        assert_eq!(nets.len(), 1);
-        assert_eq!(nets[0].signal, 4);
-        assert!(nets[0].connected);
-    }
-
-    #[test]
-    fn parse_nmcli_wifi_list_skips_empty_ssid() {
-        let stdout = ":::WPA2\n*:Real:80:WPA2\n";
-        let nets = parse_nmcli_wifi_list(stdout);
-        assert_eq!(nets.len(), 1);
-        assert_eq!(nets[0].ssid, "Real");
+    fn wifi_lists_dedupe_ssids_and_keep_security_modes() {
+        // Phase `parse_nmcli_wifi_list_basic`.
+        {
+            let stdout = "\
+    *:Home_Network:80:WPA2\n\
+    :Cafe_Guest:55:--\n\
+    :Neighbour_5G:30:WPA2\n\
+    ";
+            let nets = parse_nmcli_wifi_list(stdout);
+            assert_eq!(nets.len(), 3);
+            assert_eq!(nets[0].ssid, "Home_Network");
+            assert!(nets[0].connected);
+            assert!(nets[0].secure);
+            assert_eq!(nets[0].security, WifiSecurity::Wpa2);
+            assert_eq!(nets[0].signal, 4);
+            assert!(!nets[1].connected);
+            assert!(!nets[1].secure);
+            assert_eq!(nets[1].security, WifiSecurity::Open);
+            assert_eq!(nets[1].signal, 3);
+            assert_eq!(nets[2].signal, 2);
+        }
+        // Phase `wifi_security_preserves_supported_authentication_modes`.
+        {
+            for (nmcli, expected) in [
+                ("--", WifiSecurity::Open),
+                ("WPA2", WifiSecurity::Wpa2),
+                ("WPA3 SAE", WifiSecurity::Wpa3),
+                ("OWE", WifiSecurity::Owe),
+                ("WPA2 802.1X", WifiSecurity::Enterprise),
+                ("WEP", WifiSecurity::Unknown),
+            ] {
+                assert_eq!(WifiSecurity::from_nmcli(nmcli), expected, "{nmcli}");
+            }
+            assert!(WifiSecurity::Wpa2.supports_portable_passphrase());
+            assert!(WifiSecurity::Wpa3.supports_portable_passphrase());
+            assert!(!WifiSecurity::Enterprise.supports_portable_passphrase());
+            assert!(!WifiSecurity::Owe.supports_portable_passphrase());
+        }
+        // Phase `connected_bssid_supplies_security_when_ssids_are_deduplicated`.
+        {
+            let nets = parse_nmcli_wifi_list(":Transition:90:WPA2\n*:Transition:40:WPA3 SAE\n");
+            assert_eq!(nets.len(), 1);
+            assert_eq!(nets[0].security, WifiSecurity::Wpa3);
+            assert!(nets[0].connected);
+            assert_eq!(nets[0].signal, 4);
+        }
+        // Phase `parse_nmcli_wifi_list_dedupes_ssids`.
+        {
+            let stdout = "\
+    :DualBand:30:WPA2\n\
+    *:DualBand:75:WPA2\n\
+    ";
+            let nets = parse_nmcli_wifi_list(stdout);
+            assert_eq!(nets.len(), 1);
+            assert_eq!(nets[0].signal, 4);
+            assert!(nets[0].connected);
+        }
+        // Phase `parse_nmcli_wifi_list_skips_empty_ssid`.
+        {
+            let stdout = ":::WPA2\n*:Real:80:WPA2\n";
+            let nets = parse_nmcli_wifi_list(stdout);
+            assert_eq!(nets.len(), 1);
+            assert_eq!(nets[0].ssid, "Real");
+        }
     }
 }
 
@@ -2035,41 +2062,40 @@ mod wired_tests {
     use super::*;
 
     #[test]
-    fn parses_connected_ethernet_from_status() {
-        let out = "lo:loopback:unmanaged\neth0:ethernet:connected\nwlan0:wifi:connected\n";
-        assert_eq!(
-            parse_nmcli_wired_status(out),
-            Some(("eth0".to_string(), true))
-        );
-    }
-
-    #[test]
-    fn disconnected_ethernet_reports_device_but_not_connected() {
-        let out = "enp3s0:ethernet:disconnected\n";
-        assert_eq!(
-            parse_nmcli_wired_status(out),
-            Some(("enp3s0".to_string(), false))
-        );
-    }
-
-    #[test]
-    fn no_ethernet_device_is_none() {
-        assert_eq!(parse_nmcli_wired_status("wlan0:wifi:connected\n"), None);
-    }
-
-    #[test]
-    fn parses_speed_and_first_ipv4_from_show() {
-        let out = "CAPABILITIES.SPEED:1000 Mb/s\nIP4.ADDRESS[1]:192.168.1.42/24\nIP4.ADDRESS[2]:10.0.0.9/8\n";
-        let (speed, ipv4) = parse_nmcli_wired_show(out);
-        assert_eq!(speed.as_deref(), Some("1000 Mb/s"));
-        assert_eq!(ipv4.as_deref(), Some("192.168.1.42"));
-    }
-
-    #[test]
-    fn unknown_speed_and_missing_ip_are_none() {
-        let (speed, ipv4) = parse_nmcli_wired_show("CAPABILITIES.SPEED:unknown\n");
-        assert!(speed.is_none());
-        assert!(ipv4.is_none());
+    fn wired_status_and_show_output_parse_devices_speed_and_address() {
+        for (case, out, want) in [
+            (
+                "parses_connected_ethernet_from_status",
+                "lo:loopback:unmanaged\neth0:ethernet:connected\nwlan0:wifi:connected\n",
+                Some(("eth0".to_string(), true)),
+            ),
+            (
+                "disconnected_ethernet_reports_device_but_not_connected",
+                "enp3s0:ethernet:disconnected\n",
+                Some(("enp3s0".to_string(), false)),
+            ),
+            ("no_ethernet_device_is_none", "wlan0:wifi:connected\n", None),
+        ] {
+            assert_eq!(parse_nmcli_wired_status(out), want, "case {case}");
+        }
+        for (case, out, want_speed, want_ipv4) in [
+            (
+                "parses_speed_and_first_ipv4_from_show",
+                "CAPABILITIES.SPEED:1000 Mb/s\nIP4.ADDRESS[1]:192.168.1.42/24\nIP4.ADDRESS[2]:10.0.0.9/8\n",
+                Some("1000 Mb/s"),
+                Some("192.168.1.42"),
+            ),
+            (
+                "unknown_speed_and_missing_ip_are_none",
+                "CAPABILITIES.SPEED:unknown\n",
+                None,
+                None,
+            ),
+        ] {
+            let (speed, ipv4) = parse_nmcli_wired_show(out);
+            assert_eq!(speed.as_deref(), want_speed, "case {case}: speed");
+            assert_eq!(ipv4.as_deref(), want_ipv4, "case {case}: ipv4");
+        }
     }
 }
 
@@ -2078,20 +2104,24 @@ mod portable_profile_tests {
     use super::*;
 
     #[test]
-    fn portable_profile_keeps_only_ssid_mode_and_secret() {
-        let profile = parse_portable_wifi_profile(
-            "802-11-wireless\nHome network\nwpa-psk\ncorrect horse battery staple\n",
-        )
-        .unwrap();
-        assert_eq!(profile.ssid, "Home network");
-        assert_eq!(profile.security, WifiSecurity::Wpa2);
-        assert_eq!(profile.password.as_str(), "correct horse battery staple");
-    }
-
-    #[test]
-    fn enterprise_and_non_wifi_profiles_fail_closed() {
-        assert!(parse_portable_wifi_profile("802-11-wireless\nWork\nwpa-eap\nsecret\n").is_err());
-        assert!(parse_portable_wifi_profile("802-3-ethernet\nLAN\nwpa-psk\nsecret\n").is_err());
+    fn portable_profiles_keep_only_personal_wifi_secrets() {
+        // Phase `portable_profile_keeps_only_ssid_mode_and_secret`.
+        {
+            let profile = parse_portable_wifi_profile(
+                "802-11-wireless\nHome network\nwpa-psk\ncorrect horse battery staple\n",
+            )
+            .unwrap();
+            assert_eq!(profile.ssid, "Home network");
+            assert_eq!(profile.security, WifiSecurity::Wpa2);
+            assert_eq!(profile.password.as_str(), "correct horse battery staple");
+        }
+        // Phase `enterprise_and_non_wifi_profiles_fail_closed`.
+        {
+            assert!(
+                parse_portable_wifi_profile("802-11-wireless\nWork\nwpa-eap\nsecret\n").is_err()
+            );
+            assert!(parse_portable_wifi_profile("802-3-ethernet\nLAN\nwpa-psk\nsecret\n").is_err());
+        }
     }
 }
 
@@ -2105,45 +2135,46 @@ wifi:connected:Cafe WiFi:wlp2s0\n\
 loopback:unmanaged::lo\n";
 
     #[test]
-    fn wired_wins_when_both_links_are_up() {
-        let s = parse_nmcli_device_status(BOTH_UP);
-        assert_eq!(s.kind, LinkKind::Wired);
-        assert_eq!(s.name.as_deref(), Some("Wired connection 1"));
-        assert_eq!(s.signal, 0, "a cable has no signal strength to report");
-    }
-
-    #[test]
-    fn wifi_reports_its_ssid_when_there_is_no_cable() {
-        let s =
-            parse_nmcli_device_status("wifi:connected:Cafe WiFi:wlp2s0\nloopback:unmanaged::lo\n");
-        assert_eq!(s.kind, LinkKind::Wifi);
-        assert_eq!(s.name.as_deref(), Some("Cafe WiFi"));
-        assert!(s.signal > 0, "a connected radio never reads as no-signal");
-    }
-
-    #[test]
-    fn a_link_still_negotiating_is_not_online() {
-        let out = "wifi:connecting (getting IP configuration):Cafe WiFi:wlp2s0\n";
-        let s = parse_nmcli_device_status(out);
-        assert_eq!(
-            s.kind,
-            LinkKind::Offline,
-            "a half-associated link carries no traffic and must not read as connected"
-        );
-        assert!(!s.is_online());
-    }
-
-    #[test]
-    fn nothing_connected_is_offline() {
-        let s =
-            parse_nmcli_device_status("wifi:disconnected::wlp2s0\nethernet:unavailable::eth0\n");
-        assert_eq!(s, LinkStatus::offline());
-    }
-
-    #[test]
-    fn an_ssid_containing_a_colon_survives_the_terse_split() {
-        let s = parse_nmcli_device_status(r"wifi:connected:Home\:Network:wlp2s0");
-        assert_eq!(s.name.as_deref(), Some("Home:Network"));
+    fn device_status_prefers_wired_and_reports_only_connected_links() {
+        // Phase `wired_wins_when_both_links_are_up`.
+        {
+            let s = parse_nmcli_device_status(BOTH_UP);
+            assert_eq!(s.kind, LinkKind::Wired);
+            assert_eq!(s.name.as_deref(), Some("Wired connection 1"));
+            assert_eq!(s.signal, 0, "a cable has no signal strength to report");
+        }
+        // Phase `wifi_reports_its_ssid_when_there_is_no_cable`.
+        {
+            let s = parse_nmcli_device_status(
+                "wifi:connected:Cafe WiFi:wlp2s0\nloopback:unmanaged::lo\n",
+            );
+            assert_eq!(s.kind, LinkKind::Wifi);
+            assert_eq!(s.name.as_deref(), Some("Cafe WiFi"));
+            assert!(s.signal > 0, "a connected radio never reads as no-signal");
+        }
+        // Phase `a_link_still_negotiating_is_not_online`.
+        {
+            let out = "wifi:connecting (getting IP configuration):Cafe WiFi:wlp2s0\n";
+            let s = parse_nmcli_device_status(out);
+            assert_eq!(
+                s.kind,
+                LinkKind::Offline,
+                "a half-associated link carries no traffic and must not read as connected"
+            );
+            assert!(!s.is_online());
+        }
+        // Phase `nothing_connected_is_offline`.
+        {
+            let s = parse_nmcli_device_status(
+                "wifi:disconnected::wlp2s0\nethernet:unavailable::eth0\n",
+            );
+            assert_eq!(s, LinkStatus::offline());
+        }
+        // Phase `an_ssid_containing_a_colon_survives_the_terse_split`.
+        {
+            let s = parse_nmcli_device_status(r"wifi:connected:Home\:Network:wlp2s0");
+            assert_eq!(s.name.as_deref(), Some("Home:Network"));
+        }
     }
 
     /// Real `/proc/net/wireless`, wext scale (quality out of 70).
@@ -2152,25 +2183,31 @@ loopback:unmanaged::lo\n";
 wlp2s0: 0000   49.  -61.  -256        0      0      0     55      0\n";
 
     #[test]
-    fn link_quality_is_scaled_off_the_wext_ceiling() {
-        // 49/70 = 70%, which is bucket 3 on the shared signal scale.
-        assert_eq!(parse_proc_net_wireless(PROC_WIRELESS), Some(70));
+    fn proc_net_wireless_quality_is_scaled_to_a_percentage() {
+        // A driver reporting past the wext ceiling is already a percentage.
+        let driver_percent =
+            "hdr\nhdr\nwlan0: 0000   88.  -40.  -256        0      0      0      0\n";
+        for (case, raw, want) in [
+            // 49/70 = 70%.
+            (
+                "link_quality_is_scaled_off_the_wext_ceiling",
+                PROC_WIRELESS,
+                Some(70),
+            ),
+            (
+                "a_driver_reporting_percent_directly_is_not_rescaled",
+                driver_percent,
+                Some(88),
+            ),
+            (
+                "no_wireless_interfaces_yields_no_reading",
+                "Inter-| sta-|   Quality\n face | tus | link\n",
+                None,
+            ),
+        ] {
+            assert_eq!(parse_proc_net_wireless(raw), want, "case {case}");
+        }
+        // 70% is bucket 3 on the shared signal scale.
         assert_eq!(signal_pct_to_bucket(70), 3);
-    }
-
-    #[test]
-    fn a_driver_reporting_percent_directly_is_not_rescaled() {
-        let raw = "hdr\nhdr\nwlan0: 0000   88.  -40.  -256        0      0      0      0\n";
-        assert_eq!(
-            parse_proc_net_wireless(raw),
-            Some(88),
-            "a value past the wext ceiling is already a percentage"
-        );
-    }
-
-    #[test]
-    fn no_wireless_interfaces_yields_no_reading() {
-        let raw = "Inter-| sta-|   Quality\n face | tus | link\n";
-        assert_eq!(parse_proc_net_wireless(raw), None);
     }
 }

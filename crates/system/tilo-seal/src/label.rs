@@ -38,11 +38,17 @@ pub enum Label {
     ChannelKeyHistory,
     /// A symmetric key wrapped under a key-encryption key.
     KeyWrap,
+    /// A Cloud host's signing secret, sealed to its machine.
+    CloudHostSecret,
+    /// A user root key wrapped in a browser (passkey PRF or recovery key).
+    UserRootWrap,
+    /// One app's secret in a machine's file-backed secret store.
+    FileSecretStore,
 }
 
 impl Label {
     /// Every registered label, for uniqueness checks and documentation.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 16] = [
         Self::RelayEnrollOffer,
         Self::RelayEnrollRequest,
         Self::RelayEnrollResponse,
@@ -56,6 +62,9 @@ impl Label {
         Self::ChannelContent,
         Self::ChannelKeyHistory,
         Self::KeyWrap,
+        Self::CloudHostSecret,
+        Self::UserRootWrap,
+        Self::FileSecretStore,
     ];
 
     /// The stable byte string bound into the cryptography. Changing one of
@@ -75,6 +84,9 @@ impl Label {
             Self::ChannelContent => "tilo-seal/v1/channel-content",
             Self::ChannelKeyHistory => "tilo-seal/v1/channel-key-history",
             Self::KeyWrap => "tilo-seal/v1/key-wrap",
+            Self::CloudHostSecret => "tilo-seal/v1/cloud-host-secret",
+            Self::UserRootWrap => "tilo-seal/v1/user-root-wrap",
+            Self::FileSecretStore => "tilo-seal/v1/file-secret-store",
         }
     }
 

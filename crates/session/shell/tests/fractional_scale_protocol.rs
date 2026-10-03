@@ -167,9 +167,7 @@ fn pump(
     predicate: impl Fn(&ClientAppState) -> bool,
     label: &str,
 ) {
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(3))
-        .unwrap_or_else(Instant::now);
+    let deadline = tilo_test_env::hang_deadline();
     while Instant::now() < deadline {
         let _ = conn.flush();
         let _ = display.dispatch_clients(server_state);
@@ -195,101 +193,110 @@ fn pump(
 }
 
 #[test]
-fn compositor_advertises_fractional_scale_and_viewporter_globals() {
-    let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop event loop");
-    let mut display: Display<State> = Display::new().expect("wayland display");
-    let display_handle = display.handle();
-    let mut server_state = State::new(event_loop.handle(), display_handle);
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn fractional_scale_globals_are_advertised_and_follow_the_display_scale() {
+    // Phase `compositor_advertises_fractional_scale_and_viewporter_globals`.
+    {
+        let event_loop: EventLoop<'static, State> =
+            EventLoop::try_new().expect("calloop event loop");
+        let mut display: Display<State> = Display::new().expect("wayland display");
+        let display_handle = display.handle();
+        let mut server_state = State::new(event_loop.handle(), display_handle);
 
-    let (client_side, server_side) = UnixStream::pair().expect("socket pair");
-    let _client = display
-        .handle()
-        .insert_client(server_side, Arc::new(ClientState::default()))
-        .expect("insert client");
+        let (client_side, server_side) = UnixStream::pair().expect("socket pair");
+        let _client = display
+            .handle()
+            .insert_client(server_side, Arc::new(ClientState::default()))
+            .expect("insert client");
 
-    let conn = Connection::from_socket(client_side).expect("client from socket");
-    let mut event_queue: wayland_client::EventQueue<ClientAppState> = conn.new_event_queue();
-    let qh = event_queue.handle();
-    let _registry = conn.display().get_registry(&qh, ());
+        let conn = Connection::from_socket(client_side).expect("client from socket");
+        let mut event_queue: wayland_client::EventQueue<ClientAppState> = conn.new_event_queue();
+        let qh = event_queue.handle();
+        let _registry = conn.display().get_registry(&qh, ());
 
-    let mut app = ClientAppState::default();
-    pump(
-        &conn,
-        &mut event_queue,
-        &mut app,
-        &mut display,
-        &mut server_state,
-        |a| a.compositor.is_some() && a.fractional_manager.is_some() && a.viewporter.is_some(),
-        "registry walk for fractional-scale + viewporter",
-    );
+        let mut app = ClientAppState::default();
+        pump(
+            &conn,
+            &mut event_queue,
+            &mut app,
+            &mut display,
+            &mut server_state,
+            |a| a.compositor.is_some() && a.fractional_manager.is_some() && a.viewporter.is_some(),
+            "registry walk for fractional-scale + viewporter",
+        );
 
-    assert!(
-        app.fractional_manager.is_some(),
-        "wp_fractional_scale_manager_v1 global not advertised"
-    );
-    assert!(
-        app.viewporter.is_some(),
-        "wp_viewporter global not advertised"
-    );
-}
+        assert!(
+            app.fractional_manager.is_some(),
+            "wp_fractional_scale_manager_v1 global not advertised"
+        );
+        assert!(
+            app.viewporter.is_some(),
+            "wp_viewporter global not advertised"
+        );
+    }
 
-#[test]
-fn surface_receives_fractional_preferred_scale_driven_by_display_scale() {
-    let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop event loop");
-    let mut display: Display<State> = Display::new().expect("wayland display");
-    let display_handle = display.handle();
-    let mut server_state = State::new(event_loop.handle(), display_handle);
+    // Phase `surface_receives_fractional_preferred_scale_driven_by_display_scale`.
+    {
+        let event_loop: EventLoop<'static, State> =
+            EventLoop::try_new().expect("calloop event loop");
+        let mut display: Display<State> = Display::new().expect("wayland display");
+        let display_handle = display.handle();
+        let mut server_state = State::new(event_loop.handle(), display_handle);
 
-    // A *fractional* 1.5x — the value the Settings app's "Display scale"
-    // persists and the compositor loads at session start.
-    server_state.scale = 1.5;
+        // A *fractional* 1.5x — the value the Settings app's "Display scale"
+        // persists and the compositor loads at session start.
+        server_state.scale = 1.5;
 
-    let (client_side, server_side) = UnixStream::pair().expect("socket pair");
-    let _client = display
-        .handle()
-        .insert_client(server_side, Arc::new(ClientState::default()))
-        .expect("insert client");
+        let (client_side, server_side) = UnixStream::pair().expect("socket pair");
+        let _client = display
+            .handle()
+            .insert_client(server_side, Arc::new(ClientState::default()))
+            .expect("insert client");
 
-    let conn = Connection::from_socket(client_side).expect("client from socket");
-    let mut event_queue: wayland_client::EventQueue<ClientAppState> = conn.new_event_queue();
-    let qh = event_queue.handle();
-    let _registry = conn.display().get_registry(&qh, ());
+        let conn = Connection::from_socket(client_side).expect("client from socket");
+        let mut event_queue: wayland_client::EventQueue<ClientAppState> = conn.new_event_queue();
+        let qh = event_queue.handle();
+        let _registry = conn.display().get_registry(&qh, ());
 
-    let mut app = ClientAppState::default();
+        let mut app = ClientAppState::default();
 
-    pump(
-        &conn,
-        &mut event_queue,
-        &mut app,
-        &mut display,
-        &mut server_state,
-        |a| a.compositor.is_some() && a.fractional_manager.is_some(),
-        "registry walk",
-    );
+        pump(
+            &conn,
+            &mut event_queue,
+            &mut app,
+            &mut display,
+            &mut server_state,
+            |a| a.compositor.is_some() && a.fractional_manager.is_some(),
+            "registry walk",
+        );
 
-    let compositor = app.compositor.clone().expect("wl_compositor bound");
-    let manager = app.fractional_manager.clone().expect("manager bound");
-    let surface = compositor.create_surface(&qh, ());
-    let _fractional = manager.get_fractional_scale(&surface, &qh, ());
-    surface.commit();
+        let compositor = app.compositor.clone().expect("wl_compositor bound");
+        let manager = app.fractional_manager.clone().expect("manager bound");
+        let surface = compositor.create_surface(&qh, ());
+        let _fractional = manager.get_fractional_scale(&surface, &qh, ());
+        surface.commit();
 
-    // The commit runs `CompositorHandler::commit`, which pushes the display
-    // scale as the preferred fractional scale.
-    pump(
-        &conn,
-        &mut event_queue,
-        &mut app,
-        &mut display,
-        &mut server_state,
-        |a| a.preferred_scale_120.is_some(),
-        "preferred_scale event",
-    );
+        // The commit runs `CompositorHandler::commit`, which pushes the display
+        // scale as the preferred fractional scale.
+        pump(
+            &conn,
+            &mut event_queue,
+            &mut app,
+            &mut display,
+            &mut server_state,
+            |a| a.preferred_scale_120.is_some(),
+            "preferred_scale event",
+        );
 
-    // 1.5 x 120 = 180: fractional (a 1x compositor sends 120, a 2x one 240)
-    // and driven end-to-end by the compositor scale.
-    assert_eq!(
-        app.preferred_scale_120,
-        Some(180),
-        "surface did not receive the fractional 1.5× preferred scale (180/120)"
-    );
+        // 1.5 x 120 = 180: fractional (a 1x compositor sends 120, a 2x one 240)
+        // and driven end-to-end by the compositor scale.
+        assert_eq!(
+            app.preferred_scale_120,
+            Some(180),
+            "surface did not receive the fractional 1.5× preferred scale (180/120)"
+        );
+    }
 }

@@ -145,7 +145,15 @@ fn workspace_store(
         .map_err(Into::into)
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<std::process::ExitCode> {
+    // Automerge isolation workers re-enter this binary; serve them first.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        return Ok(std::process::ExitCode::from(code));
+    }
+    run().map(|()| std::process::ExitCode::SUCCESS)
+}
+
+fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::HomePeerRetryRemovals { identity_root } => retry_pending_removals(&identity_root),
@@ -290,7 +298,11 @@ fn refresh_home_peer_endpoint(
         .ok_or_else(|| anyhow::anyhow!("home peer is not registered"))?;
     registration.relay_endpoint = Some(endpoint.clone());
     registration.schema_version = tilo_relay::HomePeerRegistration::CURRENT_SCHEMA;
-    atomic_file::write_with_mode(&path, &serde_json::to_vec_pretty(&registrations)?, 0o644)?;
+    tilo_files::native::atomic::write_with_mode(
+        &path,
+        &serde_json::to_vec_pretty(&registrations)?,
+        0o644,
+    )?;
     Ok(())
 }
 
@@ -313,11 +325,7 @@ fn cmd_home_peer_remove(
         let mut revocation = tilo_user_identity::RevocationEntry {
             user_public_key: root.verifying_key().to_bytes(),
             revoked_device_public_key: target,
-            revoked_at_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |duration| {
-                    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
-                }),
+            revoked_at_ns: tilo_clock::unix_now_ns(),
             reason: tilo_user_identity::RevocationReason::Retired,
             signature: [0; 64],
         };
@@ -367,7 +375,7 @@ fn cmd_home_peer_remove(
         )?),
         label: "Removed".into(),
         files_ready: false,
-        services: tilo_relay::ServiceCapabilities::default(),
+        services: tilo_relay_protocol::ServiceCapabilities::default(),
         decommissioned: false,
     });
     println!("{}", serde_json::to_string(&response)?);
@@ -400,7 +408,7 @@ fn save_pending_decommissions(
     identity_root: &std::path::Path,
     pending: &[PendingDecommission],
 ) -> anyhow::Result<()> {
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &pending_decommissions_path(identity_root),
         &serde_json::to_vec_pretty(pending)?,
         0o600,
@@ -467,16 +475,14 @@ fn persist_canonical_revocation(
     entries.retain(|entry| entry.revoked_device_public_key != revocation.revoked_device_public_key);
     entries.push(revocation.clone());
     entries.sort_by_key(|entry| entry.revoked_device_public_key);
-    atomic_file::write_with_mode(&path, &postcard::to_allocvec(&entries)?, 0o600)?;
+    tilo_files::native::atomic::write_with_mode(&path, &postcard::to_allocvec(&entries)?, 0o600)?;
     Ok(())
 }
 
 fn persist_fleet_revocation(
     revocation: &tilo_user_identity::RevocationEntry,
 ) -> anyhow::Result<()> {
-    let config = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+    let config = xdg_paths::xdg::config_home()
         .ok_or_else(|| anyhow::anyhow!("user configuration directory is unavailable"))?;
     let path = config
         .join("tilo/identities/fleets")
@@ -510,7 +516,7 @@ fn persist_fleet_revocation(
             })
     });
     revocations.push(serde_json::to_value(revocation)?);
-    atomic_file::write_with_mode(&path, &serde_json::to_vec_pretty(&fleet)?, 0o600)?;
+    tilo_files::native::atomic::write_with_mode(&path, &serde_json::to_vec_pretty(&fleet)?, 0o600)?;
     Ok(())
 }
 
@@ -538,7 +544,11 @@ fn update_home_peer_registry(
     } else {
         registrations.retain(|entry| entry.device_node_id != device);
     }
-    atomic_file::write_with_mode(&path, &serde_json::to_vec_pretty(&registrations)?, 0o644)?;
+    tilo_files::native::atomic::write_with_mode(
+        &path,
+        &serde_json::to_vec_pretty(&registrations)?,
+        0o644,
+    )?;
     Ok(())
 }
 
@@ -697,11 +707,7 @@ fn cmd_revoke_device(
     let mut entry = tilo_user_identity::RevocationEntry {
         user_public_key: root.verifying_key().to_bytes(),
         revoked_device_public_key: pk,
-        revoked_at_ns: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| {
-                u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
-            }),
+        revoked_at_ns: tilo_clock::unix_now_ns(),
         reason,
         signature: [0; 64],
     };

@@ -22,6 +22,10 @@ use std::time::Instant;
 
 use shell::compositor::frame::FrameBuilder;
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
+)]
 fn main() {
     let iters: usize = std::env::var("SHELL_DRAW_ITERS")
         .ok()

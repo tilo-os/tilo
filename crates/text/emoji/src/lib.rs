@@ -5,6 +5,9 @@
 //! Unicode order, with names and keywords from CLDR. It is checked in under
 //! `data/` and regenerated deterministically by `tools/regenerate.py`.
 //!
+//! - [`Catalogue::for_locale`] names and searches in de, es, fr, it, ja, zh or
+//!   zh-Hant, keeping English for anything CLDR leaves untranslated; English
+//!   names and keywords still match, ranked after native ones.
 //! - [`Catalogue::groups`] / [`Catalogue::subgroups`] walk the picker tabs.
 //! - [`Catalogue::search`] ranks by name and keyword (prefix > word > substring).
 //! - [`Catalogue::with_skin_tone`] tones only emoji that take a tone; a
@@ -46,8 +49,13 @@ use std::sync::OnceLock;
 
 pub use recents::Recents;
 
-/// Locales with checked-in names and keywords, as `(tag, data)`.
-const LOCALES: [(&str, &str); 1] = [("en", include_str!("../data/en.txt"))];
+/// English names and keywords: the default catalogue and every other
+/// locale's fallback for an emoji or group it does not name.
+const ENGLISH: &str = include_str!("../data/en.txt");
+
+/// Every other locale's names and keywords, as `(tag, deflated data)`,
+/// deflated by build.rs from `data/<tag>.txt`.
+const TRANSLATIONS: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/translations.rs"));
 
 const STRUCTURE: &str = include_str!("../data/emoji.txt");
 
@@ -272,39 +280,73 @@ pub struct Catalogue {
     genders: HashMap<usize, (Option<usize>, Option<usize>)>,
     /// Gendered index → its neutral index.
     neutral_of: HashMap<usize, usize>,
-    keys: Vec<search::Key>,
+    /// Names and keywords, indexed on the first search.
+    search: OnceLock<tilo_search::SearchIndex>,
 }
 
-static CATALOGUES: [OnceLock<Catalogue>; LOCALES.len()] =
-    [const { OnceLock::new() }; LOCALES.len()];
+static ENGLISH_CATALOGUE: OnceLock<Catalogue> = OnceLock::new();
+static TRANSLATED: [OnceLock<Catalogue>; TRANSLATIONS.len()] =
+    [const { OnceLock::new() }; TRANSLATIONS.len()];
+/// Inflated translations, kept for the process so catalogue entries can
+/// borrow their names.
+static TRANSLATED_TEXT: [OnceLock<String>; TRANSLATIONS.len()] =
+    [const { OnceLock::new() }; TRANSLATIONS.len()];
 
 impl Catalogue {
     /// The English catalogue.
     #[must_use]
     pub fn english() -> &'static Self {
-        Self::load(0)
+        ENGLISH_CATALOGUE.get_or_init(|| data::build("en", STRUCTURE, ENGLISH, None))
     }
 
-    /// The catalogue for a BCP 47 tag ("en-GB" → "en"), falling back to English.
+    /// The catalogue for a BCP 47 or POSIX tag ("de-DE", "de_AT.UTF-8" →
+    /// "de"), falling back to English for a language without data. An emoji
+    /// or group the language does not name keeps its English name.
     #[must_use]
     pub fn for_locale(tag: &str) -> &'static Self {
+        let tag = tag.split(['.', '@']).next().unwrap_or_default();
         let primary = tag.split(['-', '_']).next().unwrap_or_default();
-        let slot = LOCALES
+        let has = |wanted: &[&str]| {
+            tag.split(['-', '_'])
+                .skip(1)
+                .any(|s| wanted.iter().any(|w| s.eq_ignore_ascii_case(w)))
+        };
+        // Chinese splits by script: Traditional for an explicit Hant script
+        // or, without an explicit Hans, the regions that write it.
+        let traditional = primary.eq_ignore_ascii_case("zh")
+            && (has(&["hant"]) || (!has(&["hans"]) && has(&["tw", "hk", "mo"])));
+        let wanted = if traditional { "zh_Hant" } else { primary };
+        TRANSLATIONS
             .iter()
-            .position(|(l, _)| l.eq_ignore_ascii_case(tag) || l.eq_ignore_ascii_case(primary))
-            .unwrap_or(0);
-        Self::load(slot)
+            .position(|(l, _)| l.eq_ignore_ascii_case(wanted))
+            .map_or_else(Self::english, Self::translated)
     }
 
-    /// Locale tags with checked-in data.
+    /// Locale tags with checked-in data, English first.
     pub fn locales() -> impl Iterator<Item = &'static str> {
-        LOCALES.iter().map(|(l, _)| *l)
+        std::iter::once("en").chain(TRANSLATIONS.iter().map(|(l, _)| *l))
     }
 
-    fn load(slot: usize) -> &'static Self {
-        let (locale, text) = LOCALES.get(slot).copied().unwrap_or(LOCALES[0]);
-        let cell = CATALOGUES.get(slot).unwrap_or(&CATALOGUES[0]);
-        cell.get_or_init(|| data::build(locale, STRUCTURE, text))
+    /// The catalogue for `TRANSLATIONS[slot]`, inflated and built on first
+    /// use. Data that fails to inflate names nothing, so every emoji falls
+    /// back to English.
+    fn translated(slot: usize) -> &'static Self {
+        let (Some(cell), Some(text), Some((locale, packed))) = (
+            TRANSLATED.get(slot),
+            TRANSLATED_TEXT.get(slot),
+            TRANSLATIONS.get(slot),
+        ) else {
+            return Self::english();
+        };
+        cell.get_or_init(|| {
+            let text = text.get_or_init(|| {
+                miniz_oxide::inflate::decompress_to_vec(packed)
+                    .ok()
+                    .and_then(|bytes| String::from_utf8(bytes).ok())
+                    .unwrap_or_default()
+            });
+            data::build(locale, STRUCTURE, text, Some(ENGLISH))
+        })
     }
 
     /// The locale this catalogue's names are in.
@@ -403,8 +445,12 @@ impl Catalogue {
     }
 
     /// Up to `limit` emoji matching `query`, best first. Every whitespace
-    /// separated term must match the name or a keyword; a name prefix beats a
-    /// word match, which beats a substring. Ties keep Unicode order.
+    /// separated term must match the name or a keyword; the name ranks above
+    /// a keyword, and a whole word above the start of a longer word, above a
+    /// substring. Whole-word ties go to the shorter name; others keep Unicode
+    /// order. In a
+    /// translated catalogue, emoji that match only in English follow every
+    /// native match, ranked the same way.
     #[must_use]
     pub fn search(&self, query: &str, limit: usize) -> Vec<&Emoji> {
         search::search(self, query, limit)
@@ -415,6 +461,10 @@ impl Catalogue {
     #[must_use]
     pub fn suggest(&self, word: &str, limit: usize) -> Vec<&Emoji> {
         search::suggest(self, word, limit)
+    }
+
+    fn search_index(&self) -> &tilo_search::SearchIndex {
+        self.search.get_or_init(|| search::index(&self.emoji))
     }
 
     fn position(&self, emoji: &Emoji) -> Option<usize> {

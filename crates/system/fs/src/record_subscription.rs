@@ -345,7 +345,7 @@ impl RecordSubscriptionStore {
         {
             std::fs::create_dir_all(parent)?;
         }
-        atomic_file::write_with_mode(&self.path, &bytes, 0o600)?;
+        tilo_files::native::atomic::write_with_mode(&self.path, &bytes, 0o600)?;
         Ok(())
     }
 }
@@ -492,89 +492,152 @@ mod tests {
     }
 
     #[test]
-    fn restart_preserves_link_and_status_in_owner_only_file() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("subscriptions.json");
-        let workspace = Uuid::new_v4();
-        let record = FileRecordId::new();
-        let link = link(1, workspace, record);
-        let secret = hex::encode(link.bearer_secret());
-        let key = RecordSubscriptionKey {
-            workspace_id: workspace,
-            record_id: record,
-        };
-        let store = RecordSubscriptionStore::open_at(&path, NOW).unwrap();
-        assert!(store.insert_at(link.clone(), NOW).unwrap());
-        assert!(!store.insert_at(link.clone(), NOW).unwrap());
-        store
-            .record_error(key, RecordSubscriptionFailureCode::Offline, 51_000)
-            .unwrap();
-        store.record_success(key, 52_000).unwrap();
-
-        #[cfg(unix)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn subscriptions_persist_privately_fail_closed_and_never_disclose_secrets() {
+        // Phase `restart_preserves_link_and_status_in_owner_only_file`.
         {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-                0o600
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("subscriptions.json");
+            let workspace = Uuid::new_v4();
+            let record = FileRecordId::new();
+            let link = link(1, workspace, record);
+            let secret = hex::encode(link.bearer_secret());
+            let key = RecordSubscriptionKey {
+                workspace_id: workspace,
+                record_id: record,
+            };
+            let store = RecordSubscriptionStore::open_at(&path, NOW).unwrap();
+            assert!(store.insert_at(link.clone(), NOW).unwrap());
+            assert!(!store.insert_at(link.clone(), NOW).unwrap());
+            store
+                .record_error(key, RecordSubscriptionFailureCode::Offline, 51_000)
+                .unwrap();
+            store.record_success(key, 52_000).unwrap();
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
+            let disk = std::fs::read_to_string(&path).unwrap();
+            assert!(disk.contains(&secret));
+            drop(store);
+
+            let reopened = RecordSubscriptionStore::open_at(&path, NOW).unwrap();
+            let subscription = reopened.get(key).unwrap();
+            assert_eq!(subscription.link(), &link);
+            assert_eq!(subscription.last_success_at_ms, Some(52_000));
+            assert_eq!(subscription.last_error, None);
+        }
+        // Phase `malformed_oversized_duplicate_and_collision_state_fail_closed`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let malformed = temp.path().join("malformed.json");
+            tilo_files::native::atomic::write_with_mode(&malformed, b"{not-json", 0o600).unwrap();
+            assert!(matches!(
+                RecordSubscriptionStore::open_at(&malformed, NOW),
+                Err(RecordSubscriptionStoreError::MalformedState)
+            ));
+
+            let oversized = temp.path().join("oversized.json");
+            let file = std::fs::File::create(&oversized).unwrap();
+            file.set_len(MAX_RECORD_SUBSCRIPTION_FILE_BYTES + 1)
+                .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&oversized, std::fs::Permissions::from_mode(0o600))
+                    .unwrap();
+            }
+            assert!(matches!(
+                RecordSubscriptionStore::open_at(&oversized, NOW),
+                Err(RecordSubscriptionStoreError::StateTooLarge)
+            ));
+
+            let path = temp.path().join("duplicates.json");
+            let workspace = Uuid::new_v4();
+            let record = FileRecordId::new();
+            let first = link(2, workspace, record);
+            let store = RecordSubscriptionStore::open_at(&path, NOW).unwrap();
+            store.insert_at(first, NOW).unwrap();
+            assert!(matches!(
+                store.insert_at(link(3, workspace, record), NOW),
+                Err(RecordSubscriptionStoreError::DuplicateCollision(_))
+            ));
+            let mut document: SubscriptionDocumentV1 =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            document
+                .subscriptions
+                .push(document.subscriptions[0].clone());
+            tilo_files::native::atomic::write_with_mode(
+                &path,
+                &serde_json::to_vec(&document).unwrap(),
+                0o600,
+            )
+            .unwrap();
+            assert!(matches!(
+                RecordSubscriptionStore::open_at(&path, NOW),
+                Err(RecordSubscriptionStoreError::DuplicateCollision(_))
+            ));
+        }
+        // Phase `debug_and_errors_never_disclose_uri_or_secret`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("subscriptions.json");
+            let workspace = Uuid::new_v4();
+            let record = FileRecordId::new();
+            let subscribed_link = link(5, workspace, record);
+            let uri = subscribed_link.encode_uri_at(NOW).unwrap();
+            let secret = hex::encode(subscribed_link.bearer_secret());
+            let store = RecordSubscriptionStore::open_at(&path, NOW).unwrap();
+            store.insert_at(subscribed_link, NOW).unwrap();
+            let key = RecordSubscriptionKey {
+                workspace_id: workspace,
+                record_id: record,
+            };
+            let debug = format!("{:?} {:?}", store, store.get(key).unwrap());
+            assert!(!debug.contains(&uri));
+            assert!(!debug.contains(&secret));
+
+            let collision = store
+                .insert_at(link(6, workspace, record), NOW)
+                .unwrap_err();
+            let error = format!("{collision:?} {collision}");
+            assert!(!error.contains(&uri));
+            assert!(!error.contains(&secret));
+        }
+        // Phase `expired_links_remain_visible_after_restart_but_cannot_be_inserted`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("subscriptions.json");
+            let expiring = link_with_expiry(7, Uuid::new_v4(), FileRecordId::new(), Some(NOW + 1));
+            let store = RecordSubscriptionStore::open_at(&path, NOW).unwrap();
+            store.insert_at(expiring, NOW).unwrap();
+            drop(store);
+
+            let reopened = RecordSubscriptionStore::open_at(&path, NOW + 2).unwrap();
+            assert_eq!(reopened.len(), 1);
+            assert!(
+                reopened.subscriptions()[0]
+                    .link()
+                    .validate_at(NOW + 2)
+                    .is_err()
             );
+
+            let other_path = temp.path().join("other.json");
+            let expired = link_with_expiry(8, Uuid::new_v4(), FileRecordId::new(), Some(NOW + 1));
+            let other = RecordSubscriptionStore::open_at(&other_path, NOW).unwrap();
+            assert!(matches!(
+                other.insert_at(expired, NOW + 2),
+                Err(RecordSubscriptionStoreError::InvalidLink)
+            ));
         }
-        let disk = std::fs::read_to_string(&path).unwrap();
-        assert!(disk.contains(&secret));
-        drop(store);
-
-        let reopened = RecordSubscriptionStore::open_at(&path, NOW).unwrap();
-        let subscription = reopened.get(key).unwrap();
-        assert_eq!(subscription.link(), &link);
-        assert_eq!(subscription.last_success_at_ms, Some(52_000));
-        assert_eq!(subscription.last_error, None);
-    }
-
-    #[test]
-    fn malformed_oversized_duplicate_and_collision_state_fail_closed() {
-        let temp = tempfile::tempdir().unwrap();
-        let malformed = temp.path().join("malformed.json");
-        atomic_file::write_with_mode(&malformed, b"{not-json", 0o600).unwrap();
-        assert!(matches!(
-            RecordSubscriptionStore::open_at(&malformed, NOW),
-            Err(RecordSubscriptionStoreError::MalformedState)
-        ));
-
-        let oversized = temp.path().join("oversized.json");
-        let file = std::fs::File::create(&oversized).unwrap();
-        file.set_len(MAX_RECORD_SUBSCRIPTION_FILE_BYTES + 1)
-            .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&oversized, std::fs::Permissions::from_mode(0o600)).unwrap();
-        }
-        assert!(matches!(
-            RecordSubscriptionStore::open_at(&oversized, NOW),
-            Err(RecordSubscriptionStoreError::StateTooLarge)
-        ));
-
-        let path = temp.path().join("duplicates.json");
-        let workspace = Uuid::new_v4();
-        let record = FileRecordId::new();
-        let first = link(2, workspace, record);
-        let store = RecordSubscriptionStore::open_at(&path, NOW).unwrap();
-        store.insert_at(first, NOW).unwrap();
-        assert!(matches!(
-            store.insert_at(link(3, workspace, record), NOW),
-            Err(RecordSubscriptionStoreError::DuplicateCollision(_))
-        ));
-        let mut document: SubscriptionDocumentV1 =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        document
-            .subscriptions
-            .push(document.subscriptions[0].clone());
-        atomic_file::write_with_mode(&path, &serde_json::to_vec(&document).unwrap(), 0o600)
-            .unwrap();
-        assert!(matches!(
-            RecordSubscriptionStore::open_at(&path, NOW),
-            Err(RecordSubscriptionStoreError::DuplicateCollision(_))
-        ));
     }
 
     #[cfg(unix)]
@@ -592,60 +655,6 @@ mod tests {
         assert!(matches!(
             RecordSubscriptionStore::open_at(&path, NOW),
             Err(RecordSubscriptionStoreError::InsecurePermissions)
-        ));
-    }
-
-    #[test]
-    fn debug_and_errors_never_disclose_uri_or_secret() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("subscriptions.json");
-        let workspace = Uuid::new_v4();
-        let record = FileRecordId::new();
-        let subscribed_link = link(5, workspace, record);
-        let uri = subscribed_link.encode_uri_at(NOW).unwrap();
-        let secret = hex::encode(subscribed_link.bearer_secret());
-        let store = RecordSubscriptionStore::open_at(&path, NOW).unwrap();
-        store.insert_at(subscribed_link, NOW).unwrap();
-        let key = RecordSubscriptionKey {
-            workspace_id: workspace,
-            record_id: record,
-        };
-        let debug = format!("{:?} {:?}", store, store.get(key).unwrap());
-        assert!(!debug.contains(&uri));
-        assert!(!debug.contains(&secret));
-
-        let collision = store
-            .insert_at(link(6, workspace, record), NOW)
-            .unwrap_err();
-        let error = format!("{collision:?} {collision}");
-        assert!(!error.contains(&uri));
-        assert!(!error.contains(&secret));
-    }
-
-    #[test]
-    fn expired_links_remain_visible_after_restart_but_cannot_be_inserted() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("subscriptions.json");
-        let expiring = link_with_expiry(7, Uuid::new_v4(), FileRecordId::new(), Some(NOW + 1));
-        let store = RecordSubscriptionStore::open_at(&path, NOW).unwrap();
-        store.insert_at(expiring, NOW).unwrap();
-        drop(store);
-
-        let reopened = RecordSubscriptionStore::open_at(&path, NOW + 2).unwrap();
-        assert_eq!(reopened.len(), 1);
-        assert!(
-            reopened.subscriptions()[0]
-                .link()
-                .validate_at(NOW + 2)
-                .is_err()
-        );
-
-        let other_path = temp.path().join("other.json");
-        let expired = link_with_expiry(8, Uuid::new_v4(), FileRecordId::new(), Some(NOW + 1));
-        let other = RecordSubscriptionStore::open_at(&other_path, NOW).unwrap();
-        assert!(matches!(
-            other.insert_at(expired, NOW + 2),
-            Err(RecordSubscriptionStoreError::InvalidLink)
         ));
     }
 }

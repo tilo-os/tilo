@@ -584,160 +584,123 @@ impl Workspace {
 mod tests {
     use super::*;
 
+    fn ids(w: &Workspace, parent: Option<Uuid>) -> Vec<Uuid> {
+        w.children_of(parent).iter().map(|p| p.id).collect()
+    }
+
     #[test]
-    fn create_page_appends_to_end_of_siblings() {
+    fn pages_create_rename_and_delete_with_contiguous_order_and_valid_invariants() {
         let mut w = Workspace::new();
         let a = w.create_page(None);
         let b = w.create_page(None);
         let c = w.create_page(None);
-        let roots = w.children_of(None);
-        let ids: Vec<_> = roots.iter().map(|p| p.id).collect();
-        assert_eq!(ids, vec![a, b, c]);
-        assert_eq!(roots[0].order, 0);
-        assert_eq!(roots[1].order, 1);
-        assert_eq!(roots[2].order, 2);
-    }
+        assert_eq!(
+            ids(&w, None),
+            vec![a, b, c],
+            "created pages append to the end"
+        );
+        let orders: Vec<_> = w.children_of(None).iter().map(|p| p.order).collect();
+        assert_eq!(orders, vec![0, 1, 2]);
 
-    #[test]
-    fn rename_changes_title() {
-        let mut w = Workspace::new();
-        let id = w.create_page(None);
-        assert!(w.rename(id, "Hello"));
-        assert_eq!(w.get(id).unwrap().title, "Hello");
+        assert!(w.rename(a, "Hello"));
+        assert_eq!(w.get(a).unwrap().title, "Hello");
         // Unknown id is a no-op.
         assert!(!w.rename(Uuid::new_v4(), "nope"));
-    }
 
-    #[test]
-    fn delete_page_removes_descendants_recursively() {
+        // Deleting renumbers the surviving siblings.
+        w.delete_page(b);
+        assert_eq!(w.get(a).unwrap().order, 0);
+        assert_eq!(w.get(c).unwrap().order, 1);
+        w.check_invariants().unwrap();
+
+        // Deleting removes descendants recursively.
         let mut w = Workspace::new();
         let root = w.create_page(None);
         let mid = w.create_page(Some(root));
         let leaf = w.create_page(Some(mid));
-
         let removed = w.delete_page(root);
         assert_eq!(removed.len(), 3);
         assert!(removed.contains(&root));
         assert!(removed.contains(&mid));
         assert!(removed.contains(&leaf));
         assert!(w.pages().is_empty());
-    }
 
-    #[test]
-    fn delete_renumbers_surviving_siblings() {
+        // The selection clears when its page is deleted.
         let mut w = Workspace::new();
-        let a = w.create_page(None); // order 0
-        let b = w.create_page(None); // order 1
-        let c = w.create_page(None); // order 2
-        w.delete_page(b);
-        assert_eq!(w.get(a).unwrap().order, 0);
-        assert_eq!(w.get(c).unwrap().order, 1);
-        w.check_invariants().unwrap();
-    }
+        let id = w.create_page(None);
+        w.set_selected(Some(id));
+        w.delete_page(id);
+        assert!(w.selected().is_none());
 
-    #[test]
-    fn check_invariants_detects_orphan() {
+        // An orphan is an invariant violation.
         let mut w = Workspace::new();
-        let fake = Uuid::new_v4();
         w.data.pages.push(PageMeta {
             id: Uuid::new_v4(),
             title: "orphan".into(),
-            parent: Some(fake),
+            parent: Some(Uuid::new_v4()),
             order: 0,
         });
         assert!(w.check_invariants().is_err());
     }
 
     #[test]
-    fn move_sibling_swaps_order_and_stays_contiguous() {
-        let mut w = Workspace::new();
-        let a = w.create_page(None); // order 0
-        let b = w.create_page(None); // order 1
-        let c = w.create_page(None); // order 2
-
-        // Move `c` up one slot → [a, c, b].
-        assert!(w.move_sibling(c, -1));
-        let ids: Vec<_> = w.children_of(None).iter().map(|p| p.id).collect();
-        assert_eq!(ids, vec![a, c, b]);
-        w.check_invariants().unwrap();
-
-        // Move `a` down one slot → [c, a, b].
-        assert!(w.move_sibling(a, 1));
-        let ids: Vec<_> = w.children_of(None).iter().map(|p| p.id).collect();
-        assert_eq!(ids, vec![c, a, b]);
-        w.check_invariants().unwrap();
-    }
-
-    #[test]
-    fn move_sibling_at_edge_is_noop() {
-        let mut w = Workspace::new();
-        let a = w.create_page(None);
-        let b = w.create_page(None);
-        // `a` is already first — moving up does nothing.
-        assert!(!w.move_sibling(a, -1));
-        // `b` is already last — moving down does nothing.
-        assert!(!w.move_sibling(b, 1));
-        let ids: Vec<_> = w.children_of(None).iter().map(|p| p.id).collect();
-        assert_eq!(ids, vec![a, b]);
-    }
-
-    #[test]
-    fn move_sibling_only_reorders_within_parent() {
-        let mut w = Workspace::new();
-        let root = w.create_page(None);
-        let x = w.create_page(Some(root)); // child order 0
-        let y = w.create_page(Some(root)); // child order 1
-        let sib = w.create_page(None); // a root sibling of `root`
-
-        // Moving the child down swaps x/y but never touches root-level.
-        assert!(w.move_sibling(x, 1));
-        let kids: Vec<_> = w.children_of(Some(root)).iter().map(|p| p.id).collect();
-        assert_eq!(kids, vec![y, x]);
-        let roots: Vec<_> = w.children_of(None).iter().map(|p| p.id).collect();
-        assert_eq!(roots, vec![root, sib]);
-        w.check_invariants().unwrap();
-    }
-
-    #[test]
-    fn move_to_reorders_within_a_sibling_group() {
+    fn moves_reorder_within_their_group_reparent_and_reject_cycles() {
         let mut w = Workspace::new();
         let a = w.create_page(None);
         let b = w.create_page(None);
         let c = w.create_page(None);
-        // Move `c` to before `a` → [c, a, b].
-        assert!(w.move_to(c, None, Some(a)));
-        let ids: Vec<_> = w.children_of(None).iter().map(|p| p.id).collect();
-        assert_eq!(ids, vec![c, a, b]);
-        w.check_invariants().unwrap();
-        // Append `c` to the end (before = None) → [a, b, c].
-        assert!(w.move_to(c, None, None));
-        let ids: Vec<_> = w.children_of(None).iter().map(|p| p.id).collect();
-        assert_eq!(ids, vec![a, b, c]);
-        w.check_invariants().unwrap();
-    }
+        // (moved page, delta, expected root order) — each move stays contiguous.
+        for (page, delta, want) in [(c, -1, vec![a, c, b]), (a, 1, vec![c, a, b])] {
+            assert!(w.move_sibling(page, delta));
+            assert_eq!(ids(&w, None), want);
+            w.check_invariants().unwrap();
+        }
 
-    #[test]
-    fn move_to_reparents_page_as_child() {
+        // Moving past either edge does nothing.
         let mut w = Workspace::new();
         let a = w.create_page(None);
         let b = w.create_page(None);
-        // Re-parent `b` under `a`.
+        assert!(!w.move_sibling(a, -1), "first cannot move up");
+        assert!(!w.move_sibling(b, 1), "last cannot move down");
+        assert_eq!(ids(&w, None), vec![a, b]);
+
+        // Moving a child only reorders within its parent.
+        let mut w = Workspace::new();
+        let root = w.create_page(None);
+        let first_child = w.create_page(Some(root));
+        let second_child = w.create_page(Some(root));
+        let sib = w.create_page(None);
+        assert!(w.move_sibling(first_child, 1));
+        assert_eq!(ids(&w, Some(root)), vec![second_child, first_child]);
+        assert_eq!(ids(&w, None), vec![root, sib]);
+        w.check_invariants().unwrap();
+
+        // move_to reorders within a sibling group (before `a`, then appended).
+        let mut w = Workspace::new();
+        let a = w.create_page(None);
+        let b = w.create_page(None);
+        let c = w.create_page(None);
+        for (before, want) in [(Some(a), vec![c, a, b]), (None, vec![a, b, c])] {
+            assert!(w.move_to(c, None, before));
+            assert_eq!(ids(&w, None), want, "move before {before:?}");
+            w.check_invariants().unwrap();
+        }
+
+        // move_to re-parents a page as a child.
+        let mut w = Workspace::new();
+        let a = w.create_page(None);
+        let b = w.create_page(None);
         assert!(w.move_to(b, Some(a), None));
         assert_eq!(w.get(b).unwrap().parent, Some(a));
         assert_eq!(w.children_of(None).len(), 1, "b left the root group");
-        let kids: Vec<_> = w.children_of(Some(a)).iter().map(|p| p.id).collect();
-        assert_eq!(kids, vec![b]);
+        assert_eq!(ids(&w, Some(a)), vec![b]);
         w.check_invariants().unwrap();
-    }
 
-    #[test]
-    fn move_to_rejects_cycles() {
+        // Can't move a page under its own descendant, or under itself.
         let mut w = Workspace::new();
         let root = w.create_page(None);
         let child = w.create_page(Some(root));
-        // Can't move `root` under its own descendant.
         assert!(!w.move_to(root, Some(child), None));
-        // Can't move a page under itself.
         assert!(!w.move_to(root, Some(root), None));
         assert_eq!(w.get(root).unwrap().parent, None);
         w.check_invariants().unwrap();
@@ -773,15 +736,6 @@ mod tests {
         // Original subtree is untouched (still 3 originals + 3 copies + sib).
         assert_eq!(w.children_of(Some(a)).len(), 1);
         w.check_invariants().unwrap();
-    }
-
-    #[test]
-    fn select_clears_when_page_deleted() {
-        let mut w = Workspace::new();
-        let id = w.create_page(None);
-        w.set_selected(Some(id));
-        w.delete_page(id);
-        assert!(w.selected().is_none());
     }
 
     #[test]

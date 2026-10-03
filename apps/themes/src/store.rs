@@ -60,51 +60,30 @@ pub const SECTION: &str = "appearance";
 /// Theme Studio's private artifact below Settings' canonical appearance state.
 pub const STUDIO_KEY: &str = "studio";
 
-/// Resolve the shared settings path. Delegating to [`settings_store`] is what
+fn appearance() -> ui::storage::Settings {
+    ui::storage::Settings::section(SECTION)
+}
+
+/// Resolve the shared settings path. Delegating to [`ui::storage`] is what
 /// keeps this in step with the Settings app rather than by hand.
 pub fn store_path() -> Option<PathBuf> {
-    settings_store::settings_path()
+    appearance().path()
 }
 
 /// Merge `spec` into `existing` (the current settings-document text, or
 /// empty) below `appearance.studio`, preserving Settings-owned preferences.
 /// Returns the pretty-printed document.
 pub fn to_json_merged(spec: &ThemeSpec, existing: &str) -> String {
-    let root: serde_json::Value = serde_json::from_str(existing).unwrap_or(serde_json::Value::Null);
-    // Coerce to a JSON object, discarding anything malformed rather than
-    // indexing into it and panicking — `existing` is a document another
-    // process (or an older schema version) may have written.
-    let mut obj = match root {
-        serde_json::Value::Object(map) => map,
-        _ => serde_json::Map::new(),
-    };
+    // Anything malformed reads as no settings, rather than being indexed
+    // into: `existing` is a document another process may have written.
+    let mut obj = ui::storage::parse_settings(existing);
     obj.insert("version".into(), serde_json::json!(1));
-
     let mut appearance = match obj.remove(SECTION) {
         Some(serde_json::Value::Object(map)) => map,
         _ => serde_json::Map::new(),
     };
-
-    let active = crate::model::builtin_theme(&spec.id)
-        .map_or_else(|| format!("custom:{}", spec.id), |theme| theme.name);
-    appearance.insert("theme".into(), serde_json::json!(active));
-    if !spec.builtin {
-        appearance.insert(
-            "custom_theme".into(),
-            serde_json::to_value(spec.to_custom_spec()).unwrap_or(serde_json::Value::Null),
-        );
-    }
-    appearance.insert(
-        STUDIO_KEY.into(),
-        serde_json::json!({
-            "id": spec.id,
-            "name": spec.name,
-            "dark_base": spec.dark_base,
-            "theme": serde_json::to_value(spec).unwrap_or(serde_json::Value::Null),
-        }),
-    );
+    appearance.extend(appearance_values(spec));
     obj.insert(SECTION.into(), serde_json::Value::Object(appearance));
-
     serde_json::to_string_pretty(&serde_json::Value::Object(obj)).unwrap_or_else(|_| "{}".into())
 }
 
@@ -126,42 +105,92 @@ pub fn active_spec(text: &str) -> Option<ThemeSpec> {
     serde_json::from_value(theme).ok()
 }
 
+/// The `appearance` keys Theme Studio owns for `spec`: the active theme's
+/// name, a custom theme's definition, and the full spec below
+/// [`STUDIO_KEY`]. Every other key of the section is left as it is.
+fn appearance_values(spec: &ThemeSpec) -> serde_json::Map<String, serde_json::Value> {
+    let mut values = serde_json::Map::new();
+    let active = crate::model::builtin_theme(&spec.id)
+        .map_or_else(|| format!("custom:{}", spec.id), |theme| theme.name);
+    values.insert("theme".into(), serde_json::json!(active));
+    if !spec.builtin {
+        values.insert(
+            "custom_theme".into(),
+            serde_json::to_value(spec.to_custom_spec()).unwrap_or(serde_json::Value::Null),
+        );
+    }
+    values.insert(
+        STUDIO_KEY.into(),
+        serde_json::json!({
+            "id": spec.id,
+            "name": spec.name,
+            "dark_base": spec.dark_base,
+            "theme": serde_json::to_value(spec).unwrap_or(serde_json::Value::Null),
+        }),
+    );
+    values
+}
+
+fn studio_id(appearance: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+    appearance
+        .get(STUDIO_KEY)?
+        .get("id")?
+        .as_str()
+        .map(std::string::ToString::to_string)
+}
+
 /// Merge `spec` into the settings document at `path`, preserving foreign
-/// sections, and write it back. Creates the parent directory if needed.
-/// The path-explicit core of [`save`], factored out so it can be tested
-/// against a temp file without mutating process-global environment.
+/// sections and keys. The path-explicit form of [`save`], for tests that
+/// must not touch the configured settings.
 ///
 /// # Errors
 ///
-/// Returns an error if the parent directory cannot be created or the file cannot be written.
+/// Returns an error if the document cannot be written.
 pub fn save_to(path: &std::path::Path, spec: &ThemeSpec) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+    ensure_legible(spec)?;
+    appearance().in_file(path).update(appearance_values(spec))
+}
+
+/// A custom theme that misses a contrast floor is not applied: the runtime
+/// would repair it anyway, but the person should see which pair failed and
+/// fix it here rather than get colours they did not pick. Presets are swept
+/// against the same floors in `ui`'s tests.
+fn ensure_legible(spec: &ThemeSpec) -> std::io::Result<()> {
+    if spec.builtin {
+        return Ok(());
     }
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
-    std::fs::write(path, to_json_merged(spec, &existing))
+    let findings = spec.to_custom_spec().contrast_findings();
+    if findings.is_empty() {
+        return Ok(());
+    }
+    let pairs: Vec<String> = findings.iter().map(ToString::to_string).collect();
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("too little contrast: {}", pairs.join("; ")),
+    ))
 }
 
 /// The active theme id in the settings document at `path`, if any.
 pub fn load_active_id_from(path: &std::path::Path) -> Option<String> {
-    active_id(&std::fs::read_to_string(path).ok()?)
+    studio_id(&appearance().in_file(path).load())
 }
 
-/// Persist `spec` as the active OS theme, preserving foreign sections.
-/// Creates the `tilo` config directory if needed. Returns the path written.
+/// Persist `spec` as the active OS theme through the shared settings
+/// document (on the web, the page's profile), preserving every other
+/// section and key.
 ///
 /// # Errors
 ///
-/// Returns an error if the config directory cannot be determined or the file cannot be written.
-pub fn save(spec: &ThemeSpec) -> std::io::Result<PathBuf> {
-    let path = store_path().ok_or_else(|| std::io::Error::other("no config dir"))?;
-    save_to(&path, spec)?;
-    Ok(path)
+/// Returns an error if there is no settings document to write, or the
+/// write fails.
+pub fn save(spec: &ThemeSpec) -> std::io::Result<()> {
+    ensure_legible(spec)?;
+    appearance().update(appearance_values(spec))
 }
 
-/// Load the active theme's id from the shared settings path, if any.
+/// Load the active theme's id from the shared settings document, if any.
 pub fn load_active_id() -> Option<String> {
-    load_active_id_from(&store_path()?)
+    studio_id(&appearance().load())
 }
 
 #[cfg(test)]
@@ -171,95 +200,139 @@ mod tests {
     use crate::model::{presets, seed_custom};
 
     #[test]
-    fn merge_writes_appearance_and_preserves_foreign_keys() {
-        let existing = r#"{"version":1,"locale":{"currency":"EUR"},"audio":{"event_sounds":true},"appearance":{"high_contrast":true,"text_scale":1.25}}"#;
-        let spec = seed_custom();
-        let out = to_json_merged(&spec, existing);
-        // Our section landed with the id + a nested full theme.
-        assert_eq!(active_id(&out).as_deref(), Some("sunset"));
-        assert!(
-            out.contains("\"appearance\""),
-            "appearance section present: {out}"
-        );
-        // Foreign sections survive untouched.
-        assert!(
-            out.contains("\"currency\": \"EUR\""),
-            "locale survived: {out}"
-        );
-        assert!(
-            out.contains("\"event_sounds\": true"),
-            "audio survived: {out}"
-        );
-        let root: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(root["appearance"]["high_contrast"], true);
-        assert_eq!(root["appearance"]["text_scale"], 1.25);
-        assert_eq!(root["appearance"]["theme"], "custom:sunset");
-        let runtime = ui::Theme::from_settings_json(&out).expect("runtime consumes custom theme");
-        assert_eq!(runtime.name, spec.name);
-        assert_eq!(runtime.accent_primary, spec.to_theme().accent_primary);
-        assert_eq!(runtime.tokens.radii.md, spec.radius_px());
-    }
+    fn an_illegible_custom_theme_is_refused_and_presets_and_their_copies_apply() {
+        let dir = std::env::temp_dir().join(format!("tilo-themes-contrast-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
 
-    #[test]
-    fn active_spec_round_trips_through_the_document() {
-        let spec = presets()[3].clone(); // Dracula
-        let out = to_json_merged(&spec, "");
-        let back = active_spec(&out).expect("appearance.theme parses back into a spec");
-        assert_eq!(
-            back, spec,
-            "the exact ThemeSpec is recoverable from the store"
-        );
-        assert_eq!(active_id(&out).as_deref(), Some(spec.id.as_str()));
-    }
-
-    #[test]
-    fn empty_or_garbage_document_has_no_active_theme() {
-        assert_eq!(active_id(""), None);
-        assert_eq!(active_id("not json {"), None);
-        assert_eq!(active_spec("").map(|s| s.id), None);
-    }
-
-    #[test]
-    fn merge_overwrites_only_its_own_section_on_reapply() {
-        // Applying a second theme replaces only Studio's artifact (no stale
-        // editor keys leak through) while Settings-owned fields survive.
-        let first = to_json_merged(&presets()[0].clone(), "");
-        let second = to_json_merged(&presets()[4].clone(), &first);
-        assert_eq!(
-            active_id(&second).as_deref(),
-            Some(presets()[4].id.as_str())
-        );
-        let back = active_spec(&second).unwrap();
-        assert_eq!(back, presets()[4].clone());
-    }
-
-    #[test]
-    fn round_trips_through_a_real_file() {
-        // Exercise the actual disk write/read (not just the in-memory merge)
-        // against an explicit temp file — no process-global env mutation, so
-        // it is safe under the default parallel test runner.
-        let path = std::env::temp_dir()
-            .join(format!("tilo-themes-store-{}", std::process::id()))
-            .join("settings.json");
-        let _ = std::fs::remove_file(&path);
-        // A pre-existing foreign section must survive the write.
-        if let Some(p) = path.parent() {
-            std::fs::create_dir_all(p).unwrap();
+        // Case `a_custom_theme_under_a_contrast_floor_is_not_written`.
+        {
+            let mut murky = seed_custom();
+            murky.text_dim = murky.surface_raised;
+            let err = save_to(&path, &murky).expect_err("dim text on its own surface");
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+            assert!(
+                err.to_string().contains("text_dim on surface_base"),
+                "the failing pair is named: {err}"
+            );
+            assert!(!path.exists(), "nothing reached the settings file");
         }
-        std::fs::write(&path, r#"{"version":1,"locale":{"currency":"GBP"}}"#).unwrap();
-        let spec = seed_custom();
-        save_to(&path, &spec).expect("save_to writes the settings file");
-        assert_eq!(load_active_id_from(&path).as_deref(), Some("sunset"));
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(
-            active_spec(&text),
-            Some(spec),
-            "the exact theme reads back off disk"
-        );
-        assert!(
-            text.contains("GBP"),
-            "foreign locale section survived the write"
-        );
-        let _ = std::fs::remove_file(&path);
+
+        // Case `every_preset_and_an_editable_copy_of_it_apply`: duplicating a
+        // preset is how most custom themes start, and the copy is measured as
+        // a custom spec (derived popover and tertiary), not as the preset.
+        {
+            for (i, preset) in presets().into_iter().enumerate() {
+                save_to(&path, &preset).unwrap_or_else(|e| panic!("{}: {e}", preset.name));
+                let copy = crate::actions::duplicate_spec(&preset, &format!("copy-{i}"), 99);
+                assert_eq!(
+                    copy.to_custom_spec().contrast_findings(),
+                    Vec::new(),
+                    "a copy of {} must apply unchanged",
+                    preset.name
+                );
+                save_to(&path, &copy).unwrap_or_else(|e| panic!("{} copy: {e}", preset.name));
+            }
+            save_to(&path, &seed_custom()).expect("the demo custom theme is legible");
+        }
+    }
+
+    /// The appearance store: merge preserving foreign keys, document and file round-trips, and garbage input.
+    #[test]
+    fn active_theme_store_round_trips_and_merges_its_own_section() {
+        // Case `merge_writes_appearance_and_preserves_foreign_keys`.
+        {
+            let existing = r#"{"version":1,"locale":{"currency":"EUR"},"audio":{"event_sounds":true},"appearance":{"high_contrast":true,"text_scale":1.25}}"#;
+            let spec = seed_custom();
+            let out = to_json_merged(&spec, existing);
+            // Our section landed with the id + a nested full theme.
+            assert_eq!(active_id(&out).as_deref(), Some("sunset"));
+            assert!(
+                out.contains("\"appearance\""),
+                "appearance section present: {out}"
+            );
+            // Foreign sections survive untouched.
+            assert!(
+                out.contains("\"currency\": \"EUR\""),
+                "locale survived: {out}"
+            );
+            assert!(
+                out.contains("\"event_sounds\": true"),
+                "audio survived: {out}"
+            );
+            let root: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(root["appearance"]["high_contrast"], true);
+            assert_eq!(root["appearance"]["text_scale"], 1.25);
+            assert_eq!(root["appearance"]["theme"], "custom:sunset");
+            let runtime =
+                ui::Theme::from_settings_json(&out).expect("runtime consumes custom theme");
+            assert_eq!(runtime.name, spec.name);
+            assert_eq!(runtime.accent_primary, spec.to_theme().accent_primary);
+            assert_eq!(runtime.tokens.radii.md, spec.radius_px());
+        }
+
+        // Case `active_spec_round_trips_through_the_document`.
+        {
+            let spec = presets()[3].clone(); // Dracula
+            let out = to_json_merged(&spec, "");
+            let back = active_spec(&out).expect("appearance.theme parses back into a spec");
+            assert_eq!(
+                back, spec,
+                "the exact ThemeSpec is recoverable from the store"
+            );
+            assert_eq!(active_id(&out).as_deref(), Some(spec.id.as_str()));
+        }
+
+        // Case `empty_or_garbage_document_has_no_active_theme`.
+        {
+            assert_eq!(active_id(""), None);
+            assert_eq!(active_id("not json {"), None);
+            assert_eq!(active_spec("").map(|s| s.id), None);
+        }
+
+        // Case `merge_overwrites_only_its_own_section_on_reapply`.
+        {
+            // Applying a second theme replaces only Studio's artifact (no stale
+            // editor keys leak through) while Settings-owned fields survive.
+            let first = to_json_merged(&presets()[0].clone(), "");
+            let second = to_json_merged(&presets()[4].clone(), &first);
+            assert_eq!(
+                active_id(&second).as_deref(),
+                Some(presets()[4].id.as_str())
+            );
+            let back = active_spec(&second).unwrap();
+            assert_eq!(back, presets()[4].clone());
+        }
+
+        // Case `round_trips_through_a_real_file`.
+        {
+            // Exercise the actual disk write/read (not just the in-memory merge)
+            // against an explicit temp file — no process-global env mutation, so
+            // it is safe under the default parallel test runner.
+            let path = std::env::temp_dir()
+                .join(format!("tilo-themes-store-{}", std::process::id()))
+                .join("settings.json");
+            let _ = std::fs::remove_file(&path);
+            // A pre-existing foreign section must survive the write.
+            if let Some(p) = path.parent() {
+                std::fs::create_dir_all(p).unwrap();
+            }
+            std::fs::write(&path, r#"{"version":1,"locale":{"currency":"GBP"}}"#).unwrap();
+            let spec = seed_custom();
+            save_to(&path, &spec).expect("save_to writes the settings file");
+            assert_eq!(load_active_id_from(&path).as_deref(), Some("sunset"));
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(
+                active_spec(&text),
+                Some(spec),
+                "the exact theme reads back off disk"
+            );
+            assert!(
+                text.contains("GBP"),
+                "foreign locale section survived the write"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
     }
 }

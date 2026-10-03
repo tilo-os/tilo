@@ -180,41 +180,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn debug_never_contains_stdin_secret() {
-        let request = CommandRequest::new("program")
-            .stdin_secret(b"do-not-log-me")
-            .env("SECRET_ENV", "do-not-log-env");
-        let debug = format!("{request:?}");
-        assert!(!debug.contains("do-not-log-me"));
-        assert!(!debug.contains("do-not-log-env"));
-        assert!(debug.contains("SECRET_ENV"));
-        assert!(debug.contains("redacted"));
-    }
+    fn the_command_runner_hides_stdin_secrets_and_bounds_output_and_time() {
+        // Phase `debug_never_contains_stdin_secret`.
+        {
+            let request = CommandRequest::new("program")
+                .stdin_secret(b"do-not-log-me")
+                .env("SECRET_ENV", "do-not-log-env");
+            let debug = format!("{request:?}");
+            assert!(!debug.contains("do-not-log-me"));
+            assert!(!debug.contains("do-not-log-env"));
+            assert!(debug.contains("SECRET_ENV"));
+            assert!(debug.contains("redacted"));
+        }
+        // Phase `runner_enforces_output_and_time_bounds`.
+        {
+            let runner = StdCommandRunner;
+            let mut oversized = CommandRequest::new("sh").args(["-c", "head -c 4096 /dev/zero"]);
+            oversized.output_limit = 32;
+            assert!(matches!(
+                runner.run(&oversized),
+                Err(CommandError::Execution {
+                    source: bounded_command::Error::OutputTooLarge { .. },
+                    ..
+                })
+            ));
 
-    #[test]
-    fn runner_enforces_output_and_time_bounds() {
-        let runner = StdCommandRunner;
-        let mut oversized = CommandRequest::new("sh").args(["-c", "head -c 4096 /dev/zero"]);
-        oversized.output_limit = 32;
-        assert!(matches!(
-            runner.run(&oversized),
-            Err(CommandError::Execution {
-                source: bounded_command::Error::OutputTooLarge { .. },
-                ..
-            })
-        ));
-
-        let timeout = CommandRequest::new("sh")
-            .args(["-c", "sleep 5"])
-            .timeout(Duration::from_millis(25));
-        let started = std::time::Instant::now();
-        assert!(matches!(
-            runner.run(&timeout),
-            Err(CommandError::Execution {
-                source: bounded_command::Error::Timeout(_),
-                ..
-            })
-        ));
-        assert!(started.elapsed() < Duration::from_secs(1));
+            let timeout = CommandRequest::new("sh")
+                .args(["-c", "sleep 5"])
+                .timeout(Duration::from_millis(25));
+            let started = std::time::Instant::now();
+            assert!(matches!(
+                runner.run(&timeout),
+                Err(CommandError::Execution {
+                    source: bounded_command::Error::Timeout(_),
+                    ..
+                })
+            ));
+            assert!(started.elapsed() < Duration::from_secs(1));
+        }
     }
 }

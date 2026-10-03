@@ -21,9 +21,15 @@ pub fn line_break_opportunities(text: &str) -> std::vec::IntoIter<(usize, LineBr
 
     use icu_segmenter::{LineSegmenter, LineSegmenterBorrowed};
     // The auto model adds dictionary/LSTM boundaries for Khmer, Lao, Myanmar,
-    // and Thai. The borrowed segmenter only references baked static data.
+    // and Thai. The borrowed segmenter only references baked static data. In
+    // the browser those models (about 2 MB) would be downloaded before
+    // anything runs, so it uses the rules alone there.
+    #[cfg(not(target_arch = "wasm32"))]
     static SEGMENTER: LazyLock<LineSegmenterBorrowed<'static>> =
         LazyLock::new(|| LineSegmenter::new_auto(Default::default()));
+    #[cfg(target_arch = "wasm32")]
+    static SEGMENTER: LazyLock<LineSegmenterBorrowed<'static>> =
+        LazyLock::new(|| LineSegmenter::new_for_non_complex_scripts(Default::default()));
 
     let mut breaks = BTreeMap::new();
     for (byte, kind) in unicode_linebreak::linebreaks(text) {
@@ -71,6 +77,57 @@ pub fn discretionary_hyphen_breaks(text: &str, language: &str) -> Vec<usize> {
 }
 
 pub(crate) const VIRTUAL_BREAK: char = '\u{200b}';
+
+/// Paragraphs longer than this are shaped in chunks (see
+/// [`OffsetMap::add_paragraph_chunks`]). Ordinary documents never reach it.
+pub(crate) const HUGE_PARAGRAPH_BYTES: usize = 16 * 1024;
+const CHUNK_MIN_BYTES: usize = 2 * 1024;
+const CHUNK_MAX_BYTES: usize = 8 * 1024;
+
+/// Content-defined chunk boundaries (source byte offsets, each the start of a
+/// chunk) for paragraphs longer than [`HUGE_PARAGRAPH_BYTES`]. A boundary
+/// follows a space whose preceding bytes hash to an anchor value, at least
+/// [`CHUNK_MIN_BYTES`] after the previous boundary; after
+/// [`CHUNK_MAX_BYTES`] any space qualifies, and after twice that any
+/// character boundary does (text without spaces). The hash depends only on
+/// nearby bytes, so an edit shifts at most the boundaries around it.
+pub(crate) fn paragraph_chunk_boundaries(text: &str) -> Vec<usize> {
+    const WINDOW: usize = 16;
+    let bytes = text.as_bytes();
+    let mut boundaries = Vec::new();
+    let mut paragraph_start = 0;
+    while paragraph_start < bytes.len() {
+        let paragraph_end = bytes[paragraph_start..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(bytes.len(), |i| paragraph_start + i);
+        if paragraph_end - paragraph_start > HUGE_PARAGRAPH_BYTES {
+            let mut last = paragraph_start;
+            let mut position = paragraph_start + CHUNK_MIN_BYTES;
+            while position < paragraph_end.saturating_sub(CHUNK_MIN_BYTES) {
+                let since = position - last;
+                let anchor = if bytes[position - 1] == b' ' && text.is_char_boundary(position) {
+                    let window = &bytes[position.saturating_sub(WINDOW).max(last)..position];
+                    let hash = window.iter().fold(0x811c_9dc5_u32, |h, &b| {
+                        (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
+                    });
+                    since >= CHUNK_MAX_BYTES || hash % 512 == 0
+                } else {
+                    since >= 2 * CHUNK_MAX_BYTES && text.is_char_boundary(position)
+                };
+                if anchor {
+                    boundaries.push(position);
+                    last = position;
+                    position += CHUNK_MIN_BYTES;
+                } else {
+                    position += 1;
+                }
+            }
+        }
+        paragraph_start = paragraph_end + 1;
+    }
+    boundaries
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct VirtualInsertion {
@@ -155,6 +212,34 @@ impl OffsetMap {
 
     pub(crate) fn is_identity(&self) -> bool {
         self.insertions.is_empty()
+    }
+
+    /// Split paragraphs longer than [`HUGE_PARAGRAPH_BYTES`] into shaping
+    /// chunks with virtual line feeds. cosmic-text shapes, wraps and caches
+    /// one paragraph as a unit, so a pasted page of text without paragraph
+    /// breaks was reshaped completely on every keystroke and every frame
+    /// that relaid it (and grew without bound). Boundaries are content
+    /// defined (see [`paragraph_chunk_boundaries`]): an edit moves only the
+    /// boundaries next to it, so unchanged chunks keep their shaped lines.
+    /// A chunk boundary ends a visual line early; that is the only visible
+    /// difference, and only in paragraphs over the threshold.
+    pub(crate) fn add_paragraph_chunks(&mut self, text: &str) {
+        let boundaries = paragraph_chunk_boundaries(text);
+        if boundaries.is_empty() {
+            return;
+        }
+        let taken: std::collections::HashSet<usize> = self
+            .insertions
+            .iter()
+            .map(|insertion| insertion.source)
+            .collect();
+        self.insertions.extend(
+            boundaries
+                .into_iter()
+                .filter(|source| !taken.contains(source))
+                .map(|source| VirtualInsertion { source, ch: '\n' }),
+        );
+        self.insertions.sort_by_key(|insertion| insertion.source);
     }
 
     pub(crate) fn has_discretionary_hyphens(&self) -> bool {
@@ -278,8 +363,13 @@ pub(crate) fn graphemes(text: &str) -> impl Iterator<Item = &str> {
 /// Uses the same ICU segmentation as toolkit word selection and movement.
 pub fn unicode_word_ranges(text: &str) -> std::vec::IntoIter<std::ops::Range<usize>> {
     use icu_segmenter::{WordSegmenter, WordSegmenterBorrowed};
+    // As for lines: no dictionary/LSTM models in the browser.
+    #[cfg(not(target_arch = "wasm32"))]
     static SEGMENTER: LazyLock<WordSegmenterBorrowed<'static>> =
         LazyLock::new(|| WordSegmenter::new_auto(Default::default()));
+    #[cfg(target_arch = "wasm32")]
+    static SEGMENTER: LazyLock<WordSegmenterBorrowed<'static>> =
+        LazyLock::new(|| WordSegmenter::new_for_non_complex_scripts(Default::default()));
     let boundaries: Vec<_> = SEGMENTER.segment_str(text).iter_with_word_type().collect();
     boundaries
         .windows(2)
@@ -307,115 +397,187 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unicode_words_retain_trailing_combining_marks() {
-        for (text, expected) in [
-            ("test\u{301}", vec!["test\u{301}"]),
-            ("test\u{301} ", vec!["test\u{301}"]),
-            (
-                "e\u{301}test test\u{301} 123\u{301}",
-                vec!["e\u{301}test", "test\u{301}", "123\u{301}"],
-            ),
-        ] {
-            let words: Vec<_> = unicode_word_ranges(text)
-                .map(|range| text.get(range).expect("UTF-8 word range"))
-                .collect();
+    fn huge_paragraphs_get_stable_content_defined_chunks() {
+        let words: Vec<String> = (0..9000)
+            .map(|i| format!("w{:x}{}", i * 7919 % 4093, "ab".repeat(i % 5)))
+            .collect();
+        let text = words.join(" ");
+        assert!(text.len() > 3 * HUGE_PARAGRAPH_BYTES);
+        assert!(paragraph_chunk_boundaries("short paragraph").is_empty());
+        assert!(paragraph_chunk_boundaries(&"x ".repeat(HUGE_PARAGRAPH_BYTES / 2)).is_empty());
+        let boundaries = paragraph_chunk_boundaries(&text);
+        assert!(boundaries.len() >= text.len() / CHUNK_MAX_BYTES - 1);
+        let mut last = 0;
+        for &b in &boundaries {
+            assert!(text.is_char_boundary(b));
+            assert_eq!(text.as_bytes()[b - 1], b' ', "boundaries follow a space");
+            assert!(b - last >= CHUNK_MIN_BYTES && b - last <= CHUNK_MAX_BYTES + 64);
+            last = b;
+        }
+        // An edit near the start moves only nearby boundaries.
+        let edited = format!("{}inserted {}", &text[..100], &text[100..]);
+        let shift = "inserted ".len();
+        let moved: Vec<usize> = paragraph_chunk_boundaries(&edited)
+            .into_iter()
+            .map(|b| b - shift)
+            .collect();
+        let unchanged = boundaries.iter().filter(|b| moved.contains(b)).count();
+        assert!(
+            unchanged + 2 >= boundaries.len(),
+            "{unchanged} of {}",
+            boundaries.len()
+        );
+        // Text without spaces is still bounded.
+        let solid = "x".repeat(5 * CHUNK_MAX_BYTES + HUGE_PARAGRAPH_BYTES);
+        assert!(!paragraph_chunk_boundaries(&solid).is_empty());
+        // Line feeds split paragraphs first.
+        let two = format!(
+            "{}\n{}",
+            &text[..HUGE_PARAGRAPH_BYTES - 10],
+            &text[..HUGE_PARAGRAPH_BYTES - 10]
+        );
+        assert!(paragraph_chunk_boundaries(&two).is_empty());
+    }
+
+    #[test]
+    fn paragraph_chunks_map_offsets_back_to_source() {
+        let text = (0..6000)
+            .map(|i| format!("word{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut map = OffsetMap::default();
+        map.add_paragraph_chunks(&text);
+        assert!(!map.is_identity());
+        let shaped = map.shape_text(&text);
+        assert_eq!(shaped.replace('\n', ""), text);
+        for byte in (0..=text.len())
+            .step_by(97)
+            .filter(|b| text.is_char_boundary(*b))
+        {
+            assert_eq!(map.shaped_to_source(map.source_to_shaped(byte)), byte);
+        }
+    }
+
+    #[test]
+    fn word_and_grapheme_segmentation_keeps_clusters_whole() {
+        // Case `unicode_words_retain_trailing_combining_marks`.
+        {
+            for (text, expected) in [
+                ("test\u{301}", vec!["test\u{301}"]),
+                ("test\u{301} ", vec!["test\u{301}"]),
+                (
+                    "e\u{301}test test\u{301} 123\u{301}",
+                    vec!["e\u{301}test", "test\u{301}", "123\u{301}"],
+                ),
+            ] {
+                let words: Vec<_> = unicode_word_ranges(text)
+                    .map(|range| text.get(range).expect("UTF-8 word range"))
+                    .collect();
+                assert_eq!(
+                    words, expected,
+                    "the complete source word remains word-like"
+                );
+            }
+            assert!(unicode_word_ranges("\u{301} , .").next().is_none());
+        }
+
+        // Case `grapheme_indices_keep_extended_clusters_whole`.
+        {
+            let text = "e\u{301}👨‍👩‍👧🇳🇱a";
+            let clusters: Vec<_> = grapheme_indices(text).collect();
             assert_eq!(
-                words, expected,
-                "the complete source word remains word-like"
+                clusters,
+                vec![(0, "e\u{301}"), (3, "👨‍👩‍👧"), (21, "🇳🇱"), (29, "a"),]
+            );
+            assert_eq!(graphemes("").count(), 0);
+        }
+    }
+
+    #[test]
+    fn line_break_opportunities_follow_script_rules() {
+        // Case `cjk_has_opportunities_without_ascii_spaces`.
+        {
+            let text = "東京京都";
+            let breaks: Vec<_> = line_break_opportunities(text).collect();
+            assert_eq!(breaks.last(), Some(&(text.len(), LineBreakKind::Mandatory)));
+            assert!(breaks.iter().any(|(byte, _)| *byte < text.len()));
+        }
+
+        // Case `non_breaking_space_does_not_create_an_opportunity`.
+        {
+            let text = "10\u{a0}km away";
+            let protected_end = "10\u{a0}".len();
+            assert!(
+                line_break_opportunities(text).all(|(byte, _)| byte != protected_end),
+                "NBSP keeps its adjacent words together"
             );
         }
-        assert!(unicode_word_ranges("\u{301} , .").next().is_none());
-    }
 
-    #[test]
-    fn grapheme_indices_keep_extended_clusters_whole() {
-        let text = "e\u{301}👨‍👩‍👧🇳🇱a";
-        let clusters: Vec<_> = grapheme_indices(text).collect();
-        assert_eq!(
-            clusters,
-            vec![(0, "e\u{301}"), (3, "👨‍👩‍👧"), (21, "🇳🇱"), (29, "a"),]
-        );
-        assert_eq!(graphemes("").count(), 0);
-    }
+        // Case `emoji_zwj_sequence_is_not_split`.
+        {
+            let family = "👨‍👩‍👧‍👦";
+            assert_eq!(
+                line_break_opportunities(family).collect::<Vec<_>>(),
+                vec![(family.len(), LineBreakKind::Mandatory)]
+            );
+        }
 
-    #[test]
-    fn cjk_has_opportunities_without_ascii_spaces() {
-        let text = "東京京都";
-        let breaks: Vec<_> = line_break_opportunities(text).collect();
-        assert_eq!(breaks.last(), Some(&(text.len(), LineBreakKind::Mandatory)));
-        assert!(breaks.iter().any(|(byte, _)| *byte < text.len()));
-    }
-
-    #[test]
-    fn non_breaking_space_does_not_create_an_opportunity() {
-        let text = "10\u{a0}km away";
-        let protected_end = "10\u{a0}".len();
-        assert!(
-            line_break_opportunities(text).all(|(byte, _)| byte != protected_end),
-            "NBSP keeps its adjacent words together"
-        );
-    }
-
-    #[test]
-    fn emoji_zwj_sequence_is_not_split() {
-        let family = "👨‍👩‍👧‍👦";
-        assert_eq!(
-            line_break_opportunities(family).collect::<Vec<_>>(),
-            vec![(family.len(), LineBreakKind::Mandatory)]
-        );
-    }
-
-    #[test]
-    fn dictionary_line_breaks_segment_thai_without_spaces() {
-        let text = "ทุกสองสัปดาห์";
-        let breaks: Vec<_> = line_break_opportunities(text)
-            .map(|(byte, _)| byte)
-            .collect();
-        assert_eq!(breaks, vec![9, 18, text.len()]);
-    }
-
-    #[test]
-    fn english_hyphenation_inserts_soft_hyphens_at_tex_pattern_boundaries() {
-        let text = "extensive";
-        let map = OffsetMap::for_text_with_hyphenation(text, Some(hypher::Lang::English));
-        let insertions: Vec<_> = map
-            .insertions
-            .iter()
-            .map(|insertion| (insertion.source, insertion.ch))
-            .collect();
-        assert_eq!(insertions, vec![(2, '\u{ad}'), (5, '\u{ad}')]);
-        assert_eq!(map.shape_text(text), "ex\u{ad}ten\u{ad}sive");
-        for source in 0..=text.len() {
-            assert_eq!(map.shaped_to_source(map.source_to_shaped(source)), source);
+        // Case `dictionary_line_breaks_segment_thai_without_spaces`.
+        {
+            let text = "ทุกสองสัปดาห์";
+            let breaks: Vec<_> = line_break_opportunities(text)
+                .map(|(byte, _)| byte)
+                .collect();
+            assert_eq!(breaks, vec![9, 18, text.len()]);
         }
     }
 
     #[test]
-    fn hyphenation_only_touches_word_like_segments() {
-        let text = "extensive, 123";
-        let map = OffsetMap::for_text_with_hyphenation(text, Some(hypher::Lang::English));
-        assert!(map.insertions.iter().all(|insertion| insertion.source < 9));
-        assert_eq!(
-            map.shaped_to_source(map.source_to_shaped(text.len())),
-            text.len()
-        );
-    }
+    fn discretionary_hyphens_map_to_word_like_source_offsets() {
+        // Case `english_hyphenation_inserts_soft_hyphens_at_tex_pattern_boundaries`.
+        {
+            let text = "extensive";
+            let map = OffsetMap::for_text_with_hyphenation(text, Some(hypher::Lang::English));
+            let insertions: Vec<_> = map
+                .insertions
+                .iter()
+                .map(|insertion| (insertion.source, insertion.ch))
+                .collect();
+            assert_eq!(insertions, vec![(2, '\u{ad}'), (5, '\u{ad}')]);
+            assert_eq!(map.shape_text(text), "ex\u{ad}ten\u{ad}sive");
+            for source in 0..=text.len() {
+                assert_eq!(map.shaped_to_source(map.source_to_shaped(source)), source);
+            }
+        }
 
-    #[test]
-    fn custom_breaks_ignore_endpoints_and_non_utf8_boundaries() {
-        let text = "éclair";
-        let map = OffsetMap::for_text_with_breaks(text, None, &[0, 1, 2, text.len(), usize::MAX]);
-        assert_eq!(map.shape_text(text), "é\u{ad}clair");
-        assert_eq!(map.insertions.len(), 1);
-        assert_eq!(map.insertions[0].source, 2);
-    }
+        // Case `hyphenation_only_touches_word_like_segments`.
+        {
+            let text = "extensive, 123";
+            let map = OffsetMap::for_text_with_hyphenation(text, Some(hypher::Lang::English));
+            assert!(map.insertions.iter().all(|insertion| insertion.source < 9));
+            assert_eq!(
+                map.shaped_to_source(map.source_to_shaped(text.len())),
+                text.len()
+            );
+        }
 
-    #[test]
-    fn public_hyphen_breaks_are_source_offsets() {
-        let text = "typography";
-        let breaks = discretionary_hyphen_breaks(text, "en-US");
-        assert!(!breaks.is_empty());
-        assert!(breaks.iter().all(|&byte| text.is_char_boundary(byte)));
-        assert!(discretionary_hyphen_breaks(text, "und").is_empty());
+        // Case `custom_breaks_ignore_endpoints_and_non_utf8_boundaries`.
+        {
+            let text = "éclair";
+            let map =
+                OffsetMap::for_text_with_breaks(text, None, &[0, 1, 2, text.len(), usize::MAX]);
+            assert_eq!(map.shape_text(text), "é\u{ad}clair");
+            assert_eq!(map.insertions.len(), 1);
+            assert_eq!(map.insertions[0].source, 2);
+        }
+
+        // Case `public_hyphen_breaks_are_source_offsets`.
+        {
+            let text = "typography";
+            let breaks = discretionary_hyphen_breaks(text, "en-US");
+            assert!(!breaks.is_empty());
+            assert!(breaks.iter().all(|&byte| text.is_char_boundary(byte)));
+            assert!(discretionary_hyphen_breaks(text, "und").is_empty());
+        }
     }
 }

@@ -4,7 +4,9 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
+use std::any::Any;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -43,6 +45,9 @@ pub struct Row {
     /// Retained Taffy identities for `children`. Rebuilt only with the layout
     /// tree; hot event/layout traversal must not allocate `taffy.children()`.
     child_nodes: Vec<NodeId>,
+    /// Stable graph / test identity when this row was built from a serialized
+    /// UI node.
+    id: Option<String>,
     rect: vello::kurbo::Rect,
     /// Overflow extent used for culling independently of an exact allocation.
     paint_rect: vello::kurbo::Rect,
@@ -88,6 +93,7 @@ impl Row {
         Self {
             children: Vec::new(),
             child_nodes: Vec::new(),
+            id: None,
             rect: vello::kurbo::Rect::ZERO,
             paint_rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
@@ -111,6 +117,35 @@ impl Row {
     pub fn push(mut self, child: Box<dyn Widget>) -> Self {
         self.children.push(child);
         self
+    }
+
+    /// Address this row by a stable id in inspection and graph reconcile.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    /// Take ownership of the child list for identity-preserving reconcile.
+    pub fn take_children(&mut self) -> Vec<Box<dyn Widget>> {
+        self.child_nodes.clear();
+        self.cache_present = false;
+        std::mem::take(&mut self.children)
+    }
+
+    /// Replace the child list after a graph reconcile pass.
+    pub fn set_children(&mut self, children: Vec<Box<dyn Widget>>) {
+        self.children = children;
+        self.child_nodes.clear();
+        self.cache_present = false;
+    }
+
+    /// Apply layout flags from a serialized row node without rebuilding.
+    pub fn apply_graph_props(&mut self, id: &str, no_wrap: bool, fill_remaining_height: bool) {
+        self.id = Some(id.to_owned());
+        self.no_wrap = no_wrap;
+        self.fill_height = fill_remaining_height;
+        self.cache_present = false;
     }
 
     #[must_use]
@@ -190,37 +225,26 @@ impl Row {
 }
 
 impl Widget for Row {
-    fn start_resource_operation_with_document(
+    crate::provides!(
+        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::undo::UndoPoints
+    );
+
+    fn start_operation(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
+        op: &crate::widget::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        // This container owns no operation handler. Preserve mutable admission
-        // down the retained tree without a second read-only fallback traversal.
-        for child in self.children_mut() {
-            if let Some(started) = child.start_resource_operation_with_document(
-                invocation, kind, type_id, payload, doc, path,
-            )? {
-                return Ok(Some(started));
-            }
-        }
-        Ok(None)
-    }
-
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        for child in &mut self.children {
-            child.sync(state, path);
-        }
+        // This container owns no operation handler: offer each child once.
+        crate::widget::start_in_children(self, op, doc, path)
     }
 
     /// Forward the per-frame update pass; every child runs, and a
     /// change in any of them is a change here. Not short-circuited —
     /// a child that skipped its pass would miss a frame of state.
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
         for child in &mut self.children {
             changed |= child.update(state, path);
@@ -239,6 +263,7 @@ impl Widget for Row {
             .iter_mut()
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
+        yield_full_width_children(taffy, &self.child_nodes);
 
         let gap = self.gap_override.unwrap_or(theme.gap_standard);
 
@@ -325,18 +350,7 @@ impl Widget for Row {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Same pointer-capture short-circuit as `Column::handle_event` —
         // a dragging child gets exclusive event routing so the drag
         // survives the cursor wandering through peer widgets.
@@ -344,32 +358,12 @@ impl Widget for Row {
             && let Some(&cnode) = self.child_nodes.get(idx)
             && let Some(child) = self.children.get_mut(idx)
         {
-            child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cnode,
-                taffy,
-            );
+            child.handle_event(event, &mut ctx.reborrow(ctx.path, cnode));
             return;
         }
         for (child_widget, &child_node) in self.children.iter_mut().zip(&self.child_nodes) {
-            child_widget.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
-            if *handled {
+            child_widget.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
+            if *ctx.handled {
                 break;
             }
         }
@@ -449,16 +443,16 @@ impl Widget for Row {
         "Row"
     }
 
+    fn test_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        Some(self)
+    }
+
     fn is_focused(&self) -> bool {
         false
-    }
-    fn needs_commit(&self) -> bool {
-        self.children().iter().any(|c| c.needs_commit())
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            child.on_commit();
-        }
     }
 
     // `.any` would short-circuit and skip `take_structure_dirty()` on later
@@ -473,20 +467,6 @@ impl Widget for Row {
             .iter_mut()
             .map(|c| c.take_structure_dirty())
             .fold(false, |acc, d| acc || d)
-    }
-
-    fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
-    }
-
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
     }
 
     fn draw_with_presence(
@@ -541,7 +521,7 @@ impl Widget for Row {
             }
         }
 
-        if let Some(scope) = self.permission_scope()
+        if let Some(scope) = crate::permissions::capability::permission_scope(self)
             && !permissions.check(&scope)
         {
             let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
@@ -554,7 +534,7 @@ impl Widget for Row {
             );
         }
 
-        if let Some(key) = self.presence_key()
+        if let Some(key) = crate::presence::capability::presence_key(self)
             && let Some(peers) = presence.here.get(&key)
             && let Some(user) = peers.first()
         {
@@ -569,6 +549,80 @@ impl Widget for Row {
         for child in &mut self.children {
             child.release_scene_cache();
         }
+    }
+}
+
+impl crate::undo::UndoPoints for Row {
+    fn needs_commit(&self) -> bool {
+        self.children()
+            .iter()
+            .any(|c| crate::undo::needs_commit(*c))
+    }
+    fn on_commit(&mut self) {
+        for child in self.children_mut() {
+            crate::undo::on_commit(child);
+        }
+    }
+}
+
+impl crate::presence::capability::PublishesPresence for Row {
+    fn presence_key(&self) -> Option<PresenceKey> {
+        if self.presence_path.is_empty() {
+            None
+        } else {
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
+        }
+    }
+}
+
+impl crate::permissions::capability::PermissionGated for Row {
+    fn permission_scope(&self) -> Option<PermissionScope> {
+        self.permission_scope.clone()
+    }
+}
+
+/// Along a row's axis, children ask only for the room they need:
+///
+/// * A child that claims its parent's full width and refuses to shrink —
+///   a nested `Row`, a fluid `Container` — keeps a `Column` from squashing
+///   it vertically, but beside siblings in a row the same style takes the
+///   whole row on top of them and overflows it, starving any spacer to
+///   nothing. A nested row is as wide as its own children, and any other
+///   such child gives back what its siblings need, down to its content's
+///   width, as `Dropdown` and `SearchField` already do.
+/// * A child that grows into the room its siblings leave and names the
+///   least it can be (`Container::with_flex_grow().with_min_width(..)`)
+///   needs no more than that: its content's width must not count towards
+///   the row's own, or a row measured for its content (in a column with no
+///   scrollable above it) is as wide as its longest label and overflows.
+fn yield_full_width_children(taffy: &mut TaffyTree<()>, children: &[NodeId]) {
+    for &child in children {
+        let Ok(style) = taffy.style(child) else {
+            continue;
+        };
+        let full_width = style.size.width == percent(1.0_f32) && style.flex_shrink == 0.0;
+        let grows_from_its_least = style.flex_grow > 0.0
+            && style.flex_basis == length(0.0_f32)
+            && style.size.width == taffy::Dimension::auto()
+            && style.min_size.width.into_option().is_some();
+        if !full_width && !grows_from_its_least {
+            continue;
+        }
+        let mut style = style.clone();
+        if grows_from_its_least {
+            style.size.width = style.min_size.width;
+        } else {
+            if style.display == taffy::Display::Flex
+                && style.flex_direction == taffy::FlexDirection::Row
+                && style.flex_grow == 0.0
+            {
+                style.size.width = taffy::Dimension::auto();
+            }
+            style.flex_shrink = 1.0;
+        }
+        let _ = taffy.set_style(child, style);
     }
 }
 
@@ -612,103 +666,190 @@ mod tests {
             .push(Box::new(Text::new("trail")))
     }
 
+    /// A label, a spacer and a full-width child (a nested row of buttons,
+    /// a fluid container) stay inside the row instead of overflowing it.
     #[test]
-    fn default_row_gap_is_the_theme_gap_standard_and_children_pack_at_start() {
-        let theme = Theme::dark();
-        let rects = lay_out(&mut two_texts(), 600.0);
-        assert!(
-            (rects[1].x0 - rects[0].x1 - f64::from(theme.gap_standard)).abs() < 0.5,
-            "default gap is gap_standard: {rects:?}"
-        );
-        assert!(
-            (rects[0].x0).abs() < 0.5,
-            "children start at the leading edge: {rects:?}"
-        );
-    }
-
-    #[test]
-    fn with_gap_overrides_the_gap_between_children() {
-        let rects = lay_out(&mut two_texts().with_gap(4.0), 600.0);
-        assert!((rects[1].x0 - rects[0].x1 - 4.0).abs() < 0.5, "{rects:?}");
-        let tight = lay_out(&mut two_texts().with_gap(0.0), 600.0);
-        assert!((tight[1].x0 - tight[0].x1).abs() < 0.5, "{tight:?}");
-    }
-
-    #[test]
-    fn with_justify_space_between_pushes_the_last_child_to_the_far_edge() {
-        let rects = lay_out(
-            &mut two_texts().with_justify(taffy::JustifyContent::SpaceBetween),
-            600.0,
-        );
-        assert!((rects[0].x0).abs() < 0.5, "{rects:?}");
-        assert!((rects[1].x1 - 600.0).abs() < 0.5, "{rects:?}");
-        let end = lay_out(
-            &mut two_texts().with_justify(taffy::JustifyContent::End),
-            600.0,
-        );
-        assert!((end[1].x1 - 600.0).abs() < 0.5, "{end:?}");
-        assert!(
-            end[0].x0 > 300.0,
-            "both children sit at the trailing end: {end:?}"
-        );
-    }
-
-    #[test]
-    fn with_align_items_start_keeps_a_short_child_at_the_top_of_a_tall_row() {
-        let tall = Box::new(
-            crate::widget::Container::new()
-                .with_no_padding()
-                .with_size(40.0, 80.0),
-        );
-        let centred = lay_out(
-            &mut Row::new()
+    fn a_full_width_child_beside_a_spacer_stays_inside_the_row() {
+        use crate::widget::{Button, Container, Spacer};
+        let buttons = || {
+            Row::new()
                 .no_wrap()
-                .push(Box::new(Text::new("x")))
-                .push(tall),
-            600.0,
-        );
-        let text_mid = centred[0].y0.midpoint(centred[0].y1);
-        let tall_mid = centred[1].y0.midpoint(centred[1].y1);
-        assert!(
-            (text_mid - tall_mid).abs() < 1.0,
-            "default centres the short child: {centred:?}"
-        );
+                .with_gap(4.0)
+                .push(Box::new(Button::new("a", "Alpha", None)))
+                .push(Box::new(Button::new("b", "Beta", None)))
+        };
+        let nested = Row::new()
+            .no_wrap()
+            .push(Box::new(Text::new("Label")))
+            .push(Box::new(Spacer::new()))
+            .push(Box::new(buttons()));
+        let fluid = Row::new()
+            .no_wrap()
+            .push(Box::new(Text::new("Label")))
+            .push(Box::new(Spacer::new()))
+            .push(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_child(Box::new(buttons())),
+            ));
+        for mut row in [nested, fluid] {
+            let rects = lay_out(&mut row, 400.0);
+            let right = rects.iter().map(|rect| rect.x1).fold(0.0, f64::max);
+            assert!(right <= 400.5, "the row overflows its 400 px: {rects:?}");
+            assert!(
+                rects[2].width() >= 100.0,
+                "the trailing child keeps its content's width: {rects:?}"
+            );
+            assert!(
+                rects[2].x1 > 390.0,
+                "the spacer pushes the trailing child to the far end: {rects:?}"
+            );
+            assert!(
+                rects[0].width() > 20.0,
+                "the label keeps its text: {rects:?}"
+            );
+        }
+    }
 
-        let tall = Box::new(
-            crate::widget::Container::new()
-                .with_no_padding()
-                .with_size(40.0, 80.0),
-        );
-        let start = lay_out(
-            &mut Row::new()
-                .no_wrap()
-                .with_align_items(taffy::AlignItems::Start)
-                .push(Box::new(Text::new("x")))
-                .push(tall),
-            600.0,
-        );
+    /// A child growing into the leftover room from the least it names
+    /// does not make a row measured for its content (no scrollable above
+    /// it) as wide as that child's longest label.
+    #[test]
+    fn a_growing_child_does_not_widen_a_row_measured_for_its_content() {
+        use crate::widget::{Button, Column, Container};
+        let label = "A long layer name that would not fit in a narrow panel at all";
+        let row = Row::new()
+            .no_wrap()
+            .push(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_flex_grow()
+                    .with_min_width(0.0)
+                    .with_child(Box::new(Text::new(label))),
+            ))
+            .push(Box::new(Button::new("eye", "Eye", None)));
+        let mut panel = Container::new()
+            .with_no_padding()
+            .with_width(240.0)
+            .with_child(Box::new(Column::new().with_no_padding().push(Box::new(
+                Column::new().with_intrinsic_height().push(Box::new(row)),
+            ))));
+        lay_out(&mut panel, 600.0);
+        let mut widest: f64 = 0.0;
+        let mut stack: Vec<&dyn Widget> = vec![&panel];
+        while let Some(widget) = stack.pop() {
+            widest = widest.max(widget.get_rect().x1);
+            stack.extend(widget.children());
+        }
         assert!(
-            (start[0].y0 - start[1].y0).abs() < 0.5,
-            "Start aligns the short child's top with the tall child's: {start:?}"
+            widest <= 240.5,
+            "the row overflows its 240 px panel: {widest}"
         );
     }
 
     #[test]
-    fn damage_merge_keeps_progress_wrap_endpoints_separate() {
-        // These are the clipped old/new segments at opposite ends of a
-        // 200px indeterminate progress bar. Their union would repaint the
-        // entire track even though each changed strip is only 60px wide.
-        let old_segment = vello::kurbo::Rect::new(140.0, 0.0, 200.0, 8.0);
-        let new_segment = vello::kurbo::Rect::new(0.0, 0.0, 60.0, 8.0);
+    fn row_gap_justify_and_alignment_place_children() {
+        // Case `default_row_gap_is_the_theme_gap_standard_and_children_pack_at_start`.
+        {
+            let theme = Theme::dark();
+            let rects = lay_out(&mut two_texts(), 600.0);
+            assert!(
+                (rects[1].x0 - rects[0].x1 - f64::from(theme.gap_standard)).abs() < 0.5,
+                "default gap is gap_standard: {rects:?}"
+            );
+            assert!(
+                (rects[0].x0).abs() < 0.5,
+                "children start at the leading edge: {rects:?}"
+            );
+        }
 
-        assert!(!can_merge_damage(old_segment, new_segment));
+        // Case `with_gap_overrides_the_gap_between_children`.
+        {
+            let rects = lay_out(&mut two_texts().with_gap(4.0), 600.0);
+            assert!((rects[1].x0 - rects[0].x1 - 4.0).abs() < 0.5, "{rects:?}");
+            let tight = lay_out(&mut two_texts().with_gap(0.0), 600.0);
+            assert!((tight[1].x0 - tight[0].x1).abs() < 0.5, "{tight:?}");
+        }
+
+        // Case `with_justify_space_between_pushes_the_last_child_to_the_far_edge`.
+        {
+            let rects = lay_out(
+                &mut two_texts().with_justify(taffy::JustifyContent::SpaceBetween),
+                600.0,
+            );
+            assert!((rects[0].x0).abs() < 0.5, "{rects:?}");
+            assert!((rects[1].x1 - 600.0).abs() < 0.5, "{rects:?}");
+            let end = lay_out(
+                &mut two_texts().with_justify(taffy::JustifyContent::End),
+                600.0,
+            );
+            assert!((end[1].x1 - 600.0).abs() < 0.5, "{end:?}");
+            assert!(
+                end[0].x0 > 300.0,
+                "both children sit at the trailing end: {end:?}"
+            );
+        }
+
+        // Case `with_align_items_start_keeps_a_short_child_at_the_top_of_a_tall_row`.
+        {
+            let tall = Box::new(
+                crate::widget::Container::new()
+                    .with_no_padding()
+                    .with_size(40.0, 80.0),
+            );
+            let centred = lay_out(
+                &mut Row::new()
+                    .no_wrap()
+                    .push(Box::new(Text::new("x")))
+                    .push(tall),
+                600.0,
+            );
+            let text_mid = centred[0].y0.midpoint(centred[0].y1);
+            let tall_mid = centred[1].y0.midpoint(centred[1].y1);
+            assert!(
+                (text_mid - tall_mid).abs() < 1.0,
+                "default centres the short child: {centred:?}"
+            );
+
+            let tall = Box::new(
+                crate::widget::Container::new()
+                    .with_no_padding()
+                    .with_size(40.0, 80.0),
+            );
+            let start = lay_out(
+                &mut Row::new()
+                    .no_wrap()
+                    .with_align_items(taffy::AlignItems::Start)
+                    .push(Box::new(Text::new("x")))
+                    .push(tall),
+                600.0,
+            );
+            assert!(
+                (start[0].y0 - start[1].y0).abs() < 0.5,
+                "Start aligns the short child's top with the tall child's: {start:?}"
+            );
+        }
     }
 
     #[test]
-    fn damage_merge_coalesces_nearby_row_children() {
-        let left = vello::kurbo::Rect::new(0.0, 0.0, 40.0, 20.0);
-        let right = vello::kurbo::Rect::new(44.0, 0.0, 84.0, 20.0);
+    fn damage_merge_coalesces_near_children_but_keeps_wrap_endpoints() {
+        // Case `damage_merge_keeps_progress_wrap_endpoints_separate`.
+        {
+            // These are the clipped old/new segments at opposite ends of a
+            // 200px indeterminate progress bar. Their union would repaint the
+            // entire track even though each changed strip is only 60px wide.
+            let old_segment = vello::kurbo::Rect::new(140.0, 0.0, 200.0, 8.0);
+            let new_segment = vello::kurbo::Rect::new(0.0, 0.0, 60.0, 8.0);
 
-        assert!(can_merge_damage(left, right));
+            assert!(!can_merge_damage(old_segment, new_segment));
+        }
+
+        // Case `damage_merge_coalesces_nearby_row_children`.
+        {
+            let left = vello::kurbo::Rect::new(0.0, 0.0, 40.0, 20.0);
+            let right = vello::kurbo::Rect::new(44.0, 0.0, 84.0, 20.0);
+
+            assert!(can_merge_damage(left, right));
+        }
     }
 }

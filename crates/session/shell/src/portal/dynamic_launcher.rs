@@ -26,18 +26,26 @@ pub struct DynamicLauncherBackend {
     ctx: PortalContext,
     lifecycle: PortalLifecycle,
     dialogs: PortalDialogQueue,
+    connection: zbus::Connection,
 }
 #[cfg(target_os = "linux")]
 impl DynamicLauncherBackend {
-    pub fn new(ctx: PortalContext) -> Self {
-        Self::with_lifecycle(ctx, PortalLifecycle::new())
+    /// `connection` is the bus this backend is served on; its request objects
+    /// are registered there.
+    pub fn new(ctx: PortalContext, connection: zbus::Connection) -> Self {
+        Self::with_lifecycle(ctx, PortalLifecycle::new(), connection)
     }
 
-    pub fn with_lifecycle(ctx: PortalContext, lifecycle: PortalLifecycle) -> Self {
+    pub fn with_lifecycle(
+        ctx: PortalContext,
+        lifecycle: PortalLifecycle,
+        connection: zbus::Connection,
+    ) -> Self {
         Self {
             ctx,
             lifecycle,
             dialogs: PortalDialogQueue::global(),
+            connection,
         }
     }
 }
@@ -128,7 +136,6 @@ impl DynamicLauncherBackend {
     async fn prepare_install(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
-        #[zbus(connection)] connection: &zbus::Connection,
         handle: ObjectPath<'_>,
         app_id: String,
         parent_window: String,
@@ -177,7 +184,7 @@ impl DynamicLauncherBackend {
         };
         if !matches!(
             self.lifecycle
-                .register_request(connection, &path, entry, move |_| {
+                .register_request(&self.connection, &path, entry, move |_| {
                     let _ = dialogs.cancel(&cancel_path);
                 })
                 .await,
@@ -189,36 +196,36 @@ impl DynamicLauncherBackend {
             review: ReviewRequest {
                 handle: path.clone(),
                 app_id: auth.caller.app_id.clone(),
-                title: if kind == 2 {
-                    "Install this web app?".into()
+                title: crate::shell::i18n::t(if kind == 2 {
+                    "portal-launcher-web-app-title"
                 } else {
-                    "Add this launcher?".into()
-                },
-                reason: "Review the launcher before it is added to your application library. The supplied image is checked but never opened from an app path or file descriptor.".into(),
+                    "portal-launcher-title"
+                }),
+                reason: crate::shell::i18n::t("portal-launcher-reason"),
                 resource,
-                confirm_label: "Add launcher".into(),
+                confirm_label: crate::shell::i18n::t("portal-launcher-confirm"),
             },
             name: name.clone(),
             editable_name,
             editable_icon,
             icon_choices: if editable_icon {
                 vec![
-                    "Supplied image (validated)".into(),
-                    "Tilo monogram".into(),
-                    "Tilo web compass".into(),
+                    crate::shell::i18n::t("portal-launcher-icon-supplied"),
+                    crate::shell::i18n::t("portal-launcher-icon-monogram"),
+                    crate::shell::i18n::t("portal-launcher-icon-compass"),
                 ]
             } else {
-                vec!["Supplied image (validated)".into()]
+                vec![crate::shell::i18n::t("portal-launcher-icon-supplied")]
             },
         }) else {
             self.lifecycle
-                .complete_request_object(connection, &path)
+                .complete_request_object(&self.connection, &path)
                 .await;
             return (2, HashMap::new());
         };
         let Ok(decision) = review.await else {
             self.lifecycle
-                .complete_request_object(connection, &path)
+                .complete_request_object(&self.connection, &path)
                 .await;
             return (1, HashMap::new());
         };
@@ -229,7 +236,7 @@ impl DynamicLauncherBackend {
             || decision.name.chars().any(char::is_control)
         {
             self.lifecycle
-                .complete_request_object(connection, &path)
+                .complete_request_object(&self.connection, &path)
                 .await;
             return (1, HashMap::new());
         }
@@ -264,7 +271,7 @@ impl DynamicLauncherBackend {
                     icon_bytes: selected_icon_bytes,
                 });
         self.lifecycle
-            .complete_request_object(connection, &path)
+            .complete_request_object(&self.connection, &path)
             .await;
         let PortalResult::Success(choice) = result else {
             return (result.response_code(), HashMap::new());
@@ -298,27 +305,26 @@ impl DynamicLauncherBackend {
 mod tests {
     use super::*;
     #[test]
-    fn web_targets_are_restricted_to_http() {
+    fn dynamic_launcher_restricts_targets_and_icons() {
+        // Phase `web_targets_are_restricted_to_http`.
         assert!(safe_web_target("https://example.test"));
         assert!(!safe_web_target("file:///tmp/a"));
         assert!(!safe_web_target("http://example.test"));
-    }
-
-    #[test]
-    fn generated_icons_are_bounded_gbytes_icons() {
-        let icon = tilo_icon(1);
-        assert!(valid_icon(&icon));
-        assert!(icon_bytes(&icon).is_some_and(|bytes| bytes.starts_with(b"<svg")));
-    }
-
-    #[test]
-    fn non_bytes_icon_serializations_are_rejected_without_path_access() {
-        let path_icon = OwnedValue::try_from(Value::new((
-            "file",
-            Value::new("/home/person/.ssh/id_ed25519"),
-        )))
-        .expect("a variant value");
-        assert!(!valid_icon(&path_icon));
+        // Phase `generated_icons_are_bounded_gbytes_icons`.
+        {
+            let icon = tilo_icon(1);
+            assert!(valid_icon(&icon));
+            assert!(icon_bytes(&icon).is_some_and(|bytes| bytes.starts_with(b"<svg")));
+        }
+        // Phase `non_bytes_icon_serializations_are_rejected_without_path_access`.
+        {
+            let path_icon = OwnedValue::try_from(Value::new((
+                "file",
+                Value::new("/home/person/.ssh/id_ed25519"),
+            )))
+            .expect("a variant value");
+            assert!(!valid_icon(&path_icon));
+        }
     }
 }
 

@@ -1,9 +1,9 @@
 //! Shared direct-manipulation crop editor for scanner, Photos, and image tools.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -342,8 +342,6 @@ impl ImageCropEditor {
 }
 
 impl Widget for ImageCropEditor {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -385,23 +383,12 @@ impl Widget for ImageCropEditor {
         self.paint_crop_overlay(scene, transform, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if self.handle_event_at(event, scale) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if self.handle_event_at(event, ctx.scale_factor) {
             if self.drag.is_some() {
-                *focus = Some(node);
+                *ctx.focus_target = Some(ctx.node_id);
             }
-            *handled = true;
+            *ctx.handled = true;
         }
     }
 
@@ -438,8 +425,8 @@ impl Widget for ImageCropEditor {
         &mut self,
         target: &str,
         action: &Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         match action {
             Action::Increment => self.adjust_boundary(target, 0.01),
@@ -490,68 +477,73 @@ impl Widget for ImageCropEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
 
     #[test]
-    fn direct_manipulation_is_normalized_and_never_inverts_the_crop() {
-        let state = LocalState::new(CropSelection::default());
-        let mut editor = ImageCropEditor::new(Arc::from(vec![255; 400]), 10, 10, state.clone());
-        editor.rect = Rect::new(0.0, 0.0, 200.0, 200.0);
-        editor.update_edge(Edge::TopLeft, Point::new(80.0, 60.0));
-        let crop = state.get();
-        assert_eq!((crop.left, crop.top), (0.4, 0.3));
-        editor.update_edge(Edge::TopLeft, Point::new(500.0, 500.0));
-        let crop = state.get();
-        assert!(crop.left <= crop.right - 0.05);
-        assert!(crop.top <= crop.bottom - 0.05);
-    }
+    fn crop_handles_normalize_and_are_touch_and_assistive_targets() {
+        fn direct_manipulation_is_normalized_and_never_inverts_the_crop() {
+            let state = LocalState::new(CropSelection::default());
+            let mut editor = ImageCropEditor::new(Arc::from(vec![255; 400]), 10, 10, state.clone());
+            editor.rect = Rect::new(0.0, 0.0, 200.0, 200.0);
+            editor.update_edge(Edge::TopLeft, Point::new(80.0, 60.0));
+            let crop = state.get();
+            assert_eq!((crop.left, crop.top), (0.4, 0.3));
+            editor.update_edge(Edge::TopLeft, Point::new(500.0, 500.0));
+            let crop = state.get();
+            assert!(crop.left <= crop.right - 0.05);
+            assert!(crop.top <= crop.bottom - 0.05);
+        }
 
-    #[test]
-    fn corner_targets_are_touch_sized() {
-        let state = LocalState::new(CropSelection::default());
-        let mut editor = ImageCropEditor::new(Arc::from(vec![255; 400]), 10, 10, state);
-        editor.rect = Rect::new(0.0, 0.0, 200.0, 200.0);
-        assert_eq!(editor.edge_at(Point::new(21.0, 21.0)), Some(Edge::TopLeft));
-        assert_eq!(editor.edge_at(Point::new(23.0, 23.0)), None);
-    }
+        fn corner_targets_are_touch_sized() {
+            let state = LocalState::new(CropSelection::default());
+            let mut editor = ImageCropEditor::new(Arc::from(vec![255; 400]), 10, 10, state);
+            editor.rect = Rect::new(0.0, 0.0, 200.0, 200.0);
+            assert_eq!(editor.edge_at(Point::new(21.0, 21.0)), Some(Edge::TopLeft));
+            assert_eq!(editor.edge_at(Point::new(23.0, 23.0)), None);
+        }
 
-    #[test]
-    fn assistive_edges_are_individually_actionable_and_bounded() {
-        let state = LocalState::new(CropSelection::default());
-        let mut editor = ImageCropEditor::new(Arc::from(vec![255; 400]), 10, 10, state.clone());
-        let semantics = editor.accessibility().unwrap();
-        assert_eq!(semantics.children.len(), 4);
-        let mut document = AutoCommit::new();
-        let root = automerge::ROOT;
-        assert!(editor.perform_semantic_action(
-            "crop.left",
-            &Action::SetValue("40%".into()),
-            &mut document,
-            &root,
-        ));
-        assert_eq!(state.get().left, 0.4);
-        assert!(editor.perform_semantic_action(
-            "crop.right",
-            &Action::Decrement,
-            &mut document,
-            &root,
-        ));
-        assert!(state.get().right < 1.0);
-    }
+        fn assistive_edges_are_individually_actionable_and_bounded() {
+            let state = LocalState::new(CropSelection::default());
+            let mut editor = ImageCropEditor::new(Arc::from(vec![255; 400]), 10, 10, state.clone());
+            let semantics = editor.accessibility().unwrap();
+            assert_eq!(semantics.children.len(), 4);
+            let mut document = AutoCommit::new();
+            let root = automerge::ROOT;
+            assert!(editor.perform_semantic_action(
+                "crop.left",
+                &Action::SetValue("40%".into()),
+                &mut document,
+                &root,
+            ));
+            assert_eq!(state.get().left, 0.4);
+            assert!(editor.perform_semantic_action(
+                "crop.right",
+                &Action::Decrement,
+                &mut document,
+                &root,
+            ));
+            assert!(state.get().right < 1.0);
+        }
 
-    #[test]
-    fn touch_drag_has_exclusive_finger_ownership() {
-        let drag = Drag {
-            edge: Edge::BottomRight,
-            touch_id: Some(42),
-        };
-        assert!(drag.owns_touch(42));
-        assert!(!drag.owns_touch(7));
-        assert!(
-            !Drag {
+        fn touch_drag_has_exclusive_finger_ownership() {
+            let drag = Drag {
                 edge: Edge::BottomRight,
-                touch_id: None,
-            }
-            .owns_touch(42)
-        );
+                touch_id: Some(42),
+            };
+            assert!(drag.owns_touch(42));
+            assert!(!drag.owns_touch(7));
+            assert!(
+                !Drag {
+                    edge: Edge::BottomRight,
+                    touch_id: None,
+                }
+                .owns_touch(42)
+            );
+        }
+
+        direct_manipulation_is_normalized_and_never_inverts_the_crop();
+        corner_targets_are_touch_sized();
+        assistive_edges_are_individually_actionable_and_bounded();
+        touch_drag_has_exclusive_finger_ownership();
     }
 }

@@ -1,10 +1,12 @@
 [package]
-name = "cli"
+name = "tilo-cli-kit"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
 description = "SDK helpers for Tilo CLI apps — stdio, workspace paths, terminal-aware output."
+repository.workspace = true
+homepage.workspace = true
 
 [lib]
 name = "cli"
@@ -22,15 +24,15 @@ path = "src/lib.rs"
 # every host. Avoid linking the full runtime umbrella: that would drag the
 # Unix service clients and identity store into native host applications which
 # merely reuse `standalone_state_dir`.
-runtime-portal   = { path = "../runtime-portal" }
-xdg-paths        = { path = "../../system/xdg-paths" }
+runtime-portal   = { version = "0.1.0", path = "../runtime-portal", default-features = false }
+tilo-xdg-paths        = { version = "0.1.0", path = "../../system/xdg-paths" }
 
 anyhow.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # Direct service-FD access is a Unix capability. Native Windows callers keep
 # the same path helpers and gracefully run without an RPC filesystem client.
-runtime-fs       = { path = "../runtime-fs" }
+runtime-fs       = { version = "0.1.0", path = "../runtime-fs" }
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -38,3 +40,7 @@ tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

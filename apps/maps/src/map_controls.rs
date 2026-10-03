@@ -4,7 +4,7 @@
 //! drawing, hit-testing, and tooltip dwell. Geographic effects remain in the
 //! app and are requested through [`MapControlAction`].
 
-use std::time::Instant;
+use ui::time::Instant;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -286,7 +286,7 @@ impl MapControls {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.tooltip.tick(Instant::now());
+        self.tooltip.tick(ui::time::now());
         if let Some((label, anchor)) = self.tooltip.visible() {
             ui::widget::tooltip::draw_hover_tooltip(
                 scene,
@@ -318,68 +318,75 @@ mod tests {
     }
 
     #[test]
-    fn every_drawn_control_hit_tests_to_one_semantic_action() {
-        let controls = controls();
-        for action in [
-            MapControlAction::ZoomIn,
-            MapControlAction::ZoomOut,
-            MapControlAction::Locate,
-            MapControlAction::ToggleTraffic,
-        ] {
-            assert_eq!(
-                controls.hit_test(controls.rect(action).center()),
-                Some(action)
-            );
-        }
-        assert_eq!(controls.hit_test(Point::new(640.0, 400.0)), None);
-    }
-
-    #[test]
-    fn hover_and_tooltip_state_are_owned_by_the_component() {
-        let mut controls = controls();
-        let zoom = controls.rect(MapControlAction::ZoomIn);
-        let t0 = Instant::now();
-        assert!(controls.on_pointer(zoom.center(), false, [], t0));
-        assert_eq!(controls.hovered, Some(MapControlAction::ZoomIn));
-        assert!(controls.tooltip.visible().is_none());
-        controls.tooltip.tick(t0 + Duration::from_millis(600));
-        assert_eq!(controls.tooltip.visible(), Some(("Zoom in", zoom)));
-        assert!(controls.on_pointer(zoom.center(), true, [], t0));
-        assert_eq!(controls.hovered, None);
-    }
-
-    /// HIG §7 "nothing touches": the zoom pair sits an `s2` apart, the
-    /// groups an `s3`, and the column the app lays out around is exactly
-    /// the four faces plus those gaps — no control shares an edge.
-    #[test]
-    fn controls_keep_token_gaps_and_never_touch() {
-        let controls = controls();
-        let sp = Spacing::BASE;
-        let zoom_in = controls.rect(MapControlAction::ZoomIn);
-        let zoom_out = controls.rect(MapControlAction::ZoomOut);
-        let locate = controls.rect(MapControlAction::Locate);
-        let traffic = controls.rect(MapControlAction::ToggleTraffic);
-        assert_eq!(zoom_out.y0 - zoom_in.y1, f64::from(sp.s2));
-        assert_eq!(locate.y0 - zoom_out.y1, f64::from(sp.s3));
-        assert_eq!(traffic.y0 - locate.y1, f64::from(sp.s3));
-        assert_eq!(zoom_in.y0, f64::from(sp.s4));
-        assert_eq!(traffic.y1 - zoom_in.y0, column_height());
-        let rects = [zoom_in, zoom_out, locate, traffic];
-        for (i, a) in rects.iter().enumerate() {
-            for b in &rects[i + 1..] {
-                assert!(
-                    b.y0 - a.y1 >= f64::from(sp.s1),
-                    "{a:?} and {b:?} touch or overlap"
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn map_controls_own_hit_testing_hover_gaps_and_traffic_state() {
+        // Phase `every_drawn_control_hit_tests_to_one_semantic_action`.
+        {
+            let controls = controls();
+            for action in [
+                MapControlAction::ZoomIn,
+                MapControlAction::ZoomOut,
+                MapControlAction::Locate,
+                MapControlAction::ToggleTraffic,
+            ] {
+                assert_eq!(
+                    controls.hit_test(controls.rect(action).center()),
+                    Some(action)
                 );
             }
+            assert_eq!(controls.hit_test(Point::new(640.0, 400.0)), None);
         }
-    }
 
-    #[test]
-    fn traffic_visual_state_is_not_duplicated_in_the_app() {
-        let mut controls = controls();
-        assert!(!controls.traffic_enabled());
-        controls.set_traffic_enabled(true);
-        assert!(controls.traffic_enabled());
+        // Phase `hover_and_tooltip_state_are_owned_by_the_component`.
+        {
+            let mut controls = controls();
+            let zoom = controls.rect(MapControlAction::ZoomIn);
+            let t0 = ui::time::now();
+            assert!(controls.on_pointer(zoom.center(), false, [], t0));
+            assert_eq!(controls.hovered, Some(MapControlAction::ZoomIn));
+            assert!(controls.tooltip.visible().is_none());
+            controls.tooltip.tick(t0 + Duration::from_millis(600));
+            assert_eq!(controls.tooltip.visible(), Some(("Zoom in", zoom)));
+            assert!(controls.on_pointer(zoom.center(), true, [], t0));
+            assert_eq!(controls.hovered, None);
+        }
+
+        // Phase `controls_keep_token_gaps_and_never_touch`.
+        // HIG §7 "nothing touches": the zoom pair sits an `s2` apart, the
+        // groups an `s3`, and the column the app lays out around is exactly
+        // the four faces plus those gaps — no control shares an edge.
+        {
+            let controls = controls();
+            let sp = Spacing::BASE;
+            let zoom_in = controls.rect(MapControlAction::ZoomIn);
+            let zoom_out = controls.rect(MapControlAction::ZoomOut);
+            let locate = controls.rect(MapControlAction::Locate);
+            let traffic = controls.rect(MapControlAction::ToggleTraffic);
+            assert_eq!(zoom_out.y0 - zoom_in.y1, f64::from(sp.s2));
+            assert_eq!(locate.y0 - zoom_out.y1, f64::from(sp.s3));
+            assert_eq!(traffic.y0 - locate.y1, f64::from(sp.s3));
+            assert_eq!(zoom_in.y0, f64::from(sp.s4));
+            assert_eq!(traffic.y1 - zoom_in.y0, column_height());
+            let rects = [zoom_in, zoom_out, locate, traffic];
+            for (i, a) in rects.iter().enumerate() {
+                for b in &rects[i + 1..] {
+                    assert!(
+                        b.y0 - a.y1 >= f64::from(sp.s1),
+                        "{a:?} and {b:?} touch or overlap"
+                    );
+                }
+            }
+        }
+
+        // Phase `traffic_visual_state_is_not_duplicated_in_the_app`.
+        {
+            let mut controls = controls();
+            assert!(!controls.traffic_enabled());
+            controls.set_traffic_enabled(true);
+            assert!(controls.traffic_enabled());
+        }
     }
 }

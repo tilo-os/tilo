@@ -4,7 +4,6 @@ use crate::theme::Theme;
 use crate::time::{Duration, Instant};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -44,6 +43,14 @@ impl StripView {
         }
     }
 
+    /// Reconcile canonical labels and local selection without restarting the view.
+    pub fn reconcile(&mut self, names: Vec<String>, active: usize) -> bool {
+        let active = active.min(names.len().saturating_sub(1));
+        let changed = self.strip_names != names || self.active_index != active;
+        self.strip_names = names;
+        self.active_index = active;
+        changed
+    }
     pub fn active_index(&self) -> usize {
         self.active_index
     }
@@ -73,7 +80,12 @@ impl StripView {
 }
 
 impl Widget for StripView {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -114,18 +126,7 @@ impl Widget for StripView {
         // Invisible — real strip chrome lives in the shell's window-group
         // layout + top-bar.
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        _scale: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        handled: &mut bool,
-        _focus: &mut Option<NodeId>,
-        _n: NodeId,
-        _t: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::MouseWheel { delta, .. } = event {
             let sign = match delta {
                 MouseScrollDelta::LineDelta(_x, y) => wheel_sign(f64::from(*y)),
@@ -134,7 +135,7 @@ impl Widget for StripView {
             if sign != 0 {
                 let now = crate::time::now().duration_since(self.start);
                 if self.try_paginate(sign, now) {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
         }

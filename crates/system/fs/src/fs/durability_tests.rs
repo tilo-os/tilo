@@ -124,72 +124,79 @@ async fn committed_bytes(fs: &QuickFS, ino: u64) -> Vec<u8> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_failed_commit_fails_close_and_never_discards_the_bytes() {
-    let fixture = Fixture::new().await;
-    let fs = fixture.mount(true);
-    let (ino, fh) = create_open(&fs, "notes.txt");
-    let record_id = fs.ns().record_id_for(ino).unwrap();
-    fs.write_buffer(ino, 0, b"precious bytes").unwrap();
+async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes() {
+    // Phase `a_failed_commit_fails_close_and_never_discards_the_bytes`.
+    {
+        let fixture = Fixture::new().await;
+        let fs = fixture.mount(true);
+        let (ino, fh) = create_open(&fs, "notes.txt");
+        let record_id = fs.ns().record_id_for(ino).unwrap();
+        fs.write_buffer(ino, 0, b"precious bytes").unwrap();
 
-    // Make the durable signed publication fail.
-    let repository = fs.record_publisher.as_ref().unwrap().repository();
-    repository.fail_writes(true);
+        // Make the durable signed publication fail.
+        let repository = fs.record_publisher.as_ref().unwrap().repository();
+        repository.fail_writes(true);
 
-    assert_eq!(
-        fs.flush_inode(ino),
-        Err(EIO),
-        "close must report the failure"
-    );
-    assert_eq!(fs.fsync_inode(ino), Ok(()), "fsync stages durably instead");
-    fs.write_buffer(ino, 8, b"BYTES").unwrap();
-    assert_eq!(fs.release_handle(ino, fh), Err(EIO));
-    assert_eq!(
-        fs.buffers().get(&ino).map(Vec::as_slice),
-        Some(b"preciousBYTESs".as_slice()),
-        "the last close must not drop bytes that were never committed"
-    );
-    let staged = fixture.staged();
-    assert_eq!(staged.len(), 1);
-    assert_eq!(staged[0].bytes, b"preciousBYTESs");
-    assert!(staged[0].entry.error.is_some());
-    assert!(committed_bytes(&fs, ino).await.is_empty());
+        assert_eq!(
+            fs.flush_inode(ino),
+            Err(EIO),
+            "close must report the failure"
+        );
+        assert_eq!(fs.fsync_inode(ino), Ok(()), "fsync stages durably instead");
+        fs.write_buffer(ino, 8, b"BYTES").unwrap();
+        assert_eq!(fs.release_handle(ino, fh), Err(EIO));
+        assert_eq!(
+            fs.buffers().get(&ino).map(Vec::as_slice),
+            Some(b"preciousBYTESs".as_slice()),
+            "the last close must not drop bytes that were never committed"
+        );
+        let staged = fixture.staged();
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].bytes, b"preciousBYTESs");
+        assert!(staged[0].entry.error.is_some());
+        assert!(committed_bytes(&fs, ino).await.is_empty());
 
-    repository.fail_writes(false);
+        repository.fail_writes(false);
 
-    // Any later close retries; success settles the retained buffer.
-    let reader = open_handle(&fs, ino, false);
-    assert_eq!(fs.flush_inode(ino), Ok(()));
-    assert_eq!(fs.release_handle(ino, reader), Ok(()));
-    assert!(!fs.buffers().contains_key(&ino));
-    assert_eq!(committed_bytes(&fs, ino).await, b"preciousBYTESs");
-    assert!(fixture.staged().is_empty());
-    assert_eq!(fixture.versions(record_id), 2);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn fsync_without_staging_commits_and_reports_failure() {
-    let fixture = Fixture::new().await;
-    let fs = fixture.mount(false);
-    let (ino, fh) = create_open(&fs, "plain.bin");
-    let record_id = fs.ns().record_id_for(ino).unwrap();
-    fs.write_buffer(ino, 0, b"abc").unwrap();
-    *fs.commit_fault.lock().unwrap() = Some((ino, EIO));
-    assert_eq!(fs.fsync_inode(ino), Err(EIO));
-    assert_eq!(fs.release_handle(ino, fh), Err(EIO));
-    assert!(fs.buffers().contains_key(&ino));
-    *fs.commit_fault.lock().unwrap() = None;
-    assert_eq!(fs.fsync_inode(ino), Ok(()));
-    assert_eq!(committed_bytes(&fs, ino).await, b"abc");
-    assert_eq!(fixture.versions(record_id), 2);
+        // Any later close retries; success settles the retained buffer.
+        let reader = open_handle(&fs, ino, false);
+        assert_eq!(fs.flush_inode(ino), Ok(()));
+        assert_eq!(fs.release_handle(ino, reader), Ok(()));
+        assert!(!fs.buffers().contains_key(&ino));
+        assert_eq!(committed_bytes(&fs, ino).await, b"preciousBYTESs");
+        assert!(fixture.staged().is_empty());
+        assert_eq!(fixture.versions(record_id), 2);
+    }
+    // Phase `fsync_without_staging_commits_and_reports_failure`.
+    {
+        let fixture = Fixture::new().await;
+        let fs = fixture.mount(false);
+        let (ino, fh) = create_open(&fs, "plain.bin");
+        let record_id = fs.ns().record_id_for(ino).unwrap();
+        fs.write_buffer(ino, 0, b"abc").unwrap();
+        *fs.commit_fault.lock().unwrap() = Some((ino, EIO));
+        assert_eq!(fs.fsync_inode(ino), Err(EIO));
+        assert_eq!(fs.release_handle(ino, fh), Err(EIO));
+        assert!(fs.buffers().contains_key(&ino));
+        *fs.commit_fault.lock().unwrap() = None;
+        assert_eq!(fs.fsync_inode(ino), Ok(()));
+        assert_eq!(committed_bytes(&fs, ino).await, b"abc");
+        assert_eq!(fixture.versions(record_id), 2);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn more_fsyncs_than_the_version_bound_lose_nothing() {
+    const VERSION_BOUND: usize = 64;
     let fixture = Fixture::new().await;
+    fixture
+        .publisher
+        .repository()
+        .set_max_record_versions(VERSION_BOUND);
     let fs = fixture.mount(true);
     let (ino, fh) = create_open(&fs, "app.sqlite");
     let record_id = fs.ns().record_id_for(ino).unwrap();
-    let syncs = crate::record_repository::MAX_RECORD_VERSIONS + 100;
+    let syncs = VERSION_BOUND + 100;
     let mut expected = vec![0_u8; 4096];
     fs.write_buffer(ino, 0, &expected).unwrap();
     for i in 0..syncs {
@@ -213,64 +220,66 @@ async fn more_fsyncs_than_the_version_bound_lose_nothing() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn bytes_a_record_cannot_take_are_kept_as_a_sibling_copy() {
-    let fixture = Fixture::new().await;
-    let fs = fixture.mount(true);
-    let (ino, fh) = create_open(&fs, "journal.log");
-    fs.write_buffer(ino, 0, b"entry that must survive").unwrap();
-    *fs.commit_fault.lock().unwrap() = Some((ino, EDQUOT));
-    assert_eq!(fs.flush_inode(ino), Err(EDQUOT));
-    assert_eq!(fs.release_handle(ino, fh), Err(EDQUOT));
-
-    let copy_name = unsaved_copy_name(b"journal.log", b"entry that must survive");
-    let copy = fs
-        .ns()
-        .lookup(crate::namespace::ROOT_INO, &copy_name)
-        .expect("the bytes are preserved as a visible sibling")
-        .ino
-        .0;
-    assert_eq!(committed_bytes(&fs, copy).await, b"entry that must survive");
-    assert!(committed_bytes(&fs, ino).await.is_empty());
-    assert!(!fs.buffers().contains_key(&ino));
-    assert!(fixture.staged().is_empty());
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn fsynced_bytes_survive_a_crash_before_close() {
-    let fixture = Fixture::new().await;
-    let (ino, moved_on) = {
+async fn unacceptable_or_uncommitted_bytes_survive_as_copies_and_across_crashes() {
+    // Phase `bytes_a_record_cannot_take_are_kept_as_a_sibling_copy`.
+    {
+        let fixture = Fixture::new().await;
         let fs = fixture.mount(true);
-        let (ino, _fh) = create_open(&fs, "wal.db");
-        fs.write_buffer(ino, 0, b"committed transaction").unwrap();
-        assert_eq!(fs.fsync_inode(ino), Ok(()));
-        let (other, _fh) = create_open(&fs, "other.db");
-        fs.write_buffer(other, 0, b"synced before a later edit")
-            .unwrap();
-        assert_eq!(fs.fsync_inode(other), Ok(()));
-        // Another version lands before the restart.
-        fs.commit_content(other, b"later edit").unwrap();
-        // Dropped without close: the process died.
-        (ino, other)
-    };
-    let fs = fixture.mount(true);
-    assert_eq!(fs.recover_unsaved_writes(), 2);
-    assert_eq!(committed_bytes(&fs, ino).await, b"committed transaction");
-    assert_eq!(
-        committed_bytes(&fs, moved_on).await,
-        b"later edit",
-        "replay never overwrites content that moved on"
-    );
-    let copy_name = unsaved_copy_name(b"other.db", b"synced before a later edit");
-    let copy = fs
-        .ns()
-        .lookup(crate::namespace::ROOT_INO, &copy_name)
-        .unwrap()
-        .ino
-        .0;
-    assert_eq!(
-        committed_bytes(&fs, copy).await,
-        b"synced before a later edit"
-    );
-    assert!(fixture.staged().is_empty());
-    assert_eq!(fs.recover_unsaved_writes(), 0);
+        let (ino, fh) = create_open(&fs, "journal.log");
+        fs.write_buffer(ino, 0, b"entry that must survive").unwrap();
+        *fs.commit_fault.lock().unwrap() = Some((ino, EDQUOT));
+        assert_eq!(fs.flush_inode(ino), Err(EDQUOT));
+        assert_eq!(fs.release_handle(ino, fh), Err(EDQUOT));
+
+        let copy_name = unsaved_copy_name(b"journal.log", b"entry that must survive");
+        let copy = fs
+            .ns()
+            .lookup(crate::namespace::ROOT_INO, &copy_name)
+            .expect("the bytes are preserved as a visible sibling")
+            .ino
+            .0;
+        assert_eq!(committed_bytes(&fs, copy).await, b"entry that must survive");
+        assert!(committed_bytes(&fs, ino).await.is_empty());
+        assert!(!fs.buffers().contains_key(&ino));
+        assert!(fixture.staged().is_empty());
+    }
+    // Phase `fsynced_bytes_survive_a_crash_before_close`.
+    {
+        let fixture = Fixture::new().await;
+        let (ino, moved_on) = {
+            let fs = fixture.mount(true);
+            let (ino, _fh) = create_open(&fs, "wal.db");
+            fs.write_buffer(ino, 0, b"committed transaction").unwrap();
+            assert_eq!(fs.fsync_inode(ino), Ok(()));
+            let (other, _fh) = create_open(&fs, "other.db");
+            fs.write_buffer(other, 0, b"synced before a later edit")
+                .unwrap();
+            assert_eq!(fs.fsync_inode(other), Ok(()));
+            // Another version lands before the restart.
+            fs.commit_content(other, b"later edit").unwrap();
+            // Dropped without close: the process died.
+            (ino, other)
+        };
+        let fs = fixture.mount(true);
+        assert_eq!(fs.recover_unsaved_writes(), 2);
+        assert_eq!(committed_bytes(&fs, ino).await, b"committed transaction");
+        assert_eq!(
+            committed_bytes(&fs, moved_on).await,
+            b"later edit",
+            "replay never overwrites content that moved on"
+        );
+        let copy_name = unsaved_copy_name(b"other.db", b"synced before a later edit");
+        let copy = fs
+            .ns()
+            .lookup(crate::namespace::ROOT_INO, &copy_name)
+            .unwrap()
+            .ino
+            .0;
+        assert_eq!(
+            committed_bytes(&fs, copy).await,
+            b"synced before a later edit"
+        );
+        assert!(fixture.staged().is_empty());
+        assert_eq!(fs.recover_unsaved_writes(), 0);
+    }
 }

@@ -336,11 +336,12 @@ fn prompted_argument(spec: &ActionSpec, text: &str) -> Option<(String, ArgValue)
 pub fn spec_encoding(spec: &ActionSpec, arg: Option<&str>) -> EncodedAction {
     let (palette, supplied) = match (&spec.input, arg) {
         (ActionInput::Immediate(encoded), None) => (encoded.clone(), Vec::new()),
+        (ActionInput::Deferred { build, .. }, None) => (build(), Vec::new()),
         (ActionInput::Prompted { build, .. }, Some(arg)) => (
             build(arg),
             prompted_argument(spec, arg).into_iter().collect(),
         ),
-        (ActionInput::Immediate(_), Some(_)) => {
+        (ActionInput::Immediate(_) | ActionInput::Deferred { .. }, Some(_)) => {
             panic!("`{}` is immediate; it takes no argument", spec.id)
         }
         (ActionInput::Prompted { .. }, None) => {
@@ -713,119 +714,163 @@ mod tests {
     }
 
     #[test]
-    fn a_deterministic_action_honours_the_whole_contract() {
-        let set = encode(&Probe::Set("next".into()));
-        assert_replays_byte_identical(&seed(), &registry(), &set);
-        assert_one_undo_boundary_reverts(&seed(), &registry(), &set);
-        let resources = published(&Probe::Set("next".into()));
-        let (_, spec) = find_spec(&resources, "probe.doc", "act");
-        assert_spec_encodes_as(spec, None, &set);
-        assert_eq!(
-            assert_every_immediate_action_honours_contract(&seed(), &registry(), &resources),
-            1
-        );
-        assert_ctrl_k_publishes(&resources, &["Act on probe"]);
+    fn contract_checks_pass_honest_noop_and_prompted_actions() {
+        // phase: a_deterministic_action_honours_the_whole_contract
+        {
+            let set = encode(&Probe::Set("next".into()));
+            assert_replays_byte_identical(&seed(), &registry(), &set);
+            assert_one_undo_boundary_reverts(&seed(), &registry(), &set);
+            let resources = published(&Probe::Set("next".into()));
+            let (_, spec) = find_spec(&resources, "probe.doc", "act");
+            assert_spec_encodes_as(spec, None, &set);
+            assert_eq!(
+                assert_every_immediate_action_honours_contract(&seed(), &registry(), &resources),
+                1
+            );
+            assert_ctrl_k_publishes(&resources, &["Act on probe"]);
+        }
+        // phase: the_sweep_tolerates_a_published_noop
+        {
+            assert_eq!(
+                assert_every_immediate_action_honours_contract(
+                    &seed(),
+                    &registry(),
+                    &published(&Probe::Nothing)
+                ),
+                1
+            );
+        }
+        // phase: the_sweep_accepts_an_app_whose_document_actions_are_prompted
+        {
+            let prompted = ActionSpec::prompted(
+                "rename",
+                "Rename probe",
+                "Name",
+                "",
+                tilo_actions::ExecutionLocus::ClientLocal,
+                |name| encode(&Probe::Set(name.to_string())),
+            );
+            let resources =
+                vec![Resource::new("probe:doc", "probe.doc", "Probe").with_action(prompted)];
+            assert_eq!(
+                assert_every_immediate_action_honours_contract(&seed(), &registry(), &resources),
+                0
+            );
+        }
     }
 
+    /// Every contract check fails loudly, with its own message, on the
+    /// action shape it exists to catch.
     #[test]
-    #[should_panic(expected = "replay reproduced the same change hashes")]
-    fn a_nondeterministic_action_fails_replay() {
-        assert_replays_byte_identical(&seed(), &registry(), &encode(&Probe::Random));
-    }
-
-    #[test]
-    #[should_panic(expected = "changed nothing on the seed")]
-    fn a_noop_proves_nothing_about_replay() {
-        assert_replays_byte_identical(&seed(), &registry(), &encode(&Probe::Nothing));
-    }
-
-    #[test]
-    #[should_panic(expected = "nothing to undo")]
-    fn a_noop_proves_nothing_about_undo() {
-        assert_one_undo_boundary_reverts(&seed(), &registry(), &encode(&Probe::Nothing));
-    }
-
-    #[test]
-    #[should_panic(expected = "changes the document's content")]
-    fn an_undo_entry_without_a_visible_change_fails() {
-        assert_one_undo_boundary_reverts(&seed(), &registry(), &encode(&Probe::Churn));
-    }
-
-    #[test]
-    #[should_panic(expected = "encode the same action")]
-    fn a_spec_that_disagrees_with_its_builder_fails() {
-        let resources = published(&Probe::Set("palette".into()));
-        let (_, spec) = find_spec(&resources, "probe:doc", "act");
-        assert_spec_encodes_as(spec, None, &encode(&Probe::Set("button".into())));
-    }
-
-    #[test]
-    fn the_sweep_tolerates_a_published_noop() {
-        assert_eq!(
-            assert_every_immediate_action_honours_contract(
-                &seed(),
-                &registry(),
-                &published(&Probe::Nothing)
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn each_contract_check_fails_the_action_it_exists_to_catch() {
+        let spec_disagrees = || {
+            let resources = published(&Probe::Set("palette".into()));
+            let (_, spec) = find_spec(&resources, "probe:doc", "act");
+            assert_spec_encodes_as(spec, None, &encode(&Probe::Set("button".into())));
+        };
+        let sweep_vacuous = || {
+            let effect = ActionSpec::operation(
+                "open",
+                "Open probe",
+                OperationKind::Effect,
+                "contract.open",
+                &(),
+            )
+            .unwrap();
+            let resources =
+                vec![Resource::new("probe:doc", "probe.doc", "Probe").with_action(effect)];
+            assert_every_immediate_action_honours_contract(&seed(), &registry(), &resources);
+        };
+        let sweep_protocol = || {
+            let mut resources = published(&Probe::Nothing);
+            resources.extend(published(&Probe::Nothing));
+            assert_every_immediate_action_honours_contract(&seed(), &registry(), &resources);
+        };
+        // (case, expected panic message fragment, check)
+        let cases: Vec<(&str, &str, Box<dyn Fn()>)> = vec![
+            (
+                "a nondeterministic action fails replay",
+                "replay reproduced the same change hashes",
+                Box::new(|| {
+                    assert_replays_byte_identical(&seed(), &registry(), &encode(&Probe::Random));
+                }),
             ),
-            1
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "replay reproduced the same change hashes")]
-    fn the_sweep_catches_a_published_nondeterministic_action() {
-        assert_every_immediate_action_honours_contract(
-            &seed(),
-            &registry(),
-            &published(&Probe::Random),
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "publishes no document action")]
-    fn the_sweep_refuses_to_pass_vacuously() {
-        let effect = ActionSpec::operation(
-            "open",
-            "Open probe",
-            OperationKind::Effect,
-            "contract.open",
-            &(),
-        )
-        .unwrap();
-        let resources = vec![Resource::new("probe:doc", "probe.doc", "Probe").with_action(effect)];
-        assert_every_immediate_action_honours_contract(&seed(), &registry(), &resources);
-    }
-
-    #[test]
-    fn the_sweep_accepts_an_app_whose_document_actions_are_prompted() {
-        let prompted = ActionSpec::prompted(
-            "rename",
-            "Rename probe",
-            "Name",
-            "",
-            tilo_actions::ExecutionLocus::ClientLocal,
-            |name| encode(&Probe::Set(name.to_string())),
-        );
-        let resources =
-            vec![Resource::new("probe:doc", "probe.doc", "Probe").with_action(prompted)];
-        assert_eq!(
-            assert_every_immediate_action_honours_contract(&seed(), &registry(), &resources),
-            0
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "breaks the protocol")]
-    fn the_sweep_runs_the_protocol_validator() {
-        let mut resources = published(&Probe::Nothing);
-        resources.extend(published(&Probe::Nothing));
-        assert_every_immediate_action_honours_contract(&seed(), &registry(), &resources);
-    }
-
-    #[test]
-    #[should_panic(expected = "offers it")]
-    fn ctrl_k_reports_a_missing_label() {
-        assert_ctrl_k_publishes(&published(&Probe::Nothing), &["Not published"]);
+            (
+                "a noop proves nothing about replay",
+                "changed nothing on the seed",
+                Box::new(|| {
+                    assert_replays_byte_identical(&seed(), &registry(), &encode(&Probe::Nothing));
+                }),
+            ),
+            (
+                "a noop proves nothing about undo",
+                "nothing to undo",
+                Box::new(|| {
+                    assert_one_undo_boundary_reverts(
+                        &seed(),
+                        &registry(),
+                        &encode(&Probe::Nothing),
+                    );
+                }),
+            ),
+            (
+                "an undo entry without a visible change fails",
+                "changes the document's content",
+                Box::new(|| {
+                    assert_one_undo_boundary_reverts(&seed(), &registry(), &encode(&Probe::Churn));
+                }),
+            ),
+            (
+                "a spec that disagrees with its builder fails",
+                "encode the same action",
+                Box::new(spec_disagrees),
+            ),
+            (
+                "the sweep catches a published nondeterministic action",
+                "replay reproduced the same change hashes",
+                Box::new(|| {
+                    assert_every_immediate_action_honours_contract(
+                        &seed(),
+                        &registry(),
+                        &published(&Probe::Random),
+                    );
+                }),
+            ),
+            (
+                "the sweep refuses to pass vacuously",
+                "publishes no document action",
+                Box::new(sweep_vacuous),
+            ),
+            (
+                "the sweep runs the protocol validator",
+                "breaks the protocol",
+                Box::new(sweep_protocol),
+            ),
+            (
+                "ctrl-k reports a missing label",
+                "offers it",
+                Box::new(|| {
+                    assert_ctrl_k_publishes(&published(&Probe::Nothing), &["Not published"]);
+                }),
+            ),
+        ];
+        for (case, expected, check) in cases {
+            let payload =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(check)).expect_err(case);
+            let message = payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+                .unwrap_or_default();
+            assert!(
+                message.contains(expected),
+                "case {case}: expected a panic containing {expected:?}, got {message:?}"
+            );
+        }
     }
 
     mod generated {

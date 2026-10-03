@@ -74,13 +74,13 @@ impl UserDirs {
             return Self::under(home);
         }
         Self {
-            home: xdg_paths::home(),
-            desktop: xdg_paths::desktop_dir(),
-            documents: xdg_paths::document_dir(),
-            downloads: xdg_paths::download_dir(),
-            music: xdg_paths::audio_dir(),
-            pictures: xdg_paths::picture_dir(),
-            videos: xdg_paths::video_dir(),
+            home: tilo_paths::home(),
+            desktop: tilo_paths::desktop_dir(),
+            documents: tilo_paths::document_dir(),
+            downloads: tilo_paths::download_dir(),
+            music: tilo_paths::audio_dir(),
+            pictures: tilo_paths::picture_dir(),
+            videos: tilo_paths::video_dir(),
         }
     }
 
@@ -177,49 +177,52 @@ mod tests {
     }
 
     #[test]
-    fn content_places_use_localized_names_and_paths() {
-        let dirs = german();
-        let places = dirs.content_places(Path::new("/home/u"));
-        let labels: Vec<&str> = places.iter().map(|(_, l, _)| l.as_str()).collect();
-        assert_eq!(
-            labels,
-            ["Dokumente", "Downloads", "Bilder", "Musik", "Videos"]
-        );
-        let (kind, _, path) = &places[0];
-        assert_eq!(*kind, UserDir::Documents);
-        assert_eq!(path, &PathBuf::from("/home/u/Dokumente"));
-    }
+    fn content_places_use_localized_names_paths_and_english_fallbacks() {
+        // Case `content_places_use_localized_names_and_paths`.
+        {
+            let dirs = german();
+            let places = dirs.content_places(Path::new("/home/u"));
+            let labels: Vec<&str> = places.iter().map(|(_, l, _)| l.as_str()).collect();
+            assert_eq!(
+                labels,
+                ["Dokumente", "Downloads", "Bilder", "Musik", "Videos"]
+            );
+            let (kind, _, path) = &places[0];
+            assert_eq!(*kind, UserDir::Documents);
+            assert_eq!(path, &PathBuf::from("/home/u/Dokumente"));
+        }
 
-    #[test]
-    fn content_places_fall_back_to_english_when_unresolved() {
-        let places = UserDirs::default().content_places(Path::new("/home/u"));
-        let labels: Vec<&str> = places.iter().map(|(_, l, _)| l.as_str()).collect();
-        assert_eq!(
-            labels,
-            ["Documents", "Downloads", "Pictures", "Music", "Videos"]
-        );
-    }
+        // Case `content_places_fall_back_to_english_when_unresolved`.
+        {
+            let places = UserDirs::default().content_places(Path::new("/home/u"));
+            let labels: Vec<&str> = places.iter().map(|(_, l, _)| l.as_str()).collect();
+            assert_eq!(
+                labels,
+                ["Documents", "Downloads", "Pictures", "Music", "Videos"]
+            );
+        }
 
-    #[test]
-    fn classify_matches_localized_paths_by_kind() {
-        let dirs = german();
-        assert_eq!(
-            dirs.classify(Path::new("/home/u/Bilder")),
-            Some(UserDir::Pictures)
-        );
-        assert_eq!(dirs.classify(Path::new("/home/u")), Some(UserDir::Home));
-        assert_eq!(
-            dirs.classify(Path::new("/home/u/Musik")),
-            Some(UserDir::Music)
-        );
-        assert_eq!(dirs.classify(Path::new("/data/projects")), None);
-    }
+        // Case `classify_matches_localized_paths_by_kind`.
+        {
+            let dirs = german();
+            assert_eq!(
+                dirs.classify(Path::new("/home/u/Bilder")),
+                Some(UserDir::Pictures)
+            );
+            assert_eq!(dirs.classify(Path::new("/home/u")), Some(UserDir::Home));
+            assert_eq!(
+                dirs.classify(Path::new("/home/u/Musik")),
+                Some(UserDir::Music)
+            );
+            assert_eq!(dirs.classify(Path::new("/data/projects")), None);
+        }
 
-    #[test]
-    fn label_is_the_localized_folder_name() {
-        let dirs = german();
-        assert_eq!(dirs.label(UserDir::Documents), "Dokumente");
-        assert_eq!(dirs.label(UserDir::Pictures), "Bilder");
-        assert_eq!(UserDirs::default().label(UserDir::Music), "Music");
+        // Case `label_is_the_localized_folder_name`.
+        {
+            let dirs = german();
+            assert_eq!(dirs.label(UserDir::Documents), "Dokumente");
+            assert_eq!(dirs.label(UserDir::Pictures), "Bilder");
+            assert_eq!(UserDirs::default().label(UserDir::Music), "Music");
+        }
     }
 }

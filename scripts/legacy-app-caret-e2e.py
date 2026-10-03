@@ -133,7 +133,71 @@ def wait_until(description: str, predicate):
     raise Failure(f"timed out waiting for {description}{suffix}")
 
 
-def terminate(process: subprocess.Popen | None) -> None:
+# Starting a process cold is bounded by its own progress, not by DEADLINE:
+# a freshly installed LibreOffice first reads hundreds of MiB of libraries,
+# which on a busy disk takes longer than any fixed interaction budget. The
+# wait fails once the watched process group stops using CPU and stops
+# reading for STALL seconds, and in any case after STARTUP_HANG.
+STALL = 20.0
+STARTUP_HANG = 180.0
+
+
+def group_progress(pgid: int) -> tuple[int, ...]:
+    """CPU ticks, major faults and bytes read by every process in a group."""
+    ticks = faults = read = 0
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            stat = (proc / "stat").read_text()
+            fields = stat[stat.rindex(")") + 2:].split()
+            if int(fields[2]) != pgid:
+                continue
+            faults += int(fields[9])
+            ticks += int(fields[11]) + int(fields[12])
+            for line in (proc / "io").read_text().splitlines():
+                if line.startswith("read_bytes:"):
+                    read += int(line.split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+    return (ticks, faults, read)
+
+
+def wait_while_progressing(description: str, predicate, process: subprocess.Popen):
+    """Wait for `predicate` while `process`'s group keeps making progress."""
+    started = time.monotonic()
+    last_progress_at = started
+    last = group_progress(process.pid)
+    last_error = None
+    while True:
+        try:
+            value = predicate()
+            if value:
+                return value
+        except (ConnectionError, FileNotFoundError, json.JSONDecodeError, OSError) as error:
+            last_error = error
+        now = time.monotonic()
+        current = group_progress(process.pid)
+        if current != last:
+            last, last_progress_at = current, now
+        stalled = now - last_progress_at >= STALL
+        if stalled or now - started >= STARTUP_HANG:
+            why = (
+                f"{process.args[0]} made no CPU or read progress for {STALL:.0f}s"
+                if stalled
+                else f"still starting after {STARTUP_HANG:.0f}s"
+            )
+            suffix = f"; last error: {last_error}" if last_error else ""
+            raise Failure(f"timed out waiting for {description}: {why}{suffix}")
+        time.sleep(0.05)
+
+
+# A SIGKILLed process is only reaped once it leaves the kernel: one blocked
+# in a driver or filesystem call, or being dumped, outlives the signal.
+KILLED_REAP_SECONDS = 30.0
+
+
+def terminate(process: subprocess.Popen | None, record: Path | None = None) -> None:
     if process is None or process.poll() is not None:
         return
     try:
@@ -144,7 +208,54 @@ def terminate(process: subprocess.Popen | None) -> None:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        process.wait(timeout=3)
+        try:
+            process.wait(timeout=KILLED_REAP_SECONDS)
+        except subprocess.TimeoutExpired:
+            if record is not None:
+                record_process_group(process.pid, record)
+            raise Failure(
+                f"{process.args[0]} survived SIGKILL for {KILLED_REAP_SECONDS:.0f}s"
+                + (f"; where it is blocked: {record}" if record is not None else "")
+            ) from None
+
+
+def record_process_group(pgid: int, destination: Path) -> None:
+    """Write where every thread of a still-running process group is blocked.
+
+    A wait that runs out on a process that never answered is only
+    diagnosable from what it was doing: its state, the kernel function each
+    thread sleeps in, its open files, and its kernel stack where readable.
+    """
+    lines: list[str] = []
+    for proc in sorted(Path("/proc").iterdir(), key=lambda p: p.name):
+        if not proc.name.isdigit():
+            continue
+        try:
+            stat = (proc / "stat").read_text()
+            # comm may contain spaces; the fields after its closing paren are fixed.
+            fields = stat[stat.rindex(")") + 2:].split()
+            if int(fields[2]) != pgid:
+                continue
+            cmdline = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+            lines.append(f"pid {proc.name} state {fields[0]} ppid {fields[1]}: {cmdline.strip()}")
+            for task in sorted((proc / "task").iterdir(), key=lambda p: int(p.name)):
+                comm = (task / "comm").read_text().strip()
+                state = (task / "stat").read_text().rsplit(")", 1)[1].split()[0]
+                wchan = (task / "wchan").read_text().strip() or "-"
+                lines.append(f"  tid {task.name} {comm} state {state} wchan {wchan}")
+                try:
+                    stack = (task / "stack").read_text().strip()
+                except OSError:
+                    stack = ""
+                lines.extend(f"    {frame}" for frame in stack.splitlines())
+            for fd in sorted((proc / "fd").iterdir(), key=lambda p: int(p.name)):
+                try:
+                    lines.append(f"  fd {fd.name} -> {os.readlink(fd)}")
+                except OSError:
+                    pass
+        except (OSError, ValueError, IndexError):
+            continue
+    destination.write_text("\n".join(lines) + "\n" if lines else f"no live process in group {pgid}\n")
 
 
 def frame_for(control: Control, app_id: str) -> dict | None:
@@ -210,14 +321,20 @@ def clipboard_text(control: Control) -> str | None:
     return response.get("clipboard", {}).get("text")
 
 
-def wait_for_clipboard_text(control: Control, description: str, expected: str) -> str:
+def wait_for_clipboard_text(
+    control: Control, description: str, expected: str, *, after_sample: bool = False
+) -> str:
+    """Wait for the clipboard to hold `expected`, or with `after_sample` to end with it."""
     last_value: str | None = None
 
     def matching_text() -> str | None:
         nonlocal last_value
         value = clipboard_text(control)
         last_value = value
-        if value is not None and value.strip("\r\n") == expected:
+        if value is None:
+            return None
+        text = value.strip("\r\n")
+        if text == expected or (after_sample and text.endswith(expected)):
             return value
         return None
 
@@ -232,21 +349,23 @@ def wait_for_clipboard_text(control: Control, description: str, expected: str) -
 def verify_focus_and_select_probe(control: Control, app_id: str, frame: dict) -> dict:
     """Prove keyboard focus and leave known document contents selected.
 
-    A fixed delay after Ctrl+A/Backspace is not sufficient for heavyweight
-    clients such as LibreOffice: an unrelated repaint can satisfy the next
-    frame barrier before its document transition finishes. Replace any sample
-    content with a probe, use the real clipboard to acknowledge its selection,
-    and leave it selected so the payload's first character replaces it
-    atomically without a separate empty-document transition.
+    No keystroke may follow a Ctrl+A until something acknowledges the
+    selection. LibreOffice runs Select All from its dispatcher, after an
+    unrelated repaint has already satisfied the frame barrier. A key typed in
+    that gap is inserted first and then selected, so the next key replaces it.
+    That is how "tilofocusprobe" became "ilofocusprobe". Type the probe after
+    any sample content, then select everything and copy it. Copy is dispatched
+    after Select All, so the clipboard acknowledges both. Leaving it selected
+    lets the payload's first character replace the whole document atomically.
     """
     probe = "tilofocusprobe"
-    control.chord("a")
-    frame = wait_for_frame_after(control, app_id, frame["frame_seq"])
     frame = type_with_frame_barriers(control, app_id, frame, probe)
     control.chord("a")
     frame = wait_for_frame_after(control, app_id, frame["frame_seq"])
     control.chord("c")
-    wait_for_clipboard_text(control, f"{app_id} focus probe selection", probe)
+    wait_for_clipboard_text(
+        control, f"{app_id} focus probe selection", probe, after_sample=True
+    )
     return frame_for(control, app_id) or frame
 
 
@@ -383,9 +502,11 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
-            wait_until("test-control socket", control_path.exists)
+            wait_while_progressing("test-control socket", control_path.exists, compositor)
             control = Control(control_path)
-            wait_until("initial workspace", lambda: control.send({"op": "state_dump"}))
+            wait_while_progressing(
+                "initial workspace", lambda: control.send({"op": "state_dump"}), compositor
+            )
             complete_onboarding(control)
             display_file = runtime / "tilo-session" / "wayland-display"
             display = wait_until(
@@ -412,9 +533,10 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
                 start_new_session=True,
             )
 
-            frame = wait_until(
+            frame = wait_while_progressing(
                 f"{case.name} to render a real frame",
                 lambda: frame_or_process_exit(control, case, app),
+                app,
             )
             rect = frame["rect"]
             click_x = rect["x"] + rect["w"] * case.click_fraction[0]
@@ -460,6 +582,9 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
             }, indent=2) + "\n")
             print(f"PASS {case.name}: {expected}")
         except Exception:
+            for name, process in (("app", app), ("compositor", compositor)):
+                if process is not None and process.poll() is None:
+                    record_process_group(process.pid, case_artifacts / f"{name}-processes.txt")
             if control_path.exists():
                 try:
                     failed_control = Control(control_path)
@@ -472,8 +597,8 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
                     pass
             raise
         finally:
-            terminate(app)
-            terminate(compositor)
+            terminate(app, case_artifacts / "app-unreaped.txt")
+            terminate(compositor, case_artifacts / "compositor-unreaped.txt")
             compositor_log.close()
             app_log.close()
             preflight_log.close()

@@ -1,8 +1,9 @@
 //! Exact before/after materialization for one action or a selected group.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use automerge::{AutoCommit, ChangeHash};
+use automerge::{AutoCommit, ChangeHash, ReadDoc};
+use tilo_automerge::ApplyIncoming;
 
 use crate::history_source::entry_id_from_hash;
 use crate::widget::HistoryEntryId;
@@ -59,7 +60,7 @@ fn compare_committed_entries(
         else {
             return Err(CompareError::UnknownEntry(*id));
         };
-        selected.push((*change).clone());
+        selected.push(change.clone());
     }
     let selected_hashes: HashSet<ChangeHash> =
         selected.iter().map(automerge::Change::hash).collect();
@@ -81,14 +82,8 @@ fn compare_committed_entries(
         .into_iter()
         .collect();
     let patches = doc.diff(&before_heads, &after_heads);
-    let before_document = doc
-        .fork_at(&before_heads)
-        .map_err(|error| CompareError::Materialize(error.to_string()))?
-        .save();
-    let after_document = doc
-        .fork_at(&after_heads)
-        .map_err(|error| CompareError::Materialize(error.to_string()))?
-        .save();
+    let before_document = document_at(&changes, doc, &before_heads)?.save();
+    let after_document = document_at(&changes, doc, &after_heads)?.save();
     Ok(HistoryComparison {
         entries: entries.to_vec(),
         before_heads,
@@ -107,62 +102,98 @@ mod tests {
     use super::*;
 
     #[test]
-    fn group_comparison_materializes_exact_before_and_after_states() {
-        let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, "title", "before").unwrap();
-        doc.commit();
-        doc.put(automerge::ROOT, "title", "during").unwrap();
-        let a = doc.commit().unwrap();
-        doc.put(automerge::ROOT, "status", "done").unwrap();
-        let b = doc.commit().unwrap();
-        let ids = [
-            entry_id_from_hash(&a.to_string()),
-            entry_id_from_hash(&b.to_string()),
-        ];
+    fn group_comparison_materialises_exact_states_and_refuses_empty_selection() {
+        // phase: group_comparison_materializes_exact_before_and_after_states
+        {
+            let mut doc = AutoCommit::new();
+            doc.put(automerge::ROOT, "title", "before").unwrap();
+            doc.commit();
+            doc.put(automerge::ROOT, "title", "during").unwrap();
+            let a = doc.commit().unwrap();
+            doc.put(automerge::ROOT, "status", "done").unwrap();
+            let b = doc.commit().unwrap();
+            let ids = [
+                entry_id_from_hash(&a.to_string()),
+                entry_id_from_hash(&b.to_string()),
+            ];
 
-        let comparison = compare_entries(&mut doc, &ids).unwrap();
-        assert!(!comparison.patches.is_empty());
-        let before = AutoCommit::load(&comparison.before_document).unwrap();
-        let after = AutoCommit::load(&comparison.after_document).unwrap();
-        assert_eq!(
-            before
-                .get(automerge::ROOT, "title")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str(),
-            Some("before")
-        );
-        assert_eq!(
-            after
-                .get(automerge::ROOT, "title")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str(),
-            Some("during")
-        );
-        assert_eq!(
-            after
-                .get(automerge::ROOT, "status")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str(),
-            Some("done")
-        );
+            let comparison = compare_entries(&mut doc, &ids).unwrap();
+            assert!(!comparison.patches.is_empty());
+            let before = AutoCommit::load(&comparison.before_document).unwrap();
+            let after = AutoCommit::load(&comparison.after_document).unwrap();
+            assert_eq!(
+                before
+                    .get(automerge::ROOT, "title")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .as_str(),
+                Some("before")
+            );
+            assert_eq!(
+                after
+                    .get(automerge::ROOT, "title")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .as_str(),
+                Some("during")
+            );
+            assert_eq!(
+                after
+                    .get(automerge::ROOT, "status")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .as_str(),
+                Some("done")
+            );
+        }
+        // phase: unknown_or_empty_selection_is_refused
+        {
+            let mut doc = AutoCommit::new();
+            assert_eq!(
+                compare_entries(&mut doc, &[]).unwrap_err(),
+                CompareError::EmptySelection
+            );
+            assert!(matches!(
+                compare_entries(&mut doc, &[HistoryEntryId([9; 16])]),
+                Err(CompareError::UnknownEntry(_))
+            ));
+        }
     }
+}
 
-    #[test]
-    fn unknown_or_empty_selection_is_refused() {
-        let mut doc = AutoCommit::new();
-        assert_eq!(
-            compare_entries(&mut doc, &[]).unwrap_err(),
-            CompareError::EmptySelection
-        );
-        assert!(matches!(
-            compare_entries(&mut doc, &[HistoryEntryId([9; 16])]),
-            Err(CompareError::UnknownEntry(_))
-        ));
+/// The committed document as of exactly `heads`: the dependency closure of
+/// those changes replayed, in the document's own causal order, into a fresh
+/// replica with the live text encoding. Automerge 0.8's `fork_at` can walk a
+/// valid merged graph out of order and panic; this replay cannot.
+fn document_at(
+    changes: &[automerge::Change],
+    doc: &AutoCommit,
+    heads: &[ChangeHash],
+) -> Result<AutoCommit, CompareError> {
+    let by_hash: HashMap<ChangeHash, &automerge::Change> = changes
+        .iter()
+        .map(|change| (change.hash(), change))
+        .collect();
+    let mut closure = HashSet::new();
+    let mut pending = heads.to_vec();
+    while let Some(hash) = pending.pop() {
+        let change = by_hash.get(&hash).ok_or_else(|| {
+            CompareError::Materialize(format!("change {hash} is not in this document"))
+        })?;
+        if closure.insert(hash) {
+            pending.extend(change.deps().iter().copied());
+        }
     }
+    let mut out = AutoCommit::new_with_encoding(doc.text_encoding());
+    out.apply_incoming(
+        changes
+            .iter()
+            .filter(|change| closure.contains(&change.hash()))
+            .cloned(),
+    )
+    .map_err(|error| CompareError::Materialize(error.to_string()))?;
+    Ok(out)
 }

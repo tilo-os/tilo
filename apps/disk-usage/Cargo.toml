@@ -17,10 +17,13 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+fnv.workspace = true
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

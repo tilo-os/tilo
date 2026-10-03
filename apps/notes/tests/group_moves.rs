@@ -2,6 +2,8 @@ use crate::component_support::*;
 use automerge::AutoCommit;
 use notes::{actions, doc::NotesDoc};
 use tilo_automerge::ApplyIncoming;
+use tilo_document::RichTextAction;
+use tilo_document::action::RegionKind;
 
 type Rows = Vec<(String, String, String, String, u64)>;
 
@@ -29,24 +31,28 @@ fn assert_visible_order(driver: &ui::headless::Driver, rows: &Rows) {
 }
 
 fn snapshot(doc: &AutoCommit, page: notes::PageId) -> Rows {
-    use automerge::ReadDoc;
-    let list = NotesDoc::page_blocks_list(doc, page).unwrap();
     let marks = NotesDoc::page_block_marks(doc, page);
-    NotesDoc::page_block_snapshots(doc, page)
+    NotesDoc::page_blocks(doc, page)
         .into_iter()
-        .enumerate()
-        .map(|(index, (id, text))| {
-            let spans = marks.iter().find(|(block, _)| block == &id).unwrap();
-            let kind = NotesDoc::block_kind(doc, &list, index);
-            let object = &NotesDoc::ordered_block_objects(doc, &list)[index];
-            let nesting = doc
-                .get(object, "nesting")
-                .unwrap()
-                .and_then(|(value, _)| value.as_u64())
-                .unwrap_or(0);
-            (id, text, kind, format!("{:?}", spans.1), nesting)
+        .map(|block| {
+            let spans = marks.iter().find(|(id, _)| id == &block.id).unwrap();
+            (
+                block.id.clone(),
+                block.text.clone(),
+                block.kind.stored(),
+                format!("{:?}", spans.1),
+                u64::from(block.nesting),
+            )
         })
         .collect()
+}
+
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "callers build the edit in place"
+)]
+fn edit(doc: &mut AutoCommit, page: notes::PageId, edit: RichTextAction) {
+    NotesDoc::edit_page_body(doc, page, &edit).unwrap();
 }
 
 fn move_group_and_verify(source: &str, order: &[usize], keyboard: bool) {
@@ -138,33 +144,41 @@ fn move_group_and_verify(source: &str, order: &[usize], keyboard: bool) {
 }
 
 #[test]
-fn mixed_list_subtree_moves_past_next_sibling_subtree_as_one_undoable_action() {
-    let source = "1. **Parent A**\n  - *Child A*\n    - [x] Task A\n2. Parent B\n  1. Child B\n3. Parent C\n";
-    for keyboard in [false, true] {
-        move_group_and_verify(source, &[3, 4, 0, 1, 2, 5], keyboard);
+fn list_subtrees_and_multiline_code_move_as_one_undoable_group() {
+    eprintln!("phase mixed_list_subtree_moves_past_next_sibling_subtree_as_one_undoable_action");
+    {
+        let source = "1. **Parent A**\n  - *Child A*\n    - [x] Task A\n2. Parent B\n  1. Child B\n3. Parent C\n";
+        for keyboard in [false, true] {
+            move_group_and_verify(source, &[3, 4, 0, 1, 2, 5], keyboard);
+        }
+    }
+
+    eprintln!("phase multiline_code_moves_as_one_group_and_preserves_all_rows_on_reopen");
+    {
+        move_group_and_verify(
+            "```python\nfirst()\nsecond()\n```\n\nAfter\n",
+            &[2, 0, 1],
+            false,
+        );
     }
 }
 
 #[test]
-fn moving_a_list_parent_keeps_nested_paragraph_code_and_task_through_undo_and_reopen() {
-    let source = "1. Parent A\n\n  Paragraph child\n\n  ```python\n  first()\n  second()\n  ```\n\n  - [x] Child task\n    1. Grandchild\n\n2. Parent B\n";
-    for keyboard in [false, true] {
-        move_group_and_verify(source, &[6, 0, 1, 2, 3, 4, 5], keyboard);
-    }
-}
-
-#[test]
-fn multiline_code_moves_as_one_group_and_preserves_all_rows_on_reopen() {
-    move_group_and_verify(
-        "```python\nfirst()\nsecond()\n```\n\nAfter\n",
-        &[2, 0, 1],
-        false,
+fn list_parents_and_formula_sources_move_their_whole_group() {
+    eprintln!(
+        "phase moving_a_list_parent_keeps_nested_paragraph_code_and_task_through_undo_and_reopen"
     );
-}
+    {
+        let source = "1. Parent A\n\n  Paragraph child\n\n  ```python\n  first()\n  second()\n  ```\n\n  - [x] Child task\n    1. Grandchild\n\n2. Parent B\n";
+        for keyboard in [false, true] {
+            move_group_and_verify(source, &[6, 0, 1, 2, 3, 4, 5], keyboard);
+        }
+    }
 
-#[test]
-fn multiline_formula_source_moves_as_one_group() {
-    move_group_and_verify("```tex\nx + y\n= z\n```\n\nAfter\n", &[2, 0, 1], false);
+    eprintln!("phase multiline_formula_source_moves_as_one_group");
+    {
+        move_group_and_verify("```tex\nx + y\n= z\n```\n\nAfter\n", &[2, 0, 1], false);
+    }
 }
 
 #[test]
@@ -178,296 +192,175 @@ fn adjacent_same_language_fences_move_independently_with_undo_and_reopen() {
     }
 }
 
+#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
-fn moving_a_block_preserves_concurrent_text_marks_and_text_object_identity() {
-    use automerge::{ReadDoc, transaction::Transactable};
-    use ui::widget::BlockEditOp;
+fn concurrent_moves_and_order_upgrades_converge_without_replacing_text() {
+    eprintln!("phase moving_a_block_preserves_concurrent_text_and_marks");
+    {
+        let f = LegacyFixture::rich();
+        f.write_page(f.child, b"**First**\n\nSecond\n");
+        let checkout = imported(&f);
+        let mut local = f.records.read(&checkout.id, AutoCommit::clone).unwrap();
+        let before = NotesDoc::page_block_snapshots(&local, f.child);
+        assert_eq!(before.len(), 2);
+        let mut peer = local.fork();
 
-    let f = LegacyFixture::rich();
-    f.write_page(f.child, b"**First**\n\nSecond\n");
-    let checkout = imported(&f);
-    let mut local = f.records.read(&checkout.id, AutoCommit::clone).unwrap();
-    let before = NotesDoc::page_block_snapshots(&local, f.child);
-    assert_eq!(before.len(), 2);
-    let list = NotesDoc::page_blocks_list(&local, f.child).unwrap();
-    let original_text = NotesDoc::block_text_obj(&local, &list, 0).unwrap();
-    let mut peer = local.fork();
-
-    NotesDoc::apply_block_ops(
-        &mut local,
-        f.child,
-        &[BlockEditOp::Move {
-            block_id: before[0].0.clone(),
-            after: Some(before[1].0.clone()),
-        }],
-    )
-    .unwrap();
-    NotesDoc::apply_block_ops(
-        &mut peer,
-        f.child,
-        &[BlockEditOp::TextSplice {
-            block_id: before[0].0.clone(),
-            start: 5,
-            end: 5,
-            text: " from peer".into(),
-        }],
-    )
-    .unwrap();
-    // Include a non-Notes native mark: moving must preserve the Text itself,
-    // not merely copy the subset of formatting understood by this app.
-    peer.mark(
-        &original_text,
-        automerge::marks::Mark::new("tilo.author".into(), "peer", 5, 15),
-        automerge::marks::ExpandMark::After,
-    )
-    .unwrap();
-    let mut local_for_peer = local.clone();
-    local.merge_incoming(&mut peer).unwrap();
-    peer.merge_incoming(&mut local_for_peer).unwrap();
-
-    let reopened = AutoCommit::load(&local.save()).unwrap();
-    for document in [&local, &peer, &reopened] {
-        notes::notebook::validate(document).unwrap();
-        assert_eq!(
-            NotesDoc::page_block_snapshots(document, f.child),
-            vec![
-                before[1].clone(),
-                (before[0].0.clone(), "First from peer".into())
-            ],
-            "moving on one peer must not discard simultaneous typing on another"
-        );
-        let moved_text = NotesDoc::block_text_obj(document, &list, 1).unwrap();
-        assert_eq!(
-            moved_text, original_text,
-            "a reorder must not replace the Text object"
-        );
-        assert!(
-            document
-                .marks(&moved_text)
-                .unwrap()
-                .iter()
-                .any(|mark| { mark.name == "tilo.author" && mark.start == 5 && mark.end == 15 })
-        );
-        assert!(
-            NotesDoc::page_block_marks(document, f.child)[1]
-                .1
-                .iter()
-                .any(|span| { matches!(span.mark, actions::InlineMark::Bold) })
-        );
-    }
-}
-
-#[test]
-fn concurrent_insertions_into_one_gap_remain_distinct_and_allow_insertion_between_them() {
-    use ui::widget::BlockEditOp;
-    let f = LegacyFixture::rich();
-    f.write_page(f.child, b"Before\n\nAfter\n");
-    let checkout = imported(&f);
-    let mut local = f.records.read(&checkout.id, AutoCommit::clone).unwrap();
-    let before = NotesDoc::page_block_snapshots(&local, f.child);
-    let mut peer = local.fork();
-    for (doc, name) in [(&mut local, "Local"), (&mut peer, "Peer")] {
-        NotesDoc::apply_block_ops(
-            doc,
+        edit(
+            &mut local,
             f.child,
-            &[BlockEditOp::Insert {
-                block_id: uuid::Uuid::new_v4().to_string(),
-                after: Some(before[0].0.clone()),
-                kind: "paragraph".into(),
-                text: name.into(),
-            }],
-        )
-        .unwrap();
-    }
-    let mut local_changes = local.clone();
-    local.merge_incoming(&mut peer).unwrap();
-    peer.merge_incoming(&mut local_changes).unwrap();
-    let merged = NotesDoc::page_block_snapshots(&local, f.child);
-    assert_eq!(merged, NotesDoc::page_block_snapshots(&peer, f.child));
-    assert_eq!(merged.len(), 4);
-    assert_eq!(merged[0], before[0]);
-    assert_eq!(merged[3], before[1]);
-    assert_ne!(merged[1].1, merged[2].1);
-    NotesDoc::apply_block_ops(
-        &mut local,
-        f.child,
-        &[BlockEditOp::Insert {
-            block_id: uuid::Uuid::new_v4().to_string(),
-            after: Some(merged[1].0.clone()),
-            kind: "paragraph".into(),
-            text: "Between".into(),
-        }],
-    )
-    .unwrap();
-    let final_rows = NotesDoc::page_block_snapshots(&local, f.child);
-    assert_eq!(final_rows[1], merged[1]);
-    assert_eq!(final_rows[2].1, "Between");
-    assert_eq!(final_rows[3], merged[2]);
-    notes::notebook::validate(&local).unwrap();
-}
-
-#[test]
-fn schema_one_move_upgrades_order_without_replacing_any_text() {
-    use automerge::{ROOT, ReadDoc, transaction::Transactable};
-    use ui::widget::BlockEditOp;
-    let f = LegacyFixture::rich();
-    f.write_page(f.child, b"First\n\nSecond\n");
-    let checkout = imported(&f);
-    let mut doc = f.records.read(&checkout.id, AutoCommit::clone).unwrap();
-    let mut text_ids = Vec::new();
-    for page in NotesDoc::list_pages(&doc) {
-        let list = NotesDoc::page_blocks_list(&doc, page.id).unwrap();
-        for object in NotesDoc::ordered_block_objects(&doc, &list) {
-            text_ids.push(doc.get(&object, "text").unwrap().unwrap().1);
-            doc.delete(&object, "notes_order").unwrap();
-            doc.delete(&object, "notes_order_base").unwrap();
-        }
-    }
-    doc.put(ROOT, "notes_schema_version", 1_u64).unwrap();
-    doc.commit();
-    notes::notebook::validate(&doc).unwrap();
-    let before = NotesDoc::page_block_snapshots(&doc, f.child);
-    NotesDoc::apply_block_ops(
-        &mut doc,
-        f.child,
-        &[BlockEditOp::Move {
-            block_id: before[0].0.clone(),
-            after: Some(before[1].0.clone()),
-        }],
-    )
-    .unwrap();
-    notes::notebook::validate(&doc).unwrap();
-    assert_eq!(
-        doc.get(ROOT, "notes_schema_version")
-            .unwrap()
-            .unwrap()
-            .0
-            .as_u64(),
-        Some(2)
-    );
-    assert_eq!(
-        NotesDoc::page_block_snapshots(&doc, f.child),
-        [before[1].clone(), before[0].clone()]
-    );
-    let after_text_ids = NotesDoc::list_pages(&doc)
-        .into_iter()
-        .flat_map(|page| {
-            let list = NotesDoc::page_blocks_list(&doc, page.id).unwrap();
-            NotesDoc::ordered_block_objects(&doc, &list)
-                .into_iter()
-                .map(|object| doc.get(&object, "text").unwrap().unwrap().1)
-                .collect::<Vec<_>>()
-        })
-        .collect::<std::collections::HashSet<_>>();
-    assert_eq!(
-        text_ids
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>(),
-        after_text_ids
-    );
-}
-
-#[test]
-fn concurrent_schema_upgrades_preserve_both_moves_and_converge() {
-    use automerge::{ROOT, ReadDoc, transaction::Transactable};
-    use ui::widget::BlockEditOp;
-    let f = LegacyFixture::rich();
-    f.write_page(f.child, b"A\n\nB\n\nC\n\nD\n");
-    let checkout = imported(&f);
-    let mut local = f.records.read(&checkout.id, AutoCommit::clone).unwrap();
-    for page in NotesDoc::list_pages(&local) {
-        let list = NotesDoc::page_blocks_list(&local, page.id).unwrap();
-        for object in NotesDoc::ordered_block_objects(&local, &list) {
-            local.delete(&object, "notes_order").unwrap();
-            local.delete(&object, "notes_order_base").unwrap();
-        }
-    }
-    local.put(ROOT, "notes_schema_version", 1_u64).unwrap();
-    local.commit();
-    let before = NotesDoc::page_block_snapshots(&local, f.child);
-    let mut peer = local.fork();
-    for (doc, index) in [(&mut local, 0), (&mut peer, 3)] {
-        NotesDoc::apply_block_ops(
-            doc,
-            f.child,
-            &[BlockEditOp::Move {
-                block_id: before[index].0.clone(),
+            RichTextAction::MoveBlocks {
+                blocks: vec![before[0].0.clone()],
                 after: Some(before[1].0.clone()),
-            }],
-        )
-        .unwrap();
-    }
-    let mut local_changes = local.clone();
-    local.merge_incoming(&mut peer).unwrap();
-    peer.merge_incoming(&mut local_changes).unwrap();
-    notes::notebook::validate(&local).unwrap();
-    notes::notebook::validate(&peer).unwrap();
-    let expected = NotesDoc::page_block_snapshots(&local, f.child);
-    assert_eq!(expected, NotesDoc::page_block_snapshots(&peer, f.child));
-    assert_eq!(expected.len(), 4);
-    assert_eq!(expected[0], before[1]);
-    assert_eq!(expected[3], before[2]);
-    assert!(expected[1..3].contains(&before[0]));
-    assert!(expected[1..3].contains(&before[3]));
-    let reopened = AutoCommit::load(&local.save()).unwrap();
-    notes::notebook::validate(&reopened).unwrap();
-    assert_eq!(NotesDoc::page_block_snapshots(&reopened, f.child), expected);
-    assert_eq!(
-        local.get_all(ROOT, "notes_schema_version").unwrap().len(),
-        2
-    );
-}
-
-#[test]
-fn repeated_middle_insertions_keep_order_metadata_compact() {
-    use automerge::{ReadDoc, ScalarValue, Value};
-    use ui::widget::BlockEditOp;
-    let f = LegacyFixture::rich();
-    f.write_page(f.child, b"Before\n\nAfter\n");
-    let checkout = imported(&f);
-    let mut doc = f.records.read(&checkout.id, AutoCommit::clone).unwrap();
-    let rows = NotesDoc::page_block_snapshots(&doc, f.child);
-    let mut predecessor = rows[0].0.clone();
-    let mut expected = vec![rows[0].clone()];
-    for index in 0..128 {
-        let id = uuid::Uuid::new_v4().to_string();
-        let text = format!("Middle {index}");
-        NotesDoc::apply_block_ops(
-            &mut doc,
+            },
+        );
+        edit(
+            &mut peer,
             f.child,
-            &[BlockEditOp::Insert {
-                block_id: id.clone(),
-                after: Some(predecessor),
-                kind: "paragraph".into(),
-                text: text.clone(),
-            }],
-        )
-        .unwrap();
-        expected.push((id.clone(), text));
-        predecessor = id;
+            RichTextAction::SpliceText {
+                region: RegionKind::Body,
+                block: before[0].0.clone(),
+                at: 5,
+                del: 0,
+                ins: " from peer".into(),
+            },
+        );
+        let mut local_for_peer = local.clone();
+        local.merge_incoming(&mut peer).unwrap();
+        peer.merge_incoming(&mut local_for_peer).unwrap();
+
+        let reopened = AutoCommit::load(&local.save()).unwrap();
+        for document in [&local, &peer, &reopened] {
+            notes::notebook::validate(document).unwrap();
+            assert_eq!(
+                NotesDoc::page_block_snapshots(document, f.child),
+                vec![
+                    before[1].clone(),
+                    (before[0].0.clone(), "First from peer".into())
+                ],
+                "moving on one peer must not discard simultaneous typing on another"
+            );
+            assert!(
+                NotesDoc::page_block_marks(document, f.child)[1]
+                    .1
+                    .iter()
+                    .any(|span| { matches!(span.mark, actions::InlineMark::Bold) })
+            );
+        }
     }
-    expected.push(rows[1].clone());
-    assert_eq!(NotesDoc::page_block_snapshots(&doc, f.child), expected);
-    let list = NotesDoc::page_blocks_list(&doc, f.child).unwrap();
-    let largest = NotesDoc::ordered_block_objects(&doc, &list)
-        .into_iter()
-        .map(|object| {
-            let (Value::Scalar(value), _) = doc.get(object, "notes_order_base").unwrap().unwrap()
-            else {
-                panic!("inserted block must have a scalar order position");
-            };
-            let ScalarValue::Bytes(bytes) = value.as_ref() else {
-                panic!("position must be bytes");
-            };
-            bytes.len()
-        })
-        .max()
-        .unwrap();
-    assert!(
-        largest <= 64,
-        "128 consecutive middle insertions produced a {largest}-byte position"
+
+    eprintln!(
+        "phase concurrent_insertions_into_one_gap_remain_distinct_and_allow_insertion_between_them"
     );
-    let reopened = AutoCommit::load(&doc.save()).unwrap();
-    notes::notebook::validate(&reopened).unwrap();
-    assert_eq!(NotesDoc::page_block_snapshots(&reopened, f.child), expected);
+    {
+        let f = LegacyFixture::rich();
+        f.write_page(f.child, b"Before\n\nAfter\n");
+        let checkout = imported(&f);
+        let mut local = f.records.read(&checkout.id, AutoCommit::clone).unwrap();
+        let before = NotesDoc::page_block_snapshots(&local, f.child);
+        let mut peer = local.fork();
+        for (doc, name) in [(&mut local, "Local"), (&mut peer, "Peer")] {
+            edit(
+                doc,
+                f.child,
+                RichTextAction::InsertParagraph {
+                    after: before[0].0.clone(),
+                    text: name.into(),
+                },
+            );
+        }
+        let mut local_changes = local.clone();
+        local.merge_incoming(&mut peer).unwrap();
+        peer.merge_incoming(&mut local_changes).unwrap();
+        let merged = NotesDoc::page_block_snapshots(&local, f.child);
+        assert_eq!(merged, NotesDoc::page_block_snapshots(&peer, f.child));
+        assert_eq!(merged.len(), 4);
+        assert_eq!(merged[0], before[0]);
+        assert_eq!(merged[3], before[1]);
+        assert_ne!(merged[1].1, merged[2].1);
+        edit(
+            &mut local,
+            f.child,
+            RichTextAction::InsertParagraph {
+                after: merged[1].0.clone(),
+                text: "Between".into(),
+            },
+        );
+        let final_rows = NotesDoc::page_block_snapshots(&local, f.child);
+        assert_eq!(final_rows[1], merged[1]);
+        assert_eq!(final_rows[2].1, "Between");
+        assert_eq!(final_rows[3], merged[2]);
+        notes::notebook::validate(&local).unwrap();
+    }
+
+    eprintln!("phase concurrent_moves_converge");
+    {
+        let f = LegacyFixture::rich();
+        f.write_page(f.child, b"A\n\nB\n\nC\n\nD\n");
+        let checkout = imported(&f);
+        let mut local = f.records.read(&checkout.id, AutoCommit::clone).unwrap();
+        let before = NotesDoc::page_block_snapshots(&local, f.child);
+        let mut peer = local.fork();
+        for (doc, index) in [(&mut local, 0), (&mut peer, 3)] {
+            edit(
+                doc,
+                f.child,
+                RichTextAction::MoveBlocks {
+                    blocks: vec![before[index].0.clone()],
+                    after: Some(before[1].0.clone()),
+                },
+            );
+        }
+        let mut local_changes = local.clone();
+        local.merge_incoming(&mut peer).unwrap();
+        peer.merge_incoming(&mut local_changes).unwrap();
+        notes::notebook::validate(&local).unwrap();
+        notes::notebook::validate(&peer).unwrap();
+        let expected = NotesDoc::page_block_snapshots(&local, f.child);
+        assert_eq!(expected, NotesDoc::page_block_snapshots(&peer, f.child));
+        assert_eq!(expected.len(), 4);
+        assert_eq!(expected[0], before[1]);
+        assert_eq!(expected[3], before[2]);
+        assert!(expected[1..3].contains(&before[0]));
+        assert!(expected[1..3].contains(&before[3]));
+        let reopened = AutoCommit::load(&local.save()).unwrap();
+        notes::notebook::validate(&reopened).unwrap();
+        assert_eq!(NotesDoc::page_block_snapshots(&reopened, f.child), expected);
+    }
+
+    eprintln!("phase repeated_middle_insertions_keep_their_order");
+    {
+        let f = LegacyFixture::rich();
+        f.write_page(f.child, b"Before\n\nAfter\n");
+        let checkout = imported(&f);
+        let mut doc = f.records.read(&checkout.id, AutoCommit::clone).unwrap();
+        let rows = NotesDoc::page_block_snapshots(&doc, f.child);
+        let mut predecessor = rows[0].0.clone();
+        let mut expected = vec![rows[0].1.clone()];
+        for index in 0..128 {
+            let text = format!("Middle {index}");
+            edit(
+                &mut doc,
+                f.child,
+                RichTextAction::InsertParagraph {
+                    after: predecessor.clone(),
+                    text: text.clone(),
+                },
+            );
+            predecessor = NotesDoc::page_block_snapshots(&doc, f.child)[index + 1]
+                .0
+                .clone();
+            expected.push(text);
+        }
+        expected.push(rows[1].1.clone());
+        let texts = |doc: &AutoCommit| {
+            NotesDoc::page_block_snapshots(doc, f.child)
+                .into_iter()
+                .map(|(_, text)| text)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(texts(&doc), expected);
+        let reopened = AutoCommit::load(&doc.save()).unwrap();
+        notes::notebook::validate(&reopened).unwrap();
+        assert_eq!(texts(&reopened), expected);
+    }
 }

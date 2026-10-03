@@ -121,6 +121,10 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
 }
 
 pub fn main() {
+    if !camera::standalone_launch() {
+        ui::framework::run::<camera::CameraShell>();
+        return;
+    }
     ui::launch::run_or_exit(
         &LaunchSpec::new("so.tilo.camera", camera::app_root)
             .shot_handler(render_shot)
@@ -145,11 +149,10 @@ pub fn main() {
 /// Write procedural photos and a lossless QR poster for headless testing.
 fn emit_photos(dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     use camera::model::PhotoFormat;
-    std::fs::create_dir_all(dir)?;
     for seed in 0..5u8 {
         let frame = camera::frame::thumbnail(seed, 960, 640);
         camera::library::write_photo(dir, &frame, PhotoFormat::Jpeg)?;
-        std::thread::sleep(std::time::Duration::from_millis(4));
+        let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(4));
     }
     let (qr, _) = camera::frame::scanner_frame(
         4,

@@ -1,785 +1,8 @@
-//! Workspace-wide history aggregation.
+//! The workspace history index, shared with the desktop.
 //!
-//! A workspace is not one Automerge document: the shell tree describes its
-//! windows and governance, while every open record owns a separate change
-//! graph.  This module is the join.  It deliberately retains the originating
-//! document beside each change; a bare [`HistoryEntryId`] is only unique
-//! inside one Automerge graph and is therefore not safe as a workspace key.
-
-use std::collections::{BTreeMap, BTreeSet, HashSet};
-
-use automerge::{AutoCommit, ChangeHash};
-use collab_types::ArtifactKind;
-use ui::history_source::{AuthorDirectory, HistorySource, committed_heads};
-use ui::record::{RecordCheckout, RecordId, RecordKind, RecordStore, home};
-use ui::widget::{HistoryEntry, HistoryEntryId};
-
-use crate::shell::state::{RoomId, WorkspaceTree};
-
-/// Hard ceilings keep a corrupt index or a room with thousands of references
-/// from turning opening History into an unbounded allocation.
-pub const MAX_FEED_ENTRIES: usize = 2_000;
-pub const MAX_INDEXED_RECORDS: usize = 512;
-
-/// A read-only source for referenced record documents which are local on disk
-/// but are not mounted in the live [`RecordStore`]. Implementations must not
-/// acquire a writer lock or add the document to the live/open record set.
-pub trait PersistedRecordHistory {
-    /// Load one complete document. `None` means missing, corrupt, too large, or
-    /// no longer at the validated location; all are reported as unavailable by
-    /// [`FeedCoverage`] rather than silently disappearing.
-    fn load_record(&self, id: &RecordId) -> Option<AutoCommit>;
-}
-
-/// Which collaborative document produced a history row.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum HistoryOrigin {
-    WorkspaceTree,
-    Record { id: RecordId, kind: RecordKind },
-}
-
-impl HistoryOrigin {
-    pub fn key(&self) -> String {
-        match self {
-            Self::WorkspaceTree => "workspace-tree".to_string(),
-            Self::Record { id, .. } => format!("record:{id}"),
-        }
-    }
-
-    pub fn label(&self) -> String {
-        match self {
-            Self::WorkspaceTree => "Workspace".to_string(),
-            Self::Record { id, .. } => id.file_path().map_or_else(
-                || id.as_str().to_string(),
-                |path| {
-                    path.file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or_else(|| id.as_str())
-                        .to_string()
-                },
-            ),
-        }
-    }
-}
-
-/// A globally unambiguous change address.  Both fields are required: two
-/// documents may legitimately contain the same native change hash.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorkspaceHistoryId {
-    pub origin: HistoryOrigin,
-    pub change: HistoryEntryId,
-}
-
-impl Ord for WorkspaceHistoryId {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.origin
-            .cmp(&other.origin)
-            .then_with(|| self.change.as_bytes().cmp(other.change.as_bytes()))
-    }
-}
-
-impl PartialOrd for WorkspaceHistoryId {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-/// A history row plus enough provenance to open, diff, or undo it against the
-/// correct document later.
-#[derive(Clone, Debug, PartialEq)]
-pub struct WorkspaceHistoryEntry {
-    pub id: WorkspaceHistoryId,
-    pub entry: HistoryEntry,
-}
-
-/// Private read state for one collaborative document. Full Automerge heads
-/// define the causal past; exceptions acknowledge individual changes without
-/// claiming that their concurrent siblings were read.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-pub struct DocumentSeenFrontier {
-    pub heads: Vec<String>,
-    pub exceptions: BTreeSet<String>,
-}
-
-/// Persistable causal read state, partitioned by full document origin.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-pub struct WorkspaceSeenFrontier {
-    pub documents: BTreeMap<String, DocumentSeenFrontier>,
-}
-
-impl WorkspaceSeenFrontier {
-    /// Advance origins the current index exposed, retaining absent origins and
-    /// previously acknowledged exceptions outside a bounded projection.
-    /// A room-scoped tree is only a projection of the global tree document, so
-    /// its visible changes are exceptions rather than an unsafe global head.
-    pub fn mark_seen(&mut self, index: &WorkspaceHistoryIndex) {
-        let room_scoped = index.query.as_ref().is_some_and(|query| {
-            query.room.is_some() || query.rooms.as_ref().is_some_and(|rooms| rooms.len() == 1)
-        });
-        for (origin, heads) in &index.document_heads {
-            let state = self.documents.entry(origin.clone()).or_default();
-            if !(room_scoped && origin == "workspace-tree") {
-                state.heads = heads.iter().map(ToString::to_string).collect();
-            }
-        }
-        if room_scoped {
-            for row in &index.entries {
-                if row.id.origin == HistoryOrigin::WorkspaceTree {
-                    self.acknowledge(&row.id);
-                }
-            }
-        }
-    }
-
-    pub fn acknowledge(&mut self, id: &WorkspaceHistoryId) {
-        self.documents
-            .entry(id.origin.key())
-            .or_default()
-            .exceptions
-            .insert(ui::widget::history_group::hex16(&id.change));
-    }
-}
-
-impl WorkspaceHistoryEntry {
-    /// A collision-resistant projection for widgets whose callback API still
-    /// accepts only a 16-byte id.  Authoritative operations must retain `id`.
-    pub fn timeline_entry(&self) -> HistoryEntry {
-        let mut projected = self.entry.clone();
-        // Collaborative named ranges live in the workspace tree and address
-        // its native ids. Preserve those ids so adding record rows cannot
-        // detach an existing name from its band. Only foreign document ids
-        // need projection into the shared widget namespace.
-        if self.id.origin == HistoryOrigin::WorkspaceTree {
-            return projected;
-        }
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(self.id.origin.key().as_bytes());
-        hasher.update(self.id.change.as_bytes());
-        let mut bytes = [0_u8; 16];
-        bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-        projected.id = HistoryEntryId::from_bytes(bytes);
-        projected
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorkspaceHistoryQuery {
-    /// `Some` includes only records held by, or originally minted in, this
-    /// room. `None` defers scope to `rooms`.
-    pub room: Option<RoomId>,
-    /// When set, restrict a multi-workspace query to this exact union instead
-    /// of treating `room: None` as unrestricted device history.
-    pub rooms: Option<Vec<RoomId>>,
-    pub limit: usize,
-}
-
-impl Default for WorkspaceHistoryQuery {
-    fn default() -> Self {
-        Self {
-            room: None,
-            rooms: None,
-            limit: 500,
-        }
-    }
-}
-
-impl WorkspaceHistoryQuery {
-    pub fn for_room(room: RoomId) -> Self {
-        Self {
-            room: Some(room),
-            ..Self::default()
-        }
-    }
-
-    pub fn for_rooms(rooms: impl IntoIterator<Item = RoomId>) -> Self {
-        let mut rooms: Vec<_> = rooms.into_iter().collect();
-        rooms.sort();
-        rooms.dedup();
-        Self {
-            rooms: Some(rooms),
-            ..Self::default()
-        }
-    }
-
-    fn bounded_limit(&self) -> usize {
-        self.limit.clamp(1, MAX_FEED_ENTRIES)
-    }
-}
-
-/// Explains whether the feed is complete on this device.  A referenced record
-/// can be known to the room before its Automerge document has been opened or
-/// downloaded; silently omitting it would make the history falsely reassuring.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct FeedCoverage {
-    pub referenced_records: usize,
-    pub indexed_records: usize,
-    pub unavailable_records: Vec<RecordCheckout>,
-    pub capped_records: usize,
-}
-
-impl FeedCoverage {
-    pub fn is_complete(&self) -> bool {
-        self.unavailable_records.is_empty() && self.capped_records == 0
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Fingerprint {
-    query: WorkspaceHistoryQuery,
-    documents: Vec<(String, Vec<ChangeHash>)>,
-    references: Vec<RecordCheckout>,
-    supplied_tree_rows: Option<Vec<(HistoryEntryId, std::time::SystemTime)>>,
-}
-
-struct IndexedRecords {
-    referenced: Vec<RecordCheckout>,
-    included: Vec<RecordCheckout>,
-    cold: BTreeMap<RecordId, AutoCommit>,
-    capped_records: usize,
-}
-
-/// Cached, deterministic reduction of the workspace's document graphs.
-pub struct WorkspaceHistoryIndex {
-    authors: AuthorDirectory,
-    entries: Vec<WorkspaceHistoryEntry>,
-    coverage: FeedCoverage,
-    fingerprint: Option<Fingerprint>,
-    query: Option<WorkspaceHistoryQuery>,
-    document_heads: BTreeMap<String, Vec<ChangeHash>>,
-    generation: u64,
-}
-
-impl Default for WorkspaceHistoryIndex {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl WorkspaceHistoryIndex {
-    pub fn new() -> Self {
-        Self {
-            authors: AuthorDirectory::new(),
-            entries: Vec::new(),
-            coverage: FeedCoverage::default(),
-            fingerprint: None,
-            query: None,
-            document_heads: BTreeMap::new(),
-            generation: 0,
-        }
-    }
-
-    pub fn authors_mut(&mut self) -> &mut AuthorDirectory {
-        // A registration can change display names and avatar hues without
-        // changing any document head, so the next refresh must re-project.
-        self.fingerprint = None;
-        &mut self.authors
-    }
-
-    pub fn set_authors(&mut self, authors: AuthorDirectory) {
-        if self.authors != authors {
-            self.authors = authors;
-            self.fingerprint = None;
-        }
-    }
-
-    pub fn entries(&self) -> &[WorkspaceHistoryEntry] {
-        &self.entries
-    }
-
-    pub fn coverage(&self) -> &FeedCoverage {
-        &self.coverage
-    }
-
-    pub fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    /// Retain only names whose whole positional span belongs to one document.
-    /// Until named-range storage carries an explicit multi-origin membership
-    /// list, dropping an ambiguous band is safer than visually absorbing and
-    /// potentially undoing changes from another record.
-    pub fn origin_safe_named_ranges(&self, ranges: &[ui::NamedRange]) -> Vec<ui::NamedRange> {
-        let projected: Vec<(HistoryEntryId, &HistoryOrigin)> = self
-            .entries
-            .iter()
-            .map(|row| (row.timeline_entry().id, &row.id.origin))
-            .collect();
-        ranges
-            .iter()
-            .filter(|range| {
-                let Some(start) = projected.iter().position(|(id, _)| *id == range.start) else {
-                    return false;
-                };
-                let end = match range.end {
-                    Some(id) => projected
-                        .iter()
-                        .position(|(candidate, _)| *candidate == id)
-                        .map(|index| index.saturating_add(1)),
-                    None => Some(projected.len()),
-                };
-                let Some(end) = end else {
-                    return false;
-                };
-                if end <= start {
-                    return false;
-                }
-                let Some(span) = projected.get(start..end) else {
-                    return false;
-                };
-                let Some((_, origin)) = span.first() else {
-                    return false;
-                };
-                span.iter().all(|(_, candidate)| candidate == origin)
-            })
-            .cloned()
-            .collect()
-    }
-
-    /// Return rows not causally covered by `frontier`. Persisted heads which
-    /// are malformed or absent from the local graph fail open as unread.
-    pub fn unseen<'a>(
-        &'a self,
-        frontier: &WorkspaceSeenFrontier,
-        tree: &mut WorkspaceTree,
-        records: &RecordStore,
-    ) -> Vec<&'a WorkspaceHistoryEntry> {
-        self.unseen_inner(frontier, tree, records, None)
-    }
-
-    /// The causal unread reduction including referenced local records which
-    /// are not mounted in the live store.
-    pub fn unseen_with_local_records<'a>(
-        &'a self,
-        frontier: &WorkspaceSeenFrontier,
-        tree: &mut WorkspaceTree,
-        records: &RecordStore,
-        local: &dyn PersistedRecordHistory,
-    ) -> Vec<&'a WorkspaceHistoryEntry> {
-        self.unseen_inner(frontier, tree, records, Some(local))
-    }
-
-    fn unseen_inner<'a>(
-        &'a self,
-        frontier: &WorkspaceSeenFrontier,
-        tree: &mut WorkspaceTree,
-        records: &RecordStore,
-        local: Option<&dyn PersistedRecordHistory>,
-    ) -> Vec<&'a WorkspaceHistoryEntry> {
-        let mut after: BTreeMap<String, HashSet<HistoryEntryId>> = BTreeMap::new();
-        for (origin, state) in &frontier.documents {
-            let heads: Vec<ChangeHash> = state
-                .heads
-                .iter()
-                .filter_map(|encoded| encoded.parse().ok())
-                .collect();
-            if heads.is_empty() || heads.len() != state.heads.len() {
-                continue;
-            }
-            let changes = if origin == "workspace-tree" {
-                if !tree.doc.get_missing_deps(&heads).is_empty() {
-                    continue;
-                }
-                committed_snapshot(&tree.doc).get_changes(&heads)
-            } else {
-                let Some(record) = origin.strip_prefix("record:").and_then(RecordId::parse) else {
-                    continue;
-                };
-                let changes = records.read(&record, |doc| {
-                    let mut doc = committed_snapshot(doc);
-                    doc.get_missing_deps(&heads)
-                        .is_empty()
-                        .then(|| doc.get_changes(&heads))
-                });
-                let changes = match changes {
-                    Some(Some(changes)) => Some(changes),
-                    Some(None) => None,
-                    None => local.and_then(|source| {
-                        let mut doc = source.load_record(&record)?;
-                        doc.rollback();
-                        doc.get_missing_deps(&heads)
-                            .is_empty()
-                            .then(|| doc.get_changes(&heads))
-                    }),
-                };
-                let Some(changes) = changes else {
-                    continue;
-                };
-                changes
-            };
-            after.insert(
-                origin.clone(),
-                changes
-                    .iter()
-                    .map(|change| {
-                        ui::history_source::entry_id_from_hash(&change.hash().to_string())
-                    })
-                    .collect(),
-            );
-        }
-        self.entries
-            .iter()
-            .filter(|row| {
-                let key = row.id.origin.key();
-                let explicitly_seen = frontier.documents.get(&key).is_some_and(|state| {
-                    state
-                        .exceptions
-                        .contains(&ui::widget::history_group::hex16(&row.id.change))
-                });
-                if explicitly_seen {
-                    return false;
-                }
-                after
-                    .get(&key)
-                    .is_none_or(|changes| changes.contains(&row.id.change))
-            })
-            .collect()
-    }
-
-    /// Build from the tree's complete history.  A surface that already has a
-    /// correctly workspace-scoped tree reduction should use
-    /// [`Self::refresh_with_workspace_entries`] to avoid leaking other rooms'
-    /// shell metadata into a room-specific feed.
-    pub fn refresh(
-        &mut self,
-        tree: &mut WorkspaceTree,
-        records: &RecordStore,
-        query: WorkspaceHistoryQuery,
-    ) -> bool {
-        self.refresh_inner(tree, records, query, None, None)
-    }
-
-    /// Build a feed which also reads referenced, persisted records without
-    /// opening them in the app's live [`RecordStore`].
-    pub fn refresh_with_local_records(
-        &mut self,
-        tree: &mut WorkspaceTree,
-        records: &RecordStore,
-        local: &dyn PersistedRecordHistory,
-        query: WorkspaceHistoryQuery,
-    ) -> bool {
-        self.refresh_inner(tree, records, query, None, Some(local))
-    }
-
-    /// Join a caller's room-scoped tree rows with all records reachable from
-    /// that room.  The supplied rows remain the exact objects used by the room
-    /// pane, so naming and workspace labels cannot drift between surfaces.
-    pub fn refresh_with_workspace_entries(
-        &mut self,
-        tree: &mut WorkspaceTree,
-        records: &RecordStore,
-        query: WorkspaceHistoryQuery,
-        workspace_entries: &[HistoryEntry],
-    ) -> bool {
-        self.refresh_inner(tree, records, query, Some(workspace_entries), None)
-    }
-
-    /// Join pre-scoped workspace rows with both live and cold local records.
-    pub fn refresh_with_workspace_entries_and_local_records(
-        &mut self,
-        tree: &mut WorkspaceTree,
-        records: &RecordStore,
-        local: &dyn PersistedRecordHistory,
-        query: WorkspaceHistoryQuery,
-        workspace_entries: &[HistoryEntry],
-    ) -> bool {
-        self.refresh_inner(tree, records, query, Some(workspace_entries), Some(local))
-    }
-
-    fn refresh_inner(
-        &mut self,
-        tree: &mut WorkspaceTree,
-        records: &RecordStore,
-        query: WorkspaceHistoryQuery,
-        supplied: Option<&[HistoryEntry]>,
-        local: Option<&dyn PersistedRecordHistory>,
-    ) -> bool {
-        let limit = query.bounded_limit();
-        let mut indexed = Self::index_records(tree, records, &query, local);
-        let fingerprint = Self::build_fingerprint(
-            tree,
-            records,
-            &query,
-            supplied,
-            &indexed.referenced,
-            &indexed.included,
-            &indexed.cold,
-        );
-        if self.fingerprint.as_ref() == Some(&fingerprint) {
-            return false;
-        }
-
-        let entries = self.collect_entries(
-            tree,
-            records,
-            supplied,
-            &indexed.included,
-            &mut indexed.cold,
-            limit,
-        );
-        self.finish_refresh(query, &indexed, fingerprint, entries);
-        true
-    }
-
-    fn index_records(
-        tree: &WorkspaceTree,
-        records: &RecordStore,
-        query: &WorkspaceHistoryQuery,
-        local: Option<&dyn PersistedRecordHistory>,
-    ) -> IndexedRecords {
-        let referenced = query.rooms.as_ref().map_or_else(
-            || referenced_records(tree, query.room),
-            |rooms| {
-                rooms
-                    .iter()
-                    .flat_map(|room| referenced_records(tree, Some(*room)))
-                    .collect()
-            },
-        );
-        let referenced_ids: BTreeSet<RecordId> =
-            referenced.iter().map(|record| record.id.clone()).collect();
-        let mut candidates = BTreeMap::new();
-        for checkout in records.open_records() {
-            if Self::record_belongs(records, &checkout.id, query, &referenced_ids) {
-                candidates.insert(checkout.id.clone(), checkout);
-            }
-        }
-        for checkout in &referenced {
-            candidates
-                .entry(checkout.id.clone())
-                .or_insert_with(|| checkout.clone());
-        }
-        let mut candidates: Vec<_> = candidates.into_values().collect();
-        candidates.sort();
-
-        let capped_records = candidates.len().saturating_sub(MAX_INDEXED_RECORDS);
-        candidates.truncate(MAX_INDEXED_RECORDS);
-        let mut cold = BTreeMap::new();
-        let mut included = Vec::new();
-        for checkout in candidates {
-            if records.read(&checkout.id, |_| ()).is_some() {
-                included.push(checkout);
-            } else if let Some(mut doc) = local.and_then(|source| source.load_record(&checkout.id))
-            {
-                // A persisted source contributes committed changes only.
-                doc.rollback();
-                cold.insert(checkout.id.clone(), doc);
-                included.push(checkout);
-            }
-        }
-        IndexedRecords {
-            referenced,
-            included,
-            cold,
-            capped_records,
-        }
-    }
-
-    fn record_belongs(
-        records: &RecordStore,
-        id: &RecordId,
-        query: &WorkspaceHistoryQuery,
-        referenced_ids: &BTreeSet<RecordId>,
-    ) -> bool {
-        if referenced_ids.contains(id) {
-            return true;
-        }
-        let Some(rooms) = query.rooms.as_ref() else {
-            return query.room.is_none()
-                || records.read(id, |doc| {
-                    home(doc).and_then(|value| value.parse::<uuid::Uuid>().ok())
-                        == query.room.map(|room| room.as_uuid())
-                }) == Some(true);
-        };
-        records.read(id, |doc| {
-            home(doc)
-                .and_then(|value| value.parse::<uuid::Uuid>().ok())
-                .is_some_and(|home| rooms.iter().any(|room| room.as_uuid() == home))
-        }) == Some(true)
-    }
-
-    fn build_fingerprint(
-        tree: &WorkspaceTree,
-        records: &RecordStore,
-        query: &WorkspaceHistoryQuery,
-        supplied: Option<&[HistoryEntry]>,
-        referenced: &[RecordCheckout],
-        included: &[RecordCheckout],
-        cold: &BTreeMap<RecordId, AutoCommit>,
-    ) -> Fingerprint {
-        let mut documents = vec![("workspace-tree".to_string(), committed_heads(&tree.doc))];
-        for record in included {
-            if let Some(heads) = records
-                .read(&record.id, committed_heads)
-                .or_else(|| cold.get(&record.id).map(committed_heads))
-            {
-                documents.push((format!("record:{}", record.id), heads));
-            }
-        }
-        let supplied_tree_rows = supplied.map(|rows| {
-            rows.iter()
-                .map(|entry| (entry.id, entry.timestamp))
-                .collect()
-        });
-        Fingerprint {
-            query: query.clone(),
-            documents,
-            references: referenced.to_vec(),
-            supplied_tree_rows,
-        }
-    }
-
-    fn collect_entries(
-        &self,
-        tree: &mut WorkspaceTree,
-        records: &RecordStore,
-        supplied: Option<&[HistoryEntry]>,
-        included: &[RecordCheckout],
-        cold: &mut BTreeMap<RecordId, AutoCommit>,
-        limit: usize,
-    ) -> Vec<WorkspaceHistoryEntry> {
-        let mut by_id: BTreeMap<WorkspaceHistoryId, WorkspaceHistoryEntry> = BTreeMap::new();
-        let tree_rows = supplied.map_or_else(
-            || {
-                HistorySource::new()
-                    .with_authors(self.authors.clone())
-                    .with_artifact_kind(ArtifactKind::Cluster)
-                    .with_max_entries(limit)
-                    .entries(&mut tree.doc)
-            },
-            <[HistoryEntry]>::to_vec,
-        );
-        insert_rows(&mut by_id, &HistoryOrigin::WorkspaceTree, tree_rows);
-
-        for record in included {
-            let kind = artifact_kind(&record.kind);
-            let origin = HistoryOrigin::Record {
-                id: record.id.clone(),
-                kind: record.kind.clone(),
-            };
-            let authors = self.authors.clone();
-            let inserted_live = records.read(&record.id, |doc| {
-                let mut doc = committed_snapshot(doc);
-                let rows = HistorySource::new()
-                    .with_authors(authors)
-                    .with_artifact_kind(kind)
-                    .with_max_entries(limit)
-                    .entries(&mut doc);
-                insert_rows(&mut by_id, &origin, rows);
-            });
-            if inserted_live.is_none()
-                && let Some(doc) = cold.get_mut(&record.id)
-            {
-                let rows = HistorySource::new()
-                    .with_authors(self.authors.clone())
-                    .with_artifact_kind(kind)
-                    .with_max_entries(limit)
-                    .entries(doc);
-                insert_rows(&mut by_id, &origin, rows);
-            }
-        }
-
-        let mut entries: Vec<_> = by_id.into_values().collect();
-        entries.sort_by(|a, b| {
-            a.entry
-                .timestamp
-                .cmp(&b.entry.timestamp)
-                .then_with(|| a.id.origin.cmp(&b.id.origin))
-                .then_with(|| a.id.change.as_bytes().cmp(b.id.change.as_bytes()))
-        });
-        // ActivityTimeline/group_entries require oldest-first input. Keep the
-        // newest suffix when applying the bound, then preserve that order.
-        if entries.len() > limit {
-            entries.drain(..entries.len().saturating_sub(limit));
-        }
-        entries
-    }
-
-    fn finish_refresh(
-        &mut self,
-        query: WorkspaceHistoryQuery,
-        indexed: &IndexedRecords,
-        fingerprint: Fingerprint,
-        entries: Vec<WorkspaceHistoryEntry>,
-    ) {
-        let included_ids: BTreeSet<RecordId> = indexed
-            .included
-            .iter()
-            .map(|record| record.id.clone())
-            .collect();
-        let unavailable_records = indexed
-            .referenced
-            .iter()
-            .filter(|record| !included_ids.contains(&record.id))
-            .cloned()
-            .collect();
-        self.coverage = FeedCoverage {
-            referenced_records: indexed.referenced.len(),
-            indexed_records: indexed.included.len(),
-            unavailable_records,
-            capped_records: indexed.capped_records,
-        };
-        self.entries = entries;
-        self.query = Some(query);
-        self.document_heads = fingerprint.documents.iter().cloned().collect();
-        self.fingerprint = Some(fingerprint);
-        self.generation = self.generation.wrapping_add(1);
-    }
-}
-
-/// `RecordStore`'s mutable access finishes pending component actions. History
-/// instead takes a private committed view and leaves the live action owner alone.
-fn committed_snapshot(doc: &AutoCommit) -> AutoCommit {
-    let mut snapshot = doc.clone();
-    snapshot.rollback();
-    snapshot
-}
-
-fn insert_rows(
-    target: &mut BTreeMap<WorkspaceHistoryId, WorkspaceHistoryEntry>,
-    origin: &HistoryOrigin,
-    rows: Vec<HistoryEntry>,
-) {
-    for entry in rows {
-        let id = WorkspaceHistoryId {
-            origin: origin.clone(),
-            change: entry.id,
-        };
-        target
-            .entry(id.clone())
-            .or_insert(WorkspaceHistoryEntry { id, entry });
-    }
-}
-
-fn referenced_records(tree: &WorkspaceTree, room: Option<RoomId>) -> Vec<RecordCheckout> {
-    let Some(room) = room else {
-        return Vec::new();
-    };
-    tree.desktop
-        .room_records_held
-        .get(&room)
-        .into_iter()
-        .flat_map(|records| records.iter())
-        .filter_map(|(id, kind)| {
-            Some(RecordCheckout::new(
-                RecordId::parse(id)?,
-                RecordKind::new(kind),
-            ))
-        })
-        .collect()
-}
-
-fn artifact_kind(kind: &RecordKind) -> ArtifactKind {
-    let lower = kind.as_str().to_ascii_lowercase();
-    if lower.contains("kanban") || lower.contains("board") {
-        ArtifactKind::Kanban
-    } else if lower.contains("chat") || lower.contains("message") {
-        ArtifactKind::ChatLog
-    } else if lower.contains("note") || lower == "tab" || lower.contains("document") {
-        ArtifactKind::Note
-    } else {
-        ArtifactKind::File
-    }
-}
+//! [`tilo_desktop::activity::index`] builds it; the tests here exercise it
+//! against the native workspace tree and record store.
+pub use tilo_desktop::activity::index::*;
 
 #[cfg(test)]
 mod tests {
@@ -791,7 +14,11 @@ mod tests {
     use ui::tilo_actions::ActionContext;
 
     use super::*;
-    use crate::shell::state::{Workspace, WorkspaceId};
+    use crate::shell::state::{RoomId, Workspace, WorkspaceId, WorkspaceTree};
+    use automerge::AutoCommit;
+    use std::collections::{BTreeMap, BTreeSet};
+    use ui::record::{RecordCheckout, RecordId, RecordKind, RecordStore};
+    use ui::widget::HistoryEntryId;
 
     struct ColdRecords {
         documents: BTreeMap<RecordId, Vec<u8>>,
@@ -845,437 +72,460 @@ mod tests {
     }
 
     #[test]
-    fn joins_tree_and_room_records_with_action_provenance() {
-        let (mut tree, room) = tree_and_room();
-        let records = RecordStore::in_memory();
-        let kept = action_record(&records, RecordId::for_file("launch.md"), room, 20);
-        let other = action_record(
-            &records,
-            RecordId::for_file("private.md"),
-            RoomId::new(),
-            30,
-        );
-        tree.desktop
-            .room_records_held
-            .entry(room)
-            .or_default()
-            .insert(kept.id.to_string(), kept.kind.to_string());
-
-        let mut index = WorkspaceHistoryIndex::new();
-        assert!(index.refresh(&mut tree, &records, WorkspaceHistoryQuery::for_room(room)));
-        assert!(index.entries().iter().any(|row| {
-            matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &kept.id)
-                && row
-                    .entry
-                    .context
-                    .as_ref()
-                    .and_then(|c| c.purpose.as_deref())
-                    == Some("Recorded the launch decision")
-        }));
-        assert!(!index.entries().iter().any(
-            |row| matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &other.id)
-        ));
-        assert!(index.coverage().is_complete());
-    }
-
-    #[test]
-    fn refresh_is_cached_and_projected_ids_include_document_identity() {
-        let (mut tree, room) = tree_and_room();
-        let records = RecordStore::in_memory();
-        let first = action_record(&records, RecordId::for_tab(1), room, 20);
-        let second = action_record(&records, RecordId::for_tab(2), room, 20);
-        for record in [&first, &second] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn history_projection_joins_tree_and_room_records_with_provenance() {
+        // Phase `joins_tree_and_room_records_with_action_provenance`.
+        {
+            let (mut tree, room) = tree_and_room();
+            let records = RecordStore::in_memory();
+            let kept = action_record(&records, RecordId::for_file("launch.md"), room, 20);
+            let other = action_record(
+                &records,
+                RecordId::for_file("private.md"),
+                RoomId::new(),
+                30,
+            );
             tree.desktop
                 .room_records_held
                 .entry(room)
                 .or_default()
-                .insert(record.id.to_string(), record.kind.to_string());
+                .insert(kept.id.to_string(), kept.kind.to_string());
+
+            let mut index = WorkspaceHistoryIndex::new();
+            assert!(index.refresh(&mut tree, &records, WorkspaceHistoryQuery::for_room(room)));
+            assert!(index.entries().iter().any(|row| {
+                matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &kept.id)
+                    && row
+                        .entry
+                        .context
+                        .as_ref()
+                        .and_then(|c| c.purpose.as_deref())
+                        == Some("Recorded the launch decision")
+            }));
+            assert!(!index.entries().iter().any(
+                |row| matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &other.id)
+            ));
+            assert!(index.coverage().is_complete());
         }
-        let mut index = WorkspaceHistoryIndex::new();
-        let query = WorkspaceHistoryQuery::for_room(room);
-        assert!(index.refresh(&mut tree, &records, query.clone()));
-        let generation = index.generation();
-        assert!(!index.refresh(&mut tree, &records, query));
-        assert_eq!(index.generation(), generation);
 
-        let projected: std::collections::HashSet<HistoryEntryId> = index
-            .entries()
-            .iter()
-            .filter(|row| matches!(row.id.origin, HistoryOrigin::Record { .. }))
-            .map(|row| row.timeline_entry().id)
-            .collect();
-        assert!(projected.len() >= 2);
-        assert!(index.entries().iter().any(|row| {
-            row.id.origin == HistoryOrigin::WorkspaceTree
-                && row.timeline_entry().id == row.id.change
-        }));
-    }
+        // Phase `refresh_is_cached_and_projected_ids_include_document_identity`.
+        {
+            let (mut tree, room) = tree_and_room();
+            let records = RecordStore::in_memory();
+            let first = action_record(&records, RecordId::for_tab(1), room, 20);
+            let second = action_record(&records, RecordId::for_tab(2), room, 20);
+            for record in [&first, &second] {
+                tree.desktop
+                    .room_records_held
+                    .entry(room)
+                    .or_default()
+                    .insert(record.id.to_string(), record.kind.to_string());
+            }
+            let mut index = WorkspaceHistoryIndex::new();
+            let query = WorkspaceHistoryQuery::for_room(room);
+            assert!(index.refresh(&mut tree, &records, query.clone()));
+            let generation = index.generation();
+            assert!(!index.refresh(&mut tree, &records, query));
+            assert_eq!(index.generation(), generation);
 
-    #[test]
-    fn history_observation_preserves_pending_record_action_and_attribution() {
-        let (mut tree, room) = tree_and_room();
-        let records = RecordStore::in_memory();
-        let record = action_record(&records, RecordId::for_tab(72), room, 20);
-        tree.desktop
-            .room_records_held
-            .entry(room)
-            .or_default()
-            .insert(record.id.to_string(), record.kind.to_string());
-        let query = WorkspaceHistoryQuery::for_room(room);
-        let mut index = WorkspaceHistoryIndex::new();
-        assert!(index.refresh(&mut tree, &records, query.clone()));
-        let committed_entries = index.entries().to_vec();
-        let mut frontier = WorkspaceSeenFrontier::default();
-        frontier.mark_seen(&index);
-        let before_heads = records.read(&record.id, AutoCommit::base_heads).unwrap();
-
-        // This is an explicit legacy action rather than an internal component
-        // ActionFrame; its owner commits the whole edit with provenance below.
-        records.with(&record.id, |doc| {
-            doc.put(ROOT, "body", "An unfinished edit").unwrap();
-        });
-        let pending = records.read(&record.id, Transactable::pending_ops).unwrap();
-        assert!(pending > 0);
-        tree.doc.put(ROOT, "status", "unfinished").unwrap();
-        let pending_tree = tree.doc.pending_ops();
-        assert!(!index.refresh(&mut tree, &records, query.clone()));
-        // Also force projection, rather than only exercising the cache hit.
-        index.authors_mut();
-        // A reader may hold the live document while history projects it. Any
-        // mutable RecordStore loan here would finish a component action and
-        // also conflict with this deliberately retained immutable loan.
-        records
-            .read(&record.id, |_| {
-                assert!(index.refresh(&mut tree, &records, query.clone()));
-                assert!(index.unseen(&frontier, &mut tree, &records).is_empty());
-            })
-            .unwrap();
-        assert_eq!(index.entries(), committed_entries);
-        assert!(index.unseen(&frontier, &mut tree, &records).is_empty());
-        assert_eq!(tree.doc.pending_ops(), pending_tree);
-        assert_eq!(
-            records.read(&record.id, |doc| (doc.base_heads(), doc.pending_ops())),
-            Some((before_heads.clone(), pending)),
-        );
-
-        let context = ActionContext::for_resource(
-            "Complete edit",
-            record.id.as_str(),
-            "note",
-            "Decision log",
-        )
-        .with_purpose("Finished the whole edit");
-        let message = context.change_message().unwrap();
-        let committed = records
-            .with(&record.id, |doc| {
-                doc.put(ROOT, "body", "The completed edit").unwrap();
-                doc.commit_with(CommitOptions::default().with_time(40).with_message(message))
-                    .unwrap()
-            })
-            .unwrap();
-        assert!(index.refresh(&mut tree, &records, query));
-        let unseen = index.unseen(&frontier, &mut tree, &records);
-        assert_eq!(unseen.len(), 1);
-        assert_eq!(
-            unseen[0].id.change,
-            ui::history_source::entry_id_from_hash(&committed.to_string())
-        );
-        assert_eq!(
-            unseen[0].entry.context.as_ref().unwrap().purpose.as_deref(),
-            Some("Finished the whole edit")
-        );
-        records
-            .read(&record.id, |doc| {
-                let changes = committed_snapshot(doc).get_changes(&before_heads);
-                assert_eq!(changes.len(), 1, "observation must not split the action");
-                assert_eq!(changes[0].hash(), committed);
-            })
-            .unwrap();
-    }
-
-    #[test]
-    fn reports_referenced_documents_that_are_not_local() {
-        let (mut tree, room) = tree_and_room();
-        let missing = RecordCheckout::new(RecordId::minted(), RecordKind::new("kanban"));
-        tree.desktop
-            .room_records_held
-            .entry(room)
-            .or_default()
-            .insert(missing.id.to_string(), missing.kind.to_string());
-
-        let mut index = WorkspaceHistoryIndex::new();
-        index.refresh(
-            &mut tree,
-            &RecordStore::in_memory(),
-            WorkspaceHistoryQuery::for_room(room),
-        );
-        assert!(!index.coverage().is_complete());
-        assert_eq!(index.coverage().unavailable_records, vec![missing]);
-    }
-
-    #[test]
-    fn indexes_cold_local_history_without_opening_the_record_store() {
-        let (mut tree, room) = tree_and_room();
-        let records = RecordStore::in_memory();
-        let checkout = RecordCheckout::new(RecordId::for_file("cold.md"), RecordKind::new("note"));
-        let mut doc = AutoCommit::new();
-        ui::record::init(&mut doc, &checkout.id, &checkout.kind, &room.to_string());
-        doc.put(&ROOT, "body", "Persisted but not mounted").unwrap();
-        doc.commit_with(CommitOptions::default().with_time(25));
-        let cold = ColdRecords {
-            documents: [(checkout.id.clone(), doc.save())].into_iter().collect(),
-            loads: Cell::new(0),
-        };
-        tree.desktop
-            .room_records_held
-            .entry(room)
-            .or_default()
-            .insert(checkout.id.to_string(), checkout.kind.to_string());
-
-        assert!(records.open_records().is_empty());
-        let mut index = WorkspaceHistoryIndex::new();
-        index.refresh_with_local_records(
-            &mut tree,
-            &records,
-            &cold,
-            WorkspaceHistoryQuery::for_room(room),
-        );
-
-        assert!(records.open_records().is_empty());
-        assert!(cold.loads.get() > 0);
-        assert!(index.coverage().is_complete());
-        assert!(index.entries().iter().any(|row| {
-            matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &checkout.id)
-        }));
-    }
-
-    #[test]
-    fn corrupt_cold_record_remains_explicitly_unavailable() {
-        let (mut tree, room) = tree_and_room();
-        let records = RecordStore::in_memory();
-        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
-        let cold = ColdRecords {
-            documents: [(checkout.id.clone(), b"not automerge".to_vec())]
-                .into_iter()
-                .collect(),
-            loads: Cell::new(0),
-        };
-        tree.desktop
-            .room_records_held
-            .entry(room)
-            .or_default()
-            .insert(checkout.id.to_string(), checkout.kind.to_string());
-
-        let mut index = WorkspaceHistoryIndex::new();
-        index.refresh_with_local_records(
-            &mut tree,
-            &records,
-            &cold,
-            WorkspaceHistoryQuery::for_room(room),
-        );
-        assert_eq!(index.coverage().unavailable_records, vec![checkout]);
-        assert!(records.open_records().is_empty());
-    }
-
-    #[test]
-    fn causal_frontier_detects_new_record_changes_and_scoped_tree_exceptions() {
-        let (mut tree, room) = tree_and_room();
-        let records = RecordStore::in_memory();
-        let record = action_record(&records, RecordId::for_tab(44), room, 20);
-        tree.desktop
-            .room_records_held
-            .entry(room)
-            .or_default()
-            .insert(record.id.to_string(), record.kind.to_string());
-        let query = WorkspaceHistoryQuery::for_room(room);
-        let mut index = WorkspaceHistoryIndex::new();
-        index.refresh(&mut tree, &records, query.clone());
-        let mut frontier = WorkspaceSeenFrontier::default();
-        frontier.mark_seen(&index);
-        assert!(index.unseen(&frontier, &mut tree, &records).is_empty());
-
-        tree.doc.put(&ROOT, "status", "review").unwrap();
-        tree.doc.commit_with(CommitOptions::default().with_time(30));
-        records.with(&record.id, |doc| {
-            doc.put(&ROOT, "body", "A newer decision").unwrap();
-            doc.commit_with(CommitOptions::default().with_time(40));
-        });
-        index.refresh(&mut tree, &records, query);
-        let unseen = index.unseen(&frontier, &mut tree, &records);
-        assert_eq!(unseen.len(), 2);
-        assert!(
-            unseen
+            let projected: std::collections::HashSet<HistoryEntryId> = index
+                .entries()
                 .iter()
-                .any(|row| row.id.origin == HistoryOrigin::WorkspaceTree)
-        );
-        assert!(unseen.iter().any(
-            |row| matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &record.id)
-        ));
-    }
+                .filter(|row| matches!(row.id.origin, HistoryOrigin::Record { .. }))
+                .map(|row| row.timeline_entry().id)
+                .collect();
+            assert!(projected.len() >= 2);
+            assert!(index.entries().iter().any(|row| {
+                row.id.origin == HistoryOrigin::DesktopTree
+                    && row.timeline_entry().id == row.id.change
+            }));
+        }
 
-    #[test]
-    fn causal_frontier_persistence_round_trips_full_heads() {
-        let (mut tree, room) = tree_and_room();
-        let records = RecordStore::in_memory();
-        let mut index = WorkspaceHistoryIndex::new();
-        index.refresh(&mut tree, &records, WorkspaceHistoryQuery::for_room(room));
-        let mut frontier = WorkspaceSeenFrontier::default();
-        frontier.mark_seen(&index);
-        let encoded = serde_json::to_string(&frontier).unwrap();
-        let decoded: WorkspaceSeenFrontier = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(decoded, frontier);
-        assert!(decoded.documents["workspace-tree"].heads.is_empty());
-        assert!(!decoded.documents["workspace-tree"].exceptions.is_empty());
-    }
-
-    #[test]
-    fn mark_seen_retains_an_origin_omitted_from_the_current_index() {
-        let (mut tree, room) = tree_and_room();
-        let records = RecordStore::in_memory();
-        let mut index = WorkspaceHistoryIndex::new();
-        index.refresh(&mut tree, &records, WorkspaceHistoryQuery::for_room(room));
-        let mut frontier = WorkspaceSeenFrontier::default();
-        frontier.documents.insert(
-            "record:uuid:temporarily-unavailable".to_string(),
-            DocumentSeenFrontier {
-                heads: vec!["11".repeat(32)],
-                exceptions: BTreeSet::new(),
-            },
-        );
-        frontier.mark_seen(&index);
-        assert_eq!(
-            frontier.documents["record:uuid:temporarily-unavailable"].heads,
-            ["11".repeat(32)]
-        );
-    }
-
-    #[test]
-    fn bounded_room_projection_unions_prior_tree_exceptions() {
-        let (mut tree, room) = tree_and_room();
-        let records = RecordStore::in_memory();
-        let query = WorkspaceHistoryQuery {
-            room: Some(room),
-            limit: 1,
-            ..WorkspaceHistoryQuery::default()
-        };
-        let mut index = WorkspaceHistoryIndex::new();
-        index.refresh(&mut tree, &records, query.clone());
-        let mut frontier = WorkspaceSeenFrontier::default();
-        frontier.mark_seen(&index);
-        let before = frontier.documents["workspace-tree"].exceptions.clone();
-        assert_eq!(before.len(), 1);
-
-        tree.doc.put(&ROOT, "status", "new").unwrap();
-        tree.doc.commit_with(CommitOptions::default().with_time(50));
-        index.refresh(&mut tree, &records, query);
-        frontier.mark_seen(&index);
-        let after = &frontier.documents["workspace-tree"].exceptions;
-        assert_eq!(after.len(), 2);
-        assert!(before.is_subset(after));
-    }
-
-    #[test]
-    fn named_range_cannot_absorb_an_interleaved_foreign_record() {
-        let (mut tree, room) = tree_and_room();
-        let records = RecordStore::in_memory();
-        let record = action_record(&records, RecordId::for_tab(55), room, 20);
-        tree.desktop
-            .room_records_held
-            .entry(room)
-            .or_default()
-            .insert(record.id.to_string(), record.kind.to_string());
-        tree.doc.put(&ROOT, "status", "done").unwrap();
-        tree.doc.commit_with(CommitOptions::default().with_time(30));
-        let mut index = WorkspaceHistoryIndex::new();
-        index.refresh(&mut tree, &records, WorkspaceHistoryQuery::for_room(room));
-        let tree_ids: Vec<_> = index
-            .entries()
-            .iter()
-            .filter(|row| row.id.origin == HistoryOrigin::WorkspaceTree)
-            .map(|row| row.timeline_entry().id)
-            .collect();
-        assert!(tree_ids.len() >= 2);
-        let range = ui::NamedRange {
-            id: "tree-band".into(),
-            label: "Workspace work".into(),
-            start: tree_ids[0],
-            end: tree_ids.last().copied(),
-            named_by: None,
-            created: std::time::SystemTime::UNIX_EPOCH,
-        };
-        assert!(index.origin_safe_named_ranges(&[range]).is_empty());
-    }
-
-    #[test]
-    fn aggregate_is_oldest_first_while_retaining_the_newest_bound() {
-        let (mut tree, room) = tree_and_room();
-        let records = RecordStore::in_memory();
-        for (name, time) in [("older.md", 10), ("newer.md", 20)] {
-            let record = action_record(&records, RecordId::for_file(name), room, time);
+        // Phase `history_observation_preserves_pending_record_action_and_attribution`.
+        {
+            let (mut tree, room) = tree_and_room();
+            let records = RecordStore::in_memory();
+            let record = action_record(&records, RecordId::for_tab(72), room, 20);
             tree.desktop
                 .room_records_held
                 .entry(room)
                 .or_default()
                 .insert(record.id.to_string(), record.kind.to_string());
+            let query = WorkspaceHistoryQuery::for_room(room);
+            let mut index = WorkspaceHistoryIndex::new();
+            assert!(index.refresh(&mut tree, &records, query.clone()));
+            let committed_entries = index.entries().to_vec();
+            let mut frontier = WorkspaceSeenFrontier::default();
+            frontier.mark_seen(&index);
+            let before_heads = records.read(&record.id, AutoCommit::base_heads).unwrap();
+
+            // This is an explicit legacy action rather than an internal component
+            // ActionFrame; its owner commits the whole edit with provenance below.
+            records.with(&record.id, |doc| {
+                doc.put(ROOT, "body", "An unfinished edit").unwrap();
+            });
+            let pending = records.read(&record.id, Transactable::pending_ops).unwrap();
+            assert!(pending > 0);
+            tree.doc.put(ROOT, "status", "unfinished").unwrap();
+            let pending_tree = tree.doc.pending_ops();
+            assert!(!index.refresh(&mut tree, &records, query.clone()));
+            // Also force projection, rather than only exercising the cache hit.
+            index.authors_mut();
+            // A reader may hold the live document while history projects it. Any
+            // mutable RecordStore loan here would finish a component action and
+            // also conflict with this deliberately retained immutable loan.
+            records
+                .read(&record.id, |_| {
+                    assert!(index.refresh(&mut tree, &records, query.clone()));
+                    assert!(index.unseen(&frontier, &mut tree, &records).is_empty());
+                })
+                .unwrap();
+            assert_eq!(index.entries(), committed_entries);
+            assert!(index.unseen(&frontier, &mut tree, &records).is_empty());
+            assert_eq!(tree.doc.pending_ops(), pending_tree);
+            assert_eq!(
+                records.read(&record.id, |doc| (doc.base_heads(), doc.pending_ops())),
+                Some((before_heads.clone(), pending)),
+            );
+
+            let context = ActionContext::for_resource(
+                "Complete edit",
+                record.id.as_str(),
+                "note",
+                "Decision log",
+            )
+            .with_purpose("Finished the whole edit");
+            let message = context.change_message().unwrap();
+            let committed = records
+                .with(&record.id, |doc| {
+                    doc.put(ROOT, "body", "The completed edit").unwrap();
+                    doc.commit_with(CommitOptions::default().with_time(40).with_message(message))
+                        .unwrap()
+                })
+                .unwrap();
+            assert!(index.refresh(&mut tree, &records, query));
+            let unseen = index.unseen(&frontier, &mut tree, &records);
+            assert_eq!(unseen.len(), 1);
+            assert_eq!(
+                unseen[0].id.change,
+                ui::history_source::entry_id_from_hash(&committed.to_string())
+            );
+            assert_eq!(
+                unseen[0].entry.context.as_ref().unwrap().purpose.as_deref(),
+                Some("Finished the whole edit")
+            );
+            records
+                .read(&record.id, |doc| {
+                    let mut settled = doc.clone();
+                    settled.rollback();
+                    let changes = settled.get_changes(&before_heads);
+                    assert_eq!(changes.len(), 1, "observation must not split the action");
+                    assert_eq!(changes[0].hash(), committed);
+                })
+                .unwrap();
         }
-        let mut index = WorkspaceHistoryIndex::new();
-        index.refresh(
-            &mut tree,
-            &records,
-            WorkspaceHistoryQuery {
-                room: Some(room),
-                limit: 2,
-                ..WorkspaceHistoryQuery::default()
-            },
-        );
-        let times: Vec<_> = index
-            .entries()
-            .iter()
-            .map(|row| row.entry.timestamp)
-            .collect();
-        assert!(times.windows(2).all(|pair| pair[0] <= pair[1]));
-        assert_eq!(times.len(), 2);
+
+        // Phase `reports_referenced_documents_that_are_not_local`.
+        {
+            let (mut tree, room) = tree_and_room();
+            let missing = RecordCheckout::new(RecordId::minted(), RecordKind::new("kanban"));
+            tree.desktop
+                .room_records_held
+                .entry(room)
+                .or_default()
+                .insert(missing.id.to_string(), missing.kind.to_string());
+
+            let mut index = WorkspaceHistoryIndex::new();
+            index.refresh(
+                &mut tree,
+                &RecordStore::in_memory(),
+                WorkspaceHistoryQuery::for_room(room),
+            );
+            assert!(!index.coverage().is_complete());
+            assert_eq!(index.coverage().unavailable_records, vec![missing]);
+        }
+
+        // Phase `multi_workspace_scope_excludes_open_records_outside_the_tree`.
+        {
+            let (mut tree, room) = tree_and_room();
+            let represented = RoomId::new();
+            let records = RecordStore::in_memory();
+            let first = action_record(&records, RecordId::for_file("first.md"), room, 20);
+            let second = action_record(&records, RecordId::for_file("second.md"), represented, 30);
+            let private = action_record(
+                &records,
+                RecordId::for_file("private.md"),
+                RoomId::new(),
+                40,
+            );
+            tree.desktop
+                .room_records_held
+                .entry(room)
+                .or_default()
+                .insert(first.id.to_string(), first.kind.to_string());
+            tree.desktop
+                .room_records_held
+                .entry(represented)
+                .or_default()
+                .insert(second.id.to_string(), second.kind.to_string());
+
+            let mut index = WorkspaceHistoryIndex::new();
+            index.refresh(
+                &mut tree,
+                &records,
+                WorkspaceHistoryQuery::for_rooms([room, represented]),
+            );
+
+            assert!(index.entries().iter().any(
+                |row| matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &first.id)
+            ));
+            assert!(index.entries().iter().any(
+                |row| matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &second.id)
+            ));
+            assert!(!index.entries().iter().any(
+                |row| matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &private.id)
+            ));
+        }
     }
 
     #[test]
-    fn multi_workspace_scope_excludes_open_records_outside_the_tree() {
-        let (mut tree, room) = tree_and_room();
-        let represented = RoomId::new();
-        let records = RecordStore::in_memory();
-        let first = action_record(&records, RecordId::for_file("first.md"), room, 20);
-        let second = action_record(&records, RecordId::for_file("second.md"), represented, 30);
-        let private = action_record(
-            &records,
-            RecordId::for_file("private.md"),
-            RoomId::new(),
-            40,
-        );
-        tree.desktop
-            .room_records_held
-            .entry(room)
-            .or_default()
-            .insert(first.id.to_string(), first.kind.to_string());
-        tree.desktop
-            .room_records_held
-            .entry(represented)
-            .or_default()
-            .insert(second.id.to_string(), second.kind.to_string());
+    fn cold_history_indexes_without_the_record_store_and_marks_corruption() {
+        // Phase `indexes_cold_local_history_without_opening_the_record_store`.
+        {
+            let (mut tree, room) = tree_and_room();
+            let records = RecordStore::in_memory();
+            let checkout =
+                RecordCheckout::new(RecordId::for_file("cold.md"), RecordKind::new("note"));
+            let mut doc = AutoCommit::new();
+            ui::record::init(&mut doc, &checkout.id, &checkout.kind, &room.to_string());
+            doc.put(&ROOT, "body", "Persisted but not mounted").unwrap();
+            doc.commit_with(CommitOptions::default().with_time(25));
+            let cold = ColdRecords {
+                documents: [(checkout.id.clone(), doc.save())].into_iter().collect(),
+                loads: Cell::new(0),
+            };
+            tree.desktop
+                .room_records_held
+                .entry(room)
+                .or_default()
+                .insert(checkout.id.to_string(), checkout.kind.to_string());
 
-        let mut index = WorkspaceHistoryIndex::new();
-        index.refresh(
-            &mut tree,
-            &records,
-            WorkspaceHistoryQuery::for_rooms([room, represented]),
-        );
+            assert!(records.open_records().is_empty());
+            let mut index = WorkspaceHistoryIndex::new();
+            index.refresh_with_local_records(
+                &mut tree,
+                &records,
+                &cold,
+                WorkspaceHistoryQuery::for_room(room),
+            );
 
-        assert!(index.entries().iter().any(
-            |row| matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &first.id)
-        ));
-        assert!(index.entries().iter().any(
-            |row| matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &second.id)
-        ));
-        assert!(!index.entries().iter().any(
-            |row| matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &private.id)
-        ));
+            assert!(records.open_records().is_empty());
+            assert!(cold.loads.get() > 0);
+            assert!(index.coverage().is_complete());
+            assert!(index.entries().iter().any(|row| {
+                matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &checkout.id)
+            }));
+        }
+
+        // Phase `corrupt_cold_record_remains_explicitly_unavailable`.
+        {
+            let (mut tree, room) = tree_and_room();
+            let records = RecordStore::in_memory();
+            let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+            let cold = ColdRecords {
+                documents: [(checkout.id.clone(), b"not automerge".to_vec())]
+                    .into_iter()
+                    .collect(),
+                loads: Cell::new(0),
+            };
+            tree.desktop
+                .room_records_held
+                .entry(room)
+                .or_default()
+                .insert(checkout.id.to_string(), checkout.kind.to_string());
+
+            let mut index = WorkspaceHistoryIndex::new();
+            index.refresh_with_local_records(
+                &mut tree,
+                &records,
+                &cold,
+                WorkspaceHistoryQuery::for_room(room),
+            );
+            assert_eq!(index.coverage().unavailable_records, vec![checkout]);
+            assert!(records.open_records().is_empty());
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn causal_frontier_detects_persists_and_unions_changes() {
+        // Phase `causal_frontier_detects_new_record_changes_and_scoped_tree_exceptions`.
+        {
+            let (mut tree, room) = tree_and_room();
+            let records = RecordStore::in_memory();
+            let record = action_record(&records, RecordId::for_tab(44), room, 20);
+            tree.desktop
+                .room_records_held
+                .entry(room)
+                .or_default()
+                .insert(record.id.to_string(), record.kind.to_string());
+            let query = WorkspaceHistoryQuery::for_room(room);
+            let mut index = WorkspaceHistoryIndex::new();
+            index.refresh(&mut tree, &records, query.clone());
+            let mut frontier = WorkspaceSeenFrontier::default();
+            frontier.mark_seen(&index);
+            assert!(index.unseen(&frontier, &mut tree, &records).is_empty());
+
+            tree.doc.put(&ROOT, "status", "review").unwrap();
+            tree.doc.commit_with(CommitOptions::default().with_time(30));
+            records.with(&record.id, |doc| {
+                doc.put(&ROOT, "body", "A newer decision").unwrap();
+                doc.commit_with(CommitOptions::default().with_time(40));
+            });
+            index.refresh(&mut tree, &records, query);
+            let unseen = index.unseen(&frontier, &mut tree, &records);
+            assert_eq!(unseen.len(), 2);
+            assert!(
+                unseen
+                    .iter()
+                    .any(|row| row.id.origin == HistoryOrigin::DesktopTree)
+            );
+            assert!(unseen.iter().any(
+                |row| matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &record.id)
+            ));
+        }
+
+        // Phase `causal_frontier_persistence_round_trips_full_heads`.
+        {
+            let (mut tree, room) = tree_and_room();
+            let records = RecordStore::in_memory();
+            let mut index = WorkspaceHistoryIndex::new();
+            index.refresh(&mut tree, &records, WorkspaceHistoryQuery::for_room(room));
+            let mut frontier = WorkspaceSeenFrontier::default();
+            frontier.mark_seen(&index);
+            let encoded = serde_json::to_string(&frontier).unwrap();
+            let decoded: WorkspaceSeenFrontier = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded, frontier);
+            assert!(decoded.documents["workspace-tree"].heads.is_empty());
+            assert!(!decoded.documents["workspace-tree"].exceptions.is_empty());
+        }
+
+        // Phase `mark_seen_retains_an_origin_omitted_from_the_current_index`.
+        {
+            let (mut tree, room) = tree_and_room();
+            let records = RecordStore::in_memory();
+            let mut index = WorkspaceHistoryIndex::new();
+            index.refresh(&mut tree, &records, WorkspaceHistoryQuery::for_room(room));
+            let mut frontier = WorkspaceSeenFrontier::default();
+            frontier.documents.insert(
+                "record:uuid:temporarily-unavailable".to_string(),
+                DocumentSeenFrontier {
+                    heads: vec!["11".repeat(32)],
+                    exceptions: BTreeSet::new(),
+                },
+            );
+            frontier.mark_seen(&index);
+            assert_eq!(
+                frontier.documents["record:uuid:temporarily-unavailable"].heads,
+                ["11".repeat(32)]
+            );
+        }
+
+        // Phase `bounded_room_projection_unions_prior_tree_exceptions`.
+        {
+            let (mut tree, room) = tree_and_room();
+            let records = RecordStore::in_memory();
+            let query = WorkspaceHistoryQuery {
+                room: Some(room),
+                limit: 1,
+                ..WorkspaceHistoryQuery::default()
+            };
+            let mut index = WorkspaceHistoryIndex::new();
+            index.refresh(&mut tree, &records, query.clone());
+            let mut frontier = WorkspaceSeenFrontier::default();
+            frontier.mark_seen(&index);
+            let before = frontier.documents["workspace-tree"].exceptions.clone();
+            assert_eq!(before.len(), 1);
+
+            tree.doc.put(&ROOT, "status", "new").unwrap();
+            tree.doc.commit_with(CommitOptions::default().with_time(50));
+            index.refresh(&mut tree, &records, query);
+            frontier.mark_seen(&index);
+            let after = &frontier.documents["workspace-tree"].exceptions;
+            assert_eq!(after.len(), 2);
+            assert!(before.is_subset(after));
+        }
+    }
+
+    #[test]
+    fn history_ranges_stay_contiguous_and_aggregate_oldest_first() {
+        // Phase `named_range_cannot_absorb_an_interleaved_foreign_record`.
+        {
+            let (mut tree, room) = tree_and_room();
+            let records = RecordStore::in_memory();
+            let record = action_record(&records, RecordId::for_tab(55), room, 20);
+            tree.desktop
+                .room_records_held
+                .entry(room)
+                .or_default()
+                .insert(record.id.to_string(), record.kind.to_string());
+            tree.doc.put(&ROOT, "status", "done").unwrap();
+            tree.doc.commit_with(CommitOptions::default().with_time(30));
+            let mut index = WorkspaceHistoryIndex::new();
+            index.refresh(&mut tree, &records, WorkspaceHistoryQuery::for_room(room));
+            let tree_ids: Vec<_> = index
+                .entries()
+                .iter()
+                .filter(|row| row.id.origin == HistoryOrigin::DesktopTree)
+                .map(|row| row.timeline_entry().id)
+                .collect();
+            assert!(tree_ids.len() >= 2);
+            let range = ui::NamedRange {
+                id: "tree-band".into(),
+                label: "Workspace work".into(),
+                start: tree_ids[0],
+                end: tree_ids.last().copied(),
+                named_by: None,
+                created: std::time::SystemTime::UNIX_EPOCH,
+            };
+            assert!(index.origin_safe_named_ranges(&[range]).is_empty());
+        }
+
+        // Phase `aggregate_is_oldest_first_while_retaining_the_newest_bound`.
+        {
+            let (mut tree, room) = tree_and_room();
+            let records = RecordStore::in_memory();
+            for (name, time) in [("older.md", 10), ("newer.md", 20)] {
+                let record = action_record(&records, RecordId::for_file(name), room, time);
+                tree.desktop
+                    .room_records_held
+                    .entry(room)
+                    .or_default()
+                    .insert(record.id.to_string(), record.kind.to_string());
+            }
+            let mut index = WorkspaceHistoryIndex::new();
+            index.refresh(
+                &mut tree,
+                &records,
+                WorkspaceHistoryQuery {
+                    room: Some(room),
+                    limit: 2,
+                    ..WorkspaceHistoryQuery::default()
+                },
+            );
+            let times: Vec<_> = index
+                .entries()
+                .iter()
+                .map(|row| row.entry.timestamp)
+                .collect();
+            assert!(times.windows(2).all(|pair| pair[0] <= pair[1]));
+            assert_eq!(times.len(), 2);
+        }
     }
 }

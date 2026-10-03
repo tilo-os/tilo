@@ -8,10 +8,16 @@
 //!
 //! Every reply closes its connection, so a client never reuses a socket across
 //! scripted replies and the request order is exactly the reply order.
+//!
+//! [`Responder::handle`] answers with a function instead of a script, for
+//! tests that need a stateful fake server (a `WebDAV` store, say). Each
+//! connection is served on its own thread, so concurrent clients work.
 
 use std::fmt::Write as _;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
@@ -68,13 +74,18 @@ impl Reply {
             200 => "OK",
             201 => "Created",
             204 => "No Content",
+            206 => "Partial Content",
             207 => "Multi-Status",
             301 => "Moved Permanently",
             302 => "Found",
             401 => "Unauthorized",
             403 => "Forbidden",
             404 => "Not Found",
+            405 => "Method Not Allowed",
+            409 => "Conflict",
             412 => "Precondition Failed",
+            416 => "Range Not Satisfiable",
+            507 => "Insufficient Storage",
             _ => "Response",
         }
     }
@@ -128,6 +139,7 @@ pub struct Responder {
     listener: TcpListener,
     port: u16,
     requests: Receiver<Request>,
+    stop: Option<Arc<AtomicBool>>,
 }
 
 impl Responder {
@@ -151,7 +163,63 @@ impl Responder {
             listener,
             port,
             requests,
+            stop: None,
         }
+    }
+
+    /// Answer every request with `handler` until the responder is dropped.
+    /// `None` closes the connection without a response, the way a server
+    /// that goes away mid-request looks to a client. Requests are also
+    /// recorded for [`Responder::next_request`].
+    ///
+    /// # Panics
+    /// If the loopback listener cannot be created.
+    #[allow(
+        clippy::expect_used,
+        reason = "a test fixture that cannot bind loopback has no meaningful fallback"
+    )]
+    pub fn handle<F>(handler: F) -> Self
+    where
+        F: Fn(&Request) -> Option<Reply> + Send + Sync + 'static,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback responder");
+        let port = listener.local_addr().expect("responder address").port();
+        let (sender, requests) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker = listener.try_clone().expect("clone responder listener");
+        let handler = Arc::new(handler);
+        let stopping = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            for stream in worker.incoming() {
+                if stopping.load(Ordering::SeqCst) {
+                    return;
+                }
+                let Ok(mut stream) = stream else { continue };
+                let handler = Arc::clone(&handler);
+                let sender = sender.clone();
+                std::thread::spawn(move || {
+                    let Some(request) = read_request(&mut stream) else {
+                        return;
+                    };
+                    let reply = handler(&request);
+                    let _ = sender.send(request);
+                    if let Some(reply) = reply {
+                        let _ = reply.write_to(&mut stream);
+                    }
+                });
+            }
+        });
+        Self {
+            listener,
+            port,
+            requests,
+            stop: Some(stop),
+        }
+    }
+
+    /// Every request recorded so far that has not been taken yet.
+    pub fn drain_requests(&self) -> Vec<Request> {
+        self.requests.try_iter().collect()
     }
 
     /// A responder that answers nothing, for asserting that a client never
@@ -205,6 +273,16 @@ impl Responder {
     }
 }
 
+impl Drop for Responder {
+    fn drop(&mut self) {
+        if let Some(stop) = &self.stop {
+            stop.store(true, Ordering::SeqCst);
+            // Wake the accept loop so it sees the flag and exits.
+            let _ = TcpStream::connect(("127.0.0.1", self.port));
+        }
+    }
+}
+
 fn serve(listener: &TcpListener, replies: Vec<Reply>, sender: &Sender<Request>) {
     for reply in replies {
         let Ok((mut stream, _)) = listener.accept() else {
@@ -250,6 +328,19 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
             Some((name.trim().to_owned(), value.trim().to_owned()))
         })
         .collect();
+    let chunked = headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("transfer-encoding") && value.eq_ignore_ascii_case("chunked")
+    });
+    if chunked {
+        let mut rest = bytes.get(header_end..)?.to_vec();
+        let body = read_chunked(stream, &mut rest)?;
+        return Some(Request {
+            method,
+            target,
+            headers,
+            body,
+        });
+    }
     let length = headers
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
@@ -274,6 +365,43 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
     })
 }
 
+/// Decode a chunked body; `buffered` holds bytes already read past the head.
+fn read_chunked(stream: &mut TcpStream, buffered: &mut Vec<u8>) -> Option<Vec<u8>> {
+    let mut body = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let line_end = loop {
+            if let Some(position) = buffered.windows(2).position(|window| window == b"\r\n") {
+                break position;
+            }
+            let read = stream.read(&mut buffer).ok()?;
+            if read == 0 {
+                return None;
+            }
+            buffered.extend_from_slice(buffer.get(..read)?);
+        };
+        let line = String::from_utf8_lossy(buffered.get(..line_end)?).into_owned();
+        let size = usize::from_str_radix(line.split(';').next()?.trim(), 16).ok()?;
+        let start = line_end.checked_add(2)?;
+        let needed = start.checked_add(size)?.checked_add(2)?;
+        while buffered.len() < needed {
+            let read = stream.read(&mut buffer).ok()?;
+            if read == 0 {
+                return None;
+            }
+            buffered.extend_from_slice(buffer.get(..read)?);
+        }
+        body.extend_from_slice(buffered.get(start..start.checked_add(size)?)?);
+        buffered.drain(..needed);
+        if size == 0 {
+            return Some(body);
+        }
+        if body.len() > MAX_REQUEST_BYTES {
+            return None;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,45 +414,80 @@ mod tests {
         response
     }
 
+    /// Answers go out in order with requests recorded, a body streams without Content-Length, and a
+    /// silent responder detects no connection.
     #[test]
-    fn answers_in_order_and_records_requests() {
-        let responder = Responder::start(vec![
-            Reply::status(207).header("ETag", "\"v1\"").body("<x/>"),
-            Reply::status(204),
-        ]);
-        let first = roundtrip(
-            responder.port(),
-            "PROPFIND /dav/ HTTP/1.1\r\nDepth: 1\r\nContent-Length: 4\r\n\r\nbody",
-        );
-        assert!(
-            first.starts_with("HTTP/1.1 207 Multi-Status\r\n"),
-            "{first}"
-        );
-        assert!(first.contains("ETag: \"v1\""));
-        assert!(first.ends_with("<x/>"));
-        let second = roundtrip(responder.port(), "DELETE /dav/a HTTP/1.1\r\n\r\n");
-        assert!(second.starts_with("HTTP/1.1 204"));
+    fn the_test_server_answers_streams_and_detects_silence() {
+        // Phase: answers_in_order_and_records_requests.
+        {
+            let responder = Responder::start(vec![
+                Reply::status(207).header("ETag", "\"v1\"").body("<x/>"),
+                Reply::status(204),
+            ]);
+            let first = roundtrip(
+                responder.port(),
+                "PROPFIND /dav/ HTTP/1.1\r\nDepth: 1\r\nContent-Length: 4\r\n\r\nbody",
+            );
+            assert!(
+                first.starts_with("HTTP/1.1 207 Multi-Status\r\n"),
+                "{first}"
+            );
+            assert!(first.contains("ETag: \"v1\""));
+            assert!(first.ends_with("<x/>"));
+            let second = roundtrip(responder.port(), "DELETE /dav/a HTTP/1.1\r\n\r\n");
+            assert!(second.starts_with("HTTP/1.1 204"));
 
-        let propfind = responder.next_request();
-        assert_eq!(propfind.method, "PROPFIND");
-        assert_eq!(propfind.target, "/dav/");
-        assert_eq!(propfind.header("depth"), Some("1"));
-        assert_eq!(propfind.body_text(), "body");
-        assert_eq!(responder.next_request().method, "DELETE");
+            let propfind = responder.next_request();
+            assert_eq!(propfind.method, "PROPFIND");
+            assert_eq!(propfind.target, "/dav/");
+            assert_eq!(propfind.header("depth"), Some("1"));
+            assert_eq!(propfind.body_text(), "body");
+            assert_eq!(responder.next_request().method, "DELETE");
+        }
+
+        // Phase: streams_a_body_without_content_length.
+        {
+            let responder = Responder::start(vec![
+                Reply::status(200).body("abc").without_content_length(),
+            ]);
+            let response = roundtrip(responder.port(), "GET / HTTP/1.1\r\n\r\n");
+            assert!(!response.to_ascii_lowercase().contains("content-length"));
+            assert!(response.ends_with("abc"));
+        }
+
+        // Phase: silent_responder_detects_no_connection.
+        {
+            Responder::silent().assert_untouched();
+        }
     }
 
     #[test]
-    fn streams_a_body_without_content_length() {
-        let responder = Responder::start(vec![
-            Reply::status(200).body("abc").without_content_length(),
-        ]);
-        let response = roundtrip(responder.port(), "GET / HTTP/1.1\r\n\r\n");
-        assert!(!response.to_ascii_lowercase().contains("content-length"));
-        assert!(response.ends_with("abc"));
-    }
-
-    #[test]
-    fn silent_responder_detects_no_connection() {
-        Responder::silent().assert_untouched();
+    fn a_handler_answers_concurrent_and_chunked_requests() {
+        let responder = Responder::handle(|request| {
+            (request.method != "DROP").then(|| {
+                Reply::status(200).body(format!("{}:{}", request.target, request.body_text()))
+            })
+        });
+        let port = responder.port();
+        let threads: Vec<_> = (0..4)
+            .map(|i| {
+                std::thread::spawn(move || {
+                    roundtrip(
+                        port,
+                        &format!("GET /{i} HTTP/1.1\r\nContent-Length: 1\r\n\r\nx"),
+                    )
+                })
+            })
+            .collect();
+        for (i, thread) in threads.into_iter().enumerate() {
+            assert!(thread.join().unwrap().ends_with(&format!("/{i}:x")));
+        }
+        let chunked = roundtrip(
+            port,
+            "PUT /c HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n",
+        );
+        assert!(chunked.ends_with("/c:abcde"), "{chunked}");
+        assert_eq!(roundtrip(port, "DROP / HTTP/1.1\r\n\r\n"), "");
+        assert_eq!(responder.drain_requests().len(), 6);
     }
 }

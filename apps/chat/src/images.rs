@@ -363,17 +363,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn demo_scheme_synthesises_decodable_png() {
+    fn fetcher_decodes_demo_images_and_returns_none_for_unknown_sources() {
         let bytes = fetcher(ContentStore::memory())(DEMO_CALL_GRID).expect("demo image bytes");
         // Must be a real PNG the ui ImageStore can decode.
         let img = image::load_from_memory(&bytes).expect("valid png");
-        assert!(img.width() > 0 && img.height() > 0);
-        assert!(fetcher(ContentStore::memory())(DEMO_SHARED_SHOT).is_some());
-    }
+        assert!(img.width() > 0 && img.height() > 0, "case demo call grid");
+        assert!(
+            fetcher(ContentStore::memory())(DEMO_SHARED_SHOT).is_some(),
+            "case demo shared shot"
+        );
 
-    #[test]
-    fn missing_file_is_none_not_panic() {
-        assert!(fetcher(ContentStore::memory())("/var/workspace/does/not/exist.png").is_none());
-        assert!(fetcher(ContentStore::memory())("tilo-demo://unknown").is_none());
+        // Missing file is None, not a panic.
+        assert!(
+            fetcher(ContentStore::memory())("/var/workspace/does/not/exist.png").is_none(),
+            "case missing file"
+        );
+        assert!(
+            fetcher(ContentStore::memory())("tilo-demo://unknown").is_none(),
+            "case unknown demo scheme"
+        );
     }
 }

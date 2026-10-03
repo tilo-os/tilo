@@ -19,8 +19,7 @@ fn managed_driver() -> ui::headless::Driver {
 }
 
 fn managed_driver_for(root: Box<dyn Widget>) -> ui::headless::Driver {
-    let definition = root
-        .document_history_definition()
+    let definition = ui::history_mode::capability::document_history_definition(root.as_ref())
         .expect("Logs root must declare framework History");
     let scope = &definition.scopes[0];
     let HistoryPresentation::External { reason } = scope.presentation else {
@@ -68,18 +67,6 @@ fn resource_snapshot(driver: &ui::headless::Driver) -> Vec<(String, String, Vec<
 }
 
 #[test]
-fn production_root_type_declares_logs_history_without_querying_journal() {
-    let definition = offline_root()
-        .document_history_definition()
-        .expect("production Logs root type declares History");
-    assert_eq!(definition.app_id, "so.tilo.logs");
-    assert!(std::ptr::eq(
-        definition,
-        std::ptr::addr_of!(crate::framework_history::HISTORY)
-    ));
-}
-
-#[test]
 fn managed_history_is_truthful_inert_and_returns_to_the_same_logs_view() {
     let mut driver = managed_driver();
     let live = driver.inspection_json().unwrap();
@@ -122,17 +109,41 @@ fn managed_history_is_truthful_inert_and_returns_to_the_same_logs_view() {
     assert_ne!(returned, history);
 }
 
-fn invoke(app: &mut crate::LogsApp, operation: &crate::actions::LogsOperation) {
+fn invoke_effect(app: &mut crate::LogsApp, operation: &crate::actions::LogsOperation) {
     let payload = serde_json::to_vec(&operation).unwrap();
     assert!(
-        Widget::invoke_resource_operation(
+        Widget::start_operation(
             app,
-            OperationKind::Effect,
-            crate::actions::LOGS_OPERATION_TYPE,
-            &payload,
-            &automerge::AutoCommit::new(),
-            &automerge::ROOT,
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                OperationKind::Effect,
+                crate::actions::LOGS_OPERATION_TYPE,
+                &payload
+            ),
+            &mut automerge::AutoCommit::new(),
+            &automerge::ROOT
         )
+        .map(|started| started.is_some())
+        .unwrap()
+    );
+}
+
+fn invoke_select_view(app: &mut crate::LogsApp, entry_id: String) {
+    let payload =
+        serde_json::to_vec(&crate::actions::LogsOperation::SelectEntry { entry_id }).unwrap();
+    assert!(
+        Widget::start_operation(
+            app,
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                OperationKind::View,
+                crate::actions::LOGS_OPERATION_TYPE,
+                &payload
+            ),
+            &mut automerge::AutoCommit::new(),
+            &automerge::ROOT
+        )
+        .map(|started| started.is_some())
         .unwrap()
     );
 }
@@ -208,21 +219,17 @@ fn held_export_snapshot_survives_history_and_settles_once_for_the_exact_selectio
     services.files = picker.clone();
     let _host = ui::host::enter(&services);
     let mut app = crate::LogsApp::new(entries, true);
-    invoke(
-        &mut app,
-        &crate::actions::LogsOperation::SetPriority {
+    let mut doc = automerge::AutoCommit::new();
+    app.commit_view(
+        &mut doc,
+        &crate::resource::LogsAction::SetPriority {
             value: crate::Priority::Err.level(),
         },
     );
-    invoke(
-        &mut app,
-        &crate::actions::LogsOperation::SelectEntry {
-            entry_id: crate::actions::entry_resource_id(&selected),
-        },
-    );
+    invoke_select_view(&mut app, crate::actions::entry_resource_id(&selected));
     app.shots_show_detail();
-    invoke(&mut app, &crate::actions::LogsOperation::ExportFiltered);
-    invoke(&mut app, &crate::actions::LogsOperation::ClearFilters);
+    invoke_effect(&mut app, &crate::actions::LogsOperation::ExportFiltered);
+    app.commit_view(&mut doc, &crate::resource::LogsAction::ClearFilters);
 
     let requests = picker
         .requests()
@@ -302,8 +309,21 @@ fn held_export_snapshot_survives_history_and_settles_once_for_the_exact_selectio
     std::fs::remove_file(path).unwrap();
 }
 
+/// The production root type declares the Logs History statically (without
+/// querying the journal) as an external policy with no preview or restore.
 #[test]
-fn logs_external_policy_has_no_preview_or_restore_schema() {
+fn logs_history_declaration_is_static_and_external_only() {
+    // The production root type declares Logs History without querying the journal.
+    let definition =
+        ui::history_mode::capability::document_history_definition(offline_root().as_ref())
+            .expect("production Logs root type declares History");
+    assert_eq!(definition.app_id, "so.tilo.logs");
+    assert!(std::ptr::eq(
+        definition,
+        std::ptr::addr_of!(crate::framework_history::HISTORY)
+    ));
+
+    // The external policy has no preview or restore schema.
     let scope = &crate::framework_history::HISTORY.scopes[0];
     assert_eq!(scope.key, "journal-observations");
     assert!(scope.content_schema.is_none());

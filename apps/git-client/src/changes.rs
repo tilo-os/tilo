@@ -7,10 +7,10 @@
 //! the author identity and a commit button whose enabled state tracks the
 //! staged count and message length.
 
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::paint::PaintCtx;
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::ButtonFace;
 
@@ -308,101 +308,55 @@ impl ChangesColumn {
     /// (area + index). `message` is the live commit message; `caret` shows
     /// a blinking caret when the box is focused. Returns hit regions for
     /// click routing.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "changes painting combines render context, repository data, viewport, selection, scroll and commit message"
-    )]
     pub fn draw(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         area: Rect,
         model: &RepoModel,
         selected: Option<(ChangeArea, usize)>,
         scroll: f64,
         message: &str,
     ) -> ChangesDraw {
-        let c = &theme.tokens.colors;
-        draw::fill_rect(scene, t, area, c.surfaces.raised);
+        let c = &ctx.theme.tokens.colors;
+        ctx.fill_rect(area, c.surfaces.raised);
         draw::vline(
-            scene,
-            t,
+            ctx,
             area.x1,
             area.y0,
             area.y1,
             draw::edge(c.surfaces.raised),
         );
 
-        let m = Metrics::measure(tr, theme);
-        let list_area = Rect::new(area.x0, area.y0, area.x1, area.y1 - m.commit_box_h);
-        let mut regions: Vec<HitRegion> = Vec::new();
+        let m = Metrics::measure(ctx.text, ctx.theme);
+        let mut pass = ColumnPass {
+            list_area: Rect::new(area.x0, area.y0, area.x1, area.y1 - m.commit_box_h),
+            m,
+            selected,
+            regions: Vec::new(),
+        };
 
         // Clip the scrollable list.
-        scene.push_layer(
+        ctx.scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
-            t,
-            &list_area,
+            ctx.transform,
+            &pass.list_area,
         );
 
-        let mut y = list_area.y0 - scroll;
-        y = Self::section(
-            scene,
-            tr,
-            t,
-            theme,
-            list_area,
-            "Staged Changes",
-            &model.staged,
-            ChangeArea::Staged,
-            selected,
-            y,
-            true,
-            &m,
-            &mut regions,
-        );
-        y = Self::section(
-            scene,
-            tr,
-            t,
-            theme,
-            list_area,
-            "Unstaged Changes",
-            &model.unstaged,
-            ChangeArea::Unstaged,
-            selected,
-            y,
-            false,
-            &m,
-            &mut regions,
-        );
-        let _ = Self::section(
-            scene,
-            tr,
-            t,
-            theme,
-            list_area,
-            "Untracked Files",
-            &model.untracked,
-            ChangeArea::Untracked,
-            selected,
-            y,
-            false,
-            &m,
-            &mut regions,
-        );
+        let mut y = pass.list_area.y0 - scroll;
+        y = pass.section(ctx, ChangeArea::Staged, &model.staged, y);
+        y = pass.section(ctx, ChangeArea::Unstaged, &model.unstaged, y);
+        let _ = pass.section(ctx, ChangeArea::Untracked, &model.untracked, y);
 
-        scene.pop_layer();
+        ctx.scene.pop_layer();
 
         // Commit box pinned to the bottom. Returns the rect the owner uses to
         // position the commit-message TextInput.
-        let commit_input =
-            Self::commit_box(scene, tr, t, theme, area, model, message, &m, &mut regions);
+        let commit_input = pass.commit_box(ctx, area, model, message);
 
         // Build closures that resolve a click to a hit. Returned as a
         // boxed list so the app can route without knowing geometry.
+        let regions = pass.regions;
         let semantic_hits = regions
             .iter()
             .map(|region| (region.rect, region.hit.clone()))
@@ -425,54 +379,50 @@ impl ChangesColumn {
             commit_input,
         }
     }
+}
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "change-section painting shares render context, file and staging data, row metrics and accumulated hit regions"
-    )]
+/// The heading a section of the column is listed under.
+fn section_title(change_area: ChangeArea) -> &'static str {
+    match change_area {
+        ChangeArea::Staged => "Staged Changes",
+        ChangeArea::Unstaged => "Unstaged Changes",
+        ChangeArea::Untracked => "Untracked Files",
+    }
+}
+
+/// One paint pass over the column: the scrollable list viewport, the
+/// measured bands, the shown file, and the click regions emitted so far.
+struct ColumnPass {
+    list_area: Rect,
+    m: Metrics,
+    selected: Option<(ChangeArea, usize)>,
+    regions: Vec<HitRegion>,
+}
+
+impl ColumnPass {
+    /// Paint the `change_area` section listing `files`, starting at `y`, and
+    /// return the `y` the next section starts at.
     fn section(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        area: Rect,
-        title: &str,
-        files: &[FileChange],
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
         change_area: ChangeArea,
-        selected: Option<(ChangeArea, usize)>,
+        files: &[FileChange],
         y: f64,
-        is_staged: bool,
-        m: &Metrics,
-        regions: &mut Vec<HitRegion>,
     ) -> f64 {
-        let mut y = Self::section_header(
-            scene,
-            tr,
-            t,
-            theme,
-            area,
-            title,
-            files,
-            change_area,
-            y,
-            is_staged,
-            m,
-            regions,
-        ) + m.row_gap;
+        let m = self.m;
+        let area = self.list_area;
+        let mut y = self.section_header(ctx, change_area, files, y) + m.row_gap;
 
         if files.is_empty() {
-            let c = &theme.tokens.colors;
+            let c = &ctx.theme.tokens.colors;
             let hint = "— nothing here —";
-            let ty_1 = draw::centered_top(tr, hint, 12.0, TextWeight::Regular, y, m.empty_hint_h);
-            draw::text(
-                scene,
-                tr,
-                t,
+            let hint_y =
+                draw::centered_top(ctx.text, hint, 12.0, TextWeight::Regular, y, m.empty_hint_h);
+            ctx.text(
                 hint,
-                12.0,
+                &TextStyle::new(12.0),
                 c.text_dim,
-                area.x0 + 20.0,
-                ty_1,
+                Point::new(area.x0 + 20.0, hint_y),
                 None,
             );
             return y + m.empty_hint_h;
@@ -484,21 +434,7 @@ impl ChangesColumn {
             // and a region under the pinned commit box would otherwise
             // overlap the commit controls.
             if y + m.row_h > area.y0 && y < area.y1 {
-                Self::section_row(
-                    scene,
-                    tr,
-                    t,
-                    theme,
-                    area,
-                    change_area,
-                    selected,
-                    y,
-                    is_staged,
-                    f,
-                    i,
-                    m,
-                    regions,
-                );
+                self.section_row(ctx, (change_area, i), f, y);
             }
             y += m.row_h + m.row_gap;
         }
@@ -508,81 +444,73 @@ impl ChangesColumn {
     /// The section header: title, count badge, and (when non-empty) the
     /// bulk stage/unstage-all action (part of [`Self::section`]). Returns
     /// the `y` the file rows should start at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
-    #[expect(
-        clippy::many_single_char_names,
-        reason = "t/y/c/m/h follow this file's graphics convention (transform, position, colour tokens, metrics, header layout)"
-    )]
     fn section_header(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        area: Rect,
-        title: &str,
-        files: &[FileChange],
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
         change_area: ChangeArea,
+        files: &[FileChange],
         y: f64,
-        is_staged: bool,
-        m: &Metrics,
-        regions: &mut Vec<HitRegion>,
     ) -> f64 {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
-        let section_h = m.section_h;
+        let area = self.list_area;
+        let section_h = self.m.section_h;
+        let is_staged = change_area == ChangeArea::Staged;
         let action_label = (!files.is_empty()).then_some(if is_staged {
             "Unstage all"
         } else {
             "Stage all"
         });
-        let h = HeaderLayout::measure(tr, theme, area, title, files.len(), action_label);
+        let header = HeaderLayout::measure(
+            ctx.text,
+            theme,
+            area,
+            section_title(change_area),
+            files.len(),
+            action_label,
+        );
         // Title, count badge and bulk action all centre on the header band:
         // each is placed from its own measured line height rather than a
         // per-element nudge, so they read as one row.
-        let ty_2 = draw::centered_top(tr, &h.title, 12.0, TextWeight::Semibold, y, section_h);
-        draw::text_weighted(
-            scene,
-            tr,
-            t,
-            &h.title,
+        let title_y = draw::centered_top(
+            ctx.text,
+            &header.title,
             12.0,
-            c.text_dim,
-            h.title_x,
-            ty_2,
-            None,
             TextWeight::Semibold,
+            y,
+            section_h,
+        );
+        ctx.text(
+            &header.title,
+            &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
+            c.text_dim,
+            Point::new(header.title_x, title_y),
+            None,
         );
         // Count badge.
         draw::pill(
-            scene,
-            tr,
-            t,
-            h.badge_x,
-            y + (section_h - h.badge_h) / 2.0,
-            10.0,
-            &h.count,
-            c.text_primary,
-            c.lift(0.72),
-            draw::PillEdge::Derived,
+            ctx,
+            Point::new(header.badge_x, y + (section_h - header.badge_h) / 2.0),
+            &header.count,
+            &draw::PillStyle {
+                size: 10.0,
+                fg: c.text_primary,
+                bg: c.lift(0.72),
+                edge: draw::PillEdge::Derived,
+            },
         );
 
-        if let Some((label, lx)) = action_label.zip(h.action_x) {
-            let ty_3 = draw::centered_top(tr, label, 11.0, TextWeight::Medium, y, section_h);
-            draw::text_weighted(
-                scene,
-                tr,
-                t,
+        if let Some((label, lx)) = action_label.zip(header.action_x) {
+            let label_y =
+                draw::centered_top(ctx.text, label, 11.0, TextWeight::Medium, y, section_h);
+            ctx.text(
                 label,
-                11.0,
+                &TextStyle::new(11.0).with_weight(TextWeight::Medium),
                 theme.accent_primary,
-                lx,
-                ty_3,
+                Point::new(lx, label_y),
                 None,
-                TextWeight::Medium,
             );
-            regions.push(HitRegion {
+            self.regions.push(HitRegion {
                 rect: Rect::new(lx - 4.0, y, area.x1, y + section_h),
                 hit: if is_staged {
                     ChangesHit::UnstageAll(change_area)
@@ -594,122 +522,83 @@ impl ChangesColumn {
         y + section_h
     }
 
-    /// The selected row's tint: a quiet surface wash keeps selection
-    /// discoverable without turning a whole row into a saturated accent
-    /// block. The accent rail remains the strong, stable selection cue.
-    fn paint_row_selection(scene: &mut Scene, t: Affine, theme: &Theme, row: Rect) {
-        draw::fill_rect(scene, t, row, theme.tokens.colors.lift(0.72));
-        draw::fill_rect(
-            scene,
-            t,
-            Rect::new(row.x0, row.y0, row.x0 + 3.0, row.y1),
-            theme.accent_primary,
-        );
-    }
-
-    /// One file row: selection tint, status badge, name/dir, +/- counts,
-    /// and the stage/unstage chevron button (part of [`Self::section`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "t/y/c follow this file's graphics convention (transform, position, colour tokens); f/i are the iterated FileChange and its index"
-    )]
+    /// One file row at `y`: selection tint, status badge, name/dir, +/-
+    /// counts, and the stage/unstage chevron button (part of
+    /// [`Self::section`]). `key` is the row's area and index within it.
     fn section_row(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        area: Rect,
-        change_area: ChangeArea,
-        selected: Option<(ChangeArea, usize)>,
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        key: (ChangeArea, usize),
+        file: &FileChange,
         y: f64,
-        is_staged: bool,
-        f: &FileChange,
-        i: usize,
-        m: &Metrics,
-        regions: &mut Vec<HitRegion>,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
-        let row_h = m.row_h;
-        if selected == Some((change_area, i)) {
-            Self::paint_row_selection(scene, t, theme, Rect::new(area.x0, y, area.x1, y + row_h));
+        let area = self.list_area;
+        let row_h = self.m.row_h;
+        let (change_area, index) = key;
+        let is_staged = change_area == ChangeArea::Staged;
+        if self.selected == Some(key) {
+            paint_row_selection(ctx, Rect::new(area.x0, y, area.x1, y + row_h));
         }
 
         // Everything in a row sits on one centre line. The +/- counts used to
         // be a second text line at `y + 18` inside the 30px row, which ran
         // into the row below; they now sit right-aligned beside the chevron.
-        let layout = RowLayout::measure(tr, theme, area, y, row_h, f, is_staged);
+        let layout = RowLayout::measure(ctx.text, theme, area, y, row_h, file, is_staged);
 
         // Status badge.
-        let bcolor = draw::kind_color(theme, f.kind);
-        let ty_4 = draw::mono_centered_top(tr, layout.badge, 12.0, y, row_h);
+        let badge_color = draw::kind_color(theme, file.kind);
+        let badge_y = draw::mono_centered_top(ctx.text, layout.badge, 12.0, y, row_h);
         draw::mono(
-            scene,
-            tr,
-            t,
+            ctx,
             layout.badge,
             12.0,
-            bcolor,
-            layout.badge_x,
-            ty_4,
+            badge_color,
+            Point::new(layout.badge_x, badge_y),
         );
 
         // Name (bold) + dir (dim). Elide to the allocation: a wrap width
         // would break a long name onto a second line inside the 30px row.
-        let name = tr.elide_to_width_weighted(
-            f.name(),
+        let name = ctx.text.elide_to_width_weighted(
+            file.name(),
             12.5,
             layout.name_max_w as f32,
             TextWeight::Medium,
         );
-        let name_y = draw::centered_top(tr, &name, 12.5, TextWeight::Medium, y, row_h);
-        draw::text_weighted(
-            scene,
-            tr,
-            t,
+        let name_y = draw::centered_top(ctx.text, &name, 12.5, TextWeight::Medium, y, row_h);
+        ctx.text(
             &name,
-            12.5,
+            &TextStyle::new(12.5).with_weight(TextWeight::Medium),
             c.text_primary,
-            layout.name_x,
-            name_y,
+            Point::new(layout.name_x, name_y),
             None,
-            TextWeight::Medium,
         );
         // A dir hint needs room for more than a lone ellipsis (about three
         // glyphs, one `s6` step); below that it only crowds the counts, so
         // the row shows the name alone.
-        let dir = f.dir();
+        let dir = file.dir();
         if !dir.is_empty() && layout.dir_max_w >= f64::from(theme.tokens.spacing.s6) {
-            let dir = tr.elide_to_width(dir, 11.0, layout.dir_max_w as f32);
-            let ty_6 = draw::centered_top(tr, &dir, 11.0, TextWeight::Regular, y, row_h);
-            draw::text(
-                scene,
-                tr,
-                t,
+            let dir = ctx.text.elide_to_width(dir, 11.0, layout.dir_max_w as f32);
+            let dir_y = draw::centered_top(ctx.text, &dir, 11.0, TextWeight::Regular, y, row_h);
+            ctx.text(
                 &dir,
-                11.0,
+                &TextStyle::new(11.0),
                 c.text_dim,
-                layout.dir_x,
-                ty_6,
+                Point::new(layout.dir_x, dir_y),
                 None,
             );
         }
 
         // +/- counts, right-aligned against the chevron.
         if let Some(counts) = &layout.counts {
-            let ty_7 = draw::mono_centered_top(tr, counts, 11.0, y, row_h);
+            let counts_y = draw::mono_centered_top(ctx.text, counts, 11.0, y, row_h);
             draw::mono(
-                scene,
-                tr,
-                t,
+                ctx,
                 counts,
                 11.0,
                 c.text_dim,
-                layout.counts_x,
-                ty_7,
+                Point::new(layout.counts_x, counts_y),
             );
         }
 
@@ -718,33 +607,31 @@ impl ChangesColumn {
         // the semantic add/delete hue.
         let chev = layout.chevron;
         let brect = layout.chevron_rect;
-        draw::card(scene, t, brect, 4.0, c.lift(0.72));
-        let chw = f64::from(draw::mono_width(tr, chev, 14.0));
-        let chev_y = draw::mono_centered_top(tr, chev, 14.0, brect.y0, brect.height());
+        draw::card(ctx, brect, 4.0, c.lift(0.72));
+        let chw = f64::from(draw::mono_width(ctx.text, chev, 14.0));
+        let chev_y = draw::mono_centered_top(ctx.text, chev, 14.0, brect.y0, brect.height());
+        let chev_color = if is_staged {
+            draw::del_fg(theme)
+        } else {
+            draw::add_fg(theme)
+        };
         draw::mono(
-            scene,
-            tr,
-            t,
+            ctx,
             chev,
             14.0,
-            if is_staged {
-                draw::del_fg(theme)
-            } else {
-                draw::add_fg(theme)
-            },
-            brect.x0 + (brect.width() - chw) / 2.0,
-            chev_y,
+            chev_color,
+            Point::new(brect.x0 + (brect.width() - chw) / 2.0, chev_y),
         );
         // Regions are clamped to the list viewport: a row straddling the
         // bottom edge must not reach under the pinned commit box.
-        regions.push(HitRegion {
+        self.regions.push(HitRegion {
             rect: brect.intersect(area),
-            hit: ChangesHit::ToggleStage(change_area, i),
+            hit: ChangesHit::ToggleStage(change_area, index),
         });
 
         // Row select region (everything left of the chevron, an `s1` clear of
         // it so the two targets never share pixels).
-        regions.push(HitRegion {
+        self.regions.push(HitRegion {
             rect: Rect::new(
                 area.x0,
                 y,
@@ -752,31 +639,23 @@ impl ChangesColumn {
                 y + row_h,
             )
             .intersect(area),
-            hit: ChangesHit::SelectFile(change_area, i),
+            hit: ChangesHit::SelectFile(change_area, index),
         });
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "commit-box painting combines render context and repository data with the message, layout metrics and hit regions"
-    )]
     fn commit_box(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
         area: Rect,
         model: &RepoModel,
         message: &str,
-        m: &Metrics,
-        regions: &mut Vec<HitRegion>,
     ) -> Rect {
-        let c = &theme.tokens.colors;
+        let m = self.m;
+        let c = &ctx.theme.tokens.colors;
         let box_rect = Rect::new(area.x0, area.y1 - m.commit_box_h, area.x1, area.y1);
-        draw::fill_rect(scene, t, box_rect, c.surfaces.base);
+        ctx.fill_rect(box_rect, c.surfaces.base);
         draw::hline(
-            scene,
-            t,
+            ctx,
             box_rect.y0,
             box_rect.x0,
             box_rect.x1,
@@ -784,7 +663,7 @@ impl ChangesColumn {
         );
 
         let ay = box_rect.y0 + m.commit_pad;
-        Self::commit_box_author(scene, tr, t, theme, box_rect, model, ay, m);
+        self.commit_box_author(ctx, box_rect, model, ay);
 
         // Message input area. The owning app positions + draws a toolkit
         // TextInput here (it paints its own frame, text and caret), and a
@@ -799,45 +678,35 @@ impl ChangesColumn {
             box_rect.x1 - m.commit_pad,
             button_top - m.commit_gap,
         );
-        regions.push(HitRegion {
+        self.regions.push(HitRegion {
             rect: input,
             hit: ChangesHit::FocusMessage,
         });
 
-        Self::commit_box_button(scene, tr, t, theme, box_rect, model, message, m, regions);
+        self.commit_box_button(ctx, box_rect, model, message);
 
         input
     }
 
-    /// The author identity row (avatar + name/email) (part of
+    /// The author identity row at `ay` (avatar + name/email) (part of
     /// [`Self::commit_box`]). The avatar is as tall as the row; the name is
     /// centred on it from its measured line height.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn commit_box_author(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
+        &self,
+        ctx: &mut PaintCtx<'_>,
         box_rect: Rect,
         model: &RepoModel,
         ay: f64,
-        m: &Metrics,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
-        let row_h = m.author_row_h;
-        let pad = m.commit_pad;
+        let row_h = self.m.author_row_h;
+        let pad = self.m.commit_pad;
         let gap = f64::from(theme.tokens.spacing.s2);
         let ax = box_rect.x0 + pad;
         draw::avatar(
-            scene,
-            tr,
-            t,
-            theme,
-            ax,
-            ay,
+            ctx,
+            Point::new(ax, ay),
             row_h,
             &model.author_name,
             draw::author_color(theme, &model.author_email),
@@ -849,38 +718,28 @@ impl ChangesColumn {
         };
         let who_max = (box_rect.width() - row_h - 3.0 * pad - gap)
             .max(f64::from(theme.tokens.spacing.s6)) as f32;
-        let who = tr.elide_to_width(&who, AUTHOR_FONT, who_max);
-        let wy = draw::centered_top(tr, &who, AUTHOR_FONT, TextWeight::Regular, ay, row_h);
-        draw::text(
-            scene,
-            tr,
-            t,
+        let who = ctx.text.elide_to_width(&who, AUTHOR_FONT, who_max);
+        let wy = draw::centered_top(ctx.text, &who, AUTHOR_FONT, TextWeight::Regular, ay, row_h);
+        ctx.text(
             &who,
-            AUTHOR_FONT,
+            &TextStyle::new(AUTHOR_FONT),
             c.text_dim,
-            ax + row_h + gap,
-            wy,
+            Point::new(ax + row_h + gap, wy),
             None,
         );
     }
 
     /// The commit button and the branch indicator beside it (part of
     /// [`Self::commit_box`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn commit_box_button(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
         box_rect: Rect,
         model: &RepoModel,
         message: &str,
-        m: &Metrics,
-        regions: &mut Vec<HitRegion>,
     ) {
+        let m = self.m;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let enabled = !model.staged.is_empty() && !message.trim().is_empty();
         let staged_n = model.staged.len();
@@ -894,7 +753,9 @@ impl ChangesColumn {
         };
         // 12 px Semibold label; the button keeps its 1× width unless the
         // label needs more.
-        let (lw, _) = tr.measure_weighted(&label, 12.0, None, TextWeight::Semibold);
+        let (lw, _) = ctx
+            .text
+            .measure_weighted(&label, 12.0, None, TextWeight::Semibold);
         let pad = m.commit_pad;
         let bw = m.button_w.max(f64::from(lw) + 2.0 * pad);
         let brect = Rect::new(
@@ -906,10 +767,7 @@ impl ChangesColumn {
         // The shared face resolves the primary fill and the one opaque
         // disabled look (rest edge included) instead of a hand-mixed pair.
         draw::button(
-            scene,
-            tr,
-            t,
-            theme,
+            ctx,
             &ButtonFace::new(brect, &label)
                 .primary()
                 .radius(6.0)
@@ -918,7 +776,7 @@ impl ChangesColumn {
                 .disabled(!enabled),
         );
         if enabled {
-            regions.push(HitRegion {
+            self.regions.push(HitRegion {
                 rect: brect,
                 hit: ChangesHit::Commit,
             });
@@ -929,27 +787,35 @@ impl ChangesColumn {
         let on = format!("on {}", model.head);
         let on_max = (brect.x0 - m.commit_gap - box_rect.x0 - pad)
             .max(f64::from(theme.tokens.spacing.s6)) as f32;
-        let on = tr.elide_to_width(&on, AUTHOR_FONT, on_max);
+        let on = ctx.text.elide_to_width(&on, AUTHOR_FONT, on_max);
         let oy = draw::centered_top(
-            tr,
+            ctx.text,
             &on,
             AUTHOR_FONT,
             TextWeight::Regular,
             brect.y0,
             brect.height(),
         );
-        draw::text(
-            scene,
-            tr,
-            t,
+        ctx.text(
             &on,
-            AUTHOR_FONT,
+            &TextStyle::new(AUTHOR_FONT),
             c.text_dim,
-            box_rect.x0 + pad,
-            oy,
+            Point::new(box_rect.x0 + pad, oy),
             None,
         );
     }
+}
+
+/// The selected row's tint: a quiet surface wash keeps selection
+/// discoverable without turning a whole row into a saturated accent
+/// block. The accent rail remains the strong, stable selection cue.
+fn paint_row_selection(ctx: &mut PaintCtx<'_>, row: Rect) {
+    let theme = ctx.theme;
+    ctx.fill_rect(row, theme.tokens.colors.lift(0.72));
+    ctx.fill_rect(
+        Rect::new(row.x0, row.y0, row.x0 + 3.0, row.y1),
+        theme.accent_primary,
+    );
 }
 
 #[cfg(test)]
@@ -968,7 +834,18 @@ mod tests {
         }
     }
 
+    /// Changes list layout: rows keep name/dir/counts/chevron on one line (and give
+    /// the text the whole row without counts), metrics follow the text scale, rows
+    /// keep a token gap on every preset, and header parts never collide. Each phase is a former test with its own fresh fixture.
     #[test]
+    fn changes_rows_and_headers_follow_measured_text_without_collisions() {
+        row_layout_keeps_name_dir_counts_and_chevron_in_one_line();
+        row_layout_without_counts_gives_the_text_the_whole_row();
+        metrics_match_the_constants_at_1x_and_grow_with_the_text_scale();
+        file_rows_keep_a_token_gap_on_every_preset();
+        section_header_title_badge_and_action_never_collide();
+    }
+
     fn row_layout_keeps_name_dir_counts_and_chevron_in_one_line() {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
@@ -998,7 +875,6 @@ mod tests {
         assert!(layout.dir_x > layout.name_x);
     }
 
-    #[test]
     fn row_layout_without_counts_gives_the_text_the_whole_row() {
         let mut tr = TextRenderer::new();
         let area = Rect::new(0.0, 0.0, 320.0, 800.0);
@@ -1022,7 +898,6 @@ mod tests {
     /// The measured bands reproduce the 1× constants exactly — a user who has
     /// not enlarged text sees the same column — and grow with the glyphs at 2×
     /// so 25 px names no longer sit in 30 px rows with no leading.
-    #[test]
     fn metrics_match_the_constants_at_1x_and_grow_with_the_text_scale() {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
@@ -1058,7 +933,6 @@ mod tests {
     /// HIG §7 "nothing touches": neighbouring file rows, and the first row
     /// under its section header, keep an `s1` gap on every preset — the
     /// list pitch is the row plus that gap, never the bare row.
-    #[test]
     fn file_rows_keep_a_token_gap_on_every_preset() {
         for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
             let mut tr = TextRenderer::new();
@@ -1080,7 +954,6 @@ mod tests {
     /// Title, badge and bulk action share a 320 px header band without
     /// touching at 1× and at 2×: the title elides before the badge and the
     /// badge ends before the action starts.
-    #[test]
     #[expect(
         clippy::float_cmp,
         reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"

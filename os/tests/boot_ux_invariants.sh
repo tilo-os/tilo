@@ -18,7 +18,8 @@ if ! containerfile_has_copy "$containerfile" os/dev/make-boot-splash.py /usr/loc
   exit 1
 fi
 grep -Fq 'plymouth-plugin-script' "$containerfile"
-if ! grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback"' "$containerfile"; then
+if ! grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback"' "$root/os/scripts/build-initramfs.sh" \
+  || ! grep -Fq 'bash /run/tilo-build-initramfs.sh "$kver"' "$containerfile"; then
   printf 'initramfs must explicitly include crypt, TPM, Plymouth, and Tilo rollback unlock modules\n' >&2
   exit 1
 fi

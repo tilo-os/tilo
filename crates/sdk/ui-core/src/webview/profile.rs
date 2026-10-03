@@ -332,39 +332,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ring_percentiles_are_ordered() {
-        let mut r = Ring::new();
-        for i in 0..100 {
-            r.push(f64::from(i));
-        }
-        let mut sorted: Vec<f64> = r.buf[..r.len].to_vec();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        // p50 of 0..100 sits mid-range, p95 near the top.
-        let pct = |p: f64| {
-            let len = u32::try_from(sorted.len()).unwrap_or(u32::MAX);
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "p is a fixed non-negative percentile constant, so the \
+    fn the_ring_wraps_keeps_recent_and_orders_percentiles() {
+        // phase: ring_percentiles_are_ordered
+        {
+            let mut r = Ring::new();
+            for i in 0..100 {
+                r.push(f64::from(i));
+            }
+            let mut sorted: Vec<f64> = r.buf[..r.len].to_vec();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            // p50 of 0..100 sits mid-range, p95 near the top.
+            let pct = |p: f64| {
+                let len = u32::try_from(sorted.len()).unwrap_or(u32::MAX);
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "p is a fixed non-negative percentile constant, so the \
                           resulting index is always in range"
-            )]
-            let idx = (f64::from(len) * p) as usize;
-            sorted[idx.min(sorted.len() - 1)]
-        };
-        assert!(pct(0.50) >= 45.0 && pct(0.50) <= 55.0);
-        assert!(pct(0.95) >= 90.0);
-    }
-
-    #[test]
-    fn ring_wraps_and_keeps_recent() {
-        let mut r = Ring::new();
-        for i in 0..(SAMPLES + 10) {
-            let value = u32::try_from(i).unwrap_or(u32::MAX);
-            r.push(f64::from(value));
+                )]
+                let idx = (f64::from(len) * p) as usize;
+                sorted[idx.min(sorted.len() - 1)]
+            };
+            assert!(pct(0.50) >= 45.0 && pct(0.50) <= 55.0);
+            assert!(pct(0.95) >= 90.0);
         }
-        assert_eq!(r.len, SAMPLES);
-        // Oldest ten were overwritten; the minimum retained is >= 10.
-        let min = r.buf.iter().copied().fold(f64::INFINITY, f64::min);
-        assert!(min >= 10.0);
+        // phase: ring_wraps_and_keeps_recent
+        {
+            let mut r = Ring::new();
+            for i in 0..(SAMPLES + 10) {
+                let value = u32::try_from(i).unwrap_or(u32::MAX);
+                r.push(f64::from(value));
+            }
+            assert_eq!(r.len, SAMPLES);
+            // Oldest ten were overwritten; the minimum retained is >= 10.
+            let min = r.buf.iter().copied().fold(f64::INFINITY, f64::min);
+            assert!(min >= 10.0);
+        }
     }
 }

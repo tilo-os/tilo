@@ -193,6 +193,18 @@ class Fixture:
         return self.run(*argv)
 
 
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
+
+
 class InternalModeGuardTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -206,14 +218,51 @@ class InternalModeGuardTests(unittest.TestCase):
         self.assertIn(fragment, result.stderr)
         self.assertEqual(result.stdout, '', 'a refusal must not report facts')
 
-    def test_exact_staged_plan_is_accepted_and_reports_its_facts(self):
-        result = self.fixture.check()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        facts = dict(line.split('=', 1) for line in result.stdout.splitlines())
-        self.assertEqual(facts['INTERNAL_OWNED_BOOT_ENTRY'], '0104')
-        self.assertEqual(facts['INTERNAL_DISK_GUID'], DISK_GUID)
-        self.assertEqual(facts['INTERNAL_STAGING_ROOT_PARTUUID'], ROOT_UUID)
-        self.assertEqual(facts['INTERNAL_HOST_OS'], 'windows')
+    def test_handoff_record_parsing(self):
+        with self.subTest(phase="exact_staged_plan_is_accepted_and_reports_its_facts"):
+            result = self.fixture.check()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            facts = dict(line.split('=', 1) for line in result.stdout.splitlines())
+            self.assertEqual(facts['INTERNAL_OWNED_BOOT_ENTRY'], '0104')
+            self.assertEqual(facts['INTERNAL_DISK_GUID'], DISK_GUID)
+            self.assertEqual(facts['INTERNAL_STAGING_ROOT_PARTUUID'], ROOT_UUID)
+            self.assertEqual(facts['INTERNAL_HOST_OS'], 'windows')
+        restart_fixture(self)
+        # Catches the guard depending on udev: in a container or early boot lsblk
+        # reports no GPT identities, and the facts must then come from the GPT.
+        with self.subTest(phase="identities_missing_from_lsblk_are_read_from_the_gpt"):
+            result = self.run_check(self.udevless(lambda table: None))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('INTERNAL_DISK_GUID=' + DISK_GUID, result.stdout)
+        restart_fixture(self)
+        with self.subTest(phase="a_gpt_that_disagrees_with_lsblk_is_refused"):
+            def swap(table):
+                table['id'] = '99999999-2222-4333-8444-555555555555'
+            self.assertRefused(self.run_check(self.udevless(swap)), 'disk GUID differs')
+        restart_fixture(self)
+        with self.subTest(phase="strict_parser_rejects_unknown_duplicate_and_malformed_fields"):
+            cases = []
+            extra = handoff_document()
+            extra['target_disk'] = DISK
+            cases.append(json.dumps(extra))
+            cases.append(json.dumps(handoff_document())[:-1] + ', "schema": 1}')
+            bad_entry = handoff_document()
+            bad_entry['owned_boot_entry'] = '0104; reboot'
+            cases.append(json.dumps(bad_entry))
+            profile = handoff_document()
+            profile['profile']['password'] = 'secret'
+            cases.append(json.dumps(profile))
+            in_order = handoff_document()
+            in_order['original_boot_order'].append('0104')
+            cases.append(json.dumps(in_order))
+            boolean = handoff_document()
+            boolean['disk_size_bytes'] = True
+            cases.append(json.dumps(boolean))
+            cases.append(json.dumps(handoff_document()) + ' ' * (64 * 1024))
+            for text in cases:
+                self.fixture.copy.write_text(text)
+                (self.fixture.esp / 'EFI/tilo-staging/handoff.json').write_text(text)
+                self.assertEqual(self.fixture.check().returncode, 1, text[:200])
 
     def udevless(self, sfdisk_table):
         """lsblk without a udev database: every GPT identity field is empty,
@@ -246,109 +295,75 @@ class InternalModeGuardTests(unittest.TestCase):
         finally:
             self.fixture.env = saved
 
-    # Catches the guard depending on udev: in a container or early boot lsblk
-    # reports no GPT identities, and the facts must then come from the GPT.
-    def test_identities_missing_from_lsblk_are_read_from_the_gpt(self):
-        result = self.run_check(self.udevless(lambda table: None))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('INTERNAL_DISK_GUID=' + DISK_GUID, result.stdout)
+    def test_refuses_disk_or_extent_mismatch(self):
+        with self.subTest(phase="whole_disk_and_prepared_modes_are_refused_on_the_live_disk"):
+            for mode in ('erase', 'prepared'):
+                self.assertRefused(self.fixture.check(mode=mode), 'accepts only guided alongside')
+        restart_fixture(self)
+        with self.subTest(phase="mismatched_disk_guid_or_size_is_refused"):
+            document = lsblk_document()
+            document['blockdevices'][0]['ptuuid'] = '99999999-2222-4333-8444-555555555555'
+            self.fixture.set_lsblk(document)
+            self.assertRefused(self.fixture.check(), 'disk GUID differs')
+            document = lsblk_document()
+            document['blockdevices'][0]['size'] += 512
+            self.fixture.set_lsblk(document)
+            self.assertRefused(self.fixture.check(), 'disk size differs')
+        restart_fixture(self)
+        with self.subTest(phase="extent_that_is_no_longer_unallocated_is_refused"):
+            document = lsblk_document()
+            document['blockdevices'][0]['children'].append(partition(
+                DISK + 'p5', '00000000-0000-4000-8000-00000000000c', LINUX_TYPE, (TARGET[0] + 2048, TARGET[0] + 4095)))
+            self.fixture.set_lsblk(document)
+            self.assertRefused(self.fixture.check(), 'no longer unallocated')
+        restart_fixture(self)
+        with self.subTest(phase="handoff_whose_extents_overlap_is_refused"):
+            document = handoff_document()
+            document['target_extent']['last_lba'] = STAGING_ESP[0]
+            self.fixture.set_handoff(document)
+            self.assertRefused(self.fixture.check(), 'overlap')
+        restart_fixture(self)
+        with self.subTest(phase="guided_plan_must_equal_the_staged_extent_and_end_at_staging"):
+            self.assertRefused(self.fixture.check(**{'free-start-bytes': TARGET[0] * 512 + 1024 * 1024}),
+                               'differs from the staged target extent')
+            shorter = (TARGET[1] - TARGET[0] + 1) * 512 - 2 * GIB - 1024 * 1024
+            self.assertRefused(self.fixture.check(**{'root-size-bytes': shorter}),
+                               'end exactly where the staged installer begins')
 
-    def test_a_gpt_that_disagrees_with_lsblk_is_refused(self):
-        def swap(table):
-            table['id'] = '99999999-2222-4333-8444-555555555555'
-        self.assertRefused(self.run_check(self.udevless(swap)), 'disk GUID differs')
-
-    def test_whole_disk_and_prepared_modes_are_refused_on_the_live_disk(self):
-        for mode in ('erase', 'prepared'):
-            self.assertRefused(self.fixture.check(mode=mode), 'accepts only guided alongside')
-
-    def test_mismatched_disk_guid_or_size_is_refused(self):
-        document = lsblk_document()
-        document['blockdevices'][0]['ptuuid'] = '99999999-2222-4333-8444-555555555555'
-        self.fixture.set_lsblk(document)
-        self.assertRefused(self.fixture.check(), 'disk GUID differs')
-        document = lsblk_document()
-        document['blockdevices'][0]['size'] += 512
-        self.fixture.set_lsblk(document)
-        self.assertRefused(self.fixture.check(), 'disk size differs')
-
-    def test_extent_that_is_no_longer_unallocated_is_refused(self):
-        document = lsblk_document()
-        document['blockdevices'][0]['children'].append(partition(
-            DISK + 'p5', '00000000-0000-4000-8000-00000000000c', LINUX_TYPE, (TARGET[0] + 2048, TARGET[0] + 4095)))
-        self.fixture.set_lsblk(document)
-        self.assertRefused(self.fixture.check(), 'no longer unallocated')
-
-    def test_handoff_whose_extents_overlap_is_refused(self):
-        document = handoff_document()
-        document['target_extent']['last_lba'] = STAGING_ESP[0]
-        self.fixture.set_handoff(document)
-        self.assertRefused(self.fixture.check(), 'overlap')
-
-    def test_guided_plan_must_equal_the_staged_extent_and_end_at_staging(self):
-        self.assertRefused(self.fixture.check(**{'free-start-bytes': TARGET[0] * 512 + 1024 * 1024}),
-                           'differs from the staged target extent')
-        shorter = (TARGET[1] - TARGET[0] + 1) * 512 - 2 * GIB - 1024 * 1024
-        self.assertRefused(self.fixture.check(**{'root-size-bytes': shorter}),
-                           'end exactly where the staged installer begins')
-
-    def test_handoff_naming_a_different_esp_than_the_booted_one_is_refused(self):
-        self.fixture.set_loader('dddddddd-0000-4000-8000-000000000004')
-        self.assertRefused(self.fixture.check(), 'different ESP')
-
-    def test_ui_copy_must_match_the_booted_staging_esp(self):
-        document = handoff_document()
-        document['target_extent']['first_lba'] += 2048
-        self.fixture.set_handoff(document, esp_only=True)
-        self.assertRefused(self.fixture.check(), 'differs from the staging ESP')
-
-    def test_live_root_elsewhere_or_foreign_mounts_are_refused(self):
-        document = lsblk_document()
-        document['blockdevices'][0]['children'][3]['mountpoints'] = [None]
-        self.fixture.set_lsblk(document)
-        self.assertRefused(self.fixture.check(), 'not the staging root')
-        document = lsblk_document()
-        document['blockdevices'][0]['children'][1]['mountpoints'] = ['/mnt/windows']
-        self.fixture.set_lsblk(document)
-        self.assertRefused(self.fixture.check(), 'only the staged installer may be in use')
-
-    def test_staging_partition_with_changed_identity_is_refused(self):
-        document = lsblk_document()
-        document['blockdevices'][0]['children'][2]['parttype'] = LINUX_TYPE
-        self.fixture.set_lsblk(document)
-        self.assertRefused(self.fixture.check(), 'staging ESP has an unexpected partition type')
-        document = lsblk_document()
-        document['blockdevices'][0]['children'][3]['start'] += 2048
-        self.fixture.set_lsblk(document)
-        self.assertRefused(self.fixture.check(), 'staging root extent differs')
-        document = lsblk_document()
-        document['blockdevices'][0]['children'][3]['parttype'] = LINUX_TYPE
-        self.fixture.set_lsblk(document)
-        self.assertRefused(self.fixture.check(), 'staging root has an unexpected partition type')
-
-    def test_strict_parser_rejects_unknown_duplicate_and_malformed_fields(self):
-        cases = []
-        extra = handoff_document()
-        extra['target_disk'] = DISK
-        cases.append(json.dumps(extra))
-        cases.append(json.dumps(handoff_document())[:-1] + ', "schema": 1}')
-        bad_entry = handoff_document()
-        bad_entry['owned_boot_entry'] = '0104; reboot'
-        cases.append(json.dumps(bad_entry))
-        profile = handoff_document()
-        profile['profile']['password'] = 'secret'
-        cases.append(json.dumps(profile))
-        in_order = handoff_document()
-        in_order['original_boot_order'].append('0104')
-        cases.append(json.dumps(in_order))
-        boolean = handoff_document()
-        boolean['disk_size_bytes'] = True
-        cases.append(json.dumps(boolean))
-        cases.append(json.dumps(handoff_document()) + ' ' * (64 * 1024))
-        for text in cases:
-            self.fixture.copy.write_text(text)
-            (self.fixture.esp / 'EFI/tilo-staging/handoff.json').write_text(text)
-            self.assertEqual(self.fixture.check().returncode, 1, text[:200])
+    def test_refuses_esp_or_mount_mismatch(self):
+        with self.subTest(phase="handoff_naming_a_different_esp_than_the_booted_one_is_refused"):
+            self.fixture.set_loader('dddddddd-0000-4000-8000-000000000004')
+            self.assertRefused(self.fixture.check(), 'different ESP')
+        restart_fixture(self)
+        with self.subTest(phase="ui_copy_must_match_the_booted_staging_esp"):
+            document = handoff_document()
+            document['target_extent']['first_lba'] += 2048
+            self.fixture.set_handoff(document, esp_only=True)
+            self.assertRefused(self.fixture.check(), 'differs from the staging ESP')
+        restart_fixture(self)
+        with self.subTest(phase="live_root_elsewhere_or_foreign_mounts_are_refused"):
+            document = lsblk_document()
+            document['blockdevices'][0]['children'][3]['mountpoints'] = [None]
+            self.fixture.set_lsblk(document)
+            self.assertRefused(self.fixture.check(), 'not the staging root')
+            document = lsblk_document()
+            document['blockdevices'][0]['children'][1]['mountpoints'] = ['/mnt/windows']
+            self.fixture.set_lsblk(document)
+            self.assertRefused(self.fixture.check(), 'only the staged installer may be in use')
+        restart_fixture(self)
+        with self.subTest(phase="staging_partition_with_changed_identity_is_refused"):
+            document = lsblk_document()
+            document['blockdevices'][0]['children'][2]['parttype'] = LINUX_TYPE
+            self.fixture.set_lsblk(document)
+            self.assertRefused(self.fixture.check(), 'staging ESP has an unexpected partition type')
+            document = lsblk_document()
+            document['blockdevices'][0]['children'][3]['start'] += 2048
+            self.fixture.set_lsblk(document)
+            self.assertRefused(self.fixture.check(), 'staging root extent differs')
+            document = lsblk_document()
+            document['blockdevices'][0]['children'][3]['parttype'] = LINUX_TYPE
+            self.fixture.set_lsblk(document)
+            self.assertRefused(self.fixture.check(), 'staging root has an unexpected partition type')
 
 
 class DetectTests(unittest.TestCase):
@@ -365,25 +380,26 @@ class DetectTests(unittest.TestCase):
         result = self.fixture.run('detect', '--out', str(self.out), '--error', str(self.error))
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_publishes_a_normalized_copy_for_the_unprivileged_ui(self):
-        self.detect()
-        published = json.loads(self.out.read_text())
-        self.assertEqual(published['disk_guid'], DISK_GUID)
-        self.assertEqual(published['staging_esp']['partuuid'], ESP_UUID)
-        self.assertEqual(self.out.stat().st_mode & 0o777, 0o644)
-        self.assertFalse(self.error.exists())
-
-    def test_usb_media_without_a_handoff_publish_nothing(self):
-        (self.fixture.esp / 'EFI/tilo-staging/handoff.json').unlink()
-        self.detect()
-        self.assertFalse(self.out.exists())
-        self.assertFalse(self.error.exists())
-
-    def test_handoff_naming_another_esp_is_reported_not_published(self):
-        self.fixture.set_loader('dddddddd-0000-4000-8000-000000000004')
-        self.detect()
-        self.assertFalse(self.out.exists())
-        self.assertIn('different ESP', self.error.read_text())
+    def test_detect_publishes_only_matching_handoff(self):
+        with self.subTest(phase="publishes_a_normalized_copy_for_the_unprivileged_ui"):
+            self.detect()
+            published = json.loads(self.out.read_text())
+            self.assertEqual(published['disk_guid'], DISK_GUID)
+            self.assertEqual(published['staging_esp']['partuuid'], ESP_UUID)
+            self.assertEqual(self.out.stat().st_mode & 0o777, 0o644)
+            self.assertFalse(self.error.exists())
+        restart_fixture(self)
+        with self.subTest(phase="usb_media_without_a_handoff_publish_nothing"):
+            (self.fixture.esp / 'EFI/tilo-staging/handoff.json').unlink()
+            self.detect()
+            self.assertFalse(self.out.exists())
+            self.assertFalse(self.error.exists())
+        restart_fixture(self)
+        with self.subTest(phase="handoff_naming_another_esp_is_reported_not_published"):
+            self.fixture.set_loader('dddddddd-0000-4000-8000-000000000004')
+            self.detect()
+            self.assertFalse(self.out.exists())
+            self.assertIn('different ESP', self.error.read_text())
 
 
 class FirmwareFinalizeTests(unittest.TestCase):
@@ -402,54 +418,56 @@ class FirmwareFinalizeTests(unittest.TestCase):
         self.fixture.write_var('Boot' + entry_id, load_option(TARGET_ESP_UUID, TARGET[0], 4194304, 5,
                                                              '\\EFI\\systemd\\systemd-bootx64.efi', 'Linux Boot Manager'))
 
-    def test_matching_owned_entry_is_deleted_and_bootnext_targets_tilo(self):
-        self.add_target_entry()
-        before = self.fixture.var('BootOrder')
-        result = self.finalize()
-        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertIsNone(self.fixture.var('Boot0104'))
-        self.assertEqual(self.fixture.var('BootNext'), ids(['0006']))
-        self.assertEqual(self.fixture.var('BootOrder'), before, 'BootOrder must stay unchanged')
-        self.assertIsNotNone(self.fixture.var('Boot0001'))
+    def test_owned_entry_deleted_only_when_matching(self):
+        with self.subTest(phase="matching_owned_entry_is_deleted_and_bootnext_targets_tilo"):
+            self.add_target_entry()
+            before = self.fixture.var('BootOrder')
+            result = self.finalize()
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIsNone(self.fixture.var('Boot0104'))
+            self.assertEqual(self.fixture.var('BootNext'), ids(['0006']))
+            self.assertEqual(self.fixture.var('BootOrder'), before, 'BootOrder must stay unchanged')
+            self.assertIsNotNone(self.fixture.var('Boot0001'))
+        restart_fixture(self)
+        with self.subTest(phase="owned_entry_that_no_longer_points_at_staging_is_left_alone"):
+            self.add_target_entry()
+            foreign = load_option('00000000-0000-4000-8000-00000000000a', WIN_ESP[0], 204800, 1)
+            self.fixture.write_var('Boot0104', foreign)
+            result = self.finalize()
+            self.assertEqual(result.returncode, 3, result.stderr + result.stdout)
+            self.assertEqual(self.fixture.var('Boot0104'), foreign)
+            self.assertNotIn('-B', self.fixture.log.read_text())
+            # Tilo is still what the next restart starts.
+            self.assertEqual(self.fixture.var('BootNext'), ids(['0006']))
+        restart_fixture(self)
+        with self.subTest(phase="owned_entry_with_a_different_extent_is_left_alone"):
+            self.add_target_entry()
+            moved = load_option(ESP_UUID, STAGING_ESP[0] + 2048, STAGING_ESP[1] - STAGING_ESP[0] + 1)
+            self.fixture.write_var('Boot0104', moved)
+            self.assertEqual(self.finalize().returncode, 3)
+            self.assertEqual(self.fixture.var('Boot0104'), moved)
 
-    def test_owned_entry_that_no_longer_points_at_staging_is_left_alone(self):
-        self.add_target_entry()
-        foreign = load_option('00000000-0000-4000-8000-00000000000a', WIN_ESP[0], 204800, 1)
-        self.fixture.write_var('Boot0104', foreign)
-        result = self.finalize()
-        self.assertEqual(result.returncode, 3, result.stderr + result.stdout)
-        self.assertEqual(self.fixture.var('Boot0104'), foreign)
-        self.assertNotIn('-B', self.fixture.log.read_text())
-        # Tilo is still what the next restart starts.
-        self.assertEqual(self.fixture.var('BootNext'), ids(['0006']))
-
-    def test_owned_entry_with_a_different_extent_is_left_alone(self):
-        self.add_target_entry()
-        moved = load_option(ESP_UUID, STAGING_ESP[0] + 2048, STAGING_ESP[1] - STAGING_ESP[0] + 1)
-        self.fixture.write_var('Boot0104', moved)
-        self.assertEqual(self.finalize().returncode, 3)
-        self.assertEqual(self.fixture.var('Boot0104'), moved)
-
-    def test_missing_target_entry_is_created_without_changing_bootorder(self):
-        created = load_option(TARGET_ESP_UUID, TARGET[0], 4194304, 5, '\\EFI\\systemd\\systemd-bootx64.efi', 'Tilo')
-        env = dict(self.fixture.env(), FAKE_EFIBOOT_CREATE=created.hex())
-        before = self.fixture.var('BootOrder')
-        result = self.finalize('--target-disk', DISK, '--target-esp-partition-number', '5',
-                               '--loader', '\\EFI\\systemd\\systemd-bootx64.efi', env=env)
-        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertEqual(self.fixture.var('BootNext'), ids(['0105']))
-        self.assertEqual(self.fixture.var('BootOrder'), before)
-        self.assertIn('-o 0001,0000', self.fixture.log.read_text())
-
-    def test_ambiguous_or_absent_target_entry_does_not_set_bootnext(self):
-        self.assertEqual(self.finalize().returncode, 1)
-        self.assertIsNone(self.fixture.var('BootNext'))
-        self.add_target_entry('0006')
-        self.add_target_entry('0007')
-        result = self.finalize()
-        self.assertEqual(result.returncode, 1)
-        self.assertIn('exactly one firmware entry', result.stderr)
-        self.assertIsNone(self.fixture.var('BootNext'))
+    def test_target_entry_creation_and_bootnext(self):
+        with self.subTest(phase="missing_target_entry_is_created_without_changing_bootorder"):
+            created = load_option(TARGET_ESP_UUID, TARGET[0], 4194304, 5, '\\EFI\\systemd\\systemd-bootx64.efi', 'Tilo')
+            env = dict(self.fixture.env(), FAKE_EFIBOOT_CREATE=created.hex())
+            before = self.fixture.var('BootOrder')
+            result = self.finalize('--target-disk', DISK, '--target-esp-partition-number', '5',
+                                   '--loader', '\\EFI\\systemd\\systemd-bootx64.efi', env=env)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertEqual(self.fixture.var('BootNext'), ids(['0105']))
+            self.assertEqual(self.fixture.var('BootOrder'), before)
+            self.assertIn('-o 0001,0000', self.fixture.log.read_text())
+        restart_fixture(self)
+        with self.subTest(phase="ambiguous_or_absent_target_entry_does_not_set_bootnext"):
+            self.assertEqual(self.finalize().returncode, 1)
+            self.assertIsNone(self.fixture.var('BootNext'))
+            self.add_target_entry('0006')
+            self.add_target_entry('0007')
+            result = self.finalize()
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('exactly one firmware entry', result.stderr)
+            self.assertIsNone(self.fixture.var('BootNext'))
 
 
 class ReclaimRecordTests(unittest.TestCase):
@@ -483,36 +501,34 @@ class BackendWiringTests(unittest.TestCase):
 
     source = BACKEND.read_text()
 
-    def test_live_disk_refusal_remains_for_usb_and_is_replaced_only_by_verification(self):
-        self.assertIn("is the live medium's own disk — refusing to install onto it", self.source)
-        guard = self.source.split('INTERNAL_MODE=0\nif [ "$TARGET_MAJ_MIN" = "$LIVE_MAJ_MIN" ]; then', 1)[1]
-        guard = guard.split('\nfi\n', 1)[0]
-        self.assertLess(guard.index('[ -n "$INTERNAL_HANDOFF" ]'), guard.index('check-install'))
-        self.assertIn('--mode guided', guard)
-        self.assertIn('INTERNAL_MODE=1', guard)
-        self.assertIn('requires the disk that holds the staged installer', self.source)
-
-    def test_internal_handoff_rejects_erase_and_prepared_before_any_disk_work(self):
-        check = self.source.index('--internal-handoff accepts only --guided-alongside')
-        self.assertLess(check, self.source.index('validate_disk_identity\n'))
-
-    def test_firmware_is_finalized_only_after_the_encrypted_root_is_closed(self):
-        finish = self.source.index('"$DISK_ENCRYPT" finish')
-        record = self.source.index('write-reclaim-record')
-        finalize = self.source.index('firmware-finalize --handoff')
-        self.assertLess(record, finish)
-        self.assertLess(finish, finalize)
-        self.assertIn('[ "$INTERNAL_MODE" -eq 0 ] || GUIDED_ARGS+=(--in-use-disk)', self.source)
-        self.assertIn('check-mounts --handoff', self.source)
-
-    def test_guided_helper_skips_only_the_whole_table_reread_on_an_in_use_disk(self):
-        guided = GUIDED.read_text()
-        self.assertIn('if [ "$IN_USE_DISK" -eq 0 ]; then\n  blockdev --rereadpt "$DISK"\nfi', guided)
-        self.assertIn('if [ "$IN_USE_DISK" -eq 1 ]; then\n    partx -a -n "$new_number:$new_number" "$DISK" || true\n  fi', guided)
-        self.assertIn('kernel_partition_matches "$new_node" "$new_number" "$new_start" "$new_sectors" "$new_uuid"', guided)
-        self.assertIn('blkid -p -s PART_ENTRY_UUID -o value "$node"', guided)
-        self.assertLess(guided.index('kernel_partition_matches() {'), guided.index('mkfs.vfat -n TILO-EFI'))
-        self.assertIn('[ $((ROOT_START + ROOT_SIZE)) -eq $((FREE_START + FREE_SIZE)) ]', guided)
+    def test_backend_wiring_order(self):
+        with self.subTest(phase="live_disk_refusal_remains_for_usb_and_is_replaced_only_by_verification"):
+            self.assertIn("is the live medium's own disk — refusing to install onto it", self.source)
+            guard = self.source.split('INTERNAL_MODE=0\nif [ "$TARGET_MAJ_MIN" = "$LIVE_MAJ_MIN" ]; then', 1)[1]
+            guard = guard.split('\nfi\n', 1)[0]
+            self.assertLess(guard.index('[ -n "$INTERNAL_HANDOFF" ]'), guard.index('check-install'))
+            self.assertIn('--mode guided', guard)
+            self.assertIn('INTERNAL_MODE=1', guard)
+            self.assertIn('requires the disk that holds the staged installer', self.source)
+        with self.subTest(phase="internal_handoff_rejects_erase_and_prepared_before_any_disk_work"):
+            check = self.source.index('--internal-handoff accepts only --guided-alongside')
+            self.assertLess(check, self.source.index('validate_disk_identity\n'))
+        with self.subTest(phase="firmware_is_finalized_only_after_the_encrypted_root_is_closed"):
+            finish = self.source.index('"$DISK_ENCRYPT" finish')
+            record = self.source.index('write-reclaim-record')
+            finalize = self.source.index('firmware-finalize --handoff')
+            self.assertLess(record, finish)
+            self.assertLess(finish, finalize)
+            self.assertIn('[ "$INTERNAL_MODE" -eq 0 ] || GUIDED_ARGS+=(--in-use-disk)', self.source)
+            self.assertIn('check-mounts --handoff', self.source)
+        with self.subTest(phase="guided_helper_skips_only_the_whole_table_reread_on_an_in_use_disk"):
+            guided = GUIDED.read_text()
+            self.assertIn('if [ "$IN_USE_DISK" -eq 0 ]; then\n  blockdev --rereadpt "$DISK"\nfi', guided)
+            self.assertIn('if [ "$IN_USE_DISK" -eq 1 ]; then\n    partx -a -n "$new_number:$new_number" "$DISK" || true\n  fi', guided)
+            self.assertIn('kernel_partition_matches "$new_node" "$new_number" "$new_start" "$new_sectors" "$new_uuid"', guided)
+            self.assertIn('blkid -p -s PART_ENTRY_UUID -o value "$node"', guided)
+            self.assertLess(guided.index('kernel_partition_matches() {'), guided.index('mkfs.vfat -n TILO-EFI'))
+            self.assertIn('[ $((ROOT_START + ROOT_SIZE)) -eq $((FREE_START + FREE_SIZE)) ]', guided)
 
 
 if __name__ == '__main__':

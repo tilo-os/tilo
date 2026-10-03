@@ -21,14 +21,13 @@
 //! cursor, so nothing is lost across a rebuild.
 
 #[cfg(all(test, unix))]
-use crate::filesystem_metadata as xattr;
+use host_fs::attributes as xattr;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
@@ -1108,7 +1107,7 @@ impl FileView {
         }
         let Some(ctx) = self.thumbs.clone() else {
             if grid {
-                self.draw_type_badge(scene, transform, tr, rect, entry);
+                self.draw_type_badge(scene, transform, tr, theme, rect, entry);
             } else {
                 self.draw_glyph(scene, transform, rect, entry, glyph_color);
             }
@@ -1139,7 +1138,7 @@ impl FileView {
         }
         // No real preview (yet): a badge in grid, a compact glyph in the list.
         if grid {
-            self.draw_type_badge(scene, transform, tr, rect, entry);
+            self.draw_type_badge(scene, transform, tr, theme, rect, entry);
         } else {
             self.draw_glyph(scene, transform, rect, entry, glyph_color);
         }
@@ -1173,11 +1172,12 @@ impl FileView {
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
+        theme: &Theme,
         rect: Rect,
         entry: &Entry,
     ) {
         let category = category_for_path(&entry.path);
-        let tint = category_tint(category);
+        let tint = category_tint(theme, category);
         let radius = 8.0 * self.scale;
         let card = RoundedRect::from_rect(rect, radius);
         // Soft category-tinted fill with a crisp tinted edge. Selection is a
@@ -1336,12 +1336,7 @@ thread_local! {
 }
 
 impl Widget for FileView {
-    fn has_action_control_bindings(&self) -> bool {
-        // This custom-painted leaf exposes semantic actions, not ActionEmitters.
-        false
-    }
-
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn is_layout_dirty(&self) -> bool {
         // Entries, mode and zoom are construction inputs: the host replaces
@@ -1480,18 +1475,7 @@ impl Widget for FileView {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             // A list's up/down movement is linear and remains app-level. An
             // icon grid, however, must use its *live measured* columns or a
@@ -1511,14 +1495,14 @@ impl Widget for FileView {
                         &self.sink,
                         FileCommand::MoveSelection {
                             index,
-                            extend: modifiers.state().shift_key(),
+                            extend: ctx.modifiers.state().shift_key(),
                         },
                     );
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = pt;
                 let new_hover = self.item_at(pt);
                 if new_hover != self.hover {
@@ -1542,17 +1526,18 @@ impl Widget for FileView {
                 // Header click → sort.
                 if let Some(col) = self.header_sort_at(self.last_cursor) {
                     push(&self.sink, FileCommand::SortColumn(col));
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 if let Some(i) = self.item_at(self.last_cursor) {
-                    let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-                    let shift = modifiers.state().shift_key();
+                    let ctrl =
+                        ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
+                    let shift = ctx.modifiers.state().shift_key();
                     // Reflect the click locally so this frame paints selected,
                     // and let the app own the authoritative selection + the
                     // single/double-click distinction.
                     self.selection.apply_click(i, ctrl, shift);
-                    *focus_target = Some(node_id);
+                    *ctx.focus_target = Some(ctx.node_id);
                     push(
                         &self.sink,
                         FileCommand::Click {
@@ -1581,7 +1566,7 @@ impl Widget for FileView {
                             },
                         );
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -1605,7 +1590,7 @@ impl Widget for FileView {
                     if !self.selection.is_selected(i) {
                         self.selection.select_only(i);
                     }
-                    *focus_target = Some(node_id);
+                    *ctx.focus_target = Some(ctx.node_id);
                 }
                 push(&self.sink, FileCommand::ContextSelect(target));
                 // Not marked handled: the app still needs to see the right-press
@@ -1698,6 +1683,13 @@ impl Widget for FileView {
             node = node.with_position(i + 1, self.entries.len());
         }
         Some(node)
+    }
+}
+
+impl ui::widget::controls::ActionControls for FileView {
+    fn has_action_control_bindings(&self) -> bool {
+        // This custom-painted leaf exposes semantic actions, not ActionEmitters.
+        false
     }
 }
 
@@ -1901,26 +1893,25 @@ fn ext_label(path: &std::path::Path) -> String {
     }
 }
 
-/// A stable, mid-tone accent per file category for the type badge. Chosen to
-/// stay legible on both light and dark surfaces (the badge fills a translucent
-/// tint of it and draws the glyph + extension in the full colour).
-fn category_tint(cat: FileCategory) -> Color {
-    let [r, g, b] = match cat {
-        FileCategory::Image => [0x3B, 0xA7, 0x76],
-        FileCategory::Video => [0x8B, 0x5C, 0xF6],
-        FileCategory::Audio => [0xE0, 0x55, 0x9A],
-        FileCategory::Pdf => [0xE5, 0x48, 0x4D],
-        FileCategory::Ebook => [0xD0, 0x8A, 0x2E],
-        FileCategory::Document => [0x3E, 0x7B, 0xEA],
-        FileCategory::Spreadsheet => [0x2F, 0xA3, 0x6B],
-        FileCategory::Presentation => [0xE8, 0x70, 0x3A],
-        FileCategory::Archive => [0xB0, 0x7B, 0x3E],
-        FileCategory::Code => [0x2A, 0xA0, 0xB4],
-        FileCategory::Text => [0x7A, 0x82, 0x90],
-        FileCategory::Font => [0x7C, 0x6C, 0xF0],
-        FileCategory::Unknown => [0x8A, 0x93, 0xA0],
+/// A file-type badge colour grown from the theme accent's categorical series,
+/// then stepped until it clears non-text contrast on the window ground. The
+/// series is six long, so later kinds share a slot with an earlier one; high
+/// contrast retints every slot because the series is grown from the accent.
+fn category_tint(theme: &Theme, cat: FileCategory) -> Color {
+    let slot = match cat {
+        FileCategory::Image | FileCategory::Archive => 0,
+        FileCategory::Video | FileCategory::Audio => 1,
+        FileCategory::Document | FileCategory::Ebook | FileCategory::Text => 2,
+        FileCategory::Spreadsheet | FileCategory::Presentation => 3,
+        FileCategory::Pdf | FileCategory::Unknown => 4,
+        FileCategory::Code | FileCategory::Font => 5,
     };
-    Color::from_rgba8(r, g, b, 255)
+    let c = &theme.tokens.colors;
+    c.ink_on(
+        c.surfaces.base,
+        c.categorical(slot),
+        ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+    )
 }
 
 /// Trim `text` with an ellipsis until it fits `max_w`.
@@ -1963,6 +1954,22 @@ mod tests {
     use crate::command::{FileCommand, new_sink};
     use std::path::PathBuf;
 
+    #[test]
+    fn category_badges_follow_the_theme() {
+        let dark = Theme::dark();
+        let contrast = Theme::high_contrast();
+        assert_ne!(
+            category_tint(&dark, FileCategory::Pdf),
+            category_tint(&contrast, FileCategory::Pdf),
+            "file-type badges grow from the accent, so high contrast retints them"
+        );
+        assert_ne!(
+            category_tint(&dark, FileCategory::Pdf),
+            category_tint(&dark, FileCategory::Image),
+            "different kinds keep different slots of the series"
+        );
+    }
+
     fn dev() -> winit::event::DeviceId {
         unsafe { std::mem::zeroed() }
     }
@@ -1975,14 +1982,16 @@ mod tests {
         let mods = winit::event::Modifiers::default();
         v.handle_event(
             ev,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            tree,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: tree,
+            },
         );
     }
 
@@ -2017,7 +2026,19 @@ mod tests {
         v
     }
 
+    /// Scrolling reuses measurement, painting and drop-target publication visit
+    /// only what the viewport shows, and the reserved status lane stays clear —
+    /// each phase with its own view fixture.
     #[test]
+    fn scroll_measurement_culling_and_drop_targets_bound_the_work() {
+        scroll_layout_reuses_real_file_view_measurement();
+        rows_outside_the_scroll_viewport_are_culled();
+        visible_range_avoids_scanning_a_large_directory();
+        drop_targets_are_limited_to_visible_folders();
+        list_and_grid_leave_a_reserved_bottom_lane_clear();
+        apply_layout_publishes_folder_rows_as_drop_targets();
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "measurement scenario checks every scroll layout step in sequence"
@@ -2130,26 +2151,32 @@ mod tests {
         }
     }
 
+    /// List rows, header and columns adapt to pane width, item zoom and
+    /// accessibility text scale — each phase with its own view fixture.
     #[test]
+    fn list_geometry_follows_width_zoom_and_text_scale() {
+        nested_navigation_layout_preserves_large_text_file_row_geometry();
+        large_text_list_reserves_scaled_rows_and_filename_width();
+        truncated_file_names_preserve_distinguishing_suffix();
+        zoom_scale_grows_row_height_and_cell_size();
+        narrow_list_collapses_detail_columns_to_give_name_room();
+        large_item_zoom_hides_detail_columns_earlier_on_narrow_windows();
+        accessibility_text_scale_reserves_metadata_width_without_double_zooming_items();
+        header_pins_to_the_viewport_top_once_scrolled();
+        header_click_sorts_even_after_the_list_is_scrolled();
+        list_item_at_maps_rows_below_the_header();
+        neighbouring_faces_keep_a_token_gap();
+    }
+
     fn nested_navigation_layout_preserves_large_text_file_row_geometry() {
         let sink = new_sink();
         let view = FileView::new(&items(2), &SelectionModel::new(), &sink);
-        let mut nav = ui::widget::NavShell::sidebar_over_content(
+        let nav = ui::widget::NavShell::sidebar_over_content(
             Box::new(ui::widget::Text::new("Places")),
             Box::new(view),
         );
         let theme = Theme::dark().with_text_scale(2.0);
-        let mut tree = TaffyTree::new();
-        let root = nav.build_layout(&mut tree, &theme, &mut HashMap::new());
-        tree.compute_layout(
-            root,
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(1000.0),
-                height: taffy::AvailableSpace::Definite(700.0),
-            },
-        )
-        .unwrap();
-        nav.apply_layout(&tree, root, Point::ZERO);
+        let nav = ui::headless::Framed::new(ui::State::new(), nav, (1000, 700), theme.clone());
         let row = nav
             .children()
             .iter()
@@ -2162,16 +2189,7 @@ mod tests {
             bounds.y1 - bounds.y0 >= 68.0,
             "nested rows must receive200% layout scale: {bounds:?}"
         );
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let mut scene = Scene::new();
-        nav.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::default(),
-        );
+        let scene = ui::headless::Framed::harness(&nav).scene();
         assert!(
             scene
                 .encoding()
@@ -2182,7 +2200,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn large_text_list_reserves_scaled_rows_and_filename_width() {
         let sink = new_sink();
         let mut view = FileView::new(&items(2), &SelectionModel::new(), &sink);
@@ -2219,7 +2236,6 @@ mod tests {
         assert!(!view.show_modified());
     }
 
-    #[test]
     fn truncated_file_names_preserve_distinguishing_suffix() {
         let mut tr = TextRenderer::new();
         tr.set_text_scale(2.0);
@@ -2230,6 +2246,13 @@ mod tests {
     }
 
     #[test]
+    fn accessibility_and_badges_describe_each_file_state() {
+        accessibility_list_bounds_describe_the_scroll_viewport();
+        accessibility_exposes_each_file_selection_and_collaboration_state();
+        sync_badge_maps_each_state_to_a_distinct_emblem();
+        rich_availability_badges_are_honest_and_actionable();
+    }
+
     fn accessibility_list_bounds_describe_the_scroll_viewport() {
         let sink = new_sink();
         let entries = vec![ent("a.txt", false), ent("b.txt", false)];
@@ -2247,7 +2270,6 @@ mod tests {
         assert_eq!(view.accessibility().unwrap().children.len(), 2);
     }
 
-    #[test]
     fn accessibility_exposes_each_file_selection_and_collaboration_state() {
         use ui::widget::Widget;
 
@@ -2311,6 +2333,14 @@ mod tests {
     }
 
     #[test]
+    fn grid_flows_wraps_and_navigates_by_visual_rows() {
+        grid_flows_left_to_right_and_wraps_to_fill_width();
+        grid_columns_scale_with_width_and_never_zero();
+        grid_arrow_targets_follow_the_measured_visual_row();
+        phone_grid_keeps_two_accessible_columns_at_normal_and_large_zoom();
+        grid_labels_share_one_baseline_and_stay_inside_the_cell();
+    }
+
     fn grid_flows_left_to_right_and_wraps_to_fill_width() {
         // A wide pane must lay several columns per row, not one item per line.
         let v = grid(12, 900.0);
@@ -2337,7 +2367,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn grid_columns_scale_with_width_and_never_zero() {
         assert!(grid(20, 1200.0).columns > grid(20, 400.0).columns);
         assert!(
@@ -2346,7 +2375,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn grid_arrow_targets_follow_the_measured_visual_row() {
         let mut v = grid(8, 400.0);
         // Keep the assertion about directional semantics independent of a
@@ -2366,7 +2394,6 @@ mod tests {
         assert_eq!(v.grid_key_target(NamedKey::ArrowRight), Some(7));
     }
 
-    #[test]
     fn phone_grid_keeps_two_accessible_columns_at_normal_and_large_zoom() {
         // A 390px window leaves a 358px FileView after the content gutter.
         // Both regular and 160% item zoom must retain a compact two-column
@@ -2417,7 +2444,18 @@ mod tests {
         }
     }
 
+    /// Each preview source runs against its own temp dir and thumbnail service.
     #[test]
+    fn thumbnails_use_the_shared_service_or_host_without_hydrating() {
+        image_cells_request_previews_through_the_shared_service();
+        workspace_thumbnail_keys_follow_content_across_renames();
+        a_workspace_photo_the_host_never_previewed_is_still_shown();
+        #[cfg(unix)]
+        a_host_preview_is_adopted_rather_than_the_file_re_decoded();
+        a_projected_file_is_never_hydrated_just_to_preview_it();
+        badge_types_never_schedule_a_decode();
+    }
+
     fn image_cells_request_previews_through_the_shared_service() {
         // The file view must off-load decoding to the shared thumbnail service,
         // never decode per-app: a request for an image cell schedules work on the
@@ -2469,7 +2507,9 @@ mod tests {
             "decode is off-loaded to the shared service"
         );
 
-        service.block_until_idle(std::time::Duration::from_secs(5));
+        // Returns as soon as generation settles; the bound only catches a
+        // service that never does, so a loaded runner cannot fail it.
+        service.block_until_idle(tilo_test_env::hang_bound());
         assert!(
             matches!(
                 FileView::request_thumb(&ctx, &entry, key, thumbnail::FileCategory::Image),
@@ -2479,7 +2519,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn workspace_thumbnail_keys_follow_content_across_renames() {
         let dir = tempfile::tempdir().unwrap();
         let (_service, ctx) = thumb_ctx(dir.path());
@@ -2536,7 +2575,6 @@ mod tests {
         (service, ctx)
     }
 
-    #[test]
     fn a_workspace_photo_the_host_never_previewed_is_still_shown() {
         // A workspace root is often an ordinary directory — no FUSE driver
         // behind it, so no `user.tilo.thumb` to read and no sync attribute
@@ -2559,7 +2597,7 @@ mod tests {
             FileView::request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true),
             ThumbState::Loading
         ));
-        service.block_until_idle(std::time::Duration::from_secs(5));
+        service.block_until_idle(tilo_test_env::hang_bound());
         let state =
             FileView::request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true);
         let ready = state
@@ -2572,7 +2610,6 @@ mod tests {
         );
     }
 
-    #[test]
     #[cfg(unix)]
     fn a_host_preview_is_adopted_rather_than_the_file_re_decoded() {
         // When the metadata channel does answer, that answer is what gets
@@ -2600,7 +2637,7 @@ mod tests {
             FileView::request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true),
             ThumbState::Loading
         ));
-        service.block_until_idle(std::time::Duration::from_secs(5));
+        service.block_until_idle(tilo_test_env::hang_bound());
         let state =
             FileView::request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true);
         let ready = state.ready().expect("the host's preview is adopted");
@@ -2611,7 +2648,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_projected_file_is_never_hydrated_just_to_preview_it() {
         // Its bytes are on a peer. With no host preview the row keeps its
         // badge rather than pulling the whole file across to draw a small
@@ -2628,7 +2664,7 @@ mod tests {
             FileView::request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true),
             ThumbState::Loading
         ));
-        service.block_until_idle(std::time::Duration::from_secs(5));
+        service.block_until_idle(tilo_test_env::hang_bound());
         assert!(matches!(
             FileView::request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true),
             ThumbState::Badge(thumbnail::FileCategory::Image)
@@ -2640,7 +2676,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn badge_types_never_schedule_a_decode() {
         let dir = tempfile::tempdir().unwrap();
         let cache = thumbnail::ThumbCache::open(dir.path()).unwrap();
@@ -2661,7 +2696,6 @@ mod tests {
         assert_eq!(service.pending(), 0, "a badge type never schedules work");
     }
 
-    #[test]
     fn zoom_scale_grows_row_height_and_cell_size() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2675,7 +2709,6 @@ mod tests {
         assert!(zoomed.cell_h() > base.cell_h());
     }
 
-    #[test]
     fn narrow_list_collapses_detail_columns_to_give_name_room() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2716,7 +2749,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn large_item_zoom_hides_detail_columns_earlier_on_narrow_windows() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2734,7 +2766,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn accessibility_text_scale_reserves_metadata_width_without_double_zooming_items() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2761,7 +2792,6 @@ mod tests {
         assert!(!v.show_modified(), "metadata yields to the primary name");
     }
 
-    #[test]
     fn rows_outside_the_scroll_viewport_are_culled() {
         // The paint path calls `cull(vp, row)` for every row/cell; a long
         // directory must only pay to draw what the viewport actually shows.
@@ -2778,7 +2808,6 @@ mod tests {
         assert!(!cull(None, Rect::new(0.0, 99_999.0, 600.0, 100_000.0)));
     }
 
-    #[test]
     fn visible_range_avoids_scanning_a_large_directory() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2808,7 +2837,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn drop_targets_are_limited_to_visible_folders() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2830,7 +2858,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn list_and_grid_leave_a_reserved_bottom_lane_clear() {
         // Files reserves a bottom lane for its floating status pill. The
         // drawing and folder-drop paths use this same predicate, so a partly
@@ -2874,7 +2901,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn header_pins_to_the_viewport_top_once_scrolled() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2895,7 +2921,6 @@ mod tests {
         assert!((v.header_top(None) + 250.0).abs() < f64::EPSILON);
     }
 
-    #[test]
     fn header_click_sorts_even_after_the_list_is_scrolled() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2916,7 +2941,15 @@ mod tests {
         );
     }
 
+    /// Each press scenario uses its own view and command sink.
     #[test]
+    fn pointer_presses_emit_context_select_and_drag_commands() {
+        right_press_selects_the_row_under_the_cursor_for_the_menu();
+        right_press_on_empty_space_clears_the_selection_for_the_menu();
+        dragging_a_directory_row_begins_a_pin_drag();
+        a_file_row_press_begins_a_move_drag();
+    }
+
     fn right_press_selects_the_row_under_the_cursor_for_the_menu() {
         // The dangerous bug this guards: a right-click must target the row it
         // lands on, not whatever was selected before. The FileView emits a
@@ -2958,7 +2991,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn right_press_on_empty_space_clears_the_selection_for_the_menu() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2997,7 +3029,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn sync_badge_maps_each_state_to_a_distinct_emblem() {
         let theme = Theme::dark();
         // Each hydration state gets its own recognisable glyph, and the
@@ -3046,7 +3077,6 @@ mod tests {
         AvailabilityProjection::parse(&serde_json::to_vec(&value).unwrap()).unwrap()
     }
 
-    #[test]
     fn rich_availability_badges_are_honest_and_actionable() {
         let theme = Theme::dark();
         let unknown = availability_with(
@@ -3117,7 +3147,6 @@ mod tests {
         assert_eq!(availability_badge(&failed, &theme).0, Icon::Ban);
     }
 
-    #[test]
     fn dragging_a_directory_row_begins_a_pin_drag() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -3166,7 +3195,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_file_row_press_begins_a_move_drag() {
         // Files (not only folders) are draggable now — a row drag moves the
         // file into a folder it is dropped onto. The host decides drop
@@ -3213,7 +3241,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn apply_layout_publishes_folder_rows_as_drop_targets() {
         // The host resolves a drop against the folder rects the view publishes,
         // so only directories must appear, at their laid-out positions.
@@ -3263,7 +3290,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn list_item_at_maps_rows_below_the_header() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -3282,7 +3308,6 @@ mod tests {
     /// Folder and file cells in one grid row share a preview slot and hence
     /// one label baseline; the folder glyph (smaller than a file badge) is
     /// centred inside that slot rather than pulling its label up.
-    #[test]
     fn grid_labels_share_one_baseline_and_stay_inside_the_cell() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -3324,7 +3349,6 @@ mod tests {
     /// HIG §7 "Nothing touches": two adjacent chosen rows keep an `s1` gap
     /// between their faces, two grid cells keep the grid gap, and the header
     /// rule is inset from the pane edge like every other separator.
-    #[test]
     fn neighbouring_faces_keep_a_token_gap() {
         let sink = new_sink();
         let s1 = f64::from(Spacing::BASE.s1);

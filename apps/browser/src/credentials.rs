@@ -101,7 +101,7 @@ impl Credentials {
                 self.sequence,
                 Pending {
                     action: action.name(),
-                    deadline: Instant::now() + Duration::from_secs(35),
+                    deadline: ui::time::now() + Duration::from_secs(35),
                 },
             );
         }
@@ -165,7 +165,7 @@ impl Credentials {
         let Some(pending) = self.pending.get(&reply.request_id) else {
             return vec![];
         };
-        if !self.open || pending.action != reply.action || Instant::now() >= pending.deadline {
+        if !self.open || pending.action != reply.action || ui::time::now() >= pending.deadline {
             return vec![];
         }
         if reply.success
@@ -211,7 +211,7 @@ impl Credentials {
                     (
                         id,
                         reply.username.unwrap_or_default(),
-                        Instant::now() + Duration::from_secs(30),
+                        ui::time::now() + Duration::from_secs(30),
                     )
                 });
             }
@@ -266,7 +266,7 @@ impl Credentials {
                     return vec![];
                 }
                 if let Some((capture, _, expires)) = self.capture.take() {
-                    if Instant::now() >= expires {
+                    if ui::time::now() >= expires {
                         self.notice = "Capture expired. Read the login again.".into();
                         return vec![];
                     }
@@ -315,7 +315,7 @@ impl Credentials {
         if self.open && self.address_mode {
             dirty |= self.addresses.sync();
         }
-        let now = Instant::now();
+        let now = ui::time::now();
         if self.pending.values().any(|p| now >= p.deadline)
             || self.capture.as_ref().is_some_and(|c| now >= c.2)
         {
@@ -581,140 +581,156 @@ mod tests {
             late: false,
         }
     }
+    /// Form discovery, private and insecure pages, late replies.
     #[test]
-    fn address_mode_discovers_forms_without_keychain_account_requests() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut model =
-            Credentials::with_address_path(false, Some(directory.path().join("addresses.json")));
-        model.navigation("https://example.com");
-        let status = model.open_addresses(true).remove(0);
-        let requests = model.apply(reply(&status, "1"));
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].action, CredentialAction::DiscoverAddresses);
-        let mut response = reply(&requests[0], "1");
-        response.forms.push(CredentialForm {
-            id: "4".into(),
-            username: String::new(),
-            kind: String::new(),
-        });
-        assert!(model.apply(response).is_empty());
-        assert_eq!(model.form.as_deref(), Some("4"));
-        assert!(
-            model.act(Action::FillAddress).is_empty(),
-            "profile selection is required"
-        );
-    }
-
-    #[test]
-    fn private_and_insecure_pages_never_request_credentials() {
-        let mut private = Credentials::new(true);
-        private.navigation("https://example.com");
-        assert!(private.open(true).is_empty());
-        let mut normal = Credentials::new(false);
-        normal.navigation("http://example.com");
-        assert!(normal.open(true).is_empty());
-    }
-    #[test]
-    fn navigation_and_close_reject_late_document_replies() {
-        let mut model = Credentials::new(false);
-        model.navigation("https://example.com/a");
-        let request = model.open(true).remove(0);
-        model.navigation("https://example.com/b");
-        assert!(model.apply(reply(&request, "1")).is_empty());
-        assert!(model.document.is_empty());
-        let request = model.open(true).remove(0);
-        model.close();
-        assert!(model.apply(reply(&request, "2")).is_empty());
-        assert!(model.document.is_empty());
-    }
-    #[test]
-    fn multiple_accounts_require_selection_and_delete_confirmation() {
-        let mut model = Credentials::new(false);
-        model.navigation("https://example.com");
-        let status = model.open(true).remove(0);
-        let requests = model.apply(reply(&status, "1"));
-        for request in requests {
-            let mut response = reply(&request, "1");
-            if matches!(request.action, CredentialAction::List) {
-                response.accounts = vec![
-                    CredentialAccount {
-                        id: "a".into(),
-                        username: "first".into(),
-                    },
-                    CredentialAccount {
-                        id: "b".into(),
-                        username: "second".into(),
-                    },
-                ];
-            }
-            model.apply(response);
+    fn credential_discovery_is_scoped_to_safe_current_documents() {
+        // Phase `address_mode_discovers_forms_without_keychain_account_requests`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let mut model = Credentials::with_address_path(
+                false,
+                Some(directory.path().join("addresses.json")),
+            );
+            model.navigation("https://example.com");
+            let status = model.open_addresses(true).remove(0);
+            let requests = model.apply(reply(&status, "1"));
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].action, CredentialAction::DiscoverAddresses);
+            let mut response = reply(&requests[0], "1");
+            response.forms.push(CredentialForm {
+                id: "4".into(),
+                username: String::new(),
+                kind: String::new(),
+            });
+            assert!(model.apply(response).is_empty());
+            assert_eq!(model.form.as_deref(), Some("4"));
+            assert!(
+                model.act(Action::FillAddress).is_empty(),
+                "profile selection is required"
+            );
         }
-        assert!(model.account.is_none());
-        assert!(model.act(Action::ConfirmDelete).is_empty());
-        assert!(model.act(Action::Account("unknown".into())).is_empty());
-        assert!(model.account.is_none());
-        model.act(Action::Account("b".into()));
-        assert!(model.act(Action::Delete).is_empty());
-        let deletion = model.act(Action::ConfirmDelete).remove(0);
-        assert_eq!(
-            deletion.action,
-            CredentialAction::Delete {
-                account: "b".into()
-            }
-        );
-        assert!(model.act(Action::ConfirmDelete).is_empty());
+
+        // Phase `private_and_insecure_pages_never_request_credentials`.
+        {
+            let mut private = Credentials::new(true);
+            private.navigation("https://example.com");
+            assert!(private.open(true).is_empty());
+            let mut normal = Credentials::new(false);
+            normal.navigation("http://example.com");
+            assert!(normal.open(true).is_empty());
+        }
+
+        // Phase `navigation_and_close_reject_late_document_replies`.
+        {
+            let mut model = Credentials::new(false);
+            model.navigation("https://example.com/a");
+            let request = model.open(true).remove(0);
+            model.navigation("https://example.com/b");
+            assert!(model.apply(reply(&request, "1")).is_empty());
+            assert!(model.document.is_empty());
+            let request = model.open(true).remove(0);
+            model.close();
+            assert!(model.apply(reply(&request, "2")).is_empty());
+            assert!(model.document.is_empty());
+        }
     }
 
+    /// Account selection, deletion confirmation and capture lifetime.
     #[test]
-    fn expired_capture_cannot_be_saved() {
-        let mut model = Credentials::new(false);
-        model.navigation("https://example.com");
-        model.open = true;
-        model.document = "1".into();
-        model.capture = Some((
-            "2".into(),
-            "person".into(),
-            Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
-        ));
-        assert!(model.act(Action::Save).is_empty());
-        assert!(model.capture.is_none());
-    }
-
-    #[test]
-    fn capture_waits_for_explicit_save_and_is_consumed_once() {
-        let mut model = Credentials::new(false);
-        model.navigation("https://example.com");
-        let status = model.open(true).remove(0);
-        let requests = model.apply(reply(&status, "1"));
-        assert_eq!(requests.len(), 2);
-        let discover = requests
-            .iter()
-            .find(|r| matches!(r.action, CredentialAction::Discover))
-            .unwrap();
-        let mut forms = reply(discover, "1");
-        forms.forms.push(CredentialForm {
-            id: "1".into(),
-            username: "person".into(),
-            kind: "current-password".into(),
-        });
-        model.apply(forms);
-        let list = requests
-            .iter()
-            .find(|r| matches!(r.action, CredentialAction::List))
-            .unwrap();
-        model.apply(reply(list, "1"));
-        let capture = model.act(Action::Capture).remove(0);
-        let mut captured = reply(&capture, "1");
-        captured.capture = Some("8".into());
-        captured.username = Some("person".into());
-        assert!(model.apply(captured).is_empty());
-        let save = model.act(Action::Save).remove(0);
-        assert_eq!(
-            save.action,
-            CredentialAction::Save {
-                capture: "8".into()
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn credential_selection_and_capture_require_explicit_fresh_choices() {
+        // Phase `multiple_accounts_require_selection_and_delete_confirmation`.
+        {
+            let mut model = Credentials::new(false);
+            model.navigation("https://example.com");
+            let status = model.open(true).remove(0);
+            let requests = model.apply(reply(&status, "1"));
+            for request in requests {
+                let mut response = reply(&request, "1");
+                if matches!(request.action, CredentialAction::List) {
+                    response.accounts = vec![
+                        CredentialAccount {
+                            id: "a".into(),
+                            username: "first".into(),
+                        },
+                        CredentialAccount {
+                            id: "b".into(),
+                            username: "second".into(),
+                        },
+                    ];
+                }
+                model.apply(response);
             }
-        );
-        assert!(model.act(Action::Save).is_empty());
+            assert!(model.account.is_none());
+            assert!(model.act(Action::ConfirmDelete).is_empty());
+            assert!(model.act(Action::Account("unknown".into())).is_empty());
+            assert!(model.account.is_none());
+            model.act(Action::Account("b".into()));
+            assert!(model.act(Action::Delete).is_empty());
+            let deletion = model.act(Action::ConfirmDelete).remove(0);
+            assert_eq!(
+                deletion.action,
+                CredentialAction::Delete {
+                    account: "b".into()
+                }
+            );
+            assert!(model.act(Action::ConfirmDelete).is_empty());
+        }
+
+        // Phase `expired_capture_cannot_be_saved`.
+        {
+            let mut model = Credentials::new(false);
+            model.navigation("https://example.com");
+            model.open = true;
+            model.document = "1".into();
+            model.capture = Some((
+                "2".into(),
+                "person".into(),
+                ui::time::now().checked_sub(Duration::from_secs(1)).unwrap(),
+            ));
+            assert!(model.act(Action::Save).is_empty());
+            assert!(model.capture.is_none());
+        }
+
+        // Phase `capture_waits_for_explicit_save_and_is_consumed_once`.
+        {
+            let mut model = Credentials::new(false);
+            model.navigation("https://example.com");
+            let status = model.open(true).remove(0);
+            let requests = model.apply(reply(&status, "1"));
+            assert_eq!(requests.len(), 2);
+            let discover = requests
+                .iter()
+                .find(|r| matches!(r.action, CredentialAction::Discover))
+                .unwrap();
+            let mut forms = reply(discover, "1");
+            forms.forms.push(CredentialForm {
+                id: "1".into(),
+                username: "person".into(),
+                kind: "current-password".into(),
+            });
+            model.apply(forms);
+            let list = requests
+                .iter()
+                .find(|r| matches!(r.action, CredentialAction::List))
+                .unwrap();
+            model.apply(reply(list, "1"));
+            let capture = model.act(Action::Capture).remove(0);
+            let mut captured = reply(&capture, "1");
+            captured.capture = Some("8".into());
+            captured.username = Some("person".into());
+            assert!(model.apply(captured).is_empty());
+            let save = model.act(Action::Save).remove(0);
+            assert_eq!(
+                save.action,
+                CredentialAction::Save {
+                    capture: "8".into()
+                }
+            );
+            assert!(model.act(Action::Save).is_empty());
+        }
     }
 }

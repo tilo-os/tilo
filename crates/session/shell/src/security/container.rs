@@ -179,8 +179,8 @@ impl Container {
 
         // 5. Wayland Socket
         let host_runtime_dir =
-            std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".into());
-        let host_socket_path = format!("{host_runtime_dir}/{wayland_socket}");
+            xdg_paths::xdg::runtime_dir().unwrap_or_else(|| "/run/user/1000".into());
+        let host_socket_path = format!("{}/{wayland_socket}", host_runtime_dir.display());
 
         let sandbox_runtime_dir = "/tmp/runtime";
         cmd.arg("--dir").arg(sandbox_runtime_dir);
@@ -290,119 +290,121 @@ mod tests {
     }
 
     #[test]
-    fn log_dir_lives_under_an_absolute_runtime_dir_only() {
+    fn container_logs_are_private_fresh_and_symlink_safe() {
+        // Phase `log_dir_lives_under_an_absolute_runtime_dir_only`.
         assert_eq!(
             app_log_dir_in(Some("/run/user/1000".into())),
             Some(PathBuf::from("/run/user/1000/tilo/app-logs"))
         );
         assert_eq!(app_log_dir_in(Some("relative/run".into())), None);
         assert_eq!(app_log_dir_in(None), None);
-    }
+        // Phase `logs_land_in_a_private_directory_with_private_modes`.
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            let dir = app_log_dir_in(Some(runtime.path().into())).unwrap();
+            let tab_id = Uuid::new_v4();
 
-    #[test]
-    fn logs_land_in_a_private_directory_with_private_modes() {
-        let runtime = tempfile::tempdir().unwrap();
-        let dir = app_log_dir_in(Some(runtime.path().into())).unwrap();
-        let tab_id = Uuid::new_v4();
+            let (path, mut file) = create_app_log(&dir, tab_id).unwrap();
+            file.write_all(b"hello").unwrap();
 
-        let (path, mut file) = create_app_log(&dir, tab_id).unwrap();
-        file.write_all(b"hello").unwrap();
-
-        assert_eq!(path, dir.join(format!("{tab_id}.log")));
-        assert_eq!(mode(&dir), 0o700);
-        assert_eq!(mode(dir.parent().unwrap()), 0o700);
-        assert_eq!(mode(&path), 0o600);
-        let metadata = std::fs::symlink_metadata(&path).unwrap();
-        assert!(metadata.is_file());
-        assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello");
-    }
-
-    #[test]
-    fn a_symlink_planted_at_the_log_path_is_not_followed() {
-        let runtime = tempfile::tempdir().unwrap();
-        let dir = runtime.path().join("app-logs");
-        std::fs::create_dir(&dir).unwrap();
-        let victim = runtime.path().join("victim");
-        std::fs::write(&victim, "untouched").unwrap();
-        let tab_id = Uuid::new_v4();
-        let planted = dir.join(format!("{tab_id}.log"));
-        std::os::unix::fs::symlink(&victim, &planted).unwrap();
-        let dangling = Uuid::new_v4();
-        let dangling_target = runtime.path().join("would-be-created");
-        std::os::unix::fs::symlink(&dangling_target, dir.join(format!("{dangling}.log"))).unwrap();
-
-        assert!(create_app_log(&dir, tab_id).is_err());
-        assert!(create_app_log(&dir, dangling).is_err());
-        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
-        assert!(!dangling_target.exists());
-        assert!(planted.symlink_metadata().unwrap().file_type().is_symlink());
-    }
-
-    #[test]
-    fn a_symlinked_log_directory_is_refused() {
-        let runtime = tempfile::tempdir().unwrap();
-        let elsewhere = runtime.path().join("elsewhere");
-        std::fs::create_dir(&elsewhere).unwrap();
-        let dir = runtime.path().join("app-logs");
-        std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
-
-        let error = create_app_log(&dir, Uuid::new_v4()).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn an_existing_log_is_not_reused() {
-        let runtime = tempfile::tempdir().unwrap();
-        let dir = runtime.path().join("app-logs");
-        let tab_id = Uuid::new_v4();
-        let (path, _) = create_app_log(&dir, tab_id).unwrap();
-        std::fs::write(&path, "earlier").unwrap();
-
-        let error = create_app_log(&dir, tab_id).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "earlier");
-    }
-
-    #[test]
-    fn old_logs_are_pruned_to_the_retention_cap() {
-        let runtime = tempfile::tempdir().unwrap();
-        let dir = runtime.path().join("app-logs");
-        let mut created: Vec<PathBuf> = Vec::new();
-        for age in 0..MAX_APP_LOGS as u64 + 4 {
-            let (path, file) = create_app_log(&dir, Uuid::new_v4()).unwrap();
-            // Distinct, increasing mtimes regardless of filesystem resolution.
-            file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000 + age))
-                .unwrap();
-            created.push(path);
+            assert_eq!(path, dir.join(format!("{tab_id}.log")));
+            assert_eq!(mode(&dir), 0o700);
+            assert_eq!(mode(dir.parent().unwrap()), 0o700);
+            assert_eq!(mode(&path), 0o600);
+            let metadata = std::fs::symlink_metadata(&path).unwrap();
+            assert!(metadata.is_file());
+            assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello");
         }
-        std::fs::write(dir.join("unrelated"), "kept").unwrap();
+        // Phase `a_symlink_planted_at_the_log_path_is_not_followed`.
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            let dir = runtime.path().join("app-logs");
+            std::fs::create_dir(&dir).unwrap();
+            let victim = runtime.path().join("victim");
+            std::fs::write(&victim, "untouched").unwrap();
+            let tab_id = Uuid::new_v4();
+            let planted = dir.join(format!("{tab_id}.log"));
+            std::os::unix::fs::symlink(&victim, &planted).unwrap();
+            let dangling = Uuid::new_v4();
+            let dangling_target = runtime.path().join("would-be-created");
+            std::os::unix::fs::symlink(&dangling_target, dir.join(format!("{dangling}.log")))
+                .unwrap();
 
-        let remaining: Vec<PathBuf> = created.iter().filter(|p| p.exists()).cloned().collect();
-        assert_eq!(remaining.len(), MAX_APP_LOGS);
-        assert_eq!(
-            remaining.as_slice(),
-            &created[created.len() - MAX_APP_LOGS..]
-        );
-        assert!(dir.join("unrelated").exists());
+            assert!(create_app_log(&dir, tab_id).is_err());
+            assert!(create_app_log(&dir, dangling).is_err());
+            assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
+            assert!(!dangling_target.exists());
+            assert!(planted.symlink_metadata().unwrap().file_type().is_symlink());
+        }
+        // Phase `a_symlinked_log_directory_is_refused`.
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            let elsewhere = runtime.path().join("elsewhere");
+            std::fs::create_dir(&elsewhere).unwrap();
+            let dir = runtime.path().join("app-logs");
+            std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
+
+            let error = create_app_log(&dir, Uuid::new_v4()).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+        }
+        // Phase `an_existing_log_is_not_reused`.
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            let dir = runtime.path().join("app-logs");
+            let tab_id = Uuid::new_v4();
+            let (path, _) = create_app_log(&dir, tab_id).unwrap();
+            std::fs::write(&path, "earlier").unwrap();
+
+            let error = create_app_log(&dir, tab_id).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "earlier");
+        }
     }
 
     #[test]
-    fn output_beyond_the_cap_is_drained_but_not_kept() {
-        let output = vec![b'x'; 10_000];
-        let mut log = Vec::new();
-        copy_capped(output.as_slice(), &mut log, 4_096).unwrap();
+    fn container_logs_are_pruned_and_capped() {
+        // Phase `old_logs_are_pruned_to_the_retention_cap`.
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            let dir = runtime.path().join("app-logs");
+            let mut created: Vec<PathBuf> = Vec::new();
+            for age in 0..MAX_APP_LOGS as u64 + 4 {
+                let (path, file) = create_app_log(&dir, Uuid::new_v4()).unwrap();
+                // Distinct, increasing mtimes regardless of filesystem resolution.
+                file.set_modified(
+                    std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000 + age),
+                )
+                .unwrap();
+                created.push(path);
+            }
+            std::fs::write(dir.join("unrelated"), "kept").unwrap();
 
-        let (kept, marker) = log.split_at(4_096);
-        assert!(kept.iter().all(|b| *b == b'x'));
-        assert_eq!(
-            marker,
-            b"\n[tilo] log truncated; further output discarded\n"
-        );
+            let remaining: Vec<PathBuf> = created.iter().filter(|p| p.exists()).cloned().collect();
+            assert_eq!(remaining.len(), MAX_APP_LOGS);
+            assert_eq!(
+                remaining.as_slice(),
+                &created[created.len() - MAX_APP_LOGS..]
+            );
+            assert!(dir.join("unrelated").exists());
+        }
+        // Phase `output_beyond_the_cap_is_drained_but_not_kept`.
+        {
+            let output = vec![b'x'; 10_000];
+            let mut log = Vec::new();
+            copy_capped(output.as_slice(), &mut log, 4_096).unwrap();
 
-        let mut small = Vec::new();
-        copy_capped(&b"short"[..], &mut small, 4_096).unwrap();
-        assert_eq!(small, b"short");
+            let (kept, marker) = log.split_at(4_096);
+            assert!(kept.iter().all(|b| *b == b'x'));
+            assert_eq!(
+                marker,
+                b"\n[tilo] log truncated; further output discarded\n"
+            );
+
+            let mut small = Vec::new();
+            copy_capped(&b"short"[..], &mut small, 4_096).unwrap();
+            assert_eq!(small, b"short");
+        }
     }
 }

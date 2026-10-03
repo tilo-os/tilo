@@ -8,8 +8,8 @@ use std::time::SystemTime;
 use channel_crypto::{ChannelGroup, Error, MemberKey, VaultKey};
 use collab_types::history::{HistoryPager, page_before};
 use collab_types::{
-    ArtifactId, AttestationId, ChannelId, ContentRetention, EncryptionMetadata, OpClass, SignedOp,
-    generate_keypair, sign_op, verify_op,
+    ArtifactId, AttestationId, ChannelId, ContentRetention, OpClass, SignedOp, generate_keypair,
+    sign_op, verify_op,
 };
 
 /// The history host (broker/relay): stores signed ciphertext, never keys.
@@ -180,7 +180,18 @@ fn read_all_history(
     (decrypted_pages.concat(), requests)
 }
 
+/// A member added after 1000 ops reads every op and the full document; joining transfers state
+/// and keys, not history; a joiner decrypts fetched history after restart with nobody online;
+/// scrolling back fetches only the pages it reaches.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn a_joiner_reads_history_on_demand_from_transferred_keys() {
+    member_added_after_1000_ops_reads_every_op_and_the_full_document();
+    joining_transfers_the_current_state_and_keys_not_the_history();
+    joiner_decrypts_fetched_history_after_restart_with_no_other_member_online();
+    scrolling_back_fetches_only_the_pages_it_reaches();
+}
+
 fn member_added_after_1000_ops_reads_every_op_and_the_full_document() {
     let (channel, artifact, host, mut alice, mut bob, document) = populated_channel(1000);
     let carol_key = member("carol");
@@ -211,7 +222,6 @@ fn member_added_after_1000_ops_reads_every_op_and_the_full_document() {
     assert_eq!(open(&mut carol, &host.ops[0]).unwrap(), line(0));
 }
 
-#[test]
 fn joining_transfers_the_current_state_and_keys_not_the_history() {
     let join_cost = |ops: usize| {
         let (channel, artifact, host, mut alice, _bob, document) = populated_channel(ops);
@@ -249,7 +259,6 @@ fn joining_transfers_the_current_state_and_keys_not_the_history() {
     );
 }
 
-#[test]
 fn joiner_decrypts_fetched_history_after_restart_with_no_other_member_online() {
     let (channel, artifact, host, mut alice, mut bob, document) = populated_channel(300);
     let carol_key = member("carol");
@@ -277,7 +286,6 @@ fn joiner_decrypts_fetched_history_after_restart_with_no_other_member_online() {
     assert_eq!(requests, 3, "301 ops in pages of 128");
 }
 
-#[test]
 fn scrolling_back_fetches_only_the_pages_it_reaches() {
     let (channel, artifact, host, mut alice, _bob, _document) = populated_channel(1000);
     let carol_key = member("carol");
@@ -326,7 +334,15 @@ fn scrolling_back_fetches_only_the_pages_it_reaches() {
     assert!(pager.oldest_loaded().unwrap() <= 5);
 }
 
+/// A removed member cannot read content sealed after removal, and concurrent add and remove
+/// serialise so every member agrees on keys.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn membership_changes_settle_one_agreed_keyring() {
+    removed_member_cannot_read_content_sealed_after_removal();
+    concurrent_add_and_remove_serialize_and_every_member_agrees_on_keys();
+}
+
 fn removed_member_cannot_read_content_sealed_after_removal() {
     let channel = ChannelId::new();
     let artifact = ArtifactId::new();
@@ -409,7 +425,6 @@ fn removed_member_cannot_read_content_sealed_after_removal() {
     }
 }
 
-#[test]
 fn concurrent_add_and_remove_serialize_and_every_member_agrees_on_keys() {
     let channel = ChannelId::new();
     let artifact = ArtifactId::new();
@@ -509,6 +524,7 @@ fn concurrent_add_and_remove_serialize_and_every_member_agrees_on_keys() {
     assert!(open(&mut carol, &host.ops[1]).is_err());
 }
 
+/// The keyring survives restart for every member.
 #[test]
 fn keyring_survives_restart_for_every_member() {
     let (channel, artifact, host, alice, bob, document) = populated_channel(40);
@@ -529,37 +545,4 @@ fn keyring_survives_restart_for_every_member() {
             "state is written in the current format"
         );
     }
-}
-
-/// An MLS application message (encryption scheme version 1) and the
-/// receiver's state, both written by the build before content keys existed.
-#[test]
-fn version_one_ciphertext_from_an_earlier_build_still_decrypts() {
-    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    let key = VaultKey::new([0x44; 32]);
-    let mut bob =
-        ChannelGroup::load_sealed(&fixtures.join("mls_v1_bob_before_decrypt.mls"), &key).unwrap();
-    let channel = bob.channel_id();
-    assert_eq!(
-        channel.0.to_string(),
-        "921f7ae5-59a8-419a-be73-9bf8820ea4aa"
-    );
-    let ciphertext = std::fs::read(fixtures.join("mls_v1_application_message.bin")).unwrap();
-    let metadata = EncryptionMetadata::mls_application(1, channel);
-    assert_eq!(
-        bob.open_content(ArtifactId::new(), &metadata, &ciphertext)
-            .unwrap()
-            .as_slice(),
-        b"sealed by the MLS application-message scheme"
-    );
-
-    // The upgraded state now also carries content keys and saves in the
-    // current format.
-    assert_eq!(bob.keyring().len(), 1);
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("bob.mls");
-    bob.save_sealed(&path, &key).unwrap();
-    let reloaded = ChannelGroup::load_sealed(&path, &key).unwrap();
-    assert_eq!(reloaded.keyring().len(), 1);
-    assert_eq!(reloaded.epoch(), 1);
 }

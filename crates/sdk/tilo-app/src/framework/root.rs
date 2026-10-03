@@ -2,14 +2,18 @@
 //! publishes the resource and its actions, forwards edits to the host, and
 //! indexes the resource for search.
 
+use std::collections::HashSet;
 use std::rc::Rc;
+use std::sync::Arc;
+use ui_core::widget::{AppModel, ModelPath};
 
 use tilo_resource::{Resource, SearchEntry};
-use ui_core::automerge::{AutoCommit, ObjId};
+use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
+use ui_core::automerge::AutoCommit;
 use ui_core::permissions::{LivePermissions, PermissionScope};
 use ui_core::presence::PresenceCtx;
 use ui_core::record::RecordSaveStatus;
-use ui_core::search::{SearchProvider, SearchResult, fuzzy_score};
+use ui_core::search::{SearchProvider, SearchResult};
 use ui_core::text_render::TextRenderer;
 use ui_core::vello::Scene;
 use ui_core::vello::kurbo::Affine;
@@ -19,7 +23,7 @@ use ui_core::{LocalState, Theme};
 use super::dispatch::Dispatcher;
 use super::live::Live;
 use super::stage::Stages;
-use super::view::Updaters;
+use super::view::{Updaters, ViewCx};
 
 pub(crate) struct ResourceRoot<R: Resource> {
     title: &'static str,
@@ -27,6 +31,8 @@ pub(crate) struct ResourceRoot<R: Resource> {
     label: String,
     live: Live<R>,
     updaters: Updaters<R>,
+    /// The live revision bound controls last followed.
+    followed: std::cell::Cell<u64>,
     _alive: Rc<()>,
     dispatch: Dispatcher<R>,
     saved: LocalState<RecordSaveStatus>,
@@ -36,40 +42,131 @@ pub(crate) struct ResourceRoot<R: Resource> {
     permissions: Option<LivePermissions>,
     write: Option<PermissionScope>,
     stages: Stages,
+    feeds: super::history::HistoryFeeds,
     content: Element,
+    /// View and effect operations of the app's presentation, attached to the
+    /// published resource. Document specs are dropped.
+    presentation: Vec<tilo_actions::ActionSpec>,
+    /// The resource's search entries at one live revision, indexed.
+    search: std::cell::RefCell<Option<(u64, Arc<IndexedEntries>)>>,
+    /// The palette the view was last drawn in, which `render` draws it in.
+    drawn_theme: Option<Theme>,
+    /// Shapes text for `render`, which runs outside a frame.
+    /// Kept across renders; unused on wasm where `render` is cfg'd out.
+    #[allow(dead_code, reason = "read only by render, which is native-only")]
+    render_text: Option<TextRenderer>,
+    /// Draws the view over a past version, which `render` answers for a
+    /// `version`. `None` in a view that is itself a past version.
+    /// Used by native-only `render` / past-version draw; unused on wasm.
+    #[allow(
+        dead_code,
+        reason = "used by native-only render / past-version draw; unused on wasm"
+    )]
+    past: Option<super::preview::DrawPast>,
+}
+
+/// The operation type of the framework's `render` view.
+pub(crate) const RENDER_TYPE: &str = "tilo.app.render";
+
+/// `render`: the app's whole view as a picture, which every framework app
+/// answers, so an agent can see what a person sees through the same door it
+/// acts through.
+fn render_spec() -> tilo_actions::ActionSpec {
+    let mut spec = tilo_actions::ActionSpec::typed_operation(
+        "render",
+        "See the app",
+        "See the app",
+        tilo_actions::OperationKind::View,
+        RENDER_TYPE,
+        vec![
+            tilo_actions::ActionParam::optional(
+                "scale",
+                tilo_actions::ParamType::Number,
+                "Pixels per point, 0.5 to 2 (default 1)",
+            )
+            .nullable(),
+            tilo_actions::ActionParam::optional(
+                "version",
+                tilo_actions::ParamType::Text,
+                "A past version: change id from history, or checkpoint name",
+            )
+            .nullable(),
+        ],
+        |args| {
+            tilo_actions::EncodedAction::encode_operation(
+                RENDER_TYPE,
+                &serde_json::json!({ "scale": args.number("scale"), "version": args.text("version") }),
+            )
+            .unwrap_or_else(|_| tilo_actions::EncodedAction {
+                type_id: RENDER_TYPE.into(),
+                payload: Vec::new(),
+            })
+        },
+    )
+    .requiring(tilo_actions::PermissionRequirement::Read)
+    .with_description(
+        "See the app's window as a picture: answers with the image and the revision of the document it shows.",
+    );
+    spec.contract.result = tilo_actions::ResultSpec::Json {
+        schema: serde_json::json!({"type": "object"}),
+    };
+    spec
+}
+
+/// The revision a picture shows: the document's heads.
+#[allow(dead_code, reason = "called only by render, which is native-only")]
+fn revision(doc: &mut AutoCommit) -> String {
+    let mut heads: Vec<String> = doc
+        .get_heads()
+        .iter()
+        .map(|head| head.to_string().chars().take(12).collect())
+        .collect();
+    heads.sort();
+    heads.join("+")
 }
 
 impl<R: Resource> ResourceRoot<R> {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "assembled once by the framework from parts it already owns"
-    )]
+    /// A root over `content`, the view built in `cx`, whose handles the root
+    /// keeps; `alive` is the scope `cx`'s bindings are tied to.
     pub(crate) fn new(
         title: &'static str,
         icon: IconDescriptor,
         label: String,
-        live: Live<R>,
-        updaters: Updaters<R>,
+        cx: ViewCx<R>,
         alive: Rc<()>,
-        dispatch: Dispatcher<R>,
-        saved: LocalState<RecordSaveStatus>,
-        stages: Stages,
         content: Element,
     ) -> Self {
         Self {
             title,
             icon,
             label,
-            live,
-            updaters,
+            live: cx.live,
+            updaters: cx.updaters,
+            followed: std::cell::Cell::new(0),
             _alive: alive,
-            dispatch,
-            saved,
+            dispatch: cx.dispatch,
+            saved: cx.saved,
             permissions: None,
             write: None,
-            stages,
+            stages: cx.stages,
+            feeds: cx.feeds,
             content,
+            presentation: Vec::new(),
+            search: std::cell::RefCell::new(None),
+            drawn_theme: None,
+            render_text: None,
+            past: None,
         }
+    }
+
+    pub(crate) fn drawing_past(mut self, past: super::preview::DrawPast) -> Self {
+        self.past = Some(past);
+        self
+    }
+
+    pub(crate) fn with_presentation(mut self, operations: Vec<tilo_actions::ActionSpec>) -> Self {
+        self.presentation = operations;
+        self
     }
 
     /// Stage a screenshot scenario's view state: every view's
@@ -99,22 +196,150 @@ impl<R: Resource> ResourceRoot<R> {
         }
     }
 
+    pub(crate) fn live(&self) -> &Live<R> {
+        &self.live
+    }
+
+    /// The view as a stored PNG, at `scale` pixels per point.
+    #[cfg(not(target_family = "wasm"))]
+    fn render(
+        &mut self,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        let args: serde_json::Value =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let scale = args
+            .get("scale")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(1.0);
+        if !(0.5..=2.0).contains(&scale) {
+            return Err("scale must be within 0.5..=2".into());
+        }
+        let version = args.get("version").and_then(serde_json::Value::as_str);
+        let rect = self.content.get_rect();
+        let side = |points: f64| {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "clamped to 1..=8192 pixels before the cast"
+            )]
+            let pixels = (points * scale).round().clamp(1.0, 8192.0) as u32;
+            pixels
+        };
+        let (width, height) = (side(rect.width()), side(rect.height()));
+        let theme = self.drawn_theme.clone().unwrap_or_else(Theme::dark);
+        let text = self.render_text.get_or_insert_with(TextRenderer::new);
+        let mut scene = Scene::new();
+        let shown = if let Some(version) = version {
+            let draw = self
+                .past
+                .ok_or_else(|| "this view cannot show another version".to_owned())?;
+            let heads = ui_core::history_source::steps::resolve(doc, version)?;
+            let past = doc
+                .fork_at(&heads)
+                .map_err(|error| format!("version {version} is not in this document: {error}"))?;
+            let bounds = ui_core::vello::kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height());
+            let transform = Affine::scale(scale);
+            scene.fill(
+                ui_core::vello::peniko::Fill::NonZero,
+                transform,
+                theme.bg_app,
+                None,
+                &bounds,
+            );
+            draw(past, bounds, &mut scene, transform, &theme)?;
+            super::history::version_name(&heads)
+        } else {
+            let transform = Affine::translate((-rect.x0, -rect.y0)).then_scale(scale);
+            scene.fill(
+                ui_core::vello::peniko::Fill::NonZero,
+                transform,
+                theme.bg_app,
+                None,
+                &rect,
+            );
+            self.content
+                .draw(&mut scene, transform, text, &theme, &PresenceCtx::empty());
+            revision(doc)
+        };
+        let mut offscreen = ui_core::offscreen::OffscreenRenderer::try_new(width, height)
+            .map_err(|error| format!("no renderer for a {width}x{height} picture: {error}"))?;
+        let rgba = offscreen.render(&scene, theme.bg_app);
+        let png =
+            ui_core::png::encode_rgba8(width, height, &rgba).map_err(|error| error.to_string())?;
+        let hash = tilo_content::ContentStore::for_app()
+            .put(&png)
+            .map_err(|error| format!("the picture could not be stored: {error}"))?;
+        let address = tilo_actions::content_resource(&hash)
+            .ok_or_else(|| "the picture has no content address".to_owned())?;
+        let mut value = serde_json::json!({
+            "width": width,
+            "height": height,
+            "theme": theme.name,
+            "revision": shown,
+            "content": address,
+        });
+        // Where the live view sits in the app's window, in window pixels: a
+        // point of the picture plus this is where a person (or the computer
+        // tool, aimed at this app) clicks it.
+        if version.is_none()
+            && let Some(fields) = value.as_object_mut()
+        {
+            fields.insert(
+                "window_origin".into(),
+                serde_json::json!([rect.x0.round(), rect.y0.round()]),
+            );
+        }
+        Ok(tilo_actions::ActionOutput {
+            value: Some(value),
+            resources: vec![address],
+        })
+    }
+
     /// Follow the document when it moved — a local action, a
     /// collaborator's change, an undo or a restore — reading only what the
     /// change touched.
     fn refresh(&self, doc: &mut AutoCommit) {
-        match self.live.sync(doc) {
-            Ok(true) => self.updaters.run(&self.live.get()),
-            Ok(false) => {}
-            Err(error) => tracing::warn!(%error, kind = R::KIND, "resource unreadable"),
+        if let Err(error) = self.live.sync(doc) {
+            tracing::warn!(%error, kind = R::KIND, "resource unreadable");
         }
+        // A surface may have synced the state itself after its own edit.
+        let revision = self.live.revision();
+        if revision != self.followed.get() {
+            self.followed.set(revision);
+            self.updaters.run(&self.live.get());
+        }
+        self.feeds.refresh(doc);
+    }
+}
+
+/// A resource's search entries and their index, keyed by position.
+struct IndexedEntries {
+    entries: Vec<SearchEntry>,
+    index: SearchIndex,
+}
+
+impl IndexedEntries {
+    fn new(entries: Vec<SearchEntry>) -> Self {
+        // Entry titles are names a person half remembers: typos match too.
+        let mut index = SearchIndex::new(Matching::LOOSE);
+        index.replace_all(entries.iter().enumerate().map(|(at, entry)| {
+            Document::new(at as u64)
+                .field(entry.title.as_str(), FieldWeight::TITLE)
+                .field(entry.text.as_str(), FieldWeight::BODY)
+        }));
+        if let Err(error) = index.commit() {
+            tracing::warn!(%error, "could not index resource search entries");
+        }
+        Self { entries, index }
     }
 }
 
 /// A search provider over one snapshot of the resource's entries.
 struct ResourceSearch {
     name: &'static str,
-    entries: Vec<SearchEntry>,
+    indexed: Arc<IndexedEntries>,
 }
 
 impl SearchProvider for ResourceSearch {
@@ -127,25 +352,24 @@ impl SearchProvider for ResourceSearch {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        let mut hits: Vec<SearchResult> = self
-            .entries
-            .iter()
-            .filter_map(|entry| {
-                let score =
-                    fuzzy_score(query, &entry.title).or_else(|| fuzzy_score(query, &entry.text))?;
-                let mut hit = SearchResult::new(
-                    self.name,
-                    entry.title.clone(),
-                    entry.anchor.clone().unwrap_or_default(),
+        self.indexed
+            .index
+            .search(query, Page::first(limit))
+            .hits
+            .into_iter()
+            .filter_map(|hit| {
+                let entry = self.indexed.entries.get(usize::try_from(hit.key).ok()?)?;
+                Some(
+                    SearchResult::new(
+                        self.name,
+                        entry.title.clone(),
+                        entry.anchor.clone().unwrap_or_default(),
+                    )
+                    .with_preview(entry.text.clone())
+                    .with_score(hit.rank.unwrap_or(0)),
                 )
-                .with_preview(entry.text.clone());
-                hit.score = score;
-                Some(hit)
             })
-            .collect();
-        hits.sort_by_key(|hit| std::cmp::Reverse(hit.score));
-        hits.truncate(limit);
-        hits
+            .collect()
     }
 }
 
@@ -154,6 +378,8 @@ impl SearchProvider for ResourceSearch {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl<R: Resource> Decorator for ResourceRoot<R> {
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources, dyn ui_core::search::capability::SearchSource; inner = content);
+
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -164,7 +390,8 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         self.content.as_mut()
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui_core::doc::document(state, path);
         self.refresh_access();
         self.refresh(state);
         self.content.sync(state, path);
@@ -178,6 +405,13 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if self
+            .drawn_theme
+            .as_ref()
+            .is_none_or(|drawn| drawn.name != theme.name)
+        {
+            self.drawn_theme = Some(theme.clone());
+        }
         scene.fill(
             ui_core::vello::peniko::Fill::NonZero,
             transform,
@@ -214,22 +448,185 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         Some(self)
     }
 
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = vec![tilo_resource::publish::<R>(
-            self.dispatch.resource_id(),
-            &self.label,
-            &self.live.get(),
-        )];
-        resources.extend(self.content.resources(doc));
-        resources
+    // The resource is the same for every participant (an agent task sees and
+    // invokes the same actions); only the content's tree is per participant.
+
+    // The undo boundary of a surface's immediate actions this event; the
+    // host records one step per event and author.
+
+    fn take_action_revert(
+        &mut self,
+    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
+        self.dispatch.take_action_revert()
     }
 
+    // A surface's step stays open for the actions that continue it (the
+    // letters of a word), which report no boundary of their own.
+
+    /// Resource and app presentation doors publish effect/view actions; their
+    /// operation types must be in the retained handler table or publication
+    /// withdraws the whole component surface.
+    fn resource_operation_handlers(&self) -> HashSet<String> {
+        let mut handlers = self.inner().resource_operation_handlers();
+        if cfg!(not(target_family = "wasm")) {
+            handlers.insert(RENDER_TYPE.to_owned());
+        }
+        handlers.insert(super::history::VIEW_TYPE.to_owned());
+        for spec in R::local_operations()
+            .into_iter()
+            .chain(self.presentation.iter().cloned())
+        {
+            if let Some(type_id) = spec.operation_type {
+                handlers.insert(type_id);
+            }
+        }
+        handlers
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &ui_core::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ui_core::automerge::ObjId,
+    ) -> Result<Option<ui_core::widget::ResourceOperationStart>, String> {
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(request) = op.unscoped()
+            && request.type_id == RENDER_TYPE
+        {
+            let output = self.render(request.payload, doc)?;
+            return Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
+                output,
+            )));
+        }
+        if let Some(request) = op.unscoped()
+            && request.type_id == super::history::VIEW_TYPE
+        {
+            let output = super::history::answer(doc, request.payload)?;
+            return Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
+                output,
+            )));
+        }
+        if let Some(started) = self.inner_mut().start_operation(op, doc, path)? {
+            return Ok(Some(started));
+        }
+        // View openers from the resource/presentation catalogue (e.g.
+        // `tilo.rich-text.view` editor/compact) are already mounted; accept
+        // them so agents and Ctrl+K can switch without a missing-handler fault.
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        if request.kind != tilo_actions::OperationKind::View {
+            return Ok(None);
+        }
+        let known = R::local_operations()
+            .into_iter()
+            .chain(self.presentation.iter().cloned())
+            .any(|spec| spec.operation_type.as_deref() == Some(request.type_id));
+        if known {
+            Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> {
+    fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
+        let revision = self.live.revision();
+        let indexed = {
+            let mut cached = self.search.borrow_mut();
+            match cached.as_ref() {
+                Some((at, indexed)) if *at == revision => Arc::clone(indexed),
+                _ => {
+                    let indexed = Arc::new(IndexedEntries::new(R::search(&self.live.get())));
+                    *cached = Some((revision, Arc::clone(&indexed)));
+                    indexed
+                }
+            }
+        };
+        let mut providers: Vec<Box<dyn SearchProvider>> = vec![Box::new(ResourceSearch {
+            name: R::LABEL,
+            indexed,
+        })];
+        providers.extend(ui_core::search::capability::search_providers(
+            self.content.as_ref(),
+        ));
+        providers
+    }
+}
+
+impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        ui_core::resources::PublishesResources::resources_for(self, None, doc)
+    }
+    fn resources_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+    ) -> Vec<tilo_actions::Resource> {
+        let mut resource =
+            tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, &self.live.get());
+        for spec in &self.presentation {
+            if spec.kind == tilo_actions::OperationKind::Document {
+                continue;
+            }
+            if resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == spec.id)
+            {
+                continue;
+            }
+            resource = resource.with_action(spec.clone());
+        }
+        if cfg!(not(target_family = "wasm"))
+            && !resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == "render")
+        {
+            resource = resource.with_action(render_spec());
+        }
+        for spec in super::history::specs() {
+            if !resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == spec.id)
+            {
+                resource = resource.with_action(spec);
+            }
+        }
+        let mut resources = vec![resource];
+        resources.extend(ui_core::resources::resources_for(
+            self.content.as_ref(),
+            participant,
+            doc,
+        ));
+        resources
+    }
+    fn document_action_result(
+        &self,
+        doc: &AutoCommit,
+        address: &tilo_actions::ActionAddress,
+        changes: &[ui_core::automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        if address.resource == self.dispatch.resource_id()
+            && super::history::is_edit(&address.action)
+        {
+            return super::history::result(&address.action, doc, changes);
+        }
+        ui_core::resources::document_action_result(self.content.as_ref(), doc, address, changes)
+    }
+}
+
+impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.dispatch
             .take()
-            .or_else(|| self.content.take_control_invocation())
+            .or_else(|| ui_core::widget::controls::take_control_invocation(self.content.as_mut()))
     }
-
     /// An edit this resource's dispatcher submitted was refused, or is held
     /// for the user's confirmation. Nothing changed in the document, so a
     /// surface that previewed the edit is re-presented the stored state; a
@@ -242,20 +639,24 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         if result.is_err() && address.resource == self.dispatch.resource_id() {
             self.live.represent();
         }
-        self.content.on_control_invocation_result(address, result);
+        ui_core::widget::controls::on_control_invocation_result(
+            self.content.as_mut(),
+            address,
+            result,
+        );
     }
-
     fn has_pending_control_invocation(&self) -> bool {
-        self.dispatch.has_pending() || self.content.has_pending_control_invocation()
+        self.dispatch.has_pending()
+            || ui_core::widget::controls::has_pending_control_invocation(self.content.as_ref())
     }
+}
 
-    fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
-        let mut providers: Vec<Box<dyn SearchProvider>> = vec![Box::new(ResourceSearch {
-            name: R::LABEL,
-            entries: R::search(&self.live.get()),
-        })];
-        providers.extend(self.content.search_providers());
-        providers
+impl<R: Resource> ui_core::undo::CommittedActions for ResourceRoot<R> {
+    fn take_committed_action(&mut self) -> Option<Vec<ui_core::automerge::ChangeHash>> {
+        self.dispatch.take_committed()
+    }
+    fn keeps_undo_step_open(&self) -> bool {
+        self.dispatch.keeps_step_open()
     }
 }
 

@@ -4,6 +4,8 @@
 //! did, so a host can mirror the same change into its replication document
 //! and roll both back together if the mirror is refused.
 
+use std::collections::{HashMap, HashSet};
+
 use crate::ids::{GroupId, MintIds, StripId, TabId};
 use crate::layout::{Tab, WindowGroup};
 use crate::tree::DesktopTree;
@@ -280,4 +282,186 @@ impl DesktopTree {
         group.tabs.insert(dest, moved);
         Some(group.tabs.clone())
     }
+
+    /// Replace one strip's group/tab arrangement with the identity-only
+    /// shape a live strip widget reports after a same-strip drag or split.
+    /// Tabs keep their content from this tree: the widget names ids, never
+    /// tiles. Maximized state stays with the group id that had it. If the
+    /// strip's active group vanished, the first group becomes active.
+    ///
+    /// Returns the strip's new groups, for the host's document mirror.
+    /// `None`, with nothing changed, when the shape is not a permutation of
+    /// the strip's tabs (a group empty or missing its active tab, a tab or
+    /// group id repeated, a tab added or lost) or changes nothing.
+    pub fn reconcile_strip_topology(
+        &mut self,
+        strip_id: StripId,
+        topology: &[GroupShape],
+    ) -> Option<Vec<WindowGroup>> {
+        let (ws_idx, strip_idx) = self.strip_position(strip_id)?;
+        let strip = self.workspaces.get(ws_idx)?.strips.get(strip_idx)?;
+
+        let old_tab_ids: HashSet<TabId> = strip
+            .window_groups
+            .iter()
+            .flat_map(|group| group.tabs.iter().map(|tab| tab.id))
+            .collect();
+        let new_tab_ids: Vec<TabId> = topology
+            .iter()
+            .flat_map(|group| group.tab_ids.iter().copied())
+            .collect();
+        let new_tab_set: HashSet<TabId> = new_tab_ids.iter().copied().collect();
+        let group_ids: HashSet<GroupId> = topology.iter().map(|group| group.id).collect();
+        if topology
+            .iter()
+            .any(|group| group.tab_ids.is_empty() || !group.tab_ids.contains(&group.active_tab))
+            || new_tab_ids.len() != new_tab_set.len()
+            || topology.len() != group_ids.len()
+            || old_tab_ids != new_tab_set
+        {
+            return None;
+        }
+
+        let mut tabs: HashMap<TabId, Tab> = strip
+            .window_groups
+            .iter()
+            .flat_map(|group| group.tabs.iter().cloned())
+            .map(|tab| (tab.id, tab))
+            .collect();
+        let old_groups: HashMap<GroupId, &WindowGroup> = strip
+            .window_groups
+            .iter()
+            .map(|group| (group.id, group))
+            .collect();
+        let mut rebuilt = Vec::with_capacity(topology.len());
+        for live in topology {
+            let group_tabs: Vec<Tab> = live
+                .tab_ids
+                .iter()
+                .filter_map(|tab_id| tabs.remove(tab_id))
+                .collect();
+            if group_tabs.len() != live.tab_ids.len() {
+                return None;
+            }
+            rebuilt.push(WindowGroup {
+                id: live.id,
+                tabs: group_tabs,
+                active_tab: live.active_tab,
+                width: live.width,
+                maximized: old_groups
+                    .get(&live.id)
+                    .is_some_and(|group| group.maximized),
+            });
+        }
+        let unchanged = rebuilt.len() == strip.window_groups.len()
+            && rebuilt.iter().zip(&strip.window_groups).all(|(new, old)| {
+                new.id == old.id
+                    && new.active_tab == old.active_tab
+                    && new.width == old.width
+                    && new.maximized == old.maximized
+                    && new
+                        .tabs
+                        .iter()
+                        .map(|tab| tab.id)
+                        .eq(old.tabs.iter().map(|tab| tab.id))
+            });
+        if unchanged {
+            return None;
+        }
+        let target = self.workspaces.get_mut(ws_idx)?.strips.get_mut(strip_idx)?;
+        target.window_groups = rebuilt;
+        let persisted = target.window_groups.clone();
+        if self
+            .active_group
+            .get(&strip_id)
+            .is_none_or(|active| !group_ids.contains(active))
+            && let Some(first) = persisted.first()
+        {
+            self.active_group.insert(strip_id, first.id);
+        }
+        Some(persisted)
+    }
+}
+
+impl DesktopTree {
+    /// Remove `tab_id` from whichever group holds it. If the removed tab was
+    /// active, the tab now at its index (or the group's last) becomes active; a group left empty is removed,
+    /// and if it was its strip's active group the group now at its index (or
+    /// the last one) takes over. `None`, with nothing changed, when no group
+    /// holds the tab.
+    pub fn remove_tab(&mut self, tab_id: TabId) -> Option<RemovedTab> {
+        let (ws_idx, strip_idx, group_idx, tab_idx) =
+            self.workspaces.iter().enumerate().find_map(|(wi, ws)| {
+                ws.strips.iter().enumerate().find_map(|(si, strip)| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .enumerate()
+                        .find_map(|(gi, group)| {
+                            group
+                                .tabs
+                                .iter()
+                                .position(|tab| tab.id == tab_id)
+                                .map(|ti| (wi, si, gi, ti))
+                        })
+                })
+            })?;
+        let strip = self.workspaces.get_mut(ws_idx)?.strips.get_mut(strip_idx)?;
+        let strip_id = strip.id;
+        let group = strip.window_groups.get_mut(group_idx)?;
+        let group_id = group.id;
+        let tab = group.tabs.remove(tab_idx);
+        if group.active_tab == tab_id {
+            group.active_tab = group
+                .tabs
+                .get(tab_idx)
+                .or_else(|| group.tabs.last())
+                .map_or(0, |tab| tab.id);
+        }
+        let group_removed = group.tabs.is_empty();
+        if group_removed {
+            strip.window_groups.remove(group_idx);
+            if self.active_group.get(&strip_id) == Some(&group_id) {
+                match strip
+                    .window_groups
+                    .get(group_idx)
+                    .or_else(|| strip.window_groups.last())
+                    .map(|group| group.id)
+                {
+                    Some(next) => {
+                        self.active_group.insert(strip_id, next);
+                    }
+                    None => {
+                        self.active_group.remove(&strip_id);
+                    }
+                }
+            }
+        }
+        Some(RemovedTab {
+            strip: strip_id,
+            group: group_id,
+            tab,
+            group_removed,
+        })
+    }
+}
+
+/// What [`DesktopTree::remove_tab`] took out of the tree.
+#[derive(Clone, Debug)]
+pub struct RemovedTab {
+    pub strip: StripId,
+    pub group: GroupId,
+    pub tab: Tab,
+    /// Whether the tab was its group's last and the group went with it.
+    pub group_removed: bool,
+}
+
+/// One window group as a live strip widget reports it: identities, order,
+/// the active tab and width, but no tile content.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupShape {
+    pub id: GroupId,
+    pub tab_ids: Vec<TabId>,
+    pub active_tab: TabId,
+    pub width: WindowWidth,
 }

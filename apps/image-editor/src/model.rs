@@ -172,7 +172,16 @@ impl Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Inserting and removing adjustments rewires the graph without flattening,
+    /// splices every branch, and refuses structural nodes.
     #[test]
+    fn adjustment_insert_and_remove_rewire_the_graph() {
+        inserting_an_early_step_rewires_without_flattening();
+        removing_a_middle_adjustment_preserves_every_later_step();
+        removing_an_adjustment_splices_all_of_its_branches();
+        structural_nodes_cannot_be_removed_as_adjustments();
+    }
+
     fn inserting_an_early_step_rewires_without_flattening() {
         let mut p = Project::blank();
         assert!(p.insert_before_output("grade", "Exposure", Operation::Exposure { stops: 1.0 }));
@@ -193,7 +202,6 @@ mod tests {
         assert!(matches!(p.operations["grade"], Operation::Exposure { .. }));
     }
 
-    #[test]
     fn removing_a_middle_adjustment_preserves_every_later_step() {
         let mut p = Project::blank();
         assert!(p.insert_before_output("grade", "Exposure", Operation::Exposure { stops: 1.0 }));
@@ -219,7 +227,6 @@ mod tests {
         assert!(!p.operations.contains_key("grade"));
     }
 
-    #[test]
     fn removing_an_adjustment_splices_all_of_its_branches() {
         let mut p = Project::blank();
         assert!(p.insert_before_output("grade", "Exposure", Operation::Exposure { stops: 1.0 }));
@@ -249,7 +256,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn structural_nodes_cannot_be_removed_as_adjustments() {
         let mut p = Project::blank();
         let before = p.clone();

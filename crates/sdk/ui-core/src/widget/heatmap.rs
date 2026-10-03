@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
+use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -250,7 +250,6 @@ impl Heatmap {
 }
 
 impl Widget for Heatmap {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -448,19 +447,8 @@ impl Widget for Heatmap {
             );
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if let Some(action) = self.touch.handle(event, scale_factor) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
             match action {
                 ChartTouchAction::Inspect(point) => {
                     self.pointer = point;
@@ -472,8 +460,8 @@ impl Widget for Heatmap {
                     self.update_hover();
                     if let Some(cell) = self.hovered.and_then(|index| self.cells.get(index)) {
                         self.activated = Some(cell.id.clone());
-                        *handled = true;
-                        *focus_target = Some(node_id);
+                        *ctx.handled = true;
+                        *ctx.focus_target = Some(ctx.node_id);
                     }
                 }
                 ChartTouchAction::Clear => self.hovered = None,
@@ -482,7 +470,8 @@ impl Widget for Heatmap {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.pointer =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.update_hover();
                 self.keyboard_inspection = false;
             }
@@ -494,8 +483,8 @@ impl Widget for Heatmap {
             } => {
                 if let Some(cell) = self.hovered.and_then(|index| self.cells.get(index)) {
                     self.activated = Some(cell.id.clone());
-                    *handled = true;
-                    *focus_target = Some(node_id);
+                    *ctx.handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
                 }
             }
             _ if chart_nav_action(event).is_some() => {
@@ -524,8 +513,8 @@ impl Widget for Heatmap {
                         self.pointer = rect.center();
                     }
                 }
-                *handled = true;
-                *focus_target = Some(node_id);
+                *ctx.handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
             }
             _ => {}
         }
@@ -570,8 +559,8 @@ impl Widget for Heatmap {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
@@ -607,23 +596,28 @@ impl Widget for Heatmap {
 mod tests {
     use super::*;
     #[test]
-    fn constant_values_have_a_safe_range() {
-        let heatmap = Heatmap::new(
-            vec!["A".into()],
-            vec!["B".into()],
-            vec![HeatmapCell::new("x", 0, 0, 3.0)],
-        );
-        let range = heatmap.range();
-        assert!(range.1 > range.0);
-    }
-    #[test]
-    fn invalid_coordinates_have_no_rect() {
-        let mut heatmap = Heatmap::new(vec!["A".into()], vec!["B".into()], vec![]);
-        heatmap.rect = Rect::new(0.0, 0.0, 200.0, 200.0);
-        assert!(
-            heatmap
-                .cell_rect(&HeatmapCell::new("x", 2, 0, 1.0))
-                .is_none()
-        );
+    fn heatmap_guards_constant_values_and_invalid_coordinates() {
+        fn constant_values_have_a_safe_range() {
+            let heatmap = Heatmap::new(
+                vec!["A".into()],
+                vec!["B".into()],
+                vec![HeatmapCell::new("x", 0, 0, 3.0)],
+            );
+            let range = heatmap.range();
+            assert!(range.1 > range.0);
+        }
+
+        fn invalid_coordinates_have_no_rect() {
+            let mut heatmap = Heatmap::new(vec!["A".into()], vec!["B".into()], vec![]);
+            heatmap.rect = Rect::new(0.0, 0.0, 200.0, 200.0);
+            assert!(
+                heatmap
+                    .cell_rect(&HeatmapCell::new("x", 2, 0, 1.0))
+                    .is_none()
+            );
+        }
+
+        constant_values_have_a_safe_range();
+        invalid_coordinates_have_no_rect();
     }
 }

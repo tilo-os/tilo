@@ -305,54 +305,24 @@ impl App {
         }
     }
     fn update_focusable_order(&mut self) {
-        fn collect_focusable(
-            node_id: NodeId,
-            widget: &dyn Widget,
-            taffy: &TaffyTree<()>,
-            order: &mut Vec<NodeId>,
-        ) {
-            let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
-                return;
-            };
-            if widget.is_focusable() && widget.is_enabled() {
-                order.push(node_id);
-            }
-            let children = widget.children();
-            if let Ok(child_nodes) = taffy.children(node_id) {
-                for (child_widget, &child_node) in children.iter().zip(child_nodes.iter()) {
-                    collect_focusable(child_node, *child_widget, taffy, order);
-                }
-            }
+        if self
+            .actions
+            .action_palette
+            .as_ref()
+            .is_some_and(|palette| palette.is_presented())
+        {
+            let node = self.layout.node_map.keys().copied().find(|&node| {
+                self.inspect_node(node, |widget| widget.test_id() == Some("action-palette"))
+                    .unwrap_or(false)
+            });
+            self.focusable_order = node.into_iter().collect();
+            self.accessibility.focus_trap_active = true;
+            self.focused_node = node;
+            return;
         }
-        // The deepest trapping widget wins (a modal opened from within one).
-        fn find_trap_focusables(
-            node_id: NodeId,
-            widget: &dyn Widget,
-            taffy: &TaffyTree<()>,
-        ) -> Option<Vec<NodeId>> {
-            let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
-                return None;
-            };
-            let children = widget.children();
-            let child_nodes = taffy.children(node_id).ok();
-            // Recurse first so a nested trap takes precedence.
-            if let Some(child_nodes) = &child_nodes {
-                for (child_widget, &child_node) in children.iter().zip(child_nodes.iter()) {
-                    if let Some(inner) = find_trap_focusables(child_node, *child_widget, taffy) {
-                        return Some(inner);
-                    }
-                }
-            }
-            if widget.traps_focus() {
-                let mut order = Vec::new();
-                collect_focusable(node_id, widget, taffy, &mut order);
-                return Some(order);
-            }
-            None
-        }
-
-        if self.history.is_some()
-            || crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
+        if self.close_admission.dialog.is_none()
+            && (self.history.is_some()
+                || crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref()))
         {
             self.update_history_focus_order();
             return;
@@ -362,53 +332,21 @@ impl App {
             return;
         };
 
-        let (trap_active, order) = self
-            .with_native_presentation(|widget, _, _, taffy| {
-                let trap = find_trap_focusables(root, widget, taffy);
-                if let Some(order) = trap {
-                    (true, order)
-                } else {
-                    let mut order = Vec::new();
-                    collect_focusable(root, widget, taffy, &mut order);
-                    (false, order)
-                }
+        let (order, trap_active) = self
+            .with_native_presentation(|widget, _, _, taffy, _| {
+                crate::focus_navigation::order(root, widget, taffy)
             })
             .unwrap_or_default();
         self.focusable_order = order;
-        match (self.accessibility.focus_trap_active, trap_active) {
-            (false, true) => {
-                // Modal just opened: remember prior focus, move into the trap.
-                self.accessibility.focus_before_trap = self.focused_node;
-                if let Some(&first) = self.focusable_order.first() {
-                    self.set_focused_node(Some(first));
-                } else {
-                    // No focusable content — drop focus so Tab can't reach
-                    // the content behind the backdrop.
-                    self.set_focused_node(None);
-                }
-            }
-            (true, false) => {
-                // Modal closed: restore only if that element still exists.
-                let restore = self
-                    .accessibility
-                    .focus_before_trap
-                    .take()
-                    .filter(|id| self.focusable_order.contains(id));
-                self.set_focused_node(restore);
-            }
-            (true, true) => {
-                // Still trapped: pull focus back if a rebuild dropped it
-                // outside the modal.
-                let inside = self
-                    .focused_node
-                    .is_some_and(|id| self.focusable_order.contains(&id));
-                if !inside {
-                    self.set_focused_node(self.focusable_order.first().copied());
-                }
-            }
-            (false, false) => {}
+        if let Some(next) = crate::focus_navigation::reconcile_trap(
+            &mut self.accessibility.focus_trap_active,
+            &mut self.accessibility.focus_before_trap,
+            self.focused_node,
+            &self.focusable_order,
+            trap_active,
+        ) {
+            self.set_focused_node(next);
         }
-        self.accessibility.focus_trap_active = trap_active;
     }
 
     /// The decode lives on [`crate::presence::PresenceCtx`] so the
@@ -475,13 +413,13 @@ impl App {
         }
     }
 
-    #[cfg(feature = "native")]
-    fn apply_undo_entry(&mut self, entry: crate::state::UndoEntry) {
+    pub(super) fn apply_undo_entry(&mut self, entry: crate::state::UndoEntry) {
         if let Some(idx) = entry.focused_node_idx {
             if let Some(&id) = self.focusable_order.get(idx) {
                 self.set_focused_node(Some(id));
                 if let Some(metadata) = entry.widget_metadata {
-                    let _ = self.mutate_node(id, |widget| widget.set_state(&metadata));
+                    let _ =
+                        self.mutate_node(id, |widget| crate::undo::set_state(widget, &metadata));
                     self.focus_history.stable_metadata = Some(metadata);
                 }
                 self.focus_history.stable_focus_idx = Some(idx);
@@ -519,7 +457,8 @@ impl App {
         };
         let mut visited = std::collections::HashSet::new();
         for (&node, pointer) in &self.layout.node_map {
-            if !visited.insert(pointer.cast::<()>()) {
+            // SAFETY: this layout is unchanged, so every node pointer is live.
+            if !visited.insert(unsafe { crate::widget::node_sweep_identity(*pointer) }) {
                 continue;
             }
             let binding = self.bindings.binding_for(node);
@@ -529,7 +468,7 @@ impl App {
                     &self.bindings,
                     &self.layout.node_map,
                     node,
-                    |widget| widget.take_undo_request(),
+                    |widget| crate::undo::take_undo_request(widget),
                 )
             }
             .ok()
@@ -551,14 +490,18 @@ impl App {
                     .flatten()
                 } else {
                     match request {
-                        crate::undo::UndoRequest::Undo => {
-                            self.state
-                                .undo_as(Some(&self.collaboration.local_author), None, None)
-                        }
-                        crate::undo::UndoRequest::Redo => {
-                            self.state
-                                .redo_as(Some(&self.collaboration.local_author), None, None)
-                        }
+                        crate::undo::UndoRequest::Undo => self.state.undo_as_with_registry(
+                            Some(&self.collaboration.local_author),
+                            None,
+                            None,
+                            Some(&self.actions.action_registry),
+                        ),
+                        crate::undo::UndoRequest::Redo => self.state.redo_as_with_registry(
+                            Some(&self.collaboration.local_author),
+                            None,
+                            None,
+                            Some(&self.actions.action_registry),
+                        ),
                     }
                 };
                 changed |= entry.is_some();
@@ -603,7 +546,7 @@ impl App {
                     &self.bindings,
                     &self.layout.node_map,
                     node,
-                    |widget| widget.set_undo_status(&mut status),
+                    |widget| crate::undo::set_undo_status(widget, &mut status),
                 )
             };
         }
@@ -642,7 +585,7 @@ impl App {
         // Called after every handled event, many of which (e.g. a
         // selection-drag `CursorMoved`) mutate only ephemeral widget state,
         // not the CRDT — `changed` lets those skip persisting/syncing.
-        let context = self.root_widget.take_commit_context();
+        let context = crate::undo::take_commit_context(self.root_widget.as_mut());
         let changed = self.state.commit_action_authored_with_context(
             self.focus_history.stable_focus_idx,
             self.focus_history.stable_metadata.clone(),
@@ -653,7 +596,7 @@ impl App {
             .focused_node
             .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
         self.focus_history.stable_metadata = self.focused_node.and_then(|id| {
-            self.inspect_node(id, |widget| widget.get_state())
+            self.inspect_node(id, |widget| crate::undo::get_state(widget))
                 .ok()
                 .flatten()
         });
@@ -673,6 +616,7 @@ impl App {
         if new_id.is_some_and(|node| self.is_history_node(node)) {
             self.remember_history_content();
         }
+        self.root_widget.focus_requested(new_id, &self.layout.taffy);
         if self.focused_node != new_id {
             if let Some(old) = self.focused_node {
                 let _ = self.mutate_node(old, |widget| widget.set_focus(false));
@@ -703,36 +647,9 @@ impl App {
     /// never activate `text-input-v3` accidentally.
     #[cfg(feature = "native")]
     fn ime_window_state(&self) -> Option<ImeWindowState> {
-        let id = self.focused_node?;
-        let purpose = self
-            .inspect_node(id, |widget| widget.ime_purpose())
+        self.inspect_node(self.focused_node?, ImeWindowState::from_widget)
             .ok()
-            .flatten()?;
-        let rect = self
-            .inspect_node(id, |widget| widget.ime_cursor_rect())
-            .ok()
-            .flatten()?;
-        let bounded = |v: f64| {
-            if v.is_finite() {
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "value is clamped to [0.0, u32::MAX] on the line above, so the cast is exact"
-                )]
-                {
-                    v.max(0.0).min(f64::from(u32::MAX)).round() as u32
-                }
-            } else {
-                0
-            }
-        };
-        Some(ImeWindowState {
-            purpose,
-            x: bounded(rect.x0),
-            y: bounded(rect.y0),
-            width: bounded(rect.width()).max(1),
-            height: bounded(rect.height()).max(1),
-        })
+            .flatten()
     }
 
     #[cfg(feature = "native")]
@@ -896,35 +813,15 @@ impl App {
         let Ok(current_rect) = self.inspect_node(current_id, |widget| widget.get_rect()) else {
             return;
         };
-        let current_center = current_rect.center();
-        let mut best_candidate = None;
-        let mut best_score = f64::MAX;
-        for &candidate_id in &self.focusable_order {
-            if candidate_id == current_id {
-                continue;
-            }
-            if let Ok(candidate_rect) = self.inspect_node(candidate_id, |widget| widget.get_rect())
-            {
-                let candidate_center = candidate_rect.center();
-                let vector = vello::kurbo::Vec2::new(
-                    candidate_center.x - current_center.x,
-                    candidate_center.y - current_center.y,
-                );
-                let (primary_dist, secondary_dist, in_direction) = match direction {
-                    Direction::Up => (-vector.y, vector.x.abs(), vector.y < -1.0),
-                    Direction::Down => (vector.y, vector.x.abs(), vector.y > 1.0),
-                    Direction::Left => (-vector.x, vector.y.abs(), vector.x < -1.0),
-                    Direction::Right => (vector.x, vector.y.abs(), vector.x > 1.0),
-                };
-                if in_direction {
-                    let score = primary_dist + (secondary_dist * 2.0);
-                    if score < best_score {
-                        best_score = score;
-                        best_candidate = Some(candidate_id);
-                    }
-                }
-            }
-        }
+        let best_candidate = crate::focus_navigation::next(
+            (current_id, current_rect),
+            self.focusable_order.iter().filter_map(|&id| {
+                self.inspect_node(id, |widget| widget.get_rect())
+                    .ok()
+                    .map(|rect| (id, rect))
+            }),
+            direction,
+        );
         if let Some(new_id) = best_candidate {
             self.set_focused_node(Some(new_id));
         }
@@ -935,7 +832,10 @@ impl App {
     /// inside a dialog or let it escape with no capture.
     #[cfg(feature = "native")]
     fn keyboard_nav_allowed(&self, modal_rect: Option<vello::kurbo::Rect>) -> bool {
-        modal_rect.is_none() || self.accessibility.focus_trap_active
+        crate::focus_navigation::keyboard_nav_allowed(
+            modal_rect,
+            self.accessibility.focus_trap_active,
+        )
     }
 
     /// Tab normally belongs to the host's focus order. A focused editor-like
@@ -974,23 +874,10 @@ impl App {
         if len == 0 {
             return false;
         }
-        let current_idx = self
-            .focused_node
-            .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
-        let next_idx = match current_idx {
-            Some(idx) => {
-                if shift {
-                    if idx == 0 {
-                        len.saturating_sub(1)
-                    } else {
-                        idx.saturating_sub(1)
-                    }
-                } else {
-                    let next = idx.saturating_add(1);
-                    if next >= len { 0 } else { next }
-                }
-            }
-            None => 0,
+        let Some(next_idx) =
+            crate::focus_navigation::tab_index(&self.focusable_order, self.focused_node, shift)
+        else {
+            return false;
         };
         if let Some(&id) = self.focusable_order.get(next_idx) {
             self.set_focused_node(Some(id));
@@ -1003,6 +890,20 @@ impl App {
     pub fn build_a11y_tree_update(&mut self, scale: f64) -> accesskit::TreeUpdate {
         let _entry = self.enter_wake_scope();
         let exported = self.bindings.exported_nodes(&self.layout.node_map);
+        if self
+            .actions
+            .action_palette
+            .as_ref()
+            .is_some_and(|p| p.is_presented())
+        {
+            return crate::accesskit_bridge::build_presentation_with_resources_bound(
+                &self.history_presentation_roots(),
+                &exported.nodes,
+                exported.focus(self.focused_node),
+                scale,
+                &[],
+            );
+        }
         if let Some(history) = &self.history {
             let resources = if history.live_interactive() {
                 self.collect_declared_resources()
@@ -1019,7 +920,7 @@ impl App {
         }
         let mut resources = self.collect_declared_resources();
         resources.extend(self.history_local_resources());
-        self.with_native_presentation(|root, nodes, focused, _| {
+        self.with_native_presentation(|root, nodes, focused, _, _| {
             crate::accesskit_bridge::build_tree_update_with_resources_bound(
                 root, nodes, focused, scale, &resources,
             )
@@ -1071,30 +972,48 @@ impl App {
         let Some(address) = Self::find_resource_action(&resources, target) else {
             return false;
         };
-        if self
-            .invoke_history_address_local(&address, argument)
-            .is_some()
-        {
-            return true;
-        }
-        let confirmation = tilo_actions::door::resolve(&resources, &address)
-            .map(|spec| spec.confirmation_for_argument(argument))
-            .unwrap_or_default();
-        if !matches!(confirmation, tilo_actions::ConfirmationPolicy::None) {
-            let _ = self.open_action_palette_at(&address);
-            return true;
-        }
-        let actor = self.collaboration.local_author.0.clone();
-        if self
-            .invoke_resource_action(ResourceInvocation::new(&address, &actor).argument(argument))
-            .is_ok()
-        {
-            self.needs_sync = true;
-            self.layout.layout_dirty = true;
-        }
+        self.invoke_local_address(&address, argument);
         true
     }
 
+    /// The local actor's door onto one action: host services first, then an
+    /// action that asks for confirmation through the palette, then the app's
+    /// own. Assistive technology and host chrome both enter here.
+    pub(super) fn invoke_local_address(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        argument: Option<&str>,
+    ) -> bool {
+        if let Some(result) = self.invoke_history_address_local(address, argument) {
+            return result.is_ok();
+        }
+        let resources = self.collect_declared_resources();
+        let confirmation = tilo_actions::door::resolve(&resources, address)
+            .map(|spec| spec.confirmation_for_argument(argument))
+            .unwrap_or_default();
+        if !matches!(confirmation, tilo_actions::ConfirmationPolicy::None) {
+            return self.open_action_palette_at(address);
+        }
+        let actor = self.collaboration.local_author.0.clone();
+        let accepted = self
+            .invoke_resource_action(ResourceInvocation::new(address, &actor).argument(argument))
+            .is_ok();
+        if accepted {
+            self.needs_sync = true;
+            self.layout.layout_dirty = true;
+        }
+        accepted
+    }
+
+    /// Resolves both retained AccessKit nodes and synthetic semantic children
+    /// (virtual rows/cells) to their owning widget. The widget gets first
+    /// refusal; synthetic children additionally carry an opaque stable target
+    /// produced by that widget. If a retained widget declines, `Action::Focus`
+    /// moves keyboard focus and activation returns click coordinates.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered native accessibility door preserves existing resource, semantic and pointer fallback precedence"
+    )]
     pub fn dispatch_a11y_action(
         &mut self,
         target: accesskit::NodeId,
@@ -1126,7 +1045,7 @@ impl App {
                 .into_iter()
                 .find_map(|root| exported.resolve(root, target))?
         } else {
-            self.with_native_presentation(|root, _, _, _| exported.resolve(root, target))
+            self.with_native_presentation(|root, _, _, _, _| exported.resolve(root, target))
                 .ok()
                 .flatten()?
         };
@@ -1140,6 +1059,24 @@ impl App {
                 semantic_target,
             } => (owner, key_path, ordinal_path, semantic_target, true),
         };
+        if let Some(target) = semantic_target
+            .as_deref()
+            .filter(|t| t.starts_with("ordinary-confirmation:"))
+        {
+            self.bindings.clear();
+            self.layout.node_map.clear();
+            self.focused_node = None;
+            let handled = self.actions.action_palette.as_mut().is_some_and(|palette| {
+                palette.perform_semantic_action(
+                    target,
+                    action,
+                    &mut self.state.doc,
+                    &self.state.root,
+                )
+            });
+            self.finish_action_palette_input(handled);
+            return None;
+        }
         let framework = crate::history_mode::embedded::owns_node(
             self.root_widget.as_ref(),
             taffy_id,
@@ -1148,7 +1085,7 @@ impl App {
             .history
             .as_ref()
             .is_some_and(|history| history.owns_node(taffy_id, &self.layout.taffy));
-        let _history_frame = crate::history_mode::frame::FrameworkInputFrame::new(
+        let history_frame = crate::history_mode::frame::FrameworkInputFrame::new(
             &self.framework_input,
             framework || self.bindings.owns_document(taffy_id),
         );
@@ -1166,6 +1103,7 @@ impl App {
                 }
             })
             .ok()?;
+        drop(history_frame);
         if handled {
             if matches!(action, Action::Focus)
                 || (matches!(action, Action::SetSelection { .. })
@@ -1180,7 +1118,16 @@ impl App {
             // control intent there; drain it before publishing the next
             // AccessKit update so an AT-SPI DoAction never reports success
             // while leaving the visible state unchanged.
-            self.dispatch_control_invocations();
+            if framework {
+                self.refresh_framework_history(
+                    self.layout.last_layout_logical.map_or(900.0, |size| size.0),
+                );
+            }
+            if framework {
+                self.service_pending_history_commands();
+            } else {
+                self.dispatch_control_invocations();
+            }
             self.invalidate_widget_resource_cache();
             self.needs_sync = true;
             self.layout.layout_dirty = true;
@@ -1276,6 +1223,20 @@ impl App {
     /// consumer reacts to just the diff.
     pub fn refresh_semantic_tree(&mut self) -> crate::a11y_tree::TreeDelta {
         let _entry = self.enter_wake_scope();
+        if let Some(palette) = self
+            .actions
+            .action_palette
+            .as_ref()
+            .filter(|p| p.is_presented())
+        {
+            return self.accessibility.semantic_tree.refresh_bound(
+                palette,
+                &self.layout.node_map,
+                &self.bindings.semantic_node_names(&self.layout.node_map),
+                self.focused_node,
+                &[],
+            );
+        }
         let mut resources = self.collect_declared_resources();
         resources.extend(self.history_local_resources());
         let components = crate::bound_dispatch::discover_cached_bound_resources(
@@ -1287,13 +1248,14 @@ impl App {
         .unwrap_or_default();
         let mut tree = std::mem::take(&mut self.accessibility.semantic_tree);
         let delta = self
-            .with_native_presentation(|root, nodes, focused, _| {
-                tree.refresh_components(root, nodes, focused, &resources, &components)
+            .with_native_presentation(|root, nodes, focused, _, names| {
+                tree.refresh_components(root, nodes, names, focused, &resources, &components)
             })
             .unwrap_or_else(|_| {
                 tree.refresh_components(
                     self.root_widget.as_ref(),
                     &self.layout.node_map,
+                    &self.bindings.semantic_node_names(&self.layout.node_map),
                     self.focused_node,
                     &self.collect_declared_resources(),
                     &components,
@@ -1316,12 +1278,32 @@ impl App {
         match self.invoke_bound_target(target, &invocation) {
             Ok(_) => Ok(true),
             Err(tilo_actions::DoorError::ConfirmationRequired) => {
+                if let Some(value) = arg {
+                    let arguments = if let Some(json) =
+                        value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+                    {
+                        crate::bound_dispatch::ControlContinuationArguments::Json(
+                            serde_json::from_str(json).map_err(|error| error.to_string())?,
+                        )
+                    } else {
+                        crate::bound_dispatch::ControlContinuationArguments::Text(value.to_owned())
+                    };
+                    return Ok(self.open_ordinary_confirmation(
+                        crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(
+                            target.clone(),
+                        ),
+                        target.address.address.clone(),
+                        arguments,
+                    ));
+                }
                 self.open_action_palette();
-                Ok(self
+                let activated = self
                     .actions
                     .action_palette
                     .as_mut()
-                    .is_some_and(|palette| palette.activate_bound(target)))
+                    .is_some_and(|palette| palette.activate_bound(target));
+                self.capture_ordinary_palette_request();
+                Ok(activated)
             }
             Err(error) => Err(error.to_string()),
         }
@@ -1365,6 +1347,23 @@ impl App {
                     self.dispatch_encoded_semantic(encoded)
                 }
             }
+            SemanticActionKind::AppDeferred { address } => {
+                if arg.is_some() {
+                    return Err("Deferred action accepts no argument".into());
+                }
+                let actor = self.collaboration.local_author.0.clone();
+                match self.invoke_resource_action(ResourceInvocation::new(&address, &actor)) {
+                    Ok(_) => {
+                        self.needs_sync = true;
+                        self.layout.layout_dirty = true;
+                        Ok(true)
+                    }
+                    Err(tilo_actions::DoorError::ConfirmationRequired) => {
+                        Ok(self.open_action_palette_at(&address))
+                    }
+                    Err(error) => Err(error.to_string()),
+                }
+            }
             SemanticActionKind::AppPrompted { .. } => {
                 let arg = arg.unwrap_or("");
                 let Some(encoded) = self
@@ -1396,6 +1395,21 @@ impl App {
                     return Ok(false);
                 };
                 if let Some(semantic_target) = semantic_target {
+                    if semantic_target.starts_with("ordinary-confirmation:") {
+                        self.bindings.clear();
+                        self.layout.node_map.clear();
+                        self.focused_node = None;
+                        let handled = self.actions.action_palette.as_mut().is_some_and(|palette| {
+                            palette.perform_semantic_action(
+                                &semantic_target,
+                                &verb,
+                                &mut self.state.doc,
+                                &self.state.root,
+                            )
+                        });
+                        self.finish_action_palette_input(handled);
+                        return Ok(handled);
+                    }
                     // Semantic owners use the same lifetime-scoped aliases as
                     // native accessibility. Resolve only current admissions;
                     // an expired alias must never fall back to a raw layout id.

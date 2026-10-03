@@ -1,0 +1,9 @@
+controls-title = Preferences
+controls-name-label = Display name
+controls-name-placeholder = Type your name
+controls-updates-label = Receive updates
+controls-refresh-label = Refresh interval
+controls-minutes-suffix = min
+controls-volume-label = Volume
+controls-region-label = Region
+controls-reset = Restore defaults

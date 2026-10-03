@@ -8,7 +8,7 @@ class SettingsEffectsTests(unittest.TestCase):
         a=dict(app='dev.tilo.settings',search_id='settings.search',ready=True,
           local_search_text='',synchronized_search_query='',search_widget_text='',search_caret_byte=0,
           search_focused=True,search_rect=[20,10,780,45],root_rect=[0,0,800,600],selected_category='network',
-          rendered_result_count=22,rendered_category_ids=list(ALL_CATEGORIES),narrow=False,sidebar_open=True,
+          rendered_result_count=23,rendered_category_ids=list(ALL_CATEGORIES),narrow=False,sidebar_open=True,
           document_root='Root',document_actor='ab12',document_witness_kind='effective_heads_on_disposable_clone',
           effective_document_heads=['a'*64],original_pending_ops=3)
         b=dict(a,local_search_text='z',search_widget_text='z',search_caret_byte=1)
@@ -41,47 +41,51 @@ class SettingsEffectsTests(unittest.TestCase):
         self.assertEqual(list(ALL_CATEGORIES),[slugs[name] for name in order])
         self.assertEqual(list(Z_CATEGORIES),expected)
 
-    def test_exact_transition_and_postdraw(self):
-        s,e,f=self.fixture()
-        self.assertEqual(validate_settings_typing(s,self.lines(e)),2)
-        self.assertEqual(validate_settings_frame_states(s,self.lines(e,f)),3)
-    def test_malformed_and_wrong_state_fails(self):
-        for k,v in [('ready',False),('app','other'),('search_focused',False),('search_caret_byte',0),('local_search_text','x'),('search_widget_text','x'),('effective_document_heads',['b'*64]),('document_actor','bc'),('original_pending_ops',4),('selected_category','about'),('narrow',True),('root_rect',[0,0,0,1])]:
-            s,e,f=self.fixture();e[1]['after'][k]=v
-            with self.subTest(key=k),self.assertRaises(ValueError):validate_settings_typing(s,self.lines(e))
-    def test_exact_results_not_just_narrowing(self):
-        for ids in [['appearance'],['appearance','time_date','accessibility'],['appearance','accessibility','about']]:
-            s,e,f=self.fixture();e[2]['before']['rendered_category_ids']=ids;e[2]['before']['rendered_result_count']=len(ids)
+    def test_exact_and_coalesced_transitions_validate_through_postdraw(self):
+        with self.subTest(phase='exact transition and postdraw'):
+            s,e,f=self.fixture()
+            self.assertEqual(validate_settings_typing(s,self.lines(e)),2)
+            self.assertEqual(validate_settings_frame_states(s,self.lines(e,f)),3)
+        with self.subTest(phase='commit between input and frame does not change effective heads'):
+            s,e,f=self.fixture();f[1]['state']['original_pending_ops']=0
+            self.assertEqual(validate_settings_frame_states(s,self.lines(e,f)),3)
+        with self.subTest(phase='coalesced inputs still require final synchronized results'):
+            s,e,f=self.fixture();e[2]['before']=copy.deepcopy(e[1]['after']);e[2]['after']=copy.deepcopy(e[0]['after'])
+            frames=[f[0],dict(cpu_frame_id=11,input_ids=[1,2],state=f[2]['state'])]
+            self.assertEqual(validate_settings_typing(s,self.lines(e)),2)
+            self.assertEqual(validate_settings_frame_states(s,self.lines(e,frames)),2)
+
+    def test_wrong_incomplete_or_misplaced_typing_evidence_fails(self):
+        with self.subTest(phase='malformed and wrong state'):
+            for k,v in [('ready',False),('app','other'),('search_focused',False),('search_caret_byte',0),('local_search_text','x'),('search_widget_text','x'),('effective_document_heads',['b'*64]),('document_actor','bc'),('original_pending_ops',4),('selected_category','about'),('narrow',True),('root_rect',[0,0,0,1])]:
+                s,e,f=self.fixture();e[1]['after'][k]=v
+                with self.subTest(key=k),self.assertRaises(ValueError):validate_settings_typing(s,self.lines(e))
+        with self.subTest(phase='exact results not just narrowing'):
+            for ids in [['appearance'],['appearance','time_date','accessibility'],['appearance','accessibility','about']]:
+                s,e,f=self.fixture();e[2]['before']['rendered_category_ids']=ids;e[2]['before']['rendered_result_count']=len(ids)
+                with self.assertRaises(ValueError):validate_settings_typing(s,self.lines(e))
+        with self.subTest(phase='retina scale and setup boundary'):
+            s,e,f=self.fixture()
+            for scale in [0,True,None,float('nan')]:
+                with self.assertRaises(ValueError):validate_settings_typing(s,self.lines(e,scale=scale))
+            s['steps'][0]['y']=150
             with self.assertRaises(ValueError):validate_settings_typing(s,self.lines(e))
-    def test_retina_scale_and_setup_boundary(self):
-        s,e,f=self.fixture()
-        for scale in [0,True,None,float('nan')]:
-            with self.assertRaises(ValueError):validate_settings_typing(s,self.lines(e,scale=scale))
-        s['steps'][0]['y']=150
-        with self.assertRaises(ValueError):validate_settings_typing(s,self.lines(e))
-        s,e,f=self.fixture();s['warmup_steps']=0
-        with self.assertRaises(ValueError):validate_settings_typing(s,self.lines(e))
-    def test_missing_duplicate_and_wrong_frame_states(self):
-        s,e,f=self.fixture()
-        for frames in [[],f[:-1],f[::-1],f+f[:1]]:
-            with self.assertRaises(ValueError):validate_settings_frame_states(s,self.lines(e,frames))
-        for k,v in [('synchronized_search_query',''),('search_caret_byte',0),('effective_document_heads',['b'*64]),('original_pending_ops',4)]:
-            broken=copy.deepcopy(f);broken[1]['state'][k]=v
-            with self.assertRaises(ValueError):validate_settings_frame_states(s,self.lines(e,broken))
-    def test_commit_between_input_and_frame_does_not_change_effective_heads(self):
-        s,e,f=self.fixture();f[1]['state']['original_pending_ops']=0
-        self.assertEqual(validate_settings_frame_states(s,self.lines(e,f)),3)
-    def test_coalesced_inputs_still_require_final_synchronized_results(self):
-        s,e,f=self.fixture();e[2]['before']=copy.deepcopy(e[1]['after']);e[2]['after']=copy.deepcopy(e[0]['after'])
-        frames=[f[0],dict(cpu_frame_id=11,input_ids=[1,2],state=f[2]['state'])]
-        self.assertEqual(validate_settings_typing(s,self.lines(e)),2)
-        self.assertEqual(validate_settings_frame_states(s,self.lines(e,frames)),2)
-    def test_missing_fields_and_effect_identity_fail(self):
-        s,e,f=self.fixture()
-        for key in e[1]['after']:
-            broken=copy.deepcopy(e);del broken[1]['after'][key]
-            with self.subTest(key=key),self.assertRaises(ValueError):validate_settings_typing(s,self.lines(broken))
-        for broken in [e[:-1],e+e[:1],e[::-1]]:
-            with self.assertRaises(ValueError):validate_settings_typing(s,self.lines(broken))
+            s,e,f=self.fixture();s['warmup_steps']=0
+            with self.assertRaises(ValueError):validate_settings_typing(s,self.lines(e))
+        with self.subTest(phase='missing fields and effect identity'):
+            s,e,f=self.fixture()
+            for key in e[1]['after']:
+                broken=copy.deepcopy(e);del broken[1]['after'][key]
+                with self.subTest(key=key),self.assertRaises(ValueError):validate_settings_typing(s,self.lines(broken))
+            for broken in [e[:-1],e+e[:1],e[::-1]]:
+                with self.assertRaises(ValueError):validate_settings_typing(s,self.lines(broken))
+        with self.subTest(phase='missing, duplicate and wrong frame states'):
+            s,e,f=self.fixture()
+            for frames in [[],f[:-1],f[::-1],f+f[:1]]:
+                with self.assertRaises(ValueError):validate_settings_frame_states(s,self.lines(e,frames))
+            for k,v in [('synchronized_search_query',''),('search_caret_byte',0),('effective_document_heads',['b'*64]),('original_pending_ops',4)]:
+                broken=copy.deepcopy(f);broken[1]['state'][k]=v
+                with self.assertRaises(ValueError):validate_settings_frame_states(s,self.lines(e,broken))
+
 
 if __name__=='__main__':unittest.main()

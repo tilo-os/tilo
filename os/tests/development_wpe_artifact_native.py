@@ -82,7 +82,7 @@ def main():
                 (assets / name).write_bytes(data)
                 pins.extend((f'{variable}={name}', f'{variable}_SHA256={wpe.sha(data)}'))
             (repo / 'os/dev/build-wpe.sh').write_text('\n'.join(pins) + '\n')
-            (repo / 'os/Containerfile').write_text((source / 'Containerfile').read_text())
+            (repo / 'os/Containerfile.wpe').write_text((source / 'Containerfile').read_text())
             buildroot = 'registry.tilo.so/tilo/tilo-wpe-buildroot@sha256:' + '1' * 64
             inputs = wpe.dependency_inputs(repo, assets, architecture, '0', buildroot)
 
@@ -106,7 +106,7 @@ def main():
 
                 rejected = []
                 negatives = []
-                for field, value in [('recipes', inputs['recipes'] | {'os/Containerfile': '0' * 64}),
+                for field, value in [('recipes', inputs['recipes'] | {'os/Containerfile.wpe': '0' * 64}),
                                      ('assets', [{'name': 'wrong.tar.xz', 'sha256': '0' * 64}]),
                                      ('epoch', '1'),
                                      ('architecture', 'aarch64' if architecture == 'x86_64' else 'x86_64')]:

@@ -2,8 +2,11 @@
 name = "tilo-resource-macros"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Procedural macros for tilo-resource."
 
 # `#[derive(Model)]` and `#[resource]`: the declarations behind the resource
 # layer's golden path. Generated code only calls `tilo_resource`'s public API.
@@ -18,3 +21,7 @@ syn = { version = "2", features = ["full"] }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

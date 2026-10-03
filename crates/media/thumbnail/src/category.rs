@@ -130,48 +130,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn preview_types_are_classified_and_previewable() {
-        for (ext, cat) in [
-            ("png", FileCategory::Image),
-            ("JPG", FileCategory::Image),
-            ("jpeg", FileCategory::Image),
-            ("pdf", FileCategory::Pdf),
-            ("epub", FileCategory::Ebook),
-            ("mp4", FileCategory::Video),
-            ("MKV", FileCategory::Video),
-        ] {
-            assert_eq!(category_for_ext(ext), cat, "{ext}");
-            assert!(cat.has_preview(), "{ext} should be previewable");
+    fn file_categories_decide_preview_or_badge() {
+        // Phase `preview_types_are_classified_and_previewable`.
+        {
+            for (ext, cat) in [
+                ("png", FileCategory::Image),
+                ("JPG", FileCategory::Image),
+                ("jpeg", FileCategory::Image),
+                ("pdf", FileCategory::Pdf),
+                ("epub", FileCategory::Ebook),
+                ("mp4", FileCategory::Video),
+                ("MKV", FileCategory::Video),
+            ] {
+                assert_eq!(category_for_ext(ext), cat, "{ext}");
+                assert!(cat.has_preview(), "{ext} should be previewable");
+            }
         }
-    }
-
-    #[test]
-    fn badge_types_have_no_preview() {
-        for (ext, cat) in [
-            ("zip", FileCategory::Archive),
-            ("rs", FileCategory::Code),
-            ("mp3", FileCategory::Audio),
-            ("docx", FileCategory::Document),
-            ("xlsx", FileCategory::Spreadsheet),
-            ("pptx", FileCategory::Presentation),
-            ("ttf", FileCategory::Font),
-            ("md", FileCategory::Text),
-            ("wat", FileCategory::Unknown),
-        ] {
-            assert_eq!(category_for_ext(ext), cat, "{ext}");
-            assert!(!cat.has_preview(), "{ext} should be a badge, not a preview");
+        // Phase `badge_types_have_no_preview`.
+        {
+            for (ext, cat) in [
+                ("zip", FileCategory::Archive),
+                ("rs", FileCategory::Code),
+                ("mp3", FileCategory::Audio),
+                ("docx", FileCategory::Document),
+                ("xlsx", FileCategory::Spreadsheet),
+                ("pptx", FileCategory::Presentation),
+                ("ttf", FileCategory::Font),
+                ("md", FileCategory::Text),
+                ("wat", FileCategory::Unknown),
+            ] {
+                assert_eq!(category_for_ext(ext), cat, "{ext}");
+                assert!(!cat.has_preview(), "{ext} should be a badge, not a preview");
+            }
         }
-    }
-
-    #[test]
-    fn path_without_extension_is_unknown() {
-        assert_eq!(
-            category_for_path(Path::new("/tmp/README")),
-            FileCategory::Unknown
-        );
-        assert_eq!(
-            category_for_path(Path::new("/a/b/photo.PNG")),
-            FileCategory::Image
-        );
+        // Phase `path_without_extension_is_unknown`.
+        {
+            assert_eq!(
+                category_for_path(Path::new("/tmp/README")),
+                FileCategory::Unknown
+            );
+            assert_eq!(
+                category_for_path(Path::new("/a/b/photo.PNG")),
+                FileCategory::Image
+            );
+        }
     }
 }

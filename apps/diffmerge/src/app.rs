@@ -12,8 +12,8 @@
 //!   roots).
 
 use std::collections::HashMap;
-use std::fs;
 use std::path::Path;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::prelude::*;
@@ -24,7 +24,9 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::permissions::PermissionContext;
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+use ui::portal::{
+    ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
+};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -110,6 +112,8 @@ pub struct DiffMergeApp {
     /// once per frame in [`Widget::sync`]. `None` when no picker is in flight —
     /// the app never draws its own picker (HIG §5).
     portal_rx: Option<PortalChannel>,
+    /// A chooser delivering contents, where files have no path (the web).
+    portal_contents_rx: Option<ContentsChannel>,
     /// Files chosen but not yet paired (first of a two-file diff selection).
     pending_left: Option<(String, String)>,
     /// A human-readable reason the last host-portal open failed, surfaced in
@@ -130,7 +134,7 @@ pub struct DiffMergeApp {
     /// [`DiffmergeAction`] through here so it brackets **one** undo boundary,
     /// encodes under [`DIFFMERGE_ACTION_TYPE`](crate::actions::DIFFMERGE_ACTION_TYPE),
     /// and replays byte-identically on peers — the same path Ctrl+K takes.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     /// The diff/merge summary, surfaced as a transient floating bubble
     /// (see [`Self::draw_status_bubble`]) instead of a permanent bottom strip.
     /// Poked only when the summary text actually changes, or held open while
@@ -154,13 +158,28 @@ pub struct DiffMergeApp {
     /// Measured toolbar band height from the last draw (see
     /// [`Self::measure_toolbar`]); the content rect starts below it.
     toolbar_h: f64,
+    /// Fingerprint of the last shared three-way projection written to the doc.
+    shared_merge_fingerprint: Option<String>,
 }
 
 impl DiffMergeApp {
     /// The live app: starts EMPTY (blank panes + the "Open files" / "Load
     /// sample" toolbar actions), never a fabricated diff.
     pub fn new() -> Self {
-        Self::build(false)
+        let mut app = Self::build(false);
+        // Where files have no path, the pair last compared.
+        if !crate::web_file::native_paths()
+            && let Some(file) = crate::web_file::recall()
+            && file.name == "pair"
+            && let Ok([(left_label, left), (right_label, right)]) =
+                serde_json::from_slice::<[(String, String); 2]>(&file.bytes)
+        {
+            app.diff
+                .set_inputs(&left_label, &left, &right_label, &right);
+            app.mode = Mode::Diff;
+            app.structure_dirty = true;
+        }
+        app
     }
 
     /// The hermetic `--shots` / demo build: seeded with a sample diff + a
@@ -234,6 +253,7 @@ impl DiffMergeApp {
             tool_hits: Vec::new(),
             cursor: Point::ZERO,
             portal_rx: None,
+            portal_contents_rx: None,
             pending_left: None,
             load_error: None,
             resource_invocation: None,
@@ -241,13 +261,14 @@ impl DiffMergeApp {
             resource_result: None,
             dirty: true,
             structure_dirty: false,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             status_bubble: ui::StatusBubble::new(),
             status_bubble_rect: Rect::ZERO,
             last_status: String::new(),
             shots_status: false,
             toolbar_focus: None,
             toolbar_h: TOOLBAR_H,
+            shared_merge_fingerprint: None,
         }
     }
 
@@ -255,7 +276,7 @@ impl DiffMergeApp {
     /// headless frame captures it (no live pointer hovers the reveal zone).
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
-        self.status_bubble.poke(std::time::Instant::now());
+        self.status_bubble.poke(ui::time::now());
     }
 
     fn content_rect(&self) -> Rect {
@@ -358,7 +379,7 @@ impl DiffMergeApp {
     /// change, so it replays byte-identically on peers), exactly as the palette
     /// does. The document heads captured just before the first action of the
     /// event are stashed so the host records **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`]). The in-memory merge model was already
+    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)). The in-memory merge model was already
     /// updated by the chip handler for immediate feedback and is reconciled from
     /// the document on the next `sync`.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::DiffmergeAction) {
@@ -370,14 +391,82 @@ impl DiffMergeApp {
             doc,
             crate::actions::DIFFMERGE_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Diff", "Diff", action),
+            tilo_actions::ActionContext::for_action("so.tilo.diffmerge", "Diff", action),
         );
+        self.merge.acknowledge_content(doc);
+    }
+
+    /// Show the merged buffer the framework resource already holds.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::doc::MergeState) {
+        self.merge.adopt_merged(&state.merged);
+        if !state.model.hunks.is_empty() {
+            self.merge.adopt_shared_model(&state.title, &state.model);
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Diffmerge>,
+    ) {
+        self.actions.attach(dispatcher);
+        self.merge.set_framework_hosted(true);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_mode_for_test(&mut self, mode: Mode) {
+        if self.mode != mode {
+            self.mode = mode;
+            self.structure_dirty = true;
+        }
+    }
+
+    /// Label for an in-flight open-files job, when one is running.
+    pub(crate) fn open_job_label(&self) -> Option<String> {
+        if self.portal_rx.is_some()
+            || self.pending_resource_paths.is_some()
+            || self.resource_invocation.is_some()
+        {
+            Some("Opening files…".into())
+        } else {
+            None
+        }
+    }
+
+    /// Write the shared three-way projection when merge inputs move.
+    fn publish_shared_merge_if_needed(&mut self, doc: &mut AutoCommit) {
+        let Some(shared) = self.merge.shared_merge().cloned() else {
+            return;
+        };
+        let fingerprint = shared.fingerprint();
+        if self.shared_merge_fingerprint.as_deref() == Some(fingerprint.as_str()) {
+            return;
+        }
+        let json = serde_json::to_string(&shared).unwrap_or_else(|_| "{}".into());
+        let action = crate::actions::DiffmergeAction::WriteSharedMerge { json };
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::DIFFMERGE_ACTION_TYPE,
+            &action,
+            tilo_actions::ActionContext::for_action("so.tilo.diffmerge", "Diff", &action),
+        );
+        self.shared_merge_fingerprint = Some(fingerprint);
         self.merge.acknowledge_content(doc);
     }
 
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
     /// test.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
@@ -415,11 +504,15 @@ impl DiffMergeApp {
     /// file after the left is picked. A second request while one is in flight
     /// is ignored, so a double-click can't stack two host dialogs.
     fn request_open_via_portal(&mut self) {
-        if self.portal_rx.is_some() {
+        if self.portal_rx.is_some() || self.portal_contents_rx.is_some() {
             return;
         }
         self.load_error = None;
-        self.portal_rx = Some(diff_open_request().send());
+        if crate::web_file::native_paths() {
+            self.portal_rx = Some(diff_open_request().send());
+        } else {
+            self.portal_contents_rx = Some(diff_open_request().send_contents());
+        }
         self.dirty = true;
     }
 
@@ -429,17 +522,72 @@ impl DiffMergeApp {
     /// status bar, and clears the in-flight channel. Never blocks — a still
     /// pending picker leaves the channel installed for the next frame.
     fn drain_portal(&mut self) {
+        if let Some(rx) = self.portal_contents_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(outcome) => {
+                    self.portal_contents_rx = None;
+                    let outcome = match outcome {
+                        ContentsOutcome::Picked(files) => match files.into_iter().next() {
+                            Some(file) => Pick::Opened(
+                                String::from_utf8(file.bytes)
+                                    .map(|text| (file.name.clone(), text))
+                                    .map_err(|_| format!("{}: not UTF-8 text", file.name)),
+                            ),
+                            None => Pick::Cancelled,
+                        },
+                        ContentsOutcome::Cancelled => Pick::Cancelled,
+                        ContentsOutcome::Failed(reason) => Pick::Failed(reason),
+                    };
+                    self.apply_pick(outcome);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.portal_contents_rx = None;
+                    self.apply_pick(Pick::Failed("file picker disconnected".into()));
+                }
+            }
+        }
         let Some(rx) = self.portal_rx.as_ref() else {
             return;
         };
         match rx.try_recv() {
             Ok(outcome) => {
                 self.portal_rx = None;
+                let outcome = match outcome {
+                    PortalOutcome::Opened(path) => Pick::Opened(label_and_text(&path)),
+                    PortalOutcome::Cancelled => Pick::Cancelled,
+                    PortalOutcome::Failed(reason) => Pick::Failed(reason),
+                };
+                self.apply_pick(outcome);
+            }
+            // Still waiting on the host dialog, or the worker vanished.
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.portal_rx = None;
+                if let Some(invocation) = self.resource_invocation.take() {
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: "diffmerge.portal_disconnected".into(),
+                            message: "file picker disconnected".into(),
+                            details: None,
+                            retryable: false,
+                        },
+                    });
+                }
+            }
+        }
+    }
+
+    /// Apply one chooser answer to the two-file selection.
+    fn apply_pick(&mut self, outcome: Pick) {
+        {
+            {
                 match outcome {
-                    PortalOutcome::Opened(path) => {
+                    Pick::Opened(picked) => {
                         // A `true` return means the left file just landed and
                         // the right one is still needed — fire a fresh request.
-                        match self.consume_pick(&path) {
+                        match picked.map(|(label, text)| self.consume_text(label, text)) {
                             Ok(true) => self.request_open_via_portal(),
                             Ok(false) => {
                                 if let Some(invocation) = self.resource_invocation.take() {
@@ -469,7 +617,7 @@ impl DiffMergeApp {
                         self.dirty = true;
                     }
                     // A cancel abandons an in-progress two-file selection.
-                    PortalOutcome::Cancelled => {
+                    Pick::Cancelled => {
                         self.pending_left = None;
                         if let Some(invocation) = self.resource_invocation.take() {
                             self.resource_result =
@@ -480,7 +628,7 @@ impl DiffMergeApp {
                         }
                         self.dirty = true;
                     }
-                    PortalOutcome::Failed(reason) => {
+                    Pick::Failed(reason) => {
                         self.pending_left = None;
                         self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
                         if let Some(invocation) = self.resource_invocation.take() {
@@ -498,22 +646,6 @@ impl DiffMergeApp {
                     }
                 }
             }
-            // Still waiting on the host dialog, or the worker vanished.
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.portal_rx = None;
-                if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "diffmerge.portal_disconnected".into(),
-                            message: "file picker disconnected".into(),
-                            details: None,
-                            retryable: false,
-                        },
-                    });
-                }
-            }
         }
     }
 
@@ -522,33 +654,39 @@ impl DiffMergeApp {
     /// the second file completes the diff and switches to Diff mode, returning
     /// `false`. Pure w.r.t. the portal (reads the file, mutates model state) so
     /// the two-file flow is unit-testable without a host dialog.
+    #[cfg(test)]
     fn consume_pick(&mut self, path: &Path) -> Result<bool, String> {
-        let label = path.file_name().map_or_else(
-            || path.display().to_string(),
-            |n| n.to_string_lossy().to_string(),
-        );
-        let content = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let (label, content) = label_and_text(path)?;
+        Ok(self.consume_text(label, content))
+    }
+
+    /// As [`Self::consume_pick`], for a file already read.
+    fn consume_text(&mut self, label: String, content: String) -> bool {
         match self.pending_left.take() {
             None => {
                 // First file picked — stash and ask for the second.
                 self.pending_left = Some((label, content));
-                Ok(true)
+                true
             }
             Some((left_label, left_content)) => {
                 self.diff
                     .set_inputs(&left_label, &left_content, &label, &content);
+                if !crate::web_file::native_paths()
+                    && let Ok(pair) =
+                        serde_json::to_vec(&[(&left_label, &left_content), (&label, &content)])
+                {
+                    crate::web_file::remember("pair", &pair);
+                }
                 self.mode = Mode::Diff;
                 self.structure_dirty = true;
-                Ok(false)
+                false
             }
         }
     }
 
     fn load_paths(&mut self, left: &Path, right: &Path) -> Result<(), String> {
-        let left_content =
-            fs::read_to_string(left).map_err(|e| format!("{}: {e}", left.display()))?;
-        let right_content =
-            fs::read_to_string(right).map_err(|e| format!("{}: {e}", right.display()))?;
+        let left_content = read_text(left)?;
+        let right_content = read_text(right)?;
         let label = |path: &Path| {
             path.file_name().map_or_else(
                 || path.display().to_string(),
@@ -781,7 +919,7 @@ impl DiffMergeApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = std::time::Instant::now();
+        let now = ui::time::now();
         let raw_label = self.status_text();
         // Poke only on a genuine change to the summary, never every frame.
         if raw_label != self.last_status {
@@ -992,104 +1130,45 @@ impl Default for DiffMergeApp {
 }
 
 impl Widget for DiffMergeApp {
-    fn document_action_applied(
-        &mut self,
-        action: &tilo_actions::EncodedAction,
-        before: &[ChangeHash],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) {
-        if action.type_id == crate::actions::DIFFMERGE_ACTION_TYPE
-            && doc
-                .clone()
-                .fork_at(before)
-                .ok()
-                .is_some_and(|prior| self.merge.context_matches(&prior))
-        {
-            self.merge.acknowledge_content(doc);
-        } else {
-            self.merge.reconcile_content(doc);
-        }
-    }
-
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::DIFFMERGE_OPERATION_TYPE]
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        self.act(match operation {
-            DiffmergeOperation::ShowDiff => Action::ModeDiff,
-            DiffmergeOperation::ShowMerge => Action::ModeMerge,
-            DiffmergeOperation::PreviousChange => Action::PrevChange,
-            DiffmergeOperation::NextChange => Action::NextChange,
-            DiffmergeOperation::ShowDiffBlock { block, fingerprint } => {
-                let Ok(block) = usize::try_from(block) else {
-                    return Err("this change target is no longer available".into());
-                };
-                if !self.diff.show_block(block, &fingerprint) {
-                    return Err(
-                        "the comparison changed; reopen this change from the current results"
-                            .into(),
-                    );
-                }
-                self.dirty = true;
-                return Ok(true);
-            }
-            DiffmergeOperation::OpenFiles { .. } => Action::Open,
-            DiffmergeOperation::LoadSample => Action::LoadSample,
-        });
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        let crate::actions::DiffmergeOperation::OpenFiles { left, right } = operation else {
-            let encoded = serde_json::to_vec(&operation).map_err(|e| e.to_string())?;
-            return self
-                .invoke_resource_operation_v2(kind, type_id, &encoded, doc, path)
-                .map(|v| v.map(ui::widget::ResourceOperationStart::Completed));
-        };
-        if self.resource_invocation.is_some() || self.pending_resource_paths.is_some() {
-            return Err("another file operation is already running".into());
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        match (left, right) {
-            (Some(left), Some(right)) => {
-                self.pending_resource_paths = Some((invocation, left.into(), right.into()));
-            }
-            (None, None) => {
-                self.resource_invocation = Some(invocation);
-                self.request_open_via_portal();
-            }
-            _ => return Err("left and right paths must be supplied together".into()),
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -1127,7 +1206,7 @@ impl Widget for DiffMergeApp {
             .flatten()
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if let Some((invocation, left, right)) = self.pending_resource_paths.take() {
             let result = self.load_paths(&left, &right);
             self.resource_result = Some(match result {
@@ -1153,6 +1232,31 @@ impl Widget for DiffMergeApp {
         // Only the active mode owns the shared merged buffer; sync the merge
         // panel always so its CRDT mirror stays seeded.
         self.merge.sync(state, path);
+        let mut seeded = false;
+        {
+            let (doc, _) = ui::doc::document(state, path);
+            self.publish_shared_merge_if_needed(doc);
+            if self.actions.is_hosted()
+                && let Some(merged) = self.merge.take_seed_request()
+            {
+                let action = crate::actions::DiffmergeAction::SeedMerge { merged };
+                self.actions.dispatch_with_context(
+                    doc,
+                    crate::actions::DIFFMERGE_ACTION_TYPE,
+                    &action,
+                    tilo_actions::ActionContext::for_action("so.tilo.diffmerge", "Diff", &action),
+                );
+                self.merge.acknowledge_content(doc);
+                seeded = true;
+            }
+            // Sync publishes are not a user gesture. Drop their undo bracket so
+            // a later chip resolution records heads at the pre-resolution point
+            // rather than inheriting the seed/shared-merge `commit_before`.
+            let _ = self.actions.take_committed();
+        }
+        if seeded {
+            self.merge.sync(state, path);
+        }
         self.diff.sync(state, path);
     }
 
@@ -1267,31 +1371,20 @@ impl Widget for DiffMergeApp {
         self.dirty = false;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.merge.reconcile_content(state);
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.merge.reconcile_content(ctx.state);
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
 
         let merge_editor_focused = self.mode == Mode::Merge && self.merge.merged_editor_focused();
-        if !merge_editor_focused && self.handle_keyboard_shortcut(event, *modifiers) {
-            *handled = true;
+        if !merge_editor_focused && self.handle_keyboard_shortcut(event, *ctx.modifiers) {
+            *ctx.handled = true;
             return;
         }
 
         if self.handle_toolbar_click(event) {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
 
@@ -1299,39 +1392,21 @@ impl Widget for DiffMergeApp {
         match self.mode {
             Mode::Diff => {
                 if let Some(n) = self.diff_node {
-                    self.diff.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        n,
-                        taffy,
-                    );
+                    self.diff
+                        .handle_event(event, &mut ctx.reborrow(ctx.path, n));
                 }
             }
             Mode::Merge => {
                 if let Some(n) = self.merge_node {
-                    self.merge.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        n,
-                        taffy,
-                    );
+                    self.merge
+                        .handle_event(event, &mut ctx.reborrow(ctx.path, n));
                 }
                 // A chip click on the merge panel queues its resolution; dispatch
                 // it through the shared action path so the chip and Ctrl+K produce
                 // the same replayable action under one undo boundary.
                 if let Some(action) = self.merge.take_pending_action() {
-                    self.perform_action(state, &action);
-                    *handled = true;
+                    self.perform_action(ctx.state, &action);
+                    *ctx.handled = true;
                 }
             }
         }
@@ -1448,9 +1523,10 @@ impl Widget for DiffMergeApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         self.merge.reconcile_content(state);
         if !matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus) {
             return false;
@@ -1528,21 +1604,6 @@ impl Widget for DiffMergeApp {
             .map(|hit| Self::toolbar_action_name(hit.action))
     }
 
-    /// Publish the open merge + its hunks so the host's Ctrl+K action palette
-    /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    /// Hand the host the heads captured before an on-panel chip dispatched its
-    /// resolution action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -1565,7 +1626,7 @@ impl Widget for DiffMergeApp {
         // Keep frames coming while a host-portal open is in flight, and while
         // the floating status bubble is lingering / fading (so it animates out
         // and hides on its own). Idle otherwise.
-        self.portal_rx.is_some() || self.status_bubble.needs_frame(std::time::Instant::now())
+        self.portal_rx.is_some() || self.status_bubble.needs_frame(ui::time::now())
     }
 
     fn mark_drawn(&mut self) {
@@ -1587,9 +1648,196 @@ impl Widget for DiffMergeApp {
     }
 }
 
+impl ui::resources::PublishesResources for DiffMergeApp {
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the workspace door — keep only local two-way comparisons and in-flight
+    /// open jobs.
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.is_hosted() && id == "diffmerge.workspace" {
+            return None;
+        }
+        if let Some(found) = self.publish_resource(doc, id) {
+            return Some(found);
+        }
+        if self.is_hosted() {
+            return crate::resource::live_extras(self)
+                .into_iter()
+                .find(|resource| resource.id.as_str() == id);
+        }
+        None
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for DiffMergeApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+    fn document_action_applied(
+        &mut self,
+        action: &tilo_actions::EncodedAction,
+        before: &[ChangeHash],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) {
+        if action.type_id == crate::actions::DIFFMERGE_ACTION_TYPE
+            && doc
+                .clone()
+                .fork_at(before)
+                .ok()
+                .is_some_and(|prior| self.merge.context_matches(&prior))
+        {
+            self.merge.acknowledge_content(doc);
+        } else {
+            self.merge.reconcile_content(doc);
+        }
+    }
+}
+
+impl ui::undo::CommittedActions for DiffMergeApp {
+    /// Hand the host the heads captured before an on-panel chip dispatched its
+    /// resolution action, so it records one undo boundary for it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl DiffMergeApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        self.act(match operation {
+            DiffmergeOperation::ShowDiff => Action::ModeDiff,
+            DiffmergeOperation::ShowMerge => Action::ModeMerge,
+            DiffmergeOperation::PreviousChange => Action::PrevChange,
+            DiffmergeOperation::NextChange => Action::NextChange,
+            DiffmergeOperation::ShowDiffBlock { block, fingerprint } => {
+                let Ok(block) = usize::try_from(block) else {
+                    return Err("this change target is no longer available".into());
+                };
+                if !self.diff.show_block(block, &fingerprint) {
+                    return Err(
+                        "the comparison changed; reopen this change from the current results"
+                            .into(),
+                    );
+                }
+                self.dirty = true;
+                return Ok(true);
+            }
+            DiffmergeOperation::OpenFiles { .. } => Action::Open,
+            DiffmergeOperation::LoadSample => Action::LoadSample,
+        });
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        let crate::actions::DiffmergeOperation::OpenFiles { left, right } = operation else {
+            let encoded = serde_json::to_vec(&operation).map_err(|e| e.to_string())?;
+            return self
+                .answer_resource_operation(kind, type_id, &encoded, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            ui::tilo_actions::ActionOutput::default(),
+                        )
+                    })
+                });
+        };
+        if self.resource_invocation.is_some() || self.pending_resource_paths.is_some() {
+            return Err("another file operation is already running".into());
+        }
+        match (left, right) {
+            (Some(left), Some(right)) => {
+                self.pending_resource_paths = Some((invocation, left.into(), right.into()));
+            }
+            (None, None) => {
+                self.resource_invocation = Some(invocation);
+                self.request_open_via_portal();
+            }
+            _ => return Err("left and right paths must be supplied together".into()),
+        }
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+}
+
+/// What the chooser answered.
+enum Pick {
+    /// A file's label and text, or why it could not be read.
+    Opened(Result<(String, String), String>),
+    Cancelled,
+    Failed(String),
+}
+
+fn label_and_text(path: &Path) -> Result<(String, String), String> {
+    let label = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().to_string(),
+    );
+    Ok((label, read_text(path)?))
+}
+
+fn read_text(path: &Path) -> Result<String, String> {
+    let failed = |error: &dyn std::fmt::Display| format!("{}: {error}", path.display());
+    let (dir, name) = tilo_files::file_at(path).map_err(|e| failed(&e))?;
+    let bytes = tilo_files::blocking::read(&dir, &name).map_err(|e| failed(&e))?;
+    String::from_utf8(bytes).map_err(|e| failed(&e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::headless::Framed;
+
+    /// A standalone three-way merge is published through the merge action.
+    #[test]
+    fn a_standalone_merge_is_published_through_the_action() {
+        let mut app = DiffMergeApp::new();
+        assert!(!app.is_hosted());
+        app.merge
+            .set_inputs("base", "a\n", "ours", "b\n", "theirs", "c\n");
+        let mut doc = automerge::AutoCommit::new();
+        app.publish_shared_merge_if_needed(&mut doc);
+        let recorded = app
+            .last_dispatched()
+            .expect("the shared merge is submitted through the action sink");
+        assert_eq!(
+            recorded.type_id.as_str(),
+            crate::actions::DIFFMERGE_ACTION_TYPE
+        );
+        let shared = crate::doc::SharedMerge::read(&doc).expect("the document holds the merge");
+        assert_eq!(shared.ours, "b\n");
+        assert_eq!(shared.theirs, "c\n");
+    }
 
     fn app_with_state() -> (DiffMergeApp, ui::State) {
         let mut app = DiffMergeApp::new();
@@ -1619,7 +1867,20 @@ mod tests {
         );
     }
 
+    /// Opening files: a direct pair via the resource operation, the toolbar Open
+    /// action reaching the host portal (with in-flight guard), the stash-left step,
+    /// and portal success / cancel / failure. Each phase uses a fresh app, temp
+    /// files and recording host.
     #[test]
+    fn open_files_flow_through_direct_operation_and_host_portal() {
+        direct_pair_is_accepted_then_succeeds();
+        open_action_routes_to_the_host_portal();
+        first_pick_stashes_left_and_asks_for_the_right();
+        portal_pick_completes_two_file_diff_via_frame_drain();
+        portal_cancel_clears_pending_selection();
+        portal_failure_surfaces_on_the_status_line();
+    }
+
     fn direct_pair_is_accepted_then_succeeds() {
         let (mut app, mut state) = app_with_state();
         let left = write_temp("Grün links.txt", "Grün\nshared\n");
@@ -1630,13 +1891,15 @@ mod tests {
             right: Some(right.display().to_string()),
         })
         .unwrap();
-        let started = Widget::start_resource_operation(
+        let started = Widget::start_operation(
             &mut app,
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::DIFFMERGE_OPERATION_TYPE,
-            &payload,
-            &state.doc,
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::DIFFMERGE_OPERATION_TYPE,
+                &payload,
+            ),
+            &mut state.doc,
             &state.root,
         )
         .unwrap()
@@ -1658,7 +1921,6 @@ mod tests {
     /// The "Open files" toolbar action must reach the host portal, never an
     /// in-app dialog. A recording host stands in for the desktop, and the
     /// in-flight guard must keep a second press from stacking another dialog.
-    #[test]
     fn open_action_routes_to_the_host_portal() {
         let (mut app, _st) = app_with_state();
         let (services, recorder) = ui::host::HostServices::recording();
@@ -1678,7 +1940,6 @@ mod tests {
     /// The first file of a diff pair is stashed and a follow-up pick is
     /// requested (`consume_pick` returns true) — no host dialog is spawned by
     /// the consume step itself.
-    #[test]
     fn first_pick_stashes_left_and_asks_for_the_right() {
         let (mut app, _st) = app_with_state();
         let left = write_temp("left.txt", "alpha\nbeta\ngamma\n");
@@ -1696,7 +1957,6 @@ mod tests {
     /// The terminal step: with a left file already pending, a portal-chosen
     /// right file completes the two-file diff through the per-frame `sync`
     /// drain — no real dialog, exercising the exact channel the worker feeds.
-    #[test]
     fn portal_pick_completes_two_file_diff_via_frame_drain() {
         let (mut app, mut st) = app_with_state();
         app.pending_left = Some(("left.txt".into(), "alpha\nbeta\ngamma\n".into()));
@@ -1728,7 +1988,6 @@ mod tests {
 
     /// A cancelled portal interaction abandons an in-progress selection and
     /// leaves the channel cleared.
-    #[test]
     fn portal_cancel_clears_pending_selection() {
         let (mut app, mut st) = app_with_state();
         app.pending_left = Some(("left.txt".into(), "x\n".into()));
@@ -1746,7 +2005,6 @@ mod tests {
 
     /// A portal failure (e.g. no desktop portal running) surfaces on the
     /// status line rather than silently dropping the request.
-    #[test]
     fn portal_failure_surfaces_on_the_status_line() {
         let (mut app, mut st) = app_with_state();
         open_with_outcome(&mut app, PortalOutcome::Failed("no portal".into()));
@@ -1757,12 +2015,23 @@ mod tests {
         assert!(err.contains("no portal"), "the reason is surfaced: {err}");
     }
 
+    /// One resolution action behind every entry point: the chip dispatch records one
+    /// undo boundary and reverts, chip and palette encode identically, a pointer click
+    /// on the drawn chip resolves that hunk, and the root accessibility tree resolves
+    /// through the CRDT path. Fresh demo app and state per phase.
+    #[test]
+    fn hunk_resolution_is_one_action_from_chip_palette_pointer_and_a11y() {
+        chip_dispatch_records_one_undo_boundary_and_reverts();
+        chip_and_palette_encode_identically();
+        clicking_a_resolution_chip_resolves_that_hunk_through_the_pointer_path();
+        root_accessibility_includes_active_hunks_and_uses_the_crdt_resolution_path();
+    }
+
     /// The full covenant on one on-panel affordance: driving the chip handler
     /// exactly as a click does queues a resolution; dispatching it through the
     /// app's shared action path mutates the merged buffer, records **one** undo
     /// boundary bracketed at the pre-action heads, and Ctrl+Z reverts precisely
     /// that action.
-    #[test]
     fn chip_dispatch_records_one_undo_boundary_and_reverts() {
         let mut app = DiffMergeApp::new_demo(); // Merge mode with a real conflict
         let mut state = ui::State::new();
@@ -1843,7 +2112,6 @@ mod tests {
     /// Single source of truth: the take-theirs chip on the merge panel builds the
     /// byte-identical [`EncodedAction`] the palette's take-theirs `ActionSpec`
     /// does — one action, two entry points.
-    #[test]
     fn chip_and_palette_encode_identically() {
         let mut app = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
@@ -1858,7 +2126,7 @@ mod tests {
             .unwrap();
 
         // Palette path: the take-theirs immediate spec on the conflict resource.
-        let resources = Widget::resources(&app, &state.doc);
+        let resources = ui::resources::resources(&app, &state.doc);
         let conflict = resources[0]
             .children
             .iter()
@@ -1874,7 +2142,8 @@ mod tests {
             .unwrap();
         let from_spec = match &spec.input {
             tilo_actions::ActionInput::Immediate(e) => e.clone(),
-            tilo_actions::ActionInput::Prompted { .. } => panic!("take-theirs is immediate"),
+            tilo_actions::ActionInput::Prompted { .. }
+            | tilo_actions::ActionInput::Deferred { .. } => panic!("take-theirs is immediate"),
         };
 
         // Chip path: `resolve` queues the action a click builds.
@@ -1888,60 +2157,38 @@ mod tests {
         );
     }
 
-    /// Run the real five-pass frame so the merge panel lays out and draws,
-    /// which is what populates the resolution-chip hit rects.
-    fn draw_merge_frame(app: &mut DiffMergeApp, viewport: (f32, f32)) {
-        draw_frame_scaled(app, viewport, 1.0);
+    /// Mount `app` over the case's `state` in the production frame host and run
+    /// one frame, which lays out and draws the merge panel (populating the
+    /// resolution-chip hit rects).
+    fn merge_frame(
+        app: DiffMergeApp,
+        state: ui::State,
+        viewport: (f32, f32),
+    ) -> Framed<DiffMergeApp> {
+        frame_scaled(app, state, viewport, 1.0)
     }
 
-    /// Lay out and paint one frame at `text_scale`, the way the launcher's
-    /// `--text-scale` does: the theme's type tokens and the renderer's scale
-    /// move together.
-    fn draw_frame_scaled(app: &mut DiffMergeApp, viewport: (f32, f32), text_scale: f32) {
-        use std::collections::HashMap;
-        let (w, h) = viewport;
-        let theme = Theme::dark().with_text_scale(text_scale);
-        let presence = PresenceCtx::empty();
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(text_scale);
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(w),
-                        height: Dimension::length(h),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-        {
-            let measure_map = node_map.clone();
-            let trr = &mut tr;
-            taffy
-                .compute_layout_with_measure(
-                    root,
-                    taffy::Size {
-                        width: AvailableSpace::Definite(w),
-                        height: AvailableSpace::Definite(h),
-                    },
-                    |known, available, node_id, _, _| {
-                        if let Some(&ptr) = measure_map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, available, trr) }
-                        } else {
-                            taffy::Size::ZERO
-                        }
-                    },
-                )
-                .unwrap();
-        }
-        app.apply_layout(&taffy, child, Point::ORIGIN);
-        let mut scene = Scene::new();
-        app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    /// [`merge_frame`] at `text_scale`, the way the launcher's `--text-scale`
+    /// does: the theme's type tokens and the renderer's scale move together.
+    fn frame_scaled(
+        app: DiffMergeApp,
+        state: ui::State,
+        viewport: (f32, f32),
+        text_scale: f32,
+    ) -> Framed<DiffMergeApp> {
+        Framed::new(
+            state,
+            app,
+            ui::headless::viewport(viewport),
+            Theme::dark().with_text_scale(text_scale),
+        )
+    }
+
+    /// Rebuild and run the next frame of a mounted app at a new size.
+    fn rerender_merge_frame(app: &mut Framed<DiffMergeApp>, viewport: (f32, f32)) {
+        Framed::harness_mut(app)
+            .relayout_themed(ui::headless::viewport(viewport), Theme::dark())
+            .expect("diffmerge frame lays out");
     }
 
     fn keyboard_event(key: Key) -> WindowEvent {
@@ -1975,16 +2222,26 @@ mod tests {
             .expect("one compact source is selected")
     }
 
+    /// Phone-width layout: the three-way merge and the two-way diff present a
+    /// one-source switcher, the toolbar stays on screen without overlap, and a long
+    /// error bubble stays inside the viewport. Fresh app per phase.
+    #[test]
+    fn phone_width_keeps_controls_onscreen_with_one_source_switchers() {
+        phone_merge_uses_a_full_width_source_switcher();
+        phone_toolbar_keeps_every_control_visible_without_overlap();
+        phone_diff_uses_an_accessible_one_source_switcher();
+        narrow_status_bubble_stays_within_the_viewport_for_long_errors();
+    }
+
     /// At phone width, a three-way merge intentionally presents one full-width
     /// source pane plus an explicit Base/Ours/Theirs switcher. This guards
     /// against a future layout change quietly restoring three unreadable
     /// columns at 390px.
-    #[test]
     fn phone_merge_uses_a_full_width_source_switcher() {
         let mut app = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
-        draw_merge_frame(&mut app, (390.0, 760.0));
+        let mut app = merge_frame(app, state, (390.0, 760.0));
 
         let hits = app.merge.compact_source_hits();
         assert_eq!(hits.len(), 3, "phone has Base/Ours/Theirs source controls");
@@ -2021,7 +2278,7 @@ mod tests {
 
         // At tablet width the selector disappears because all three panes are
         // deliberately visible side by side.
-        draw_merge_frame(&mut app, (800.0, 760.0));
+        rerender_merge_frame(&mut app, (800.0, 760.0));
         assert!(app.merge.compact_source_hits().is_empty());
         assert!(
             Widget::accessibility(&app.merge)
@@ -2040,12 +2297,11 @@ mod tests {
     /// The compact source switcher is only useful when the surrounding chrome
     /// is usable too. Keep the complete one-row phone toolbar on screen and
     /// non-overlapping (both modes, file open/sample, and change navigation).
-    #[test]
     fn phone_toolbar_keeps_every_control_visible_without_overlap() {
         let mut app = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
-        draw_merge_frame(&mut app, (390.0, 760.0));
+        let app = merge_frame(app, state, (390.0, 760.0));
 
         assert_eq!(app.tool_hits.len(), 6, "two modes and four actions");
         let mut rects: Vec<_> = app.tool_hits.iter().map(|hit| hit.rect).collect();
@@ -2054,10 +2310,19 @@ mod tests {
         assert!(rects.windows(2).all(|pair| pair[0].x1 <= pair[1].x0));
     }
 
+    /// Measured-text layout at 1x and 200%: toolbar controls, merge chips, merge
+    /// rows and the diff gutter all follow the renderer. Fresh apps per phase.
+    #[test]
+    fn layout_metrics_follow_the_measured_text_at_every_scale() {
+        toolbar_controls_fit_their_measured_labels_at_every_text_scale();
+        merge_chips_stay_inside_their_pane();
+        merge_rows_follow_the_scaled_line_height();
+        diff_rows_and_gutter_follow_the_scaled_line_height();
+    }
+
     /// Every toolbar control is sized from its measured label and centred on
     /// the measured bar, at 1× and at 200% text; the content starts below the
     /// bar that was actually painted.
-    #[test]
     #[expect(
         clippy::float_cmp,
         reason = "at 1x the scale literal and the authored toolbar height are reproduced exactly"
@@ -2068,7 +2333,7 @@ mod tests {
             let mut app = DiffMergeApp::new_demo();
             let mut state = ui::State::new();
             app.sync(&mut state.doc, &state.root);
-            draw_frame_scaled(&mut app, (800.0, 700.0), scale);
+            let app = frame_scaled(app, state, (800.0, 700.0), scale);
 
             assert_eq!(
                 app.tool_hits.len(),
@@ -2125,7 +2390,6 @@ mod tests {
     /// Every resolution chip paints inside the pane that owns it, at 800 and
     /// 1200 wide and at 200% text: chip widths are measured, and the long
     /// "Take …" labels fall back to the short form when they cannot fit.
-    #[test]
     fn merge_chips_stay_inside_their_pane() {
         for (w, h, scale) in [
             (800.0f32, 700.0f32, 1.0f32),
@@ -2135,7 +2399,7 @@ mod tests {
             let mut app = DiffMergeApp::new_demo();
             let mut state = ui::State::new();
             app.sync(&mut state.doc, &state.root);
-            draw_frame_scaled(&mut app, (w, h), scale);
+            let app = frame_scaled(app, state, (w, h), scale);
             let pane = app.merge.get_rect();
             let hits = app.merge.chip_hits();
             assert!(
@@ -2165,19 +2429,18 @@ mod tests {
 
     /// Row pitch, header band and chip band follow the renderer's measured
     /// line height, so 200% text does not overprint 19px rows.
-    #[test]
     fn merge_rows_follow_the_scaled_line_height() {
         let mut one = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
         one.sync(&mut state.doc, &state.root);
-        draw_frame_scaled(&mut one, (1200.0, 800.0), 1.0);
+        let one = frame_scaled(one, state, (1200.0, 800.0), 1.0);
         let (row_1, header_1, chip_1) = one.merge.metrics_for_test();
         let content_1 = one.merge.content_height_for_test();
 
         let mut two = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
         two.sync(&mut state.doc, &state.root);
-        draw_frame_scaled(&mut two, (1200.0, 800.0), 2.0);
+        let two = frame_scaled(two, state, (1200.0, 800.0), 2.0);
         let (row_2, header_2, chip_2) = two.merge.metrics_for_test();
         let content_2 = two.merge.content_height_for_test();
 
@@ -2194,20 +2457,19 @@ mod tests {
 
     /// The two-way diff shares the same contract: rows, header and the
     /// line-number gutter grow with the measured text.
-    #[test]
     fn diff_rows_and_gutter_follow_the_scaled_line_height() {
         let mut one = DiffMergeApp::new_demo();
         one.act(Action::ModeDiff);
         let mut state = ui::State::new();
         one.sync(&mut state.doc, &state.root);
-        draw_frame_scaled(&mut one, (1200.0, 800.0), 1.0);
+        let one = frame_scaled(one, state, (1200.0, 800.0), 1.0);
         let (row_1, header_1, gutter_1) = one.diff.metrics_for_test();
 
         let mut two = DiffMergeApp::new_demo();
         two.act(Action::ModeDiff);
         let mut state = ui::State::new();
         two.sync(&mut state.doc, &state.root);
-        draw_frame_scaled(&mut two, (1200.0, 800.0), 2.0);
+        let two = frame_scaled(two, state, (1200.0, 800.0), 2.0);
         let (row_2, header_2, gutter_2) = two.diff.metrics_for_test();
 
         let mut tr = TextRenderer::new();
@@ -2222,10 +2484,20 @@ mod tests {
         );
     }
 
+    /// Input parity for the chrome: the compact source switcher by pointer, keyboard
+    /// and a11y; toolbar semantics, focus and activation; Tab/Enter order; and the
+    /// empty/error content explained to assistive tech. Fresh app per phase.
+    #[test]
+    fn controls_have_pointer_keyboard_and_semantic_parity() {
+        compact_source_switcher_has_pointer_keyboard_and_a11y_parity();
+        toolbar_controls_have_semantic_names_focus_geometry_and_activation();
+        toolbar_keyboard_tab_and_enter_follow_the_painted_control_order();
+        root_accessibility_explains_empty_and_error_content();
+    }
+
     /// Pointer, keyboard, and assistive activation all select the same compact
     /// source state. The test drives the real event/semantic routes rather
     /// than calling the selection helper directly.
-    #[test]
     fn compact_source_switcher_has_pointer_keyboard_and_a11y_parity() {
         use winit::dpi::PhysicalPosition;
         use winit::event::{DeviceId, Modifiers};
@@ -2233,7 +2505,8 @@ mod tests {
         let mut app = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
-        draw_merge_frame(&mut app, (390.0, 760.0));
+        let mut app = merge_frame(app, state, (390.0, 760.0));
+        let (app, state) = Framed::split(&mut app);
         let theirs = app
             .merge
             .compact_source_hits()
@@ -2252,14 +2525,16 @@ mod tests {
                 device_id: DeviceId::dummy(),
                 position: PhysicalPosition::new(theirs.x, theirs.y),
             },
-            1.0,
-            &mods,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         app.handle_event(
             &WindowEvent::MouseInput {
@@ -2267,32 +2542,36 @@ mod tests {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            1.0,
-            &mods,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         assert!(handled);
-        assert_eq!(selected_compact_source(&app), "Show Theirs source");
+        assert_eq!(selected_compact_source(app), "Show Theirs source");
 
         handled = false;
         app.handle_event(
             &keyboard_event(Key::Named(NamedKey::ArrowLeft)),
-            1.0,
-            &mods,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         assert!(handled);
-        assert_eq!(selected_compact_source(&app), "Show Ours source");
+        assert_eq!(selected_compact_source(app), "Show Ours source");
 
         let theirs_key = ui::a11y::hash_key(&"diffmerge.source.theirs");
         assert!(Widget::perform_action_at(
@@ -2302,17 +2581,17 @@ mod tests {
             &mut state.doc,
             &state.root,
         ));
-        assert_eq!(selected_compact_source(&app), "Show Theirs source");
+        assert_eq!(selected_compact_source(app), "Show Theirs source");
     }
 
-    #[test]
     fn toolbar_controls_have_semantic_names_focus_geometry_and_activation() {
         let mut app = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
-        draw_merge_frame(&mut app, (980.0, 720.0));
+        let mut app = merge_frame(app, state, (980.0, 720.0));
+        let (app, state) = Framed::split(&mut app);
 
-        let semantics = Widget::accessibility(&app).expect("toolbar semantics");
+        let semantics = Widget::accessibility(&*app).expect("toolbar semantics");
         let toolbar = semantics.children.first().expect("toolbar group");
         assert_eq!(toolbar.children.len(), 6, "both modes and four actions");
         assert!(toolbar.children.iter().all(|node| {
@@ -2324,12 +2603,12 @@ mod tests {
             .position(|node| node.name.as_deref() == Some("Load sample comparison"))
             .expect("sample control");
         assert!(Widget::focus_synthetic_accessibility(
-            &mut app,
+            &mut *app,
             &[0, sample_index]
         ));
         assert_eq!(app.toolbar_focus, Some(Action::LoadSample));
         assert!(Widget::perform_semantic_action(
-            &mut app,
+            &mut *app,
             "diffmerge.toolbar.show-diff",
             &ui::a11y::Action::Activate,
             &mut state.doc,
@@ -2338,7 +2617,6 @@ mod tests {
         assert_eq!(app.mode, Mode::Diff);
     }
 
-    #[test]
     fn toolbar_keyboard_tab_and_enter_follow_the_painted_control_order() {
         use winit::event::Modifiers;
 
@@ -2351,52 +2629,58 @@ mod tests {
         let modifiers = Modifiers::default();
         app.handle_event(
             &keyboard_event(Key::Named(NamedKey::Tab)),
-            1.0,
-            &modifiers,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         assert!(handled);
         assert_eq!(app.toolbar_focus, Some(Action::ModeDiff));
         handled = false;
         app.handle_event(
             &keyboard_event(Key::Named(NamedKey::Tab)),
-            1.0,
-            &modifiers,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         assert_eq!(app.toolbar_focus, Some(Action::ModeMerge));
         app.handle_event(
             &keyboard_event(Key::Named(NamedKey::Enter)),
-            1.0,
-            &modifiers,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         assert_eq!(app.mode, Mode::Merge);
     }
 
-    #[test]
     fn phone_diff_uses_an_accessible_one_source_switcher() {
         let mut app = DiffMergeApp::new_demo();
         app.mode = Mode::Diff;
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
-        draw_merge_frame(&mut app, (390.0, 760.0));
-        let root = Widget::accessibility(&app).expect("diff semantics");
+        let mut app = merge_frame(app, state, (390.0, 760.0));
+        let (app, state) = Framed::split(&mut app);
+        let root = Widget::accessibility(&*app).expect("diff semantics");
         let diff = root
             .children
             .iter()
@@ -2418,7 +2702,7 @@ mod tests {
             2
         );
         assert!(Widget::perform_semantic_action(
-            &mut app,
+            &mut *app,
             "diffmerge.diff-source:right",
             &ui::a11y::Action::Activate,
             &mut state.doc,
@@ -2443,30 +2727,32 @@ mod tests {
             "after.txt",
             "same\nreplacement value\n",
         );
-        let state = ui::State::new();
+        let mut state = ui::State::new();
         let payload = serde_json::to_vec(&DiffmergeOperation::ShowDiffBlock {
             block: 0,
             fingerprint: stale_fingerprint,
         })
         .expect("operation serializes");
 
-        let error = Widget::invoke_resource_operation(
+        let error = Widget::start_operation(
             &mut app,
-            tilo_actions::OperationKind::View,
-            crate::actions::DIFFMERGE_OPERATION_TYPE,
-            &payload,
-            &state.doc,
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
+                crate::actions::DIFFMERGE_OPERATION_TYPE,
+                &payload,
+            ),
+            &mut state.doc,
             &state.root,
         )
         .expect_err("stale local operation must explain why its target is unsafe");
         assert!(error.contains("comparison changed"));
     }
 
-    #[test]
     fn narrow_status_bubble_stays_within_the_viewport_for_long_errors() {
         let mut app = DiffMergeApp::for_shot(Some("error"));
         app.arm_status_bubble_for_shots();
-        draw_merge_frame(&mut app, (390.0, 760.0));
+        let app = merge_frame(app, ui::State::new(), (390.0, 760.0));
         let bubble = app.status_bubble_rect();
         assert!(
             bubble.x0 >= app.rect.x0 && bubble.x1 <= app.rect.x1,
@@ -2480,14 +2766,14 @@ mod tests {
         );
     }
 
-    #[test]
     fn root_accessibility_includes_active_hunks_and_uses_the_crdt_resolution_path() {
         let mut app = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
-        draw_merge_frame(&mut app, (980.0, 720.0));
+        let mut app = merge_frame(app, state, (980.0, 720.0));
+        let (app, state) = Framed::split(&mut app);
 
-        let root = Widget::accessibility(&app).expect("root semantics");
+        let root = Widget::accessibility(&*app).expect("root semantics");
         let merge = root
             .children
             .iter()
@@ -2500,7 +2786,7 @@ mod tests {
             .expect("one drawn resolution action is accessible");
         let before = crate::doc::MergeDoc::merged_text(&state.doc);
         assert!(Widget::perform_semantic_action(
-            &mut app,
+            &mut *app,
             &target,
             &ui::a11y::Action::Activate,
             &mut state.doc,
@@ -2509,11 +2795,10 @@ mod tests {
         assert_ne!(crate::doc::MergeDoc::merged_text(&state.doc), before);
     }
 
-    #[test]
     fn root_accessibility_explains_empty_and_error_content() {
-        let mut empty = DiffMergeApp::for_shot(Some("empty"));
-        draw_merge_frame(&mut empty, (980.0, 720.0));
-        let empty_semantics = Widget::accessibility(&empty).expect("empty semantics");
+        let empty = DiffMergeApp::for_shot(Some("empty"));
+        let empty = merge_frame(empty, ui::State::new(), (980.0, 720.0));
+        let empty_semantics = Widget::accessibility(&*empty).expect("empty semantics");
         let names = empty_semantics
             .children
             .iter()
@@ -2521,9 +2806,9 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(names.contains(&"No files loaded"), "{names:?}");
 
-        let mut error = DiffMergeApp::for_shot(Some("error"));
-        draw_merge_frame(&mut error, (980.0, 720.0));
-        let error_semantics = Widget::accessibility(&error).expect("error semantics");
+        let error = DiffMergeApp::for_shot(Some("error"));
+        let error = merge_frame(error, ui::State::new(), (980.0, 720.0));
+        let error_semantics = Widget::accessibility(&*error).expect("error semantics");
         let names = error_semantics
             .children
             .iter()
@@ -2535,7 +2820,6 @@ mod tests {
     /// Clicking a resolution chip at its drawn pixel position resolves *that*
     /// hunk — proving the pointer → hit-rect → hunk mapping and the app's
     /// pending-action drain, not just `resolve` in isolation.
-    #[test]
     fn clicking_a_resolution_chip_resolves_that_hunk_through_the_pointer_path() {
         use winit::dpi::PhysicalPosition;
         use winit::event::{DeviceId, Modifiers};
@@ -2543,7 +2827,8 @@ mod tests {
         let mut app = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
-        draw_merge_frame(&mut app, (1200.0, 760.0));
+        let mut app = merge_frame(app, state, (1200.0, 760.0));
+        let (app, state) = Framed::split(&mut app);
 
         let hunk = app
             .merge
@@ -2573,14 +2858,16 @@ mod tests {
                 device_id: DeviceId::dummy(),
                 position: PhysicalPosition::new(center.x, center.y),
             },
-            1.0,
-            &m,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         app.handle_event(
             &WindowEvent::MouseInput {
@@ -2588,14 +2875,16 @@ mod tests {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            1.0,
-            &m,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
 
         assert!(handled, "the chip click was consumed");
@@ -2636,7 +2925,7 @@ mod history_input_tests {
         );
         let heads = doc.get_heads();
         assert!(
-            Widget::resources(&app, &doc)
+            ui::resources::resources(&app, &doc)
                 .iter()
                 .flat_map(|r| &r.children)
                 .all(|r| r.kind != "diffmerge.conflict")

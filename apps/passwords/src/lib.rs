@@ -11,6 +11,8 @@ use std::collections::HashMap;
 use ui::widget::Widget;
 
 mod actions;
+mod doc;
+pub mod resource;
 mod showcase;
 mod transfer;
 pub use showcase::{PasswordsSurface, ShowcaseMode};
@@ -57,8 +59,8 @@ pub(crate) fn analyze_health(items: &[SecretItem]) -> VaultHealth {
                 || !password.chars().any(|character| character.is_ascii_digit())
         })
         .count();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let now = ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs());
     let one_year = 365 * 24 * 60 * 60;
     VaultHealth {
@@ -243,6 +245,11 @@ impl PasswordsModel {
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(PasswordsSurface::live())
 }
+
+/// The app as every host mounts it: the live root.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.passwords", app_root).as_definition("Passwords")
+}
 pub fn app_root_demo() -> Box<dyn Widget> {
     Box::new(PasswordsSurface::demo(ShowcaseMode::Vault))
 }
@@ -255,103 +262,112 @@ pub fn app_root_long_list_showcase() -> Box<dyn Widget> {
     Box::new(PasswordsSurface::demo_long_list())
 }
 
+pub use resource::{Passwords, PasswordsShell, launch_spec};
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn empty_password_is_generated_and_crud_round_trips() {
-        let root = std::env::temp_dir().join(format!("tilo-passwords-test-{}", std::process::id()));
-        let mut model = PasswordsModel::open_in(&root);
-        let id = model
-            .save_login("Example", "ada", "", Some("https://example.com/login"))
-            .unwrap();
-        let item = model.items().pop().unwrap();
-        assert_eq!(item.id, id);
-        assert!(item.password.len() >= 20);
-        assert!(item.origins.contains("https://example.com"));
-        assert_eq!(model.search("EXAMP").len(), 1);
-        let mut edited = item;
-        edited.title = "Renamed".into();
-        edited.password = "replacement secret".into();
-        model.update(&mut edited).unwrap();
-        assert_eq!(model.reveal(&id).unwrap().as_str(), "replacement secret");
-        assert!(model.remove(&id).unwrap());
-        std::fs::remove_dir_all(root).ok();
+    fn every_secret_kind_persists_round_trips_and_generates_missing_passwords() {
+        eprintln!("phase empty_password_is_generated_and_crud_round_trips");
+        {
+            let root =
+                std::env::temp_dir().join(format!("tilo-passwords-test-{}", std::process::id()));
+            let mut model = PasswordsModel::open_in(&root);
+            let id = model
+                .save_login("Example", "ada", "", Some("https://example.com/login"))
+                .unwrap();
+            let item = model.items().pop().unwrap();
+            assert_eq!(item.id, id);
+            assert!(item.password.len() >= 20);
+            assert!(item.origins.contains("https://example.com"));
+            assert_eq!(model.search("EXAMP").len(), 1);
+            let mut edited = item;
+            edited.title = "Renamed".into();
+            edited.password = "replacement secret".into();
+            model.update(&mut edited).unwrap();
+            assert_eq!(model.reveal(&id).unwrap().as_str(), "replacement secret");
+            assert!(model.remove(&id).unwrap());
+            std::fs::remove_dir_all(root).ok();
+        }
+
+        eprintln!("phase every_supported_secret_kind_persists_and_reveals_its_primary_value");
+        {
+            use accounts::SecretItemKind;
+
+            let root = std::env::temp_dir().join(format!(
+                "tilo-passwords-kinds-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let mut model = PasswordsModel::open_in(&root);
+            let cases = [
+                (SecretItemKind::Login, "Login", "login-secret", ""),
+                (SecretItemKind::ApiKey, "API key", "api-secret", ""),
+                (SecretItemKind::SecureNote, "Note", "", "note-secret"),
+                (SecretItemKind::Wifi, "Wi-Fi", "wifi-secret", ""),
+                (SecretItemKind::Other, "Other", "other-secret", ""),
+            ];
+
+            for (kind, title, password, notes) in cases {
+                let mut item = SecretItem::login(title, "owner", password);
+                item.kind = kind;
+                item.notes = notes.into();
+                let id = model.save_item(&mut item).unwrap();
+                let expected = if kind == SecretItemKind::SecureNote {
+                    notes
+                } else {
+                    password
+                };
+                assert_eq!(model.reveal_value(&id).unwrap().as_str(), expected);
+            }
+
+            let stored = model.items();
+            assert_eq!(stored.len(), cases.len());
+            for (kind, ..) in cases {
+                assert!(stored.iter().any(|item| item.kind == kind));
+            }
+            let _ = std::fs::remove_dir_all(root);
+        }
     }
 
     #[test]
-    fn health_reports_only_locally_provable_findings() {
-        let mut reused_a = SecretItem::login("A", "ada", "SharedPassword7");
-        let reused_b = SecretItem::login("B", "ada", "SharedPassword7");
-        let weak = SecretItem::login("C", "ada", "tiny");
-        reused_a.updated_unix = 1;
-        let health = analyze_health(&[reused_a, reused_b, weak]);
-        assert_eq!(health.total, 3);
-        assert_eq!(health.reused, 2);
-        assert_eq!(health.weak, 1);
-        assert_eq!(health.older_than_year, 1);
-    }
+    fn search_and_health_use_only_local_non_secret_metadata() {
+        eprintln!("phase search_indexes_only_non_secret_local_metadata");
+        {
+            let root = std::env::temp_dir().join(format!(
+                "tilo-passwords-search-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let mut model = PasswordsModel::open_in(&root);
+            let mut item = SecretItem::login("Payroll", "ada", "DoNotIndexThis7");
+            item.add_origin("https://people.example/pay").unwrap();
+            item.notes = "Managed by Finance".into();
+            item.fields.insert("account number".into(), "A-1942".into());
+            item.tags.insert("work".into());
+            model.save_item(&mut item).unwrap();
 
-    #[test]
-    fn search_indexes_only_non_secret_local_metadata() {
-        let root = std::env::temp_dir().join(format!(
-            "tilo-passwords-search-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let mut model = PasswordsModel::open_in(&root);
-        let mut item = SecretItem::login("Payroll", "ada", "DoNotIndexThis7");
-        item.add_origin("https://people.example/pay").unwrap();
-        item.notes = "Managed by Finance".into();
-        item.fields.insert("account number".into(), "A-1942".into());
-        item.tags.insert("work".into());
-        model.save_item(&mut item).unwrap();
-
-        for query in ["people.example", "account number", "work"] {
-            assert_eq!(model.search(query).len(), 1, "query: {query}");
-        }
-        for secret in ["DoNotIndexThis7", "managed by finance", "a-1942"] {
-            assert!(model.search(secret).is_empty(), "secret query: {secret}");
-        }
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn every_supported_secret_kind_persists_and_reveals_its_primary_value() {
-        use accounts::SecretItemKind;
-
-        let root = std::env::temp_dir().join(format!(
-            "tilo-passwords-kinds-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let mut model = PasswordsModel::open_in(&root);
-        let cases = [
-            (SecretItemKind::Login, "Login", "login-secret", ""),
-            (SecretItemKind::ApiKey, "API key", "api-secret", ""),
-            (SecretItemKind::SecureNote, "Note", "", "note-secret"),
-            (SecretItemKind::Wifi, "Wi-Fi", "wifi-secret", ""),
-            (SecretItemKind::Other, "Other", "other-secret", ""),
-        ];
-
-        for (kind, title, password, notes) in cases {
-            let mut item = SecretItem::login(title, "owner", password);
-            item.kind = kind;
-            item.notes = notes.into();
-            let id = model.save_item(&mut item).unwrap();
-            let expected = if kind == SecretItemKind::SecureNote {
-                notes
-            } else {
-                password
-            };
-            assert_eq!(model.reveal_value(&id).unwrap().as_str(), expected);
+            for query in ["people.example", "account number", "work"] {
+                assert_eq!(model.search(query).len(), 1, "query: {query}");
+            }
+            for secret in ["DoNotIndexThis7", "managed by finance", "a-1942"] {
+                assert!(model.search(secret).is_empty(), "secret query: {secret}");
+            }
+            let _ = std::fs::remove_dir_all(root);
         }
 
-        let stored = model.items();
-        assert_eq!(stored.len(), cases.len());
-        for (kind, ..) in cases {
-            assert!(stored.iter().any(|item| item.kind == kind));
+        eprintln!("phase health_reports_only_locally_provable_findings");
+        {
+            let mut reused_a = SecretItem::login("A", "ada", "SharedPassword7");
+            let reused_b = SecretItem::login("B", "ada", "SharedPassword7");
+            let weak = SecretItem::login("C", "ada", "tiny");
+            reused_a.updated_unix = 1;
+            let health = analyze_health(&[reused_a, reused_b, weak]);
+            assert_eq!(health.total, 3);
+            assert_eq!(health.reused, 2);
+            assert_eq!(health.weak, 1);
+            assert_eq!(health.older_than_year, 1);
         }
-        let _ = std::fs::remove_dir_all(root);
     }
 }

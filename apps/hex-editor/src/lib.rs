@@ -40,9 +40,11 @@ pub mod actions;
 pub mod app;
 pub mod inspector;
 pub mod model;
+pub mod resource;
 pub mod sample;
 pub mod search;
 pub mod view;
+mod web_file;
 
 use ui::widget::Widget;
 
@@ -79,6 +81,13 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(view)
 }
 
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.hex-editor", app_root)
+        .component_actions(actions::register)
+        .as_definition("Hex Editor")
+}
+
 /// First positional file argument, skipping the renderer's own flags so
 /// `--shots OUT.png` never gets mistaken for a file to open. Returns the
 /// path only if it actually exists.
@@ -108,27 +117,27 @@ fn parse_file_arg(args: Vec<String>) -> Option<String> {
     None
 }
 
+pub use resource::{HexEditor, HexEditorShell, launch_spec};
+
 #[cfg(test)]
 mod tests {
     use super::parse_file_arg;
 
     #[test]
-    fn shots_flag_and_value_are_not_treated_as_file() {
-        let args = vec!["--shots".to_string(), "/tmp/whatever-out.png".to_string()];
-        // The PATH after --shots must never be opened as input, even if it
-        // happens to exist on disk.
-        assert_eq!(parse_file_arg(args), None);
-    }
-
-    #[test]
-    fn equals_form_shots_is_skipped() {
-        let args = vec!["--shots=/tmp/x.png".to_string()];
-        assert_eq!(parse_file_arg(args), None);
-    }
-
-    #[test]
-    fn nonexistent_positional_is_ignored() {
-        let args = vec!["/no/such/file.bin".to_string()];
-        assert_eq!(parse_file_arg(args), None);
+    fn parse_file_arg_skips_shots_output_and_missing_paths() {
+        let cases: &[(&str, &[&str])] = &[
+            // The PATH after --shots must never be opened as input, even if it
+            // happens to exist on disk.
+            (
+                "shots flag and value",
+                &["--shots", "/tmp/whatever-out.png"],
+            ),
+            ("equals-form shots", &["--shots=/tmp/x.png"]),
+            ("nonexistent positional", &["/no/such/file.bin"]),
+        ];
+        for (name, args) in cases {
+            let args = args.iter().map(|a| (*a).to_string()).collect::<Vec<_>>();
+            assert_eq!(parse_file_arg(args), None, "case {name}");
+        }
     }
 }

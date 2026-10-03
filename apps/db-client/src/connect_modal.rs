@@ -19,9 +19,10 @@ use crate::model::{ConnectionProfile, Engine};
 use crate::theme_ext::ThemeExt;
 use ui::PresenceCtx;
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::paint::PaintCtx;
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace, TextInput, Widget};
+use ui::widget::{Button, ButtonFace, EventCtx, TextInput, Widget};
 
 /// Which text field currently has focus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -354,36 +355,25 @@ impl ConnectModal {
 
     /// Handle an event while the modal is open. On Save, writes the new
     /// profile into `out`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the widget event bundle (event/scale/modifiers/state/root/node/taffy) is \
-                  fixed by `ui::Widget::handle_event`, which this forwards to; the two \
-                  out-params are the modal's own result channel"
-    )]
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-        handled: &mut bool,
+        ctx: &mut EventCtx<'_>,
         out: &mut Option<ConnectionProfile>,
     ) {
         let mut editor = EditorEvent {
             event,
-            scale_factor,
-            modifiers: *modifiers,
-            state,
-            root,
-            node_id,
-            taffy,
+            scale_factor: ctx.scale_factor,
+            modifiers: *ctx.modifiers,
+            state: &mut *ctx.state,
+            root: ctx.path,
+            node_id: ctx.node_id,
+            taffy: ctx.taffy,
         };
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 // Every visible input observes pointer movement so a later
                 // press can place its caret at the actual click position.
                 for field in self.visible_fields().iter().copied() {
@@ -395,7 +385,7 @@ impl ConnectModal {
                 button: MouseButton::Left,
                 ..
             } => {
-                *handled = true;
+                *ctx.handled = true;
                 let c = self.cursor;
                 if self.cancel_btn.contains(c) {
                     self.open = false;
@@ -436,7 +426,7 @@ impl ConnectModal {
                     },
                 ..
             } => {
-                *handled = true;
+                *ctx.handled = true;
                 match logical_key {
                     Key::Named(NamedKey::Escape) => {
                         self.open = false;
@@ -456,7 +446,7 @@ impl ConnectModal {
             // IME preedit/commit and accessibility-driven edits must follow
             // the same shared input path as physical keyboard events.
             _ if self.focus.is_some() => {
-                *handled = true;
+                *ctx.handled = true;
                 self.route_to_focused_input(&mut editor);
             }
             _ => {}
@@ -476,14 +466,16 @@ impl ConnectModal {
         Widget::handle_event(
             self.input_mut(field),
             event.event,
-            event.scale_factor,
-            &event.modifiers,
-            event.state,
-            event.root,
-            &mut handled,
-            &mut focus_target,
-            event.node_id,
-            event.taffy,
+            &mut EventCtx {
+                scale_factor: event.scale_factor,
+                modifiers: &event.modifiers,
+                state: event.state,
+                path: event.root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: event.node_id,
+                taffy: event.taffy,
+            },
         );
     }
 
@@ -576,7 +568,7 @@ impl ConnectModal {
         y += 36.0;
 
         y = self.draw_engine_selector(scene, t, tr, theme, px, pw, y);
-        y = self.draw_fields(scene, t, tr, theme, px, pw, y);
+        y = self.draw_fields(&mut PaintCtx::new(scene, t, tr, theme), y);
 
         // Password-handling note for the network engines.
         if self.engine != Engine::Sqlite {
@@ -594,10 +586,6 @@ impl ConnectModal {
     }
 
     /// Engine selector segmented control. Returns the Y position beneath it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "engine selector painting shares the render context and the panel origin, width and row position"
-    )]
     fn draw_engine_selector(
         &mut self,
         scene: &mut Scene,
@@ -649,67 +637,18 @@ impl ConnectModal {
 
     /// The engine-dependent field set (`SQLite` file path, or the network
     /// host/port/db/user/password rows). Returns the Y position beneath it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "connection field painting shares the render context and panel geometry across engine-specific rows"
-    )]
-    fn draw_fields(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        px: f64,
-        pw: f64,
-        y: f64,
-    ) -> f64 {
+    fn draw_fields(&mut self, ctx: &mut PaintCtx<'_>, y: f64) -> f64 {
         self.field_rects.clear();
         let mut y = y;
         if self.engine == Engine::Sqlite {
-            y = self.field(scene, t, tr, theme, px, pw, y, "Name", Field::Name);
-            y = self.field(
-                scene,
-                t,
-                tr,
-                theme,
-                px,
-                pw,
-                y,
-                "SQLite file path",
-                Field::FilePath,
-            );
+            y = self.field(ctx, y, ("Name", Field::Name));
+            y = self.field(ctx, y, ("SQLite file path", Field::FilePath));
         } else {
-            y = self.field(scene, t, tr, theme, px, pw, y, "Name", Field::Name);
+            y = self.field(ctx, y, ("Name", Field::Name));
             // Host + Port on one row.
-            let (hx, ()) = self.field_pair(
-                scene,
-                t,
-                tr,
-                theme,
-                px,
-                pw,
-                y,
-                "Host",
-                Field::Host,
-                "Port",
-                Field::Port,
-            );
-            y = hx;
-            y = self.field(scene, t, tr, theme, px, pw, y, "Database", Field::Database);
-            let (ux, ()) = self.field_pair(
-                scene,
-                t,
-                tr,
-                theme,
-                px,
-                pw,
-                y,
-                "User",
-                Field::User,
-                "Password",
-                Field::Password,
-            );
-            y = ux;
+            y = self.field_pair(ctx, y, ("Host", Field::Host), ("Port", Field::Port));
+            y = self.field(ctx, y, ("Database", Field::Database));
+            y = self.field_pair(ctx, y, ("User", Field::User), ("Password", Field::Password));
         }
         y
     }
@@ -758,90 +697,66 @@ impl ConnectModal {
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "shared draw context (canvas/theme/panel geometry) plus this field's label and slot"
-    )]
-    fn field(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        px: f64,
-        pw: f64,
-        y: f64,
-        label: &str,
-        field: Field,
-    ) -> f64 {
-        tr.draw_text(
-            scene,
+    /// One labelled input spanning the panel's content width at `y`.
+    /// Returns the Y position beneath it.
+    fn field(&mut self, ctx: &mut PaintCtx<'_>, y: f64, (label, field): (&str, Field)) -> f64 {
+        let (px, pw) = (self.panel.x0, self.panel.width());
+        ctx.text(
             label,
-            11.0,
-            theme.text_dim,
-            t * Affine::translate((px + 24.0, y)),
+            &TextStyle::new(11.0),
+            ctx.theme.text_dim,
+            Point::new(px + 24.0, y),
             None,
         );
         let r = Rect::new(px + 24.0, y + 16.0, px + pw - 24.0, y + 44.0);
-        self.draw_input(scene, t, tr, theme, r, field);
+        self.draw_input(ctx, r, field);
         self.field_rects.push((field, r));
         y + 56.0
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "shared draw context (canvas/theme/panel geometry) plus a pair of fields' labels and slots"
-    )]
+    /// Two labelled inputs sharing one row at `y`, the first taking most of
+    /// the width. Returns the Y position beneath them.
     fn field_pair(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        px: f64,
-        pw: f64,
+        ctx: &mut PaintCtx<'_>,
         y: f64,
-        l1: &str,
-        f1: Field,
-        l2: &str,
-        f2: Field,
-    ) -> (f64, ()) {
+        (l1, f1): (&str, Field),
+        (l2, f2): (&str, Field),
+    ) -> f64 {
+        let (px, pw) = (self.panel.x0, self.panel.width());
         let total = pw - 48.0;
         let w1 = total * 0.68;
-        tr.draw_text(
-            scene,
+        let label = TextStyle::new(11.0);
+        ctx.text(
             l1,
-            11.0,
-            theme.text_dim,
-            t * Affine::translate((px + 24.0, y)),
+            &label,
+            ctx.theme.text_dim,
+            Point::new(px + 24.0, y),
             None,
         );
-        tr.draw_text(
-            scene,
+        ctx.text(
             l2,
-            11.0,
-            theme.text_dim,
-            t * Affine::translate((px + 24.0 + w1 + 12.0, y)),
+            &label,
+            ctx.theme.text_dim,
+            Point::new(px + 24.0 + w1 + 12.0, y),
             None,
         );
         let r1 = Rect::new(px + 24.0, y + 16.0, px + 24.0 + w1, y + 44.0);
         let r2 = Rect::new(px + 24.0 + w1 + 12.0, y + 16.0, px + pw - 24.0, y + 44.0);
-        self.draw_input(scene, t, tr, theme, r1, f1);
-        self.draw_input(scene, t, tr, theme, r2, f2);
+        self.draw_input(ctx, r1, f1);
+        self.draw_input(ctx, r2, f2);
         self.field_rects.push((f1, r1));
         self.field_rects.push((f2, r2));
-        (y + 56.0, ())
+        y + 56.0
     }
 
-    fn draw_input(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        r: Rect,
-        field: Field,
-    ) {
+    fn draw_input(&mut self, ctx: &mut PaintCtx<'_>, r: Rect, field: Field) {
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
         let focused = self.focus == Some(field);
         if focused {
             scene.fill(
@@ -908,110 +823,122 @@ mod tests {
         let mut state = AutoCommit::new();
         let mut taffy = TaffyTree::new();
         let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+        let mut focus_target = None;
         m.handle_event(
             event,
-            1.0,
-            &modifiers,
-            &mut state,
-            &automerge::ROOT,
-            node,
-            &taffy,
-            &mut handled,
+            &mut EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut state,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
             &mut out,
         );
         assert!(handled, "an open modal consumes its editor event");
         assert!(out.is_none(), "editor event does not submit the form");
     }
 
+    /// Opening resets the form, profiles parse the port, focus wraps for `SQLite` and engine switches blur hidden fields.
     #[test]
-    fn open_resets_form_and_focus() {
-        let mut m = ConnectModal::new();
-        m.open_new();
-        assert!(m.is_open());
-        assert_eq!(m.engine, Engine::Postgres);
+    fn connect_form_resets_parses_and_navigates() {
+        // --- phase: open_resets_form_and_focus ---
+        {
+            let mut m = ConnectModal::new();
+            m.open_new();
+            assert!(m.is_open());
+            assert_eq!(m.engine, Engine::Postgres);
+        }
+
+        // --- phase: build_profile_parses_port ---
+        {
+            let mut m = ConnectModal::new();
+            m.open_new();
+            m.host.set_text("db.example");
+            m.port.set_text("6543");
+            m.database.set_text("app");
+            let p = m.build_profile();
+            assert_eq!(p.port, 6543);
+            assert_eq!(p.host, "db.example");
+        }
+
+        // --- phase: next_field_wraps_for_sqlite ---
+        {
+            let mut m = ConnectModal::new();
+            m.open_new();
+            m.set_engine(Engine::Sqlite);
+            m.focus = Some(Field::FilePath);
+            // Only Name + FilePath in the SQLite order, so it wraps to Name.
+            assert!(matches!(m.next_field(), Field::Name));
+        }
+
+        // --- phase: switching_engine_blurs_a_field_that_becomes_hidden ---
+        {
+            let mut m = ConnectModal::new();
+            m.open_new();
+            m.focus_field(Some(Field::Password));
+            m.set_engine(Engine::Sqlite);
+            assert_eq!(m.focus, Some(Field::Name));
+            assert!(Widget::is_focused(&m.name));
+            assert!(!Widget::is_focused(&m.password));
+            assert_eq!(m.visible_fields(), &[Field::Name, Field::FilePath]);
+        }
     }
 
+    /// Fields replace keyboard selections and commit IME through the shared input, and the password is a protected secret.
     #[test]
-    fn build_profile_parses_port() {
-        let mut m = ConnectModal::new();
-        m.open_new();
-        m.host.set_text("db.example");
-        m.port.set_text("6543");
-        m.database.set_text("app");
-        let p = m.build_profile();
-        assert_eq!(p.port, 6543);
-        assert_eq!(p.host, "db.example");
-    }
+    fn connect_form_inputs_use_shared_secret_safe_editing() {
+        // --- phase: shared_input_replaces_a_keyboard_selection ---
+        {
+            let mut m = ConnectModal::new();
+            m.open_new();
+            let ctrl = Modifiers::from(ModifiersState::CONTROL);
+            send(
+                &mut m,
+                &key_event(Key::Character(SmolStr::new("a")), Some("a")),
+                ctrl,
+            );
+            assert_eq!(m.name.selection_range_public(), Some((0, 14)));
 
-    #[test]
-    fn next_field_wraps_for_sqlite() {
-        let mut m = ConnectModal::new();
-        m.open_new();
-        m.set_engine(Engine::Sqlite);
-        m.focus = Some(Field::FilePath);
-        // Only Name + FilePath in the SQLite order, so it wraps to Name.
-        assert!(matches!(m.next_field(), Field::Name));
-    }
+            send(
+                &mut m,
+                &key_event(Key::Character(SmolStr::new("P")), Some("P")),
+                Modifiers::default(),
+            );
+            assert_eq!(m.name.value(), "P");
+        }
 
-    #[test]
-    fn shared_input_replaces_a_keyboard_selection() {
-        let mut m = ConnectModal::new();
-        m.open_new();
-        let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        send(
-            &mut m,
-            &key_event(Key::Character(SmolStr::new("a")), Some("a")),
-            ctrl,
-        );
-        assert_eq!(m.name.selection_range_public(), Some((0, 14)));
+        // --- phase: ime_commit_uses_the_same_focused_input_path ---
+        {
+            let mut m = ConnectModal::new();
+            m.open_new();
+            m.name.set_text("");
+            send(
+                &mut m,
+                &WindowEvent::Ime(winit::event::Ime::Commit("接続".into())),
+                Modifiers::default(),
+            );
+            assert_eq!(m.name.value(), "接続");
+        }
 
-        send(
-            &mut m,
-            &key_event(Key::Character(SmolStr::new("P")), Some("P")),
-            Modifiers::default(),
-        );
-        assert_eq!(m.name.value(), "P");
-    }
-
-    #[test]
-    fn ime_commit_uses_the_same_focused_input_path() {
-        let mut m = ConnectModal::new();
-        m.open_new();
-        m.name.set_text("");
-        send(
-            &mut m,
-            &WindowEvent::Ime(winit::event::Ime::Commit("接続".into())),
-            Modifiers::default(),
-        );
-        assert_eq!(m.name.value(), "接続");
-    }
-
-    #[test]
-    fn password_is_a_protected_secret_input() {
-        let mut m = ConnectModal::new();
-        m.open_new();
-        m.password.set_text("correct horse");
-        assert!(m.password.is_secret());
-        assert_eq!(
-            Widget::ime_purpose(&m.password),
-            Some(winit::window::ImePurpose::Password)
-        );
-        let node = Widget::accessibility(&m.password).expect("text input accessibility node");
-        assert_eq!(node.role, Role::TextInput);
-        assert!(node.state.protected);
-        assert_eq!(node.value, None, "password never enters the a11y value");
-        assert_eq!(m.build_profile().password, "correct horse");
-    }
-
-    #[test]
-    fn switching_engine_blurs_a_field_that_becomes_hidden() {
-        let mut m = ConnectModal::new();
-        m.open_new();
-        m.focus_field(Some(Field::Password));
-        m.set_engine(Engine::Sqlite);
-        assert_eq!(m.focus, Some(Field::Name));
-        assert!(Widget::is_focused(&m.name));
-        assert!(!Widget::is_focused(&m.password));
-        assert_eq!(m.visible_fields(), &[Field::Name, Field::FilePath]);
+        // --- phase: password_is_a_protected_secret_input ---
+        {
+            let mut m = ConnectModal::new();
+            m.open_new();
+            m.password.set_text("correct horse");
+            assert!(m.password.is_secret());
+            assert_eq!(
+                Widget::ime_purpose(&m.password),
+                Some(winit::window::ImePurpose::Password)
+            );
+            let node = Widget::accessibility(&m.password).expect("text input accessibility node");
+            assert_eq!(node.role, Role::TextInput);
+            assert!(node.state.protected);
+            assert_eq!(node.value, None, "password never enters the a11y value");
+            assert_eq!(m.build_profile().password, "correct horse");
+        }
     }
 }

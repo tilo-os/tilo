@@ -23,6 +23,8 @@
 //! application must not be able to draw. Calling [`pair`] from a settings
 //! pane starts the pairing; the prompt that results appears in OS chrome.
 
+use std::fs;
+use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -45,11 +47,46 @@ fn client() -> Result<&'static BluezClient, String> {
     Ok(CLIENT.get_or_init(|| client))
 }
 
+/// The process's one `BlueZ` client, for code that needs the connection
+/// itself rather than one of the blocking calls here. The compositor
+/// serves its pairing agent on it, so a pairing that quick settings or a
+/// handoff starts through this module is answered on the connection that
+/// asked, and the process never holds a second one.
+///
+/// Blocking; call it from a worker thread, never from the UI thread or
+/// inside an async task.
+///
+/// # Errors
+///
+/// Returns an error message if the Bluetooth runtime or `org.bluez` D-Bus
+/// connection is unavailable.
+pub fn shared_client() -> Result<BluezClient, String> {
+    client().cloned()
+}
+
 fn block<F, T>(f: F) -> Result<T, String>
 where
     F: std::future::Future<Output = Result<T, zbus::Error>>,
 {
     crate::block_on(async { f.await.map_err(|e| tilo_bluez::error_text(&e)) })
+}
+
+const BLUETOOTH_CLASS: &str = "/sys/class/bluetooth";
+
+/// Whether this machine has a Bluetooth controller. Desktops without a
+/// dongle and most VMs do not; Quick Settings uses this to leave the tile
+/// out rather than show a toggle that talks to a missing adapter.
+pub fn has_adapter() -> bool {
+    has_adapter_in(Path::new(BLUETOOTH_CLASS))
+}
+
+fn has_adapter_in(root: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(root) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .any(|entry| entry.file_name().to_string_lossy().starts_with("hci"))
 }
 
 /// The adapter every operation here targets.
@@ -246,4 +283,22 @@ pub fn set_discoverable(on: bool) -> Result<(), String> {
     let c = client()?;
     let adapter = adapter_path()?;
     block(async { c.set_discoverable(&adapter, on).await })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_adapter_in;
+    use std::fs;
+
+    #[test]
+    fn has_adapter_requires_an_hci_controller() {
+        let empty = tempfile::tempdir().unwrap();
+        assert!(!has_adapter_in(empty.path()));
+        let with_hci = tempfile::tempdir().unwrap();
+        fs::create_dir(with_hci.path().join("hci0")).unwrap();
+        assert!(has_adapter_in(with_hci.path()));
+        let noise = tempfile::tempdir().unwrap();
+        fs::create_dir(noise.path().join("rfkill")).unwrap();
+        assert!(!has_adapter_in(noise.path()));
+    }
 }

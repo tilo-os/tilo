@@ -36,10 +36,6 @@ fn run_calendar(directory: &Path, source: Option<&Path>, name: &str) -> serde_js
         command.env(key, path);
     }
     command.env("TILO_PACKAGE_ID", "so.tilo.calendar.cli-test");
-    command.env(
-        "TILO_CALENDAR_DATA",
-        directory.join("absent-legacy.automerge"),
-    );
     if let Some(source) = source {
         command.arg(source);
     }
@@ -64,16 +60,16 @@ fn run_calendar(directory: &Path, source: Option<&Path>, name: &str) -> serde_js
             std::fs::File::create(&stderr).unwrap(),
         ));
     let mut child = command.spawn().expect("launch actual Calendar binary");
-    let started = std::time::Instant::now();
+    let started = ui::time::now();
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
         }
-        if started.elapsed() > std::time::Duration::from_secs(30) {
+        if started.elapsed() > tilo_test_env::hang_bound() {
             child.kill().unwrap();
             child.wait().unwrap();
             panic!(
-                "Calendar {name} timed out: {}",
+                "Calendar {name} never exited within the hang bound: {}",
                 std::fs::read_to_string(&stderr).unwrap()
             );
         }

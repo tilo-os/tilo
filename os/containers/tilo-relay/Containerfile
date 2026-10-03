@@ -18,14 +18,14 @@
 #         -t registry.tilo.so/tilo/tilo-relay:latest .
 #
 # Publish via the existing forgejo CI workflow — see
-# `.forgejo/workflows/tilo-relay.yaml` (companion to the OS image job).
+# `.forgejo/workflows/release-relay.yml` (companion to the OS image job).
 # ============================================================================
 
 # ---- Frozen RPM repo + mirrored base (cross-time reproducibility) ----------
 # Digest-pinned snapshot and base shared with the desktop + host bootc images.
-# RPMS_REF comes from os/rpms-snapshot.env and BASE_REF from
+# RPMS_REF comes from resolve-rpm-snapshot.sh and BASE_REF from
 # os/base-snapshot.env — see os/dev/build-image.sh and the
-# .forgejo/workflows/tilo-relay.yaml build. Declared before the first FROM so
+# .forgejo/workflows/release-relay.yml build. Declared before the first FROM so
 # both are global rather than scoped to the preceding stage.
 ARG BASE_REF
 ARG RPMS_REF
@@ -43,7 +43,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         clang clang-devel pkgconf-pkg-config \
     && dnf clean all
 
-# Fedora's sccache RPM omits S3 support. Install the same checksum-pinned,
+# Fedora's sccache RPM omits the GHA backend. Install the same checksum-pinned,
 # full-feature static client as the canonical OS builder.
 ARG SCCACHE_VERSION=0.17.0
 ARG SCCACHE_SHA256_X86_64=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006
@@ -82,11 +82,6 @@ COPY . /build
 # os/Containerfile.host — pin CARGO_HOME + SCCACHE_DIR into the
 # repo-mounted /build.
 ARG SOURCE_DATE_EPOCH=0
-ARG SCCACHE_BUCKET=""
-ARG SCCACHE_ENDPOINT=""
-ARG SCCACHE_REGION="auto"
-ARG SCCACHE_S3_KEY_PREFIX="tilo/relay/v1"
-ARG SCCACHE_S3_USE_SSL="false"
 ARG TILO_COMPILER_CACHE_CONFIGURED=0
 ARG TILO_REQUIRE_COMPILER_CACHE=0
 ARG TILO_CACHE_PROBE_NONCE=""
@@ -100,11 +95,8 @@ ARG TILO_CACHE_PROBE_NONCE=""
 # cargo reads that config from /build.
 ENV CARGO_HOME=/build/.cargo-home \
     SCCACHE_DIR=/build/.sccache \
-    SCCACHE_BUCKET=${SCCACHE_BUCKET} \
-    SCCACHE_ENDPOINT=${SCCACHE_ENDPOINT} \
-    SCCACHE_REGION=${SCCACHE_REGION} \
-    SCCACHE_S3_KEY_PREFIX=${SCCACHE_S3_KEY_PREFIX} \
-    SCCACHE_S3_USE_SSL=${SCCACHE_S3_USE_SSL} \
+    SCCACHE_GHA_VERSION=tilo-relay-v1 \
+    SCCACHE_IDLE_TIMEOUT=0 \
     SCCACHE_IGNORE_SERVER_IO_ERROR=1 \
     TILO_CACHE_PROBE_NONCE=${TILO_CACHE_PROBE_NONCE} \
     RUSTC_WRAPPER=/usr/local/bin/sccache \
@@ -122,12 +114,15 @@ ENV CARGO_HOME=/build/.cargo-home \
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/build/.sccache \
-    --mount=type=secret,id=aws_access_key_id \
-    --mount=type=secret,id=aws_secret_access_key \
-    --mount=type=secret,id=aws_session_token \
-    export AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id 2>/dev/null || true)" \
-    && export AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key 2>/dev/null || true)" \
-    && export AWS_SESSION_TOKEN="$(cat /run/secrets/aws_session_token 2>/dev/null || true)" \
+    --mount=type=secret,id=actions_cache_url \
+    --mount=type=secret,id=actions_runtime_token \
+    export ACTIONS_CACHE_URL="$(cat /run/secrets/actions_cache_url 2>/dev/null || true)" \
+    && export ACTIONS_RUNTIME_TOKEN="$(cat /run/secrets/actions_runtime_token 2>/dev/null || true)" \
+    && if [ -n "$ACTIONS_CACHE_URL" ] && [ -n "$ACTIONS_RUNTIME_TOKEN" ]; then \
+         export SCCACHE_GHA_ENABLED=on; \
+       else \
+         TILO_COMPILER_CACHE_CONFIGURED=0; \
+       fi \
     && if [ "$TILO_REQUIRE_COMPILER_CACHE" = 1 ]; then \
          test "$TILO_COMPILER_CACHE_CONFIGURED" = 1 || { \
            printf '%s\n' 'required compiler cache configuration is unavailable' >&2; exit 1; \
@@ -138,7 +133,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          printf '%s\n' 'sccache backend unavailable; compiling normally' >&2; \
        fi \
     && { sccache --zero-stats 2>/dev/null || true; } \
-    && cargo build --locked --release -p tilo-relay -p fs --bins \
+    && cargo build --locked --release -p tilo-relay -p tilo-fs --bins \
     && { sccache --show-stats 2>/dev/null || true; } \
     && mkdir -p /out \
     && cp target/release/tilo-relay \

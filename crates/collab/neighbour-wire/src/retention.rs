@@ -99,6 +99,16 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             route.extend_from_slice(ack.device.as_bytes());
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
         }
+        // A device's certificate, sent through a host by a member no gossip
+        // neighbour can vouch for (a browser, a shell reachable only through
+        // the host). Receivers bind it to the host-authenticated author, and
+        // a device that joins later needs it before that member's edits, so
+        // the host keeps each device's latest one.
+        NeighbourMsg::IdentityHello { cert, .. } => {
+            let mut route = b"identity-hello\0".to_vec();
+            route.extend_from_slice(&cert.device_public_key);
+            return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
+        }
         NeighbourMsg::PersonalContinuityCheckpoint {
             user_public_key, ..
         } => {
@@ -143,11 +153,23 @@ mod tests {
         msg
     }
 
+    /// Every segment of a large snapshot is kept after its checkpoint, content-key ciphertext is
+    /// kept by its signed class, and state persists while late session actions never do.
+    /// The channel digests retained state is keyed by stay stable.
+    /// Runs each phase below in order; every phase builds its own fixture.
+    #[test]
+    fn the_host_retains_exactly_what_its_signed_classes_allow() {
+        host_retains_every_segment_of_a_large_snapshot_after_its_checkpoint();
+        host_retains_content_key_ciphertext_by_its_signed_class();
+        host_retains_channel_governance_per_channel_and_device();
+        host_persists_state_but_never_late_session_actions();
+        channel_digests_are_stable();
+    }
+
     /// The host replays a checkpoint followed by its tail. A snapshot too
     /// large for one frame must therefore start a new checkpoint with its
     /// first segment and keep every later segment in the tail, or a device
     /// replaying from the host could never reassemble it.
-    #[test]
     fn host_retains_every_segment_of_a_large_snapshot_after_its_checkpoint() {
         let len = 3 * collab_types::document_transfer::DOCUMENT_SEGMENT_BYTES + 1;
         for (mutation, first) in [
@@ -176,7 +198,6 @@ mod tests {
 
     /// Encrypted history is retained by its signed storage class, never by
     /// decoding ciphertext; single-use MLS messages are not retained.
-    #[test]
     fn host_retains_content_key_ciphertext_by_its_signed_class() {
         let channel = collab_types::ChannelId::new();
         let classify = |metadata| {
@@ -213,7 +234,6 @@ mod tests {
     /// A device that was offline gets every frame of a channel's chain
     /// (a redelivered frame replaces its copy), and the steward gets each
     /// device's latest request and acknowledgement.
-    #[test]
     fn host_retains_channel_governance_per_channel_and_device() {
         use collab_types::{
             ChannelId, MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceAction,
@@ -264,7 +284,6 @@ mod tests {
         assert_ne!(acked, mine);
     }
 
-    #[test]
     fn host_persists_state_but_never_late_session_actions() {
         assert!(matches!(
             retention(
@@ -362,7 +381,6 @@ mod tests {
 
     /// Channel digests are what a durable host already keys stored
     /// checkpoints by; changing the route bytes would orphan retained state.
-    #[test]
     fn channel_digests_are_stable() {
         let (channel, _) = retention(
             &NeighbourMsg::SyncResp {

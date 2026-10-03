@@ -4,7 +4,10 @@
 #   podman run --rm --entrypoint /bin/bash localhost/tilo:latest \
 #       /usr/libexec/tilo/boot-chain-test.sh
 #
-# or from the source tree with OS_ROOT pointing at an unpacked rootfs. The
+# or from the source tree with OS_ROOT pointing at an unpacked rootfs, or with
+# `--source` against this repository's os/ tree, which has the units and configs
+# but no kernel and no enablement symlinks (checks needing those are skipped;
+# the in-image run keeps them). The
 # checks exist because the image once shipped without an initramfs while also
 # offering `tilo-install --encrypt`, a combination in which the kernel reaches the
 # LUKS device and then has no userspace to open it.
@@ -15,6 +18,11 @@
 
 set -uo pipefail
 
+source_tree=0
+if [ "${1:-}" = --source ]; then
+  source_tree=1
+  OS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fi
 OS_ROOT="${OS_ROOT:-/}"
 fail=0
 ok()   { printf 'ok    %s\n' "$*"; }
@@ -23,7 +31,9 @@ bad()  { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 # 1. Exactly one kernel version. A second one means an orphan modules directory
 #    survived a kernel swap, and ostree/bootc pick a version rather than fail.
 mapfile -t kvers < <(ls -1 "$OS_ROOT/usr/lib/modules" 2>/dev/null)
-if [ "${#kvers[@]}" -eq 1 ]; then
+if [ "$source_tree" = 1 ]; then
+  : # the kernel comes from the build
+elif [ "${#kvers[@]}" -eq 1 ]; then
   ok "one kernel version: ${kvers[0]}"
 else
   bad "expected exactly one /usr/lib/modules entry, found ${#kvers[@]}: ${kvers[*]:-none}"
@@ -128,7 +138,10 @@ for kver in "${kvers[@]}"; do
     done
     omitted_drivers="$OS_ROOT/usr/lib/tilo/initramfs-omitted-drivers.txt"
     if [ -s "$omitted_drivers" ]; then
-      for unwanted_driver in ext4 xfs; do
+      if grep -qx ext4 "$omitted_drivers"; then
+        bad "initramfs excludes Ext4, so a supported Ext4 root cannot boot"
+      fi
+      for unwanted_driver in xfs; do
         if grep -qx "$unwanted_driver" "$omitted_drivers"; then
           ok "initramfs excludes the $unwanted_driver kernel driver"
         else
@@ -142,7 +155,7 @@ for kver in "${kvers[@]}"; do
        && [ -n "$(lsinitrd "$img" 2>/dev/null)" ]; then
     listing="$(lsinitrd "$img" 2>/dev/null)"
     for want in systemd-cryptsetup cryptsetup tilo-rollback-initrd-unlock; do
-      if printf '%s' "$listing" | grep -q "$want"; then
+      if grep -q "$want" <<<"$listing"; then
         ok "initramfs carries $want"
       else
         bad "initramfs has no $want — it cannot unlock an encrypted root"
@@ -175,7 +188,7 @@ else
   [ "$ours" = "ConditionPathIsMountPoint=/sysroot" ] \
     && ok "tilo growfs is gated on /sysroot" \
     || bad "tilo growfs does not require /sysroot (${ours:-none})"
-  [ "$exec_line" = "ExecStart=/usr/lib/systemd/systemd-growfs /sysroot" ] \
+  [ "$exec_line" = "ExecStart=/usr/bin/sh -c 'mount -o remount,rw /sysroot && exec /usr/lib/systemd/systemd-growfs /sysroot'" ] \
     && ok "tilo growfs targets the block-backed /sysroot" \
     || bad "tilo growfs targets the wrong path (${exec_line:-none})"
 fi
@@ -212,7 +225,11 @@ fi
 # Ask systemctl rather than guessing which wants directory contains the link.
 # The path fallback keeps this invariant useful in a minimal unpacked root.
 growfs_enabled=""
-if command -v systemctl >/dev/null 2>&1; then
+if [ "$source_tree" = 1 ]; then
+  # Enabled by the build (os/Containerfile); os/tests/boot_performance_gate_test.sh
+  # checks that it does.
+  growfs_enabled=yes
+elif command -v systemctl >/dev/null 2>&1; then
   case "$(systemctl --root="$OS_ROOT" is-enabled tilo-growfs-sysroot.timer 2>/dev/null)" in
     enabled|enabled-runtime|static) growfs_enabled=yes ;;
     *) growfs_enabled=no ;;
@@ -226,6 +243,19 @@ if [ "$growfs_enabled" = yes ]; then
   ok "tilo-growfs-sysroot.timer is enabled"
 else
   bad "tilo-growfs-sysroot.timer is not enabled — the filesystem is never grown"
+fi
+
+# The kernel has no NFS (os/kernel/config-fragments/tilo.config), so the NFS
+# userspace could only fail at every boot. A later package transaction pulling it
+# back in (libvirt recommends it) must fail the build, not the boot.
+if [ "$source_tree" = 1 ]; then
+  :
+elif command -v rpm >/dev/null 2>&1 \
+     && nfs="$(rpm --root "$OS_ROOT" -qa --qf '%{NAME}\n' 2>/dev/null | grep -Ex 'nfs-utils|nfs(v[34])?-(client|common)-utils|rpcbind' || true)" \
+     && [ -n "$nfs" ]; then
+  bad "the image ships NFS userspace the kernel cannot serve: $(echo $nfs)"
+else
+  ok "no NFS userspace"
 fi
 
 [ "$fail" -eq 0 ] && printf '\nall boot-chain invariants hold\n'

@@ -9,14 +9,12 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Result, anyhow};
 use iroh_blobs::Hash;
 use runtime_fs::storage::{
-    EvictionReport, EvictionSelection, StorageAggregate, StorageRequest, StorageResponse,
-    SyncStorageSnapshot, SyncedFileState,
+    EvictionReport, EvictionSelection, STORAGE_FRAMING, StorageAggregate, StorageRequest,
+    StorageResponse, SyncStorageSnapshot, SyncedFileState,
 };
-use serde::{Serialize, de::DeserializeOwned};
-use tilo_clock::unix_now_ms;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::availability::{AvailabilityPolicy, AvailabilityRegistry, RecordAvailability};
+use crate::clock::unix_now_ms;
 use crate::eviction::{EvictionCoordinator, EvictionPlan, EvictionQueue, EvictionRequestId};
 use crate::namespace::NodeKind;
 use crate::{FileHistoryStore, Hydrator, Namespace};
@@ -44,11 +42,12 @@ pub async fn serve(listener: tokio::net::UnixListener, authority: StorageAuthori
         };
         let authority = authority.clone();
         tokio::spawn(async move {
-            loop {
-                let request: StorageRequest = match read_async_frame(&mut stream).await {
-                    Ok(request) => request,
-                    Err(_) => break,
-                };
+            // A close, a malformed or oversized frame, or a failed write
+            // ends the connection.
+            while let Ok(Some(request)) = STORAGE_FRAMING
+                .read_value_async::<_, StorageRequest>(&mut stream)
+                .await
+            {
                 let response = match request {
                     StorageRequest::Snapshot => {
                         StorageResponse::Snapshot(authority.snapshot().await)
@@ -58,42 +57,16 @@ pub async fn serve(listener: tokio::net::UnixListener, authority: StorageAuthori
                         Err(error) => StorageResponse::Error(error.to_string()),
                     },
                 };
-                if write_async_frame(&mut stream, &response).await.is_err() {
+                if STORAGE_FRAMING
+                    .write_value_async(&mut stream, &response)
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
         });
     }
-}
-
-const MAX_FRAME: usize = 16 * 1024 * 1024;
-
-async fn read_async_frame<T: DeserializeOwned>(
-    stream: &mut tokio::net::UnixStream,
-) -> std::io::Result<T> {
-    let len = stream.read_u32_le().await? as usize;
-    if len > MAX_FRAME {
-        return Err(std::io::Error::other("storage frame too large"));
-    }
-    let mut data = vec![0; len];
-    stream.read_exact(&mut data).await?;
-    postcard::from_bytes(&data).map_err(std::io::Error::other)
-}
-
-// `T: Sync` so `&T` is `Send` — required for the future this returns to be
-// usable from the `tokio::spawn`ed connection task in `serve`.
-async fn write_async_frame<T: Serialize + Sync>(
-    stream: &mut tokio::net::UnixStream,
-    value: &T,
-) -> std::io::Result<()> {
-    let data = postcard::to_allocvec(value).map_err(std::io::Error::other)?;
-    if data.len() > MAX_FRAME {
-        return Err(std::io::Error::other("storage frame too large"));
-    }
-    let len = u32::try_from(data.len())
-        .map_err(|_| std::io::Error::other("storage frame too large to length-prefix"))?;
-    stream.write_u32_le(len).await?;
-    stream.write_all(&data).await
 }
 
 #[derive(Clone)]
@@ -113,10 +86,6 @@ struct LogicalFile {
 }
 
 impl StorageAuthority {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the constructor explicitly names the independent durable services which Settings must share with FUSE"
-    )]
     pub fn new(
         namespace: Arc<Mutex<Namespace>>,
         hydrator: Arc<Hydrator>,
@@ -381,8 +350,9 @@ impl StorageAuthority {
         let namespace = Arc::clone(&self.namespace);
         let dirty = Arc::clone(&self.dirty);
         let store = Arc::clone(&self.hydrator.store);
-        let runtime = self.hydrator.runtime_handle.clone();
-        self.coordinator()?
+        let coordinator = self.coordinator()?;
+        let runtime = coordinator.handoff_runtime();
+        coordinator
             .prepare_with_handoff(
                 record_id,
                 crate::eviction::EvictionMode::Safe,
@@ -599,174 +569,221 @@ mod tests {
     use super::*;
     use crate::namespace::ROOT_INO;
 
-    #[test]
-    fn only_explicit_app_namespaces_are_attributed() {
-        assert_eq!(
-            app_from_path("/apps/org.tilo.Notes/a"),
-            Some("org.tilo.Notes".into())
-        );
-        assert_eq!(app_from_path("/personal/notes"), None);
-        assert_eq!(app_from_path("/apps"), None);
-    }
-
-    #[test]
-    fn broken_or_cyclic_policy_ancestry_is_pinned_fail_closed() {
-        let record = collab_types::FileRecordId::new();
-        let missing_parent = collab_types::FileRecordId::new();
-        let mut row = RecordAvailability::new(record, crate::availability::RecordKind::File);
-        row.parent = Some(missing_parent);
-        assert!(effective_pinned(&[row], record));
-    }
-
-    #[test]
-    fn snapshot_selection_carries_all_race_tokens() {
-        let file = SyncedFileState {
-            workspace: "work".into(),
-            app: None,
-            logical_path: "/a".into(),
-            identity: "stable-node".into(),
-            inode: 9,
-            version: "version-a".into(),
-            logical_bytes: 1,
-            hydrated_bytes: 1,
-            remote_only: false,
-            dirty: false,
-            pinned: false,
-            in_flight: false,
-            remotely_durable: true,
-            reclaimable_bytes: 1,
-        };
-        let selection = EvictionSelection::from(&file);
-        assert_eq!(selection.identity, file.identity);
-        assert_eq!(selection.inode, file.inode);
-        assert_eq!(selection.version, file.version);
-    }
-
-    #[test]
-    fn final_live_token_rejects_a_namespace_or_dirty_change() {
-        let namespace = Arc::new(Mutex::new(Namespace::new("storage-token").unwrap()));
-        let dirty = Arc::new(Mutex::new(HashMap::new()));
-        let expected = Hash::from([7; 32]);
-        let inode = namespace
-            .lock()
-            .unwrap()
-            .create_file(ROOT_INO, "report.txt", Some(&expected), 1, 1)
+    #[tokio::test]
+    async fn storage_frames_are_little_endian_length_then_postcard() {
+        let (mut client, mut server) = tokio::net::UnixStream::pair().unwrap();
+        let mut wire = Vec::new();
+        STORAGE_FRAMING
+            .write_value_async(&mut wire, &StorageResponse::Error("no".into()))
+            .await
             .unwrap();
-        let (identity, record_id) = {
-            let namespace = namespace.lock().unwrap();
-            (
-                namespace.id_for_ino(inode).unwrap().to_owned(),
-                namespace.record_id_for(inode).unwrap(),
-            )
-        };
-        assert!(
-            validate_live_eviction_token(
-                &mut namespace.lock().unwrap(),
-                &dirty.lock().unwrap(),
-                &identity,
-                inode,
-                record_id,
-                expected,
-            )
-            .is_ok()
-        );
+        assert_eq!(wire, [4, 0, 0, 0, 2, 2, b'n', b'o']);
 
-        let replacement = Hash::from([8; 32]);
-        assert!(
-            namespace
+        tokio::io::AsyncWriteExt::write_all(&mut client, &[1, 0, 0, 0, 0])
+            .await
+            .unwrap();
+        drop(client);
+        let request: Option<StorageRequest> =
+            STORAGE_FRAMING.read_value_async(&mut server).await.unwrap();
+        assert!(matches!(request, Some(StorageRequest::Snapshot)));
+        let closed: Option<StorageRequest> =
+            STORAGE_FRAMING.read_value_async(&mut server).await.unwrap();
+        assert!(closed.is_none());
+    }
+
+    #[tokio::test]
+    async fn storage_frames_over_sixteen_mebibytes_are_refused() {
+        let oversized = (16_u32 * 1024 * 1024 + 1).to_le_bytes();
+        assert!(matches!(
+            STORAGE_FRAMING
+                .read_value_async::<_, StorageRequest>(&mut &oversized[..])
+                .await,
+            Err(wire_frame::FrameError::TooLarge(_))
+        ));
+        let truncated = [2, 0, 0, 0, 1];
+        assert!(matches!(
+            STORAGE_FRAMING
+                .read_value_async::<_, StorageRequest>(&mut &truncated[..])
+                .await,
+            Err(wire_frame::FrameError::Truncated)
+        ));
+    }
+
+    #[test]
+    fn storage_attribution_and_candidates_fail_closed() {
+        // Phase `only_explicit_app_namespaces_are_attributed`.
+        {
+            assert_eq!(
+                app_from_path("/apps/org.tilo.Notes/a"),
+                Some("org.tilo.Notes".into())
+            );
+            assert_eq!(app_from_path("/personal/notes"), None);
+            assert_eq!(app_from_path("/apps"), None);
+        }
+        // Phase `broken_or_cyclic_policy_ancestry_is_pinned_fail_closed`.
+        {
+            let record = collab_types::FileRecordId::new();
+            let missing_parent = collab_types::FileRecordId::new();
+            let mut row = RecordAvailability::new(record, crate::availability::RecordKind::File);
+            row.parent = Some(missing_parent);
+            assert!(effective_pinned(&[row], record));
+        }
+        // Phase `snapshot_candidates_skip_rows_that_cannot_be_reclaimed`.
+        {
+            let record_id = collab_types::FileRecordId::new();
+            let logical = vec![LogicalFile {
+                identity: "candidate".into(),
+                inode: 7,
+                path: "/candidate".into(),
+                logical_bytes: 1,
+                hash: Some(Hash::from([1; 32])),
+                record_id,
+                mtime: 0,
+            }];
+            let mut dirty = HashSet::new();
+            dirty.insert(7);
+            let mut record =
+                RecordAvailability::new(record_id, crate::availability::RecordKind::File);
+            record.current_version = Some(collab_types::FileVersionId::new());
+            assert!(snapshot_candidate_ids(&logical, &dirty, &[record], unix_now_ms()).is_empty());
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn reclamation_tokens_and_leases_block_racing_mutation() {
+        // Phase `snapshot_selection_carries_all_race_tokens`.
+        {
+            let file = SyncedFileState {
+                workspace: "work".into(),
+                app: None,
+                logical_path: "/a".into(),
+                identity: "stable-node".into(),
+                inode: 9,
+                version: "version-a".into(),
+                logical_bytes: 1,
+                hydrated_bytes: 1,
+                remote_only: false,
+                dirty: false,
+                pinned: false,
+                in_flight: false,
+                remotely_durable: true,
+                reclaimable_bytes: 1,
+            };
+            let selection = EvictionSelection::from(&file);
+            assert_eq!(selection.identity, file.identity);
+            assert_eq!(selection.inode, file.inode);
+            assert_eq!(selection.version, file.version);
+        }
+        // Phase `final_live_token_rejects_a_namespace_or_dirty_change`.
+        {
+            let namespace = Arc::new(Mutex::new(Namespace::new("storage-token").unwrap()));
+            let dirty = Arc::new(Mutex::new(HashMap::new()));
+            let expected = Hash::from([7; 32]);
+            let inode = namespace
                 .lock()
                 .unwrap()
-                .set_content(inode, Some(&replacement), 1, 2)
-        );
-        assert!(
-            validate_live_eviction_token(
-                &mut namespace.lock().unwrap(),
-                &dirty.lock().unwrap(),
-                &identity,
-                inode,
-                record_id,
-                expected,
-            )
-            .is_err()
-        );
+                .create_file(ROOT_INO, "report.txt", Some(&expected), 1, 1)
+                .unwrap();
+            let (identity, record_id) = {
+                let namespace = namespace.lock().unwrap();
+                (
+                    namespace.id_for_ino(inode).unwrap().to_owned(),
+                    namespace.record_id_for(inode).unwrap(),
+                )
+            };
+            assert!(
+                validate_live_eviction_token(
+                    &mut namespace.lock().unwrap(),
+                    &dirty.lock().unwrap(),
+                    &identity,
+                    inode,
+                    record_id,
+                    expected,
+                )
+                .is_ok()
+            );
 
-        assert!(
-            namespace
+            let replacement = Hash::from([8; 32]);
+            assert!(
+                namespace
+                    .lock()
+                    .unwrap()
+                    .set_content(inode, Some(&replacement), 1, 2)
+            );
+            assert!(
+                validate_live_eviction_token(
+                    &mut namespace.lock().unwrap(),
+                    &dirty.lock().unwrap(),
+                    &identity,
+                    inode,
+                    record_id,
+                    expected,
+                )
+                .is_err()
+            );
+
+            assert!(
+                namespace
+                    .lock()
+                    .unwrap()
+                    .set_content(inode, Some(&expected), 1, 3)
+            );
+            dirty.lock().unwrap().insert(inode, Vec::new());
+            assert!(
+                validate_live_eviction_token(
+                    &mut namespace.lock().unwrap(),
+                    &dirty.lock().unwrap(),
+                    &identity,
+                    inode,
+                    record_id,
+                    expected,
+                )
+                .is_err()
+            );
+        }
+        // Phase `live_authorization_lease_blocks_mutation_after_validation`.
+        {
+            let namespace = Arc::new(Mutex::new(Namespace::new("storage-lease").unwrap()));
+            let dirty = Arc::new(Mutex::new(HashMap::new()));
+            let expected = Hash::from([9; 32]);
+            let inode = namespace
                 .lock()
                 .unwrap()
-                .set_content(inode, Some(&expected), 1, 3)
-        );
-        dirty.lock().unwrap().insert(inode, Vec::new());
-        assert!(
-            validate_live_eviction_token(
-                &mut namespace.lock().unwrap(),
-                &dirty.lock().unwrap(),
-                &identity,
-                inode,
-                record_id,
-                expected,
-            )
-            .is_err()
-        );
-    }
+                .create_file(ROOT_INO, "lease.txt", Some(&expected), 1, 1)
+                .unwrap();
+            let (identity, record_id) = {
+                let namespace = namespace.lock().unwrap();
+                (
+                    namespace.id_for_ino(inode).unwrap().to_owned(),
+                    namespace.record_id_for(inode).unwrap(),
+                )
+            };
 
-    #[test]
-    fn live_authorization_lease_blocks_mutation_after_validation() {
-        let namespace = Arc::new(Mutex::new(Namespace::new("storage-lease").unwrap()));
-        let dirty = Arc::new(Mutex::new(HashMap::new()));
-        let expected = Hash::from([9; 32]);
-        let inode = namespace
-            .lock()
-            .unwrap()
-            .create_file(ROOT_INO, "lease.txt", Some(&expected), 1, 1)
-            .unwrap();
-        let (identity, record_id) = {
-            let namespace = namespace.lock().unwrap();
-            (
-                namespace.id_for_ino(inode).unwrap().to_owned(),
-                namespace.record_id_for(inode).unwrap(),
-            )
-        };
-
-        // This is the exact lease held by `prepare_with_handoff` while it
-        // persists the request and performs backend tag release.
-        let dirty_lease = dirty.lock().unwrap();
-        let mut namespace_lease = namespace.lock().unwrap();
-        assert!(
-            validate_live_eviction_token(
-                &mut namespace_lease,
-                &dirty_lease,
-                &identity,
-                inode,
-                record_id,
-                expected,
-            )
-            .is_ok()
-        );
-        assert!(namespace.try_lock().is_err());
-        assert!(dirty.try_lock().is_err());
-        drop(namespace_lease);
-        drop(dirty_lease);
-        assert!(namespace.try_lock().is_ok());
-        assert!(dirty.try_lock().is_ok());
-    }
-
-    #[test]
-    fn snapshot_candidates_skip_rows_that_cannot_be_reclaimed() {
-        let record_id = collab_types::FileRecordId::new();
-        let logical = vec![LogicalFile {
-            identity: "candidate".into(),
-            inode: 7,
-            path: "/candidate".into(),
-            logical_bytes: 1,
-            hash: Some(Hash::from([1; 32])),
-            record_id,
-            mtime: 0,
-        }];
-        let mut dirty = HashSet::new();
-        dirty.insert(7);
-        let mut record = RecordAvailability::new(record_id, crate::availability::RecordKind::File);
-        record.current_version = Some(collab_types::FileVersionId::new());
-        assert!(snapshot_candidate_ids(&logical, &dirty, &[record], unix_now_ms()).is_empty());
+            // This is the exact lease held by `prepare_with_handoff` while it
+            // persists the request and performs backend tag release.
+            let dirty_lease = dirty.lock().unwrap();
+            let mut namespace_lease = namespace.lock().unwrap();
+            assert!(
+                validate_live_eviction_token(
+                    &mut namespace_lease,
+                    &dirty_lease,
+                    &identity,
+                    inode,
+                    record_id,
+                    expected,
+                )
+                .is_ok()
+            );
+            assert!(namespace.try_lock().is_err());
+            assert!(dirty.try_lock().is_err());
+            drop(namespace_lease);
+            drop(dirty_lease);
+            assert!(namespace.try_lock().is_ok());
+            assert!(dirty.try_lock().is_ok());
+        }
     }
 }

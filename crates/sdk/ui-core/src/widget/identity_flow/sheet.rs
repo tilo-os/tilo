@@ -33,13 +33,14 @@
 use std::cell::RefCell;
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::MouseScrollDelta;
 use winit::keyboard::{Key, NamedKey};
 
+use crate::paint::PaintCtx;
 use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::widget::checkbox::{Checkbox, CheckboxFace};
 use crate::widget::modal_frame::{
@@ -469,46 +470,22 @@ pub(super) fn paragraph_height(
 /// Paint `text` in `role`, its measured line box vertically centred in
 /// `rect`, wrapped to the rect's width when `wrap`. Measured and drawn with
 /// one style, so the centring is exact rather than `(h - 13.0) / 2.0`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one text painter receives the shared paint context plus what it paints"
-)]
 pub(super) fn paint_text(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
+    ctx: &mut PaintCtx<'_>,
     rect: Rect,
     text: &str,
     role: Role,
     align: Align,
     wrap: bool,
 ) {
-    paint_text_in(
-        scene,
-        transform,
-        text_renderer,
-        theme,
-        rect,
-        text,
-        role,
-        role.color(theme),
-        align,
-        wrap,
-    );
+    let color = role.color(ctx.theme);
+    paint_text_in(ctx, rect, text, role, color, align, wrap);
 }
 
 /// [`paint_text`] with an explicit ink, for a placeholder or a value on a
 /// fill the role's ink was not derived against.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one text painter receives the shared paint context plus what it paints"
-)]
 pub(super) fn paint_text_in(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
+    ctx: &mut PaintCtx<'_>,
     rect: Rect,
     text: &str,
     role: Role,
@@ -520,21 +497,14 @@ pub(super) fn paint_text_in(
         return;
     }
     let max_width = wrap.then_some(rect.width());
-    let (w, h) = measure(text_renderer, theme, role, text, max_width);
+    let (w, h) = measure(ctx.text, ctx.theme, role, text, max_width);
     let x = match align {
         Align::Start => rect.x0,
         Align::Center => rect.x0 + (rect.width() - w) / 2.0,
     };
     let y = rect.y0 + (rect.height() - h) / 2.0;
-    text_renderer.draw_text_weighted(
-        scene,
-        text,
-        role.size(theme, text_renderer),
-        color,
-        transform.pre_translate(Vec2::new(x, y)),
-        max_width.map(narrow),
-        role.weight(),
-    );
+    let style = TextStyle::new(role.size(ctx.theme, ctx.text)).with_weight(role.weight());
+    ctx.text(text, &style, color, Point::new(x, y), max_width.map(narrow));
 }
 
 /// Seat an embedded [`TextInput`] in the row the plan gave it. The field
@@ -614,10 +584,6 @@ pub(super) fn check_box_rect(row: Rect, theme: &Theme) -> Rect {
 /// A checkbox row: the shared checkbox face at the row's start, its label
 /// one gap to the right, both centred on the row. Returns the box rect; the
 /// caller keeps the whole row as the hit target, so the label toggles too.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one row painter receives the shared paint context plus the row's state"
-)]
 pub(super) fn paint_check_row(
     scene: &mut Scene,
     transform: Affine,
@@ -645,10 +611,7 @@ pub(super) fn paint_check_row(
         row.y1,
     );
     paint_text(
-        scene,
-        transform,
-        text_renderer,
-        theme,
+        &mut PaintCtx::new(scene, transform, text_renderer, theme),
         label_rect,
         label,
         Role::Value,
@@ -839,11 +802,8 @@ pub(super) fn paint_qr(
         paint_cell(scene, transform, theme, rect, false);
         let inset = f64::from(theme.tokens.spacing.s3);
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            rect.inset(inset),
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            rect.inset(-inset),
             &format!("QR error: {err}"),
             Role::Error,
             Align::Center,
@@ -918,338 +878,351 @@ mod tests {
     }
 
     #[test]
-    fn body_width_is_what_the_modal_layout_hands_back() {
-        let mut tr = TextRenderer::new();
-        for (name, theme) in themes() {
+    fn sheet_card_centres_clamps_and_measures_its_body() {
+        fn body_width_is_what_the_modal_layout_hands_back() {
+            let mut tr = TextRenderer::new();
+            for (name, theme) in themes() {
+                let actions = [ModalAction::primary("Continue")];
+                let spec = SheetSpec {
+                    title: "Title",
+                    max_width: FORM_SHEET_WIDTH,
+                    actions: &actions,
+                };
+                let predicted = Sheet::body_width(VIEWPORT, FORM_SHEET_WIDTH, &theme);
+                let sheet = Sheet::layout(VIEWPORT, &spec, 120.0, &mut tr, &theme);
+                assert!(
+                    (sheet.body().width() - predicted).abs() < 0.01,
+                    "{name}: predicted body width {predicted}, layout gave {}",
+                    sheet.body().width()
+                );
+            }
+        }
+
+        fn card_centres_on_the_viewport_and_body_carries_the_measured_height() {
+            let mut tr = TextRenderer::new();
+            for (name, theme) in themes() {
+                let actions = [
+                    ModalAction::secondary("Back"),
+                    ModalAction::primary("Continue"),
+                ];
+                let spec = SheetSpec {
+                    title: "Title",
+                    max_width: FORM_SHEET_WIDTH,
+                    actions: &actions,
+                };
+                let body_h = 180.0;
+                let sheet = Sheet::layout(VIEWPORT, &spec, body_h, &mut tr, &theme);
+                let card = sheet.layout.card;
+                assert!(
+                    (card.center().x - VIEWPORT.center().x).abs() < 0.5
+                        && (card.center().y - VIEWPORT.center().y).abs() < 0.5,
+                    "{name}: card {card:?} is not centred on {VIEWPORT:?}"
+                );
+                assert!(
+                    (sheet.body().height() - body_h).abs() < 0.5,
+                    "{name}: body {} tall for a {body_h} measurement",
+                    sheet.body().height()
+                );
+                assert!(
+                    card.width()
+                        <= MODAL_MAX_WIDTH.max(FORM_SHEET_WIDTH) * f64::from(theme.text_scale)
+                            + 0.5,
+                    "{name}: card wider than the sheet maximum"
+                );
+            }
+        }
+
+        fn a_small_viewport_clamps_the_card_and_reports_overflow() {
+            let mut tr = TextRenderer::new();
+            let theme = Theme::dark();
+            let actions = [ModalAction::primary("Continue")];
+            let spec = SheetSpec {
+                title: "Title",
+                max_width: GRID_SHEET_WIDTH,
+                actions: &actions,
+            };
+            let small = Rect::new(0.0, 0.0, 480.0, 360.0);
+            let sheet = Sheet::layout(small, &spec, 900.0, &mut tr, &theme);
+            assert!(sheet.layout.body_overflows, "900 px of rows cannot fit 360");
+            assert!(
+                sheet.layout.card.x0 >= small.x0 && sheet.layout.card.x1 <= small.x1,
+                "the card stays inside a narrow viewport"
+            );
+            assert!(
+                sheet.action(0).y1 <= sheet.layout.card.y1,
+                "the action row stays reachable inside the card"
+            );
+        }
+
+        /// A body taller than the card scrolls: the offset clamps to what
+        /// overflows, a wheel line is a control row, PageDown is a body, and a
+        /// row scrolled under the action row has no pointer target.
+        fn body_scroll_clamps_and_hides_rows_outside_the_body() {
+            let body = Rect::new(100.0, 200.0, 600.0, 400.0);
+            let mut scroll = BodyScroll::default();
+            let placed = scroll.place(body, 500.0, 34.0);
+            assert_eq!(scroll.max(), 300.0);
+            assert_eq!(
+                placed.y0, body.y0,
+                "unscrolled rows start at the body's top"
+            );
+            assert_eq!(placed.height(), 500.0);
+
+            assert!(scroll.wheel(&MouseScrollDelta::LineDelta(0.0, -2.0)));
+            assert_eq!(scroll.offset(), 68.0, "two lines down is two control rows");
+            assert!(!scroll.wheel(&MouseScrollDelta::LineDelta(0.0, 0.0)));
+            assert!(scroll.key(&Key::Named(NamedKey::PageDown), body.height()));
+            assert_eq!(scroll.offset(), 268.0);
+            assert!(scroll.key(&Key::Named(NamedKey::PageDown), body.height()));
+            assert_eq!(scroll.offset(), 300.0, "clamped at the overflow");
+            assert!(!scroll.key(&Key::Named(NamedKey::PageDown), body.height()));
+            let placed = scroll.place(body, 500.0, 34.0);
+            assert_eq!(placed.y0, body.y0 - 300.0);
+
+            let below = Rect::new(100.0, 420.0, 600.0, 454.0);
+            assert_eq!(BodyScroll::visible(body, below), Rect::ZERO);
+            let straddling = Rect::new(100.0, 380.0, 600.0, 414.0);
+            assert_eq!(BodyScroll::visible(body, straddling).y1, body.y1);
+
+            // A body that fits again snaps back and refuses to scroll.
+            let placed = scroll.place(body, 150.0, 34.0);
+            assert_eq!(scroll.offset(), 0.0);
+            assert_eq!(placed.y0, body.y0);
+            assert!(!scroll.wheel(&MouseScrollDelta::LineDelta(0.0, -1.0)));
+        }
+
+        /// `resolve` returns the same plan from the layout renderer and from a
+        /// fresh frame renderer, so what `apply_layout` hit-tests is what
+        /// `draw` paints.
+        fn resolve_agrees_between_the_layout_renderer_and_a_frame_renderer() {
+            let theme = Theme::dark();
             let actions = [ModalAction::primary("Continue")];
             let spec = SheetSpec {
                 title: "Title",
                 max_width: FORM_SHEET_WIDTH,
                 actions: &actions,
             };
-            let predicted = Sheet::body_width(VIEWPORT, FORM_SHEET_WIDTH, &theme);
-            let sheet = Sheet::layout(VIEWPORT, &spec, 120.0, &mut tr, &theme);
-            assert!(
-                (sheet.body().width() - predicted).abs() < 0.01,
-                "{name}: predicted body width {predicted}, layout gave {}",
-                sheet.body().width()
-            );
-        }
-    }
-
-    #[test]
-    fn card_centres_on_the_viewport_and_body_carries_the_measured_height() {
-        let mut tr = TextRenderer::new();
-        for (name, theme) in themes() {
-            let actions = [
-                ModalAction::secondary("Back"),
-                ModalAction::primary("Continue"),
-            ];
-            let spec = SheetSpec {
-                title: "Title",
-                max_width: FORM_SHEET_WIDTH,
-                actions: &actions,
+            let plan = |mut rows: Rows, control_h: f64, tr: &mut TextRenderer, theme: &Theme| {
+                let a = rows.row(paragraph_height(
+                    tr,
+                    theme,
+                    Role::Body,
+                    "A sentence long enough to wrap inside a form sheet body once or twice.",
+                    rows.width(),
+                ));
+                rows.gap(theme.tokens.spacing.s6);
+                let b = rows.row(control_h);
+                ((a, b), rows.bottom())
             };
-            let body_h = 180.0;
-            let sheet = Sheet::layout(VIEWPORT, &spec, body_h, &mut tr, &theme);
-            let card = sheet.layout.card;
-            assert!(
-                (card.center().x - VIEWPORT.center().x).abs() < 0.5
-                    && (card.center().y - VIEWPORT.center().y).abs() < 0.5,
-                "{name}: card {card:?} is not centred on {VIEWPORT:?}"
-            );
-            assert!(
-                (sheet.body().height() - body_h).abs() < 0.5,
-                "{name}: body {} tall for a {body_h} measurement",
-                sheet.body().height()
-            );
-            assert!(
-                card.width()
-                    <= MODAL_MAX_WIDTH.max(FORM_SHEET_WIDTH) * f64::from(theme.text_scale) + 0.5,
-                "{name}: card wider than the sheet maximum"
+            let mut scroll_a = BodyScroll::default();
+            let from_layout = with_layout_renderer(&theme, |tr| {
+                resolve(VIEWPORT, &spec, &mut scroll_a, tr, &theme, plan)
+            });
+            let mut frame = TextRenderer::new();
+            let mut scroll_b = BodyScroll::default();
+            let from_frame = resolve(VIEWPORT, &spec, &mut scroll_b, &mut frame, &theme, plan);
+            assert_eq!(from_layout.plan, from_frame.plan);
+            assert_eq!(from_layout.sheet.layout.card, from_frame.sheet.layout.card);
+            assert_eq!(
+                from_layout.plan.1.height(),
+                from_layout.sheet.action(0).height()
             );
         }
+
+        body_width_is_what_the_modal_layout_hands_back();
+        card_centres_on_the_viewport_and_body_carries_the_measured_height();
+        a_small_viewport_clamps_the_card_and_reports_overflow();
+        body_scroll_clamps_and_hides_rows_outside_the_body();
+        resolve_agrees_between_the_layout_renderer_and_a_frame_renderer();
     }
 
     #[test]
-    fn a_small_viewport_clamps_the_card_and_reports_overflow() {
-        let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
-        let actions = [ModalAction::primary("Continue")];
-        let spec = SheetSpec {
-            title: "Title",
-            max_width: GRID_SHEET_WIDTH,
-            actions: &actions,
-        };
-        let small = Rect::new(0.0, 0.0, 480.0, 360.0);
-        let sheet = Sheet::layout(small, &spec, 900.0, &mut tr, &theme);
-        assert!(sheet.layout.body_overflows, "900 px of rows cannot fit 360");
-        assert!(
-            sheet.layout.card.x0 >= small.x0 && sheet.layout.card.x1 <= small.x1,
-            "the card stays inside a narrow viewport"
-        );
-        assert!(
-            sheet.action(0).y1 <= sheet.layout.card.y1,
-            "the action row stays reachable inside the card"
-        );
-    }
-
-    #[test]
-    fn rows_stack_without_overlap_and_measure_their_own_height() {
-        let mut rows = Rows::measuring(400.0);
-        let a = rows.row(30.0);
-        rows.gap(8.0);
-        let b = rows.row(44.0);
-        assert_eq!(a.y1, 30.0);
-        assert_eq!(b.y0, 38.0);
-        assert_eq!(b.y1, 82.0);
-        assert_eq!(rows.bottom(), 82.0);
-        assert_eq!(rows.width(), 400.0);
-        let placed = Rows::new(Rect::new(100.0, 200.0, 500.0, 282.0));
-        let mut placed_rows = placed;
-        let a2 = placed_rows.row(30.0);
-        assert_eq!((a2.x0, a2.y0, a2.x1), (100.0, 200.0, 500.0));
-    }
-
-    #[test]
-    fn control_height_is_the_action_rows_button_height() {
-        let mut tr = TextRenderer::new();
-        for (name, theme) in themes() {
-            let actions = [ModalAction::primary("Continue")];
-            let spec = SheetSpec {
-                title: "Title",
-                max_width: FORM_SHEET_WIDTH,
-                actions: &actions,
-            };
-            let sheet = Sheet::layout(VIEWPORT, &spec, 60.0, &mut tr, &theme);
-            assert!(
-                (sheet.control_height(&theme) - sheet.action(0).height()).abs() < 0.01,
-                "{name}: a body control must be one action button tall"
-            );
+    fn sheet_rows_cells_and_segments_tile_without_overlap() {
+        fn rows_stack_without_overlap_and_measure_their_own_height() {
+            let mut rows = Rows::measuring(400.0);
+            let a = rows.row(30.0);
+            rows.gap(8.0);
+            let b = rows.row(44.0);
+            assert_eq!(a.y1, 30.0);
+            assert_eq!(b.y0, 38.0);
+            assert_eq!(b.y1, 82.0);
+            assert_eq!(rows.bottom(), 82.0);
+            assert_eq!(rows.width(), 400.0);
+            let placed = Rows::new(Rect::new(100.0, 200.0, 500.0, 282.0));
+            let mut placed_rows = placed;
+            let a2 = placed_rows.row(30.0);
+            assert_eq!((a2.x0, a2.y0, a2.x1), (100.0, 200.0, 500.0));
         }
+
+        fn control_height_is_the_action_rows_button_height() {
+            let mut tr = TextRenderer::new();
+            for (name, theme) in themes() {
+                let actions = [ModalAction::primary("Continue")];
+                let spec = SheetSpec {
+                    title: "Title",
+                    max_width: FORM_SHEET_WIDTH,
+                    actions: &actions,
+                };
+                let sheet = Sheet::layout(VIEWPORT, &spec, 60.0, &mut tr, &theme);
+                assert!(
+                    (sheet.control_height(&theme) - sheet.action(0).height()).abs() < 0.01,
+                    "{name}: a body control must be one action button tall"
+                );
+            }
+        }
+
+        fn wrap_chars_breaks_an_unbreakable_token_into_lines_that_fit() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let token: String = "TILOINVITEBASE32".repeat(12);
+            let width = 240.0;
+            let lines = wrap_chars(&mut tr, &theme, Role::Value, &token, width);
+            assert!(
+                lines.len() > 1,
+                "a 180-character token needs more than one line"
+            );
+            for line in &lines {
+                let (w, _) = measure(&mut tr, &theme, Role::Value, line, None);
+                assert!(w <= width + 0.01, "line {line:?} is {w} wide for {width}");
+            }
+            assert_eq!(lines.concat(), token, "every character is kept, in order");
+        }
+
+        fn word_grid_cells_tile_four_columns_and_never_touch() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let row_h = 34.0;
+            let area = Rect::new(100.0, 300.0, 740.0, 300.0 + WordGrid::height(24, row_h));
+            assert_eq!(WordGrid::rows_for(24), 6);
+            assert_eq!(area.height(), 6.0 * row_h);
+            let grid = WordGrid::new(area, row_h, &mut tr, &theme);
+            let (o0, w0) = grid.cell(0, &theme);
+            let (o1, w1) = grid.cell(1, &theme);
+            let (o4, _) = grid.cell(4, &theme);
+            assert_eq!(o0.x0, area.x0);
+            assert_eq!(o0.y0, area.y0);
+            assert_eq!(
+                w0.x0, o0.x1,
+                "the word starts where its ordinal column ends"
+            );
+            assert!(w0.x1 < o1.x0, "a word stops short of the next column");
+            assert!((o1.x0 - o0.x0 - area.width() / 4.0).abs() < 1e-9);
+            assert!(
+                (o4.y0 - o0.y0 - row_h).abs() < 1e-9,
+                "row 2 is one row down"
+            );
+            assert_eq!(w1.height(), row_h);
+        }
+
+        fn segments_tile_the_row_exactly() {
+            let row = Rect::new(10.0, 20.0, 410.0, 54.0);
+            let segs = segment_rects(row, 4);
+            assert_eq!(segs.len(), 4);
+            assert_eq!(segs[0].x0, row.x0);
+            assert!((segs[3].x1 - row.x1).abs() < 1e-9);
+            for pair in segs.windows(2) {
+                assert!((pair[0].x1 - pair[1].x0).abs() < 1e-9, "segments abut");
+                assert!((pair[0].width() - pair[1].width()).abs() < 1e-9);
+            }
+            assert!(segment_rects(row, 0).is_empty());
+        }
+
+        rows_stack_without_overlap_and_measure_their_own_height();
+        control_height_is_the_action_rows_button_height();
+        wrap_chars_breaks_an_unbreakable_token_into_lines_that_fit();
+        word_grid_cells_tile_four_columns_and_never_touch();
+        segments_tile_the_row_exactly();
     }
 
-    /// A body taller than the card scrolls: the offset clamps to what
-    /// overflows, a wheel line is a control row, PageDown is a body, and a
-    /// row scrolled under the action row has no pointer target.
     #[test]
-    fn body_scroll_clamps_and_hides_rows_outside_the_body() {
-        let body = Rect::new(100.0, 200.0, 600.0, 400.0);
-        let mut scroll = BodyScroll::default();
-        let placed = scroll.place(body, 500.0, 34.0);
-        assert_eq!(scroll.max(), 300.0);
-        assert_eq!(
-            placed.y0, body.y0,
-            "unscrolled rows start at the body's top"
-        );
-        assert_eq!(placed.height(), 500.0);
+    fn sheet_text_roles_and_cells_scale_with_text() {
+        /// An embedded field takes exactly the row the plan gave it and speaks
+        /// the sheet's `Value` role, so it lines up with the grid words beside
+        /// it; a code cell's digit widget is centred on its cell and never
+        /// wider than it.
+        fn embedded_fields_take_their_row_and_code_cells_centre_their_digit() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let mut input = TextInput::local();
+            let row = Rect::new(100.0, 200.0, 620.0, 234.0);
+            place_field(&mut input, row, &tr, &theme);
+            assert_eq!(Widget::get_rect(&input), row);
+            assert!(
+                !input.is_plain(),
+                "a field keeps the shared widget's chrome"
+            );
 
-        assert!(scroll.wheel(&MouseScrollDelta::LineDelta(0.0, -2.0)));
-        assert_eq!(scroll.offset(), 68.0, "two lines down is two control rows");
-        assert!(!scroll.wheel(&MouseScrollDelta::LineDelta(0.0, 0.0)));
-        assert!(scroll.key(&Key::Named(NamedKey::PageDown), body.height()));
-        assert_eq!(scroll.offset(), 268.0);
-        assert!(scroll.key(&Key::Named(NamedKey::PageDown), body.height()));
-        assert_eq!(scroll.offset(), 300.0, "clamped at the overflow");
-        assert!(!scroll.key(&Key::Named(NamedKey::PageDown), body.height()));
-        let placed = scroll.place(body, 500.0, 34.0);
-        assert_eq!(placed.y0, body.y0 - 300.0);
+            let mut digit = TextInput::local();
+            let side = code_cell_side(&mut tr, &theme);
+            assert!(
+                (side - f64::from(theme.tokens.spacing.s12)).abs() < 1e-9,
+                "at 1× the cell is s12"
+            );
+            let cell = Rect::new(100.0, 300.0, 100.0 + side, 300.0 + side);
+            place_code_cell(&mut digit, cell, &mut tr, &theme);
+            let r = Widget::get_rect(&digit);
+            assert!(digit.is_plain(), "the cell frame is painted by paint_cell");
+            assert!(
+                (r.center().x - cell.center().x).abs() < 1e-9,
+                "digit centred on its cell"
+            );
+            assert!(
+                r.x0 > cell.x0 && r.x1 < cell.x1,
+                "digit widget stays inside the cell"
+            );
+            assert_eq!((r.y0, r.y1), (cell.y0, cell.y1));
+        }
 
-        let below = Rect::new(100.0, 420.0, 600.0, 454.0);
-        assert_eq!(BodyScroll::visible(body, below), Rect::ZERO);
-        let straddling = Rect::new(100.0, 380.0, 600.0, 414.0);
-        assert_eq!(BodyScroll::visible(body, straddling).y1, body.y1);
+        /// At 2× text the `Code` line outgrows an `s12` square, so the cell
+        /// grows with the glyph instead of the glyph filling the frame.
+        fn code_cell_grows_with_the_text_scale() {
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(2.0);
+            let side = code_cell_side(&mut tr, &theme);
+            let glyph = line_height(&mut tr, &theme, Role::Code);
+            assert!(side > f64::from(theme.tokens.spacing.s12));
+            assert!(side >= glyph + 2.0 * f64::from(theme.tokens.spacing.s2));
+        }
 
-        // A body that fits again snaps back and refuses to scroll.
-        let placed = scroll.place(body, 150.0, 34.0);
-        assert_eq!(scroll.offset(), 0.0);
-        assert_eq!(placed.y0, body.y0);
-        assert!(!scroll.wheel(&MouseScrollDelta::LineDelta(0.0, -1.0)));
-    }
-
-    /// `resolve` returns the same plan from the layout renderer and from a
-    /// fresh frame renderer, so what `apply_layout` hit-tests is what
-    /// `draw` paints.
-    #[test]
-    fn resolve_agrees_between_the_layout_renderer_and_a_frame_renderer() {
-        let theme = Theme::dark();
-        let actions = [ModalAction::primary("Continue")];
-        let spec = SheetSpec {
-            title: "Title",
-            max_width: FORM_SHEET_WIDTH,
-            actions: &actions,
-        };
-        let plan = |mut rows: Rows, control_h: f64, tr: &mut TextRenderer, theme: &Theme| {
-            let a = rows.row(paragraph_height(
-                tr,
-                theme,
+        fn roles_divide_the_text_scale_back_out_for_the_renderer() {
+            let base = Theme::dark();
+            let base_tr = TextRenderer::new();
+            let scaled = Theme::dark().with_text_scale(2.0);
+            let mut scaled_tr = TextRenderer::new();
+            scaled_tr.set_text_scale(2.0);
+            for role in [
                 Role::Body,
-                "A sentence long enough to wrap inside a form sheet body once or twice.",
-                rows.width(),
-            ));
-            rows.gap(theme.tokens.spacing.s6);
-            let b = rows.row(control_h);
-            ((a, b), rows.bottom())
-        };
-        let mut scroll_a = BodyScroll::default();
-        let from_layout = with_layout_renderer(&theme, |tr| {
-            resolve(VIEWPORT, &spec, &mut scroll_a, tr, &theme, plan)
-        });
-        let mut frame = TextRenderer::new();
-        let mut scroll_b = BodyScroll::default();
-        let from_frame = resolve(VIEWPORT, &spec, &mut scroll_b, &mut frame, &theme, plan);
-        assert_eq!(from_layout.plan, from_frame.plan);
-        assert_eq!(from_layout.sheet.layout.card, from_frame.sheet.layout.card);
-        assert_eq!(
-            from_layout.plan.1.height(),
-            from_layout.sheet.action(0).height()
-        );
-    }
-
-    #[test]
-    fn wrap_chars_breaks_an_unbreakable_token_into_lines_that_fit() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let token: String = "TILOINVITEBASE32".repeat(12);
-        let width = 240.0;
-        let lines = wrap_chars(&mut tr, &theme, Role::Value, &token, width);
-        assert!(
-            lines.len() > 1,
-            "a 180-character token needs more than one line"
-        );
-        for line in &lines {
-            let (w, _) = measure(&mut tr, &theme, Role::Value, line, None);
-            assert!(w <= width + 0.01, "line {line:?} is {w} wide for {width}");
+                Role::Label,
+                Role::Value,
+                Role::Caption,
+                Role::Error,
+                Role::Code,
+            ] {
+                assert!(
+                    (role.size(&base, &base_tr) - role.size(&scaled, &scaled_tr)).abs() < 0.01,
+                    "{role:?}: the renderer applies the scale; the role must not apply it twice"
+                );
+            }
+            assert!(Role::Code.size(&base, &base_tr) > Role::Value.size(&base, &base_tr));
+            assert!(Role::Value.size(&base, &base_tr) > Role::Caption.size(&base, &base_tr));
         }
-        assert_eq!(lines.concat(), token, "every character is kept, in order");
-    }
 
-    #[test]
-    fn word_grid_cells_tile_four_columns_and_never_touch() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let row_h = 34.0;
-        let area = Rect::new(100.0, 300.0, 740.0, 300.0 + WordGrid::height(24, row_h));
-        assert_eq!(WordGrid::rows_for(24), 6);
-        assert_eq!(area.height(), 6.0 * row_h);
-        let grid = WordGrid::new(area, row_h, &mut tr, &theme);
-        let (o0, w0) = grid.cell(0, &theme);
-        let (o1, w1) = grid.cell(1, &theme);
-        let (o4, _) = grid.cell(4, &theme);
-        assert_eq!(o0.x0, area.x0);
-        assert_eq!(o0.y0, area.y0);
-        assert_eq!(
-            w0.x0, o0.x1,
-            "the word starts where its ordinal column ends"
-        );
-        assert!(w0.x1 < o1.x0, "a word stops short of the next column");
-        assert!((o1.x0 - o0.x0 - area.width() / 4.0).abs() < 1e-9);
-        assert!(
-            (o4.y0 - o0.y0 - row_h).abs() < 1e-9,
-            "row 2 is one row down"
-        );
-        assert_eq!(w1.height(), row_h);
-    }
-
-    #[test]
-    fn segments_tile_the_row_exactly() {
-        let row = Rect::new(10.0, 20.0, 410.0, 54.0);
-        let segs = segment_rects(row, 4);
-        assert_eq!(segs.len(), 4);
-        assert_eq!(segs[0].x0, row.x0);
-        assert!((segs[3].x1 - row.x1).abs() < 1e-9);
-        for pair in segs.windows(2) {
-            assert!((pair[0].x1 - pair[1].x0).abs() < 1e-9, "segments abut");
-            assert!((pair[0].width() - pair[1].width()).abs() < 1e-9);
-        }
-        assert!(segment_rects(row, 0).is_empty());
-    }
-
-    /// An embedded field takes exactly the row the plan gave it and speaks
-    /// the sheet's `Value` role, so it lines up with the grid words beside
-    /// it; a code cell's digit widget is centred on its cell and never
-    /// wider than it.
-    #[test]
-    fn embedded_fields_take_their_row_and_code_cells_centre_their_digit() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut input = TextInput::local();
-        let row = Rect::new(100.0, 200.0, 620.0, 234.0);
-        place_field(&mut input, row, &tr, &theme);
-        assert_eq!(Widget::get_rect(&input), row);
-        assert!(
-            !input.is_plain(),
-            "a field keeps the shared widget's chrome"
-        );
-
-        let mut digit = TextInput::local();
-        let side = code_cell_side(&mut tr, &theme);
-        assert!(
-            (side - f64::from(theme.tokens.spacing.s12)).abs() < 1e-9,
-            "at 1× the cell is s12"
-        );
-        let cell = Rect::new(100.0, 300.0, 100.0 + side, 300.0 + side);
-        place_code_cell(&mut digit, cell, &mut tr, &theme);
-        let r = Widget::get_rect(&digit);
-        assert!(digit.is_plain(), "the cell frame is painted by paint_cell");
-        assert!(
-            (r.center().x - cell.center().x).abs() < 1e-9,
-            "digit centred on its cell"
-        );
-        assert!(
-            r.x0 > cell.x0 && r.x1 < cell.x1,
-            "digit widget stays inside the cell"
-        );
-        assert_eq!((r.y0, r.y1), (cell.y0, cell.y1));
-    }
-
-    /// At 2× text the `Code` line outgrows an `s12` square, so the cell
-    /// grows with the glyph instead of the glyph filling the frame.
-    #[test]
-    fn code_cell_grows_with_the_text_scale() {
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let side = code_cell_side(&mut tr, &theme);
-        let glyph = line_height(&mut tr, &theme, Role::Code);
-        assert!(side > f64::from(theme.tokens.spacing.s12));
-        assert!(side >= glyph + 2.0 * f64::from(theme.tokens.spacing.s2));
-    }
-
-    #[test]
-    fn roles_divide_the_text_scale_back_out_for_the_renderer() {
-        let base = Theme::dark();
-        let base_tr = TextRenderer::new();
-        let scaled = Theme::dark().with_text_scale(2.0);
-        let mut scaled_tr = TextRenderer::new();
-        scaled_tr.set_text_scale(2.0);
-        for role in [
-            Role::Body,
-            Role::Label,
-            Role::Value,
-            Role::Caption,
-            Role::Error,
-            Role::Code,
-        ] {
+        fn line_height_grows_with_the_text_scale() {
+            let mut tr = TextRenderer::new();
+            let one = line_height(&mut tr, &Theme::dark(), Role::Value);
+            let mut tr2 = TextRenderer::new();
+            tr2.set_text_scale(1.5);
+            let big = line_height(&mut tr2, &Theme::dark().with_text_scale(1.5), Role::Value);
             assert!(
-                (role.size(&base, &base_tr) - role.size(&scaled, &scaled_tr)).abs() < 0.01,
-                "{role:?}: the renderer applies the scale; the role must not apply it twice"
+                big > one,
+                "a 1.5× renderer must measure a taller line ({one} → {big})"
             );
         }
-        assert!(Role::Code.size(&base, &base_tr) > Role::Value.size(&base, &base_tr));
-        assert!(Role::Value.size(&base, &base_tr) > Role::Caption.size(&base, &base_tr));
-    }
 
-    #[test]
-    fn line_height_grows_with_the_text_scale() {
-        let mut tr = TextRenderer::new();
-        let one = line_height(&mut tr, &Theme::dark(), Role::Value);
-        let mut tr2 = TextRenderer::new();
-        tr2.set_text_scale(1.5);
-        let big = line_height(&mut tr2, &Theme::dark().with_text_scale(1.5), Role::Value);
-        assert!(
-            big > one,
-            "a 1.5× renderer must measure a taller line ({one} → {big})"
-        );
+        embedded_fields_take_their_row_and_code_cells_centre_their_digit();
+        code_cell_grows_with_the_text_scale();
+        roles_divide_the_text_scale_back_out_for_the_renderer();
+        line_height_grows_with_the_text_scale();
     }
 }

@@ -45,7 +45,10 @@ RestrictSUIDSGID=yes
 RemoveIPC=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
-ReadWritePaths=/boot
+# /boot stays read-only: this unit stages its changes in its state directory
+# and tilo-esp-write@boot-entries.service applies them.
+StateDirectory=tilo/esp-plan/boot-entries
+StateDirectoryMode=0700
 ReadOnlyPaths=/var/lib/tilo/secureboot
 RestrictAddressFamilies=AF_UNIX
 SystemCallArchitectures=native

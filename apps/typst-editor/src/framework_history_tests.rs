@@ -32,6 +32,128 @@ fn test_root() -> Box<dyn ui::widget::Widget> {
 #[test]
 #[allow(
     clippy::too_many_lines,
+    reason = "merged scenario: each former test is a labelled case block with its own fixture"
+)]
+fn library_restore_and_compilation_history_are_exact() {
+    // Case `absent_source_refuses_restore_but_empty_source_is_exact`.
+    {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "view_only", "current").unwrap();
+        let absent = doc.get_heads()[0];
+        let source = doc
+            .put_object(ROOT, "source", automerge::ObjType::Text)
+            .unwrap();
+        let empty = doc.get_heads()[0];
+        doc.splice_text(&source, 0, 0, "Current source").unwrap();
+        let heads = doc.get_heads();
+        let p = preview(&doc, absent, PreviewSide::After);
+        assert!(p.accessibility().description.contains("No source recorded"));
+        assert!(
+            prepare_content_restore(&doc, &crate::framework_history::SCHEMA, &heads, &[absent])
+                .is_err()
+        );
+        assert_eq!(doc.base_heads(), heads);
+        assert_eq!(doc.pending_ops(), 0);
+        assert_eq!(doc.text(&source).unwrap(), "Current source");
+        let mut driver = managed_driver(doc.clone(), absent);
+        let undo_before = format!("{:?}", driver.state_mut().undo_status(None));
+        let live_before = driver.state_mut().doc.base_heads();
+        driver.click_named("history-restore").unwrap();
+        driver.key("Enter");
+        assert_eq!(driver.state_mut().doc.base_heads(), live_before);
+        assert_eq!(driver.state_mut().doc.pending_ops(), 0);
+        assert_eq!(
+            format!("{:?}", driver.state_mut().undo_status(None)),
+            undo_before
+        );
+        assert_eq!(
+            driver.state_mut().doc.text(&source).unwrap(),
+            "Current source"
+        );
+        driver.key("Escape");
+        select_version(&mut driver, empty);
+        driver.click_named("history-restore").unwrap();
+        driver.key("Enter");
+        let restored = driver
+            .state_mut()
+            .doc
+            .get(ROOT, "source")
+            .unwrap()
+            .unwrap()
+            .1;
+        assert_eq!(driver.state_mut().doc.text(&restored).unwrap(), "");
+        assert!(driver.state_mut().can_undo_as(None));
+
+        select_version(&mut driver, heads[0]);
+        driver.click_named("history-restore").unwrap();
+        driver.key("Enter");
+        let restored = driver
+            .state_mut()
+            .doc
+            .get(ROOT, "source")
+            .unwrap()
+            .unwrap()
+            .1;
+        assert_eq!(
+            driver.state_mut().doc.text(&restored).unwrap(),
+            "Current source"
+        );
+        let plan =
+            prepare_content_restore(&doc, &crate::framework_history::SCHEMA, &heads, &[empty])
+                .unwrap();
+        apply_prepared_content_restore(&mut doc, &plan).unwrap();
+        doc.get_heads();
+        let mut root = test_root();
+        root.sync(&mut doc, &ROOT);
+        let text = doc.get(ROOT, "source").unwrap().unwrap().1;
+        assert_eq!(doc.text(&text).unwrap(), "");
+    }
+    // Case `invalid_source_has_diagnostics_and_multipage_compilation_is_navigable`.
+    {
+        for text in [
+            "= Invalid source\n#let x = (",
+            "= Page one\n#pagebreak()\n= Page two",
+        ] {
+            let mut doc = AutoCommit::new();
+            let obj = doc
+                .put_object(ROOT, "source", automerge::ObjType::Text)
+                .unwrap();
+            doc.splice_text(&obj, 0, 0, text).unwrap();
+            let selected = doc.get_heads()[0];
+            let mut p = preview(&doc, selected, PreviewSide::After);
+            assert!(p.accessibility().description.contains(text));
+            let pages = p.accessibility().pages;
+            if text.contains("Invalid") {
+                assert!(pages.iter().any(|(id, _)| id == "diagnostics"));
+                assert!(!pages.iter().any(|(id, _)| id.starts_with("page:")));
+                assert!(p.navigate(PreviewNavigation::SelectPage("diagnostics".into())));
+                assert!(!p.accessibility().description.is_empty());
+            } else {
+                assert!(p.navigate(PreviewNavigation::SelectPage("page:1".into())));
+                assert!(p.accessibility().description.contains("Page two"));
+            }
+            let mut tr = ui::TextRenderer::new();
+            for width in [360., 1000.] {
+                p.layout(
+                    vello::kurbo::Rect::new(0., 0., width, 300.),
+                    &mut tr,
+                    &ui::Theme::dark(),
+                )
+                .unwrap();
+                p.draw(
+                    &mut vello::Scene::new(),
+                    vello::kurbo::Affine::IDENTITY,
+                    &mut tr,
+                    &ui::Theme::dark(),
+                );
+            }
+        }
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
     reason = "one isolated write/read subprocess custody test"
 )]
 fn production_library_persisted_restore_and_fresh_reopen() {
@@ -52,7 +174,8 @@ fn production_library_persisted_restore_and_fresh_reopen() {
                 before,
                 "production startup must retain saved source"
             );
-            let def = root.document_history_definition().unwrap();
+            let def =
+                ui::history_mode::capability::document_history_definition(root.as_ref()).unwrap();
             let reg = HistoryRegistration::new(
                 def,
                 vec![HistorySourceRegistration::HostDocument {
@@ -167,125 +290,16 @@ fn production_library_persisted_restore_and_fresh_reopen() {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
+        // libtest exits 0 when `--exact` selects nothing; require the child ran.
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("test result: ok. 1 passed"),
+            "the child ran no test: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
     }
     assert_eq!(
         std::fs::read_to_string(dir.join("unrelated.typ")).unwrap(),
         "= External library must not replace source"
     );
     std::fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn absent_source_refuses_restore_but_empty_source_is_exact() {
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "view_only", "current").unwrap();
-    let absent = doc.get_heads()[0];
-    let source = doc
-        .put_object(ROOT, "source", automerge::ObjType::Text)
-        .unwrap();
-    let empty = doc.get_heads()[0];
-    doc.splice_text(&source, 0, 0, "Current source").unwrap();
-    let heads = doc.get_heads();
-    let p = preview(&doc, absent, PreviewSide::After);
-    assert!(p.accessibility().description.contains("No source recorded"));
-    assert!(
-        prepare_content_restore(&doc, &crate::framework_history::SCHEMA, &heads, &[absent])
-            .is_err()
-    );
-    assert_eq!(doc.base_heads(), heads);
-    assert_eq!(doc.pending_ops(), 0);
-    assert_eq!(doc.text(&source).unwrap(), "Current source");
-    let mut driver = managed_driver(doc.clone(), absent);
-    let undo_before = format!("{:?}", driver.state_mut().undo_status(None));
-    let live_before = driver.state_mut().doc.base_heads();
-    driver.click_named("history-restore").unwrap();
-    driver.key("Enter");
-    assert_eq!(driver.state_mut().doc.base_heads(), live_before);
-    assert_eq!(driver.state_mut().doc.pending_ops(), 0);
-    assert_eq!(
-        format!("{:?}", driver.state_mut().undo_status(None)),
-        undo_before
-    );
-    assert_eq!(
-        driver.state_mut().doc.text(&source).unwrap(),
-        "Current source"
-    );
-    driver.key("Escape");
-    select_version(&mut driver, empty);
-    driver.click_named("history-restore").unwrap();
-    driver.key("Enter");
-    let restored = driver
-        .state_mut()
-        .doc
-        .get(ROOT, "source")
-        .unwrap()
-        .unwrap()
-        .1;
-    assert_eq!(driver.state_mut().doc.text(&restored).unwrap(), "");
-    assert!(driver.state_mut().can_undo_as(None));
-
-    select_version(&mut driver, heads[0]);
-    driver.click_named("history-restore").unwrap();
-    driver.key("Enter");
-    let restored = driver
-        .state_mut()
-        .doc
-        .get(ROOT, "source")
-        .unwrap()
-        .unwrap()
-        .1;
-    assert_eq!(
-        driver.state_mut().doc.text(&restored).unwrap(),
-        "Current source"
-    );
-    let plan =
-        prepare_content_restore(&doc, &crate::framework_history::SCHEMA, &heads, &[empty]).unwrap();
-    apply_prepared_content_restore(&mut doc, &plan).unwrap();
-    doc.get_heads();
-    let mut root = test_root();
-    root.sync(&mut doc, &ROOT);
-    let text = doc.get(ROOT, "source").unwrap().unwrap().1;
-    assert_eq!(doc.text(&text).unwrap(), "");
-}
-
-#[test]
-fn invalid_source_has_diagnostics_and_multipage_compilation_is_navigable() {
-    for text in [
-        "= Invalid source\n#let x = (",
-        "= Page one\n#pagebreak()\n= Page two",
-    ] {
-        let mut doc = AutoCommit::new();
-        let obj = doc
-            .put_object(ROOT, "source", automerge::ObjType::Text)
-            .unwrap();
-        doc.splice_text(&obj, 0, 0, text).unwrap();
-        let selected = doc.get_heads()[0];
-        let mut p = preview(&doc, selected, PreviewSide::After);
-        assert!(p.accessibility().description.contains(text));
-        let pages = p.accessibility().pages;
-        if text.contains("Invalid") {
-            assert!(pages.iter().any(|(id, _)| id == "diagnostics"));
-            assert!(!pages.iter().any(|(id, _)| id.starts_with("page:")));
-            assert!(p.navigate(PreviewNavigation::SelectPage("diagnostics".into())));
-            assert!(!p.accessibility().description.is_empty());
-        } else {
-            assert!(p.navigate(PreviewNavigation::SelectPage("page:1".into())));
-            assert!(p.accessibility().description.contains("Page two"));
-        }
-        let mut tr = ui::TextRenderer::new();
-        for width in [360., 1000.] {
-            p.layout(
-                vello::kurbo::Rect::new(0., 0., width, 300.),
-                &mut tr,
-                &ui::Theme::dark(),
-            )
-            .unwrap();
-            p.draw(
-                &mut vello::Scene::new(),
-                vello::kurbo::Affine::IDENTITY,
-                &mut tr,
-                &ui::Theme::dark(),
-            );
-        }
-    }
 }

@@ -6,9 +6,8 @@
 
 use crate::input_context::InputContext;
 use std::collections::HashSet;
+use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use vello::Scene;
 
 use chrono::{Duration, NaiveDate};
 use vello::kurbo::{Affine, Point, Rect};
@@ -20,7 +19,7 @@ use ui::widget::Scrollable;
 
 use crate::app::{center_text, draw_checkbox};
 use crate::date;
-use crate::draw_util::{fill_rect, fill_round, stroke_line};
+use crate::draw_util::{fill_round, stroke_line};
 use crate::metrics;
 use crate::model::{Id, Model, Priority};
 
@@ -154,30 +153,27 @@ impl AgendaView {
     pub(crate) fn layout(
         &mut self,
         area: Rect,
-        model: &Model,
-        anchor: NaiveDate,
-        hidden_calendars: &HashSet<String>,
-        calendar_filter: Option<&str>,
+        source: &AgendaSource<'_>,
         metrics: &AgendaMetrics,
     ) {
         self.scroll.set_viewport_rect(area);
-        self.scroll.set_content_size(
-            area.width() as f32,
-            content_height(model, anchor, hidden_calendars, calendar_filter, metrics) as f32,
-        );
+        self.scroll
+            .set_content_size(area.width() as f32, content_height(source, metrics) as f32);
     }
 
     pub(crate) fn handle_event(&mut self, input: &mut InputContext<'_>) -> bool {
         self.scroll.handle_event(
             input.event,
-            input.scale_factor,
-            &input.modifiers,
-            input.state,
-            input.path,
-            input.handled,
-            input.focus_target,
-            input.node_id,
-            input.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: input.scale_factor,
+                modifiers: &input.modifiers,
+                state: input.state,
+                path: input.path,
+                handled: input.handled,
+                focus_target: input.focus_target,
+                node_id: input.node_id,
+                taffy: input.taffy,
+            },
         );
         *input.handled
     }
@@ -186,102 +182,82 @@ impl AgendaView {
         self.scroll.wants_pointer_capture()
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "agenda painting combines paint context and viewport with date bounds, calendar filters, model data and hover position"
-    )]
     pub(crate) fn draw(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         area: Rect,
-        model: &Model,
-        anchor: NaiveDate,
+        source: &AgendaSource<'_>,
         today: NaiveDate,
-        hidden_calendars: &HashSet<String>,
-        calendar_filter: Option<&str>,
         pointer: Point,
     ) -> Vec<(Rect, AgendaAction)> {
+        let theme = ctx.theme;
         let colors = &theme.tokens.colors;
-        let mut hits = Vec::new();
-        fill_rect(scene, transform, area, colors.surfaces.base);
+        ctx.fill_rect(area, colors.surfaces.base);
 
-        let end = anchor + Duration::days(DAYS_SHOWN);
-        let mut m = AgendaMetrics::new(&theme.tokens.spacing, text.text_scale());
-        m.measure_time_column(text, &theme.tokens.spacing);
-        let x0 = area.x0 + m.side_pad;
-        let show_location = area.width() >= 520.0;
+        let end = source.anchor + Duration::days(DAYS_SHOWN);
+        let mut m = AgendaMetrics::new(&theme.tokens.spacing, ctx.text.text_scale());
+        m.measure_time_column(ctx.text, &theme.tokens.spacing);
+        let mut rows = RowPainter {
+            ctx: ctx.reborrow(),
+            area,
+            x0: area.x0 + m.side_pad,
+            show_location: area.width() >= 520.0,
+            pointer,
+            m,
+            hits: Vec::new(),
+        };
         let mut y = area.y0 + TOP_PAD - f64::from(self.scroll.offset_y());
         let mut drew_any = false;
 
-        scene.push_layer(
+        rows.ctx.scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
-            transform,
+            rows.ctx.transform,
             &area,
         );
 
-        let mut day = anchor;
+        let mut day = source.anchor;
         while day <= end {
-            let events = visible_events_on(model, day, hidden_calendars, calendar_filter);
-            let tasks: Vec<_> = model
-                .tasks
-                .iter()
-                .filter(|task| task.due == Some(day) && task.parent.is_none())
-                .collect();
+            let events = source.events_on(day);
+            let tasks = source.tasks_on(day);
             if events.is_empty() && tasks.is_empty() {
                 day += Duration::days(1);
                 continue;
             }
             drew_any = true;
 
-            draw_day_heading(scene, transform, text, theme, area, x0, y, day, today, &m);
+            rows.draw_day_heading(y, day, today);
             y += m.heading_h;
 
             for event in events {
-                draw_event_row(
-                    scene,
-                    transform,
-                    text,
-                    theme,
-                    area,
-                    x0,
-                    y,
-                    show_location,
-                    pointer,
-                    event,
-                    &m,
-                    &mut hits,
-                );
+                rows.draw_event_row(y, event);
                 y += m.row_pitch;
             }
 
             for task in tasks {
-                draw_task_row(
-                    scene, transform, text, theme, area, x0, y, pointer, task, &m, &mut hits,
-                );
+                rows.draw_task_row(y, task);
                 y += m.row_pitch;
             }
             y += m.section_gap;
             day += Duration::days(1);
         }
 
-        scene.pop_layer();
+        let hits = rows.hits;
+        ctx.scene.pop_layer();
         if !drew_any {
             center_text(
-                scene,
-                text,
+                ctx.scene,
+                ctx.text,
                 "Nothing scheduled — press New to add an event",
                 14.0,
                 colors.text_dim,
                 area,
-                transform,
+                ctx.transform,
             );
         }
-        self.scroll.draw_bar_overlay(scene, transform, theme);
+        self.scroll
+            .draw_bar_overlay(ctx.scene, ctx.transform, theme);
         hits
     }
 
@@ -302,243 +278,264 @@ impl AgendaView {
     }
 }
 
-/// Draw one day's two-line heading (relative label + long date) at `y`,
-/// clipped to `area`. Split out of `AgendaView::draw` to keep it within the
-/// line-count lint.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "day headings combine paint context, clipping and row metrics with the displayed date and today's relative label"
-)]
-fn draw_day_heading(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    theme: &Theme,
+/// One agenda paint pass: the clip area, the row metrics and the hit rects
+/// the rows push, shared by every heading and row it paints.
+struct RowPainter<'a> {
+    ctx: PaintCtx<'a>,
     area: Rect,
     x0: f64,
-    y: f64,
-    day: NaiveDate,
-    today: NaiveDate,
-    m: &AgendaMetrics,
-) {
-    let colors = &theme.tokens.colors;
-    if y + m.heading_h > area.y0 && y < area.y1 {
-        let heading_color = if day == today {
-            colors.accent[5]
-        } else {
-            colors.neutral[8]
-        };
-        let label = date::relative_label(day, today);
-        text.draw_text(
-            scene,
-            &label,
-            HEADING_TEXT,
-            heading_color,
-            transform * Affine::translate((x0, y)),
-            None,
-        );
-        // The date follows the label on a shared baseline: its smaller line
-        // box is bottom-aligned to the label's, and it starts at the authored
-        // column or just after a long label, whichever is further right.
-        let label_w = f64::from(text.measure(&label, HEADING_TEXT, None).0);
-        let date_x = x0 + HEADING_DATE_X.max(label_w + m.check_gap);
-        text.draw_text(
-            scene,
-            &date::fmt_day_long(day),
-            HEADING_DATE_TEXT,
-            colors.text_dim,
-            transform * Affine::translate((date_x, y + m.heading_text_h - m.heading_date_h)),
-            None,
-        );
-    }
-}
-
-/// Draw one event row at `y`, pushing its hit-rect into `hits` when the row
-/// is on screen. Split out of `AgendaView::draw` to keep it within the
-/// line-count lint.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "event rows combine paint context and clipping metrics with event data, location visibility, pointer and hit output"
-)]
-fn draw_event_row(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    theme: &Theme,
-    area: Rect,
-    x0: f64,
-    y: f64,
     show_location: bool,
     pointer: Point,
-    event: &crate::model::Event,
-    m: &AgendaMetrics,
-    hits: &mut Vec<(Rect, AgendaAction)>,
-) {
-    let colors = &theme.tokens.colors;
-    let row = Rect::new(x0, y, area.x1 - m.side_pad, y + m.row_h);
-    if row.y1 > area.y0 && row.y0 < area.y1 {
-        if row.contains(pointer) {
-            fill_round(scene, transform, row, 6.0, colors.lift(0.35));
-        }
-        fill_round(
+    m: AgendaMetrics,
+    hits: Vec<(Rect, AgendaAction)>,
+}
+
+impl RowPainter<'_> {
+    /// Draw one day's two-line heading (relative label + long date) at `y`,
+    /// clipped to `area`.
+    fn draw_day_heading(&mut self, y: f64, day: NaiveDate, today: NaiveDate) {
+        let PaintCtx {
             scene,
             transform,
-            Rect::new(
-                row.x0,
-                row.y0 + m.bar_inset,
-                row.x0 + m.bar_inset,
-                row.y1 - m.bar_inset,
-            ),
-            2.0,
-            event.color.color(theme),
-        );
-        // Every text run is centred on the row from its own measured line
-        // height, so time, title and location share one visual centre.
-        let meta_y = y + (m.row_h - m.row_meta_h) / 2.0;
-        let title_y = y + (m.row_h - m.row_text_h) / 2.0;
-        let time = if event.all_day {
-            ALL_DAY_LABEL.to_string()
-        } else {
-            date::fmt_time(&event.start)
-        };
-        text.draw_text(
-            scene,
-            &time,
-            ROW_META_TEXT,
-            colors.text_dim,
-            transform * Affine::translate((row.x0 + m.time_x, meta_y)),
-            None,
-        );
-        // The location is a single elided line in a trailing column that is
-        // never wider than its share of the row — wrapping it used to spill a
-        // second line into the next row at larger text scales.
-        let title_x = row.x0 + m.title_x;
-        let mut title_right = row.x1 - m.check_gap;
-        if show_location && !event.location.is_empty() {
-            let loc_max = (row.width() * LOCATION_MAX_SHARE).max(40.0);
-            let location =
-                text.elide_to_width(&event.location, ROW_META_TEXT, ui::num::f32_of_f64(loc_max));
-            let loc_w = f64::from(text.measure(&location, ROW_META_TEXT, None).0);
-            let loc_x = row.x1 - m.bar_inset - loc_w;
+            text,
+            theme,
+        } = &mut self.ctx;
+        let (transform, theme) = (*transform, *theme);
+        let (area, x0, m) = (self.area, self.x0, &self.m);
+        let colors = &theme.tokens.colors;
+        if y + m.heading_h > area.y0 && y < area.y1 {
+            let heading_color = if day == today {
+                colors.accent[5]
+            } else {
+                colors.neutral[8]
+            };
+            let label = date::relative_label(day, today);
             text.draw_text(
                 scene,
-                &location,
-                ROW_META_TEXT,
-                colors.text_dim,
-                transform * Affine::translate((loc_x, meta_y)),
+                &label,
+                HEADING_TEXT,
+                heading_color,
+                transform * Affine::translate((x0, y)),
                 None,
             );
-            title_right = loc_x - m.check_gap;
+            // The date follows the label on a shared baseline: its smaller line
+            // box is bottom-aligned to the label's, and it starts at the authored
+            // column or just after a long label, whichever is further right.
+            let label_w = f64::from(text.measure(&label, HEADING_TEXT, None).0);
+            let date_x = x0 + HEADING_DATE_X.max(label_w + m.check_gap);
+            text.draw_text(
+                scene,
+                &date::fmt_day_long(day),
+                HEADING_DATE_TEXT,
+                colors.text_dim,
+                transform * Affine::translate((date_x, y + m.heading_text_h - m.heading_date_h)),
+                None,
+            );
         }
-        let title_max = (title_right - title_x).max(40.0);
-        let title = text.elide_to_width(&event.title, ROW_TEXT, ui::num::f32_of_f64(title_max));
-        text.draw_text(
+    }
+
+    /// Draw one event row at `y`, pushing its hit-rect into `hits` when the row
+    /// is on screen.
+    fn draw_event_row(&mut self, y: f64, event: &crate::model::Event) {
+        let PaintCtx {
             scene,
-            &title,
-            ROW_TEXT,
-            colors.neutral[9],
-            transform * Affine::translate((title_x, title_y)),
-            None,
+            transform,
+            text,
+            theme,
+        } = &mut self.ctx;
+        let (transform, theme) = (*transform, *theme);
+        let (area, x0, show_location, pointer, m) = (
+            self.area,
+            self.x0,
+            self.show_location,
+            self.pointer,
+            &self.m,
         );
-        if let Some(hit) = clamp_hit(row, area) {
-            hits.push((hit, AgendaAction::OpenEvent(event.id)));
+        let hits = &mut self.hits;
+        let colors = &theme.tokens.colors;
+        let row = Rect::new(x0, y, area.x1 - m.side_pad, y + m.row_h);
+        if row.y1 > area.y0 && row.y0 < area.y1 {
+            if row.contains(pointer) {
+                fill_round(scene, transform, row, 6.0, colors.lift(0.35));
+            }
+            fill_round(
+                scene,
+                transform,
+                Rect::new(
+                    row.x0,
+                    row.y0 + m.bar_inset,
+                    row.x0 + m.bar_inset,
+                    row.y1 - m.bar_inset,
+                ),
+                2.0,
+                event.color.color(theme),
+            );
+            // Every text run is centred on the row from its own measured line
+            // height, so time, title and location share one visual centre.
+            let meta_y = y + (m.row_h - m.row_meta_h) / 2.0;
+            let title_y = y + (m.row_h - m.row_text_h) / 2.0;
+            let time = if event.all_day {
+                ALL_DAY_LABEL.to_string()
+            } else {
+                date::fmt_time(&event.start)
+            };
+            text.draw_text(
+                scene,
+                &time,
+                ROW_META_TEXT,
+                colors.text_dim,
+                transform * Affine::translate((row.x0 + m.time_x, meta_y)),
+                None,
+            );
+            // The location is a single elided line in a trailing column that is
+            // never wider than its share of the row — wrapping it used to spill a
+            // second line into the next row at larger text scales.
+            let title_x = row.x0 + m.title_x;
+            let mut title_right = row.x1 - m.check_gap;
+            if show_location && !event.location.is_empty() {
+                let loc_max = (row.width() * LOCATION_MAX_SHARE).max(40.0);
+                let location = text.elide_to_width(
+                    &event.location,
+                    ROW_META_TEXT,
+                    ui::num::f32_of_f64(loc_max),
+                );
+                let loc_w = f64::from(text.measure(&location, ROW_META_TEXT, None).0);
+                let loc_x = row.x1 - m.bar_inset - loc_w;
+                text.draw_text(
+                    scene,
+                    &location,
+                    ROW_META_TEXT,
+                    colors.text_dim,
+                    transform * Affine::translate((loc_x, meta_y)),
+                    None,
+                );
+                title_right = loc_x - m.check_gap;
+            }
+            let title_max = (title_right - title_x).max(40.0);
+            let title = text.elide_to_width(&event.title, ROW_TEXT, ui::num::f32_of_f64(title_max));
+            text.draw_text(
+                scene,
+                &title,
+                ROW_TEXT,
+                colors.neutral[9],
+                transform * Affine::translate((title_x, title_y)),
+                None,
+            );
+            if let Some(hit) = clamp_hit(row, area) {
+                hits.push((hit, AgendaAction::OpenEvent(event.id)));
+            }
+        }
+    }
+
+    /// Draw one task row at `y`, pushing its open- and toggle-hit rects into
+    /// `hits` when the row is on screen.
+    fn draw_task_row(&mut self, y: f64, task: &crate::model::Task) {
+        let PaintCtx {
+            scene,
+            transform,
+            text,
+            theme,
+        } = &mut self.ctx;
+        let (transform, theme) = (*transform, *theme);
+        let (area, x0, pointer, m) = (self.area, self.x0, self.pointer, &self.m);
+        let hits = &mut self.hits;
+        let colors = &theme.tokens.colors;
+        let row = Rect::new(x0, y, area.x1 - m.side_pad, y + m.row_h);
+        if row.y1 > area.y0 && row.y0 < area.y1 {
+            if row.contains(pointer) {
+                fill_round(scene, transform, row, 6.0, colors.lift(0.35));
+            }
+            if let Some(hit) = clamp_hit(row, area) {
+                hits.push((hit, AgendaAction::OpenTask(task.id)));
+            }
+            // The checkbox is one text line tall and centred on the row, so it
+            // stays proportionate to the label it toggles at every text scale.
+            let half = m.check_size / 2.0;
+            let checkbox = Rect::new(
+                row.x0 + m.check_gap,
+                row.center().y - half,
+                row.x0 + m.check_gap + m.check_size,
+                row.center().y + half,
+            );
+            draw_checkbox(scene, transform, theme, checkbox, task.done);
+            let label_color = if task.done {
+                colors.text_dim
+            } else {
+                colors.neutral[9]
+            };
+            let label_x0 = checkbox.x1 + m.check_gap;
+            let title_y = y + (m.row_h - m.row_text_h) / 2.0;
+            // Reserve the trailing flag column from the measured flag glyph so the
+            // label can never run underneath it.
+            let flag = (task.priority != Priority::None).then(|| task.priority.flag());
+            let flag_w = flag.map_or(0.0, |f| f64::from(text.measure(f, ROW_FLAG_TEXT, None).0));
+            let flag_x = row.x1 - m.check_gap - flag_w;
+            let label_max = (flag_x - m.check_gap - label_x0).max(40.0);
+            let label = text.elide_to_width(&task.title, ROW_TEXT, ui::num::f32_of_f64(label_max));
+            text.draw_text(
+                scene,
+                &label,
+                ROW_TEXT,
+                label_color,
+                transform * Affine::translate((label_x0, title_y)),
+                None,
+            );
+            let label_width = f64::from(text.measure(&label, ROW_TEXT, None).0);
+            if task.done {
+                stroke_line(
+                    scene,
+                    transform,
+                    colors.text_dim,
+                    Point::new(label_x0, row.center().y),
+                    Point::new(label_x0 + label_width, row.center().y),
+                    1.0,
+                );
+            }
+            // The toggle target covers the checkbox and the label, but stops short
+            // of the trailing open-task region: a long title must still leave room
+            // on the row that opens the task instead of completing it.
+            let toggle_right = (label_x0 + label_width + m.check_gap)
+                .min(flag_x - m.check_gap)
+                .min(row.x1 - TASK_OPEN_MIN_W)
+                .max(checkbox.x1 + m.check_gap);
+            let complete = Rect::new(row.x0, row.y0, toggle_right, row.y1);
+            if let Some(hit) = clamp_hit(complete, area) {
+                hits.push((hit, AgendaAction::ToggleTask(task.id)));
+            }
+            if let Some(flag) = flag {
+                text.draw_text(
+                    scene,
+                    flag,
+                    ROW_FLAG_TEXT,
+                    task.priority.color(theme),
+                    transform * Affine::translate((flag_x, y + (m.row_h - m.row_flag_h) / 2.0)),
+                    None,
+                );
+            }
         }
     }
 }
 
-/// Draw one task row at `y`, pushing its open- and toggle-hit rects into
-/// `hits` when the row is on screen. Split out of `AgendaView::draw` to keep
-/// it within the line-count lint.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "task rows combine paint context and clipping metrics with task data, pointer and open/toggle hit output"
-)]
-fn draw_task_row(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    theme: &Theme,
-    area: Rect,
-    x0: f64,
-    y: f64,
-    pointer: Point,
-    task: &crate::model::Task,
-    m: &AgendaMetrics,
-    hits: &mut Vec<(Rect, AgendaAction)>,
-) {
-    let colors = &theme.tokens.colors;
-    let row = Rect::new(x0, y, area.x1 - m.side_pad, y + m.row_h);
-    if row.y1 > area.y0 && row.y0 < area.y1 {
-        if row.contains(pointer) {
-            fill_round(scene, transform, row, 6.0, colors.lift(0.35));
-        }
-        if let Some(hit) = clamp_hit(row, area) {
-            hits.push((hit, AgendaAction::OpenTask(task.id)));
-        }
-        // The checkbox is one text line tall and centred on the row, so it
-        // stays proportionate to the label it toggles at every text scale.
-        let half = m.check_size / 2.0;
-        let checkbox = Rect::new(
-            row.x0 + m.check_gap,
-            row.center().y - half,
-            row.x0 + m.check_gap + m.check_size,
-            row.center().y + half,
-        );
-        draw_checkbox(scene, transform, theme, checkbox, task.done);
-        let label_color = if task.done {
-            colors.text_dim
-        } else {
-            colors.neutral[9]
-        };
-        let label_x0 = checkbox.x1 + m.check_gap;
-        let title_y = y + (m.row_h - m.row_text_h) / 2.0;
-        // Reserve the trailing flag column from the measured flag glyph so the
-        // label can never run underneath it.
-        let flag = (task.priority != Priority::None).then(|| task.priority.flag());
-        let flag_w = flag.map_or(0.0, |f| f64::from(text.measure(f, ROW_FLAG_TEXT, None).0));
-        let flag_x = row.x1 - m.check_gap - flag_w;
-        let label_max = (flag_x - m.check_gap - label_x0).max(40.0);
-        let label = text.elide_to_width(&task.title, ROW_TEXT, ui::num::f32_of_f64(label_max));
-        text.draw_text(
-            scene,
-            &label,
-            ROW_TEXT,
-            label_color,
-            transform * Affine::translate((label_x0, title_y)),
-            None,
-        );
-        let label_width = f64::from(text.measure(&label, ROW_TEXT, None).0);
-        if task.done {
-            stroke_line(
-                scene,
-                transform,
-                colors.text_dim,
-                Point::new(label_x0, row.center().y),
-                Point::new(label_x0 + label_width, row.center().y),
-                1.0,
-            );
-        }
-        // The toggle target covers the checkbox and the label, but stops short
-        // of the trailing open-task region: a long title must still leave room
-        // on the row that opens the task instead of completing it.
-        let toggle_right = (label_x0 + label_width + m.check_gap)
-            .min(flag_x - m.check_gap)
-            .min(row.x1 - TASK_OPEN_MIN_W)
-            .max(checkbox.x1 + m.check_gap);
-        let complete = Rect::new(row.x0, row.y0, toggle_right, row.y1);
-        if let Some(hit) = clamp_hit(complete, area) {
-            hits.push((hit, AgendaAction::ToggleTask(task.id)));
-        }
-        if let Some(flag) = flag {
-            text.draw_text(
-                scene,
-                flag,
-                ROW_FLAG_TEXT,
-                task.priority.color(theme),
-                transform * Affine::translate((flag_x, y + (m.row_h - m.row_flag_h) / 2.0)),
-                None,
-            );
-        }
+/// What the agenda lists: the model's events and top-level tasks from
+/// `anchor` onward, with hidden calendars and the calendar filter applied.
+pub(crate) struct AgendaSource<'a> {
+    pub(crate) model: &'a Model,
+    pub(crate) anchor: NaiveDate,
+    pub(crate) hidden_calendars: &'a HashSet<String>,
+    pub(crate) calendar_filter: Option<&'a str>,
+}
+
+impl<'a> AgendaSource<'a> {
+    fn events_on(&self, day: NaiveDate) -> Vec<&'a crate::model::Event> {
+        visible_events_on(self.model, day, self.hidden_calendars, self.calendar_filter)
+    }
+
+    fn tasks_on(&self, day: NaiveDate) -> Vec<&'a crate::model::Task> {
+        self.model
+            .tasks
+            .iter()
+            .filter(|task| task.due == Some(day) && task.parent.is_none())
+            .collect()
     }
 }
 
@@ -564,25 +561,14 @@ fn visible_events_on<'a>(
         .collect()
 }
 
-fn content_height(
-    model: &Model,
-    anchor: NaiveDate,
-    hidden_calendars: &HashSet<String>,
-    calendar_filter: Option<&str>,
-    m: &AgendaMetrics,
-) -> f64 {
-    let end = anchor + Duration::days(DAYS_SHOWN);
+fn content_height(source: &AgendaSource<'_>, m: &AgendaMetrics) -> f64 {
+    let end = source.anchor + Duration::days(DAYS_SHOWN);
     let mut height = TOP_PAD;
-    let mut day = anchor;
+    let mut day = source.anchor;
     while day <= end {
-        let events = visible_events_on(model, day, hidden_calendars, calendar_filter).len();
-        let tasks = model
-            .tasks
-            .iter()
-            .filter(|task| task.due == Some(day) && task.parent.is_none())
-            .count();
-        if events + tasks > 0 {
-            height += m.heading_h + m.row_pitch * (events + tasks) as f64 + m.section_gap;
+        let rows = source.events_on(day).len() + source.tasks_on(day).len();
+        if rows > 0 {
+            height += m.heading_h + m.row_pitch * rows as f64 + m.section_gap;
         }
         day += Duration::days(1);
     }
@@ -602,6 +588,19 @@ mod tests {
 
     fn date(day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 8, day).expect("valid fixture date")
+    }
+
+    fn source<'a>(
+        model: &'a Model,
+        anchor: NaiveDate,
+        hidden_calendars: &'a HashSet<String>,
+    ) -> AgendaSource<'a> {
+        AgendaSource {
+            model,
+            anchor,
+            hidden_calendars,
+            calendar_filter: None,
+        }
     }
 
     fn event(day: u32, calendar_id: Option<&str>) -> Event {
@@ -630,125 +629,127 @@ mod tests {
     }
 
     #[test]
-    fn content_extent_matches_headers_and_rows() {
-        let anchor = date(1);
-        let model = Model {
-            events: vec![event(1, None)],
-            tasks: vec![Task {
-                id: Uuid::new_v4(),
-                title: "Task".into(),
-                done: false,
-                due: Some(anchor),
-                priority: Priority::None,
-                project: None,
-                parent: None,
-            }],
-            ..Model::default()
-        };
-        let m = AgendaMetrics::new(&Spacing::default(), 1.0);
-        // 18 top pad + 26 heading + 2 × 32 rows + 12 section gap + 8 bottom.
-        assert_eq!(
-            content_height(&model, anchor, &HashSet::new(), None, &m),
-            128.0
-        );
-    }
-
-    #[test]
-    fn hidden_remote_calendars_do_not_expand_the_scroll_extent() {
-        let anchor = date(1);
-        let model = Model {
-            events: vec![event(1, Some("hidden"))],
-            ..Model::default()
-        };
-        let hidden = HashSet::from(["hidden".to_string()]);
-        let m = AgendaMetrics::new(&Spacing::default(), 1.0);
-        assert_eq!(content_height(&model, anchor, &hidden, None, &m), 26.0);
-        assert_eq!(
-            content_height(&model, anchor, &HashSet::new(), None, &m),
-            96.0
-        );
-    }
-
-    #[test]
-    fn one_x_metrics_reproduce_the_authored_rows() {
-        let m = AgendaMetrics::new(&Spacing::default(), 1.0);
-        // The authored rows win at 1×: 18.75 + `s1` and 16.25 + `s3` both
-        // fit inside 26 and 30, so nothing drifts off whole pixels.
-        assert_eq!(m.heading_h, 26.0);
-        assert_eq!(m.row_h, 30.0);
-        assert_eq!(m.row_pitch, 32.0);
-        assert_eq!(m.title_x, 90.0);
-        assert_eq!(m.check_size, 16.0);
-        let sp = Spacing::default();
-        assert_eq!(m.side_pad, f64::from(sp.s6));
-        assert_eq!(m.bottom_pad, f64::from(sp.s2));
-    }
-
-    /// Scaled rows are whole pixels too: a 2× row is the authored row plus
-    /// its line's growth, snapped up, never a fraction.
-    #[test]
-    fn scaled_rows_land_on_whole_pixels() {
-        let m = AgendaMetrics::new(&Spacing::default(), 2.0);
-        for value in [m.heading_h, m.row_h, m.row_pitch] {
-            assert_eq!(value.fract(), 0.0, "{value} is not a whole pixel");
+    fn content_extent_and_visible_events_respect_hidden_and_selected_calendars() {
+        // Case `content_extent_matches_headers_and_rows`.
+        {
+            let anchor = date(1);
+            let model = Model {
+                events: vec![event(1, None)],
+                tasks: vec![Task {
+                    id: Uuid::new_v4(),
+                    title: "Task".into(),
+                    done: false,
+                    due: Some(anchor),
+                    priority: Priority::None,
+                    project: None,
+                    parent: None,
+                }],
+                ..Model::default()
+            };
+            let m = AgendaMetrics::new(&Spacing::default(), 1.0);
+            // 18 top pad + 26 heading + 2 × 32 rows + 12 section gap + 8 bottom.
+            assert_eq!(
+                content_height(&source(&model, anchor, &HashSet::new()), &m),
+                128.0
+            );
         }
-        // Each row is its scaled line plus the same theme pad the painter
-        // leaves, rounded up — never a fraction short of it.
-        let sp = Spacing::default();
-        assert_eq!(m.row_h, (m.row_text_h + f64::from(sp.s3)).ceil());
-        assert_eq!(m.heading_h, (m.heading_text_h + f64::from(sp.s1)).ceil());
+        // Case `hidden_remote_calendars_do_not_expand_the_scroll_extent`.
+        {
+            let anchor = date(1);
+            let model = Model {
+                events: vec![event(1, Some("hidden"))],
+                ..Model::default()
+            };
+            let hidden = HashSet::from(["hidden".to_string()]);
+            let m = AgendaMetrics::new(&Spacing::default(), 1.0);
+            assert_eq!(content_height(&source(&model, anchor, &hidden), &m), 26.0);
+            assert_eq!(
+                content_height(&source(&model, anchor, &HashSet::new()), &m),
+                96.0
+            );
+        }
+        // Case `selected_calendar_filters_events_without_overriding_visibility`.
+        {
+            let anchor = date(1);
+            let model = Model {
+                events: vec![
+                    event(1, None),
+                    event(1, Some("work")),
+                    event(1, Some("home")),
+                ],
+                ..Model::default()
+            };
+            assert_eq!(
+                visible_events_on(&model, anchor, &HashSet::new(), Some("work")).len(),
+                1
+            );
+            assert!(
+                visible_events_on(
+                    &model,
+                    anchor,
+                    &HashSet::from(["work".to_string()]),
+                    Some("work")
+                )
+                .is_empty()
+            );
+            assert_eq!(
+                visible_events_on(&model, anchor, &HashSet::new(), Some("local")).len(),
+                1
+            );
+        }
     }
 
     #[test]
-    fn scaled_rows_hold_their_text_and_grow_the_scroll_extent() {
-        let m1 = AgendaMetrics::new(&Spacing::default(), 1.0);
-        let m2 = AgendaMetrics::new(&Spacing::default(), 2.0);
-        // A 2× row must hold a 2× line with the same padding a 1× row has.
-        assert!(m2.row_h >= m2.row_text_h + 12.0);
-        assert!(m2.heading_h >= m2.heading_text_h + 4.0);
-        assert!(m2.row_h > m1.row_h && m2.heading_h > m1.heading_h);
-        assert!(m2.check_size > m1.check_size);
+    fn metrics_reproduce_authored_rows_at_one_x_and_grow_on_whole_pixels() {
+        // Case `one_x_metrics_reproduce_the_authored_rows`.
+        {
+            let m = AgendaMetrics::new(&Spacing::default(), 1.0);
+            // The authored rows win at 1×: 18.75 + `s1` and 16.25 + `s3` both
+            // fit inside 26 and 30, so nothing drifts off whole pixels.
+            assert_eq!(m.heading_h, 26.0);
+            assert_eq!(m.row_h, 30.0);
+            assert_eq!(m.row_pitch, 32.0);
+            assert_eq!(m.title_x, 90.0);
+            assert_eq!(m.check_size, 16.0);
+            let sp = Spacing::default();
+            assert_eq!(m.side_pad, f64::from(sp.s6));
+            assert_eq!(m.bottom_pad, f64::from(sp.s2));
+        }
+        // Case `scaled_rows_land_on_whole_pixels`:
+        // Scaled rows are whole pixels too: a 2× row is the authored row plus
+        // its line's growth, snapped up, never a fraction.
+        {
+            let m = AgendaMetrics::new(&Spacing::default(), 2.0);
+            for value in [m.heading_h, m.row_h, m.row_pitch] {
+                assert_eq!(value.fract(), 0.0, "{value} is not a whole pixel");
+            }
+            // Each row is its scaled line plus the same theme pad the painter
+            // leaves, rounded up — never a fraction short of it.
+            let sp = Spacing::default();
+            assert_eq!(m.row_h, (m.row_text_h + f64::from(sp.s3)).ceil());
+            assert_eq!(m.heading_h, (m.heading_text_h + f64::from(sp.s1)).ceil());
+        }
+        // Case `scaled_rows_hold_their_text_and_grow_the_scroll_extent`.
+        {
+            let m1 = AgendaMetrics::new(&Spacing::default(), 1.0);
+            let m2 = AgendaMetrics::new(&Spacing::default(), 2.0);
+            // A 2× row must hold a 2× line with the same padding a 1× row has.
+            assert!(m2.row_h >= m2.row_text_h + 12.0);
+            assert!(m2.heading_h >= m2.heading_text_h + 4.0);
+            assert!(m2.row_h > m1.row_h && m2.heading_h > m1.heading_h);
+            assert!(m2.check_size > m1.check_size);
 
-        let anchor = date(1);
-        let model = Model {
-            events: vec![event(1, None)],
-            ..Model::default()
-        };
-        let one = content_height(&model, anchor, &HashSet::new(), None, &m1);
-        let two = content_height(&model, anchor, &HashSet::new(), None, &m2);
-        assert_eq!(
-            two - one,
-            (m2.heading_h - m1.heading_h) + (m2.row_pitch - m1.row_pitch)
-        );
-    }
-
-    #[test]
-    fn selected_calendar_filters_events_without_overriding_visibility() {
-        let anchor = date(1);
-        let model = Model {
-            events: vec![
-                event(1, None),
-                event(1, Some("work")),
-                event(1, Some("home")),
-            ],
-            ..Model::default()
-        };
-        assert_eq!(
-            visible_events_on(&model, anchor, &HashSet::new(), Some("work")).len(),
-            1
-        );
-        assert!(
-            visible_events_on(
-                &model,
-                anchor,
-                &HashSet::from(["work".to_string()]),
-                Some("work")
-            )
-            .is_empty()
-        );
-        assert_eq!(
-            visible_events_on(&model, anchor, &HashSet::new(), Some("local")).len(),
-            1
-        );
+            let anchor = date(1);
+            let model = Model {
+                events: vec![event(1, None)],
+                ..Model::default()
+            };
+            let one = content_height(&source(&model, anchor, &HashSet::new()), &m1);
+            let two = content_height(&source(&model, anchor, &HashSet::new()), &m2);
+            assert_eq!(
+                two - one,
+                (m2.heading_h - m1.heading_h) + (m2.row_pitch - m1.row_pitch)
+            );
+        }
     }
 }

@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "photos"
 version = "0.1.0"
 edition = "2024"
@@ -18,7 +19,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The open photograph is published as a Resource whose edits are ActionSpecs,
 # so the shell's palette and an out-of-process caller drive the same operations
 # the toolbar buttons do.
@@ -26,10 +27,11 @@ tilo-actions = { path = "../../crates/collab/actions" }
 tilo-reference = { path = "../../crates/collab/reference" }
 tilo-content = { path = "../../crates/system/content" }
 # The shared preview pipeline behind the library grid.
-thumbnail = { path = "../../crates/media/thumbnail" }
+tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 tilo-vision = { path = "../../crates/media/vision" }
 agent-provider-config = { path = "../../crates/agent/provider-config" }
-atomic-file = { path = "../../crates/system/atomic-file" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 serde.workspace = true
@@ -51,6 +53,15 @@ runtime-fs = { path = "../../crates/runtime/runtime-fs" }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 libc.workspace = true
 vello_encoding.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

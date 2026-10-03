@@ -5,7 +5,6 @@
 //! the middle with `...`: keeps the first segment, inserts `...`, keeps the
 //! last two. A trail of 4 or fewer segments never truncates (the truncated
 //! form wouldn't be shorter).
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -215,12 +214,6 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
 }
 
 impl Widget for Breadcrumb {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
-        // Breadcrumb segments are pushed in by the host (file explorer,
-        // settings page, etc.) rather than mirrored from a CRDT path.
-        // Sync is intentionally a no-op.
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -323,21 +316,11 @@ impl Widget for Breadcrumb {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let logical =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let mut new_hover: Option<usize> = None;
                 let active_origin = self.segments.len().saturating_sub(1);
                 for (i, r) in self.segment_rects.iter().enumerate() {
@@ -356,7 +339,7 @@ impl Widget for Breadcrumb {
                 }
                 if new_hover != self.hover_idx {
                     self.hover_idx = new_hover;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -370,7 +353,7 @@ impl Widget for Breadcrumb {
                     if let Some(cb) = self.on_navigate.as_mut() {
                         cb(orig);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -402,6 +385,7 @@ impl Widget for Breadcrumb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
     use winit::event::{DeviceId, ElementState, Modifiers, MouseButton};
@@ -438,151 +422,161 @@ mod tests {
         let root = automerge::ROOT;
         bc.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 
     #[test]
-    fn breadcrumb_with_one_segment_paints_no_separator() {
-        let bc = Breadcrumb::new(vec!["home".to_string()]);
-        let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
-        let mut bc = bc;
-        bc.rect = Rect::new(0.0, 0.0, 500.0, 24.0);
-        bc.apply_layout_helper(&theme, &mut tr);
-        assert_eq!(
-            bc.separator_count(),
-            0,
-            "one-segment breadcrumb must report zero separators"
-        );
-        assert_eq!(bc.cached_visible, vec!["home".to_string()]);
-    }
+    fn breadcrumb_paints_separators_centres_labels_and_truncates() {
+        fn breadcrumb_with_one_segment_paints_no_separator() {
+            let bc = Breadcrumb::new(vec!["home".to_string()]);
+            let mut tr = TextRenderer::new();
+            let theme = Theme::dark();
+            let mut bc = bc;
+            bc.rect = Rect::new(0.0, 0.0, 500.0, 24.0);
+            bc.apply_layout_helper(&theme, &mut tr);
+            assert_eq!(
+                bc.separator_count(),
+                0,
+                "one-segment breadcrumb must report zero separators"
+            );
+            assert_eq!(bc.cached_visible, vec!["home".to_string()]);
+        }
 
-    /// Labels and chevrons are centred on the line the renderer measured,
-    /// not on the font size — the latter sat every segment 1.5 px below the
-    /// row's centre (12 px type lays out as a 15 px line).
-    #[test]
-    fn breadcrumb_labels_and_chevrons_centre_their_measured_line() {
-        let mut bc = Breadcrumb::new(vec!["home".to_string(), "docs".to_string()]);
-        let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
-        // An 18 px band, as `build_layout` gives a small-type trail.
-        let rect = Rect::new(10.0, 40.0, 500.0, 58.0);
-        bc.rect = rect;
-        bc.apply_layout_helper(&theme, &mut tr);
-        let mut scene = Scene::new();
-        bc.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &crate::presence::PresenceCtx::default(),
-        );
-        assert_eq!(
-            scene.encoding().resources.glyph_runs.len(),
-            3,
-            "home, chevron, docs"
-        );
-        let size = theme.tokens.typography.scale.sm;
-        for (index, text) in ["home", SEPARATOR_GLYPH, "docs"].into_iter().enumerate() {
-            crate::widget::text::assert_glyph_run_centred_in_band(
-                &scene,
-                index,
-                text,
-                size,
-                rect.y0,
-                rect.height(),
+        /// Labels and chevrons are centred on the line the renderer measured,
+        /// not on the font size — the latter sat every segment 1.5 px below the
+        /// row's centre (12 px type lays out as a 15 px line).
+        fn breadcrumb_labels_and_chevrons_centre_their_measured_line() {
+            let mut bc = Breadcrumb::new(vec!["home".to_string(), "docs".to_string()]);
+            let mut tr = TextRenderer::new();
+            let theme = Theme::dark();
+            // An 18 px band, as `build_layout` gives a small-type trail.
+            let rect = Rect::new(10.0, 40.0, 500.0, 58.0);
+            bc.rect = rect;
+            bc.apply_layout_helper(&theme, &mut tr);
+            let mut scene = Scene::new();
+            bc.draw(
+                &mut scene,
+                Affine::IDENTITY,
                 &mut tr,
-                theme.text_primary,
+                &theme,
+                &crate::presence::PresenceCtx::default(),
+            );
+            assert_eq!(
+                scene.encoding().resources.glyph_runs.len(),
+                3,
+                "home, chevron, docs"
+            );
+            let size = theme.tokens.typography.scale.sm;
+            for (index, text) in ["home", SEPARATOR_GLYPH, "docs"].into_iter().enumerate() {
+                crate::widget::text::assert_glyph_run_centred_in_band(
+                    &scene,
+                    index,
+                    text,
+                    size,
+                    rect.y0,
+                    rect.height(),
+                    &mut tr,
+                    theme.text_primary,
+                );
+            }
+        }
+
+        fn breadcrumb_with_long_path_truncates_middle_segments() {
+            let segments: Vec<String> = (0..10).map(|i| format!("segment_{i:02}")).collect();
+            let bc = Breadcrumb::new(segments);
+            let mut tr = TextRenderer::new();
+            let theme = Theme::dark();
+
+            // 200px at `sm` (12px text) fits the four-label fallback but
+            // rejects the ten-label full path.
+            let visible = bc.visible_segments(200.0, &theme, &mut tr);
+            assert_eq!(
+                visible,
+                vec![
+                    "segment_00".to_string(),
+                    ELLIPSIS.to_string(),
+                    "segment_08".to_string(),
+                    "segment_09".to_string(),
+                ],
+                "long path must collapse to first + ellipsis + last two segments"
             );
         }
+
+        breadcrumb_with_one_segment_paints_no_separator();
+        breadcrumb_labels_and_chevrons_centre_their_measured_line();
+        breadcrumb_with_long_path_truncates_middle_segments();
     }
 
     #[test]
-    fn breadcrumb_clicking_middle_segment_calls_on_navigate_with_that_index() {
-        let received = Rc::new(RefCell::new(None::<usize>));
-        let received_clone = received.clone();
-        let mut bc = Breadcrumb::new(vec![
-            "home".to_string(),
-            "docs".to_string(),
-            "project".to_string(),
-        ])
-        .on_navigate(move |idx| {
-            *received_clone.borrow_mut() = Some(idx);
-        });
+    fn breadcrumb_navigation_and_semantics_name_the_current_segment() {
+        fn breadcrumb_clicking_middle_segment_calls_on_navigate_with_that_index() {
+            let received = Rc::new(RefCell::new(None::<usize>));
+            let received_clone = received.clone();
+            let mut bc = Breadcrumb::new(vec![
+                "home".to_string(),
+                "docs".to_string(),
+                "project".to_string(),
+            ])
+            .on_navigate(move |idx| {
+                *received_clone.borrow_mut() = Some(idx);
+            });
 
-        bc.rect = Rect::new(0.0, 0.0, 800.0, 24.0);
-        let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
-        bc.apply_layout_helper(&theme, &mut tr);
+            bc.rect = Rect::new(0.0, 0.0, 800.0, 24.0);
+            let mut tr = TextRenderer::new();
+            let theme = Theme::dark();
+            bc.apply_layout_helper(&theme, &mut tr);
 
-        assert_eq!(
-            bc.segment_rects.len(),
-            3,
-            "expected one rect per visible segment"
-        );
-        let middle_center = bc.segment_rects[1].center();
-        dispatch(&mut bc, &cursor_at(middle_center));
-        dispatch(&mut bc, &left_press());
+            assert_eq!(
+                bc.segment_rects.len(),
+                3,
+                "expected one rect per visible segment"
+            );
+            let middle_center = bc.segment_rects[1].center();
+            dispatch(&mut bc, &cursor_at(middle_center));
+            dispatch(&mut bc, &left_press());
 
-        assert_eq!(
-            *received.borrow(),
-            Some(1),
-            "clicking the middle segment must call on_navigate with the original index 1"
-        );
-    }
+            assert_eq!(
+                *received.borrow(),
+                Some(1),
+                "clicking the middle segment must call on_navigate with the original index 1"
+            );
+        }
 
-    #[test]
-    fn breadcrumb_with_long_path_truncates_middle_segments() {
-        let segments: Vec<String> = (0..10).map(|i| format!("segment_{i:02}")).collect();
-        let bc = Breadcrumb::new(segments);
-        let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
+        fn accessibility_reports_list_role_name_and_current_segment() {
+            use crate::a11y::Role;
+            let bc = Breadcrumb::new(vec![
+                "home".to_string(),
+                "docs".to_string(),
+                "readme.md".to_string(),
+            ]);
+            let node = Widget::accessibility(&bc).expect("breadcrumb is not presentational");
+            assert_eq!(node.role, Role::List);
+            assert_eq!(node.name.as_deref(), Some("Breadcrumb"));
+            assert_eq!(
+                node.value.as_deref(),
+                Some("readme.md"),
+                "the rightmost segment is the current page"
+            );
+        }
 
-        // 200px at `sm` (12px text) fits the four-label fallback but
-        // rejects the ten-label full path.
-        let visible = bc.visible_segments(200.0, &theme, &mut tr);
-        assert_eq!(
-            visible,
-            vec![
-                "segment_00".to_string(),
-                ELLIPSIS.to_string(),
-                "segment_08".to_string(),
-                "segment_09".to_string(),
-            ],
-            "long path must collapse to first + ellipsis + last two segments"
-        );
-    }
+        fn accessibility_empty_trail_has_no_value() {
+            let bc = Breadcrumb::new(Vec::new());
+            let node = Widget::accessibility(&bc).unwrap();
+            assert_eq!(node.value, None, "empty trail → no current segment");
+        }
 
-    #[test]
-    fn accessibility_reports_list_role_name_and_current_segment() {
-        use crate::a11y::Role;
-        let bc = Breadcrumb::new(vec![
-            "home".to_string(),
-            "docs".to_string(),
-            "readme.md".to_string(),
-        ]);
-        let node = Widget::accessibility(&bc).expect("breadcrumb is not presentational");
-        assert_eq!(node.role, Role::List);
-        assert_eq!(node.name.as_deref(), Some("Breadcrumb"));
-        assert_eq!(
-            node.value.as_deref(),
-            Some("readme.md"),
-            "the rightmost segment is the current page"
-        );
-    }
-
-    #[test]
-    fn accessibility_empty_trail_has_no_value() {
-        let bc = Breadcrumb::new(Vec::new());
-        let node = Widget::accessibility(&bc).unwrap();
-        assert_eq!(node.value, None, "empty trail → no current segment");
+        breadcrumb_clicking_middle_segment_calls_on_navigate_with_that_index();
+        accessibility_reports_list_role_name_and_current_segment();
+        accessibility_empty_trail_has_no_value();
     }
 }

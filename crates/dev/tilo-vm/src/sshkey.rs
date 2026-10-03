@@ -103,6 +103,16 @@ pub fn smbios_credential(public: &str) -> String {
     )
 }
 
+/// Direct Linux boots on QEMU's ARM `virt` machine have no SMBIOS table for
+/// systemd to read. The public key can safely use systemd's kernel command
+/// line credential transport; private keys and passwords must never use it.
+pub fn kernel_credential(public: &str) -> String {
+    format!(
+        "systemd.set_credential_binary={CREDENTIAL}:{}",
+        encoded(public)
+    )
+}
+
 /// The one-time step for a VM that did not get the key as a credential:
 /// the dev account logs in with its password, and sudo appends the key to
 /// root's `authorized_keys`. Runs the same in a POSIX shell and `PowerShell`.
@@ -121,78 +131,91 @@ mod tests {
 
     const PUBLIC: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample tilo-vm-dev";
 
-    #[cfg(unix)]
+    /// Keys live beside the registry, the credential carries the key line base64-encoded, the install step
+    /// logs in as the dev account, and an existing key is kept.
     #[test]
-    fn keys_live_beside_the_registry() {
-        let key = key_path(Path::new("/cfg/tilo-vm/vms.toml"), "dev");
-        assert_eq!(key, Path::new("/cfg/tilo-vm/keys/dev_ed25519"));
-        assert_eq!(
-            public_path(&key),
-            Path::new("/cfg/tilo-vm/keys/dev_ed25519.pub")
-        );
-        assert_eq!(
-            keygen_command(&key, "dev").display(),
-            "ssh-keygen -q -t ed25519 -N '' -C tilo-vm-dev -f /cfg/tilo-vm/keys/dev_ed25519"
-        );
-    }
-
-    #[test]
-    fn the_credential_carries_the_key_line_base64_encoded() {
-        let value = smbios_credential(PUBLIC);
-        let encoded = value
-            .strip_prefix("io.systemd.credential.binary:ssh.authorized_keys.root=")
-            .unwrap();
-        assert!(!encoded.contains([' ', ',', '\'', '"']), "{encoded}");
-        assert_eq!(
-            STANDARD.decode(encoded).unwrap(),
-            format!("{PUBLIC}\n").as_bytes()
-        );
-    }
-
-    #[test]
-    fn the_install_step_logs_in_as_the_dev_account() {
-        let endpoint = SshEndpoint {
-            user: "root".into(),
-            host: "192.168.64.5".into(),
-            port: 22,
-        };
-        let command = install_command(&endpoint, PUBLIC);
-        assert!(
-            command.starts_with("ssh -t -o StrictHostKeyChecking=accept-new -p 22 quickuser@192.168.64.5 'sudo install -d -m 0700 /root/.ssh && echo "),
-            "{command}"
-        );
-        assert!(command.contains(&encoded(PUBLIC)));
-        assert!(command.ends_with("| base64 -d | sudo tee -a /root/.ssh/authorized_keys >/dev/null && sudo restorecon -R /root/.ssh'"));
-    }
-
-    #[test]
-    fn an_existing_key_is_kept() {
-        /// Records what would have run, and runs nothing.
-        struct Record(Vec<String>);
-        impl Runner for Record {
-            fn output(
-                &mut self,
-                command: &CommandLine,
-            ) -> Result<crate::hypervisor::Output, CliError> {
-                self.0.push(command.display());
-                Err(CliError::InvalidInput("not run".into()))
-            }
-            fn interactive(&mut self, command: &CommandLine) -> Result<bool, CliError> {
-                self.0.push(command.display());
-                Ok(false)
-            }
+    fn the_dev_ssh_key_lives_beside_the_registry_and_logs_in_as_dev() {
+        // Phase: keys_live_beside_the_registry.
+        #[cfg(unix)]
+        {
+            let key = key_path(Path::new("/cfg/tilo-vm/vms.toml"), "dev");
+            assert_eq!(key, Path::new("/cfg/tilo-vm/keys/dev_ed25519"));
+            assert_eq!(
+                public_path(&key),
+                Path::new("/cfg/tilo-vm/keys/dev_ed25519.pub")
+            );
+            assert_eq!(
+                keygen_command(&key, "dev").display(),
+                "ssh-keygen -q -t ed25519 -N '' -C tilo-vm-dev -f /cfg/tilo-vm/keys/dev_ed25519"
+            );
         }
-        let dir = tempfile::tempdir().unwrap();
-        let key = dir.path().join("keys/dev_ed25519");
-        std::fs::create_dir_all(key.parent().unwrap()).unwrap();
-        std::fs::write(&key, "private").unwrap();
-        std::fs::write(public_path(&key), format!("{PUBLIC}\n")).unwrap();
-        let mut runner = Record(Vec::new());
-        assert_eq!(ensure(&mut runner, &key, "dev").unwrap(), PUBLIC);
-        assert!(runner.0.is_empty(), "{:?}", runner.0);
-        // A new VM's key is made with ssh-keygen.
-        let other = dir.path().join("keys/other_ed25519");
-        assert!(ensure(&mut runner, &other, "other").is_err());
-        assert_eq!(runner.0, [keygen_command(&other, "other").display()]);
+
+        // Phase: the_credential_carries_the_key_line_base64_encoded.
+        {
+            let value = smbios_credential(PUBLIC);
+            let encoded = value
+                .strip_prefix("io.systemd.credential.binary:ssh.authorized_keys.root=")
+                .unwrap();
+            assert!(!encoded.contains([' ', ',', '\'', '"']), "{encoded}");
+            assert_eq!(
+                STANDARD.decode(encoded).unwrap(),
+                format!("{PUBLIC}\n").as_bytes()
+            );
+            let kernel = kernel_credential(PUBLIC);
+            let encoded = kernel
+                .strip_prefix("systemd.set_credential_binary=ssh.authorized_keys.root:")
+                .unwrap();
+            assert_eq!(
+                STANDARD.decode(encoded).unwrap(),
+                format!("{PUBLIC}\n").as_bytes()
+            );
+        }
+
+        // Phase: the_install_step_logs_in_as_the_dev_account.
+        {
+            let endpoint = SshEndpoint {
+                user: "root".into(),
+                host: "192.168.64.5".into(),
+                port: 22,
+            };
+            let command = install_command(&endpoint, PUBLIC);
+            assert!(
+                command.starts_with("ssh -t -o StrictHostKeyChecking=accept-new -p 22 quickuser@192.168.64.5 'sudo install -d -m 0700 /root/.ssh && echo "),
+                "{command}"
+            );
+            assert!(command.contains(&encoded(PUBLIC)));
+            assert!(command.ends_with("| base64 -d | sudo tee -a /root/.ssh/authorized_keys >/dev/null && sudo restorecon -R /root/.ssh'"));
+        }
+
+        // Phase: an_existing_key_is_kept.
+        {
+            /// Records what would have run, and runs nothing.
+            struct Record(Vec<String>);
+            impl Runner for Record {
+                fn output(
+                    &mut self,
+                    command: &CommandLine,
+                ) -> Result<crate::hypervisor::Output, CliError> {
+                    self.0.push(command.display());
+                    Err(CliError::InvalidInput("not run".into()))
+                }
+                fn interactive(&mut self, command: &CommandLine) -> Result<bool, CliError> {
+                    self.0.push(command.display());
+                    Ok(false)
+                }
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let key = dir.path().join("keys/dev_ed25519");
+            std::fs::create_dir_all(key.parent().unwrap()).unwrap();
+            std::fs::write(&key, "private").unwrap();
+            std::fs::write(public_path(&key), format!("{PUBLIC}\n")).unwrap();
+            let mut runner = Record(Vec::new());
+            assert_eq!(ensure(&mut runner, &key, "dev").unwrap(), PUBLIC);
+            assert!(runner.0.is_empty(), "{:?}", runner.0);
+            // A new VM's key is made with ssh-keygen.
+            let other = dir.path().join("keys/other_ed25519");
+            assert!(ensure(&mut runner, &other, "other").is_err());
+            assert_eq!(runner.0, [keygen_command(&other, "other").display()]);
+        }
     }
 }

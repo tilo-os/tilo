@@ -13,6 +13,18 @@ fetcher = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fetcher)
 
 
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
+
+
 class AssetTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -27,36 +39,37 @@ class AssetTests(unittest.TestCase):
                                        for name in fetcher.NAMES)
                                 + f'{digest}\tunrelated\thttps://example.invalid/unrelated\n')
 
-    def test_valid_cache_uses_no_network_and_only_selected_assets(self):
-        for name in fetcher.NAMES:
-            (self.output / name).write_bytes(self.payload)
-        with patch.object(fetcher.urllib.request, 'urlopen', side_effect=AssertionError('network')):
-            fetcher.fetch(self.output, self.manifest)
-        self.assertEqual({p.name for p in self.output.iterdir()}, set(fetcher.NAMES))
-
-    def test_corrupt_cache_replaced_only_by_verified_download(self):
-        for name in fetcher.NAMES:
-            (self.output / name).write_bytes(b'corrupt')
-        with patch.object(fetcher.urllib.request, 'urlopen', side_effect=lambda *a, **k: io.BytesIO(self.payload)) as download:
-            fetcher.fetch(self.output, self.manifest)
-        self.assertEqual(download.call_count, 2)
-        for name in fetcher.NAMES:
-            self.assertEqual((self.output / name).read_bytes(), self.payload)
-
-    def test_wrong_download_is_not_promoted_and_temporary_file_removed(self):
-        existing = self.output / fetcher.NAMES[0]
-        existing.write_bytes(b'corrupt original')
-        with patch.object(fetcher.urllib.request, 'urlopen', return_value=io.BytesIO(b'wrong download')):
-            with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+    def test_asset_cache_and_download_verification(self):
+        with self.subTest(phase="valid_cache_uses_no_network_and_only_selected_assets"):
+            for name in fetcher.NAMES:
+                (self.output / name).write_bytes(self.payload)
+            with patch.object(fetcher.urllib.request, 'urlopen', side_effect=AssertionError('network')):
                 fetcher.fetch(self.output, self.manifest)
-        self.assertEqual(existing.read_bytes(), b'corrupt original')
-        self.assertEqual(list(self.output.iterdir()), [existing])
-
-    def test_duplicate_pin_rejected_before_download(self):
-        self.manifest.write_text(self.manifest.read_text() + self.manifest.read_text().splitlines()[0] + '\n')
-        with patch.object(fetcher.urllib.request, 'urlopen', side_effect=AssertionError('network')):
-            with self.assertRaisesRegex(ValueError, 'exactly one'):
+            self.assertEqual({p.name for p in self.output.iterdir()}, set(fetcher.NAMES))
+        restart_fixture(self)
+        with self.subTest(phase="corrupt_cache_replaced_only_by_verified_download"):
+            for name in fetcher.NAMES:
+                (self.output / name).write_bytes(b'corrupt')
+            with patch.object(fetcher.urllib.request, 'urlopen', side_effect=lambda *a, **k: io.BytesIO(self.payload)) as download:
                 fetcher.fetch(self.output, self.manifest)
+            self.assertEqual(download.call_count, 2)
+            for name in fetcher.NAMES:
+                self.assertEqual((self.output / name).read_bytes(), self.payload)
+        restart_fixture(self)
+        with self.subTest(phase="wrong_download_is_not_promoted_and_temporary_file_removed"):
+            existing = self.output / fetcher.NAMES[0]
+            existing.write_bytes(b'corrupt original')
+            with patch.object(fetcher.urllib.request, 'urlopen', return_value=io.BytesIO(b'wrong download')):
+                with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+                    fetcher.fetch(self.output, self.manifest)
+            self.assertEqual(existing.read_bytes(), b'corrupt original')
+            self.assertEqual(list(self.output.iterdir()), [existing])
+        restart_fixture(self)
+        with self.subTest(phase="duplicate_pin_rejected_before_download"):
+            self.manifest.write_text(self.manifest.read_text() + self.manifest.read_text().splitlines()[0] + '\n')
+            with patch.object(fetcher.urllib.request, 'urlopen', side_effect=AssertionError('network')):
+                with self.assertRaisesRegex(ValueError, 'exactly one'):
+                    fetcher.fetch(self.output, self.manifest)
 
 
 if __name__ == '__main__':

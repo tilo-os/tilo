@@ -7,7 +7,7 @@
 //! expanded disk image are SHA-256 checked before the image becomes selectable.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -460,10 +460,7 @@ fn validate_digest(digest: &str) -> Result<(), String> {
 }
 
 fn cache_root() -> PathBuf {
-    std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+    tilo_paths::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("tilo-imager")
 }
@@ -777,8 +774,7 @@ fn verified_image_observed(
 
     let compressed = File::open(&archive_part)
         .map_err(|error| format!("Could not open the verified installer: {error}"))?;
-    let mut decoder = zstd::stream::read::Decoder::new(compressed)
-        .map_err(|error| format!("Could not unpack the Tilo installer: {error}"))?;
+    let mut decoder = ZstdFrames::new(BufReader::new(compressed));
     let mut expanded = File::create(&image_part)
         .map_err(|error| format!("Could not create the expanded installer: {error}"))?;
     let mut expanded_size = 0_u64;
@@ -864,6 +860,56 @@ pub fn spawn_download(release: TiloRelease) -> DownloadJob {
     }
 }
 
+/// Zstandard frames back to back, decoded as `zstd --decompress` reads them.
+struct ZstdFrames<R> {
+    source: R,
+    frame: ruzstd::decoding::FrameDecoder,
+    open: bool,
+}
+
+impl<R: BufRead> ZstdFrames<R> {
+    fn new(source: R) -> Self {
+        Self {
+            source,
+            frame: ruzstd::decoding::FrameDecoder::new(),
+            open: false,
+        }
+    }
+}
+
+impl<R: BufRead> Read for ZstdFrames<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if !self.open {
+                if self.source.fill_buf()?.is_empty() {
+                    return Ok(0);
+                }
+                self.frame
+                    .reset(&mut self.source)
+                    .map_err(io::Error::other)?;
+                self.open = true;
+            }
+            while self.frame.can_collect() < buf.len() && !self.frame.is_finished() {
+                let wanted = buf.len() - self.frame.can_collect();
+                self.frame
+                    .decode_blocks(
+                        &mut self.source,
+                        ruzstd::decoding::BlockDecodingStrategy::UptoBytes(wanted),
+                    )
+                    .map_err(io::Error::other)?;
+            }
+            let read = self.frame.read(buf)?;
+            if read > 0 {
+                return Ok(read);
+            }
+            self.open = false;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -937,9 +983,72 @@ mod tests {
         tilo_net::http::blocking_client().build().unwrap()
     }
 
+    /// Architecture-matched media selection.
     #[test]
-    fn development_catalog_is_well_formed() {
-        assert!(bundled_releases().is_ok());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn media_selection_matches_the_native_host_architecture_only() {
+        // Phase `development_catalog_is_well_formed`.
+        {
+            assert!(bundled_releases().is_ok());
+        }
+
+        // Phase `native_arm64_host_selects_only_arm64_media_regardless_of_imager_build`.
+        {
+            let releases =
+                releases_for_host(&catalog_with_both_architectures(), Ok(Some("aarch64"))).unwrap();
+            assert_eq!(releases.len(), 1);
+            assert_eq!(releases[0].name, "Tilo aarch64");
+            assert!(releases[0].url.ends_with("tilo-aarch64.img.zst"));
+            assert_eq!(releases[0].image_sha256, "b".repeat(64));
+        }
+
+        // Phase `native_x86_64_host_selects_only_x86_64_media`.
+        {
+            let releases =
+                releases_for_host(&catalog_with_both_architectures(), Ok(Some("x86_64"))).unwrap();
+            assert_eq!(releases.len(), 1);
+            assert_eq!(releases[0].name, "Tilo x86_64");
+        }
+
+        // Phase `native_arm64_host_does_not_fall_back_when_only_x86_media_is_published`.
+        {
+            let mut catalog: serde_json::Value =
+                serde_json::from_str(&catalog_with_both_architectures()).unwrap();
+            catalog["releases"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|release| release["arch"] == "x86_64");
+            assert!(
+                releases_for_host(&catalog.to_string(), Ok(Some("aarch64")))
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+
+        // Phase `unknown_or_failed_native_detection_never_offers_media`.
+        {
+            let catalog = catalog_with_both_architectures();
+            assert!(releases_for_host(&catalog, Ok(None)).unwrap().is_empty());
+            assert_eq!(
+                releases_for_host(&catalog, Err("host detection failed".into())).unwrap_err(),
+                "host detection failed"
+            );
+        }
+
+        // Phase `arm64_selection_preserves_catalog_metadata_validation`.
+        {
+            let catalog = catalog_with_both_architectures();
+            for invalid in [
+                catalog.replace("code.tilo.so", "untrusted.example"),
+                catalog.replace(&"a".repeat(64), "invalid-digest"),
+                catalog.replace("\"image_size\":64", "\"image_size\":0"),
+            ] {
+                assert!(releases_for_host(&invalid, Ok(Some("aarch64"))).is_err());
+            }
+        }
     }
 
     fn catalog_with_both_architectures() -> String {
@@ -964,24 +1073,6 @@ mod tests {
         .to_string()
     }
 
-    #[test]
-    fn native_arm64_host_selects_only_arm64_media_regardless_of_imager_build() {
-        let releases =
-            releases_for_host(&catalog_with_both_architectures(), Ok(Some("aarch64"))).unwrap();
-        assert_eq!(releases.len(), 1);
-        assert_eq!(releases[0].name, "Tilo aarch64");
-        assert!(releases[0].url.ends_with("tilo-aarch64.img.zst"));
-        assert_eq!(releases[0].image_sha256, "b".repeat(64));
-    }
-
-    #[test]
-    fn native_x86_64_host_selects_only_x86_64_media() {
-        let releases =
-            releases_for_host(&catalog_with_both_architectures(), Ok(Some("x86_64"))).unwrap();
-        assert_eq!(releases.len(), 1);
-        assert_eq!(releases[0].name, "Tilo x86_64");
-    }
-
     fn catalog_with_hardware_variant() -> serde_json::Value {
         let mut catalog: serde_json::Value =
             serde_json::from_str(&catalog_with_both_architectures()).unwrap();
@@ -1002,206 +1093,376 @@ mod tests {
         catalog
     }
 
+    /// Hardware variants, legacy catalogs and v2 profiles.
     #[test]
-    fn hardware_variants_keep_distinct_authenticated_selection_and_source_labels() {
-        let releases = releases_for_host(
-            &catalog_with_hardware_variant().to_string(),
-            Ok(Some("aarch64")),
-        )
-        .unwrap();
-        assert_eq!(releases.len(), 2);
-        assert_eq!(releases[0].hardware_profile, "generic");
-        assert_eq!(releases[1].hardware_profile, "lenovo-83ed");
-        assert_ne!(releases[0].selection_id(), releases[1].selection_id());
-        let board = releases[1].to_source();
-        assert!(board.name.contains("lenovo-83ed only"));
-        assert!(board.label.contains("lenovo-83ed only"));
-        assert_eq!(
-            board.expected_sha256.as_deref(),
-            Some("c".repeat(64).as_str())
-        );
-        assert!(!releases[0].matches_source(&board));
-        assert!(releases[1].matches_source(&board));
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn hardware_profiles_are_explicit_data_driven_and_provenance_bound() {
+        // Phase `hardware_variants_keep_distinct_authenticated_selection_and_source_labels`.
+        {
+            let releases = releases_for_host(
+                &catalog_with_hardware_variant().to_string(),
+                Ok(Some("aarch64")),
+            )
+            .unwrap();
+            assert_eq!(releases.len(), 2);
+            assert_eq!(releases[0].hardware_profile, "generic");
+            assert_eq!(releases[1].hardware_profile, "lenovo-83ed");
+            assert_ne!(releases[0].selection_id(), releases[1].selection_id());
+            let board = releases[1].to_source();
+            assert!(board.name.contains("lenovo-83ed only"));
+            assert!(board.label.contains("lenovo-83ed only"));
+            assert_eq!(
+                board.expected_sha256.as_deref(),
+                Some("c".repeat(64).as_str())
+            );
+            assert!(!releases[0].matches_source(&board));
+            assert!(releases[1].matches_source(&board));
+        }
 
-    #[test]
-    fn legacy_catalogs_mean_generic_and_cannot_silently_claim_a_board() {
-        let legacy =
-            releases_for_host(&catalog_with_both_architectures(), Ok(Some("aarch64"))).unwrap();
-        assert_eq!(legacy[0].hardware_profile, "generic");
-        let mut catalog = catalog_with_hardware_variant();
-        catalog["schema"] = 1.into();
-        assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
-    }
-
-    #[test]
-    fn generic_media_provenance_does_not_require_a_board_profile_payload() {
-        let mut catalog: serde_json::Value =
-            serde_json::from_str(&catalog_with_both_architectures()).unwrap();
-        catalog["releases"][1]["provenance"] = serde_json::json!({
-            "source_image_id": format!("sha256:{}", "d".repeat(64)),
-            "input_qcow2_sha256": "e".repeat(64),
-            "hardware_profile_sha256": null,
-            "target_update_ref": null,
-        });
-        let releases = releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).unwrap();
-        assert_eq!(releases[0].hardware_profile, "generic");
-    }
-
-    #[test]
-    fn v2_requires_safe_explicit_unique_profiles_and_bound_provenance() {
-        for invalid in [
-            serde_json::Value::Null,
-            "".into(),
-            "../board".into(),
-            "Board".into(),
-        ] {
+        // Phase `legacy_catalogs_mean_generic_and_cannot_silently_claim_a_board`.
+        {
+            let legacy =
+                releases_for_host(&catalog_with_both_architectures(), Ok(Some("aarch64"))).unwrap();
+            assert_eq!(legacy[0].hardware_profile, "generic");
             let mut catalog = catalog_with_hardware_variant();
-            catalog["releases"][2]["hardware_profile"] = invalid;
+            catalog["schema"] = 1.into();
             assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
         }
-        for field in ["hardware_profile", "provenance"] {
+
+        // Phase `generic_media_provenance_does_not_require_a_board_profile_payload`.
+        {
+            let mut catalog: serde_json::Value =
+                serde_json::from_str(&catalog_with_both_architectures()).unwrap();
+            catalog["releases"][1]["provenance"] = serde_json::json!({
+                "source_image_id": format!("sha256:{}", "d".repeat(64)),
+                "input_qcow2_sha256": "e".repeat(64),
+                "hardware_profile_sha256": null,
+                "target_update_ref": null,
+            });
+            let releases = releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).unwrap();
+            assert_eq!(releases[0].hardware_profile, "generic");
+        }
+
+        // Phase `v2_requires_safe_explicit_unique_profiles_and_bound_provenance`.
+        {
+            for invalid in [
+                serde_json::Value::Null,
+                "".into(),
+                "../board".into(),
+                "Board".into(),
+            ] {
+                let mut catalog = catalog_with_hardware_variant();
+                catalog["releases"][2]["hardware_profile"] = invalid;
+                assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
+            }
+            for field in ["hardware_profile", "provenance"] {
+                let mut catalog = catalog_with_hardware_variant();
+                catalog["releases"][2]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(field);
+                assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
+            }
+            for field in [
+                "source_image_id",
+                "hardware_profile_sha256",
+                "input_qcow2_sha256",
+                "target_update_ref",
+            ] {
+                let mut catalog = catalog_with_hardware_variant();
+                catalog["releases"][2]["provenance"][field] = "untrusted".into();
+                assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
+            }
+            for origin in [
+                "registry.tilo.so/tilo/tilo:gen7".to_owned(),
+                format!("code.tilo.so/tilo/tilo@sha256:{}", "a".repeat(64)),
+            ] {
+                let mut catalog = catalog_with_hardware_variant();
+                catalog["releases"][2]["provenance"]["target_update_ref"] = origin.into();
+                assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_ok());
+            }
+            for origin in [
+                "registry.tilo.so/tilo/tilo-vm:gen7",
+                "registry.tilo.so/tilo/tilo:",
+                "code.tilo.so/tilo/tilo@sha256:short",
+                "example.org/tilo/tilo:gen7",
+            ] {
+                let mut catalog = catalog_with_hardware_variant();
+                catalog["releases"][2]["provenance"]["target_update_ref"] = origin.into();
+                assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
+            }
             let mut catalog = catalog_with_hardware_variant();
-            catalog["releases"][2]
-                .as_object_mut()
-                .unwrap()
-                .remove(field);
+            let duplicate = catalog["releases"][2].clone();
+            catalog["releases"].as_array_mut().unwrap().push(duplicate);
             assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
         }
-        for field in [
-            "source_image_id",
-            "hardware_profile_sha256",
-            "input_qcow2_sha256",
-            "target_update_ref",
-        ] {
+
+        // Phase `hardware_profile_ids_are_data_driven_not_a_model_allowlist`.
+        {
             let mut catalog = catalog_with_hardware_variant();
-            catalog["releases"][2]["provenance"][field] = "untrusted".into();
-            assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
-        }
-        for origin in [
-            "registry.tilo.so/tilo/tilo:gen7".to_owned(),
-            format!("code.tilo.so/tilo/tilo@sha256:{}", "a".repeat(64)),
-        ] {
-            let mut catalog = catalog_with_hardware_variant();
-            catalog["releases"][2]["provenance"]["target_update_ref"] = origin.into();
-            assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_ok());
-        }
-        for origin in [
-            "registry.tilo.so/tilo/tilo-vm:gen7",
-            "registry.tilo.so/tilo/tilo:",
-            "code.tilo.so/tilo/tilo@sha256:short",
-            "example.org/tilo/tilo:gen7",
-        ] {
-            let mut catalog = catalog_with_hardware_variant();
-            catalog["releases"][2]["provenance"]["target_update_ref"] = origin.into();
-            assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
-        }
-        let mut catalog = catalog_with_hardware_variant();
-        let duplicate = catalog["releases"][2].clone();
-        catalog["releases"].as_array_mut().unwrap().push(duplicate);
-        assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
-    }
-
-    #[test]
-    fn hardware_profile_ids_are_data_driven_not_a_model_allowlist() {
-        let mut catalog = catalog_with_hardware_variant();
-        catalog["releases"][2]["hardware_profile"] = "another-reviewed-board".into();
-        let releases = releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).unwrap();
-        assert!(
-            releases[1]
-                .to_source()
-                .name
-                .contains("another-reviewed-board only")
-        );
-    }
-
-    #[test]
-    fn native_arm64_host_does_not_fall_back_when_only_x86_media_is_published() {
-        let mut catalog: serde_json::Value =
-            serde_json::from_str(&catalog_with_both_architectures()).unwrap();
-        catalog["releases"]
-            .as_array_mut()
-            .unwrap()
-            .retain(|release| release["arch"] == "x86_64");
-        assert!(
-            releases_for_host(&catalog.to_string(), Ok(Some("aarch64")))
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn unknown_or_failed_native_detection_never_offers_media() {
-        let catalog = catalog_with_both_architectures();
-        assert!(releases_for_host(&catalog, Ok(None)).unwrap().is_empty());
-        assert_eq!(
-            releases_for_host(&catalog, Err("host detection failed".into())).unwrap_err(),
-            "host detection failed"
-        );
-    }
-
-    #[test]
-    fn arm64_selection_preserves_catalog_metadata_validation() {
-        let catalog = catalog_with_both_architectures();
-        for invalid in [
-            catalog.replace("code.tilo.so", "untrusted.example"),
-            catalog.replace(&"a".repeat(64), "invalid-digest"),
-            catalog.replace("\"image_size\":64", "\"image_size\":0"),
-        ] {
-            assert!(releases_for_host(&invalid, Ok(Some("aarch64"))).is_err());
+            catalog["releases"][2]["hardware_profile"] = "another-reviewed-board".into();
+            let releases = releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).unwrap();
+            assert!(
+                releases[1]
+                    .to_source()
+                    .name
+                    .contains("another-reviewed-board only")
+            );
         }
     }
 
+    /// Digest validation, verified source identity and redirect checks.
     #[test]
-    fn digest_validation_is_strict() {
-        assert!(validate_digest(&"a".repeat(64)).is_ok());
-        assert!(validate_digest(&"z".repeat(64)).is_err());
-        assert!(validate_digest("abc").is_err());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn release_sources_keep_strict_digests_identity_and_trusted_redirects() {
+        // Phase `digest_validation_is_strict`.
+        {
+            assert!(validate_digest(&"a".repeat(64)).is_ok());
+            assert!(validate_digest(&"z".repeat(64)).is_err());
+            assert!(validate_digest("abc").is_err());
+        }
+
+        // Phase `verified_release_source_keeps_catalog_digest_and_file_identity`.
+        {
+            let image = tempfile::NamedTempFile::new().unwrap();
+            let release = TiloRelease {
+                name: "Tilo".into(),
+                version: "1.0".into(),
+                size: 1,
+                channel: "stable".into(),
+                architecture: "aarch64".into(),
+                hardware_profile: "generic".into(),
+                local_path: String::new(),
+                url:
+                    "https://code.tilo.so/tilo/releases/releases/download/imager-v1.0.0/tilo.img.zst"
+                        .into(),
+                archive_sha256: "a".repeat(64),
+                archive_size: 1,
+                image_sha256: "b".repeat(64),
+            };
+
+            let source = source_for(&release, image.path()).unwrap();
+            let expected = "b".repeat(64);
+            assert_eq!(source.expected_sha256.as_deref(), Some(expected.as_str()));
+            assert!(source.identity.is_some());
+            assert_eq!(
+                source.identity,
+                crate::model::SourceIdentity::from_file(image.as_file()).unwrap()
+            );
+            let missing = image.path().with_extension("missing");
+            assert!(source_for(&release, &missing).is_err());
+        }
+
+        // Phase `trusted_redirect_check_includes_scheme_host_and_port`.
+        {
+            let trusted = reqwest::Url::parse("https://code.tilo.so/").unwrap();
+            assert!(same_origin(
+                &reqwest::Url::parse("https://code.tilo.so/releases/file").unwrap(),
+                &trusted
+            ));
+            assert!(!same_origin(
+                &reqwest::Url::parse("https://code.tilo.so:444/releases/file").unwrap(),
+                &trusted
+            ));
+            assert!(!same_origin(
+                &reqwest::Url::parse("http://code.tilo.so/releases/file").unwrap(),
+                &trusted
+            ));
+        }
     }
 
+    /// Range resume, restart and oversized partials.
     #[test]
-    fn verified_release_source_keeps_catalog_digest_and_file_identity() {
-        let image = tempfile::NamedTempFile::new().unwrap();
-        let release = TiloRelease {
-            name: "Tilo".into(),
-            version: "1.0".into(),
-            size: 1,
-            channel: "stable".into(),
-            architecture: "aarch64".into(),
-            hardware_profile: "generic".into(),
-            local_path: String::new(),
-            url:
-                "https://code.tilo.so/tilo/releases/releases/download/imager-v1.0.0/tilo.img.zst"
-                    .into(),
-            archive_sha256: "a".repeat(64),
-            archive_size: 1,
-            image_sha256: "b".repeat(64),
-        };
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn release_download_resumes_only_valid_ranges() {
+        // Phase `interrupted_download_keeps_bytes_and_resumes_with_a_valid_range`.
+        {
+            let payload = b"signed installer archive bytes";
+            let split = 9;
+            let (url, origin, requests, server) = serve(vec![
+                HttpResponse {
+                    status: "200 OK",
+                    headers: vec![],
+                    body: payload[..split].to_vec(),
+                    advertised_size: Some(payload.len()),
+                },
+                HttpResponse {
+                    status: "206 Partial Content",
+                    headers: vec![format!(
+                        "Content-Range: bytes {split}-{}/{}",
+                        payload.len() - 1,
+                        payload.len()
+                    )],
+                    body: payload[split..].to_vec(),
+                    advertised_size: None,
+                },
+            ]);
+            let cache = tempfile::tempdir().unwrap();
+            let part = cache.path().join("installer.part");
+            let client = test_client();
 
-        let source = source_for(&release, image.path()).unwrap();
-        let expected = "b".repeat(64);
-        assert_eq!(source.expected_sha256.as_deref(), Some(expected.as_str()));
-        assert!(source.identity.is_some());
-        assert_eq!(
-            source.identity,
-            crate::model::SourceIdentity::from_file(image.as_file()).unwrap()
-        );
-        let missing = image.path().with_extension("missing");
-        assert!(source_for(&release, &missing).is_err());
-    }
+            assert!(download_archive(&client, &url, &origin, &part, payload.len() as u64).is_err());
+            assert_eq!(fs::read(&part).unwrap(), payload[..split]);
+            download_archive(&client, &url, &origin, &part, payload.len() as u64).unwrap();
+            assert_eq!(fs::read(&part).unwrap(), payload);
+            server.join().unwrap();
+            let requests = requests.lock().unwrap();
+            assert!(!requests[0].contains("Range:"));
+            assert!(requests[1].contains(&format!("range: bytes={split}-")));
+            drop(requests);
+        }
 
-    #[test]
-    fn interrupted_download_keeps_bytes_and_resumes_with_a_valid_range() {
-        let payload = b"signed installer archive bytes";
-        let split = 9;
-        let (url, origin, requests, server) = serve(vec![
-            HttpResponse {
+        // Phase `ignored_range_restarts_without_duplicating_the_partial`.
+        {
+            let payload = b"complete archive from a range-ignorant server";
+            let (url, origin, requests, server) = serve(vec![HttpResponse {
                 status: "200 OK",
                 headers: vec![],
-                body: payload[..split].to_vec(),
-                advertised_size: Some(payload.len()),
-            },
-            HttpResponse {
+                body: payload.to_vec(),
+                advertised_size: None,
+            }]);
+            let cache = tempfile::tempdir().unwrap();
+            let part = cache.path().join("installer.part");
+            fs::write(&part, &payload[..8]).unwrap();
+
+            download_archive(&test_client(), &url, &origin, &part, payload.len() as u64).unwrap();
+            assert_eq!(fs::read(&part).unwrap(), payload);
+            server.join().unwrap();
+            assert!(requests.lock().unwrap()[0].contains("range: bytes=8-"));
+        }
+
+        // Phase `mismatched_content_range_is_discarded_before_a_clean_restart`.
+        {
+            let payload = b"archive with authenticated final digest";
+            let split = 7;
+            let (url, origin, requests, server) = serve(vec![
+                HttpResponse {
+                    status: "206 Partial Content",
+                    headers: vec![format!(
+                        "Content-Range: bytes {}-{}/{}",
+                        split + 1,
+                        payload.len() - 1,
+                        payload.len()
+                    )],
+                    body: payload[split..].to_vec(),
+                    advertised_size: None,
+                },
+                HttpResponse {
+                    status: "200 OK",
+                    headers: vec![],
+                    body: payload.to_vec(),
+                    advertised_size: None,
+                },
+            ]);
+            let cache = tempfile::tempdir().unwrap();
+            let part = cache.path().join("installer.part");
+            fs::write(&part, &payload[..split]).unwrap();
+
+            download_archive(&test_client(), &url, &origin, &part, payload.len() as u64).unwrap();
+            assert_eq!(fs::read(&part).unwrap(), payload);
+            server.join().unwrap();
+            let requests = requests.lock().unwrap();
+            assert!(requests[0].contains(&format!("range: bytes={split}-")));
+            assert!(!requests[1].contains("Range:"));
+            assert!(!requests[1].contains("range:"));
+            drop(requests);
+        }
+
+        // Phase `oversized_partial_is_removed_before_requesting_the_full_archive`.
+        {
+            let payload = b"small complete archive";
+            let (url, origin, requests, server) = serve(vec![HttpResponse {
+                status: "200 OK",
+                headers: vec![],
+                body: payload.to_vec(),
+                advertised_size: None,
+            }]);
+            let cache = tempfile::tempdir().unwrap();
+            let part = cache.path().join("installer.part");
+            fs::write(&part, vec![b'x'; payload.len() + 1]).unwrap();
+
+            download_archive(&test_client(), &url, &origin, &part, payload.len() as u64).unwrap();
+            assert_eq!(fs::read(&part).unwrap(), payload);
+            server.join().unwrap();
+            assert!(!requests.lock().unwrap()[0].contains("range:"));
+        }
+    }
+
+    /// Transient failures, progress reporting and cancellation.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn release_download_failures_and_cancellation_keep_the_partial() {
+        // Phase `transient_http_failure_does_not_destroy_a_partial_archive`.
+        {
+            let payload = b"partial archive survives";
+            let (url, origin, requests, server) = serve(vec![HttpResponse {
+                status: "503 Service Unavailable",
+                headers: vec![],
+                body: b"later".to_vec(),
+                advertised_size: None,
+            }]);
+            let cache = tempfile::tempdir().unwrap();
+            let part = cache.path().join("installer.part");
+            fs::write(&part, &payload[..6]).unwrap();
+
+            assert!(
+                download_archive(&test_client(), &url, &origin, &part, payload.len() as u64)
+                    .is_err()
+            );
+            assert_eq!(fs::read(&part).unwrap(), payload[..6]);
+            server.join().unwrap();
+            assert!(requests.lock().unwrap()[0].contains("range: bytes=6-"));
+        }
+
+        // Phase `observed_download_reports_bounded_byte_progress`.
+        {
+            let payload = b"installer bytes with progress";
+            let (url, origin, _requests, server) = serve(vec![HttpResponse {
+                status: "200 OK",
+                headers: vec![],
+                body: payload.to_vec(),
+                advertised_size: None,
+            }]);
+            let cache = tempfile::tempdir().unwrap();
+            let part = cache.path().join("installer.part");
+            let mut events = Vec::new();
+
+            download_archive_observed(
+                &test_client(),
+                &url,
+                &origin,
+                &part,
+                payload.len() as u64,
+                &DownloadControl::default(),
+                &mut |event| events.push(event),
+            )
+            .unwrap();
+
+            server.join().unwrap();
+            assert!(events.iter().any(|event| matches!(
+                event,
+                DownloadEvent::Downloading { received, total }
+                    if *received == payload.len() as u64 && *total == payload.len() as u64
+            )));
+        }
+
+        // Phase `cancellation_preserves_the_resumable_partial_archive`.
+        {
+            let payload = b"more authenticated installer bytes";
+            let split = 8;
+            let (url, origin, _requests, server) = serve(vec![HttpResponse {
                 status: "206 Partial Content",
                 headers: vec![format!(
                     "Content-Range: bytes {split}-{}/{}",
@@ -1210,202 +1471,28 @@ mod tests {
                 )],
                 body: payload[split..].to_vec(),
                 advertised_size: None,
-            },
-        ]);
-        let cache = tempfile::tempdir().unwrap();
-        let part = cache.path().join("installer.part");
-        let client = test_client();
+            }]);
+            let cache = tempfile::tempdir().unwrap();
+            let part = cache.path().join("installer.part");
+            fs::write(&part, &payload[..split]).unwrap();
+            let control = DownloadControl::default();
+            control.cancel();
 
-        assert!(download_archive(&client, &url, &origin, &part, payload.len() as u64).is_err());
-        assert_eq!(fs::read(&part).unwrap(), payload[..split]);
-        download_archive(&client, &url, &origin, &part, payload.len() as u64).unwrap();
-        assert_eq!(fs::read(&part).unwrap(), payload);
-        server.join().unwrap();
-        let requests = requests.lock().unwrap();
-        assert!(!requests[0].contains("Range:"));
-        assert!(requests[1].contains(&format!("range: bytes={split}-")));
-        drop(requests);
-    }
+            let error = download_archive_observed(
+                &test_client(),
+                &url,
+                &origin,
+                &part,
+                payload.len() as u64,
+                &control,
+                &mut |_| {},
+            )
+            .unwrap_err();
 
-    #[test]
-    fn ignored_range_restarts_without_duplicating_the_partial() {
-        let payload = b"complete archive from a range-ignorant server";
-        let (url, origin, requests, server) = serve(vec![HttpResponse {
-            status: "200 OK",
-            headers: vec![],
-            body: payload.to_vec(),
-            advertised_size: None,
-        }]);
-        let cache = tempfile::tempdir().unwrap();
-        let part = cache.path().join("installer.part");
-        fs::write(&part, &payload[..8]).unwrap();
-
-        download_archive(&test_client(), &url, &origin, &part, payload.len() as u64).unwrap();
-        assert_eq!(fs::read(&part).unwrap(), payload);
-        server.join().unwrap();
-        assert!(requests.lock().unwrap()[0].contains("range: bytes=8-"));
-    }
-
-    #[test]
-    fn mismatched_content_range_is_discarded_before_a_clean_restart() {
-        let payload = b"archive with authenticated final digest";
-        let split = 7;
-        let (url, origin, requests, server) = serve(vec![
-            HttpResponse {
-                status: "206 Partial Content",
-                headers: vec![format!(
-                    "Content-Range: bytes {}-{}/{}",
-                    split + 1,
-                    payload.len() - 1,
-                    payload.len()
-                )],
-                body: payload[split..].to_vec(),
-                advertised_size: None,
-            },
-            HttpResponse {
-                status: "200 OK",
-                headers: vec![],
-                body: payload.to_vec(),
-                advertised_size: None,
-            },
-        ]);
-        let cache = tempfile::tempdir().unwrap();
-        let part = cache.path().join("installer.part");
-        fs::write(&part, &payload[..split]).unwrap();
-
-        download_archive(&test_client(), &url, &origin, &part, payload.len() as u64).unwrap();
-        assert_eq!(fs::read(&part).unwrap(), payload);
-        server.join().unwrap();
-        let requests = requests.lock().unwrap();
-        assert!(requests[0].contains(&format!("range: bytes={split}-")));
-        assert!(!requests[1].contains("Range:"));
-        assert!(!requests[1].contains("range:"));
-        drop(requests);
-    }
-
-    #[test]
-    fn oversized_partial_is_removed_before_requesting_the_full_archive() {
-        let payload = b"small complete archive";
-        let (url, origin, requests, server) = serve(vec![HttpResponse {
-            status: "200 OK",
-            headers: vec![],
-            body: payload.to_vec(),
-            advertised_size: None,
-        }]);
-        let cache = tempfile::tempdir().unwrap();
-        let part = cache.path().join("installer.part");
-        fs::write(&part, vec![b'x'; payload.len() + 1]).unwrap();
-
-        download_archive(&test_client(), &url, &origin, &part, payload.len() as u64).unwrap();
-        assert_eq!(fs::read(&part).unwrap(), payload);
-        server.join().unwrap();
-        assert!(!requests.lock().unwrap()[0].contains("range:"));
-    }
-
-    #[test]
-    fn transient_http_failure_does_not_destroy_a_partial_archive() {
-        let payload = b"partial archive survives";
-        let (url, origin, requests, server) = serve(vec![HttpResponse {
-            status: "503 Service Unavailable",
-            headers: vec![],
-            body: b"later".to_vec(),
-            advertised_size: None,
-        }]);
-        let cache = tempfile::tempdir().unwrap();
-        let part = cache.path().join("installer.part");
-        fs::write(&part, &payload[..6]).unwrap();
-
-        assert!(
-            download_archive(&test_client(), &url, &origin, &part, payload.len() as u64).is_err()
-        );
-        assert_eq!(fs::read(&part).unwrap(), payload[..6]);
-        server.join().unwrap();
-        assert!(requests.lock().unwrap()[0].contains("range: bytes=6-"));
-    }
-
-    #[test]
-    fn observed_download_reports_bounded_byte_progress() {
-        let payload = b"installer bytes with progress";
-        let (url, origin, _requests, server) = serve(vec![HttpResponse {
-            status: "200 OK",
-            headers: vec![],
-            body: payload.to_vec(),
-            advertised_size: None,
-        }]);
-        let cache = tempfile::tempdir().unwrap();
-        let part = cache.path().join("installer.part");
-        let mut events = Vec::new();
-
-        download_archive_observed(
-            &test_client(),
-            &url,
-            &origin,
-            &part,
-            payload.len() as u64,
-            &DownloadControl::default(),
-            &mut |event| events.push(event),
-        )
-        .unwrap();
-
-        server.join().unwrap();
-        assert!(events.iter().any(|event| matches!(
-            event,
-            DownloadEvent::Downloading { received, total }
-                if *received == payload.len() as u64 && *total == payload.len() as u64
-        )));
-    }
-
-    #[test]
-    fn cancellation_preserves_the_resumable_partial_archive() {
-        let payload = b"more authenticated installer bytes";
-        let split = 8;
-        let (url, origin, _requests, server) = serve(vec![HttpResponse {
-            status: "206 Partial Content",
-            headers: vec![format!(
-                "Content-Range: bytes {split}-{}/{}",
-                payload.len() - 1,
-                payload.len()
-            )],
-            body: payload[split..].to_vec(),
-            advertised_size: None,
-        }]);
-        let cache = tempfile::tempdir().unwrap();
-        let part = cache.path().join("installer.part");
-        fs::write(&part, &payload[..split]).unwrap();
-        let control = DownloadControl::default();
-        control.cancel();
-
-        let error = download_archive_observed(
-            &test_client(),
-            &url,
-            &origin,
-            &part,
-            payload.len() as u64,
-            &control,
-            &mut |_| {},
-        )
-        .unwrap_err();
-
-        server.join().unwrap();
-        assert!(error.contains("cancelled"));
-        assert_eq!(fs::read(&part).unwrap(), payload[..split]);
-    }
-
-    #[test]
-    fn trusted_redirect_check_includes_scheme_host_and_port() {
-        let trusted = reqwest::Url::parse("https://code.tilo.so/").unwrap();
-        assert!(same_origin(
-            &reqwest::Url::parse("https://code.tilo.so/releases/file").unwrap(),
-            &trusted
-        ));
-        assert!(!same_origin(
-            &reqwest::Url::parse("https://code.tilo.so:444/releases/file").unwrap(),
-            &trusted
-        ));
-        assert!(!same_origin(
-            &reqwest::Url::parse("http://code.tilo.so/releases/file").unwrap(),
-            &trusted
-        ));
+            server.join().unwrap();
+            assert!(error.contains("cancelled"));
+            assert_eq!(fs::read(&part).unwrap(), payload[..split]);
+        }
     }
 }
 
@@ -1421,31 +1508,87 @@ mod internal_catalog_tests {
     fn catalog(entry: Value) -> String {
         json!({"schema":1,"tag":"imager-vtest","releases":[entry]}).to_string()
     }
+    /// Legacy media, internal purpose, unknown fields and published packages.
     #[test]
-    fn legacy_media_still_parses() {
-        assert!(parse_catalog(&catalog(media())).is_ok());
-    }
-    #[test]
-    fn explicit_internal_purpose_never_falls_through_as_media() {
-        let mut value = media();
-        value["purpose"] = json!("tilo-internal-installer");
-        value["layout"] = json!("internal-bundle-v2");
-        assert!(parse_catalog(&catalog(value)).is_err());
-    }
-    #[test]
-    fn catalog_rejects_unknown_fields_and_bad_foreign_entries() {
-        let mut value = media();
-        value["unexpected"] = json!(true);
-        assert!(parse_catalog(&catalog(value)).is_err());
-        for (field, bad) in [
-            ("archive_sha256", json!("invalid")),
-            ("url", json!("https://evil.example/file")),
-            ("image_size", json!(0)),
-        ] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn internal_catalog_entries_parse_strictly_and_separately_from_media() {
+        // Phase `legacy_media_still_parses`.
+        {
+            assert!(parse_catalog(&catalog(media())).is_ok());
+        }
+
+        // Phase `explicit_internal_purpose_never_falls_through_as_media`.
+        {
             let mut value = media();
-            value["arch"] = json!("aarch64");
-            value[field] = bad;
-            assert!(parse_catalog(&catalog(value)).is_err(), "accepted {field}");
+            value["purpose"] = json!("tilo-internal-installer");
+            value["layout"] = json!("internal-bundle-v2");
+            assert!(parse_catalog(&catalog(value)).is_err());
+        }
+
+        // Phase `catalog_rejects_unknown_fields_and_bad_foreign_entries`.
+        {
+            let mut value = media();
+            value["unexpected"] = json!(true);
+            assert!(parse_catalog(&catalog(value)).is_err());
+            for (field, bad) in [
+                ("archive_sha256", json!("invalid")),
+                ("url", json!("https://evil.example/file")),
+                ("image_size", json!(0)),
+            ] {
+                let mut value = media();
+                value["arch"] = json!("aarch64");
+                value[field] = bad;
+                assert!(parse_catalog(&catalog(value)).is_err(), "accepted {field}");
+            }
+        }
+
+        // Phase `loop_harness_catalog_shape_is_a_valid_catalog`.
+        // The catalog `os/tests/staging_helper_loop.sh` writes for its synthetic
+        // bundle (via `TILO_STAGING_TEST_CATALOG`) must pass the real parser.
+        {
+            let mut entry = internal(b"{}");
+            entry["release_id"] = json!("loop-test");
+            entry["manifest_url"] = json!("https://code.tilo.so/tilo/loop-test/manifest.json");
+            let text =
+                json!({"schema":1,"tag":"imager-v0.0.0-loop-test","releases":[entry]}).to_string();
+            let parsed = parse_catalog(&text).unwrap();
+            assert!(matches!(
+                parsed.releases.as_slice(),
+                [CatalogRelease::Internal(m)] if m.release_id == "loop-test"
+            ));
+        }
+
+        // Phase `published_package_entries_parse_as_internal_releases`.
+        {
+            // The exact shape build-release-catalog.sh emits for a Forgejo package.
+            let mut value = crate::setup::internal_bundle::tests::fixture();
+            value["release_id"] = json!("imager-v1.2.3");
+            let bytes = crate::setup::internal_bundle::tests::bytes(&value);
+            let mut entry = internal(&bytes);
+            entry["release_id"] = json!("imager-v1.2.3");
+            entry["manifest_url"] = json!(
+                "https://code.tilo.so/api/packages/tilo/generic/tilo-internal-installer/imager-v1.2.3/tilo-internal-installer-x86_64.json"
+            );
+            let raw =
+                json!({"schema":1,"tag":"imager-v1.2.3","releases":[media(), entry]}).to_string();
+            let catalog = parse_catalog(&raw).unwrap();
+            assert_eq!(
+                media_releases(parse_catalog(&raw).unwrap(), "x86_64").len(),
+                1
+            );
+            let release = catalog
+                .releases
+                .into_iter()
+                .find_map(|entry| match entry {
+                    CatalogRelease::Internal(metadata) => Some(InternalRelease { metadata }),
+                    CatalogRelease::Media(_) => None,
+                })
+                .unwrap();
+            assert_eq!(release.release_id(), "imager-v1.2.3");
+            assert!(release.verify_manifest(&bytes).is_ok());
         }
     }
     fn internal(manifest: &[u8]) -> Value {
@@ -1454,22 +1597,6 @@ mod internal_catalog_tests {
             "manifest_url":"https://code.tilo.so/fixture/manifest.json",
             "manifest_sha256":hex::encode(Sha256::digest(manifest)),"manifest_size":manifest.len()})
     }
-    /// The catalog `os/tests/staging_helper_loop.sh` writes for its synthetic
-    /// bundle (via `TILO_STAGING_TEST_CATALOG`) must pass the real parser.
-    #[test]
-    fn loop_harness_catalog_shape_is_a_valid_catalog() {
-        let mut entry = internal(b"{}");
-        entry["release_id"] = json!("loop-test");
-        entry["manifest_url"] = json!("https://code.tilo.so/tilo/loop-test/manifest.json");
-        let text =
-            json!({"schema":1,"tag":"imager-v0.0.0-loop-test","releases":[entry]}).to_string();
-        let parsed = parse_catalog(&text).unwrap();
-        assert!(matches!(
-            parsed.releases.as_slice(),
-            [CatalogRelease::Internal(m)] if m.release_id == "loop-test"
-        ));
-    }
-
     fn selection(value: Value) -> InternalRelease {
         match parse_catalog(&catalog(value))
             .unwrap()
@@ -1481,115 +1608,95 @@ mod internal_catalog_tests {
             _ => panic!("internal entry became media"),
         }
     }
+    /// Internal entry binding, selection mismatches and strict profiles.
     #[test]
-    fn internal_entries_remain_separate_and_bind_exact_manifest_bytes() {
-        let bytes = crate::setup::internal_bundle::tests::bytes(
-            &crate::setup::internal_bundle::tests::fixture(),
-        );
-        let value = internal(&bytes);
-        assert!(
-            media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64").is_empty()
-        );
-        let release = selection(value);
-        assert!(release.verify_manifest(&bytes).is_ok());
-        let mut longer = bytes.clone();
-        longer.push(b' ');
-        assert!(release.verify_manifest(&longer).is_err());
-        let mut changed_manifest = crate::setup::internal_bundle::tests::fixture();
-        changed_manifest["boot_binding"]["uki_sha256"] = json!("c".repeat(64));
-        let changed = crate::setup::internal_bundle::tests::bytes(&changed_manifest);
-        assert_eq!(changed.len(), bytes.len());
-        let valid = crate::setup::internal_bundle::validate_internal_bundle(&changed).unwrap();
-        assert_eq!(valid.release_id(), release.release_id());
-        assert_eq!(valid.architecture(), release.architecture());
-        assert!(release.verify_manifest(&changed).is_err());
-    }
-    #[test]
-    fn published_package_entries_parse_as_internal_releases() {
-        // The exact shape build-release-catalog.sh emits for a Forgejo package.
-        let mut value = crate::setup::internal_bundle::tests::fixture();
-        value["release_id"] = json!("imager-v1.2.3");
-        let bytes = crate::setup::internal_bundle::tests::bytes(&value);
-        let mut entry = internal(&bytes);
-        entry["release_id"] = json!("imager-v1.2.3");
-        entry["manifest_url"] = json!(
-            "https://code.tilo.so/api/packages/tilo/generic/tilo-internal-installer/imager-v1.2.3/tilo-internal-installer-x86_64.json"
-        );
-        let raw = json!({"schema":1,"tag":"imager-v1.2.3","releases":[media(), entry]}).to_string();
-        let catalog = parse_catalog(&raw).unwrap();
-        assert_eq!(
-            media_releases(parse_catalog(&raw).unwrap(), "x86_64").len(),
-            1
-        );
-        let release = catalog
-            .releases
-            .into_iter()
-            .find_map(|entry| match entry {
-                CatalogRelease::Internal(metadata) => Some(InternalRelease { metadata }),
-                CatalogRelease::Media(_) => None,
-            })
-            .unwrap();
-        assert_eq!(release.release_id(), "imager-v1.2.3");
-        assert!(release.verify_manifest(&bytes).is_ok());
-    }
-    #[test]
-    fn internal_selection_rejects_release_and_architecture_mismatch() {
-        let bytes = crate::setup::internal_bundle::tests::bytes(
-            &crate::setup::internal_bundle::tests::fixture(),
-        );
-        for (key, value) in [
-            ("release_id", json!("other-release")),
-            ("arch", json!("aarch64")),
-        ] {
-            let mut entry = internal(&bytes);
-            entry[key] = value;
-            assert!(
-                selection(entry).verify_manifest(&bytes).is_err(),
-                "accepted {key}"
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn internal_entries_bind_manifest_bytes_release_and_architecture() {
+        // Phase `internal_entries_remain_separate_and_bind_exact_manifest_bytes`.
+        {
+            let bytes = crate::setup::internal_bundle::tests::bytes(
+                &crate::setup::internal_bundle::tests::fixture(),
             );
+            let value = internal(&bytes);
+            assert!(
+                media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64")
+                    .is_empty()
+            );
+            let release = selection(value);
+            assert!(release.verify_manifest(&bytes).is_ok());
+            let mut longer = bytes.clone();
+            longer.push(b' ');
+            assert!(release.verify_manifest(&longer).is_err());
+            let mut changed_manifest = crate::setup::internal_bundle::tests::fixture();
+            changed_manifest["boot_binding"]["uki_sha256"] = json!("c".repeat(64));
+            let changed = crate::setup::internal_bundle::tests::bytes(&changed_manifest);
+            assert_eq!(changed.len(), bytes.len());
+            let valid = crate::setup::internal_bundle::validate_internal_bundle(&changed).unwrap();
+            assert_eq!(valid.release_id(), release.release_id());
+            assert_eq!(valid.architecture(), release.architecture());
+            assert!(release.verify_manifest(&changed).is_err());
         }
-    }
 
-    #[test]
-    fn explicit_media_pair_and_internal_catalog_profiles_are_strict() {
-        let mut tagged = media();
-        tagged["purpose"] = json!("removable-media");
-        tagged["layout"] = json!("whole-disk-image");
-        assert_eq!(
-            media_releases(parse_catalog(&catalog(tagged.clone())).unwrap(), "x86_64").len(),
-            1
-        );
-        for bad in [Value::Null, json!("unknown"), json!(true)] {
-            let mut value = tagged.clone();
-            value["purpose"] = bad;
-            assert!(parse_catalog(&catalog(value)).is_err());
+        // Phase `internal_selection_rejects_release_and_architecture_mismatch`.
+        {
+            let bytes = crate::setup::internal_bundle::tests::bytes(
+                &crate::setup::internal_bundle::tests::fixture(),
+            );
+            for (key, value) in [
+                ("release_id", json!("other-release")),
+                ("arch", json!("aarch64")),
+            ] {
+                let mut entry = internal(&bytes);
+                entry[key] = value;
+                assert!(
+                    selection(entry).verify_manifest(&bytes).is_err(),
+                    "accepted {key}"
+                );
+            }
         }
-        tagged.as_object_mut().unwrap().remove("layout");
-        assert!(parse_catalog(&catalog(tagged)).is_err());
-        let bytes = crate::setup::internal_bundle::tests::bytes(
-            &crate::setup::internal_bundle::tests::fixture(),
-        );
-        for (field, bad) in [
-            ("layout", json!("whole-disk-image")),
-            // Schema-1 manifests are retired; so are the catalog tags naming them.
-            ("layout", json!("internal-bundle-v1")),
-            ("purpose", json!("tilo-internal-installer")),
-            ("manifest_size", json!(65537)),
-            ("manifest_sha256", json!("A".repeat(64))),
-            ("purpose", json!("removable-media")),
-            (
-                "manifest_url",
-                json!("https://code.tilo.so:444/manifest"),
-            ),
-        ] {
-            let mut value = internal(&bytes);
-            value[field] = bad;
-            assert!(parse_catalog(&catalog(value)).is_err(), "accepted {field}");
+
+        // Phase `explicit_media_pair_and_internal_catalog_profiles_are_strict`.
+        {
+            let mut tagged = media();
+            tagged["purpose"] = json!("removable-media");
+            tagged["layout"] = json!("whole-disk-image");
+            assert_eq!(
+                media_releases(parse_catalog(&catalog(tagged.clone())).unwrap(), "x86_64").len(),
+                1
+            );
+            for bad in [Value::Null, json!("unknown"), json!(true)] {
+                let mut value = tagged.clone();
+                value["purpose"] = bad;
+                assert!(parse_catalog(&catalog(value)).is_err());
+            }
+            tagged.as_object_mut().unwrap().remove("layout");
+            assert!(parse_catalog(&catalog(tagged)).is_err());
+            let bytes = crate::setup::internal_bundle::tests::bytes(
+                &crate::setup::internal_bundle::tests::fixture(),
+            );
+            for (field, bad) in [
+                ("layout", json!("whole-disk-image")),
+                // Schema-1 manifests are retired; so are the catalog tags naming them.
+                ("layout", json!("internal-bundle-v1")),
+                // Only the exact purpose names an internal installer.
+                ("purpose", json!("internal-installer")),
+                ("manifest_size", json!(65537)),
+                ("manifest_sha256", json!("A".repeat(64))),
+                ("purpose", json!("removable-media")),
+                ("manifest_url", json!("https://code.tilo.so:444/manifest")),
+            ] {
+                let mut value = internal(&bytes);
+                value[field] = bad;
+                assert!(parse_catalog(&catalog(value)).is_err(), "accepted {field}");
+            }
+            assert!(bundled_internal_releases().unwrap().is_empty());
+            assert!(bundled_releases().unwrap().is_empty());
+            let raw = catalog(media()).replacen("\"arch\":", "\"arch\":\"x86_64\",\"arch\":", 1);
+            assert!(parse_catalog(&raw).is_err());
         }
-        assert!(bundled_internal_releases().unwrap().is_empty());
-        assert!(bundled_releases().unwrap().is_empty());
-        let raw = catalog(media()).replacen("\"arch\":", "\"arch\":\"x86_64\",\"arch\":", 1);
-        assert!(parse_catalog(&raw).is_err());
     }
     fn positional_record(value: &Value, fields: &str) -> Value {
         Value::Array(
@@ -1599,83 +1706,59 @@ mod internal_catalog_tests {
                 .collect(),
         )
     }
+    /// Catalog records keep their JSON object representation: a positional
+    /// array, an object-shaped tag or a duplicated key never parses.
     #[test]
-    fn representation_catalog_must_be_an_object() {
+    fn catalog_representation_requires_objects_string_tags_and_unique_keys() {
+        let bytes = crate::setup::internal_bundle::tests::bytes(
+            &crate::setup::internal_bundle::tests::fixture(),
+        );
+
+        // The catalog itself must be an object.
         let raw = catalog(media());
         assert!(parse_catalog(&raw).is_ok());
         let value: Value = serde_json::from_str(&raw).unwrap();
         let array = positional_record(&value, "schema tag releases");
         assert!(parse_catalog(&array.to_string()).is_err());
-    }
-    #[test]
-    fn representation_media_entry_must_be_an_object() {
-        let mut value = media();
-        value["purpose"] = json!("removable-media");
-        value["layout"] = json!("whole-disk-image");
-        assert!(parse_catalog(&catalog(value.clone())).is_ok());
-        let array = positional_record(
-            &value,
-            "purpose layout name version channel arch url archive_sha256 archive_size image_sha256 image_size",
-        );
-        assert!(parse_catalog(&catalog(array)).is_err());
-    }
-    #[test]
-    fn representation_internal_entry_must_be_an_object() {
-        let bytes = crate::setup::internal_bundle::tests::bytes(
-            &crate::setup::internal_bundle::tests::fixture(),
-        );
-        let value = internal(&bytes);
-        assert!(parse_catalog(&catalog(value.clone())).is_ok());
-        let array = positional_record(
-            &value,
-            "purpose layout release_id arch manifest_url manifest_sha256 manifest_size",
-        );
-        assert!(parse_catalog(&catalog(array)).is_err());
-    }
-    #[test]
-    fn representation_internal_purpose_and_layout_must_be_strings() {
-        let bytes = crate::setup::internal_bundle::tests::bytes(
-            &crate::setup::internal_bundle::tests::fixture(),
-        );
-        let entry = internal(&bytes);
-        assert!(parse_catalog(&catalog(entry.clone())).is_ok());
-        let accepted: Vec<_> = ["purpose", "layout"]
-            .into_iter()
-            .filter(|field| {
-                let mut value = entry.clone();
-                value[*field] = json!({entry[*field].as_str().unwrap():null});
-                parse_catalog(&catalog(value)).is_ok()
-            })
-            .collect();
-        assert!(
-            accepted.is_empty(),
-            "accepted object-shaped tags: {accepted:?}"
-        );
-    }
-    #[test]
-    fn representation_media_purpose_and_layout_must_be_strings() {
-        let mut entry = media();
-        entry["purpose"] = json!("removable-media");
-        entry["layout"] = json!("whole-disk-image");
-        assert!(parse_catalog(&catalog(entry.clone())).is_ok());
-        let accepted: Vec<_> = ["purpose", "layout"]
-            .into_iter()
-            .filter(|field| {
-                let mut value = entry.clone();
-                value[*field] = json!({entry[*field].as_str().unwrap():null});
-                parse_catalog(&catalog(value)).is_ok()
-            })
-            .collect();
-        assert!(
-            accepted.is_empty(),
-            "accepted object-shaped tags: {accepted:?}"
-        );
-    }
-    #[test]
-    fn representation_checks_do_not_collapse_duplicate_catalog_keys() {
-        let bytes = crate::setup::internal_bundle::tests::bytes(
-            &crate::setup::internal_bundle::tests::fixture(),
-        );
+
+        let mut tagged_media = media();
+        tagged_media["purpose"] = json!("removable-media");
+        tagged_media["layout"] = json!("whole-disk-image");
+        for (case, entry, fields) in [
+            (
+                "media",
+                tagged_media,
+                "purpose layout name version channel arch url archive_sha256 archive_size image_sha256 image_size",
+            ),
+            (
+                "internal",
+                internal(&bytes),
+                "purpose layout release_id arch manifest_url manifest_sha256 manifest_size",
+            ),
+        ] {
+            assert!(
+                parse_catalog(&catalog(entry.clone())).is_ok(),
+                "case {case}"
+            );
+            // The entry must be an object, not a positional record.
+            let array = positional_record(&entry, fields);
+            assert!(parse_catalog(&catalog(array)).is_err(), "case {case}");
+            // Purpose and layout must be strings, not object-shaped tags.
+            let accepted: Vec<_> = ["purpose", "layout"]
+                .into_iter()
+                .filter(|field| {
+                    let mut value = entry.clone();
+                    value[*field] = json!({entry[*field].as_str().unwrap():null});
+                    parse_catalog(&catalog(value)).is_ok()
+                })
+                .collect();
+            assert!(
+                accepted.is_empty(),
+                "case {case}: accepted object-shaped tags: {accepted:?}"
+            );
+        }
+
+        // Duplicate keys are not collapsed into one.
         for entry in [media(), internal(&bytes)] {
             let raw = catalog(entry);
             assert!(parse_catalog(&raw).is_ok());
@@ -1691,5 +1774,34 @@ mod internal_catalog_tests {
                 assert!(parse_catalog(&changed).is_err());
             }
         }
+    }
+
+    #[test]
+    fn zstd_frames_decode_back_to_back_frames_in_small_reads() {
+        use ruzstd::encoding::{CompressionLevel, compress_to_vec};
+        let first: Vec<u8> = (0..300_000_u32).map(|i| (i % 251) as u8).collect();
+        let second = b"second frame".repeat(1000);
+        let mut archive = compress_to_vec(first.as_slice(), CompressionLevel::Fastest);
+        archive.extend(compress_to_vec(
+            second.as_slice(),
+            CompressionLevel::Fastest,
+        ));
+        let mut frames = ZstdFrames::new(BufReader::new(archive.as_slice()));
+        let mut expanded = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        loop {
+            let read = frames.read(&mut chunk).unwrap();
+            if read == 0 {
+                break;
+            }
+            expanded.extend_from_slice(&chunk[..read]);
+        }
+        assert_eq!(expanded.len(), first.len() + second.len());
+        assert!(expanded.starts_with(&first) && expanded.ends_with(&second));
+        assert!(
+            ZstdFrames::new(BufReader::new(&b"not zstd"[..]))
+                .read(&mut chunk)
+                .is_err()
+        );
     }
 }

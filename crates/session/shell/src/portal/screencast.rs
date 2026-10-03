@@ -28,9 +28,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
-use std::time::{SystemTime, UNIX_EPOCH};
-
-#[cfg(target_os = "linux")]
 use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
@@ -283,7 +280,7 @@ impl RestoreStore {
                     .map_err(|error| format!("secure restore directory: {error}"))?;
             }
         }
-        atomic_file::write_with_mode(path, &bytes, 0o600)
+        tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
             .map_err(|error| format!("write restore records: {error}"))
     }
 
@@ -619,13 +616,8 @@ impl ScreenCastBackend {
 
     /// `Start` — provision a real `PipeWire` node per selected source and
     /// return the streams. Issues a fresh `restore_token` when the session asked to persist.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.ScreenCast.Start D-Bus signature"
-    )]
     async fn start(
         &self,
-        #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         #[zbus(connection)] connection: &zbus::Connection,
         handle: ObjectPath<'_>,
@@ -796,9 +788,7 @@ impl ScreenCastBackend {
                 cursor_mode: session.cursor_mode,
                 multiple: session.multiple,
                 persist_mode: session.persist_mode,
-                issued_unix_seconds: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_or(0, |duration| duration.as_secs()),
+                issued_unix_seconds: tilo_clock::unix_now(),
             };
             let stored = self
                 .restore
@@ -956,88 +946,145 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn start_allow_returns_response_zero_with_streams_key() {
-        let (code, results) = outcome_to_start_response_for_tests(PromptOutcome::AllowOnce);
-        assert_eq!(code, 0);
-        assert!(results.contains_key("streams"));
+    fn screencast_start_responses_carry_streams_and_restore_data() {
+        // Phase `start_allow_returns_response_zero_with_streams_key`.
+        {
+            let (code, results) = outcome_to_start_response_for_tests(PromptOutcome::AllowOnce);
+            assert_eq!(code, 0);
+            assert!(results.contains_key("streams"));
+        }
+        // Phase `start_deny_returns_response_one_no_results`.
+        {
+            let (code, results) = outcome_to_start_response_for_tests(PromptOutcome::Deny);
+            assert_eq!(code, 1);
+            assert!(results.is_empty());
+        }
+        // Phase `start_returns_non_empty_streams_on_allow`.
+        {
+            let info = PipewireStreamInfo {
+                node_id: 99,
+                source_type: 1,
+                id: 0,
+                size: (1280, 720),
+                position: (0, 0),
+            };
+            let (code, results) = start_response_with_stream(info);
+            assert_eq!(code, 0);
+            let streams_v = results.get("streams").expect("streams");
+            let cloned: OwnedValue = streams_v.try_clone().expect("clone");
+            let streams: Vec<(u32, HashMap<String, OwnedValue>)> =
+                Vec::<(u32, HashMap<String, OwnedValue>)>::try_from(cloned)
+                    .expect("Vec<(u32, dict)>");
+            assert_eq!(streams.len(), 1, "must emit exactly one stream");
+            assert_eq!(streams[0].0, 99, "node id must round-trip");
+            assert!(streams[0].1.contains_key("size"));
+            assert!(streams[0].1.contains_key("source_type"));
+            assert!(streams[0].1.contains_key("id"));
+        }
+        // Phase `start_response_includes_standard_restore_data_when_persisted`.
+        {
+            let info = PipewireStreamInfo {
+                node_id: 3,
+                source_type: 1,
+                id: 0,
+                size: (640, 480),
+                position: (0, 0),
+            };
+            let (code, results) = start_response(vec![info], Some("tok-123".into()), 2);
+            assert_eq!(code, 0);
+            assert!(results.contains_key("restore_data"));
+            assert!(results.contains_key("persist_mode"));
+            // No restore data => no restore_data/persist_mode keys.
+            let info2 = PipewireStreamInfo {
+                node_id: 4,
+                source_type: 1,
+                id: 0,
+                size: (640, 480),
+                position: (0, 0),
+            };
+            let (_c, results2) = start_response(vec![info2], None, 0);
+            assert!(!results2.contains_key("restore_data"));
+        }
     }
 
     #[test]
-    fn start_deny_returns_response_one_no_results() {
-        let (code, results) = outcome_to_start_response_for_tests(PromptOutcome::Deny);
-        assert_eq!(code, 1);
-        assert!(results.is_empty());
+    fn screencast_restore_authority_is_app_bound_durable_and_revocable() {
+        // Phase `standard_restore_data_round_trips_only_tilo_uuid_payloads`.
+        {
+            let key = uuid::Uuid::new_v4().to_string();
+            let mut options = HashMap::new();
+            options.insert("restore_data".into(), restore_data(key.clone()).unwrap());
+            let raw = options["restore_data"].try_clone().unwrap();
+            let parsed: (String, u32, OwnedValue) = raw.try_into().unwrap();
+            assert_eq!(parsed.0, RESTORE_VENDOR);
+            assert_eq!(parsed.1, RESTORE_DATA_VERSION);
+            assert_eq!(Value::from(parsed.2).downcast::<String>().unwrap(), key);
+            let key = uuid::Uuid::new_v4().to_string();
+            options.insert("restore_data".into(), restore_data(key.clone()).unwrap());
+            assert_eq!(restore_key(&options).as_deref(), Some(key.as_str()));
+            options.insert(
+                "restore_data".into(),
+                OwnedValue::from(zbus::zvariant::Str::from("not-a-tuple")),
+            );
+            assert_eq!(restore_key(&options), None);
+        }
+        // Phase `durable_restore_survives_a_store_restart_and_stays_app_bound`.
+        {
+            let root = std::env::temp_dir().join(format!("tilo-sc-{}", uuid::Uuid::new_v4()));
+            let path = root.join("restore.json");
+            let token = uuid::Uuid::new_v4().to_string();
+            let mut store = RestoreStore::load_at(Some(path.clone()));
+            store
+                .insert(token.clone(), durable_record("org.example.share"))
+                .expect("durable write");
+            drop(store);
+            let after_restart = RestoreStore::load_at(Some(path));
+            assert_eq!(
+                after_restart.get(&token).map(|record| record.app_id),
+                Some("org.example.share".into())
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
+        // Phase `corrupt_durable_restore_is_quarantined_and_never_restored`.
+        {
+            let root = std::env::temp_dir().join(format!("tilo-sc-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root).expect("root");
+            let path = root.join("restore.json");
+            std::fs::write(&path, b"not json").expect("corrupt fixture");
+            let store = RestoreStore::load_at(Some(path.clone()));
+            assert!(store.durable.is_empty());
+            assert!(!path.exists(), "corrupt data must not remain authoritative");
+            assert!(
+                std::fs::read_dir(&root)
+                    .expect("root entries")
+                    .any(|entry| entry
+                        .expect("entry")
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("restore.corrupt-")),
+                "corrupt artifact is retained for diagnosis rather than overwritten"
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
+        // Phase `revocation_removes_durable_restore_authority`.
+        {
+            let root = std::env::temp_dir().join(format!("tilo-sc-{}", uuid::Uuid::new_v4()));
+            let path = root.join("restore.json");
+            let token = uuid::Uuid::new_v4().to_string();
+            let mut store = RestoreStore::load_at(Some(path.clone()));
+            store
+                .insert(token.clone(), durable_record("org.example.share"))
+                .expect("durable write");
+            store.revoke_app("org.example.share").expect("revoke");
+            drop(store);
+            assert!(RestoreStore::load_at(Some(path)).get(&token).is_none());
+            let _ = std::fs::remove_dir_all(root);
+        }
     }
 
     #[test]
-    fn start_returns_non_empty_streams_on_allow() {
-        let info = PipewireStreamInfo {
-            node_id: 99,
-            source_type: 1,
-            id: 0,
-            size: (1280, 720),
-            position: (0, 0),
-        };
-        let (code, results) = start_response_with_stream(info);
-        assert_eq!(code, 0);
-        let streams_v = results.get("streams").expect("streams");
-        let cloned: OwnedValue = streams_v.try_clone().expect("clone");
-        let streams: Vec<(u32, HashMap<String, OwnedValue>)> =
-            Vec::<(u32, HashMap<String, OwnedValue>)>::try_from(cloned).expect("Vec<(u32, dict)>");
-        assert_eq!(streams.len(), 1, "must emit exactly one stream");
-        assert_eq!(streams[0].0, 99, "node id must round-trip");
-        assert!(streams[0].1.contains_key("size"));
-        assert!(streams[0].1.contains_key("source_type"));
-        assert!(streams[0].1.contains_key("id"));
-    }
-
-    #[test]
-    fn start_response_includes_standard_restore_data_when_persisted() {
-        let info = PipewireStreamInfo {
-            node_id: 3,
-            source_type: 1,
-            id: 0,
-            size: (640, 480),
-            position: (0, 0),
-        };
-        let (code, results) = start_response(vec![info], Some("tok-123".into()), 2);
-        assert_eq!(code, 0);
-        assert!(results.contains_key("restore_data"));
-        assert!(results.contains_key("persist_mode"));
-        // No restore data => no restore_data/persist_mode keys.
-        let info2 = PipewireStreamInfo {
-            node_id: 4,
-            source_type: 1,
-            id: 0,
-            size: (640, 480),
-            position: (0, 0),
-        };
-        let (_c, results2) = start_response(vec![info2], None, 0);
-        assert!(!results2.contains_key("restore_data"));
-    }
-
-    #[test]
-    fn standard_restore_data_round_trips_only_tilo_uuid_payloads() {
-        let key = uuid::Uuid::new_v4().to_string();
-        let mut options = HashMap::new();
-        options.insert("restore_data".into(), restore_data(key.clone()).unwrap());
-        let raw = options["restore_data"].try_clone().unwrap();
-        let parsed: (String, u32, OwnedValue) = raw.try_into().unwrap();
-        assert_eq!(parsed.0, RESTORE_VENDOR);
-        assert_eq!(parsed.1, RESTORE_DATA_VERSION);
-        assert_eq!(Value::from(parsed.2).downcast::<String>().unwrap(), key);
-        let key = uuid::Uuid::new_v4().to_string();
-        options.insert("restore_data".into(), restore_data(key.clone()).unwrap());
-        assert_eq!(restore_key(&options).as_deref(), Some(key.as_str()));
-        options.insert(
-            "restore_data".into(),
-            OwnedValue::from(zbus::zvariant::Str::from("not-a-tuple")),
-        );
-        assert_eq!(restore_key(&options), None);
-    }
-
-    #[test]
-    fn selected_source_types_respects_multiple_and_mask() {
+    fn screencast_options_select_sources_sizes_and_provisioning() {
+        // Phase `selected_source_types_respects_multiple_and_mask`.
         // Single-source: only the first (monitor preferred).
         assert_eq!(
             selected_source_types(source_type::MONITOR | source_type::WINDOW, false),
@@ -1050,24 +1097,43 @@ mod tests {
         );
         // Empty mask defaults to monitor.
         assert_eq!(selected_source_types(0, true), vec![source_type::MONITOR]);
-    }
-
-    #[test]
-    fn size_from_options_reads_and_defaults() {
-        let mut opts: HashMap<String, OwnedValue> = HashMap::new();
-        let size: (u32, u32) = (640, 480);
-        opts.insert(
-            "size".to_string(),
-            OwnedValue::try_from(Value::new(size)).unwrap(),
-        );
-        assert_eq!(size_from_options(&opts), (640, 480));
-        assert_eq!(size_from_options(&HashMap::new()), (1920, 1080));
-    }
-
-    #[test]
-    fn available_types_and_modes_cover_the_spec_bits() {
+        // Phase `size_from_options_reads_and_defaults`.
+        {
+            let mut opts: HashMap<String, OwnedValue> = HashMap::new();
+            let size: (u32, u32) = (640, 480);
+            opts.insert(
+                "size".to_string(),
+                OwnedValue::try_from(Value::new(size)).unwrap(),
+            );
+            assert_eq!(size_from_options(&opts), (640, 480));
+            assert_eq!(size_from_options(&HashMap::new()), (1920, 1080));
+        }
+        // Phase `available_types_and_modes_cover_the_spec_bits`.
         assert_eq!(source_type::ALL, 1 | 2 | 4);
         assert_eq!(cursor_mode::ALL, 1 | 2 | 4);
+        // Phase `screencast_provisioner_records_source_type_and_size`.
+        // The provisioner records the request the Start path forwards, including the selected source type + size.
+        {
+            let ws_id = WorkspaceId(40);
+            let provisioner = Arc::new(MockScreenCastProvisioner::new_with_node(13, "sc"));
+            let sc_handle = ScreenCastStreamProvisionerHandle::new(provisioner.clone());
+            let req = PipewireStreamRequest {
+                caller: PortalCaller::new(ws_id, "org.example"),
+                width: 1024,
+                height: 768,
+                framerate: 30,
+                source_type: source_type::WINDOW,
+                cursor_mode: cursor_mode::HIDDEN,
+            };
+            let info = sc_handle.provision(&req).expect("provision");
+            assert_eq!(info.node_id, 13);
+            assert_eq!(info.size, (1024, 768));
+            assert_eq!(info.source_type, source_type::WINDOW);
+            let seen = provisioner.requests();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].caller.app_id, "org.example");
+            assert_eq!(seen[0].source_type, source_type::WINDOW);
+        }
     }
 
     fn durable_record(app_id: &str) -> RestoreData {
@@ -1079,84 +1145,5 @@ mod tests {
             persist_mode: 2,
             issued_unix_seconds: 42,
         }
-    }
-
-    #[test]
-    fn durable_restore_survives_a_store_restart_and_stays_app_bound() {
-        let root = std::env::temp_dir().join(format!("tilo-sc-{}", uuid::Uuid::new_v4()));
-        let path = root.join("restore.json");
-        let token = uuid::Uuid::new_v4().to_string();
-        let mut store = RestoreStore::load_at(Some(path.clone()));
-        store
-            .insert(token.clone(), durable_record("org.example.share"))
-            .expect("durable write");
-        drop(store);
-        let after_restart = RestoreStore::load_at(Some(path));
-        assert_eq!(
-            after_restart.get(&token).map(|record| record.app_id),
-            Some("org.example.share".into())
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn corrupt_durable_restore_is_quarantined_and_never_restored() {
-        let root = std::env::temp_dir().join(format!("tilo-sc-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).expect("root");
-        let path = root.join("restore.json");
-        std::fs::write(&path, b"not json").expect("corrupt fixture");
-        let store = RestoreStore::load_at(Some(path.clone()));
-        assert!(store.durable.is_empty());
-        assert!(!path.exists(), "corrupt data must not remain authoritative");
-        assert!(
-            std::fs::read_dir(&root)
-                .expect("root entries")
-                .any(|entry| entry
-                    .expect("entry")
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("restore.corrupt-")),
-            "corrupt artifact is retained for diagnosis rather than overwritten"
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn revocation_removes_durable_restore_authority() {
-        let root = std::env::temp_dir().join(format!("tilo-sc-{}", uuid::Uuid::new_v4()));
-        let path = root.join("restore.json");
-        let token = uuid::Uuid::new_v4().to_string();
-        let mut store = RestoreStore::load_at(Some(path.clone()));
-        store
-            .insert(token.clone(), durable_record("org.example.share"))
-            .expect("durable write");
-        store.revoke_app("org.example.share").expect("revoke");
-        drop(store);
-        assert!(RestoreStore::load_at(Some(path)).get(&token).is_none());
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    /// The provisioner records the request the Start path forwards, including the selected source type + size.
-    #[test]
-    fn screencast_provisioner_records_source_type_and_size() {
-        let ws_id = WorkspaceId(40);
-        let provisioner = Arc::new(MockScreenCastProvisioner::new_with_node(13, "sc"));
-        let sc_handle = ScreenCastStreamProvisionerHandle::new(provisioner.clone());
-        let req = PipewireStreamRequest {
-            caller: PortalCaller::new(ws_id, "org.example"),
-            width: 1024,
-            height: 768,
-            framerate: 30,
-            source_type: source_type::WINDOW,
-            cursor_mode: cursor_mode::HIDDEN,
-        };
-        let info = sc_handle.provision(&req).expect("provision");
-        assert_eq!(info.node_id, 13);
-        assert_eq!(info.size, (1024, 768));
-        assert_eq!(info.source_type, source_type::WINDOW);
-        let seen = provisioner.requests();
-        assert_eq!(seen.len(), 1);
-        assert_eq!(seen[0].caller.app_id, "org.example");
-        assert_eq!(seen[0].source_type, source_type::WINDOW);
     }
 }

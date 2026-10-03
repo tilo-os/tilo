@@ -235,138 +235,147 @@ mod tests {
         }
     }
 
+    /// Names are display-only with fingerprint fallback, duplicates stay distinct, bounded JSON loads, malformed or unknown schemas are refused and v2 adds device details.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn names_are_display_only_and_unknown_roots_fall_back_to_fingerprint() {
-        let known = ed25519_dalek::SigningKey::from_bytes(&[7; 32])
-            .verifying_key()
-            .to_bytes();
-        let unknown = ed25519_dalek::SigningKey::from_bytes(&[8; 32])
-            .verifying_key()
-            .to_bytes();
-        let directory =
-            TrustedHumanDirectory::from_projection(projection(vec![(known, "Ada Lovelace")]))
-                .unwrap();
-        let known = Ed25519PublicKey::from_bytes(known);
-        let unknown = Ed25519PublicKey::from_bytes(unknown);
-        assert_eq!(
-            directory.display_name_or_fingerprint(&known),
-            "Ada Lovelace"
-        );
-        assert_eq!(
-            directory.display_name_or_fingerprint(&unknown),
-            fingerprint(unknown.as_bytes())
-        );
-        assert_eq!(directory.humans()[0].person, known);
-    }
+    fn identity_projection_is_display_only_and_refuses_malformed_input() {
+        // --- phase: names_are_display_only_and_unknown_roots_fall_back_to_fingerprint ---
+        {
+            let known = ed25519_dalek::SigningKey::from_bytes(&[7; 32])
+                .verifying_key()
+                .to_bytes();
+            let unknown = ed25519_dalek::SigningKey::from_bytes(&[8; 32])
+                .verifying_key()
+                .to_bytes();
+            let directory =
+                TrustedHumanDirectory::from_projection(projection(vec![(known, "Ada Lovelace")]))
+                    .unwrap();
+            let known = Ed25519PublicKey::from_bytes(known);
+            let unknown = Ed25519PublicKey::from_bytes(unknown);
+            assert_eq!(
+                directory.display_name_or_fingerprint(&known),
+                "Ada Lovelace"
+            );
+            assert_eq!(
+                directory.display_name_or_fingerprint(&unknown),
+                fingerprint(unknown.as_bytes())
+            );
+            assert_eq!(directory.humans()[0].person, known);
+        }
 
-    #[test]
-    fn malformed_or_ambiguous_projections_are_refused_wholesale() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32])
-            .verifying_key()
-            .to_bytes();
-        let duplicate = projection(vec![(root, "Alice"), (root, "Mallory")]);
-        assert!(TrustedHumanDirectory::from_projection(duplicate).is_err());
-        assert!(
-            TrustedHumanDirectory::from_projection(projection(vec![(root, "bad\nname")])).is_err()
-        );
-    }
+        // --- phase: malformed_or_ambiguous_projections_are_refused_wholesale ---
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32])
+                .verifying_key()
+                .to_bytes();
+            let duplicate = projection(vec![(root, "Alice"), (root, "Mallory")]);
+            assert!(TrustedHumanDirectory::from_projection(duplicate).is_err());
+            assert!(
+                TrustedHumanDirectory::from_projection(projection(vec![(root, "bad\nname")]))
+                    .is_err()
+            );
+        }
 
-    #[test]
-    fn duplicate_display_names_remain_distinct_root_key_presentations() {
-        let first = ed25519_dalek::SigningKey::from_bytes(&[11; 32])
-            .verifying_key()
-            .to_bytes();
-        let second = ed25519_dalek::SigningKey::from_bytes(&[12; 32])
-            .verifying_key()
-            .to_bytes();
-        let directory = TrustedHumanDirectory::from_projection(projection(vec![
-            (first, "Alex"),
-            (second, "Alex"),
-        ]))
-        .unwrap();
+        // --- phase: duplicate_display_names_remain_distinct_root_key_presentations ---
+        {
+            let first = ed25519_dalek::SigningKey::from_bytes(&[11; 32])
+                .verifying_key()
+                .to_bytes();
+            let second = ed25519_dalek::SigningKey::from_bytes(&[12; 32])
+                .verifying_key()
+                .to_bytes();
+            let directory = TrustedHumanDirectory::from_projection(projection(vec![
+                (first, "Alex"),
+                (second, "Alex"),
+            ]))
+            .unwrap();
 
-        assert_eq!(directory.humans().len(), 2);
-        assert_eq!(
-            directory
-                .human(&Ed25519PublicKey::from_bytes(first))
-                .unwrap()
-                .person,
-            Ed25519PublicKey::from_bytes(first)
-        );
-        assert_eq!(
-            directory
-                .human(&Ed25519PublicKey::from_bytes(second))
-                .unwrap()
-                .person,
-            Ed25519PublicKey::from_bytes(second)
-        );
-    }
+            assert_eq!(directory.humans().len(), 2);
+            assert_eq!(
+                directory
+                    .human(&Ed25519PublicKey::from_bytes(first))
+                    .unwrap()
+                    .person,
+                Ed25519PublicKey::from_bytes(first)
+            );
+            assert_eq!(
+                directory
+                    .human(&Ed25519PublicKey::from_bytes(second))
+                    .unwrap()
+                    .person,
+                Ed25519PublicKey::from_bytes(second)
+            );
+        }
 
-    #[test]
-    fn bounded_json_projection_loads_and_missing_is_empty() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(
-            TrustedHumanDirectory::load(&dir.path().join("missing.json"))
-                .unwrap()
-                .humans()
-                .is_empty()
-        );
-        let root = ed25519_dalek::SigningKey::from_bytes(&[10; 32])
-            .verifying_key()
-            .to_bytes();
-        let path = dir.path().join("trusted.json");
-        std::fs::write(
-            &path,
-            serde_json::to_vec(&projection(vec![(root, "Grace Hopper")])).unwrap(),
-        )
-        .unwrap();
-        let loaded = TrustedHumanDirectory::load(&path).unwrap();
-        assert_eq!(loaded.humans()[0].display_name, "Grace Hopper");
-    }
+        // --- phase: bounded_json_projection_loads_and_missing_is_empty ---
+        {
+            let dir = tempfile::tempdir().unwrap();
+            assert!(
+                TrustedHumanDirectory::load(&dir.path().join("missing.json"))
+                    .unwrap()
+                    .humans()
+                    .is_empty()
+            );
+            let root = ed25519_dalek::SigningKey::from_bytes(&[10; 32])
+                .verifying_key()
+                .to_bytes();
+            let path = dir.path().join("trusted.json");
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&projection(vec![(root, "Grace Hopper")])).unwrap(),
+            )
+            .unwrap();
+            let loaded = TrustedHumanDirectory::load(&path).unwrap();
+            assert_eq!(loaded.humans()[0].display_name, "Grace Hopper");
+        }
 
-    #[test]
-    fn unknown_schema_is_refused_wholesale() {
-        let mut projection = TrustedIdentityProjectionV1::empty();
-        projection.schema_version += 1;
-        assert!(TrustedHumanDirectory::from_projection(projection).is_err());
-    }
+        // --- phase: unknown_schema_is_refused_wholesale ---
+        {
+            let mut projection = TrustedIdentityProjectionV1::empty();
+            projection.schema_version += 1;
+            assert!(TrustedHumanDirectory::from_projection(projection).is_err());
+        }
 
-    #[test]
-    fn v2_exposes_root_signed_device_details_without_changing_share_authority() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
-        let mut certificate = tilo_user_identity::DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "Ada's laptop".into(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: 7,
-            expires_at_ns: None,
-            signature: [0; 64],
-        };
-        tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
-        let directory = TrustedHumanDirectory::from_projection_v2(
-            tilo_user_identity::TrustedIdentityProjectionV2 {
-                schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
-                humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
-                    root_public_key: root.verifying_key().to_bytes(),
-                    display_name: "Ada Lovelace".into(),
-                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 { certificate }],
-                }],
-            },
-        )
-        .unwrap();
-        let human = &directory.humans()[0];
-        assert_eq!(human.display_name, "Ada Lovelace");
-        assert_eq!(human.person.as_bytes(), &root.verifying_key().to_bytes());
-        assert_eq!(human.devices[0].label, "Ada's laptop");
-        assert_eq!(
-            human.devices[0].capabilities,
-            tilo_user_identity::DeviceCapabilities::member()
-        );
-        assert_eq!(
-            human.devices[0].device.as_bytes(),
-            &device.verifying_key().to_bytes()
-        );
+        // --- phase: v2_exposes_root_signed_device_details_without_changing_share_authority ---
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
+            let device = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
+            let mut certificate = tilo_user_identity::DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: "Ada's laptop".into(),
+                capabilities: tilo_user_identity::DeviceCapabilities::member(),
+                issued_at_ns: 7,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+            let directory = TrustedHumanDirectory::from_projection_v2(
+                tilo_user_identity::TrustedIdentityProjectionV2 {
+                    schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
+                    humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
+                        root_public_key: root.verifying_key().to_bytes(),
+                        display_name: "Ada Lovelace".into(),
+                        devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 { certificate }],
+                    }],
+                },
+            )
+            .unwrap();
+            let human = &directory.humans()[0];
+            assert_eq!(human.display_name, "Ada Lovelace");
+            assert_eq!(human.person.as_bytes(), &root.verifying_key().to_bytes());
+            assert_eq!(human.devices[0].label, "Ada's laptop");
+            assert_eq!(
+                human.devices[0].capabilities,
+                tilo_user_identity::DeviceCapabilities::member()
+            );
+            assert_eq!(
+                human.devices[0].device.as_bytes(),
+                &device.verifying_key().to_bytes()
+            );
+        }
     }
 }

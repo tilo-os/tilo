@@ -14,369 +14,398 @@ fn select(driver: &mut ui::headless::Driver, hash: automerge::ChangeHash) {
         .unwrap();
 }
 
-// Removing component registration, projecting the outer launcher State, or
-// restoring only page titles must fail this real saved-notebook exercise.
-#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one saved-notebook lifecycle keeps all projection and custody assertions together"
 )]
-fn notebook_shared_history_previews_restores_and_undoes_saved_content() {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
-    let source = f.source_bytes();
-    let mut d = driver(&f, 11, &checkout);
-    invoke(
-        &mut d,
-        11,
-        actions::page_resource_id(f.child),
-        "rename",
-        Some("Selected release"),
-    );
-    let selected = f
-        .records
-        .read(&checkout.id, |doc| doc.base_heads()[0])
-        .unwrap();
-    let target = f.records.read(&checkout.id, Clone::clone).unwrap();
-    f.records
-        .with_owned_action(
-            &checkout.id,
+#[test]
+fn notebook_history_previews_restores_and_refuses_a_second_writer() {
+    eprintln!("phase notebook_shared_history_previews_restores_and_undoes_saved_content");
+    {
+        let f = LegacyFixture::rich();
+        let checkout = imported(&f);
+        let source = f.source_bytes();
+        let mut d = driver(&f, 11, &checkout);
+        invoke(
+            &mut d,
             11,
-            canonical::PACKAGE,
-            f.author.clone(),
-            tilo_actions::ActionContext::default(),
-            |doc, _| {
-                let mut page = NotesDoc::list_pages(doc)
-                    .into_iter()
-                    .find(|p| p.id == f.child)
-                    .unwrap();
-                page.parent = None;
-                page.order = 2;
-                NotesDoc::upsert_page_meta(doc, &page);
-                let blocks = NotesDoc::page_blocks_list(doc, f.child).unwrap();
-                let text = NotesDoc::block_text_obj(doc, &blocks, 0).unwrap();
-                doc.splice_text(
-                    &text,
-                    0,
-                    isize::try_from(doc.text(&text).unwrap().chars().count()).unwrap(),
-                    "changed marked block",
-                )
-                .unwrap();
-                NotesDoc::upsert_tag(
-                    doc,
-                    &notes::model::TagMeta {
-                        id: f.tag,
-                        name: "Live tag".into(),
-                    },
-                );
-                NotesDoc::set_tag_assignment(doc, f.child, f.tag, false);
-                doc.put(ROOT, "workspace_json", "retained legacy metadata")
-                    .unwrap();
-            },
-        )
-        .unwrap();
-
-    invoke(
-        &mut d,
-        11,
-        actions::page_resource_id(f.child),
-        "rename",
-        Some("Live release"),
-    );
-    let before = f
-        .records
-        .read(&checkout.id, Transactable::base_heads)
-        .unwrap();
-    assert!(
-        d.targets().contains_key("history-open"),
-        "actual canonical Notes needs shared History"
-    );
-    d.click_named("history-open").unwrap();
-    select(&mut d, selected);
-    d.click_named("history-next-page").unwrap();
-    let preview = format!("{:?}", d.a11y_nodes());
-    assert!(preview.contains("Selected release"), "{preview}");
-    assert!(
-        preview.contains("Projects"),
-        "tree navigation must retain the parent page"
-    );
-    assert_eq!(
-        f.records
-            .read(&checkout.id, Transactable::base_heads)
-            .unwrap(),
-        before
-    );
-    d.type_text("must not edit historical content");
-    d.key("Backspace");
-    assert_eq!(
-        f.records
-            .read(&checkout.id, Transactable::base_heads)
-            .unwrap(),
-        before
-    );
-    d.click_named("history-before").unwrap();
-    assert!(!format!("{:?}", d.a11y_nodes()).contains("changed marked block"));
-    d.click_named("history-after").unwrap();
-    d.resize((480, 700)).unwrap();
-    d.click_named("history-previous-page").unwrap();
-    d.perform_named("history-next-page", &ui::a11y::Action::Focus)
-        .unwrap();
-    d.key("Enter");
-    assert!(format!("{:?}", d.a11y_nodes()).contains("Heading one"));
-    d.click_named("history-restore").unwrap();
-    d.key("Enter");
-    f.records
-        .read(&checkout.id, |doc| {
-            assert_eq!(
-                NotesDoc::list_pages(doc)
-                    .into_iter()
-                    .find(|p| p.id == f.child)
-                    .unwrap()
-                    .title,
-                "Selected release"
-            );
-            assert_eq!(doc.clone().get_changes(&before).len(), 1);
-            notes::notebook::validate(doc).unwrap();
-            assert_eq!(
-                NotesDoc::page_block_snapshots(doc, f.child),
-                NotesDoc::page_block_snapshots(&target, f.child)
-            );
-            assert_eq!(
-                NotesDoc::page_block_marks(doc, f.child),
-                NotesDoc::page_block_marks(&target, f.child)
-            );
-            assert_eq!(NotesDoc::list_pages(doc), NotesDoc::list_pages(&target));
-            assert_eq!(NotesDoc::list_tags(doc), NotesDoc::list_tags(&target));
-            assert_eq!(
-                notes::notebook::project(doc, None)
-                    .unwrap()
-                    .data
-                    .tag_assignments,
-                notes::notebook::project(&target, None)
-                    .unwrap()
-                    .data
-                    .tag_assignments
-            );
-            assert_eq!(
-                doc.get(ROOT, "notes_import_v1").unwrap(),
-                target.get(ROOT, "notes_import_v1").unwrap()
-            );
-            assert_eq!(
-                doc.get(ROOT, "notes_schema_version").unwrap(),
-                target.get(ROOT, "notes_schema_version").unwrap()
-            );
-            assert_eq!(
-                doc.get(ROOT, "workspace_json").unwrap().unwrap().0.as_str(),
-                Some("retained legacy metadata")
-            );
-        })
-        .unwrap();
-    f.records
-        .with_history(&checkout.id, |doc, history| {
-            history.undo_in(doc, &f.author, 11, None, None).unwrap();
-            assert_eq!(
-                NotesDoc::list_pages(doc)
-                    .into_iter()
-                    .find(|p| p.id == f.child)
-                    .unwrap()
-                    .title,
-                "Live release"
-            );
-        })
-        .unwrap();
-    close_driver(&mut d);
-    assert_eq!(f.source_bytes(), source);
-    drop(d);
-    let f = f.reopen();
-    f.records.try_open_record(&checkout).unwrap();
-    assert_eq!(
-        f.records
-            .read(&checkout.id, |doc| NotesDoc::list_pages(doc)
-                .into_iter()
-                .find(|p| p.id == f.child)
-                .unwrap()
-                .title)
-            .unwrap(),
-        "Live release"
-    );
-}
-
-#[test]
-fn legacy_notebook_refuses_a_second_writer_until_first_is_dropped() {
-    let temp = tempfile::tempdir().unwrap();
-    let first = notes::NotesApp::spawn(temp.path().to_path_buf()).unwrap();
-    assert!(notes::NotesApp::spawn(temp.path().to_path_buf()).is_err());
-    drop(first);
-    assert!(notes::NotesApp::spawn(temp.path().to_path_buf()).is_ok());
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one saved-notebook lifecycle keeps all projection and custody assertions together"
-)]
-fn production_preparation_imports_once_preserves_sources_and_reopens_real_history() {
-    let f = LegacyFixture::rich();
-    let source = f.source_bytes();
-    assert!(
-        notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, false)
-            .is_err()
-    );
-    let prepared =
-        notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, true)
+            actions::page_resource_id(f.child),
+            "rename",
+            Some("Selected release"),
+        );
+        let selected = f
+            .records
+            .read(&checkout.id, |doc| doc.base_heads()[0])
             .unwrap();
-    let mut surfaces = 0;
-    ui::Widget::visit_framework_history(&prepared.root, &mut |_, _| surfaces += 1);
-    assert_eq!(surfaces, 1);
-    let checkout = prepared.checkout.clone();
-    let original = prepared
-        .records
-        .read(&checkout.id, Transactable::base_heads)
-        .unwrap();
-    let records = prepared.records.clone();
-    let mut d = ui::headless::Driver::new_with_controlled_inputs(
-        ui::State::new(),
-        Box::new(prepared.root),
-        (1000, 700),
-        ui::Theme::dark(),
-        renderer(),
-        f.author.clone(),
-    );
-    assert!(d.targets().contains_key("history-open"));
-    records
-        .with_owned_action(
-            &checkout.id,
-            1,
-            canonical::PACKAGE,
-            f.author.clone(),
-            tilo_actions::ActionContext::default(),
-            |doc, _| {
-                let mut page = NotesDoc::list_pages(doc)
-                    .into_iter()
-                    .find(|p| p.id == f.root)
-                    .unwrap();
-                page.title = "Saved production change".into();
-                NotesDoc::upsert_page_meta(doc, &page);
-            },
-        )
-        .unwrap();
-    d.relayout();
-    let outer = (
-        d.state_mut().doc.base_heads(),
-        d.state_mut().doc.pending_ops(),
-    );
-    let selected = records
-        .read(&checkout.id, |doc| doc.base_heads()[0])
-        .unwrap();
-    d.click_named("history-open").unwrap();
-    select(&mut d, selected);
-    let pinned = format!("{:?}", d.a11y_nodes());
-    assert!(pinned.contains("Saved production change"));
-    records
-        .with_owned_action(
-            &checkout.id,
-            2,
-            canonical::PACKAGE,
-            ui::permissions::UserId("second-owner-fixture".into()),
-            tilo_actions::ActionContext::default(),
-            |doc, _| {
-                let mut page = NotesDoc::list_pages(doc)
-                    .into_iter()
-                    .find(|p| p.id == f.root)
-                    .unwrap();
-                page.title = "Later live update".into();
-                NotesDoc::upsert_page_meta(doc, &page);
-            },
-        )
-        .unwrap();
-    d.relayout();
-    assert!(format!("{:?}", d.a11y_nodes()).contains("Saved production change"));
-    assert!(!format!("{:?}", d.a11y_nodes()).contains("Later live update"));
-    let live_before_restore = records
-        .read(&checkout.id, Transactable::base_heads)
-        .unwrap();
-    d.click_named("history-restore").unwrap();
-    d.key("Enter");
-    records
-        .read(&checkout.id, |doc| {
-            assert_eq!(doc.clone().get_changes(&live_before_restore).len(), 1);
-            assert_eq!(
-                NotesDoc::list_pages(doc)
-                    .into_iter()
-                    .find(|p| p.id == f.root)
-                    .unwrap()
-                    .title,
-                "Saved production change"
-            );
-        })
-        .unwrap();
-    assert_eq!(
-        (
-            d.state_mut().doc.base_heads(),
-            d.state_mut().doc.pending_ops()
-        ),
-        outer
-    );
-    d.close_components();
-    for report in d.take_component_close_reports() {
-        assert_closed(&report);
-    }
-    assert_eq!(
-        records.save_status(&checkout.id).unwrap(),
-        ui::record::RecordSaveStatus::Saved
-    );
-    let heads = records
-        .read(&checkout.id, Transactable::base_heads)
-        .unwrap();
-    assert_ne!(heads, original);
-    drop(d);
-    drop(records);
-    drop(prepared.records);
-    let reopened =
-        notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, false)
+        let target = f.records.read(&checkout.id, Clone::clone).unwrap();
+        f.records
+            .with_owned_action(
+                &checkout.id,
+                11,
+                canonical::PACKAGE,
+                f.author.clone(),
+                tilo_actions::ActionContext::default(),
+                |doc, _| {
+                    let mut page = NotesDoc::list_pages(doc)
+                        .into_iter()
+                        .find(|p| p.id == f.child)
+                        .unwrap();
+                    page.parent = None;
+                    page.order = 2;
+                    NotesDoc::upsert_page_meta(doc, &page);
+                    let block = NotesDoc::page_block_snapshots(doc, f.child)[0].0.clone();
+                    replace_block_text(doc, f.child, &block, "changed marked block");
+                    NotesDoc::upsert_tag(
+                        doc,
+                        &notes::model::TagMeta {
+                            id: f.tag,
+                            name: "Live tag".into(),
+                        },
+                    );
+                    NotesDoc::set_tag_assignment(doc, f.child, f.tag, false);
+                    doc.put(ROOT, "workspace_json", "retained legacy metadata")
+                        .unwrap();
+                },
+            )
             .unwrap();
-    assert_eq!(reopened.checkout, checkout);
-    assert_eq!(
-        reopened
+
+        invoke(
+            &mut d,
+            11,
+            actions::page_resource_id(f.child),
+            "rename",
+            Some("Live release"),
+        );
+        let before = f
             .records
             .read(&checkout.id, Transactable::base_heads)
-            .unwrap(),
-        heads
-    );
-    for (path, bytes) in source {
-        assert_eq!(std::fs::read(f.source.join(path)).unwrap(), bytes);
+            .unwrap();
+        assert!(
+            d.targets().contains_key("history-open"),
+            "actual canonical Notes needs shared History"
+        );
+        d.click_named("history-open").unwrap();
+        select(&mut d, selected);
+        d.click_named("history-next-page").unwrap();
+        let preview = format!("{:?}", d.a11y_nodes());
+        assert!(preview.contains("Selected release"), "{preview}");
+        assert!(
+            preview.contains("Projects"),
+            "tree navigation must retain the parent page"
+        );
+        assert_eq!(
+            f.records
+                .read(&checkout.id, Transactable::base_heads)
+                .unwrap(),
+            before
+        );
+        d.type_text("must not edit historical content");
+        d.key("Backspace");
+        assert_eq!(
+            f.records
+                .read(&checkout.id, Transactable::base_heads)
+                .unwrap(),
+            before
+        );
+        d.click_named("history-before").unwrap();
+        assert!(!format!("{:?}", d.a11y_nodes()).contains("changed marked block"));
+        d.click_named("history-after").unwrap();
+        d.resize((480, 700)).unwrap();
+        d.click_named("history-previous-page").unwrap();
+        d.perform_named("history-next-page", &ui::a11y::Action::Focus)
+            .unwrap();
+        d.key("Enter");
+        assert!(format!("{:?}", d.a11y_nodes()).contains("Heading one"));
+        d.click_named("history-restore").unwrap();
+        d.key("Enter");
+        f.records
+            .read(&checkout.id, |doc| {
+                assert_eq!(
+                    NotesDoc::list_pages(doc)
+                        .into_iter()
+                        .find(|p| p.id == f.child)
+                        .unwrap()
+                        .title,
+                    "Selected release"
+                );
+                assert_eq!(doc.clone().get_changes(&before).len(), 1);
+                notes::notebook::validate(doc).unwrap();
+                assert_eq!(
+                    NotesDoc::page_block_snapshots(doc, f.child),
+                    NotesDoc::page_block_snapshots(&target, f.child)
+                );
+                assert_eq!(
+                    NotesDoc::page_block_marks(doc, f.child),
+                    NotesDoc::page_block_marks(&target, f.child)
+                );
+                assert_eq!(NotesDoc::list_pages(doc), NotesDoc::list_pages(&target));
+                assert_eq!(NotesDoc::list_tags(doc), NotesDoc::list_tags(&target));
+                assert_eq!(
+                    notes::notebook::project(doc, None)
+                        .unwrap()
+                        .data
+                        .tag_assignments,
+                    notes::notebook::project(&target, None)
+                        .unwrap()
+                        .data
+                        .tag_assignments
+                );
+                assert_eq!(
+                    doc.get(ROOT, "notes_import_v1").unwrap(),
+                    target.get(ROOT, "notes_import_v1").unwrap()
+                );
+                assert_eq!(
+                    doc.get(ROOT, "notes_schema_version").unwrap(),
+                    target.get(ROOT, "notes_schema_version").unwrap()
+                );
+                assert_eq!(
+                    doc.get(ROOT, "workspace_json").unwrap().unwrap().0.as_str(),
+                    Some("retained legacy metadata")
+                );
+            })
+            .unwrap();
+        f.records
+            .with_history(&checkout.id, |doc, history| {
+                history.undo_in(doc, &f.author, 11, None, None).unwrap();
+                assert_eq!(
+                    NotesDoc::list_pages(doc)
+                        .into_iter()
+                        .find(|p| p.id == f.child)
+                        .unwrap()
+                        .title,
+                    "Live release"
+                );
+            })
+            .unwrap();
+        close_driver(&mut d);
+        assert_eq!(f.source_bytes(), source);
+        drop(d);
+        let f = f.reopen();
+        f.records.try_open_record(&checkout).unwrap();
+        assert_eq!(
+            f.records
+                .read(&checkout.id, |doc| NotesDoc::list_pages(doc)
+                    .into_iter()
+                    .find(|p| p.id == f.child)
+                    .unwrap()
+                    .title)
+                .unwrap(),
+            "Live release"
+        );
     }
-    assert!(
-        notes::NotesApp::spawn(f.source).is_err(),
-        "retired legacy writers must not fork saved notebook content"
-    );
+
+    eprintln!("phase legacy_notebook_refuses_a_second_writer_until_first_is_dropped");
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let first = notes::NotesApp::spawn(temp.path().to_path_buf()).unwrap();
+        assert!(notes::NotesApp::spawn(temp.path().to_path_buf()).is_err());
+        drop(first);
+        assert!(notes::NotesApp::spawn(temp.path().to_path_buf()).is_ok());
+    }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one saved-notebook lifecycle keeps all projection and custody assertions together"
+)]
 #[test]
-fn retired_source_refuses_wrong_namespace_and_missing_canonical_record() {
-    let f = LegacyFixture::rich();
-    let prepared =
-        notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, true)
+fn production_preparation_imports_once_and_reopens_the_same_graph() {
+    eprintln!(
+        "phase production_preparation_imports_once_preserves_sources_and_reopens_real_history"
+    );
+    {
+        let f = LegacyFixture::rich();
+        let source = f.source_bytes();
+        assert!(
+            notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, false)
+                .is_err()
+        );
+        let prepared =
+            notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, true)
+                .unwrap();
+        let mut surfaces = 0;
+        ui::history_mode::capability::visit_framework_history(&prepared.root, &mut |_, _| {
+            surfaces += 1;
+        });
+        assert_eq!(surfaces, 1);
+        let checkout = prepared.checkout.clone();
+        let original = prepared
+            .records
+            .read(&checkout.id, Transactable::base_heads)
             .unwrap();
-    let checkout = prepared.checkout.clone();
-    drop(prepared);
-    assert!(
-        notes::production::prepare_notebook(&f.source, &f.state_root, "wrong-room", true).is_err()
-    );
-    assert!(
-        notes::production::prepare_notebook(
-            &f.source,
-            &f.temp.path().join("wrong-state"),
-            canonical::ROOM,
-            true
-        )
-        .is_err()
-    );
-    std::fs::remove_file(f.document_path(&checkout)).unwrap();
-    assert!(
-        notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, true)
+        let records = prepared.records.clone();
+        let mut d = ui::headless::Driver::new_with_controlled_inputs(
+            ui::State::new(),
+            Box::new(prepared.root),
+            (1000, 700),
+            ui::Theme::dark(),
+            renderer(),
+            f.author.clone(),
+        );
+        assert!(d.targets().contains_key("history-open"));
+        records
+            .with_owned_action(
+                &checkout.id,
+                1,
+                canonical::PACKAGE,
+                f.author.clone(),
+                tilo_actions::ActionContext::default(),
+                |doc, _| {
+                    let mut page = NotesDoc::list_pages(doc)
+                        .into_iter()
+                        .find(|p| p.id == f.root)
+                        .unwrap();
+                    page.title = "Saved production change".into();
+                    NotesDoc::upsert_page_meta(doc, &page);
+                },
+            )
+            .unwrap();
+        d.relayout();
+        let outer = (
+            d.state_mut().doc.base_heads(),
+            d.state_mut().doc.pending_ops(),
+        );
+        let selected = records
+            .read(&checkout.id, |doc| doc.base_heads()[0])
+            .unwrap();
+        d.click_named("history-open").unwrap();
+        select(&mut d, selected);
+        let pinned = format!("{:?}", d.a11y_nodes());
+        assert!(pinned.contains("Saved production change"));
+        records
+            .with_owned_action(
+                &checkout.id,
+                2,
+                canonical::PACKAGE,
+                ui::permissions::UserId("second-owner-fixture".into()),
+                tilo_actions::ActionContext::default(),
+                |doc, _| {
+                    let mut page = NotesDoc::list_pages(doc)
+                        .into_iter()
+                        .find(|p| p.id == f.root)
+                        .unwrap();
+                    page.title = "Later live update".into();
+                    NotesDoc::upsert_page_meta(doc, &page);
+                },
+            )
+            .unwrap();
+        d.relayout();
+        assert!(format!("{:?}", d.a11y_nodes()).contains("Saved production change"));
+        assert!(!format!("{:?}", d.a11y_nodes()).contains("Later live update"));
+        let live_before_restore = records
+            .read(&checkout.id, Transactable::base_heads)
+            .unwrap();
+        d.click_named("history-restore").unwrap();
+        d.key("Enter");
+        records
+            .read(&checkout.id, |doc| {
+                assert_eq!(doc.clone().get_changes(&live_before_restore).len(), 1);
+                assert_eq!(
+                    NotesDoc::list_pages(doc)
+                        .into_iter()
+                        .find(|p| p.id == f.root)
+                        .unwrap()
+                        .title,
+                    "Saved production change"
+                );
+            })
+            .unwrap();
+        assert_eq!(
+            (
+                d.state_mut().doc.base_heads(),
+                d.state_mut().doc.pending_ops()
+            ),
+            outer
+        );
+        d.close_components();
+        for report in d.take_component_close_reports() {
+            assert_closed(&report);
+        }
+        assert_eq!(
+            records.save_status(&checkout.id).unwrap(),
+            ui::record::RecordSaveStatus::Saved
+        );
+        let heads = records
+            .read(&checkout.id, Transactable::base_heads)
+            .unwrap();
+        assert_ne!(heads, original);
+        drop(d);
+        drop(records);
+        drop(prepared.records);
+        let reopened =
+            notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, false)
+                .unwrap();
+        assert_eq!(reopened.checkout, checkout);
+        assert_eq!(
+            reopened
+                .records
+                .read(&checkout.id, Transactable::base_heads)
+                .unwrap(),
+            heads
+        );
+        for (path, bytes) in source {
+            assert_eq!(std::fs::read(f.source.join(path)).unwrap(), bytes);
+        }
+        assert!(
+            notes::NotesApp::spawn(f.source).is_err(),
+            "retired legacy writers must not fork saved notebook content"
+        );
+    }
+
+    eprintln!("phase retired_source_refuses_wrong_namespace_and_missing_canonical_record");
+    {
+        let f = LegacyFixture::rich();
+        let prepared =
+            notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, true)
+                .unwrap();
+        let checkout = prepared.checkout.clone();
+        drop(prepared);
+        assert!(
+            notes::production::prepare_notebook(&f.source, &f.state_root, "wrong-room", true)
+                .is_err()
+        );
+        assert!(
+            notes::production::prepare_notebook(
+                &f.source,
+                &f.temp.path().join("wrong-state"),
+                canonical::ROOM,
+                true
+            )
             .is_err()
-    );
+        );
+        std::fs::remove_file(f.document_path(&checkout)).unwrap();
+        assert!(
+            notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, true)
+                .is_err()
+        );
+    }
+
+    eprintln!("phase durable_import_without_retirement_marker_reopens_the_same_graph");
+    {
+        let f = LegacyFixture::rich();
+        let key = notes::legacy_import::source_key(&f.source).unwrap();
+        let imported = notes::legacy_import::import_legacy(&f.records, &f.source, key).unwrap();
+        let heads = f
+            .records
+            .read(&imported.checkout.id, Transactable::base_heads)
+            .unwrap();
+        let checkout = imported.checkout;
+        let source = f.source.clone();
+        let state_root = f.state_root.clone();
+        drop(f.records);
+        let prepared =
+            notes::production::prepare_notebook(&source, &state_root, canonical::ROOM, false)
+                .unwrap();
+        assert_eq!(prepared.checkout, checkout);
+        assert_eq!(
+            prepared
+                .records
+                .read(&checkout.id, Transactable::base_heads)
+                .unwrap(),
+            heads
+        );
+        assert!(source.join(".notes-canonical-v1").is_file());
+    }
 }
 
 #[test]
@@ -447,43 +476,17 @@ fn notebook_restore_rechecks_stale_frontier_and_current_authority() {
 }
 
 #[test]
-fn durable_import_without_retirement_marker_reopens_the_same_graph() {
-    let f = LegacyFixture::rich();
-    let key = notes::legacy_import::source_key(&f.source).unwrap();
-    let imported = notes::legacy_import::import_legacy(&f.records, &f.source, key).unwrap();
-    let heads = f
-        .records
-        .read(&imported.checkout.id, Transactable::base_heads)
-        .unwrap();
-    let checkout = imported.checkout;
-    let source = f.source.clone();
-    let state_root = f.state_root.clone();
-    drop(f.records);
-    let prepared =
-        notes::production::prepare_notebook(&source, &state_root, canonical::ROOM, false).unwrap();
-    assert_eq!(prepared.checkout, checkout);
-    assert_eq!(
-        prepared
-            .records
-            .read(&checkout.id, Transactable::base_heads)
-            .unwrap(),
-        heads
-    );
-    assert!(source.join(".notes-canonical-v1").is_file());
-}
-
-#[test]
-fn actual_binary_launch_spec_prepares_the_notebook_and_shared_history() {
+fn actual_binary_normal_launch_prepares_default_canonical_notebook_and_history() {
     let temp = tempfile::tempdir().unwrap();
-    let notebook = temp.path().join("notebook");
-    let state = temp.path().join("application-state");
+    let profile = temp.path().join("application-state");
+    let workspace = "00000000-0000-0000-0000-000000000023";
     let dump = temp.path().join("inspection.json");
     let spec = serde_json::json!({"actions":[{"click_named":"history-open"}],"inspect":dump});
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_notes"))
-        .env("XDG_DATA_HOME", &state)
-        .env("TILO_NOTES_ROOT", &notebook)
+        .env("XDG_DATA_HOME", &profile)
         .env("TILO_PACKAGE_ID", canonical::PACKAGE)
-        .env("TILO_WORKSPACE_ID", "00000000-0000-0000-0000-000000000023")
+        .env("TILO_WORKSPACE_ID", workspace)
+        .env("TILO_PARTICIPATION", "author")
         .args(["--headless-drive", &spec.to_string()])
         .output()
         .unwrap();
@@ -495,132 +498,125 @@ fn actual_binary_launch_spec_prepares_the_notebook_and_shared_history() {
     );
     let inspection = std::fs::read_to_string(&dump).unwrap();
     assert!(inspection.contains("activity_timeline"), "{inspection}");
-    // The notebook is a canonical record in application state. A workspace
-    // launch never adopts, creates or retires a personal Markdown notebook.
-    assert!(
-        walkdir(&state).next().is_some(),
-        "the launch persisted its notebook record under {}",
-        state.display()
-    );
-    assert!(
-        !notebook.exists(),
-        "a workspace launch leaves the personal notebook alone"
-    );
+    // A launch into a workspace opens the room's shared default record.
+    let checkout = notes::hosting::launch_notebook(true);
+    let directory = app_state::DocStore::room_record_dir_at(
+        &profile,
+        canonical::PACKAGE,
+        workspace,
+        &checkout.id.storage_key(),
+    )
+    .unwrap();
+    assert!(directory.join(app_state::DOCUMENT_FILE).is_file());
 }
 
-/// Every regular file below `root`.
-fn walkdir(root: &std::path::Path) -> impl Iterator<Item = std::path::PathBuf> {
-    let mut pending = vec![root.to_path_buf()];
-    let mut files = Vec::new();
-    while let Some(dir) = pending.pop() {
-        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                pending.push(path);
-            } else {
-                files.push(path);
-            }
-        }
-    }
-    files.into_iter()
-}
-
+#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
-fn production_close_failure_retains_the_saved_record_owner_for_retry() {
-    let f = LegacyFixture::rich();
-    let prepared =
-        notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, true)
-            .unwrap();
-    let checkout = prepared.checkout.clone();
-    let path = f.document_path(&checkout);
-    let records = prepared.records.clone();
-    let mut d = ui::headless::Driver::new_with_controlled_inputs(
-        ui::State::new(),
-        Box::new(prepared.root),
-        (1000, 700),
-        ui::Theme::dark(),
-        renderer(),
-        f.author.clone(),
-    );
-    let sibling = ui::record::RecordCheckout::new(
-        ui::RecordId::for_tab(9991),
-        ui::record::RecordKind::new("unrelated"),
-    );
-    records
-        .reserve_record(&sibling)
-        .unwrap()
-        .initialize(|_| Ok(()))
-        .unwrap();
-    records
-        .with(&sibling.id, |doc| {
-            doc.put(ROOT, "pending-sibling", "untouched").unwrap();
-        })
-        .unwrap();
-    let sibling_before = records
-        .read(&sibling.id, |doc| (doc.base_heads(), doc.pending_ops()))
-        .unwrap();
-    std::fs::remove_file(&path).unwrap();
-    std::fs::create_dir(&path).unwrap();
-    records
-        .with_owned_action(
-            &checkout.id,
-            11,
-            canonical::PACKAGE,
+fn failed_closes_and_rebinds_retain_the_saved_owner() {
+    eprintln!("phase production_close_failure_retains_the_saved_record_owner_for_retry");
+    {
+        let f = LegacyFixture::rich();
+        let prepared =
+            notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, true)
+                .unwrap();
+        let checkout = prepared.checkout.clone();
+        let path = f.document_path(&checkout);
+        let records = prepared.records.clone();
+        let mut d = ui::headless::Driver::new_with_controlled_inputs(
+            ui::State::new(),
+            Box::new(prepared.root),
+            (1000, 700),
+            ui::Theme::dark(),
+            renderer(),
             f.author.clone(),
-            tilo_actions::ActionContext::default(),
-            |doc, _| {
-                let mut page = NotesDoc::list_pages(doc)
+        );
+        let sibling = ui::record::RecordCheckout::new(
+            ui::RecordId::for_tab(9991),
+            ui::record::RecordKind::new("unrelated"),
+        );
+        records
+            .reserve_record(&sibling)
+            .unwrap()
+            .initialize(|_| Ok(()))
+            .unwrap();
+        records
+            .with(&sibling.id, |doc| {
+                doc.put(ROOT, "pending-sibling", "untouched").unwrap();
+            })
+            .unwrap();
+        let sibling_before = records
+            .read(&sibling.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        records
+            .with_owned_action(
+                &checkout.id,
+                11,
+                canonical::PACKAGE,
+                f.author.clone(),
+                tilo_actions::ActionContext::default(),
+                |doc, _| {
+                    let mut page = NotesDoc::list_pages(doc)
+                        .into_iter()
+                        .find(|p| p.id == f.root)
+                        .unwrap();
+                    page.title = "Retained unsaved change".into();
+                    NotesDoc::upsert_page_meta(doc, &page);
+                },
+            )
+            .unwrap();
+        d.close_components();
+        let mut report = d
+            .take_component_close_reports()
+            .into_iter()
+            .find(|report| report.record_error.is_some())
+            .expect("save failure must retain recovery");
+        assert!(report.record_retry.is_some());
+        assert_eq!(report.record_retry_target.as_ref(), Some(&checkout.id));
+        assert_eq!(
+            records
+                .read(&sibling.id, |doc| (doc.base_heads(), doc.pending_ops()))
+                .unwrap(),
+            sibling_before
+        );
+        drop(d);
+        drop(records);
+        drop(prepared.records);
+        assert!(notes::NotesApp::spawn(f.source.clone()).is_err());
+        std::fs::remove_dir(&path).unwrap();
+        let retained = report.record_retry.as_ref().unwrap().clone();
+        report.retry_record().unwrap();
+        assert_eq!(
+            retained
+                .read(&sibling.id, |doc| (doc.base_heads(), doc.pending_ops()))
+                .unwrap(),
+            sibling_before
+        );
+        drop(retained);
+        assert!(report.record_retry.is_none());
+        let reopened =
+            notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, false)
+                .unwrap();
+        assert_eq!(
+            reopened
+                .records
+                .read(&checkout.id, |doc| NotesDoc::list_pages(doc)
                     .into_iter()
                     .find(|p| p.id == f.root)
-                    .unwrap();
-                page.title = "Retained unsaved change".into();
-                NotesDoc::upsert_page_meta(doc, &page);
-            },
-        )
-        .unwrap();
-    d.close_components();
-    let mut report = d
-        .take_component_close_reports()
-        .into_iter()
-        .find(|report| report.record_error.is_some())
-        .expect("save failure must retain recovery");
-    assert!(report.record_retry.is_some());
-    assert_eq!(report.record_retry_target.as_ref(), Some(&checkout.id));
-    assert_eq!(
-        records
-            .read(&sibling.id, |doc| (doc.base_heads(), doc.pending_ops()))
-            .unwrap(),
-        sibling_before
-    );
-    drop(d);
-    drop(records);
-    drop(prepared.records);
-    assert!(notes::NotesApp::spawn(f.source.clone()).is_err());
-    std::fs::remove_dir(&path).unwrap();
-    let retained = report.record_retry.as_ref().unwrap().clone();
-    report.retry_record().unwrap();
-    assert_eq!(
-        retained
-            .read(&sibling.id, |doc| (doc.base_heads(), doc.pending_ops()))
-            .unwrap(),
-        sibling_before
-    );
-    drop(retained);
-    assert!(report.record_retry.is_none());
-    let reopened =
-        notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, false)
-            .unwrap();
-    assert_eq!(
-        reopened
-            .records
-            .read(&checkout.id, |doc| NotesDoc::list_pages(doc)
-                .into_iter()
-                .find(|p| p.id == f.root)
-                .unwrap()
-                .title)
-            .unwrap(),
-        "Retained unsaved change"
-    );
+                    .unwrap()
+                    .title)
+                .unwrap(),
+            "Retained unsaved change"
+        );
+    }
+
+    eprintln!("phase outgoing_notebook_rebind_retains_failed_owner_without_preclose");
+    {
+        for rejected in [false, true] {
+            assert_outgoing_notebook_recovery(OutgoingTransition::Rebind, rejected);
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -635,7 +631,6 @@ enum OutgoingTransition {
     reason = "one failed outgoing-owner lifecycle keeps retry, sibling isolation and durable reopen assertions together"
 )]
 fn assert_outgoing_notebook_recovery(transition: OutgoingTransition, reject_incoming: bool) {
-    use ui::Widget as _;
     let f = LegacyFixture::rich();
     let notes::production::PreparedNotebook {
         root: mut tile,
@@ -726,7 +721,7 @@ fn assert_outgoing_notebook_recovery(transition: OutgoingTransition, reject_inco
     }
     tile.bind_record(incoming.clone(), requested.clone());
     tile.bind_record(incoming.clone(), requested);
-    let mut reports = tile.take_component_close_reports();
+    let mut reports = ui::component_lifecycle::take_component_close_reports(&mut tile);
     assert_eq!(
         reports.len(),
         1,
@@ -760,7 +755,7 @@ fn assert_outgoing_notebook_recovery(transition: OutgoingTransition, reject_inco
             .unwrap(),
         incoming_before
     );
-    assert!(tile.take_component_close_reports().is_empty());
+    assert!(ui::component_lifecycle::take_component_close_reports(&mut tile).is_empty());
     // Only the recovery report may retain A when B admission fails or succeeds.
     drop(tile);
     drop(records);
@@ -804,18 +799,16 @@ fn assert_outgoing_notebook_recovery(transition: OutgoingTransition, reject_inco
 }
 
 #[test]
-fn outgoing_notebook_rebind_retains_failed_owner_without_preclose() {
-    for rejected in [false, true] {
-        assert_outgoing_notebook_recovery(OutgoingTransition::Rebind, rejected);
+fn outgoing_replacements_retain_the_failed_owner_without_preclose() {
+    eprintln!("phase outgoing_notebook_replacement_retains_failed_owner_without_preclose");
+    {
+        for rejected in [false, true] {
+            assert_outgoing_notebook_recovery(OutgoingTransition::Replace, rejected);
+        }
     }
-}
-#[test]
-fn outgoing_notebook_replacement_retains_failed_owner_without_preclose() {
-    for rejected in [false, true] {
-        assert_outgoing_notebook_recovery(OutgoingTransition::Replace, rejected);
+
+    eprintln!("phase outgoing_notebook_mutable_replacement_retains_failed_owner_without_preclose");
+    {
+        assert_outgoing_notebook_recovery(OutgoingTransition::MutableReplacement, true);
     }
-}
-#[test]
-fn outgoing_notebook_mutable_replacement_retains_failed_owner_without_preclose() {
-    assert_outgoing_notebook_recovery(OutgoingTransition::MutableReplacement, true);
 }

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -19,7 +20,7 @@ use ui::widget::{Button, Card, Column, Container, Row, Scrollable, Text, Widget}
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 use super::desktop_continuation::{self, ChoiceMode, Continuation};
 use super::folders;
@@ -39,6 +40,11 @@ use super::{page, stack};
 use crate::rhythm::px::{GROUP, PAGE_GUTTER, RELATED, SCROLLBAR_GUTTER, SIBLING};
 
 static NEXT_OPERATION: AtomicU64 = AtomicU64::new(0);
+
+/// How long a screenshot scenario waits for its migration worker. Durable
+/// copies and journal fsyncs can take many seconds on a loaded disk, so this
+/// only catches a worker that never finishes.
+const SHOT_WAIT_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
 
 type CommandSink = Rc<RefCell<Vec<ImportCommand>>>;
 type SaveReply = mpsc::Receiver<Result<Vec<OperationRecord>, String>>;
@@ -195,14 +201,7 @@ impl ImportApp {
     }
 
     fn try_for_shot(scenario: &str) -> Result<Self, String> {
-        // Screenshot fixtures are disposable and must not inherit the login
-        // user's protected home classification (CI commonly runs as root).
-        // macOS resolves its default temporary directory beneath /private,
-        // which the source guard correctly treats as an OS directory.
-        #[cfg(target_os = "macos")]
-        let temp = tempfile::tempdir_in("/Users/Shared").map_err(|error| error.to_string())?;
-        #[cfg(not(target_os = "macos"))]
-        let temp = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let temp = disposable_fixture_dir().map_err(|error| error.to_string())?;
         let base = temp
             .path()
             .canonicalize()
@@ -273,13 +272,13 @@ impl ImportApp {
                     .map_err(|e| e.to_string())?;
                 }
                 app.prepare_and_start_shot(&source, &destination_parent)?;
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+                let deadline = ui::time::now() + SHOT_WAIT_BOUND;
                 app.wait_for_shot_terminal(deadline)?;
                 app.expanded_details.insert(0);
                 app.load_issue_page(0, 0)?;
                 while app.detail_request.is_some() {
                     app.poll_background();
-                    if std::time::Instant::now() > deadline {
+                    if ui::time::now() > deadline {
                         return Err("issue-page screenshot timed out".into());
                     }
                     std::thread::yield_now();
@@ -289,9 +288,7 @@ impl ImportApp {
                 std::fs::write(source.join("Welcome.txt"), b"verified import")
                     .map_err(|error| error.to_string())?;
                 app.prepare_and_start_shot(&source, &destination_parent)?;
-                app.wait_for_shot_terminal(
-                    std::time::Instant::now() + std::time::Duration::from_secs(15),
-                )?;
+                app.wait_for_shot_terminal(ui::time::now() + SHOT_WAIT_BOUND)?;
             }
         }
         app.structure_dirty = true;
@@ -311,7 +308,7 @@ impl ImportApp {
             .map_err(|error| error.to_string())?;
         }
         self.prepare_and_start_shot(source, destination_parent)?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let deadline = ui::time::now() + SHOT_WAIT_BOUND;
         loop {
             self.poll_background();
             if self
@@ -331,7 +328,7 @@ impl ImportApp {
                 self.status_is_error = false;
                 return Ok(());
             }
-            if std::time::Instant::now() >= deadline {
+            if ui::time::now() >= deadline {
                 return Err("progress screenshot worker timed out".into());
             }
             std::thread::yield_now();
@@ -349,7 +346,7 @@ impl ImportApp {
         std::os::unix::fs::symlink(source.join("Welcome.txt"), source.join("Old shortcut"))
             .map_err(|error| error.to_string())?;
         self.prepare_and_start_shot(source, destination_parent)?;
-        self.wait_for_shot_terminal(std::time::Instant::now() + std::time::Duration::from_secs(15))
+        self.wait_for_shot_terminal(ui::time::now() + SHOT_WAIT_BOUND)
     }
 
     fn seed_retry_progress_shot(
@@ -365,7 +362,7 @@ impl ImportApp {
             .map_err(|error| error.to_string())?;
         }
         self.prepare_and_start_shot(source, destination_parent)?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let deadline = ui::time::now() + SHOT_WAIT_BOUND;
         loop {
             self.poll_background();
             if self
@@ -377,7 +374,7 @@ impl ImportApp {
                 self.wait_for_shot_terminal(deadline)?;
                 break;
             }
-            if std::time::Instant::now() >= deadline {
+            if ui::time::now() >= deadline {
                 return Err("retry screenshot setup timed out".into());
             }
             std::thread::yield_now();
@@ -405,7 +402,7 @@ impl ImportApp {
                 self.status_is_error = false;
                 return Ok(());
             }
-            if std::time::Instant::now() >= deadline || self.worker.is_none() {
+            if ui::time::now() >= deadline || self.worker.is_none() {
                 return Err("retry screenshot worker finished before progress was captured".into());
             }
             std::thread::yield_now();
@@ -420,9 +417,7 @@ impl ImportApp {
         std::fs::write(source.join("Budget.txt"), b"source version")
             .map_err(|error| error.to_string())?;
         self.prepare_and_start_shot(source, destination_parent)?;
-        self.wait_for_shot_terminal(
-            std::time::Instant::now() + std::time::Duration::from_secs(15),
-        )?;
+        self.wait_for_shot_terminal(ui::time::now() + SHOT_WAIT_BOUND)?;
         let completed = self
             .operations
             .first()
@@ -456,13 +451,13 @@ impl ImportApp {
         self.source = Some(source.to_path_buf());
         self.destination_parent = Some(destination_parent.to_path_buf());
         self.prepare_review()?;
-        self.start_operation(0)
+        self.start_copy(0)
     }
 
-    fn wait_for_shot_terminal(&mut self, deadline: std::time::Instant) -> Result<(), String> {
+    fn wait_for_shot_terminal(&mut self, deadline: ui::time::Instant) -> Result<(), String> {
         while self.worker.is_some() {
             self.poll_background();
-            if std::time::Instant::now() >= deadline {
+            if ui::time::now() >= deadline {
                 return Err("screenshot worker timed out".into());
             }
             std::thread::yield_now();
@@ -472,7 +467,7 @@ impl ImportApp {
 
     fn run_shot_worker(operation: &mut OperationRecord, job: MigrationJob) -> Result<(), String> {
         let mut worker = MigrationWorker::start(job)?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let deadline = ui::time::now() + SHOT_WAIT_BOUND;
         loop {
             if let Some(event) = worker.try_next() {
                 match event {
@@ -487,7 +482,7 @@ impl ImportApp {
                     }
                 }
             }
-            if std::time::Instant::now() >= deadline {
+            if ui::time::now() >= deadline {
                 operation.apply_outcome(WorkerOutcome::Interrupted);
                 return Err("screenshot worker timed out".into());
             }
@@ -582,7 +577,7 @@ impl ImportApp {
         })
     }
 
-    fn can_start_operation(&self, index: usize) -> bool {
+    fn can_start_copy(&self, index: usize) -> bool {
         self.operations
             .get(index)
             .is_some_and(|record| record.state() == OperationState::AwaitingReview)
@@ -697,7 +692,7 @@ impl ImportApp {
                 let details_available = operation.issue_count() > 0
                     || !operation.metadata_limitations().is_empty()
                     || operation.failure().is_some();
-                let start_available = self.can_start_operation(index);
+                let start_available = self.can_start_copy(index);
                 OperationProjection {
                     identity: operation.id().to_string(),
                     state: operation_state_key(operation.state()),
@@ -924,7 +919,7 @@ impl ImportApp {
                     return self
                         .refuse_semantic(super::strings::t("imager-import-error-stale-operation"));
                 };
-                if !self.can_start_operation(index) {
+                if !self.can_start_copy(index) {
                     return self.refuse_semantic(super::strings::t(
                         "imager-import-error-start-unavailable",
                     ));
@@ -1194,8 +1189,8 @@ impl ImportApp {
         let id = format!(
             "{}-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            ui::time::wall()
+                .duration_since(ui::time::UNIX_EPOCH)
                 .map_err(|_| "system time is before the Unix epoch".to_string())?
                 .as_nanos(),
             NEXT_OPERATION.fetch_add(1, Ordering::Relaxed)
@@ -1296,7 +1291,7 @@ impl ImportApp {
                         c.select_destination_parent(index, &parent)?;
                         parent
                     } else {
-                        let parent = xdg_paths::data_local_dir()
+                        let parent = tilo_paths::data_local_dir()
                             .ok_or("No local user data directory")?
                             .join("tilo/files");
                         super::migration_store::ensure_private_root(&parent)
@@ -1402,7 +1397,7 @@ impl ImportApp {
         Ok(())
     }
 
-    fn start_operation(&mut self, index: usize) -> Result<(), String> {
+    fn start_copy(&mut self, index: usize) -> Result<(), String> {
         if self.pending_prepare_invocation.is_some() || self.pending_review_invocation.is_some() {
             return Err("Wait for the folder review to finish saving before copying.".into());
         }
@@ -1886,7 +1881,7 @@ impl ImportApp {
             Err("Review at least one saved Copy folder first.".into())
         } else {
             let first = self.batch.remove(0);
-            self.start_operation(first)
+            self.start_copy(first)
         }
     }
 
@@ -1955,7 +1950,7 @@ impl ImportApp {
                 }
             }
             ImportCommand::PrepareReview => self.prepare_review(),
-            ImportCommand::Start(index) => self.start_operation(index),
+            ImportCommand::Start(index) => self.start_copy(index),
             ImportCommand::Retry(index) => self.retry_operation(index),
             ImportCommand::Cancel => {
                 if self.cancel_active() {
@@ -2150,7 +2145,7 @@ impl ImportApp {
                     ImportCommand::Start(index),
                 )
                 .primary()
-                .with_enabled(self.can_start_operation(index)),
+                .with_enabled(self.can_start_copy(index)),
             ),
             OperationState::Running
                 if self
@@ -2534,145 +2529,30 @@ fn state_summary(state: OperationState) -> &'static str {
 }
 
 impl Widget for ImportApp {
+    ui::provides!(dyn ui::resources::PublishesResources);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[import_actions::IMPORT_OPERATION_TYPE]
     }
 
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        vec![import_actions::resource(&self.import_projection())]
-    }
-
-    fn invoke_resource_operation_v2(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        let Some(operation) = import_actions::decode(type_id, payload)? else {
-            for child in self.children_mut() {
-                if let Some(output) =
-                    child.invoke_resource_operation_v2(kind, type_id, payload, doc, path)?
-                {
-                    return Ok(Some(output));
-                }
-            }
-            return Ok(None);
-        };
-        if kind != operation.kind() {
-            return Err(super::strings::t("imager-import-error-operation-kind"));
-        }
-        self.invoke_import_operation(operation).map(Some)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = import_actions::decode(type_id, payload)? else {
-            for child in self.children_mut() {
-                if let Some(started) =
-                    child.start_resource_operation(invocation, kind, type_id, payload, doc, path)?
-                {
-                    return Ok(Some(started));
-                }
-            }
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        if kind != operation.kind() {
-            return Err(super::strings::t("imager-import-error-operation-kind"));
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let operation_ids = if operation.background() {
-            if self.pending_copy_invocation.is_some()
-                || self.pending_review_invocation.is_some()
-                || self.pending_prepare_invocation.is_some()
-            {
-                return Err("Another folder import action is still settling.".into());
-            }
-            match &operation {
-                ImportOperation::StartReviewedBatch => self
-                    .reviewed_batch_indices()
-                    .into_iter()
-                    .filter_map(|index| {
-                        self.operations
-                            .get(index)
-                            .map(|record| record.id().to_string())
-                    })
-                    .collect(),
-                ImportOperation::Start { operation_id }
-                | ImportOperation::Retry { operation_id } => vec![operation_id.clone()],
-                _ => Vec::new(),
-            }
-        } else {
-            Vec::new()
-        };
-        let review_folder = match &operation {
-            ImportOperation::ResolveFolder { folder_id }
-            | ImportOperation::PickFolderDestination { folder_id } => Some(folder_id.clone()),
-            _ => None,
-        };
-        let preparing = matches!(&operation, ImportOperation::PrepareReview);
-        let prepare_paths = if preparing {
-            Some((
-                self.source.clone().ok_or("Choose a source folder first")?,
-                self.destination_parent
-                    .clone()
-                    .ok_or("Choose a destination folder first")?,
-            ))
-        } else {
-            None
-        };
-        let output = self.invoke_import_operation(operation)?;
-        if preparing {
-            let (source, destination_parent) =
-                prepare_paths.ok_or("Folder review lost its selected locations")?;
-            let save_reply = self
-                .pending_saves
-                .pop()
-                .ok_or_else(|| "Folder review did not queue a durable index save.".to_string())?;
-            let operation_id = self
-                .operations
-                .last()
-                .ok_or("Folder review did not create a copy plan")?
-                .id()
-                .to_string();
-            self.pending_prepare_invocation = Some(PendingPrepareInvocation {
-                invocation,
-                save_reply,
-                operation_id,
-                source,
-                destination_parent,
-            });
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        } else if let Some(folder_id) = review_folder {
-            self.pending_review_invocation = Some(PendingReviewInvocation {
-                invocation,
-                folder_id,
-                cancelled: false,
-                cancellation_requested: false,
-                finished: false,
-                failure: None,
-                save_reply: None,
-            });
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        } else if !operation_ids.is_empty() {
-            self.pending_copy_invocation = Some(PendingCopyInvocation {
-                invocation,
-                operation_ids,
-                terminal_states: HashMap::new(),
-                cancellation_requested: false,
-                failure: None,
-            });
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        } else {
-            Ok(Some(ui::widget::ResourceOperationStart::Completed(output)))
-        }
+        self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+        )
     }
 
     fn poll_resource_operation(
@@ -2931,7 +2811,7 @@ impl Widget for ImportApp {
         Some(update)
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.poll_background();
         self.drain_commands();
         if let Some(composed) = &mut self.composed {
@@ -2939,7 +2819,7 @@ impl Widget for ImportApp {
         }
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let mut changed = self.poll_background() || self.drain_commands();
         if let Some(composed) = &mut self.composed {
             changed |= composed.update(state, path);
@@ -3010,33 +2890,12 @@ impl Widget for ImportApp {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(composed) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&child) = children.first()
         {
-            composed.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child,
-                taffy,
-            );
+            composed.handle_event(event, &mut ctx.reborrow(ctx.path, child));
         }
     }
 
@@ -3085,26 +2944,152 @@ impl Widget for ImportApp {
     }
 }
 
+impl ui::resources::PublishesResources for ImportApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let projection = self.import_projection();
+        let described = import_actions::resource(&projection);
+        let mut published = ui::tilo_resource::publish::<import_actions::ImportGuide>(
+            import_actions::IMPORT_RESOURCE_ID,
+            &described.label,
+            &projection,
+        );
+        published.presentation = described.presentation;
+        vec![published]
+    }
+}
+
+impl ImportApp {
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = import_actions::decode(type_id, payload)? else {
+            return Ok(None);
+        };
+        if kind != operation.kind() {
+            return Err(super::strings::t("imager-import-error-operation-kind"));
+        }
+        let operation_ids = if operation.background() {
+            if self.pending_copy_invocation.is_some()
+                || self.pending_review_invocation.is_some()
+                || self.pending_prepare_invocation.is_some()
+            {
+                return Err("Another folder import action is still settling.".into());
+            }
+            match &operation {
+                ImportOperation::StartReviewedBatch => self
+                    .reviewed_batch_indices()
+                    .into_iter()
+                    .filter_map(|index| {
+                        self.operations
+                            .get(index)
+                            .map(|record| record.id().to_string())
+                    })
+                    .collect(),
+                ImportOperation::Start { operation_id }
+                | ImportOperation::Retry { operation_id } => vec![operation_id.clone()],
+                _ => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+        let review_folder = match &operation {
+            ImportOperation::ResolveFolder { folder_id }
+            | ImportOperation::PickFolderDestination { folder_id } => Some(folder_id.clone()),
+            _ => None,
+        };
+        let preparing = matches!(&operation, ImportOperation::PrepareReview);
+        let prepare_paths = if preparing {
+            Some((
+                self.source.clone().ok_or("Choose a source folder first")?,
+                self.destination_parent
+                    .clone()
+                    .ok_or("Choose a destination folder first")?,
+            ))
+        } else {
+            None
+        };
+        let output = self.invoke_import_operation(operation)?;
+        if preparing {
+            let (source, destination_parent) =
+                prepare_paths.ok_or("Folder review lost its selected locations")?;
+            let save_reply = self
+                .pending_saves
+                .pop()
+                .ok_or_else(|| "Folder review did not queue a durable index save.".to_string())?;
+            let operation_id = self
+                .operations
+                .last()
+                .ok_or("Folder review did not create a copy plan")?
+                .id()
+                .to_string();
+            self.pending_prepare_invocation = Some(PendingPrepareInvocation {
+                invocation,
+                save_reply,
+                operation_id,
+                source,
+                destination_parent,
+            });
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else if let Some(folder_id) = review_folder {
+            self.pending_review_invocation = Some(PendingReviewInvocation {
+                invocation,
+                folder_id,
+                cancelled: false,
+                cancellation_requested: false,
+                finished: false,
+                failure: None,
+                save_reply: None,
+            });
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else if !operation_ids.is_empty() {
+            self.pending_copy_invocation = Some(PendingCopyInvocation {
+                invocation,
+                operation_ids,
+                terminal_states: HashMap::new(),
+                cancellation_requested: false,
+                failure: None,
+            });
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else {
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(output)))
+        }
+    }
+}
+
 #[must_use]
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(ImportApp::new())
+}
+
+/// A fresh directory for disposable screenshot and test fixtures, in a place
+/// the source guard treats as user data.
+///
+/// Neither the login user's home (CI commonly runs as root, and `/root` is an
+/// OS directory) nor the configured temporary directory will do: `TMPDIR` can
+/// point anywhere, including below `/var`, and macOS resolves its default
+/// beneath `/private`. The guard rightly refuses both.
+fn disposable_fixture_dir() -> std::io::Result<tempfile::TempDir> {
+    #[cfg(target_os = "macos")]
+    return tempfile::tempdir_in("/Users/Shared");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    return tempfile::tempdir_in("/tmp");
+    #[cfg(not(unix))]
+    return tempfile::tempdir();
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
     use std::path::Path;
-    use std::time::{Duration, Instant};
 
     use super::*;
 
     fn fixture() -> (tempfile::TempDir, ImportApp, PathBuf, PathBuf) {
-        // A source under macOS's default /private/var temporary directory is
-        // rightly rejected by the protected-system-path guard.
-        #[cfg(target_os = "macos")]
-        let temp = tempfile::tempdir_in("/Users/Shared").unwrap();
-        #[cfg(not(target_os = "macos"))]
-        let temp = tempfile::tempdir().unwrap();
+        let temp = super::disposable_fixture_dir().unwrap();
         let base = temp.path().canonicalize().unwrap();
         let source = base.join("source");
         let destination_parent = base.join("destination-parent");
@@ -3119,26 +3104,50 @@ mod tests {
         )
     }
 
+    /// Waits for the worker, then settles its admitted invocation the way the
+    /// host does, so the next background action is not refused as unsettled.
     fn wait_terminal(app: &mut ImportApp) {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = tilo_test_env::hang_deadline();
         while app.worker.is_some() {
             app.poll_background();
-            assert!(Instant::now() < deadline, "import worker did not finish");
+            assert!(ui::time::now() < deadline, "import worker did not finish");
+            std::thread::yield_now();
+        }
+        while let Some(invocation) = app
+            .pending_copy_invocation
+            .as_ref()
+            .map(|pending| pending.invocation)
+        {
+            app.poll_background();
+            if Widget::poll_resource_operation(
+                app,
+                invocation,
+                false,
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            )
+            .is_some()
+            {
+                break;
+            }
+            assert!(ui::time::now() < deadline, "copy invocation did not settle");
             std::thread::yield_now();
         }
     }
 
     fn settle_index(app: &mut ImportApp) {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         while !app.pending_saves.is_empty() {
             app.poll_background();
-            assert!(Instant::now() < deadline);
+            assert!(ui::time::now() < deadline);
             std::thread::yield_now();
         }
     }
 
     fn root_resource(app: &ImportApp) -> tilo_actions::Resource {
-        Widget::resources(app, &AutoCommit::new()).pop().unwrap()
+        ui::resources::resources(app, &AutoCommit::new())
+            .pop()
+            .unwrap()
     }
 
     fn action(resource: &tilo_actions::Resource, id: &str) -> tilo_actions::ActionSpec {
@@ -3157,33 +3166,41 @@ mod tests {
         let encoded = action
             .build_json(&serde_json::Map::new())
             .map_err(|error| error.to_string())?;
-        Widget::invoke_resource_operation_v2(
-            app,
-            action.kind,
-            &encoded.type_id,
-            &encoded.payload,
-            &AutoCommit::new(),
-            &automerge::ROOT,
-        )?
-        .and_then(|output| output.value)
-        .ok_or_else(|| "import operation returned no projection".to_string())
+        start_import(app, action.kind, &encoded)
     }
 
     fn invoke_import_raw(
         app: &mut ImportApp,
         operation: &ImportOperation,
     ) -> Result<serde_json::Value, String> {
-        let encoded = import_actions::encode(operation);
-        Widget::invoke_resource_operation_v2(
+        start_import(app, operation.kind(), &import_actions::encode(operation))
+    }
+
+    /// The projection an agent sees: a synchronous result carries it, and a
+    /// background operation's admission is followed by the public status read.
+    fn start_import(
+        app: &mut ImportApp,
+        kind: tilo_actions::OperationKind,
+        encoded: &tilo_actions::EncodedAction,
+    ) -> Result<serde_json::Value, String> {
+        let started = Widget::start_operation(
             app,
-            operation.kind(),
-            &encoded.type_id,
-            &encoded.payload,
-            &AutoCommit::new(),
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                kind,
+                &encoded.type_id,
+                &encoded.payload,
+            ),
+            &mut AutoCommit::new(),
             &automerge::ROOT,
-        )?
-        .and_then(|output| output.value)
-        .ok_or_else(|| "import operation returned no projection".to_string())
+        )?;
+        match started {
+            Some(ui::widget::ResourceOperationStart::Completed(output)) => output
+                .value
+                .ok_or_else(|| "import operation returned no projection".to_string()),
+            Some(ui::widget::ResourceOperationStart::Accepted) => observe_import(app),
+            None => Err("import operation was not handled".to_string()),
+        }
     }
 
     fn observe_import(app: &mut ImportApp) -> Result<serde_json::Value, String> {
@@ -3192,7 +3209,7 @@ mod tests {
     }
 
     fn wait_for_public_issue_count(app: &mut ImportApp, count: usize) -> serde_json::Value {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         let mut state = AutoCommit::new();
         loop {
             Widget::update(app, &mut state, &automerge::ROOT);
@@ -3205,7 +3222,7 @@ mod tests {
                 return observed;
             }
             assert!(
-                Instant::now() < deadline,
+                ui::time::now() < deadline,
                 "issue page with {count} messages was not publicly observable"
             );
             std::thread::yield_now();
@@ -3246,13 +3263,15 @@ mod tests {
         let encoded = action
             .build_json(&serde_json::Map::new())
             .map_err(|error| error.to_string())?;
-        Widget::start_resource_operation(
+        Widget::start_operation(
             app,
-            invocation,
-            action.kind,
-            &encoded.type_id,
-            &encoded.payload,
-            &AutoCommit::new(),
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                action.kind,
+                &encoded.type_id,
+                &encoded.payload,
+            ),
+            &mut AutoCommit::new(),
             &automerge::ROOT,
         )?
         .ok_or_else(|| "import operation was not handled".into())
@@ -3267,979 +3286,1325 @@ mod tests {
         }
     }
 
+    /// Operation resources, read status, review endpoints, detail order and shot states.
     #[test]
-    fn standalone_import_publishes_stable_operation_resources_before_layout() {
-        let (_temp, mut app, source, destination_parent) = fixture();
-        fs::write(source.join("document.txt"), b"kept locally").unwrap();
-        let source_text = source.display().to_string();
-        let destination_text = destination_parent.display().to_string();
-        settle_index(&mut app);
-        app.source = Some(source);
-        app.destination_parent = Some(destination_parent.clone());
-        let collision = destination_parent.join("source");
-        fs::create_dir(&collision).unwrap();
-        let prepare_review = action(&root_resource(&app), "prepare-review");
-        let public_error = invoke_action(&mut app, &prepare_review).unwrap_err();
-        assert!(!public_error.contains(&source_text));
-        assert!(!public_error.contains(&destination_text));
-        assert!(public_error.contains("read-status"), "{public_error}");
-        assert!(app.status.contains(&collision.display().to_string()));
-        assert!(
-            observe_import(&mut app).unwrap()["local"]["status"]
-                .as_str()
-                .is_some_and(|status| status.contains(&collision.display().to_string()))
-        );
-        fs::remove_dir(collision).unwrap();
-        app.prepare_review().unwrap();
-        let operation_id = app.operations[0].id().to_string();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn import_resources_and_status_publish_reviewed_endpoints_from_real_events() {
+        // Phase `standalone_import_publishes_stable_operation_resources_before_layout`.
+        {
+            let (_temp, mut app, source, destination_parent) = fixture();
+            fs::write(source.join("document.txt"), b"kept locally").unwrap();
+            let source_text = source.display().to_string();
+            let destination_text = destination_parent.display().to_string();
+            settle_index(&mut app);
+            app.source = Some(source);
+            app.destination_parent = Some(destination_parent.clone());
+            let collision = destination_parent.join("source");
+            fs::create_dir(&collision).unwrap();
+            let prepare_review = action(&root_resource(&app), "prepare-review");
+            let public_error = invoke_action(&mut app, &prepare_review).unwrap_err();
+            assert!(!public_error.contains(&source_text));
+            assert!(!public_error.contains(&destination_text));
+            assert!(public_error.contains("read-status"), "{public_error}");
+            assert!(app.status.contains(&collision.display().to_string()));
+            assert!(
+                observe_import(&mut app).unwrap()["local"]["status"]
+                    .as_str()
+                    .is_some_and(|status| status.contains(&collision.display().to_string()))
+            );
+            fs::remove_dir(collision).unwrap();
+            app.prepare_review().unwrap();
+            let operation_id = app.operations[0].id().to_string();
 
-        let resources = Widget::resources(&app, &AutoCommit::new());
+            let resources = ui::resources::resources(&app, &AutoCommit::new());
 
-        assert_eq!(resources.len(), 1);
-        assert_eq!(resources[0].kind, "imager.import");
-        assert_eq!(resources[0].children.len(), 1);
-        assert_eq!(resources[0].children[0].kind, "imager.import.operation");
-        assert!(resources[0].children[0].id.0.ends_with(&operation_id));
-        let exposed = resources[0]
-            .children
-            .iter()
-            .map(|child| {
-                format!(
-                    "{} {}",
-                    child.label,
-                    child
-                        .presentation
-                        .as_ref()
-                        .and_then(|presentation| presentation.detail.as_deref())
-                        .unwrap_or("")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert!(!exposed.contains(&source_text));
-        assert!(!exposed.contains(&destination_text));
-    }
-
-    #[test]
-    fn local_read_status_names_reviewed_endpoints_without_publishing_paths() {
-        let (_temp, mut app, source, destination_parent) = fixture();
-        settle_index(&mut app);
-        fs::write(source.join("document.txt"), b"private copy").unwrap();
-        let expected_source = source.display().to_string();
-        let expected_destination = destination_parent.join("source").display().to_string();
-        app.source = Some(source);
-        app.destination_parent = Some(destination_parent);
-        let selected = observe_import(&mut app).unwrap();
-        assert_eq!(selected["local"]["source"], expected_source);
-        assert_eq!(selected["local"]["destination"], expected_destination);
-
-        app.prepare_review().unwrap();
-        let reviewed = observe_import(&mut app).unwrap();
-        assert_eq!(reviewed["operations"][0]["source"], expected_source);
-        assert_eq!(
-            reviewed["operations"][0]["destination"],
-            expected_destination
-        );
-        let public = app.import_projection().value().to_string();
-        assert!(!public.contains(&expected_source));
-        assert!(!public.contains(&expected_destination));
-    }
-
-    #[test]
-    fn local_read_status_names_continued_folder_endpoints() {
-        let (_temp, mut app, source, destination_parent) = fixture();
-        settle_index(&mut app);
-        fs::write(source.join("document.txt"), b"private copy").unwrap();
-        let expected_source = source.display().to_string();
-        let expected_destination = destination_parent.join("source").display().to_string();
-        let mut continuation = Continuation::capture(&[continuation_choice(&source)]).unwrap();
-        continuation.resolve(0, &destination_parent, true).unwrap();
-        app.continuation = Some(continuation);
-
-        let local = observe_import(&mut app).unwrap();
-        assert_eq!(
-            local["continuation"]["folders"][0]["source"],
-            expected_source
-        );
-        assert_eq!(
-            local["continuation"]["folders"][0]["destination"],
-            expected_destination
-        );
-        let public = app.import_projection().value().to_string();
-        assert!(!public.contains(&expected_source));
-        assert!(!public.contains(&expected_destination));
-    }
-
-    #[test]
-    fn semantic_picker_refuses_a_second_request_without_spawning_another_picker() {
-        let (_temp, mut app, _source, _destination_parent) = fixture();
-        settle_index(&mut app);
-        app.picker_launcher = cancelled_picker;
-        let choose_source = action(&root_resource(&app), "choose-source");
-
-        let pending = invoke_action(&mut app, &choose_source).unwrap();
-        assert_eq!(pending["phase"], "choosing_folder");
-        assert!(app.picker.is_some());
-
-        let error = invoke_action(&mut app, &choose_source).unwrap_err();
-        assert!(error.contains("chooser"), "{error}");
-        assert!(app.picker.is_some());
-        assert_eq!(app.status, error);
-
-        let (_temp, mut button_app, _source, _destination_parent) = fixture();
-        settle_index(&mut button_app);
-        button_app.picker_launcher = cancelled_picker;
-        button_app.apply_command(ImportCommand::PickSource);
-        button_app.apply_command(ImportCommand::PickDestination);
-        assert!(button_app.picker.is_some());
-        assert!(button_app.status_is_error);
-        assert!(button_app.status.contains("chooser"));
-    }
-
-    #[test]
-    fn retained_operation_action_tracks_its_id_after_reordering_and_stales_after_removal() {
-        let (_temp, mut app, source, destination_parent) = fixture();
-        settle_index(&mut app);
-        fs::write(source.join("first.txt"), b"first").unwrap();
-        app.source = Some(source);
-        app.destination_parent = Some(destination_parent.clone());
-        app.prepare_review().unwrap();
-        settle_index(&mut app);
-
-        let second_source = destination_parent.parent().unwrap().join("second-source");
-        fs::create_dir(&second_source).unwrap();
-        fs::write(second_source.join("second.txt"), b"second").unwrap();
-        app.source = Some(second_source);
-        app.destination_parent = Some(destination_parent);
-        app.prepare_review().unwrap();
-        let first_id = app.operations[0].id().to_string();
-        let second_id = app.operations[1].id().to_string();
-        let first_resource = root_resource(&app)
-            .children
-            .into_iter()
-            .find(|resource| resource.id.0.ends_with(&first_id))
-            .unwrap();
-        let retained_start = action(&first_resource, "start");
-
-        app.operations.swap(0, 1);
-        invoke_action(&mut app, &retained_start).unwrap();
-        wait_terminal(&mut app);
-        assert_eq!(
-            app.operations
+            assert_eq!(resources.len(), 1);
+            assert_eq!(resources[0].kind, "imager.import");
+            assert_eq!(resources[0].children.len(), 1);
+            assert_eq!(resources[0].children[0].kind, "imager.import.operation");
+            assert!(resources[0].children[0].id.0.ends_with(&operation_id));
+            let exposed = resources[0]
+                .children
                 .iter()
-                .find(|operation| operation.id() == first_id)
-                .unwrap()
-                .state(),
-            OperationState::Complete
-        );
-        assert_eq!(
-            app.operations
-                .iter()
-                .find(|operation| operation.id() == second_id)
-                .unwrap()
-                .state(),
-            OperationState::AwaitingReview
-        );
-
-        app.operations
-            .retain(|operation| operation.id() != second_id);
-        let stale = invoke_import_raw(
-            &mut app,
-            &ImportOperation::Start {
-                operation_id: second_id,
-            },
-        )
-        .unwrap_err();
-        assert!(stale.contains("no longer available"), "{stale}");
-        assert!(app.worker.is_none());
-    }
-
-    #[test]
-    fn continuation_actions_keep_revision_identities_and_reject_replaced_reviews() {
-        let (_temp, mut app, source, destination_parent) = fixture();
-        settle_index(&mut app);
-        fs::write(source.join("first.txt"), b"first").unwrap();
-        let second = source.parent().unwrap().join("second-choice");
-        fs::create_dir(&second).unwrap();
-        fs::write(second.join("second.txt"), b"second").unwrap();
-        let continuation =
-            Continuation::capture(&[continuation_choice(&source), continuation_choice(&second)])
-                .unwrap();
-        let original_ids = [continuation.operation_id(0), continuation.operation_id(1)];
-        app.continuation = Some(continuation);
-
-        let folders = root_resource(&app)
-            .children
-            .into_iter()
-            .filter(|resource| resource.kind == "imager.import.folder")
-            .collect::<Vec<_>>();
-        let retained_second_later = action(&folders[1], "later");
-        let connected = action(&folders[0], "connected");
-        assert!(matches!(
-            connected.contract.availability,
-            tilo_actions::Availability::Unavailable { .. }
-        ));
-        invoke_action(&mut app, &action(&folders[0], "later")).unwrap();
-        assert_eq!(
-            [
-                app.continuation.as_ref().unwrap().operation_id(0),
-                app.continuation.as_ref().unwrap().operation_id(1),
-            ],
-            original_ids
-        );
-        assert_eq!(
-            app.continuation.as_ref().unwrap().folders[0].mode,
-            ChoiceMode::Later
-        );
-        assert!(
-            invoke_import_raw(
-                &mut app,
-                &ImportOperation::SetFolderConnected {
-                    folder_id: original_ids[0].clone(),
-                },
-            )
-            .unwrap_err()
-            .contains("not available")
-        );
-
-        let replacement_source = destination_parent.parent().unwrap().join("replacement");
-        fs::create_dir(&replacement_source).unwrap();
-        fs::write(replacement_source.join("new.txt"), b"new").unwrap();
-        app.continuation =
-            Some(Continuation::capture(&[continuation_choice(&replacement_source)]).unwrap());
-        let replacement_id = app.continuation.as_ref().unwrap().operation_id(0);
-        assert!(!original_ids.contains(&replacement_id));
-        let error = invoke_action(&mut app, &retained_second_later).unwrap_err();
-        assert!(error.contains("no longer available"), "{error}");
-        assert_eq!(
-            app.continuation.as_ref().unwrap().folders[0].mode,
-            ChoiceMode::Copy
-        );
-
-        assert!(
-            Widget::invoke_resource_operation_v2(
-                &mut app,
-                tilo_actions::OperationKind::View,
-                import_actions::IMPORT_OPERATION_TYPE,
-                b"{not-json",
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn reviewed_batch_rechecks_identity_and_starts_only_reviewed_copy_rows() {
-        let (_temp, mut app, source, destination_parent) = fixture();
-        settle_index(&mut app);
-        fs::write(source.join("first.txt"), b"first").unwrap();
-        let second = source.parent().unwrap().join("batch-second");
-        fs::create_dir(&second).unwrap();
-        fs::write(second.join("second.txt"), b"second").unwrap();
-        let mut continuation =
-            Continuation::capture(&[continuation_choice(&source), continuation_choice(&second)])
-                .unwrap();
-        continuation.resolve(0, &destination_parent, true).unwrap();
-        continuation.resolve(1, &destination_parent, true).unwrap();
-        app.continuation = Some(continuation);
-        app.identity_ready = true;
-        app.prepare_continued_folder(0).unwrap();
-        app.prepare_continued_folder(1).unwrap();
-        settle_index(&mut app);
-        app.save_continued_mode(1, ChoiceMode::Later).unwrap();
-        let copy_id = app.continuation.as_ref().unwrap().operation_id(0);
-        let later_id = app.continuation.as_ref().unwrap().operation_id(1);
-        app.identity_checker = identity_ready;
-        let start_batch = action(&root_resource(&app), "start-reviewed-folders");
-
-        let pending = invoke_action(&mut app, &start_batch).unwrap();
-        assert_eq!(pending["phase"], "checking_identity");
-        assert!(app.gate_request.is_some());
-        assert!(app.worker.is_none());
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while app.gate_request.is_some() {
-            app.poll_background();
-            assert!(Instant::now() < deadline, "identity check did not finish");
-            std::thread::yield_now();
+                .map(|child| {
+                    format!(
+                        "{} {}",
+                        child.label,
+                        child
+                            .presentation
+                            .as_ref()
+                            .and_then(|presentation| presentation.detail.as_deref())
+                            .unwrap_or("")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(!exposed.contains(&source_text));
+            assert!(!exposed.contains(&destination_text));
         }
-        assert!(
-            app.worker.is_some(),
-            "batch bypassed the shared worker start"
-        );
-        wait_terminal(&mut app);
-        assert_eq!(
-            app.operations
-                .iter()
-                .find(|operation| operation.id() == copy_id)
-                .unwrap()
-                .state(),
-            OperationState::Complete
-        );
-        assert_eq!(
-            app.operations
-                .iter()
-                .find(|operation| operation.id() == later_id)
-                .unwrap()
-                .state(),
-            OperationState::AwaitingReview
-        );
-    }
 
-    #[test]
-    fn copy_action_succeeds_only_after_the_worker_finishes() {
-        let (_temp, mut app, source, destination_parent) = fixture();
-        settle_index(&mut app);
-        fs::write(source.join("document.txt"), b"copied bytes").unwrap();
-        app.source = Some(source);
-        app.destination_parent = Some(destination_parent);
-        app.prepare_review().unwrap();
-        let start = action(&root_resource(&app).children[0], "start");
-        let invocation = tilo_actions::InvocationId::new();
+        // Phase `local_read_status_names_reviewed_endpoints_without_publishing_paths`.
+        {
+            let (_temp, mut app, source, destination_parent) = fixture();
+            settle_index(&mut app);
+            fs::write(source.join("document.txt"), b"private copy").unwrap();
+            let expected_source = source.display().to_string();
+            let expected_destination = destination_parent.join("source").display().to_string();
+            app.source = Some(source);
+            app.destination_parent = Some(destination_parent);
+            let selected = observe_import(&mut app).unwrap();
+            assert_eq!(selected["local"]["source"], expected_source);
+            assert_eq!(selected["local"]["destination"], expected_destination);
 
-        assert_eq!(
-            start_action(&mut app, &start, invocation).unwrap(),
-            ui::widget::ResourceOperationStart::Accepted
-        );
-        assert!(
-            Widget::poll_resource_operation(
-                &mut app,
-                invocation,
-                false,
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            )
-            .is_none()
-        );
+            app.prepare_review().unwrap();
+            let reviewed = observe_import(&mut app).unwrap();
+            assert_eq!(reviewed["operations"][0]["source"], expected_source);
+            assert_eq!(
+                reviewed["operations"][0]["destination"],
+                expected_destination
+            );
+            let public = app.import_projection().value().to_string();
+            assert!(!public.contains(&expected_source));
+            assert!(!public.contains(&expected_destination));
+        }
 
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            app.poll_background();
-            if let Some(update) = Widget::poll_resource_operation(
-                &mut app,
-                invocation,
-                false,
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            ) {
-                assert!(matches!(
-                    update,
-                    tilo_actions::InvocationUpdate::Succeeded { .. }
-                ));
-                break;
+        // Phase `local_read_status_names_continued_folder_endpoints`.
+        {
+            let (_temp, mut app, source, destination_parent) = fixture();
+            settle_index(&mut app);
+            fs::write(source.join("document.txt"), b"private copy").unwrap();
+            let expected_source = source.display().to_string();
+            let expected_destination = destination_parent.join("source").display().to_string();
+            let mut continuation = Continuation::capture(&[continuation_choice(&source)]).unwrap();
+            continuation.resolve(0, &destination_parent, true).unwrap();
+            app.continuation = Some(continuation);
+
+            let local = observe_import(&mut app).unwrap();
+            assert_eq!(
+                local["continuation"]["folders"][0]["source"],
+                expected_source
+            );
+            assert_eq!(
+                local["continuation"]["folders"][0]["destination"],
+                expected_destination
+            );
+            let public = app.import_projection().value().to_string();
+            assert!(!public.contains(&expected_source));
+            assert!(!public.contains(&expected_destination));
+        }
+
+        // Phase `review_uses_the_selected_source_and_destination_parent`.
+        // Catches copying into a suggested setup path before both current native
+        // grants and the exact fresh destination have been reviewed.
+        {
+            let (_temp, mut app, source, destination_parent) = fixture();
+            app.source = Some(source.clone());
+            assert!(app.prepare_review().is_err());
+
+            app.destination_parent = Some(destination_parent.clone());
+            app.prepare_review().unwrap();
+            let operation = app.operations.last().unwrap();
+            assert_eq!(operation.state(), OperationState::AwaitingReview);
+            assert_eq!(operation.source().unwrap(), source);
+            assert_eq!(
+                operation.destination().unwrap(),
+                destination_parent.join("source")
+            );
+            assert!(operation.start_job().is_err());
+        }
+
+        // Phase `expanded_details_precede_the_operation_commands`.
+        // The expanded issue list precedes the commands that act on it — the
+        // details toggle, the issue paging, the copy action — in reading and Tab
+        // order (the accessibility tree and `collect_focusable` both walk the
+        // widget tree in child order), and the three share one action row.
+        {
+            let pages = ImportApp::for_shot("import-issue-pages");
+            assert!(pages.expanded_details.contains(&0));
+            let card = pages.operation_card(0, &pages.operations[0]);
+            fn ids(widget: &dyn Widget, out: &mut Vec<String>) {
+                if let Some(id) = widget.test_id() {
+                    out.push(id.to_string());
+                }
+                for child in widget.children() {
+                    ids(child, out);
+                }
             }
-            assert!(Instant::now() < deadline, "copy action never settled");
-            std::thread::yield_now();
+            let mut order = Vec::new();
+            ids(&card, &mut order);
+            let position = |id: &str| {
+                order
+                    .iter()
+                    .position(|x| x == id)
+                    .unwrap_or_else(|| panic!("{id} missing from {order:?}"))
+            };
+            let summary = position("import.operation.0.summary");
+            let details = position("import.operation.0.details");
+            let toggle = position("import.operation.0.toggle-details");
+            let next = position("import.operation.0.next-issues");
+            let retry = position("import.operation.0.retry");
+            assert!(
+                summary < details && details < toggle && toggle < next && next < retry,
+                "{order:?}"
+            );
         }
-        assert_eq!(app.operations[0].state(), OperationState::Complete);
+
+        // Phase `screenshot_states_come_from_real_worker_events`.
+        // Catches screenshot fixtures drifting into fabricated success labels that
+        // never passed through the real worker and copy report classifier.
+        {
+            let progress = ImportApp::for_shot("import-progress");
+            assert_eq!(progress.operations[0].state(), OperationState::Running);
+            assert!(progress.operations[0].verified_file_count() > 0);
+
+            let retry = ImportApp::for_shot("import-retry-progress");
+            assert_eq!(retry.operations[0].state(), OperationState::Running);
+            assert!(retry.operations[0].verified_file_count() > 0);
+            assert!(retry.operations[0].issues().unwrap().is_empty());
+
+            let mut partial = ImportApp::for_shot("import-partial");
+            assert_eq!(partial.operations[0].state(), OperationState::Incomplete);
+            assert!(!partial.operations[0].issues().unwrap().is_empty());
+            assert!(partial.expanded_details.is_empty());
+            partial.apply_command(ImportCommand::ToggleDetails(0));
+            assert!(partial.expanded_details.contains(&0));
+
+            let conflict = ImportApp::for_shot("import-conflict");
+            assert_eq!(conflict.operations[0].state(), OperationState::Incomplete);
+            assert!(!conflict.operations[0].issues().unwrap().is_empty());
+            let conflict_source = conflict.operations[0].source().unwrap().join("Budget.txt");
+            let conflict_destination = conflict.operations[0]
+                .destination()
+                .unwrap()
+                .join("Budget.txt");
+            assert_eq!(fs::read(conflict_source).unwrap(), b"source version");
+            assert_eq!(fs::read(conflict_destination).unwrap(), b"destination edit");
+            assert!(conflict.expanded_details.is_empty());
+
+            let mut pages = ImportApp::for_shot("import-issue-pages");
+            assert_eq!(pages.operations[0].state(), OperationState::Incomplete);
+            assert_eq!(pages.operations[0].issue_count(), 40);
+            assert_eq!(pages.detail_pages[&0].issues.len(), 32);
+            pages.apply_command(ImportCommand::NextIssues(0));
+            let deadline = tilo_test_env::hang_deadline();
+            while pages.detail_request.is_some() {
+                pages.poll_background();
+                assert!(ui::time::now() < deadline);
+                std::thread::yield_now();
+            }
+            assert_eq!(pages.detail_pages[&0].issues.len(), 8);
+            assert!(pages.detail_pages[&0].next.is_none());
+            assert!(
+                pages.detail_pages[&0]
+                    .issues
+                    .iter()
+                    .any(|(p, _)| p == Path::new("Shortcut 39"))
+            );
+
+            let complete = ImportApp::for_shot("import-complete");
+            assert_eq!(complete.operations[0].state(), OperationState::Complete);
+            assert!(complete.operations[0].verified_bytes() > 0);
+        }
     }
 
+    /// Review preparation, identity failure and picker outcomes.
     #[test]
-    fn prepare_review_effect_fails_when_the_index_save_is_rejected() {
-        let (_temp, mut app, source, destination_parent) = fixture();
-        settle_index(&mut app);
-        fs::write(source.join("document.txt"), b"unchanged original").unwrap();
-        app.source = Some(source);
-        app.destination_parent = Some(destination_parent);
-        fs::remove_file(app.store.as_ref().unwrap().root().join("ownership.lock")).unwrap();
-        let review = action(&root_resource(&app), "prepare-review");
-        let invocation = tilo_actions::InvocationId::new();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn review_action_fails_or_cancels_with_its_picker_and_index() {
+        // Phase `prepare_review_effect_fails_when_the_index_save_is_rejected`.
+        {
+            let (_temp, mut app, source, destination_parent) = fixture();
+            settle_index(&mut app);
+            fs::write(source.join("document.txt"), b"unchanged original").unwrap();
+            app.source = Some(source);
+            app.destination_parent = Some(destination_parent);
+            fs::remove_file(app.store.as_ref().unwrap().root().join("ownership.lock")).unwrap();
+            let review = action(&root_resource(&app), "prepare-review");
+            let invocation = tilo_actions::InvocationId::new();
 
-        assert_eq!(
-            start_action(&mut app, &review, invocation).unwrap(),
-            ui::widget::ResourceOperationStart::Accepted
-        );
-        let unsaved_id = app.operations[0].id().to_string();
-        assert!(!app.import_projection().operations[0].start_available);
-        assert!(
-            invoke_import_raw(
+            assert_eq!(
+                start_action(&mut app, &review, invocation).unwrap(),
+                ui::widget::ResourceOperationStart::Accepted
+            );
+            let unsaved_id = app.operations[0].id().to_string();
+            assert!(!app.import_projection().operations[0].start_available);
+            assert!(
+                invoke_import_raw(
+                    &mut app,
+                    &ImportOperation::Start {
+                        operation_id: unsaved_id,
+                    },
+                )
+                .is_err(),
+                "an unconfirmed review must not start a copy"
+            );
+            let pending = app.pending_prepare_invocation.as_ref().unwrap();
+            app.source = Some(pending.source.clone());
+            app.destination_parent = Some(pending.destination_parent.clone());
+            assert!(!app.import_projection().prepare_review_available);
+            assert!(invoke_import_raw(&mut app, &ImportOperation::PrepareReview).is_err());
+            assert_eq!(
+                app.operations.len(),
+                1,
+                "a second review must not be queued"
+            );
+            let deadline = tilo_test_env::hang_deadline();
+            loop {
+                app.poll_background();
+                if let Some(update) = Widget::poll_resource_operation(
+                    &mut app,
+                    invocation,
+                    false,
+                    &AutoCommit::new(),
+                    &automerge::ROOT,
+                ) {
+                    assert!(matches!(
+                        update,
+                        tilo_actions::InvocationUpdate::Failed { ref error, .. }
+                            if !error.retryable
+                    ));
+                    break;
+                }
+                assert!(ui::time::now() < deadline, "review save never settled");
+                std::thread::yield_now();
+            }
+            assert!(
+                app.operations.is_empty(),
+                "failed review must not remain actionable"
+            );
+            assert!(app.source.is_some(), "source selection should be retained");
+            assert!(
+                app.destination_parent.is_some(),
+                "destination selection should be retained"
+            );
+        }
+
+        // Phase `identity_failure_yields_failed_folder_review_action`.
+        {
+            let (_temp, mut app, source, _destination_parent) = fixture();
+            settle_index(&mut app);
+            fs::write(source.join("document.txt"), b"unchanged original").unwrap();
+            app.continuation =
+                Some(Continuation::capture(&[continuation_choice(&source)]).unwrap());
+            app.identity_ready = true;
+            app.identity_checker = identity_denied;
+            let review = action(&root_resource(&app).children[0], "review-destination");
+            let invocation = tilo_actions::InvocationId::new();
+
+            assert_eq!(
+                start_action(&mut app, &review, invocation).unwrap(),
+                ui::widget::ResourceOperationStart::Accepted
+            );
+            let deadline = tilo_test_env::hang_deadline();
+            loop {
+                app.poll_background();
+                if let Some(update) = Widget::poll_resource_operation(
+                    &mut app,
+                    invocation,
+                    false,
+                    &AutoCommit::new(),
+                    &automerge::ROOT,
+                ) {
+                    assert!(matches!(
+                        update,
+                        tilo_actions::InvocationUpdate::Failed { ref error, .. } if !error.retryable
+                    ));
+                    break;
+                }
+                assert!(ui::time::now() < deadline, "review failure never settled");
+                std::thread::yield_now();
+            }
+        }
+
+        // Phase `cancelled_folder_destination_picker_cancels_review_action`.
+        {
+            let (_temp, mut app, source, _destination_parent) = fixture();
+            settle_index(&mut app);
+            app.continuation =
+                Some(Continuation::capture(&[continuation_choice(&source)]).unwrap());
+            app.identity_ready = true;
+            app.identity_checker = identity_ready;
+            app.picker_launcher = cancelled_picker;
+            let choose = action(&root_resource(&app).children[0], "choose-destination");
+            let invocation = tilo_actions::InvocationId::new();
+
+            assert_eq!(
+                start_action(&mut app, &choose, invocation).unwrap(),
+                ui::widget::ResourceOperationStart::Accepted
+            );
+            let deadline = tilo_test_env::hang_deadline();
+            loop {
+                app.poll_background();
+                if let Some(update) = Widget::poll_resource_operation(
+                    &mut app,
+                    invocation,
+                    false,
+                    &AutoCommit::new(),
+                    &automerge::ROOT,
+                ) {
+                    assert!(matches!(
+                        update,
+                        tilo_actions::InvocationUpdate::Cancelled { .. }
+                    ));
+                    break;
+                }
+                assert!(
+                    ui::time::now() < deadline,
+                    "picker cancellation never settled"
+                );
+                std::thread::yield_now();
+            }
+        }
+
+        // Phase `disconnected_folder_picker_fails_the_review_action`.
+        {
+            let (_temp, mut app, source, _destination_parent) = fixture();
+            settle_index(&mut app);
+            app.continuation =
+                Some(Continuation::capture(&[continuation_choice(&source)]).unwrap());
+            app.identity_ready = true;
+            app.identity_checker = identity_ready;
+            app.picker_launcher = disconnected_picker;
+            let choose = action(&root_resource(&app).children[0], "choose-destination");
+            let invocation = tilo_actions::InvocationId::new();
+
+            assert_eq!(
+                start_action(&mut app, &choose, invocation).unwrap(),
+                ui::widget::ResourceOperationStart::Accepted
+            );
+            // The identity gate runs on its own thread before the picker opens, so
+            // one poll can observe neither the picker nor its failure yet.
+            let deadline = tilo_test_env::hang_deadline();
+            let update = loop {
+                app.poll_background();
+                if let Some(update) = Widget::poll_resource_operation(
+                    &mut app,
+                    invocation,
+                    false,
+                    &AutoCommit::new(),
+                    &automerge::ROOT,
+                ) {
+                    break update;
+                }
+                assert!(
+                    ui::time::now() < deadline,
+                    "disconnected picker never failed the review action"
+                );
+                std::thread::yield_now();
+            };
+            assert!(
+                app.gate_request.is_none(),
+                "identity gate must have resolved"
+            );
+            assert!(
+                app.picker.is_none(),
+                "disconnected portal must clear the picker"
+            );
+            assert!(matches!(
+                update,
+                tilo_actions::InvocationUpdate::Failed { .. }
+            ));
+        }
+
+        // Phase `semantic_picker_refuses_a_second_request_without_spawning_another_picker`.
+        {
+            let (_temp, mut app, _source, _destination_parent) = fixture();
+            settle_index(&mut app);
+            app.picker_launcher = cancelled_picker;
+            let choose_source = action(&root_resource(&app), "choose-source");
+
+            let pending = invoke_action(&mut app, &choose_source).unwrap();
+            assert_eq!(pending["phase"], "choosing_folder");
+            assert!(app.picker.is_some());
+
+            let error = invoke_action(&mut app, &choose_source).unwrap_err();
+            assert!(error.contains("chooser"), "{error}");
+            assert!(app.picker.is_some());
+            assert_eq!(app.status, error);
+
+            let (_temp, mut button_app, _source, _destination_parent) = fixture();
+            settle_index(&mut button_app);
+            button_app.picker_launcher = cancelled_picker;
+            button_app.apply_command(ImportCommand::PickSource);
+            button_app.apply_command(ImportCommand::PickDestination);
+            assert!(button_app.picker.is_some());
+            assert!(button_app.status_is_error);
+            assert!(button_app.status.contains("chooser"));
+        }
+    }
+
+    /// Retained operation actions, continuation revisions and review matching.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn retained_and_continuation_actions_keep_revision_identities() {
+        // Phase `retained_operation_action_tracks_its_id_after_reordering_and_stales_after_removal`.
+        {
+            let (_temp, mut app, source, destination_parent) = fixture();
+            settle_index(&mut app);
+            fs::write(source.join("first.txt"), b"first").unwrap();
+            app.source = Some(source);
+            app.destination_parent = Some(destination_parent.clone());
+            app.prepare_review().unwrap();
+            settle_index(&mut app);
+
+            let second_source = destination_parent.parent().unwrap().join("second-source");
+            fs::create_dir(&second_source).unwrap();
+            fs::write(second_source.join("second.txt"), b"second").unwrap();
+            app.source = Some(second_source);
+            app.destination_parent = Some(destination_parent);
+            app.prepare_review().unwrap();
+            let first_id = app.operations[0].id().to_string();
+            let second_id = app.operations[1].id().to_string();
+            let first_resource = root_resource(&app)
+                .children
+                .into_iter()
+                .find(|resource| resource.id.0.ends_with(&first_id))
+                .unwrap();
+            let retained_start = action(&first_resource, "start");
+
+            app.operations.swap(0, 1);
+            invoke_action(&mut app, &retained_start).unwrap();
+            wait_terminal(&mut app);
+            assert_eq!(
+                app.operations
+                    .iter()
+                    .find(|operation| operation.id() == first_id)
+                    .unwrap()
+                    .state(),
+                OperationState::Complete
+            );
+            assert_eq!(
+                app.operations
+                    .iter()
+                    .find(|operation| operation.id() == second_id)
+                    .unwrap()
+                    .state(),
+                OperationState::AwaitingReview
+            );
+
+            app.operations
+                .retain(|operation| operation.id() != second_id);
+            let stale = invoke_import_raw(
                 &mut app,
                 &ImportOperation::Start {
-                    operation_id: unsaved_id,
+                    operation_id: second_id,
                 },
             )
-            .is_err(),
-            "an unconfirmed review must not start a copy"
-        );
-        let pending = app.pending_prepare_invocation.as_ref().unwrap();
-        app.source = Some(pending.source.clone());
-        app.destination_parent = Some(pending.destination_parent.clone());
-        assert!(!app.import_projection().prepare_review_available);
-        assert!(invoke_import_raw(&mut app, &ImportOperation::PrepareReview).is_err());
-        assert_eq!(
-            app.operations.len(),
-            1,
-            "a second review must not be queued"
-        );
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            app.poll_background();
-            if let Some(update) = Widget::poll_resource_operation(
-                &mut app,
-                invocation,
-                false,
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            ) {
-                assert!(matches!(
-                    update,
-                    tilo_actions::InvocationUpdate::Failed { ref error, .. }
-                        if !error.retryable
-                ));
-                break;
-            }
-            assert!(Instant::now() < deadline, "review save never settled");
-            std::thread::yield_now();
-        }
-        assert!(
-            app.operations.is_empty(),
-            "failed review must not remain actionable"
-        );
-        assert!(app.source.is_some(), "source selection should be retained");
-        assert!(
-            app.destination_parent.is_some(),
-            "destination selection should be retained"
-        );
-    }
-
-    #[test]
-    fn identity_failure_yields_failed_copy_action_instead_of_success() {
-        let (_temp, mut app, source, destination_parent) = fixture();
-        settle_index(&mut app);
-        fs::write(source.join("document.txt"), b"unchanged original").unwrap();
-        let mut continuation = Continuation::capture(&[continuation_choice(&source)]).unwrap();
-        continuation.resolve(0, &destination_parent, true).unwrap();
-        app.continuation = Some(continuation);
-        app.identity_ready = true;
-        app.prepare_continued_folder(0).unwrap();
-        app.identity_checker = identity_denied;
-        let start = action(&root_resource(&app), "start-reviewed-folders");
-        let invocation = tilo_actions::InvocationId::new();
-
-        assert_eq!(
-            start_action(&mut app, &start, invocation).unwrap(),
-            ui::widget::ResourceOperationStart::Accepted
-        );
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            app.poll_background();
-            if let Some(update) = Widget::poll_resource_operation(
-                &mut app,
-                invocation,
-                false,
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            ) {
-                assert!(matches!(
-                    update,
-                    tilo_actions::InvocationUpdate::Failed { ref error, .. } if !error.retryable
-                ));
-                break;
-            }
-            assert!(Instant::now() < deadline, "identity failure never settled");
-            std::thread::yield_now();
-        }
-        assert!(app.worker.is_none());
-        assert_eq!(app.operations[0].state(), OperationState::AwaitingReview);
-    }
-
-    #[test]
-    fn broker_cancellation_stops_a_queued_copy_before_the_worker_starts() {
-        let (_temp, mut app, source, destination_parent) = fixture();
-        settle_index(&mut app);
-        fs::write(source.join("document.txt"), b"unchanged original").unwrap();
-        let mut continuation = Continuation::capture(&[continuation_choice(&source)]).unwrap();
-        continuation.resolve(0, &destination_parent, true).unwrap();
-        app.continuation = Some(continuation);
-        app.identity_ready = true;
-        app.prepare_continued_folder(0).unwrap();
-        app.identity_checker = identity_ready;
-        let start = action(&root_resource(&app), "start-reviewed-folders");
-        let invocation = tilo_actions::InvocationId::new();
-
-        assert_eq!(
-            start_action(&mut app, &start, invocation).unwrap(),
-            ui::widget::ResourceOperationStart::Accepted
-        );
-        assert!(app.gate_request.is_some());
-        let update = Widget::poll_resource_operation(
-            &mut app,
-            invocation,
-            true,
-            &AutoCommit::new(),
-            &automerge::ROOT,
-        );
-        assert!(matches!(
-            update,
-            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
-        ));
-        assert!(app.gate_request.is_none());
-        app.poll_background();
-        assert!(app.worker.is_none());
-        assert_eq!(app.operations[0].state(), OperationState::AwaitingReview);
-    }
-
-    #[test]
-    fn identity_failure_yields_failed_folder_review_action() {
-        let (_temp, mut app, source, _destination_parent) = fixture();
-        settle_index(&mut app);
-        fs::write(source.join("document.txt"), b"unchanged original").unwrap();
-        app.continuation = Some(Continuation::capture(&[continuation_choice(&source)]).unwrap());
-        app.identity_ready = true;
-        app.identity_checker = identity_denied;
-        let review = action(&root_resource(&app).children[0], "review-destination");
-        let invocation = tilo_actions::InvocationId::new();
-
-        assert_eq!(
-            start_action(&mut app, &review, invocation).unwrap(),
-            ui::widget::ResourceOperationStart::Accepted
-        );
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            app.poll_background();
-            if let Some(update) = Widget::poll_resource_operation(
-                &mut app,
-                invocation,
-                false,
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            ) {
-                assert!(matches!(
-                    update,
-                    tilo_actions::InvocationUpdate::Failed { ref error, .. } if !error.retryable
-                ));
-                break;
-            }
-            assert!(Instant::now() < deadline, "review failure never settled");
-            std::thread::yield_now();
-        }
-    }
-
-    #[test]
-    fn cancelled_folder_destination_picker_cancels_review_action() {
-        let (_temp, mut app, source, _destination_parent) = fixture();
-        settle_index(&mut app);
-        app.continuation = Some(Continuation::capture(&[continuation_choice(&source)]).unwrap());
-        app.identity_ready = true;
-        app.identity_checker = identity_ready;
-        app.picker_launcher = cancelled_picker;
-        let choose = action(&root_resource(&app).children[0], "choose-destination");
-        let invocation = tilo_actions::InvocationId::new();
-
-        assert_eq!(
-            start_action(&mut app, &choose, invocation).unwrap(),
-            ui::widget::ResourceOperationStart::Accepted
-        );
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            app.poll_background();
-            if let Some(update) = Widget::poll_resource_operation(
-                &mut app,
-                invocation,
-                false,
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            ) {
-                assert!(matches!(
-                    update,
-                    tilo_actions::InvocationUpdate::Cancelled { .. }
-                ));
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "picker cancellation never settled"
-            );
-            std::thread::yield_now();
-        }
-    }
-
-    #[test]
-    fn disconnected_folder_picker_fails_the_review_action() {
-        let (_temp, mut app, source, _destination_parent) = fixture();
-        settle_index(&mut app);
-        app.continuation = Some(Continuation::capture(&[continuation_choice(&source)]).unwrap());
-        app.identity_ready = true;
-        app.identity_checker = identity_ready;
-        app.picker_launcher = disconnected_picker;
-        let choose = action(&root_resource(&app).children[0], "choose-destination");
-        let invocation = tilo_actions::InvocationId::new();
-
-        assert_eq!(
-            start_action(&mut app, &choose, invocation).unwrap(),
-            ui::widget::ResourceOperationStart::Accepted
-        );
-        // The identity gate runs on its own thread before the picker opens, so
-        // one poll can observe neither the picker nor its failure yet.
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let update = loop {
-            app.poll_background();
-            if let Some(update) = Widget::poll_resource_operation(
-                &mut app,
-                invocation,
-                false,
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            ) {
-                break update;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "disconnected picker never failed the review action"
-            );
-            std::thread::yield_now();
-        };
-        assert!(
-            app.gate_request.is_none(),
-            "identity gate must have resolved"
-        );
-        assert!(
-            app.picker.is_none(),
-            "disconnected portal must clear the picker"
-        );
-        assert!(matches!(
-            update,
-            tilo_actions::InvocationUpdate::Failed { .. }
-        ));
-    }
-
-    #[test]
-    fn stop_copy_command_refuses_when_no_worker_accepts_the_request() {
-        let (_temp, mut app, _source, _destination_parent) = fixture();
-        settle_index(&mut app);
-        app.apply_authorized_command(ImportCommand::Cancel);
-        assert!(app.status_is_error);
-        assert!(app.status.contains("could not be stopped"));
-    }
-
-    #[test]
-    fn semantic_cancel_and_retry_use_the_existing_journaled_worker() {
-        let (_temp, mut app, source, destination_parent) = fixture();
-        settle_index(&mut app);
-        for index in 0..32 {
-            fs::write(
-                source.join(format!("archive-{index:02}.bin")),
-                vec![index as u8; 64 * 1024],
-            )
-            .unwrap();
-        }
-        app.source = Some(source);
-        app.destination_parent = Some(destination_parent);
-        app.prepare_review().unwrap();
-        let operation = root_resource(&app).children.pop().unwrap();
-
-        invoke_action(&mut app, &action(&operation, "start")).unwrap();
-        assert!(app.worker.is_some());
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while app.worker.is_some() && app.operations[0].verified_file_count() == 0 {
-            app.poll_background();
-            assert!(Instant::now() < deadline, "copy made no journaled progress");
-            std::thread::yield_now();
-        }
-        assert!(
-            app.worker.is_some(),
-            "copy finished before cancellation could be tested"
-        );
-        assert!(app.operations[0].journal().unwrap().is_file());
-        let running = root_resource(&app).children.pop().unwrap();
-        invoke_action(&mut app, &action(&running, "cancel")).unwrap();
-        wait_terminal(&mut app);
-        assert_eq!(app.operations[0].state(), OperationState::Cancelled);
-
-        let cancelled = root_resource(&app).children.pop().unwrap();
-        invoke_action(&mut app, &action(&cancelled, "retry")).unwrap();
-        assert!(app.worker.is_some());
-        wait_terminal(&mut app);
-        assert_eq!(app.operations[0].state(), OperationState::Complete);
-        assert_eq!(app.operations[0].verified_file_count(), 32);
-    }
-
-    #[test]
-    fn semantic_issue_details_publish_completed_pages_through_repeatable_public_reads() {
-        let mut app = ImportApp::try_for_shot("import-issue-pages").unwrap();
-        let operation = root_resource(&app).children.pop().unwrap();
-        let next = action(&operation, "next-issues");
-        assert!(matches!(
-            next.contract.availability,
-            tilo_actions::Availability::Available
-        ));
-
-        let pending = invoke_action(&mut app, &next).unwrap();
-        assert_eq!(pending["phase"], "loading_details");
-        let observed = wait_for_public_issue_count(&mut app, 8);
-        let issues = observed["operations"][0]["issues"].as_array().unwrap();
-        assert_eq!(issues.len(), 8);
-        assert_eq!(issues[0]["path"], "Shortcut 32");
-        assert!(issues.iter().all(|issue| {
-            issue["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("symbolic link"))
-        }));
-        assert_eq!(observed["operations"][0]["issue_count"], 40);
-        assert_eq!(observed["operations"][0]["details_loading"], false);
-        assert_eq!(observed["operations"][0]["next_issues_available"], false);
-        assert_eq!(observe_import(&mut app).unwrap(), observed);
-        let operation = root_resource(&app).children.pop().unwrap();
-        assert!(matches!(
-            action(&operation, "next-issues").contract.availability,
-            tilo_actions::Availability::Unavailable { .. }
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn first_issues_action_is_unavailable_on_a_single_final_page() {
-        let (_temp, mut app, source, destination_parent) = fixture();
-        settle_index(&mut app);
-        fs::write(source.join("document.txt"), b"original").unwrap();
-        for index in 0..9 {
-            std::os::unix::fs::symlink(
-                source.join("document.txt"),
-                source.join(format!("link-{index}")),
-            )
-            .unwrap();
-        }
-        app.source = Some(source);
-        app.destination_parent = Some(destination_parent);
-        app.prepare_review().unwrap();
-        let start = action(&root_resource(&app).children[0], "start");
-        invoke_action(&mut app, &start).unwrap();
-        wait_terminal(&mut app);
-        let operation = root_resource(&app).children.remove(0);
-        invoke_action(&mut app, &action(&operation, "toggle-details")).unwrap();
-        wait_for_public_issue_count(&mut app, 9);
-
-        let observed = observe_import(&mut app).unwrap();
-        assert_eq!(observed["operations"][0]["next_issues_available"], false);
-        assert_eq!(observed["operations"][0]["first_issues_available"], false);
-    }
-
-    #[test]
-    fn semantic_first_issue_page_restores_the_original_page_and_closes_both_payloads() {
-        let mut app = ImportApp::try_for_shot("import-issue-pages").unwrap();
-        let operation = root_resource(&app).children.pop().unwrap();
-        let retained_next = action(&operation, "next-issues");
-        invoke_action(&mut app, &retained_next).unwrap();
-        let terminal = wait_for_public_issue_count(&mut app, 8);
-        assert_eq!(terminal["operations"][0]["next_issues_available"], false);
-
-        let operation = root_resource(&app).children.pop().unwrap();
-        let first = action(&operation, "first-issues");
-        assert!(matches!(
-            first.contract.availability,
-            tilo_actions::Availability::Available
-        ));
-        let close = action(&operation, "toggle-details");
-        invoke_action(&mut app, &close).unwrap();
-        let closed = root_resource(&app).children.pop().unwrap();
-        assert!(matches!(
-            action(&closed, "first-issues").contract.availability,
-            tilo_actions::Availability::Unavailable { .. }
-        ));
-        assert!(invoke_action(&mut app, &retained_next).is_err());
-        assert!(invoke_action(&mut app, &first).is_err());
-
-        let reopen = action(&closed, "toggle-details");
-        invoke_action(&mut app, &reopen).unwrap();
-        assert_eq!(
-            observe_import(&mut app).unwrap()["operations"][0]["issues"]
-                .as_array()
-                .unwrap()
-                .len(),
-            8
-        );
-        let first = action(&root_resource(&app).children.pop().unwrap(), "first-issues");
-        invoke_action(&mut app, &first).unwrap();
-        let restored = wait_for_public_issue_count(&mut app, 32);
-        assert_eq!(restored["operations"][0]["next_issues_available"], true);
-        let restored_operation = root_resource(&app).children.pop().unwrap();
-        assert!(matches!(
-            action(&restored_operation, "next-issues")
-                .contract
-                .availability,
-            tilo_actions::Availability::Available
-        ));
-        assert!(matches!(
-            action(&restored_operation, "first-issues")
-                .contract
-                .availability,
-            tilo_actions::Availability::Unavailable { .. }
-        ));
-    }
-
-    #[test]
-    fn terminal_issue_button_uses_the_production_path_to_restore_the_first_page() {
-        use ui::headless::{FrameHarness, SemanticExpectation};
-
-        let mut app = ImportApp::try_for_shot("import-issue-pages").unwrap();
-        let operation = root_resource(&app).children.pop().unwrap();
-        invoke_action(&mut app, &action(&operation, "next-issues")).unwrap();
-        wait_for_public_issue_count(&mut app, 8);
-
-        let card = app.operation_card(0, &app.operations[0]);
-        let mut harness = FrameHarness::new(ui::State::new(), Box::new(card), (640, 640));
-        harness
-            .expect(
-                &SemanticExpectation::named("import.operation.0.next-issues")
-                    .name_contains("First issue page")
-                    .enabled(true),
-            )
-            .unwrap();
-        harness
-            .perform_named(
-                "import.operation.0.next-issues",
-                &ui::a11y::Action::Activate,
-            )
-            .unwrap();
-        drop(harness);
-
-        let mut state = AutoCommit::new();
-        Widget::update(&mut app, &mut state, &automerge::ROOT);
-        let restored = wait_for_public_issue_count(&mut app, 32);
-        assert_eq!(restored["operations"][0]["next_issues_available"], true);
-    }
-
-    #[test]
-    fn retained_next_issue_actions_refuse_while_details_are_closed() {
-        let mut app = ImportApp::try_for_shot("import-issue-pages").unwrap();
-        let operation = root_resource(&app).children.pop().unwrap();
-        let retained_next = action(&operation, "next-issues");
-        let close = action(&operation, "toggle-details");
-        invoke_action(&mut app, &close).unwrap();
-
-        let closed = root_resource(&app).children.pop().unwrap();
-        assert!(matches!(
-            action(&closed, "next-issues").contract.availability,
-            tilo_actions::Availability::Unavailable { .. }
-        ));
-        let retained_error = invoke_action(&mut app, &retained_next).unwrap_err();
-        assert!(retained_error.contains("not available"), "{retained_error}");
-        let operation_id = closed.id.as_str().rsplit('.').next().unwrap().to_string();
-        let direct_error =
-            invoke_import_raw(&mut app, &ImportOperation::NextIssues { operation_id }).unwrap_err();
-        assert!(direct_error.contains("not available"), "{direct_error}");
-
-        let mut state = AutoCommit::new();
-        for _ in 0..8 {
-            Widget::update(&mut app, &mut state, &automerge::ROOT);
-            std::thread::yield_now();
-        }
-        let reopen = action(
-            &root_resource(&app).children.pop().unwrap(),
-            "toggle-details",
-        );
-        invoke_action(&mut app, &reopen).unwrap();
-        let observed = observe_import(&mut app).unwrap();
-        assert_eq!(
-            observed["operations"][0]["issues"]
-                .as_array()
-                .unwrap()
-                .len(),
-            32
-        );
-        assert_eq!(observed["operations"][0]["details_open"], true);
-        assert_eq!(observed["operations"][0]["next_issues_available"], true);
-    }
-
-    #[test]
-    fn mismatched_review_records_refuse_start_without_losing_rereview() {
-        let (_temp, mut app, source, parent) = fixture();
-        settle_index(&mut app);
-        let choice = super::super::controller::FolderChoice {
-            scan: super::super::folders::scan_folder(&source).unwrap(),
-            destination: super::super::controller::FolderDestination::Unresolved,
-            mode: super::super::model::FolderMode::Copy,
-            mode_overridden: false,
-        };
-        let mut old = Continuation::capture(&[choice]).unwrap();
-        old.resolve(0, &parent, true).unwrap();
-        let old_record = old
-            .prepare(0, app.store.as_ref().unwrap(), &[], true)
-            .unwrap()
-            .unwrap();
-        let another = parent.join("another");
-        fs::create_dir(&another).unwrap();
-        let mut new = old.clone();
-        new.select_destination_parent(0, &another).unwrap();
-        new.resolve(0, &another, true).unwrap();
-        let new_record = new
-            .prepare(0, app.store.as_ref().unwrap(), &[], true)
-            .unwrap()
-            .unwrap();
-        // Either ordering of the two durable writes may survive a crash.
-        for (continuation, record) in [(new, old_record), (old, new_record)] {
-            continuation.save(app.store.as_ref().unwrap()).unwrap();
-            app.store.as_ref().unwrap().save(&[record]).unwrap();
-            app.continuation = Continuation::load(app.store.as_ref().unwrap()).unwrap();
-            app.operations = app.store.as_ref().unwrap().load().unwrap();
-            app.identity_ready = true;
-            assert!(app.start_operation(0).is_err());
+            .unwrap_err();
+            assert!(stale.contains("no longer available"), "{stale}");
             assert!(app.worker.is_none());
-            assert_eq!(app.operations[0].state(), OperationState::AwaitingReview);
-            assert!(app.check_continued_review_allowed(0).is_ok());
-            app.prepare_continued_folder(0).unwrap();
+        }
+
+        // Phase `continuation_actions_keep_revision_identities_and_reject_replaced_reviews`.
+        {
+            let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
+            fs::write(source.join("first.txt"), b"first").unwrap();
+            let second = source.parent().unwrap().join("second-choice");
+            fs::create_dir(&second).unwrap();
+            fs::write(second.join("second.txt"), b"second").unwrap();
+            let continuation = Continuation::capture(&[
+                continuation_choice(&source),
+                continuation_choice(&second),
+            ])
+            .unwrap();
+            let original_ids = [continuation.operation_id(0), continuation.operation_id(1)];
+            app.continuation = Some(continuation);
+
+            let folders = root_resource(&app)
+                .children
+                .into_iter()
+                .filter(|resource| resource.kind == "imager.import.folder")
+                .collect::<Vec<_>>();
+            let retained_second_later = action(&folders[1], "later");
+            let connected = action(&folders[0], "connected");
+            assert!(matches!(
+                connected.contract.availability,
+                tilo_actions::Availability::Unavailable { .. }
+            ));
+            invoke_action(&mut app, &action(&folders[0], "later")).unwrap();
             assert_eq!(
-                app.operations[0].destination().unwrap(),
-                app.continuation.as_ref().unwrap().folders[0]
-                    .destination()
-                    .unwrap()
-                    .unwrap()
+                [
+                    app.continuation.as_ref().unwrap().operation_id(0),
+                    app.continuation.as_ref().unwrap().operation_id(1),
+                ],
+                original_ids
+            );
+            assert_eq!(
+                app.continuation.as_ref().unwrap().folders[0].mode,
+                ChoiceMode::Later
+            );
+            assert!(
+                invoke_import_raw(
+                    &mut app,
+                    &ImportOperation::SetFolderConnected {
+                        folder_id: original_ids[0].clone(),
+                    },
+                )
+                .unwrap_err()
+                .contains("not available")
+            );
+
+            let replacement_source = destination_parent.parent().unwrap().join("replacement");
+            fs::create_dir(&replacement_source).unwrap();
+            fs::write(replacement_source.join("new.txt"), b"new").unwrap();
+            app.continuation =
+                Some(Continuation::capture(&[continuation_choice(&replacement_source)]).unwrap());
+            let replacement_id = app.continuation.as_ref().unwrap().operation_id(0);
+            assert!(!original_ids.contains(&replacement_id));
+            let error = invoke_action(&mut app, &retained_second_later).unwrap_err();
+            assert!(error.contains("no longer available"), "{error}");
+            assert_eq!(
+                app.continuation.as_ref().unwrap().folders[0].mode,
+                ChoiceMode::Copy
+            );
+
+            assert!(
+                Widget::start_operation(
+                    &mut app,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        import_actions::IMPORT_OPERATION_TYPE,
+                        b"{not-json"
+                    ),
+                    &mut AutoCommit::new(),
+                    &automerge::ROOT
+                )
+                .is_err()
             );
         }
-        assert!(!parent.join("source").exists());
-        assert!(!another.join("source").exists());
-    }
 
-    #[test]
-    fn unpublished_continuation_can_review_another_destination_after_collision() {
-        for substitute_parent in [false, true] {
+        // Phase `continuation_batch_affordance_requires_identity_and_reviewed_copy`.
+        {
+            use ui::headless::{FrameHarness, SemanticExpectation};
+            for (scenario, enabled) in [
+                ("import-first-login", true),
+                ("import-first-login-waiting", false),
+                ("import-first-login-later", false),
+            ] {
+                let app = ImportApp::for_shot(scenario);
+                let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (640, 640));
+                harness
+                    .expect(&SemanticExpectation::named("import.continued.start").enabled(enabled))
+                    .unwrap();
+                if enabled {
+                    harness
+                        .expect(
+                            &SemanticExpectation::named("import.continued.0.review").enabled(true),
+                        )
+                        .unwrap();
+                    harness
+                        .expect(
+                            &SemanticExpectation::named("import.continued.0.destination")
+                                .enabled(true),
+                        )
+                        .unwrap();
+                    assert!(
+                        !harness
+                            .a11y_nodes()
+                            .iter()
+                            .any(|(_, node)| node.label() == Some("Start copy"))
+                    );
+                }
+            }
+        }
+
+        // Phase `mismatched_review_records_refuse_start_without_losing_rereview`.
+        {
             let (_temp, mut app, source, parent) = fixture();
             settle_index(&mut app);
-            fs::write(source.join("hello"), b"original").unwrap();
             let choice = super::super::controller::FolderChoice {
                 scan: super::super::folders::scan_folder(&source).unwrap(),
                 destination: super::super::controller::FolderDestination::Unresolved,
                 mode: super::super::model::FolderMode::Copy,
                 mode_overridden: false,
             };
-            let mut c = Continuation::capture(&[choice]).unwrap();
+            let mut old = Continuation::capture(&[choice]).unwrap();
+            old.resolve(0, &parent, true).unwrap();
+            let old_record = old
+                .prepare(0, app.store.as_ref().unwrap(), &[], true)
+                .unwrap()
+                .unwrap();
+            let another = parent.join("another");
+            fs::create_dir(&another).unwrap();
+            let mut new = old.clone();
+            new.select_destination_parent(0, &another).unwrap();
+            new.resolve(0, &another, true).unwrap();
+            let new_record = new
+                .prepare(0, app.store.as_ref().unwrap(), &[], true)
+                .unwrap()
+                .unwrap();
+            // Either ordering of the two durable writes may survive a crash.
+            for (continuation, record) in [(new, old_record), (old, new_record)] {
+                continuation.save(app.store.as_ref().unwrap()).unwrap();
+                app.store.as_ref().unwrap().save(&[record]).unwrap();
+                app.continuation = Continuation::load(app.store.as_ref().unwrap()).unwrap();
+                app.operations = app.store.as_ref().unwrap().load().unwrap();
+                app.identity_ready = true;
+                assert!(app.start_copy(0).is_err());
+                assert!(app.worker.is_none());
+                assert_eq!(app.operations[0].state(), OperationState::AwaitingReview);
+                assert!(app.check_continued_review_allowed(0).is_ok());
+                app.prepare_continued_folder(0).unwrap();
+                settle_index(&mut app);
+                assert_eq!(
+                    app.operations[0].destination().unwrap(),
+                    app.continuation.as_ref().unwrap().folders[0]
+                        .destination()
+                        .unwrap()
+                        .unwrap()
+                );
+            }
+            assert!(!parent.join("source").exists());
+            assert!(!another.join("source").exists());
+        }
+    }
+
+    /// Reviewed batches, completion, identity failures, cancellation and refused stops.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn copy_action_completes_only_after_the_reviewed_worker_finishes() {
+        // Phase `reviewed_batch_rechecks_identity_and_starts_only_reviewed_copy_rows`.
+        {
+            let (_temp, mut app, source, destination_parent) = fixture();
+            settle_index(&mut app);
+            fs::write(source.join("first.txt"), b"first").unwrap();
+            let second = source.parent().unwrap().join("batch-second");
+            fs::create_dir(&second).unwrap();
+            fs::write(second.join("second.txt"), b"second").unwrap();
+            let mut continuation = Continuation::capture(&[
+                continuation_choice(&source),
+                continuation_choice(&second),
+            ])
+            .unwrap();
+            continuation.resolve(0, &destination_parent, true).unwrap();
+            continuation.resolve(1, &destination_parent, true).unwrap();
+            app.continuation = Some(continuation);
+            app.identity_ready = true;
+            app.prepare_continued_folder(0).unwrap();
+            app.prepare_continued_folder(1).unwrap();
+            settle_index(&mut app);
+            app.save_continued_mode(1, ChoiceMode::Later).unwrap();
+            let copy_id = app.continuation.as_ref().unwrap().operation_id(0);
+            let later_id = app.continuation.as_ref().unwrap().operation_id(1);
+            app.identity_checker = identity_ready;
+            let start_batch = action(&root_resource(&app), "start-reviewed-folders");
+
+            let pending = invoke_action(&mut app, &start_batch).unwrap();
+            assert_eq!(pending["phase"], "checking_identity");
+            assert!(app.gate_request.is_some());
+            assert!(app.worker.is_none());
+            let deadline = tilo_test_env::hang_deadline();
+            while app.gate_request.is_some() {
+                app.poll_background();
+                assert!(ui::time::now() < deadline, "identity check did not finish");
+                std::thread::yield_now();
+            }
+            assert!(
+                app.worker.is_some(),
+                "batch bypassed the shared worker start"
+            );
+            wait_terminal(&mut app);
+            assert_eq!(
+                app.operations
+                    .iter()
+                    .find(|operation| operation.id() == copy_id)
+                    .unwrap()
+                    .state(),
+                OperationState::Complete
+            );
+            assert_eq!(
+                app.operations
+                    .iter()
+                    .find(|operation| operation.id() == later_id)
+                    .unwrap()
+                    .state(),
+                OperationState::AwaitingReview
+            );
+        }
+
+        // Phase `copy_action_succeeds_only_after_the_worker_finishes`.
+        {
+            let (_temp, mut app, source, destination_parent) = fixture();
+            settle_index(&mut app);
+            fs::write(source.join("document.txt"), b"copied bytes").unwrap();
+            app.source = Some(source);
+            app.destination_parent = Some(destination_parent);
+            app.prepare_review().unwrap();
+            let start = action(&root_resource(&app).children[0], "start");
+            let invocation = tilo_actions::InvocationId::new();
+
+            assert_eq!(
+                start_action(&mut app, &start, invocation).unwrap(),
+                ui::widget::ResourceOperationStart::Accepted
+            );
+            assert!(
+                Widget::poll_resource_operation(
+                    &mut app,
+                    invocation,
+                    false,
+                    &AutoCommit::new(),
+                    &automerge::ROOT,
+                )
+                .is_none()
+            );
+
+            let deadline = tilo_test_env::hang_deadline();
+            loop {
+                app.poll_background();
+                if let Some(update) = Widget::poll_resource_operation(
+                    &mut app,
+                    invocation,
+                    false,
+                    &AutoCommit::new(),
+                    &automerge::ROOT,
+                ) {
+                    assert!(matches!(
+                        update,
+                        tilo_actions::InvocationUpdate::Succeeded { .. }
+                    ));
+                    break;
+                }
+                assert!(ui::time::now() < deadline, "copy action never settled");
+                std::thread::yield_now();
+            }
+            assert_eq!(app.operations[0].state(), OperationState::Complete);
+        }
+
+        // Phase `identity_failure_yields_failed_copy_action_instead_of_success`.
+        {
+            let (_temp, mut app, source, destination_parent) = fixture();
+            settle_index(&mut app);
+            fs::write(source.join("document.txt"), b"unchanged original").unwrap();
+            let mut continuation = Continuation::capture(&[continuation_choice(&source)]).unwrap();
+            continuation.resolve(0, &destination_parent, true).unwrap();
+            app.continuation = Some(continuation);
+            app.identity_ready = true;
+            app.prepare_continued_folder(0).unwrap();
+            app.identity_checker = identity_denied;
+            let start = action(&root_resource(&app), "start-reviewed-folders");
+            let invocation = tilo_actions::InvocationId::new();
+
+            assert_eq!(
+                start_action(&mut app, &start, invocation).unwrap(),
+                ui::widget::ResourceOperationStart::Accepted
+            );
+            let deadline = tilo_test_env::hang_deadline();
+            loop {
+                app.poll_background();
+                if let Some(update) = Widget::poll_resource_operation(
+                    &mut app,
+                    invocation,
+                    false,
+                    &AutoCommit::new(),
+                    &automerge::ROOT,
+                ) {
+                    assert!(matches!(
+                        update,
+                        tilo_actions::InvocationUpdate::Failed { ref error, .. } if !error.retryable
+                    ));
+                    break;
+                }
+                assert!(ui::time::now() < deadline, "identity failure never settled");
+                std::thread::yield_now();
+            }
+            assert!(app.worker.is_none());
+            assert_eq!(app.operations[0].state(), OperationState::AwaitingReview);
+        }
+
+        // Phase `broker_cancellation_stops_a_queued_copy_before_the_worker_starts`.
+        {
+            let (_temp, mut app, source, destination_parent) = fixture();
+            settle_index(&mut app);
+            fs::write(source.join("document.txt"), b"unchanged original").unwrap();
+            let mut continuation = Continuation::capture(&[continuation_choice(&source)]).unwrap();
+            continuation.resolve(0, &destination_parent, true).unwrap();
+            app.continuation = Some(continuation);
+            app.identity_ready = true;
+            app.prepare_continued_folder(0).unwrap();
+            app.identity_checker = identity_ready;
+            let start = action(&root_resource(&app), "start-reviewed-folders");
+            let invocation = tilo_actions::InvocationId::new();
+
+            assert_eq!(
+                start_action(&mut app, &start, invocation).unwrap(),
+                ui::widget::ResourceOperationStart::Accepted
+            );
+            assert!(app.gate_request.is_some());
+            let update = Widget::poll_resource_operation(
+                &mut app,
+                invocation,
+                true,
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            );
+            assert!(matches!(
+                update,
+                Some(tilo_actions::InvocationUpdate::Cancelled { .. })
+            ));
+            assert!(app.gate_request.is_none());
+            app.poll_background();
+            assert!(app.worker.is_none());
+            assert_eq!(app.operations[0].state(), OperationState::AwaitingReview);
+        }
+
+        // Phase `stop_copy_command_refuses_when_no_worker_accepts_the_request`.
+        {
+            let (_temp, mut app, _source, _destination_parent) = fixture();
+            settle_index(&mut app);
+            app.apply_authorized_command(ImportCommand::Cancel);
+            assert!(app.status_is_error);
+            assert!(app.status.contains("could not be stopped"));
+        }
+    }
+
+    /// Semantic cancel/retry, restart retry and partial reports.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn retry_and_restart_resume_the_journaled_worker_honestly() {
+        // Phase `semantic_cancel_and_retry_use_the_existing_journaled_worker`.
+        {
+            let (_temp, mut app, source, destination_parent) = fixture();
+            settle_index(&mut app);
+            for index in 0..32 {
+                fs::write(
+                    source.join(format!("archive-{index:02}.bin")),
+                    vec![index as u8; 64 * 1024],
+                )
+                .unwrap();
+            }
+            app.source = Some(source);
+            app.destination_parent = Some(destination_parent);
+            app.prepare_review().unwrap();
+            let operation = root_resource(&app).children.pop().unwrap();
+
+            invoke_action(&mut app, &action(&operation, "start")).unwrap();
+            assert!(app.worker.is_some());
+            let deadline = tilo_test_env::hang_deadline();
+            while app.worker.is_some() && app.operations[0].verified_file_count() == 0 {
+                app.poll_background();
+                assert!(
+                    ui::time::now() < deadline,
+                    "copy made no journaled progress"
+                );
+                std::thread::yield_now();
+            }
+            assert!(
+                app.worker.is_some(),
+                "copy finished before cancellation could be tested"
+            );
+            assert!(app.operations[0].journal().unwrap().is_file());
+            let running = root_resource(&app).children.pop().unwrap();
+            invoke_action(&mut app, &action(&running, "cancel")).unwrap();
+            wait_terminal(&mut app);
+            assert_eq!(app.operations[0].state(), OperationState::Cancelled);
+
+            let cancelled = root_resource(&app).children.pop().unwrap();
+            invoke_action(&mut app, &action(&cancelled, "retry")).unwrap();
+            assert!(app.worker.is_some());
+            wait_terminal(&mut app);
+            assert_eq!(app.operations[0].state(), OperationState::Complete);
+            assert_eq!(app.operations[0].verified_file_count(), 32);
+        }
+
+        // Phase `application_restart_requires_explicit_retry_and_reaches_verified_completion`.
+        // Catches an application restart turning a cancelled operation into a
+        // fresh overwrite attempt instead of an explicit journal resume.
+        {
+            let (temp, mut app, source, destination_parent) = fixture();
+            for index in 0..24 {
+                fs::write(
+                    source.join(format!("file-{index}")),
+                    vec![index as u8; 1024 * 1024],
+                )
+                .unwrap();
+            }
+            app.source = Some(source);
+            app.destination_parent = Some(destination_parent);
+            app.prepare_review().unwrap();
+            app.start_copy(0).unwrap();
+            let deadline = tilo_test_env::hang_deadline();
+            loop {
+                app.poll_background();
+                if app.operations[0].verified_file_count() > 0 {
+                    assert!(app.cancel_active());
+                    break;
+                }
+                assert!(ui::time::now() < deadline, "copy did not publish progress");
+                std::thread::yield_now();
+            }
+            wait_terminal(&mut app);
+            assert_eq!(app.operations[0].state(), OperationState::Cancelled);
+
+            drop(app);
+            let deadline = tilo_test_env::hang_deadline();
+            let store = loop {
+                if let Ok(store) =
+                    MigrationStore::open_at(&temp.path().canonicalize().unwrap().join("state"))
+                {
+                    break store;
+                }
+                assert!(
+                    ui::time::now() < deadline,
+                    "previous writer retained store ownership"
+                );
+                std::thread::yield_now();
+            };
+            let mut reopened = ImportApp::with_store(store).unwrap();
+            assert_eq!(reopened.operations[0].state(), OperationState::Cancelled);
+            assert!(reopened.operations[0].verified_file_count() > 0);
+            reopened.retry_operation(0).unwrap();
+            assert_eq!(reopened.operations[0].state(), OperationState::Running);
+            assert_eq!(reopened.operations[0].verified_file_count(), 0);
+            assert_eq!(reopened.operations[0].verified_bytes(), 0);
+            assert!(reopened.operations[0].issues().unwrap().is_empty());
+            assert!(
+                reopened.operations[0]
+                    .current_relative_path()
+                    .unwrap()
+                    .is_none()
+            );
+            wait_terminal(&mut reopened);
+
+            assert_eq!(reopened.operations[0].state(), OperationState::Complete);
+        }
+
+        // Phase `partial_worker_report_remains_visible_as_incomplete`.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let (_temp, mut app, source, destination_parent) = fixture();
+            fs::write(source.join("regular"), b"kept").unwrap();
+            symlink(source.join("regular"), source.join("linked")).unwrap();
+            app.source = Some(source);
+            app.destination_parent = Some(destination_parent);
+            app.prepare_review().unwrap();
+            app.start_copy(0).unwrap();
+            wait_terminal(&mut app);
+
+            assert_eq!(app.operations[0].state(), OperationState::Incomplete);
+            assert_eq!(app.operations[0].verified_bytes(), 4);
+            assert!(
+                app.operations[0]
+                    .issues()
+                    .unwrap()
+                    .iter()
+                    .any(|(path, _)| path == Path::new("linked"))
+            );
+        }
+    }
+
+    /// Issue detail pages.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn issue_detail_pages_publish_restore_and_refuse_when_closed() {
+        // Phase `semantic_issue_details_publish_completed_pages_through_repeatable_public_reads`.
+        {
+            let mut app = ImportApp::try_for_shot("import-issue-pages").unwrap();
+            let operation = root_resource(&app).children.pop().unwrap();
+            let next = action(&operation, "next-issues");
+            assert!(matches!(
+                next.contract.availability,
+                tilo_actions::Availability::Available
+            ));
+
+            let pending = invoke_action(&mut app, &next).unwrap();
+            assert_eq!(pending["phase"], "loading_details");
+            let observed = wait_for_public_issue_count(&mut app, 8);
+            let issues = observed["operations"][0]["issues"].as_array().unwrap();
+            assert_eq!(issues.len(), 8);
+            assert_eq!(issues[0]["path"], "Shortcut 32");
+            assert!(issues.iter().all(|issue| {
+                issue["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("symbolic link"))
+            }));
+            assert_eq!(observed["operations"][0]["issue_count"], 40);
+            assert_eq!(observed["operations"][0]["details_loading"], false);
+            assert_eq!(observed["operations"][0]["next_issues_available"], false);
+            assert_eq!(observe_import(&mut app).unwrap(), observed);
+            let operation = root_resource(&app).children.pop().unwrap();
+            assert!(matches!(
+                action(&operation, "next-issues").contract.availability,
+                tilo_actions::Availability::Unavailable { .. }
+            ));
+        }
+
+        // Phase `first_issues_action_is_unavailable_on_a_single_final_page`.
+        #[cfg(unix)]
+        {
+            let (_temp, mut app, source, destination_parent) = fixture();
+            settle_index(&mut app);
+            fs::write(source.join("document.txt"), b"original").unwrap();
+            for index in 0..9 {
+                std::os::unix::fs::symlink(
+                    source.join("document.txt"),
+                    source.join(format!("link-{index}")),
+                )
+                .unwrap();
+            }
+            app.source = Some(source);
+            app.destination_parent = Some(destination_parent);
+            app.prepare_review().unwrap();
+            let start = action(&root_resource(&app).children[0], "start");
+            invoke_action(&mut app, &start).unwrap();
+            wait_terminal(&mut app);
+            let operation = root_resource(&app).children.remove(0);
+            invoke_action(&mut app, &action(&operation, "toggle-details")).unwrap();
+            wait_for_public_issue_count(&mut app, 9);
+
+            let observed = observe_import(&mut app).unwrap();
+            assert_eq!(observed["operations"][0]["next_issues_available"], false);
+            assert_eq!(observed["operations"][0]["first_issues_available"], false);
+        }
+
+        // Phase `semantic_first_issue_page_restores_the_original_page_and_closes_both_payloads`.
+        {
+            let mut app = ImportApp::try_for_shot("import-issue-pages").unwrap();
+            let operation = root_resource(&app).children.pop().unwrap();
+            let retained_next = action(&operation, "next-issues");
+            invoke_action(&mut app, &retained_next).unwrap();
+            let terminal = wait_for_public_issue_count(&mut app, 8);
+            assert_eq!(terminal["operations"][0]["next_issues_available"], false);
+
+            let operation = root_resource(&app).children.pop().unwrap();
+            let first = action(&operation, "first-issues");
+            assert!(matches!(
+                first.contract.availability,
+                tilo_actions::Availability::Available
+            ));
+            let close = action(&operation, "toggle-details");
+            invoke_action(&mut app, &close).unwrap();
+            let closed = root_resource(&app).children.pop().unwrap();
+            assert!(matches!(
+                action(&closed, "first-issues").contract.availability,
+                tilo_actions::Availability::Unavailable { .. }
+            ));
+            assert!(invoke_action(&mut app, &retained_next).is_err());
+            assert!(invoke_action(&mut app, &first).is_err());
+
+            let reopen = action(&closed, "toggle-details");
+            invoke_action(&mut app, &reopen).unwrap();
+            assert_eq!(
+                observe_import(&mut app).unwrap()["operations"][0]["issues"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                8
+            );
+            let first = action(&root_resource(&app).children.pop().unwrap(), "first-issues");
+            invoke_action(&mut app, &first).unwrap();
+            let restored = wait_for_public_issue_count(&mut app, 32);
+            assert_eq!(restored["operations"][0]["next_issues_available"], true);
+            let restored_operation = root_resource(&app).children.pop().unwrap();
+            assert!(matches!(
+                action(&restored_operation, "next-issues")
+                    .contract
+                    .availability,
+                tilo_actions::Availability::Available
+            ));
+            assert!(matches!(
+                action(&restored_operation, "first-issues")
+                    .contract
+                    .availability,
+                tilo_actions::Availability::Unavailable { .. }
+            ));
+        }
+
+        // Phase `terminal_issue_button_uses_the_production_path_to_restore_the_first_page`.
+        {
+            use ui::headless::{FrameHarness, SemanticExpectation};
+
+            let mut app = ImportApp::try_for_shot("import-issue-pages").unwrap();
+            let operation = root_resource(&app).children.pop().unwrap();
+            invoke_action(&mut app, &action(&operation, "next-issues")).unwrap();
+            wait_for_public_issue_count(&mut app, 8);
+
+            let card = app.operation_card(0, &app.operations[0]);
+            let mut harness = FrameHarness::new(ui::State::new(), Box::new(card), (640, 640));
+            harness
+                .expect(
+                    &SemanticExpectation::named("import.operation.0.next-issues")
+                        .name_contains("First issue page")
+                        .enabled(true),
+                )
+                .unwrap();
+            harness
+                .perform_named(
+                    "import.operation.0.next-issues",
+                    &ui::a11y::Action::Activate,
+                )
+                .unwrap();
+            drop(harness);
+
+            let mut state = AutoCommit::new();
+            Widget::update(&mut app, &mut state, &automerge::ROOT);
+            let restored = wait_for_public_issue_count(&mut app, 32);
+            assert_eq!(restored["operations"][0]["next_issues_available"], true);
+        }
+
+        // Phase `retained_next_issue_actions_refuse_while_details_are_closed`.
+        {
+            let mut app = ImportApp::try_for_shot("import-issue-pages").unwrap();
+            let operation = root_resource(&app).children.pop().unwrap();
+            let retained_next = action(&operation, "next-issues");
+            let close = action(&operation, "toggle-details");
+            invoke_action(&mut app, &close).unwrap();
+
+            let closed = root_resource(&app).children.pop().unwrap();
+            assert!(matches!(
+                action(&closed, "next-issues").contract.availability,
+                tilo_actions::Availability::Unavailable { .. }
+            ));
+            let retained_error = invoke_action(&mut app, &retained_next).unwrap_err();
+            assert!(retained_error.contains("not available"), "{retained_error}");
+            let operation_id = closed.id.as_str().rsplit('.').next().unwrap().to_string();
+            let direct_error =
+                invoke_import_raw(&mut app, &ImportOperation::NextIssues { operation_id })
+                    .unwrap_err();
+            assert!(direct_error.contains("not available"), "{direct_error}");
+
+            let mut state = AutoCommit::new();
+            for _ in 0..8 {
+                Widget::update(&mut app, &mut state, &automerge::ROOT);
+                std::thread::yield_now();
+            }
+            let reopen = action(
+                &root_resource(&app).children.pop().unwrap(),
+                "toggle-details",
+            );
+            invoke_action(&mut app, &reopen).unwrap();
+            let observed = observe_import(&mut app).unwrap();
+            assert_eq!(
+                observed["operations"][0]["issues"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                32
+            );
+            assert_eq!(observed["operations"][0]["details_open"], true);
+            assert_eq!(observed["operations"][0]["next_issues_available"], true);
+        }
+    }
+
+    /// Continuation collisions, basename retargeting, reopen and retry.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn continuation_batches_retarget_and_retry_without_duplicate_operations() {
+        // Phase `unpublished_continuation_can_review_another_destination_after_collision`.
+        {
+            for substitute_parent in [false, true] {
+                let (_temp, mut app, source, parent) = fixture();
+                settle_index(&mut app);
+                fs::write(source.join("hello"), b"original").unwrap();
+                let choice = super::super::controller::FolderChoice {
+                    scan: super::super::folders::scan_folder(&source).unwrap(),
+                    destination: super::super::controller::FolderDestination::Unresolved,
+                    mode: super::super::model::FolderMode::Copy,
+                    mode_overridden: false,
+                };
+                let mut c = Continuation::capture(&[choice]).unwrap();
+                c.resolve(0, &parent, true).unwrap();
+                app.continuation = Some(c);
+                app.identity_ready = true;
+                app.prepare_continued_folder(0).unwrap();
+                settle_index(&mut app);
+                if substitute_parent {
+                    fs::rename(&parent, parent.with_extension("old")).unwrap();
+                    fs::create_dir(&parent).unwrap();
+                }
+                fs::create_dir(parent.join("source")).unwrap();
+                fs::write(parent.join("source/existing"), b"keep").unwrap();
+                assert!(app.start_copy(0).is_err());
+                assert_eq!(app.operations[0].state(), OperationState::AwaitingReview);
+                assert!(!app.operations[0].journal().unwrap().exists());
+                let another = parent.join("another");
+                fs::create_dir(&another).unwrap();
+                app.request_continued_review(0, Some(another.clone()))
+                    .unwrap();
+                assert!(
+                    app.needs_idle_sync(),
+                    "background review must keep native polling alive"
+                );
+                let deadline = tilo_test_env::hang_deadline();
+                while app.review_request.is_some() {
+                    app.poll_background();
+                    assert!(ui::time::now() < deadline);
+                    std::thread::yield_now();
+                }
+                assert!(!app.status_is_error, "{}", app.status);
+                settle_index(&mut app);
+                assert_eq!(app.operations.len(), 1);
+                assert_eq!(
+                    app.operations[0].destination().unwrap(),
+                    another.join("source")
+                );
+                app.start_copy(0).unwrap();
+                wait_terminal(&mut app);
+                assert_eq!(
+                    app.operations[0].state(),
+                    OperationState::Complete,
+                    "{}",
+                    app.status
+                );
+                assert_eq!(fs::read(another.join("source/hello")).unwrap(), b"original");
+                assert_eq!(fs::read(parent.join("source/existing")).unwrap(), b"keep");
+                assert!(
+                    app.request_continued_review(0, Some(parent.clone()))
+                        .is_err()
+                );
+            }
+        }
+
+        // Phase `same_basename_folders_can_retarget_the_second_without_changing_first_output`.
+        {
+            let (_temp, mut app, source, parent) = fixture();
+            settle_index(&mut app);
+            let second = source.with_extension("other").join("source");
+            fs::create_dir_all(&second).unwrap();
+            fs::write(source.join("hello"), b"first").unwrap();
+            fs::write(second.join("hello"), b"second").unwrap();
+            let choices: Vec<_> = [&source, &second]
+                .into_iter()
+                .map(|path| super::super::controller::FolderChoice {
+                    scan: super::super::folders::scan_folder(path).unwrap(),
+                    destination: super::super::controller::FolderDestination::Unresolved,
+                    mode: super::super::model::FolderMode::Copy,
+                    mode_overridden: false,
+                })
+                .collect();
+            let mut c = Continuation::capture(&choices).unwrap();
             c.resolve(0, &parent, true).unwrap();
+            c.resolve(1, &parent, true).unwrap();
             app.continuation = Some(c);
             app.identity_ready = true;
             app.prepare_continued_folder(0).unwrap();
+            app.prepare_continued_folder(1).unwrap();
             settle_index(&mut app);
-            if substitute_parent {
-                fs::rename(&parent, parent.with_extension("old")).unwrap();
-                fs::create_dir(&parent).unwrap();
-            }
-            fs::create_dir(parent.join("source")).unwrap();
-            fs::write(parent.join("source/existing"), b"keep").unwrap();
-            assert!(app.start_operation(0).is_err());
-            assert_eq!(app.operations[0].state(), OperationState::AwaitingReview);
-            assert!(!app.operations[0].journal().unwrap().exists());
-            let another = parent.join("another");
-            fs::create_dir(&another).unwrap();
-            app.request_continued_review(0, Some(another.clone()))
-                .unwrap();
-            assert!(
-                app.needs_idle_sync(),
-                "background review must keep native polling alive"
-            );
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while app.review_request.is_some() {
-                app.poll_background();
-                assert!(Instant::now() < deadline);
-                std::thread::yield_now();
-            }
-            assert!(!app.status_is_error, "{}", app.status);
-            settle_index(&mut app);
-            assert_eq!(app.operations.len(), 1);
-            assert_eq!(
-                app.operations[0].destination().unwrap(),
-                another.join("source")
-            );
-            app.start_operation(0).unwrap();
+            app.start_copy(0).unwrap();
             wait_terminal(&mut app);
             assert_eq!(
                 app.operations[0].state(),
@@ -4247,221 +4612,148 @@ mod tests {
                 "{}",
                 app.status
             );
-            assert_eq!(fs::read(another.join("source/hello")).unwrap(), b"original");
-            assert_eq!(fs::read(parent.join("source/existing")).unwrap(), b"keep");
-            assert!(
-                app.request_continued_review(0, Some(parent.clone()))
-                    .is_err()
+            assert!(app.start_copy(1).is_err());
+            assert_eq!(app.operations[1].state(), OperationState::AwaitingReview);
+            let another = parent.join("another");
+            fs::create_dir(&another).unwrap();
+            app.request_continued_review(1, Some(another.clone()))
+                .unwrap();
+            let deadline = tilo_test_env::hang_deadline();
+            while app.review_request.is_some() {
+                app.poll_background();
+                assert!(ui::time::now() < deadline);
+                std::thread::yield_now();
+            }
+            assert!(!app.status_is_error, "{}", app.status);
+            settle_index(&mut app);
+            app.start_copy(1).unwrap();
+            wait_terminal(&mut app);
+            assert_eq!(
+                app.operations[1].state(),
+                OperationState::Complete,
+                "{}",
+                app.status
             );
+            assert_eq!(fs::read(parent.join("source/hello")).unwrap(), b"first");
+            assert_eq!(fs::read(another.join("source/hello")).unwrap(), b"second");
+            assert_eq!(app.operations.len(), 2);
         }
-    }
 
-    #[test]
-    fn same_basename_folders_can_retarget_the_second_without_changing_first_output() {
-        let (_temp, mut app, source, parent) = fixture();
-        settle_index(&mut app);
-        let second = source.with_extension("other").join("source");
-        fs::create_dir_all(&second).unwrap();
-        fs::write(source.join("hello"), b"first").unwrap();
-        fs::write(second.join("hello"), b"second").unwrap();
-        let choices: Vec<_> = [&source, &second]
-            .into_iter()
-            .map(|path| super::super::controller::FolderChoice {
-                scan: super::super::folders::scan_folder(path).unwrap(),
+        // Phase `continuation_batch_uses_existing_worker_and_reopen_does_not_duplicate`.
+        {
+            let (temp, mut app, source, destination_parent) = fixture();
+            settle_index(&mut app);
+            fs::write(source.join("hello"), b"hello").unwrap();
+            let choice = super::super::controller::FolderChoice {
+                scan: super::super::folders::FolderScan {
+                    source: source.clone(),
+                    file_count: 1,
+                    bytes: 5,
+                    empty_directory_count: 0,
+                    empty_directories: vec![],
+                    skipped_count: 0,
+                    skipped: vec![],
+                },
                 destination: super::super::controller::FolderDestination::Unresolved,
                 mode: super::super::model::FolderMode::Copy,
                 mode_overridden: false,
-            })
-            .collect();
-        let mut c = Continuation::capture(&choices).unwrap();
-        c.resolve(0, &parent, true).unwrap();
-        c.resolve(1, &parent, true).unwrap();
-        app.continuation = Some(c);
-        app.identity_ready = true;
-        app.prepare_continued_folder(0).unwrap();
-        app.prepare_continued_folder(1).unwrap();
-        settle_index(&mut app);
-        app.start_operation(0).unwrap();
-        wait_terminal(&mut app);
-        assert_eq!(
-            app.operations[0].state(),
-            OperationState::Complete,
-            "{}",
-            app.status
-        );
-        assert!(app.start_operation(1).is_err());
-        assert_eq!(app.operations[1].state(), OperationState::AwaitingReview);
-        let another = parent.join("another");
-        fs::create_dir(&another).unwrap();
-        app.request_continued_review(1, Some(another.clone()))
-            .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while app.review_request.is_some() {
-            app.poll_background();
-            assert!(Instant::now() < deadline);
-            std::thread::yield_now();
+            };
+            let mut controller =
+                super::super::controller::SetupController::new(super::super::model::Capabilities {
+                    host: super::super::model::HostOs::Linux,
+                    desktop_session: true,
+                    internal_dual_boot: false,
+                });
+            assert!(controller.choose_experience(super::super::model::Experience::Desktop));
+            controller.next().unwrap();
+            controller.add_folder_unresolved(choice.scan);
+            controller.next().unwrap();
+            let mut continuation = Continuation::capture(controller.folders()).unwrap();
+            assert!(continuation.resolve(0, &destination_parent, false).is_err());
+            continuation.resolve(0, &destination_parent, true).unwrap();
+            continuation.save(app.store.as_ref().unwrap()).unwrap();
+            app.continuation = Some(continuation);
+            app.identity_ready = true;
+            app.prepare_continued_folder(0).unwrap();
+            settle_index(&mut app);
+            assert_eq!(app.operations.len(), 1);
+            app.start_copy(0).unwrap();
+            wait_terminal(&mut app);
+            assert_eq!(
+                app.operations[0].state(),
+                OperationState::Complete,
+                "{} / {:?}",
+                app.status,
+                app.operations[0].failure()
+            );
+            assert_eq!(fs::read(source.join("hello")).unwrap(), b"hello");
+            assert_eq!(
+                fs::read(destination_parent.join("source/hello")).unwrap(),
+                b"hello"
+            );
+            assert!(app.start_copy(0).is_err());
+            settle_index(&mut app);
+            let root = temp.path().canonicalize().unwrap().join("state");
+            drop(app);
+            let deadline = tilo_test_env::hang_deadline();
+            let store = loop {
+                if let Ok(store) = MigrationStore::open_at(&root) {
+                    break store;
+                }
+                assert!(ui::time::now() < deadline);
+                std::thread::yield_now();
+            };
+            let mut reopened = ImportApp::with_store(store).unwrap();
+            reopened.identity_ready = true;
+            assert_eq!(reopened.operations.len(), 1);
+            reopened.prepare_continued_folder(0).unwrap();
+            assert_eq!(reopened.operations.len(), 1);
+            assert_eq!(reopened.operations[0].state(), OperationState::Complete);
         }
-        assert!(!app.status_is_error, "{}", app.status);
-        settle_index(&mut app);
-        app.start_operation(1).unwrap();
-        wait_terminal(&mut app);
-        assert_eq!(
-            app.operations[1].state(),
-            OperationState::Complete,
-            "{}",
-            app.status
-        );
-        assert_eq!(fs::read(parent.join("source/hello")).unwrap(), b"first");
-        assert_eq!(fs::read(another.join("source/hello")).unwrap(), b"second");
-        assert_eq!(app.operations.len(), 2);
-    }
 
-    #[test]
-    fn continuation_batch_uses_existing_worker_and_reopen_does_not_duplicate() {
-        let (temp, mut app, source, destination_parent) = fixture();
-        settle_index(&mut app);
-        fs::write(source.join("hello"), b"hello").unwrap();
-        let choice = super::super::controller::FolderChoice {
-            scan: super::super::folders::FolderScan {
-                source: source.clone(),
-                file_count: 1,
-                bytes: 5,
-                empty_directory_count: 0,
-                empty_directories: vec![],
-                skipped_count: 0,
-                skipped: vec![],
-            },
-            destination: super::super::controller::FolderDestination::Unresolved,
-            mode: super::super::model::FolderMode::Copy,
-            mode_overridden: false,
-        };
-        let mut controller =
-            super::super::controller::SetupController::new(super::super::model::Capabilities {
-                host: super::super::model::HostOs::Linux,
-                desktop_session: true,
-                internal_dual_boot: false,
-            });
-        assert!(controller.choose_experience(super::super::model::Experience::Desktop));
-        controller.next().unwrap();
-        controller.add_folder_unresolved(choice.scan);
-        controller.next().unwrap();
-        let mut continuation = Continuation::capture(controller.folders()).unwrap();
-        assert!(continuation.resolve(0, &destination_parent, false).is_err());
-        continuation.resolve(0, &destination_parent, true).unwrap();
-        continuation.save(app.store.as_ref().unwrap()).unwrap();
-        app.continuation = Some(continuation);
-        app.identity_ready = true;
-        app.prepare_continued_folder(0).unwrap();
-        settle_index(&mut app);
-        assert_eq!(app.operations.len(), 1);
-        app.start_operation(0).unwrap();
-        wait_terminal(&mut app);
-        assert_eq!(
-            app.operations[0].state(),
-            OperationState::Complete,
-            "{} / {:?}",
-            app.status,
-            app.operations[0].failure()
-        );
-        assert_eq!(fs::read(source.join("hello")).unwrap(), b"hello");
-        assert_eq!(
-            fs::read(destination_parent.join("source/hello")).unwrap(),
-            b"hello"
-        );
-        assert!(app.start_operation(0).is_err());
-        settle_index(&mut app);
-        let root = temp.path().canonicalize().unwrap().join("state");
-        drop(app);
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let store = loop {
-            if let Ok(store) = MigrationStore::open_at(&root) {
-                break store;
-            }
-            assert!(Instant::now() < deadline);
-            std::thread::yield_now();
-        };
-        let mut reopened = ImportApp::with_store(store).unwrap();
-        reopened.identity_ready = true;
-        assert_eq!(reopened.operations.len(), 1);
-        reopened.prepare_continued_folder(0).unwrap();
-        assert_eq!(reopened.operations.len(), 1);
-        assert_eq!(reopened.operations[0].state(), OperationState::Complete);
-    }
-
-    #[test]
-    fn interrupted_before_journal_creation_can_explicitly_retry_without_new_operation() {
-        let (_temp, mut app, source, parent) = fixture();
-        settle_index(&mut app);
-        fs::write(source.join("hello"), b"original").unwrap();
-        let choice = super::super::controller::FolderChoice {
-            scan: super::super::folders::FolderScan {
-                source: source.clone(),
-                file_count: 1,
-                bytes: 8,
-                empty_directory_count: 0,
-                empty_directories: vec![],
-                skipped_count: 0,
-                skipped: vec![],
-            },
-            destination: super::super::controller::FolderDestination::Unresolved,
-            mode: super::super::model::FolderMode::Copy,
-            mode_overridden: false,
-        };
-        let mut c = Continuation::capture(&[choice]).unwrap();
-        c.resolve(0, &parent, true).unwrap();
-        let mut op = c
-            .prepare(0, app.store.as_ref().unwrap(), &[], true)
-            .unwrap()
-            .unwrap();
-        op.approve();
-        op.mark_running().unwrap();
-        app.store.as_ref().unwrap().save(&[op]).unwrap();
-        app.operations = app.store.as_ref().unwrap().load().unwrap();
-        c.save(app.store.as_ref().unwrap()).unwrap();
-        app.continuation = Some(c);
-        app.identity_ready = true;
-        assert_eq!(app.operations[0].state(), OperationState::Interrupted);
-        app.retry_operation(0).unwrap();
-        wait_terminal(&mut app);
-        assert_eq!(app.operations.len(), 1);
-        assert_eq!(
-            app.operations[0].state(),
-            OperationState::Complete,
-            "{}",
-            app.status
-        );
-        assert_eq!(fs::read(source.join("hello")).unwrap(), b"original");
-    }
-
-    #[test]
-    fn continuation_batch_affordance_requires_identity_and_reviewed_copy() {
-        use ui::headless::{FrameHarness, SemanticExpectation};
-        for (scenario, enabled) in [
-            ("import-first-login", true),
-            ("import-first-login-waiting", false),
-            ("import-first-login-later", false),
-        ] {
-            let app = ImportApp::for_shot(scenario);
-            let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (640, 640));
-            harness
-                .expect(&SemanticExpectation::named("import.continued.start").enabled(enabled))
+        // Phase `interrupted_before_journal_creation_can_explicitly_retry_without_new_operation`.
+        {
+            let (_temp, mut app, source, parent) = fixture();
+            settle_index(&mut app);
+            fs::write(source.join("hello"), b"original").unwrap();
+            let choice = super::super::controller::FolderChoice {
+                scan: super::super::folders::FolderScan {
+                    source: source.clone(),
+                    file_count: 1,
+                    bytes: 8,
+                    empty_directory_count: 0,
+                    empty_directories: vec![],
+                    skipped_count: 0,
+                    skipped: vec![],
+                },
+                destination: super::super::controller::FolderDestination::Unresolved,
+                mode: super::super::model::FolderMode::Copy,
+                mode_overridden: false,
+            };
+            let mut c = Continuation::capture(&[choice]).unwrap();
+            c.resolve(0, &parent, true).unwrap();
+            let mut op = c
+                .prepare(0, app.store.as_ref().unwrap(), &[], true)
+                .unwrap()
                 .unwrap();
-            if enabled {
-                harness
-                    .expect(&SemanticExpectation::named("import.continued.0.review").enabled(true))
-                    .unwrap();
-                harness
-                    .expect(
-                        &SemanticExpectation::named("import.continued.0.destination").enabled(true),
-                    )
-                    .unwrap();
-                assert!(
-                    !harness
-                        .a11y_nodes()
-                        .iter()
-                        .any(|(_, node)| node.label() == Some("Start copy"))
-                );
-            }
+            op.approve();
+            op.mark_running().unwrap();
+            app.store.as_ref().unwrap().save(&[op]).unwrap();
+            app.operations = app.store.as_ref().unwrap().load().unwrap();
+            c.save(app.store.as_ref().unwrap()).unwrap();
+            app.continuation = Some(c);
+            app.identity_ready = true;
+            assert_eq!(app.operations[0].state(), OperationState::Interrupted);
+            app.retry_operation(0).unwrap();
+            wait_terminal(&mut app);
+            assert_eq!(app.operations.len(), 1);
+            assert_eq!(
+                app.operations[0].state(),
+                OperationState::Complete,
+                "{}",
+                app.status
+            );
+            assert_eq!(fs::read(source.join("hello")).unwrap(), b"original");
         }
     }
 
@@ -4479,8 +4771,8 @@ mod tests {
         // waited for it would only return once the hold timed out, which
         // drops the release receiver and fails the send below.
         let (entered, release) = super::super::migration_store::test_support::hold_save(&root, 1);
-        app.start_operation(0).unwrap();
-        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        app.start_copy(0).unwrap();
+        tilo_test_env::recv("the save hook", &entered);
         assert!(!destination_parent.join("source").exists());
         app.poll_background();
         assert!(app.cancel_active());
@@ -4489,13 +4781,13 @@ mod tests {
         release
             .send(())
             .expect("the start checkpoint was still held when the UI calls returned");
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Ok(store) = MigrationStore::open_at(&root) {
                 assert_eq!(store.load().unwrap()[0].state(), OperationState::Cancelled);
                 break;
             }
-            assert!(Instant::now() < deadline);
+            assert!(ui::time::now() < deadline);
             std::thread::yield_now();
         }
         assert!(!destination_parent.join("source").exists());
@@ -4512,11 +4804,11 @@ mod tests {
         settle_index(&mut app);
         let root = app.store.as_ref().unwrap().root().to_owned();
         let (entered, release) = super::super::migration_store::test_support::hold_save(&root, 2);
-        app.start_operation(0).unwrap();
+        app.start_copy(0).unwrap();
         // Native durability includes directory fsyncs; allow slower virtual
         // disks to reach the terminal checkpoint without weakening the state
         // assertion that follows.
-        entered.recv_timeout(Duration::from_secs(15)).unwrap();
+        tilo_test_env::recv("the save hook", &entered);
         app.poll_background();
         assert_eq!(app.operations[0].state(), OperationState::Running);
         // Polling must not wait for the held checkpoint: had it waited, the
@@ -4528,257 +4820,62 @@ mod tests {
         assert_eq!(app.operations[0].state(), OperationState::Complete);
     }
 
+    /// Failed terminal and start persistence.
     #[test]
-    fn failed_terminal_checkpoint_retains_an_honest_incomplete_result() {
-        let (_temp, mut app, source, destination_parent) = fixture();
-        settle_index(&mut app);
-        fs::write(source.join("hello"), b"hello").unwrap();
-        app.source = Some(source.clone());
-        app.destination_parent = Some(destination_parent.clone());
-        app.prepare_review().unwrap();
-        settle_index(&mut app);
-        let root = app.store.as_ref().unwrap().root().to_owned();
-        let (entered, release) = super::super::migration_store::test_support::hold_save(&root, 2);
-        app.start_operation(0).unwrap();
-        // Native durability includes directory fsyncs; allow slower virtual
-        // disks to reach the terminal checkpoint without weakening the state
-        // assertion that follows.
-        entered.recv_timeout(Duration::from_secs(15)).unwrap();
-        fs::rename(root.join("ownership.lock"), root.join("old-lock")).unwrap();
-        release.send(()).unwrap();
-        wait_terminal(&mut app);
-        assert_eq!(app.operations[0].state(), OperationState::Incomplete);
-        assert_eq!(app.operations[0].verified_bytes(), 5);
-        assert!(app.status.contains("could not be saved"));
-        assert_eq!(fs::read(source.join("hello")).unwrap(), b"hello");
-        assert_eq!(
-            fs::read(destination_parent.join("source/hello")).unwrap(),
-            b"hello"
-        );
-    }
+    fn failed_checkpoints_never_report_completion_or_create_output() {
+        // Phase `failed_terminal_checkpoint_retains_an_honest_incomplete_result`.
+        {
+            let (_temp, mut app, source, destination_parent) = fixture();
+            settle_index(&mut app);
+            fs::write(source.join("hello"), b"hello").unwrap();
+            app.source = Some(source.clone());
+            app.destination_parent = Some(destination_parent.clone());
+            app.prepare_review().unwrap();
+            settle_index(&mut app);
+            let root = app.store.as_ref().unwrap().root().to_owned();
+            let (entered, release) =
+                super::super::migration_store::test_support::hold_save(&root, 2);
+            app.start_copy(0).unwrap();
+            // Native durability includes directory fsyncs; allow slower virtual
+            // disks to reach the terminal checkpoint without weakening the state
+            // assertion that follows.
+            tilo_test_env::recv("the save hook", &entered);
+            fs::rename(root.join("ownership.lock"), root.join("old-lock")).unwrap();
+            release.send(()).unwrap();
+            wait_terminal(&mut app);
+            assert_eq!(app.operations[0].state(), OperationState::Incomplete);
+            assert_eq!(app.operations[0].verified_bytes(), 5);
+            assert!(app.status.contains("could not be saved"));
+            assert_eq!(fs::read(source.join("hello")).unwrap(), b"hello");
+            assert_eq!(
+                fs::read(destination_parent.join("source/hello")).unwrap(),
+                b"hello"
+            );
+        }
 
-    #[test]
-    fn failed_start_persistence_never_creates_output() {
-        let (_temp, mut app, source, destination_parent) = fixture();
-        settle_index(&mut app);
-        app.source = Some(source);
-        app.destination_parent = Some(destination_parent.clone());
-        app.prepare_review().unwrap();
-        settle_index(&mut app);
-        fs::rename(
-            app.store.as_ref().unwrap().root().join("ownership.lock"),
-            app.store.as_ref().unwrap().root().join("replaced-lock"),
-        )
-        .unwrap();
-        app.start_operation(0).unwrap();
-        wait_terminal(&mut app);
-        assert_eq!(app.operations[0].state(), OperationState::Failed);
-        assert!(!destination_parent.join("source").exists());
-        assert!(
-            app.operations[0]
-                .failure()
-                .unwrap()
-                .contains("could not be saved")
-        );
-    }
-
-    // Catches copying into a suggested setup path before both current native
-    // grants and the exact fresh destination have been reviewed.
-    #[test]
-    fn review_uses_the_selected_source_and_destination_parent() {
-        let (_temp, mut app, source, destination_parent) = fixture();
-        app.source = Some(source.clone());
-        assert!(app.prepare_review().is_err());
-
-        app.destination_parent = Some(destination_parent.clone());
-        app.prepare_review().unwrap();
-        let operation = app.operations.last().unwrap();
-        assert_eq!(operation.state(), OperationState::AwaitingReview);
-        assert_eq!(operation.source().unwrap(), source);
-        assert_eq!(
-            operation.destination().unwrap(),
-            destination_parent.join("source")
-        );
-        assert!(operation.start_job().is_err());
-    }
-
-    // Catches an application restart turning a cancelled operation into a
-    // fresh overwrite attempt instead of an explicit journal resume.
-    #[test]
-    fn application_restart_requires_explicit_retry_and_reaches_verified_completion() {
-        let (temp, mut app, source, destination_parent) = fixture();
-        for index in 0..24 {
-            fs::write(
-                source.join(format!("file-{index}")),
-                vec![index as u8; 1024 * 1024],
+        // Phase `failed_start_persistence_never_creates_output`.
+        {
+            let (_temp, mut app, source, destination_parent) = fixture();
+            settle_index(&mut app);
+            app.source = Some(source);
+            app.destination_parent = Some(destination_parent.clone());
+            app.prepare_review().unwrap();
+            settle_index(&mut app);
+            fs::rename(
+                app.store.as_ref().unwrap().root().join("ownership.lock"),
+                app.store.as_ref().unwrap().root().join("replaced-lock"),
             )
             .unwrap();
-        }
-        app.source = Some(source);
-        app.destination_parent = Some(destination_parent);
-        app.prepare_review().unwrap();
-        app.start_operation(0).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            app.poll_background();
-            if app.operations[0].verified_file_count() > 0 {
-                assert!(app.cancel_active());
-                break;
-            }
-            assert!(Instant::now() < deadline, "copy did not publish progress");
-            std::thread::yield_now();
-        }
-        wait_terminal(&mut app);
-        assert_eq!(app.operations[0].state(), OperationState::Cancelled);
-
-        drop(app);
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let store = loop {
-            if let Ok(store) =
-                MigrationStore::open_at(&temp.path().canonicalize().unwrap().join("state"))
-            {
-                break store;
-            }
+            app.start_copy(0).unwrap();
+            wait_terminal(&mut app);
+            assert_eq!(app.operations[0].state(), OperationState::Failed);
+            assert!(!destination_parent.join("source").exists());
             assert!(
-                Instant::now() < deadline,
-                "previous writer retained store ownership"
+                app.operations[0]
+                    .failure()
+                    .unwrap()
+                    .contains("could not be saved")
             );
-            std::thread::yield_now();
-        };
-        let mut reopened = ImportApp::with_store(store).unwrap();
-        assert_eq!(reopened.operations[0].state(), OperationState::Cancelled);
-        assert!(reopened.operations[0].verified_file_count() > 0);
-        reopened.retry_operation(0).unwrap();
-        assert_eq!(reopened.operations[0].state(), OperationState::Running);
-        assert_eq!(reopened.operations[0].verified_file_count(), 0);
-        assert_eq!(reopened.operations[0].verified_bytes(), 0);
-        assert!(reopened.operations[0].issues().unwrap().is_empty());
-        assert!(
-            reopened.operations[0]
-                .current_relative_path()
-                .unwrap()
-                .is_none()
-        );
-        wait_terminal(&mut reopened);
-
-        assert_eq!(reopened.operations[0].state(), OperationState::Complete);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn partial_worker_report_remains_visible_as_incomplete() {
-        use std::os::unix::fs::symlink;
-
-        let (_temp, mut app, source, destination_parent) = fixture();
-        fs::write(source.join("regular"), b"kept").unwrap();
-        symlink(source.join("regular"), source.join("linked")).unwrap();
-        app.source = Some(source);
-        app.destination_parent = Some(destination_parent);
-        app.prepare_review().unwrap();
-        app.start_operation(0).unwrap();
-        wait_terminal(&mut app);
-
-        assert_eq!(app.operations[0].state(), OperationState::Incomplete);
-        assert_eq!(app.operations[0].verified_bytes(), 4);
-        assert!(
-            app.operations[0]
-                .issues()
-                .unwrap()
-                .iter()
-                .any(|(path, _)| path == Path::new("linked"))
-        );
-    }
-
-    // Catches screenshot fixtures drifting into fabricated success labels that
-    // never passed through the real worker and copy report classifier.
-    #[test]
-    fn screenshot_states_come_from_real_worker_events() {
-        let progress = ImportApp::for_shot("import-progress");
-        assert_eq!(progress.operations[0].state(), OperationState::Running);
-        assert!(progress.operations[0].verified_file_count() > 0);
-
-        let retry = ImportApp::for_shot("import-retry-progress");
-        assert_eq!(retry.operations[0].state(), OperationState::Running);
-        assert!(retry.operations[0].verified_file_count() > 0);
-        assert!(retry.operations[0].issues().unwrap().is_empty());
-
-        let mut partial = ImportApp::for_shot("import-partial");
-        assert_eq!(partial.operations[0].state(), OperationState::Incomplete);
-        assert!(!partial.operations[0].issues().unwrap().is_empty());
-        assert!(partial.expanded_details.is_empty());
-        partial.apply_command(ImportCommand::ToggleDetails(0));
-        assert!(partial.expanded_details.contains(&0));
-
-        let conflict = ImportApp::for_shot("import-conflict");
-        assert_eq!(conflict.operations[0].state(), OperationState::Incomplete);
-        assert!(!conflict.operations[0].issues().unwrap().is_empty());
-        let conflict_source = conflict.operations[0].source().unwrap().join("Budget.txt");
-        let conflict_destination = conflict.operations[0]
-            .destination()
-            .unwrap()
-            .join("Budget.txt");
-        assert_eq!(fs::read(conflict_source).unwrap(), b"source version");
-        assert_eq!(fs::read(conflict_destination).unwrap(), b"destination edit");
-        assert!(conflict.expanded_details.is_empty());
-
-        let mut pages = ImportApp::for_shot("import-issue-pages");
-        assert_eq!(pages.operations[0].state(), OperationState::Incomplete);
-        assert_eq!(pages.operations[0].issue_count(), 40);
-        assert_eq!(pages.detail_pages[&0].issues.len(), 32);
-        pages.apply_command(ImportCommand::NextIssues(0));
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while pages.detail_request.is_some() {
-            pages.poll_background();
-            assert!(Instant::now() < deadline);
-            std::thread::yield_now();
         }
-        assert_eq!(pages.detail_pages[&0].issues.len(), 8);
-        assert!(pages.detail_pages[&0].next.is_none());
-        assert!(
-            pages.detail_pages[&0]
-                .issues
-                .iter()
-                .any(|(p, _)| p == Path::new("Shortcut 39"))
-        );
-
-        let complete = ImportApp::for_shot("import-complete");
-        assert_eq!(complete.operations[0].state(), OperationState::Complete);
-        assert!(complete.operations[0].verified_bytes() > 0);
-    }
-
-    /// The expanded issue list precedes the commands that act on it — the
-    /// details toggle, the issue paging, the copy action — in reading and Tab
-    /// order (the accessibility tree and `collect_focusable` both walk the
-    /// widget tree in child order), and the three share one action row.
-    #[test]
-    fn expanded_details_precede_the_operation_commands() {
-        let pages = ImportApp::for_shot("import-issue-pages");
-        assert!(pages.expanded_details.contains(&0));
-        let card = pages.operation_card(0, &pages.operations[0]);
-        fn ids(widget: &dyn Widget, out: &mut Vec<String>) {
-            if let Some(id) = widget.test_id() {
-                out.push(id.to_string());
-            }
-            for child in widget.children() {
-                ids(child, out);
-            }
-        }
-        let mut order = Vec::new();
-        ids(&card, &mut order);
-        let position = |id: &str| {
-            order
-                .iter()
-                .position(|x| x == id)
-                .unwrap_or_else(|| panic!("{id} missing from {order:?}"))
-        };
-        let summary = position("import.operation.0.summary");
-        let details = position("import.operation.0.details");
-        let toggle = position("import.operation.0.toggle-details");
-        let next = position("import.operation.0.next-issues");
-        let retry = position("import.operation.0.retry");
-        assert!(
-            summary < details && details < toggle && toggle < next && next < retry,
-            "{order:?}"
-        );
     }
 }

@@ -13,7 +13,7 @@
 //! string for "now") and [`period_progress`] (the 0..1 fraction of the
 //! current step still remaining — drives the countdown ring).
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use ui::time::UNIX_EPOCH;
 
 use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
@@ -58,7 +58,7 @@ fn decode_base32_lenient(encoding: &data_encoding::Encoding, symbols: &[u8]) -> 
 /// Seconds since the Unix epoch for "now". Centralised so tests and the
 /// ring share one clock source.
 pub fn unix_now() -> f64 {
-    SystemTime::now()
+    ui::time::wall()
         .duration_since(UNIX_EPOCH)
         .map_or(0.0, |d| d.as_secs_f64())
 }
@@ -195,87 +195,95 @@ mod tests {
         a
     }
 
-    /// RFC 6238 Appendix B test vectors. The published vectors use an
-    /// ASCII seed; "12345678901234567890" base32-encodes to
-    /// "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ". Verify SHA1 at the listed
-    /// timestamps.
+    /// RFC 6238 vectors, period stability and progress/remaining.
     #[test]
-    fn rfc6238_sha1_vectors() {
-        let a = acc("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", Algorithm::Sha1, 8, 30);
-        assert_eq!(code_at(&a, 59.0), "94287082");
-        assert_eq!(code_at(&a, 1_111_111_109.0), "07081804");
-        assert_eq!(code_at(&a, 1_234_567_890.0), "89005924");
-        assert_eq!(code_at(&a, 2_000_000_000.0), "69279037");
-    }
-
-    #[test]
-    fn code_is_stable_within_a_period_and_rotates_after() {
-        let a = acc("JBSWY3DPEHPK3PXP", Algorithm::Sha1, 6, 30);
-        // 100s and 119s both fall in the [90, 120) step (counter 3), so the
-        // code is identical.
-        assert_eq!(code_at(&a, 100.0), code_at(&a, 119.0));
-        // Crossing the 120s boundary into the next step changes the code
-        // (overwhelmingly likely).
-        assert_ne!(code_at(&a, 100.0), code_at(&a, 130.0));
-    }
-
-    /// RFC 4648 section 10 vectors, plus the inputs the lenient decoder
-    /// must keep accepting: unused trailing bits that are not zero, and a
-    /// stray final symbol that carries no whole byte.
-    #[test]
-    fn secrets_decode_like_rfc4648_and_stay_lenient() {
-        for (encoded, raw) in [
-            ("MY", &b"f"[..]),
-            ("MZXQ", b"fo"),
-            ("MZXW6", b"foo"),
-            ("MZXW6YQ", b"foob"),
-            ("MZXW6YTB", b"fooba"),
-            ("MZXW6YTBOI", b"foobar"),
-            ("mzxw 6ytb oi======", b"foobar"),
-            ("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", b"12345678901234567890"),
-            ("MZ", b"f"),
-            ("MZXW6YTBO", b"fooba"),
-            ("MZXW6YTBOIA", b"foobar"),
-            ("MZXW6YTBOIAAAA", b"foobar\0\0"),
-        ] {
-            assert_eq!(decode_secret(encoded).as_deref(), Some(raw), "{encoded}");
+    fn codes_match_rfc6238_and_track_the_clock() {
+        // Case `rfc6238_sha1_vectors`.
+        // RFC 6238 Appendix B test vectors. The published vectors use an
+        // ASCII seed; "12345678901234567890" base32-encodes to
+        // "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ". Verify SHA1 at the listed
+        // timestamps.
+        {
+            let a = acc("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", Algorithm::Sha1, 8, 30);
+            assert_eq!(code_at(&a, 59.0), "94287082");
+            assert_eq!(code_at(&a, 1_111_111_109.0), "07081804");
+            assert_eq!(code_at(&a, 1_234_567_890.0), "89005924");
+            assert_eq!(code_at(&a, 2_000_000_000.0), "69279037");
         }
-        for invalid in ["", "MZXW6YTB1", "MZXW6YT!", "MZXW6YTBO!", "A"] {
-            let decoded = decode_secret(invalid);
-            assert!(
-                decoded.as_ref().is_none_or(Vec::is_empty),
-                "{invalid}: {decoded:?}"
+
+        // Case `code_is_stable_within_a_period_and_rotates_after`.
+        {
+            let a = acc("JBSWY3DPEHPK3PXP", Algorithm::Sha1, 6, 30);
+            // 100s and 119s both fall in the [90, 120) step (counter 3), so the
+            // code is identical.
+            assert_eq!(code_at(&a, 100.0), code_at(&a, 119.0));
+            // Crossing the 120s boundary into the next step changes the code
+            // (overwhelmingly likely).
+            assert_ne!(code_at(&a, 100.0), code_at(&a, 130.0));
+        }
+
+        // Case `progress_and_remaining_track_the_clock`.
+        {
+            let a = acc("JBSWY3DPEHPK3PXP", Algorithm::Sha1, 6, 30);
+            // Exactly at a step boundary: full period remaining.
+            assert!((period_progress(&a, 0.0) - 1.0).abs() < 1e-9);
+            assert_eq!(seconds_remaining(&a, 0.0), 30);
+            // 25s into a 30s step: ~1/6 remaining, 5s left.
+            assert!((period_progress(&a, 25.0) - (5.0 / 30.0)).abs() < 1e-9);
+            assert_eq!(seconds_remaining(&a, 25.0), 5);
+        }
+    }
+
+    /// RFC 4648 decoding, masked placeholder for invalid secrets, and thin-space grouping.
+    #[test]
+    fn secrets_decode_leniently_and_codes_display_grouped() {
+        // Case `secrets_decode_like_rfc4648_and_stay_lenient`.
+        // RFC 4648 section 10 vectors, plus the inputs the lenient decoder
+        // must keep accepting: unused trailing bits that are not zero, and a
+        // stray final symbol that carries no whole byte.
+        {
+            for (encoded, raw) in [
+                ("MY", &b"f"[..]),
+                ("MZXQ", b"fo"),
+                ("MZXW6", b"foo"),
+                ("MZXW6YQ", b"foob"),
+                ("MZXW6YTB", b"fooba"),
+                ("MZXW6YTBOI", b"foobar"),
+                ("mzxw 6ytb oi======", b"foobar"),
+                ("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", b"12345678901234567890"),
+                ("MZ", b"f"),
+                ("MZXW6YTBO", b"fooba"),
+                ("MZXW6YTBOIA", b"foobar"),
+                ("MZXW6YTBOIAAAA", b"foobar\0\0"),
+            ] {
+                assert_eq!(decode_secret(encoded).as_deref(), Some(raw), "{encoded}");
+            }
+            for invalid in ["", "MZXW6YTB1", "MZXW6YT!", "MZXW6YTBO!", "A"] {
+                let decoded = decode_secret(invalid);
+                assert!(
+                    decoded.as_ref().is_none_or(Vec::is_empty),
+                    "{invalid}: {decoded:?}"
+                );
+            }
+        }
+
+        // Case `invalid_secret_yields_masked_placeholder`.
+        {
+            let a = acc("not valid base32 !!!", Algorithm::Sha1, 6, 30);
+            assert_eq!(code_at(&a, 0.0), "••••••");
+        }
+
+        // Case `group_code_inserts_a_thin_space`.
+        {
+            assert_eq!(
+                group_code("123456")
+                    .chars()
+                    .filter(char::is_ascii_digit)
+                    .count(),
+                6
             );
+            assert!(group_code("123456").contains('\u{2009}'));
+            assert!(group_code("12345678").contains('\u{2009}'));
         }
-    }
-
-    #[test]
-    fn invalid_secret_yields_masked_placeholder() {
-        let a = acc("not valid base32 !!!", Algorithm::Sha1, 6, 30);
-        assert_eq!(code_at(&a, 0.0), "••••••");
-    }
-
-    #[test]
-    fn progress_and_remaining_track_the_clock() {
-        let a = acc("JBSWY3DPEHPK3PXP", Algorithm::Sha1, 6, 30);
-        // Exactly at a step boundary: full period remaining.
-        assert!((period_progress(&a, 0.0) - 1.0).abs() < 1e-9);
-        assert_eq!(seconds_remaining(&a, 0.0), 30);
-        // 25s into a 30s step: ~1/6 remaining, 5s left.
-        assert!((period_progress(&a, 25.0) - (5.0 / 30.0)).abs() < 1e-9);
-        assert_eq!(seconds_remaining(&a, 25.0), 5);
-    }
-
-    #[test]
-    fn group_code_inserts_a_thin_space() {
-        assert_eq!(
-            group_code("123456")
-                .chars()
-                .filter(char::is_ascii_digit)
-                .count(),
-            6
-        );
-        assert!(group_code("123456").contains('\u{2009}'));
-        assert!(group_code("12345678").contains('\u{2009}'));
     }
 }

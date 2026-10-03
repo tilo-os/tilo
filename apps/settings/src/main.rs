@@ -1,8 +1,7 @@
 //! Settings — standard Tilo application entry point.
 //!
-//! Settings keeps its format-specific screenshot scenario pipeline, while the
-//! shared runner owns CLI validation, headless driving, persistence and the
-//! live window lifecycle.
+//! The live window runs on the app framework (`SettingsShell`). Format-specific
+//! `--shots` scenarios keep the standalone screenshot pipeline.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop. Crash-producing lints remain denied.
@@ -27,15 +26,45 @@
     )
 )]
 
-use ui::launch::LaunchSpec;
 #[cfg(not(feature = "thin"))]
-use ui::launch::{LaunchArgs, LaunchError};
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
+#[cfg(not(feature = "thin"))]
 use ui::widget::Widget;
 
-const APP_ID: &str = "so.tilo.settings";
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
 
-fn root() -> Box<dyn Widget> {
-    Box::new(settings::SettingsApp::new())
+pub fn main() {
+    #[cfg(not(feature = "thin"))]
+    if standalone_capture() {
+        let spec = LaunchSpec::new("so.tilo.settings", || {
+            Box::new(settings::SettingsApp::new()) as Box<dyn Widget>
+        })
+        .shot_handler(render_shot)
+        .configure_app(configure);
+        ui::launch::run_or_exit(&spec);
+        return;
+    }
+    ui::launch::run_or_exit(&ui::framework::launch_spec::<settings::SettingsShell>());
+}
+
+#[cfg(not(feature = "thin"))]
+fn configure(app: &mut ui::App) {
+    // Sidebar filtering rebuilds the widget tree; restore its first focusable
+    // field after each structural change so typing retains the caret.
+    app.autofocus_on_structure_change = true;
+    // Apply Appearance-pane scale, theme, contrast and motion changes live.
+    app.appearance_reconcile = true;
+}
+
+#[cfg(not(feature = "thin"))]
+fn standalone_capture() -> bool {
+    std::env::args().any(|arg| {
+        arg == "--shots"
+            || arg.starts_with("--shots=")
+            || arg == "--responsive-matrix"
+            || arg.starts_with("--responsive-matrix=")
+    })
 }
 
 #[cfg(not(feature = "thin"))]
@@ -52,23 +81,4 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         },
     );
     result.map_err(|error| LaunchError::Operation(format!("settings screenshot failed: {error}")))
-}
-
-fn configure(app: &mut ui::App) {
-    settings::actions::register(app.action_registry_mut());
-    // Sidebar filtering rebuilds the widget tree; restore its first focusable
-    // field after each structural change so typing retains the caret.
-    app.autofocus_on_structure_change = true;
-    // Apply Appearance-pane scale, theme, contrast and motion changes live.
-    app.appearance_reconcile = true;
-}
-
-#[cfg(feature = "thin")]
-extern crate runtime_dylib;
-
-pub fn main() {
-    let spec = LaunchSpec::new(APP_ID, root).configure_app(configure);
-    #[cfg(not(feature = "thin"))]
-    let spec = spec.shot_handler(render_shot);
-    ui::launch::run_or_exit(&spec);
 }

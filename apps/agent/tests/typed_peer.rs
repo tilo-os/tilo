@@ -33,6 +33,8 @@ use ui::collaboration::{
 
 const TEST_ROOM: uuid::Uuid = uuid::Uuid::from_u128(0x6f2a_5fce_f612_46ac_9228_f6a3_ace4_9a11);
 const ROOT_KEY: [u8; 32] = [91; 32];
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: Duration = Duration::from_secs(30);
 
 pub const fn room() -> uuid::Uuid {
     TEST_ROOM
@@ -102,6 +104,7 @@ impl TypedPeer {
             app_id,
             cluster_id,
             record,
+            record_kind: _,
             handle,
         } = request
         else {
@@ -229,12 +232,10 @@ pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource
 
     // Publishing is one-way; ask the action host until it offers what
     // was published before a test launches an agent that plans against it.
-    let deadline = std::time::Instant::now()
-        .checked_add(Duration::from_secs(5))
-        .expect("five-second catalogue deadline fits in Instant");
+    let deadline = tilo_test_env::hang_deadline();
     let mut deferred = Vec::new();
     let mut correlation = 0_u64;
-    while std::time::Instant::now() < deadline {
+    while ui::time::now() < deadline {
         correlation = correlation.wrapping_add(1);
         let link = peer
             .link
@@ -251,10 +252,10 @@ pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource
             },
         })
         .expect("ask the action host for its catalogue");
-        let answered = std::time::Instant::now()
+        let answered = ui::time::now()
             .checked_add(Duration::from_millis(500))
             .expect("half a second fits in Instant");
-        while std::time::Instant::now() < answered {
+        while ui::time::now() < answered {
             match link
                 .recv(Duration::from_millis(100))
                 .expect("receive the action host's answer")
@@ -293,6 +294,17 @@ pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource
     panic!("broker did not publish {app_id}'s action catalogue in time");
 }
 
+/// A document invocation as the broker delivers it to the app host.
+pub struct DocumentInvocation<'a> {
+    pub id: u64,
+    pub address: ActionAddress,
+    pub argument: Option<&'a str>,
+    pub actor: &'a str,
+    /// The invocation's own provenance (the calling run's intent group),
+    /// recorded with the change exactly as the toolkit host records it.
+    pub context: Option<&'a tilo_actions::ActionContext>,
+}
+
 /// Resolve and execute a document invocation through an application's real
 /// action registry, broadcasting the resulting CRDT delta like the toolkit
 /// host. The caller owns when to send the returned terminal update, allowing
@@ -302,22 +314,24 @@ pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource
 ///
 /// Panics if a successful document action produces no CRDT delta or that
 /// delta cannot be sent through the typed test peer.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the peer, replica, registry and invocation envelope stay explicit so tests can interleave document actions and terminal updates"
-)]
 pub fn service_document_invocation(
     peer: &mut TypedPeer,
     replica: &mut automerge::AutoCommit,
     resources: &[Resource],
     register: fn(&mut ActionRegistry),
-    id: u64,
-    resource: String,
-    action: String,
-    argument: Option<&str>,
-    actor: &str,
+    invocation: DocumentInvocation<'_>,
 ) -> tilo_actions::InvocationUpdate {
-    let address = ActionAddress::new(resource, action);
+    let DocumentInvocation {
+        id,
+        address,
+        argument,
+        actor,
+        context,
+    } = invocation;
+    let provenance = tilo_actions::door::InvocationProvenance {
+        actor: actor.as_bytes(),
+        ambient: context,
+    };
     let mut registry = ActionRegistry::new();
     register(&mut registry);
     let mut transport = LocalTransport::new();
@@ -333,7 +347,7 @@ pub fn service_document_invocation(
                     resources,
                     &address,
                     &arguments,
-                    actor.as_bytes(),
+                    provenance,
                     &registry,
                     &mut transport,
                 )
@@ -344,7 +358,7 @@ pub fn service_document_invocation(
             resources,
             &address,
             argument,
-            actor.as_bytes(),
+            provenance,
             &registry,
             &mut transport,
         )
@@ -384,6 +398,16 @@ pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
             ("so.tilo.word-processor", "delete"),
             ("so.tilo.word-processor", "insert-table"),
             ("so.tilo.word-processor", "place-image"),
+            ("dev.tilo.word-processor", "align-center"),
+            ("dev.tilo.word-processor", "delete"),
+            ("dev.tilo.word-processor", "insert-table"),
+            ("dev.tilo.word-processor", "place-image"),
+            ("dev.tilo.photos", "rotate-right"),
+            ("dev.tilo.photos", "export-edited-content"),
+            ("so.tilo.word-processor", "align-center"),
+            ("so.tilo.word-processor", "delete"),
+            ("so.tilo.word-processor", "insert-table"),
+            ("so.tilo.word-processor", "place-image"),
             ("so.tilo.photos", "rotate-right"),
             ("so.tilo.photos", "export-edited-content"),
         ],
@@ -399,10 +423,17 @@ pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
 ///
 /// Panics if the deterministic test room cannot be configured or its native
 /// collaboration broker cannot bind `path`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "builds the whole agent test room in one place"
+)]
 pub fn spawn_with_agent_actions(
     path: &Path,
     actions: &[(&str, &str)],
 ) -> shell::shell::collab_broker::BrokerHandle {
+    let parent = path.parent().expect("typed broker socket has a parent");
+    shell::shell::collab_broker_capnp::tests::secure_socket_parent(parent)
+        .expect("secure typed broker fixture root");
     let root = SigningKey::from_bytes(&ROOT_KEY);
     let collab_types::Principal::Person(principal) = collab_types::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
@@ -450,13 +481,9 @@ pub fn spawn_with_agent_actions(
             )
             .expect("the harness owner grants a reviewed test action");
     }
-    // App fixtures use the same agent-only endpoint as Scribe. Admission and
-    // app authority remain separate, so each host receives only its own app.
-    for (host, app) in [
-        ("quinten", "so.tilo.word-processor"),
-        ("photos", "so.tilo.photos"),
-        ("files", "so.tilo.file-explorer"),
-    ] {
+    // App fixtures use the same agent-only endpoint as Scribe. Device
+    // enrollment, room membership, and exact app authority remain separate.
+    for host in ["quinten", "photos", "files"] {
         workspace
             .grant_as(
                 &principal,
@@ -467,6 +494,17 @@ pub fn spawn_with_agent_actions(
                 ),
             )
             .expect("the harness owner admits an app fixture");
+    }
+    // Integration fixtures exercise the canonical routes and the dev.tilo test
+    // routes. Grant each observed route explicitly: the production capability
+    // check deliberately does not alias app authority.
+    for (host, app) in [
+        ("quinten", "dev.tilo.word-processor"),
+        ("quinten", "so.tilo.word-processor"),
+        ("photos", "dev.tilo.photos"),
+        ("photos", "so.tilo.photos"),
+        ("files", "so.tilo.file-explorer"),
+    ] {
         workspace
             .grant_as(
                 &principal,
@@ -484,10 +522,22 @@ pub fn spawn_with_agent_actions(
         .map(|handle| device_key(handle).verifying_key().to_bytes())
         .into_iter()
         .collect();
-    shell::shell::collab_broker::spawn_native_harness(
+    let broker = shell::shell::collab_broker::spawn_native_harness(
         path.to_path_buf(),
         tree.shared(),
         trusted_devices,
     )
-    .expect("bind the typed collaboration service")
+    .expect("bind the typed collaboration service");
+    // The fixture apps read the catalogue to see their own publication land,
+    // as an app declaring `[actions] query` may.
+    broker
+        .app_action_broker()
+        .expect("the harness serves actions")
+        .set_app_action_access(std::sync::Arc::new(|_: &str| {
+            shell::shell::app_action_access::ActionAccess {
+                query: true,
+                invoke: false,
+            }
+        }));
+    broker
 }

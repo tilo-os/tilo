@@ -28,8 +28,11 @@
 //! same toolkit runs under the native desktop runner, inside a multi-app host
 //! such as the compositor, or in a test that records every effect.
 //!
-//! The native desktop backends live in [`native`] behind the `native` feature
-//! and the per-service `portal`, `mpris` and `notifications` features.
+//! The user-mediated services' traits and their Linux, macOS and web backends
+//! live in platform crates (`tilo-clipboard`, `tilo-dialogs`, …), which this
+//! crate re-exports; [`host::HostServices`] is the per-app registry of them.
+//! The remaining native backends (media sessions, location, screen capture)
+//! live in [`native`] behind the `native` feature.
 //!
 //! Apps do not depend on this crate: `tilo-ui` re-exports every module here
 //! under the same path (`ui::portal`, `ui::host`, `ui::time`, …), and
@@ -38,12 +41,26 @@
 pub mod background;
 pub mod capture;
 pub mod clipboard;
+pub mod env;
 pub mod host;
 pub mod location;
 pub mod mpris;
+/// User notifications: `tilo_notify` under the toolkit's module path.
+pub mod notify {
+    pub use tilo_notify::*;
+}
 #[cfg(feature = "native")]
 pub mod native;
+/// App-scoped secrets: `tilo_secrets` under the toolkit's module path.
+pub mod secrets {
+    pub use tilo_secrets::*;
+}
 pub mod png;
-pub mod portal;
+/// File choosers and URI opening: `tilo_dialogs::portal` under the
+/// toolkit's module path.
+pub use tilo_dialogs::portal;
+// Android's Storage Access Framework chooser (main's Android host).
+#[cfg(all(feature = "native", target_os = "android"))]
+mod saf;
 pub mod time;
 pub mod wake;

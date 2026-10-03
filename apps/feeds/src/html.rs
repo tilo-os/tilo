@@ -222,45 +222,49 @@ fn decode_entity(ent: &str) -> String {
 mod tests {
     use super::*;
 
+    /// HTML renders paragraphs, headings, bullets, plain text, numeric entities and unclosed preformatted blocks.
     #[test]
-    fn paragraphs_and_headings() {
-        let html = "<h2>Title</h2><p>First para.</p><p>Second &amp; last.</p>";
-        let blocks = to_blocks(html);
-        assert_eq!(blocks.len(), 3);
-        assert_eq!(blocks[0].kind, BlockKind::Heading2);
-        assert_eq!(blocks[0].text, "Title");
-        assert_eq!(blocks[2].text, "Second & last.");
-    }
+    fn html_renders_blocks_text_and_entities() {
+        // --- phase: paragraphs_and_headings ---
+        {
+            let html = "<h2>Title</h2><p>First para.</p><p>Second &amp; last.</p>";
+            let blocks = to_blocks(html);
+            assert_eq!(blocks.len(), 3);
+            assert_eq!(blocks[0].kind, BlockKind::Heading2);
+            assert_eq!(blocks[0].text, "Title");
+            assert_eq!(blocks[2].text, "Second & last.");
+        }
 
-    #[test]
-    fn list_items_become_bullets() {
-        let html = "<ul><li>One</li><li>Two</li></ul>";
-        let blocks = to_blocks(html);
-        let bullets = blocks
-            .iter()
-            .filter(|b| b.kind == BlockKind::Bullet)
-            .count();
-        assert_eq!(bullets, 2);
-    }
+        // --- phase: list_items_become_bullets ---
+        {
+            let html = "<ul><li>One</li><li>Two</li></ul>";
+            let blocks = to_blocks(html);
+            let bullets = blocks
+                .iter()
+                .filter(|b| b.kind == BlockKind::Bullet)
+                .count();
+            assert_eq!(bullets, 2);
+        }
 
-    #[test]
-    fn plain_text_fallback() {
-        let blocks = to_blocks("just some text without tags");
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].text, "just some text without tags");
-    }
+        // --- phase: plain_text_fallback ---
+        {
+            let blocks = to_blocks("just some text without tags");
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].text, "just some text without tags");
+        }
 
-    #[test]
-    fn numeric_entities() {
-        let blocks = to_blocks("<p>caf&#233; &#x41;</p>");
-        assert_eq!(blocks[0].text, "café A");
-    }
+        // --- phase: numeric_entities ---
+        {
+            let blocks = to_blocks("<p>caf&#233; &#x41;</p>");
+            assert_eq!(blocks[0].text, "café A");
+        }
 
-    #[test]
-    fn unclosed_preformatted_block_uses_the_shared_final_flush() {
-        let blocks = to_blocks("<pre>\nfn main() {\n    work();\n}");
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].kind, BlockKind::Code);
-        assert_eq!(blocks[0].text, "fn main() {\n    work();\n}");
+        // --- phase: unclosed_preformatted_block_uses_the_shared_final_flush ---
+        {
+            let blocks = to_blocks("<pre>\nfn main() {\n    work();\n}");
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].kind, BlockKind::Code);
+            assert_eq!(blocks[0].text, "fn main() {\n    work();\n}");
+        }
     }
 }

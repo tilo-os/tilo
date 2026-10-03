@@ -17,6 +17,8 @@ the VM itself do not see them.
 - `headful`: gets its own virtual display (a vkms card), its own logind seat
   and, on first `tilo-vm input`, its own keyboard and pointer, so the real
   DRM and libinput paths run. The card is re-created after a VM reboot.
+  `--outputs 2560x1600@2,1920x1080` gives it several monitors with their
+  own modes and scales (`tilo-vm guide driving`).
   The hypervisor window does not show it; `shot` does, and `seat claim`
   moves the session onto seat0, which the window does show.
 

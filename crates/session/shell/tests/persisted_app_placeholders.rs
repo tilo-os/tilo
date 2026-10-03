@@ -69,40 +69,43 @@ fn tree_with_single_placeholder(kind: AppKind, title: &str) -> WorkspaceTree {
 }
 
 #[test]
-fn terminal_placeholder_resolves_to_live_app_tile() {
-    let tile = TileContent::AppPlaceholder {
-        kind: AppKind::Terminal,
-        label: "Terminal".into(),
-    };
-    // PTY spawn can legitimately fail in some CI sandboxes, so accept either
-    // shape. The regression guarded against is a silent fall-through to Stub
-    // with the *original* placeholder label — on spawn failure the fallback
-    // carries a "Terminal: <err>" prefix.
-    let shape = resolve_tile_shape_for_test(&tile);
-    assert!(
-        shape == "App" || shape == "Stub",
-        "unexpected tile shape: {shape}"
-    );
-}
+fn persisted_terminal_and_files_placeholders_resolve_to_live_tiles() {
+    // Phase `terminal_placeholder_resolves_to_live_app_tile`.
+    {
+        let tile = TileContent::AppPlaceholder {
+            kind: AppKind::Terminal,
+            label: "Terminal".into(),
+        };
+        // PTY spawn can legitimately fail in some CI sandboxes, so accept either
+        // shape. The regression guarded against is a silent fall-through to Stub
+        // with the *original* placeholder label — on spawn failure the fallback
+        // carries a "Terminal: <err>" prefix.
+        let shape = resolve_tile_shape_for_test(&tile);
+        assert!(
+            shape == "App" || shape == "Stub",
+            "unexpected tile shape: {shape}"
+        );
+    }
 
-#[test]
-fn file_explorer_placeholder_resolves_to_live_app_tile() {
-    let tile = TileContent::AppPlaceholder {
-        kind: AppKind::FileExplorer,
-        label: "Files".into(),
-    };
-    assert_eq!(
-        resolve_tile_shape_for_test(&tile),
-        "App",
-        "FileExplorerWidget::new is infallible; placeholder must resolve to App"
-    );
-}
+    // Phase `file_explorer_placeholder_resolves_to_live_app_tile`.
+    {
+        let tile = TileContent::AppPlaceholder {
+            kind: AppKind::FileExplorer,
+            label: "Files".into(),
+        };
+        assert_eq!(
+            resolve_tile_shape_for_test(&tile),
+            "App",
+            "FileExplorerWidget::new is infallible; placeholder must resolve to App"
+        );
+    }
 
-#[test]
-fn build_tilo_root_accepts_terminal_and_files_placeholders() {
-    // The full root-build path must not panic on persisted placeholders.
-    let term_tree = tree_with_single_placeholder(AppKind::Terminal, "Terminal");
-    let _ = build_tilo_root(&term_tree);
-    let files_tree = tree_with_single_placeholder(AppKind::FileExplorer, "Files");
-    let _ = build_tilo_root(&files_tree);
+    // Phase `build_tilo_root_accepts_terminal_and_files_placeholders`.
+    {
+        // The full root-build path must not panic on persisted placeholders.
+        let term_tree = tree_with_single_placeholder(AppKind::Terminal, "Terminal");
+        let _ = build_tilo_root(&term_tree);
+        let files_tree = tree_with_single_placeholder(AppKind::FileExplorer, "Files");
+        let _ = build_tilo_root(&files_tree);
+    }
 }

@@ -4,22 +4,15 @@ The ARM image carries a separate x86 Windows compatibility rootfs. Its current
 consumer requires the traditional Wine pair, including both x86-64 and i686
 loaders. Fedora's stock Wine packages do not satisfy that consumer contract.
 
-Run **Development / assemble retained Windows guest** on a `codex/` branch after
-the Wine producer has published its paired artifact. This workflow packages
-existing Wine RPMs; it does not compile Wine, the browser or the OS.
-
-## Inputs and reuse
-
-- `buildroot_candidate`: immutable native x86-64 Fedora 44 tooling image.
-- First assembly: supply `wine_pair_candidate` from the Wine producer's pair job.
-- Later assembly: supply `signed_wine_candidate` and its independent
-  `signed_wine_key_sha256` from the retained public receipt instead of the pair.
-- To reuse dependency resolution too, supply `guest_rpms_candidate` with the same
-  signed Wine identity and public-key hash used to create that snapshot.
+Dispatch **Build / Windows compatibility payloads**
+(`build-windows-compat.yml`) with `payload=windows-guest`. Its `windows-guest`
+job packages the Wine RPMs its own `build` and `pair` jobs just produced, on the
+tooling image of its `native-inputs` job; it does not compile the browser or
+the OS.
 
 Each completed stage publishes its digest immediately. The always-retained
 `guest-evidence/inputs.json` records completed inputs, even if a later stage
-fails. Use those references for the next attempt. Only the pinned DXVK archive
+fails. Only the pinned DXVK archive
 and license are fetched for this guest.
 
 The final `guest-reference.txt` is the immutable `windows_guest_candidate` input

@@ -353,6 +353,7 @@ pub fn watch(on_change: impl FnMut() -> bool + Send + 'static) -> Result<(), Str
 ///
 /// # Errors
 /// As [`watch`].
+#[cfg(target_os = "linux")]
 pub fn watch_dir(
     dir: &Path,
     mut on_change: impl FnMut() -> bool + Send + 'static,
@@ -388,6 +389,22 @@ pub fn watch_dir(
         })
         .map(|_| ())
         .map_err(|error| format!("codec-pack watcher: {error}"))
+}
+
+/// The codec pack is part of the Tilo OS image; elsewhere there is no status
+/// to watch.
+///
+/// # Errors
+/// Always.
+#[cfg(not(target_os = "linux"))]
+pub fn watch_dir(
+    dir: &Path,
+    _on_change: impl FnMut() -> bool + Send + 'static,
+) -> Result<(), String> {
+    Err(format!(
+        "watch {}: the codec pack exists only on Tilo OS",
+        dir.display()
+    ))
 }
 
 #[cfg(test)]
@@ -549,6 +566,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_watcher_reports_an_atomic_status_rewrite() {
         let dir = tempfile::tempdir().unwrap();
@@ -559,7 +577,7 @@ mod tests {
         std::fs::write(&temporary, r#"{"state":"installing"}"#).unwrap();
         std::fs::write(dir.path().join("unrelated"), "x").unwrap();
         std::fs::rename(&temporary, dir.path().join("status.json")).unwrap();
-        rx.recv_timeout(Duration::from_secs(10))
+        rx.recv_timeout(tilo_test_env::hang_bound())
             .expect("rename over status.json is reported");
         assert_eq!(
             CodecPackStatus::read_from(&dir.path().join("status.json")).state,

@@ -366,146 +366,142 @@ mod tests {
     }
 
     #[test]
-    fn a_created_layer_round_trips() {
-        let (_d, s) = store();
-        s.create("scratch", "debian", LayerKind::Ephemeral, vec![])
-            .unwrap();
-        let back = s.load("scratch").unwrap();
-        assert_eq!(back.name, "scratch");
-        assert_eq!(back.base, "debian");
-        assert_eq!(back.kind, LayerKind::Ephemeral);
-        assert!(s.upper_dir("scratch").is_dir());
-        assert!(s.work_dir("scratch").is_dir());
-        assert!(s.home_dir("scratch").is_dir());
-    }
+    fn layers_are_created_promoted_and_renamed_without_clobbering() {
+        // Phase `a_created_layer_round_trips`.
+        {
+            let (_d, s) = store();
+            s.create("scratch", "debian", LayerKind::Ephemeral, vec![])
+                .unwrap();
+            let back = s.load("scratch").unwrap();
+            assert_eq!(back.name, "scratch");
+            assert_eq!(back.base, "debian");
+            assert_eq!(back.kind, LayerKind::Ephemeral);
+            assert!(s.upper_dir("scratch").is_dir());
+            assert!(s.work_dir("scratch").is_dir());
+            assert!(s.home_dir("scratch").is_dir());
+        }
+        // Phase `creating_twice_refuses_rather_than_clobbering`.
+        {
+            let (_d, s) = store();
+            s.create("a", "debian", LayerKind::Kept, vec![]).unwrap();
+            let err = s
+                .create("a", "debian", LayerKind::Kept, vec![])
+                .unwrap_err();
+            assert!(err.to_string().contains("already exists"), "{err}");
+        }
+        // Phase `promotion_is_retroactive_and_can_rename`.
+        {
+            let (_d, s) = store();
+            s.create("scratch", "debian", LayerKind::Ephemeral, vec![])
+                .unwrap();
+            std::fs::write(s.upper_dir("scratch").join("marker"), b"work").unwrap();
 
-    #[test]
-    fn creating_twice_refuses_rather_than_clobbering() {
-        let (_d, s) = store();
-        s.create("a", "debian", LayerKind::Kept, vec![]).unwrap();
-        let err = s
-            .create("a", "debian", LayerKind::Kept, vec![])
-            .unwrap_err();
-        assert!(err.to_string().contains("already exists"), "{err}");
-    }
-
-    #[test]
-    fn promotion_is_retroactive_and_can_rename() {
-        let (_d, s) = store();
-        s.create("scratch", "debian", LayerKind::Ephemeral, vec![])
-            .unwrap();
-        std::fs::write(s.upper_dir("scratch").join("marker"), b"work").unwrap();
-
-        let kept = s
-            .promote("scratch", Some("rust-dev"), Some("cargo + clang"))
-            .unwrap();
-        assert_eq!(kept.kind, LayerKind::Kept);
-        assert_eq!(kept.name, "rust-dev");
-        assert_eq!(kept.note, "cargo + clang");
-        // The work done before the decision has to survive the decision.
-        assert_eq!(
-            std::fs::read(s.upper_dir("rust-dev").join("marker")).unwrap(),
-            b"work"
-        );
-        assert!(s.load("scratch").is_err());
-    }
-
-    #[test]
-    fn promoting_twice_is_not_an_error() {
-        let (_d, s) = store();
-        s.create("a", "debian", LayerKind::Ephemeral, vec![])
-            .unwrap();
-        s.promote("a", None, None).unwrap();
-        let again = s.promote("a", None, Some("note")).unwrap();
-        assert_eq!(again.kind, LayerKind::Kept);
-        assert_eq!(again.note, "note");
-    }
-
-    #[test]
-    fn renaming_rewrites_stack_references() {
-        let (_d, s) = store();
-        s.create("bottom", "debian", LayerKind::Kept, vec![])
-            .unwrap();
-        s.create("top", "debian", LayerKind::Ephemeral, vec!["bottom".into()])
-            .unwrap();
-        s.promote("bottom", Some("renamed"), None).unwrap();
-        assert_eq!(
-            s.load("top").unwrap().stacked_on,
-            vec!["renamed".to_string()]
-        );
-    }
-
-    #[test]
-    fn stacking_on_a_missing_layer_is_refused() {
-        let (_d, s) = store();
-        let err = s
-            .create("top", "debian", LayerKind::Ephemeral, vec!["ghost".into()])
-            .unwrap_err();
-        assert!(err.to_string().contains("no such layer"), "{err}");
-    }
-
-    #[test]
-    fn discard_refuses_to_pull_a_layer_out_from_under_a_stack() {
-        let (_d, s) = store();
-        s.create("bottom", "debian", LayerKind::Kept, vec![])
-            .unwrap();
-        s.create("top", "debian", LayerKind::Ephemeral, vec!["bottom".into()])
-            .unwrap();
-
-        let err = s.discard("bottom").unwrap_err();
-        assert!(err.to_string().contains("top"), "{err}");
-        assert!(s.load("bottom").is_ok());
-
-        s.discard("top").unwrap();
-        s.discard("bottom").unwrap();
-        assert!(s.list().unwrap().is_empty());
-    }
-
-    #[test]
-    fn reverting_one_path_leaves_the_rest_of_the_layer_alone() {
-        let (_d, s) = store();
-        s.create("a", "debian", LayerKind::Kept, vec![]).unwrap();
-        std::fs::create_dir_all(s.upper_dir("a").join("etc")).unwrap();
-        std::fs::write(s.upper_dir("a").join("etc/hosts"), b"bad").unwrap();
-        std::fs::write(s.upper_dir("a").join("etc/keepme"), b"good").unwrap();
-
-        s.revert_path("a", Path::new("/etc/hosts")).unwrap();
-        assert!(!s.upper_dir("a").join("etc/hosts").exists());
-        assert!(s.upper_dir("a").join("etc/keepme").exists());
-    }
-
-    #[test]
-    fn reverting_something_the_layer_never_touched_says_so() {
-        let (_d, s) = store();
-        s.create("a", "debian", LayerKind::Kept, vec![]).unwrap();
-        let err = s.revert_path("a", Path::new("/etc/nope")).unwrap_err();
-        assert!(err.to_string().contains("did not change"), "{err}");
-    }
-
-    #[test]
-    fn revert_paths_cannot_escape_the_layer() {
-        let (_d, s) = store();
-        s.create("a", "debian", LayerKind::Kept, vec![]).unwrap();
-        assert!(s.revert_path("a", Path::new("/../../etc/passwd")).is_err());
-    }
-
-    #[test]
-    fn hostile_layer_names_are_refused() {
-        let (_d, s) = store();
-        for bad in ["", ".hidden", "-flag", "a/b", "a b", "a;b", "..", "a\nb"] {
-            assert!(
-                s.create(bad, "debian", LayerKind::Kept, vec![]).is_err(),
-                "accepted {bad:?}"
+            let kept = s
+                .promote("scratch", Some("rust-dev"), Some("cargo + clang"))
+                .unwrap();
+            assert_eq!(kept.kind, LayerKind::Kept);
+            assert_eq!(kept.name, "rust-dev");
+            assert_eq!(kept.note, "cargo + clang");
+            // The work done before the decision has to survive the decision.
+            assert_eq!(
+                std::fs::read(s.upper_dir("rust-dev").join("marker")).unwrap(),
+                b"work"
+            );
+            assert!(s.load("scratch").is_err());
+        }
+        // Phase `promoting_twice_is_not_an_error`.
+        {
+            let (_d, s) = store();
+            s.create("a", "debian", LayerKind::Ephemeral, vec![])
+                .unwrap();
+            s.promote("a", None, None).unwrap();
+            let again = s.promote("a", None, Some("note")).unwrap();
+            assert_eq!(again.kind, LayerKind::Kept);
+            assert_eq!(again.note, "note");
+        }
+        // Phase `renaming_rewrites_stack_references`.
+        {
+            let (_d, s) = store();
+            s.create("bottom", "debian", LayerKind::Kept, vec![])
+                .unwrap();
+            s.create("top", "debian", LayerKind::Ephemeral, vec!["bottom".into()])
+                .unwrap();
+            s.promote("bottom", Some("renamed"), None).unwrap();
+            assert_eq!(
+                s.load("top").unwrap().stacked_on,
+                vec!["renamed".to_string()]
             );
         }
-        // '..' must be rejected by the name rules, not merely by the filesystem.
-        assert!(validate_name("..").is_err());
+        // Phase `listing_an_empty_store_is_empty_not_an_error`.
+        {
+            let d = tempfile::tempdir().unwrap();
+            let s = Store::at(d.path().join("does-not-exist-yet"));
+            assert!(s.list().unwrap().is_empty());
+        }
     }
 
     #[test]
-    fn listing_an_empty_store_is_empty_not_an_error() {
-        let d = tempfile::tempdir().unwrap();
-        let s = Store::at(d.path().join("does-not-exist-yet"));
-        assert!(s.list().unwrap().is_empty());
+    fn stacks_reverts_and_names_are_contained() {
+        // Phase `stacking_on_a_missing_layer_is_refused`.
+        {
+            let (_d, s) = store();
+            let err = s
+                .create("top", "debian", LayerKind::Ephemeral, vec!["ghost".into()])
+                .unwrap_err();
+            assert!(err.to_string().contains("no such layer"), "{err}");
+        }
+        // Phase `discard_refuses_to_pull_a_layer_out_from_under_a_stack`.
+        {
+            let (_d, s) = store();
+            s.create("bottom", "debian", LayerKind::Kept, vec![])
+                .unwrap();
+            s.create("top", "debian", LayerKind::Ephemeral, vec!["bottom".into()])
+                .unwrap();
+
+            let err = s.discard("bottom").unwrap_err();
+            assert!(err.to_string().contains("top"), "{err}");
+            assert!(s.load("bottom").is_ok());
+
+            s.discard("top").unwrap();
+            s.discard("bottom").unwrap();
+            assert!(s.list().unwrap().is_empty());
+        }
+        // Phase `reverting_one_path_leaves_the_rest_of_the_layer_alone`.
+        {
+            let (_d, s) = store();
+            s.create("a", "debian", LayerKind::Kept, vec![]).unwrap();
+            std::fs::create_dir_all(s.upper_dir("a").join("etc")).unwrap();
+            std::fs::write(s.upper_dir("a").join("etc/hosts"), b"bad").unwrap();
+            std::fs::write(s.upper_dir("a").join("etc/keepme"), b"good").unwrap();
+
+            s.revert_path("a", Path::new("/etc/hosts")).unwrap();
+            assert!(!s.upper_dir("a").join("etc/hosts").exists());
+            assert!(s.upper_dir("a").join("etc/keepme").exists());
+        }
+        // Phase `reverting_something_the_layer_never_touched_says_so`.
+        {
+            let (_d, s) = store();
+            s.create("a", "debian", LayerKind::Kept, vec![]).unwrap();
+            let err = s.revert_path("a", Path::new("/etc/nope")).unwrap_err();
+            assert!(err.to_string().contains("did not change"), "{err}");
+        }
+        // Phase `revert_paths_cannot_escape_the_layer`.
+        {
+            let (_d, s) = store();
+            s.create("a", "debian", LayerKind::Kept, vec![]).unwrap();
+            assert!(s.revert_path("a", Path::new("/../../etc/passwd")).is_err());
+        }
+        // Phase `hostile_layer_names_are_refused`.
+        {
+            let (_d, s) = store();
+            for bad in ["", ".hidden", "-flag", "a/b", "a b", "a;b", "..", "a\nb"] {
+                assert!(
+                    s.create(bad, "debian", LayerKind::Kept, vec![]).is_err(),
+                    "accepted {bad:?}"
+                );
+            }
+            // '..' must be rejected by the name rules, not merely by the filesystem.
+            assert!(validate_name("..").is_err());
+        }
     }
 }

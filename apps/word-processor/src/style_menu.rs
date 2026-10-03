@@ -100,42 +100,47 @@ impl StyleMenu {
 mod tests {
     use super::*;
 
+    /// Custom and builtin styles offer the right actions, a click returns a typed action and closes, and an
+    /// outside click dismisses without an action.
     #[test]
-    fn custom_and_builtin_styles_offer_the_right_actions() {
-        let mut menu = StyleMenu::default();
-        menu.open("custom-1", Point::new(10.0, 20.0));
-        assert_eq!(
-            menu.actions,
-            vec![
-                StyleMenuAction::Delete("custom-1".into()),
-                StyleMenuAction::Duplicate("custom-1".into()),
-            ]
-        );
+    fn the_style_menu_offers_the_right_actions_and_closes_cleanly() {
+        // Phase: custom_and_builtin_styles_offer_the_right_actions.
+        {
+            let mut menu = StyleMenu::default();
+            menu.open("custom-1", Point::new(10.0, 20.0));
+            assert_eq!(
+                menu.actions,
+                vec![
+                    StyleMenuAction::Delete("custom-1".into()),
+                    StyleMenuAction::Duplicate("custom-1".into()),
+                ]
+            );
 
-        menu.open("body", Point::new(10.0, 20.0));
-        assert_eq!(
-            menu.actions,
-            vec![StyleMenuAction::Duplicate("body".into())]
-        );
-    }
+            menu.open("body", Point::new(10.0, 20.0));
+            assert_eq!(
+                menu.actions,
+                vec![StyleMenuAction::Duplicate("body".into())]
+            );
+        }
 
-    #[test]
-    fn click_returns_a_typed_action_and_closes() {
-        let mut menu = StyleMenu::default();
-        menu.open("custom-1", Point::new(10.0, 20.0));
-        let first_row = Point::new(20.0, 27.0);
-        assert_eq!(
-            menu.click(first_row),
-            Some(StyleMenuAction::Delete("custom-1".into()))
-        );
-        assert!(!menu.is_open());
-    }
+        // Phase: click_returns_a_typed_action_and_closes.
+        {
+            let mut menu = StyleMenu::default();
+            menu.open("custom-1", Point::new(10.0, 20.0));
+            let first_row = Point::new(20.0, 27.0);
+            assert_eq!(
+                menu.click(first_row),
+                Some(StyleMenuAction::Delete("custom-1".into()))
+            );
+            assert!(!menu.is_open());
+        }
 
-    #[test]
-    fn outside_click_dismisses_without_an_action() {
-        let mut menu = StyleMenu::default();
-        menu.open("body", Point::new(10.0, 20.0));
-        assert_eq!(menu.click(Point::ZERO), None);
-        assert!(!menu.is_open());
+        // Phase: outside_click_dismisses_without_an_action.
+        {
+            let mut menu = StyleMenu::default();
+            menu.open("body", Point::new(10.0, 20.0));
+            assert_eq!(menu.click(Point::ZERO), None);
+            assert!(!menu.is_open());
+        }
     }
 }

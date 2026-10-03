@@ -15,9 +15,10 @@ RemainAfterExit=yes
 # boot and also handles installations onto a larger-than-image partition.
 # bootc leaves the deployed sysroot read-only. Remount it only in this unit's
 # slave mount namespace before growfs runs, so that temporary write access
-# cannot propagate to the host namespace.
-ExecStartPre=/usr/bin/mount -o remount,rw /sysroot
-ExecStart=/usr/lib/systemd/systemd-growfs /sysroot
+# cannot propagate to the host namespace. Both run in one process: systemd
+# gives each Exec* line its own private namespace, so a remount in an
+# ExecStartPre= never reached growfs, which failed with "Read-only file system".
+ExecStart=/usr/bin/sh -c 'mount -o remount,rw /sysroot && exec /usr/lib/systemd/systemd-growfs /sysroot'
 TimeoutSec=infinity
 # Filesystem growth is background maintenance after the first boot. Keep its
 # metadata traffic from producing frame-time spikes or delaying app cold start.
@@ -53,7 +54,7 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RemoveIPC=yes
-# Filesystem resize ioctls require CAP_SYS_ADMIN; retain no other capability.
-CapabilityBoundingSet=CAP_SYS_ADMIN
+# Btrfs needs CAP_SYS_ADMIN; Ext4 online resize also needs CAP_SYS_RESOURCE.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_RESOURCE
 AmbientCapabilities=
 SystemCallArchitectures=native

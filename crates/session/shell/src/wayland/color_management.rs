@@ -8,10 +8,10 @@
 //! Advertises the *parametric* creator path only — primaries, transfer
 //! function, optional mastering-display/luminance hints, then `create`
 //! for an immutable `wp_image_description_v1` attached via
-//! `wp_color_management_surface_v1`. Deliberately unimplemented: ICC
-//! creators and Windows-scRGB (`unsupported_feature` error — the
-//! parametric path already unblocks HDR clients like `mpv --hdr`), and
-//! `get_information` on client-created descriptions (`no_information` —
+//! `wp_color_management_surface_v1`, plus the Windows-scRGB description
+//! (linear light, sRGB primaries, `1.0` at SDR white) that DirectX-style
+//! games render into. Deliberately unimplemented: ICC creators
+//! (`unsupported_feature` error), and `get_information` on client-created descriptions (`no_information` —
 //! they're surface-attach-only, not for round-tripping). Descriptions minted
 //! by output and surface-feedback requests are queryable and return the exact
 //! parametric values the compositor advertised.
@@ -96,6 +96,16 @@ pub struct ColorManagerState {
     /// and it saves a `create_global` return dance).
     #[cfg(target_os = "linux")]
     pub global: Option<GlobalId>,
+    /// Every live `wp_color_management_output_v1`, so a change of an
+    /// output's signal reaches clients with `image_description_changed`.
+    #[cfg(target_os = "linux")]
+    outputs: Arc<Mutex<Vec<(WpColorManagementOutputV1, ColorManagementOutputData)>>>,
+    /// Every live surface feedback object, told when the preferred
+    /// description changes.
+    #[cfg(target_os = "linux")]
+    feedbacks: Arc<Mutex<Vec<WpColorManagementSurfaceFeedbackV1>>>,
+    /// The description surfaces are asked to render in.
+    preferred: Arc<Mutex<OutputDescription>>,
 }
 
 impl Default for ColorManagerState {
@@ -106,11 +116,12 @@ impl Default for ColorManagerState {
             // physically covers each gamut: the output description below is
             // populated independently from that output's EDID/profile.
             supported_primaries: vec![1, 6, 9],
-            // BT.1886 (=1), gamma22 (=2), ST 2084 PQ (=11), HLG (=13).
-            // The v1 spec's `srgb` (=9) is deprecated since v2; we
-            // don't advertise it — clients get gamma22 or the sibling
-            // `ext_srgb` (=10) instead.
-            supported_transfers: vec![1, 2, 11, 13],
+            // BT.1886 (=1), gamma22 (=2), ext_linear (=5), ST 2084 PQ
+            // (=11), HLG (=13). The v1 spec's `srgb` (=9) is deprecated
+            // since v2; we don't advertise it — clients get gamma22 or the
+            // sibling `ext_srgb` (=10) instead. `ext_linear` is scRGB-style
+            // linear light, composited at full precision like PQ and HLG.
+            supported_transfers: vec![1, 2, 5, 11, 13],
             // Compositor's preferred matrix set: Identity (=0),
             // BT.709 (=1), BT.2020-non-constant (=9). These are the
             // CICP MatrixCoefficients numbers, not `color-management-v1`
@@ -124,13 +135,19 @@ impl Default for ColorManagerState {
             // set_luminances (=4) — primary volume min/max/reference.
             // set_mastering_display_primaries (=5) — SMPTE ST 2086
             //   mastering-display metadata for HDR pipelines.
-            supported_features: vec![1, 2, 3, 4, 5],
+            // windows_scrgb (=7) — the ready-made scRGB description.
+            supported_features: vec![1, 2, 3, 4, 5, 7],
             // Perceptual (=0), Relative colorimetric (=1),
             // Media-relative w/ BPC (=4). Saturation (=2) + Absolute
             // (=3) aren't yet plumbed into the wgpu shader.
             supported_render_intents: vec![0, 1, 4],
             #[cfg(target_os = "linux")]
             global: None,
+            #[cfg(target_os = "linux")]
+            outputs: Arc::default(),
+            #[cfg(target_os = "linux")]
+            feedbacks: Arc::default(),
+            preferred: Arc::new(Mutex::new(OutputDescription::sdr())),
         }
     }
 }
@@ -150,6 +167,57 @@ impl ColorManagerState {
         let global = display.create_global::<D, WpColorManagerV1, _>(MAX_VERSION, ());
         state.global = Some(global);
         state
+    }
+
+    /// The description surfaces are asked to render in.
+    pub fn preferred(&self) -> OutputDescription {
+        self.preferred
+            .lock()
+            .map_or_else(|_| OutputDescription::sdr(), |preferred| *preferred)
+    }
+
+    /// Update what each output tells clients it displays. `describe` maps a
+    /// client's `wl_output` to its description (`None`: an ordinary SDR
+    /// output). Objects whose description changed get
+    /// `image_description_changed`; objects of gone clients are dropped.
+    #[cfg(target_os = "linux")]
+    pub fn update_outputs(&self, describe: impl Fn(&WlOutput) -> Option<OutputDescription>) {
+        let Ok(mut outputs) = self.outputs.lock() else {
+            return;
+        };
+        outputs.retain(|(resource, _)| resource.is_alive());
+        for (resource, data) in outputs.iter() {
+            let description = data
+                .output
+                .as_ref()
+                .and_then(&describe)
+                .unwrap_or_else(OutputDescription::sdr);
+            if data.set_description(description) {
+                let () = resource.image_description_changed();
+            }
+        }
+    }
+
+    /// Change the description surfaces are asked to render in and tell
+    /// every feedback object.
+    #[cfg(target_os = "linux")]
+    pub fn set_preferred(&self, description: OutputDescription) {
+        let changed = self.preferred.lock().is_ok_and(|mut preferred| {
+            let changed = *preferred != description;
+            *preferred = description;
+            changed
+        });
+        if !changed {
+            return;
+        }
+        let Ok(mut feedbacks) = self.feedbacks.lock() else {
+            return;
+        };
+        feedbacks.retain(Resource::is_alive);
+        let identity = description_data(description).identity_lo();
+        for feedback in feedbacks.iter() {
+            let () = feedback.preferred_changed(identity);
+        }
     }
 
     /// Zero-globals constructor for headless tests that never bind a
@@ -318,6 +386,7 @@ impl ParametricBuilder {
             hdr,
             identity: mint_identity(),
             queryable: false,
+            reference_luminance: DEFAULT_REFERENCE_LUMINANCE,
         })
     }
 
@@ -360,6 +429,7 @@ fn transfer_named_to_color(t: TransferFunction) -> TransferCharacteristics {
         TransferFunction::St2084Pq => TransferCharacteristics::SmpteSt2084,
         TransferFunction::Hlg => TransferCharacteristics::AribStdB67,
         TransferFunction::Srgb | TransferFunction::ExtSrgb => TransferCharacteristics::Srgb,
+        TransferFunction::ExtLinear => TransferCharacteristics::Linear,
         _ => TransferCharacteristics::Unspecified,
     }
 }
@@ -417,6 +487,85 @@ pub struct ImageDescriptionData {
     /// state and therefore must answer `get_information`. Client-created
     /// parametric descriptions are deliberately attach-only.
     pub queryable: bool,
+    /// Where SDR white sits, cd/m². For an HDR output this is the user's SDR
+    /// content brightness, so HDR clients place their UI at the same level
+    /// as the desktop around them.
+    pub reference_luminance: u32,
+}
+
+/// BT.2408 reference white, the reference luminance unless an output says
+/// otherwise.
+pub const DEFAULT_REFERENCE_LUMINANCE: u32 = 203;
+
+impl ImageDescriptionData {
+    /// The Windows-scRGB description: linear light with sRGB primaries,
+    /// `1.0` at SDR white and values above it for HDR highlights, full
+    /// range RGB.
+    pub fn windows_scrgb() -> Self {
+        Self {
+            colorimetry: Colorimetry {
+                primaries: ColorPrimaries::Bt709,
+                transfer: TransferCharacteristics::Linear,
+                matrix: MatrixCoefficients::Identity,
+                range: ColorRange::Full,
+            },
+            hdr: None,
+            identity: mint_identity(),
+            queryable: false,
+            reference_luminance: DEFAULT_REFERENCE_LUMINANCE,
+        }
+    }
+}
+
+/// What the compositor tells clients one output displays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputDescription {
+    pub colorimetry: Colorimetry,
+    pub hdr: Option<Hdr10Metadata>,
+    pub reference_luminance: u32,
+}
+
+impl OutputDescription {
+    /// An ordinary SDR output.
+    pub fn sdr() -> Self {
+        Self {
+            colorimetry: Colorimetry::sdr_bt709(),
+            hdr: None,
+            reference_luminance: DEFAULT_REFERENCE_LUMINANCE,
+        }
+    }
+
+    /// An output driven with a PQ BT.2020 signal: the sink's EDID primaries
+    /// and luminance as the mastering volume, SDR white at `sdr_white_nits`.
+    pub fn hdr_pq(display: &crate::wayland::edid::HdrDisplayInfo, sdr_white_nits: f32) -> Self {
+        let to_st2086 = |micro: u32| -> u16 {
+            u16::try_from(micro.checked_div(20).unwrap_or(0).min(50_000)).unwrap_or(50_000)
+        };
+        let [r, g, b] = display.display_primaries;
+        let pair = |(x, y): (u32, u32)| (to_st2086(x), to_st2086(y));
+        let mastering = MasteringDisplayColorVolume {
+            display_primaries: [pair(r), pair(g), pair(b)],
+            white_point: pair(display.white_point),
+            max_display_mastering_luminance: u32::from(display.max_luminance_cd_m2)
+                .saturating_mul(10_000),
+            min_display_mastering_luminance: display.min_luminance_micro_cd_m2,
+        };
+        let light = ContentLightLevel {
+            max_content_light_level: display.max_luminance_cd_m2,
+            max_frame_average_light_level: display.max_frame_average_luminance_cd_m2,
+        };
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "SDR white is clamped to a small positive range before the cast"
+        )]
+        let reference_luminance = sdr_white_nits.clamp(1.0, 10_000.0).round() as u32;
+        Self {
+            colorimetry: crate::collab::hdr_metadata::HdrConfig::pq_reference().colorimetry(),
+            hdr: Some(Hdr10Metadata { mastering, light }),
+            reference_luminance,
+        }
+    }
 }
 
 impl ImageDescriptionData {
@@ -445,6 +594,7 @@ impl ImageDescriptionData {
             let transfer = match self.colorimetry.transfer {
                 TransferCharacteristics::Bt709 => Some(TransferCharacteristics::Bt709),
                 TransferCharacteristics::Srgb => Some(TransferCharacteristics::Srgb),
+                TransferCharacteristics::Linear => Some(TransferCharacteristics::Linear),
                 TransferCharacteristics::SmpteSt2084 => Some(TransferCharacteristics::SmpteSt2084),
                 TransferCharacteristics::AribStdB67 => Some(TransferCharacteristics::AribStdB67),
                 TransferCharacteristics::Unspecified => None,
@@ -466,6 +616,7 @@ impl ImageDescriptionData {
             transfer.and_then(|value| match value {
                 TransferCharacteristics::Bt709 => Some(TransferFunction::Bt1886),
                 TransferCharacteristics::Srgb => Some(TransferFunction::ExtSrgb),
+                TransferCharacteristics::Linear => Some(TransferFunction::ExtLinear),
                 TransferCharacteristics::SmpteSt2084 => Some(TransferFunction::St2084Pq),
                 TransferCharacteristics::AribStdB67 => Some(TransferFunction::Hlg),
                 TransferCharacteristics::Unspecified => None,
@@ -497,7 +648,7 @@ impl ImageDescriptionData {
             (
                 hdr.mastering.min_display_mastering_luminance,
                 hdr.mastering.max_display_mastering_luminance / 10_000,
-                203,
+                self.reference_luminance,
             )
         })
     }
@@ -589,13 +740,9 @@ pub fn surface_current_colorimetry(
 /// colorimetry.
 #[derive(Debug, Clone)]
 pub struct ColorManagementOutputData {
-    // Retains the protocol object this descriptor belongs to. Tests of the
-    // pure descriptor contract use `None`; live output resources always use
-    // `Some`. Color metadata is updated separately by the DRM path below.
-    #[allow(
-        dead_code,
-        reason = "holding the live wl_output resource ties protocol user-data lifetime to the output descriptor even though requests read the color snapshot"
-    )]
+    // The `wl_output` this object describes. Tests of the pure descriptor
+    // contract use `None`; live output resources always use `Some`, which
+    // [`ColorManagerState::update_outputs`] maps back to the backend output.
     #[cfg(target_os = "linux")]
     output: Option<WlOutput>,
     /// Colorimetry the compositor tells clients this output actually
@@ -604,6 +751,7 @@ pub struct ColorManagementOutputData {
     /// backend can push updates without minting a new proxy.
     color: Arc<Mutex<Colorimetry>>,
     hdr: Arc<Mutex<Option<Hdr10Metadata>>>,
+    reference_luminance: Arc<Mutex<u32>>,
 }
 
 impl ColorManagementOutputData {
@@ -613,12 +761,36 @@ impl ColorManagementOutputData {
             output: None,
             color: Arc::new(Mutex::new(color)),
             hdr: Arc::new(Mutex::new(hdr)),
+            reference_luminance: Arc::new(Mutex::new(DEFAULT_REFERENCE_LUMINANCE)),
         }
     }
 
+    /// The description this output object currently hands out.
+    pub fn description(&self) -> OutputDescription {
+        OutputDescription {
+            colorimetry: self.color.lock().map(|c| *c).unwrap_or_default(),
+            hdr: self.hdr.lock().ok().and_then(|h| *h),
+            reference_luminance: self
+                .reference_luminance
+                .lock()
+                .map_or(DEFAULT_REFERENCE_LUMINANCE, |r| *r),
+        }
+    }
+
+    /// Replace the description; `true` when it changed.
+    pub fn set_description(&self, description: OutputDescription) -> bool {
+        if self.description() == description {
+            return false;
+        }
+        self.set_display_color(description.colorimetry, description.hdr);
+        if let Ok(mut reference) = self.reference_luminance.lock() {
+            *reference = description.reference_luminance;
+        }
+        true
+    }
+
     /// Attach a fresh output-side descriptor. Defaults to SDR BT.709;
-    /// the DRM backend calls [`Self::set_display_color`] when an EDID
-    /// arrives.
+    /// [`ColorManagerState::update_outputs`] sets the real description.
     #[must_use]
     #[cfg(target_os = "linux")]
     pub fn new(output: WlOutput) -> Self {
@@ -642,14 +814,18 @@ impl ColorManagementOutputData {
     }
 
     fn snapshot(&self) -> ImageDescriptionData {
-        let color = self.color.lock().map(|c| *c).unwrap_or_default();
-        let hdr = self.hdr.lock().ok().and_then(|h| *h);
-        ImageDescriptionData {
-            colorimetry: color,
-            hdr,
-            identity: mint_identity(),
-            queryable: true,
-        }
+        description_data(self.description())
+    }
+}
+
+/// A fresh queryable image description for `description`.
+fn description_data(description: OutputDescription) -> ImageDescriptionData {
+    ImageDescriptionData {
+        colorimetry: description.colorimetry,
+        hdr: description.hdr,
+        identity: mint_identity(),
+        queryable: true,
+        reference_luminance: description.reference_luminance,
     }
 }
 
@@ -765,10 +941,11 @@ where
         + Dispatch<WpColorManagementSurfaceV1, ColorManagementSurfaceUserData>
         + Dispatch<WpColorManagementSurfaceFeedbackV1, ColorManagementSurfaceFeedbackData>
         + Dispatch<WpColorManagementOutputV1, ColorManagementOutputData>
+        + AsRef<ColorManagerState>
         + 'static,
 {
     fn request(
-        _state: &mut D,
+        state: &mut D,
         _client: &Client,
         manager: &WpColorManagerV1,
         request: <WpColorManagerV1 as Resource>::Request,
@@ -797,25 +974,19 @@ where
                 );
             }
             wp_color_manager_v1::Request::CreateWindowsScrgb { image_description } => {
-                // See `CreateIccCreator`: every request `new_id` must be
-                // initialised even when the request ends in a protocol error.
-                data_init.init(
-                    image_description,
-                    ImageDescriptionData {
-                        colorimetry: Colorimetry::sdr_bt709(),
-                        hdr: None,
-                        identity: 0,
-                        queryable: false,
-                    },
-                );
-                manager.post_error(
-                    wp_color_manager_v1::Error::UnsupportedFeature,
-                    "Windows-scRGB image descriptions are not supported",
-                );
+                let data = ImageDescriptionData::windows_scrgb();
+                let identity = data.identity;
+                let obj = data_init.init(image_description, data);
+                // Version 1: `ready` is the only success event (see
+                // `create_image_description`).
+                let () = obj.ready((identity & 0xFFFF_FFFF) as u32);
             }
             wp_color_manager_v1::Request::GetOutput { id, output } => {
                 let data = ColorManagementOutputData::new(output);
-                data_init.init(id, data);
+                let resource = data_init.init(id, data.clone());
+                if let Ok(mut outputs) = state.as_ref().outputs.lock() {
+                    outputs.push((resource, data));
+                }
             }
             wp_color_manager_v1::Request::GetSurface { id, surface } => {
                 let already_taken = wl_compositor::with_states(&surface, |states| {
@@ -853,7 +1024,10 @@ where
                 }
             }
             wp_color_manager_v1::Request::GetSurfaceFeedback { id, surface } => {
-                data_init.init(id, ColorManagementSurfaceFeedbackData::new(surface));
+                let resource = data_init.init(id, ColorManagementSurfaceFeedbackData::new(surface));
+                if let Ok(mut feedbacks) = state.as_ref().feedbacks.lock() {
+                    feedbacks.push(resource);
+                }
             }
             wp_color_manager_v1::Request::GetImageDescription {
                 image_description,
@@ -869,6 +1043,7 @@ where
                     hdr: None,
                     identity: 0,
                     queryable: false,
+                    reference_luminance: DEFAULT_REFERENCE_LUMINANCE,
                 };
                 let inited = data_init.init(image_description, desc);
                 let () = inited.failed(
@@ -1116,6 +1291,7 @@ fn create_image_description<D>(
                 hdr: None,
                 identity: 0,
                 queryable: false,
+                reference_luminance: DEFAULT_REFERENCE_LUMINANCE,
             },
         );
         creator.post_error(
@@ -1263,10 +1439,11 @@ impl<D> Dispatch<WpColorManagementSurfaceFeedbackV1, ColorManagementSurfaceFeedb
 where
     D: Dispatch<WpColorManagementSurfaceFeedbackV1, ColorManagementSurfaceFeedbackData>
         + Dispatch<WpImageDescriptionV1, ImageDescriptionData>
+        + AsRef<ColorManagerState>
         + 'static,
 {
     fn request(
-        _state: &mut D,
+        state: &mut D,
         _client: &Client,
         _obj: &WpColorManagementSurfaceFeedbackV1,
         request: <WpColorManagementSurfaceFeedbackV1 as Resource>::Request,
@@ -1281,12 +1458,7 @@ where
             | wp_color_management_surface_feedback_v1::Request::GetPreferredParametric {
                 image_description,
             } => {
-                let desc = ImageDescriptionData {
-                    colorimetry: Colorimetry::sdr_bt709(),
-                    hdr: None,
-                    identity: mint_identity(),
-                    queryable: true,
-                };
+                let desc = description_data(state.as_ref().preferred());
                 let identity_lo = desc.identity_lo();
                 let obj = data_init.init(image_description, desc);
                 let () = obj.ready(identity_lo);
@@ -1415,82 +1587,128 @@ mod tests {
     use super::*;
 
     #[test]
-    fn advertised_capabilities_include_bt2020_and_pq() {
-        let cfg = ColorManagerState::default();
-        assert!(cfg.supported_primaries.contains(&(6)));
-        assert!(cfg.supported_primaries.contains(&(1)));
-        assert!(cfg.supported_primaries.contains(&(9)));
-        assert!(cfg.supported_transfers.contains(&(11)));
-        assert!(cfg.supported_transfers.contains(&(13)));
-        assert!(cfg.supported_features.contains(&(1)));
-        assert!(cfg.supported_features.contains(&(2)));
+    fn color_management_advertises_builds_and_exposes_hdr_descriptions() {
+        // Phase `advertised_capabilities_include_bt2020_and_pq`.
+        {
+            let cfg = ColorManagerState::default();
+            assert!(cfg.supported_primaries.contains(&(6)));
+            assert!(cfg.supported_primaries.contains(&(1)));
+            assert!(cfg.supported_primaries.contains(&(9)));
+            assert!(cfg.supported_transfers.contains(&(11)));
+            assert!(cfg.supported_transfers.contains(&(13)));
+            assert!(cfg.supported_features.contains(&(1)));
+            assert!(cfg.supported_features.contains(&(2)));
+        }
+
+        // Phase `builder_yields_bt2020_pq_when_configured`.
+        {
+            let b = ParametricBuilder::default();
+            {
+                let mut inner = b.inner.lock().unwrap();
+                inner.primaries_named = Some(ColorPrimaries::Bt2020);
+                inner.tf_named = Some(TransferCharacteristics::SmpteSt2084);
+            }
+            let desc = b.build().expect("builder produces description");
+            assert_eq!(desc.colorimetry.primaries, ColorPrimaries::Bt2020);
+            assert_eq!(
+                desc.colorimetry.transfer,
+                TransferCharacteristics::SmpteSt2084
+            );
+            assert!(desc.hdr.is_some());
+        }
+
+        // Phase `builder_returns_none_on_missing_required_fields`.
+        {
+            let b = ParametricBuilder::default();
+            assert!(b.build().is_none());
+            {
+                b.inner.lock().unwrap().primaries_named = Some(ColorPrimaries::Bt709);
+            }
+            // Still missing transfer.
+            assert!(b.build().is_none());
+        }
+
+        // Phase `hdr_metadata_only_populated_for_hdr_transfer`.
+        {
+            let b = ParametricBuilder::default();
+            {
+                let mut inner = b.inner.lock().unwrap();
+                inner.primaries_named = Some(ColorPrimaries::Bt709);
+                inner.tf_named = Some(TransferCharacteristics::Bt709);
+            }
+            let desc = b.build().unwrap();
+            assert!(desc.hdr.is_none(), "SDR builder must not emit HDR metadata");
+        }
+
+        // Phase `compositor_descriptions_are_queryable_but_client_descriptions_are_not`.
+        {
+            let output =
+                ColorManagementOutputData::from_color(Colorimetry::sdr_bt709(), None).snapshot();
+            assert_eq!(
+                output.information_colors(),
+                Some((
+                    Some(ColorPrimaries::Bt709),
+                    Some(TransferCharacteristics::Bt709)
+                ))
+            );
+            assert_eq!(
+                output.protocol_primaries(),
+                (
+                    640_000, 330_000, 300_000, 600_000, 150_000, 60_000, 312_700, 329_000
+                )
+            );
+            assert_eq!(output.protocol_luminances(), (100, 100, 100));
+
+            let builder = ParametricBuilder::default();
+            {
+                let mut inner = builder.inner.lock().unwrap();
+                inner.primaries_named = Some(ColorPrimaries::Bt2020);
+                inner.tf_named = Some(TransferCharacteristics::SmpteSt2084);
+            }
+            assert_eq!(builder.build().unwrap().information_colors(), None);
+        }
     }
 
     #[test]
-    fn builder_yields_bt2020_pq_when_configured() {
-        let b = ParametricBuilder::default();
+    fn an_hdr_output_describes_pq_bt2020_with_its_edid_volume() {
         {
-            let mut inner = b.inner.lock().unwrap();
-            inner.primaries_named = Some(ColorPrimaries::Bt2020);
-            inner.tf_named = Some(TransferCharacteristics::SmpteSt2084);
+            let display = crate::wayland::edid::HdrDisplayInfo {
+                display_primaries: [(708_000, 292_000), (170_000, 797_000), (131_000, 46_000)],
+                white_point: (312_700, 329_000),
+                max_luminance_cd_m2: 800,
+                max_frame_average_luminance_cd_m2: 350,
+                min_luminance_micro_cd_m2: 500,
+                ..crate::wayland::edid::HdrDisplayInfo::default_sdr()
+            };
+            let description = OutputDescription::hdr_pq(&display, 250.0);
+            assert_eq!(
+                description.colorimetry.transfer,
+                TransferCharacteristics::SmpteSt2084
+            );
+            assert_eq!(description.colorimetry.primaries, ColorPrimaries::Bt2020);
+            let hdr = description.hdr.expect("PQ output carries HDR metadata");
+            assert_eq!(hdr.mastering.display_primaries[0], (35_400, 14_600));
+            assert_eq!(hdr.mastering.max_display_mastering_luminance, 8_000_000);
+            assert_eq!(hdr.light.max_frame_average_light_level, 350);
+            let output = ColorManagementOutputData::from_color(Colorimetry::sdr_bt709(), None);
+            assert!(output.set_description(description));
+            assert!(
+                !output.set_description(description),
+                "unchanged is no event"
+            );
+            let snapshot = output.snapshot();
+            assert_eq!(snapshot.protocol_luminances(), (500, 800, 250));
+            assert_eq!(
+                snapshot.information_colors(),
+                Some((
+                    Some(ColorPrimaries::Bt2020),
+                    Some(TransferCharacteristics::SmpteSt2084)
+                ))
+            );
+            assert!(output.set_description(OutputDescription::sdr()));
+            assert_eq!(output.snapshot().protocol_luminances(), (100, 100, 100));
+            let state = ColorManagerState::for_test();
+            assert_eq!(state.preferred(), OutputDescription::sdr());
         }
-        let desc = b.build().expect("builder produces description");
-        assert_eq!(desc.colorimetry.primaries, ColorPrimaries::Bt2020);
-        assert_eq!(
-            desc.colorimetry.transfer,
-            TransferCharacteristics::SmpteSt2084
-        );
-        assert!(desc.hdr.is_some());
-    }
-
-    #[test]
-    fn builder_returns_none_on_missing_required_fields() {
-        let b = ParametricBuilder::default();
-        assert!(b.build().is_none());
-        {
-            b.inner.lock().unwrap().primaries_named = Some(ColorPrimaries::Bt709);
-        }
-        // Still missing transfer.
-        assert!(b.build().is_none());
-    }
-
-    #[test]
-    fn hdr_metadata_only_populated_for_hdr_transfer() {
-        let b = ParametricBuilder::default();
-        {
-            let mut inner = b.inner.lock().unwrap();
-            inner.primaries_named = Some(ColorPrimaries::Bt709);
-            inner.tf_named = Some(TransferCharacteristics::Bt709);
-        }
-        let desc = b.build().unwrap();
-        assert!(desc.hdr.is_none(), "SDR builder must not emit HDR metadata");
-    }
-
-    #[test]
-    fn compositor_descriptions_are_queryable_but_client_descriptions_are_not() {
-        let output =
-            ColorManagementOutputData::from_color(Colorimetry::sdr_bt709(), None).snapshot();
-        assert_eq!(
-            output.information_colors(),
-            Some((
-                Some(ColorPrimaries::Bt709),
-                Some(TransferCharacteristics::Bt709)
-            ))
-        );
-        assert_eq!(
-            output.protocol_primaries(),
-            (
-                640_000, 330_000, 300_000, 600_000, 150_000, 60_000, 312_700, 329_000
-            )
-        );
-        assert_eq!(output.protocol_luminances(), (100, 100, 100));
-
-        let builder = ParametricBuilder::default();
-        {
-            let mut inner = builder.inner.lock().unwrap();
-            inner.primaries_named = Some(ColorPrimaries::Bt2020);
-            inner.tf_named = Some(TransferCharacteristics::SmpteSt2084);
-        }
-        assert_eq!(builder.build().unwrap().information_colors(), None);
     }
 }

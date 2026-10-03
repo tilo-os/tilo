@@ -6,8 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HomePeerRegistration {
-    /// Registry schema version. Records created before versioning deserialize as v1.
-    #[serde(default = "legacy_version")]
+    /// Registry schema version; readers accept only [`Self::CURRENT_SCHEMA`].
     pub schema_version: u16,
     /// Certified filesystem/device endpoint key, lowercase hex.
     pub device_node_id: String,
@@ -15,7 +14,7 @@ pub struct HomePeerRegistration {
     pub relay_service_node_id: String,
     /// Last authenticated, network-addressable endpoint advertisement for
     /// the relay service. The service id alone is insufficient without an
-    /// address lookup service; legacy registrations omit this hint.
+    /// address lookup service; absent until the peer advertises one.
     #[serde(default)]
     pub relay_endpoint: Option<iroh_base::EndpointAddr>,
     /// User-visible device name.
@@ -23,15 +22,11 @@ pub struct HomePeerRegistration {
     /// Root identity key, lowercase hex.
     pub user_public_key: String,
     /// Root-signed host certificate, retained so normal fleet revocation can
-    /// manage a headless peer. Absent on legacy registrations.
+    /// manage a headless peer.
     #[serde(default)]
     pub device_cert: Option<tilo_user_identity::DeviceCert>,
     /// Relay room shards this peer was last configured to retain.
     pub relay_workspace_ids: Vec<u64>,
-}
-
-const fn legacy_version() -> u16 {
-    1
 }
 
 impl HomePeerRegistration {

@@ -43,11 +43,12 @@ from ci import suites as path_suites
 # These catch repository contracts outside a changed crate's dependency edges.
 ALWAYS_PACKAGES = {"collab-types", "pkg", "qdoc", "qdoc-codecs"}
 EXTERNAL_ASSET_MANIFEST = "os/external-assets/github-assets.tsv"
-# Snapshot pins CI publishes and signs. A pull request that changes only these
-# changes no code: check.yml's `pins` job proves each changed pin is the signed
-# snapshot published for this source (os/dev/verify-snapshot-pins.sh) instead
-# of the Rust and security suites, which main runs after the merge.
-PIN_FILES = ("os/rpms-snapshot.env", "os/kernel-snapshot.env")
+# Snapshot pins CI publishes and signs (kernel only; RPM snapshots resolve by
+# fingerprint). A pull request that changes only these changes no code:
+# check.yml's `pins` job proves each changed pin is the signed snapshot
+# published for this source (os/dev/verify-snapshot-pins.sh) instead of the
+# Rust and security suites, which main runs after the merge.
+PIN_FILES = ("os/kernel-snapshot.env",)
 # Audited developer/CI prose, not compiled documentation or runtime contracts.
 # Keep this explicit: crates/sdk/ui-core/CHARTS.md is included by Rust, docs/app-development.md
 # is inspected by tilo-app, and docs/packaging.md is a packaging contract input.
@@ -71,10 +72,10 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/check_lock_update.py": "tools/tests/test_lock_update.py",
     "tools/ci/measure.sh": "tools/tests/test_ci_measure.py",
     "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
+    "tools/ci/recheck_base.py": "tools/tests/test_recheck_base.py",
     "tools/ci/workspace_graph.py": "tools/tests/test_ci_select.py",
     "tools/ci/recorded_test_time.json": "tools/tests/test_ci_select.py",
     "tools/ci/recorded_test_time.py": "tools/tests/test_ci_recorded_test_time.py",
-    "tools/ci/queue_coalesce.py": "tools/tests/test_ci_queue_coalesce.py",
     "tools/ci/timing_report.py": "tools/tests/test_ci_timing_report.py",
     "tools/ci/nextest_report.py": "tools/tests/test_nextest_report.py",
     "tools/ci/run_scoped_tests.py": "tools/tests/test_ci_scoped_tests.py",
@@ -84,7 +85,6 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/native-mold-linker.sh": "tools/tests/test_ci_native_mold.py",
     "tools/ci/verify-native-mold.sh": "tools/tests/test_ci_native_mold.py",
     "tools/ci/dispatch_merge.py": "tools/tests/test_ci_merge_dispatch.py",
-    "tools/ci/workflow_applicability.py": "tools/tests/test_workflow_applicability.py",
     "tools/ci/suites.py": "tools/tests/test_suites.py",
     "tools/ci/suites.toml": "tools/tests/test_suites.py",
     "tools/policy/run.sh": "tools/tests/test_ci_select.py",
@@ -100,10 +100,15 @@ QUALITY_ONLY_HELPERS = {
 # file in the mandatory repository-policy suite. A file missing from this exact
 # map retains native Rust checks.
 QUALITY_ONLY_CONTROL_INPUTS = {
-    "os/rpms-snapshot.env": (
+    "os/dev/rpm-snapshot-fingerprint.py": (
+        "os/tests/test_rpm_snapshot_fingerprint.py",
         "tools/tests/test_rpm_pin_contract.py",
     ),
-    ".forgejo/workflows/build-builder-image.yml": (
+    "os/dev/resolve-rpm-snapshot.sh": (
+        "os/tests/test_rpm_snapshot_fingerprint.py",
+        "tools/tests/test_rpm_pin_contract.py",
+    ),
+    ".forgejo/workflows/build-ci-builder.yml": (
         "os/tests/test_builder_candidate_workflow.py",
         "os/tests/release_pipeline_invariants.sh",
         "os/tests/workflow_dependency_invariants.sh",
@@ -112,7 +117,6 @@ QUALITY_ONLY_CONTROL_INPUTS = {
         "tools/tests/test_cosign_install_action.py",
     ),
     ".forgejo/workflows/build-kernel.yml": (
-        "tools/tests/test_workflow_applicability.py",
         "os/tests/workflow_dependency_invariants.sh",
     ),
     ".forgejo/workflows/dev-disk.yml": (
@@ -125,22 +129,16 @@ QUALITY_ONLY_CONTROL_INPUTS = {
         "tools/tests/test_ci_receipt.sh",
         "tools/tests/test_resolve_ci_builder.py",
     ),
-    ".forgejo/workflows/legacy-app-e2e.yml": (
+    ".forgejo/workflows/ci-legacy-apps.yml": (
         "tools/tests/test_ci_queue_relief.py",
         "os/tests/test_builder_candidate_workflow.py",
     ),
-    ".forgejo/workflows/tilo-relay.yaml": (
+    ".forgejo/workflows/release-relay.yml": (
         "tools/tests/test_workflow_package_paths.py",
-        "tools/tests/test_workflow_applicability.py",
         "os/tests/workflow_dependency_invariants.sh",
     ),
 }
 NATIVE_RUNNERS = {"x86_64": "runner", "aarch64": "runner-arm64"}
-# A tilo-ui lib-test link has repeatedly exceeded 5 GiB RSS by itself. Its
-# affected shard also links shell and other test targets, so the general 10 GiB
-# envelope can OOM even when the source is valid. ARM has no large label and is
-# already serialized by the workflow.
-LARGE_X86_TEST_PACKAGES = {"tilo-ui"}
 GLOBAL_FILES = {
     "Cargo.toml",
     "Cargo.lock",
@@ -158,7 +156,7 @@ GLOBAL_PREFIXES = (
 HEAVY_PACKAGES = {
     "browser",
     "ebook",
-    "media",
+    "tilo-media",
     "qdoc-pdf",
     "shell",
     "slides",
@@ -191,6 +189,34 @@ REVERSE_TEST_COST_BUDGET = SHARD_COST_BUDGET
 # of structural cost. Only shard balancing uses these numbers.
 TEST_SECONDS = Path(__file__).with_name("recorded_test_time.json")
 TEST_SECOND_WEIGHT = 2
+# A package without a recorded time (new since the last refresh) is assumed to
+# test for about as long as the upper quartile of recorded packages, so a new
+# service suite does not ride along as free weight on an already full shard.
+UNRECORDED_TEST_SECONDS = 20
+# Test jobs are sharded on their own, by recorded test time: one test job per
+# this many recorded seconds, so a large tested set runs its suites on several
+# runners instead of queueing them on one. Each test job links only its own
+# packages' tests; the type-check shards above are unaffected.
+TEST_SHARD_SECONDS = 500
+MAX_TEST_SHARDS = 4
+# A tested package heavier than this (structural cost plus weighted recorded
+# test seconds) gets a test job of its own, so it builds and tests beside the
+# balanced shards instead of lengthening one of them.
+DEDICATED_TEST_WEIGHT = 1_000
+# Suites whose tests fsync heavily: fs's durability, checked-restore and
+# release-matrix tests over real FUSE (with fs-native and private-fs), and the
+# host suites that commit a durable Store, owner journal or relay journal on
+# every step. On one runner their fsyncs queue behind each other until the host
+# suites' handshake bounds expire, so test shards keep them apart whenever
+# there is more than one shard.
+TEST_SHARD_APART = (
+    frozenset({"tilo-fs", "fs-native", "private-fs"}),
+    frozenset({
+        "tilo-action-broker",
+        "tilo-peer-state",
+        "tilo-relay",
+    }),
+)
 
 
 def recorded_test_seconds(path: Path = TEST_SECONDS) -> dict[str, int]:
@@ -203,6 +229,13 @@ def recorded_test_seconds(path: Path = TEST_SECONDS) -> dict[str, int]:
             for name, value in data.items()):
         raise ValueError(f"{path} must map package names to whole seconds")
     return data
+
+
+def expected_test_seconds(name: str, test_seconds: dict[str, int] | None) -> int:
+    """Recorded seconds, the unrecorded default when timings exist, else zero."""
+    if not test_seconds:
+        return 0
+    return test_seconds.get(name, UNRECORDED_TEST_SECONDS)
 
 
 def manifest_at(root: Path, revision: str) -> dict[str, tuple[str, str]] | None:
@@ -441,19 +474,30 @@ def direct_dependants_within_budget(
 
 
 def balance(names: set[str], packages: dict[str, dict], shard_count: int,
-            test_seconds: dict[str, int] | None = None) -> list[dict]:
-    """Spread packages over shards by structural cost plus recorded test time."""
+            test_seconds: dict[str, int] | None = None,
+            apart: tuple[frozenset[str], ...] = ()) -> list[dict]:
+    """Spread packages over shards by structural cost plus recorded test time.
+
+    Packages of different `apart` sets never share a shard while another
+    shard can take them.
+    """
     if not names:
         return []
     test_seconds = test_seconds or {}
 
     def weight(name: str) -> int:
-        return package_cost(packages[name]) + TEST_SECOND_WEIGHT * test_seconds.get(name, 0)
+        return (package_cost(packages[name])
+                + TEST_SECOND_WEIGHT * expected_test_seconds(name, test_seconds))
+
+    def clashes(name: str, shard: dict) -> bool:
+        return any(name in group and any(other in rival for other in shard["names"])
+                   for group in apart for rival in apart if rival is not group)
 
     shards = [{"names": [], "cost": 0, "weight": 0}
               for _ in range(max(1, min(shard_count, len(names))))]
     for name in sorted(names, key=lambda n: (-weight(n), n)):
-        shard = min(shards, key=lambda item: (item["weight"], len(item["names"])))
+        candidates = [shard for shard in shards if not clashes(name, shard)] or shards
+        shard = min(candidates, key=lambda item: (item["weight"], len(item["names"])))
         shard["names"].append(name)
         shard["cost"] += package_cost(packages[name])
         shard["weight"] += weight(name)
@@ -472,10 +516,72 @@ def balance(names: set[str], packages: dict[str, dict], shard_count: int,
     return result
 
 
+def dedicated_test_shards(names: set[str], packages: dict[str, dict],
+                          test_seconds: dict[str, int] | None) -> list[dict]:
+    """A test shard of its own for each package too heavy to share one."""
+    test_seconds = test_seconds or {}
+    heavy = [name for name in names
+             if package_cost(packages[name])
+             + TEST_SECOND_WEIGHT * expected_test_seconds(name, test_seconds)
+             > DEDICATED_TEST_WEIGHT]
+    return [{"packages": f"-p {name}", "package_count": 1,
+             "estimated_cost": package_cost(packages[name]),
+             "recorded_test_seconds": test_seconds.get(name, 0)}
+            for name in sorted(heavy, key=lambda n: (-test_seconds.get(n, 0), n))]
+
+
 def useful_shard_count(names: set[str], packages: dict[str, dict], maximum: int) -> int:
     total_cost = sum(package_cost(packages[name]) for name in names)
     cost_limited = max(1, (total_cost + SHARD_COST_BUDGET - 1) // SHARD_COST_BUDGET)
     return min(max(1, maximum), len(names), cost_limited)
+
+
+def useful_test_shard_count(names: set[str], test_seconds: dict[str, int]) -> int:
+    total = sum(expected_test_seconds(name, test_seconds) for name in names)
+    time_limited = max(1, (total + TEST_SHARD_SECONDS - 1) // TEST_SHARD_SECONDS)
+    return min(MAX_TEST_SHARDS, max(1, len(names)), time_limited)
+
+
+def android_apps(packages: dict[str, dict]) -> set[str]:
+    """Apps that opt into the Android host by declaring an `<app>-android` example."""
+    return {
+        name for name, package in packages.items()
+        if any(target.get("name") == f"{name}-android" and "example" in target.get("kind", ())
+               for target in package.get("targets", ()))
+    }
+
+
+def browser_crates(packages: dict[str, dict]) -> set[str]:
+    """Crates that build for the browser: they depend on `wasm-bindgen`."""
+    return {
+        name for name, package in packages.items()
+        if any(dependency.get("name") == "wasm-bindgen" and dependency.get("kind") is None
+               for dependency in package.get("dependencies", ()))
+    }
+
+
+# Example apps; check.yml's `wasm` job builds the web-capable ones with
+# `tilo-app build --platform web` (tools/ci/build-web-examples.sh).
+EXAMPLE_APPS = "examples/apps/"
+# What the web build of an example runs besides the example: a change to any of
+# these rebuilds every web-capable example.
+WEB_BUILD_INPUTS = (
+    "crates/browser/tilo-browser-runtime/scripts/",
+    "crates/dev/tilo-app-cli/src/web.rs",
+    "crates/dev/tilo-app-cli/src/targets/",
+    "crates/dev/tilo-app-cli/src/portability.rs",
+    "tools/ci/build-web-examples.sh",
+)
+
+
+def example_apps(packages: dict[str, dict], root: Path) -> set[str]:
+    """Packages under examples/apps/."""
+    base = root.resolve()
+    return {
+        name for name, package in packages.items()
+        if Path(package["manifest_path"]).resolve().parent.relative_to(base).as_posix()
+        .startswith(EXAMPLE_APPS)
+    }
 
 
 def make_plan(
@@ -491,7 +597,14 @@ def make_plan(
     suite_manifest: path_suites.Manifest | None = None,
     all_suites: bool = False,
     test_seconds: dict[str, int] | None = None,
+    only: dict | None = None,
 ) -> dict:
+    """Plan the check jobs for `changes`.
+
+    `only` narrows a re-check: {"packages": ..., "suites": ...} that the base
+    branch changed since the last green run of the same pull request. Every
+    other package and suite gave the same result on that run.
+    """
     packages, by_dir = package_maps(metadata, root)
     resolved_inputs = {path: resolved for path, resolved in (resolved_inputs or {}).items()
                        if path in changes}
@@ -575,6 +688,9 @@ def make_plan(
         or (recipe_present and path == "os/Containerfile.builder")
         for path in changes
     )
+    # Packages whose own inputs or dependencies the changes reach, without the
+    # contract packages every plan adds.
+    reached: set[str] = set()
     if pin_only:
         selected = set()
         reason = "snapshot pins only; the pins job verifies their signatures and provenance"
@@ -594,6 +710,7 @@ def make_plan(
         full = True
     else:
         selected = closure(seeds | checked, reverse)
+        reached = selected | readers
         selected.update(ALWAYS_PACKAGES & packages.keys())
         selected.update(readers)
         reason = f"{len(seeds)} changed packages, their reverse dependencies, and contract packages"
@@ -615,33 +732,63 @@ def make_plan(
         dependants, deferred_dependants = direct_dependants_within_budget(
             seeds, reverse, packages, tested)
         tested |= dependants & selected
+    if only is not None:
+        selected &= set(only["packages"])
+        tested &= selected
+        reason += "; re-check limited to what the base branch changed since the last green run"
     scoped_tests = {name: scope for name, scope in reader_scopes.items()
                     if scope is not None and name in selected and name not in tested}
     shard_limit = (shard_count if force_full else
                    min(shard_count, MAX_DEVELOPER_SHARDS) if full else 1)
     effective_shards = useful_shard_count(selected, packages, shard_limit)
     runners = NATIVE_RUNNERS if force_full else {"x86_64": NATIVE_RUNNERS["x86_64"]}
-    matrix = []
+    # Type-check (Clippy/check) shards cover the selected closure.
+    check_rows = []
     for arch, runner in runners.items():
         for shard in balance(selected, packages, effective_shards, test_seconds):
-            shard_names = set(shard["packages"].split()[1::2])
-            test_names = sorted(tested & shard_names)
-            scoped_names = sorted(scoped_tests.keys() & shard_names)
-            selected_runner = (
-                "runner-large"
-                if arch == "x86_64"
-                and LARGE_X86_TEST_PACKAGES.intersection(test_names + scoped_names)
-                else runner
-            )
-            scoped = [{"package": name, "test": scoped_tests[name].test,
-                       "filter": scoped_tests[name].filter} for name in scoped_names]
-            matrix.append({**shard, "arch": arch, "runner": selected_runner, "check_runner": runner,
-                           "test_packages": " ".join(f"-p {name}" for name in test_names),
-                           "scoped_tests": json.dumps(scoped, separators=(",", ":")) if scoped else ""})
+            check_rows.append({**shard, "arch": arch, "runner": runner, "check_runner": runner})
+    # Test shards cover the tested packages and scoped readers, split by
+    # recorded test time. Packages too heavy to share a job get their own
+    # shards, which start first; the rest balance around them.
+    test_units = (tested | scoped_tests.keys()) & selected
+    dedicated = dedicated_test_shards(tested & selected, packages, test_seconds)
+    shared_units = test_units - {shard["packages"].split()[1] for shard in dedicated}
+    test_shards = dedicated + balance(
+        shared_units, packages, useful_test_shard_count(shared_units, test_seconds or {}),
+        test_seconds, TEST_SHARD_APART)
+    for index, shard in enumerate(test_shards, 1):
+        shard["shard"] = index
+    if selected and not test_shards:
+        # Keep the aggregate's test result applicable: one row whose steps skip.
+        test_shards = [{"shard": 1, "packages": "", "package_count": 0,
+                        "estimated_cost": 0, "recorded_test_seconds": 0}]
+
+    def test_row(shard: dict, arch: str, runner: str) -> dict:
+        shard_names = set(shard["packages"].split()[1::2])
+        test_names = sorted(tested & shard_names)
+        scoped_names = sorted(scoped_tests.keys() & shard_names)
+        scoped = [{"package": name, "test": scoped_tests[name].test,
+                   "filter": scoped_tests[name].filter} for name in scoped_names]
+        # check_runner: a pull request runs its own check.yml against this
+        # planner from the merged tree; older branches' check.yml reads it.
+        return {**shard, "arch": arch, "runner": runner, "check_runner": runner,
+                "test_packages": " ".join(f"-p {name}" for name in test_names),
+                "scoped_tests": json.dumps(scoped, separators=(",", ":")) if scoped else ""}
+
+    matrix = [test_row(shard, arch, runner)
+              for arch, runner in runners.items() for shard in test_shards]
     # Hermetic suites outside Cargo follow their declared inputs; explicit full
     # runs and pushes to main (all_suites) run every one of them.
     suites = (path_suites.select(suite_manifest, changes, run_all=force_full or all_suites)
               if suite_manifest is not None and not pin_only else [])
+    if only is not None:
+        suites = [suite for suite in suites if suite in set(only["suites"])]
+    android = sorted(android_apps(packages) & selected)
+    wasm = sorted(browser_crates(packages) & selected)
+    examples = example_apps(packages, root)
+    web_examples = sorted(
+        examples if any(path.startswith(WEB_BUILD_INPUTS) for path in changes)
+        else examples & selected)
     return {
         "full": full,
         "rust_required": bool(selected),
@@ -650,11 +797,23 @@ def make_plan(
         "pins_required": pin_only,
         "pins": pins if pin_only else [],
         "suites": suites,
+        # Selected apps with an Android host example; check.yml's `android`
+        # job type-checks them for the Android targets.
+        "android_required": bool(android),
+        "android": android,
+        # Selected browser crates; check.yml's `wasm` job type-checks them for
+        # wasm32-unknown-unknown, a target no other job builds.
+        # Selected examples, or all of them when their web build changed; the
+        # `wasm` job builds the web-capable ones for the web.
+        "wasm_required": bool(wasm) or bool(web_examples),
+        "wasm": wasm,
+        "web_examples": web_examples,
         "reason": reason,
         "changed_files": changes,
         "selected_count": len(selected),
         "workspace_count": len(packages),
         "selected": sorted(selected),
+        "reached": sorted(reached if not full else selected),
         "tested": sorted(tested),
         # Packages that only read a changed file through a scoped input; the
         # test job runs just the tests that read it.
@@ -667,14 +826,15 @@ def make_plan(
         "estimated_cost": sum(package_cost(packages[name]) for name in selected),
         "requested_shards": shard_count,
         "shard_count": effective_shards,
+        "test_shard_count": len(matrix) // len(runners) if matrix else 0,
         "matrix": {"include": matrix},
         # Clippy's lint result is architecture-independent; lint each package
         # set once, on x86_64.
-        "clippy_matrix": {"include": [row for row in matrix if row["arch"] == "x86_64"]},
+        "clippy_matrix": {"include": [row for row in check_rows if row["arch"] == "x86_64"]},
         # Clippy type-checks every target it lints with the same flags, so on
         # x86_64 it is the all-target check. Other architectures, which are
         # not linted, keep a standalone all-target check.
-        "check_matrix": {"include": [row for row in matrix if row["arch"] != "x86_64"]},
+        "check_matrix": {"include": [row for row in check_rows if row["arch"] != "x86_64"]},
     }
 
 
@@ -694,10 +854,35 @@ def emit_github(plan: dict, output: Path) -> None:
         handle.write(f"suites={' '.join(plan['suites'])}\n")
         handle.write(f"pins_required={'true' if plan['pins_required'] else 'false'}\n")
         handle.write(f"pins={' '.join(plan['pins'])}\n")
+        handle.write(f"android_required={'true' if plan['android_required'] else 'false'}\n")
+        handle.write(f"android_packages={' '.join(f'-p {name}' for name in plan['android'])}\n")
+        handle.write(f"wasm_required={'true' if plan['wasm_required'] else 'false'}\n")
+        handle.write(f"wasm_packages={' '.join(f'-p {name}' for name in plan['wasm'])}\n")
+        handle.write(f"web_examples={' '.join(plan['web_examples'])}\n")
         handle.write(f"selected_count={plan['selected_count']}\n")
         handle.write(f"workspace_count={plan['workspace_count']}\n")
         handle.write(f"estimated_cost={plan['estimated_cost']}\n")
         handle.write(f"shard_count={plan['shard_count']}\n")
+        handle.write(f"test_shard_count={plan['test_shard_count']}\n")
+
+
+def recheck_scope(root: Path, metadata: dict, tested_base: str, base: str,
+                  suite_manifest) -> dict | None:
+    """Packages and suites whose inputs changed between two base commits, or None for all.
+
+    A pull request green on `tested_base` gives the same result on `base` for
+    every package and suite the base's own changes do not reach. None when the
+    old base is not an ancestor, or the change reaches the whole workspace.
+    """
+    if subprocess.run(["git", "merge-base", "--is-ancestor", tested_base, base],
+                      cwd=root, capture_output=True).returncode:
+        return None
+    changes = changed_files(root, tested_base, base)
+    delta = make_plan(metadata, root, changes, 1, suite_manifest=suite_manifest,
+                      resolved_inputs=resolve_manifest_inputs(root, tested_base, base, metadata, changes))
+    if delta["full"]:
+        return None
+    return {"packages": set(delta["reached"]), "suites": set(delta["suites"])}
 
 
 def main() -> int:
@@ -719,6 +904,9 @@ def main() -> int:
     parser.add_argument("--github-output", type=Path)
     parser.add_argument("--metadata", type=Path, help="read metadata JSON instead of invoking Cargo")
     parser.add_argument("--changes", type=Path, help="read changed paths instead of invoking git")
+    parser.add_argument("--recheck-from",
+                        help="re-check of a pull request that was green on this older base commit: "
+                             "limit the plan to what the base changed since (--base is the new base)")
     args = parser.parse_args()
 
     root = Path(run("git", "rev-parse", "--show-toplevel", cwd=Path.cwd()))
@@ -733,6 +921,10 @@ def main() -> int:
         resolve_manifest_inputs(root, args.base, args.head, metadata, changes)
         if args.changes is None and not args.full else {}
     )
+    suite_manifest = path_suites.load(root)
+    only = None
+    if args.recheck_from:
+        only = recheck_scope(root, metadata, args.recheck_from, args.base, suite_manifest)
     plan = make_plan(
         metadata,
         root,
@@ -742,9 +934,10 @@ def main() -> int:
         builder_only_external_assets=builder_only_external_assets,
         allow_security_skip=args.allow_security_skip,
         resolved_inputs=resolved_inputs,
-        suite_manifest=path_suites.load(root),
+        suite_manifest=suite_manifest,
         all_suites=args.all_suites,
         test_seconds=recorded_test_seconds(),
+        only=only,
     )
     print(json.dumps(plan, indent=2))
     if args.github_output:

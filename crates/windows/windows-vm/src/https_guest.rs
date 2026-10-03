@@ -1451,275 +1451,275 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bridge_accepts_only_its_fixed_host_only_endpoint() {
-        assert!(
-            GuestBridgeConfig::system(ApplicationPresentation::NativeRail)
-                .validate()
-                .is_ok()
-        );
-        let mut configuration = GuestBridgeConfig::system(ApplicationPresentation::NativeRail);
-        configuration.endpoint = "127.0.0.1:49888".parse().unwrap();
-        assert!(matches!(
-            configuration.validate(),
-            Err(AgentError::InvalidEndpoint)
-        ));
-    }
-
-    #[test]
-    fn hmac_is_stable_and_body_bound() {
-        let key = [7_u8; 32];
-        let first = hmac_hex(&key, b"7\nnonce\n", b"body");
-        assert_eq!(first, hmac_hex(&key, b"7\nnonce\n", b"body"));
-        assert_ne!(first, hmac_hex(&key, b"7\nnonce\n", b"different"));
-        assert!(constant_time_eq(first.as_bytes(), first.as_bytes()));
-    }
-
-    #[test]
-    fn installer_package_is_opaque_digest_bound_and_bounded() {
-        let package = InstallerPackage::new(InstallerKind::Msi, 4096, "a".repeat(64)).unwrap();
-        assert!(valid_identifier(package.id()));
-        assert_eq!(package.byte_len(), 4096);
-        assert_eq!(package.sha256(), "a".repeat(64));
-        assert!(InstallerPackage::new(InstallerKind::Exe, 0, "a".repeat(64)).is_err());
-        assert!(
-            InstallerPackage::new(InstallerKind::Exe, MAX_INSTALLER_BYTES + 1, "a".repeat(64))
-                .is_err()
-        );
-        assert!(InstallerPackage::new(InstallerKind::Exe, 1, "not-a-digest").is_err());
-        assert!(InstallationOperationId::parse("too-short").is_err());
-        assert!(InstallationOperationId::parse("a".repeat(48)).is_ok());
-    }
-
-    #[test]
-    fn installation_status_rejects_unbounded_or_early_candidates() {
-        let operation = InstallationOperationId("a".repeat(48));
-        let candidate = DiscoveredApplication {
-            id: "candidate.id".to_string(),
-            display_name: "Candidate".to_string(),
-            product_name: None,
-            publisher: None,
-            version: None,
-            uninstall: None,
-        };
-        assert!(
-            WireInstallationStatus {
-                operation_id: operation.as_str().to_string(),
-                state: InstallationState::Running,
-                exit_code: None,
-                candidates: vec![candidate.clone()],
-            }
-            .validate(&operation)
-            .is_err()
-        );
-        assert!(
-            WireInstallationStatus {
-                operation_id: operation.as_str().to_string(),
-                state: InstallationState::Completed,
-                exit_code: Some(0),
-                candidates: vec![candidate],
-            }
-            .validate(&operation)
-            .is_ok()
-        );
-    }
-
-    #[test]
-    fn installation_acceptance_can_only_prepare_app_focused_spice() {
-        let operation = "a".repeat(48);
-        let accepted = WireInstallationAccepted {
-            package_id: "b".repeat(48),
-            operation_id: operation.clone(),
-            endpoint: "192.168.251.2:3389".to_string(),
-            remote_app_alias: operation.clone(),
-            launch_nonce: "c".repeat(32),
-            certificate_sha256: "d".repeat(64),
-            presentation_backend: "app_focused_spice".to_string(),
-        };
-        let prepared = accepted.into_prepared(&operation, &"b".repeat(48)).unwrap();
-        assert_eq!(prepared.operation_id.as_str(), operation);
-        assert_eq!(
-            prepared.presentation.presentation,
-            ApplicationPresentation::AppFocusedSpice
-        );
-        assert!(prepared.presentation.endpoint.username.is_empty());
-    }
-
-    #[test]
-    fn uninstallation_status_binds_success_to_a_catalog_generation() {
-        let operation = UninstallationOperationId::parse("e".repeat(48)).unwrap();
-        assert!(
-            WireUninstallationStatus {
-                operation_id: operation.as_str().to_string(),
-                state: InstallationState::Completed,
-                exit_code: Some(0),
-                catalog_generation: None,
-            }
-            .validate(&operation)
-            .is_err()
-        );
-        assert!(
-            WireUninstallationStatus {
-                operation_id: operation.as_str().to_string(),
-                state: InstallationState::Completed,
-                exit_code: Some(0),
-                catalog_generation: Some(9),
-            }
-            .validate(&operation)
-            .is_ok()
-        );
-    }
-
-    #[test]
-    fn launch_rejects_a_guest_that_changes_selected_presentation() {
-        let launch = WireLaunch {
-            endpoint: "192.168.251.2:3389".to_string(),
-            username: Some("qra123".to_string()),
-            password: Some("secret".to_string()),
-            remote_app_alias: "published.app".to_string(),
-            launch_nonce: "0123456789abcdef".to_string(),
-            certificate_sha256: "a".repeat(64),
-            presentation_backend: "app_focused_spice".to_string(),
-        };
-        assert!(
-            launch
-                .into_guest_launch("published.app", ApplicationPresentation::NativeRail)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn focused_spice_launch_has_no_rdp_credentials() {
-        let launch = WireLaunch {
-            endpoint: "192.168.251.2:3389".to_string(),
-            username: None,
-            password: None,
-            remote_app_alias: "published.app".to_string(),
-            launch_nonce: "0123456789abcdef".to_string(),
-            certificate_sha256: "a".repeat(64),
-            presentation_backend: "app_focused_spice".to_string(),
-        };
-        let launch = launch
-            .into_guest_launch("published.app", ApplicationPresentation::AppFocusedSpice)
-            .expect("focused SPICE does not require an RDP account");
-        assert!(launch.endpoint.username.is_empty());
-        assert!(launch.password.expose().is_empty());
-    }
-
-    #[test]
-    fn focused_spice_rejects_rdp_credentials_if_guest_sends_them() {
-        let launch = WireLaunch {
-            endpoint: "192.168.251.2:3389".to_string(),
-            username: Some("unexpected-account".to_string()),
-            password: Some("unexpected-password".to_string()),
-            remote_app_alias: "published.app".to_string(),
-            launch_nonce: "0123456789abcdef".to_string(),
-            certificate_sha256: "a".repeat(64),
-            presentation_backend: "app_focused_spice".to_string(),
-        };
-        assert!(
-            launch
-                .into_guest_launch("published.app", ApplicationPresentation::AppFocusedSpice)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn native_rail_launch_still_requires_rdp_credentials() {
-        let launch = WireLaunch {
-            endpoint: "192.168.251.2:3389".to_string(),
-            username: None,
-            password: None,
-            remote_app_alias: "published.app".to_string(),
-            launch_nonce: "0123456789abcdef".to_string(),
-            certificate_sha256: "a".repeat(64),
-            presentation_backend: "native_rail_rds".to_string(),
-        };
-        assert!(
-            launch
-                .into_guest_launch("published.app", ApplicationPresentation::NativeRail)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn owner_or_member_group_read_is_private_but_world_access_is_not() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let file = tempfile::NamedTempFile::new().unwrap();
-        fs::set_permissions(file.path(), fs::Permissions::from_mode(0o640)).unwrap();
-        assert!(private_file_authorized(&fs::metadata(file.path()).unwrap()));
-        fs::set_permissions(file.path(), fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(!private_file_authorized(
-            &fs::metadata(file.path()).unwrap()
-        ));
-    }
-
-    #[test]
-    fn enrollment_pins_do_not_change_shared_session_state_permissions() {
-        let session = tempfile::tempdir().unwrap();
-        let state = session.path().join("state.json");
-        fs::write(&state, b"{\"phase\":\"installing\"}").unwrap();
-        fs::set_permissions(session.path(), fs::Permissions::from_mode(0o770)).unwrap();
-        fs::set_permissions(&state, fs::Permissions::from_mode(0o660)).unwrap();
-
-        let pins = session.path().join(PINS_DIRECTORY);
-        let pin = vec![b'a'; 64];
-        write_private_new_or_equal(&pins.join(PIN_FILE), &pin).unwrap();
-        write_private_new_or_equal(&pins.join(CERTIFICATE_FILE), b"certificate").unwrap();
-
-        assert_eq!(fs::metadata(session.path()).unwrap().mode() & 0o777, 0o770);
-        assert_eq!(fs::read(&state).unwrap(), b"{\"phase\":\"installing\"}");
-        assert_eq!(fs::metadata(&pins).unwrap().mode() & 0o777, 0o700);
-        assert_eq!(
-            fs::metadata(pins.join(PIN_FILE)).unwrap().mode() & 0o777,
-            0o600
-        );
-    }
-
-    #[test]
-    fn health_and_launch_certificates_must_match_the_enrolled_der_digest() {
-        let directory = tempfile::tempdir().unwrap();
-        let secret = directory.path().join("bootstrap.secret");
-        fs::write(&secret, [9_u8; 32]).unwrap();
-        fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
-        let bridge = HttpsGuestBridge::new(GuestBridgeConfig {
-            endpoint: DEFAULT_ENDPOINT,
-            bootstrap_secret: secret,
-            pin_directory: directory.path().to_path_buf(),
-            presentation: ApplicationPresentation::AppFocusedSpice,
-        })
-        .unwrap();
-
-        let certificate = b"enrolled-certificate-der";
-        let digest = sha256_hex(certificate);
-        let pins = bridge.pins_directory();
-        write_private_new_or_equal(&pins.join(PIN_FILE), digest.as_bytes()).unwrap();
-        write_private_new_or_equal(&pins.join(CERTIFICATE_FILE), certificate).unwrap();
-
-        let mut health = WireHealth {
-            protocol_major: HOST_PROTOCOL_MAJOR,
-            certificate_sha256: digest.clone(),
-            certificate_der_base64: base64::engine::general_purpose::STANDARD.encode(certificate),
-            license: "licensed".to_string(),
-            catalog_generation: 1,
-            guest_boot_id: "boot-id".to_string(),
-            presentation_backend: "app_focused_spice".to_string(),
-            app_focused_spice_available: true,
-            app_focused_spice_unavailable_reason: None,
-        };
-        health.validate().unwrap();
-        bridge
-            .require_enrolled_certificate(&health.certificate_digest().unwrap())
+    fn the_guest_bridge_is_fixed_hmac_bound_and_certificate_pinned() {
+        // Phase `bridge_accepts_only_its_fixed_host_only_endpoint`.
+        {
+            assert!(
+                GuestBridgeConfig::system(ApplicationPresentation::NativeRail)
+                    .validate()
+                    .is_ok()
+            );
+            let mut configuration = GuestBridgeConfig::system(ApplicationPresentation::NativeRail);
+            configuration.endpoint = "127.0.0.1:49888".parse().unwrap();
+            assert!(matches!(
+                configuration.validate(),
+                Err(AgentError::InvalidEndpoint)
+            ));
+        }
+        // Phase `hmac_is_stable_and_body_bound`.
+        {
+            let key = [7_u8; 32];
+            let first = hmac_hex(&key, b"7\nnonce\n", b"body");
+            assert_eq!(first, hmac_hex(&key, b"7\nnonce\n", b"body"));
+            assert_ne!(first, hmac_hex(&key, b"7\nnonce\n", b"different"));
+            assert!(constant_time_eq(first.as_bytes(), first.as_bytes()));
+        }
+        // Phase `health_and_launch_certificates_must_match_the_enrolled_der_digest`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let secret = directory.path().join("bootstrap.secret");
+            fs::write(&secret, [9_u8; 32]).unwrap();
+            fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
+            let bridge = HttpsGuestBridge::new(GuestBridgeConfig {
+                endpoint: DEFAULT_ENDPOINT,
+                bootstrap_secret: secret,
+                pin_directory: directory.path().to_path_buf(),
+                presentation: ApplicationPresentation::AppFocusedSpice,
+            })
             .unwrap();
-        bridge.require_enrolled_certificate(&digest).unwrap();
 
-        health.certificate_sha256 = "a".repeat(64);
-        assert!(matches!(
-            health.certificate_digest(),
-            Err(AgentError::Authentication)
-        ));
-        assert!(matches!(
-            bridge.require_enrolled_certificate(&"b".repeat(64)),
-            Err(AgentError::Authentication)
-        ));
+            let certificate = b"enrolled-certificate-der";
+            let digest = sha256_hex(certificate);
+            let pins = bridge.pins_directory();
+            write_private_new_or_equal(&pins.join(PIN_FILE), digest.as_bytes()).unwrap();
+            write_private_new_or_equal(&pins.join(CERTIFICATE_FILE), certificate).unwrap();
+
+            let mut health = WireHealth {
+                protocol_major: HOST_PROTOCOL_MAJOR,
+                certificate_sha256: digest.clone(),
+                certificate_der_base64: base64::engine::general_purpose::STANDARD
+                    .encode(certificate),
+                license: "licensed".to_string(),
+                catalog_generation: 1,
+                guest_boot_id: "boot-id".to_string(),
+                presentation_backend: "app_focused_spice".to_string(),
+                app_focused_spice_available: true,
+                app_focused_spice_unavailable_reason: None,
+            };
+            health.validate().unwrap();
+            bridge
+                .require_enrolled_certificate(&health.certificate_digest().unwrap())
+                .unwrap();
+            bridge.require_enrolled_certificate(&digest).unwrap();
+
+            health.certificate_sha256 = "a".repeat(64);
+            assert!(matches!(
+                health.certificate_digest(),
+                Err(AgentError::Authentication)
+            ));
+            assert!(matches!(
+                bridge.require_enrolled_certificate(&"b".repeat(64)),
+                Err(AgentError::Authentication)
+            ));
+        }
+        // Phase `owner_or_member_group_read_is_private_but_world_access_is_not`.
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let file = tempfile::NamedTempFile::new().unwrap();
+            fs::set_permissions(file.path(), fs::Permissions::from_mode(0o640)).unwrap();
+            assert!(private_file_authorized(&fs::metadata(file.path()).unwrap()));
+            fs::set_permissions(file.path(), fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(!private_file_authorized(
+                &fs::metadata(file.path()).unwrap()
+            ));
+        }
+        // Phase `enrollment_pins_do_not_change_shared_session_state_permissions`.
+        {
+            let session = tempfile::tempdir().unwrap();
+            let state = session.path().join("state.json");
+            fs::write(&state, b"{\"phase\":\"installing\"}").unwrap();
+            fs::set_permissions(session.path(), fs::Permissions::from_mode(0o770)).unwrap();
+            fs::set_permissions(&state, fs::Permissions::from_mode(0o660)).unwrap();
+
+            let pins = session.path().join(PINS_DIRECTORY);
+            let pin = vec![b'a'; 64];
+            write_private_new_or_equal(&pins.join(PIN_FILE), &pin).unwrap();
+            write_private_new_or_equal(&pins.join(CERTIFICATE_FILE), b"certificate").unwrap();
+
+            assert_eq!(fs::metadata(session.path()).unwrap().mode() & 0o777, 0o770);
+            assert_eq!(fs::read(&state).unwrap(), b"{\"phase\":\"installing\"}");
+            assert_eq!(fs::metadata(&pins).unwrap().mode() & 0o777, 0o700);
+            assert_eq!(
+                fs::metadata(pins.join(PIN_FILE)).unwrap().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn guest_installation_status_is_bounded_digest_bound_and_generation_bound() {
+        // Phase `installer_package_is_opaque_digest_bound_and_bounded`.
+        {
+            let package = InstallerPackage::new(InstallerKind::Msi, 4096, "a".repeat(64)).unwrap();
+            assert!(valid_identifier(package.id()));
+            assert_eq!(package.byte_len(), 4096);
+            assert_eq!(package.sha256(), "a".repeat(64));
+            assert!(InstallerPackage::new(InstallerKind::Exe, 0, "a".repeat(64)).is_err());
+            assert!(
+                InstallerPackage::new(InstallerKind::Exe, MAX_INSTALLER_BYTES + 1, "a".repeat(64))
+                    .is_err()
+            );
+            assert!(InstallerPackage::new(InstallerKind::Exe, 1, "not-a-digest").is_err());
+            assert!(InstallationOperationId::parse("too-short").is_err());
+            assert!(InstallationOperationId::parse("a".repeat(48)).is_ok());
+        }
+        // Phase `installation_status_rejects_unbounded_or_early_candidates`.
+        {
+            let operation = InstallationOperationId("a".repeat(48));
+            let candidate = DiscoveredApplication {
+                id: "candidate.id".to_string(),
+                display_name: "Candidate".to_string(),
+                product_name: None,
+                publisher: None,
+                version: None,
+                uninstall: None,
+            };
+            assert!(
+                WireInstallationStatus {
+                    operation_id: operation.as_str().to_string(),
+                    state: InstallationState::Running,
+                    exit_code: None,
+                    candidates: vec![candidate.clone()],
+                }
+                .validate(&operation)
+                .is_err()
+            );
+            assert!(
+                WireInstallationStatus {
+                    operation_id: operation.as_str().to_string(),
+                    state: InstallationState::Completed,
+                    exit_code: Some(0),
+                    candidates: vec![candidate],
+                }
+                .validate(&operation)
+                .is_ok()
+            );
+        }
+        // Phase `installation_acceptance_can_only_prepare_app_focused_spice`.
+        {
+            let operation = "a".repeat(48);
+            let accepted = WireInstallationAccepted {
+                package_id: "b".repeat(48),
+                operation_id: operation.clone(),
+                endpoint: "192.168.251.2:3389".to_string(),
+                remote_app_alias: operation.clone(),
+                launch_nonce: "c".repeat(32),
+                certificate_sha256: "d".repeat(64),
+                presentation_backend: "app_focused_spice".to_string(),
+            };
+            let prepared = accepted.into_prepared(&operation, &"b".repeat(48)).unwrap();
+            assert_eq!(prepared.operation_id.as_str(), operation);
+            assert_eq!(
+                prepared.presentation.presentation,
+                ApplicationPresentation::AppFocusedSpice
+            );
+            assert!(prepared.presentation.endpoint.username.is_empty());
+        }
+        // Phase `uninstallation_status_binds_success_to_a_catalog_generation`.
+        {
+            let operation = UninstallationOperationId::parse("e".repeat(48)).unwrap();
+            assert!(
+                WireUninstallationStatus {
+                    operation_id: operation.as_str().to_string(),
+                    state: InstallationState::Completed,
+                    exit_code: Some(0),
+                    catalog_generation: None,
+                }
+                .validate(&operation)
+                .is_err()
+            );
+            assert!(
+                WireUninstallationStatus {
+                    operation_id: operation.as_str().to_string(),
+                    state: InstallationState::Completed,
+                    exit_code: Some(0),
+                    catalog_generation: Some(9),
+                }
+                .validate(&operation)
+                .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn guest_launches_keep_the_selected_presentation_and_its_credentials() {
+        // Phase `launch_rejects_a_guest_that_changes_selected_presentation`.
+        {
+            let launch = WireLaunch {
+                endpoint: "192.168.251.2:3389".to_string(),
+                username: Some("qra123".to_string()),
+                password: Some("secret".to_string()),
+                remote_app_alias: "published.app".to_string(),
+                launch_nonce: "0123456789abcdef".to_string(),
+                certificate_sha256: "a".repeat(64),
+                presentation_backend: "app_focused_spice".to_string(),
+            };
+            assert!(
+                launch
+                    .into_guest_launch("published.app", ApplicationPresentation::NativeRail)
+                    .is_err()
+            );
+        }
+        // Phase `focused_spice_launch_has_no_rdp_credentials`.
+        {
+            let launch = WireLaunch {
+                endpoint: "192.168.251.2:3389".to_string(),
+                username: None,
+                password: None,
+                remote_app_alias: "published.app".to_string(),
+                launch_nonce: "0123456789abcdef".to_string(),
+                certificate_sha256: "a".repeat(64),
+                presentation_backend: "app_focused_spice".to_string(),
+            };
+            let launch = launch
+                .into_guest_launch("published.app", ApplicationPresentation::AppFocusedSpice)
+                .expect("focused SPICE does not require an RDP account");
+            assert!(launch.endpoint.username.is_empty());
+            assert!(launch.password.expose().is_empty());
+        }
+        // Phase `focused_spice_rejects_rdp_credentials_if_guest_sends_them`.
+        {
+            let launch = WireLaunch {
+                endpoint: "192.168.251.2:3389".to_string(),
+                username: Some("unexpected-account".to_string()),
+                password: Some("unexpected-password".to_string()),
+                remote_app_alias: "published.app".to_string(),
+                launch_nonce: "0123456789abcdef".to_string(),
+                certificate_sha256: "a".repeat(64),
+                presentation_backend: "app_focused_spice".to_string(),
+            };
+            assert!(
+                launch
+                    .into_guest_launch("published.app", ApplicationPresentation::AppFocusedSpice)
+                    .is_err()
+            );
+        }
+        // Phase `native_rail_launch_still_requires_rdp_credentials`.
+        {
+            let launch = WireLaunch {
+                endpoint: "192.168.251.2:3389".to_string(),
+                username: None,
+                password: None,
+                remote_app_alias: "published.app".to_string(),
+                launch_nonce: "0123456789abcdef".to_string(),
+                certificate_sha256: "a".repeat(64),
+                presentation_backend: "native_rail_rds".to_string(),
+            };
+            assert!(
+                launch
+                    .into_guest_launch("published.app", ApplicationPresentation::NativeRail)
+                    .is_err()
+            );
+        }
     }
 }

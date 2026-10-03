@@ -123,13 +123,13 @@ fn dialog_for(info: MapInfo, close_requested: Rc<Cell<bool>>) -> ModalDialog<Tex
     let (title, body) = match info {
         MapInfo::Attribution => (
             "Attribution",
-            "Map data © OpenStreetMap contributors\nBasemap tiles © CARTO",
+            "Map data and tiles © OpenStreetMap contributors",
         ),
         MapInfo::Licenses => (
             "Licenses",
             "OpenStreetMap data — Open Database License (ODbL)\n\
-             CARTO basemaps — under CARTO's basemap terms\n\
-             © OpenStreetMap contributors · © CARTO",
+             OpenStreetMap Standard tiles — OSMF Tile Usage Policy\n\
+             © OpenStreetMap contributors",
         ),
     };
     let dismiss = Rc::clone(&close_requested);
@@ -162,39 +162,49 @@ mod tests {
     }
 
     #[test]
-    fn escape_dismisses_and_consumes() {
-        let mut sheet = MapInfoSheet::default();
-        sheet.open(MapInfo::Attribution);
-        assert!(sheet.handle_event(&escape(), 1.0, Modifiers::default(), &mut AutoCommit::new(),));
-        assert!(!sheet.is_open());
-    }
+    fn info_sheet_is_modal_only_while_open() {
+        // Phase `escape_dismisses_and_consumes`.
+        {
+            let mut sheet = MapInfoSheet::default();
+            sheet.open(MapInfo::Attribution);
+            assert!(sheet.handle_event(
+                &escape(),
+                1.0,
+                Modifiers::default(),
+                &mut AutoCommit::new(),
+            ));
+            assert!(!sheet.is_open());
+        }
 
-    #[test]
-    fn closed_sheet_does_not_capture_input() {
-        let mut sheet = MapInfoSheet::default();
-        let press = WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
-        assert!(!sheet.handle_event(&press, 1.0, Modifiers::default(), &mut AutoCommit::new(),));
-    }
+        // Phase `closed_sheet_does_not_capture_input`.
+        {
+            let mut sheet = MapInfoSheet::default();
+            let press = WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            };
+            assert!(
+                !sheet.handle_event(&press, 1.0, Modifiers::default(), &mut AutoCommit::new(),)
+            );
+        }
 
-    #[test]
-    fn open_sheet_exposes_shared_modal_semantics() {
-        let mut sheet = MapInfoSheet::default();
-        sheet.open(MapInfo::Licenses);
-        sheet.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-            Rect::new(0.0, 0.0, 1000.0, 700.0),
-        );
+        // Phase `open_sheet_exposes_shared_modal_semantics`.
+        {
+            let mut sheet = MapInfoSheet::default();
+            sheet.open(MapInfo::Licenses);
+            sheet.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                Rect::new(0.0, 0.0, 1000.0, 700.0),
+            );
 
-        assert!(sheet.modal_capture().is_some());
-        let node = sheet.accessibility().expect("open dialog a11y node");
-        assert_eq!(node.role, ui::a11y::Role::Dialog);
-        assert!(node.state.modal);
+            assert!(sheet.modal_capture().is_some());
+            let node = sheet.accessibility().expect("open dialog a11y node");
+            assert_eq!(node.role, ui::a11y::Role::Dialog);
+            assert!(node.state.modal);
+        }
     }
 }

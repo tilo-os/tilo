@@ -773,204 +773,208 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_guest_bridge_fails_closed() {
-        let directory = TempDir::new().unwrap();
-        let appliance = fixture(
-            &directory,
-            Agent {
-                available: false,
-                alias_on_launch: "tilo-word".to_string(),
-            },
-            BrokeredLaunch::deny_all("lease"),
-        );
-        assert!(matches!(
-            appliance.launch(&request()),
-            Err(LaunchError::Agent(AgentError::Unavailable))
-        ));
+    fn appliance_launches_require_an_available_guest_and_published_unchanged_apps() {
+        // Phase `unavailable_guest_bridge_fails_closed`.
+        {
+            let directory = TempDir::new().unwrap();
+            let appliance = fixture(
+                &directory,
+                Agent {
+                    available: false,
+                    alias_on_launch: "tilo-word".to_string(),
+                },
+                BrokeredLaunch::deny_all("lease"),
+            );
+            assert!(matches!(
+                appliance.launch(&request()),
+                Err(LaunchError::Agent(AgentError::Unavailable))
+            ));
+        }
+        // Phase `unpublished_application_cannot_be_launched`.
+        {
+            let directory = TempDir::new().unwrap();
+            let appliance = fixture(
+                &directory,
+                Agent {
+                    available: true,
+                    alias_on_launch: "tilo-word".to_string(),
+                },
+                BrokeredLaunch::deny_all("lease"),
+            );
+            let mut bad = request();
+            bad.application_id = "arbitrary-exe".to_string();
+            assert!(matches!(
+                appliance.launch(&bad),
+                Err(LaunchError::ApplicationNotPublished(_))
+            ));
+        }
+        // Phase `changed_publication_alias_fails_and_revokes_lease`.
+        {
+            let directory = TempDir::new().unwrap();
+            let appliance = fixture(
+                &directory,
+                Agent {
+                    available: true,
+                    alias_on_launch: "tilo-different".to_string(),
+                },
+                BrokeredLaunch::deny_all("lease"),
+            );
+            assert!(matches!(
+                appliance.launch(&request()),
+                Err(LaunchError::PublicationChanged)
+            ));
+            assert_eq!(
+                appliance.capabilities.revoked.lock().unwrap().as_slice(),
+                ["lease"]
+            );
+        }
     }
 
     #[test]
-    fn unpublished_application_cannot_be_launched() {
-        let directory = TempDir::new().unwrap();
-        let appliance = fixture(
-            &directory,
-            Agent {
-                available: true,
-                alias_on_launch: "tilo-word".to_string(),
-            },
-            BrokeredLaunch::deny_all("lease"),
-        );
-        let mut bad = request();
-        bad.application_id = "arbitrary-exe".to_string();
-        assert!(matches!(
-            appliance.launch(&bad),
-            Err(LaunchError::ApplicationNotPublished(_))
-        ));
-    }
-
-    #[test]
-    fn broker_cannot_upgrade_a_read_only_portal_document_to_a_writable_drive() {
-        let directory = TempDir::new().unwrap();
-        let appliance = fixture(
-            &directory,
-            Agent {
-                available: true,
-                alias_on_launch: "tilo-word".to_string(),
-            },
-            BrokeredLaunch {
-                lease_id: "lease".to_string(),
-                network: false,
-                network_binding: None,
-                clipboard: false,
-                microphone: false,
-                shares: vec![ShareBinding {
-                    drive_name: "TILO1".to_string(),
-                    portal_document_id: "portal-document".to_string(),
-                    host_path: crate::portal_lease_root().join("lease/document"),
-                    read_only: false,
-                }],
-            },
-        );
-        let mut request = request();
-        request.grants.portal_documents = vec![PortalDocumentGrant {
-            handle: "portal-document".to_string(),
-            access: PortalDocumentAccess::ReadOnly,
-        }];
-        assert!(matches!(
-            appliance.launch(&request),
-            Err(LaunchError::BrokerEscalated("files"))
-        ));
-    }
-
-    #[test]
-    fn duplicate_portal_handles_are_rejected_before_any_guest_connection() {
-        let directory = TempDir::new().unwrap();
-        let appliance = fixture(
-            &directory,
-            Agent {
-                available: true,
-                alias_on_launch: "tilo-word".to_string(),
-            },
-            BrokeredLaunch::deny_all("lease"),
-        );
-        let mut request = request();
-        request.grants.portal_documents = vec![
-            PortalDocumentGrant {
+    fn brokers_cannot_widen_portal_documents_handles_or_clipboard() {
+        // Phase `broker_cannot_upgrade_a_read_only_portal_document_to_a_writable_drive`.
+        {
+            let directory = TempDir::new().unwrap();
+            let appliance = fixture(
+                &directory,
+                Agent {
+                    available: true,
+                    alias_on_launch: "tilo-word".to_string(),
+                },
+                BrokeredLaunch {
+                    lease_id: "lease".to_string(),
+                    network: false,
+                    network_binding: None,
+                    clipboard: false,
+                    microphone: false,
+                    shares: vec![ShareBinding {
+                        drive_name: "TILO1".to_string(),
+                        portal_document_id: "portal-document".to_string(),
+                        host_path: crate::portal_lease_root().join("lease/document"),
+                        read_only: false,
+                    }],
+                },
+            );
+            let mut request = request();
+            request.grants.portal_documents = vec![PortalDocumentGrant {
                 handle: "portal-document".to_string(),
                 access: PortalDocumentAccess::ReadOnly,
-            },
-            PortalDocumentGrant {
-                handle: "portal-document".to_string(),
-                access: PortalDocumentAccess::ReadWrite,
-            },
-        ];
-        assert!(matches!(
-            appliance.launch(&request),
-            Err(LaunchError::InvalidRequest("portal document id"))
-        ));
+            }];
+            assert!(matches!(
+                appliance.launch(&request),
+                Err(LaunchError::BrokerEscalated("files"))
+            ));
+        }
+        // Phase `duplicate_portal_handles_are_rejected_before_any_guest_connection`.
+        {
+            let directory = TempDir::new().unwrap();
+            let appliance = fixture(
+                &directory,
+                Agent {
+                    available: true,
+                    alias_on_launch: "tilo-word".to_string(),
+                },
+                BrokeredLaunch::deny_all("lease"),
+            );
+            let mut request = request();
+            request.grants.portal_documents = vec![
+                PortalDocumentGrant {
+                    handle: "portal-document".to_string(),
+                    access: PortalDocumentAccess::ReadOnly,
+                },
+                PortalDocumentGrant {
+                    handle: "portal-document".to_string(),
+                    access: PortalDocumentAccess::ReadWrite,
+                },
+            ];
+            assert!(matches!(
+                appliance.launch(&request),
+                Err(LaunchError::InvalidRequest("portal document id"))
+            ));
+        }
+        // Phase `a_broker_cannot_enable_ungranted_clipboard`.
+        {
+            let directory = TempDir::new().unwrap();
+            let appliance = fixture(
+                &directory,
+                Agent {
+                    available: true,
+                    alias_on_launch: "tilo-word".to_string(),
+                },
+                BrokeredLaunch {
+                    lease_id: "lease".to_string(),
+                    network: false,
+                    network_binding: None,
+                    clipboard: true,
+                    microphone: false,
+                    shares: Vec::new(),
+                },
+            );
+            assert!(matches!(
+                appliance.launch(&request()),
+                Err(LaunchError::BrokerEscalated("clipboard"))
+            ));
+            assert_eq!(
+                appliance.capabilities.revoked.lock().unwrap().as_slice(),
+                ["lease"]
+            );
+        }
     }
 
     #[test]
-    fn a_broker_cannot_enable_ungranted_clipboard() {
-        let directory = TempDir::new().unwrap();
-        let appliance = fixture(
-            &directory,
-            Agent {
-                available: true,
-                alias_on_launch: "tilo-word".to_string(),
-            },
-            BrokeredLaunch {
-                lease_id: "lease".to_string(),
-                network: false,
-                network_binding: None,
-                clipboard: true,
-                microphone: false,
-                shares: Vec::new(),
-            },
-        );
-        assert!(matches!(
-            appliance.launch(&request()),
-            Err(LaunchError::BrokerEscalated("clipboard"))
-        ));
-        assert_eq!(
-            appliance.capabilities.revoked.lock().unwrap().as_slice(),
-            ["lease"]
-        );
-    }
+    fn the_passive_catalogue_cache_is_authenticated_and_never_wakes_the_guest() {
+        // Phase `authenticated_catalogue_is_cached_for_passive_manager_enumeration`.
+        {
+            let directory = TempDir::new().unwrap();
+            let appliance = fixture(
+                &directory,
+                Agent {
+                    available: true,
+                    alias_on_launch: "tilo-word".to_string(),
+                },
+                BrokeredLaunch::deny_all("lease"),
+            );
+            let fresh = appliance.catalog().unwrap();
+            assert_eq!(fresh.generation, 2);
 
-    #[test]
-    fn changed_publication_alias_fails_and_revokes_lease() {
-        let directory = TempDir::new().unwrap();
-        let appliance = fixture(
-            &directory,
-            Agent {
-                available: true,
-                alias_on_launch: "tilo-different".to_string(),
-            },
-            BrokeredLaunch::deny_all("lease"),
-        );
-        assert!(matches!(
-            appliance.launch(&request()),
-            Err(LaunchError::PublicationChanged)
-        ));
-        assert_eq!(
-            appliance.capabilities.revoked.lock().unwrap().as_slice(),
-            ["lease"]
-        );
-    }
+            let cached = appliance.cached_catalog().unwrap().unwrap();
+            assert_eq!(cached, fresh);
+            assert_eq!(appliance.state.load().unwrap().catalog_generation, 2);
+        }
+        // Phase `passive_catalogue_cache_never_contacts_an_unavailable_guest`.
+        {
+            let directory = TempDir::new().unwrap();
+            let appliance = fixture(
+                &directory,
+                Agent {
+                    available: false,
+                    alias_on_launch: "tilo-word".to_string(),
+                },
+                BrokeredLaunch::deny_all("lease"),
+            );
+            let cached = Catalog {
+                generation: 1,
+                applications: vec![PublishedApplication {
+                    id: "word".to_string(),
+                    display_name: "Word".to_string(),
+                    remote_app_alias: "tilo-word".to_string(),
+                    icon_sha256: None,
+                    associations: Vec::new(),
+                    uninstall_available: false,
+                }],
+            };
+            appliance
+                .state
+                .save(&ApplianceState {
+                    schema_version: 1,
+                    phase: crate::AppliancePhase::Ready,
+                    license: LicenseState::DigitallyActivated,
+                    catalog_generation: 1,
+                    cached_catalog: Some(cached.clone()),
+                })
+                .unwrap();
 
-    #[test]
-    fn authenticated_catalogue_is_cached_for_passive_manager_enumeration() {
-        let directory = TempDir::new().unwrap();
-        let appliance = fixture(
-            &directory,
-            Agent {
-                available: true,
-                alias_on_launch: "tilo-word".to_string(),
-            },
-            BrokeredLaunch::deny_all("lease"),
-        );
-        let fresh = appliance.catalog().unwrap();
-        assert_eq!(fresh.generation, 2);
-
-        let cached = appliance.cached_catalog().unwrap().unwrap();
-        assert_eq!(cached, fresh);
-        assert_eq!(appliance.state.load().unwrap().catalog_generation, 2);
-    }
-
-    #[test]
-    fn passive_catalogue_cache_never_contacts_an_unavailable_guest() {
-        let directory = TempDir::new().unwrap();
-        let appliance = fixture(
-            &directory,
-            Agent {
-                available: false,
-                alias_on_launch: "tilo-word".to_string(),
-            },
-            BrokeredLaunch::deny_all("lease"),
-        );
-        let cached = Catalog {
-            generation: 1,
-            applications: vec![PublishedApplication {
-                id: "word".to_string(),
-                display_name: "Word".to_string(),
-                remote_app_alias: "tilo-word".to_string(),
-                icon_sha256: None,
-                associations: Vec::new(),
-                uninstall_available: false,
-            }],
-        };
-        appliance
-            .state
-            .save(&ApplianceState {
-                schema_version: 1,
-                phase: crate::AppliancePhase::Ready,
-                license: LicenseState::DigitallyActivated,
-                catalog_generation: 1,
-                cached_catalog: Some(cached.clone()),
-            })
-            .unwrap();
-
-        assert_eq!(appliance.cached_catalog().unwrap(), Some(cached));
+            assert_eq!(appliance.cached_catalog().unwrap(), Some(cached));
+        }
     }
 }

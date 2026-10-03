@@ -17,12 +17,28 @@ has_karg() { case " $cmdline " in *" $1 "*) return 0;; *) return 1;; esac; }
 
 echo "=== Tilo security audit ==="
 
-if rpm -q systemd-resolved >/dev/null 2>&1; then
+# Installed packages. The unit runs this audit with NoNewPrivileges=, under
+# which SELinux refuses rpm its rpm_t transition, so every `rpm -q` failed and
+# read as "not installed". The unit lists the packages with privileges first
+# (/run/tilo-security-audit.packages); a manual run as root asks rpm itself.
+packages_file=/run/tilo-security-audit.packages
+installed() {
+  local package
+  for package in "$@"; do
+    if [ -r "$packages_file" ]; then
+      grep -Fqx -- "$package" "$packages_file" || return 1
+    else
+      rpm -q "$package" >/dev/null 2>&1 || return 1
+    fi
+  done
+}
+
+if installed systemd-resolved; then
   warn "redundant OpenSSL-linked systemd-resolved package is installed"
 else
   ok "systemd-resolved attack surface absent; NetworkManager owns DNS"
 fi
-if rpm -q systemd-networkd >/dev/null 2>&1 \
+if installed systemd-networkd \
    || systemctl is-active --quiet systemd-networkd.service 2>/dev/null; then
   warn "redundant systemd-networkd surface remains beside NetworkManager"
 else
@@ -48,16 +64,22 @@ if systemctl is-enabled --quiet systemd-pstore.service 2>/dev/null; then
 else
   ok "persistent pstore crash-record copying is disabled"
 fi
-if rpm -q systemd-coredump >/dev/null 2>&1 \
+if installed systemd-coredump \
    || systemctl is-enabled --quiet systemd-coredump.socket 2>/dev/null; then
   warn "systemd-coredump collector remains available to persist process memory"
 else
   ok "systemd-coredump collector is absent and disabled"
 fi
 
+image_flavour="$(cat /usr/lib/tilo/image-flavour 2>/dev/null || true)"
 avoidable_crypto_consumers=""
 for package in pesign nss-tools git git-core openvpn NetworkManager-openvpn openssh-server; do
-  if rpm -q "$package" >/dev/null 2>&1; then
+  if installed "$package"; then
+    # A dev image (os/Containerfile.dev) adds these on purpose: tilo-vm reaches
+    # it over SSH, and it builds components from git checkouts.
+    case "$image_flavour:$package" in
+      dev:git|dev:git-core|dev:openssh-server) note "dev image: $package installed for tilo-vm"; continue ;;
+    esac
     avoidable_crypto_consumers="$avoidable_crypto_consumers $package"
   fi
 done
@@ -75,8 +97,7 @@ optional_crypto_module="$(find /usr/lib /usr/lib64 \
      -o -path '*/gstreamer-1.0/libgstshout2.so' \
      -o -path '*/gstreamer-1.0/libgstwebrtc.so' \
      -o -path '*/gstreamer-1.0/libgstnice.so' \
-     -o -path '*/gstreamer-1.0/libgstsrtp.so' \
-     -o -path '*/qt6/plugins/tls/libqopensslbackend.so' \) \
+     -o -path '*/gstreamer-1.0/libgstsrtp.so' \) \
   \( -type f -o -type l \) -print -quit 2>/dev/null || true)"
 if [ -n "$optional_crypto_module" ]; then
   warn "optional crypto/network media plugin remains: $optional_crypto_module"
@@ -89,8 +110,8 @@ fi
 for pair in gnutls-utils:swtpm-tools openssh:virt-viewer openssh-clients:virt-viewer; do
   package="${pair%%:*}"
   parent="${pair#*:}"
-  if rpm -q "$package" >/dev/null 2>&1; then
-    if rpm -q "$parent" >/dev/null 2>&1; then
+  if installed "$package"; then
+    if installed "$parent"; then
       note "reviewed Fedora VM dependency retained: $package ($parent)"
     else
       warn "unexpected VM dependency without its consumer: $package ($parent absent)"
@@ -121,9 +142,18 @@ case "$lock" in
 esac
 
 # Memory-init + heap hardening kargs
-for k in init_on_alloc=1 init_on_free=1 slab_nomerge page_alloc.shuffle=1 vsyscall=none systemd.import_credentials=no; do
+for k in init_on_alloc=1 init_on_free=1 slab_nomerge page_alloc.shuffle=1 vsyscall=none; do
   has_karg "$k" && ok "karg $k" || warn "karg $k MISSING"
 done
+# A dev image (os/Containerfile.dev, /usr/lib/tilo/image-flavour = dev) drops
+# this karg on purpose: tilo-vm hands the VM its SSH key as a credential.
+if has_karg systemd.import_credentials=no; then
+  ok "karg systemd.import_credentials=no"
+elif [ "$image_flavour" = dev ]; then
+  note "dev image: system credentials are imported (tilo-vm's SSH key)"
+else
+  warn "karg systemd.import_credentials=no MISSING"
+fi
 case " $cmdline " in *randomize_kstack_offset=on*|*randomize_kstack_offset=1*) ok "karg randomize_kstack_offset";; *) warn "karg randomize_kstack_offset MISSING";; esac
 
 # Device and user signing keys are deliberately never written to persistent
@@ -177,6 +207,11 @@ esac
 check_sysctl() {
   key="$1"; want="$2"
   have="$(sysctl -n "$key" 2>/dev/null || echo '?')"
+  # Some keys only CAP_SYS_ADMIN may read (net.core.bpf_jit_harden); the unit
+  # snapshots those to /run/tilo-security-audit.<key> before the unprivileged audit.
+  if [ "$have" = '?' ] && [ -r "/run/tilo-security-audit.$key" ]; then
+    have="$(cat "/run/tilo-security-audit.$key")"
+  fi
   if [ "$have" = "$want" ]; then ok "$key = $have"
   else warn "$key = $have (expected $want)"; fi
 }
@@ -185,35 +220,45 @@ check_sysctl kernel.kptr_restrict 2
 check_sysctl kernel.dmesg_restrict 1
 check_sysctl kernel.unprivileged_bpf_disabled 1
 running_kernel_config="/usr/lib/modules/$(uname -r)/config"
-if grep -Fqx '# CONFIG_KEXEC is not set' "$running_kernel_config" 2>/dev/null; then
+# An option is compiled only when the config sets it (=y or =m). Kconfig writes
+# "# CONFIG_X is not set" only for options visible on this architecture, so an
+# option arm64 does not have at all (X86_*, removed ones like DEVKMEM) has no
+# line, and is just as absent. An unreadable config proves nothing.
+kconfig_off() {
+  [ -r "$running_kernel_config" ] || return 1
+  ! grep -Eq "^CONFIG_$1=(y|m)$" "$running_kernel_config"
+}
+[ -r "$running_kernel_config" ] \
+  || warn "running kernel config $running_kernel_config is unreadable; kernel options unverified"
+if kconfig_off KEXEC; then
   ok "kexec interfaces are not compiled"
 else
   check_sysctl kernel.kexec_load_disabled 1
 fi
-if grep -Fqx '# CONFIG_HIBERNATION is not set' "$running_kernel_config" 2>/dev/null; then
+if kconfig_off HIBERNATION; then
   ok "kernel hibernation image parser is not compiled"
 else
   warn "kernel hibernation remains compiled despite zram-only swap"
 fi
-if grep -Fqx '# CONFIG_MODULE_UNLOAD is not set' "$running_kernel_config" 2>/dev/null \
-   && grep -Fqx '# CONFIG_LIVEPATCH is not set' "$running_kernel_config" 2>/dev/null; then
+if kconfig_off MODULE_UNLOAD \
+   && kconfig_off LIVEPATCH; then
   ok "running kernel cannot unload modules or install live patches"
 else
   warn "running kernel retains module-unload or livepatch mutation paths"
 fi
-if grep -Fqx '# CONFIG_ACPI_CUSTOM_METHOD is not set' "$running_kernel_config" 2>/dev/null \
-   && grep -Fqx '# CONFIG_ACPI_CONFIGFS is not set' "$running_kernel_config" 2>/dev/null \
-   && grep -Fqx '# CONFIG_EFI_CUSTOM_SSDT_OVERLAYS is not set' "$running_kernel_config" 2>/dev/null; then
+if kconfig_off ACPI_CUSTOM_METHOD \
+   && kconfig_off ACPI_CONFIGFS \
+   && kconfig_off EFI_CUSTOM_SSDT_OVERLAYS; then
   ok "running kernel accepts no runtime ACPI or SSDT injection"
 else
   warn "running kernel retains a runtime ACPI or SSDT injection path"
 fi
-if grep -Fqx '# CONFIG_DEBUG_FS is not set' "$running_kernel_config" 2>/dev/null; then
+if kconfig_off DEBUG_FS; then
   ok "kernel debugfs control surface is not compiled"
 else
   warn "kernel debugfs control surface remains compiled"
 fi
-if grep -Fqx '# CONFIG_PROC_PAGE_MONITOR is not set' "$running_kernel_config" 2>/dev/null; then
+if kconfig_off PROC_PAGE_MONITOR; then
   ok "procfs physical-page monitoring interfaces are not compiled"
 else
   warn "procfs still exposes pagemap, smaps, or clear_refs interfaces"
@@ -228,8 +273,9 @@ else
   warn "kernel lacks BPF LSM or BTF required by systemd RestrictFileSystems="
 fi
 active_lsms="$(cat /sys/kernel/security/lsm 2>/dev/null || true)"
-case ":$active_lsms:" in
-  *:bpf:*) ok "BPF LSM is active for systemd filesystem restrictions" ;;
+# /sys/kernel/security/lsm is comma-separated.
+case ",$active_lsms," in
+  *,bpf,*) ok "BPF LSM is active for systemd filesystem restrictions" ;;
   *)       warn "BPF LSM is absent from the active LSM stack: ${active_lsms:-unavailable}" ;;
 esac
 for interface in \
@@ -257,7 +303,7 @@ for interface in \
   LIBFCOE SCSI_FC_ATTRS NET_FC NVME_RDMA NVME_FC NVME_TCP NVME_TARGET NVME_HOST_AUTH NVME_AUTH \
   NVME_KEYRING BLK_DEV_RNBD_CLIENT BLK_DEV_RNBD_SERVER TARGET_CORE \
   INFINIBAND; do
-  if grep -Fqx "# CONFIG_${interface} is not set" "$running_kernel_config" 2>/dev/null; then
+  if kconfig_off "$interface"; then
     ok "unused privileged kernel interface $interface is not compiled"
   else
     warn "unused privileged kernel interface $interface remains compiled"
@@ -266,20 +312,20 @@ done
 for protocol in \
   ATM CAN CAIF HAMRADIO 6LOWPAN AF_RXRPC IEEE802154 IP_DCCP IP_SCTP AF_KCM \
   LAPB L2TP MCTP MPLS NET_NSH NFC PHONET RDS SMC TIPC X25; do
-  if grep -Fqx "# CONFIG_${protocol} is not set" "$running_kernel_config" 2>/dev/null; then
+  if kconfig_off "$protocol"; then
     ok "unused kernel protocol $protocol is not compiled"
   else
     warn "unused kernel protocol $protocol remains compiled"
   fi
 done
 check_sysctl kernel.perf_event_paranoid 3
-if grep -Fqx '# CONFIG_IO_URING is not set' "$running_kernel_config" 2>/dev/null; then
+if kconfig_off IO_URING; then
   ok "io_uring syscall and worker surface is not compiled"
 else
   check_sysctl kernel.io_uring_disabled 2
 fi
 check_sysctl kernel.randomize_va_space 2
-if grep -Fqx '# CONFIG_USERFAULTFD is not set' "$running_kernel_config" 2>/dev/null; then
+if kconfig_off USERFAULTFD; then
   ok "userfaultfd page-fault control surface is not compiled"
 else
   check_sysctl vm.unprivileged_userfaultfd 0
@@ -519,12 +565,17 @@ case "${roottype:-}" in
   *)     note "root filesystem is NOT encrypted ($rootsrc, $roottype) — install with --encrypt to change that" ;;
 esac
 
-# hidepid on /proc (other users' processes hidden)
-if findmnt -no OPTIONS /proc 2>/dev/null | grep -qE 'hidepid=(2|invisible|1)'; then
-  ok "hidepid on /proc: $(findmnt -no OPTIONS /proc | tr ',' '\n' | grep hidepid)"
-else
-  warn "hidepid on /proc NOT set"
-fi
+# Long-running services under their own users see only their own processes
+# (ProtectProc=invisible). /proc is not remounted hidepid globally: that hides
+# PID 1 from every unprivileged process, which breaks libsystemd's unit
+# lookups (the AT-SPI bus cannot start); secret holders are non-dumpable.
+for unit in tilo-relay.service tilo-fs-replica.service tilo-local-model.service; do
+  if [ "$(systemctl show -p ProtectProc --value "$unit" 2>/dev/null)" = invisible ]; then
+    ok "$unit sees only its own processes (ProtectProc=invisible)"
+  else
+    warn "$unit can see other users' processes (ProtectProc is not invisible)"
+  fi
+done
 
 # Hardened userspace allocator (scudo) on the base daemons. Query systemd's
 # effective unit environment rather than acquiring ptrace authority merely to
@@ -566,7 +617,7 @@ fi
 
 for tool in p11tool gnutls-cli; do
   if command -v "$tool" >/dev/null 2>&1; then
-    if rpm -q gnutls-utils swtpm-tools >/dev/null 2>&1; then
+    if installed gnutls-utils swtpm-tools; then
       note "Fedora gnutls-utils companion retained with required TPM certtool: $tool"
     else
       warn "unapproved cryptographic command-line tool remains: $tool"

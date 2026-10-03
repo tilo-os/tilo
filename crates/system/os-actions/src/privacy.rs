@@ -112,17 +112,92 @@ pub fn active_media_uses() -> Result<Vec<ActiveMediaUse>, String> {
     parse_pipewire_media(&json, Path::new("/proc"), effective_uid())
 }
 
-/// Subscribe to `PipeWire` graph changes through the reference monitor and
-/// emit a freshly verified capture snapshot after each change burst. This
-/// blocks until the monitor exits; callers normally run it on one session
-/// worker and retry if `PipeWire` restarts.
+/// How long a settled device graph may sit with no further device facts
+/// before the monitor process is stopped. Stream and client churn,
+/// including `pw-dump` itself, does not extend this.
+const MONITOR_QUIET: Duration = Duration::from_millis(200);
+
+/// Whether `pw-dump --monitor` may keep running.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MonitorDisposition {
+    /// The device graph is still settling, or has not been seen yet.
+    Keep,
+    /// Devices and hardware nodes are unchanged. The monitor must exit.
+    Stop,
+}
+
+/// Device and hardware identity seen on the `PipeWire` graph.
+///
+/// Streams, clients, ports, links and volume are omitted. A `pw-dump`
+/// client is itself a stream, so folding it into this signature kept the
+/// monitor awake: every snapshot spawned another dump, and that client
+/// showed up as a graph change.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeviceGraphWatch {
+    established: bool,
+    signature: String,
+}
+
+impl DeviceGraphWatch {
+    /// Fold one `pw-dump` JSON array into the device signature.
+    ///
+    /// The first document that names devices establishes the signature and
+    /// keeps the monitor up long enough to confirm it. A later document
+    /// with the same devices, or with only streams and clients, stops it.
+    pub fn observe_document(&mut self, json: &str) -> MonitorDisposition {
+        let Some(facts) = device_facts(json) else {
+            return self.non_device_document();
+        };
+        if facts.is_empty() {
+            return self.non_device_document();
+        }
+        let signature = facts.join("\n");
+        if !self.established {
+            self.signature = signature;
+            self.established = true;
+            MonitorDisposition::Keep
+        } else if signature == self.signature {
+            MonitorDisposition::Stop
+        } else {
+            self.signature = signature;
+            MonitorDisposition::Keep
+        }
+    }
+
+    /// No document arrived before [`MONITOR_QUIET`]. A graph we have already
+    /// seen is unchanged; a monitor that has not produced one yet stays up.
+    pub fn observe_quiet(&mut self) -> MonitorDisposition {
+        if self.established {
+            MonitorDisposition::Stop
+        } else {
+            MonitorDisposition::Keep
+        }
+    }
+
+    fn non_device_document(&self) -> MonitorDisposition {
+        if self.established {
+            MonitorDisposition::Stop
+        } else {
+            MonitorDisposition::Keep
+        }
+    }
+
+    fn is_established(&self) -> bool {
+        self.established
+    }
+}
+
+/// Subscribe to `PipeWire` until the device graph is unchanged, then stop
+/// the monitor process. Capture snapshots come from the monitor's own JSON,
+/// not from a second `pw-dump`: that second process is a stream, and
+/// treating it as a graph change kept `--monitor` running for the whole
+/// idle window.
 ///
 /// # Errors
 ///
-/// Returns an error message if `pw-dump` is not installed, the monitor process fails to start
-/// or exits, or the monitor's stdout cannot be read.
+/// Returns an error message if `pw-dump` is not installed, the monitor
+/// process fails to start, or it exits before any device graph arrives.
 pub fn monitor_media_usage(mut on_change: impl FnMut(Vec<ActiveMediaUse>)) -> Result<(), String> {
-    on_change(active_media_uses().unwrap_or_default());
     if !crate::process::which("pw-dump") {
         return Err("pw-dump not installed".into());
     }
@@ -139,43 +214,175 @@ pub fn monitor_media_usage(mut on_change: impl FnMut(Vec<ActiveMediaUse>)) -> Re
         .take()
         .ok_or("PipeWire monitor has no output")?;
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut reader = std::io::BufReader::new(stdout);
-        let mut chunk = [0_u8; 8192];
-        loop {
-            match reader.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(_) => {
-                    if tx.send(Ok(())).is_err() {
-                        break;
+    std::thread::Builder::new()
+        .name("os-pw-dump-read".into())
+        .spawn(move || {
+            let mut reader = std::io::BufReader::new(stdout);
+            let mut chunk = [0_u8; 8192];
+            loop {
+                match reader.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let Some(bytes) = chunk.get(..n) else {
+                            break;
+                        };
+                        if tx.send(bytes.to_vec()).is_err() {
+                            break;
+                        }
                     }
                 }
-                Err(error) => {
-                    let _ = tx.send(Err(error.to_string()));
-                    break;
+            }
+        })
+        .map_err(|error| format!("PipeWire monitor reader could not start: {error}"))?;
+    let result = drive_media_monitor(&rx, &mut on_change);
+    drop(rx);
+    terminate_monitor(&mut child);
+    result
+}
+
+fn drive_media_monitor(
+    rx: &std::sync::mpsc::Receiver<Vec<u8>>,
+    on_change: &mut impl FnMut(Vec<ActiveMediaUse>),
+) -> Result<(), String> {
+    let mut buf = Vec::new();
+    let mut watch = DeviceGraphWatch::default();
+    loop {
+        let incoming = if watch.is_established() {
+            match rx.recv_timeout(MONITOR_QUIET) {
+                Ok(chunk) => Some(chunk),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return established_or_lost(watch.is_established());
+                }
+            }
+        } else {
+            match rx.recv() {
+                Ok(chunk) => Some(chunk),
+                Err(_) => return established_or_lost(false),
+            }
+        };
+        match incoming {
+            None => {
+                if watch.observe_quiet() == MonitorDisposition::Stop {
+                    return Ok(());
+                }
+            }
+            Some(chunk) => {
+                buf.extend_from_slice(&chunk);
+                while let Some(doc) = pop_json_array(&mut buf) {
+                    let text = String::from_utf8_lossy(&doc);
+                    publish_media_snapshot(&text, on_change);
+                    if watch.observe_document(&text) == MonitorDisposition::Stop {
+                        return Ok(());
+                    }
                 }
             }
         }
-    });
-    while let Ok(event) = rx.recv() {
-        if let Err(error) = event {
-            terminate_monitor(&mut child);
-            return Err(format!("PipeWire monitor failed: {error}"));
-        }
-        // Pretty-printed JSON produces many lines per graph mutation. Wait
-        // until the burst goes quiet, then take one authoritative snapshot.
-        while rx.recv_timeout(Duration::from_millis(100)).is_ok() {}
-        if let Ok(media) = active_media_uses() {
-            on_change(media);
+    }
+}
+
+fn established_or_lost(established: bool) -> Result<(), String> {
+    if established {
+        Ok(())
+    } else {
+        Err("PipeWire monitor exited before a device graph".into())
+    }
+}
+
+fn publish_media_snapshot(json: &str, on_change: &mut impl FnMut(Vec<ActiveMediaUse>)) {
+    // A delta that only names a stream has no client security context.
+    // Publishing it would clear a real indicator. The full dump carries
+    // both, and that is the snapshot the indicator is allowed to show.
+    if !json.contains("Interface:Client") {
+        return;
+    }
+    if let Ok(media) = parse_pipewire_media(json, Path::new("/proc"), effective_uid()) {
+        on_change(media);
+    }
+}
+
+fn device_facts(json: &str) -> Option<Vec<String>> {
+    let values: Vec<serde_json::Value> = serde_json::from_str(json).ok()?;
+    let mut facts = Vec::new();
+    for object in &values {
+        if let Some(fact) = device_fact(object) {
+            facts.push(fact);
         }
     }
-    let status = child
-        .wait()
-        .map_err(|error| format!("PipeWire monitor wait failed: {error}"))?;
-    Err(format!(
-        "PipeWire monitor exited with status {:?}",
-        status.code()
-    ))
+    facts.sort();
+    facts.dedup();
+    Some(facts)
+}
+
+fn device_fact(object: &serde_json::Value) -> Option<String> {
+    let ty = object.get("type")?.as_str()?;
+    let props = object
+        .pointer("/info/props")
+        .or_else(|| object.get("props"))?;
+    if ty.ends_with(":Device") {
+        let name = props.get("device.name")?.as_str()?;
+        if name.is_empty() {
+            return None;
+        }
+        return Some(format!("device:{name}"));
+    }
+    if ty.ends_with(":Node") {
+        let class = props.get("media.class")?.as_str()?;
+        if class.is_empty() || class.starts_with("Stream/") || class.starts_with("Midi/") {
+            return None;
+        }
+        let name = props.get("node.name")?.as_str()?;
+        if name.is_empty() {
+            return None;
+        }
+        return Some(format!("node:{class}:{name}"));
+    }
+    None
+}
+
+fn pop_json_array(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
+    let start = buf.iter().position(|byte| *byte == b'[')?;
+    if start > 0 {
+        buf.drain(..start);
+    }
+    let end = json_array_end(buf)?;
+    let doc = buf.get(..end)?.to_vec();
+    buf.drain(..end);
+    Some(doc)
+}
+
+/// Byte length of one JSON array at the start of `bytes`, or `None` when
+/// the closing bracket has not arrived yet.
+fn json_array_end(bytes: &[u8]) -> Option<usize> {
+    let mut depth = 0_u32;
+    let mut in_string = false;
+    let mut escape = false;
+    for (offset, byte) in bytes.iter().copied().enumerate() {
+        if in_string {
+            if escape {
+                escape = false;
+                continue;
+            }
+            match byte {
+                b'\\' => escape = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'[' | b'{' => depth = depth.saturating_add(1),
+            b']' | b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 && byte == b']' {
+                    return Some(offset.saturating_add(1));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn terminate_monitor(child: &mut std::process::Child) {
@@ -426,76 +633,140 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hardware_camera_shutter_wins_over_software_state() {
-        let root = tempfile::tempdir().unwrap();
-        let dev = tempfile::tempdir().unwrap();
-        let camera = root.path().join("rfkill0");
-        std::fs::create_dir(&camera).unwrap();
-        std::fs::write(camera.join("type"), "camera\n").unwrap();
-        std::fs::write(camera.join("soft"), "0\n").unwrap();
-        std::fs::write(camera.join("hard"), "1\n").unwrap();
+    fn device_use_is_attributed_only_from_server_side_security_evidence() {
+        // Phase `hardware_camera_shutter_wins_over_software_state`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let dev = tempfile::tempdir().unwrap();
+            let camera = root.path().join("rfkill0");
+            std::fs::create_dir(&camera).unwrap();
+            std::fs::write(camera.join("type"), "camera\n").unwrap();
+            std::fs::write(camera.join("soft"), "0\n").unwrap();
+            std::fs::write(camera.join("hard"), "1\n").unwrap();
 
-        let status = get_privacy_status_from(root.path(), dev.path());
-        assert_eq!(status.camera_kill, KillState::HardwareBlocked);
+            let status = get_privacy_status_from(root.path(), dev.path());
+            assert_eq!(status.camera_kill, KillState::HardwareBlocked);
+        }
+        // Phase `pipewire_attribution_uses_security_pid_and_kernel_executable`.
+        {
+            use std::os::unix::fs::symlink;
+            let proc = tempfile::tempdir().unwrap();
+            let process = proc.path().join("4242");
+            std::fs::create_dir_all(&process).unwrap();
+            std::fs::write(
+                process.join("status"),
+                "Name:\tbad\nUid:\t1000\t1000\t1000\t1000\n",
+            )
+            .unwrap();
+            symlink("/usr/bin/tilo-video-chat", process.join("exe")).unwrap();
+            let json = r#"[
+              {"id":7,"type":"PipeWire:Interface:Client","info":{"props":{
+                "pipewire.sec.pid":4242,"application.name":"Settings (spoofed)"}}},
+              {"id":9,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{
+                "client.id":7,"media.class":"Stream/Input/Audio"}}}
+            ]"#;
+            let uses = parse_pipewire_media(json, proc.path(), 1000).unwrap();
+            assert_eq!(uses.len(), 1);
+            assert_eq!(uses[0].label, "Local process · Video Chat");
+            assert_eq!(uses[0].kind, MediaKind::Microphone);
+            assert!(!uses[0].label.contains("Settings"));
+        }
+        // Phase `client_claim_without_server_security_pid_is_not_attributed`.
+        {
+            let json = r#"[
+              {"id":7,"type":"PipeWire:Interface:Client","info":{"props":{
+                "application.process.id":1,"application.name":"Trusted App"}}},
+              {"id":9,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{
+                "client.id":7,"media.class":"Stream/Input/Video"}}}
+            ]"#;
+            assert!(
+                parse_pipewire_media(json, Path::new("/proc"), effective_uid())
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        // Phase `portal_identity_requires_server_flatpak_security_marker`.
+        {
+            use std::os::unix::fs::symlink;
+            let proc = tempfile::tempdir().unwrap();
+            let process = proc.path().join("4242");
+            std::fs::create_dir_all(&process).unwrap();
+            std::fs::write(process.join("status"), "Uid:\t1000\t1000\t1000\t1000\n").unwrap();
+            symlink("/app/bin/chat", process.join("exe")).unwrap();
+            let json = r#"[
+              {"id":7,"type":"PipeWire:Interface:Client","info":{"props":{
+                "pipewire.sec.pid":4242,"pipewire.sec.flatpak":"true",
+                "pipewire.access.portal.app_id":"org.example.Chat"}}},
+              {"id":9,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{
+                "client.id":7,"media.class":"Stream/Input/Video"}}}
+            ]"#;
+            let uses = parse_pipewire_media(json, proc.path(), 1000).unwrap();
+            assert_eq!(uses[0].app_id, "flatpak:org.example.Chat");
+            assert_eq!(uses[0].label, "Chat");
+        }
     }
 
     #[test]
-    fn pipewire_attribution_uses_security_pid_and_kernel_executable() {
-        use std::os::unix::fs::symlink;
-        let proc = tempfile::tempdir().unwrap();
-        let process = proc.path().join("4242");
-        std::fs::create_dir_all(&process).unwrap();
-        std::fs::write(
-            process.join("status"),
-            "Name:\tbad\nUid:\t1000\t1000\t1000\t1000\n",
-        )
-        .unwrap();
-        symlink("/usr/bin/tilo-video-chat", process.join("exe")).unwrap();
-        let json = r#"[
-          {"id":7,"type":"PipeWire:Interface:Client","info":{"props":{
-            "pipewire.sec.pid":4242,"application.name":"Settings (spoofed)"}}},
-          {"id":9,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{
-            "client.id":7,"media.class":"Stream/Input/Audio"}}}
-        ]"#;
-        let uses = parse_pipewire_media(json, proc.path(), 1000).unwrap();
-        assert_eq!(uses.len(), 1);
-        assert_eq!(uses[0].label, "Local process · Video Chat");
-        assert_eq!(uses[0].kind, MediaKind::Microphone);
-        assert!(!uses[0].label.contains("Settings"));
-    }
-
-    #[test]
-    fn client_claim_without_server_security_pid_is_not_attributed() {
-        let json = r#"[
-          {"id":7,"type":"PipeWire:Interface:Client","info":{"props":{
-            "application.process.id":1,"application.name":"Trusted App"}}},
-          {"id":9,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{
-            "client.id":7,"media.class":"Stream/Input/Video"}}}
-        ]"#;
-        assert!(
-            parse_pipewire_media(json, Path::new("/proc"), effective_uid())
-                .unwrap()
-                .is_empty()
+    fn an_unchanged_device_graph_stops_the_pw_dump_monitor() {
+        let device = |name: &str| {
+            format!(
+                r#"{{"id":1,"type":"PipeWire:Interface:Device","info":{{"props":{{"device.name":"{name}"}}}}}}"#
+            )
+        };
+        let sink = |volume: &str| {
+            format!(
+                r#"{{"id":2,"type":"PipeWire:Interface:Node","info":{{"props":{{"media.class":"Audio/Sink","node.name":"alsa_output.pci.analog-stereo","channelVolumes":[{volume}]}}}}}}"#
+            )
+        };
+        let graph = format!("[{},{}]", device("alsa_card.pci"), sink("0.40"));
+        let mut watch = DeviceGraphWatch::default();
+        assert_eq!(
+            watch.observe_document(&graph),
+            MonitorDisposition::Keep,
+            "the first device dump establishes the signature"
         );
-    }
+        assert_eq!(
+            watch.observe_quiet(),
+            MonitorDisposition::Stop,
+            "a quiet device graph must not keep pw-dump --monitor running"
+        );
 
-    #[test]
-    fn portal_identity_requires_server_flatpak_security_marker() {
-        use std::os::unix::fs::symlink;
-        let proc = tempfile::tempdir().unwrap();
-        let process = proc.path().join("4242");
-        std::fs::create_dir_all(&process).unwrap();
-        std::fs::write(process.join("status"), "Uid:\t1000\t1000\t1000\t1000\n").unwrap();
-        symlink("/app/bin/chat", process.join("exe")).unwrap();
-        let json = r#"[
-          {"id":7,"type":"PipeWire:Interface:Client","info":{"props":{
-            "pipewire.sec.pid":4242,"pipewire.sec.flatpak":"true",
-            "pipewire.access.portal.app_id":"org.example.Chat"}}},
-          {"id":9,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{
-            "client.id":7,"media.class":"Stream/Input/Video"}}}
-        ]"#;
-        let uses = parse_pipewire_media(json, proc.path(), 1000).unwrap();
-        assert_eq!(uses[0].app_id, "flatpak:org.example.Chat");
-        assert_eq!(uses[0].label, "Chat");
+        let mut watch = DeviceGraphWatch::default();
+        assert_eq!(watch.observe_document(&graph), MonitorDisposition::Keep);
+        let dump_stream = r#"[{"id":99,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Stream/Output/Audio","node.name":"pw-dump","application.name":"pw-dump"}}},{"id":7,"type":"PipeWire:Interface:Client","info":{"props":{"application.name":"pw-dump"}}}]"#;
+        assert_eq!(
+            watch.observe_document(dump_stream),
+            MonitorDisposition::Stop,
+            "pw-dump is a stream, not a device; it must not keep the monitor up"
+        );
+
+        let mut watch = DeviceGraphWatch::default();
+        assert_eq!(watch.observe_document(&graph), MonitorDisposition::Keep);
+        let louder = format!("[{},{}]", device("alsa_card.pci"), sink("0.90"));
+        assert_eq!(
+            watch.observe_document(&louder),
+            MonitorDisposition::Stop,
+            "volume is not the device graph"
+        );
+
+        let mut watch = DeviceGraphWatch::default();
+        assert_eq!(watch.observe_document(&graph), MonitorDisposition::Keep);
+        let headset = format!(
+            "[{},{},{}]",
+            device("alsa_card.pci"),
+            device("bluez_card.headset"),
+            sink("0.40")
+        );
+        assert_eq!(
+            watch.observe_document(&headset),
+            MonitorDisposition::Keep,
+            "a new device is a real graph change"
+        );
+
+        let mut buf = b"noise [1, {\"a\": [2]}] tail".to_vec();
+        let doc = pop_json_array(&mut buf).expect("one array");
+        assert_eq!(doc, b"[1, {\"a\": [2]}]");
+        assert_eq!(buf, b" tail");
+        assert!(pop_json_array(&mut buf).is_none());
     }
 }

@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "tilo-vmd"
 version = "0.1.0"
 edition = "2024"
@@ -14,22 +15,31 @@ name = "tilo-vmd"
 path = "src/main.rs"
 
 [dependencies]
-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-files = { path = "../../platform/tilo-files" }
 base64.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }
 clap.workspace = true
 hex.workspace = true
 libc.workspace = true
 serde.workspace = true
+# The display settings contract the Settings app uses, for --outputs layouts.
+settings-store = { path = "../../system/settings-store" }
 serde_json.workspace = true
 sha2.workspace = true
 tar.workspace = true
 thiserror.workspace = true
 tilo-vm-protocol = { path = "../tilo-vm-protocol" }
 uuid.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

@@ -50,7 +50,6 @@ derive the same Iroh endpoint id from that device key.
 ```bash
 journalctl --user -u graphical-session.target | grep -Ei 'iroh|gossip|workspace host'
 stat -c '%a %U:%G %n' /var/lib/tilo/device-private/keypair.bin
-systemctl --user status tilo-identity.service
 systemctl --user status shell-peer-sync.service
 ```
 

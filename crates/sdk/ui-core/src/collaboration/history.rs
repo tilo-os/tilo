@@ -123,52 +123,55 @@ mod tests {
     }
 
     #[test]
-    fn history_is_fetched_from_the_oldest_live_op_backwards_on_demand() {
-        let artifact = ArtifactId::new();
-        let mut history = DocumentHistory::default();
-        history.observe_live(artifact, 5_000);
-        history.observe_live(artifact, 5_001);
-        assert_eq!(before_seq(history.on_viewport(artifact, 100)), None);
-        assert_eq!(before_seq(history.on_viewport(artifact, 3)), Some(5_000));
-        assert_eq!(
-            before_seq(history.on_viewport(artifact, 0)),
-            None,
-            "in flight"
-        );
-        assert_eq!(
-            before_seq(history.on_batch(artifact, Some(4_950), false)),
-            None
-        );
-        assert_eq!(before_seq(history.on_viewport(artifact, 10)), Some(4_950));
-        history.on_batch(artifact, Some(4_900), true);
-        assert!(history.pager_for(artifact).unwrap().is_exhausted());
-        assert_eq!(before_seq(history.on_viewport(artifact, 0)), None);
-    }
+    fn history_pages_backwards_from_the_oldest_live_op_until_loaded() {
+        // Case `history_is_fetched_from_the_oldest_live_op_backwards_on_demand`.
+        {
+            let artifact = ArtifactId::new();
+            let mut history = DocumentHistory::default();
+            history.observe_live(artifact, 5_000);
+            history.observe_live(artifact, 5_001);
+            assert_eq!(before_seq(history.on_viewport(artifact, 100)), None);
+            assert_eq!(before_seq(history.on_viewport(artifact, 3)), Some(5_000));
+            assert_eq!(
+                before_seq(history.on_viewport(artifact, 0)),
+                None,
+                "in flight"
+            );
+            assert_eq!(
+                before_seq(history.on_batch(artifact, Some(4_950), false)),
+                None
+            );
+            assert_eq!(before_seq(history.on_viewport(artifact, 10)), Some(4_950));
+            history.on_batch(artifact, Some(4_900), true);
+            assert!(history.pager_for(artifact).unwrap().is_exhausted());
+            assert_eq!(before_seq(history.on_viewport(artifact, 0)), None);
+        }
 
-    #[test]
-    fn opening_an_old_version_keeps_paging_until_it_is_loaded() {
-        let artifact = ArtifactId::new();
-        let mut history = DocumentHistory::default();
-        history.observe_live(artifact, 1_000);
-        assert_eq!(
-            before_seq(history.ensure_loaded_back_to(artifact, 880)),
-            Some(1_000)
-        );
-        assert_eq!(
-            before_seq(history.on_batch(artifact, Some(950), false)),
-            Some(950)
-        );
-        assert_eq!(
-            before_seq(history.on_batch(artifact, Some(900), false)),
-            Some(900)
-        );
-        assert_eq!(
-            before_seq(history.on_batch(artifact, Some(850), false)),
-            None
-        );
-        assert_eq!(
-            history.ensure_loaded_back_to(artifact, 870).map(|_| ()),
-            None
-        );
+        // Case `opening_an_old_version_keeps_paging_until_it_is_loaded`.
+        {
+            let artifact = ArtifactId::new();
+            let mut history = DocumentHistory::default();
+            history.observe_live(artifact, 1_000);
+            assert_eq!(
+                before_seq(history.ensure_loaded_back_to(artifact, 880)),
+                Some(1_000)
+            );
+            assert_eq!(
+                before_seq(history.on_batch(artifact, Some(950), false)),
+                Some(950)
+            );
+            assert_eq!(
+                before_seq(history.on_batch(artifact, Some(900), false)),
+                Some(900)
+            );
+            assert_eq!(
+                before_seq(history.on_batch(artifact, Some(850), false)),
+                None
+            );
+            assert_eq!(
+                history.ensure_loaded_back_to(artifact, 870).map(|_| ()),
+                None
+            );
+        }
     }
 }

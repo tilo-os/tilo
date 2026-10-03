@@ -42,11 +42,21 @@ def projection_commands(source):
         elif commands:
             commands[-1] += " " + line
     start = f"{INSTALLED_HELPER} remove systemd.show_status"
-    stop = ("systemctl enable tilo-firstboot-user.service "
-            "tilo-firstboot-autologin-cleanup.service "
-            "tilo-installer-setup.service tilo-live-recovery.service")
-    if commands.count(start) != 1 or commands.count(stop) != 1:
+    required_services = {
+        "tilo-firstboot-user.service", "tilo-firstboot-autologin-cleanup.service",
+        "tilo-installer-setup.service", "tilo-live-recovery.service",
+    }
+    allowed_services = required_services | {"tilo-installer-code-refresh.service"}
+    stops = []
+    for command in commands:
+        words = shlex.split(command)
+        if words[:2] == ["systemctl", "enable"] and required_services <= set(words[2:]):
+            if set(words[2:]) != allowed_services or len(words[2:]) != len(allowed_services):
+                raise ValueError("unexpected services at UKI projection boundary")
+            stops.append(command)
+    if commands.count(start) != 1 or len(stops) != 1:
         raise ValueError("cannot observe exactly one UKI projection span")
+    stop = stops[0]
     begin, end = commands.index(start), commands.index(stop)
     if begin >= end:
         raise ValueError("invalid UKI projection span")
@@ -111,6 +121,18 @@ def fixture_bytes(tokens):
                          (i + 1) * 4096, 2048, offset)
         data[offset:offset + len(payload)] = payload
     return bytes(data)
+
+
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
 
 
 class TargetCmdlineTests(unittest.TestCase):
@@ -181,29 +203,54 @@ class TargetCmdlineTests(unittest.TestCase):
         self.assertLessEqual(size, 2048)
         self.assertEqual(after[raw + size:raw + 2048], bytes(2048 - size))
 
-    def test_current_base_projects_without_duplicate_inherited_keys(self):
-        # Duplicate appends, a missed live-token removal, or a lost inherited
-        # argument must break this real producer path.
-        self.assertEqual(self.base.count(ROOT_TOKEN), 1)
-        self.assertEqual(self.base.count(OPTIONS_TOKEN), 1)
-        live_before = self.prepare_live()
-        live_tokens = self.tokens(self.live)
-        self.assertIn("tilo.install", live_tokens)
-        result = self.run_commands(self.project)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        target_tokens = self.tokens(self.target)
-        self.assertEqual(target_tokens.count(ROOT_TOKEN), 1)
-        self.assertEqual(target_tokens.count(OPTIONS_TOKEN), 1)
-        self.assertEqual(
-            target_tokens,
-            [t for t in live_tokens if t.split("=", 1)[0] not in LIVE_ONLY_KEYS]
-            + [BOOT_MOUNT_TOKEN],
-        )
-        self.assertTrue(LIVE_ONLY_KEYS.isdisjoint({t.split("=", 1)[0] for t in target_tokens}))
-        for token in ("composefs=" + "a" * 128, "tilo.generation=42", "tilo.mode=normal", "preempt=full"):
-            self.assertIn(token, target_tokens)
-        self.assertEqual(self.live.read_bytes(), live_before)
-        self.assert_only_cmdline_changed(live_before, self.target.read_bytes())
+    def test_target_projection_and_extraction(self):
+        with self.subTest(phase="current_base_projects_without_duplicate_inherited_keys"):
+            # Duplicate appends, a missed live-token removal, or a lost inherited
+            # argument must break this real producer path.
+            self.assertEqual(self.base.count(ROOT_TOKEN), 1)
+            self.assertEqual(self.base.count(OPTIONS_TOKEN), 1)
+            live_before = self.prepare_live()
+            live_tokens = self.tokens(self.live)
+            self.assertIn("tilo.install", live_tokens)
+            result = self.run_commands(self.project)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            target_tokens = self.tokens(self.target)
+            self.assertEqual(target_tokens.count(ROOT_TOKEN), 1)
+            self.assertEqual(target_tokens.count(OPTIONS_TOKEN), 1)
+            self.assertEqual(
+                target_tokens,
+                [t for t in live_tokens if t.split("=", 1)[0] not in LIVE_ONLY_KEYS]
+                + [BOOT_MOUNT_TOKEN],
+            )
+            self.assertTrue(LIVE_ONLY_KEYS.isdisjoint({t.split("=", 1)[0] for t in target_tokens}))
+            for token in ("composefs=" + "a" * 128, "tilo.generation=42", "tilo.mode=normal", "preempt=full"):
+                self.assertIn(token, target_tokens)
+            self.assertEqual(self.live.read_bytes(), live_before)
+            self.assert_only_cmdline_changed(live_before, self.target.read_bytes())
+        restart_fixture(self)
+        with self.subTest(phase="shared_helper_still_refuses_duplicate_append_without_writing"):
+            self.prepare_live()
+            projected = self.run_commands(self.project)
+            self.assertEqual(projected.returncode, 0, projected.stdout + projected.stderr)
+            target_before = self.target.read_bytes()
+            for token in (ROOT_TOKEN, OPTIONS_TOKEN):
+                with self.subTest(token=token):
+                    result = self.cli("append", token, self.target)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("is already on the sealed command line", result.stderr)
+                    self.assertEqual(self.target.read_bytes(), target_before)
+        restart_fixture(self)
+        with self.subTest(phase="extraction_fails_when_subject_is_missing_or_changes_unsupported"):
+            source = CONTAINERFILE.read_text()
+            marker = f"&& {INSTALLED_HELPER} remove tilo.install {TARGET}"
+            self.assertEqual(source.count(marker), 1)
+            for changed in ("", source.replace(marker, marker + " && true"),
+                            source.replace(marker, "&& unexpected_command\n    " + marker),
+                            source.replace("enable tilo-installer-code-refresh.service", "enable unknown.service tilo-installer-code-refresh.service"),
+                            source.replace("enable tilo-installer-code-refresh.service", "enable")):
+                with self.subTest(source=changed[-100:]):
+                    with self.assertRaises(ValueError):
+                        projection_commands(changed)
 
     def test_invalid_inherited_keys_are_rejected_before_target_projection(self):
         for expected in (ROOT_TOKEN, OPTIONS_TOKEN):
@@ -232,28 +279,6 @@ class TargetCmdlineTests(unittest.TestCase):
                         if token.split("=", 1)[0] == key
                     ]
                     self.assertEqual(remaining, replacement)
-
-    def test_shared_helper_still_refuses_duplicate_append_without_writing(self):
-        self.prepare_live()
-        projected = self.run_commands(self.project)
-        self.assertEqual(projected.returncode, 0, projected.stdout + projected.stderr)
-        target_before = self.target.read_bytes()
-        for token in (ROOT_TOKEN, OPTIONS_TOKEN):
-            with self.subTest(token=token):
-                result = self.cli("append", token, self.target)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("is already on the sealed command line", result.stderr)
-                self.assertEqual(self.target.read_bytes(), target_before)
-
-    def test_extraction_fails_when_subject_is_missing_or_changes_unsupported(self):
-        source = CONTAINERFILE.read_text()
-        marker = f"&& {INSTALLED_HELPER} remove tilo.install {TARGET}"
-        self.assertEqual(source.count(marker), 1)
-        for changed in ("", source.replace(marker, marker + " && true"),
-                        source.replace(marker, "&& unexpected_command\n    " + marker)):
-            with self.subTest(source=changed[-100:]):
-                with self.assertRaises(ValueError):
-                    projection_commands(changed)
 
 
 if __name__ == "__main__":

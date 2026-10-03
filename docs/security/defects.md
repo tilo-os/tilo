@@ -42,9 +42,11 @@ the ceremony persists that seed, and `IdentityRecord::into_threshold_identity` r
 whose secret does not derive its recorded public key. The mismatch is fatal in `runtime-identity`
 in every build profile. Firstboot now goes through the same encoder, so there is one writer of
 the format. Held by
-`crates/sdk/ui-core/src/widget/identity_flow/mod.rs::tests::ceremony_minted_record_signs_for_its_own_recorded_public_key`
+`crates/sdk/ui-core/src/widget/identity_flow/mod.rs::tests::identity_record_serialization_and_signing_round_trips`
+(phase `ceremony_minted_record_signs_for_its_own_recorded_public_key`)
 and
-`crates/runtime/runtime-identity/src/lib.rs::tests::secret_that_does_not_derive_the_recorded_pubkey_is_refused`.
+`crates/runtime/runtime-identity/src/unix.rs::tests::a_local_secret_must_derive_the_recorded_key_to_sign`
+(phase `secret_that_does_not_derive_the_recorded_pubkey_is_refused`).
 
 ---
 
@@ -416,8 +418,10 @@ and returns its serialized bytes for fan-out. Existing members process the same
 commit, and the removed member becomes inactive after processing it. The
 two-member convenience admission now refuses once an existing peer would need
 a commit, so multi-party admission cannot silently discard epoch state. Held by
-`third_member_joins::removal_commit_advances_survivors_and_excludes_removed_member`
-and `multi_party_add_cannot_drop_the_commit`. Production brokers now validate
+`third_member_joins::members_who_miss_or_are_removed_by_a_commit_cannot_decrypt_after_it`
+(phase `removal_commit_advances_survivors_and_excludes_removed_member`) and
+`third_member_joins::a_third_member_joins_and_everyone_can_talk` (phase
+`multi_party_add_cannot_drop_the_commit`). Production brokers now validate
 route-bound signed metadata and relay opaque MLS payloads byte-for-byte, while
 `ui::collaboration` can encrypt/decrypt after a trusted caller installs the
 exact route's `ChannelGroup`. The crypto layer now supplies vault-key-sealed
@@ -526,7 +530,7 @@ Observed twice:
   not been buildable from `main` all morning, and nothing about it was specific to any of those
   commits.
 
-`docs/supply-chain.md` claims builds are reproducible across time. `os/rpms-snapshot.env` +
+`docs/supply-chain.md` claims builds are reproducible across time. `set-<fingerprint>` resolution +
 `os/Containerfile.rpms` genuinely deliver that for the package set, but the base underneath
 evaporates, so a rebuild weeks later does not merely differ — it does not run. Supply-chain
 integrity rests on the pin being real rather than aspirational: a pin that reliably fails is one
@@ -550,7 +554,7 @@ Two adjacent holes in the same guarantee were found alongside it:
   written (it hardcodes the `tilo/fedora-bootc` destination and asserts an `ostree.linux` label
   fedora-minimal does not carry). Parameterise that workflow over source/destination, mirror
   fedora-minimal, and add a second ref to `os/base-snapshot.env` that
-  `.forgejo/workflows/tilo-relay.yaml` passes alongside `BASE_REF`.
+  `.forgejo/workflows/release-relay.yml` passes alongside `BASE_REF`.
 - `os/Containerfile`'s `wpe-builder` stage installs its build deps with `dnf builddep
   webkitgtk6.0` against live Fedora repos, a deliberate exception noted in the file. That much is
   still open. The stage was also **entirely broken**, and unpinned turned out to mean unwatched in
@@ -636,6 +640,53 @@ debug builds, which is where `catch_unwind` works.
 
 ---
 
+## P1-9 — A fetched namespace tree is not bound to the requesting workspace
+
+`crates/system/fs/src/sync.rs`, `sync/session.rs`, `main.rs`
+
+The namespace is one Automerge document per workspace, and nothing inside its bytes says which
+workspace it is. Every path that accepts one from a peer checked the peer's certificate, but none
+checked the tree against the workspace the ticket names:
+
+- The sync ALPN (`tilo-fs-sync/0`) carried no workspace at all. `fetch_remote_doc` merged whatever
+  document the peer sent, and both sides of `MODE_SYNC` fed any sync message into `sync_receive`.
+  A home peer serves several workspaces under one device key, so a request could reach the wrong
+  one, and a lying peer could serve any tree it held.
+- A read-only device's per-request pull fetched the full document from any peer that had ever
+  authenticated to it and merged it, with no check of the local policy at all.
+- Bootstrap merged documents from every persisted content peer, including peers registered for
+  another workspace and ticketless legacy entries.
+- On the session plane only the server compared the request's `workspace_id`. The client applied
+  whatever `Sync` and `NamespaceChunk` frames came back.
+- The exact-record share client ignored the response's session, so a snapshot from a session on
+  another workspace or record was taken as the invite's.
+
+Signed changesets (`PullChangesets`) were already bound: the signed header carries the workspace
+and `apply_changeset` refuses a mismatch.
+
+**Resolved.** Every namespace request names its workspace (`tilo-fs-sync/1`,
+`tilo-fs-session/2`). Every namespace payload, whether a document, the changes beyond a set of
+heads or a sync message, travels with a `NamespaceBindingV1`: the sending device's signature over
+the workspace, the payload kind and the digest of the exact bytes. Receivers on both sides apply a
+payload only after `sync::accept_namespace_payload` has accepted it. That check requires all of:
+
+- the binding names the requested workspace;
+- it was signed by the authenticated peer's own device;
+- the bytes match the signed digest;
+- the local policy lets that peer read the whole workspace (write it, for sync).
+
+A host refuses a request for another workspace explicitly. Bootstrap takes the tree only from the
+ticket's node and from persisted peers registered for the same workspace. The share client refuses
+a snapshot whose session is not the invite's workspace and record. Held by
+`crates/system/fs/src/namespace_binding.rs::tests`, the
+`crates/system/fs/src/sync/tests.rs` tests from
+`a_document_of_another_workspace_is_refused_although_validly_signed` to
+`a_read_only_pull_merges_only_a_members_document_of_this_workspace`,
+`crates/system/fs/src/sync/session/tests.rs` and
+`crates/system/fs/src/record_repository.rs::tests::a_validly_signed_changeset_of_another_workspace_is_refused`.
+
+---
+
 ## P2-1 — `PeerId` is a 64-bit fold of the public key
 
 `crates/session/shell/src/network/behaviour.rs:98-107` derives the wire `PeerId` as a 64-bit FNV-1a fold of the
@@ -660,8 +711,7 @@ from first run. The same function documents a known TOCTOU window between write 
 
 **Resolved.** An unreadable key file propagates as an error with the bytes left on disk, and the
 compositor leaves peer sync off rather than syncing an unsalted id space. The key itself is now the
-machine's one device key, so the compositor no longer keeps a network identity of its own; an
-an existing installation's transport key is adopted seed-and-all so the machine keeps its Iroh `EndpointId`.
+machine's one device key, so the compositor no longer keeps a network identity of its own.
 The write goes through an atomic write-with-mode, closing the TOCTOU window. Held by
 `crates/session/shell/src/network/behaviour.rs::tests::unreadable_key_file_raises_instead_of_rotating_identity`
 and `::key_reachable_outside_the_trust_group_raises_instead_of_rotating`.
@@ -679,8 +729,8 @@ production collaboration message; a later revocation removes the peer immediatel
 also withdraws this machine's exported filesystem authority and stops the app identity broker
 from signing locally. Held by
 `shell::network::tests::identity_hello_redeems_invite_as_editor_and_revocation_removes_trust`,
-`shell::state::identity_fs_tests::filesystem_export_maps_selected_person_through_verified_device_chain`,
-and `identity_broker::tests::signing_requires_the_exact_app_action_capability`.
+`shell::state::identity_fs_tests::filesystem_export_maps_verified_people_and_per_workspace_membership`,
+and `identity_broker::tests::identity_service_wire_is_pinned_and_signing_requires_the_exact_capability`.
 
 ## P2-4 — Egress documentation describes a weaker mechanism than the code implements
 

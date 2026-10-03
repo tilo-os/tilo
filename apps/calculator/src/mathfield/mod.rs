@@ -15,6 +15,7 @@ pub mod layout;
 pub mod model;
 pub mod render;
 
+use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use vello::Scene;
@@ -306,19 +307,14 @@ impl MathField {
         // Clip to the field rect so a long/tall formula scrolls within a
         // bounded box instead of spilling over neighbouring rows.
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &self.rect);
-        render::draw_field(
-            scene,
-            t,
-            tr,
-            theme,
-            layout,
-            origin,
-            caret,
-            sel.as_ref(),
-            &sel_gaps_ref,
-            text_color,
-            focused,
-        );
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
+        if let Some(sel) = sel.as_ref() {
+            render::draw_selection(&mut ctx, origin, sel, &sel_gaps_ref);
+        }
+        ui::math::draw_layout(ctx.scene, t, ctx.text, layout, origin, text_color);
+        if focused && let Some(g) = caret {
+            render::draw_caret(&mut ctx, origin, g);
+        }
         scene.pop_layer();
     }
 

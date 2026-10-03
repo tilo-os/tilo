@@ -6,7 +6,7 @@
 use std::fs::File;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use ui::time::{Duration, Instant, UNIX_EPOCH};
 
 use serde::Deserialize;
 
@@ -61,7 +61,7 @@ pub struct TemporaryEgressLease {
 impl TemporaryEgressLease {
     #[must_use]
     pub fn expiry_label(&self) -> String {
-        let now = SystemTime::now()
+        let now = ui::time::wall()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_secs());
         if self.expires_at_unix <= now {
@@ -314,7 +314,7 @@ impl ApplianceOwnerClient {
             status_pending: false,
             action_pending: false,
             action_result: None,
-            next_refresh: Instant::now()
+            next_refresh: ui::time::now()
                 .checked_sub(STATUS_INTERVAL)
                 .unwrap_or_else(Instant::now),
             status: ApplianceStatus::unavailable("Checking the Windows appliance…"),
@@ -334,11 +334,11 @@ impl ApplianceOwnerClient {
     }
 
     pub fn refresh(&mut self) {
-        if self.status_pending || self.action_pending || Instant::now() < self.next_refresh {
+        if self.status_pending || self.action_pending || ui::time::now() < self.next_refresh {
             return;
         }
         self.status_pending = true;
-        self.next_refresh = Instant::now() + STATUS_INTERVAL;
+        self.next_refresh = ui::time::now() + STATUS_INTERVAL;
         let sender = self.sender.clone();
         std::thread::spawn(move || {
             let _ = sender.send(OwnerEvent::Status(read_status()));
@@ -643,99 +643,98 @@ mod tests {
     use std::io::Read;
 
     #[test]
-    fn parses_only_the_typed_owner_status_shape() {
-        let status: ApplianceStatus = serde_json::from_str(
+    fn owner_status_parses_only_the_typed_shape() {
+        // Case `parses_only_the_typed_owner_status_shape`.
+        {
+            let status: ApplianceStatus = serde_json::from_str(
             r#"{"schema_version":1,"configured":true,"phase":"ready","license":"digitally_activated","catalog_generation":4,"published_applications":2,"recovery_available":true}"#,
         )
         .unwrap();
-        assert!(status.is_provisioned());
-        assert_eq!(status.phase_label(), "Ready");
-        assert_eq!(status.power_state, AppliancePowerState::Unknown);
-        assert_eq!(status.temporary_egress, None);
-        assert_eq!(
-            status.next_step_label(),
-            "Windows is ready for published applications"
-        );
-        assert_eq!(
-            status.license_label(),
-            "Windows reports digitally activated"
-        );
-        assert_eq!(status.license_detail(), None);
-    }
-
-    #[test]
-    fn unactivated_status_is_management_guidance_not_a_licensing_claim() {
-        let status = ApplianceStatus {
-            schema_version: 1,
-            configured: true,
-            phase: AppliancePhase::Ready,
-            license: LicenseState::Unlicensed,
-            catalog_generation: 0,
-            published_applications: 0,
-            recovery_available: true,
-            power_state: AppliancePowerState::Running,
-            temporary_egress: None,
-            detail: None,
-        };
-        assert_eq!(
-            status.license_label(),
-            "Windows reports that it is not activated"
-        );
-        assert!(
-            status
-                .license_detail()
-                .is_some_and(|detail| detail.contains("does not keep product keys"))
-        );
-    }
-
-    #[test]
-    fn rejects_untyped_owner_status_fields() {
-        let result = serde_json::from_str::<ApplianceStatus>(
-            r#"{"schema_version":1,"configured":false,"phase":"not_provisioned","license":"unknown","catalog_generation":0,"published_applications":0,"recovery_available":false,"command":"cmd.exe"}"#,
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn parses_temporary_egress_and_power_state_without_exposing_a_lease_id() {
-        let status: ApplianceStatus = serde_json::from_str(
+            assert!(status.is_provisioned());
+            assert_eq!(status.phase_label(), "Ready");
+            assert_eq!(status.power_state, AppliancePowerState::Unknown);
+            assert_eq!(status.temporary_egress, None);
+            assert_eq!(
+                status.next_step_label(),
+                "Windows is ready for published applications"
+            );
+            assert_eq!(
+                status.license_label(),
+                "Windows reports digitally activated"
+            );
+            assert_eq!(status.license_detail(), None);
+        }
+        // Case `unactivated_status_is_management_guidance_not_a_licensing_claim`.
+        {
+            let status = ApplianceStatus {
+                schema_version: 1,
+                configured: true,
+                phase: AppliancePhase::Ready,
+                license: LicenseState::Unlicensed,
+                catalog_generation: 0,
+                published_applications: 0,
+                recovery_available: true,
+                power_state: AppliancePowerState::Running,
+                temporary_egress: None,
+                detail: None,
+            };
+            assert_eq!(
+                status.license_label(),
+                "Windows reports that it is not activated"
+            );
+            assert!(
+                status
+                    .license_detail()
+                    .is_some_and(|detail| detail.contains("does not keep product keys"))
+            );
+        }
+        // Case `rejects_untyped_owner_status_fields`.
+        {
+            let result = serde_json::from_str::<ApplianceStatus>(
+                r#"{"schema_version":1,"configured":false,"phase":"not_provisioned","license":"unknown","catalog_generation":0,"published_applications":0,"recovery_available":false,"command":"cmd.exe"}"#,
+            );
+            assert!(result.is_err());
+        }
+        // Case `parses_temporary_egress_and_power_state_without_exposing_a_lease_id`.
+        {
+            let status: ApplianceStatus = serde_json::from_str(
             r#"{"schema_version":1,"configured":true,"phase":"ready","license":"unlicensed","catalog_generation":4,"published_applications":2,"recovery_available":true,"power_state":"suspended","temporary_egress":{"purpose":"activation","expires_at_unix":4102444800}}"#,
         )
         .unwrap();
-        assert_eq!(status.power_state, AppliancePowerState::Suspended);
-        assert!(status.power_state.allows(LifecycleAction::Resume));
-        assert!(!status.power_state.allows(LifecycleAction::Shutdown));
-        assert!(AppliancePowerState::ShutDown.allows(LifecycleAction::Start));
-        assert!(AppliancePowerState::Paused.allows(LifecycleAction::Resume));
-        assert_eq!(
-            status.temporary_egress.as_ref().map(|lease| lease.purpose),
-            Some(EgressPurpose::Activation)
-        );
-    }
+            assert_eq!(status.power_state, AppliancePowerState::Suspended);
+            assert!(status.power_state.allows(LifecycleAction::Resume));
+            assert!(!status.power_state.allows(LifecycleAction::Shutdown));
+            assert!(AppliancePowerState::ShutDown.allows(LifecycleAction::Start));
+            assert!(AppliancePowerState::Paused.allows(LifecycleAction::Resume));
+            assert_eq!(
+                status.temporary_egress.as_ref().map(|lease| lease.purpose),
+                Some(EgressPurpose::Activation)
+            );
+        }
+        // Case `iso_handoff_streams_the_open_descriptor_not_a_later_path_reopen`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let source_path = dir.path().join("selected.iso");
+            let captured_path = dir.path().join("captured.iso");
+            std::fs::write(&source_path, b"accepted ISO descriptor").unwrap();
+            let source = File::open(&source_path).unwrap();
+            std::fs::remove_file(&source_path).unwrap();
+            std::fs::write(&source_path, b"replacement ISO pathname").unwrap();
 
-    #[test]
-    fn iso_handoff_streams_the_open_descriptor_not_a_later_path_reopen() {
-        let dir = tempfile::tempdir().unwrap();
-        let source_path = dir.path().join("selected.iso");
-        let captured_path = dir.path().join("captured.iso");
-        std::fs::write(&source_path, b"accepted ISO descriptor").unwrap();
-        let source = File::open(&source_path).unwrap();
-        std::fs::remove_file(&source_path).unwrap();
-        std::fs::write(&source_path, b"replacement ISO pathname").unwrap();
-
-        let mut command = Command::new("sh");
-        command
-            .arg("-c")
-            .arg("cat > \"$1\"")
-            .arg("tilo-test-capture")
-            .arg(&captured_path);
-        let output = command_with_stdin(command, source).unwrap();
-        assert!(output.status.success());
-        let mut captured = String::new();
-        File::open(captured_path)
-            .unwrap()
-            .read_to_string(&mut captured)
-            .unwrap();
-        assert_eq!(captured, "accepted ISO descriptor");
+            let mut command = Command::new("sh");
+            command
+                .arg("-c")
+                .arg("cat > \"$1\"")
+                .arg("tilo-test-capture")
+                .arg(&captured_path);
+            let output = command_with_stdin(command, source).unwrap();
+            assert!(output.status.success());
+            let mut captured = String::new();
+            File::open(captured_path)
+                .unwrap()
+                .read_to_string(&mut captured)
+                .unwrap();
+            assert_eq!(captured, "accepted ISO descriptor");
+        }
     }
 }

@@ -1,8 +1,7 @@
 //! Typed Automerge schema for Maps' durable collaborative resources.
 //!
 //! The `maps_v2` map has named fields for each durable resource. It never uses
-//! a JSON/native-tree projection as authority; the old `maps` JSON text is a
-//! read-only migration source. Search results and viewport POIs are local,
+//! a JSON/native-tree projection as authority. Search results and viewport POIs are local,
 //! derived caches and deliberately have no CRDT representation.
 
 #![allow(
@@ -17,8 +16,8 @@
 )]
 
 use crate::model::{
-    Category, DownloadedRegion, LatLon, Maneuver, MapModel, Place, Route, RouteStep,
-    TransitJourney, TransitLeg, TransitMode, TransitTime, TransitTimeMode, TravelMode,
+    Category, DownloadedRegion, LatLon, MapModel, Place, Route, TransitJourney, TransitTime,
+    TransitTimeMode, TravelMode,
 };
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
@@ -56,7 +55,7 @@ pub struct MapsDoc;
 
 impl MapsDoc {
     pub fn load(doc: &AutoCommit) -> Option<MapModel> {
-        Self::load_v2(doc).or_else(|| Self::load_legacy(doc))
+        Self::load_v2(doc)
     }
 
     /// Explicit durable schema writer. Ranked results, drafts, status, camera,
@@ -66,8 +65,6 @@ impl MapsDoc {
         let r = Self::root(doc);
         Self::places(doc, &r, &m.places);
         Self::recents(doc, &r, &m.recents);
-        Self::route(doc, &r, m.route.as_ref());
-        Self::transit(doc, &r, &m.transit);
         Self::text_put(doc, &r, "mode", travel_name(m.mode));
         Self::opt_point(doc, &r, "origin", m.origin);
         Self::text_put(doc, &r, "origin_name", &m.origin_name);
@@ -165,12 +162,6 @@ impl MapsDoc {
         let r = Self::root(doc);
         Self::active_plan_put(doc, &r, "transit_plan", &ActivePlan::None)
     }
-    pub fn set_route(doc: &mut AutoCommit, route: &Route) {
-        let r = Self::root(doc);
-        Self::route(doc, &r, Some(route));
-        Self::b(doc, &r, "route_deleted", false)
-    }
-
     pub fn set_active_route(
         doc: &mut AutoCommit,
         route: &Route,
@@ -232,26 +223,6 @@ impl MapsDoc {
             let _ = doc.put(&r, "transit_time", json);
         }
     }
-    pub fn set_transit(doc: &mut AutoCommit, items: &[TransitJourney]) {
-        let r = Self::root(doc);
-        Self::transit(doc, &r, items);
-        Self::b(doc, &r, "transit_deleted", false)
-    }
-    pub fn set_route_context(
-        doc: &mut AutoCommit,
-        origin: Option<LatLon>,
-        origin_name: &str,
-        dest: Option<LatLon>,
-        dest_name: &str,
-        mode: TravelMode,
-    ) {
-        let r = Self::root(doc);
-        Self::opt_point(doc, &r, "origin", origin);
-        Self::text_put(doc, &r, "origin_name", origin_name);
-        Self::opt_point(doc, &r, "dest", dest);
-        Self::text_put(doc, &r, "dest_name", dest_name);
-        Self::text_put(doc, &r, "mode", travel_name(mode))
-    }
     pub fn add_region(doc: &mut AutoCommit, x: &DownloadedRegion) {
         let r = Self::root(doc);
         let rows = Self::map_make(doc, &r, "regions");
@@ -274,14 +245,6 @@ impl MapsDoc {
         let mut m = MapModel::default();
         m.places = Self::places_get(doc, &r);
         m.recents = Self::recents_get(doc, &r);
-        m.route = (!Self::conflict_true(doc, &r, "route_deleted"))
-            .then(|| Self::route_get(doc, &r))
-            .flatten();
-        m.transit = if Self::conflict_true(doc, &r, "transit_deleted") {
-            vec![]
-        } else {
-            Self::transit_get(doc, &r)
-        };
         m.mode = read_str_or_text(doc, &r, "mode")
             .as_deref()
             .and_then(travel)
@@ -369,12 +332,6 @@ impl MapsDoc {
     fn active_plan_get(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<ActivePlan> {
         read_str_or_text(doc, root, key).and_then(|json| serde_json::from_str(&json).ok())
     }
-    fn load_legacy(doc: &AutoCommit) -> Option<MapModel> {
-        let Ok(Some((Value::Object(ObjType::Text), id))) = doc.get(&ROOT, "maps") else {
-            return None;
-        };
-        serde_json::from_str(&doc.text(&id).ok()?).ok()
-    }
     fn root(doc: &mut AutoCommit) -> ObjId {
         Self::map_make(doc, &ROOT, ROOT_KEY)
     }
@@ -392,23 +349,9 @@ impl MapsDoc {
                 .unwrap_or_else(|_| p.clone()),
         }
     }
-    fn list_make(doc: &mut AutoCommit, p: &ObjId, k: &str) -> ObjId {
-        match doc.get(p, k) {
-            Ok(Some((Value::Object(ObjType::List), id))) => id,
-            _ => doc
-                .put_object(p, k, ObjType::List)
-                .unwrap_or_else(|_| p.clone()),
-        }
-    }
     fn map(doc: &AutoCommit, p: &ObjId, k: &str) -> Option<ObjId> {
         match doc.get(p, k).ok().flatten() {
             Some((Value::Object(ObjType::Map), id)) => Some(id),
-            _ => None,
-        }
-    }
-    fn list(doc: &AutoCommit, p: &ObjId, k: &str) -> Option<ObjId> {
-        match doc.get(p, k).ok().flatten() {
-            Some((Value::Object(ObjType::List), id)) => Some(id),
             _ => None,
         }
     }
@@ -526,136 +469,6 @@ impl MapsDoc {
         v.into_iter().map(|(_, _, q)| q).collect()
     }
 
-    fn route(doc: &mut AutoCommit, r: &ObjId, x: Option<&Route>) {
-        let Some(x) = x else { return };
-        let row = Self::map_make(doc, r, "route");
-        Self::text_put(doc, &row, "mode", travel_name(x.mode));
-        Self::f(doc, &row, "distance_m", x.distance_m);
-        Self::f(doc, &row, "duration_s", x.duration_s);
-        Self::points(doc, &row, "geometry", &x.geometry);
-        let steps = Self::list_make(doc, &row, "steps");
-        Self::clear(doc, &steps);
-        for (n, s) in x.steps.iter().enumerate() {
-            let Ok(q) = doc.insert_object(&steps, n, ObjType::Map) else {
-                continue;
-            };
-            Self::text_put(doc, &q, "instruction", &s.instruction);
-            Self::f(doc, &q, "distance_m", s.distance_m);
-            Self::text_put(doc, &q, "maneuver", maneuver_name(s.maneuver))
-        }
-        Self::point(doc, &row, "from", x.from);
-        Self::point(doc, &row, "to", x.to)
-    }
-    fn route_get(doc: &AutoCommit, r: &ObjId) -> Option<Route> {
-        let x = Self::map(doc, r, "route")?;
-        let steps = Self::list(doc, &x, "steps")
-            .into_iter()
-            .flat_map(|l| {
-                (0..doc.length(&l)).filter_map(move |n| {
-                    let q = Self::index_map(doc, &l, n)?;
-                    Some(RouteStep {
-                        instruction: read_str_or_text(doc, &q, "instruction")?,
-                        distance_m: read_number(doc, &q, "distance_m")?,
-                        maneuver: maneuver(&read_str_or_text(doc, &q, "maneuver")?)?,
-                    })
-                })
-            })
-            .collect();
-        Some(Route {
-            mode: travel(&read_str_or_text(doc, &x, "mode")?)?,
-            distance_m: read_number(doc, &x, "distance_m")?,
-            duration_s: read_number(doc, &x, "duration_s")?,
-            geometry: Self::points_get(doc, &x, "geometry"),
-            steps,
-            from: Self::point_get(doc, &x, "from")?,
-            to: Self::point_get(doc, &x, "to")?,
-        })
-    }
-    fn transit(doc: &mut AutoCommit, r: &ObjId, v: &[TransitJourney]) {
-        let list = Self::list_make(doc, r, "transit");
-        Self::clear(doc, &list);
-        for (n, x) in v.iter().enumerate() {
-            let Ok(row) = doc.insert_object(&list, n, ObjType::Map) else {
-                continue;
-            };
-            Self::text_put(doc, &row, "dep", &x.dep);
-            Self::text_put(doc, &row, "arr", &x.arr);
-            Self::u(doc, &row, "duration_min", u64::from(x.duration_min));
-            Self::u(doc, &row, "transfers", u64::from(x.transfers));
-            let legs = Self::list_make(doc, &row, "legs");
-            Self::clear(doc, &legs);
-            for (k, l) in x.legs.iter().enumerate() {
-                let Ok(q) = doc.insert_object(&legs, k, ObjType::Map) else {
-                    continue;
-                };
-                Self::leg(doc, &q, l)
-            }
-        }
-    }
-    fn leg(doc: &mut AutoCommit, r: &ObjId, x: &TransitLeg) {
-        Self::text_put(doc, r, "mode", transit_name(x.mode));
-        for (k, v) in [
-            ("line", &x.line),
-            ("headsign", &x.headsign),
-            ("from_name", &x.from_name),
-            ("to_name", &x.to_name),
-            ("dep", &x.dep),
-            ("arr", &x.arr),
-            ("agency", &x.agency),
-        ] {
-            Self::text_put(doc, r, k, v)
-        }
-        Self::u(doc, r, "duration_min", u64::from(x.duration_min));
-        Self::u(doc, r, "num_stops", u64::from(x.num_stops));
-        Self::points(doc, r, "geometry", &x.geometry);
-        Self::opt_text(doc, r, "color", x.color.as_deref());
-        Self::opt_text(doc, r, "text_color", x.text_color.as_deref());
-        Self::b(doc, r, "realtime", x.realtime)
-    }
-    fn transit_get(doc: &AutoCommit, r: &ObjId) -> Vec<TransitJourney> {
-        Self::list(doc, r, "transit")
-            .into_iter()
-            .flat_map(|l| {
-                (0..doc.length(&l)).filter_map(move |n| {
-                    let x = Self::index_map(doc, &l, n)?;
-                    let legs = Self::list(doc, &x, "legs")
-                        .into_iter()
-                        .flat_map(|q| {
-                            (0..doc.length(&q)).filter_map(move |k| {
-                                Self::leg_get(doc, &Self::index_map(doc, &q, k)?)
-                            })
-                        })
-                        .collect();
-                    Some(TransitJourney {
-                        dep: read_str_or_text(doc, &x, "dep")?,
-                        arr: read_str_or_text(doc, &x, "arr")?,
-                        duration_min: read_u64(doc, &x, "duration_min")? as u32,
-                        transfers: read_u64(doc, &x, "transfers")? as u32,
-                        legs,
-                    })
-                })
-            })
-            .collect()
-    }
-    fn leg_get(doc: &AutoCommit, r: &ObjId) -> Option<TransitLeg> {
-        Some(TransitLeg {
-            mode: transit(&read_str_or_text(doc, r, "mode")?)?,
-            line: read_str_or_text(doc, r, "line")?,
-            headsign: read_str_or_text(doc, r, "headsign")?,
-            from_name: read_str_or_text(doc, r, "from_name")?,
-            to_name: read_str_or_text(doc, r, "to_name")?,
-            dep: read_str_or_text(doc, r, "dep")?,
-            arr: read_str_or_text(doc, r, "arr")?,
-            duration_min: read_u64(doc, r, "duration_min")? as u32,
-            num_stops: read_u64(doc, r, "num_stops")? as u32,
-            geometry: Self::points_get(doc, r, "geometry"),
-            color: read_str_or_text(doc, r, "color"),
-            text_color: read_str_or_text(doc, r, "text_color"),
-            agency: read_str_or_text(doc, r, "agency").unwrap_or_default(),
-            realtime: read_bool(doc, r, "realtime").unwrap_or(false),
-        })
-    }
-
     fn regions(doc: &mut AutoCommit, r: &ObjId, v: &[DownloadedRegion]) {
         let rows = Self::map_make(doc, r, "regions");
         let keep: std::collections::BTreeSet<_> = v.iter().map(|x| x.id.as_str()).collect();
@@ -727,43 +540,6 @@ impl MapsDoc {
             read_number(doc, &r, "lon")?,
         ))
     }
-    fn points(doc: &mut AutoCommit, p: &ObjId, k: &str, v: &[LatLon]) {
-        let l = Self::list_make(doc, p, k);
-        Self::clear(doc, &l);
-        for (n, x) in v.iter().enumerate() {
-            let Ok(r) = doc.insert_object(&l, n, ObjType::Map) else {
-                continue;
-            };
-            Self::f(doc, &r, "lat", x.lat);
-            Self::f(doc, &r, "lon", x.lon)
-        }
-    }
-    fn points_get(doc: &AutoCommit, p: &ObjId, k: &str) -> Vec<LatLon> {
-        Self::list(doc, p, k)
-            .into_iter()
-            .flat_map(|l| {
-                (0..doc.length(&l)).filter_map(move |n| {
-                    let r = Self::index_map(doc, &l, n)?;
-                    Some(LatLon::new(
-                        read_number(doc, &r, "lat")?,
-                        read_number(doc, &r, "lon")?,
-                    ))
-                })
-            })
-            .collect()
-    }
-    fn clear(doc: &mut AutoCommit, l: &ObjId) {
-        for n in (0..doc.length(l)).rev() {
-            let _ = doc.delete(l, n);
-        }
-    }
-    fn opt_text(doc: &mut AutoCommit, p: &ObjId, k: &str, v: Option<&str>) {
-        if let Some(v) = v {
-            Self::text_put(doc, p, k, v)
-        } else {
-            let _ = doc.delete(p, k);
-        }
-    }
     fn text_put(doc: &mut AutoCommit, p: &ObjId, k: &str, v: &str) {
         match doc.get(p, k) {
             Ok(Some((Value::Object(ObjType::Text), id))) => {
@@ -796,12 +572,6 @@ impl MapsDoc {
             let _ = doc.put(p, k, v);
         }
     }
-    fn index_map(doc: &AutoCommit, p: &ObjId, n: usize) -> Option<ObjId> {
-        match doc.get(p, n).ok().flatten() {
-            Some((Value::Object(ObjType::Map), id)) => Some(id),
-            _ => None,
-        }
-    }
     /// An `Int`, or a `Uint` that fits in `i64`.
     fn i_get(doc: &AutoCommit, p: &ObjId, k: &str) -> Option<i64> {
         match read_scalar(doc, p, k)? {
@@ -817,71 +587,49 @@ fn recent_id(q: &str) -> String {
 macro_rules! names{($a:ident,$b:ident,$t:ty,{$($v:ident=>$s:literal),+})=>{fn $a(x:$t)->&'static str{match x{$(<$t>::$v=>$s),+}}fn $b(x:&str)->Option<$t>{match x{$($s=>Some(<$t>::$v)),+,_=>None}}};}
 names!(category_name,category,Category,{Landmark=>"landmark",Cafe=>"cafe",Restaurant=>"restaurant",Bar=>"bar",Museum=>"museum",Park=>"park",Transit=>"transit",Hotel=>"hotel",Shop=>"shop",Hospital=>"hospital",Other=>"other"});
 names!(travel_name,travel,TravelMode,{Car=>"car",Transit=>"transit",Bike=>"bike",Foot=>"foot"});
-names!(maneuver_name,maneuver,Maneuver,{Depart=>"depart",Continue=>"continue",SlightLeft=>"slight_left",Left=>"left",SharpLeft=>"sharp_left",SlightRight=>"slight_right",Right=>"right",SharpRight=>"sharp_right",Uturn=>"uturn",Roundabout=>"roundabout",Merge=>"merge",Arrive=>"arrive"});
-names!(transit_name,transit,TransitMode,{Walk=>"walk",Bus=>"bus",Tram=>"tram",Subway=>"subway",Rail=>"rail",Ferry=>"ferry"});
 names!(time_name,time,TransitTimeMode,{Depart=>"depart",Arrive=>"arrive"});
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::sample;
-    use automerge::ActorId;
-    use tilo_automerge::ApplyIncoming;
     #[test]
-    fn typed_schema_excludes_window_local_state() {
-        let mut d = AutoCommit::new();
-        let mut m = sample::default_model();
-        m.selected = Some("marienplatz".into());
-        m.panel = crate::model::Panel::Directions;
-        m.transit_choice = 1;
-        MapsDoc::save(&mut d, &m);
-        let out = MapsDoc::load(&d).unwrap();
-        assert_eq!(
-            out.route.as_ref().map(|route| route.mode),
-            m.route.as_ref().map(|route| route.mode)
-        );
-        assert!(
-            (out.route.as_ref().map_or(0.0, |route| route.distance_m)
-                - m.route.as_ref().map_or(0.0, |route| route.distance_m))
-            .abs()
-                < f64::EPSILON
-        );
-        assert_eq!(out.transit.len(), m.transit.len());
-        assert_eq!(
-            out.transit
-                .iter()
-                .map(|journey| (&journey.dep, &journey.arr, journey.duration_min))
-                .collect::<Vec<_>>(),
-            m.transit
-                .iter()
-                .map(|journey| (&journey.dep, &journey.arr, journey.duration_min))
-                .collect::<Vec<_>>()
-        );
-        assert!(out.results.is_empty());
-        assert!(out.selected.is_none());
-        assert_eq!(out.panel, crate::model::Panel::Explore);
-        assert_eq!(out.transit_choice, 0);
-        assert!(d.get(&ROOT, "maps").unwrap().is_none())
-    }
-    #[test]
-    fn legacy_route_fields_still_merge_and_load() {
-        let mut s = AutoCommit::new();
-        let m = sample::default_model();
-        MapsDoc::save(&mut s, &m);
-        let root = MapsDoc::existing(&s).unwrap();
-        s.delete(&root, "route_plan").unwrap();
-        let bytes = s.save();
-        let mut a = AutoCommit::load(&bytes).unwrap();
-        a.set_actor(ActorId::from([1; 16].as_slice()));
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        b.set_actor(ActorId::from([2; 16].as_slice()));
-        let mut route = m.route.clone().unwrap();
-        route.distance_m = 1234.;
-        MapsDoc::set_route(&mut a, &route);
-        MapsDoc::set_route_context(&mut b, m.origin, "Changed", m.dest, &m.dest_name, m.mode);
-        a.merge_incoming(&mut b).unwrap();
-        let out = MapsDoc::load(&a).unwrap();
-        assert_eq!(out.route.unwrap().distance_m, 1234.);
-        assert_eq!(out.origin_name, "Changed")
+    fn schema_excludes_window_local_state() {
+        // Phase `typed_schema_excludes_window_local_state`.
+        {
+            let mut d = AutoCommit::new();
+            let mut m = sample::default_model();
+            m.selected = Some("marienplatz".into());
+            m.panel = crate::model::Panel::Directions;
+            m.transit_choice = 1;
+            MapsDoc::save(&mut d, &m);
+            let out = MapsDoc::load(&d).unwrap();
+            assert_eq!(
+                out.route.as_ref().map(|route| route.mode),
+                m.route.as_ref().map(|route| route.mode)
+            );
+            assert!(
+                (out.route.as_ref().map_or(0.0, |route| route.distance_m)
+                    - m.route.as_ref().map_or(0.0, |route| route.distance_m))
+                .abs()
+                    < f64::EPSILON
+            );
+            assert_eq!(out.transit.len(), m.transit.len());
+            assert_eq!(
+                out.transit
+                    .iter()
+                    .map(|journey| (&journey.dep, &journey.arr, journey.duration_min))
+                    .collect::<Vec<_>>(),
+                m.transit
+                    .iter()
+                    .map(|journey| (&journey.dep, &journey.arr, journey.duration_min))
+                    .collect::<Vec<_>>()
+            );
+            assert!(out.results.is_empty());
+            assert!(out.selected.is_none());
+            assert_eq!(out.panel, crate::model::Panel::Explore);
+            assert_eq!(out.transit_choice, 0);
+            assert!(d.get(&ROOT, "maps").unwrap().is_none())
+        }
     }
 }

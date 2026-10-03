@@ -1,11 +1,11 @@
 #[cfg(unix)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use tilo_ntfs_helper::limits;
     use std::{
         fs::OpenOptions,
         os::unix::fs::OpenOptionsExt,
         time::{Duration, Instant},
     };
+    use tilo_ntfs_helper::limits;
     let mut args = std::env::args_os().skip(1);
     let path = args.next().ok_or("expected regular image path")?;
     let mut copy_manifest = false;

@@ -38,6 +38,22 @@ pub fn get_volume() -> Result<f32, String> {
     parse_wpctl_volume(&out)
 }
 
+/// Whether the default sink is a real output. With no audio device
+/// `WirePlumber` still offers a "Dummy Output" (`auto_null`) whose volume reads
+/// and sets fine and does nothing, so a control over it has no device behind it.
+pub fn has_output_device() -> bool {
+    run_capture("wpctl", &["inspect", "@DEFAULT_AUDIO_SINK@"]).is_ok_and(|out| !is_dummy_sink(&out))
+}
+
+fn is_dummy_sink(inspect: &str) -> bool {
+    inspect.lines().any(|line| {
+        let line = line.trim_start_matches(|c: char| c.is_whitespace() || c == '*');
+        line.strip_prefix("node.name")
+            .and_then(|rest| rest.trim_start().strip_prefix('='))
+            .is_some_and(|value| value.trim().trim_matches('"') == "auto_null")
+    })
+}
+
 /// Toggle the default audio sink's mute state via
 /// `wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle`.
 ///
@@ -145,35 +161,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_wpctl_volume_simple() {
-        let s = "Volume: 0.45";
-        let v = parse_wpctl_volume(s).unwrap();
-        assert!((v - 0.45).abs() < 1e-6);
+    fn only_the_dummy_output_counts_as_no_device() {
+        let dummy = "id 34, type PipeWire:Interface:Node\n    media.class = \"Audio/Sink\"\n  * node.description = \"Dummy Output\"\n  * node.name = \"auto_null\"\n";
+        let real = "id 52, type PipeWire:Interface:Node\n  * node.description = \"Built-in Audio Analog Stereo\"\n  * node.name = \"alsa_output.pci-0000_00_1f.3.analog-stereo\"\n";
+        assert!(is_dummy_sink(dummy));
+        assert!(!is_dummy_sink(real));
+        assert!(!is_dummy_sink(""));
     }
 
     #[test]
-    fn parse_wpctl_volume_muted_suffix() {
-        let s = "Volume: 0.30 [MUTED]";
-        let v = parse_wpctl_volume(s).unwrap();
-        assert!((v - 0.30).abs() < 1e-6);
-    }
-
-    #[test]
-    fn parse_wpctl_volume_state_reads_level_and_mute_together() {
-        let unmuted = parse_wpctl_volume_state("Volume: 0.45\n").unwrap();
-        assert!((unmuted.level - 0.45).abs() < 1e-6);
-        assert!(!unmuted.muted);
-
-        let muted = parse_wpctl_volume_state("Volume: 0.30 [MUTED]\n").unwrap();
-        assert!(
-            (muted.level - 0.30).abs() < 1e-6,
-            "a muted sink still reports the level it will return to"
-        );
-        assert!(muted.muted);
-    }
-
-    #[test]
-    fn parse_wpctl_volume_garbage_is_err() {
+    fn wpctl_volume_lines_parse_level_and_mute_or_fail() {
+        for (case, line, level, muted) in [
+            ("parse_wpctl_volume_simple", "Volume: 0.45", 0.45, false),
+            (
+                "parse_wpctl_volume_muted_suffix",
+                "Volume: 0.30 [MUTED]",
+                0.30,
+                true,
+            ),
+        ] {
+            let v = parse_wpctl_volume(line).unwrap();
+            assert!((v - level).abs() < 1e-6, "case {case}: level {v}");
+            // The state parser reads level and mute together; a muted sink
+            // still reports the level it will return to.
+            let state = parse_wpctl_volume_state(&format!("{line}\n")).unwrap();
+            assert!(
+                (state.level - level).abs() < 1e-6,
+                "case {case}: state level"
+            );
+            assert_eq!(state.muted, muted, "case {case}: muted");
+        }
+        // parse_wpctl_volume_garbage_is_err
         assert!(parse_wpctl_volume("not-a-line").is_err());
     }
 

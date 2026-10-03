@@ -4,8 +4,9 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::binding::{BoxedBinding, Pulled};
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
@@ -36,9 +37,13 @@ pub struct Slider {
     is_dragging: bool,
     is_focused: bool,
     value: f64, // 0.0 to 1.0
-    on_change_path: String,
-    local_state: Option<crate::local_state::LocalBinding<f64>>,
+    /// Where the value lives: a document key or process-local state.
+    binding: Option<BoxedBinding<f64>>,
     on_change: Option<Box<dyn FnMut(f64)>>,
+    /// Invoke the bound action once per drag, when it is let go.
+    settles: bool,
+    /// The value when the current drag began.
+    drag_from: Option<f64>,
     action: Option<ActionEmitter<f64>>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
@@ -78,9 +83,10 @@ impl Slider {
             is_dragging: false,
             is_focused: false,
             value: 0.5,
-            on_change_path: on_change_path.to_string(),
-            local_state: None,
+            binding: Some(crate::doc_binding::number_key(on_change_path)),
             on_change: None,
+            settles: false,
+            drag_from: None,
             action: None,
             presence_path: Vec::new(),
             permission_scope: None,
@@ -98,10 +104,10 @@ impl Slider {
     /// through any clone update this slider on the next synchronization pass.
     /// Values are clamped to `0.0..=1.0` at the control boundary.
     pub fn from_state(state: &crate::LocalState<f64>) -> Self {
-        let (value, binding) = crate::local_state::LocalBinding::new(state);
+        let (value, binding) = super::binding::local(state);
         let mut slider = Self::new("slider", "");
         slider.value = value.clamp(0.0, 1.0);
-        slider.local_state = Some(binding);
+        slider.binding = Some(binding);
         slider.publish_local_state();
         slider
     }
@@ -115,6 +121,16 @@ impl Slider {
         if self.action.is_none() {
             self.on_change = Some(Box::new(callback));
         }
+        self
+    }
+
+    /// Invoke the bound action once per drag, with the value it is let go
+    /// at, rather than at every step of it; a key or an assistive action
+    /// still invokes it at once. For an action that is an undoable edit, so
+    /// one drag is one step.
+    #[must_use]
+    pub fn commits_on_release(mut self) -> Self {
+        self.settles = true;
         self
     }
 
@@ -141,7 +157,7 @@ impl Slider {
     }
 
     fn publish_local_state(&mut self) {
-        if let Some(binding) = &mut self.local_state {
+        if let Some(binding) = &mut self.binding {
             binding.publish(&self.value);
         }
     }
@@ -223,21 +239,17 @@ impl Slider {
     /// Commit a new value to the CRDT iff it differs from the cached
     /// `value` by more than a frame-of-noise epsilon. Returns `true` if
     /// the commit happened so callers can flag the event as handled.
-    fn commit_value(&mut self, new_value: f64, state: &mut AutoCommit, root: &ObjId) -> bool {
+    fn commit_value(&mut self, new_value: f64, state: &mut AppModel, root: &ModelPath) -> bool {
         if (new_value - self.value).abs() <= 0.001 {
             return false;
         }
         self.value = new_value;
         if let Some(action) = &mut self.action {
-            let _ = action.emit(self.value);
-        } else if self.local_state.is_some() {
-            self.publish_local_state();
-        } else {
-            let _ = state.put(
-                root,
-                self.on_change_path.as_str(),
-                automerge::ScalarValue::F64(self.value),
-            );
+            if !(self.settles && self.is_dragging) {
+                let _ = action.emit(self.value);
+            }
+        } else if let Some(binding) = &mut self.binding {
+            binding.push(state, root, &self.value);
         }
         if self.action.is_none()
             && let Some(callback) = self.on_change.as_mut()
@@ -456,6 +468,12 @@ impl Slider {
 }
 
 impl Widget for Slider {
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::presence::capability::PublishesPresence
+    );
+
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
@@ -464,31 +482,11 @@ impl Widget for Slider {
         self.is_hovered &= environment.supports_hover();
     }
 
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "Automerge integer values are normalized into this f64 slider model"
-    )]
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Some(value) = self
-            .local_state
-            .as_mut()
-            .and_then(crate::local_state::LocalBinding::poll)
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        if let Some(binding) = &mut self.binding
+            && let Pulled::Value(value) = binding.pull(state, root)
         {
             self.value = value.clamp(0.0, 1.0);
-            return;
-        }
-        if self.local_state.is_some() {
-            return;
-        }
-        if let Ok(Some((val, _))) = state.get(root, self.on_change_path.as_str())
-            && let Value::Scalar(s) = val
-        {
-            match s.as_ref() {
-                automerge::ScalarValue::F64(f) => self.value = *f,
-                automerge::ScalarValue::Int(i) => self.value = *i as f64,
-                automerge::ScalarValue::Uint(u) => self.value = *u as f64,
-                _ => {}
-            }
         }
     }
 
@@ -539,36 +537,25 @@ impl Widget for Slider {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Disabled: reject all input — no drag, no value change, no hover.
         if !self.effectively_enabled() {
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = p;
                 let hover = self.rect.contains(p);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
 
                 if self.is_dragging {
                     let new_value = self.value_from_cursor_x(p.x);
-                    if self.commit_value(new_value, state, root) {
-                        *handled = true;
+                    if self.commit_value(new_value, ctx.state, ctx.path) {
+                        *ctx.handled = true;
                     }
                 }
             }
@@ -585,13 +572,24 @@ impl Widget for Slider {
                 // "press on track to jump" affordance.
                 if *element_state == ElementState::Pressed && self.rect.contains(self.last_cursor) {
                     self.is_dragging = true;
-                    *focus_target = Some(node_id);
-                    *handled = true;
+                    self.drag_from = Some(self.value);
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                     let new_value = self.value_from_cursor_x(self.last_cursor.x);
-                    self.commit_value(new_value, state, root);
+                    self.commit_value(new_value, ctx.state, ctx.path);
                 } else if *element_state == ElementState::Released && self.is_dragging {
                     self.is_dragging = false;
-                    *handled = true;
+                    *ctx.handled = true;
+                    let moved = self
+                        .drag_from
+                        .take()
+                        .is_some_and(|from| (from - self.value).abs() > 0.001);
+                    if self.settles
+                        && moved
+                        && let Some(action) = &mut self.action
+                    {
+                        let _ = action.emit(self.value);
+                    }
                 }
             }
             _ => {}
@@ -673,8 +671,8 @@ impl Widget for Slider {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
         const STEP: f64 = 0.05;
@@ -707,55 +705,6 @@ impl Widget for Slider {
         }
     }
 
-    fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
-    }
-
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
-    }
-
-    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        let control_id = self.test_id().unwrap_or("slider");
-        if let Some(action) = &self.action {
-            vec![action.metadata(control_id)]
-        } else if !self.on_change_path.is_empty() {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::CollaborativeDocument(self.on_change_path.clone()),
-            }]
-        } else if self.on_change.is_some() {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::LegacyCallback,
-            }]
-        } else {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::SemanticAction(control_id.to_string()),
-            }]
-        }
-    }
-
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,
@@ -770,7 +719,7 @@ impl Widget for Slider {
         }
         self.draw(scene, transform, text_renderer, theme, presence);
 
-        if let Some(scope) = self.permission_scope()
+        if let Some(scope) = crate::permissions::capability::permission_scope(self)
             && !permissions.check(&scope)
         {
             let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
@@ -783,7 +732,7 @@ impl Widget for Slider {
             );
         }
 
-        if let Some(key) = self.presence_key()
+        if let Some(key) = crate::presence::capability::presence_key(self)
             && let Some(peers) = presence.here.get(&key)
             && let Some(user) = peers.first()
         {
@@ -792,9 +741,72 @@ impl Widget for Slider {
     }
 }
 
+impl crate::presence::capability::PublishesPresence for Slider {
+    fn presence_key(&self) -> Option<PresenceKey> {
+        if self.presence_path.is_empty() {
+            None
+        } else {
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
+        }
+    }
+}
+
+impl crate::permissions::capability::PermissionGated for Slider {
+    fn permission_scope(&self) -> Option<PermissionScope> {
+        self.permission_scope.clone()
+    }
+}
+
+impl crate::widget::controls::ActionControls for Slider {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.action {
+            let _ = action.install_custody(domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.action.as_mut().and_then(ActionEmitter::take)
+    }
+    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        let control_id = self.test_id().unwrap_or("slider");
+        if let Some(action) = &self.action {
+            vec![action.metadata(control_id)]
+        } else if let Some(key) = self.binding.as_ref().and_then(|b| b.document_key()) {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::CollaborativeDocument(key.to_owned()),
+            }]
+        } else if self.on_change.is_some() {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::LegacyCallback,
+            }]
+        } else {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::SemanticAction(control_id.to_string()),
+            }]
+        }
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::{AutoCommit, ReadDoc};
 
     /// Build a slider with a known rect so we don't need a full taffy pass.
     /// Rect spans [0..200, 0..30] — track-padding 5 px, so the track itself
@@ -838,290 +850,332 @@ mod tests {
         let root = automerge::ROOT;
         s.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 
     #[test]
-    fn knob_radius_grows_on_hover_and_drag() {
-        // Idle < hover < pressed. Visual contract for state contrast —
-        // if this test fails the slider has stopped scaling the knob
-        // and the polish has regressed.
-        let mut s = Slider::new("test", "v");
-        let r0 = s.knob_radius_for_state();
+    fn slider_pointer_input_hovers_drags_and_jumps() {
+        // Case `knob_radius_grows_on_hover_and_drag`.
+        {
+            // Idle < hover < pressed. Visual contract for state contrast —
+            // if this test fails the slider has stopped scaling the knob
+            // and the polish has regressed.
+            let mut s = Slider::new("test", "v");
+            let r0 = s.knob_radius_for_state();
 
-        s.set_hovered_for_test(true);
-        let r1 = s.knob_radius_for_state();
+            s.set_hovered_for_test(true);
+            let r1 = s.knob_radius_for_state();
 
-        s.set_dragging_for_test(true);
-        let r2 = s.knob_radius_for_state();
+            s.set_dragging_for_test(true);
+            let r2 = s.knob_radius_for_state();
 
-        assert!(r0 < r1, "hover must grow knob: idle={r0}, hover={r1}");
-        assert!(
-            r1 < r2,
-            "press must grow knob further: hover={r1}, press={r2}",
-        );
+            assert!(r0 < r1, "hover must grow knob: idle={r0}, hover={r1}");
+            assert!(
+                r1 < r2,
+                "press must grow knob further: hover={r1}, press={r2}",
+            );
+        }
+
+        // Case `drag_continues_after_cursor_leaves_rect`.
+        {
+            // Rect [0..200, 0..30]. Track usable width 190 (padding 5 each side).
+            let mut s = slider_at(0.0, 0.0, 200.0, 30.0);
+
+            // Move cursor inside, near the left edge of the track.
+            dispatch(&mut s, &cursor_moved(20.0, 15.0));
+            // Press inside the rect — drag begins.
+            dispatch(&mut s, &mouse_press());
+            assert!(s.is_dragging, "press inside rect must start drag");
+
+            // Cursor leaves the rect vertically (still within the track's
+            // horizontal range). The drag must continue updating `value`.
+            dispatch(&mut s, &cursor_moved(150.0, 200.0));
+            let expected = ((150.0 - 5.0) / 190.0_f64).clamp(0.0, 1.0);
+            assert!(
+                (s.value - expected).abs() < 1e-6,
+                "drag outside rect must keep tracking cursor x — got {}, expected {}",
+                s.value,
+                expected
+            );
+
+            // And another move further outside — value still tracks.
+            dispatch(&mut s, &cursor_moved(95.0, -50.0));
+            let expected2 = ((95.0 - 5.0) / 190.0_f64).clamp(0.0, 1.0);
+            assert!(
+                (s.value - expected2).abs() < 1e-6,
+                "drag continues to track even far outside rect — got {}, expected {}",
+                s.value,
+                expected2
+            );
+
+            // Release ends the drag.
+            dispatch(&mut s, &mouse_release());
+            assert!(!s.is_dragging, "release must end drag");
+        }
+
+        // Case `press_on_track_jumps_value`.
+        {
+            // Rect [0..200, 0..30], track [5..195] (width 190).
+            // x at 0.8 of width → 5 + 0.8*190 = 157.0
+            let mut s = slider_at(0.0, 0.0, 200.0, 30.0);
+
+            // Move cursor to the press location *and* press without any
+            // prior hover state being toggled by the same code path —
+            // this is the "click on track to jump" affordance.
+            let press_x = 5.0 + 0.8 * 190.0;
+            dispatch(&mut s, &cursor_moved(press_x, 15.0));
+            dispatch(&mut s, &mouse_press());
+
+            assert!(s.is_dragging, "press inside rect must start drag");
+            assert!(
+                (s.value - 0.8).abs() < 1e-3,
+                "press on track at x=0.8 of width must jump value to ≈0.8 — got {}",
+                s.value
+            );
+        }
+
+        // Case `disabled_slider_rejects_input`.
+        {
+            // Rect [0..200, 0..30]. A disabled slider must ignore press/drag.
+            let mut s = slider_at(0.0, 0.0, 200.0, 30.0);
+            s.set_enabled(false);
+            let before = s.value;
+
+            dispatch(&mut s, &cursor_moved(20.0, 15.0));
+            dispatch(&mut s, &mouse_press());
+            dispatch(&mut s, &cursor_moved(150.0, 15.0));
+
+            assert!(!s.is_dragging, "disabled slider must not start a drag");
+            assert_eq!(s.value, before, "disabled slider must not change its value");
+        }
     }
 
     #[test]
-    fn drag_continues_after_cursor_leaves_rect() {
-        // Rect [0..200, 0..30]. Track usable width 190 (padding 5 each side).
-        let mut s = slider_at(0.0, 0.0, 200.0, 30.0);
+    fn slider_identity_binding_and_enabled_state() {
+        // Case `slider_test_id_default_is_slider`.
+        {
+            let s = Slider::new("any", "value");
+            assert_eq!(Widget::test_id(&s), Some("slider"));
+        }
 
-        // Move cursor inside, near the left edge of the track.
-        dispatch(&mut s, &cursor_moved(20.0, 15.0));
-        // Press inside the rect — drag begins.
-        dispatch(&mut s, &mouse_press());
-        assert!(s.is_dragging, "press inside rect must start drag");
+        // Case `slider_test_id_can_be_overridden`.
+        {
+            let s = Slider::new("any", "value").with_id("volume");
+            assert_eq!(Widget::test_id(&s), Some("volume"));
+        }
 
-        // Cursor leaves the rect vertically (still within the track's
-        // horizontal range). The drag must continue updating `value`.
-        dispatch(&mut s, &cursor_moved(150.0, 200.0));
-        let expected = ((150.0 - 5.0) / 190.0_f64).clamp(0.0, 1.0);
-        assert!(
-            (s.value - expected).abs() < 1e-6,
-            "drag outside rect must keep tracking cursor x — got {}, expected {}",
-            s.value,
-            expected
-        );
+        // Case `local_state_binding_is_two_way_across_sliders`.
+        {
+            use crate::a11y::Action;
 
-        // And another move further outside — value still tracks.
-        dispatch(&mut s, &cursor_moved(95.0, -50.0));
-        let expected2 = ((95.0 - 5.0) / 190.0_f64).clamp(0.0, 1.0);
-        assert!(
-            (s.value - expected2).abs() < 1e-6,
-            "drag continues to track even far outside rect — got {}, expected {}",
-            s.value,
-            expected2
-        );
+            let state = crate::LocalState::new(0.25);
+            let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let captured = std::rc::Rc::clone(&changes);
+            let mut first = Slider::from_state(&state)
+                .on_change(move |value| captured.borrow_mut().push(value));
+            let mut second = Slider::from_state(&state);
+            let mut document = AutoCommit::new();
 
-        // Release ends the drag.
-        dispatch(&mut s, &mouse_release());
-        assert!(!s.is_dragging, "release must end drag");
+            state.set(0.5);
+            Widget::sync(&mut first, &mut document, &automerge::ROOT);
+            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            assert_eq!(first.value(), 0.5);
+            assert_eq!(second.value(), 0.5);
+            assert!(changes.borrow().is_empty(), "model sync is not user intent");
+
+            assert!(Widget::perform_action(
+                &mut first,
+                &Action::Increment,
+                &mut document,
+                &automerge::ROOT,
+            ));
+            assert_eq!(state.get(), 0.55);
+            assert_eq!(&*changes.borrow(), &[0.55]);
+            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            assert_eq!(second.value(), 0.55);
+
+            second.set_value(0.8);
+            assert_eq!(state.get(), 0.8);
+            Widget::sync(&mut first, &mut document, &automerge::ROOT);
+            assert_eq!(first.value(), 0.8);
+            assert_eq!(&*changes.borrow(), &[0.55]);
+        }
+
+        // Case `with_enabled_false_is_reported_by_is_enabled`.
+        {
+            let s = Slider::new("any", "value").with_enabled(false);
+            assert!(!Widget::is_enabled(&s));
+            assert!(
+                Widget::is_enabled(&Slider::new("any", "value")),
+                "default is enabled"
+            );
+        }
     }
 
     #[test]
-    fn press_on_track_jumps_value() {
-        // Rect [0..200, 0..30], track [5..195] (width 190).
-        // x at 0.8 of width → 5 + 0.8*190 = 157.0
-        let mut s = slider_at(0.0, 0.0, 200.0, 30.0);
+    fn slider_accessibility_reports_and_routes_value_actions() {
+        // Case `accessibility_reports_slider_role_and_percent_value`.
+        {
+            use crate::a11y::Role;
+            // Default value is 0.5 → "50%".
+            let s = Slider::new("any", "value");
+            let node = Widget::accessibility(&s).unwrap();
+            assert_eq!(node.role, Role::Slider);
+            assert_eq!(node.value.as_deref(), Some("50%"));
+            assert!(node.state.focusable);
+            assert!(!node.state.disabled);
+            assert_eq!(node.state.checked, None, "a slider is not checkable");
+        }
 
-        // Move cursor to the press location *and* press without any
-        // prior hover state being toggled by the same code path —
-        // this is the "click on track to jump" affordance.
-        let press_x = 5.0 + 0.8 * 190.0;
-        dispatch(&mut s, &cursor_moved(press_x, 15.0));
-        dispatch(&mut s, &mouse_press());
+        // Case `accessibility_value_tracks_position_and_disabled`.
+        {
+            let mut s = Slider::new("any", "value").with_enabled(false);
+            s.value = 0.25;
+            let node = Widget::accessibility(&s).unwrap();
+            assert_eq!(node.value.as_deref(), Some("25%"));
+            assert!(node.state.disabled);
+        }
 
-        assert!(s.is_dragging, "press inside rect must start drag");
-        assert!(
-            (s.value - 0.8).abs() < 1e-3,
-            "press on track at x=0.8 of width must jump value to ≈0.8 — got {}",
-            s.value
-        );
-    }
+        // Case `accessibility_uses_accessible_name_when_set`.
+        {
+            // No name by default; `with_accessible_name` names what the slider
+            // adjusts so the reader pairs it with the value.
+            let plain = Slider::new("any", "value");
+            assert_eq!(Widget::accessibility(&plain).unwrap().name, None);
 
-    #[test]
-    fn slider_test_id_default_is_slider() {
-        let s = Slider::new("any", "value");
-        assert_eq!(Widget::test_id(&s), Some("slider"));
-    }
+            let named = Slider::new("any", "value").with_accessible_name("Volume");
+            let node = Widget::accessibility(&named).unwrap();
+            assert_eq!(node.name.as_deref(), Some("Volume"));
+            assert_eq!(node.value.as_deref(), Some("50%"));
+        }
 
-    #[test]
-    fn slider_test_id_can_be_overridden() {
-        let s = Slider::new("any", "value").with_id("volume");
-        assert_eq!(Widget::test_id(&s), Some("volume"));
-    }
+        // Case `perform_action_increments_decrements_and_sets_value`.
+        {
+            use crate::a11y::Action;
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut s = Slider::new("any", "value"); // default 0.5
 
-    #[test]
-    fn local_state_binding_is_two_way_across_sliders() {
-        use crate::a11y::Action;
+            assert!(Widget::perform_action(
+                &mut s,
+                &Action::Increment,
+                &mut doc,
+                &root
+            ));
+            assert!((s.value - 0.55).abs() < 1e-9, "increment steps +5%");
+            assert!(Widget::perform_action(
+                &mut s,
+                &Action::Decrement,
+                &mut doc,
+                &root
+            ));
+            assert!((s.value - 0.50).abs() < 1e-9, "decrement steps -5%");
 
-        let state = crate::LocalState::new(0.25);
-        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let captured = std::rc::Rc::clone(&changes);
-        let mut first =
-            Slider::from_state(&state).on_change(move |value| captured.borrow_mut().push(value));
-        let mut second = Slider::from_state(&state);
-        let mut document = AutoCommit::new();
+            // SetValue accepts a 0..100 percentage.
+            assert!(Widget::perform_action(
+                &mut s,
+                &Action::SetValue("80%".into()),
+                &mut doc,
+                &root
+            ));
+            assert!((s.value - 0.80).abs() < 1e-9);
 
-        state.set(0.5);
-        Widget::sync(&mut first, &mut document, &automerge::ROOT);
-        Widget::sync(&mut second, &mut document, &automerge::ROOT);
-        assert_eq!(first.value(), 0.5);
-        assert_eq!(second.value(), 0.5);
-        assert!(changes.borrow().is_empty(), "model sync is not user intent");
+            // SetValue also accepts a 0..1 fraction.
+            assert!(Widget::perform_action(
+                &mut s,
+                &Action::SetValue("0.2".into()),
+                &mut doc,
+                &root
+            ));
+            assert!((s.value - 0.20).abs() < 1e-9);
+        }
 
-        assert!(Widget::perform_action(
-            &mut first,
-            &Action::Increment,
-            &mut document,
-            &automerge::ROOT,
-        ));
-        assert_eq!(state.get(), 0.55);
-        assert_eq!(&*changes.borrow(), &[0.55]);
-        Widget::sync(&mut second, &mut document, &automerge::ROOT);
-        assert_eq!(second.value(), 0.55);
+        // Case `disabled_slider_rejects_perform_action`.
+        {
+            use crate::a11y::Action;
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut s = Slider::new("any", "value").with_enabled(false);
+            let before = s.value;
+            assert!(!Widget::perform_action(
+                &mut s,
+                &Action::Increment,
+                &mut doc,
+                &root
+            ));
+            assert_eq!(s.value, before, "a disabled slider must not change value");
+        }
 
-        second.set_value(0.8);
-        assert_eq!(state.get(), 0.8);
-        Widget::sync(&mut first, &mut document, &automerge::ROOT);
-        assert_eq!(first.value(), 0.8);
-        assert_eq!(&*changes.borrow(), &[0.55]);
-    }
+        // Case `a_settling_slider_invokes_its_action_once_per_drag`.
+        {
+            let mut slider = slider_at(0.0, 0.0, 200.0, 30.0)
+                .on_action(crate::widget::test_number_action_binding())
+                .commits_on_release();
+            crate::widget::controls::refresh_control_action_availability(
+                &mut slider,
+                &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                    "test:control",
+                    "set",
+                )]),
+            );
+            dispatch(&mut slider, &cursor_moved(20.0, 15.0));
+            dispatch(&mut slider, &mouse_press());
+            dispatch(&mut slider, &cursor_moved(100.0, 15.0));
+            dispatch(&mut slider, &cursor_moved(150.0, 15.0));
+            assert!(
+                crate::widget::controls::take_control_invocation(&mut slider).is_none(),
+                "nothing is invoked while the drag goes on"
+            );
+            dispatch(&mut slider, &mouse_release());
+            let invoked = crate::widget::controls::take_control_invocation(&mut slider)
+                .expect("letting go invokes the action");
+            let value = invoked.arguments["value"].as_f64().unwrap();
+            assert!((value - slider.value).abs() < 1e-9);
+            assert!(crate::widget::controls::take_control_invocation(&mut slider).is_none());
+        }
 
-    #[test]
-    fn with_enabled_false_is_reported_by_is_enabled() {
-        let s = Slider::new("any", "value").with_enabled(false);
-        assert!(!Widget::is_enabled(&s));
-        assert!(
-            Widget::is_enabled(&Slider::new("any", "value")),
-            "default is enabled"
-        );
-    }
-
-    #[test]
-    fn accessibility_reports_slider_role_and_percent_value() {
-        use crate::a11y::Role;
-        // Default value is 0.5 → "50%".
-        let s = Slider::new("any", "value");
-        let node = Widget::accessibility(&s).unwrap();
-        assert_eq!(node.role, Role::Slider);
-        assert_eq!(node.value.as_deref(), Some("50%"));
-        assert!(node.state.focusable);
-        assert!(!node.state.disabled);
-        assert_eq!(node.state.checked, None, "a slider is not checkable");
-    }
-
-    #[test]
-    fn accessibility_value_tracks_position_and_disabled() {
-        let mut s = Slider::new("any", "value").with_enabled(false);
-        s.value = 0.25;
-        let node = Widget::accessibility(&s).unwrap();
-        assert_eq!(node.value.as_deref(), Some("25%"));
-        assert!(node.state.disabled);
-    }
-
-    #[test]
-    fn accessibility_uses_accessible_name_when_set() {
-        // No name by default; `with_accessible_name` names what the slider
-        // adjusts so the reader pairs it with the value.
-        let plain = Slider::new("any", "value");
-        assert_eq!(Widget::accessibility(&plain).unwrap().name, None);
-
-        let named = Slider::new("any", "value").with_accessible_name("Volume");
-        let node = Widget::accessibility(&named).unwrap();
-        assert_eq!(node.name.as_deref(), Some("Volume"));
-        assert_eq!(node.value.as_deref(), Some("50%"));
-    }
-
-    #[test]
-    fn perform_action_increments_decrements_and_sets_value() {
-        use crate::a11y::Action;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut s = Slider::new("any", "value"); // default 0.5
-
-        assert!(Widget::perform_action(
-            &mut s,
-            &Action::Increment,
-            &mut doc,
-            &root
-        ));
-        assert!((s.value - 0.55).abs() < 1e-9, "increment steps +5%");
-        assert!(Widget::perform_action(
-            &mut s,
-            &Action::Decrement,
-            &mut doc,
-            &root
-        ));
-        assert!((s.value - 0.50).abs() < 1e-9, "decrement steps -5%");
-
-        // SetValue accepts a 0..100 percentage.
-        assert!(Widget::perform_action(
-            &mut s,
-            &Action::SetValue("80%".into()),
-            &mut doc,
-            &root
-        ));
-        assert!((s.value - 0.80).abs() < 1e-9);
-
-        // SetValue also accepts a 0..1 fraction.
-        assert!(Widget::perform_action(
-            &mut s,
-            &Action::SetValue("0.2".into()),
-            &mut doc,
-            &root
-        ));
-        assert!((s.value - 0.20).abs() < 1e-9);
-    }
-
-    #[test]
-    fn disabled_slider_rejects_perform_action() {
-        use crate::a11y::Action;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut s = Slider::new("any", "value").with_enabled(false);
-        let before = s.value;
-        assert!(!Widget::perform_action(
-            &mut s,
-            &Action::Increment,
-            &mut doc,
-            &root
-        ));
-        assert_eq!(s.value, before, "a disabled slider must not change value");
-    }
-
-    #[test]
-    fn disabled_slider_rejects_input() {
-        // Rect [0..200, 0..30]. A disabled slider must ignore press/drag.
-        let mut s = slider_at(0.0, 0.0, 200.0, 30.0);
-        s.set_enabled(false);
-        let before = s.value;
-
-        dispatch(&mut s, &cursor_moved(20.0, 15.0));
-        dispatch(&mut s, &mouse_press());
-        dispatch(&mut s, &cursor_moved(150.0, 15.0));
-
-        assert!(!s.is_dragging, "disabled slider must not start a drag");
-        assert_eq!(s.value, before, "disabled slider must not change its value");
-    }
-
-    #[test]
-    fn action_binding_owns_accessibility_value_changes() {
-        let mut slider = Slider::new("native", "legacy")
-            .on_change(|_| panic!("legacy callback must be suppressed"))
-            .on_action(crate::widget::test_number_action_binding());
-        let mut doc = AutoCommit::new();
-        Widget::refresh_control_action_availability(&mut slider, &std::collections::HashSet::new());
-        assert!(!Widget::is_enabled(&slider));
-        Widget::refresh_control_action_availability(
-            &mut slider,
-            &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
-                "test:control",
-                "set",
-            )]),
-        );
-        assert!(Widget::is_enabled(&slider));
-        assert!(Widget::perform_action(
-            &mut slider,
-            &crate::a11y::Action::SetValue("80%".into()),
-            &mut doc,
-            &automerge::ROOT
-        ));
-        assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
-        assert_eq!(
-            Widget::take_control_invocation(&mut slider)
-                .unwrap()
-                .arguments["value"],
-            0.8
-        );
+        // Case `action_binding_owns_accessibility_value_changes`.
+        {
+            let mut slider = Slider::new("native", "legacy")
+                .on_change(|_| panic!("legacy callback must be suppressed"))
+                .on_action(crate::widget::test_number_action_binding());
+            let mut doc = AutoCommit::new();
+            crate::widget::controls::refresh_control_action_availability(
+                &mut slider,
+                &std::collections::HashSet::new(),
+            );
+            assert!(!Widget::is_enabled(&slider));
+            crate::widget::controls::refresh_control_action_availability(
+                &mut slider,
+                &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                    "test:control",
+                    "set",
+                )]),
+            );
+            assert!(Widget::is_enabled(&slider));
+            assert!(Widget::perform_action(
+                &mut slider,
+                &crate::a11y::Action::SetValue("80%".into()),
+                &mut doc,
+                &automerge::ROOT
+            ));
+            assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
+            assert_eq!(
+                crate::widget::controls::take_control_invocation(&mut slider)
+                    .unwrap()
+                    .arguments["value"],
+                0.8
+            );
+        }
     }
 }

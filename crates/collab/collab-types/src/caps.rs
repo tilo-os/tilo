@@ -541,9 +541,6 @@ pub enum Effect {
 /// are all just a `CapOverride` with a different scope/subject; there is
 /// no second sharing system. `Restrict { verb }` caps authority at "no
 /// more than `verb`": any required verb it doesn't imply is removed.
-///
-/// The added fields carry `#[serde(default)]` so records persisted
-/// before they existed still load.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CapOverride {
@@ -558,15 +555,12 @@ pub struct CapOverride {
     /// Stable id, so a specific capability can be revoked by name even after
     /// replicating to peers that never saw it granted. Empty means unnamed —
     /// revocable only by matching content.
-    #[serde(default)]
     pub id: String,
     /// When this capability dies. An expired capability is invisible to
     /// [`decide_actor`] — not "denied", simply not there.
-    #[serde(default)]
     pub expiry: Expiry,
     /// Who granted this, for the share-list UI and audit. Advisory: grant
     /// authority is enforced where the grant is *made*, not here.
-    #[serde(default)]
     pub granted_by: Option<Principal>,
 }
 
@@ -797,6 +791,7 @@ pub fn decide_actor(
         }
     }
 
+    restricted |= crate::foreign_device::exceeds_ceiling(actor, required);
     let allowed = (base_role_allows || granted) && !restricted;
     if allowed {
         CapDecision::Allow
@@ -858,27 +853,31 @@ pub fn decide_capability(
 mod tests {
     use super::*;
 
+    /// Verbs imply the ones below them, and each role's cap ceiling matches its verb ceiling.
     #[test]
-    fn implies_ladder() {
-        assert!(Verb::Admin.implies(Verb::Invite));
-        assert!(Verb::Admin.implies(Verb::Write));
-        assert!(Verb::Write.implies(Verb::Comment));
-        assert!(Verb::Write.implies(Verb::Read));
-        assert!(!Verb::Write.implies(Verb::Admin));
-        assert!(!Verb::Comment.implies(Verb::Write));
-        assert!(Verb::Comment.implies(Verb::Read));
-        assert!(Verb::Invite.implies(Verb::Read));
-        assert!(!Verb::Invite.implies(Verb::Write));
-        assert!(Verb::Read.implies(Verb::Read));
-        assert!(!Verb::Read.implies(Verb::Comment));
-    }
+    fn capability_verbs_form_a_ladder_that_bounds_each_role() {
+        // Phase: implies_ladder.
+        {
+            assert!(Verb::Admin.implies(Verb::Invite));
+            assert!(Verb::Admin.implies(Verb::Write));
+            assert!(Verb::Write.implies(Verb::Comment));
+            assert!(Verb::Write.implies(Verb::Read));
+            assert!(!Verb::Write.implies(Verb::Admin));
+            assert!(!Verb::Comment.implies(Verb::Write));
+            assert!(Verb::Comment.implies(Verb::Read));
+            assert!(Verb::Invite.implies(Verb::Read));
+            assert!(!Verb::Invite.implies(Verb::Write));
+            assert!(Verb::Read.implies(Verb::Read));
+            assert!(!Verb::Read.implies(Verb::Comment));
+        }
 
-    #[test]
-    fn role_caps_match_verb_ceiling() {
-        assert_eq!(role_caps(Role::Owner), Some(Verb::Admin));
-        assert_eq!(role_caps(Role::Editor), Some(Verb::Write));
-        assert_eq!(role_caps(Role::Commenter), Some(Verb::Comment));
-        assert_eq!(role_caps(Role::Viewer), Some(Verb::Read));
-        assert_eq!(role_caps(Role::Denied), None);
+        // Phase: role_caps_match_verb_ceiling.
+        {
+            assert_eq!(role_caps(Role::Owner), Some(Verb::Admin));
+            assert_eq!(role_caps(Role::Editor), Some(Verb::Write));
+            assert_eq!(role_caps(Role::Commenter), Some(Verb::Comment));
+            assert_eq!(role_caps(Role::Viewer), Some(Verb::Read));
+            assert_eq!(role_caps(Role::Denied), None);
+        }
     }
 }

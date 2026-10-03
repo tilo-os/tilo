@@ -12,7 +12,7 @@ fn critique_state_dump() {
     );
     std::fs::create_dir_all(&directory).expect("create screenshot evidence directory");
     let only = std::env::var("NOTES_CRITIQUE_SCENARIO").ok();
-    for (name, scenario, viewport) in [
+    let captures = [
         ("01-overview", None, (1280, 800)),
         ("25-typed-lists", Some("typed_lists"), (1280, 800)),
         ("26-code-keyboard", Some("code_keyboard"), (1280, 800)),
@@ -52,18 +52,15 @@ fn critique_state_dump() {
         ("22-fence-opening", Some("fenced_code_opening"), (1280, 800)),
         ("23-typed-python", Some("fenced_code"), (1280, 800)),
         ("24-narrow-typed-python", Some("fenced_code"), (390, 844)),
-    ] {
-        if only.as_deref().is_some_and(|only| scenario != Some(only)) {
-            continue;
-        }
-        let path = directory.join(format!("{name}.png"));
-        notes::shots::render_to_path(viewport, &path, scenario, None)
-            .expect("scenario must reach its requested state and render");
-        let bytes = std::fs::read(&path).expect("rendered evidence must exist");
-        assert!(
-            bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
-            "screenshot must be a PNG"
-        );
-        eprintln!("notes: reviewed scenario evidence {}", path.display());
-    }
+    ]
+    .into_iter()
+    .filter(|(_, scenario, _)| only.is_none() || *scenario == only.as_deref())
+    .map(|(name, scenario, viewport)| crate::captures::Capture {
+        label: name.to_owned(),
+        scenario,
+        viewport,
+        path: directory.join(format!("{name}.png")),
+    })
+    .collect::<Vec<_>>();
+    crate::captures::render_all(&captures);
 }

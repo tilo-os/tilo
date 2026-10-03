@@ -395,63 +395,65 @@ pub fn decode_chunk(report: &Report, length: u32) -> io::Result<Vec<u8>> {
 mod tests {
     use super::*;
     #[test]
-    fn cancellation_signal_cannot_interrupt_child_reaping() {
-        let mut attempts = 0;
-        let result = retry_interrupted(|| {
-            attempts += 1;
-            if attempts < 3 {
-                Err(io::Error::from(io::ErrorKind::Interrupted))
-            } else {
-                Ok("reaped")
-            }
-        });
-        assert_eq!(result.unwrap(), "reaped");
-        assert_eq!(attempts, 3);
-        let mut attempts = 0;
-        let error = retry_interrupted(|| {
-            attempts += 1;
-            Err::<(), _>(io::Error::from_raw_os_error(libc::ECHILD))
-        })
-        .unwrap_err();
-        assert_eq!(error.raw_os_error(), Some(libc::ECHILD));
-        assert_eq!(attempts, 1);
-    }
-    #[test]
-    fn parent_peer_monitor_refuses_cancel_and_disconnect() {
-        use std::os::unix::net::UnixStream;
-        let (parent, mut peer) = UnixStream::pair().unwrap();
-        check_peer(Some(parent.as_raw_fd())).unwrap();
-        peer.write_all(b"cancel").unwrap();
-        assert!(check_peer(Some(parent.as_raw_fd())).is_err());
-        let (parent, peer) = UnixStream::pair().unwrap();
-        drop(peer);
-        assert!(check_peer(Some(parent.as_raw_fd())).is_err());
-    }
-    /// The child's report bytes: a little-endian `u32` length, then JSON.
-    #[test]
-    fn child_report_bytes_are_pinned() {
-        let mut output = Vec::new();
-        frame(&mut output, &serde_json::json!({"fact": 1})).unwrap();
-        assert_eq!(output, b"\x0a\0\0\0{\"fact\":1}");
-    }
-
-    #[test]
-    fn child_framing_refuses_trailing_unknown_and_oversized_results() {
-        let valid = serde_json::json!({"done":{"schema":2,"status":0,"stats":{"bytes":0,"calls":0,"writes":0}}});
-        let encode = |value: &serde_json::Value| {
-            let payload = serde_json::to_vec(value).unwrap();
-            let mut bytes = u32::try_from(payload.len()).unwrap().to_le_bytes().to_vec();
-            bytes.extend(payload);
-            bytes
-        };
-        assert!(decode(&encode(&valid)).is_ok());
-        let mut trailing = encode(&valid);
-        trailing.extend(encode(&valid));
-        assert!(decode(&trailing).is_err());
-        let mut unknown = valid;
-        unknown["done"]["status"] = serde_json::json!(42);
-        assert!(decode(&encode(&unknown)).is_err());
-        assert!(decode(&65_537_u32.to_le_bytes()).is_err());
-        assert!(decode(&[1, 0, 0, 0]).is_err());
+    fn child_limits_survive_cancellation_and_framing_refuses_bad_results() {
+        // Phase `cancellation_signal_cannot_interrupt_child_reaping`.
+        {
+            let mut attempts = 0;
+            let result = retry_interrupted(|| {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(io::Error::from(io::ErrorKind::Interrupted))
+                } else {
+                    Ok("reaped")
+                }
+            });
+            assert_eq!(result.unwrap(), "reaped");
+            assert_eq!(attempts, 3);
+            let mut attempts = 0;
+            let error = retry_interrupted(|| {
+                attempts += 1;
+                Err::<(), _>(io::Error::from_raw_os_error(libc::ECHILD))
+            })
+            .unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(libc::ECHILD));
+            assert_eq!(attempts, 1);
+        }
+        // Phase `parent_peer_monitor_refuses_cancel_and_disconnect`.
+        {
+            use std::os::unix::net::UnixStream;
+            let (parent, mut peer) = UnixStream::pair().unwrap();
+            check_peer(Some(parent.as_raw_fd())).unwrap();
+            peer.write_all(b"cancel").unwrap();
+            assert!(check_peer(Some(parent.as_raw_fd())).is_err());
+            let (parent, peer) = UnixStream::pair().unwrap();
+            drop(peer);
+            assert!(check_peer(Some(parent.as_raw_fd())).is_err());
+        }
+        // Phase `child_report_bytes_are_pinned`.
+        // The child's report bytes: a little-endian `u32` length, then JSON.
+        {
+            let mut output = Vec::new();
+            frame(&mut output, &serde_json::json!({"fact": 1})).unwrap();
+            assert_eq!(output, b"\x0a\0\0\0{\"fact\":1}");
+        }
+        // Phase `child_framing_refuses_trailing_unknown_and_oversized_results`.
+        {
+            let valid = serde_json::json!({"done":{"schema":2,"status":0,"stats":{"bytes":0,"calls":0,"writes":0}}});
+            let encode = |value: &serde_json::Value| {
+                let payload = serde_json::to_vec(value).unwrap();
+                let mut bytes = u32::try_from(payload.len()).unwrap().to_le_bytes().to_vec();
+                bytes.extend(payload);
+                bytes
+            };
+            assert!(decode(&encode(&valid)).is_ok());
+            let mut trailing = encode(&valid);
+            trailing.extend(encode(&valid));
+            assert!(decode(&trailing).is_err());
+            let mut unknown = valid;
+            unknown["done"]["status"] = serde_json::json!(42);
+            assert!(decode(&encode(&unknown)).is_err());
+            assert!(decode(&65_537_u32.to_le_bytes()).is_err());
+            assert!(decode(&[1, 0, 0, 0]).is_err());
+        }
     }
 }

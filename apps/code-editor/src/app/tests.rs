@@ -1,7 +1,76 @@
 use super::*;
 use automerge::ReadDoc;
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[test]
+fn a_standalone_project_import_is_submitted_through_the_action() {
+    let mut app = CodeApp::with_sample();
+    assert!(!app.actions.is_hosted());
+    let mut doc = AutoCommit::new();
+    app.import_project_file_records(&mut doc);
+    let recorded = app
+        .actions
+        .last_dispatched()
+        .expect("imported files are submitted through the action sink");
+    assert_eq!(recorded.type_id.as_str(), actions::CODE_EDITOR_ACTION_TYPE);
+    assert!(
+        !EditorDoc::files(&doc).is_empty(),
+        "the sample project is in the document"
+    );
+}
+
+#[test]
+fn a_standalone_project_is_created_by_the_action() {
+    let mut app = CodeApp::new();
+    assert!(!app.actions.is_hosted());
+    let mut doc = AutoCommit::new();
+    app.ensure_buffers(&mut doc);
+    assert_eq!(
+        EditorDoc::project_id(&doc).as_deref(),
+        Some(app.project_id.as_str())
+    );
+    let recorded = app
+        .actions
+        .last_dispatched()
+        .expect("the project is submitted through the action sink");
+    assert_eq!(recorded.type_id.as_str(), actions::CODE_EDITOR_ACTION_TYPE);
+}
+
+#[test]
+fn a_standalone_terminal_panel_is_created_by_the_action() {
+    let mut app = CodeApp::new();
+    assert!(!app.actions.is_hosted());
+    let mut doc = AutoCommit::new();
+    let id = app.terminal_document_root(&mut doc);
+    assert_eq!(EditorDoc::terminal_panel(&doc), Some(id));
+    let recorded = app
+        .actions
+        .last_dispatched()
+        .expect("the terminal panel is submitted through the action sink");
+    assert_eq!(recorded.type_id.as_str(), actions::CODE_EDITOR_ACTION_TYPE);
+}
+
+#[test]
+fn hosted_terminal_panel_is_created_by_the_action() {
+    let mut app = CodeApp::new();
+    app.mark_hosted_for_test();
+    let mut doc = AutoCommit::new();
+    assert!(EditorDoc::terminal_panel(&doc).is_none());
+    let id = app.terminal_document_root(&mut doc);
+    assert_eq!(EditorDoc::terminal_panel(&doc), Some(id.clone()));
+    assert_eq!(app.terminal_document_root(&mut doc), id);
+}
+
+#[test]
+fn resource_operations_accept_reject_wrong_kinds_and_resolve_late_files_lazily() {
+    // Each phase builds a fresh app and document.
+    direct_open_is_accepted_then_reports_the_exact_failure();
+    resource_operations_reject_wrong_kinds_without_changing_state();
+    large_resource_snapshot_is_bounded_but_late_file_activates_lazily();
+}
+
 fn direct_open_is_accepted_then_reports_the_exact_failure() {
     let mut app = CodeApp::new();
     let mut doc = AutoCommit::new();
@@ -10,13 +79,15 @@ fn direct_open_is_accepted_then_reports_the_exact_failure() {
         path: Some("/definitely/missing/tilo-code-file".into()),
     })
     .unwrap();
-    let started = Widget::start_resource_operation(
+    let started = Widget::start_operation(
         &mut app,
-        invocation,
-        tilo_actions::OperationKind::Effect,
-        crate::actions::CODE_EDITOR_OPERATION_TYPE,
-        &payload,
-        &doc,
+        &ui::widget::ResourceOperation::local(
+            invocation,
+            tilo_actions::OperationKind::Effect,
+            crate::actions::CODE_EDITOR_OPERATION_TYPE,
+            &payload,
+        ),
+        &mut doc,
         &automerge::ROOT,
     )
     .unwrap()
@@ -29,9 +100,8 @@ fn direct_open_is_accepted_then_reports_the_exact_failure() {
     ));
 }
 
-#[test]
 fn resource_operations_reject_wrong_kinds_without_changing_state() {
-    let (mut app, doc) = synced_sample();
+    let (mut app, mut doc) = synced_sample();
     let active = app.active_file_node();
     let other = app
         .session
@@ -46,13 +116,16 @@ fn resource_operations_reject_wrong_kinds_without_changing_state() {
     })
     .unwrap();
     assert!(
-        Widget::invoke_resource_operation(
+        Widget::start_operation(
             &mut app,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::CODE_EDITOR_OPERATION_TYPE,
-            &open,
-            &doc,
-            &automerge::ROOT,
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
+                crate::actions::CODE_EDITOR_OPERATION_TYPE,
+                &open
+            ),
+            &mut doc,
+            &automerge::ROOT
         )
         .is_err()
     );
@@ -63,14 +136,16 @@ fn resource_operations_reject_wrong_kinds_without_changing_state() {
     })
     .unwrap();
     assert!(
-        Widget::start_resource_operation(
+        Widget::start_operation(
             &mut app,
-            tilo_actions::InvocationId::new(),
-            tilo_actions::OperationKind::View,
-            crate::actions::CODE_EDITOR_OPERATION_TYPE,
-            &open_file,
-            &doc,
-            &automerge::ROOT,
+            &ui::widget::ResourceOperation::local(
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
+                crate::actions::CODE_EDITOR_OPERATION_TYPE,
+                &open_file
+            ),
+            &mut doc,
+            &automerge::ROOT
         )
         .is_err()
     );
@@ -79,13 +154,20 @@ fn resource_operations_reject_wrong_kinds_without_changing_state() {
 }
 
 #[test]
+fn sample_app_opens_main_rs_with_accessible_context_and_a_collapsed_dock() {
+    // Each phase builds a fresh sample app.
+    new_app_opens_main_rs();
+    accessibility_exposes_project_and_active_document_context();
+    ensure_buffers_seeds_active_text();
+    fresh_editor_collapses_the_empty_bottom_panel();
+}
+
 fn new_app_opens_main_rs() {
     let app = CodeApp::with_sample();
     let active = app.session.active_buffer().unwrap();
     assert_eq!(active.name, "main.rs");
 }
 
-#[test]
 fn accessibility_exposes_project_and_active_document_context() {
     let app = CodeApp::with_sample();
     let node = Widget::accessibility(&app).expect("Code has a semantic root");
@@ -105,31 +187,43 @@ fn accessibility_exposes_project_and_active_document_context() {
 }
 
 fn invoke_search_hit(app: &mut CodeApp, doc: &mut AutoCommit, query: &str, kind: &str) {
-    let hit = app.search_providers()[0]
+    let hit = ui::search::capability::search_providers(app)[0]
         .search(query)
         .into_iter()
         .find(|hit| hit.kind == kind)
         .expect("search hit");
     let address = hit.action_address().expect("canonical address");
-    let resource = Widget::resource(app, doc, &address.resource)
+    let resource = ui::resources::resource(app, doc, &address.resource)
         .expect("address resolves through current widget authority");
     let encoded = tilo_actions::door::encode(&[resource], &address, None)
         .expect("lazy resource exports the searched action");
-    assert!(
-        Widget::invoke_resource_operation(
+    assert!(matches!(
+        Widget::start_operation(
             app,
-            tilo_actions::OperationKind::View,
-            &encoded.type_id,
-            &encoded.payload,
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload
+            ),
             doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         )
-        .unwrap()
-    );
+        .unwrap(),
+        Some(ui::widget::ResourceOperationStart::Completed(_))
+    ));
     app.sync(doc, &automerge::ROOT);
 }
 
 #[test]
+fn search_hits_open_through_exported_actions_and_stale_addresses_are_refused() {
+    // Each phase builds a fresh synced sample.
+    file_search_uses_the_exported_open_action();
+    symbol_search_resolves_and_reproduces_the_exact_caret();
+    project_result_search_resolves_and_restores_results_context();
+    stale_search_address_is_refused_by_current_widget_authority();
+}
+
 fn file_search_uses_the_exported_open_action() {
     let (mut app, mut doc) = synced_sample();
     let prime = app
@@ -149,7 +243,6 @@ fn file_search_uses_the_exported_open_action() {
     assert_eq!(app.active_file_node(), Some(prime));
 }
 
-#[test]
 fn stale_search_address_is_refused_by_current_widget_authority() {
     let (mut app, mut doc) = synced_sample();
     let file = app
@@ -161,16 +254,16 @@ fn stale_search_address_is_refused_by_current_widget_authority() {
         .expect("sample file")
         .clone();
     let address = crate::actions::open_file_address(&file.resource_id);
-    assert!(Widget::resource(&app, &doc, &address.resource).is_some());
+    assert!(ui::resources::resource(&app, &doc, &address.resource).is_some());
 
     app.session
         .project
         .remove_collaborative_file(&file.resource_id);
     app.invalidate_search_projection();
     app.refresh_search_catalog(&mut doc);
-    assert!(Widget::resource(&app, &doc, &address.resource).is_none());
+    assert!(ui::resources::resource(&app, &doc, &address.resource).is_none());
     assert!(
-        app.search_providers()[0]
+        ui::search::capability::search_providers(&app)[0]
             .search("prime.rs")
             .into_iter()
             .all(|hit| hit.action_address() != Some(address.clone()))
@@ -178,6 +271,12 @@ fn stale_search_address_is_refused_by_current_widget_authority() {
 }
 
 #[test]
+fn search_projection_rebuilds_only_on_revisions_or_an_exhausted_generation() {
+    // Each phase builds a fresh synced sample; rebuild counters must not leak.
+    search_projection_rebuilds_only_for_document_project_or_result_revisions();
+    exhausted_search_projection_generation_rebuilds_instead_of_reusing_a_cursor();
+}
+
 fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
     let (mut app, mut doc) = synced_sample();
     let initial = app.search_refresh_stats();
@@ -197,7 +296,7 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
     let after_document = app.search_refresh_stats();
     assert_eq!(after_document.rebuilds, idle.rebuilds.saturating_add(1));
     assert!(
-        app.search_providers()[0]
+        ui::search::capability::search_providers(&app)[0]
             .search("revision_gate_needle")
             .iter()
             .any(|hit| hit.kind == crate::search_provider::SYMBOL_KIND)
@@ -216,7 +315,7 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
         after_document.rebuilds.saturating_add(1)
     );
     assert!(
-        app.search_providers()[0]
+        ui::search::capability::search_providers(&app)[0]
             .search("project-revision-needle")
             .iter()
             .any(|hit| {
@@ -248,14 +347,13 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
         after_project.rebuilds.saturating_add(1)
     );
     assert!(
-        app.search_providers()[0]
+        ui::search::capability::search_providers(&app)[0]
             .search("result_revision_needle")
             .iter()
             .any(|hit| hit.kind == crate::search_provider::RESULT_KIND)
     );
 }
 
-#[test]
 fn exhausted_search_projection_generation_rebuilds_instead_of_reusing_a_cursor() {
     let (mut app, mut doc) = synced_sample();
     app.search_projection_local_generation = Some(u64::MAX);
@@ -271,7 +369,6 @@ fn exhausted_search_projection_generation_rebuilds_instead_of_reusing_a_cursor()
     );
 }
 
-#[test]
 fn large_resource_snapshot_is_bounded_but_late_file_activates_lazily() {
     let mut app = CodeApp::new();
     let root = app.session.project.root;
@@ -293,7 +390,7 @@ fn large_resource_snapshot_is_bounded_but_late_file_activates_lazily() {
     }
     let mut doc = AutoCommit::new();
     app.refresh_search_catalog(&mut doc);
-    let snapshot = Widget::resources(&app, &doc);
+    let snapshot = ui::resources::resources(&app, &doc);
     assert!(
         snapshot[0].children.len() <= crate::actions::EAGER_RESOURCE_SNAPSHOT_LIMIT,
         "the eager tree must remain bounded by its resource cap"
@@ -304,24 +401,27 @@ fn large_resource_snapshot_is_bounded_but_late_file_activates_lazily() {
         tilo_actions::door::resolve(&snapshot, &address).is_none(),
         "the late file must not be eagerly materialized"
     );
-    let resource = Widget::resource(&app, &doc, &address.resource)
+    let resource = ui::resources::resource(&app, &doc, &address.resource)
         .expect("late file is still current widget authority");
     let encoded = tilo_actions::door::encode(&[resource], &address, None)
         .expect("the lazy resource retains its open action");
-    assert!(
-        Widget::invoke_resource_operation(
+    assert!(matches!(
+        Widget::start_operation(
             &mut app,
-            tilo_actions::OperationKind::View,
-            &encoded.type_id,
-            &encoded.payload,
-            &doc,
-            &automerge::ROOT,
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload
+            ),
+            &mut doc,
+            &automerge::ROOT
         )
-        .expect("operation routes through the widget")
-    );
+        .expect("operation routes through the widget"),
+        Some(ui::widget::ResourceOperationStart::Completed(_))
+    ));
 }
 
-#[test]
 fn symbol_search_resolves_and_reproduces_the_exact_caret() {
     let (mut app, mut doc) = synced_sample();
     let node = app.active_file_node().unwrap();
@@ -347,7 +447,6 @@ fn symbol_search_resolves_and_reproduces_the_exact_caret() {
     assert_eq!(app.editor.primary_caret(), (expected_line, expected_col));
 }
 
-#[test]
 fn project_result_search_resolves_and_restores_results_context() {
     let (mut app, mut doc) = synced_sample();
     let node = app.active_file_node().unwrap();
@@ -378,6 +477,15 @@ fn project_result_search_resolves_and_restores_results_context() {
 }
 
 #[test]
+fn bottom_dock_keeps_a_live_terminal_across_toggles_and_returns_focus_to_its_trigger() {
+    // Each phase builds a fresh app (and its own terminal or headless driver).
+    ide_embeds_the_real_terminal_widget();
+    ide_terminal_runs_a_command_and_shows_output();
+    dock_commands_open_the_requested_content_and_toggle_without_clearing_it();
+    keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing_terminal();
+    retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes();
+}
+
 fn ide_embeds_the_real_terminal_widget() {
     // The IDE must embed the real system `TerminalWidget` as its integrated
     // terminal — not ship a second, weaker emulator. Opening the Terminal
@@ -395,7 +503,6 @@ fn ide_embeds_the_real_terminal_widget() {
     );
 }
 
-#[test]
 fn ide_terminal_runs_a_command_and_shows_output() {
     // End-to-end: open the embedded terminal, type a command, pump the
     // app's `sync` (which drains the terminal's PTY), and prove the shell's
@@ -406,7 +513,8 @@ fn ide_terminal_runs_a_command_and_shows_output() {
     app.sync(&mut state.doc, &state.root);
     app.shots_terminal_input("printf 'IDE_TERM_OK\\n'\n");
     let mut found = false;
-    for _ in 0..300 {
+    let deadline = ui::time::now() + HANG_BOUND;
+    while ui::time::now() < deadline {
         app.sync(&mut state.doc, &state.root);
         if let Some(t) = app.shots_terminal_grid_text()
             && t.contains("IDE_TERM_OK")
@@ -422,7 +530,6 @@ fn ide_terminal_runs_a_command_and_shows_output() {
     );
 }
 
-#[test]
 fn ensure_buffers_seeds_active_text() {
     let mut app = CodeApp::with_sample();
     let mut doc = AutoCommit::new();
@@ -434,6 +541,18 @@ fn ensure_buffers_seeds_active_text() {
 }
 
 #[test]
+fn tab_pills_mirror_open_buffers_by_node_id_and_close_prompts_only_when_dirty() {
+    // Each phase builds a fresh sample app.
+    opening_a_second_file_adds_a_tab();
+    reconcile_tabs_keys_pills_to_open_buffers_by_node_id();
+    reconcile_tabs_mirrors_dirty_into_the_shared_bars_modified_mark();
+    sync_tab_accents_tints_each_pill_by_its_buffers_language();
+    closing_the_shared_bars_pill_removes_the_matching_buffer_by_id_not_position();
+    selecting_a_different_pill_is_read_back_via_active_id();
+    closing_a_dirty_tab_prompts_before_discarding();
+    closing_a_clean_tab_closes_immediately();
+}
+
 fn opening_a_second_file_adds_a_tab() {
     let mut app = CodeApp::with_sample();
     // Find prime.rs.
@@ -457,7 +576,6 @@ fn open_ids(app: &CodeApp) -> Vec<u64> {
     app.session.open.iter().map(|b| b.node as u64).collect()
 }
 
-#[test]
 fn reconcile_tabs_keys_pills_to_open_buffers_by_node_id() {
     let mut app = CodeApp::with_sample();
     let prime = app
@@ -479,7 +597,6 @@ fn reconcile_tabs_keys_pills_to_open_buffers_by_node_id() {
     );
 }
 
-#[test]
 fn reconcile_tabs_mirrors_dirty_into_the_shared_bars_modified_mark() {
     let (mut app, mut doc) = synced_sample();
     let id = app.session.active_buffer().unwrap().node as u64;
@@ -498,7 +615,6 @@ fn reconcile_tabs_mirrors_dirty_into_the_shared_bars_modified_mark() {
     );
 }
 
-#[test]
 fn sync_tab_accents_tints_each_pill_by_its_buffers_language() {
     // `with_sample` opens main.rs, a Rust file.
     let mut app = CodeApp::with_sample();
@@ -514,7 +630,6 @@ fn sync_tab_accents_tints_each_pill_by_its_buffers_language() {
     );
 }
 
-#[test]
 fn closing_the_shared_bars_pill_removes_the_matching_buffer_by_id_not_position() {
     // The whole point of reconciling by node id rather than position: the
     // pill the user clicked × on must be the buffer that closes — even
@@ -559,7 +674,6 @@ fn closing_the_shared_bars_pill_removes_the_matching_buffer_by_id_not_position()
     );
 }
 
-#[test]
 fn selecting_a_different_pill_is_read_back_via_active_id() {
     let mut app = CodeApp::with_sample();
     let prime = app
@@ -595,6 +709,18 @@ fn selecting_a_different_pill_is_read_back_via_active_id() {
 }
 
 #[test]
+fn editor_commands_edit_through_the_crdt_and_move_the_caret() {
+    // Each phase builds a fresh synced sample.
+    editing_routes_through_crdt();
+    editor_gesture_and_replace_text_resource_encode_the_same_action();
+    duplicate_line_repeats_it_below();
+    move_line_down_swaps_with_the_next();
+    delete_line_removes_it();
+    toggle_comment_comments_then_uncomments();
+    go_to_line_moves_the_caret();
+    find_highlights_and_navigates_matches();
+}
+
 fn editing_routes_through_crdt() {
     let (mut app, mut doc) = synced_sample();
     let node = app.session.active_buffer().unwrap().node;
@@ -605,7 +731,6 @@ fn editing_routes_through_crdt() {
     assert_eq!(after.chars().count(), before.chars().count() + 1);
 }
 
-#[test]
 fn editor_gesture_and_replace_text_resource_encode_the_same_action() {
     let (mut app, mut doc) = synced_sample();
     let node = app.session.active_buffer().unwrap().node;
@@ -613,8 +738,7 @@ fn editor_gesture_and_replace_text_resource_encode_the_same_action() {
     app.editor.move_caret_to(0, 0);
     app.editor.insert_for_test(&mut doc, "λ");
     let next = format!("λ{base}");
-    let expected = app
-        .resources(&doc)
+    let expected = ui::resources::resources(&app, &doc)
         .iter()
         .find_map(|resource| {
             find_resource(resource, &actions::file_resource_id(app.buffer_key(node)))
@@ -641,6 +765,16 @@ fn editor_gesture_and_replace_text_resource_encode_the_same_action() {
 }
 
 #[test]
+fn sidebar_docks_when_wide_overlays_when_narrow_and_follows_file_opens() {
+    // Each phase builds a fresh sample app.
+    toggle_sidebar_command_hides_it();
+    layout_is_docked_when_wide_overlay_when_narrow();
+    narrow_window_hides_sidebar_by_default();
+    wide_window_docks_sidebar_open_by_default();
+    opening_a_file_in_overlay_dismisses_the_flap();
+    opening_a_file_keeps_docked_sidebar_pinned();
+}
+
 fn toggle_sidebar_command_hides_it() {
     // Default width hint is wide → docked-open; the command flips it shut.
     let mut app = CodeApp::with_sample();
@@ -653,6 +787,12 @@ fn toggle_sidebar_command_hides_it() {
 }
 
 #[test]
+fn project_files_are_created_by_durable_actions_and_adopted_from_peers() {
+    // Each phase builds a fresh sample app and document.
+    new_file_command_dispatches_the_durable_create_file_action();
+    a_collaborative_file_is_adopted_as_a_tracked_file();
+}
+
 fn new_file_command_dispatches_the_durable_create_file_action() {
     // The on-screen "New file" command and the Ctrl+K "New file" spec must
     // build the byte-identical action — one source of truth. Both carry the
@@ -671,7 +811,9 @@ fn new_file_command_dispatches_the_durable_create_file_action() {
         .unwrap();
     let from_spec = match &spec.input {
         tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-        tilo_actions::ActionInput::Prompted { .. } => panic!("new-file is an immediate action"),
+        tilo_actions::ActionInput::Prompted { .. } | tilo_actions::ActionInput::Deferred { .. } => {
+            panic!("new-file is an immediate action")
+        }
     };
 
     app.apply_command(Command::NewFile, &mut doc);
@@ -688,7 +830,6 @@ fn new_file_command_dispatches_the_durable_create_file_action() {
     assert!(EditorDoc::read_buffer_key(&doc, &expected_file_id).is_some());
 }
 
-#[test]
 fn a_collaborative_file_is_adopted_as_a_tracked_file() {
     // A peer's durable file record is surfaced by the next sync. The
     // resource UUID, rather than a coincidental local arena number, is the
@@ -727,7 +868,6 @@ fn a_collaborative_file_is_adopted_as_a_tracked_file() {
     assert_eq!(app.session.project.nodes.len(), before + 1);
 }
 
-#[test]
 fn layout_is_docked_when_wide_overlay_when_narrow() {
     let mut app = CodeApp::with_sample();
     app.set_width_hint(1200.0);
@@ -741,7 +881,6 @@ fn layout_is_docked_when_wide_overlay_when_narrow() {
     assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
 }
 
-#[test]
 fn narrow_window_hides_sidebar_by_default() {
     let mut app = CodeApp::with_sample();
     app.set_width_hint(600.0);
@@ -753,7 +892,6 @@ fn narrow_window_hides_sidebar_by_default() {
     assert!(app.sidebar_open());
 }
 
-#[test]
 fn wide_window_docks_sidebar_open_by_default() {
     let mut app = CodeApp::with_sample();
     app.set_width_hint(1200.0);
@@ -761,7 +899,6 @@ fn wide_window_docks_sidebar_open_by_default() {
     assert!(app.sidebar_open(), "docked sidebar opens by default");
 }
 
-#[test]
 fn opening_a_file_in_overlay_dismisses_the_flap() {
     let mut app = CodeApp::with_sample();
     app.set_width_hint(600.0);
@@ -784,7 +921,6 @@ fn opening_a_file_in_overlay_dismisses_the_flap() {
     );
 }
 
-#[test]
 fn opening_a_file_keeps_docked_sidebar_pinned() {
     let mut app = CodeApp::with_sample();
     app.set_width_hint(1200.0);
@@ -811,6 +947,15 @@ fn replace_buffer_text(doc: &mut AutoCommit, key: &str, text: &str) {
 }
 
 #[test]
+fn problems_panel_reports_lint_findings_and_defers_to_the_language_server() {
+    // Each phase builds a fresh app and document.
+    diagnostics_populate_for_buffer_with_todo();
+    an_unfinished_server_replaces_the_no_problems_claim();
+    the_panel_learns_the_server_is_still_working();
+    a_published_diagnostic_retires_the_bracket_scan();
+    explicit_problems_open_survives_an_empty_diagnostics_refresh();
+}
+
 fn diagnostics_populate_for_buffer_with_todo() {
     let mut app = CodeApp::with_sample();
     let mut doc = AutoCommit::new();
@@ -834,7 +979,6 @@ fn diagnostics_populate_for_buffer_with_todo() {
 /// An empty Problems list means two completely different things depending
 /// on whether anything has looked yet, and the panel has to distinguish
 /// them: "analysed and clean" is a finding, "not analysed yet" is not.
-#[test]
 fn an_unfinished_server_replaces_the_no_problems_claim() {
     let busy = LspStatus::Busy {
         server: "rust-analyzer".to_string(),
@@ -884,7 +1028,6 @@ fn an_unfinished_server_replaces_the_no_problems_claim() {
 
 /// And the note reaches the panel through the production path, not just the
 /// helper that formats it.
-#[test]
 fn the_panel_learns_the_server_is_still_working() {
     let mut app = CodeApp::with_sample();
     let mut doc = AutoCommit::new();
@@ -913,6 +1056,14 @@ fn the_panel_learns_the_server_is_still_working() {
     );
 }
 
+#[test]
+fn disk_files_load_stat_and_save_back_through_the_crdt() {
+    // Each phase uses its own tempdir, app and document.
+    open_file_from_path_loads_it();
+    a_document_from_a_previous_session_still_stats_the_file();
+    edit_and_save_round_trips_to_disk();
+}
+
 /// A persisted document handing back a buffer must not let a save skip the
 /// conflict check.
 ///
@@ -922,7 +1073,6 @@ fn the_panel_learns_the_server_is_still_working() {
 /// [`crate::disk::save`] takes a missing stamp as "no check requested" and
 /// writes unconditionally. Driving the real editor over a real file with a
 /// document from an earlier run overwrote 203 bytes of it without a word.
-#[test]
 fn a_document_from_a_previous_session_still_stats_the_file() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("main.rs");
@@ -976,7 +1126,6 @@ fn a_document_from_a_previous_session_still_stats_the_file() {
 
 /// The structural scan defers to a language server that has published for
 /// the buffer, and only to one that has.
-#[test]
 fn a_published_diagnostic_retires_the_bracket_scan() {
     let mut app = CodeApp::with_sample();
     let mut doc = AutoCommit::new();
@@ -1050,7 +1199,6 @@ fn find_resource<'a>(
 }
 
 /// A real file picked from disk loads its bytes into a tab.
-#[test]
 fn open_file_from_path_loads_it() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("greet.rs");
@@ -1070,7 +1218,6 @@ fn open_file_from_path_loads_it() {
 
 /// Open a real file, edit it through the CRDT, save, and prove the new bytes
 /// reached disk.
-#[test]
 fn edit_and_save_round_trips_to_disk() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("notes.txt");
@@ -1100,7 +1247,6 @@ fn edit_and_save_round_trips_to_disk() {
 
 /// Find populates real matches over the active buffer, hands them to the
 /// editor's highlight layer, and stepping to a match selects it.
-#[test]
 fn find_highlights_and_navigates_matches() {
     let (mut app, doc) = synced_sample();
     app.open_find(false, &doc);
@@ -1133,7 +1279,6 @@ fn find_highlights_and_navigates_matches() {
 
 /// Go-to-line moves the caret to the requested 1-based line and clamps past
 /// the end of the buffer.
-#[test]
 fn go_to_line_moves_the_caret() {
     let (mut app, _doc) = synced_sample();
     assert!(app.editor.line_count() > 5);
@@ -1150,7 +1295,6 @@ fn go_to_line_moves_the_caret() {
     );
 }
 
-#[test]
 fn duplicate_line_repeats_it_below() {
     let (mut app, mut doc) = synced_sample();
     let node = app.session.active_buffer().unwrap().node;
@@ -1167,7 +1311,6 @@ fn duplicate_line_repeats_it_below() {
     assert_eq!(app.editor.primary_caret().0, 1, "caret rode onto the copy");
 }
 
-#[test]
 fn move_line_down_swaps_with_the_next() {
     let (mut app, mut doc) = synced_sample();
     let node = app.session.active_buffer().unwrap().node;
@@ -1184,7 +1327,6 @@ fn move_line_down_swaps_with_the_next() {
     assert_eq!(app.editor.primary_caret().0, 1, "caret followed the line");
 }
 
-#[test]
 fn delete_line_removes_it() {
     let (mut app, mut doc) = synced_sample();
     let node = app.session.active_buffer().unwrap().node;
@@ -1199,7 +1341,6 @@ fn delete_line_removes_it() {
     assert_eq!(after[0], before[1], "the following line is now first");
 }
 
-#[test]
 fn toggle_comment_comments_then_uncomments() {
     let (mut app, mut doc) = synced_sample();
     let node = app.session.active_buffer().unwrap().node;
@@ -1228,7 +1369,6 @@ fn toggle_comment_comments_then_uncomments() {
     );
 }
 
-#[test]
 fn closing_a_dirty_tab_prompts_before_discarding() {
     let (mut app, mut doc) = synced_sample();
     let node = app.session.active_buffer().unwrap().node;
@@ -1258,7 +1398,6 @@ fn closing_a_dirty_tab_prompts_before_discarding() {
     assert!(app.close_prompt.is_none());
 }
 
-#[test]
 fn closing_a_clean_tab_closes_immediately() {
     let (mut app, _doc) = synced_sample();
     let before = app.session.open.len();
@@ -1271,7 +1410,6 @@ fn closing_a_clean_tab_closes_immediately() {
     assert_eq!(app.session.open.len(), before - 1);
 }
 
-#[test]
 fn dock_commands_open_the_requested_content_and_toggle_without_clearing_it() {
     let mut app = CodeApp::with_sample();
     let mut doc = AutoCommit::new();
@@ -1318,7 +1456,6 @@ fn dock_commands_open_the_requested_content_and_toggle_without_clearing_it() {
     );
 }
 
-#[test]
 fn explicit_problems_open_survives_an_empty_diagnostics_refresh() {
     let mut app = CodeApp::new();
     let mut doc = AutoCommit::new();
@@ -1334,7 +1471,6 @@ fn explicit_problems_open_survives_an_empty_diagnostics_refresh() {
     assert_eq!(app.panel.active_tab(), PanelTab::Problems);
 }
 
-#[test]
 fn fresh_editor_collapses_the_empty_bottom_panel() {
     let app = CodeApp::with_sample();
 
@@ -1350,7 +1486,6 @@ fn fresh_editor_collapses_the_empty_bottom_panel() {
     );
 }
 
-#[test]
 fn keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing_terminal() {
     let mut app = CodeApp::with_sample();
     app.shots_open_terminal();
@@ -1392,7 +1527,6 @@ fn keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing
     );
 }
 
-#[test]
 #[allow(
     clippy::float_cmp,
     clippy::too_many_lines,

@@ -1,0 +1,5 @@
+[
+  {"perform": {"target": "add-book", "action": "activate"}},
+  {"perform": {"target": "add-book", "action": "activate"}},
+  {"expect": {"target": "book-count", "name_contains": "2"}}
+]

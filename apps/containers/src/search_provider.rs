@@ -246,51 +246,55 @@ mod tests {
     use super::*;
     use ui::search::SearchProvider;
 
+    /// Search finds objects and log content with canonical addresses, stops at its budget and reaches late matches within the page budget.
     #[test]
-    fn searches_objects_and_log_content_with_canonical_addresses() {
-        let provider = ContainerSearchIndex::new(&crate::model::sample_engine()).provider();
-        let container = provider.search("web-frontend").remove(0);
-        assert_eq!(container.kind, "Containers");
-        assert!(container.action_address().is_some());
+    fn search_finds_objects_and_logs_within_page_budgets() {
+        // --- phase: searches_objects_and_log_content_with_canonical_addresses ---
+        {
+            let provider = ContainerSearchIndex::new(&crate::model::sample_engine()).provider();
+            let container = provider.search("web-frontend").remove(0);
+            assert_eq!(container.kind, "Containers");
+            assert!(container.action_address().is_some());
 
-        let logs = provider.search("sigkill");
-        assert!(logs.iter().any(|hit| hit.kind == "Container logs"));
-        assert!(logs.iter().all(|hit| hit.action_address().is_some()));
-    }
-
-    #[test]
-    fn limited_search_stops_materialising_at_budget() {
-        let provider = ContainerSearchIndex::new(&crate::model::sample_engine()).provider();
-        assert_eq!(provider.search_limited("", 3).len(), 3);
-        assert!(provider.search_limited("", 0).is_empty());
-    }
-
-    #[test]
-    fn late_matches_are_reachable_without_exceeding_the_page_budget() {
-        let mut engine = Engine::default();
-        for index in 0..300 {
-            let mut container = crate::model::sample_engine().containers[0].clone();
-            container.id = format!("container-{index:03}");
-            container.name = if index == 299 {
-                "needle-at-the-end".into()
-            } else {
-                format!("container-{index:03}")
-            };
-            engine.containers.push(container);
+            let logs = provider.search("sigkill");
+            assert!(logs.iter().any(|hit| hit.kind == "Container logs"));
+            assert!(logs.iter().all(|hit| hit.action_address().is_some()));
         }
-        let provider = ContainerSearchIndex::new(&engine).provider();
-        let mut cursor = None;
-        let mut found = false;
-        loop {
-            let page = provider.search_page("needle", cursor.as_ref(), 7, 3);
-            assert!(page.inspected <= 7);
-            found |= page
-                .results
-                .iter()
-                .any(|hit| hit.title == "needle-at-the-end");
-            let Some(next) = page.next else { break };
-            cursor = Some(next);
+
+        // --- phase: limited_search_stops_materialising_at_budget ---
+        {
+            let provider = ContainerSearchIndex::new(&crate::model::sample_engine()).provider();
+            assert_eq!(provider.search_limited("", 3).len(), 3);
+            assert!(provider.search_limited("", 0).is_empty());
         }
-        assert!(found);
+
+        // --- phase: late_matches_are_reachable_without_exceeding_the_page_budget ---
+        {
+            let mut engine = Engine::default();
+            for index in 0..300 {
+                let mut container = crate::model::sample_engine().containers[0].clone();
+                container.id = format!("container-{index:03}");
+                container.name = if index == 299 {
+                    "needle-at-the-end".into()
+                } else {
+                    format!("container-{index:03}")
+                };
+                engine.containers.push(container);
+            }
+            let provider = ContainerSearchIndex::new(&engine).provider();
+            let mut cursor = None;
+            let mut found = false;
+            loop {
+                let page = provider.search_page("needle", cursor.as_ref(), 7, 3);
+                assert!(page.inspected <= 7);
+                found |= page
+                    .results
+                    .iter()
+                    .any(|hit| hit.title == "needle-at-the-end");
+                let Some(next) = page.next else { break };
+                cursor = Some(next);
+            }
+            assert!(found);
+        }
     }
 }

@@ -145,6 +145,11 @@ mod tests {
     use ui::search::SearchProvider;
 
     #[test]
+    fn search_rows_address_canonical_resources_and_page_generation_safely() {
+        search_rows_use_the_same_canonical_resources_as_the_graph();
+        search_is_cursor_paged_and_generation_safe();
+    }
+
     fn search_rows_use_the_same_canonical_resources_as_the_graph() {
         let mut project = Project::blank();
         assert!(project.insert_before_output(
@@ -163,7 +168,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn search_is_cursor_paged_and_generation_safe() {
         let mut project = Project::blank();
         for index in 0..4 {

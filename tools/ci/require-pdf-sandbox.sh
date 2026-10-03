@@ -5,7 +5,7 @@
 # at the ABI Tilo targets (crates/system/sandbox-core: TARGET_ABI). On such a
 # runner, TILO_REQUIRE_PDF_SANDBOX makes an unconfined helper a test failure
 # instead of the development-build fallback to the in-process engine (see
-# crates/doc/pdf/src/lib.rs, "When the sandbox cannot be enforced"). A runner
+# crates/platform/tilo-pdf/src/lib.rs, "When the sandbox cannot be enforced"). A runner
 # without it still runs every PDF test that does not need the sandbox, and
 # says here that the sandbox went unverified.
 #

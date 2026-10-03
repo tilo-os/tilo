@@ -66,7 +66,7 @@ warmup from frame statistics. Both workloads share the measurement window.
 | Action latency | Immediately before broker `start` → completion receiver returns |
 | Broker start return | Same start → broker `start` returns an invocation job |
 | CPU frame build | Existing shared profiler's frame-build timer; excludes later worker-channel send and rendering |
-| Render stages | Existing `QUICK_UI_PRESENT` CPU timers for acquire, encode, submit, and present API calls |
+| Render stages | Existing `TILO_UI_PRESENT` CPU timers for acquire, encode, submit, and present API calls |
 
 Action durations use monotonic `Instant` and retain nanoseconds; frame hooks
 retain microseconds. Reports use milliseconds and nearest-rank median/p95/p99,

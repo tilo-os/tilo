@@ -1,0 +1,36 @@
+[package]
+id = "so.tilo.hot-reload-demo"
+name = "Hot reload"
+category = "Utility"
+version = "0.1.0"
+kind = "app"
+runtime = "tilo-runtime/2026.07"
+platforms = ["linux", "macos"]
+platform-reason = "Demonstrates `tilo-app dev` loading new Rust into the running native process."
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+
+[entrypoint]
+bin = "bin/hot-reload-demo"
+type = "gui"
+splash-budget = 250
+
+[providers]
+mime = []
+ext = []

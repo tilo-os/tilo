@@ -80,8 +80,15 @@ impl<R: Resource> Live<R> {
         self.inner.borrow().current_demand().clone()
     }
 
-    /// Apply what changed in `doc` since the last sync.
-    pub(crate) fn sync(&self, doc: &mut Doc) -> Result<bool, ModelError> {
+    /// Apply what changed in `doc` since the last sync, reading only what
+    /// changed. The framework does this before every frame; a surface calls
+    /// it after an immediate edit ([`Dispatcher::apply_now`](super::Dispatcher::apply_now))
+    /// to read its own result within the same event. Returns whether the
+    /// state changed.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when the document no longer holds the resource.
+    pub fn sync(&self, doc: &mut Doc) -> Result<bool, ModelError> {
         self.inner.borrow_mut().sync(doc)
     }
 }

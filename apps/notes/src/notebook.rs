@@ -9,9 +9,10 @@ use crate::{
 use automerge::{
     AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-pub const NOTES_SCHEMA_VERSION: u32 = 2;
+/// 3: page bodies are rich text (`body`).
+pub const NOTES_SCHEMA_VERSION: u32 = 3;
 const OWNED_FIELDS: [&str; 6] = [
     "notes_schema_version",
     "pages",
@@ -171,7 +172,7 @@ fn keyed_uuid(value: &str) -> Result<uuid::Uuid, String> {
 }
 
 fn validated_workspace(doc: &AutoCommit, validate_image_bytes: bool) -> Result<Workspace, String> {
-    if !matches!(schema_version(doc).ok(), Some(1 | 2)) {
+    if schema_version(doc).ok() != Some(u64::from(NOTES_SCHEMA_VERSION)) {
         return Err("notebook schema version is missing or unsupported; migration required".into());
     }
     let pages = object(doc, &ROOT, "pages", ObjType::Map)?;
@@ -200,7 +201,7 @@ fn validated_workspace(doc: &AutoCommit, validate_image_bytes: bool) -> Result<W
             parent,
             order,
         });
-        validate_blocks(doc, &page).map_err(|e| format!("page {id}: {e}"))?;
+        validate_body(doc, &page).map_err(|e| format!("page {id}: {e}"))?;
     }
     for key in doc.keys(&tags) {
         let id = keyed_uuid(&key)?;
@@ -417,10 +418,16 @@ pub fn put_asset(doc: &mut AutoCommit, digest: &str, bytes: &[u8]) -> Result<(),
 pub fn content() -> &'static tilo_content::ContentStore {
     static CONTENT: std::sync::OnceLock<tilo_content::ContentStore> = std::sync::OnceLock::new();
     CONTENT.get_or_init(|| {
-        if cfg!(test) {
-            tilo_content::ContentStore::memory()
-        } else {
+        // A host without native files (a browser page) has no local store for
+        // notebook images; it keeps them in memory, as tests do.
+        let native = matches!(
+            tilo_files::availability(tilo_files::Feature::NativePaths),
+            tilo_files::Availability::Available
+        );
+        if native && !cfg!(test) {
             tilo_content::ContentStore::for_app()
+        } else {
+            tilo_content::ContentStore::memory()
         }
     })
 }
@@ -620,92 +627,12 @@ pub(crate) fn assets_complete(
         .all(|digest| snapshot.contains_key(&format!("asset:{digest}"))))
 }
 
-fn validate_blocks(doc: &AutoCommit, page: &ObjId) -> Result<(), String> {
-    let blocks = object(doc, page, "blocks", ObjType::List)?;
-    let mut ids = HashSet::new();
-    let mut positions = HashSet::new();
-    for index in 0..doc.length(&blocks) {
-        let values = doc.get_all(&blocks, index).map_err(|e| e.to_string())?;
-        let [(Value::Object(ObjType::Map), block)] = values.as_slice() else {
-            return Err(format!("block {index} must be one Map"));
-        };
-        let id = uuid(&string(doc, block, "id")?)?;
-        if !ids.insert(id) {
-            return Err(format!("duplicate block {id}"));
-        }
-        if schema_version(doc)? >= 2 {
-            let rank = crate::block_order::stored(doc, block)
-                .ok_or_else(|| format!("block {id} requires order metadata"))?;
-            if !crate::block_order::valid(&rank) || !positions.insert(rank) {
-                return Err(format!("block {id} has invalid order metadata"));
-            }
-        }
-        if !crate::doc::valid_kind(&string(doc, block, "kind")?) {
-            return Err(format!("block {id} has invalid kind"));
-        }
-        if !doc
-            .get_all(block, "nesting")
-            .map_err(|e| e.to_string())?
-            .is_empty()
-        {
-            let depth = integer(doc, block, "nesting")?;
-            let kind = string(doc, block, "kind")?;
-            if depth > u64::from(crate::markdown::MAX_LIST_INDENT)
-                || kind.starts_with("bullet:")
-                || kind.starts_with("numbered:")
-                || kind.starts_with("checklist:")
-            {
-                return Err(format!("block {id} has invalid nesting"));
-            }
-        }
-        if !doc
-            .get_all(block, "code_group")
-            .map_err(|e| e.to_string())?
-            .is_empty()
-        {
-            uuid(&string(doc, block, "code_group")?)?;
-            if !string(doc, block, "kind")?.starts_with("code:") {
-                return Err(format!("block {id} has a code group but is not code"));
-            }
-        }
-        let text_obj = object(doc, block, "text", ObjType::Text)?;
-        let body = doc.text(&text_obj).map_err(|e| e.to_string())?;
-        if integer(doc, block, "notes_marks_version")? != 1 {
-            return Err(format!("block {id} requires native mark migration"));
-        }
-        for mark in doc.marks(&text_obj).map_err(|e| e.to_string())? {
-            let Some(name) = mark.name.strip_prefix("notes.inline.") else {
-                continue;
-            };
-            if mark.start >= mark.end || mark.end > body.chars().count() {
-                return Err(format!("block {id} has invalid mark range"));
-            }
-            match name {
-                "bold" | "italic" | "code" | "underline" | "strikethrough"
-                    if mark.value == ScalarValue::Boolean(true) => {}
-                name if name.starts_with("link:") || name.starts_with("transclusion:") => {
-                    let target = name
-                        .strip_prefix("link:")
-                        .or_else(|| name.strip_prefix("transclusion:"))
-                        .ok_or_else(|| "invalid link name".to_string())?;
-                    uuid(target)?;
-                    if mark.value != ScalarValue::Str(target.into()) {
-                        return Err(format!("block {id} has inconsistent link target"));
-                    }
-                }
-                "external-link" => {
-                    let ScalarValue::Str(url) = &mark.value else {
-                        return Err(format!("block {id} has invalid external link target"));
-                    };
-                    if !crate::markdown::safe_external_url(url) {
-                        return Err(format!("block {id} has invalid external link target"));
-                    }
-                }
-                _ => return Err(format!("block {id} has invalid native mark {name}")),
-            }
-        }
-    }
-    Ok(())
+/// A page's body: rich text.
+fn validate_body(doc: &AutoCommit, page: &ObjId) -> Result<(), String> {
+    let body = object(doc, page, "body", ObjType::Map)?;
+    tilo_doc::model::open(doc, &body)
+        .map(|_| ())
+        .map_err(|error| format!("body is not rich text: {error}"))
 }
 
 fn validate_receipt(doc: &AutoCommit) -> Result<(), String> {
@@ -754,9 +681,8 @@ fn validate_receipt(doc: &AutoCommit) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::actions::{InlineMark, InlineMarkSpan, NotesAction};
-    use automerge::marks::{ExpandMark, Mark};
 
-    fn linked_notebook(mark: InlineMark) -> (AutoCommit, PageId, ObjId) {
+    fn notebook_with(blocks: &[ui::widget::BlockContent]) -> (AutoCommit, PageId) {
         let mut doc = AutoCommit::new();
         initialize_empty(&mut doc).unwrap();
         let page = uuid::Uuid::new_v4();
@@ -769,254 +695,223 @@ mod tests {
                 order: 0,
             },
         );
-        let list = NotesDoc::page_blocks_list(&doc, page).unwrap();
-        let text = NotesDoc::push_block(&mut doc, &list, "paragraph", "Read this");
-        let id = NotesDoc::page_block_snapshots(&doc, page)[0].0.clone();
-        NotesDoc::set_block_marks(
-            &mut doc,
-            page,
-            &id,
-            &[InlineMarkSpan {
-                start: 0,
-                end: 9,
-                mark,
-            }],
-        )
-        .unwrap();
-        (doc, page, text)
+        NotesDoc::fill_page_body(&mut doc, page, blocks).unwrap();
+        (doc, page)
     }
 
-    #[test]
-    fn quote_and_table_edits_survive_canonical_reopen() {
-        let (mut doc, page, _) = linked_notebook(InlineMark::Bold);
-        let first = NotesDoc::page_block_snapshots(&doc, page)[0].0.clone();
-        for kind in ["quote", "table:0", "table:1"] {
-            NotesDoc::apply_block_ops(
-                &mut doc,
-                page,
-                &[ui::widget::BlockEditOp::SetKind {
-                    block_id: first.clone(),
-                    kind: kind.into(),
-                }],
-            )
-            .unwrap();
-            let mut reopened = AutoCommit::load(&doc.save()).unwrap();
-            project(&reopened, Some(page)).unwrap();
-            let list = NotesDoc::page_blocks_list(&reopened, page).unwrap();
-            assert_eq!(NotesDoc::block_kind(&reopened, &list, 0), kind);
-            NotesDoc::apply_block_ops(
-                &mut reopened,
-                page,
-                &[ui::widget::BlockEditOp::Insert {
-                    block_id: uuid::Uuid::new_v4().to_string(),
-                    after: Some(first.clone()),
-                    kind: kind.into(),
-                    text: "new block".into(),
-                }],
-            )
-            .unwrap();
-            validate(&reopened).unwrap();
-            assert_eq!(NotesDoc::block_kind(&reopened, &list, 1), kind);
+    fn linked_notebook(mark: InlineMark) -> (AutoCommit, PageId) {
+        let mut read = ui::widget::BlockContent::paragraph("", "Read this");
+        read.marks = InlineMarkSpan {
+            start: 0,
+            end: 9,
+            mark,
         }
-        for malformed in ["table:2", "table:true", "quote:1"] {
-            assert!(!crate::doc::valid_kind(malformed));
-        }
+        .to_ui()
+        .into_iter()
+        .collect();
+        notebook_with(&[read])
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn content_addressed_image_assets_survive_reopen_and_reject_bad_payloads() {
-        use tilo_actions::Action;
-        let mut doc = AutoCommit::new();
-        initialize_empty(&mut doc).unwrap();
-        let page = uuid::Uuid::new_v4();
-        crate::actions::new_page_action(page, None, 0, "Images")
-            .apply(&mut doc)
-            .unwrap();
-        let bytes = vec![137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0];
-        let action = crate::actions::add_image_asset_action(
-            page,
-            bytes.clone(),
-            ui::widget::BlockEditOp::Insert {
-                block_id: uuid::Uuid::new_v4().to_string(),
-                after: None,
-                kind: "paragraph".into(),
-                text: format!("![Scan](asset:{})", blake3::hash(&bytes).to_hex()),
-            },
-        );
-        action.apply(&mut doc).unwrap();
-        validate(&doc).unwrap();
-        let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
-        assert_eq!(asset_snapshot(&doc).unwrap().get(&source), Some(&bytes));
-        let reopened = AutoCommit::load(&doc.save()).unwrap();
-        validate(&reopened).unwrap();
-        assert_eq!(
-            asset_snapshot(&reopened).unwrap().get(&source),
-            Some(&bytes)
-        );
-
-        let before = NotesDoc::page_block_snapshots(&reopened, page);
-        let invalid = crate::actions::NotesAction::AddImageAsset {
-            page: page.to_string(),
-            digest: "0".repeat(64),
-            bytes: b"not an image".to_vec(),
-            op: ui::widget::BlockEditOp::Insert {
-                block_id: uuid::Uuid::new_v4().to_string(),
-                after: None,
-                kind: "paragraph".into(),
-                text: "![Bad](asset:bad)".into(),
-            },
-        };
-        let mut rejected = reopened;
-        assert!(invalid.apply(&mut rejected).is_err());
-        assert_eq!(NotesDoc::page_block_snapshots(&rejected, page), before);
-    }
-
-    #[test]
-    fn image_source_edits_persist_through_actions_and_undo_but_view_modes_do_not() {
-        use ui::Widget;
-        let original = "![Scan](assets/original.png)";
-        let edited = "![Updated scan](assets/revised.png)";
-        let (mut doc, page, _) = linked_notebook(InlineMark::Bold);
-        let id = NotesDoc::page_block_snapshots(&doc, page)[0].0.clone();
-        NotesDoc::apply_block_ops(
-            &mut doc,
-            page,
-            &[ui::widget::BlockEditOp::TextSplice {
-                block_id: id.clone(),
-                start: 0,
-                end: 9,
-                text: original.into(),
-            }],
-        )
-        .unwrap();
-        NotesDoc::set_block_marks(&mut doc, page, &id, &[]).unwrap();
-        doc.commit();
-        let mut state = ui::State::new();
-        state.doc = doc;
-        let list = NotesDoc::page_blocks_list(&state.doc, page).unwrap();
-        let mut editor = ui::widget::BlockEditor::new();
-        editor.set_action_interception(true);
-        editor.bind_existing_blocks(&state.doc, list).unwrap();
-        editor.sync(&mut state.doc, &ROOT);
-        let initial_heads = state.doc.get_heads();
-        assert!(editor.perform_semantic_action(
-            &format!("notes.image-edit:{id}"),
-            &ui::a11y::Action::Activate,
-            &mut state.doc,
-            &ROOT
-        ));
-        assert!(editor.take_pending_semantic_ops().is_empty());
-        assert_eq!(state.doc.get_heads(), initial_heads);
-        assert!(editor.perform_semantic_action(
-            &format!("notes.image-source:{id}"),
-            &ui::a11y::Action::SetValue(edited.into()),
-            &mut state.doc,
-            &ROOT
-        ));
-        let ops = editor.take_pending_semantic_ops();
-        assert!(
-            !ops.is_empty(),
-            "source edits must use canonical semantic block operations"
-        );
-        let action = crate::actions::apply_block_ops_action(page, ops);
-        tilo_actions::apply_local(&mut state.doc, &action, crate::actions::encode(&action))
-            .unwrap();
-        state.record_committed_action(initial_heads, None, None);
-        assert!(editor.perform_semantic_action(
-            &format!("notes.image-done:{id}"),
-            &ui::a11y::Action::Activate,
-            &mut state.doc,
-            &ROOT
-        ));
-        assert!(editor.take_pending_semantic_ops().is_empty());
-        let reopened = AutoCommit::load(&state.doc.save()).unwrap();
-        validate(&reopened).unwrap();
-        assert_eq!(NotesDoc::page_block_snapshots(&reopened, page)[0].1, edited);
-        state.undo(None, None).unwrap();
-        assert_eq!(
-            NotesDoc::page_block_snapshots(&state.doc, page)[0].1,
-            original
-        );
-    }
-
-    #[test]
-    fn external_links_and_embeds_reopen_and_duplicate_without_losing_marks() {
-        for mark in [
-            InlineMark::ExternalLink {
-                url: "https://example.com/research?q=notes".into(),
-            },
-            InlineMark::Transclusion {
-                page: uuid::Uuid::new_v4().to_string(),
-            },
-        ] {
-            let (mut doc, page, _) = linked_notebook(mark.clone());
-            let mut reopened = AutoCommit::load(&doc.save()).unwrap();
-            let workspace = project(&reopened, Some(page)).unwrap();
-            assert_eq!(workspace.selected(), Some(page));
-            assert_eq!(
-                NotesDoc::page_block_marks(&reopened, page)[0].1[0].mark,
-                mark
-            );
-            let NotesAction::DuplicateSubtree { pages, .. } =
-                crate::actions::duplicate_subtree_action(&reopened, page).unwrap()
-            else {
-                panic!("duplicate action expected");
-            };
-            NotesDoc::duplicate_subtree(&mut reopened, page, &pages).unwrap();
-            let workspace = project(&reopened, Some(page)).unwrap();
-            let copy = workspace
-                .pages()
+    fn canonical_notebook_reopens_quotes_tables_links_and_embeds_losslessly() {
+        eprintln!("phase quote_and_table_blocks_survive_canonical_reopen");
+        {
+            use ui::widget::{BlockContent, BlockKind};
+            let kinds = [
+                BlockKind::Quote,
+                BlockKind::Table { visual: false },
+                BlockKind::Table { visual: true },
+            ];
+            let blocks = kinds
                 .iter()
-                .find(|note| note.id != page)
-                .unwrap();
+                .map(|kind| BlockContent {
+                    kind: kind.clone(),
+                    ..BlockContent::paragraph("", "| a |")
+                })
+                .collect::<Vec<_>>();
+            let (mut doc, page) = notebook_with(&blocks);
+            let reopened = AutoCommit::load(&doc.save()).unwrap();
+            project(&reopened, Some(page)).unwrap();
+            validate(&reopened).unwrap();
             assert_eq!(
-                NotesDoc::page_block_marks(&reopened, copy.id)[0].1[0].mark,
-                mark
+                NotesDoc::page_blocks(&reopened, page)
+                    .into_iter()
+                    .map(|block| block.kind)
+                    .collect::<Vec<_>>(),
+                kinds
             );
+            for malformed in ["table:2", "table:true", "quote:1"] {
+                assert!(BlockKind::from_stored(malformed).is_none());
+            }
+        }
+
+        eprintln!("phase external_links_and_embeds_reopen_and_duplicate_without_losing_marks");
+        {
+            for mark in [
+                InlineMark::ExternalLink {
+                    url: "https://example.com/research?q=notes".into(),
+                },
+                InlineMark::Transclusion {
+                    page: uuid::Uuid::new_v4().to_string(),
+                },
+            ] {
+                let (mut doc, page) = linked_notebook(mark.clone());
+                let mut reopened = AutoCommit::load(&doc.save()).unwrap();
+                let workspace = project(&reopened, Some(page)).unwrap();
+                assert_eq!(workspace.selected(), Some(page));
+                assert_eq!(
+                    NotesDoc::page_block_marks(&reopened, page)[0].1[0].mark,
+                    mark
+                );
+                let NotesAction::DuplicateSubtree { pages, .. } =
+                    crate::actions::duplicate_subtree_action(&reopened, page).unwrap()
+                else {
+                    panic!("duplicate action expected");
+                };
+                NotesDoc::duplicate_subtree(&mut reopened, page, &pages).unwrap();
+                let workspace = project(&reopened, Some(page)).unwrap();
+                let copy = workspace
+                    .pages()
+                    .iter()
+                    .find(|note| note.id != page)
+                    .unwrap();
+                assert_eq!(
+                    NotesDoc::page_block_marks(&reopened, copy.id)[0].1[0].mark,
+                    mark
+                );
+            }
         }
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn external_link_validation_refuses_unsafe_urls_and_non_string_values() {
-        for value in [
-            ScalarValue::Str("javascript:alert(1)".into()),
-            ScalarValue::Boolean(true),
-        ] {
-            let (mut doc, _, text) = linked_notebook(InlineMark::Bold);
-            doc.mark(
-                &text,
-                Mark::new("notes.inline.external-link".into(), value, 0, 9),
-                ExpandMark::After,
-            )
-            .unwrap();
-            assert!(
-                validate(&doc)
-                    .unwrap_err()
-                    .contains("invalid external link target")
+    fn notebook_images_are_content_addressed_references_that_survive_reopen_and_undo() {
+        eprintln!("phase content_addressed_image_assets_survive_reopen_and_reject_bad_payloads");
+        {
+            use tilo_actions::Action;
+            let mut doc = AutoCommit::new();
+            initialize_empty(&mut doc).unwrap();
+            let page = uuid::Uuid::new_v4();
+            crate::actions::new_page_action(page, None, 0, "Images")
+                .apply(&mut doc)
+                .unwrap();
+            let bytes = vec![137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0];
+            let action = crate::actions::add_image_asset_action(
+                page,
+                bytes.clone(),
+                tilo_document::RichTextAction::AppendParagraph {
+                    text: format!("![Scan](asset:{})", blake3::hash(&bytes).to_hex()),
+                },
             );
-        }
-    }
+            action.apply(&mut doc).unwrap();
+            validate(&doc).unwrap();
+            let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
+            assert_eq!(asset_snapshot(&doc).unwrap().get(&source), Some(&bytes));
+            let reopened = AutoCommit::load(&doc.save()).unwrap();
+            validate(&reopened).unwrap();
+            assert_eq!(
+                asset_snapshot(&reopened).unwrap().get(&source),
+                Some(&bytes)
+            );
 
-    #[test]
-    fn embed_validation_refuses_a_mismatched_target() {
-        let (mut doc, _, text) = linked_notebook(InlineMark::Bold);
-        let target = uuid::Uuid::new_v4();
-        doc.mark(
-            &text,
-            Mark::new(
-                format!("notes.inline.transclusion:{target}"),
-                ScalarValue::Str(uuid::Uuid::new_v4().to_string().into()),
-                0,
-                9,
-            ),
-            ExpandMark::After,
-        )
-        .unwrap();
-        assert!(
-            validate(&doc)
-                .unwrap_err()
-                .contains("inconsistent link target")
+            let before = NotesDoc::page_block_snapshots(&reopened, page);
+            let invalid = crate::actions::NotesAction::AddImageAsset {
+                page: page.to_string(),
+                digest: "0".repeat(64),
+                bytes: b"not an image".to_vec(),
+                edit: tilo_document::RichTextAction::AppendParagraph {
+                    text: "![Bad](asset:bad)".into(),
+                },
+            };
+            let mut rejected = reopened;
+            assert!(invalid.apply(&mut rejected).is_err());
+            assert_eq!(NotesDoc::page_block_snapshots(&rejected, page), before);
+        }
+
+        eprintln!(
+            "phase image_source_edits_persist_through_actions_and_undo_but_view_modes_do_not"
         );
+        {
+            use ui::Widget;
+            let original = "![Scan](assets/original.png)";
+            let edited = "![Updated scan](assets/revised.png)";
+            let (doc, page) = notebook_with(&[ui::widget::BlockContent::paragraph("", original)]);
+            let mut state = ui::State::new();
+            state.doc = doc;
+            state.doc.commit();
+            let mut panel = crate::MainPanel::new();
+            panel
+                .bind_canonical_page(&state.doc, page, "Reference")
+                .unwrap();
+            panel.body_editor_mut().sync(&mut state.doc, &ROOT);
+            let id = panel.editor().blocks()[0].id.clone();
+            let initial_heads = state.doc.get_heads();
+            assert!(panel.editor_mut().perform_semantic_action(
+                &format!("notes.image-edit:{id}"),
+                &ui::a11y::Action::Activate,
+                &mut state.doc,
+                &ROOT
+            ));
+            panel.body_editor_mut().sync(&mut state.doc, &ROOT);
+            assert_eq!(
+                state.doc.get_heads(),
+                initial_heads,
+                "a view mode writes nothing"
+            );
+            assert!(panel.editor_mut().perform_semantic_action(
+                &format!("notes.image-source:{id}"),
+                &ui::a11y::Action::SetValue(edited.into()),
+                &mut state.doc,
+                &ROOT
+            ));
+            panel.body_editor_mut().sync(&mut state.doc, &ROOT);
+            let before = ui::undo::take_committed_action(panel.body_editor_mut())
+                .expect("a source edit is a Notes action");
+            state.record_committed_action(before, None, None);
+            let edited_heads = state.doc.get_heads();
+            assert!(panel.editor_mut().perform_semantic_action(
+                &format!("notes.image-done:{id}"),
+                &ui::a11y::Action::Activate,
+                &mut state.doc,
+                &ROOT
+            ));
+            panel.body_editor_mut().sync(&mut state.doc, &ROOT);
+            assert_eq!(state.doc.get_heads(), edited_heads);
+            let reopened = AutoCommit::load(&state.doc.save()).unwrap();
+            validate(&reopened).unwrap();
+            assert_eq!(NotesDoc::page_block_snapshots(&reopened, page)[0].1, edited);
+            state.undo(None, None).unwrap();
+            assert_eq!(
+                NotesDoc::page_block_snapshots(&state.doc, page)[0].1,
+                original
+            );
+        }
+
+        eprintln!("phase new_images_are_references_only_when_a_content_store_holds_the_bytes");
+        {
+            let bytes = png(5);
+            let digest = blake3::hash(&bytes).to_hex().to_string();
+
+            let mut shared_doc = AutoCommit::new();
+            initialize_empty(&mut shared_doc).unwrap();
+            let store = device_store(false);
+            put_asset_in(&store, &mut shared_doc, &digest, &bytes).unwrap();
+            assert!(matches!(
+                stored(&shared_doc, &digest),
+                StoredAsset::Reference { .. }
+            ));
+            assert_eq!(store.read(&digest), Some(bytes.clone()));
+            // Re-adding the same image is a no-op; other bytes under the digest are not.
+            put_asset_in(&store, &mut shared_doc, &digest, &bytes).unwrap();
+
+            let mut local_doc = AutoCommit::new();
+            initialize_empty(&mut local_doc).unwrap();
+            let local = tilo_content::ContentStore::memory();
+            put_asset_in(&local, &mut local_doc, &digest, &bytes).unwrap();
+            assert_eq!(stored(&local_doc, &digest), StoredAsset::Inline(bytes));
+            validate(&local_doc).unwrap();
+        }
     }
 
     use tilo_automerge::ApplyIncoming as _;
@@ -1091,117 +986,97 @@ mod tests {
     }
 
     #[test]
-    fn inline_images_move_to_the_content_store_and_the_notebook_keeps_references() {
-        let images = [png(1), png(2)];
-        let (mut doc, digests) = inline_notebook(&images);
-        validate(&doc).expect("an old notebook with inline images stays loadable");
-        assert_eq!(inline_asset_digests(&doc).unwrap(), {
-            let mut sorted = digests.clone();
-            sorted.sort();
-            sorted
-        });
-
-        let store = device_store(false);
-        assert_eq!(
-            move_inline_assets_in(&store, &mut doc, &digests).unwrap(),
-            2
+    fn inline_images_move_to_the_content_store_convergently_or_stay_inline() {
+        eprintln!(
+            "phase inline_images_move_to_the_content_store_and_the_notebook_keeps_references"
         );
-        doc.commit();
-        for (digest, bytes) in digests.iter().zip(&images) {
+        {
+            let images = [png(1), png(2)];
+            let (mut doc, digests) = inline_notebook(&images);
+            validate(&doc).expect("an old notebook with inline images stays loadable");
+            assert_eq!(inline_asset_digests(&doc).unwrap(), {
+                let mut sorted = digests.clone();
+                sorted.sort();
+                sorted
+            });
+
+            let store = device_store(false);
             assert_eq!(
-                stored(&doc, digest),
-                StoredAsset::Reference {
-                    len: bytes.len() as u64,
-                    mime: "image/png".into(),
-                }
+                move_inline_assets_in(&store, &mut doc, &digests).unwrap(),
+                2
             );
-            assert_eq!(store.read(digest).as_ref(), Some(bytes));
+            doc.commit();
+            for (digest, bytes) in digests.iter().zip(&images) {
+                assert_eq!(
+                    stored(&doc, digest),
+                    StoredAsset::Reference {
+                        len: bytes.len() as u64,
+                        mime: "image/png".into(),
+                    }
+                );
+                assert_eq!(store.read(digest).as_ref(), Some(bytes));
+            }
+            assert!(inline_asset_digests(&doc).unwrap().is_empty());
+
+            // Round trip: the saved notebook reopens with references and every
+            // image readable through the store.
+            let reopened = AutoCommit::load(&doc.save()).unwrap();
+            validate(&reopened).unwrap();
+            let snapshot = asset_snapshot_with(&reopened, |hash| store.read(hash)).unwrap();
+            for (digest, bytes) in digests.iter().zip(&images) {
+                assert_eq!(snapshot.get(&format!("asset:{digest}")), Some(bytes));
+            }
+            assert!(assets_complete(&reopened, &snapshot).unwrap());
+            // Before a collaborator's bytes arrive, the image is simply absent.
+            let waiting = asset_snapshot_with(&reopened, |_| None).unwrap();
+            assert!(waiting.is_empty());
+            assert!(!assets_complete(&reopened, &waiting).unwrap());
+
+            // Idempotent: a second move changes nothing.
+            let mut again = reopened;
+            let heads = again.get_heads();
+            assert_eq!(
+                move_inline_assets_in(&store, &mut again, &digests).unwrap(),
+                0
+            );
+            again.commit();
+            assert_eq!(again.get_heads(), heads);
         }
-        assert!(inline_asset_digests(&doc).unwrap().is_empty());
 
-        // Round trip: the saved notebook reopens with references and every
-        // image readable through the store.
-        let reopened = AutoCommit::load(&doc.save()).unwrap();
-        validate(&reopened).unwrap();
-        let snapshot = asset_snapshot_with(&reopened, |hash| store.read(hash)).unwrap();
-        for (digest, bytes) in digests.iter().zip(&images) {
-            assert_eq!(snapshot.get(&format!("asset:{digest}")), Some(bytes));
+        eprintln!("phase two_devices_moving_the_same_images_converge");
+        {
+            let images = [png(3)];
+            let (mut doc, digests) = inline_notebook(&images);
+            let mut a = doc.fork();
+            let mut b = doc.fork();
+            let store = device_store(false);
+            move_inline_assets_in(&store, &mut a, &digests).unwrap();
+            move_inline_assets_in(&store, &mut b, &digests).unwrap();
+            a.merge_incoming(&mut b).unwrap();
+            validate(&a).unwrap();
+            assert!(matches!(
+                stored(&a, &digests[0]),
+                StoredAsset::Reference { .. }
+            ));
         }
-        assert!(assets_complete(&reopened, &snapshot).unwrap());
-        // Before a collaborator's bytes arrive, the image is simply absent.
-        let waiting = asset_snapshot_with(&reopened, |_| None).unwrap();
-        assert!(waiting.is_empty());
-        assert!(!assets_complete(&reopened, &waiting).unwrap());
 
-        // Idempotent: a second move changes nothing.
-        let mut again = reopened;
-        let heads = again.get_heads();
-        assert_eq!(
-            move_inline_assets_in(&store, &mut again, &digests).unwrap(),
-            0
-        );
-        again.commit();
-        assert_eq!(again.get_heads(), heads);
-    }
-
-    #[test]
-    fn two_devices_moving_the_same_images_converge() {
-        let images = [png(3)];
-        let (mut doc, digests) = inline_notebook(&images);
-        let mut a = doc.fork();
-        let mut b = doc.fork();
-        let store = device_store(false);
-        move_inline_assets_in(&store, &mut a, &digests).unwrap();
-        move_inline_assets_in(&store, &mut b, &digests).unwrap();
-        a.merge_incoming(&mut b).unwrap();
-        validate(&a).unwrap();
-        assert!(matches!(
-            stored(&a, &digests[0]),
-            StoredAsset::Reference { .. }
-        ));
-    }
-
-    #[test]
-    fn a_refused_move_leaves_the_images_inline() {
-        let images = [png(4)];
-        let (mut doc, digests) = inline_notebook(&images);
-        let refusing = device_store(true);
-        assert!(move_inline_assets_in(&refusing, &mut doc, &digests).is_err());
-        assert_eq!(
-            stored(&doc, &digests[0]),
-            StoredAsset::Inline(images[0].clone())
-        );
-        // A process-local store never receives the only copy.
-        let local = tilo_content::ContentStore::memory();
-        assert!(move_inline_assets_in(&local, &mut doc, &digests).is_err());
-        assert_eq!(
-            stored(&doc, &digests[0]),
-            StoredAsset::Inline(images[0].clone())
-        );
-    }
-
-    #[test]
-    fn new_images_are_references_only_when_a_content_store_holds_the_bytes() {
-        let bytes = png(5);
-        let digest = blake3::hash(&bytes).to_hex().to_string();
-
-        let mut shared_doc = AutoCommit::new();
-        initialize_empty(&mut shared_doc).unwrap();
-        let store = device_store(false);
-        put_asset_in(&store, &mut shared_doc, &digest, &bytes).unwrap();
-        assert!(matches!(
-            stored(&shared_doc, &digest),
-            StoredAsset::Reference { .. }
-        ));
-        assert_eq!(store.read(&digest), Some(bytes.clone()));
-        // Re-adding the same image is a no-op; other bytes under the digest are not.
-        put_asset_in(&store, &mut shared_doc, &digest, &bytes).unwrap();
-
-        let mut local_doc = AutoCommit::new();
-        initialize_empty(&mut local_doc).unwrap();
-        let local = tilo_content::ContentStore::memory();
-        put_asset_in(&local, &mut local_doc, &digest, &bytes).unwrap();
-        assert_eq!(stored(&local_doc, &digest), StoredAsset::Inline(bytes));
-        validate(&local_doc).unwrap();
+        eprintln!("phase a_refused_move_leaves_the_images_inline");
+        {
+            let images = [png(4)];
+            let (mut doc, digests) = inline_notebook(&images);
+            let refusing = device_store(true);
+            assert!(move_inline_assets_in(&refusing, &mut doc, &digests).is_err());
+            assert_eq!(
+                stored(&doc, &digests[0]),
+                StoredAsset::Inline(images[0].clone())
+            );
+            // A process-local store never receives the only copy.
+            let local = tilo_content::ContentStore::memory();
+            assert!(move_inline_assets_in(&local, &mut doc, &digests).is_err());
+            assert_eq!(
+                stored(&doc, &digests[0]),
+                StoredAsset::Inline(images[0].clone())
+            );
+        }
     }
 }

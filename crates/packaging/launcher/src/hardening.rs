@@ -22,6 +22,17 @@
 //! is link-time compatible, but glibc won't switch shadow stacks on without
 //! this opt-in, which scopes the protection instead of making it global and
 //! is inert (not an error) on a CPU without shadow-stack support.
+//!
+//! Inert only at startup: once shadow stacks are on, glibc refuses to
+//! `dlopen` any object without the SHSTK note, and a multithreaded process
+//! cannot drop them again (`glibc.cpu.x86_shstk=permissive` does not help).
+//! GPU drivers are dlopened, so every library in the pinned driver's closure
+//! must be marked. Fedora 44's libzstd is not (its decoder assembly carries no
+//! GNU property note) and Mesa's RADV needs it: on a shadow-stack CPU the
+//! Vulkan loader finds no driver, wgpu has no backend, and the app never draws
+//! a window. An image that launches these packages must ship a marked libzstd
+//! (zstd built with `ZSTD_DISABLE_ASM` and `-fcf-protection`; the hosted guest
+//! image does this) or otherwise check the closure of the drivers it ships.
 
 use std::path::{Path, PathBuf};
 
@@ -169,74 +180,76 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_exact_id_matches_only_itself() {
-        let list = "so.tilo.browser\n";
-        assert!(policy_matches(list, "so.tilo.browser"));
-        assert!(!policy_matches(list, "so.tilo.browserish"));
-        assert!(!policy_matches(list, "so.tilo.calculator"));
+    fn hardening_policy_entries_match_ids_and_families() {
+        // Phase `an_exact_id_matches_only_itself`.
+        {
+            let list = "so.tilo.browser\n";
+            assert!(policy_matches(list, "so.tilo.browser"));
+            assert!(!policy_matches(list, "so.tilo.browserish"));
+            assert!(!policy_matches(list, "so.tilo.calculator"));
+        }
+        // Phase `comments_and_blank_lines_are_not_entries`.
+        {
+            let list = "\n# so.tilo.calculator\n   \nso.tilo.tube  # decodes video\n";
+            assert!(policy_matches(list, "so.tilo.tube"));
+            assert!(
+                !policy_matches(list, "so.tilo.calculator"),
+                "a commented-out id must not match"
+            );
+        }
+        // Phase `a_trailing_star_matches_a_family`.
+        {
+            let list = "so.tilo.media.*\n";
+            assert!(policy_matches(list, "so.tilo.media.player"));
+            assert!(!policy_matches(list, "so.tilo.notes"));
+        }
+        // Phase `an_empty_policy_hardens_nothing`.
+        {
+            assert!(!policy_matches("", "so.tilo.browser"));
+            assert!(!policy_matches(
+                "# everything commented\n",
+                "so.tilo.browser"
+            ));
+        }
     }
 
     #[test]
-    fn comments_and_blank_lines_are_not_entries() {
-        let list = "\n# so.tilo.calculator\n   \nso.tilo.tube  # decodes video\n";
-        assert!(policy_matches(list, "so.tilo.tube"));
-        assert!(
-            !policy_matches(list, "so.tilo.calculator"),
-            "a commented-out id must not match"
-        );
-    }
+    fn hardening_policy_file_replaces_the_builtin_list() {
+        // Phase `a_policy_file_replaces_the_builtin_list`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("untrusted-parsers.conf");
+            std::fs::write(&file, "so.tilo.notes\n").unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(POLICY_PATH_ENV, &file);
 
-    #[test]
-    fn a_trailing_star_matches_a_family() {
-        let list = "so.tilo.media.*\n";
-        assert!(policy_matches(list, "so.tilo.media.player"));
-        assert!(!policy_matches(list, "so.tilo.notes"));
-    }
+            let notes = for_package("so.tilo.notes");
+            let browser = for_package("so.tilo.browser");
+            drop(env);
 
-    #[test]
-    fn an_empty_policy_hardens_nothing() {
-        assert!(!policy_matches("", "so.tilo.browser"));
-        assert!(!policy_matches(
-            "# everything commented\n",
-            "so.tilo.browser"
-        ));
-    }
+            assert!(
+                notes.shadow_stack,
+                "the package named by the policy file must be hardened"
+            );
+            assert!(
+                !browser.is_active(),
+                "a package the policy file omits must not be hardened just because \
+                 it is in the compiled-in fallback"
+            );
+        }
+        // Phase `with_no_policy_file_the_builtin_set_still_applies`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let missing = dir.path().join("does-not-exist.conf");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(POLICY_PATH_ENV, &missing);
 
-    #[test]
-    fn a_policy_file_replaces_the_builtin_list() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("untrusted-parsers.conf");
-        std::fs::write(&file, "so.tilo.notes\n").unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(POLICY_PATH_ENV, &file);
+            let browser = for_package("so.tilo.browser");
+            let calculator = for_package("so.tilo.calculator");
+            drop(env);
 
-        let notes = for_package("so.tilo.notes");
-        let browser = for_package("so.tilo.browser");
-        drop(env);
-
-        assert!(
-            notes.shadow_stack,
-            "the package named by the policy file must be hardened"
-        );
-        assert!(
-            !browser.is_active(),
-            "a package the policy file omits must not be hardened just because \
-             it is in the compiled-in fallback"
-        );
-    }
-
-    #[test]
-    fn with_no_policy_file_the_builtin_set_still_applies() {
-        let dir = tempfile::tempdir().unwrap();
-        let missing = dir.path().join("does-not-exist.conf");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(POLICY_PATH_ENV, &missing);
-
-        let browser = for_package("so.tilo.browser");
-        let calculator = for_package("so.tilo.calculator");
-        drop(env);
-
-        assert!(browser.shadow_stack, "fallback list lost the browser");
-        assert!(!calculator.is_active(), "a plain app must stay unhardened");
+            assert!(browser.shadow_stack, "fallback list lost the browser");
+            assert!(!calculator.is_active(), "a plain app must stay unhardened");
+        }
     }
 }

@@ -22,7 +22,7 @@
 //! - for the immediate-mode painters, on the glyph runs they encode: every
 //!   run's font size at 2× is exactly the expected multiple of its 1× size.
 //!
-//! With `QUICK_UI_SCREENSHOT_DIR` set, each frame is also written under
+//! With `TILO_UI_SCREENSHOT_DIR` set, each frame is also written under
 //! `text_scaled_once/` there as visual evidence.
 
 use tilo_ui::State;
@@ -176,22 +176,116 @@ fn retained_widgets() -> Vec<(&'static str, fn() -> Element, f64)> {
 }
 
 #[test]
-fn retained_widget_labels_follow_the_text_scale_once_through_the_harness() {
-    for (widget, build, expected) in retained_widgets() {
-        let mut label_ink = Vec::new();
-        for scale in [1.0_f32, 2.0] {
-            let cap = capture(widget, column(vec![build()]), (360, 200), scale);
-            let band = rect(find(&cap.harness.inspection().root, widget));
-            assert!(
-                band.width() > 0.0 && band.height() > 0.0,
-                "{widget}: empty layout rect {band:?}"
-            );
-            // A theme-sized label may overhang a fixed-height pill at 2×; the
-            // probe follows the ink, not the box.
-            let probe = band.inflate(4.0, 12.0);
-            label_ink.push(ink(&cap.image, probe));
+fn text_scale_is_applied_once_by_retained_immediate_and_renderer_paths() {
+    // Case `retained_widget_labels_follow_the_text_scale_once_through_the_harness`.
+    {
+        for (widget, build, expected) in retained_widgets() {
+            let mut label_ink = Vec::new();
+            for scale in [1.0_f32, 2.0] {
+                let cap = capture(widget, column(vec![build()]), (360, 200), scale);
+                let band = rect(find(&cap.harness.inspection().root, widget));
+                assert!(
+                    band.width() > 0.0 && band.height() > 0.0,
+                    "{widget}: empty layout rect {band:?}"
+                );
+                // A theme-sized label may overhang a fixed-height pill at 2×; the
+                // probe follows the ink, not the box.
+                let probe = band.inflate(4.0, 12.0);
+                label_ink.push(ink(&cap.image, probe));
+            }
+            assert_ink_scaled(widget, label_ink[0], label_ink[1], expected);
         }
-        assert_ink_scaled(widget, label_ink[0], label_ink[1], expected);
+    }
+
+    // Case `immediate_mode_painters_encode_glyphs_at_the_text_scale_once`.
+    {
+        let painters: Vec<(&str, Box<Painter>, f32)> = vec![
+            (
+                // Theme-sized label in a pill the host lays out at the control
+                // step: the label follows the text scale once.
+                "Chip::draw_at",
+                Box::new(|scene, tr, theme| {
+                    Chip::draw_at(
+                        scene,
+                        Affine::IDENTITY,
+                        Rect::new(0.0, 0.0, 160.0, 28.0),
+                        "Design review",
+                        ChipLead::None,
+                        ChipStyle::default(),
+                        theme,
+                        tr,
+                    );
+                }),
+                2.0,
+            ),
+            (
+                // Renderer-relative contract: an app that wants the theme's
+                // control-label size divides it once, as documented on
+                // `pill_size`; the pill then paints it scaled once.
+                "status_bubble::draw_pill",
+                Box::new(|scene, tr, theme| {
+                    let size = tilo_ui::text_metrics::renderer_type_size(
+                        tr,
+                        theme.tokens.typography.scale.sm,
+                    );
+                    let (w, h) = tilo_ui::status_bubble::pill_size("Syncing", tr, size, 0.0);
+                    tilo_ui::status_bubble::draw_pill(
+                        scene,
+                        Affine::IDENTITY,
+                        tr,
+                        theme,
+                        Rect::new(0.0, 0.0, w, h),
+                        "Syncing",
+                        size,
+                    );
+                }),
+                2.0,
+            ),
+            (
+                // Initials are sized from the disc, so they stay put when only
+                // the text scale changes — they used to grow out of it.
+                "Avatar::draw_at",
+                Box::new(|scene, tr, theme| {
+                    Avatar::draw_at(
+                        scene,
+                        Affine::IDENTITY,
+                        Rect::new(0.0, 0.0, 40.0, 40.0),
+                        "AB",
+                        Color::from_rgb8(0x3b, 0x82, 0xf6),
+                        theme,
+                        tr,
+                    );
+                }),
+                1.0,
+            ),
+        ];
+        for (what, paint, expected) in &painters {
+            assert_runs_scale(what, paint.as_ref(), *expected);
+        }
+    }
+
+    // Case `renderer_type_size_is_the_size_only_twin_of_renderer_input_style`.
+    // The helper itself: the size-only twin of `renderer_input_style`.
+    {
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let resolved = Theme::dark()
+            .with_text_scale(2.0)
+            .tokens
+            .typography
+            .scale
+            .base;
+        let via_style = tr
+            .renderer_input_style(&tilo_ui::text_render::TextStyle::new(resolved))
+            .size;
+        assert_eq!(
+            tilo_ui::text_metrics::renderer_type_size(&tr, resolved),
+            via_style
+        );
+        assert_eq!(
+            tilo_ui::text_metrics::renderer_type_size(&tr, resolved),
+            14.0
+        );
     }
 }
 
@@ -234,93 +328,4 @@ fn assert_runs_scale(what: &str, paint: &Painter, expected: f32) {
             expected * b
         );
     }
-}
-
-#[test]
-fn immediate_mode_painters_encode_glyphs_at_the_text_scale_once() {
-    let painters: Vec<(&str, Box<Painter>, f32)> = vec![
-        (
-            // Theme-sized label in a pill the host lays out at the control
-            // step: the label follows the text scale once.
-            "Chip::draw_at",
-            Box::new(|scene, tr, theme| {
-                Chip::draw_at(
-                    scene,
-                    Affine::IDENTITY,
-                    Rect::new(0.0, 0.0, 160.0, 28.0),
-                    "Design review",
-                    ChipLead::None,
-                    ChipStyle::default(),
-                    theme,
-                    tr,
-                );
-            }),
-            2.0,
-        ),
-        (
-            // Renderer-relative contract: an app that wants the theme's
-            // control-label size divides it once, as documented on
-            // `pill_size`; the pill then paints it scaled once.
-            "status_bubble::draw_pill",
-            Box::new(|scene, tr, theme| {
-                let size =
-                    tilo_ui::text_metrics::renderer_type_size(tr, theme.tokens.typography.scale.sm);
-                let (w, h) = tilo_ui::status_bubble::pill_size("Syncing", tr, size, 0.0);
-                tilo_ui::status_bubble::draw_pill(
-                    scene,
-                    Affine::IDENTITY,
-                    tr,
-                    theme,
-                    Rect::new(0.0, 0.0, w, h),
-                    "Syncing",
-                    size,
-                );
-            }),
-            2.0,
-        ),
-        (
-            // Initials are sized from the disc, so they stay put when only
-            // the text scale changes — they used to grow out of it.
-            "Avatar::draw_at",
-            Box::new(|scene, tr, theme| {
-                Avatar::draw_at(
-                    scene,
-                    Affine::IDENTITY,
-                    Rect::new(0.0, 0.0, 40.0, 40.0),
-                    "AB",
-                    Color::from_rgb8(0x3b, 0x82, 0xf6),
-                    theme,
-                    tr,
-                );
-            }),
-            1.0,
-        ),
-    ];
-    for (what, paint, expected) in &painters {
-        assert_runs_scale(what, paint.as_ref(), *expected);
-    }
-}
-
-/// The helper itself: the size-only twin of `renderer_input_style`.
-#[test]
-fn renderer_type_size_is_the_size_only_twin_of_renderer_input_style() {
-    let mut tr = TextRenderer::new();
-    tr.set_text_scale(2.0);
-    let resolved = Theme::dark()
-        .with_text_scale(2.0)
-        .tokens
-        .typography
-        .scale
-        .base;
-    let via_style = tr
-        .renderer_input_style(&tilo_ui::text_render::TextStyle::new(resolved))
-        .size;
-    assert_eq!(
-        tilo_ui::text_metrics::renderer_type_size(&tr, resolved),
-        via_style
-    );
-    assert_eq!(
-        tilo_ui::text_metrics::renderer_type_size(&tr, resolved),
-        14.0
-    );
 }

@@ -18,6 +18,8 @@ import subprocess
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 COMPOSEFS = re.compile(r"[0-9a-f]{128}\Z")
 GUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z")
+DEV_VM_MARKER = Path("/usr/share/tilo/unverified-vm-install")
+VM_PROOF_PORT = Path("/dev/virtio-ports/org.tilo.vm-install-proof")
 
 
 def require(ok, message):
@@ -45,6 +47,19 @@ def hash_file(path):
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def copied_dev_manifest_digest():
+    """Identify a VM-only bootc export by its exact local OCI manifest bytes."""
+    require(DEV_VM_MARKER.is_file() and not DEV_VM_MARKER.is_symlink()
+            and VM_PROOF_PORT.is_char_device(),
+            "development copy proof requires the VM-only installer and proof port")
+    command("systemd-detect-virt", "--vm", "--quiet")
+    raw = subprocess.run(("skopeo", "inspect", "--raw",
+                          "containers-storage:localhost/bootc"), check=True,
+                         capture_output=True, timeout=30).stdout
+    require(raw, "development copy has no local OCI manifest")
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
 def build_proof(args):
@@ -84,18 +99,32 @@ def build_proof(args):
                 and receipt_path.stat().st_size <= 8192,
                 "offline target verification receipt is unsafe")
         selected = json.loads(receipt_path.read_text(encoding="utf-8"))
-        require(selected.get("schema") == "tilo.installer-offline-target.v1"
+        development = selected.get("schema") == "tilo.installer-dev-target.v1"
+        require(selected.get("schema") in ("tilo.installer-offline-target.v1", "tilo.installer-dev-target.v1")
                 and selected.get("target_digest") == installed_digest
-                and selected.get("target_ref") == {
+                and selected.get("target_ref") == ("registry.tilo.so/tilo/tilo-vm" if development else {
                     "generic": "registry.tilo.so/tilo/tilo",
                     # Board images stay on the forge's private registry.
                     "lenovo-83ed": "code.tilo.so/tilo/tilo",
-                }.get(selected.get("hardware_profile"), "") + "@" + installed_digest
+                }.get(selected.get("hardware_profile"), "")) + "@" + installed_digest
                 and installed_origin == "ostree-unverified-image:docker://" + selected.get("update_origin", ""),
                 "installed deployment differs from the independently signed offline target")
+        if development:
+            require(DEV_VM_MARKER.is_file() and not DEV_VM_MARKER.is_symlink()
+                    and VM_PROOF_PORT.is_char_device() and selected.get("verifier_key_sha256") is None,
+                    "development target proof requires the VM-only development installer")
+            command("systemd-detect-virt", "--vm", "--quiet")
+            require(selected.get("provenance", {}).get("source_revision") == selected.get("source_revision")
+                    and selected.get("provenance", {}).get("invocation_id") == selected.get("ci_run_id"),
+                    "development target source differs from its transport receipt")
+            selected = {key: value for key, value in selected.items()
+                        if key not in ("source_revision", "ci_run_id")}
     else:
-        require(booted_digest == installed_digest and booted_composefs == composefs,
+        require(booted_composefs == composefs,
                 "installed deployment does not match the booted CI image")
+        if booted_digest != installed_digest:
+            require(copied_dev_manifest_digest() == installed_digest,
+                    "installed deployment differs from the VM-local bootc copy")
     require(not args.target_uki.is_symlink(),
             "installed target UKI is a symlink")
     uki = args.target_uki.resolve(strict=True)
@@ -115,7 +144,10 @@ def build_proof(args):
         identities[role] = partuuid.lower()
     require(len(set(identities.values())) == 3,
             "installed target partition identities overlap")
-    result = {"schema": "tilo.vm-install-image-proof.v2" if selected else
+    dev_copy = not selected and booted_digest != installed_digest
+    result = {"schema": "tilo.vm-install-image-proof.v4" if selected and development else
+            "tilo.vm-install-image-proof.v2" if selected else
+            "tilo.vm-install-image-proof.v3" if dev_copy else
             "tilo.vm-install-image-proof.v1",
             "architecture": architecture,
             "booted_image_digest": booted_digest,
@@ -126,8 +158,19 @@ def build_proof(args):
             "installed_update_origin": installed_origin,
             "target_uki_sha256": hash_file(uki),
             "disk_guid": disk_guid.lower(), "partuuids": identities}
+    code_receipt = Path('/run/tilo-installer/code-refresh/active.json')
+    if code_receipt.exists() or code_receipt.is_symlink():
+        require(code_receipt.is_file() and not code_receipt.is_symlink()
+                and code_receipt.stat().st_size <= 65536, 'unsafe installer code refresh evidence')
+        code = json.loads(code_receipt.read_text())
+        require(code.get('schema') == 'tilo.installer-code-refresh.v1'
+                and re.fullmatch(r'[0-9a-f]{64}', code.get('sha256', '')),
+                'invalid installer code refresh evidence')
+        result['installer_code_override_sha256'] = code['sha256']
     if selected:
         result["selected_target"] = selected
+    if dev_copy:
+        result["copied_manifest_digest"] = installed_digest
     return result
 
 

@@ -160,126 +160,125 @@ mod tests {
     }
 
     #[test]
-    fn new_registry_is_empty() {
-        let r = OutputRegistry::new();
-        assert!(r.is_empty());
-        assert_eq!(r.len(), 0);
+    fn output_registry_interns_stable_distinct_ids() {
+        // Phase `new_registry_is_empty`.
+        {
+            let r = OutputRegistry::new();
+            assert!(r.is_empty());
+            assert_eq!(r.len(), 0);
+        }
+        // Phase `intern_mints_ids_starting_at_zero`.
+        {
+            let mut r = OutputRegistry::new();
+            assert_eq!(r.intern(key(1, 10)), OutputId(0));
+            assert_eq!(r.intern(key(1, 11)), OutputId(1));
+            assert_eq!(r.intern(key(2, 10)), OutputId(2));
+        }
+        // Phase `intern_is_stable_across_calls`.
+        {
+            let mut r = OutputRegistry::new();
+            let first = r.intern(key(1, 42));
+            let second = r.intern(key(1, 42));
+            assert_eq!(first, second);
+            // No new id minted.
+            assert_eq!(r.len(), 1);
+        }
+        // Phase `intern_distinct_devices_get_distinct_ids`.
+        {
+            let mut r = OutputRegistry::new();
+            let a = r.intern(key(1, 10));
+            let b = r.intern(key(2, 10));
+            assert_ne!(a, b);
+        }
+        // Phase `iter_yields_all_entries`.
+        {
+            let mut r = OutputRegistry::new();
+            r.intern(key(1, 10));
+            r.intern(key(1, 11));
+            let count = r.iter().count();
+            assert_eq!(count, 2);
+        }
     }
 
     #[test]
-    fn intern_mints_ids_starting_at_zero() {
-        let mut r = OutputRegistry::new();
-        assert_eq!(r.intern(key(1, 10)), OutputId(0));
-        assert_eq!(r.intern(key(1, 11)), OutputId(1));
-        assert_eq!(r.intern(key(2, 10)), OutputId(2));
-    }
-
-    #[test]
-    fn intern_is_stable_across_calls() {
-        let mut r = OutputRegistry::new();
-        let first = r.intern(key(1, 42));
-        let second = r.intern(key(1, 42));
-        assert_eq!(first, second);
-        // No new id minted.
-        assert_eq!(r.len(), 1);
-    }
-
-    #[test]
-    fn intern_distinct_devices_get_distinct_ids() {
-        let mut r = OutputRegistry::new();
-        let a = r.intern(key(1, 10));
-        let b = r.intern(key(2, 10));
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn iter_yields_all_entries() {
-        let mut r = OutputRegistry::new();
-        r.intern(key(1, 10));
-        r.intern(key(1, 11));
-        let count = r.iter().count();
-        assert_eq!(count, 2);
-    }
-
-    #[test]
-    fn registry_populates_from_connector_list() {
-        let mut r = OutputRegistry::new();
-        let connectors = vec![
-            ConnectorInfo {
+    fn registry_populates_only_connected_connectors_with_modes() {
+        // Phase `registry_populates_from_connector_list`.
+        {
+            let mut r = OutputRegistry::new();
+            let connectors = vec![
+                ConnectorInfo {
+                    device_id: 1,
+                    connector_id: 10,
+                    connected: true,
+                    modes: vec![mode_1080p()],
+                },
+                ConnectorInfo {
+                    device_id: 1,
+                    connector_id: 11,
+                    connected: true,
+                    modes: vec![mode_4k()],
+                },
+            ];
+            let outputs = r.populate(&connectors);
+            assert_eq!(outputs.len(), 2);
+            assert_eq!(outputs[0].1.size, (1920, 1080));
+            assert_eq!(outputs[1].1.size, (3840, 2160));
+            assert_eq!(r.len(), 2);
+        }
+        // Phase `populate_skips_disconnected_connectors`.
+        {
+            let mut r = OutputRegistry::new();
+            let connectors = vec![
+                ConnectorInfo {
+                    device_id: 1,
+                    connector_id: 10,
+                    connected: false,
+                    modes: vec![mode_1080p()],
+                },
+                ConnectorInfo {
+                    device_id: 1,
+                    connector_id: 11,
+                    connected: true,
+                    modes: vec![mode_4k()],
+                },
+            ];
+            let outputs = r.populate(&connectors);
+            assert_eq!(outputs.len(), 1);
+            assert_eq!(outputs[0].1.size, (3840, 2160));
+            // Disconnected connector should not be interned either.
+            assert_eq!(r.len(), 1);
+        }
+        // Phase `populate_skips_connected_connector_with_no_modes`.
+        {
+            let mut r = OutputRegistry::new();
+            let connectors = vec![ConnectorInfo {
                 device_id: 1,
                 connector_id: 10,
                 connected: true,
-                modes: vec![mode_1080p()],
-            },
-            ConnectorInfo {
-                device_id: 1,
-                connector_id: 11,
+                modes: vec![],
+            }];
+            let outputs = r.populate(&connectors);
+            assert!(outputs.is_empty());
+            assert!(r.is_empty());
+        }
+        // Phase `populate_returns_stable_ids_across_calls`.
+        {
+            let mut r = OutputRegistry::new();
+            let connectors = vec![ConnectorInfo {
+                device_id: 7,
+                connector_id: 99,
                 connected: true,
-                modes: vec![mode_4k()],
-            },
-        ];
-        let outputs = r.populate(&connectors);
-        assert_eq!(outputs.len(), 2);
-        assert_eq!(outputs[0].1.size, (1920, 1080));
-        assert_eq!(outputs[1].1.size, (3840, 2160));
-        assert_eq!(r.len(), 2);
-    }
-
-    #[test]
-    fn populate_skips_disconnected_connectors() {
-        let mut r = OutputRegistry::new();
-        let connectors = vec![
-            ConnectorInfo {
-                device_id: 1,
-                connector_id: 10,
-                connected: false,
                 modes: vec![mode_1080p()],
-            },
-            ConnectorInfo {
-                device_id: 1,
-                connector_id: 11,
-                connected: true,
-                modes: vec![mode_4k()],
-            },
-        ];
-        let outputs = r.populate(&connectors);
-        assert_eq!(outputs.len(), 1);
-        assert_eq!(outputs[0].1.size, (3840, 2160));
-        // Disconnected connector should not be interned either.
-        assert_eq!(r.len(), 1);
-    }
-
-    #[test]
-    fn populate_skips_connected_connector_with_no_modes() {
-        let mut r = OutputRegistry::new();
-        let connectors = vec![ConnectorInfo {
-            device_id: 1,
-            connector_id: 10,
-            connected: true,
-            modes: vec![],
-        }];
-        let outputs = r.populate(&connectors);
-        assert!(outputs.is_empty());
-        assert!(r.is_empty());
-    }
-
-    #[test]
-    fn populate_returns_stable_ids_across_calls() {
-        let mut r = OutputRegistry::new();
-        let connectors = vec![ConnectorInfo {
-            device_id: 7,
-            connector_id: 99,
-            connected: true,
-            modes: vec![mode_1080p()],
-        }];
-        let first = r.populate(&connectors);
-        let second = r.populate(&connectors);
-        assert_eq!(first.len(), 1);
-        assert_eq!(second.len(), 1);
-        assert_eq!(
-            first[0].0, second[0].0,
-            "OutputId must be stable across re-enumeration"
-        );
-        assert_eq!(r.len(), 1, "no extra entries on re-enumeration");
+            }];
+            let first = r.populate(&connectors);
+            let second = r.populate(&connectors);
+            assert_eq!(first.len(), 1);
+            assert_eq!(second.len(), 1);
+            assert_eq!(
+                first[0].0, second[0].0,
+                "OutputId must be stable across re-enumeration"
+            );
+            assert_eq!(r.len(), 1, "no extra entries on re-enumeration");
+        }
     }
 }

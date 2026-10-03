@@ -279,12 +279,45 @@ pub fn draw(
     draw_with_metrics(scene, transform, tr, theme, rect, &items, &metrics)
 }
 
+/// The bar role (HIG §9.1) behind a strip of controls along a window's top
+/// edge: the raised surface and one derived bottom hairline.
+pub fn paint_bar(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.raised,
+        None,
+        &rect,
+    );
+    let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
+    if rule > 0.0 {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            crate::chrome::chrome_hairline(theme),
+            None,
+            &Rect::new(rect.x0, rect.y1 - rule, rect.x1, rect.y1),
+        );
+    }
+}
+
+/// The inset of a bar's controls from its edges: siblings' step across,
+/// the tightest step above and below so the bar stays one control tall
+/// (HIG §7b).
+pub fn bar_padding(theme: &Theme) -> taffy::Rect<taffy::LengthPercentage> {
+    let spacing = &theme.tokens.spacing;
+    let across = taffy::LengthPercentage::length(spacing.s3);
+    let along = taffy::LengthPercentage::length(spacing.s1);
+    taffy::Rect {
+        left: across,
+        right: across,
+        top: along,
+        bottom: along,
+    }
+}
+
 /// [`draw`] with an explicit width model — for a host that lays its rows
 /// out with the same [`ToolbarMetrics`] it hands in here.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the shared paint context plus the row, its items and its metrics"
-)]
 pub fn draw_with_metrics(
     scene: &mut Scene,
     transform: Affine,
@@ -294,21 +327,7 @@ pub fn draw_with_metrics(
     items: &[ToolbarItem],
     metrics: &ToolbarMetrics,
 ) -> Vec<Rect> {
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        theme.tokens.colors.surfaces.raised,
-        None,
-        &rect,
-    );
-    // Bar role (HIG §9.1): one derived bottom hairline.
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        crate::chrome::chrome_hairline(theme),
-        None,
-        &Rect::new(rect.x0, rect.y1 - 1.0, rect.x1, rect.y1),
-    );
+    paint_bar(scene, transform, theme, rect);
 
     // Ink on the accent fill comes from the theme (it walks out of white on
     // a bright accent), not from a literal white that the light and
@@ -397,143 +416,146 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scaled_toolbar_labels_fit_inside_their_hit_rects_and_row() {
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut text = TextRenderer::new();
-        text.set_text_scale(2.0);
-        let mut scene = Scene::new();
-        let items = [
-            ToolbarItem::new("More", 100.0),
-            ToolbarItem::new("Bold", 100.0).cue(LabelCue::Bold),
-            ToolbarItem::new("U", 60.0).cue(LabelCue::Underline),
-            ToolbarItem::new("S", 60.0).cue(LabelCue::Strike),
-        ];
-        let row = Rect::new(20.0, 40.0, 440.0, 104.0);
-        let rects = draw(&mut scene, Affine::IDENTITY, &mut text, &theme, row, &items);
-        for (item, button) in items.iter().zip(&rects) {
-            let weight = if item.cue == LabelCue::Bold {
-                TextWeight::Bold
-            } else {
-                TextWeight::Regular
-            };
-            let (_, height) = text.measure_weighted(&item.label, 15.0, None, weight);
-            assert!(
-                button.height() >= f64::from(height),
-                "{} label ({height}px) overflows its {}px hit target",
-                item.label,
-                button.height()
-            );
-            assert!(
-                button.y0 >= row.y0 && button.y1 <= row.y1,
-                "scaled button must stay inside its allocated toolbar row"
-            );
+    fn toolbar_item_rects_fit_labels_match_paint_and_scale_hit_targets() {
+        // Case `scaled_toolbar_labels_fit_inside_their_hit_rects_and_row`.
+        {
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut text = TextRenderer::new();
+            text.set_text_scale(2.0);
+            let mut scene = Scene::new();
+            let items = [
+                ToolbarItem::new("More", 100.0),
+                ToolbarItem::new("Bold", 100.0).cue(LabelCue::Bold),
+                ToolbarItem::new("U", 60.0).cue(LabelCue::Underline),
+                ToolbarItem::new("S", 60.0).cue(LabelCue::Strike),
+            ];
+            let row = Rect::new(20.0, 40.0, 440.0, 104.0);
+            let rects = draw(&mut scene, Affine::IDENTITY, &mut text, &theme, row, &items);
+            for (item, button) in items.iter().zip(&rects) {
+                let weight = if item.cue == LabelCue::Bold {
+                    TextWeight::Bold
+                } else {
+                    TextWeight::Regular
+                };
+                let (_, height) = text.measure_weighted(&item.label, 15.0, None, weight);
+                assert!(
+                    button.height() >= f64::from(height),
+                    "{} label ({height}px) overflows its {}px hit target",
+                    item.label,
+                    button.height()
+                );
+                assert!(
+                    button.y0 >= row.y0 && button.y1 <= row.y1,
+                    "scaled button must stay inside its allocated toolbar row"
+                );
+            }
         }
-    }
 
-    /// The geometry `draw` paints is the geometry `item_rects` returns, and
-    /// both follow the advance model a row packer sums: leading pad, then
-    /// per item its separator (when it starts a group), its width and the
-    /// gap. A host packing rows with `item_advance` therefore admits
-    /// exactly the rows `draw` lays out.
-    #[test]
-    fn item_rects_are_what_draw_paints_and_follow_the_advance_model() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        let m = ToolbarMetrics::standard();
-        let items = vec![
-            ToolbarItem::new("B", 34.0).cue(LabelCue::Bold),
-            ToolbarItem::new("I", 30.0),
-            ToolbarItem::new("H1", 42.0).group_start(true),
-            ToolbarItem::new("Quote", 60.0),
-        ];
-        let rect = Rect::new(10.0, 20.0, 610.0, 20.0 + TOOLBAR_HEIGHT);
-        let laid = item_rects(rect, &items, &mut tr, &m);
-        let drawn = draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, rect, &items);
-        assert_eq!(laid, drawn, "draw paints the rects item_rects lays out");
+        // Case `item_rects_are_what_draw_paints_and_follow_the_advance_model`:
+        // The geometry `draw` paints is the geometry `item_rects` returns, and
+        // both follow the advance model a row packer sums: leading pad, then
+        // per item its separator (when it starts a group), its width and the
+        // gap. A host packing rows with `item_advance` therefore admits
+        // exactly the rows `draw` lays out.
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            let m = ToolbarMetrics::standard();
+            let items = vec![
+                ToolbarItem::new("B", 34.0).cue(LabelCue::Bold),
+                ToolbarItem::new("I", 30.0),
+                ToolbarItem::new("H1", 42.0).group_start(true),
+                ToolbarItem::new("Quote", 60.0),
+            ];
+            let rect = Rect::new(10.0, 20.0, 610.0, 20.0 + TOOLBAR_HEIGHT);
+            let laid = item_rects(rect, &items, &mut tr, &m);
+            let drawn = draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, rect, &items);
+            assert_eq!(laid, drawn, "draw paints the rects item_rects lays out");
 
-        assert!((laid[0].x0 - (rect.x0 + m.leading_pad)).abs() < 1e-9);
-        let mut x = rect.x0 + m.leading_pad;
-        for (item, r) in items.iter().zip(&laid) {
-            let sep = if item.group_start {
-                m.separator_advance
-            } else {
-                0.0
-            };
-            assert!(
-                (r.x0 - (x + sep)).abs() < 1e-9,
-                "{} starts after its separator",
-                item.label
+            assert!((laid[0].x0 - (rect.x0 + m.leading_pad)).abs() < 1e-9);
+            let mut x = rect.x0 + m.leading_pad;
+            for (item, r) in items.iter().zip(&laid) {
+                let sep = if item.group_start {
+                    m.separator_advance
+                } else {
+                    0.0
+                };
+                assert!(
+                    (r.x0 - (x + sep)).abs() < 1e-9,
+                    "{} starts after its separator",
+                    item.label
+                );
+                assert!((r.width() - item.width).abs() < 1e-9);
+                assert!(
+                    (r.height() - m.button_min_height).abs() < 1e-9,
+                    "1× labels fit the minimum"
+                );
+                assert!(
+                    (r.center().y - rect.center().y).abs() < 1e-9,
+                    "buttons centre on the row"
+                );
+                x += m.item_advance(item.width, item.group_start);
+            }
+            // The used width the packer sums is where the next item would start.
+            assert!((x - (laid[3].x1 + m.item_gap)).abs() < 1e-9);
+            // The literal model the hosts mirrored: 14 / 6 / 34 / 15.
+            assert_eq!(
+                (
+                    m.leading_pad,
+                    m.item_gap,
+                    m.separator_advance,
+                    m.button_min_height
+                ),
+                (14.0, 6.0, 14.0, 34.0)
             );
-            assert!((r.width() - item.width).abs() < 1e-9);
-            assert!(
-                (r.height() - m.button_min_height).abs() < 1e-9,
-                "1× labels fit the minimum"
-            );
-            assert!(
-                (r.center().y - rect.center().y).abs() < 1e-9,
-                "buttons centre on the row"
-            );
-            x += m.item_advance(item.width, item.group_start);
+            assert!((m.label_size - 15.0).abs() < f32::EPSILON);
         }
-        // The used width the packer sums is where the next item would start.
-        assert!((x - (laid[3].x1 + m.item_gap)).abs() < 1e-9);
-        // The literal model the hosts mirrored: 14 / 6 / 34 / 15.
-        assert_eq!(
-            (
-                m.leading_pad,
-                m.item_gap,
-                m.separator_advance,
-                m.button_min_height
-            ),
-            (14.0, 6.0, 14.0, 34.0)
-        );
-        assert!((m.label_size - 15.0).abs() < f32::EPSILON);
-    }
 
-    #[test]
-    fn draw_returns_a_rect_per_item_and_hit_tests() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        let items = vec![
-            ToolbarItem::new("B", 34.0).active(true).cue(LabelCue::Bold),
-            ToolbarItem::new("I", 30.0),
-            ToolbarItem::new("H1", 42.0).group_start(true),
-        ];
-        let rect = Rect::new(0.0, 0.0, 600.0, TOOLBAR_HEIGHT);
-        let rects = draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, rect, &items);
-        assert_eq!(rects.len(), 3);
-        // ascending, non-overlapping, with a separator gap before item 2
-        assert!(rects[0].x1 <= rects[1].x0);
-        assert!(
-            rects[1].x1 + 10.0 <= rects[2].x0,
-            "group separator widened the gap"
-        );
-        let mid = rects[1].center();
-        assert_eq!(hit(&rects, mid), Some(1));
-        assert_eq!(hit(&rects, Point::new(5000.0, 5.0)), None);
-    }
+        // Case `draw_returns_a_rect_per_item_and_hit_tests`.
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            let items = vec![
+                ToolbarItem::new("B", 34.0).active(true).cue(LabelCue::Bold),
+                ToolbarItem::new("I", 30.0),
+                ToolbarItem::new("H1", 42.0).group_start(true),
+            ];
+            let rect = Rect::new(0.0, 0.0, 600.0, TOOLBAR_HEIGHT);
+            let rects = draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, rect, &items);
+            assert_eq!(rects.len(), 3);
+            // ascending, non-overlapping, with a separator gap before item 2
+            assert!(rects[0].x1 <= rects[1].x0);
+            assert!(
+                rects[1].x1 + 10.0 <= rects[2].x0,
+                "group separator widened the gap"
+            );
+            let mid = rects[1].center();
+            assert_eq!(hit(&rects, mid), Some(1));
+            assert_eq!(hit(&rects, Point::new(5000.0, 5.0)), None);
+        }
 
-    #[test]
-    fn two_x_geometry_scales_hit_targets_without_changing_item_order() {
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let mut scene = Scene::new();
-        let items = vec![
-            ToolbarItem::new("New", 64.0),
-            ToolbarItem::new("B", 34.0).group_start(true),
-        ];
-        let m = metrics(2.0);
-        let rect = Rect::new(0.0, 0.0, 500.0, m.row_height);
-        let rects = draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, rect, &items);
+        // Case `two_x_geometry_scales_hit_targets_without_changing_item_order`.
+        {
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(2.0);
+            let mut scene = Scene::new();
+            let items = vec![
+                ToolbarItem::new("New", 64.0),
+                ToolbarItem::new("B", 34.0).group_start(true),
+            ];
+            let m = metrics(2.0);
+            let rect = Rect::new(0.0, 0.0, 500.0, m.row_height);
+            let rects = draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, rect, &items);
 
-        assert_eq!(m.row_height, TOOLBAR_HEIGHT * 2.0);
-        assert_eq!(rects[0].width(), 128.0);
-        assert_eq!(rects[0].height(), 68.0);
-        assert!(rects[1].x0 - rects[0].x1 >= m.group_gap);
-        assert_eq!(hit(&rects, rects[0].center()), Some(0));
-        assert_eq!(hit(&rects, rects[1].center()), Some(1));
+            assert_eq!(m.row_height, TOOLBAR_HEIGHT * 2.0);
+            assert_eq!(rects[0].width(), 128.0);
+            assert_eq!(rects[0].height(), 68.0);
+            assert!(rects[1].x0 - rects[0].x1 >= m.group_gap);
+            assert_eq!(hit(&rects, rects[0].center()), Some(0));
+            assert_eq!(hit(&rects, rects[1].center()), Some(1));
+        }
     }
 }

@@ -27,6 +27,8 @@
 //! padding at layout time but not these composition gaps, which is a known
 //! limit of theme-less composition (recorded for the toolkit's layout unit).
 
+use std::cell::Cell;
+
 use ui::icons::Icon;
 use ui::tokens::{Spacing, SpacingStep};
 pub use ui::widget::BadgeTone as StatusTone;
@@ -123,7 +125,9 @@ pub fn page_heading(title: &str, subtitle: &str) -> El {
             .with_intrinsic_height()
             .with_gap(spacing().s1)
             .push(Box::new(
-                Text::new("SETTINGS").with_scaled_size(12.0).dimmed(),
+                Text::new(&crate::i18n::t("settings-page-eyebrow"))
+                    .with_scaled_size(12.0)
+                    .dimmed(),
             ))
             .push(Box::new(Text::new(title).with_scaled_size(24.0)))
             .push(Box::new(
@@ -204,13 +208,38 @@ pub fn caption(text: &str) -> El {
 /// longest option label the settings dropdowns offer.
 pub const COMPACT_CONTROL_W: f32 = 220.0;
 
+thread_local! {
+    static COMPOSE_TEXT_GROWTH: Cell<f32> = const { Cell::new(1.0) };
+}
+
+/// Record the live theme's [`ui::Theme::text_growth`] before a pane
+/// composes. Compact choosers are authored at 1×; large type has to grow
+/// that pin or option labels clip inside a 220 px box.
+pub fn set_compose_text_growth(growth: f32) {
+    let growth = if growth.is_finite() {
+        growth.clamp(1.0, 4.0)
+    } else {
+        1.0
+    };
+    COMPOSE_TEXT_GROWTH.set(growth);
+}
+
+fn compose_text_growth() -> f32 {
+    COMPOSE_TEXT_GROWTH.get()
+}
+
+/// [`COMPACT_CONTROL_W`] grown for the current compose-time text scale.
+pub fn compact_chooser_width() -> f32 {
+    COMPACT_CONTROL_W * compose_text_growth()
+}
+
 /// Pin a trailing control to a fixed width so it aligns to the row's right
 /// edge instead of stretching across the whole card. `ui`'s `Dropdown` fills
 /// its parent (`percent(1.0)` width); wrapping it here gives every settings
 /// chooser the same compact, right-aligned footprint — the GNOME/Adwaita
 /// look — rather than a form field that spans the card.
 pub fn compact_control(control: El) -> El {
-    compact_control_w(COMPACT_CONTROL_W, control)
+    compact_control_w(compact_chooser_width(), control)
 }
 
 /// [`compact_control`] with an explicit width, for controls that need more
@@ -281,7 +310,7 @@ pub fn choice_rows_stack_below() -> f32 {
     /// stays inline, while the smaller phone card stacks.
     const CHOICE_LABEL_RESERVE: f32 = 100.0;
     let sp = spacing();
-    COMPACT_CONTROL_W + sp.s3 + CHOICE_LABEL_RESERVE + 2.0 * sp.s3
+    compact_chooser_width() + sp.s3 + CHOICE_LABEL_RESERVE + 2.0 * sp.s3
 }
 
 /// A small rounded status chip (e.g. "Connected", "Paired", "Offline").

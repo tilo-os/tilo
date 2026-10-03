@@ -25,6 +25,9 @@ var<storage> segments: array<Segment>;
 
 const GRADIENT_WIDTH = 512;
 
+// PTCL commands one tile may execute before fine gives up on it.
+const MAX_TILE_COMMANDS = 65536u;
+
 const IMAGE_QUALITY_LOW = 0u;
 const IMAGE_QUALITY_MEDIUM = 1u;
 const IMAGE_QUALITY_HIGH = 2u;
@@ -158,7 +161,7 @@ fn fill_path_ms(fill: CmdFill, local_id: vec2<u32>, result: ptr<function, array<
         fill_path_ms_evenodd(fill, local_id, result);
         return;
     }
-    let n_segs = fill.size_and_rule >> 1u;
+    let n_segs = fill_segment_count(fill);
     let th_ix = local_id.y * (TILE_WIDTH / PIXELS_PER_THREAD) + local_id.x;
     // Initialize winding number arrays to a winding number of 0, which is 0x80 in an
     // 8 bit biased signed integer encoding.
@@ -227,7 +230,12 @@ fn fill_path_ms(fill: CmdFill, local_id: vec2<u32>, result: ptr<function, array<
             }
             let el_ix = lo;
             let last_pixel = i + 1u == sh_count[el_ix];
-            let sub_ix = i - select(0u, sh_count[el_ix - 1u], el_ix > 0u);
+            // `select` evaluates both arms, so the first element would read index -1.
+            var prev_count = 0u;
+            if el_ix > 0u {
+                prev_count = sh_count[el_ix - 1u];
+            }
+            let sub_ix = i - prev_count;
             let seg_off = fill.seg_data + batch * WG_SIZE + el_ix;
             let segment = segments[seg_off];
             // Coordinates are relative to tile origin
@@ -516,7 +524,7 @@ fn fill_path_ms(fill: CmdFill, local_id: vec2<u32>, result: ptr<function, array<
 //
 // TODO: factor some logic out to reduce code duplication.
 fn fill_path_ms_evenodd(fill: CmdFill, local_id: vec2<u32>, result: ptr<function, array<f32, PIXELS_PER_THREAD>>) {
-    let n_segs = fill.size_and_rule >> 1u;
+    let n_segs = fill_segment_count(fill);
     let th_ix = local_id.y * (TILE_WIDTH / PIXELS_PER_THREAD) + local_id.x;
     if th_ix < TILE_HEIGHT {
         if th_ix == 0u {
@@ -583,7 +591,12 @@ fn fill_path_ms_evenodd(fill: CmdFill, local_id: vec2<u32>, result: ptr<function
             }
             let el_ix = lo;
             let last_pixel = i + 1u == sh_count[el_ix];
-            let sub_ix = i - select(0u, sh_count[el_ix - 1u], el_ix > 0u);
+            // `select` evaluates both arms, so the first element would read index -1.
+            var prev_count = 0u;
+            if el_ix > 0u {
+                prev_count = sh_count[el_ix - 1u];
+            }
+            let sub_ix = i - prev_count;
             let seg_off = fill.seg_data + batch * WG_SIZE + el_ix;
             let segment = segments[seg_off];
             let xy0_in = segment.point0;
@@ -730,6 +743,14 @@ fn erf7(x: f32) -> f32 {
 
 fn hypot(a: f32, b: f32) -> f32 {
     return sqrt(a * a + b * b);
+}
+
+// A fill never reads past the segment buffer. PTCL words that coarse did not
+// write this frame (a pooled buffer, an overflow jump) can hold any count; an
+// unclamped one keeps the GPU busy long enough to hang the display server.
+fn fill_segment_count(fill: CmdFill) -> u32 {
+    let available = arrayLength(&segments) - min(fill.seg_data, arrayLength(&segments));
+    return min(fill.size_and_rule >> 1u, available);
 }
 
 fn read_fill(cmd_ix: u32) -> CmdFill {
@@ -1032,7 +1053,7 @@ fn ppt8_subgroup_x(pixel_x_base: u32, subgroup: u32) -> f32 {
 //
 // FIXME: This should return an array when https://github.com/gfx-rs/naga/issues/1930 is fixed.
 fn fill_path(fill: CmdFill, xy: vec2<f32>, result: ptr<function, array<f32, PIXELS_PER_THREAD>>) {
-    let n_segs = fill.size_and_rule >> 1u;
+    let n_segs = fill_segment_count(fill);
     let even_odd = (fill.size_and_rule & 1u) != 0u;
     var area: array<f32, PIXELS_PER_THREAD>;
     let backdrop_f = f32(fill.backdrop);
@@ -1100,7 +1121,7 @@ fn fill_path(fill: CmdFill, xy: vec2<f32>, result: ptr<function, array<f32, PIXE
 // invocations. Only y-dependent terms are shared; each subgroup retains its
 // original `point0.x - subgroup_x` origin before adding the line term.
 fn fill_path_ppt8(fill: CmdFill, local_x_base: u32, local_y: u32, result: ptr<function, array<f32, PIXELS_PER_THREAD>>) {
-    let n_segs = fill.size_and_rule >> 1u;
+    let n_segs = fill_segment_count(fill);
     let even_odd = (fill.size_and_rule & 1u) != 0u;
     var area: array<f32, PIXELS_PER_THREAD>;
     let backdrop_f = f32(fill.backdrop);
@@ -1225,7 +1246,16 @@ fn main(
     let blend_offset = ptcl[cmd_ix];
     cmd_ix += 1u;
     // main interpretation loop
-    while true {
+    // Bounded: an unknown tag, a jump that does not move forward within the
+    // buffer, or more commands than any tile can hold ends the tile instead
+    // of spinning. A non-terminating dispatch cannot be preempted on some
+    // drivers and takes the whole display down with it.
+    let ptcl_len = arrayLength(&ptcl);
+    var malformed = false;
+    for (var step = 0u; step < MAX_TILE_COMMANDS; step += 1u) {
+        if cmd_ix >= ptcl_len {
+            break;
+        }
         let raw_tag = ptcl[cmd_ix];
 #ifdef solid_fuse
         let tag = raw_tag & ~CMD_SOLID_FUSED;
@@ -1326,7 +1356,12 @@ fn main(
                 cmd_ix += 3u;
             }
             case CMD_JUMP: {
-                cmd_ix = ptcl[cmd_ix + 1u];
+                let target_ix = ptcl[cmd_ix + 1u];
+                if target_ix <= cmd_ix || target_ix >= ptcl_len {
+                    malformed = true;
+                } else {
+                    cmd_ix = target_ix;
+                }
             }
             case CMD_BLUR_RECT: {
                 /// Approximation for the convolution of a gaussian filter with a rounded rectangle.
@@ -1576,7 +1611,12 @@ fn main(
                 }
                 cmd_ix += 2u;
             }
-            default: {}
+            default: {
+                malformed = true;
+            }
+        }
+        if malformed {
+            break;
         }
     }
     let xy_uint = vec2<u32>(xy);

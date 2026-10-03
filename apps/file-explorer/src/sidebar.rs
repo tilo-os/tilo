@@ -98,78 +98,82 @@ pub fn active_shortcut_index(shortcuts: &[Shortcut], current: &Path) -> Option<u
 mod tests {
     use super::*;
 
+    /// Tiers depend on home, favourites order is stable, the system tier holds the OS disk and shortcuts flatten the tiers.
     #[test]
-    fn build_tiers_has_two_tiers_when_home_is_set() {
-        let tiers = build_tiers(Some(Path::new("/home/user")));
-        assert_eq!(tiers.len(), 2);
-        assert_eq!(tiers[0].title, "Favorites");
-        assert_eq!(tiers[1].title, "System");
-    }
+    fn sidebar_tiers_and_shortcuts_are_stable() {
+        // --- phase: build_tiers_has_two_tiers_when_home_is_set ---
+        {
+            let tiers = build_tiers(Some(Path::new("/home/user")));
+            assert_eq!(tiers.len(), 2);
+            assert_eq!(tiers[0].title, "Favorites");
+            assert_eq!(tiers[1].title, "System");
+        }
 
-    #[test]
-    fn build_tiers_drops_favorites_when_home_is_none() {
-        // Without a home path there are no xdg-user-dirs to list, so
-        // the Favorites tier is omitted entirely; System stays.
-        let tiers = build_tiers(None);
-        assert_eq!(tiers.len(), 1);
-        assert_eq!(tiers[0].title, "System");
-    }
+        // --- phase: build_tiers_drops_favorites_when_home_is_none ---
+        {
+            // Without a home path there are no xdg-user-dirs to list, so
+            // the Favorites tier is omitted entirely; System stays.
+            let tiers = build_tiers(None);
+            assert_eq!(tiers.len(), 1);
+            assert_eq!(tiers[0].title, "System");
+        }
 
-    #[test]
-    fn favorites_order_is_stable() {
-        let tiers = build_tiers(Some(Path::new("/home/user")));
-        let labels: Vec<&str> = tiers[0]
-            .entries
-            .iter()
-            .map(|(_, l, _)| l.as_str())
-            .collect();
-        assert_eq!(
-            labels,
-            vec![
-                "Home",
-                "Documents",
-                "Downloads",
-                "Pictures",
-                "Music",
-                "Videos"
-            ]
-        );
-        let icons: Vec<Icon> = tiers[0].entries.iter().map(|(i, _, _)| *i).collect();
-        assert_eq!(
-            icons,
-            vec![
-                Icon::Home,
-                Icon::FileText,
-                Icon::CloudDownload,
-                Icon::Image,
-                Icon::Music,
-                Icon::Film,
-            ]
-        );
-    }
+        // --- phase: favorites_order_is_stable ---
+        {
+            let tiers = build_tiers(Some(Path::new("/home/user")));
+            let labels: Vec<&str> = tiers[0]
+                .entries
+                .iter()
+                .map(|(_, l, _)| l.as_str())
+                .collect();
+            assert_eq!(
+                labels,
+                vec![
+                    "Home",
+                    "Documents",
+                    "Downloads",
+                    "Pictures",
+                    "Music",
+                    "Videos"
+                ]
+            );
+            let icons: Vec<Icon> = tiers[0].entries.iter().map(|(i, _, _)| *i).collect();
+            assert_eq!(
+                icons,
+                vec![
+                    Icon::Home,
+                    Icon::FileText,
+                    Icon::CloudDownload,
+                    Icon::Image,
+                    Icon::Music,
+                    Icon::Film,
+                ]
+            );
+        }
 
-    #[test]
-    fn system_tier_has_root_as_os_disk() {
-        let tiers = build_tiers(None);
-        let sys = &tiers[0];
-        assert_eq!(sys.title, "System");
-        assert_eq!(sys.entries.len(), 1);
-        assert_eq!(sys.entries[0].0, Icon::HardDrive);
-        assert_eq!(sys.entries[0].1, "Root");
-        assert_eq!(sys.entries[0].2, PathBuf::from("/"));
-    }
+        // --- phase: system_tier_has_root_as_os_disk ---
+        {
+            let tiers = build_tiers(None);
+            let sys = &tiers[0];
+            assert_eq!(sys.title, "System");
+            assert_eq!(sys.entries.len(), 1);
+            assert_eq!(sys.entries[0].0, Icon::HardDrive);
+            assert_eq!(sys.entries[0].1, "Root");
+            assert_eq!(sys.entries[0].2, PathBuf::from("/"));
+        }
 
-    #[test]
-    fn build_shortcuts_is_the_flat_concatenation_of_tier_entries() {
-        let tiers = build_tiers(Some(Path::new("/home/user")));
-        let flat = build_shortcuts(Some(Path::new("/home/user")));
-        let expected_len: usize = tiers.iter().map(|t| t.entries.len()).sum();
-        assert_eq!(flat.len(), expected_len);
-        // First entry must come from the first tier, last from the last.
-        assert_eq!(flat.first().unwrap().0, tiers[0].entries[0].0);
-        assert_eq!(
-            flat.last().unwrap().0,
-            tiers.last().unwrap().entries.last().unwrap().0
-        );
+        // --- phase: build_shortcuts_is_the_flat_concatenation_of_tier_entries ---
+        {
+            let tiers = build_tiers(Some(Path::new("/home/user")));
+            let flat = build_shortcuts(Some(Path::new("/home/user")));
+            let expected_len: usize = tiers.iter().map(|t| t.entries.len()).sum();
+            assert_eq!(flat.len(), expected_len);
+            // First entry must come from the first tier, last from the last.
+            assert_eq!(flat.first().unwrap().0, tiers[0].entries[0].0);
+            assert_eq!(
+                flat.last().unwrap().0,
+                tiers.last().unwrap().entries.last().unwrap().0
+            );
+        }
     }
 }

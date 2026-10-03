@@ -4,15 +4,12 @@
 //! Storage, sync, collaboration, history, undo, permissions and the action
 //! palette come from the framework.
 
-mod native_fixture;
 mod native_probe;
 
 use std::cell::Cell;
 use std::rc::Rc;
 
-pub use native_fixture::{NativeFixtureManifest, seed_native_fixture};
 use ui::prelude::*;
-use ui::record::RecordSaveStatus;
 
 /// The note.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -84,3 +81,5 @@ impl ResourceApp for Scratchpad {
         Box::new(native_probe::NativeProbe::new(content, scroll))
     }
 }
+
+ui::dev_reload_entry!(Scratchpad);

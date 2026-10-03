@@ -7,11 +7,9 @@
 
 use crate::time::Instant;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
-use winit::event::WindowEvent;
 
 use crate::color_compat::ColorCompat;
 use crate::text_render::TextRenderer;
@@ -89,8 +87,6 @@ impl Default for Spinner {
 }
 
 impl Widget for Spinner {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -166,20 +162,6 @@ impl Widget for Spinner {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "Spinner"
     }
@@ -217,86 +199,144 @@ mod tests {
     use taffy::prelude::TaffyMaxContent;
     use vello_encoding::DrawTag;
 
-    /// Pins `DEFAULT_SIZE_PX` against the public contract — a future
-    /// change to the default has to touch this deliberately.
     #[test]
-    fn spinner_default_size_is_24_px() {
-        let s = Spinner::new();
-        assert_eq!(s.size(), 24.0, "Spinner::new() must default to 24 px");
+    fn spinner_contract_size_semantics_and_dots() {
+        // Case `spinner_default_size_is_24_px`.
+        // Pins `DEFAULT_SIZE_PX` against the public contract — a future
+        // change to the default has to touch this deliberately.
+        {
+            let s = Spinner::new();
+            assert_eq!(s.size(), 24.0, "Spinner::new() must default to 24 px");
 
-        let mut s = Spinner::new();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let root = taffy.parent_node(Style::default(), &[node]);
-        taffy
-            .compute_layout(root, taffy::Size::MAX_CONTENT)
-            .unwrap();
-        s.apply_layout(&taffy, node, Point::ZERO);
+            let mut s = Spinner::new();
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+            let root = taffy.parent_node(Style::default(), &[node]);
+            taffy
+                .compute_layout(root, taffy::Size::MAX_CONTENT)
+                .unwrap();
+            s.apply_layout(&taffy, node, Point::ZERO);
 
-        assert_eq!(s.get_rect().width(), 24.0);
-        assert_eq!(s.get_rect().height(), 24.0);
+            assert_eq!(s.get_rect().width(), 24.0);
+            assert_eq!(s.get_rect().height(), 24.0);
+        }
+
+        // Case `accessibility_reports_spinner_role_and_busy`.
+        {
+            use crate::a11y::Role;
+            let s = Spinner::new();
+            let node = Widget::accessibility(&s).expect("spinner is not presentational");
+            assert_eq!(node.role, Role::Spinner);
+            assert!(node.state.busy, "a spinner is always busy");
+            assert_eq!(node.name, None, "a spinner has no text label");
+        }
+
+        // Case `spinner_paints_four_dots`.
+        // Every dot is a single `scene.fill(NonZero, ..., Circle)`, so the exact
+        // `DrawTag::COLOR` count guards against a background ring, a collapsed
+        // chain, or stray text/icon fills.
+        {
+            let mut s = Spinner::new();
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+            let root = taffy.parent_node(Style::default(), &[node]);
+            taffy
+                .compute_layout(root, taffy::Size::MAX_CONTENT)
+                .unwrap();
+            s.apply_layout(&taffy, node, Point::ZERO);
+
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            s.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+            let colour_fills = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::COLOR)
+                .count();
+
+            assert_eq!(
+                colour_fills, DOT_COUNT,
+                "Spinner must emit exactly {DOT_COUNT} colour fills — one per orbiting dot (got {colour_fills})"
+            );
+        }
     }
 
-    /// Pin so a future refactor that "cleans up" the override doesn't
-    /// remove the only thing that keeps the dots moving in production.
     #[test]
-    fn spinner_requests_frames_only_when_motion_is_enabled() {
-        let s = Spinner::new();
-        assert!(
-            Widget::needs_animation_frame(&s),
-            "Spinner must request animation frames before its first motion-on draw"
-        );
+    fn spinner_animates_only_when_motion_is_enabled() {
+        // Case `spinner_requests_frames_only_when_motion_is_enabled`.
+        // Pin so a future refactor that "cleans up" the override doesn't
+        // remove the only thing that keeps the dots moving in production.
+        {
+            let s = Spinner::new();
+            assert!(
+                Widget::needs_animation_frame(&s),
+                "Spinner must request animation frames before its first motion-on draw"
+            );
 
-        let s = Spinner::with_size(48.0);
-        assert!(
-            Widget::needs_animation_frame(&s),
-            "Spinner::with_size must also request animation frames before drawing"
-        );
-    }
+            let s = Spinner::with_size(48.0);
+            assert!(
+                Widget::needs_animation_frame(&s),
+                "Spinner::with_size must also request animation frames before drawing"
+            );
+        }
 
-    #[test]
-    fn accessibility_reports_spinner_role_and_busy() {
-        use crate::a11y::Role;
-        let s = Spinner::new();
-        let node = Widget::accessibility(&s).expect("spinner is not presentational");
-        assert_eq!(node.role, Role::Spinner);
-        assert!(node.state.busy, "a spinner is always busy");
-        assert_eq!(node.name, None, "a spinner has no text label");
-    }
+        // Case `reduce_motion_freezes_the_orbit_at_phase_zero`.
+        // A spinner backdated half a rotation must paint the *same* geometry
+        // as a fresh one under reduced motion (proving `draw` ignores elapsed
+        // time), but different geometry with motion on (proving the freeze is
+        // the reduced-motion path, not a no-op).
+        {
+            use crate::time::Duration;
+            let half_period = Duration::from_secs_f64(ROTATION_PERIOD_MS / 1000.0 / 2.0);
+            // `half_period` is ~750ms, so this can only underflow on a machine
+            // whose monotonic clock started under a second ago; fall back to
+            // "now" (untested edge case) instead of panicking the test.
+            let backdate = crate::time::now()
+                .checked_sub(half_period)
+                .unwrap_or_else(crate::time::now);
 
-    /// Every dot is a single `scene.fill(NonZero, ..., Circle)`, so the exact
-    /// `DrawTag::COLOR` count guards against a background ring, a collapsed
-    /// chain, or stray text/icon fills.
-    #[test]
-    fn spinner_paints_four_dots() {
-        let mut s = Spinner::new();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let root = taffy.parent_node(Style::default(), &[node]);
-        taffy
-            .compute_layout(root, taffy::Size::MAX_CONTENT)
-            .unwrap();
-        s.apply_layout(&taffy, node, Point::ZERO);
+            let mut fresh = Spinner::new();
+            let fresh_geo = draw_path_data(&mut fresh, true);
 
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let mut scene = Scene::new();
-        s.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            let mut aged = Spinner::new();
+            aged.set_started_for_test(backdate);
+            let aged_reduced = draw_path_data(&mut aged, true);
 
-        let colour_fills = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::COLOR)
-            .count();
+            assert_eq!(
+                fresh_geo, aged_reduced,
+                "reduced motion must paint the resting orbit regardless of elapsed time",
+            );
 
-        assert_eq!(
-            colour_fills, DOT_COUNT,
-            "Spinner must emit exactly {DOT_COUNT} colour fills — one per orbiting dot (got {colour_fills})"
-        );
+            let mut aged2 = Spinner::new();
+            aged2.set_started_for_test(backdate);
+            let aged_moving = draw_path_data(&mut aged2, false);
+            assert_ne!(
+                fresh_geo, aged_moving,
+                "with motion on, a backdated spinner is at a different phase",
+            );
+        }
+
+        // Case `reduced_motion_stops_animation_wakeups_after_the_static_frame`.
+        {
+            let mut spinner = Spinner::new();
+            let _ = draw_path_data(&mut spinner, true);
+            assert!(
+                !Widget::needs_animation_frame(&spinner),
+                "a frozen reduced-motion spinner must not keep the compositor awake"
+            );
+
+            let _ = draw_path_data(&mut spinner, false);
+            assert!(
+                Widget::needs_animation_frame(&spinner),
+                "switching back to normal motion must restore spinner animation"
+            );
+        }
     }
 
     fn draw_path_data(s: &mut Spinner, reduce_motion: bool) -> Vec<u32> {
@@ -315,57 +355,5 @@ mod tests {
         let mut scene = Scene::new();
         s.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
         scene.encoding().path_data.clone()
-    }
-
-    /// A spinner backdated half a rotation must paint the *same* geometry
-    /// as a fresh one under reduced motion (proving `draw` ignores elapsed
-    /// time), but different geometry with motion on (proving the freeze is
-    /// the reduced-motion path, not a no-op).
-    #[test]
-    fn reduce_motion_freezes_the_orbit_at_phase_zero() {
-        use crate::time::Duration;
-        let half_period = Duration::from_secs_f64(ROTATION_PERIOD_MS / 1000.0 / 2.0);
-        // `half_period` is ~750ms, so this can only underflow on a machine
-        // whose monotonic clock started under a second ago; fall back to
-        // "now" (untested edge case) instead of panicking the test.
-        let backdate = crate::time::now()
-            .checked_sub(half_period)
-            .unwrap_or_else(crate::time::now);
-
-        let mut fresh = Spinner::new();
-        let fresh_geo = draw_path_data(&mut fresh, true);
-
-        let mut aged = Spinner::new();
-        aged.set_started_for_test(backdate);
-        let aged_reduced = draw_path_data(&mut aged, true);
-
-        assert_eq!(
-            fresh_geo, aged_reduced,
-            "reduced motion must paint the resting orbit regardless of elapsed time",
-        );
-
-        let mut aged2 = Spinner::new();
-        aged2.set_started_for_test(backdate);
-        let aged_moving = draw_path_data(&mut aged2, false);
-        assert_ne!(
-            fresh_geo, aged_moving,
-            "with motion on, a backdated spinner is at a different phase",
-        );
-    }
-
-    #[test]
-    fn reduced_motion_stops_animation_wakeups_after_the_static_frame() {
-        let mut spinner = Spinner::new();
-        let _ = draw_path_data(&mut spinner, true);
-        assert!(
-            !Widget::needs_animation_frame(&spinner),
-            "a frozen reduced-motion spinner must not keep the compositor awake"
-        );
-
-        let _ = draw_path_data(&mut spinner, false);
-        assert!(
-            Widget::needs_animation_frame(&spinner),
-            "switching back to normal motion must restore spinner animation"
-        );
     }
 }

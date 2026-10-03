@@ -22,7 +22,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -505,8 +504,6 @@ fn draw_card(
 }
 
 impl Widget for ConflictPicker {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -590,7 +587,7 @@ impl Widget for ConflictPicker {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.glass,
+            theme.material_glass(),
             None,
             &body,
         );
@@ -625,25 +622,14 @@ impl Widget for ConflictPicker {
         self.dirty = false;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if matches!(self.kind, ConflictKind::Auto) {
             return;
         }
         let alt_count = self.alternatives().len();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = p;
                 let card_idx = self.card_at(p);
                 let new_alt = card_idx.filter(|&i| i < alt_count);
@@ -657,7 +643,7 @@ impl Widget for ConflictPicker {
                     self.hover_merged = new_merged;
                     self.hover_keep = new_keep;
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -679,19 +665,19 @@ impl Widget for ConflictPicker {
                         } else {
                             self.fire(PickerOutcome::PickedMerged);
                         }
-                        *handled = true;
+                        *ctx.handled = true;
                         return;
                     }
                 }
                 if self.keep_current_rect().contains(self.last_cursor) {
                     self.fire(PickerOutcome::KeepCurrent);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 // Click on the scrim (outside the modal rect) cancels.
                 if !self.rect.contains(self.last_cursor) {
                     self.fire(PickerOutcome::Cancel);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -706,7 +692,7 @@ impl Widget for ConflictPicker {
                     && let Key::Named(NamedKey::Escape) = logical_key
                 {
                     self.fire(PickerOutcome::Cancel);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -893,6 +879,7 @@ fn draw_merged_overlay(
 mod tests {
     use super::*;
     use crate::time::{Duration, SystemTime};
+    use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Arc;
@@ -918,21 +905,106 @@ mod tests {
     }
 
     #[test]
-    fn accessibility_reports_group_role_name_and_kind() {
-        use crate::a11y::Role;
-        let kind = ConflictKind::PickOne {
-            alternatives: vec![alt("Done", "Alice"), alt("In progress", "Bob")],
-        };
-        let p = picker_at(Rect::new(0.0, 0.0, 500.0, 300.0), kind);
-        let node = Widget::accessibility(&p).expect("picker is not presentational");
-        assert_eq!(node.role, Role::Group);
-        assert_eq!(node.name.as_deref(), Some("Resolve conflict: Kanban move"));
-        // The description names the conflict kind (Debug form).
-        assert!(
-            node.description.as_deref().unwrap().starts_with("PickOne"),
-            "description should name the conflict kind, got {:?}",
-            node.description
-        );
+    fn picker_renders_alternatives_and_fits_narrow_viewports() {
+        fn accessibility_reports_group_role_name_and_kind() {
+            use crate::a11y::Role;
+            let kind = ConflictKind::PickOne {
+                alternatives: vec![alt("Done", "Alice"), alt("In progress", "Bob")],
+            };
+            let p = picker_at(Rect::new(0.0, 0.0, 500.0, 300.0), kind);
+            let node = Widget::accessibility(&p).expect("picker is not presentational");
+            assert_eq!(node.role, Role::Group);
+            assert_eq!(node.name.as_deref(), Some("Resolve conflict: Kanban move"));
+            // The description names the conflict kind (Debug form).
+            assert!(
+                node.description.as_deref().unwrap().starts_with("PickOne"),
+                "description should name the conflict kind, got {:?}",
+                node.description
+            );
+        }
+
+        fn picker_renders_two_alternatives_side_by_side() {
+            // 1280-wide typical layout — two cards lay out side-by-side
+            // and both rects fit inside the picker.
+            let kind = ConflictKind::PickOne {
+                alternatives: vec![alt("Move to Done", "Alice"), alt("Move to Review", "Bob")],
+            };
+            let p = picker_at(Rect::new(0.0, 0.0, 1280.0, 360.0), kind);
+            let cards = p.card_rects();
+            assert_eq!(cards.len(), 2);
+            // Side-by-side: card[1] starts to the right of card[0].
+            assert!(cards[1].x0 > cards[0].x0);
+            assert!(p.rect.contains(cards[0].center()));
+            assert!(p.rect.contains(cards[1].center()));
+        }
+
+        fn picker_merged_button_only_renders_when_preview_present() {
+            // MergeOrPick with `merge_preview: None` produces no merged
+            // card; with `Some(_)` it adds a trailing card.
+            let kind_none = ConflictKind::MergeOrPick {
+                alternatives: vec![alt("Rename to A", "Alice")],
+                merge_preview: None,
+            };
+            let p_none = picker_at(Rect::new(0.0, 0.0, 1280.0, 360.0), kind_none);
+            assert!(!p_none.has_merged_card());
+            assert_eq!(p_none.card_rects().len(), 1);
+
+            let kind_some = ConflictKind::MergeOrPick {
+                alternatives: vec![alt("Rename to A", "Alice"), alt("Rename to B", "Bob")],
+                merge_preview: Some("Combined: A / B".into()),
+            };
+            let p_some = picker_at(Rect::new(0.0, 0.0, 1280.0, 360.0), kind_some);
+            assert!(p_some.has_merged_card());
+            assert_eq!(p_some.card_rects().len(), 3);
+        }
+
+        fn picker_hover_alt_tracks_cursor_in_alternative_card() {
+            let kind = ConflictKind::PickOne {
+                alternatives: vec![alt("Move to Done", "Alice"), alt("Move to Review", "Bob")],
+            };
+            let mut p = picker_at(Rect::new(0.0, 0.0, 1280.0, 360.0), kind);
+            let cards = p.card_rects();
+            dispatch(
+                &mut p,
+                &cursor_moved(cards[0].center().x, cards[0].center().y),
+            );
+            assert_eq!(p.hover_alt(), Some(0));
+            dispatch(
+                &mut p,
+                &cursor_moved(cards[1].center().x, cards[1].center().y),
+            );
+            assert_eq!(p.hover_alt(), Some(1));
+            // Cache the bounds first so the borrow checker doesn't see a live
+            // `&p` while we hand `&mut p` to `dispatch`.
+            let outside_x = p.rect.x1 + 200.0;
+            let outside_y = p.rect.y1 + 200.0;
+            dispatch(&mut p, &cursor_moved(outside_x, outside_y));
+            assert_eq!(p.hover_alt(), None);
+        }
+
+        fn picker_fits_in_narrow_viewport_via_stack() {
+            // At 800 px wide with three total cards (2 alternatives + merged
+            // preview), the picker must wrap to a vertical stack rather than
+            // producing sub-MIN_CARD_W cards that would be unreadable.
+            let kind = ConflictKind::MergeOrPick {
+                alternatives: vec![alt("A", "Alice"), alt("B", "Bob")],
+                merge_preview: Some("merged".into()),
+            };
+            let p = picker_at(Rect::new(0.0, 0.0, 800.0, 600.0), kind);
+            let cards = p.card_rects();
+            assert_eq!(cards.len(), 3);
+            for c in &cards {
+                assert!(c.width() > MIN_CARD_W, "stacked cards must be wide");
+            }
+            assert!(cards[1].y0 > cards[0].y0);
+            assert!(cards[2].y0 > cards[1].y0);
+        }
+
+        accessibility_reports_group_role_name_and_kind();
+        picker_renders_two_alternatives_side_by_side();
+        picker_merged_button_only_renders_when_preview_present();
+        picker_hover_alt_tracks_cursor_in_alternative_card();
+        picker_fits_in_narrow_viewport_via_stack();
     }
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {
@@ -982,263 +1054,192 @@ mod tests {
         let root = automerge::ROOT;
         p.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 
     #[test]
-    fn picker_renders_two_alternatives_side_by_side() {
-        // 1280-wide typical layout — two cards lay out side-by-side
-        // and both rects fit inside the picker.
-        let kind = ConflictKind::PickOne {
-            alternatives: vec![alt("Move to Done", "Alice"), alt("Move to Review", "Bob")],
-        };
-        let p = picker_at(Rect::new(0.0, 0.0, 1280.0, 360.0), kind);
-        let cards = p.card_rects();
-        assert_eq!(cards.len(), 2);
-        // Side-by-side: card[1] starts to the right of card[0].
-        assert!(cards[1].x0 > cards[0].x0);
-        assert!(p.rect.contains(cards[0].center()));
-        assert!(p.rect.contains(cards[1].center()));
-    }
+    fn picker_buttons_and_dismissal_fire_the_matching_outcome() {
+        fn picker_pick_button_fires_with_correct_index() {
+            // Click the second alternative's button — outcome must be Picked { alternative_index: 1 }.
+            let outcomes: Rc<RefCell<Vec<PickerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
+            let outcomes_clone = outcomes.clone();
+            let kind = ConflictKind::PickOne {
+                alternatives: vec![alt("Move to Done", "Alice"), alt("Move to Review", "Bob")],
+            };
+            let mut p = ConflictPicker::new("Kanban move", kind)
+                .on_pick(move |o| outcomes_clone.borrow_mut().push(o));
+            p.rect = Rect::new(0.0, 0.0, 1280.0, 360.0);
 
-    #[test]
-    fn picker_pick_button_fires_with_correct_index() {
-        // Click the second alternative's button — outcome must be Picked { alternative_index: 1 }.
-        let outcomes: Rc<RefCell<Vec<PickerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
-        let outcomes_clone = outcomes.clone();
-        let kind = ConflictKind::PickOne {
-            alternatives: vec![alt("Move to Done", "Alice"), alt("Move to Review", "Bob")],
-        };
-        let mut p = ConflictPicker::new("Kanban move", kind)
-            .on_pick(move |o| outcomes_clone.borrow_mut().push(o));
-        p.rect = Rect::new(0.0, 0.0, 1280.0, 360.0);
-
-        let btn = p.pick_button_rect(1).expect("button 1 must exist");
-        dispatch(&mut p, &cursor_moved(btn.center().x, btn.center().y));
-        dispatch(&mut p, &mouse_press());
-        assert_eq!(outcomes.borrow().len(), 1);
-        assert_eq!(
-            outcomes.borrow()[0],
-            PickerOutcome::Picked {
-                alternative_index: 1
-            }
-        );
-    }
-
-    #[test]
-    fn picker_merged_button_only_renders_when_preview_present() {
-        // MergeOrPick with `merge_preview: None` produces no merged
-        // card; with `Some(_)` it adds a trailing card.
-        let kind_none = ConflictKind::MergeOrPick {
-            alternatives: vec![alt("Rename to A", "Alice")],
-            merge_preview: None,
-        };
-        let p_none = picker_at(Rect::new(0.0, 0.0, 1280.0, 360.0), kind_none);
-        assert!(!p_none.has_merged_card());
-        assert_eq!(p_none.card_rects().len(), 1);
-
-        let kind_some = ConflictKind::MergeOrPick {
-            alternatives: vec![alt("Rename to A", "Alice"), alt("Rename to B", "Bob")],
-            merge_preview: Some("Combined: A / B".into()),
-        };
-        let p_some = picker_at(Rect::new(0.0, 0.0, 1280.0, 360.0), kind_some);
-        assert!(p_some.has_merged_card());
-        assert_eq!(p_some.card_rects().len(), 3);
-    }
-
-    #[test]
-    fn picker_keep_current_fires_keep_current() {
-        // Click the bottom-centre "Pick neither" button.
-        let outcomes: Rc<RefCell<Vec<PickerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
-        let outcomes_clone = outcomes.clone();
-        let kind = ConflictKind::PickOne {
-            alternatives: vec![alt("Move to Done", "Alice"), alt("Move to Review", "Bob")],
-        };
-        let mut p = ConflictPicker::new("Kanban move", kind)
-            .on_pick(move |o| outcomes_clone.borrow_mut().push(o));
-        p.rect = Rect::new(0.0, 0.0, 1280.0, 360.0);
-
-        let keep = p.keep_current_rect();
-        dispatch(&mut p, &cursor_moved(keep.center().x, keep.center().y));
-        dispatch(&mut p, &mouse_press());
-        assert_eq!(outcomes.borrow().len(), 1);
-        assert_eq!(outcomes.borrow()[0], PickerOutcome::KeepCurrent);
-    }
-
-    #[test]
-    fn picker_esc_fires_cancel() {
-        // Esc → Cancel, driving the chrome's "changed their mind" path.
-        let outcomes: Rc<RefCell<Vec<PickerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
-        let outcomes_clone = outcomes.clone();
-        let kind = ConflictKind::PickOne {
-            alternatives: vec![alt("Move to Done", "Alice")],
-        };
-        let mut p = ConflictPicker::new("Kanban move", kind)
-            .on_pick(move |o| outcomes_clone.borrow_mut().push(o));
-        p.rect = Rect::new(0.0, 0.0, 1280.0, 360.0);
-
-        dispatch(&mut p, &key_press(NamedKey::Escape));
-        assert_eq!(outcomes.borrow().len(), 1);
-        assert_eq!(outcomes.borrow()[0], PickerOutcome::Cancel);
-    }
-
-    #[test]
-    fn picker_hover_alt_tracks_cursor_in_alternative_card() {
-        let kind = ConflictKind::PickOne {
-            alternatives: vec![alt("Move to Done", "Alice"), alt("Move to Review", "Bob")],
-        };
-        let mut p = picker_at(Rect::new(0.0, 0.0, 1280.0, 360.0), kind);
-        let cards = p.card_rects();
-        dispatch(
-            &mut p,
-            &cursor_moved(cards[0].center().x, cards[0].center().y),
-        );
-        assert_eq!(p.hover_alt(), Some(0));
-        dispatch(
-            &mut p,
-            &cursor_moved(cards[1].center().x, cards[1].center().y),
-        );
-        assert_eq!(p.hover_alt(), Some(1));
-        // Cache the bounds first so the borrow checker doesn't see a live
-        // `&p` while we hand `&mut p` to `dispatch`.
-        let outside_x = p.rect.x1 + 200.0;
-        let outside_y = p.rect.y1 + 200.0;
-        dispatch(&mut p, &cursor_moved(outside_x, outside_y));
-        assert_eq!(p.hover_alt(), None);
-    }
-
-    #[test]
-    fn picker_merged_pick_button_fires_picked_merged() {
-        // Click on the merged card's `[Use merged]` button —
-        // outcome must be PickedMerged (not Picked{2}).
-        let outcomes: Rc<RefCell<Vec<PickerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
-        let outcomes_clone = outcomes.clone();
-        let kind = ConflictKind::MergeOrPick {
-            alternatives: vec![alt("Rename to A", "Alice"), alt("Rename to B", "Bob")],
-            merge_preview: Some("Combined: A / B".into()),
-        };
-        let mut p = ConflictPicker::new("Rename collision", kind)
-            .on_pick(move |o| outcomes_clone.borrow_mut().push(o));
-        p.rect = Rect::new(0.0, 0.0, 1280.0, 360.0);
-
-        // The merged card is at trailing index 2 (alt_count = 2).
-        let btn = p.pick_button_rect(2).expect("merged button must exist");
-        dispatch(&mut p, &cursor_moved(btn.center().x, btn.center().y));
-        dispatch(&mut p, &mouse_press());
-        assert_eq!(outcomes.borrow().len(), 1);
-        assert_eq!(outcomes.borrow()[0], PickerOutcome::PickedMerged);
-    }
-
-    #[test]
-    fn picker_fits_in_narrow_viewport_via_stack() {
-        // At 800 px wide with three total cards (2 alternatives + merged
-        // preview), the picker must wrap to a vertical stack rather than
-        // producing sub-MIN_CARD_W cards that would be unreadable.
-        let kind = ConflictKind::MergeOrPick {
-            alternatives: vec![alt("A", "Alice"), alt("B", "Bob")],
-            merge_preview: Some("merged".into()),
-        };
-        let p = picker_at(Rect::new(0.0, 0.0, 800.0, 600.0), kind);
-        let cards = p.card_rects();
-        assert_eq!(cards.len(), 3);
-        for c in &cards {
-            assert!(c.width() > MIN_CARD_W, "stacked cards must be wide");
+            let btn = p.pick_button_rect(1).expect("button 1 must exist");
+            dispatch(&mut p, &cursor_moved(btn.center().x, btn.center().y));
+            dispatch(&mut p, &mouse_press());
+            assert_eq!(outcomes.borrow().len(), 1);
+            assert_eq!(
+                outcomes.borrow()[0],
+                PickerOutcome::Picked {
+                    alternative_index: 1
+                }
+            );
         }
-        assert!(cards[1].y0 > cards[0].y0);
-        assert!(cards[2].y0 > cards[1].y0);
-    }
 
-    #[test]
-    fn picker_scrim_click_fires_cancel() {
-        // Click outside the modal rect — the scrim absorbs the click as Cancel.
-        let outcomes: Rc<RefCell<Vec<PickerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
-        let outcomes_clone = outcomes.clone();
-        let kind = ConflictKind::PickOne {
-            alternatives: vec![alt("A", "Alice")],
-        };
-        let mut p = ConflictPicker::new("Kanban move", kind)
-            .on_pick(move |o| outcomes_clone.borrow_mut().push(o));
-        p.rect = Rect::new(200.0, 200.0, 1080.0, 560.0);
+        fn picker_keep_current_fires_keep_current() {
+            // Click the bottom-centre "Pick neither" button.
+            let outcomes: Rc<RefCell<Vec<PickerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
+            let outcomes_clone = outcomes.clone();
+            let kind = ConflictKind::PickOne {
+                alternatives: vec![alt("Move to Done", "Alice"), alt("Move to Review", "Bob")],
+            };
+            let mut p = ConflictPicker::new("Kanban move", kind)
+                .on_pick(move |o| outcomes_clone.borrow_mut().push(o));
+            p.rect = Rect::new(0.0, 0.0, 1280.0, 360.0);
 
-        dispatch(&mut p, &cursor_moved(50.0, 50.0));
-        dispatch(&mut p, &mouse_press());
-        assert_eq!(outcomes.borrow().len(), 1);
-        assert_eq!(outcomes.borrow()[0], PickerOutcome::Cancel);
-    }
+            let keep = p.keep_current_rect();
+            dispatch(&mut p, &cursor_moved(keep.center().x, keep.center().y));
+            dispatch(&mut p, &mouse_press());
+            assert_eq!(outcomes.borrow().len(), 1);
+            assert_eq!(outcomes.borrow()[0], PickerOutcome::KeepCurrent);
+        }
 
-    #[test]
-    fn banner_to_picker_round_trip_outcome() {
-        // Combined host-flow test: chrome wires a banner's `[Review]`
-        // callback to open a picker. Drive the banner click, observe
-        // Review fires, then dispatch a Pick click and observe Picked.
-        use crate::widget::conflict_banner::{BANNER_HEIGHT, ConflictBanner};
+        fn picker_esc_fires_cancel() {
+            // Esc → Cancel, driving the chrome's "changed their mind" path.
+            let outcomes: Rc<RefCell<Vec<PickerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
+            let outcomes_clone = outcomes.clone();
+            let kind = ConflictKind::PickOne {
+                alternatives: vec![alt("Move to Done", "Alice")],
+            };
+            let mut p = ConflictPicker::new("Kanban move", kind)
+                .on_pick(move |o| outcomes_clone.borrow_mut().push(o));
+            p.rect = Rect::new(0.0, 0.0, 1280.0, 360.0);
 
-        // 1. Banner click drives the host to open a picker.
-        let review_fired: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
-        let rf = review_fired.clone();
-        let mut banner =
-            ConflictBanner::new("Kanban move").on_review(move || *rf.borrow_mut() = true);
-        banner.set_rect_for_test(Rect::new(0.0, 0.0, 600.0, BANNER_HEIGHT));
-        banner.set_conflict_count(2);
+            dispatch(&mut p, &key_press(NamedKey::Escape));
+            assert_eq!(outcomes.borrow().len(), 1);
+            assert_eq!(outcomes.borrow()[0], PickerOutcome::Cancel);
+        }
 
-        let banner_chip = banner.review_chip_rect().unwrap();
+        fn picker_merged_pick_button_fires_picked_merged() {
+            // Click on the merged card's `[Use merged]` button —
+            // outcome must be PickedMerged (not Picked{2}).
+            let outcomes: Rc<RefCell<Vec<PickerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
+            let outcomes_clone = outcomes.clone();
+            let kind = ConflictKind::MergeOrPick {
+                alternatives: vec![alt("Rename to A", "Alice"), alt("Rename to B", "Bob")],
+                merge_preview: Some("Combined: A / B".into()),
+            };
+            let mut p = ConflictPicker::new("Rename collision", kind)
+                .on_pick(move |o| outcomes_clone.borrow_mut().push(o));
+            p.rect = Rect::new(0.0, 0.0, 1280.0, 360.0);
 
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        banner.handle_event(
-            &cursor_moved(banner_chip.center().x, banner_chip.center().y),
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
-        );
-        banner.handle_event(
-            &mouse_press(),
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
-        );
-        assert!(*review_fired.borrow(), "banner [Review] must fire");
+            // The merged card is at trailing index 2 (alt_count = 2).
+            let btn = p.pick_button_rect(2).expect("merged button must exist");
+            dispatch(&mut p, &cursor_moved(btn.center().x, btn.center().y));
+            dispatch(&mut p, &mouse_press());
+            assert_eq!(outcomes.borrow().len(), 1);
+            assert_eq!(outcomes.borrow()[0], PickerOutcome::PickedMerged);
+        }
 
-        // 2. Host opens the picker and the user picks alternative 0.
-        let outcomes: Rc<RefCell<Vec<PickerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
-        let outcomes_clone = outcomes.clone();
-        let kind = ConflictKind::PickOne {
-            alternatives: vec![alt("Move to Done", "Alice"), alt("Move to Review", "Bob")],
-        };
-        let mut picker = ConflictPicker::new("Kanban move", kind)
-            .on_pick(move |o| outcomes_clone.borrow_mut().push(o));
-        picker.rect = Rect::new(0.0, 0.0, 1280.0, 360.0);
+        fn picker_scrim_click_fires_cancel() {
+            // Click outside the modal rect — the scrim absorbs the click as Cancel.
+            let outcomes: Rc<RefCell<Vec<PickerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
+            let outcomes_clone = outcomes.clone();
+            let kind = ConflictKind::PickOne {
+                alternatives: vec![alt("A", "Alice")],
+            };
+            let mut p = ConflictPicker::new("Kanban move", kind)
+                .on_pick(move |o| outcomes_clone.borrow_mut().push(o));
+            p.rect = Rect::new(200.0, 200.0, 1080.0, 560.0);
 
-        let btn = picker.pick_button_rect(0).unwrap();
-        dispatch(&mut picker, &cursor_moved(btn.center().x, btn.center().y));
-        dispatch(&mut picker, &mouse_press());
-        assert_eq!(
-            outcomes.borrow()[0],
-            PickerOutcome::Picked {
-                alternative_index: 0
-            }
-        );
+            dispatch(&mut p, &cursor_moved(50.0, 50.0));
+            dispatch(&mut p, &mouse_press());
+            assert_eq!(outcomes.borrow().len(), 1);
+            assert_eq!(outcomes.borrow()[0], PickerOutcome::Cancel);
+        }
+
+        fn banner_to_picker_round_trip_outcome() {
+            // Combined host-flow test: chrome wires a banner's `[Review]`
+            // callback to open a picker. Drive the banner click, observe
+            // Review fires, then dispatch a Pick click and observe Picked.
+            use crate::widget::conflict_banner::{BANNER_HEIGHT, ConflictBanner};
+
+            // 1. Banner click drives the host to open a picker.
+            let review_fired: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+            let rf = review_fired.clone();
+            let mut banner =
+                ConflictBanner::new("Kanban move").on_review(move || *rf.borrow_mut() = true);
+            banner.set_rect_for_test(Rect::new(0.0, 0.0, 600.0, BANNER_HEIGHT));
+            banner.set_conflict_count(2);
+
+            let banner_chip = banner.review_chip_rect().unwrap();
+
+            let mut tree = TaffyTree::<()>::new();
+            let node = tree.leaf_node(Style::default());
+            let mut handled = false;
+            let mut focus = None;
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            banner.handle_event(
+                &cursor_moved(banner_chip.center().x, banner_chip.center().y),
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &Modifiers::default(),
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &tree,
+                },
+            );
+            banner.handle_event(
+                &mouse_press(),
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &Modifiers::default(),
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &tree,
+                },
+            );
+            assert!(*review_fired.borrow(), "banner [Review] must fire");
+
+            // 2. Host opens the picker and the user picks alternative 0.
+            let outcomes: Rc<RefCell<Vec<PickerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
+            let outcomes_clone = outcomes.clone();
+            let kind = ConflictKind::PickOne {
+                alternatives: vec![alt("Move to Done", "Alice"), alt("Move to Review", "Bob")],
+            };
+            let mut picker = ConflictPicker::new("Kanban move", kind)
+                .on_pick(move |o| outcomes_clone.borrow_mut().push(o));
+            picker.rect = Rect::new(0.0, 0.0, 1280.0, 360.0);
+
+            let btn = picker.pick_button_rect(0).unwrap();
+            dispatch(&mut picker, &cursor_moved(btn.center().x, btn.center().y));
+            dispatch(&mut picker, &mouse_press());
+            assert_eq!(
+                outcomes.borrow()[0],
+                PickerOutcome::Picked {
+                    alternative_index: 0
+                }
+            );
+        }
+
+        picker_pick_button_fires_with_correct_index();
+        picker_keep_current_fires_keep_current();
+        picker_esc_fires_cancel();
+        picker_merged_pick_button_fires_picked_merged();
+        picker_scrim_click_fires_cancel();
+        banner_to_picker_round_trip_outcome();
     }
 }

@@ -50,6 +50,8 @@ struct ManagedEntry {
 pub struct PortalLifecycle {
     requests: Arc<Mutex<HashMap<String, ManagedEntry>>>,
     sessions: Arc<Mutex<HashMap<String, ManagedEntry>>>,
+    /// Poked when a session ends, so clipboard revocation does not poll.
+    pub(crate) wake: crate::idle_wake::IdleWake,
 }
 
 impl PortalLifecycle {
@@ -121,14 +123,22 @@ impl PortalLifecycle {
 
     /// Remove a session only when the authenticated frontend still owns it.
     pub fn close_session(&self, path: &str, owner: &str) -> Option<LifecycleEntry> {
-        close(&self.sessions, path, Some(owner))
+        let closed = close(&self.sessions, path, Some(owner));
+        if closed.is_some() {
+            self.wake.poke();
+        }
+        closed
     }
 
     /// Finish a session from the compositor/backend (for example, output
     /// loss). The caller should use `close_session_object` to also emit the
     /// mandated `Session.Closed` signal.
     pub fn finish_session(&self, path: &str) -> Option<LifecycleEntry> {
-        close(&self.sessions, path, None)
+        let closed = close(&self.sessions, path, None);
+        if closed.is_some() {
+            self.wake.poke();
+        }
+        closed
     }
 
     pub fn has_session(&self, path: &str, owner: &str, app_id: &str) -> bool {
@@ -145,7 +155,11 @@ impl PortalLifecycle {
     /// resource belonging to the departed authenticated frontend.
     pub fn close_owner(&self, owner: &str) -> Vec<LifecycleEntry> {
         let mut released = close_matching(&self.requests, owner);
-        released.extend(close_matching(&self.sessions, owner));
+        let sessions = close_matching(&self.sessions, owner);
+        if !sessions.is_empty() {
+            self.wake.poke();
+        }
+        released.extend(sessions);
         released
     }
 
@@ -470,54 +484,22 @@ mod tests {
     }
 
     #[test]
-    fn owners_cannot_close_each_others_resources() {
-        let lifecycle = PortalLifecycle::new();
-        assert!(lifecycle.insert_request("/request/one", entry(":1.1")));
-        assert!(lifecycle.close_request("/request/one", ":1.2").is_none());
-        assert!(lifecycle.close_request("/request/one", ":1.1").is_some());
-    }
-
-    #[test]
-    fn cleanup_runs_exactly_once_after_close() {
-        let lifecycle = PortalLifecycle::new();
-        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let cleanup_count = count.clone();
-        assert!(
-            lifecycle.insert_request_with_cleanup("/request/one", entry(":1.1"), move |_| {
-                cleanup_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            })
-        );
-        assert!(lifecycle.close_request("/request/one", ":1.1").is_some());
-        assert!(lifecycle.close_request("/request/one", ":1.1").is_none());
-        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn successful_completion_does_not_run_cancellation_cleanup() {
-        let lifecycle = PortalLifecycle::new();
-        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let cleanup_count = count.clone();
-        assert!(lifecycle.insert_request_with_cleanup(
-            "/request/complete",
-            entry(":1.1"),
-            move |_| {
-                cleanup_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            }
-        ));
-        assert!(take_without_cleanup(&lifecycle.requests, "/request/complete").is_some());
-        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn disconnect_releases_both_kinds() {
-        let lifecycle = PortalLifecycle::new();
-        assert!(lifecycle.insert_request("/request/one", entry(":1.1")));
-        assert!(lifecycle.insert_session("/session/one", entry(":1.1")));
-        assert_eq!(lifecycle.close_owner(":1.1").len(), 2);
-    }
-
-    #[test]
-    fn only_portal_object_space_is_accepted() {
+    fn portal_resources_are_owner_scoped_and_released_on_disconnect() {
+        // Phase `owners_cannot_close_each_others_resources`.
+        {
+            let lifecycle = PortalLifecycle::new();
+            assert!(lifecycle.insert_request("/request/one", entry(":1.1")));
+            assert!(lifecycle.close_request("/request/one", ":1.2").is_none());
+            assert!(lifecycle.close_request("/request/one", ":1.1").is_some());
+        }
+        // Phase `disconnect_releases_both_kinds`.
+        {
+            let lifecycle = PortalLifecycle::new();
+            assert!(lifecycle.insert_request("/request/one", entry(":1.1")));
+            assert!(lifecycle.insert_session("/session/one", entry(":1.1")));
+            assert_eq!(lifecycle.close_owner(":1.1").len(), 2);
+        }
+        // Phase `only_portal_object_space_is_accepted`.
         assert!(valid_portal_path(
             "/org/freedesktop/portal/desktop/request/tilo/one",
             "/request/"
@@ -526,5 +508,40 @@ mod tests {
             "/org/tilo/private/request/one",
             "/request/"
         ));
+    }
+
+    #[test]
+    fn cleanup_runs_exactly_once_and_only_for_cancellation() {
+        // Phase `cleanup_runs_exactly_once_after_close`.
+        {
+            let lifecycle = PortalLifecycle::new();
+            let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let cleanup_count = count.clone();
+            assert!(lifecycle.insert_request_with_cleanup(
+                "/request/one",
+                entry(":1.1"),
+                move |_| {
+                    cleanup_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            ));
+            assert!(lifecycle.close_request("/request/one", ":1.1").is_some());
+            assert!(lifecycle.close_request("/request/one", ":1.1").is_none());
+            assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        }
+        // Phase `successful_completion_does_not_run_cancellation_cleanup`.
+        {
+            let lifecycle = PortalLifecycle::new();
+            let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let cleanup_count = count.clone();
+            assert!(lifecycle.insert_request_with_cleanup(
+                "/request/complete",
+                entry(":1.1"),
+                move |_| {
+                    cleanup_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            ));
+            assert!(take_without_cleanup(&lifecycle.requests, "/request/complete").is_some());
+            assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
+        }
     }
 }

@@ -7,7 +7,8 @@
 
 use ui::ColorCompat;
 use ui::charts::ChartPalette;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::paint::PaintCtx;
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect};
@@ -525,15 +526,16 @@ impl Graph3dScreen {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         let panel_bg = if self.overlay {
             c.surfaces.raised
         } else {
             c.surfaces.base
         };
-        draw::fill_rect(scene, t, self.panel, panel_bg);
+        ctx.fill_rect(self.panel, panel_bg);
         draw::line(
-            scene,
+            ctx.scene,
             t,
             Point::new(self.panel.x1, self.panel.y0),
             Point::new(self.panel.x1, self.panel.y1),
@@ -542,7 +544,7 @@ impl Graph3dScreen {
         );
         // Title and subtitle stack on their measured line boxes (24 + 20 px at
         // 1×); `layout` starts the first card below the same band.
-        let (head_h, sub_h, _) = Self::header_band(tr);
+        let (head_h, sub_h, _) = Self::header_band(ctx.text);
         let head = Rect::new(
             self.panel.x0 + 16.0,
             self.panel.y0 + 12.0,
@@ -550,15 +552,12 @@ impl Graph3dScreen {
             self.panel.y0 + 12.0 + head_h,
         );
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             head,
             "Surfaces",
-            16.0,
+            &TextStyle::new(16.0).with_weight(TextWeight::Semibold),
             c.text_primary,
             Align::Left,
-            TextWeight::Semibold,
         );
         let sub = Rect::new(
             self.panel.x0 + 16.0,
@@ -567,15 +566,12 @@ impl Graph3dScreen {
             head.y1 + sub_h,
         );
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             sub,
             "z = f(x, y)  ·  click to edit",
-            12.0,
+            &TextStyle::new(12.0),
             c.text_dim,
             Align::Left,
-            TextWeight::Regular,
         );
     }
 
@@ -599,6 +595,7 @@ impl Graph3dScreen {
         theme: &Theme,
         model: &CalcModel,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         let palette = ChartPalette::from_theme(theme);
         for i in 0..model.surfaces.len() {
@@ -613,16 +610,10 @@ impl Graph3dScreen {
             };
             let active = i == model.active_surface;
             if active {
-                draw::fill_round(
-                    scene,
-                    t,
-                    r,
-                    8.0,
-                    draw::mix(c.surfaces.raised, c.accent[5], 0.18),
-                );
-                draw::stroke_round(scene, t, r, 8.0, c.accent[5], 1.0);
+                ctx.fill_round(r, 8.0, draw::mix(c.surfaces.raised, c.accent[5], 0.18));
+                ctx.stroke_round(r, 8.0, c.accent[5], 1.0);
             } else if self.hovered_row == Some(i) {
-                ui::surface::card(scene, t, r, 8.0, c.surfaces.raised);
+                ui::surface::card(ctx.scene, t, r, 8.0, c.surfaces.raised);
             }
             // colour swatch (this surface's series colour)
             let sw = Rect::new(
@@ -632,9 +623,7 @@ impl Graph3dScreen {
                 r.center().y + 7.0,
             );
             let col = palette.categorical(i);
-            draw::fill_round(
-                scene,
-                t,
+            ctx.fill_round(
                 sw,
                 3.0,
                 if f.visible {
@@ -651,15 +640,12 @@ impl Graph3dScreen {
             };
             let prefix = Rect::new(r.x0 + PREFIX_X, r.y0, r.x0 + PREFIX_X + self.prefix_w, r.y1);
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 prefix,
                 "z =",
-                14.0,
+                &TextStyle::new(14.0).with_weight(TextWeight::Medium),
                 txt_col,
                 Align::Left,
-                TextWeight::Medium,
             );
             let Some(empty) = self.fields.get(i).map(MathField::is_empty) else {
                 continue;
@@ -667,57 +653,49 @@ impl Graph3dScreen {
             if empty && !active {
                 let pr = Rect::new(edit.x0 + 4.0, edit.y0, edit.x1, edit.y1);
                 draw::text_in(
-                    scene,
-                    tr,
-                    t,
+                    &mut ctx,
                     pr,
                     "f(x, y)",
-                    14.0,
+                    &TextStyle::new(14.0),
                     c.text_dim,
                     Align::Left,
-                    TextWeight::Regular,
                 );
             } else if let Some(field) = self.fields.get_mut(i) {
-                field.set_rect(edit, tr);
+                field.set_rect(edit, ctx.text);
                 let fld_col = if f.visible { txt_col } else { c.text_dim };
-                field.draw(scene, t, tr, theme, fld_col, active);
+                field.draw(ctx.scene, t, ctx.text, theme, fld_col, active);
             }
-            ui::surface::card(scene, t, dr, 5.0, c.neutral[2]);
+            ui::surface::card(ctx.scene, t, dr, 5.0, c.neutral[2]);
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 dr,
                 "×",
-                16.0,
+                &TextStyle::new(16.0).with_weight(TextWeight::Semibold),
                 c.text_dim,
                 Align::Center,
-                TextWeight::Semibold,
             );
             // visibility dot
             let vis_col = if f.visible { col } else { c.neutral[3] };
-            draw::stroke_round(scene, t, vr, vr.height() / 2.0, vis_col, 2.0);
+            ctx.stroke_round(vr, vr.height() / 2.0, vis_col, 2.0);
             if f.visible {
                 let inner = Rect::new(vr.x0 + 5.0, vr.y0 + 5.0, vr.x1 - 5.0, vr.y1 - 5.0);
-                draw::fill_round(scene, t, inner, inner.height() / 2.0, vis_col);
+                ctx.fill_round(inner, inner.height() / 2.0, vis_col);
             }
         }
     }
 
     /// The "+ Add surface" button below the row list.
     fn draw_add_button(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
-        ui::surface::card(scene, t, self.add_rect, 8.0, c.surfaces.raised);
+        ui::surface::card(ctx.scene, t, self.add_rect, 8.0, c.surfaces.raised);
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             self.add_rect,
             "+ Add surface",
-            13.0,
+            &TextStyle::new(13.0).with_weight(TextWeight::Medium),
             c.accent[6],
             Align::Center,
-            TextWeight::Medium,
         );
     }
 
@@ -730,11 +708,12 @@ impl Graph3dScreen {
         theme: &Theme,
         model: &CalcModel,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         let v = &model.view3d;
         // Three 12 px lines stacked on their measured line boxes (20 px each
         // at 1×, an 80 px card), so the read-out never overprints itself.
-        let line_h = draw::line_box(tr, 12.0) + 5.0;
+        let line_h = draw::line_box(ctx.text, 12.0) + 5.0;
         let info_y = self.add_rect.y1 + 16.0;
         let info = Rect::new(
             self.panel.x0 + 16.0,
@@ -742,7 +721,7 @@ impl Graph3dScreen {
             self.panel.x1 - 16.0,
             info_y + 3.0 * line_h + 20.0,
         );
-        ui::surface::card(scene, t, info, 8.0, c.neutral[1]);
+        ui::surface::card(ctx.scene, t, info, 8.0, c.neutral[1]);
         let l1 = Rect::new(
             info.x0 + 12.0,
             info.y0 + 6.0,
@@ -750,19 +729,16 @@ impl Graph3dScreen {
             info.y0 + 6.0 + line_h,
         );
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             l1,
             &format!(
                 "yaw  {:.0}°   pitch  {:.0}°",
                 v.yaw.to_degrees(),
                 v.pitch.to_degrees()
             ),
-            12.0,
+            &TextStyle::new(12.0),
             c.text_dim,
             Align::Left,
-            TextWeight::Regular,
         );
         let l2 = Rect::new(
             info.x0 + 12.0,
@@ -771,70 +747,53 @@ impl Graph3dScreen {
             l1.y1 + 2.0 + line_h,
         );
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             l2,
             &format!("zoom  {:.2}×   domain ±{:.0}", v.zoom, DOM),
-            12.0,
+            &TextStyle::new(12.0),
             c.text_dim,
             Align::Left,
-            TextWeight::Regular,
         );
         let l3 = Rect::new(info.x0 + 12.0, l2.y1 + 2.0, info.x1 - 12.0, info.y1 - 6.0);
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             l3,
             "drag to rotate · scroll to zoom",
-            12.0,
+            &TextStyle::new(12.0),
             c.accent[6],
             Align::Left,
-            TextWeight::Regular,
         );
     }
 
     /// Draw the panel toggle: a "Surfaces" pill over the canvas when the drawer
     /// is closed, or a "Hide" chip in the drawer header when it's open.
     fn draw_toggle(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         if self.toggle_rect == Rect::ZERO {
             return;
         }
         let c = &theme.tokens.colors;
         let r = self.toggle_rect;
         if self.panel_open {
-            ui::surface::card(scene, t, r, 8.0, c.neutral[2]);
+            ui::surface::card(ctx.scene, t, r, 8.0, c.neutral[2]);
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 r,
                 "Hide",
-                12.0,
+                &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
                 c.text_dim,
                 Align::Center,
-                TextWeight::Semibold,
             );
         } else {
-            draw::fill_round(
-                scene,
-                t,
-                r,
-                8.0,
-                draw::mix(c.surfaces.raised, c.accent[5], 0.20),
-            );
-            draw::stroke_round(scene, t, r, 8.0, c.accent[5], 1.0);
+            ctx.fill_round(r, 8.0, draw::mix(c.surfaces.raised, c.accent[5], 0.20));
+            ctx.stroke_round(r, 8.0, c.accent[5], 1.0);
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 r,
                 "Surfaces",
-                13.0,
+                &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
                 c.accent[6],
                 Align::Center,
-                TextWeight::Semibold,
             );
         }
     }
@@ -1122,196 +1081,215 @@ mod tests {
         }
     }
 
+    /// The Surfaces panel docks when wide, collapses to an overlay drawer (toggle,
+    /// scrim, no orbit under the drawer) when narrow, and keeps non-overlapping
+    /// 44 px row-action targets. Fresh screen per phase.
     #[test]
-    fn wide_docks_narrow_collapses_surface_panel() {
-        let mut s = Graph3dScreen::default();
-        let m = CalcModel::seeded();
-        // Wide: docked.
-        s.layout(Rect::new(0.0, 60.0, 1280.0, 800.0), &m);
-        assert!(!s.overlay && s.panel_open);
-        assert!(s.panel.width() > 0.0 && s.canvas.x0 >= s.panel.x1 - 0.5);
-        // Narrow: collapsed overlay, canvas takes the full width.
-        s.layout(Rect::new(0.0, 60.0, 560.0, 800.0), &m);
-        assert!(s.overlay && !s.panel_open);
-        assert_eq!(s.panel, Rect::ZERO);
-        assert!((s.canvas.width() - 560.0).abs() < 0.5);
-        assert!(s.toggle_at(s.toggle_rect.center()));
-        // Open it → drawer + scrim; press inside must not orbit.
-        s.toggle_panel();
-        s.layout(Rect::new(0.0, 60.0, 560.0, 800.0), &m);
-        assert!(s.panel_open && s.panel.width() > 0.0 && s.scrim_rect.width() > 0.0);
-        assert!(!s.canvas_contains(s.panel.center()));
-    }
+    fn surface_panel_docks_wide_overlays_narrow_and_keeps_row_targets() {
+        // phase wide_docks_narrow_collapses_surface_panel
+        {
+            let mut s = Graph3dScreen::default();
+            let m = CalcModel::seeded();
+            // Wide: docked.
+            s.layout(Rect::new(0.0, 60.0, 1280.0, 800.0), &m);
+            assert!(!s.overlay && s.panel_open);
+            assert!(s.panel.width() > 0.0 && s.canvas.x0 >= s.panel.x1 - 0.5);
+            // Narrow: collapsed overlay, canvas takes the full width.
+            s.layout(Rect::new(0.0, 60.0, 560.0, 800.0), &m);
+            assert!(s.overlay && !s.panel_open);
+            assert_eq!(s.panel, Rect::ZERO);
+            assert!((s.canvas.width() - 560.0).abs() < 0.5);
+            assert!(s.toggle_at(s.toggle_rect.center()));
+            // Open it → drawer + scrim; press inside must not orbit.
+            s.toggle_panel();
+            s.layout(Rect::new(0.0, 60.0, 560.0, 800.0), &m);
+            assert!(s.panel_open && s.panel.width() > 0.0 && s.scrim_rect.width() > 0.0);
+            assert!(!s.canvas_contains(s.panel.center()));
+        }
 
-    #[test]
-    fn row_actions_have_non_overlapping_44px_targets() {
-        let mut s = Graph3dScreen::default();
-        let m = CalcModel::seeded();
-        let area = Rect::new(0.0, 60.0, 390.0, 844.0);
-        s.layout(area, &m);
-        s.toggle_panel();
-        s.layout(area, &m);
-        let delete = s.delete_rect(0).expect("delete target");
-        let visible = s.visibility_rect(0).expect("visibility target");
-        assert!(delete.width() >= 44.0 && delete.height() >= 44.0);
-        assert!(visible.width() >= 44.0 && visible.height() >= 44.0);
-        assert!(delete.x1 <= visible.x0, "row actions must not overlap");
-        assert_eq!(s.delete_at(delete.center()), Some(0));
-        assert_eq!(s.vis_at(visible.center()), Some(0));
-        assert_eq!(
-            s.delete_at(s.delete_rect(1).expect("second delete target").center()),
-            Some(1),
-            "a delete hit must not target the adjacent row"
-        );
-        assert!(
-            s.edit_rects[0].x1 <= delete.x0,
-            "math editing must not steal the delete target"
-        );
-    }
-
-    #[test]
-    fn first_draw_samples_every_visible_surface() {
-        let mut s = screen();
-        let m = CalcModel::seeded(); // 3 visible surfaces
-        s.ensure_surfaces(&m);
-        assert_eq!(s.surface_cache.rebuilds, 1);
-        assert!(!s.surface_cache.cells.is_empty(), "expected sampled grids");
-        // Cells from more than one series prove multiple surfaces are drawn.
-        let distinct: std::collections::BTreeSet<usize> =
-            s.surface_cache.cells.iter().map(|c| c.series).collect();
-        assert!(
-            distinct.len() >= 2,
-            "multiple surfaces must each contribute cells, got {distinct:?}"
-        );
-    }
-
-    #[test]
-    fn theme_or_tab_switch_does_not_rebuild_surface() {
-        let mut s = screen();
-        let mut m = CalcModel::seeded();
-        s.ensure_surfaces(&m);
-        assert_eq!(s.surface_cache.rebuilds, 1);
-        s.ensure_surfaces(&m);
-        s.ensure_surfaces(&m);
-        assert_eq!(
-            s.surface_cache.rebuilds, 1,
-            "theme switch re-sampled the surfaces"
-        );
-        m.mode = Mode::Calc;
-        s.ensure_surfaces(&m);
-        m.mode = Mode::Graph3d;
-        s.ensure_surfaces(&m);
-        assert_eq!(
-            s.surface_cache.rebuilds, 1,
-            "tab switch re-sampled the surfaces"
-        );
-    }
-
-    #[test]
-    fn editing_a_surface_or_orbiting_rebuilds() {
-        let mut s = screen();
-        let mut m = CalcModel::seeded();
-        s.ensure_surfaces(&m);
-        assert_eq!(s.surface_cache.rebuilds, 1);
-        m.surfaces[0].expr = "x*y".into();
-        s.ensure_surfaces(&m);
-        assert_eq!(s.surface_cache.rebuilds, 2);
-        m.view3d.yaw += 0.2;
-        s.ensure_surfaces(&m);
-        assert_eq!(s.surface_cache.rebuilds, 3);
-        m.view3d.zoom *= 1.3;
-        s.ensure_surfaces(&m);
-        assert_eq!(s.surface_cache.rebuilds, 4);
-    }
-
-    #[test]
-    fn hiding_a_surface_drops_its_cells() {
-        let mut s = screen();
-        let mut m = CalcModel::seeded();
-        s.ensure_surfaces(&m);
-        let all_series: std::collections::BTreeSet<usize> =
-            s.surface_cache.cells.iter().map(|c| c.series).collect();
-        assert!(all_series.contains(&0));
-        m.surfaces[0].visible = false;
-        s.ensure_surfaces(&m);
-        let after: std::collections::BTreeSet<usize> =
-            s.surface_cache.cells.iter().map(|c| c.series).collect();
-        assert!(
-            !after.contains(&0),
-            "a hidden surface must contribute no cells"
-        );
-    }
-
-    #[test]
-    fn cached_cells_carry_theme_independent_shading() {
-        let mut s = screen();
-        let m = CalcModel::seeded();
-        s.ensure_surfaces(&m);
-        for cell in &s.surface_cache.cells {
-            assert!(cell.shade >= 0.55 && cell.shade <= 1.0);
+        // phase row_actions_have_non_overlapping_44px_targets
+        {
+            let mut s = Graph3dScreen::default();
+            let m = CalcModel::seeded();
+            let area = Rect::new(0.0, 60.0, 390.0, 844.0);
+            s.layout(area, &m);
+            s.toggle_panel();
+            s.layout(area, &m);
+            let delete = s.delete_rect(0).expect("delete target");
+            let visible = s.visibility_rect(0).expect("visibility target");
+            assert!(delete.width() >= 44.0 && delete.height() >= 44.0);
+            assert!(visible.width() >= 44.0 && visible.height() >= 44.0);
+            assert!(delete.x1 <= visible.x0, "row actions must not overlap");
+            assert_eq!(s.delete_at(delete.center()), Some(0));
+            assert_eq!(s.vis_at(visible.center()), Some(0));
+            assert_eq!(
+                s.delete_at(s.delete_rect(1).expect("second delete target").center()),
+                Some(1),
+                "a delete hit must not target the adjacent row"
+            );
+            assert!(
+                s.edit_rects[0].x1 <= delete.x0,
+                "math editing must not steal the delete target"
+            );
         }
     }
 
-    /// A stacked surface formula grows its card taller than the base, mirroring
-    /// the 2D function rows, so the formula shows in full rather than clipping.
+    /// The sampled-surface cache: the first draw samples every visible surface
+    /// with theme-independent shading; theme or tab switches do not rebuild;
+    /// editing, orbiting or zooming rebuild; hiding a surface drops its cells.
+    /// Fresh screen + model per phase.
     #[test]
-    fn fraction_surface_card_grows_to_fit() {
-        let mut tr = TextRenderer::new();
-        let mut s = Graph3dScreen::default();
-        let m = CalcModel {
-            surfaces: vec![PlotFn {
-                expr: "(x^2+1)/(y-3)".into(),
-                visible: true,
-            }],
-            active_surface: 0,
-            ..CalcModel::default()
-        };
-        s.measure_cards(&m, &mut tr, 1.0);
-        s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
-        assert!(
-            s.card_heights[0] > BASE_ROW_H + 8.0,
-            "a fraction surface card must grow taller than the base ({BASE_ROW_H}), got {}",
-            s.card_heights[0]
-        );
+    fn surface_cache_rebuilds_only_when_geometry_changes() {
+        // phase first_draw_samples_every_visible_surface
+        {
+            let mut s = screen();
+            let m = CalcModel::seeded(); // 3 visible surfaces
+            s.ensure_surfaces(&m);
+            assert_eq!(s.surface_cache.rebuilds, 1);
+            assert!(!s.surface_cache.cells.is_empty(), "expected sampled grids");
+            // Cells from more than one series prove multiple surfaces are drawn.
+            let distinct: std::collections::BTreeSet<usize> =
+                s.surface_cache.cells.iter().map(|c| c.series).collect();
+            assert!(
+                distinct.len() >= 2,
+                "multiple surfaces must each contribute cells, got {distinct:?}"
+            );
+        }
+
+        // phase theme_or_tab_switch_does_not_rebuild_surface
+        {
+            let mut s = screen();
+            let mut m = CalcModel::seeded();
+            s.ensure_surfaces(&m);
+            assert_eq!(s.surface_cache.rebuilds, 1);
+            s.ensure_surfaces(&m);
+            s.ensure_surfaces(&m);
+            assert_eq!(
+                s.surface_cache.rebuilds, 1,
+                "theme switch re-sampled the surfaces"
+            );
+            m.mode = Mode::Calc;
+            s.ensure_surfaces(&m);
+            m.mode = Mode::Graph3d;
+            s.ensure_surfaces(&m);
+            assert_eq!(
+                s.surface_cache.rebuilds, 1,
+                "tab switch re-sampled the surfaces"
+            );
+        }
+
+        // phase editing_a_surface_or_orbiting_rebuilds
+        {
+            let mut s = screen();
+            let mut m = CalcModel::seeded();
+            s.ensure_surfaces(&m);
+            assert_eq!(s.surface_cache.rebuilds, 1);
+            m.surfaces[0].expr = "x*y".into();
+            s.ensure_surfaces(&m);
+            assert_eq!(s.surface_cache.rebuilds, 2);
+            m.view3d.yaw += 0.2;
+            s.ensure_surfaces(&m);
+            assert_eq!(s.surface_cache.rebuilds, 3);
+            m.view3d.zoom *= 1.3;
+            s.ensure_surfaces(&m);
+            assert_eq!(s.surface_cache.rebuilds, 4);
+        }
+
+        // phase hiding_a_surface_drops_its_cells
+        {
+            let mut s = screen();
+            let mut m = CalcModel::seeded();
+            s.ensure_surfaces(&m);
+            let all_series: std::collections::BTreeSet<usize> =
+                s.surface_cache.cells.iter().map(|c| c.series).collect();
+            assert!(all_series.contains(&0));
+            m.surfaces[0].visible = false;
+            s.ensure_surfaces(&m);
+            let after: std::collections::BTreeSet<usize> =
+                s.surface_cache.cells.iter().map(|c| c.series).collect();
+            assert!(
+                !after.contains(&0),
+                "a hidden surface must contribute no cells"
+            );
+        }
+
+        // phase cached_cells_carry_theme_independent_shading
+        {
+            let mut s = screen();
+            let m = CalcModel::seeded();
+            s.ensure_surfaces(&m);
+            for cell in &s.surface_cache.cells {
+                assert!(cell.shade >= 0.55 && cell.shade <= 1.0);
+            }
+        }
     }
 
-    /// A surface formula taller than even the generous card max (a
-    /// fraction-over-fraction, the 3D analogue of the 2D case): the card clamps
-    /// to the max and the field scrolls within it rather than clipping the
-    /// formula behind the card edge. Mirrors the 2D coverage so the "grow to a
-    /// max then scroll, never clip" rule is proven for surfaces too, on the real
-    /// measure → layout → set-rect path.
+    /// Surface formula cards on the real measure → layout → set-rect path grow to
+    /// fit a stacked formula and clamp to the max (then scroll, never clip) for an
+    /// oversized one. Fresh screen + renderer per phase.
     #[test]
-    fn oversized_surface_card_grows_to_max_then_scrolls() {
-        let mut tr = TextRenderer::new();
-        let mut s = Graph3dScreen::default();
-        let m = CalcModel {
-            surfaces: vec![PlotFn {
-                expr: "(1/x)/(1/y)".into(),
-                visible: true,
-            }],
-            active_surface: 0,
-            ..CalcModel::default()
-        };
-        s.measure_cards(&m, &mut tr, 1.0);
-        s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
-        let expected = crate::mathfield::CARD_MAX_H + 2.0 * CARD_PAD_Y;
-        assert!(
-            (s.card_heights[0] - expected).abs() < 1e-6,
-            "an oversized surface card must clamp to the max ({expected}), got {}",
-            s.card_heights[0]
-        );
-        // Taller than the maxed field → the formula scrolls (never clips).
-        let content_h = s.fields[0].content_height(&mut tr);
-        assert!(
-            content_h > s.edit_rects[0].height() + 0.5,
-            "an oversized surface must overflow its maxed field vertically (scroll, not clip): content {content_h} vs field {}",
-            s.edit_rects[0].height()
-        );
-        s.fields[0].set_rect(s.edit_rects[0], &mut tr);
-        assert!(
-            s.fields[0].overflows(),
-            "the maxed surface field must report overflow"
-        );
+    fn surface_cards_grow_to_fit_then_clamp_to_max_and_scroll() {
+        // phase fraction_surface_card_grows_to_fit
+        // A stacked surface formula grows its card taller than the base, mirroring
+        // the 2D function rows, so the formula shows in full rather than clipping.
+        {
+            let mut tr = TextRenderer::new();
+            let mut s = Graph3dScreen::default();
+            let m = CalcModel {
+                surfaces: vec![PlotFn {
+                    expr: "(x^2+1)/(y-3)".into(),
+                    visible: true,
+                }],
+                active_surface: 0,
+                ..CalcModel::default()
+            };
+            s.measure_cards(&m, &mut tr, 1.0);
+            s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
+            assert!(
+                s.card_heights[0] > BASE_ROW_H + 8.0,
+                "a fraction surface card must grow taller than the base ({BASE_ROW_H}), got {}",
+                s.card_heights[0]
+            );
+        }
+
+        // phase oversized_surface_card_grows_to_max_then_scrolls
+        // A surface formula taller than even the generous card max (a
+        // fraction-over-fraction, the 3D analogue of the 2D case): the card clamps
+        // to the max and the field scrolls within it rather than clipping the
+        // formula behind the card edge. Mirrors the 2D coverage so the "grow to a
+        // max then scroll, never clip" rule is proven for surfaces too, on the real
+        // measure → layout → set-rect path.
+        {
+            let mut tr = TextRenderer::new();
+            let mut s = Graph3dScreen::default();
+            let m = CalcModel {
+                surfaces: vec![PlotFn {
+                    expr: "(1/x)/(1/y)".into(),
+                    visible: true,
+                }],
+                active_surface: 0,
+                ..CalcModel::default()
+            };
+            s.measure_cards(&m, &mut tr, 1.0);
+            s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
+            let expected = crate::mathfield::CARD_MAX_H + 2.0 * CARD_PAD_Y;
+            assert!(
+                (s.card_heights[0] - expected).abs() < 1e-6,
+                "an oversized surface card must clamp to the max ({expected}), got {}",
+                s.card_heights[0]
+            );
+            // Taller than the maxed field → the formula scrolls (never clips).
+            let content_h = s.fields[0].content_height(&mut tr);
+            assert!(
+                content_h > s.edit_rects[0].height() + 0.5,
+                "an oversized surface must overflow its maxed field vertically (scroll, not clip): content {content_h} vs field {}",
+                s.edit_rects[0].height()
+            );
+            s.fields[0].set_rect(s.edit_rects[0], &mut tr);
+            assert!(
+                s.fields[0].overflows(),
+                "the maxed surface field must report overflow"
+            );
+        }
     }
 }

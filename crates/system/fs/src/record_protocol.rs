@@ -19,10 +19,12 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tilo_user_identity::RevocationList;
 use uuid::Uuid;
+use wire_frame::Framing;
 
 use crate::authenticated_transport::{
     AuthenticatedTransportConfig, AuthenticatedTransportError, authenticate_fs_peer_parts_at,
 };
+use crate::canonical_frame::{self, CanonicalFrameError};
 use crate::clock::{unix_now_ms, unix_now_ns};
 use crate::identity::PeerCredentials;
 use crate::record_access::{RecordAccessBinding, RecordAccessRegistry};
@@ -126,6 +128,16 @@ pub struct RecordProtocolSessionV1 {
     pub grant_id: Uuid,
     pub workspace_id: Uuid,
     pub record_id: FileRecordId,
+}
+
+impl RecordProtocolSessionV1 {
+    /// Whether this is a session of what `invite` grants: its workspace and
+    /// its record. A recipient accepts a snapshot only from such a session,
+    /// never one the host opened on another workspace or record.
+    #[must_use]
+    pub fn is_for_invite(&self, invite: &collab_types::FileInviteV1) -> bool {
+        self.workspace_id == invite.workspace_id && self.record_id == invite.record_id
+    }
 }
 
 impl From<RecordAccessBinding> for RecordProtocolSessionV1 {
@@ -258,10 +270,6 @@ impl RecordProtocol {
     /// # Errors
     ///
     /// Returns an error when the endpoint does not match the certified device.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Protocol construction binds endpoint identity, credentials/revocations, workspace and share authority, live certification, access registry, and repository."
-    )]
     pub fn new(
         endpoint: Endpoint,
         credentials: PeerCredentials,
@@ -343,7 +351,7 @@ impl RecordProtocol {
         // Capability bytes are read only after the line above succeeds.
         let request = match read_request(recv).await {
             Ok(request) => request,
-            Err(FrameError::TooLarge) => {
+            Err(CanonicalFrameError::TooLarge(_)) => {
                 write_response(send, &RecordProtocolResponseV1::RequestTooLarge).await?;
                 let _ = send.finish();
                 return Ok(());
@@ -904,12 +912,9 @@ pub enum RecordProtocolError {
     Canonical(#[from] collab_types::canonical::CanonicalError),
 }
 
-#[derive(Debug)]
-enum FrameError {
-    Io,
-    Canonical,
-    TooLarge,
-}
+/// Each record request and response: a big-endian `u32` length, then the
+/// canonical encoding.
+const RECORD_PROTOCOL_FRAMING: Framing = Framing::big_endian(MAX_RECORD_PROTOCOL_FRAME_BYTES);
 
 async fn write_request<W>(
     send: &mut W,
@@ -919,19 +924,19 @@ where
     W: tokio::io::AsyncWrite + Unpin,
 {
     use tokio::io::AsyncWriteExt;
-    let bytes = collab_types::canonical_bytes(request)
-        .map_err(|_| RecordProtocolClientError::InvalidRequest)?;
-    if bytes.len() > MAX_RECORD_PROTOCOL_FRAME_BYTES {
-        return Err(RecordProtocolClientError::RequestTooLarge);
-    }
-    let length =
-        u32::try_from(bytes.len()).map_err(|_| RecordProtocolClientError::RequestTooLarge)?;
-    send.write_all(&length.to_be_bytes())
+    canonical_frame::write(RECORD_PROTOCOL_FRAMING, send, request)
         .await
-        .map_err(|error| RecordProtocolClientError::Transport(error.to_string()))?;
-    send.write_all(&bytes)
-        .await
-        .map_err(|error| RecordProtocolClientError::Transport(error.to_string()))?;
+        .map_err(|error| match error {
+            CanonicalFrameError::Io(error) => {
+                RecordProtocolClientError::Transport(error.to_string())
+            }
+            CanonicalFrameError::Empty | CanonicalFrameError::TooLarge(_) => {
+                RecordProtocolClientError::RequestTooLarge
+            }
+            CanonicalFrameError::Encode(_) | CanonicalFrameError::Decode(_) => {
+                RecordProtocolClientError::InvalidRequest
+            }
+        })?;
     send.flush()
         .await
         .map_err(|error| RecordProtocolClientError::Transport(error.to_string()))?;
@@ -944,47 +949,24 @@ async fn read_response<R>(
 where
     R: tokio::io::AsyncRead + Unpin,
 {
-    use tokio::io::AsyncReadExt;
-    let mut prefix = [0; 4];
-    recv.read_exact(&mut prefix)
+    canonical_frame::read_required(RECORD_PROTOCOL_FRAMING, recv)
         .await
-        .map_err(|error| RecordProtocolClientError::Transport(error.to_string()))?;
-    let length = u32::from_be_bytes(prefix) as usize;
-    if length > MAX_RECORD_PROTOCOL_FRAME_BYTES {
-        return Err(RecordProtocolClientError::ResponseTooLarge);
-    }
-    let mut bytes = vec![0; length];
-    recv.read_exact(&mut bytes)
-        .await
-        .map_err(|error| RecordProtocolClientError::Transport(error.to_string()))?;
-    collab_types::canonical::from_canonical_bytes(&bytes)
-        .map_err(|_| RecordProtocolClientError::InvalidResponse)
+        .map_err(|error| match error {
+            CanonicalFrameError::Io(error) => {
+                RecordProtocolClientError::Transport(error.to_string())
+            }
+            CanonicalFrameError::TooLarge(_) => RecordProtocolClientError::ResponseTooLarge,
+            CanonicalFrameError::Empty
+            | CanonicalFrameError::Encode(_)
+            | CanonicalFrameError::Decode(_) => RecordProtocolClientError::InvalidResponse,
+        })
 }
 
-impl From<io::Error> for FrameError {
-    fn from(_error: io::Error) -> Self {
-        Self::Io
-    }
-}
-
-async fn read_request<R>(recv: &mut R) -> Result<RecordProtocolRequestV1, FrameError>
+async fn read_request<R>(recv: &mut R) -> Result<RecordProtocolRequestV1, CanonicalFrameError>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
-    use tokio::io::AsyncReadExt;
-    let mut prefix = [0; 4];
-    recv.read_exact(&mut prefix)
-        .await
-        .map_err(|_| FrameError::Io)?;
-    let length = u32::from_be_bytes(prefix) as usize;
-    if length > MAX_RECORD_PROTOCOL_FRAME_BYTES {
-        return Err(FrameError::TooLarge);
-    }
-    let mut bytes = vec![0; length];
-    recv.read_exact(&mut bytes)
-        .await
-        .map_err(|_| FrameError::Io)?;
-    collab_types::canonical::from_canonical_bytes(&bytes).map_err(|_| FrameError::Canonical)
+    canonical_frame::read_required(RECORD_PROTOCOL_FRAMING, recv).await
 }
 
 async fn write_response<W>(
@@ -996,15 +978,13 @@ where
 {
     use tokio::io::AsyncWriteExt;
     let mut bytes = collab_types::canonical_bytes(response)?;
-    if bytes.len() > MAX_RECORD_PROTOCOL_FRAME_BYTES {
+    if bytes.len() > RECORD_PROTOCOL_FRAMING.max_len() {
         bytes = collab_types::canonical_bytes(&RecordProtocolResponseV1::ResponseTooLarge)?;
     }
-    let length = u32::try_from(bytes.len())
-        .map_err(|_| io::Error::other("record protocol response exceeds frame bound"))?;
-    send.write_all(&length.to_be_bytes())
+    RECORD_PROTOCOL_FRAMING
+        .write_async(send, &bytes)
         .await
         .map_err(io::Error::other)?;
-    send.write_all(&bytes).await.map_err(io::Error::other)?;
     send.flush().await.map_err(io::Error::other)?;
     Ok(())
 }
@@ -1030,6 +1010,49 @@ mod tests {
     };
 
     static NEXT_PARTY: AtomicU64 = AtomicU64::new(100);
+
+    /// A recipient takes a snapshot only from a session on the invite's
+    /// workspace and record.
+    #[test]
+    fn a_session_on_another_workspace_or_record_is_not_the_invites() {
+        let workspace = Uuid::new_v4();
+        let record = FileRecordId::new();
+        let issuer = SigningKey::from_bytes(&[7; 32]);
+        let mut rng = StdRng::seed_from_u64(9);
+        let invite = mint_bearer_file_invite(
+            FileInviteSpec {
+                workspace_id: workspace,
+                record_id: record,
+                subject: FileInviteSubject::Bearer {
+                    secret_hash: [0; 32],
+                },
+                permission: FilePermission::View,
+                expires_at_ms: None,
+                max_redemptions: None,
+            },
+            &issuer,
+            &mut rng,
+        )
+        .unwrap()
+        .token;
+        let session = RecordProtocolSessionV1 {
+            session_id: Uuid::new_v4(),
+            grant_id: invite.id,
+            workspace_id: workspace,
+            record_id: record,
+        };
+        assert!(session.is_for_invite(&invite));
+        let other_workspace = RecordProtocolSessionV1 {
+            workspace_id: Uuid::new_v4(),
+            ..session
+        };
+        assert!(!other_workspace.is_for_invite(&invite));
+        let other_record = RecordProtocolSessionV1 {
+            record_id: FileRecordId::new(),
+            ..session
+        };
+        assert!(!other_record.is_for_invite(&invite));
+    }
 
     struct Party {
         endpoint: Endpoint,
@@ -1680,63 +1703,99 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oversized_request_is_rejected_without_allocating_payload() {
-        use tokio::io::AsyncWriteExt;
-        let (mut writer, mut reader) = tokio::io::duplex(16);
-        let write = tokio::spawn(async move {
-            writer
-                .write_all(
-                    &u32::try_from(MAX_RECORD_PROTOCOL_FRAME_BYTES + 1)
-                        .unwrap()
-                        .to_be_bytes(),
-                )
-                .await
-                .unwrap();
-        });
+    async fn frames_are_big_endian_length_then_canonical_bytes() {
+        let mut wire = Vec::new();
+        write_response(&mut wire, &RecordProtocolResponseV1::Denied)
+            .await
+            .unwrap();
+        assert_eq!(wire, [0, 0, 0, 1, 5]);
+
         assert!(matches!(
-            read_request(&mut reader).await,
-            Err(FrameError::TooLarge)
+            read_response(&mut &[0, 0, 0, 1, 6][..]).await,
+            Ok(RecordProtocolResponseV1::NotFound)
         ));
-        write.await.unwrap();
     }
 
     #[tokio::test]
-    async fn client_rejects_oversized_response_without_allocating_payload() {
-        use tokio::io::AsyncWriteExt;
-        let (mut writer, mut reader) = tokio::io::duplex(16);
-        let write = tokio::spawn(async move {
-            writer
-                .write_all(
-                    &u32::try_from(MAX_RECORD_PROTOCOL_FRAME_BYTES + 1)
-                        .unwrap()
-                        .to_be_bytes(),
-                )
-                .await
-                .unwrap();
-        });
+    async fn truncated_frames_are_transport_errors() {
+        for wire in [&[][..], &[0, 0][..], &[0, 0, 0, 2, 5][..]] {
+            assert!(
+                matches!(
+                    read_response(&mut &wire[..]).await,
+                    Err(RecordProtocolClientError::Transport(ref message)) if message == "early eof"
+                ),
+                "{wire:?}"
+            );
+            assert!(matches!(
+                read_request(&mut &wire[..]).await,
+                Err(CanonicalFrameError::Io(_))
+            ));
+        }
         assert!(matches!(
-            read_response(&mut reader).await,
-            Err(RecordProtocolClientError::ResponseTooLarge)
-        ));
-        write.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn client_rejects_malformed_response() {
-        use tokio::io::AsyncWriteExt;
-        let (mut writer, mut reader) = tokio::io::duplex(16);
-        let write = tokio::spawn(async move {
-            let malformed = [0xff, 0xff];
-            writer
-                .write_all(&u32::try_from(malformed.len()).unwrap().to_be_bytes())
-                .await
-                .unwrap();
-            writer.write_all(&malformed).await.unwrap();
-        });
-        assert!(matches!(
-            read_response(&mut reader).await,
+            read_response(&mut &[0, 0, 0, 0][..]).await,
             Err(RecordProtocolClientError::InvalidResponse)
         ));
-        write.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn oversized_or_malformed_frames_are_rejected_without_allocating() {
+        // Phase `oversized_request_is_rejected_without_allocating_payload`.
+        {
+            use tokio::io::AsyncWriteExt;
+            let (mut writer, mut reader) = tokio::io::duplex(16);
+            let write = tokio::spawn(async move {
+                writer
+                    .write_all(
+                        &u32::try_from(MAX_RECORD_PROTOCOL_FRAME_BYTES + 1)
+                            .unwrap()
+                            .to_be_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            });
+            assert!(matches!(
+                read_request(&mut reader).await,
+                Err(CanonicalFrameError::TooLarge(_))
+            ));
+            write.await.unwrap();
+        }
+        // Phase `client_rejects_oversized_response_without_allocating_payload`.
+        {
+            use tokio::io::AsyncWriteExt;
+            let (mut writer, mut reader) = tokio::io::duplex(16);
+            let write = tokio::spawn(async move {
+                writer
+                    .write_all(
+                        &u32::try_from(MAX_RECORD_PROTOCOL_FRAME_BYTES + 1)
+                            .unwrap()
+                            .to_be_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            });
+            assert!(matches!(
+                read_response(&mut reader).await,
+                Err(RecordProtocolClientError::ResponseTooLarge)
+            ));
+            write.await.unwrap();
+        }
+        // Phase `client_rejects_malformed_response`.
+        {
+            use tokio::io::AsyncWriteExt;
+            let (mut writer, mut reader) = tokio::io::duplex(16);
+            let write = tokio::spawn(async move {
+                let malformed = [0xff, 0xff];
+                writer
+                    .write_all(&u32::try_from(malformed.len()).unwrap().to_be_bytes())
+                    .await
+                    .unwrap();
+                writer.write_all(&malformed).await.unwrap();
+            });
+            assert!(matches!(
+                read_response(&mut reader).await,
+                Err(RecordProtocolClientError::InvalidResponse)
+            ));
+            write.await.unwrap();
+        }
     }
 }

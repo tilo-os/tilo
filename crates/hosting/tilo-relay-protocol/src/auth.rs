@@ -1,7 +1,6 @@
 //! Authenticated handshake between a relay and a peer.
 //!
-//! The relay accepts on the `tilo-relay/1` ALPN. As soon as a
-//! connection opens, both sides perform this challenge/response:
+//! As soon as a connection opens, both sides perform this challenge/response:
 //!
 //! ```text
 //! client → server:   Hello { cert: DeviceCert, nonce: [u8;32] }
@@ -20,7 +19,7 @@
 //! The signatures cover a BLAKE3 digest of a fixed domain tag
 //! concatenated with the challenge nonce, so a signature under one
 //! nonce cannot be replayed as a signature under any other nonce or
-//! any other domain.
+//! protocol.
 //!
 //! **Why nonces both ways.** A pure "prove you hold the private key"
 //! flow only needs one nonce. We do two so the client also
@@ -35,10 +34,8 @@ use tilo_user_identity::{DeviceCert, DeviceCertError, RevocationList, verify_dev
 
 use crate::policy::TrustPolicy;
 
-/// Domain-separation tag for the auth-nonce signature. Frozen wire
-/// ABI: `tilo-relay-auth-v1` + NUL. Any change breaks connections
-/// against previously-deployed relays.
-pub const AUTH_NONCE_TAG: &[u8] = b"tilo-relay-auth-v1\0";
+/// Domain tag bound into every mutual-authentication challenge signature.
+const TILO_AUTH_NONCE_TAG: &[u8] = b"tilo-relay-auth-v1\0";
 
 /// First message: client → server.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -142,11 +139,10 @@ pub enum AuthError {
     BadChallengeSig,
 }
 
-/// Compute `blake3(AUTH_NONCE_TAG || nonce)` — the 32 bytes both
-/// sides sign.
+/// Compute the domain-bound challenge digest both sides sign.
 pub fn challenge_digest(nonce: &[u8; 32]) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(AUTH_NONCE_TAG);
+    hasher.update(TILO_AUTH_NONCE_TAG);
     hasher.update(nonce);
     *hasher.finalize().as_bytes()
 }
@@ -255,12 +251,9 @@ fn verify_hello_ack_inner(
     now_ns: u64,
     challenge_client_nonce: &[u8; 32],
 ) -> Result<AuthenticatedPeer, AuthError> {
-    verify_device_cert_at(&ack.cert, now_ns)?;
+    verify_hello_ack_cryptographic(ack, revocations, now_ns, challenge_client_nonce)?;
     if !ack.cert.capabilities.can_act_as_host {
         return Err(AuthError::PolicyReject);
-    }
-    if revocations.is_revoked_at(&ack.cert.device_public_key, now_ns) {
-        return Err(AuthError::Revoked);
     }
     // A same-owner client pins the expected user root. A hosted-service
     // client instead pins the Iroh EndpointAddr and accepts any valid server
@@ -270,18 +263,58 @@ fn verify_hello_ack_inner(
     {
         return Err(AuthError::PolicyReject);
     }
-    let vk = ed25519_dalek::VerifyingKey::from_bytes(&ack.cert.device_public_key)
-        .map_err(|_| AuthError::BadChallengeSig)?;
-    let digest = challenge_digest(challenge_client_nonce);
-    let sig = ed25519_dalek::Signature::from_bytes(&ack.sig_over_client_nonce);
-    vk.verify(&digest, &sig)
-        .map_err(|_| AuthError::BadChallengeSig)?;
     Ok(AuthenticatedPeer {
         role: PeerRole::from_cert(&ack.cert),
         cert: ack.cert.clone(),
         user_public_key: ack.cert.user_public_key,
         device_public_key: ack.cert.device_public_key,
     })
+}
+
+/// Verify the exact primary device authorized by a signed, room-scoped
+/// interactive-owner hint. This exception does not grant host capability and
+/// cannot be reached from the generic pinned-host API.
+///
+/// # Errors
+///
+/// Returns [`AuthError`] unless the ACK certificate is the exact expected
+/// governor, is current and non-revoked, can govern workspaces, and proves the
+/// challenge with its certified device key.
+pub fn verify_interactive_owner_ack(
+    ack: &HelloAck,
+    expected_governor: &DeviceCert,
+    revocations: &RevocationList,
+    now_ns: u64,
+    challenge_client_nonce: &[u8; 32],
+) -> Result<AuthenticatedPeer, AuthError> {
+    verify_hello_ack_cryptographic(ack, revocations, now_ns, challenge_client_nonce)?;
+    if &ack.cert != expected_governor || !ack.cert.capabilities.can_own_workspaces {
+        return Err(AuthError::PolicyReject);
+    }
+    Ok(AuthenticatedPeer {
+        role: PeerRole::from_cert(&ack.cert),
+        cert: ack.cert.clone(),
+        user_public_key: ack.cert.user_public_key,
+        device_public_key: ack.cert.device_public_key,
+    })
+}
+
+fn verify_hello_ack_cryptographic(
+    ack: &HelloAck,
+    revocations: &RevocationList,
+    now_ns: u64,
+    challenge_client_nonce: &[u8; 32],
+) -> Result<(), AuthError> {
+    verify_device_cert_at(&ack.cert, now_ns)?;
+    if revocations.is_revoked_at(&ack.cert.device_public_key, now_ns) {
+        return Err(AuthError::Revoked);
+    }
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(&ack.cert.device_public_key)
+        .map_err(|_| AuthError::BadChallengeSig)?;
+    let digest = challenge_digest(challenge_client_nonce);
+    let sig = ed25519_dalek::Signature::from_bytes(&ack.sig_over_client_nonce);
+    vk.verify(&digest, &sig)
+        .map_err(|_| AuthError::BadChallengeSig)
 }
 
 /// Server-side: verify the client's `HelloAck2` — its signature
@@ -354,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn happy_path_mutual_auth() {
+    fn server_accepts_only_trusted_unrevoked_devices_and_completes_mutual_auth() {
         let (root_sk, user) = UserIdentity::generate("Alice", 1);
         let relay = enrol(
             &root_sk,
@@ -368,11 +401,11 @@ mod tests {
             "laptop",
             DeviceCapabilities::primary(),
         );
-        let revs = RevocationList::new();
 
+        // Happy path: both directions verify.
+        let revs = RevocationList::new();
         let client_nonce = [1u8; 32];
         let server_nonce = [2u8; 32];
-
         let hello = Hello {
             cert: client.cert.clone(),
             client_nonce,
@@ -386,72 +419,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(server_peer.device_public_key, client.cert.device_public_key);
-
         let ack = build_hello_ack(relay.cert.clone(), &relay.sk, server_nonce, &client_nonce);
         let client_peer =
             verify_hello_ack(&ack, &user.public_key, &revs, 1000, &client_nonce).unwrap();
         assert_eq!(client_peer.device_public_key, relay.cert.device_public_key);
-
         let ack2 = build_hello_ack2(&client.sk, &server_nonce);
         verify_hello_ack2(&ack2, &client.cert.device_public_key, &server_nonce).unwrap();
-    }
 
-    #[test]
-    fn wrong_user_rejected_by_default_policy() {
-        let (alice_root, alice) = UserIdentity::generate("Alice", 1);
+        // Wrong user: the relay is Alice's; the client presents Bob's cert.
         let (bob_root, bob) = UserIdentity::generate("Bob", 1);
-        // Relay is Alice's; client presents Bob's cert.
-        let _relay = enrol(
-            &alice_root,
-            alice.public_key,
-            "server",
-            DeviceCapabilities::host(),
-        );
-        let client = enrol(
+        let bob_client = enrol(
             &bob_root,
             bob.public_key,
             "laptop",
             DeviceCapabilities::primary(),
         );
         let hello = Hello {
-            cert: client.cert,
-            client_nonce: [0u8; 32],
-        };
-        assert!(matches!(
-            accept_hello(
-                &hello,
-                &alice.public_key,
-                &TrustPolicy::default(),
-                &RevocationList::new(),
-                1000,
-            )
-            .unwrap_err(),
-            AuthError::PolicyReject
-        ));
-    }
-
-    #[test]
-    fn revoked_device_rejected() {
-        let (root_sk, user) = UserIdentity::generate("Alice", 1);
-        let client = enrol(
-            &root_sk,
-            user.public_key,
-            "laptop",
-            DeviceCapabilities::primary(),
-        );
-        let mut rev = RevocationEntry {
-            user_public_key: user.public_key,
-            revoked_device_public_key: client.cert.device_public_key,
-            revoked_at_ns: 500,
-            reason: RevocationReason::Compromised,
-            signature: [0u8; 64],
-        };
-        sign_revocation_entry(&mut rev, &root_sk).unwrap();
-        let mut revs = RevocationList::new();
-        revs.insert(rev).unwrap();
-
-        let hello = Hello {
-            cert: client.cert,
+            cert: bob_client.cert,
             client_nonce: [0u8; 32],
         };
         assert!(matches!(
@@ -463,13 +447,158 @@ mod tests {
                 1000
             )
             .unwrap_err(),
+            AuthError::PolicyReject
+        ));
+
+        // Revoked: Alice's own laptop, revoked at 500, connecting at 1000.
+        let mut rev = RevocationEntry {
+            user_public_key: user.public_key,
+            revoked_device_public_key: client.cert.device_public_key,
+            revoked_at_ns: 500,
+            reason: RevocationReason::Compromised,
+            signature: [0u8; 64],
+        };
+        sign_revocation_entry(&mut rev, &root_sk).unwrap();
+        let mut revoked = RevocationList::new();
+        revoked.insert(rev).unwrap();
+        let hello = Hello {
+            cert: client.cert,
+            client_nonce: [0u8; 32],
+        };
+        assert!(matches!(
+            accept_hello(
+                &hello,
+                &user.public_key,
+                &TrustPolicy::default(),
+                &revoked,
+                1000
+            )
+            .unwrap_err(),
             AuthError::Revoked
         ));
     }
 
+    /// `Hello` as a build from before the foreign-device marker encodes it.
+    mod v1 {
+        #[allow(
+            clippy::struct_excessive_bools,
+            reason = "a frozen copy of the v1 wire type"
+        )]
+        #[derive(serde::Serialize, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct DeviceCapabilities {
+            pub can_own_workspaces: bool,
+            pub can_admit_devices: bool,
+            pub can_act_as_host: bool,
+            pub can_read_all_workspaces: bool,
+        }
+
+        #[derive(serde::Serialize, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct DeviceCert {
+            pub user_public_key: [u8; 32],
+            pub device_public_key: [u8; 32],
+            pub device_label: String,
+            pub capabilities: DeviceCapabilities,
+            pub issued_at_ns: u64,
+            pub expires_at_ns: Option<u64>,
+            #[serde(with = "crate::sig64")]
+            pub signature: [u8; 64],
+        }
+
+        #[derive(serde::Serialize, serde::Deserialize)]
+        pub struct Hello {
+            pub cert: DeviceCert,
+            pub client_nonce: [u8; 32],
+        }
+    }
+
+    /// An old relay decodes the frame with its own types; for what it can
+    /// decode, verification is the unchanged v1 path.
+    fn old_relay_accepts(frame: &[u8], user: &[u8; 32]) -> bool {
+        postcard::from_bytes::<v1::Hello>(frame).is_ok() && new_relay_accepts(frame, user).is_some()
+    }
+
+    fn new_relay_accepts(frame: &[u8], user: &[u8; 32]) -> Option<AuthenticatedPeer> {
+        let hello: Hello = postcard::from_bytes(frame).ok()?;
+        let policy = TrustPolicy::default();
+        accept_hello(&hello, user, &policy, &RevocationList::new(), 1000).ok()
+    }
+
     #[test]
-    fn client_rejects_ack_from_stranger_cert() {
-        let (alice_root, alice) = UserIdentity::generate("Alice", 1);
+    fn relay_handshakes_across_certificate_versions() {
+        let (root_sk, user) = UserIdentity::generate("Alice", 1);
+        let native = enrol(
+            &root_sk,
+            user.public_key,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
+        let foreign = enrol(
+            &root_sk,
+            user.public_key,
+            "mac",
+            DeviceCapabilities {
+                foreign: true,
+                ..DeviceCapabilities::primary()
+            },
+        );
+        let hello = |cert: &DeviceCert| {
+            postcard::to_stdvec(&Hello {
+                cert: cert.clone(),
+                client_nonce: [1; 32],
+            })
+            .unwrap()
+        };
+
+        // Old client, new relay: the old client's frame is the native frame.
+        let caps = &native.cert.capabilities;
+        let old_frame = postcard::to_stdvec(&v1::Hello {
+            cert: v1::DeviceCert {
+                user_public_key: native.cert.user_public_key,
+                device_public_key: native.cert.device_public_key,
+                device_label: native.cert.device_label.clone(),
+                capabilities: v1::DeviceCapabilities {
+                    can_own_workspaces: caps.can_own_workspaces,
+                    can_admit_devices: caps.can_admit_devices,
+                    can_act_as_host: caps.can_act_as_host,
+                    can_read_all_workspaces: caps.can_read_all_workspaces,
+                },
+                issued_at_ns: native.cert.issued_at_ns,
+                expires_at_ns: native.cert.expires_at_ns,
+                signature: native.cert.signature,
+            },
+            client_nonce: [1; 32],
+        })
+        .unwrap();
+        assert_eq!(hello(&native.cert), old_frame);
+        assert!(new_relay_accepts(&old_frame, &user.public_key).is_some());
+
+        // New native client, old relay.
+        assert!(old_relay_accepts(&hello(&native.cert), &user.public_key));
+
+        // New foreign client: an old relay cannot decode it; a new relay
+        // admits it with the marker the room's role cap reads.
+        let foreign_frame = hello(&foreign.cert);
+        assert!(!old_relay_accepts(&foreign_frame, &user.public_key));
+        let peer = new_relay_accepts(&foreign_frame, &user.public_key).unwrap();
+        assert!(peer.cert.capabilities.foreign);
+        assert_eq!(peer.role, PeerRole::Device);
+    }
+
+    #[test]
+    fn client_rejects_acks_from_strangers_non_hosts_and_bad_signatures() {
+        let (root_sk, alice) = UserIdentity::generate("Alice", 1);
+        let relay = enrol(
+            &root_sk,
+            alice.public_key,
+            "server",
+            DeviceCapabilities::host(),
+        );
+        let revs = RevocationList::new();
+
+        // Bob's device answers Alice's client: the signature is valid but the
+        // wrong-user policy rejects it.
         let (bob_root, bob) = UserIdentity::generate("Bob", 1);
         let bob_dev = enrol(
             &bob_root,
@@ -478,29 +607,17 @@ mod tests {
             DeviceCapabilities::host(),
         );
         let client_nonce = [7u8; 32];
-        // Bob's device tries to answer Alice's client — signature
-        // is valid but wrong-user policy rejects.
         let ack = build_hello_ack(bob_dev.cert.clone(), &bob_dev.sk, [0u8; 32], &client_nonce);
         assert!(matches!(
-            verify_hello_ack(
-                &ack,
-                &alice.public_key,
-                &RevocationList::new(),
-                1000,
-                &client_nonce,
-            )
-            .unwrap_err(),
+            verify_hello_ack(&ack, &alice.public_key, &revs, 1000, &client_nonce).unwrap_err(),
             AuthError::PolicyReject
         ));
-        let _ = alice_root;
-    }
 
-    #[test]
-    fn client_rejects_pinned_server_without_host_capability() {
-        let (root, user) = UserIdentity::generate("Provider", 1);
+        // A pinned host must hold the host capability.
+        let (provider_root, provider) = UserIdentity::generate("Provider", 1);
         let ordinary_device = enrol(
-            &root,
-            user.public_key,
+            &provider_root,
+            provider.public_key,
             "ordinary device",
             DeviceCapabilities::member(),
         );
@@ -511,58 +628,24 @@ mod tests {
             [9u8; 32],
             &client_nonce,
         );
-
         assert!(matches!(
-            verify_pinned_host_ack(&ack, &RevocationList::new(), 1000, &client_nonce,).unwrap_err(),
+            verify_pinned_host_ack(&ack, &revs, 1000, &client_nonce).unwrap_err(),
             AuthError::PolicyReject
         ));
-    }
 
-    #[test]
-    fn tampered_challenge_signature_rejected() {
-        let (root_sk, user) = UserIdentity::generate("Alice", 1);
-        let relay = enrol(
-            &root_sk,
-            user.public_key,
-            "server",
-            DeviceCapabilities::host(),
-        );
+        // A tampered challenge signature.
         let client_nonce = [4u8; 32];
         let mut ack = build_hello_ack(relay.cert.clone(), &relay.sk, [0u8; 32], &client_nonce);
         ack.sig_over_client_nonce[0] ^= 0x01;
         assert!(matches!(
-            verify_hello_ack(
-                &ack,
-                &user.public_key,
-                &RevocationList::new(),
-                1000,
-                &client_nonce,
-            )
-            .unwrap_err(),
+            verify_hello_ack(&ack, &alice.public_key, &revs, 1000, &client_nonce).unwrap_err(),
             AuthError::BadChallengeSig
         ));
-    }
 
-    #[test]
-    fn replay_of_signature_under_different_nonce_rejected() {
-        let (root_sk, user) = UserIdentity::generate("Alice", 1);
-        let relay = enrol(
-            &root_sk,
-            user.public_key,
-            "server",
-            DeviceCapabilities::host(),
-        );
+        // A signature replayed under a different client nonce.
         let ack = build_hello_ack(relay.cert.clone(), &relay.sk, [0u8; 32], &[9u8; 32]);
-        // Verify with a *different* client nonce.
         assert!(matches!(
-            verify_hello_ack(
-                &ack,
-                &user.public_key,
-                &RevocationList::new(),
-                1000,
-                &[8u8; 32],
-            )
-            .unwrap_err(),
+            verify_hello_ack(&ack, &alice.public_key, &revs, 1000, &[8u8; 32]).unwrap_err(),
             AuthError::BadChallengeSig
         ));
     }

@@ -5,19 +5,17 @@ fn in_note_find_and_handle_menu_captures_use_real_input() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/notes-review/find");
     std::fs::create_dir_all(&directory).unwrap();
-    for (scenario, name) in [
+    let captures = [
         ("find", "in-note-find.png"),
         ("block_type_menu", "block-type-menu.png"),
-    ] {
-        let path = directory.join(name);
-        notes::shots::render_to_path((1000, 700), &path, Some(scenario), None)
-            .unwrap_or_else(|error| panic!("{scenario}: {error:?}"));
-        assert!(
-            std::fs::read(path)
-                .unwrap()
-                .starts_with(b"\x89PNG\r\n\x1a\n")
-        );
-    }
+    ]
+    .map(|(scenario, name)| crate::captures::Capture {
+        label: scenario.to_owned(),
+        scenario: Some(scenario),
+        viewport: (1000, 700),
+        path: directory.join(name),
+    });
+    crate::captures::render_all(&captures);
 }
 
 #[test]
@@ -25,22 +23,20 @@ fn canonical_markdown_and_title_affordance_captures_reach_real_mounted_states() 
     let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/notes-review/canonical-affordances");
     std::fs::create_dir_all(&directory).unwrap();
-    for (scenario, viewport) in [
+    let captures = [
         ("slash", (1000, 700)),
         ("slash_applied", (390, 844)),
         ("heading", (390, 844)),
         ("quote", (1000, 700)),
         ("title_edit", (1000, 700)),
-    ] {
-        let path = directory.join(format!("{scenario}.png"));
-        notes::shots::render_to_path(viewport, &path, Some(scenario), None)
-            .unwrap_or_else(|error| panic!("{scenario}: {error:?}"));
-        assert!(
-            std::fs::read(&path)
-                .unwrap()
-                .starts_with(b"\x89PNG\r\n\x1a\n")
-        );
-    }
+    ]
+    .map(|(scenario, viewport)| crate::captures::Capture {
+        label: scenario.to_owned(),
+        scenario: Some(scenario),
+        viewport,
+        path: directory.join(format!("{scenario}.png")),
+    });
+    crate::captures::render_all(&captures);
 }
 
 fn render_canonical_document_feature(scenario: &str, viewport: (u32, u32)) {
@@ -144,7 +140,7 @@ fn canonical_navigation_and_overlay_captures_use_real_input_paths() {
     let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/notes-review/canonical-navigation-overlays");
     std::fs::create_dir_all(&directory).unwrap();
-    for (scenario, viewport) in [
+    let captures = [
         ("drawer", (390, 844)),
         ("drag", (1000, 700)),
         ("block_drag", (1000, 700)),
@@ -163,16 +159,14 @@ fn canonical_navigation_and_overlay_captures_use_real_input_paths() {
         ("saving", (1000, 700)),
         ("save_error", (1000, 700)),
         ("import_success", (1000, 700)),
-    ] {
-        let path = directory.join(format!("{scenario}.png"));
-        notes::shots::render_to_path(viewport, &path, Some(scenario), None)
-            .unwrap_or_else(|error| panic!("{scenario}: {error:?}"));
-        assert!(
-            std::fs::read(&path)
-                .unwrap()
-                .starts_with(b"\x89PNG\r\n\x1a\n")
-        );
-    }
+    ]
+    .map(|(scenario, viewport)| crate::captures::Capture {
+        label: scenario.to_owned(),
+        scenario: Some(scenario),
+        viewport,
+        path: directory.join(format!("{scenario}.png")),
+    });
+    crate::captures::render_all(&captures);
 }
 
 #[test]
@@ -424,7 +418,7 @@ fn canonical_typing_records_real_frame_cost_and_visible_content() {
     notes::capture::drive_fixture(&mut driver, Some("fenced_code_opening")).unwrap();
     driver.key("Enter");
     driver.begin_profiling();
-    let started = std::time::Instant::now();
+    let started = ui::time::now();
     driver.type_text("print(1)");
     let typing_us = started.elapsed().as_micros();
     let samples = driver.take_profile_samples();

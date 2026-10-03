@@ -43,6 +43,11 @@
 #   CHANNEL            true advances tilo-vm:latest, only forward (default false)
 #   TILO_PACKAGE_TOKEN, TILO_PACKAGE_PUBLIC_BASE_URL   generic package access
 #   TILO_VM_PUBLISH_DIR  scratch for converted disks (default /var/tmp/tilo-vm-publish)
+#   PUSHED_DIGEST      the child is already pushed as <tag>-<arch> with this
+#                      digest (a BuildKit push); DEV_IMAGE is then unused
+#   IMAGE_ONLY         1 publishes the child and index only: no disk, no disk
+#                      manifest, no latest (Build / OS dev; SOURCE_DISK and the
+#                      package settings are then ignored)
 # Registry credentials for registry.tilo.so come from the job's login.
 set -euo pipefail
 
@@ -52,8 +57,13 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 die() { printf '::error::%s\n' "$*" >&2; exit 1; }
 note() { printf '::notice::%s\n' "$*"; }
 
-for name in DEV_IMAGE DEV_TAG ARCH SOURCE_REVISION DISK_TOOLING_REVISION SOURCE_DISK BASE_REPOSITORY BASE_TRUST \
-            BASE_INDEX_DIGEST BASE_CHILD_DIGEST TILO_PACKAGE_TOKEN TILO_PACKAGE_PUBLIC_BASE_URL; do
+IMAGE_ONLY=${IMAGE_ONLY:-0}
+[[ $IMAGE_ONLY == 0 || $IMAGE_ONLY == 1 ]] || die "IMAGE_ONLY must be 0 or 1"
+required=(DEV_TAG ARCH SOURCE_REVISION DISK_TOOLING_REVISION BASE_REPOSITORY BASE_TRUST
+          BASE_INDEX_DIGEST BASE_CHILD_DIGEST)
+[[ $IMAGE_ONLY == 1 ]] || required+=(SOURCE_DISK TILO_PACKAGE_TOKEN TILO_PACKAGE_PUBLIC_BASE_URL)
+[[ -n ${PUSHED_DIGEST:-} ]] || required+=(DEV_IMAGE)
+for name in "${required[@]}"; do
   [[ -n ${!name:-} ]] || die "$name is required"
 done
 DISK_FORMATS=${DISK_FORMATS:-qcow2}
@@ -79,9 +89,15 @@ for digest in "$BASE_INDEX_DIGEST" "$BASE_CHILD_DIGEST"; do
   [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || die "base digest $digest is not sha256:<64 hex>"
 done
 [[ $CHANNEL == true || $CHANNEL == false ]] || die "CHANNEL must be true or false"
-test -s "$SOURCE_DISK" || die "no installed disk at $SOURCE_DISK"
-podman image exists "$DEV_IMAGE" || die "$DEV_IMAGE is not in local storage"
+[[ $IMAGE_ONLY == 1 ]] || test -s "$SOURCE_DISK" || die "no installed disk at $SOURCE_DISK"
+if [[ -n ${PUSHED_DIGEST:-} ]]; then
+  [[ $PUSHED_DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] || die "PUSHED_DIGEST is not sha256:<64 hex>"
+else
+  podman image exists "$DEV_IMAGE" || die "$DEV_IMAGE is not in local storage"
+fi
 
+manifest_digest() { skopeo inspect --raw "docker://$1" | sha256sum | awk '{print "sha256:" $1}'; }
+if [[ $IMAGE_ONLY == 0 ]]; then
 # Large-disk runners do not resolve the in-cluster Forgejo service, so uploads
 # cross the public TLS edge.
 package_api=${TILO_PACKAGE_PUBLIC_BASE_URL%/}
@@ -100,16 +116,20 @@ case "$status" in
   3??) die "reading $package/$manifest_file was redirected (HTTP $status): the package base moved; update TILO_PACKAGE_PUBLIC_BASE_URL" ;;
   *) die "reading $package/$manifest_file answered HTTP $status" ;;
 esac
-
-manifest_digest() { skopeo inspect --raw "docker://$1" | sha256sum | awk '{print "sha256:" $1}'; }
+fi
 
 # ---- 1. the child ------------------------------------------------------------
 # Not committed until the manifest below exists, so a rerun may replace it.
 child_tag="$REPOSITORY:$DEV_TAG-$ARCH"
-digest_file=$(mktemp /var/tmp/tilo-vm-digest.XXXXXX)
-podman push --digestfile "$digest_file" "$DEV_IMAGE" "docker://$child_tag"
-image_digest=$(tr -d '[:space:]' < "$digest_file")
-rm -f "$digest_file"
+if [[ -n ${PUSHED_DIGEST:-} ]]; then
+  image_digest=$PUSHED_DIGEST
+  [[ $(manifest_digest "$child_tag") == "$image_digest" ]] || die "$child_tag does not name $image_digest"
+else
+  digest_file=$(mktemp /var/tmp/tilo-vm-digest.XXXXXX)
+  podman push --digestfile "$digest_file" "$DEV_IMAGE" "docker://$child_tag"
+  image_digest=$(tr -d '[:space:]' < "$digest_file")
+  rm -f "$digest_file"
+fi
 [[ $image_digest =~ ^sha256:[0-9a-f]{64}$ ]] || die "podman push reported no digest for $child_tag"
 config=$(skopeo inspect "docker://$REPOSITORY@$image_digest")
 [[ $(jq -r .Architecture <<< "$config") == "$platform" ]] || die "$child_tag is not linux/$platform"
@@ -159,14 +179,21 @@ for attempt in 1 2 3 4 5 6; do
     converged=true
     break
   fi
-  list="tilo-vm-index-$DEV_TAG-$ARCH-$$"
-  podman manifest rm "$list" >/dev/null 2>&1 || true
-  podman manifest create "$list" >/dev/null
-  for digest in $(jq -r '.[].digest' <<< "$wanted"); do
-    podman manifest add "$list" "docker://$REPOSITORY@$digest" >/dev/null
-  done
-  podman manifest push --all "$list" "docker://$index_tag"
-  podman manifest rm "$list" >/dev/null
+  # buildx writes the index straight to the registry; podman needs a local
+  # store, which a lane that merely has podman installed cannot always set up.
+  if docker buildx version >/dev/null 2>&1; then
+    mapfile -t sources < <(jq -r --arg repo "$REPOSITORY" '.[] | "\($repo)@\(.digest)"' <<< "$wanted")
+    docker buildx imagetools create --tag "$index_tag" "${sources[@]}"
+  else
+    list="tilo-vm-index-$DEV_TAG-$ARCH-$$"
+    podman manifest rm "$list" >/dev/null 2>&1 || true
+    podman manifest create "$list" >/dev/null
+    for digest in $(jq -r '.[].digest' <<< "$wanted"); do
+      podman manifest add "$list" "docker://$REPOSITORY@$digest" >/dev/null
+    done
+    podman manifest push --all "$list" "docker://$index_tag"
+    podman manifest rm "$list" >/dev/null
+  fi
   # A concurrent lane may have written between our read and write; let its
   # write land before reading back.
   sleep $(( attempt * 5 ))
@@ -174,10 +201,14 @@ done
 [[ $converged == true ]] || die "$index_tag did not converge on the published children"
 index_digest=$(manifest_digest "$index_tag")
 # The index is rebuilt whenever another architecture lands; keep each one
-# reachable by its digest, as for the child above.
-skopeo copy --all --preserve-digests "docker://$REPOSITORY@$index_digest" \
+# reachable by its digest, as for the child above. Only the index is copied:
+# its children are already in the repository, and copying them again with
+# --all refuses an index whose children mix gzip and zstd layers under
+# --preserve-digests.
+skopeo copy --multi-arch index-only --preserve-digests "docker://$REPOSITORY@$index_digest" \
   "docker://$REPOSITORY:$DEV_TAG-${index_digest:7:16}" >/dev/null
 note "$index_tag ($index_digest) holds $(jq -r '[.[].architecture] | join(", ")' <<< "$wanted")"
+[[ $IMAGE_ONLY == 0 ]] || exit 0
 
 # ---- 3. the disks --------------------------------------------------------------
 rm -rf -- "$out"
@@ -189,7 +220,14 @@ for format in $DISK_FORMATS; do
   case "$format" in
     # Compressed clusters are read transparently by QEMU (UTM, libvirt), so
     # the download is small and needs no unpacking.
-    qcow2) qemu-img convert -p -f qcow2 -O qcow2 -c -o compression_type=zstd "$SOURCE_DISK" "$out/$file" ;;
+    qcow2)
+      if qemu-img info --output=json "$SOURCE_DISK" | jq -e '."format-specific".data."compression-type" == "zstd"' >/dev/null; then
+        # The CI dev-disk lane already wrote zstd qcow2 clusters. A hard link
+        # gives the package its versioned name without allocating another disk.
+        ln -- "$SOURCE_DISK" "$out/$file"
+      else
+        qemu-img convert -p -f qcow2 -O qcow2 -c -o compression_type=zstd "$SOURCE_DISK" "$out/$file"
+      fi ;;
     vhdx) qemu-img convert -p -f qcow2 -O vhdx -o subformat=dynamic "$SOURCE_DISK" "$out/$file" ;;
     *) die "unsupported disk format: $format" ;;
   esac
@@ -304,7 +342,10 @@ for attempt in 1 2 3 4 5 6; do
     note "tilo-vm:latest names $current, which is not an ancestor of $SOURCE_REVISION; leaving it"
     exit 0
   fi
-  skopeo copy --all "docker://$REPOSITORY@$target" "docker://$latest"
+  # Byte-for-byte, as for the digest tag above: a re-encoded index has
+  # another digest and never matches $target.
+  skopeo copy --multi-arch index-only --preserve-digests \
+    "docker://$REPOSITORY@$target" "docker://$latest"
   sleep $(( attempt * 5 ))
 done
 die "tilo-vm:latest did not converge on $index_tag"

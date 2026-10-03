@@ -123,20 +123,22 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn explicit_bundle_loads_and_deduplicates() {
-        let directory = tempfile::tempdir().unwrap();
-        let bundle = directory.path().join("roots.pem");
-        let certificate = "-----BEGIN CERTIFICATE-----\nAQID\n-----END CERTIFICATE-----\n";
-        fs::write(&bundle, format!("{certificate}{certificate}")).unwrap();
-        let result = load_certs_from_paths(Some(&bundle), None);
-        assert!(result.errors.is_empty());
-        assert_eq!(result.certs.len(), 1);
-    }
-
-    #[test]
-    fn certificate_directories_are_rejected() {
-        let directory = tempfile::tempdir().unwrap();
-        let result = load_certs_from_paths(None, Some(directory.path()));
-        assert_eq!(result.errors.len(), 1);
+    fn explicit_bundles_load_deduplicated_and_directories_are_rejected() {
+        // Phase `explicit_bundle_loads_and_deduplicates`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let bundle = directory.path().join("roots.pem");
+            let certificate = "-----BEGIN CERTIFICATE-----\nAQID\n-----END CERTIFICATE-----\n";
+            fs::write(&bundle, format!("{certificate}{certificate}")).unwrap();
+            let result = load_certs_from_paths(Some(&bundle), None);
+            assert!(result.errors.is_empty());
+            assert_eq!(result.certs.len(), 1);
+        }
+        // Phase `certificate_directories_are_rejected`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let result = load_certs_from_paths(None, Some(directory.path()));
+            assert_eq!(result.errors.len(), 1);
+        }
     }
 }

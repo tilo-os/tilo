@@ -126,6 +126,10 @@ pub mod offscreen {
     ///
     /// Returns an error if the output directory cannot be created, or if a
     /// scene named in `scenes` fails its own setup.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
+    )]
     pub fn run_scenes(
         scenes: &[String],
         dir: &Path,
@@ -279,7 +283,11 @@ pub mod recording {
         for action in &scenario.actions {
             scenario_apply_then_capture(driver, action, &mut sink)?;
         }
-        let first_unit = sink.first_unit.take();
+        let mut first_unit = sink.first_unit.take();
+        let tail = encoder
+            .finish()
+            .map_err(|e| format!("finish encoding in recording mode: {e}"))?;
+        write_units(&mut file, &mut first_unit, tail)?;
         file.finish()?;
         Ok(RecordingSummary { codec, first_unit })
     }
@@ -305,19 +313,28 @@ pub mod recording {
             let scene = driver.paint();
             let rgba = self.renderer.render_rgba_resilient(&scene);
             for _ in 0..self.frames_per_step {
-                let unit = self
+                let units = self
                     .encoder
                     .encode(&rgba)
                     .map_err(|e| format!("encode in recording mode: {e}"))?;
-                if !unit.is_empty() {
-                    self.file.write_access_unit(&unit)?;
-                    if self.first_unit.is_none() {
-                        self.first_unit = Some(unit);
-                    }
-                }
+                write_units(self.file, &mut self.first_unit, units)?;
             }
             Ok(())
         }
+    }
+
+    fn write_units(
+        file: &mut Mp4Recording,
+        first_unit: &mut Option<Vec<u8>>,
+        units: Vec<media::EncodedUnit>,
+    ) -> Result<(), String> {
+        for unit in units.into_iter().filter(|unit| !unit.data.is_empty()) {
+            file.write_access_unit(&unit.data)?;
+            if first_unit.is_none() {
+                *first_unit = Some(unit.data);
+            }
+        }
+        Ok(())
     }
 
     impl SnapshotSink for RecordingSink<'_> {
@@ -391,6 +408,10 @@ pub mod window {
     /// `OpenPalette` will not be visible on the live binary's first
     /// frame; a pre-rolled `SwitchWorkspace(1)` will. Useful for
     /// scripted "open the live binary on workspace 2 with these tabs".
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
+    )]
     pub fn run(pre_roll: Option<&Scenario>) {
         if let Some(scenario) = pre_roll {
             println!("shots: window-mode pre-roll scenario '{}'", scenario.name);
@@ -466,6 +487,7 @@ mod tests {
         let mut driver = ShellDriver::new((128, 96));
         let summary =
             recording::run_scenario(&mut driver, &scenario, &tmp, 30, 1.0).expect("run_scenario");
+        drop(driver);
 
         let bytes = fs::read(&tmp).expect("read recorded file");
         assert!(bytes.len() > 8, "recording mode produced an empty file");
@@ -494,5 +516,42 @@ mod tests {
              output isn't reaching the encoder"
         );
         let _ = fs::remove_file(&tmp);
+    }
+
+    /// The desktop a scenario boots opens its apps with their documents:
+    /// clicking into Notes and typing lands in that tab's own record,
+    /// instead of every in-process tile painting "Document unavailable".
+    #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the shell fixture owns long-lived permits by design and lives for the whole test"
+    )]
+    fn booted_notes_tab_has_its_document_and_takes_typing() {
+        use shell::shell::notes_app::BODY_KEY;
+        use shell::shell::state::TileContent;
+        use shell::shell::tab_documents::tab_body;
+        use ui::record::RecordId;
+
+        let mut driver = ShellDriver::new((1600, 900));
+        let group = driver.chrome().tree().desktop.workspaces[0].strips[0].window_groups[0].clone();
+        let notes = group.tabs[0].id;
+        let hosted: Vec<u64> = group
+            .tabs
+            .iter()
+            .filter(|tab| matches!(tab.tile, TileContent::AppPlaceholder { .. }))
+            .map(|tab| tab.id)
+            .collect();
+        assert!(hosted.len() >= 2, "the booted group opens Notes and Files");
+        let scenario = lookup("notes_click_and_type").expect("notes_click_and_type in catalogue");
+        scenario::run(&mut driver, &scenario, &mut NullSink);
+
+        let records = driver.chrome().records().clone();
+        for tab in hosted {
+            assert!(
+                records.read(&RecordId::for_tab(tab), |_| ()).is_some(),
+                "booted tab {tab} has no document"
+            );
+        }
+        assert_eq!(tab_body(&records, notes, BODY_KEY).as_deref(), Some("hi"));
     }
 }

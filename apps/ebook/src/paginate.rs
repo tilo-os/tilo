@@ -70,6 +70,10 @@ pub enum LayoutKind {
     Heading,
     Paragraph,
     Quote,
+    /// A stanza: one line per source line, ragged, wrapped lines hanging.
+    Verse {
+        quoted: bool,
+    },
     List,
     Math,
     Separator,
@@ -105,6 +109,9 @@ pub struct LaidBlock {
     pub text: String,
     /// Total chars in [`Self::text`].
     pub char_len: usize,
+    /// Char offsets of the spaces in [`Self::text`] that stand for a hard
+    /// line break (a verse line, a `<br/>`), ascending.
+    pub hard_breaks: Vec<usize>,
 }
 
 /// A fully laid-out chapter plus its page breaks.
@@ -211,6 +218,15 @@ fn style_for(block: &Block, body: f32, text_scale: f32) -> BlockStyle {
             space_before: body * 0.9 * text_scale,
             fixed_height: None,
         },
+        Block::Verse { quoted, .. } => BlockStyle {
+            kind: LayoutKind::Verse { quoted: *quoted },
+            size: body,
+            force_italic: false,
+            force_bold: false,
+            indent: if *quoted { 30.0 * text_scale } else { 0.0 },
+            space_before: body * 0.75 * text_scale,
+            fixed_height: None,
+        },
         Block::ListItem { .. } => BlockStyle {
             kind: LayoutKind::List,
             size: body,
@@ -270,6 +286,9 @@ struct Word {
     shrink_before: f32,
     start_protrusion: f32,
     end_protrusion: f32,
+    /// This word starts a line (the block's first, or one after a hard
+    /// break), indented this many ems.
+    line_start: Option<u8>,
 }
 
 fn weight(bold: bool) -> TextWeight {
@@ -278,6 +297,17 @@ fn weight(bold: bool) -> TextWeight {
     } else {
         TextWeight::Regular
     }
+}
+
+/// Reader font scale from which layout keeps natural glyph metrics inside
+/// the measured page box: no glyph expansion and no hanging punctuation.
+const ACCESSIBLE_FONT_SCALE: f32 = 1.35;
+
+/// Whether punctuation may hang into the margins: book composition at
+/// ordinary sizes. At accessibility sizes a hanging mark is a whole glyph
+/// width outside the measure on a narrow page.
+fn hangs_punctuation(settings: &Settings) -> bool {
+    settings.composition.justified() && settings.font_scale < ACCESSIBLE_FONT_SCALE
 }
 
 fn punctuation_protrusion(character: char) -> f32 {
@@ -357,9 +387,13 @@ fn push_math_word(
     span: &Span,
     text: &mut TextRenderer,
     style: &BlockStyle,
+    line_start: Option<u8>,
 ) {
     let space_before = span.space_before;
     if !built.canonical_text.is_empty() && space_before {
+        if span.line_break {
+            built.hard_breaks.push(built.char_count);
+        }
         built.canonical_text.push(' ');
         built.char_count += 1;
     }
@@ -390,6 +424,7 @@ fn push_math_word(
         shrink_before: 0.0,
         start_protrusion: 0.0,
         end_protrusion: 0.0,
+        line_start,
     });
 }
 
@@ -404,16 +439,48 @@ struct WordBreaks {
     opening_fraction: f32,
 }
 
-fn word_break_boundaries(w: &str, settings: &Settings, language: &str) -> WordBreaks {
-    let hyphen = if settings.composition.justified() {
+fn is_em_dash(character: char) -> bool {
+    matches!(character, '—' | '―' | '⸺' | '⸻')
+}
+
+/// Byte offsets just after an em dash and any word joiners (U+2060) or
+/// zero-width no-break spaces (U+FEFF) that follow it. Producers such as
+/// Standard Ebooks glue every em dash to its neighbours so it never begins a
+/// line; UAX #14 then forbids any break in `gods⁠—⁠Deliberations`, but a
+/// line may still end after the dash, as in print.
+fn em_dash_breaks(w: &str) -> Vec<usize> {
+    let mut breaks = Vec::new();
+    let mut chars = w.char_indices().peekable();
+    while let Some((_, character)) = chars.next() {
+        if !is_em_dash(character) {
+            continue;
+        }
+        while chars
+            .next_if(|&(_, next)| matches!(next, '\u{2060}' | '\u{feff}'))
+            .is_some()
+        {}
+        if let Some(&(byte, next)) = chars.peek()
+            && !is_em_dash(next)
+        {
+            breaks.push(byte);
+        }
+    }
+    breaks
+}
+
+fn word_break_boundaries(w: &str, hyphenate: bool, language: &str) -> WordBreaks {
+    let hyphen = if hyphenate {
         discretionary_hyphen_breaks(w, language)
     } else {
         Vec::new()
     };
-    let unicode: Vec<_> = line_break_opportunities(w)
+    let mut unicode: Vec<_> = line_break_opportunities(w)
         .map(|(byte, _)| byte)
         .filter(|&byte| byte > 0 && byte < w.len())
         .collect();
+    unicode.extend(em_dash_breaks(w).into_iter().filter(|&byte| byte > 0));
+    unicode.sort_unstable();
+    unicode.dedup();
     let mut boundaries = hyphen.clone();
     boundaries.extend(unicode.iter().copied());
     let opening_fraction = w.chars().next().map_or(0.0, opening_punctuation_protrusion);
@@ -486,6 +553,7 @@ struct SourceWord<'a> {
     source_byte_start: usize,
     flags: WordFlags,
     family: &'a FontChoice,
+    line_start: Option<u8>,
 }
 
 #[derive(Clone, Copy)]
@@ -510,6 +578,7 @@ struct BuiltWords {
     words: Vec<Word>,
     canonical_text: String,
     char_count: usize,
+    hard_breaks: Vec<usize>,
     line_height: f32,
 }
 
@@ -540,6 +609,11 @@ struct LinePlacement {
     text_width: f32,
     justify: bool,
     block_top: f32,
+    /// End of the hard-broken line (word index) this visual line belongs to;
+    /// its last visual line is set like a paragraph's last.
+    segment_end: usize,
+    /// Indentation of this visual line from the block's left edge.
+    x_offset: f32,
 }
 
 /// Measure and push the single fragment `w[byte_start..byte_end]` as a
@@ -584,7 +658,7 @@ fn push_one_fragment(
         .0;
     let end_protrusion = if slice.byte_end == source.text.len() {
         fragment.chars().last().map_or(0.0, |character| {
-            let fraction = if ctx.settings.composition.justified() {
+            let fraction = if hangs_punctuation(ctx.settings) {
                 punctuation_protrusion(character)
             } else {
                 0.0
@@ -602,24 +676,22 @@ fn push_one_fragment(
     } else {
         0.0
     };
-    let start_protrusion = if ctx.settings.composition.justified()
-        && slice.index == 0
-        && breaks.opening_fraction > 0.0
-    {
-        fragment.chars().next().map_or(0.0, |character| {
-            protrusion_width(
-                character,
-                breaks.opening_fraction,
-                ctx.style,
-                bold,
-                italic,
-                ctx.text,
-                source.family,
-            )
-        })
-    } else {
-        0.0
-    };
+    let start_protrusion =
+        if hangs_punctuation(ctx.settings) && slice.index == 0 && breaks.opening_fraction > 0.0 {
+            fragment.chars().next().map_or(0.0, |character| {
+                protrusion_width(
+                    character,
+                    breaks.opening_fraction,
+                    ctx.style,
+                    bold,
+                    italic,
+                    ctx.text,
+                    source.family,
+                )
+            })
+        } else {
+            0.0
+        };
     ctx.words.push(Word {
         text: fragment.to_string(),
         bold,
@@ -642,6 +714,7 @@ fn push_one_fragment(
         shrink_before: 0.0,
         start_protrusion,
         end_protrusion,
+        line_start: source.line_start.filter(|_| slice.index == 0),
     });
     fragment_chars
 }
@@ -649,7 +722,9 @@ fn push_one_fragment(
 /// Split one whitespace-separated source word `w` into hyphenation/line-break
 /// fragments and push each as a `Word` (measured, with protrusion).
 fn push_word_fragments(ctx: &mut FragmentBuildCtx<'_>, source: &SourceWord<'_>) {
-    let breaks = word_break_boundaries(source.text, ctx.settings, ctx.language);
+    let hyphenate =
+        ctx.settings.composition.justified() && !matches!(ctx.style.kind, LayoutKind::Verse { .. });
+    let breaks = word_break_boundaries(source.text, hyphenate, ctx.language);
     let hyphen_width = ctx
         .text
         .measure_font(
@@ -691,6 +766,7 @@ fn build_words(text: &mut TextRenderer, input: &WordBuildInput<'_>) -> BuiltWord
         words: Vec::new(),
         canonical_text: String::new(),
         char_count: 0,
+        hard_breaks: Vec::new(),
         line_height: input.line_height,
     };
     for span in input.block.spans() {
@@ -702,14 +778,18 @@ fn build_words(text: &mut TextRenderer, input: &WordBuildInput<'_>) -> BuiltWord
         } else {
             input.base_family
         };
+        let line_start = (built.words.is_empty() || span.line_break).then_some(span.line_indent);
         if let Some(expr) = &span.math {
-            push_math_word(&mut built, expr, span, text, input.style);
+            push_math_word(&mut built, expr, span, text, input.style, line_start);
             continue;
         }
         for (wi, w) in span.text.split_whitespace().enumerate() {
             let space_before = if wi == 0 { span.space_before } else { true };
             // A separating space is one canonical char between words.
             if !built.canonical_text.is_empty() && space_before {
+                if wi == 0 && span.line_break {
+                    built.hard_breaks.push(built.char_count);
+                }
                 built.canonical_text.push(' ');
                 built.char_count += 1;
             }
@@ -737,6 +817,7 @@ fn build_words(text: &mut TextRenderer, input: &WordBuildInput<'_>) -> BuiltWord
                         mono,
                     },
                     family: word_family,
+                    line_start: line_start.filter(|_| wi == 0),
                 },
             );
         }
@@ -853,11 +934,12 @@ fn compose_one_line(
     {
         last.display_text.push('-');
     }
-    if placement.paragraph_rtl && (line.end == ctx.words.len() || !placement.justify) {
-        let offset = (placement.text_width - x).max(0.0);
-        for run in &mut runs {
-            run.x += offset;
-        }
+    let mut offset = placement.x_offset;
+    if placement.paragraph_rtl && (line.end == placement.segment_end || !placement.justify) {
+        offset += (placement.text_width - x).max(0.0);
+    }
+    for run in &mut runs {
+        run.x += offset;
     }
     LaidLine {
         y: placement.block_top + line_idx as f32 * ctx.line_height,
@@ -868,24 +950,26 @@ fn compose_one_line(
     }
 }
 
-/// Compose the complete paragraph rather than accepting the first local break
-/// that fits, then realize each chosen line into a `LaidLine`. Body prose and
-/// quotations use adjustable inter-word glue; headings and lists retain
-/// natural ragged spacing while still benefiting from paragraph-wide break
-/// selection.
-fn compose_block_lines(
-    text: &mut TextRenderer,
-    composition: &BlockComposition<'_>,
-) -> Vec<LaidLine> {
-    let text_width = (composition.content_width - composition.style.indent).max(40.0);
-    let space_width = measure_space(text, composition.style.size, composition.base_family);
-    let bidi = BidiInfo::new(composition.canonical_text, None);
-    let paragraph_rtl = bidi
-        .paragraphs
-        .first()
-        .is_some_and(|paragraph| paragraph.level.is_rtl());
-    let boxes: Vec<_> = composition
-        .words
+/// The word ranges between hard line breaks: each starts at a word with
+/// [`Word::line_start`].
+fn hard_lines(words: &[Word]) -> Vec<std::ops::Range<usize>> {
+    let starts: Vec<usize> = words
+        .iter()
+        .enumerate()
+        .filter(|(index, word)| *index == 0 || word.line_start.is_some())
+        .map(|(index, _)| index)
+        .collect();
+    let ends = starts.iter().skip(1).copied().chain([words.len()]);
+    starts
+        .iter()
+        .zip(ends)
+        .map(|(&start, end)| start..end)
+        .collect()
+}
+
+/// The compositor's boxes for a block's measured words.
+fn paragraph_boxes(words: &[Word], space_width: f32) -> Vec<ParagraphBox> {
+    words
         .iter()
         .map(|word| ParagraphBox {
             width: word.w,
@@ -900,7 +984,32 @@ fn compose_block_lines(
             break_width: word.hyphen_width_before,
             end_protrusion: word.end_protrusion,
         })
-        .collect();
+        .collect()
+}
+
+/// Compose the complete paragraph rather than accepting the first local break
+/// that fits, then realize each chosen line into a `LaidLine`. Body prose and
+/// quotations use adjustable inter-word glue; headings and lists retain
+/// natural ragged spacing while still benefiting from paragraph-wide break
+/// selection.
+///
+/// Each hard-broken line (after a `<br/>`, or a verse line) is composed on
+/// its own, so it ends like a paragraph's last line. Verse is ragged, and
+/// a verse line too long for the measure wraps with its continuation lines
+/// hanging one em further in.
+fn compose_block_lines(
+    text: &mut TextRenderer,
+    composition: &BlockComposition<'_>,
+) -> Vec<LaidLine> {
+    let text_width = (composition.content_width - composition.style.indent).max(40.0);
+    let space_width = measure_space(text, composition.style.size, composition.base_family);
+    let bidi = BidiInfo::new(composition.canonical_text, None);
+    let paragraph_rtl = bidi
+        .paragraphs
+        .first()
+        .is_some_and(|paragraph| paragraph.level.is_rtl());
+    let verse = matches!(composition.style.kind, LayoutKind::Verse { .. });
+    let boxes = paragraph_boxes(composition.words, space_width);
     let mut options = ParagraphOptions::new(text_width);
     options.justify = composition.settings.composition.justified()
         && matches!(
@@ -911,17 +1020,15 @@ fn compose_block_lines(
     // the subtle expansion used for book-like justification. On a narrow
     // phone one expanded line can otherwise exceed its measured paint box,
     // leaving the final word visibly clipped instead of reflowing.
-    if !composition.settings.composition.justified() || composition.settings.font_scale >= 1.35 {
+    if !composition.settings.composition.justified()
+        || composition.settings.font_scale >= ACCESSIBLE_FONT_SCALE
+        || verse
+    {
         options.max_glyph_expansion = 0.0;
     }
-    let composed = compose_paragraph(&boxes, options);
-    let mut lines: Vec<LaidLine> = Vec::with_capacity(composed.len());
-    let placement = LinePlacement {
-        paragraph_rtl,
-        text_width,
-        justify: options.justify,
-        block_top: composition.block_top,
-    };
+    let em = composition.style.size;
+    let hang = if verse { em } else { 0.0 };
+    let mut lines: Vec<LaidLine> = Vec::new();
     let mut line_ctx = LineComposition {
         words: composition.words,
         bidi: &bidi,
@@ -931,8 +1038,53 @@ fn compose_block_lines(
         line_height: composition.line_height,
         text,
     };
-    for (line_idx, line) in composed.iter().enumerate() {
-        lines.push(compose_one_line(&mut line_ctx, line, line_idx, placement));
+    for segment in hard_lines(composition.words) {
+        let indent = composition
+            .words
+            .get(segment.start)
+            .and_then(|word| word.line_start)
+            .map_or(0.0, |ems| f32::from(ems) * em)
+            .min(text_width * 0.5);
+        let Some(segment_boxes) = boxes.get(segment.clone()) else {
+            continue;
+        };
+        let width = (text_width - indent).max(40.0);
+        let mut composed = compose_paragraph(
+            segment_boxes,
+            ParagraphOptions {
+                line_width: width,
+                ..options
+            },
+        );
+        if hang > 0.0 && composed.len() > 1 {
+            composed = compose_paragraph(
+                segment_boxes,
+                ParagraphOptions {
+                    line_width: (width - hang).max(40.0),
+                    ..options
+                },
+            );
+        }
+        for (visual, line) in composed.iter().enumerate() {
+            let line = ComposedLine {
+                start: line.start + segment.start,
+                end: line.end + segment.start,
+                ..*line
+            };
+            let hanging = if visual > 0 { hang } else { 0.0 };
+            let placement = LinePlacement {
+                paragraph_rtl,
+                text_width: width - hanging,
+                justify: options.justify,
+                block_top: composition.block_top,
+                segment_end: segment.end,
+                // Right-to-left lines align to the right edge, so their
+                // indentation comes off the measure instead.
+                x_offset: if paragraph_rtl { 0.0 } else { indent + hanging },
+            };
+            let index = lines.len();
+            lines.push(compose_one_line(&mut line_ctx, &line, index, placement));
+        }
     }
     if lines.is_empty() {
         lines.push(LaidLine {
@@ -986,6 +1138,7 @@ fn laid_math_block(text: &mut TextRenderer, input: &MathBlockInput<'_>) -> LaidB
         }),
         text: input.source.to_string(),
         char_len: input.source.chars().count(),
+        hard_breaks: Vec::new(),
     }
 }
 
@@ -1011,6 +1164,7 @@ fn laid_separator_block(index: usize, y: f32, st: &BlockStyle) -> LaidBlock {
         math: None,
         text: String::new(),
         char_len: 0,
+        hard_breaks: Vec::new(),
     }
 }
 
@@ -1127,16 +1281,16 @@ pub fn layout_chapter(tr: &mut TextRenderer, request: &ChapterLayoutRequest<'_>)
             math: None,
             char_len: built.char_count,
             text: built.canonical_text,
+            hard_breaks: built.hard_breaks,
         });
         y += height;
     }
 
-    let total_height = y;
     let pages = paginate(&laid, request.content_height);
 
     ChapterLayout {
         blocks: laid,
-        total_height,
+        total_height: y,
         pages,
         key,
     }
@@ -1214,7 +1368,7 @@ fn paginate(blocks: &[LaidBlock], page_h: f32) -> Vec<f32> {
         // a page boundary whenever that can be achieved on this page.
         if matches!(
             row.kind,
-            LayoutKind::Paragraph | LayoutKind::Quote | LayoutKind::List
+            LayoutKind::Paragraph | LayoutKind::Quote | LayoutKind::Verse { .. } | LayoutKind::List
         ) && row.line_count >= 4
             && (row.line == 1 || row.line_count - row.line == 1)
         {
@@ -1299,312 +1453,572 @@ mod tests {
         )
     }
 
+    /// Layout produces pages and lines (including math and tall narrow content), keys on settings and font, and assigns selection offsets.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn layout_produces_pages_and_lines() {
-        let mut tr = TextRenderer::new();
-        let blocks = vec![
-            Block::Heading {
-                level: 1,
-                spans: vec![Span::plain("A Chapter")],
-            },
-            para(
-                "This is a reasonably long paragraph that should wrap across \
+    fn layout_paginates_content_and_keys_on_settings() {
+        // --- phase: layout_produces_pages_and_lines ---
+        {
+            let mut tr = TextRenderer::new();
+            let blocks = vec![
+                Block::Heading {
+                    level: 1,
+                    spans: vec![Span::plain("A Chapter")],
+                },
+                para(
+                    "This is a reasonably long paragraph that should wrap across \
                   several lines when laid out into a narrow content column so \
                   that pagination has something real to slice into pages here.",
-            ),
-            Block::Separator,
-            para(
-                "Another paragraph after the rule, also long enough to wrap a \
+                ),
+                Block::Separator,
+                para(
+                    "Another paragraph after the rule, also long enough to wrap a \
                   couple of times within the narrow measure we hand the engine.",
-            ),
-        ];
-        let layout = test_layout(
-            &mut tr,
-            &blocks,
-            360.0,
-            220.0,
-            &Settings::default(),
-            "en-US",
-            &FontChoice::SansSerif,
-        );
-        assert!(layout.total_height > 0.0);
-        assert!(layout.page_count() >= 1);
-        // The long paragraph wrapped into multiple lines.
-        let para_block = &layout.blocks[1];
-        assert!(para_block.lines.len() >= 2, "paragraph should wrap");
-        // Lines are monotonically increasing in y.
-        let ys: Vec<f32> = para_block.lines.iter().map(|l| l.y).collect();
-        assert!(ys.windows(2).all(|w| w[1] > w[0]));
-    }
+                ),
+            ];
+            let layout = test_layout(
+                &mut tr,
+                &blocks,
+                360.0,
+                220.0,
+                &Settings::default(),
+                "en-US",
+                &FontChoice::SansSerif,
+            );
+            assert!(layout.total_height > 0.0);
+            assert!(layout.page_count() >= 1);
+            // The long paragraph wrapped into multiple lines.
+            let para_block = &layout.blocks[1];
+            assert!(para_block.lines.len() >= 2, "paragraph should wrap");
+            // Lines are monotonically increasing in y.
+            let ys: Vec<f32> = para_block.lines.iter().map(|l| l.y).collect();
+            assert!(ys.windows(2).all(|w| w[1] > w[0]));
+        }
 
-    #[test]
-    fn math_block_uses_shared_two_dimensional_layout() {
-        let mut tr = TextRenderer::new();
-        let expr = ui::math::MathExpr {
-            root: vec![ui::math::Node::Frac {
-                num: vec![
-                    ui::math::Node::Char('x'),
-                    ui::math::Node::Sup {
-                        exp: vec![ui::math::Node::Char('2')],
-                    },
-                ],
-                den: vec![ui::math::Node::Sqrt {
-                    index: None,
-                    radicand: vec![ui::math::Node::Char('y')],
-                }],
-            }],
-        };
-        let layout = test_layout(
-            &mut tr,
-            &[Block::Math {
-                expr,
-                source: "(x^(2))/(sqrt(y))".into(),
-                display: true,
-            }],
-            420.0,
-            500.0,
-            &Settings::default(),
-            "en-US",
-            &FontChoice::Serif,
-        );
-        let block = &layout.blocks[0];
-        let math = block.math.as_ref().expect("shared math layout attached");
-        assert_eq!(block.kind, LayoutKind::Math);
-        assert!(math.layout.height > f64::from(block.size) * 2.0);
-        assert!(math.x > 0.0, "display formula is centered in the measure");
-        assert!(
-            math.layout
-                .boxes
-                .iter()
-                .any(|math_box| matches!(math_box.kind, ui::math::BoxKind::FracBar))
-        );
-    }
-
-    #[test]
-    fn narrow_tall_content_paginates_into_several_pages() {
-        let mut tr = TextRenderer::new();
-        let big = "word ".repeat(400);
-        let blocks = vec![para(&big)];
-        let layout = test_layout(
-            &mut tr,
-            &blocks,
-            300.0,
-            160.0,
-            &Settings::default(),
-            "en-US",
-            &FontChoice::SansSerif,
-        );
-        assert!(layout.page_count() >= 3, "lots of text -> several pages");
-        // Page starts strictly increase.
-        assert!(layout.pages.windows(2).all(|w| w[1] > w[0]));
-    }
-
-    #[test]
-    fn layout_key_changes_with_settings_and_font() {
-        let base = LayoutKey::new(0, 300.0, 200.0, &Settings::default(), 0, 1.0);
-        let bigger_font = Settings {
-            font_scale: 1.4,
-            ..Default::default()
-        };
-        let scaled = LayoutKey::new(0, 300.0, 200.0, &bigger_font, 0, 1.0);
-        assert_ne!(base, scaled, "font scale change relays out");
-        // A different font signature (family/size-mult) also relays out.
-        let font_changed = LayoutKey::new(0, 300.0, 200.0, &Settings::default(), 99, 1.0);
-        assert_ne!(base, font_changed, "font change relays out");
-        let ragged = Settings {
-            composition: CompositionStyle::Ragged,
-            ..Default::default()
-        };
-        let ragged_key = LayoutKey::new(0, 300.0, 200.0, &ragged, 0, 1.0);
-        assert_ne!(base, ragged_key, "composition change relays out");
-        let accessibility_scaled = LayoutKey::new(0, 300.0, 200.0, &Settings::default(), 0, 2.0);
-        assert_ne!(
-            base, accessibility_scaled,
-            "host accessibility text scale relays out"
-        );
-    }
-
-    #[test]
-    fn ragged_composition_disables_book_microtypography() {
-        let mut tr = TextRenderer::new();
-        let settings = Settings {
-            composition: CompositionStyle::Ragged,
-            ..Default::default()
-        };
-        let layout = test_layout(
-            &mut tr,
-            &[para(
-                "“Characteristically typographic paragraphs demonstrate hyphenation and spacing.”",
-            )],
-            145.0,
-            600.0,
-            &settings,
-            "en-US",
-            &FontChoice::Serif,
-        );
-        let lines = &layout.blocks[0].lines;
-        assert!(
-            lines.len() >= 2,
-            "fixture wraps across several ragged lines"
-        );
-        assert!(
-            lines
-                .iter()
-                .flat_map(|line| &line.runs)
-                .all(|run| !run.display_text.ends_with('-')),
-            "ragged composition inserts no discretionary hyphens"
-        );
-        #[allow(
-            clippy::float_cmp,
-            reason = "ragged composition assigns glyph_scale exactly 1.0 (no computed \
-                      expansion), so exact equality is the correct assertion"
-        )]
+        // --- phase: math_block_uses_shared_two_dimensional_layout ---
         {
+            let mut tr = TextRenderer::new();
+            let expr = ui::math::MathExpr {
+                root: vec![ui::math::Node::Frac {
+                    num: vec![
+                        ui::math::Node::Char('x'),
+                        ui::math::Node::Sup {
+                            exp: vec![ui::math::Node::Char('2')],
+                        },
+                    ],
+                    den: vec![ui::math::Node::Sqrt {
+                        index: None,
+                        radicand: vec![ui::math::Node::Char('y')],
+                    }],
+                }],
+            };
+            let layout = test_layout(
+                &mut tr,
+                &[Block::Math {
+                    expr,
+                    source: "(x^(2))/(sqrt(y))".into(),
+                    display: true,
+                }],
+                420.0,
+                500.0,
+                &Settings::default(),
+                "en-US",
+                &FontChoice::Serif,
+            );
+            let block = &layout.blocks[0];
+            let math = block.math.as_ref().expect("shared math layout attached");
+            assert_eq!(block.kind, LayoutKind::Math);
+            assert!(math.layout.height > f64::from(block.size) * 2.0);
+            assert!(math.x > 0.0, "display formula is centered in the measure");
             assert!(
-                lines.iter().all(|line| line.glyph_scale == 1.0),
-                "ragged composition does not expand or condense glyphs"
+                math.layout
+                    .boxes
+                    .iter()
+                    .any(|math_box| matches!(math_box.kind, ui::math::BoxKind::FracBar))
             );
         }
-        assert_eq!(lines[0].runs[0].x, 0.0, "opening punctuation does not hang");
-    }
 
-    #[test]
-    fn selection_char_offsets_are_assigned_across_words() {
-        let mut tr = TextRenderer::new();
-        let blocks = vec![para("alpha beta gamma")];
-        let layout = test_layout(
-            &mut tr,
-            &blocks,
-            600.0,
-            400.0,
-            &Settings::default(),
-            "en-US",
-            &FontChoice::SansSerif,
-        );
-        let b = &layout.blocks[0];
-        assert_eq!(
-            b.text, "alpha beta gamma",
-            "canonical text joins words with spaces"
-        );
-        // Each run carries a char range that indexes into the canonical text.
-        let runs: Vec<&LineRun> = b.lines.iter().flat_map(|l| l.runs.iter()).collect();
-        assert_eq!(runs.len(), 3);
-        for r in &runs {
-            let slice: String = b.text.chars().skip(r.char_start).take(r.char_len).collect();
-            assert_eq!(slice, r.text, "run char range slices back to its text");
+        // --- phase: narrow_tall_content_paginates_into_several_pages ---
+        {
+            let mut tr = TextRenderer::new();
+            let big = "word ".repeat(400);
+            let blocks = vec![para(&big)];
+            let layout = test_layout(
+                &mut tr,
+                &blocks,
+                300.0,
+                160.0,
+                &Settings::default(),
+                "en-US",
+                &FontChoice::SansSerif,
+            );
+            assert!(layout.page_count() >= 3, "lots of text -> several pages");
+            // Page starts strictly increase.
+            assert!(layout.pages.windows(2).all(|w| w[1] > w[0]));
+        }
+
+        // --- phase: layout_key_changes_with_settings_and_font ---
+        {
+            let base = LayoutKey::new(0, 300.0, 200.0, &Settings::default(), 0, 1.0);
+            let bigger_font = Settings {
+                font_scale: 1.4,
+                ..Default::default()
+            };
+            let scaled = LayoutKey::new(0, 300.0, 200.0, &bigger_font, 0, 1.0);
+            assert_ne!(base, scaled, "font scale change relays out");
+            // A different font signature (family/size-mult) also relays out.
+            let font_changed = LayoutKey::new(0, 300.0, 200.0, &Settings::default(), 99, 1.0);
+            assert_ne!(base, font_changed, "font change relays out");
+            let ragged = Settings {
+                composition: CompositionStyle::Ragged,
+                ..Default::default()
+            };
+            let ragged_key = LayoutKey::new(0, 300.0, 200.0, &ragged, 0, 1.0);
+            assert_ne!(base, ragged_key, "composition change relays out");
+            let accessibility_scaled =
+                LayoutKey::new(0, 300.0, 200.0, &Settings::default(), 0, 2.0);
+            assert_ne!(
+                base, accessibility_scaled,
+                "host accessibility text scale relays out"
+            );
+        }
+
+        // --- phase: selection_char_offsets_are_assigned_across_words ---
+        {
+            let mut tr = TextRenderer::new();
+            let blocks = vec![para("alpha beta gamma")];
+            let layout = test_layout(
+                &mut tr,
+                &blocks,
+                600.0,
+                400.0,
+                &Settings::default(),
+                "en-US",
+                &FontChoice::SansSerif,
+            );
+            let b = &layout.blocks[0];
+            assert_eq!(
+                b.text, "alpha beta gamma",
+                "canonical text joins words with spaces"
+            );
+            // Each run carries a char range that indexes into the canonical text.
+            let runs: Vec<&LineRun> = b.lines.iter().flat_map(|l| l.runs.iter()).collect();
+            assert_eq!(runs.len(), 3);
+            for r in &runs {
+                let slice: String = b.text.chars().skip(r.char_start).take(r.char_len).collect();
+                assert_eq!(slice, r.text, "run char range slices back to its text");
+            }
         }
     }
 
+    /// Ragged composition, hyphenation, hanging punctuation, CJK breaking and RTL alignment follow language and composition.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn language_aware_hyphenation_paints_only_the_exercised_break() {
-        let mut tr = TextRenderer::new();
-        let blocks = vec![para("characteristically")];
-        let layout = test_layout(
-            &mut tr,
-            &blocks,
-            105.0,
-            400.0,
-            &Settings::default(),
-            "en-US",
-            &FontChoice::Serif,
-        );
-        let block = &layout.blocks[0];
-        assert!(block.lines.len() >= 2, "the long word should hyphenate");
-        assert!(
-            block.lines[..block.lines.len() - 1]
-                .iter()
-                .filter_map(|line| line.runs.last())
-                .any(|run| run.display_text.ends_with('-')),
-            "a selected discretionary break paints its hyphen"
-        );
-        let source: String = block
-            .lines
-            .iter()
-            .flat_map(|line| line.runs.iter())
-            .map(|run| run.text.as_str())
-            .collect();
-        assert_eq!(
-            source, block.text,
-            "virtual hyphens never enter source text"
-        );
-    }
+    fn microtypography_follows_language_and_composition() {
+        // --- phase: ragged_composition_disables_book_microtypography ---
+        {
+            let mut tr = TextRenderer::new();
+            let settings = Settings {
+                composition: CompositionStyle::Ragged,
+                ..Default::default()
+            };
+            let layout = test_layout(
+                &mut tr,
+                &[para(
+                    "“Characteristically typographic paragraphs demonstrate hyphenation and spacing.”",
+                )],
+                145.0,
+                600.0,
+                &settings,
+                "en-US",
+                &FontChoice::Serif,
+            );
+            let lines = &layout.blocks[0].lines;
+            assert!(
+                lines.len() >= 2,
+                "fixture wraps across several ragged lines"
+            );
+            assert!(
+                lines
+                    .iter()
+                    .flat_map(|line| &line.runs)
+                    .all(|run| !run.display_text.ends_with('-')),
+                "ragged composition inserts no discretionary hyphens"
+            );
+            #[allow(
+                clippy::float_cmp,
+                reason = "ragged composition assigns glyph_scale exactly 1.0 (no computed \
+                      expansion), so exact equality is the correct assertion"
+            )]
+            {
+                assert!(
+                    lines.iter().all(|line| line.glyph_scale == 1.0),
+                    "ragged composition does not expand or condense glyphs"
+                );
+            }
+            assert_eq!(lines[0].runs[0].x, 0.0, "opening punctuation does not hang");
+        }
 
-    #[test]
-    fn opening_punctuation_hangs_into_the_margin_without_changing_source() {
-        let mut tr = TextRenderer::new();
-        let blocks = vec![para("“Typography begins at the edge.”")];
-        let layout = test_layout(
-            &mut tr,
-            &blocks,
-            600.0,
-            400.0,
-            &Settings::default(),
-            "en-US",
-            &FontChoice::Serif,
-        );
-        let block = &layout.blocks[0];
-        let line = &block.lines[0];
-        assert!(line.runs[0].x < 0.0, "opening quote protrudes left");
-        for run in &line.runs {
+        // --- phase: language_aware_hyphenation_paints_only_the_exercised_break ---
+        {
+            let mut tr = TextRenderer::new();
+            let blocks = vec![para("characteristically")];
+            let layout = test_layout(
+                &mut tr,
+                &blocks,
+                105.0,
+                400.0,
+                &Settings::default(),
+                "en-US",
+                &FontChoice::Serif,
+            );
+            let block = &layout.blocks[0];
+            assert!(block.lines.len() >= 2, "the long word should hyphenate");
+            assert!(
+                block.lines[..block.lines.len() - 1]
+                    .iter()
+                    .filter_map(|line| line.runs.last())
+                    .any(|run| run.display_text.ends_with('-')),
+                "a selected discretionary break paints its hyphen"
+            );
             let source: String = block
-                .text
-                .chars()
-                .skip(run.char_start)
-                .take(run.char_len)
+                .lines
+                .iter()
+                .flat_map(|line| line.runs.iter())
+                .map(|run| run.text.as_str())
                 .collect();
-            assert_eq!(source, run.text);
+            assert_eq!(
+                source, block.text,
+                "virtual hyphens never enter source text"
+            );
+        }
+
+        // --- phase: opening_punctuation_hangs_into_the_margin_without_changing_source ---
+        {
+            let mut tr = TextRenderer::new();
+            let blocks = vec![para("“Typography begins at the edge.”")];
+            let layout = test_layout(
+                &mut tr,
+                &blocks,
+                600.0,
+                400.0,
+                &Settings::default(),
+                "en-US",
+                &FontChoice::Serif,
+            );
+            let block = &layout.blocks[0];
+            let line = &block.lines[0];
+            assert!(line.runs[0].x < 0.0, "opening quote protrudes left");
+            for run in &line.runs {
+                let source: String = block
+                    .text
+                    .chars()
+                    .skip(run.char_start)
+                    .take(run.char_len)
+                    .collect();
+                assert_eq!(source, run.text);
+            }
+        }
+
+        // --- phase: unspaced_cjk_uses_unicode_breaks_and_inter_character_justification ---
+        {
+            let mut tr = TextRenderer::new();
+            let text = "天地玄黃宇宙洪荒日月盈昃辰宿列張寒來暑往秋收冬藏";
+            let layout = test_layout(
+                &mut tr,
+                &[para(text)],
+                120.0,
+                500.0,
+                &Settings::default(),
+                "zh-Hant",
+                &FontChoice::Serif,
+            );
+            let block = &layout.blocks[0];
+            assert!(block.lines.len() >= 2, "CJK wraps without ASCII spaces");
+            assert_eq!(block.text, text);
+            assert!(
+                block.lines[..block.lines.len() - 1]
+                    .iter()
+                    .any(|line| line.runs.len() > 1 && line.adjustment_ratio != 0.0),
+                "non-final CJK lines participate in micro-justification"
+            );
+        }
+
+        // --- phase: rtl_paragraphs_use_visual_bidi_order_and_right_align_the_final_line ---
+        {
+            let mut tr = TextRenderer::new();
+            let layout = test_layout(
+                &mut tr,
+                &[para("مرحبا بالعالم 123")],
+                500.0,
+                400.0,
+                &Settings::default(),
+                "ar",
+                &FontChoice::Serif,
+            );
+            let line = &layout.blocks[0].lines[0];
+            assert!(line.rtl);
+            assert!(line.runs.windows(2).all(|pair| pair[0].x < pair[1].x));
+            let logical_first = line
+                .runs
+                .iter()
+                .find(|run| run.char_start == 0)
+                .expect("first Arabic word");
+            assert!(
+                logical_first.x > line.runs[0].x,
+                "logical first word is visually rightmost"
+            );
+            assert!(line.runs[0].x > 100.0, "short RTL final line aligns right");
         }
     }
 
-    #[test]
-    fn unspaced_cjk_uses_unicode_breaks_and_inter_character_justification() {
-        let mut tr = TextRenderer::new();
-        let text = "天地玄黃宇宙洪荒日月盈昃辰宿列張寒來暑往秋收冬藏";
-        let layout = test_layout(
-            &mut tr,
-            &[para(text)],
-            120.0,
-            500.0,
-            &Settings::default(),
-            "zh-Hant",
-            &FontChoice::Serif,
-        );
-        let block = &layout.blocks[0];
-        assert!(block.lines.len() >= 2, "CJK wraps without ASCII spaces");
-        assert_eq!(block.text, text);
-        assert!(
-            block.lines[..block.lines.len() - 1]
-                .iter()
-                .any(|line| line.runs.len() > 1 && line.adjustment_ratio != 0.0),
-            "non-final CJK lines participate in micro-justification"
-        );
+    /// A run of `text` that starts a new line indented `indent` ems.
+    fn line(text: &str, indent: u8) -> Span {
+        Span {
+            space_before: true,
+            line_break: true,
+            line_indent: indent,
+            ..Span::plain(text)
+        }
     }
 
-    #[test]
-    fn rtl_paragraphs_use_visual_bidi_order_and_right_align_the_final_line() {
-        let mut tr = TextRenderer::new();
-        let layout = test_layout(
-            &mut tr,
-            &[para("مرحبا بالعالم 123")],
-            500.0,
-            400.0,
-            &Settings::default(),
-            "ar",
-            &FontChoice::Serif,
-        );
-        let line = &layout.blocks[0].lines[0];
-        assert!(line.rtl);
-        assert!(line.runs.windows(2).all(|pair| pair[0].x < pair[1].x));
-        let logical_first = line
-            .runs
+    fn line_text(line: &LaidLine) -> String {
+        line.runs
             .iter()
-            .find(|run| run.char_start == 0)
-            .expect("first Arabic word");
-        assert!(
-            logical_first.x > line.runs[0].x,
-            "logical first word is visually rightmost"
+            .map(|run| run.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Verse sets one ragged line per source line, indents marked lines, hangs wrapped ones, and keeps the prose offsets.
+    #[test]
+    fn verse_lays_out_one_ragged_line_per_source_line() {
+        // --- phase: verse_lines_are_ragged_indented_and_hang_when_wrapped ---
+        {
+            let mut tr = TextRenderer::new();
+            let long =
+                "The capitals of many nations, learned the customs of their dwellers, and endured";
+            let verse = Block::Verse {
+                spans: vec![
+                    Span::plain("Tell me, O Muse,"),
+                    line("Who, having overthrown", 0),
+                    line("Of Ilium, wandered far", 2),
+                    line(long, 0),
+                ],
+                quoted: false,
+            };
+            let layout = test_layout(
+                &mut tr,
+                std::slice::from_ref(&verse),
+                360.0,
+                2000.0,
+                &Settings::default(),
+                "en-US",
+                &FontChoice::Serif,
+            );
+            let block = &layout.blocks[0];
+            assert_eq!(block.kind, LayoutKind::Verse { quoted: false });
+            assert_eq!(block.text, verse.plain_text(), "offsets are the prose ones");
+            assert_eq!(line_text(&block.lines[0]), "Tell me, O Muse,");
+            assert_eq!(line_text(&block.lines[1]), "Who, having overthrown");
+            assert_eq!(line_text(&block.lines[2]), "Of Ilium, wandered far");
+            assert!(block.lines.len() >= 5, "the long line wraps");
+            let x = |line: usize| block.lines[line].runs[0].x;
+            let em = block.size;
+            assert!((x(2) - x(1) - 2.0 * em).abs() < 0.5, "i2 indents two ems");
+            assert!(
+                (x(4) - x(3) - em).abs() < 0.5,
+                "a wrapped line hangs one em"
+            );
+            #[allow(
+                clippy::float_cmp,
+                reason = "unjustified lines keep exactly the natural glyph scale 1.0"
+            )]
+            {
+                assert!(block.lines.iter().all(|line| line.glyph_scale == 1.0));
+            }
+            assert!(
+                block
+                    .lines
+                    .iter()
+                    .flat_map(|line| &line.runs)
+                    .all(|run| !run.display_text.ends_with('-')),
+                "verse is not hyphenated"
+            );
+            for run in block.lines.iter().flat_map(|line| &line.runs) {
+                let source: String = block
+                    .text
+                    .chars()
+                    .skip(run.char_start)
+                    .take(run.char_len)
+                    .collect();
+                assert_eq!(source, run.text);
+            }
+        }
+    }
+
+    /// A prose `<br/>` ends its line with natural spacing and no hanging indent.
+    #[test]
+    fn a_prose_break_ends_its_line_without_justifying_it() {
+        {
+            let mut tr = TextRenderer::new();
+            let prose = Block::Paragraph {
+                spans: vec![
+                    Span::plain("Short line"),
+                    line(
+                        "and then a paragraph long enough to wrap and be justified across the measure",
+                        0,
+                    ),
+                ],
+            };
+            let layout = test_layout(
+                &mut tr,
+                std::slice::from_ref(&prose),
+                300.0,
+                2000.0,
+                &Settings::default(),
+                "en-US",
+                &FontChoice::Serif,
+            );
+            let natural = test_layout(
+                &mut tr,
+                &[para("Short line")],
+                300.0,
+                2000.0,
+                &Settings::default(),
+                "en-US",
+                &FontChoice::Serif,
+            );
+            let block = &layout.blocks[0];
+            assert_eq!(line_text(&block.lines[0]), "Short line");
+            let xs = |line: &LaidLine| line.runs.iter().map(|run| run.x).collect::<Vec<_>>();
+            assert_eq!(
+                xs(&block.lines[0]),
+                xs(&natural.blocks[0].lines[0]),
+                "the broken line keeps natural spacing"
+            );
+            assert!(block.lines[1].runs[0].x.abs() < 0.5, "prose does not hang");
+            assert_eq!(
+                block.text,
+                "Short line and then a paragraph long enough to wrap and be justified across the measure"
+            );
+        }
+    }
+
+    /// Standard Ebooks' Odyssey, Book I: a zero-width no-break space glues
+    /// every em dash to the word before it.
+    const ODYSSEY_BOOK_ONE_SUMMARY: &str = "A council of the gods\u{feff}—Deliberations concerning Ulysses\u{feff}—Mercury despatched to Calypso, to bid her send Ulysses to Ithaca\u{feff}—Visit of Pallas, in the shape of Mentor, to Telemachus, advising him to repair to Pylos and Sparta in quest of his father, Ulysses\u{feff}—Revels of the suitors of Penelope\u{feff}—Phemius, the minstrel, and his song of the return of the Grecians\u{feff}—The suitors rebuked by Telemachus.";
+
+    fn painted_line(line: &LaidLine) -> String {
+        let mut text = String::new();
+        for (index, run) in line.runs.iter().enumerate() {
+            if index > 0 && !text.ends_with(['—', '\u{feff}', '\u{2060}']) {
+                text.push(' ');
+            }
+            text.push_str(&run.display_text);
+        }
+        text
+    }
+
+    /// At phone measures, em-dash compounds glued by invisible joiners
+    /// break after the dash, and no justified line is left holding a lone
+    /// short word.
+    #[test]
+    fn em_dash_compounds_break_without_stranding_words_at_phone_widths() {
+        let mut tr = TextRenderer::new();
+        let word_joined = ODYSSEY_BOOK_ONE_SUMMARY.replace("\u{feff}—", "\u{2060}—\u{2060}");
+        for text in [ODYSSEY_BOOK_ONE_SUMMARY, word_joined.as_str()] {
+            for width in (300..=400).step_by(2) {
+                let width = width as f32;
+                let layout = test_layout(
+                    &mut tr,
+                    &[para(text)],
+                    width,
+                    4000.0,
+                    &Settings::default(),
+                    "en-US",
+                    &FontChoice::Serif,
+                );
+                let block = &layout.blocks[0];
+                let lines: Vec<String> = block.lines.iter().map(painted_line).collect();
+                let size = block.size;
+                for line in &lines[..lines.len() - 1] {
+                    let natural = tr
+                        .measure_font(
+                            line,
+                            size,
+                            None,
+                            TextWeight::Regular,
+                            false,
+                            &FontChoice::Serif,
+                        )
+                        .0;
+                    assert!(
+                        natural > width * 0.6,
+                        "{width}px: underfull justified line {line:?} in {lines:#?}"
+                    );
+                }
+                let source: String = block
+                    .lines
+                    .iter()
+                    .flat_map(|line| &line.runs)
+                    .map(|run| run.text.as_str())
+                    .collect();
+                assert_eq!(
+                    source.replace(' ', ""),
+                    block.text.replace(' ', ""),
+                    "breaks never drop or duplicate source text"
+                );
+            }
+        }
+    }
+
+    /// A line may end after an em dash even when joiners glue it to the next
+    /// word, and never inside a dash run or before the dash.
+    #[test]
+    fn em_dash_breaks_follow_the_dash_and_its_joiners() {
+        assert_eq!(
+            em_dash_breaks("gods\u{feff}—Deliberations"),
+            vec!["gods\u{feff}—".len()]
         );
-        assert!(line.runs[0].x > 100.0, "short RTL final line aligns right");
+        assert_eq!(
+            em_dash_breaks("gods\u{2060}—\u{2060}Deliberations"),
+            vec!["gods\u{2060}—\u{2060}".len()]
+        );
+        assert_eq!(em_dash_breaks("so——then"), vec!["so——".len()]);
+        assert!(em_dash_breaks("father—").is_empty());
+        assert!(em_dash_breaks("half-way").is_empty());
+    }
+
+    /// Word joiners and zero-width no-break spaces are invisible: they add
+    /// no advance and paint no glyph in any reader face.
+    #[test]
+    fn invisible_joiners_have_no_width() {
+        let mut tr = TextRenderer::new();
+        for family in [FontChoice::Serif, FontChoice::SansSerif] {
+            let mut width = |text: &str| {
+                tr.measure_font(text, 18.0, None, TextWeight::Regular, false, &family)
+                    .0
+            };
+            let plain = width("gods—Deliberations");
+            for joined in [
+                "gods\u{feff}—Deliberations",
+                "gods\u{2060}—\u{2060}Deliberations",
+            ] {
+                assert!(
+                    (width(joined) - plain).abs() < 0.5,
+                    "{joined:?} measures {} vs {plain}",
+                    width(joined)
+                );
+            }
+            assert!(width("\u{2060}\u{feff}") < 0.5);
+        }
     }
 
     fn block_with_lines(kind: LayoutKind, top: f32, line_count: usize) -> LaidBlock {
@@ -1630,27 +2044,32 @@ mod tests {
             math: None,
             text: String::new(),
             char_len: 0,
+            hard_breaks: Vec::new(),
         }
     }
 
+    /// Pagination avoids single-line widows and orphans and keeps headings with their text.
     #[test]
-    fn pagination_avoids_single_line_widows_and_orphans() {
-        let widow = block_with_lines(LayoutKind::Paragraph, 0.0, 5);
-        assert_eq!(paginate(&[widow], 85.0), vec![0.0, 60.0]);
+    fn pagination_avoids_widows_orphans_and_stranded_headings() {
+        // --- phase: pagination_avoids_single_line_widows_and_orphans ---
+        {
+            let widow = block_with_lines(LayoutKind::Paragraph, 0.0, 5);
+            assert_eq!(paginate(&[widow], 85.0), vec![0.0, 60.0]);
 
-        let before = block_with_lines(LayoutKind::Separator, 0.0, 1);
-        let paragraph = block_with_lines(LayoutKind::Paragraph, 40.0, 5);
-        assert_eq!(paginate(&[before, paragraph], 65.0), vec![0.0, 40.0, 100.0]);
-    }
+            let before = block_with_lines(LayoutKind::Separator, 0.0, 1);
+            let paragraph = block_with_lines(LayoutKind::Paragraph, 40.0, 5);
+            assert_eq!(paginate(&[before, paragraph], 65.0), vec![0.0, 40.0, 100.0]);
+        }
 
-    #[test]
-    fn pagination_keeps_a_heading_with_following_text() {
-        let intro = block_with_lines(LayoutKind::Paragraph, 0.0, 1);
-        let heading = block_with_lines(LayoutKind::Heading, 25.0, 1);
-        let body = block_with_lines(LayoutKind::Paragraph, 45.0, 3);
-        assert_eq!(
-            paginate(&[intro, heading, body], 55.0),
-            vec![0.0, 25.0, 65.0]
-        );
+        // --- phase: pagination_keeps_a_heading_with_following_text ---
+        {
+            let intro = block_with_lines(LayoutKind::Paragraph, 0.0, 1);
+            let heading = block_with_lines(LayoutKind::Heading, 25.0, 1);
+            let body = block_with_lines(LayoutKind::Paragraph, 45.0, 3);
+            assert_eq!(
+                paginate(&[intro, heading, body], 55.0),
+                vec![0.0, 25.0, 65.0]
+            );
+        }
     }
 }

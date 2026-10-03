@@ -46,6 +46,8 @@ extern crate runtime_dylib;
 use notes::shots::DEFAULT_SHOTS_VIEWPORT;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 
+ui::android_main!();
+
 const SHOT_SCENARIOS: &[&str] = &[
     "first_note",
     "drawer",
@@ -101,15 +103,32 @@ const SHOT_SCENARIOS: &[&str] = &[
 /// Returns an error if `--shots` mode fails to render, or if the app fails
 /// to spawn against its workspace.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ui::launch::run(
-        &LaunchSpec::from_definition(notes::definition())
-            .max_positionals(1)
-            .component_host(prepare_component)
-            .native_services()
-            .capture_scenario(capture_scenario)
-            .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
-            .scenarios(SHOT_SCENARIOS),
-    )?;
+    let args: Vec<String> = std::env::args().collect();
+    // Captures, native audit, headless drives and a positional open keep the
+    // component-host launcher; the default live window runs on the framework.
+    let standalone = args.iter().any(|arg| {
+        [
+            "--shots",
+            "--responsive-matrix",
+            "--native-audit",
+            "--headless",
+        ]
+        .iter()
+        .any(|mode| arg == *mode || arg.starts_with(&format!("{mode}=")))
+    }) || args.iter().skip(1).any(|arg| !arg.starts_with('-'));
+    if standalone {
+        ui::launch::run(
+            &LaunchSpec::from_definition(notes::definition())
+                .max_positionals(1)
+                .component_host(prepare_component)
+                .native_services()
+                .capture_scenario(capture_scenario)
+                .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
+                .scenarios(SHOT_SCENARIOS),
+        )?;
+    } else {
+        ui::framework::run::<notes::NotesShell>();
+    }
     Ok(())
 }
 
@@ -117,10 +136,18 @@ fn prepare_component(
     _definition: &ui::application::ApplicationDefinition,
     args: &LaunchArgs,
 ) -> Result<ui::application::PreparedComponentInputs, LaunchError> {
-    let inputs = ui::application::ComponentRunnerInputs::from_native_process();
     if args.shots.is_some() || args.responsive_matrix.is_some() {
-        notes::capture::prepare_fixture(args.scenario.as_deref(), inputs)
-    } else if args.native_audit {
+        let theme = ui::launch::shot_theme(args);
+        let mut text_renderer = ui::TextRenderer::new();
+        text_renderer.set_text_scale(theme.text_scale);
+        let inputs = ui::application::ComponentRunnerInputs {
+            theme,
+            text_renderer,
+        };
+        return notes::capture::prepare_fixture(args.scenario.as_deref(), inputs);
+    }
+    let inputs = ui::application::ComponentRunnerInputs::from_native_process();
+    if args.native_audit {
         notes::capture::prepare_fixture(Some("first_note"), inputs)
     } else {
         notes::hosting::set_native_launch_target(args.positionals().first().cloned());

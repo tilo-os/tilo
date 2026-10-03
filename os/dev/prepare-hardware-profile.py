@@ -23,6 +23,19 @@ FIRMWARE_PATH = Path("usr/lib/firmware")
 PROFILE_PATH = Path("usr/lib/tilo/hardware-profile.json")
 PARSER_PATH = Path("usr/lib/tilo/hardware_profile.py")
 DRACUT_PATH = Path("etc/dracut.conf.d/41-tilo-hardware.conf")
+# Broadcom's sample station address. Vendor NVRAM files (the Orange Pi's
+# AP6256 among them) ship it, and brcmfmac programs whatever the NVRAM names,
+# so every board would share one MAC. The pinned bytes are checked as
+# published; only the installed copy drops this line, and the radio keeps the
+# address it was given.
+SAMPLE_BROADCOM_MAC = b"macaddr=00:90:4c:c5:12:38"
+
+
+def installed_firmware(destination: str, payload: bytes) -> bytes:
+    if not destination.endswith(".txt"):
+        return payload
+    lines = payload.splitlines(keepends=True)
+    return b"".join(line for line in lines if line.rstrip(b"\r\n") != SAMPLE_BROADCOM_MAC)
 
 
 def checked_path(root: Path, relative: Path, *, required: bool) -> Path:
@@ -47,6 +60,30 @@ def checked_path(root: Path, relative: Path, *, required: bool) -> Path:
         elif not stat.S_ISDIR(info.st_mode):
             raise ValueError(f"hardware profile path is not a directory: {current}")
     return current
+
+
+def module_state(kernel: Path, name: str) -> str:
+    """Return ``builtin``, ``module``, or ``absent`` without following symlinks."""
+    builtin = kernel / "modules.builtin"
+    suffix = f"/{name}.ko"
+    if builtin.exists() or builtin.is_symlink():
+        builtin = checked_path(kernel, Path("modules.builtin"), required=True)
+        for line in builtin.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.endswith(suffix):
+                return "builtin"
+    for directory, dirnames, filenames in os.walk(kernel, followlinks=False):
+        current = Path(directory)
+        if current.is_symlink():
+            dirnames.clear()
+            continue
+        dirnames[:] = [entry for entry in dirnames if not (current / entry).is_symlink()]
+        for filename in filenames:
+            candidate = current / filename
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
+            if filename == f"{name}.ko" or filename.startswith(f"{name}.ko."):
+                return "module"
+    return "absent"
 
 
 def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir: Path,
@@ -121,7 +158,7 @@ def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir:
         payload = checked_path(firmware_dir, Path(name), required=True).read_bytes()
         if not payload or hashlib.sha256(payload).hexdigest() != digest:
             raise ValueError(f"firmware does not match its pinned SHA-256: {name}")
-        outputs[FIRMWARE_PATH / destination] = payload
+        outputs[FIRMWARE_PATH / destination] = installed_firmware(destination, payload)
 
     document = {
         "schema_version": 1,
@@ -141,11 +178,20 @@ def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir:
         raise ValueError("hardware profile parser is not a valid LF script")
     outputs[PARSER_PATH] = parser
     initramfs_firmware = [*firmware_names.values(), *installed_system_firmware]
-    firmware_paths = " ".join(f"/{(FIRMWARE_PATH / name).as_posix()}" for name in initramfs_firmware)
-    outputs[DRACUT_PATH] = (
-        "# Hardware-profile firmware needed before the encrypted root is unlocked.\n"
-        f'install_items+=" {firmware_paths} "\n'
-    ).encode("utf-8")
+    modular_boot = []
+    for name in definition.get("boot_modules", []):
+        state = module_state(config.parent, name)
+        if state == "absent":
+            raise ValueError(f"hardware profile boot module is not built in or installed: {name}")
+        if state == "module":
+            modular_boot.append(name)
+    dracut_lines = ["# Hardware-profile firmware and boot modules needed before the root is mounted."]
+    if initramfs_firmware:
+        firmware_paths = " ".join(f"/{(FIRMWARE_PATH / name).as_posix()}" for name in initramfs_firmware)
+        dracut_lines.append(f'install_items+=" {firmware_paths} "')
+    if modular_boot:
+        dracut_lines.append(f'add_drivers+=" {" ".join(modular_boot)} "')
+    outputs[DRACUT_PATH] = ("\n".join(dracut_lines) + "\n").encode("utf-8")
     # Check every destination before creating directories or installing bytes.
     # This includes existing output files, including dangling symlinks.
     destinations = {

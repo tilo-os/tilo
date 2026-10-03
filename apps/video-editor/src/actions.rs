@@ -44,7 +44,7 @@ use uuid::Uuid;
 use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
     ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
-    Resource, ResourceProvider, ResultSpec, RetryPolicy,
+    Resource, ResultSpec, RetryPolicy,
 };
 
 use crate::curve::Curve;
@@ -279,12 +279,6 @@ pub struct ClipData {
 
 impl ClipData {
     pub fn from_clip(c: &Clip) -> Self {
-        // An older in-memory project can still enter through file import or a
-        // test fixture. Normalise its stack before it crosses the action
-        // boundary so the next ordinary collaborative write persists ids;
-        // never rely on random identity during `Action::apply`.
-        let mut normalised = c.clone();
-        normalised.ensure_effect_ids();
         Self {
             id: c.id.to_string(),
             track: c.track.to_string(),
@@ -302,7 +296,7 @@ impl ClipData {
             fade_in: c.fade_in,
             fade_out: c.fade_out,
             transition_duration: c.transition_duration,
-            effects: normalised.effects,
+            effects: c.effects.clone(),
             transform: c.transform,
             speed: c.speed,
             curves: c.curves.clone(),
@@ -320,7 +314,7 @@ impl ClipData {
     /// unparseable id) so `apply` can no-op instead of fabricating a value,
     /// which would break replay determinism.
     fn to_clip(&self) -> Option<Clip> {
-        let mut clip = Clip {
+        Some(Clip {
             id: self.id.parse::<Uuid>().ok()?,
             track: self.track.parse::<Uuid>().ok()?,
             media: self.media.parse::<Uuid>().ok()?,
@@ -353,9 +347,7 @@ impl ClipData {
             link: self.link.as_ref().and_then(|l| l.parse::<Uuid>().ok()),
             sound_split: self.sound_split,
             link_follows: self.link_follows,
-        };
-        clip.ensure_effect_ids();
-        Some(clip)
+        })
     }
 }
 
@@ -565,11 +557,6 @@ pub enum VideoEditorAction {
     /// tie-break, so replay never derives an ordinal from receiver state.
     AddEffect {
         clip: String,
-        /// Retained solely to decode actions authored by older clients. New
-        /// actions do not make an unrelated concurrent append fail closed.
-        #[serde(default)]
-        expected_stack: Vec<Uuid>,
-        #[serde(default)]
         ordinal: usize,
         effect: crate::model::ClipEffect,
     },
@@ -759,15 +746,9 @@ pub enum ClipFieldPatch {
         expected: String,
         value: String,
     },
-    Json {
-        field: ClipJsonField,
-        expected: String,
-        value: String,
-    },
     /// A new, typed compound value. It is atomic at the action boundary (a
     /// curve edit or transform preset is one authored gesture), then expands
-    /// into the document's keyed maps. `Json` above is retained only so old
-    /// persisted actions remain decodable; new UI/resource actions use this.
+    /// into the document's keyed maps.
     Compound {
         field: ClipCompoundField,
         expected: ClipCompound,
@@ -831,16 +812,6 @@ pub enum ClipTextField {
 pub enum MarkerTextField {
     Name,
     Note,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ClipJsonField {
-    Transform,
-    Curves,
-    Key,
-    Mask,
-    Animation,
-    Markers,
 }
 
 /// Named compound clip records. Each is represented by leaf CRDT fields or
@@ -1041,19 +1012,6 @@ fn patch_matches(clip: &Clip, patch: &ClipFieldPatch) -> bool {
             ClipTextField::Track => clip.track.to_string() == *expected,
             ClipTextField::Transition => clip.transition.as_str() == expected,
         },
-        ClipFieldPatch::Json {
-            field, expected, ..
-        } => {
-            let current = match field {
-                ClipJsonField::Transform => serde_json::to_string(&clip.transform),
-                ClipJsonField::Curves => serde_json::to_string(&clip.curves),
-                ClipJsonField::Key => serde_json::to_string(&clip.key),
-                ClipJsonField::Mask => serde_json::to_string(&clip.mask),
-                ClipJsonField::Animation => serde_json::to_string(&clip.anim),
-                ClipJsonField::Markers => serde_json::to_string(&clip.markers),
-            };
-            current.is_ok_and(|current| current == *expected)
-        }
         ClipFieldPatch::Compound {
             field, expected, ..
         } => {
@@ -1112,19 +1070,6 @@ fn write_patch(doc: &mut Doc, id: Uuid, patch: &ClipFieldPatch) -> bool {
             match field {
                 ClipTextField::Track => "track",
                 ClipTextField::Transition => "transition",
-            },
-            value,
-        ),
-        ClipFieldPatch::Json { field, value, .. } => VideoDoc::set_existing_clip_text(
-            doc,
-            id,
-            match field {
-                ClipJsonField::Transform => "transform",
-                ClipJsonField::Curves => "curves",
-                ClipJsonField::Key => "key",
-                ClipJsonField::Mask => "mask",
-                ClipJsonField::Animation => "anim",
-                ClipJsonField::Markers => "markers",
             },
             value,
         ),
@@ -1195,14 +1140,6 @@ fn validate_patch_set(changes: &[ClipFieldPatch]) -> Result<(), ActionError> {
         ClipFieldPatch::Text { field, .. } => match field {
             ClipTextField::Track => "track",
             ClipTextField::Transition => "transition",
-        },
-        ClipFieldPatch::Json { field, .. } => match field {
-            ClipJsonField::Transform => "transform",
-            ClipJsonField::Curves => "curves",
-            ClipJsonField::Key => "key",
-            ClipJsonField::Mask => "mask",
-            ClipJsonField::Animation => "anim",
-            ClipJsonField::Markers => "markers",
         },
         ClipFieldPatch::Compound { field, .. } => match field {
             ClipCompoundField::Transform => "transform",
@@ -1353,7 +1290,6 @@ impl Action for VideoEditorAction {
             }
             VideoEditorAction::AddEffect {
                 clip,
-                expected_stack,
                 ordinal,
                 effect,
             } => {
@@ -1369,17 +1305,7 @@ impl Action for VideoEditorAction {
                         return Err(ActionError::Refused("invalid authored effect id".into()));
                     }
                 }
-                // Pre-rank clients included the complete stack they saw. Its
-                // length is an authored fact in that legacy payload, unlike
-                // the receiver's current stack length, so it is safe as a
-                // deterministic compatibility rank. New actions always send
-                // `ordinal` explicitly (including zero for the first entry).
-                let authored_ordinal = if *ordinal == 0 && !expected_stack.is_empty() {
-                    expected_stack.len()
-                } else {
-                    *ordinal
-                };
-                if !VideoDoc::add_clip_effect(doc, clip_id, *effect, authored_ordinal) {
+                if !VideoDoc::add_clip_effect(doc, clip_id, *effect, *ordinal) {
                     return Err(ActionError::Refused(
                         "effect clip is no longer available".into(),
                     ));
@@ -2027,9 +1953,173 @@ fn parse_colour(s: &str) -> Option<[f64; 4]> {
     }
 }
 
+/// Playhead/mix-accurate conveniences — presentation state, not CRDT.
+///
+/// Standalone [`provide_resources`] nests these under `video.project`. Hosted
+/// [`PublishesResources`](ui::resources::PublishesResources) returns the same
+/// slices alone so agents keep mark/split/trim-at-playhead (and mix trim)
+/// without a second project root beside [`crate::resource::VideoProject`].
+#[allow(
+    clippy::expect_used,
+    clippy::too_many_lines,
+    reason = "playhead-bound payloads serialize only local serde enums; the clip loop mirrors the timeline tree"
+)]
+pub fn live_playhead_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
+    let p = &ctx.project;
+    let at = ctx.playhead;
+    let mut playhead = Resource::new(
+        "video.playhead",
+        "video.playhead",
+        format!("Playhead · {at:.2}s"),
+    );
+
+    let mut marked = p.clone();
+    marked.set_mark_in(at);
+    playhead = playhead.with_action(immediate(
+        "mark-in",
+        "Mark in at playhead",
+        &set_project_meta_action(&marked),
+    ));
+    let mut marked = p.clone();
+    marked.set_mark_out(at);
+    playhead = playhead.with_action(immediate(
+        "mark-out",
+        "Mark out at playhead",
+        &set_project_meta_action(&marked),
+    ));
+
+    if ctx.mix.clipped() {
+        let snap = p.clone();
+        let lanes = ctx.mix.measured_tracks();
+        let over = ctx.mix.worst_over_db();
+        let lane_words = match ctx.mix.clipped_tracks().len() {
+            0 => String::new(),
+            1 => ", 1 lane over on its own".to_string(),
+            n => format!(", {n} lanes over on their own"),
+        };
+        playhead = playhead.with_action(
+            ActionSpec::typed(
+                "trim-mix",
+                "Trim the mix to fit",
+                "0",
+                ExecutionLocus::ClientLocal,
+                vec![ActionParam::required(
+                    "headroom",
+                    ParamType::Number,
+                    "decibels to leave below full scale; 0 lands the measured \
+                     peak exactly at full scale",
+                )],
+                move |args: &ActionArgs| {
+                    let headroom = args.number("headroom").unwrap_or(0.0).max(0.0);
+                    let next = snap.lanes_trimmed_by(&lanes, over + headroom);
+                    encode(&upsert_tracks_and_clips_action(&next, &[]))
+                },
+            )
+            .with_description(format!(
+                "the mix was measured {over:+.1} dB over full scale in {} place{}{lane_words}; \
+                 every lane comes down by the same amount, so the balance is unchanged",
+                ctx.mix.overs.len(),
+                if ctx.mix.overs.len() == 1 { "" } else { "s" },
+            )),
+        );
+    }
+
+    playhead = playhead.with_action(ActionSpec::typed(
+        "add-marker",
+        "Add marker at playhead",
+        "Marker",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required(
+            "name",
+            ParamType::Text,
+            "what the marker is called; an empty name reads as “Marker”",
+        )],
+        move |args: &ActionArgs| {
+            let raw_name = args.text("name").unwrap_or("").trim();
+            let label = if raw_name.is_empty() {
+                "Marker"
+            } else {
+                raw_name
+            };
+            let project_marker = crate::model::Marker::new(at, label, 1);
+            encode(&VideoEditorAction::AddProjectMarker {
+                marker: project_marker,
+            })
+        },
+    ));
+    if let Some(m) = p.markers.iter().find(|m| (m.t - at).abs() < 0.25) {
+        playhead = playhead.with_action(immediate(
+            "remove-marker",
+            &format!("Remove marker \u{201c}{}\u{201d}", m.name),
+            &VideoEditorAction::RemoveProjectMarker {
+                marker: m.id.to_string(),
+            },
+        ));
+    }
+
+    for clip in &p.clips {
+        let cid = clip.id;
+        let group = p.link_group(cid);
+        // Distinct ids from timeline `video.clip:{id}` so the playhead slice
+        // can sit beside the document tree without a duplicate resource id.
+        let mut cr = Resource::new(
+            format!("video.playhead-clip:{cid}"),
+            "video.playhead-clip",
+            p.media(clip.media)
+                .map_or_else(|| format!("Clip {cid}"), |m| m.name.clone()),
+        );
+
+        let mut split_project = p.clone();
+        let halves = split_project.split_linked(cid, at);
+        if !halves.is_empty() {
+            let written: Vec<Clip> = halves
+                .iter()
+                .flat_map(|(l, r)| [*l, *r])
+                .filter_map(|id| split_project.clip(id).cloned())
+                .collect();
+            let action = match written.as_slice() {
+                [left, right] => split_clip_action(left, right),
+                many => upsert_clips_action(many),
+            };
+            cr = cr.with_action(immediate("split", "Split at playhead", &action));
+        }
+
+        if clip.covers(at) {
+            let mut ti = p.clone();
+            let din = at - clip.start;
+            ti.trim_in_linked(cid, din);
+            if group.iter().any(|id| ti.clip(*id).is_some()) {
+                cr = cr.with_action(immediate(
+                    "trim-in",
+                    "Trim in to playhead",
+                    &patch_clips_fields_action(p, &ti, &group),
+                ));
+            }
+            let mut to = p.clone();
+            let dout = at - clip.end();
+            to.trim_out_linked(cid, dout);
+            if group.iter().any(|id| to.clip(*id).is_some()) {
+                cr = cr.with_action(immediate(
+                    "trim-out",
+                    "Trim out to playhead",
+                    &patch_clips_fields_action(p, &to, &group),
+                ));
+            }
+        }
+
+        if !cr.actions.is_empty() {
+            playhead = playhead.with_child(cr);
+        }
+    }
+
+    annotate_contracts(&mut playhead);
+    vec![playhead]
+}
+
 /// Build the resource tree the editor currently has open: the project, its
 /// tracks (top-to-bottom display order), and the clips on each track — every
-/// document-mutating operation exported as an action.
+/// document-mutating operation exported as an action. Playhead/mix conveniences
+/// ride [`live_playhead_resources`] under the project root.
 ///
 /// # Panics
 ///
@@ -2041,7 +2131,9 @@ fn parse_colour(s: &str) -> Option<[f64; 4]> {
     clippy::too_many_lines,
     reason = "the resource builder serializes only its local serde enums and indexes the first partner only after proving the candidate list non-empty"
 )]
-pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
+/// Timeline tree used by [`Resource::children`] and the root action split.
+/// Playhead rows are included here and stripped by the resource's children.
+pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
     let p = &ctx.project;
     let mut root = Resource::new(
         "video.project".to_string(),
@@ -2235,26 +2327,11 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
 
     // Project-level: the render range. The export loop used to run the whole
     // timeline unconditionally, so checking a ten-second fix meant
-    // re-rendering everything.
+    // re-rendering everything. Playhead mark-in/out and mix trim ride
+    // [`live_playhead_resources`].
     {
-        let snap = p.clone();
-        let at = ctx.playhead;
-        let mut marked = snap.clone();
-        marked.set_mark_in(at);
-        root = root.with_action(immediate(
-            "mark-in",
-            "Mark in at playhead",
-            &set_project_meta_action(&marked),
-        ));
-        let mut marked = snap.clone();
-        marked.set_mark_out(at);
-        root = root.with_action(immediate(
-            "mark-out",
-            "Mark out at playhead",
-            &set_project_meta_action(&marked),
-        ));
         if p.has_marks() {
-            let mut cleared = snap;
+            let mut cleared = p.clone();
             cleared.clear_marks();
             root = root.with_action(immediate(
                 "clear-marks",
@@ -2294,90 +2371,6 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 encode(&set_project_meta_action(&next))
             },
         ));
-    }
-
-    // Project-level: bring a mix that went over back under full scale.
-    //
-    // Offered only once a mix has actually been measured over, because it is
-    // a report about a measurement — an editor that offered to "fix" levels
-    // nobody has listened to would be guessing, and it would be offering to
-    // quieten a mix that is fine.
-    //
-    // This is the one operation on the clipping warning that a caller with no
-    // screen could not otherwise reach. Seeing the warning is the
-    // accessibility tree's job and it does it (the master strip's node states
-    // how far over and where); *acting* on it meant reading the overshoot off
-    // a red chip, doing the arithmetic and then dragging every fader — none of
-    // which a script, an agent or a keyboard has.
-    if ctx.mix.clipped() {
-        let snap = p.clone();
-        let lanes = ctx.mix.measured_tracks();
-        let over = ctx.mix.worst_over_db();
-        let lane_words = match ctx.mix.clipped_tracks().len() {
-            0 => String::new(),
-            1 => ", 1 lane over on its own".to_string(),
-            n => format!(", {n} lanes over on their own"),
-        };
-        root = root.with_action(
-            ActionSpec::typed(
-                "trim-mix",
-                "Trim the mix to fit",
-                "0",
-                ExecutionLocus::ClientLocal,
-                vec![ActionParam::required(
-                    "headroom",
-                    ParamType::Number,
-                    "decibels to leave below full scale; 0 lands the measured \
-                     peak exactly at full scale",
-                )],
-                move |args: &ActionArgs| {
-                    // Negative headroom would be an instruction to trim it
-                    // back to *over* full scale, which is the state this
-                    // exists to leave. An unbound argument is the plain
-                    // "make it fit".
-                    let headroom = args.number("headroom").unwrap_or(0.0).max(0.0);
-                    let next = snap.lanes_trimmed_by(&lanes, over + headroom);
-                    encode(&upsert_tracks_and_clips_action(&next, &[]))
-                },
-            )
-            .with_description(format!(
-                "the mix was measured {over:+.1} dB over full scale in {} place{}{lane_words}; \
-                 every lane comes down by the same amount, so the balance is unchanged",
-                ctx.mix.overs.len(),
-                if ctx.mix.overs.len() == 1 { "" } else { "s" },
-            )),
-        );
-    }
-
-    // Project-level: a timeline marker at the playhead, named.
-    {
-        let at = ctx.playhead;
-        root = root.with_action(ActionSpec::typed(
-            "add-marker",
-            "Add marker at playhead",
-            "Marker",
-            ExecutionLocus::ClientLocal,
-            vec![ActionParam::required(
-                "name",
-                ParamType::Text,
-                "what the marker is called; an empty name reads as “Marker”",
-            )],
-            move |args: &ActionArgs| {
-                let name = args.text("name").unwrap_or("").trim();
-                let name = if name.is_empty() { "Marker" } else { name };
-                let marker = crate::model::Marker::new(at, name, 1);
-                encode(&VideoEditorAction::AddProjectMarker { marker })
-            },
-        ));
-        if let Some(m) = p.markers.iter().find(|m| (m.t - ctx.playhead).abs() < 0.25) {
-            root = root.with_action(immediate(
-                "remove-marker",
-                &format!("Remove marker \u{201c}{}\u{201d}", m.name),
-                &VideoEditorAction::RemoveProjectMarker {
-                    marker: m.id.to_string(),
-                },
-            ));
-        }
     }
 
     // Project-level: a title. It lands in the bin like any other source —
@@ -2682,51 +2675,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 &delete_clips_action(&removed, &moved),
             ));
 
-            // Split at the playhead — only when the playhead is strictly inside.
-            // A linked shot is cut on both lanes at once, and the two tails
-            // become a link group of their own (see `Project::split_linked`).
-            let mut split_project = p.clone();
-            let halves = split_project.split_linked(cid, ctx.playhead);
-            if !halves.is_empty() {
-                let written: Vec<Clip> = halves
-                    .iter()
-                    .flat_map(|(l, r)| [*l, *r])
-                    .filter_map(|id| split_project.clip(id).cloned())
-                    .collect();
-                // Two clips are still the split they always were on the wire;
-                // four is the pair being cut, which has no two-clip shape.
-                let action = match written.as_slice() {
-                    [left, right] => split_clip_action(left, right),
-                    many => upsert_clips_action(many),
-                };
-                cr = cr.with_action(immediate("split", "Split at playhead", &action));
-            }
-
-            // Trim in / out to the playhead — only when it lies within the span.
-            // The linked half takes the same trim, so the sound keeps covering
-            // the picture.
-            if clip.covers(ctx.playhead) {
-                let mut ti = p.clone();
-                let din = ctx.playhead - clip.start;
-                ti.trim_in_linked(cid, din);
-                if group.iter().any(|id| ti.clip(*id).is_some()) {
-                    cr = cr.with_action(immediate(
-                        "trim-in",
-                        "Trim in to playhead",
-                        &patch_clips_fields_action(p, &ti, &group),
-                    ));
-                }
-                let mut to = p.clone();
-                let dout = ctx.playhead - clip.end();
-                to.trim_out_linked(cid, dout);
-                if group.iter().any(|id| to.clip(*id).is_some()) {
-                    cr = cr.with_action(immediate(
-                        "trim-out",
-                        "Trim out to playhead",
-                        &patch_clips_fields_action(p, &to, &group),
-                    ));
-                }
-            }
+            // Split / trim-at-playhead ride [`live_playhead_resources`].
 
             // Colour grade — prompted `0..1` sliders folded into optimistic
             // clip-field patches.
@@ -2767,6 +2716,17 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         // drag worked. An action and a click must not
                         // disagree about what they did.
                         next.set_param_at(field.param(), at, v);
+                        // If a curve still owns the playhead value, the
+                        // constant write was a no-op for playback — key the
+                        // authored instant so `param_at` and the picture agree.
+                        if (next.param_at(field.param(), at) - v).abs() >= 1e-9 {
+                            next.set_key_at(
+                                field.param(),
+                                at,
+                                v,
+                                next.key_interp_at(field.param(), at).unwrap_or_default(),
+                            );
+                        }
                         encode(&clip_field_patch_action(&base, &next))
                     },
                 ));
@@ -2803,6 +2763,14 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         // As the inspector's slider does — see the grade
                         // actions above for why the constant is not enough.
                         next.set_param_at(axis.param(), at, v);
+                        if (next.param_at(axis.param(), at) - v).abs() >= 1e-9 {
+                            next.set_key_at(
+                                axis.param(),
+                                at,
+                                v,
+                                next.key_interp_at(axis.param(), at).unwrap_or_default(),
+                            );
+                        }
                         encode(&clip_field_patch_action(&base, &next))
                     },
                 ));
@@ -3022,7 +2990,6 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
 
                     encode(&VideoEditorAction::AddEffect {
                         clip: add_clip.to_string(),
-                        expected_stack: Vec::new(),
                         ordinal: add_ordinal,
                         effect,
                     })
@@ -3786,8 +3753,26 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
         root = root.with_child(mr);
     }
 
+    for extra in live_playhead_resources(ctx) {
+        root = root.with_child(extra);
+    }
+
     annotate_contracts(&mut root);
     vec![root]
+}
+
+/// The published project. Playhead and mix rows stay live extras on this tree
+/// so standalone callers still see them; the framework root adds them itself.
+pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
+    // Standalone / palette / tests need the timeline at the *live* playhead
+    // (clip markers, keys, trim). `tilo_resource::publish` builds document
+    // children at playhead 0 and keeps playhead doors on the surface — that
+    // path stays for the framework root; this tree is the live editor door.
+    let mut roots = project_tree(ctx);
+    for root in &mut roots {
+        annotate_contracts(root);
+    }
+    roots
 }
 
 #[derive(Clone, Copy)]
@@ -3922,9 +3907,29 @@ fn parse_transition(s: &str) -> Transition {
     }
 }
 
-impl ResourceProvider for crate::app::VideoEditorApp {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.video_resource_ctx())
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::VideoEditorApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        let ctx = self.video_resource_ctx();
+        // The document is the project once it holds one. An unsynced editor
+        // still has the project only on the widget. Playhead and mix stay live.
+        let project = if VideoDoc::is_empty(doc) {
+            ctx.project.clone()
+        } else {
+            VideoDoc::load_project(doc)
+        };
+        let label = if project.name.is_empty() {
+            "Project".to_string()
+        } else {
+            project.name.clone()
+        };
+        let mut root = ui::tilo_resource::publish::<crate::resource::VideoProject>(
+            "video.project",
+            &label,
+            &project,
+        );
+        root.children.extend(live_playhead_resources(&ctx));
+        vec![root]
     }
 }
 
@@ -4043,347 +4048,341 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
     #[expect(
         clippy::float_cmp,
         reason = "the values are written through an action and read back unchanged, or clamped to a literal bound"
     )]
-    fn opening_a_project_replays_as_one_action_that_replaces_everything() {
-        // Opening a file is an action, so it undoes and replicates. That is
-        // only true if the *encoded* form carries the whole project — a
-        // payload that dropped the media bin would replay on a peer as a
-        // timeline of clips with no sources.
-        let (ctx, _cid) = ctx_fixture();
-        let mut doc = AutoCommit::new();
-        VideoDoc::write_project(&mut doc, &ctx.project);
-
-        let mut opened = Project::new("Opened");
-        opened.fps = 24.0;
-        let mid = Uuid::new_v4();
-        opened.media.push(MediaItem {
-            id: mid,
-            name: "New.mp4".into(),
-            kind: MediaKind::Video,
-            duration: 8.0,
-            width: 1280,
-            height: 720,
-            ..Default::default()
-        });
-        let tid = Uuid::new_v4();
-        opened.tracks.push(Track {
-            id: tid,
-            name: "V1".into(),
-            index: 1,
-            solo: true,
-            ..Default::default()
-        });
-        opened.clips.push(Clip {
-            id: Uuid::new_v4(),
-            track: tid,
-            media: mid,
-            start: 2.0,
-            out_point: 8.0,
-            ..Default::default()
-        });
-
-        // Through the wire, not through the struct: this is the exact path a
-        // peer replaying the change takes.
-        let encoded = encode(&load_project_action(&opened));
-        let decoded: VideoEditorAction =
-            serde_json::from_slice(&encoded.payload).expect("payload decodes");
-        decoded.apply(&mut doc).expect("applies");
-
-        let back = VideoDoc::load_project(&doc);
-        assert_eq!(back.name, "Opened");
-        assert_eq!(back.fps, 24.0);
-        assert_eq!(
-            back.media.len(),
-            1,
-            "the previous bin is replaced, not merged"
-        );
-        assert_eq!(back.media[0].name, "New.mp4");
-        assert_eq!(back.tracks.len(), 1);
-        assert!(back.tracks[0].solo);
-        assert_eq!(back.clips.len(), 1);
-        assert_eq!(back.clips[0].media, mid);
-    }
-
-    #[test]
-    fn a_whole_project_survives_the_wire_with_every_field_intact() {
-        // `ProjectData` is composed from the per-entity payloads so there is
-        // one definition of "a clip on the wire" — this proves the
-        // composition did not quietly drop a layer.
-        let (ctx, cid) = ctx_fixture();
-        let mut p = ctx.project;
-        p.add_marker(3.5, "Beat", 2);
+    fn whole_project_actions_replace_and_survive_the_wire() {
+        // Case `opening_a_project_replays_as_one_action_that_replaces_everything`.
         {
-            let c = p.clip_mut(cid).unwrap();
-            c.set_speed(0.5, false);
-            c.transition_duration = 0.75;
-            c.set_key_at(Param::Opacity, 1.0, 0.4, Interp::Linear);
+            // Opening a file is an action, so it undoes and replicates. That is
+            // only true if the *encoded* form carries the whole project — a
+            // payload that dropped the media bin would replay on a peer as a
+            // timeline of clips with no sources.
+            let (ctx, _cid) = ctx_fixture();
+            let mut doc = AutoCommit::new();
+            VideoDoc::write_project(&mut doc, &ctx.project);
+
+            let mut opened = Project::new("Opened");
+            opened.fps = 24.0;
+            let mid = Uuid::new_v4();
+            opened.media.push(MediaItem {
+                id: mid,
+                name: "New.mp4".into(),
+                kind: MediaKind::Video,
+                duration: 8.0,
+                width: 1280,
+                height: 720,
+                ..Default::default()
+            });
+            let tid = Uuid::new_v4();
+            opened.tracks.push(Track {
+                id: tid,
+                name: "V1".into(),
+                index: 1,
+                solo: true,
+                ..Default::default()
+            });
+            opened.clips.push(Clip {
+                id: Uuid::new_v4(),
+                track: tid,
+                media: mid,
+                start: 2.0,
+                out_point: 8.0,
+                ..Default::default()
+            });
+
+            // Through the wire, not through the struct: this is the exact path a
+            // peer replaying the change takes.
+            let encoded = encode(&load_project_action(&opened));
+            let decoded: VideoEditorAction =
+                serde_json::from_slice(&encoded.payload).expect("payload decodes");
+            decoded.apply(&mut doc).expect("applies");
+
+            let back = VideoDoc::load_project(&doc);
+            assert_eq!(back.name, "Opened");
+            assert_eq!(back.fps, 24.0);
+            assert_eq!(
+                back.media.len(),
+                1,
+                "the previous bin is replaced, not merged"
+            );
+            assert_eq!(back.media[0].name, "New.mp4");
+            assert_eq!(back.tracks.len(), 1);
+            assert!(back.tracks[0].solo);
+            assert_eq!(back.clips.len(), 1);
+            assert_eq!(back.clips[0].media, mid);
         }
-
-        let json = serde_json::to_vec(&load_project_action(&p)).unwrap();
-        let back: VideoEditorAction = serde_json::from_slice(&json).unwrap();
-        let VideoEditorAction::LoadProject(data) = back else {
-            panic!("the action round-trips as itself");
-        };
-        let rebuilt = data.to_project();
-
-        assert_eq!(rebuilt.markers.len(), 1);
-        assert_eq!(rebuilt.markers[0].name, "Beat");
-        assert_eq!(rebuilt.media.len(), p.media.len());
-        assert_eq!(rebuilt.tracks.len(), p.tracks.len());
-        let c = rebuilt.clip(cid).expect("the clip kept its id");
-        assert_eq!(c.speed, p.clip(cid).unwrap().speed);
-        assert!((c.transition_duration - 0.75).abs() < 1e-9);
-        assert_eq!(c.anim, p.clip(cid).unwrap().anim);
-    }
-
-    #[test]
-    fn explicit_full_clip_replacement_carries_geometry_speed_curves_and_markers() {
-        // Import and explicit replacement still carry all persisted fields;
-        // ordinary editor interactions cover them with narrow patches below.
-        let (mut p, cid) = {
+        // Case `a_whole_project_survives_the_wire_with_every_field_intact`.
+        {
+            // `ProjectData` is composed from the per-entity payloads so there is
+            // one definition of "a clip on the wire" — this proves the
+            // composition did not quietly drop a layer.
             let (ctx, cid) = ctx_fixture();
-            (ctx.project, cid)
-        };
-        {
-            let c = p.clip_mut(cid).unwrap();
-            c.transform = crate::model::Transform::pip(0.3, (1.0, -1.0), 0.05);
-            c.set_speed(2.5, true);
-            c.set_key_at(Param::Opacity, 0.0, 0.2, Interp::Ease);
-            c.set_key_at(Param::Opacity, 3.0, 0.9, Interp::Hold);
-            c.transition_duration = 1.25;
-            c.add_marker(1.0, "beat", 2);
-            c.key = crate::model::ChromaKey {
-                enabled: true,
-                color: [0.09, 0.71, 0.18],
-                tolerance: 0.26,
-                softness: 0.08,
-                spill: 0.55,
+            let mut p = ctx.project;
+            p.add_marker(3.5, "Beat", 2);
+            {
+                let c = p.clip_mut(cid).unwrap();
+                c.set_speed(0.5, false);
+                c.transition_duration = 0.75;
+                c.set_key_at(Param::Opacity, 1.0, 0.4, Interp::Linear);
+            }
+
+            let json = serde_json::to_vec(&load_project_action(&p)).unwrap();
+            let back: VideoEditorAction = serde_json::from_slice(&json).unwrap();
+            let VideoEditorAction::LoadProject(data) = back else {
+                panic!("the action round-trips as itself");
             };
-            c.mask = crate::model::Mask {
-                shape: crate::model::MaskShape::Rect,
-                x: 0.12,
-                y: -0.34,
-                w: 0.55,
-                h: 0.42,
-                rotation: 12.0,
-                feather: 0.19,
-                invert: true,
-            };
-            c.set_key_at(Param::MaskX, 2.0, 0.4, Interp::Linear);
+            let rebuilt = data.to_project();
+
+            assert_eq!(rebuilt.markers.len(), 1);
+            assert_eq!(rebuilt.markers[0].name, "Beat");
+            assert_eq!(rebuilt.media.len(), p.media.len());
+            assert_eq!(rebuilt.tracks.len(), p.tracks.len());
+            let c = rebuilt.clip(cid).expect("the clip kept its id");
+            assert_eq!(c.speed, p.clip(cid).unwrap().speed);
+            assert!((c.transition_duration - 0.75).abs() < 1e-9);
+            assert_eq!(c.anim, p.clip(cid).unwrap().anim);
         }
-        let want = p.clip(cid).unwrap().clone();
-        let data = ClipData::from_clip(&want);
-        let back = data.to_clip().expect("round-trips");
-        assert_eq!(back, want, "the wire payload is lossless");
-        // Through serde too, which is how it actually travels — a field
-        // missing its `serde` attribute survives the struct copy above and
-        // is dropped the moment it is encoded.
-        let wire = serde_json::to_vec(&data).expect("encodes");
-        let decoded: ClipData = serde_json::from_slice(&wire).expect("decodes");
-        assert_eq!(
-            decoded.to_clip().expect("rebuilds"),
-            want,
-            "and over the wire"
-        );
-
-        // And through a real document.
-        let mut doc = AutoCommit::new();
-        VideoDoc::write_project(&mut doc, &p);
-        VideoEditorAction::UpsertClip(data)
-            .apply(&mut doc)
-            .expect("applies");
-        assert_eq!(VideoDoc::load_project(&doc).clip(cid).unwrap(), &want);
-    }
-
-    /// A peer that predates keying sends a payload with no `key`/`mask`
-    /// field at all. That has to read as "not keyed, not masked" — the
-    /// composite that peer is already drawing — rather than failing the
-    /// decode and wedging the replay.
-    #[test]
-    fn a_payload_from_before_keying_reads_as_unkeyed_and_unmasked() {
-        let (ctx, cid) = ctx_fixture();
-        let want = ctx.project.clip(cid).unwrap().clone();
-        let mut json: serde_json::Value =
-            serde_json::to_value(ClipData::from_clip(&want)).expect("encodes");
-        let obj = json.as_object_mut().expect("a map on the wire");
-        assert!(obj.remove("key").is_some(), "the field is there to remove");
-        assert!(obj.remove("mask").is_some());
-        let older: ClipData = serde_json::from_value(json).expect("an older payload still decodes");
-        let c = older.to_clip().expect("and still rebuilds");
-        assert!(!c.key.is_active(), "absent means nothing is keyed");
-        assert!(!c.mask.is_active(), "absent means the layer is not cut");
-        assert_eq!(c, want, "and nothing else about the clip moved");
-    }
-
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the values are written through an action and read back unchanged, or clamped to a literal bound"
-    )]
-    fn the_palette_can_set_a_speed_and_reverse_it() {
-        let (ctx, cid) = ctx_fixture();
-        let sped = run(&ctx.project, &spec(&ctx, "set-speed"), Some("2"));
-        let c = sped.clip(cid).unwrap();
-        assert_eq!(c.speed.rate(), 2.0);
-        assert!(
-            ((c.duration()) - (15.0)).abs() < 1e-9,
-            "and the clip is half as long on the timeline"
-        );
-
-        let back = run(&ctx.project, &spec(&ctx, "toggle-reverse"), None);
-        assert!(back.clip(cid).unwrap().speed.reverse);
-    }
-
-    #[test]
-    fn the_palette_can_inset_a_clip_and_put_it_back() {
-        let (ctx, cid) = ctx_fixture();
-        let inset = run(&ctx.project, &spec(&ctx, "pip-tr"), None);
-        let t = inset.clip(cid).unwrap().transform;
-        assert!(!t.is_identity());
-        assert!(t.pos_x > 0.0 && t.pos_y < 0.0, "top-right: {t:?}");
-
-        // With the clip already inset, the palette offers the way back.
-        let ctx2 = VideoResourceCtx {
-            project: inset,
-            ..ctx
-        };
-        let flat = run(&ctx2.project, &spec(&ctx2, "reset-transform"), None);
-        assert!(flat.clip(cid).unwrap().transform.is_identity());
-    }
-
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the values are written through an action and read back unchanged, or clamped to a literal bound"
-    )]
-    fn the_palette_keys_a_parameter_at_the_playhead_without_moving_the_picture() {
-        let (ctx, cid) = ctx_fixture();
-        let before = ctx.project.clip(cid).unwrap().param_at(Param::Opacity, 4.0);
-        let keyed = run(&ctx.project, &spec(&ctx, "key-opacity"), None);
-        let c = keyed.clip(cid).unwrap();
-        assert!(c.anim.is_animated(Param::Opacity), "a curve exists now");
-        assert_eq!(
-            c.param_at(Param::Opacity, 4.0),
-            before,
-            "the first key is planted where the value already was",
-        );
-
-        // And with a curve present, the palette offers to take it away.
-        let ctx2 = VideoResourceCtx {
-            project: keyed,
-            ..ctx
-        };
-        let cleared = run(&ctx2.project, &spec(&ctx2, "unkey-opacity"), None);
-        assert!(!cleared.clip(cid).unwrap().anim.is_animated(Param::Opacity));
-    }
-
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the values are written through an action and read back unchanged, or clamped to a literal bound"
-    )]
-    fn the_palette_adds_a_timeline_marker_and_removes_it() {
-        let (ctx, _) = ctx_fixture();
-        let marked = run(&ctx.project, &spec(&ctx, "add-marker"), Some("Act two"));
-        assert_eq!(marked.markers.len(), 1);
-        assert_eq!(marked.markers[0].name, "Act two");
-        assert_eq!(marked.markers[0].t, 4.0, "at the playhead");
-
-        let ctx2 = VideoResourceCtx {
-            project: marked,
-            ..ctx
-        };
-        let gone = run(&ctx2.project, &spec(&ctx2, "remove-marker"), None);
-        assert!(gone.markers.is_empty());
-    }
-
-    #[test]
-    fn the_palette_adds_a_title_to_the_bin() {
-        let (ctx, _) = ctx_fixture();
-        let with_title = run(&ctx.project, &spec(&ctx, "add-title"), Some("Chapter One"));
-        let t = with_title
-            .media
-            .iter()
-            .find(|m| m.kind == MediaKind::Text)
-            .expect("a title landed in the bin");
-        assert_eq!(
-            t.text.as_ref().map(|t| t.content.as_str()),
-            Some("Chapter One")
-        );
-        assert_eq!(t.name, "Chapter One", "and it is named after its words");
-        assert!(t.path.is_empty(), "a title has no bytes to fetch");
-
-        // Its words can then be edited from the bin.
-        let ctx2 = VideoResourceCtx {
-            project: with_title,
-            ..ctx
-        };
-        let edited = run(
-            &ctx2.project,
-            &spec(&ctx2, "set-title-text"),
-            Some("Chapter Two"),
-        );
-        let t = edited
-            .media
-            .iter()
-            .find(|m| m.kind == MediaKind::Text)
-            .unwrap();
-        assert_eq!(
-            t.text.as_ref().map(|t| t.content.as_str()),
-            Some("Chapter Two")
-        );
-    }
-
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the values are written through an action and read back unchanged, or clamped to a literal bound"
-    )]
-    fn a_clip_marker_from_the_palette_lands_on_the_clip_not_the_project() {
-        let (ctx, cid) = ctx_fixture();
-        let marked = run(&ctx.project, &spec(&ctx, "add-clip-marker"), Some("hit"));
-        assert!(marked.markers.is_empty(), "not a project marker");
-        let m = &marked.clip(cid).unwrap().markers;
-        assert_eq!(m.len(), 1);
-        assert_eq!(m[0].name, "hit");
-        assert_eq!(m[0].t, 4.0, "clip-local, and this clip starts at zero");
-    }
-
-    #[test]
-    fn every_new_action_replays_to_the_same_document_twice() {
-        // The determinism contract: no RNG, no clock, so applying the same
-        // encoded action to the same base twice lands identically.
-        let (ctx, _) = ctx_fixture();
-        for (id, arg) in [
-            ("set-speed", Some("1.75")),
-            ("toggle-reverse", None),
-            ("pip-bl", None),
-            ("key-scale_x", None),
-            ("add-marker", Some("m")),
-            ("add-clip-marker", Some("m")),
-            ("set-rotation", Some("-12")),
-        ] {
-            // One authoring, applied twice. Ids are minted when the action
-            // is *built* and travel in the payload, so what has to be
-            // deterministic is `apply` — two separate authorings of
-            // "add a marker" are two different markers, and should be.
-            let sp = spec(&ctx, id);
-            let encoded = match arg {
-                Some(a) => prompted_encode(&sp, a),
-                None => spec_encoding(&sp, None),
+        // Case `explicit_full_clip_replacement_carries_geometry_speed_curves_and_markers`.
+        {
+            // Import and explicit replacement still carry all persisted fields;
+            // ordinary editor interactions cover them with narrow patches below.
+            let (mut p, cid) = {
+                let (ctx, cid) = ctx_fixture();
+                (ctx.project, cid)
             };
-            let apply_once = || {
-                let mut doc = AutoCommit::new();
-                VideoDoc::write_project(&mut doc, &ctx.project);
-                let action: VideoEditorAction =
-                    serde_json::from_slice(&encoded.payload).expect("decodes");
-                action.apply(&mut doc).expect("applies");
-                serde_json::to_value(VideoDoc::load_project(&doc)).unwrap()
+            {
+                let c = p.clip_mut(cid).unwrap();
+                c.transform = crate::model::Transform::pip(0.3, (1.0, -1.0), 0.05);
+                c.set_speed(2.5, true);
+                c.set_key_at(Param::Opacity, 0.0, 0.2, Interp::Ease);
+                c.set_key_at(Param::Opacity, 3.0, 0.9, Interp::Hold);
+                c.transition_duration = 1.25;
+                c.add_marker(1.0, "beat", 2);
+                c.key = crate::model::ChromaKey {
+                    enabled: true,
+                    color: [0.09, 0.71, 0.18],
+                    tolerance: 0.26,
+                    softness: 0.08,
+                    spill: 0.55,
+                };
+                c.mask = crate::model::Mask {
+                    shape: crate::model::MaskShape::Rect,
+                    x: 0.12,
+                    y: -0.34,
+                    w: 0.55,
+                    h: 0.42,
+                    rotation: 12.0,
+                    feather: 0.19,
+                    invert: true,
+                };
+                c.set_key_at(Param::MaskX, 2.0, 0.4, Interp::Linear);
+            }
+            let want = p.clip(cid).unwrap().clone();
+            let data = ClipData::from_clip(&want);
+            let back = data.to_clip().expect("round-trips");
+            assert_eq!(back, want, "the wire payload is lossless");
+            // Through serde too, which is how it actually travels — a field
+            // missing its `serde` attribute survives the struct copy above and
+            // is dropped the moment it is encoded.
+            let wire = serde_json::to_vec(&data).expect("encodes");
+            let decoded: ClipData = serde_json::from_slice(&wire).expect("decodes");
+            assert_eq!(
+                decoded.to_clip().expect("rebuilds"),
+                want,
+                "and over the wire"
+            );
+
+            // And through a real document.
+            let mut doc = AutoCommit::new();
+            VideoDoc::write_project(&mut doc, &p);
+            VideoEditorAction::UpsertClip(data)
+                .apply(&mut doc)
+                .expect("applies");
+            assert_eq!(VideoDoc::load_project(&doc).clip(cid).unwrap(), &want);
+        }
+        // Case `a_payload_from_before_keying_reads_as_unkeyed_and_unmasked`:
+        // A peer that predates keying sends a payload with no `key`/`mask`
+        // field at all. That has to read as "not keyed, not masked" — the
+        // composite that peer is already drawing — rather than failing the
+        // decode and wedging the replay.
+        {
+            let (ctx, cid) = ctx_fixture();
+            let want = ctx.project.clip(cid).unwrap().clone();
+            let mut json: serde_json::Value =
+                serde_json::to_value(ClipData::from_clip(&want)).expect("encodes");
+            let obj = json.as_object_mut().expect("a map on the wire");
+            assert!(obj.remove("key").is_some(), "the field is there to remove");
+            assert!(obj.remove("mask").is_some());
+            let older: ClipData =
+                serde_json::from_value(json).expect("an older payload still decodes");
+            let c = older.to_clip().expect("and still rebuilds");
+            assert!(!c.key.is_active(), "absent means nothing is keyed");
+            assert!(!c.mask.is_active(), "absent means the layer is not cut");
+            assert_eq!(c, want, "and nothing else about the clip moved");
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the values are written through an action and read back unchanged, or clamped to a literal bound"
+    )]
+    fn palette_edits_speed_inset_keys_markers_and_titles() {
+        // Case `the_palette_can_set_a_speed_and_reverse_it`.
+        {
+            let (ctx, cid) = ctx_fixture();
+            let sped = run(&ctx.project, &spec(&ctx, "set-speed"), Some("2"));
+            let c = sped.clip(cid).unwrap();
+            assert_eq!(c.speed.rate(), 2.0);
+            assert!(
+                ((c.duration()) - (15.0)).abs() < 1e-9,
+                "and the clip is half as long on the timeline"
+            );
+
+            let back = run(&ctx.project, &spec(&ctx, "toggle-reverse"), None);
+            assert!(back.clip(cid).unwrap().speed.reverse);
+        }
+        // Case `the_palette_can_inset_a_clip_and_put_it_back`.
+        {
+            let (ctx, cid) = ctx_fixture();
+            let inset = run(&ctx.project, &spec(&ctx, "pip-tr"), None);
+            let t = inset.clip(cid).unwrap().transform;
+            assert!(!t.is_identity());
+            assert!(t.pos_x > 0.0 && t.pos_y < 0.0, "top-right: {t:?}");
+
+            // With the clip already inset, the palette offers the way back.
+            let ctx2 = VideoResourceCtx {
+                project: inset,
+                ..ctx
             };
-            assert_eq!(apply_once(), apply_once(), "{id} replays deterministically");
+            let flat = run(&ctx2.project, &spec(&ctx2, "reset-transform"), None);
+            assert!(flat.clip(cid).unwrap().transform.is_identity());
+        }
+        // Case `the_palette_keys_a_parameter_at_the_playhead_without_moving_the_picture`.
+        {
+            let (ctx, cid) = ctx_fixture();
+            let before = ctx.project.clip(cid).unwrap().param_at(Param::Opacity, 4.0);
+            let keyed = run(&ctx.project, &spec(&ctx, "key-opacity"), None);
+            let c = keyed.clip(cid).unwrap();
+            assert!(c.anim.is_animated(Param::Opacity), "a curve exists now");
+            assert_eq!(
+                c.param_at(Param::Opacity, 4.0),
+                before,
+                "the first key is planted where the value already was",
+            );
+
+            // And with a curve present, the palette offers to take it away.
+            let ctx2 = VideoResourceCtx {
+                project: keyed,
+                ..ctx
+            };
+            let cleared = run(&ctx2.project, &spec(&ctx2, "unkey-opacity"), None);
+            assert!(!cleared.clip(cid).unwrap().anim.is_animated(Param::Opacity));
+        }
+        // Case `the_palette_adds_a_timeline_marker_and_removes_it`.
+        {
+            let (ctx, _) = ctx_fixture();
+            let marked = run(&ctx.project, &spec(&ctx, "add-marker"), Some("Act two"));
+            assert_eq!(marked.markers.len(), 1);
+            assert_eq!(marked.markers[0].name, "Act two");
+            assert_eq!(marked.markers[0].t, 4.0, "at the playhead");
+
+            let ctx2 = VideoResourceCtx {
+                project: marked,
+                ..ctx
+            };
+            let gone = run(&ctx2.project, &spec(&ctx2, "remove-marker"), None);
+            assert!(gone.markers.is_empty());
+        }
+        // Case `the_palette_adds_a_title_to_the_bin`.
+        {
+            let (ctx, _) = ctx_fixture();
+            let with_title = run(&ctx.project, &spec(&ctx, "add-title"), Some("Chapter One"));
+            let t = with_title
+                .media
+                .iter()
+                .find(|m| m.kind == MediaKind::Text)
+                .expect("a title landed in the bin");
+            assert_eq!(
+                t.text.as_ref().map(|t| t.content.as_str()),
+                Some("Chapter One")
+            );
+            assert_eq!(t.name, "Chapter One", "and it is named after its words");
+            assert!(t.path.is_empty(), "a title has no bytes to fetch");
+
+            // Its words can then be edited from the bin.
+            let ctx2 = VideoResourceCtx {
+                project: with_title,
+                ..ctx
+            };
+            let edited = run(
+                &ctx2.project,
+                &spec(&ctx2, "set-title-text"),
+                Some("Chapter Two"),
+            );
+            let t = edited
+                .media
+                .iter()
+                .find(|m| m.kind == MediaKind::Text)
+                .unwrap();
+            assert_eq!(
+                t.text.as_ref().map(|t| t.content.as_str()),
+                Some("Chapter Two")
+            );
+        }
+        // Case `a_clip_marker_from_the_palette_lands_on_the_clip_not_the_project`.
+        {
+            let (ctx, cid) = ctx_fixture();
+            let marked = run(&ctx.project, &spec(&ctx, "add-clip-marker"), Some("hit"));
+            assert!(marked.markers.is_empty(), "not a project marker");
+            let m = &marked.clip(cid).unwrap().markers;
+            assert_eq!(m.len(), 1);
+            assert_eq!(m[0].name, "hit");
+            assert_eq!(m[0].t, 4.0, "clip-local, and this clip starts at zero");
+        }
+        // Case `every_new_action_replays_to_the_same_document_twice`.
+        {
+            // The determinism contract: no RNG, no clock, so applying the same
+            // encoded action to the same base twice lands identically.
+            let (ctx, _) = ctx_fixture();
+            for (id, arg) in [
+                ("set-speed", Some("1.75")),
+                ("toggle-reverse", None),
+                ("pip-bl", None),
+                ("key-scale_x", None),
+                ("add-marker", Some("m")),
+                ("add-clip-marker", Some("m")),
+                ("set-rotation", Some("-12")),
+            ] {
+                // One authoring, applied twice. Ids are minted when the action
+                // is *built* and travel in the payload, so what has to be
+                // deterministic is `apply` — two separate authorings of
+                // "add a marker" are two different markers, and should be.
+                let sp = spec(&ctx, id);
+                let encoded = match arg {
+                    Some(a) => prompted_encode(&sp, a),
+                    None => spec_encoding(&sp, None),
+                };
+                let apply_once = || {
+                    let mut doc = AutoCommit::new();
+                    VideoDoc::write_project(&mut doc, &ctx.project);
+                    let action: VideoEditorAction =
+                        serde_json::from_slice(&encoded.payload).expect("decodes");
+                    action.apply(&mut doc).expect("applies");
+                    serde_json::to_value(VideoDoc::load_project(&doc)).unwrap()
+                };
+                assert_eq!(apply_once(), apply_once(), "{id} replays deterministically");
+            }
         }
     }
 
@@ -4412,157 +4411,207 @@ mod tests {
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
+                panic!("expected a prompted action: {}", spec.id)
+            }
         }
     }
 
-    /// Ctrl+K on the editor yields the nested tree: the project → its tracks →
-    /// the clips on each, each exporting the actions its data model implies.
-    /// Drives the real resource hook.
     #[test]
-    fn ctrl_k_publishes_the_project_track_clip_tree() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 1, "one open project");
-        let project = &resources[0];
-        assert_eq!(project.kind, "video.project");
-        let proj_actions: Vec<&str> = project.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(proj_actions.contains(&"rename-project"), "{proj_actions:?}");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn palette_tree_and_removals_edit_the_document() {
+        // Case `ctrl_k_publishes_the_project_track_clip_tree`:
+        // Ctrl+K on the editor yields the nested tree: the project → its tracks →
+        // the clips on each, each exporting the actions its data model implies.
+        // Drives the real resource hook.
+        {
+            let (app, doc) = seeded();
+            let resources = ui::resources::resources(&app, &doc);
+            assert_eq!(resources.len(), 1, "one open project");
+            let project = &resources[0];
+            assert_eq!(project.kind, "video_editor.project");
+            let proj_actions: Vec<&str> = project.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(proj_actions.contains(&"rename-project"), "{proj_actions:?}");
 
-        let tracks: Vec<_> = project
-            .children
-            .iter()
-            .filter(|c| c.kind == "video.track")
-            .collect();
-        assert_eq!(tracks.len(), 4, "four sample tracks");
-        // The bin's media are also published, each with rename + delete.
-        let media: Vec<_> = project
-            .children
-            .iter()
-            .filter(|c| c.kind == "video.media")
-            .collect();
-        assert_eq!(media.len(), 7, "seven sample media items");
-        let media_actions: Vec<&str> = media[0].actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(media_actions.contains(&"rename-media"), "{media_actions:?}");
-        assert!(media_actions.contains(&"delete-media"), "{media_actions:?}");
-        let track = tracks[0];
-        assert_eq!(track.kind, "video.track");
-        let track_actions: Vec<&str> = track.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(track_actions.contains(&"rename-track"), "{track_actions:?}");
-        assert!(track_actions.contains(&"delete-track"), "{track_actions:?}");
-        assert!(track_actions.contains(&"toggle-mute"), "{track_actions:?}");
+            let tracks: Vec<_> = project
+                .children
+                .iter()
+                .filter(|c| c.kind == "video.track")
+                .collect();
+            assert_eq!(tracks.len(), 4, "four sample tracks");
+            // The bin's media are also published, each with rename + delete.
+            let media: Vec<_> = project
+                .children
+                .iter()
+                .filter(|c| c.kind == "video.media")
+                .collect();
+            assert_eq!(media.len(), 7, "seven sample media items");
+            let media_actions: Vec<&str> = media[0].actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(media_actions.contains(&"rename-media"), "{media_actions:?}");
+            assert!(media_actions.contains(&"delete-media"), "{media_actions:?}");
+            let track = tracks[0];
+            assert_eq!(track.kind, "video.track");
+            let track_actions: Vec<&str> = track.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(track_actions.contains(&"rename-track"), "{track_actions:?}");
+            assert!(track_actions.contains(&"delete-track"), "{track_actions:?}");
+            assert!(track_actions.contains(&"toggle-mute"), "{track_actions:?}");
 
-        // Some clip must expose the trim / delete / filter surface.
-        let clip = project
-            .children
-            .iter()
-            .flat_map(|t| t.children.iter())
-            .find(|c| c.kind == "video.clip")
-            .expect("a clip resource");
-        let clip_actions: Vec<&str> = clip.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(clip_actions.contains(&"delete"), "{clip_actions:?}");
-        assert!(clip_actions.contains(&"ripple-delete"), "{clip_actions:?}");
-        assert!(clip_actions.contains(&"set-brightness"), "{clip_actions:?}");
-    }
+            // Some clip must expose the trim / delete / filter surface.
+            let clip = project
+                .children
+                .iter()
+                .flat_map(|t| t.children.iter())
+                .find(|c| c.kind == "video.clip")
+                .expect("a clip resource");
+            let clip_actions: Vec<&str> = clip.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(clip_actions.contains(&"delete"), "{clip_actions:?}");
+            assert!(clip_actions.contains(&"ripple-delete"), "{clip_actions:?}");
+            assert!(clip_actions.contains(&"set-brightness"), "{clip_actions:?}");
+        }
+        // Case `delete_clip_action_removes_it_from_the_doc`:
+        // Dispatching `DeleteClip` through the executor removes exactly that clip
+        // from the document.
+        {
+            let (_app, mut doc) = seeded();
+            let project = VideoDoc::load_project(&doc);
+            let id = project.clips[0].id;
+            let before = project.clips.len();
 
-    /// Dispatching `DeleteClip` through the executor removes exactly that clip
-    /// from the document.
-    #[test]
-    fn delete_clip_action_removes_it_from_the_doc() {
-        let (_app, mut doc) = seeded();
-        let project = VideoDoc::load_project(&doc);
-        let id = project.clips[0].id;
-        let before = project.clips.len();
+            let action = delete_clip_action(&id);
+            let encoded = encode(&action);
+            let decoded = registry().decode(&encoded).unwrap();
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
-        let action = delete_clip_action(&id);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+            let after = VideoDoc::load_project(&doc);
+            assert_eq!(after.clips.len(), before - 1);
+            assert!(after.clip(id).is_none(), "the clip is gone from the CRDT");
+        }
+        // Case `ripple_delete_is_one_action_that_closes_the_gap`:
+        // A ripple delete lands as ONE action that both removes the clip and shifts
+        // every later clip on the same track left — a single change, not N.
+        {
+            let (_app, mut doc) = seeded();
+            let project = VideoDoc::load_project(&doc);
+            // Find a track whose first clip has a later neighbour.
+            let (id, track, next_id, next_start) = project
+                .tracks
+                .iter()
+                .find_map(|t| {
+                    let clips = project.clips_on(t.id);
+                    if clips.len() >= 2 {
+                        Some((clips[0].id, t.id, clips[1].id, clips[1].start))
+                    } else {
+                        None
+                    }
+                })
+                .expect("a track with two clips");
+            let _ = track;
 
-        let after = VideoDoc::load_project(&doc);
-        assert_eq!(after.clips.len(), before - 1);
-        assert!(after.clip(id).is_none(), "the clip is gone from the CRDT");
-    }
+            let mut plan = project;
+            let moved_ids = plan.ripple_delete(id);
+            let moved: Vec<Clip> = moved_ids
+                .iter()
+                .filter_map(|m| plan.clip(*m).cloned())
+                .collect();
+            let action = ripple_delete_action(&id, &moved);
+            let encoded = encode(&action);
+            let decoded = registry().decode(&encoded).unwrap();
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
-    /// A ripple delete lands as ONE action that both removes the clip and shifts
-    /// every later clip on the same track left — a single change, not N.
-    #[test]
-    fn ripple_delete_is_one_action_that_closes_the_gap() {
-        let (_app, mut doc) = seeded();
-        let project = VideoDoc::load_project(&doc);
-        // Find a track whose first clip has a later neighbour.
-        let (id, track, next_id, next_start) = project
-            .tracks
-            .iter()
-            .find_map(|t| {
-                let clips = project.clips_on(t.id);
-                if clips.len() >= 2 {
-                    Some((clips[0].id, t.id, clips[1].id, clips[1].start))
-                } else {
-                    None
-                }
-            })
-            .expect("a track with two clips");
-        let _ = track;
-
-        let mut plan = project;
-        let moved_ids = plan.ripple_delete(id);
-        let moved: Vec<Clip> = moved_ids
-            .iter()
-            .filter_map(|m| plan.clip(*m).cloned())
-            .collect();
-        let action = ripple_delete_action(&id, &moved);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-
-        let after = VideoDoc::load_project(&doc);
-        assert!(after.clip(id).is_none(), "the rippled clip is gone");
-        assert!(
-            after.clip(next_id).unwrap().start < next_start,
-            "the later clip shifted left to close the gap",
-        );
-    }
-
-    /// Deleting a bin media removes the source *and* every clip that placed it,
-    /// in one action, so no dangling clip is left referencing a gone source.
-    #[test]
-    fn remove_media_action_also_deletes_its_clips() {
-        let (_app, mut doc) = seeded();
-        let project = VideoDoc::load_project(&doc);
-        // Pick a media that is placed on the timeline at least once.
-        let mid = project
-            .media
-            .iter()
-            .find(|m| project.clips.iter().any(|c| c.media == m.id))
-            .map(|m| m.id)
-            .expect("a placed media");
-        let clip_ids: Vec<Uuid> = project
-            .clips
-            .iter()
-            .filter(|c| c.media == mid)
-            .map(|c| c.id)
-            .collect();
-        assert!(!clip_ids.is_empty());
-
-        let action = remove_media_action(&mid, &clip_ids);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-
-        let after = VideoDoc::load_project(&doc);
-        assert!(
-            after.media(mid).is_none(),
-            "the source is gone from the bin"
-        );
-        for cid in &clip_ids {
+            let after = VideoDoc::load_project(&doc);
+            assert!(after.clip(id).is_none(), "the rippled clip is gone");
             assert!(
-                after.clip(*cid).is_none(),
-                "a clip of the removed media is gone"
+                after.clip(next_id).unwrap().start < next_start,
+                "the later clip shifted left to close the gap",
             );
+        }
+        // Case `remove_media_action_also_deletes_its_clips`:
+        // Deleting a bin media removes the source *and* every clip that placed it,
+        // in one action, so no dangling clip is left referencing a gone source.
+        {
+            let (_app, mut doc) = seeded();
+            let project = VideoDoc::load_project(&doc);
+            // Pick a media that is placed on the timeline at least once.
+            let mid = project
+                .media
+                .iter()
+                .find(|m| project.clips.iter().any(|c| c.media == m.id))
+                .map(|m| m.id)
+                .expect("a placed media");
+            let clip_ids: Vec<Uuid> = project
+                .clips
+                .iter()
+                .filter(|c| c.media == mid)
+                .map(|c| c.id)
+                .collect();
+            assert!(!clip_ids.is_empty());
+
+            let action = remove_media_action(&mid, &clip_ids);
+            let encoded = encode(&action);
+            let decoded = registry().decode(&encoded).unwrap();
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+
+            let after = VideoDoc::load_project(&doc);
+            assert!(
+                after.media(mid).is_none(),
+                "the source is gone from the bin"
+            );
+            for cid in &clip_ids {
+                assert!(
+                    after.clip(*cid).is_none(),
+                    "a clip of the removed media is gone"
+                );
+            }
+        }
+        // Case `add_effect_action_appends_to_the_stack`:
+        // The Ctrl+K "Add effect" prompt appends the named effect to the clip's
+        // stack through the same narrow effects action the inspector uses.
+        {
+            let (app, mut doc) = seeded();
+            let resources = ui::resources::resources(&app, &doc);
+            let clip_res = resources[0]
+                .children
+                .iter()
+                .flat_map(|t| t.children.iter())
+                .find(|c| c.kind == "video.clip")
+                .unwrap();
+            let cid: Uuid = clip_res
+                .id
+                .0
+                .trim_start_matches("video.clip:")
+                .parse()
+                .unwrap();
+            let before = VideoDoc::load_project(&doc)
+                .clip(cid)
+                .unwrap()
+                .effects
+                .len();
+            let spec = clip_res
+                .actions
+                .iter()
+                .find(|a| a.id == "add-effect")
+                .expect("add-effect action");
+            let encoded = prompted_encode(spec, "sepia");
+            let decoded = registry().decode(&encoded).unwrap();
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+            let after = VideoDoc::load_project(&doc)
+                .clip(cid)
+                .unwrap()
+                .effects
+                .clone();
+            assert_eq!(
+                after.len(),
+                before + 1,
+                "the effect was appended to the stack"
+            );
+            assert_eq!(after.last().unwrap().kind, EffectKind::Sepia);
         }
     }
 
@@ -4572,7 +4621,7 @@ mod tests {
         let mut app = VideoEditorApp::new();
         let mut doc = doc.clone();
         app.sync(&mut doc, &automerge::ROOT);
-        Widget::resources(&app, &doc)
+        ui::resources::resources(&app, &doc)
     }
 
     fn clip_id(res: &Resource) -> Uuid {
@@ -4656,157 +4705,571 @@ mod tests {
         ],
     }
 
-    /// The prompted brightness spec builds the same narrow field patch an
-    /// inspector edit to 0.9 would — a slider value folded into one action.
     #[test]
-    fn prompted_brightness_builds_the_expected_clip_write() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let (clip_res, spec) = find_spec(&resources, "video.clip", "set-brightness");
-        let from_spec = prompted_encode(spec, "0.9");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the values are written through an action and read back unchanged, or clamped to a literal bound"
+    )]
+    fn declared_arguments_are_parsed_and_refused_by_type() {
+        // Case `prompted_brightness_builds_the_expected_clip_write`:
+        // The prompted brightness spec builds the same narrow field patch an
+        // inspector edit to 0.9 would — a slider value folded into one action.
+        {
+            let (app, doc) = seeded();
+            let resources = ui::resources::resources(&app, &doc);
+            let (clip_res, spec) = find_spec(&resources, "video.clip", "set-brightness");
+            let from_spec = prompted_encode(spec, "0.9");
 
-        let before = VideoDoc::load_project(&doc)
-            .clip(clip_id(clip_res))
-            .unwrap()
-            .clone();
-        let mut expected = before.clone();
-        expected.filters.brightness = 0.9;
-        let from_builder = encode(&clip_field_patch_action(&before, &expected));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "slider folds into one narrow clip-field action"
-        );
-    }
+            let before = VideoDoc::load_project(&doc)
+                .clip(clip_id(clip_res))
+                .unwrap()
+                .clone();
+            let mut expected = before.clone();
+            expected.filters.brightness = 0.9;
+            let from_builder = encode(&clip_field_patch_action(&before, &expected));
+            assert_eq!(
+                from_spec.payload, from_builder.payload,
+                "slider folds into one narrow clip-field action"
+            );
+        }
+        // Case `an_action_on_a_keyframed_clip_moves_what_it_plays`:
+        // A grade action declares a number, and a word is refused before the
+        // document is touched.
+        //
+        // This used to be a free-text prompt parsed by `parse_unit`, which
+        // answered `0.5` for anything it could not read. So `set-brightness
+        // banana` did not fail — it made a real edit, to a plausible value, and
+        // reported success. A caller had no way to learn the type either: "Value
+        // 0–1" was prose in a placeholder. Declaring the parameter makes the type
+        // readable and makes a bad value an error rather than an edit.
+        // An action on a keyframed clip changes what the clip is playing.
+        //
+        // The grade and level actions wrote the constant field. `param_at`
+        // prefers the curve and only falls back to the constant, so on a clip
+        // whose brightness is keyframed the write was invisible — the action
+        // reported success and the picture did not move. The identical drag in
+        // the inspector worked, because it goes through `set_param_at`. An
+        // action and a click disagreeing about what they did is the one thing
+        // this surface exists to prevent.
+        {
+            use crate::param::{Interp, Param};
+            use tilo_actions::params::ArgValue;
 
-    /// A grade action declares a number, and a word is refused before the
-    /// document is touched.
-    ///
-    /// This used to be a free-text prompt parsed by `parse_unit`, which
-    /// answered `0.5` for anything it could not read. So `set-brightness
-    /// banana` did not fail — it made a real edit, to a plausible value, and
-    /// reported success. A caller had no way to learn the type either: "Value
-    /// 0–1" was prose in a placeholder. Declaring the parameter makes the type
-    /// readable and makes a bad value an error rather than an edit.
-    /// An action on a keyframed clip changes what the clip is playing.
-    ///
-    /// The grade and level actions wrote the constant field. `param_at`
-    /// prefers the curve and only falls back to the constant, so on a clip
-    /// whose brightness is keyframed the write was invisible — the action
-    /// reported success and the picture did not move. The identical drag in
-    /// the inspector worked, because it goes through `set_param_at`. An
-    /// action and a click disagreeing about what they did is the one thing
-    /// this surface exists to prevent.
-    #[test]
-    fn an_action_on_a_keyframed_clip_moves_what_it_plays() {
-        use crate::param::{Interp, Param};
-        use tilo_actions::params::ArgValue;
+            // Built straight from a project, so this needs no widget.
+            let mut project = crate::doc::sample_project();
+            let cid = project
+                .clips
+                .iter()
+                .find(|c| {
+                    project
+                        .track(c.track)
+                        .is_some_and(|t| t.kind == crate::model::TrackKind::Video)
+                })
+                .expect("a video clip")
+                .id;
+            let at = {
+                let c = project.clip(cid).expect("clip");
+                c.start + (c.end() - c.start) * 0.5
+            };
+            project.clip_mut(cid).expect("clip").set_key_at(
+                Param::Brightness,
+                at,
+                0.2,
+                Interp::Linear,
+            );
 
-        // Built straight from a project, so this needs no widget.
-        let mut project = crate::doc::sample_project();
-        let cid = project
-            .clips
-            .iter()
-            .find(|c| {
-                project
-                    .track(c.track)
-                    .is_some_and(|t| t.kind == crate::model::TrackKind::Video)
-            })
-            .expect("a video clip")
-            .id;
-        let at = {
-            let c = project.clip(cid).expect("clip");
-            c.start + (c.end() - c.start) * 0.5
-        };
-        project
-            .clip_mut(cid)
-            .expect("clip")
-            .set_key_at(Param::Brightness, at, 0.2, Interp::Linear);
+            let before = project
+                .clip(cid)
+                .expect("clip")
+                .param_at(Param::Brightness, at);
+            assert!(
+                (before - 0.2).abs() < 1e-6,
+                "the fixture is not actually keyframed: {before}",
+            );
 
-        let before = project
-            .clip(cid)
-            .expect("clip")
-            .param_at(Param::Brightness, at);
-        assert!(
-            (before - 0.2).abs() < 1e-6,
-            "the fixture is not actually keyframed: {before}",
-        );
+            let resources = provide_resources(&VideoResourceCtx {
+                project: project.clone(),
+                playhead: at,
+                ..Default::default()
+            });
+            let clip_res = resources
+                .iter()
+                .flat_map(|r| r.children.iter())
+                .flat_map(|t| t.children.iter())
+                .find(|c| c.kind == "video.clip" && c.id.0.ends_with(&cid.to_string()))
+                .expect("the keyed clip is published");
+            let spec = clip_res
+                .actions
+                .iter()
+                .find(|a| a.id == "set-brightness")
+                .expect("set-brightness is offered");
 
-        let resources = provide_resources(&VideoResourceCtx {
-            project: project.clone(),
-            playhead: at,
-            ..Default::default()
-        });
-        let clip_res = resources
-            .iter()
-            .flat_map(|r| r.children.iter())
-            .flat_map(|t| t.children.iter())
-            .find(|c| c.kind == "video.clip" && c.id.0.ends_with(&cid.to_string()))
-            .expect("the keyed clip is published");
-        let spec = clip_res
-            .actions
-            .iter()
-            .find(|a| a.id == "set-brightness")
-            .expect("set-brightness is offered");
+            let encoded = spec
+                .build_args([("value".to_string(), ArgValue::Number(0.9))])
+                .expect("a number binds");
+            let action: VideoEditorAction =
+                serde_json::from_slice(&encoded.payload).expect("payload decodes");
 
-        let encoded = spec
-            .build_args([("value".to_string(), ArgValue::Number(0.9))])
-            .expect("a number binds");
-        let action: VideoEditorAction =
-            serde_json::from_slice(&encoded.payload).expect("payload decodes");
+            let mut doc = automerge::AutoCommit::new();
+            VideoDoc::write_project(&mut doc, &project);
+            action.apply(&mut doc).expect("the action applies");
 
-        let mut doc = automerge::AutoCommit::new();
-        VideoDoc::write_project(&mut doc, &project);
-        action.apply(&mut doc).expect("the action applies");
-
-        let after = VideoDoc::load_project(&doc)
-            .clip(cid)
-            .expect("clip survives")
-            .param_at(Param::Brightness, at);
-        assert!(
-            (after - 0.9).abs() < 0.05,
-            "set-brightness 0.9 on a keyframed clip left it playing {after} \
+            let after = VideoDoc::load_project(&doc)
+                .clip(cid)
+                .expect("clip survives")
+                .param_at(Param::Brightness, at);
+            assert!(
+                (after - 0.9).abs() < 0.05,
+                "set-brightness 0.9 on a keyframed clip left it playing {after} \
              (was {before}) — the action wrote the constant the curve hides",
-        );
-    }
+            );
+        }
+        // Case `a_word_is_refused_where_the_grade_declares_a_number`.
+        {
+            use tilo_actions::params::ArgValue;
 
-    #[test]
-    fn a_word_is_refused_where_the_grade_declares_a_number() {
-        use tilo_actions::params::ArgValue;
+            let (app, doc) = seeded();
+            let resources = ui::resources::resources(&app, &doc);
+            let clip_res = resources[0]
+                .children
+                .iter()
+                .flat_map(|t| t.children.iter())
+                .find(|c| c.kind == "video.clip")
+                .unwrap();
+            let spec = clip_res
+                .actions
+                .iter()
+                .find(|a| a.id == "set-brightness")
+                .unwrap();
 
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let clip_res = resources[0]
-            .children
-            .iter()
-            .flat_map(|t| t.children.iter())
-            .find(|c| c.kind == "video.clip")
-            .unwrap();
-        let spec = clip_res
-            .actions
-            .iter()
-            .find(|a| a.id == "set-brightness")
-            .unwrap();
+            // The type is published, not described in prose.
+            assert_eq!(spec.params().len(), 1, "one declared parameter");
+            assert_eq!(spec.params()[0].name.as_ref(), "value");
+            assert_eq!(spec.params()[0].ty, ParamType::Number);
 
-        // The type is published, not described in prose.
-        assert_eq!(spec.params().len(), 1, "one declared parameter");
-        assert_eq!(spec.params()[0].name.as_ref(), "value");
-        assert_eq!(spec.params()[0].ty, ParamType::Number);
+            let refused = ActionArgs::bind(
+                spec.params(),
+                [("value".to_string(), ArgValue::Text("banana".into()))],
+            );
+            assert!(
+                refused.is_err(),
+                "a word bound to a number-typed parameter must be refused, not read as 0.5",
+            );
 
-        let refused = ActionArgs::bind(
-            spec.params(),
-            [("value".to_string(), ArgValue::Text("banana".into()))],
-        );
-        assert!(
-            refused.is_err(),
-            "a word bound to a number-typed parameter must be refused, not read as 0.5",
-        );
+            let bound = ActionArgs::bind(
+                spec.params(),
+                [("value".to_string(), ArgValue::Number(0.8))],
+            )
+            .expect("a number binds");
+            assert_eq!(bound.number("value"), Some(0.8));
+        }
+        // Case `every_parameterised_action_declares_its_argument`:
+        // Every action that takes an argument names it and declares its type.
+        //
+        // That declaration is the whole surface for a caller with no screen: a
+        // screen reader, a script and an agent read the enumeration and nothing
+        // else, so a type stated only in placeholder prose ("Value 0-1", "Rate,
+        // e.g. 0.5 / 1 / 2") is a type none of them can see. The second half of
+        // the test is the one that keeps it honest — an action that takes an
+        // argument and is not in the table fails here rather than shipping as
+        // another untyped prompt.
+        {
+            let ctx = ctx_with_title();
+            for (id, params) in declared() {
+                let sp = spec(&ctx, id);
+                assert_eq!(
+                    sp.params().len(),
+                    params.len(),
+                    "{id} declares exactly the parameters this test has read",
+                );
+                for (i, (name, ty)) in params.iter().enumerate() {
+                    let p = &sp.params()[i];
+                    assert_eq!(p.name.as_ref(), *name, "{id} names its argument {i}");
+                    assert_eq!(p.ty, *ty, "{id} declares the type of {name}");
+                    assert!(p.required, "{id} needs {name}");
+                    assert!(!p.description.is_empty(), "{id} says what {name} means");
+                }
+            }
 
-        let bound = ActionArgs::bind(
-            spec.params(),
-            [("value".to_string(), ArgValue::Number(0.8))],
-        )
-        .expect("a number binds");
-        assert_eq!(bound.number("value"), Some(0.8));
+            let known = declared();
+            for (id, sp) in all_specs(&ctx) {
+                if sp.params().is_empty() || sp.kind == OperationKind::Effect {
+                    continue;
+                }
+                assert!(
+                    known.iter().any(|(k, _)| *k == id),
+                    "{id} takes an argument but declares nothing this test has read",
+                );
+            }
+        }
+        // Case `the_key_and_mask_knobs_write_the_value_they_are_named_for`:
+        // The chroma key's three sliders and the mask's six geometry knobs write
+        // the value they are named for.
+        //
+        // Declaring the parameter is half of it; the other half is that the number
+        // lands on the knob the id names. Nine near-identical actions is exactly
+        // the shape a copy-paste slip hides in — `set-mask-height` writing
+        // `mask.w` would satisfy every type assertion in this file and stay
+        // invisible until someone actually masked something — so each is checked
+        // against every one of its neighbours as well as against itself.
+        {
+            type Read = fn(&Clip) -> f64;
+            let (ctx, cid) = ctx_fixture();
+            let cases: [(&str, &str, f64, Read); 9] = [
+                ("set-key-tolerance", "0.31", 0.31, |c| c.key.tolerance),
+                ("set-key-softness", "0.17", 0.17, |c| c.key.softness),
+                ("set-key-spill", "0.62", 0.62, |c| c.key.spill),
+                ("set-mask-x", "-0.24", -0.24, |c| c.mask.x),
+                ("set-mask-y", "0.44", 0.44, |c| c.mask.y),
+                ("set-mask-width", "0.73", 0.73, |c| c.mask.w),
+                ("set-mask-height", "0.29", 0.29, |c| c.mask.h),
+                ("set-mask-rotation", "-37", -37.0, |c| c.mask.rotation),
+                ("set-mask-feather", "0.08", 0.08, |c| c.mask.feather),
+            ];
+            let before = ctx.project.clip(cid).expect("the fixture clip").clone();
+            for (id, arg, want, read) in cases {
+                let after = run(&ctx.project, &spec(&ctx, id), Some(arg));
+                let clip = after.clip(cid).expect("the clip survives its own edit");
+                assert!(
+                    (read(clip) - want).abs() < 1e-9,
+                    "{id} left {} where it was asked for {want}",
+                    read(clip),
+                );
+                for (other, other_read) in cases.iter().map(|(i, _, _, r)| (*i, *r)) {
+                    if other == id {
+                        continue;
+                    }
+                    assert!(
+                        (other_read(clip) - other_read(&before)).abs() < 1e-9,
+                        "{id} also moved the knob {other} is for",
+                    );
+                }
+            }
+            // Out of range clamps where the far stop is a legible intent, and does
+            // not where the model has a reason to allow more.
+            let hot = run(&ctx.project, &spec(&ctx, "set-key-tolerance"), Some("1.8"));
+            let tol = hot.clip(cid).expect("clip").key.tolerance;
+            assert!(
+                (tol - 1.0).abs() < 1e-9,
+                "\u{201c}as much as it takes\u{201d} is the far stop, not {tol}",
+            );
+            let wide = run(&ctx.project, &spec(&ctx, "set-mask-width"), Some("1.6"));
+            assert!(
+                (wide.clip(cid).expect("clip").mask.w - 1.6).abs() < 1e-9,
+                "a mask may reach past the frame — that is how a soft edge is kept \
+             out of the picture rather than drawn across it",
+            );
+            let inverted = run(&ctx.project, &spec(&ctx, "set-mask-width"), Some("-0.5"));
+            let w = inverted.clip(cid).expect("clip").mask.w;
+            assert!(
+                (w - 0.0).abs() < 1e-9,
+                "a negative extent is not a shape: {w}"
+            );
+        }
+        // Case `a_word_never_reaches_a_key_or_mask_knob`:
+        // A key or mask knob asked for nothing it can read leaves the value where
+        // it was, rather than answering with a plausible middle.
+        //
+        // The failure this rules out is the one the grade actions were built to
+        // rule out: a lenient parser that read a word as 0.5 made a real,
+        // convincing edit and reported success.
+        {
+            use tilo_actions::params::ArgValue;
+
+            let (ctx, _cid) = ctx_fixture();
+            for (id, param) in [
+                ("set-key-tolerance", "value"),
+                ("set-key-softness", "value"),
+                ("set-key-spill", "value"),
+                ("set-mask-x", "offset"),
+                ("set-mask-y", "offset"),
+                ("set-mask-width", "fraction"),
+                ("set-mask-height", "fraction"),
+                ("set-mask-rotation", "degrees"),
+                ("set-mask-feather", "value"),
+            ] {
+                let sp = spec(&ctx, id);
+                assert!(
+                    ActionArgs::bind(
+                        sp.params(),
+                        vec![(param.to_string(), ArgValue::Text("a lot".into()))]
+                    )
+                    .is_err(),
+                    "{id} must refuse a word where {param} declares a number",
+                );
+                let bound = ActionArgs::bind(
+                    sp.params(),
+                    vec![(param.to_string(), ArgValue::Number(0.4))],
+                )
+                .unwrap_or_else(|e| panic!("{id} takes a number for {param}: {e}"));
+                assert_eq!(bound.number(param), Some(0.4));
+            }
+        }
+        // Case `a_word_is_refused_wherever_a_number_is_declared`:
+        // A word is refused wherever a number is declared, everywhere — not only
+        // on the grade.
+        //
+        // Each of these used to be a free-text prompt with a lenient parser
+        // behind it: `parse_unit` answered 0.5, the geometry parse answered 0.0
+        // (for scale, an invisible clip), the speed parse answered 1x. All three
+        // were a real edit reported as success. Declaring `Number` makes the bad
+        // call a refusal, before the document is touched.
+        {
+            use tilo_actions::params::ArgValue;
+
+            let ctx = ctx_with_title();
+            for (id, params) in declared() {
+                for (target, ty) in params {
+                    if *ty != ParamType::Number {
+                        continue;
+                    }
+                    let sp = spec(&ctx, id);
+                    // Every declared argument supplied, so what is under test is
+                    // the *type* of one of them and not a missing sibling. An
+                    // action carrying two numbers has to refuse a word in either
+                    // position, not only the first.
+                    let with = |bad: Option<&str>| -> Vec<(String, ArgValue)> {
+                        params
+                            .iter()
+                            .map(|(name, _)| {
+                                let v = match bad {
+                                    Some(word) if name == target => ArgValue::Text(word.into()),
+                                    _ => ArgValue::Number(0.25),
+                                };
+                                ((*name).to_string(), v)
+                            })
+                            .collect()
+                    };
+                    assert!(
+                        ActionArgs::bind(sp.params(), with(Some("banana"))).is_err(),
+                        "{id} must refuse a word where {target} declares a number",
+                    );
+                    let bound = ActionArgs::bind(sp.params(), with(None))
+                        .unwrap_or_else(|e| panic!("{id} takes a number for {target}: {e}"));
+                    assert_eq!(bound.number(target), Some(0.25));
+                    // An integer widens — JSON spells 1.0 as 1, and a rate of 1
+                    // has to stay passable.
+                    let ints: Vec<(String, ArgValue)> = params
+                        .iter()
+                        .map(|(name, _)| ((*name).to_string(), ArgValue::Integer(1)))
+                        .collect();
+                    assert!(
+                        ActionArgs::bind(sp.params(), ints).is_ok(),
+                        "{id} takes an integer literal as a number",
+                    );
+                    // And an argument by a name it never declared is refused
+                    // rather than dropped, so a caller cannot believe it asked
+                    // for something it did not get.
+                    let mut stray = with(None);
+                    stray.push(("v".to_string(), ArgValue::Number(0.25)));
+                    assert!(
+                        ActionArgs::bind(sp.params(), stray).is_err(),
+                        "{id} refuses an argument it never declared",
+                    );
+                }
+            }
+        }
+        // Case `a_name_outside_the_declared_choices_is_refused`:
+        // A name outside the declared vocabulary is refused, and every name the
+        // vocabulary lists binds.
+        //
+        // The prose list used to be the entire specification — "grayscale /
+        // sepia / invert / warm / cool / vignette" in a placeholder — with the
+        // parser answering "nothing happened" for a name it did not know, and
+        // `parse_transition` answering "hard cut". Declared choices are the same
+        // list a caller can read *and* be held to.
+        {
+            use tilo_actions::params::ArgValue;
+
+            let ctx = ctx_with_title();
+            for (id, name, never_offered) in [
+                ("add-effect", "effect", "chrome"),
+                ("set-transition", "transition", "swipe"),
+                ("set-title-align", "align", "centre"),
+            ] {
+                let sp = spec(&ctx, id);
+                let choices = &sp.params()[0].choices;
+                assert!(!choices.is_empty(), "{id} enumerates its vocabulary");
+                for c in choices {
+                    ActionArgs::bind(
+                        sp.params(),
+                        [(name.to_string(), ArgValue::Text(c.to_string()))],
+                    )
+                    .unwrap_or_else(|e| panic!("{id} accepts its own choice {c:?}: {e}"));
+                }
+                assert!(
+                    ActionArgs::bind(
+                        sp.params(),
+                        [(name.to_string(), ArgValue::Text(never_offered.into()))],
+                    )
+                    .is_err(),
+                    "{id} refuses {never_offered:?}, a name it never offered",
+                );
+                assert!(
+                    ActionArgs::bind(sp.params(), [(name.to_string(), ArgValue::Number(1.0))])
+                        .is_err(),
+                    "{id} refuses a number where it declares a name",
+                );
+            }
+
+            // The declared set is the parser's set, in both directions: nothing is
+            // offered that the parser cannot read, and nothing the model can be is
+            // unreachable through the names offered. That is what stops the
+            // vocabulary and the parser drifting apart once they are two lists.
+            let effect = spec(&ctx, "add-effect");
+            let effects = &effect.params()[0].choices;
+            for c in effects {
+                assert!(
+                    EffectKind::from_name(c).is_some(),
+                    "{c:?} is offered, so the parser has to know it",
+                );
+            }
+            for k in EffectKind::ALL {
+                assert!(
+                    effects.iter().any(|c| EffectKind::from_name(c) == Some(k)),
+                    "{} is reachable by name",
+                    k.as_str(),
+                );
+            }
+            let transition = spec(&ctx, "set-transition");
+            let transitions = &transition.params()[0].choices;
+            for t in Transition::ALL {
+                assert!(
+                    transitions.iter().any(|c| parse_transition(c) == t),
+                    "{} is reachable by name",
+                    t.as_str(),
+                );
+            }
+        }
+        // Case `an_unreadable_value_no_longer_invents_an_edit`:
+        // Valid input still lands, and unreadable input now changes nothing
+        // instead of inventing a plausible edit.
+        {
+            let (ctx, cid) = ctx_fixture();
+
+            // `parse_unit("half")` answered 0.5 — half the frame cropped away, on
+            // a typo. The word cannot bind now, so the edge keeps its value.
+            assert!(rejects(&spec(&ctx, "crop-left"), "half"));
+            // A number still lands, and out of range still clamps: asking to cut
+            // 1.4 of the frame is a legible "all of it".
+            let cropped = run(&ctx.project, &spec(&ctx, "crop-left"), Some("1.4"));
+            assert_eq!(cropped.clip(cid).unwrap().transform.crop_left, 1.0);
+            let cropped = run(&ctx.project, &spec(&ctx, "crop-bottom"), Some("0.25"));
+            assert_eq!(cropped.clip(cid).unwrap().transform.crop_bottom, 0.25);
+
+            // The geometry parse answered 0.0, which for scale is a clip that is
+            // no longer on screen.
+            assert!(rejects(&spec(&ctx, "set-scale"), "banana"));
+            let scaled = run(&ctx.project, &spec(&ctx, "set-scale"), Some("0.5"));
+            assert_eq!(scaled.clip(cid).unwrap().transform.scale_y, 0.5);
+            // Rotation is a real number and stays one — degrees are not integers.
+            let turned = run(&ctx.project, &spec(&ctx, "set-rotation"), Some("-12.5"));
+            assert_eq!(turned.clip(cid).unwrap().transform.rotation, -12.5);
+
+            // The speed parse answered 1.0, so a bad rate silently returned a
+            // slowed clip to normal. Now a slowed clip stays slowed.
+            let fast = run(&ctx.project, &spec(&ctx, "set-speed"), Some("2"));
+            let ctx2 = VideoResourceCtx {
+                project: fast,
+                ..ctx
+            };
+            assert!(rejects(&spec(&ctx2, "set-speed"), "quickly"));
+        }
+        // Case `a_named_transition_and_effect_land_and_an_unknown_name_does_not`:
+        // A named transition and effect still land; a name the action never
+        // offered leaves the clip alone instead of quietly cutting.
+        {
+            let (ctx, cid) = ctx_fixture();
+
+            let dipped = run(
+                &ctx.project,
+                &spec(&ctx, "set-transition"),
+                Some("dip to black"),
+            );
+            assert_eq!(dipped.clip(cid).unwrap().transition, Transition::DipToBlack);
+            let ctx2 = VideoResourceCtx {
+                project: dipped,
+                // Named rather than spread: the rest of this test still reads
+                // `ctx`, and the meter is not `Copy`, so a spread would move it out
+                // from under the assertions below.
+                mix: ctx.mix.clone(),
+                ..ctx
+            };
+            assert!(rejects(&spec(&ctx2, "set-transition"), "swipe"));
+
+            // An alias the placeholder never listed but the parser has always
+            // taken still works — declaring the type must not take a working name
+            // away.
+            let inverted = run(&ctx.project, &spec(&ctx, "add-effect"), Some("negative"));
+            assert_eq!(
+                inverted.clip(cid).unwrap().effects.last().map(|e| e.kind),
+                Some(EffectKind::Invert),
+            );
+            assert!(rejects(&spec(&ctx, "add-effect"), "chrome"));
+        }
+        // Case `the_title_actions_hold_their_declared_shapes`:
+        // The title's own arguments: three declared names for alignment, numbers
+        // for size and backdrop, and free text for the colour — which keeps its
+        // leniency deliberately.
+        {
+            let ctx = ctx_with_title();
+
+            let left = run(&ctx.project, &spec(&ctx, "set-title-align"), Some("left"));
+            assert_eq!(title_of(&left).align, crate::model::TextAlign::Left);
+            let ctx2 = VideoResourceCtx {
+                project: left,
+                ..ctx
+            };
+            // "centre" used to be read as `Center` — an edit, from a spelling the
+            // action never offered, indistinguishable from a real one.
+            assert!(rejects(&spec(&ctx2, "set-title-align"), "centre"));
+
+            let big = run(&ctx2.project, &spec(&ctx2, "set-title-size"), Some("0.3"));
+            assert_eq!(title_of(&big).size, 0.3);
+            let plate = run(
+                &ctx2.project,
+                &spec(&ctx2, "set-title-backdrop"),
+                Some("1.4"),
+            );
+            assert_eq!(title_of(&plate).backdrop, 1.0, "clamped, not invented");
+
+            // A colour is free text with no set to enumerate, and `parse_colour`
+            // still answers `None` for a word rather than guessing: the title
+            // keeps the colour it had instead of going black.
+            let before = title_of(&ctx2.project).color;
+            let unchanged = run(
+                &ctx2.project,
+                &spec(&ctx2, "set-title-colour"),
+                Some("puce"),
+            );
+            assert_eq!(title_of(&unchanged).color, before);
+            let red = run(
+                &ctx2.project,
+                &spec(&ctx2, "set-title-colour"),
+                Some("#ff0000"),
+            );
+            assert_eq!(title_of(&red).color, [1.0, 0.0, 0.0, 1.0]);
+        }
+        // Case `the_renames_still_rename_through_their_named_parameter`:
+        // The three renames still rename, through a parameter that now has a
+        // name of its own rather than the generic prompted one.
+        {
+            let (ctx, _) = ctx_fixture();
+            let renamed = run(
+                &ctx.project,
+                &spec(&ctx, "rename-project"),
+                Some("  Cut 3  "),
+            );
+            assert_eq!(renamed.name, "Cut 3");
+            let tracks = run(&ctx.project, &spec(&ctx, "rename-track"), Some("B-roll"));
+            assert_eq!(tracks.tracks[0].name, "B-roll");
+            let media = run(&ctx.project, &spec(&ctx, "rename-media"), Some("hero"));
+            assert_eq!(media.media[0].name, "hero");
+        }
     }
 
     /// The fixture with a title in the bin, so the media resource exports the
@@ -4938,46 +5401,6 @@ mod tests {
         DECLARED.into_iter().chain(DECLARED_MORE).collect()
     }
 
-    /// Every action that takes an argument names it and declares its type.
-    ///
-    /// That declaration is the whole surface for a caller with no screen: a
-    /// screen reader, a script and an agent read the enumeration and nothing
-    /// else, so a type stated only in placeholder prose ("Value 0-1", "Rate,
-    /// e.g. 0.5 / 1 / 2") is a type none of them can see. The second half of
-    /// the test is the one that keeps it honest — an action that takes an
-    /// argument and is not in the table fails here rather than shipping as
-    /// another untyped prompt.
-    #[test]
-    fn every_parameterised_action_declares_its_argument() {
-        let ctx = ctx_with_title();
-        for (id, params) in declared() {
-            let sp = spec(&ctx, id);
-            assert_eq!(
-                sp.params().len(),
-                params.len(),
-                "{id} declares exactly the parameters this test has read",
-            );
-            for (i, (name, ty)) in params.iter().enumerate() {
-                let p = &sp.params()[i];
-                assert_eq!(p.name.as_ref(), *name, "{id} names its argument {i}");
-                assert_eq!(p.ty, *ty, "{id} declares the type of {name}");
-                assert!(p.required, "{id} needs {name}");
-                assert!(!p.description.is_empty(), "{id} says what {name} means");
-            }
-        }
-
-        let known = declared();
-        for (id, sp) in all_specs(&ctx) {
-            if sp.params().is_empty() || sp.kind == OperationKind::Effect {
-                continue;
-            }
-            assert!(
-                known.iter().any(|(k, _)| *k == id),
-                "{id} takes an argument but declares nothing this test has read",
-            );
-        }
-    }
-
     // ---- linked audio and video -----------------------------------------
 
     /// A fixture whose picture source carries sound, so the palette offers to
@@ -5015,927 +5438,507 @@ mod tests {
         (picture, sound)
     }
 
-    /// Splitting the sound off is an action, so a script, an agent and a
-    /// reader can do it — and it makes the audio lane it needs when the
-    /// project has none, in the same change, so it never half-lands.
     #[test]
-    fn the_palette_splits_a_shots_sound_onto_its_own_clip() {
-        let (ctx, cid) = ctx_with_sound();
-        assert_eq!(
-            ctx.project.tracks.len(),
-            1,
-            "the fixture starts with only a picture lane",
-        );
-        let after = run(&ctx.project, &spec(&ctx, "link-audio"), None);
-        assert_eq!(after.clips.len(), 2, "the sound is a clip of its own");
-        assert_eq!(
-            after.tracks.len(),
-            2,
-            "and the lane it needed came with it, in the same change",
-        );
-        let (picture, sound) = halves(&after);
-        assert_eq!(picture, cid);
-        assert_eq!(
-            after.clip(picture).expect("picture").link,
-            after.clip(sound).expect("sound").link,
-        );
-        assert!(after.is_linked(picture));
-        assert!(
-            after.clip(picture).expect("picture").sound_split,
-            "or the shot would be heard twice",
-        );
-        assert!(
-            !crate::audio::plan_audio(&after, 4.0)
-                .iter()
-                .any(|l| l.clip == picture),
-            "the picture stops carrying the sound the audio clip now has",
-        );
-    }
-
-    /// Unlinking is explicit and reversible, both ways round, from the palette.
-    #[test]
-    fn the_palette_unlinks_a_pair_and_links_it_back() {
-        let (ctx, _cid) = ctx_with_sound();
-        let split = run(&ctx.project, &spec(&ctx, "link-audio"), None);
-        let (picture, sound) = halves(&split);
-        let ctx = ctx_of(split, 4.0);
-
-        let cut = run(&ctx.project, &spec(&ctx, "unlink"), None);
-        // Behaviour, not representation: the group id survives a break so the
-        // editor can still find the sound this shot was split from, and it is
-        // `link_follows` that stops the two moving together.
-        assert!(!cut.is_linked(picture) && !cut.is_linked(sound));
-        assert!(cut.link_partners(picture).is_empty());
-        assert_eq!(
-            cut.detached_sound(picture),
-            Some(sound),
-            "the sound is still findable, which is what stops a second copy \
-             of it being offered",
-        );
-        assert_eq!(cut.clips.len(), 2, "unlinking removes nothing");
-
-        // …and back, by naming the partner. The ids that exist are declared
-        // as the choices, so a clip that is not there is refused.
-        let ctx = ctx_of(cut, 4.0);
-        let sp = spec(&ctx, "link-with");
-        let choices = &sp.params()[0].choices;
-        assert!(
-            choices.iter().any(|c| c.as_ref() == sound.to_string()),
-            "the other clip's id is offered: {choices:?}",
-        );
-        let relinked = run(&ctx.project, &sp, Some(&sound.to_string()));
-        assert!(
-            relinked.is_linked(picture),
-            "a pair that was separated has to be able to come back together",
-        );
-        assert_eq!(
-            relinked.clip(picture).expect("picture").link,
-            relinked.clip(sound).expect("sound").link,
-        );
-    }
-
-    /// Delete, ripple-delete, split, trim and re-time all follow the link
-    /// through the palette, exactly as they do on screen.
-    #[test]
-    fn every_palette_edit_that_follows_the_link_carries_both_halves() {
-        let (ctx, _cid) = ctx_with_sound();
-        let split = run(&ctx.project, &spec(&ctx, "link-audio"), None);
-        let (picture, sound) = halves(&split);
-        let ctx = ctx_of(split, 4.0);
-
-        let gone = run(&ctx.project, &spec(&ctx, "delete"), None);
-        assert!(
-            gone.clip(picture).is_none() && gone.clip(sound).is_none(),
-            "half a shot left on the timeline is the surprise a link avoids",
-        );
-
-        let rippled = run(&ctx.project, &spec(&ctx, "ripple-delete"), None);
-        assert!(rippled.clip(picture).is_none() && rippled.clip(sound).is_none());
-
-        let cut = run(&ctx.project, &spec(&ctx, "split"), None);
-        assert_eq!(cut.clips.len(), 4, "both lanes were cut");
-        let tails: Vec<&Clip> = cut.clips.iter().filter(|c| c.start > 3.9).collect();
-        assert_eq!(tails.len(), 2);
-        assert_eq!(
-            tails[0].link, tails[1].link,
-            "the two tails share a group of their own",
-        );
-        assert_ne!(
-            tails[0].link,
-            cut.clip(picture).expect("head").link,
-            "and it is not the heads'",
-        );
-
-        let fast = run(&ctx.project, &spec(&ctx, "set-speed"), Some("2"));
-        assert!((fast.clip(picture).expect("picture").speed.rate() - 2.0).abs() < 1e-9);
-        assert!(
-            (fast.clip(sound).expect("sound").speed.rate() - 2.0).abs() < 1e-9,
-            "re-timing one half and not the other desyncs them permanently",
-        );
-
-        let trimmed = run(&ctx.project, &spec(&ctx, "trim-in"), None);
-        assert!(
-            (trimmed.clip(picture).expect("picture").in_point
-                - trimmed.clip(sound).expect("sound").in_point)
-                .abs()
-                < 1e-9,
-            "the sound keeps covering the picture",
-        );
-        assert!(trimmed.clip(sound).expect("sound").in_point > 0.0);
-    }
-
-    /// An unlinked clip uses the same narrow action shape as a linked group:
-    /// one optimistic member patch rather than an old full snapshot.
-    #[test]
-    fn unlinked_clip_edits_use_one_optimistic_member_patch() {
-        let (ctx, cid) = ctx_fixture();
-        let sp = spec(&ctx, "set-speed");
-        let from_spec = prompted_encode(&sp, "2");
-        let mut expected = ctx.project.clip(cid).expect("the clip").clone();
-        expected.set_speed(2.0, false);
-        let mut after = ctx.project.clone();
-        *after.clip_mut(cid).unwrap() = expected.clone();
-        assert_eq!(
-            from_spec.payload,
-            encode(&patch_clips_fields_action(&ctx.project, &after, &[cid])).payload,
-            "one clip is one narrow member patch",
-        );
-        let del = spec_encoding(&spec(&ctx, "delete"), None);
-        assert_eq!(
-            del.payload,
-            encode(&delete_clip_action(&cid)).payload,
-            "and one delete is still one delete",
-        );
-    }
-
-    /// The chroma key's three sliders and the mask's six geometry knobs write
-    /// the value they are named for.
-    ///
-    /// Declaring the parameter is half of it; the other half is that the number
-    /// lands on the knob the id names. Nine near-identical actions is exactly
-    /// the shape a copy-paste slip hides in — `set-mask-height` writing
-    /// `mask.w` would satisfy every type assertion in this file and stay
-    /// invisible until someone actually masked something — so each is checked
-    /// against every one of its neighbours as well as against itself.
-    #[test]
-    fn the_key_and_mask_knobs_write_the_value_they_are_named_for() {
-        type Read = fn(&Clip) -> f64;
-        let (ctx, cid) = ctx_fixture();
-        let cases: [(&str, &str, f64, Read); 9] = [
-            ("set-key-tolerance", "0.31", 0.31, |c| c.key.tolerance),
-            ("set-key-softness", "0.17", 0.17, |c| c.key.softness),
-            ("set-key-spill", "0.62", 0.62, |c| c.key.spill),
-            ("set-mask-x", "-0.24", -0.24, |c| c.mask.x),
-            ("set-mask-y", "0.44", 0.44, |c| c.mask.y),
-            ("set-mask-width", "0.73", 0.73, |c| c.mask.w),
-            ("set-mask-height", "0.29", 0.29, |c| c.mask.h),
-            ("set-mask-rotation", "-37", -37.0, |c| c.mask.rotation),
-            ("set-mask-feather", "0.08", 0.08, |c| c.mask.feather),
-        ];
-        let before = ctx.project.clip(cid).expect("the fixture clip").clone();
-        for (id, arg, want, read) in cases {
-            let after = run(&ctx.project, &spec(&ctx, id), Some(arg));
-            let clip = after.clip(cid).expect("the clip survives its own edit");
-            assert!(
-                (read(clip) - want).abs() < 1e-9,
-                "{id} left {} where it was asked for {want}",
-                read(clip),
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn linked_palette_edits_carry_both_halves() {
+        // Case `the_palette_splits_a_shots_sound_onto_its_own_clip`:
+        // Splitting the sound off is an action, so a script, an agent and a
+        // reader can do it — and it makes the audio lane it needs when the
+        // project has none, in the same change, so it never half-lands.
+        {
+            let (ctx, cid) = ctx_with_sound();
+            assert_eq!(
+                ctx.project.tracks.len(),
+                1,
+                "the fixture starts with only a picture lane",
             );
-            for (other, other_read) in cases.iter().map(|(i, _, _, r)| (*i, *r)) {
-                if other == id {
-                    continue;
-                }
-                assert!(
-                    (other_read(clip) - other_read(&before)).abs() < 1e-9,
-                    "{id} also moved the knob {other} is for",
-                );
-            }
-        }
-        // Out of range clamps where the far stop is a legible intent, and does
-        // not where the model has a reason to allow more.
-        let hot = run(&ctx.project, &spec(&ctx, "set-key-tolerance"), Some("1.8"));
-        let tol = hot.clip(cid).expect("clip").key.tolerance;
-        assert!(
-            (tol - 1.0).abs() < 1e-9,
-            "\u{201c}as much as it takes\u{201d} is the far stop, not {tol}",
-        );
-        let wide = run(&ctx.project, &spec(&ctx, "set-mask-width"), Some("1.6"));
-        assert!(
-            (wide.clip(cid).expect("clip").mask.w - 1.6).abs() < 1e-9,
-            "a mask may reach past the frame — that is how a soft edge is kept \
-             out of the picture rather than drawn across it",
-        );
-        let inverted = run(&ctx.project, &spec(&ctx, "set-mask-width"), Some("-0.5"));
-        let w = inverted.clip(cid).expect("clip").mask.w;
-        assert!(
-            (w - 0.0).abs() < 1e-9,
-            "a negative extent is not a shape: {w}"
-        );
-    }
-
-    /// A key or mask knob asked for nothing it can read leaves the value where
-    /// it was, rather than answering with a plausible middle.
-    ///
-    /// The failure this rules out is the one the grade actions were built to
-    /// rule out: a lenient parser that read a word as 0.5 made a real,
-    /// convincing edit and reported success.
-    #[test]
-    fn a_word_never_reaches_a_key_or_mask_knob() {
-        use tilo_actions::params::ArgValue;
-
-        let (ctx, _cid) = ctx_fixture();
-        for (id, param) in [
-            ("set-key-tolerance", "value"),
-            ("set-key-softness", "value"),
-            ("set-key-spill", "value"),
-            ("set-mask-x", "offset"),
-            ("set-mask-y", "offset"),
-            ("set-mask-width", "fraction"),
-            ("set-mask-height", "fraction"),
-            ("set-mask-rotation", "degrees"),
-            ("set-mask-feather", "value"),
-        ] {
-            let sp = spec(&ctx, id);
-            assert!(
-                ActionArgs::bind(
-                    sp.params(),
-                    vec![(param.to_string(), ArgValue::Text("a lot".into()))]
-                )
-                .is_err(),
-                "{id} must refuse a word where {param} declares a number",
+            let after = run(&ctx.project, &spec(&ctx, "link-audio"), None);
+            assert_eq!(after.clips.len(), 2, "the sound is a clip of its own");
+            assert_eq!(
+                after.tracks.len(),
+                2,
+                "and the lane it needed came with it, in the same change",
             );
-            let bound = ActionArgs::bind(
-                sp.params(),
-                vec![(param.to_string(), ArgValue::Number(0.4))],
-            )
-            .unwrap_or_else(|e| panic!("{id} takes a number for {param}: {e}"));
-            assert_eq!(bound.number(param), Some(0.4));
-        }
-    }
-
-    /// A word is refused wherever a number is declared, everywhere — not only
-    /// on the grade.
-    ///
-    /// Each of these used to be a free-text prompt with a lenient parser
-    /// behind it: `parse_unit` answered 0.5, the geometry parse answered 0.0
-    /// (for scale, an invisible clip), the speed parse answered 1x. All three
-    /// were a real edit reported as success. Declaring `Number` makes the bad
-    /// call a refusal, before the document is touched.
-    #[test]
-    fn a_word_is_refused_wherever_a_number_is_declared() {
-        use tilo_actions::params::ArgValue;
-
-        let ctx = ctx_with_title();
-        for (id, params) in declared() {
-            for (target, ty) in params {
-                if *ty != ParamType::Number {
-                    continue;
-                }
-                let sp = spec(&ctx, id);
-                // Every declared argument supplied, so what is under test is
-                // the *type* of one of them and not a missing sibling. An
-                // action carrying two numbers has to refuse a word in either
-                // position, not only the first.
-                let with = |bad: Option<&str>| -> Vec<(String, ArgValue)> {
-                    params
-                        .iter()
-                        .map(|(name, _)| {
-                            let v = match bad {
-                                Some(word) if name == target => ArgValue::Text(word.into()),
-                                _ => ArgValue::Number(0.25),
-                            };
-                            ((*name).to_string(), v)
-                        })
-                        .collect()
-                };
-                assert!(
-                    ActionArgs::bind(sp.params(), with(Some("banana"))).is_err(),
-                    "{id} must refuse a word where {target} declares a number",
-                );
-                let bound = ActionArgs::bind(sp.params(), with(None))
-                    .unwrap_or_else(|e| panic!("{id} takes a number for {target}: {e}"));
-                assert_eq!(bound.number(target), Some(0.25));
-                // An integer widens — JSON spells 1.0 as 1, and a rate of 1
-                // has to stay passable.
-                let ints: Vec<(String, ArgValue)> = params
+            let (picture, sound) = halves(&after);
+            assert_eq!(picture, cid);
+            assert_eq!(
+                after.clip(picture).expect("picture").link,
+                after.clip(sound).expect("sound").link,
+            );
+            assert!(after.is_linked(picture));
+            assert!(
+                after.clip(picture).expect("picture").sound_split,
+                "or the shot would be heard twice",
+            );
+            assert!(
+                !crate::audio::plan_audio(&after, 4.0)
                     .iter()
-                    .map(|(name, _)| ((*name).to_string(), ArgValue::Integer(1)))
-                    .collect();
-                assert!(
-                    ActionArgs::bind(sp.params(), ints).is_ok(),
-                    "{id} takes an integer literal as a number",
-                );
-                // And an argument by a name it never declared is refused
-                // rather than dropped, so a caller cannot believe it asked
-                // for something it did not get.
-                let mut stray = with(None);
-                stray.push(("v".to_string(), ArgValue::Number(0.25)));
-                assert!(
-                    ActionArgs::bind(sp.params(), stray).is_err(),
-                    "{id} refuses an argument it never declared",
-                );
-            }
+                    .any(|l| l.clip == picture),
+                "the picture stops carrying the sound the audio clip now has",
+            );
         }
-    }
+        // Case `the_palette_unlinks_a_pair_and_links_it_back`:
+        // Unlinking is explicit and reversible, both ways round, from the palette.
+        {
+            let (ctx, _cid) = ctx_with_sound();
+            let split = run(&ctx.project, &spec(&ctx, "link-audio"), None);
+            let (picture, sound) = halves(&split);
+            let ctx = ctx_of(split, 4.0);
 
-    /// A name outside the declared vocabulary is refused, and every name the
-    /// vocabulary lists binds.
-    ///
-    /// The prose list used to be the entire specification — "grayscale /
-    /// sepia / invert / warm / cool / vignette" in a placeholder — with the
-    /// parser answering "nothing happened" for a name it did not know, and
-    /// `parse_transition` answering "hard cut". Declared choices are the same
-    /// list a caller can read *and* be held to.
-    #[test]
-    fn a_name_outside_the_declared_choices_is_refused() {
-        use tilo_actions::params::ArgValue;
+            let cut = run(&ctx.project, &spec(&ctx, "unlink"), None);
+            // Behaviour, not representation: the group id survives a break so the
+            // editor can still find the sound this shot was split from, and it is
+            // `link_follows` that stops the two moving together.
+            assert!(!cut.is_linked(picture) && !cut.is_linked(sound));
+            assert!(cut.link_partners(picture).is_empty());
+            assert_eq!(
+                cut.detached_sound(picture),
+                Some(sound),
+                "the sound is still findable, which is what stops a second copy \
+             of it being offered",
+            );
+            assert_eq!(cut.clips.len(), 2, "unlinking removes nothing");
 
-        let ctx = ctx_with_title();
-        for (id, name, never_offered) in [
-            ("add-effect", "effect", "chrome"),
-            ("set-transition", "transition", "swipe"),
-            ("set-title-align", "align", "centre"),
-        ] {
-            let sp = spec(&ctx, id);
+            // …and back, by naming the partner. The ids that exist are declared
+            // as the choices, so a clip that is not there is refused.
+            let ctx = ctx_of(cut, 4.0);
+            let sp = spec(&ctx, "link-with");
             let choices = &sp.params()[0].choices;
-            assert!(!choices.is_empty(), "{id} enumerates its vocabulary");
-            for c in choices {
-                ActionArgs::bind(
-                    sp.params(),
-                    [(name.to_string(), ArgValue::Text(c.to_string()))],
-                )
-                .unwrap_or_else(|e| panic!("{id} accepts its own choice {c:?}: {e}"));
-            }
             assert!(
-                ActionArgs::bind(
-                    sp.params(),
-                    [(name.to_string(), ArgValue::Text(never_offered.into()))],
-                )
-                .is_err(),
-                "{id} refuses {never_offered:?}, a name it never offered",
+                choices.iter().any(|c| c.as_ref() == sound.to_string()),
+                "the other clip's id is offered: {choices:?}",
             );
+            let relinked = run(&ctx.project, &sp, Some(&sound.to_string()));
             assert!(
-                ActionArgs::bind(sp.params(), [(name.to_string(), ArgValue::Number(1.0))]).is_err(),
-                "{id} refuses a number where it declares a name",
+                relinked.is_linked(picture),
+                "a pair that was separated has to be able to come back together",
+            );
+            assert_eq!(
+                relinked.clip(picture).expect("picture").link,
+                relinked.clip(sound).expect("sound").link,
             );
         }
+        // Case `every_palette_edit_that_follows_the_link_carries_both_halves`:
+        // Delete, ripple-delete, split, trim and re-time all follow the link
+        // through the palette, exactly as they do on screen.
+        {
+            let (ctx, _cid) = ctx_with_sound();
+            let split = run(&ctx.project, &spec(&ctx, "link-audio"), None);
+            let (picture, sound) = halves(&split);
+            let ctx = ctx_of(split, 4.0);
 
-        // The declared set is the parser's set, in both directions: nothing is
-        // offered that the parser cannot read, and nothing the model can be is
-        // unreachable through the names offered. That is what stops the
-        // vocabulary and the parser drifting apart once they are two lists.
-        let effect = spec(&ctx, "add-effect");
-        let effects = &effect.params()[0].choices;
-        for c in effects {
+            let gone = run(&ctx.project, &spec(&ctx, "delete"), None);
             assert!(
-                EffectKind::from_name(c).is_some(),
-                "{c:?} is offered, so the parser has to know it",
+                gone.clip(picture).is_none() && gone.clip(sound).is_none(),
+                "half a shot left on the timeline is the surprise a link avoids",
+            );
+
+            let rippled = run(&ctx.project, &spec(&ctx, "ripple-delete"), None);
+            assert!(rippled.clip(picture).is_none() && rippled.clip(sound).is_none());
+
+            let cut = run(&ctx.project, &spec(&ctx, "split"), None);
+            assert_eq!(cut.clips.len(), 4, "both lanes were cut");
+            let tails: Vec<&Clip> = cut.clips.iter().filter(|c| c.start > 3.9).collect();
+            assert_eq!(tails.len(), 2);
+            assert_eq!(
+                tails[0].link, tails[1].link,
+                "the two tails share a group of their own",
+            );
+            assert_ne!(
+                tails[0].link,
+                cut.clip(picture).expect("head").link,
+                "and it is not the heads'",
+            );
+
+            let fast = run(&ctx.project, &spec(&ctx, "set-speed"), Some("2"));
+            assert!((fast.clip(picture).expect("picture").speed.rate() - 2.0).abs() < 1e-9);
+            assert!(
+                (fast.clip(sound).expect("sound").speed.rate() - 2.0).abs() < 1e-9,
+                "re-timing one half and not the other desyncs them permanently",
+            );
+
+            let trimmed = run(&ctx.project, &spec(&ctx, "trim-in"), None);
+            assert!(
+                (trimmed.clip(picture).expect("picture").in_point
+                    - trimmed.clip(sound).expect("sound").in_point)
+                    .abs()
+                    < 1e-9,
+                "the sound keeps covering the picture",
+            );
+            assert!(trimmed.clip(sound).expect("sound").in_point > 0.0);
+        }
+        // Case `unlinked_clip_edits_use_one_optimistic_member_patch`:
+        // An unlinked clip uses the same narrow action shape as a linked group:
+        // one optimistic member patch rather than an old full snapshot.
+        {
+            let (ctx, cid) = ctx_fixture();
+            let sp = spec(&ctx, "set-speed");
+            let from_spec = prompted_encode(&sp, "2");
+            let mut expected = ctx.project.clip(cid).expect("the clip").clone();
+            expected.set_speed(2.0, false);
+            let mut after = ctx.project.clone();
+            *after.clip_mut(cid).unwrap() = expected.clone();
+            assert_eq!(
+                from_spec.payload,
+                encode(&patch_clips_fields_action(&ctx.project, &after, &[cid])).payload,
+                "one clip is one narrow member patch",
+            );
+            let del = spec_encoding(&spec(&ctx, "delete"), None);
+            assert_eq!(
+                del.payload,
+                encode(&delete_clip_action(&cid)).payload,
+                "and one delete is still one delete",
             );
         }
-        for k in EffectKind::ALL {
+        // Case `linked_membership_patch_is_atomic_and_refuses_a_stale_group_member`.
+        {
+            let (ctx, first) = ctx_fixture();
+            let mut project = ctx.project;
+            let second = Uuid::new_v4();
+            let mut sibling = project.clip(first).expect("fixture clip").clone();
+            sibling.id = second;
+            let old_group = Uuid::new_v4();
+            let primary = project.clip_mut(first).expect("first");
+            primary.link = Some(old_group);
+            primary.link_follows = true;
+            sibling.link = Some(old_group);
+            sibling.link_follows = true;
+            project.clips.push(sibling);
+
+            let new_group = Uuid::new_v4();
+            let action = VideoEditorAction::PatchClipsFields {
+                patches: vec![
+                    ClipPatchData {
+                        clip: first.to_string(),
+                        changes: vec![ClipFieldPatch::Link {
+                            expected: Some(old_group.to_string()),
+                            value: Some(new_group.to_string()),
+                        }],
+                    },
+                    ClipPatchData {
+                        clip: second.to_string(),
+                        changes: vec![ClipFieldPatch::Link {
+                            expected: Some(old_group.to_string()),
+                            value: Some(new_group.to_string()),
+                        }],
+                    },
+                ],
+            };
+
+            let mut doc = AutoCommit::new();
+            VideoDoc::write_project(&mut doc, &project);
+            action.apply(&mut doc).expect("both members still match");
+            let linked = VideoDoc::load_project(&doc);
+            assert_eq!(linked.clip(first).expect("first").link, Some(new_group));
+            assert_eq!(linked.clip(second).expect("second").link, Some(new_group));
+
+            // Rewind the fixture and let a peer alter only one member. The action
+            // must validate both before it writes either, so the first cannot be
+            // moved into a group whose second half rejected the replay.
+            VideoDoc::write_project(&mut doc, &project);
+            let changed_group = Uuid::new_v4();
+            let mut peer = project.clone();
+            peer.clip_mut(second).expect("second").link = Some(changed_group);
+            VideoDoc::upsert_clip(&mut doc, peer.clip(second).expect("second"));
             assert!(
-                effects.iter().any(|c| EffectKind::from_name(c) == Some(k)),
-                "{} is reachable by name",
-                k.as_str(),
+                action.apply(&mut doc).is_err(),
+                "stale member refuses group"
             );
-        }
-        let transition = spec(&ctx, "set-transition");
-        let transitions = &transition.params()[0].choices;
-        for t in Transition::ALL {
-            assert!(
-                transitions.iter().any(|c| parse_transition(c) == t),
-                "{} is reachable by name",
-                t.as_str(),
+            let refused = VideoDoc::load_project(&doc);
+            assert_eq!(refused.clip(first).expect("first").link, Some(old_group));
+            assert_eq!(
+                refused.clip(second).expect("second").link,
+                Some(changed_group)
             );
         }
     }
 
-    /// Valid input still lands, and unreadable input now changes nothing
-    /// instead of inventing a plausible edit.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
     #[expect(
         clippy::float_cmp,
         reason = "the values are written through an action and read back unchanged, or clamped to a literal bound"
     )]
-    fn an_unreadable_value_no_longer_invents_an_edit() {
-        let (ctx, cid) = ctx_fixture();
+    fn captured_field_actions_refuse_stale_values() {
+        // Case `an_effect_resource_edits_the_named_instance_and_carries_it_through_replay`.
+        {
+            let (mut ctx, clip_id) = ctx_fixture();
+            let clip = ctx.project.clip_mut(clip_id).expect("fixture clip");
+            clip.add_effect(EffectKind::Sepia);
+            clip.add_effect(EffectKind::Sepia);
+            clip.set_key_at(Param::EffectAmount(0), 0.0, 0.2, Interp::Linear);
+            clip.set_key_at(Param::EffectAmount(1), 0.0, 0.8, Interp::Linear);
+            let first = clip.effects[0].id;
+            let second = clip.effects[1].id;
+            let resource = effect_resource_id(clip_id, second);
 
-        // `parse_unit("half")` answered 0.5 — half the frame cropped away, on
-        // a typo. The word cannot bind now, so the edge keeps its value.
-        assert!(rejects(&spec(&ctx, "crop-left"), "half"));
-        // A number still lands, and out of range still clamps: asking to cut
-        // 1.4 of the frame is a legible "all of it".
-        let cropped = run(&ctx.project, &spec(&ctx, "crop-left"), Some("1.4"));
-        assert_eq!(cropped.clip(cid).unwrap().transform.crop_left, 1.0);
-        let cropped = run(&ctx.project, &spec(&ctx, "crop-bottom"), Some("0.25"));
-        assert_eq!(cropped.clip(cid).unwrap().transform.crop_bottom, 0.25);
+            let amount = run(
+                &ctx.project,
+                &spec_on(&ctx, &resource, "set-amount"),
+                Some("0.25"),
+            );
+            let changed = amount.clip(clip_id).expect("written clip");
+            assert_eq!(
+                changed
+                    .effects
+                    .iter()
+                    .find(|effect| effect.id == second)
+                    .map(|e| e.amount),
+                Some(0.25),
+                "the duplicate named by id changed",
+            );
+            assert_eq!(
+                changed
+                    .effects
+                    .iter()
+                    .find(|effect| effect.id == first)
+                    .map(|e| e.amount),
+                Some(EffectKind::Sepia.default_amount()),
+                "its neighbour was not selected by index",
+            );
 
-        // The geometry parse answered 0.0, which for scale is a clip that is
-        // no longer on screen.
-        assert!(rejects(&spec(&ctx, "set-scale"), "banana"));
-        let scaled = run(&ctx.project, &spec(&ctx, "set-scale"), Some("0.5"));
-        assert_eq!(scaled.clip(cid).unwrap().transform.scale_y, 0.5);
-        // Rotation is a real number and stays one — degrees are not integers.
-        let turned = run(&ctx.project, &spec(&ctx, "set-rotation"), Some("-12.5"));
-        assert_eq!(turned.clip(cid).unwrap().transform.rotation, -12.5);
+            ctx.project = amount;
+            let moved = run(&ctx.project, &spec_on(&ctx, &resource, "move-up"), None);
+            assert_eq!(
+                moved.clip(clip_id).expect("moved clip").effects[0].id,
+                second
+            );
+            let moved_clip = moved.clip(clip_id).expect("moved clip");
+            assert_eq!(
+                moved_clip.anim.sample(Param::EffectAmount(0), 0.0),
+                Some(0.8),
+                "the moved effect carried its keyed amount"
+            );
+            assert_eq!(
+                moved_clip.anim.sample(Param::EffectAmount(1), 0.0),
+                Some(0.2),
+                "its neighbour carried its own curve in the other direction"
+            );
 
-        // The speed parse answered 1.0, so a bad rate silently returned a
-        // slowed clip to normal. Now a slowed clip stays slowed.
-        let fast = run(&ctx.project, &spec(&ctx, "set-speed"), Some("2"));
-        let ctx2 = VideoResourceCtx {
-            project: fast,
-            ..ctx
-        };
-        assert!(rejects(&spec(&ctx2, "set-speed"), "quickly"));
-    }
+            ctx.project = moved;
+            let removed = run(&ctx.project, &spec_on(&ctx, &resource, "remove"), None);
+            assert!(
+                removed
+                    .clip(clip_id)
+                    .expect("removed clip")
+                    .effect_index(second)
+                    .is_none(),
+                "the exact addressed instance was removed",
+            );
+            assert_eq!(
+                removed
+                    .clip(clip_id)
+                    .expect("removed clip")
+                    .anim
+                    .sample(Param::EffectAmount(0), 0.0),
+                Some(0.2),
+                "removing the head closes the animation slot with the remaining effect"
+            );
 
-    /// A named transition and effect still land; a name the action never
-    /// offered leaves the clip alone instead of quietly cutting.
-    #[test]
-    fn a_named_transition_and_effect_land_and_an_unknown_name_does_not() {
-        let (ctx, cid) = ctx_fixture();
+            let mut before_clear = removed;
+            before_clear.clip_mut(clip_id).unwrap().set_key_at(
+                Param::Opacity,
+                0.0,
+                0.6,
+                Interp::Linear,
+            );
+            ctx.project = before_clear;
+            let cleared = run(
+                &ctx.project,
+                &spec_on(&ctx, &clip_resource_id(clip_id), "clear-effects"),
+                None,
+            );
+            let cleared_clip = cleared.clip(clip_id).expect("cleared clip");
+            assert!(cleared_clip.effects.is_empty());
+            assert_eq!(
+                cleared_clip.anim.sample(Param::EffectAmount(0), 0.0),
+                None,
+                "clearing effects clears their now-orphaned curves"
+            );
+            assert_eq!(
+                cleared_clip.anim.sample(Param::Opacity, 0.0),
+                Some(0.6),
+                "clearing effects preserves unrelated animation"
+            );
+        }
+        // Case `captured_effect_actions_refuse_stale_stack_changes_without_overwriting_other_fields`.
+        {
+            let (mut ctx, clip_id) = ctx_fixture();
+            let clip = ctx.project.clip_mut(clip_id).expect("fixture clip");
+            clip.add_effect(EffectKind::Sepia);
+            clip.add_effect(EffectKind::Invert);
+            let first = clip.effects[0].id;
+            let second = clip.effects[1].id;
+            let second_resource = effect_resource_id(clip_id, second);
 
-        let dipped = run(
-            &ctx.project,
-            &spec(&ctx, "set-transition"),
-            Some("dip to black"),
-        );
-        assert_eq!(dipped.clip(cid).unwrap().transition, Transition::DipToBlack);
-        let ctx2 = VideoResourceCtx {
-            project: dipped,
-            // Named rather than spread: the rest of this test still reads
-            // `ctx`, and the meter is not `Copy`, so a spread would move it out
-            // from under the assertions below.
-            mix: ctx.mix.clone(),
-            ..ctx
-        };
-        assert!(rejects(&spec(&ctx2, "set-transition"), "swipe"));
+            // A captured amount action applies after an unrelated opacity edit,
+            // and only writes `effects` — it must not restore old opacity.
+            let amount: VideoEditorAction = serde_json::from_slice(
+                &prompted_encode(&spec_on(&ctx, &second_resource, "set-amount"), "0.25").payload,
+            )
+            .expect("effect action decodes");
+            let mut doc = AutoCommit::new();
+            VideoDoc::write_project(&mut doc, &ctx.project);
+            let mut other_field = ctx.project.clone();
+            other_field.clip_mut(clip_id).expect("clip").opacity = 0.37;
+            VideoDoc::upsert_clip(&mut doc, other_field.clip(clip_id).expect("changed clip"));
+            amount
+                .apply(&mut doc)
+                .expect("unrelated write does not stale effect");
+            let after = VideoDoc::load_project(&doc);
+            let after_clip = after.clip(clip_id).expect("clip remains");
+            assert_eq!(
+                after_clip.opacity, 0.37,
+                "old snapshot did not overwrite opacity"
+            );
+            assert_eq!(
+                after_clip
+                    .effects
+                    .iter()
+                    .find(|effect| effect.id == second)
+                    .map(|effect| effect.amount),
+                Some(0.25),
+            );
 
-        // An alias the placeholder never listed but the parser has always
-        // taken still works — declaring the type must not take a working name
-        // away.
-        let inverted = run(&ctx.project, &spec(&ctx, "add-effect"), Some("negative"));
-        assert_eq!(
-            inverted.clip(cid).unwrap().effects.last().map(|e| e.kind),
-            Some(EffectKind::Invert),
-        );
-        assert!(rejects(&spec(&ctx, "add-effect"), "chrome"));
-    }
+            // A move captured against [first, second] refuses after a peer has
+            // already reordered it; it cannot swap whatever happens to be there.
+            let move_up: VideoEditorAction = serde_json::from_slice(
+                &spec_encoding(&spec_on(&ctx, &second_resource, "move-up"), None).payload,
+            )
+            .expect("move action decodes");
+            let mut reordered = ctx.project.clone();
+            reordered
+                .clip_mut(clip_id)
+                .expect("clip")
+                .move_effect_down(0);
+            VideoDoc::upsert_clip(&mut doc, reordered.clip(clip_id).expect("reordered clip"));
+            assert!(
+                move_up.apply(&mut doc).is_err(),
+                "changed neighbour is stale"
+            );
+            assert_eq!(
+                VideoDoc::load_project(&doc)
+                    .clip(clip_id)
+                    .expect("clip")
+                    .effects[0]
+                    .id,
+                second,
+                "the peer order survived the refused action",
+            );
 
-    /// The title's own arguments: three declared names for alignment, numbers
-    /// for size and backdrop, and free text for the colour — which keeps its
-    /// leniency deliberately.
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the values are written through an action and read back unchanged, or clamped to a literal bound"
-    )]
-    fn the_title_actions_hold_their_declared_shapes() {
-        let ctx = ctx_with_title();
+            // Removal also carries the value it saw. A peer changing that value
+            // makes delete refuse, and a peer deleting it makes set refuse.
+            let first_resource = effect_resource_id(clip_id, first);
+            let remove: VideoEditorAction = serde_json::from_slice(
+                &spec_encoding(&spec_on(&ctx, &first_resource, "remove"), None).payload,
+            )
+            .expect("remove action decodes");
+            let mut changed = ctx.project.clone();
+            changed.clip_mut(clip_id).expect("clip").effects[0].amount = 0.1;
+            VideoDoc::upsert_clip(&mut doc, changed.clip(clip_id).expect("changed clip"));
+            assert!(remove.apply(&mut doc).is_err(), "changed instance is stale");
+            assert!(
+                VideoDoc::load_project(&doc)
+                    .clip(clip_id)
+                    .expect("clip")
+                    .effect_index(first)
+                    .is_some(),
+                "refusal did not delete a changed effect",
+            );
+        }
+        // Case `captured_clip_field_action_updates_only_its_field_and_refuses_a_stale_value`.
+        {
+            let (ctx, clip_id) = ctx_fixture();
+            let action: VideoEditorAction = serde_json::from_slice(
+                &prompted_encode(&spec(&ctx, "set-brightness"), "0.9").payload,
+            )
+            .expect("field action decodes");
+            assert!(
+                matches!(&action, VideoEditorAction::PatchClipFields { .. }),
+                "resource edits are narrow patches, never whole clip snapshots",
+            );
 
-        let left = run(&ctx.project, &spec(&ctx, "set-title-align"), Some("left"));
-        assert_eq!(title_of(&left).align, crate::model::TextAlign::Left);
-        let ctx2 = VideoResourceCtx {
-            project: left,
-            ..ctx
-        };
-        // "centre" used to be read as `Center` — an edit, from a spelling the
-        // action never offered, indistinguishable from a real one.
-        assert!(rejects(&spec(&ctx2, "set-title-align"), "centre"));
-
-        let big = run(&ctx2.project, &spec(&ctx2, "set-title-size"), Some("0.3"));
-        assert_eq!(title_of(&big).size, 0.3);
-        let plate = run(
-            &ctx2.project,
-            &spec(&ctx2, "set-title-backdrop"),
-            Some("1.4"),
-        );
-        assert_eq!(title_of(&plate).backdrop, 1.0, "clamped, not invented");
-
-        // A colour is free text with no set to enumerate, and `parse_colour`
-        // still answers `None` for a word rather than guessing: the title
-        // keeps the colour it had instead of going black.
-        let before = title_of(&ctx2.project).color;
-        let unchanged = run(
-            &ctx2.project,
-            &spec(&ctx2, "set-title-colour"),
-            Some("puce"),
-        );
-        assert_eq!(title_of(&unchanged).color, before);
-        let red = run(
-            &ctx2.project,
-            &spec(&ctx2, "set-title-colour"),
-            Some("#ff0000"),
-        );
-        assert_eq!(title_of(&red).color, [1.0, 0.0, 0.0, 1.0]);
-    }
-
-    /// The three renames still rename, through a parameter that now has a
-    /// name of its own rather than the generic prompted one.
-    #[test]
-    fn the_renames_still_rename_through_their_named_parameter() {
-        let (ctx, _) = ctx_fixture();
-        let renamed = run(
-            &ctx.project,
-            &spec(&ctx, "rename-project"),
-            Some("  Cut 3  "),
-        );
-        assert_eq!(renamed.name, "Cut 3");
-        let tracks = run(&ctx.project, &spec(&ctx, "rename-track"), Some("B-roll"));
-        assert_eq!(tracks.tracks[0].name, "B-roll");
-        let media = run(&ctx.project, &spec(&ctx, "rename-media"), Some("hero"));
-        assert_eq!(media.media[0].name, "hero");
-    }
-
-    /// The Ctrl+K "Add effect" prompt appends the named effect to the clip's
-    /// stack through the same narrow effects action the inspector uses.
-    #[test]
-    fn add_effect_action_appends_to_the_stack() {
-        let (app, mut doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let clip_res = resources[0]
-            .children
-            .iter()
-            .flat_map(|t| t.children.iter())
-            .find(|c| c.kind == "video.clip")
-            .unwrap();
-        let cid: Uuid = clip_res
-            .id
-            .0
-            .trim_start_matches("video.clip:")
-            .parse()
-            .unwrap();
-        let before = VideoDoc::load_project(&doc)
-            .clip(cid)
-            .unwrap()
-            .effects
-            .len();
-        let spec = clip_res
-            .actions
-            .iter()
-            .find(|a| a.id == "add-effect")
-            .expect("add-effect action");
-        let encoded = prompted_encode(spec, "sepia");
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        let after = VideoDoc::load_project(&doc)
-            .clip(cid)
-            .unwrap()
-            .effects
-            .clone();
-        assert_eq!(
-            after.len(),
-            before + 1,
-            "the effect was appended to the stack"
-        );
-        assert_eq!(after.last().unwrap().kind, EffectKind::Sepia);
-    }
-
-    #[test]
-    fn an_effect_resource_edits_the_named_instance_and_carries_it_through_replay() {
-        let (mut ctx, clip_id) = ctx_fixture();
-        let clip = ctx.project.clip_mut(clip_id).expect("fixture clip");
-        clip.add_effect(EffectKind::Sepia);
-        clip.add_effect(EffectKind::Sepia);
-        clip.set_key_at(Param::EffectAmount(0), 0.0, 0.2, Interp::Linear);
-        clip.set_key_at(Param::EffectAmount(1), 0.0, 0.8, Interp::Linear);
-        let first = clip.effects[0].id;
-        let second = clip.effects[1].id;
-        let resource = effect_resource_id(clip_id, second);
-
-        let amount = run(
-            &ctx.project,
-            &spec_on(&ctx, &resource, "set-amount"),
-            Some("0.25"),
-        );
-        let changed = amount.clip(clip_id).expect("written clip");
-        assert_eq!(
-            changed
-                .effects
-                .iter()
-                .find(|effect| effect.id == second)
-                .map(|e| e.amount),
-            Some(0.25),
-            "the duplicate named by id changed",
-        );
-        assert_eq!(
-            changed
-                .effects
-                .iter()
-                .find(|effect| effect.id == first)
-                .map(|e| e.amount),
-            Some(EffectKind::Sepia.default_amount()),
-            "its neighbour was not selected by index",
-        );
-
-        ctx.project = amount;
-        let moved = run(&ctx.project, &spec_on(&ctx, &resource, "move-up"), None);
-        assert_eq!(
-            moved.clip(clip_id).expect("moved clip").effects[0].id,
-            second
-        );
-        let moved_clip = moved.clip(clip_id).expect("moved clip");
-        assert_eq!(
-            moved_clip.anim.sample(Param::EffectAmount(0), 0.0),
-            Some(0.8),
-            "the moved effect carried its keyed amount"
-        );
-        assert_eq!(
-            moved_clip.anim.sample(Param::EffectAmount(1), 0.0),
-            Some(0.2),
-            "its neighbour carried its own curve in the other direction"
-        );
-
-        ctx.project = moved;
-        let removed = run(&ctx.project, &spec_on(&ctx, &resource, "remove"), None);
-        assert!(
-            removed
-                .clip(clip_id)
-                .expect("removed clip")
-                .effect_index(second)
-                .is_none(),
-            "the exact addressed instance was removed",
-        );
-        assert_eq!(
-            removed
-                .clip(clip_id)
-                .expect("removed clip")
-                .anim
-                .sample(Param::EffectAmount(0), 0.0),
-            Some(0.2),
-            "removing the head closes the animation slot with the remaining effect"
-        );
-
-        let mut before_clear = removed;
-        before_clear.clip_mut(clip_id).unwrap().set_key_at(
-            Param::Opacity,
-            0.0,
-            0.6,
-            Interp::Linear,
-        );
-        ctx.project = before_clear;
-        let cleared = run(
-            &ctx.project,
-            &spec_on(&ctx, &clip_resource_id(clip_id), "clear-effects"),
-            None,
-        );
-        let cleared_clip = cleared.clip(clip_id).expect("cleared clip");
-        assert!(cleared_clip.effects.is_empty());
-        assert_eq!(
-            cleared_clip.anim.sample(Param::EffectAmount(0), 0.0),
-            None,
-            "clearing effects clears their now-orphaned curves"
-        );
-        assert_eq!(
-            cleared_clip.anim.sample(Param::Opacity, 0.0),
-            Some(0.6),
-            "clearing effects preserves unrelated animation"
-        );
-    }
-
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the values are written through an action and read back unchanged, or clamped to a literal bound"
-    )]
-    fn captured_effect_actions_refuse_stale_stack_changes_without_overwriting_other_fields() {
-        let (mut ctx, clip_id) = ctx_fixture();
-        let clip = ctx.project.clip_mut(clip_id).expect("fixture clip");
-        clip.add_effect(EffectKind::Sepia);
-        clip.add_effect(EffectKind::Invert);
-        let first = clip.effects[0].id;
-        let second = clip.effects[1].id;
-        let second_resource = effect_resource_id(clip_id, second);
-
-        // A captured amount action applies after an unrelated opacity edit,
-        // and only writes `effects` — it must not restore old opacity.
-        let amount: VideoEditorAction = serde_json::from_slice(
-            &prompted_encode(&spec_on(&ctx, &second_resource, "set-amount"), "0.25").payload,
-        )
-        .expect("effect action decodes");
-        let mut doc = AutoCommit::new();
-        VideoDoc::write_project(&mut doc, &ctx.project);
-        let mut other_field = ctx.project.clone();
-        other_field.clip_mut(clip_id).expect("clip").opacity = 0.37;
-        VideoDoc::upsert_clip(&mut doc, other_field.clip(clip_id).expect("changed clip"));
-        amount
-            .apply(&mut doc)
-            .expect("unrelated write does not stale effect");
-        let after = VideoDoc::load_project(&doc);
-        let after_clip = after.clip(clip_id).expect("clip remains");
-        assert_eq!(
-            after_clip.opacity, 0.37,
-            "old snapshot did not overwrite opacity"
-        );
-        assert_eq!(
-            after_clip
-                .effects
-                .iter()
-                .find(|effect| effect.id == second)
-                .map(|effect| effect.amount),
-            Some(0.25),
-        );
-
-        // A move captured against [first, second] refuses after a peer has
-        // already reordered it; it cannot swap whatever happens to be there.
-        let move_up: VideoEditorAction = serde_json::from_slice(
-            &spec_encoding(&spec_on(&ctx, &second_resource, "move-up"), None).payload,
-        )
-        .expect("move action decodes");
-        let mut reordered = ctx.project.clone();
-        reordered
-            .clip_mut(clip_id)
-            .expect("clip")
-            .move_effect_down(0);
-        VideoDoc::upsert_clip(&mut doc, reordered.clip(clip_id).expect("reordered clip"));
-        assert!(
-            move_up.apply(&mut doc).is_err(),
-            "changed neighbour is stale"
-        );
-        assert_eq!(
-            VideoDoc::load_project(&doc)
+            let mut doc = AutoCommit::new();
+            VideoDoc::write_project(&mut doc, &ctx.project);
+            let mut peer = ctx.project.clone();
+            let peer_clip = peer.clip_mut(clip_id).expect("fixture clip");
+            peer_clip.start += 3.0;
+            peer_clip.opacity = 0.42;
+            VideoDoc::upsert_clip(&mut doc, peer.clip(clip_id).expect("peer clip"));
+            action
+                .apply(&mut doc)
+                .expect("unrelated peer fields do not stale the patch");
+            let written = VideoDoc::load_project(&doc)
                 .clip(clip_id)
                 .expect("clip")
-                .effects[0]
-                .id,
-            second,
-            "the peer order survived the refused action",
-        );
+                .clone();
+            assert_eq!(written.start, peer.clip(clip_id).expect("peer clip").start);
+            assert_eq!(written.opacity, 0.42);
+            assert_eq!(written.filters.brightness, 0.9);
 
-        // Removal also carries the value it saw. A peer changing that value
-        // makes delete refuse, and a peer deleting it makes set refuse.
-        let first_resource = effect_resource_id(clip_id, first);
-        let remove: VideoEditorAction = serde_json::from_slice(
-            &spec_encoding(&spec_on(&ctx, &first_resource, "remove"), None).payload,
-        )
-        .expect("remove action decodes");
-        let mut changed = ctx.project.clone();
-        changed.clip_mut(clip_id).expect("clip").effects[0].amount = 0.1;
-        VideoDoc::upsert_clip(&mut doc, changed.clip(clip_id).expect("changed clip"));
-        assert!(remove.apply(&mut doc).is_err(), "changed instance is stale");
-        assert!(
-            VideoDoc::load_project(&doc)
+            let mut stale = ctx.project.clone();
+            stale
+                .clip_mut(clip_id)
+                .expect("fixture clip")
+                .filters
+                .brightness = 0.1;
+            VideoDoc::upsert_clip(&mut doc, stale.clip(clip_id).expect("stale clip"));
+            assert!(
+                action.apply(&mut doc).is_err(),
+                "a changed property refuses"
+            );
+            let after_project = VideoDoc::load_project(&doc);
+            let after_refusal = after_project.clip(clip_id).expect("clip");
+            assert_eq!(after_refusal.filters.brightness, 0.1);
+        }
+        // Case `palette_and_curves_are_narrow_existing_clip_fields`.
+        {
+            let (ctx, clip_id) = ctx_fixture();
+            let before = ctx.project.clip(clip_id).expect("fixture clip").clone();
+            let mut after = before.clone();
+            after.palette = 6;
+            after.curves.master.set_point(0.5, 0.8);
+            let VideoEditorAction::PatchClipFields { changes, .. } =
+                clip_field_patch_action(&before, &after)
+            else {
+                panic!("existing clip diff is narrow");
+            };
+            assert!(changes.iter().any(|patch| matches!(
+                patch,
+                ClipFieldPatch::Byte {
+                    field: ClipByteField::Palette,
+                    ..
+                }
+            )));
+            assert!(changes.iter().any(|patch| matches!(
+                patch,
+                ClipFieldPatch::Compound {
+                    field: ClipCompoundField::Curves,
+                    ..
+                }
+            )));
+
+            let mut doc = AutoCommit::new();
+            VideoDoc::write_project(&mut doc, &ctx.project);
+            VideoEditorAction::PatchClipFields {
+                clip: clip_id.to_string(),
+                changes,
+            }
+            .apply(&mut doc)
+            .expect("narrow palette and curve patch applies");
+            let written = VideoDoc::load_project(&doc)
                 .clip(clip_id)
                 .expect("clip")
-                .effect_index(first)
-                .is_some(),
-            "refusal did not delete a changed effect",
-        );
-    }
-
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the values are written through an action and read back unchanged, or clamped to a literal bound"
-    )]
-    fn captured_clip_field_action_updates_only_its_field_and_refuses_a_stale_value() {
-        let (ctx, clip_id) = ctx_fixture();
-        let action: VideoEditorAction =
-            serde_json::from_slice(&prompted_encode(&spec(&ctx, "set-brightness"), "0.9").payload)
-                .expect("field action decodes");
-        assert!(
-            matches!(&action, VideoEditorAction::PatchClipFields { .. }),
-            "resource edits are narrow patches, never whole clip snapshots",
-        );
-
-        let mut doc = AutoCommit::new();
-        VideoDoc::write_project(&mut doc, &ctx.project);
-        let mut peer = ctx.project.clone();
-        let peer_clip = peer.clip_mut(clip_id).expect("fixture clip");
-        peer_clip.start += 3.0;
-        peer_clip.opacity = 0.42;
-        VideoDoc::upsert_clip(&mut doc, peer.clip(clip_id).expect("peer clip"));
-        action
-            .apply(&mut doc)
-            .expect("unrelated peer fields do not stale the patch");
-        let written = VideoDoc::load_project(&doc)
-            .clip(clip_id)
-            .expect("clip")
-            .clone();
-        assert_eq!(written.start, peer.clip(clip_id).expect("peer clip").start);
-        assert_eq!(written.opacity, 0.42);
-        assert_eq!(written.filters.brightness, 0.9);
-
-        let mut stale = ctx.project.clone();
-        stale
-            .clip_mut(clip_id)
-            .expect("fixture clip")
-            .filters
-            .brightness = 0.1;
-        VideoDoc::upsert_clip(&mut doc, stale.clip(clip_id).expect("stale clip"));
-        assert!(
-            action.apply(&mut doc).is_err(),
-            "a changed property refuses"
-        );
-        let after_project = VideoDoc::load_project(&doc);
-        let after_refusal = after_project.clip(clip_id).expect("clip");
-        assert_eq!(after_refusal.filters.brightness, 0.1);
-    }
-
-    #[test]
-    fn linked_membership_patch_is_atomic_and_refuses_a_stale_group_member() {
-        let (ctx, first) = ctx_fixture();
-        let mut project = ctx.project;
-        let second = Uuid::new_v4();
-        let mut sibling = project.clip(first).expect("fixture clip").clone();
-        sibling.id = second;
-        let old_group = Uuid::new_v4();
-        let primary = project.clip_mut(first).expect("first");
-        primary.link = Some(old_group);
-        primary.link_follows = true;
-        sibling.link = Some(old_group);
-        sibling.link_follows = true;
-        project.clips.push(sibling);
-
-        let new_group = Uuid::new_v4();
-        let action = VideoEditorAction::PatchClipsFields {
-            patches: vec![
-                ClipPatchData {
-                    clip: first.to_string(),
-                    changes: vec![ClipFieldPatch::Link {
-                        expected: Some(old_group.to_string()),
-                        value: Some(new_group.to_string()),
-                    }],
-                },
-                ClipPatchData {
-                    clip: second.to_string(),
-                    changes: vec![ClipFieldPatch::Link {
-                        expected: Some(old_group.to_string()),
-                        value: Some(new_group.to_string()),
-                    }],
-                },
-            ],
-        };
-
-        let mut doc = AutoCommit::new();
-        VideoDoc::write_project(&mut doc, &project);
-        action.apply(&mut doc).expect("both members still match");
-        let linked = VideoDoc::load_project(&doc);
-        assert_eq!(linked.clip(first).expect("first").link, Some(new_group));
-        assert_eq!(linked.clip(second).expect("second").link, Some(new_group));
-
-        // Rewind the fixture and let a peer alter only one member. The action
-        // must validate both before it writes either, so the first cannot be
-        // moved into a group whose second half rejected the replay.
-        VideoDoc::write_project(&mut doc, &project);
-        let changed_group = Uuid::new_v4();
-        let mut peer = project.clone();
-        peer.clip_mut(second).expect("second").link = Some(changed_group);
-        VideoDoc::upsert_clip(&mut doc, peer.clip(second).expect("second"));
-        assert!(
-            action.apply(&mut doc).is_err(),
-            "stale member refuses group"
-        );
-        let refused = VideoDoc::load_project(&doc);
-        assert_eq!(refused.clip(first).expect("first").link, Some(old_group));
-        assert_eq!(
-            refused.clip(second).expect("second").link,
-            Some(changed_group)
-        );
-    }
-
-    #[test]
-    fn palette_and_curves_are_narrow_existing_clip_fields() {
-        let (ctx, clip_id) = ctx_fixture();
-        let before = ctx.project.clip(clip_id).expect("fixture clip").clone();
-        let mut after = before.clone();
-        after.palette = 6;
-        after.curves.master.set_point(0.5, 0.8);
-        let VideoEditorAction::PatchClipFields { changes, .. } =
-            clip_field_patch_action(&before, &after)
-        else {
-            panic!("existing clip diff is narrow");
-        };
-        assert!(changes.iter().any(|patch| matches!(
-            patch,
-            ClipFieldPatch::Byte {
-                field: ClipByteField::Palette,
-                ..
-            }
-        )));
-        assert!(changes.iter().any(|patch| matches!(
-            patch,
-            ClipFieldPatch::Compound {
-                field: ClipCompoundField::Curves,
-                ..
-            }
-        )));
-
-        let mut doc = AutoCommit::new();
-        VideoDoc::write_project(&mut doc, &ctx.project);
-        VideoEditorAction::PatchClipFields {
-            clip: clip_id.to_string(),
-            changes,
+                .clone();
+            assert_eq!(written.palette, 6);
+            assert!((written.curves.master.eval(0.5) - 0.8).abs() < 1e-9);
         }
-        .apply(&mut doc)
-        .expect("narrow palette and curve patch applies");
-        let written = VideoDoc::load_project(&doc)
-            .clip(clip_id)
-            .expect("clip")
-            .clone();
-        assert_eq!(written.palette, 6);
-        assert!((written.curves.master.eval(0.5) - 0.8).abs() < 1e-9);
     }
 
     // ---- trimming a mix that clipped -------------------------------------
@@ -5997,343 +6000,345 @@ mod tests {
         )
     }
 
-    /// The action is a report about a measurement, so it exists only once
-    /// there is one. Offering to "fix" the levels of a mix nobody has listened
-    /// to would be offering to quieten a mix that is fine.
     #[test]
-    fn trimming_is_offered_only_once_a_mix_has_actually_been_measured_over() {
-        let (quiet, _) = ctx_fixture();
-        assert!(
-            !all_specs(&quiet).iter().any(|(id, _)| id == "trim-mix"),
-            "nothing has clipped, so there is nothing to trim",
-        );
-        let (clipped, _) = ctx_with_clipped_mix(3.0);
-        assert!(
-            all_specs(&clipped).iter().any(|(id, _)| id == "trim-mix"),
-            "a measured overload is what makes the trim meaningful",
-        );
-    }
-
-    /// Running it takes every lane in the mix down by exactly what the meter
-    /// measured, and by the *same* amount, so the balance survives.
-    /// Invoking `set-gain` and `set-pan` actually moves the lane, and out of
-    /// range is clamped rather than stored.
-    ///
-    /// The declared-shape table only proves these actions *say* they take a
-    /// number called `db`. It would pass just as happily if the closure read
-    /// a different parameter name, dropped the value, or clamped the wrong
-    /// way — which is the whole of what a caller with no screen depends on.
-    #[test]
-    fn setting_a_lanes_gain_and_pan_through_the_action_moves_the_lane() {
-        let (ctx, lanes) = ctx_with_clipped_mix(0.0);
-        let a1 = lanes[0];
-
-        let lane = format!("video.track:{a1}");
-        let after = run(&ctx.project, &spec_on(&ctx, &lane, "set-gain"), Some("-6"));
-        assert!(
-            (after.track(a1).expect("A1").gain_db + 6.0).abs() < 1e-6,
-            "the lane came down 6 dB: {}",
-            after.track(a1).expect("A1").gain_db,
-        );
-
-        let after = run(&ctx.project, &spec_on(&ctx, &lane, "set-pan"), Some("-1"));
-        assert!(
-            (after.track(a1).expect("A1").pan + 1.0).abs() < 1e-6,
-            "the lane went hard left: {}",
-            after.track(a1).expect("A1").pan,
-        );
-
-        // Beyond the ends, the intent is legible even though the number is
-        // not, so it is clamped to the end rather than refused or stored raw.
-        let after = run(&ctx.project, &spec_on(&ctx, &lane, "set-gain"), Some("999"));
-        assert!(
-            (after.track(a1).expect("A1").gain_db - MAX_GAIN_DB).abs() < 1e-6,
-            "asking for more than the fader has gives the top of the fader, \
-             not 999: {}",
-            after.track(a1).expect("A1").gain_db,
-        );
-        let after = run(&ctx.project, &spec_on(&ctx, &lane, "set-pan"), Some("-9"));
-        assert!(
-            (after.track(a1).expect("A1").pan + 1.0).abs() < 1e-6,
-            "pan clamps to hard left: {}",
-            after.track(a1).expect("A1").pan,
-        );
-
-        // And `reset-mix` puts both back in one step — the reason it exists
-        // rather than leaving a caller to send `set-gain 0` and forget the pan.
-        let mut moved = ctx.project.clone();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn mix_trim_and_lane_gain_actions_follow_the_measurement() {
+        // Case `trimming_is_offered_only_once_a_mix_has_actually_been_measured_over`:
+        // The action is a report about a measurement, so it exists only once
+        // there is one. Offering to "fix" the levels of a mix nobody has listened
+        // to would be offering to quieten a mix that is fine.
         {
-            let t = moved.tracks.iter_mut().find(|t| t.id == a1).expect("A1");
-            t.gain_db = 4.5;
-            t.pan = -0.35;
+            let (quiet, _) = ctx_fixture();
+            assert!(
+                !all_specs(&quiet).iter().any(|(id, _)| id == "trim-mix"),
+                "nothing has clipped, so there is nothing to trim",
+            );
+            let (clipped, _) = ctx_with_clipped_mix(3.0);
+            assert!(
+                all_specs(&clipped).iter().any(|(id, _)| id == "trim-mix"),
+                "a measured overload is what makes the trim meaningful",
+            );
         }
-        let moved_ctx = VideoResourceCtx {
-            project: moved,
-            mix: ctx.mix.clone(),
-            ..ctx
-        };
-        let after = run(
-            &moved_ctx.project,
-            &spec_on(&moved_ctx, &lane, "reset-mix"),
-            None,
-        );
-        let t = after.track(a1).expect("A1");
-        assert!(
-            t.gain_db.abs() < 1e-6 && t.pan.abs() < 1e-6,
-            "reset puts the lane back to unity and centre in one step: \
-             {} dB, pan {}",
-            t.gain_db,
-            t.pan,
-        );
-    }
+        // Case `setting_a_lanes_gain_and_pan_through_the_action_moves_the_lane`:
+        // Running it takes every lane in the mix down by exactly what the meter
+        // measured, and by the *same* amount, so the balance survives.
+        // Invoking `set-gain` and `set-pan` actually moves the lane, and out of
+        // range is clamped rather than stored.
+        //
+        // The declared-shape table only proves these actions *say* they take a
+        // number called `db`. It would pass just as happily if the closure read
+        // a different parameter name, dropped the value, or clamped the wrong
+        // way — which is the whole of what a caller with no screen depends on.
+        {
+            let (ctx, lanes) = ctx_with_clipped_mix(0.0);
+            let a1 = lanes[0];
 
-    #[test]
-    fn the_trim_action_lowers_every_lane_by_the_measured_overshoot() {
-        let (ctx, lanes) = ctx_with_clipped_mix(4.0);
-        // Two lanes deliberately at different levels, so "the balance is
-        // unchanged" is a claim with something to be wrong about.
-        let mut p = ctx.project.clone();
-        p.tracks
-            .iter_mut()
-            .find(|t| t.id == lanes[0])
-            .expect("A1")
-            .gain_db = 2.0;
-        p.tracks
-            .iter_mut()
-            .find(|t| t.id == lanes[1])
-            .expect("A2")
-            .gain_db = -5.0;
-        let ctx = VideoResourceCtx {
-            project: p,
-            mix: ctx.mix.clone(),
-            ..ctx
-        };
+            let lane = format!("video.track:{a1}");
+            let after = run(&ctx.project, &spec_on(&ctx, &lane, "set-gain"), Some("-6"));
+            assert!(
+                (after.track(a1).expect("A1").gain_db + 6.0).abs() < 1e-6,
+                "the lane came down 6 dB: {}",
+                after.track(a1).expect("A1").gain_db,
+            );
 
-        let after = run(&ctx.project, &spec(&ctx, "trim-mix"), Some("0"));
-        let want = ctx.mix.worst_over_db();
-        assert!(
-            (want - 4.0).abs() < 1e-6,
-            "the fixture measured 4 dB over: {want}",
-        );
-        assert!(
-            (after.track(lanes[0]).expect("A1").gain_db - (2.0 - want)).abs() < 1e-6,
-            "A1 came down by the overshoot: {}",
-            after.track(lanes[0]).expect("A1").gain_db,
-        );
-        assert!(
-            (after.track(lanes[1]).expect("A2").gain_db - (-5.0 - want)).abs() < 1e-6,
-            "and A2 by the same, so they are still 7 dB apart: {}",
-            after.track(lanes[1]).expect("A2").gain_db,
-        );
-    }
+            let after = run(&ctx.project, &spec_on(&ctx, &lane, "set-pan"), Some("-1"));
+            assert!(
+                (after.track(a1).expect("A1").pan + 1.0).abs() < 1e-6,
+                "the lane went hard left: {}",
+                after.track(a1).expect("A1").pan,
+            );
 
-    /// The declared argument is honoured rather than decorative.
-    #[test]
-    fn the_trims_headroom_argument_is_read() {
-        let (ctx, lanes) = ctx_with_clipped_mix(4.0);
-        let plain = run(&ctx.project, &spec(&ctx, "trim-mix"), Some("0"));
-        let spare = run(&ctx.project, &spec(&ctx, "trim-mix"), Some("3"));
-        let gain = |p: &Project| p.track(lanes[0]).expect("A1").gain_db;
-        assert!(
-            (gain(&plain) - gain(&spare) - 3.0).abs() < 1e-6,
-            "three decibels of headroom is three decibels lower: {} vs {}",
-            gain(&plain),
-            gain(&spare),
-        );
-        // Negative headroom would be an instruction to leave it clipping,
-        // which is the state this exists to end.
-        let back = run(&ctx.project, &spec(&ctx, "trim-mix"), Some("-6"));
-        assert!(
-            (gain(&back) - gain(&plain)).abs() < 1e-6,
-            "asking for headroom below zero is asking for none: {}",
-            gain(&back),
-        );
-    }
+            // Beyond the ends, the intent is legible even though the number is
+            // not, so it is clamped to the end rather than refused or stored raw.
+            let after = run(&ctx.project, &spec_on(&ctx, &lane, "set-gain"), Some("999"));
+            assert!(
+                (after.track(a1).expect("A1").gain_db - MAX_GAIN_DB).abs() < 1e-6,
+                "asking for more than the fader has gives the top of the fader, \
+             not 999: {}",
+                after.track(a1).expect("A1").gain_db,
+            );
+            let after = run(&ctx.project, &spec_on(&ctx, &lane, "set-pan"), Some("-9"));
+            assert!(
+                (after.track(a1).expect("A1").pan + 1.0).abs() < 1e-6,
+                "pan clamps to hard left: {}",
+                after.track(a1).expect("A1").pan,
+            );
 
-    /// The measurement reaches a caller that has no screen. This is the whole
-    /// point of putting it on the action surface: an agent or a script reads
-    /// the report from the enumeration, exactly as a person reads it off the
-    /// red chip.
-    #[test]
-    fn the_trim_states_the_measurement_it_is_a_report_about() {
-        let (ctx, _) = ctx_with_clipped_mix(4.0);
-        let sp = spec(&ctx, "trim-mix");
-        let words = sp.description.unwrap_or_default();
-        assert!(words.contains("+4.0 dB over"), "how far over: {words}");
-        assert!(words.contains("1 place"), "and in how many places: {words}");
-    }
-
-    #[test]
-    fn exported_edits_declare_undo_and_destructive_removals() {
-        let (ctx, _) = ctx_fixture();
-        let specs = all_specs(&ctx);
-        assert!(
-            specs
-                .iter()
-                .filter(|(_, action)| action.kind == OperationKind::Document)
-                .all(|(_, action)| action.contract.reversible)
-        );
-        assert!(
-            specs
-                .iter()
-                .filter(|(_, action)| action.kind != OperationKind::Document)
-                .all(|(_, action)| !action.contract.reversible)
-        );
-        let (_, delete) = specs
-            .iter()
-            .find(|(_, action)| action.id == "delete")
-            .expect("fixture clip exports deletion");
-        assert_eq!(delete.contract.risk, tilo_actions::RiskLevel::Destructive);
-        assert_eq!(
-            delete.contract.confirmation,
-            tilo_actions::ConfirmationPolicy::Confirm
-        );
-    }
-
-    #[test]
-    fn file_and_render_effects_are_canonical_and_not_falsely_reversible() {
-        let resources = provide_resources(&VideoResourceCtx::default());
-        let root = &resources[0];
-        for id in [
-            "import",
-            "open",
-            "save",
-            "save-as",
-            "export",
-            "cancel-export",
-        ] {
-            let action = root.actions.iter().find(|action| action.id == id).unwrap();
-            assert_eq!(action.kind, OperationKind::Effect, "{id}");
-            assert!(!action.contract.reversible, "{id}");
-            if id != "cancel-export" {
-                assert!(
-                    matches!(action.contract.execution, ExecutionMode::Background { .. }),
-                    "{id}"
-                );
-                assert_eq!(action.contract.result, ResultSpec::Job, "{id}");
-                assert_eq!(action.params()[0].name.as_ref(), "path", "{id}");
+            // And `reset-mix` puts both back in one step — the reason it exists
+            // rather than leaving a caller to send `set-gain 0` and forget the pan.
+            let mut moved = ctx.project.clone();
+            {
+                let t = moved.tracks.iter_mut().find(|t| t.id == a1).expect("A1");
+                t.gain_db = 4.5;
+                t.pan = -0.35;
             }
+            let moved_ctx = VideoResourceCtx {
+                project: moved,
+                mix: ctx.mix.clone(),
+                ..ctx
+            };
+            let after = run(
+                &moved_ctx.project,
+                &spec_on(&moved_ctx, &lane, "reset-mix"),
+                None,
+            );
+            let t = after.track(a1).expect("A1");
+            assert!(
+                t.gain_db.abs() < 1e-6 && t.pan.abs() < 1e-6,
+                "reset puts the lane back to unity and centre in one step: \
+             {} dB, pan {}",
+                t.gain_db,
+                t.pan,
+            );
         }
-        let cancel = root
-            .actions
-            .iter()
-            .find(|a| a.id == "cancel-export")
-            .unwrap();
-        assert!(!cancel.contract.availability.is_available());
+        // Case `the_trim_action_lowers_every_lane_by_the_measured_overshoot`.
+        {
+            let (ctx, lanes) = ctx_with_clipped_mix(4.0);
+            // Two lanes deliberately at different levels, so "the balance is
+            // unchanged" is a claim with something to be wrong about.
+            let mut p = ctx.project.clone();
+            p.tracks
+                .iter_mut()
+                .find(|t| t.id == lanes[0])
+                .expect("A1")
+                .gain_db = 2.0;
+            p.tracks
+                .iter_mut()
+                .find(|t| t.id == lanes[1])
+                .expect("A2")
+                .gain_db = -5.0;
+            let ctx = VideoResourceCtx {
+                project: p,
+                mix: ctx.mix.clone(),
+                ..ctx
+            };
+
+            let after = run(&ctx.project, &spec(&ctx, "trim-mix"), Some("0"));
+            let want = ctx.mix.worst_over_db();
+            assert!(
+                (want - 4.0).abs() < 1e-6,
+                "the fixture measured 4 dB over: {want}",
+            );
+            assert!(
+                (after.track(lanes[0]).expect("A1").gain_db - (2.0 - want)).abs() < 1e-6,
+                "A1 came down by the overshoot: {}",
+                after.track(lanes[0]).expect("A1").gain_db,
+            );
+            assert!(
+                (after.track(lanes[1]).expect("A2").gain_db - (-5.0 - want)).abs() < 1e-6,
+                "and A2 by the same, so they are still 7 dB apart: {}",
+                after.track(lanes[1]).expect("A2").gain_db,
+            );
+        }
+        // Case `the_trims_headroom_argument_is_read`:
+        // The declared argument is honoured rather than decorative.
+        {
+            let (ctx, lanes) = ctx_with_clipped_mix(4.0);
+            let plain = run(&ctx.project, &spec(&ctx, "trim-mix"), Some("0"));
+            let spare = run(&ctx.project, &spec(&ctx, "trim-mix"), Some("3"));
+            let gain = |p: &Project| p.track(lanes[0]).expect("A1").gain_db;
+            assert!(
+                (gain(&plain) - gain(&spare) - 3.0).abs() < 1e-6,
+                "three decibels of headroom is three decibels lower: {} vs {}",
+                gain(&plain),
+                gain(&spare),
+            );
+            // Negative headroom would be an instruction to leave it clipping,
+            // which is the state this exists to end.
+            let back = run(&ctx.project, &spec(&ctx, "trim-mix"), Some("-6"));
+            assert!(
+                (gain(&back) - gain(&plain)).abs() < 1e-6,
+                "asking for headroom below zero is asking for none: {}",
+                gain(&back),
+            );
+        }
+        // Case `the_trim_states_the_measurement_it_is_a_report_about`:
+        // The measurement reaches a caller that has no screen. This is the whole
+        // point of putting it on the action surface: an agent or a script reads
+        // the report from the enumeration, exactly as a person reads it off the
+        // red chip.
+        {
+            let (ctx, _) = ctx_with_clipped_mix(4.0);
+            let sp = spec(&ctx, "trim-mix");
+            let words = sp.description.unwrap_or_default();
+            assert!(words.contains("+4.0 dB over"), "how far over: {words}");
+            assert!(words.contains("1 place"), "and in how many places: {words}");
+        }
     }
 
     #[test]
-    fn concurrent_effect_actions_replay_in_either_order_with_one_stable_stack() {
-        let (ctx, clip) = ctx_fixture();
-        let mut seed = AutoCommit::new();
-        VideoDoc::write_project(&mut seed, &ctx.project);
-        let initial = ctx.project.clip(clip).expect("fixture clip").effects.len();
-        let first = VideoEditorAction::AddEffect {
-            clip: clip.to_string(),
-            expected_stack: Vec::new(),
-            ordinal: initial,
-            effect: crate::model::ClipEffect::new(EffectKind::Sepia),
-        };
-        let second = VideoEditorAction::AddEffect {
-            clip: clip.to_string(),
-            expected_stack: Vec::new(),
-            ordinal: initial,
-            effect: crate::model::ClipEffect::new(EffectKind::Vignette),
-        };
-        let mut forward = AutoCommit::load(&seed.save()).expect("fork");
-        first.apply(&mut forward).expect("first applies");
-        second.apply(&mut forward).expect("second applies");
-        let mut reverse = AutoCommit::load(&seed.save()).expect("fork");
-        second.apply(&mut reverse).expect("second applies");
-        first.apply(&mut reverse).expect("first applies");
-        let ids = |doc: &AutoCommit| {
-            VideoDoc::load_project(doc)
-                .clip(clip)
-                .expect("clip")
-                .effects
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn exported_edit_contracts_and_concurrent_replays_are_honest() {
+        // Case `exported_edits_declare_undo_and_destructive_removals`.
+        {
+            let (ctx, _) = ctx_fixture();
+            let specs = all_specs(&ctx);
+            assert!(
+                specs
+                    .iter()
+                    .filter(|(_, action)| action.kind == OperationKind::Document)
+                    .all(|(_, action)| action.contract.reversible)
+            );
+            assert!(
+                specs
+                    .iter()
+                    .filter(|(_, action)| action.kind != OperationKind::Document)
+                    .all(|(_, action)| !action.contract.reversible)
+            );
+            let (_, delete) = specs
                 .iter()
-                .map(|effect| effect.id)
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            ids(&forward),
-            ids(&reverse),
-            "rank + UUID tie-break is independent of delivery order"
-        );
-    }
-
-    #[test]
-    fn delete_wins_over_a_delayed_effect_update() {
-        let (ctx, clip) = ctx_fixture();
-        let mut doc = AutoCommit::new();
-        VideoDoc::write_project(&mut doc, &ctx.project);
-        let effect = crate::model::ClipEffect::new(EffectKind::Sepia);
-        let add = VideoEditorAction::AddEffect {
-            clip: clip.to_string(),
-            expected_stack: Vec::new(),
-            ordinal: 0,
-            effect,
-        };
-        add.apply(&mut doc).expect("initial add applies");
-        let remove = VideoEditorAction::RemoveEffect {
-            clip: clip.to_string(),
-            effect: effect.id.to_string(),
-            expected_kind: effect.kind,
-            expected_amount_bits: effect.amount.to_bits(),
-        };
-        let delayed = VideoEditorAction::SetEffectAmount {
-            clip: clip.to_string(),
-            effect: effect.id.to_string(),
-            expected_amount_bits: effect.amount.to_bits(),
-            amount: 0.2,
-        };
-        remove.apply(&mut doc).expect("delete applies");
-        assert!(
-            delayed.apply(&mut doc).is_err(),
-            "a delayed update cannot recreate a deleted effect"
-        );
-        assert!(
-            add.apply(&mut doc).is_err(),
-            "a delayed original action is stopped by the durable tombstone"
-        );
-        assert!(
-            VideoDoc::load_project(&doc)
-                .clip(clip)
-                .expect("clip")
-                .effects
+                .find(|(_, action)| action.id == "delete")
+                .expect("fixture clip exports deletion");
+            assert_eq!(delete.contract.risk, tilo_actions::RiskLevel::Destructive);
+            assert_eq!(
+                delete.contract.confirmation,
+                tilo_actions::ConfirmationPolicy::Confirm
+            );
+        }
+        // Case `file_and_render_effects_are_canonical_and_not_falsely_reversible`.
+        {
+            let resources = provide_resources(&VideoResourceCtx::default());
+            let root = &resources[0];
+            for id in [
+                "import",
+                "open",
+                "save",
+                "save-as",
+                "export",
+                "cancel-export",
+            ] {
+                let action = root.actions.iter().find(|action| action.id == id).unwrap();
+                assert_eq!(action.kind, OperationKind::Effect, "{id}");
+                assert!(!action.contract.reversible, "{id}");
+                if id != "cancel-export" {
+                    assert!(
+                        matches!(action.contract.execution, ExecutionMode::Background { .. }),
+                        "{id}"
+                    );
+                    assert_eq!(action.contract.result, ResultSpec::Job, "{id}");
+                    assert_eq!(action.params()[0].name.as_ref(), "path", "{id}");
+                }
+            }
+            let cancel = root
+                .actions
                 .iter()
-                .all(|entry| entry.id != effect.id)
-        );
-    }
-
-    #[test]
-    fn delayed_structural_clip_upsert_keeps_new_nested_effects_and_markers() {
-        let (ctx, clip) = ctx_fixture();
-        let stale = VideoEditorAction::UpsertClip(ClipData::from_clip(
-            ctx.project.clip(clip).expect("fixture clip"),
-        ));
-        let effect = crate::model::ClipEffect::new(EffectKind::Sepia);
-        let marker = crate::model::Marker::new(2.0, "beat", 3);
-        let add_effect = VideoEditorAction::AddEffect {
-            clip: clip.to_string(),
-            expected_stack: Vec::new(),
-            ordinal: 0,
-            effect,
-        };
-        let add_marker = VideoEditorAction::AddClipMarker {
-            clip: clip.to_string(),
-            marker: marker.clone(),
-        };
-        let mut doc = AutoCommit::new();
-        VideoDoc::write_project(&mut doc, &ctx.project);
-        add_effect.apply(&mut doc).expect("new effect applies");
-        add_marker.apply(&mut doc).expect("new marker applies");
-        stale
-            .apply(&mut doc)
-            .expect("delayed structural upsert remains valid");
-        let written = VideoDoc::load_project(&doc);
-        let written = written.clip(clip).expect("clip remains");
-        assert!(written.effects.iter().any(|entry| entry.id == effect.id));
-        assert!(written.markers.iter().any(|entry| entry.id == marker.id));
+                .find(|a| a.id == "cancel-export")
+                .unwrap();
+            assert!(!cancel.contract.availability.is_available());
+        }
+        // Case `concurrent_effect_actions_replay_in_either_order_with_one_stable_stack`.
+        {
+            let (ctx, clip) = ctx_fixture();
+            let mut seed = AutoCommit::new();
+            VideoDoc::write_project(&mut seed, &ctx.project);
+            let initial = ctx.project.clip(clip).expect("fixture clip").effects.len();
+            let first = VideoEditorAction::AddEffect {
+                clip: clip.to_string(),
+                ordinal: initial,
+                effect: crate::model::ClipEffect::new(EffectKind::Sepia),
+            };
+            let second = VideoEditorAction::AddEffect {
+                clip: clip.to_string(),
+                ordinal: initial,
+                effect: crate::model::ClipEffect::new(EffectKind::Vignette),
+            };
+            let mut forward = AutoCommit::load(&seed.save()).expect("fork");
+            first.apply(&mut forward).expect("first applies");
+            second.apply(&mut forward).expect("second applies");
+            let mut reverse = AutoCommit::load(&seed.save()).expect("fork");
+            second.apply(&mut reverse).expect("second applies");
+            first.apply(&mut reverse).expect("first applies");
+            let ids = |doc: &AutoCommit| {
+                VideoDoc::load_project(doc)
+                    .clip(clip)
+                    .expect("clip")
+                    .effects
+                    .iter()
+                    .map(|effect| effect.id)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                ids(&forward),
+                ids(&reverse),
+                "rank + UUID tie-break is independent of delivery order"
+            );
+        }
+        // Case `delete_wins_over_a_delayed_effect_update`.
+        {
+            let (ctx, clip) = ctx_fixture();
+            let mut doc = AutoCommit::new();
+            VideoDoc::write_project(&mut doc, &ctx.project);
+            let effect = crate::model::ClipEffect::new(EffectKind::Sepia);
+            let add = VideoEditorAction::AddEffect {
+                clip: clip.to_string(),
+                ordinal: 0,
+                effect,
+            };
+            add.apply(&mut doc).expect("initial add applies");
+            let remove = VideoEditorAction::RemoveEffect {
+                clip: clip.to_string(),
+                effect: effect.id.to_string(),
+                expected_kind: effect.kind,
+                expected_amount_bits: effect.amount.to_bits(),
+            };
+            let delayed = VideoEditorAction::SetEffectAmount {
+                clip: clip.to_string(),
+                effect: effect.id.to_string(),
+                expected_amount_bits: effect.amount.to_bits(),
+                amount: 0.2,
+            };
+            remove.apply(&mut doc).expect("delete applies");
+            assert!(
+                delayed.apply(&mut doc).is_err(),
+                "a delayed update cannot recreate a deleted effect"
+            );
+            assert!(
+                add.apply(&mut doc).is_err(),
+                "a delayed original action is stopped by the durable tombstone"
+            );
+            assert!(
+                VideoDoc::load_project(&doc)
+                    .clip(clip)
+                    .expect("clip")
+                    .effects
+                    .iter()
+                    .all(|entry| entry.id != effect.id)
+            );
+        }
+        // Case `delayed_structural_clip_upsert_keeps_new_nested_effects_and_markers`.
+        {
+            let (ctx, clip) = ctx_fixture();
+            let stale = VideoEditorAction::UpsertClip(ClipData::from_clip(
+                ctx.project.clip(clip).expect("fixture clip"),
+            ));
+            let effect = crate::model::ClipEffect::new(EffectKind::Sepia);
+            let marker = crate::model::Marker::new(2.0, "beat", 3);
+            let add_effect = VideoEditorAction::AddEffect {
+                clip: clip.to_string(),
+                ordinal: 0,
+                effect,
+            };
+            let add_marker = VideoEditorAction::AddClipMarker {
+                clip: clip.to_string(),
+                marker: marker.clone(),
+            };
+            let mut doc = AutoCommit::new();
+            VideoDoc::write_project(&mut doc, &ctx.project);
+            add_effect.apply(&mut doc).expect("new effect applies");
+            add_marker.apply(&mut doc).expect("new marker applies");
+            stale
+                .apply(&mut doc)
+                .expect("delayed structural upsert remains valid");
+            let written = VideoDoc::load_project(&doc);
+            let written = written.clip(clip).expect("clip remains");
+            assert!(written.effects.iter().any(|entry| entry.id == effect.id));
+            assert!(written.markers.iter().any(|entry| entry.id == marker.id));
+        }
     }
 }

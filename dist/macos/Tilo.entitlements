@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Hardened-runtime entitlements for Tilo.app (Tilo and the updater;
+     tilo-runtime adds its two capture devices in Runtime.entitlements).
+     Deliberately empty: every exception below was considered and is unused.
+
+     - com.apple.security.app-sandbox: absent. tilo-runtime is the launcher
+       that confines apps (App Sandbox or Seatbelt via launcher-macos); it
+       spawns /usr/bin/sandbox-exec and must reach the user's files, which
+       App Sandbox would forbid. Without App Sandbox the network.client and
+       network.server entitlements have no effect, so they are absent too.
+     - com.apple.security.cs.allow-jit and allow-unsigned-executable-memory:
+       absent. Neither binary links a JIT (no wasmtime, V8 or webview engine
+       in either dependency graph); rendering is wgpu on Metal.
+     - com.apple.security.cs.disable-library-validation: absent. Both binaries
+       are statically linked Rust; the store's `thin` feature
+       (runtime-dylib) is not built for this bundle, and ash's Vulkan loader
+       is reached only through the Linux DMA-BUF import.
+     - com.apple.security.cs.allow-dyld-environment-variables: absent. Apps
+       receive their environment from launcher-macos, not through dyld.
+     - com.apple.security.get-task-allow: absent. It is a debugging exception
+       that notarization rejects. -->
+<plist version="1.0"><dict/></plist>

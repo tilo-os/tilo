@@ -497,174 +497,183 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// Zero latency without throttle is passthrough, 80 ms latency delays delivery, jitter stays
+    /// within bounds, and the oldest frame drops when the queue overflows.
     #[test]
-    fn zero_latency_no_throttle_is_passthrough() {
-        // Simple constructor default-enables 5 ms jitter; use
-        // `with_config` here to pin jitter to zero for a strict
-        // passthrough assertion.
-        let mut link: FrameLink<u32> = FrameLink::with_config(&LinkConfig {
-            latency_ms: 0,
-            jitter_ms: 0,
-            throughput_kbps: 0,
-            queue_capacity: DEFAULT_QUEUE_CAPACITY,
-            jitter_seed: 0,
-            token_bucket_bytes: TOKEN_BUCKET_BYTES,
-        });
-        let start = Instant::now();
-        link.push(start, 100, 1u32);
-        link.push(start, 100, 2u32);
-        link.push(start, 100, 3u32);
-        let drained = link.drain_ready(start);
-        assert_eq!(drained, vec![1, 2, 3]);
-        assert_eq!(link.stats().frames_delivered, 3);
-        assert_eq!(link.stats().frames_dropped, 0);
+    fn the_link_delays_jitters_and_drops_frames_as_configured() {
+        // Phase: zero_latency_no_throttle_is_passthrough.
+        {
+            // Simple constructor default-enables 5 ms jitter; use
+            // `with_config` here to pin jitter to zero for a strict
+            // passthrough assertion.
+            let mut link: FrameLink<u32> = FrameLink::with_config(&LinkConfig {
+                latency_ms: 0,
+                jitter_ms: 0,
+                throughput_kbps: 0,
+                queue_capacity: DEFAULT_QUEUE_CAPACITY,
+                jitter_seed: 0,
+                token_bucket_bytes: TOKEN_BUCKET_BYTES,
+            });
+            let start = Instant::now();
+            link.push(start, 100, 1u32);
+            link.push(start, 100, 2u32);
+            link.push(start, 100, 3u32);
+            let drained = link.drain_ready(start);
+            assert_eq!(drained, vec![1, 2, 3]);
+            assert_eq!(link.stats().frames_delivered, 3);
+            assert_eq!(link.stats().frames_dropped, 0);
+        }
+
+        // Phase: eighty_ms_latency_delays_delivery.
+        {
+            let mut link: FrameLink<u32> = FrameLink::with_config(&LinkConfig {
+                latency_ms: 80,
+                jitter_ms: 0,
+                throughput_kbps: 0,
+                queue_capacity: DEFAULT_QUEUE_CAPACITY,
+                jitter_seed: 0,
+                token_bucket_bytes: TOKEN_BUCKET_BYTES,
+            });
+            let t0 = Instant::now();
+            link.push(t0, 100, 42u32);
+            // Right away — nothing delivered.
+            assert!(link.drain_ready(t0).is_empty());
+            // 50 ms later — still nothing.
+            assert!(link.drain_ready(t0 + Duration::from_millis(50)).is_empty());
+            // 80 ms later — one delivery.
+            let d = link.drain_ready(t0 + Duration::from_millis(80));
+            assert_eq!(d, vec![42]);
+        }
+
+        // Phase: jitter_stays_within_bounds.
+        {
+            let mut link: FrameLink<u32> = FrameLink::with_config(&LinkConfig {
+                latency_ms: 100,
+                jitter_ms: 5,
+                throughput_kbps: 0,
+                queue_capacity: 64,
+                jitter_seed: 42,
+                token_bucket_bytes: TOKEN_BUCKET_BYTES,
+            });
+            let t0 = Instant::now();
+            // Push 32 frames; look at the queued deliver_at instants.
+            for i in 0..32 {
+                link.push(t0, 100, i);
+            }
+            // Every deliver_at must be in [t0 + 95ms, t0 + 105ms].
+            for env in &link.queue {
+                let d = env.deliver_at.duration_since(t0);
+                assert!(d >= Duration::from_millis(95), "d={d:?}");
+                assert!(d <= Duration::from_millis(105), "d={d:?}");
+            }
+        }
+
+        // Phase: drop_oldest_when_queue_overflows.
+        {
+            let mut link: FrameLink<u32> = FrameLink::with_config(&LinkConfig {
+                latency_ms: 1000, // stall the queue so drains don't drain
+                jitter_ms: 0,
+                throughput_kbps: 0,
+                queue_capacity: 4,
+                jitter_seed: 0,
+                token_bucket_bytes: TOKEN_BUCKET_BYTES,
+            });
+            let t0 = Instant::now();
+            for i in 0..10u32 {
+                link.push(t0, 100, i);
+            }
+            assert_eq!(link.stats().frames_pushed, 10);
+            assert_eq!(link.stats().frames_dropped, 6);
+            // The remaining 4 are the newest.
+            let d = link.drain_ready(t0 + Duration::from_millis(1100));
+            assert_eq!(d, vec![6, 7, 8, 9]);
+        }
     }
 
+    /// Throttles at 2 Mbps and 100 kbps pace delivery, and effective-bps stats are reasonable.
     #[test]
-    fn eighty_ms_latency_delays_delivery() {
-        let mut link: FrameLink<u32> = FrameLink::with_config(&LinkConfig {
-            latency_ms: 80,
-            jitter_ms: 0,
-            throughput_kbps: 0,
-            queue_capacity: DEFAULT_QUEUE_CAPACITY,
-            jitter_seed: 0,
-            token_bucket_bytes: TOKEN_BUCKET_BYTES,
-        });
-        let t0 = Instant::now();
-        link.push(t0, 100, 42u32);
-        // Right away — nothing delivered.
-        assert!(link.drain_ready(t0).is_empty());
-        // 50 ms later — still nothing.
-        assert!(link.drain_ready(t0 + Duration::from_millis(50)).is_empty());
-        // 80 ms later — one delivery.
-        let d = link.drain_ready(t0 + Duration::from_millis(80));
-        assert_eq!(d, vec![42]);
-    }
+    fn the_throttle_paces_throughput_to_the_declared_rate() {
+        // Phase: throttle_at_2mbps_paces_delivery.
+        {
+            // 2 Mbps throughput = 250_000 bytes/sec. A single 100_000-byte frame
+            // drains ~400 ms of tokens even from a full bucket.
+            let mut link: FrameLink<u32> = FrameLink::with_config(&LinkConfig {
+                latency_ms: 0,
+                jitter_ms: 0,
+                throughput_kbps: 2000,
+                queue_capacity: 64,
+                jitter_seed: 0,
+                token_bucket_bytes: TOKEN_BUCKET_BYTES,
+            });
+            let t0 = Instant::now();
+            // Push 40 × 100_000-byte frames (roughly 32 Mb of input).
+            for i in 0..40 {
+                link.push(t0, 100_000, i);
+            }
+            // Drain over a 4 s wall-clock window: at 2 Mbps we expect ~1 MB = 10
+            // frames of 100 000 bytes to leave.
+            let mut delivered: Vec<u32> = Vec::new();
+            let mut now = t0;
+            for _ in 0..80 {
+                now += Duration::from_millis(50);
+                delivered.extend(link.drain_ready(now));
+            }
+            let stats = link.stats();
+            // The initial 8 MB bucket lets a burst leave immediately (all 40 ×
+            // 100 kB fit under 8 MB), so the delivered count is 40 on a 4 s
+            // window — asserting we're bytes-cap-bound, not queue-cap-bound.
+            assert!(
+                stats.bytes_delivered > 0,
+                "expected some bytes delivered under throttle"
+            );
+            assert_eq!(
+                delivered.len(),
+                usize::try_from(stats.frames_delivered).unwrap()
+            );
+        }
 
-    #[test]
-    fn jitter_stays_within_bounds() {
-        let mut link: FrameLink<u32> = FrameLink::with_config(&LinkConfig {
-            latency_ms: 100,
-            jitter_ms: 5,
-            throughput_kbps: 0,
-            queue_capacity: 64,
-            jitter_seed: 42,
-            token_bucket_bytes: TOKEN_BUCKET_BYTES,
-        });
-        let t0 = Instant::now();
-        // Push 32 frames; look at the queued deliver_at instants.
-        for i in 0..32 {
-            link.push(t0, 100, i);
+        // Phase: throttle_at_100kbps_paces_a_1mb_input.
+        {
+            // Sub-bucket frame sizes so the throttle can drain them at all.
+            // 100 kbps = 12_500 bytes/sec; push 500 × 1_000-byte frames with a
+            // bucket permitting ~1 s of burst, drain over 20 s, and check the
+            // effective rate is near the cap.
+            let mut link: FrameLink<u32> = FrameLink::with_config(&LinkConfig {
+                latency_ms: 0,
+                jitter_ms: 0,
+                throughput_kbps: 100,
+                queue_capacity: 1024,
+                jitter_seed: 0,
+                token_bucket_bytes: 12_500,
+            });
+            let t0 = Instant::now();
+            for i in 0..500 {
+                link.push(t0, 1_000, i);
+            }
+            let mut now = t0;
+            for _ in 0..200 {
+                now += Duration::from_millis(100);
+                let _ = link.drain_ready(now);
+            }
+            // Effective rate must be near the cap (allow ±30% for warm-up
+            // burst from the token bucket).
+            let elapsed = now.duration_since(t0);
+            let bps = link.stats().effective_bps(elapsed);
+            assert!(
+                bps > 60_000.0 && bps < 150_000.0,
+                "expected ~100 kbps effective throughput, got {bps:.0} bps"
+            );
         }
-        // Every deliver_at must be in [t0 + 95ms, t0 + 105ms].
-        for env in &link.queue {
-            let d = env.deliver_at.duration_since(t0);
-            assert!(d >= Duration::from_millis(95), "d={d:?}");
-            assert!(d <= Duration::from_millis(105), "d={d:?}");
-        }
-    }
 
-    #[test]
-    fn throttle_at_2mbps_paces_delivery() {
-        // 2 Mbps throughput = 250_000 bytes/sec. A single 100_000-byte frame
-        // drains ~400 ms of tokens even from a full bucket.
-        let mut link: FrameLink<u32> = FrameLink::with_config(&LinkConfig {
-            latency_ms: 0,
-            jitter_ms: 0,
-            throughput_kbps: 2000,
-            queue_capacity: 64,
-            jitter_seed: 0,
-            token_bucket_bytes: TOKEN_BUCKET_BYTES,
-        });
-        let t0 = Instant::now();
-        // Push 40 × 100_000-byte frames (roughly 32 Mb of input).
-        for i in 0..40 {
-            link.push(t0, 100_000, i);
+        // Phase: stats_effective_bps_reasonable.
+        {
+            let mut link: FrameLink<u32> = FrameLink::with_config(&LinkConfig::default());
+            let t0 = Instant::now();
+            link.push(t0, 1_000_000, 1); // 8 Mbit
+            let _ = link.drain_ready(t0);
+            let bps = link.stats().effective_bps(Duration::from_secs(1));
+            assert!((bps - 8_000_000.0).abs() < 1.0);
         }
-        // Drain over a 4 s wall-clock window: at 2 Mbps we expect ~1 MB = 10
-        // frames of 100 000 bytes to leave.
-        let mut delivered: Vec<u32> = Vec::new();
-        let mut now = t0;
-        for _ in 0..80 {
-            now += Duration::from_millis(50);
-            delivered.extend(link.drain_ready(now));
-        }
-        let stats = link.stats();
-        // The initial 8 MB bucket lets a burst leave immediately (all 40 ×
-        // 100 kB fit under 8 MB), so the delivered count is 40 on a 4 s
-        // window — asserting we're bytes-cap-bound, not queue-cap-bound.
-        assert!(
-            stats.bytes_delivered > 0,
-            "expected some bytes delivered under throttle"
-        );
-        assert_eq!(
-            delivered.len(),
-            usize::try_from(stats.frames_delivered).unwrap()
-        );
-    }
-
-    #[test]
-    fn throttle_at_100kbps_paces_a_1mb_input() {
-        // Sub-bucket frame sizes so the throttle can drain them at all.
-        // 100 kbps = 12_500 bytes/sec; push 500 × 1_000-byte frames with a
-        // bucket permitting ~1 s of burst, drain over 20 s, and check the
-        // effective rate is near the cap.
-        let mut link: FrameLink<u32> = FrameLink::with_config(&LinkConfig {
-            latency_ms: 0,
-            jitter_ms: 0,
-            throughput_kbps: 100,
-            queue_capacity: 1024,
-            jitter_seed: 0,
-            token_bucket_bytes: 12_500,
-        });
-        let t0 = Instant::now();
-        for i in 0..500 {
-            link.push(t0, 1_000, i);
-        }
-        let mut now = t0;
-        for _ in 0..200 {
-            now += Duration::from_millis(100);
-            let _ = link.drain_ready(now);
-        }
-        // Effective rate must be near the cap (allow ±30% for warm-up
-        // burst from the token bucket).
-        let elapsed = now.duration_since(t0);
-        let bps = link.stats().effective_bps(elapsed);
-        assert!(
-            bps > 60_000.0 && bps < 150_000.0,
-            "expected ~100 kbps effective throughput, got {bps:.0} bps"
-        );
-    }
-
-    #[test]
-    fn drop_oldest_when_queue_overflows() {
-        let mut link: FrameLink<u32> = FrameLink::with_config(&LinkConfig {
-            latency_ms: 1000, // stall the queue so drains don't drain
-            jitter_ms: 0,
-            throughput_kbps: 0,
-            queue_capacity: 4,
-            jitter_seed: 0,
-            token_bucket_bytes: TOKEN_BUCKET_BYTES,
-        });
-        let t0 = Instant::now();
-        for i in 0..10u32 {
-            link.push(t0, 100, i);
-        }
-        assert_eq!(link.stats().frames_pushed, 10);
-        assert_eq!(link.stats().frames_dropped, 6);
-        // The remaining 4 are the newest.
-        let d = link.drain_ready(t0 + Duration::from_millis(1100));
-        assert_eq!(d, vec![6, 7, 8, 9]);
-    }
-
-    #[test]
-    fn stats_effective_bps_reasonable() {
-        let mut link: FrameLink<u32> = FrameLink::with_config(&LinkConfig::default());
-        let t0 = Instant::now();
-        link.push(t0, 1_000_000, 1); // 8 Mbit
-        let _ = link.drain_ready(t0);
-        let bps = link.stats().effective_bps(Duration::from_secs(1));
-        assert!((bps - 8_000_000.0).abs() < 1.0);
     }
 }
 

@@ -16,14 +16,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
 use crate::widget::TaffyTreeExt;
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::{
     Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat as Format,
 };
-use winit::event::WindowEvent;
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -418,8 +416,6 @@ fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), ImageDecodeError> {
 }
 
 impl Widget for Image {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -466,20 +462,6 @@ impl Widget for Image {
         _presence: &PresenceCtx,
     ) {
         self.paint(scene, transform, theme.tokens.colors.semantic.danger);
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {
@@ -535,68 +517,76 @@ mod tests {
     }
 
     #[test]
-    fn image_loads_from_encoded_bytes_and_reports_size() {
-        build_fixture_if_missing();
-        let bytes = std::fs::read(FIXTURE_PATH).unwrap();
-        let img = Image::from_encoded(&bytes).unwrap();
-        assert_eq!(img.intrinsic_size(), (16, 16));
+    fn image_loads_fits_and_survives_missing_sources() {
+        fn image_loads_from_encoded_bytes_and_reports_size() {
+            build_fixture_if_missing();
+            let bytes = std::fs::read(FIXTURE_PATH).unwrap();
+            let img = Image::from_encoded(&bytes).unwrap();
+            assert_eq!(img.intrinsic_size(), (16, 16));
+        }
+
+        fn image_with_fill_fit_fills_entire_rect() {
+            let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16)
+                .with_fit(ImageFit::Fill);
+            let mut scene = Scene::new();
+            let mut img = img;
+            img.draw_for_test(&mut scene, Rect::new(0.0, 0.0, 100.0, 50.0));
+            // No panic; rendering proceeds. The widget's rect should now
+            // match the requested target so a parent layout pass would
+            // place subsequent siblings correctly.
+            assert_eq!(img.get_rect(), Rect::new(0.0, 0.0, 100.0, 50.0));
+        }
+
+        fn contain_fit_preserves_aspect_ratio_in_wide_rect() {
+            let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16)
+                .with_fit(ImageFit::Contain);
+            let mut scene = Scene::new();
+            let mut img = img;
+            // 200×50 rect with a square source: contain should scale to
+            // height (50), width 50, centred at x=75.
+            img.draw_for_test(&mut scene, Rect::new(0.0, 0.0, 200.0, 50.0));
+            // No assertion on scene encoding here; the paint path simply
+            // must not panic and must respect the chosen fit.
+            assert_eq!(img.intrinsic_size(), (16, 16));
+        }
+
+        fn missing_path_renders_error_state_without_panic() {
+            let mut img = Image::from_path("nonexistent/file.png");
+            let mut scene = Scene::new();
+            img.draw_for_test(&mut scene, Rect::new(0.0, 0.0, 100.0, 100.0));
+            // Source must have flipped to `Failed` so subsequent draws
+            // also paint the error state instead of retrying disk I/O.
+            assert!(matches!(img.source, Source::Failed));
+        }
+
+        image_loads_from_encoded_bytes_and_reports_size();
+        image_with_fill_fit_fills_entire_rect();
+        contain_fit_preserves_aspect_ratio_in_wide_rect();
+        missing_path_renders_error_state_without_panic();
     }
 
     #[test]
-    fn image_with_fill_fit_fills_entire_rect() {
-        let img =
-            Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16).with_fit(ImageFit::Fill);
-        let mut scene = Scene::new();
-        let mut img = img;
-        img.draw_for_test(&mut scene, Rect::new(0.0, 0.0, 100.0, 50.0));
-        // No panic; rendering proceeds. The widget's rect should now
-        // match the requested target so a parent layout pass would
-        // place subsequent siblings correctly.
-        assert_eq!(img.get_rect(), Rect::new(0.0, 0.0, 100.0, 50.0));
-    }
+    fn image_accessible_name_comes_from_alt_text() {
+        fn accessibility_alt_text_surfaces_as_accessible_name() {
+            use crate::a11y::Role;
+            let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16)
+                .with_alt("A red square");
+            assert_eq!(img.alt(), Some("A red square"));
+            let node = Widget::accessibility(&img).expect("image is not presentational");
+            assert_eq!(node.role, Role::Image);
+            assert_eq!(node.name.as_deref(), Some("A red square"));
+        }
 
-    #[test]
-    fn missing_path_renders_error_state_without_panic() {
-        let mut img = Image::from_path("nonexistent/file.png");
-        let mut scene = Scene::new();
-        img.draw_for_test(&mut scene, Rect::new(0.0, 0.0, 100.0, 100.0));
-        // Source must have flipped to `Failed` so subsequent draws
-        // also paint the error state instead of retrying disk I/O.
-        assert!(matches!(img.source, Source::Failed));
-    }
+        fn accessibility_without_alt_has_no_name() {
+            use crate::a11y::Role;
+            let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16);
+            assert_eq!(img.alt(), None, "an image defaults to no alt text");
+            let node = Widget::accessibility(&img).unwrap();
+            assert_eq!(node.role, Role::Image);
+            assert_eq!(node.name, None, "a decorative image has no accessible name");
+        }
 
-    #[test]
-    fn accessibility_alt_text_surfaces_as_accessible_name() {
-        use crate::a11y::Role;
-        let img =
-            Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16).with_alt("A red square");
-        assert_eq!(img.alt(), Some("A red square"));
-        let node = Widget::accessibility(&img).expect("image is not presentational");
-        assert_eq!(node.role, Role::Image);
-        assert_eq!(node.name.as_deref(), Some("A red square"));
-    }
-
-    #[test]
-    fn accessibility_without_alt_has_no_name() {
-        use crate::a11y::Role;
-        let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16);
-        assert_eq!(img.alt(), None, "an image defaults to no alt text");
-        let node = Widget::accessibility(&img).unwrap();
-        assert_eq!(node.role, Role::Image);
-        assert_eq!(node.name, None, "a decorative image has no accessible name");
-    }
-
-    #[test]
-    fn contain_fit_preserves_aspect_ratio_in_wide_rect() {
-        let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16)
-            .with_fit(ImageFit::Contain);
-        let mut scene = Scene::new();
-        let mut img = img;
-        // 200×50 rect with a square source: contain should scale to
-        // height (50), width 50, centred at x=75.
-        img.draw_for_test(&mut scene, Rect::new(0.0, 0.0, 200.0, 50.0));
-        // No assertion on scene encoding here; the paint path simply
-        // must not panic and must respect the chosen fit.
-        assert_eq!(img.intrinsic_size(), (16, 16));
+        accessibility_alt_text_surfaces_as_accessible_name();
+        accessibility_without_alt_has_no_name();
     }
 }

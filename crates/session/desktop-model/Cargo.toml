@@ -1,9 +1,13 @@
 [package]
+autotests = false
 name = "tilo-desktop-model"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The canonical Tilo desktop model shared by every host."
 
 # The canonical desktop model: workspaces, strips, window groups, tabs and the
 # people and permissions attached to them. Pure data and pure functions — no
@@ -14,17 +18,23 @@ license.workspace = true
 [dependencies]
 automerge.workspace = true
 blake3.workspace = true
-collab-types = { path = "../../collab/collab-types" }
-desktop-policy = { path = "../../system/desktop-policy", default-features = false }
+collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+desktop-policy = { version = "0.1.0", path = "../../system/desktop-policy", default-features = false }
+hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tilo-actions = { path = "../../collab/actions" }
-tilo-automation = { path = "../../collab/automation" }
+tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-automation = { version = "0.1.0", path = "../../collab/automation" }
 uuid.workspace = true
 
 [dev-dependencies]
-tilo-automerge = { path = "../../doc/tilo-automerge" }
+# Tests take a peer's changes in the way production does (clippy.toml).
+tilo-automerge.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

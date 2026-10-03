@@ -27,7 +27,6 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
-use ui::doc::read_str_or_text;
 
 /// Which top-level section is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,6 +110,28 @@ impl DetailTab {
 pub struct ViewDoc;
 
 impl ViewDoc {
+    fn single<'a>(
+        doc: &'a AutoCommit,
+        obj: &ObjId,
+        key: &str,
+    ) -> Result<Option<(Value<'a>, ObjId)>, StoredValueError> {
+        let Ok(mut values) = doc.get_all(obj, key) else {
+            return Err(StoredValueError::WrongType);
+        };
+        if values.len() > 1 {
+            return Err(StoredValueError::Conflict);
+        }
+        Ok(values.pop())
+    }
+
+    fn existing_view_map(doc: &AutoCommit) -> Result<Option<ObjId>, StoredValueError> {
+        match Self::single(doc, &ROOT, "view")? {
+            None => Ok(None),
+            Some((Value::Object(ObjType::Map), id)) => Ok(Some(id)),
+            Some(_) => Err(StoredValueError::WrongType),
+        }
+    }
+
     fn view_map(doc: &mut AutoCommit) -> ObjId {
         match doc.get(&ROOT, "view") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -118,6 +139,14 @@ impl ViewDoc {
             // which can't happen; falling back to root keeps this from
             // panicking mid-collaboration if that assumption is ever wrong.
             _ => doc.put_object(&ROOT, "view", ObjType::Map).unwrap_or(ROOT),
+        }
+    }
+
+    fn get_str(doc: &AutoCommit, map: &ObjId, key: &str) -> Option<String> {
+        match Self::single(doc, map, key) {
+            Ok(Some((Value::Scalar(s), _))) => s.as_str().map(ToOwned::to_owned),
+            Ok(Some((Value::Object(ObjType::Text), tid))) => doc.text(&tid).ok(),
+            Ok(None | Some(_)) | Err(_) => None,
         }
     }
 
@@ -138,9 +167,12 @@ impl ViewDoc {
 
     // --- section / selection / tab ---
 
-    pub fn section(doc: &mut AutoCommit) -> Section {
-        let m = Self::view_map(doc);
-        Section::parse(&read_str_or_text(doc, &m, "section").unwrap_or_default())
+    pub fn section(doc: &AutoCommit) -> Section {
+        let value = Self::existing_view_map(doc)
+            .ok()
+            .flatten()
+            .and_then(|map| Self::get_str(doc, &map, "section"));
+        Section::parse(&value.unwrap_or_default())
     }
 
     pub fn set_section(doc: &mut AutoCommit, section: Section) {
@@ -148,9 +180,12 @@ impl ViewDoc {
         Self::put_str(doc, &m, "section", section.as_str());
     }
 
-    pub fn selected(doc: &mut AutoCommit) -> Option<String> {
-        let m = Self::view_map(doc);
-        read_str_or_text(doc, &m, "selected").filter(|s| !s.is_empty())
+    pub fn selected(doc: &AutoCommit) -> Option<String> {
+        Self::existing_view_map(doc)
+            .ok()
+            .flatten()
+            .and_then(|map| Self::get_str(doc, &map, "selected"))
+            .filter(|s| !s.is_empty())
     }
 
     pub fn set_selected(doc: &mut AutoCommit, id: Option<&str>) {
@@ -158,9 +193,12 @@ impl ViewDoc {
         Self::put_str(doc, &m, "selected", id.unwrap_or(""));
     }
 
-    pub fn tab(doc: &mut AutoCommit) -> DetailTab {
-        let m = Self::view_map(doc);
-        DetailTab::parse(&read_str_or_text(doc, &m, "tab").unwrap_or_default())
+    pub fn tab(doc: &AutoCommit) -> DetailTab {
+        let value = Self::existing_view_map(doc)
+            .ok()
+            .flatten()
+            .and_then(|map| Self::get_str(doc, &map, "tab"));
+        DetailTab::parse(&value.unwrap_or_default())
     }
 
     pub fn set_tab(doc: &mut AutoCommit, tab: DetailTab) {
@@ -170,10 +208,12 @@ impl ViewDoc {
 
     // --- search (collaborative Text) ---
 
-    pub fn search(doc: &mut AutoCommit) -> String {
-        let m = Self::view_map(doc);
-        let t = Self::text_obj(doc, &m, "search");
-        doc.text(&t).unwrap_or_default()
+    pub fn search(doc: &AutoCommit) -> String {
+        Self::existing_view_map(doc)
+            .ok()
+            .flatten()
+            .and_then(|map| Self::get_str(doc, &map, "search"))
+            .unwrap_or_default()
     }
 
     pub fn search_obj(doc: &mut AutoCommit) -> ObjId {
@@ -188,6 +228,17 @@ impl ViewDoc {
 
     // --- create-container draft ---
 
+    fn existing_create_map(doc: &AutoCommit) -> Result<Option<ObjId>, StoredValueError> {
+        let Some(view) = Self::existing_view_map(doc)? else {
+            return Ok(None);
+        };
+        match Self::single(doc, &view, "create")? {
+            None => Ok(None),
+            Some((Value::Object(ObjType::Map), id)) => Ok(Some(id)),
+            Some(_) => Err(StoredValueError::WrongType),
+        }
+    }
+
     fn create_map(doc: &mut AutoCommit) -> ObjId {
         let m = Self::view_map(doc);
         match doc.get(&m, "create") {
@@ -200,25 +251,53 @@ impl ViewDoc {
 
     /// `ObjId` of one of the create-form's Text fields, so a `TextInput`-style
     /// edit can splice directly into the shared draft.
-    pub fn create_field_obj(doc: &mut AutoCommit, field: CreateField) -> ObjId {
-        let m = Self::create_map(doc);
-        Self::text_obj(doc, &m, field.key())
+    pub fn create_field_obj(doc: &AutoCommit, field: CreateField) -> Option<ObjId> {
+        match Self::stored_create_field(doc, field) {
+            StoredCreateField::Text { object, .. } => Some(object),
+            StoredCreateField::Absent
+            | StoredCreateField::WrongType
+            | StoredCreateField::Conflict => None,
+        }
     }
 
-    pub fn create_field(doc: &mut AutoCommit, field: CreateField) -> String {
-        let obj = Self::create_field_obj(doc, field);
-        doc.text(&obj).unwrap_or_default()
+    pub fn stored_create_field(doc: &AutoCommit, field: CreateField) -> StoredCreateField {
+        let map = match Self::existing_create_map(doc) {
+            Ok(Some(map)) => map,
+            Ok(None) => return StoredCreateField::Absent,
+            Err(StoredValueError::WrongType) => return StoredCreateField::WrongType,
+            Err(StoredValueError::Conflict) => return StoredCreateField::Conflict,
+        };
+        match Self::single(doc, &map, field.key()) {
+            Ok(None) => StoredCreateField::Absent,
+            Ok(Some((Value::Object(ObjType::Text), object))) => doc
+                .text(&object)
+                .map_or(StoredCreateField::WrongType, |value| {
+                    StoredCreateField::Text { value, object }
+                }),
+            Ok(Some(_)) | Err(StoredValueError::WrongType) => StoredCreateField::WrongType,
+            Err(StoredValueError::Conflict) => StoredCreateField::Conflict,
+        }
+    }
+
+    pub fn create_field(doc: &AutoCommit, field: CreateField) -> String {
+        match Self::stored_create_field(doc, field) {
+            StoredCreateField::Text { value, .. } => value,
+            StoredCreateField::Absent
+            | StoredCreateField::WrongType
+            | StoredCreateField::Conflict => String::new(),
+        }
     }
 
     pub fn set_create_field(doc: &mut AutoCommit, field: CreateField, value: &str) {
-        let obj = Self::create_field_obj(doc, field);
+        let map = Self::create_map(doc);
+        let obj = Self::text_obj(doc, &map, field.key());
         ui::doc::splice_text_diffed(doc, &obj, value);
     }
 
     /// Reset every create-form field to empty.
     pub fn clear_create(doc: &mut AutoCommit) {
-        for field in CreateField::ALL {
-            Self::set_create_field(doc, field, "");
+        if let Ok(Some(view)) = Self::existing_view_map(doc) {
+            let _ = doc.delete(&view, "create");
         }
     }
 
@@ -230,7 +309,7 @@ impl ViewDoc {
     /// command override. This is the single source of truth the live
     /// `submit_create` shells out with — asserting on it (rather than a
     /// helper copy) proves the create flow builds the right podman call.
-    pub fn create_run_args(doc: &mut AutoCommit) -> Option<Vec<String>> {
+    pub fn create_run_args(doc: &AutoCommit) -> Option<Vec<String>> {
         let name = Self::create_field(doc, CreateField::Name);
         let image = Self::create_field(doc, CreateField::Image);
         let ports = Self::create_field(doc, CreateField::Ports);
@@ -263,6 +342,20 @@ impl ViewDoc {
         }
         Some(args)
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StoredValueError {
+    WrongType,
+    Conflict,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StoredCreateField {
+    Absent,
+    Text { value: String, object: ObjId },
+    WrongType,
+    Conflict,
 }
 
 /// Split a comma-separated draft into trimmed, non-empty entries.
@@ -335,138 +428,146 @@ impl CreateField {
 mod tests {
     use super::*;
 
+    /// Section, selection, tab, search and create-form state round-trip through the doc and build the run arguments.
     #[test]
-    fn section_round_trips_through_doc() {
-        let mut doc = AutoCommit::new();
-        assert_eq!(ViewDoc::section(&mut doc), Section::Containers, "default");
-        ViewDoc::set_section(&mut doc, Section::Images);
-        assert_eq!(ViewDoc::section(&mut doc), Section::Images);
-        ViewDoc::set_section(&mut doc, Section::Distrobox);
-        assert_eq!(ViewDoc::section(&mut doc), Section::Distrobox);
-    }
-
-    #[test]
-    fn selection_set_and_clear() {
-        let mut doc = AutoCommit::new();
-        assert_eq!(ViewDoc::selected(&mut doc), None);
-        ViewDoc::set_selected(&mut doc, Some("abc123"));
-        assert_eq!(ViewDoc::selected(&mut doc), Some("abc123".into()));
-        ViewDoc::set_selected(&mut doc, None);
-        assert_eq!(ViewDoc::selected(&mut doc), None);
-    }
-
-    #[test]
-    fn tab_round_trips() {
-        let mut doc = AutoCommit::new();
-        assert_eq!(ViewDoc::tab(&mut doc), DetailTab::Logs, "default");
-        ViewDoc::set_tab(&mut doc, DetailTab::Stats);
-        assert_eq!(ViewDoc::tab(&mut doc), DetailTab::Stats);
-    }
-
-    #[test]
-    fn search_text_round_trips() {
-        let mut doc = AutoCommit::new();
-        ViewDoc::set_search(&mut doc, "nginx");
-        assert_eq!(ViewDoc::search(&mut doc), "nginx");
-        ViewDoc::set_search(&mut doc, "redis");
-        assert_eq!(ViewDoc::search(&mut doc), "redis");
-    }
-
-    #[test]
-    fn create_run_args_requires_image() {
-        let mut doc = AutoCommit::new();
-        assert!(
-            ViewDoc::create_run_args(&mut doc).is_none(),
-            "no image → no args"
-        );
-        ViewDoc::set_create_field(&mut doc, CreateField::Image, "nginx:alpine");
-        ViewDoc::set_create_field(&mut doc, CreateField::Name, "web");
-        ViewDoc::set_create_field(&mut doc, CreateField::Ports, "8080:80, 8443:443");
-        let args = ViewDoc::create_run_args(&mut doc).unwrap();
-        assert_eq!(args[0], "run");
-        assert!(args.contains(&"--name".to_string()));
-        assert!(args.contains(&"web".to_string()));
-        assert!(args.contains(&"8080:80".to_string()));
-        assert!(args.contains(&"8443:443".to_string()));
-        assert!(args.contains(&"nginx:alpine".to_string()));
-    }
-
-    #[test]
-    fn create_run_args_includes_env_and_volumes() {
-        let mut doc = AutoCommit::new();
-        ViewDoc::set_create_field(&mut doc, CreateField::Image, "postgres:16");
-        ViewDoc::set_create_field(&mut doc, CreateField::Env, "POSTGRES_DB=app, TZ=UTC");
-        ViewDoc::set_create_field(
-            &mut doc,
-            CreateField::Volumes,
-            "pgdata:/var/lib/postgresql/data",
-        );
-        let args = ViewDoc::create_run_args(&mut doc).unwrap();
-        // -e flags for each env entry, -v for the volume mount.
-        let e_count = args.iter().filter(|a| *a == "-e").count();
-        assert_eq!(e_count, 2, "one -e per env entry: {args:?}");
-        assert!(
-            args.windows(2)
-                .any(|w| w[0] == "-e" && w[1] == "POSTGRES_DB=app")
-        );
-        assert!(args.windows(2).any(|w| w[0] == "-e" && w[1] == "TZ=UTC"));
-        assert!(
-            args.windows(2)
-                .any(|w| w[0] == "-v" && w[1] == "pgdata:/var/lib/postgresql/data")
-        );
-        // The image comes after every flag, before any command.
-        let img_pos = args.iter().position(|a| a == "postgres:16").unwrap();
-        let last_flag = args
-            .iter()
-            .rposition(|a| a == "-e" || a == "-v" || a == "-p")
-            .unwrap();
-        assert!(img_pos > last_flag, "image follows all flags: {args:?}");
-    }
-
-    #[test]
-    fn volumes_section_round_trips() {
-        let mut doc = AutoCommit::new();
-        ViewDoc::set_section(&mut doc, Section::Volumes);
-        assert_eq!(ViewDoc::section(&mut doc), Section::Volumes);
-    }
-
-    #[test]
-    fn clear_create_empties_fields() {
-        let mut doc = AutoCommit::new();
-        ViewDoc::set_create_field(&mut doc, CreateField::Image, "nginx");
-        ViewDoc::clear_create(&mut doc);
-        assert_eq!(ViewDoc::create_field(&mut doc, CreateField::Image), "");
-    }
-
-    #[test]
-    fn appending_one_char_to_search_is_bounded() {
-        // Anti-churn: growing a long search field by one char must splice only
-        // the new char, not rewrite the whole value.
-        let mut doc = AutoCommit::new();
-        let long = "n".repeat(300);
-        ViewDoc::set_search(&mut doc, &long);
-        let before = doc.save().len();
-        let mut longer = long.clone();
-        longer.push('!');
-        ViewDoc::set_search(&mut doc, &longer);
-        let grew = doc.save().len() - before;
-        assert_eq!(ViewDoc::search(&mut doc), longer, "value round-trips");
-        assert!(grew < 40, "one-char search edit grew doc by {grew} bytes");
-    }
-
-    #[test]
-    fn repeated_set_search_keeps_doc_bounded() {
-        let mut doc = AutoCommit::new();
-        let long = "r".repeat(300);
-        ViewDoc::set_search(&mut doc, &long);
-        let a = doc.save().len();
-        for _ in 0..50 {
-            ViewDoc::set_search(&mut doc, &long);
+    fn view_and_create_state_round_trip_through_doc() {
+        // --- phase: section_round_trips_through_doc ---
+        {
+            let mut doc = AutoCommit::new();
+            assert_eq!(ViewDoc::section(&doc), Section::Containers, "default");
+            ViewDoc::set_section(&mut doc, Section::Images);
+            assert_eq!(ViewDoc::section(&doc), Section::Images);
+            ViewDoc::set_section(&mut doc, Section::Distrobox);
+            assert_eq!(ViewDoc::section(&doc), Section::Distrobox);
         }
-        let b = doc.save().len();
-        assert_eq!(
-            a, b,
-            "re-storing the same search grew the document {a} -> {b}"
-        );
+
+        // --- phase: selection_set_and_clear ---
+        {
+            let mut doc = AutoCommit::new();
+            assert_eq!(ViewDoc::selected(&doc), None);
+            ViewDoc::set_selected(&mut doc, Some("abc123"));
+            assert_eq!(ViewDoc::selected(&doc), Some("abc123".into()));
+            ViewDoc::set_selected(&mut doc, None);
+            assert_eq!(ViewDoc::selected(&doc), None);
+        }
+
+        // --- phase: tab_round_trips ---
+        {
+            let mut doc = AutoCommit::new();
+            assert_eq!(ViewDoc::tab(&doc), DetailTab::Logs, "default");
+            ViewDoc::set_tab(&mut doc, DetailTab::Stats);
+            assert_eq!(ViewDoc::tab(&doc), DetailTab::Stats);
+        }
+
+        // --- phase: search_text_round_trips ---
+        {
+            let mut doc = AutoCommit::new();
+            ViewDoc::set_search(&mut doc, "nginx");
+            assert_eq!(ViewDoc::search(&doc), "nginx");
+            ViewDoc::set_search(&mut doc, "redis");
+            assert_eq!(ViewDoc::search(&doc), "redis");
+        }
+
+        // --- phase: volumes_section_round_trips ---
+        {
+            let mut doc = AutoCommit::new();
+            ViewDoc::set_section(&mut doc, Section::Volumes);
+            assert_eq!(ViewDoc::section(&doc), Section::Volumes);
+        }
+
+        // --- phase: clear_create_empties_fields ---
+        {
+            let mut doc = AutoCommit::new();
+            ViewDoc::set_create_field(&mut doc, CreateField::Image, "nginx");
+            ViewDoc::clear_create(&mut doc);
+            assert_eq!(ViewDoc::create_field(&doc, CreateField::Image), "");
+        }
+
+        // --- phase: create_run_args_requires_image ---
+        {
+            let mut doc = AutoCommit::new();
+            assert!(
+                ViewDoc::create_run_args(&doc).is_none(),
+                "no image → no args"
+            );
+            ViewDoc::set_create_field(&mut doc, CreateField::Image, "nginx:alpine");
+            ViewDoc::set_create_field(&mut doc, CreateField::Name, "web");
+            ViewDoc::set_create_field(&mut doc, CreateField::Ports, "8080:80, 8443:443");
+            let args = ViewDoc::create_run_args(&doc).unwrap();
+            assert_eq!(args[0], "run");
+            assert!(args.contains(&"--name".to_string()));
+            assert!(args.contains(&"web".to_string()));
+            assert!(args.contains(&"8080:80".to_string()));
+            assert!(args.contains(&"8443:443".to_string()));
+            assert!(args.contains(&"nginx:alpine".to_string()));
+        }
+
+        // --- phase: create_run_args_includes_env_and_volumes ---
+        {
+            let mut doc = AutoCommit::new();
+            ViewDoc::set_create_field(&mut doc, CreateField::Image, "postgres:16");
+            ViewDoc::set_create_field(&mut doc, CreateField::Env, "POSTGRES_DB=app, TZ=UTC");
+            ViewDoc::set_create_field(
+                &mut doc,
+                CreateField::Volumes,
+                "pgdata:/var/lib/postgresql/data",
+            );
+            let args = ViewDoc::create_run_args(&doc).unwrap();
+            // -e flags for each env entry, -v for the volume mount.
+            let e_count = args.iter().filter(|a| *a == "-e").count();
+            assert_eq!(e_count, 2, "one -e per env entry: {args:?}");
+            assert!(
+                args.windows(2)
+                    .any(|w| w[0] == "-e" && w[1] == "POSTGRES_DB=app")
+            );
+            assert!(args.windows(2).any(|w| w[0] == "-e" && w[1] == "TZ=UTC"));
+            assert!(
+                args.windows(2)
+                    .any(|w| w[0] == "-v" && w[1] == "pgdata:/var/lib/postgresql/data")
+            );
+            // The image comes after every flag, before any command.
+            let img_pos = args.iter().position(|a| a == "postgres:16").unwrap();
+            let last_flag = args
+                .iter()
+                .rposition(|a| a == "-e" || a == "-v" || a == "-p")
+                .unwrap();
+            assert!(img_pos > last_flag, "image follows all flags: {args:?}");
+        }
+    }
+
+    /// Appending to or repeatedly setting the search keeps the doc bounded.
+    #[test]
+    fn search_edits_keep_doc_bounded() {
+        // --- phase: appending_one_char_to_search_is_bounded ---
+        {
+            // Anti-churn: growing a long search field by one char must splice only
+            // the new char, not rewrite the whole value.
+            let mut doc = AutoCommit::new();
+            let long = "n".repeat(300);
+            ViewDoc::set_search(&mut doc, &long);
+            let before = doc.save().len();
+            let mut longer = long.clone();
+            longer.push('!');
+            ViewDoc::set_search(&mut doc, &longer);
+            let grew = doc.save().len() - before;
+            assert_eq!(ViewDoc::search(&doc), longer, "value round-trips");
+            assert!(grew < 40, "one-char search edit grew doc by {grew} bytes");
+        }
+
+        // --- phase: repeated_set_search_keeps_doc_bounded ---
+        {
+            let mut doc = AutoCommit::new();
+            let long = "r".repeat(300);
+            ViewDoc::set_search(&mut doc, &long);
+            let a = doc.save().len();
+            for _ in 0..50 {
+                ViewDoc::set_search(&mut doc, &long);
+            }
+            let b = doc.save().len();
+            assert_eq!(
+                a, b,
+                "re-storing the same search grew the document {a} -> {b}"
+            );
+        }
     }
 }

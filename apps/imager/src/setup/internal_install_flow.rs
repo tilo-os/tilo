@@ -423,28 +423,7 @@ pub(super) fn staging_consumer(
 /// A fresh RFC 4122 version 4 identifier. Not a secret: it names one
 /// operation's record, and the helper refuses to reuse a finished one.
 fn new_operation_id() -> String {
-    use std::hash::{BuildHasher, Hasher};
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_nanos());
-    let half = |index: usize| {
-        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
-        hasher.write_u128(nanos);
-        hasher.write_usize(index);
-        hasher.write_u32(std::process::id());
-        u128::from(hasher.finish())
-    };
-    let random = (half(0) << 64) | half(1);
-    // Version 4 in bits 76..80, RFC 4122 variant in bits 62..64.
-    let value = (random & !(0xf << 76) & !(0x3 << 62)) | (0x4 << 76) | (0x2 << 62);
-    format!(
-        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
-        value >> 96,
-        (value >> 80) & 0xffff,
-        (value >> 64) & 0xffff,
-        (value >> 48) & 0xffff,
-        value & 0xffff_ffff_ffff
-    )
+    uuid::Uuid::new_v4().to_string()
 }
 
 /// Host readiness for Full Tilo, as shown on the experience page.
@@ -1420,162 +1399,393 @@ pub(super) mod tests {
     }
 
     fn wait_state(install: &mut InternalInstall, done: impl Fn(&RunState) -> bool) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         while !done(install.run_state()) {
             install.poll();
-            assert!(std::time::Instant::now() < deadline, "run did not finish");
+            assert!(ui::time::now() < deadline, "run did not finish");
             std::thread::sleep(Duration::from_millis(1));
         }
     }
 
-    // Catches offering Full Tilo from platform identity alone or from a dev
-    // build without the explicit opt-in.
+    /// Gate, readiness, remedies and copy.
     #[test]
-    fn gate_requires_the_release_flag_or_the_explicit_development_opt_in() {
-        assert!(!gate_open(None, None));
-        assert!(!gate_open(Some("0"), Some("true")));
-        assert!(gate_open(Some("1"), None));
-        assert!(gate_open(None, Some("1")));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn internal_install_gate_readiness_and_remedies_follow_blockers() {
+        // Phase `gate_requires_the_release_flag_or_the_explicit_development_opt_in`.
+        // Catches offering Full Tilo from platform identity alone or from a dev
+        // build without the explicit opt-in.
+        {
+            assert!(!gate_open(None, None));
+            assert!(!gate_open(Some("0"), Some("true")));
+            assert!(gate_open(Some("1"), None));
+            assert!(gate_open(None, Some("1")));
 
-        let fakes = Fakes::new(Vec::new());
-        let mut gated = InternalInstall::new(fakes.runtime(), false, HostOs::Windows);
-        assert!(gated.probe_task().is_none());
-        assert_eq!(gated.readiness(), &Readiness::Gated);
-        gated.accept_probe(facts(Vec::new()), Vec::new(), true);
-        assert!(!gated.offers_full_os());
-        assert_eq!(fakes.probes.load(Ordering::SeqCst), 0);
-    }
+            let fakes = Fakes::new(Vec::new());
+            let mut gated = InternalInstall::new(fakes.runtime(), false, HostOs::Windows);
+            assert!(gated.probe_task().is_none());
+            assert_eq!(gated.readiness(), &Readiness::Gated);
+            gated.accept_probe(facts(Vec::new()), Vec::new(), true);
+            assert!(!gated.offers_full_os());
+            assert_eq!(fakes.probes.load(Ordering::SeqCst), 0);
+        }
 
-    // Catches enabling Full Tilo while checking, without a release, or when
-    // a blocker without a remedy exists.
-    #[test]
-    fn readiness_needs_probe_release_and_only_remediable_blockers() {
-        let fakes = Fakes::new(Vec::new());
-        let mut install = InternalInstall::new(fakes.runtime(), true, HostOs::Windows);
-        assert_eq!(install.readiness(), &Readiness::Checking);
-        assert!(!install.offers_full_os());
+        // Phase `readiness_needs_probe_release_and_only_remediable_blockers`.
+        // Catches enabling Full Tilo while checking, without a release, or when
+        // a blocker without a remedy exists.
+        {
+            let fakes = Fakes::new(Vec::new());
+            let mut install = InternalInstall::new(fakes.runtime(), true, HostOs::Windows);
+            assert_eq!(install.readiness(), &Readiness::Checking);
+            assert!(!install.offers_full_os());
 
-        assert_eq!(probed(&fakes, false).readiness(), &Readiness::NoRelease);
-        let ready = probed(&fakes, true);
-        assert!(ready.offers_full_os());
-        assert!(ready.install_blocker(true).is_ok());
-        assert!(ready.install_blocker(false).is_err());
+            assert_eq!(probed(&fakes, false).readiness(), &Readiness::NoRelease);
+            let ready = probed(&fakes, true);
+            assert!(ready.offers_full_os());
+            assert!(ready.install_blocker(true).is_ok());
+            assert!(ready.install_blocker(false).is_err());
 
-        let remediable = probed(&Fakes::new(vec![Blocker::SecureBootOn]), true);
-        assert!(remediable.offers_full_os());
-        assert!(remediable.install_blocker(true).is_err());
-        assert!(remediable.firmware_command().is_some());
+            let remediable = probed(&Fakes::new(vec![Blocker::SecureBootOn]), true);
+            assert!(remediable.offers_full_os());
+            assert!(remediable.install_blocker(true).is_err());
+            assert!(remediable.firmware_command().is_some());
 
-        let unsupported = probed(&Fakes::new(vec![Blocker::NotGpt, Blocker::OnBattery]), true);
-        assert_eq!(
-            unsupported.readiness(),
-            &Readiness::Unsupported(vec![Blocker::NotGpt])
-        );
-        assert!(!unsupported.offers_full_os());
-        let blind = HostFacts {
-            basis: None,
-            bitlocker_protected: false,
-            blockers: Vec::new(),
-        };
-        install.accept_probe(blind, Vec::new(), true);
-        assert!(!install.offers_full_os());
-    }
-
-    // Catches a stepper value escaping the planner's bounds or a size change
-    // that leaves the shown plan stale.
-    #[test]
-    fn target_size_stays_within_bounds_and_replans() {
-        let fakes = Fakes::new(Vec::new());
-        let mut install = probed(&fakes, true);
-        let (min, max) = install.bounds_gib().unwrap();
-        assert_eq!(min, 35);
-        assert_eq!(max, 400 - 120 - 42);
-        let first = install.reviewed_digest().unwrap();
-        assert!(install.set_target_gib(min - 1).is_err());
-        assert!(install.set_target_gib(max + 1).is_err());
-        install.set_target_gib(100).unwrap();
-        assert_eq!(install.target_bytes(), 100 * GIB);
-        let Some(Ok(plan)) = install.plan() else {
-            panic!("plan")
-        };
-        assert_eq!(target_extent_bytes(plan), 100 * GIB);
-        assert_ne!(install.reviewed_digest().unwrap(), first);
-
-        install.target_state().set(1000.0);
-        assert!(install.poll());
-        assert_eq!(install.target_bytes(), max * GIB);
-    }
-
-    // Catches arm/remove running without the unfinished record or against a
-    // record the person no longer sees.
-    #[test]
-    fn retry_and_remove_act_on_the_current_record_only() {
-        let mut fakes = Fakes::new(vec![Blocker::PendingOperation]);
-        assert!(probed(&fakes, true).helper_task(Action::Arm, "x").is_err());
-        fakes.records = vec![record("op-1")];
-        fakes.script = vec![progress(Step::BootNext, 0, 1), finished(true, None)];
-        let mut install = probed(&fakes, true);
-        assert!(install.helper_task(Action::Remove, "op-2").is_err());
-        let task = install.helper_task(Action::Arm, "op-1").unwrap();
-        assert!(install.is_running());
-        assert!(install.helper_task(Action::Remove, "op-1").is_err());
-        task();
-        install.poll();
-        assert_eq!(
-            install.run_state(),
-            &RunState::Succeeded {
-                action: Action::Arm
-            }
-        );
-        assert!(install.can_restart());
-        let launched = fakes.launches.lock().unwrap();
-        assert_eq!(launched.len(), 1);
-        assert_eq!(launched[0].action, Action::Arm);
-        assert_eq!(launched[0].operation_id, "op-1");
-        assert!(launched[0].manifest_path.is_empty());
-    }
-
-    // Catches a refused helper being reported as success, or a plan-stale
-    // refusal that does not send the person back to review.
-    #[test]
-    fn helper_refusals_keep_their_stable_codes() {
-        let mut fakes = Fakes::new(vec![Blocker::PendingOperation]);
-        fakes.records = vec![record("op-1")];
-        for code in ["plan-stale", "boot-next-busy", "digest-mismatch", "other"] {
-            fakes.script = vec![finished(false, Some(code))];
-            let mut install = probed(&fakes, true);
-            install.helper_task(Action::Arm, "op-1").unwrap()();
-            install.poll();
-            let RunState::Failed { failure, .. } = install.run_state().clone() else {
-                panic!("{code} should fail");
+            let unsupported = probed(&Fakes::new(vec![Blocker::NotGpt, Blocker::OnBattery]), true);
+            assert_eq!(
+                unsupported.readiness(),
+                &Readiness::Unsupported(vec![Blocker::NotGpt])
+            );
+            assert!(!unsupported.offers_full_os());
+            let blind = HostFacts {
+                basis: None,
+                bitlocker_protected: false,
+                blockers: Vec::new(),
             };
-            assert_eq!(failure.code.as_deref(), Some(code));
-            assert_eq!(install.take_reprobe(), code == "plan-stale");
-            assert!(!install.take_reprobe());
-            assert!(!install.can_restart());
-            let text = failure_text(&failure, HostOs::Windows);
-            assert!(!text.contains("imager-setup"), "{text}");
+            install.accept_probe(blind, Vec::new(), true);
+            assert!(!install.offers_full_os());
+        }
+
+        // Phase `remedies_follow_blockers_and_host`.
+        // Catches remedies offered where they do not apply, e.g. Fast Startup on
+        // Linux or BitLocker suspension without BitLocker.
+        {
+            let mut fakes = Fakes::new(vec![Blocker::SecureBootOn, Blocker::Hibernation]);
+            fakes.facts.bitlocker_protected = true;
+            let windows = probed(&fakes, true);
+            assert_eq!(
+                windows.firmware_command(),
+                Some(HostCommand::FirmwareSettings {
+                    suspend_bitlocker: true
+                })
+            );
+            assert!(windows.command_available(HostCommand::DisableFastStartup));
+            assert!(!windows.command_available(HostCommand::Restart));
+
+            let mut linux = InternalInstall::new(fakes.runtime(), true, HostOs::Linux);
+            let (facts, records) = linux.probe_task().unwrap()();
+            linux.accept_probe(facts, records, true);
+            assert_eq!(
+                linux.firmware_command(),
+                Some(HostCommand::FirmwareSettings {
+                    suspend_bitlocker: false
+                })
+            );
+            assert!(!linux.command_available(HostCommand::DisableFastStartup));
+            assert!(
+                probed(&Fakes::new(Vec::new()), true)
+                    .firmware_command()
+                    .is_none()
+            );
+        }
+
+        // Phase `every_blocker_and_step_has_copy`.
+        {
+            for blocker in [
+                Blocker::NotUefi,
+                Blocker::SecureBootOn,
+                Blocker::BitlockerLocked,
+                Blocker::NotGpt,
+                Blocker::DiskUnsupported,
+                Blocker::Hibernation,
+                Blocker::InsufficientSpace,
+                Blocker::OnBattery,
+                Blocker::PendingOperation,
+                Blocker::ArchMismatch,
+            ] {
+                assert_eq!(
+                    serde_json::to_value(blocker).unwrap(),
+                    serde_json::json!(blocker_key(blocker))
+                );
+                let text = blocker_text(blocker, HostOs::Windows);
+                assert!(!text.starts_with("imager-setup"), "{text}");
+            }
+            for step in [
+                Step::Shrink,
+                Step::CreateEsp,
+                Step::CreateRoot,
+                Step::WriteEsp,
+                Step::WriteRoot,
+                Step::Verify,
+                Step::Handoff,
+                Step::BootEntry,
+                Step::BootNext,
+                Step::RemoveBootNext,
+                Step::RemoveBootEntry,
+                Step::RemoveRoot,
+                Step::RemoveEsp,
+                Step::RestoreShrink,
+            ] {
+                assert_eq!(
+                    serde_json::to_value(step).unwrap(),
+                    serde_json::json!(step_key(step))
+                );
+                let text = super::super::strings::t(&format!(
+                    "imager-setup-internal-step-{}",
+                    step_key(step)
+                ));
+                assert!(!text.starts_with("imager-setup"), "{text}");
+            }
         }
     }
 
-    // Catches a launch failure hanging in Running or an install proceeding
-    // against a plan that changed after review.
+    /// Target sizing and replanning.
     #[test]
-    fn stage_requires_the_reviewed_digest_and_launch_failures_settle() {
-        let fakes = Fakes::new(Vec::new());
-        let mut install = probed(&fakes, true);
-        assert!(install.begin_stage("stale", true).is_err());
-        assert!(!install.is_running());
-        let digest = install.reviewed_digest().unwrap();
-        assert!(install.begin_stage(&digest, false).is_err());
-        install.begin_stage(&digest, true).unwrap();
-        assert!(install.is_running());
-        install.abort_stage("download", "worker refused".into());
-        let RunState::Failed { failure, .. } = install.run_state() else {
-            panic!("abort should fail");
-        };
-        assert_eq!(failure.code.as_deref(), Some("download"));
-        assert!(install.link.lock().intent.is_none());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn internal_install_target_size_replans_within_bounds() {
+        // Phase `target_size_stays_within_bounds_and_replans`.
+        // Catches a stepper value escaping the planner's bounds or a size change
+        // that leaves the shown plan stale.
+        {
+            let fakes = Fakes::new(Vec::new());
+            let mut install = probed(&fakes, true);
+            let (min, max) = install.bounds_gib().unwrap();
+            assert_eq!(min, 35);
+            assert_eq!(max, 400 - 120 - 42);
+            let first = install.reviewed_digest().unwrap();
+            assert!(install.set_target_gib(min - 1).is_err());
+            assert!(install.set_target_gib(max + 1).is_err());
+            install.set_target_gib(100).unwrap();
+            assert_eq!(install.target_bytes(), 100 * GIB);
+            let Some(Ok(plan)) = install.plan() else {
+                panic!("plan")
+            };
+            assert_eq!(target_extent_bytes(plan), 100 * GIB);
+            assert_ne!(install.reviewed_digest().unwrap(), first);
+
+            install.target_state().set(1000.0);
+            assert!(install.poll());
+            assert_eq!(install.target_bytes(), max * GIB);
+        }
+
+        // Phase `smaller_manifest_sizes_are_replanned_without_shrinking_further`.
+        // Catches the helper refusing every real install (its plan must be the
+        // planner's exact result for the bundle's sizes) and a replan that
+        // silently shrinks the system volume further than the person reviewed.
+        {
+            let fakes = Fakes::new(Vec::new());
+            let mut install = probed(&fakes, true);
+            let digest = install.reviewed_digest().unwrap();
+            install.begin_stage(&digest, true).unwrap();
+            let intent = install.link.lock().intent.clone().unwrap();
+            let reviewed = intent.plan.clone();
+            let dir = tempfile::tempdir().unwrap();
+            let manifest = selected_sizes(64 << 20, 40 * GIB);
+            let request = stage_request(&install.link, &manifest, intent, dir.path()).unwrap();
+            assert_ne!(request.plan_sha256, digest);
+            assert_eq!(request.plan_sha256, request.plan.digest());
+            let s = request.plan.basis.disk.sector_bytes;
+            assert_eq!(request.plan.staging_esp.extent().lbas() * s, 64 << 20);
+            assert_eq!(
+                request.plan.target_extent.lbas(),
+                reviewed.target_extent.lbas()
+            );
+            let kept = |p: &Plan| p.shrink.as_ref().map_or(u64::MAX, |x| x.to_bytes);
+            assert!(kept(&request.plan) >= kept(&reviewed));
+        }
+
+        // Phase `undersized_plan_is_refused_as_stale_and_replanned_with_manifest_sizes`.
+        // Catches staging a plan whose installer partitions are smaller than the
+        // verified manifest requires, and a re-review that ignores the real size.
+        {
+            let fakes = Fakes::new(Vec::new());
+            let mut install = probed(&fakes, true);
+            let digest = install.reviewed_digest().unwrap();
+            install.begin_stage(&digest, true).unwrap();
+            let intent = install.link.lock().intent.take().unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let outcome =
+                stage_request(&install.link, &selected(48 * GIB), intent, dir.path()).unwrap_err();
+            assert_eq!(outcome.code.as_deref(), Some("plan-stale"));
+            install.link.finish(Action::Stage, &outcome);
+            install.poll();
+            assert!(install.take_reprobe());
+            let (facts, records) = install.probe_task().unwrap()();
+            install.accept_probe(facts, records, true);
+            let Some(Ok(plan)) = install.plan() else {
+                panic!("replanned")
+            };
+            assert!(
+                partition_bytes(
+                    plan,
+                    plan.staging_root.first_lba,
+                    plan.staging_root.last_lba
+                ) >= 48 * GIB
+            );
+            assert_ne!(install.reviewed_digest().unwrap(), digest);
+        }
+    }
+
+    /// Stage request binding, helper refusals, operation ids, retry/remove and progress.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn internal_install_staging_binds_the_reviewed_request_and_reports_outcomes() {
+        // Phase `retry_and_remove_act_on_the_current_record_only`.
+        // Catches arm/remove running without the unfinished record or against a
+        // record the person no longer sees.
+        {
+            let mut fakes = Fakes::new(vec![Blocker::PendingOperation]);
+            assert!(probed(&fakes, true).helper_task(Action::Arm, "x").is_err());
+            fakes.records = vec![record("op-1")];
+            fakes.script = vec![progress(Step::BootNext, 0, 1), finished(true, None)];
+            let mut install = probed(&fakes, true);
+            assert!(install.helper_task(Action::Remove, "op-2").is_err());
+            let task = install.helper_task(Action::Arm, "op-1").unwrap();
+            assert!(install.is_running());
+            assert!(install.helper_task(Action::Remove, "op-1").is_err());
+            task();
+            install.poll();
+            assert_eq!(
+                install.run_state(),
+                &RunState::Succeeded {
+                    action: Action::Arm
+                }
+            );
+            assert!(install.can_restart());
+            let launched = fakes.launches.lock().unwrap();
+            assert_eq!(launched.len(), 1);
+            assert_eq!(launched[0].action, Action::Arm);
+            assert_eq!(launched[0].operation_id, "op-1");
+            assert!(launched[0].manifest_path.is_empty());
+        }
+
+        // Phase `helper_refusals_keep_their_stable_codes`.
+        // Catches a refused helper being reported as success, or a plan-stale
+        // refusal that does not send the person back to review.
+        {
+            let mut fakes = Fakes::new(vec![Blocker::PendingOperation]);
+            fakes.records = vec![record("op-1")];
+            for code in ["plan-stale", "boot-next-busy", "digest-mismatch", "other"] {
+                fakes.script = vec![finished(false, Some(code))];
+                let mut install = probed(&fakes, true);
+                install.helper_task(Action::Arm, "op-1").unwrap()();
+                install.poll();
+                let RunState::Failed { failure, .. } = install.run_state().clone() else {
+                    panic!("{code} should fail");
+                };
+                assert_eq!(failure.code.as_deref(), Some(code));
+                assert_eq!(install.take_reprobe(), code == "plan-stale");
+                assert!(!install.take_reprobe());
+                assert!(!install.can_restart());
+                let text = failure_text(&failure, HostOs::Windows);
+                assert!(!text.contains("imager-setup"), "{text}");
+            }
+        }
+
+        // Phase `stage_requires_the_reviewed_digest_and_launch_failures_settle`.
+        // Catches a launch failure hanging in Running or an install proceeding
+        // against a plan that changed after review.
+        {
+            let fakes = Fakes::new(Vec::new());
+            let mut install = probed(&fakes, true);
+            assert!(install.begin_stage("stale", true).is_err());
+            assert!(!install.is_running());
+            let digest = install.reviewed_digest().unwrap();
+            assert!(install.begin_stage(&digest, false).is_err());
+            install.begin_stage(&digest, true).unwrap();
+            assert!(install.is_running());
+            install.abort_stage("download", "worker refused".into());
+            let RunState::Failed { failure, .. } = install.run_state() else {
+                panic!("abort should fail");
+            };
+            assert_eq!(failure.code.as_deref(), Some("download"));
+            assert!(install.link.lock().intent.is_none());
+        }
+
+        // Phase `stage_request_binds_release_plan_paths_and_manifest_bytes`.
+        // Catches a request that names the wrong release, loses the reviewed
+        // plan digest, or hands the helper a manifest it cannot re-hash.
+        {
+            let fakes = Fakes::new(Vec::new());
+            let mut install = probed(&fakes, true);
+            let digest = install.reviewed_digest().unwrap();
+            install.begin_stage(&digest, true).unwrap();
+            let intent = install.link.lock().intent.clone().unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let manifest = selected(40 * GIB);
+            let request = stage_request(&install.link, &manifest, intent, dir.path()).unwrap();
+            assert_eq!(request.action, Action::Stage);
+            assert_eq!(request.plan_sha256, digest);
+            assert_eq!(request.plan.digest(), digest);
+            assert_eq!(request.release.release_id, "fixture-only");
+            assert_eq!(request.release.architecture, "x86_64");
+            assert_eq!(request.release.manifest_sha256, manifest.manifest_sha256());
+            assert_eq!(
+                request.component_paths.staging_esp,
+                "/verified/staging-esp.img"
+            );
+            assert_eq!(
+                std::fs::read(&request.manifest_path).unwrap(),
+                manifest.bytes()
+            );
+            assert_eq!(
+                install.link.lock().requirements,
+                Some((PROVISIONAL_STAGING_ESP_BYTES, 40 * GIB))
+            );
+        }
+
+        // Phase `operation_ids_are_distinct_version_four_uuids`.
+        {
+            let a = new_operation_id();
+            let b = new_operation_id();
+            assert_ne!(a, b);
+            assert_eq!(a.len(), 36);
+            assert_eq!(&a[14..15], "4");
+            assert!(matches!(&a[19..20], "8" | "9" | "a" | "b"));
+        }
+
+        // Phase `scripted_helper_reports_progress_before_its_outcome`.
+        // `wait_state` is shared with the download-flow consumer tests.
+        {
+            let mut fakes = Fakes::new(vec![Blocker::PendingOperation]);
+            fakes.records = vec![record("op-1")];
+            fakes.script = vec![
+                progress(Step::Verify, 5, 10),
+                Poll::default(),
+                finished(true, None),
+            ];
+            let mut install = probed(&fakes, true);
+            let task = install.helper_task(Action::Remove, "op-1").unwrap();
+            let thread = std::thread::spawn(task);
+            wait_state(&mut install, |state| {
+                !matches!(state, RunState::Running { .. })
+            });
+            thread.join().unwrap();
+            assert_eq!(
+                install.run_state(),
+                &RunState::Succeeded {
+                    action: Action::Remove
+                }
+            );
+            assert!(install.take_reprobe());
+        }
     }
 
     fn selected(root_minimum: u64) -> SelectedManifest {
@@ -1592,210 +1802,5 @@ pub(super) mod tests {
             "https://code.tilo.so/releases/manifest.json",
         );
         SelectedManifest::from_bytes(&release, bytes).unwrap()
-    }
-
-    // Catches a request that names the wrong release, loses the reviewed
-    // plan digest, or hands the helper a manifest it cannot re-hash.
-    #[test]
-    fn stage_request_binds_release_plan_paths_and_manifest_bytes() {
-        let fakes = Fakes::new(Vec::new());
-        let mut install = probed(&fakes, true);
-        let digest = install.reviewed_digest().unwrap();
-        install.begin_stage(&digest, true).unwrap();
-        let intent = install.link.lock().intent.clone().unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let manifest = selected(40 * GIB);
-        let request = stage_request(&install.link, &manifest, intent, dir.path()).unwrap();
-        assert_eq!(request.action, Action::Stage);
-        assert_eq!(request.plan_sha256, digest);
-        assert_eq!(request.plan.digest(), digest);
-        assert_eq!(request.release.release_id, "fixture-only");
-        assert_eq!(request.release.architecture, "x86_64");
-        assert_eq!(request.release.manifest_sha256, manifest.manifest_sha256());
-        assert_eq!(
-            request.component_paths.staging_esp,
-            "/verified/staging-esp.img"
-        );
-        assert_eq!(
-            std::fs::read(&request.manifest_path).unwrap(),
-            manifest.bytes()
-        );
-        assert_eq!(
-            install.link.lock().requirements,
-            Some((PROVISIONAL_STAGING_ESP_BYTES, 40 * GIB))
-        );
-    }
-
-    // Catches the helper refusing every real install (its plan must be the
-    // planner's exact result for the bundle's sizes) and a replan that
-    // silently shrinks the system volume further than the person reviewed.
-    #[test]
-    fn smaller_manifest_sizes_are_replanned_without_shrinking_further() {
-        let fakes = Fakes::new(Vec::new());
-        let mut install = probed(&fakes, true);
-        let digest = install.reviewed_digest().unwrap();
-        install.begin_stage(&digest, true).unwrap();
-        let intent = install.link.lock().intent.clone().unwrap();
-        let reviewed = intent.plan.clone();
-        let dir = tempfile::tempdir().unwrap();
-        let manifest = selected_sizes(64 << 20, 40 * GIB);
-        let request = stage_request(&install.link, &manifest, intent, dir.path()).unwrap();
-        assert_ne!(request.plan_sha256, digest);
-        assert_eq!(request.plan_sha256, request.plan.digest());
-        let s = request.plan.basis.disk.sector_bytes;
-        assert_eq!(request.plan.staging_esp.extent().lbas() * s, 64 << 20);
-        assert_eq!(
-            request.plan.target_extent.lbas(),
-            reviewed.target_extent.lbas()
-        );
-        let kept = |p: &Plan| p.shrink.as_ref().map_or(u64::MAX, |x| x.to_bytes);
-        assert!(kept(&request.plan) >= kept(&reviewed));
-    }
-
-    // Catches staging a plan whose installer partitions are smaller than the
-    // verified manifest requires, and a re-review that ignores the real size.
-    #[test]
-    fn undersized_plan_is_refused_as_stale_and_replanned_with_manifest_sizes() {
-        let fakes = Fakes::new(Vec::new());
-        let mut install = probed(&fakes, true);
-        let digest = install.reviewed_digest().unwrap();
-        install.begin_stage(&digest, true).unwrap();
-        let intent = install.link.lock().intent.take().unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let outcome =
-            stage_request(&install.link, &selected(48 * GIB), intent, dir.path()).unwrap_err();
-        assert_eq!(outcome.code.as_deref(), Some("plan-stale"));
-        install.link.finish(Action::Stage, &outcome);
-        install.poll();
-        assert!(install.take_reprobe());
-        let (facts, records) = install.probe_task().unwrap()();
-        install.accept_probe(facts, records, true);
-        let Some(Ok(plan)) = install.plan() else {
-            panic!("replanned")
-        };
-        assert!(
-            partition_bytes(
-                plan,
-                plan.staging_root.first_lba,
-                plan.staging_root.last_lba
-            ) >= 48 * GIB
-        );
-        assert_ne!(install.reviewed_digest().unwrap(), digest);
-    }
-
-    #[test]
-    fn operation_ids_are_distinct_version_four_uuids() {
-        let a = new_operation_id();
-        let b = new_operation_id();
-        assert_ne!(a, b);
-        assert_eq!(a.len(), 36);
-        assert_eq!(&a[14..15], "4");
-        assert!(matches!(&a[19..20], "8" | "9" | "a" | "b"));
-    }
-
-    // Catches remedies offered where they do not apply, e.g. Fast Startup on
-    // Linux or BitLocker suspension without BitLocker.
-    #[test]
-    fn remedies_follow_blockers_and_host() {
-        let mut fakes = Fakes::new(vec![Blocker::SecureBootOn, Blocker::Hibernation]);
-        fakes.facts.bitlocker_protected = true;
-        let windows = probed(&fakes, true);
-        assert_eq!(
-            windows.firmware_command(),
-            Some(HostCommand::FirmwareSettings {
-                suspend_bitlocker: true
-            })
-        );
-        assert!(windows.command_available(HostCommand::DisableFastStartup));
-        assert!(!windows.command_available(HostCommand::Restart));
-
-        let mut linux = InternalInstall::new(fakes.runtime(), true, HostOs::Linux);
-        let (facts, records) = linux.probe_task().unwrap()();
-        linux.accept_probe(facts, records, true);
-        assert_eq!(
-            linux.firmware_command(),
-            Some(HostCommand::FirmwareSettings {
-                suspend_bitlocker: false
-            })
-        );
-        assert!(!linux.command_available(HostCommand::DisableFastStartup));
-        assert!(
-            probed(&Fakes::new(Vec::new()), true)
-                .firmware_command()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn every_blocker_and_step_has_copy() {
-        for blocker in [
-            Blocker::NotUefi,
-            Blocker::SecureBootOn,
-            Blocker::BitlockerLocked,
-            Blocker::NotGpt,
-            Blocker::DiskUnsupported,
-            Blocker::Hibernation,
-            Blocker::InsufficientSpace,
-            Blocker::OnBattery,
-            Blocker::PendingOperation,
-            Blocker::ArchMismatch,
-        ] {
-            assert_eq!(
-                serde_json::to_value(blocker).unwrap(),
-                serde_json::json!(blocker_key(blocker))
-            );
-            let text = blocker_text(blocker, HostOs::Windows);
-            assert!(!text.starts_with("imager-setup"), "{text}");
-        }
-        for step in [
-            Step::Shrink,
-            Step::CreateEsp,
-            Step::CreateRoot,
-            Step::WriteEsp,
-            Step::WriteRoot,
-            Step::Verify,
-            Step::Handoff,
-            Step::BootEntry,
-            Step::BootNext,
-            Step::RemoveBootNext,
-            Step::RemoveBootEntry,
-            Step::RemoveRoot,
-            Step::RemoveEsp,
-            Step::RestoreShrink,
-        ] {
-            assert_eq!(
-                serde_json::to_value(step).unwrap(),
-                serde_json::json!(step_key(step))
-            );
-            let text =
-                super::super::strings::t(&format!("imager-setup-internal-step-{}", step_key(step)));
-            assert!(!text.starts_with("imager-setup"), "{text}");
-        }
-    }
-
-    // `wait_state` is shared with the download-flow consumer tests.
-    #[test]
-    fn scripted_helper_reports_progress_before_its_outcome() {
-        let mut fakes = Fakes::new(vec![Blocker::PendingOperation]);
-        fakes.records = vec![record("op-1")];
-        fakes.script = vec![
-            progress(Step::Verify, 5, 10),
-            Poll::default(),
-            finished(true, None),
-        ];
-        let mut install = probed(&fakes, true);
-        let task = install.helper_task(Action::Remove, "op-1").unwrap();
-        let thread = std::thread::spawn(task);
-        wait_state(&mut install, |state| {
-            !matches!(state, RunState::Running { .. })
-        });
-        thread.join().unwrap();
-        assert_eq!(
-            install.run_state(),
-            &RunState::Succeeded {
-                action: Action::Remove
-            }
-        );
-        assert!(install.take_reprobe());
     }
 }

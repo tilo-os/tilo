@@ -209,7 +209,15 @@ pub fn language_for(path: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Diff parsing: hunk line numbering, new/deleted file detection and language
+    /// detection. Each phase is a former test with its own fresh fixture.
     #[test]
+    fn unified_diff_parsing_numbers_lines_and_classifies_files() {
+        parses_hunk_line_numbering();
+        detects_new_and_deleted_files();
+        language_detection();
+    }
+
     fn parses_hunk_line_numbering() {
         let text = "\
 @@ -1,3 +1,4 @@ fn main()
@@ -232,7 +240,6 @@ mod tests {
         assert_eq!(add.new_lineno, Some(2));
     }
 
-    #[test]
     fn detects_new_and_deleted_files() {
         let new = parse_unified(
             "a.txt",
@@ -248,7 +255,6 @@ mod tests {
         assert!(del.is_deleted);
     }
 
-    #[test]
     fn language_detection() {
         assert_eq!(language_for("src/main.rs"), "rs");
         assert_eq!(language_for("Cargo.toml"), "toml");

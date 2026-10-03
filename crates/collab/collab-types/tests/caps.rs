@@ -37,7 +37,6 @@ fn t(secs: u64) -> SystemTime {
         .unwrap()
 }
 
-#[allow(clippy::too_many_arguments)]
 fn make_role_attestation(
     issuer_sk: &SigningKey,
     issuer_pub: Ed25519PublicKey,
@@ -196,11 +195,14 @@ fn commenter_may_comment_but_not_edit_on_the_real_apply_path() {
     );
 }
 
-// The richer layer does real work: an app-scoped Restrict narrows an
-// Editor below what the coarse role table allows.
-
+/// Capability overrides do real work on the apply path: an app-scoped
+/// Restrict narrows an Editor below the role table, a per-resource share
+/// extends a Viewer on exactly one artifact, and nothing rescues Denied.
 #[test]
-fn app_scoped_restriction_caps_an_editor_to_comment_only() {
+fn capability_overrides_narrow_extend_but_never_rescue_on_the_real_path() {
+    // Phase: an app-scoped restriction caps an editor to comment only. The
+    // richer layer does real work: an app-scoped Restrict narrows an Editor
+    // below what the coarse role table allows.
     let (mut state, author_sk, author_pub, att, artifact, _ch) = channel_with_author(Role::Editor);
 
     // Baseline: the coarse role table permits an Editor to splice, and
@@ -245,13 +247,10 @@ fn app_scoped_restriction_caps_an_editor_to_comment_only() {
         "comment is within the restricted cap ceiling"
     );
     assert_eq!(state.op_log.len(), 1);
-}
 
-// Per-resource share: a Grant extends a Viewer's authority on ONE
-// artifact without changing their role.
-
-#[test]
-fn per_resource_share_grants_a_viewer_comment_on_one_artifact() {
+    // Phase: a per-resource share grants a viewer comment on one artifact.
+    // A Grant extends a Viewer's authority on ONE artifact without changing
+    // their role.
     let (mut state, author_sk, author_pub, att, artifact, _ch) = channel_with_author(Role::Viewer);
 
     // A second artifact the viewer is NOT shared on.
@@ -293,12 +292,9 @@ fn per_resource_share_grants_a_viewer_comment_on_one_artifact() {
         Err(ValidationError::RoleForbidsOpClass),
         "a comment-only share does not grant edit"
     );
-}
 
-// Denied is an explicit block: no grant can rescue it.
-
-#[test]
-fn denied_role_cannot_be_rescued_by_a_grant() {
+    // Phase: a denied role cannot be rescued by a grant. Denied is an
+    // explicit block: no grant can rescue it.
     let (mut state, author_sk, author_pub, att, artifact, _ch) = channel_with_author(Role::Denied);
 
     // Even a workspace-wide Admin grant to this exact user is inert

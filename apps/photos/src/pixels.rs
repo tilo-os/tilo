@@ -386,12 +386,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bounded_reader_accepts_the_limit_and_rejects_one_byte_more() {
+    fn decoding_is_bounded_round_trips_png_and_refuses_non_images() {
         assert_eq!(
             read_bounded(Cursor::new([1, 2, 3, 4]), 4),
             Some(vec![1, 2, 3, 4])
         );
         assert_eq!(read_bounded(Cursor::new([1, 2, 3, 4, 5]), 4), None);
+
+        // Dimensions that would need an unbounded RGBA buffer are refused.
+        for (w, h, ok) in [
+            (8_000, 4_000, true),
+            (8_193, 4_096, false),
+            (u32::MAX, u32::MAX, false),
+            (0, 1, false),
+        ] {
+            assert_eq!(within_decode_limits(w, h), ok, "decode limits for {w}x{h}");
+        }
+
+        let src = ramp(6, 4);
+        let png = encode_png(&src).expect("encode");
+        assert_eq!(&png[1..4], b"PNG", "not a PNG");
+        let back = decode(&png).expect("decode");
+        assert_eq!((back.w, back.h), (6, 4));
+        assert_eq!(back.bytes, src.bytes, "the round trip changed pixels");
+
+        assert!(decode(b"this is not a picture").is_none());
+        assert!(decode(&[]).is_none());
     }
 
     /// A 4x2 image whose every pixel is distinguishable: red channel encodes
@@ -420,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn every_exif_orientation_produces_the_specified_upright_pixel_grid() {
+    fn exif_orientation_uprights_pixels_and_is_read_from_real_jpeg_bytes() {
         let source = ramp(3, 2);
         let cases = [
             (
@@ -477,6 +497,30 @@ mod tests {
         assert_eq!(normalize_exif_orientation(source.clone(), None), source);
         assert_eq!(normalize_exif_orientation(source.clone(), Some(0)), source);
         assert_eq!(normalize_exif_orientation(source.clone(), Some(9)), source);
+
+        // The decoder reads every valid orientation from real JPEG bytes ...
+        for orientation in 1..=8 {
+            let jpeg = jpeg_with_orientation(orientation);
+            assert_eq!(encoded_exif_orientation(&jpeg), Some(orientation));
+            let upright = decode(&jpeg).expect("decode tagged JPEG");
+            let expected_dimensions = if orientation >= 5 { (2, 3) } else { (3, 2) };
+            assert_eq!(
+                (upright.w, upright.h),
+                expected_dimensions,
+                "orientation {orientation}"
+            );
+        }
+        // ... and ignores an invalid one without rejecting the photo.
+        for orientation in [0, 9, u16::MAX] {
+            let jpeg = jpeg_with_orientation(orientation);
+            assert_eq!(
+                encoded_exif_orientation(&jpeg),
+                None,
+                "orientation {orientation}"
+            );
+            let upright = decode(&jpeg).expect("decode JPEG despite invalid metadata");
+            assert_eq!((upright.w, upright.h), (3, 2), "orientation {orientation}");
+        }
     }
 
     fn jpeg_with_orientation(orientation: u16) -> Vec<u8> {
@@ -522,44 +566,20 @@ mod tests {
         tagged
     }
 
-    #[test]
-    fn decoder_reads_every_valid_exif_orientation_from_real_jpeg_bytes() {
-        for orientation in 1..=8 {
-            let jpeg = jpeg_with_orientation(orientation);
-            assert_eq!(encoded_exif_orientation(&jpeg), Some(orientation));
-            let upright = decode(&jpeg).expect("decode tagged JPEG");
-            let expected_dimensions = if orientation >= 5 { (2, 3) } else { (3, 2) };
-            assert_eq!(
-                (upright.w, upright.h),
-                expected_dimensions,
-                "orientation {orientation}"
-            );
+    fn rect(left: f64, top: f64, width: f64, height: f64) -> Rect01 {
+        Rect01 {
+            x: left,
+            y: top,
+            w: width,
+            h: height,
         }
     }
 
     #[test]
-    fn decoder_ignores_invalid_exif_orientation_without_rejecting_the_photo() {
-        for orientation in [0, 9, u16::MAX] {
-            let jpeg = jpeg_with_orientation(orientation);
-            assert_eq!(encoded_exif_orientation(&jpeg), None);
-            let upright = decode(&jpeg).expect("decode JPEG despite invalid metadata");
-            assert_eq!((upright.w, upright.h), (3, 2));
-        }
-    }
-
-    #[test]
-    fn crop_takes_the_requested_region_and_nothing_else() {
+    fn crops_and_thumbnails_take_exactly_their_bounded_region() {
         let src = ramp(4, 4);
         // The bottom-right quadrant: columns 2..4, rows 2..4.
-        let out = crop(
-            &src,
-            Rect01 {
-                x: 0.5,
-                y: 0.5,
-                w: 0.5,
-                h: 0.5,
-            },
-        );
+        let out = crop(&src, rect(0.5, 0.5, 0.5, 0.5));
         assert_eq!((out.w, out.h), (2, 2));
         // Pixel (0,0) of the crop must be pixel (2,2) of the source.
         assert_eq!(out.pixel(0, 0).unwrap()[0..2], [2, 2]);
@@ -567,151 +587,86 @@ mod tests {
         // And the byte count must match the new size exactly — a crop that
         // kept the original buffer would still pass a dimension check.
         assert_eq!(out.bytes.len(), 2 * 2 * 4);
-    }
 
-    #[test]
-    fn crop_of_a_degenerate_rect_still_yields_a_real_pixel() {
-        let src = ramp(4, 4);
-        let out = crop(
-            &src,
-            Rect01 {
-                x: 0.5,
-                y: 0.5,
-                w: 0.0,
-                h: 0.0,
-            },
-        );
+        let out = crop(&src, rect(0.5, 0.5, 0.0, 0.0));
         assert_eq!((out.w, out.h), (1, 1), "a zero-area crop must not vanish");
         assert_eq!(out.bytes.len(), 4);
-    }
 
-    #[test]
-    fn decode_limits_refuse_dimensions_that_would_need_an_unbounded_rgba_buffer() {
-        assert!(within_decode_limits(8_000, 4_000));
-        assert!(!within_decode_limits(8_193, 4_096));
-        assert!(!within_decode_limits(u32::MAX, u32::MAX));
-        assert!(!within_decode_limits(0, 1));
-    }
-
-    #[test]
-    fn thumbnail_is_bounded_and_preserves_the_source_orientation() {
-        let source = ramp(8, 4);
-        let preview = thumbnail(&source, 2, 2);
+        // A thumbnail is bounded and preserves the source orientation.
+        let preview = thumbnail(&ramp(8, 4), 2, 2);
         assert_eq!((preview.w, preview.h), (2, 1));
         assert_eq!(preview.pixel(0, 0).unwrap()[0..2], [0, 0]);
         assert_eq!(preview.pixel(1, 0).unwrap()[0..2], [4, 0]);
-    }
-
-    #[test]
-    fn thumbnail_caps_arbitrary_requested_bounds_without_overflowing() {
-        let source = ramp(800, 400);
-        let preview = thumbnail(&source, u32::MAX, u32::MAX);
+        // Arbitrary requested bounds are capped without overflowing.
+        let preview = thumbnail(&ramp(800, 400), u32::MAX, u32::MAX);
         assert!(u64::from(preview.w).saturating_mul(u64::from(preview.h)) <= MAX_THUMBNAIL_PIXELS);
         assert_eq!(preview.pixel(0, 0).unwrap()[0..2], [0, 0]);
     }
 
     #[test]
-    fn rotate_quarter_turn_swaps_the_axes_and_moves_the_corner() {
-        let src = ramp(4, 2);
-        let out = rotate(&src, 1);
-        assert_eq!((out.w, out.h), (2, 4), "90 degrees swaps width and height");
-        // The source's bottom-left pixel (0, 1) becomes the destination's
-        // top-left after one clockwise turn.
-        assert_eq!(out.pixel(0, 0).unwrap()[0..2], [0, 1]);
-        // The source's top-left (0, 0) lands top-right.
-        assert_eq!(out.pixel(1, 0).unwrap()[0..2], [0, 0]);
-    }
-
-    #[test]
-    fn four_quarter_turns_are_the_identity() {
-        let src = ramp(5, 3);
-        assert_eq!(rotate(&src, 4), src);
-        assert_eq!(rotate(&src, 0), src);
-    }
-
-    #[test]
-    fn rotate_is_not_a_no_op_on_a_square_image() {
-        // The dimension check cannot catch a broken square rotation, so assert
-        // the content moved.
-        let src = ramp(3, 3);
-        let out = rotate(&src, 1);
-        assert_eq!((out.w, out.h), (3, 3));
+    fn rotation_moves_pixels_and_unrotate_inverts_the_view() {
+        // (case, source, output dimensions, [(x, y) -> expected [r, g]])
+        let cases = [
+            // 90 degrees swaps width and height; the source's bottom-left
+            // pixel (0, 1) becomes the top-left, its top-left lands top-right.
+            (
+                "quarter turn",
+                rotate(&ramp(4, 2), 1),
+                (2, 4),
+                vec![((0, 0), [0, 1]), ((1, 0), [0, 0])],
+            ),
+            // The dimension check cannot catch a broken square rotation, so
+            // assert the content moved.
+            (
+                "square quarter turn",
+                rotate(&ramp(3, 3), 1),
+                (3, 3),
+                vec![((0, 0), [0, 2])],
+            ),
+            // Crop to the left half (2x2), then a quarter turn keeps it 2x2
+            // but moves the corner.
+            (
+                "render crops then rotates",
+                render(&ramp(4, 2), rect(0.0, 0.0, 0.5, 1.0), 1),
+                (2, 2),
+                vec![((0, 0), [0, 1])],
+            ),
+        ];
+        for (case, out, dims, pixels) in cases {
+            assert_eq!((out.w, out.h), dims, "case {case}");
+            for ((x, y), want) in pixels {
+                assert_eq!(
+                    out.pixel(x, y).unwrap()[0..2],
+                    want,
+                    "case {case} pixel ({x}, {y})"
+                );
+            }
+        }
         assert_ne!(
-            out.bytes, src.bytes,
+            rotate(&ramp(3, 3), 1).bytes,
+            ramp(3, 3).bytes,
             "a square rotation must still move pixels"
         );
-        assert_eq!(out.pixel(0, 0).unwrap()[0..2], [0, 2]);
-    }
+        let src = ramp(5, 3);
+        assert_eq!(rotate(&src, 4), src, "four quarter turns are the identity");
+        assert_eq!(rotate(&src, 0), src);
 
-    #[test]
-    fn unrotate_is_the_inverse_of_rotating_the_view() {
         // Take the top-left quarter of a view that has been turned once, map
         // it back, and it must name the region that *is* top-left once the
         // image is turned — the bottom-left quarter of the original.
-        let r = Rect01 {
-            x: 0.0,
-            y: 0.0,
-            w: 0.5,
-            h: 0.5,
-        };
-        let back = unrotate_rect(r, 1);
+        let back = unrotate_rect(rect(0.0, 0.0, 0.5, 0.5), 1);
         assert!((back.x - 0.0).abs() < 1e-9, "got {back:?}");
         assert!((back.y - 0.5).abs() < 1e-9, "got {back:?}");
         assert!((back.w - 0.5).abs() < 1e-9, "got {back:?}");
         assert!((back.h - 0.5).abs() < 1e-9, "got {back:?}");
-    }
-
-    #[test]
-    fn unrotate_round_trips_through_every_quarter() {
-        let r = Rect01 {
-            x: 0.25,
-            y: 0.125,
-            w: 0.5,
-            h: 0.25,
-        };
         // Undoing q turns and then undoing (4 - q) more is a full circle.
+        let r = rect(0.25, 0.125, 0.5, 0.25);
         for q in 0..4u8 {
-            let there = unrotate_rect(r, q);
-            let back = unrotate_rect(there, 4 - q);
+            let back = unrotate_rect(unrotate_rect(r, q), 4 - q);
             assert!((back.x - r.x).abs() < 1e-9, "q={q} {back:?}");
             assert!((back.y - r.y).abs() < 1e-9, "q={q} {back:?}");
             assert!((back.w - r.w).abs() < 1e-9, "q={q} {back:?}");
             assert!((back.h - r.h).abs() < 1e-9, "q={q} {back:?}");
         }
-    }
-
-    #[test]
-    fn render_composes_crop_then_rotate() {
-        let src = ramp(4, 2);
-        let out = render(
-            &src,
-            Rect01 {
-                x: 0.0,
-                y: 0.0,
-                w: 0.5,
-                h: 1.0,
-            },
-            1,
-        );
-        // Crop to the left half (2x2), then a quarter turn keeps it 2x2 but
-        // moves the corner.
-        assert_eq!((out.w, out.h), (2, 2));
-        assert_eq!(out.pixel(0, 0).unwrap()[0..2], [0, 1]);
-    }
-
-    #[test]
-    fn png_round_trips_through_decode() {
-        let src = ramp(6, 4);
-        let png = encode_png(&src).expect("encode");
-        assert_eq!(&png[1..4], b"PNG", "not a PNG");
-        let back = decode(&png).expect("decode");
-        assert_eq!((back.w, back.h), (6, 4));
-        assert_eq!(back.bytes, src.bytes, "the round trip changed pixels");
-    }
-
-    #[test]
-    fn decode_refuses_bytes_that_are_not_an_image() {
-        assert!(decode(b"this is not a picture").is_none());
-        assert!(decode(&[]).is_none());
     }
 }

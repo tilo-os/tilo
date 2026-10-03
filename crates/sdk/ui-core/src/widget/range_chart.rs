@@ -5,7 +5,7 @@
     reason = "bounded floating-point chart geometry"
 )]
 
-use automerge::{AutoCommit, ObjId};
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -261,7 +261,6 @@ fn format_value(value: f64) -> String {
 }
 
 impl Widget for RangeChart {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -480,19 +479,8 @@ impl Widget for RangeChart {
             );
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        _mods: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if let Some(action) = self.touch.handle(event, scale) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
             match action {
                 ChartTouchAction::Inspect(point) => {
                     self.pointer = point;
@@ -504,8 +492,8 @@ impl Widget for RangeChart {
                     self.hovered = self.hit(point).map(str::to_owned);
                     if let Some(id) = &self.hovered {
                         self.activated = Some(id.clone());
-                        *handled = true;
-                        *focus = Some(node);
+                        *ctx.handled = true;
+                        *ctx.focus_target = Some(ctx.node_id);
                     }
                 }
                 ChartTouchAction::Clear => self.hovered = None,
@@ -513,7 +501,7 @@ impl Widget for RangeChart {
             return;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Point::new(position.x / scale, position.y / scale);
+            self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             self.hovered = self.hit(self.pointer).map(str::to_owned);
             self.keyboard_inspection = false;
         }
@@ -530,7 +518,7 @@ impl Widget for RangeChart {
         ) && let Some(id) = self.hit(self.pointer).map(str::to_owned)
         {
             self.activated = Some(id);
-            *handled = true;
+            *ctx.handled = true;
         }
         if let Some(action) = chart_nav_action(event) {
             if action == ChartNavAction::Activate {
@@ -559,8 +547,8 @@ impl Widget for RangeChart {
                     self.pointer = rect.center();
                 }
             }
-            *handled = true;
-            *focus = Some(node);
+            *ctx.handled = true;
+            *ctx.focus_target = Some(ctx.node_id);
         }
     }
     fn accessibility(&self) -> Option<AccessNode> {
@@ -594,8 +582,8 @@ impl Widget for RangeChart {
         &mut self,
         action: &crate::a11y::Action,
         keys: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
@@ -632,16 +620,20 @@ impl Widget for RangeChart {
 mod tests {
     use super::*;
     #[test]
-    fn reversed_intervals_are_included() {
-        let domain = RangeChart::new(vec![RangeBar::new("a", "A", 8.0, 2.0)]).domain();
-        assert!(domain.0 < 2.0 && domain.1 > 8.0);
-    }
-    #[test]
-    fn explicit_range_wins() {
-        let chart = RangeChart::new(Vec::new()).styled(RangeStyle {
-            range: Some((10.0, 20.0)),
-            ..Default::default()
-        });
-        assert_eq!(chart.domain(), (10.0, 20.0));
+    fn value_range_includes_reversed_intervals_unless_explicit() {
+        // Case `reversed_intervals_are_included`.
+        {
+            let domain = RangeChart::new(vec![RangeBar::new("a", "A", 8.0, 2.0)]).domain();
+            assert!(domain.0 < 2.0 && domain.1 > 8.0);
+        }
+
+        // Case `explicit_range_wins`.
+        {
+            let chart = RangeChart::new(Vec::new()).styled(RangeStyle {
+                range: Some((10.0, 20.0)),
+                ..Default::default()
+            });
+            assert_eq!(chart.domain(), (10.0, 20.0));
+        }
     }
 }

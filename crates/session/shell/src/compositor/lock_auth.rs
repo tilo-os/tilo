@@ -63,7 +63,7 @@ impl GreetdVerifier {
 #[cfg(target_os = "linux")]
 impl PasswordVerifier for GreetdVerifier {
     fn verify(&self, username: &str, password: &str) -> Result<(), String> {
-        greeter::greetd_client::verify_password(&self.sock, username, password)
+        greetd_client::verify_password(&self.sock, username, password)
             // `user_message` is the same non-leaky copy the login box shows ("Incorrect username or password"), so unlock never reveals more than login does.
             .map_err(|e| e.user_message())
     }
@@ -264,7 +264,8 @@ mod tests {
     // explicitly, so shipped behaviour is exercised from an ordinary debug test run instead of only being reachable in a build the suite never runs.
 
     #[test]
-    fn dev_build_lets_the_test_password_win() {
+    fn lock_verifier_selection_is_gated_by_build_and_fails_closed() {
+        // Phase `dev_build_lets_the_test_password_win`.
         assert_eq!(
             select_verifier(
                 true,
@@ -275,10 +276,7 @@ mod tests {
             ),
             VerifierChoice::Fixed("letmein".into()),
         );
-    }
-
-    #[test]
-    fn shipped_build_ignores_the_test_password_entirely() {
+        // Phase `shipped_build_ignores_the_test_password_entirely`.
         // Same inputs, gate closed. The injected password must not be able to
         // displace the configured helper.
         assert_eq!(
@@ -291,18 +289,12 @@ mod tests {
             ),
             VerifierChoice::Helper(DEFAULT_UNLOCK_HELPER.into()),
         );
-    }
-
-    #[test]
-    fn shipped_build_ignores_the_helper_override_entirely() {
+        // Phase `shipped_build_ignores_the_helper_override_entirely`.
         assert_eq!(
             select_verifier(false, None, Some("/tmp/evil".into()), true, None),
             VerifierChoice::Helper(DEFAULT_UNLOCK_HELPER.into()),
         );
-    }
-
-    #[test]
-    fn shipped_build_with_no_helper_installed_falls_closed_not_to_the_override() {
+        // Phase `shipped_build_with_no_helper_installed_falls_closed_not_to_the_override`.
         // With no verifier to use, an ignored override must leave the session
         // unverifiable rather than becoming the fallback.
         assert_eq!(
@@ -315,36 +307,24 @@ mod tests {
             ),
             VerifierChoice::Unavailable,
         );
-    }
-
-    #[test]
-    fn dev_helper_override_beats_the_installed_helper() {
+        // Phase `dev_helper_override_beats_the_installed_helper`.
         assert_eq!(
             select_verifier(true, None, Some("/tmp/helper".into()), true, None),
             VerifierChoice::Helper("/tmp/helper".into()),
         );
-    }
-
-    #[test]
-    fn blank_helper_override_is_not_a_path() {
+        // Phase `blank_helper_override_is_not_a_path`.
         // An empty or whitespace-only override would otherwise spawn "" and
         // fail closed on every attempt; fall through to the helper.
         assert_eq!(
             select_verifier(true, None, Some("   ".into()), true, None),
             VerifierChoice::Helper(DEFAULT_UNLOCK_HELPER.into()),
         );
-    }
-
-    #[test]
-    fn greetd_is_the_login_time_fallback_when_no_helper_is_installed() {
+        // Phase `greetd_is_the_login_time_fallback_when_no_helper_is_installed`.
         assert_eq!(
             select_verifier(false, None, None, false, Some("/run/greetd.sock".into())),
             VerifierChoice::Greetd("/run/greetd.sock".into()),
         );
-    }
-
-    #[test]
-    fn nothing_configured_is_fail_closed() {
+        // Phase `nothing_configured_is_fail_closed`.
         assert_eq!(
             select_verifier(false, None, None, false, None),
             VerifierChoice::Unavailable,
@@ -352,22 +332,30 @@ mod tests {
     }
 
     #[test]
-    fn fixed_verifier_accepts_only_the_configured_password() {
-        let v = FixedVerifier::new("hunter2");
-        assert!(v.verify("alice", "hunter2").is_ok());
-        assert!(v.verify("alice", "wrong").is_err());
-        // The rejection message is the non-leaky login copy.
-        assert_eq!(
-            v.verify("alice", "wrong").unwrap_err(),
-            "Incorrect username or password"
-        );
-    }
-
-    #[test]
-    fn unavailable_verifier_rejects_everything_fail_closed() {
-        let v = UnavailableVerifier;
-        assert!(v.verify("alice", "").is_err());
-        assert!(v.verify("alice", "anything").is_err());
+    fn fixed_and_unavailable_verifiers_are_exact_and_send() {
+        // Phase `fixed_verifier_accepts_only_the_configured_password`.
+        {
+            let v = FixedVerifier::new("hunter2");
+            assert!(v.verify("alice", "hunter2").is_ok());
+            assert!(v.verify("alice", "wrong").is_err());
+            // The rejection message is the non-leaky login copy.
+            assert_eq!(
+                v.verify("alice", "wrong").unwrap_err(),
+                "Incorrect username or password"
+            );
+        }
+        // Phase `unavailable_verifier_rejects_everything_fail_closed`.
+        {
+            let v = UnavailableVerifier;
+            assert!(v.verify("alice", "").is_err());
+            assert!(v.verify("alice", "anything").is_err());
+        }
+        // Phase `helper_verifier_is_send_sync_for_worker_thread`.
+        {
+            // The async unlock path moves an `Arc<dyn PasswordVerifier>` onto a worker thread, so the helper must be `Send + Sync`.
+            fn assert_send_sync<T: Send + Sync>() {}
+            assert_send_sync::<HelperVerifier>();
+        }
     }
 
     #[test]
@@ -416,85 +404,73 @@ mod tests {
 
     #[test]
     #[serial_test::serial(lock_helper)]
-    fn helper_exit0_unlocks_exit1_stays_locked_with_nonleaky_msg() {
-        // Read the password from stdin; accept exactly one value.
-        let (v, path) = fake_helper("read -r pw\n[ \"$pw\" = \"s3cr3t\" ] && exit 0\nexit 1\n");
-        assert!(
-            v.verify("alice", "s3cr3t").is_ok(),
-            "correct password unlocks"
-        );
-        // Wrong → denied, with the shared non-leaky wording.
-        assert_eq!(v.verify("alice", "wrong").unwrap_err(), INCORRECT_MSG);
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    #[serial_test::serial(lock_helper)]
-    fn helper_error_exit_is_unavailable_fail_closed() {
-        // Exit 2 = "could not run the check" → fail closed, distinct wording.
-        let (v, path) = fake_helper("read -r pw\nexit 2\n");
-        assert_eq!(v.verify("alice", "whatever").unwrap_err(), UNAVAILABLE_MSG);
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    #[serial_test::serial(lock_helper)]
-    fn helper_spawn_failure_is_unavailable_fail_closed() {
-        // A non-existent program can never authenticate anyone.
-        let v = HelperVerifier::new(vec![
-            "/nonexistent/definitely/not/a/tilo-unlock-helper".to_string(),
-        ]);
-        assert_eq!(v.verify("alice", "s3cr3t").unwrap_err(), UNAVAILABLE_MSG);
-    }
-
-    #[test]
-    #[serial_test::serial(lock_helper)]
-    fn helper_timeout_is_unavailable_and_returns_promptly() {
-        // A helper that never answers must not hang the verify — the bound fires and the attempt fails closed. `exec sleep` so the killed child is the sleeper itself (no orphaned grandchild).
-        let (v, path) = fake_helper("exec sleep 30\n");
-        let v = v.with_timeout(Duration::from_millis(150));
-        let start = Instant::now();
-        assert_eq!(v.verify("alice", "s3cr3t").unwrap_err(), UNAVAILABLE_MSG);
-        assert!(
-            start.elapsed() < Duration::from_secs(5),
-            "verify must return promptly on timeout, took {:?}",
-            start.elapsed()
-        );
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    #[serial_test::serial(lock_helper)]
-    fn helper_receives_password_on_stdin_not_argv() {
-        // Prove the secret is passed on stdin only: the script records its argv to a file; the password must be absent from it and the username present.
-        let n = FAKE_SEQ.fetch_add(1, Ordering::Relaxed);
-        let args_out = std::env::temp_dir().join(format!(
-            "tilo-fake-helper-argv-{}-{}.txt",
-            std::process::id(),
-            n
-        ));
-        let (v, path) = fake_helper(&format!(
-            "printf '%s' \"$*\" > {out}\nread -r pw\nexit 0\n",
-            out = args_out.to_string_lossy()
-        ));
-        assert!(v.verify("bob", "topsecret-pw").is_ok());
-        let recorded = std::fs::read_to_string(&args_out).unwrap_or_default();
-        assert!(
-            !recorded.contains("topsecret-pw"),
-            "password must never appear in the helper's argv (got {recorded:?})"
-        );
-        assert!(
-            recorded.contains("bob"),
-            "username should be passed as argv (got {recorded:?})"
-        );
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(&args_out);
-    }
-
-    #[test]
-    fn helper_verifier_is_send_sync_for_worker_thread() {
-        // The async unlock path moves an `Arc<dyn PasswordVerifier>` onto a worker thread, so the helper must be `Send + Sync`.
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<HelperVerifier>();
+    fn lock_helper_exit_status_timeout_and_stdin_contract() {
+        // Phase `helper_exit0_unlocks_exit1_stays_locked_with_nonleaky_msg`.
+        {
+            // Read the password from stdin; accept exactly one value.
+            let (v, path) = fake_helper("read -r pw\n[ \"$pw\" = \"s3cr3t\" ] && exit 0\nexit 1\n");
+            assert!(
+                v.verify("alice", "s3cr3t").is_ok(),
+                "correct password unlocks"
+            );
+            // Wrong → denied, with the shared non-leaky wording.
+            assert_eq!(v.verify("alice", "wrong").unwrap_err(), INCORRECT_MSG);
+            let _ = std::fs::remove_file(&path);
+        }
+        // Phase `helper_error_exit_is_unavailable_fail_closed`.
+        {
+            // Exit 2 = "could not run the check" → fail closed, distinct wording.
+            let (v, path) = fake_helper("read -r pw\nexit 2\n");
+            assert_eq!(v.verify("alice", "whatever").unwrap_err(), UNAVAILABLE_MSG);
+            let _ = std::fs::remove_file(&path);
+        }
+        // Phase `helper_spawn_failure_is_unavailable_fail_closed`.
+        {
+            // A non-existent program can never authenticate anyone.
+            let v = HelperVerifier::new(vec![
+                "/nonexistent/definitely/not/a/tilo-unlock-helper".to_string(),
+            ]);
+            assert_eq!(v.verify("alice", "s3cr3t").unwrap_err(), UNAVAILABLE_MSG);
+        }
+        // Phase `helper_timeout_is_unavailable_and_returns_promptly`.
+        {
+            // A helper that never answers must not hang the verify — the bound fires and the attempt fails closed. `exec sleep` so the killed child is the sleeper itself (no orphaned grandchild).
+            let (v, path) = fake_helper("exec sleep 30\n");
+            let v = v.with_timeout(Duration::from_millis(150));
+            let start = Instant::now();
+            assert_eq!(v.verify("alice", "s3cr3t").unwrap_err(), UNAVAILABLE_MSG);
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "verify must return promptly on timeout, took {:?}",
+                start.elapsed()
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+        // Phase `helper_receives_password_on_stdin_not_argv`.
+        {
+            // Prove the secret is passed on stdin only: the script records its argv to a file; the password must be absent from it and the username present.
+            let n = FAKE_SEQ.fetch_add(1, Ordering::Relaxed);
+            let args_out = std::env::temp_dir().join(format!(
+                "tilo-fake-helper-argv-{}-{}.txt",
+                std::process::id(),
+                n
+            ));
+            let (v, path) = fake_helper(&format!(
+                "printf '%s' \"$*\" > {out}\nread -r pw\nexit 0\n",
+                out = args_out.to_string_lossy()
+            ));
+            assert!(v.verify("bob", "topsecret-pw").is_ok());
+            let recorded = std::fs::read_to_string(&args_out).unwrap_or_default();
+            assert!(
+                !recorded.contains("topsecret-pw"),
+                "password must never appear in the helper's argv (got {recorded:?})"
+            );
+            assert!(
+                recorded.contains("bob"),
+                "username should be passed as argv (got {recorded:?})"
+            );
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(&args_out);
+        }
     }
 }

@@ -26,43 +26,29 @@
 //! then calls the widget's operation handler. No container control shells out
 //! before that authority boundary.
 //!
-//! ## What is in the shared document — and why none of it is an action
+//! ## What is in the shared document
 //!
-//! The only thing Containers writes to its Automerge document is **view state**
-//! (see [`crate::doc`]), and it falls into exactly the two non-action categories
-//! the recipe names:
+//! Containers writes **view preferences** to its Automerge document (see
+//! [`crate::doc`] and [`crate::resource::ContainersAction`]):
 //!
-//! - **Navigation / selection is presentation.** `view.section` (which section is
-//!   showing), `view.selected` (which container is selected) and `view.tab`
-//!   (which detail tab is active) are scalar strings. The recipe lists "which
-//!   book is open, the current selection, an overlay being open" as presentation
-//!   that must *never* be an action — "dispatching it as an action would be
-//!   wrong". Containers deliberately keeps this view state in the CRDT so two
-//!   peers can navigate the same manager together, but replicating a cursor does
-//!   not make it a document mutation to encode.
-//!
+//! - **Section / selection / detail tab** are document Actions
+//!   (`set-section`, `select-container`, `set-tab`) so the palette and agents
+//!   share one door with the UI through [`tilo_resource::publish`].
 //! - **The search box and the create-container draft are native collaborative
-//!   `Text`.** `view.search` and the six `view.create.*` fields (name / image /
-//!   ports / env / volumes / command) are Automerge `Text` objects, edited by
-//!   `splice_text_diffed` on the toolkit's CRDT-native text path — the same path
-//!   the recipe says a flowing text body must take *instead of* the action
-//!   executor. Two peers typing into the create form converge and undo through
-//!   through the `Text` object; re-encoding a keystroke as an action would
-//!   duplicate what the text path already gives. The create draft is transient:
-//!   submitting it shells out to `podman run` (external) and clears the draft.
+//!   `Text`.** `view.search` and the six `view.create.*` fields are Automerge
+//!   `Text` objects on the toolkit's CRDT-native text path. The create draft is
+//!   transient: submitting it shells out to `podman run` (external) and clears.
 //!
-//! There is no user-authored *structural* record to hang an action off: no saved
-//! run-configs or compose definitions, no favourites / pins, no custom groupings,
-//! no saved-session list. The document holds one `view` map and nothing else.
+//! There is no saved compose / favourites collection yet. Live engine inventory
+//! (containers, images, volumes, distroboxes) stays host-local and is published
+//! as live extras when hosted — never a second `containers.engine` root beside
+//! `ResourceRoot`.
 //!
 //! ## Consequence
 //!
-//! Containers publishes the transient engine objects (including nested log
-//! resources) as stable session resources with typed view/effect operations.
-//! In demo/offline mode effects remain enumerable but carry an explicit
-//! `engine_offline` availability reason. Effects appear in durable activity
-//! history but never create a document undo boundary; view/navigation state
-//! continues through the collaborative Automerge document.
+//! Document ops and `create` live on [`tilo_resource::publish`]. Standalone /
+//! `--shots` overlay engine children on that one root; hosted surfaces keep only
+//! live engine rows (and an in-flight pull). Lifecycle Effects remain Effects.
 
 #[cfg(test)]
 mod tests {
@@ -78,13 +64,17 @@ mod tests {
     use crate::model::ContainerStatus;
     use crate::podman::Action as Lifecycle;
 
-    // Containers publishes only view and effect operations: the host engine
-    // is not a document, so the registry decodes nothing and the sweep checks
-    // the published surface itself.
+    // Document view Actions register on Containers; engine lifecycle Effects
+    // are checked on the published standalone surface.
     ui::action_contract_tests! {
         seed: AutoCommit::new(),
-        registry: ui::tilo_actions::ActionRegistry::new(),
-        resources: |doc| Widget::resources(&ContainersApp::new(false), doc),
+        registry: {
+            use ui::tilo_resource::Resource as _;
+            let mut registry = ui::tilo_actions::ActionRegistry::new();
+            crate::resource::Containers::register(&mut registry);
+            registry
+        },
+        resources: |doc| ui::resources::resources(&ContainersApp::new(false), doc),
         palette: ["Open web-frontend", "Open postgres"],
     }
 
@@ -140,14 +130,16 @@ mod tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &Modifiers::default(),
-            doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            NodeId::new(0),
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+            },
         );
     }
 
@@ -158,199 +150,189 @@ mod tests {
         }
     }
 
-    /// Every key Containers writes to its document is view state — navigation /
-    /// selection scalars plus the native-`Text` search + create draft. Driving
-    /// the real selection path (open the app palette, Enter a row) writes
-    /// `view.selected`, and the document holds only the one `view` map: no saved
-    /// run-configs, favourites, pins, groupings or sessions — nothing structural
-    /// for an action to mutate.
+    /// The document holds only view state and native create-draft text that replicates byte-identically; lifecycle verbs are external effects exported without document actions.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn document_holds_only_view_state_and_native_text() {
-        const ALLOWED: [&str; 5] = ["section", "selected", "tab", "search", "create"];
+    fn document_holds_view_state_while_lifecycle_verbs_stay_external() {
+        // --- phase: document_holds_only_view_state_and_native_text ---
+        {
+            const ALLOWED: [&str; 5] = ["section", "selected", "tab", "search", "create"];
 
-        let mut app = ContainersApp::new(false);
-        let mut doc = AutoCommit::new();
+            let mut app = ContainersApp::new(false);
+            let mut doc = AutoCommit::new();
 
-        // Production find-and-jump path: the app-local palette selects a container.
-        app.open_container_palette();
-        let expected = app.engine.containers[0].id.clone();
-        send(&mut app, &mut doc, &named_event(NamedKey::Enter));
-        app.dispatch_palette_invocation_for_test(&mut doc);
-        assert_eq!(
-            ViewDoc::selected(&mut doc).as_deref(),
-            Some(expected.as_str()),
-            "activating a palette row selects that container (navigation)",
-        );
-
-        // The whole document is a single `view` map — nothing else.
-        let root_keys: Vec<String> = doc.keys(&ROOT).collect();
-        assert_eq!(
-            root_keys,
-            vec!["view".to_string()],
-            "document is only the view map: {root_keys:?}"
-        );
-
-        // Every key inside `view` is a known view-state key; classify each.
-        let view = view_obj(&doc);
-        for key in doc.keys(&view) {
-            assert!(
-                ALLOWED.contains(&key.as_str()),
-                "unexpected structural key in document: {key}"
+            // Production find-and-jump path: the app-local palette selects a container.
+            app.open_container_palette();
+            let expected = app.engine.containers[0].id.clone();
+            send(&mut app, &mut doc, &named_event(NamedKey::Enter));
+            app.dispatch_palette_invocation_for_test(&mut doc);
+            assert_eq!(
+                ViewDoc::selected(&doc).as_deref(),
+                Some(expected.as_str()),
+                "activating a palette row selects that container (navigation)",
             );
-        }
-        // No user-authored record collection exists to hang an action off.
-        for forbidden in [
-            "favourites",
-            "favorites",
-            "pins",
-            "run_configs",
-            "groups",
-            "sessions",
-        ] {
-            assert!(
-                doc.get(&view, forbidden).unwrap().is_none(),
-                "document must not carry a `{forbidden}` record collection",
-            );
-        }
 
-        // Selection is a presentation scalar; the create draft is a native-Text map.
-        match doc.get(&view, "selected").unwrap() {
-            Some((Value::Scalar(s), _)) => {
+            // The whole document is a single `view` map — nothing else.
+            let root_keys: Vec<String> = doc.keys(&ROOT).collect();
+            assert_eq!(
+                root_keys,
+                vec!["view".to_string()],
+                "document is only the view map: {root_keys:?}"
+            );
+
+            // Every key inside `view` is a known view-state key; classify each.
+            let view = view_obj(&doc);
+            for key in doc.keys(&view) {
                 assert!(
-                    matches!(s.as_ref(), automerge::ScalarValue::Str(v) if v.as_str() == expected)
+                    ALLOWED.contains(&key.as_str()),
+                    "unexpected structural key in document: {key}"
                 );
             }
-            other => panic!("view.selected must be a scalar string, got {other:?}"),
+            // No user-authored record collection exists to hang an action off.
+            for forbidden in [
+                "favourites",
+                "favorites",
+                "pins",
+                "run_configs",
+                "groups",
+                "sessions",
+            ] {
+                assert!(
+                    doc.get(&view, forbidden).unwrap().is_none(),
+                    "document must not carry a `{forbidden}` record collection",
+                );
+            }
+
+            // Selection is a presentation scalar; the create draft is a native-Text map.
+            match doc.get(&view, "selected").unwrap() {
+                Some((Value::Scalar(s), _)) => {
+                    assert!(
+                        matches!(s.as_ref(), automerge::ScalarValue::Str(v) if v.as_str() == expected)
+                    );
+                }
+                other => panic!("view.selected must be a scalar string, got {other:?}"),
+            }
+            match doc.get(&view, "create").unwrap() {
+                Some((Value::Object(ObjType::Map), _)) | None => {}
+                other => panic!("view.create must be a native-Text map, got {other:?}"),
+            }
         }
-        match doc.get(&view, "create").unwrap() {
-            Some((Value::Object(ObjType::Map), _)) | None => {}
-            other => panic!("view.create must be a native-Text map, got {other:?}"),
+
+        // --- phase: create_draft_is_native_text_and_replicates_byte_identically ---
+        {
+            let mut app = ContainersApp::new(false);
+            let mut doc = AutoCommit::new();
+            // Open the create modal on the Name field — a plain text field,
+            // not the image combobox — so a keystroke lands straight on the text path.
+            app.create_open = true;
+            app.create_focus = CreateField::Name;
+
+            // A base both replicas share before any create draft exists.
+            let before = ViewDoc::create_field(&doc, CreateField::Name);
+            assert_eq!(before, "", "draft starts empty");
+            doc.commit();
+            let base = doc.save();
+            let mut peer = AutoCommit::load(&base).unwrap();
+            assert_eq!(
+                doc.get_heads(),
+                peer.get_heads(),
+                "precondition: replicas share a base"
+            );
+
+            // Real keystroke → create_modal_key → SetCreateField (a splice).
+            send(&mut app, &mut doc, &char_event("w"));
+            doc.commit();
+            assert_eq!(
+                ViewDoc::create_field(&doc, CreateField::Name),
+                "w",
+                "the keystroke spliced into the create-draft Text on the native path",
+            );
+
+            peer.merge_incoming(&mut doc).unwrap();
+            assert_eq!(
+                doc.get_heads(),
+                peer.get_heads(),
+                "byte-identical convergence after merge"
+            );
+            assert_eq!(
+                ViewDoc::create_field(&peer, CreateField::Name),
+                "w",
+                "the peer sees the same create draft",
+            );
         }
-    }
 
-    /// The create-container draft is native collaborative `Text`, so it already
-    /// carries the guarantee an action would otherwise provide: a keystroke driven
-    /// through the production `Widget::handle_event` splices into the draft's
-    /// `Text`, and an independent replica that merges the change converges
-    /// byte-identically (same head hashes, not merely the same text). Nothing to
-    /// encode as an action.
-    #[test]
-    fn create_draft_is_native_text_and_replicates_byte_identically() {
-        let mut app = ContainersApp::new(false);
-        let mut doc = AutoCommit::new();
-        // Open the create modal on the Name field — a plain text field,
-        // not the image combobox — so a keystroke lands straight on the text path.
-        app.create_open = true;
-        app.create_focus = CreateField::Name;
+        // --- phase: lifecycle_verbs_are_external_not_document_mutations ---
+        {
+            let mut app = ContainersApp::new(false);
+            let mut doc = AutoCommit::new();
+            let heads_before = doc.get_heads();
 
-        // A base both replicas share, with the create draft materialised.
-        let before = ViewDoc::create_field(&mut doc, CreateField::Name);
-        assert_eq!(before, "", "draft starts empty");
-        doc.commit();
-        let base = doc.save();
-        let mut peer = AutoCommit::load(&base).unwrap();
-        assert_eq!(
-            doc.get_heads(),
-            peer.get_heads(),
-            "precondition: replicas share a base"
-        );
-
-        // Real keystroke → create_modal_key → ViewDoc::set_create_field (a splice).
-        send(&mut app, &mut doc, &char_event("w"));
-        doc.commit();
-        assert_eq!(
-            ViewDoc::create_field(&mut doc, CreateField::Name),
-            "w",
-            "the keystroke spliced into the create-draft Text on the native path",
-        );
-
-        peer.merge_incoming(&mut doc).unwrap();
-        assert_eq!(
-            doc.get_heads(),
-            peer.get_heads(),
-            "byte-identical convergence after merge"
-        );
-        assert_eq!(
-            ViewDoc::create_field(&mut peer, CreateField::Name),
-            "w",
-            "the peer sees the same create draft",
-        );
-    }
-
-    /// A container lifecycle verb is **external**: it mutates podman's world (here,
-    /// the offline engine projection), never the CRDT. Driving the real
-    /// `apply_action` path stops the container in the in-memory engine while
-    /// writing nothing to the document — proving lifecycle ops are not actions.
-    #[test]
-    fn lifecycle_verbs_are_external_not_document_mutations() {
-        let mut app = ContainersApp::new(false);
-        let mut doc = AutoCommit::new();
-        let heads_before = doc.get_heads();
-
-        let running = app
-            .engine
-            .containers
-            .iter()
-            .find(|c| c.status.is_running())
-            .expect("sample engine has a running container")
-            .clone();
-
-        // Production lifecycle path (offline mirror of `podman stop`).
-        app.apply_action(Lifecycle::Stop, &running.id);
-
-        let after = app
-            .engine
-            .find(&running.id)
-            .expect("container still present");
-        assert_eq!(
-            after.status,
-            ContainerStatus::Exited,
-            "the engine reflects the stop"
-        );
-        assert_eq!(
-            doc.get_heads(),
-            heads_before,
-            "a lifecycle verb writes nothing to the shared document",
-        );
-    }
-
-    /// Offline/demo resources remain discoverable but their effects state why
-    /// they cannot run; external effects never create a document undo boundary.
-    #[test]
-    fn exports_unavailable_effect_resources_without_document_actions() {
-        let mut app = ContainersApp::new(false);
-        let mut doc = AutoCommit::new();
-
-        // Exercise the real event path (open + close the app palette) so this is
-        // the live widget after interaction, not a pristine one.
-        app.open_container_palette();
-        send(&mut app, &mut doc, &named_event(NamedKey::Escape));
-        // A stray click on the surface, too.
-        send(&mut app, &mut doc, &left_press());
-
-        let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 1, "one container-engine root");
-        let engine = &resources[0];
-        assert_eq!(engine.kind, "containers.engine");
-        let actions: Vec<_> = engine
-            .children
-            .iter()
-            .flat_map(|resource| resource.actions.iter())
-            .filter(|action| action.kind == ui::tilo_actions::OperationKind::Effect)
-            .collect();
-        assert!(
-            actions
+            let running = app
+                .engine
+                .containers
                 .iter()
-                .any(|action| matches!(action.id.as_str(), "start" | "stop")),
-            "container publishes the lifecycle action appropriate to its state",
-        );
-        assert!(actions.iter().all(|action| {
-            action.kind == ui::tilo_actions::OperationKind::Effect
-                && !action.contract.availability.is_available()
-        }));
-        assert!(
-            app.take_committed_action().is_none(),
-            "no action is dispatched, so no action-host undo boundary is recorded",
-        );
+                .find(|c| c.status.is_running())
+                .expect("sample engine has a running container")
+                .clone();
+
+            // Production lifecycle path (offline mirror of `podman stop`).
+            app.apply_action(Lifecycle::Stop, &running.id);
+
+            let after = app
+                .engine
+                .find(&running.id)
+                .expect("container still present");
+            assert_eq!(
+                after.status,
+                ContainerStatus::Exited,
+                "the engine reflects the stop"
+            );
+            assert_eq!(
+                doc.get_heads(),
+                heads_before,
+                "a lifecycle verb writes nothing to the shared document",
+            );
+        }
+
+        // --- phase: exports_unavailable_effect_resources_without_document_actions ---
+        {
+            let mut app = ContainersApp::new(false);
+            let mut doc = AutoCommit::new();
+
+            // Exercise the real event path (open + close the app palette) so this is
+            // the live widget after interaction, not a pristine one.
+            app.open_container_palette();
+            send(&mut app, &mut doc, &named_event(NamedKey::Escape));
+            // A stray click on the surface, too.
+            send(&mut app, &mut doc, &left_press());
+
+            let resources = ui::resources::resources(&app, &doc);
+            assert_eq!(resources.len(), 1, "one container-engine root");
+            let engine = &resources[0];
+            assert_eq!(engine.kind, "containers.engine");
+            let actions: Vec<_> = engine
+                .children
+                .iter()
+                .flat_map(|resource| resource.actions.iter())
+                .filter(|action| action.kind == ui::tilo_actions::OperationKind::Effect)
+                .collect();
+            assert!(
+                actions
+                    .iter()
+                    .any(|action| matches!(action.id.as_str(), "start" | "stop")),
+                "container publishes the lifecycle action appropriate to its state",
+            );
+            assert!(actions.iter().all(|action| {
+                action.kind == ui::tilo_actions::OperationKind::Effect
+                    && !action.contract.availability.is_available()
+            }));
+            assert!(
+                ui::undo::take_committed_action(&mut app).is_none(),
+                "no action is dispatched, so no action-host undo boundary is recorded",
+            );
+        }
     }
 }

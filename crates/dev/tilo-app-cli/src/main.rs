@@ -7,6 +7,10 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use serde_json::{Value, json};
+
+mod json_stdout;
+mod publishing;
 
 #[derive(Parser)]
 #[command(
@@ -16,9 +20,14 @@ use clap::{Parser, Subcommand, ValueEnum};
     long_about = "The short path from an app idea to a running Tilo window.\n\n\
                   Run `tilo-app new` for an interactive setup, or provide a name \
                   and flags for a reproducible, non-interactive scaffold. Then \
-                  use `add`, `locale`, `check`, `scenario`, `dev`, `test`, `run`, `shot`, `inspect`, and `package` from anywhere inside the app. Use `ui` to construct validated serialized screens."
+                  use `add`, `locale`, `check`, `scenario`, `dev`, `test`, `run`, `build`, `shot`, `inspect`, and `package` from anywhere inside the app; `--target linux|macos|web` picks the platform. Use `ui` to construct validated serialized screens."
 )]
 struct Cli {
+    /// Write one JSON document describing the result to stdout. Progress and
+    /// tool output move to stderr, and nothing prompts.
+    #[arg(long, global = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -27,20 +36,31 @@ struct Cli {
 enum Command {
     /// Create a buildable app with packaging and headless-test defaults.
     New(NewArgs),
+    /// List the example apps `tilo-app new --from-example` starts from.
+    Examples,
     /// Add a screen, reusable component, headless scenario, or translation catalog.
     Add(AddArgs),
     /// Keep translation catalogs structurally aligned with the source locale.
     Locale(LocaleArgs),
     /// Run saved headless interaction scenarios against isolated app state.
     Scenario(ScenarioArgs),
-    /// Diagnose app source, manifest, lifecycle, and toolkit wiring.
+    /// Diagnose app source, manifest, lifecycle, and toolkit wiring
+    /// (`--platform android`: the Android toolchain).
     Doctor(DoctorArgs),
-    /// Run structural checks, tests, and accessibility-audited scenarios.
+    /// Install the toolchain a platform's builds need (`setup android`).
+    Setup(SetupArgs),
+    /// Run lints, structural checks, tests, and accessibility-audited scenarios.
+    #[command(after_long_help = CHECK_EXAMPLES)]
     Check(CheckArgs),
     /// Prove the production root satisfies the live Tilo-native contract.
     Certify(CertifyArgs),
-    /// Run an app from any path inside it, after a structural preflight.
-    Run(AppTaskArgs),
+    /// Run an app from any path inside it: natively after a structural
+    /// preflight, or with `--target` for Linux, macOS or the web.
+    #[command(after_long_help = TARGET_EXAMPLES)]
+    Run(RunArgs),
+    /// Build the runnable artifact for a target: a binary, a dev `.app`, or a web bundle.
+    #[command(after_long_help = TARGET_EXAMPLES)]
+    Build(BuildArgs),
     /// Test an app from any path inside it, after a structural preflight.
     Test(AppTaskArgs),
     /// Run an app and rebuild/restart it after source or asset changes.
@@ -53,6 +73,12 @@ enum Command {
     Ui(UiArgs),
     /// Build, assemble, sign, and verify an installable Tilo package.
     Package(PackageArgs),
+    /// Create or show the publisher key that signs packages and entries.
+    Keys(publishing::KeysArgs),
+    /// Ask a registry to let your key publish under namespaces you prove.
+    Apply(publishing::ApplyArgs),
+    /// Upload packages and ask the registry to list them.
+    Publish(publishing::PublishArgs),
 }
 
 #[derive(clap::Args)]
@@ -86,6 +112,33 @@ enum AddCommand {
         /// Derive actions from a registered graph screen reachable from main.
         #[arg(long)]
         screen: Option<String>,
+        #[command(flatten)]
+        options: AddOptions,
+    },
+    /// Declare a host capability in tilo-app.toml (optional unless --required).
+    Capability {
+        /// Capability name, for example `network.http` or `files.save`.
+        #[arg(required_unless_present = "list")]
+        name: Option<String>,
+        /// The app cannot work without it; every platform must provide it.
+        #[arg(long)]
+        required: bool,
+        /// Print every capability and where it is available.
+        #[arg(long, conflicts_with_all = ["name", "required"])]
+        list: bool,
+        /// App directory or a file/directory inside it. Defaults to the current directory.
+        #[arg(long)]
+        app: Option<PathBuf>,
+    },
+    /// Add a workflow that checks, packages and publishes the app from CI.
+    Ci {
+        /// The forge the repository is hosted on; Codeberg is forgejo.
+        #[arg(long, value_enum)]
+        forge: ForgeArg,
+        /// Linux runner label. Defaults to `ubuntu-latest`, or `docker` on
+        /// Forgejo (`codeberg-small` on Codeberg).
+        #[arg(long)]
+        runs_on: Option<String>,
         #[command(flatten)]
         options: AddOptions,
     },
@@ -317,12 +370,86 @@ struct PropertyEditArgs {
 struct DoctorArgs {
     /// App directory or a file/directory inside it. Defaults to the current directory.
     path: Option<PathBuf>,
+
+    /// Check the toolchain this platform's builds need instead of an app.
+    #[arg(long, value_enum)]
+    platform: Option<ToolchainArg>,
+}
+
+/// A platform with a toolchain of its own to check and install.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ToolchainArg {
+    Android,
+}
+
+#[derive(clap::Args)]
+struct SetupArgs {
+    /// The platform whose toolchain to install.
+    #[arg(value_enum)]
+    platform: ToolchainArg,
+
+    /// Accept the Android SDK licences without showing each one.
+    #[arg(long)]
+    accept_licenses: bool,
+}
+
+const CHECK_EXAMPLES: &str = "\
+Lints:
+  portability  Apps call portable APIs; platform code lives in platform crates
+               (crates/platform). The rules are in
+               tools/policy/app_portability_rules.toml: target cfg (R1), std::os,
+               extern blocks and native binding crates (R2), platform paths and
+               environment (R3), OS tools (R4), platform and internal dependencies
+               (D1, D2), SDK backend features (F1), and the calls that fail on the
+               web: threads, std clocks, std fs/net (W1-W3, warnings for now).
+               tests/ and #[cfg(test)] are exempt. An inherently
+               platform-specific app narrows its platforms once in tilo-app.toml:
+
+                 [package]
+                 platforms = [\"linux\", \"macos\"]
+                 platform-reason = \"Writes OS images to block devices.\"
+
+Examples:
+  tilo-app check                     Everything, for the app in the current directory
+  tilo-app check --lint apps/notes   Only the lints, without building
+  tilo-app check --lint --all        The lints for every Tilo app in the workspace (CI)";
+
+#[derive(clap::Args)]
+struct LintScope {
+    /// Run only the lints (currently `portability`); nothing is built or run.
+    #[arg(long)]
+    lint: bool,
+
+    /// Lint every Tilo app in the workspace containing PATH (or the current directory).
+    #[arg(long, requires = "lint")]
+    all: bool,
 }
 
 #[derive(clap::Args)]
 struct CheckArgs {
     /// App directory or a file/directory inside it. Defaults to the current directory.
     path: Option<PathBuf>,
+
+    #[command(flatten)]
+    lints: LintScope,
+
+    /// Only check that the app builds for these targets: declared platforms,
+    /// required capabilities, then `cargo check` where this host can compile.
+    #[arg(long, value_enum, value_delimiter = ',', conflicts_with = "all")]
+    target: Vec<TargetArg>,
+
+    /// With --target: accept required capabilities whose backend is only planned.
+    #[arg(long, requires = "target")]
+    allow_planned: bool,
+
+    /// Also lint the app for another platform's target triple, or prove the
+    /// web build; repeat it or pass `all`. The host build is always checked.
+    #[arg(long = "platform", value_enum)]
+    platforms: Vec<CheckPlatformArg>,
+
+    /// CPU architecture for `--platform`. Defaults to the host's.
+    #[arg(long, value_enum)]
+    arch: Option<ArchArg>,
 
     /// Write each audited scenario's semantic, target, document, and audit JSON here.
     /// Relative paths are resolved from the app root.
@@ -372,18 +499,245 @@ struct AppTaskArgs {
     forwarded: Vec<OsString>,
 }
 
+const TARGET_EXAMPLES: &str = "\
+Targets:
+  linux   a native binary; `package` makes a signed .tapp
+  macos   an ad-hoc-signed .app; `package` signs (TILO_MAC_SIGNING_IDENTITY),
+          notarizes (TILO_NOTARY_KEYCHAIN_PROFILE) and zips it, with the
+          signing descriptor `tilo-app-package entry --platform macos` reads
+  web     a bundle for the browser runtime; `run` serves it on 127.0.0.1:7878
+          and reloads the page after each rebuild; `package` writes the
+          immutable versions/<digest>/ layout Cloud serves and its registry
+          zip (`tilo-app-package entry --platform web`)
+  android what `--platform android` builds: a debug APK; `run` and `dev`
+          install it on a device (--device); `package` signs an APK and bundle
+
+A target must be in the manifest's `package.platforms`, and every `required`
+capability must be available there (`tilo-app add capability --list`).
+
+Examples:
+  tilo-app run --target web            Serve, rebuild on change, reload the page
+  tilo-app build --target macos        target/tilo-app/macos/<app>/<Name>.app
+  tilo-app package --target web        dist/web/<app-id>/versions/<digest>/";
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum TargetArg {
+    Linux,
+    Macos,
+    Web,
+    /// An APK for a device or emulator, as `--platform android` builds it.
+    Android,
+}
+
+impl TargetArg {
+    /// The SDK target; `None` for Android, which builds through the
+    /// `--platform android` flow.
+    fn sdk(self) -> Option<tilo_app_cli::targets::Target> {
+        match self {
+            Self::Linux => Some(tilo_app_cli::targets::Target::Linux),
+            Self::Macos => Some(tilo_app_cli::targets::Target::Macos),
+            Self::Web => Some(tilo_app_cli::targets::Target::Web),
+            Self::Android => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum BundleArg {
+    /// The desktop bundle for Tilo's own web apps, otherwise the app alone.
+    Auto,
+    /// The page runtime with only this app.
+    App,
+    /// Every web-capable Tilo app (inside a Tilo checkout).
+    Desktop,
+}
+
+#[derive(clap::Args)]
+struct TargetOptions {
+    /// Optimized build.
+    #[arg(long)]
+    release: bool,
+    /// Web only: which bundle to build.
+    #[arg(long, value_enum, default_value = "auto")]
+    bundle: BundleArg,
+    /// Build even when a required capability's backend is only planned.
+    #[arg(long)]
+    allow_planned: bool,
+    /// Comma-separated Cargo features enabled for the app.
+    #[arg(long, value_delimiter = ',')]
+    features: Vec<String>,
+    /// Disable the app's default Cargo features.
+    #[arg(long)]
+    no_default_features: bool,
+}
+
+impl TargetOptions {
+    fn request(
+        &self,
+        target: tilo_app_cli::targets::Target,
+    ) -> tilo_app_cli::targets::TargetRequest {
+        let mut request = tilo_app_cli::targets::TargetRequest::new(target);
+        request.release = self.release;
+        request.allow_planned = self.allow_planned;
+        request.bundle = match self.bundle {
+            BundleArg::Auto => tilo_app_cli::targets::WebBundle::Auto,
+            BundleArg::App => tilo_app_cli::targets::WebBundle::App,
+            BundleArg::Desktop => tilo_app_cli::targets::WebBundle::Desktop,
+        };
+        request.features.clone_from(&self.features);
+        request.no_default_features = self.no_default_features;
+        request
+    }
+}
+
+/// The package platform and architecture a command builds for, the other
+/// way to name what `--target` names.
+#[derive(Clone, Copy, clap::Args)]
+struct PlatformArgs {
+    /// The system to build for: Tilo OS (the default), another Linux
+    /// desktop, Windows, macOS, the web, or Android.
+    #[arg(long, value_enum)]
+    platform: Option<PlatformArg>,
+
+    /// CPU architecture to build for. Defaults to the host's; `wasm32` is the
+    /// web's only one. On Android, the device's for `run` and `dev`, else
+    /// `aarch64`.
+    #[arg(long, value_enum)]
+    arch: Option<ArchArg>,
+}
+
+impl PlatformArgs {
+    fn resolve(
+        self,
+    ) -> Result<(
+        tilo_app_cli::PackagePlatform,
+        Option<tilo_app_cli::PackageArch>,
+    )> {
+        platform_and_arch(self.platform.unwrap_or(PlatformArg::Tilo), self.arch)
+    }
+
+    /// `--platform android` for `--target android`, which names the same build.
+    fn or_target(mut self, target: Option<TargetArg>) -> Self {
+        if matches!(target, Some(TargetArg::Android)) {
+            self.platform = Some(PlatformArg::Android);
+        }
+        self
+    }
+}
+
+#[derive(clap::Args)]
+struct RunArgs {
+    /// App directory or a file/directory inside it. Defaults to the current directory.
+    path: Option<PathBuf>,
+
+    /// Build for a target first; without it, `cargo run` for this host.
+    #[arg(long, value_enum, conflicts_with_all = ["platform", "arch"])]
+    target: Option<TargetArg>,
+
+    #[command(flatten)]
+    options: TargetOptions,
+
+    /// A native platform runs only on the system and architecture it is
+    /// built for; `web` builds once and serves the page.
+    #[command(flatten)]
+    platform: PlatformArgs,
+
+    /// Address the page is served on (`--platform web`).
+    #[arg(long, default_value = "127.0.0.1:4321")]
+    bind: String,
+
+    /// The `adb` serial of the device or emulator to install on
+    /// (`--platform android`). Defaults to `$ANDROID_SERIAL`, else the one
+    /// connected.
+    #[arg(long)]
+    device: Option<String>,
+
+    /// Web only: loopback port to serve on.
+    #[arg(long, default_value = "7878")]
+    port: u16,
+
+    /// Web only: serve once, without rebuilding on change.
+    #[arg(long)]
+    no_watch: bool,
+
+    /// Arguments forwarded to the app. Write them after `--`.
+    #[arg(last = true, allow_hyphen_values = true)]
+    forwarded: Vec<OsString>,
+}
+
+#[derive(clap::Args)]
+struct BuildArgs {
+    /// App directory or a file/directory inside it. Defaults to the current directory.
+    path: Option<PathBuf>,
+
+    /// Target to build for.
+    #[arg(long, value_enum, conflicts_with_all = ["platform", "arch"])]
+    target: Option<TargetArg>,
+
+    #[command(flatten)]
+    options: TargetOptions,
+
+    /// Without `--target`: `tilo` builds thin against the toolkit the OS
+    /// ships; `linux`, `windows` and `macos` one self-contained executable;
+    /// `web` a page with the toolkit core and the app, ready to serve.
+    #[command(flatten)]
+    platform: PlatformArgs,
+
+    /// For the web, the page directory [default: target/web]; for a native
+    /// platform, a directory to copy the executables into. Relative to the
+    /// app root unless absolute.
+    #[arg(short, long, conflicts_with = "target")]
+    output: Option<PathBuf>,
+
+    /// Relink only the app against the toolkit core already built
+    /// (`--platform web`).
+    #[arg(long, conflicts_with = "target")]
+    app_only: bool,
+
+    /// Cargo profile for a native `--platform` build. Defaults to `thin-app`,
+    /// or `release` with `--static` and for the other desktops.
+    #[arg(long, conflicts_with = "target")]
+    profile: Option<String>,
+
+    /// Link the toolkit and `libstd` into a Tilo OS build instead of against
+    /// the copies the OS ships.
+    #[arg(long = "static", conflicts_with = "target")]
+    static_link: bool,
+}
+
 #[derive(clap::Args)]
 struct DevArgs {
     /// App directory or a file/directory inside it. Defaults to the current directory.
     path: Option<PathBuf>,
 
     /// Quiet period used to coalesce editor save events.
-    #[arg(long, default_value = "150")]
+    #[arg(long, default_value_t = NonZeroU64::new(tilo_app_cli::DEV_DEBOUNCE_MS).expect("the default debounce is not zero"))]
     debounce_ms: NonZeroU64,
 
     /// Watch only the app, not its local `ui` dependency.
     #[arg(long)]
     app_only: bool,
+
+    /// Report where each reload spent its time, from the change to the
+    /// first presented frame. With `--json`, the result lists every reload.
+    #[arg(long)]
+    timings: bool,
+
+    /// `web` serves the app's web build and reloads the page into the same
+    /// document after each rebuild; a native platform runs on this machine
+    /// only when it is that system and architecture.
+    #[command(flatten)]
+    platform: PlatformArgs,
+
+    /// Address the web page is served on (`--platform web`).
+    #[arg(long, default_value = "127.0.0.1:4321")]
+    bind: String,
+
+    /// The `adb` serial of the device or emulator to install on
+    /// (`--platform android`). Defaults to `$ANDROID_SERIAL`, else the one
+    /// connected.
+    #[arg(long)]
+    device: Option<String>,
 
     /// Arguments forwarded to the app. Write them after `--`.
     #[arg(last = true, allow_hyphen_values = true)]
@@ -447,6 +801,10 @@ struct InspectArgs {
 }
 
 #[derive(clap::Args)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent command-line switches, not a state machine"
+)]
 struct PackageArgs {
     /// App directory or a file/directory inside it. Defaults to the current directory.
     path: Option<PathBuf>,
@@ -459,13 +817,38 @@ struct PackageArgs {
     #[arg(long)]
     identity: Option<PathBuf>,
 
-    /// Cargo profile used to build the declared entrypoints.
-    #[arg(long, default_value = "release")]
-    profile: String,
+    /// Cargo profile used to build the declared entrypoints. Defaults to
+    /// `thin-app`, or `release` with `--static`.
+    #[arg(long)]
+    profile: Option<String>,
 
-    /// Rust target triple passed to Cargo.
+    /// Link the toolkit and `libstd` into the binary instead of against the
+    /// copies the OS ships. The result is far over the application size limit;
+    /// use it for local experiments only.
+    #[arg(long = "static")]
+    static_link: bool,
+
+    /// The system to build for: a thin Tilo OS app, one self-contained
+    /// Linux, Windows or macOS executable with the toolkit linked in, a
+    /// WebAssembly side module of the browser's toolkit core, or a signed
+    /// Android APK (and bundle).
+    #[arg(long, value_enum, default_value_t = PlatformArg::Tilo)]
+    platform: PlatformArg,
+
+    /// CPU architecture to build for. Defaults to the host's.
+    #[arg(long, value_enum)]
+    arch: Option<ArchArg>,
+
+    /// `linux`, `macos` or `web` packages the app for that SDK target, and
+    /// `android` as `--platform android` does; any other value is a Rust
+    /// target triple passed to Cargo, overriding the
+    /// one --platform and --arch pick (for example `x86_64-pc-windows-gnu`).
     #[arg(long)]
     target: Option<String>,
+
+    /// Package even when a required capability's backend is only planned.
+    #[arg(long)]
+    allow_planned: bool,
 
     /// Comma-separated Cargo features enabled for the package build.
     #[arg(long, value_delimiter = ',')]
@@ -478,6 +861,23 @@ struct PackageArgs {
     /// Replace an existing output package after the new package verifies successfully.
     #[arg(long)]
     force: bool,
+
+    #[command(flatten)]
+    android: AndroidPackageArgs,
+}
+
+/// `package --platform android`'s own options.
+#[derive(clap::Args)]
+struct AndroidPackageArgs {
+    /// The keystore that signs an Android release (`--platform android`).
+    /// Defaults to `$TILO_ANDROID_KEYSTORE`, else a release key kept beside
+    /// the publisher key.
+    #[arg(long)]
+    keystore: Option<PathBuf>,
+
+    /// Skip the Android App Bundle (`.aab`) beside the APK.
+    #[arg(long)]
+    no_bundle: bool,
 }
 
 #[derive(clap::Args)]
@@ -485,7 +885,9 @@ struct NewArgs {
     /// Cargo package name, for example `reading-list`.
     name: Option<String>,
 
-    /// Reverse-DNS application id. Defaults to `so.tilo.<name>`.
+    /// Reverse-DNS application id. Defaults to `so.tilo.<name>` in the Tilo
+    /// workspace and `local.dev.<name>` elsewhere; publishing needs a
+    /// namespace you have verified.
     #[arg(long)]
     id: Option<String>,
 
@@ -493,17 +895,52 @@ struct NewArgs {
     #[arg(long)]
     title: Option<String>,
 
-    /// Starter shape to generate.
-    #[arg(long, value_enum)]
+    /// Starter shape to generate; `--list-templates` describes each.
+    #[arg(long, value_enum, conflicts_with = "from_example")]
     template: Option<TemplateArg>,
+
+    /// Start from a complete example app instead of a template, renamed to
+    /// this app; `tilo-app examples` lists them.
+    #[arg(long, value_name = "EXAMPLE")]
+    from_example: Option<String>,
+
+    /// List the templates `--template` accepts, then exit.
+    #[arg(long, conflicts_with_all = [
+        "name", "id", "title", "template", "from_example", "directory", "ui_path", "sdk_git",
+        "sdk_rev", "dry_run", "dev",
+    ])]
+    list_templates: bool,
 
     /// Destination directory. Defaults to `apps/<name>` in a Tilo checkout.
     #[arg(long)]
     directory: Option<PathBuf>,
 
-    /// Override the discovered toolkit `ui` crate (or set `TILO_UI_PATH`).
-    #[arg(long)]
+    /// Build against the toolkit `ui` crate of this Tilo checkout (or set
+    /// `TILO_UI_PATH`).
+    #[arg(long, conflicts_with_all = ["sdk_git", "sdk_rev", "sdk_version"])]
     ui_path: Option<PathBuf>,
+
+    /// Build a standalone app against this Tilo git repository. Without a
+    /// checkout nearby, the default is <https://code.tilo.so/tilo/tilo.git>.
+    #[arg(long, value_name = "URL")]
+    sdk_git: Option<String>,
+
+    /// Pin the SDK repository to this commit. Defaults to the commit this
+    /// `tilo-app` was built from.
+    #[arg(long, value_name = "COMMIT")]
+    sdk_rev: Option<String>,
+
+    /// Build a standalone app on the published SDK: `tilo-app` from the
+    /// registry at this version requirement, with no `[patch]` or lockfile.
+    /// Without a value, the version this `tilo-app` was built with.
+    #[arg(
+        long,
+        value_name = "VERSION",
+        num_args = 0..=1,
+        default_missing_value = "",
+        conflicts_with_all = ["sdk_git", "sdk_rev"]
+    )]
+    sdk_version: Option<String>,
 
     /// Print the files that would be created without writing them.
     #[arg(long, conflicts_with = "dev")]
@@ -518,24 +955,48 @@ struct NewArgs {
 /// `#[action]` edits and a view bound to them.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum TemplateArg {
-    /// A profile resource edited through bound text, toggle, number, slider and choice controls.
+    /// One resource, one action and one bound field: the smallest correct app.
     Starter,
-    /// A virtualized, selectable data table over sparse external rows; opened rows are resource state.
-    Data,
-    /// A sparse, variable-height list with interactive retained row widgets.
-    List,
-    /// A stable-id, accessible tree suitable for professional hierarchy UIs.
-    Tree,
-    /// A live-editable serialized UI graph above controls bound to the resource.
-    Graph,
-    /// Typed background work on resource input, with automatic wakeup and keyed result views.
-    Async,
-    /// A collaborative document with a live preview, undo and confirmation for destructive edits.
+    /// One collaborative document with a live preview, undo and a destructive clear.
     Document,
-    /// IME-capable input driving an accessible generated QR image.
+    /// A list of items the user adds, edits, checks off and removes.
+    Collection,
+    /// Serialized, live-editable screens above controls bound to the resource.
+    Graph,
+    // Templates earlier versions had, now examples; naming one says which.
+    #[value(hide = true)]
+    Data,
+    #[value(hide = true)]
+    List,
+    #[value(hide = true)]
+    Tree,
+    #[value(hide = true)]
+    Async,
+    #[value(hide = true)]
     Qr,
-    /// A responsive master-detail app with durable per-item editing.
+    #[value(hide = true)]
     Workspace,
+}
+
+impl TemplateArg {
+    fn template(self) -> Result<tilo_app_cli::Template> {
+        let retired = match self {
+            Self::Starter => return Ok(tilo_app_cli::Template::Starter),
+            Self::Document => return Ok(tilo_app_cli::Template::Document),
+            Self::Collection => return Ok(tilo_app_cli::Template::Collection),
+            Self::Graph => return Ok(tilo_app_cli::Template::Graph),
+            Self::Data => "data",
+            Self::List => "list",
+            Self::Tree => "tree",
+            Self::Async => "async",
+            Self::Qr => "qr",
+            Self::Workspace => "workspace",
+        };
+        let example = tilo_app_cli::retired_template_example(retired).unwrap_or("counter");
+        anyhow::bail!(
+            "the {retired} template is now the `{example}` example; run `tilo-app new NAME --from-example {example}`"
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -569,33 +1030,153 @@ enum ComponentTemplateArg {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    tilo_app_cli::run_as_build_tool_if_requested();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => return report_usage_error(&error),
+    };
+    let json = if cli.json {
+        match json_stdout::JsonStdout::claim() {
+            Ok(stdout) => Some(stdout),
+            Err(error) => {
+                eprintln!("tilo-app: reserving stdout for --json: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
+    let interactive = json.is_none();
+    let name = cli.command.name();
     let result = match cli.command {
-        Command::New(args) => run_new(args),
-        Command::Add(args) => run_add(args),
+        Command::New(args) => run_new(args, interactive),
+        Command::Examples => Ok(list_examples()),
+        Command::Add(args) => run_add(args, interactive),
         Command::Locale(args) => run_locale(args),
         Command::Scenario(args) => run_scenario(args),
         Command::Doctor(args) => run_doctor(args),
+        Command::Setup(args) => run_setup(&args),
         Command::Check(args) => run_check(args),
         Command::Certify(args) => run_certify(args),
-        Command::Run(args) => run_app_task(args, tilo_app_cli::AppTask::Run),
+        Command::Run(args) => run_run(args),
+        Command::Build(args) => run_build(args),
         Command::Test(args) => run_app_task(args, tilo_app_cli::AppTask::Test),
         Command::Dev(args) => run_dev(args),
         Command::Shot(args) => run_shot(args),
         Command::Inspect(args) => run_inspect(args),
         Command::Ui(args) => run_ui(args),
         Command::Package(args) => run_package(args),
+        Command::Keys(args) => publishing::run_keys(args),
+        Command::Apply(args) => publishing::run_apply(args),
+        Command::Publish(args) => publishing::run_publish(args),
     };
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
+    let code = match &result {
+        Ok(_) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("tilo-app: {error:#}");
             ExitCode::FAILURE
         }
+    };
+    if let Some(stdout) = json {
+        let document = match result {
+            Ok(report) => serde_json::json!({"ok": true, "command": name, "result": report}),
+            Err(error) => serde_json::json!({
+                "ok": false,
+                "command": name,
+                "error": format!("{error:#}"),
+                "causes": error.chain().map(ToString::to_string).collect::<Vec<_>>(),
+                "result": error
+                    .downcast_ref::<Failed>()
+                    .or_else(|| error.chain().find_map(|cause| cause.downcast_ref::<Failed>()))
+                    .map(|failed| &failed.report),
+            }),
+        };
+        if let Err(error) = stdout.emit(&document) {
+            eprintln!("tilo-app: writing --json result: {error}");
+            return ExitCode::FAILURE;
+        }
+    }
+    code
+}
+
+/// Help and version stay human text; any other usage error is reported as a
+/// JSON document when `--json` was requested, so a caller never has to parse
+/// clap's prose to learn that its invocation was wrong.
+fn report_usage_error(error: &clap::Error) -> ExitCode {
+    use clap::error::ErrorKind;
+
+    let informational = matches!(
+        error.kind(),
+        ErrorKind::DisplayHelp
+            | ErrorKind::DisplayVersion
+            | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    );
+    let wants_json = std::env::args_os().skip(1).any(|arg| arg == "--json");
+    if informational || !wants_json {
+        error.exit();
+    }
+    let document = json!({
+        "ok": false,
+        "command": Value::Null,
+        "error": error.kind().to_string(),
+        "usage": error.render().to_string(),
+    });
+    println!("{document}");
+    ExitCode::from(2)
+}
+
+/// A command that ran to completion but whose verdict is failure. The report
+/// still describes what happened, so `--json` includes it.
+#[derive(Debug)]
+struct Failed {
+    message: String,
+    report: Value,
+}
+
+impl std::fmt::Display for Failed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
     }
 }
 
-fn run_scenario(args: ScenarioArgs) -> Result<()> {
+impl std::error::Error for Failed {}
+
+fn failed(message: impl Into<String>, report: Value) -> anyhow::Error {
+    Failed {
+        message: message.into(),
+        report,
+    }
+    .into()
+}
+
+impl Command {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::New(_) => "new",
+            Self::Examples => "examples",
+            Self::Add(_) => "add",
+            Self::Locale(_) => "locale",
+            Self::Scenario(_) => "scenario",
+            Self::Doctor(_) => "doctor",
+            Self::Setup(_) => "setup",
+            Self::Check(_) => "check",
+            Self::Certify(_) => "certify",
+            Self::Run(_) => "run",
+            Self::Build(_) => "build",
+            Self::Test(_) => "test",
+            Self::Dev(_) => "dev",
+            Self::Shot(_) => "shot",
+            Self::Inspect(_) => "inspect",
+            Self::Ui(_) => "ui",
+            Self::Package(_) => "package",
+            Self::Keys(_) => "keys",
+            Self::Apply(_) => "apply",
+            Self::Publish(_) => "publish",
+        }
+    }
+}
+
+fn run_scenario(args: ScenarioArgs) -> Result<Value> {
     match args.command {
         ScenarioCommand::Run {
             name,
@@ -617,8 +1198,15 @@ fn run_scenario(args: ScenarioArgs) -> Result<()> {
     }
 }
 
-fn execute_scenario_plan(plan: &tilo_app_cli::ScenarioSuitePlan) -> Result<()> {
+fn execute_scenario_plan(plan: &tilo_app_cli::ScenarioSuitePlan) -> Result<Value> {
     let outcome = plan.execute()?;
+    let mut report = outcome.to_json();
+    if let Some(fields) = report.as_object_mut() {
+        fields.insert(
+            "artifacts".into(),
+            json!(plan.artifact_dir().map(|path| path.display().to_string())),
+        );
+    }
     for name in &outcome.passed {
         println!("✓ {name}");
     }
@@ -630,14 +1218,17 @@ fn execute_scenario_plan(plan: &tilo_app_cli::ScenarioSuitePlan) -> Result<()> {
     }
     if outcome.failed.is_empty() {
         println!("{} scenario(s) passed", outcome.passed.len());
-        Ok(())
+        Ok(report)
     } else {
         let total = outcome.passed.len().saturating_add(outcome.failed.len());
-        anyhow::bail!("{} of {} scenario(s) failed", outcome.failed.len(), total)
+        Err(failed(
+            format!("{} of {} scenario(s) failed", outcome.failed.len(), total),
+            report,
+        ))
     }
 }
 
-fn run_locale(args: LocaleArgs) -> Result<()> {
+fn run_locale(args: LocaleArgs) -> Result<Value> {
     match args.command {
         LocaleCommand::Sync {
             locale,
@@ -681,19 +1272,40 @@ fn run_locale(args: LocaleArgs) -> Result<()> {
                     "Use --prune for stale units and --reset-variables for mismatched patterns"
                 );
             }
-            Ok(())
+            Ok(outcome.to_json())
         }
     }
 }
 
-fn run_add(args: AddArgs) -> Result<()> {
+#[allow(
+    clippy::too_many_lines,
+    reason = "one dispatch over every artifact the command adds"
+)]
+fn run_add(args: AddArgs, interactive: bool) -> Result<Value> {
     let Some(command) = args.command else {
+        anyhow::ensure!(
+            interactive,
+            "an artifact subcommand is required with --json; use `tilo-app add screen`, `tilo-app add component`, `tilo-app add scenario`, or `tilo-app add locale`"
+        );
         let start = std::env::current_dir()?;
         let outcome = tilo_app_cli::add_app_artifact_interactive(&start)?;
         print_add_outcome(&outcome);
-        return Ok(());
+        return Ok(outcome.to_json());
     };
     let (artifact, options) = match command {
+        AddCommand::Capability {
+            name,
+            required,
+            list,
+            app,
+        } => return run_add_capability(name, required, list, app),
+        AddCommand::Ci {
+            forge,
+            runs_on,
+            options,
+        } => {
+            return run_add_ci(forge, runs_on.as_deref(), &options);
+        }
         AddCommand::Screen {
             name,
             title,
@@ -735,14 +1347,7 @@ fn run_add(args: AddArgs) -> Result<()> {
             props,
             options,
         } => {
-            let template = match template {
-                ComponentTemplateArg::Display => tilo_app_cli::ComponentTemplate::Display,
-                ComponentTemplateArg::Form => tilo_app_cli::ComponentTemplate::Form,
-                ComponentTemplateArg::Tree => tilo_app_cli::ComponentTemplate::Tree,
-                ComponentTemplateArg::List => tilo_app_cli::ComponentTemplate::List,
-                ComponentTemplateArg::Table => tilo_app_cli::ComponentTemplate::Table,
-                ComponentTemplateArg::Text => tilo_app_cli::ComponentTemplate::Text,
-            };
+            let template = component_template(template);
             let artifact = if let Some(screen) = mount {
                 let mut mount = match template {
                     tilo_app_cli::ComponentTemplate::Display => {
@@ -780,7 +1385,38 @@ fn run_add(args: AddArgs) -> Result<()> {
         dry_run: options.dry_run,
     })?;
     print_add_outcome(&outcome);
-    Ok(())
+    Ok(outcome.to_json())
+}
+
+fn component_template(template: ComponentTemplateArg) -> tilo_app_cli::ComponentTemplate {
+    match template {
+        ComponentTemplateArg::Display => tilo_app_cli::ComponentTemplate::Display,
+        ComponentTemplateArg::Form => tilo_app_cli::ComponentTemplate::Form,
+        ComponentTemplateArg::Tree => tilo_app_cli::ComponentTemplate::Tree,
+        ComponentTemplateArg::List => tilo_app_cli::ComponentTemplate::List,
+        ComponentTemplateArg::Table => tilo_app_cli::ComponentTemplate::Table,
+        ComponentTemplateArg::Text => tilo_app_cli::ComponentTemplate::Text,
+    }
+}
+
+fn run_add_ci(forge: ForgeArg, runs_on: Option<&str>, options: &AddOptions) -> Result<Value> {
+    let start = options.app.clone().map_or_else(std::env::current_dir, Ok)?;
+    let forge = match forge {
+        ForgeArg::Github => tilo_app_cli::ci::Forge::Github,
+        ForgeArg::Forgejo => tilo_app_cli::ci::Forge::Forgejo,
+        ForgeArg::Gitea => tilo_app_cli::ci::Forge::Gitea,
+    };
+    let outcome = tilo_app_cli::ci::add_ci(&start, forge, runs_on, options.force, options.dry_run)?;
+    let verb = if outcome.written {
+        "Created"
+    } else {
+        "Would create"
+    };
+    println!("{verb} {}", outcome.path.display());
+    println!(
+        "Next: add the TILO_PUBLISHER_KEY secret (the file `tilo-app keys new` wrote), then push a v* tag to publish"
+    );
+    Ok(outcome.to_json())
 }
 
 fn print_add_outcome(outcome: &tilo_app_cli::AddOutcome) {
@@ -800,17 +1436,23 @@ fn print_add_outcome(outcome: &tilo_app_cli::AddOutcome) {
     }
 }
 
-fn run_ui(args: UiArgs) -> Result<()> {
-    match args.command {
+fn run_ui(args: UiArgs) -> Result<Value> {
+    let report = match args.command {
         UiCommand::Edit { file, builder } => {
             let _ = tilo_app_cli::load_ui_graph(&file)?;
             tilo_app_cli::ui_builder_plan(&file, builder)?.execute()?;
+            json!({"file": file, "action": "edit"})
         }
         UiCommand::Init { file, title, force } => {
             tilo_app_cli::init_ui_graph(&file, &title, force)?;
             println!("Created {}", file.display());
+            json!({"file": file, "action": "create"})
         }
-        UiCommand::Tree { file } => print!("{}", tilo_app_cli::ui_graph_tree(&file)?),
+        UiCommand::Tree { file } => {
+            let tree = tilo_app_cli::ui_graph_tree(&file)?;
+            print!("{tree}");
+            json!({"file": file, "tree": tree})
+        }
         UiCommand::Validate { file } => {
             let document = tilo_app_cli::load_ui_graph(&file)?;
             println!(
@@ -818,10 +1460,12 @@ fn run_ui(args: UiArgs) -> Result<()> {
                 document.nodes().len(),
                 document.version
             );
+            json!({"file": file, "valid": true, "nodes": document.nodes().len(), "version": document.version})
         }
         UiCommand::Format { file } => {
             tilo_app_cli::format_ui_graph(&file)?;
             println!("Formatted {}", file.display());
+            json!({"file": file, "action": "format"})
         }
         UiCommand::Insert {
             file,
@@ -830,15 +1474,14 @@ fn run_ui(args: UiArgs) -> Result<()> {
             source,
         } => {
             let node = read_ui_node(source)?;
-            tilo_app_cli::edit_ui_graph(
+            ui_graph_edit(
                 &file,
                 tilo_app_cli::UiGraphEdit::Insert {
                     parent,
                     index,
                     node,
                 },
-            )?;
-            println!("Updated {}", file.display());
+            )?
         }
         UiCommand::Component {
             file,
@@ -858,26 +1501,18 @@ fn run_ui(args: UiArgs) -> Result<()> {
             },
         )?,
         UiCommand::Remove { file, id } => {
-            tilo_app_cli::edit_ui_graph(&file, tilo_app_cli::UiGraphEdit::Remove { id })?;
-            println!("Updated {}", file.display());
+            ui_graph_edit(&file, tilo_app_cli::UiGraphEdit::Remove { id })?
         }
         UiCommand::Replace { file, id, source } => {
             let node = read_ui_node(source)?;
-            tilo_app_cli::edit_ui_graph(&file, tilo_app_cli::UiGraphEdit::Replace { id, node })?;
-            println!("Updated {}", file.display());
+            ui_graph_edit(&file, tilo_app_cli::UiGraphEdit::Replace { id, node })?
         }
         UiCommand::Move {
             file,
             id,
             parent,
             index,
-        } => {
-            tilo_app_cli::edit_ui_graph(
-                &file,
-                tilo_app_cli::UiGraphEdit::Move { id, parent, index },
-            )?;
-            println!("Updated {}", file.display());
-        }
+        } => ui_graph_edit(&file, tilo_app_cli::UiGraphEdit::Move { id, parent, index })?,
         UiCommand::Set {
             file,
             id,
@@ -893,28 +1528,33 @@ fn run_ui(args: UiArgs) -> Result<()> {
                 (None, true) => tilo_app_cli::UiGraphEdit::UnsetProperty { id, property },
                 _ => anyhow::bail!("choose exactly one of --value or --unset"),
             };
-            tilo_app_cli::edit_ui_graph(&file, graph_edit)?;
-            println!("Updated {}", file.display());
+            ui_graph_edit(&file, graph_edit)?
         }
         UiCommand::Apply { file, edits } => run_ui_apply(&file, &edits)?,
-    }
-    Ok(())
+    };
+    Ok(report)
 }
 
-fn run_ui_component(file: &Path, request: tilo_app_cli::UiComponentInsert) -> Result<()> {
+fn ui_graph_edit(file: &Path, edit: tilo_app_cli::UiGraphEdit) -> Result<Value> {
+    tilo_app_cli::edit_ui_graph(file, edit)?;
+    println!("Updated {}", file.display());
+    Ok(json!({"file": file, "action": "update"}))
+}
+
+fn run_ui_component(file: &Path, request: tilo_app_cli::UiComponentInsert) -> Result<Value> {
     let id = tilo_app_cli::insert_ui_component(file, request)?;
     println!("Inserted {id} in {}", file.display());
-    Ok(())
+    Ok(json!({"file": file, "action": "insert", "id": id}))
 }
 
-fn run_ui_apply(file: &Path, edits: &Path) -> Result<()> {
+fn run_ui_apply(file: &Path, edits: &Path) -> Result<Value> {
     let source = std::fs::read_to_string(edits)
         .with_context(|| format!("reading UI graph edits {}", edits.display()))?;
     let edits = tilo_app_cli::parse_ui_graph_edits(&source)?;
     let count = edits.len();
     tilo_app_cli::edit_ui_graph_batch(file, edits)?;
     println!("Applied {count} edits to {}", file.display());
-    Ok(())
+    Ok(json!({"file": file, "action": "apply", "edits": count}))
 }
 
 fn parse_ui_property_value(source: String) -> serde_json::Value {
@@ -932,38 +1572,423 @@ fn read_ui_node(source: NodeSourceArgs) -> Result<tilo_ui_graph::UiNode> {
     tilo_app_cli::parse_ui_node(&source)
 }
 
-fn run_package(args: PackageArgs) -> Result<()> {
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum PlatformArg {
+    Tilo,
+    Linux,
+    Windows,
+    Macos,
+    Web,
+    Android,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum CheckPlatformArg {
+    Tilo,
+    Linux,
+    Windows,
+    Macos,
+    Web,
+    Android,
+    /// Every platform above.
+    All,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ForgeArg {
+    Github,
+    Forgejo,
+    Gitea,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ArchArg {
+    #[value(name = "x86_64")]
+    X86_64,
+    Aarch64,
+    /// The one architecture of `--platform web`.
+    Wasm32,
+}
+
+/// The platform and, for a native one, the architecture `--platform` and
+/// `--arch` name; `None` is the host's.
+fn platform_and_arch(
+    platform: PlatformArg,
+    arch: Option<ArchArg>,
+) -> Result<(
+    tilo_app_cli::PackagePlatform,
+    Option<tilo_app_cli::PackageArch>,
+)> {
+    let web = matches!(platform, PlatformArg::Web);
+    match arch {
+        Some(ArchArg::Wasm32) if !web => anyhow::bail!("--arch wasm32 is for --platform web"),
+        Some(ArchArg::X86_64 | ArchArg::Aarch64) if web => {
+            anyhow::bail!("--platform web builds for wasm32")
+        }
+        _ => {}
+    }
+    Ok((
+        match platform {
+            PlatformArg::Tilo => tilo_app_cli::PackagePlatform::Tilo,
+            PlatformArg::Linux => tilo_app_cli::PackagePlatform::Linux,
+            PlatformArg::Windows => tilo_app_cli::PackagePlatform::Windows,
+            PlatformArg::Macos => tilo_app_cli::PackagePlatform::Macos,
+            PlatformArg::Web => tilo_app_cli::PackagePlatform::Web,
+            PlatformArg::Android => tilo_app_cli::PackagePlatform::Android,
+        },
+        arch.and_then(|arch| match arch {
+            ArchArg::X86_64 => Some(tilo_app_cli::PackageArch::X86_64),
+            ArchArg::Aarch64 => Some(tilo_app_cli::PackageArch::Aarch64),
+            ArchArg::Wasm32 => None,
+        }),
+    ))
+}
+
+fn run_package(args: PackageArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    tilo_app_cli::package_app(
+    let sdk_target = match args.target.as_deref() {
+        Some("linux") => Some(tilo_app_cli::targets::Target::Linux),
+        Some("macos") => Some(tilo_app_cli::targets::Target::Macos),
+        Some("web") => Some(tilo_app_cli::targets::Target::Web),
+        _ => None,
+    };
+    if let Some(target) = sdk_target {
+        let mut build = tilo_app_cli::targets::TargetRequest::new(target);
+        build.allow_planned = args.allow_planned;
+        build.features = args.features;
+        build.no_default_features = args.no_default_features;
+        let output = tilo_app_cli::targets::package(
+            &path,
+            &tilo_app_cli::targets::TargetPackageRequest {
+                build,
+                output: args.output,
+                identity: args.identity,
+                force: args.force,
+            },
+        )?;
+        println!("{}", output.display());
+        return Ok(json!({"artifact": output}));
+    }
+    let android = args.target.as_deref() == Some("android");
+    let (platform, arch) = platform_and_arch(
+        if android {
+            PlatformArg::Android
+        } else {
+            args.platform
+        },
+        args.arch,
+    )?;
+    if platform != tilo_app_cli::PackagePlatform::Android
+        && (args.android.keystore.is_some() || args.android.no_bundle)
+    {
+        anyhow::bail!("--keystore and --no-bundle are for --platform android");
+    }
+    let request = tilo_app_cli::PackageRequest {
+        output: args.output,
+        identity: args.identity,
+        profile: args.profile,
+        static_link: args.static_link,
+        target: args.target.filter(|_| !android),
+        platform,
+        arch,
+        features: args.features,
+        no_default_features: args.no_default_features,
+        force: args.force,
+    };
+    if platform == tilo_app_cli::PackagePlatform::Android {
+        let outcomes = tilo_app_cli::android::package(
+            &path,
+            &request,
+            &tilo_app_cli::android::PackageOptions {
+                keystore: args.android.keystore,
+                bundle: args.android.no_bundle.then_some(false),
+            },
+        )?;
+        let mut packages: Vec<Value> = outcomes
+            .iter()
+            .map(tilo_app_cli::PackageOutcome::to_json)
+            .collect();
+        return Ok(if packages.len() == 1 {
+            packages.remove(0)
+        } else {
+            json!({ "packages": packages })
+        });
+    }
+    Ok(tilo_app_cli::package_app(&path, &request)?.to_json())
+}
+
+fn run_run(args: RunArgs) -> Result<Value> {
+    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
+    let Some(target) = args.target.and_then(TargetArg::sdk) else {
+        let (platform, arch) = args.platform.or_target(args.target).resolve()?;
+        if platform == tilo_app_cli::PackagePlatform::Web {
+            tilo_app_cli::web::run_web(
+                &path,
+                &tilo_app_cli::web::WebDevOptions { bind: args.bind },
+            )?;
+            return Ok(json!({"stopped": true}));
+        }
+        if platform == tilo_app_cli::PackagePlatform::Android {
+            if !args.forwarded.is_empty() {
+                anyhow::bail!("an Android app takes no command-line arguments");
+            }
+            let build = tilo_app_cli::android::run_on_device(
+                &path,
+                &tilo_app_cli::android::DeviceRequest {
+                    device: args.device,
+                    arch,
+                },
+            )?;
+            return Ok(build.to_json());
+        }
+        platform.ensure_runs_here(arch)?;
+        let plan = tilo_app_cli::plan_app_task(&path, tilo_app_cli::AppTask::Run, &args.forwarded)?;
+        plan.execute()?;
+        return Ok(json!({"app_dir": plan.app_dir, "platform": platform.cli_name()}));
+    };
+    let serve = tilo_app_cli::targets::ServeOptions {
+        address: std::net::SocketAddr::from(([127, 0, 0, 1], args.port)),
+        watch: !args.no_watch,
+        ..tilo_app_cli::targets::ServeOptions::default()
+    };
+    tilo_app_cli::targets::run(
         &path,
-        &tilo_app_cli::PackageRequest {
+        &args.options.request(target),
+        &args.forwarded,
+        &serve,
+    )?;
+    Ok(json!({"app_dir": path}))
+}
+
+fn run_build(args: BuildArgs) -> Result<Value> {
+    let path = args.path.clone().map_or_else(std::env::current_dir, Ok)?;
+    let Some(target) = args.target.and_then(TargetArg::sdk) else {
+        return run_platform_build(&path, args);
+    };
+    let outcome = tilo_app_cli::targets::build(&path, &args.options.request(target))?;
+    println!("{}", outcome.artifact.display());
+    Ok(json!({"artifact": outcome.artifact}))
+}
+
+fn run_add_capability(
+    name: Option<String>,
+    required: bool,
+    list: bool,
+    app: Option<PathBuf>,
+) -> Result<Value> {
+    if list {
+        print!("{}", tilo_app_cli::targets::capability_table());
+        return Ok(json!({"listed": true}));
+    }
+    let name = name.context("name a capability, or pass --list")?;
+    let start = app.map_or_else(std::env::current_dir, Ok)?;
+    let added = tilo_app_cli::targets::add_capability(&start, &name, required)?;
+    println!(
+        "Declared `{}` as {} in {}",
+        added.capability,
+        if added.required {
+            "required"
+        } else {
+            "optional"
+        },
+        added.manifest.display()
+    );
+    for (target, reason) in &added.unavailable {
+        println!("  note: not available on {target} ({reason}); the app must degrade there");
+    }
+    Ok(json!({
+        "capability": added.capability.to_string(),
+        "required": added.required,
+        "manifest": added.manifest,
+    }))
+}
+
+fn run_dev(args: DevArgs) -> Result<Value> {
+    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
+    let request = tilo_app_cli::DevRequest {
+        forwarded: args.forwarded,
+        watch_ui: !args.app_only,
+        debounce: Duration::from_millis(args.debounce_ms.get()),
+        timings: args.timings,
+    };
+    let (platform, arch) = args.platform.resolve()?;
+    if platform == tilo_app_cli::PackagePlatform::Web {
+        tilo_app_cli::web::dev_web(
+            &path,
+            &request,
+            &tilo_app_cli::web::WebDevOptions { bind: args.bind },
+        )?;
+    } else if platform == tilo_app_cli::PackagePlatform::Android {
+        tilo_app_cli::android::dev_on_device(
+            &path,
+            &request,
+            &tilo_app_cli::android::DeviceRequest {
+                device: args.device,
+                arch,
+            },
+        )?;
+    } else {
+        platform.ensure_runs_here(arch)?;
+        let reloads = tilo_app_cli::dev_app(&path, &request)?;
+        if request.timings {
+            return Ok(json!({"stopped": true, "reloads": reloads}));
+        }
+    }
+    Ok(json!({"stopped": true}))
+}
+
+fn run_platform_build(path: &Path, args: BuildArgs) -> Result<Value> {
+    let (platform, arch) = args.platform.or_target(args.target).resolve()?;
+    if platform == tilo_app_cli::PackagePlatform::Android {
+        return build_android(path, &args, arch);
+    }
+    if platform != tilo_app_cli::PackagePlatform::Web {
+        return build_native(path, &args, platform, arch);
+    }
+    if args.profile.is_some() || args.static_link {
+        anyhow::bail!("--profile and --static are for a native build");
+    }
+    let build = tilo_app_cli::web::build_web(
+        path,
+        &tilo_app_cli::web::WebBuildRequest {
             output: args.output,
-            identity: args.identity,
-            profile: args.profile,
-            target: args.target,
-            features: args.features,
-            no_default_features: args.no_default_features,
-            force: args.force,
+            app_only: args.app_only,
         },
     )?;
-    Ok(())
+    eprintln!(
+        "[tilo-app] built {} for the web in {:.1} s: {} ({}, module {} bytes)",
+        build.app_id,
+        build.elapsed.as_secs_f64(),
+        build.output.display(),
+        build.entry,
+        build.module_bytes
+    );
+    Ok(build.to_json())
 }
 
-fn run_dev(args: DevArgs) -> Result<()> {
-    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    tilo_app_cli::dev_app(
-        &path,
-        &tilo_app_cli::DevRequest {
-            forwarded: args.forwarded,
-            watch_ui: !args.app_only,
-            debounce: Duration::from_millis(args.debounce_ms.get()),
+/// A debug-signed APK under `target/android/`, copied to `--output`.
+fn build_android(
+    path: &Path,
+    args: &BuildArgs,
+    arch: Option<tilo_app_cli::PackageArch>,
+) -> Result<Value> {
+    if args.app_only || args.static_link {
+        anyhow::bail!("--app-only and --static are not for --platform android");
+    }
+    let build = tilo_app_cli::android::build(
+        path,
+        &tilo_app_cli::android::BuildRequest {
+            arch: arch.unwrap_or(tilo_app_cli::PackageArch::Aarch64),
+            profile: args.profile.clone().unwrap_or_else(|| "dev".to_owned()),
+            signing: tilo_app_cli::android::Signing::Debug,
+            bundle: false,
+            features: Vec::new(),
+            no_default_features: false,
         },
-    )
+    )?;
+    let mut json = build.to_json();
+    if let Some(output) = &args.output {
+        let output = if output.is_absolute() {
+            output.clone()
+        } else {
+            build.app_dir.join(output)
+        };
+        std::fs::create_dir_all(&output)
+            .with_context(|| format!("creating {}", output.display()))?;
+        let name = build
+            .apk
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("{} has no file name", build.apk.display()))?;
+        let destination = output.join(name);
+        std::fs::copy(&build.apk, &destination).with_context(|| {
+            format!(
+                "copying {} to {}",
+                build.apk.display(),
+                destination.display()
+            )
+        })?;
+        if let Some(fields) = json.as_object_mut() {
+            fields.insert("copied".to_owned(), json!([destination]));
+        }
+    }
+    eprintln!(
+        "[tilo-app] built {} for android ({}) in {:.1} s: {}",
+        build.metadata.application_id,
+        build.arch.android_abi(),
+        build.elapsed.as_secs_f64(),
+        build.apk.display()
+    );
+    Ok(json)
 }
 
-fn run_shot(args: ShotArgs) -> Result<()> {
+fn build_native(
+    path: &Path,
+    args: &BuildArgs,
+    platform: tilo_app_cli::PackagePlatform,
+    arch: Option<tilo_app_cli::PackageArch>,
+) -> Result<Value> {
+    if args.app_only {
+        anyhow::bail!("--app-only is for --platform web");
+    }
+    let build = tilo_app_cli::build_native(
+        path,
+        &tilo_app_cli::PackageRequest {
+            output: None,
+            identity: None,
+            profile: args.profile.clone(),
+            static_link: args.static_link,
+            target: None,
+            platform,
+            arch,
+            features: Vec::new(),
+            no_default_features: false,
+            force: false,
+        },
+    )?;
+    let mut json = build.to_json();
+    if let Some(output) = &args.output {
+        let output = if output.is_absolute() {
+            output.clone()
+        } else {
+            build.app_dir.join(output)
+        };
+        std::fs::create_dir_all(&output)
+            .with_context(|| format!("creating {}", output.display()))?;
+        let mut copied = Vec::new();
+        for (_, executable) in &build.executables {
+            let name = executable
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("{} has no file name", executable.display()))?;
+            let destination = output.join(name);
+            std::fs::copy(executable, &destination).with_context(|| {
+                format!(
+                    "copying {} to {}",
+                    executable.display(),
+                    destination.display()
+                )
+            })?;
+            copied.push(destination);
+        }
+        if let Some(fields) = json.as_object_mut() {
+            fields.insert("copied".to_owned(), json!(copied));
+        }
+    }
+    for (bin, executable) in &build.executables {
+        eprintln!(
+            "[tilo-app] built {bin} for {} ({}) in {:.1} s: {}",
+            platform.cli_name(),
+            build.triple.as_deref().unwrap_or("host"),
+            build.elapsed.as_secs_f64(),
+            executable.display()
+        );
+    }
+    Ok(json)
+}
+
+fn run_shot(args: ShotArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    tilo_app_cli::plan_app_shot(
+    let output = args.output.clone();
+    let plan = tilo_app_cli::plan_app_shot(
         &path,
         tilo_app_cli::ShotRequest {
             output: args.output,
@@ -971,13 +1996,20 @@ fn run_shot(args: ShotArgs) -> Result<()> {
             scenario: args.scenario,
             forwarded: args.forwarded,
         },
-    )?
-    .execute()
+    )?;
+    plan.execute()?;
+    Ok(json!({"app_dir": plan.app_dir, "output": plan.app_dir.join(output)}))
 }
 
-fn run_inspect(args: InspectArgs) -> Result<()> {
+fn run_inspect(args: InspectArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    tilo_app_cli::plan_app_inspection(
+    let artifacts = json!({
+        "output": args.output,
+        "dump": args.dump,
+        "targets": args.targets,
+        "audit_report": args.audit_report,
+    });
+    let plan = tilo_app_cli::plan_app_inspection(
         &path,
         tilo_app_cli::InspectRequest {
             output: args.output,
@@ -988,8 +2020,9 @@ fn run_inspect(args: InspectArgs) -> Result<()> {
             audit: args.audit,
             audit_report: args.audit_report,
         },
-    )?
-    .execute()
+    )?;
+    plan.execute()?;
+    Ok(json!({"app_dir": plan.app_dir, "relative_to_app_dir": artifacts}))
 }
 
 fn parse_viewport(raw: &str) -> std::result::Result<(u32, u32), String> {
@@ -1010,28 +2043,79 @@ fn parse_viewport(raw: &str) -> std::result::Result<(u32, u32), String> {
     Ok((width, height))
 }
 
-fn run_app_task(args: AppTaskArgs, task: tilo_app_cli::AppTask) -> Result<()> {
+fn run_app_task(args: AppTaskArgs, task: tilo_app_cli::AppTask) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    tilo_app_cli::plan_app_task(&path, task, &args.forwarded)?.execute()
+    let plan = tilo_app_cli::plan_app_task(&path, task, &args.forwarded)?;
+    plan.execute()?;
+    Ok(json!({"app_dir": plan.app_dir}))
 }
 
-fn run_doctor(args: DoctorArgs) -> Result<()> {
+fn run_doctor(args: DoctorArgs) -> Result<Value> {
+    if let Some(ToolchainArg::Android) = args.platform {
+        let report = tilo_app_cli::android::doctor();
+        println!("{}", report.summary());
+        if !report.is_ready() {
+            return Err(failed(
+                "the Android toolchain is incomplete",
+                report.to_json(),
+            ));
+        }
+        return Ok(report.to_json());
+    }
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
     let report = tilo_app_cli::doctor_app(&path)?;
     println!("{}", report.summary());
     if !report.is_ready() {
-        anyhow::bail!("app checks failed");
+        return Err(failed("app checks failed", report.to_json()));
     }
-    Ok(())
+    Ok(report.to_json())
 }
 
-fn run_check(args: CheckArgs) -> Result<()> {
-    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
+fn run_setup(args: &SetupArgs) -> Result<Value> {
+    let ToolchainArg::Android = args.platform;
+    let report = tilo_app_cli::android::setup(tilo_app_cli::android::SetupOptions {
+        accept_licenses: args.accept_licenses,
+    })?;
+    println!("{}", report.summary());
+    if !report.is_ready() {
+        return Err(failed(
+            "the Android toolchain is still incomplete",
+            report.to_json(),
+        ));
+    }
+    Ok(report.to_json())
+}
+
+fn run_check(args: CheckArgs) -> Result<Value> {
+    let path = args.path.clone().map_or_else(std::env::current_dir, Ok)?;
+    if args.lints.all {
+        return lint_workspace(&path);
+    }
+    if !args.target.is_empty() {
+        return check_targets(&path, &args);
+    }
+    let mut stages = Vec::new();
+    println!("[check] lint: {}", tilo_app_cli::portability::LINT);
+    let lint = tilo_app_cli::lint_portability(&path)?;
+    print!("{}", lint.render());
+    stages.push(json!({"stage": "lint", "passed": lint.passed(), "report": lint.to_json()}));
+    if !lint.passed() {
+        return Err(failed(
+            format!("lint `{}` failed", tilo_app_cli::portability::LINT),
+            json!({"stages": stages}),
+        ));
+    }
+    if args.lints.lint {
+        return Ok(json!({"stages": stages}));
+    }
+
     println!("[check] app structure");
     let report = tilo_app_cli::doctor_app(&path)?;
     println!("{}", report.summary());
+    stages
+        .push(json!({"stage": "doctor", "passed": report.is_ready(), "report": report.to_json()}));
     if !report.is_ready() {
-        anyhow::bail!("app checks failed");
+        return Err(failed("app checks failed", json!({"stages": stages})));
     }
 
     let format_mode = if args.fix {
@@ -1045,14 +2129,33 @@ fn run_check(args: CheckArgs) -> Result<()> {
     } else {
         println!("[check] Rust formatting");
     }
-    quality.format.execute()?;
-    println!("[check] app-local Clippy");
-    quality.clippy.execute()?;
-    println!("[check] Rust tests and generated accessibility contract");
-    quality.test.execute()?;
+    let tool_stages: [CheckStage<'_>; 4] = [
+        ("format", "Rust formatting", &|| quality.format.execute()),
+        ("clippy", "app-local Clippy", &|| quality.clippy.execute()),
+        (
+            "test",
+            "Rust tests and generated accessibility contract",
+            &|| {
+                tilo_app_cli::native_libs::require_fonts()?;
+                quality.test.execute()
+            },
+        ),
+        ("certify", "Tilo-native runtime certification", &|| {
+            certify_one(&path)
+        }),
+    ];
+    for (index, (stage, label, run)) in tool_stages.iter().enumerate() {
+        if index > 0 {
+            println!("[check] {label}");
+        }
+        if let Err(error) = run() {
+            stages.push(json!({"stage": stage, "passed": false}));
+            return Err(error.context(failed(format!("{label} failed"), json!({"stages": stages}))));
+        }
+        stages.push(json!({"stage": stage, "passed": true}));
+    }
 
-    println!("[check] Tilo-native runtime certification");
-    certify_one(&path)?;
+    check_other_platforms(&path, &args.platforms, args.arch, &mut stages)?;
 
     if !args.no_scenarios {
         println!("[check] isolated accessibility-audited scenarios");
@@ -1063,10 +2166,150 @@ fn run_check(args: CheckArgs) -> Result<()> {
             artifacts: args.artifacts,
             audit: true,
         })?;
-        execute_scenario_plan(&plan)?;
+        match execute_scenario_plan(&plan) {
+            Ok(report) => {
+                stages.push(json!({"stage": "scenarios", "passed": true, "report": report}));
+            }
+            Err(error) => {
+                let report = error
+                    .downcast_ref::<Failed>()
+                    .map(|failed| failed.report.clone());
+                stages.push(json!({"stage": "scenarios", "passed": false, "report": report}));
+                return Err(failed(format!("{error:#}"), json!({"stages": stages})));
+            }
+        }
     }
     println!("All app checks passed");
+    Ok(json!({"stages": stages}))
+}
+
+/// `check --target`: the SDK targets' declared platforms, capabilities and
+/// `cargo check`, and Clippy for `android`.
+fn check_targets(path: &Path, args: &CheckArgs) -> Result<Value> {
+    let targets: Vec<_> = args
+        .target
+        .iter()
+        .filter_map(|target| target.sdk())
+        .collect();
+    if !targets.is_empty() {
+        tilo_app_cli::targets::check_targets(path, &targets, args.allow_planned)?;
+    }
+    if args
+        .target
+        .iter()
+        .any(|target| matches!(target, TargetArg::Android))
+    {
+        let (_, arch) = platform_and_arch(PlatformArg::Android, args.arch)?;
+        tilo_app_cli::android::clippy(path, arch.unwrap_or(tilo_app_cli::PackageArch::Aarch64))?;
+    }
+    Ok(
+        json!({"targets": args.target.iter().map(|target| format!("{target:?}")).collect::<Vec<_>>()}),
+    )
+}
+
+/// The `check --platform` stages, appended to `stages`: Clippy for each other
+/// native target, and a web build for `web`.
+fn check_other_platforms(
+    path: &Path,
+    requested: &[CheckPlatformArg],
+    arch: Option<ArchArg>,
+    stages: &mut Vec<Value>,
+) -> Result<()> {
+    for platform in check_platforms(requested) {
+        let (label, result) = if platform == tilo_app_cli::PackagePlatform::Web {
+            println!("[check] web build");
+            (
+                "web build".to_owned(),
+                tilo_app_cli::web::build_web(path, &tilo_app_cli::web::WebBuildRequest::default())
+                    .map(|_| ()),
+            )
+        } else if platform == tilo_app_cli::PackagePlatform::Android {
+            let (_, arch) = platform_and_arch(PlatformArg::Android, arch)?;
+            let arch = arch.unwrap_or(tilo_app_cli::PackageArch::Aarch64);
+            let label = format!("Clippy for android ({})", arch.android_abi());
+            println!("[check] {label}");
+            (label, tilo_app_cli::android::clippy(path, arch))
+        } else {
+            let (_, arch) = platform_and_arch(PlatformArg::Tilo, arch)?;
+            let Some(plan) = tilo_app_cli::plan_platform_clippy(path, platform, arch)? else {
+                continue;
+            };
+            let label = format!("Clippy for {}", platform.cli_name());
+            println!("[check] {label}");
+            (label, plan.execute())
+        };
+        let stage = format!("platform:{}", platform.cli_name());
+        if let Err(error) = result {
+            stages.push(json!({"stage": stage, "passed": false}));
+            return Err(error.context(failed(format!("{label} failed"), json!({"stages": stages}))));
+        }
+        stages.push(json!({"stage": stage, "passed": true}));
+    }
     Ok(())
+}
+
+/// The platforms `check --platform` names, each once, in `ALL` order.
+fn check_platforms(requested: &[CheckPlatformArg]) -> Vec<tilo_app_cli::PackagePlatform> {
+    use tilo_app_cli::PackagePlatform;
+    PackagePlatform::ALL
+        .into_iter()
+        .filter(|platform| {
+            requested.iter().any(|arg| {
+                *arg == CheckPlatformArg::All
+                    || matches!(
+                        (arg, platform),
+                        (CheckPlatformArg::Tilo, PackagePlatform::Tilo)
+                            | (CheckPlatformArg::Linux, PackagePlatform::Linux)
+                            | (CheckPlatformArg::Windows, PackagePlatform::Windows)
+                            | (CheckPlatformArg::Macos, PackagePlatform::Macos)
+                            | (CheckPlatformArg::Web, PackagePlatform::Web)
+                            | (CheckPlatformArg::Android, PackagePlatform::Android)
+                    )
+            })
+        })
+        .collect()
+}
+
+/// A `check` stage: its JSON name, its progress label, and the work.
+type CheckStage<'a> = (&'static str, &'static str, &'a dyn Fn() -> Result<()>);
+
+fn lint_workspace(start: &Path) -> Result<Value> {
+    let apps = tilo_app_cli::portability::workspace_apps(start)?;
+    let mut failures = Vec::new();
+    let mut reports = Vec::new();
+    for app in &apps {
+        let report = tilo_app_cli::portability::lint_app(app)?;
+        reports.push(report.to_json());
+        if report.passed() {
+            continue;
+        }
+        println!(
+            "[check] lint: {} in {}",
+            tilo_app_cli::portability::LINT,
+            app.display()
+        );
+        println!("{}", report.render());
+        failures.push(app.display().to_string());
+    }
+    let summary = json!({"apps": reports});
+    if !failures.is_empty() {
+        return Err(failed(
+            format!(
+                "lint `{}` failed for {} of {} app(s): {}",
+                tilo_app_cli::portability::LINT,
+                failures.len(),
+                apps.len(),
+                failures.join(", ")
+            ),
+            summary,
+        ));
+    }
+    println!(
+        "lint `{}` passed for {} app(s)",
+        tilo_app_cli::portability::LINT,
+        apps.len()
+    );
+    Ok(summary)
 }
 
 fn certify_one(path: &Path) -> Result<()> {
@@ -1083,12 +2326,12 @@ fn certify_one(path: &Path) -> Result<()> {
     clippy::too_many_lines,
     reason = "workspace certification deliberately keeps discovery, one unified build, and execution in one auditable flow"
 )]
-fn run_certify(args: CertifyArgs) -> Result<()> {
+fn run_certify(args: CertifyArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
     if !args.workspace {
         certify_one(&path)?;
         println!("Tilo-native certification passed");
-        return Ok(());
+        return Ok(json!({"certified": [path]}));
     }
 
     let apps = path.join("apps");
@@ -1294,7 +2537,7 @@ fn run_certify(args: CertifyArgs) -> Result<()> {
         }
     }
     println!("Certified {} graphical Tilo applications", app_dirs.len());
-    Ok(())
+    Ok(json!({"certified": app_dirs}))
 }
 
 struct ResponsiveAcceptanceRun {
@@ -1403,28 +2646,34 @@ fn responsive_acceptance_runs(app_root: &Path) -> Vec<ResponsiveAcceptanceRun> {
     ]
 }
 
-fn run_new(args: NewArgs) -> Result<()> {
+fn run_new(args: NewArgs, interactive: bool) -> Result<Value> {
+    if args.list_templates {
+        return Ok(list_templates());
+    }
     let start_dev = args.dev;
     let request = tilo_app_cli::NewAppRequest {
         name: args.name,
         app_id: args.id,
         title: args.title,
-        template: args.template.map(|template| match template {
-            TemplateArg::Starter => tilo_app_cli::Template::Starter,
-            TemplateArg::Data => tilo_app_cli::Template::Data,
-            TemplateArg::List => tilo_app_cli::Template::List,
-            TemplateArg::Tree => tilo_app_cli::Template::Tree,
-            TemplateArg::Graph => tilo_app_cli::Template::Graph,
-            TemplateArg::Async => tilo_app_cli::Template::Async,
-            TemplateArg::Document => tilo_app_cli::Template::Document,
-            TemplateArg::Qr => tilo_app_cli::Template::Qr,
-            TemplateArg::Workspace => tilo_app_cli::Template::Workspace,
-        }),
+        template: args.template.map(TemplateArg::template).transpose()?,
+        example: args
+            .from_example
+            .as_deref()
+            .map(tilo_app_cli::examples::find)
+            .transpose()?,
         directory: args.directory,
         ui_path: args.ui_path,
+        sdk_git: args.sdk_git,
+        sdk_rev: args.sdk_rev,
+        sdk_version: args.sdk_version,
         dry_run: args.dry_run,
     };
-    let outcome = tilo_app_cli::create_app_interactive(request)?;
+    let outcome = if interactive {
+        tilo_app_cli::create_app_interactive(request)?
+    } else {
+        tilo_app_cli::create_app(request)?
+    };
+    let report = outcome.to_json();
     if start_dev {
         println!("{}", outcome.headline());
         println!("\nStarting live development; press Ctrl-C to stop.");
@@ -1433,760 +2682,887 @@ fn run_new(args: NewArgs) -> Result<()> {
             &tilo_app_cli::DevRequest {
                 forwarded: Vec::new(),
                 watch_ui: true,
-                debounce: Duration::from_millis(150),
+                debounce: Duration::from_millis(tilo_app_cli::DEV_DEBOUNCE_MS),
+                timings: false,
             },
-        )
+        )?;
+        Ok(report)
     } else {
         println!("{}", outcome.summary());
-        Ok(())
+        Ok(report)
     }
+}
+
+fn list_templates() -> Value {
+    let templates = tilo_app_cli::templates_json();
+    for template in templates.as_array().into_iter().flatten() {
+        let name = template["name"].as_str().unwrap_or_default();
+        let default = if template["default"] == true {
+            " (default)"
+        } else {
+            ""
+        };
+        println!(
+            "{name:<11} {}{default}",
+            template["description"].as_str().unwrap_or_default()
+        );
+    }
+    println!("\nCreate one with `tilo-app new NAME --template NAME`.");
+    json!({ "templates": templates })
+}
+
+fn list_examples() -> Value {
+    for example in tilo_app_cli::examples::ALL {
+        let web = if example.web { "" } else { " (native only)" };
+        println!("{:<17} {}{web}", example.name, example.concept);
+        println!("{:<17} {}", "", example.summary);
+    }
+    println!(
+        "\nStart an app from one with `tilo-app new NAME --from-example EXAMPLE`; read one in examples/apps/."
+    );
+    json!({ "examples": tilo_app_cli::examples::examples_json() })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// new starts from an example instead of a template, never both, and examples are listed.
     #[test]
-    fn new_exposes_the_sparse_list_template() {
-        let cli = Cli::try_parse_from(["tilo-app", "new", "activity-feed", "--template", "list"])
-            .expect("list template command");
+    fn new_starts_from_an_example_instead_of_a_template() {
+        let cli = Cli::try_parse_from(["tilo-app", "new", "notes", "--from-example", "counter"])
+            .expect("from-example command");
         let Command::New(args) = cli.command else {
             panic!("expected new command");
         };
-        assert!(matches!(args.template, Some(TemplateArg::List)));
+        assert_eq!(args.from_example.as_deref(), Some("counter"));
+        for conflicting in [
+            [
+                "tilo-app",
+                "new",
+                "notes",
+                "--from-example",
+                "counter",
+                "--template",
+                "starter",
+            ]
+            .as_slice(),
+            [
+                "tilo-app",
+                "new",
+                "--list-templates",
+                "--from-example",
+                "counter",
+            ]
+            .as_slice(),
+        ] {
+            assert!(Cli::try_parse_from(conflicting).is_err(), "{conflicting:?}");
+        }
+        let listed = list_examples();
+        assert_eq!(
+            listed["examples"].as_array().map(Vec::len),
+            Some(tilo_app_cli::examples::ALL.len())
+        );
     }
 
+    /// new offers each template by name, points a retired template at the example that replaced
+    /// it, lists templates only on their own, and can enter dev but cannot dev a dry run.
     #[test]
-    fn new_exposes_the_typed_async_template() {
-        let cli = Cli::try_parse_from(["tilo-app", "new", "repo-scan", "--template", "async"])
-            .expect("async template command");
-        let Command::New(args) = cli.command else {
-            panic!("expected new command");
-        };
-        assert!(matches!(args.template, Some(TemplateArg::Async)));
+    fn new_exposes_every_app_template_and_refuses_to_dev_a_dry_run() {
+        // Phase: new_accepts_every_template_by_name.
+        {
+            for template in tilo_app_cli::Template::ALL {
+                let cli = Cli::try_parse_from([
+                    "tilo-app",
+                    "new",
+                    "notes",
+                    "--template",
+                    template.name(),
+                ])
+                .expect("template command");
+                let Command::New(args) = cli.command else {
+                    panic!("expected new command");
+                };
+                let parsed = args.template.expect("a template").template().unwrap();
+                assert_eq!(parsed, template);
+            }
+        }
+
+        // Phase: a_retired_template_names_its_example.
+        {
+            for (retired, example) in [
+                ("list", "virtual-list"),
+                ("data", "data-table"),
+                ("tree", "tree-browser"),
+                ("workspace", "tree-browser"),
+                ("async", "background-task"),
+                ("qr", "qr-code"),
+            ] {
+                let cli = Cli::try_parse_from(["tilo-app", "new", "notes", "--template", retired])
+                    .expect("retired template command still parses");
+                let Command::New(args) = cli.command else {
+                    panic!("expected new command");
+                };
+                let error = args.template.expect("a template").template().unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("--from-example {example}")),
+                    "{error}"
+                );
+            }
+        }
+
+        // Phase: listing_templates_stands_alone.
+        {
+            let cli = Cli::try_parse_from(["tilo-app", "new", "--list-templates"])
+                .expect("list templates command");
+            let Command::New(args) = cli.command else {
+                panic!("expected new command");
+            };
+            assert!(args.list_templates);
+            assert!(Cli::try_parse_from(["tilo-app", "new", "notes", "--list-templates"]).is_err());
+            let listed = list_templates();
+            let names: Vec<_> = listed["templates"]
+                .as_array()
+                .expect("a template list")
+                .iter()
+                .map(|template| template["name"].as_str().expect("a name"))
+                .collect();
+            assert_eq!(names, ["starter", "document", "collection", "graph"]);
+        }
+
+        // Phase: new_can_enter_dev_but_cannot_dev_a_dry_run.
+        {
+            let cli = Cli::try_parse_from(["tilo-app", "new", "notes", "--dev"])
+                .expect("create-and-develop command");
+            let Command::New(args) = cli.command else {
+                panic!("expected new command");
+            };
+            assert!(args.dev);
+            assert!(!args.dry_run);
+
+            assert!(
+                Cli::try_parse_from(["tilo-app", "new", "notes", "--dev", "--dry-run"]).is_err()
+            );
+        }
     }
 
+    /// add commands expose safe repeatable generation options and explicit, scoped component mount
+    /// options, and the reusable list, table and advanced text templates.
     #[test]
-    fn new_exposes_the_durable_document_template() {
-        let cli = Cli::try_parse_from(["tilo-app", "new", "notes", "--template", "document"])
-            .expect("document template command");
-        let Command::New(args) = cli.command else {
-            panic!("expected new command");
-        };
-        assert!(matches!(args.template, Some(TemplateArg::Document)));
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn add_commands_expose_safe_explicit_generation_options_and_templates() {
+        // Phase: add_commands_expose_safe_repeatable_generation_options.
+        {
+            let screen = Cli::try_parse_from([
+                "tilo-app",
+                "add",
+                "screen",
+                "account-settings",
+                "--title",
+                "Account",
+                "--template",
+                "settings",
+                "--link-from",
+                "main",
+                "--app",
+                "apps/demo/src",
+                "--dry-run",
+            ])
+            .expect("screen command");
+            let Command::Add(AddArgs {
+                command:
+                    Some(AddCommand::Screen {
+                        name,
+                        title,
+                        template,
+                        link_from,
+                        options,
+                    }),
+            }) = screen.command
+            else {
+                panic!("expected add screen command");
+            };
+            assert_eq!(name, "account-settings");
+            assert_eq!(title.as_deref(), Some("Account"));
+            assert!(matches!(template, ScreenTemplateArg::Settings));
+            assert_eq!(link_from.as_deref(), Some("main"));
+            assert_eq!(options.app, Some(PathBuf::from("apps/demo/src")));
+            assert!(options.dry_run);
+            assert!(!options.force);
 
-    #[test]
-    fn new_exposes_the_accessible_qr_template() {
-        let cli = Cli::try_parse_from(["tilo-app", "new", "qr-code", "--template", "qr"])
-            .expect("QR template command");
-        let Command::New(args) = cli.command else {
-            panic!("expected new command");
-        };
-        assert!(matches!(args.template, Some(TemplateArg::Qr)));
-    }
+            let component = Cli::try_parse_from([
+                "tilo-app",
+                "add",
+                "component",
+                "profile-card",
+                "--template",
+                "form",
+                "--app",
+                "apps/demo",
+                "--dry-run",
+            ])
+            .expect("component command");
+            let Command::Add(AddArgs {
+                command:
+                    Some(AddCommand::Component {
+                        name,
+                        template,
+                        options,
+                        ..
+                    }),
+            }) = component.command
+            else {
+                panic!("expected add component command");
+            };
+            assert_eq!(name, "profile-card");
+            assert!(matches!(template, ComponentTemplateArg::Form));
+            assert_eq!(options.app, Some(PathBuf::from("apps/demo")));
+            assert!(options.dry_run);
 
-    #[test]
-    fn new_exposes_the_professional_workspace_template() {
-        let cli = Cli::try_parse_from([
-            "tilo-app",
-            "new",
-            "project-studio",
-            "--template",
-            "workspace",
-        ])
-        .expect("workspace template command");
-        let Command::New(args) = cli.command else {
-            panic!("expected new command");
-        };
-        assert!(matches!(args.template, Some(TemplateArg::Workspace)));
-    }
-
-    #[test]
-    fn new_can_enter_dev_but_cannot_dev_a_dry_run() {
-        let cli = Cli::try_parse_from(["tilo-app", "new", "notes", "--dev"])
-            .expect("create-and-develop command");
-        let Command::New(args) = cli.command else {
-            panic!("expected new command");
-        };
-        assert!(args.dev);
-        assert!(!args.dry_run);
-
-        assert!(Cli::try_parse_from(["tilo-app", "new", "notes", "--dev", "--dry-run"]).is_err());
-    }
-
-    #[test]
-    fn add_commands_expose_safe_repeatable_generation_options() {
-        let screen = Cli::try_parse_from([
-            "tilo-app",
-            "add",
-            "screen",
-            "account-settings",
-            "--title",
-            "Account",
-            "--template",
-            "settings",
-            "--link-from",
-            "main",
-            "--app",
-            "apps/demo/src",
-            "--dry-run",
-        ])
-        .expect("screen command");
-        let Command::Add(AddArgs {
-            command:
-                Some(AddCommand::Screen {
-                    name,
-                    title,
-                    template,
-                    link_from,
-                    options,
-                }),
-        }) = screen.command
-        else {
-            panic!("expected add screen command");
-        };
-        assert_eq!(name, "account-settings");
-        assert_eq!(title.as_deref(), Some("Account"));
-        assert!(matches!(template, ScreenTemplateArg::Settings));
-        assert_eq!(link_from.as_deref(), Some("main"));
-        assert_eq!(options.app, Some(PathBuf::from("apps/demo/src")));
-        assert!(options.dry_run);
-        assert!(!options.force);
-
-        let component = Cli::try_parse_from([
-            "tilo-app",
-            "add",
-            "component",
-            "profile-card",
-            "--template",
-            "form",
-            "--app",
-            "apps/demo",
-            "--dry-run",
-        ])
-        .expect("component command");
-        let Command::Add(AddArgs {
-            command:
-                Some(AddCommand::Component {
-                    name,
-                    template,
-                    options,
-                    ..
-                }),
-        }) = component.command
-        else {
-            panic!("expected add component command");
-        };
-        assert_eq!(name, "profile-card");
-        assert!(matches!(template, ComponentTemplateArg::Form));
-        assert_eq!(options.app, Some(PathBuf::from("apps/demo")));
-        assert!(options.dry_run);
-
-        let tree_component = Cli::try_parse_from([
-            "tilo-app",
-            "add",
-            "component",
-            "project-tree",
-            "--template",
-            "tree",
-        ])
-        .expect("tree component command");
-        assert!(matches!(
-            tree_component.command,
-            Command::Add(AddArgs {
-                command: Some(AddCommand::Component {
-                    template: ComponentTemplateArg::Tree,
-                    ..
+            let tree_component = Cli::try_parse_from([
+                "tilo-app",
+                "add",
+                "component",
+                "project-tree",
+                "--template",
+                "tree",
+            ])
+            .expect("tree component command");
+            assert!(matches!(
+                tree_component.command,
+                Command::Add(AddArgs {
+                    command: Some(AddCommand::Component {
+                        template: ComponentTemplateArg::Tree,
+                        ..
+                    })
                 })
-            })
-        ));
+            ));
 
-        let locale = Cli::try_parse_from(["tilo-app", "add", "locale", "de-DE", "--force"])
-            .expect("locale command");
-        let Command::Add(AddArgs {
-            command: Some(AddCommand::Locale { locale, options }),
-        }) = locale.command
-        else {
-            panic!("expected add locale command");
-        };
-        assert_eq!(locale, "de-DE");
-        assert!(options.force);
+            let locale = Cli::try_parse_from(["tilo-app", "add", "locale", "de-DE", "--force"])
+                .expect("locale command");
+            let Command::Add(AddArgs {
+                command: Some(AddCommand::Locale { locale, options }),
+            }) = locale.command
+            else {
+                panic!("expected add locale command");
+            };
+            assert_eq!(locale, "de-DE");
+            assert!(options.force);
 
-        let wizard = Cli::try_parse_from(["tilo-app", "add"]).expect("add wizard command");
-        let Command::Add(AddArgs { command: None }) = wizard.command else {
-            panic!("expected interactive add command");
-        };
-    }
+            let wizard = Cli::try_parse_from(["tilo-app", "add"]).expect("add wizard command");
+            let Command::Add(AddArgs { command: None }) = wizard.command else {
+                panic!("expected interactive add command");
+            };
+        }
 
-    #[test]
-    fn add_component_mount_options_are_explicit_and_scoped() {
-        let mounted = Cli::try_parse_from([
-            "tilo-app",
-            "add",
-            "component",
-            "activity-card",
-            "--mount",
-            "main",
-            "--id",
-            "summary",
-            "--parent",
-            "content",
-            "--index",
-            "1",
-            "--props",
-            r#"{"title":"Recent","detail":"Ready"}"#,
-        ])
-        .expect("mounted component command");
-        assert!(matches!(
-            mounted.command,
-            Command::Add(AddArgs {
-                command: Some(AddCommand::Component {
-                    mount: Some(screen),
-                    id: Some(id),
-                    parent: Some(parent),
-                    index: Some(1),
-                    props: Some(_),
-                    ..
-                })
-            }) if screen == "main" && id == "summary" && parent == "content"
-        ));
-        assert!(
-            Cli::try_parse_from([
+        // Phase: add_component_mount_options_are_explicit_and_scoped.
+        {
+            let mounted = Cli::try_parse_from([
                 "tilo-app",
                 "add",
                 "component",
                 "activity-card",
+                "--mount",
+                "main",
+                "--id",
+                "summary",
                 "--parent",
                 "content",
+                "--index",
+                "1",
+                "--props",
+                r#"{"title":"Recent","detail":"Ready"}"#,
             ])
-            .is_err()
-        );
-    }
+            .expect("mounted component command");
+            assert!(matches!(
+                mounted.command,
+                Command::Add(AddArgs {
+                    command: Some(AddCommand::Component {
+                        mount: Some(screen),
+                        id: Some(id),
+                        parent: Some(parent),
+                        index: Some(1),
+                        props: Some(_),
+                        ..
+                    })
+                }) if screen == "main" && id == "summary" && parent == "content"
+            ));
+            assert!(
+                Cli::try_parse_from([
+                    "tilo-app",
+                    "add",
+                    "component",
+                    "activity-card",
+                    "--parent",
+                    "content",
+                ])
+                .is_err()
+            );
+        }
 
-    #[test]
-    fn add_command_exposes_the_reusable_list_template() {
-        let cli = Cli::try_parse_from([
-            "tilo-app",
-            "add",
-            "component",
-            "activity-list",
-            "--template",
-            "list",
-        ])
-        .expect("list component command");
+        // Phase: add_command_exposes_the_reusable_list_template.
+        {
+            let cli = Cli::try_parse_from([
+                "tilo-app",
+                "add",
+                "component",
+                "activity-list",
+                "--template",
+                "list",
+            ])
+            .expect("list component command");
 
-        assert!(matches!(
-            cli.command,
-            Command::Add(AddArgs {
-                command: Some(AddCommand::Component {
-                    template: ComponentTemplateArg::List,
-                    ..
+            assert!(matches!(
+                cli.command,
+                Command::Add(AddArgs {
+                    command: Some(AddCommand::Component {
+                        template: ComponentTemplateArg::List,
+                        ..
+                    })
                 })
-            })
-        ));
-    }
+            ));
+        }
 
-    #[test]
-    fn add_command_exposes_the_reusable_table_template() {
-        let cli = Cli::try_parse_from([
-            "tilo-app",
-            "add",
-            "component",
-            "results-table",
-            "--template",
-            "table",
-        ])
-        .expect("table component command");
+        // Phase: add_command_exposes_the_reusable_table_template.
+        {
+            let cli = Cli::try_parse_from([
+                "tilo-app",
+                "add",
+                "component",
+                "results-table",
+                "--template",
+                "table",
+            ])
+            .expect("table component command");
 
-        assert!(matches!(
-            cli.command,
-            Command::Add(AddArgs {
-                command: Some(AddCommand::Component {
-                    template: ComponentTemplateArg::Table,
-                    ..
+            assert!(matches!(
+                cli.command,
+                Command::Add(AddArgs {
+                    command: Some(AddCommand::Component {
+                        template: ComponentTemplateArg::Table,
+                        ..
+                    })
                 })
-            })
-        ));
-    }
+            ));
+        }
 
-    #[test]
-    fn add_command_exposes_the_advanced_text_template() {
-        let cli = Cli::try_parse_from([
-            "tilo-app",
-            "add",
-            "component",
-            "article-body",
-            "--template",
-            "text",
-        ])
-        .expect("text component command");
+        // Phase: add_command_exposes_the_advanced_text_template.
+        {
+            let cli = Cli::try_parse_from([
+                "tilo-app",
+                "add",
+                "component",
+                "article-body",
+                "--template",
+                "text",
+            ])
+            .expect("text component command");
 
-        assert!(matches!(
-            cli.command,
-            Command::Add(AddArgs {
-                command: Some(AddCommand::Component {
-                    template: ComponentTemplateArg::Text,
-                    ..
+            assert!(matches!(
+                cli.command,
+                Command::Add(AddArgs {
+                    command: Some(AddCommand::Component {
+                        template: ComponentTemplateArg::Text,
+                        ..
+                    })
                 })
-            })
-        ));
+            ));
+        }
     }
 
+    /// locale sync exposes preservation and explicit repair options; run and test accept a descendant
+    /// path and forwarded arguments; certify accepts one app or a workspace root.
     #[test]
-    fn locale_sync_exposes_preservation_and_explicit_repair_options() {
-        let cli = Cli::try_parse_from([
-            "tilo-app",
-            "locale",
-            "sync",
-            "de-DE",
-            "--prune",
-            "--reset-variables",
-            "--app",
-            "apps/demo/src",
-            "--dry-run",
-        ])
-        .expect("locale sync command");
-        let Command::Locale(LocaleArgs {
-            command:
-                LocaleCommand::Sync {
-                    locale,
-                    prune,
-                    reset_variables,
-                    app,
-                    dry_run,
-                },
-        }) = cli.command
-        else {
-            panic!("expected locale sync command");
-        };
-        assert_eq!(locale.as_deref(), Some("de-DE"));
-        assert!(prune);
-        assert!(reset_variables);
-        assert_eq!(app, Some(PathBuf::from("apps/demo/src")));
-        assert!(dry_run);
-    }
+    fn maintenance_commands_accept_explicit_repairs_and_app_paths() {
+        // Phase: locale_sync_exposes_preservation_and_explicit_repair_options.
+        {
+            let cli = Cli::try_parse_from([
+                "tilo-app",
+                "locale",
+                "sync",
+                "de-DE",
+                "--prune",
+                "--reset-variables",
+                "--app",
+                "apps/demo/src",
+                "--dry-run",
+            ])
+            .expect("locale sync command");
+            let Command::Locale(LocaleArgs {
+                command:
+                    LocaleCommand::Sync {
+                        locale,
+                        prune,
+                        reset_variables,
+                        app,
+                        dry_run,
+                    },
+            }) = cli.command
+            else {
+                panic!("expected locale sync command");
+            };
+            assert_eq!(locale.as_deref(), Some("de-DE"));
+            assert!(prune);
+            assert!(reset_variables);
+            assert_eq!(app, Some(PathBuf::from("apps/demo/src")));
+            assert!(dry_run);
+        }
 
-    #[test]
-    fn run_and_test_accept_a_descendant_path_and_forwarded_arguments() {
-        let run = Cli::try_parse_from([
-            "tilo-app",
-            "run",
-            "apps/demo/src",
-            "--",
-            "--shots",
-            "preview.png",
-        ])
-        .expect("run CLI");
-        let Command::Run(run) = run.command else {
-            panic!("expected run command");
-        };
-        assert_eq!(run.path, Some(PathBuf::from("apps/demo/src")));
-        assert_eq!(
-            run.forwarded,
-            [OsString::from("--shots"), OsString::from("preview.png")]
-        );
+        // Phase: run_and_test_accept_a_descendant_path_and_forwarded_arguments.
+        {
+            let run = Cli::try_parse_from([
+                "tilo-app",
+                "run",
+                "apps/demo/src",
+                "--",
+                "--shots",
+                "preview.png",
+            ])
+            .expect("run CLI");
+            let Command::Run(run) = run.command else {
+                panic!("expected run command");
+            };
+            assert_eq!(run.path, Some(PathBuf::from("apps/demo/src")));
+            assert_eq!(
+                run.forwarded,
+                [OsString::from("--shots"), OsString::from("preview.png")]
+            );
 
-        let test =
-            Cli::try_parse_from(["tilo-app", "test", "--", "--nocapture"]).expect("test CLI");
-        let Command::Test(test) = test.command else {
-            panic!("expected test command");
-        };
-        assert_eq!(test.path, None);
-        assert_eq!(test.forwarded, [OsString::from("--nocapture")]);
-    }
+            let test =
+                Cli::try_parse_from(["tilo-app", "test", "--", "--nocapture"]).expect("test CLI");
+            let Command::Test(test) = test.command else {
+                panic!("expected test command");
+            };
+            assert_eq!(test.path, None);
+            assert_eq!(test.forwarded, [OsString::from("--nocapture")]);
+        }
 
-    #[test]
-    fn certify_accepts_one_app_or_a_workspace_root() {
-        let app = Cli::try_parse_from(["tilo-app", "certify", "apps/demo/src"])
-            .expect("single-app certification CLI");
-        let Command::Certify(app) = app.command else {
-            panic!("expected certify command");
-        };
-        assert_eq!(app.path, Some(PathBuf::from("apps/demo/src")));
-        assert!(!app.workspace);
-        assert!(app.responsive_artifacts.is_none());
+        // Phase: certify_accepts_one_app_or_a_workspace_root.
+        {
+            let app = Cli::try_parse_from(["tilo-app", "certify", "apps/demo/src"])
+                .expect("single-app certification CLI");
+            let Command::Certify(app) = app.command else {
+                panic!("expected certify command");
+            };
+            assert_eq!(app.path, Some(PathBuf::from("apps/demo/src")));
+            assert!(!app.workspace);
+            assert!(app.responsive_artifacts.is_none());
 
-        let workspace = Cli::try_parse_from([
-            "tilo-app",
-            "certify",
-            ".",
-            "--workspace",
-            "--responsive-artifacts",
-            "target/acceptance",
-        ])
-        .expect("workspace certification CLI");
-        let Command::Certify(workspace) = workspace.command else {
-            panic!("expected certify command");
-        };
-        assert_eq!(workspace.path, Some(PathBuf::from(".")));
-        assert!(workspace.workspace);
-        assert_eq!(
-            workspace.responsive_artifacts,
-            Some(PathBuf::from("target/acceptance"))
-        );
-
-        assert!(
-            Cli::try_parse_from([
+            let workspace = Cli::try_parse_from([
                 "tilo-app",
                 "certify",
-                "apps/demo",
+                ".",
+                "--workspace",
                 "--responsive-artifacts",
                 "target/acceptance",
             ])
-            .is_err(),
-            "a fleet artifact request without --workspace is ambiguous"
-        );
+            .expect("workspace certification CLI");
+            let Command::Certify(workspace) = workspace.command else {
+                panic!("expected certify command");
+            };
+            assert_eq!(workspace.path, Some(PathBuf::from(".")));
+            assert!(workspace.workspace);
+            assert_eq!(
+                workspace.responsive_artifacts,
+                Some(PathBuf::from("target/acceptance"))
+            );
+
+            assert!(
+                Cli::try_parse_from([
+                    "tilo-app",
+                    "certify",
+                    "apps/demo",
+                    "--responsive-artifacts",
+                    "target/acceptance",
+                ])
+                .is_err(),
+                "a fleet artifact request without --workspace is ambiguous"
+            );
+        }
     }
 
+    /// Responsive acceptance covers shape, copy, type and contrast, and the PNG gate rejects blank or
+    /// wrong-sized frames.
     #[test]
-    fn responsive_acceptance_covers_shape_copy_type_and_contrast() {
-        let runs = responsive_acceptance_runs(Path::new("/tmp/acceptance/browser"));
-        assert_eq!(
-            runs.iter().map(|run| run.name).collect::<Vec<_>>(),
-            ["default", "expanded-copy", "large-type", "high-contrast"]
-        );
-        assert!(runs.iter().all(|run| {
-            run.args.first() == Some(&OsString::from("--responsive-matrix"))
-                && run
+    fn responsive_acceptance_covers_the_layout_and_rejects_bad_frames() {
+        // Phase: responsive_acceptance_covers_shape_copy_type_and_contrast.
+        {
+            let runs = responsive_acceptance_runs(Path::new("/tmp/acceptance/browser"));
+            assert_eq!(
+                runs.iter().map(|run| run.name).collect::<Vec<_>>(),
+                ["default", "expanded-copy", "large-type", "high-contrast"]
+            );
+            assert!(runs.iter().all(|run| {
+                run.args.first() == Some(&OsString::from("--responsive-matrix"))
+                    && run
+                        .args
+                        .get(1)
+                        .is_some_and(|path| Path::new(path).is_absolute())
+            }));
+            assert!(runs[1].args.contains(&OsString::from("--pseudo-locale")));
+            assert_eq!(runs[1].audit_extra, [OsString::from("--pseudo-locale")]);
+            assert!(
+                runs[2]
                     .args
-                    .get(1)
-                    .is_some_and(|path| Path::new(path).is_absolute())
-        }));
-        assert!(runs[1].args.contains(&OsString::from("--pseudo-locale")));
-        assert_eq!(runs[1].audit_extra, [OsString::from("--pseudo-locale")]);
-        assert!(
-            runs[2]
-                .args
-                .windows(2)
-                .any(|pair| { pair == [OsString::from("--text-scale"), OsString::from("2")] })
-        );
-        assert_eq!(RESPONSIVE_AUDIT_VIEWPORTS[0], ("phone", (390, 844)));
-        assert_eq!(
-            RESPONSIVE_AUDIT_VIEWPORTS.last(),
-            Some(&("desktop", (1920, 1080)))
-        );
-        assert_eq!(runs[3].shot_theme, Some("high-contrast"));
-    }
-
-    #[test]
-    fn responsive_png_gate_rejects_blank_or_wrong_sized_frames() {
-        let dir = tempfile::tempdir().expect("temporary screenshots");
-        let blank_path = dir.path().join("blank-phone.png");
-        image::RgbaImage::from_pixel(100, 80, image::Rgba([12, 13, 15, 255]))
-            .save(&blank_path)
-            .expect("write blank PNG");
-        assert!(validate_responsive_png(&blank_path, (100, 80)).is_err());
-
-        let mut painted = image::RgbaImage::from_pixel(100, 80, image::Rgba([12, 13, 15, 255]));
-        for x in 0..10 {
-            for y in 0..80 {
-                painted.put_pixel(x, y, image::Rgba([240, 240, 240, 255]));
-            }
+                    .windows(2)
+                    .any(|pair| { pair == [OsString::from("--text-scale"), OsString::from("2")] })
+            );
+            assert_eq!(RESPONSIVE_AUDIT_VIEWPORTS[0], ("phone", (390, 844)));
+            assert_eq!(
+                RESPONSIVE_AUDIT_VIEWPORTS.last(),
+                Some(&("desktop", (1920, 1080)))
+            );
+            assert_eq!(runs[3].shot_theme, Some("high-contrast"));
         }
-        let painted_path = dir.path().join("painted-phone.png");
-        painted.save(&painted_path).expect("write painted PNG");
-        validate_responsive_png(&painted_path, (100, 80)).expect("painted frame is useful");
-        assert!(validate_responsive_png(&painted_path, (80, 100)).is_err());
 
-        // A sparse but explicit empty state is useful UI. Even a compact
-        // centred title/action treatment occupies little of a desktop frame.
-        let mut sparse = image::RgbaImage::from_pixel(100, 100, image::Rgba([12, 13, 15, 255]));
-        for x in 47..53 {
-            for y in 47..53 {
-                sparse.put_pixel(x, y, image::Rgba([240, 240, 240, 255]));
+        // Phase: responsive_png_gate_rejects_blank_or_wrong_sized_frames.
+        {
+            let dir = tempfile::tempdir().expect("temporary screenshots");
+            let blank_path = dir.path().join("blank-phone.png");
+            image::RgbaImage::from_pixel(100, 80, image::Rgba([12, 13, 15, 255]))
+                .save(&blank_path)
+                .expect("write blank PNG");
+            assert!(validate_responsive_png(&blank_path, (100, 80)).is_err());
+
+            let mut painted = image::RgbaImage::from_pixel(100, 80, image::Rgba([12, 13, 15, 255]));
+            for x in 0..10 {
+                for y in 0..80 {
+                    painted.put_pixel(x, y, image::Rgba([240, 240, 240, 255]));
+                }
             }
+            let painted_path = dir.path().join("painted-phone.png");
+            painted.save(&painted_path).expect("write painted PNG");
+            validate_responsive_png(&painted_path, (100, 80)).expect("painted frame is useful");
+            assert!(validate_responsive_png(&painted_path, (80, 100)).is_err());
+
+            // A sparse but explicit empty state is useful UI. Even a compact
+            // centred title/action treatment occupies little of a desktop frame.
+            let mut sparse = image::RgbaImage::from_pixel(100, 100, image::Rgba([12, 13, 15, 255]));
+            for x in 47..53 {
+                for y in 47..53 {
+                    sparse.put_pixel(x, y, image::Rgba([240, 240, 240, 255]));
+                }
+            }
+            let sparse_path = dir.path().join("sparse-empty-state.png");
+            sparse.save(&sparse_path).expect("write sparse PNG");
+            validate_responsive_png(&sparse_path, (100, 100))
+                .expect("explicit sparse empty state is useful");
+
+            let mut near_blank =
+                image::RgbaImage::from_pixel(100, 100, image::Rgba([12, 13, 15, 255]));
+            near_blank.put_pixel(50, 50, image::Rgba([240, 240, 240, 255]));
+            let near_blank_path = dir.path().join("near-blank.png");
+            near_blank
+                .save(&near_blank_path)
+                .expect("write near-blank PNG");
+            assert!(validate_responsive_png(&near_blank_path, (100, 100)).is_err());
         }
-        let sparse_path = dir.path().join("sparse-empty-state.png");
-        sparse.save(&sparse_path).expect("write sparse PNG");
-        validate_responsive_png(&sparse_path, (100, 100))
-            .expect("explicit sparse empty state is useful");
-
-        let mut near_blank = image::RgbaImage::from_pixel(100, 100, image::Rgba([12, 13, 15, 255]));
-        near_blank.put_pixel(50, 50, image::Rgba([240, 240, 240, 255]));
-        let near_blank_path = dir.path().join("near-blank.png");
-        near_blank
-            .save(&near_blank_path)
-            .expect("write near-blank PNG");
-        assert!(validate_responsive_png(&near_blank_path, (100, 100)).is_err());
     }
 
+    /// shot and inspect expose direct artifact workflows; scenario run selects a case and viewport;
+    /// check composes tests, audited scenarios and artifacts; dev exposes a bounded restart loop; package
+    /// exposes reproducible build and signing options.
     #[test]
-    fn shot_and_inspect_expose_direct_artifact_workflows() {
-        let shot = Cli::try_parse_from([
-            "tilo-app",
-            "shot",
-            "apps/demo/src",
-            "--output",
-            "dark.png",
-            "--viewport",
-            "1440x900",
-            "--scenario",
-            "populated",
-            "--",
-            "--theme",
-            "dark",
-        ])
-        .expect("shot CLI");
-        let Command::Shot(shot) = shot.command else {
-            panic!("expected shot command");
-        };
-        assert_eq!(shot.path, Some(PathBuf::from("apps/demo/src")));
-        assert_eq!(shot.output, PathBuf::from("dark.png"));
-        assert_eq!(shot.viewport, Some((1440, 900)));
-        assert_eq!(shot.scenario.as_deref(), Some("populated"));
-        assert_eq!(
-            shot.forwarded,
-            [OsString::from("--theme"), OsString::from("dark")]
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn workflow_commands_expose_bounded_reproducible_options() {
+        // Phase: shot_and_inspect_expose_direct_artifact_workflows.
+        {
+            let shot = Cli::try_parse_from([
+                "tilo-app",
+                "shot",
+                "apps/demo/src",
+                "--output",
+                "dark.png",
+                "--viewport",
+                "1440x900",
+                "--scenario",
+                "populated",
+                "--",
+                "--theme",
+                "dark",
+            ])
+            .expect("shot CLI");
+            let Command::Shot(shot) = shot.command else {
+                panic!("expected shot command");
+            };
+            assert_eq!(shot.path, Some(PathBuf::from("apps/demo/src")));
+            assert_eq!(shot.output, PathBuf::from("dark.png"));
+            assert_eq!(shot.viewport, Some((1440, 900)));
+            assert_eq!(shot.scenario.as_deref(), Some("populated"));
+            assert_eq!(
+                shot.forwarded,
+                [OsString::from("--theme"), OsString::from("dark")]
+            );
 
-        let inspect = Cli::try_parse_from([
-            "tilo-app",
-            "inspect",
-            "apps/demo/src/lib.rs",
-            "--viewport",
-            "1280X800",
-            "--actions",
-            "actions.json",
-            "--dump",
-            "state.json",
-            "--targets",
-            "targets.json",
-            "--audit",
-            "--audit-report",
-            "audit.json",
-        ])
-        .expect("inspect CLI");
-        let Command::Inspect(inspect) = inspect.command else {
-            panic!("expected inspect command");
-        };
-        assert_eq!(inspect.viewport, Some((1280, 800)));
-        assert_eq!(inspect.output, PathBuf::from("inspect.json"));
-        assert_eq!(inspect.actions, Some(PathBuf::from("actions.json")));
-        assert_eq!(inspect.dump, Some(PathBuf::from("state.json")));
-        assert_eq!(inspect.targets, Some(PathBuf::from("targets.json")));
-        assert!(inspect.audit);
-        assert_eq!(inspect.audit_report, Some(PathBuf::from("audit.json")));
+            let inspect = Cli::try_parse_from([
+                "tilo-app",
+                "inspect",
+                "apps/demo/src/lib.rs",
+                "--viewport",
+                "1280X800",
+                "--actions",
+                "actions.json",
+                "--dump",
+                "state.json",
+                "--targets",
+                "targets.json",
+                "--audit",
+                "--audit-report",
+                "audit.json",
+            ])
+            .expect("inspect CLI");
+            let Command::Inspect(inspect) = inspect.command else {
+                panic!("expected inspect command");
+            };
+            assert_eq!(inspect.viewport, Some((1280, 800)));
+            assert_eq!(inspect.output, PathBuf::from("inspect.json"));
+            assert_eq!(inspect.actions, Some(PathBuf::from("actions.json")));
+            assert_eq!(inspect.dump, Some(PathBuf::from("state.json")));
+            assert_eq!(inspect.targets, Some(PathBuf::from("targets.json")));
+            assert!(inspect.audit);
+            assert_eq!(inspect.audit_report, Some(PathBuf::from("audit.json")));
 
-        assert!(Cli::try_parse_from(["tilo-app", "inspect", "--viewport", "1280x0"]).is_err());
+            assert!(Cli::try_parse_from(["tilo-app", "inspect", "--viewport", "1280x0"]).is_err());
+        }
+
+        // Phase: scenario_run_selects_a_case_and_viewport.
+        {
+            let cli = Cli::try_parse_from([
+                "tilo-app",
+                "scenario",
+                "run",
+                "empty-state",
+                "--viewport",
+                "1024x768",
+                "--app",
+                "apps/demo/src",
+                "--artifacts",
+                "target/scenarios",
+                "--audit",
+            ])
+            .expect("scenario CLI");
+            let Command::Scenario(ScenarioArgs {
+                command:
+                    ScenarioCommand::Run {
+                        name,
+                        app,
+                        viewport,
+                        artifacts,
+                        audit,
+                    },
+            }) = cli.command
+            else {
+                panic!("expected scenario run command");
+            };
+            assert_eq!(name.as_deref(), Some("empty-state"));
+            assert_eq!(app, Some(PathBuf::from("apps/demo/src")));
+            assert_eq!(viewport, Some((1024, 768)));
+            assert_eq!(artifacts, Some(PathBuf::from("target/scenarios")));
+            assert!(audit);
+        }
+
+        // Phase: check_composes_tests_audited_scenarios_and_artifacts.
+        {
+            let cli = Cli::try_parse_from([
+                "tilo-app",
+                "check",
+                "apps/demo/src",
+                "--viewport",
+                "1280x720",
+                "--artifacts",
+                "target/check",
+                "--fix",
+                "--",
+                "--nocapture",
+            ])
+            .expect("check CLI");
+            let Command::Check(args) = cli.command else {
+                panic!("expected check command");
+            };
+            assert_eq!(args.path, Some(PathBuf::from("apps/demo/src")));
+            assert_eq!(args.viewport, Some((1280, 720)));
+            assert_eq!(args.artifacts, Some(PathBuf::from("target/check")));
+            assert!(!args.no_scenarios);
+            assert!(args.fix);
+            assert_eq!(args.forwarded, [OsString::from("--nocapture")]);
+        }
+
+        // Phase: dev_exposes_a_bounded_restart_loop.
+        {
+            let cli = Cli::try_parse_from([
+                "tilo-app",
+                "dev",
+                "apps/demo/src",
+                "--debounce-ms",
+                "75",
+                "--app-only",
+                "--",
+                "--document",
+                "sample.qdoc",
+            ])
+            .expect("dev CLI");
+            let Command::Dev(dev) = cli.command else {
+                panic!("expected dev command");
+            };
+            assert_eq!(dev.path, Some(PathBuf::from("apps/demo/src")));
+            assert_eq!(dev.debounce_ms.get(), 75);
+            assert!(dev.app_only);
+            assert_eq!(
+                dev.forwarded,
+                [OsString::from("--document"), OsString::from("sample.qdoc")]
+            );
+            assert!(Cli::try_parse_from(["tilo-app", "dev", "--debounce-ms", "0"]).is_err());
+        }
+
+        // Phase: every_build_command_takes_platform_and_arch.
+        {
+            let build = Cli::try_parse_from(["tilo-app", "build"]).expect("build CLI");
+            let Command::Build(build) = build.command else {
+                panic!("expected build command");
+            };
+            assert!(build.target.is_none());
+            assert!(build.platform.platform.is_none());
+            assert!(build.platform.arch.is_none());
+            for command in ["run", "dev", "build"] {
+                let cli = Cli::try_parse_from([
+                    "tilo-app",
+                    command,
+                    "--platform",
+                    "linux",
+                    "--arch",
+                    "aarch64",
+                ])
+                .unwrap_or_else(|error| panic!("{command}: {error}"));
+                let platform = match cli.command {
+                    Command::Run(args) => args.platform,
+                    Command::Dev(args) => args.platform,
+                    Command::Build(args) => args.platform,
+                    _ => panic!("expected {command}"),
+                };
+                assert!(matches!(platform.platform, Some(PlatformArg::Linux)));
+                assert!(matches!(platform.arch, Some(ArchArg::Aarch64)));
+            }
+            for command in ["run", "build"] {
+                assert!(
+                    Cli::try_parse_from([
+                        "tilo-app",
+                        command,
+                        "--target",
+                        "linux",
+                        "--platform",
+                        "linux"
+                    ])
+                    .is_err(),
+                    "{command}: --target and --platform name the same thing"
+                );
+            }
+            let check = Cli::try_parse_from([
+                "tilo-app",
+                "check",
+                "--platform",
+                "windows",
+                "--platform",
+                "web",
+                "--arch",
+                "x86_64",
+            ])
+            .expect("check CLI");
+            let Command::Check(check) = check.command else {
+                panic!("expected check command");
+            };
+            assert_eq!(
+                check_platforms(&check.platforms),
+                [
+                    tilo_app_cli::PackagePlatform::Windows,
+                    tilo_app_cli::PackagePlatform::Web
+                ]
+            );
+            assert_eq!(
+                check_platforms(&[CheckPlatformArg::Web, CheckPlatformArg::All]),
+                tilo_app_cli::PackagePlatform::ALL
+            );
+            assert!(check_platforms(&[]).is_empty());
+        }
+
+        // Phase: package_exposes_reproducible_build_and_signing_options.
+        {
+            let cli = Cli::try_parse_from([
+                "tilo-app",
+                "package",
+                "apps/demo/src",
+                "--output",
+                "dist/demo-dev.tapp",
+                "--identity",
+                "publisher.json",
+                "--profile",
+                "distribution",
+                "--target",
+                "x86_64-unknown-linux-gnu",
+                "--features",
+                "sqlite,telemetry",
+                "--no-default-features",
+                "--force",
+            ])
+            .expect("package CLI");
+            let Command::Package(package) = cli.command else {
+                panic!("expected package command");
+            };
+            assert_eq!(package.path, Some(PathBuf::from("apps/demo/src")));
+            assert_eq!(package.output, Some(PathBuf::from("dist/demo-dev.tapp")));
+            assert_eq!(package.identity, Some(PathBuf::from("publisher.json")));
+            assert_eq!(package.profile, Some("distribution".into()));
+            assert_eq!(package.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
+            assert_eq!(package.features, ["sqlite", "telemetry"]);
+            assert!(package.no_default_features);
+            assert!(package.force);
+
+            let defaults = Cli::try_parse_from(["tilo-app", "package"]).expect("package defaults");
+            let Command::Package(defaults) = defaults.command else {
+                panic!("expected package command");
+            };
+            assert_eq!(defaults.profile, None);
+            assert!(!defaults.static_link);
+            assert!(!defaults.force);
+        }
     }
 
+    /// UI builder commands require unambiguous node sources; ui set accepts one typed property edit;
+    /// ui apply reads and publishes one complete batch.
     #[test]
-    fn scenario_run_selects_a_case_and_viewport() {
-        let cli = Cli::try_parse_from([
-            "tilo-app",
-            "scenario",
-            "run",
-            "empty-state",
-            "--viewport",
-            "1024x768",
-            "--app",
-            "apps/demo/src",
-            "--artifacts",
-            "target/scenarios",
-            "--audit",
-        ])
-        .expect("scenario CLI");
-        let Command::Scenario(ScenarioArgs {
-            command:
-                ScenarioCommand::Run {
-                    name,
-                    app,
-                    viewport,
-                    artifacts,
-                    audit,
-                },
-        }) = cli.command
-        else {
-            panic!("expected scenario run command");
-        };
-        assert_eq!(name.as_deref(), Some("empty-state"));
-        assert_eq!(app, Some(PathBuf::from("apps/demo/src")));
-        assert_eq!(viewport, Some((1024, 768)));
-        assert_eq!(artifacts, Some(PathBuf::from("target/scenarios")));
-        assert!(audit);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn ui_builder_commands_take_unambiguous_sources_and_whole_edits() {
+        // Phase: ui_builder_commands_require_unambiguous_node_sources.
+        {
+            let edit = Cli::try_parse_from([
+                "tilo-app",
+                "ui",
+                "edit",
+                "ui/main.json",
+                "--builder",
+                "/opt/tilo-ui-builder",
+            ])
+            .expect("UI edit command");
+            let Command::Ui(UiArgs {
+                command: UiCommand::Edit { file, builder },
+            }) = edit.command
+            else {
+                panic!("expected UI edit command");
+            };
+            assert_eq!(file, PathBuf::from("ui/main.json"));
+            assert_eq!(builder, Some(OsString::from("/opt/tilo-ui-builder")));
 
-    #[test]
-    fn check_composes_tests_audited_scenarios_and_artifacts() {
-        let cli = Cli::try_parse_from([
-            "tilo-app",
-            "check",
-            "apps/demo/src",
-            "--viewport",
-            "1280x720",
-            "--artifacts",
-            "target/check",
-            "--fix",
-            "--",
-            "--nocapture",
-        ])
-        .expect("check CLI");
-        let Command::Check(args) = cli.command else {
-            panic!("expected check command");
-        };
-        assert_eq!(args.path, Some(PathBuf::from("apps/demo/src")));
-        assert_eq!(args.viewport, Some((1280, 720)));
-        assert_eq!(args.artifacts, Some(PathBuf::from("target/check")));
-        assert!(!args.no_scenarios);
-        assert!(args.fix);
-        assert_eq!(args.forwarded, [OsString::from("--nocapture")]);
-    }
-
-    #[test]
-    fn dev_exposes_a_bounded_restart_loop() {
-        let cli = Cli::try_parse_from([
-            "tilo-app",
-            "dev",
-            "apps/demo/src",
-            "--debounce-ms",
-            "75",
-            "--app-only",
-            "--",
-            "--document",
-            "sample.qdoc",
-        ])
-        .expect("dev CLI");
-        let Command::Dev(dev) = cli.command else {
-            panic!("expected dev command");
-        };
-        assert_eq!(dev.path, Some(PathBuf::from("apps/demo/src")));
-        assert_eq!(dev.debounce_ms.get(), 75);
-        assert!(dev.app_only);
-        assert_eq!(
-            dev.forwarded,
-            [OsString::from("--document"), OsString::from("sample.qdoc")]
-        );
-        assert!(Cli::try_parse_from(["tilo-app", "dev", "--debounce-ms", "0"]).is_err());
-    }
-
-    #[test]
-    fn package_exposes_reproducible_build_and_signing_options() {
-        let cli = Cli::try_parse_from([
-            "tilo-app",
-            "package",
-            "apps/demo/src",
-            "--output",
-            "dist/demo-dev.tapp",
-            "--identity",
-            "publisher.json",
-            "--profile",
-            "distribution",
-            "--target",
-            "x86_64-unknown-linux-gnu",
-            "--features",
-            "sqlite,telemetry",
-            "--no-default-features",
-            "--force",
-        ])
-        .expect("package CLI");
-        let Command::Package(package) = cli.command else {
-            panic!("expected package command");
-        };
-        assert_eq!(package.path, Some(PathBuf::from("apps/demo/src")));
-        assert_eq!(package.output, Some(PathBuf::from("dist/demo-dev.tapp")));
-        assert_eq!(package.identity, Some(PathBuf::from("publisher.json")));
-        assert_eq!(package.profile, "distribution");
-        assert_eq!(package.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
-        assert_eq!(package.features, ["sqlite", "telemetry"]);
-        assert!(package.no_default_features);
-        assert!(package.force);
-
-        let defaults = Cli::try_parse_from(["tilo-app", "package"]).expect("package defaults");
-        let Command::Package(defaults) = defaults.command else {
-            panic!("expected package command");
-        };
-        assert_eq!(defaults.profile, "release");
-        assert!(!defaults.force);
-    }
-
-    #[test]
-    fn ui_builder_commands_require_unambiguous_node_sources() {
-        let edit = Cli::try_parse_from([
-            "tilo-app",
-            "ui",
-            "edit",
-            "ui/main.json",
-            "--builder",
-            "/opt/tilo-ui-builder",
-        ])
-        .expect("UI edit command");
-        let Command::Ui(UiArgs {
-            command: UiCommand::Edit { file, builder },
-        }) = edit.command
-        else {
-            panic!("expected UI edit command");
-        };
-        assert_eq!(file, PathBuf::from("ui/main.json"));
-        assert_eq!(builder, Some(OsString::from("/opt/tilo-ui-builder")));
-
-        let insert = Cli::try_parse_from([
-            "tilo-app",
-            "ui",
-            "insert",
-            "ui/main.json",
-            "--parent",
-            "root",
-            "--index",
-            "2",
-            "--node",
-            r#"{"type":"spacer","id":"gap"}"#,
-        ])
-        .expect("UI insert command");
-        let Command::Ui(UiArgs {
-            command:
-                UiCommand::Insert {
-                    parent,
-                    index,
-                    source,
-                    ..
-                },
-        }) = insert.command
-        else {
-            panic!("expected UI insert command");
-        };
-        assert_eq!(parent, "root");
-        assert_eq!(index, 2);
-        assert!(source.node.is_some());
-        assert!(source.node_file.is_none());
-
-        let component = Cli::try_parse_from([
-            "tilo-app",
-            "ui",
-            "component",
-            "ui/main.json",
-            "profile-card",
-            "--props",
-            r#"{"title":"Ada","detail":"Owner"}"#,
-        ])
-        .expect("UI component command");
-        let Command::Ui(UiArgs {
-            command:
-                UiCommand::Component {
-                    file,
-                    name,
-                    id,
-                    parent,
-                    index,
-                    props,
-                },
-        }) = component.command
-        else {
-            panic!("expected UI component command");
-        };
-        assert_eq!(file, PathBuf::from("ui/main.json"));
-        assert_eq!(name, "profile-card");
-        assert_eq!(id, None);
-        assert_eq!(parent, "root");
-        assert_eq!(index, None);
-        assert!(props.contains("Ada"));
-
-        assert!(
-            Cli::try_parse_from(["tilo-app", "ui", "replace", "ui/main.json", "--id", "body",])
-                .is_err()
-        );
-        assert!(
-            Cli::try_parse_from([
+            let insert = Cli::try_parse_from([
                 "tilo-app",
                 "ui",
                 "insert",
@@ -2194,59 +3570,85 @@ mod tests {
                 "--parent",
                 "root",
                 "--index",
-                "0",
+                "2",
                 "--node",
-                r#"{"type":"spacer","id":"a"}"#,
-                "--node-file",
-                "node.json",
+                r#"{"type":"spacer","id":"gap"}"#,
             ])
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn ui_set_accepts_one_typed_property_edit() {
-        let set = Cli::try_parse_from([
-            "tilo-app",
-            "ui",
-            "set",
-            "ui/main.json",
-            "--id",
-            "title",
-            "--property",
-            "text.value",
-            "--value",
-            "Recent projects",
-        ])
-        .expect("UI property command");
-        assert!(matches!(
-            set.command,
-            Command::Ui(UiArgs {
-                command: UiCommand::Set {
-                    edit: PropertyEditArgs {
-                        value: Some(_),
-                        unset: false,
+            .expect("UI insert command");
+            let Command::Ui(UiArgs {
+                command:
+                    UiCommand::Insert {
+                        parent,
+                        index,
+                        source,
+                        ..
                     },
-                    ..
-                }
-            })
-        ));
+            }) = insert.command
+            else {
+                panic!("expected UI insert command");
+            };
+            assert_eq!(parent, "root");
+            assert_eq!(index, 2);
+            assert!(source.node.is_some());
+            assert!(source.node_file.is_none());
 
-        assert!(
-            Cli::try_parse_from([
+            let component = Cli::try_parse_from([
                 "tilo-app",
                 "ui",
-                "set",
+                "component",
                 "ui/main.json",
-                "--id",
-                "title",
-                "--property",
-                "size",
+                "profile-card",
+                "--props",
+                r#"{"title":"Ada","detail":"Owner"}"#,
             ])
-            .is_err()
-        );
-        assert!(
-            Cli::try_parse_from([
+            .expect("UI component command");
+            let Command::Ui(UiArgs {
+                command:
+                    UiCommand::Component {
+                        file,
+                        name,
+                        id,
+                        parent,
+                        index,
+                        props,
+                    },
+            }) = component.command
+            else {
+                panic!("expected UI component command");
+            };
+            assert_eq!(file, PathBuf::from("ui/main.json"));
+            assert_eq!(name, "profile-card");
+            assert_eq!(id, None);
+            assert_eq!(parent, "root");
+            assert_eq!(index, None);
+            assert!(props.contains("Ada"));
+
+            assert!(
+                Cli::try_parse_from(["tilo-app", "ui", "replace", "ui/main.json", "--id", "body",])
+                    .is_err()
+            );
+            assert!(
+                Cli::try_parse_from([
+                    "tilo-app",
+                    "ui",
+                    "insert",
+                    "ui/main.json",
+                    "--parent",
+                    "root",
+                    "--index",
+                    "0",
+                    "--node",
+                    r#"{"type":"spacer","id":"a"}"#,
+                    "--node-file",
+                    "node.json",
+                ])
+                .is_err()
+            );
+        }
+
+        // Phase: ui_set_accepts_one_typed_property_edit.
+        {
+            let set = Cli::try_parse_from([
                 "tilo-app",
                 "ui",
                 "set",
@@ -2254,64 +3656,236 @@ mod tests {
                 "--id",
                 "title",
                 "--property",
-                "size",
+                "text.value",
                 "--value",
-                "24",
-                "--unset",
+                "Recent projects",
             ])
-            .is_err()
-        );
-        assert_eq!(
-            parse_ui_property_value("true".into()),
-            serde_json::json!(true)
-        );
-        assert_eq!(parse_ui_property_value("24".into()), serde_json::json!(24));
-        assert_eq!(
-            parse_ui_property_value("Recent projects".into()),
-            serde_json::json!("Recent projects")
-        );
+            .expect("UI property command");
+            assert!(matches!(
+                set.command,
+                Command::Ui(UiArgs {
+                    command: UiCommand::Set {
+                        edit: PropertyEditArgs {
+                            value: Some(_),
+                            unset: false,
+                        },
+                        ..
+                    }
+                })
+            ));
 
-        let apply =
-            Cli::try_parse_from(["tilo-app", "ui", "apply", "ui/main.json", "ui/edits.json"])
-                .expect("UI batch command");
-        assert!(matches!(
-            apply.command,
-            Command::Ui(UiArgs {
-                command: UiCommand::Apply { file, edits }
-            }) if file.as_path() == std::path::Path::new("ui/main.json")
-                && edits.as_path() == std::path::Path::new("ui/edits.json")
-        ));
+            assert!(
+                Cli::try_parse_from([
+                    "tilo-app",
+                    "ui",
+                    "set",
+                    "ui/main.json",
+                    "--id",
+                    "title",
+                    "--property",
+                    "size",
+                ])
+                .is_err()
+            );
+            assert!(
+                Cli::try_parse_from([
+                    "tilo-app",
+                    "ui",
+                    "set",
+                    "ui/main.json",
+                    "--id",
+                    "title",
+                    "--property",
+                    "size",
+                    "--value",
+                    "24",
+                    "--unset",
+                ])
+                .is_err()
+            );
+            assert_eq!(
+                parse_ui_property_value("true".into()),
+                serde_json::json!(true)
+            );
+            assert_eq!(parse_ui_property_value("24".into()), serde_json::json!(24));
+            assert_eq!(
+                parse_ui_property_value("Recent projects".into()),
+                serde_json::json!("Recent projects")
+            );
+
+            let apply =
+                Cli::try_parse_from(["tilo-app", "ui", "apply", "ui/main.json", "ui/edits.json"])
+                    .expect("UI batch command");
+            assert!(matches!(
+                apply.command,
+                Command::Ui(UiArgs {
+                    command: UiCommand::Apply { file, edits }
+                }) if file.as_path() == std::path::Path::new("ui/main.json")
+                    && edits.as_path() == std::path::Path::new("ui/edits.json")
+            ));
+        }
+
+        // Phase: ui_apply_reads_and_publishes_one_complete_batch.
+        {
+            let temp = tempfile::tempdir().expect("temp dir");
+            let graph = temp.path().join("main.json");
+            let edits = temp.path().join("edits.json");
+            tilo_app_cli::init_ui_graph(&graph, "Projects", false).unwrap();
+            std::fs::write(
+                &edits,
+                r#"[
+                  {"op":"set-property","id":"title","property":"text.value","value":"Recent projects"},
+                  {"op":"insert","parent":"root","index":2,"node":{"type":"button","id":"open","label":"Open"}}
+                ]"#,
+            )
+            .unwrap();
+
+            run_ui(UiArgs {
+                command: UiCommand::Apply {
+                    file: graph.clone(),
+                    edits,
+                },
+            })
+            .expect("apply batch through CLI handler");
+
+            let document = tilo_app_cli::load_ui_graph(&graph).unwrap();
+            assert!(document.node("open").is_some());
+            assert!(
+                std::fs::read_to_string(graph)
+                    .unwrap()
+                    .contains("Recent projects")
+            );
+        }
     }
 
+    /// `--target android` is the `--platform android` build, beside the SDK's
+    /// linux, macos and web targets, and names one build with `--platform`.
     #[test]
-    fn ui_apply_reads_and_publishes_one_complete_batch() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let graph = temp.path().join("main.json");
-        let edits = temp.path().join("edits.json");
-        tilo_app_cli::init_ui_graph(&graph, "Projects", false).unwrap();
-        std::fs::write(
-            &edits,
-            r#"[
-              {"op":"set-property","id":"title","property":"text.value","value":"Recent projects"},
-              {"op":"insert","parent":"root","index":2,"node":{"type":"button","id":"open","label":"Open"}}
-            ]"#,
-        )
-        .unwrap();
+    fn android_is_a_target_that_names_the_platform_build() {
+        use tilo_app_cli::PackagePlatform;
 
-        run_ui(UiArgs {
-            command: UiCommand::Apply {
-                file: graph.clone(),
-                edits,
-            },
-        })
-        .expect("apply batch through CLI handler");
-
-        let document = tilo_app_cli::load_ui_graph(&graph).unwrap();
-        assert!(document.node("open").is_some());
-        assert!(
-            std::fs::read_to_string(graph)
-                .unwrap()
-                .contains("Recent projects")
+        let build = Cli::try_parse_from(["tilo-app", "build", "--target", "android"])
+            .expect("build --target android");
+        let Command::Build(build) = build.command else {
+            panic!("expected build command");
+        };
+        assert!(build.target.and_then(TargetArg::sdk).is_none());
+        assert_eq!(
+            build.platform.or_target(build.target).resolve().unwrap(),
+            (PackagePlatform::Android, None)
         );
+        assert!(
+            Cli::try_parse_from([
+                "tilo-app",
+                "run",
+                "--target",
+                "android",
+                "--platform",
+                "web"
+            ])
+            .is_err(),
+            "--target and --platform name one build"
+        );
+    }
+
+    /// Android is one more `--platform`: build, run, dev, package and check
+    /// take it, with a device for run and dev, signing and bundle options for
+    /// package, and doctor and setup for its toolchain.
+    #[test]
+    fn android_is_a_platform_of_every_command_and_of_the_toolchain_commands() {
+        use tilo_app_cli::{PackageArch, PackagePlatform};
+
+        let run = Cli::try_parse_from([
+            "tilo-app",
+            "run",
+            "--platform",
+            "android",
+            "--device",
+            "emulator-5554",
+        ])
+        .expect("run --platform android");
+        let Command::Run(run) = run.command else {
+            panic!("expected run command");
+        };
+        assert_eq!(
+            run.platform.resolve().unwrap(),
+            (PackagePlatform::Android, None)
+        );
+        assert_eq!(run.device.as_deref(), Some("emulator-5554"));
+
+        let dev = Cli::try_parse_from([
+            "tilo-app",
+            "dev",
+            "--platform",
+            "android",
+            "--arch",
+            "x86_64",
+            "--device",
+            "R5CT",
+        ])
+        .expect("dev --platform android");
+        let Command::Dev(dev) = dev.command else {
+            panic!("expected dev command");
+        };
+        assert_eq!(
+            dev.platform.resolve().unwrap(),
+            (PackagePlatform::Android, Some(PackageArch::X86_64))
+        );
+        assert_eq!(dev.device.as_deref(), Some("R5CT"));
+
+        let build = Cli::try_parse_from(["tilo-app", "build", "--platform", "android"])
+            .expect("build --platform android");
+        let Command::Build(build) = build.command else {
+            panic!("expected build command");
+        };
+        assert_eq!(
+            build.platform.resolve().unwrap(),
+            (PackagePlatform::Android, None)
+        );
+        assert!(
+            platform_and_arch(PlatformArg::Android, Some(ArchArg::Wasm32)).is_err(),
+            "wasm32 is the web's architecture, not Android's"
+        );
+
+        let package = Cli::try_parse_from([
+            "tilo-app",
+            "package",
+            "--platform",
+            "android",
+            "--keystore",
+            "release.keystore",
+            "--no-bundle",
+        ])
+        .expect("package --platform android");
+        let Command::Package(package) = package.command else {
+            panic!("expected package command");
+        };
+        assert!(matches!(package.platform, PlatformArg::Android));
+        assert_eq!(
+            package.android.keystore,
+            Some(PathBuf::from("release.keystore"))
+        );
+        assert!(package.android.no_bundle);
+
+        let doctor = Cli::try_parse_from(["tilo-app", "doctor", "--platform", "android"])
+            .expect("doctor --platform android");
+        let Command::Doctor(doctor) = doctor.command else {
+            panic!("expected doctor command");
+        };
+        assert!(matches!(doctor.platform, Some(ToolchainArg::Android)));
+
+        let setup = Cli::try_parse_from(["tilo-app", "setup", "android", "--accept-licenses"])
+            .expect("setup android");
+        let Command::Setup(setup) = setup.command else {
+            panic!("expected setup command");
+        };
+        assert!(matches!(setup.platform, ToolchainArg::Android));
+        assert!(setup.accept_licenses);
+
+        assert_eq!(
+            check_platforms(&[CheckPlatformArg::Android]),
+            [PackagePlatform::Android]
+        );
+        assert!(check_platforms(&[CheckPlatformArg::All]).contains(&PackagePlatform::Android));
     }
 }

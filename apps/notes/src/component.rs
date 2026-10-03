@@ -14,6 +14,7 @@ static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
         record_kind: RecordKind::new("notes.notebook"),
         required: vec![],
         optional: vec![],
+        opens: &[],
         create: |context, target, restore| create_component(context, &target, &restore),
     });
 pub fn definition() -> &'static ApplicationDefinition {
@@ -27,13 +28,25 @@ fn create_component(
     if let RestoreInput::Local(saved) = restore
         && let Some(local) = &saved.application
     {
-        crate::local_view::NotesLocalViewV1::decode(local).map_err(LaunchError::Restore)?;
+        // The framework has validated the envelope against its exact durable
+        // route. Preflight the payload using the same finite definition lookup
+        // as the later widget restore, without rewriting the saved binding.
+        if local.app_id != definition().app_id {
+            return Err(LaunchError::Restore(ui::view::ThawError::BindingMismatch));
+        }
+        let mut definition_local = local.clone();
+        definition_local.app_id = definition().app_id.into();
+        crate::local_view::NotesLocalViewV1::decode(&definition_local)
+            .map_err(LaunchError::Restore)?;
     }
     if matches!(target, LaunchTarget::New) {
         context
             .initialize_new_record(crate::notebook::initialize_empty)
             .map_err(LaunchError::Record)?;
     }
+    // The sidebar resolves its strings while it is built, before the main
+    // panel would register the catalog.
+    crate::metadata::register_messages();
     let author = context.author().clone();
     let mut root = context
         .read_record(|doc| crate::NotesApp::from_document(doc, &author))

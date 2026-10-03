@@ -298,66 +298,69 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_input_decodes_nothing() {
-        let mut dec = VideoDecoder::h264();
-        assert!(dec.decode(&[]).is_none());
-    }
-
-    #[test]
-    fn wire_labels_pick_the_codec_and_the_output() {
-        let d = VideoDecoder::for_wire_codec("h264").expect("h264");
-        assert_eq!(d.codec(), StreamCodec::H264);
-        assert!(!d.is_ten_bit());
-        let d = VideoDecoder::for_wire_codec("hevc-main10").expect("hevc");
-        assert!(d.is_ten_bit(), "HEVC Main10 decodes to P010");
-        let d = VideoDecoder::for_stream("av1", 10).expect("av1");
-        assert!(d.is_ten_bit(), "a 10-bit AV1 stream decodes to P010");
-        let d = VideoDecoder::for_wire_codec("vp9").expect("vp9");
-        assert!(!d.is_ten_bit());
-        match VideoDecoder::for_wire_codec("h266") {
-            Err(DecoderError::UnknownCodec(label)) => assert_eq!(label, "h266"),
-            Ok(_) => panic!("an unknown label must not build a decoder"),
+    fn decoder_output_shapes_for_empty_and_decoded_input() {
+        // Phase `empty_input_decodes_nothing`.
+        {
+            let mut dec = VideoDecoder::h264();
+            assert!(dec.decode(&[]).is_none());
+        }
+        // Phase `decoded_pixels_variant_predicates`.
+        {
+            let rgba = DecodedPixels::Rgba8(vec![0u8; 4]);
+            assert!(rgba.is_rgba());
+            assert!(!rgba.is_p010());
+            let p010 = DecodedPixels::P010 {
+                y: vec![0u16; 16],
+                uv: vec![0u16; 8],
+                y_stride: 4,
+                uv_stride: 4,
+            };
+            assert!(p010.is_p010());
         }
     }
 
     #[test]
-    fn cicp_maps_onto_the_wire_colorimetry() {
-        assert_eq!(
-            colorimetry_from(StreamColor::BT709),
-            Colorimetry::sdr_bt709()
-        );
-        for c in [
-            Colorimetry::sdr_bt709(),
-            Colorimetry::hdr10(),
-            Colorimetry::hdr_hlg(),
-        ] {
-            assert_eq!(colorimetry_from(stream_color(c)), c, "round trip {c:?}");
+    fn wire_labels_and_cicp_select_codec_output_and_colorimetry() {
+        // Phase `wire_labels_pick_the_codec_and_the_output`.
+        {
+            let d = VideoDecoder::for_wire_codec("h264").expect("h264");
+            assert_eq!(d.codec(), StreamCodec::H264);
+            assert!(!d.is_ten_bit());
+            let d = VideoDecoder::for_wire_codec("hevc-main10").expect("hevc");
+            assert!(d.is_ten_bit(), "HEVC Main10 decodes to P010");
+            let d = VideoDecoder::for_stream("av1", 10).expect("av1");
+            assert!(d.is_ten_bit(), "a 10-bit AV1 stream decodes to P010");
+            let d = VideoDecoder::for_wire_codec("vp9").expect("vp9");
+            assert!(!d.is_ten_bit());
+            match VideoDecoder::for_wire_codec("h266") {
+                Err(DecoderError::UnknownCodec(label)) => assert_eq!(label, "h266"),
+                Ok(_) => panic!("an unknown label must not build a decoder"),
+            }
         }
-        let pq = colorimetry_from(StreamColor::BT2100_PQ);
-        assert_eq!(pq.transfer, TransferCharacteristics::SmpteSt2084);
-        assert_eq!(pq.primaries, ColorPrimaries::Bt2020);
-        assert_eq!(pq.matrix, MatrixCoefficients::Bt2020NonConstant);
-        assert!(pq.is_hdr());
-    }
-
-    #[test]
-    fn an_announced_hdr_colorimetry_is_kept_for_a_stream_that_signals_none() {
-        let mut dec = VideoDecoder::new(StreamCodec::Av1, true);
-        dec.set_stream_colorimetry(Some(Colorimetry::hdr10()));
-        assert_eq!(dec.stream_colorimetry, Some(Colorimetry::hdr10()));
-    }
-
-    #[test]
-    fn decoded_pixels_variant_predicates() {
-        let rgba = DecodedPixels::Rgba8(vec![0u8; 4]);
-        assert!(rgba.is_rgba());
-        assert!(!rgba.is_p010());
-        let p010 = DecodedPixels::P010 {
-            y: vec![0u16; 16],
-            uv: vec![0u16; 8],
-            y_stride: 4,
-            uv_stride: 4,
-        };
-        assert!(p010.is_p010());
+        // Phase `cicp_maps_onto_the_wire_colorimetry`.
+        {
+            assert_eq!(
+                colorimetry_from(StreamColor::BT709),
+                Colorimetry::sdr_bt709()
+            );
+            for c in [
+                Colorimetry::sdr_bt709(),
+                Colorimetry::hdr10(),
+                Colorimetry::hdr_hlg(),
+            ] {
+                assert_eq!(colorimetry_from(stream_color(c)), c, "round trip {c:?}");
+            }
+            let pq = colorimetry_from(StreamColor::BT2100_PQ);
+            assert_eq!(pq.transfer, TransferCharacteristics::SmpteSt2084);
+            assert_eq!(pq.primaries, ColorPrimaries::Bt2020);
+            assert_eq!(pq.matrix, MatrixCoefficients::Bt2020NonConstant);
+            assert!(pq.is_hdr());
+        }
+        // Phase `an_announced_hdr_colorimetry_is_kept_for_a_stream_that_signals_none`.
+        {
+            let mut dec = VideoDecoder::new(StreamCodec::Av1, true);
+            dec.set_stream_colorimetry(Some(Colorimetry::hdr10()));
+            assert_eq!(dec.stream_colorimetry, Some(Colorimetry::hdr10()));
+        }
     }
 }

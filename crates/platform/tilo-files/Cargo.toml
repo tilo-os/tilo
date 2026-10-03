@@ -1,0 +1,103 @@
+[package]
+name = "tilo-files"
+version = "0.1.0"
+edition = "2024"
+# Published: the SDK's platform layer (tools/sdk/publish_check.py).
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Files inside capability-scoped roots on Linux, macOS and the web: crash-safe replacement, no-clobber creation and renames, advisory locks, and the browser's origin-private file system."
+
+[lib]
+name = "tilo_files"
+path = "src/lib.rs"
+
+# The native backends are the crash-safe write path (`native::atomic`), the
+# owner-checked private files (`native::private`) and the workspace's lock
+# crate; everything else is std, the two platform leaves it speaks in, and the
+# system calls std does not expose.
+[dependencies]
+tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
+tilo-paths = { version = "0.1.0", path = "../tilo-paths" }
+tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+# Native change notification (inotify, FSEvents), for `Dir::watch` on native
+# directories. Off by default so persisting crates stay free of it.
+[features]
+watch = ["dep:notify"]
+# `native::atomic::json`: load-or-default reading and atomic saving of `serde`
+# values.
+json = ["dep:serde", "dep:serde_json"]
+# `native::atomic::test_support` and `directory_probe`: failure injection at
+# the publication protocol's checkpoints, for tests.
+test-support = ["windows-sys/Win32_System_LibraryLoader", "windows-sys/Win32_System_SystemInformation"]
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+notify = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+# `flock(2)`, `FD_CLOEXEC`, `renameat2`/`renameatx_np` and `native::atomic`'s
+# directory-relative publication without hand-written FFI.
+rustix = { workspace = true, features = ["fs", "process", "std"] }
+# `native::private`'s owner check.
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# `path_identity`'s file URLs.
+url.workspace = true
+# `native::atomic`'s NTFS publication protocol.
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_IO", "Wdk_Foundation", "Wdk_Storage_FileSystem", "Wdk_System_SystemServices", "Win32_System_SystemServices"] }
+
+# The browser's origin-private file system and Web Locks, pinned to the
+# versions the browser runtime links so a page carries one copy.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+wasm-bindgen = "=0.2.108"
+wasm-bindgen-futures = "=0.4.58"
+js-sys = "=0.3.85"
+web-sys = { version = "=0.3.85", features = [
+    "Blob",
+    "BroadcastChannel",
+    "File",
+    "FileSystemCreateWritableOptions",
+    "FileSystemDirectoryHandle",
+    "FileSystemFileHandle",
+    "FileSystemGetDirectoryOptions",
+    "FileSystemGetFileOptions",
+    "FileSystemHandle",
+    "FileSystemHandleKind",
+    "FileSystemRemoveOptions",
+    "FileSystemWritableFileStream",
+    "MessageEvent",
+    "StorageManager",
+    "WritableStream",
+] }
+
+[dev-dependencies]
+# The package's own tests and the probe example exercise `native::atomic`'s
+# test-support hooks; enabling them here runs those tests whenever the package
+# is tested, not only when a dependant happens to unify the feature in.
+tilo-files = { path = ".", features = ["test-support"] }
+tempfile.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+
+# Run in headless Chrome by `web/run.mjs`; natively an empty library.
+[[example]]
+name = "web_probe"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "directory_commit_probe"
+required-features = ["test-support"]
+test = true
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

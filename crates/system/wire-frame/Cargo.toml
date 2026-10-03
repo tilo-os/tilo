@@ -2,9 +2,11 @@
 name = "wire-frame"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
 description = "Length-prefixed framing for byte streams: blocking, tokio and postcard."
+repository.workspace = true
+homepage.workspace = true
 
 [lib]
 name = "wire_frame"

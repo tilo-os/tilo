@@ -1,0 +1,50 @@
+[package]
+name = "tilo-rt"
+version = "0.1.0"
+edition = "2024"
+# Published: the SDK's platform layer (tools/sdk/publish_check.py).
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The one async runtime model for Tilo processes: an app runtime off the UI thread, bounded daemon runtimes, a CPU pool, a file-I/O pool, named threads, and the host background executors and wake routing."
+
+[lib]
+name = "tilo_rt"
+path = "src/lib.rs"
+
+# Kept to tokio and rayon: every app, daemon and CLI links this, so it must not
+# pull a UI stack or a network stack into a process that has neither.
+[dependencies]
+rayon = "1.12.0"
+thiserror.workspace = true
+# Background deadlines are measured on the platform clock.
+tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
+# `time` compiles everywhere; a page waits on `setTimeout` instead (`sleep`).
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tracing.workspace = true
+
+# Daemon runtimes are multi-threaded; wasm has no threads, and tokio refuses
+# `rt-multi-thread` there.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+# In a browser the app runtime is the page's microtask queue.
+[target.'cfg(target_family = "wasm")'.dependencies]
+wasm-bindgen-futures = "=0.4.58"
+
+# A browser page's background executor: microtasks and `setTimeout`.
+[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
+js-sys = "=0.3.85"
+wasm-bindgen = "=0.2.108"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

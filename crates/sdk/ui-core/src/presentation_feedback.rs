@@ -230,25 +230,29 @@ mod tests {
     use super::handoff_row;
 
     #[test]
-    fn handoff_keeps_frame_and_clock_fields_with_explicit_worker_identity() {
-        let original = serde_json::json!({"cpu_frame_id": 42, "before_receive_host_lo_s": null});
-        for worker in [None, Some(9)] {
-            let row = handoff_row(original.clone(), worker).unwrap();
-            assert_eq!(row["cpu_frame_id"], 42);
-            assert!(row["before_receive_host_lo_s"].is_null());
-            assert_eq!(row["worker_id"], serde_json::json!(worker));
-            assert_eq!(row.as_object().unwrap().len(), 3);
+    fn handoff_rows_keep_identity_and_refuse_malformed_emission() {
+        // Case `handoff_keeps_frame_and_clock_fields_with_explicit_worker_identity`.
+        {
+            let original =
+                serde_json::json!({"cpu_frame_id": 42, "before_receive_host_lo_s": null});
+            for worker in [None, Some(9)] {
+                let row = handoff_row(original.clone(), worker).unwrap();
+                assert_eq!(row["cpu_frame_id"], 42);
+                assert!(row["before_receive_host_lo_s"].is_null());
+                assert_eq!(row["worker_id"], serde_json::json!(worker));
+                assert_eq!(row.as_object().unwrap().len(), 3);
+            }
         }
-    }
 
-    #[test]
-    fn malformed_handoff_cannot_be_emitted_as_a_qualifying_row() {
-        for row in [
-            serde_json::Value::Null,
-            serde_json::json!([]),
-            serde_json::json!(3),
-        ] {
-            assert!(handoff_row(row, Some(1)).is_none());
+        // Case `malformed_handoff_cannot_be_emitted_as_a_qualifying_row`.
+        {
+            for row in [
+                serde_json::Value::Null,
+                serde_json::json!([]),
+                serde_json::json!(3),
+            ] {
+                assert!(handoff_row(row, Some(1)).is_none());
+            }
         }
     }
 }

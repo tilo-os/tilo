@@ -5,6 +5,7 @@
 //! the small [`Action`] values emitted here to the current view and anchor.
 
 use chrono::{Datelike, NaiveDate};
+use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use vello::Scene;
@@ -107,10 +108,6 @@ impl Topbar {
         self.view_rect
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The calendar bar combines render context with the current view, anchor date, and pointer for action hit regions."
-    )]
     pub(crate) fn draw(
         &mut self,
         scene: &mut Scene,
@@ -141,13 +138,8 @@ impl Topbar {
         let title_x = self.draw_navigation(scene, transform, text, theme, pointer, center_y);
         let title_right = self.draw_actions(scene, transform, text, theme, view, pointer, center_y);
         self.draw_title(
-            scene,
-            transform,
-            text,
-            theme,
-            view,
-            anchor,
-            center_y,
+            &mut PaintCtx::new(scene, transform, text, theme),
+            &period_title_variants(view, anchor),
             title_x,
             title_right,
         );
@@ -228,10 +220,6 @@ impl Topbar {
         today.x1 + 14.0
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "View and new-event controls share render context, current view, pointer position, and the measured bar center."
-    )]
     fn draw_actions(
         &mut self,
         scene: &mut Scene,
@@ -332,24 +320,18 @@ impl Topbar {
         new_event.x0 - 12.0
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Period title fitting needs render context, view and anchor date, vertical alignment, and the available title span."
-    )]
+    /// Paint the longest of the period title `variants` that fits between
+    /// `title_x` and `title_right`, or the shortest clipped to that span.
     fn draw_title(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        view: View,
-        anchor: NaiveDate,
-        center_y: f64,
+        ctx: &mut PaintCtx<'_>,
+        variants: &[String],
         title_x: f64,
         title_right: f64,
     ) {
+        let (scene, transform, text) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text);
+        let center_y = self.rect.center().y;
         let available = (title_right - title_x).max(0.0);
-        let variants = period_title_variants(view, anchor);
         let title = variants
             .iter()
             .find(|variant| f64::from(text.measure(variant, 19.0, None).0) <= available)
@@ -369,7 +351,7 @@ impl Topbar {
             scene,
             title,
             19.0,
-            theme.tokens.colors.text_primary,
+            ctx.theme.tokens.colors.text_primary,
             transform * Affine::translate((title_x, center_y - 11.0)),
             None,
         );
@@ -427,158 +409,163 @@ mod tests {
     use super::*;
 
     #[test]
-    fn layout_owns_bar_and_view_geometry() {
-        let mut bar = Topbar::new();
-        let content = Rect::new(252.0, 10.0, 1280.0, 800.0);
-        bar.layout(content, LeadingControl::None);
-        assert_eq!(bar.view_rect(), Rect::new(252.0, 70.0, 1280.0, 800.0));
+    fn layout_owns_geometry_and_switcher_visibility() {
+        // Case `layout_owns_bar_and_view_geometry`.
+        {
+            let mut bar = Topbar::new();
+            let content = Rect::new(252.0, 10.0, 1280.0, 800.0);
+            bar.layout(content, LeadingControl::None);
+            assert_eq!(bar.view_rect(), Rect::new(252.0, 70.0, 1280.0, 800.0));
+        }
+        // Case `responsive_switcher_accounts_for_leading_control`.
+        {
+            let mut bar = Topbar::new();
+            let width = 590.0;
+            bar.layout(Rect::new(0.0, 0.0, width, 700.0), LeadingControl::None);
+            assert!(bar.switcher_visible());
+            bar.layout(
+                Rect::new(0.0, 0.0, width, 700.0),
+                LeadingControl::OpenSidebar,
+            );
+            assert!(!bar.switcher_visible());
+        }
+        // Case `empty_content_clears_component_geometry`.
+        {
+            let mut bar = Topbar::new();
+            bar.layout(Rect::new(0.0, 0.0, 900.0, 700.0), LeadingControl::None);
+            assert!(bar.switcher_visible());
+            bar.layout(Rect::ZERO, LeadingControl::None);
+            assert!(!bar.switcher_visible());
+            assert_eq!(bar.view_rect(), Rect::ZERO);
+        }
     }
 
     #[test]
-    fn responsive_switcher_accounts_for_leading_control() {
-        let mut bar = Topbar::new();
-        let width = 590.0;
-        bar.layout(Rect::new(0.0, 0.0, width, 700.0), LeadingControl::None);
-        assert!(bar.switcher_visible());
-        bar.layout(
-            Rect::new(0.0, 0.0, width, 700.0),
-            LeadingControl::OpenSidebar,
-        );
-        assert!(!bar.switcher_visible());
-    }
+    fn period_titles_offer_compact_variants() {
+        // Case `week_title_keeps_both_endpoints_in_compact_variant`.
+        {
+            let variants = period_title_variants(
+                View::Week,
+                NaiveDate::from_ymd_opt(2026, 8, 31).expect("valid test date"),
+            );
+            assert_eq!(variants.len(), 2);
+            assert!(variants[1].contains('–'));
+        }
+        // Case `month_title_has_compact_variants_before_it_can_clip_into_new`.
+        {
+            let anchor = NaiveDate::from_ymd_opt(2026, 9, 3).expect("valid test date");
+            let variants = period_title_variants(View::Month, anchor);
+            assert_eq!(variants, vec!["September 2026", "Sep 2026", "2026"]);
 
-    #[test]
-    fn empty_content_clears_component_geometry() {
-        let mut bar = Topbar::new();
-        bar.layout(Rect::new(0.0, 0.0, 900.0, 700.0), LeadingControl::None);
-        assert!(bar.switcher_visible());
-        bar.layout(Rect::ZERO, LeadingControl::None);
-        assert!(!bar.switcher_visible());
-        assert_eq!(bar.view_rect(), Rect::ZERO);
-    }
-
-    #[test]
-    fn week_title_keeps_both_endpoints_in_compact_variant() {
-        let variants = period_title_variants(
-            View::Week,
-            NaiveDate::from_ymd_opt(2026, 8, 31).expect("valid test date"),
-        );
-        assert_eq!(variants.len(), 2);
-        assert!(variants[1].contains('–'));
-    }
-
-    #[test]
-    fn month_title_has_compact_variants_before_it_can_clip_into_new() {
-        let anchor = NaiveDate::from_ymd_opt(2026, 9, 3).expect("valid test date");
-        let variants = period_title_variants(View::Month, anchor);
-        assert_eq!(variants, vec!["September 2026", "Sep 2026", "2026"]);
-
-        let mut bar = Topbar::new();
-        bar.layout(Rect::new(0.0, 0.0, 390.0, 844.0), LeadingControl::None);
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        let theme = Theme::dark();
-        let hits = bar.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            View::Month,
-            anchor,
-            Point::ZERO,
-        );
-        let new = hits
-            .iter()
-            .find(|(_, action)| *action == Action::NewEvent)
-            .map(|(rect, _)| *rect)
-            .expect("new event hit target");
-        let title_right = new.x0 - 12.0;
-        let title_x = 16.0 + 74.0 + 60.0 + 14.0;
-        let chosen = variants
-            .iter()
-            .find(|title| f64::from(text.measure(title, 19.0, None).0) <= title_right - title_x)
-            .expect("a compact month title fits before New");
-        assert_eq!(chosen, "Sep 2026");
-    }
-
-    #[test]
-    fn draw_builds_the_owned_hit_map_for_visible_controls() {
-        let mut bar = Topbar::new();
-        bar.layout(
-            Rect::new(0.0, 0.0, 1024.0, 700.0),
-            LeadingControl::OpenSidebar,
-        );
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        let actions: Vec<_> = bar
-            .draw(
+            let mut bar = Topbar::new();
+            bar.layout(Rect::new(0.0, 0.0, 390.0, 844.0), LeadingControl::None);
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            let theme = Theme::dark();
+            let hits = bar.draw(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut text,
-                &Theme::dark(),
+                &theme,
                 View::Month,
-                NaiveDate::from_ymd_opt(2026, 8, 31).expect("valid test date"),
+                anchor,
                 Point::ZERO,
-            )
-            .iter()
-            .map(|(_, action)| *action)
-            .collect();
-
-        assert!(actions.contains(&Action::OpenSidebar));
-        assert!(actions.contains(&Action::Today));
-        assert!(actions.contains(&Action::Previous));
-        assert!(actions.contains(&Action::Next));
-        assert!(actions.contains(&Action::NewEvent));
-        assert_eq!(
-            actions
+            );
+            let new = hits
                 .iter()
-                .filter(|action| matches!(action, Action::View(_)))
-                .count(),
-            View::ALL.len()
-        );
+                .find(|(_, action)| *action == Action::NewEvent)
+                .map(|(rect, _)| *rect)
+                .expect("new event hit target");
+            let title_right = new.x0 - 12.0;
+            let title_x = 16.0 + 74.0 + 60.0 + 14.0;
+            let chosen = variants
+                .iter()
+                .find(|title| f64::from(text.measure(title, 19.0, None).0) <= title_right - title_x)
+                .expect("a compact month title fits before New");
+            assert_eq!(chosen, "Sep 2026");
+        }
     }
 
     #[test]
-    fn large_text_controls_are_bounded_and_non_overlapping_at_desktop_width() {
-        let content = Rect::new(0.0, 0.0, 1200.0, 900.0);
-        let mut bar = Topbar::new();
-        bar.set_text_scale(2.0);
-        bar.layout(content, LeadingControl::OpenSidebar);
-        assert!(
-            !bar.switcher_visible(),
-            "large-text view controls live in the drawer"
-        );
-        assert_eq!(bar.view_rect().y0, LARGE_TEXT_HEIGHT);
-
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        text.set_text_scale(2.0);
-        let theme = Theme::dark().with_text_scale(2.0);
-        let hits = bar.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            View::Month,
-            NaiveDate::from_ymd_opt(2026, 9, 3).expect("valid test date"),
-            Point::ZERO,
-        );
-        assert!(
-            hits.iter()
-                .any(|(_, action)| *action == Action::OpenSidebar)
-        );
-        assert!(hits.iter().any(|(_, action)| *action == Action::Today));
-        assert!(hits.iter().any(|(_, action)| *action == Action::NewEvent));
-        for (index, (rect, _)) in hits.iter().enumerate() {
-            assert!(
-                content.contains_rect(*rect),
-                "control {index} escaped the viewport: {rect:?}"
+    fn draw_hit_map_covers_visible_controls_at_normal_and_large_text() {
+        // Case `draw_builds_the_owned_hit_map_for_visible_controls`.
+        {
+            let mut bar = Topbar::new();
+            bar.layout(
+                Rect::new(0.0, 0.0, 1024.0, 700.0),
+                LeadingControl::OpenSidebar,
             );
-            for (other, _) in hits.iter().skip(index + 1) {
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            let actions: Vec<_> = bar
+                .draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &Theme::dark(),
+                    View::Month,
+                    NaiveDate::from_ymd_opt(2026, 8, 31).expect("valid test date"),
+                    Point::ZERO,
+                )
+                .iter()
+                .map(|(_, action)| *action)
+                .collect();
+
+            assert!(actions.contains(&Action::OpenSidebar));
+            assert!(actions.contains(&Action::Today));
+            assert!(actions.contains(&Action::Previous));
+            assert!(actions.contains(&Action::Next));
+            assert!(actions.contains(&Action::NewEvent));
+            assert_eq!(
+                actions
+                    .iter()
+                    .filter(|action| matches!(action, Action::View(_)))
+                    .count(),
+                View::ALL.len()
+            );
+        }
+        // Case `large_text_controls_are_bounded_and_non_overlapping_at_desktop_width`.
+        {
+            let content = Rect::new(0.0, 0.0, 1200.0, 900.0);
+            let mut bar = Topbar::new();
+            bar.set_text_scale(2.0);
+            bar.layout(content, LeadingControl::OpenSidebar);
+            assert!(
+                !bar.switcher_visible(),
+                "large-text view controls live in the drawer"
+            );
+            assert_eq!(bar.view_rect().y0, LARGE_TEXT_HEIGHT);
+
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            text.set_text_scale(2.0);
+            let theme = Theme::dark().with_text_scale(2.0);
+            let hits = bar.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                View::Month,
+                NaiveDate::from_ymd_opt(2026, 9, 3).expect("valid test date"),
+                Point::ZERO,
+            );
+            assert!(
+                hits.iter()
+                    .any(|(_, action)| *action == Action::OpenSidebar)
+            );
+            assert!(hits.iter().any(|(_, action)| *action == Action::Today));
+            assert!(hits.iter().any(|(_, action)| *action == Action::NewEvent));
+            for (index, (rect, _)) in hits.iter().enumerate() {
                 assert!(
-                    rect.intersect(*other).area() <= 0.0,
-                    "controls overlap: {rect:?} and {other:?}"
+                    content.contains_rect(*rect),
+                    "control {index} escaped the viewport: {rect:?}"
                 );
+                for (other, _) in hits.iter().skip(index + 1) {
+                    assert!(
+                        rect.intersect(*other).area() <= 0.0,
+                        "controls overlap: {rect:?} and {other:?}"
+                    );
+                }
             }
         }
     }

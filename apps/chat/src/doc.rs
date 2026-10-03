@@ -12,14 +12,19 @@
 //! ├── "users"        (Map<userId,{name,initials,color_idx,status}>)
 //! ├── "channels"     (Map<chId,  {workspace,category,name,topic,kind,order}>)
 //! ├── "messages"     (Map<chId,  List<Message>>)
-//! │      Message = { id, author, ts, text(Text), edited(bool),
+//! │      Message = { id, author, ts, text(Text), rich(rich text)?, edited(bool),
 //! │                  parent(Str ""), reactions(List<{emoji,user}>),
 //! │                  history(List<{ts,text}>), attachment(Map? blob hash),
 //! │                  work(Map{state, since, reasoning, trace}) }
 //! ├── "voice"        (Map<chId,  Map<userId,{talking,muted,deafened,audio_only}>>)
 //! ├── "read"         (Map<userId, Map<chId, i64>>) # each peer's read watermark
-//! └── "drafts"       (Map<chId, Text>)           # per-channel composer body
+//! └── "rich_drafts"  (Map<chId, rich text>)      # per-channel composer body
 //! ```
+//!
+//! A message's `text` is its plain text; `rich`, when present, is the body as
+//! written (qdoc rich text, mentions marked). A message written before bodies
+//! were rich has only `text`, and reads as that text with its mentions
+//! marked. Drafts are rich text.
 //!
 //! A channel's **unread** count is not stored — it is derived per-peer as the
 //! number of top-level messages beyond that peer's `read` watermark (advanced
@@ -48,7 +53,7 @@ use std::collections::HashMap;
 use ui::doc::{read_bool, read_i64_coerced, read_str, read_text};
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
 use tilo_content::ContentStore;
 use uuid::Uuid;
@@ -61,16 +66,7 @@ use crate::model::{
 /// Attachments in the chat CRDT are portable content-addressed descriptors;
 /// bytes are kept in the app's content store so a message never names a
 /// sender-local filesystem path.
-/// One sync migration visits at most this many message rows. The app invokes
-/// it once per loaded document, so hostile legacy history cannot tax every
-/// frame forever.
-const LEGACY_MIGRATION_VISIT_BUDGET: usize = 256;
-const LEGACY_MIGRATION_WRITE_BUDGET: usize = 32;
-/// Legacy paths are only examined for our fixed demo identities. Keeping the
-/// copied scalar small makes the one-shot migration fail closed even when a
-/// hostile old document contains megabyte-scale path fields.
-const LEGACY_MIGRATION_PATH_BYTES: usize = 256;
-
+///
 /// A deliberately small import ceiling. Media bytes live in the content store,
 /// but accepting an arbitrary local file on the UI event path would
 /// still let one click exhaust memory and room bandwidth.
@@ -101,6 +97,8 @@ pub struct NewMessage {
     pub author: String,
     pub ts: i64,
     pub text: String,
+    /// The body as written; empty stores only `text`.
+    pub body: Vec<tilo_document::ClipBlock>,
     pub parent: Option<String>,
     pub reactions: Vec<(String, Vec<String>)>,
     pub attachment: Option<Attachment>,
@@ -176,16 +174,57 @@ fn list_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<ObjId> {
     }
 }
 
-/// Positional trace keys emitted by the short-lived pre-stable-id schema.
-/// Current step ids always begin with `step_`; this deliberately recognises
-/// only exactly eight ASCII digits so a user-authored id is never migrated.
-fn is_legacy_trace_key(key: &str) -> bool {
-    key.len() == 8 && key.bytes().all(|byte| byte.is_ascii_digit())
+// ---------------------------------------------------------------------------
+// Conflicting containers
+//
+// A container created on first use is a per-replica object: two peers that
+// each `put_object` the same key before syncing leave a map-key conflict, and
+// `doc.get` shows only the winner — the loser's whole subtree (a channel's
+// first messages, a peer's read marks, a draft) disappears from view. New
+// documents create these containers up front (seed / channel creation, both
+// replayed deterministically), but documents written before that still carry
+// lazy containers, so every read below joins *all* candidates and writes go
+// to the winner. Automerge orders the candidates identically on every replica.
+// ---------------------------------------------------------------------------
+
+/// Every object of type `ty` stored under `obj[key]`, the `doc.get` winner
+/// first, then the concurrent losers in Automerge's deterministic order.
+fn object_candidates(doc: &AutoCommit, obj: &ObjId, key: &str, ty: ObjType) -> Vec<ObjId> {
+    let mut found: Vec<ObjId> = doc
+        .get_all(obj, key)
+        .map(|values| {
+            values
+                .into_iter()
+                .filter_map(|(value, id)| {
+                    matches!(value, Value::Object(t) if t == ty).then_some(id)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Ok(Some((Value::Object(t), winner))) = doc.get(obj, key)
+        && t == ty
+        && let Some(at) = found.iter().position(|id| *id == winner)
+    {
+        let winner = found.remove(at);
+        found.insert(0, winner);
+    }
+    found
 }
 
-fn legacy_step_id(key: &str) -> String {
-    format!("legacy_step_{key}")
+fn map_candidates(doc: &AutoCommit, obj: &ObjId, key: &str) -> Vec<ObjId> {
+    object_candidates(doc, obj, key, ObjType::Map)
 }
+
+/// Every message list of `channel`, across every `messages` map candidate.
+fn message_lists(doc: &AutoCommit, channel: &str) -> Vec<ObjId> {
+    map_candidates(doc, &ROOT, "messages")
+        .iter()
+        .flat_map(|root_map| object_candidates(doc, root_map, channel, ObjType::List))
+        .collect()
+}
+
+/// Where each composer's rich-text draft is kept.
+const RICH_DRAFTS: &str = "rich_drafts";
 
 /// # Panics
 /// Never in practice: every caller passes `ROOT` or an object it just
@@ -268,61 +307,6 @@ impl ChatDoc {
         (content.read(&hash).as_deref() == Some(bytes)).then_some(hash)
     }
 
-    /// Upgrade only legacy demo rows, whose content is deterministic and has
-    /// no local I/O. Historic filesystem-backed rows intentionally remain
-    /// inert until their owning machine explicitly re-shares the file through
-    /// the bounded import worker; reading arbitrary old paths from `sync`
-    /// would both block the UI and replicate a peer-local identity onward.
-    pub fn migrate_legacy_attachment_paths(doc: &mut AutoCommit) {
-        let Some(channels) = map_at(doc, &ROOT, "messages") else {
-            return;
-        };
-        let mut legacy = Vec::new();
-        let mut visited = 0usize;
-        for channel in doc.keys(&channels).take(LEGACY_MIGRATION_VISIT_BUDGET) {
-            let Some(messages) = list_at(doc, &channels, &channel) else {
-                continue;
-            };
-            for index in 0..doc.length(&messages) {
-                if visited >= LEGACY_MIGRATION_VISIT_BUDGET {
-                    break;
-                }
-                visited += 1;
-                let Ok(Some((Value::Object(ObjType::Map), message))) = doc.get(&messages, index)
-                else {
-                    continue;
-                };
-                let Some(attachment) = map_at(doc, &message, "attachment") else {
-                    continue;
-                };
-                let blob_is_empty = match doc.get(&attachment, "blob") {
-                    Ok(None) => true,
-                    Ok(Some((Value::Scalar(value), _))) => {
-                        matches!(value.as_ref(), ScalarValue::Str(blob) if blob.is_empty())
-                    }
-                    _ => false,
-                };
-                if !blob_is_empty {
-                    continue;
-                }
-                let Ok(Some((Value::Scalar(value), _))) = doc.get(&attachment, "path") else {
-                    continue;
-                };
-                let ScalarValue::Str(path) = value.as_ref() else {
-                    continue;
-                };
-                if path.len() <= LEGACY_MIGRATION_PATH_BYTES
-                    && path.starts_with(crate::images::DEMO_SCHEME)
-                {
-                    legacy.push((attachment, path.to_string()));
-                }
-            }
-        }
-        for (attachment, path) in legacy.into_iter().take(LEGACY_MIGRATION_WRITE_BUDGET) {
-            let _ = doc.put(&attachment, "blob", path);
-            let _ = doc.delete(&attachment, "path");
-        }
-    }
     pub fn is_seeded(doc: &AutoCommit) -> bool {
         read_bool(doc, &ROOT, "seeded").unwrap_or(false)
     }
@@ -340,6 +324,7 @@ impl ChatDoc {
             return;
         }
         let _ = doc.put(&ROOT, "seeded", true);
+        Self::put_shared_roots(doc);
 
         Self::put_user(doc, me_id, me_name, me_initials, 0, Presence::Online);
         Self::put_workspace(doc, "ws_home", "My Workspace", "MW", 0, 0);
@@ -375,6 +360,7 @@ impl ChatDoc {
             return;
         }
         let _ = doc.put(&ROOT, "seeded", true);
+        Self::put_shared_roots(doc);
 
         Self::seed_demo_users(doc);
         Self::seed_demo_workspaces(doc);
@@ -774,6 +760,17 @@ impl ChatDoc {
     // Writers
     // -----------------------------------------------------------------------
 
+    /// Create the root containers other peers write into on first use, in the
+    /// seed change every peer adopts. Created lazily instead, two peers that
+    /// each send the first message, mark a channel read, or start a draft
+    /// before syncing would each mint their own root map and a merge would
+    /// show only one of them (see "Conflicting containers" above).
+    fn put_shared_roots(doc: &mut AutoCommit) {
+        for key in ["messages", "read", RICH_DRAFTS] {
+            let _ = get_or_map(doc, &ROOT, key);
+        }
+    }
+
     fn put_user(
         doc: &mut AutoCommit,
         id: &str,
@@ -822,10 +819,6 @@ impl ChatDoc {
         let _ = doc.put(&cat, "collapsed", collapsed);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "private leaf serializer mirrors the fixed channel CRDT schema; all call sites provide complete channel records"
-    )]
     fn put_channel(
         doc: &mut AutoCommit,
         id: &str,
@@ -854,6 +847,15 @@ impl ChatDoc {
             let voice = get_or_map(doc, &ROOT, "voice");
             let _ = get_or_map(doc, &voice, id);
         }
+        // The same for the channel's message list and composer draft: created
+        // here, inside the one (replayed, content-addressed) channel-creation
+        // change, so two peers' first messages or first keystrokes land in one
+        // shared list / Text instead of two conflicting ones.
+        let messages = get_or_map(doc, &ROOT, "messages");
+        let _ = get_or_list(doc, &messages, id);
+        if Self::rich_draft_candidates(doc, id).is_empty() {
+            let _ = Self::replace_rich_draft(doc, id, &[]);
+        }
     }
 
     fn messages_list_mut(doc: &mut AutoCommit, channel: &str) -> ObjId {
@@ -877,6 +879,31 @@ impl ChatDoc {
         let _ = doc.put(block, "ts", ts);
         let _ = doc.put(block, "parent", parent.unwrap_or_default());
         let _ = doc.put(block, "edited", edited);
+    }
+
+    /// The body as written, as rich text under the message's `rich` map;
+    /// nothing for an empty body (the plain text is the whole message).
+    fn write_message_body(doc: &mut AutoCommit, block: &ObjId, body: &[tilo_document::ClipBlock]) {
+        if body.is_empty() {
+            let _ = doc.delete(block, "rich");
+            return;
+        }
+        let Ok(root) = doc.put_object(block, "rich", ObjType::Map) else {
+            return;
+        };
+        let written = tilo_document::RichText::initialize_under(doc, &root).is_ok()
+            && tilo_rich_text::fill_clips_under(doc, &root, body).is_ok();
+        if !written {
+            // The plain text still stands for the message.
+            let _ = doc.delete(block, "rich");
+        }
+    }
+
+    /// The body as written, when the message has one.
+    fn read_message_body(doc: &AutoCommit, block: &ObjId) -> Vec<ui::widget::BlockContent> {
+        map_at(doc, block, "rich")
+            .and_then(|root| tilo_rich_text::blocks_under(doc, &root).ok())
+            .unwrap_or_default()
     }
 
     /// # Panics
@@ -976,8 +1003,7 @@ impl ChatDoc {
     /// Reasoning is deliberately one atomic scalar: `route` and `why` are one
     /// assertion, and merging them independently could manufacture a pairing
     /// no agent authored. Trace rows are keyed by an authored step id, never a
-    /// positional index. Current trace updates are additive; only legacy
-    /// positional rows are tombstoned during migration.
+    /// positional index, and trace updates are additive.
     fn write_work(doc: &mut AutoCommit, block: &ObjId, work: &crate::model::AgentWork) {
         // A state update is often accompanied by an unchanged trace or
         // reasoning record. Do not rewrite those independent fields: doing so
@@ -1040,22 +1066,6 @@ impl ChatDoc {
         // collaborator's append cannot know that row is obsolete. Therefore
         // `SetAgentWork` is additive; only an explicit future tombstone action
         // may clear a stable step id.
-        // A release prior to stable step ids used zero-padded list positions as
-        // keys. During the first update, retain its projection under a derived
-        // legacy id but tombstone the positional row so it cannot reappear.
-        #[allow(
-            clippy::needless_collect,
-            reason = "the keys must be owned before tombstoning their rows mutably"
-        )]
-        let legacy_trace_keys: Vec<_> = doc
-            .keys(&trace)
-            .filter(|key| is_legacy_trace_key(key))
-            .collect();
-        for key in legacy_trace_keys {
-            if let Some(row) = map_at(doc, &trace, &key) {
-                let _ = doc.put(&row, "present", false);
-            }
-        }
     }
 
     /// # Panics
@@ -1145,6 +1155,7 @@ impl ChatDoc {
             author,
             ts,
             text,
+            body,
             parent,
             reactions,
             attachment,
@@ -1155,11 +1166,10 @@ impl ChatDoc {
             work,
         } = nm;
 
-        // Keep this low-level writer compatible with old persisted rows and
-        // migrations, while still making a repeated stable id harmless. New
-        // network/palette actions go through `accepts_message_action` below,
-        // which also validates their channel, hierarchy, text, and attachment
-        // metadata before it reaches this compatibility seam.
+        // A repeated stable id is harmless. New network/palette actions go
+        // through `accepts_message_action` below, which also validates their
+        // channel, hierarchy, text, and attachment metadata before it reaches
+        // this low-level writer.
         if Self::message_id_exists(doc, id) {
             return id.to_string();
         }
@@ -1172,6 +1182,7 @@ impl ChatDoc {
 
         Self::write_message_identity(doc, &block, id, &author, ts, parent, edited);
         Self::write_message_text(doc, &block, &text);
+        Self::write_message_body(doc, &block, &body);
         Self::write_reactions(doc, &block, &reactions);
         Self::write_mentions(doc, &block, &mentions);
         Self::write_reference(doc, &block, reference.as_ref());
@@ -1185,9 +1196,8 @@ impl ChatDoc {
     }
 
     /// Whether a new wire action is safe to add to the durable conversation.
-    /// This is intentionally separate from `push_message_with_id`: migration
-    /// code must be able to faithfully retain path-based legacy descriptors,
-    /// while an incoming modern action must not create an ambiguous resource,
+    /// This is intentionally separate from `push_message_with_id`: an incoming
+    /// action must not create an ambiguous resource,
     /// hidden channel, dangling thread edge, or unbounded display metadata.
     pub fn accepts_message_action(
         doc: &AutoCommit,
@@ -1198,6 +1208,7 @@ impl ChatDoc {
         attachment: Option<&Attachment>,
     ) -> bool {
         Self::channel_exists(doc, channel)
+            && Self::channel_has_timeline(doc, channel)
             && Self::valid_message_id(id)
             && !Self::message_id_exists(doc, id)
             && text.len() <= MAX_MESSAGE_TEXT_BYTES
@@ -1209,16 +1220,72 @@ impl ChatDoc {
     /// namespace.  This makes direct resolution deterministic and makes an
     /// action replay idempotent before it reaches the list writer.
     fn message_id_exists(doc: &AutoCommit, id: &str) -> bool {
-        let Some(channels) = map_at(doc, &ROOT, "messages") else {
-            return false;
-        };
-        doc.keys(&channels).any(|channel| {
-            list_at(doc, &channels, &channel).is_some_and(|list| {
-                (0..doc.length(&list)).any(|index| {
-                    matches!(doc.get(&list, index), Ok(Some((Value::Object(ObjType::Map), row))) if read_str(doc, &row, "id").unwrap_or_default() == id)
+        map_candidates(doc, &ROOT, "messages").iter().any(|channels| {
+            doc.keys(channels).any(|channel| {
+                message_lists(doc, &channel).into_iter().any(|list| {
+                    (0..doc.length(&list)).any(|index| {
+                        matches!(doc.get(&list, index), Ok(Some((Value::Object(ObjType::Map), row))) if read_str(doc, &row, "id").unwrap_or_default() == id)
+                    })
                 })
             })
         })
+    }
+
+    /// Record `name` as the agent display name of `author`, beside the
+    /// message `id` it just wrote (`agent_authors/<author> = name`). Only an
+    /// agent task participant author is labelled, only when that message
+    /// exists with that author, and only when the stored name differs.
+    pub fn label_agent_author(doc: &mut AutoCommit, id: &str, author: &str, name: &str) {
+        if !author.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
+            || name.trim().is_empty()
+            || name.len() > crate::actions::MAX_AGENT_AUTHOR_NAME_BYTES
+        {
+            return;
+        }
+        let authored = map_candidates(doc, &ROOT, "messages").iter().any(|channels| {
+            doc.keys(channels).any(|channel| {
+                message_lists(doc, &channel).into_iter().any(|list| {
+                    (0..doc.length(&list)).any(|index| {
+                        matches!(doc.get(&list, index), Ok(Some((Value::Object(ObjType::Map), row)))
+                            if read_str(doc, &row, "id").unwrap_or_default() == id && read_str(doc, &row, "author").unwrap_or_default() == author)
+                    })
+                })
+            })
+        });
+        if !authored {
+            return;
+        }
+        let agents = get_or_map(doc, &ROOT, "agent_authors");
+        if read_str(doc, &agents, author).unwrap_or_default() != name {
+            let _ = doc.put(&agents, author, name);
+        }
+    }
+
+    /// Agent display names of agent-authored message authors.
+    pub fn agent_authors(doc: &AutoCommit) -> std::collections::HashMap<String, String> {
+        let Some(agents) = map_at(doc, &ROOT, "agent_authors") else {
+            return std::collections::HashMap::new();
+        };
+        doc.keys(&agents)
+            .filter(|author| author.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX))
+            .filter_map(|author| {
+                let name = read_str(doc, &agents, author.as_str()).unwrap_or_default();
+                (!name.trim().is_empty()).then_some((author, name))
+            })
+            .collect()
+    }
+
+    /// Only a text channel shows a message timeline: opening a voice channel
+    /// joins the call and no view ever renders its message list. A new message
+    /// there would be durable but seen by no one (an agent's post reported as
+    /// sent while every member looked at `#general`), so it is refused.
+    /// Rows that already exist stay readable; this gates new actions only.
+    fn channel_has_timeline(doc: &AutoCommit, channel: &str) -> bool {
+        map_at(doc, &ROOT, "channels")
+            .and_then(|channels| map_at(doc, &channels, channel))
+            .is_some_and(|row| {
+                read_str(doc, &row, "kind").unwrap_or_default() != ChannelKind::Voice.as_str()
+            })
     }
 
     fn channel_exists(doc: &AutoCommit, channel: &str) -> bool {
@@ -1295,13 +1362,13 @@ impl ChatDoc {
     }
 
     fn find_message_obj(doc: &AutoCommit, channel: &str, msg_id: &str) -> Option<ObjId> {
-        let root_map = map_at(doc, &ROOT, "messages")?;
-        let list = list_at(doc, &root_map, channel)?;
-        for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
-                && read_str(doc, &m, "id").unwrap_or_default() == msg_id
-            {
-                return Some(m);
+        for list in message_lists(doc, channel) {
+            for i in 0..doc.length(&list) {
+                if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
+                    && read_str(doc, &m, "id").unwrap_or_default() == msg_id
+                {
+                    return Some(m);
+                }
             }
         }
         None
@@ -1421,18 +1488,14 @@ impl ChatDoc {
     /// no-op. Threaded replies (if any) are left in place; they simply lose their
     /// parent card, which is recoverable.
     pub fn delete_message(doc: &mut AutoCommit, channel: &str, msg_id: &str) {
-        let Some(root_map) = map_at(doc, &ROOT, "messages") else {
-            return;
-        };
-        let Some(list) = list_at(doc, &root_map, channel) else {
-            return;
-        };
-        for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
-                && read_str(doc, &m, "id").unwrap_or_default() == msg_id
-            {
-                let _ = doc.delete(&list, i);
-                return;
+        for list in message_lists(doc, channel) {
+            for i in 0..doc.length(&list) {
+                if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
+                    && read_str(doc, &m, "id").unwrap_or_default() == msg_id
+                {
+                    let _ = doc.delete(&list, i);
+                    return;
+                }
             }
         }
     }
@@ -1463,13 +1526,29 @@ impl ChatDoc {
         channel: &str,
         msg_id: &str,
         new_text: &str,
+        body: &[tilo_document::ClipBlock],
         ts: i64,
     ) {
         let Some(block) = Self::find_message_obj(doc, channel, msg_id) else {
             return;
         };
         let old = read_text(doc, &block, "text").unwrap_or_default();
+        let old_body: Vec<tilo_document::ClipBlock> = map_at(doc, &block, "rich")
+            .and_then(|root| tilo_doc::model::open(doc, &root).ok())
+            .map(|containers| {
+                tilo_doc::model::materialize_region(doc, &containers, tilo_doc::model::Region::Body)
+                    .iter()
+                    .map(tilo_rich_text::clip_block)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if old == new_text && old_body == body {
+            return;
+        }
+        Self::write_message_body(doc, &block, body);
         if old == new_text {
+            // Reformatted, same words: no revision to archive.
+            let _ = doc.put(&block, "edited", true);
             return;
         }
         let hist = get_or_list(doc, &block, "history");
@@ -1483,32 +1562,124 @@ impl ChatDoc {
         let _ = doc.put(&block, "edited", true);
     }
 
-    /// The per-channel draft `Text` object, created on demand. The composer
-    /// splices directly into this so a draft is collaborative state too.
-    pub fn draft_obj(doc: &mut AutoCommit, channel: &str) -> ObjId {
-        let drafts = get_or_map(doc, &ROOT, "drafts");
-        get_or_text(doc, &drafts, channel)
+    /// Every rich-text draft stored for `key`: the winner first, then drafts
+    /// left by two peers creating the same one at once.
+    fn rich_draft_candidates(doc: &AutoCommit, key: &str) -> Vec<ObjId> {
+        map_candidates(doc, &ROOT, RICH_DRAFTS)
+            .iter()
+            .flat_map(|drafts| object_candidates(doc, drafts, key, ObjType::Map))
+            .collect()
     }
 
-    pub fn draft_text(doc: &AutoCommit, channel: &str) -> String {
-        match map_at(doc, &ROOT, "drafts") {
-            Some(drafts) => read_text(doc, &drafts, channel).unwrap_or_default(),
-            None => String::new(),
+    /// The rich text the composer for `key` edits, when it exists.
+    pub fn rich_draft(doc: &AutoCommit, key: &str) -> Option<ObjId> {
+        Self::rich_draft_candidates(doc, key).into_iter().next()
+    }
+
+    /// The rich text the composer for `key` edits, created when missing.
+    /// Drafts two peers created at once are joined into one, winner first,
+    /// so no one's keystrokes are hidden.
+    pub fn rich_draft_is_settled(doc: &AutoCommit, key: &str) -> bool {
+        Self::rich_draft_candidates(doc, key).len() == 1
+    }
+
+    pub fn ensure_rich_draft(doc: &mut AutoCommit, key: &str) -> Option<ObjId> {
+        let candidates = Self::rich_draft_candidates(doc, key);
+        if let [only] = candidates.as_slice() {
+            return Some(only.clone());
         }
+        let blocks: Vec<ui::widget::BlockContent> = Self::distinct_drafts(doc, key)
+            .into_iter()
+            .flat_map(|(_, blocks)| blocks)
+            .filter(|block| !block.text.is_empty())
+            .collect();
+        Self::replace_rich_draft(doc, key, &blocks)
     }
 
-    /// Replace the draft body with `text`, diff-spliced so only the changed
-    /// span is written (never a whole-text rewrite per keystroke — see
-    /// `crates/sdk/ui-core/HIG.md` §6). The composer calls this on every edit so the draft
-    /// stays collaborative + persistent.
-    pub fn set_draft(doc: &mut AutoCommit, channel: &str, text: &str) {
-        let obj = Self::draft_obj(doc, channel);
-        ui::doc::splice_text_diffed(doc, &obj, text);
+    /// Replace the draft for `key` with `blocks` (none: an empty draft).
+    fn replace_rich_draft(
+        doc: &mut AutoCommit,
+        key: &str,
+        blocks: &[ui::widget::BlockContent],
+    ) -> Option<ObjId> {
+        for drafts in map_candidates(doc, &ROOT, RICH_DRAFTS) {
+            let _ = doc.delete(&drafts, key);
+        }
+        let drafts = get_or_map(doc, &ROOT, RICH_DRAFTS);
+        let root = doc.put_object(&drafts, key, ObjType::Map).ok()?;
+        tilo_document::RichText::initialize_under(doc, &root).ok()?;
+        let blocks: Vec<ui::widget::BlockContent> = blocks
+            .iter()
+            .map(|block| ui::widget::BlockContent {
+                id: String::new(),
+                ..block.clone()
+            })
+            .collect();
+        tilo_rich_text::fill_under(doc, &root, &blocks).ok()?;
+        Some(root)
     }
 
-    pub fn clear_draft(doc: &mut AutoCommit, channel: &str) {
-        let obj = Self::draft_obj(doc, channel);
-        ui::doc::splice_text_diffed(doc, &obj, "");
+    /// The draft for `key` as written: every draft stored for it, the same
+    /// text twice (two peers joining the same drafts at once) once.
+    pub fn draft_blocks(doc: &AutoCommit, key: &str) -> Vec<ui::widget::BlockContent> {
+        Self::distinct_drafts(doc, key)
+            .into_iter()
+            .flat_map(|(_, blocks)| blocks)
+            .collect()
+    }
+
+    fn distinct_drafts(doc: &AutoCommit, key: &str) -> Vec<(ObjId, Vec<ui::widget::BlockContent>)> {
+        let mut seen: Vec<String> = Vec::new();
+        Self::rich_draft_candidates(doc, key)
+            .into_iter()
+            .filter_map(|root| {
+                let blocks = tilo_rich_text::blocks_under(doc, &root).unwrap_or_default();
+                let text = crate::body::plain_text(&blocks);
+                if seen.contains(&text) {
+                    return None;
+                }
+                seen.push(text);
+                Some((root, blocks))
+            })
+            .collect()
+    }
+
+    /// The draft for `key` as an action carries it.
+    pub fn draft_clips(doc: &AutoCommit, key: &str) -> Vec<tilo_document::ClipBlock> {
+        Self::distinct_drafts(doc, key)
+            .iter()
+            .filter_map(|(root, _)| tilo_doc::model::open(doc, root).ok())
+            .flat_map(|containers| {
+                tilo_doc::model::materialize_region(doc, &containers, tilo_doc::model::Region::Body)
+            })
+            .map(|view| tilo_rich_text::clip_block(&view))
+            .collect()
+    }
+
+    /// The draft's plain text, a line per paragraph.
+    pub fn draft_text(doc: &AutoCommit, key: &str) -> String {
+        crate::body::plain_text(&Self::draft_blocks(doc, key))
+    }
+
+    /// Replace the draft with `text` as one paragraph (line breaks inside
+    /// it), as if typed: a staged draft, a test.
+    pub fn set_draft(doc: &mut AutoCommit, key: &str, text: &str) {
+        let blocks = if text.is_empty() {
+            Vec::new()
+        } else {
+            vec![ui::widget::BlockContent::paragraph("", text)]
+        };
+        let _ = Self::replace_rich_draft(doc, key, &blocks);
+    }
+
+    /// Empty the draft once it is sent.
+    pub fn clear_draft(doc: &mut AutoCommit, key: &str) {
+        let blocks = Self::draft_blocks(doc, key);
+        let empty = blocks.len() <= 1 && blocks.iter().all(|block| block.text.is_empty());
+        if empty && Self::rich_draft_candidates(doc, key).len() == 1 {
+            return;
+        }
+        let _ = Self::replace_rich_draft(doc, key, &[]);
     }
 
     // -----------------------------------------------------------------------
@@ -1564,6 +1735,27 @@ impl ChatDoc {
         wrote
     }
 
+    /// Whether the roster row already matches this peer. Does not create maps.
+    pub fn user_is_current(
+        doc: &AutoCommit,
+        id: &str,
+        name: &str,
+        initials: &str,
+        color: usize,
+        status: Presence,
+    ) -> bool {
+        let Some(users) = map_at(doc, &ROOT, "users") else {
+            return false;
+        };
+        let Some(user) = map_at(doc, &users, id) else {
+            return false;
+        };
+        read_str(doc, &user, "name").unwrap_or_default() == name
+            && read_str(doc, &user, "initials").unwrap_or_default() == initials
+            && read_i64_coerced(doc, &user, "color_idx").unwrap_or(0) == color as i64
+            && read_str(doc, &user, "status").unwrap_or_default() == status.as_str()
+    }
+
     /// The peer's `read` watermark map (channel → count), created on demand
     /// under its own user id. Keyed by `user` so two peers never clobber each
     /// other's unread badges.
@@ -1574,10 +1766,13 @@ impl ChatDoc {
 
     /// A peer's read watermark for `channel` (0 if never opened).
     pub fn read_watermark(doc: &AutoCommit, channel: &str, user: &str) -> i64 {
-        match map_at(doc, &ROOT, "read").and_then(|r| map_at(doc, &r, user)) {
-            Some(m) => read_i64_coerced(doc, &m, channel).unwrap_or(0),
-            None => 0,
-        }
+        // The winner first (where `read_map` writes), then any concurrently
+        // created `read` map that still holds this peer's marks.
+        map_candidates(doc, &ROOT, "read")
+            .iter()
+            .filter_map(|r| map_at(doc, r, user))
+            .find_map(|m| read_i64_coerced(doc, &m, channel))
+            .unwrap_or(0)
     }
 
     /// Unread top-level messages in `channel` for `user`.
@@ -1749,13 +1944,13 @@ impl ChatDoc {
         if let Some(chans) = map_at(doc, &ROOT, "channels") {
             let _ = doc.delete(&chans, id);
         }
-        if let Some(msgs) = map_at(doc, &ROOT, "messages") {
+        for msgs in map_candidates(doc, &ROOT, "messages") {
             let _ = doc.delete(&msgs, id);
         }
         if let Some(voice) = map_at(doc, &ROOT, "voice") {
             let _ = doc.delete(&voice, id);
         }
-        if let Some(drafts) = map_at(doc, &ROOT, "drafts") {
+        for drafts in map_candidates(doc, &ROOT, RICH_DRAFTS) {
             let _ = doc.delete(&drafts, id);
         }
     }
@@ -2076,17 +2271,18 @@ impl ChatDoc {
     }
 
     pub fn list_messages(doc: &AutoCommit, channel: &str) -> Vec<Message> {
-        let Some(root_map) = map_at(doc, &ROOT, "messages") else {
-            return vec![];
-        };
-        let Some(list) = list_at(doc, &root_map, channel) else {
-            return vec![];
-        };
+        let lists = message_lists(doc, channel);
+        let rows: Vec<ObjId> = lists
+            .iter()
+            .flat_map(|list| {
+                (0..doc.length(list)).filter_map(move |i| match doc.get(list, i) {
+                    Ok(Some((Value::Object(ObjType::Map), m))) => Some(m),
+                    _ => None,
+                })
+            })
+            .collect();
         let mut out = Vec::new();
-        for i in 0..doc.length(&list) {
-            let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) else {
-                continue;
-            };
+        for m in rows {
             let parent = read_str(doc, &m, "parent").unwrap_or_default();
             out.push(Message {
                 id: read_str(doc, &m, "id").unwrap_or_default(),
@@ -2094,6 +2290,7 @@ impl ChatDoc {
                 author: read_str(doc, &m, "author").unwrap_or_default(),
                 ts: read_i64_coerced(doc, &m, "ts").unwrap_or(0),
                 text: read_text(doc, &m, "text").unwrap_or_default(),
+                body: Self::read_message_body(doc, &m),
                 edited: read_bool(doc, &m, "edited").unwrap_or(false),
                 history: Self::read_history(doc, &m),
                 parent: if parent.is_empty() {
@@ -2108,6 +2305,11 @@ impl ChatDoc {
                 work: Self::read_work(doc, &m),
                 pinned: read_bool(doc, &m, "pinned").unwrap_or(false),
             });
+        }
+        if lists.len() > 1 {
+            // Rows from concurrently created lists interleave by time; the
+            // sort is stable, so one list's own order is kept on ties.
+            out.sort_by_key(|m| m.ts);
         }
         out
     }
@@ -2199,18 +2401,7 @@ impl ChatDoc {
 
     fn read_attachment(doc: &AutoCommit, msg: &ObjId) -> Option<Attachment> {
         let a = map_at(doc, msg, "attachment")?;
-        // A historic row can still carry a peer-local `path`. Preserve it in
-        // this peer's projection so the file card is not erased, but never
-        // read it here or write it back as a blob: only an explicit local
-        // re-share enters the bounded importer and collaborative document.
-        let blob = {
-            let current = read_str(doc, &a, "blob").unwrap_or_default();
-            if current.is_empty() {
-                read_str(doc, &a, "path").unwrap_or_default()
-            } else {
-                current
-            }
-        };
+        let blob = read_str(doc, &a, "blob").unwrap_or_default();
         match read_str(doc, &a, "kind").unwrap_or_default().as_str() {
             "image" => Some(Attachment::Image {
                 name: read_str(doc, &a, "name").unwrap_or_default(),
@@ -2246,110 +2437,39 @@ impl ChatDoc {
         serde_json::from_str(&raw).ok()
     }
 
-    /// The agent record stored on a message, or `None` for an ordinary one.
-    /// New rows use the native CRDT map written by [`Self::write_work`]. The
-    /// JSON fallback is read-only compatibility for documents saved by older
-    /// releases; the next real agent update replaces it with the native form.
+    /// The agent record stored on a message, or `None` for an ordinary one,
+    /// as the native CRDT map written by [`Self::write_work`].
     fn read_work(doc: &AutoCommit, msg: &ObjId) -> Option<crate::model::AgentWork> {
-        if let Some(record) = map_at(doc, msg, "work") {
-            return Self::read_native_work(doc, &record);
-        }
-        let raw = read_str(doc, msg, "work").unwrap_or_default();
-        if raw.is_empty() {
-            return None;
-        }
-        serde_json::from_str(&raw).ok()
+        let record = map_at(doc, msg, "work")?;
+        Self::read_native_work(doc, &record)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one compatibility reader keeps the native and two legacy AgentWork schemas adjacent"
-    )]
     fn read_native_work(doc: &AutoCommit, record: &ObjId) -> Option<crate::model::AgentWork> {
         let transition = serde_json::from_str::<StoredAgentTransition>(
             &read_str(doc, record, "transition").unwrap_or_default(),
         )
-        .ok();
-        let (state, since) = if let Some(transition) = transition {
-            (transition.state, transition.since)
-        } else {
-            // Compatibility with the initial native-map rollout. Its next
-            // update writes `transition` and thereafter ignores these fields.
-            let state = map_at(doc, record, "state")?;
-            let state = match read_str(doc, &state, "kind").unwrap_or_default().as_str() {
-                "taken" => crate::model::AgentWorkState::Taken,
-                "waiting" => crate::model::AgentWorkState::Waiting {
-                    app: read_str(doc, &state, "app").unwrap_or_default(),
-                },
-                "doing" => crate::model::AgentWorkState::Doing {
-                    did: read_str(doc, &state, "did").unwrap_or_default(),
-                    about: read_str(doc, &state, "about").unwrap_or_default(),
-                },
-                "done" => crate::model::AgentWorkState::Done {
-                    did: read_str(doc, &state, "did").unwrap_or_default(),
-                },
-                "refused" => crate::model::AgentWorkState::Refused,
-                _ => return None,
-            };
-            (state, read_i64_coerced(doc, record, "since").unwrap_or(0))
-        };
+        .ok()?;
+        let (state, since) = (transition.state, transition.since);
         // Reasoning is one atomic scalar because route and explanation are one
-        // authored claim. Support the previous native map only while reading
-        // old documents; the next write replaces it with this scalar.
-        let reasoning = if map_at(doc, record, "reasoning").is_some() {
-            map_at(doc, record, "reasoning").and_then(|reasoning| {
-                if !read_bool(doc, &reasoning, "present").unwrap_or(false) {
-                    return None;
-                }
-                let route = match read_str(doc, &reasoning, "route")
-                    .unwrap_or_default()
-                    .as_str()
-                {
-                    "model" => crate::model::AgentRoute::Model,
-                    "floor" => crate::model::AgentRoute::Floor,
-                    _ => return None,
-                };
-                Some(crate::model::AgentReasoning {
-                    route,
-                    why: read_str(doc, &reasoning, "why").unwrap_or_default(),
-                })
-            })
-        } else {
-            serde_json::from_str::<Option<crate::model::AgentReasoning>>(
-                &read_str(doc, record, "reasoning").unwrap_or_default(),
-            )
-            .ok()
-            .flatten()
-        };
+        // authored claim.
+        let reasoning = serde_json::from_str::<Option<crate::model::AgentReasoning>>(
+            &read_str(doc, record, "reasoning").unwrap_or_default(),
+        )
+        .ok()
+        .flatten();
         let mut trace_with_order = Vec::new();
         if let Some(rows) = map_at(doc, record, "trace") {
-            for key in doc.keys(&rows) {
-                let Some(row) = map_at(doc, &rows, &key) else {
+            for id in doc.keys(&rows) {
+                let Some(row) = map_at(doc, &rows, &id) else {
                     continue;
                 };
                 if !read_bool(doc, &row, "present").unwrap_or(false) {
                     continue;
                 }
-                let outcome = if let Ok(outcome) =
-                    serde_json::from_str::<crate::model::AgentStepOutcome>(
-                        &read_str(doc, &row, "outcome").unwrap_or_default(),
-                    ) {
-                    outcome
-                } else {
-                    match read_str(doc, &row, "outcome").unwrap_or_default().as_str() {
-                        "asked" => crate::model::AgentStepOutcome::Asked,
-                        "applied" => crate::model::AgentStepOutcome::Applied,
-                        "no_change" => crate::model::AgentStepOutcome::NoChange,
-                        "refused" => crate::model::AgentStepOutcome::Refused {
-                            why: read_str(doc, &row, "why").unwrap_or_default(),
-                        },
-                        _ => continue,
-                    }
-                };
-                let id = if is_legacy_trace_key(&key) {
-                    legacy_step_id(&key)
-                } else {
-                    key.clone()
+                let Ok(outcome) = serde_json::from_str::<crate::model::AgentStepOutcome>(
+                    &read_str(doc, &row, "outcome").unwrap_or_default(),
+                ) else {
+                    continue;
                 };
                 let sequence = read_i64_coerced(doc, &row, "sequence").unwrap_or(0).max(0) as u64;
                 trace_with_order.push((
@@ -2428,1062 +2548,1266 @@ mod tests {
         doc
     }
 
-    /// A message's `reference` — the address of the thing it is about —
-    /// survives being written and read back, and an ordinary message carries
-    /// none. Read through [`ChatDoc::list_messages`], the same path every
-    /// consumer uses, not a lower-level accessor that could drift from it.
     #[test]
-    fn a_messages_reference_round_trips_and_an_ordinary_message_carries_none() {
-        let mut doc = seeded();
-        let about = tilo_reference::ResourceRef::whole(
-            "files.entry",
-            "files.entry:/var/workspace/harbour.png",
-            "harbour.png",
-        );
-        ChatDoc::push_message_with_id(
-            &mut doc,
-            "c_general",
-            "m_about",
-            NewMessage {
-                author: model::ME.into(),
-                ts: 1000,
-                text: "look at this".into(),
-                reference: Some(about.clone()),
-                ..Default::default()
-            },
-        );
-        ChatDoc::push_message_with_id(
-            &mut doc,
-            "c_general",
-            "m_plain",
-            NewMessage {
-                author: model::ME.into(),
-                ts: 1001,
-                text: "hi".into(),
-                ..Default::default()
-            },
-        );
-        let msgs = ChatDoc::list_messages(&doc, "c_general");
-        let with_ref = msgs.iter().find(|m| m.id == "m_about").unwrap();
-        assert_eq!(with_ref.reference, Some(about));
-        let plain = msgs.iter().find(|m| m.id == "m_plain").unwrap();
-        assert_eq!(
-            plain.reference, None,
-            "an ordinary message must carry no reference"
-        );
-    }
-
-    #[test]
-    fn replayed_message_id_is_exactly_once_and_cannot_break_thread_identity() {
-        let mut doc = seeded();
-        let message = NewMessage {
-            author: model::ME.into(),
-            ts: NOW,
-            text: "idempotent send".into(),
-            ..Default::default()
-        };
-        ChatDoc::push_message_with_id(&mut doc, "c_general", "m_retry", message.clone());
-        // A duplicate delivery may carry an equivalent decoded payload, but it
-        // must not create a second row or turn `chat.message:m_retry` into an
-        // ambiguous resource.
-        ChatDoc::push_message_with_id(&mut doc, "c_general", "m_retry", message);
-        assert_eq!(
-            ChatDoc::list_messages(&doc, "c_general")
-                .iter()
-                .filter(|row| row.id == "m_retry")
-                .count(),
-            1
-        );
-
-        // A message action cannot manufacture a hidden conversation or a
-        // reply-to-reply thread edge when replayed from outside the visible
-        // UI. (A parent not yet received remains valid so delivery ordering
-        // cannot lose a reply.)
-        assert!(!ChatDoc::accepts_message_action(
-            &doc,
-            "c_missing",
-            "m_missing_channel",
-            "orphan",
-            None,
-            None,
-        ));
-        ChatDoc::push_message_with_id(
-            &mut doc,
-            "c_general",
-            "m_first_reply",
-            NewMessage {
-                author: model::ME.into(),
-                ts: NOW,
-                text: "first reply".into(),
-                parent: Some("m_retry".into()),
-                ..Default::default()
-            },
-        );
-        assert!(!ChatDoc::accepts_message_action(
-            &doc,
-            "c_general",
-            "m_nested_reply",
-            "nested reply",
-            Some("m_first_reply"),
-            None,
-        ));
-        assert!(ChatDoc::list_messages(&doc, "c_missing").is_empty());
-        assert!(
-            ChatDoc::list_messages(&doc, "c_general")
-                .iter()
-                .all(|row| row.id != "m_nested_reply")
-        );
-    }
-
-    #[test]
-    fn seed_starter_is_minimal_real_and_has_no_demo_content() {
-        // The live first-run seed: just the local person + an empty workspace.
-        let mut doc = AutoCommit::new();
-        ChatDoc::seed_starter(&mut doc, model::ME, "Ada Lovelace", "AL");
-
-        let users = ChatDoc::list_users(&doc);
-        assert_eq!(users.len(), 1, "only the local user — no fabricated people");
-        assert_eq!(users[0].id, model::ME);
-        assert_eq!(users[0].name, "Ada Lovelace");
-
-        let ws = ChatDoc::list_workspaces(&doc);
-        assert_eq!(ws.len(), 1);
-        assert_eq!(ws[0].id, "ws_home");
-        assert!(ws.iter().all(|w| w.id != "ws_acme"), "no demo workspaces");
-
-        let chans = ChatDoc::list_channels(&doc);
-        assert!(
-            chans
-                .iter()
-                .any(|c| c.id == "c_general" && c.kind == ChannelKind::Text)
-        );
-        assert!(chans.iter().any(|c| c.kind == ChannelKind::Voice));
-        assert!(chans.iter().all(|c| c.id != "c_crit"), "no demo channels");
-        assert!(
-            ChatDoc::list_messages(&doc, "c_general").is_empty(),
-            "a real first run has no fabricated conversation"
-        );
-
-        // Idempotent: adopting or re-seeding never duplicates.
-        ChatDoc::seed_starter(&mut doc, model::ME, "X", "X");
-        assert_eq!(ChatDoc::list_users(&doc).len(), 1);
-        assert_eq!(ChatDoc::list_workspaces(&doc).len(), 1);
-    }
-
-    #[test]
-    fn seed_is_idempotent() {
-        let mut doc = seeded();
-        let before = ChatDoc::list_channels(&doc).len();
-        ChatDoc::seed_if_empty(&mut doc);
-        let after = ChatDoc::list_channels(&doc).len();
-        assert_eq!(before, after, "second seed must not duplicate channels");
-        assert!(before >= 12);
-    }
-
-    #[test]
-    fn workspaces_and_channels_round_trip() {
-        let doc = seeded();
-        let ws = ChatDoc::list_workspaces(&doc);
-        assert_eq!(ws.first().map(|w| w.name.as_str()), Some("Acme Design"));
-        let acme: Vec<_> = ChatDoc::list_channels(&doc)
-            .into_iter()
-            .filter(|c| c.workspace == "ws_acme")
-            .collect();
-        assert!(acme.iter().any(|c| c.name == "design-crit"));
-        assert!(acme.iter().any(|c| c.kind == ChannelKind::Voice));
-    }
-
-    #[test]
-    fn messages_carry_reactions_thread_and_attachment() {
-        let doc = seeded();
-        let msgs = ChatDoc::list_messages(&doc, "c_crit");
-        let concept = msgs.iter().find(|m| m.id == "m_concept").unwrap();
-        assert!(matches!(concept.attachment, Some(Attachment::Image { .. })));
-        assert!(concept.reactions.iter().any(|r| r.emoji == "❤️"));
-        // thread replies hang off the concept image
-        assert_eq!(model::reply_count(&msgs, "m_concept"), 3);
-        // an edited message preserves its prior version
-        let sora = msgs.iter().find(|m| m.id == "m_sora").unwrap();
-        assert!(sora.edited);
-        assert_eq!(sora.history.len(), 1);
-    }
-
-    #[test]
-    fn toggle_reaction_writes_through_crdt() {
-        let mut doc = seeded();
-        // m_me1 starts with no reactions
-        ChatDoc::toggle_reaction(&mut doc, "c_crit", "m_me1", "🔥", model::ME);
-        let msgs = ChatDoc::list_messages(&doc, "c_crit");
-        let m = msgs.iter().find(|m| m.id == "m_me1").unwrap();
-        assert!(
-            m.reactions
-                .iter()
-                .any(|r| r.emoji == "🔥" && r.reacted_by(model::ME))
-        );
-        // toggling again removes it and prunes the emoji
-        ChatDoc::toggle_reaction(&mut doc, "c_crit", "m_me1", "🔥", model::ME);
-        let msgs = ChatDoc::list_messages(&doc, "c_crit");
-        let m = msgs.iter().find(|m| m.id == "m_me1").unwrap();
-        assert!(!m.reactions.iter().any(|r| r.emoji == "🔥"));
-    }
-
-    #[test]
-    fn edit_message_archives_history() {
-        let mut doc = seeded();
-        ChatDoc::edit_message(&mut doc, "c_crit", "m_me1", "Edited body.", NOW);
-        let msgs = ChatDoc::list_messages(&doc, "c_crit");
-        let m = msgs.iter().find(|m| m.id == "m_me1").unwrap();
-        assert_eq!(m.text, "Edited body.");
-        assert!(m.edited);
-        assert_eq!(m.history.len(), 1, "previous body archived");
-    }
-
-    #[test]
-    fn editing_a_long_message_splices_only_the_changed_span() {
-        // Editing a message re-sends its whole body. Deleting and reinserting
-        // it tombstones every character on every edit, so a message that is
-        // corrected a few times costs many times its own length forever.
-        let mut doc = seeded();
-        let body = "The deploy finished at 14:02 and the canary is green across \
-                    all three regions; rolling the rest of the fleet now."
-            .to_string();
-        ChatDoc::edit_message(&mut doc, "c_crit", "m_me1", &body, NOW);
-        let baseline = doc.save().len();
-
-        // 30 corrections, each touching only the last word.
-        for i in 0..30 {
-            let edited = format!("{body} v{i}");
-            ChatDoc::edit_message(&mut doc, "c_crit", "m_me1", &edited, NOW + i64::from(i));
-        }
-        let grown = doc.save().len() - baseline;
-
-        let msgs = ChatDoc::list_messages(&doc, "c_crit");
-        let m = msgs.iter().find(|m| m.id == "m_me1").unwrap();
-        assert_eq!(
-            m.text,
-            format!("{body} v29"),
-            "the last edit must be the body"
-        );
-        // Each edit legitimately archives the previous body into `history`, so
-        // the bound is against the archive cost, not zero. A full rewrite would
-        // add the body a second time per edit on top of that.
-        assert!(
-            grown < 30 * body.len() * 3 / 2,
-            "30 one-word edits grew the document by {grown} bytes for a {}-char \
-             body — edit_message is rewriting the whole text",
-            body.len()
-        );
-    }
-
-    #[test]
-    fn clearing_an_unset_draft_is_free() {
-        let mut doc = seeded();
-        ChatDoc::draft_obj(&mut doc, "c_crit");
-        let before = doc.save().len();
-
-        for _ in 0..20 {
-            ChatDoc::clear_draft(&mut doc, "c_crit");
-        }
-
-        assert_eq!(ChatDoc::draft_text(&doc, "c_crit"), "");
-        assert_eq!(
-            doc.save().len(),
-            before,
-            "clearing an already-empty draft must not grow the document"
-        );
-    }
-
-    #[test]
-    fn draft_round_trips_and_send_appends() {
-        let mut doc = seeded();
-        let before = ChatDoc::list_messages(&doc, "c_crit").len();
-        let draft = ChatDoc::draft_obj(&mut doc, "c_crit");
-        let _ = doc.splice_text(&draft, 0, 0, "hi there");
-        assert_eq!(ChatDoc::draft_text(&doc, "c_crit"), "hi there");
-        ChatDoc::push_message(
-            &mut doc,
-            "c_crit",
-            NewMessage {
-                author: model::ME.into(),
-                ts: NOW,
-                text: "hi there".into(),
-                ..Default::default()
-            },
-        );
-        ChatDoc::clear_draft(&mut doc, "c_crit");
-        assert_eq!(ChatDoc::draft_text(&doc, "c_crit"), "");
-        assert_eq!(ChatDoc::list_messages(&doc, "c_crit").len(), before + 1);
-    }
-
-    #[test]
-    fn channels_carry_category_and_voice_seed() {
-        let doc = seeded();
-        let crit = ChatDoc::list_channels(&doc)
-            .into_iter()
-            .find(|c| c.id == "c_crit")
-            .unwrap();
-        assert_eq!(crit.category, "cat_acme_main");
-        let cats = ChatDoc::list_categories(&doc);
-        assert!(
-            cats.iter()
-                .any(|c| c.workspace == "ws_acme" && c.name == "Voice")
-        );
-        // The huddle is pre-populated with three members; Aria is talking.
-        let members = ChatDoc::list_voice_members(&doc, "c_huddle");
-        assert_eq!(members.len(), 3);
-        assert!(members.iter().any(|m| m.user == "u_aria" && m.talking));
-        assert!(members.iter().any(|m| m.user == "u_milo" && m.muted));
-        assert!(members.iter().any(|m| m.user == "u_sora" && m.audio_only));
-    }
-
-    #[test]
-    fn channel_crud_roundtrips() {
-        let mut doc = seeded();
-        let before = ChatDoc::list_channels(&doc).len();
-        let id = ChatDoc::create_channel(
-            &mut doc,
-            "ws_acme",
-            "cat_acme_main",
-            "design-ops",
-            ChannelKind::Text,
-        );
-        assert_eq!(ChatDoc::list_channels(&doc).len(), before + 1);
-        ChatDoc::rename_channel(&mut doc, &id, "ops");
-        let c = ChatDoc::list_channels(&doc)
-            .into_iter()
-            .find(|c| c.id == id)
-            .unwrap();
-        assert_eq!(c.name, "ops");
-        // Move into the voice category, then delete.
-        ChatDoc::move_channel(&mut doc, &id, "cat_acme_voice");
-        let c = ChatDoc::list_channels(&doc)
-            .into_iter()
-            .find(|c| c.id == id)
-            .unwrap();
-        assert_eq!(c.category, "cat_acme_voice");
-        ChatDoc::delete_channel(&mut doc, &id);
-        assert!(ChatDoc::list_channels(&doc).into_iter().all(|c| c.id != id));
-    }
-
-    #[test]
-    fn reorder_channel_swaps_adjacent_order() {
-        let mut doc = seeded();
-        // general(0), design-crit(1) in cat_acme_main — move design-crit up.
-        let general_before = ChatDoc::list_channels(&doc)
-            .into_iter()
-            .find(|c| c.id == "c_general")
-            .unwrap()
-            .order;
-        let crit_before = ChatDoc::list_channels(&doc)
-            .into_iter()
-            .find(|c| c.id == "c_crit")
-            .unwrap()
-            .order;
-        assert!(crit_before > general_before);
-        ChatDoc::reorder_channel(&mut doc, "c_crit", true);
-        let general_after = ChatDoc::list_channels(&doc)
-            .into_iter()
-            .find(|c| c.id == "c_general")
-            .unwrap()
-            .order;
-        let crit_after = ChatDoc::list_channels(&doc)
-            .into_iter()
-            .find(|c| c.id == "c_crit")
-            .unwrap()
-            .order;
-        assert!(
-            crit_after < general_after,
-            "design-crit now sorts before general"
-        );
-    }
-
-    #[test]
-    fn deleting_category_rehomes_its_channels() {
-        let mut doc = seeded();
-        ChatDoc::delete_category(&mut doc, "cat_acme_main");
-        assert!(
-            ChatDoc::list_categories(&doc)
-                .into_iter()
-                .all(|c| c.id != "cat_acme_main")
-        );
-        // Its channels survive, rehomed to the uncategorised group.
-        let general = ChatDoc::list_channels(&doc)
-            .into_iter()
-            .find(|c| c.id == "c_general")
-            .unwrap();
-        assert_eq!(general.category, "");
-    }
-
-    #[test]
-    fn voice_join_leave_and_state() {
-        let mut doc = seeded();
-        ChatDoc::voice_join(&mut doc, "c_huddle", "u_me");
-        assert_eq!(ChatDoc::voice_count(&doc, "c_huddle"), 4);
-        ChatDoc::voice_set_state(
-            &mut doc,
-            "c_huddle",
-            "u_me",
-            VoiceState {
-                talking: true,
-                muted: true,
-                deafened: true,
-                audio_only: true,
-            },
-        );
-        let me = ChatDoc::list_voice_members(&doc, "c_huddle")
-            .into_iter()
-            .find(|m| m.user == "u_me")
-            .unwrap();
-        assert!(me.talking);
-        assert!(me.muted);
-        assert!(me.deafened);
-        assert!(me.audio_only);
-        ChatDoc::voice_leave(&mut doc, "c_huddle", "u_me");
-        assert_eq!(ChatDoc::voice_count(&doc, "c_huddle"), 3);
-    }
-
-    #[test]
-    fn voice_screen_share_round_trips_through_the_shared_membership() {
-        let mut doc = seeded();
-        ChatDoc::voice_join(&mut doc, "c_huddle", "u_me");
-        let sharing = |doc: &AutoCommit| {
-            ChatDoc::list_voice_members(doc, "c_huddle")
-                .into_iter()
-                .find(|m| m.user == "u_me")
-                .is_some_and(|m| m.sharing)
-        };
-        assert!(!sharing(&doc), "a fresh member is not sharing");
-        let video = |doc: &AutoCommit| {
-            ChatDoc::list_voice_members(doc, "c_huddle")
-                .into_iter()
-                .find(|m| m.user == "u_me")
-                .and_then(|m| m.video)
-        };
-        assert_eq!(
-            video(&doc),
-            None,
-            "a member that never announced is a legacy peer"
-        );
-        let caps = crate::model::VideoCaps {
-            hardware_decode: vec!["av1".into(), "vp9".into()],
-            software_decode: vec!["h264".into()],
-        };
-        ChatDoc::voice_set_video_caps(&mut doc, "c_huddle", "u_me", &caps);
-        assert_eq!(video(&doc), Some(caps));
-        ChatDoc::voice_set_sharing(&mut doc, "c_huddle", "u_me", true);
-        assert!(sharing(&doc), "a started share is visible to every peer");
-        ChatDoc::voice_set_sharing(&mut doc, "c_huddle", "u_me", false);
-        assert!(!sharing(&doc), "a stopped share clears the shared flag");
-    }
-
-    #[test]
-    fn document_survives_a_save_load_cycle() {
-        // The persistence contract: send a message, save the raw bytes, load
-        // them into a fresh document, and the message is still there.
-        let mut doc = seeded();
-        ChatDoc::push_message(
-            &mut doc,
-            "c_general",
-            NewMessage {
-                author: "u_me".into(),
-                ts: NOW,
-                text: "persisted!".into(),
-                ..Default::default()
-            },
-        );
-        let bytes = doc.save();
-        let reloaded = AutoCommit::load(&bytes).unwrap();
-        assert!(
-            ChatDoc::is_seeded(&reloaded),
-            "reloaded doc keeps the seed guard"
-        );
-        let msgs = ChatDoc::list_messages(&reloaded, "c_general");
-        assert!(
-            msgs.iter().any(|m| m.text == "persisted!"),
-            "message survived reload"
-        );
-    }
-
-    #[test]
-    fn create_workspace_scaffolds_a_usable_workspace() {
-        let mut doc = seeded();
-        let before = ChatDoc::list_workspaces(&doc).len();
-        let id = ChatDoc::create_workspace(&mut doc, "Weekend Jam Two");
-        let wss = ChatDoc::list_workspaces(&doc);
-        assert_eq!(wss.len(), before + 1, "a workspace was created");
-        let ws = wss.iter().find(|w| w.id == id).unwrap();
-        assert_eq!(ws.name, "Weekend Jam Two");
-        assert_eq!(ws.glyph, "WJ", "glyph is a monogram of the name");
-        assert!(
-            ws.order as usize >= before,
-            "appended at the end of the rail"
-        );
-        // It comes with a usable text channel and a voice channel to call in.
-        let chans: Vec<_> = ChatDoc::list_channels(&doc)
-            .into_iter()
-            .filter(|c| c.workspace == id)
-            .collect();
-        assert!(
-            chans
-                .iter()
-                .any(|c| c.name == "general" && c.kind == ChannelKind::Text)
-        );
-        assert!(chans.iter().any(|c| c.kind == ChannelKind::Voice));
-    }
-
-    #[test]
-    fn unread_derives_from_the_read_watermark() {
-        let mut doc = seeded();
-        // #design-crit has eight top-level messages (thread replies excluded).
-        assert_eq!(ChatDoc::top_level_count(&doc, "c_crit"), 8);
-        // Never opened → every top-level message is unread.
-        assert_eq!(ChatDoc::unread_count(&doc, "c_crit", model::ME), 8);
-        // Reading it clears the badge…
-        ChatDoc::mark_read(&mut doc, "c_crit", model::ME);
-        assert_eq!(ChatDoc::unread_count(&doc, "c_crit", model::ME), 0);
-        // …and a new message makes it unread again.
-        ChatDoc::push_message(
-            &mut doc,
-            "c_crit",
-            NewMessage {
-                author: "u_aria".into(),
-                ts: NOW,
-                text: "one more".into(),
-                ..Default::default()
-            },
-        );
-        assert_eq!(ChatDoc::unread_count(&doc, "c_crit", model::ME), 1);
-        // A threaded reply is not a top-level message, so it doesn't count.
-        ChatDoc::push_message(
-            &mut doc,
-            "c_crit",
-            NewMessage {
-                author: "u_aria".into(),
-                ts: NOW,
-                text: "in the thread".into(),
-                parent: Some("m_concept".into()),
-                ..Default::default()
-            },
-        );
-        assert_eq!(
-            ChatDoc::unread_count(&doc, "c_crit", model::ME),
-            1,
-            "thread replies don't bump unread"
-        );
-    }
-
-    #[test]
-    fn mark_read_is_idempotent_and_does_not_churn() {
-        // Reading a channel twice with no new messages must not append a new
-        // change (the watermark write is guarded on a real value change).
-        let mut doc = seeded();
-        ChatDoc::mark_read(&mut doc, "c_crit", model::ME);
-        let heads = doc.get_heads();
-        ChatDoc::mark_read(&mut doc, "c_crit", model::ME);
-        assert_eq!(doc.get_heads(), heads, "a no-op mark_read writes nothing");
-    }
-
-    #[test]
-    fn concurrent_voice_joins_converge_to_the_full_roster() {
-        // Two peers join the same voice channel before syncing. Because the
-        // voice-membership map is pre-created with the channel (shared object),
-        // their concurrent joins add distinct user keys to the *same* map and a
-        // merge keeps BOTH — no silently-dropped participant.
-        let mut a = AutoCommit::new();
-        ChatDoc::seed_starter(&mut a, "u_alice", "Alice", "AL");
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        // Concurrent, un-synced joins.
-        ChatDoc::voice_join(&mut a, "c_lounge", "u_alice");
-        ChatDoc::voice_set_ticket(&mut a, "c_lounge", "u_alice", "iroh://alice");
-        ChatDoc::voice_join(&mut b, "c_lounge", "u_bob");
-        ChatDoc::voice_set_ticket(&mut b, "c_lounge", "u_bob", "iroh://bob");
-        // Merge both ways.
-        let mut b2 = AutoCommit::load(&b.save()).unwrap();
-        a.merge_incoming(&mut b2).unwrap();
-        let members = ChatDoc::list_voice_members(&a, "c_lounge");
-        assert_eq!(
-            members.len(),
-            2,
-            "both concurrent joiners survive the merge"
-        );
-        assert!(
-            members
-                .iter()
-                .any(|m| m.user == "u_alice" && m.ticket.as_deref() == Some("iroh://alice"))
-        );
-        assert!(
-            members
-                .iter()
-                .any(|m| m.user == "u_bob" && m.ticket.as_deref() == Some("iroh://bob"))
-        );
-    }
-
-    #[test]
-    fn video_attachment_round_trips_through_the_crdt() {
-        // A video share references a portable content hash (no bytes in the
-        // CRDT) and reads back with its resolution + size intact.
-        let mut doc = seeded();
-        ChatDoc::push_message(
-            &mut doc,
-            "c_general",
-            NewMessage {
-                author: model::ME.into(),
-                ts: NOW,
-                attachment: Some(Attachment::Video {
-                    name: "demo.mp4".into(),
-                    blob: "a".repeat(64),
-                    w: 1920,
-                    h: 1080,
-                    size: 4_200_000,
-                }),
-                ..Default::default()
-            },
-        );
-        let msgs = ChatDoc::list_messages(&doc, "c_general");
-        match msgs.last().and_then(|m| m.attachment.clone()) {
-            Some(Attachment::Video {
-                name,
-                blob,
-                w,
-                h,
-                size,
-            }) => {
-                assert_eq!(name, "demo.mp4");
-                assert_eq!(blob, "a".repeat(64));
-                assert_eq!((w, h), (1920, 1080));
-                assert_eq!(size, 4_200_000);
-            }
-            other => panic!("expected a Video attachment, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn attachment_blobs_are_portable_hashes_not_paths() {
-        let bytes = b"shared attachment bytes";
-        let content = ContentStore::memory();
-        let hash = ChatDoc::store_attachment_blob(&content, bytes).expect("small blob accepted");
-        assert_eq!(hash.len(), 64);
-        assert!(hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
-        assert_eq!(content.read(&hash), Some(bytes.to_vec()));
-    }
-
-    #[test]
-    fn attachment_blob_import_fails_closed_at_the_size_limit() {
-        let too_large = vec![0; MAX_ATTACHMENT_BYTES as usize + 1];
-        assert!(ChatDoc::store_attachment_blob(&ContentStore::memory(), &too_large).is_none());
-    }
-
-    #[test]
-    fn legacy_local_paths_remain_visible_but_are_never_promoted_in_sync() {
-        let mut doc = seeded();
-        let id = ChatDoc::push_message_with_id(
-            &mut doc,
-            "c_crit",
-            "m_legacy_attachment",
-            NewMessage {
-                author: model::ME.into(),
-                ts: NOW,
-                attachment: Some(Attachment::File {
-                    name: "old-local.pdf".into(),
-                    blob: String::new(),
-                    size: 7,
-                }),
-                ..Default::default()
-            },
-        );
-        let message = ChatDoc::find_message_obj(&doc, "c_crit", &id).unwrap();
-        let attachment = map_at(&doc, &message, "attachment").unwrap();
-        let _ = doc.put(&attachment, "path", "/old-machine/old-local.pdf");
-
-        ChatDoc::migrate_legacy_attachment_paths(&mut doc);
-        let row = ChatDoc::list_messages(&doc, "c_crit")
-            .into_iter()
-            .find(|row| row.id == id)
-            .unwrap();
-        assert_eq!(row.attachment.unwrap().blob(), "/old-machine/old-local.pdf");
-        assert_eq!(
-            read_str(&doc, &attachment, "path").unwrap_or_default(),
-            "/old-machine/old-local.pdf",
-            "sync neither reads nor rewrites a peer-local path"
-        );
-    }
-
-    #[test]
-    fn legacy_migration_has_a_fixed_total_visit_and_write_budget() {
-        let mut doc = seeded();
-        for n in 0..=LEGACY_MIGRATION_VISIT_BUDGET {
-            let id = format!("m_legacy_budget_{n}");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one labelled phase per original scenario, each with its own fresh fixture"
+    )]
+    fn messages_round_trip_references_reactions_threads_and_exactly_once_ids() {
+        // Phase: a_messages_reference_round_trips_and_an_ordinary_message_carries_none.
+        {
+            let mut doc = seeded();
+            let about = tilo_reference::ResourceRef::whole(
+                "files.entry",
+                "files.entry:/var/workspace/harbour.png",
+                "harbour.png",
+            );
             ChatDoc::push_message_with_id(
                 &mut doc,
-                "c_crit",
-                &id,
+                "c_general",
+                "m_about",
+                NewMessage {
+                    author: model::ME.into(),
+                    ts: 1000,
+                    text: "look at this".into(),
+                    reference: Some(about.clone()),
+                    ..Default::default()
+                },
+            );
+            ChatDoc::push_message_with_id(
+                &mut doc,
+                "c_general",
+                "m_plain",
+                NewMessage {
+                    author: model::ME.into(),
+                    ts: 1001,
+                    text: "hi".into(),
+                    ..Default::default()
+                },
+            );
+            let msgs = ChatDoc::list_messages(&doc, "c_general");
+            let with_ref = msgs.iter().find(|m| m.id == "m_about").unwrap();
+            assert_eq!(with_ref.reference, Some(about));
+            let plain = msgs.iter().find(|m| m.id == "m_plain").unwrap();
+            assert_eq!(
+                plain.reference, None,
+                "an ordinary message must carry no reference"
+            );
+        }
+
+        // Phase: replayed_message_id_is_exactly_once_and_cannot_break_thread_identity.
+        {
+            let mut doc = seeded();
+            let message = NewMessage {
+                author: model::ME.into(),
+                ts: NOW,
+                text: "idempotent send".into(),
+                ..Default::default()
+            };
+            ChatDoc::push_message_with_id(&mut doc, "c_general", "m_retry", message.clone());
+            // A duplicate delivery may carry an equivalent decoded payload, but it
+            // must not create a second row or turn `chat.message:m_retry` into an
+            // ambiguous resource.
+            ChatDoc::push_message_with_id(&mut doc, "c_general", "m_retry", message);
+            assert_eq!(
+                ChatDoc::list_messages(&doc, "c_general")
+                    .iter()
+                    .filter(|row| row.id == "m_retry")
+                    .count(),
+                1
+            );
+
+            // A message action cannot manufacture a hidden conversation or a
+            // reply-to-reply thread edge when replayed from outside the visible
+            // UI. (A parent not yet received remains valid so delivery ordering
+            // cannot lose a reply.)
+            assert!(!ChatDoc::accepts_message_action(
+                &doc,
+                "c_missing",
+                "m_missing_channel",
+                "orphan",
+                None,
+                None,
+            ));
+            ChatDoc::push_message_with_id(
+                &mut doc,
+                "c_general",
+                "m_first_reply",
                 NewMessage {
                     author: model::ME.into(),
                     ts: NOW,
-                    attachment: Some(Attachment::File {
-                        name: format!("{n}.txt"),
-                        blob: String::new(),
-                        size: 1,
+                    text: "first reply".into(),
+                    parent: Some("m_retry".into()),
+                    ..Default::default()
+                },
+            );
+            assert!(!ChatDoc::accepts_message_action(
+                &doc,
+                "c_general",
+                "m_nested_reply",
+                "nested reply",
+                Some("m_first_reply"),
+                None,
+            ));
+            assert!(ChatDoc::list_messages(&doc, "c_missing").is_empty());
+            assert!(
+                ChatDoc::list_messages(&doc, "c_general")
+                    .iter()
+                    .all(|row| row.id != "m_nested_reply")
+            );
+        }
+
+        // Phase: messages_carry_reactions_thread_and_attachment.
+        {
+            let doc = seeded();
+            let msgs = ChatDoc::list_messages(&doc, "c_crit");
+            let concept = msgs.iter().find(|m| m.id == "m_concept").unwrap();
+            assert!(matches!(concept.attachment, Some(Attachment::Image { .. })));
+            assert!(concept.reactions.iter().any(|r| r.emoji == "❤️"));
+            // thread replies hang off the concept image
+            assert_eq!(model::reply_count(&msgs, "m_concept"), 3);
+            // an edited message preserves its prior version
+            let sora = msgs.iter().find(|m| m.id == "m_sora").unwrap();
+            assert!(sora.edited);
+            assert_eq!(sora.history.len(), 1);
+        }
+
+        // Phase: toggle_reaction_writes_through_crdt.
+        {
+            let mut doc = seeded();
+            // m_me1 starts with no reactions
+            ChatDoc::toggle_reaction(&mut doc, "c_crit", "m_me1", "🔥", model::ME);
+            let msgs = ChatDoc::list_messages(&doc, "c_crit");
+            let m = msgs.iter().find(|m| m.id == "m_me1").unwrap();
+            assert!(
+                m.reactions
+                    .iter()
+                    .any(|r| r.emoji == "🔥" && r.reacted_by(model::ME))
+            );
+            // toggling again removes it and prunes the emoji
+            ChatDoc::toggle_reaction(&mut doc, "c_crit", "m_me1", "🔥", model::ME);
+            let msgs = ChatDoc::list_messages(&doc, "c_crit");
+            let m = msgs.iter().find(|m| m.id == "m_me1").unwrap();
+            assert!(!m.reactions.iter().any(|r| r.emoji == "🔥"));
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one labelled phase per original scenario, each with its own fresh fixture"
+    )]
+    fn seeded_and_created_workspaces_are_minimal_idempotent_and_durable() {
+        // Phase: seed_starter_is_minimal_real_and_has_no_demo_content.
+        {
+            // The live first-run seed: just the local person + an empty workspace.
+            let mut doc = AutoCommit::new();
+            ChatDoc::seed_starter(&mut doc, model::ME, "Ada Lovelace", "AL");
+
+            let users = ChatDoc::list_users(&doc);
+            assert_eq!(users.len(), 1, "only the local user — no fabricated people");
+            assert_eq!(users[0].id, model::ME);
+            assert_eq!(users[0].name, "Ada Lovelace");
+
+            let ws = ChatDoc::list_workspaces(&doc);
+            assert_eq!(ws.len(), 1);
+            assert_eq!(ws[0].id, "ws_home");
+            assert!(ws.iter().all(|w| w.id != "ws_acme"), "no demo workspaces");
+
+            let chans = ChatDoc::list_channels(&doc);
+            assert!(
+                chans
+                    .iter()
+                    .any(|c| c.id == "c_general" && c.kind == ChannelKind::Text)
+            );
+            assert!(chans.iter().any(|c| c.kind == ChannelKind::Voice));
+            assert!(chans.iter().all(|c| c.id != "c_crit"), "no demo channels");
+            assert!(
+                ChatDoc::list_messages(&doc, "c_general").is_empty(),
+                "a real first run has no fabricated conversation"
+            );
+
+            // Idempotent: adopting or re-seeding never duplicates.
+            ChatDoc::seed_starter(&mut doc, model::ME, "X", "X");
+            assert_eq!(ChatDoc::list_users(&doc).len(), 1);
+            assert_eq!(ChatDoc::list_workspaces(&doc).len(), 1);
+        }
+
+        // Phase: seed_is_idempotent.
+        {
+            let mut doc = seeded();
+            let before = ChatDoc::list_channels(&doc).len();
+            ChatDoc::seed_if_empty(&mut doc);
+            let after = ChatDoc::list_channels(&doc).len();
+            assert_eq!(before, after, "second seed must not duplicate channels");
+            assert!(before >= 12);
+        }
+
+        // Phase: workspaces_and_channels_round_trip.
+        {
+            let doc = seeded();
+            let ws = ChatDoc::list_workspaces(&doc);
+            assert_eq!(ws.first().map(|w| w.name.as_str()), Some("Acme Design"));
+            let acme: Vec<_> = ChatDoc::list_channels(&doc)
+                .into_iter()
+                .filter(|c| c.workspace == "ws_acme")
+                .collect();
+            assert!(acme.iter().any(|c| c.name == "design-crit"));
+            assert!(acme.iter().any(|c| c.kind == ChannelKind::Voice));
+        }
+
+        // Phase: channels_carry_category_and_voice_seed.
+        {
+            let doc = seeded();
+            let crit = ChatDoc::list_channels(&doc)
+                .into_iter()
+                .find(|c| c.id == "c_crit")
+                .unwrap();
+            assert_eq!(crit.category, "cat_acme_main");
+            let cats = ChatDoc::list_categories(&doc);
+            assert!(
+                cats.iter()
+                    .any(|c| c.workspace == "ws_acme" && c.name == "Voice")
+            );
+            // The huddle is pre-populated with three members; Aria is talking.
+            let members = ChatDoc::list_voice_members(&doc, "c_huddle");
+            assert_eq!(members.len(), 3);
+            assert!(members.iter().any(|m| m.user == "u_aria" && m.talking));
+            assert!(members.iter().any(|m| m.user == "u_milo" && m.muted));
+            assert!(members.iter().any(|m| m.user == "u_sora" && m.audio_only));
+        }
+
+        // Phase: create_workspace_scaffolds_a_usable_workspace.
+        {
+            let mut doc = seeded();
+            let before = ChatDoc::list_workspaces(&doc).len();
+            let id = ChatDoc::create_workspace(&mut doc, "Weekend Jam Two");
+            let wss = ChatDoc::list_workspaces(&doc);
+            assert_eq!(wss.len(), before + 1, "a workspace was created");
+            let ws = wss.iter().find(|w| w.id == id).unwrap();
+            assert_eq!(ws.name, "Weekend Jam Two");
+            assert_eq!(ws.glyph, "WJ", "glyph is a monogram of the name");
+            assert!(
+                ws.order as usize >= before,
+                "appended at the end of the rail"
+            );
+            // It comes with a usable text channel and a voice channel to call in.
+            let chans: Vec<_> = ChatDoc::list_channels(&doc)
+                .into_iter()
+                .filter(|c| c.workspace == id)
+                .collect();
+            assert!(
+                chans
+                    .iter()
+                    .any(|c| c.name == "general" && c.kind == ChannelKind::Text)
+            );
+            assert!(chans.iter().any(|c| c.kind == ChannelKind::Voice));
+        }
+
+        // Phase: document_survives_a_save_load_cycle.
+        {
+            // The persistence contract: send a message, save the raw bytes, load
+            // them into a fresh document, and the message is still there.
+            let mut doc = seeded();
+            ChatDoc::push_message(
+                &mut doc,
+                "c_general",
+                NewMessage {
+                    author: "u_me".into(),
+                    ts: NOW,
+                    text: "persisted!".into(),
+                    ..Default::default()
+                },
+            );
+            let bytes = doc.save();
+            let reloaded = AutoCommit::load(&bytes).unwrap();
+            assert!(
+                ChatDoc::is_seeded(&reloaded),
+                "reloaded doc keeps the seed guard"
+            );
+            let msgs = ChatDoc::list_messages(&reloaded, "c_general");
+            assert!(
+                msgs.iter().any(|m| m.text == "persisted!"),
+                "message survived reload"
+            );
+        }
+    }
+
+    #[test]
+    fn edits_and_drafts_write_only_the_changes_they_make() {
+        // Phase: edit_message_archives_history.
+        {
+            let mut doc = seeded();
+            ChatDoc::edit_message(&mut doc, "c_crit", "m_me1", "Edited body.", &[], NOW);
+            let msgs = ChatDoc::list_messages(&doc, "c_crit");
+            let m = msgs.iter().find(|m| m.id == "m_me1").unwrap();
+            assert_eq!(m.text, "Edited body.");
+            assert!(m.edited);
+            assert_eq!(m.history.len(), 1, "previous body archived");
+        }
+
+        // Phase: editing_a_long_message_splices_only_the_changed_span.
+        {
+            // Editing a message re-sends its whole body. Deleting and reinserting
+            // it tombstones every character on every edit, so a message that is
+            // corrected a few times costs many times its own length forever.
+            let mut doc = seeded();
+            let body = "The deploy finished at 14:02 and the canary is green across \
+                        all three regions; rolling the rest of the fleet now."
+                .to_string();
+            ChatDoc::edit_message(&mut doc, "c_crit", "m_me1", &body, &[], NOW);
+            let baseline = doc.save().len();
+
+            // 30 corrections, each touching only the last word.
+            for i in 0..30 {
+                let edited = format!("{body} v{i}");
+                ChatDoc::edit_message(
+                    &mut doc,
+                    "c_crit",
+                    "m_me1",
+                    &edited,
+                    &[],
+                    NOW + i64::from(i),
+                );
+            }
+            let grown = doc.save().len() - baseline;
+
+            let msgs = ChatDoc::list_messages(&doc, "c_crit");
+            let m = msgs.iter().find(|m| m.id == "m_me1").unwrap();
+            assert_eq!(
+                m.text,
+                format!("{body} v29"),
+                "the last edit must be the body"
+            );
+            // Each edit legitimately archives the previous body into `history`, so
+            // the bound is against the archive cost, not zero. A full rewrite would
+            // add the body a second time per edit on top of that.
+            assert!(
+                grown < 30 * body.len() * 3 / 2,
+                "30 one-word edits grew the document by {grown} bytes for a {}-char \
+                 body — edit_message is rewriting the whole text",
+                body.len()
+            );
+        }
+
+        // Phase: clearing_an_unset_draft_is_free.
+        {
+            let mut doc = seeded();
+            ChatDoc::ensure_rich_draft(&mut doc, "c_crit");
+            let before = doc.save().len();
+
+            for _ in 0..20 {
+                ChatDoc::clear_draft(&mut doc, "c_crit");
+            }
+
+            assert_eq!(ChatDoc::draft_text(&doc, "c_crit"), "");
+            assert_eq!(
+                doc.save().len(),
+                before,
+                "clearing an already-empty draft must not grow the document"
+            );
+        }
+
+        // Phase: draft_round_trips_and_send_appends.
+        {
+            let mut doc = seeded();
+            let before = ChatDoc::list_messages(&doc, "c_crit").len();
+            type_into(&mut doc, "c_crit", 0, "hi there");
+            assert_eq!(ChatDoc::draft_text(&doc, "c_crit"), "hi there");
+            ChatDoc::push_message(
+                &mut doc,
+                "c_crit",
+                NewMessage {
+                    author: model::ME.into(),
+                    ts: NOW,
+                    text: "hi there".into(),
+                    ..Default::default()
+                },
+            );
+            ChatDoc::clear_draft(&mut doc, "c_crit");
+            assert_eq!(ChatDoc::draft_text(&doc, "c_crit"), "");
+            assert_eq!(ChatDoc::list_messages(&doc, "c_crit").len(), before + 1);
+        }
+    }
+
+    /// The seed without its shared `rich_drafts`/`messages`/`read`
+    /// containers, so the first write on each replica creates them lazily.
+    fn lazy_root_seeded() -> AutoCommit {
+        let mut doc = seeded();
+        for key in [RICH_DRAFTS, "messages", "read"] {
+            let _ = doc.delete(&ROOT, key);
+        }
+        doc.commit();
+        doc
+    }
+
+    /// Type `text` at character `at` of the draft's first paragraph, as the
+    /// composer's edit would, creating the draft first if need be.
+    fn type_into(doc: &mut AutoCommit, key: &str, at: usize, text: &str) {
+        let root = ChatDoc::ensure_rich_draft(doc, key).unwrap();
+        let block = ChatDoc::draft_blocks(doc, key)[0].id.clone();
+        tilo_document::RichTextAction::SpliceText {
+            region: tilo_document::action::RegionKind::Body,
+            block,
+            at,
+            del: 0,
+            ins: text.into(),
+        }
+        .apply_under(doc, &root)
+        .unwrap();
+    }
+
+    fn msg(text: &str, ts: i64) -> NewMessage {
+        NewMessage {
+            author: model::ME.into(),
+            ts,
+            text: text.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn concurrent_first_drafts_on_two_replicas_both_survive() {
+        for mut base in [seeded(), lazy_root_seeded()] {
+            for _ in 0..8 {
+                let mut a = base.fork();
+                let mut b = base.fork();
+                type_into(&mut a, "c_crit", 0, "left");
+                type_into(&mut b, "c_crit", 0, "right");
+                a.merge_incoming(&mut b).unwrap();
+                let draft = ChatDoc::draft_text(&a, "c_crit");
+                assert!(
+                    draft.contains("left") && draft.contains("right"),
+                    "both replicas' first draft keystrokes survive; got {draft:?}"
+                );
+                // The next edit joins drafts made at once into one.
+                ChatDoc::ensure_rich_draft(&mut a, "c_crit");
+                assert_eq!(ChatDoc::rich_draft_candidates(&a, "c_crit").len(), 1);
+                let joined = ChatDoc::draft_text(&a, "c_crit");
+                assert!(
+                    joined.contains("left") && joined.contains("right"),
+                    "{joined:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn collaborators_typing_into_one_draft_merge_per_character() {
+        let mut a = seeded();
+        type_into(&mut a, "c_crit", 0, "Hello world");
+        let mut c = a.fork();
+        type_into(&mut a, "c_crit", 5, ",");
+        type_into(&mut c, "c_crit", 11, "!");
+        a.merge_incoming(&mut c).unwrap();
+        assert_eq!(ChatDoc::draft_text(&a, "c_crit"), "Hello, world!");
+    }
+
+    #[test]
+    fn a_rich_body_is_stored_beside_its_plain_text_and_edited_as_written() {
+        let mut doc = seeded();
+        let body = vec![tilo_document::ClipBlock {
+            kind: "paragraph".into(),
+            text: "hi @Ada".into(),
+            marks: vec![tilo_doc::document::MarkSpan {
+                start: 3,
+                end: 7,
+                name: "mention".into(),
+                value: tilo_doc::document::MarkValue::Str("u-ada".into()),
+            }],
+            level: None,
+            ordered: None,
+            align: None,
+            attrs: std::collections::BTreeMap::new(),
+        }];
+        ChatDoc::push_message_with_id(
+            &mut doc,
+            "c_crit",
+            "m_rich",
+            NewMessage {
+                body: body.clone(),
+                ..msg("hi @Ada", NOW)
+            },
+        );
+        let read = |doc: &AutoCommit| {
+            ChatDoc::list_messages(doc, "c_crit")
+                .into_iter()
+                .find(|m| m.id == "m_rich")
+                .unwrap()
+        };
+        let sent = read(&doc);
+        assert_eq!(sent.text, "hi @Ada");
+        assert_eq!(sent.blocks().len(), 1);
+        assert_eq!(
+            sent.blocks()[0].marks,
+            [ui::widget::MarkSpan::new(
+                3..7,
+                ui::widget::Mark::Mention("u-ada".into())
+            )]
+        );
+        let mut bold = body;
+        bold[0].marks.push(tilo_doc::document::MarkSpan {
+            start: 0,
+            end: 2,
+            name: "strong".into(),
+            value: tilo_doc::document::MarkValue::Bool(true),
+        });
+        ChatDoc::edit_message(&mut doc, "c_crit", "m_rich", "hi @Ada", &bold, NOW + 5);
+        let edited = read(&doc);
+        assert!(edited.edited);
+        assert!(
+            edited.history.is_empty(),
+            "the same words: nothing to archive"
+        );
+        assert_eq!(edited.blocks()[0].marks.len(), 2);
+        ChatDoc::edit_message(&mut doc, "c_crit", "m_rich", "plain now", &[], NOW + 9);
+        let plain = read(&doc);
+        assert_eq!(plain.history.len(), 1);
+        assert!(
+            plain.body.is_empty(),
+            "a plain edit drops the old formatting"
+        );
+        assert_eq!(plain.blocks()[0].text, "plain now");
+    }
+
+    #[test]
+    fn concurrent_first_messages_on_two_replicas_both_survive() {
+        // A channel created after the seed: its list must come with it.
+        let mut origin = seeded();
+        ChatDoc::insert_channel(
+            &mut origin,
+            "c_new",
+            "ws_acme",
+            "cat_acme_main",
+            "new",
+            ChannelKind::Text,
+        );
+        origin.commit();
+        let cases = [(origin, "c_new"), (lazy_root_seeded(), "c_crit")];
+        for (mut base, channel) in cases {
+            for _ in 0..8 {
+                let mut a = base.fork();
+                let mut b = base.fork();
+                ChatDoc::push_message_with_id(&mut a, channel, "m_left", msg("left", NOW));
+                ChatDoc::push_message_with_id(&mut b, channel, "m_right", msg("right", NOW + 1));
+                a.merge_incoming(&mut b).unwrap();
+                let mut texts: Vec<String> = ChatDoc::list_messages(&a, channel)
+                    .into_iter()
+                    .map(|m| m.text)
+                    .collect();
+                // Concurrent appends to one shared list order by actor, not
+                // time; only membership is the property under test here.
+                texts.sort();
+                assert_eq!(texts, ["left", "right"], "channel {channel}");
+                // Resolution and deletion reach the losing list too.
+                ChatDoc::delete_message(&mut a, channel, "m_left");
+                ChatDoc::delete_message(&mut a, channel, "m_right");
+                assert!(ChatDoc::list_messages(&a, channel).is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn concurrent_first_read_marks_on_two_replicas_both_survive() {
+        for _ in 0..8 {
+            let mut base = lazy_root_seeded();
+            let mut a = base.fork();
+            let mut b = base.fork();
+            ChatDoc::set_read_watermark(&mut a, "c_crit", "u_a", 3);
+            ChatDoc::set_read_watermark(&mut b, "c_crit", "u_b", 5);
+            a.merge_incoming(&mut b).unwrap();
+            assert_eq!(ChatDoc::read_watermark(&a, "c_crit", "u_a"), 3);
+            assert_eq!(ChatDoc::read_watermark(&a, "c_crit", "u_b"), 5);
+        }
+    }
+
+    /// Regression (frame-performance Chat workload): consecutive sends from
+    /// one composer while a collaborator syncs every change must each start
+    /// from an empty draft, on a fresh and on a lazily rooted document.
+    #[test]
+    fn consecutive_sends_with_a_syncing_collaborator_start_from_an_empty_draft() {
+        for mut origin in [seeded(), lazy_root_seeded()] {
+            let mut a = origin.fork();
+            let mut b = origin.fork();
+            for n in 0..5 {
+                assert_eq!(
+                    ChatDoc::draft_text(&a, "c_crit"),
+                    "",
+                    "send {n} starts empty"
+                );
+                let text = format!("m{n:04} hello");
+                type_into(&mut a, "c_crit", 0, &text);
+                b.merge_incoming(&mut a).unwrap();
+                a.merge_incoming(&mut b).unwrap();
+                let draft = ChatDoc::draft_text(&a, "c_crit");
+                assert_eq!(draft, text);
+                ChatDoc::push_message(&mut a, "c_crit", msg(&draft, NOW + n));
+                ChatDoc::clear_draft(&mut a, "c_crit");
+                b.merge_incoming(&mut a).unwrap();
+                a.merge_incoming(&mut b).unwrap();
+                assert_eq!(
+                    ChatDoc::draft_text(&a, "c_crit"),
+                    "",
+                    "send {n} consumes the draft"
+                );
+                assert_eq!(
+                    ChatDoc::draft_text(&b, "c_crit"),
+                    "",
+                    "collaborator sees it consumed"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn channel_and_category_structure_mutations_round_trip() {
+        // Phase: channel_crud_roundtrips.
+        {
+            let mut doc = seeded();
+            let before = ChatDoc::list_channels(&doc).len();
+            let id = ChatDoc::create_channel(
+                &mut doc,
+                "ws_acme",
+                "cat_acme_main",
+                "design-ops",
+                ChannelKind::Text,
+            );
+            assert_eq!(ChatDoc::list_channels(&doc).len(), before + 1);
+            ChatDoc::rename_channel(&mut doc, &id, "ops");
+            let c = ChatDoc::list_channels(&doc)
+                .into_iter()
+                .find(|c| c.id == id)
+                .unwrap();
+            assert_eq!(c.name, "ops");
+            // Move into the voice category, then delete.
+            ChatDoc::move_channel(&mut doc, &id, "cat_acme_voice");
+            let c = ChatDoc::list_channels(&doc)
+                .into_iter()
+                .find(|c| c.id == id)
+                .unwrap();
+            assert_eq!(c.category, "cat_acme_voice");
+            ChatDoc::delete_channel(&mut doc, &id);
+            assert!(ChatDoc::list_channels(&doc).into_iter().all(|c| c.id != id));
+        }
+
+        // Phase: reorder_channel_swaps_adjacent_order.
+        {
+            let mut doc = seeded();
+            // general(0), design-crit(1) in cat_acme_main — move design-crit up.
+            let general_before = ChatDoc::list_channels(&doc)
+                .into_iter()
+                .find(|c| c.id == "c_general")
+                .unwrap()
+                .order;
+            let crit_before = ChatDoc::list_channels(&doc)
+                .into_iter()
+                .find(|c| c.id == "c_crit")
+                .unwrap()
+                .order;
+            assert!(crit_before > general_before);
+            ChatDoc::reorder_channel(&mut doc, "c_crit", true);
+            let general_after = ChatDoc::list_channels(&doc)
+                .into_iter()
+                .find(|c| c.id == "c_general")
+                .unwrap()
+                .order;
+            let crit_after = ChatDoc::list_channels(&doc)
+                .into_iter()
+                .find(|c| c.id == "c_crit")
+                .unwrap()
+                .order;
+            assert!(
+                crit_after < general_after,
+                "design-crit now sorts before general"
+            );
+        }
+
+        // Phase: deleting_category_rehomes_its_channels.
+        {
+            let mut doc = seeded();
+            ChatDoc::delete_category(&mut doc, "cat_acme_main");
+            assert!(
+                ChatDoc::list_categories(&doc)
+                    .into_iter()
+                    .all(|c| c.id != "cat_acme_main")
+            );
+            // Its channels survive, rehomed to the uncategorised group.
+            let general = ChatDoc::list_channels(&doc)
+                .into_iter()
+                .find(|c| c.id == "c_general")
+                .unwrap();
+            assert_eq!(general.category, "");
+        }
+    }
+
+    #[test]
+    fn voice_membership_and_screen_share_round_trip() {
+        // Phase: voice_join_leave_and_state.
+        {
+            let mut doc = seeded();
+            ChatDoc::voice_join(&mut doc, "c_huddle", "u_me");
+            assert_eq!(ChatDoc::voice_count(&doc, "c_huddle"), 4);
+            ChatDoc::voice_set_state(
+                &mut doc,
+                "c_huddle",
+                "u_me",
+                VoiceState {
+                    talking: true,
+                    muted: true,
+                    deafened: true,
+                    audio_only: true,
+                },
+            );
+            let me = ChatDoc::list_voice_members(&doc, "c_huddle")
+                .into_iter()
+                .find(|m| m.user == "u_me")
+                .unwrap();
+            assert!(me.talking);
+            assert!(me.muted);
+            assert!(me.deafened);
+            assert!(me.audio_only);
+            ChatDoc::voice_leave(&mut doc, "c_huddle", "u_me");
+            assert_eq!(ChatDoc::voice_count(&doc, "c_huddle"), 3);
+        }
+
+        // Phase: voice_screen_share_round_trips_through_the_shared_membership.
+        {
+            let mut doc = seeded();
+            ChatDoc::voice_join(&mut doc, "c_huddle", "u_me");
+            let sharing = |doc: &AutoCommit| {
+                ChatDoc::list_voice_members(doc, "c_huddle")
+                    .into_iter()
+                    .find(|m| m.user == "u_me")
+                    .is_some_and(|m| m.sharing)
+            };
+            assert!(!sharing(&doc), "a fresh member is not sharing");
+            let video = |doc: &AutoCommit| {
+                ChatDoc::list_voice_members(doc, "c_huddle")
+                    .into_iter()
+                    .find(|m| m.user == "u_me")
+                    .and_then(|m| m.video)
+            };
+            assert_eq!(
+                video(&doc),
+                None,
+                "a member that never announced is a legacy peer"
+            );
+            let caps = crate::model::VideoCaps {
+                hardware_decode: vec!["av1".into(), "vp9".into()],
+                software_decode: vec!["h264".into()],
+            };
+            ChatDoc::voice_set_video_caps(&mut doc, "c_huddle", "u_me", &caps);
+            assert_eq!(video(&doc), Some(caps));
+            ChatDoc::voice_set_sharing(&mut doc, "c_huddle", "u_me", true);
+            assert!(sharing(&doc), "a started share is visible to every peer");
+            ChatDoc::voice_set_sharing(&mut doc, "c_huddle", "u_me", false);
+            assert!(!sharing(&doc), "a stopped share clears the shared flag");
+        }
+    }
+
+    #[test]
+    fn unread_derives_from_an_idempotent_read_watermark() {
+        // Phase: unread_derives_from_the_read_watermark.
+        {
+            let mut doc = seeded();
+            // #design-crit has eight top-level messages (thread replies excluded).
+            assert_eq!(ChatDoc::top_level_count(&doc, "c_crit"), 8);
+            // Never opened → every top-level message is unread.
+            assert_eq!(ChatDoc::unread_count(&doc, "c_crit", model::ME), 8);
+            // Reading it clears the badge…
+            ChatDoc::mark_read(&mut doc, "c_crit", model::ME);
+            assert_eq!(ChatDoc::unread_count(&doc, "c_crit", model::ME), 0);
+            // …and a new message makes it unread again.
+            ChatDoc::push_message(
+                &mut doc,
+                "c_crit",
+                NewMessage {
+                    author: "u_aria".into(),
+                    ts: NOW,
+                    text: "one more".into(),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(ChatDoc::unread_count(&doc, "c_crit", model::ME), 1);
+            // A threaded reply is not a top-level message, so it doesn't count.
+            ChatDoc::push_message(
+                &mut doc,
+                "c_crit",
+                NewMessage {
+                    author: "u_aria".into(),
+                    ts: NOW,
+                    text: "in the thread".into(),
+                    parent: Some("m_concept".into()),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(
+                ChatDoc::unread_count(&doc, "c_crit", model::ME),
+                1,
+                "thread replies don't bump unread"
+            );
+        }
+
+        // Phase: mark_read_is_idempotent_and_does_not_churn.
+        {
+            // Reading a channel twice with no new messages must not append a new
+            // change (the watermark write is guarded on a real value change).
+            let mut doc = seeded();
+            ChatDoc::mark_read(&mut doc, "c_crit", model::ME);
+            let heads = doc.get_heads();
+            ChatDoc::mark_read(&mut doc, "c_crit", model::ME);
+            assert_eq!(doc.get_heads(), heads, "a no-op mark_read writes nothing");
+        }
+    }
+
+    #[test]
+    fn peers_are_announced_and_their_concurrent_state_converges() {
+        // Phase: ensure_user_is_guarded_and_announces_a_peer.
+        {
+            // Registering the local peer writes once, then no-ops (so it never
+            // churns the doc / spams empty collab deltas), and a fresh peer id is
+            // announced into the roster so others learn its name + colour.
+            let mut doc = seeded();
+            let wrote = ChatDoc::ensure_user(&mut doc, "u_bob", "Bob", "BO", 4, Presence::Online);
+            assert!(wrote, "a new peer is announced");
+            assert!(
+                ChatDoc::list_users(&doc)
+                    .iter()
+                    .any(|u| u.id == "u_bob" && u.name == "Bob")
+            );
+            let again = ChatDoc::ensure_user(&mut doc, "u_bob", "Bob", "BO", 4, Presence::Online);
+            assert!(!again, "an unchanged re-announce writes nothing");
+        }
+
+        // Phase: read_watermarks_are_independent_per_peer.
+        {
+            // The exact multi-participant bug the identity work fixes: two peers
+            // must not clobber each other's unread badges. Alice reads a channel;
+            // Bob's unread for it is unaffected.
+            let mut doc = seeded();
+            let total = ChatDoc::top_level_count(&doc, "c_crit") as u32;
+            assert!(total > 0);
+            ChatDoc::mark_read(&mut doc, "c_crit", "u_alice");
+            assert_eq!(
+                ChatDoc::unread_count(&doc, "c_crit", "u_alice"),
+                0,
+                "alice caught up"
+            );
+            assert_eq!(
+                ChatDoc::unread_count(&doc, "c_crit", "u_bob"),
+                total,
+                "bob's unread is untouched by alice reading"
+            );
+        }
+
+        // Phase: two_peers_converge_on_a_reaction.
+        {
+            // Peer A seeds; peer B adopts A's state, both react, then merge.
+            let mut a = seeded();
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            ChatDoc::toggle_reaction(&mut a, "c_crit", "m_me1", "👍", "u_aria");
+            ChatDoc::toggle_reaction(&mut b, "c_crit", "m_me1", "👍", "u_milo");
+            let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
+            a.merge_incoming(&mut b_loaded).unwrap();
+            let msgs = ChatDoc::list_messages(&a, "c_crit");
+            let m = msgs.iter().find(|m| m.id == "m_me1").unwrap();
+            let thumbs = m.reactions.iter().find(|r| r.emoji == "👍").unwrap();
+            assert_eq!(thumbs.count(), 2, "both reactors converge on one emoji");
+        }
+
+        // Phase: concurrent_voice_joins_converge_to_the_full_roster.
+        {
+            // Two peers join the same voice channel before syncing. Because the
+            // voice-membership map is pre-created with the channel (shared object),
+            // their concurrent joins add distinct user keys to the *same* map and a
+            // merge keeps BOTH — no silently-dropped participant.
+            let mut a = AutoCommit::new();
+            ChatDoc::seed_starter(&mut a, "u_alice", "Alice", "AL");
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            // Concurrent, un-synced joins.
+            ChatDoc::voice_join(&mut a, "c_lounge", "u_alice");
+            ChatDoc::voice_set_ticket(&mut a, "c_lounge", "u_alice", "iroh://alice");
+            ChatDoc::voice_join(&mut b, "c_lounge", "u_bob");
+            ChatDoc::voice_set_ticket(&mut b, "c_lounge", "u_bob", "iroh://bob");
+            // Merge both ways.
+            let mut b2 = AutoCommit::load(&b.save()).unwrap();
+            a.merge_incoming(&mut b2).unwrap();
+            let members = ChatDoc::list_voice_members(&a, "c_lounge");
+            assert_eq!(
+                members.len(),
+                2,
+                "both concurrent joiners survive the merge"
+            );
+            assert!(
+                members
+                    .iter()
+                    .any(|m| m.user == "u_alice" && m.ticket.as_deref() == Some("iroh://alice"))
+            );
+            assert!(
+                members
+                    .iter()
+                    .any(|m| m.user == "u_bob" && m.ticket.as_deref() == Some("iroh://bob"))
+            );
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one labelled phase per original scenario, each with its own fresh fixture"
+    )]
+    fn attachments_are_portable_and_bounded() {
+        // Phase: video_attachment_round_trips_through_the_crdt.
+        {
+            // A video share references a portable content hash (no bytes in the
+            // CRDT) and reads back with its resolution + size intact.
+            let mut doc = seeded();
+            ChatDoc::push_message(
+                &mut doc,
+                "c_general",
+                NewMessage {
+                    author: model::ME.into(),
+                    ts: NOW,
+                    attachment: Some(Attachment::Video {
+                        name: "demo.mp4".into(),
+                        blob: "a".repeat(64),
+                        w: 1920,
+                        h: 1080,
+                        size: 4_200_000,
                     }),
                     ..Default::default()
                 },
             );
-            let message = ChatDoc::find_message_obj(&doc, "c_crit", &id).unwrap();
-            let attachment = map_at(&doc, &message, "attachment").unwrap();
-            let _ = doc.put(&attachment, "path", crate::images::DEMO_CALL_GRID);
+            let msgs = ChatDoc::list_messages(&doc, "c_general");
+            match msgs.last().and_then(|m| m.attachment.clone()) {
+                Some(Attachment::Video {
+                    name,
+                    blob,
+                    w,
+                    h,
+                    size,
+                }) => {
+                    assert_eq!(name, "demo.mp4");
+                    assert_eq!(blob, "a".repeat(64));
+                    assert_eq!((w, h), (1920, 1080));
+                    assert_eq!(size, 4_200_000);
+                }
+                other => panic!("expected a Video attachment, got {other:?}"),
+            }
         }
 
-        ChatDoc::migrate_legacy_attachment_paths(&mut doc);
-        let migrated = (0..=LEGACY_MIGRATION_VISIT_BUDGET)
-            .filter(|n| {
-                let id = format!("m_legacy_budget_{n}");
-                let message = ChatDoc::find_message_obj(&doc, "c_crit", &id).unwrap();
-                let attachment = map_at(&doc, &message, "attachment").unwrap();
-                read_str(&doc, &attachment, "blob").unwrap_or_default()
-                    == crate::images::DEMO_CALL_GRID
-            })
-            .count();
-        assert!(migrated <= LEGACY_MIGRATION_WRITE_BUDGET);
-        assert!(
-            {
-                let message =
-                    ChatDoc::find_message_obj(&doc, "c_crit", "m_legacy_budget_256").unwrap();
-                let attachment = map_at(&doc, &message, "attachment").unwrap();
-                read_str(&doc, &attachment, "blob")
-                    .unwrap_or_default()
-                    .is_empty()
-            },
-            "the bounded one-shot migration leaves rows beyond its visit budget untouched"
-        );
+        // Phase: attachment_blobs_are_portable_hashes_not_paths.
+        {
+            let bytes = b"shared attachment bytes";
+            let content = ContentStore::memory();
+            let hash =
+                ChatDoc::store_attachment_blob(&content, bytes).expect("small blob accepted");
+            assert_eq!(hash.len(), 64);
+            assert!(hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
+            assert_eq!(content.read(&hash), Some(bytes.to_vec()));
+        }
+
+        // Phase: attachment_blob_import_fails_closed_at_the_size_limit.
+        {
+            let too_large = vec![0; MAX_ATTACHMENT_BYTES as usize + 1];
+            assert!(ChatDoc::store_attachment_blob(&ContentStore::memory(), &too_large).is_none());
+        }
     }
 
     #[test]
-    fn ensure_user_is_guarded_and_announces_a_peer() {
-        // Registering the local peer writes once, then no-ops (so it never
-        // churns the doc / spams empty collab deltas), and a fresh peer id is
-        // announced into the roster so others learn its name + colour.
-        let mut doc = seeded();
-        let wrote = ChatDoc::ensure_user(&mut doc, "u_bob", "Bob", "BO", 4, Presence::Online);
-        assert!(wrote, "a new peer is announced");
-        assert!(
-            ChatDoc::list_users(&doc)
-                .iter()
-                .any(|u| u.id == "u_bob" && u.name == "Bob")
-        );
-        let again = ChatDoc::ensure_user(&mut doc, "u_bob", "Bob", "BO", 4, Presence::Online);
-        assert!(!again, "an unchanged re-announce writes nothing");
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one labelled phase per original scenario, each with its own fresh fixture"
+    )]
+    fn agent_work_is_granular_crdt_state_that_merges_without_loss_or_hybrids() {
+        // Phase: agent_work_is_native_granular_crdt_state_and_merges_independent_updates.
+        {
+            use crate::model::{
+                AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
+            };
 
-    #[test]
-    fn read_watermarks_are_independent_per_peer() {
-        // The exact multi-participant bug the identity work fixes: two peers
-        // must not clobber each other's unread badges. Alice reads a channel;
-        // Bob's unread for it is unaffected.
-        let mut doc = seeded();
-        let total = ChatDoc::top_level_count(&doc, "c_crit") as u32;
-        assert!(total > 0);
-        ChatDoc::mark_read(&mut doc, "c_crit", "u_alice");
-        assert_eq!(
-            ChatDoc::unread_count(&doc, "c_crit", "u_alice"),
-            0,
-            "alice caught up"
-        );
-        assert_eq!(
-            ChatDoc::unread_count(&doc, "c_crit", "u_bob"),
-            total,
-            "bob's unread is untouched by alice reading"
-        );
-    }
+            let mut a = seeded();
+            let message = ChatDoc::push_message_with_id(
+                &mut a,
+                "c_crit",
+                "m_native_work",
+                NewMessage {
+                    author: "agent_claude".into(),
+                    ts: NOW,
+                    ..Default::default()
+                },
+            );
+            let taken = AgentWork::new(AgentWorkState::Taken, NOW);
+            assert!(ChatDoc::set_message_work(
+                &mut a, "c_crit", &message, &taken, None
+            ));
+            let message_obj = ChatDoc::find_message_obj(&a, "c_crit", &message).unwrap();
+            assert!(
+                map_at(&a, &message_obj, "work").is_some(),
+                "new agent records are CRDT maps, never JSON scalars"
+            );
 
-    #[test]
-    fn two_peers_converge_on_a_reaction() {
-        // Peer A seeds; peer B adopts A's state, both react, then merge.
-        let mut a = seeded();
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        ChatDoc::toggle_reaction(&mut a, "c_crit", "m_me1", "👍", "u_aria");
-        ChatDoc::toggle_reaction(&mut b, "c_crit", "m_me1", "👍", "u_milo");
-        let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge_incoming(&mut b_loaded).unwrap();
-        let msgs = ChatDoc::list_messages(&a, "c_crit");
-        let m = msgs.iter().find(|m| m.id == "m_me1").unwrap();
-        let thumbs = m.reactions.iter().find(|r| r.emoji == "👍").unwrap();
-        assert_eq!(thumbs.count(), 2, "both reactors converge on one emoji");
-    }
-
-    #[test]
-    fn agent_work_is_native_granular_crdt_state_and_merges_independent_updates() {
-        use crate::model::{
-            AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
-        };
-
-        let mut a = seeded();
-        let message = ChatDoc::push_message_with_id(
-            &mut a,
-            "c_crit",
-            "m_native_work",
-            NewMessage {
-                author: "agent_claude".into(),
-                ts: NOW,
-                ..Default::default()
-            },
-        );
-        let taken = AgentWork::new(AgentWorkState::Taken, NOW);
-        assert!(ChatDoc::set_message_work(
-            &mut a, "c_crit", &message, &taken, None
-        ));
-        let message_obj = ChatDoc::find_message_obj(&a, "c_crit", &message).unwrap();
-        assert!(
-            map_at(&a, &message_obj, "work").is_some(),
-            "new agent records are CRDT maps, never JSON scalars"
-        );
-
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let explained = taken.clone().because(AgentReasoning {
-            route: AgentRoute::Floor,
-            why: "The operation name matched the request.".into(),
-        });
-        assert!(ChatDoc::set_message_work(
-            &mut a, "c_crit", &message, &explained, None
-        ));
-        let record = map_at(
-            &a,
-            &ChatDoc::find_message_obj(&a, "c_crit", &message).unwrap(),
-            "work",
-        )
-        .unwrap();
-        assert!(
-            map_at(&a, &record, "reasoning").is_none(),
-            "route and explanation must not be independently mergeable fields"
-        );
-        assert_eq!(
-            serde_json::from_str::<Option<AgentReasoning>>(
-                &read_str(&a, &record, "reasoning").unwrap_or_default()
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            let explained = taken.clone().because(AgentReasoning {
+                route: AgentRoute::Floor,
+                why: "The operation name matched the request.".into(),
+            });
+            assert!(ChatDoc::set_message_work(
+                &mut a, "c_crit", &message, &explained, None
+            ));
+            let record = map_at(
+                &a,
+                &ChatDoc::find_message_obj(&a, "c_crit", &message).unwrap(),
+                "work",
             )
-            .unwrap(),
-            explained.reasoning,
-            "reasoning is one explicitly atomic authored record"
-        );
-        let traced = taken.clone().with_trace(vec![AgentStep::authored(
-            "chat.message:m_me1",
-            "Pin message",
-            AgentStepOutcome::Applied,
-            0,
-        )]);
-        assert!(ChatDoc::set_message_work(
-            &mut b, "c_crit", &message, &traced, None
-        ));
-
-        let mut b_changes = AutoCommit::load(&b.save()).unwrap();
-        a.merge_incoming(&mut b_changes).unwrap();
-        let merged = ChatDoc::list_messages(&a, "c_crit")
-            .into_iter()
-            .find(|row| row.id == message)
-            .and_then(|row| row.work)
             .unwrap();
-        assert_eq!(merged.state, AgentWorkState::Taken);
-        assert_eq!(merged.reasoning, explained.reasoning);
-        assert_eq!(merged.trace, traced.trace);
+            assert!(
+                map_at(&a, &record, "reasoning").is_none(),
+                "route and explanation must not be independently mergeable fields"
+            );
+            assert_eq!(
+                serde_json::from_str::<Option<AgentReasoning>>(
+                    &read_str(&a, &record, "reasoning").unwrap_or_default()
+                )
+                .unwrap(),
+                explained.reasoning,
+                "reasoning is one explicitly atomic authored record"
+            );
+            let traced = taken.clone().with_trace(vec![AgentStep::authored(
+                "chat.message:m_me1",
+                "Pin message",
+                AgentStepOutcome::Applied,
+                0,
+            )]);
+            assert!(ChatDoc::set_message_work(
+                &mut b, "c_crit", &message, &traced, None
+            ));
+
+            let mut b_changes = AutoCommit::load(&b.save()).unwrap();
+            a.merge_incoming(&mut b_changes).unwrap();
+            let merged = ChatDoc::list_messages(&a, "c_crit")
+                .into_iter()
+                .find(|row| row.id == message)
+                .and_then(|row| row.work)
+                .unwrap();
+            assert_eq!(merged.state, AgentWorkState::Taken);
+            assert_eq!(merged.reasoning, explained.reasoning);
+            assert_eq!(merged.trace, traced.trace);
+        }
+
+        // Phase: concurrent_agent_trace_appends_keep_both_authored_steps.
+        {
+            use crate::model::{AgentStep, AgentStepOutcome, AgentWork, AgentWorkState};
+
+            let mut a = seeded();
+            let message = ChatDoc::push_message_with_id(
+                &mut a,
+                "c_crit",
+                "m_concurrent_trace",
+                NewMessage {
+                    author: "agent_claude".into(),
+                    ts: NOW,
+                    ..Default::default()
+                },
+            );
+            let taken = AgentWork::new(AgentWorkState::Taken, NOW);
+            ChatDoc::set_message_work(&mut a, "c_crit", &message, &taken, None);
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            let left = AgentStep::authored(
+                "chat.message:m_me1",
+                "Pin message",
+                AgentStepOutcome::Asked,
+                1,
+            );
+            let right = AgentStep::authored(
+                "chat.channel:c_crit",
+                "Mark as read",
+                AgentStepOutcome::Applied,
+                1,
+            );
+            let a_work = taken.clone().with_trace(vec![left.clone()]);
+            let b_work = taken.with_trace(vec![right.clone()]);
+            ChatDoc::set_message_work(&mut a, "c_crit", &message, &a_work, None);
+            ChatDoc::set_message_work(&mut b, "c_crit", &message, &b_work, None);
+
+            let mut b_changes = AutoCommit::load(&b.save()).unwrap();
+            a.merge_incoming(&mut b_changes).unwrap();
+            let trace = ChatDoc::list_messages(&a, "c_crit")
+                .into_iter()
+                .find(|row| row.id == message)
+                .and_then(|row| row.work)
+                .unwrap()
+                .trace;
+            assert_eq!(trace.len(), 2, "concurrent appends must not collide");
+            assert!(trace.iter().any(|step| step.id == left.id));
+            assert!(trace.iter().any(|step| step.id == right.id));
+            assert!(
+                trace.windows(2).all(|pair| {
+                    (pair[0].sequence, &pair[0].id) <= (pair[1].sequence, &pair[1].id)
+                }),
+                "equal sequence keys use step id as a deterministic tie-break"
+            );
+        }
+
+        // Phase: stale_agent_trace_update_cannot_tombstone_a_step_learned_later.
+        {
+            use crate::model::{AgentStep, AgentStepOutcome, AgentWork, AgentWorkState};
+
+            let mut a = seeded();
+            let message = ChatDoc::push_message_with_id(
+                &mut a,
+                "c_crit",
+                "m_delayed_trace",
+                NewMessage {
+                    author: "agent_claude".into(),
+                    ts: NOW,
+                    ..Default::default()
+                },
+            );
+            let base = AgentWork::new(AgentWorkState::Taken, NOW);
+            ChatDoc::set_message_work(&mut a, "c_crit", &message, &base, None);
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            let from_a = AgentStep::authored(
+                "chat.message:m_me1",
+                "Pin message",
+                AgentStepOutcome::Applied,
+                1,
+            );
+            let from_b = AgentStep::authored(
+                "chat.channel:c_crit",
+                "Mark as read",
+                AgentStepOutcome::Applied,
+                2,
+            );
+            // A authors its payload before it has seen B's append, but delivery is
+            // deliberately delayed until after B's change has merged.
+            let stale_a_payload = base.clone().with_trace(vec![from_a.clone()]);
+            let b_payload = base.with_trace(vec![from_b.clone()]);
+            ChatDoc::set_message_work(&mut b, "c_crit", &message, &b_payload, None);
+            let mut b_changes = AutoCommit::load(&b.save()).unwrap();
+            a.merge_incoming(&mut b_changes).unwrap();
+            ChatDoc::set_message_work(&mut a, "c_crit", &message, &stale_a_payload, None);
+
+            let trace = ChatDoc::list_messages(&a, "c_crit")
+                .into_iter()
+                .find(|row| row.id == message)
+                .and_then(|row| row.work)
+                .unwrap()
+                .trace;
+            assert!(trace.iter().any(|step| step.id == from_a.id));
+            assert!(
+                trace.iter().any(|step| step.id == from_b.id),
+                "a stale payload must not infer a collaborator's append is deleted"
+            );
+        }
+
+        // Phase: concurrent_agent_transitions_are_never_hybridized.
+        {
+            use crate::model::{AgentWork, AgentWorkState};
+
+            let mut a = seeded();
+            let message = ChatDoc::push_message_with_id(
+                &mut a,
+                "c_crit",
+                "m_transition_merge",
+                NewMessage {
+                    author: "agent_claude".into(),
+                    ts: NOW,
+                    ..Default::default()
+                },
+            );
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            let left = AgentWork::new(
+                AgentWorkState::Doing {
+                    did: "Pin message".into(),
+                    about: "m_me1".into(),
+                },
+                NOW + 10,
+            );
+            let right = AgentWork::new(
+                AgentWorkState::Done {
+                    did: "Mark as read".into(),
+                },
+                NOW + 20,
+            );
+            ChatDoc::set_message_work(&mut a, "c_crit", &message, &left, None);
+            ChatDoc::set_message_work(&mut b, "c_crit", &message, &right, None);
+            let mut b_changes = AutoCommit::load(&b.save()).unwrap();
+            a.merge_incoming(&mut b_changes).unwrap();
+
+            let merged = ChatDoc::list_messages(&a, "c_crit")
+                .into_iter()
+                .find(|row| row.id == message)
+                .and_then(|row| row.work)
+                .unwrap();
+            assert!(
+                (merged.state == left.state && merged.since == left.since)
+                    || (merged.state == right.state && merged.since == right.since),
+                "merge must choose one complete authored transition, not a hybrid: {merged:?}"
+            );
+        }
     }
 
     #[test]
-    fn concurrent_agent_trace_appends_keep_both_authored_steps() {
-        use crate::model::{AgentStep, AgentStepOutcome, AgentWork, AgentWorkState};
-
-        let mut a = seeded();
-        let message = ChatDoc::push_message_with_id(
-            &mut a,
-            "c_crit",
-            "m_concurrent_trace",
-            NewMessage {
-                author: "agent_claude".into(),
-                ts: NOW,
-                ..Default::default()
-            },
+    fn a_composer_draft_is_created_by_the_action() {
+        use tilo_actions::Action as _;
+        let mut doc = ui::automerge::AutoCommit::new();
+        crate::actions::ChatAction::EnsureRichDraft {
+            key: "channel-1".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert!(ChatDoc::rich_draft_is_settled(&doc, "channel-1"));
+        let first = ChatDoc::ensure_rich_draft(&mut doc, "channel-1");
+        crate::actions::ChatAction::EnsureRichDraft {
+            key: "channel-1".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(
+            ChatDoc::ensure_rich_draft(&mut doc, "channel-1"),
+            first,
+            "a second ensure keeps the same draft"
         );
-        let taken = AgentWork::new(AgentWorkState::Taken, NOW);
-        ChatDoc::set_message_work(&mut a, "c_crit", &message, &taken, None);
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let left = AgentStep::authored(
-            "chat.message:m_me1",
-            "Pin message",
-            AgentStepOutcome::Asked,
-            1,
-        );
-        let right = AgentStep::authored(
-            "chat.channel:c_crit",
-            "Mark as read",
-            AgentStepOutcome::Applied,
-            1,
-        );
-        let a_work = taken.clone().with_trace(vec![left.clone()]);
-        let b_work = taken.with_trace(vec![right.clone()]);
-        ChatDoc::set_message_work(&mut a, "c_crit", &message, &a_work, None);
-        ChatDoc::set_message_work(&mut b, "c_crit", &message, &b_work, None);
-
-        let mut b_changes = AutoCommit::load(&b.save()).unwrap();
-        a.merge_incoming(&mut b_changes).unwrap();
-        let trace = ChatDoc::list_messages(&a, "c_crit")
-            .into_iter()
-            .find(|row| row.id == message)
-            .and_then(|row| row.work)
-            .unwrap()
-            .trace;
-        assert_eq!(trace.len(), 2, "concurrent appends must not collide");
-        assert!(trace.iter().any(|step| step.id == left.id));
-        assert!(trace.iter().any(|step| step.id == right.id));
         assert!(
-            trace
-                .windows(2)
-                .all(|pair| { (pair[0].sequence, &pair[0].id) <= (pair[1].sequence, &pair[1].id) }),
-            "equal sequence keys use step id as a deterministic tie-break"
+            crate::actions::ChatAction::EnsureRichDraft { key: String::new() }
+                .apply(&mut doc)
+                .is_err()
         );
     }
 
     #[test]
-    fn stale_agent_trace_update_cannot_tombstone_a_step_learned_later() {
-        use crate::model::{AgentStep, AgentStepOutcome, AgentWork, AgentWorkState};
-
-        let mut a = seeded();
-        let message = ChatDoc::push_message_with_id(
-            &mut a,
-            "c_crit",
-            "m_delayed_trace",
-            NewMessage {
-                author: "agent_claude".into(),
-                ts: NOW,
-                ..Default::default()
-            },
-        );
-        let base = AgentWork::new(AgentWorkState::Taken, NOW);
-        ChatDoc::set_message_work(&mut a, "c_crit", &message, &base, None);
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let from_a = AgentStep::authored(
-            "chat.message:m_me1",
-            "Pin message",
-            AgentStepOutcome::Applied,
-            1,
-        );
-        let from_b = AgentStep::authored(
-            "chat.channel:c_crit",
-            "Mark as read",
-            AgentStepOutcome::Applied,
-            2,
-        );
-        // A authors its payload before it has seen B's append, but delivery is
-        // deliberately delayed until after B's change has merged.
-        let stale_a_payload = base.clone().with_trace(vec![from_a.clone()]);
-        let b_payload = base.with_trace(vec![from_b.clone()]);
-        ChatDoc::set_message_work(&mut b, "c_crit", &message, &b_payload, None);
-        let mut b_changes = AutoCommit::load(&b.save()).unwrap();
-        a.merge_incoming(&mut b_changes).unwrap();
-        ChatDoc::set_message_work(&mut a, "c_crit", &message, &stale_a_payload, None);
-
-        let trace = ChatDoc::list_messages(&a, "c_crit")
-            .into_iter()
-            .find(|row| row.id == message)
-            .and_then(|row| row.work)
-            .unwrap()
-            .trace;
-        assert!(trace.iter().any(|step| step.id == from_a.id));
+    fn a_new_chat_record_starts_from_the_seed_action() {
+        use tilo_actions::Action as _;
+        let mut doc = automerge::AutoCommit::new();
+        crate::actions::ChatAction::SeedStarter {
+            id: "person-1".into(),
+            name: "Ada".into(),
+            initials: "Ad".into(),
+            color_idx: 3,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert!(ChatDoc::is_seeded(&doc));
         assert!(
-            trace.iter().any(|step| step.id == from_b.id),
-            "a stale payload must not infer a collaborator's append is deleted"
+            ChatDoc::list_channels(&doc)
+                .iter()
+                .any(|channel| channel.name == "general")
         );
-    }
-
-    #[test]
-    fn concurrent_agent_transitions_are_never_hybridized() {
-        use crate::model::{AgentWork, AgentWorkState};
-
-        let mut a = seeded();
-        let message = ChatDoc::push_message_with_id(
-            &mut a,
-            "c_crit",
-            "m_transition_merge",
-            NewMessage {
-                author: "agent_claude".into(),
-                ts: NOW,
-                ..Default::default()
-            },
-        );
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let left = AgentWork::new(
-            AgentWorkState::Doing {
-                did: "Pin message".into(),
-                about: "m_me1".into(),
-            },
-            NOW + 10,
-        );
-        let right = AgentWork::new(
-            AgentWorkState::Done {
-                did: "Mark as read".into(),
-            },
-            NOW + 20,
-        );
-        ChatDoc::set_message_work(&mut a, "c_crit", &message, &left, None);
-        ChatDoc::set_message_work(&mut b, "c_crit", &message, &right, None);
-        let mut b_changes = AutoCommit::load(&b.save()).unwrap();
-        a.merge_incoming(&mut b_changes).unwrap();
-
-        let merged = ChatDoc::list_messages(&a, "c_crit")
-            .into_iter()
-            .find(|row| row.id == message)
-            .and_then(|row| row.work)
-            .unwrap();
-        assert!(
-            (merged.state == left.state && merged.since == left.since)
-                || (merged.state == right.state && merged.since == right.since),
-            "merge must choose one complete authored transition, not a hybrid: {merged:?}"
-        );
-    }
-
-    #[test]
-    fn legacy_positional_trace_row_migrates_to_a_tombstoned_id_key() {
-        use crate::model::{AgentStepOutcome, AgentWork, AgentWorkState};
-
-        let mut doc = seeded();
-        let message = ChatDoc::push_message_with_id(
-            &mut doc,
-            "c_crit",
-            "m_legacy_trace",
-            NewMessage {
-                author: "agent_claude".into(),
-                ts: NOW,
-                ..Default::default()
-            },
-        );
-        let message_obj = ChatDoc::find_message_obj(&doc, "c_crit", &message).unwrap();
-        let work = get_or_map(&mut doc, &message_obj, "work");
-        let _ = doc.put(&work, "since", NOW);
-        let state = get_or_map(&mut doc, &work, "state");
-        let _ = doc.put(&state, "kind", "taken");
-        let trace = get_or_map(&mut doc, &work, "trace");
-        let old = get_or_map(&mut doc, &trace, "00000000");
-        let _ = doc.put(&old, "present", true);
-        let _ = doc.put(&old, "resource", "chat.message:m_me1");
-        let _ = doc.put(&old, "label", "Pin message");
-        let _ = doc.put(&old, "outcome", "asked");
-
-        let mut updated = AgentWork::new(AgentWorkState::Taken, NOW + 1);
-        updated.trace = ChatDoc::list_messages(&doc, "c_crit")
-            .into_iter()
-            .find(|row| row.id == message)
-            .and_then(|row| row.work)
-            .unwrap()
-            .trace;
-        assert_eq!(updated.trace[0].id, "legacy_step_00000000");
-        updated.trace[0].outcome = AgentStepOutcome::Applied;
-        ChatDoc::set_message_work(&mut doc, "c_crit", &message, &updated, None);
-
-        let trace = map_at(&doc, &work, "trace").unwrap();
-        assert!(
-            !read_bool(&doc, &map_at(&doc, &trace, "00000000").unwrap(), "present")
-                .unwrap_or(false),
-            "the old positional row is a tombstone"
-        );
-        assert!(
-            map_at(&doc, &trace, "legacy_step_00000000").is_some(),
-            "the same row is now keyed by a stable id"
+        crate::actions::ChatAction::SeedStarter {
+            id: "person-1".into(),
+            name: "Ada".into(),
+            initials: "Ad".into(),
+            color_idx: 3,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(
+            ChatDoc::list_channels(&doc)
+                .iter()
+                .filter(|channel| channel.name == "general")
+                .count(),
+            1
         );
     }
 }

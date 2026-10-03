@@ -162,14 +162,8 @@ pub fn parse_pdf_date(date: &str) -> Option<i64> {
     }
     let (year, month, day) = (field(0, 4, 1970), field(4, 2, 1), field(6, 2, 1));
     let (hour, minute, second) = (field(8, 2, 0), field(10, 2, 0), field(12, 2, 0));
-    // Days from civil (Howard Hinnant), proleptic Gregorian.
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y.rem_euclid(400);
-    let mp = (month + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
+    let days =
+        ui::date::days_from_civil(year, u32::try_from(month).ok()?, u32::try_from(day).ok()?);
     Some(((days * 24 + hour) * 60 + minute) * 60_000 + second * 1000)
 }
 
@@ -315,6 +309,7 @@ pub fn plan_import<S: std::hash::BuildHasher>(
                     created: annotation.created_ms,
                     resolved: false,
                     replies: Vec::new(),
+                    blocks: Vec::new(),
                 });
             }
             plan.adopted.push(AdoptedEntry {
@@ -364,6 +359,7 @@ pub fn plan_import<S: std::hash::BuildHasher>(
                     created: 0,
                     resolved: false,
                     replies: Vec::new(),
+                    blocks: Vec::new(),
                 });
                 plan.comments.len() - 1
             };
@@ -373,6 +369,7 @@ pub fn plan_import<S: std::hash::BuildHasher>(
                     id: reply_id.clone(),
                     author: info.author.clone(),
                     body: info.contents.clone(),
+                    blocks: Vec::new(),
                 });
             }
             plan.adopted.push(AdoptedEntry {
@@ -506,14 +503,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pdf_dates_parse_to_unix_milliseconds() {
+    fn imported_dates_and_ids_are_deterministic() {
         assert_eq!(parse_pdf_date("D:19700101000000Z"), Some(0));
         assert_eq!(parse_pdf_date("D:20260924120000Z"), Some(1_790_251_200_000));
         assert_eq!(parse_pdf_date(""), None);
-    }
 
-    #[test]
-    fn imported_ids_are_stable_per_address() {
         let hash = "ab".repeat(32);
         assert_eq!(imported_id(&hash, 1, 3), imported_id(&hash, 1, 3));
         assert_ne!(imported_id(&hash, 1, 3), imported_id(&hash, 1, 4));

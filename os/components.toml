@@ -42,7 +42,9 @@
 #   packages    cargo package(s) built for this component
 #   bins        cargo bins those packages build for the image
 #   features    cargo features, package-qualified ("pkg/feature")
-#   dev_features  cargo features only dev builds enable, package-qualified.
+#   dev_features  cargo features only dev builds enable, normally package-qualified;
+#                 a bare feature may target a single-package component when a
+#                 same-named self dev-dependency shadows pkg/feature.
 #               The dev image rebuilds every component that has them, with
 #               them (os/Containerfile.dev); the production image never does.
 #   units       system units whose ExecStart runs these files (restart on swap)
@@ -106,11 +108,22 @@ kind = "userspace"
 scope = "session"
 packages = ["shell"]
 bins = ["shell"]
-dev_features = ["shell/dev-overrides"]
-user_units = ["tilo-identity.service"]
+dev_features = ["dev-overrides"]
 layer = "desktop-binaries"
 files = [
   { from = "shell", to = "/usr/bin/shell", mode = "0755" },
+]
+
+[[component]]
+name = "native-runtime-host"
+kind = "userspace"
+scope = "session"
+packages = ["shell"]
+bins = ["tilo-runtime-mcp"]
+dev_features = ["dev-overrides"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-runtime-mcp", to = "/usr/bin/tilo-runtime-mcp", mode = "0755" },
 ]
 
 [[component]]
@@ -315,7 +328,7 @@ profile = "thin-app"
 packages = ["runtime-dylib"]
 app_manifests = "apps/*/tilo-app.toml"
 features = [
-  "music/audio", "music/live", "video-player/decode", "video-player/portal",
+  "music/audio", "music/live", "video-player/decode",
   "camera/live-capture", "tube/live", "tube/media", "tube/grayjay-sync",
   "chat/live-media", "mail/live", "disks/live", "video-editor/decode",
   "video-editor/gst",
@@ -335,13 +348,28 @@ files = [
 name = "fs"
 kind = "userspace"
 scope = "vm"
-packages = ["fs"]
+packages = ["tilo-fs"]
 bins = ["fs"]
 units = ["fs.service", "tilo-fs-replica.service"]
-user_units = ["tilo-fs-recipient.service"]
+user_units = ["tilo-fs-recipient.service", "tilo-fs-cloud.service"]
 layer = "desktop-binaries"
 files = [
   { from = "fs", to = "/usr/bin/fs", mode = "0755" },
+]
+
+# Settings' credential helper. The cloud account service runs it (through
+# bounded-command) when an account's short-lived handoff credential is
+# missing, expired or rejected; it alone opens the account vault, for that
+# one call.
+[[component]]
+name = "account-credential"
+kind = "userspace"
+scope = "session"
+packages = ["account-custody"]
+bins = ["tilo-account-credential"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-account-credential", to = "/usr/libexec/tilo-account-credential", mode = "0755" },
 ]
 
 [[component]]
@@ -480,7 +508,7 @@ kind = "userspace"
 scope = "session"
 packages = ["shell"]
 bins = ["tilo-control"]
-dev_features = ["shell/dev-overrides"]
+dev_features = ["dev-overrides"]
 layer = "dev-tools"
 files = [
   { from = "tilo-control", to = "/usr/bin/tilo-control", mode = "0755" },

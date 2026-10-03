@@ -42,7 +42,7 @@ fn wpe_engine_renders_a_page_offscreen() {
         "data:text/html,<body style=\"background:%23ff0000;margin:0\"><h1>Tilo</h1></body>".into(),
     ));
 
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     let mut finished = false;
     let mut frame = None;
     while Instant::now() < deadline {

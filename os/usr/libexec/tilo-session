@@ -11,11 +11,37 @@ readonly SHELL_BIN=/usr/bin/shell
 readonly MKDTEMP=/usr/bin/mktemp
 readonly RM=/usr/bin/rm
 readonly RMDIR=/usr/bin/rmdir
+readonly MKDIR=/usr/bin/mkdir
+readonly MKFIFO=/usr/bin/mkfifo
+readonly CHMOD=/usr/bin/chmod
+readonly MV=/usr/bin/mv
+readonly CP=/usr/bin/cp
+readonly TAIL=/usr/bin/tail
+readonly DATE=/usr/bin/date
+readonly SLEEP=/usr/bin/sleep
+readonly FLIGHT_RECORDER=/usr/libexec/tilo-flight-recorder
 readonly SESSION_TARGET=tilo-graphical-session.target
+
+# The desktop uses Mesa too. The greeter's separate cage process cannot pass
+# its LLVM CPU workaround through greetd into this authenticated session.
+# Restrict baseline JIT codegen to ARM guests with the 2D PCI virtio GPU;
+# physical GPUs retain their normal CPU selection.
+if [[ $(uname -m) == aarch64 ]]; then
+  for card in /sys/class/drm/card[0-9]*; do
+    if [[ -f $card/device/uevent ]] && grep -qx 'PCI_ID=1AF4:1050' "$card/device/uevent"; then
+      cpu_shim=/usr/lib/tilo/virtio-gallivm-cpu.so
+      [[ -s $cpu_shim ]] || { echo 'missing ARM virtual graphics CPU shim' >&2; exit 1; }
+      export LD_PRELOAD="$cpu_shim${LD_PRELOAD:+:$LD_PRELOAD}"
+      break
+    fi
+  done
+fi
 
 target_started=0
 environment_imported=0
 shell_pid=""
+flight_pipe=""
+flight_relay_pid=""
 logout_request_dir=""
 logout_request_path=""
 
@@ -66,6 +92,9 @@ cleanup_logout_channel() {
   if [ -n "$logout_request_path" ]; then
     "$RM" -f -- "$logout_request_path" 2>/dev/null || true
   fi
+  if [ -n "$flight_pipe" ]; then
+    "$RM" -f -- "$flight_pipe" 2>/dev/null || true
+  fi
   if [ -n "$logout_request_dir" ]; then
     "$RMDIR" -- "$logout_request_dir" 2>/dev/null || true
   fi
@@ -99,14 +128,18 @@ run_managed() {
   return "$status"
 }
 
-# This blocks until graphical-session-pre.target (whose identity unit performs
-# idempotent migration/repair) and graphical-session.target complete. A missing
-# identity is intentionally a no-op here: the native compositor owns first-login
-# OOBE because it is the first trusted display surface. Starting the Tilo-owned
+# This blocks until graphical-session-pre.target and graphical-session.target
+# complete. Identity is not handled here: the native compositor verifies and
+# repairs an existing identity at startup and owns first-login OOBE because it
+# is the first trusted display surface. Starting the Tilo-owned
 # target is necessary because the standard graphical targets carry
 # RefuseManualStart=yes.
 if [ ! -x "$DBUS_UPDATE" ]; then
   echo "tilo-session: $DBUS_UPDATE is missing or not executable" >&2
+  exit 1
+fi
+if [ ! -x "$FLIGHT_RECORDER" ]; then
+  echo "tilo-session: $FLIGHT_RECORDER is missing or not executable" >&2
   exit 1
 fi
 
@@ -122,8 +155,56 @@ environment_imported=1
 "$SYSTEMCTL" --user start "$SESSION_TARGET"
 target_started=1
 
+# Keep a small persistent flight recorder beside the journal, as the host
+# package's session runner does: an abrupt reset or journal vacuuming must not
+# erase the only evidence from a failed login, and tilo-session-report reads
+# these files. The recorder passes every byte on to this wrapper's stdout, so
+# the journal still gets it all, and keeps only the latest 4 MiB. One previous
+# login is retained, with its per-frame trace.
+flight_dir="${XDG_STATE_HOME:-${HOME:?}/.local/state}/tilo/session-logs"
+"$MKDIR" -p -- "$flight_dir"
+"$CHMOD" 0700 "$flight_dir"
+if [ -f "$flight_dir/latest.log" ]; then
+  "$TAIL" -c 4194304 -- "$flight_dir/latest.log" >"$flight_dir/previous.log.tmp" || true
+  "$CHMOD" 0600 "$flight_dir/previous.log.tmp"
+  "$MV" -f -- "$flight_dir/previous.log.tmp" "$flight_dir/previous.log"
+fi
+if [ -f "$flight_dir/frame-trace.csv" ]; then
+  "$CP" -- "$flight_dir/frame-trace.csv" "$flight_dir/previous-frame-trace.csv.tmp"
+  "$CHMOD" 0600 "$flight_dir/previous-frame-trace.csv.tmp"
+  "$MV" -f -- "$flight_dir/previous-frame-trace.csv.tmp" "$flight_dir/previous-frame-trace.csv"
+fi
+flight_log="$flight_dir/latest.log"
+: >"$flight_log"
+"$CHMOD" 0600 "$flight_log"
+TILO_FRAME_TRACE="$flight_dir/frame-trace.csv"
+: >"$TILO_FRAME_TRACE"
+"$CHMOD" 0600 "$TILO_FRAME_TRACE"
+export TILO_FRAME_TRACE
+export TILO_PAINT_STATS=1
+export TILO_LOOP_TIMING=1
+flight_pipe="$logout_request_dir/flight-record.pipe"
+"$MKFIFO" -m 0600 -- "$flight_pipe"
+"$FLIGHT_RECORDER" "$flight_log" "$("$DATE" --iso-8601=seconds)" "$$" "$SHELL_BIN" <"$flight_pipe" &
+flight_relay_pid=$!
+
 set +e
-run_managed "$SHELL_BIN" "$@"
+run_managed "$SHELL_BIN" "$@" >"$flight_pipe" 2>&1
 status=$?
+# Apps the compositor started inherit the pipe and can keep its write end open
+# after the compositor exits; the recorder would then never see end-of-file
+# and this wrapper, and the session unit, would outlive the session. Give the
+# recorder two seconds to drain what was written, then stop it.
+i=0
+while [ "$i" -lt 20 ] && kill -0 "$flight_relay_pid" 2>/dev/null; do
+  i=$((i + 1))
+  "$SLEEP" 0.1
+done
+kill -KILL "$flight_relay_pid" 2>/dev/null || true
+wait "$flight_relay_pid" 2>/dev/null
+flight_relay_pid=""
+printf 'tilo-flight-record-v1 end=%s status=%s logout_request=%s\n' \
+  "$("$DATE" --iso-8601=seconds)" "$status" \
+  "$([ -e "$logout_request_path" ] && printf yes || printf no)" >>"$flight_log"
 set -e
 exit "$status"

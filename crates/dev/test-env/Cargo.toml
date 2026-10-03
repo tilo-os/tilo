@@ -2,9 +2,11 @@
 name = "tilo-test-env"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
-description = "Serialised, self-restoring process environment and XDG fixtures for tests"
+repository.workspace = true
+homepage.workspace = true
+description = "Serialised, self-restoring process environment, XDG fixtures and hang-bounded waits for tests"
 
 # Test support only: depend on this from [dev-dependencies], never from a
 # production dependency table.
@@ -14,3 +16,7 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

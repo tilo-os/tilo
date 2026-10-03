@@ -13,6 +13,9 @@ const MAX_BOOKMARK_TITLE_BYTES: usize = 4 * 1024;
 pub struct Bookmark {
     pub url: String,
     pub title: String,
+    /// CRDT add-tags still present for this URL. File-cache rows leave this
+    /// empty; remove is published from the document projection.
+    pub tags: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -71,6 +74,7 @@ impl Bookmarks {
             } else {
                 bounded_text(title.trim(), MAX_BOOKMARK_TITLE_BYTES)
             },
+            tags: Vec::new(),
         });
         self.revision = self.revision.wrapping_add(1);
         true
@@ -151,6 +155,7 @@ impl Bookmarks {
                             |title| bounded_text(title.trim(), MAX_BOOKMARK_TITLE_BYTES),
                         ),
                     url: url.to_string(),
+                    tags: Vec::new(),
                 })
             })
             .take(MAX_BOOKMARKS)
@@ -177,49 +182,53 @@ fn bounded_text(value: &str, limit: usize) -> String {
 mod tests {
     use super::*;
 
+    /// Bookmark store persistence and bounds.
     #[test]
-    fn bookmark_store_deduplicates_and_round_trips() {
-        let mut bookmarks = Bookmarks::default();
-        assert!(bookmarks.add("https://example.test", "Example"));
-        assert!(!bookmarks.add("https://example.test", "Duplicate"));
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("bookmarks.json");
-        bookmarks.save_to(&path).unwrap();
-        let loaded = Bookmarks::from_json(&std::fs::read_to_string(path).unwrap());
-        assert_eq!(loaded, bookmarks);
-        assert!(bookmarks.remove("https://example.test"));
-    }
+    fn bookmark_store_dedups_round_trips_and_bounds_hostile_input() {
+        // Phase `bookmark_store_deduplicates_and_round_trips`.
+        {
+            let mut bookmarks = Bookmarks::default();
+            assert!(bookmarks.add("https://example.test", "Example"));
+            assert!(!bookmarks.add("https://example.test", "Duplicate"));
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("bookmarks.json");
+            bookmarks.save_to(&path).unwrap();
+            let loaded = Bookmarks::from_json(&std::fs::read_to_string(path).unwrap());
+            assert_eq!(loaded, bookmarks);
+            assert!(bookmarks.remove("https://example.test"));
+        }
 
-    #[test]
-    fn malformed_or_huge_store_is_bounded() {
-        assert!(Bookmarks::from_json("not json").entries().is_empty());
-        let rows = (0..10_500)
-            .map(|index| serde_json::json!({"url": format!("https://{index}.test")}))
-            .collect::<Vec<_>>();
-        let loaded = Bookmarks::from_json(&serde_json::to_string(&rows).unwrap());
-        assert_eq!(loaded.entries().len(), 10_000);
-    }
+        // Phase `malformed_or_huge_store_is_bounded`.
+        {
+            assert!(Bookmarks::from_json("not json").entries().is_empty());
+            let rows = (0..10_500)
+                .map(|index| serde_json::json!({"url": format!("https://{index}.test")}))
+                .collect::<Vec<_>>();
+            let loaded = Bookmarks::from_json(&serde_json::to_string(&rows).unwrap());
+            assert_eq!(loaded.entries().len(), 10_000);
+        }
 
-    #[test]
-    fn hostile_rows_cannot_create_unbounded_library_labels() {
-        let too_long_url = format!(
-            "https://example.test/{}",
-            "x".repeat(MAX_BOOKMARK_URL_BYTES)
-        );
-        let json = serde_json::json!([
-            { "url": too_long_url, "title": "ignored" },
-            {
-                "url": "https://kept.example.test",
-                "title": "t".repeat(MAX_BOOKMARK_TITLE_BYTES + 64),
-            }
-        ]);
-        let loaded = Bookmarks::from_json(&json.to_string());
-        assert_eq!(loaded.entries().len(), 1);
-        assert_eq!(loaded.entries()[0].title.len(), MAX_BOOKMARK_TITLE_BYTES);
-        assert!(
-            Bookmarks::from_json(&" ".repeat(MAX_BOOKMARK_FILE_BYTES + 1))
-                .entries()
-                .is_empty()
-        );
+        // Phase `hostile_rows_cannot_create_unbounded_library_labels`.
+        {
+            let too_long_url = format!(
+                "https://example.test/{}",
+                "x".repeat(MAX_BOOKMARK_URL_BYTES)
+            );
+            let json = serde_json::json!([
+                { "url": too_long_url, "title": "ignored" },
+                {
+                    "url": "https://kept.example.test",
+                    "title": "t".repeat(MAX_BOOKMARK_TITLE_BYTES + 64),
+                }
+            ]);
+            let loaded = Bookmarks::from_json(&json.to_string());
+            assert_eq!(loaded.entries().len(), 1);
+            assert_eq!(loaded.entries()[0].title.len(), MAX_BOOKMARK_TITLE_BYTES);
+            assert!(
+                Bookmarks::from_json(&" ".repeat(MAX_BOOKMARK_FILE_BYTES + 1))
+                    .entries()
+                    .is_empty()
+            );
+        }
     }
 }

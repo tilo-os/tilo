@@ -249,14 +249,16 @@ impl SourceEditor {
         // the resolve falls back to it even if the binding were ever cleared.
         self.code.handle_event(
             event,
-            1.0,
-            modifiers,
-            doc,
-            text_id,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers,
+                state: doc,
+                path: text_id,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -357,10 +359,6 @@ impl SourceEditor {
     /// Draw a floating tooltip card near `at` carrying a diagnostic's message
     /// (and its first hint, dimmed). Sizing is measured from the text so the
     /// card hugs the content.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "diagnostic tooltip painting combines scene resources and theme with its anchor and diagnostic message/hint"
-    )]
     fn draw_tooltip(
         &self,
         scene: &mut Scene,
@@ -551,111 +549,113 @@ mod tests {
     }
 
     #[test]
-    fn byte_of_line_col_maps_positions() {
-        let t = "ab\ncde\nf";
-        assert_eq!(byte_of_line_col(t, 0, 0), 0);
-        assert_eq!(byte_of_line_col(t, 1, 0), 3);
-        assert_eq!(byte_of_line_col(t, 1, 2), 5);
-        assert_eq!(byte_of_line_col(t, 2, 0), 7);
-    }
-
-    #[test]
-    fn diag_byte_span_covers_the_reported_span() {
-        // 1-based ln 2 cols 3..6 → 0-based line 1 cols 2..5 → bytes 5..8 in
-        // "ab\ncdefg".
-        let t = "ab\ncdefg";
-        let d = Diagnostic {
-            kind: DiagKind::Error,
-            message: "boom".into(),
-            line: Some(2),
-            col: Some(3),
-            end_line: Some(2),
-            end_col: Some(6),
-            hints: vec![],
-        };
-        assert_eq!(diag_byte_span(&d, t), Some((5, 8)));
-    }
-
-    #[test]
-    fn diag_zero_width_span_is_widened() {
-        let t = "abc";
-        let d = Diagnostic {
-            kind: DiagKind::Warning,
-            message: "x".into(),
-            line: Some(1),
-            col: Some(2),
-            end_line: Some(1),
-            end_col: Some(2),
-            hints: vec![],
-        };
-        let (b0, b1) = diag_byte_span(&d, t).unwrap();
-        assert!(
-            b1 > b0,
-            "a zero-width span still underlines at least one byte"
-        );
-    }
-
-    #[test]
-    fn gutter_severity_prefers_error() {
-        let warn = Diagnostic {
-            kind: DiagKind::Warning,
-            message: "w".into(),
-            line: Some(2),
-            col: Some(1),
-            end_line: Some(2),
-            end_col: Some(2),
-            hints: vec![],
-        };
-        let err = Diagnostic {
-            kind: DiagKind::Error,
-            message: "e".into(),
-            line: Some(2),
-            col: Some(4),
-            end_line: Some(2),
-            end_col: Some(6),
-            hints: vec![],
-        };
-        let map = worst_severity_by_line(&[warn, err]);
-        assert_eq!(map.get(&1), Some(&DiagKind::Error));
-    }
-
-    /// Typing through the shell edits the bound Automerge object via the shared
-    /// widget's real key path.
-    #[test]
-    fn typing_edits_the_bound_document() {
-        use winit::event::{ElementState, KeyEvent};
-        use winit::keyboard::{Key, SmolStr};
-        let (mut doc, id) = doc_with("");
-        let mut ed = SourceEditor::new();
-        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
-        ed.bind(id.clone(), &mut doc);
-        ed.focused = true;
-        for ch in ["h", "i"] {
-            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = Key::Character(SmolStr::new(ch));
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
-            );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = Some(SmolStr::new(ch));
-            let event = WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
-                event: ev,
-                is_synthetic: false,
-            };
-            assert!(ed.handle_key(&event, &Modifiers::default(), &mut doc, &id));
+    fn editor_maps_positions_and_diagnostic_spans() {
+        // Case `byte_of_line_col_maps_positions`.
+        {
+            let t = "ab\ncde\nf";
+            assert_eq!(byte_of_line_col(t, 0, 0), 0);
+            assert_eq!(byte_of_line_col(t, 1, 0), 3);
+            assert_eq!(byte_of_line_col(t, 1, 2), 5);
+            assert_eq!(byte_of_line_col(t, 2, 0), 7);
         }
-        assert_eq!(doc.text(&id).unwrap(), "hi");
+        // Case `diag_byte_span_covers_the_reported_span`.
+        {
+            // 1-based ln 2 cols 3..6 → 0-based line 1 cols 2..5 → bytes 5..8 in
+            // "ab\ncdefg".
+            let t = "ab\ncdefg";
+            let d = Diagnostic {
+                kind: DiagKind::Error,
+                message: "boom".into(),
+                line: Some(2),
+                col: Some(3),
+                end_line: Some(2),
+                end_col: Some(6),
+                hints: vec![],
+            };
+            assert_eq!(diag_byte_span(&d, t), Some((5, 8)));
+        }
+        // Case `diag_zero_width_span_is_widened`.
+        {
+            let t = "abc";
+            let d = Diagnostic {
+                kind: DiagKind::Warning,
+                message: "x".into(),
+                line: Some(1),
+                col: Some(2),
+                end_line: Some(1),
+                end_col: Some(2),
+                hints: vec![],
+            };
+            let (b0, b1) = diag_byte_span(&d, t).unwrap();
+            assert!(
+                b1 > b0,
+                "a zero-width span still underlines at least one byte"
+            );
+        }
+        // Case `gutter_severity_prefers_error`.
+        {
+            let warn = Diagnostic {
+                kind: DiagKind::Warning,
+                message: "w".into(),
+                line: Some(2),
+                col: Some(1),
+                end_line: Some(2),
+                end_col: Some(2),
+                hints: vec![],
+            };
+            let err = Diagnostic {
+                kind: DiagKind::Error,
+                message: "e".into(),
+                line: Some(2),
+                col: Some(4),
+                end_line: Some(2),
+                end_col: Some(6),
+                hints: vec![],
+            };
+            let map = worst_severity_by_line(&[warn, err]);
+            assert_eq!(map.get(&1), Some(&DiagKind::Error));
+        }
     }
 
     #[test]
-    fn goto_line_moves_the_caret_to_the_line_start() {
-        let (mut doc, id) = doc_with("one\ntwo\nthree");
-        let mut ed = SourceEditor::new();
-        ed.bind(id, &mut doc);
-        ed.goto_line("", 2);
-        assert_eq!(ed.caret(), 4, "line 2 starts just after the first newline");
+    fn editor_input_edits_document_and_moves_caret() {
+        // Case `typing_edits_the_bound_document`:
+        // Typing through the shell edits the bound Automerge object via the shared
+        // widget's real key path.
+        {
+            use winit::event::{ElementState, KeyEvent};
+            use winit::keyboard::{Key, SmolStr};
+            let (mut doc, id) = doc_with("");
+            let mut ed = SourceEditor::new();
+            ed.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
+            ed.bind(id.clone(), &mut doc);
+            ed.focused = true;
+            for ch in ["h", "i"] {
+                let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+                ev.logical_key = Key::Character(SmolStr::new(ch));
+                ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+                    winit::keyboard::NativeKeyCode::Unidentified,
+                );
+                ev.location = winit::keyboard::KeyLocation::Standard;
+                ev.state = ElementState::Pressed;
+                ev.repeat = false;
+                ev.text = Some(SmolStr::new(ch));
+                let event = WindowEvent::KeyboardInput {
+                    device_id: unsafe { std::mem::zeroed() },
+                    event: ev,
+                    is_synthetic: false,
+                };
+                assert!(ed.handle_key(&event, &Modifiers::default(), &mut doc, &id));
+            }
+            assert_eq!(doc.text(&id).unwrap(), "hi");
+        }
+        // Case `goto_line_moves_the_caret_to_the_line_start`.
+        {
+            let (mut doc, id) = doc_with("one\ntwo\nthree");
+            let mut ed = SourceEditor::new();
+            ed.bind(id, &mut doc);
+            ed.goto_line("", 2);
+            assert_eq!(ed.caret(), 4, "line 2 starts just after the first newline");
+        }
     }
 }

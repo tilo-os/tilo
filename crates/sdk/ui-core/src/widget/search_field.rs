@@ -12,9 +12,9 @@
 //! and opens its own `CommandPalette`. Search UI and ranking thus live in
 //! one shared toolkit widget, not in every app's bespoke search bar.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -75,7 +75,8 @@ impl SearchField {
         Self::with_input(TextInput::local())
     }
 
-    pub(crate) fn with_language(language: &str) -> Self {
+    #[doc(hidden)]
+    pub fn with_language(language: &str) -> Self {
         Self::with_input(TextInput::local_with_language(language))
     }
 
@@ -288,13 +289,11 @@ impl Default for SearchField {
 }
 
 impl Widget for SearchField {
+    crate::provides!(dyn crate::undo::UndoPoints);
+
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
         self.input.set_platform_conventions(conventions);
-    }
-
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.input.sync(state, path);
     }
 
     #[allow(
@@ -425,20 +424,10 @@ impl Widget for SearchField {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         // A left press anywhere latches a palette-open request and never
         // reaches the inner input.
@@ -451,7 +440,7 @@ impl Widget for SearchField {
                 && self.rect.contains(self.last_cursor)
             {
                 self.request_palette();
-                *handled = true;
+                *ctx.handled = true;
             }
             return;
         }
@@ -466,28 +455,20 @@ impl Widget for SearchField {
         {
             self.input.set_text("");
             self.cleared = true;
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         // A field placed by `apply_layout_external` has no child node; the
         // input only uses the node to report a focus target.
-        let child_node = taffy
-            .children(node_id)
+        let child_node = ctx
+            .taffy
+            .children(ctx.node_id)
             .unwrap_or_default()
             .first()
             .copied()
-            .unwrap_or(node_id);
-        self.input.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            child_node,
-            taffy,
-        );
+            .unwrap_or(ctx.node_id);
+        self.input
+            .handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
@@ -524,14 +505,6 @@ impl Widget for SearchField {
         vec![&mut self.input as &mut (dyn Widget + '_)]
     }
 
-    fn needs_commit(&self) -> bool {
-        self.input.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.input.on_commit();
-    }
-
     fn name(&self) -> &'static str {
         "SearchField"
     }
@@ -559,13 +532,23 @@ impl Widget for SearchField {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = crate::doc::document(state, path);
         if self.opens_palette {
             return matches!(action, crate::a11y::Action::Activate) && self.request_palette();
         }
         Widget::perform_action(&mut self.input, action, state, path)
+    }
+}
+
+impl crate::undo::UndoPoints for SearchField {
+    fn needs_commit(&self) -> bool {
+        self.input.needs_commit()
+    }
+    fn on_commit(&mut self) {
+        self.input.on_commit();
     }
 }
 
@@ -577,38 +560,167 @@ pub(crate) fn observed_language(field: &SearchField) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
 
-    /// The palette key cap centres its label on the measured 11 px line
-    /// inside the 20 px cap — not on the former hand-tuned `cy - 6.5`.
     #[test]
-    fn palette_keycap_label_centres_its_measured_line() {
-        let mut field = SearchField::new().opens_palette();
-        lay_out(&mut field, 400.0);
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        field.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::default(),
-        );
-        let label = Shortcut::command("K").label(field.platform);
-        // The cap is painted after the (empty) input, so its label is the
-        // last glyph run of the frame.
-        let runs = scene.encoding().resources.glyph_runs.len();
-        assert!(runs > 0, "key cap label glyphs");
-        crate::widget::text::assert_glyph_run_centred_in_band(
-            &scene,
-            runs - 1,
-            &label,
-            KBD_LABEL_SIZE,
-            field.rect.center().y - KBD_HEIGHT / 2.0,
-            KBD_HEIGHT,
-            &mut tr,
-            theme.text_dim,
-        );
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "test-only layout size is a small pixel value; f32 precision loss is \
+immaterial"
+    )]
+    fn search_input_geometry_clear_button_and_semantics() {
+        // Case `palette_keycap_label_centres_its_measured_line`.
+        // The palette key cap centres its label on the measured 11 px line
+        // inside the 20 px cap — not on the former hand-tuned `cy - 6.5`.
+        {
+            let mut field = SearchField::new().opens_palette();
+            lay_out(&mut field, 400.0);
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            field.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::default(),
+            );
+            let label = Shortcut::command("K").label(field.platform);
+            // The cap is painted after the (empty) input, so its label is the
+            // last glyph run of the frame.
+            let runs = scene.encoding().resources.glyph_runs.len();
+            assert!(runs > 0, "key cap label glyphs");
+            crate::widget::text::assert_glyph_run_centred_in_band(
+                &scene,
+                runs - 1,
+                &label,
+                KBD_LABEL_SIZE,
+                field.rect.center().y - KBD_HEIGHT / 2.0,
+                KBD_HEIGHT,
+                &mut tr,
+                theme.text_dim,
+            );
+        }
+
+        // Case `embedded_input_sits_inside_the_icon_gutter`.
+        {
+            let mut sf = SearchField::new();
+            let _ = lay_out(&mut sf, 320.0);
+            assert!(
+                (sf.get_rect().width() - 320.0).abs() < 1.0,
+                "pill fills width"
+            );
+            let input_rect = sf.input.get_rect();
+            assert!(
+                input_rect.x0 >= sf.get_rect().x0 + ICON_GUTTER - 0.5,
+                "the editable text starts past the magnifier gutter ({} vs {})",
+                input_rect.x0,
+                sf.get_rect().x0 + ICON_GUTTER
+            );
+        }
+
+        // Case `clear_button_hidden_when_empty_shown_when_typed`.
+        {
+            let mut sf = SearchField::new();
+            let _ = lay_out(&mut sf, 320.0);
+            draw(&mut sf);
+            assert_eq!(sf.clear_rect(), Rect::ZERO, "empty query ⇒ no clear button");
+            sf.input.set_text("hello");
+            draw(&mut sf);
+            assert_ne!(
+                sf.clear_rect(),
+                Rect::ZERO,
+                "non-empty query ⇒ a clear button appears"
+            );
+        }
+
+        // Case `clicking_clear_empties_query_and_reports_dirty`.
+        {
+            let theme = Theme::dark();
+            let mut sf = SearchField::new();
+            let mut taffy = TaffyTree::<()>::new();
+            let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let mut tr = TextRenderer::new();
+            let node = sf.build_layout(&mut taffy, &theme, &mut nm);
+            taffy
+                .compute_layout_with_measure(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(320.0),
+                        height: taffy::AvailableSpace::Definite(HEIGHT as f32),
+                    },
+                    |k, a, id, _, _| {
+                        nm.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
+                            (*p).measure(k, a, &mut tr)
+                        })
+                    },
+                )
+                .unwrap();
+            sf.apply_layout(&taffy, node, Point::ZERO);
+            sf.input.set_text("query text");
+            draw(&mut sf);
+            assert!(!sf.is_empty());
+            let target = sf.clear_rect().center();
+            assert!(target.x > 0.0, "clear button resolves after draw");
+
+            let mut handled = false;
+            let mut ft = None;
+            let mut doc = AutoCommit::new();
+            let rootid = automerge::ROOT;
+            let mods = winit::event::Modifiers::default();
+            sf.handle_event(
+                &WindowEvent::CursorMoved {
+                    device_id: unsafe { std::mem::zeroed() },
+                    position: winit::dpi::PhysicalPosition::new(target.x, target.y),
+                },
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &rootid,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+            sf.handle_event(
+                &WindowEvent::MouseInput {
+                    device_id: unsafe { std::mem::zeroed() },
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &rootid,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+            assert!(handled, "clear click consumed");
+            assert!(sf.is_empty(), "clear empties the query");
+            assert_eq!(
+                sf.take_dirty().as_deref(),
+                Some(""),
+                "clear reports an empty-string edit"
+            );
+            assert_eq!(sf.take_dirty(), None, "dirty drains after one read");
+        }
+
+        // Case `accessibility_is_a_text_input_with_the_query_as_value`.
+        {
+            use crate::a11y::Role;
+            let mut sf = SearchField::new();
+            sf.input.set_text("abc");
+            let node = Widget::accessibility(&sf).expect("search field exposes a11y");
+            assert_eq!(node.role, Role::TextInput);
+            assert_eq!(node.value.as_deref(), Some("abc"));
+            assert!(node.state.focusable);
+        }
     }
 
     #[allow(
@@ -649,246 +761,132 @@ mod tests {
     }
 
     #[test]
-    fn embedded_input_sits_inside_the_icon_gutter() {
-        let mut sf = SearchField::new();
-        let _ = lay_out(&mut sf, 320.0);
-        assert!(
-            (sf.get_rect().width() - 320.0).abs() < 1.0,
-            "pill fills width"
-        );
-        let input_rect = sf.input.get_rect();
-        assert!(
-            input_rect.x0 >= sf.get_rect().x0 + ICON_GUTTER - 0.5,
-            "the editable text starts past the magnifier gutter ({} vs {})",
-            input_rect.x0,
-            sf.get_rect().x0 + ICON_GUTTER
-        );
-    }
-
-    #[test]
-    fn clear_button_hidden_when_empty_shown_when_typed() {
-        let mut sf = SearchField::new();
-        let _ = lay_out(&mut sf, 320.0);
-        draw(&mut sf);
-        assert_eq!(sf.clear_rect(), Rect::ZERO, "empty query ⇒ no clear button");
-        sf.input.set_text("hello");
-        draw(&mut sf);
-        assert_ne!(
-            sf.clear_rect(),
-            Rect::ZERO,
-            "non-empty query ⇒ a clear button appears"
-        );
-    }
-
-    #[test]
     #[allow(
         clippy::cast_possible_truncation,
         reason = "test-only layout size is a small pixel value; f32 precision loss is \
-                  immaterial"
+immaterial"
     )]
-    fn clicking_clear_empties_query_and_reports_dirty() {
-        let theme = Theme::dark();
-        let mut sf = SearchField::new();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let mut tr = TextRenderer::new();
-        let node = sf.build_layout(&mut taffy, &theme, &mut nm);
-        taffy
-            .compute_layout_with_measure(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(320.0),
-                    height: taffy::AvailableSpace::Definite(HEIGHT as f32),
+    fn launcher_is_a_button_that_latches_one_palette_request() {
+        // Case `launcher_accessibility_uses_the_platform_shortcut_label`.
+        {
+            use crate::platform::{Platform, PlatformConventions};
+
+            let mut field = SearchField::new().opens_palette();
+            field.set_platform_conventions(PlatformConventions::new(Platform::MacOs));
+            let node = Widget::accessibility(&field).expect("launcher exposes a11y");
+            assert_eq!(node.name.as_deref(), Some("Open search (⌘K)"));
+
+            field.set_platform_conventions(PlatformConventions::new(Platform::Windows));
+            let node = Widget::accessibility(&field).expect("launcher exposes a11y");
+            assert_eq!(node.name.as_deref(), Some("Open search (Ctrl+K)"));
+        }
+
+        // Case `launcher_click_latches_a_palette_request_and_stays_non_editable`.
+        {
+            let theme = Theme::dark();
+            let mut sf = SearchField::new()
+                .opens_palette()
+                .with_placeholder("Search containers…");
+            assert!(sf.is_palette_launcher());
+            let mut taffy = TaffyTree::<()>::new();
+            let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let mut tr = TextRenderer::new();
+            let node = sf.build_layout(&mut taffy, &theme, &mut nm);
+            taffy
+                .compute_layout_with_measure(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(320.0),
+                        height: taffy::AvailableSpace::Definite(HEIGHT as f32),
+                    },
+                    |k, a, id, _, _| {
+                        nm.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
+                            (*p).measure(k, a, &mut tr)
+                        })
+                    },
+                )
+                .unwrap();
+            sf.apply_layout(&taffy, node, Point::ZERO);
+            draw(&mut sf);
+
+            assert!(!sf.take_palette_request());
+
+            let center = sf.get_rect().center();
+            let mut handled = false;
+            let mut ft = None;
+            let mut doc = AutoCommit::new();
+            let rootid = automerge::ROOT;
+            let mods = winit::event::Modifiers::default();
+            sf.handle_event(
+                &WindowEvent::CursorMoved {
+                    device_id: unsafe { std::mem::zeroed() },
+                    position: winit::dpi::PhysicalPosition::new(center.x, center.y),
                 },
-                |k, a, id, _, _| {
-                    nm.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
-                        (*p).measure(k, a, &mut tr)
-                    })
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &rootid,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
                 },
-            )
-            .unwrap();
-        sf.apply_layout(&taffy, node, Point::ZERO);
-        sf.input.set_text("query text");
-        draw(&mut sf);
-        assert!(!sf.is_empty());
-        let target = sf.clear_rect().center();
-        assert!(target.x > 0.0, "clear button resolves after draw");
-
-        let mut handled = false;
-        let mut ft = None;
-        let mut doc = AutoCommit::new();
-        let rootid = automerge::ROOT;
-        let mods = winit::event::Modifiers::default();
-        sf.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(target.x, target.y),
-            },
-            1.0,
-            &mods,
-            &mut doc,
-            &rootid,
-            &mut handled,
-            &mut ft,
-            node,
-            &taffy,
-        );
-        sf.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            1.0,
-            &mods,
-            &mut doc,
-            &rootid,
-            &mut handled,
-            &mut ft,
-            node,
-            &taffy,
-        );
-        assert!(handled, "clear click consumed");
-        assert!(sf.is_empty(), "clear empties the query");
-        assert_eq!(
-            sf.take_dirty().as_deref(),
-            Some(""),
-            "clear reports an empty-string edit"
-        );
-        assert_eq!(sf.take_dirty(), None, "dirty drains after one read");
-    }
-
-    #[test]
-    fn accessibility_is_a_text_input_with_the_query_as_value() {
-        use crate::a11y::Role;
-        let mut sf = SearchField::new();
-        sf.input.set_text("abc");
-        let node = Widget::accessibility(&sf).expect("search field exposes a11y");
-        assert_eq!(node.role, Role::TextInput);
-        assert_eq!(node.value.as_deref(), Some("abc"));
-        assert!(node.state.focusable);
-    }
-
-    #[test]
-    fn launcher_accessibility_uses_the_platform_shortcut_label() {
-        use crate::platform::{Platform, PlatformConventions};
-
-        let mut field = SearchField::new().opens_palette();
-        field.set_platform_conventions(PlatformConventions::new(Platform::MacOs));
-        let node = Widget::accessibility(&field).expect("launcher exposes a11y");
-        assert_eq!(node.name.as_deref(), Some("Open search (⌘K)"));
-
-        field.set_platform_conventions(PlatformConventions::new(Platform::Windows));
-        let node = Widget::accessibility(&field).expect("launcher exposes a11y");
-        assert_eq!(node.name.as_deref(), Some("Open search (Ctrl+K)"));
-    }
-
-    #[test]
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "test-only layout size is a small pixel value; f32 precision loss is \
-                  immaterial"
-    )]
-    fn launcher_click_latches_a_palette_request_and_stays_non_editable() {
-        let theme = Theme::dark();
-        let mut sf = SearchField::new()
-            .opens_palette()
-            .with_placeholder("Search containers…");
-        assert!(sf.is_palette_launcher());
-        let mut taffy = TaffyTree::<()>::new();
-        let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let mut tr = TextRenderer::new();
-        let node = sf.build_layout(&mut taffy, &theme, &mut nm);
-        taffy
-            .compute_layout_with_measure(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(320.0),
-                    height: taffy::AvailableSpace::Definite(HEIGHT as f32),
+            );
+            sf.handle_event(
+                &WindowEvent::MouseInput {
+                    device_id: unsafe { std::mem::zeroed() },
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
                 },
-                |k, a, id, _, _| {
-                    nm.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
-                        (*p).measure(k, a, &mut tr)
-                    })
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &rootid,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
                 },
-            )
-            .unwrap();
-        sf.apply_layout(&taffy, node, Point::ZERO);
-        draw(&mut sf);
+            );
+            assert!(handled, "the launcher consumes the click");
+            assert!(!sf.input.is_focused(), "launcher pill stays non-editable");
+            assert!(
+                sf.take_palette_request(),
+                "click latches a palette-open request"
+            );
+            assert!(
+                !sf.take_palette_request(),
+                "the request drains after one read"
+            );
+        }
 
-        assert!(!sf.take_palette_request());
+        // Case `launcher_reports_button_role_for_accessibility`.
+        {
+            use crate::a11y::Role;
+            let sf = SearchField::new().opens_palette();
+            let node = Widget::accessibility(&sf).expect("launcher exposes a11y");
+            assert_eq!(
+                node.role,
+                Role::Button,
+                "launcher is a button, not a text field"
+            );
+            assert!(node.state.focusable);
+        }
 
-        let center = sf.get_rect().center();
-        let mut handled = false;
-        let mut ft = None;
-        let mut doc = AutoCommit::new();
-        let rootid = automerge::ROOT;
-        let mods = winit::event::Modifiers::default();
-        sf.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(center.x, center.y),
-            },
-            1.0,
-            &mods,
-            &mut doc,
-            &rootid,
-            &mut handled,
-            &mut ft,
-            node,
-            &taffy,
-        );
-        sf.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            1.0,
-            &mods,
-            &mut doc,
-            &rootid,
-            &mut handled,
-            &mut ft,
-            node,
-            &taffy,
-        );
-        assert!(handled, "the launcher consumes the click");
-        assert!(!sf.input.is_focused(), "launcher pill stays non-editable");
-        assert!(
-            sf.take_palette_request(),
-            "click latches a palette-open request"
-        );
-        assert!(
-            !sf.take_palette_request(),
-            "the request drains after one read"
-        );
-    }
-
-    #[test]
-    fn launcher_reports_button_role_for_accessibility() {
-        use crate::a11y::Role;
-        let sf = SearchField::new().opens_palette();
-        let node = Widget::accessibility(&sf).expect("launcher exposes a11y");
-        assert_eq!(
-            node.role,
-            Role::Button,
-            "launcher is a button, not a text field"
-        );
-        assert!(node.state.focusable);
-    }
-
-    #[test]
-    fn launcher_semantic_activate_latches_the_same_palette_request_as_click() {
-        let mut sf = SearchField::new().opens_palette();
-        let mut doc = AutoCommit::new();
-        assert!(Widget::perform_action(
-            &mut sf,
-            &crate::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert!(sf.take_palette_request());
-        assert!(!sf.take_palette_request(), "semantic request drains once");
+        // Case `launcher_semantic_activate_latches_the_same_palette_request_as_click`.
+        {
+            let mut sf = SearchField::new().opens_palette();
+            let mut doc = AutoCommit::new();
+            assert!(Widget::perform_action(
+                &mut sf,
+                &crate::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert!(sf.take_palette_request());
+            assert!(!sf.take_palette_request(), "semantic request drains once");
+        }
     }
 }

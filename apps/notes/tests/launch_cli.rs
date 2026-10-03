@@ -2,6 +2,27 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 fn run(root: &Path, host: &Path, target: Option<&Path>, dump: &Path) -> serde_json::Value {
+    run_with(root, host, target, dump, &[])
+}
+
+fn run_with(
+    root: &Path,
+    host: &Path,
+    target: Option<&Path>,
+    dump: &Path,
+    env: &[(&str, &str)],
+) -> serde_json::Value {
+    drive(root, host, target, dump, env, &serde_json::json!([]))
+}
+
+fn drive(
+    root: &Path,
+    host: &Path,
+    target: Option<&Path>,
+    dump: &Path,
+    env: &[(&str, &str)],
+    actions: &serde_json::Value,
+) -> serde_json::Value {
     std::fs::create_dir_all(host).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_notes"));
     #[cfg(windows)]
@@ -35,8 +56,9 @@ fn run(root: &Path, host: &Path, target: Option<&Path>, dump: &Path) -> serde_js
     command
         .env("TILO_NOTES_ROOT", root)
         .env("TILO_PACKAGE_ID", "so.tilo.notes")
+        .envs(env.iter().copied())
         .arg("--headless-drive")
-        .arg(serde_json::json!({"actions": [], "dump": dump}).to_string());
+        .arg(serde_json::json!({"actions": actions, "dump": dump}).to_string());
     if let Some(target) = target {
         command.arg(target);
     }
@@ -46,14 +68,12 @@ fn run(root: &Path, host: &Path, target: Option<&Path>, dump: &Path) -> serde_js
         .stdout(Stdio::from(std::fs::File::create(&stdout).unwrap()))
         .stderr(Stdio::from(std::fs::File::create(&stderr).unwrap()));
     let mut child = command.spawn().unwrap();
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(30))
-        .expect("a 30 s deadline is representable");
+    let deadline = tilo_test_env::hang_deadline();
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
         }
-        if std::time::Instant::now() >= deadline {
+        if ui::time::now() >= deadline {
             child.kill().unwrap();
             child.wait().unwrap();
             panic!(
@@ -74,6 +94,16 @@ fn run(root: &Path, host: &Path, target: Option<&Path>, dump: &Path) -> serde_js
         "widget-owned notebook must not open a substitute host document"
     );
     serde_json::from_slice(&std::fs::read(dump).unwrap()).unwrap()
+}
+
+/// The paragraphs of a page in a dumped notebook, in no particular order.
+fn texts(page: &serde_json::Value) -> Vec<String> {
+    page["body"]["blocks"]
+        .as_object()
+        .unwrap()
+        .values()
+        .filter_map(|block| block["text"].as_str().map(str::to_owned))
+        .collect()
 }
 
 #[test]
@@ -103,10 +133,7 @@ fn positional_markdown_imports_and_persists_without_synthetic_input() {
     );
     assert_eq!(second["pages"].as_object().unwrap().len(), 2);
     assert_eq!(second["pages"][old_id]["title"], old_page["title"]);
-    assert_eq!(
-        second["pages"][old_id]["blocks"][1]["text"],
-        "Keep this body."
-    );
+    assert!(texts(&second["pages"][old_id]).contains(&"Keep this body.".to_owned()));
     let restored = run(&notebook, &host, None, &temp.path().join("restart.json"));
     assert_eq!(restored["pages"].as_object().unwrap().len(), 2);
     let new_page = restored["pages"]
@@ -115,8 +142,9 @@ fn positional_markdown_imports_and_persists_without_synthetic_input() {
         .values()
         .find(|page| page["title"] == "Grüße 日本語")
         .unwrap();
-    assert_eq!(new_page["blocks"][0]["text"], "Imported");
-    assert_eq!(new_page["blocks"][1]["text"], "Unicode body.");
+    let mut body = texts(new_page);
+    body.sort();
+    assert_eq!(body, ["Imported", "Unicode body."]);
     assert_eq!(
         std::fs::read_to_string(existing).unwrap(),
         "# Existing\n\nKeep this body."
@@ -125,4 +153,70 @@ fn positional_markdown_imports_and_persists_without_synthetic_input() {
         std::fs::read_to_string(imported).unwrap(),
         "# Imported\n\nUnicode body."
     );
+}
+
+fn record_dirs(root: &Path) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                names.push(entry.file_name().to_string_lossy().into_owned());
+                pending.push(entry.path());
+            }
+        }
+    }
+    names
+}
+
+/// Launched into a room, Notes opens the room's default record, the one
+/// every other device's first Notes window (native or browser) opens, so
+/// they edit one notebook; a standalone launch keeps the personal notebook.
+#[test]
+fn a_room_launch_opens_the_rooms_default_record() {
+    let temp = tempfile::tempdir().unwrap();
+    let room_default = ui::record::RecordId::room_default().storage_key();
+    let personal = notes::hosting::default_notebook().id.storage_key();
+
+    let room_host = temp.path().join("room");
+    run_with(
+        &temp.path().join("room-notebook"),
+        &room_host,
+        None,
+        &temp.path().join("room.json"),
+        &[
+            ("TILO_WORKSPACE_ID", "095789bd-bf1b-4215-9d78-78129060e306"),
+            ("TILO_PARTICIPATION", "author"),
+        ],
+    );
+    let dirs = record_dirs(&room_host);
+    assert!(dirs.contains(&room_default), "{dirs:?}");
+    assert!(!dirs.contains(&personal), "{dirs:?}");
+
+    let personal_host = temp.path().join("personal");
+    run(
+        &temp.path().join("personal-notebook"),
+        &personal_host,
+        None,
+        &temp.path().join("personal.json"),
+    );
+    let dirs = record_dirs(&personal_host);
+    assert!(dirs.contains(&personal), "{dirs:?}");
+}
+
+/// The empty state's "New note" is found where it is drawn: its button
+/// names its own bounds, so a click at them (a screen reader's, a test
+/// driver's) creates the first note instead of landing on empty panel.
+#[test]
+fn clicking_new_note_where_its_button_says_it_is_creates_the_first_note() {
+    let temp = tempfile::tempdir().unwrap();
+    let dump = drive(
+        &temp.path().join("notebook"),
+        &temp.path().join("host"),
+        None,
+        &temp.path().join("dump.json"),
+        &[],
+        &serde_json::json!([{"click_named": "notes.first_note"}]),
+    );
+    assert_eq!(dump["pages"].as_object().unwrap().len(), 1, "{dump}");
 }

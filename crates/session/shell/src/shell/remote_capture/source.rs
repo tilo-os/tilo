@@ -466,78 +466,81 @@ mod tests {
     use super::*;
 
     #[test]
-    fn live_profiles_are_bounded_by_the_wire_chunk() {
-        let camera = RemoteCaptureProfile::Camera {
-            format: RemoteVideoFormat::Nv12,
-            width: 160,
-            height: 120,
-            frames_per_second: 15,
-        };
-        let microphone = RemoteCaptureProfile::Microphone {
-            format: RemoteAudioFormat::PcmS16Le,
-            sample_rate: 48_000,
-            channels: 2,
-            frame_millis: 20,
-        };
-        assert_eq!(live_frame_bytes(&camera), Some(28_800));
-        assert_eq!(live_frame_bytes(&microphone), Some(3_840));
-        assert!(
-            live_frame_bytes(&RemoteCaptureProfile::Camera {
+    fn capture_sources_bound_chunks_spool_consistently_and_report_saturation() {
+        // Phase `live_profiles_are_bounded_by_the_wire_chunk`.
+        {
+            let camera = RemoteCaptureProfile::Camera {
                 format: RemoteVideoFormat::Nv12,
-                width: 4096,
-                height: 2160,
-                frames_per_second: 30,
-            })
-            .is_none()
-        );
-    }
+                width: 160,
+                height: 120,
+                frames_per_second: 15,
+            };
+            let microphone = RemoteCaptureProfile::Microphone {
+                format: RemoteAudioFormat::PcmS16Le,
+                sample_rate: 48_000,
+                channels: 2,
+                frame_millis: 20,
+            };
+            assert_eq!(live_frame_bytes(&camera), Some(28_800));
+            assert_eq!(live_frame_bytes(&microphone), Some(3_840));
+            assert!(
+                live_frame_bytes(&RemoteCaptureProfile::Camera {
+                    format: RemoteVideoFormat::Nv12,
+                    width: 4096,
+                    height: 2160,
+                    frames_per_second: 30,
+                })
+                .is_none()
+            );
+        }
 
-    #[test]
-    fn scanner_spools_before_publishing_consistent_total_offsets() {
-        let profile = RemoteCaptureProfile::DocumentScanner {
-            format: crate::shell::remote_capture::device::RemoteDocumentFormat::Png,
-            max_pages: 1,
-            max_document_bytes: 200_000,
-        };
-        let bytes = vec![7_u8; 130_000];
-        let (tx, rx) = mpsc::sync_channel(4);
-        let (failure_tx, failure_rx) = mpsc::sync_channel(1);
-        pump_scanner(
-            bytes.as_slice(),
-            [3; 16],
-            &profile,
-            &AtomicBool::new(false),
-            &tx,
-            &failure_tx,
-        );
-        assert!(failure_rx.try_recv().is_err());
-        let chunks = rx.try_iter().collect::<Vec<_>>();
-        assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].offset, 0);
-        assert_eq!(chunks[1].offset, 65_536);
-        assert!(chunks[1].end_of_unit);
-        assert!(chunks.iter().all(|chunk| chunk.total_bytes == 130_000));
-    }
+        // Phase `scanner_spools_before_publishing_consistent_total_offsets`.
+        {
+            let profile = RemoteCaptureProfile::DocumentScanner {
+                format: crate::shell::remote_capture::device::RemoteDocumentFormat::Png,
+                max_pages: 1,
+                max_document_bytes: 200_000,
+            };
+            let bytes = vec![7_u8; 130_000];
+            let (tx, rx) = mpsc::sync_channel(4);
+            let (failure_tx, failure_rx) = mpsc::sync_channel(1);
+            pump_scanner(
+                bytes.as_slice(),
+                [3; 16],
+                &profile,
+                &AtomicBool::new(false),
+                &tx,
+                &failure_tx,
+            );
+            assert!(failure_rx.try_recv().is_err());
+            let chunks = rx.try_iter().collect::<Vec<_>>();
+            assert_eq!(chunks.len(), 2);
+            assert_eq!(chunks[0].offset, 0);
+            assert_eq!(chunks[1].offset, 65_536);
+            assert!(chunks[1].end_of_unit);
+            assert!(chunks.iter().all(|chunk| chunk.total_bytes == 130_000));
+        }
 
-    #[test]
-    fn scanner_queue_saturation_reports_failure_instead_of_blocking() {
-        let profile = RemoteCaptureProfile::DocumentScanner {
-            format: crate::shell::remote_capture::device::RemoteDocumentFormat::Png,
-            max_pages: 1,
-            max_document_bytes: 200_000,
-        };
-        let bytes = vec![9_u8; 130_000];
-        let (tx, _rx) = mpsc::sync_channel(1);
-        let (failure_tx, failure_rx) = mpsc::sync_channel(1);
-        pump_scanner(
-            bytes.as_slice(),
-            [4; 16],
-            &profile,
-            &AtomicBool::new(false),
-            &tx,
-            &failure_tx,
-        );
-        assert_eq!(failure_rx.try_recv(), Ok([4; 16]));
+        // Phase `scanner_queue_saturation_reports_failure_instead_of_blocking`.
+        {
+            let profile = RemoteCaptureProfile::DocumentScanner {
+                format: crate::shell::remote_capture::device::RemoteDocumentFormat::Png,
+                max_pages: 1,
+                max_document_bytes: 200_000,
+            };
+            let bytes = vec![9_u8; 130_000];
+            let (tx, _rx) = mpsc::sync_channel(1);
+            let (failure_tx, failure_rx) = mpsc::sync_channel(1);
+            pump_scanner(
+                bytes.as_slice(),
+                [4; 16],
+                &profile,
+                &AtomicBool::new(false),
+                &tx,
+                &failure_tx,
+            );
+            assert_eq!(failure_rx.try_recv(), Ok([4; 16]));
+        }
     }
 }
 

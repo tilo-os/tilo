@@ -63,10 +63,13 @@ pub mod caps;
 pub mod channel;
 pub mod compaction;
 pub mod crypto;
+pub mod document_import;
 pub mod document_transfer;
 pub mod event;
 pub mod file_invite;
 pub mod files;
+pub mod first_party_app_ids;
+pub mod foreign_device;
 pub mod history;
 pub mod identity;
 pub mod invite;
@@ -96,8 +99,9 @@ pub use channel::{
     DocumentHandle, MemberRef,
 };
 pub use compaction::{
-    CompactionCheckpoint, CompactionError, encode_compaction_payload, hash_op_prefix,
-    parse_compaction_payload,
+    CompactionCheckpoint, CompactionError, SEALED_COMPACTION_VERSION, SealedCompaction,
+    encode_compaction_payload, hash_op_prefix, hash_sealed_prefix, parse_compaction_payload,
+    sealed_ciphertext,
 };
 pub use crypto::{
     Ed25519PublicKey, Signature, VerifyError, generate_keypair, sign_event, sign_op, verify_event,
@@ -143,8 +147,9 @@ pub use mls_governance::{
 pub use op::{
     ContentRetention, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,
     EncryptionMetadata, EncryptionScheme, MAX_DOCUMENT_MUTATION_BYTES, RoutedDocumentPayload,
-    SignedOp, document_artifact_id, document_attestation_id, document_channel_id,
-    validate_document_payload_route,
+    SignedOp, WholeDocumentPayload, document_artifact_id, document_attestation_id,
+    document_channel_id, live_artifact_id, validate_document_payload_route,
+    validate_whole_document_payload_route,
 };
 pub use ownership_transfer::{
     OWNERSHIP_TRANSFER_VERSION, OwnershipTransferAcceptanceV1, OwnershipTransferAuditV1,
@@ -173,4 +178,7 @@ pub use share_control::{
 pub use space::{Space, SpaceId};
 pub use validator::{
     ChannelState, ValidationError, validate_admitted_inbound_op, validate_inbound_op,
+    validate_replayed_inbound_op,
 };
+
+pub mod local_transport;

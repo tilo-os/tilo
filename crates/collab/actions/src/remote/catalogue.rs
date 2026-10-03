@@ -32,7 +32,8 @@ pub struct CatalogueQuery {
     /// Only the direct children of this resource; `None` is the top level.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_resource: Option<String>,
-    /// Only rows whose labels or ids contain this text (case-insensitive).
+    /// Only rows whose labels, ids or parameters contain this text
+    /// (case-insensitive).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub needle: String,
     /// Only this exact action, re-resolved against the provider now: the
@@ -157,6 +158,9 @@ impl CatalogueRow {
         ];
         if let Some(action) = &self.action {
             fields.extend([action.action_label.as_str(), action.address.action.as_str()]);
+            for param in &action.params {
+                fields.extend([param.name.as_ref(), param.description.as_ref()]);
+            }
         }
         fields
             .iter()
@@ -371,5 +375,34 @@ mod tests {
             exact.rows[0].target().map(|target| target.address),
             Some(ActionAddress::new("note:2", "archive"))
         );
+    }
+
+    #[test]
+    fn a_needle_matches_parameter_names_and_descriptions() {
+        let mut format = row("sheet:1", Some("format-cells"), "");
+        if let Some(action) = format.action.as_mut() {
+            action.params = vec![crate::ActionParam::optional(
+                "bold",
+                crate::ParamType::Boolean,
+                "Heavier text",
+            )];
+        }
+        let rows = vec![row("sheet:1", Some("sort-rows"), ""), format];
+        for needle in ["BOLD", "heavier"] {
+            let page = CataloguePage::from_rows(
+                "r1".into(),
+                rows.clone(),
+                &CatalogueQuery {
+                    needle: needle.into(),
+                    ..CatalogueQuery::default()
+                },
+            );
+            let actions: Vec<_> = page
+                .rows
+                .iter()
+                .filter_map(|row| row.action.as_ref().map(|a| a.address.action.as_str()))
+                .collect();
+            assert_eq!(actions, ["format-cells"], "{needle}");
+        }
     }
 }

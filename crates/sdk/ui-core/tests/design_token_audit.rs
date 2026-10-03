@@ -20,22 +20,30 @@ use std::{
 };
 
 use crate::support::ratchet::{
-    Counts, is_skipped, ratchet_failures, read_baseline, test_module_spans, write_baseline,
+    Counts, is_skipped, note_stale, ratchet_failures, read_baseline, test_module_spans,
+    write_baseline,
 };
 
 /// Files exempt from the audit:
 ///  - theme.rs (the single source of truth for literal color values)
 ///  - tokens/** (palette sub-modules — the token origin, not token consumers)
 ///  - presence/render.rs (the HSL helper intentionally encodes per-user hue math)
-///  - tests/** and `#[cfg(test)]` modules inside a src file (test fixtures —
-///    see `support::ratchet::test_module_spans`)
+///  - tests/**, `*_tests.rs`, and `#[cfg(test)]` modules inside a src file
+///    (test fixtures — see `support::ratchet::test_module_spans`). Path-based
+///    test modules extracted beside production code use the `*_tests.rs`
+///    suffix so they stay out of the ratchet the same way inline test bodies do.
 fn is_exempt(path: &Path) -> bool {
     let s = path.to_string_lossy();
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
     s.contains("/theme.rs")
         || s.contains("/tokens/")
         || s.contains("/presence/render.rs")
         || s.contains("/tests/")
-        || path.file_name().is_some_and(|name| name == "tests.rs")
+        || name == "tests.rs"
+        || name.ends_with("_tests.rs")
 }
 
 fn walk(root: &Path, out: &mut Vec<PathBuf>) {
@@ -80,52 +88,85 @@ fn forbidden_patterns() -> Vec<(Regex, &'static str)> {
     ]
 }
 
-/// The forbidden set must still bite: a pattern that no longer matches the
-/// shape it names would let the audit pass empty.
 #[test]
-fn forbidden_patterns_match_the_shapes_they_name() {
-    let patterns = forbidden_patterns();
-    assert_eq!(patterns.len(), 3);
-    assert!(
-        patterns[0]
-            .0
-            .is_match("Some(cosmic_text::Color::rgb(100, 110, 120))")
-    );
-    assert!(
-        !patterns[0]
-            .0
-            .is_match("cosmic_text::Color::rgb(cr, cg, cb)"),
-        "real data routed through the constructor is not a literal"
-    );
-    assert!(
-        !patterns[0].0.is_match("Color::from_rgb8(12, 120, 220)"),
-        "peniko literals belong to the ratchet, not the hard-fail set"
-    );
-    assert!(patterns[1].0.is_match("rect.to_rounded_rect(8.0)"));
-    assert!(
-        !patterns[1]
-            .0
-            .is_match("rect.to_rounded_rect(theme.radius_standard)")
-    );
-    assert!(patterns[2].0.is_match("blur: 16.0,"));
-    assert!(
-        !patterns[2]
-            .0
-            .is_match("blur: theme.tokens.elevation.raised.blur,")
-    );
-}
+fn audit_patterns_match_exactly_the_shapes_they_name() {
+    // Case `forbidden_patterns_match_the_shapes_they_name`.
+    // The forbidden set must still bite: a pattern that no longer matches the
+    // shape it names would let the audit pass empty.
+    {
+        let patterns = forbidden_patterns();
+        assert_eq!(patterns.len(), 3);
+        assert!(
+            patterns[0]
+                .0
+                .is_match("Some(cosmic_text::Color::rgb(100, 110, 120))")
+        );
+        assert!(
+            !patterns[0]
+                .0
+                .is_match("cosmic_text::Color::rgb(cr, cg, cb)"),
+            "real data routed through the constructor is not a literal"
+        );
+        assert!(
+            !patterns[0].0.is_match("Color::from_rgb8(12, 120, 220)"),
+            "peniko literals belong to the ratchet, not the hard-fail set"
+        );
+        assert!(patterns[1].0.is_match("rect.to_rounded_rect(8.0)"));
+        assert!(
+            !patterns[1]
+                .0
+                .is_match("rect.to_rounded_rect(theme.radius_standard)")
+        );
+        assert!(patterns[2].0.is_match("blur: 16.0,"));
+        assert!(
+            !patterns[2]
+                .0
+                .is_match("blur: theme.tokens.elevation.raised.blur,")
+        );
+    }
 
-/// The `#[cfg(test)]` span finder and the baseline plumbing live in
-/// `support::ratchet`, shared with `spacing_token_audit.rs`. The finder
-/// covers exactly the item the attribute governs — an earlier copy here
-/// treated every `#[cfg(test)]` as a braced module, so a `#[cfg(test)]
-/// const …;` or `mod tests;` exempted whatever braced production item
-/// followed it.
-#[test]
-fn a_file_gated_to_tests_has_no_production_style_lines() {
-    let source = "#![cfg(test)]\nuse super::*;\nfn fixture() { let ink = Color::WHITE; }\n";
-    assert_eq!(test_module_spans(source), vec![(0, 3)]);
-    assert!(test_module_spans("fn draw() { let ink = Color::WHITE; }\n").is_empty());
+    // Case `a_file_gated_to_tests_has_no_production_style_lines`.
+    // The `#[cfg(test)]` span finder and the baseline plumbing live in
+    // `support::ratchet`, shared with `spacing_token_audit.rs`. The finder
+    // covers exactly the item the attribute governs — an earlier copy here
+    // treated every `#[cfg(test)]` as a braced module, so a `#[cfg(test)]
+    // const …;` or `mod tests;` exempted whatever braced production item
+    // followed it.
+    {
+        let source = "#![cfg(test)]\nuse super::*;\nfn fixture() { let ink = Color::WHITE; }\n";
+        assert_eq!(test_module_spans(source), vec![(0, 3)]);
+        assert!(test_module_spans("fn draw() { let ink = Color::WHITE; }\n").is_empty());
+    }
+
+    // Case `declared_border_pattern_matches_the_shapes_it_names`.
+    // The chrome-edge pattern must match the shapes it names and nothing else.
+    {
+        let (_, re, _) = declared_border_patterns().remove(0);
+        for hit in [
+            "theme.tokens.colors.border_standard,",
+            "let bc = theme.border_standard;",
+            "stroke(&Stroke::new(1.0), t, colors.border_strong, None, &shape);",
+            "c.overlay_border_strong",
+            "colors.neutral[3]",
+        ] {
+            assert!(
+                re.is_match(hit),
+                "{hit:?} is a declared edge and must match"
+            );
+        }
+        for miss in [
+            "theme.border_focus",
+            "Colors::hairline_on(ground, HAIRLINE_ALPHA)",
+            "border_standard: p.border,",
+            "tilo_ui::surface::edge_on(fill)",
+            "let neutral = colors.text_dim;",
+        ] {
+            assert!(
+                !re.is_match(miss),
+                "{miss:?} is not a declared edge and must not match"
+            );
+        }
+    }
 }
 
 #[test]
@@ -175,8 +216,8 @@ fn no_hardcoded_style_literals_in_tree() {
 //
 // Turning these into hard failures would break hundreds of existing lines, so
 // they're ratcheted instead: `design_token_baseline.txt` records what each
-// file carries today, a file may never carry more, and one that carries
-// fewer lowers its record in the same commit. The number only goes down.
+// file carries today and a file may never carry more. One that carries fewer
+// is noted so its record can be lowered. The number only goes down.
 
 /// Path to the recorded counts, relative to the crate root.
 const BASELINE: &str = "tests/design_token_baseline.txt";
@@ -264,8 +305,8 @@ const BASELINE_HEADER: &[&str] = &[
     "This is a ratchet, not approval: counts may only move down.",
 ];
 
-/// The escape hatches the older audit was blind to may not grow, and a file
-/// that has shed some has to say so — the record only moves downward.
+/// The escape hatches the older audit was blind to may not grow; a file that
+/// has shed some is noted so the record can be lowered.
 #[test]
 fn theme_escape_hatches_do_not_grow() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -291,13 +332,7 @@ fn theme_escape_hatches_do_not_grow() {
         grew.len(),
         grew.join("\n"),
     );
-    assert!(
-        stale.is_empty(),
-        "{} baseline entr(ies) in {BASELINE} are higher than the tree.\n\
-         The ratchet only moves down — lower these so the progress is kept:\n{}",
-        stale.len(),
-        stale.join("\n"),
-    );
+    note_stale(BASELINE, "UPDATE_DESIGN_BASELINE", &stale);
 }
 
 /// App and shell styling debt may only shrink. Set
@@ -331,12 +366,10 @@ fn app_and_shell_theme_escape_hatches_do_not_grow() {
         grew.len(),
         grew.join("\n"),
     );
-    assert!(
-        stale.is_empty(),
-        "{} app/shell baseline entr(ies) are stale. Keep the improvement by lowering {}.\n{}",
-        stale.len(),
+    note_stale(
         APP_SHELL_BASELINE,
-        stale.join("\n"),
+        "UPDATE_APP_SHELL_DESIGN_BASELINE",
+        &stale,
     );
 }
 
@@ -366,38 +399,8 @@ fn declared_border_patterns() -> Vec<(&'static str, Regex, &'static str)> {
     )]
 }
 
-/// The chrome-edge pattern must match the shapes it names and nothing else.
-#[test]
-fn declared_border_pattern_matches_the_shapes_it_names() {
-    let (_, re, _) = declared_border_patterns().remove(0);
-    for hit in [
-        "theme.tokens.colors.border_standard,",
-        "let bc = theme.border_standard;",
-        "stroke(&Stroke::new(1.0), t, colors.border_strong, None, &shape);",
-        "c.overlay_border_strong",
-        "colors.neutral[3]",
-    ] {
-        assert!(
-            re.is_match(hit),
-            "{hit:?} is a declared edge and must match"
-        );
-    }
-    for miss in [
-        "theme.border_focus",
-        "Colors::hairline_on(ground, HAIRLINE_ALPHA)",
-        "border_standard: p.border,",
-        "tilo_ui::surface::edge_on(fill)",
-        "let neutral = colors.text_dim;",
-    ] {
-        assert!(
-            !re.is_match(miss),
-            "{miss:?} is not a declared edge and must not match"
-        );
-    }
-}
-
-/// Chrome may not gain a declared edge, and a file that sheds one lowers its
-/// record in the same commit. Refresh with `UPDATE_CHROME_BORDER_BASELINE=1`
+/// Chrome may not gain a declared edge; a file that sheds one is noted so its
+/// record can be lowered. Refresh with `UPDATE_CHROME_BORDER_BASELINE=1`
 /// only after reviewing that every change is a reduction.
 #[test]
 fn declared_borders_in_chrome_do_not_grow() {
@@ -449,17 +452,21 @@ fn declared_borders_in_chrome_do_not_grow() {
         grew.len(),
         grew.join("\n"),
     );
-    assert!(
-        stale.is_empty(),
-        "{} entr(ies) in {CHROME_BORDER_BASELINE} are higher than the tree; the ratchet only moves down:\n{}",
-        stale.len(),
-        stale.join("\n"),
+    note_stale(
+        CHROME_BORDER_BASELINE,
+        "UPDATE_CHROME_BORDER_BASELINE",
+        &stale,
     );
 }
 
 /// The resource app framework's entry points. Each builds its launch from
 /// `LaunchSpec`, so an app started through one is on the shared launcher.
-const FRAMEWORK_LAUNCHERS: [&str; 2] = ["framework::run::<", "framework::launch_spec::<"];
+/// `ui::main!` expands to `framework::run` or a definition's launch spec.
+const FRAMEWORK_LAUNCHERS: [&str; 3] = [
+    "framework::run::<",
+    "framework::launch_spec::<",
+    "ui::main!(",
+];
 const FRAMEWORK_APP: &str = "crates/sdk/tilo-app/src/framework/app.rs";
 
 /// The signature and body of the top-level `pub fn NAME<` in `source`, up to
@@ -471,63 +478,66 @@ fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
     rest.split_once("\n}\n").map_or(rest, |(body, _)| body)
 }
 
-/// Accepting the framework's entry points is sound only while they stay on
-/// `LaunchSpec`; a framework that grew its own launcher would take every
-/// framework app off the acceptance matrix at once.
 #[test]
-fn framework_launchers_build_on_the_shared_launch_spec() {
-    let source = fs::read_to_string(repository_root().join(FRAMEWORK_APP))
-        .expect("framework app module is readable");
-    let spec = function_body(&source, "launch_spec");
-    assert!(
-        spec.contains("-> LaunchSpec") && spec.contains("LaunchSpec::from_definition("),
-        "framework::launch_spec must build the shared LaunchSpec:\n{spec}"
-    );
-    let run = function_body(&source, "run");
-    assert!(
-        run.contains("launch::run_or_exit(&launch_spec::<A>())"),
-        "framework::run must launch through framework::launch_spec:\n{run}"
-    );
-}
-
-/// Product apps share one viewport/large-type/pseudo-locale audit path. A new
-/// bespoke launcher silently loses that acceptance matrix, so keep the fleet on
-/// `LaunchSpec` — directly or through a framework entry point that builds it —
-/// unless the binary is itself an automation agent rather than a user-facing
-/// app window.
-#[test]
-fn product_apps_use_the_shared_responsive_launcher() {
-    let apps = repository_root().join("apps");
-    let mut missing = Vec::new();
-    for entry in fs::read_dir(&apps)
-        .expect("apps directory exists")
-        .flatten()
+fn launchers_build_on_the_shared_launch_specs() {
+    // Case `framework_launchers_build_on_the_shared_launch_spec`.
+    // Accepting the framework's entry points is sound only while they stay on
+    // `LaunchSpec`; a framework that grew its own launcher would take every
+    // framework app off the acceptance matrix at once.
     {
-        let app = entry.path();
-        if !app.join("tilo-app.toml").is_file() {
-            continue;
-        }
-        let main = app.join("src/main.rs");
-        if !main.is_file() || app.file_name().is_some_and(|name| name == "agent") {
-            continue;
-        }
-        let source = fs::read_to_string(&main).expect("app main is readable");
-        let launched = source.contains("LaunchSpec")
-            || FRAMEWORK_LAUNCHERS
-                .iter()
-                .any(|entry| source.contains(entry));
-        if !launched {
-            missing.push(
-                app.file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned(),
-            );
-        }
+        let source = fs::read_to_string(repository_root().join(FRAMEWORK_APP))
+            .expect("framework app module is readable");
+        let spec = function_body(&source, "launch_spec");
+        assert!(
+            spec.contains("-> LaunchSpec") && spec.contains("LaunchSpec::from_definition("),
+            "framework::launch_spec must build the shared LaunchSpec:\n{spec}"
+        );
+        let run = function_body(&source, "run");
+        assert!(
+            run.contains("launch::run_or_exit(&launch_spec::<A>())"),
+            "framework::run must launch through framework::launch_spec:\n{run}"
+        );
     }
-    assert!(
-        missing.is_empty(),
-        "product apps missing the shared responsive launcher: {}",
-        missing.join(", ")
-    );
+
+    // Case `product_apps_use_the_shared_responsive_launcher`.
+    // Product apps share one viewport/large-type/pseudo-locale audit path. A new
+    // bespoke launcher silently loses that acceptance matrix, so keep the fleet on
+    // `LaunchSpec` — directly or through a framework entry point that builds it —
+    // unless the binary is itself an automation agent rather than a user-facing
+    // app window.
+    {
+        let apps = repository_root().join("apps");
+        let mut missing = Vec::new();
+        for entry in fs::read_dir(&apps)
+            .expect("apps directory exists")
+            .flatten()
+        {
+            let app = entry.path();
+            if !app.join("tilo-app.toml").is_file() {
+                continue;
+            }
+            let main = app.join("src/main.rs");
+            if !main.is_file() || app.file_name().is_some_and(|name| name == "agent") {
+                continue;
+            }
+            let source = fs::read_to_string(&main).expect("app main is readable");
+            let launched = source.contains("LaunchSpec")
+                || FRAMEWORK_LAUNCHERS
+                    .iter()
+                    .any(|entry| source.contains(entry));
+            if !launched {
+                missing.push(
+                    app.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "product apps missing the shared responsive launcher: {}",
+            missing.join(", ")
+        );
+    }
 }

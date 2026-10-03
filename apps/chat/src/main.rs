@@ -1,7 +1,7 @@
 //! Chat — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
-//!   * default        — run the live winit event loop via `ui::App`.
+//!   * default        — the chat window, importing an older workspace file once.
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
 //!     (headless screenshot; identical passes to the live app).
 //!
@@ -41,16 +41,6 @@ use ui::theme::Theme;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
-fn open_state(app_id: &'static str) -> (ui::State, ui::persist::DocWriter) {
-    // An older release kept the workspace in its own file. Hand that path to
-    // `open_migrating` so existing history is merged into the shared store on
-    // first launch rather than orphaned; the merge is idempotent.
-    match chat::storage::data_dir() {
-        Some(dir) => ui::persist::open_migrating(app_id, &chat::storage::workspace_path(&dir)),
-        None => ui::persist::open(app_id),
-    }
-}
-
 fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
     let out = args
         .shots
@@ -73,6 +63,8 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
 extern crate runtime_dylib;
 
 pub fn main() {
+    // This spec imports an older workspace file once. The ResourceApp shell
+    // opens an empty record and would leave that history behind.
     ui::launch::run_or_exit(
         &LaunchSpec::new("so.tilo.chat", chat::app_root)
             .shot_handler(shot_handler)
@@ -99,7 +91,6 @@ pub fn main() {
                 "floating-call-returning",
                 "floating-call-returned",
             ])
-            .open_state(open_state)
             .configure_app(|app| chat::actions::register(app.action_registry_mut())),
     );
 }

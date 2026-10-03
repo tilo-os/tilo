@@ -1,0 +1,31 @@
+[package]
+name = "tilo-sandbox"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+description = "Confined helper processes and the shared memory they exchange: Landlock + seccomp + memfd on Linux, Seatbelt + POSIX shm on macOS, unsupported on the web."
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "tilo_sandbox"
+path = "src/lib.rs"
+
+[dependencies]
+thiserror.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+memmap2 = "0.9.10"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Landlock rulesets and the seccomp parser policy.
+tilo-sandbox-core = { version = "0.1.0", path = "../../system/sandbox-core" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

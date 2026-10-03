@@ -73,6 +73,10 @@ pub enum Symbol {
     Return,
     Space,
     Tab,
+    /// Move the caret one character left (the space-bar cursor drag).
+    Left,
+    /// Move the caret one character right.
+    Right,
 }
 
 impl Symbol {
@@ -107,6 +111,8 @@ impl Symbol {
             Symbol::Return => "Return".to_string(),
             Symbol::Space => "space".to_string(),
             Symbol::Tab => "Tab".to_string(),
+            Symbol::Left => "Left".to_string(),
+            Symbol::Right => "Right".to_string(),
             Symbol::Unicode(c) => format!("U{:04X}", c as u32),
         }
     }
@@ -221,11 +227,14 @@ pub use wayland::VirtualKeyboardInjector;
 /// Live Wayland backend. Kept in a submodule so the protocol plumbing is in one
 /// place; the public type is re-exported above.
 mod wayland {
+    #[cfg(not(target_os = "macos"))]
     use std::os::fd::AsFd;
 
+    #[cfg(not(target_os = "macos"))]
+    use wayland_client::globals::registry_queue_init;
     use wayland_client::{
         Connection, Dispatch, QueueHandle,
-        globals::{GlobalListContents, registry_queue_init},
+        globals::GlobalListContents,
         protocol::{wl_registry, wl_seat},
     };
     use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
@@ -240,6 +249,7 @@ mod wayland {
     const KEY_RELEASED: u32 = 0;
     /// `wl_keyboard.keymap_format` XKB-v1 text format (this protocol declares
     /// the `keymap` arg as a bare `uint` rather than importing the enum).
+    #[cfg(not(target_os = "macos"))]
     const KEYMAP_FORMAT_XKB_V1: u32 = 1;
 
     /// Injects text into the focused surface via a synthetic virtual keyboard.
@@ -314,6 +324,12 @@ mod wayland {
         /// `None` (so the caller degrades to `NullInjector`) if there is no
         /// Wayland display, no `wl_seat`, or the compositor doesn't advertise
         /// `zwp_virtual_keyboard_manager_v1`. Never panics.
+        #[cfg(target_os = "macos")]
+        pub fn new() -> Option<Self> {
+            None
+        }
+
+        #[cfg(not(target_os = "macos"))]
         pub fn new() -> Option<Self> {
             let conn = Connection::connect_to_env().ok()?;
             let (globals, mut queue) = registry_queue_init::<State>(&conn).ok()?;
@@ -367,6 +383,16 @@ mod wayland {
 
         /// Write `keymap_str` to an anonymous, sealed-ish memfd and hand it to
         /// the compositor via `keymap(xkb_v1, fd, size)`.
+        #[cfg(target_os = "macos")]
+        #[allow(
+            clippy::unused_self,
+            reason = "same platform-specific backend method signature"
+        )]
+        fn upload_keymap(&self, _keymap_str: &str) -> Option<()> {
+            None
+        }
+
+        #[cfg(not(target_os = "macos"))]
         fn upload_keymap(&self, keymap_str: &str) -> Option<()> {
             use std::io::{Seek, SeekFrom, Write};
 
@@ -467,167 +493,177 @@ mod tests {
     use super::*;
 
     #[test]
-    fn symbol_from_char_maps_specials() {
-        assert_eq!(Symbol::from_char('\n'), Symbol::Return);
-        assert_eq!(Symbol::from_char('\r'), Symbol::Return);
-        assert_eq!(Symbol::from_char('\t'), Symbol::Tab);
-        assert_eq!(Symbol::from_char(' '), Symbol::Space);
-        assert_eq!(Symbol::from_char('\u{8}'), Symbol::BackSpace);
-        assert_eq!(Symbol::from_char('a'), Symbol::Unicode('a'));
-        assert_eq!(Symbol::from_char('€'), Symbol::Unicode('€'));
-    }
+    fn keysyms_map_specials_and_names() {
+        eprintln!("phase symbol_from_char_maps_specials");
+        {
+            assert_eq!(Symbol::from_char('\n'), Symbol::Return);
+            assert_eq!(Symbol::from_char('\r'), Symbol::Return);
+            assert_eq!(Symbol::from_char('\t'), Symbol::Tab);
+            assert_eq!(Symbol::from_char(' '), Symbol::Space);
+            assert_eq!(Symbol::from_char('\u{8}'), Symbol::BackSpace);
+            assert_eq!(Symbol::from_char('a'), Symbol::Unicode('a'));
+            assert_eq!(Symbol::from_char('€'), Symbol::Unicode('€'));
+        }
 
-    #[test]
-    fn keysym_names_are_correct() {
-        // ASCII 'A' = U+0041.
-        assert_eq!(Symbol::Unicode('A').keysym_name(), "U0041");
-        // lowercase 'a' = U+0061.
-        assert_eq!(Symbol::Unicode('a').keysym_name(), "U0061");
-        // Euro sign U+20AC — five hex digits round to the natural width.
-        assert_eq!(Symbol::Unicode('€').keysym_name(), "U20AC");
-        // An emoji above the BMP keeps full width.
-        assert_eq!(Symbol::Unicode('😀').keysym_name(), "U1F600");
-        assert_eq!(Symbol::BackSpace.keysym_name(), "BackSpace");
-        assert_eq!(Symbol::Return.keysym_name(), "Return");
-        assert_eq!(Symbol::Space.keysym_name(), "space");
-        assert_eq!(Symbol::Tab.keysym_name(), "Tab");
-    }
-
-    #[test]
-    fn build_keymap_emits_keysym_lines_and_codes() {
-        let symbols = vec![
-            Symbol::Unicode('h'),
-            Symbol::Unicode('i'),
-            Symbol::Space,
-            Symbol::BackSpace,
-            Symbol::Return,
-        ];
-        let (keymap, assigned) = build_keymap(&symbols);
-
-        // Well-formed wrapper.
-        assert!(keymap.starts_with("xkb_keymap {"));
-        assert!(keymap.trim_end().ends_with("};"));
-        assert!(keymap.contains("xkb_keycodes"));
-        assert!(keymap.contains("xkb_symbols"));
-        assert!(keymap.contains("include \"complete\""));
-
-        // Codes start at the evdev+8 base and increment per distinct symbol.
-        assert_eq!(assigned.len(), 5);
-        assert_eq!(assigned[0].1, KEYCODE_BASE);
-        assert_eq!(assigned[4].1, KEYCODE_BASE + 4);
-
-        // Each symbol gets a keycode declaration and a symbols line with the
-        // right keysym name.
-        assert!(keymap.contains(&format!("<I{KEYCODE_BASE}> = {KEYCODE_BASE}")));
-        assert!(keymap.contains(&format!("key <I{KEYCODE_BASE}> {{ [ U0068 ] }}")));
-        assert!(keymap.contains(&format!("key <I{}> {{ [ U0069 ] }}", KEYCODE_BASE + 1)));
-        assert!(keymap.contains(&format!("key <I{}> {{ [ space ] }}", KEYCODE_BASE + 2)));
-        assert!(keymap.contains(&format!("key <I{}> {{ [ BackSpace ] }}", KEYCODE_BASE + 3)));
-        assert!(keymap.contains(&format!("key <I{}> {{ [ Return ] }}", KEYCODE_BASE + 4)));
-    }
-
-    #[test]
-    fn build_keymap_deduplicates_repeats() {
-        // "aa" should produce ONE distinct keycode for 'a'.
-        let (_, assigned) = build_keymap(&[Symbol::Unicode('a'), Symbol::Unicode('a')]);
-        assert_eq!(assigned.len(), 1);
-        assert_eq!(assigned[0], (Symbol::Unicode('a'), KEYCODE_BASE));
-    }
-
-    #[test]
-    fn build_keymap_handles_empty_input() {
-        // No symbols → still a well-formed, compilable keymap (no key lines).
-        let (keymap, assigned) = build_keymap(&[]);
-        assert!(assigned.is_empty());
-        assert!(keymap.contains("xkb_keycodes"));
-        assert!(keymap.contains("xkb_symbols"));
-        // Range is well-formed even with nothing declared.
-        assert!(keymap.contains(&format!("minimum = {KEYCODE_BASE};")));
-        assert!(keymap.contains(&format!("maximum = {KEYCODE_BASE};")));
-    }
-
-    #[test]
-    fn null_injector_records_commit_and_send() {
-        let mut inj = NullInjector::new();
-        assert_eq!(inj.backend_name(), "null");
-
-        inj.commit_text("hi");
-        inj.commit_text(" there");
-        assert_eq!(inj.committed, vec!["hi".to_string(), " there".to_string()]);
-
-        inj.send(&[Symbol::Unicode('Z'), Symbol::Space]);
-        inj.send(&[Symbol::Return, Symbol::BackSpace]);
-        assert_eq!(
-            inj.keys,
-            vec![
-                "U005A".to_string(), // 'Z'
-                "space".to_string(),
-                "Return".to_string(),
-                "BackSpace".to_string(),
-            ]
-        );
-    }
-
-    /// The strongest pure-logic check available without a compositor: feed the
-    /// generated keymap to **libxkbcommon itself** (the same library a real
-    /// wlroots/KWin compositor compiles it with) and confirm (a) it parses and
-    /// (b) each assigned keycode resolves to exactly the intended keysym. If
-    /// this passes, the wire bytes a real compositor receives are correct.
-    #[test]
-    fn generated_keymap_compiles_with_libxkbcommon_and_resolves_keysyms() {
-        use xkbcommon::xkb;
-
-        let symbols = vec![
-            Symbol::Unicode('a'),
-            Symbol::Unicode('Z'),
-            Symbol::Unicode('€'),
-            Symbol::Space,
-            Symbol::Return,
-            Symbol::BackSpace,
-            Symbol::Tab,
-        ];
-        let (keymap_str, assigned) = build_keymap(&symbols);
-
-        let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-        let keymap = xkb::Keymap::new_from_string(
-            &ctx,
-            keymap_str,
-            xkb::KEYMAP_FORMAT_TEXT_V1,
-            xkb::KEYMAP_COMPILE_NO_FLAGS,
-        )
-        .expect("generated keymap should compile with libxkbcommon");
-
-        // Each assigned keycode's single (layout 0, level 0) keysym must equal
-        // the symbol we asked for.
-        for (sym, code) in &assigned {
-            let kc = xkb::Keycode::new(*code);
-            let syms = keymap.key_get_syms_by_level(kc, 0, 0);
-            assert_eq!(syms.len(), 1, "one keysym per synthetic key ({sym:?})");
-            let got = xkb::keysym_get_name(syms[0]);
-            let want = sym.keysym_name();
-            // libxkbcommon canonicalises Unicode keysyms to their named form
-            // when one exists (e.g. U0061 → "a", U0020 wouldn't appear since we
-            // use the named `space`). Accept either the requested name or the
-            // canonical character/name for that codepoint.
-            let ok = got == want
-                || matches!(sym, Symbol::Unicode(c) if got == c.to_string())
-                || matches!(sym, Symbol::Unicode(c)
-                    if got == format!("U{:04X}", *c as u32));
-            assert!(
-                ok,
-                "keycode {code} resolved to {got:?}, expected {want:?} (for {sym:?})"
-            );
+        eprintln!("phase keysym_names_are_correct");
+        {
+            // ASCII 'A' = U+0041.
+            assert_eq!(Symbol::Unicode('A').keysym_name(), "U0041");
+            // lowercase 'a' = U+0061.
+            assert_eq!(Symbol::Unicode('a').keysym_name(), "U0061");
+            // Euro sign U+20AC — five hex digits round to the natural width.
+            assert_eq!(Symbol::Unicode('€').keysym_name(), "U20AC");
+            // An emoji above the BMP keeps full width.
+            assert_eq!(Symbol::Unicode('😀').keysym_name(), "U1F600");
+            assert_eq!(Symbol::BackSpace.keysym_name(), "BackSpace");
+            assert_eq!(Symbol::Return.keysym_name(), "Return");
+            assert_eq!(Symbol::Space.keysym_name(), "space");
+            assert_eq!(Symbol::Tab.keysym_name(), "Tab");
         }
     }
 
     #[test]
-    fn default_injector_never_panics_and_names_a_backend() {
-        // In CI / headless there is usually no virtual-keyboard-v1 compositor,
-        // so this should degrade to "null"; under a supporting compositor it
-        // may bind the real backend. Either way it must not panic and must
-        // report a known backend name.
-        let inj = default_injector();
-        let name = inj.backend_name();
-        assert!(name == "null" || name == "virtual-keyboard-v1");
+    fn build_keymap_emits_deduplicated_compilable_keysyms() {
+        eprintln!("phase build_keymap_emits_keysym_lines_and_codes");
+        {
+            let symbols = vec![
+                Symbol::Unicode('h'),
+                Symbol::Unicode('i'),
+                Symbol::Space,
+                Symbol::BackSpace,
+                Symbol::Return,
+            ];
+            let (keymap, assigned) = build_keymap(&symbols);
+
+            // Well-formed wrapper.
+            assert!(keymap.starts_with("xkb_keymap {"));
+            assert!(keymap.trim_end().ends_with("};"));
+            assert!(keymap.contains("xkb_keycodes"));
+            assert!(keymap.contains("xkb_symbols"));
+            assert!(keymap.contains("include \"complete\""));
+
+            // Codes start at the evdev+8 base and increment per distinct symbol.
+            assert_eq!(assigned.len(), 5);
+            assert_eq!(assigned[0].1, KEYCODE_BASE);
+            assert_eq!(assigned[4].1, KEYCODE_BASE + 4);
+
+            // Each symbol gets a keycode declaration and a symbols line with the
+            // right keysym name.
+            assert!(keymap.contains(&format!("<I{KEYCODE_BASE}> = {KEYCODE_BASE}")));
+            assert!(keymap.contains(&format!("key <I{KEYCODE_BASE}> {{ [ U0068 ] }}")));
+            assert!(keymap.contains(&format!("key <I{}> {{ [ U0069 ] }}", KEYCODE_BASE + 1)));
+            assert!(keymap.contains(&format!("key <I{}> {{ [ space ] }}", KEYCODE_BASE + 2)));
+            assert!(keymap.contains(&format!("key <I{}> {{ [ BackSpace ] }}", KEYCODE_BASE + 3)));
+            assert!(keymap.contains(&format!("key <I{}> {{ [ Return ] }}", KEYCODE_BASE + 4)));
+        }
+
+        eprintln!("phase build_keymap_deduplicates_repeats");
+        {
+            // "aa" should produce ONE distinct keycode for 'a'.
+            let (_, assigned) = build_keymap(&[Symbol::Unicode('a'), Symbol::Unicode('a')]);
+            assert_eq!(assigned.len(), 1);
+            assert_eq!(assigned[0], (Symbol::Unicode('a'), KEYCODE_BASE));
+        }
+
+        eprintln!("phase build_keymap_handles_empty_input");
+        {
+            // No symbols → still a well-formed, compilable keymap (no key lines).
+            let (keymap, assigned) = build_keymap(&[]);
+            assert!(assigned.is_empty());
+            assert!(keymap.contains("xkb_keycodes"));
+            assert!(keymap.contains("xkb_symbols"));
+            // Range is well-formed even with nothing declared.
+            assert!(keymap.contains(&format!("minimum = {KEYCODE_BASE};")));
+            assert!(keymap.contains(&format!("maximum = {KEYCODE_BASE};")));
+        }
+
+        // The strongest pure-logic check available without a compositor: feed the
+        // generated keymap to **libxkbcommon itself** (the same library a real
+        // wlroots/KWin compositor compiles it with) and confirm (a) it parses and
+        // (b) each assigned keycode resolves to exactly the intended keysym. If
+        // this passes, the wire bytes a real compositor receives are correct.
+        #[cfg(not(target_os = "macos"))]
+        {
+            use xkbcommon::xkb;
+            eprintln!("phase generated_keymap_compiles_with_libxkbcommon_and_resolves_keysyms");
+
+            let symbols = vec![
+                Symbol::Unicode('a'),
+                Symbol::Unicode('Z'),
+                Symbol::Unicode('€'),
+                Symbol::Space,
+                Symbol::Return,
+                Symbol::BackSpace,
+                Symbol::Tab,
+            ];
+            let (keymap_str, assigned) = build_keymap(&symbols);
+
+            let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+            let keymap = xkb::Keymap::new_from_string(
+                &ctx,
+                keymap_str,
+                xkb::KEYMAP_FORMAT_TEXT_V1,
+                xkb::KEYMAP_COMPILE_NO_FLAGS,
+            )
+            .expect("generated keymap should compile with libxkbcommon");
+
+            // Each assigned keycode's single (layout 0, level 0) keysym must equal
+            // the symbol we asked for.
+            for (sym, code) in &assigned {
+                let kc = xkb::Keycode::new(*code);
+                let syms = keymap.key_get_syms_by_level(kc, 0, 0);
+                assert_eq!(syms.len(), 1, "one keysym per synthetic key ({sym:?})");
+                let got = xkb::keysym_get_name(syms[0]);
+                let want = sym.keysym_name();
+                // libxkbcommon canonicalises Unicode keysyms to their named form
+                // when one exists (e.g. U0061 → "a", U0020 wouldn't appear since we
+                // use the named `space`). Accept either the requested name or the
+                // canonical character/name for that codepoint.
+                let ok = got == want
+                    || matches!(sym, Symbol::Unicode(c) if got == c.to_string())
+                    || matches!(sym, Symbol::Unicode(c)
+                        if got == format!("U{:04X}", *c as u32));
+                assert!(
+                    ok,
+                    "keycode {code} resolved to {got:?}, expected {want:?} (for {sym:?})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn injectors_record_actions_and_default_never_panics() {
+        eprintln!("phase null_injector_records_commit_and_send");
+        {
+            let mut inj = NullInjector::new();
+            assert_eq!(inj.backend_name(), "null");
+
+            inj.commit_text("hi");
+            inj.commit_text(" there");
+            assert_eq!(inj.committed, vec!["hi".to_string(), " there".to_string()]);
+
+            inj.send(&[Symbol::Unicode('Z'), Symbol::Space]);
+            inj.send(&[Symbol::Return, Symbol::BackSpace]);
+            assert_eq!(
+                inj.keys,
+                vec![
+                    "U005A".to_string(), // 'Z'
+                    "space".to_string(),
+                    "Return".to_string(),
+                    "BackSpace".to_string(),
+                ]
+            );
+        }
+
+        eprintln!("phase default_injector_never_panics_and_names_a_backend");
+        {
+            // In CI / headless there is usually no virtual-keyboard-v1 compositor,
+            // so this should degrade to "null"; under a supporting compositor it
+            // may bind the real backend. Either way it must not panic and must
+            // report a known backend name.
+            let inj = default_injector();
+            let name = inj.backend_name();
+            assert!(name == "null" || name == "virtual-keyboard-v1");
+        }
     }
 }

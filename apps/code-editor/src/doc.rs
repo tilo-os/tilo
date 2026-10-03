@@ -17,7 +17,6 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
-use sha2::{Digest, Sha256};
 use ui::doc::{read_bool, read_i64_coerced, read_str};
 
 #[cfg(test)]
@@ -75,9 +74,7 @@ pub enum ParentPatch<'a> {
 
 impl EditorDoc {
     /// Return the durable project identity, minting it once inside the shared
-    /// document. For an imported legacy document that already has content we
-    /// derive the migration ID from its canonical saved bytes, so independent
-    /// peers choose the same value before the migration write is merged.
+    /// document.
     pub fn ensure_project_id(doc: &mut AutoCommit, proposed: &str) -> String {
         if let Ok(Some((Value::Scalar(value), _))) = doc.get(&ROOT, "project_id")
             && let ScalarValue::Str(id) = value.as_ref()
@@ -85,9 +82,7 @@ impl EditorDoc {
         {
             return id.to_string();
         }
-        let id = if doc.get(&ROOT, "files").ok().flatten().is_some() {
-            Self::legacy_project_id(doc)
-        } else if uuid::Uuid::parse_str(proposed).is_ok() {
+        let id = if uuid::Uuid::parse_str(proposed).is_ok() {
             proposed.to_string()
         } else {
             uuid::Uuid::new_v4().to_string()
@@ -96,21 +91,17 @@ impl EditorDoc {
         id
     }
 
-    fn legacy_project_id(doc: &mut AutoCommit) -> String {
-        let mut bytes = Sha256::digest(doc.save())
-            .into_iter()
-            .take(16)
-            .collect::<Vec<_>>();
-        // UUID variant/version bits make this a valid stable resource identity.
-        if let Some(byte) = bytes.get_mut(6) {
-            *byte = (*byte & 0x0f) | 0x50;
+    /// The durable project id, when one has been written.
+    pub fn project_id(doc: &AutoCommit) -> Option<String> {
+        match doc.get(&ROOT, "project_id") {
+            Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
+                ScalarValue::Str(id) if uuid::Uuid::parse_str(id).is_ok() => Some(id.to_string()),
+                _ => None,
+            },
+            _ => None,
         }
-        if let Some(byte) = bytes.get_mut(8) {
-            *byte = (*byte & 0x3f) | 0x80;
-        }
-        uuid::Uuid::from_slice(&bytes)
-            .map_or_else(|_| uuid::Uuid::new_v4().to_string(), |id| id.to_string())
     }
+
     /// Get-or-create the durable file-record namespace. Unlike `buffers`, this
     /// is the collaborative project tree rather than a cache of editor panes.
     pub fn files_map(doc: &mut AutoCommit) -> Option<ObjId> {
@@ -336,11 +327,23 @@ impl EditorDoc {
         reason = "ROOT is Automerge's permanent, undeletable root Map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
     )]
     pub fn terminal_root(doc: &mut AutoCommit) -> ObjId {
-        match doc.get(&ROOT, "terminal_panel") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc
+        let _ = tilo_actions::Action::apply(
+            &crate::actions::CodeEditorAction::EnsureTerminalPanel,
+            doc,
+        );
+        match Self::terminal_panel(doc) {
+            Some(id) => id,
+            None => doc
                 .put_object(&ROOT, "terminal_panel", ObjType::Map)
                 .expect("put_object terminal_panel on root never fails"),
+        }
+    }
+
+    /// The embedded terminal's map, when the document already has one.
+    pub fn terminal_panel(doc: &AutoCommit) -> Option<ObjId> {
+        match doc.get(&ROOT, "terminal_panel") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
+            _ => None,
         }
     }
 
@@ -364,102 +367,108 @@ mod tests {
     use tilo_automerge::ApplyIncoming;
 
     #[test]
-    fn project_identity_persists_and_does_not_collide() {
-        let proposed_a = "00000000-0000-4000-8000-000000000011";
-        let proposed_b = "00000000-0000-4000-8000-000000000012";
-        let mut a = AutoCommit::new();
-        let mut b = AutoCommit::new();
-        let id_a = EditorDoc::ensure_project_id(&mut a, proposed_a);
-        assert_eq!(EditorDoc::ensure_project_id(&mut a, proposed_b), id_a);
-        assert_eq!(EditorDoc::ensure_project_id(&mut b, proposed_b), proposed_b);
-        assert_ne!(id_a, EditorDoc::ensure_project_id(&mut b, proposed_b));
+    fn project_identity_and_exhausted_file_revisions_refuse_to_overwrite() {
+        // Project identity persists and does not collide.
+        {
+            let proposed_a = "00000000-0000-4000-8000-000000000011";
+            let proposed_b = "00000000-0000-4000-8000-000000000012";
+            let mut a = AutoCommit::new();
+            let mut b = AutoCommit::new();
+            let id_a = EditorDoc::ensure_project_id(&mut a, proposed_a);
+            assert_eq!(EditorDoc::ensure_project_id(&mut a, proposed_b), id_a);
+            assert_eq!(EditorDoc::ensure_project_id(&mut b, proposed_b), proposed_b);
+            assert_ne!(id_a, EditorDoc::ensure_project_id(&mut b, proposed_b));
 
-        let bytes = a.save();
-        let mut peer = AutoCommit::load(&bytes).unwrap_or_else(|_| AutoCommit::new());
-        assert_eq!(EditorDoc::ensure_project_id(&mut peer, proposed_b), id_a);
+            let bytes = a.save();
+            let mut peer = AutoCommit::load(&bytes).unwrap_or_else(|_| AutoCommit::new());
+            assert_eq!(EditorDoc::ensure_project_id(&mut peer, proposed_b), id_a);
+        }
+
+        // An exhausted field revision refuses without partially mutating metadata.
+        {
+            let mut doc = AutoCommit::new();
+            let file = CollaborativeFile {
+                id: "00000000-0000-4000-8000-000000000101".into(),
+                kind: "file".into(),
+                path: "before.rs".into(),
+                name: "before.rs".into(),
+                parent: None,
+                language: "Rust".into(),
+                order: 0,
+                deleted: false,
+                name_revision: i64::MAX,
+                structure_revision: 0,
+                language_revision: 0,
+                deletion_revision: 0,
+            };
+            assert!(EditorDoc::create_file(&mut doc, &file, "fn main() {}"));
+            assert!(
+                EditorDoc::update_file(
+                    &mut doc,
+                    &file.id,
+                    FilePatch {
+                        name: Some("after.rs"),
+                        revision_field: Some("name_revision"),
+                        ..FilePatch::default()
+                    },
+                )
+                .is_none()
+            );
+            let current = EditorDoc::file(&doc, &file.id).expect("file survives refusal");
+            assert_eq!(current.name, "before.rs");
+            assert_eq!(current.name_revision, i64::MAX);
+        }
     }
 
     #[test]
-    fn ensure_and_read_round_trip() {
-        let mut doc = AutoCommit::new();
-        let t = EditorDoc::ensure_buffer(&mut doc, 7, "hello\nworld");
-        assert_eq!(doc.text(&t).unwrap(), "hello\nworld");
-        assert_eq!(EditorDoc::read_buffer(&doc, 7).unwrap(), "hello\nworld");
-    }
+    fn buffers_round_trip_splice_and_converge_across_peers() {
+        // Ensure and read round trip.
+        {
+            let mut doc = AutoCommit::new();
+            let t = EditorDoc::ensure_buffer(&mut doc, 7, "hello\nworld");
+            assert_eq!(doc.text(&t).unwrap(), "hello\nworld");
+            assert_eq!(EditorDoc::read_buffer(&doc, 7).unwrap(), "hello\nworld");
+        }
 
-    #[test]
-    fn ensure_is_idempotent() {
-        let mut doc = AutoCommit::new();
-        let _ = EditorDoc::ensure_buffer(&mut doc, 1, "first");
-        // Second call with a different seed must NOT overwrite.
-        let _ = EditorDoc::ensure_buffer(&mut doc, 1, "second");
-        assert_eq!(EditorDoc::read_buffer(&doc, 1).unwrap(), "first");
-    }
+        // Ensure is idempotent.
+        {
+            let mut doc = AutoCommit::new();
+            let _ = EditorDoc::ensure_buffer(&mut doc, 1, "first");
+            // Second call with a different seed must NOT overwrite.
+            let _ = EditorDoc::ensure_buffer(&mut doc, 1, "second");
+            assert_eq!(EditorDoc::read_buffer(&doc, 1).unwrap(), "first");
+        }
 
-    #[test]
-    fn splice_inserts_and_deletes() {
-        let mut doc = AutoCommit::new();
-        let t = EditorDoc::ensure_buffer(&mut doc, 0, "abcdef");
-        // Delete "cd" (chars 2..4) and insert "XY".
-        EditorDoc::splice(&mut doc, &t, 2, 2, "XY");
-        assert_eq!(doc.text(&t).unwrap(), "abXYef");
-    }
+        // Splice inserts and deletes.
+        {
+            let mut doc = AutoCommit::new();
+            let t = EditorDoc::ensure_buffer(&mut doc, 0, "abcdef");
+            // Delete "cd" (chars 2..4) and insert "XY".
+            EditorDoc::splice(&mut doc, &t, 2, 2, "XY");
+            assert_eq!(doc.text(&t).unwrap(), "abXYef");
+        }
 
-    #[test]
-    fn exhausted_field_revision_refuses_without_partially_mutating_metadata() {
-        let mut doc = AutoCommit::new();
-        let file = CollaborativeFile {
-            id: "00000000-0000-4000-8000-000000000101".into(),
-            kind: "file".into(),
-            path: "before.rs".into(),
-            name: "before.rs".into(),
-            parent: None,
-            language: "Rust".into(),
-            order: 0,
-            deleted: false,
-            name_revision: i64::MAX,
-            structure_revision: 0,
-            language_revision: 0,
-            deletion_revision: 0,
-        };
-        assert!(EditorDoc::create_file(&mut doc, &file, "fn main() {}"));
-        assert!(
-            EditorDoc::update_file(
-                &mut doc,
-                &file.id,
-                FilePatch {
-                    name: Some("after.rs"),
-                    revision_field: Some("name_revision"),
-                    ..FilePatch::default()
-                },
-            )
-            .is_none()
-        );
-        let current = EditorDoc::file(&doc, &file.id).expect("file survives refusal");
-        assert_eq!(current.name, "before.rs");
-        assert_eq!(current.name_revision, i64::MAX);
-    }
+        // Two peers converge on buffer edits.
+        {
+            let mut a = AutoCommit::new();
+            let t = EditorDoc::ensure_buffer(&mut a, 0, "fn main() {}\n");
 
-    #[test]
-    fn two_peers_converge_on_buffer_edits() {
-        let mut a = AutoCommit::new();
-        let t = EditorDoc::ensure_buffer(&mut a, 0, "fn main() {}\n");
+            // B joins from A's saved state, sharing the same Text object.
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            let tb = EditorDoc::buffer_text(&b, 0).unwrap();
+            assert_eq!(t, tb, "shared base => same Text ObjId");
 
-        // B joins from A's saved state, sharing the same Text object.
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let tb = EditorDoc::buffer_text(&b, 0).unwrap();
-        assert_eq!(t, tb, "shared base => same Text ObjId");
+            // A appends at the end; B inserts at the start.
+            let a_len = a.text(&t).unwrap().chars().count();
+            EditorDoc::splice(&mut a, &t, a_len, 0, "// tail\n");
+            EditorDoc::splice(&mut b, &tb, 0, 0, "// head\n");
 
-        // A appends at the end; B inserts at the start.
-        let a_len = a.text(&t).unwrap().chars().count();
-        EditorDoc::splice(&mut a, &t, a_len, 0, "// tail\n");
-        EditorDoc::splice(&mut b, &tb, 0, 0, "// head\n");
-
-        let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge_incoming(&mut b_loaded).unwrap();
-        let merged = a.text(&t).unwrap();
-        assert!(merged.contains("// head"));
-        assert!(merged.contains("// tail"));
-        assert!(merged.contains("fn main"));
+            let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
+            a.merge_incoming(&mut b_loaded).unwrap();
+            let merged = a.text(&t).unwrap();
+            assert!(merged.contains("// head"));
+            assert!(merged.contains("// tail"));
+            assert!(merged.contains("fn main"));
+        }
     }
 }

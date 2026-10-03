@@ -1,0 +1,55 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tilo · shared room (review page)</title>
+<!-- What the site's page does with a room, for review: the browser runtime
+     bundle with its certified peer and apps; create a room, join it as a
+     certified device, mount the page's desktop (Books and Writer) in it,
+     pre-fill the shared Writer document through its actions where the mount
+     offers them, and show the phone's join link and who joined. -->
+<style>body{margin:0;font:14px system-ui;background:#16181d;color:#e8e8ea;display:grid;grid-template-rows:auto 1fr;height:100vh}
+header{display:flex;gap:16px;align-items:center;padding:8px 12px;flex-wrap:wrap}#surface{min-height:0}a{color:#8ab4f8;word-break:break-all}</style>
+<header><strong>Reading group</strong><span id="state">Starting…</span><a id="join" target="_blank"></a><span id="members"></span></header>
+<div id="surface"></div>
+<script type="module">
+import {BOOKS, WRITER, createInvitation, createRoom, joinRoom, recordOf, useRegistry, watchMembers} from './rooms.mjs';
+const api = new URLSearchParams(location.search).get('api') ?? location.origin;
+const state = document.querySelector('#state');
+const members = [];
+try {
+  await useRegistry();
+  const room = await createRoom(api);
+  watchMembers(room, member => {
+    members.push(member);
+    document.querySelector('#members').textContent = `joined: ${members.map(m => m.label).join(', ')}`;
+  });
+  state.textContent = 'Joining the room…';
+  const peer = await joinRoom({...room, ticket: room.pageTicket, label: 'Visitor'});
+  await peer.whenReady();
+  const mount = await peer.mountDesktop(document.querySelector('#surface'), {
+    apps: [BOOKS, WRITER], author: 'Visitor',
+  });
+  const record = await recordOf(peer, WRITER);
+  // Pre-fill the shared document through Writer's own actions. A mount's
+  // action caret stays where the document starts, so the text goes in last
+  // line first: the quote, Enter above it, then the title.
+  const frame = () => new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 50)));
+  const act = async (action, args) => {
+    const found = mount.actions?.().find(candidate => candidate.address.action === action);
+    if (!found) return;
+    mount.invokeAction(found.address.resource, action, args);
+    await frame();
+  };
+  await act('type-text', {text: '“Sing to me of the man, Muse, the man of twists and turns …”'});
+  await act('new-paragraph');
+  await act('type-text', {text: 'Reading group: Book I'});
+  const joinUrl = await createInvitation(room, {record});
+  const link = document.querySelector('#join');
+  link.href = joinUrl; link.textContent = 'Phone link';
+  state.textContent = `Room ${room.roomId}`;
+  globalThis.demo = {room, peer, mount, record, joinUrl, members};
+} catch (error) {
+  state.textContent = `Failed: ${error?.message ?? error}`;
+  console.error(error);
+}
+</script>

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- TiloFiles.appex: App Sandbox, as every app extension, with one hole: it
+     may connect to the runtime's workspace socket and nothing else of the
+     runtime profile. The file exception does not cover connecting to a
+     socket, hence the SBPL one; neither is admitted on the Mac App Store,
+     which Tilo does not ship through. -->
+<plist version="1.0"><dict>
+  <key>com.apple.security.app-sandbox</key><true/>
+  <key>com.apple.security.application-groups</key><array>
+    <string>group.so.tilo.runtime</string>
+  </array>
+  <key>com.apple.security.temporary-exception.sbpl</key><array>
+    <string>(allow network-outbound (remote unix-socket (path-regex #"^/Users/[^/]+/Library/Application Support/Tilo/runtime/files\.sock$")))</string>
+  </array>
+</dict></plist>

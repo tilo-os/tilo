@@ -15,19 +15,20 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
+test-support = ["ui/test-support"]
 
 [dependencies]
 zeroize.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo action model: every document-mutating operation is a serializable,
 # replayable action dispatched through one executor, so undo, multi-peer replay
 # and the Ctrl+K command palette all work from a single implementation.
 tilo-actions = { path = "../../crates/collab/actions" }
 os-actions = { path = "../../crates/system/os-actions" }
 bounded-command = { path = "../../crates/system/bounded-command" }
-atomic-file = { path = "../../crates/system/atomic-file" }
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 serde.workspace = true
@@ -37,6 +38,7 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 serial_test.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tilo-test-env = { path = "../../crates/dev/test-env" }

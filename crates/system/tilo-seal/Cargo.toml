@@ -2,9 +2,11 @@
 name = "tilo-seal"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
 description = "The one reviewed home for Tilo's public-key sealing (HPKE) and at-rest envelopes"
+repository.workspace = true
+homepage.workspace = true
 
 [lib]
 name = "tilo_seal"
@@ -23,10 +25,11 @@ hpke-rs-rust-crypto = { version = "0.7", default-features = false, features = ["
 chacha20poly1305.workspace = true
 # Password-derived keys.
 argon2.workspace = true
-# Key identifiers and the HKDF steps of formats this crate still reads.
+# Key identifiers, the HKDF steps of formats this crate still reads, and
+# the HKDF + AES-GCM wraps a browser computes with WebCrypto.
 hkdf = "0.13"
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 sha2.workspace = true
-blake3.workspace = true
 getrandom.workspace = true
 subtle = "2.6"
 zeroize.workspace = true
@@ -37,3 +40,7 @@ hex.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

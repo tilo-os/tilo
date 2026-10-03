@@ -99,90 +99,97 @@ mod tests {
         Place::new(id, name, Category::Cafe, "", pos)
     }
 
-    /// The reported bug: two places with the *exact same name*, one near and one
-    /// far. The near one must rank first regardless of the upstream order.
     #[test]
-    fn near_same_named_place_ranks_above_a_far_one() {
-        let anchor = LatLon::new(48.137, 11.575); // Munich
-        // Far one listed FIRST (as Nominatim importance would),
-        // ~511 km away (Hamburg-ish); near one ~2.8 km away.
-        let mut places = vec![
-            place("far", "Sankt Nikolai", LatLon::new(53.55, 9.99)),
-            place("near", "Sankt Nikolai", LatLon::new(48.16, 11.58)),
-        ];
-        let far_km = haversine_m(anchor, places[0].pos) / 1000.0;
-        let near_km = haversine_m(anchor, places[1].pos) / 1000.0;
-        assert!(
-            far_km > 400.0 && near_km < 5.0,
-            "fixture: far {far_km:.0}km, near {near_km:.1}km"
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn ranking_weighs_text_match_proximity_duplicates_and_folding() {
+        // Phase `near_same_named_place_ranks_above_a_far_one`.
+        // The reported bug: two places with the *exact same name*, one near and one
+        // far. The near one must rank first regardless of the upstream order.
+        {
+            let anchor = LatLon::new(48.137, 11.575); // Munich
+            // Far one listed FIRST (as Nominatim importance would),
+            // ~511 km away (Hamburg-ish); near one ~2.8 km away.
+            let mut places = vec![
+                place("far", "Sankt Nikolai", LatLon::new(53.55, 9.99)),
+                place("near", "Sankt Nikolai", LatLon::new(48.16, 11.58)),
+            ];
+            let far_km = haversine_m(anchor, places[0].pos) / 1000.0;
+            let near_km = haversine_m(anchor, places[1].pos) / 1000.0;
+            assert!(
+                far_km > 400.0 && near_km < 5.0,
+                "fixture: far {far_km:.0}km, near {near_km:.1}km"
+            );
 
-        rank(&mut places, anchor, "Sankt Nikolai");
+            rank(&mut places, anchor, "Sankt Nikolai");
 
-        assert_eq!(
-            places[0].id, "near",
-            "the nearer same-named place ranks first"
-        );
-        assert_eq!(places[1].id, "far", "the distant namesake follows");
-    }
+            assert_eq!(
+                places[0].id, "near",
+                "the nearer same-named place ranks first"
+            );
+            assert_eq!(places[1].id, "far", "the distant namesake follows");
+        }
 
-    /// An exact text match outranks a merely-partial one even when the partial
-    /// match is a little closer — relevance tiers before distance.
-    #[test]
-    fn exact_text_match_beats_partial_even_if_slightly_closer() {
-        let anchor = LatLon::new(48.137, 11.575);
-        let mut places = vec![
-            place("partial", "Munich Airport", LatLon::new(48.20, 11.60)),
-            place("exact", "Munich", LatLon::new(48.30, 11.70)),
-        ];
-        rank(&mut places, anchor, "munich");
-        assert_eq!(
-            places[0].id, "exact",
-            "exact name match ranks above a prefix match"
-        );
-    }
+        // Phase `exact_text_match_beats_partial_even_if_slightly_closer`.
+        // An exact text match outranks a merely-partial one even when the partial
+        // match is a little closer — relevance tiers before distance.
+        {
+            let anchor = LatLon::new(48.137, 11.575);
+            let mut places = vec![
+                place("partial", "Munich Airport", LatLon::new(48.20, 11.60)),
+                place("exact", "Munich", LatLon::new(48.30, 11.70)),
+            ];
+            rank(&mut places, anchor, "munich");
+            assert_eq!(
+                places[0].id, "exact",
+                "exact name match ranks above a prefix match"
+            );
+        }
 
-    /// A duplicate of the same place (same name, ~same point) collapses; a
-    /// genuine namesake in another region is kept and disambiguated.
-    #[test]
-    fn duplicates_collapse_but_distant_namesakes_survive() {
-        let anchor = LatLon::new(48.137, 11.575);
-        let mut places = vec![
-            place("a", "Marienplatz", LatLon::new(48.1374, 11.5755)),
-            place("a-dup", "Marienplatz", LatLon::new(48.1375, 11.5756)), // ~15 m away
-            place("elsewhere", "Marienplatz", LatLon::new(49.45, 11.08)), // Nuremberg
-        ];
-        rank(&mut places, anchor, "Marienplatz");
-        let ids: Vec<_> = places.iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            vec!["a", "elsewhere"],
-            "co-located dup dropped, namesake kept"
-        );
-    }
+        // Phase `duplicates_collapse_but_distant_namesakes_survive`.
+        // A duplicate of the same place (same name, ~same point) collapses; a
+        // genuine namesake in another region is kept and disambiguated.
+        {
+            let anchor = LatLon::new(48.137, 11.575);
+            let mut places = vec![
+                place("a", "Marienplatz", LatLon::new(48.1374, 11.5755)),
+                place("a-dup", "Marienplatz", LatLon::new(48.1375, 11.5756)), // ~15 m away
+                place("elsewhere", "Marienplatz", LatLon::new(49.45, 11.08)), // Nuremberg
+            ];
+            rank(&mut places, anchor, "Marienplatz");
+            let ids: Vec<_> = places.iter().map(|p| p.id.as_str()).collect();
+            assert_eq!(
+                ids,
+                vec!["a", "elsewhere"],
+                "co-located dup dropped, namesake kept"
+            );
+        }
 
-    /// Accent- and case-insensitive matching: "munchen" matches "München".
-    #[test]
-    fn matching_folds_accents_and_case() {
-        assert_eq!(match_tier("munchen", "München"), Some(MatchTier::Exact));
-        assert_eq!(match_tier("CAFE", "Café Glück"), Some(MatchTier::Prefix));
-        assert_eq!(
-            match_tier("gluck", "Café Glück"),
-            Some(MatchTier::WordPrefix)
-        );
-        assert_eq!(match_tier("luck", "Café Glück"), Some(MatchTier::Contains));
-        assert_eq!(match_tier("zzz", "München"), None);
-    }
+        // Phase `matching_folds_accents_and_case`.
+        // Accent- and case-insensitive matching: "munchen" matches "München".
+        {
+            assert_eq!(match_tier("munchen", "München"), Some(MatchTier::Exact));
+            assert_eq!(match_tier("CAFE", "Café Glück"), Some(MatchTier::Prefix));
+            assert_eq!(
+                match_tier("gluck", "Café Glück"),
+                Some(MatchTier::WordPrefix)
+            );
+            assert_eq!(match_tier("luck", "Café Glück"), Some(MatchTier::Contains));
+            assert_eq!(match_tier("zzz", "München"), None);
+        }
 
-    /// An empty query ranks purely by proximity (the offline-list fallback).
-    #[test]
-    fn empty_query_is_pure_proximity() {
-        let anchor = LatLon::new(0.0, 0.0);
-        let mut places = vec![
-            place("far", "B", LatLon::new(1.0, 1.0)),
-            place("near", "A", LatLon::new(0.1, 0.1)),
-        ];
-        rank(&mut places, anchor, "");
-        assert_eq!(places[0].id, "near");
+        // Phase `empty_query_is_pure_proximity`.
+        // An empty query ranks purely by proximity (the offline-list fallback).
+        {
+            let anchor = LatLon::new(0.0, 0.0);
+            let mut places = vec![
+                place("far", "B", LatLon::new(1.0, 1.0)),
+                place("near", "A", LatLon::new(0.1, 0.1)),
+            ];
+            rank(&mut places, anchor, "");
+            assert_eq!(places[0].id, "near");
+        }
     }
 }

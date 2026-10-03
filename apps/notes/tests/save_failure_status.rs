@@ -17,13 +17,16 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::time::Duration;
+use ui::time::Duration;
 
 use notes::sidebar::OutEvent;
 use notes::storage::SaveStatus;
 use notes::{NotesApp, storage};
 use tempfile::TempDir;
 use ui::widget::Widget;
+
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: Duration = Duration::from_secs(30);
 
 #[test]
 fn status_bar_surfaces_page_save_failure() {
@@ -56,7 +59,8 @@ fn status_bar_surfaces_page_save_failure() {
     // until it reflects the failure. Status-only refresh, so no re-queue.
     // Bounded wait on the writer thread — a directory write fails fast.
     let mut surfaced = false;
-    for _ in 0..400 {
+    let deadline = ui::time::now() + HANG_BOUND;
+    while ui::time::now() < deadline {
         app.refresh_status_for_test();
         if app.status_bar_for_test().state().save_status == SaveStatus::Failed {
             surfaced = true;

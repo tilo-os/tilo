@@ -16,7 +16,7 @@
 //! receiver to pattern-match — the cleanest fit for six fixed shapes.
 
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
+use web_time::SystemTime;
 
 use crate::canonical::{CanonicalError, canonical_bytes};
 use crate::channel::{ChannelId, ChannelSettingsDelta};
@@ -372,123 +372,132 @@ mod tests {
     use crate::canonical::from_canonical_bytes;
     use crate::crypto::{generate_keypair, sign_event, verify_event};
 
+    /// Genesis, member-added and member-removed events round-trip canonically.
     #[test]
-    fn genesis_round_trip() {
-        let (_, owner) = generate_keypair();
-        let g = ChannelEvent::Genesis {
-            channel_id: ChannelId::new(),
-            space: SpaceId::new(),
-            name: "general".into(),
-            owner,
-            created_at: SystemTime::UNIX_EPOCH,
-            signature: Signature::from_bytes([0u8; 64]),
-        };
-        let bytes = canonical_bytes(&g).unwrap();
-        let back: ChannelEvent = from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(g, back);
-    }
-
-    #[test]
-    fn genesis_sign_and_verify() {
-        let (sk, pk) = generate_keypair();
-        let cid = ChannelId::new();
-        let sid = SpaceId::new();
-        let now = SystemTime::UNIX_EPOCH;
-
-        // Build the view, sign over it, stamp the signature back in.
-        let mut g = ChannelEvent::Genesis {
-            channel_id: cid,
-            space: sid,
-            name: "general".into(),
-            owner: pk,
-            created_at: now,
-            signature: Signature::from_bytes([0u8; 64]),
-        };
-        let bytes = g.signing_bytes().unwrap();
-        let sig = sign_event(&bytes, &sk).unwrap();
-        if let ChannelEvent::Genesis { signature, .. } = &mut g {
-            *signature = sig;
+    fn channel_events_round_trip_canonically() {
+        // Phase: genesis_round_trip.
+        {
+            let (_, owner) = generate_keypair();
+            let g = ChannelEvent::Genesis {
+                channel_id: ChannelId::new(),
+                space: SpaceId::new(),
+                name: "general".into(),
+                owner,
+                created_at: SystemTime::UNIX_EPOCH,
+                signature: Signature::from_bytes([0u8; 64]),
+            };
+            let bytes = canonical_bytes(&g).unwrap();
+            let back: ChannelEvent = from_canonical_bytes(&bytes).unwrap();
+            assert_eq!(g, back);
         }
-        // Re-derive view bytes and verify.
-        let view = g.signing_bytes().unwrap();
-        assert!(verify_event(&view, &sig, &pk).is_ok());
-    }
 
-    #[test]
-    fn signer_for_each_variant() {
-        let (_, k) = generate_keypair();
-        let v1 = ChannelEvent::AttestationRevoked {
-            attestation: AttestationId::new(),
-            signed_by: k,
-            signature: Signature::from_bytes([0u8; 64]),
-        };
-        assert_eq!(v1.signer(), k);
-    }
-
-    #[test]
-    fn member_added_round_trip() {
-        let (_, k) = generate_keypair();
-        let ev = ChannelEvent::MemberAdded {
-            welcome: vec![0xde, 0xad, 0xbe, 0xef],
-            signed_by: k,
-            signature: Signature::from_bytes([0u8; 64]),
-        };
-        let bytes = canonical_bytes(&ev).unwrap();
-        let back: ChannelEvent = from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(ev, back);
-        assert_eq!(back.signer(), k);
-    }
-
-    #[test]
-    fn member_added_sign_and_verify() {
-        let (sk, pk) = generate_keypair();
-        let mut ev = ChannelEvent::MemberAdded {
-            welcome: vec![1, 2, 3, 4, 5],
-            signed_by: pk,
-            signature: Signature::from_bytes([0u8; 64]),
-        };
-        let bytes = ev.signing_bytes().unwrap();
-        let sig = sign_event(&bytes, &sk).unwrap();
-        if let ChannelEvent::MemberAdded { signature, .. } = &mut ev {
-            *signature = sig;
+        // Phase: member_added_round_trip.
+        {
+            let (_, k) = generate_keypair();
+            let ev = ChannelEvent::MemberAdded {
+                welcome: vec![0xde, 0xad, 0xbe, 0xef],
+                signed_by: k,
+                signature: Signature::from_bytes([0u8; 64]),
+            };
+            let bytes = canonical_bytes(&ev).unwrap();
+            let back: ChannelEvent = from_canonical_bytes(&bytes).unwrap();
+            assert_eq!(ev, back);
+            assert_eq!(back.signer(), k);
         }
-        let view = ev.signing_bytes().unwrap();
-        assert!(verify_event(&view, &sig, &pk).is_ok());
+
+        // Phase: member_removed_round_trip.
+        {
+            let (_, k) = generate_keypair();
+            let ev = ChannelEvent::MemberRemoved {
+                removal: vec![0xca, 0xfe, 0xba, 0xbe],
+                signed_by: k,
+                signature: Signature::from_bytes([0u8; 64]),
+            };
+            let bytes = canonical_bytes(&ev).unwrap();
+            let back: ChannelEvent = from_canonical_bytes(&bytes).unwrap();
+            assert_eq!(ev, back);
+            assert_eq!(back.signer(), k);
+        }
     }
 
+    /// Genesis and member-added events sign and verify, added and removed have distinct signing bytes,
+    /// and every variant names its signer.
     #[test]
-    fn member_removed_round_trip() {
-        let (_, k) = generate_keypair();
-        let ev = ChannelEvent::MemberRemoved {
-            removal: vec![0xca, 0xfe, 0xba, 0xbe],
-            signed_by: k,
-            signature: Signature::from_bytes([0u8; 64]),
-        };
-        let bytes = canonical_bytes(&ev).unwrap();
-        let back: ChannelEvent = from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(ev, back);
-        assert_eq!(back.signer(), k);
-    }
+    fn channel_events_sign_over_distinct_views_and_name_their_signer() {
+        // Phase: genesis_sign_and_verify.
+        {
+            let (sk, pk) = generate_keypair();
+            let cid = ChannelId::new();
+            let sid = SpaceId::new();
+            let now = SystemTime::UNIX_EPOCH;
 
-    #[test]
-    fn member_added_and_removed_have_distinct_signing_bytes() {
-        // Same payload byte sequence; different tag must give different
-        // signing bytes so a peer can't replay one signature on the other variant.
-        let (_, k) = generate_keypair();
-        let bytes = vec![7u8; 16];
-        let added = ChannelEvent::MemberAdded {
-            welcome: bytes.clone(),
-            signed_by: k,
-            signature: Signature::from_bytes([0u8; 64]),
-        };
-        let removed = ChannelEvent::MemberRemoved {
-            removal: bytes,
-            signed_by: k,
-            signature: Signature::from_bytes([0u8; 64]),
-        };
-        assert_ne!(
-            added.signing_bytes().unwrap(),
-            removed.signing_bytes().unwrap()
-        );
+            // Build the view, sign over it, stamp the signature back in.
+            let mut g = ChannelEvent::Genesis {
+                channel_id: cid,
+                space: sid,
+                name: "general".into(),
+                owner: pk,
+                created_at: now,
+                signature: Signature::from_bytes([0u8; 64]),
+            };
+            let bytes = g.signing_bytes().unwrap();
+            let sig = sign_event(&bytes, &sk).unwrap();
+            if let ChannelEvent::Genesis { signature, .. } = &mut g {
+                *signature = sig;
+            }
+            // Re-derive view bytes and verify.
+            let view = g.signing_bytes().unwrap();
+            assert!(verify_event(&view, &sig, &pk).is_ok());
+        }
+
+        // Phase: member_added_sign_and_verify.
+        {
+            let (sk, pk) = generate_keypair();
+            let mut ev = ChannelEvent::MemberAdded {
+                welcome: vec![1, 2, 3, 4, 5],
+                signed_by: pk,
+                signature: Signature::from_bytes([0u8; 64]),
+            };
+            let bytes = ev.signing_bytes().unwrap();
+            let sig = sign_event(&bytes, &sk).unwrap();
+            if let ChannelEvent::MemberAdded { signature, .. } = &mut ev {
+                *signature = sig;
+            }
+            let view = ev.signing_bytes().unwrap();
+            assert!(verify_event(&view, &sig, &pk).is_ok());
+        }
+
+        // Phase: member_added_and_removed_have_distinct_signing_bytes.
+        {
+            // Same payload byte sequence; different tag must give different
+            // signing bytes so a peer can't replay one signature on the other variant.
+            let (_, k) = generate_keypair();
+            let bytes = vec![7u8; 16];
+            let added = ChannelEvent::MemberAdded {
+                welcome: bytes.clone(),
+                signed_by: k,
+                signature: Signature::from_bytes([0u8; 64]),
+            };
+            let removed = ChannelEvent::MemberRemoved {
+                removal: bytes,
+                signed_by: k,
+                signature: Signature::from_bytes([0u8; 64]),
+            };
+            assert_ne!(
+                added.signing_bytes().unwrap(),
+                removed.signing_bytes().unwrap()
+            );
+        }
+
+        // Phase: signer_for_each_variant.
+        {
+            let (_, k) = generate_keypair();
+            let v1 = ChannelEvent::AttestationRevoked {
+                attestation: AttestationId::new(),
+                signed_by: k,
+                signature: Signature::from_bytes([0u8; 64]),
+            };
+            assert_eq!(v1.signer(), k);
+        }
     }
 }

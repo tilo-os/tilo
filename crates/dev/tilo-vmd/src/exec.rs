@@ -37,15 +37,75 @@ impl Ended {
     }
 }
 
+/// The variables that place a process in a user's session. `runuser` sets
+/// only `HOME`, `SHELL`, `USER` and `LOGNAME`, so without these the command
+/// would keep the daemon's (root's `XDG_RUNTIME_DIR=/run/user/0`, no bus).
+pub const SESSION_ENV: &[&str] = &[
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "WAYLAND_DISPLAY",
+    "DISPLAY",
+    "XDG_SEAT",
+    "XDG_SESSION_ID",
+    "XDG_SESSION_TYPE",
+    "TILO_TEST_CONTROL",
+];
+
+/// The [`SESSION_ENV`] entries of a `/proc/PID/environ` image.
+pub fn session_env(environ: &[u8]) -> Vec<(String, String)> {
+    environ
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| {
+            let (key, value) = std::str::from_utf8(entry).ok()?.split_once('=')?;
+            SESSION_ENV
+                .contains(&key)
+                .then(|| (key.to_owned(), value.to_owned()))
+        })
+        .collect()
+}
+
+/// Add the compositor's `WAYLAND_DISPLAY` to a session's `env`. The display is
+/// named after the session process started, so that process's environment
+/// never has it; the compositor publishes it under the runtime directory.
+pub fn add_published_wayland_display(env: &mut Vec<(String, String)>) {
+    if env.iter().any(|(key, _)| key == "WAYLAND_DISPLAY") {
+        return;
+    }
+    let Some(runtime) = env
+        .iter()
+        .find(|(key, _)| key == "XDG_RUNTIME_DIR")
+        .map(|(_, value)| std::path::PathBuf::from(value))
+    else {
+        return;
+    };
+    let Ok(published) = std::fs::read_to_string(runtime.join("tilo-session/wayland-display"))
+    else {
+        return;
+    };
+    let name = published.trim();
+    if !name.is_empty() {
+        env.push(("WAYLAND_DISPLAY".to_owned(), name.to_owned()));
+    }
+}
+
 /// The command that runs `args` as `user` inside the mount namespace of
-/// process `pid`.
-pub fn in_session(pid: u32, user: &str, args: &[String]) -> Command {
+/// process `pid`, with that session's `env` (see [`session_env`]) in place
+/// of the daemon's.
+pub fn in_session(pid: u32, user: &str, env: &[(String, String)], args: &[String]) -> Command {
     let mut command = Command::new("nsenter");
     command
         .arg(format!("--target={pid}"))
         .arg("--mount")
-        .args(["--", "runuser", "-u", user, "--"])
-        .args(args);
+        .args(["--", "runuser", "-u", user, "--", "env"]);
+    for key in SESSION_ENV {
+        command.arg(format!("--unset={key}"));
+    }
+    // `env` ends its options at the first assignment, so `--` must precede them.
+    command.arg("--");
+    for (key, value) in env {
+        command.arg(format!("{key}={value}"));
+    }
+    command.args(args);
     command
 }
 
@@ -164,77 +224,178 @@ mod tests {
         command
     }
 
-    #[test]
-    fn the_command_joins_the_session_namespace_as_the_slot_user() {
+    fn env_runs_the_command_with_the_session_environment() {
+        // Through the real `env`: an argv's shape cannot show where `env` stops parsing options.
         let command = in_session(
             4242,
             "tds-a",
-            &["sha256sum".into(), "/usr/bin/shell".into()],
+            &[("XDG_RUNTIME_DIR".to_owned(), "/run/user/1001".to_owned())],
+            &[
+                "sh".into(),
+                "-c".into(),
+                "printf %s \"$XDG_RUNTIME_DIR\"".into(),
+            ],
         );
-        let args: Vec<String> = command
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(command.get_program(), "nsenter");
-        assert_eq!(
-            args,
-            [
-                "--target=4242",
-                "--mount",
-                "--",
-                "runuser",
-                "-u",
+        let args: Vec<_> = command.get_args().collect();
+        let after_env = args
+            .iter()
+            .position(|arg| *arg == "env")
+            .and_then(|at| at.checked_add(1))
+            .expect("in_session runs env");
+        let output = Command::new("env")
+            .args(args.get(after_env..).expect("env has arguments"))
+            .env("XDG_RUNTIME_DIR", "/run/user/0")
+            .output()
+            .expect("run env");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"/run/user/1001");
+    }
+
+    #[test]
+    fn a_session_without_wayland_display_takes_the_published_one() {
+        let runtime = tempfile::tempdir().unwrap();
+        std::fs::create_dir(runtime.path().join("tilo-session")).unwrap();
+        std::fs::write(
+            runtime.path().join("tilo-session/wayland-display"),
+            "wayland-1\n",
+        )
+        .unwrap();
+        let runtime_env = (
+            "XDG_RUNTIME_DIR".to_owned(),
+            runtime.path().display().to_string(),
+        );
+        // Phase `the_published_name_fills_the_gap`.
+        {
+            let mut env = vec![runtime_env.clone()];
+            add_published_wayland_display(&mut env);
+            assert_eq!(
+                env,
+                [
+                    runtime_env.clone(),
+                    ("WAYLAND_DISPLAY".to_owned(), "wayland-1".to_owned())
+                ]
+            );
+        }
+        // Phase `a_display_already_in_the_environment_is_kept`.
+        {
+            let own = ("WAYLAND_DISPLAY".to_owned(), "wayland-7".to_owned());
+            let mut env = vec![runtime_env.clone(), own.clone()];
+            add_published_wayland_display(&mut env);
+            assert_eq!(env, [runtime_env, own]);
+        }
+        // Phase `nothing_published_adds_nothing`.
+        {
+            let empty = tempfile::tempdir().unwrap();
+            let bare = (
+                "XDG_RUNTIME_DIR".to_owned(),
+                empty.path().display().to_string(),
+            );
+            let mut env = vec![bare.clone()];
+            add_published_wayland_display(&mut env);
+            assert_eq!(env, [bare]);
+        }
+    }
+
+    #[test]
+    fn exec_runs_in_the_session_as_the_slot_user_bounded_and_streamed() {
+        // Phase `the_command_joins_the_session_namespace_as_the_slot_user`.
+        {
+            let env = session_env(
+                b"HOME=/home/tds-a\0XDG_RUNTIME_DIR=/run/user/1001\0SECRET=x\0\
+                  WAYLAND_DISPLAY=wayland-1\0",
+            );
+            assert_eq!(
+                env,
+                [
+                    ("XDG_RUNTIME_DIR".to_owned(), "/run/user/1001".to_owned()),
+                    ("WAYLAND_DISPLAY".to_owned(), "wayland-1".to_owned()),
+                ]
+            );
+            let command = in_session(
+                4242,
                 "tds-a",
-                "--",
-                "sha256sum",
-                "/usr/bin/shell"
-            ]
-        );
-    }
+                &env,
+                &["sha256sum".into(), "/usr/bin/shell".into()],
+            );
+            let args: Vec<String> = command
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(command.get_program(), "nsenter");
+            assert_eq!(
+                args,
+                [
+                    "--target=4242",
+                    "--mount",
+                    "--",
+                    "runuser",
+                    "-u",
+                    "tds-a",
+                    "--",
+                    "env"
+                ]
+                .into_iter()
+                .map(str::to_owned)
+                .chain(SESSION_ENV.iter().map(|key| format!("--unset={key}")))
+                .chain([
+                    "--".to_owned(),
+                    "XDG_RUNTIME_DIR=/run/user/1001".to_owned(),
+                    "WAYLAND_DISPLAY=wayland-1".to_owned(),
+                    "sha256sum".to_owned(),
+                    "/usr/bin/shell".to_owned(),
+                ])
+                .collect::<Vec<_>>()
+            );
+        }
+        // Phase `env_runs_the_command_with_the_session_environment`.
+        env_runs_the_command_with_the_session_environment();
+        // Phase `output_streams_and_the_exit_status_passes_through`.
+        {
+            let (out, err) = (Sink::default(), Sink::default());
+            let ended = run_bounded(
+                sh("echo out; echo err >&2; exit 3"),
+                Duration::from_secs(10),
+                1 << 20,
+                out.clone(),
+                err.clone(),
+            )
+            .unwrap();
+            assert_eq!(ended, Ended::Exited(3));
+            assert_eq!(ended.code(), 3);
+            assert_eq!(out.0.lock().unwrap().as_slice(), b"out\n");
+            assert_eq!(err.0.lock().unwrap().as_slice(), b"err\n");
+        }
+        // Phase `runs_are_bounded_in_time_and_output`.
+        {
+            let out = Sink::default();
+            let ended = run_bounded(
+                sh("while :; do echo yyyyyyyy; done"),
+                Duration::from_secs(10),
+                1000,
+                out.clone(),
+                Sink::default(),
+            )
+            .unwrap();
+            assert_eq!(ended, Ended::TooMuchOutput);
+            assert_eq!(ended.code(), 125);
+            assert_eq!(out.0.lock().unwrap().len(), 1000);
 
-    #[test]
-    fn output_streams_and_the_exit_status_passes_through() {
-        let (out, err) = (Sink::default(), Sink::default());
-        let ended = run_bounded(
-            sh("echo out; echo err >&2; exit 3"),
-            Duration::from_secs(10),
-            1 << 20,
-            out.clone(),
-            err.clone(),
-        )
-        .unwrap();
-        assert_eq!(ended, Ended::Exited(3));
-        assert_eq!(ended.code(), 3);
-        assert_eq!(out.0.lock().unwrap().as_slice(), b"out\n");
-        assert_eq!(err.0.lock().unwrap().as_slice(), b"err\n");
-    }
-
-    #[test]
-    fn runs_are_bounded_in_time_and_output() {
-        let out = Sink::default();
-        let ended = run_bounded(
-            sh("while :; do echo yyyyyyyy; done"),
-            Duration::from_secs(10),
-            1000,
-            out.clone(),
-            Sink::default(),
-        )
-        .unwrap();
-        assert_eq!(ended, Ended::TooMuchOutput);
-        assert_eq!(ended.code(), 125);
-        assert_eq!(out.0.lock().unwrap().len(), 1000);
-
-        let started = Instant::now();
-        let ended = run_bounded(
-            sh("exec sleep 30"),
-            Duration::from_millis(300),
-            1000,
-            Sink::default(),
-            Sink::default(),
-        )
-        .unwrap();
-        assert_eq!(ended, Ended::TimedOut);
-        assert_eq!(ended.code(), 124);
-        assert!(started.elapsed() < Duration::from_secs(10));
+            let started = Instant::now();
+            let ended = run_bounded(
+                sh("exec sleep 30"),
+                Duration::from_millis(300),
+                1000,
+                Sink::default(),
+                Sink::default(),
+            )
+            .unwrap();
+            assert_eq!(ended, Ended::TimedOut);
+            assert_eq!(ended.code(), 124);
+            assert!(started.elapsed() < Duration::from_secs(10));
+        }
     }
 }

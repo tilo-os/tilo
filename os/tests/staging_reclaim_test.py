@@ -138,6 +138,18 @@ def record():
     }
 
 
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
+
+
 class ReclaimTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -177,51 +189,62 @@ class ReclaimTests(unittest.TestCase):
         return [call for call in self.state()['calls']
                 if call[0] in ('cryptsetup', 'btrfs') or (call[0] == 'sfdisk' and call[1] != '--json')]
 
-    def test_deletes_both_staging_partitions_and_grows_the_adjacent_root(self):
-        result = self.reclaim()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        parts = self.partitions()
-        self.assertNotIn('aaaaaaaa-0000-4000-8000-000000000001', parts)
-        self.assertNotIn('bbbbbbbb-0000-4000-8000-000000000002', parts)
-        self.assertEqual(parts['eeeeeeee-0000-4000-8000-000000000005'], (TARGET_ROOT[0], STAGING_ROOT[1]))
-        self.assertEqual(parts['00000000-0000-4000-8000-00000000000d'], RECOVERY, 'WinRE must be untouched')
-        self.assertEqual(parts['00000000-0000-4000-8000-00000000000b'], (206848, 100 * GIB_SECTORS - 1))
-        calls = self.state()['calls']
-        self.assertIn(['cryptsetup', 'resize', '--batch-mode', 'luks-1234'], calls)
-        self.assertIn(['btrfs', 'filesystem', 'resize', 'max', '/sysroot'], calls)
-        self.assertFalse(self.record_path.exists())
-        self.assertEqual(result.stdout.splitlines()[-1], 'tilo-staging-reclaim: done')
-
-    def test_resumes_after_a_crash_between_the_two_deletions(self):
-        state = initial_state()
-        state['partitions'] = [p for p in state['partitions'] if p['node'] != DISK + '3']
-        self.write_state(state)
-        result = self.reclaim()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.partitions()['eeeeeeee-0000-4000-8000-000000000005'],
-                         (TARGET_ROOT[0], STAGING_ROOT[1]))
-        self.assertFalse(self.record_path.exists())
-
-    def test_resumes_after_growth_but_before_the_filesystem_grew(self):
-        state = initial_state()
-        state['partitions'] = [p for p in state['partitions'] if p['node'] not in (DISK + '3', DISK + '4')]
-        root = next(p for p in state['partitions'] if p['node'] == DISK + '6')
-        root['size'] = STAGING_ROOT[1] - root['start'] + 1
-        self.write_state(state)
-        result = self.reclaim()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        calls = self.state()['calls']
-        self.assertFalse([c for c in calls if c[0] == 'sfdisk' and c[1] != '--json'], 'no second GPT write')
-        self.assertIn(['btrfs', 'filesystem', 'resize', 'max', '/sysroot'], calls)
-
-    def test_waits_for_the_first_user_session(self):
-        state = initial_state()
-        state['sessions'] = [{'id': '1', 'Class': 'greeter', 'Uid': '972', 'State': 'active'}]
-        self.write_state(state)
-        result = self.reclaim()
-        self.assertEqual(result.returncode, 0)
-        self.assertEqual(self.mutations(), [])
-        self.assertTrue(self.record_path.exists())
+    def test_reclaims_and_resumes(self):
+        with self.subTest(phase="deletes_both_staging_partitions_and_grows_the_adjacent_root"):
+            result = self.reclaim()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            parts = self.partitions()
+            self.assertNotIn('aaaaaaaa-0000-4000-8000-000000000001', parts)
+            self.assertNotIn('bbbbbbbb-0000-4000-8000-000000000002', parts)
+            self.assertEqual(parts['eeeeeeee-0000-4000-8000-000000000005'], (TARGET_ROOT[0], STAGING_ROOT[1]))
+            self.assertEqual(parts['00000000-0000-4000-8000-00000000000d'], RECOVERY, 'WinRE must be untouched')
+            self.assertEqual(parts['00000000-0000-4000-8000-00000000000b'], (206848, 100 * GIB_SECTORS - 1))
+            calls = self.state()['calls']
+            self.assertIn(['cryptsetup', 'resize', '--batch-mode', 'luks-1234'], calls)
+            self.assertIn(['btrfs', 'filesystem', 'resize', 'max', '/sysroot'], calls)
+            self.assertFalse(self.record_path.exists())
+            self.assertEqual(result.stdout.splitlines()[-1], 'tilo-staging-reclaim: done')
+        restart_fixture(self)
+        with self.subTest(phase="resumes_after_a_crash_between_the_two_deletions"):
+            state = initial_state()
+            state['partitions'] = [p for p in state['partitions'] if p['node'] != DISK + '3']
+            self.write_state(state)
+            result = self.reclaim()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(self.partitions()['eeeeeeee-0000-4000-8000-000000000005'],
+                             (TARGET_ROOT[0], STAGING_ROOT[1]))
+            self.assertFalse(self.record_path.exists())
+        restart_fixture(self)
+        with self.subTest(phase="resumes_after_growth_but_before_the_filesystem_grew"):
+            state = initial_state()
+            state['partitions'] = [p for p in state['partitions'] if p['node'] not in (DISK + '3', DISK + '4')]
+            root = next(p for p in state['partitions'] if p['node'] == DISK + '6')
+            root['size'] = STAGING_ROOT[1] - root['start'] + 1
+            self.write_state(state)
+            result = self.reclaim()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            calls = self.state()['calls']
+            self.assertFalse([c for c in calls if c[0] == 'sfdisk' and c[1] != '--json'], 'no second GPT write')
+            self.assertIn(['btrfs', 'filesystem', 'resize', 'max', '/sysroot'], calls)
+        restart_fixture(self)
+        with self.subTest(phase="waits_for_the_first_user_session"):
+            state = initial_state()
+            state['sessions'] = [{'id': '1', 'Class': 'greeter', 'Uid': '972', 'State': 'active'}]
+            self.write_state(state)
+            result = self.reclaim()
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(self.mutations(), [])
+            self.assertTrue(self.record_path.exists())
+        restart_fixture(self)
+        with self.subTest(phase="locked_luks_key_defers_growth_to_the_next_boot"):
+            state = initial_state()
+            state['fail_cryptsetup'] = True
+            self.write_state(state)
+            result = self.reclaim()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('grows at the next boot', result.stdout)
+            self.assertNotIn(['btrfs', 'filesystem', 'resize', 'max', '/sysroot'], self.state()['calls'])
+            self.assertFalse(self.record_path.exists())
 
     def assertUntouched(self, fragment):
         before = self.partitions()
@@ -234,56 +257,47 @@ class ReclaimTests(unittest.TestCase):
         self.assertEqual(self.mutations(), [])
         self.assertTrue(self.record_path.exists(), 'a refused reclaim keeps its evidence')
 
-    def test_foreign_partition_in_the_staging_space_leaves_everything_untouched(self):
-        state = initial_state()
-        state['partitions'] = [p for p in state['partitions'] if p['node'] != DISK + '4']
-        state['partitions'].append({'node': DISK + '8', 'uuid': '00000000-0000-4000-8000-00000000000e',
-                                    'type': LINUX_TYPE, 'start': STAGING_ROOT[0], 'size': 2048})
-        self.write_state(state)
-        self.assertUntouched('now occupies the recorded staging space')
-
-    def test_changed_staging_identity_leaves_everything_untouched(self):
-        state = initial_state()
-        next(p for p in state['partitions'] if p['node'] == DISK + '4')['type'] = TILO_ROOT
-        self.write_state(state)
-        self.assertUntouched('staging root type changed')
-        # A generic Linux partition is not a staging root, whatever its extent.
-        state = initial_state()
-        next(p for p in state['partitions'] if p['node'] == DISK + '4')['type'] = LINUX_TYPE
-        self.write_state(state)
-        self.assertUntouched('staging root type changed')
-
-    def test_mounted_staging_partition_leaves_everything_untouched(self):
-        state = initial_state()
-        next(p for p in state['partitions'] if p['node'] == DISK + '3')['mounts'] = ['/mnt']
-        self.write_state(state)
-        self.assertUntouched('staging ESP is in use')
-
-    def test_other_disk_guid_or_moved_root_leaves_everything_untouched(self):
-        state = initial_state()
-        state['ptuuid'] = '99999999-2222-4333-8444-555555555555'
-        self.write_state(state)
-        self.assertUntouched('expected exactly one disk')
-        state = initial_state()
-        next(p for p in state['partitions'] if p['node'] == DISK + '6')['size'] -= 2048
-        self.write_state(state)
-        self.assertUntouched('ends neither at its recorded end')
-
-    def test_malformed_record_leaves_everything_untouched(self):
-        broken = record()
-        broken['staging_esp']['partuuid'] = 'AAAAAAAA-0000-4000-8000-000000000001'
-        self.record_path.write_text(json.dumps(broken))
-        self.assertUntouched('not a lowercase GUID')
-
-    def test_locked_luks_key_defers_growth_to_the_next_boot(self):
-        state = initial_state()
-        state['fail_cryptsetup'] = True
-        self.write_state(state)
-        result = self.reclaim()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('grows at the next boot', result.stdout)
-        self.assertNotIn(['btrfs', 'filesystem', 'resize', 'max', '/sysroot'], self.state()['calls'])
-        self.assertFalse(self.record_path.exists())
+    def test_mismatch_leaves_everything_untouched(self):
+        with self.subTest(phase="foreign_partition_in_the_staging_space_leaves_everything_untouched"):
+            state = initial_state()
+            state['partitions'] = [p for p in state['partitions'] if p['node'] != DISK + '4']
+            state['partitions'].append({'node': DISK + '8', 'uuid': '00000000-0000-4000-8000-00000000000e',
+                                        'type': LINUX_TYPE, 'start': STAGING_ROOT[0], 'size': 2048})
+            self.write_state(state)
+            self.assertUntouched('now occupies the recorded staging space')
+        restart_fixture(self)
+        with self.subTest(phase="changed_staging_identity_leaves_everything_untouched"):
+            state = initial_state()
+            next(p for p in state['partitions'] if p['node'] == DISK + '4')['type'] = TILO_ROOT
+            self.write_state(state)
+            self.assertUntouched('staging root type changed')
+            # A generic Linux partition is not a staging root, whatever its extent.
+            state = initial_state()
+            next(p for p in state['partitions'] if p['node'] == DISK + '4')['type'] = LINUX_TYPE
+            self.write_state(state)
+            self.assertUntouched('staging root type changed')
+        restart_fixture(self)
+        with self.subTest(phase="mounted_staging_partition_leaves_everything_untouched"):
+            state = initial_state()
+            next(p for p in state['partitions'] if p['node'] == DISK + '3')['mounts'] = ['/mnt']
+            self.write_state(state)
+            self.assertUntouched('staging ESP is in use')
+        restart_fixture(self)
+        with self.subTest(phase="other_disk_guid_or_moved_root_leaves_everything_untouched"):
+            state = initial_state()
+            state['ptuuid'] = '99999999-2222-4333-8444-555555555555'
+            self.write_state(state)
+            self.assertUntouched('expected exactly one disk')
+            state = initial_state()
+            next(p for p in state['partitions'] if p['node'] == DISK + '6')['size'] -= 2048
+            self.write_state(state)
+            self.assertUntouched('ends neither at its recorded end')
+        restart_fixture(self)
+        with self.subTest(phase="malformed_record_leaves_everything_untouched"):
+            broken = record()
+            broken['staging_esp']['partuuid'] = 'AAAAAAAA-0000-4000-8000-000000000001'
+            self.record_path.write_text(json.dumps(broken))
+            self.assertUntouched('not a lowercase GUID')
 
 
 class UnitWiringTests(unittest.TestCase):

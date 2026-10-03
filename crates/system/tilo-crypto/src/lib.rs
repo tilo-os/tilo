@@ -8,6 +8,11 @@ use sha_crypt::{PasswordHasher, ShaCrypt};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
+#[cfg(feature = "tls-fixture")]
+mod tls_fixture;
+#[cfg(feature = "tls-fixture")]
+pub use tls_fixture::{TlsFixture, generate_tls_fixture};
+
 /// Display metadata extracted from a bounded X.509 certificate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CertificateInfo {
@@ -40,19 +45,6 @@ impl TpmAuthorityKey {
 
     pub fn public_key_pem(&self) -> &str {
         &self.public_key_pem
-    }
-}
-
-/// Ephemeral CA and server credentials for a loopback TLS fixture.
-pub struct TlsFixture {
-    pub ca_certificate_pem: String,
-    pub server_private_key_pem: String,
-    pub server_certificate_pem: String,
-}
-
-impl Drop for TlsFixture {
-    fn drop(&mut self) {
-        self.server_private_key_pem.zeroize();
     }
 }
 
@@ -573,67 +565,6 @@ pub fn generate_tpm_authority_key() -> Result<TpmAuthorityKey, String> {
     })
 }
 
-/// Generate a constrained ephemeral CA and an IP-SAN server certificate.
-///
-/// # Errors
-///
-/// Returns an error if certificate validity bounds overflow, key generation
-/// fails, or either certificate cannot be encoded or signed.
-pub fn generate_tls_fixture(server_ip: std::net::IpAddr) -> Result<TlsFixture, String> {
-    use rcgen::{
-        BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose,
-        IsCa, Issuer, KeyPair, KeyUsagePurpose,
-    };
-
-    let now = time::OffsetDateTime::now_utc();
-    let not_before = now
-        .checked_sub(time::Duration::hours(1))
-        .ok_or("TLS certificate start date overflow")?;
-    let not_after = now
-        .checked_add(time::Duration::days(2))
-        .ok_or("TLS certificate expiry date overflow")?;
-    let mut ca_params = CertificateParams::default();
-    ca_params.not_before = not_before;
-    ca_params.not_after = not_after;
-    ca_params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
-    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-    ca_params.distinguished_name = DistinguishedName::new();
-    ca_params
-        .distinguished_name
-        .push(DnType::CommonName, "Tilo Disposable Registry CA");
-    let ca_key =
-        KeyPair::generate().map_err(|error| format!("cannot generate TLS CA key: {error}"))?;
-    let ca_certificate = ca_params
-        .self_signed(&ca_key)
-        .map_err(|error| format!("cannot generate TLS CA certificate: {error}"))?;
-    let issuer = Issuer::new(ca_params, ca_key);
-
-    let mut server_params = CertificateParams::new(vec![server_ip.to_string()])
-        .map_err(|error| format!("cannot encode TLS server IP: {error}"))?;
-    server_params.not_before = not_before;
-    server_params.not_after = not_after;
-    server_params.is_ca = IsCa::NoCa;
-    // Strict RFC 5280 verification requires non-self-signed certificates to
-    // identify their issuer's key. Python's default TLS context enforces this.
-    server_params.use_authority_key_identifier_extension = true;
-    server_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
-    server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-    server_params.distinguished_name = DistinguishedName::new();
-    server_params
-        .distinguished_name
-        .push(DnType::CommonName, "Tilo Loopback Registry");
-    let server_key =
-        KeyPair::generate().map_err(|error| format!("cannot generate TLS server key: {error}"))?;
-    let server_certificate = server_params
-        .signed_by(&server_key, &issuer)
-        .map_err(|error| format!("cannot sign TLS server certificate: {error}"))?;
-    Ok(TlsFixture {
-        ca_certificate_pem: ca_certificate.pem(),
-        server_private_key_pem: server_key.serialize_pem(),
-        server_certificate_pem: server_certificate.pem(),
-    })
-}
-
 /// Create an RSA PKCS#1 v1.5 SHA-256 signature from a PEM private key.
 ///
 /// # Errors
@@ -766,6 +697,42 @@ pub fn p256_public_key_sha256(public_key_pem: &str) -> Result<String, String> {
         .to_public_key_der()
         .map_err(|_| "cannot canonicalize P-256 public key")?;
     Ok(hex::encode(Sha256::digest(der.as_bytes())))
+}
+
+/// Verify a detached ECDSA P-256 / SHA-256 signature over `message`, in the
+/// form `cosign sign-blob` writes: base64 of the DER signature, surrounding
+/// whitespace allowed.
+///
+/// A signature with a high `s` is accepted in its normalized form: a KMS may
+/// produce either, and both prove the same signer over the same bytes.
+///
+/// # Errors
+///
+/// Returns an error if the key is not a P-256 `SubjectPublicKeyInfo` PEM, the
+/// signature is not base64 DER, or the signature does not verify.
+pub fn verify_p256_sha256(
+    public_key_pem: &str,
+    message: &[u8],
+    signature_base64: &[u8],
+) -> Result<(), String> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use p256::{
+        ecdsa::{Signature, VerifyingKey, signature::Verifier as _},
+        pkcs8::DecodePublicKey,
+    };
+
+    let key = VerifyingKey::from_public_key_pem(public_key_pem)
+        .map_err(|_| "invalid P-256 SubjectPublicKeyInfo")?;
+    let text = std::str::from_utf8(signature_base64)
+        .map_err(|_| "P-256 signature is not base64 text")?
+        .trim();
+    let der = STANDARD
+        .decode(text)
+        .map_err(|_| "P-256 signature is not base64 text")?;
+    let signature = Signature::from_der(&der).map_err(|_| "invalid P-256 DER signature")?;
+    let signature = signature.normalize_s();
+    key.verify(message, &signature)
+        .map_err(|_| "P-256 signature verification failed".into())
 }
 
 /// Append a Linux kernel PKCS#7 module signature made with RSA/SHA-512.
@@ -1706,6 +1673,7 @@ mod tests {
         assert!(inspect_certificate(b"not a certificate").is_err());
     }
 
+    #[cfg(feature = "tls-fixture")]
     #[test]
     fn certificate_inspection_reports_subject_expiry_and_bounds_pem_input() {
         use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -1862,66 +1830,6 @@ mod tests {
     }
 
     #[test]
-    fn generated_tls_fixture_has_constrained_ca_and_loopback_san() {
-        use der::{Decode, DecodePem};
-        use x509_cert::{
-            Certificate,
-            ext::pkix::{
-                AuthorityKeyIdentifier, BasicConstraints, SubjectAltName, SubjectKeyIdentifier,
-                name::GeneralName,
-            },
-        };
-
-        fn extension<T: for<'a> Decode<'a>>(
-            certificate: &Certificate,
-            oid: const_oid::ObjectIdentifier,
-        ) -> Option<T> {
-            certificate
-                .tbs_certificate
-                .extensions
-                .as_deref()?
-                .iter()
-                .find(|extension| extension.extn_id == oid)
-                .map(|extension| T::from_der(extension.extn_value.as_bytes()).unwrap())
-        }
-
-        let fixture = generate_tls_fixture("127.0.0.1".parse().unwrap()).expect("TLS fixture");
-        assert!(fixture.server_private_key_pem.contains("PRIVATE KEY"));
-
-        let ca = Certificate::from_pem(fixture.ca_certificate_pem.as_bytes()).unwrap();
-        let ca_constraints: BasicConstraints =
-            extension(&ca, const_oid::db::rfc5280::ID_CE_BASIC_CONSTRAINTS).unwrap();
-        assert!(ca_constraints.ca);
-
-        let server = Certificate::from_pem(fixture.server_certificate_pem.as_bytes()).unwrap();
-        let ca_key_id: SubjectKeyIdentifier =
-            extension(&ca, const_oid::db::rfc5280::ID_CE_SUBJECT_KEY_IDENTIFIER)
-                .expect("CA subject key identifier");
-        let issuer_key_id = extension::<AuthorityKeyIdentifier>(
-            &server,
-            const_oid::db::rfc5280::ID_CE_AUTHORITY_KEY_IDENTIFIER,
-        )
-        .and_then(|identifier| identifier.key_identifier)
-        .expect("server authority key identifier");
-        assert_eq!(
-            issuer_key_id, ca_key_id.0,
-            "server identifies the signing CA key"
-        );
-        assert!(
-            !extension::<BasicConstraints>(
-                &server,
-                const_oid::db::rfc5280::ID_CE_BASIC_CONSTRAINTS
-            )
-            .is_some_and(|constraints| constraints.ca)
-        );
-        let san: SubjectAltName =
-            extension(&server, const_oid::db::rfc5280::ID_CE_SUBJECT_ALT_NAME).unwrap();
-        assert!(san.0.iter().any(
-            |name| matches!(name, GeneralName::IpAddress(bytes) if bytes.as_bytes() == [127, 0, 0, 1])
-        ));
-    }
-
-    #[test]
     fn rsa_signature_round_trips_and_rejects_tampering() {
         let generated = generate_secure_boot_certificate("Tilo signer").expect("generate RSA cert");
         let public = rsa_public_key_pem(&generated.private_key_pem).expect("derive public key");
@@ -1966,6 +1874,44 @@ mod tests {
             p256_public_key_sha256("-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn p256_detached_signatures_verify_only_the_signed_bytes_and_key() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use p256::ecdsa::{Signature, SigningKey, signature::Signer as _};
+        use p256::pkcs8::{EncodePublicKey as _, LineEnding};
+
+        let signing = SigningKey::from_slice(&[7_u8; 32]).expect("P-256 key");
+        let public = signing
+            .verifying_key()
+            .to_public_key_pem(LineEnding::LF)
+            .expect("public PEM");
+        let message = br#"{"type":"tilo.system-extension.sysext-manifest"}"#;
+        let signature: Signature = signing.sign(message);
+        let encoded = format!("{}\n", STANDARD.encode(signature.to_der().as_bytes()));
+
+        verify_p256_sha256(&public, message, encoded.as_bytes()).expect("valid signature");
+
+        let mut tampered = message.to_vec();
+        tampered[3] ^= 1;
+        assert!(verify_p256_sha256(&public, &tampered, encoded.as_bytes()).is_err());
+
+        let other = SigningKey::from_slice(&[9_u8; 32])
+            .expect("P-256 key")
+            .verifying_key()
+            .to_public_key_pem(LineEnding::LF)
+            .expect("public PEM");
+        assert!(verify_p256_sha256(&other, message, encoded.as_bytes()).is_err());
+
+        // The same signature with s replaced by n - s still proves the signer.
+        let (r, s) = (signature.r(), signature.s());
+        let high = Signature::from_scalars(r, -*s).expect("high-s signature");
+        let high = STANDARD.encode(high.to_der().as_bytes());
+        verify_p256_sha256(&public, message, high.as_bytes()).expect("high-s signature");
+
+        assert!(verify_p256_sha256(&public, message, b"not base64!").is_err());
+        assert!(verify_p256_sha256(&public, message, STANDARD.encode(b"junk").as_bytes()).is_err());
     }
 
     #[test]

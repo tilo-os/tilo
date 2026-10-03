@@ -145,6 +145,47 @@ pub trait Action: std::fmt::Debug {
     fn risk(&self) -> crate::contract::RiskLevel {
         crate::contract::RiskLevel::Low
     }
+
+    /// The document action that undoes this one when `apply` records an
+    /// outside consequence in the document (an outbox entry, a filesystem op
+    /// queue). Computed against the document *before* this action runs, so a
+    /// delete can still read the row it removes.
+    ///
+    /// When this returns `Some`, undo applies that action through
+    /// [`Action::apply`] instead of writing Automerge inverse patches — so the
+    /// compensating queue entry is recorded the same way peers will replay it.
+    /// Pure CRDT actions with no outside consequence leave this as `None`;
+    /// inverse patches remain correct for them. Effects never participate:
+    /// they have no heads and are not undoable.
+    fn inverse_before(&self, doc: &Doc) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        let _ = doc;
+        None
+    }
+
+    /// [`inverse_before`](Self::inverse_before) as an encoded action, so the
+    /// door can undo through `apply` after the concrete type has been erased.
+    ///
+    /// The palette, an agent and a script apply a decoded `dyn Action`. That
+    /// value cannot return `Self`. An action whose `apply` writes an outside
+    /// queue implements this and encodes the compensating action under the
+    /// same registry type id. The default is `None`: undo stays Automerge
+    /// inverse patches.
+    fn inverse_encoded(&self, doc: &Doc) -> Option<EncodedAction> {
+        let _ = doc;
+        None
+    }
+
+    /// Whether this value changes the document's content or is housekeeping
+    /// about it (a read marker, a reading position). The executor writes it
+    /// into the change's [`ActionContext`](crate::ActionContext), where a
+    /// workspace activity feed reads it. Must be a pure function of `self`.
+    /// Defaults to [`Content`](crate::context::ChangeKind::Content).
+    fn change_kind(&self) -> crate::context::ChangeKind {
+        crate::context::ChangeKind::Content
+    }
 }
 
 /// A serialized action ready to cross a process/network boundary: the
@@ -187,5 +228,28 @@ impl EncodedAction {
             type_id: type_id.into(),
             payload: serde_json::to_vec(payload).map_err(ActionError::Encode)?,
         })
+    }
+}
+
+#[cfg(test)]
+mod operation_kind_tests {
+    use super::OperationKind;
+
+    /// Only the canonical form round-trips; other spellings are refused.
+    #[test]
+    fn operation_kind_accepts_only_the_canonical_spelling() {
+        for (kind, canonical, lower) in [
+            (OperationKind::Document, "Document", "document"),
+            (OperationKind::Effect, "Effect", "effect"),
+            (OperationKind::View, "View", "view"),
+        ] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), canonical);
+            assert_eq!(
+                serde_json::from_value::<OperationKind>(serde_json::json!(canonical)).unwrap(),
+                kind
+            );
+            assert!(serde_json::from_value::<OperationKind>(serde_json::json!(lower)).is_err());
+        }
+        assert!(serde_json::from_value::<OperationKind>(serde_json::json!("EFFECT")).is_err());
     }
 }

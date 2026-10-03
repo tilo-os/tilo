@@ -165,6 +165,13 @@ pub struct Resolver {
 }
 
 impl Resolver {
+    /// Limit the image atlas to `max_size` pixels per side; images that do
+    /// not fit after eviction are omitted and reported.
+    pub fn set_image_atlas_max(&mut self, max_size: u32) {
+        self.image_cache
+            .set_max_size(i32::try_from(max_size).unwrap_or(i32::MAX));
+    }
+
     /// Creates a new resource cache.
     pub fn new() -> Self {
         Self::default()

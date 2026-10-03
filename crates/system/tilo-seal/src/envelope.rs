@@ -63,7 +63,7 @@ impl<'a> Context<'a> {
         self.label
     }
 
-    fn aad(&self, header: &[u8]) -> Result<Vec<u8>> {
+    pub(crate) fn aad(&self, header: &[u8]) -> Result<Vec<u8>> {
         let label = self.label.as_bytes();
         let label_len = u16::try_from(label.len()).map_err(|_| Error::Malformed("label"))?;
         let record_len =
@@ -435,106 +435,108 @@ mod tests {
     };
 
     #[test]
-    fn key_envelope_round_trip_and_binding() {
-        let key = SymmetricKey::generate().unwrap();
-        let context = Context::new(Label::SecretVault, b"record-1");
-        let sealed = seal(&key, context, b"payload").unwrap();
-        assert!(is_envelope(&sealed));
-        assert_eq!(open(&key, context, &sealed).unwrap().as_slice(), b"payload");
-        assert_eq!(
-            open(&key, Context::new(Label::SecretVault, b"record-2"), &sealed),
-            Err(Error::Authentication)
-        );
-        assert_eq!(
-            open(
-                &key,
-                Context::new(Label::PasswordBackup, b"record-1"),
-                &sealed
-            ),
-            Err(Error::Authentication)
-        );
-        assert_eq!(
-            open(&SymmetricKey::generate().unwrap(), context, &sealed),
-            Err(Error::WrongKey)
-        );
-        // Every header byte is authenticated.
-        for index in 0..sealed.len() {
-            let mut tampered = sealed.clone();
-            tampered[index] ^= 0x01;
-            assert!(open(&key, context, &tampered).is_err(), "byte {index}");
-        }
-        assert!(open(&key, context, &sealed[..sealed.len() - 1]).is_err());
-    }
-
-    #[test]
-    fn nonces_are_fresh() {
-        let key = SymmetricKey::generate().unwrap();
-        let context = Context::new(Label::SecretVault, b"");
-        assert_ne!(
-            seal(&key, context, b"same").unwrap(),
-            seal(&key, context, b"same").unwrap()
-        );
-    }
-
-    #[test]
-    fn password_envelope_stores_params() {
-        let context = Context::new(Label::IdentityBackup, b"backup");
-        let sealed = seal_with_password(b"hunter2", CHEAP, context, b"identity").unwrap();
-        match Envelope::parse(&sealed).unwrap().source {
-            KeySource::Password { params, salt } => {
-                assert_eq!(params, CHEAP);
-                assert_eq!(salt.len(), SALT_LEN);
+    fn key_and_password_envelopes_round_trip_bound_with_fresh_nonces() {
+        // Phase `key_envelope_round_trip_and_binding`.
+        {
+            let key = SymmetricKey::generate().unwrap();
+            let context = Context::new(Label::SecretVault, b"record-1");
+            let sealed = seal(&key, context, b"payload").unwrap();
+            assert!(is_envelope(&sealed));
+            assert_eq!(open(&key, context, &sealed).unwrap().as_slice(), b"payload");
+            assert_eq!(
+                open(&key, Context::new(Label::SecretVault, b"record-2"), &sealed),
+                Err(Error::Authentication)
+            );
+            assert_eq!(
+                open(
+                    &key,
+                    Context::new(Label::PasswordBackup, b"record-1"),
+                    &sealed
+                ),
+                Err(Error::Authentication)
+            );
+            assert_eq!(
+                open(&SymmetricKey::generate().unwrap(), context, &sealed),
+                Err(Error::WrongKey)
+            );
+            // Every header byte is authenticated.
+            for index in 0..sealed.len() {
+                let mut tampered = sealed.clone();
+                tampered[index] ^= 0x01;
+                assert!(open(&key, context, &tampered).is_err(), "byte {index}");
             }
-            KeySource::Key(_) => panic!("expected a password envelope"),
+            assert!(open(&key, context, &sealed[..sealed.len() - 1]).is_err());
         }
-        assert_eq!(
-            open_with_password(b"hunter2", context, &sealed)
-                .unwrap()
-                .as_slice(),
-            b"identity"
-        );
-        assert_eq!(
-            open_with_password(b"hunter3", context, &sealed),
-            Err(Error::Authentication)
-        );
+        // Phase `nonces_are_fresh`.
+        {
+            let key = SymmetricKey::generate().unwrap();
+            let context = Context::new(Label::SecretVault, b"");
+            assert_ne!(
+                seal(&key, context, b"same").unwrap(),
+                seal(&key, context, b"same").unwrap()
+            );
+        }
+        // Phase `password_envelope_stores_params`.
+        {
+            let context = Context::new(Label::IdentityBackup, b"backup");
+            let sealed = seal_with_password(b"hunter2", CHEAP, context, b"identity").unwrap();
+            match Envelope::parse(&sealed).unwrap().source {
+                KeySource::Password { params, salt } => {
+                    assert_eq!(params, CHEAP);
+                    assert_eq!(salt.len(), SALT_LEN);
+                }
+                KeySource::Key(_) => panic!("expected a password envelope"),
+            }
+            assert_eq!(
+                open_with_password(b"hunter2", context, &sealed)
+                    .unwrap()
+                    .as_slice(),
+                b"identity"
+            );
+            assert_eq!(
+                open_with_password(b"hunter3", context, &sealed),
+                Err(Error::Authentication)
+            );
+        }
+        // Phase `wrap_and_unwrap`.
+        {
+            let kek = SymmetricKey::generate().unwrap();
+            let key = SymmetricKey::generate().unwrap();
+            let context = Context::new(Label::KeyWrap, b"slot");
+            let wrapped = wrap_key(&kek, context, &key).unwrap();
+            assert_eq!(unwrap_key(&kek, context, &wrapped).unwrap(), key);
+        }
     }
 
     #[test]
-    fn hostile_password_params_are_refused_before_derivation() {
-        let context = Context::new(Label::IdentityBackup, b"");
-        let mut sealed = seal_with_password(b"pw", CHEAP, context, b"x").unwrap();
-        // m_cost lives right after the 8-byte prefix.
-        sealed[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert!(matches!(
-            open_with_password(b"pw", context, &sealed),
-            Err(Error::PasswordParams(_))
-        ));
-    }
-
-    #[test]
-    fn wrap_and_unwrap() {
-        let kek = SymmetricKey::generate().unwrap();
-        let key = SymmetricKey::generate().unwrap();
-        let context = Context::new(Label::KeyWrap, b"slot");
-        let wrapped = wrap_key(&kek, context, &key).unwrap();
-        assert_eq!(unwrap_key(&kek, context, &wrapped).unwrap(), key);
-    }
-
-    #[test]
-    fn unknown_version_and_algorithm_are_explicit() {
-        let key = SymmetricKey::generate().unwrap();
-        let context = Context::new(Label::KeyWrap, b"");
-        let mut sealed = seal(&key, context, b"x").unwrap();
-        sealed[5] = 9;
-        assert_eq!(
-            open(&key, context, &sealed),
-            Err(Error::UnsupportedVersion(9))
-        );
-        sealed[5] = FORMAT_VERSION;
-        sealed[6] = 7;
-        assert_eq!(
-            open(&key, context, &sealed),
-            Err(Error::UnsupportedAlgorithm(7))
-        );
+    fn hostile_or_unknown_envelopes_are_refused_explicitly() {
+        // Phase `hostile_password_params_are_refused_before_derivation`.
+        {
+            let context = Context::new(Label::IdentityBackup, b"");
+            let mut sealed = seal_with_password(b"pw", CHEAP, context, b"x").unwrap();
+            // m_cost lives right after the 8-byte prefix.
+            sealed[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+            assert!(matches!(
+                open_with_password(b"pw", context, &sealed),
+                Err(Error::PasswordParams(_))
+            ));
+        }
+        // Phase `unknown_version_and_algorithm_are_explicit`.
+        {
+            let key = SymmetricKey::generate().unwrap();
+            let context = Context::new(Label::KeyWrap, b"");
+            let mut sealed = seal(&key, context, b"x").unwrap();
+            sealed[5] = 9;
+            assert_eq!(
+                open(&key, context, &sealed),
+                Err(Error::UnsupportedVersion(9))
+            );
+            sealed[5] = FORMAT_VERSION;
+            sealed[6] = 7;
+            assert_eq!(
+                open(&key, context, &sealed),
+                Err(Error::UnsupportedAlgorithm(7))
+            );
+        }
     }
 }

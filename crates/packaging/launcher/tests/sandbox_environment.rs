@@ -57,6 +57,7 @@ fn manifest() -> MinimalManifest {
     MinimalManifest {
         package_id: PACKAGE.to_string(),
         name: None,
+        localized_names: BTreeMap::default(),
         category: None,
         icon: None,
         version: "0.0.0".to_string(),
@@ -148,205 +149,210 @@ fn env_names_inside() -> Vec<String> {
         .collect()
 }
 
-/// The launcher's environment does not become the app's.
 #[test]
-fn the_sessions_environment_does_not_reach_a_sandboxed_app() {
-    let mut planted: Vec<(&str, &str)> = vec![(MARKER, "the-parent-was-here")];
-    planted.extend_from_slice(SESSION_PRIVATE);
-    let _env = parent_env(&planted);
+#[allow(
+    clippy::too_many_lines,
+    reason = "each phase keeps one former test's body verbatim"
+)]
+fn the_session_environment_does_not_leak_into_the_sandbox() {
+    // Phase `the_sessions_environment_does_not_reach_a_sandboxed_app`.
+    // The launcher's environment does not become the app's.
+    {
+        let mut planted: Vec<(&str, &str)> = vec![(MARKER, "the-parent-was-here")];
+        planted.extend_from_slice(SESSION_PRIVATE);
+        let _env = parent_env(&planted);
 
-    // Without this the test would pass on a launcher that never had the
-    // variable to leak in the first place.
-    assert_eq!(
-        std::env::var(MARKER).as_deref(),
-        Ok("the-parent-was-here"),
-        "the marker must be set on the launching process, or this test cannot \
-         tell a cleared environment from an empty one"
-    );
-
-    let inside = env_names_inside();
-
-    assert!(
-        !inside.iter().any(|k| k == MARKER),
-        "{MARKER} was set on the launching process and reached the sandbox; \
-         the app inherits the session's environment. Saw: {inside:?}"
-    );
-    for (key, _) in SESSION_PRIVATE {
-        assert!(
-            !inside.iter().any(|k| k == key),
-            "{key} describes the session's own wiring and must not be in a \
-             sandboxed app's environment. Saw: {inside:?}"
+        // Without this the test would pass on a launcher that never had the
+        // variable to leak in the first place.
+        assert_eq!(
+            std::env::var(MARKER).as_deref(),
+            Ok("the-parent-was-here"),
+            "the marker must be set on the launching process, or this test cannot \
+             tell a cleared environment from an empty one"
         );
+
+        let inside = env_names_inside();
+
+        assert!(
+            !inside.iter().any(|k| k == MARKER),
+            "{MARKER} was set on the launching process and reached the sandbox; \
+             the app inherits the session's environment. Saw: {inside:?}"
+        );
+        for (key, _) in SESSION_PRIVATE {
+            assert!(
+                !inside.iter().any(|k| k == key),
+                "{key} describes the session's own wiring and must not be in a \
+                 sandboxed app's environment. Saw: {inside:?}"
+            );
+        }
+    }
+    // Phase `every_variable_in_the_sandbox_is_one_the_launcher_set`.
+    // The app's environment is a closed set, not a filtered one.
+    //
+    // Stronger than naming variables that must be absent: a variable
+    // arriving some other way fails this even though nobody named it —
+    // the point, since the leak this closes was exactly a variable nobody
+    // had thought of.
+    {
+        let _env = parent_env(&[
+            ("EDITOR", "vi"),
+            ("SSH_AUTH_SOCK", "/run/user/1000/keyring/ssh"),
+            ("XDG_SESSION_TYPE", "wayland"),
+            (MARKER, "the-parent-was-here"),
+        ]);
+
+        // What the launcher gives an app: `PATH` and the allowlist from
+        // `push_clean_environment`, plus one set beside each bind that makes
+        // it reachable.
+        let mut allowed: Vec<String> = vec![
+            "PATH".to_string(),
+            // `--clearenv` keeps `PWD`, which is a path inside the sandbox rather
+            // than anything of the session's.
+            "PWD".to_string(),
+            "TILO_PACKAGE_ID".to_string(),
+            "TILO_APP_NAME".to_string(),
+            "TILO_APP_ICON".to_string(),
+            "TILO_APP_DIR".to_string(),
+            "TILO_USER_HOME".to_string(),
+            "TILO_USER_IDENTITY".to_string(),
+            "TILO_IDENTITY_BROKER_FD".to_string(),
+            "TILO_WORKSPACE_ID".to_string(),
+            "TILO_WORKSPACE_ROOTS".to_string(),
+            "TILO_PARTICIPATION".to_string(),
+            "TILO_CLI_COMMAND".to_string(),
+            // The egress gate and proxy variables naming it. Absent here (this
+            // fixture declares `net = "off"`), but part of the set.
+            "TILO_NET_GATE".to_string(),
+            "HTTPS_PROXY".to_string(),
+            "HTTP_PROXY".to_string(),
+            "ALL_PROXY".to_string(),
+            "https_proxy".to_string(),
+            "http_proxy".to_string(),
+            "all_proxy".to_string(),
+            "NO_PROXY".to_string(),
+            "no_proxy".to_string(),
+            "HOME".to_string(),
+            "XDG_DATA_HOME".to_string(),
+            "XDG_STATE_HOME".to_string(),
+            "XDG_CONFIG_HOME".to_string(),
+            "XDG_CACHE_HOME".to_string(),
+            "XDG_RUNTIME_DIR".to_string(),
+            "WAYLAND_DISPLAY".to_string(),
+            "DBUS_SESSION_BUS_ADDRESS".to_string(),
+            "LD_LIBRARY_PATH".to_string(),
+            "LD_PRELOAD".to_string(),
+            "GLIBC_TUNABLES".to_string(),
+        ];
+        allowed.extend(
+            launcher::sandbox::INHERITED_ENV
+                .iter()
+                .map(std::string::ToString::to_string),
+        );
+        allowed.extend(
+            launcher::sandbox::ACCESSIBILITY_TEXT_SCALE_ENV
+                .iter()
+                .map(std::string::ToString::to_string),
+        );
+
+        let inside = env_names_inside();
+        assert!(
+            !inside.is_empty(),
+            "the fixture reported no environment at all, which would make every \
+             other assertion here vacuous"
+        );
+
+        let unexpected: Vec<&String> = inside
+            .iter()
+            // Service-socket descriptors are named per service.
+            .filter(|k| !allowed.contains(k) && !k.starts_with("TILO_SVC_"))
+            .collect();
+        assert!(
+            unexpected.is_empty(),
+            "a sandboxed app's environment must hold only what the launcher put \
+             there; these arrived some other way: {unexpected:?}"
+        );
+    }
+    // Phase `path_is_the_sandboxes_own`.
+    // `PATH` inside the sandbox is the sandbox's, not the session's: the
+    // inherited one named host directories outside the namespace, and
+    // could name a writable directory that decides which binary the
+    // app's `exec` resolves to.
+    {
+        let _env = parent_env(&[("PATH", "/home/somebody/bin:/usr/bin")]);
+
+        let path = run(&["env", "PATH"]);
+        assert_eq!(
+            path,
+            format!("ENV PATH={}", launcher::sandbox::SANDBOX_PATH),
+            "a sandboxed app must not inherit the session's PATH"
+        );
+    }
+    // Phase `unsafe_text_scale_and_other_parent_environment_stay_out`.
+    // Recognising a preference name must not turn it into a generic string
+    // channel. Non-finite, out-of-range and non-numeric values remain absent,
+    // as does an unrelated parent variable.
+    {
+        for value in ["NaN", "0.49", "4.01", "1.25\nTILO_ENV_LEAK_MARKER=leaked"] {
+            let _env = parent_env(&[
+                ("TILO_A11Y_TEXT_SCALE", value),
+                (MARKER, "the-parent-was-here"),
+            ]);
+            assert_eq!(
+                run(&["env", "TILO_A11Y_TEXT_SCALE"]),
+                "ENV TILO_A11Y_TEXT_SCALE=<unset>",
+                "unsafe value crossed the sandbox: {value:?}"
+            );
+            assert!(
+                !env_names_inside().iter().any(|key| key == MARKER),
+                "unrelated parent environment crossed beside {value:?}"
+            );
+        }
     }
 }
 
-/// The app's environment is a closed set, not a filtered one.
-///
-/// Stronger than naming variables that must be absent: a variable
-/// arriving some other way fails this even though nobody named it —
-/// the point, since the leak this closes was exactly a variable nobody
-/// had thought of.
 #[test]
-fn every_variable_in_the_sandbox_is_one_the_launcher_set() {
-    let _env = parent_env(&[
-        ("EDITOR", "vi"),
-        ("SSH_AUTH_SOCK", "/run/user/1000/keyring/ssh"),
-        ("XDG_SESSION_TYPE", "wayland"),
-        (MARKER, "the-parent-was-here"),
-    ]);
+fn chosen_session_preferences_are_carried_across_explicitly() {
+    // Phase `the_users_locale_is_carried_across_explicitly`.
+    // The user's language crosses the boundary, since it's the user's,
+    // not the session's — clearing the environment without putting the
+    // locale back would leave every app in the C locale.
+    {
+        let _env = parent_env(&[("LANG", "en_US.UTF-8"), ("LC_ALL", "en_US.UTF-8")]);
 
-    // What the launcher gives an app: `PATH` and the allowlist from
-    // `push_clean_environment`, plus one set beside each bind that makes
-    // it reachable.
-    let mut allowed: Vec<String> = vec![
-        "PATH".to_string(),
-        // `--clearenv` keeps `PWD`, which is a path inside the sandbox rather
-        // than anything of the session's.
-        "PWD".to_string(),
-        "TILO_PACKAGE_ID".to_string(),
-        "TILO_APP_NAME".to_string(),
-        "TILO_APP_ICON".to_string(),
-        "TILO_APP_DIR".to_string(),
-        "TILO_USER_HOME".to_string(),
-        "TILO_USER_IDENTITY".to_string(),
-        "TILO_IDENTITY_BROKER_FD".to_string(),
-        "TILO_WORKSPACE_ID".to_string(),
-        "TILO_WORKSPACE_ROOTS".to_string(),
-        "TILO_PARTICIPATION".to_string(),
-        "TILO_CLI_COMMAND".to_string(),
-        // The egress gate and proxy variables naming it. Absent here (this
-        // fixture declares `net = "off"`), but part of the set.
-        "TILO_NET_GATE".to_string(),
-        "HTTPS_PROXY".to_string(),
-        "HTTP_PROXY".to_string(),
-        "ALL_PROXY".to_string(),
-        "https_proxy".to_string(),
-        "http_proxy".to_string(),
-        "all_proxy".to_string(),
-        "NO_PROXY".to_string(),
-        "no_proxy".to_string(),
-        "HOME".to_string(),
-        "XDG_DATA_HOME".to_string(),
-        "XDG_STATE_HOME".to_string(),
-        "XDG_CONFIG_HOME".to_string(),
-        "XDG_CACHE_HOME".to_string(),
-        "XDG_RUNTIME_DIR".to_string(),
-        "WAYLAND_DISPLAY".to_string(),
-        "DBUS_SESSION_BUS_ADDRESS".to_string(),
-        "LD_LIBRARY_PATH".to_string(),
-        "LD_PRELOAD".to_string(),
-        "GLIBC_TUNABLES".to_string(),
-    ];
-    allowed.extend(
-        launcher::sandbox::INHERITED_ENV
-            .iter()
-            .map(std::string::ToString::to_string),
-    );
-    allowed.extend(
-        launcher::sandbox::ACCESSIBILITY_TEXT_SCALE_ENV
-            .iter()
-            .map(std::string::ToString::to_string),
-    );
+        let lang = run(&["env", "LANG"]);
+        assert_eq!(
+            lang, "ENV LANG=en_US.UTF-8",
+            "the session's locale must reach the app; without it every app answers \
+             in the C locale"
+        );
+    }
+    // Phase `the_sessions_logging_preference_reaches_the_app`.
+    // What the session asked its applications to say out loud crosses
+    // too: without `RUST_LOG` a sandboxed app falls back to errors only,
+    // its only account of what happened inside it.
+    {
+        let _env = parent_env(&[("RUST_LOG", "info,file_explorer::drag=debug")]);
 
-    let inside = env_names_inside();
-    assert!(
-        !inside.is_empty(),
-        "the fixture reported no environment at all, which would make every \
-         other assertion here vacuous"
-    );
-
-    let unexpected: Vec<&String> = inside
-        .iter()
-        // Service-socket descriptors are named per service.
-        .filter(|k| !allowed.contains(k) && !k.starts_with("TILO_SVC_"))
-        .collect();
-    assert!(
-        unexpected.is_empty(),
-        "a sandboxed app's environment must hold only what the launcher put \
-         there; these arrived some other way: {unexpected:?}"
-    );
-}
-
-/// The user's language crosses the boundary, since it's the user's,
-/// not the session's — clearing the environment without putting the
-/// locale back would leave every app in the C locale.
-#[test]
-fn the_users_locale_is_carried_across_explicitly() {
-    let _env = parent_env(&[("LANG", "en_US.UTF-8"), ("LC_ALL", "en_US.UTF-8")]);
-
-    let lang = run(&["env", "LANG"]);
-    assert_eq!(
-        lang, "ENV LANG=en_US.UTF-8",
-        "the session's locale must reach the app; without it every app answers \
-         in the C locale"
-    );
-}
-
-/// `PATH` inside the sandbox is the sandbox's, not the session's: the
-/// inherited one named host directories outside the namespace, and
-/// could name a writable directory that decides which binary the
-/// app's `exec` resolves to.
-#[test]
-fn path_is_the_sandboxes_own() {
-    let _env = parent_env(&[("PATH", "/home/somebody/bin:/usr/bin")]);
-
-    let path = run(&["env", "PATH"]);
-    assert_eq!(
-        path,
-        format!("ENV PATH={}", launcher::sandbox::SANDBOX_PATH),
-        "a sandboxed app must not inherit the session's PATH"
-    );
-}
-
-/// What the session asked its applications to say out loud crosses
-/// too: without `RUST_LOG` a sandboxed app falls back to errors only,
-/// its only account of what happened inside it.
-#[test]
-fn the_sessions_logging_preference_reaches_the_app() {
-    let _env = parent_env(&[("RUST_LOG", "info,file_explorer::drag=debug")]);
-
-    let seen = run(&["env", "RUST_LOG"]);
-    assert_eq!(
-        seen, "ENV RUST_LOG=info,file_explorer::drag=debug",
-        "the session's log filter must reach the app; without it every app \
-         inside the sandbox is silent below error level"
-    );
-}
-
-/// Text scaling is a user accessibility preference, so the launcher carries
-/// it across the clean environment after parsing and canonicalising it.
-#[test]
-fn validated_accessibility_text_scale_reaches_the_app() {
-    let _env = parent_env(&[
-        ("TILO_A11Y_TEXT_SCALE", " 1.25 "),
-        ("TILO_TEXT_SCALE", "2.0"),
-    ]);
-
-    assert_eq!(
-        run(&["env", "TILO_A11Y_TEXT_SCALE"]),
-        "ENV TILO_A11Y_TEXT_SCALE=1.25"
-    );
-    assert_eq!(run(&["env", "TILO_TEXT_SCALE"]), "ENV TILO_TEXT_SCALE=2");
-}
-
-/// Recognising a preference name must not turn it into a generic string
-/// channel. Non-finite, out-of-range and non-numeric values remain absent,
-/// as does an unrelated parent variable.
-#[test]
-fn unsafe_text_scale_and_other_parent_environment_stay_out() {
-    for value in ["NaN", "0.49", "4.01", "1.25\nTILO_ENV_LEAK_MARKER=leaked"] {
+        let seen = run(&["env", "RUST_LOG"]);
+        assert_eq!(
+            seen, "ENV RUST_LOG=info,file_explorer::drag=debug",
+            "the session's log filter must reach the app; without it every app \
+             inside the sandbox is silent below error level"
+        );
+    }
+    // Phase `validated_accessibility_text_scale_reaches_the_app`.
+    // Text scaling is a user accessibility preference, so the launcher carries
+    // it across the clean environment after parsing and canonicalising it.
+    {
         let _env = parent_env(&[
-            ("TILO_A11Y_TEXT_SCALE", value),
-            (MARKER, "the-parent-was-here"),
+            ("TILO_A11Y_TEXT_SCALE", " 1.25 "),
+            ("TILO_TEXT_SCALE", "2.0"),
         ]);
+
         assert_eq!(
             run(&["env", "TILO_A11Y_TEXT_SCALE"]),
-            "ENV TILO_A11Y_TEXT_SCALE=<unset>",
-            "unsafe value crossed the sandbox: {value:?}"
+            "ENV TILO_A11Y_TEXT_SCALE=1.25"
         );
-        assert!(
-            !env_names_inside().iter().any(|key| key == MARKER),
-            "unrelated parent environment crossed beside {value:?}"
-        );
+        assert_eq!(run(&["env", "TILO_TEXT_SCALE"]), "ENV TILO_TEXT_SCALE=2");
     }
 }

@@ -20,9 +20,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::thread;
-use std::time::Duration;
-
 use crate::support::{document_mutation, typed_collab::TypedBroker};
 use tilo_ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use tilo_ui::presence::PresenceKey;
@@ -34,15 +31,12 @@ fn n_peer_fanout_and_per_peer_attribution() {
     let mut b = broker.manager("peer-b");
     let mut c = broker.manager("peer-c");
 
-    // Give the broker time to register all three Hello handshakes.
-    thread::sleep(Duration::from_millis(150));
     let _ = a.poll();
     let _ = b.poll();
     let _ = c.poll();
 
     // --- 1. Fan-out excludes the sender -----------------------------
     a.send(CollabRequest::document_incremental(b"X".to_vec()));
-    thread::sleep(Duration::from_millis(150));
 
     let count_incremental = |evs: &[CollabEvent]| {
         evs.iter()
@@ -54,8 +48,12 @@ fn n_peer_fanout_and_per_peer_attribution() {
             })
             .count()
     };
-    let b_evs = b.poll();
-    let c_evs = c.poll();
+    let (mut b_evs, mut c_evs) = (Vec::new(), Vec::new());
+    tilo_test_env::wait_until("A's incremental at B and C", || {
+        b_evs.extend(b.poll());
+        c_evs.extend(c.poll());
+        count_incremental(&b_evs) > 0 && count_incremental(&c_evs) > 0
+    });
     let a_evs = a.poll();
     assert_eq!(
         count_incremental(&b_evs),
@@ -83,9 +81,6 @@ fn n_peer_fanout_and_per_peer_attribution() {
         key: PresenceKey::Workspace { id: "2".into() },
         payload: PresencePayload::Pointer { x: 2.0, y: 2.0 },
     });
-    thread::sleep(Duration::from_millis(150));
-
-    let c_evs = c.poll();
     // Extract the attributed user_id for each source by its distinct key.
     let uid_for = |evs: &[CollabEvent], ws: &str| -> Option<String> {
         evs.iter().find_map(|e| match e {
@@ -97,6 +92,14 @@ fn n_peer_fanout_and_per_peer_attribution() {
             _ => None,
         })
     };
+    let (mut c_evs, mut a_evs) = (Vec::new(), Vec::new());
+    tilo_test_env::wait_until("both presences at C and B's at A", || {
+        c_evs.extend(c.poll());
+        a_evs.extend(a.poll());
+        uid_for(&c_evs, "1").is_some()
+            && uid_for(&c_evs, "2").is_some()
+            && uid_for(&a_evs, "2").is_some()
+    });
     let uid_a = uid_for(&c_evs, "1").expect("C sees A's Workspace-1 presence");
     let uid_b = uid_for(&c_evs, "2").expect("C sees B's Workspace-2 presence");
     // Asserts the exact announced ids, not just `uid_a != uid_b` — that
@@ -107,7 +110,6 @@ fn n_peer_fanout_and_per_peer_attribution() {
 
     // A must NOT receive its own Workspace-1 presence, but SHOULD see
     // B's Workspace-2 presence.
-    let a_evs = a.poll();
     assert!(
         uid_for(&a_evs, "1").is_none(),
         "A must not receive its own presence back: {a_evs:?}"

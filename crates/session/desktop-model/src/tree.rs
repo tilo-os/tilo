@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::collaborator::Collaborator;
 use crate::ids::{GroupId, RoomId, StripId, WorkspaceId};
+use crate::partition::OutputPartition;
 use crate::serde_ids::deserialize_id_map;
 use crate::workspace::Workspace;
 
@@ -21,18 +22,10 @@ use crate::workspace::Workspace;
 /// direction with no safe default: older reading newer.
 pub const STATE_SCHEMA_VERSION: u32 = 1;
 
-/// A file with no `schema_version` key is version 1 — the key was added
-/// alongside the check, not a format change, and defaulting to "unknown"
-/// would strand every existing session on upgrade.
-fn state_schema_version_of_a_file_without_one() -> u32 {
-    1
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DesktopTree {
     /// Which version of the on-disk shape the file describes. Read back to
     /// decide whether this build may touch the file at all.
-    #[serde(default = "state_schema_version_of_a_file_without_one")]
     pub schema_version: u32,
     /// Counts rounds in which a peer's changes landed. `#[serde(skip)]`
     /// — a restored value could match a live reader's cache and
@@ -55,6 +48,10 @@ pub struct DesktopTree {
     /// non-closing group" (see [`Self::resolve_active_group`]).
     #[serde(default, deserialize_with = "deserialize_id_map")]
     pub active_group: HashMap<StripId, GroupId>,
+    /// Which display each window group is shown on, on this device. Local
+    /// layout: persisted with this device's desktop, never replicated.
+    #[serde(default, skip_serializing_if = "OutputPartition::is_empty")]
+    pub outputs: OutputPartition,
     /// Legacy session-wide presence cache. Ordinary chrome must read the
     /// active workspace's roster instead: a person present elsewhere is not
     /// present here. Never deserialized, so no stale presence survives a
@@ -85,6 +82,7 @@ impl Default for DesktopTree {
             active: WorkspaceId::default(),
             active_strip: HashMap::new(),
             active_group: HashMap::new(),
+            outputs: OutputPartition::default(),
             collaborators: Vec::new(),
             room_records_held: HashMap::new(),
             room_records_inbound: Vec::new(),

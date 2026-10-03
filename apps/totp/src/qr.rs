@@ -59,24 +59,28 @@ mod tests {
     use super::*;
     use image::{GrayImage, Luma};
 
-    /// Render a known otpauth URI into a clean, high-resolution QR bitmap
-    /// with the `qrcode` crate, then prove our decoder reads it back
-    /// verbatim. This exercises the real `rqrr` detect+decode path end to
-    /// end on the exact buffer type the file importer produces.
+    /// The QR decoder reads a rendered otpauth URI back and reports images without a code.
     #[test]
-    fn round_trips_an_otpauth_qr_through_the_decoder() {
-        let uri = "otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP&issuer=Acme&algorithm=SHA256&digits=8&period=45";
-        let luma = render_qr_luma(uri);
-        let decoded = decode_luma(luma).expect("decoder reads the rendered QR");
-        assert_eq!(decoded, uri);
-    }
+    fn qr_decoder_round_trips_otpauth_and_reports_empty_images() {
+        // Case `round_trips_an_otpauth_qr_through_the_decoder`.
+        // Render a known otpauth URI into a clean, high-resolution QR bitmap
+        // with the `qrcode` crate, then prove our decoder reads it back
+        // verbatim. This exercises the real `rqrr` detect+decode path end to
+        // end on the exact buffer type the file importer produces.
+        {
+            let uri = "otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP&issuer=Acme&algorithm=SHA256&digits=8&period=45";
+            let luma = render_qr_luma(uri);
+            let decoded = decode_luma(luma).expect("decoder reads the rendered QR");
+            assert_eq!(decoded, uri);
+        }
 
-    #[test]
-    fn empty_image_reports_no_qr_found() {
-        // A blank white field has no finder patterns to detect.
-        let blank = GrayImage::from_pixel(128, 128, Luma([255]));
-        let err = decode_luma(blank).unwrap_err();
-        assert!(err.contains("No QR code"), "got: {err}");
+        // Case `empty_image_reports_no_qr_found`.
+        {
+            // A blank white field has no finder patterns to detect.
+            let blank = GrayImage::from_pixel(128, 128, Luma([255]));
+            let err = decode_luma(blank).unwrap_err();
+            assert!(err.contains("No QR code"), "got: {err}");
+        }
     }
 
     /// Encode `data` as a QR code and rasterise it to a greyscale image,

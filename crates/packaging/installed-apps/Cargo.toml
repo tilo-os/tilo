@@ -1,0 +1,25 @@
+[package]
+name = "tilo-installed-apps"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The applications a session can launch: installed packages read through their manifests, and what each declared it may do on the action door."
+
+# Shared by every host that launches installed apps: the desktop session and
+# the per-user runtime without it. It reads the registry and the launcher's
+# manifest view and never starts anything, so it builds wherever the
+# launcher's library does.
+
+[dependencies]
+desktop-policy = { path = "../../system/desktop-policy", default-features = false }
+launcher = { path = "../launcher" }
+package-store = { path = "../package-store" }
+tilo-app-package = { path = "../tilo-app-package" }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

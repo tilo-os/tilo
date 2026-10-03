@@ -7,29 +7,53 @@
 //! so the number is the largest thing on the surface, with the device's name right next to it.
 //!
 //! Built from shared `ui` widgets, so it inherits the system theme and focus handling. Nothing here is hand-drawn.
+//!
+//! [`PairingOverlay`] is how the shell hosts it: it follows the session's
+//! [`PairingPromptHandle`], keeps the view modal above the desktop, and
+//! hands the person's answer back to the agent. Accepting exists only as
+//! this dialog's own controls, pressed by the person at the machine; an
+//! agent or script can decline a pairing through the shell's actions, but
+//! nothing outside this dialog can confirm one.
+//!
+//! What is typed into the passkey or PIN field stays in process memory
+//! owned by the view, never in a document.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex, PoisonError};
+use ui::widget::{AppModel, ModelPath};
 
+use crate::bluetooth::PairingPromptHandle;
+use crate::shell::i18n::{t, t_args};
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
-use tilo_bluez::{PairingPrompt, PairingReply, PairingRequest};
+use tilo_bluez::{MAX_PIN_CODE_BYTES, PairingPrompt, PairingReply, PairingRequest};
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonStyle, Card, Column, Row, Spacer, Text, TextInput, Widget};
+use ui::widget::{
+    Button, ButtonStyle, Card, Column, Row, Spacer, Text, TextInput, TextInputKind, Widget,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use vello::peniko::Fill;
+use winit::event::{ElementState, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 pub const KEY_ACCEPT: &str = "bluetooth.pair.accept";
 pub const KEY_REJECT: &str = "bluetooth.pair.reject";
-/// Where the typed passkey / PIN lands for the two entry prompts.
-pub const KEY_ENTRY: &str = "bluetooth.pair.entry";
+/// Test id of the passkey / PIN field of the two entry prompts.
+pub const ENTRY_FIELD_ID: &str = "bluetooth.pair.entry.field";
 
 /// Width of the dialog in logical px.
 const DIALOG_WIDTH: f32 = 460.0;
+/// The largest passkey Bluetooth defines: six decimal digits.
+const MAX_PASSKEY: u32 = 999_999;
+/// Opacity of the scrim that separates the modal dialog from the desktop.
+const SCRIM_ALPHA: f32 = 0.45;
 
 /// The prompt widget. Holds the question and, once the user acts, the answer for the host to drain.
 pub struct PairingPromptView {
     request: PairingRequest,
+    /// What the person typed into the entry field, outside any document.
+    entry: Arc<Mutex<String>>,
     answer: Option<PairingReply>,
     structure_dirty: bool,
     composed: Option<Box<dyn Widget>>,
@@ -40,6 +64,7 @@ impl PairingPromptView {
     pub fn new(request: PairingRequest) -> Self {
         Self {
             request,
+            entry: Arc::new(Mutex::new(String::new())),
             answer: None,
             structure_dirty: false,
             composed: None,
@@ -51,55 +76,157 @@ impl PairingPromptView {
         &self.request
     }
 
+    /// Show `request` in place — a displayed code whose typed-digit count
+    /// moved on. What was typed stays only while the question is the same.
+    pub fn set_request(&mut self, request: PairingRequest) {
+        if request.device_path != self.request.device_path
+            || std::mem::discriminant(&request.prompt)
+                != std::mem::discriminant(&self.request.prompt)
+        {
+            self.entry
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clear();
+        }
+        self.request = request;
+        self.structure_dirty = true;
+    }
+
     /// Take the user's answer, if they have given one.
     pub fn take_answer(&mut self) -> Option<PairingReply> {
         self.answer.take()
     }
 
+    /// Where the dialog card is on screen: the area a capture withholds.
+    pub fn card_rect(&self) -> Option<Rect> {
+        self.composed
+            .as_ref()
+            .map(|composed| composed.get_rect())
+            .filter(|rect| rect.area() > 0.0)
+    }
+
+    /// Clear answer keys a previous prompt may have left in `state`, so a
+    /// new question never starts out answered.
+    pub fn clear_answer_keys(state: &mut AutoCommit, root: &ObjId) {
+        for key in [KEY_ACCEPT, KEY_REJECT] {
+            if read_bool(state, root, key) {
+                let _ = state.put(root, key, ScalarValue::Boolean(false));
+            }
+        }
+    }
+
     /// Headline. Names the device, because "Pair with a device?" tells the user nothing they can check.
     fn title(&self) -> String {
+        let device = [(
+            "device",
+            ui::i18n::ArgValue::from(self.request.device_name.as_str()),
+        )];
         match &self.request.prompt {
             PairingPrompt::ConfirmPasskey { .. } => {
-                format!("Does {} show this code?", self.request.device_name)
+                t_args("bluetooth-prompt-title-confirm-passkey", &device)
             }
             PairingPrompt::DisplayPasskey { .. } | PairingPrompt::DisplayPinCode { .. } => {
-                format!("Type this on {}", self.request.device_name)
+                t_args("bluetooth-prompt-title-display", &device)
             }
             PairingPrompt::RequestPasskey => {
-                format!("Enter the code shown on {}", self.request.device_name)
+                t_args("bluetooth-prompt-title-request-passkey", &device)
             }
-            PairingPrompt::RequestPinCode => {
-                format!("Enter the PIN for {}", self.request.device_name)
+            PairingPrompt::RequestPinCode => t_args("bluetooth-prompt-title-request-pin", &device),
+            PairingPrompt::ConfirmPairing => {
+                t_args("bluetooth-prompt-title-confirm-pairing", &device)
             }
-            PairingPrompt::ConfirmPairing => format!("Pair with {}?", self.request.device_name),
             PairingPrompt::AuthorizeService { .. } => {
-                format!("Let {} connect?", self.request.device_name)
+                t_args("bluetooth-prompt-title-authorize-service", &device)
             }
         }
     }
 
     /// The sentence under the headline. Says what accepting actually grants, in terms of what the device will be able to do.
-    fn explanation(&self) -> &'static str {
+    fn explanation(&self) -> String {
         match &self.request.prompt {
-            PairingPrompt::ConfirmPasskey { .. } => {
-                "Compare it with the code on the other device. If they differ, something else \
-                 is trying to pair — say no."
-            }
+            PairingPrompt::ConfirmPasskey { .. } => t("bluetooth-prompt-explain-confirm-passkey"),
             PairingPrompt::DisplayPasskey { .. } | PairingPrompt::DisplayPinCode { .. } => {
-                "Enter this code on the other device to finish pairing."
+                t("bluetooth-prompt-explain-display")
             }
             PairingPrompt::RequestPasskey | PairingPrompt::RequestPinCode => {
-                "The code is shown on the device you are pairing. Many keyboards ask you to \
-                 type it and press Enter."
+                t("bluetooth-prompt-explain-request")
             }
-            PairingPrompt::ConfirmPairing => {
-                "This device cannot show a code to compare, so there is nothing to check \
-                 against. Only continue if you started this pairing yourself."
-            }
+            PairingPrompt::ConfirmPairing => t("bluetooth-prompt-explain-confirm-pairing"),
             PairingPrompt::AuthorizeService { .. } => {
-                "A device you have already paired is asking to use a new service. Paired \
-                 devices can send input and audio to this machine."
+                t("bluetooth-prompt-explain-authorize-service")
             }
+        }
+    }
+
+    /// The code the dialog shows, spoken digit by digit: a screen reader
+    /// reading "424 242" as two numbers is no help for comparing.
+    fn spoken_code(&self) -> Option<String> {
+        self.request.prompt.passkey_text().map(|code| {
+            let digits = code.chars().map(String::from).collect::<Vec<_>>().join(" ");
+            t_args(
+                "bluetooth-prompt-a11y-code",
+                &[("code", digits.as_str().into())],
+            )
+        })
+    }
+
+    /// What pressing the primary action answers. The typed prompts answer
+    /// with what was typed — a blank or unparseable entry is a refusal, not
+    /// a zero passkey, which the device would reject anyway and read as
+    /// "pairing mysteriously failed".
+    fn accepted(&self) -> PairingReply {
+        let entry = self
+            .entry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .trim()
+            .to_string();
+        match self.request.prompt {
+            PairingPrompt::RequestPasskey => match entry.parse::<u32>() {
+                Ok(n) if n <= MAX_PASSKEY && !entry.is_empty() => PairingReply::Passkey(n),
+                _ => PairingReply::Reject,
+            },
+            PairingPrompt::RequestPinCode => {
+                if entry.is_empty() || entry.len() > MAX_PIN_CODE_BYTES {
+                    PairingReply::Reject
+                } else {
+                    PairingReply::PinCode(entry)
+                }
+            }
+            // A displayed code has nothing to accept.
+            PairingPrompt::DisplayPasskey { .. } | PairingPrompt::DisplayPinCode { .. } => {
+                PairingReply::Reject
+            }
+            _ => PairingReply::Accept,
+        }
+    }
+
+    fn entry_field(&self) -> TextInput {
+        let typed = self
+            .entry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let pin = matches!(self.request.prompt, PairingPrompt::RequestPinCode);
+        let field = TextInput::local()
+            .with_initial_value(&typed)
+            .with_id(ENTRY_FIELD_ID)
+            .with_external_buffer(Arc::clone(&self.entry))
+            .with_spellcheck(false)
+            .with_autocorrect(false)
+            .with_font_size(15.0);
+        if pin {
+            field
+                .with_kind(TextInputKind::Code)
+                .with_char_filter(|c| c.is_ascii_graphic())
+                .with_accessible_name(t("bluetooth-prompt-pin-label"))
+                .with_placeholder(&t("bluetooth-prompt-pin-placeholder"))
+        } else {
+            field
+                .with_kind(TextInputKind::Number)
+                .with_char_filter(|c| c.is_ascii_digit())
+                .with_accessible_name(t("bluetooth-prompt-code-label"))
+                .with_placeholder(&t("bluetooth-prompt-code-placeholder"))
         }
     }
 
@@ -109,7 +236,7 @@ impl PairingPromptView {
             .with_gap(18.0)
             .push(Box::new(Text::new(&self.title()).with_size(20.0)))
             .push(Box::new(
-                Text::new(self.explanation())
+                Text::new(&self.explanation())
                     .with_size(13.0)
                     .with_color(theme.text_dim),
             ));
@@ -133,31 +260,28 @@ impl PairingPromptView {
             && *entered > 0
         {
             body = body.push(Box::new(
-                Text::new(&format!("{entered} of 6 digits entered"))
-                    .with_size(12.0)
-                    .with_color(theme.text_dim),
+                Text::new(&t_args(
+                    "bluetooth-prompt-digits-entered",
+                    &[("entered", (*entered).into())],
+                ))
+                .with_size(12.0)
+                .with_color(theme.text_dim),
             ));
         }
 
         if let PairingPrompt::AuthorizeService { uuid } = &self.request.prompt {
             body = body.push(Box::new(
-                Text::new(&format!("Service {uuid}"))
-                    .with_size(11.0)
-                    .with_color(theme.text_dim),
+                Text::new(&t_args(
+                    "bluetooth-prompt-service",
+                    &[("uuid", uuid.into())],
+                ))
+                .with_size(11.0)
+                .with_color(theme.text_dim),
             ));
         }
 
         if self.request.prompt.expects_entry() {
-            body = body.push(Box::new(
-                TextInput::new(Vec::new())
-                    .with_id("bluetooth.pair.entry.field")
-                    .with_on_change_path(KEY_ENTRY)
-                    .with_placeholder(match self.request.prompt {
-                        PairingPrompt::RequestPinCode => "PIN",
-                        _ => "6-digit code",
-                    })
-                    .with_font_size(15.0),
-            ));
+            body = body.push(Box::new(self.entry_field()));
         }
 
         // A display-only prompt has nothing to accept — an OK button would
@@ -166,13 +290,13 @@ impl PairingPromptView {
             vec![
                 Box::new(Button::new(
                     "bluetooth.pair.reject",
-                    "Don't pair",
+                    &t("bluetooth-prompt-reject"),
                     Some(KEY_REJECT),
                 )),
                 Box::new(
                     Button::new(
                         "bluetooth.pair.accept",
-                        accept_label(&self.request.prompt),
+                        &accept_label(&self.request.prompt),
                         Some(KEY_ACCEPT),
                     )
                     .with_style(ButtonStyle::Primary),
@@ -181,7 +305,7 @@ impl PairingPromptView {
         } else {
             vec![Box::new(Button::new(
                 "bluetooth.pair.reject",
-                "Cancel",
+                &t("bluetooth-prompt-cancel"),
                 Some(KEY_REJECT),
             ))]
         };
@@ -199,11 +323,11 @@ impl PairingPromptView {
     }
 }
 
-fn accept_label(prompt: &PairingPrompt) -> &'static str {
+fn accept_label(prompt: &PairingPrompt) -> String {
     match prompt {
-        PairingPrompt::ConfirmPasskey { .. } => "They match",
-        PairingPrompt::AuthorizeService { .. } => "Allow",
-        _ => "Pair",
+        PairingPrompt::ConfirmPasskey { .. } => t("bluetooth-prompt-accept-match"),
+        PairingPrompt::AuthorizeService { .. } => t("bluetooth-prompt-accept-allow"),
+        _ => t("bluetooth-prompt-accept-pair"),
     }
 }
 
@@ -226,45 +350,23 @@ fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> bool {
     )
 }
 
-fn read_text(state: &AutoCommit, root: &ObjId, key: &str) -> String {
-    match state.get(root, key) {
-        Ok(Some((Value::Object(automerge::ObjType::Text), id))) => {
-            state.text(&id).unwrap_or_default()
-        }
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Str(t) => t.to_string(),
-            _ => String::new(),
-        },
-        _ => String::new(),
-    }
+fn pressed(event: &WindowEvent, key: NamedKey) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput { event, .. }
+            if event.state == ElementState::Pressed && event.logical_key == Key::Named(key)
+    )
 }
 
 impl Widget for PairingPromptView {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         if read_bool(state, root, KEY_REJECT) {
             let _ = state.put(root, KEY_REJECT, ScalarValue::Boolean(false));
             self.answer = Some(PairingReply::Reject);
         } else if read_bool(state, root, KEY_ACCEPT) {
             let _ = state.put(root, KEY_ACCEPT, ScalarValue::Boolean(false));
-            // The typed prompts answer with what was typed — a blank or unparseable
-            // entry is a refusal, not a zero passkey, which the device would reject anyway and read as "pairing mysteriously failed".
-            self.answer = Some(match self.request.prompt {
-                PairingPrompt::RequestPasskey => {
-                    match read_text(state, root, KEY_ENTRY).trim().parse::<u32>() {
-                        Ok(n) => PairingReply::Passkey(n),
-                        Err(_) => PairingReply::Reject,
-                    }
-                }
-                PairingPrompt::RequestPinCode => {
-                    let pin = read_text(state, root, KEY_ENTRY).trim().to_string();
-                    if pin.is_empty() {
-                        PairingReply::Reject
-                    } else {
-                        PairingReply::PinCode(pin)
-                    }
-                }
-                _ => PairingReply::Accept,
-            });
+            self.answer = Some(self.accepted());
         }
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
@@ -327,39 +429,37 @@ impl Widget for PairingPromptView {
         theme: &Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
+        // A modal question: dim what it sits above, so the answer is
+        // plainly about this dialog and not the window behind it.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.scrim.with_alpha(SCRIM_ALPHA),
+            None,
+            &self.rect,
+        );
         if let Some(c) = &mut self.composed {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if pressed(event, NamedKey::Escape) {
+            self.answer = Some(PairingReply::Reject);
+            *ctx.handled = true;
+            return;
+        }
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
+        }
+        // Enter in the entry field submits what was typed, the way the
+        // device's own keyboard finishes the code.
+        if !*ctx.handled && self.request.prompt.expects_entry() && pressed(event, NamedKey::Enter) {
+            self.answer = Some(self.accepted());
+            *ctx.handled = true;
         }
     }
 
@@ -391,6 +491,26 @@ impl Widget for PairingPromptView {
         self.rect
     }
 
+    /// Tab stays inside the question until it is answered.
+    fn traps_focus(&self) -> bool {
+        true
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let description = match self.spoken_code() {
+            Some(code) => format!("{} {code}", self.explanation()),
+            None => self.explanation(),
+        };
+        Some(
+            AccessNode::new(Role::Dialog)
+                .with_name(self.title())
+                .with_description(description)
+                .with_bounds(self.card_rect().unwrap_or(self.rect))
+                .with_state(AccessState::new().modal(true).protected(true)),
+        )
+    }
+
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
         let child = self
@@ -398,6 +518,208 @@ impl Widget for PairingPromptView {
             .as_mut()
             .is_some_and(|c| c.take_structure_dirty());
         own || child
+    }
+}
+
+/// The shell's host for the pairing prompt: one question at a time, from
+/// the session's [`PairingPromptHandle`], modal above the desktop.
+pub struct PairingOverlay {
+    handle: PairingPromptHandle,
+    view: Option<PairingPromptView>,
+    node: Option<NodeId>,
+    focus_reset: bool,
+    structure_dirty: bool,
+}
+
+impl Default for PairingOverlay {
+    /// An overlay on a private handle nothing posts to.
+    fn default() -> Self {
+        Self::new(PairingPromptHandle::new())
+    }
+}
+
+impl PairingOverlay {
+    pub fn new(handle: PairingPromptHandle) -> Self {
+        Self {
+            handle,
+            view: None,
+            node: None,
+            focus_reset: false,
+            structure_dirty: false,
+        }
+    }
+
+    pub fn handle(&self) -> &PairingPromptHandle {
+        &self.handle
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.view.is_some()
+    }
+
+    pub fn view(&self) -> Option<&PairingPromptView> {
+        self.view.as_ref()
+    }
+
+    pub fn view_mut(&mut self) -> Option<&mut PairingPromptView> {
+        self.view.as_mut()
+    }
+
+    /// Where the dialog is on screen; a capture draws it as the placeholder.
+    pub fn secret_rect(&self) -> Option<Rect> {
+        self.view.as_ref().and_then(PairingPromptView::card_rect)
+    }
+
+    /// Deliver an answer the person gave, then follow the handle: open,
+    /// update or close the dialog. Returns whether anything on screen
+    /// changed.
+    ///
+    /// The view is only ever dropped here, between frames, and a dropped
+    /// view raises a focus reset: the frame rebuilds its tree before the
+    /// next event reaches a widget pointer that no longer exists.
+    pub fn pump(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
+        let mut changed = false;
+        if let Some(answer) = self.view.as_mut().and_then(PairingPromptView::take_answer) {
+            match answer {
+                PairingReply::Reject => {
+                    self.handle.dismiss();
+                }
+                reply => {
+                    self.handle.answer(reply);
+                }
+            }
+            self.close();
+            changed = true;
+        }
+        let current = self.handle.current();
+        let shown = self.view.as_ref().map(|view| view.request().clone());
+        match (shown, current) {
+            (None, None) => {}
+            (Some(_), None) => {
+                self.close();
+                changed = true;
+            }
+            (Some(shown), Some(request)) if shown == request => {}
+            (Some(shown), Some(request))
+                if shown.device_path == request.device_path
+                    && !shown.prompt.expects_answer()
+                    && !request.prompt.expects_answer() =>
+            {
+                if let Some(view) = self.view.as_mut() {
+                    view.set_request(request);
+                }
+                self.structure_dirty = true;
+                changed = true;
+            }
+            (_, Some(request)) => {
+                PairingPromptView::clear_answer_keys(state, root);
+                self.view = Some(PairingPromptView::new(request));
+                self.node = None;
+                self.focus_reset = true;
+                self.structure_dirty = true;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    fn close(&mut self) {
+        if self.view.take().is_some() {
+            self.node = None;
+            self.focus_reset = true;
+            self.structure_dirty = true;
+        }
+    }
+
+    pub fn take_focus_reset(&mut self) -> bool {
+        std::mem::take(&mut self.focus_reset)
+    }
+
+    pub fn take_structure_dirty(&mut self) -> bool {
+        let own = std::mem::take(&mut self.structure_dirty);
+        let view = self
+            .view
+            .as_mut()
+            .is_some_and(PairingPromptView::take_structure_dirty);
+        own || view
+    }
+
+    /// The dialog's node, filling the viewport without taking part in the
+    /// desktop's flex placement.
+    pub fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> Option<NodeId> {
+        let view = self.view.as_mut()?;
+        let node = view.build_layout(taffy, theme, node_map);
+        if let Ok(style) = taffy.style(node) {
+            let mut overlay = style.clone();
+            overlay.position = taffy::Position::Absolute;
+            overlay.inset = taffy::Rect {
+                left: taffy::LengthPercentageAuto::length(0.0),
+                right: taffy::LengthPercentageAuto::length(0.0),
+                top: taffy::LengthPercentageAuto::length(0.0),
+                bottom: taffy::LengthPercentageAuto::length(0.0),
+            };
+            let _ = taffy.set_style(node, overlay);
+        }
+        self.node = Some(node);
+        Some(node)
+    }
+
+    pub fn apply_layout(&mut self, taffy: &TaffyTree<()>, origin: Point) {
+        if let (Some(view), Some(node)) = (self.view.as_mut(), self.node) {
+            view.apply_layout(taffy, node, origin);
+        }
+    }
+
+    pub fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        if self.node.is_some()
+            && let Some(view) = self.view.as_mut()
+        {
+            view.draw(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    /// Route one event to the open dialog. While it is open it owns every
+    /// event, except the unmodified Tab and the Enter/Space activation the
+    /// frame performs on the focused control when the dialog did not use
+    /// them. Returns whether the dialog is open.
+    /// `ctx.node_id` is the node the event arrived at; the dialog is
+    /// dispatched at its own.
+    pub fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        // Not laid out yet means not on screen: nothing to route to.
+        let (Some(view), Some(node)) = (self.view.as_mut(), self.node) else {
+            return false;
+        };
+        view.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        // A button writes its key into `state`; read it now so the answer
+        // is the one given in this event, whatever document the next frame
+        // pumps.
+        view.sync(ctx.state, ctx.path);
+        let modifiers = ctx.modifiers.state();
+        let unmodified = !modifiers.control_key() && !modifiers.alt_key() && !modifiers.super_key();
+        let frame_owned = unmodified
+            && (pressed(event, NamedKey::Tab)
+                || pressed(event, NamedKey::Enter)
+                || pressed(event, NamedKey::Space));
+        if !frame_owned {
+            *ctx.handled = true;
+        }
+        true
     }
 }
 
@@ -417,125 +739,241 @@ mod tests {
         let _ = doc.put(&automerge::ROOT, key, ScalarValue::Boolean(true));
     }
 
+    fn type_entry(v: &PairingPromptView, text: &str) {
+        *v.entry.lock().unwrap() = text.to_string();
+    }
+
+    fn accept_with(prompt: PairingPrompt, entry: &str) -> Option<PairingReply> {
+        let mut v = view(prompt);
+        type_entry(&v, entry);
+        let mut doc = AutoCommit::new();
+        press(&mut doc, KEY_ACCEPT);
+        v.sync(&mut doc, &automerge::ROOT);
+        v.take_answer()
+    }
+
     #[test]
-    fn the_headline_names_the_device() {
-        let v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
+    fn every_prompt_kind_builds_a_layout_with_honest_copy() {
+        // Phase `the_headline_names_the_device`.
+        {
+            let v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
+            assert!(
+                v.title().contains("Studio Headphones"),
+                "a prompt the user cannot check is not a prompt: {}",
+                v.title()
+            );
+        }
+        // Phase `six_digits_are_split_for_comparison`.
+        {
+            assert_eq!(spaced("424242"), "424 242");
+            assert_eq!(spaced("0000"), "0000", "a legacy PIN is left alone");
+        }
+        // Phase `the_just_works_prompt_admits_it_cannot_be_verified`.
+        // The just-works prompt must say out loud that there's nothing to check, because it's the weakest flow and looks identical otherwise.
+        {
+            let v = view(PairingPrompt::ConfirmPairing);
+            assert!(
+                v.explanation().contains("nothing to check"),
+                "{}",
+                v.explanation()
+            );
+        }
+        // Phase `every_prompt_builds_a_layout`.
+        {
+            let prompts = [
+                PairingPrompt::ConfirmPasskey { passkey: 424_242 },
+                PairingPrompt::DisplayPasskey {
+                    passkey: 1,
+                    entered: 3,
+                },
+                PairingPrompt::DisplayPinCode { pin: "0000".into() },
+                PairingPrompt::RequestPasskey,
+                PairingPrompt::RequestPinCode,
+                PairingPrompt::ConfirmPairing,
+                PairingPrompt::AuthorizeService {
+                    uuid: "0000110b-0000-1000-8000-00805f9b34fb".into(),
+                },
+            ];
+            for p in prompts {
+                let mut v = view(p);
+                let theme = Theme::dark();
+                let mut taffy: TaffyTree<()> = TaffyTree::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let _ = v.build_layout(&mut taffy, &theme, &mut node_map);
+            }
+        }
+    }
+
+    #[test]
+    fn the_dialog_is_a_modal_protected_focus_trap_that_speaks_its_code() {
+        let v = view(PairingPrompt::ConfirmPasskey { passkey: 424_242 });
+        assert!(v.traps_focus(), "Tab must not leave an unanswered question");
+        let node = v.accessibility().expect("the dialog is announced");
+        assert_eq!(node.role, ui::a11y::Role::Dialog);
+        assert!(node.state.modal && node.state.protected);
+        assert_eq!(node.name.as_deref(), Some(v.title().as_str()));
+        let description = node.description.unwrap_or_default();
         assert!(
-            v.title().contains("Studio Headphones"),
-            "a prompt the user cannot check is not a prompt: {}",
-            v.title()
+            description.contains("4 2 4 2 4 2"),
+            "the code is spoken digit by digit: {description}"
+        );
+        let v = view(PairingPrompt::ConfirmPairing);
+        assert!(
+            !v.accessibility()
+                .and_then(|n| n.description)
+                .unwrap_or_default()
+                .contains("Code"),
+            "no code, nothing to speak"
         );
     }
 
     #[test]
-    fn accepting_a_comparison_answers_accept() {
-        let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 424_242 });
-        let mut doc = AutoCommit::new();
-        press(&mut doc, KEY_ACCEPT);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(v.take_answer(), Some(PairingReply::Accept));
-    }
-
-    #[test]
-    fn declining_answers_reject() {
-        let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
-        let mut doc = AutoCommit::new();
-        press(&mut doc, KEY_REJECT);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(v.take_answer(), Some(PairingReply::Reject));
-    }
-
-    /// Reject must win over accept when both keys are somehow set — the safe reading of an ambiguous state is "no".
-    #[test]
-    fn reject_wins_over_a_simultaneous_accept() {
-        let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
-        let mut doc = AutoCommit::new();
-        press(&mut doc, KEY_ACCEPT);
-        press(&mut doc, KEY_REJECT);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(v.take_answer(), Some(PairingReply::Reject));
-    }
-
-    #[test]
-    fn a_typed_passkey_is_parsed_and_returned() {
-        let mut v = view(PairingPrompt::RequestPasskey);
-        let mut doc = AutoCommit::new();
-        let _ = doc.put(
-            &automerge::ROOT,
-            KEY_ENTRY,
-            ScalarValue::Str("654321".into()),
-        );
-        press(&mut doc, KEY_ACCEPT);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(v.take_answer(), Some(PairingReply::Passkey(654_321)));
-    }
-
-    /// A blank or nonsense entry refuses rather than sending a zero, which the device rejects anyway and reads as an unexplained failure.
-    #[test]
-    fn an_unparseable_passkey_refuses_rather_than_sending_zero() {
-        for entry in ["", "   ", "abcdef"] {
-            let mut v = view(PairingPrompt::RequestPasskey);
+    fn prompt_answers_are_exact_and_refuse_rather_than_guess() {
+        // Phase `accepting_a_comparison_answers_accept`.
+        {
+            let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 424_242 });
             let mut doc = AutoCommit::new();
-            let _ = doc.put(&automerge::ROOT, KEY_ENTRY, ScalarValue::Str(entry.into()));
             press(&mut doc, KEY_ACCEPT);
             v.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(v.take_answer(), Some(PairingReply::Accept));
+        }
+        // Phase `declining_answers_reject`.
+        {
+            let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
+            let mut doc = AutoCommit::new();
+            press(&mut doc, KEY_REJECT);
+            v.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(v.take_answer(), Some(PairingReply::Reject));
+        }
+        // Phase `reject_wins_over_a_simultaneous_accept`.
+        // Reject must win over accept when both keys are somehow set — the safe reading of an ambiguous state is "no".
+        {
+            let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
+            let mut doc = AutoCommit::new();
+            press(&mut doc, KEY_ACCEPT);
+            press(&mut doc, KEY_REJECT);
+            v.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(v.take_answer(), Some(PairingReply::Reject));
+        }
+        // Phase `a_typed_passkey_is_parsed_and_returned`.
+        {
             assert_eq!(
-                v.take_answer(),
+                accept_with(PairingPrompt::RequestPasskey, "654321"),
+                Some(PairingReply::Passkey(654_321))
+            );
+        }
+        // Phase `an_unparseable_passkey_refuses_rather_than_sending_zero`.
+        // A blank, nonsense or out-of-range entry refuses rather than sending
+        // a number the device rejects anyway and reads as an unexplained failure.
+        {
+            for entry in ["", "   ", "abcdef", "1000000"] {
+                assert_eq!(
+                    accept_with(PairingPrompt::RequestPasskey, entry),
+                    Some(PairingReply::Reject),
+                    "entry {entry:?}"
+                );
+            }
+        }
+        // Phase `a_typed_pin_is_returned_verbatim`.
+        {
+            assert_eq!(
+                accept_with(PairingPrompt::RequestPinCode, "0000"),
+                Some(PairingReply::PinCode("0000".into()))
+            );
+            assert_eq!(
+                accept_with(PairingPrompt::RequestPinCode, &"9".repeat(17)),
                 Some(PairingReply::Reject),
-                "entry {entry:?}"
+                "longer than Bluetooth's PIN"
+            );
+        }
+        // Phase `a_displayed_code_has_nothing_to_accept`.
+        {
+            assert_eq!(
+                accept_with(
+                    PairingPrompt::DisplayPasskey {
+                        passkey: 1,
+                        entered: 0
+                    },
+                    ""
+                ),
+                Some(PairingReply::Reject)
+            );
+        }
+        // Phase `the_typed_code_never_enters_the_document`.
+        {
+            let mut v = view(PairingPrompt::RequestPinCode);
+            type_entry(&v, "1234");
+            let mut doc = AutoCommit::new();
+            press(&mut doc, KEY_ACCEPT);
+            v.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(v.take_answer(), Some(PairingReply::PinCode("1234".into())));
+            assert!(
+                doc.keys(&automerge::ROOT)
+                    .all(|key| key == KEY_ACCEPT || key == KEY_REJECT),
+                "only the answer keys are written"
             );
         }
     }
 
     #[test]
-    fn a_typed_pin_is_returned_verbatim() {
-        let mut v = view(PairingPrompt::RequestPinCode);
+    fn the_overlay_follows_the_handle_and_hands_back_the_answer() {
+        use tilo_bluez::PairingReplySender;
+
+        let handle = PairingPromptHandle::new();
+        let mut overlay = PairingOverlay::new(handle.clone());
         let mut doc = AutoCommit::new();
-        let _ = doc.put(&automerge::ROOT, KEY_ENTRY, ScalarValue::Str("0000".into()));
+        assert!(!overlay.pump(&mut doc, &automerge::ROOT));
+
+        // A stale accept left in the document never answers a new question.
         press(&mut doc, KEY_ACCEPT);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(v.take_answer(), Some(PairingReply::PinCode("0000".into())));
-    }
+        let (reply, _displayed) = PairingReplySender::channel();
+        let request = PairingRequest {
+            device_path: "/org/bluez/hci0/dev_AA".into(),
+            device_name: "Keyboard".into(),
+            prompt: PairingPrompt::DisplayPasskey {
+                passkey: 12,
+                entered: 0,
+            },
+        };
+        handle.post(request.clone(), reply);
+        assert!(overlay.pump(&mut doc, &automerge::ROOT));
+        assert!(overlay.is_open() && overlay.take_focus_reset());
+        overlay.view_mut().unwrap().sync(&mut doc, &automerge::ROOT);
+        assert_eq!(overlay.view_mut().unwrap().take_answer(), None);
 
-    #[test]
-    fn six_digits_are_split_for_comparison() {
-        assert_eq!(spaced("424242"), "424 242");
-        assert_eq!(spaced("0000"), "0000", "a legacy PIN is left alone");
-    }
-
-    /// The just-works prompt must say out loud that there's nothing to check, because it's the weakest flow and looks identical otherwise.
-    #[test]
-    fn the_just_works_prompt_admits_it_cannot_be_verified() {
-        let v = view(PairingPrompt::ConfirmPairing);
-        assert!(
-            v.explanation().contains("nothing to check"),
-            "{}",
-            v.explanation()
+        // A typed digit updates the dialog in place.
+        let (reply, _) = PairingReplySender::channel();
+        handle.post(
+            PairingRequest {
+                prompt: PairingPrompt::DisplayPasskey {
+                    passkey: 12,
+                    entered: 1,
+                },
+                ..request
+            },
+            reply,
         );
-    }
+        assert!(overlay.pump(&mut doc, &automerge::ROOT));
+        assert!(!overlay.take_focus_reset(), "same dialog, same focus");
+        assert!(overlay.take_structure_dirty());
 
-    #[test]
-    fn every_prompt_builds_a_layout() {
-        let prompts = [
-            PairingPrompt::ConfirmPasskey { passkey: 424_242 },
-            PairingPrompt::DisplayPasskey {
-                passkey: 1,
-                entered: 3,
+        // The person declines a comparison: the agent hears a refusal and
+        // the dialog closes.
+        let (reply, rx) = PairingReplySender::channel();
+        handle.post(
+            PairingRequest {
+                device_path: "/org/bluez/hci0/dev_BB".into(),
+                device_name: "Speaker".into(),
+                prompt: PairingPrompt::ConfirmPasskey { passkey: 7 },
             },
-            PairingPrompt::DisplayPinCode { pin: "0000".into() },
-            PairingPrompt::RequestPasskey,
-            PairingPrompt::RequestPinCode,
-            PairingPrompt::ConfirmPairing,
-            PairingPrompt::AuthorizeService {
-                uuid: "0000110b-0000-1000-8000-00805f9b34fb".into(),
-            },
-        ];
-        for p in prompts {
-            let mut v = view(p);
-            let theme = Theme::dark();
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let _ = v.build_layout(&mut taffy, &theme, &mut node_map);
-        }
+            reply,
+        );
+        assert!(overlay.pump(&mut doc, &automerge::ROOT));
+        press(&mut doc, KEY_REJECT);
+        overlay.view_mut().unwrap().sync(&mut doc, &automerge::ROOT);
+        assert!(overlay.pump(&mut doc, &automerge::ROOT));
+        assert!(!overlay.is_open() && !handle.is_prompting());
+        assert!(overlay.take_focus_reset(), "a closed dialog rebuilds focus");
+        assert_eq!(rx.blocking_recv().unwrap(), PairingReply::Reject);
     }
 }

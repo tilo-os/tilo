@@ -209,3 +209,73 @@ neither worker submission nor overall animation cadence can qualify visible
 scroll updates. All app qualifications remain incomplete. See
 `docs/native-presentation-feedback.md` for implementation, raw evidence,
 clock/observer limitations and exact cohorts.
+
+## Development hot reload (2026-09-29)
+
+`tilo-app dev --timings` prints where each in-place Rust reload spent its time
+and, with `--json`, returns every reload's phases when `dev` stops.
+`scripts/perf/dev-reload-bench.py APP` drives it against a headless compositor:
+it edits one line of `src/lib.rs` per run and times the save to the first frame
+the reloaded code presents. `--budget-ms` makes it fail when the median is over
+a budget. The phases are file-change detection (`notify`), `debounce`, `cargo`
+startup and fingerprint walk, rustc `compile` and `link`, `stage`, `signal`,
+the app's `checkpoint`, `dlopen`, `state_handoff` and `first_frame`, and
+`present`.
+
+A scaffolded standalone app (`tilo-app new`, 179-line `src/lib.rs`), built
+locally in the Fedora 44 dev container on stable 1.97.1 with `rust-lld`, medians
+of five or six saves after a warm-up:
+
+| Phase | Before | After |
+|---|---:|---:|
+| detection + debounce | ~250 ms | 94 + 31 ms |
+| Cargo startup and fingerprint walk | ~1300 ms | 0 |
+| rustc front end and codegen | ~2300 ms (with link) | 1911 ms |
+| link | | 82 ms |
+| stage, signal, checkpoint, dlopen, handoff | ~20 ms | 7 ms |
+| first frame + present | | 12 ms |
+| **save → first frame** | **4322 ms** | **2138 ms** |
+
+`apps/hot-reload-demo`, inside the workspace, same container:
+
+| Path | Before | After |
+|---|---:|---:|
+| edit to `src/lib.rs` (rustc replay) | 94.1 s | 2185 ms (compile 1926, link 116) |
+| edit Cargo must see (`tests/app.rs`), no app code to compile | ~75 s | 3.5 s |
+
+Before, every Cargo reload in the workspace rebuilt `runtime-dylib` twice: a
+step of its own built it with `-C prefer-dynamic`, and the host and library
+steps rebuilt it without. That step is gone; a Rust dylib links `libstd`
+dynamically without the flag. The remaining 3.5 s is Cargo's startup and
+fingerprint walk over the toolkit's ~900 units, which the rustc replay skips.
+
+What changed:
+
+- After Cargo builds the reload library once, `tilo-app` replays its recorded
+  rustc command directly for edits confined to files in that library's
+  dep-info. Manifests, build scripts, toolkit sources, new files, or a rustc
+  failure outside the app's code still go through Cargo.
+- The replayed link leaves out the Rust dylibs the running app already has
+  loaded. `lld` spent ~390 of ~470 ms parsing the 961,000 exported symbols of
+  `libruntime_dylib.so`; the library now resolves them from the host process
+  at `dlopen`. Linux only.
+- The default debounce is 30 ms instead of 150 ms. A newer save already
+  cancels an older build.
+
+Measured and rejected, all on the replayed rustc command: `-C incremental`
+(slower: the first run pays the cache, later runs gained nothing measurable),
+`-C split-debuginfo=unpacked`, `-C debuginfo=0`, `-C codegen-units=16`, and
+`-C opt-level=s`. `-Z share-generics=no` changed nothing either.
+`-Z time-passes` shows the remaining floor: an empty crate with the same
+`--extern`s spends ~550 ms resolving the toolkit's metadata, macro expansion
+takes ~550 ms, coherence plus type checking ~400 ms, and the monomorphization
+collector ~600 ms for only ~2,100 items. All of this is the size of the crate
+universe that `ui` re-exports, not the app's code, and the parallel front end
+that could split it is nightly-only.
+
+Two environment notes. When another program holds most of
+`fs.inotify.max_user_watches` (an editor watching a large tree), `dev` falls
+back to a 200 ms stamp poll, which is the ~94 ms detection above. On a host
+whose `cargo` forwards to a remote builder, Cargo and rustc run remotely, so
+the fast path cannot record a local command and every reload pays the remote
+round trip (~6 s for a no-op). Sub-second reloads need a local toolchain.

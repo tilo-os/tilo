@@ -41,6 +41,8 @@ mod coedit_keystone;
 mod colorpicker_hex_input;
 #[path = "command_palette_test.rs"]
 mod command_palette_test;
+#[path = "component_text_input.rs"]
+mod component_text_input;
 #[path = "container_update_forwarding.rs"]
 mod container_update_forwarding;
 #[path = "context_menu_test.rs"]
@@ -96,6 +98,8 @@ mod live_text_sync;
 mod local_identity_is_a_person;
 #[path = "menu_highlight_render.rs"]
 mod menu_highlight_render;
+#[path = "mouse_navigation_test.rs"]
+mod mouse_navigation_test;
 #[path = "multi_user_session.rs"]
 mod multi_user_session;
 #[path = "overlay_test.rs"]
@@ -149,6 +153,8 @@ mod tokens_test;
 mod tooltip_render_test;
 #[path = "tooltip_test.rs"]
 mod tooltip_test;
+#[path = "touch_gestures_test.rs"]
+mod touch_gestures_test;
 #[path = "typography_baseline_geometry.rs"]
 mod typography_baseline_geometry;
 #[path = "typography_visual_regression.rs"]
@@ -181,3 +187,5 @@ mod application_contract;
 mod bound_component_dispatch;
 
 mod instance_undo;
+
+mod package_primary;

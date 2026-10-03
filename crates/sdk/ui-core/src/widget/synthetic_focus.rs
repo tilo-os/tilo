@@ -142,59 +142,62 @@ mod tests {
     use vello::kurbo::Rect;
 
     #[test]
-    fn path_target_and_focus_marking_share_the_live_tree() {
-        let mut root = AccessNode::new(Role::Group).with_children(vec![
-            AccessNode::new(Role::Button)
-                .with_name("One")
-                .with_action_target("one")
-                .with_bounds(Rect::new(0.0, 0.0, 40.0, 30.0))
-                .with_state(AccessState::new().focusable(true)),
-            AccessNode::new(Role::Button)
-                .with_name("Two")
-                .with_action_target("two")
-                .with_bounds(Rect::new(50.0, 0.0, 90.0, 30.0))
-                .with_state(AccessState::new().focusable(true)),
-        ]);
-        assert_eq!(semantic_target_at_path(&root, &[1]), Some("two"));
-        assert_eq!(
-            semantic_target_bounds(&root, "two"),
-            Some(Rect::new(50.0, 0.0, 90.0, 30.0))
-        );
-        assert!(mark_semantic_focus(&mut root, "two"));
-        assert!(!root.children[0].state.focused);
-        assert!(root.children[1].state.focused);
-        assert_eq!(semantic_focus_order(&root), vec!["one", "two"]);
-        assert_eq!(
-            adjacent_semantic_target(&root, Some("two"), true).as_deref(),
-            Some("one")
-        );
-    }
+    fn synthetic_focus_targets_and_recovers_in_the_live_tree() {
+        // Case `path_target_and_focus_marking_share_the_live_tree`.
+        {
+            let mut root = AccessNode::new(Role::Group).with_children(vec![
+                AccessNode::new(Role::Button)
+                    .with_name("One")
+                    .with_action_target("one")
+                    .with_bounds(Rect::new(0.0, 0.0, 40.0, 30.0))
+                    .with_state(AccessState::new().focusable(true)),
+                AccessNode::new(Role::Button)
+                    .with_name("Two")
+                    .with_action_target("two")
+                    .with_bounds(Rect::new(50.0, 0.0, 90.0, 30.0))
+                    .with_state(AccessState::new().focusable(true)),
+            ]);
+            assert_eq!(semantic_target_at_path(&root, &[1]), Some("two"));
+            assert_eq!(
+                semantic_target_bounds(&root, "two"),
+                Some(Rect::new(50.0, 0.0, 90.0, 30.0))
+            );
+            assert!(mark_semantic_focus(&mut root, "two"));
+            assert!(!root.children[0].state.focused);
+            assert!(root.children[1].state.focused);
+            assert_eq!(semantic_focus_order(&root), vec!["one", "two"]);
+            assert_eq!(
+                adjacent_semantic_target(&root, Some("two"), true).as_deref(),
+                Some("one")
+            );
+        }
 
-    #[test]
-    fn focus_recovery_uses_same_slot_then_previous_at_the_end() {
-        let node = |target: &str| {
-            AccessNode::new(Role::Button)
-                .with_name(target)
-                .with_action_target(target)
-                .with_state(AccessState::new().focusable(true))
-        };
-        let before = AccessNode::new(Role::Group).with_children(vec![
-            node("one"),
-            node("two"),
-            node("three"),
-        ]);
-        let middle_removed =
-            AccessNode::new(Role::Group).with_children(vec![node("one"), node("three")]);
-        assert_eq!(
-            recover_semantic_focus(&before, &middle_removed, Some("two")).as_deref(),
-            Some("three")
-        );
+        // Case `focus_recovery_uses_same_slot_then_previous_at_the_end`.
+        {
+            let node = |target: &str| {
+                AccessNode::new(Role::Button)
+                    .with_name(target)
+                    .with_action_target(target)
+                    .with_state(AccessState::new().focusable(true))
+            };
+            let before = AccessNode::new(Role::Group).with_children(vec![
+                node("one"),
+                node("two"),
+                node("three"),
+            ]);
+            let middle_removed =
+                AccessNode::new(Role::Group).with_children(vec![node("one"), node("three")]);
+            assert_eq!(
+                recover_semantic_focus(&before, &middle_removed, Some("two")).as_deref(),
+                Some("three")
+            );
 
-        let end_removed =
-            AccessNode::new(Role::Group).with_children(vec![node("one"), node("two")]);
-        assert_eq!(
-            recover_semantic_focus(&before, &end_removed, Some("three")).as_deref(),
-            Some("two")
-        );
+            let end_removed =
+                AccessNode::new(Role::Group).with_children(vec![node("one"), node("two")]);
+            assert_eq!(
+                recover_semantic_focus(&before, &end_removed, Some("three")).as_deref(),
+                Some("two")
+            );
+        }
     }
 }

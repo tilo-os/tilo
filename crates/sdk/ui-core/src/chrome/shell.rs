@@ -298,7 +298,7 @@ pub fn glass_selector(theme: &Theme, state: SelectionState) -> SelectionTier {
     let colors = &theme.tokens.colors;
     let ground = colors.surfaces.base;
     let lifted = state.active || state.pressed;
-    let film = colors.glass_film();
+    let film = theme.material_film();
     let alpha = if lifted {
         GLASS_ACTIVE_ALPHA
     } else if state.hover {
@@ -709,183 +709,262 @@ mod tests {
     }
 
     #[test]
-    fn the_material_paints_a_body_an_edge_and_a_rim_and_nothing_else() {
-        for (name, theme) in themes() {
-            assert_eq!(
-                glass_fill_count(&theme, SelectionState::default()),
-                0,
-                "{name}: an idle selector has no body, so it must paint nothing \
+    fn glass_material_paints_body_edge_and_rim_as_one_decision() {
+        // Case `the_material_paints_a_body_an_edge_and_a_rim_and_nothing_else`.
+        {
+            for (name, theme) in themes() {
+                assert_eq!(
+                    glass_fill_count(&theme, SelectionState::default()),
+                    0,
+                    "{name}: an idle selector has no body, so it must paint nothing \
                  at all — not an edge, and certainly not a shadow of nothing",
-            );
-            assert_eq!(
-                glass_fill_count(&theme, SelectionState::new(false, true, false)),
-                2,
-                "{name}: a hovered selector is exactly a film and its edge",
-            );
-            assert_eq!(
-                glass_fill_count(&theme, SelectionState::active(true)),
-                3,
-                "{name}: a lifted selector is exactly a film, its edge and its \
-                 lit rim — anything more is elevation smuggled into selection",
-            );
-        }
-    }
-
-    #[test]
-    fn a_glass_body_is_never_opaque_and_always_has_somewhere_to_lighten() {
-        for (name, theme) in themes() {
-            for (state_name, state) in [
-                ("hover", SelectionState::new(false, true, false)),
-                ("active", SelectionState::active(true)),
-                ("pressed", SelectionState::new(false, false, true)),
-            ] {
-                let tier = glass_selector(&theme, state);
-                assert!(
-                    tier.fill.a() > 0,
-                    "{name}/{state_name}: a state with a body must paint one",
                 );
-                assert!(
-                    tier.fill.a() < u8::MAX,
-                    "{name}/{state_name}: an opaque body is not glass — the \
+                assert_eq!(
+                    glass_fill_count(&theme, SelectionState::new(false, true, false)),
+                    2,
+                    "{name}: a hovered selector is exactly a film and its edge",
+                );
+                assert_eq!(
+                    glass_fill_count(&theme, SelectionState::active(true)),
+                    3,
+                    "{name}: a lifted selector is exactly a film, its edge and its \
+                 lit rim — anything more is elevation smuggled into selection",
+                );
+            }
+        }
+
+        // Case `a_glass_body_is_never_opaque_and_always_has_somewhere_to_lighten`.
+        {
+            for (name, theme) in themes() {
+                for (state_name, state) in [
+                    ("hover", SelectionState::new(false, true, false)),
+                    ("active", SelectionState::active(true)),
+                    ("pressed", SelectionState::new(false, false, true)),
+                ] {
+                    let tier = glass_selector(&theme, state);
+                    assert!(
+                        tier.fill.a() > 0,
+                        "{name}/{state_name}: a state with a body must paint one",
+                    );
+                    assert!(
+                        tier.fill.a() < u8::MAX,
+                        "{name}/{state_name}: an opaque body is not glass — the \
                      desktop has to come through it, and an opaque fill also \
                      makes the lit-end alpha ramp a silent no-op",
-                );
-                let lit = tier.fill.with_alpha_factor(GLASS_LIT_GAIN);
-                assert!(
-                    lit.a() > tier.fill.a(),
-                    "{name}/{state_name}: the lit end of the film ({}) is no \
+                    );
+                    let lit = tier.fill.with_alpha_factor(GLASS_LIT_GAIN);
+                    assert!(
+                        lit.a() > tier.fill.a(),
+                        "{name}/{state_name}: the lit end of the film ({}) is no \
                      denser than its middle ({}), so the body paints flat and \
                      has no light direction at all",
-                    lit.a(),
-                    tier.fill.a(),
-                );
-                let seated = tier.fill.with_alpha_factor(GLASS_SEAT_FALLOFF);
-                assert!(
-                    seated.a() < tier.fill.a(),
-                    "{name}/{state_name}: the seated end is no thinner than \
+                        lit.a(),
+                        tier.fill.a(),
+                    );
+                    let seated = tier.fill.with_alpha_factor(GLASS_SEAT_FALLOFF);
+                    assert!(
+                        seated.a() < tier.fill.a(),
+                        "{name}/{state_name}: the seated end is no thinner than \
                      the middle — a surface lit from above is darker where \
                      the light does not reach",
-                );
+                    );
+                }
             }
         }
-    }
 
-    #[test]
-    fn a_glass_body_and_its_edge_are_the_same_decision() {
-        for (name, theme) in themes() {
-            for (state_name, state) in [
-                ("idle", SelectionState::default()),
-                ("hover", SelectionState::new(false, true, false)),
-                ("active", SelectionState::active(true)),
-                ("pressed", SelectionState::new(false, false, true)),
-            ] {
-                let tier = glass_selector(&theme, state);
-                assert_eq!(
-                    tier.fill.a() > 0,
-                    tier.border.is_some(),
-                    "{name}/{state_name}: body and edge disagree — one paints \
+        // Case `a_glass_body_and_its_edge_are_the_same_decision`.
+        {
+            for (name, theme) in themes() {
+                for (state_name, state) in [
+                    ("idle", SelectionState::default()),
+                    ("hover", SelectionState::new(false, true, false)),
+                    ("active", SelectionState::active(true)),
+                    ("pressed", SelectionState::new(false, false, true)),
+                ] {
+                    let tier = glass_selector(&theme, state);
+                    assert_eq!(
+                        tier.fill.a() > 0,
+                        tier.border.is_some(),
+                        "{name}/{state_name}: body and edge disagree — one paints \
                      and the other does not",
-                );
+                    );
+                }
             }
         }
-    }
 
-    #[test]
-    fn the_film_lifts_the_same_way_a_flat_lift_does_on_every_preset() {
-        for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-            let colors = &theme.tokens.colors;
-            let ground = relative_luminance(colors.surfaces.base);
-            let film = relative_luminance(colors.glass_film());
-            let flat = relative_luminance(colors.lift(1.0));
-            assert!(
-                (film - ground).abs() > f64::EPSILON,
-                "{}: the film does not move the ground at all",
-                theme.name,
-            );
-            assert_eq!(
-                film > ground,
-                flat > ground,
-                "{}: the glass film lifts {} while a flat lift goes {} — \
+        // Case `the_film_lifts_the_same_way_a_flat_lift_does_on_every_preset`.
+        {
+            for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+                let colors = &theme.tokens.colors;
+                let ground = relative_luminance(colors.surfaces.base);
+                let film = relative_luminance(colors.glass_film());
+                let flat = relative_luminance(colors.lift(1.0));
+                assert!(
+                    (film - ground).abs() > f64::EPSILON,
+                    "{}: the film does not move the ground at all",
+                    theme.name,
+                );
+                assert_eq!(
+                    film > ground,
+                    flat > ground,
+                    "{}: the glass film lifts {} while a flat lift goes {} — \
                  chrome painted in the two materials would move in opposite \
                  directions on the same desktop",
-                theme.name,
-                if film > ground { "brighter" } else { "darker" },
-                if flat > ground { "brighter" } else { "darker" },
-            );
-            assert_eq!(
-                colors.lifts_bright(),
-                flat > ground,
-                "{}: `lifts_bright` disagrees with where a lift actually \
-                 goes, so the material would be lit from the wrong end",
-                theme.name,
-            );
-        }
-    }
-
-    #[test]
-    fn the_lit_end_of_a_selector_is_its_top_on_every_preset() {
-        for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-            let (lit, seated) = light_ends(&theme);
-            let brightens = theme.tokens.colors.lifts_bright();
-            let dense_end_is_top = lit < seated;
-            assert_eq!(
-                dense_end_is_top,
-                brightens,
-                "{}: the film is densest at the {} on a palette whose \
-                 surfaces lift {} — that is a pill lit from below",
-                theme.name,
-                if dense_end_is_top { "top" } else { "bottom" },
-                if brightens { "brighter" } else { "darker" },
-            );
-        }
-    }
-
-    /// Per theme: a fixed white wash would pass this on dark and fail on
-    /// light.
-    #[test]
-    fn selection_tier_on_registers_on_every_ground_it_is_asked_about() {
-        use crate::a11y::relative_luminance;
-        for (name, theme) in [
-            ("dark", Theme::dark()),
-            ("light", Theme::light()),
-            ("high-contrast", Theme::high_contrast()),
-        ] {
-            let colors = &theme.tokens.colors;
-            let grounds = [
-                ("base", colors.surfaces.base),
-                ("raised", colors.surfaces.raised),
-                ("panel_ground", panel_ground(&theme)),
-            ];
-            for (ground_name, ground) in grounds {
-                let delta = |c: Color| (relative_luminance(c) - relative_luminance(ground)).abs();
-                let active = selection_tier_on(&theme, SelectionState::active(true), ground).fill;
-                let hover =
-                    selection_tier_on(&theme, SelectionState::new(false, true, false), ground).fill;
-                let idle =
-                    selection_tier_on(&theme, SelectionState::new(false, false, false), ground)
-                        .fill;
+                    theme.name,
+                    if film > ground { "brighter" } else { "darker" },
+                    if flat > ground { "brighter" } else { "darker" },
+                );
                 assert_eq!(
-                    idle.components[3], 0.0,
-                    "{name}/{ground_name}: idle is transparent"
-                );
-                assert!(
-                    delta(active) >= HAIRLINE_MIN_DELTA,
-                    "{name}/{ground_name}: active lift must register on its ground (Δ {:.4})",
-                    delta(active)
-                );
-                assert!(
-                    delta(hover) > 0.0 && delta(hover) < delta(active),
-                    "{name}/{ground_name}: hover sits between the ground and the active tier"
+                    colors.lifts_bright(),
+                    flat > ground,
+                    "{}: `lifts_bright` disagrees with where a lift actually \
+                 goes, so the material would be lit from the wrong end",
+                    theme.name,
                 );
             }
-            // On the base the ground-aware tier is the base tier, so the two
-            // vocabularies agree wherever the shell already uses the latter.
-            let base = colors.surfaces.base;
-            if delta_on(base, colors.lift(1.0)) >= HAIRLINE_MIN_DELTA {
+        }
+
+        // Case `the_lit_end_of_a_selector_is_its_top_on_every_preset`.
+        {
+            for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+                let (lit, seated) = light_ends(&theme);
+                let brightens = theme.tokens.colors.lifts_bright();
+                let dense_end_is_top = lit < seated;
                 assert_eq!(
-                    selection_tier_on(&theme, SelectionState::active(true), base).fill,
-                    selection_tier(&theme, SelectionState::active(true)).fill,
-                    "{name}: base tier unchanged"
+                    dense_end_is_top,
+                    brightens,
+                    "{}: the film is densest at the {} on a palette whose \
+                 surfaces lift {} — that is a pill lit from below",
+                    theme.name,
+                    if dense_end_is_top { "top" } else { "bottom" },
+                    if brightens { "brighter" } else { "darker" },
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn selection_tiers_register_progressively_without_the_accent() {
+        // Case `selection_tier_on_registers_on_every_ground_it_is_asked_about`:
+        // Per theme: a fixed white wash would pass this on dark and fail on
+        // light.
+        {
+            use crate::a11y::relative_luminance;
+            for (name, theme) in [
+                ("dark", Theme::dark()),
+                ("light", Theme::light()),
+                ("high-contrast", Theme::high_contrast()),
+            ] {
+                let colors = &theme.tokens.colors;
+                let grounds = [
+                    ("base", colors.surfaces.base),
+                    ("raised", colors.surfaces.raised),
+                    ("panel_ground", panel_ground(&theme)),
+                ];
+                for (ground_name, ground) in grounds {
+                    let delta =
+                        |c: Color| (relative_luminance(c) - relative_luminance(ground)).abs();
+                    let active =
+                        selection_tier_on(&theme, SelectionState::active(true), ground).fill;
+                    let hover =
+                        selection_tier_on(&theme, SelectionState::new(false, true, false), ground)
+                            .fill;
+                    let idle =
+                        selection_tier_on(&theme, SelectionState::new(false, false, false), ground)
+                            .fill;
+                    assert_eq!(
+                        idle.components[3], 0.0,
+                        "{name}/{ground_name}: idle is transparent"
+                    );
+                    assert!(
+                        delta(active) >= HAIRLINE_MIN_DELTA,
+                        "{name}/{ground_name}: active lift must register on its ground (Δ {:.4})",
+                        delta(active)
+                    );
+                    assert!(
+                        delta(hover) > 0.0 && delta(hover) < delta(active),
+                        "{name}/{ground_name}: hover sits between the ground and the active tier"
+                    );
+                }
+                // On the base the ground-aware tier is the base tier, so the two
+                // vocabularies agree wherever the shell already uses the latter.
+                let base = colors.surfaces.base;
+                if delta_on(base, colors.lift(1.0)) >= HAIRLINE_MIN_DELTA {
+                    assert_eq!(
+                        selection_tier_on(&theme, SelectionState::active(true), base).fill,
+                        selection_tier(&theme, SelectionState::active(true)).fill,
+                        "{name}: base tier unchanged"
+                    );
+                }
+            }
+        }
+
+        // Case `selection_tiers_move_progressively_away_from_the_ground`.
+        {
+            for (name, theme) in themes() {
+                let ground = relative_luminance(theme.tokens.colors.surfaces.base);
+                let dist = |s: SelectionState| {
+                    let t = selection_tier(&theme, s);
+                    // An idle tier is transparent, so composite over the
+                    // ground first — its effective luminance is the ground's.
+                    let f = t.fill;
+                    let a = f.components[3];
+                    let over = |c: f32, g: f32| c * a + g * (1.0 - a);
+                    let g = theme.tokens.colors.surfaces.base.components;
+                    let composited = Color::new([
+                        over(f.components[0], g[0]),
+                        over(f.components[1], g[1]),
+                        over(f.components[2], g[2]),
+                        1.0,
+                    ]);
+                    (relative_luminance(composited) - ground).abs()
+                };
+                let idle = dist(SelectionState::default());
+                let hover = dist(SelectionState::new(false, true, false));
+                let active = dist(SelectionState::active(true));
+                assert!(
+                    hover > idle,
+                    "{name}: hover ({hover:.4}) must read as lifted off idle ({idle:.4})"
+                );
+                assert!(
+                    active > hover,
+                    "{name}: active ({active:.4}) must read as lifted off hover ({hover:.4})"
+                );
+            }
+        }
+
+        // Case `selection_never_uses_the_accent`.
+        {
+            for (name, theme) in themes() {
+                let accent = theme.tokens.colors.accent[5];
+                for state in [
+                    SelectionState::active(true),
+                    SelectionState::new(false, true, false),
+                    SelectionState::new(true, true, true),
+                ] {
+                    let tier = selection_tier(&theme, state);
+                    assert_ne!(
+                        tier.fill.to_rgba8().to_u32(),
+                        accent.to_rgba8().to_u32(),
+                        "{name}: {state:?} filled with the accent"
+                    );
+                }
+            }
+        }
+
+        // Case `hovering_an_active_control_changes_nothing`.
+        {
+            for (name, theme) in themes() {
+                let a = selection_tier(&theme, SelectionState::active(true));
+                let ah = selection_tier(&theme, SelectionState::new(true, true, false));
+                assert_eq!(
+                    a.fill.to_rgba8().to_u32(),
+                    ah.fill.to_rgba8().to_u32(),
+                    "{name}: an active control brightened on hover"
+                );
+                assert_eq!(
+                    a.scale, ah.scale,
+                    "{name}: an active control resized on hover"
                 );
             }
         }
@@ -897,170 +976,103 @@ mod tests {
     }
 
     #[test]
-    fn selection_tiers_move_progressively_away_from_the_ground() {
-        for (name, theme) in themes() {
-            let ground = relative_luminance(theme.tokens.colors.surfaces.base);
-            let dist = |s: SelectionState| {
-                let t = selection_tier(&theme, s);
-                // An idle tier is transparent, so composite over the
-                // ground first — its effective luminance is the ground's.
-                let f = t.fill;
-                let a = f.components[3];
-                let over = |c: f32, g: f32| c * a + g * (1.0 - a);
-                let g = theme.tokens.colors.surfaces.base.components;
-                let composited = Color::new([
-                    over(f.components[0], g[0]),
-                    over(f.components[1], g[1]),
-                    over(f.components[2], g[2]),
-                    1.0,
-                ]);
-                (relative_luminance(composited) - ground).abs()
-            };
-            let idle = dist(SelectionState::default());
-            let hover = dist(SelectionState::new(false, true, false));
-            let active = dist(SelectionState::active(true));
-            assert!(
-                hover > idle,
-                "{name}: hover ({hover:.4}) must read as lifted off idle ({idle:.4})"
-            );
-            assert!(
-                active > hover,
-                "{name}: active ({active:.4}) must read as lifted off hover ({hover:.4})"
-            );
+    fn chrome_radii_and_surfaces_follow_the_theme() {
+        // Case `a_selector_is_a_capsule_at_every_height`.
+        {
+            let theme = Theme::dark();
+            for h in [12.0_f64, 28.0, 44.0, 120.0] {
+                let r = ChromeRole::Selector.radius(&theme, h);
+                assert!(
+                    (r - h / 2.0).abs() < f64::EPSILON,
+                    "height {h} resolved to radius {r}, not a capsule"
+                );
+                assert!(r <= h / 2.0, "radius {r} exceeds half of height {h}");
+            }
         }
-    }
 
-    #[test]
-    fn selection_never_uses_the_accent() {
-        for (name, theme) in themes() {
-            let accent = theme.tokens.colors.accent[5];
-            for state in [
-                SelectionState::active(true),
-                SelectionState::new(false, true, false),
-                SelectionState::new(true, true, true),
+        // Case `no_role_resolves_to_an_off_scale_radius`:
+        // 16 px is deliberately absent from the radius scale (`tokens::radii`);
+        // no role may resolve to it.
+        {
+            let theme = Theme::dark();
+            let radii = &theme.tokens.radii;
+            let on_scale = [
+                0.0,
+                f64::from(radii.sm),
+                f64::from(radii.md),
+                f64::from(radii.lg),
+                f64::from(radii.xl),
+            ];
+            for role in [
+                ChromeRole::Bar,
+                ChromeRole::Panel,
+                ChromeRole::Control,
+                ChromeRole::Object,
             ] {
-                let tier = selection_tier(&theme, state);
-                assert_ne!(
-                    tier.fill.to_rgba8().to_u32(),
-                    accent.to_rgba8().to_u32(),
-                    "{name}: {state:?} filled with the accent"
+                let r = role.radius(&theme, 44.0);
+                assert!(
+                    on_scale.iter().any(|s| (s - r).abs() < f64::EPSILON),
+                    "{role:?} resolved to {r}, which is not on the radius scale"
+                );
+                assert!(
+                    (r - 16.0).abs() > f64::EPSILON,
+                    "{role:?} resolved to the absent 16 px step"
                 );
             }
         }
-    }
 
-    #[test]
-    fn hovering_an_active_control_changes_nothing() {
-        for (name, theme) in themes() {
-            let a = selection_tier(&theme, SelectionState::active(true));
-            let ah = selection_tier(&theme, SelectionState::new(true, true, false));
-            assert_eq!(
-                a.fill.to_rgba8().to_u32(),
-                ah.fill.to_rgba8().to_u32(),
-                "{name}: an active control brightened on hover"
-            );
-            assert_eq!(
-                a.scale, ah.scale,
-                "{name}: an active control resized on hover"
-            );
+        // Case `bar_and_panel_share_one_material`.
+        {
+            for (name, theme) in themes() {
+                let bar = ChromeRole::Bar.surface(&theme);
+                let panel = ChromeRole::Panel.surface(&theme);
+                assert_eq!(
+                    bar.to_rgba8().to_u32(),
+                    panel.to_rgba8().to_u32(),
+                    "{name}: the bar and a panel are painted in different materials"
+                );
+            }
         }
-    }
 
-    #[test]
-    fn a_selector_is_a_capsule_at_every_height() {
-        let theme = Theme::dark();
-        for h in [12.0_f64, 28.0, 44.0, 120.0] {
-            let r = ChromeRole::Selector.radius(&theme, h);
-            assert!(
-                (r - h / 2.0).abs() < f64::EPSILON,
-                "height {h} resolved to radius {r}, not a capsule"
-            );
-            assert!(r <= h / 2.0, "radius {r} exceeds half of height {h}");
-        }
-    }
-
-    /// 16 px is deliberately absent from the radius scale (`tokens::radii`);
-    /// no role may resolve to it.
-    #[test]
-    fn no_role_resolves_to_an_off_scale_radius() {
-        let theme = Theme::dark();
-        let radii = &theme.tokens.radii;
-        let on_scale = [
-            0.0,
-            f64::from(radii.sm),
-            f64::from(radii.md),
-            f64::from(radii.lg),
-            f64::from(radii.xl),
-        ];
-        for role in [
-            ChromeRole::Bar,
-            ChromeRole::Panel,
-            ChromeRole::Control,
-            ChromeRole::Object,
-        ] {
-            let r = role.radius(&theme, 44.0);
-            assert!(
-                on_scale.iter().any(|s| (s - r).abs() < f64::EPSILON),
-                "{role:?} resolved to {r}, which is not on the radius scale"
-            );
-            assert!(
-                (r - 16.0).abs() > f64::EPSILON,
-                "{role:?} resolved to the absent 16 px step"
-            );
-        }
-    }
-
-    #[test]
-    fn bar_and_panel_share_one_material() {
-        for (name, theme) in themes() {
-            let bar = ChromeRole::Bar.surface(&theme);
-            let panel = ChromeRole::Panel.surface(&theme);
-            assert_eq!(
-                bar.to_rgba8().to_u32(),
-                panel.to_rgba8().to_u32(),
-                "{name}: the bar and a panel are painted in different materials"
-            );
-        }
-    }
-
-    /// On high-contrast, `surfaces.overlay` is the same colour as the
-    /// ground, so fill *or* edge must carry the separation — this asserts
-    /// at least one does.
-    #[test]
-    fn a_panel_separates_from_the_desktop_on_every_theme() {
-        for (name, theme) in themes() {
-            let base = theme.tokens.colors.surfaces.base;
-            let ground = panel_ground(&theme);
-            let border = panel_border(&theme);
-            let fill_delta = (relative_luminance(ground) - relative_luminance(base)).abs();
-            // The border is translucent; composite it over the panel
-            // ground to judge what the eye actually receives.
-            let a = border.components[3];
-            let g = ground.components;
-            let edge = Color::new([
-                border.components[0] * a + g[0] * (1.0 - a),
-                border.components[1] * a + g[1] * (1.0 - a),
-                border.components[2] * a + g[2] * (1.0 - a),
-                1.0,
-            ]);
-            let edge_delta = (relative_luminance(edge) - relative_luminance(ground)).abs();
-            assert!(
-                fill_delta >= PANEL_MIN_DELTA || edge_delta >= PANEL_MIN_DELTA,
-                "{name}: a panel is indistinguishable from the desktop \
+        // Case `a_panel_separates_from_the_desktop_on_every_theme`:
+        // On high-contrast, `surfaces.overlay` is the same colour as the
+        // ground, so fill *or* edge must carry the separation — this asserts
+        // at least one does.
+        {
+            for (name, theme) in themes() {
+                let base = theme.tokens.colors.surfaces.base;
+                let ground = panel_ground(&theme);
+                let border = panel_border(&theme);
+                let fill_delta = (relative_luminance(ground) - relative_luminance(base)).abs();
+                // The border is translucent; composite it over the panel
+                // ground to judge what the eye actually receives.
+                let a = border.components[3];
+                let g = ground.components;
+                let edge = Color::new([
+                    border.components[0] * a + g[0] * (1.0 - a),
+                    border.components[1] * a + g[1] * (1.0 - a),
+                    border.components[2] * a + g[2] * (1.0 - a),
+                    1.0,
+                ]);
+                let edge_delta = (relative_luminance(edge) - relative_luminance(ground)).abs();
+                assert!(
+                    fill_delta >= PANEL_MIN_DELTA || edge_delta >= PANEL_MIN_DELTA,
+                    "{name}: a panel is indistinguishable from the desktop \
                  (fill delta {fill_delta:.4}, edge delta {edge_delta:.4})"
+                );
+            }
+        }
+
+        // Case `chrome_surfaces_differ_between_light_and_dark`.
+        {
+            let dark = ChromeRole::Panel.surface(&Theme::dark());
+            let light = ChromeRole::Panel.surface(&Theme::light());
+            assert_ne!(
+                dark.to_rgba8().to_u32(),
+                light.to_rgba8().to_u32(),
+                "the panel surface is identical on light and dark"
             );
         }
-    }
-
-    #[test]
-    fn chrome_surfaces_differ_between_light_and_dark() {
-        let dark = ChromeRole::Panel.surface(&Theme::dark());
-        let light = ChromeRole::Panel.surface(&Theme::light());
-        assert_ne!(
-            dark.to_rgba8().to_u32(),
-            light.to_rgba8().to_u32(),
-            "the panel surface is identical on light and dark"
-        );
     }
 
     /// Perceived lightness of an 8-bit grey, CIE L\*. A scrim's job is
@@ -1100,171 +1112,174 @@ mod tests {
         (out.clamp(0.0, 1.0) * 255.0).round() as u8
     }
 
-    /// Asserted only from `#ffffff` down to mid grey — those grounds *can*
-    /// lose a fixed amount; below that a ground has less lightness than
-    /// the scrim wants, and that's the separate requirement below.
     #[test]
-    fn a_scrim_dims_every_bright_ground_by_the_same_amount() {
-        for (name, theme) in themes() {
-            let drops: Vec<(u8, f64)> = [255u8, 252, 240, 220, 180, 128]
-                .iter()
-                .map(|&v| (v, lstar(v) - lstar(scrim_maps(v, 0.45, &theme))))
-                .collect();
-            let lo = drops.iter().map(|d| d.1).fold(f64::MAX, f64::min);
-            let hi = drops.iter().map(|d| d.1).fold(f64::MIN, f64::max);
-            assert!(
-                hi - lo <= 4.0,
-                "on {name} the scrim takes between {lo:.1} and {hi:.1} L* off \
+    fn scrim_dims_every_ground_while_keeping_its_structure() {
+        // Case `a_scrim_dims_every_bright_ground_by_the_same_amount`:
+        // Asserted only from `#ffffff` down to mid grey — those grounds *can*
+        // lose a fixed amount; below that a ground has less lightness than
+        // the scrim wants, and that's the separate requirement below.
+        {
+            for (name, theme) in themes() {
+                let drops: Vec<(u8, f64)> = [255u8, 252, 240, 220, 180, 128]
+                    .iter()
+                    .map(|&v| (v, lstar(v) - lstar(scrim_maps(v, 0.45, &theme))))
+                    .collect();
+                let lo = drops.iter().map(|d| d.1).fold(f64::MAX, f64::min);
+                let hi = drops.iter().map(|d| d.1).fold(f64::MIN, f64::max);
+                assert!(
+                    hi - lo <= 4.0,
+                    "on {name} the scrim takes between {lo:.1} and {hi:.1} L* off \
                  grounds that are all bright enough to give it up, so it is \
                  not one gesture — it is a different one per app: {drops:?}"
-            );
-            assert!(
-                lo >= 15.0,
-                "on {name} the scrim only takes {lo:.1} L* off the ground it \
+                );
+                assert!(
+                    lo >= 15.0,
+                    "on {name} the scrim only takes {lo:.1} L* off the ground it \
                  moves least, which is not a dim, it is a tint: {drops:?}"
-            );
+                );
+            }
         }
-    }
 
-    #[test]
-    fn a_scrim_does_not_erase_the_brightest_ground() {
-        for (name, theme) in themes() {
-            let page = scrim_maps(252, 0.45, &theme);
-            let drop = lstar(252) - lstar(page);
-            assert!(
-                drop <= 28.0,
-                "on {name} the scrim takes {drop:.1} L* off a bg-white page \
+        // Case `a_scrim_does_not_erase_the_brightest_ground`.
+        {
+            for (name, theme) in themes() {
+                let page = scrim_maps(252, 0.45, &theme);
+                let drop = lstar(252) - lstar(page);
+                assert!(
+                    drop <= 28.0,
+                    "on {name} the scrim takes {drop:.1} L* off a bg-white page \
                  (252 -> {page}); past about 28 the page stops reading as a \
                  page and starts reading as a grey slab"
-            );
+                );
+            }
         }
-    }
 
-    /// A scrim must lower what's behind it without flattening it — a flat
-    /// wash closed the 12 code values between a page and a rule on it down
-    /// to 7. Squaring the backdrop trades the opposite way at the dark end,
-    /// bounded here so that can't quietly become a collapse either.
-    #[test]
-    fn a_scrim_keeps_the_structure_of_what_is_behind_it() {
-        for (name, theme) in themes() {
-            for (hi, lo) in [(252u8, 240u8), (255, 245)] {
-                let span_before = i32::from(hi) - i32::from(lo);
-                let span_after = i32::from(scrim_maps(hi, 0.45, &theme))
-                    - i32::from(scrim_maps(lo, 0.45, &theme));
-                let flat_after =
-                    i32::from(flat_wash(hi, 0.45, &theme)) - i32::from(flat_wash(lo, 0.45, &theme));
-                assert!(
-                    span_after >= flat_after,
-                    "on {name} the scrim compresses {lo}..{hi} harder than the \
+        // Case `a_scrim_keeps_the_structure_of_what_is_behind_it`:
+        // A scrim must lower what's behind it without flattening it — a flat
+        // wash closed the 12 code values between a page and a rule on it down
+        // to 7. Squaring the backdrop trades the opposite way at the dark end,
+        // bounded here so that can't quietly become a collapse either.
+        {
+            for (name, theme) in themes() {
+                for (hi, lo) in [(252u8, 240u8), (255, 245)] {
+                    let span_before = i32::from(hi) - i32::from(lo);
+                    let span_after = i32::from(scrim_maps(hi, 0.45, &theme))
+                        - i32::from(scrim_maps(lo, 0.45, &theme));
+                    let flat_after = i32::from(flat_wash(hi, 0.45, &theme))
+                        - i32::from(flat_wash(lo, 0.45, &theme));
+                    assert!(
+                        span_after >= flat_after,
+                        "on {name} the scrim compresses {lo}..{hi} harder than the \
                      flat wash it replaced ({span_before} -> {span_after}, flat \
                      managed {flat_after}) — the bright end is exactly where a \
                      wash goes flat and where this must not"
-                );
-            }
-            for (hi, lo) in [(64u8, 52u8), (40, 28)] {
-                let span_before = i32::from(hi) - i32::from(lo);
-                let span_after = i32::from(scrim_maps(hi, 0.45, &theme))
-                    - i32::from(scrim_maps(lo, 0.45, &theme));
-                assert!(
-                    span_after * 2 >= span_before,
-                    "on {name} a dark span {lo}..{hi} came out at {span_after} \
+                    );
+                }
+                for (hi, lo) in [(64u8, 52u8), (40, 28)] {
+                    let span_before = i32::from(hi) - i32::from(lo);
+                    let span_after = i32::from(scrim_maps(hi, 0.45, &theme))
+                        - i32::from(scrim_maps(lo, 0.45, &theme));
+                    assert!(
+                        span_after * 2 >= span_before,
+                        "on {name} a dark span {lo}..{hi} came out at {span_after} \
                      from {span_before}; the tone pass is allowed to cost the \
                      dark end a code value, not half of it"
-                );
+                    );
+                }
             }
         }
-    }
 
-    /// Relative, not absolute: a ground at L\* 6 cannot lose 20 L\*, but it
-    /// must move further than the flat wash moved it.
-    #[test]
-    fn a_scrim_reaches_the_dark_grounds_a_flat_wash_could_not() {
-        for (name, theme) in themes() {
-            for v in [96u8, 64, 40, 32, 23, 20, 10] {
-                let now = lstar(v) - lstar(scrim_maps(v, 0.45, &theme));
-                let was = lstar(v) - lstar(flat_wash(v, 0.45, &theme));
-                assert!(
-                    now > was,
-                    "on {name} a ground at {v} loses {now:.1} L* to the scrim \
+        // Case `a_scrim_reaches_the_dark_grounds_a_flat_wash_could_not`:
+        // Relative, not absolute: a ground at L\* 6 cannot lose 20 L\*, but it
+        // must move further than the flat wash moved it.
+        {
+            for (name, theme) in themes() {
+                for v in [96u8, 64, 40, 32, 23, 20, 10] {
+                    let now = lstar(v) - lstar(scrim_maps(v, 0.45, &theme));
+                    let was = lstar(v) - lstar(flat_wash(v, 0.45, &theme));
+                    assert!(
+                        now > was,
+                        "on {name} a ground at {v} loses {now:.1} L* to the scrim \
                      where the flat wash it replaced took {was:.1} — the dark \
                      half of the screen is the half that never showed the dim"
-                );
+                    );
+                }
             }
         }
-    }
 
-    /// Both fills must fade with the surface's openness, or the dim arrives
-    /// before the panel does.
-    #[test]
-    fn a_scrim_fades_monotonically_with_its_openness() {
-        for (name, theme) in themes() {
-            let mut last = 253u8;
-            for step in 0..=8 {
-                #[allow(
-                    clippy::cast_precision_loss,
-                    reason = "step ranges 0..=8, far below where f32 loses integer precision"
-                )]
-                let openness = step as f32 / 8.0;
-                let page = scrim_maps(252, 0.45 * openness, &theme);
-                assert!(
-                    page <= last,
-                    "on {name} the scrim got *lighter* between openness steps \
+        // Case `a_scrim_fades_monotonically_with_its_openness`:
+        // Both fills must fade with the surface's openness, or the dim arrives
+        // before the panel does.
+        {
+            for (name, theme) in themes() {
+                let mut last = 253u8;
+                for step in 0..=8 {
+                    #[allow(
+                        clippy::cast_precision_loss,
+                        reason = "step ranges 0..=8, far below where f32 loses integer precision"
+                    )]
+                    let openness = step as f32 / 8.0;
+                    let page = scrim_maps(252, 0.45 * openness, &theme);
+                    assert!(
+                        page <= last,
+                        "on {name} the scrim got *lighter* between openness steps \
                      ({last} -> {page} at {openness})"
+                    );
+                    last = page;
+                }
+                assert!(
+                    scrim_maps(252, 0.0, &theme) == 252,
+                    "on {name} a closed scrim still moved the page"
                 );
-                last = page;
             }
-            assert!(
-                scrim_maps(252, 0.0, &theme) == 252,
-                "on {name} a closed scrim still moved the page"
-            );
         }
-    }
 
-    /// White on black must not drop below the 7:1 (AAA) that palette exists
-    /// to clear.
-    #[test]
-    fn a_scrim_leaves_high_contrast_high_contrast() {
-        let theme = Theme::high_contrast();
-        let ink = scrim_maps(255, 0.45, &theme);
-        let ground = scrim_maps(0, 0.45, &theme);
-        let lum = |v: u8| {
-            let s = f64::from(v) / 255.0;
-            if s <= 0.03928 {
-                s / 12.92
-            } else {
-                ((s + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        let ratio = (lum(ink) + 0.05) / (lum(ground) + 0.05);
-        assert!(
-            ratio >= 7.0,
-            "white ink behind the scrim is {ink} on {ground} = {ratio:.1}:1; \
+        // Case `a_scrim_leaves_high_contrast_high_contrast`:
+        // White on black must not drop below the 7:1 (AAA) that palette exists
+        // to clear.
+        {
+            let theme = Theme::high_contrast();
+            let ink = scrim_maps(255, 0.45, &theme);
+            let ground = scrim_maps(0, 0.45, &theme);
+            let lum = |v: u8| {
+                let s = f64::from(v) / 255.0;
+                if s <= 0.03928 {
+                    s / 12.92
+                } else {
+                    ((s + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            let ratio = (lum(ink) + 0.05) / (lum(ground) + 0.05);
+            assert!(
+                ratio >= 7.0,
+                "white ink behind the scrim is {ink} on {ground} = {ratio:.1}:1; \
              the high-contrast palette is chosen to clear AAA (7:1) and a \
              scrim must not take that away"
-        );
-    }
+            );
+        }
 
-    /// The paint path and [`scrim_maps`] must agree on the fill count, or
-    /// the model describes something nobody sees.
-    #[test]
-    fn a_scrim_paints_the_two_stages_the_model_describes() {
-        let rect = Rect::new(0.0, 0.0, 200.0, 120.0);
-        for (name, theme) in themes() {
-            let mut scene = Scene::new();
-            fill_scrim(&mut scene, Affine::IDENTITY, rect, 0.45, &theme);
-            let n = scene.encoding().draw_tags.len();
-            assert!(
-                n >= 3,
-                "on {name} the scrim encoded {n} draws; it is a soft-light \
+        // Case `a_scrim_paints_the_two_stages_the_model_describes`:
+        // The paint path and [`scrim_maps`] must agree on the fill count, or
+        // the model describes something nobody sees.
+        {
+            let rect = Rect::new(0.0, 0.0, 200.0, 120.0);
+            for (name, theme) in themes() {
+                let mut scene = Scene::new();
+                fill_scrim(&mut scene, Affine::IDENTITY, rect, 0.45, &theme);
+                let n = scene.encoding().draw_tags.len();
+                assert!(
+                    n >= 3,
+                    "on {name} the scrim encoded {n} draws; it is a soft-light \
                  layer, the tone fill inside it, and the level fill after it"
-            );
-            let mut closed = Scene::new();
-            fill_scrim(&mut closed, Affine::IDENTITY, rect, 0.0, &theme);
-            assert_eq!(
-                closed.encoding().draw_tags.len(),
-                0,
-                "on {name} a scrim at zero strength still painted something"
-            );
+                );
+                let mut closed = Scene::new();
+                fill_scrim(&mut closed, Affine::IDENTITY, rect, 0.0, &theme);
+                assert_eq!(
+                    closed.encoding().draw_tags.len(),
+                    0,
+                    "on {name} a scrim at zero strength still painted something"
+                );
+            }
         }
     }
 }
@@ -1612,84 +1627,87 @@ mod rail_tests {
     }
 
     #[test]
-    fn a_single_group_draws_no_rail() {
-        assert!(!rail(1, 0, vec![0]).is_meaningful());
-        assert!(rail(2, 0, vec![0]).is_meaningful());
-        assert!(rail(1, 0, vec![0]).hit(Point::new(800.0, 884.0)).is_none());
-    }
-
-    #[test]
-    fn segments_run_in_order_with_the_focused_one_longest() {
-        let r = rail(4, 2, vec![1, 2]);
-        let rects: Vec<Rect> = (0..4).map(|i| r.segment_rect(i).unwrap()).collect();
-        for pair in rects.windows(2) {
-            assert!(
-                pair[0].x1 <= pair[1].x0,
-                "segments must not overlap: {:?} then {:?}",
-                pair[0],
-                pair[1]
-            );
+    fn rail_segments_are_ordered_weighted_and_hittable() {
+        // Case `a_single_group_draws_no_rail`.
+        {
+            assert!(!rail(1, 0, vec![0]).is_meaningful());
+            assert!(rail(2, 0, vec![0]).is_meaningful());
+            assert!(rail(1, 0, vec![0]).hit(Point::new(800.0, 884.0)).is_none());
         }
-        assert!(
-            rects[2].width() > rects[0].width(),
-            "the focused segment must be longer than an unfocused one"
-        );
-        assert!(
-            rects
-                .iter()
-                .all(|s| (s.y1 - (r.content.y1 - RAIL_MARGIN)).abs() < f64::EPSILON),
-            "every segment sits on the rail's baseline"
-        );
-    }
 
-    /// All four weights resolve to the same colour and differ only in
-    /// alpha, so this checks that and then that the alphas rise.
-    #[test]
-    fn weights_stay_ordered_on_every_palette() {
-        for (name, theme) in [
-            ("dark", Theme::dark()),
-            ("light", Theme::light()),
-            ("high-contrast", Theme::high_contrast()),
-        ] {
-            let weights = [
-                ("off-screen", rail_fill(&theme, false, false, false)),
-                ("on-screen", rail_fill(&theme, false, false, true)),
-                ("hover", rail_fill(&theme, false, true, true)),
-                ("focused", rail_fill(&theme, true, false, true)),
-            ];
-            let rgb = |c: Color| {
-                let p = c.to_rgba8();
-                (p.r, p.g, p.b)
-            };
-            for (label, c) in &weights[1..] {
-                assert_eq!(
-                    rgb(*c),
-                    rgb(weights[0].1),
-                    "{name}: the {label} weight resolved to a different colour than \
-                     off-screen, so the four are not one ramp"
+        // Case `segments_run_in_order_with_the_focused_one_longest`.
+        {
+            let r = rail(4, 2, vec![1, 2]);
+            let rects: Vec<Rect> = (0..4).map(|i| r.segment_rect(i).unwrap()).collect();
+            for pair in rects.windows(2) {
+                assert!(
+                    pair[0].x1 <= pair[1].x0,
+                    "segments must not overlap: {:?} then {:?}",
+                    pair[0],
+                    pair[1]
                 );
             }
-            let alphas: Vec<u8> = weights.iter().map(|(_, c)| c.to_rgba8().a).collect();
             assert!(
-                alphas.windows(2).all(|w| w[0] < w[1]),
-                "{name}: rail weights must rise off-screen < on-screen < hover < focused, \
-                 got {alphas:?}"
+                rects[2].width() > rects[0].width(),
+                "the focused segment must be longer than an unfocused one"
+            );
+            assert!(
+                rects
+                    .iter()
+                    .all(|s| (s.y1 - (r.content.y1 - RAIL_MARGIN)).abs() < f64::EPSILON),
+                "every segment sits on the rail's baseline"
             );
         }
-    }
 
-    #[test]
-    fn hit_targets_tile_and_clear_the_minimum_size() {
-        let r = rail(5, 0, vec![0, 1]);
-        for i in 0..5 {
-            let hit = r.hit_rect(i).unwrap();
-            assert!(
-                hit.height() >= RAIL_HIT_H,
-                "segment {i}'s target is {} tall, below the minimum {RAIL_HIT_H}",
-                hit.height()
-            );
-            let c = hit.center();
-            assert_eq!(r.hit(c), Some(i), "segment {i} must claim its own centre");
+        // Case `weights_stay_ordered_on_every_palette`:
+        // All four weights resolve to the same colour and differ only in
+        // alpha, so this checks that and then that the alphas rise.
+        {
+            for (name, theme) in [
+                ("dark", Theme::dark()),
+                ("light", Theme::light()),
+                ("high-contrast", Theme::high_contrast()),
+            ] {
+                let weights = [
+                    ("off-screen", rail_fill(&theme, false, false, false)),
+                    ("on-screen", rail_fill(&theme, false, false, true)),
+                    ("hover", rail_fill(&theme, false, true, true)),
+                    ("focused", rail_fill(&theme, true, false, true)),
+                ];
+                let rgb = |c: Color| {
+                    let p = c.to_rgba8();
+                    (p.r, p.g, p.b)
+                };
+                for (label, c) in &weights[1..] {
+                    assert_eq!(
+                        rgb(*c),
+                        rgb(weights[0].1),
+                        "{name}: the {label} weight resolved to a different colour than \
+                     off-screen, so the four are not one ramp"
+                    );
+                }
+                let alphas: Vec<u8> = weights.iter().map(|(_, c)| c.to_rgba8().a).collect();
+                assert!(
+                    alphas.windows(2).all(|w| w[0] < w[1]),
+                    "{name}: rail weights must rise off-screen < on-screen < hover < focused, \
+                 got {alphas:?}"
+                );
+            }
+        }
+
+        // Case `hit_targets_tile_and_clear_the_minimum_size`.
+        {
+            let r = rail(5, 0, vec![0, 1]);
+            for i in 0..5 {
+                let hit = r.hit_rect(i).unwrap();
+                assert!(
+                    hit.height() >= RAIL_HIT_H,
+                    "segment {i}'s target is {} tall, below the minimum {RAIL_HIT_H}",
+                    hit.height()
+                );
+                let c = hit.center();
+                assert_eq!(r.hit(c), Some(i), "segment {i} must claim its own centre");
+            }
         }
     }
 }
@@ -1708,141 +1726,147 @@ mod ribbon_tests {
     }
 
     #[test]
-    fn segments_are_ordered_and_disjoint() {
-        let r = ribbon(4, 2);
-        let rects: Vec<Rect> = (0..4).map(|i| r.segment_rect(i).unwrap()).collect();
-        for w in rects.windows(2) {
-            assert!(
-                w[1].y0 >= w[0].y1,
-                "segments overlap: {:?} then {:?}",
-                w[0],
-                w[1]
-            );
+    fn ribbon_segments_are_ordered_centred_and_prominent_when_focused() {
+        // Case `segments_are_ordered_and_disjoint`.
+        {
+            let r = ribbon(4, 2);
+            let rects: Vec<Rect> = (0..4).map(|i| r.segment_rect(i).unwrap()).collect();
+            for w in rects.windows(2) {
+                assert!(
+                    w[1].y0 >= w[0].y1,
+                    "segments overlap: {:?} then {:?}",
+                    w[0],
+                    w[1]
+                );
+            }
         }
-    }
 
-    #[test]
-    fn the_focused_segment_is_longer() {
-        let r = ribbon(3, 1);
-        let focused = r.segment_rect(1).unwrap().height();
-        for i in [0usize, 2] {
-            assert!(
-                focused > r.segment_rect(i).unwrap().height(),
-                "focused segment is not longer than segment {i}"
-            );
+        // Case `the_focused_segment_is_longer`.
+        {
+            let r = ribbon(3, 1);
+            let focused = r.segment_rect(1).unwrap().height();
+            for i in [0usize, 2] {
+                assert!(
+                    focused > r.segment_rect(i).unwrap().height(),
+                    "focused segment is not longer than segment {i}"
+                );
+            }
         }
-    }
 
-    #[test]
-    fn the_ribbon_stays_centred_whichever_strip_has_focus() {
-        let content = Rect::new(0.0, 40.0, 1600.0, 900.0);
-        for focused in 0..4 {
-            let r = StripRibbon {
-                content,
-                count: 4,
-                focused,
-            };
-            let first = r.segment_rect(0).unwrap();
-            let last = r.segment_rect(3).unwrap();
-            let mid = f64::midpoint(first.y0, last.y1);
-            assert!(
-                (mid - content.center().y).abs() < 0.001,
-                "focus {focused}: ribbon centre {mid} drifted off {}",
-                content.center().y
-            );
+        // Case `the_ribbon_stays_centred_whichever_strip_has_focus`.
+        {
+            let content = Rect::new(0.0, 40.0, 1600.0, 900.0);
+            for focused in 0..4 {
+                let r = StripRibbon {
+                    content,
+                    count: 4,
+                    focused,
+                };
+                let first = r.segment_rect(0).unwrap();
+                let last = r.segment_rect(3).unwrap();
+                let mid = f64::midpoint(first.y0, last.y1);
+                assert!(
+                    (mid - content.center().y).abs() < 0.001,
+                    "focus {focused}: ribbon centre {mid} drifted off {}",
+                    content.center().y
+                );
+            }
         }
-    }
 
-    #[test]
-    fn every_segment_is_clickable_at_the_minimum_target() {
-        let r = ribbon(3, 0);
-        for i in 0..3 {
-            let hit = r.hit_rect(i).unwrap();
-            assert!(
-                hit.width() >= 32.0 && hit.height() >= 32.0,
-                "segment {i} target is {}x{}, under the 32 px minimum",
-                hit.width(),
-                hit.height()
-            );
-            assert_eq!(
-                r.hit(hit.center()),
-                Some(i),
-                "segment {i} is not hittable at its centre"
-            );
-        }
-    }
-
-    #[test]
-    fn pointer_targets_do_not_overlap() {
-        let r = ribbon(4, 2);
-        let hits: Vec<Rect> = (0..4).map(|i| r.hit_rect(i).unwrap()).collect();
-        for (i, w) in hits.windows(2).enumerate() {
-            assert!(
-                w[1].y0 >= w[0].y1 - 0.001,
-                "targets {i} and {} overlap: {:?} then {:?}",
-                i + 1,
-                w[0],
-                w[1]
-            );
-        }
-    }
-
-    #[test]
-    fn a_click_away_from_the_ribbon_hits_nothing() {
-        let r = ribbon(3, 1);
-        assert_eq!(r.hit(Point::new(400.0, 470.0)), None);
-    }
-
-    /// `lift` has nothing to move toward on high-contrast, where base and
-    /// raised are both black, so this pins the ordering explicitly rather
-    /// than trusting a derived tier.
-    #[test]
-    fn the_focused_segment_is_the_most_prominent_on_every_theme() {
-        use crate::a11y::relative_luminance;
-        for (name, theme) in [
-            ("dark", Theme::dark()),
-            ("light", Theme::light()),
-            ("high_contrast", Theme::high_contrast()),
-        ] {
-            let base = theme.tokens.colors.surfaces.base;
-            let g = relative_luminance(base);
-            let contrast = |c: Color| {
-                let a = c.components[3];
-                let b = base.components;
-                let over = Color::new([
-                    c.components[0] * a + b[0] * (1.0 - a),
-                    c.components[1] * a + b[1] * (1.0 - a),
-                    c.components[2] * a + b[2] * (1.0 - a),
-                    1.0,
-                ]);
-                (relative_luminance(over) - g).abs()
-            };
-            let idle = contrast(ribbon_fill(&theme, false, false));
-            let hover = contrast(ribbon_fill(&theme, false, true));
-            let focused = contrast(ribbon_fill(&theme, true, false));
-            assert!(
-                idle > 0.0,
-                "{name}: an unfocused segment is invisible, so a second strip \
+        // Case `the_focused_segment_is_the_most_prominent_on_every_theme`:
+        // `lift` has nothing to move toward on high-contrast, where base and
+        // raised are both black, so this pins the ordering explicitly rather
+        // than trusting a derived tier.
+        {
+            use crate::a11y::relative_luminance;
+            for (name, theme) in [
+                ("dark", Theme::dark()),
+                ("light", Theme::light()),
+                ("high_contrast", Theme::high_contrast()),
+            ] {
+                let base = theme.tokens.colors.surfaces.base;
+                let g = relative_luminance(base);
+                let contrast = |c: Color| {
+                    let a = c.components[3];
+                    let b = base.components;
+                    let over = Color::new([
+                        c.components[0] * a + b[0] * (1.0 - a),
+                        c.components[1] * a + b[1] * (1.0 - a),
+                        c.components[2] * a + b[2] * (1.0 - a),
+                        1.0,
+                    ]);
+                    (relative_luminance(over) - g).abs()
+                };
+                let idle = contrast(ribbon_fill(&theme, false, false));
+                let hover = contrast(ribbon_fill(&theme, false, true));
+                let focused = contrast(ribbon_fill(&theme, true, false));
+                assert!(
+                    idle > 0.0,
+                    "{name}: an unfocused segment is invisible, so a second strip \
                  cannot be discovered by looking"
-            );
-            assert!(
-                hover > idle,
-                "{name}: hover ({hover:.4}) does not lift off idle ({idle:.4})"
-            );
-            assert!(
-                focused > hover,
-                "{name}: the focused segment ({focused:.4}) is less prominent than a \
+                );
+                assert!(
+                    hover > idle,
+                    "{name}: hover ({hover:.4}) does not lift off idle ({idle:.4})"
+                );
+                assert!(
+                    focused > hover,
+                    "{name}: the focused segment ({focused:.4}) is less prominent than a \
                  merely hovered one ({hover:.4}) — the ribbon reads inverted"
-            );
+                );
+            }
+        }
+
+        // Case `one_strip_still_draws_a_segment`:
+        // Unlike [`StripRail`], a single strip still shows its ribbon segment
+        // — it's how the control is discovered at all.
+        {
+            let r = ribbon(1, 0);
+            assert!(r.segment_rect(0).is_some());
+            assert!(r.extent() > 0.0);
         }
     }
 
-    /// Unlike [`StripRail`], a single strip still shows its ribbon segment
-    /// — it's how the control is discovered at all.
     #[test]
-    fn one_strip_still_draws_a_segment() {
-        let r = ribbon(1, 0);
-        assert!(r.segment_rect(0).is_some());
-        assert!(r.extent() > 0.0);
+    fn ribbon_pointer_targets_are_disjoint_and_minimum_sized() {
+        // Case `every_segment_is_clickable_at_the_minimum_target`.
+        {
+            let r = ribbon(3, 0);
+            for i in 0..3 {
+                let hit = r.hit_rect(i).unwrap();
+                assert!(
+                    hit.width() >= 32.0 && hit.height() >= 32.0,
+                    "segment {i} target is {}x{}, under the 32 px minimum",
+                    hit.width(),
+                    hit.height()
+                );
+                assert_eq!(
+                    r.hit(hit.center()),
+                    Some(i),
+                    "segment {i} is not hittable at its centre"
+                );
+            }
+        }
+
+        // Case `pointer_targets_do_not_overlap`.
+        {
+            let r = ribbon(4, 2);
+            let hits: Vec<Rect> = (0..4).map(|i| r.hit_rect(i).unwrap()).collect();
+            for (i, w) in hits.windows(2).enumerate() {
+                assert!(
+                    w[1].y0 >= w[0].y1 - 0.001,
+                    "targets {i} and {} overlap: {:?} then {:?}",
+                    i + 1,
+                    w[0],
+                    w[1]
+                );
+            }
+        }
+
+        // Case `a_click_away_from_the_ribbon_hits_nothing`.
+        {
+            let r = ribbon(3, 1);
+            assert_eq!(r.hit(Point::new(400.0, 470.0)), None);
+        }
     }
 }

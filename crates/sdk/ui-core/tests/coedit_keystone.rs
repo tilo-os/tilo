@@ -24,9 +24,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::thread;
-use std::time::Duration;
-
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 
@@ -276,175 +273,271 @@ fn non_background_pixels(rgba: &[u8]) -> usize {
 
 fn two_peers() -> (CollaborationManager, CollaborationManager) {
     let broker = TypedBroker::new();
+    // Each returns subscribed, so fan-out traffic reaches both from here on.
     let a = broker.manager("alice");
     let b = broker.manager("bob");
-
-    assert!(a.is_connected(), "peer A must connect to the broker");
-    assert!(b.is_connected(), "peer B must connect to the broker");
-    // Let both Hellos register on the broker before any fan-out traffic.
-    thread::sleep(Duration::from_millis(150));
     (a, b)
 }
 
 fn poll_until<T>(
+    what: &str,
     mgr: &mut CollaborationManager,
     mut f: impl FnMut(&CollabEvent) -> Option<T>,
-) -> Option<T> {
-    for _ in 0..60 {
-        for ev in mgr.poll() {
-            if let Some(v) = f(&ev) {
-                return Some(v);
+) -> T {
+    tilo_test_env::wait_for(what, || mgr.poll().iter().find_map(&mut f))
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"
+)]
+#[test]
+fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
+    // Case `peer_edit_converges_and_each_renders_the_shared_state_locally`.
+    {
+        let (mut a, mut b) = two_peers();
+
+        let mut a_doc = AutoCommit::new();
+        a_doc.set_actor(automerge::ActorId::from(b"alice".as_slice()));
+        let a_text = a_doc.put_object(&ROOT, "text", ObjType::Text).unwrap();
+        a_doc.splice_text(&a_text, 0, 0, "SEED").unwrap();
+
+        // Late-join handshake: A ships a full snapshot, B adopts it. This is
+        // exactly the document snapshot path the App drives on join.
+        a.send(CollabRequest::document_snapshot(a_doc.save()));
+        let _ = a_doc.save_incremental(); // re-baseline incremental after full save
+
+        let mut b_doc = AutoCommit::new();
+        b_doc.set_actor(automerge::ActorId::from(b"bob".as_slice()));
+        let adopted = poll_until("B must receive A's snapshot", &mut b, |ev| {
+            match ev.document_mutation()? {
+                Ok(collab_types::DocumentMutation::Snapshot(data)) => Some(data),
+                _ => None,
             }
-        }
-        thread::sleep(Duration::from_millis(25));
-    }
-    None
-}
+        });
+        let mut incoming = AutoCommit::load(&adopted).unwrap();
+        b_doc.merge(&mut incoming).unwrap();
+        assert_eq!(text_of(&b_doc), "SEED", "B adopts A's seed text");
 
-#[test]
-fn peer_edit_converges_and_each_renders_the_shared_state_locally() {
-    let (mut a, mut b) = two_peers();
+        let b_text = text_obj(&b_doc).expect("B's doc has the shared Text object");
+        // The object id is global in Automerge, so B binds to the SAME object
+        // A created — this is genuinely one shared CRDT object.
+        assert_eq!(b_text, a_text, "both peers share one CRDT Text object id");
 
-    let mut a_doc = AutoCommit::new();
-    a_doc.set_actor(automerge::ActorId::from(b"alice".as_slice()));
-    let a_text = a_doc.put_object(&ROOT, "text", ObjType::Text).unwrap();
-    a_doc.splice_text(&a_text, 0, 0, "SEED").unwrap();
+        let empty_presence = PresenceCtx::empty();
+        let b_before = render_bound(&mut b_doc, &b_text, &empty_presence);
+        assert!(
+            non_background_pixels(&b_before.pixels) > 0,
+            "B's pre-edit render must show the seeded text"
+        );
 
-    // Late-join handshake: A ships a full snapshot, B adopts it. This is
-    // exactly the document snapshot path the App drives on join.
-    a.send(CollabRequest::document_snapshot(a_doc.save()));
-    let _ = a_doc.save_incremental(); // re-baseline incremental after full save
+        a_doc.splice_text(&a_text, 4, 0, "-EDIT").unwrap();
+        let delta = a_doc.save_incremental();
+        assert!(!delta.is_empty(), "the edit must produce a delta");
+        a.send(CollabRequest::document_incremental(delta));
 
-    let mut b_doc = AutoCommit::new();
-    b_doc.set_actor(automerge::ActorId::from(b"bob".as_slice()));
-    let adopted = poll_until(&mut b, |ev| match ev.document_mutation()? {
-        Ok(collab_types::DocumentMutation::Snapshot(data)) => Some(data),
-        _ => None,
-    })
-    .expect("B must receive A's snapshot");
-    let mut incoming = AutoCommit::load(&adopted).unwrap();
-    b_doc.merge(&mut incoming).unwrap();
-    assert_eq!(text_of(&b_doc), "SEED", "B adopts A's seed text");
+        let got = poll_until("B must receive A's incremental edit", &mut b, |ev| match ev
+            .document_mutation()?
+        {
+            Ok(collab_types::DocumentMutation::Incremental(data)) => Some(data),
+            _ => None,
+        });
+        b_doc.load_incremental(&got).unwrap();
 
-    let b_text = text_obj(&b_doc).expect("B's doc has the shared Text object");
-    // The object id is global in Automerge, so B binds to the SAME object
-    // A created — this is genuinely one shared CRDT object.
-    assert_eq!(b_text, a_text, "both peers share one CRDT Text object id");
+        assert_eq!(
+            text_of(&b_doc),
+            "SEED-EDIT",
+            "B's doc converges with A's edit over the real broker"
+        );
+        assert_eq!(text_of(&a_doc), text_of(&b_doc), "the two peers converge");
 
-    let empty_presence = PresenceCtx::empty();
-    let b_before = render_bound(&mut b_doc, &b_text, &empty_presence);
-    assert!(
-        non_background_pixels(&b_before.pixels) > 0,
-        "B's pre-edit render must show the seeded text"
-    );
+        let b_after = render_bound(&mut b_doc, &b_text, &empty_presence);
+        let a_after = render_bound(&mut a_doc, &a_text, &empty_presence);
 
-    a_doc.splice_text(&a_text, 4, 0, "-EDIT").unwrap();
-    let delta = a_doc.save_incremental();
-    assert!(!delta.is_empty(), "the edit must produce a delta");
-    a.send(CollabRequest::document_incremental(delta));
+        // B re-rendered locally: its post-edit frame differs from its
+        // pre-edit frame (the change is visible in B's OWN render).
+        assert_ne!(
+            b_after.drawn, b_before.drawn,
+            "B must re-render locally to reflect the converged edit"
+        );
+        assert!(
+            non_background_pixels(&b_after.pixels) > non_background_pixels(&b_before.pixels),
+            "the added text must add drawn pixels in B's local render"
+        );
 
-    let got = poll_until(&mut b, |ev| match ev.document_mutation()? {
-        Ok(collab_types::DocumentMutation::Incremental(data)) => Some(data),
-        _ => None,
-    })
-    .expect("B must receive A's incremental edit");
-    b_doc.load_incremental(&got).unwrap();
-
-    assert_eq!(
-        text_of(&b_doc),
-        "SEED-EDIT",
-        "B's doc converges with A's edit over the real broker"
-    );
-    assert_eq!(text_of(&a_doc), text_of(&b_doc), "the two peers converge");
-
-    let b_after = render_bound(&mut b_doc, &b_text, &empty_presence);
-    let a_after = render_bound(&mut a_doc, &a_text, &empty_presence);
-
-    // B re-rendered locally: its post-edit frame differs from its
-    // pre-edit frame (the change is visible in B's OWN render).
-    assert_ne!(
-        b_after.drawn, b_before.drawn,
-        "B must re-render locally to reflect the converged edit"
-    );
-    assert!(
-        non_background_pixels(&b_after.pixels) > non_background_pixels(&b_before.pixels),
-        "the added text must add drawn pixels in B's local render"
-    );
-
-    // The keystone assertion.
-    assert_same_frame(
-        &a_after,
-        &b_after,
-        "each peer's local render of the shared CRDT state; \
+        // The keystone assertion.
+        assert_same_frame(
+            &a_after,
+            &b_after,
+            "each peer's local render of the shared CRDT state; \
          co-edit is local-render convergence, not frame streaming",
-    );
+        );
 
-    drop(a);
-    drop(b);
-}
+        drop(a);
+        drop(b);
+    }
 
-#[test]
-fn remote_caret_presence_round_trips_both_ways() {
-    let (mut a, mut b) = two_peers();
+    // Case `remote_caret_presence_round_trips_both_ways`.
+    {
+        let (mut a, mut b) = two_peers();
 
-    let key = PresenceKey::Widget {
-        path: vec![PathSegment::Field("text".into())],
-    };
+        let key = PresenceKey::Widget {
+            path: vec![PathSegment::Field("text".into())],
+        };
 
-    a.send(CollabRequest::Presence {
-        key: key.clone(),
-        payload: PresencePayload::Caret { pos: 7 },
-    });
-    let a_caret_on_b = poll_until(&mut b, |ev| match ev {
-        CollabEvent::RemotePresenceUpdate {
-            user_id,
-            payload: PresencePayload::Caret { pos },
-            ..
-        } if user_id == "alice" => Some(*pos),
-        _ => None,
-    })
-    .expect("B must receive A's caret presence attributed to alice");
-    assert_eq!(a_caret_on_b, 7);
+        a.send(CollabRequest::Presence {
+            key: key.clone(),
+            payload: PresencePayload::Caret { pos: 7 },
+        });
+        let a_caret_on_b = poll_until(
+            "B must receive A's caret presence attributed to alice",
+            &mut b,
+            |ev| match ev {
+                CollabEvent::RemotePresenceUpdate {
+                    user_id,
+                    payload: PresencePayload::Caret { pos },
+                    ..
+                } if user_id == "alice" => Some(*pos),
+                _ => None,
+            },
+        );
+        assert_eq!(a_caret_on_b, 7);
 
-    // B's caret moves -> A sees it, attributed to bob. Both directions
-    // travel the same real presence fan-out.
-    b.send(CollabRequest::Presence {
-        key: key.clone(),
-        payload: PresencePayload::Caret { pos: 3 },
-    });
-    let b_caret_on_a = poll_until(&mut a, |ev| match ev {
-        CollabEvent::RemotePresenceUpdate {
-            user_id,
-            payload: PresencePayload::Caret { pos },
-            ..
-        } if user_id == "bob" => Some(*pos),
-        _ => None,
-    })
-    .expect("A must receive B's caret presence attributed to bob");
-    assert_eq!(b_caret_on_a, 3);
+        // B's caret moves -> A sees it, attributed to bob. Both directions
+        // travel the same real presence fan-out.
+        b.send(CollabRequest::Presence {
+            key: key.clone(),
+            payload: PresencePayload::Caret { pos: 3 },
+        });
+        let b_caret_on_a = poll_until(
+            "A must receive B's caret presence attributed to bob",
+            &mut a,
+            |ev| match ev {
+                CollabEvent::RemotePresenceUpdate {
+                    user_id,
+                    payload: PresencePayload::Caret { pos },
+                    ..
+                } if user_id == "bob" => Some(*pos),
+                _ => None,
+            },
+        );
+        assert_eq!(b_caret_on_a, 3);
 
-    // The remote caret paints into the local render: place alice's caret
-    // into a presence context keyed to the same widget and prove the
-    // peer-caret chrome draws ink that a no-presence render does not.
-    let path = vec![PathSegment::Field("text".into())];
-    let no_presence = PresenceCtx::empty();
-    let baseline = render_presence_probe(path.clone(), &no_presence);
+        // The remote caret paints into the local render: place alice's caret
+        // into a presence context keyed to the same widget and prove the
+        // peer-caret chrome draws ink that a no-presence render does not.
+        let path = vec![PathSegment::Field("text".into())];
+        let no_presence = PresenceCtx::empty();
+        let baseline = render_presence_probe(path.clone(), &no_presence);
 
-    let mut with_peer = PresenceCtx::empty();
-    with_peer.set_caret(&key, UserId("alice".into()), 4);
-    let with_caret = render_presence_probe(path, &with_peer);
+        let mut with_peer = PresenceCtx::empty();
+        with_peer.set_caret(&key, UserId("alice".into()), 4);
+        let with_caret = render_presence_probe(path, &with_peer);
 
-    assert_ne!(
-        baseline.drawn, with_caret.drawn,
-        "a remote peer's caret must be drawn into the local render"
-    );
-    assert!(
-        non_background_pixels(&with_caret.pixels) > non_background_pixels(&baseline.pixels),
-        "the peer caret must add drawn pixels to the local render"
-    );
+        assert_ne!(
+            baseline.drawn, with_caret.drawn,
+            "a remote peer's caret must be drawn into the local render"
+        );
+        assert!(
+            non_background_pixels(&with_caret.pixels) > non_background_pixels(&baseline.pixels),
+            "the peer caret must add drawn pixels to the local render"
+        );
 
-    drop(a);
-    drop(b);
+        drop(a);
+        drop(b);
+    }
+
+    // Case `signed_edit_is_permission_gated`.
+    {
+        // One channel owner underwrites two members: a writer (Editor) and a
+        // viewer (Viewer, no write capability). Both target the same Note
+        // artifact.
+        let (owner_sk, owner_pub) = generate_keypair();
+        let (writer_sk, writer_pub) = generate_keypair();
+        let (viewer_sk, viewer_pub) = generate_keypair();
+        let channel = ChannelId::new();
+        let artifact = ArtifactId::new();
+
+        let writer_att = make_attestation(&owner_sk, owner_pub, writer_pub, channel, Role::Editor);
+        let viewer_att = make_attestation(&owner_sk, owner_pub, viewer_pub, channel, Role::Viewer);
+        let writer_att_id = writer_att.attestation.id;
+        let viewer_att_id = viewer_att.attestation.id;
+
+        let mut state = ChannelState::default();
+        state.authorised_signers.push(owner_pub);
+        state.artifacts.insert(artifact, ArtifactKind::Note);
+        state.register_attestation(writer_att);
+        state.register_attestation(viewer_att);
+
+        let mut peer_doc = AutoCommit::new();
+        let t = peer_doc.put_object(&ROOT, "text", ObjType::Text).unwrap();
+        peer_doc.splice_text(&t, 0, 0, "base").unwrap();
+        let bound = text_obj(&peer_doc).unwrap();
+        let baseline_render = render_bound(&mut peer_doc, &bound, &PresenceCtx::empty());
+
+        let mut writer_doc = AutoCommit::load(&peer_doc.save()).unwrap();
+        writer_doc.set_actor(automerge::ActorId::from(b"writer".as_slice()));
+        let wt = text_obj(&writer_doc).unwrap();
+        writer_doc.splice_text(&wt, 4, 0, "-WROTE").unwrap();
+        let writer_delta = writer_doc.save_incremental();
+        let writer_op = sign_delta(
+            &writer_sk,
+            writer_pub,
+            writer_att_id,
+            artifact,
+            writer_delta,
+            1,
+        );
+
+        // The viewer forges the identical intent but has no write capability.
+        let mut viewer_doc = AutoCommit::load(&peer_doc.save()).unwrap();
+        viewer_doc.set_actor(automerge::ActorId::from(b"viewer".as_slice()));
+        let vt = text_obj(&viewer_doc).unwrap();
+        viewer_doc.splice_text(&vt, 4, 0, "-HACKED").unwrap();
+        let viewer_delta = viewer_doc.save_incremental();
+        let viewer_op = sign_delta(
+            &viewer_sk,
+            viewer_pub,
+            viewer_att_id,
+            artifact,
+            viewer_delta,
+            1,
+        );
+
+        match validate_inbound_op(&viewer_op, &mut state) {
+            Err(ValidationError::RoleForbidsOpClass) => {}
+            other => panic!("viewer without write cap must be rejected, got {other:?}"),
+        }
+        // ...so the peer doc and its render are untouched.
+        assert_eq!(
+            text_of(&peer_doc),
+            "base",
+            "a rejected op must not mutate the shared doc"
+        );
+        let again = render_bound(&mut peer_doc, &bound, &PresenceCtx::empty());
+        assert_same_frame(&again, &baseline_render, "a rejected op's local render");
+
+        // The writer's op validates and is applied via the same
+        // `load_incremental` path the App uses for incremental document events.
+        validate_inbound_op(&writer_op, &mut state).expect("writer op must validate");
+        peer_doc.load_incremental(&writer_op.payload).unwrap();
+
+        assert_eq!(
+            text_of(&peer_doc),
+            "base-WROTE",
+            "the writer's validated edit converges into the peer doc"
+        );
+        let after_render = render_bound(&mut peer_doc, &bound, &PresenceCtx::empty());
+        assert_ne!(
+            after_render.drawn, baseline_render.drawn,
+            "the writer's validated edit re-renders locally"
+        );
+        assert!(
+            non_background_pixels(&after_render.pixels)
+                > non_background_pixels(&baseline_render.pixels),
+            "the writer's added text must put ink on more pixels"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -510,96 +603,4 @@ fn sign_delta(
     );
     sign_op(&mut op, author_sk).unwrap();
     op
-}
-
-#[test]
-fn signed_edit_is_permission_gated() {
-    // One channel owner underwrites two members: a writer (Editor) and a
-    // viewer (Viewer, no write capability). Both target the same Note
-    // artifact.
-    let (owner_sk, owner_pub) = generate_keypair();
-    let (writer_sk, writer_pub) = generate_keypair();
-    let (viewer_sk, viewer_pub) = generate_keypair();
-    let channel = ChannelId::new();
-    let artifact = ArtifactId::new();
-
-    let writer_att = make_attestation(&owner_sk, owner_pub, writer_pub, channel, Role::Editor);
-    let viewer_att = make_attestation(&owner_sk, owner_pub, viewer_pub, channel, Role::Viewer);
-    let writer_att_id = writer_att.attestation.id;
-    let viewer_att_id = viewer_att.attestation.id;
-
-    let mut state = ChannelState::default();
-    state.authorised_signers.push(owner_pub);
-    state.artifacts.insert(artifact, ArtifactKind::Note);
-    state.register_attestation(writer_att);
-    state.register_attestation(viewer_att);
-
-    let mut peer_doc = AutoCommit::new();
-    let t = peer_doc.put_object(&ROOT, "text", ObjType::Text).unwrap();
-    peer_doc.splice_text(&t, 0, 0, "base").unwrap();
-    let bound = text_obj(&peer_doc).unwrap();
-    let baseline_render = render_bound(&mut peer_doc, &bound, &PresenceCtx::empty());
-
-    let mut writer_doc = AutoCommit::load(&peer_doc.save()).unwrap();
-    writer_doc.set_actor(automerge::ActorId::from(b"writer".as_slice()));
-    let wt = text_obj(&writer_doc).unwrap();
-    writer_doc.splice_text(&wt, 4, 0, "-WROTE").unwrap();
-    let writer_delta = writer_doc.save_incremental();
-    let writer_op = sign_delta(
-        &writer_sk,
-        writer_pub,
-        writer_att_id,
-        artifact,
-        writer_delta,
-        1,
-    );
-
-    // The viewer forges the identical intent but has no write capability.
-    let mut viewer_doc = AutoCommit::load(&peer_doc.save()).unwrap();
-    viewer_doc.set_actor(automerge::ActorId::from(b"viewer".as_slice()));
-    let vt = text_obj(&viewer_doc).unwrap();
-    viewer_doc.splice_text(&vt, 4, 0, "-HACKED").unwrap();
-    let viewer_delta = viewer_doc.save_incremental();
-    let viewer_op = sign_delta(
-        &viewer_sk,
-        viewer_pub,
-        viewer_att_id,
-        artifact,
-        viewer_delta,
-        1,
-    );
-
-    match validate_inbound_op(&viewer_op, &mut state) {
-        Err(ValidationError::RoleForbidsOpClass) => {}
-        other => panic!("viewer without write cap must be rejected, got {other:?}"),
-    }
-    // ...so the peer doc and its render are untouched.
-    assert_eq!(
-        text_of(&peer_doc),
-        "base",
-        "a rejected op must not mutate the shared doc"
-    );
-    let again = render_bound(&mut peer_doc, &bound, &PresenceCtx::empty());
-    assert_same_frame(&again, &baseline_render, "a rejected op's local render");
-
-    // The writer's op validates and is applied via the same
-    // `load_incremental` path the App uses for incremental document events.
-    validate_inbound_op(&writer_op, &mut state).expect("writer op must validate");
-    peer_doc.load_incremental(&writer_op.payload).unwrap();
-
-    assert_eq!(
-        text_of(&peer_doc),
-        "base-WROTE",
-        "the writer's validated edit converges into the peer doc"
-    );
-    let after_render = render_bound(&mut peer_doc, &bound, &PresenceCtx::empty());
-    assert_ne!(
-        after_render.drawn, baseline_render.drawn,
-        "the writer's validated edit re-renders locally"
-    );
-    assert!(
-        non_background_pixels(&after_render.pixels)
-            > non_background_pixels(&baseline_render.pixels),
-        "the writer's added text must put ink on more pixels"
-    );
 }

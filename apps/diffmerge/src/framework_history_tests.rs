@@ -1,3 +1,4 @@
+use ui::widget::{AppModel, ModelPath};
 include!("../../../crates/sdk/ui-core/tests/support/history_adapter_conformance.rs");
 fn malformed_fixture(doc: &mut AutoCommit) {
     doc.put(ROOT, "merged", 7).unwrap();
@@ -28,7 +29,15 @@ fn verify_restored(doc: &AutoCommit) {
         Some("recorded session")
     );
 }
+/// History adapter restore: production startup preserves a saved merge, and
+/// restoring fences a stale resource request while successive admitted hunks
+/// stay usable. Fresh fixture per phase.
 #[test]
+fn history_restore_preserves_saved_merge_and_fences_stale_requests() {
+    production_startup_preserves_saved_merge();
+    successive_admitted_resource_hunks_remain_usable_then_restore_fences_stale_request();
+}
+
 fn production_startup_preserves_saved_merge() {
     use ui::widget::Widget;
     let mut doc = automerge::AutoCommit::new();
@@ -59,23 +68,14 @@ struct ResourceHarness {
     queue: std::rc::Rc<std::cell::RefCell<Vec<tilo_actions::ControlInvocation>>>,
 }
 impl ui::widget::Widget for ResourceHarness {
-    fn sync(&mut self, d: &mut AutoCommit, p: &automerge::ObjId) {
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
+    );
+
+    fn sync(&mut self, d: &mut AppModel, p: &ModelPath) {
         self.app.sync(d, p);
-    }
-    fn resources(&self, d: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        ui::widget::Widget::resources(&self.app, d)
-    }
-    fn document_action_applied(
-        &mut self,
-        a: &tilo_actions::EncodedAction,
-        b: &[automerge::ChangeHash],
-        d: &AutoCommit,
-        p: &automerge::ObjId,
-    ) {
-        self.app.document_action_applied(a, b, d, p);
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.queue.borrow_mut().pop()
     }
     fn build_layout(
         &mut self,
@@ -102,19 +102,8 @@ impl ui::widget::Widget for ResourceHarness {
         clippy::many_single_char_names,
         reason = "test adapter forwards the existing Widget event signature"
     )]
-    fn handle_event(
-        &mut self,
-        e: &winit::event::WindowEvent,
-        s: f64,
-        m: &winit::event::Modifiers,
-        d: &mut AutoCommit,
-        p: &automerge::ObjId,
-        h: &mut bool,
-        f: &mut Option<taffy::NodeId>,
-        n: taffy::NodeId,
-        t: &taffy::TaffyTree<()>,
-    ) {
-        self.app.handle_event(e, s, m, d, p, h, f, n, t);
+    fn handle_event(&mut self, e: &winit::event::WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.app.handle_event(e, ctx);
     }
     fn name(&self) -> &'static str {
         "DiffMerge resource test"
@@ -123,7 +112,30 @@ impl ui::widget::Widget for ResourceHarness {
         self.app.get_rect()
     }
 }
-#[test]
+
+impl ui::resources::PublishesResources for ResourceHarness {
+    fn resources(&self, d: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        ui::resources::resources(&self.app, d)
+    }
+}
+
+impl ui::widget::controls::ActionControls for ResourceHarness {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.queue.borrow_mut().pop()
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for ResourceHarness {
+    fn document_action_applied(
+        &mut self,
+        a: &tilo_actions::EncodedAction,
+        b: &[automerge::ChangeHash],
+        d: &AutoCommit,
+        p: &automerge::ObjId,
+    ) {
+        self.app.document_action_applied(a, b, d, p);
+    }
+}
 fn successive_admitted_resource_hunks_remain_usable_then_restore_fences_stale_request() {
     let queue = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let root = ResourceHarness {

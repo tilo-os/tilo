@@ -25,8 +25,6 @@ use tilo_user_identity::{
     sign_device_cert,
 };
 
-const PROCESS_TIMEOUT: Duration = Duration::from_secs(45);
-
 struct MountProcess {
     child: Child,
     lines: Receiver<String>,
@@ -57,7 +55,7 @@ impl Drop for ReplicaProcess {
 
 impl MountProcess {
     fn wait_line(&mut self, expected: &str) -> String {
-        let deadline = Instant::now().checked_add(PROCESS_TIMEOUT).unwrap();
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Some(status) = self.child.try_wait().unwrap() {
                 panic!(
@@ -94,7 +92,7 @@ impl MountProcess {
             .args(["-u", "-z"])
             .arg(&self.mount)
             .status();
-        wait_for(PROCESS_TIMEOUT, || {
+        tilo_test_env::wait_for("the unmounted daemon to exit", || {
             self.child.try_wait().unwrap().map(|_| ())
         });
     }
@@ -169,10 +167,6 @@ fn capture(child: &mut Child) -> (Receiver<String>, Arc<Mutex<Vec<String>>>) {
 
 // Each path is a distinct externally observable daemon boundary in this
 // end-to-end fixture; bundling them would make call-site mixups less visible.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each path is a distinct daemon boundary; bundling them hides call-site mixups"
-)]
 fn spawn_fs(
     binary: &Path,
     identity: &Path,
@@ -281,7 +275,7 @@ fn spawn_replica(binary: &Path, identity: &Path, config: &Path) -> ReplicaProces
 }
 
 fn ready_replica_endpoint(status: &Path, process: &mut ReplicaProcess) -> iroh_base::EndpointAddr {
-    let deadline = Instant::now().checked_add(PROCESS_TIMEOUT).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     let mut last_status = None;
     loop {
         if let Some(exit) = process.child.try_wait().unwrap() {
@@ -319,23 +313,12 @@ fn ready_replica_endpoint(status: &Path, process: &mut ReplicaProcess) -> iroh_b
 
 fn gate(socket: &Path, command: &str) -> String {
     eprintln!("barrier: gate {} {command}", socket.display());
-    wait_for(PROCESS_TIMEOUT, || UnixStream::connect(socket).ok());
+    tilo_test_env::wait_for("the barrier socket", || UnixStream::connect(socket).ok());
     let mut stream = UnixStream::connect(socket).unwrap();
     stream.write_all(format!("{command}\n").as_bytes()).unwrap();
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();
     response
-}
-
-fn wait_for<T>(timeout: Duration, mut inspect: impl FnMut() -> Option<T>) -> T {
-    let deadline = Instant::now().checked_add(timeout).unwrap();
-    loop {
-        if let Some(value) = inspect() {
-            return value;
-        }
-        assert!(Instant::now() < deadline, "state barrier timed out");
-        std::thread::park_timeout(Duration::from_millis(10));
-    }
 }
 
 fn real_fuse_available(scenario: &str) -> bool {
@@ -358,7 +341,7 @@ fn real_fuse_available(scenario: &str) -> bool {
 }
 
 fn wait_for_process<T>(process: &mut MountProcess, mut inspect: impl FnMut() -> Option<T>) -> T {
-    let deadline = Instant::now().checked_add(PROCESS_TIMEOUT).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(value) = inspect() {
             return value;
@@ -616,8 +599,8 @@ fn forced_partition_offline_edits_restart_and_converge_as_a_conflict() {
 
     let left_path = temp.path().join("left.automerge");
     let right_path = temp.path().join("right.automerge");
-    atomic_file::write(&left_path, &left.save()).unwrap();
-    atomic_file::write(&right_path, &right.save()).unwrap();
+    tilo_files::native::atomic::write(&left_path, &left.save()).unwrap();
+    tilo_files::native::atomic::write(&right_path, &right.save()).unwrap();
     drop(left);
     drop(right);
 
@@ -761,7 +744,7 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
     });
     std::fs::write(host_mount.join("contended.txt"), b"baseline").unwrap();
     eprintln!("barrier: peer baseline visible");
-    wait_for(PROCESS_TIMEOUT, || {
+    tilo_test_env::wait_for("the baseline on the peer", || {
         peer_mount.join("contended.txt").exists().then_some(())
     });
     wait_for_process(&mut peer, || {
@@ -871,7 +854,7 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
     // A device shows the conflict as soon as it holds both heads, and the
     // winner once it has projected them; both converge on the same one.
     let ((host_content, host_history), (peer_content, peer_history)) =
-        wait_for(PROCESS_TIMEOUT, || {
+        tilo_test_env::wait_for("both mounts to converge", || {
             let host = converged(&host_mount)?;
             let peer = converged(&peer_mount)?;
             (host == peer).then_some((host, peer))
@@ -920,7 +903,7 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
     reader_process.wait_line("Joined workspace");
     reader_process.wait_line("Mounting QuickFS");
     eprintln!("barrier: reader entry visible");
-    let reader_file = wait_for(PROCESS_TIMEOUT, || {
+    let reader_file = tilo_test_env::wait_for("the reader entry", || {
         std::fs::read_dir(&reader_mount)
             .ok()?
             .next()?
@@ -1073,7 +1056,7 @@ macro_rules! run_nas_replica_lifecycle_scenario {
         // namespace may move on after the change first lands (the records
         // that go with it are projected after it); the proof is for the
         // generation the replica advertises.
-        wait_for(PROCESS_TIMEOUT, || {
+        tilo_test_env::wait_for("the replica to hold the change durably", || {
             if let Some(exit) = nas.child.try_wait().unwrap() {
                 panic!(
                     "replica exited {exit}; logs:\n{}",
@@ -1162,7 +1145,7 @@ macro_rules! run_nas_replica_lifecycle_scenario {
         let replica_authority = replica_cache
             .join(original.workspace_id().to_string())
             .join("workspace-authority.bin");
-        wait_for(PROCESS_TIMEOUT, || {
+        tilo_test_env::wait_for("the replica workspace authority", || {
             let authority = fs::workspace_authority::WorkspaceAuthority::open(
                 &replica_authority,
                 original.workspace_id(),
@@ -1190,7 +1173,9 @@ macro_rules! run_nas_replica_lifecycle_scenario {
             &["mount", "--ticket", &nas_ticket],
             false,
         );
-        let revoked_status = wait_for(PROCESS_TIMEOUT, || revoked.child.try_wait().unwrap());
+        let revoked_status = tilo_test_env::wait_for("the revoked replica to exit", || {
+            revoked.child.try_wait().unwrap()
+        });
         assert!(
             !revoked_status.success(),
             "a newer signed authority revision revokes the previously granted collaborator"
@@ -1243,16 +1228,18 @@ macro_rules! run_nas_replica_lifecycle_scenario {
                 .await
                 .unwrap();
             let deleted_chunk = Hash::new(b"delete-me");
-            tokio::time::timeout(Duration::from_secs(10), async {
-                loop {
-                    if !store.has(deleted_manifest).await && !store.has(deleted_chunk).await {
-                        break;
+            tilo_test_env::within(
+                "replica GC to reclaim the deleted manifest and chunk",
+                async {
+                    loop {
+                        if !store.has(deleted_manifest).await && !store.has(deleted_chunk).await {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
                     }
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-            })
-            .await
-            .expect("replica GC reclaims deleted manifest and chunk");
+                },
+            )
+            .await;
             store.store().shutdown().await.unwrap();
         });
     }};

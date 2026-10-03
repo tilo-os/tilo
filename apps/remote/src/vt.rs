@@ -289,80 +289,89 @@ mod tests {
     }
 
     #[test]
-    fn prints_text_and_wraps_lines() {
-        let mut g = VtGrid::new(20, 5);
-        g.feed(b"hello\r\nworld");
-        let lines = g.lines();
-        assert_eq!(plain_text(&lines[0]), "hello");
-        assert_eq!(plain_text(&lines[1]), "world");
-    }
+    fn text_prints_wraps_overwrites_and_scrolls() {
+        eprintln!("phase prints_text_and_wraps_lines");
+        {
+            let mut g = VtGrid::new(20, 5);
+            g.feed(b"hello\r\nworld");
+            let lines = g.lines();
+            assert_eq!(plain_text(&lines[0]), "hello");
+            assert_eq!(plain_text(&lines[1]), "world");
+        }
 
-    #[test]
-    fn carriage_return_overwrites() {
-        let mut g = VtGrid::new(20, 3);
-        g.feed(b"aaaa\rbb");
-        assert_eq!(plain_text(&g.lines()[0]), "bbaa");
-    }
+        eprintln!("phase carriage_return_overwrites");
+        {
+            let mut g = VtGrid::new(20, 3);
+            g.feed(b"aaaa\rbb");
+            assert_eq!(plain_text(&g.lines()[0]), "bbaa");
+        }
 
-    #[test]
-    fn sgr_sets_color_and_bold() {
-        let mut g = VtGrid::new(20, 3);
-        // Bold red 'X', then reset, then plain 'y'.
-        g.feed(b"\x1b[1;31mX\x1b[0my");
-        let row = &g.lines()[0].cells;
-        assert_eq!(row[0].ch, 'X');
-        assert_eq!(row[0].color, Some(1));
-        assert!(row[0].bold);
-        assert_eq!(row[1].ch, 'y');
-        assert_eq!(row[1].color, None);
-        assert!(!row[1].bold);
-    }
-
-    #[test]
-    fn bright_color_maps_into_upper_palette() {
-        let mut g = VtGrid::new(10, 2);
-        g.feed(b"\x1b[92mg"); // bright green -> index 2 + 8 = 10
-        assert_eq!(g.lines()[0].cells[0].color, Some(10));
-    }
-
-    #[test]
-    fn cursor_position_and_erase() {
-        let mut g = VtGrid::new(10, 4);
-        g.feed(b"line0\r\nline1");
-        // Home the cursor, erase to end of the first line, write new text.
-        g.feed(b"\x1b[1;1H\x1b[Knew");
-        assert_eq!(plain_text(&g.lines()[0]), "new");
-        // Second line untouched.
-        assert_eq!(plain_text(&g.lines()[1]), "line1");
-    }
-
-    #[test]
-    fn newline_scrolls_when_cursor_at_bottom() {
-        let mut g = VtGrid::new(8, 2);
-        g.feed(b"a\r\nb\r\nc");
-        // Grid is 2 rows: "a" scrolled off, leaving "b" then "c".
-        let lines = g.lines();
-        assert_eq!(plain_text(&lines[0]), "b");
-        assert_eq!(plain_text(&lines[1]), "c");
-    }
-
-    #[test]
-    fn clear_screen_blanks_grid() {
-        let mut g = VtGrid::new(8, 3);
-        g.feed(b"junk\r\nmore");
-        g.feed(b"\x1b[2J");
-        for line in g.lines() {
-            assert_eq!(plain_text(&line).trim(), "");
+        eprintln!("phase newline_scrolls_when_cursor_at_bottom");
+        {
+            let mut g = VtGrid::new(8, 2);
+            g.feed(b"a\r\nb\r\nc");
+            // Grid is 2 rows: "a" scrolled off, leaving "b" then "c".
+            let lines = g.lines();
+            assert_eq!(plain_text(&lines[0]), "b");
+            assert_eq!(plain_text(&lines[1]), "c");
         }
     }
 
     #[test]
-    fn resize_preserves_and_clamps() {
-        let mut g = VtGrid::new(10, 3);
-        g.feed(b"keep");
-        g.resize(6, 2);
-        assert_eq!(g.cols(), 6);
-        assert_eq!(g.rows(), 2);
-        assert_eq!(plain_text(&g.lines()[0]), "keep");
+    fn sgr_sets_colors_bold_and_bright_palette() {
+        eprintln!("phase sgr_sets_color_and_bold");
+        {
+            let mut g = VtGrid::new(20, 3);
+            // Bold red 'X', then reset, then plain 'y'.
+            g.feed(b"\x1b[1;31mX\x1b[0my");
+            let row = &g.lines()[0].cells;
+            assert_eq!(row[0].ch, 'X');
+            assert_eq!(row[0].color, Some(1));
+            assert!(row[0].bold);
+            assert_eq!(row[1].ch, 'y');
+            assert_eq!(row[1].color, None);
+            assert!(!row[1].bold);
+        }
+
+        eprintln!("phase bright_color_maps_into_upper_palette");
+        {
+            let mut g = VtGrid::new(10, 2);
+            g.feed(b"\x1b[92mg"); // bright green -> index 2 + 8 = 10
+            assert_eq!(g.lines()[0].cells[0].color, Some(10));
+        }
+    }
+
+    #[test]
+    fn cursor_erase_clear_and_resize_edit_the_grid() {
+        eprintln!("phase cursor_position_and_erase");
+        {
+            let mut g = VtGrid::new(10, 4);
+            g.feed(b"line0\r\nline1");
+            // Home the cursor, erase to end of the first line, write new text.
+            g.feed(b"\x1b[1;1H\x1b[Knew");
+            assert_eq!(plain_text(&g.lines()[0]), "new");
+            // Second line untouched.
+            assert_eq!(plain_text(&g.lines()[1]), "line1");
+        }
+
+        eprintln!("phase clear_screen_blanks_grid");
+        {
+            let mut g = VtGrid::new(8, 3);
+            g.feed(b"junk\r\nmore");
+            g.feed(b"\x1b[2J");
+            for line in g.lines() {
+                assert_eq!(plain_text(&line).trim(), "");
+            }
+        }
+
+        eprintln!("phase resize_preserves_and_clamps");
+        {
+            let mut g = VtGrid::new(10, 3);
+            g.feed(b"keep");
+            g.resize(6, 2);
+            assert_eq!(g.cols(), 6);
+            assert_eq!(g.rows(), 2);
+            assert_eq!(plain_text(&g.lines()[0]), "keep");
+        }
     }
 }

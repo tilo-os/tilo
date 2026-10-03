@@ -68,6 +68,9 @@
 //! same shared markup.
 
 use std::collections::HashSet;
+
+/// Where a comment or reply keeps its text: rich text.
+const TEXT: &str = "text";
 use ui::doc::{read_bool, read_number, read_scalar, read_str};
 
 use automerge::transaction::Transactable;
@@ -1135,7 +1138,7 @@ impl PdfDoc {
             let _ = doc.put(&m, "page-id", page_id);
         }
         let _ = doc.put(&m, "author", c.author.as_str());
-        let _ = doc.put(&m, "body", c.body.as_str());
+        Self::write_text(doc, &m, &tilo_rich_text::plain_clips(&c.body));
         let _ = doc.put(&m, "created", c.created);
         let _ = doc.put(&m, "resolved", c.resolved);
         let Ok(replies) = doc.put_object(&m, "replies", ObjType::List) else {
@@ -1147,8 +1150,27 @@ impl PdfDoc {
             };
             let _ = doc.put(&rm, "id", r.id.as_str());
             let _ = doc.put(&rm, "author", r.author.as_str());
-            let _ = doc.put(&rm, "body", r.body.as_str());
+            Self::write_text(doc, &rm, &tilo_rich_text::plain_clips(&r.body));
         }
+    }
+
+    /// Write a comment or reply's text as rich text under its [`TEXT`] key,
+    /// replacing what it held.
+    fn write_text(doc: &mut AutoCommit, entry: &ObjId, clips: &[tilo_document::ClipBlock]) {
+        if let Err(error) = tilo_rich_text::put_rich_text(doc, entry, TEXT, clips) {
+            tracing::warn!(%error, "comment text not written");
+        }
+    }
+
+    /// A comment or reply's text: its plain text and its paragraphs.
+    fn read_text(doc: &AutoCommit, entry: &ObjId) -> (String, Vec<ui::widget::BlockContent>) {
+        if let Some(root) = tilo_rich_text::rich_text_at(doc, entry, TEXT) {
+            return (
+                tilo_document::RichText::plain_text_under(doc, &root).unwrap_or_default(),
+                tilo_rich_text::blocks_under(doc, &root).unwrap_or_default(),
+            );
+        }
+        (String::new(), Vec::new())
     }
 
     pub fn list_comments(doc: &AutoCommit) -> Vec<Comment> {
@@ -1166,7 +1188,7 @@ impl PdfDoc {
                 continue;
             };
             let author = read_str(doc, &m, "author").unwrap_or_default();
-            let body = read_str(doc, &m, "body").unwrap_or_default();
+            let (body, blocks) = Self::read_text(doc, &m);
             let created = Self::get_i64(doc, &m, "created").unwrap_or(0);
             let resolved = read_bool(doc, &m, "resolved").unwrap_or(false);
             let mut replies = Vec::new();
@@ -1174,19 +1196,18 @@ impl PdfDoc {
                 let mut seen_reply_ids = HashSet::new();
                 for j in 0..doc.length(&rl) {
                     if let Ok(Some((Value::Object(ObjType::Map), rm))) = doc.get(&rl, j) {
-                        // Old documents predate reply ids.  Give their
-                        // read-only projection a deterministic legacy key;
-                        // newly-authored replies always persist their UUID and
-                        // are never renumbered when siblings arrive.
-                        let id = read_str(doc, &rm, "id")
-                            .unwrap_or_else(|| Self::legacy_reply_id(&id, &rm));
+                        let Some(id) = read_str(doc, &rm, "id") else {
+                            continue;
+                        };
                         if !seen_reply_ids.insert(id.clone()) {
                             continue;
                         }
+                        let (body, blocks) = Self::read_text(doc, &rm);
                         replies.push(Reply {
                             id,
                             author: read_str(doc, &rm, "author").unwrap_or_default(),
-                            body: read_str(doc, &rm, "body").unwrap_or_default(),
+                            body,
+                            blocks,
                         });
                     }
                 }
@@ -1200,6 +1221,7 @@ impl PdfDoc {
                 created,
                 resolved,
                 replies,
+                blocks,
             });
         }
         out.sort_by_key(|c| c.created);
@@ -1214,13 +1236,12 @@ impl PdfDoc {
         }
     }
 
-    /// Replace a comment's body text. Used by the inline editor when the user
-    /// types into a note or comment thread.
-    pub fn set_comment_body(doc: &mut AutoCommit, id: &str, body: &str) {
+    /// Replace a comment's text with `clips` (its paragraphs as written).
+    pub fn set_comment_text(doc: &mut AutoCommit, id: &str, clips: &[tilo_document::ClipBlock]) {
         if let Some((list, i)) = Self::locate(doc, "comments", id)
             && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
         {
-            let _ = doc.put(&m, "body", body);
+            Self::write_text(doc, &m, clips);
         }
     }
 
@@ -1230,7 +1251,14 @@ impl PdfDoc {
         }
     }
 
-    pub fn add_reply(doc: &mut AutoCommit, comment_id: &str, reply: &Reply) {
+    /// Append `reply`, its text written as `clips` (its paragraphs as
+    /// written; none writes its plain `body`), to the thread of `comment_id`.
+    pub fn add_reply(
+        doc: &mut AutoCommit,
+        comment_id: &str,
+        reply: &Reply,
+        clips: &[tilo_document::ClipBlock],
+    ) {
         if reply.id.trim().is_empty() {
             return;
         }
@@ -1259,17 +1287,12 @@ impl PdfDoc {
             };
             let _ = doc.put(&rm, "id", reply.id.as_str());
             let _ = doc.put(&rm, "author", reply.author.as_str());
-            let _ = doc.put(&rm, "body", reply.body.as_str());
+            if clips.is_empty() {
+                Self::write_text(doc, &rm, &tilo_rich_text::plain_clips(&reply.body));
+            } else {
+                Self::write_text(doc, &rm, clips);
+            }
         }
-    }
-
-    /// Stable projection for old reply maps which had no id on disk.  This is
-    /// deliberately read-only: writing a generated id while listing would
-    /// create a surprising local edit.  The map's Automerge object id remains
-    /// stable through insertions and merges, so legacy siblings do not get
-    /// renumbered merely because a new reply is added.
-    fn legacy_reply_id(comment_id: &str, reply: &ObjId) -> String {
-        format!("legacy:{comment_id}:{reply}")
     }
 
     // ---- signatures -------------------------------------------------
@@ -1385,21 +1408,89 @@ mod tests {
     };
     use tilo_automerge::ApplyIncoming;
 
-    fn hl(page: usize) -> Annotation {
+    fn anno(page: usize, kind: AnnoKind, color: Swatch, author: &str) -> Annotation {
         Annotation {
             id: Annotation::new_id(),
             page,
-            kind: AnnoKind::highlight(PtRect::new(10.0, 20.0, 100.0, 14.0)),
-            color: Swatch::Yellow,
-            author: "Alice".into(),
+            kind,
+            color,
+            author: author.into(),
             chars: None,
             created_ms: 0,
             space: crate::model::GeomSpace::Page,
         }
     }
 
+    fn hl(page: usize) -> Annotation {
+        anno(
+            page,
+            AnnoKind::highlight(PtRect::new(10.0, 20.0, 100.0, 14.0)),
+            Swatch::Yellow,
+            "Alice",
+        )
+    }
+
+    fn comment(id: &str, anno_id: Option<&str>, author: &str, body: &str, created: i64) -> Comment {
+        Comment {
+            id: id.into(),
+            anno_id: anno_id.map(Into::into),
+            page: 1,
+            author: author.into(),
+            body: body.into(),
+            created,
+            resolved: false,
+            replies: Vec::new(),
+            blocks: Vec::new(),
+        }
+    }
+
+    fn reply(id: &str, author: &str, body: &str) -> Reply {
+        Reply {
+            id: id.into(),
+            author: author.into(),
+            body: body.into(),
+            blocks: Vec::new(),
+        }
+    }
+
+    fn signature(
+        id: &str,
+        page: usize,
+        rect: PtRect,
+        signer: &str,
+        date: &str,
+        ink: crate::model::SignatureInk,
+    ) -> Signature {
+        Signature {
+            id: id.into(),
+            page,
+            rect,
+            signer: signer.into(),
+            date: date.into(),
+            ink,
+            space: crate::model::GeomSpace::Page,
+        }
+    }
+
     #[test]
-    fn annotation_round_trips() {
+    fn a_comment_written_rich_keeps_its_marks_and_plain_text() {
+        let mut doc = AutoCommit::new();
+        PdfDoc::add_comment(&mut doc, &comment("c", None, "Ada", "draft", 1));
+        let mut bold = ui::widget::BlockContent::paragraph("", "plain bold");
+        bold.marks = vec![ui::widget::MarkSpan::new(
+            6..10,
+            ui::widget::marks::Mark::Bold,
+        )];
+        let clips = tilo_rich_text::Draft::with_blocks(&[bold]).clip_blocks();
+        PdfDoc::set_comment_text(&mut doc, "c", &clips);
+        let got = &PdfDoc::list_comments(&doc)[0];
+        assert_eq!(got.body, "plain bold");
+        assert_eq!(got.blocks.len(), 1);
+        assert_eq!(got.blocks[0].marks.len(), 1);
+    }
+
+    #[test]
+    fn annotations_round_trip_recolor_reposition_and_delete() {
         let mut doc = AutoCommit::new();
         let a = hl(2);
         PdfDoc::add_annotation(&mut doc, &a, None);
@@ -1408,29 +1499,24 @@ mod tests {
         assert_eq!(list[0].page, 2);
         assert_eq!(list[0].color, Swatch::Yellow);
         match &list[0].kind {
-            AnnoKind::Markup { quads, .. } => {
-                assert!((quads[0].w - 100.0).abs() < 1e-6);
-            }
+            AnnoKind::Markup { quads, .. } => assert!((quads[0].w - 100.0).abs() < 1e-6),
             _ => panic!("expected highlight"),
         }
-    }
+        PdfDoc::set_annotation_color(&mut doc, &a.id, Swatch::Green);
+        assert_eq!(PdfDoc::list_annotations(&doc)[0].color, Swatch::Green);
+        PdfDoc::delete_annotation(&mut doc, &a.id);
+        assert!(PdfDoc::list_annotations(&doc).is_empty());
 
-    #[test]
-    fn ink_points_round_trip() {
+        // Ink points round-trip exactly.
         let mut doc = AutoCommit::new();
-        let a = Annotation {
-            id: Annotation::new_id(),
-            page: 1,
-            kind: AnnoKind::ink(vec![(1.0, 2.0), (3.5, 4.25), (10.0, 0.0)]),
-            color: Swatch::Blue,
-            author: "Bob".into(),
-            chars: None,
-            created_ms: 0,
-            space: crate::model::GeomSpace::Page,
-        };
-        PdfDoc::add_annotation(&mut doc, &a, None);
-        let got = PdfDoc::list_annotations(&doc);
-        match &got[0].kind {
+        let ink = anno(
+            1,
+            AnnoKind::ink(vec![(1.0, 2.0), (3.5, 4.25), (10.0, 0.0)]),
+            Swatch::Blue,
+            "Bob",
+        );
+        PdfDoc::add_annotation(&mut doc, &ink, None);
+        match &PdfDoc::list_annotations(&doc)[0].kind {
             AnnoKind::Ink { strokes } => {
                 let points = &strokes[0];
                 assert_eq!(points.len(), 3);
@@ -1439,36 +1525,17 @@ mod tests {
             }
             _ => panic!("expected ink"),
         }
-    }
 
-    #[test]
-    fn set_color_and_delete() {
+        // Repositioning moves a note marker ...
         let mut doc = AutoCommit::new();
-        let a = hl(1);
-        let id = a.id.clone();
-        PdfDoc::add_annotation(&mut doc, &a, None);
-        PdfDoc::set_annotation_color(&mut doc, &id, Swatch::Green);
-        assert_eq!(PdfDoc::list_annotations(&doc)[0].color, Swatch::Green);
-        PdfDoc::delete_annotation(&mut doc, &id);
-        assert!(PdfDoc::list_annotations(&doc).is_empty());
-    }
-
-    #[test]
-    fn set_position_moves_a_note_marker() {
-        let mut doc = AutoCommit::new();
-        let a = Annotation {
-            id: Annotation::new_id(),
-            page: 1,
-            kind: AnnoKind::Note { x: 30.0, y: 40.0 },
-            color: Swatch::Blue,
-            author: "Alice".into(),
-            chars: None,
-            created_ms: 0,
-            space: crate::model::GeomSpace::Page,
-        };
-        let id = a.id.clone();
-        PdfDoc::add_annotation(&mut doc, &a, None);
-        PdfDoc::set_annotation_position(&mut doc, &id, 120.5, 210.25, GeomSpace::Page);
+        let note = anno(
+            1,
+            AnnoKind::Note { x: 30.0, y: 40.0 },
+            Swatch::Blue,
+            "Alice",
+        );
+        PdfDoc::add_annotation(&mut doc, &note, None);
+        PdfDoc::set_annotation_position(&mut doc, &note.id, 120.5, 210.25, GeomSpace::Page);
         match &PdfDoc::list_annotations(&doc)[0].kind {
             AnnoKind::Note { x, y } => {
                 assert!((x - 120.5).abs() < 1e-6, "note x moved");
@@ -1476,25 +1543,17 @@ mod tests {
             }
             _ => panic!("expected note"),
         }
-    }
 
-    #[test]
-    fn set_position_leaves_ink_geometry_untouched() {
-        // Ink is a polyline, not a single anchor — repositioning must be a no-op.
+        // ... but ink is a polyline, not a single anchor — repositioning must be a no-op.
         let mut doc = AutoCommit::new();
-        let a = Annotation {
-            id: Annotation::new_id(),
-            page: 1,
-            kind: AnnoKind::ink(vec![(1.0, 2.0), (3.0, 4.0)]),
-            color: Swatch::Blue,
-            author: "Bob".into(),
-            chars: None,
-            created_ms: 0,
-            space: crate::model::GeomSpace::Page,
-        };
-        let id = a.id.clone();
-        PdfDoc::add_annotation(&mut doc, &a, None);
-        PdfDoc::set_annotation_position(&mut doc, &id, 99.0, 99.0, GeomSpace::Page);
+        let ink = anno(
+            1,
+            AnnoKind::ink(vec![(1.0, 2.0), (3.0, 4.0)]),
+            Swatch::Blue,
+            "Bob",
+        );
+        PdfDoc::add_annotation(&mut doc, &ink, None);
+        PdfDoc::set_annotation_position(&mut doc, &ink.id, 99.0, 99.0, GeomSpace::Page);
         match &PdfDoc::list_annotations(&doc)[0].kind {
             AnnoKind::Ink { strokes } => assert_eq!(strokes[0].len(), 2, "ink polyline preserved"),
             _ => panic!("expected ink"),
@@ -1502,23 +1561,16 @@ mod tests {
     }
 
     #[test]
-    fn comment_thread_round_trips() {
+    fn comment_threads_round_trip_sort_and_keep_reply_ids_through_merges() {
         let mut doc = AutoCommit::new();
-        let c = Comment {
-            id: Comment::new_id(),
-            anno_id: Some("anno-1".into()),
-            page: 1,
-            author: "Alice".into(),
-            body: "Is this still accurate?".into(),
-            created: 5,
-            resolved: false,
-            replies: vec![Reply {
-                id: Reply::new_id(),
-                author: "Bob".into(),
-                body: "Yes, verified.".into(),
-            }],
-        };
-        let cid = c.id.clone();
+        let mut c = comment(
+            &Comment::new_id(),
+            Some("anno-1"),
+            "Alice",
+            "Is this still accurate?",
+            5,
+        );
+        c.replies = vec![reply(&Reply::new_id(), "Bob", "Yes, verified.")];
         PdfDoc::add_comment(&mut doc, &c);
         let got = PdfDoc::list_comments(&doc);
         assert_eq!(got.len(), 1);
@@ -1526,61 +1578,56 @@ mod tests {
         assert_eq!(got[0].replies.len(), 1);
         assert_eq!(got[0].replies[0].author, "Bob");
         assert_eq!(got[0].replies[0].id, c.replies[0].id);
-
         PdfDoc::add_reply(
             &mut doc,
-            &cid,
-            &Reply {
-                id: Reply::new_id(),
-                author: "Carol".into(),
-                body: "Agreed.".into(),
-            },
+            &c.id,
+            &reply(&Reply::new_id(), "Carol", "Agreed."),
+            &tilo_rich_text::plain_clips("Agreed."),
         );
-        PdfDoc::set_comment_resolved(&mut doc, &cid, true);
-        PdfDoc::set_comment_body(&mut doc, &cid, "Edited: confirmed accurate.");
+        PdfDoc::set_comment_resolved(&mut doc, &c.id, true);
+        PdfDoc::set_comment_text(
+            &mut doc,
+            &c.id,
+            &tilo_rich_text::plain_clips("Edited: confirmed accurate."),
+        );
         let got = PdfDoc::list_comments(&doc);
         assert_eq!(got[0].replies.len(), 2);
         assert!(got[0].resolved);
         assert_eq!(got[0].body, "Edited: confirmed accurate.");
-    }
 
-    #[test]
-    fn reply_ids_survive_reload_retries_and_concurrent_merges() {
+        // Comments list in creation order.
+        let mut doc = AutoCommit::new();
+        for (id, created) in [("a", 30), ("b", 10), ("c", 20)] {
+            PdfDoc::add_comment(&mut doc, &comment(id, None, "x", "y", created));
+        }
+        let order: Vec<i64> = PdfDoc::list_comments(&doc)
+            .iter()
+            .map(|c| c.created)
+            .collect();
+        assert_eq!(order, vec![10, 20, 30]);
+
+        // Reply ids survive reload, retries and concurrent merges.
         let mut base = AutoCommit::new();
-        let comment = Comment {
-            id: "thread-1".into(),
-            anno_id: None,
-            page: 1,
-            author: "Ada".into(),
-            body: "Please review this.".into(),
-            created: 1,
-            resolved: false,
-            replies: Vec::new(),
-        };
-        PdfDoc::add_comment(&mut base, &comment);
+        let thread = comment("thread-1", None, "Ada", "Please review this.", 1);
+        PdfDoc::add_comment(&mut base, &thread);
         let bytes = base.save();
         let mut left = AutoCommit::load(&bytes).unwrap();
         let mut right = AutoCommit::load(&bytes).unwrap();
-        let left_reply = Reply {
-            id: "reply-left".into(),
-            author: "Grace".into(),
-            body: "Looks good.".into(),
-        };
-        let right_reply = Reply {
-            id: "reply-right".into(),
-            author: "Lin".into(),
-            body: "One small change.".into(),
-        };
-        PdfDoc::add_reply(&mut left, &comment.id, &left_reply);
+        let left_reply = reply("reply-left", "Grace", "Looks good.");
+        PdfDoc::add_reply(&mut left, &thread.id, &left_reply, &[]);
         // A retried delivery has the same id and must remain exactly one reply.
-        PdfDoc::add_reply(&mut left, &comment.id, &left_reply);
-        PdfDoc::add_reply(&mut right, &comment.id, &right_reply);
+        PdfDoc::add_reply(&mut left, &thread.id, &left_reply, &[]);
+        PdfDoc::add_reply(
+            &mut right,
+            &thread.id,
+            &reply("reply-right", "Lin", "One small change."),
+            &tilo_rich_text::plain_clips("One small change."),
+        );
         left.merge_incoming(&mut right).unwrap();
         let replies = &PdfDoc::list_comments(&left)[0].replies;
         assert_eq!(replies.len(), 2);
         assert!(replies.iter().any(|reply| reply.id == "reply-left"));
         assert!(replies.iter().any(|reply| reply.id == "reply-right"));
-
         let reloaded = AutoCommit::load(&left.save()).unwrap();
         let reloaded_comments = PdfDoc::list_comments(&reloaded);
         let ids: Vec<&str> = reloaded_comments[0]
@@ -1592,113 +1639,83 @@ mod tests {
     }
 
     #[test]
-    fn comments_sort_by_created() {
+    fn signatures_round_trip_and_deletes_cascade_only_to_anchored_comments() {
+        use crate::model::SignatureInk;
         let mut doc = AutoCommit::new();
-        for (i, created) in [("a", 30), ("b", 10), ("c", 20)] {
-            PdfDoc::add_comment(
-                &mut doc,
-                &Comment {
-                    id: i.into(),
-                    anno_id: None,
-                    page: 1,
-                    author: "x".into(),
-                    body: "y".into(),
-                    created,
-                    resolved: false,
-                    replies: vec![],
-                },
-            );
-        }
-        let got = PdfDoc::list_comments(&doc);
-        let order: Vec<i64> = got.iter().map(|c| c.created).collect();
-        assert_eq!(order, vec![10, 20, 30]);
-    }
+        assert!(!PdfDoc::is_seeded(&mut doc));
+        PdfDoc::set_meta(&mut doc, "T", "A");
+        assert!(PdfDoc::is_seeded(&mut doc));
 
-    #[test]
-    fn signature_round_trips() {
-        let mut doc = AutoCommit::new();
-        let s = Signature {
-            id: Signature::new_id(),
-            page: 5,
-            rect: PtRect::new(360.0, 640.0, 180.0, 56.0),
-            signer: "Alice Daskju".into(),
-            date: "2026-06-30".into(),
-            ink: crate::model::SignatureInk::Typed,
-            space: crate::model::GeomSpace::Page,
-        };
-        PdfDoc::add_signature(&mut doc, &s, None);
+        let typed = signature(
+            &Signature::new_id(),
+            5,
+            PtRect::new(360.0, 640.0, 180.0, 56.0),
+            "Alice Daskju",
+            "2026-06-30",
+            SignatureInk::Typed,
+        );
+        PdfDoc::add_signature(&mut doc, &typed, None);
         let got = PdfDoc::list_signatures(&doc);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].signer, "Alice Daskju");
         assert_eq!(got[0].page, 5);
-        assert_eq!(got[0].ink, crate::model::SignatureInk::Typed);
-    }
+        assert_eq!(got[0].ink, SignatureInk::Typed);
+        PdfDoc::delete_signature(&mut doc, &typed.id);
+        assert!(PdfDoc::list_signatures(&doc).is_empty());
 
-    #[test]
-    fn drawn_signature_strokes_round_trip() {
-        let mut doc = AutoCommit::new();
         let strokes = vec![
             vec![(0.1, 0.5), (0.3, 0.2), (0.5, 0.6)],
             vec![(0.6, 0.4), (0.9, 0.5)],
         ];
-        let s = Signature {
-            id: Signature::new_id(),
-            page: 2,
-            rect: PtRect::new(100.0, 100.0, 200.0, 70.0),
-            signer: "Grace".into(),
-            date: "2026-08-17".into(),
-            ink: crate::model::SignatureInk::Drawn { strokes },
-            space: crate::model::GeomSpace::Page,
-        };
-        PdfDoc::add_signature(&mut doc, &s, None);
+        let drawn = signature(
+            &Signature::new_id(),
+            2,
+            PtRect::new(100.0, 100.0, 200.0, 70.0),
+            "Grace",
+            "2026-08-17",
+            SignatureInk::Drawn { strokes },
+        );
+        PdfDoc::add_signature(&mut doc, &drawn, None);
         let got = PdfDoc::list_signatures(&doc);
         assert_eq!(got.len(), 1);
         match &got[0].ink {
-            crate::model::SignatureInk::Drawn { strokes: back } => {
+            SignatureInk::Drawn { strokes: back } => {
                 assert_eq!(back.len(), 2, "both strokes survive");
                 assert_eq!(back[0].len(), 3);
                 assert!((back[0][1].0 - 0.3).abs() < 1e-2 && (back[0][1].1 - 0.2).abs() < 1e-2);
                 assert_eq!(back[1].len(), 2);
             }
-            crate::model::SignatureInk::Typed => panic!("expected drawn ink, got Typed"),
+            SignatureInk::Typed => panic!("expected drawn ink, got Typed"),
         }
-    }
 
-    #[test]
-    fn deleting_annotation_removes_its_anchored_comments() {
+        // Deleting a free comment removes it.
+        let mut doc = AutoCommit::new();
+        let free = comment(&Comment::new_id(), None, "Alice", "x", 1);
+        PdfDoc::add_comment(&mut doc, &free);
+        PdfDoc::delete_comment(&mut doc, &free.id);
+        assert!(PdfDoc::list_comments(&doc).is_empty());
+
+        // Deleting an annotation removes its anchored comments; an unrelated
+        // free comment must survive the delete.
         let mut doc = AutoCommit::new();
         let a = hl(1);
-        let aid = a.id.clone();
         PdfDoc::add_annotation(&mut doc, &a, None);
         PdfDoc::add_comment(
             &mut doc,
-            &Comment {
-                id: Comment::new_id(),
-                anno_id: Some(aid.clone()),
-                page: 1,
-                author: "Alice".into(),
-                body: "pinned".into(),
-                created: 1,
-                resolved: false,
-                replies: vec![],
-            },
+            &comment(
+                &Comment::new_id(),
+                Some(a.id.as_str()),
+                "Alice",
+                "pinned",
+                1,
+            ),
         );
-        // An unrelated free comment must survive the delete.
         PdfDoc::add_comment(
             &mut doc,
-            &Comment {
-                id: Comment::new_id(),
-                anno_id: None,
-                page: 1,
-                author: "Bob".into(),
-                body: "free".into(),
-                created: 2,
-                resolved: false,
-                replies: vec![],
-            },
+            &comment(&Comment::new_id(), None, "Bob", "free", 2),
         );
         assert_eq!(PdfDoc::list_comments(&doc).len(), 2);
-        PdfDoc::delete_annotation(&mut doc, &aid);
+        PdfDoc::delete_annotation(&mut doc, &a.id);
         assert!(PdfDoc::list_annotations(&doc).is_empty());
         let left = PdfDoc::list_comments(&doc);
         assert_eq!(
@@ -1710,48 +1727,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_comment_and_signature() {
-        let mut doc = AutoCommit::new();
-        let c = Comment {
-            id: Comment::new_id(),
-            anno_id: None,
-            page: 1,
-            author: "Alice".into(),
-            body: "x".into(),
-            created: 1,
-            resolved: false,
-            replies: vec![],
-        };
-        let cid = c.id.clone();
-        PdfDoc::add_comment(&mut doc, &c);
-        PdfDoc::delete_comment(&mut doc, &cid);
-        assert!(PdfDoc::list_comments(&doc).is_empty());
-
-        let s = Signature {
-            id: Signature::new_id(),
-            page: 1,
-            rect: PtRect::new(10.0, 10.0, 100.0, 40.0),
-            signer: "Alice".into(),
-            date: "2026-06-30".into(),
-            ink: crate::model::SignatureInk::Typed,
-            space: crate::model::GeomSpace::Page,
-        };
-        let sid = s.id.clone();
-        PdfDoc::add_signature(&mut doc, &s, None);
-        PdfDoc::delete_signature(&mut doc, &sid);
-        assert!(PdfDoc::list_signatures(&doc).is_empty());
-    }
-
-    #[test]
-    fn seeded_flag_flips() {
-        let mut doc = AutoCommit::new();
-        assert!(!PdfDoc::is_seeded(&mut doc));
-        PdfDoc::set_meta(&mut doc, "T", "A");
-        assert!(PdfDoc::is_seeded(&mut doc));
-    }
-
-    #[test]
-    fn concurrent_initialisation_and_same_page_moves_converge_without_duplicate_ids() {
+    fn page_plan_converges_imports_atomically_and_carries_markup() {
         let base = AutoCommit::new().save();
         let mut left = AutoCommit::load(&base).unwrap();
         let mut right = AutoCommit::load(&base).unwrap();
@@ -1785,47 +1761,38 @@ mod tests {
         assert_eq!(ids.len(), 3);
         b.merge_incoming(&mut a).unwrap();
         assert_eq!(PdfDoc::list_page_plan(&a), PdfDoc::list_page_plan(&b));
-    }
 
-    #[test]
-    fn markup_anchors_follow_a_page_occurrence_through_move_and_delete() {
+        // Markup anchors follow a page occurrence through move and delete.
         let mut doc = AutoCommit::new();
         PdfDoc::ensure_page_plan(&mut doc, 3);
         let annotation = hl(1);
-        let annotation_id = annotation.id.clone();
         PdfDoc::add_annotation(&mut doc, &annotation, None);
         PdfDoc::add_comment(
             &mut doc,
-            &Comment {
-                id: "comment-on-source-1".into(),
-                anno_id: Some(annotation_id),
-                page: 1,
-                author: "Alice".into(),
-                body: "attached".into(),
-                created: 1,
-                resolved: false,
-                replies: vec![],
-            },
+            &comment(
+                "comment-on-source-1",
+                Some(annotation.id.as_str()),
+                "Alice",
+                "attached",
+                1,
+            ),
         );
         PdfDoc::add_signature(
             &mut doc,
-            &Signature {
-                id: "signature-on-source-1".into(),
-                page: 1,
-                rect: PtRect::new(10.0, 10.0, 100.0, 40.0),
-                signer: "Alice".into(),
-                date: "2026-01-01".into(),
-                ink: crate::model::SignatureInk::Typed,
-                space: crate::model::GeomSpace::Page,
-            },
+            &signature(
+                "signature-on-source-1",
+                1,
+                PtRect::new(10.0, 10.0, 100.0, 40.0),
+                "Alice",
+                "2026-01-01",
+                crate::model::SignatureInk::Typed,
+            ),
             None,
         );
-
         PdfDoc::move_page_plan(&mut doc, "source-1", Some("source-3"));
         assert_eq!(PdfDoc::list_annotations(&doc)[0].page, 3);
         assert_eq!(PdfDoc::list_comments(&doc)[0].page, 3);
         assert_eq!(PdfDoc::list_signatures(&doc)[0].page, 3);
-
         PdfDoc::delete_page_plan(&mut doc, "source-1");
         assert!(PdfDoc::list_annotations(&doc).is_empty());
         assert!(PdfDoc::list_comments(&doc).is_empty());
@@ -1838,28 +1805,24 @@ mod tests {
             PdfDoc::annotation_page_id(&doc, &hidden[0].id).as_deref(),
             Some("source-1")
         );
-    }
 
-    #[test]
-    fn imported_pages_are_atomic_and_keep_their_durable_identity() {
+        // Imported pages are atomic and keep their durable identity.
         let mut doc = AutoCommit::new();
         PdfDoc::ensure_page_plan(&mut doc, 2);
-        let imported = ImportedPage {
-            hash: "a".repeat(64),
-            kind: "image".into(),
-            page: 1,
-            width_milli: 612_000,
-            height_milli: 408_000,
-        };
         let page = PagePlanEntry {
             id: "imported-image".into(),
             source_page: 1,
-            imported: Some(imported),
+            imported: Some(ImportedPage {
+                hash: "a".repeat(64),
+                kind: "image".into(),
+                page: 1,
+                width_milli: 612_000,
+                height_milli: 408_000,
+            }),
             rotation: 0,
         };
         PdfDoc::import_pages(&mut doc, Some("source-1"), std::slice::from_ref(&page));
         assert_eq!(PdfDoc::list_page_plan(&doc)[1], page);
-
         // A malformed batch refuses as a whole, including the otherwise valid
         // first entry. It cannot leave a partial shared page plan behind.
         let mut bad = page.clone();

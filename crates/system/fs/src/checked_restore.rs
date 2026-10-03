@@ -718,7 +718,7 @@ impl QuickFS {
             let bytes =
                 tokio::task::block_in_place(|| handle.block_on(hydrator.read(hash, 0, u64::MAX)))
                     .map_err(|_| Outcome::Unavailable)?;
-            (qdoc::Document::load(&bytes).is_ok(), bytes.len() as u64)
+            (tilo_doc::Document::load(&bytes).is_ok(), bytes.len() as u64)
         } else {
             (
                 false,
@@ -729,7 +729,7 @@ impl QuickFS {
                 },
             )
         };
-        let serialized_document = current_document || qdoc::Document::load(&data).is_ok();
+        let serialized_document = current_document || tilo_doc::Document::load(&data).is_ok();
         let mut journal = runtime.journal.lock().map_err(|_| Outcome::Unavailable)?;
         let _publication = publisher
             .map(|publisher| publisher.publication_lease())
@@ -1116,7 +1116,7 @@ fn test_pause(id: uuid::Uuid, point: TestPause) {
     if let Some(gate) = gate {
         gate.entered.send(()).unwrap();
         gate.resume
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(tilo_test_env::hang_bound())
             .unwrap();
     }
 }

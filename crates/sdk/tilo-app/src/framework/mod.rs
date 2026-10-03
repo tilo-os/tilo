@@ -75,22 +75,35 @@
 
 mod app;
 mod controls;
+// In-place reload swaps native code into a running process; a browser build
+// has neither the thin shared library nor the host that loads it.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod dev_reload;
 mod dispatch;
 mod each;
+pub mod history;
 mod live;
 mod preview;
 mod root;
 mod stage;
 mod surface;
 mod switch;
+// The test hosts discover native presentation, which the browser has not got.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod testing;
 mod view;
 
-pub use app::{ResourceApp, definition, launch_spec, run};
+#[cfg(not(target_arch = "wasm32"))]
+pub use app::definition_launch_spec;
+pub use app::launch_spec;
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+pub use app::run;
+pub use app::{ResourceApp, definition};
 pub use controls::{ActionControl, Actions};
 pub use dispatch::{DispatchGroup, Dispatcher};
 pub use each::Each;
 pub use live::Live;
+pub use preview::PastVersion;
 pub use stage::stage;
 pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
 pub use view::ViewCx;

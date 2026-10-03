@@ -25,9 +25,11 @@ environment would conceal the omission. The boundary regression tests cover both
 
 ## Local preparation
 
-Publication normally runs through `.forgejo/workflows/snapshot-rpms.yml`. Local
-builds are also supported for preparation and diagnosis; they do not publish,
-sign or promote an artifact. There is no `os/dev/snapshot-rpms.sh` helper.
+Publication normally runs through `.forgejo/workflows/build-rpms.yml`, which
+tags `registry.tilo.so/tilo/rpms:set-<fingerprint>` and is also a reusable
+workflow for image builds. Local builds are supported for preparation and
+diagnosis; they do not publish, sign or promote an artifact. There is no
+`os/dev/snapshot-rpms.sh` helper.
 
 On the native target architecture, use the exact base pin and a named context
 containing `virtio-win-0.1.302-1.noarch.rpm`. The recipe independently checks its
@@ -46,7 +48,9 @@ podman image inspect "localhost/tilo-rpms:$(uname -m)-candidate"
 The pinned base must already be present locally when using `--pull=never`.
 Snapshot creation downloads Fedora inputs; consumption uses the frozen repository.
 Record the resulting immutable local repository digest before supplying
-`RPMS_REF` to `os/dev/build-image.sh`. A local digest is not a published release pin.
+`RPMS_REF` to `os/dev/build-image.sh` (or let `resolve-rpm-snapshot.sh` look
+up the published `set-<fingerprint>` tag). A local digest is not a
+published fingerprint tag.
 
 Every non-VirtIO RPM must produce a verified cryptographic signature and valid
 digests using an isolated Fedora trust database. `rpmkeys` success alone is

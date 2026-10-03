@@ -37,11 +37,13 @@ pub mod actions;
 pub mod app;
 pub mod doc;
 pub mod document_scan;
+mod files;
 pub mod frame;
 pub mod library;
 pub mod media;
 pub mod model;
 pub mod paint;
+pub mod resource;
 pub mod scan;
 pub mod search;
 pub mod video;
@@ -60,8 +62,16 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(CameraApp::disk())
 }
 
+/// The app as every host mounts it: the live camera and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.camera", app_root)
+        .component_actions(actions::register)
+        .as_definition("Camera")
+}
+
 /// Build the hermetic app used by `--shots` and integration harnesses:
 /// self-contained sample content, no disk or device access.
 pub fn shots_root() -> Box<dyn Widget> {
     Box::new(CameraApp::sample())
 }
+pub use resource::{Camera, CameraShell, CameraState, launch_spec, standalone_launch};

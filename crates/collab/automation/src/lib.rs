@@ -50,8 +50,13 @@ mod types;
 #[cfg(test)]
 mod tests;
 
-pub use catalog::{ActionCatalog, ResourceTarget, kind_matches};
-pub use check::{CheckError, CheckErrorKind, NoShortcuts, ShortcutResolver, check};
+pub use catalog::{
+    ActionCatalog, ResourceTarget, kind_matches, quick_action_arguments, quick_action_input,
+};
+pub use check::{
+    BindingOption, CheckError, CheckErrorKind, NoShortcuts, ShortcutResolver, binding_options,
+    check, values_at,
+};
 pub use grant::{grant_permits, required_verb};
 pub use path::StepPath;
 pub use run::{
@@ -59,8 +64,9 @@ pub use run::{
     RunTrigger, StepFailure, StepRecord, StepStatus, invocation_id, run,
 };
 pub use shortcut::{
-    AiTransform, Binding, CatchUp, Condition, FocusTransition, Schedule, Selector, Shortcut, Step,
-    StepKind, TimeOfDay, TriggerSpec, UnattendedConsent, Weekday,
+    AiTransform, Binding, CatchUp, Condition, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE,
+    FocusTransition, Schedule, ScheduleClaim, Selector, Shortcut, Step, StepKind, TimeOfDay,
+    TriggerSpec, UnattendedConsent, Weekday,
 };
 
 /// Application that publishes shortcuts as runnable actions.

@@ -8,13 +8,13 @@
 //! The panel renders the data the app feeds it and reports what the user
 //! clicked; it owns no filesystem or language-server state of its own.
 
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{EmptyState, Widget};
+use ui::widget::{EmptyState, EmptyStateContent, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
@@ -256,15 +256,14 @@ impl BottomPanel {
                 self.rect.y1,
             );
             EmptyState::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 body,
-                Some(ui::icons::Icon::Search),
-                "Search this project",
-                Some("Ctrl+Shift+F searches every file under the project root."),
-                None,
+                &EmptyStateContent {
+                    icon: Some(ui::icons::Icon::Search),
+                    title: "Search this project",
+                    message: Some("Ctrl+Shift+F searches every file under the project root."),
+                    action_label: None,
+                },
                 Point::new(-1.0, -1.0),
             );
             return;
@@ -318,10 +317,6 @@ impl BottomPanel {
     /// Draw one row per visible search hit: the `path:line` location column,
     /// then the code preview with the matched span tinted. Records each row's
     /// rect in `hit_rects` for click hit-testing.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a draw pass over one screenful of rows threading through the same handful of already-computed geometry values; grouping them into a struct would not make the call clearer"
-    )]
     fn draw_search_rows(
         &mut self,
         scene: &mut Scene,
@@ -635,15 +630,14 @@ impl BottomPanel {
                 ),
             };
             EmptyState::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 body,
-                Some(icon),
-                title,
-                Some(message),
-                None,
+                &EmptyStateContent {
+                    icon: Some(icon),
+                    title,
+                    message: Some(message),
+                    action_label: None,
+                },
                 Point::new(-1.0, -1.0),
             );
         } else {
@@ -663,13 +657,14 @@ impl BottomPanel {
                 // tops, not centres).
                 let centred = |tr: &mut TextRenderer, text: &str, size: f32| {
                     let (_, h) = tr.measure(text, size, None);
-                    y + (ROW_H - f64::from(h)) / 2.0
+                    y + (self.row_height() - f64::from(h)) / 2.0
                 };
-                let glyph_y = centred(text_renderer, glyph, 13.0);
+                let glyph_size = 13.0 * theme.text_scale;
+                let glyph_y = centred(text_renderer, glyph, glyph_size);
                 text_renderer.draw_text(
                     scene,
                     glyph,
-                    13.0 * theme.text_scale,
+                    glyph_size,
                     sev_color,
                     transform * Affine::translate((self.rect.x0 + 14.0 * self.text_scale, glyph_y)),
                     None,
@@ -687,33 +682,41 @@ impl BottomPanel {
                         13.0 * theme.text_scale,
                         self.rect.width() - 62.0 * self.text_scale,
                     );
+                    let message_size = 13.0 * theme.text_scale;
+                    let message_y = centred(text_renderer, &message, message_size);
                     text_renderer.draw_text(
                         scene,
                         &message,
-                        13.0 * theme.text_scale,
+                        message_size,
                         c.neutral[8],
-                        transform * Affine::translate((self.rect.x0 + 48.0 * self.text_scale, y)),
+                        transform
+                            * Affine::translate((self.rect.x0 + 48.0 * self.text_scale, message_y)),
                         None,
                     );
                 } else {
+                    let loc_size = 12.0 * theme.text_scale;
+                    let loc_y = centred(text_renderer, &loc, loc_size);
                     text_renderer.draw_text(
                         scene,
                         &loc,
-                        12.0 * theme.text_scale,
+                        loc_size,
                         c.text_dim,
                         transform
-                            * Affine::translate((
-                                self.rect.x0 + 36.0 * self.text_scale,
-                                y + 0.5 * self.text_scale,
-                            )),
+                            * Affine::translate((self.rect.x0 + 36.0 * self.text_scale, loc_y)),
                         None,
                     );
+                    let message_size = 13.0 * theme.text_scale;
+                    let message_y = centred(text_renderer, &d.message, message_size);
                     text_renderer.draw_text(
                         scene,
                         &d.message,
-                        13.0 * theme.text_scale,
+                        message_size,
                         c.neutral[8],
-                        transform * Affine::translate((self.rect.x0 + 130.0 * self.text_scale, y)),
+                        transform
+                            * Affine::translate((
+                                self.rect.x0 + 130.0 * self.text_scale,
+                                message_y,
+                            )),
                         Some((self.rect.width() - 140.0 * self.text_scale) as f32),
                     );
                 }
@@ -790,8 +793,6 @@ fn ellipsize_back(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> Stri
 }
 
 impl Widget for BottomPanel {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -890,21 +891,11 @@ impl Widget for BottomPanel {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.tab != PanelTab::Search || !self.rect.contains(self.last_cursor) {
@@ -922,7 +913,7 @@ impl Widget for BottomPanel {
                     self.search_scroll = next;
                     self.dirty = true;
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -939,7 +930,7 @@ impl Widget for BottomPanel {
                                 self.tab_changed = true;
                                 self.dirty = true;
                             }
-                            *handled = true;
+                            *ctx.handled = true;
                             break;
                         }
                     }
@@ -952,7 +943,7 @@ impl Widget for BottomPanel {
                         if rect.contains(self.last_cursor) {
                             self.activated_hit = Some(self.search_scroll + i);
                             self.dirty = true;
-                            *handled = true;
+                            *ctx.handled = true;
                             break;
                         }
                     }
@@ -1002,6 +993,14 @@ mod tests {
     }
 
     #[test]
+    fn ellipsizing_fits_the_width_and_keeps_the_actionable_end() {
+        // Each phase uses a fresh text renderer.
+        a_short_string_is_left_alone();
+        a_long_path_keeps_its_file_and_line();
+        a_long_preview_keeps_its_beginning();
+        zero_width_yields_nothing_rather_than_an_ellipsis();
+    }
+
     fn a_short_string_is_left_alone() {
         let mut t = tr();
         assert_eq!(
@@ -1014,7 +1013,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_long_path_keeps_its_file_and_line() {
         // Front trimming must preserve the actionable file and line suffix.
         let mut t = tr();
@@ -1028,7 +1026,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_long_preview_keeps_its_beginning() {
         let mut t = tr();
         let long = "a".repeat(400);
@@ -1038,7 +1035,6 @@ mod tests {
         assert!(f64::from(t.measure(&out, 12.0, None).0) <= 100.0);
     }
 
-    #[test]
     fn zero_width_yields_nothing_rather_than_an_ellipsis() {
         let mut t = tr();
         assert_eq!(ellipsize_front(&mut t, "x", 12.0, 0.0), "");
@@ -1046,6 +1042,13 @@ mod tests {
     }
 
     #[test]
+    fn search_tab_summary_activation_and_scroll_follow_the_query() {
+        // Each phase builds a fresh panel.
+        the_search_summary_says_what_is_true();
+        the_search_tab_reports_the_row_the_user_clicked();
+        a_new_query_resets_the_scroll_but_streaming_does_not();
+    }
+
     fn the_search_summary_says_what_is_true() {
         let mut p = BottomPanel::new();
         p.set_tab(PanelTab::Search);
@@ -1099,7 +1102,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn the_search_tab_reports_the_row_the_user_clicked() {
         let mut p = BottomPanel::new();
         assert_eq!(p.take_activated_hit(), None);
@@ -1108,9 +1110,16 @@ mod tests {
         assert_eq!(p.take_activated_hit(), None, "cleared on read");
     }
 
+    #[test]
+    fn panel_layout_centres_tab_labels_and_budgets_search_rows() {
+        // Each phase builds a fresh panel.
+        tab_labels_share_one_centre_line_inside_the_strip();
+        the_search_tab_is_taller_than_the_others();
+        the_row_budget_reserves_room_for_the_summary_and_the_more_hint();
+    }
+
     /// Every tab label is placed from its measured line height, so the three
     /// labels share one glyph top inside the strip and none escapes it.
-    #[test]
     fn tab_labels_share_one_centre_line_inside_the_strip() {
         let mut panel = BottomPanel::new();
         panel.rect = Rect::new(0.0, 100.0, 900.0, 100.0 + PANEL_HEIGHT);
@@ -1140,7 +1149,6 @@ mod tests {
         assert!(f64::from(tops[0]) + f64::from(line_h) <= 100.0 + TAB_H);
     }
 
-    #[test]
     fn the_search_tab_is_taller_than_the_others() {
         let mut p = BottomPanel::new();
         assert_eq!(p.height(), PANEL_HEIGHT);
@@ -1148,7 +1156,6 @@ mod tests {
         assert_eq!(p.height(), PANEL_HEIGHT_SEARCH);
     }
 
-    #[test]
     fn a_new_query_resets_the_scroll_but_streaming_does_not() {
         let mut p = BottomPanel::new();
         p.set_search(SearchState {
@@ -1179,7 +1186,6 @@ mod tests {
         assert_eq!(p.search_scroll, 0);
     }
 
-    #[test]
     fn the_row_budget_reserves_room_for_the_summary_and_the_more_hint() {
         // A row count that ignored those two strips would draw the last row on
         // top of the "N more" line.

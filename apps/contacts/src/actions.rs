@@ -40,7 +40,7 @@ use uuid::Uuid;
 use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
     ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
-    Resource, ResourceProvider, ResultSpec, RetryPolicy,
+    Resource, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::ContactsDoc;
@@ -148,60 +148,76 @@ pub enum ContactsOperation {
     },
 }
 
+fn find_resource(resource: Resource, id: &str) -> Option<Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource);
+    }
+    for child in resource.children {
+        if let Some(found) = find_resource(child, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod file_action_tests {
     use super::*;
+    /// Contact file operations go through the portal with no host path, are sensitive confirmed background jobs, and only start the export flow.
     #[test]
-    fn file_operation_is_portal_mediated_and_has_no_host_path_argument() {
-        let spec = file_operation("import-vcard", "Import vCard", false);
-        assert!(spec.params().is_empty());
-        let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
-        let decoded: ContactsOperation = serde_json::from_slice(&encoded.payload).unwrap();
-        assert_eq!(decoded, ContactsOperation::ImportVcard { path: None });
-        assert!(matches!(
-            spec.contract.execution,
-            ExecutionMode::Background { .. }
-        ));
-        assert_eq!(spec.contract.result, ResultSpec::Job);
-    }
+    fn exports_are_portal_mediated_sensitive_background_jobs() {
+        // --- phase: file_operation_is_portal_mediated_and_has_no_host_path_argument ---
+        {
+            let spec = file_operation("import-vcard", "Import vCard", false);
+            assert!(spec.params().is_empty());
+            let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
+            let decoded: ContactsOperation = serde_json::from_slice(&encoded.payload).unwrap();
+            assert_eq!(decoded, ContactsOperation::ImportVcard { path: None });
+            assert!(matches!(
+                spec.contract.execution,
+                ExecutionMode::Background { .. }
+            ));
+            assert_eq!(spec.contract.result, ResultSpec::Job);
+        }
 
-    #[test]
-    fn exports_are_sensitive_confirmed_background_jobs_not_deletes() {
-        let spec = file_operation("export-all-vcard", "Export all contacts", true);
-        assert_eq!(spec.contract.risk, tilo_actions::RiskLevel::Sensitive);
-        assert_eq!(
-            spec.contract.confirmation,
-            tilo_actions::ConfirmationPolicy::Confirm
-        );
-        assert_eq!(
-            spec.contract.execution,
-            ExecutionMode::Background { cancellable: false }
-        );
-        assert_eq!(spec.contract.result, ResultSpec::Job);
-        assert!(spec.contract.validate_declaration().is_empty());
-    }
+        // --- phase: exports_are_sensitive_confirmed_background_jobs_not_deletes ---
+        {
+            let spec = file_operation("export-all-vcard", "Export all contacts", true);
+            assert_eq!(spec.contract.risk, tilo_actions::RiskLevel::Sensitive);
+            assert_eq!(
+                spec.contract.confirmation,
+                tilo_actions::ConfirmationPolicy::Confirm
+            );
+            assert_eq!(
+                spec.contract.execution,
+                ExecutionMode::Background { cancellable: false }
+            );
+            assert_eq!(spec.contract.result, ResultSpec::Job);
+            assert!(spec.contract.validate_declaration().is_empty());
+        }
 
-    #[test]
-    fn contact_export_only_starts_the_sensitive_export_flow() {
-        let operation = ContactsOperation::ExportContactVcard {
-            id: uuid::Uuid::nil().to_string(),
-            path: None,
-        };
-        let spec = contact_operation(
-            "export-contact",
-            "Export contact",
-            OperationKind::Effect,
-            &operation,
-        )
-        .expect("contact export has a typed operation");
-        assert_eq!(spec.contract.risk, tilo_actions::RiskLevel::Sensitive);
-        assert_eq!(
-            spec.contract.confirmation,
-            tilo_actions::ConfirmationPolicy::Confirm
-        );
-        assert_eq!(spec.contract.execution, ExecutionMode::Immediate);
-        assert_eq!(spec.contract.result, ResultSpec::None);
-        assert!(spec.contract.validate_declaration().is_empty());
+        // --- phase: contact_export_only_starts_the_sensitive_export_flow ---
+        {
+            let operation = ContactsOperation::ExportContactVcard {
+                id: uuid::Uuid::nil().to_string(),
+                path: None,
+            };
+            let spec = contact_operation(
+                "export-contact",
+                "Export contact",
+                OperationKind::Effect,
+                &operation,
+            )
+            .expect("contact export has a typed operation");
+            assert_eq!(spec.contract.risk, tilo_actions::RiskLevel::Sensitive);
+            assert_eq!(
+                spec.contract.confirmation,
+                tilo_actions::ConfirmationPolicy::Confirm
+            );
+            assert_eq!(spec.contract.execution, ExecutionMode::Immediate);
+            assert_eq!(spec.contract.result, ResultSpec::None);
+            assert!(spec.contract.validate_declaration().is_empty());
+        }
     }
 }
 
@@ -261,7 +277,16 @@ fn export_flow_contract() -> ActionContract {
     }
 }
 
-fn file_operation(id: &str, label: &str, export: bool) -> ActionSpec {
+/// Book-level import / export Effects (no document delta). Published via
+/// [`crate::resource::Contacts::local_operations`].
+pub(crate) fn book_effect_specs() -> Vec<ActionSpec> {
+    vec![
+        file_operation("import-vcard", "Import vCard", false),
+        file_operation("export-all-vcard", "Export all contacts", true),
+    ]
+}
+
+pub(crate) fn file_operation(id: &str, label: &str, export: bool) -> ActionSpec {
     ActionSpec::typed_operation(
         id,
         label,
@@ -711,7 +736,7 @@ pub enum ContactsAction {
 /// Durable, browseable history metadata for an address-book mutation.
 pub fn history_context(action: &ContactsAction) -> tilo_actions::ActionContext {
     let mut context =
-        tilo_actions::ActionContext::for_action("org.tilo.Contacts", "Contacts", action);
+        tilo_actions::ActionContext::for_action("so.tilo.contacts", "Contacts", action);
     let (label, id, name) = match action {
         ContactsAction::CreateContact(contact) => {
             let name = format!("{} {}", contact.first, contact.last)
@@ -1421,7 +1446,7 @@ pub fn ordered_groups(contacts: &[Contact]) -> Vec<String> {
 /// Split a typed full name into first / rest-as-last, so a palette "New
 /// contact" / "Rename" that collects a single name string lands the same way
 /// the form's two fields would.
-fn split_name(name: &str) -> (String, String) {
+pub(crate) fn split_name(name: &str) -> (String, String) {
     let name = name.trim();
     match name.split_once(char::is_whitespace) {
         Some((first, rest)) => (first.trim().to_string(), rest.trim().to_string()),
@@ -1480,78 +1505,6 @@ fn patch_spec(contact: &Contact) -> ActionSpec {
             })
         },
     )
-}
-
-/// Build the resource tree Contacts currently has open: the book (with a "New
-/// contact" action) and each contact (typed field patch, rename, add-to-group,
-/// favourite, delete).
-/// Every document-mutating operation is exported as the same action the
-/// on-screen affordance dispatches.
-fn book_resource(ctx: &ContactsResourceCtx) -> Resource {
-    let mut root = Resource::new("contacts.book", "contacts.book", "Contacts");
-    let mut import = file_operation("import-vcard", "Import vCard", false);
-    if ctx.import_busy {
-        import = import.unavailable("already_running", "A contact import is already in progress");
-    }
-    root = root.with_action(import);
-    let mut export = file_operation("export-all-vcard", "Export all contacts", true);
-    if ctx.contact_count == 0 {
-        export = export.unavailable("book_empty", "There are no contacts to export");
-    } else if ctx.export_busy {
-        export = export.unavailable("already_running", "A contact export is already in progress");
-    }
-    root = root.with_action(export);
-
-    // Book-level: create a contact from a typed name. The uuid is minted once
-    // when the argument is committed, then baked into the envelope, so replay
-    // stays deterministic.
-    root = root.with_action(ActionSpec::prompted(
-        "new-contact",
-        "New contact",
-        "Name",
-        "full name…",
-        ExecutionLocus::ClientLocal,
-        move |name: &str| {
-            let (first, last) = split_name(name);
-            let mut c = Contact::new(); // id minted HERE, once, at commit time
-            c.first = first;
-            c.last = last;
-            encode(&create_contact_action(&c))
-        },
-    ));
-
-    for conflict in &ctx.import_conflicts {
-        let mut child = Resource::new(
-            format!("contacts.import-conflict:{}", conflict.token),
-            "contacts.import-conflict",
-            format!("Import review: {}", conflict.incoming_name),
-        );
-        let keep = ContactsOperation::KeepImportConflict {
-            token: conflict.token.clone(),
-        };
-        let import_as_new = ContactsOperation::ImportConflictAsNew {
-            token: conflict.token.clone(),
-        };
-        if let Some(spec) = contact_operation(
-            "keep-existing",
-            "Keep existing contact",
-            OperationKind::Effect,
-            &keep,
-        ) {
-            child = child.with_action(spec);
-        }
-        if let Some(spec) = contact_operation(
-            "import-as-new",
-            "Import as new contact",
-            OperationKind::Effect,
-            &import_as_new,
-        ) {
-            child = child.with_action(spec);
-        }
-        root = root.with_child(child);
-    }
-
-    root
 }
 
 /// Resource and action catalogue for one stable contact identity. Kept
@@ -1755,23 +1708,122 @@ pub fn duplicate_resource(duplicate: &DuplicateResource) -> Resource {
 /// Build the contextual resource page the palette renders. Discovery stays
 /// bounded even for a very large shared book; direct resource lookup and the
 /// search provider retain complete reachability.
-pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    let mut root = book_resource(ctx);
-    root = root.with_child(favorites_resource());
-    for duplicate in ctx.duplicates.iter().take(MAX_CONTEXT_DUPLICATE_RESOURCES) {
-        root = root.with_child(duplicate_resource(duplicate));
+fn overlay_transfer_availability(root: &mut Resource, ctx: &ContactsResourceCtx) {
+    if ctx.import_busy
+        && let Some(index) = root
+            .actions
+            .iter()
+            .position(|action| action.id == "import-vcard")
+    {
+        let spec = root.actions.remove(index);
+        root.actions.insert(
+            index,
+            spec.unavailable("already_running", "A contact import is already in progress"),
+        );
     }
-    // Defend the catalogue boundary here as well as in `ContactsApp`: other
-    // hosts can construct this context directly, and resource discovery must
-    // stay bounded regardless of which adapter supplied it.
-    for group in ctx.groups.iter().take(MAX_CONTEXT_GROUP_RESOURCES) {
-        root = root.with_child(group_resource(group));
+    if let Some(index) = root
+        .actions
+        .iter()
+        .position(|action| action.id == "export-all-vcard")
+    {
+        let spec = root.actions.remove(index);
+        let spec = if ctx.contact_count == 0 {
+            spec.unavailable("book_empty", "There are no contacts to export")
+        } else if ctx.export_busy {
+            spec.unavailable("already_running", "A contact export is already in progress")
+        } else {
+            spec
+        };
+        root.actions.insert(index, spec);
     }
-    for contact in ctx.contacts.iter().take(MAX_CONTEXT_CONTACT_RESOURCES) {
-        root = root.with_child(contact_resource(contact, ctx.export_busy));
-    }
+}
 
+/// The published address book for this page. Duplicate reviews stay children
+/// beside the document rows.
+pub fn provide_resources(ctx: &ContactsResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    // The address book is the document once the `contacts` map exists, including
+    // an empty book. Import conflicts and duplicate reviews stay live extras.
+    // A caller that has not written the map yet still publishes its context.
+    let has_book = automerge::ReadDoc::get(doc, &automerge::ROOT, "contacts")
+        .ok()
+        .flatten()
+        .is_some();
+    let state = if has_book {
+        <crate::resource::Contacts as ui::tilo_resource::Resource>::read(doc).unwrap_or(
+            crate::resource::ContactsState {
+                contacts: Vec::new(),
+            },
+        )
+    } else {
+        crate::resource::ContactsState {
+            contacts: ctx.contacts.clone(),
+        }
+    };
+    let mut root = ui::tilo_resource::publish::<crate::resource::Contacts>(
+        "contacts.book",
+        "Contacts",
+        &state,
+    );
+    overlay_transfer_availability(&mut root, ctx);
+    root.children.extend(live_presentation_extras(ctx));
     vec![root]
+}
+
+/// Document-derived children for [`tilo_resource::publish`]: favorites, groups,
+/// and contacts. Import conflicts and duplicate reviews stay live extras —
+/// they are not shared CRDT rows.
+pub(crate) fn publish_children(contacts: &[Contact]) -> Vec<Resource> {
+    let mut children = vec![favorites_resource()];
+    for group in ordered_groups(contacts)
+        .into_iter()
+        .take(MAX_CONTEXT_GROUP_RESOURCES)
+    {
+        children.push(group_resource(&group));
+    }
+    for contact in contacts.iter().take(MAX_CONTEXT_CONTACT_RESOURCES) {
+        children.push(contact_resource(contact, false));
+    }
+    children
+}
+
+/// Hosted-only extras that are not document state: in-flight import conflicts
+/// and pending duplicate-merge reviews.
+pub(crate) fn live_presentation_extras(ctx: &ContactsResourceCtx) -> Vec<Resource> {
+    let mut extras = Vec::new();
+    for conflict in &ctx.import_conflicts {
+        let mut child = Resource::new(
+            format!("contacts.import-conflict:{}", conflict.token),
+            "contacts.import-conflict",
+            format!("Import review: {}", conflict.incoming_name),
+        );
+        let keep = ContactsOperation::KeepImportConflict {
+            token: conflict.token.clone(),
+        };
+        let import_as_new = ContactsOperation::ImportConflictAsNew {
+            token: conflict.token.clone(),
+        };
+        if let Some(spec) = contact_operation(
+            "keep-existing",
+            "Keep existing contact",
+            OperationKind::Effect,
+            &keep,
+        ) {
+            child = child.with_action(spec);
+        }
+        if let Some(spec) = contact_operation(
+            "import-as-new",
+            "Import as new contact",
+            OperationKind::Effect,
+            &import_as_new,
+        ) {
+            child = child.with_action(spec);
+        }
+        extras.push(child);
+    }
+    for duplicate in ctx.duplicates.iter().take(MAX_CONTEXT_DUPLICATE_RESOURCES) {
+        extras.push(duplicate_resource(duplicate));
+    }
+    extras
 }
 
 /// Resolve one resource from the complete current book without materialising
@@ -1780,7 +1832,11 @@ pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Re
 /// handler.
 pub fn resolve_resource(ctx: &ContactsResourceCtx, id: &str) -> Option<Resource> {
     if id == "contacts.book" {
-        return Some(book_resource(ctx));
+        let mut root = provide_resources(ctx, &automerge::AutoCommit::new())
+            .into_iter()
+            .next()?;
+        root.children.clear();
+        return Some(root);
     }
     if id == FAVORITES_RESOURCE_ID {
         return Some(favorites_resource());
@@ -1858,12 +1914,40 @@ pub fn resolve_resource(ctx: &ContactsResourceCtx, id: &str) -> Option<Resource>
         .map(|contact| contact_resource(contact, ctx.export_busy))
 }
 
-impl ResourceProvider for crate::app::ContactsApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::ContactsApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.contacts_resource_ctx(), doc)
     }
 
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if id == "contacts.book" {
+            // The published address book. The directory page does not walk
+            // every contact; those resolve by id.
+            let mut root = provide_resources(&self.contacts_resource_ctx(), doc)
+                .into_iter()
+                .next()?;
+            root.children.clear();
+            return Some(root);
+        }
+        if let Some(mut found) = provide_resources(&self.contacts_resource_ctx(), doc)
+            .into_iter()
+            .find_map(|root| find_resource(root, id))
+        {
+            if self.export_is_busy()
+                && let Some(action) = found
+                    .actions
+                    .iter_mut()
+                    .find(|action| action.id == "export-contact")
+            {
+                *action = action
+                    .clone()
+                    .unavailable("already_running", "A contact export is already in progress");
+            }
+            return Some(found);
+        }
+        // A contact or group outside the eager page stays addressable from
+        // this device's store.
         self.exact_contacts_resource_ctx(id)
             .and_then(|ctx| resolve_resource(&ctx, id))
     }
@@ -1887,7 +1971,9 @@ mod tests {
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
+                panic!("expected a prompted action: {}", spec.id)
+            }
         }
     }
 
@@ -1918,7 +2004,7 @@ mod tests {
         let mut app = ContactsApp::sample();
         let mut adopted = doc.clone();
         app.sync(&mut adopted, &ROOT);
-        Widget::resources(&app, doc)
+        ui::resources::resources(&app, doc)
     }
 
     /// The stored contact a `contacts.contact` resource addresses.
@@ -1970,670 +2056,705 @@ mod tests {
         ],
     }
 
-    /// Per-contact export is a typed resource operation, not an unmodelled
-    /// context-menu side effect. The portal path stays absent from the
-    /// payload and the action is confirmation-labelled because it can
-    /// disclose contact data outside the address book.
+    /// The contacts tree is bounded yet every contact and group resolves directly, with typed export and search-addressed actions.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn export_contact_is_a_typed_sensitive_operation() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let (contact, export_spec) = ui::testing::action_contract::find_spec(
-            &resources,
-            "contacts.contact",
-            "export-contact",
-        );
-        let id = contact.id.as_str().trim_start_matches("contacts.contact:");
-        assert!(matches!(
-            export_spec.contract.risk,
-            tilo_actions::RiskLevel::Sensitive
-        ));
-        assert_eq!(export_spec.contract.execution, ExecutionMode::Immediate);
-        assert_eq!(export_spec.contract.result, ResultSpec::None);
-        let export: ContactsOperation = serde_json::from_slice(
-            &ui::testing::action_contract::spec_encoding(export_spec, None).payload,
-        )
-        .expect("export operation payload is typed");
-        assert_eq!(
-            export,
-            ContactsOperation::ExportContactVcard {
-                id: id.to_string(),
-                path: None,
-            }
-        );
-    }
+    fn contacts_resource_tree_publishes_bounded_typed_operations() {
+        // --- phase: ctrl_k_publishes_the_contacts_tree ---
+        // Ctrl+K on Contacts yields the tree: the book with a "New contact" action
+        // and a `contacts.contact` child per record exporting rename / add-to-group
+        // / favourite / export / delete. Drives the real resource hook.
+        {
+            let (app, doc) = seeded();
+            let resources = ui::resources::resources(&app, &doc);
+            assert_eq!(resources.len(), 1, "one book root");
+            let book = &resources[0];
+            assert_eq!(book.kind, "contacts.book");
+            let book_actions: Vec<&str> = book.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(book_actions.contains(&"new-contact"), "{book_actions:?}");
 
-    /// Ctrl+K on Contacts yields the tree: the book with a "New contact" action
-    /// and a `contacts.contact` child per record exporting rename / add-to-group
-    /// / favourite / export / delete. Drives the real resource hook.
-    #[test]
-    fn ctrl_k_publishes_the_contacts_tree() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 1, "one book root");
-        let book = &resources[0];
-        assert_eq!(book.kind, "contacts.book");
-        let book_actions: Vec<&str> = book.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(book_actions.contains(&"new-contact"), "{book_actions:?}");
-
-        let contact = book
-            .children
-            .iter()
-            .find(|r| r.kind == "contacts.contact")
-            .expect("a contact resource");
-        let actions: Vec<&str> = contact.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(actions.contains(&"edit"), "{actions:?}");
-        assert!(actions.contains(&"add-to-group"), "{actions:?}");
-        assert!(actions.contains(&"favorite"), "{actions:?}");
-        assert!(actions.contains(&"export-contact"), "{actions:?}");
-        assert!(actions.contains(&"delete"), "{actions:?}");
-
-        let group = book
-            .children
-            .iter()
-            .find(|resource| resource.kind == "contacts.group")
-            .expect("a durable group resource");
-        assert!(
-            group.actions.iter().any(|action| action.id == "open"),
-            "groups export their canonical open action"
-        );
-
-        // The full flattened tree exports every action.
-        let flat: Vec<&str> = tilo_actions::flatten(&resources)
-            .iter()
-            .map(|f| f.action.label.as_str())
-            .collect();
-        assert!(flat.contains(&"New contact"), "{flat:?}");
-        assert!(flat.contains(&"Delete contact"), "{flat:?}");
-        assert!(flat.contains(&"Export contact"), "{flat:?}");
-        assert!(flat.contains(&"Rename contact"), "{flat:?}");
-    }
-
-    #[test]
-    fn contextual_catalogue_is_bounded_but_every_contact_resolves_directly() {
-        let contacts = (0..(MAX_CONTEXT_CONTACT_RESOURCES + 2))
-            .map(|index| Contact {
-                id: Uuid::new_v4(),
-                first: format!("Person {index:03}"),
-                ..Contact::default()
-            })
-            .collect::<Vec<_>>();
-        let ctx = ContactsResourceCtx {
-            contacts: contacts.clone(),
-            groups: Vec::new(),
-            contact_count: contacts.len(),
-            import_busy: false,
-            export_busy: false,
-            import_conflicts: Vec::new(),
-            duplicates: Vec::new(),
-        };
-
-        let page = provide_resources(&ctx, &AutoCommit::new());
-        assert_eq!(
-            page[0]
+            let contact = book
                 .children
                 .iter()
-                .filter(|resource| resource.kind == "contacts.contact")
-                .count(),
-            MAX_CONTEXT_CONTACT_RESOURCES,
-            "the permanent Favorites collection does not consume the bounded contact page"
-        );
+                .find(|r| r.kind == "contacts.contact")
+                .expect("a contact resource");
+            let actions: Vec<&str> = contact.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(actions.contains(&"edit"), "{actions:?}");
+            assert!(actions.contains(&"add-to-group"), "{actions:?}");
+            assert!(actions.contains(&"favorite"), "{actions:?}");
+            assert!(actions.contains(&"export-contact"), "{actions:?}");
+            assert!(actions.contains(&"delete"), "{actions:?}");
 
-        let target = contacts.last().expect("fixture is populated");
-        let address = open_contact_address(target.id);
-        let direct = resolve_resource(&ctx, &address.resource)
-            .expect("contacts outside the contextual page resolve lazily");
-        assert!(
-            tilo_actions::door::resolve(&[direct], &address).is_some(),
-            "the lazy resource exposes its canonical open action"
-        );
-        assert!(
-            resolve_resource(&ctx, &contact_resource_id(Uuid::new_v4())).is_none(),
-            "a stale contact id is refused rather than resurrected"
-        );
-    }
+            let group = book
+                .children
+                .iter()
+                .find(|resource| resource.kind == "contacts.group")
+                .expect("a durable group resource");
+            assert!(
+                group.actions.iter().any(|action| action.id == "open"),
+                "groups export their canonical open action"
+            );
 
-    #[test]
-    fn group_resources_are_canonical_bounded_and_resolve_outside_the_page() {
-        let contacts = (0..(MAX_CONTEXT_GROUP_RESOURCES + 2))
-            .map(|index| Contact {
-                id: Uuid::new_v4(),
-                first: format!("Person {index:03}"),
-                groups: vec![GroupEntry::new(format!("Group {index:03}"))],
-                ..Contact::default()
-            })
-            .collect::<Vec<_>>();
-        let ctx = ContactsResourceCtx {
-            groups: ordered_groups(&contacts)
+            // The full flattened tree exports every action.
+            let flat: Vec<&str> = tilo_actions::flatten(&resources)
+                .iter()
+                .map(|f| f.action.label.as_str())
+                .collect();
+            assert!(flat.contains(&"New contact"), "{flat:?}");
+            assert!(flat.contains(&"Delete contact"), "{flat:?}");
+            assert!(flat.contains(&"Export contact"), "{flat:?}");
+            assert!(flat.contains(&"Rename contact"), "{flat:?}");
+        }
+
+        // --- phase: contextual_catalogue_is_bounded_but_every_contact_resolves_directly ---
+        {
+            let contacts = (0..(MAX_CONTEXT_CONTACT_RESOURCES + 2))
+                .map(|index| Contact {
+                    id: Uuid::new_v4(),
+                    first: format!("Person {index:03}"),
+                    ..Contact::default()
+                })
+                .collect::<Vec<_>>();
+            let ctx = ContactsResourceCtx {
+                contacts: contacts.clone(),
+                groups: Vec::new(),
+                contact_count: contacts.len(),
+                import_busy: false,
+                export_busy: false,
+                import_conflicts: Vec::new(),
+                duplicates: Vec::new(),
+            };
+
+            let page = provide_resources(&ctx, &AutoCommit::new());
+            assert_eq!(
+                page[0]
+                    .children
+                    .iter()
+                    .filter(|resource| resource.kind == "contacts.contact")
+                    .count(),
+                MAX_CONTEXT_CONTACT_RESOURCES,
+                "the permanent Favorites collection does not consume the bounded contact page"
+            );
+
+            let target = contacts.last().expect("fixture is populated");
+            let address = open_contact_address(target.id);
+            let direct = resolve_resource(&ctx, &address.resource)
+                .expect("contacts outside the contextual page resolve lazily");
+            assert!(
+                tilo_actions::door::resolve(&[direct], &address).is_some(),
+                "the lazy resource exposes its canonical open action"
+            );
+            assert!(
+                resolve_resource(&ctx, &contact_resource_id(Uuid::new_v4())).is_none(),
+                "a stale contact id is refused rather than resurrected"
+            );
+        }
+
+        // --- phase: group_resources_are_canonical_bounded_and_resolve_outside_the_page ---
+        {
+            let contacts = (0..(MAX_CONTEXT_GROUP_RESOURCES + 2))
+                .map(|index| Contact {
+                    id: Uuid::new_v4(),
+                    first: format!("Person {index:03}"),
+                    groups: vec![GroupEntry::new(format!("Group {index:03}"))],
+                    ..Contact::default()
+                })
+                .collect::<Vec<_>>();
+            let ctx = ContactsResourceCtx {
+                groups: ordered_groups(&contacts)
+                    .into_iter()
+                    .take(MAX_CONTEXT_GROUP_RESOURCES)
+                    .collect(),
+                contact_count: contacts.len(),
+                contacts,
+                import_busy: false,
+                export_busy: false,
+                import_conflicts: Vec::new(),
+                duplicates: Vec::new(),
+            };
+
+            let page = provide_resources(&ctx, &AutoCommit::new());
+            let group_count = page[0]
+                .children
+                .iter()
+                .filter(|resource| resource.kind == "contacts.group")
+                .count();
+            assert_eq!(group_count, MAX_CONTEXT_GROUP_RESOURCES);
+
+            let name = format!("Group {:03}", MAX_CONTEXT_GROUP_RESOURCES + 1);
+            let address = open_group_address(&name);
+            let resource = resolve_resource(&ctx, &address.resource)
+                .expect("a group outside the palette page resolves lazily");
+            assert!(
+                tilo_actions::door::resolve(&[resource], &address).is_some(),
+                "the lazy resource exposes the exact group view operation"
+            );
+        }
+
+        // --- phase: search_provider_addresses_an_exported_contact_action ---
+        // Search addresses the exact view action in the live resource tree; it
+        // does not mint a parallel navigation namespace.
+        {
+            let (app, doc) = seeded();
+
+            // The mutation side is live.
+            assert!(
+                !ui::resources::resources(&app, &doc).is_empty(),
+                "resources are exported"
+            );
+
+            // The search side finds the contact and names its exported action.
+            let providers = ui::search::capability::search_providers(&app);
+            assert_eq!(providers.len(), 1, "one contacts search provider");
+            let hits = providers[0].search("hopper");
+            let hit = hits
+                .iter()
+                .find(|r| r.title == "Grace Hopper")
+                .expect("the provider surfaces the real matching contact");
+            let id = ContactsDoc::list_contacts(&doc)
                 .into_iter()
-                .take(MAX_CONTEXT_GROUP_RESOURCES)
-                .collect(),
-            contact_count: contacts.len(),
-            contacts,
-            import_busy: false,
-            export_busy: false,
-            import_conflicts: Vec::new(),
-            duplicates: Vec::new(),
-        };
+                .find(|contact| contact.display_name() == hit.title)
+                .expect("the result names a stored contact")
+                .id;
+            let address = hit.action_address().expect("search hit is canonical");
+            assert_eq!(address, open_contact_address(id));
+            assert!(
+                tilo_actions::door::resolve(&ui::resources::resources(&app, &doc), &address)
+                    .is_some(),
+                "the address is exported to the palette, accessibility and agents"
+            );
+        }
 
-        let page = provide_resources(&ctx, &AutoCommit::new());
-        let group_count = page[0]
-            .children
-            .iter()
-            .filter(|resource| resource.kind == "contacts.group")
-            .count();
-        assert_eq!(group_count, MAX_CONTEXT_GROUP_RESOURCES);
-
-        let name = format!("Group {:03}", MAX_CONTEXT_GROUP_RESOURCES + 1);
-        let address = open_group_address(&name);
-        let resource = resolve_resource(&ctx, &address.resource)
-            .expect("a group outside the palette page resolves lazily");
-        assert!(
-            tilo_actions::door::resolve(&[resource], &address).is_some(),
-            "the lazy resource exposes the exact group view operation"
-        );
-    }
-
-    #[test]
-    fn imported_uid_review_actions_are_addressable_and_guard_new_contact_creation() {
-        let token = Uuid::new_v4().to_string();
-        let ctx = ContactsResourceCtx {
-            contacts: Vec::new(),
-            groups: Vec::new(),
-            contact_count: 0,
-            import_busy: false,
-            export_busy: false,
-            import_conflicts: vec![ImportConflictResource {
-                token: token.clone(),
-                incoming_name: "Incoming Ada".into(),
-                existing_name: "Existing Ada".into(),
-            }],
-            duplicates: Vec::new(),
-        };
-        let resource_id = format!("contacts.import-conflict:{token}");
-        let review = resolve_resource(&ctx, &resource_id).expect("pending review resolves");
-        assert!(
-            review
-                .actions
-                .iter()
-                .any(|action| action.id == "keep-existing")
-        );
-        let import_as_new = review
-            .actions
-            .iter()
-            .find(|action| action.id == "import-as-new")
-            .expect("review exposes import-as-new");
-        assert_eq!(
-            import_as_new.contract.confirmation,
-            tilo_actions::ConfirmationPolicy::Confirm,
-            "adding an untrusted collision as a new contact needs confirmation"
-        );
-        assert_eq!(
-            import_as_new.contract.risk,
-            tilo_actions::RiskLevel::Destructive
-        );
-    }
-
-    #[test]
-    fn typed_field_patch_action_covers_the_complete_contact_form() {
-        let (_app, mut doc) = seeded();
-        let contact = first_contact(&doc);
-        let resource = contact_resource(&contact, false);
-        let spec = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "update-fields")
-            .expect("every contact exports its typed field patch action");
-
-        let encoded = spec
-            .build_json(
-                serde_json::json!({"patch": {"title": "Admiral"}})
-                    .as_object()
-                    .expect("the fixture is an argument object"),
-            )
-            .expect("the typed patch is accepted at the action door");
-        let decoded = registry()
-            .decode(&encoded)
-            .expect("the resource action is a registered ContactsAction");
-        decoded
-            .apply(&mut doc)
-            .expect("the canonical patch action applies");
-        assert_eq!(
-            ContactsDoc::list_contacts(&doc)
-                .into_iter()
-                .find(|candidate| candidate.id == contact.id)
-                .expect("target contact remains active")
-                .title,
-            "Admiral"
-        );
-
-        let empty = spec
-            .build_json(
-                serde_json::json!({"patch": {}})
-                    .as_object()
-                    .expect("the fixture is an argument object"),
-            )
-            .expect("the invalid payload is still an encoded rejection");
-        assert_eq!(
-            empty.type_id,
-            tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
-            "empty patches cannot create meaningless history entries"
-        );
-    }
-
-    #[test]
-    fn reviewed_merge_is_destructive_reversible_and_undo_restores_both_contacts() {
-        let mut app = ContactsApp::sample();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-        let mut contacts = ContactsDoc::list_contacts(&state.doc);
-        contacts.sort_by_key(|contact| contact.id);
-        let survivor = contacts.remove(0);
-        let mut source = contacts.remove(0);
-        source.first = survivor.first.clone();
-        source.last = survivor.last.clone();
-        source
-            .emails
-            .push(Labeled::new("work", "unique@example.test"));
-        ContactsDoc::upsert_contact(&mut state.doc, &source);
-        state.doc.commit();
-        let survivor = ContactsDoc::list_contacts(&state.doc)
-            .into_iter()
-            .find(|contact| contact.id == survivor.id)
-            .unwrap();
-        let source = ContactsDoc::list_contacts(&state.doc)
-            .into_iter()
-            .find(|contact| contact.id == source.id)
-            .unwrap();
-        let duplicate = DuplicateResource {
-            candidate: duplicate_candidate(&survivor, &source)
-                .expect("matching names are reviewable"),
-            survivor: survivor.clone(),
-            source: source.clone(),
-        };
-        let resource = duplicate_resource(&duplicate);
-        let spec = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "merge")
-            .unwrap();
-        assert_eq!(spec.contract.risk, tilo_actions::RiskLevel::Destructive);
-        assert_eq!(
-            spec.contract.confirmation,
-            tilo_actions::ConfirmationPolicy::Confirm
-        );
-        assert!(
-            spec.contract.reversible,
-            "merge truthfully advertises ActionHost undo"
-        );
-
-        let action = merge_contacts_action(&survivor, &source, &HashSet::new());
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let before_heads = state.doc.get_heads();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-        let after = ContactsDoc::list_contacts(&state.doc);
-        assert!(!after.iter().any(|contact| contact.id == source.id));
-        assert!(
-            after
-                .iter()
-                .find(|contact| contact.id == survivor.id)
-                .unwrap()
-                .emails
-                .iter()
-                .any(|email| email.value == "unique@example.test")
-        );
-
-        state
-            .undo(None, None)
-            .expect("merge has one recoverable undo boundary");
-        let restored = ContactsDoc::list_contacts(&state.doc);
-        assert!(restored.iter().any(|contact| contact.id == source.id));
-        assert_eq!(
-            restored
-                .iter()
-                .find(|contact| contact.id == survivor.id)
-                .unwrap()
-                .emails,
-            survivor.emails,
-            "undo restores the survivor rather than only reviving the source"
-        );
-    }
-
-    #[test]
-    fn duplicate_detector_is_normalized_bounded_and_merge_replays_on_a_peer() {
-        let (_app, mut seed) = seeded();
-        let mut contacts = ContactsDoc::list_contacts(&seed);
-        contacts.sort_by_key(|contact| contact.id);
-        let survivor = contacts.remove(0);
-        let mut source = contacts.remove(0);
-        source.first = survivor.first.clone();
-        source.last = survivor.last.clone();
-        source.emails = vec![Labeled::new("home", "ADA@EXAMPLE.TEST")];
-        let mut survivor = survivor;
-        survivor.emails = vec![Labeled::new("home", "ada@example.test")];
-        ContactsDoc::upsert_contact(&mut seed, &survivor);
-        ContactsDoc::upsert_contact(&mut seed, &source);
-        seed.commit();
-        let bytes = seed.save();
-        let mut peer = AutoCommit::load(&bytes).unwrap();
-        let candidates = duplicate_candidates(&ContactsDoc::list_contacts(&seed), 1);
-        assert_eq!(
-            candidates.len(),
-            1,
-            "bounded discovery returns one stable pair"
-        );
-        assert!(candidates[0].reasons.contains(&DuplicateReason::Email));
-        assert!(candidates[0].reasons.contains(&DuplicateReason::Name));
-        let action = merge_contacts_action(&survivor, &source, &HashSet::new());
-        let encoded = encode(&action);
-        let envelope = tilo_actions::apply_local(&mut seed, &action, encoded).unwrap();
-        tilo_actions::replay(&mut peer, &envelope, &registry()).unwrap();
-        assert_eq!(
-            seed.get_heads(),
-            peer.get_heads(),
-            "reviewed merge converges exactly"
-        );
-    }
-
-    #[test]
-    fn concurrent_independent_field_and_group_patches_converge() {
-        let (_app, mut a) = seeded();
-        a.commit();
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let base = first_contact(&a);
-
-        let mut title_edit = base.clone();
-        title_edit.title = "Compiler pioneer".into();
-        patch_contact_action(&base, &title_edit)
-            .apply(&mut a)
-            .unwrap();
-        a.commit();
-
-        let mut group_edit = base.clone();
-        group_edit.groups.push(GroupEntry::new("Research"));
-        patch_contact_action(&base, &group_edit)
-            .apply(&mut b)
-            .unwrap();
-        b.commit();
-
-        a.merge_incoming(&mut b).unwrap();
-        let merged = ContactsDoc::list_contacts(&a)
-            .into_iter()
-            .find(|contact| contact.id == base.id)
-            .unwrap();
-        assert_eq!(merged.title, "Compiler pioneer");
-        assert!(merged.groups.iter().any(|group| group.value == "Research"));
-    }
-
-    #[test]
-    fn duplicate_rows_keep_separate_ids_across_edit_remove_and_reordered_replay() {
-        let (_app, mut seed) = seeded();
-        let mut contact = first_contact(&seed);
-        let first = Labeled::new("mobile", "+1 555 0100");
-        let second = Labeled::new("work", "+1 555 0100");
-        contact.phones = vec![first.clone(), second];
-        ContactsDoc::upsert_contact(&mut seed, &contact);
-        seed.commit();
-        let bytes = seed.save();
-
-        let mut edit_peer = AutoCommit::load(&bytes).unwrap();
-        let mut remove_peer = AutoCommit::load(&bytes).unwrap();
-        let base = ContactsDoc::list_contacts(&seed)
-            .into_iter()
-            .find(|candidate| candidate.id == contact.id)
-            .unwrap();
-        let mut edited = base.clone();
-        edited.phones[0].value = "+1 555 0199".into();
-        let edit_action = patch_contact_action(&base, &edited);
-        let mut removed = base.clone();
-        removed.phones.remove(1);
-        let remove_action = patch_contact_action(&base, &removed);
-
-        let edit_envelope =
-            tilo_actions::apply_local(&mut edit_peer, &edit_action, encode(&edit_action)).unwrap();
-        let remove_envelope =
-            tilo_actions::apply_local(&mut remove_peer, &remove_action, encode(&remove_action))
-                .unwrap();
-        // Each envelope was authored from the shared base. Replay into a peer
-        // that has already advanced locally; the action layer must replay at
-        // the pinned base and CRDT-merge, rather than validate against the
-        // receiver's current state.
-        tilo_actions::replay(&mut edit_peer, &remove_envelope, &registry()).unwrap();
-        tilo_actions::replay(&mut remove_peer, &edit_envelope, &registry()).unwrap();
-
-        let merged = ContactsDoc::list_contacts(&edit_peer)
-            .into_iter()
-            .find(|candidate| candidate.id == contact.id)
-            .unwrap();
-        assert_eq!(merged.phones.len(), 1);
-        assert_eq!(merged.phones[0].id, first.id);
-        assert_eq!(merged.phones[0].value, "+1 555 0199");
-
-        assert_eq!(
-            ContactsDoc::list_contacts(&edit_peer),
-            ContactsDoc::list_contacts(&remove_peer),
-            "cross-envelope replay converges UUID-addressed duplicate rows"
-        );
-    }
-
-    #[test]
-    fn repeated_field_actions_refuse_nil_mismatched_and_duplicate_entry_ids() {
-        let base = Contact::new();
-        let row = Labeled::new("home", "+1 555 0110");
-        let mismatched = ContactsAction::PatchContact {
-            id: base.id.to_string(),
-            patch: Box::new(ContactPatch {
-                phone_edits: vec![ListEdit::Add {
-                    entry_id: Uuid::new_v4(),
-                    value: row,
-                }],
-                ..ContactPatch::default()
-            }),
-        };
-        let nil = ContactsAction::PatchContact {
-            id: base.id.to_string(),
-            patch: Box::new(ContactPatch {
-                phone_edits: vec![ListEdit::Remove {
-                    entry_id: Uuid::nil(),
-                }],
-                ..ContactPatch::default()
-            }),
-        };
-        let entry_id = Uuid::new_v4();
-        let duplicate = ContactsAction::PatchContact {
-            id: base.id.to_string(),
-            patch: Box::new(ContactPatch {
-                phone_edits: vec![ListEdit::Remove { entry_id }, ListEdit::Remove { entry_id }],
-                ..ContactPatch::default()
-            }),
-        };
-        for action in [mismatched, nil, duplicate] {
+        // --- phase: export_contact_is_a_typed_sensitive_operation ---
+        // Per-contact export is a typed resource operation, not an unmodelled
+        // context-menu side effect. The portal path stays absent from the
+        // payload and the action is confirmation-labelled because it can
+        // disclose contact data outside the address book.
+        {
+            let (app, doc) = seeded();
+            let resources = ui::resources::resources(&app, &doc);
+            let (contact, export_spec) = ui::testing::action_contract::find_spec(
+                &resources,
+                "contacts.contact",
+                "export-contact",
+            );
+            let id = contact.id.as_str().trim_start_matches("contacts.contact:");
             assert!(matches!(
-                action.apply(&mut AutoCommit::new()),
-                Err(ActionError::Refused(_))
+                export_spec.contract.risk,
+                tilo_actions::RiskLevel::Sensitive
             ));
+            assert_eq!(export_spec.contract.execution, ExecutionMode::Immediate);
+            assert_eq!(export_spec.contract.result, ResultSpec::None);
+            let export: ContactsOperation = serde_json::from_slice(
+                &ui::testing::action_contract::spec_encoding(export_spec, None).payload,
+            )
+            .expect("export operation payload is typed");
+            assert_eq!(
+                export,
+                ContactsOperation::ExportContactVcard {
+                    id: id.to_string(),
+                    path: None,
+                }
+            );
         }
     }
 
+    /// Duplicate detection is normalised and bounded; the reviewed merge is destructive, undoable and replays on a peer.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn late_stale_row_refusal_is_observationally_atomic() {
-        let (_app, mut doc) = seeded();
-        let base = first_contact(&doc);
-        let added_phone = Labeled::new("mobile", "+1 555 0188");
-        let action = ContactsAction::PatchContact {
-            id: base.id.to_string(),
-            patch: Box::new(ContactPatch {
-                first: Some("Would partially write".into()),
-                phone_edits: vec![ListEdit::Add {
-                    entry_id: added_phone.id,
-                    value: added_phone,
-                }],
-                // This comes last in normal application order. Before the
-                // preflight it left the first name and phone mutation behind.
-                address_edits: vec![ListEdit::Remove {
-                    entry_id: Uuid::new_v4(),
-                }],
-                ..ContactPatch::default()
-            }),
-        };
-        let heads_before = doc.get_heads();
-        let bytes_before = doc.save();
-        let content_before = ContactsDoc::list_contacts(&doc);
-        assert!(matches!(
-            action.apply(&mut doc),
-            Err(ActionError::Refused(_))
-        ));
-        assert_eq!(doc.get_heads(), heads_before, "refusal creates no change");
-        assert_eq!(doc.save(), bytes_before, "refusal leaves bytes untouched");
-        assert_eq!(ContactsDoc::list_contacts(&doc), content_before);
-    }
-
-    #[test]
-    fn delete_tombstone_wins_over_a_cross_envelope_stale_patch() {
-        let (_app, mut a) = seeded();
-        a.commit();
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let base = first_contact(&a);
-        let mut stale = base.clone();
-        stale.notes = "late note".into();
-        let patch = patch_contact_action(&base, &stale);
-
-        let delete = delete_contact_action(base.id.to_string());
-        let delete_envelope = tilo_actions::apply_local(&mut a, &delete, encode(&delete)).unwrap();
-        let patch_envelope = tilo_actions::apply_local(&mut b, &patch, encode(&patch)).unwrap();
-        tilo_actions::replay(&mut a, &patch_envelope, &registry()).unwrap();
-        tilo_actions::replay(&mut b, &delete_envelope, &registry()).unwrap();
-        assert!(
-            !ContactsDoc::list_contacts(&a)
+    fn duplicate_merge_is_reviewed_reversible_and_replayable() {
+        // --- phase: reviewed_merge_is_destructive_reversible_and_undo_restores_both_contacts ---
+        {
+            let mut app = ContactsApp::sample();
+            let mut state = ui::State::new();
+            app.sync(&mut state.doc, &state.root);
+            let mut contacts = ContactsDoc::list_contacts(&state.doc);
+            contacts.sort_by_key(|contact| contact.id);
+            let survivor = contacts.remove(0);
+            let mut source = contacts.remove(0);
+            source.first = survivor.first.clone();
+            source.last = survivor.last.clone();
+            source
+                .emails
+                .push(Labeled::new("work", "unique@example.test"));
+            ContactsDoc::upsert_contact(&mut state.doc, &source);
+            state.doc.commit();
+            let survivor = ContactsDoc::list_contacts(&state.doc)
+                .into_iter()
+                .find(|contact| contact.id == survivor.id)
+                .unwrap();
+            let source = ContactsDoc::list_contacts(&state.doc)
+                .into_iter()
+                .find(|contact| contact.id == source.id)
+                .unwrap();
+            let duplicate = DuplicateResource {
+                candidate: duplicate_candidate(&survivor, &source)
+                    .expect("matching names are reviewable"),
+                survivor: survivor.clone(),
+                source: source.clone(),
+            };
+            let resource = duplicate_resource(&duplicate);
+            let spec = resource
+                .actions
                 .iter()
-                .any(|contact| contact.id == base.id),
-            "a concurrent or reordered stale patch cannot resurrect a tombstoned contact"
-        );
-        assert!(
-            !ContactsDoc::list_contacts(&b)
+                .find(|action| action.id == "merge")
+                .unwrap();
+            assert_eq!(spec.contract.risk, tilo_actions::RiskLevel::Destructive);
+            assert_eq!(
+                spec.contract.confirmation,
+                tilo_actions::ConfirmationPolicy::Confirm
+            );
+            assert!(
+                spec.contract.reversible,
+                "merge truthfully advertises ActionHost undo"
+            );
+
+            let action = merge_contacts_action(&survivor, &source, &HashSet::new());
+            let encoded = encode(&action);
+            let decoded = registry().decode(&encoded).unwrap();
+            let before_heads = state.doc.get_heads();
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+            state.record_committed_action(before_heads, None, None);
+            let after = ContactsDoc::list_contacts(&state.doc);
+            assert!(!after.iter().any(|contact| contact.id == source.id));
+            assert!(
+                after
+                    .iter()
+                    .find(|contact| contact.id == survivor.id)
+                    .unwrap()
+                    .emails
+                    .iter()
+                    .any(|email| email.value == "unique@example.test")
+            );
+
+            state
+                .undo(None, None)
+                .expect("merge has one recoverable undo boundary");
+            let restored = ContactsDoc::list_contacts(&state.doc);
+            assert!(restored.iter().any(|contact| contact.id == source.id));
+            assert_eq!(
+                restored
+                    .iter()
+                    .find(|contact| contact.id == survivor.id)
+                    .unwrap()
+                    .emails,
+                survivor.emails,
+                "undo restores the survivor rather than only reviving the source"
+            );
+        }
+
+        // --- phase: duplicate_detector_is_normalized_bounded_and_merge_replays_on_a_peer ---
+        {
+            let (_app, mut seed) = seeded();
+            let mut contacts = ContactsDoc::list_contacts(&seed);
+            contacts.sort_by_key(|contact| contact.id);
+            let survivor = contacts.remove(0);
+            let mut source = contacts.remove(0);
+            source.first = survivor.first.clone();
+            source.last = survivor.last.clone();
+            source.emails = vec![Labeled::new("home", "ADA@EXAMPLE.TEST")];
+            let mut survivor = survivor;
+            survivor.emails = vec![Labeled::new("home", "ada@example.test")];
+            ContactsDoc::upsert_contact(&mut seed, &survivor);
+            ContactsDoc::upsert_contact(&mut seed, &source);
+            seed.commit();
+            let bytes = seed.save();
+            let mut peer = AutoCommit::load(&bytes).unwrap();
+            let candidates = duplicate_candidates(&ContactsDoc::list_contacts(&seed), 1);
+            assert_eq!(
+                candidates.len(),
+                1,
+                "bounded discovery returns one stable pair"
+            );
+            assert!(candidates[0].reasons.contains(&DuplicateReason::Email));
+            assert!(candidates[0].reasons.contains(&DuplicateReason::Name));
+            let action = merge_contacts_action(&survivor, &source, &HashSet::new());
+            let encoded = encode(&action);
+            let envelope = tilo_actions::apply_local(&mut seed, &action, encoded).unwrap();
+            tilo_actions::replay(&mut peer, &envelope, &registry()).unwrap();
+            assert_eq!(
+                seed.get_heads(),
+                peer.get_heads(),
+                "reviewed merge converges exactly"
+            );
+        }
+    }
+
+    /// Independent patches converge in any order, row ids survive replay, stale rows are refused atomically and delete tombstones win.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
+    #[test]
+    fn patches_converge_across_replicas_and_refuse_stale_rows() {
+        // --- phase: concurrent_independent_field_and_group_patches_converge ---
+        {
+            let (_app, mut a) = seeded();
+            a.commit();
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            let base = first_contact(&a);
+
+            let mut title_edit = base.clone();
+            title_edit.title = "Compiler pioneer".into();
+            patch_contact_action(&base, &title_edit)
+                .apply(&mut a)
+                .unwrap();
+            a.commit();
+
+            let mut group_edit = base.clone();
+            group_edit.groups.push(GroupEntry::new("Research"));
+            patch_contact_action(&base, &group_edit)
+                .apply(&mut b)
+                .unwrap();
+            b.commit();
+
+            a.merge_incoming(&mut b).unwrap();
+            let merged = ContactsDoc::list_contacts(&a)
+                .into_iter()
+                .find(|contact| contact.id == base.id)
+                .unwrap();
+            assert_eq!(merged.title, "Compiler pioneer");
+            assert!(merged.groups.iter().any(|group| group.value == "Research"));
+        }
+
+        // --- phase: duplicate_rows_keep_separate_ids_across_edit_remove_and_reordered_replay ---
+        {
+            let (_app, mut seed) = seeded();
+            let mut contact = first_contact(&seed);
+            let first = Labeled::new("mobile", "+1 555 0100");
+            let second = Labeled::new("work", "+1 555 0100");
+            contact.phones = vec![first.clone(), second];
+            ContactsDoc::upsert_contact(&mut seed, &contact);
+            seed.commit();
+            let bytes = seed.save();
+
+            let mut edit_peer = AutoCommit::load(&bytes).unwrap();
+            let mut remove_peer = AutoCommit::load(&bytes).unwrap();
+            let base = ContactsDoc::list_contacts(&seed)
+                .into_iter()
+                .find(|candidate| candidate.id == contact.id)
+                .unwrap();
+            let mut edited = base.clone();
+            edited.phones[0].value = "+1 555 0199".into();
+            let edit_action = patch_contact_action(&base, &edited);
+            let mut removed = base.clone();
+            removed.phones.remove(1);
+            let remove_action = patch_contact_action(&base, &removed);
+
+            let edit_envelope =
+                tilo_actions::apply_local(&mut edit_peer, &edit_action, encode(&edit_action))
+                    .unwrap();
+            let remove_envelope =
+                tilo_actions::apply_local(&mut remove_peer, &remove_action, encode(&remove_action))
+                    .unwrap();
+            // Each envelope was authored from the shared base. Replay into a peer
+            // that has already advanced locally; the action layer must replay at
+            // the pinned base and CRDT-merge, rather than validate against the
+            // receiver's current state.
+            tilo_actions::replay(&mut edit_peer, &remove_envelope, &registry()).unwrap();
+            tilo_actions::replay(&mut remove_peer, &edit_envelope, &registry()).unwrap();
+
+            let merged = ContactsDoc::list_contacts(&edit_peer)
+                .into_iter()
+                .find(|candidate| candidate.id == contact.id)
+                .unwrap();
+            assert_eq!(merged.phones.len(), 1);
+            assert_eq!(merged.phones[0].id, first.id);
+            assert_eq!(merged.phones[0].value, "+1 555 0199");
+
+            assert_eq!(
+                ContactsDoc::list_contacts(&edit_peer),
+                ContactsDoc::list_contacts(&remove_peer),
+                "cross-envelope replay converges UUID-addressed duplicate rows"
+            );
+        }
+
+        // --- phase: late_stale_row_refusal_is_observationally_atomic ---
+        {
+            let (_app, mut doc) = seeded();
+            let base = first_contact(&doc);
+            let added_phone = Labeled::new("mobile", "+1 555 0188");
+            let action = ContactsAction::PatchContact {
+                id: base.id.to_string(),
+                patch: Box::new(ContactPatch {
+                    first: Some("Would partially write".into()),
+                    phone_edits: vec![ListEdit::Add {
+                        entry_id: added_phone.id,
+                        value: added_phone,
+                    }],
+                    // This comes last in normal application order. Before the
+                    // preflight it left the first name and phone mutation behind.
+                    address_edits: vec![ListEdit::Remove {
+                        entry_id: Uuid::new_v4(),
+                    }],
+                    ..ContactPatch::default()
+                }),
+            };
+            let heads_before = doc.get_heads();
+            let bytes_before = doc.save();
+            let content_before = ContactsDoc::list_contacts(&doc);
+            assert!(matches!(
+                action.apply(&mut doc),
+                Err(ActionError::Refused(_))
+            ));
+            assert_eq!(doc.get_heads(), heads_before, "refusal creates no change");
+            assert_eq!(doc.save(), bytes_before, "refusal leaves bytes untouched");
+            assert_eq!(ContactsDoc::list_contacts(&doc), content_before);
+        }
+
+        // --- phase: delete_tombstone_wins_over_a_cross_envelope_stale_patch ---
+        {
+            let (_app, mut a) = seeded();
+            a.commit();
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            let base = first_contact(&a);
+            let mut stale = base.clone();
+            stale.notes = "late note".into();
+            let patch = patch_contact_action(&base, &stale);
+
+            let delete = delete_contact_action(base.id.to_string());
+            let delete_envelope =
+                tilo_actions::apply_local(&mut a, &delete, encode(&delete)).unwrap();
+            let patch_envelope = tilo_actions::apply_local(&mut b, &patch, encode(&patch)).unwrap();
+            tilo_actions::replay(&mut a, &patch_envelope, &registry()).unwrap();
+            tilo_actions::replay(&mut b, &delete_envelope, &registry()).unwrap();
+            assert!(
+                !ContactsDoc::list_contacts(&a)
+                    .iter()
+                    .any(|contact| contact.id == base.id),
+                "a concurrent or reordered stale patch cannot resurrect a tombstoned contact"
+            );
+            assert!(
+                !ContactsDoc::list_contacts(&b)
+                    .iter()
+                    .any(|contact| contact.id == base.id),
+                "the other replay order preserves the tombstone too"
+            );
+        }
+
+        // --- phase: independent_patches_are_value_convergent_when_replayed_in_either_order ---
+        {
+            let (_app, mut seed) = seeded();
+            let bytes = seed.save();
+            let mut first_then_second = AutoCommit::load(&bytes).unwrap();
+            let mut second_then_first = AutoCommit::load(&bytes).unwrap();
+            let base = first_contact(&first_then_second);
+            let mut org_edit = base.clone();
+            org_edit.org = "Navy".into();
+            let mut title_edit = base.clone();
+            title_edit.title = "Rear admiral".into();
+            let org = patch_contact_action(&base, &org_edit);
+            let title = patch_contact_action(&base, &title_edit);
+
+            org.apply(&mut first_then_second).unwrap();
+            title.apply(&mut first_then_second).unwrap();
+            title.apply(&mut second_then_first).unwrap();
+            org.apply(&mut second_then_first).unwrap();
+
+            let one = ContactsDoc::list_contacts(&first_then_second);
+            let two = ContactsDoc::list_contacts(&second_then_first);
+            assert_eq!(one, two, "reordering independent patch envelopes converges");
+        }
+    }
+
+    /// Create, typed patch and import-review actions apply to the book and refuse malformed, oversized or mismatched input.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
+    #[test]
+    fn contact_mutation_actions_validate_and_apply() {
+        // --- phase: new_contact_action_creates_a_contact ---
+        // Dispatching the "New contact" prompted action creates a contact in the
+        // document with the committed name split into first/last.
+        {
+            let (app, mut doc) = seeded();
+            let resources = ui::resources::resources(&app, &doc);
+            let spec = resources[0]
+                .actions
                 .iter()
-                .any(|contact| contact.id == base.id),
-            "the other replay order preserves the tombstone too"
-        );
-    }
+                .find(|a| a.id == "new-contact")
+                .unwrap();
+            let before = ContactsDoc::list_contacts(&doc).len();
 
-    #[test]
-    fn independent_patches_are_value_convergent_when_replayed_in_either_order() {
-        let (_app, mut seed) = seeded();
-        let bytes = seed.save();
-        let mut first_then_second = AutoCommit::load(&bytes).unwrap();
-        let mut second_then_first = AutoCommit::load(&bytes).unwrap();
-        let base = first_contact(&first_then_second);
-        let mut org_edit = base.clone();
-        org_edit.org = "Navy".into();
-        let mut title_edit = base.clone();
-        title_edit.title = "Rear admiral".into();
-        let org = patch_contact_action(&base, &org_edit);
-        let title = patch_contact_action(&base, &title_edit);
+            let encoded = prompted_encode(spec, "Dana Scott");
+            let decoded = registry().decode(&encoded).unwrap();
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
-        org.apply(&mut first_then_second).unwrap();
-        title.apply(&mut first_then_second).unwrap();
-        title.apply(&mut second_then_first).unwrap();
-        org.apply(&mut second_then_first).unwrap();
+            let book = ContactsDoc::list_contacts(&doc);
+            assert_eq!(book.len(), before + 1, "the action added a contact");
+            let created = book.iter().find(|c| c.first == "Dana" && c.last == "Scott");
+            assert!(
+                created.is_some(),
+                "the created contact carries the committed name"
+            );
+        }
 
-        let one = ContactsDoc::list_contacts(&first_then_second);
-        let two = ContactsDoc::list_contacts(&second_then_first);
-        assert_eq!(one, two, "reordering independent patch envelopes converges");
-    }
+        // --- phase: typed_field_patch_action_covers_the_complete_contact_form ---
+        {
+            let (_app, mut doc) = seeded();
+            let contact = first_contact(&doc);
+            let resource = contact_resource(&contact, false);
+            let spec = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "update-fields")
+                .expect("every contact exports its typed field patch action");
 
-    #[test]
-    fn malformed_and_oversized_mutations_are_refused() {
-        let mut doc = AutoCommit::new();
-        let malformed = ContactsAction::PatchContact {
-            id: "not-a-uuid".into(),
-            patch: Box::default(),
-        };
-        assert!(matches!(
-            malformed.apply(&mut doc),
-            Err(ActionError::Refused(_))
-        ));
+            let encoded = spec
+                .build_json(
+                    serde_json::json!({"patch": {"title": "Admiral"}})
+                        .as_object()
+                        .expect("the fixture is an argument object"),
+                )
+                .expect("the typed patch is accepted at the action door");
+            let decoded = registry()
+                .decode(&encoded)
+                .expect("the resource action is a registered ContactsAction");
+            decoded
+                .apply(&mut doc)
+                .expect("the canonical patch action applies");
+            assert_eq!(
+                ContactsDoc::list_contacts(&doc)
+                    .into_iter()
+                    .find(|candidate| candidate.id == contact.id)
+                    .expect("target contact remains active")
+                    .title,
+                "Admiral"
+            );
 
-        let oversized = ContactsAction::CreateContact(Box::new(ContactData {
-            id: uuid::Uuid::new_v4().to_string(),
-            notes: "x".repeat(MAX_CONTACT_FIELD_BYTES + 1),
-            ..ContactData::from_contact(&Contact::new())
-        }));
-        assert!(matches!(
-            oversized.apply(&mut doc),
-            Err(ActionError::Refused(_))
-        ));
+            let empty = spec
+                .build_json(
+                    serde_json::json!({"patch": {}})
+                        .as_object()
+                        .expect("the fixture is an argument object"),
+                )
+                .expect("the invalid payload is still an encoded rejection");
+            assert_eq!(
+                empty.type_id,
+                tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
+                "empty patches cannot create meaningless history entries"
+            );
+        }
 
-        let invalid_birthday = ContactsAction::CreateContact(Box::new(ContactData {
-            id: uuid::Uuid::new_v4().to_string(),
-            birthday: "not-a-date".into(),
-            ..ContactData::from_contact(&Contact::new())
-        }));
-        assert!(matches!(
-            invalid_birthday.apply(&mut doc),
-            Err(ActionError::Refused(_))
-        ));
-    }
+        // --- phase: imported_uid_review_actions_are_addressable_and_guard_new_contact_creation ---
+        {
+            let token = Uuid::new_v4().to_string();
+            let ctx = ContactsResourceCtx {
+                contacts: Vec::new(),
+                groups: Vec::new(),
+                contact_count: 0,
+                import_busy: false,
+                export_busy: false,
+                import_conflicts: vec![ImportConflictResource {
+                    token: token.clone(),
+                    incoming_name: "Incoming Ada".into(),
+                    existing_name: "Existing Ada".into(),
+                }],
+                duplicates: Vec::new(),
+            };
+            let resource_id = format!("contacts.import-conflict:{token}");
+            let review = resolve_resource(&ctx, &resource_id).expect("pending review resolves");
+            assert!(
+                review
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "keep-existing")
+            );
+            let import_as_new = review
+                .actions
+                .iter()
+                .find(|action| action.id == "import-as-new")
+                .expect("review exposes import-as-new");
+            assert_eq!(
+                import_as_new.contract.confirmation,
+                tilo_actions::ConfirmationPolicy::Confirm,
+                "adding an untrusted collision as a new contact needs confirmation"
+            );
+            assert_eq!(
+                import_as_new.contract.risk,
+                tilo_actions::RiskLevel::Destructive
+            );
+        }
 
-    /// Dispatching the "New contact" prompted action creates a contact in the
-    /// document with the committed name split into first/last.
-    #[test]
-    fn new_contact_action_creates_a_contact() {
-        let (app, mut doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let spec = resources[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "new-contact")
-            .unwrap();
-        let before = ContactsDoc::list_contacts(&doc).len();
+        // --- phase: repeated_field_actions_refuse_nil_mismatched_and_duplicate_entry_ids ---
+        {
+            let base = Contact::new();
+            let row = Labeled::new("home", "+1 555 0110");
+            let mismatched = ContactsAction::PatchContact {
+                id: base.id.to_string(),
+                patch: Box::new(ContactPatch {
+                    phone_edits: vec![ListEdit::Add {
+                        entry_id: Uuid::new_v4(),
+                        value: row,
+                    }],
+                    ..ContactPatch::default()
+                }),
+            };
+            let nil = ContactsAction::PatchContact {
+                id: base.id.to_string(),
+                patch: Box::new(ContactPatch {
+                    phone_edits: vec![ListEdit::Remove {
+                        entry_id: Uuid::nil(),
+                    }],
+                    ..ContactPatch::default()
+                }),
+            };
+            let entry_id = Uuid::new_v4();
+            let duplicate = ContactsAction::PatchContact {
+                id: base.id.to_string(),
+                patch: Box::new(ContactPatch {
+                    phone_edits: vec![ListEdit::Remove { entry_id }, ListEdit::Remove { entry_id }],
+                    ..ContactPatch::default()
+                }),
+            };
+            for action in [mismatched, nil, duplicate] {
+                assert!(matches!(
+                    action.apply(&mut AutoCommit::new()),
+                    Err(ActionError::Refused(_))
+                ));
+            }
+        }
 
-        let encoded = prompted_encode(spec, "Dana Scott");
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        // --- phase: malformed_and_oversized_mutations_are_refused ---
+        {
+            let mut doc = AutoCommit::new();
+            let malformed = ContactsAction::PatchContact {
+                id: "not-a-uuid".into(),
+                patch: Box::default(),
+            };
+            assert!(matches!(
+                malformed.apply(&mut doc),
+                Err(ActionError::Refused(_))
+            ));
 
-        let book = ContactsDoc::list_contacts(&doc);
-        assert_eq!(book.len(), before + 1, "the action added a contact");
-        let created = book.iter().find(|c| c.first == "Dana" && c.last == "Scott");
-        assert!(
-            created.is_some(),
-            "the created contact carries the committed name"
-        );
-    }
+            let oversized = ContactsAction::CreateContact(Box::new(ContactData {
+                id: uuid::Uuid::new_v4().to_string(),
+                notes: "x".repeat(MAX_CONTACT_FIELD_BYTES + 1),
+                ..ContactData::from_contact(&Contact::new())
+            }));
+            assert!(matches!(
+                oversized.apply(&mut doc),
+                Err(ActionError::Refused(_))
+            ));
 
-    /// Search addresses the exact view action in the live resource tree; it
-    /// does not mint a parallel navigation namespace.
-    #[test]
-    fn search_provider_addresses_an_exported_contact_action() {
-        let (app, doc) = seeded();
-
-        // The mutation side is live.
-        assert!(
-            !Widget::resources(&app, &doc).is_empty(),
-            "resources are exported"
-        );
-
-        // The search side finds the contact and names its exported action.
-        let providers = Widget::search_providers(&app);
-        assert_eq!(providers.len(), 1, "one contacts search provider");
-        let hits = providers[0].search("hopper");
-        let hit = hits
-            .iter()
-            .find(|r| r.title == "Grace Hopper")
-            .expect("the provider surfaces the real matching contact");
-        let id = ContactsDoc::list_contacts(&doc)
-            .into_iter()
-            .find(|contact| contact.display_name() == hit.title)
-            .expect("the result names a stored contact")
-            .id;
-        let address = hit.action_address().expect("search hit is canonical");
-        assert_eq!(address, open_contact_address(id));
-        assert!(
-            tilo_actions::door::resolve(&Widget::resources(&app, &doc), &address).is_some(),
-            "the address is exported to the palette, accessibility and agents"
-        );
+            let invalid_birthday = ContactsAction::CreateContact(Box::new(ContactData {
+                id: uuid::Uuid::new_v4().to_string(),
+                birthday: "not-a-date".into(),
+                ..ContactData::from_contact(&Contact::new())
+            }));
+            assert!(matches!(
+                invalid_birthday.apply(&mut doc),
+                Err(ActionError::Refused(_))
+            ));
+        }
     }
 }

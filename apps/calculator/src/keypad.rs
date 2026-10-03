@@ -12,7 +12,8 @@
 //!    toggle that opens an overlay drawer (drawn over the keypad with a
 //!    dismiss scrim) when the window is too narrow to dock it.
 
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::paint::PaintCtx;
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{SidebarDrawer, SidebarSide};
 use vello::Scene;
@@ -35,6 +36,31 @@ const SIDEBAR_W_MIN: f64 = 280.0;
 const SIDEBAR_W_MAX: f64 = 380.0;
 /// Overlay drawer width when the sidebar floats over the keypad.
 const SIDEBAR_OVERLAY_W: f64 = 320.0;
+/// The shortest a key gets before the chrome around the pad gives way.
+const KEY_MIN_H: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64;
+/// The narrowest a key column gets beside the display.
+const KEY_MIN_W: f64 = ui::tokens::Spacing::BASE.s12 as f64;
+// Display card: status line, expression line and result line in their fonts.
+const DISPLAY_H: f64 = 124.0;
+// The display without its status line: the expression and result lines at
+// their short font sizes.
+const DISPLAY_SHORT_H: f64 = 72.0;
+const MEM_H: f64 = ui::tokens::Metrics::BASE.panel_row_height as f64;
+// The memory row beside a short display, between the pointer minimum and a row.
+const MEM_SHORT_H: f64 = 36.0;
+// Fits the widest memory label ("MR") with room for its press state.
+const MEM_BTN_W: f64 = 64.0;
+const MEM_GAP: f64 = ui::tokens::Spacing::BASE.s2 as f64;
+/// The narrowest a memory button gets in a short window.
+const MEM_BTN_MIN_W: f64 = ui::tokens::Metrics::BASE.panel_row_height as f64;
+// The sidebar toggle pill's width, which `SidebarDrawer::draw_toggle` does not expose.
+const TOGGLE_W: f64 = 46.0;
+const CHROME_GAP: f64 = ui::tokens::Spacing::BASE.s3 as f64;
+/// The narrowest column beside the pad: display over four narrowed memory
+/// buttons and the sidebar toggle.
+const SIDE_CHROME_MIN_W: f64 = 4.0 * MEM_BTN_MIN_W + 3.0 * MEM_GAP + CHROME_GAP + TOGGLE_W;
+/// The narrowest a four-column pad beside the display may be.
+const SIDE_PAD_MIN_W: f64 = 4.0 * KEY_MIN_W + 3.0 * MEM_GAP;
 
 pub struct CalcScreen {
     keys: Vec<Key>,
@@ -48,6 +74,9 @@ pub struct CalcScreen {
     clear_hist_rect: Rect,
     /// Toggle pill that shows/hides the history sidebar.
     toggle_rect: Rect,
+    /// Expression line used to anchor the platform IME candidate window.
+    expression_rect: Rect,
+    display_rect: Rect,
     pub hovered_key: Option<usize>,
     pub hovered_mem: Option<usize>,
     pub pressed_key: Option<usize>,
@@ -75,6 +104,8 @@ impl Default for CalcScreen {
             history_rects: Vec::new(),
             clear_hist_rect: Rect::ZERO,
             toggle_rect: Rect::ZERO,
+            expression_rect: Rect::ZERO,
+            display_rect: Rect::ZERO,
             hovered_key: None,
             hovered_mem: None,
             pressed_key: None,
@@ -154,6 +185,17 @@ impl CalcScreen {
         self.toggle_rect
     }
 
+    pub fn expression_ime_rect(&self) -> Option<Rect> {
+        (self.expression_rect != Rect::ZERO).then(|| {
+            Rect::new(
+                self.expression_rect.x1 - 1.0,
+                self.expression_rect.y0,
+                self.expression_rect.x1,
+                self.expression_rect.y1,
+            )
+        })
+    }
+
     /// Pick the keypad layout for `keypad_w` and rebuild the key list if the
     /// breakpoint changed. Cheap when unchanged (the common case).
     fn ensure_layout(&mut self, keypad_w: f64) {
@@ -212,6 +254,12 @@ impl CalcScreen {
 
     /// Recompute all geometry for the given body `area`. Called at the top of
     /// both draw and event handling so hit-tests match the last paint.
+    ///
+    /// The keys keep at least [`KEY_MIN_H`] for as long as the chrome can give
+    /// way: a short window first drops the display's status line and folds
+    /// the sidebar toggle into the memory row, then, when wide enough, moves
+    /// the display and memory bar beside the pad so the keys get the full
+    /// height. Only a window both short and narrow shrinks the keys further.
     pub fn layout(&mut self, area: Rect, model: &CalcModel) {
         let pad = 16.0;
         let keypad_w = self.resolve_sidebar(area, pad);
@@ -227,39 +275,67 @@ impl CalcScreen {
             area.x1 - pad
         };
         let left = Rect::new(area.x0 + pad, area.y0 + pad, left_x1, area.y1 - pad);
-
-        // Header row above the display holds the standard sidebar-toggle
-        // affordance on the right (a compact icon pill from the primitive).
-        let toggle_w = 46.0;
+        let gap = CHROME_GAP;
+        let toggle_w = TOGGLE_W;
         let toggle_h = 28.0;
-        self.toggle_rect = Rect::new(left.x1 - toggle_w, left.y0, left.x1, left.y0 + toggle_h);
-        let header_h = toggle_h + 8.0;
 
-        let display_h = 124.0;
-        let mem_h = 44.0;
-        let gap = 12.0;
-        let display_top = left.y0 + header_h;
-        let mem_top = display_top + display_h + gap;
-        let grid_top = mem_top + mem_h + gap;
-
-        // Memory bar: 4 buttons on the left.
-        self.mem_rects.clear();
-        let mem_btn_w = 64.0;
-        let mem_gap = 8.0;
-        for i in 0..4 {
-            let x0 = left.x0 + f64::from(i) * (mem_btn_w + mem_gap);
-            self.mem_rects
-                .push(Rect::new(x0, mem_top, x0 + mem_btn_w, mem_top + mem_h));
+        let tall_grid = left.height() - (toggle_h + 8.0) - DISPLAY_H - MEM_H - 2.0 * gap;
+        let side_w = (left.width() * 0.38).clamp(SIDE_CHROME_MIN_W, 320.0);
+        let (chrome, grid) = if tall_grid >= self.grid_min_h() {
+            self.toggle_rect = Rect::new(left.x1 - toggle_w, left.y0, left.x1, left.y0 + toggle_h);
+            let display_top = left.y0 + toggle_h + 8.0;
+            let chrome = Rect::new(left.x0, display_top, left.x1, display_top + DISPLAY_H);
+            let grid_top = chrome.y1 + gap + MEM_H + gap;
+            (chrome, Rect::new(left.x0, grid_top, left.x1, left.y1))
+        } else if left.width() - side_w - gap >= SIDE_PAD_MIN_W {
+            let chrome = Rect::new(left.x0, left.y0, left.x0 + side_w, left.y1);
+            let grid = Rect::new(chrome.x1 + gap, left.y0, left.x1, left.y1);
+            self.ensure_layout(grid.width());
+            (chrome, grid)
+        } else {
+            let grid_top = left.y0 + DISPLAY_SHORT_H + gap + MEM_SHORT_H + gap;
+            (left, Rect::new(left.x0, grid_top, left.x1, left.y1))
+        };
+        let tall = grid.y0 > chrome.y1;
+        if tall {
+            self.display_rect = chrome;
+            self.layout_memory(left.x0, chrome.y1 + gap, MEM_BTN_W, MEM_H);
+        } else {
+            // The display sits above the memory row, which also carries the
+            // sidebar toggle at its right end.
+            let display_h = if grid.x0 > chrome.x1 {
+                (chrome.height() - MEM_SHORT_H - gap).clamp(DISPLAY_SHORT_H, DISPLAY_H)
+            } else {
+                DISPLAY_SHORT_H
+            };
+            self.display_rect = Rect::new(chrome.x0, chrome.y0, chrome.x1, chrome.y0 + display_h);
+            let mem_top = self.display_rect.y1 + gap;
+            let row_w = chrome.width() - toggle_w - gap - 3.0 * MEM_GAP;
+            let button_w = (row_w / 4.0).clamp(1.0, MEM_BTN_W);
+            self.layout_memory(chrome.x0, mem_top, button_w, MEM_SHORT_H);
+            let toggle_y = mem_top + (MEM_SHORT_H - toggle_h) / 2.0;
+            self.toggle_rect = Rect::new(
+                chrome.x1 - toggle_w,
+                toggle_y,
+                chrome.x1,
+                toggle_y + toggle_h,
+            );
         }
+        let (expr_top, expr_bottom) = self.expression_band();
+        self.expression_rect = Rect::new(
+            self.display_rect.x0 + 16.0,
+            expr_top,
+            self.display_rect.x1 - 16.0,
+            expr_bottom,
+        );
 
         // Keypad grid (column count is layout-dependent).
         self.key_rects.clear();
         let cols = self.cols;
         let rows = self.keys.len().div_ceil(cols);
         let cell_gap = 8.0;
-        let grid = Rect::new(left.x0, grid_top, left.x1, left.y1);
         let cw = (grid.width() - cell_gap * (cols as f64 - 1.0)) / cols as f64;
-        let ch = (grid.height() - cell_gap * (rows as f64 - 1.0)) / rows as f64;
+        let ch = ((grid.height() - cell_gap * (rows as f64 - 1.0)) / rows as f64).max(1.0);
         for idx in 0..self.keys.len() {
             let r = idx / cols;
             let c = idx % cols;
@@ -270,6 +346,37 @@ impl CalcScreen {
 
         // History list geometry (only meaningful when the sidebar is shown).
         self.layout_history(model);
+    }
+
+    /// The height the current pad needs at [`KEY_MIN_H`] per key.
+    fn grid_min_h(&self) -> f64 {
+        let rows = self.keys.len().div_ceil(self.cols) as f64;
+        rows * KEY_MIN_H + (rows - 1.0) * 8.0
+    }
+
+    /// The four memory buttons from `x0`, each `width` by `height`.
+    fn layout_memory(&mut self, x0: f64, top: f64, width: f64, height: f64) {
+        self.mem_rects.clear();
+        for i in 0..4 {
+            let x = x0 + f64::from(i) * (width + MEM_GAP);
+            self.mem_rects
+                .push(Rect::new(x, top, x + width, top + height));
+        }
+    }
+
+    /// Whether the display is too short for its status line.
+    fn display_is_short(&self) -> bool {
+        self.display_rect.height() < DISPLAY_H
+    }
+
+    /// The expression line's top and bottom within the display.
+    fn expression_band(&self) -> (f64, f64) {
+        let d = self.display_rect;
+        if self.display_is_short() {
+            (d.y0 + 4.0, d.y0 + 38.0)
+        } else {
+            (d.y0 + 30.0, d.y0 + 78.0)
+        }
     }
 
     fn layout_history(&mut self, model: &CalcModel) {
@@ -324,28 +431,15 @@ impl CalcScreen {
         // the docked column / overlay flap slides instead of snapping.
         self.drawer.tick(theme.reduce_motion);
         self.layout(area, model);
-        let pad = 16.0;
 
-        let left_x1 = if self.drawer.is_docked() {
-            // Docked: the keypad column ends at the (eased) content edge, so the
-            // history slide reflows the keypad both opening and collapsing.
-            self.drawer.content_rect().x1 - pad
-        } else {
-            area.x1 - pad
-        };
-        let left = Rect::new(area.x0 + pad, area.y0 + pad, left_x1, area.y1 - pad);
-        let header_h = 36.0;
-        let display_top = left.y0 + header_h;
-
-        // ---- Header: sidebar toggle ---------------------------------------
+        // ---- Sidebar toggle ------------------------------------------------
         self.draw_toggle(scene, t, tr, theme);
 
         // ---- Display panel -------------------------------------------------
-        let display = Rect::new(left.x0, display_top, left.x1, display_top + 124.0);
-        Self::draw_display(scene, t, tr, theme, model, display);
+        self.draw_display(scene, t, tr, theme, model);
 
         // ---- Memory bar ----------------------------------------------------
-        self.draw_memory_bar(scene, t, tr, theme, model, left);
+        self.draw_memory_bar(scene, t, tr, theme, model);
 
         // ---- Keypad --------------------------------------------------------
         self.draw_keys(scene, t, tr, theme);
@@ -367,15 +461,21 @@ impl CalcScreen {
     /// The display panel: status line (angle mode + Ans), the expression
     /// line, and the result/preview line.
     fn draw_display(
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
         model: &CalcModel,
-        display: Rect,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
-        ui::surface::card(scene, t, display, theme.radius_standard, c.neutral[0]);
+        let display = self.display_rect;
+        ui::surface::card(ctx.scene, t, display, theme.radius_standard, c.neutral[0]);
+        if self.display_is_short() {
+            self.draw_display_expr_and_result(ctx.scene, t, ctx.text, theme, model);
+            return;
+        }
 
         // status line: angle mode + Ans
         let status = Rect::new(
@@ -386,49 +486,40 @@ impl CalcScreen {
         );
         let mode_txt = if model.deg { "DEG" } else { "RAD" };
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             status,
             mode_txt,
-            12.0,
+            &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
             c.accent[6],
             Align::Left,
-            TextWeight::Semibold,
         );
         let ans_txt = format!("Ans = {}", engine::format_number(model.ans));
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             status,
             &ans_txt,
-            12.0,
+            &TextStyle::new(12.0),
             c.text_dim,
             Align::Right,
-            TextWeight::Regular,
         );
 
-        Self::draw_display_expr_and_result(scene, t, tr, theme, model, display);
+        self.draw_display_expr_and_result(ctx.scene, t, ctx.text, theme, model);
     }
 
     /// The display panel's expression line and its result/preview line.
     fn draw_display_expr_and_result(
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
         model: &CalcModel,
-        display: Rect,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
-        // expression line
-        let expr_rect = Rect::new(
-            display.x0 + 16.0,
-            display.y0 + 30.0,
-            display.x1 - 16.0,
-            display.y0 + 78.0,
-        );
+        let display = self.display_rect;
+        let short = self.display_is_short();
+        let expr_rect = self.expression_rect;
         let expr_shown = if model.expr.trim().is_empty() {
             "0".to_string()
         } else {
@@ -440,23 +531,20 @@ impl CalcScreen {
             c.text_primary
         };
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             expr_rect,
             &expr_shown,
-            30.0,
+            &TextStyle::new(if short { 24.0 } else { 30.0 }).with_weight(TextWeight::Medium),
             expr_color,
             Align::Right,
-            TextWeight::Medium,
         );
 
         // result / preview line
         let res_rect = Rect::new(
             display.x0 + 16.0,
-            display.y0 + 78.0,
+            expr_rect.y1,
             display.x1 - 16.0,
-            display.y1 - 6.0,
+            display.y1 - if short { 4.0 } else { 6.0 },
         );
         let (res_txt, res_color, weight) = match engine::evaluate(&model.expr, &model.ctx()) {
             Ok(v) if !model.expr.trim().is_empty() => {
@@ -479,15 +567,12 @@ impl CalcScreen {
             _ => (String::new(), c.text_dim, TextWeight::Regular),
         };
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             res_rect,
             &res_txt,
-            34.0,
+            &TextStyle::new(if short { 24.0 } else { 34.0 }).with_weight(weight),
             res_color,
             Align::Right,
-            weight,
         );
     }
 
@@ -499,8 +584,8 @@ impl CalcScreen {
         tr: &mut TextRenderer,
         theme: &Theme,
         model: &CalcModel,
-        left: Rect,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         for (i, key) in MEM_KEYS.iter().enumerate() {
             let Some(&r) = self.mem_rects.get(i) else {
@@ -509,22 +594,28 @@ impl CalcScreen {
             let hovered = self.hovered_mem == Some(i);
             let active = matches!(key, Key::MemRecall | Key::MemClear) && model.memory != 0.0;
             let fill = if hovered { c.neutral[3] } else { c.neutral[2] };
-            ui::surface::card(scene, t, r, 8.0, fill);
+            ui::surface::card(ctx.scene, t, r, 8.0, fill);
             let txt_col = if active { c.accent[6] } else { c.text_dim };
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 r,
                 key.label(),
-                13.0,
+                &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
                 txt_col,
                 Align::Center,
-                TextWeight::Semibold,
             );
         }
         if let Some(&mem3) = self.mem_rects.get(3) {
-            let mem_label = Rect::new(mem3.x1 + 12.0, mem3.y0, left.x1, mem3.y1);
+            // Ends before the sidebar toggle when the toggle shares the row.
+            let label_x1 = if self.toggle_rect.y0 >= mem3.y0 {
+                self.toggle_rect.x0 - 12.0
+            } else {
+                self.display_rect.x1
+            };
+            let mem_label = Rect::new(mem3.x1 + 12.0, mem3.y0, label_x1, mem3.y1);
+            if mem_label.width() < 48.0 {
+                return;
+            }
             let mem_txt = format!("M = {}", engine::format_number(model.memory));
             let mem_col = if model.memory == 0.0 {
                 c.text_dim
@@ -532,21 +623,19 @@ impl CalcScreen {
                 c.accent[6]
             };
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 mem_label,
                 &mem_txt,
-                14.0,
+                &TextStyle::new(14.0).with_weight(TextWeight::Medium),
                 mem_col,
                 Align::Right,
-                TextWeight::Medium,
             );
         }
     }
 
     /// The scientific keypad's key buttons.
     fn draw_keys(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         for (i, key) in self.keys.iter().enumerate() {
             let Some(&r) = self.key_rects.get(i) else {
@@ -555,24 +644,22 @@ impl CalcScreen {
             let hovered = self.hovered_key == Some(i);
             let pressed = self.pressed_key == Some(i);
             let (fill, text_col) = key_colors(theme, key.role(), hovered, pressed);
-            ui::surface::card(scene, t, r, 10.0, fill);
+            ui::surface::card(ctx.scene, t, r, 10.0, fill);
             if key.role() == KeyRole::Accent {
-                draw::stroke_round(scene, t, r, 10.0, c.accent[6], 1.0);
+                ctx.stroke_round(r, 10.0, c.accent[6], 1.0);
             }
             let size = match key.role() {
-                KeyRole::Digit | KeyRole::Operator | KeyRole::Accent => 22.0,
+                KeyRole::Digit | KeyRole::Operator | KeyRole::Accent => 22.0_f32,
                 _ => 16.0,
-            };
+            }
+            .min(ui::num::f32_of_f64(r.height() * 0.6));
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 r,
                 key.label(),
-                size,
+                &TextStyle::new(size).with_weight(TextWeight::Medium),
                 text_col,
                 Align::Center,
-                TextWeight::Medium,
             );
         }
     }
@@ -591,6 +678,7 @@ impl CalcScreen {
         theme: &Theme,
         model: &CalcModel,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         let right = self.sidebar_rect;
 
@@ -602,9 +690,9 @@ impl CalcScreen {
         } else {
             c.surfaces.base
         };
-        draw::fill_rect(scene, t, right, panel_bg);
+        ctx.fill_rect(right, panel_bg);
         draw::line(
-            scene,
+            ctx.scene,
             t,
             Point::new(right.x0, right.y0),
             Point::new(right.x0, right.y1),
@@ -614,30 +702,24 @@ impl CalcScreen {
 
         let header = Rect::new(right.x0 + 16.0, right.y0, right.x1 - 16.0, right.y0 + 48.0);
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             header,
             "History",
-            16.0,
+            &TextStyle::new(16.0).with_weight(TextWeight::Semibold),
             c.text_primary,
             Align::Left,
-            TextWeight::Semibold,
         );
-        ui::surface::card(scene, t, self.clear_hist_rect, 6.0, c.neutral[2]);
+        ui::surface::card(ctx.scene, t, self.clear_hist_rect, 6.0, c.neutral[2]);
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             self.clear_hist_rect,
             "Clear",
-            12.0,
+            &TextStyle::new(12.0).with_weight(TextWeight::Medium),
             c.text_dim,
             Align::Center,
-            TextWeight::Medium,
         );
 
-        scene.push_layer(
+        ctx.scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
@@ -646,15 +728,12 @@ impl CalcScreen {
         );
         if model.history.is_empty() {
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 self.history_view,
                 "No calculations yet",
-                14.0,
+                &TextStyle::new(14.0),
                 c.text_dim,
                 Align::Center,
-                TextWeight::Regular,
             );
         }
         for (i, r) in &self.history_rects {
@@ -662,15 +741,15 @@ impl CalcScreen {
                 continue;
             };
             draw_recorded_row(
-                scene,
+                ctx.scene,
                 t,
-                tr,
+                ctx.text,
                 theme,
                 Rect::new(r.x0, r.y0 + 4.0, r.x1, r.y1 - 4.0),
                 entry,
             );
         }
-        scene.pop_layer();
+        ctx.scene.pop_layer();
     }
 
     // -- hit-testing ---------------------------------------------------------
@@ -773,31 +852,26 @@ pub(crate) fn draw_recorded_row(
     row: Rect,
     entry: &crate::model::HistoryEntry,
 ) {
+    let mut ctx = PaintCtx::new(scene, t, tr, theme);
     let c = &theme.tokens.colors;
-    ui::surface::card(scene, t, row, 8.0, c.neutral[1]);
+    ui::surface::card(ctx.scene, t, row, 8.0, c.neutral[1]);
     let expr_r = Rect::new(row.x0 + 12.0, row.y0 + 6.0, row.x1 - 12.0, row.y0 + 26.0);
     draw::text_in(
-        scene,
-        tr,
-        t,
+        &mut ctx,
         expr_r,
         &engine::prettify(&entry.expr),
-        13.0,
+        &TextStyle::new(13.0),
         c.text_dim,
         Align::Left,
-        TextWeight::Regular,
     );
     let res_r = Rect::new(row.x0 + 12.0, row.y0 + 24.0, row.x1 - 12.0, row.y1 - 4.0);
     draw::text_in(
-        scene,
-        tr,
-        t,
+        &mut ctx,
         res_r,
         &format!("= {}", entry.result),
-        18.0,
+        &TextStyle::new(18.0).with_weight(TextWeight::Semibold),
         c.text_primary,
         Align::Right,
-        TextWeight::Semibold,
     );
 }
 
@@ -810,95 +884,163 @@ mod tests {
         Rect::new(0.0, 60.0, w, 860.0)
     }
 
+    /// The history sidebar docks open on the right when wide, collapses by default
+    /// when narrow and opens there as an overlay drawer with a dismiss scrim that
+    /// captures clicks over it, and an explicit user hide survives relayout when
+    /// wide. Fresh screen per phase.
     #[test]
-    fn wide_window_docks_sidebar_open_by_default() {
-        let mut s = CalcScreen::default();
-        let m = CalcModel::seeded();
-        s.layout(body(1200.0), &m);
-        assert!(
-            s.sidebar_open(),
-            "wide window should default to history shown"
-        );
-        assert!(s.drawer.is_docked(), "wide window should dock, not overlay");
-        assert!(s.sidebar_rect.width() > 0.0);
-        // Docked on the RIGHT: the history column hugs the right edge.
-        assert!(
-            (s.sidebar_rect.x1 - body(1200.0).x1).abs() < 0.5,
-            "history docks on the right edge"
-        );
+    fn history_sidebar_docks_wide_overlays_narrow_and_honours_user_choice() {
+        // phase wide_window_docks_sidebar_open_by_default
+        {
+            let mut s = CalcScreen::default();
+            let m = CalcModel::seeded();
+            s.layout(body(1200.0), &m);
+            assert!(
+                s.sidebar_open(),
+                "wide window should default to history shown"
+            );
+            assert!(s.drawer.is_docked(), "wide window should dock, not overlay");
+            assert!(s.sidebar_rect.width() > 0.0);
+            // Docked on the RIGHT: the history column hugs the right edge.
+            assert!(
+                (s.sidebar_rect.x1 - body(1200.0).x1).abs() < 0.5,
+                "history docks on the right edge"
+            );
+        }
+
+        // phase narrow_window_collapses_sidebar_by_default
+        {
+            let mut s = CalcScreen::default();
+            let m = CalcModel::seeded();
+            s.layout(body(520.0), &m);
+            assert!(
+                !s.sidebar_open(),
+                "narrow window must NOT force the sidebar open"
+            );
+            assert!(
+                s.drawer.is_overlay(),
+                "narrow window uses the overlay drawer mode"
+            );
+            assert_eq!(
+                s.history_viewport(),
+                Rect::ZERO,
+                "collapsed → no history viewport"
+            );
+        }
+
+        // phase narrow_window_opens_as_overlay_with_scrim
+        {
+            let mut s = CalcScreen::default();
+            let m = CalcModel::seeded();
+            s.layout(body(520.0), &m);
+            // user taps the toggle to open the drawer (snap to settle deterministically)
+            s.toggle_sidebar();
+            s.snap_sidebar(true);
+            s.layout(body(520.0), &m);
+            assert!(s.sidebar_open());
+            assert!(s.drawer.is_overlay(), "still an overlay at this width");
+            assert!(
+                s.drawer.scrim_rect().width() > 0.0,
+                "overlay must lay down a dismiss scrim"
+            );
+            // a scrim tap (left of the right-anchored drawer) dismisses it
+            let scrim_pt = Point::new(body(520.0).x0 + 10.0, s.drawer.scrim_rect().center().y);
+            assert!(s.scrim_at(scrim_pt));
+            s.close_sidebar();
+            s.layout(body(520.0), &m);
+            assert!(!s.sidebar_open());
+        }
+
+        // phase overlay_drawer_captures_clicks_over_it
+        {
+            let mut s = CalcScreen::default();
+            let m = CalcModel::seeded();
+            s.layout(body(520.0), &m);
+            s.toggle_sidebar();
+            s.snap_sidebar(true);
+            s.layout(body(520.0), &m);
+            // a point inside the drawer is not a keypad/mem press
+            let over = Point::new(s.sidebar_rect.center().x, s.sidebar_rect.center().y);
+            assert_eq!(
+                s.key_at(over),
+                None,
+                "drawer must not press the key behind it"
+            );
+            assert_eq!(s.mem_at(over), None);
+        }
+
+        // phase user_choice_overrides_breakpoint_default_when_wide
+        {
+            let mut s = CalcScreen::default();
+            let m = CalcModel::seeded();
+            s.layout(body(1200.0), &m);
+            assert!(s.sidebar_open());
+            // user explicitly hides it; that choice sticks across redraws
+            s.toggle_sidebar();
+            s.layout(body(1200.0), &m);
+            assert!(!s.sidebar_open(), "explicit hide must survive a relayout");
+        }
     }
 
     #[test]
-    fn narrow_window_collapses_sidebar_by_default() {
-        let mut s = CalcScreen::default();
-        let m = CalcModel::seeded();
-        s.layout(body(520.0), &m);
-        assert!(
-            !s.sidebar_open(),
-            "narrow window must NOT force the sidebar open"
-        );
-        assert!(
-            s.drawer.is_overlay(),
-            "narrow window uses the overlay drawer mode"
-        );
-        assert_eq!(
-            s.history_viewport(),
-            Rect::ZERO,
-            "collapsed → no history viewport"
-        );
-    }
-
-    #[test]
-    fn narrow_window_opens_as_overlay_with_scrim() {
-        let mut s = CalcScreen::default();
-        let m = CalcModel::seeded();
-        s.layout(body(520.0), &m);
-        // user taps the toggle to open the drawer (snap to settle deterministically)
-        s.toggle_sidebar();
-        s.snap_sidebar(true);
-        s.layout(body(520.0), &m);
-        assert!(s.sidebar_open());
-        assert!(s.drawer.is_overlay(), "still an overlay at this width");
-        assert!(
-            s.drawer.scrim_rect().width() > 0.0,
-            "overlay must lay down a dismiss scrim"
-        );
-        // a scrim tap (left of the right-anchored drawer) dismisses it
-        let scrim_pt = Point::new(body(520.0).x0 + 10.0, s.drawer.scrim_rect().center().y);
-        assert!(s.scrim_at(scrim_pt));
-        s.close_sidebar();
-        s.layout(body(520.0), &m);
-        assert!(!s.sidebar_open());
-    }
-
-    #[test]
-    fn overlay_drawer_captures_clicks_over_it() {
-        let mut s = CalcScreen::default();
-        let m = CalcModel::seeded();
-        s.layout(body(520.0), &m);
-        s.toggle_sidebar();
-        s.snap_sidebar(true);
-        s.layout(body(520.0), &m);
-        // a point inside the drawer is not a keypad/mem press
-        let over = Point::new(s.sidebar_rect.center().x, s.sidebar_rect.center().y);
-        assert_eq!(
-            s.key_at(over),
-            None,
-            "drawer must not press the key behind it"
-        );
-        assert_eq!(s.mem_at(over), None);
-    }
-
-    #[test]
-    fn user_choice_overrides_breakpoint_default_when_wide() {
-        let mut s = CalcScreen::default();
-        let m = CalcModel::seeded();
-        s.layout(body(1200.0), &m);
-        assert!(s.sidebar_open());
-        // user explicitly hides it; that choice sticks across redraws
-        s.toggle_sidebar();
-        s.layout(body(1200.0), &m);
-        assert!(!s.sidebar_open(), "explicit hide must survive a relayout");
+    fn short_windows_keep_every_control_apart_and_inside_the_body() {
+        let overlaps = |a: Rect, b: Rect| a.intersect(b).area() > 0.01;
+        let sizes = [
+            // (width, height, keys must keep KEY_MIN_H)
+            (1200.0, 800.0, true),
+            (440.0, 800.0, true),
+            // Landscape phone, history docked beside the pad.
+            (914.0, 270.0, true),
+            // A 420 dpi phone in landscape, less its navigation bar.
+            (825.0, 274.0, true),
+            (600.0, 280.0, true),
+            // Split screen: short and narrow.
+            (360.0, 300.0, false),
+        ];
+        for (w, h, roomy) in sizes {
+            let area = Rect::new(0.0, 60.0, w, 60.0 + h);
+            let mut s = CalcScreen::default();
+            s.layout(area, &CalcModel::seeded());
+            let context = format!("{w}x{h}");
+            let chrome = [s.display_rect, s.toggle_rect]
+                .into_iter()
+                .chain(s.mem_rects.iter().copied())
+                .collect::<Vec<_>>();
+            for (i, a) in chrome.iter().enumerate() {
+                assert!(
+                    area.contains_rect(*a),
+                    "{context}: chrome {a:?} leaves the body"
+                );
+                for b in &chrome[i + 1..] {
+                    assert!(!overlaps(*a, *b), "{context}: chrome {a:?} overlaps {b:?}");
+                }
+            }
+            for (i, key) in s.key_rects.iter().enumerate() {
+                assert!(
+                    area.contains_rect(*key),
+                    "{context}: key {i} {key:?} leaves the body"
+                );
+                if roomy {
+                    assert!(key.height() >= KEY_MIN_H, "{context}: key {i} is {key:?}");
+                }
+                for c in &chrome {
+                    assert!(
+                        !overlaps(*key, *c),
+                        "{context}: key {i} {key:?} overlaps {c:?}"
+                    );
+                }
+                for (j, other) in s.key_rects.iter().enumerate().skip(i + 1) {
+                    assert!(
+                        !overlaps(*key, *other),
+                        "{context}: keys {i} and {j} overlap"
+                    );
+                }
+            }
+            assert!(
+                s.display_rect.contains_rect(s.expression_rect),
+                "{context}: the expression line leaves the display"
+            );
+        }
     }
 
     #[test]

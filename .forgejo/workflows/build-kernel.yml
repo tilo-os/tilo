@@ -1,4 +1,4 @@
-name: Snapshot / kernel
+name: Build / kernel
 
 # Rebuilds Fedora's kernel with the Tilo config fragment. Pull requests
 # validate the build; pushes to main, version tags and manual dispatches publish
@@ -6,18 +6,22 @@ name: Snapshot / kernel
 #
 # Every build dependency and the Fedora SRPM come from the signed native kernel
 # buildroot pinned in os/kernel-buildroot-snapshot.env
-# (snapshot-kernel-buildroot.yml). Kernel provenance binds that buildroot, not
+# (build-buildroots.yml). Kernel provenance binds that buildroot, not
 # the OS frozen RPM snapshot, so only kernel inputs trigger a rebuild here.
+# tilo-crypto is filtered to the signing sources the kernel Containerfile
+# copies; TLS fixture code stays behind the default tls-fixture feature and
+# is covered by check.yml / ci-development-signing.yml instead.
 
 on:
   push:
     branches: ["main"]
     tags: ["v*"]
     paths:
-      - "tools/ci/workflow_applicability.py"
       - "os/kernel/**"
       - "os/kernel-buildroot-snapshot.env"
-      - "crates/system/tilo-crypto/**"
+      - "crates/system/tilo-crypto/Cargo.toml"
+      - "crates/system/tilo-crypto/src/lib.rs"
+      - "crates/system/tilo-crypto/src/main.rs"
       - "os/tests/kernel_module_signing_test.sh"
       - "os/tests/kernel_runtime_probe.*"
       - "os/tests/secureboot_vm_*"
@@ -33,7 +37,9 @@ on:
     paths:
       - "os/kernel/**"
       - "os/kernel-buildroot-snapshot.env"
-      - "crates/system/tilo-crypto/**"
+      - "crates/system/tilo-crypto/Cargo.toml"
+      - "crates/system/tilo-crypto/src/lib.rs"
+      - "crates/system/tilo-crypto/src/main.rs"
       - "os/tests/kernel_module_signing_test.sh"
       - "os/tests/kernel_runtime_probe.*"
       - "os/tests/secureboot_vm_*"
@@ -44,8 +50,6 @@ on:
       - "os/dev/open-snapshot-pr.py"
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/workflows/build-kernel.yml"
-      - "tools/ci/workflow_applicability.py"
-      - "tools/ci/prepare_pr_history.py"
   workflow_dispatch:
 
 concurrency:
@@ -53,31 +57,6 @@ concurrency:
   cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main')) }}
 
 jobs:
-  applicability:
-    if: ${{ github.event_name == 'pull_request' }}
-    runs-on: runner-quality
-    timeout-minutes: 5
-    container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
-    outputs:
-      applicable: ${{ steps.compare.outputs.applicable }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 2
-          sparse-checkout: |
-            tools/ci/prepare_pr_history.py
-            tools/ci/workflow_applicability.py
-            .forgejo/workflows/build-kernel.yml
-          sparse-checkout-cone-mode: false
-          token: ${{ secrets.REGISTRY_TOKEN }}
-      - name: Prepare targeted PR history
-        run: python3 -I tools/ci/prepare_pr_history.py
-      - name: Require an exact relevant PR diff before native work
-        id: compare
-        run: python3 -I tools/ci/workflow_applicability.py --workflow .forgejo/workflows/build-kernel.yml
-
   signing-preflight:
     if: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
     runs-on: runner
@@ -100,12 +79,10 @@ jobs:
         run: os/dev/require-cosign-authority.sh
 
   build-and-push-kernel:
-    needs: [signing-preflight, applicability]
+    needs: signing-preflight
     if: >-
       ${{
         always() &&
-        (github.event_name != 'pull_request' ||
-         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
         (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped')
       }}
     strategy:
@@ -165,7 +142,7 @@ jobs:
             aarch64) ref="$KERNEL_BUILDROOT_AARCH64_REF"; expected_arch=arm64 ;;
           esac
           [[ "$ref" =~ ^registry\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]] || {
-            printf 'no digest-pinned native kernel buildroot for %s; run snapshot-kernel-buildroot\n' '${{ matrix.arch }}' >&2
+            printf 'no digest-pinned native kernel buildroot for %s; run build-buildroots\n' '${{ matrix.arch }}' >&2
             exit 1
           }
           cosign verify --key keys/cosign.pub "$ref" >/dev/null
@@ -197,56 +174,36 @@ jobs:
             v4l2loopback-0.15.3-a7e4a4d.tar.gz
             sccache-v0.17.0-${{ matrix.arch }}-unknown-linux-musl.tar.gz
 
-      # Every CI pool provides the same S3 compiler cache and a bucket-scoped
-      # credential. The kernel compile requires it, so a dead cache fails
-      # instead of silently compiling the whole tree again.
-      #
-      # Only pull requests use it. Every other run publishes a kernel that
-      # signed OS images install, and every CI job and agent sandbox holds a
-      # credential that can write any object in that bucket. A published
-      # kernel therefore compiles with the cache off and receives no cache
-      # settings or credentials.
+      # The runner's compiler cache (infra docs/ci-caching.md). Pull requests
+      # read and write it (their own scope, plus main's). Every other run
+      # publishes a kernel that signed OS images install, so it never reads
+      # the cache: it compiles every object and writes them (populate), which
+      # is where pull requests' hits come from.
       - name: Bind the runner compiler cache
         env:
           PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
         run: |
           set -euo pipefail
-          if [[ $PULL_REQUEST != true ]]; then
-            {
-              echo 'KERNEL_COMPILER_CACHE=off'
-              echo 'KERNEL_REQUIRE_COMPILER_CACHE=0'
-              echo 'KERNEL_SCCACHE_BUCKET='
-              echo 'KERNEL_SCCACHE_ENDPOINT='
-              echo 'KERNEL_SCCACHE_REGION=auto'
-              echo 'KERNEL_SCCACHE_S3_USE_SSL=false'
-              echo 'KERNEL_COMPILER_CACHE_SECRETS='
-            } >> "$GITHUB_ENV"
-            echo '::notice::publication: compiling the kernel without the shared compiler cache'
+          if [[ -z ${ACTIONS_CACHE_URL:-} || -z ${ACTIONS_RUNTIME_TOKEN:-} ]]; then
+            printf '%s\n' KERNEL_COMPILER_CACHE=off KERNEL_REQUIRE_COMPILER_CACHE=0 KERNEL_COMPILER_CACHE_SECRETS= >> "$GITHUB_ENV"
+            echo "::notice::this slot provides no compiler cache; compiling the kernel without it"
             exit 0
           fi
-          for name in SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_USE_SSL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
-            value="${!name:-}"
-            if [[ -z $value || $value == *$'\n'* ]]; then
-              echo "::error::runner compiler cache setting $name is missing"
-              exit 1
-            fi
-          done
+          if [[ $PULL_REQUEST == true ]]; then
+            printf '%s\n' KERNEL_COMPILER_CACHE=shared KERNEL_REQUIRE_COMPILER_CACHE=1 >> "$GITHUB_ENV"
+          else
+            printf '%s\n' KERNEL_COMPILER_CACHE=populate KERNEL_REQUIRE_COMPILER_CACHE=0 >> "$GITHUB_ENV"
+            echo '::notice::publication: compiling every kernel object and writing it to the compiler cache, reading none'
+          fi
           {
-            echo 'KERNEL_COMPILER_CACHE=shared'
-            echo 'KERNEL_REQUIRE_COMPILER_CACHE=1'
-            printf 'KERNEL_SCCACHE_BUCKET=%s\n' "$SCCACHE_BUCKET"
-            printf 'KERNEL_SCCACHE_ENDPOINT=%s\n' "$SCCACHE_ENDPOINT"
-            printf 'KERNEL_SCCACHE_REGION=%s\n' "$SCCACHE_REGION"
-            printf 'KERNEL_SCCACHE_S3_USE_SSL=%s\n' "$SCCACHE_S3_USE_SSL"
             echo 'KERNEL_COMPILER_CACHE_SECRETS<<TILO_COMPILER_CACHE_SECRETS'
-            echo 'aws_access_key_id=AWS_ACCESS_KEY_ID'
-            echo 'aws_secret_access_key=AWS_SECRET_ACCESS_KEY'
+            echo 'actions_cache_url=ACTIONS_CACHE_URL'
+            echo 'actions_runtime_token=ACTIONS_RUNTIME_TOKEN'
             echo 'TILO_COMPILER_CACHE_SECRETS'
           } >> "$GITHUB_ENV"
 
-      # The shared setup gives the builder the runner pool's registries and
-      # exports TILO_LAYER_CACHE_REGISTRY (see build-image).
-      - name: Set up buildx for registry cache export
+      # The shared setup gives the builder the runner pool's registries.
+      - name: Set up buildx
         uses: ./.forgejo/actions/setup-buildx
         with:
           driver-opts: |
@@ -302,24 +259,20 @@ jobs:
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
             KERNEL_BUILDROOT_REF=${{ env.KERNEL_BUILDROOT_REF }}
             KERNEL_BUILD_JOBS=${{ matrix.kernel_build_jobs }}
-            SCCACHE_BUCKET=${{ env.KERNEL_SCCACHE_BUCKET }}
-            SCCACHE_ENDPOINT=${{ env.KERNEL_SCCACHE_ENDPOINT }}
-            SCCACHE_REGION=${{ env.KERNEL_SCCACHE_REGION }}
-            SCCACHE_S3_USE_SSL=${{ env.KERNEL_SCCACHE_S3_USE_SSL }}
             TILO_COMPILER_CACHE=${{ env.KERNEL_COMPILER_CACHE }}
             TILO_REQUIRE_COMPILER_CACHE=${{ env.KERNEL_REQUIRE_COMPILER_CACHE }}
           secret-envs: ${{ env.KERNEL_COMPILER_CACHE_SECRETS }}
           # A published kernel imports no layer cache: no uncached rebuild
           # checks it, and the cache tag is writable by other jobs. Publishing
           # runs refresh the cache that pull requests then consume.
-          cache-from: ${{ github.event_name == 'pull_request' && format('type=registry,ref={0}/tilo/tilo-kernel-buildcache:{1}', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch) || '' }}
+          cache-from: ${{ github.event_name == 'pull_request' && format('type=gha,scope=kernel-{0}', matrix.arch) || '' }}
           # PRs consume the shared cache but do not update it: exporting cache
           # work can outlive a successful compile and exhaust the runner's
           # hard deadline. Main/tag/dispatch builds refresh final-stage
           # dependencies only; mode=max duplicates the multi-GiB source tree.
           # ignore-error: a cache write failure must not fail a build whose
           # image was already pushed; the next run simply starts colder.
-          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}/tilo/tilo-kernel-buildcache:{1},mode=min,ignore-error=true', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch) || '' }}
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=gha,scope=kernel-{0},mode=min,ignore-error=true', matrix.arch) || '' }}
           provenance: false
 
       # The build step never fails the job itself (continue-on-error), so
@@ -456,6 +409,8 @@ jobs:
             kernel-acceptance/inputs.json
             kernel-acceptance/rpm.sha256
           if-no-files-found: warn
+          # Evidence for this run's failure triage only.
+          retention-days: 1
 
       - name: Prove firmware rejects unsigned EFI and executes the signed image
         timeout-minutes: 15
@@ -463,11 +418,11 @@ jobs:
           set -euo pipefail
           probe="$RUNNER_TEMP/tilo-secureboot-probe-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           # The same compiler-cache mode as the kernel build, so the probe
-          # reuses its compile; a publication passes no cache credential.
+          # reuses its compile.
           cache_secrets=()
-          if [[ $KERNEL_COMPILER_CACHE == shared ]]; then
-            cache_secrets=(--secret id=aws_access_key_id,env=AWS_ACCESS_KEY_ID
-                           --secret id=aws_secret_access_key,env=AWS_SECRET_ACCESS_KEY)
+          if [[ $KERNEL_COMPILER_CACHE != off ]]; then
+            cache_secrets=(--secret id=actions_cache_url,env=ACTIONS_CACHE_URL
+                           --secret id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN)
           fi
           docker buildx build --file os/kernel/Containerfile \
             --target secureboot-probe-inputs \
@@ -475,10 +430,6 @@ jobs:
             --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
             --build-arg "KERNEL_BUILDROOT_REF=$KERNEL_BUILDROOT_REF" \
             --build-arg "KERNEL_BUILD_JOBS=${{ matrix.kernel_build_jobs }}" \
-            --build-arg "SCCACHE_BUCKET=$KERNEL_SCCACHE_BUCKET" \
-            --build-arg "SCCACHE_ENDPOINT=$KERNEL_SCCACHE_ENDPOINT" \
-            --build-arg "SCCACHE_REGION=$KERNEL_SCCACHE_REGION" \
-            --build-arg "SCCACHE_S3_USE_SSL=$KERNEL_SCCACHE_S3_USE_SSL" \
             --build-arg "TILO_COMPILER_CACHE=$KERNEL_COMPILER_CACHE" \
             --build-arg "TILO_REQUIRE_COMPILER_CACHE=$KERNEL_REQUIRE_COMPILER_CACHE" \
             "${cache_secrets[@]}" \
@@ -580,6 +531,8 @@ jobs:
         with:
           name: tilo-kernel-${{ matrix.arch }}
           path: refs/${{ matrix.arch }}.env
+          # Read by this run's pin job.
+          retention-days: 1
 
       - name: Revoke local registry login
         if: ${{ always() }}
@@ -594,7 +547,9 @@ jobs:
       KERNEL_SNAPSHOT_INPUTS: |
         os/kernel
         os/kernel-buildroot-snapshot.env
-        crates/system/tilo-crypto
+        crates/system/tilo-crypto/Cargo.toml
+        crates/system/tilo-crypto/src/lib.rs
+        crates/system/tilo-crypto/src/main.rs
         os/external-assets/github-assets.tsv
         os/dev/assert-native-arch.sh
         os/dev/open-snapshot-pr.py

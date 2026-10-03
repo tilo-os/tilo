@@ -9,7 +9,7 @@
 //! back-pressuring input and animation.
 
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
@@ -304,18 +304,14 @@ fn default_profile_path() -> Option<PathBuf> {
     std::env::var_os("TILO_PROJECTOR_PROFILE")
         .map(PathBuf::from)
         .or_else(|| {
-            std::env::var_os("XDG_RUNTIME_DIR")
-                .map(|dir| Path::new(&dir).join("tilo-projector/capture-profile.json"))
+            xdg_paths::xdg::runtime_dir().map(|dir| dir.join("tilo-projector/capture-profile.json"))
         })
 }
 
 fn default_socket_path() -> Option<PathBuf> {
     std::env::var_os(VIDEO_SOCKET_ENV)
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("XDG_RUNTIME_DIR")
-                .map(|dir| Path::new(&dir).join("tilo-projector/video.sock"))
-        })
+        .or_else(|| xdg_paths::xdg::runtime_dir().map(|dir| dir.join("tilo-projector/video.sock")))
 }
 
 fn target_size(source: (u32, u32), profile: CaptureProfile) -> Option<(u32, u32, f64)> {
@@ -349,32 +345,34 @@ mod tests {
     use std::os::unix::net::UnixListener;
 
     #[test]
-    fn target_size_preserves_aspect_and_encoder_evenness() {
-        let smooth = CaptureProfile::new(1280, 720, 60, 6_000);
-        assert_eq!(
-            target_size((1920, 1080), smooth),
-            Some((1280, 720, 2.0 / 3.0))
-        );
-        let (width, height, _) = target_size((1365, 768), smooth).expect("target");
-        assert_eq!(width % 2, 0);
-        assert_eq!(height % 2, 0);
-        assert!(width <= smooth.max_width && height <= smooth.max_height);
-        assert_eq!(
-            target_size((3840, 2160), CaptureProfile::new(3840, 2160, 30, 20_000)),
-            Some((3840, 2160, 1.0))
-        );
-    }
+    fn projection_target_size_and_encoder_pressure_scaling() {
+        // Phase `target_size_preserves_aspect_and_encoder_evenness`.
+        {
+            let smooth = CaptureProfile::new(1280, 720, 60, 6_000);
+            assert_eq!(
+                target_size((1920, 1080), smooth),
+                Some((1280, 720, 2.0 / 3.0))
+            );
+            let (width, height, _) = target_size((1365, 768), smooth).expect("target");
+            assert_eq!(width % 2, 0);
+            assert_eq!(height % 2, 0);
+            assert!(width <= smooth.max_width && height <= smooth.max_height);
+            assert_eq!(
+                target_size((3840, 2160), CaptureProfile::new(3840, 2160, 30, 20_000)),
+                Some((3840, 2160, 1.0))
+            );
+        }
+        // Phase `encoder_pressure_scales_continuously_and_recovers_only_to_the_ceiling`.
+        {
+            let ceiling = CaptureProfile::new(2560, 1440, 60, 15_000);
+            let lowered = lower_profile(ceiling);
+            assert_eq!((lowered.max_width, lowered.max_height), (1920, 1080));
+            assert!(lowered.bitrate_kbps < ceiling.bitrate_kbps);
+            assert_eq!(raise_profile(lowered, ceiling), ceiling);
 
-    #[test]
-    fn encoder_pressure_scales_continuously_and_recovers_only_to_the_ceiling() {
-        let ceiling = CaptureProfile::new(2560, 1440, 60, 15_000);
-        let lowered = lower_profile(ceiling);
-        assert_eq!((lowered.max_width, lowered.max_height), (1920, 1080));
-        assert!(lowered.bitrate_kbps < ceiling.bitrate_kbps);
-        assert_eq!(raise_profile(lowered, ceiling), ceiling);
-
-        let user_limit = CaptureProfile::new(1280, 720, 30, 5_000);
-        assert_eq!(clamp_profile(ceiling, user_limit), user_limit);
+            let user_limit = CaptureProfile::new(1280, 720, 30, 5_000);
+            assert_eq!(clamp_profile(ceiling, user_limit), user_limit);
+        }
     }
 
     /// Needs an H.264 encoder: hardware, or Cisco's openh264 plugin. A stock
@@ -401,7 +399,7 @@ mod tests {
         }));
         let (mut stream, _) = listener.accept().expect("encoder connection");
         stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .expect("read timeout");
         let packet = VideoPacket::read_from(&mut stream).expect("encoded video packet");
         assert_eq!((packet.width, packet.height), (320, 240));

@@ -59,14 +59,14 @@ impl LocalIdentity {
     /// The Tilo runtime identity — the canonical per-user identity the launcher
     /// provisions and the collab layer signs with.
     fn from_runtime_identity() -> Option<Self> {
-        let si = runtime_identity::load().ok()?;
-        let pk = si.group_public_key();
+        let si = ui::local_identity::bound()?;
+        let pk = si.group_public_key;
         // A short, stable, collision-resistant id from the public key. The full
         // 32 bytes is overkill for a map key; the first 8 bytes (64 bits) are
         // ample and keep the id readable in logs / the document.
         let id = format!("u_{}", hex8(&pk));
         let name = {
-            let n = si.display_name().trim().to_string();
+            let n = si.display_name.trim().to_string();
             if n.is_empty() { user_display() } else { n }
         };
         Some(Self {
@@ -81,13 +81,15 @@ impl LocalIdentity {
     /// session (no `TILO_USER_IDENTITY`) still keeps one stable id across runs.
     fn from_persisted_uuid() -> Option<Self> {
         let dir = crate::storage::data_dir()?;
-        let path = dir.join("peer-id");
-        let id = match std::fs::read_to_string(&path) {
-            Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
+        let (dir, name) = tilo_files::file_at(&dir.join("peer-id")).ok()?;
+        let stored = tilo_files::blocking::read(&dir, &name)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok());
+        let id = match stored {
+            Some(s) if !s.trim().is_empty() => s.trim().to_string(),
             _ => {
                 let fresh = format!("u_{}", uuid::Uuid::new_v4().simple());
-                std::fs::create_dir_all(&dir).ok()?;
-                std::fs::write(&path, &fresh).ok()?;
+                tilo_files::blocking::write_atomic(&dir, &name, fresh.as_bytes()).ok()?;
                 fresh
             }
         };
@@ -103,10 +105,8 @@ impl LocalIdentity {
     /// Deterministic last resort: a `user@host` hash, so even with no disk and
     /// no runtime identity two different machines/users still differ.
     fn from_user_host() -> Self {
-        let user = std::env::var("USER")
-            .or_else(|_| std::env::var("USERNAME"))
-            .unwrap_or_default();
-        let host = hostname();
+        let user = tilo_paths::session::user_name().unwrap_or_default();
+        let host = tilo_paths::session::host_name().unwrap_or_default();
         let seed = format!("{user}@{host}");
         let id = if seed == "@" {
             format!("u_{}", uuid::Uuid::new_v4().simple())
@@ -141,26 +141,18 @@ pub fn color_index_for(bytes: &[u8]) -> usize {
     color_from_bytes(bytes)
 }
 
-/// 64-bit FNV-1a — a tiny, dependency-free stable hash (never used for
+/// 64-bit FNV-1a — a stable hash (never used for
 /// security; only to spread ids across the colour palette / host fallback).
 fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in bytes {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0000_0100_0000_01B3);
-    }
-    h
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, bytes);
+    std::hash::Hasher::finish(&hasher)
 }
 
-/// Present a tidy display name from `$USER`, splitting on common separators so
-/// "ada.lovelace" → "Ada Lovelace". Falls back to "You".
+/// Present a tidy display name from the login name, splitting on common
+/// separators so "ada.lovelace" → "Ada Lovelace". Falls back to "You".
 fn user_display() -> String {
-    let raw = std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "You".to_string());
+    let raw = tilo_paths::session::user_name().unwrap_or_else(|| "You".to_string());
     let display: String = raw
         .split(['.', '_', '-', ' '])
         .filter(|p| !p.is_empty())
@@ -188,31 +180,17 @@ pub fn initials_for(name: &str) -> String {
     initials_of(name)
 }
 
-fn hostname() -> String {
-    std::env::var("HOSTNAME")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            std::fs::read_to_string("/etc/hostname")
-                .ok()
-                .map(|s| s.trim().to_string())
-        })
-        .unwrap_or_default()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn demo_identity_is_the_seeded_local_user() {
+    fn identity_derivation_is_stable_distinct_and_tidy() {
+        // Demo identity is the seeded local user.
         let me = LocalIdentity::demo();
-        assert_eq!(me.id, model::ME);
-        assert_eq!(me.name, "You");
-    }
+        assert_eq!(me.id, model::ME, "case demo: id");
+        assert_eq!(me.name, "You", "case demo: name");
 
-    #[test]
-    fn user_host_ids_are_distinct_per_peer_and_stable() {
         // Two different peers (different user@host) must never share an id, and
         // the same peer must resolve the same id twice — that stability + that
         // distinctness is exactly what genuine multi-participant chat needs.
@@ -221,19 +199,23 @@ mod tests {
         let b = format!("u_{:016x}", fnv1a(b"bob@banana"));
         assert_eq!(a, a2, "same peer resolves the same id");
         assert_ne!(a, b, "different peers get different ids");
-    }
 
-    #[test]
-    fn initials_and_display_are_tidy() {
-        assert_eq!(initials_of("Ada Lovelace"), "AL");
-        assert_eq!(initials_of("mononym"), "M");
-        assert_eq!(ui::format::capitalize_first("ada"), "Ada");
-    }
+        // Initials and display are tidy.
+        assert_eq!(
+            initials_of("Ada Lovelace"),
+            "AL",
+            "case initials: two words"
+        );
+        assert_eq!(initials_of("mononym"), "M", "case initials: mononym");
+        assert_eq!(
+            ui::format::capitalize_first("ada"),
+            "Ada",
+            "case capitalize_first"
+        );
 
-    #[test]
-    fn hex8_and_color_are_stable() {
+        // hex8 and colour are stable.
         let pk = [0xABu8; 32];
-        assert_eq!(hex8(&pk), "abababababababab");
-        assert_eq!(color_from_bytes(&pk), 5);
+        assert_eq!(hex8(&pk), "abababababababab", "case hex8");
+        assert_eq!(color_from_bytes(&pk), 5, "case color_from_bytes");
     }
 }

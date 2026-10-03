@@ -116,14 +116,12 @@ fn run(root: &Path, name: &str, source: &Path, extra: Vec<Value>) -> (Value, Val
         .stdout(Stdio::from(std::fs::File::create(&stdout).unwrap()))
         .stderr(Stdio::from(std::fs::File::create(&stderr).unwrap()));
     let mut child = command.spawn().unwrap();
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(60))
-        .expect("a 60 s deadline is representable");
+    let deadline = tilo_test_env::hang_deadline();
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
         }
-        if std::time::Instant::now() >= deadline {
+        if ui::time::now() >= deadline {
             child.kill().unwrap();
             child.wait().unwrap();
             panic!(
@@ -143,6 +141,30 @@ fn run(root: &Path, name: &str, source: &Path, extra: Vec<Value>) -> (Value, Val
         serde_json::from_slice(&std::fs::read(dump).unwrap()).unwrap(),
         serde_json::from_slice(&std::fs::read(inspect).unwrap()).unwrap(),
     )
+}
+
+/// A dumped comment's text: the paragraphs of its rich text, a line each.
+fn comment_text(comment: &Value) -> String {
+    let mut blocks: Vec<(String, String)> = comment["text"]["blocks"]
+        .as_object()
+        .map(|blocks| {
+            blocks
+                .values()
+                .map(|block| {
+                    (
+                        block["order"].to_string(),
+                        block["text"].as_str().unwrap_or_default().to_owned(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    blocks.sort();
+    blocks
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn find_canvas<'a>(node: &'a Value, found: &mut Vec<&'a Value>) {
@@ -199,7 +221,7 @@ fn cli_note_survives_other_document_and_restart() {
     assert_eq!(edited["annotations"].as_array().unwrap().len(), 1);
     assert_eq!(edited["comments"].as_array().unwrap().len(), 1);
     assert_eq!(edited["annotations"][0]["kind"], "note");
-    assert_eq!(edited["comments"][0]["body"], marker);
+    assert_eq!(comment_text(&edited["comments"][0]), marker);
     assert_eq!(edited["tilo:record"]["id"], record);
     let (other, _) = run(&root, "b-open", &b, vec![]);
     assert_ne!(other["tilo:record"]["id"], record);

@@ -27,15 +27,11 @@ for package in aws-lc-rs aws-lc-sys; do
   fi
 done
 
-# Upstream bootc 1.16.10 itself links libcrypto. The development-only,
-# installer-only helper is never copied into Tilo; its artifact verifier and
-# installed-disk audit enforce that boundary.
 manifest_hits="$(find "$repo/os" "$repo/.forgejo" -type f \
     \( -name 'Containerfile*' -o -name '*.yml' -o -name '*.yaml' \) -print0 \
   | xargs -0 -r rg -n -i '\b(openssl(-devel)?|sbsigntools)\b' \
   | grep -Ev '(^|:)[0-9]+:[[:space:]]*#|rpm -q|microdnf remove|dnf remove|libssl|libcrypto' \
   | grep -Ev '^.*/os/Containerfile:[0-9]+:RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/run/tilo-build-tools/openssl,ro \\$' \
-  | grep -Ev '^.*/\.forgejo/workflows/development-installer-bootc-helper\.yml:[0-9]+:        run: dnf install -y libzstd-devel ostree-devel openssl-devel && dnf clean all$' \
   | grep -Ev ': *&& (! )?printf '"'"'%s\\n'"'"' "\$installed" \| (awk '"'"'/\^\([[:alnum:]_|-]+\)\$/'"'"'|grep -Eq '"'"'\^\([[:alnum:]_|-]+\)\$'"'"') *\\?$' \
   || true)"
 if [ -n "$manifest_hits" ]; then
@@ -60,9 +56,7 @@ fi
 crypto_source="$repo/crates/system/tilo-crypto/src/lib.rs"
 development_signer="$repo/os/dev/development-signer.py"
 development_signer_setup="$repo/os/dev/setup-development-signer.py"
-development_compiler="$repo/os/dev/compile-development-os.py"
 development_trust="$repo/os/dev/development-trust.py"
-development_compile_container="$repo/os/Containerfile.development-compile"
 fex_buildroot_container="$repo/os/Containerfile.fex-buildroot"
 development_boot_fixture="$repo/os/tests/test_development_boot.py"
 development_signer_fixture="$repo/os/tests/development_signer.py"
@@ -84,26 +78,18 @@ if grep -Eq "(/usr/bin/(openssl|sbsign)|\['(openssl|sbsign)')" \
 else
   ok 'development key provisioning and private operations use the Rust-native signer'
 fi
-if grep -Eq "run\('openssl', '(genpkey|pkey)'|subprocess\.run\(\['openssl', 'pkey'" \
-    "$development_compiler"; then
-  bad 'development registry-owner key generation still invokes OpenSSL'
-else
-  ok 'development registry-owner key generation uses Rust-native Ed25519'
-fi
 if grep -Eq "(^|[^[:alnum:]_])openssl([^[:alnum:]_]|$)" "$development_trust"; then
   bad 'development public trust parsing still invokes OpenSSL'
 else
   ok 'development Cosign, PCR, and certificate identities use Rust-native parsing'
 fi
 if rg -n -i '(/usr/bin/(openssl|sbsign|sbverify)|\b(openssl|sbsign|sbverify)\b)' \
-    "$development_signer" "$development_signer_setup" "$development_compiler" \
+    "$development_signer" "$development_signer_setup" \
     "$development_trust" "$repo/os/dev/verify-development-loader.py" \
     "$repo/os/dev/verify-installed-development-disk.py" \
     "$repo/os/dev/development_boot.py" "$repo/os/dev/development_prediction.py" \
     "$repo/os/dev/retain-development-rootfs.py" "$repo/os/dev/signing_spool.py" >/dev/null; then
   bad 'development trust tooling still invokes OpenSSL or sbsigntools'
-elif grep -Eq 'dnf .*install.*(openssl|sbsigntools)' "$development_compile_container"; then
-  bad 'retained development compiler still installs OpenSSL or sbsigntools'
 else
   ok 'retained development trust tooling uses only Rust-native crypto'
 fi
@@ -245,12 +231,12 @@ if inventory_cleanup "$runtime_network" '^systemd-(coredump|networkd|resolved)$'
     "xargs -r dnf --disablerepo='*' remove -y" '^systemd-(coredump|networkd|resolved)$' \
   && grep -Fq 'test "$(readlink /etc/resolv.conf)" = ../run/NetworkManager/resolv.conf' <<<"$runtime_network" \
   && awk '/ln -sfn .*NetworkManager/ { switched=1 } /xargs -r dnf/ { if (!switched) exit 1; removed=1 } END { if (!removed) exit 1 }' <<<"$runtime_network" \
-  && grep -Fq 'rpm -q systemd-networkd' "$repo/os/usr/libexec/tilo-security-audit"; then
+  && grep -Fq 'installed systemd-networkd' "$repo/os/usr/libexec/tilo-security-audit"; then
   ok 'redundant systemd network daemons are removed and audited'
 else
   bad 'systemd network daemons remain in the NetworkManager-owned runtime'
 fi
-grep -Fq 'rpm -q systemd-coredump' "$repo/os/usr/libexec/tilo-security-audit" \
+grep -Fq 'installed systemd-coredump' "$repo/os/usr/libexec/tilo-security-audit" \
   && grep -Fq 'systemd-coredump.socket' "$repo/os/Containerfile" \
   || bad 'runtime can retain process memory through inherited systemd-coredump'
 
@@ -376,7 +362,6 @@ grep -Fq -- "-path '*/ossl-modules/legacy.so'" "$repo/os/Containerfile" \
   && grep -Fq -- "-path '*/gstreamer-1.0/libgstwebrtc.so'" "$repo/os/Containerfile" \
   && grep -Fq -- "-path '*/gstreamer-1.0/libgstnice.so'" "$repo/os/Containerfile" \
   && grep -Fq -- "-path '*/gstreamer-1.0/libgstsrtp.so'" "$repo/os/Containerfile" \
-  && grep -Fq -- "-path '*/qt6/plugins/tls/libqopensslbackend.so'" "$repo/os/Containerfile" \
   && grep -Fq 'optional OpenSSL modules and unused network media plugins absent' \
        "$repo/os/usr/libexec/tilo-security-audit" \
   || bad 'sealed rootfs does not remove and audit optional OpenSSL provider/engine/media modules'

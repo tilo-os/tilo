@@ -147,6 +147,8 @@ fn desired_config(request: &ApplyRequest) -> anyhow::Result<RelayConfig> {
             pin: serving,
             replication: replication.clone(),
             admitted_users: Vec::new(),
+            shell_authority: None,
+            checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
         })
         .collect();
     Ok(config)
@@ -308,7 +310,7 @@ fn apply_services(config: &RelayConfig) -> anyhow::Result<()> {
 
 fn restore(path: &Path, previous: Option<&[u8]>) -> anyhow::Result<()> {
     match previous {
-        Some(bytes) => atomic_file::write(path, bytes).map_err(Into::into),
+        Some(bytes) => tilo_files::native::atomic::write(path, bytes).map_err(Into::into),
         None if path.exists() => std::fs::remove_file(path).map_err(Into::into),
         None => Ok(()),
     }
@@ -323,9 +325,9 @@ fn commit_transaction(
 ) -> anyhow::Result<()> {
     let previous = std::fs::read(relay_path).ok();
     let previous_home = std::fs::read(home_path).ok();
-    atomic_file::write(relay_path, relay_bytes)?;
+    tilo_files::native::atomic::write(relay_path, relay_bytes)?;
     if let Some(bytes) = home_bytes
-        && let Err(error) = atomic_file::write(home_path, bytes)
+        && let Err(error) = tilo_files::native::atomic::write(home_path, bytes)
     {
         restore(relay_path, previous.as_deref())?;
         return Err(error.into());
@@ -562,7 +564,15 @@ fn personal_device_command(
     enrollment_command_result(&output, "personal-device enrollment was not completed")
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<std::process::ExitCode> {
+    // Automerge isolation workers re-enter this binary; serve them first.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        return Ok(std::process::ExitCode::from(code));
+    }
+    run().map(|()| std::process::ExitCode::SUCCESS)
+}
+
+fn run() -> anyhow::Result<()> {
     require_root()?;
     match Cli::parse().command {
         BrokerCommand::Apply => apply(&read_request()?),
@@ -626,216 +636,217 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
 
     #[test]
-    fn passwd_lookup_keeps_the_requesting_primary_group_and_home() {
-        let passwd = "root:x:0:0:root:/root:/bin/bash\ntilouser:x:42424:31337::/home/tilouser:/sbin/nologin\n";
-        assert_eq!(
-            account_from_passwd(passwd, 42_424),
-            Some(Account {
-                gid: 31_337,
-                home: PathBuf::from("/home/tilouser"),
+    fn enrollment_requests_run_as_the_invoking_user_with_bounded_diagnostics() {
+        // Phase `passwd_lookup_keeps_the_requesting_primary_group_and_home`.
+        {
+            let passwd = "root:x:0:0:root:/root:/bin/bash\ntilouser:x:42424:31337::/home/tilouser:/sbin/nologin\n";
+            assert_eq!(
+                account_from_passwd(passwd, 42_424),
+                Some(Account {
+                    gid: 31_337,
+                    home: PathBuf::from("/home/tilouser"),
+                })
+            );
+            assert_eq!(account_from_passwd(passwd, 7), None);
+        }
+        // Phase `enrollment_failure_preserves_the_bounded_child_diagnostic`.
+        {
+            let error = enrollment_command_result(
+                &bounded_command::Output {
+                    status: std::process::ExitStatus::from_raw(1 << 8),
+                    stdout: Vec::new(),
+                    stderr: b"requester lease expired\n".to_vec(),
+                },
+                "personal-device enrollment was not completed",
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "personal-device enrollment was not completed: requester lease expired"
+            );
+        }
+        // Phase `enrollment_failure_without_stderr_still_reports_exit_status`.
+        {
+            let error = enrollment_command_result(
+                &bounded_command::Output {
+                    status: std::process::ExitStatus::from_raw(2 << 8),
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                },
+                "home-server enrollment was not completed",
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "home-server enrollment was not completed (exit status: 2)"
+            );
+        }
+        // Phase `personal_device_ids_are_exact_ed25519_width_hex`.
+        {
+            assert!(validate_peer_ids(&"11".repeat(32), &"22".repeat(32)).is_ok());
+            assert!(validate_peer_ids("11", &"22".repeat(32)).is_err());
+            assert!(validate_peer_ids(&"zz".repeat(32), &"22".repeat(32)).is_err());
+        }
+        // Phase `request_projects_only_bounded_role_services_and_workspace_ids`.
+        {
+            let request = ApplyRequest {
+                identity_root: PathBuf::from("/var/lib/tilo"),
+                role: "always-on".into(),
+                workspace_ids: vec![9, 2, 9],
+                replication: "full".into(),
+                inbound_relay: true,
+                remote_control_relay: false,
+                app_serving: false,
+                compute: false,
+            };
+            let config = desired_config(&request).unwrap();
+            assert_eq!(config.device_role, DeviceRole::AlwaysOnServer);
+            assert_eq!(
+                config
+                    .workspaces
+                    .iter()
+                    .map(|entry| entry.id)
+                    .collect::<Vec<_>>(),
+                vec![2, 9]
+            );
+            assert!(
+                config
+                    .workspaces
+                    .iter()
+                    .all(|entry| entry.pin && entry.replication == ReplicationIntent::FullWorkspace)
+            );
+        }
+        // Phase `approval_identity_root_is_owned_and_confined_to_the_invoking_home`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let home = dir.path().join("home");
+            let identity = home.join(".local/share/tilo");
+            std::fs::create_dir_all(&identity).unwrap();
+            let uid = std::fs::metadata("/proc/self").unwrap().uid();
+            assert_eq!(
+                validate_identity_root(&identity, uid, &home).unwrap(),
+                identity.canonicalize().unwrap()
+            );
+
+            let outside = dir.path().join("outside/tilo");
+            std::fs::create_dir_all(&outside).unwrap();
+            assert!(validate_identity_root(&outside, uid, &home).is_err());
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn config_and_workspace_changes_reload_or_roll_back() {
+        // Phase `failed_reload_rolls_back_config`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("relay.toml");
+            tilo_files::native::atomic::write(&path, b"old").unwrap();
+            let home = dir.path().join("home.toml");
+            tilo_files::native::atomic::write(&home, b"old-home").unwrap();
+            let result = commit_transaction(&path, b"new", &home, Some(b"new-home"), || {
+                bail!("reload failed")
+            });
+            assert!(result.is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), b"old");
+            assert_eq!(std::fs::read(&home).unwrap(), b"old-home");
+        }
+        // Phase `successful_reload_keeps_new_config`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("relay.toml");
+            let home = dir.path().join("home.toml");
+            commit_transaction(&path, b"new", &home, Some(b"new-home"), || Ok(())).unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), b"new");
+            assert_eq!(std::fs::read(&home).unwrap(), b"new-home");
+        }
+        // Phase `service_rollback_restores_enabled_and_active_independently`.
+        {
+            assert_eq!(
+                service_state_actions(ServiceState {
+                    enabled: true,
+                    active: false,
+                }),
+                ("enable", "stop")
+            );
+            assert_eq!(
+                service_state_actions(ServiceState {
+                    enabled: false,
+                    active: true,
+                }),
+                ("disable", "restart")
+            );
+        }
+        // Phase `stock_desktop_always_on_selection_self_provisions_full_sync`.
+        {
+            let config = desired_config(&ApplyRequest {
+                identity_root: PathBuf::from("/var/lib/tilo"),
+                role: "always-on".into(),
+                workspace_ids: vec![12],
+                replication: "on-demand".into(),
+                inbound_relay: true,
+                remote_control_relay: false,
+                app_serving: false,
+                compute: false,
             })
-        );
-        assert_eq!(account_from_passwd(passwd, 7), None);
-    }
+            .unwrap();
+            assert!(needs_local_home_peer_export(&config, false));
+            assert!(!needs_local_home_peer_export(&config, true));
+        }
+        // Phase `workspace_add_remove_reloads_mapping_and_keeps_continuity`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let relay = dir.path().join("relay.toml");
+            let home = dir.path().join("home.toml");
+            let governor = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+            let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+                uuid::Uuid::from_bytes([3; 16]),
+                1,
+                Vec::new(),
+                false,
+                &governor,
+            )
+            .unwrap();
+            let bundle = fs::full_replica::HomePeerSet {
+                status_file: dir.path().join("status.json"),
+                workspaces: vec![fs::full_replica::HomePeerBundle {
+                    ticket: "test-ticket".into(),
+                    cache_dir: dir.path().join("cache"),
+                    capability_json: "[]".into(),
+                    authority: Some(authority),
+                    principals: Vec::new(),
+                    relay_workspace_ids: vec![7, 8],
+                }],
+            };
+            let original = toml::to_string_pretty(&bundle).unwrap();
+            tilo_files::native::atomic::write(&home, original.as_bytes()).unwrap();
+            let continuity =
+                tilo_relay::personal_continuity_workspace_id(&governor.verifying_key().to_bytes());
 
-    #[test]
-    fn enrollment_failure_preserves_the_bounded_child_diagnostic() {
-        let error = enrollment_command_result(
-            &bounded_command::Output {
-                status: std::process::ExitStatus::from_raw(1 << 8),
-                stdout: Vec::new(),
-                stderr: b"requester lease expired\n".to_vec(),
-            },
-            "personal-device enrollment was not completed",
-        )
-        .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "personal-device enrollment was not completed: requester lease expired"
-        );
-    }
+            let added = project_home_peer_workspaces(original.as_bytes(), &[8, 9]).unwrap();
+            commit_transaction(&relay, b"relay-add", &home, Some(&added), || Ok(())).unwrap();
+            let after_add: fs::full_replica::HomePeerSet =
+                toml::from_str(&std::fs::read_to_string(&home).unwrap()).unwrap();
+            assert_eq!(after_add.workspaces[0].relay_workspace_ids, {
+                let mut expected = vec![8, 9, continuity];
+                expected.sort_unstable();
+                expected.dedup();
+                expected
+            });
 
-    #[test]
-    fn enrollment_failure_without_stderr_still_reports_exit_status() {
-        let error = enrollment_command_result(
-            &bounded_command::Output {
-                status: std::process::ExitStatus::from_raw(2 << 8),
-                stdout: Vec::new(),
-                stderr: Vec::new(),
-            },
-            "home-server enrollment was not completed",
-        )
-        .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "home-server enrollment was not completed (exit status: 2)"
-        );
-    }
-
-    #[test]
-    fn personal_device_ids_are_exact_ed25519_width_hex() {
-        assert!(validate_peer_ids(&"11".repeat(32), &"22".repeat(32)).is_ok());
-        assert!(validate_peer_ids("11", &"22".repeat(32)).is_err());
-        assert!(validate_peer_ids(&"zz".repeat(32), &"22".repeat(32)).is_err());
-    }
-
-    #[test]
-    fn request_projects_only_bounded_role_services_and_workspace_ids() {
-        let request = ApplyRequest {
-            identity_root: PathBuf::from("/var/lib/tilo"),
-            role: "always-on".into(),
-            workspace_ids: vec![9, 2, 9],
-            replication: "full".into(),
-            inbound_relay: true,
-            remote_control_relay: false,
-            app_serving: false,
-            compute: false,
-        };
-        let config = desired_config(&request).unwrap();
-        assert_eq!(config.device_role, DeviceRole::AlwaysOnServer);
-        assert_eq!(
-            config
-                .workspaces
-                .iter()
-                .map(|entry| entry.id)
-                .collect::<Vec<_>>(),
-            vec![2, 9]
-        );
-        assert!(
-            config
-                .workspaces
-                .iter()
-                .all(|entry| entry.pin && entry.replication == ReplicationIntent::FullWorkspace)
-        );
-    }
-
-    #[test]
-    fn failed_reload_rolls_back_config() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("relay.toml");
-        atomic_file::write(&path, b"old").unwrap();
-        let home = dir.path().join("home.toml");
-        atomic_file::write(&home, b"old-home").unwrap();
-        let result = commit_transaction(&path, b"new", &home, Some(b"new-home"), || {
-            bail!("reload failed")
-        });
-        assert!(result.is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), b"old");
-        assert_eq!(std::fs::read(&home).unwrap(), b"old-home");
-    }
-
-    #[test]
-    fn successful_reload_keeps_new_config() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("relay.toml");
-        let home = dir.path().join("home.toml");
-        commit_transaction(&path, b"new", &home, Some(b"new-home"), || Ok(())).unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), b"new");
-        assert_eq!(std::fs::read(&home).unwrap(), b"new-home");
-    }
-
-    #[test]
-    fn service_rollback_restores_enabled_and_active_independently() {
-        assert_eq!(
-            service_state_actions(ServiceState {
-                enabled: true,
-                active: false,
-            }),
-            ("enable", "stop")
-        );
-        assert_eq!(
-            service_state_actions(ServiceState {
-                enabled: false,
-                active: true,
-            }),
-            ("disable", "restart")
-        );
-    }
-
-    #[test]
-    fn approval_identity_root_is_owned_and_confined_to_the_invoking_home() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().join("home");
-        let identity = home.join(".local/share/tilo");
-        std::fs::create_dir_all(&identity).unwrap();
-        let uid = std::fs::metadata("/proc/self").unwrap().uid();
-        assert_eq!(
-            validate_identity_root(&identity, uid, &home).unwrap(),
-            identity.canonicalize().unwrap()
-        );
-
-        let outside = dir.path().join("outside/tilo");
-        std::fs::create_dir_all(&outside).unwrap();
-        assert!(validate_identity_root(&outside, uid, &home).is_err());
-    }
-
-    #[test]
-    fn stock_desktop_always_on_selection_self_provisions_full_sync() {
-        let config = desired_config(&ApplyRequest {
-            identity_root: PathBuf::from("/var/lib/tilo"),
-            role: "always-on".into(),
-            workspace_ids: vec![12],
-            replication: "on-demand".into(),
-            inbound_relay: true,
-            remote_control_relay: false,
-            app_serving: false,
-            compute: false,
-        })
-        .unwrap();
-        assert!(needs_local_home_peer_export(&config, false));
-        assert!(!needs_local_home_peer_export(&config, true));
-    }
-
-    #[test]
-    fn workspace_add_remove_reloads_mapping_and_keeps_continuity() {
-        let dir = tempfile::tempdir().unwrap();
-        let relay = dir.path().join("relay.toml");
-        let home = dir.path().join("home.toml");
-        let governor = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
-        let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
-            uuid::Uuid::from_bytes([3; 16]),
-            1,
-            Vec::new(),
-            false,
-            &governor,
-        )
-        .unwrap();
-        let bundle = fs::full_replica::HomePeerSet {
-            status_file: dir.path().join("status.json"),
-            workspaces: vec![fs::full_replica::HomePeerBundle {
-                ticket: "test-ticket".into(),
-                cache_dir: dir.path().join("cache"),
-                capability_json: "[]".into(),
-                authority: Some(authority),
-                principals: Vec::new(),
-                relay_workspace_ids: vec![7, 8],
-            }],
-        };
-        let original = toml::to_string_pretty(&bundle).unwrap();
-        atomic_file::write(&home, original.as_bytes()).unwrap();
-        let continuity =
-            tilo_relay::personal_continuity_workspace_id(&governor.verifying_key().to_bytes());
-
-        let added = project_home_peer_workspaces(original.as_bytes(), &[8, 9]).unwrap();
-        commit_transaction(&relay, b"relay-add", &home, Some(&added), || Ok(())).unwrap();
-        let after_add: fs::full_replica::HomePeerSet =
-            toml::from_str(&std::fs::read_to_string(&home).unwrap()).unwrap();
-        assert_eq!(after_add.workspaces[0].relay_workspace_ids, {
-            let mut expected = vec![8, 9, continuity];
-            expected.sort_unstable();
-            expected.dedup();
-            expected
-        });
-
-        let removed = project_home_peer_workspaces(&added, &[9]).unwrap();
-        commit_transaction(&relay, b"relay-remove", &home, Some(&removed), || Ok(())).unwrap();
-        let after_remove: fs::full_replica::HomePeerSet =
-            toml::from_str(&std::fs::read_to_string(&home).unwrap()).unwrap();
-        assert_eq!(after_remove.workspaces[0].relay_workspace_ids, {
-            let mut expected = vec![9, continuity];
-            expected.sort_unstable();
-            expected.dedup();
-            expected
-        });
+            let removed = project_home_peer_workspaces(&added, &[9]).unwrap();
+            commit_transaction(&relay, b"relay-remove", &home, Some(&removed), || Ok(())).unwrap();
+            let after_remove: fs::full_replica::HomePeerSet =
+                toml::from_str(&std::fs::read_to_string(&home).unwrap()).unwrap();
+            assert_eq!(after_remove.workspaces[0].relay_workspace_ids, {
+                let mut expected = vec![9, continuity];
+                expected.sort_unstable();
+                expected.dedup();
+                expected
+            });
+        }
     }
 }

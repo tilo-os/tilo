@@ -6,6 +6,7 @@
 
 pub mod adapter;
 mod assets;
+pub mod capability;
 pub mod checked_files;
 mod files_session;
 pub mod preview;
@@ -14,9 +15,11 @@ pub use assets::{HistoricalAssetRequest, HistoricalAssetResponse, HistoricalAsse
 pub(crate) mod owner;
 pub mod registration;
 pub use owner::HistoryOwner;
-mod canvas;
+pub(crate) mod canvas;
 pub(crate) mod frame;
+pub(crate) mod frozen_root;
 pub(crate) mod host;
+pub mod pending_controls;
 pub use preview::*;
 pub use registration::*;
 
@@ -234,6 +237,17 @@ impl HistoryController {
 
     pub fn groups(&self) -> &[HistoryGroup] {
         &self.groups
+    }
+
+    /// Committed activity at `live`'s frontier, in causal order, leaving
+    /// this controller's projection and selection where they are.
+    #[cfg(any(feature = "native", test))]
+    pub(crate) fn entries_at(&self, live: &AutoCommit) -> Vec<HistoryEntry> {
+        let mut projection = committed_clone(live);
+        if self.projected_heads.as_ref() == Some(&sorted_heads(projection.get_heads())) {
+            return self.entries.clone();
+        }
+        self.source.entries(&mut projection)
     }
 
     /// Reproject factual activity from committed graph state. An existing
@@ -470,12 +484,7 @@ pub(crate) fn sorted_heads(mut heads: Vec<ChangeHash>) -> Vec<ChangeHash> {
 }
 
 fn is_effect_receipt(entry: &HistoryEntry) -> bool {
-    entry.context.as_ref().is_some_and(|context| {
-        context
-            .facets
-            .iter()
-            .any(|facet| facet.key == "tilo.receipt" && facet.value == "effect")
-    })
+    entry.is_effect_receipt()
 }
 
 #[cfg(test)]

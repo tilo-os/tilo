@@ -173,35 +173,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn network_requires_full_connectivity_and_a_connected_unmetered_device() {
-        assert!(full_connectivity("full\n"));
-        assert!(!full_connectivity("limited\n"));
-        assert!(connected_unmetered_device(
-            "GENERAL.STATE:100 (connected)\nGENERAL.METERED:no (guessed)\n"
-        ));
-        assert!(!connected_unmetered_device(
-            "GENERAL.STATE:100 (connected)\nGENERAL.METERED:yes\n"
-        ));
-        assert!(connected_unmetered_device(
-            "GENERAL.STATE:30 (disconnected)\nGENERAL.METERED:no\n\
-             GENERAL.STATE:100 (connected)\nGENERAL.METERED:no\n"
-        ));
-    }
-
-    #[test]
-    fn battery_policy_is_conservative_while_discharging() {
-        assert!(battery_allows(false, false, 0));
-        assert!(!battery_allows(true, false, 100));
-        assert!(!battery_allows(true, true, MIN_BATTERY_PERCENT - 1));
-        assert!(battery_allows(true, true, MIN_BATTERY_PERCENT));
-    }
-
-    #[test]
-    fn storage_requires_both_an_absolute_and_percentage_reserve() {
-        let gib = 1024_u64 * 1024 * 1024;
-        assert!(storage_values_allow(10 * gib, 2 * gib, 1));
-        assert!(!storage_values_allow(100 * gib, gib - 1, 1));
-        assert!(!storage_values_allow(100 * gib, 2 * gib, 1));
-        assert!(!storage_values_allow(0, 0, 4096));
+    fn smart_monitor_policies_require_good_network_battery_and_storage() {
+        // Phase `network_requires_full_connectivity_and_a_connected_unmetered_device`.
+        {
+            assert!(full_connectivity("full\n"));
+            assert!(!full_connectivity("limited\n"));
+            assert!(connected_unmetered_device(
+                "GENERAL.STATE:100 (connected)\nGENERAL.METERED:no (guessed)\n"
+            ));
+            assert!(!connected_unmetered_device(
+                "GENERAL.STATE:100 (connected)\nGENERAL.METERED:yes\n"
+            ));
+            assert!(connected_unmetered_device(
+                "GENERAL.STATE:30 (disconnected)\nGENERAL.METERED:no\n\
+                 GENERAL.STATE:100 (connected)\nGENERAL.METERED:no\n"
+            ));
+        }
+        // Phase `battery_policy_is_conservative_while_discharging`.
+        {
+            assert!(battery_allows(false, false, 0));
+            assert!(!battery_allows(true, false, 100));
+            assert!(!battery_allows(true, true, MIN_BATTERY_PERCENT - 1));
+            assert!(battery_allows(true, true, MIN_BATTERY_PERCENT));
+        }
+        // Phase `storage_requires_both_an_absolute_and_percentage_reserve`.
+        {
+            let gib = 1024_u64 * 1024 * 1024;
+            assert!(storage_values_allow(10 * gib, 2 * gib, 1));
+            assert!(!storage_values_allow(100 * gib, gib - 1, 1));
+            assert!(!storage_values_allow(100 * gib, 2 * gib, 1));
+            assert!(!storage_values_allow(0, 0, 4096));
+        }
     }
 }

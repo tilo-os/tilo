@@ -2,8 +2,9 @@
 //!
 //! A Tilo app's state is a set of **resources**: typed, versioned, shared
 //! values the system owns. This crate is the layer that turns a Rust type into
-//! one. It has no rendering, windowing or widget dependency; the UI toolkit
-//! has no dependency on it; `tilo-app` binds the two.
+//! one. It has no rendering, windowing or widget dependency. The UI toolkit
+//! uses only its document-generic parts (history, stamped commits, replay);
+//! `tilo-app` binds resources to views.
 //!
 //! ## The golden path
 //!
@@ -56,12 +57,18 @@
 //!   operation with typed parameters, applied deterministically (ids and time
 //!   come from [`ActionCx`]) and replayed byte-identically on every replica;
 //! * **exposure** — the same declarations are what the palette, agents and
-//!   scripts list and invoke ([`publish`]), with permissions per action;
+//!   scripts list and invoke ([`publish`]), with permissions per action, and
+//!   the generic [`APPLY`] operation publishes a JSON Schema of the action
+//!   vocabulary ([`Resource::action_schema`], [`JsonSchema`]);
 //! * **history** — every action is a change attributed to its author with its
 //!   label and time ([`history`]); any version can be read back
 //!   ([`history::read_at`]) and restored, field by field and item by item,
 //!   from the record's stored [`Shape`];
 //! * **search** — text fields are indexed by default ([`Resource::search`]);
+//! * **document machinery** — fractional [`order`] keys, stamped commits and
+//!   positional replay ([`history`]), writing large content as a few changes
+//!   ([`batch`]) and id-aligned structural [`diff`]s, shared by every
+//!   resource type including the hand-written ones;
 //! * **incremental reads** — after a change only what it touched is read
 //!   again ([`Resource::refresh`], [`Delta`]); a record resource gets this
 //!   field by field and item by item, and a resource too large to read whole
@@ -94,8 +101,10 @@
 )]
 
 pub mod action;
+pub mod batch;
 pub mod collection;
 pub mod delta;
+pub mod diff;
 pub mod group;
 pub mod history;
 pub mod items;
@@ -104,13 +113,14 @@ pub mod order;
 pub mod reader;
 pub mod replica;
 pub mod resource;
+pub mod schema;
 pub mod shape;
 
 pub use action::{
     ActionCx, ActionRef, Binds, Invoke, Mapped, Operation, Outcome, Refusal, Stamped,
 };
 pub use collection::{Collection, Id};
-pub use delta::{Delta, Touch, Touched, Tracker};
+pub use delta::{Delta, Path, Touch, Touched, Tracker};
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
 pub use model::{
     Atom, Doc, Fields, Json, Model, ModelError, Slot, read_key, refresh_key, write_key,
@@ -118,11 +128,12 @@ pub use model::{
 pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
 pub use resource::{
-    APPLY, APPLY_PARAM, ActionDecl, BuildAction, Resource, SearchEntry, build_action, encode,
-    origin_now_ms, publish,
+    APPLY, APPLY_PARAM, ActionDecl, BuildAction, Resource, SearchEntry, action_label, build_action,
+    encode, origin_now_ms, publish,
 };
+pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape};
-pub use tilo_resource_macros::{Model, resource};
+pub use tilo_resource_macros::{JsonSchema, Model, resource};
 
 /// Items the generated code refers to. Not part of the public API.
 #[doc(hidden)]
@@ -131,7 +142,7 @@ pub mod __private {
     pub use serde;
     pub use serde_json;
     pub use tilo_actions::{
-        ActionArgs, ActionParam, ParamType, PermissionRequirement, Resource, RiskLevel,
+        ActionArgs, ActionParam, ChangeKind, ParamType, PermissionRequirement, Resource, RiskLevel,
     };
 
     /// The default search entry of a record: all of its text, in one entry.

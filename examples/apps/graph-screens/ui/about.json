@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "root": {
+    "type": "column",
+    "id": "root",
+    "children": [
+      {
+        "type": "text",
+        "id": "title",
+        "text": {
+          "source": "static",
+          "value": "about-title"
+        },
+        "role": "title",
+        "size": null
+      },
+      {
+        "type": "text",
+        "id": "body",
+        "text": {
+          "source": "static",
+          "value": "about-body"
+        },
+        "role": "body",
+        "size": null
+      },
+      {
+        "type": "button",
+        "id": "back",
+        "label": "about-back",
+        "accessible_name": null,
+        "tooltip": null,
+        "on_click_path": null,
+        "click_value": null,
+        "navigate": {
+          "action": "back"
+        },
+        "enabled": true,
+        "style": "ghost"
+      }
+    ],
+    "gap": 8.0,
+    "no_padding": false,
+    "intrinsic_height": false,
+    "fill_remaining_height": false
+  }
+}

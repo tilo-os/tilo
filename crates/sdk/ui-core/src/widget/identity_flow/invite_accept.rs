@@ -14,9 +14,9 @@
 //! IME or set through an accessibility action.
 
 use crate::time::SystemTime;
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use collab_types::{ChannelEvent, Ed25519PublicKey};
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -24,6 +24,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -218,34 +219,26 @@ impl InviteAcceptScreen {
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
     // received; bundling it would mean bundling the trait method too.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The invite screen forwards the Widget event, scale, modifiers, CRDT path, handled/focus outputs, node, and layout to its URL input."
-    )]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) -> ScreenOutcome {
-        let field_node = self.url_node.unwrap_or(node_id);
+        let handled = &mut *ctx.handled;
+        let field_node = self.url_node.unwrap_or(ctx.node_id);
         let mut forward = |url: &mut TextInput, handled: &mut bool| {
             url.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                field_node,
-                taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state: ctx.state,
+                    path: ctx.path,
+                    handled,
+                    focus_target: ctx.focus_target,
+                    node_id: field_node,
+                    taffy: ctx.taffy,
+                },
             );
         };
         // Set after the match, once `forward` has released `focus_target`:
@@ -254,7 +247,7 @@ impl InviteAcceptScreen {
         let mut claim_focus = false;
         let outcome = match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = p;
                 let a = self.accept_rect.contains(p) && self.parsed.is_some();
                 let d = self.decline_rect.contains(p);
@@ -324,7 +317,7 @@ impl InviteAcceptScreen {
             }
         };
         if claim_focus {
-            *focus_target = Some(field_node);
+            *ctx.focus_target = Some(field_node);
         }
         self.reparse_if_edited();
         outcome
@@ -401,11 +394,11 @@ impl InviteAcceptScreen {
             "{} invited you to #{} as {:?}",
             env.inviter_label, env.channel_name, env.role
         );
-        let when = chrono::DateTime::<chrono::Utc>::from(
-            SystemTime::UNIX_EPOCH
-                .checked_add(crate::time::Duration::from_secs(env.expires_unix))
-                .unwrap_or(SystemTime::UNIX_EPOCH),
+        let when = chrono::DateTime::<chrono::Utc>::from_timestamp(
+            i64::try_from(env.expires_unix).unwrap_or(i64::MAX),
+            0,
         )
+        .unwrap_or_default()
         .to_rfc3339();
         Some((banner, format!("Expires {when}")))
     }
@@ -461,7 +454,7 @@ impl InviteAcceptScreen {
 }
 
 impl Widget for InviteAcceptScreen {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
 
     fn build_layout(
         &mut self,
@@ -531,10 +524,7 @@ impl Widget for InviteAcceptScreen {
         sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
         sheet.clip_body(scene, transform);
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             plan.link_label,
             LINK_LABEL,
             Role::Label,
@@ -546,10 +536,7 @@ impl Widget for InviteAcceptScreen {
         if let Some((banner, expires)) = self.banner_text() {
             if let Some(rect) = plan.banner {
                 paint_text(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
                     rect,
                     &banner,
                     Role::Value,
@@ -559,10 +546,7 @@ impl Widget for InviteAcceptScreen {
             }
             if let Some(rect) = plan.expires {
                 paint_text(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
                     rect,
                     &expires,
                     Role::Caption,
@@ -572,10 +556,7 @@ impl Widget for InviteAcceptScreen {
             }
         } else if let (Some(rect), Some((text, role))) = (plan.status, self.status_text()) {
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 &text,
                 role,
@@ -585,10 +566,7 @@ impl Widget for InviteAcceptScreen {
         }
         if let (Some(rect), Some(err)) = (plan.error, self.accept_error.as_deref()) {
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 err,
                 Role::Error,
@@ -598,20 +576,6 @@ impl Widget for InviteAcceptScreen {
         }
         scene.pop_layer();
         sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {
@@ -657,6 +621,7 @@ impl Widget for InviteAcceptScreen {
 mod tests {
     use super::*;
     use crate::time::Duration;
+    use automerge::AutoCommit;
     use collab_types::{ChannelId, Role as ChannelRole, generate_keypair};
 
     fn fixture_url(now: SystemTime) -> String {
@@ -676,133 +641,141 @@ mod tests {
     }
 
     #[test]
-    fn pasting_valid_url_populates_parsed() {
-        let url = fixture_url(crate::time::wall());
-        let mut s = InviteAcceptScreen::new();
-        s.set_url(&url);
-        assert!(s.parsed().is_some(), "parse error: {:?}", s.parse_error());
-        assert_eq!(s.parsed().unwrap().role, ChannelRole::Editor);
-    }
+    fn invite_accept_parses_verifies_and_surfaces_link_errors() {
+        fn pasting_valid_url_populates_parsed() {
+            let url = fixture_url(crate::time::wall());
+            let mut s = InviteAcceptScreen::new();
+            s.set_url(&url);
+            assert!(s.parsed().is_some(), "parse error: {:?}", s.parse_error());
+            assert_eq!(s.parsed().unwrap().role, ChannelRole::Editor);
+        }
 
-    #[test]
-    fn pasting_garbage_url_surfaces_error() {
-        let mut s = InviteAcceptScreen::new();
-        s.set_url("https://example.com/not-an-invite");
-        assert!(s.parsed().is_none());
-        assert!(s.parse_error().is_some());
-    }
+        fn pasting_garbage_url_surfaces_error() {
+            let mut s = InviteAcceptScreen::new();
+            s.set_url("https://example.com/not-an-invite");
+            assert!(s.parsed().is_none());
+            assert!(s.parse_error().is_some());
+        }
 
-    #[test]
-    fn accept_builds_attestation_event() {
-        let url = fixture_url(crate::time::wall());
-        let mut s = InviteAcceptScreen::new();
-        s.set_url(&url);
-        let (_invitee_sk, invitee_pk) = generate_keypair();
-        let event = s
-            .accept(invitee_pk, crate::time::wall())
-            .expect("accept must succeed")
-            .clone();
-        match event {
-            ChannelEvent::AttestationIssued(ra) => {
-                assert_eq!(ra.attestation.subject.as_bytes(), invitee_pk.as_bytes());
+        fn tampered_url_fails_signature() {
+            let url = fixture_url(crate::time::wall());
+            // Truncation exercises the parse_error path (doesn't decode cleanly).
+            let mut chars: Vec<char> = url.chars().collect();
+            for _ in 0..4 {
+                chars.pop();
             }
-            _ => panic!("expected AttestationIssued"),
+            let bad: String = chars.into_iter().collect();
+            let mut s = InviteAcceptScreen::new();
+            s.set_url(&bad);
+            assert!(s.parsed().is_none());
+            assert!(s.parse_error().is_some());
         }
-    }
 
-    #[test]
-    fn decline_clears_state() {
-        let url = fixture_url(crate::time::wall());
-        let mut s = InviteAcceptScreen::new();
-        s.set_url(&url);
-        s.decline();
-        assert!(s.parsed().is_none());
-        assert!(s.url().is_empty());
-    }
-
-    #[test]
-    fn tampered_url_fails_signature() {
-        let url = fixture_url(crate::time::wall());
-        // Truncation exercises the parse_error path (doesn't decode cleanly).
-        let mut chars: Vec<char> = url.chars().collect();
-        for _ in 0..4 {
-            chars.pop();
+        /// An edit that lands in the shared field through any door — here the
+        /// accessibility `SetValue` an agent or screen reader uses — re-parses
+        /// the link on the next layout pass, exactly as typing did.
+        fn an_edit_through_the_shared_field_reparses_the_link() {
+            let url = fixture_url(crate::time::wall());
+            let mut s = InviteAcceptScreen::new();
+            assert!(s.parsed().is_none());
+            let mut doc = AutoCommit::new();
+            assert!(Widget::perform_action(
+                &mut s.url,
+                &crate::a11y::Action::SetValue(url.clone()),
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(s.url(), url, "the value landed in the shared field");
+            assert!(
+                s.parsed().is_none(),
+                "not yet re-read: no layout pass has run"
+            );
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map = HashMap::new();
+            let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+            taffy
+                .compute_layout(
+                    node,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(1280.0),
+                        height: taffy::AvailableSpace::Definite(800.0),
+                    },
+                )
+                .expect("layout");
+            s.apply_layout(&taffy, node, Point::ORIGIN);
+            assert!(
+                s.parsed().is_some(),
+                "the layout pass re-parsed the edited link"
+            );
+            let ids: Vec<&str> = s.children().iter().filter_map(|c| c.test_id()).collect();
+            assert_eq!(ids, vec![URL_INPUT_ID]);
+            assert!(
+                node_map.contains_key(&s.url_node.expect("field node")),
+                "the field is registered for the host's focus and semantics"
+            );
         }
-        let bad: String = chars.into_iter().collect();
-        let mut s = InviteAcceptScreen::new();
-        s.set_url(&bad);
-        assert!(s.parsed().is_none());
-        assert!(s.parse_error().is_some());
+
+        /// Empty, invalid and valid links each get a designed row under the
+        /// field, and the field is one control tall on the body's full width.
+        fn plan_has_a_status_row_for_every_link_state() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let body = Rect::new(100.0, 200.0, 620.0, 200.0);
+            let mut s = InviteAcceptScreen::new();
+            let empty = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
+            assert_eq!(empty.url.height(), 34.0);
+            assert_eq!((empty.url.x0, empty.url.x1), (body.x0, body.x1));
+            assert!(empty.status.is_some() && empty.banner.is_none());
+
+            s.set_url("https://example.com/not-an-invite");
+            let bad = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
+            assert!(bad.status.is_some(), "a parse error has a row");
+
+            s.set_url(fixture_url(crate::time::wall()));
+            let good = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
+            let banner = good.banner.expect("a valid link shows its banner");
+            let expires = good.expires.expect("and its expiry");
+            assert!(banner.y0 > good.url.y1);
+            assert!((expires.y0 - banner.y1 - f64::from(theme.tokens.spacing.s1)).abs() < 1e-9);
+            assert!(good.status.is_none());
+        }
+
+        pasting_valid_url_populates_parsed();
+        pasting_garbage_url_surfaces_error();
+        tampered_url_fails_signature();
+        an_edit_through_the_shared_field_reparses_the_link();
+        plan_has_a_status_row_for_every_link_state();
     }
 
-    /// An edit that lands in the shared field through any door — here the
-    /// accessibility `SetValue` an agent or screen reader uses — re-parses
-    /// the link on the next layout pass, exactly as typing did.
     #[test]
-    fn an_edit_through_the_shared_field_reparses_the_link() {
-        let url = fixture_url(crate::time::wall());
-        let mut s = InviteAcceptScreen::new();
-        assert!(s.parsed().is_none());
-        let mut doc = AutoCommit::new();
-        assert!(Widget::perform_action(
-            &mut s.url,
-            &crate::a11y::Action::SetValue(url.clone()),
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(s.url(), url, "the value landed in the shared field");
-        assert!(
-            s.parsed().is_none(),
-            "not yet re-read: no layout pass has run"
-        );
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map = HashMap::new();
-        let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(1280.0),
-                    height: taffy::AvailableSpace::Definite(800.0),
-                },
-            )
-            .expect("layout");
-        s.apply_layout(&taffy, node, Point::ORIGIN);
-        assert!(
-            s.parsed().is_some(),
-            "the layout pass re-parsed the edited link"
-        );
-        let ids: Vec<&str> = s.children().iter().filter_map(|c| c.test_id()).collect();
-        assert_eq!(ids, vec![URL_INPUT_ID]);
-        assert!(
-            node_map.contains_key(&s.url_node.expect("field node")),
-            "the field is registered for the host's focus and semantics"
-        );
-    }
+    fn invite_accept_builds_attestation_or_declines() {
+        fn accept_builds_attestation_event() {
+            let url = fixture_url(crate::time::wall());
+            let mut s = InviteAcceptScreen::new();
+            s.set_url(&url);
+            let (_invitee_sk, invitee_pk) = generate_keypair();
+            let event = s
+                .accept(invitee_pk, crate::time::wall())
+                .expect("accept must succeed")
+                .clone();
+            match event {
+                ChannelEvent::AttestationIssued(ra) => {
+                    assert_eq!(ra.attestation.subject.as_bytes(), invitee_pk.as_bytes());
+                }
+                _ => panic!("expected AttestationIssued"),
+            }
+        }
 
-    /// Empty, invalid and valid links each get a designed row under the
-    /// field, and the field is one control tall on the body's full width.
-    #[test]
-    fn plan_has_a_status_row_for_every_link_state() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let body = Rect::new(100.0, 200.0, 620.0, 200.0);
-        let mut s = InviteAcceptScreen::new();
-        let empty = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
-        assert_eq!(empty.url.height(), 34.0);
-        assert_eq!((empty.url.x0, empty.url.x1), (body.x0, body.x1));
-        assert!(empty.status.is_some() && empty.banner.is_none());
+        fn decline_clears_state() {
+            let url = fixture_url(crate::time::wall());
+            let mut s = InviteAcceptScreen::new();
+            s.set_url(&url);
+            s.decline();
+            assert!(s.parsed().is_none());
+            assert!(s.url().is_empty());
+        }
 
-        s.set_url("https://example.com/not-an-invite");
-        let bad = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
-        assert!(bad.status.is_some(), "a parse error has a row");
-
-        s.set_url(fixture_url(crate::time::wall()));
-        let good = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
-        let banner = good.banner.expect("a valid link shows its banner");
-        let expires = good.expires.expect("and its expiry");
-        assert!(banner.y0 > good.url.y1);
-        assert!((expires.y0 - banner.y1 - f64::from(theme.tokens.spacing.s1)).abs() < 1e-9);
-        assert!(good.status.is_none());
+        accept_builds_attestation_event();
+        decline_clears_state();
     }
 }

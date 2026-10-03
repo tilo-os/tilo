@@ -170,7 +170,15 @@ mod tests {
         }
     }
 
+    /// Commit graph lanes: linear history stays in one lane, a merge uses a second
+    /// lane, and every row has a lane. Each phase is a former test with its own fresh fixture.
     #[test]
+    fn commit_graph_assigns_lanes() {
+        linear_history_stays_in_one_lane();
+        merge_commit_uses_a_second_lane();
+        every_row_has_a_lane();
+    }
+
     fn linear_history_stays_in_one_lane() {
         let mut commits = vec![commit("c", &["b"]), commit("b", &["a"]), commit("a", &[])];
         let layout = layout(&mut commits);
@@ -180,7 +188,6 @@ mod tests {
         assert_eq!(layout.edges.len(), 2);
     }
 
-    #[test]
     fn merge_commit_uses_a_second_lane() {
         // m merges feature(f) into main(a); f branched from a.
         let mut commits = vec![
@@ -196,7 +203,6 @@ mod tests {
         assert_eq!(from_zero, 2);
     }
 
-    #[test]
     fn every_row_has_a_lane() {
         let mut commits = vec![commit("c", &["b"]), commit("b", &["a"]), commit("a", &[])];
         let layout = layout(&mut commits);

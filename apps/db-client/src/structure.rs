@@ -8,7 +8,8 @@ use vello::peniko::{Color, Fill};
 
 use crate::model::TableInfo;
 use crate::theme_ext::ThemeExt;
-use ui::text_render::TextRenderer;
+use ui::paint::PaintCtx;
+use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 
 /// 1× band heights; the painted bands are [`Bands`], which equal these until
@@ -109,10 +110,6 @@ pub fn draw_structure(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one panel's full draw context: canvas + theme + area + y + table + the measured bands"
-)]
 #[expect(
     clippy::similar_names,
     reason = "`chip_x0`/`chip_y0` are the chip's origin coordinates"
@@ -135,7 +132,14 @@ fn draw_columns_panel(
         ("Key", area.x0 + 430.0),
         ("Default", area.x0 + 510.0),
     ];
-    let mut y = panel_header(scene, t, tr, theme, area, y, "COLUMNS", &cols, m);
+    let mut y = panel_header(
+        &mut PaintCtx::new(scene, t, tr, theme),
+        area,
+        y,
+        "COLUMNS",
+        &cols,
+        m,
+    );
     let type_x = cols[1].1;
 
     for (i, col) in table.columns.iter().enumerate() {
@@ -211,10 +215,6 @@ fn draw_columns_panel(
     y
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one panel's full draw context: canvas + theme + area + y + table + the measured bands"
-)]
 fn draw_keys_panel(
     scene: &mut Scene,
     t: Affine,
@@ -231,7 +231,14 @@ fn draw_keys_panel(
         ("Column", area.x0 + 220.0),
         ("References", area.x0 + 360.0),
     ];
-    let mut y = panel_header(scene, t, tr, theme, area, y, "KEYS", &kx, m);
+    let mut y = panel_header(
+        &mut PaintCtx::new(scene, t, tr, theme),
+        area,
+        y,
+        "KEYS",
+        &kx,
+        m,
+    );
 
     for col in table.primary_keys() {
         let row = Rect::new(area.x0, y, area.x1, y + m.row_h);
@@ -277,10 +284,6 @@ fn draw_keys_panel(
     y
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one panel's full draw context: canvas + theme + area + y + table + the measured bands"
-)]
 fn draw_indexes_panel(
     scene: &mut Scene,
     t: Affine,
@@ -297,7 +300,14 @@ fn draw_indexes_panel(
         ("Unique", area.x0 + 240.0),
         ("Columns", area.x0 + 330.0),
     ];
-    let mut y = panel_header(scene, t, tr, theme, area, y, "INDEXES", &ix, m);
+    let mut y = panel_header(
+        &mut PaintCtx::new(scene, t, tr, theme),
+        area,
+        y,
+        "INDEXES",
+        &ix,
+        m,
+    );
     for (i, idx) in table.indexes.iter().enumerate() {
         let row = Rect::new(area.x0, y, area.x1, y + m.row_h);
         if i % 2 == 1 {
@@ -332,50 +342,44 @@ fn draw_indexes_panel(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one panel's full draw context: canvas + theme + area + this panel's title/y, its header columns (label, x) pairs and the measured bands"
-)]
+/// The panel's title and column-heading band across `area`, starting at
+/// `y`. Returns the Y position beneath its rule.
 fn panel_header(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
+    ctx: &mut PaintCtx<'_>,
     area: Rect,
     mut y: f64,
     title: &str,
     columns: &[(&str, f64)],
     m: &Bands,
 ) -> f64 {
+    let theme = ctx.theme;
     let p = theme.db();
-    tr.draw_text(
-        scene,
+    ctx.text(
         title,
-        11.0,
+        &TextStyle::new(11.0),
         theme.text_dim,
-        t * Affine::translate((area.x0, y)),
+        Point::new(area.x0, y),
         None,
     );
     y += m.panel_title_band;
-    let hr = Rect::new(area.x0, y, area.x1, y + m.header_h);
-    scene.fill(Fill::NonZero, t, p.header_bg, None, &hr);
+    ctx.fill_rect(Rect::new(area.x0, y, area.x1, y + m.header_h), p.header_bg);
+    let heading = TextStyle::new(HEADING_FONT);
     for (h, x) in columns {
         // Centre each heading on the band from its measured line height so
         // the header row and the cells below share one alignment rule.
-        let (_, hh) = tr.measure(h, HEADING_FONT, None);
-        tr.draw_text(
-            scene,
+        let (_, hh) = ctx.text.measure(h, HEADING_FONT, None);
+        ctx.text(
             h,
-            HEADING_FONT,
+            &heading,
             theme.text_primary,
-            t * Affine::translate((x + 6.0, y + (m.header_h - f64::from(hh)) / 2.0)),
+            Point::new(x + 6.0, y + (m.header_h - f64::from(hh)) / 2.0),
             None,
         );
     }
     y += m.header_h;
-    scene.stroke(
+    ctx.scene.stroke(
         &Stroke::new(1.0),
-        t,
+        ctx.transform,
         theme.border_standard,
         None,
         &Line::new(Point::new(area.x0, y), Point::new(area.x1, y)),
@@ -383,10 +387,6 @@ fn panel_header(
     y
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one cell's draw context: canvas, colour, text, column x, row y and the measured bands"
-)]
 fn cell(
     scene: &mut Scene,
     t: Affine,

@@ -20,7 +20,6 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::MouseScrollDelta;
 use winit::keyboard::ModifiersState;
 
-use ui::ColorCompat;
 use ui::gesture::{DragSelect, Granularity};
 use ui::text_render::TextRenderer;
 use ui::text_selection::{Selection, extend_span_drag, line_boundaries, word_boundaries};
@@ -1065,8 +1064,7 @@ fn wheel_px(delta: &MouseScrollDelta, scale_factor: f64) -> (f64, f64) {
 
 /// A translucent accent used for the selection highlight over the page.
 fn selection_color(theme: &Theme) -> Color {
-    let a = theme.accent_primary;
-    Color::from_rgba8(a.r(), a.g(), a.b(), 90)
+    ui::paint::with_alpha(theme.accent_primary, 90)
 }
 
 #[cfg(test)]
@@ -1120,187 +1118,189 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_wheel_zooms_toward_cursor() {
-        let mut p = pane();
-        let z0 = p.viewport.zoom();
-        let center = p.viewport.rect().center();
-        // Ctrl + wheel-up zooms in.
-        p.on_wheel(
-            &MouseScrollDelta::LineDelta(0.0, 1.0),
-            &ModifiersState::CONTROL,
-            center,
-            1.0,
-        );
-        assert!(p.viewport.zoom() > z0, "ctrl+wheel-up zooms in");
-        assert!(!p.fit_width, "an explicit zoom drops the fit-width intent");
+    fn preview_zooms_fits_and_switches_pages() {
+        // Case `ctrl_wheel_zooms_toward_cursor`.
+        {
+            let mut p = pane();
+            let z0 = p.viewport.zoom();
+            let center = p.viewport.rect().center();
+            // Ctrl + wheel-up zooms in.
+            p.on_wheel(
+                &MouseScrollDelta::LineDelta(0.0, 1.0),
+                &ModifiersState::CONTROL,
+                center,
+                1.0,
+            );
+            assert!(p.viewport.zoom() > z0, "ctrl+wheel-up zooms in");
+            assert!(!p.fit_width, "an explicit zoom drops the fit-width intent");
+        }
+        // Case `initial_fit_width_keeps_the_document_title_at_the_top`.
+        {
+            let p = pane();
+            assert_eq!(
+                p.viewport.scroll_y(),
+                0.0,
+                "a first fit-width layout must not centre-scroll past the title"
+            );
+        }
+        // Case `switching_pages_via_thumb_scrolls`.
+        {
+            let mut p = PreviewPane::new();
+            p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
+            let pages = vec![page(200.0, 260.0), page(200.0, 260.0), page(200.0, 260.0)];
+            p.set_pages_with_text(&pages, &[vec![], vec![], vec![]]);
+            p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
+            assert!(p.has_thumbs());
+            p.scroll_to_page(2);
+            assert_eq!(p.current_page(), 2);
+            assert!(
+                p.viewport.scroll_y() > 0.0,
+                "jumping to a later page scrolls down"
+            );
+        }
     }
 
     #[test]
-    fn initial_fit_width_keeps_the_document_title_at_the_top() {
-        let p = pane();
-        assert_eq!(
-            p.viewport.scroll_y(),
-            0.0,
-            "a first fit-width layout must not centre-scroll past the title"
-        );
+    fn preview_text_selection_copies_words_drags_and_all() {
+        // Case `preview_word_selection_uses_shared_boundaries_and_drag_state`.
+        {
+            let mut p = pane();
+            assert_eq!(p.text_span_at(7, false), (6, 11));
+
+            // The second word is selected by the shared double-click classifier;
+            // a subsequent drag extends in whole shared word units.
+            let point = p
+                .viewport
+                .content_point_to_screen(Point::new(20.0 + 7.5 * 8.0, 46.0));
+            assert!(p.on_mouse_down(point, false));
+            p.on_mouse_up();
+            assert!(p.on_mouse_down(point, false));
+            assert!(p.has_selection());
+            assert_eq!(p.selected_text().as_deref(), Some("world"));
+            p.on_mouse_up();
+        }
+        // Case `drag_selects_text_and_copies`.
+        {
+            let mut p = pane();
+            // Press at the first glyph, drag to just before the space (5 chars in).
+            let start = p.viewport.content_point_to_screen(Point::new(21.0, 46.0));
+            let end = p
+                .viewport
+                .content_point_to_screen(Point::new(20.0 + 8.0 * 5.0 + 1.0, 46.0));
+            assert!(
+                p.on_mouse_down(start, false),
+                "a text press begins a selection drag"
+            );
+            p.on_mouse_drag(end);
+            assert!(p.has_selection(), "the drag produced a selection");
+            assert_eq!(p.selected_text().as_deref(), Some("Hello"));
+        }
+        // Case `select_all_covers_every_cell_and_copies_with_line_break`.
+        {
+            let mut p = PreviewPane::new();
+            p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
+            let pages = vec![page(200.0, 400.0)];
+            let runs = vec![
+                line_run(40.0, "ab", 20.0, 8.0),
+                line_run(80.0, "cd", 20.0, 8.0),
+            ];
+            p.set_pages_with_text(&pages, &[runs]);
+            p.select_all();
+            assert_eq!(
+                p.selected_text().as_deref(),
+                Some("ab\ncd"),
+                "line break between runs"
+            );
+        }
     }
 
     #[test]
-    fn preview_word_selection_uses_shared_boundaries_and_drag_state() {
-        let mut p = pane();
-        assert_eq!(p.text_span_at(7, false), (6, 11));
-
-        // The second word is selected by the shared double-click classifier;
-        // a subsequent drag extends in whole shared word units.
-        let point = p
-            .viewport
-            .content_point_to_screen(Point::new(20.0 + 7.5 * 8.0, 46.0));
-        assert!(p.on_mouse_down(point, false));
-        p.on_mouse_up();
-        assert!(p.on_mouse_down(point, false));
-        assert!(p.has_selection());
-        assert_eq!(p.selected_text().as_deref(), Some("world"));
-        p.on_mouse_up();
-    }
-
-    #[test]
-    fn plain_wheel_scrolls_when_zoomed_tall() {
-        let mut p = pane();
-        // Even at fit-width a 200×800pt page overflows the 300px pane vertically.
-        assert!(p.viewport.overflows_y(), "tall page overflows vertically");
-        p.demo_set_view(1.6, 0.3);
-        let y0 = p.viewport.scroll_y();
-        // Plain wheel-down pans further down.
-        p.on_wheel(
-            &MouseScrollDelta::LineDelta(0.0, -1.0),
-            &ModifiersState::empty(),
-            p.viewport.rect().center(),
-            1.0,
-        );
-        assert!(
-            p.viewport.scroll_y() > y0,
-            "plain wheel scrolls the zoomed page down"
-        );
-    }
-
-    #[test]
-    fn tilt_wheel_scrolls_vertically_when_no_horizontal_overflow() {
-        let mut p = pane();
-        // Fit-width: nothing to scroll sideways, but the page is tall.
-        assert!(!p.viewport.overflows_x());
-        assert!(p.viewport.overflows_y());
-        p.demo_set_view(1.0, 0.3); // move off the top so a scroll can register
-        let y0 = p.viewport.scroll_y();
-        // A tilt (horizontal) wheel is folded into vertical panning.
-        p.on_wheel(
-            &MouseScrollDelta::LineDelta(1.0, 0.0),
-            &ModifiersState::empty(),
-            p.viewport.rect().center(),
-            1.0,
-        );
-        assert_ne!(
-            p.viewport.scroll_y(),
-            y0,
-            "tilt wheel moves a tall page vertically"
-        );
-    }
-
-    #[test]
-    fn drag_pans_when_zoomed_past_fit() {
-        let mut p = pane();
-        // Zoom in past fit-width so the page overflows horizontally.
-        p.demo_set_view(1.6, 0.3);
-        assert!(
-            p.viewport.overflows_x(),
-            "zoomed past fit-width the page overflows horizontally"
-        );
-        let sx0 = p.viewport.scroll_x();
-        let start = p.viewport.rect().center();
-        // A press while zoomed begins a pan drag (not a text selection).
-        assert!(p.on_mouse_down(start, false), "a press while zoomed pans");
-        p.on_mouse_drag(Point::new(start.x - 60.0, start.y - 20.0));
-        assert!(!p.has_selection(), "a pan drag never selects text");
-        assert!(
-            p.viewport.scroll_x() > sx0,
-            "dragging left reveals content to the right (scroll_x grew: {} -> {})",
-            sx0,
-            p.viewport.scroll_x()
-        );
-        p.on_mouse_up();
-        assert!(!p.viewport.is_panning(), "releasing ends the pan");
-    }
-
-    #[test]
-    fn tilt_wheel_pans_horizontally_when_zoomed_past_fit() {
-        let mut p = pane();
-        p.demo_set_view(1.6, 0.3);
-        assert!(
-            p.viewport.overflows_x(),
-            "page overflows sideways when zoomed"
-        );
-        let x0 = p.viewport.scroll_x();
-        // A tilt (horizontal) wheel pans the page sideways once it overflows.
-        p.on_wheel(
-            &MouseScrollDelta::LineDelta(-1.0, 0.0),
-            &ModifiersState::empty(),
-            p.viewport.rect().center(),
-            1.0,
-        );
-        assert_ne!(
-            p.viewport.scroll_x(),
-            x0,
-            "tilt wheel pans a wide zoomed page sideways"
-        );
-    }
-
-    #[test]
-    fn drag_selects_text_and_copies() {
-        let mut p = pane();
-        // Press at the first glyph, drag to just before the space (5 chars in).
-        let start = p.viewport.content_point_to_screen(Point::new(21.0, 46.0));
-        let end = p
-            .viewport
-            .content_point_to_screen(Point::new(20.0 + 8.0 * 5.0 + 1.0, 46.0));
-        assert!(
-            p.on_mouse_down(start, false),
-            "a text press begins a selection drag"
-        );
-        p.on_mouse_drag(end);
-        assert!(p.has_selection(), "the drag produced a selection");
-        assert_eq!(p.selected_text().as_deref(), Some("Hello"));
-    }
-
-    #[test]
-    fn select_all_covers_every_cell_and_copies_with_line_break() {
-        let mut p = PreviewPane::new();
-        p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
-        let pages = vec![page(200.0, 400.0)];
-        let runs = vec![
-            line_run(40.0, "ab", 20.0, 8.0),
-            line_run(80.0, "cd", 20.0, 8.0),
-        ];
-        p.set_pages_with_text(&pages, &[runs]);
-        p.select_all();
-        assert_eq!(
-            p.selected_text().as_deref(),
-            Some("ab\ncd"),
-            "line break between runs"
-        );
-    }
-
-    #[test]
-    fn switching_pages_via_thumb_scrolls() {
-        let mut p = PreviewPane::new();
-        p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
-        let pages = vec![page(200.0, 260.0), page(200.0, 260.0), page(200.0, 260.0)];
-        p.set_pages_with_text(&pages, &[vec![], vec![], vec![]]);
-        p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
-        assert!(p.has_thumbs());
-        p.scroll_to_page(2);
-        assert_eq!(p.current_page(), 2);
-        assert!(
-            p.viewport.scroll_y() > 0.0,
-            "jumping to a later page scrolls down"
-        );
+    fn preview_wheel_and_drag_scroll_or_pan() {
+        // Case `plain_wheel_scrolls_when_zoomed_tall`.
+        {
+            let mut p = pane();
+            // Even at fit-width a 200×800pt page overflows the 300px pane vertically.
+            assert!(p.viewport.overflows_y(), "tall page overflows vertically");
+            p.demo_set_view(1.6, 0.3);
+            let y0 = p.viewport.scroll_y();
+            // Plain wheel-down pans further down.
+            p.on_wheel(
+                &MouseScrollDelta::LineDelta(0.0, -1.0),
+                &ModifiersState::empty(),
+                p.viewport.rect().center(),
+                1.0,
+            );
+            assert!(
+                p.viewport.scroll_y() > y0,
+                "plain wheel scrolls the zoomed page down"
+            );
+        }
+        // Case `tilt_wheel_scrolls_vertically_when_no_horizontal_overflow`.
+        {
+            let mut p = pane();
+            // Fit-width: nothing to scroll sideways, but the page is tall.
+            assert!(!p.viewport.overflows_x());
+            assert!(p.viewport.overflows_y());
+            p.demo_set_view(1.0, 0.3); // move off the top so a scroll can register
+            let y0 = p.viewport.scroll_y();
+            // A tilt (horizontal) wheel is folded into vertical panning.
+            p.on_wheel(
+                &MouseScrollDelta::LineDelta(1.0, 0.0),
+                &ModifiersState::empty(),
+                p.viewport.rect().center(),
+                1.0,
+            );
+            assert_ne!(
+                p.viewport.scroll_y(),
+                y0,
+                "tilt wheel moves a tall page vertically"
+            );
+        }
+        // Case `drag_pans_when_zoomed_past_fit`.
+        {
+            let mut p = pane();
+            // Zoom in past fit-width so the page overflows horizontally.
+            p.demo_set_view(1.6, 0.3);
+            assert!(
+                p.viewport.overflows_x(),
+                "zoomed past fit-width the page overflows horizontally"
+            );
+            let sx0 = p.viewport.scroll_x();
+            let start = p.viewport.rect().center();
+            // A press while zoomed begins a pan drag (not a text selection).
+            assert!(p.on_mouse_down(start, false), "a press while zoomed pans");
+            p.on_mouse_drag(Point::new(start.x - 60.0, start.y - 20.0));
+            assert!(!p.has_selection(), "a pan drag never selects text");
+            assert!(
+                p.viewport.scroll_x() > sx0,
+                "dragging left reveals content to the right (scroll_x grew: {} -> {})",
+                sx0,
+                p.viewport.scroll_x()
+            );
+            p.on_mouse_up();
+            assert!(!p.viewport.is_panning(), "releasing ends the pan");
+        }
+        // Case `tilt_wheel_pans_horizontally_when_zoomed_past_fit`.
+        {
+            let mut p = pane();
+            p.demo_set_view(1.6, 0.3);
+            assert!(
+                p.viewport.overflows_x(),
+                "page overflows sideways when zoomed"
+            );
+            let x0 = p.viewport.scroll_x();
+            // A tilt (horizontal) wheel pans the page sideways once it overflows.
+            p.on_wheel(
+                &MouseScrollDelta::LineDelta(-1.0, 0.0),
+                &ModifiersState::empty(),
+                p.viewport.rect().center(),
+                1.0,
+            );
+            assert_ne!(
+                p.viewport.scroll_x(),
+                x0,
+                "tilt wheel pans a wide zoomed page sideways"
+            );
+        }
     }
 }

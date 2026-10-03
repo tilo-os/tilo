@@ -155,8 +155,8 @@ fn gpt(sector: u64, total_sectors: u64, parts: &[Part]) -> (Vec<u8>, Vec<u8>) {
     put(&mut header, 72, &2u64.to_le_bytes());
     put(&mut header, 80, &128u32.to_le_bytes());
     put(&mut header, 84, &128u32.to_le_bytes());
-    put(&mut header, 88, &layout::crc32(&entries).to_le_bytes());
-    let crc = layout::crc32(&header[..92]);
+    put(&mut header, 88, &crc32fast::hash(&entries).to_le_bytes());
+    let crc = crc32fast::hash(&header[..92]);
     put(&mut header, 16, &crc.to_le_bytes());
     let padded = entries.len().div_ceil(sector as usize) * sector as usize;
     entries.resize(padded, 0);
@@ -294,621 +294,697 @@ impl Fixture {
     }
 }
 
+/// GUID, CRC32, extents, truncated layouts and firmware variables.
 #[test]
-fn guids_round_trip_through_the_little_endian_encoding() {
-    assert_eq!(layout::guid_from_le(guid_le(ESP_TYPE)), ESP_TYPE);
-    assert_eq!(
-        layout::normalize_guid("{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}").as_deref(),
-        Some(ESP_TYPE)
-    );
-    for bad in [
-        "",
-        "{}",
-        "c12a7328-f81f-11d2-ba4b-00a0c93ec93",
-        "c12a7328f81f11d2ba4b00a0c93ec93b",
-        "c12a7328-f81f-11d2-ba4b-00a0c93ec93g",
-        "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}'; rm",
-    ] {
-        assert_eq!(layout::normalize_guid(bad), None, "{bad:?}");
-    }
-}
-
-#[test]
-fn crc32_matches_the_ieee_check_value() {
-    assert_eq!(layout::crc32(b"123456789"), 0xCBF4_3926);
-}
-
-#[test]
-fn oem_layout_decodes_into_the_staging_disk() {
-    let fx = Fixture::oem(512);
-    let disk = fx.layout_disk();
-    assert_eq!(disk.id, "0");
-    assert_eq!(disk.guid, DISK_GUID);
-    assert_eq!(disk.sector_bytes, 512);
-    assert_eq!(disk.size_bytes, 512 * GIB);
-    assert_eq!(disk.first_usable_lba, 34);
-    assert_eq!(disk.last_usable_lba, fx.total_sectors - 34);
-    let numbers: Vec<u32> = disk.partitions.iter().map(|p| p.number).collect();
-    assert_eq!(numbers, [1, 2, 3, 4]);
-    assert_eq!(
-        disk.partitions[0],
-        Partition {
-            number: 1,
-            guid: ESP_GUID.into(),
-            type_guid: ESP_TYPE.into(),
-            first_lba: 2048,
-            last_lba: 2048 + 204_800 - 1,
-        }
-    );
-    let winre = &disk.partitions[3];
-    assert_eq!(winre.type_guid, WINRE_TYPE);
-    assert!(winre.last_lba <= disk.last_usable_lba);
-
-    let layout = layout::parse_drive_layout(&layout_buf(
-        layout::STYLE_GPT,
-        34 * 512,
-        (fx.total_sectors - 67) * 512,
-        &fx.parts,
-    ))
-    .unwrap();
-    assert_eq!(layout.partitions[2].name, "Basic data partition");
-}
-
-#[test]
-fn oem_layout_probe_offers_full_tilo_with_empty_boot_fields() {
-    let fx = Fixture::oem(512);
-    let snapshot = fx.snapshot_json("GPT", json!("NVMe"), json!(2));
-    let observed = fx.observed(&snapshot);
-    let facts = facts::assemble(&observed);
-    assert_eq!(facts.blockers, Vec::<Blocker>::new());
-    assert!(!facts.bitlocker_protected);
-    assert!(facts.offers_full_os());
-    let basis = facts.basis.unwrap();
-    assert_eq!(basis.disk, fx.layout_disk());
-    assert_eq!(
-        basis.system_volume,
-        Some(SystemVolume {
-            partition_guid: C_GUID.into(),
-            size_bytes: fx.parts[2].len,
-            supported_min_bytes: 180 * GIB,
-            used_bytes: fx.parts[2].len - 200 * GIB,
-        })
-    );
-    assert!(basis.firmware.uefi);
-    assert!(!basis.firmware.secure_boot);
-    assert_eq!(basis.firmware.boot_current, None);
-    assert!(basis.firmware.boot_order.is_empty());
-    assert_eq!(basis.firmware.boot_next, None);
-    assert_eq!(facts::basis_error(&observed), None);
-}
-
-#[test]
-fn snapshot_protects_boot_system_and_lettered_partitions() {
-    let fx = Fixture::oem(512);
-    let snapshot =
-        storage::parse_snapshot(&fx.snapshot_json("GPT", json!("NVMe"), json!(2))).unwrap();
-    assert_eq!(
-        snapshot.partitions[0].drive_letter, None,
-        "NUL is no letter"
-    );
-    assert_eq!(snapshot.partitions[2].drive_letter, Some('C'));
-    let protected = storage::protected_partitions(&snapshot);
-    assert!(protected.contains(&ESP_GUID.to_string()));
-    assert!(protected.contains(&C_GUID.to_string()));
-    assert!(!protected.contains(&WINRE_GUID.to_string()));
-}
-
-#[test]
-fn four_k_native_disk_uses_six_sector_gpt_bounds() {
-    let fx = Fixture::oem(4096);
-    let disk = fx.layout_disk();
-    assert_eq!(disk.sector_bytes, 4096);
-    assert_eq!(disk.first_usable_lba, 6);
-    assert_eq!(disk.last_usable_lba, fx.total_sectors - 6);
-    assert_eq!(disk.partitions[0].first_lba, 256);
-    let snapshot =
-        storage::parse_snapshot(&fx.snapshot_json("GPT", json!(17), json!(null))).unwrap();
-    // The cmdlet-derived fallback agrees with the header-derived bounds.
-    let fallback = storage::disk_from_snapshot(&snapshot).unwrap();
-    assert_eq!(fallback, disk);
-    storage::cross_check(&disk, &snapshot).unwrap();
-    // GPT on-disk verification (elevated helper path).
-    let (header, entries) = gpt(4096, fx.total_sectors, &fx.parts);
-    let header = layout::parse_gpt_header(&header).unwrap();
-    assert_eq!(header.entries_read_bytes(4096).unwrap(), 16 * 1024);
-    let entries = layout::parse_gpt_entries(&entries, &header).unwrap();
-    layout::cross_check_gpt(&disk, &header, &entries).unwrap();
-}
-
-#[test]
-fn a_misaligned_partition_on_a_4kn_disk_is_refused() {
-    let mut fx = Fixture::oem(4096);
-    fx.parts[3].offset += 512;
-    let first = 6 * 4096;
-    let len = (fx.total_sectors - 11) * 4096;
-    let layout =
-        layout::parse_drive_layout(&layout_buf(layout::STYLE_GPT, first, len, &fx.parts)).unwrap();
-    let geometry = Geometry {
-        disk_size: fx.size(),
-        bytes_per_sector: 4096,
-    };
-    assert!(layout::disk_from_layout(0, geometry, &layout).is_err());
-}
-
-#[test]
-fn mbr_disk_is_not_gpt_without_a_basis() {
-    let fx = Fixture::oem(512);
-    let mut snapshot = fx.snapshot_json("MBR", json!("SATA"), json!(2));
-    snapshot["Disk"]["Guid"] = json!("");
-    for p in snapshot["Partitions"].as_array_mut().unwrap() {
-        p["Guid"] = json!("");
-        p["GptType"] = json!("");
-    }
-    let mut observed = fx.observed(&snapshot);
-    let mbr_layout =
-        layout::parse_drive_layout(&layout_buf(layout::STYLE_MBR, 0, 0, &fx.parts)).unwrap();
-    assert_eq!(mbr_layout.disk_guid, None);
-    observed.layout_disk = layout::disk_from_layout(
-        0,
-        Geometry {
-            disk_size: fx.size(),
-            bytes_per_sector: 512,
-        },
-        &mbr_layout,
-    );
-    assert!(observed.layout_disk.is_err());
-    let facts = facts::assemble(&observed);
-    assert_eq!(facts.blockers, vec![Blocker::NotGpt]);
-    assert!(facts.basis.is_none());
-    assert!(!facts.offers_full_os());
-    assert_eq!(
-        storage::parse_snapshot(&snapshot).unwrap().disk.style,
-        PartitionStyle::Mbr
-    );
-}
-
-#[test]
-fn dynamic_disk_is_unsupported() {
-    let mut fx = Fixture::oem(512);
-    fx.parts[2].type_guid = LDM_DATA_TYPE;
-    fx.parts[3].type_guid = LDM_METADATA_TYPE;
-    let snapshot = fx.snapshot_json("GPT", json!("NVMe"), json!(2));
-    let parsed = storage::parse_snapshot(&snapshot).unwrap();
-    assert_eq!(
-        storage::unsupported_reason(&parsed).as_deref(),
-        Some("the system disk is a dynamic disk")
-    );
-    let facts = facts::assemble(&fx.observed(&snapshot));
-    assert_eq!(facts.blockers, vec![Blocker::DiskUnsupported]);
-    assert!(!facts.offers_full_os());
-}
-
-#[test]
-fn raid_spaces_removable_and_vhd_boot_disks_are_unsupported() {
-    let fx = Fixture::oem(512);
-    for bus in [
-        json!("RAID"),
-        json!("Storage Spaces"),
-        json!("Spaces"),
-        json!("USB"),
-        json!("SD"),
-        json!("File Backed Virtual"),
-        json!(8),
-        json!(16),
-        json!("iSCSI"),
-        json!("Unknown"),
-        json!(null),
-    ] {
-        let snapshot = fx.snapshot_json("GPT", bus.clone(), json!(2));
-        let facts = facts::assemble(&fx.observed(&snapshot));
-        assert!(
-            facts.blockers.contains(&Blocker::DiskUnsupported),
-            "{bus} must be unsupported"
-        );
-    }
-    for bus in [
-        json!("NVMe"),
-        json!("SATA"),
-        json!("SAS"),
-        json!("SCSI"),
-        json!(17),
-        json!(11),
-    ] {
-        let snapshot = fx.snapshot_json("GPT", bus.clone(), json!(2));
-        assert!(
-            facts::assemble(&fx.observed(&snapshot)).blockers.is_empty(),
-            "{bus}"
-        );
-    }
-}
-
-#[test]
-fn bitlocker_states_map_to_protection_and_blockers() {
-    let fx = Fixture::oem(512);
-    let run = |value: Value| {
-        facts::assemble(&fx.observed(&fx.snapshot_json("GPT", json!("NVMe"), value)))
-    };
-    let on = run(json!(1));
-    assert!(on.bitlocker_protected);
-    assert!(on.blockers.is_empty(), "protection alone does not block");
-    assert!(on.offers_full_os());
-    let unknown = run(json!(null));
-    assert!(
-        unknown.bitlocker_protected,
-        "unknown fails closed as protected"
-    );
-    assert!(unknown.blockers.is_empty());
-    for converting in [3, 4, 6] {
-        let facts = run(json!(converting));
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn windows_binary_encodings_decode_and_reject_truncation() {
+    // Phase `guids_round_trip_through_the_little_endian_encoding`.
+    {
+        assert_eq!(layout::guid_from_le(guid_le(ESP_TYPE)), ESP_TYPE);
         assert_eq!(
-            facts.blockers,
-            vec![Blocker::BitlockerLocked],
-            "{converting}"
+            layout::normalize_guid("{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}").as_deref(),
+            Some(ESP_TYPE)
         );
+        for bad in [
+            "",
+            "{}",
+            "c12a7328-f81f-11d2-ba4b-00a0c93ec93",
+            "c12a7328f81f11d2ba4b00a0c93ec93b",
+            "c12a7328-f81f-11d2-ba4b-00a0c93ec93g",
+            "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}'; rm",
+        ] {
+            assert_eq!(layout::normalize_guid(bad), None, "{bad:?}");
+        }
+    }
+
+    // Phase `volume_extents_decode`.
+    {
+        let mut buf = vec![0u8; layout::EXTENTS_FIRST + 2 * layout::EXTENT_BYTES];
+        put(&mut buf, 0, &2u32.to_le_bytes());
+        put(&mut buf, 8, &3u32.to_le_bytes());
+        put(&mut buf, 16, &MIB.to_le_bytes());
+        put(&mut buf, 24, &GIB.to_le_bytes());
+        put(&mut buf, 32, &1u32.to_le_bytes());
+        let extents = layout::parse_volume_extents(&buf).unwrap();
+        assert_eq!(extents.len(), 2);
+        assert_eq!(extents[0].disk_number, 3);
+        assert_eq!(extents[0].offset, MIB);
+        assert_eq!(extents[0].length, GIB);
+        assert_eq!(extents[1].disk_number, 1);
+        assert!(layout::parse_volume_extents(&buf[..40]).is_err());
+    }
+
+    // Phase `truncated_or_negative_layouts_are_rejected`.
+    {
+        let fx = Fixture::oem(512);
+        let buf = layout_buf(layout::STYLE_GPT, 34 * 512, GIB, &fx.parts);
+        assert!(layout::parse_drive_layout(&buf[..buf.len() - 1]).is_err());
+        let mut negative = buf;
+        put(
+            &mut negative,
+            layout::LAYOUT_HEADER_BYTES + layout::ENTRY_OFFSET,
+            &(-512i64).to_le_bytes(),
+        );
+        assert!(layout::parse_drive_layout(&negative).is_err());
+        assert!(layout::parse_geometry(&[0u8; 8]).is_err());
+    }
+
+    // Phase `live_firmware_facts_decode_boot_variables`.
+    {
+        let base = facts::basis_firmware(true, false);
+        let mut vars = HashMap::new();
+        vars.insert("BootCurrent".to_string(), vec![0x01, 0x00]);
+        vars.insert(
+            "BootOrder".to_string(),
+            vec![0x01, 0x00, 0x00, 0x00, 0x0a, 0x01],
+        );
+        let facts = super::live_firmware_facts(&FakeFirmware(vars.clone()), &base).unwrap();
+        assert_eq!(facts.boot_current.as_deref(), Some("0001"));
+        assert_eq!(facts.boot_order, ["0001", "0000", "010A"]);
+        assert_eq!(facts.boot_next, None);
+        assert!(facts.uefi && !facts.secure_boot);
+
+        vars.insert("BootNext".to_string(), vec![0x04]);
+        assert!(super::live_firmware_facts(&FakeFirmware(vars.clone()), &base).is_err());
+        vars.insert("BootNext".to_string(), vec![0x04, 0x01]);
+        assert_eq!(
+            super::live_firmware_facts(&FakeFirmware(vars), &base)
+                .unwrap()
+                .boot_next
+                .as_deref(),
+            Some("0104")
+        );
+        assert!(ops::decode_boot_order(&[1, 0, 2]).is_err());
+    }
+}
+
+/// OEM layout, probe offer, snapshot protection and 4Kn bounds.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn windows_layout_decodes_protects_and_aligns_the_staging_disk() {
+    // Phase `oem_layout_decodes_into_the_staging_disk`.
+    {
+        let fx = Fixture::oem(512);
+        let disk = fx.layout_disk();
+        assert_eq!(disk.id, "0");
+        assert_eq!(disk.guid, DISK_GUID);
+        assert_eq!(disk.sector_bytes, 512);
+        assert_eq!(disk.size_bytes, 512 * GIB);
+        assert_eq!(disk.first_usable_lba, 34);
+        assert_eq!(disk.last_usable_lba, fx.total_sectors - 34);
+        let numbers: Vec<u32> = disk.partitions.iter().map(|p| p.number).collect();
+        assert_eq!(numbers, [1, 2, 3, 4]);
+        assert_eq!(
+            disk.partitions[0],
+            Partition {
+                number: 1,
+                guid: ESP_GUID.into(),
+                type_guid: ESP_TYPE.into(),
+                first_lba: 2048,
+                last_lba: 2048 + 204_800 - 1,
+            }
+        );
+        let winre = &disk.partitions[3];
+        assert_eq!(winre.type_guid, WINRE_TYPE);
+        assert!(winre.last_lba <= disk.last_usable_lba);
+
+        let layout = layout::parse_drive_layout(&layout_buf(
+            layout::STYLE_GPT,
+            34 * 512,
+            (fx.total_sectors - 67) * 512,
+            &fx.parts,
+        ))
+        .unwrap();
+        assert_eq!(layout.partitions[2].name, "Basic data partition");
+    }
+
+    // Phase `oem_layout_probe_offers_full_tilo_with_empty_boot_fields`.
+    {
+        let fx = Fixture::oem(512);
+        let snapshot = fx.snapshot_json("GPT", json!("NVMe"), json!(2));
+        let observed = fx.observed(&snapshot);
+        let facts = facts::assemble(&observed);
+        assert_eq!(facts.blockers, Vec::<Blocker>::new());
+        assert!(!facts.bitlocker_protected);
+        assert!(facts.offers_full_os());
+        let basis = facts.basis.unwrap();
+        assert_eq!(basis.disk, fx.layout_disk());
+        assert_eq!(
+            basis.system_volume,
+            Some(SystemVolume {
+                partition_guid: C_GUID.into(),
+                size_bytes: fx.parts[2].len,
+                supported_min_bytes: 180 * GIB,
+                used_bytes: fx.parts[2].len - 200 * GIB,
+            })
+        );
+        assert!(basis.firmware.uefi);
+        assert!(!basis.firmware.secure_boot);
+        assert_eq!(basis.firmware.boot_current, None);
+        assert!(basis.firmware.boot_order.is_empty());
+        assert_eq!(basis.firmware.boot_next, None);
+        assert_eq!(facts::basis_error(&observed), None);
+    }
+
+    // Phase `snapshot_protects_boot_system_and_lettered_partitions`.
+    {
+        let fx = Fixture::oem(512);
+        let snapshot =
+            storage::parse_snapshot(&fx.snapshot_json("GPT", json!("NVMe"), json!(2))).unwrap();
+        assert_eq!(
+            snapshot.partitions[0].drive_letter, None,
+            "NUL is no letter"
+        );
+        assert_eq!(snapshot.partitions[2].drive_letter, Some('C'));
+        let protected = storage::protected_partitions(&snapshot);
+        assert!(protected.contains(&ESP_GUID.to_string()));
+        assert!(protected.contains(&C_GUID.to_string()));
+        assert!(!protected.contains(&WINRE_GUID.to_string()));
+    }
+
+    // Phase `four_k_native_disk_uses_six_sector_gpt_bounds`.
+    {
+        let fx = Fixture::oem(4096);
+        let disk = fx.layout_disk();
+        assert_eq!(disk.sector_bytes, 4096);
+        assert_eq!(disk.first_usable_lba, 6);
+        assert_eq!(disk.last_usable_lba, fx.total_sectors - 6);
+        assert_eq!(disk.partitions[0].first_lba, 256);
+        let snapshot =
+            storage::parse_snapshot(&fx.snapshot_json("GPT", json!(17), json!(null))).unwrap();
+        // The cmdlet-derived fallback agrees with the header-derived bounds.
+        let fallback = storage::disk_from_snapshot(&snapshot).unwrap();
+        assert_eq!(fallback, disk);
+        storage::cross_check(&disk, &snapshot).unwrap();
+        // GPT on-disk verification (elevated helper path).
+        let (header, entries) = gpt(4096, fx.total_sectors, &fx.parts);
+        let header = layout::parse_gpt_header(&header).unwrap();
+        assert_eq!(header.entries_read_bytes(4096).unwrap(), 16 * 1024);
+        let entries = layout::parse_gpt_entries(&entries, &header).unwrap();
+        layout::cross_check_gpt(&disk, &header, &entries).unwrap();
+    }
+
+    // Phase `a_misaligned_partition_on_a_4kn_disk_is_refused`.
+    {
+        let mut fx = Fixture::oem(4096);
+        fx.parts[3].offset += 512;
+        let first = 6 * 4096;
+        let len = (fx.total_sectors - 11) * 4096;
+        let layout =
+            layout::parse_drive_layout(&layout_buf(layout::STYLE_GPT, first, len, &fx.parts))
+                .unwrap();
+        let geometry = Geometry {
+            disk_size: fx.size(),
+            bytes_per_sector: 4096,
+        };
+        assert!(layout::disk_from_layout(0, geometry, &layout).is_err());
+    }
+}
+
+/// MBR, dynamic, RAID/spaces/removable/VHD disks.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn windows_unsupported_disks_leave_no_basis() {
+    // Phase `mbr_disk_is_not_gpt_without_a_basis`.
+    {
+        let fx = Fixture::oem(512);
+        let mut snapshot = fx.snapshot_json("MBR", json!("SATA"), json!(2));
+        snapshot["Disk"]["Guid"] = json!("");
+        for p in snapshot["Partitions"].as_array_mut().unwrap() {
+            p["Guid"] = json!("");
+            p["GptType"] = json!("");
+        }
+        let mut observed = fx.observed(&snapshot);
+        let mbr_layout =
+            layout::parse_drive_layout(&layout_buf(layout::STYLE_MBR, 0, 0, &fx.parts)).unwrap();
+        assert_eq!(mbr_layout.disk_guid, None);
+        observed.layout_disk = layout::disk_from_layout(
+            0,
+            Geometry {
+                disk_size: fx.size(),
+                bytes_per_sector: 512,
+            },
+            &mbr_layout,
+        );
+        assert!(observed.layout_disk.is_err());
+        let facts = facts::assemble(&observed);
+        assert_eq!(facts.blockers, vec![Blocker::NotGpt]);
+        assert!(facts.basis.is_none());
+        assert!(!facts.offers_full_os());
+        assert_eq!(
+            storage::parse_snapshot(&snapshot).unwrap().disk.style,
+            PartitionStyle::Mbr
+        );
+    }
+
+    // Phase `dynamic_disk_is_unsupported`.
+    {
+        let mut fx = Fixture::oem(512);
+        fx.parts[2].type_guid = LDM_DATA_TYPE;
+        fx.parts[3].type_guid = LDM_METADATA_TYPE;
+        let snapshot = fx.snapshot_json("GPT", json!("NVMe"), json!(2));
+        let parsed = storage::parse_snapshot(&snapshot).unwrap();
+        assert_eq!(
+            storage::unsupported_reason(&parsed).as_deref(),
+            Some("the system disk is a dynamic disk")
+        );
+        let facts = facts::assemble(&fx.observed(&snapshot));
+        assert_eq!(facts.blockers, vec![Blocker::DiskUnsupported]);
         assert!(!facts.offers_full_os());
     }
-    for off in [0, 2, 5, 8] {
-        assert!(!run(json!(off)).bitlocker_protected, "{off}");
+
+    // Phase `raid_spaces_removable_and_vhd_boot_disks_are_unsupported`.
+    {
+        let fx = Fixture::oem(512);
+        for bus in [
+            json!("RAID"),
+            json!("Storage Spaces"),
+            json!("Spaces"),
+            json!("USB"),
+            json!("SD"),
+            json!("File Backed Virtual"),
+            json!(8),
+            json!(16),
+            json!("iSCSI"),
+            json!("Unknown"),
+            json!(null),
+        ] {
+            let snapshot = fx.snapshot_json("GPT", bus.clone(), json!(2));
+            let facts = facts::assemble(&fx.observed(&snapshot));
+            assert!(
+                facts.blockers.contains(&Blocker::DiskUnsupported),
+                "{bus} must be unsupported"
+            );
+        }
+        for bus in [
+            json!("NVMe"),
+            json!("SATA"),
+            json!("SAS"),
+            json!("SCSI"),
+            json!(17),
+            json!(11),
+        ] {
+            let snapshot = fx.snapshot_json("GPT", bus.clone(), json!(2));
+            assert!(
+                facts::assemble(&fx.observed(&snapshot)).blockers.is_empty(),
+                "{bus}"
+            );
+        }
     }
-    assert_eq!(storage::bitlocker_state(Some(99)), BitlockerState::Unknown);
 }
 
+/// BitLocker, disagreeing readers, missing bounds, ioctl fallback, firmware and remedies.
 #[test]
-fn disagreeing_readers_leave_no_basis() {
-    let fx = Fixture::oem(512);
-    let mut snapshot = fx.snapshot_json("GPT", json!("NVMe"), json!(2));
-    snapshot["Partitions"][3]["Size"] = json!(fx.parts[3].len - MIB);
-    let observed = fx.observed(&snapshot);
-    let facts = facts::assemble(&observed);
-    assert!(facts.basis.is_none());
-    assert_eq!(facts.blockers, vec![Blocker::DiskUnsupported]);
-    assert!(facts::basis_error(&observed).unwrap().contains("disagree"));
-}
-
-#[test]
-fn missing_shrink_bounds_or_snapshot_leave_no_basis() {
-    let fx = Fixture::oem(512);
-    let mut snapshot = fx.snapshot_json("GPT", json!("NVMe"), json!(2));
-    snapshot["System"]["SizeMin"] = Value::Null;
-    let facts = facts::assemble(&fx.observed(&snapshot));
-    assert!(facts.basis.is_none());
-    assert_eq!(facts.blockers, vec![Blocker::DiskUnsupported]);
-
-    let mut observed = fx.observed(&fx.snapshot_json("GPT", json!("NVMe"), json!(2)));
-    observed.snapshot = Err("PowerShell failed".into());
-    let facts = facts::assemble(&observed);
-    assert!(facts.basis.is_none());
-    assert!(facts.bitlocker_protected);
-    assert_eq!(facts.blockers, vec![Blocker::DiskUnsupported]);
-}
-
-#[test]
-fn layout_ioctl_failure_falls_back_to_the_cmdlet_disk() {
-    let fx = Fixture::oem(512);
-    let mut observed = fx.observed(&fx.snapshot_json("GPT", json!("NVMe"), json!(2)));
-    observed.layout_disk = Err("access denied".into());
-    let facts = facts::assemble(&observed);
-    assert_eq!(facts.basis.unwrap().disk, fx.layout_disk());
-}
-
-#[test]
-fn firmware_power_and_hibernation_blockers() {
-    let fx = Fixture::oem(512);
-    let snapshot = fx.snapshot_json("GPT", json!("NVMe"), json!(2));
-    let mut observed = fx.observed(&snapshot);
-    observed.uefi = Some(false);
-    let facts = facts::assemble(&observed);
-    assert_eq!(facts.blockers, vec![Blocker::NotUefi]);
-    assert!(!facts.basis.unwrap().firmware.uefi);
-
-    let mut observed = fx.observed(&snapshot);
-    observed.secure_boot_registry = None;
-    observed.hiberboot_enabled = Some(1);
-    observed.power = Some(PowerStatus {
-        ac_line: 0,
-        battery_flag: 1,
-        percent: 49,
-    });
-    let facts = facts::assemble(&observed);
-    assert_eq!(
-        facts.blockers,
-        vec![
-            Blocker::SecureBootOn,
-            Blocker::Hibernation,
-            Blocker::OnBattery
-        ]
-    );
-    assert!(facts.offers_full_os(), "every one of these has a remedy");
-    assert!(facts.basis.unwrap().firmware.secure_boot);
-
-    assert!(facts::secure_boot_enabled(Some(1)));
-    assert!(!facts::secure_boot_enabled(Some(0)));
-    assert!(facts::hibernation_active(Some(0), Some(0), true));
-    assert!(facts::hibernation_active(None, None, false));
-    assert!(!facts::hibernation_active(Some(1), Some(0), false));
-    assert!(!facts::hibernation_active(Some(0), None, false));
-    let status = |ac_line, battery_flag, percent| {
-        Some(PowerStatus {
-            ac_line,
-            battery_flag,
-            percent,
-        })
-    };
-    assert!(!facts::on_battery(status(0, 1, 50)));
-    assert!(facts::on_battery(status(0, 1, 255)));
-    assert!(!facts::on_battery(status(255, 128, 255)));
-    assert!(facts::on_battery(status(255, 8, 20)));
-    assert!(facts::on_battery(None));
-}
-
-#[test]
-fn gpt_verification_catches_corruption_and_renumbering() {
-    let fx = Fixture::oem(512);
-    let disk = fx.layout_disk();
-    let (header, entries) = gpt(512, fx.total_sectors, &fx.parts);
-    let parsed = layout::parse_gpt_header(&header).unwrap();
-    assert_eq!(parsed.first_usable_lba, 34);
-    assert_eq!(parsed.disk_guid, DISK_GUID);
-    let list = layout::parse_gpt_entries(&entries, &parsed).unwrap();
-    assert_eq!(list.len(), 4);
-    layout::cross_check_gpt(&disk, &parsed, &list).unwrap();
-
-    let mut bad = header;
-    bad[40] ^= 1;
-    assert!(
-        layout::parse_gpt_header(&bad)
-            .unwrap_err()
-            .contains("checksum")
-    );
-    let mut bad = entries;
-    bad[33] ^= 1;
-    assert!(
-        layout::parse_gpt_entries(&bad, &parsed)
-            .unwrap_err()
-            .contains("checksum")
-    );
-    assert!(layout::parse_gpt_header(&[0u8; 512]).is_err());
-
-    // WinRE sits in GPT slot 5 while Windows calls it partition 4.
-    let mut moved = fx.parts.clone();
-    moved[3].number = 5;
-    let (header, entries) = gpt(512, fx.total_sectors, &moved);
-    let parsed = layout::parse_gpt_header(&header).unwrap();
-    let list = layout::parse_gpt_entries(&entries, &parsed).unwrap();
-    let error = layout::cross_check_gpt(&disk, &parsed, &list).unwrap_err();
-    assert!(error.contains("GPT entry 5"), "{error}");
-}
-
-#[test]
-fn volume_extents_decode() {
-    let mut buf = vec![0u8; layout::EXTENTS_FIRST + 2 * layout::EXTENT_BYTES];
-    put(&mut buf, 0, &2u32.to_le_bytes());
-    put(&mut buf, 8, &3u32.to_le_bytes());
-    put(&mut buf, 16, &MIB.to_le_bytes());
-    put(&mut buf, 24, &GIB.to_le_bytes());
-    put(&mut buf, 32, &1u32.to_le_bytes());
-    let extents = layout::parse_volume_extents(&buf).unwrap();
-    assert_eq!(extents.len(), 2);
-    assert_eq!(extents[0].disk_number, 3);
-    assert_eq!(extents[0].offset, MIB);
-    assert_eq!(extents[0].length, GIB);
-    assert_eq!(extents[1].disk_number, 1);
-    assert!(layout::parse_volume_extents(&buf[..40]).is_err());
-}
-
-#[test]
-fn truncated_or_negative_layouts_are_rejected() {
-    let fx = Fixture::oem(512);
-    let buf = layout_buf(layout::STYLE_GPT, 34 * 512, GIB, &fx.parts);
-    assert!(layout::parse_drive_layout(&buf[..buf.len() - 1]).is_err());
-    let mut negative = buf;
-    put(
-        &mut negative,
-        layout::LAYOUT_HEADER_BYTES + layout::ENTRY_OFFSET,
-        &(-512i64).to_le_bytes(),
-    );
-    assert!(layout::parse_drive_layout(&negative).is_err());
-    assert!(layout::parse_geometry(&[0u8; 8]).is_err());
-}
-
-#[test]
-fn scripts_interpolate_only_validated_values() {
-    assert_eq!(
-        scripts::ps_guid(ESP_TYPE).unwrap(),
-        format!("{{{ESP_TYPE}}}")
-    );
-    assert_eq!(scripts::ps_guid("x'; Remove-Partition"), None);
-    assert!(scripts::resize(0, 3, "not-a-guid", GIB).is_none());
-    assert!(scripts::create(0, MIB, GIB, "'; format c:").is_none());
-    assert!(scripts::delete(0, 5, "{bad}", MIB, GIB).is_none());
-
-    let resize = scripts::resize(0, 3, C_GUID, 300 * GIB).unwrap();
-    assert!(resize.contains(&format!(
-        "Resize-Partition -DiskNumber 0 -PartitionNumber 3 -Size {}",
-        300 * GIB
-    )));
-    assert!(resize.contains(&format!("'{{{C_GUID}}}'")));
-    let create = scripts::create(1, 400 * GIB, 2 * GIB, &ESP_TYPE.to_uppercase()).unwrap();
-    assert!(create.contains(&format!(
-        "New-Partition -DiskNumber 1 -Offset {} -Size {} -GptType '{{{ESP_TYPE}}}'",
-        400 * GIB,
-        2 * GIB
-    )));
-    assert!(!create.contains("AssignDriveLetter"));
-    let delete = scripts::delete(1, 6, WINRE_GUID, MIB, GIB).unwrap();
-    assert!(delete.contains("Remove-Partition -DiskNumber 1 -PartitionNumber 6 -Confirm:$false"));
-    for script in [
-        &resize,
-        &create,
-        &delete,
-        &scripts::snapshot(scripts::DriveLetter::new('c').unwrap()),
-    ] {
-        assert!(script.starts_with("$ErrorActionPreference = 'Stop'"));
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn windows_blockers_and_remedies_follow_reader_facts() {
+    // Phase `bitlocker_states_map_to_protection_and_blockers`.
+    {
+        let fx = Fixture::oem(512);
+        let run = |value: Value| {
+            facts::assemble(&fx.observed(&fx.snapshot_json("GPT", json!("NVMe"), value)))
+        };
+        let on = run(json!(1));
+        assert!(on.bitlocker_protected);
+        assert!(on.blockers.is_empty(), "protection alone does not block");
+        assert!(on.offers_full_os());
+        let unknown = run(json!(null));
+        assert!(
+            unknown.bitlocker_protected,
+            "unknown fails closed as protected"
+        );
+        assert!(unknown.blockers.is_empty());
+        for converting in [3, 4, 6] {
+            let facts = run(json!(converting));
+            assert_eq!(
+                facts.blockers,
+                vec![Blocker::BitlockerLocked],
+                "{converting}"
+            );
+            assert!(!facts.offers_full_os());
+        }
+        for off in [0, 2, 5, 8] {
+            assert!(!run(json!(off)).bitlocker_protected, "{off}");
+        }
+        assert_eq!(storage::bitlocker_state(Some(99)), BitlockerState::Unknown);
     }
-    assert!(
-        scripts::snapshot(scripts::DriveLetter::new('d').unwrap()).contains("-DriveLetter D\n")
-    );
-    assert_eq!(
-        scripts::DriveLetter::of_path(r"C:\Windows")
-            .unwrap()
-            .letter(),
-        'C'
-    );
-    assert_eq!(scripts::DriveLetter::of_path(r"\\server\share"), None);
-    assert_eq!(scripts::DriveLetter::new('1'), None);
-}
 
-#[test]
-fn powershell_programs_travel_as_encoded_commands() {
-    for (plain, encoded) in [
-        ("", ""),
-        ("f", "Zg=="),
-        ("fo", "Zm8="),
-        ("foo", "Zm9v"),
-        ("foob", "Zm9vYg=="),
-        ("fooba", "Zm9vYmE="),
-        ("foobar", "Zm9vYmFy"),
-    ] {
-        assert_eq!(scripts::base64(plain.as_bytes()), encoded);
+    // Phase `disagreeing_readers_leave_no_basis`.
+    {
+        let fx = Fixture::oem(512);
+        let mut snapshot = fx.snapshot_json("GPT", json!("NVMe"), json!(2));
+        snapshot["Partitions"][3]["Size"] = json!(fx.parts[3].len - MIB);
+        let observed = fx.observed(&snapshot);
+        let facts = facts::assemble(&observed);
+        assert!(facts.basis.is_none());
+        assert_eq!(facts.blockers, vec![Blocker::DiskUnsupported]);
+        assert!(facts::basis_error(&observed).unwrap().contains("disagree"));
     }
-    assert_eq!(scripts::encode_command("a"), "YQA=");
-    let args = scripts::powershell_args("exit 0");
-    assert_eq!(
-        &args[..5],
-        [
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-EncodedCommand"
-        ]
-    );
-    let outer = scripts::elevated(r"C:\Win'dows\powershell.exe", "exit 7");
-    assert!(outer.contains(r"-FilePath 'C:\Win''dows\powershell.exe' -Verb RunAs"));
-    assert!(outer.contains(&scripts::encode_command("exit 7")));
-    assert!(outer.contains("exit 1223"));
+
+    // Phase `missing_shrink_bounds_or_snapshot_leave_no_basis`.
+    {
+        let fx = Fixture::oem(512);
+        let mut snapshot = fx.snapshot_json("GPT", json!("NVMe"), json!(2));
+        snapshot["System"]["SizeMin"] = Value::Null;
+        let facts = facts::assemble(&fx.observed(&snapshot));
+        assert!(facts.basis.is_none());
+        assert_eq!(facts.blockers, vec![Blocker::DiskUnsupported]);
+
+        let mut observed = fx.observed(&fx.snapshot_json("GPT", json!("NVMe"), json!(2)));
+        observed.snapshot = Err("PowerShell failed".into());
+        let facts = facts::assemble(&observed);
+        assert!(facts.basis.is_none());
+        assert!(facts.bitlocker_protected);
+        assert_eq!(facts.blockers, vec![Blocker::DiskUnsupported]);
+    }
+
+    // Phase `layout_ioctl_failure_falls_back_to_the_cmdlet_disk`.
+    {
+        let fx = Fixture::oem(512);
+        let mut observed = fx.observed(&fx.snapshot_json("GPT", json!("NVMe"), json!(2)));
+        observed.layout_disk = Err("access denied".into());
+        let facts = facts::assemble(&observed);
+        assert_eq!(facts.basis.unwrap().disk, fx.layout_disk());
+    }
+
+    // Phase `firmware_power_and_hibernation_blockers`.
+    {
+        let fx = Fixture::oem(512);
+        let snapshot = fx.snapshot_json("GPT", json!("NVMe"), json!(2));
+        let mut observed = fx.observed(&snapshot);
+        observed.uefi = Some(false);
+        let facts = facts::assemble(&observed);
+        assert_eq!(facts.blockers, vec![Blocker::NotUefi]);
+        assert!(!facts.basis.unwrap().firmware.uefi);
+
+        let mut observed = fx.observed(&snapshot);
+        observed.secure_boot_registry = None;
+        observed.hiberboot_enabled = Some(1);
+        observed.power = Some(PowerStatus {
+            ac_line: 0,
+            battery_flag: 1,
+            percent: 49,
+        });
+        let facts = facts::assemble(&observed);
+        assert_eq!(
+            facts.blockers,
+            vec![
+                Blocker::SecureBootOn,
+                Blocker::Hibernation,
+                Blocker::OnBattery
+            ]
+        );
+        assert!(facts.offers_full_os(), "every one of these has a remedy");
+        assert!(facts.basis.unwrap().firmware.secure_boot);
+
+        assert!(facts::secure_boot_enabled(Some(1)));
+        assert!(!facts::secure_boot_enabled(Some(0)));
+        assert!(facts::hibernation_active(Some(0), Some(0), true));
+        assert!(facts::hibernation_active(None, None, false));
+        assert!(!facts::hibernation_active(Some(1), Some(0), false));
+        assert!(!facts::hibernation_active(Some(0), None, false));
+        let status = |ac_line, battery_flag, percent| {
+            Some(PowerStatus {
+                ac_line,
+                battery_flag,
+                percent,
+            })
+        };
+        assert!(!facts::on_battery(status(0, 1, 50)));
+        assert!(facts::on_battery(status(0, 1, 255)));
+        assert!(!facts::on_battery(status(255, 128, 255)));
+        assert!(facts::on_battery(status(255, 8, 20)));
+        assert!(facts::on_battery(None));
+    }
+
+    // Phase `remedies_suspend_bitlocker_before_firmware_restart`.
+    {
+        let drive = scripts::DriveLetter::new('C').unwrap();
+        let program = remedies::firmware_settings_program(drive, true);
+        let suspend = program.find("DisableKeyProtectors").unwrap();
+        let restart = program.find("shutdown.exe\" /r /fw /t 0").unwrap();
+        assert!(suspend < restart);
+        assert!(program.contains("DisableCount = [uint32]1"));
+        assert!(program.contains("DriveLetter='C:'"));
+        assert!(program.contains("$protectedHint = $true"));
+        assert!(
+            remedies::firmware_settings_program(drive, false).contains("$protectedHint = $false")
+        );
+        assert!(remedies::disable_fast_startup_program().contains("powercfg.exe\" /h off"));
+        assert!(remedies::describe_exit(Some(0)).is_ok());
+        assert!(
+            remedies::describe_exit(Some(1223))
+                .unwrap_err()
+                .contains("not granted")
+        );
+        assert!(
+            remedies::describe_exit(Some(22))
+                .unwrap_err()
+                .contains("BitLocker")
+        );
+        assert!(remedies::describe_exit(None).is_err());
+    }
 }
 
+/// GPT verification, create preconditions and raw IO ranges.
 #[test]
-fn remedies_suspend_bitlocker_before_firmware_restart() {
-    let drive = scripts::DriveLetter::new('C').unwrap();
-    let program = remedies::firmware_settings_program(drive, true);
-    let suspend = program.find("DisableKeyProtectors").unwrap();
-    let restart = program.find("shutdown.exe\" /r /fw /t 0").unwrap();
-    assert!(suspend < restart);
-    assert!(program.contains("DisableCount = [uint32]1"));
-    assert!(program.contains("DriveLetter='C:'"));
-    assert!(program.contains("$protectedHint = $true"));
-    assert!(remedies::firmware_settings_program(drive, false).contains("$protectedHint = $false"));
-    assert!(remedies::disable_fast_startup_program().contains("powercfg.exe\" /h off"));
-    assert!(remedies::describe_exit(Some(0)).is_ok());
-    assert!(
-        remedies::describe_exit(Some(1223))
-            .unwrap_err()
-            .contains("not granted")
-    );
-    assert!(
-        remedies::describe_exit(Some(22))
-            .unwrap_err()
-            .contains("BitLocker")
-    );
-    assert!(remedies::describe_exit(None).is_err());
-}
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn windows_disk_io_verifies_gpt_preconditions_and_ranges() {
+    // Phase `gpt_verification_catches_corruption_and_renumbering`.
+    {
+        let fx = Fixture::oem(512);
+        let disk = fx.layout_disk();
+        let (header, entries) = gpt(512, fx.total_sectors, &fx.parts);
+        let parsed = layout::parse_gpt_header(&header).unwrap();
+        assert_eq!(parsed.first_usable_lba, 34);
+        assert_eq!(parsed.disk_guid, DISK_GUID);
+        let list = layout::parse_gpt_entries(&entries, &parsed).unwrap();
+        assert_eq!(list.len(), 4);
+        layout::cross_check_gpt(&disk, &parsed, &list).unwrap();
 
-#[test]
-fn create_preconditions_and_read_back() {
-    let fx = Fixture::oem(512);
-    let mut disk = fx.layout_disk();
-    // Shrunk C: leaves room before WinRE.
-    let c_last = disk.partitions[2].first_lba + 200 * GIB / 512 - 1;
-    disk.partitions[2].last_lba = c_last;
-    let esp = NewPartition {
-        first_lba: c_last + 1 + 2048 + 64 * GIB / 512,
-        last_lba: c_last + 2048 + 64 * GIB / 512 + 2 * GIB / 512,
-        type_guid: ESP_TYPE.into(),
-        name: "Tilo installer boot".into(),
-        guid: None,
-    };
-    let (offset, size) = ops::create_extent(&disk, &esp).unwrap();
-    assert_eq!(offset, esp.first_lba * 512);
-    assert_eq!(size, 2 * GIB);
+        let mut bad = header;
+        bad[40] ^= 1;
+        assert!(
+            layout::parse_gpt_header(&bad)
+                .unwrap_err()
+                .contains("checksum")
+        );
+        let mut bad = entries;
+        bad[33] ^= 1;
+        assert!(
+            layout::parse_gpt_entries(&bad, &parsed)
+                .unwrap_err()
+                .contains("checksum")
+        );
+        assert!(layout::parse_gpt_header(&[0u8; 512]).is_err());
 
-    let mut with_guid = esp.clone();
-    with_guid.guid = Some(ESP_GUID.into());
-    assert!(ops::create_extent(&disk, &with_guid).is_err());
-    let mut data = esp.clone();
-    data.type_guid = BASIC_DATA_TYPE.into();
-    assert!(ops::create_extent(&disk, &data).is_err());
-    let mut overlap = esp.clone();
-    overlap.first_lba = c_last;
-    assert!(ops::create_extent(&disk, &overlap).is_err());
-    let mut past_end = esp;
-    past_end.first_lba = disk.last_usable_lba;
-    past_end.last_lba = disk.last_usable_lba + 1;
-    assert!(ops::create_extent(&disk, &past_end).is_err());
+        // WinRE sits in GPT slot 5 while Windows calls it partition 4.
+        let mut moved = fx.parts.clone();
+        moved[3].number = 5;
+        let (header, entries) = gpt(512, fx.total_sectors, &moved);
+        let parsed = layout::parse_gpt_header(&header).unwrap();
+        let list = layout::parse_gpt_entries(&entries, &parsed).unwrap();
+        let error = layout::cross_check_gpt(&disk, &parsed, &list).unwrap_err();
+        assert!(error.contains("GPT entry 5"), "{error}");
+    }
 
-    let good = json!({"PartitionNumber": 5, "Offset": offset, "Size": size,
-        "Guid": "{9E8D7C6B-5A49-4382-9170-6F5E4D3C2B1A}", "GptType": "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}",
-        "DriveLetter": "\u{0}", "AccessPaths": ["\\\\?\\Volume{9e8d7c6b-5a49-4382-9170-6f5e4d3c2b1a}\\"]});
-    assert_eq!(
-        ops::parse_created(&good, offset, size, ESP_TYPE).unwrap(),
-        "9e8d7c6b-5a49-4382-9170-6f5e4d3c2b1a"
-    );
-    let mut lettered = good.clone();
-    lettered["DriveLetter"] = json!("E");
-    assert!(ops::parse_created(&lettered, offset, size, ESP_TYPE).is_err());
-    let mut mounted = good.clone();
-    mounted["AccessPaths"] = json!(["E:\\"]);
-    assert!(ops::parse_created(&mounted, offset, size, ESP_TYPE).is_err());
-    assert!(ops::parse_created(&good, offset + MIB, size, ESP_TYPE).is_err());
-    assert!(ops::parse_created(&good, offset, size, STAGING_ROOT_TYPE).is_err());
+    // Phase `create_preconditions_and_read_back`.
+    {
+        let fx = Fixture::oem(512);
+        let mut disk = fx.layout_disk();
+        // Shrunk C: leaves room before WinRE.
+        let c_last = disk.partitions[2].first_lba + 200 * GIB / 512 - 1;
+        disk.partitions[2].last_lba = c_last;
+        let esp = NewPartition {
+            first_lba: c_last + 1 + 2048 + 64 * GIB / 512,
+            last_lba: c_last + 2048 + 64 * GIB / 512 + 2 * GIB / 512,
+            type_guid: ESP_TYPE.into(),
+            name: "Tilo installer boot".into(),
+            guid: None,
+        };
+        let (offset, size) = ops::create_extent(&disk, &esp).unwrap();
+        assert_eq!(offset, esp.first_lba * 512);
+        assert_eq!(size, 2 * GIB);
 
-    ops::parse_resized(
-        &json!({"Size": 200 * GIB, "Guid": format!("{{{C_GUID}}}")}),
-        C_GUID,
-        200 * GIB,
-    )
-    .unwrap();
-    assert!(
+        let mut with_guid = esp.clone();
+        with_guid.guid = Some(ESP_GUID.into());
+        assert!(ops::create_extent(&disk, &with_guid).is_err());
+        let mut data = esp.clone();
+        data.type_guid = BASIC_DATA_TYPE.into();
+        assert!(ops::create_extent(&disk, &data).is_err());
+        let mut overlap = esp.clone();
+        overlap.first_lba = c_last;
+        assert!(ops::create_extent(&disk, &overlap).is_err());
+        let mut past_end = esp;
+        past_end.first_lba = disk.last_usable_lba;
+        past_end.last_lba = disk.last_usable_lba + 1;
+        assert!(ops::create_extent(&disk, &past_end).is_err());
+
+        let good = json!({"PartitionNumber": 5, "Offset": offset, "Size": size,
+            "Guid": "{9E8D7C6B-5A49-4382-9170-6F5E4D3C2B1A}", "GptType": "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}",
+            "DriveLetter": "\u{0}", "AccessPaths": ["\\\\?\\Volume{9e8d7c6b-5a49-4382-9170-6f5e4d3c2b1a}\\"]});
+        assert_eq!(
+            ops::parse_created(&good, offset, size, ESP_TYPE).unwrap(),
+            "9e8d7c6b-5a49-4382-9170-6f5e4d3c2b1a"
+        );
+        let mut lettered = good.clone();
+        lettered["DriveLetter"] = json!("E");
+        assert!(ops::parse_created(&lettered, offset, size, ESP_TYPE).is_err());
+        let mut mounted = good.clone();
+        mounted["AccessPaths"] = json!(["E:\\"]);
+        assert!(ops::parse_created(&mounted, offset, size, ESP_TYPE).is_err());
+        assert!(ops::parse_created(&good, offset + MIB, size, ESP_TYPE).is_err());
+        assert!(ops::parse_created(&good, offset, size, STAGING_ROOT_TYPE).is_err());
+
         ops::parse_resized(
-            &json!({"Size": 200 * GIB + MIB, "Guid": C_GUID}),
+            &json!({"Size": 200 * GIB, "Guid": format!("{{{C_GUID}}}")}),
             C_GUID,
-            200 * GIB
+            200 * GIB,
         )
-        .is_err()
-    );
+        .unwrap();
+        assert!(
+            ops::parse_resized(
+                &json!({"Size": 200 * GIB + MIB, "Guid": C_GUID}),
+                C_GUID,
+                200 * GIB
+            )
+            .is_err()
+        );
+    }
+
+    // Phase `raw_io_ranges_and_volume_overlap_rules`.
+    {
+        assert_eq!(
+            ops::io_offset(MIB, GIB, 512, 4096, 8192).unwrap(),
+            MIB + 4096
+        );
+        assert!(ops::io_offset(MIB, GIB, 512, 100, 512).is_err());
+        assert!(ops::io_offset(MIB, GIB, 4096, 0, 512).is_err());
+        assert!(ops::io_offset(MIB, GIB, 512, GIB - 512, 1024).is_err());
+        assert_eq!(
+            ops::io_offset(MIB, GIB, 512, GIB - 512, 512).unwrap(),
+            MIB + GIB - 512
+        );
+        // Disjoint, contained, straddling.
+        assert_eq!(ops::volume_extent_allowed(GIB, GIB, 0, GIB), Some(true));
+        assert_eq!(ops::volume_extent_allowed(GIB, GIB, GIB, GIB), Some(true));
+        assert_eq!(
+            ops::volume_extent_allowed(GIB, GIB, GIB - MIB, 2 * MIB),
+            Some(false)
+        );
+        assert_eq!(
+            ops::volume_extent_allowed(GIB, GIB, 0, 3 * GIB),
+            Some(false)
+        );
+        assert!(ops::is_staging_type(&STAGING_ROOT_TYPE.to_uppercase()));
+        assert!(!ops::is_staging_type(BASIC_DATA_TYPE));
+        assert!(ops::valid_efi_name("Boot0100"));
+        assert!(ops::valid_efi_name("BootNext"));
+        assert!(!ops::valid_efi_name("Boot-0100"));
+        assert!(!ops::valid_efi_name(""));
+    }
 }
 
+/// Script interpolation and encoded commands.
 #[test]
-fn raw_io_ranges_and_volume_overlap_rules() {
-    assert_eq!(
-        ops::io_offset(MIB, GIB, 512, 4096, 8192).unwrap(),
-        MIB + 4096
-    );
-    assert!(ops::io_offset(MIB, GIB, 512, 100, 512).is_err());
-    assert!(ops::io_offset(MIB, GIB, 4096, 0, 512).is_err());
-    assert!(ops::io_offset(MIB, GIB, 512, GIB - 512, 1024).is_err());
-    assert_eq!(
-        ops::io_offset(MIB, GIB, 512, GIB - 512, 512).unwrap(),
-        MIB + GIB - 512
-    );
-    // Disjoint, contained, straddling.
-    assert_eq!(ops::volume_extent_allowed(GIB, GIB, 0, GIB), Some(true));
-    assert_eq!(ops::volume_extent_allowed(GIB, GIB, GIB, GIB), Some(true));
-    assert_eq!(
-        ops::volume_extent_allowed(GIB, GIB, GIB - MIB, 2 * MIB),
-        Some(false)
-    );
-    assert_eq!(
-        ops::volume_extent_allowed(GIB, GIB, 0, 3 * GIB),
-        Some(false)
-    );
-    assert!(ops::is_staging_type(&STAGING_ROOT_TYPE.to_uppercase()));
-    assert!(!ops::is_staging_type(BASIC_DATA_TYPE));
-    assert!(ops::valid_efi_name("Boot0100"));
-    assert!(ops::valid_efi_name("BootNext"));
-    assert!(!ops::valid_efi_name("Boot-0100"));
-    assert!(!ops::valid_efi_name(""));
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn windows_scripts_carry_only_validated_encoded_values() {
+    // Phase `scripts_interpolate_only_validated_values`.
+    {
+        assert_eq!(
+            scripts::ps_guid(ESP_TYPE).unwrap(),
+            format!("{{{ESP_TYPE}}}")
+        );
+        assert_eq!(scripts::ps_guid("x'; Remove-Partition"), None);
+        assert!(scripts::resize(0, 3, "not-a-guid", GIB).is_none());
+        assert!(scripts::create(0, MIB, GIB, "'; format c:").is_none());
+        assert!(scripts::delete(0, 5, "{bad}", MIB, GIB).is_none());
+
+        let resize = scripts::resize(0, 3, C_GUID, 300 * GIB).unwrap();
+        assert!(resize.contains(&format!(
+            "Resize-Partition -DiskNumber 0 -PartitionNumber 3 -Size {}",
+            300 * GIB
+        )));
+        assert!(resize.contains(&format!("'{{{C_GUID}}}'")));
+        let create = scripts::create(1, 400 * GIB, 2 * GIB, &ESP_TYPE.to_uppercase()).unwrap();
+        assert!(create.contains(&format!(
+            "New-Partition -DiskNumber 1 -Offset {} -Size {} -GptType '{{{ESP_TYPE}}}'",
+            400 * GIB,
+            2 * GIB
+        )));
+        assert!(!create.contains("AssignDriveLetter"));
+        let delete = scripts::delete(1, 6, WINRE_GUID, MIB, GIB).unwrap();
+        assert!(
+            delete.contains("Remove-Partition -DiskNumber 1 -PartitionNumber 6 -Confirm:$false")
+        );
+        for script in [
+            &resize,
+            &create,
+            &delete,
+            &scripts::snapshot(scripts::DriveLetter::new('c').unwrap()),
+        ] {
+            assert!(script.starts_with("$ErrorActionPreference = 'Stop'"));
+        }
+        assert!(
+            scripts::snapshot(scripts::DriveLetter::new('d').unwrap()).contains("-DriveLetter D\n")
+        );
+        assert_eq!(
+            scripts::DriveLetter::of_path(r"C:\Windows")
+                .unwrap()
+                .letter(),
+            'C'
+        );
+        assert_eq!(scripts::DriveLetter::of_path(r"\\server\share"), None);
+        assert_eq!(scripts::DriveLetter::new('1'), None);
+    }
+
+    // Phase `powershell_programs_travel_as_encoded_commands`.
+    {
+        for (plain, encoded) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(scripts::base64(plain.as_bytes()), encoded);
+        }
+        assert_eq!(scripts::encode_command("a"), "YQA=");
+        let args = scripts::powershell_args("exit 0");
+        assert_eq!(
+            &args[..5],
+            [
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-EncodedCommand"
+            ]
+        );
+        let outer = scripts::elevated(r"C:\Win'dows\powershell.exe", "exit 7");
+        assert!(outer.contains(r"-FilePath 'C:\Win''dows\powershell.exe' -Verb RunAs"));
+        assert!(outer.contains(&scripts::encode_command("exit 7")));
+        assert!(outer.contains("exit 1223"));
+    }
 }
 
 /// In-memory EFI variables; every disk operation is refused.
@@ -951,32 +1027,4 @@ impl Platform for FakeFirmware {
     fn delete_efi_var(&mut self, _: &str) -> IoResult<()> {
         Err("fake".into())
     }
-}
-
-#[test]
-fn live_firmware_facts_decode_boot_variables() {
-    let base = facts::basis_firmware(true, false);
-    let mut vars = HashMap::new();
-    vars.insert("BootCurrent".to_string(), vec![0x01, 0x00]);
-    vars.insert(
-        "BootOrder".to_string(),
-        vec![0x01, 0x00, 0x00, 0x00, 0x0a, 0x01],
-    );
-    let facts = super::live_firmware_facts(&FakeFirmware(vars.clone()), &base).unwrap();
-    assert_eq!(facts.boot_current.as_deref(), Some("0001"));
-    assert_eq!(facts.boot_order, ["0001", "0000", "010A"]);
-    assert_eq!(facts.boot_next, None);
-    assert!(facts.uefi && !facts.secure_boot);
-
-    vars.insert("BootNext".to_string(), vec![0x04]);
-    assert!(super::live_firmware_facts(&FakeFirmware(vars.clone()), &base).is_err());
-    vars.insert("BootNext".to_string(), vec![0x04, 0x01]);
-    assert_eq!(
-        super::live_firmware_facts(&FakeFirmware(vars), &base)
-            .unwrap()
-            .boot_next
-            .as_deref(),
-        Some("0104")
-    );
-    assert!(ops::decode_boot_order(&[1, 0, 2]).is_err());
 }

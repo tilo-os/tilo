@@ -184,7 +184,8 @@ impl Registry {
             entry: self.entries.clone(),
         };
         let text = toml::to_string(&file).map_err(|error| write_error(error.to_string()))?;
-        atomic_file::write(path, text.as_bytes()).map_err(|error| write_error(error.to_string()))
+        tilo_files::native::atomic::write(path, text.as_bytes())
+            .map_err(|error| write_error(error.to_string()))
     }
 
     pub fn entries(&self) -> &[InstalledPackage] {
@@ -239,61 +240,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_legacy_row_parses_with_defaults() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("registry.toml");
-        std::fs::write(
+    fn registry_rows_load_parse_and_upsert() {
+        // phase: a_legacy_row_parses_with_defaults
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("registry.toml");
+            std::fs::write(
             &path,
             "[[entry]]\nid = 'so.tilo.notes'\npayload_root = '/p'\nmanifest_path = '/p/manifest.toml'\n\
              unknown_future_field = 3\n",
         )
         .unwrap();
-        let registry = Registry::load(&path).unwrap();
-        let row = registry.find("so.tilo.notes").unwrap();
-        assert_eq!(row.package_id(), None);
-        assert_eq!(row.pinning(), Pinning::Tried);
-        assert!(row.user_managed());
-    }
-
-    #[test]
-    fn a_missing_registry_is_empty_and_a_broken_one_is_an_error() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(
-            Registry::load(&dir.path().join("absent.toml"))
-                .unwrap()
-                .is_empty()
-        );
-        let broken = dir.path().join("broken.toml");
-        std::fs::write(&broken, "[[entry]]\nid = 3\n").unwrap();
-        assert!(matches!(
-            Registry::load(&broken),
-            Err(RegistryError::Parse { .. })
-        ));
-    }
-
-    #[test]
-    fn upsert_replaces_the_row_of_the_same_app() {
-        let row = |version: &str| InstalledPackage {
-            id: "so.tilo.notes".into(),
-            version: version.into(),
-            package_id_hex: String::new(),
-            payload_root: PathBuf::from("/p"),
-            manifest_path: PathBuf::from("/m"),
-            publisher_key_hex: String::new(),
-            pinned: false,
-            installed_at: 0,
-            last_used: 0,
-            attested_by: String::new(),
-            cli_commands: Vec::new(),
-            runtime: String::new(),
-            source: String::new(),
-            system: false,
-        };
-        let mut registry = Registry::default();
-        assert!(registry.upsert(row("1")).is_none());
-        let replaced = registry.upsert(row("2")).unwrap();
-        assert_eq!(replaced.version, "1");
-        assert_eq!(registry.entries().len(), 1);
-        assert_eq!(registry.find("so.tilo.notes").unwrap().version, "2");
+            let registry = Registry::load(&path).unwrap();
+            let row = registry.find("so.tilo.notes").unwrap();
+            assert_eq!(row.package_id(), None);
+            assert_eq!(row.pinning(), Pinning::Tried);
+            assert!(row.user_managed());
+        }
+        // phase: a_missing_registry_is_empty_and_a_broken_one_is_an_error
+        {
+            let dir = tempfile::tempdir().unwrap();
+            assert!(
+                Registry::load(&dir.path().join("absent.toml"))
+                    .unwrap()
+                    .is_empty()
+            );
+            let broken = dir.path().join("broken.toml");
+            std::fs::write(&broken, "[[entry]]\nid = 3\n").unwrap();
+            assert!(matches!(
+                Registry::load(&broken),
+                Err(RegistryError::Parse { .. })
+            ));
+        }
+        // phase: upsert_replaces_the_row_of_the_same_app
+        {
+            let row = |version: &str| InstalledPackage {
+                id: "so.tilo.notes".into(),
+                version: version.into(),
+                package_id_hex: String::new(),
+                payload_root: PathBuf::from("/p"),
+                manifest_path: PathBuf::from("/m"),
+                publisher_key_hex: String::new(),
+                pinned: false,
+                installed_at: 0,
+                last_used: 0,
+                attested_by: String::new(),
+                cli_commands: Vec::new(),
+                runtime: String::new(),
+                source: String::new(),
+                system: false,
+            };
+            let mut registry = Registry::default();
+            assert!(registry.upsert(row("1")).is_none());
+            let replaced = registry.upsert(row("2")).unwrap();
+            assert_eq!(replaced.version, "1");
+            assert_eq!(registry.entries().len(), 1);
+            assert_eq!(registry.find("so.tilo.notes").unwrap().version, "2");
+        }
     }
 }

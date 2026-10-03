@@ -45,7 +45,9 @@ pub const IMAGE_DRACUT_ARGS: &[&str] = &[
     "--omit",
     "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh",
     "--omit-drivers",
-    "ext4 xfs",
+    "amdgpu nouveau xe xfs",
+    "--add-drivers",
+    "ext4",
     "--add",
     "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback",
 ];
@@ -741,156 +743,168 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_kernel_layer_carries_one_release() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(matches!(
-            kernel_in_layer(dir.path()),
-            Err(DaemonError::KernelLayer(_))
-        ));
-        let modules = dir.path().join("usr/lib/modules/7.2.5-200.fc44.x86_64+dev");
-        fs::create_dir_all(&modules).unwrap();
-        assert!(kernel_in_layer(dir.path()).is_err());
-        fs::write(modules.join("vmlinuz"), b"k").unwrap();
-        let (kver, path) = kernel_in_layer(dir.path()).unwrap();
-        assert_eq!(kver, "7.2.5-200.fc44.x86_64+dev");
-        assert_eq!(path, modules);
-        let other = dir.path().join("usr/lib/modules/6.1/");
-        fs::create_dir_all(&other).unwrap();
-        fs::write(other.join("vmlinuz"), b"k").unwrap();
-        let error = kernel_in_layer(dir.path()).unwrap_err();
-        assert!(error.to_string().contains("2 kernels"), "{error}");
-    }
-
-    #[test]
-    fn entries_take_the_running_command_line_without_loader_words() {
-        assert_eq!(
-            boot_options(
-                "BOOT_IMAGE=(hd0,gpt3)/vmlinuz-6.1 root=UUID=abc ro rootflags=subvol=root initrd=/x console=ttyS0"
-            ),
-            "root=UUID=abc ro rootflags=subvol=root console=ttyS0"
-        );
-        let stem = entry_stem("7.2.5+dev", "0123456789abcdef0123");
-        assert_eq!(stem, "tilo-vm-7.2.5+dev-0123456789ab");
-        let text = entry_text(
-            "7.2.5+dev",
-            "/tilo-vm/s/vmlinuz",
-            "/tilo-vm/s/initramfs.img",
-            "root=x rw",
-        );
-        assert_eq!(entry_field(&text, "linux"), Some("/tilo-vm/s/vmlinuz"));
-        assert_eq!(entry_field(&text, "options"), Some("root=x rw"));
-        assert_eq!(entry_field(&text, "version"), Some("7.2.5+dev"));
-    }
-
-    #[test]
-    fn entry_paths_follow_the_existing_entries() {
-        let boot = tempfile::tempdir().unwrap();
-        fs::write(boot.path().join("vmlinuz-6.1"), b"k").unwrap();
-        // A separate /boot (or the ESP there): paths relative to it.
-        assert_eq!(
-            path_prefix(boot.path(), &["linux /vmlinuz-6.1\n".into()]),
-            ""
-        );
-        // /boot on the root filesystem: absolute paths.
-        assert_eq!(
-            path_prefix(boot.path(), &["title x\nlinux /boot/vmlinuz-6.1\n".into()]),
-            "/boot"
-        );
-        assert_eq!(path_prefix(boot.path(), &[]), "");
-    }
-
-    #[test]
-    fn the_running_entry_is_found_by_its_boot_image() {
-        let boot = tempfile::tempdir().unwrap();
-        fs::write(boot.path().join("vmlinuz-6.19"), b"k").unwrap();
-        let entries = [
-            (
-                "b208-6.19".to_string(),
-                "linux /boot/vmlinuz-6.19\n".to_string(),
-            ),
-            (
-                "tilo-vm-7.2-aaaa".into(),
-                "linux /boot/tilo-vm/x/vmlinuz\n".into(),
-            ),
-        ];
-        assert_eq!(
-            running_entry(
-                "BOOT_IMAGE=(hd0,gpt3)/boot/vmlinuz-6.19 ro root=UUID=1",
-                &entries,
-                boot.path()
-            ),
-            Some("b208-6.19".into())
-        );
-        // A separate /boot: the loader's path has no /boot prefix.
-        assert_eq!(
-            running_entry("BOOT_IMAGE=/vmlinuz-6.19 ro", &entries, boot.path()),
-            Some("b208-6.19".into())
-        );
-        assert_eq!(running_entry("ro root=UUID=1", &entries, boot.path()), None);
-    }
-
-    #[test]
-    fn loader_info_names_the_loader() {
-        let var = |text: &str| {
-            let mut bytes = vec![7, 0, 0, 0];
-            for unit in text.encode_utf16().chain([0]) {
-                bytes.extend(unit.to_le_bytes());
-            }
-            bytes
-        };
-        assert_eq!(
-            efivar_string(&var("systemd-boot 258.1")),
-            "systemd-boot 258.1"
-        );
-        assert_eq!(efivar_string(&var("GRUB 2.12")), "GRUB 2.12");
-        assert_eq!(efivar_string(&[7, 0]), "");
-    }
-
-    #[test]
-    fn loaders_name_entries_their_way() {
-        assert_eq!(Loader::SystemdBoot.entry_id("tilo-vm-a"), "tilo-vm-a.conf");
-        assert_eq!(Loader::Grub.entry_id("tilo-vm-a"), "tilo-vm-a");
-        assert_eq!(Loader::stem("tilo-vm-a.conf"), "tilo-vm-a");
-        assert_eq!(
-            systemd_boot_default(
-                r#"[{"id":"a.conf","isDefault":false},{"id":"b.conf","isDefault":true}]"#
-            ),
-            Some("b.conf".into())
-        );
-        assert_eq!(
-            grub_default("saved_entry=abc-6.1\nboot_success=1\n"),
-            Some("abc-6.1".into())
-        );
-        assert_eq!(grub_default("next_entry=\n"), None);
-    }
-
-    #[test]
-    fn only_the_new_entry_and_the_fallback_survive() {
-        let existing = [
-            "fedora-6.1".to_string(),
-            "tilo-vm-7.2+dev-aaaa".into(),
-            "tilo-vm-7.2+dev-bbbb".into(),
-            "tilo-vm-7.2+dev-cccc".into(),
-        ];
-        assert_eq!(
-            stale_stems(&existing, &["tilo-vm-7.2+dev-cccc", "tilo-vm-7.2+dev-bbbb"]),
-            ["tilo-vm-7.2+dev-aaaa"]
-        );
-        assert_eq!(
-            stale_stems(&existing, &["tilo-vm-7.2+dev-cccc", "fedora-6.1"]).len(),
-            2
-        );
-    }
-
-    #[test]
-    fn the_image_dracut_arguments_are_complete_pairs() {
-        // Every option that takes a value has one, and the value is no option.
-        for pair in IMAGE_DRACUT_ARGS.windows(2) {
-            if ["--compress", "--omit", "--omit-drivers", "--add"].contains(&pair[0]) {
-                assert!(!pair[1].starts_with("--"), "{pair:?}");
-            }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn boot_entries_carry_one_kernel_release_and_the_running_command_line() {
+        // Phase `a_kernel_layer_carries_one_release`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            assert!(matches!(
+                kernel_in_layer(dir.path()),
+                Err(DaemonError::KernelLayer(_))
+            ));
+            let modules = dir.path().join("usr/lib/modules/7.2.5-200.fc44.x86_64+dev");
+            fs::create_dir_all(&modules).unwrap();
+            assert!(kernel_in_layer(dir.path()).is_err());
+            fs::write(modules.join("vmlinuz"), b"k").unwrap();
+            let (kver, path) = kernel_in_layer(dir.path()).unwrap();
+            assert_eq!(kver, "7.2.5-200.fc44.x86_64+dev");
+            assert_eq!(path, modules);
+            let other = dir.path().join("usr/lib/modules/6.1/");
+            fs::create_dir_all(&other).unwrap();
+            fs::write(other.join("vmlinuz"), b"k").unwrap();
+            let error = kernel_in_layer(dir.path()).unwrap_err();
+            assert!(error.to_string().contains("2 kernels"), "{error}");
         }
-        assert!(SYSEXT_DROPIN_TEXT.contains("udevadm trigger --action=add"));
-        assert_eq!(KERNEL_LAYER_DRACUT_ARGS, ["--force-drivers", "overlay"]);
+        // Phase `entries_take_the_running_command_line_without_loader_words`.
+        {
+            assert_eq!(
+                boot_options(
+                    "BOOT_IMAGE=(hd0,gpt3)/vmlinuz-6.1 root=UUID=abc ro rootflags=subvol=root initrd=/x console=ttyS0"
+                ),
+                "root=UUID=abc ro rootflags=subvol=root console=ttyS0"
+            );
+            let stem = entry_stem("7.2.5+dev", "0123456789abcdef0123");
+            assert_eq!(stem, "tilo-vm-7.2.5+dev-0123456789ab");
+            let text = entry_text(
+                "7.2.5+dev",
+                "/tilo-vm/s/vmlinuz",
+                "/tilo-vm/s/initramfs.img",
+                "root=x rw",
+            );
+            assert_eq!(entry_field(&text, "linux"), Some("/tilo-vm/s/vmlinuz"));
+            assert_eq!(entry_field(&text, "options"), Some("root=x rw"));
+            assert_eq!(entry_field(&text, "version"), Some("7.2.5+dev"));
+        }
+        // Phase `entry_paths_follow_the_existing_entries`.
+        {
+            let boot = tempfile::tempdir().unwrap();
+            fs::write(boot.path().join("vmlinuz-6.1"), b"k").unwrap();
+            // A separate /boot (or the ESP there): paths relative to it.
+            assert_eq!(
+                path_prefix(boot.path(), &["linux /vmlinuz-6.1\n".into()]),
+                ""
+            );
+            // /boot on the root filesystem: absolute paths.
+            assert_eq!(
+                path_prefix(boot.path(), &["title x\nlinux /boot/vmlinuz-6.1\n".into()]),
+                "/boot"
+            );
+            assert_eq!(path_prefix(boot.path(), &[]), "");
+        }
+        // Phase `the_running_entry_is_found_by_its_boot_image`.
+        {
+            let boot = tempfile::tempdir().unwrap();
+            fs::write(boot.path().join("vmlinuz-6.19"), b"k").unwrap();
+            let entries = [
+                (
+                    "b208-6.19".to_string(),
+                    "linux /boot/vmlinuz-6.19\n".to_string(),
+                ),
+                (
+                    "tilo-vm-7.2-aaaa".into(),
+                    "linux /boot/tilo-vm/x/vmlinuz\n".into(),
+                ),
+            ];
+            assert_eq!(
+                running_entry(
+                    "BOOT_IMAGE=(hd0,gpt3)/boot/vmlinuz-6.19 ro root=UUID=1",
+                    &entries,
+                    boot.path()
+                ),
+                Some("b208-6.19".into())
+            );
+            // A separate /boot: the loader's path has no /boot prefix.
+            assert_eq!(
+                running_entry("BOOT_IMAGE=/vmlinuz-6.19 ro", &entries, boot.path()),
+                Some("b208-6.19".into())
+            );
+            assert_eq!(running_entry("ro root=UUID=1", &entries, boot.path()), None);
+        }
+        // Phase `only_the_new_entry_and_the_fallback_survive`.
+        {
+            let existing = [
+                "fedora-6.1".to_string(),
+                "tilo-vm-7.2+dev-aaaa".into(),
+                "tilo-vm-7.2+dev-bbbb".into(),
+                "tilo-vm-7.2+dev-cccc".into(),
+            ];
+            assert_eq!(
+                stale_stems(&existing, &["tilo-vm-7.2+dev-cccc", "tilo-vm-7.2+dev-bbbb"]),
+                ["tilo-vm-7.2+dev-aaaa"]
+            );
+            assert_eq!(
+                stale_stems(&existing, &["tilo-vm-7.2+dev-cccc", "fedora-6.1"]).len(),
+                2
+            );
+        }
+        // Phase `the_image_dracut_arguments_are_complete_pairs`.
+        {
+            // Every option that takes a value has one, and the value is no option.
+            for pair in IMAGE_DRACUT_ARGS.windows(2) {
+                if [
+                    "--compress",
+                    "--omit",
+                    "--omit-drivers",
+                    "--add-drivers",
+                    "--add",
+                ]
+                .contains(&pair[0])
+                {
+                    assert!(!pair[1].starts_with("--"), "{pair:?}");
+                }
+            }
+            assert!(SYSEXT_DROPIN_TEXT.contains("udevadm trigger --action=add"));
+            assert_eq!(KERNEL_LAYER_DRACUT_ARGS, ["--force-drivers", "overlay"]);
+        }
+    }
+
+    #[test]
+    fn boot_loaders_are_identified_and_name_entries_their_way() {
+        // Phase `loader_info_names_the_loader`.
+        {
+            let var = |text: &str| {
+                let mut bytes = vec![7, 0, 0, 0];
+                for unit in text.encode_utf16().chain([0]) {
+                    bytes.extend(unit.to_le_bytes());
+                }
+                bytes
+            };
+            assert_eq!(
+                efivar_string(&var("systemd-boot 258.1")),
+                "systemd-boot 258.1"
+            );
+            assert_eq!(efivar_string(&var("GRUB 2.12")), "GRUB 2.12");
+            assert_eq!(efivar_string(&[7, 0]), "");
+        }
+        // Phase `loaders_name_entries_their_way`.
+        {
+            assert_eq!(Loader::SystemdBoot.entry_id("tilo-vm-a"), "tilo-vm-a.conf");
+            assert_eq!(Loader::Grub.entry_id("tilo-vm-a"), "tilo-vm-a");
+            assert_eq!(Loader::stem("tilo-vm-a.conf"), "tilo-vm-a");
+            assert_eq!(
+                systemd_boot_default(
+                    r#"[{"id":"a.conf","isDefault":false},{"id":"b.conf","isDefault":true}]"#
+                ),
+                Some("b.conf".into())
+            );
+            assert_eq!(
+                grub_default("saved_entry=abc-6.1\nboot_success=1\n"),
+                Some("abc-6.1".into())
+            );
+            assert_eq!(grub_default("next_entry=\n"), None);
+        }
     }
 }

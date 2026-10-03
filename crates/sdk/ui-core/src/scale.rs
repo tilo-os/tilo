@@ -56,6 +56,51 @@ pub fn physical_font_px(base_font: f32, ui_scale: f32, text_scale: f32, device_s
     base_font * ui_scale * text_scale * device_scale
 }
 
+/// The part of the window that system chrome drawn over it (status and
+/// navigation bars, a display cutout, a soft keyboard) leaves visible, as
+/// logical-pixel insets from each edge. Zero wherever the platform keeps its
+/// chrome outside the window.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SafeArea {
+    pub left: f64,
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+}
+
+impl SafeArea {
+    /// From `[left, top, right, bottom]` physical-pixel insets.
+    pub fn from_physical(insets: [i32; 4], device_scale: f64) -> Self {
+        let s = if device_scale > 0.0 {
+            device_scale
+        } else {
+            1.0
+        };
+        let [left, top, right, bottom] = insets.map(|inset| f64::from(inset.max(0)) / s);
+        Self {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    /// Where content goes in a `viewport` of logical size: its origin and
+    /// size. Insets wider than the viewport leave an empty box, not a negative
+    /// one.
+    pub fn content(&self, viewport: (f64, f64)) -> (vello::kurbo::Point, (f64, f64)) {
+        let left = self.left.min(viewport.0);
+        let top = self.top.min(viewport.1);
+        (
+            vello::kurbo::Point::new(left, top),
+            (
+                (viewport.0 - left - self.right).max(0.0),
+                (viewport.1 - top - self.bottom).max(0.0),
+            ),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,116 +111,206 @@ mod tests {
     use vello::peniko::{Color, Fill};
 
     #[test]
-    fn composite_transform_is_uniform_device_scale() {
-        for scale in [1.0f64, 1.25, 1.5, 1.75, 2.0] {
-            let t = composite_transform(scale);
-            let p = t * vello::kurbo::Point::new(40.0, 30.0);
-            assert!((p.x - 40.0 * scale).abs() < 1e-9);
-            assert!((p.y - 30.0 * scale).abs() < 1e-9);
-            // Matrix carries no translation/shear — pure scale.
-            let c = t.as_coeffs();
-            assert!((c[0] - scale).abs() < 1e-9 && (c[3] - scale).abs() < 1e-9);
-            assert!(c[1].abs() < 1e-12 && c[2].abs() < 1e-12);
-            assert!(c[4].abs() < 1e-12 && c[5].abs() < 1e-12);
+    fn scale_factors_compose_device_and_user_scale_uniformly() {
+        // Case `composite_transform_is_uniform_device_scale`.
+        {
+            for scale in [1.0f64, 1.25, 1.5, 1.75, 2.0] {
+                let t = composite_transform(scale);
+                let p = t * vello::kurbo::Point::new(40.0, 30.0);
+                assert!((p.x - 40.0 * scale).abs() < 1e-9);
+                assert!((p.y - 30.0 * scale).abs() < 1e-9);
+                // Matrix carries no translation/shear — pure scale.
+                let c = t.as_coeffs();
+                assert!((c[0] - scale).abs() < 1e-9 && (c[3] - scale).abs() < 1e-9);
+                assert!(c[1].abs() < 1e-12 && c[2].abs() < 1e-12);
+                assert!(c[4].abs() < 1e-12 && c[5].abs() < 1e-12);
+            }
+        }
+
+        // Case `logical_available_space_divides_by_fractional_scale`.
+        {
+            assert_eq!(logical_size((2560, 1600), 1.25), (2048.0, 1280.0));
+            assert_eq!(logical_size((1920, 1080), 1.5), (1280.0, 720.0));
+            let (lw, lh) = logical_size((3360, 1890), 1.75);
+            assert!((lw - 1920.0).abs() < 1e-9 && (lh - 1080.0).abs() < 1e-9);
+            // A zero/garbage scale degrades to 1.0 rather than dividing by zero.
+            assert_eq!(logical_size((800, 600), 0.0), (800.0, 600.0));
+        }
+
+        // Case `physical_font_px_composes_device_and_user_scales`.
+        {
+            let px = physical_font_px(14.0, 1.25, 1.2, 1.5);
+            assert!((px - 14.0 * 1.25 * 1.2 * 1.5).abs() < 1e-4, "got {px}");
+            // Neutral user scales leave only the device factor.
+            assert!((physical_font_px(16.0, 1.0, 1.0, 1.75) - 28.0).abs() < 1e-4);
+            // Neutral device leaves only the user factors.
+            assert!((physical_font_px(10.0, 1.5, 1.0, 1.0) - 15.0).abs() < 1e-4);
+        }
+
+        // Case `text_metrics_are_logical_and_physical_extent_scales`.
+        {
+            let mut tr = TextRenderer::new();
+            let (lw, lh) = tr.measure("Fractional scaling", 16.0, None);
+            assert!(lw > 0.0 && lh > 0.0);
+            for scale in [1.0f64, 1.25, 1.5, 1.75] {
+                let (w2, h2) = tr.measure("Fractional scaling", 16.0, None);
+                assert_eq!(
+                    (w2, h2),
+                    (lw, lh),
+                    "measure is scale-free (logical) at {scale}"
+                );
+                let pw = physical_len(f64::from(lw), scale);
+                assert!(
+                    (pw - f64::from(lw) * scale).abs() < 1e-6,
+                    "physical width = logical × {scale}"
+                );
+            }
         }
     }
 
     #[test]
-    fn logical_available_space_divides_by_fractional_scale() {
-        assert_eq!(logical_size((2560, 1600), 1.25), (2048.0, 1280.0));
-        assert_eq!(logical_size((1920, 1080), 1.5), (1280.0, 720.0));
-        let (lw, lh) = logical_size((3360, 1890), 1.75);
-        assert!((lw - 1920.0).abs() < 1e-9 && (lh - 1080.0).abs() < 1e-9);
-        // A zero/garbage scale degrades to 1.0 rather than dividing by zero.
-        assert_eq!(logical_size((800, 600), 0.0), (800.0, 600.0));
+    fn safe_area_insets_the_content_box_in_logical_pixels() {
+        // A phone in portrait: status bar on top, gesture bar at the bottom.
+        let area = SafeArea::from_physical([0, 128, 0, 63], 2.625);
+        assert!((area.top - 128.0 / 2.625).abs() < 1e-9);
+        let (origin, size) = area.content((411.0, 914.0));
+        assert_eq!(origin.x, 0.0);
+        assert!((origin.y - area.top).abs() < 1e-9);
+        assert!((size.0 - 411.0).abs() < 1e-9);
+        assert!((size.1 - (914.0 - area.top - area.bottom)).abs() < 1e-9);
+
+        // Landscape moves the cutout to a side edge.
+        let (origin, size) = SafeArea::from_physical([128, 0, 0, 63], 2.0).content((1000.0, 400.0));
+        assert_eq!((origin.x, origin.y), (64.0, 0.0));
+        assert_eq!(size, (936.0, 368.5));
+
+        // No chrome over the window: content is the whole viewport.
+        assert_eq!(
+            SafeArea::default().content((800.0, 600.0)),
+            (vello::kurbo::Point::ORIGIN, (800.0, 600.0))
+        );
+        // Negative reports and a zero scale are clamped, and insets larger
+        // than the viewport never produce a negative box.
+        let odd = SafeArea::from_physical([-4, 900, 0, 900], 0.0);
+        assert_eq!(odd.left, 0.0);
+        let (origin, size) = odd.content((300.0, 500.0));
+        assert_eq!(origin.y, 500.0);
+        assert_eq!(size, (300.0, 0.0));
     }
 
     #[test]
-    fn physical_font_px_composes_device_and_user_scales() {
-        let px = physical_font_px(14.0, 1.25, 1.2, 1.5);
-        assert!((px - 14.0 * 1.25 * 1.2 * 1.5).abs() < 1e-4, "got {px}");
-        // Neutral user scales leave only the device factor.
-        assert!((physical_font_px(16.0, 1.0, 1.0, 1.75) - 28.0).abs() < 1e-4);
-        // Neutral device leaves only the user factors.
-        assert!((physical_font_px(10.0, 1.5, 1.0, 1.0) - 15.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn fill_lands_at_physical_coordinates_at_fractional_scales() {
-        for scale in [1.25f64, 1.5, 1.75] {
-            let (lw, lh) = (100.0f64, 60.0f64);
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "lw/lh are small positive test dimensions and scale is a positive \
+    fn fractional_scale_renders_natively_at_physical_coordinates() {
+        // Case `fill_lands_at_physical_coordinates_at_fractional_scales`.
+        {
+            for scale in [1.25f64, 1.5, 1.75] {
+                let (lw, lh) = (100.0f64, 60.0f64);
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "lw/lh are small positive test dimensions and scale is a positive \
                           test factor, so the physical length stays well within u32 range"
-            )]
-            let pw = physical_len(lw, scale).round() as u32;
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "lw/lh are small positive test dimensions and scale is a positive \
+                )]
+                let pw = physical_len(lw, scale).round() as u32;
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "lw/lh are small positive test dimensions and scale is a positive \
                           test factor, so the physical length stays well within u32 range"
-            )]
-            let ph = physical_len(lh, scale).round() as u32;
+                )]
+                let ph = physical_len(lh, scale).round() as u32;
 
-            let mut scene = Scene::new();
-            let rect = Rect::new(20.0, 15.0, 60.0, 45.0); // logical
-            scene.fill(
-                Fill::NonZero,
-                composite_transform(scale),
-                Color::WHITE,
-                None,
-                &rect,
-            );
+                let mut scene = Scene::new();
+                let rect = Rect::new(20.0, 15.0, 60.0, 45.0); // logical
+                scene.fill(
+                    Fill::NonZero,
+                    composite_transform(scale),
+                    Color::WHITE,
+                    None,
+                    &rect,
+                );
 
-            let mut r = OffscreenRenderer::new(pw, ph);
-            let buf = r.render(&scene, Color::BLACK);
+                let mut r = OffscreenRenderer::new(pw, ph);
+                let buf = r.render(&scene, Color::BLACK);
 
-            let (cx, cy) = physical_point((40.0, 30.0), scale);
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "cx/cy are physical_point() of positive logical coordinates at a \
+                let (cx, cy) = physical_point((40.0, 30.0), scale);
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "cx/cy are physical_point() of positive logical coordinates at a \
                           positive scale, so they are always non-negative"
-            )]
-            let (cr, _, _, _) = OffscreenRenderer::sample(&buf, pw, cx as u32, cy as u32);
-            assert!(
-                cr > 200,
-                "rect centre inked at physical ({cx:.0},{cy:.0}) for scale {scale}, got r={cr}"
-            );
+                )]
+                let (cr, _, _, _) = OffscreenRenderer::sample(&buf, pw, cx as u32, cy as u32);
+                assert!(
+                    cr > 200,
+                    "rect centre inked at physical ({cx:.0},{cy:.0}) for scale {scale}, got r={cr}"
+                );
 
-            let (ox, oy) = physical_point((6.0, 6.0), scale);
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "ox/oy are physical_point() of positive logical coordinates at a \
+                let (ox, oy) = physical_point((6.0, 6.0), scale);
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "ox/oy are physical_point() of positive logical coordinates at a \
                           positive scale, so they are always non-negative"
-            )]
-            let (obr, _, _, _) = OffscreenRenderer::sample(&buf, pw, ox as u32, oy as u32);
-            assert!(
-                obr < 60,
-                "background stays black outside the rect for scale {scale}, got r={obr}"
-            );
+                )]
+                let (obr, _, _, _) = OffscreenRenderer::sample(&buf, pw, ox as u32, oy as u32);
+                assert!(
+                    obr < 60,
+                    "background stays black outside the rect for scale {scale}, got r={obr}"
+                );
+            }
         }
-    }
 
-    #[test]
-    fn text_metrics_are_logical_and_physical_extent_scales() {
-        let mut tr = TextRenderer::new();
-        let (lw, lh) = tr.measure("Fractional scaling", 16.0, None);
-        assert!(lw > 0.0 && lh > 0.0);
-        for scale in [1.0f64, 1.25, 1.5, 1.75] {
-            let (w2, h2) = tr.measure("Fractional scaling", 16.0, None);
-            assert_eq!(
-                (w2, h2),
-                (lw, lh),
-                "measure is scale-free (logical) at {scale}"
-            );
-            let pw = physical_len(f64::from(lw), scale);
+        // Case `native_fractional_render_is_crisper_than_upscaling`:
+        // Native render at device scale 2.0 must carry strictly MORE
+        // anti-aliased luminance levels than nearest-upscaling the scale-1
+        // raster to the same size (which invents no new detail).
+        {
+            let (lw, lh) = (140u32, 44u32);
+            let mut tr = TextRenderer::new();
+
+            let draw = |scale: f64, tr: &mut TextRenderer| -> (Vec<u8>, u32, u32) {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "lw/lh are small positive test dimensions and scale is a positive \
+                          test factor, so the physical size stays well within u32 range"
+                )]
+                let pw = (f64::from(lw) * scale).round() as u32;
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "lw/lh are small positive test dimensions and scale is a positive \
+                          test factor, so the physical size stays well within u32 range"
+                )]
+                let ph = (f64::from(lh) * scale).round() as u32;
+                let mut scene = Scene::new();
+                tr.draw_text(
+                    &mut scene,
+                    "Ashgraphy",
+                    26.0,
+                    Color::WHITE,
+                    composite_transform(scale),
+                    None,
+                );
+                let mut r = OffscreenRenderer::new(pw, ph);
+                (r.render(&scene, Color::BLACK), pw, ph)
+            };
+
+            let (buf1, w1, h1) = draw(1.0, &mut tr);
+            let (buf2, w2, h2) = draw(2.0, &mut tr);
+
+            let upscaled = nearest_upscale(&buf1, w1, h1, w2, h2);
+            let native_levels = distinct_luma_levels(&buf2, w2, h2);
+            let upscaled_levels = distinct_luma_levels(&upscaled, w2, h2);
+
             assert!(
-                (pw - f64::from(lw) * scale).abs() < 1e-6,
-                "physical width = logical × {scale}"
+                native_levels > upscaled_levels,
+                "native 2× render must carry more anti-alias detail than an upscale: \
+             native={native_levels} upscaled={upscaled_levels}",
+            );
+            assert!(
+                native_levels > 4,
+                "the native render produced real anti-aliased text"
             );
         }
     }
@@ -204,59 +339,5 @@ mod tests {
             seen[buf[i.saturating_mul(4)] as usize] = true;
         }
         seen.iter().filter(|&&b| b).count()
-    }
-
-    /// Native render at device scale 2.0 must carry strictly MORE
-    /// anti-aliased luminance levels than nearest-upscaling the scale-1
-    /// raster to the same size (which invents no new detail).
-    #[test]
-    fn native_fractional_render_is_crisper_than_upscaling() {
-        let (lw, lh) = (140u32, 44u32);
-        let mut tr = TextRenderer::new();
-
-        let draw = |scale: f64, tr: &mut TextRenderer| -> (Vec<u8>, u32, u32) {
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "lw/lh are small positive test dimensions and scale is a positive \
-                          test factor, so the physical size stays well within u32 range"
-            )]
-            let pw = (f64::from(lw) * scale).round() as u32;
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "lw/lh are small positive test dimensions and scale is a positive \
-                          test factor, so the physical size stays well within u32 range"
-            )]
-            let ph = (f64::from(lh) * scale).round() as u32;
-            let mut scene = Scene::new();
-            tr.draw_text(
-                &mut scene,
-                "Ashgraphy",
-                26.0,
-                Color::WHITE,
-                composite_transform(scale),
-                None,
-            );
-            let mut r = OffscreenRenderer::new(pw, ph);
-            (r.render(&scene, Color::BLACK), pw, ph)
-        };
-
-        let (buf1, w1, h1) = draw(1.0, &mut tr);
-        let (buf2, w2, h2) = draw(2.0, &mut tr);
-
-        let upscaled = nearest_upscale(&buf1, w1, h1, w2, h2);
-        let native_levels = distinct_luma_levels(&buf2, w2, h2);
-        let upscaled_levels = distinct_luma_levels(&upscaled, w2, h2);
-
-        assert!(
-            native_levels > upscaled_levels,
-            "native 2× render must carry more anti-alias detail than an upscale: \
-             native={native_levels} upscaled={upscaled_levels}",
-        );
-        assert!(
-            native_levels > 4,
-            "the native render produced real anti-aliased text"
-        );
     }
 }

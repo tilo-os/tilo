@@ -9,10 +9,11 @@
 //! committed operation into its canonical durable action.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
@@ -304,7 +305,7 @@ impl Gallery {
 }
 
 impl Widget for Gallery {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.name_input.sync(state, path);
     }
 
@@ -428,16 +429,15 @@ impl Widget for Gallery {
             let count_size = tr
                 .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
                 .size;
-            draw::text_w(
-                tr,
-                scene,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 &format!("{} themes", self.count),
-                count_size,
+                &TextStyle::new(count_size).with_weight(TextWeight::Semibold),
                 theme.text_dim,
-                self.rect.x0 + f64::from(PAD),
-                self.rect.y0 + f64::from(theme.tokens.spacing.s3),
-                TextWeight::Semibold,
+                Point::new(
+                    self.rect.x0 + f64::from(PAD),
+                    self.rect.y0 + f64::from(theme.tokens.spacing.s3),
+                ),
+                None,
             );
         }
         for r in &mut self.rows {
@@ -461,24 +461,10 @@ impl Widget for Gallery {
         self.menu.draw(scene, t, tr, theme, p);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The Widget event contract supplies scale, modifiers, CRDT state/path, handled and focus outputs, node, and layout to menu and rename input."
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        m: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Point::new(position.x / scale, position.y / scale);
+            self.last_cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
 
         // A rename asked to focus the inline editor.
@@ -491,24 +477,14 @@ impl Widget for Gallery {
 
         // An open menu owns input first; a chosen row becomes a command.
         if self.menu.is_open() {
-            self.menu.handle_event(
-                event,
-                scale,
-                m,
-                state,
-                path,
-                handled,
-                focus_target,
-                node,
-                taffy,
-            );
+            self.menu.handle_event(event, ctx);
             if let Some(idx) = self.menu.take_selection() {
                 if let Some(cmd) = self.menu_cmds.get(idx) {
                     self.commands.push(cmd.clone());
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
-            if *handled {
+            if *ctx.handled {
                 return;
             }
         }
@@ -527,7 +503,7 @@ impl Widget for Gallery {
                 .map(|r| (r.id().to_string(), r.is_custom()));
             if let Some((id, custom)) = hit {
                 self.open_menu(self.last_cursor.x, self.last_cursor.y, &id, custom);
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
@@ -542,44 +518,25 @@ impl Widget for Gallery {
                 && key.state == ElementState::Pressed
                 && self.resolve_name_conflict(&key.logical_key)
             {
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
-            self.name_input.handle_event(
-                event,
-                scale,
-                m,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+            self.name_input
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
             // Keep name input local until the app commits its canonical action.
             if let Some(name) = self.name_input.take_dirty() {
                 self.edited_name = Some(name);
             }
-            if *handled {
+            if *ctx.handled {
                 return;
             }
         }
 
         // Rows (selection + hover) last.
-        if let Ok(children) = taffy.children(node) {
+        if let Ok(children) = ctx.taffy.children(ctx.node_id) {
             for (row, child) in self.rows.iter_mut().zip(children.iter()) {
-                row.handle_event(
-                    event,
-                    scale,
-                    m,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    *child,
-                    taffy,
-                );
-                if *handled {
+                row.handle_event(event, &mut ctx.reborrow(ctx.path, *child));
+                if *ctx.handled {
                     if row.take_select_request() {
                         self.commands.push(format!("select:{}", row.id()));
                     }

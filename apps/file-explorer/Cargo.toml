@@ -23,16 +23,19 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-tilo-clock = { path = "../../crates/system/tilo-clock" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
+tilo-automation = { path = "../../crates/collab/automation" }
 accounts = { path = "../../crates/system/accounts" }
-# Remote WebDAV/Nextcloud files: the shared bounded DAV client.
-tilo-dav = { path = "../../crates/system/tilo-dav" }
+# Remote account folders are named exactly as the storage daemon's cloud
+# service names its mounts (`cloud_source::tree::mount_names`).
+cloud-source = { path = "../../crates/system/cloud-source" }
 # Source of truth for which extensions are editable documents (so the file
 # manager and the codecs agree on what opens in the word processor).
-qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false }
+tilo-doc-codecs = { path = "../../crates/doc/tilo-doc-codecs", default-features = false }
 collab-types = { path = "../../crates/collab/collab-types" }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 ed25519-dalek.workspace = true
@@ -45,9 +48,9 @@ hex.workspace = true
 sha2.workspace = true
 # Shared thumbnail generator and cache. PDF previews use dynamically loaded
 # pdfium and fall back to a badge; video remains a badge in this crate.
-thumbnail = { path = "../../crates/media/thumbnail", features = ["pdf"] }
+tilo-thumbnail = { path = "../../crates/media/thumbnail", features = ["pdf"] }
 trash = "5.2.6"
-mime_guess = "2.0.5"
+mime_guess.workspace = true
 chrono = { workspace = true, default-features = true }
 # CLDR-backed date/time and decimal formatting. Keep these scoped to Files:
 # ICU4X's compiled data provides deterministic locale fallback without relying
@@ -56,15 +59,16 @@ icu_datetime = "2.3.0"
 icu_decimal = "2.3.0"
 icu_locale = "2.3.0"
 # Reads the Tilo FUSE driver's `user.tilo.sync` extended attribute so the file
-# manager can show each workspace file's sync/hydration state.
-libc.workspace = true
+# manager can show each workspace file's sync/hydration state, and performs
+# no-replace renames, private staging and trash management.
+host-fs = { path = "../../crates/system/host-fs" }
 # Used by `--shots` demo seeds to create sample images and an EPUB cover.
 image = { workspace = true, features = ["png", "jpeg"] }
 zip.workspace = true
 tar.workspace = true
 flate2.workspace = true
 # Home, config, cache and the localized user folders.
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true
@@ -78,6 +82,7 @@ cap-fs-ext = "3.4.6"
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
@@ -86,11 +91,8 @@ tempfile.workspace = true
 fluent.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 
-[target.'cfg(unix)'.dependencies]
-xattr = "1.6.1"
-
 [target.'cfg(unix)'.dev-dependencies]
-fs = { path = "../../crates/system/fs" }
+tilo-fs = { path = "../../crates/system/fs" }
 fuser.workspace = true
 iroh.workspace = true
 

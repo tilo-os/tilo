@@ -362,7 +362,7 @@ pub fn store(dir: &Path, approvals: &[Approval]) -> Result<Vec<PathBuf>> {
     for a in approvals {
         let p = dir.join(a.file_name());
         let json = serde_json::to_string_pretty(a)?;
-        atomic_file::write_with_mode(&p, json.as_bytes(), 0o644)
+        tilo_files::native::atomic::write_with_mode(&p, json.as_bytes(), 0o644)
             .with_context(|| format!("atomically writing {}", p.display()))?;
         paths.push(p);
     }
@@ -437,112 +437,109 @@ mod tests {
     }
 
     #[test]
-    fn an_approval_is_bound_to_one_target() {
-        let a = approved_policy(&name(), 5).unwrap();
-        let b = approved_policy(&name(), 6).unwrap();
-        assert_ne!(a, b, "each step must need its own approval");
+    fn approvals_bind_one_target_index_and_machine() {
+        // Phase `an_approval_is_bound_to_one_target`.
+        {
+            let a = approved_policy(&name(), 5).unwrap();
+            let b = approved_policy(&name(), 6).unwrap();
+            assert_ne!(a, b, "each step must need its own approval");
+        }
+        // Phase `an_approval_is_bound_to_one_index`.
+        {
+            let other = {
+                let mut v = vec![0x00, 0x0B];
+                v.extend_from_slice(&[9u8; 32]);
+                v
+            };
+            assert_ne!(
+                approved_policy(&name(), 5).unwrap(),
+                approved_policy(&other, 5).unwrap()
+            );
+        }
+        // Phase `target_counter_zero_is_refused`.
+        {
+            assert!(approved_policy(&name(), 0).is_err());
+        }
+        // Phase `validation_catches_an_approval_for_another_machine`.
+        {
+            let a = approval_for(5);
+            assert!(a.validate_for(0x01D9_1100, &name()).is_ok());
+            let other = {
+                let mut v = vec![0x00, 0x0B];
+                v.extend_from_slice(&[9u8; 32]);
+                v
+            };
+            let e = a.validate_for(0x01D9_1100, &other).unwrap_err().to_string();
+            assert!(e.contains("different NV index Name"), "{e}");
+            let e = a
+                .validate_for(0x01D9_1200, &name())
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("NV index"), "{e}");
+        }
+        // Phase `validation_catches_a_tampered_target`.
+        {
+            let mut a = approval_for(5);
+            a.target_counter = 9;
+            let e = a
+                .validate_for(0x01D9_1100, &name())
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("does not match its stated target"), "{e}");
+        }
     }
 
     #[test]
-    fn an_approval_is_bound_to_one_index() {
-        let other = {
-            let mut v = vec![0x00, 0x0B];
-            v.extend_from_slice(&[9u8; 32]);
-            v
-        };
-        assert_ne!(
-            approved_policy(&name(), 5).unwrap(),
-            approved_policy(&other, 5).unwrap()
-        );
-    }
-
-    #[test]
-    fn target_counter_zero_is_refused() {
-        assert!(approved_policy(&name(), 0).is_err());
-    }
-
-    #[test]
-    fn validation_catches_an_approval_for_another_machine() {
-        let a = approval_for(5);
-        assert!(a.validate_for(0x01D9_1100, &name()).is_ok());
-        let other = {
-            let mut v = vec![0x00, 0x0B];
-            v.extend_from_slice(&[9u8; 32]);
-            v
-        };
-        let e = a.validate_for(0x01D9_1100, &other).unwrap_err().to_string();
-        assert!(e.contains("different NV index Name"), "{e}");
-        let e = a
-            .validate_for(0x01D9_1200, &name())
-            .unwrap_err()
-            .to_string();
-        assert!(e.contains("NV index"), "{e}");
-    }
-
-    #[test]
-    fn validation_catches_a_tampered_target() {
-        let mut a = approval_for(5);
-        a.target_counter = 9;
-        let e = a
-            .validate_for(0x01D9_1100, &name())
-            .unwrap_err()
-            .to_string();
-        assert!(e.contains("does not match its stated target"), "{e}");
-    }
-
-    #[test]
-    fn the_safe_bound_is_the_newest_enrolled_generation() {
-        let floor = counter::FloorState {
-            counter: 10,
-            base: 5,
-        };
-        let r = build_request(1, &name(), floor, &[8, 7, 6], 3).unwrap();
-        assert_eq!(r.floor_generation, 5);
-        assert_eq!(r.safe_target_floor, 8);
-    }
-
-    #[test]
-    fn with_nothing_enrolled_the_safe_bound_is_the_current_floor() {
-        let floor = counter::FloorState {
-            counter: 10,
-            base: 5,
-        };
-        let r = build_request(1, &name(), floor, &[], 3).unwrap();
-        assert_eq!(r.safe_target_floor, 5);
-    }
-
-    #[test]
-    fn finding_and_discarding_work_by_target() {
-        let list = vec![approval_for(3), approval_for(4)];
-        assert_eq!(find(&list, 4).unwrap().target_counter, 4);
-        assert!(find(&list, 9).is_none());
-    }
-
-    #[test]
-    fn approvals_round_trip_through_a_directory() {
-        let d = tempfile::tempdir().unwrap();
-        let list = vec![approval_for(4), approval_for(3)];
-        store(d.path(), &list).unwrap();
-        let back = load_all(d.path()).unwrap();
-        assert_eq!(back.len(), 2);
-        assert_eq!(back[0].target_counter, 3, "loaded oldest target first");
-        discard(d.path(), &back[0]);
-        assert_eq!(load_all(d.path()).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn a_missing_directory_is_no_approvals_not_an_error() {
-        let d = tempfile::tempdir().unwrap();
-        assert!(load_all(&d.path().join("nope")).unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_corrupt_approval_does_not_hide_the_good_ones() {
-        let d = tempfile::tempdir().unwrap();
-        store(d.path(), &[approval_for(3)]).unwrap();
-        std::fs::write(d.path().join("floor-9.json"), b"not json").unwrap();
-        let back = load_all(d.path()).unwrap();
-        assert_eq!(back.len(), 1);
-        assert_eq!(back[0].target_counter, 3);
+    fn approval_bounds_and_directories_follow_enrolled_generations() {
+        // Phase `the_safe_bound_is_the_newest_enrolled_generation`.
+        {
+            let floor = counter::FloorState {
+                counter: 10,
+                base: 5,
+            };
+            let r = build_request(1, &name(), floor, &[8, 7, 6], 3).unwrap();
+            assert_eq!(r.floor_generation, 5);
+            assert_eq!(r.safe_target_floor, 8);
+        }
+        // Phase `with_nothing_enrolled_the_safe_bound_is_the_current_floor`.
+        {
+            let floor = counter::FloorState {
+                counter: 10,
+                base: 5,
+            };
+            let r = build_request(1, &name(), floor, &[], 3).unwrap();
+            assert_eq!(r.safe_target_floor, 5);
+        }
+        // Phase `finding_and_discarding_work_by_target`.
+        {
+            let list = vec![approval_for(3), approval_for(4)];
+            assert_eq!(find(&list, 4).unwrap().target_counter, 4);
+            assert!(find(&list, 9).is_none());
+        }
+        // Phase `approvals_round_trip_through_a_directory`.
+        {
+            let d = tempfile::tempdir().unwrap();
+            let list = vec![approval_for(4), approval_for(3)];
+            store(d.path(), &list).unwrap();
+            let back = load_all(d.path()).unwrap();
+            assert_eq!(back.len(), 2);
+            assert_eq!(back[0].target_counter, 3, "loaded oldest target first");
+            discard(d.path(), &back[0]);
+            assert_eq!(load_all(d.path()).unwrap().len(), 1);
+        }
+        // Phase `a_missing_directory_is_no_approvals_not_an_error`.
+        {
+            let d = tempfile::tempdir().unwrap();
+            assert!(load_all(&d.path().join("nope")).unwrap().is_empty());
+        }
+        // Phase `a_corrupt_approval_does_not_hide_the_good_ones`.
+        {
+            let d = tempfile::tempdir().unwrap();
+            store(d.path(), &[approval_for(3)]).unwrap();
+            std::fs::write(d.path().join("floor-9.json"), b"not json").unwrap();
+            let back = load_all(d.path()).unwrap();
+            assert_eq!(back.len(), 1);
+            assert_eq!(back[0].target_counter, 3);
+        }
     }
 }

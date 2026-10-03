@@ -15,6 +15,9 @@ dist/rpm/build/
 # Local build routing (see DEVELOPMENT.md)
 .build-container
 
+# Throwaway keys and state of tools/web/local-registry.sh
+/.local-registry/
+
 # Legacy BranchBox credentials and local state (keep untracked)
 .branchbox/registry.json
 .branchbox/secure/

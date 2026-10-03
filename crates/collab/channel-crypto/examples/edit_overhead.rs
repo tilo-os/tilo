@@ -2,7 +2,7 @@
 //! endpoint and open it on a receiving one, and the bytes it adds.
 //!
 //! ```bash
-//! rcargo run --locked --release -p channel-crypto --example edit_overhead
+//! cargo run --locked --release -p channel-crypto --example edit_overhead
 //! ```
 
 #![allow(

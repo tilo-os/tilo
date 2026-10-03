@@ -193,95 +193,102 @@ mod tests {
     use super::*;
 
     #[test]
-    fn speed_ratio_buckets_into_levels() {
-        assert_eq!(Congestion::from_speed_ratio(1.0), Congestion::Free);
-        assert_eq!(Congestion::from_speed_ratio(0.8), Congestion::Free);
-        assert_eq!(Congestion::from_speed_ratio(0.6), Congestion::Moderate);
-        assert_eq!(Congestion::from_speed_ratio(0.3), Congestion::Heavy);
-        assert_eq!(Congestion::from_speed_ratio(0.1), Congestion::Severe);
-        // Out-of-range ratios clamp rather than panic.
-        assert_eq!(Congestion::from_speed_ratio(5.0), Congestion::Free);
-        assert_eq!(Congestion::from_speed_ratio(-1.0), Congestion::Severe);
-    }
-
-    #[test]
-    fn default_traffic_is_empty_the_honest_live_state() {
-        let t = TrafficData::default();
-        assert!(t.is_empty(), "live traffic starts with no reports");
-        assert!(t.source.is_none(), "no provenance when there is no data");
-        assert_eq!(t.counts(), [0, 0, 0, 0]);
-    }
-
-    #[test]
-    fn sample_overlay_colours_the_basemap_roads() {
-        let base = crate::sample::basemap();
-        let t = TrafficData::sample(&base);
-        assert!(!t.is_empty(), "the sample basemap has roads to colour");
-        assert_eq!(t.source.as_deref(), Some("sample data"));
-        // Every segment is a real polyline (>= 2 points) and is counted in
-        // exactly one level bucket.
-        for s in &t.segments {
-            assert!(s.geometry.len() >= 2, "a segment is a real polyline");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn traffic_levels_start_empty_and_sample_overlay_is_realistic() {
+        // Phase `speed_ratio_buckets_into_levels`.
+        {
+            assert_eq!(Congestion::from_speed_ratio(1.0), Congestion::Free);
+            assert_eq!(Congestion::from_speed_ratio(0.8), Congestion::Free);
+            assert_eq!(Congestion::from_speed_ratio(0.6), Congestion::Moderate);
+            assert_eq!(Congestion::from_speed_ratio(0.3), Congestion::Heavy);
+            assert_eq!(Congestion::from_speed_ratio(0.1), Congestion::Severe);
+            // Out-of-range ratios clamp rather than panic.
+            assert_eq!(Congestion::from_speed_ratio(5.0), Congestion::Free);
+            assert_eq!(Congestion::from_speed_ratio(-1.0), Congestion::Severe);
         }
-        let counts = t.counts();
-        assert_eq!(
-            counts.iter().sum::<usize>(),
-            t.segments.len(),
-            "every segment is counted in exactly one level bucket"
-        );
-        // Sub-segmentation makes the overlay dense: many more coloured segments
-        // than there are roads, so congestion varies *along* a road.
-        let drivable = base
-            .roads
-            .iter()
-            .filter(|r| !matches!(r.class, RoadClass::Path) && r.pts.len() >= 2)
-            .count();
-        assert!(
-            t.segments.len() > drivable,
-            "roads are split into sub-segments: {} segments from {drivable} roads",
-            t.segments.len()
-        );
-        // Deterministic: the same basemap yields the identical overlay each run.
-        let again = TrafficData::sample(&base);
-        assert_eq!(
-            again.counts(),
-            counts,
-            "sample overlay is stable across runs"
-        );
-    }
 
-    #[test]
-    fn sample_overlay_shows_a_realistic_congestion_spread() {
-        // A believable traffic picture uses the whole ramp, not one flat colour.
-        let base = crate::sample::basemap();
-        let counts = TrafficData::sample(&base).counts();
-        let levels_present = counts.iter().filter(|&&n| n > 0).count();
-        assert!(
-            levels_present >= 3,
-            "at least three congestion levels are represented: {counts:?}"
-        );
-        // The residential grid keeps some free-flowing streets, and the busy
-        // arterials produce heavy/severe segments — both ends of the ramp show.
-        assert!(
-            counts[Congestion::Free as usize] > 0,
-            "some roads flow freely"
-        );
-        assert!(
-            counts[Congestion::Heavy as usize] + counts[Congestion::Severe as usize] > 0,
-            "some arterials are congested"
-        );
-    }
+        // Phase `default_traffic_is_empty_the_honest_live_state`.
+        {
+            let t = TrafficData::default();
+            assert!(t.is_empty(), "live traffic starts with no reports");
+            assert!(t.source.is_none(), "no provenance when there is no data");
+            assert_eq!(t.counts(), [0, 0, 0, 0]);
+        }
 
-    #[test]
-    fn primary_avenues_never_flow_free() {
-        // Primaries carry the most traffic — every sub-segment on a primary road
-        // is at least Moderate, so the overlay reads like a real arterial net.
-        for h in 0..500u64 {
-            assert_ne!(
-                super::level_for(RoadClass::Primary, h),
-                Congestion::Free,
-                "a primary arterial is never fully free (h={h})"
+        // Phase `sample_overlay_colours_the_basemap_roads`.
+        {
+            let base = crate::sample::basemap();
+            let t = TrafficData::sample(&base);
+            assert!(!t.is_empty(), "the sample basemap has roads to colour");
+            assert_eq!(t.source.as_deref(), Some("sample data"));
+            // Every segment is a real polyline (>= 2 points) and is counted in
+            // exactly one level bucket.
+            for s in &t.segments {
+                assert!(s.geometry.len() >= 2, "a segment is a real polyline");
+            }
+            let counts = t.counts();
+            assert_eq!(
+                counts.iter().sum::<usize>(),
+                t.segments.len(),
+                "every segment is counted in exactly one level bucket"
             );
+            // Sub-segmentation makes the overlay dense: many more coloured segments
+            // than there are roads, so congestion varies *along* a road.
+            let drivable = base
+                .roads
+                .iter()
+                .filter(|r| !matches!(r.class, RoadClass::Path) && r.pts.len() >= 2)
+                .count();
+            assert!(
+                t.segments.len() > drivable,
+                "roads are split into sub-segments: {} segments from {drivable} roads",
+                t.segments.len()
+            );
+            // Deterministic: the same basemap yields the identical overlay each run.
+            let again = TrafficData::sample(&base);
+            assert_eq!(
+                again.counts(),
+                counts,
+                "sample overlay is stable across runs"
+            );
+        }
+
+        // Phase `sample_overlay_shows_a_realistic_congestion_spread`.
+        {
+            // A believable traffic picture uses the whole ramp, not one flat colour.
+            let base = crate::sample::basemap();
+            let counts = TrafficData::sample(&base).counts();
+            let levels_present = counts.iter().filter(|&&n| n > 0).count();
+            assert!(
+                levels_present >= 3,
+                "at least three congestion levels are represented: {counts:?}"
+            );
+            // The residential grid keeps some free-flowing streets, and the busy
+            // arterials produce heavy/severe segments — both ends of the ramp show.
+            assert!(
+                counts[Congestion::Free as usize] > 0,
+                "some roads flow freely"
+            );
+            assert!(
+                counts[Congestion::Heavy as usize] + counts[Congestion::Severe as usize] > 0,
+                "some arterials are congested"
+            );
+        }
+
+        // Phase `primary_avenues_never_flow_free`.
+        {
+            // Primaries carry the most traffic — every sub-segment on a primary road
+            // is at least Moderate, so the overlay reads like a real arterial net.
+            for h in 0..500u64 {
+                assert_ne!(
+                    super::level_for(RoadClass::Primary, h),
+                    Congestion::Free,
+                    "a primary arterial is never fully free (h={h})"
+                );
+            }
         }
     }
 }

@@ -15,11 +15,12 @@
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::state::{AppKind, GroupId, TabId, TileContent};
 use crate::shell::tab_binding::{self, Placement};
+use tilo_desktop_model::commands::OpenIntent;
 
 /// Where a newly-created window should go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Destination {
-    /// Follow [`crate::shell::placement::placement_for_new_window`] — to
+    /// Follow [`crate::shell::placement::placement_for`] — to
     /// the right of the active window, or into its group when that group
     /// is already tabbed.
     Beside,
@@ -60,7 +61,7 @@ fn placement_for(st: &ChromeState, dest: Destination) -> Placement {
         Destination::Beside => rule_placement(st),
         Destination::Search => {
             let tree = st.tree();
-            crate::shell::placement::placement_for_search_result(&tree, st.strip_viewport())
+            crate::shell::placement::placement_for(&tree, OpenIntent::Search, st.strip_viewport())
         }
     }
 }
@@ -69,7 +70,7 @@ fn placement_for(st: &ChromeState, dest: Destination) -> Placement {
 /// currently looking at.
 fn rule_placement(st: &ChromeState) -> Placement {
     let tree = st.tree();
-    crate::shell::placement::placement_for_new_window(&tree, st.strip_viewport())
+    crate::shell::placement::placement_for(&tree, OpenIntent::Launch, st.strip_viewport())
 }
 
 /// Hosted in-process, so this is a tree splice rather than a launch — a
@@ -120,13 +121,11 @@ pub enum DuplicateError {
 }
 
 impl DuplicateError {
-    pub fn user_message(self) -> &'static str {
+    pub fn user_message(self) -> String {
+        use crate::shell::i18n::t;
         match self {
-            DuplicateError::NoActiveTab => "There is no tab to duplicate.",
-            DuplicateError::ForeignWindow => {
-                "This window belongs to an app the compositor doesn't host, so it can't be copied. \
-                 Open a second one from search instead."
-            }
+            DuplicateError::NoActiveTab => t("window-duplicate-no-tab"),
+            DuplicateError::ForeignWindow => t("window-duplicate-foreign"),
         }
     }
 }
@@ -214,16 +213,13 @@ pub enum TabActionError {
 }
 
 impl TabActionError {
-    pub fn user_message(self) -> &'static str {
+    pub fn user_message(self) -> String {
+        use crate::shell::i18n::t;
         match self {
-            TabActionError::NoActiveTab => "There is no tab to act on.",
-            TabActionError::UnknownTab => "That tab is no longer open.",
-            TabActionError::OnlyTab => {
-                "This is the window's only tab; there is nothing to split it from."
-            }
-            TabActionError::DocumentRefused => {
-                "The workspace document did not accept the change, so nothing was moved."
-            }
+            TabActionError::NoActiveTab => t("window-tab-action-no-tab"),
+            TabActionError::UnknownTab => t("window-tab-action-unknown-tab"),
+            TabActionError::OnlyTab => t("window-tab-action-only-tab"),
+            TabActionError::DocumentRefused => t("window-tab-action-document-refused"),
         }
     }
 }
@@ -295,7 +291,7 @@ pub(crate) fn close_tab_unrecorded(
     st: &mut ChromeState,
     tab_id: TabId,
 ) -> Result<(), TabActionError> {
-    let surface = {
+    let foreign = {
         let tree = st.tree();
         tree.desktop
             .workspaces
@@ -305,10 +301,13 @@ pub(crate) fn close_tab_unrecorded(
             .flat_map(|group| group.tabs.iter())
             .find(|tab| tab.id == tab_id)
             .and_then(|tab| match &tab.tile {
-                TileContent::Foreign { surface_id, .. } => Some(*surface_id),
+                TileContent::Foreign { app_id, surface_id } => Some((app_id.clone(), *surface_id)),
                 _ => None,
             })
     };
+    let launch_key = foreign
+        .as_ref()
+        .map(|(app_id, surface_id)| host_launch_key(app_id, *surface_id));
     let removed = {
         let mut tree = st.tree_mut();
         tab_binding::remove_tab(&mut tree, tab_id)
@@ -316,15 +315,114 @@ pub(crate) fn close_tab_unrecorded(
     if !removed {
         return Err(TabActionError::UnknownTab);
     }
-    #[cfg(target_os = "macos")]
     st.hosted_inputs.prune_documents(&mut st.tree_mut());
     // Close is durable before the client is asked to exit.
     st.tree().flush_to_disk();
-    if let Some(surface_id) = surface {
+    if let Some((_, surface_id)) = foreign {
         st.request_surface_close(surface_id);
+    }
+    #[cfg(any(test, target_os = "linux"))]
+    if let Some(key) = launch_key.as_deref()
+        && !foreign_tabs_remain_for(&st.tree().desktop, key)
+    {
+        // Wine File's tab announces wineboot.exe. That is not the desktop
+        // id the launch table uses, so terminate(key) is a no-op until the
+        // surface was attributed to the launch. A second X11 window of that
+        // launch (Wine Mono announces control.exe) still counts. Session
+        // helpers that never asked for a window are not part of this close.
+        let known = crate::shell::launcher::unconfined_launch_is_live(key)
+            || crate::shell::launcher::launch_key_for_surface(
+                foreign.as_ref().map_or(0, |(_, id)| *id),
+            )
+            .is_some()
+            || crate::shell::launcher::launch_key_for_app_id(
+                foreign.as_ref().map_or("", |(id, _)| id),
+            )
+            .is_some();
+        crate::shell::launcher::terminate_unconfined_launches(key);
+        if !known {
+            for package_id in crate::shell::launcher::unconfined_launches_for_unresolved_close() {
+                if !foreign_tabs_remain_for(&st.tree().desktop, &package_id) {
+                    crate::shell::launcher::terminate_unconfined_launches(&package_id);
+                }
+            }
+        }
     }
     st.bump();
     Ok(())
+}
+
+fn host_launch_key(app_id: &str, surface_id: u64) -> String {
+    crate::shell::persist::durable_app_id(surface_id, app_id)
+}
+
+fn foreign_tabs_remain_for(desktop: &crate::shell::state::DesktopTree, launch_key: &str) -> bool {
+    let mut unresolved = false;
+    for workspace in &desktop.workspaces {
+        for strip in &workspace.strips {
+            for group in &strip.window_groups {
+                for tab in &group.tabs {
+                    let TileContent::Foreign { app_id, surface_id } = &tab.tile else {
+                        continue;
+                    };
+                    let resolved = host_launch_key(app_id, *surface_id);
+                    if resolved.eq_ignore_ascii_case(launch_key)
+                        || app_id.eq_ignore_ascii_case(launch_key)
+                    {
+                        return true;
+                    }
+                    // `durable_app_id` falls back to the announced toolkit id
+                    // (wineboot.exe, control.exe) when the desktop id never
+                    // matched. That window still belongs to the user launch
+                    // that asked for it, even when autostart helpers are also
+                    // live.
+                    if resolved.eq_ignore_ascii_case(app_id) {
+                        unresolved = true;
+                    }
+                }
+            }
+        }
+    }
+    unresolved && unresolved_window_belongs_to(launch_key)
+}
+
+/// An unmatched toolkit window belongs to `launch_key` when that launch is
+/// the only unconfined process, or the one user launch waiting on a window.
+fn unresolved_window_belongs_to(launch_key: &str) -> bool {
+    sole_live_unconfined_launch(launch_key) || unresolved_launch_is_the_user_launch(launch_key)
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn unresolved_launch_is_the_user_launch(launch_key: &str) -> bool {
+    crate::shell::launcher::unconfined_launches_for_unresolved_close()
+        .iter()
+        .any(|id| id.eq_ignore_ascii_case(launch_key))
+}
+
+#[cfg(not(any(test, target_os = "linux")))]
+fn unresolved_launch_is_the_user_launch(launch_key: &str) -> bool {
+    let _ = launch_key;
+    false
+}
+
+/// True when `launch_key` is the only unconfined host launch still running.
+///
+/// On hosts that do not track launches this is false: there is no process
+/// to keep, and a toolkit window id must not invent one.
+fn sole_live_unconfined_launch(launch_key: &str) -> bool {
+    #[cfg(any(test, target_os = "linux"))]
+    {
+        let live = crate::shell::launcher::live_unconfined_package_ids();
+        live.len() == 1
+            && live
+                .first()
+                .is_some_and(|package| package.eq_ignore_ascii_case(launch_key))
+    }
+    #[cfg(not(any(test, target_os = "linux")))]
+    {
+        let _ = launch_key;
+        false
+    }
 }
 
 /// [`close_tab`] on the focused group's active tab — the `tab.close`
@@ -337,6 +435,177 @@ pub(crate) fn close_tab_unrecorded(
 pub fn close_active_tab(st: &mut ChromeState) -> Result<(), TabActionError> {
     let tab = active_tab_id(st).ok_or(TabActionError::NoActiveTab)?;
     close_tab(st, tab)
+}
+
+/// Why a window could not move to another workspace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MoveTabError {
+    /// The tab is not in the tree (already closed, or a stale id).
+    UnknownTab,
+    /// The destination workspace is gone, or has no strip to land in.
+    UnknownWorkspace,
+    /// The window is already in that workspace.
+    SameWorkspace,
+    /// The window belongs to its workspace: its private history, or a
+    /// collaborator's window shown here.
+    Pinned,
+    /// The replicated document refused the mutation; nothing changed.
+    DocumentRefused,
+    /// A room owner keeps that workspace's records, not this device.
+    HostedWorkspace,
+    /// The destination workspace does not let this app be opened there.
+    NotPermitted,
+    /// The window is already on its way somewhere.
+    AlreadyMoving,
+    /// Nobody is at this desktop to agree to what crosses.
+    NobodyToConfirm,
+}
+
+impl MoveTabError {
+    pub fn user_message(self) -> String {
+        crate::shell::i18n::t(match self {
+            MoveTabError::UnknownTab => "window-move-unknown-tab",
+            MoveTabError::UnknownWorkspace => "window-move-unknown-workspace",
+            MoveTabError::SameWorkspace => "window-move-same-workspace",
+            MoveTabError::Pinned => "window-move-pinned",
+            MoveTabError::DocumentRefused => "window-move-document-refused",
+            MoveTabError::HostedWorkspace => "window-move-hosted-workspace",
+            MoveTabError::NotPermitted => "window-move-not-permitted",
+            MoveTabError::AlreadyMoving => "window-move-already-moving",
+            MoveTabError::NobodyToConfirm => "window-move-nobody-to-confirm",
+        })
+    }
+}
+
+/// What asking to move a window did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MoveOutcome {
+    /// A window the shell draws itself moved as it is.
+    Moved,
+    /// A client window crosses a sandbox boundary: the sheet asking what
+    /// crosses is up, and nothing has changed yet
+    /// ([`crate::shell::window_transfer`]).
+    AwaitingConsent,
+}
+
+/// Move `tab_id` into workspace `target`, preferring to move its document
+/// rather than copy it. See [`transfer_tab_to_workspace`].
+///
+/// # Errors
+///
+/// As [`transfer_tab_to_workspace`].
+pub fn move_tab_to_workspace(
+    st: &mut ChromeState,
+    tab_id: TabId,
+    target: crate::shell::state::WorkspaceId,
+) -> Result<MoveOutcome, MoveTabError> {
+    transfer_tab_to_workspace(
+        st,
+        tab_id,
+        target,
+        crate::shell::window_transfer::TransferMode::Move,
+    )
+}
+
+/// Take `tab_id` into workspace `target`.
+///
+/// A window the shell draws itself moves as it is, as a new window at the
+/// end of the destination's current strip, tree first
+/// ([`crate::shell::state::WorkspaceTree::move_tab_across_strips`]).
+///
+/// The workspace is the sandbox boundary: a running client stays inside the
+/// sandbox, grants and collaborators of the workspace it was launched in, so
+/// a client window never crosses by itself. Its record and state are carried
+/// by [`crate::shell::window_transfer`] once the person agrees on the sheet
+/// this puts up, `preferred` being the answer it offers first.
+///
+/// # Errors
+///
+/// [`MoveTabError::UnknownTab`] when the tab is in no strip,
+/// [`MoveTabError::UnknownWorkspace`] when `target` is gone or has no strip,
+/// [`MoveTabError::SameWorkspace`] when the tab is already there,
+/// [`MoveTabError::Pinned`] for a workspace's own history or a peer's
+/// window, [`MoveTabError::DocumentRefused`] when the document refuses
+/// (nothing changed), and the transfer's own refusals for a client window.
+pub fn transfer_tab_to_workspace(
+    st: &mut ChromeState,
+    tab_id: TabId,
+    target: crate::shell::state::WorkspaceId,
+    preferred: crate::shell::window_transfer::TransferMode,
+) -> Result<MoveOutcome, MoveTabError> {
+    let tile = st
+        .tree()
+        .desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .find(|tab| tab.id == tab_id)
+        .map(|tab| tab.tile.clone())
+        .ok_or(MoveTabError::UnknownTab)?;
+    if matches!(
+        tile,
+        TileContent::Foreign { .. } | TileContent::LocalApp { .. }
+    ) {
+        crate::shell::window_transfer::request(st, tab_id, target, preferred)?;
+        return Ok(MoveOutcome::AwaitingConsent);
+    }
+    {
+        let mut tree = st.tree_mut();
+        let (source, src_strip, tile) = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find_map(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .flat_map(|group| group.tabs.iter())
+                        .find(|tab| tab.id == tab_id)
+                        .map(|tab| (workspace.id, strip.id, tab.tile.clone()))
+                })
+            })
+            .ok_or(MoveTabError::UnknownTab)?;
+        if source == target {
+            return Err(MoveTabError::SameWorkspace);
+        }
+        if matches!(
+            tile,
+            TileContent::WorkspaceActivity | TileContent::PeerWindow { .. }
+        ) {
+            return Err(MoveTabError::Pinned);
+        }
+        let current = tree.desktop.active_strip.get(&target).copied();
+        let destination = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == target)
+            .and_then(|workspace| {
+                workspace
+                    .strips
+                    .iter()
+                    .find(|strip| Some(strip.id) == current)
+                    .or_else(|| workspace.strips.first())
+                    .map(|strip| (strip.id, strip.window_groups.len()))
+            });
+        let Some((dst_strip, gap_index)) = destination else {
+            return Err(MoveTabError::UnknownWorkspace);
+        };
+        if !tree.move_tab_across_strips(
+            src_strip,
+            dst_strip,
+            tab_id,
+            crate::shell::state::next_id(),
+            crate::shell::state::DropTarget::GroupGap { gap_index },
+        ) {
+            return Err(MoveTabError::DocumentRefused);
+        }
+    }
+    st.bump();
+    Ok(MoveOutcome::Moved)
 }
 
 /// Split `tab_id` into a new single-tab group in its own strip, tree first
@@ -415,25 +684,126 @@ mod tests {
     }
 
     #[test]
-    fn history_new_hosted_tabs_have_records_before_tree_rebuild() {
-        let chrome = chrome_with_default_tree();
-        let mut st = chrome.borrow_mut();
-        let first = open_hosted(
-            &mut st,
-            AppKind::Other("Notes".into()),
-            "Notes",
-            Destination::Beside,
-        );
-        let second = duplicate_active_tab(&mut st).unwrap();
-        for id in [first, second] {
-            assert!(
-                st.records()
-                    .read(&ui::RecordId::for_tab(id), |_| ())
-                    .is_some(),
-                "the creating action must establish its new record before presentation"
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn window_actions_are_durable_for_history_restart_and_peers() {
+        // Phase `history_new_hosted_tabs_have_records_before_tree_rebuild`.
+        {
+            let chrome = chrome_with_default_tree();
+            let mut st = chrome.borrow_mut();
+            let first = open_hosted(
+                &mut st,
+                AppKind::Other("Notes".into()),
+                "Notes",
+                Destination::Beside,
             );
+            let second = duplicate_active_tab(&mut st).unwrap();
+            for id in [first, second] {
+                assert!(
+                    st.records()
+                        .read(&ui::RecordId::for_tab(id), |_| ())
+                        .is_some(),
+                    "the creating action must establish its new record before presentation"
+                );
+            }
+            assert_ne!(first, second);
         }
-        assert_ne!(first, second);
+
+        // Phase `opening_a_hosted_app_is_durable_for_restart_and_peer_export`.
+        {
+            let state_dir = tempfile::tempdir().expect("state directory");
+            let state_path = state_dir.path().join("state.json");
+            let chrome = chrome_with_default_tree();
+            let mut st = chrome.borrow_mut();
+            let baseline = {
+                let mut tree = st.tree_mut();
+                tree.persist_path = Some(state_path.clone());
+                tree.current_heads()
+            };
+            let mut replica = st.tree().clone();
+
+            let tab_id = open_terminal(&mut st, Destination::Beside);
+            let (changes, restarted) = {
+                let mut tree = st.tree_mut();
+                let changes = tree.export_changes_since(&baseline);
+                tree.flush_to_disk();
+                drop(tree);
+                let restarted = crate::shell::persist::load_tree_from(&state_path)
+                    .expect("opening a hosted app must leave a loadable state file");
+                (changes, restarted)
+            };
+
+            replica
+                .apply_changes(&changes)
+                .expect("hosted app creation must be present in peer export");
+
+            for (authority, tree) in [("restart", &restarted), ("peer export", &replica)] {
+                assert!(
+                    tree.desktop
+                        .workspaces
+                        .iter()
+                        .flat_map(|workspace| workspace.strips.iter())
+                        .flat_map(|strip| strip.window_groups.iter())
+                        .flat_map(|group| group.tabs.iter())
+                        .any(|tab| tab.id == tab_id),
+                    "a hosted app opened in the chrome must survive the {authority} authority read"
+                );
+            }
+        }
+
+        // Phase `switching_workspace_is_durable_across_restart`.
+        {
+            let state_dir = tempfile::tempdir().expect("state directory");
+            let state_path = state_dir.path().join("state.json");
+            let mut tree = WorkspaceTree::bootstrap_demo();
+            tree.desktop
+                .workspaces
+                .first_mut()
+                .expect("demo has a first workspace")
+                .name = "Home (workspace persistence test)".into();
+            tree.persist_path = Some(state_path.clone());
+            let first = tree
+                .desktop
+                .workspaces
+                .first()
+                .expect("demo has a first workspace")
+                .id;
+            let target = tree
+                .desktop
+                .workspaces
+                .get(1)
+                .expect("demo has a second workspace")
+                .id;
+
+            tree.set_active(target);
+            // A restart ends the process that held the state file's single writer.
+            drop(tree);
+
+            let restarted = crate::shell::persist::load_tree_from(&state_path)
+                .expect("workspace selection must leave a loadable state file");
+            assert_eq!(
+                restarted.desktop.active, target,
+                "the workspace selected by the user must be the one reopened"
+            );
+
+            let mut moved_up = restarted;
+            moved_up.persist_path = Some(state_path.clone());
+            assert!(moved_up.switch_up());
+            drop(moved_up);
+            let restarted = crate::shell::persist::load_tree_from(&state_path)
+                .expect("moving to the previous workspace must persist immediately");
+            assert_eq!(restarted.desktop.active, first);
+
+            let mut moved_down = restarted;
+            moved_down.persist_path = Some(state_path.clone());
+            assert!(moved_down.switch_down());
+            drop(moved_down);
+            let restarted = crate::shell::persist::load_tree_from(&state_path)
+                .expect("moving to the next workspace must persist immediately");
+            assert_eq!(restarted.desktop.active, target);
+        }
     }
 
     /// The group the user is looking at, and the number of tabs in it.
@@ -459,263 +829,164 @@ mod tests {
     #[test]
     #[allow(
         clippy::significant_drop_tightening,
-        reason = "the borrow feeds a chain of derived references (strip -> window_groups -> \
-                  group -> tab) used through the assertions right after; ending it earlier \
-                  would mean cloning test fixture data for no real gain"
+        reason = "each phase's borrow feeds a chain of derived references (strip -> \
+    window_groups -> group -> tab) used through the assertions right after, or only builds \
+    the fixture and is dropped at its block's closing brace; ending it earlier would mean \
+    cloning test fixture data for no real gain"
     )]
-    fn open_terminal_here_adds_a_tab_to_the_focused_group() {
-        let chrome = chrome_with_default_tree();
-        let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
-        let before = focused_group_tab_count(&st);
-        let group = focused_group(&st).unwrap();
-        let id = open_terminal(&mut st, Destination::Here);
-        assert_eq!(
-            focused_group_tab_count(&st),
-            before + 1,
-            "the terminal joined the group the user was looking at"
-        );
-        let tree = st.tree();
-        let g = tree
-            .desktop
-            .active_workspace()
-            .unwrap()
-            .strips
-            .iter()
-            .flat_map(|s| s.window_groups.iter())
-            .find(|w| w.id == group)
-            .unwrap();
-        assert_eq!(g.active_tab, id, "the new tab is focused");
-        let tab = g.tabs.iter().find(|t| t.id == id).unwrap();
-        assert!(
-            matches!(
-                &tab.tile,
-                TileContent::AppPlaceholder {
-                    kind: AppKind::Terminal,
-                    ..
-                }
-            ),
-            "a real terminal placeholder, not a stub: {:?}",
-            tab.tile
-        );
-    }
-
-    #[test]
     #[allow(
-        clippy::significant_drop_tightening,
-        reason = "each borrow feeds a chain of derived references (strip -> window_groups -> \
-                  original) used through the assertion right after; ending it earlier would mean \
-                  cloning test fixture data for no real gain"
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn open_terminal_beside_leaves_the_focused_group_alone_when_it_holds_one_tab() {
-        let chrome = chrome_with_default_tree();
-        let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
-        // Collapse to a single tab so the "open beside" branch is under test.
+    fn window_actions_open_and_duplicate_tabs_in_the_right_group() {
+        // Phase `open_terminal_here_adds_a_tab_to_the_focused_group`.
         {
-            let mut tree = st.tree_mut();
-            let ws = tree.desktop.active_workspace_mut().unwrap();
-            let g = &mut ws.strips[0].window_groups[0];
-            g.tabs.truncate(1);
-            g.active_tab = g.tabs[0].id;
-        }
-        let group = focused_group(&st).unwrap();
-        let groups_before = {
+            let chrome = chrome_with_default_tree();
+            let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
+            let before = focused_group_tab_count(&st);
+            let group = focused_group(&st).unwrap();
+            let id = open_terminal(&mut st, Destination::Here);
+            assert_eq!(
+                focused_group_tab_count(&st),
+                before + 1,
+                "the terminal joined the group the user was looking at"
+            );
             let tree = st.tree();
-            tree.desktop.active_workspace().unwrap().strips[0]
-                .window_groups
-                .len()
-        };
-        open_terminal(&mut st, Destination::Beside);
-        let tree = st.tree();
-        let strip = &tree.desktop.active_workspace().unwrap().strips[0];
-        assert_eq!(
-            strip.window_groups.len(),
-            groups_before + 1,
-            "a single-window group gains a neighbour, not a tab"
-        );
-        let original = strip.window_groups.iter().find(|g| g.id == group).unwrap();
-        assert_eq!(original.tabs.len(), 1, "the original group is untouched");
-    }
-
-    #[test]
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "each borrow feeds a chain of derived references used through the assertion \
-                  right after; ending it earlier would mean cloning test fixture data for no \
-                  real gain"
-    )]
-    fn duplicate_active_tab_copies_the_focused_app_into_the_same_group() {
-        let chrome = chrome_with_default_tree();
-        let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
-        let group = focused_group(&st).unwrap();
-        // Focus the Terminal tab so the duplicate has a known kind to copy.
-        let terminal_tab = {
-            let mut tree = st.tree_mut();
-            let ws = tree.desktop.active_workspace_mut().unwrap();
-            let g = ws.strips[0]
-                .window_groups
-                .iter_mut()
-                .find(|g| g.id == group)
-                .unwrap();
-            let id = g
-                .tabs
+            let g = tree
+                .desktop
+                .active_workspace()
+                .unwrap()
+                .strips
                 .iter()
-                .find(|t| {
-                    matches!(
-                        &t.tile,
-                        TileContent::AppPlaceholder {
-                            kind: AppKind::Terminal,
-                            ..
-                        }
-                    )
-                })
-                .map(|t| t.id)
-                .expect("the default tree seeds a terminal");
-            g.active_tab = id;
-            id
-        };
-        let before = focused_group_tab_count(&st);
-        let new_id = duplicate_active_tab(&mut st).expect("a hosted tab duplicates");
-        assert_ne!(new_id, terminal_tab, "a duplicate is a new tab");
-        assert_eq!(focused_group_tab_count(&st), before + 1);
-        let tree = st.tree();
-        let g = tree.desktop.active_workspace().unwrap().strips[0]
-            .window_groups
-            .iter()
-            .find(|g| g.id == group)
-            .unwrap();
-        let dup = g.tabs.iter().find(|t| t.id == new_id).unwrap();
-        assert!(
-            matches!(
-                &dup.tile,
-                TileContent::AppPlaceholder {
-                    kind: AppKind::Terminal,
-                    ..
-                }
-            ),
-            "the duplicate is the same app kind: {:?}",
-            dup.tile
-        );
-        assert_eq!(g.active_tab, new_id, "the duplicate takes focus");
-    }
-
-    #[test]
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the mutable borrow's only job in this block is building the fixture; it's \
-                  already dropped at the block's closing brace, right after its last use"
-    )]
-    fn duplicating_a_foreign_window_reports_why_it_cannot() {
-        let chrome = chrome_with_default_tree();
-        let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
-        {
-            let mut tree = st.tree_mut();
-            let ws = tree.desktop.active_workspace_mut().unwrap();
-            let g = &mut ws.strips[0].window_groups[0];
-            let id = next_id();
-            g.tabs.push(Tab {
-                id,
-                title: "Foreign".into(),
-                tile: TileContent::Foreign {
-                    app_id: "org.example.thing".into(),
-                    surface_id: 7,
-                },
-            });
-            g.active_tab = id;
-        }
-        assert_eq!(
-            duplicate_active_tab(&mut st),
-            Err(DuplicateError::ForeignWindow),
-            "a client-owned window cannot be cloned by the compositor"
-        );
-    }
-
-    #[test]
-    fn opening_a_hosted_app_is_durable_for_restart_and_peer_export() {
-        let state_dir = tempfile::tempdir().expect("state directory");
-        let state_path = state_dir.path().join("state.json");
-        let chrome = chrome_with_default_tree();
-        let mut st = chrome.borrow_mut();
-        let baseline = {
-            let mut tree = st.tree_mut();
-            tree.persist_path = Some(state_path.clone());
-            tree.current_heads()
-        };
-        let mut replica = st.tree().clone();
-
-        let tab_id = open_terminal(&mut st, Destination::Beside);
-        let (changes, restarted) = {
-            let mut tree = st.tree_mut();
-            let changes = tree.export_changes_since(&baseline);
-            tree.flush_to_disk();
-            drop(tree);
-            let restarted = crate::shell::persist::load_tree_from(&state_path)
-                .expect("opening a hosted app must leave a loadable state file");
-            (changes, restarted)
-        };
-
-        replica
-            .apply_changes(&changes)
-            .expect("hosted app creation must be present in peer export");
-
-        for (authority, tree) in [("restart", &restarted), ("peer export", &replica)] {
+                .flat_map(|s| s.window_groups.iter())
+                .find(|w| w.id == group)
+                .unwrap();
+            assert_eq!(g.active_tab, id, "the new tab is focused");
+            let tab = g.tabs.iter().find(|t| t.id == id).unwrap();
             assert!(
-                tree.desktop
-                    .workspaces
-                    .iter()
-                    .flat_map(|workspace| workspace.strips.iter())
-                    .flat_map(|strip| strip.window_groups.iter())
-                    .flat_map(|group| group.tabs.iter())
-                    .any(|tab| tab.id == tab_id),
-                "a hosted app opened in the chrome must survive the {authority} authority read"
+                matches!(
+                    &tab.tile,
+                    TileContent::AppPlaceholder {
+                        kind: AppKind::Terminal,
+                        ..
+                    }
+                ),
+                "a real terminal placeholder, not a stub: {:?}",
+                tab.tile
             );
         }
-    }
 
-    #[test]
-    fn switching_workspace_is_durable_across_restart() {
-        let state_dir = tempfile::tempdir().expect("state directory");
-        let state_path = state_dir.path().join("state.json");
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        tree.desktop
-            .workspaces
-            .first_mut()
-            .expect("demo has a first workspace")
-            .name = "Home (workspace persistence test)".into();
-        tree.persist_path = Some(state_path.clone());
-        let first = tree
-            .desktop
-            .workspaces
-            .first()
-            .expect("demo has a first workspace")
-            .id;
-        let target = tree
-            .desktop
-            .workspaces
-            .get(1)
-            .expect("demo has a second workspace")
-            .id;
+        // Phase `open_terminal_beside_leaves_the_focused_group_alone_when_it_holds_one_tab`.
+        {
+            let chrome = chrome_with_default_tree();
+            let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
+            // Collapse to a single tab so the "open beside" branch is under test.
+            {
+                let mut tree = st.tree_mut();
+                let ws = tree.desktop.active_workspace_mut().unwrap();
+                let g = &mut ws.strips[0].window_groups[0];
+                g.tabs.truncate(1);
+                g.active_tab = g.tabs[0].id;
+            }
+            let group = focused_group(&st).unwrap();
+            let groups_before = {
+                let tree = st.tree();
+                tree.desktop.active_workspace().unwrap().strips[0]
+                    .window_groups
+                    .len()
+            };
+            open_terminal(&mut st, Destination::Beside);
+            let tree = st.tree();
+            let strip = &tree.desktop.active_workspace().unwrap().strips[0];
+            assert_eq!(
+                strip.window_groups.len(),
+                groups_before + 1,
+                "a single-window group gains a neighbour, not a tab"
+            );
+            let original = strip.window_groups.iter().find(|g| g.id == group).unwrap();
+            assert_eq!(original.tabs.len(), 1, "the original group is untouched");
+        }
 
-        tree.set_active(target);
+        // Phase `duplicate_active_tab_copies_the_focused_app_into_the_same_group`.
+        {
+            let chrome = chrome_with_default_tree();
+            let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
+            let group = focused_group(&st).unwrap();
+            // Focus the Terminal tab so the duplicate has a known kind to copy.
+            let terminal_tab = {
+                let mut tree = st.tree_mut();
+                let ws = tree.desktop.active_workspace_mut().unwrap();
+                let g = ws.strips[0]
+                    .window_groups
+                    .iter_mut()
+                    .find(|g| g.id == group)
+                    .unwrap();
+                let id = g
+                    .tabs
+                    .iter()
+                    .find(|t| {
+                        matches!(
+                            &t.tile,
+                            TileContent::AppPlaceholder {
+                                kind: AppKind::Terminal,
+                                ..
+                            }
+                        )
+                    })
+                    .map(|t| t.id)
+                    .expect("the default tree seeds a terminal");
+                g.active_tab = id;
+                id
+            };
+            let before = focused_group_tab_count(&st);
+            let new_id = duplicate_active_tab(&mut st).expect("a hosted tab duplicates");
+            assert_ne!(new_id, terminal_tab, "a duplicate is a new tab");
+            assert_eq!(focused_group_tab_count(&st), before + 1);
+            let tree = st.tree();
+            let g = tree.desktop.active_workspace().unwrap().strips[0]
+                .window_groups
+                .iter()
+                .find(|g| g.id == group)
+                .unwrap();
+            let dup = g.tabs.iter().find(|t| t.id == new_id).unwrap();
+            assert!(
+                matches!(
+                    &dup.tile,
+                    TileContent::AppPlaceholder {
+                        kind: AppKind::Terminal,
+                        ..
+                    }
+                ),
+                "the duplicate is the same app kind: {:?}",
+                dup.tile
+            );
+            assert_eq!(g.active_tab, new_id, "the duplicate takes focus");
+        }
 
-        let restarted = crate::shell::persist::load_tree_from(&state_path)
-            .expect("workspace selection must leave a loadable state file");
-        assert_eq!(
-            restarted.desktop.active, target,
-            "the workspace selected by the user must be the one reopened"
-        );
-
-        let mut moved_up = restarted;
-        moved_up.persist_path = Some(state_path.clone());
-        assert!(moved_up.switch_up());
-        let restarted = crate::shell::persist::load_tree_from(&state_path)
-            .expect("moving to the previous workspace must persist immediately");
-        assert_eq!(restarted.desktop.active, first);
-
-        let mut moved_down = restarted;
-        moved_down.persist_path = Some(state_path.clone());
-        assert!(moved_down.switch_down());
-        let restarted = crate::shell::persist::load_tree_from(&state_path)
-            .expect("moving to the next workspace must persist immediately");
-        assert_eq!(restarted.desktop.active, target);
+        // Phase `duplicating_a_foreign_window_reports_why_it_cannot`.
+        {
+            let chrome = chrome_with_default_tree();
+            let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
+            {
+                let mut tree = st.tree_mut();
+                let ws = tree.desktop.active_workspace_mut().unwrap();
+                let g = &mut ws.strips[0].window_groups[0];
+                let id = next_id();
+                g.tabs.push(Tab {
+                    id,
+                    title: "Foreign".into(),
+                    tile: TileContent::Foreign {
+                        app_id: "org.example.thing".into(),
+                        surface_id: 7,
+                    },
+                });
+                g.active_tab = id;
+            }
+            assert_eq!(
+                duplicate_active_tab(&mut st),
+                Err(DuplicateError::ForeignWindow),
+                "a client-owned window cannot be cloned by the compositor"
+            );
+        }
     }
 }

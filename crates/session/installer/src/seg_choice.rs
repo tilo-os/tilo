@@ -81,8 +81,6 @@ impl SegChoice {
 }
 
 impl Widget for SegChoice {
-    fn sync(&mut self, _state: &mut AutoCommit, _root: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -214,23 +212,12 @@ impl Widget for SegChoice {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor.set(Point::new(
-                    position.x / scale_factor,
-                    position.y / scale_factor,
+                    position.x / ctx.scale_factor,
+                    position.y / ctx.scale_factor,
                 ));
             }
             WindowEvent::MouseInput {
@@ -241,10 +228,10 @@ impl Widget for SegChoice {
                 let pos = self.last_cursor.get();
                 for (i, seg) in self.segment_rects.iter().enumerate() {
                     if seg.contains(pos) {
-                        *focus_target = Some(node_id);
-                        *handled = true;
+                        *ctx.focus_target = Some(ctx.node_id);
+                        *ctx.handled = true;
                         if i != self.selected {
-                            self.fire(i, state, root);
+                            self.fire(i, ctx.state, ctx.path);
                         }
                         break;
                     }
@@ -271,8 +258,8 @@ impl Widget for SegChoice {
                     _ => None,
                 };
                 if let Some(t) = target {
-                    self.fire(t, state, root);
-                    *handled = true;
+                    self.fire(t, ctx.state, ctx.path);
+                    *ctx.handled = true;
                 }
             }
             _ => {}

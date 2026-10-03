@@ -5,7 +5,7 @@
 
 pub mod actions;
 pub(crate) mod bluetooth;
-pub(crate) mod drill_in;
+pub mod now_playing;
 pub mod refresh;
 pub(crate) mod root;
 pub(crate) mod vpn;
@@ -96,12 +96,12 @@ pub enum PowerProfile {
 }
 
 impl PowerProfile {
-    pub fn label(self) -> &'static str {
-        match self {
-            PowerProfile::Saver => "Power Saver",
-            PowerProfile::Balanced => "Balanced",
-            PowerProfile::Performance => "Performance",
-        }
+    pub fn label(self) -> String {
+        crate::shell::i18n::t(match self {
+            PowerProfile::Saver => "qs-power-saver",
+            PowerProfile::Balanced => "qs-power-balanced",
+            PowerProfile::Performance => "qs-power-performance",
+        })
     }
 }
 

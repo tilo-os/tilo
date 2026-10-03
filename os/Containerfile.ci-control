@@ -2,7 +2,7 @@
 # the Docker client/buildx. The runner owns a separate per-job Docker daemon.
 # Built by .forgejo/workflows/build-ci-fast-image.yml, which passes the ci-fast
 # image it has just built; the default is the currently pinned ci-fast.
-ARG CI_FAST_IMAGE=registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+ARG CI_FAST_IMAGE=registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
 FROM docker.io/library/docker@sha256:f56779b4e86550493153cc8642c9c8e40b5d934e43cb5b4ea463aea5245c5c01 AS docker-cli
 FROM ${CI_FAST_IMAGE}
 

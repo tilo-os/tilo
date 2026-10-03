@@ -93,12 +93,12 @@ impl AccountBackend {
         let review = match self.dialogs.enqueue_review(ReviewRequest {
             handle: path.clone(),
             app_id: auth.caller.app_id.clone(),
-            title: "Share your identity?".into(),
-            reason: reason.clone().unwrap_or_else(|| {
-                "The app is asking for your name and account identifier.".into()
-            }),
-            resource: "Your selected identity for this workspace".into(),
-            confirm_label: "Share identity".into(),
+            title: crate::shell::i18n::t("portal-account-title"),
+            reason: reason
+                .clone()
+                .unwrap_or_else(|| crate::shell::i18n::t("portal-account-reason")),
+            resource: crate::shell::i18n::t("portal-account-resource"),
+            confirm_label: crate::shell::i18n::t("portal-account-confirm"),
         }) {
             Ok(review) => review,
             Err(_) => {

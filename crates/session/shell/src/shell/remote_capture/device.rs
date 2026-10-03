@@ -324,10 +324,6 @@ impl RemoteCaptureRegistry {
     /// Install a grant minted by the certified source after matching it to an
     /// outstanding target request. The caller owns that request correlation;
     /// this registry owns the exact data-plane binding from this point on.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the source-minted grant arrives as separate wire fields that are all bound here"
-    )]
     pub fn accept_grant(
         &mut self,
         request: &RemoteCaptureRequest,
@@ -439,13 +435,187 @@ mod tests {
     use super::*;
 
     #[test]
-    fn grant_expiry_adds_the_ttl() {
-        let now = Instant::now();
-        assert_eq!(
-            Some(grant_expiry(now)),
-            now.checked_add(REMOTE_CAPTURE_GRANT_TTL)
-        );
-        assert!(grant_expiry(now) > now);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn capture_device_grants_are_exactly_bound_bounded_and_expiring() {
+        // Phase `grant_expiry_adds_the_ttl`.
+        {
+            let now = Instant::now();
+            assert_eq!(
+                Some(grant_expiry(now)),
+                now.checked_add(REMOTE_CAPTURE_GRANT_TTL)
+            );
+            assert!(grant_expiry(now) > now);
+        }
+
+        // Phase `exact_binding_rejects_peer_app_workspace_and_grant_spoofing`.
+        {
+            let now = Instant::now();
+            let source = device("phone");
+            let target = device("laptop");
+            let mut registry = RemoteCaptureRegistry::default();
+            let (session_id, grant) = registry
+                .grant(
+                    &request(RemoteCaptureKind::Camera),
+                    source.clone(),
+                    target.clone(),
+                    now,
+                )
+                .unwrap();
+            let chunk = RemoteCaptureChunk {
+                session_id,
+                grant,
+                sequence: 1,
+                offset: 0,
+                total_bytes: 4,
+                page_index: None,
+                end_of_unit: true,
+                payload: vec![1, 2, 3, 4],
+            };
+            assert!(!registry.accept_chunk(
+                &device("other"),
+                &target,
+                "so.tilo.Camera",
+                "room-a",
+                &chunk,
+                now
+            ));
+            assert!(!registry.accept_chunk(
+                &source,
+                &target,
+                "so.tilo.Other",
+                "room-a",
+                &chunk,
+                now
+            ));
+            assert!(!registry.accept_chunk(
+                &source,
+                &target,
+                "so.tilo.Camera",
+                "room-b",
+                &chunk,
+                now
+            ));
+            let mut forged = chunk.clone();
+            forged.grant = RemoteCaptureGrant([9; 32]);
+            assert!(!registry.accept_chunk(
+                &source,
+                &target,
+                "so.tilo.Camera",
+                "room-a",
+                &forged,
+                now
+            ));
+            assert!(registry.accept_chunk(
+                &source,
+                &target,
+                "so.tilo.Camera",
+                "room-a",
+                &chunk,
+                now
+            ));
+            assert_eq!(
+                registry.phase(session_id),
+                Some(RemoteCapturePhase::Streaming)
+            );
+        }
+
+        // Phase `chunks_profiles_and_sequences_are_bounded`.
+        {
+            assert!(
+                !RemoteCaptureProfile::Camera {
+                    format: RemoteVideoFormat::Nv12,
+                    width: 8192,
+                    height: 1080,
+                    frames_per_second: 30,
+                }
+                .valid()
+            );
+            let chunk = RemoteCaptureChunk {
+                session_id: [1; 16],
+                grant: RemoteCaptureGrant([2; 32]),
+                sequence: 1,
+                offset: 0,
+                total_bytes: (MAX_REMOTE_CAPTURE_CHUNK_BYTES + 1) as u64,
+                page_index: None,
+                end_of_unit: true,
+                payload: vec![0; MAX_REMOTE_CAPTURE_CHUNK_BYTES + 1],
+            };
+            assert!(!chunk.valid_for(RemoteCaptureKind::Camera));
+
+            let now = Instant::now();
+            let source = device("phone");
+            let target = device("laptop");
+            let mut registry = RemoteCaptureRegistry::default();
+            let (session_id, grant) = registry
+                .grant(
+                    &request(RemoteCaptureKind::Microphone),
+                    source.clone(),
+                    target.clone(),
+                    now,
+                )
+                .unwrap();
+            let audio = RemoteCaptureChunk {
+                session_id,
+                grant,
+                sequence: 7,
+                offset: 0,
+                total_bytes: 2,
+                page_index: None,
+                end_of_unit: true,
+                payload: vec![0; 2],
+            };
+            assert!(registry.accept_chunk(
+                &source,
+                &target,
+                "so.tilo.Camera",
+                "room-a",
+                &audio,
+                now
+            ));
+            assert!(!registry.accept_chunk(
+                &source,
+                &target,
+                "so.tilo.Camera",
+                "room-a",
+                &audio,
+                now
+            ));
+        }
+
+        // Phase `peer_app_policy_and_expiry_teardown_are_authoritative`.
+        {
+            let now = Instant::now();
+            let source = device("phone");
+            let target = device("laptop");
+            let mut registry = RemoteCaptureRegistry::default();
+            registry
+                .grant(
+                    &request(RemoteCaptureKind::DocumentScanner),
+                    source.clone(),
+                    target.clone(),
+                    now,
+                )
+                .unwrap();
+            assert_eq!(registry.revoke_peer(&source), 1);
+            registry
+                .grant(
+                    &request(RemoteCaptureKind::Camera),
+                    source.clone(),
+                    target.clone(),
+                    now,
+                )
+                .unwrap();
+            assert_eq!(registry.revoke_app("so.tilo.Camera", "room-a"), 1);
+            let (session_id, _) = registry
+                .grant(&request(RemoteCaptureKind::Microphone), source, target, now)
+                .unwrap();
+            registry.expire(now + REMOTE_CAPTURE_GRANT_TTL + Duration::from_millis(1));
+            assert_eq!(registry.phase(session_id), None);
+            assert_eq!(registry.revoke_all(), 0);
+        }
     }
 
     fn device(id: &str) -> DeviceId {
@@ -480,130 +650,5 @@ mod tests {
             app_label: "Camera".into(),
             profile,
         }
-    }
-
-    #[test]
-    fn exact_binding_rejects_peer_app_workspace_and_grant_spoofing() {
-        let now = Instant::now();
-        let source = device("phone");
-        let target = device("laptop");
-        let mut registry = RemoteCaptureRegistry::default();
-        let (session_id, grant) = registry
-            .grant(
-                &request(RemoteCaptureKind::Camera),
-                source.clone(),
-                target.clone(),
-                now,
-            )
-            .unwrap();
-        let chunk = RemoteCaptureChunk {
-            session_id,
-            grant,
-            sequence: 1,
-            offset: 0,
-            total_bytes: 4,
-            page_index: None,
-            end_of_unit: true,
-            payload: vec![1, 2, 3, 4],
-        };
-        assert!(!registry.accept_chunk(
-            &device("other"),
-            &target,
-            "so.tilo.Camera",
-            "room-a",
-            &chunk,
-            now
-        ));
-        assert!(!registry.accept_chunk(&source, &target, "so.tilo.Other", "room-a", &chunk, now));
-        assert!(!registry.accept_chunk(&source, &target, "so.tilo.Camera", "room-b", &chunk, now));
-        let mut forged = chunk.clone();
-        forged.grant = RemoteCaptureGrant([9; 32]);
-        assert!(!registry.accept_chunk(&source, &target, "so.tilo.Camera", "room-a", &forged, now));
-        assert!(registry.accept_chunk(&source, &target, "so.tilo.Camera", "room-a", &chunk, now));
-        assert_eq!(
-            registry.phase(session_id),
-            Some(RemoteCapturePhase::Streaming)
-        );
-    }
-
-    #[test]
-    fn chunks_profiles_and_sequences_are_bounded() {
-        assert!(
-            !RemoteCaptureProfile::Camera {
-                format: RemoteVideoFormat::Nv12,
-                width: 8192,
-                height: 1080,
-                frames_per_second: 30,
-            }
-            .valid()
-        );
-        let chunk = RemoteCaptureChunk {
-            session_id: [1; 16],
-            grant: RemoteCaptureGrant([2; 32]),
-            sequence: 1,
-            offset: 0,
-            total_bytes: (MAX_REMOTE_CAPTURE_CHUNK_BYTES + 1) as u64,
-            page_index: None,
-            end_of_unit: true,
-            payload: vec![0; MAX_REMOTE_CAPTURE_CHUNK_BYTES + 1],
-        };
-        assert!(!chunk.valid_for(RemoteCaptureKind::Camera));
-
-        let now = Instant::now();
-        let source = device("phone");
-        let target = device("laptop");
-        let mut registry = RemoteCaptureRegistry::default();
-        let (session_id, grant) = registry
-            .grant(
-                &request(RemoteCaptureKind::Microphone),
-                source.clone(),
-                target.clone(),
-                now,
-            )
-            .unwrap();
-        let audio = RemoteCaptureChunk {
-            session_id,
-            grant,
-            sequence: 7,
-            offset: 0,
-            total_bytes: 2,
-            page_index: None,
-            end_of_unit: true,
-            payload: vec![0; 2],
-        };
-        assert!(registry.accept_chunk(&source, &target, "so.tilo.Camera", "room-a", &audio, now));
-        assert!(!registry.accept_chunk(&source, &target, "so.tilo.Camera", "room-a", &audio, now));
-    }
-
-    #[test]
-    fn peer_app_policy_and_expiry_teardown_are_authoritative() {
-        let now = Instant::now();
-        let source = device("phone");
-        let target = device("laptop");
-        let mut registry = RemoteCaptureRegistry::default();
-        registry
-            .grant(
-                &request(RemoteCaptureKind::DocumentScanner),
-                source.clone(),
-                target.clone(),
-                now,
-            )
-            .unwrap();
-        assert_eq!(registry.revoke_peer(&source), 1);
-        registry
-            .grant(
-                &request(RemoteCaptureKind::Camera),
-                source.clone(),
-                target.clone(),
-                now,
-            )
-            .unwrap();
-        assert_eq!(registry.revoke_app("so.tilo.Camera", "room-a"), 1);
-        let (session_id, _) = registry
-            .grant(&request(RemoteCaptureKind::Microphone), source, target, now)
-            .unwrap();
-        registry.expire(now + REMOTE_CAPTURE_GRANT_TTL + Duration::from_millis(1));
-        assert_eq!(registry.phase(session_id), None);
-        assert_eq!(registry.revoke_all(), 0);
     }
 }

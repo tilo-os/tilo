@@ -326,160 +326,160 @@ mod tests {
     use super::*;
 
     #[test]
-    fn enter_and_leave_track_focused_surface() {
-        let mut seat = RemoteSeat::new();
-        assert!(seat.focused_surface.is_none());
-        let prev = seat.enter(42);
-        assert!(prev.is_none());
-        assert_eq!(seat.focused_surface, Some(42));
-        let prev2 = seat.enter(43);
-        assert_eq!(prev2, Some(42));
-        assert_eq!(seat.focused_surface, Some(43));
-        let cleared = seat.leave();
-        assert_eq!(cleared, Some(43));
-        assert!(seat.focused_surface.is_none());
-        assert!(seat.leave().is_none());
+    fn remote_seat_focus_is_tracked_per_peer() {
+        // Phase `enter_and_leave_track_focused_surface`.
+        {
+            let mut seat = RemoteSeat::new();
+            assert!(seat.focused_surface.is_none());
+            let prev = seat.enter(42);
+            assert!(prev.is_none());
+            assert_eq!(seat.focused_surface, Some(42));
+            let prev2 = seat.enter(43);
+            assert_eq!(prev2, Some(42));
+            assert_eq!(seat.focused_surface, Some(43));
+            let cleared = seat.leave();
+            assert_eq!(cleared, Some(43));
+            assert!(seat.focused_surface.is_none());
+            assert!(seat.leave().is_none());
+        }
+        // Phase `pointer_leave_does_not_clear_keyboard_focus`.
+        {
+            let mut seat = RemoteSeat::new();
+            seat.pointer_enter(42);
+            seat.enter(42);
+            assert_eq!(seat.pointer_leave(), Some(42));
+            assert_eq!(seat.focused_surface, Some(42));
+        }
+        // Phase `remote_seats_lazy_inserts_and_drops`.
+        {
+            let mut seats = RemoteSeats::new();
+            assert!(seats.is_empty());
+            let _ = seats.seat_mut(7);
+            assert_eq!(seats.len(), 1);
+            assert!(seats.seat(7).is_some());
+            let _ = seats.seat_mut(7);
+            assert_eq!(seats.len(), 1);
+            let _ = seats.seat_mut(8);
+            assert_eq!(seats.len(), 2);
+            seats.drop_peer(7);
+            assert_eq!(seats.len(), 1);
+            assert!(seats.seat(7).is_none());
+        }
     }
 
     #[test]
-    fn pointer_leave_does_not_clear_keyboard_focus() {
-        let mut seat = RemoteSeat::new();
-        seat.pointer_enter(42);
-        seat.enter(42);
-        assert_eq!(seat.pointer_leave(), Some(42));
-        assert_eq!(seat.focused_surface, Some(42));
+    fn keys_are_refcounted_across_local_and_remote_holders() {
+        // Phase `keys_are_refcounted_across_peers`.
+        {
+            let mut seats = RemoteSeats::new();
+            assert!(seats.key_transition(7, 42, true));
+            assert!(
+                !seats.key_transition(7, 42, true),
+                "repeat is not a second press"
+            );
+            assert!(
+                !seats.key_transition(8, 42, true),
+                "app already sees the key held"
+            );
+            assert!(
+                !seats.key_transition(7, 42, false),
+                "another peer still holds it"
+            );
+            assert!(
+                seats.key_transition(8, 42, false),
+                "last holder releases app seat"
+            );
+            assert!(
+                !seats.key_transition(8, 42, false),
+                "unmatched release is ignored"
+            );
+        }
+        // Phase `identical_printable_presses_from_two_peers_both_reach_the_app`.
+        {
+            let mut seats = RemoteSeats::new();
+            // Evdev KEY_A. Both collaborators typed; the single legacy caret
+            // must receive two presses even though their holds overlap.
+            assert!(seats.key_transition(7, 30, true));
+            assert!(seats.key_transition(8, 30, true));
+            assert!(!seats.key_transition(7, 30, false));
+            assert!(seats.key_transition(8, 30, false));
+        }
+        // Phase `peer_cleanup_releases_only_final_holders`.
+        {
+            let mut seats = RemoteSeats::new();
+            assert!(seats.key_transition(7, 42, true));
+            assert!(seats.key_transition(7, 30, true));
+            assert!(!seats.key_transition(8, 42, true));
+            assert_eq!(seats.release_peer_keys(7), vec![30]);
+            assert_eq!(seats.release_peer_keys(8), vec![42]);
+        }
+        // Phase `local_and_remote_modifiers_share_one_app_facing_hold`.
+        {
+            let mut seats = RemoteSeats::new();
+            assert!(seats.local_key_transition(42, true));
+            assert!(
+                !seats.key_transition(7, 42, true),
+                "the app already sees local Shift held"
+            );
+            assert!(
+                !seats.local_key_transition(42, false),
+                "local release cannot clear the remote holder"
+            );
+            assert!(seats.key_transition(7, 42, false));
+
+            assert!(seats.key_transition(7, 29, true));
+            assert!(!seats.local_key_transition(29, true));
+            assert!(!seats.key_transition(7, 29, false));
+            assert!(seats.local_key_transition(29, false));
+        }
+        // Phase `local_and_remote_printable_presses_both_type_at_the_single_caret`.
+        {
+            let mut seats = RemoteSeats::new();
+            assert!(seats.local_key_transition(30, true));
+            assert!(seats.key_transition(7, 30, true));
+            assert!(!seats.local_key_transition(30, false));
+            assert!(seats.key_transition(7, 30, false));
+        }
+        // Phase `local_keyboard_reset_retires_ownership_for_the_next_press`.
+        {
+            let mut seats = RemoteSeats::new();
+            assert!(seats.local_key_transition(42, true));
+            assert_eq!(seats.release_local_keys(), vec![42]);
+            assert!(
+                seats.local_key_transition(42, true),
+                "the first press after device recovery is not a stale duplicate"
+            );
+        }
     }
 
     #[test]
-    fn remote_seats_lazy_inserts_and_drops() {
-        let mut seats = RemoteSeats::new();
-        assert!(seats.is_empty());
-        let _ = seats.seat_mut(7);
-        assert_eq!(seats.len(), 1);
-        assert!(seats.seat(7).is_some());
-        let _ = seats.seat_mut(7);
-        assert_eq!(seats.len(), 1);
-        let _ = seats.seat_mut(8);
-        assert_eq!(seats.len(), 2);
-        seats.drop_peer(7);
-        assert_eq!(seats.len(), 1);
-        assert!(seats.seat(7).is_none());
-    }
-
-    #[test]
-    fn keys_are_refcounted_across_peers() {
-        let mut seats = RemoteSeats::new();
-        assert!(seats.key_transition(7, 42, true));
-        assert!(
-            !seats.key_transition(7, 42, true),
-            "repeat is not a second press"
-        );
-        assert!(
-            !seats.key_transition(8, 42, true),
-            "app already sees the key held"
-        );
-        assert!(
-            !seats.key_transition(7, 42, false),
-            "another peer still holds it"
-        );
-        assert!(
-            seats.key_transition(8, 42, false),
-            "last holder releases app seat"
-        );
-        assert!(
-            !seats.key_transition(8, 42, false),
-            "unmatched release is ignored"
-        );
-    }
-
-    #[test]
-    fn identical_printable_presses_from_two_peers_both_reach_the_app() {
-        let mut seats = RemoteSeats::new();
-        // Evdev KEY_A. Both collaborators typed; the single legacy caret
-        // must receive two presses even though their holds overlap.
-        assert!(seats.key_transition(7, 30, true));
-        assert!(seats.key_transition(8, 30, true));
-        assert!(!seats.key_transition(7, 30, false));
-        assert!(seats.key_transition(8, 30, false));
-    }
-
-    #[test]
-    fn peer_cleanup_releases_only_final_holders() {
-        let mut seats = RemoteSeats::new();
-        assert!(seats.key_transition(7, 42, true));
-        assert!(seats.key_transition(7, 30, true));
-        assert!(!seats.key_transition(8, 42, true));
-        assert_eq!(seats.release_peer_keys(7), vec![30]);
-        assert_eq!(seats.release_peer_keys(8), vec![42]);
-    }
-
-    #[test]
-    fn local_and_remote_modifiers_share_one_app_facing_hold() {
-        let mut seats = RemoteSeats::new();
-        assert!(seats.local_key_transition(42, true));
-        assert!(
-            !seats.key_transition(7, 42, true),
-            "the app already sees local Shift held"
-        );
-        assert!(
-            !seats.local_key_transition(42, false),
-            "local release cannot clear the remote holder"
-        );
-        assert!(seats.key_transition(7, 42, false));
-
-        assert!(seats.key_transition(7, 29, true));
-        assert!(!seats.local_key_transition(29, true));
-        assert!(!seats.key_transition(7, 29, false));
-        assert!(seats.local_key_transition(29, false));
-    }
-
-    #[test]
-    fn local_and_remote_printable_presses_both_type_at_the_single_caret() {
-        let mut seats = RemoteSeats::new();
-        assert!(seats.local_key_transition(30, true));
-        assert!(seats.key_transition(7, 30, true));
-        assert!(!seats.local_key_transition(30, false));
-        assert!(seats.key_transition(7, 30, false));
-    }
-
-    #[test]
-    fn local_and_remote_pointer_holds_form_one_legacy_drag() {
-        let mut seats = RemoteSeats::new();
-        assert!(seats.local_button_transition(272, true));
-        assert!(!seats.button_transition(7, 272, true));
-        assert!(!seats.local_button_transition(272, false));
-        assert!(seats.button_transition(7, 272, false));
-    }
-
-    #[test]
-    fn peer_cleanup_releases_only_its_final_pointer_buttons() {
-        let mut seats = RemoteSeats::new();
-        assert!(seats.button_transition(7, 272, true));
-        assert!(!seats.button_transition(8, 272, true));
-        assert!(seats.button_transition(7, 273, true));
-        assert_eq!(seats.release_peer_buttons(7), vec![273]);
-        assert_eq!(seats.release_peer_buttons(8), vec![272]);
-    }
-
-    #[test]
-    fn local_pointer_loss_preserves_a_remote_drag() {
-        let mut seats = RemoteSeats::new();
-        assert!(seats.local_button_transition(272, true));
-        assert!(!seats.button_transition(7, 272, true));
-        assert!(seats.local_button_transition(273, true));
-        assert_eq!(seats.release_local_buttons(), vec![273]);
-        assert_eq!(seats.button_holder_count(272), 1);
-        assert!(seats.button_transition(7, 272, false));
-    }
-
-    #[test]
-    fn local_keyboard_reset_retires_ownership_for_the_next_press() {
-        let mut seats = RemoteSeats::new();
-        assert!(seats.local_key_transition(42, true));
-        assert_eq!(seats.release_local_keys(), vec![42]);
-        assert!(
-            seats.local_key_transition(42, true),
-            "the first press after device recovery is not a stale duplicate"
-        );
+    fn pointer_buttons_form_one_drag_across_local_and_remote_holders() {
+        // Phase `local_and_remote_pointer_holds_form_one_legacy_drag`.
+        {
+            let mut seats = RemoteSeats::new();
+            assert!(seats.local_button_transition(272, true));
+            assert!(!seats.button_transition(7, 272, true));
+            assert!(!seats.local_button_transition(272, false));
+            assert!(seats.button_transition(7, 272, false));
+        }
+        // Phase `peer_cleanup_releases_only_its_final_pointer_buttons`.
+        {
+            let mut seats = RemoteSeats::new();
+            assert!(seats.button_transition(7, 272, true));
+            assert!(!seats.button_transition(8, 272, true));
+            assert!(seats.button_transition(7, 273, true));
+            assert_eq!(seats.release_peer_buttons(7), vec![273]);
+            assert_eq!(seats.release_peer_buttons(8), vec![272]);
+        }
+        // Phase `local_pointer_loss_preserves_a_remote_drag`.
+        {
+            let mut seats = RemoteSeats::new();
+            assert!(seats.local_button_transition(272, true));
+            assert!(!seats.button_transition(7, 272, true));
+            assert!(seats.local_button_transition(273, true));
+            assert_eq!(seats.release_local_buttons(), vec![273]);
+            assert_eq!(seats.button_holder_count(272), 1);
+            assert!(seats.button_transition(7, 272, false));
+        }
     }
 }

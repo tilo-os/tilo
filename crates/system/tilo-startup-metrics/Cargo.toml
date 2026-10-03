@@ -3,15 +3,24 @@ name = "tilo-startup-metrics"
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
-publish = false
+publish = true
+repository.workspace = true
+homepage.workspace = true
+description = "Lightweight startup-timing capture for Tilo apps."
 
 [features]
 test-support = []
 
 [dependencies]
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+web-time = { version = "1", features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

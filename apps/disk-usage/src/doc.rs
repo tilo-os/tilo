@@ -86,12 +86,9 @@ fn map_make(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
 }
 
 fn stable_id(path: &Path) -> String {
-    let hash = path
-        .to_string_lossy()
-        .bytes()
-        .fold(0xcbf2_9ce4_8422_2325_u64, |current, byte| {
-            (current ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
-        });
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, path.to_string_lossy().as_bytes());
+    let hash = std::hash::Hasher::finish(&hasher);
     format!("path-{hash:016x}")
 }
 

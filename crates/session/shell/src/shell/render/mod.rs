@@ -1,3 +1,5 @@
+pub mod hdr_composite;
+pub mod hdr_encode;
 pub mod paint;
 pub mod xrgb_history;
 

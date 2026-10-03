@@ -1,12 +1,12 @@
 //! Catalogue artwork leaf with a useful monogram fallback.
 
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::style_helpers::length;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, Role};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{TaffyTreeExt, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect};
@@ -106,7 +106,7 @@ impl Artwork {
 }
 
 impl Widget for Artwork {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         if self.image.is_none()
             && !self.url.is_empty()
             && let Some(store) = &self.store
@@ -358,19 +358,6 @@ impl Widget for Artwork {
             }
         }
     }
-    fn handle_event(
-        &mut self,
-        _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
-    }
     fn accessibility(&self) -> Option<AccessNode> {
         Some(
             AccessNode::new(Role::Image)
@@ -396,16 +383,20 @@ impl Widget for Artwork {
 mod tests {
     use super::{FallbackMark, fallback_mark};
 
+    /// Known apps get distinct marks and unknown ones a legible generic mark.
     #[test]
-    fn known_desktop_apps_have_distinct_fallback_marks() {
-        assert_eq!(fallback_mark("Terminal"), FallbackMark::Terminal);
-        assert_eq!(fallback_mark("Files"), FallbackMark::Files);
-        assert_eq!(fallback_mark("VLC"), FallbackMark::Media);
-        assert_eq!(fallback_mark("Notes"), FallbackMark::Notes);
-    }
+    fn fallback_marks_are_distinct_and_legible() {
+        // Case `known_desktop_apps_have_distinct_fallback_marks`.
+        {
+            assert_eq!(fallback_mark("Terminal"), FallbackMark::Terminal);
+            assert_eq!(fallback_mark("Files"), FallbackMark::Files);
+            assert_eq!(fallback_mark("VLC"), FallbackMark::Media);
+            assert_eq!(fallback_mark("Notes"), FallbackMark::Notes);
+        }
 
-    #[test]
-    fn unknown_catalogue_item_keeps_a_legible_generic_mark() {
-        assert_eq!(fallback_mark("Example app"), FallbackMark::Generic);
+        // Case `unknown_catalogue_item_keeps_a_legible_generic_mark`.
+        {
+            assert_eq!(fallback_mark("Example app"), FallbackMark::Generic);
+        }
     }
 }

@@ -47,13 +47,13 @@ contains populated examples of every chart family, reflows from two columns to
 one, and retains each widget's hover, click, focus, and accessibility behavior:
 
 ```text
-cargo run -p ui --example ui-lab -- chart_gallery
+cargo run -p ui-examples --example ui-lab -- chart_gallery
 ```
 
 Deterministic wide/narrow, light/dark renders use the same scene:
 
 ```text
-cargo run -p ui --example ui-shots -- chart_gallery_shots
+cargo run -p ui-examples --example ui-shots -- chart_gallery_shots
 ```
 
 ## A mixed Cartesian plot

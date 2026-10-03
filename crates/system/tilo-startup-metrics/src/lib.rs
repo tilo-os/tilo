@@ -46,7 +46,7 @@
 
 use serde::Serialize;
 use std::sync::{Mutex, OnceLock, PoisonError};
-use std::time::{Instant, SystemTime};
+use web_time::{Instant, SystemTime};
 
 /// One launch's process/surface timing. Placement remains the compositor's
 /// responsibility; this small crate owns only FIFO timing correlation so
@@ -251,19 +251,14 @@ pub fn mark(name: &str) {
     // mark phases, not frames, so this never enters a hot render path. The
     // lock is held across the write so concurrent marks cannot interleave
     // their temporary files.
-    let temporary = m.output_path.with_extension("json.tmp");
     let payload = serde_json::json!({
         "origin_epoch_ms": m.origin_epoch_ms,
         "events": *events,
     });
-    if std::fs::write(
-        &temporary,
-        serde_json::to_vec_pretty(&payload).unwrap_or_default(),
-    )
-    .is_ok()
-    {
-        let _ = std::fs::rename(temporary, &m.output_path);
-    }
+    let _ = tilo_files::native::atomic::write_regenerable(
+        &m.output_path,
+        &serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+    );
     drop(events);
 }
 
@@ -312,34 +307,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn disabled_by_default() {
-        // Without TILO_STARTUP_METRICS_PATH, mark is a no-op — nothing to assert beyond "no panic".
-        mark("nothing");
-    }
-
-    #[test]
-    fn span_passes_through_return_value() {
-        assert_eq!(span("computation", || 40 + 2), 42);
-    }
-
-    #[test]
-    fn same_app_launches_bind_fifo_and_present_once() {
-        launch_table().clear();
-        let first = launch_requested("dev.tilo.test");
-        let second = launch_requested("dev.tilo.test");
-        launch_spawned(first, 10);
-        launch_spawned(second, 11);
-        launch_mapped(first, 100);
-        launch_mapped(second, 101);
-        let surfaces: Vec<_> = launch_table()
-            .iter()
-            .map(|launch| launch.surface_id)
-            .collect();
-        assert_eq!(surfaces, [Some(100), Some(101)]);
-        launch_first_present(100, 1);
-        assert_eq!(launch_table().len(), 1);
-        launch_first_present(100, 2);
-        assert_eq!(launch_table().len(), 1);
-        launch_failed(second);
+    fn startup_metrics_are_opt_in_transparent_and_bind_launches_once() {
+        // Phase `disabled_by_default`.
+        {
+            // Without TILO_STARTUP_METRICS_PATH, mark is a no-op — nothing to assert beyond "no panic".
+            mark("nothing");
+        }
+        // Phase `span_passes_through_return_value`.
+        {
+            assert_eq!(span("computation", || 40 + 2), 42);
+        }
+        // Phase `same_app_launches_bind_fifo_and_present_once`.
+        {
+            launch_table().clear();
+            let first = launch_requested("dev.tilo.test");
+            let second = launch_requested("dev.tilo.test");
+            launch_spawned(first, 10);
+            launch_spawned(second, 11);
+            launch_mapped(first, 100);
+            launch_mapped(second, 101);
+            let surfaces: Vec<_> = launch_table()
+                .iter()
+                .map(|launch| launch.surface_id)
+                .collect();
+            assert_eq!(surfaces, [Some(100), Some(101)]);
+            launch_first_present(100, 1);
+            assert_eq!(launch_table().len(), 1);
+            launch_first_present(100, 2);
+            assert_eq!(launch_table().len(), 1);
+            launch_failed(second);
+        }
     }
 }

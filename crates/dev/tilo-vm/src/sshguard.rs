@@ -292,92 +292,96 @@ mod tests {
         guarded_write(&[line.to_owned()])
     }
 
+    /// Reads pass anywhere and writes into guarded places are caught.
     #[test]
-    fn reads_pass_anywhere() {
-        for line in [
-            "systemctl status tilo-vmd --no-pager",
-            "systemctl is-active tilo-vmd",
-            "systemctl is-enabled tilo-vm-session@a.service",
-            "command -v tilo-vmd",
-            "tilo-vmd --version",
-            "tilo-vmd --help",
-            "ls /usr/bin",
-            "cat /etc/os-release",
-            "ls -la /var/lib/tilo-vm/slots",
-            "journalctl -b -p warning",
-            "journalctl -u tilo-vmd --no-pager | tail -n 50",
-            "systemctl status tilo-vmd --no-pager | head -20; systemctl is-active sshd && echo ok",
-            "rpm -qa | grep tilo",
-            "rpm -qi bootc",
-            "dnf list installed",
-            "bootc status --json",
-            "systemd-sysext status",
-            "cp /usr/share/tilo/components.toml /tmp/components.toml",
-            "find /usr/lib/systemd -name 'tilo*' 2>/dev/null",
-            "cat /etc/os-release > /tmp/os",
-            "ls /usr 2>&1 | head",
-            "sed -n 1,5p /etc/fstab",
-            "systemctl restart sshd",
-            "pacman -Ss foo",
-        ] {
-            assert_eq!(check(line), None, "{line}");
+    fn the_ssh_guard_passes_reads_and_catches_guarded_writes() {
+        // Phase: reads_pass_anywhere.
+        {
+            for line in [
+                "systemctl status tilo-vmd --no-pager",
+                "systemctl is-active tilo-vmd",
+                "systemctl is-enabled tilo-vm-session@a.service",
+                "command -v tilo-vmd",
+                "tilo-vmd --version",
+                "tilo-vmd --help",
+                "ls /usr/bin",
+                "cat /etc/os-release",
+                "ls -la /var/lib/tilo-vm/slots",
+                "journalctl -b -p warning",
+                "journalctl -u tilo-vmd --no-pager | tail -n 50",
+                "systemctl status tilo-vmd --no-pager | head -20; systemctl is-active sshd && echo ok",
+                "rpm -qa | grep tilo",
+                "rpm -qi bootc",
+                "dnf list installed",
+                "bootc status --json",
+                "systemd-sysext status",
+                "cp /usr/share/tilo/components.toml /tmp/components.toml",
+                "find /usr/lib/systemd -name 'tilo*' 2>/dev/null",
+                "cat /etc/os-release > /tmp/os",
+                "ls /usr 2>&1 | head",
+                "sed -n 1,5p /etc/fstab",
+                "systemctl restart sshd",
+                "pacman -Ss foo",
+            ] {
+                assert_eq!(check(line), None, "{line}");
+            }
+            assert_eq!(guarded_write(&[]), None);
+            // Split into words, as `vm ssh -- systemctl status x` passes them.
+            let words = ["systemctl", "status", "tilo-vmd", "--no-pager"].map(str::to_owned);
+            assert_eq!(guarded_write(&words), None);
         }
-        assert_eq!(guarded_write(&[]), None);
-        // Split into words, as `vm ssh -- systemctl status x` passes them.
-        let words = ["systemctl", "status", "tilo-vmd", "--no-pager"].map(str::to_owned);
-        assert_eq!(guarded_write(&words), None);
-    }
 
-    #[test]
-    fn writes_into_guarded_places_are_caught() {
-        for (line, says) in [
-            ("sudo cp shell /usr/bin/shell", "writes /usr/bin/shell"),
-            (
-                "install -Dm755 target/shell /usr/bin/shell",
-                "writes /usr/bin/shell",
-            ),
-            ("cp -t /usr/lib/tilo a b", "writes /usr/lib/tilo"),
-            (
-                "rsync -a out/ root@vm:/usr/lib/tilo/",
-                "writes /usr/lib/tilo/",
-            ),
-            ("mv /usr/bin/shell /tmp/shell", "changes /usr/bin/shell"),
-            ("echo x | tee /etc/tilo.conf", "changes /etc/tilo.conf"),
-            ("echo x > /etc/tilo.conf", "writes /etc/tilo.conf"),
-            ("echo x >>/etc/tilo.conf", "writes /etc/tilo.conf"),
-            ("dd if=img of=/boot/efi.img", "writes /boot/efi.img"),
-            (
-                "rm -rf /var/lib/tilo-vm/layers/x",
-                "changes /var/lib/tilo-vm/layers/x",
-            ),
-            (
-                "sed -i s/a/b/ /etc/greetd/config.toml",
-                "changes /etc/greetd/config.toml",
-            ),
-            ("dnf install -y strace", "changes packages (dnf install)"),
-            ("sudo rpm-ostree install strace", "changes the image"),
-            ("rpm -Uvh x.rpm", "changes packages (rpm -Uvh)"),
-            (
-                "systemctl restart tilo-vmd",
-                "restarts the tilo unit tilo-vmd",
-            ),
-            (
-                "systemctl enable --now tilo-vmd.socket",
-                "enables the tilo unit",
-            ),
-            ("systemd-sysext refresh", "system extensions"),
-            ("bootc usr-overlay", "bootc usr-overlay"),
-            ("ostree admin unlock --hotfix", "ostree admin"),
-            ("mount -o remount,rw /usr", "remounts /usr"),
-            ("tilo-vmd restore", "tilo-vmd restore"),
-            ("sh -c 'cp shell /usr/bin/shell'", "writes /usr/bin/shell"),
-            (
-                "ls /usr/bin && cp shell /usr/bin/shell",
-                "writes /usr/bin/shell",
-            ),
-        ] {
-            let found = check(line).unwrap_or_else(|| panic!("{line} passed"));
-            assert!(found.contains(says), "{line}: {found}");
+        // Phase: writes_into_guarded_places_are_caught.
+        {
+            for (line, says) in [
+                ("sudo cp shell /usr/bin/shell", "writes /usr/bin/shell"),
+                (
+                    "install -Dm755 target/shell /usr/bin/shell",
+                    "writes /usr/bin/shell",
+                ),
+                ("cp -t /usr/lib/tilo a b", "writes /usr/lib/tilo"),
+                (
+                    "rsync -a out/ root@vm:/usr/lib/tilo/",
+                    "writes /usr/lib/tilo/",
+                ),
+                ("mv /usr/bin/shell /tmp/shell", "changes /usr/bin/shell"),
+                ("echo x | tee /etc/tilo.conf", "changes /etc/tilo.conf"),
+                ("echo x > /etc/tilo.conf", "writes /etc/tilo.conf"),
+                ("echo x >>/etc/tilo.conf", "writes /etc/tilo.conf"),
+                ("dd if=img of=/boot/efi.img", "writes /boot/efi.img"),
+                (
+                    "rm -rf /var/lib/tilo-vm/layers/x",
+                    "changes /var/lib/tilo-vm/layers/x",
+                ),
+                (
+                    "sed -i s/a/b/ /etc/greetd/config.toml",
+                    "changes /etc/greetd/config.toml",
+                ),
+                ("dnf install -y strace", "changes packages (dnf install)"),
+                ("sudo rpm-ostree install strace", "changes the image"),
+                ("rpm -Uvh x.rpm", "changes packages (rpm -Uvh)"),
+                (
+                    "systemctl restart tilo-vmd",
+                    "restarts the tilo unit tilo-vmd",
+                ),
+                (
+                    "systemctl enable --now tilo-vmd.socket",
+                    "enables the tilo unit",
+                ),
+                ("systemd-sysext refresh", "system extensions"),
+                ("bootc usr-overlay", "bootc usr-overlay"),
+                ("ostree admin unlock --hotfix", "ostree admin"),
+                ("mount -o remount,rw /usr", "remounts /usr"),
+                ("tilo-vmd restore", "tilo-vmd restore"),
+                ("sh -c 'cp shell /usr/bin/shell'", "writes /usr/bin/shell"),
+                (
+                    "ls /usr/bin && cp shell /usr/bin/shell",
+                    "writes /usr/bin/shell",
+                ),
+            ] {
+                let found = check(line).unwrap_or_else(|| panic!("{line} passed"));
+                assert!(found.contains(says), "{line}: {found}");
+            }
         }
     }
 }

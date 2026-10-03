@@ -37,88 +37,84 @@ class UiClockContractTests(unittest.TestCase):
             path.write_text(text, encoding="utf-8")
         return root
 
-    def test_crate_clock_module_passes(self):
-        root = self.fixture(
-            {
-                "time.rs": "pub use std::time::{Instant, SystemTime};\n",
-                "lib.rs": "use crate::time::Instant;\nuse std::time::Duration;\n",
-            },
-            crate_path="crates/sdk/tilo-host",
-        )
-        self.assertEqual(contract.audit(root), [])
+    def test_ui_code_must_use_the_crate_clock_outside_tests_and_comments(self):
+        with self.subTest(phase='crate clock module passes'):
+            root = self.fixture(
+                {
+                    "time.rs": "pub use std::time::{Instant, SystemTime};\n",
+                    "lib.rs": "use crate::time::Instant;\nuse std::time::Duration;\n",
+                },
+                crate_path="crates/sdk/tilo-host",
+            )
+            self.assertEqual(contract.audit(root), [])
+        with self.subTest(phase='the clock module lives in the host crate only'):
+            root = self.fixture({"time.rs": "pub use std::time::Instant;\n"})
+            paths = [Path(v.path).as_posix() for v in contract.audit(root)]
+            self.assertEqual(paths, ["crates/sdk/ui-core/src/time.rs"])
+        with self.subTest(phase='every toolkit crate is audited'):
+            root = self.fixture({"a.rs": "use std::time::Instant;\n"})
+            host = root / "crates/sdk/tilo-host"
+            (host / "src").mkdir(parents=True)
+            (host / "src/b.rs").write_text("use std::time::SystemTime;\n", encoding="utf-8")
+            audited = sorted(Path(v.path).as_posix() for v in contract.audit(root))
+            self.assertEqual(
+                audited,
+                [
+                    "crates/sdk/tilo-host/clippy.toml",
+                    "crates/sdk/tilo-host/src/b.rs",
+                    "crates/sdk/ui-core/src/a.rs",
+                ],
+            )
+        with self.subTest(phase='std clock paths fail'):
+            root = self.fixture(
+                {
+                    "a.rs": "use std::time::Instant;\n",
+                    "b.rs": "use std::time::{Duration, SystemTime};\n",
+                    "c.rs": "use std::{\n    path::Path,\n    time::{Duration, Instant},\n};\n",
+                    "d.rs": "fn f() -> std::time::SystemTime { todo!() }\n",
+                }
+            )
+            paths = sorted(Path(v.path).name for v in contract.audit(root))
+            self.assertEqual(paths, ["a.rs", "b.rs", "c.rs", "d.rs"])
+        with self.subTest(phase='tests and comments are exempt'):
+            root = self.fixture(
+                {
+                    "a.rs": "// std::time::Instant\nfn f() {}\n#[cfg(test)]\nmod tests { use std::time::Instant; }\n",
+                    "w/tests.rs": "use std::time::Instant;\n",
+                    "w/tests/x.rs": "use std::time::Instant;\n",
+                }
+            )
+            self.assertEqual(contract.audit(root), [])
 
-    def test_the_clock_module_lives_in_the_host_crate_only(self):
-        root = self.fixture({"time.rs": "pub use std::time::Instant;\n"})
-        paths = [Path(v.path).as_posix() for v in contract.audit(root)]
-        self.assertEqual(paths, ["crates/sdk/ui-core/src/time.rs"])
+    def test_crate_clippy_config_repeats_and_may_only_extend_root_policy(self):
+        with self.subTest(phase='crate clippy config must repeat root keys'):
+            root = self.fixture({}, crate_clippy='disallowed-methods = []\n')
+            reasons = [v.reason for v in contract.audit(root)]
+            self.assertEqual(len(reasons), 1)
+            self.assertIn("allow-unwrap-in-tests", reasons[0])
+        with self.subTest(phase='crate clippy config must match root values'):
+            root = self.fixture({}, crate_clippy="allow-unwrap-in-tests = false\n")
+            reasons = [v.reason for v in contract.audit(root)]
+            self.assertEqual(len(reasons), 1)
+            self.assertIn("differently", reasons[0])
+        with self.subTest(phase='crate clippy list may extend the root list'):
+            root = self.fixture({}, crate_clippy=None)
+            (root / "clippy.toml").write_text(
+                ROOT_CLIPPY + 'disallowed-methods = ["reqwest::get"]\n', encoding="utf-8"
+            )
+            crate = root / "crates/sdk/ui-core/clippy.toml"
+            crate.write_text(
+                ROOT_CLIPPY + 'disallowed-methods = ["reqwest::get", "std::time::Instant::now"]\n',
+                encoding="utf-8",
+            )
+            self.assertEqual(contract.audit(root), [])
+            crate.write_text(
+                ROOT_CLIPPY + 'disallowed-methods = ["std::time::Instant::now"]\n', encoding="utf-8"
+            )
+            reasons = [v.reason for v in contract.audit(root)]
+            self.assertEqual(len(reasons), 1)
+            self.assertIn("differently", reasons[0])
 
-    def test_every_toolkit_crate_is_audited(self):
-        root = self.fixture({"a.rs": "use std::time::Instant;\n"})
-        host = root / "crates/sdk/tilo-host"
-        (host / "src").mkdir(parents=True)
-        (host / "src/b.rs").write_text("use std::time::SystemTime;\n", encoding="utf-8")
-        audited = sorted(Path(v.path).as_posix() for v in contract.audit(root))
-        self.assertEqual(
-            audited,
-            [
-                "crates/sdk/tilo-host/clippy.toml",
-                "crates/sdk/tilo-host/src/b.rs",
-                "crates/sdk/ui-core/src/a.rs",
-            ],
-        )
-
-    def test_std_clock_paths_fail(self):
-        root = self.fixture(
-            {
-                "a.rs": "use std::time::Instant;\n",
-                "b.rs": "use std::time::{Duration, SystemTime};\n",
-                "c.rs": "use std::{\n    path::Path,\n    time::{Duration, Instant},\n};\n",
-                "d.rs": "fn f() -> std::time::SystemTime { todo!() }\n",
-            }
-        )
-        paths = sorted(Path(v.path).name for v in contract.audit(root))
-        self.assertEqual(paths, ["a.rs", "b.rs", "c.rs", "d.rs"])
-
-    def test_tests_and_comments_are_exempt(self):
-        root = self.fixture(
-            {
-                "a.rs": "// std::time::Instant\nfn f() {}\n#[cfg(test)]\nmod tests { use std::time::Instant; }\n",
-                "w/tests.rs": "use std::time::Instant;\n",
-                "w/tests/x.rs": "use std::time::Instant;\n",
-            }
-        )
-        self.assertEqual(contract.audit(root), [])
-
-    def test_crate_clippy_config_must_repeat_root_keys(self):
-        root = self.fixture({}, crate_clippy='disallowed-methods = []\n')
-        reasons = [v.reason for v in contract.audit(root)]
-        self.assertEqual(len(reasons), 1)
-        self.assertIn("allow-unwrap-in-tests", reasons[0])
-
-    def test_crate_clippy_config_must_match_root_values(self):
-        root = self.fixture({}, crate_clippy="allow-unwrap-in-tests = false\n")
-        reasons = [v.reason for v in contract.audit(root)]
-        self.assertEqual(len(reasons), 1)
-        self.assertIn("differently", reasons[0])
-
-
-    def test_crate_clippy_list_may_extend_the_root_list(self):
-        root = self.fixture({}, crate_clippy=None)
-        (root / "clippy.toml").write_text(
-            ROOT_CLIPPY + 'disallowed-methods = ["reqwest::get"]\n', encoding="utf-8"
-        )
-        crate = root / "crates/sdk/ui-core/clippy.toml"
-        crate.write_text(
-            ROOT_CLIPPY + 'disallowed-methods = ["reqwest::get", "std::time::Instant::now"]\n',
-            encoding="utf-8",
-        )
-        self.assertEqual(contract.audit(root), [])
-        crate.write_text(
-            ROOT_CLIPPY + 'disallowed-methods = ["std::time::Instant::now"]\n', encoding="utf-8"
-        )
-        reasons = [v.reason for v in contract.audit(root)]
-        self.assertEqual(len(reasons), 1)
-        self.assertIn("differently", reasons[0])
 
 if __name__ == "__main__":
     unittest.main()

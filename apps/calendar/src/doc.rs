@@ -15,12 +15,12 @@
 //! │           attendees(Map keyed by stable AttendeeId),
 //! │           exdates(Map keyed by original date),
 //! │           overrides(Map keyed by original date), project(Str|""),
-//! │           notes(List of {kind,text})
+//! │           notes(Map: qdoc rich text)
 //! │         }
 //! ├── "tasks"    (Map keyed by TaskId)
 //! │     └── <id> (Map) {
 //! │           title(Str), done(Bool), due(Str|""), priority(Int),
-//! │           project(Str|""), parent(Str|""), notes(List of {kind,text})
+//! │           project(Str|""), parent(Str|""), notes(Map: qdoc rich text)
 //! │         }
 //! └── "tombstones" (Map keyed by `<kind>:<UUID>`) { value: Bool }
 //! ```
@@ -33,14 +33,15 @@
 //!
 //! The in-memory [`Model`] stays authoritative for the UI; this module
 //! is the persistence/replication mirror. The one piece that is *read*
-//! back live is each item's `notes` list — bound directly to a
-//! `BlockEditor`, so notes are a genuine collaborative document.
+//! back live is each item's `notes`: rich text edited in the SDK editor,
+//! so notes are a genuine collaborative document.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+use tilo_document::RichText;
 use ui::doc::{read_bool, read_i64_coerced, read_str};
-use ui::widget::{BlockEditOp, legacy_block_id};
+use ui::widget::{BlockContent, BlockKind};
 
 use crate::model::{
     Attendee, Event, Id, InviteStatus, Model, OccurrenceOverride, Palette, Priority, Project,
@@ -70,6 +71,17 @@ impl CalDoc {
     fn tombstone(doc: &mut AutoCommit, kind: &str, id: Id) {
         let tombstones = Self::map_at(doc, Self::TOMBSTONES);
         let _ = doc.put(&tombstones, Self::tombstone_key(kind, id), true);
+    }
+
+    /// Clear a tombstone so a restoring upsert (undo of delete) can rewrite
+    /// the row. Peers that still hold the tombstone keep it until they apply
+    /// the same restoring action.
+    pub(crate) fn clear_tombstone(doc: &mut AutoCommit, kind: &str, id: Id) {
+        let Ok(Some((Value::Object(ObjType::Map), tombstones))) = doc.get(&ROOT, Self::TOMBSTONES)
+        else {
+            return;
+        };
+        let _ = doc.delete(&tombstones, Self::tombstone_key(kind, id));
     }
 
     /// A durable delete marker for an event. It is intentionally never
@@ -111,8 +123,8 @@ impl CalDoc {
 
     /// Mirror the whole in-memory model into the CRDT. Idempotent —
     /// safe to call repeatedly (it overwrites scalar fields in place and
-    /// only seeds a `notes` list when one doesn't exist yet, so live
-    /// edits to notes survive a re-mirror).
+    /// only starts `notes` when there are none yet, so live edits to notes
+    /// survive a re-mirror).
     pub fn seed(doc: &mut AutoCommit, model: &Model) {
         let projects = Self::map_at(doc, "projects");
         for p in &model.projects {
@@ -132,7 +144,7 @@ impl CalDoc {
             }
             let m = Self::ensure_child(doc, &events, &e.id.to_string());
             Self::write_event_fields(doc, &m, e);
-            Self::ensure_notes_list(doc, &m);
+            Self::ensure_notes_in(doc, &m);
         }
 
         let tasks = Self::map_at(doc, "tasks");
@@ -142,7 +154,7 @@ impl CalDoc {
             }
             let m = Self::ensure_child(doc, &tasks, &t.id.to_string());
             Self::write_task_fields(doc, &m, t);
-            Self::ensure_notes_list(doc, &m);
+            Self::ensure_notes_in(doc, &m);
         }
     }
 
@@ -262,6 +274,7 @@ impl CalDoc {
         let events = Self::map_at(doc, "events");
         let m = Self::ensure_child(doc, &events, &e.id.to_string());
         Self::write_event_fields(doc, &m, e);
+        Self::ensure_notes_in(doc, &m);
     }
 
     /// Create or replace a complete project during creation/import. Ordinary
@@ -571,6 +584,7 @@ impl CalDoc {
         let tasks = Self::map_at(doc, "tasks");
         let m = Self::ensure_child(doc, &tasks, &t.id.to_string());
         Self::write_task_fields(doc, &m, t);
+        Self::ensure_notes_in(doc, &m);
     }
 
     /// Apply only the task registers named in a sparse action patch. A task
@@ -758,157 +772,80 @@ impl CalDoc {
         }
     }
 
-    #[allow(
-        clippy::expect_used,
-        reason = "item is caller-supplied but always a live Map fetched-or-created just above, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
-    )]
-    fn ensure_notes_list(doc: &mut AutoCommit, item: &ObjId) -> ObjId {
-        match doc.get(item, "notes") {
-            Ok(Some((Value::Object(ObjType::List), id))) => id,
-            _ => doc
-                .put_object(item, "notes", ObjType::List)
-                .expect("put_object notes list never fails"),
+    fn item(doc: &AutoCommit, event_owner: bool, id: Id) -> Option<ObjId> {
+        let parent = if event_owner { "events" } else { "tasks" };
+        let Ok(Some((Value::Object(ObjType::Map), items))) = doc.get(&ROOT, parent) else {
+            return None;
+        };
+        match doc.get(&items, id.to_string().as_str()) {
+            Ok(Some((Value::Object(ObjType::Map), item))) => Some(item),
+            _ => None,
         }
     }
 
-    /// The `notes` block list for an event, get-or-create. Returns `None`
-    /// only if the event was never seeded.
-    pub fn event_notes(doc: &mut AutoCommit, id: Id) -> Option<ObjId> {
-        let events = Self::map_at(doc, "events");
-        let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&events, id.to_string().as_str())
-        else {
-            return None;
-        };
-        Some(Self::ensure_notes_list(doc, &m))
+    /// An item's notes: the map its rich text lives under, when it has
+    /// notes in the current format. Never writes.
+    pub fn notes(doc: &AutoCommit, event_owner: bool, id: Id) -> Option<ObjId> {
+        let item = Self::item(doc, event_owner, id)?;
+        match doc.get(&item, "notes") {
+            Ok(Some((Value::Object(ObjType::Map), notes))) => Some(notes),
+            _ => None,
+        }
     }
 
-    /// Whether an event has any collaborative note blocks, without creating a
-    /// missing list as a side effect. Used by the new-event draft policy: Back
-    /// may discard only a draft with no meaningful text anywhere in it.
+    /// An item's notes, started when it has none. `None` when the item does
+    /// not exist.
+    pub fn ensure_notes(doc: &mut AutoCommit, event_owner: bool, id: Id) -> Option<ObjId> {
+        let item = Self::item(doc, event_owner, id)?;
+        Self::ensure_notes_in(doc, &item)
+    }
+
+    fn ensure_notes_in(doc: &mut AutoCommit, item: &ObjId) -> Option<ObjId> {
+        if let Ok(Some((Value::Object(ObjType::Map), notes))) = doc.get(item, "notes") {
+            return Some(notes);
+        }
+        let notes = doc.put_object(item, "notes", ObjType::Map).ok()?;
+        if let Err(error) = fill_notes(doc, &notes, &[]) {
+            tracing::warn!(%error, "calendar notes could not be started");
+        }
+        Some(notes)
+    }
+
+    /// Whether an event's notes hold any text, without writing. Used by the
+    /// new-event draft policy: Back may discard only a draft with no
+    /// meaningful text anywhere in it.
     pub fn event_has_notes(doc: &AutoCommit, id: Id) -> bool {
-        let Ok(Some((Value::Object(ObjType::Map), events))) = doc.get(&ROOT, "events") else {
-            return false;
-        };
-        let Ok(Some((Value::Object(ObjType::Map), event))) =
-            doc.get(&events, id.to_string().as_str())
-        else {
-            return false;
-        };
-        let Ok(Some((Value::Object(ObjType::List), notes))) = doc.get(&event, "notes") else {
-            return false;
-        };
-        doc.length(&notes) > 0
-    }
-
-    /// The `notes` block list for a task, get-or-create.
-    pub fn task_notes(doc: &mut AutoCommit, id: Id) -> Option<ObjId> {
-        let tasks = Self::map_at(doc, "tasks");
-        let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&tasks, id.to_string().as_str())
-        else {
-            return None;
-        };
-        Some(Self::ensure_notes_list(doc, &m))
+        !Self::note_text(doc, true, id).trim().is_empty()
     }
 
     /// Plain text projection used exclusively for local search indexing. It
-    /// never creates a notes list, so indexing cannot mutate a shared doc.
+    /// never writes, so indexing cannot mutate a shared doc.
     pub fn note_text(doc: &AutoCommit, event_owner: bool, id: Id) -> String {
-        let parent = if event_owner { "events" } else { "tasks" };
-        let Ok(Some((Value::Object(ObjType::Map), items))) = doc.get(&ROOT, parent) else {
-            return String::new();
-        };
-        let Ok(Some((Value::Object(ObjType::Map), item))) =
-            doc.get(&items, id.to_string().as_str())
-        else {
-            return String::new();
-        };
-        let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&item, "notes") else {
-            return String::new();
-        };
-        (0..doc.length(&list))
-            .filter_map(|index| {
-                let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(&list, index) else {
-                    return None;
-                };
-                let Ok(Some((Value::Object(ObjType::Text), text))) = doc.get(&block, "text") else {
-                    return None;
-                };
-                doc.text(&text).ok()
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
+        Self::notes(doc, event_owner, id)
+            .and_then(|notes| RichText::plain_text_under(doc, &notes).ok())
+            .unwrap_or_default()
     }
 
-    /// Apply one action-owned semantic note delta.  UUIDs, never list
-    /// indexes, identify existing blocks; a stale operation therefore fails
-    /// safely instead of applying to a neighbour after a concurrent insert.
-    /// # Errors
-    ///
-    /// Returns an error if the owner or its note block cannot be found, an
-    /// operation names an invalid UUID or kind, or a text splice is not on a
-    /// Unicode scalar boundary.
-    pub fn apply_note_ops(
-        doc: &mut AutoCommit,
-        event_owner: bool,
-        id: Id,
-        ops: &[BlockEditOp],
-    ) -> Result<(), String> {
-        let parent = if event_owner { "events" } else { "tasks" };
-        let Ok(Some((Value::Object(ObjType::Map), items))) = doc.get(&ROOT, parent) else {
-            return Err("note owner no longer exists".into());
-        };
-        let Ok(Some((Value::Object(ObjType::Map), item))) =
-            doc.get(&items, id.to_string().as_str())
-        else {
-            return Err("note owner no longer exists".into());
-        };
-        let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&item, "notes") else {
-            return Err("note document no longer exists".into());
-        };
-        // The widget only derives legacy IDs while action interception is
-        // enabled. Persist that deterministic migration here, inside the
-        // owner action's one durable mutation path.
-        ensure_note_block_ids(doc, &list)?;
-        for op in ops {
-            apply_note_op(doc, &list, op)?;
-        }
-        Ok(())
-    }
-
-    /// Seed an item's notes list with markdown-ish lines if it is still
-    /// empty. Each line becomes a `paragraph` block. Lets the demo show
-    /// real rich-text notes on first paint without a user typing.
-    ///
-    /// # Panics
-    /// Never in practice: `list` is caller-supplied but always a live List,
-    /// and each block map is inserted by this call itself, so the object
-    /// creation below only fails for an already-corrupted document.
-    #[allow(
-        clippy::expect_used,
-        reason = "list is caller-supplied but always a live List, and the block map was just inserted by this call, so these cannot fail short of a corrupted document — there is no meaningful value to fall back to"
-    )]
-    pub fn seed_notes_if_empty(doc: &mut AutoCommit, list: &ObjId, lines: &[&str]) {
-        if doc.length(list) > 0 {
+    /// Seed an item's notes with markdown-ish lines if they are still
+    /// empty: a `# ` line becomes a heading, every other line a paragraph.
+    /// Lets the demo show real rich-text notes on first paint without a
+    /// user typing.
+    pub fn seed_notes_if_empty(doc: &mut AutoCommit, event_owner: bool, id: Id, lines: &[&str]) {
+        let Some(notes) = Self::ensure_notes(doc, event_owner, id) else {
             return;
-        }
-        for (i, line) in lines.iter().enumerate() {
-            let block = doc
-                .insert_object(list, i, ObjType::Map)
-                .expect("insert notes block never fails");
-            let kind = if line.starts_with("# ") {
-                "heading1"
-            } else {
-                "paragraph"
-            };
-            let body = line.strip_prefix("# ").unwrap_or(line);
-            let _ = doc.put(&block, "kind", kind);
-            let text_id = doc
-                .put_object(&block, "text", ObjType::Text)
-                .expect("put_object block text never fails");
-            if !body.is_empty() {
-                let _ = doc.splice_text(&text_id, 0, 0, body);
-            }
-        }
+        };
+        let blocks: Vec<BlockContent> = lines
+            .iter()
+            .map(|line| match line.strip_prefix("# ") {
+                Some(heading) => BlockContent {
+                    kind: BlockKind::Heading(1),
+                    ..BlockContent::paragraph("", heading)
+                },
+                None => BlockContent::paragraph("", *line),
+            })
+            .collect();
+        // Notes that already hold text are refused, and stay as they are.
+        let _ = tilo_rich_text::fill_under(doc, &notes, &blocks);
     }
 
     // --- CalDAV outbox --------------------------------------------------
@@ -1184,270 +1121,10 @@ impl CalDoc {
     }
 }
 
-fn note_block_index(doc: &AutoCommit, list: &ObjId, id: &str) -> Option<usize> {
-    (0..doc.length(list)).find(|index| {
-        let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(list, *index) else {
-            return false;
-        };
-        read_str(doc, &block, "id").unwrap_or_default() == id
-    })
-}
-
-fn ensure_note_block_ids(doc: &mut AutoCommit, list: &ObjId) -> Result<(), String> {
-    for index in 0..doc.length(list) {
-        let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(list, index) else {
-            return Err("note block no longer exists".into());
-        };
-        if uuid::Uuid::parse_str(&read_str(doc, &block, "id").unwrap_or_default()).is_ok() {
-            continue;
-        }
-        let kind = read_str(doc, &block, "kind").unwrap_or_default();
-        let text = match doc.get(&block, "text") {
-            Ok(Some((Value::Object(ObjType::Text), text))) => doc.text(&text).unwrap_or_default(),
-            _ => return Err("note text no longer exists".into()),
-        };
-        let id = legacy_block_id(list, index, &kind, &text);
-        doc.put(&block, "id", id.as_str())
-            .map_err(|_| "note document no longer exists")?;
-    }
-    Ok(())
-}
-
-fn note_block_map(doc: &AutoCommit, list: &ObjId, id: &str) -> Option<(usize, ObjId)> {
-    let index = note_block_index(doc, list, id)?;
-    match doc.get(list, index) {
-        Ok(Some((Value::Object(ObjType::Map), block))) => Some((index, block)),
-        _ => None,
-    }
-}
-
-fn note_kind_is_valid(kind: &str) -> bool {
-    matches!(
-        kind,
-        "paragraph" | "divider" | "heading1" | "heading2" | "heading3"
-    ) || kind
-        .strip_prefix("bullet:")
-        .is_some_and(|n| n.parse::<u8>().is_ok_and(|n| n <= 5))
-        || kind
-            .strip_prefix("numbered:")
-            .is_some_and(|n| n.parse::<u8>().is_ok_and(|n| n <= 5))
-        || kind.strip_prefix("checklist:").is_some_and(|rest| {
-            let mut parts = rest.split(':');
-            parts
-                .next()
-                .is_some_and(|n| n.parse::<u8>().is_ok_and(|n| n <= 5))
-                && matches!(parts.next(), Some("0" | "1"))
-                && parts.next().is_none()
-        })
-        || kind.starts_with("code:")
-}
-
-fn insert_note_block(
-    doc: &mut AutoCommit,
-    list: &ObjId,
-    index: usize,
-    id: &str,
-    kind: &str,
-    text: &str,
-) -> Result<(), String> {
-    if uuid::Uuid::parse_str(id).is_err() || !note_kind_is_valid(kind) {
-        return Err("note operation is invalid".into());
-    }
-    let block = doc
-        .insert_object(list, index.min(doc.length(list)), ObjType::Map)
-        .map_err(|_| "note document no longer exists")?;
-    doc.put(&block, "id", id)
-        .map_err(|_| "note document no longer exists")?;
-    doc.put(&block, "kind", kind)
-        .map_err(|_| "note document no longer exists")?;
-    let text_obj = doc
-        .put_object(&block, "text", ObjType::Text)
-        .map_err(|_| "note document no longer exists")?;
-    if !text.is_empty() {
-        doc.splice_text(&text_obj, 0, 0, text)
-            .map_err(|_| "note text could not be written")?;
-    }
-    Ok(())
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "all note edit variants share one atomic CRDT mutation boundary"
-)]
-fn apply_note_op(doc: &mut AutoCommit, list: &ObjId, op: &BlockEditOp) -> Result<(), String> {
-    match op {
-        BlockEditOp::Insert {
-            block_id,
-            after,
-            kind,
-            text,
-        } => {
-            if note_block_index(doc, list, block_id).is_some() {
-                return Err("note block already exists".into());
-            }
-            let index = match after {
-                Some(after) => note_block_index(doc, list, after)
-                    .map(|i| i.saturating_add(1))
-                    .ok_or_else(|| "note predecessor no longer exists".to_string())?,
-                None => 0,
-            };
-            insert_note_block(doc, list, index, block_id, kind, text)
-        }
-        BlockEditOp::Delete { block_id } => {
-            let (index, _) = note_block_map(doc, list, block_id)
-                .ok_or_else(|| "note block no longer exists".to_string())?;
-            doc.delete(list, index)
-                .map_err(|_| "note document no longer exists".into())
-        }
-        BlockEditOp::SetKind { block_id, kind } => {
-            if !note_kind_is_valid(kind) {
-                return Err("note kind is invalid".into());
-            }
-            let (_, block) = note_block_map(doc, list, block_id)
-                .ok_or_else(|| "note block no longer exists".to_string())?;
-            if kind.starts_with("bullet:")
-                || kind.starts_with("numbered:")
-                || kind.starts_with("checklist:")
-            {
-                doc.delete(&block, "nesting").map_err(|e| e.to_string())?;
-            }
-            if !kind.starts_with("code:") {
-                doc.delete(&block, "code_group")
-                    .map_err(|e| e.to_string())?;
-            }
-            doc.put(&block, "kind", kind.as_str())
-                .map_err(|_| "note document no longer exists".into())
-        }
-        BlockEditOp::SetNesting { block_id, depth } => {
-            if *depth > 5 {
-                return Err("note nesting is too deep".into());
-            }
-            let (_, block) =
-                note_block_map(doc, list, block_id).ok_or("note block no longer exists")?;
-            let kind = read_str(doc, &block, "kind").unwrap_or_default();
-            if *depth > 0
-                && (kind.starts_with("bullet:")
-                    || kind.starts_with("numbered:")
-                    || kind.starts_with("checklist:"))
-            {
-                return Err("list depth belongs to its kind".into());
-            }
-            if *depth == 0 {
-                doc.delete(&block, "nesting").map_err(|e| e.to_string())
-            } else {
-                doc.put(&block, "nesting", u64::from(*depth))
-                    .map_err(|e| e.to_string())
-            }
-        }
-        BlockEditOp::SetCodeGroup { block_id, group_id } => {
-            let (_, block) =
-                note_block_map(doc, list, block_id).ok_or("note block no longer exists")?;
-            if let Some(group) = group_id {
-                let id = uuid::Uuid::parse_str(group).map_err(|_| "invalid code group UUID")?;
-                if id.is_nil()
-                    || !read_str(doc, &block, "kind")
-                        .unwrap_or_default()
-                        .starts_with("code:")
-                {
-                    return Err("invalid code group".into());
-                }
-                doc.put(&block, "code_group", group.as_str())
-                    .map_err(|e| e.to_string())
-            } else {
-                doc.delete(&block, "code_group").map_err(|e| e.to_string())
-            }
-        }
-        BlockEditOp::SetChecklist { block_id, done } => {
-            let (_, block) = note_block_map(doc, list, block_id)
-                .ok_or_else(|| "note block no longer exists".to_string())?;
-            let old = read_str(doc, &block, "kind").unwrap_or_default();
-            let Some((prefix, _)) = old.rsplit_once(':') else {
-                return Err("note block is not a checklist".into());
-            };
-            if !prefix.starts_with("checklist:") {
-                return Err("note block is not a checklist".into());
-            }
-            doc.put(&block, "kind", format!("{prefix}:{}", i32::from(*done)))
-                .map_err(|_| "note document no longer exists".into())
-        }
-        BlockEditOp::TextSplice {
-            block_id,
-            start,
-            end,
-            text,
-        } => {
-            let (_, block) = note_block_map(doc, list, block_id)
-                .ok_or_else(|| "note block no longer exists".to_string())?;
-            let Ok(Some((Value::Object(ObjType::Text), text_obj))) = doc.get(&block, "text") else {
-                return Err("note text no longer exists".into());
-            };
-            let current = doc
-                .text(&text_obj)
-                .map_err(|_| "note text no longer exists")?;
-            if start > end
-                || *end > current.len()
-                || !current.is_char_boundary(*start)
-                || !current.is_char_boundary(*end)
-            {
-                return Err("note splice is not on a character boundary".into());
-            }
-            let deleted = isize::try_from(end.saturating_sub(*start))
-                .map_err(|_| "note splice is too large")?;
-            doc.splice_text(&text_obj, *start, deleted, text)
-                .map_err(|_| "note text could not be written".into())
-        }
-        BlockEditOp::Move { block_id, after } => {
-            if after.as_deref() == Some(block_id.as_str()) {
-                return Err("note block cannot follow itself".into());
-            }
-            let (old_index, block) = note_block_map(doc, list, block_id)
-                .ok_or_else(|| "note block no longer exists".to_string())?;
-            let kind = read_str(doc, &block, "kind").unwrap_or_default();
-            let group = read_str(doc, &block, "code_group").unwrap_or_default();
-            let nesting = doc
-                .get(&block, "nesting")
-                .ok()
-                .flatten()
-                .and_then(|(v, _)| v.as_u64())
-                .unwrap_or(0) as u8;
-            let text = match doc.get(&block, "text") {
-                Ok(Some((Value::Object(ObjType::Text), text))) => {
-                    doc.text(&text).unwrap_or_default()
-                }
-                _ => return Err("note text no longer exists".into()),
-            };
-            doc.delete(list, old_index)
-                .map_err(|_| "note document no longer exists")?;
-            let index = match after {
-                Some(after) => note_block_index(doc, list, after)
-                    .map(|i| i.saturating_add(1))
-                    .ok_or_else(|| "note predecessor no longer exists".to_string())?,
-                None => 0,
-            };
-            insert_note_block(doc, list, index, block_id, &kind, &text)?;
-            if nesting > 0 {
-                apply_note_op(
-                    doc,
-                    list,
-                    &BlockEditOp::SetNesting {
-                        block_id: block_id.clone(),
-                        depth: nesting,
-                    },
-                )?;
-            }
-            if !group.is_empty() {
-                apply_note_op(
-                    doc,
-                    list,
-                    &BlockEditOp::SetCodeGroup {
-                        block_id: block_id.clone(),
-                        group_id: Some(group),
-                    },
-                )?;
-            }
-            Ok(())
-        }
-    }
+/// Start rich text under `root` holding `blocks`.
+fn fill_notes(doc: &mut AutoCommit, root: &ObjId, blocks: &[BlockContent]) -> Result<(), String> {
+    RichText::initialize_under(doc, root).map_err(|error| error.to_string())?;
+    tilo_rich_text::fill_under(doc, root, blocks).map_err(|error| error.to_string())
 }
 
 fn nonempty(value: String) -> Option<String> {
@@ -1554,298 +1231,317 @@ mod tests {
     use tilo_automerge::ApplyIncoming;
 
     #[test]
-    fn model_round_trips_through_crdt() {
-        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
-        let mut doc = AutoCommit::new();
-        CalDoc::seed(&mut doc, &model);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn document_round_trips_model_sync_identity_and_addressable_notes() {
+        // Case `model_round_trips_through_crdt`.
+        {
+            let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+            let mut doc = AutoCommit::new();
+            CalDoc::seed(&mut doc, &model);
 
-        let back = CalDoc::read_model(&doc);
-        assert_eq!(back.projects.len(), model.projects.len());
-        assert_eq!(back.events.len(), model.events.len());
-        assert_eq!(back.tasks.len(), model.tasks.len());
+            let back = CalDoc::read_model(&doc);
+            assert_eq!(back.projects.len(), model.projects.len());
+            assert_eq!(back.events.len(), model.events.len());
+            assert_eq!(back.tasks.len(), model.tasks.len());
 
-        // Spot-check a known event survives the round trip.
-        let standup = back
-            .events
-            .iter()
-            .find(|e| e.title == "Team standup")
-            .unwrap();
-        assert_eq!(standup.recurrence, Recurrence::Weekdays);
-        assert_eq!(standup.reminder_min, Some(10));
+            // Spot-check a known event survives the round trip.
+            let standup = back
+                .events
+                .iter()
+                .find(|e| e.title == "Team standup")
+                .unwrap();
+            assert_eq!(standup.recurrence, Recurrence::Weekdays);
+            assert_eq!(standup.reminder_min, Some(10));
 
-        // A done task stays done.
-        assert!(back.tasks.iter().any(|t| t.done));
+            // A done task stays done.
+            assert!(back.tasks.iter().any(|t| t.done));
+        }
+        // Case `caldav_identity_etag_and_checkpoint_survive_document_restart`.
+        {
+            let mut doc = AutoCommit::new();
+            let id = crate::model::Id::new_v4();
+            CalDoc::set_remote_binding(
+                &mut doc,
+                id,
+                "work/default",
+                "/dav/work/a.ics",
+                Some("\"etag-7\""),
+            );
+            CalDoc::set_sync_token(&mut doc, "work/default", "token-8");
+            let bytes = doc.save();
+            let restored = AutoCommit::load(&bytes).unwrap();
+            assert_eq!(
+                CalDoc::remote_binding(&restored, id),
+                Some((
+                    "work/default".into(),
+                    "/dav/work/a.ics".into(),
+                    Some("\"etag-7\"".into())
+                ))
+            );
+            assert_eq!(
+                CalDoc::sync_tokens(&restored),
+                vec![("work/default".into(), "token-8".into())]
+            );
+        }
+        // Case `notes_are_rich_text_addressable_per_event`.
+        {
+            let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+            let mut doc = AutoCommit::new();
+            CalDoc::seed(&mut doc, &model);
+            let eid = model.events[0].id;
+            assert!(
+                CalDoc::notes(&doc, true, eid).is_some(),
+                "seeding starts notes"
+            );
+            CalDoc::seed_notes_if_empty(&mut doc, true, eid, &["# Agenda", "Discuss roadmap"]);
+            assert_eq!(
+                CalDoc::note_text(&doc, true, eid),
+                "Agenda\nDiscuss roadmap"
+            );
+            assert!(CalDoc::event_has_notes(&doc, eid));
+            // Idempotent: second seed is a no-op.
+            CalDoc::seed_notes_if_empty(&mut doc, true, eid, &["should not appear"]);
+            assert_eq!(
+                CalDoc::note_text(&doc, true, eid),
+                "Agenda\nDiscuss roadmap"
+            );
+            let other = model.events[1].id;
+            assert!(
+                !CalDoc::event_has_notes(&doc, other),
+                "notes of one event only"
+            );
+        }
     }
 
     #[test]
-    fn outbox_enqueues_dedupes_and_dequeues() {
-        let mut doc = AutoCommit::new();
-        let a = crate::model::Id::new_v4();
-        let b = crate::model::Id::new_v4();
-        CalDoc::enqueue_push(&mut doc, a);
-        CalDoc::enqueue_push(&mut doc, a); // dup — ignored
-        CalDoc::enqueue_push(&mut doc, b);
-        assert_eq!(CalDoc::outbox(&doc), vec![a, b]);
-        CalDoc::dequeue_push(&mut doc, a);
-        assert_eq!(CalDoc::outbox(&doc), vec![b]);
-    }
-
-    #[test]
-    fn delete_event_removes_it_from_the_document() {
-        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
-        let mut doc = AutoCommit::new();
-        CalDoc::seed(&mut doc, &model);
-        let victim = model.events[0].id;
-        let before = CalDoc::read_model(&doc).events.len();
-        CalDoc::delete_event(&mut doc, victim);
-        let after = CalDoc::read_model(&doc);
-        assert_eq!(after.events.len(), before - 1);
-        assert!(
-            !after.events.iter().any(|e| e.id == victim),
-            "deleted event is gone"
-        );
-        // Idempotent.
-        CalDoc::delete_event(&mut doc, victim);
-        assert_eq!(CalDoc::read_model(&doc).events.len(), before - 1);
-    }
-
-    #[test]
-    fn delete_task_removes_it_from_the_document() {
-        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
-        let mut doc = AutoCommit::new();
-        CalDoc::seed(&mut doc, &model);
-        let victim = model.tasks[0].id;
-        let before = CalDoc::read_model(&doc).tasks.len();
-        CalDoc::delete_task(&mut doc, victim);
-        let after = CalDoc::read_model(&doc);
-        assert_eq!(after.tasks.len(), before - 1);
-        assert!(
-            !after.tasks.iter().any(|t| t.id == victim),
-            "deleted task is gone"
-        );
-    }
-
-    #[test]
-    fn tombstones_make_delete_win_over_a_concurrent_stale_upsert() {
-        // A map delete alone is not a durable semantic delete: a peer that
-        // still has a whole object snapshot can put the same key while
-        // offline. Tombstones keep the raw CRDT merge auditable while making
-        // every model projection converge on the deleted result.
-        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
-        let event = model.events[0].clone();
-        let task = model.tasks[0].clone();
-        let mut deleted = AutoCommit::new();
-        CalDoc::seed(&mut deleted, &model);
-        deleted.commit();
-        let mut stale = AutoCommit::load(&deleted.save()).unwrap();
-
-        CalDoc::delete_event(&mut deleted, event.id);
-        CalDoc::delete_task(&mut deleted, task.id);
-
-        let mut stale_event = event.clone();
-        stale_event.title = "Late stale event snapshot".into();
-        let mut stale_task = task.clone();
-        stale_task.title = "Late stale task snapshot".into();
-        CalDoc::update_event(&mut stale, &stale_event);
-        CalDoc::update_task(&mut stale, &stale_task);
-
-        deleted.commit();
-        stale.commit();
-        deleted.merge_incoming(&mut stale).unwrap();
-        let merged = CalDoc::read_model(&deleted);
-        assert!(CalDoc::event_tombstoned(&deleted, event.id));
-        assert!(CalDoc::task_tombstoned(&deleted, task.id));
-        assert!(merged.event(event.id).is_none());
-        assert!(merged.task(task.id).is_none());
-
-        // A newly joined replica observes the same outcome, even if the
-        // underlying map still contains a concurrently-written object.
-        let joined = AutoCommit::load(&deleted.save()).unwrap();
-        let joined_model = CalDoc::read_model(&joined);
-        assert!(joined_model.event(event.id).is_none());
-        assert!(joined_model.task(task.id).is_none());
-    }
-
-    #[test]
-    fn delete_outbox_enqueues_dedupes_and_dequeues() {
-        let mut doc = AutoCommit::new();
-        let a = crate::model::Id::new_v4();
-        let b = crate::model::Id::new_v4();
-        CalDoc::enqueue_delete(&mut doc, "work/default", a);
-        CalDoc::enqueue_delete(&mut doc, "work/default", a); // dup — ignored
-        CalDoc::enqueue_delete(&mut doc, "icloud/personal", b);
-        assert_eq!(
-            CalDoc::delete_outbox(&doc),
-            vec![
-                ("work/default".to_string(), a),
-                ("icloud/personal".to_string(), b)
-            ]
-        );
-        CalDoc::dequeue_delete(&mut doc, a);
-        assert_eq!(
-            CalDoc::delete_outbox(&doc),
-            vec![("icloud/personal".to_string(), b)]
-        );
-    }
-
-    #[test]
-    fn caldav_identity_etag_and_checkpoint_survive_document_restart() {
-        let mut doc = AutoCommit::new();
-        let id = crate::model::Id::new_v4();
-        CalDoc::set_remote_binding(
-            &mut doc,
-            id,
-            "work/default",
-            "/dav/work/a.ics",
-            Some("\"etag-7\""),
-        );
-        CalDoc::set_sync_token(&mut doc, "work/default", "token-8");
-        let bytes = doc.save();
-        let restored = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            CalDoc::remote_binding(&restored, id),
-            Some((
-                "work/default".into(),
-                "/dav/work/a.ics".into(),
-                Some("\"etag-7\"".into())
-            ))
-        );
-        assert_eq!(
-            CalDoc::sync_tokens(&restored),
-            vec![("work/default".into(), "token-8".into())]
-        );
-    }
-
-    #[test]
-    fn notes_list_is_addressable_per_event() {
-        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
-        let mut doc = AutoCommit::new();
-        CalDoc::seed(&mut doc, &model);
-        let eid = model.events[0].id;
-        let list = CalDoc::event_notes(&mut doc, eid).unwrap();
-        CalDoc::seed_notes_if_empty(&mut doc, &list, &["# Agenda", "Discuss roadmap"]);
-        assert_eq!(doc.length(&list), 2);
-        // Idempotent: second seed is a no-op.
-        CalDoc::seed_notes_if_empty(&mut doc, &list, &["should not appear"]);
-        assert_eq!(doc.length(&list), 2);
-    }
-
-    #[test]
-    fn event_time_patch_cannot_persist_end_before_its_stored_start() {
-        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
-        let mut doc = AutoCommit::new();
-        CalDoc::seed(&mut doc, &model);
-        let event = &model.events[0];
-        let before = CalDoc::read_model(&doc).event(event.id).unwrap().clone();
-        CalDoc::patch_event(
-            &mut doc,
-            event.id,
-            &crate::actions::EventPatch {
-                end: Some(
-                    (before.start - chrono::Duration::minutes(1))
-                        .format(DT_FMT)
-                        .to_string(),
-                ),
-                ..crate::actions::EventPatch::default()
-            },
-        );
-        let after_model = CalDoc::read_model(&doc);
-        let after = after_model.event(event.id).unwrap();
-        assert_eq!(after.start, before.start);
-        assert_eq!(
-            after.end, before.end,
-            "invalid sparse end patch is rejected as a pair"
-        );
-    }
-
-    #[test]
-    fn patches_reject_unknown_project_relationships() {
-        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
-        let mut doc = AutoCommit::new();
-        CalDoc::seed(&mut doc, &model);
-        let unknown = Id::new_v4().to_string();
-        let event_id = model.events[0].id;
-        let task_id = model.tasks[0].id;
-        CalDoc::patch_event(
-            &mut doc,
-            event_id,
-            &crate::actions::EventPatch {
-                project: Some(unknown.clone()),
-                ..crate::actions::EventPatch::default()
-            },
-        );
-        CalDoc::patch_task(
-            &mut doc,
-            task_id,
-            &crate::actions::TaskPatch {
-                project: Some(unknown),
-                ..crate::actions::TaskPatch::default()
-            },
-        );
-        let back = CalDoc::read_model(&doc);
-        assert_eq!(
-            back.event(event_id).unwrap().project,
-            model.events[0].project
-        );
-        assert_eq!(back.task(task_id).unwrap().project, model.tasks[0].project);
-    }
-
-    #[test]
-    fn note_ops_are_uuid_addressed_unicode_safe_and_refuse_stale_blocks() {
+    fn notes_edits_are_rich_text_actions_refused_for_a_stale_block() {
+        use tilo_actions::Action as _;
+        use tilo_document::RichTextAction;
+        use tilo_document::action::RegionKind;
         let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
         let id = model.events[0].id;
         let mut doc = AutoCommit::new();
         CalDoc::seed(&mut doc, &model);
-        let block = uuid::Uuid::new_v4().to_string();
-        CalDoc::apply_note_ops(
-            &mut doc,
-            true,
-            id,
-            &[BlockEditOp::Insert {
-                block_id: block.clone(),
-                after: None,
-                kind: "paragraph".into(),
-                text: "café".into(),
-            }],
-        )
+        let edit = |edit| crate::actions::CalendarAction::EditNotes {
+            owner: crate::actions::NoteOwner::Event { id: id.to_string() },
+            edit,
+        };
+        for text in ["café", "second"] {
+            edit(RichTextAction::AppendParagraph { text: text.into() })
+                .apply(&mut doc)
+                .unwrap();
+        }
+        let notes = CalDoc::notes(&doc, true, id).unwrap();
+        let block = tilo_rich_text::blocks_under(&doc, &notes).unwrap()[0]
+            .id
+            .clone();
+        edit(RichTextAction::SpliceText {
+            region: RegionKind::Body,
+            block: block.clone(),
+            at: 3,
+            del: 1,
+            ins: "e".into(),
+        })
+        .apply(&mut doc)
         .unwrap();
-        CalDoc::apply_note_ops(
-            &mut doc,
-            true,
-            id,
-            &[BlockEditOp::TextSplice {
-                block_id: block.clone(),
-                start: 3,
-                end: 5,
-                text: "e".into(),
-            }],
-        )
+        assert_eq!(CalDoc::note_text(&doc, true, id), "cafe\nsecond");
+        edit(RichTextAction::RemoveBlocks {
+            blocks: vec![block.clone()],
+        })
+        .apply(&mut doc)
         .unwrap();
-        assert_eq!(CalDoc::note_text(&doc, true, id), "cafe");
         assert!(
-            CalDoc::apply_note_ops(
-                &mut doc,
-                true,
-                id,
-                &[BlockEditOp::Delete {
-                    block_id: block.clone()
-                }],
-            )
-            .is_ok()
-        );
-        assert!(
-            CalDoc::apply_note_ops(
-                &mut doc,
-                true,
-                id,
-                &[BlockEditOp::TextSplice {
-                    block_id: block,
-                    start: 0,
-                    end: 0,
-                    text: "x".into()
-                }],
-            )
+            edit(RichTextAction::SpliceText {
+                region: RegionKind::Body,
+                block,
+                at: 0,
+                del: 0,
+                ins: "x".into(),
+            })
+            .apply(&mut doc)
             .is_err()
         );
+        let missing = crate::actions::CalendarAction::EditNotes {
+            owner: crate::actions::NoteOwner::Task {
+                id: Id::new_v4().to_string(),
+            },
+            edit: RichTextAction::AppendParagraph { text: "x".into() },
+        };
+        assert!(missing.apply(&mut doc).is_err(), "notes of a missing task");
+    }
+
+    #[test]
+    fn deletes_and_outboxes_dedupe_dequeue_and_win_over_stale_upserts() {
+        // Case `outbox_enqueues_dedupes_and_dequeues`.
+        {
+            let mut doc = AutoCommit::new();
+            let a = crate::model::Id::new_v4();
+            let b = crate::model::Id::new_v4();
+            CalDoc::enqueue_push(&mut doc, a);
+            CalDoc::enqueue_push(&mut doc, a); // dup — ignored
+            CalDoc::enqueue_push(&mut doc, b);
+            assert_eq!(CalDoc::outbox(&doc), vec![a, b]);
+            CalDoc::dequeue_push(&mut doc, a);
+            assert_eq!(CalDoc::outbox(&doc), vec![b]);
+        }
+        // Case `delete_event_removes_it_from_the_document`.
+        {
+            let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+            let mut doc = AutoCommit::new();
+            CalDoc::seed(&mut doc, &model);
+            let victim = model.events[0].id;
+            let before = CalDoc::read_model(&doc).events.len();
+            CalDoc::delete_event(&mut doc, victim);
+            let after = CalDoc::read_model(&doc);
+            assert_eq!(after.events.len(), before - 1);
+            assert!(
+                !after.events.iter().any(|e| e.id == victim),
+                "deleted event is gone"
+            );
+            // Idempotent.
+            CalDoc::delete_event(&mut doc, victim);
+            assert_eq!(CalDoc::read_model(&doc).events.len(), before - 1);
+        }
+        // Case `delete_task_removes_it_from_the_document`.
+        {
+            let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+            let mut doc = AutoCommit::new();
+            CalDoc::seed(&mut doc, &model);
+            let victim = model.tasks[0].id;
+            let before = CalDoc::read_model(&doc).tasks.len();
+            CalDoc::delete_task(&mut doc, victim);
+            let after = CalDoc::read_model(&doc);
+            assert_eq!(after.tasks.len(), before - 1);
+            assert!(
+                !after.tasks.iter().any(|t| t.id == victim),
+                "deleted task is gone"
+            );
+        }
+        // Case `tombstones_make_delete_win_over_a_concurrent_stale_upsert`.
+        {
+            // A map delete alone is not a durable semantic delete: a peer that
+            // still has a whole object snapshot can put the same key while
+            // offline. Tombstones keep the raw CRDT merge auditable while making
+            // every model projection converge on the deleted result.
+            let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+            let event = model.events[0].clone();
+            let task = model.tasks[0].clone();
+            let mut deleted = AutoCommit::new();
+            CalDoc::seed(&mut deleted, &model);
+            deleted.commit();
+            let mut stale = AutoCommit::load(&deleted.save()).unwrap();
+
+            CalDoc::delete_event(&mut deleted, event.id);
+            CalDoc::delete_task(&mut deleted, task.id);
+
+            let mut stale_event = event.clone();
+            stale_event.title = "Late stale event snapshot".into();
+            let mut stale_task = task.clone();
+            stale_task.title = "Late stale task snapshot".into();
+            CalDoc::update_event(&mut stale, &stale_event);
+            CalDoc::update_task(&mut stale, &stale_task);
+
+            deleted.commit();
+            stale.commit();
+            deleted.merge_incoming(&mut stale).unwrap();
+            let merged = CalDoc::read_model(&deleted);
+            assert!(CalDoc::event_tombstoned(&deleted, event.id));
+            assert!(CalDoc::task_tombstoned(&deleted, task.id));
+            assert!(merged.event(event.id).is_none());
+            assert!(merged.task(task.id).is_none());
+
+            // A newly joined replica observes the same outcome, even if the
+            // underlying map still contains a concurrently-written object.
+            let joined = AutoCommit::load(&deleted.save()).unwrap();
+            let joined_model = CalDoc::read_model(&joined);
+            assert!(joined_model.event(event.id).is_none());
+            assert!(joined_model.task(task.id).is_none());
+        }
+        // Case `delete_outbox_enqueues_dedupes_and_dequeues`.
+        {
+            let mut doc = AutoCommit::new();
+            let a = crate::model::Id::new_v4();
+            let b = crate::model::Id::new_v4();
+            CalDoc::enqueue_delete(&mut doc, "work/default", a);
+            CalDoc::enqueue_delete(&mut doc, "work/default", a); // dup — ignored
+            CalDoc::enqueue_delete(&mut doc, "icloud/personal", b);
+            assert_eq!(
+                CalDoc::delete_outbox(&doc),
+                vec![
+                    ("work/default".to_string(), a),
+                    ("icloud/personal".to_string(), b)
+                ]
+            );
+            CalDoc::dequeue_delete(&mut doc, a);
+            assert_eq!(
+                CalDoc::delete_outbox(&doc),
+                vec![("icloud/personal".to_string(), b)]
+            );
+        }
+    }
+
+    #[test]
+    fn patches_reject_inverted_times_and_unknown_projects() {
+        // Case `event_time_patch_cannot_persist_end_before_its_stored_start`.
+        {
+            let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+            let mut doc = AutoCommit::new();
+            CalDoc::seed(&mut doc, &model);
+            let event = &model.events[0];
+            let before = CalDoc::read_model(&doc).event(event.id).unwrap().clone();
+            CalDoc::patch_event(
+                &mut doc,
+                event.id,
+                &crate::actions::EventPatch {
+                    end: Some(
+                        (before.start - chrono::Duration::minutes(1))
+                            .format(DT_FMT)
+                            .to_string(),
+                    ),
+                    ..crate::actions::EventPatch::default()
+                },
+            );
+            let after_model = CalDoc::read_model(&doc);
+            let after = after_model.event(event.id).unwrap();
+            assert_eq!(after.start, before.start);
+            assert_eq!(
+                after.end, before.end,
+                "invalid sparse end patch is rejected as a pair"
+            );
+        }
+        // Case `patches_reject_unknown_project_relationships`.
+        {
+            let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+            let mut doc = AutoCommit::new();
+            CalDoc::seed(&mut doc, &model);
+            let unknown = Id::new_v4().to_string();
+            let event_id = model.events[0].id;
+            let task_id = model.tasks[0].id;
+            CalDoc::patch_event(
+                &mut doc,
+                event_id,
+                &crate::actions::EventPatch {
+                    project: Some(unknown.clone()),
+                    ..crate::actions::EventPatch::default()
+                },
+            );
+            CalDoc::patch_task(
+                &mut doc,
+                task_id,
+                &crate::actions::TaskPatch {
+                    project: Some(unknown),
+                    ..crate::actions::TaskPatch::default()
+                },
+            );
+            let back = CalDoc::read_model(&doc);
+            assert_eq!(
+                back.event(event_id).unwrap().project,
+                model.events[0].project
+            );
+            assert_eq!(back.task(task_id).unwrap().project, model.tasks[0].project);
+        }
     }
 }

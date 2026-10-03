@@ -60,6 +60,7 @@ fn a_file_that_differs_from_its_pin_is_refused() {
 fn manifest_paths_stay_inside_the_catalog() {
     let asset = |file: &str| Asset {
         scope: Scope::Product,
+        browser_startup: false,
         file: file.to_string(),
         bytes: 0,
         sha256: String::new(),

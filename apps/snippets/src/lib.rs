@@ -45,6 +45,7 @@ pub mod draw;
 pub mod expand;
 pub mod highlight;
 pub mod model;
+pub mod resource;
 pub mod search_provider;
 pub mod seed;
 
@@ -56,6 +57,21 @@ use ui::widget::Widget;
 /// Build and return the app's root widget tree.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(SnippetsApp::new())
+}
+
+/// Snippets' Fluent catalogs, source locale first.
+pub const LOCALES: &[(&str, &str)] = &[
+    ("en-US", include_str!("../locales/en-US.ftl")),
+    ("de-DE", include_str!("../locales/de-DE.ftl")),
+];
+
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.snippets", app_root)
+        .history(&framework_history::HISTORY)
+        .component_actions(actions::register)
+        .component_locales(LOCALES)
+        .as_definition("Snippets")
 }
 
 /// Like [`app_root`] but with a named interaction scenario staged for a
@@ -81,7 +97,9 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     Box::new(app)
 }
 
-#[cfg(test)]
-mod framework_history_tests;
+pub use resource::{Snippets, SnippetsShell, launch_spec};
 
 pub mod framework_history;
+
+#[cfg(test)]
+mod framework_history_tests;

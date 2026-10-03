@@ -224,73 +224,73 @@ mod tests {
     }
 
     #[test]
-    fn graph_exposes_branch_and_merge_edges() {
-        let (mut doc, base, alice, bob, merge) = forked_document();
-        let graph = RevisionHistory::from_document(&mut doc);
-        let branch = graph.get(base).unwrap();
-        assert!(branch.is_branch_point());
-        assert_eq!(
-            branch.children.iter().copied().collect::<HashSet<_>>(),
-            HashSet::from([alice, bob])
-        );
-        let merged = graph.get(merge).unwrap();
-        assert!(merged.is_merge());
-        assert_eq!(
-            merged.parents.iter().copied().collect::<HashSet<_>>(),
-            HashSet::from([alice, bob])
-        );
-        assert_eq!(graph.heads(), &[merge]);
-        assert!(merged.is_head);
-        assert_eq!(merged.message.as_deref(), Some("merge branches"));
-        assert!(merged.timestamp.is_some());
-    }
+    fn the_revision_graph_round_trips_and_restores_branches_undoably() {
+        // phase: graph_exposes_branch_and_merge_edges
+        {
+            let (mut doc, base, alice, bob, merge) = forked_document();
+            let graph = RevisionHistory::from_document(&mut doc);
+            let branch = graph.get(base).unwrap();
+            assert!(branch.is_branch_point());
+            assert_eq!(
+                branch.children.iter().copied().collect::<HashSet<_>>(),
+                HashSet::from([alice, bob])
+            );
+            let merged = graph.get(merge).unwrap();
+            assert!(merged.is_merge());
+            assert_eq!(
+                merged.parents.iter().copied().collect::<HashSet<_>>(),
+                HashSet::from([alice, bob])
+            );
+            assert_eq!(graph.heads(), &[merge]);
+            assert!(merged.is_head);
+            assert_eq!(merged.message.as_deref(), Some("merge branches"));
+            assert!(merged.timestamp.is_some());
+        }
+        // phase: graph_round_trips_with_the_document
+        {
+            let (mut doc, _, _, _, _) = forked_document();
+            let before = RevisionHistory::from_document(&mut doc);
+            let bytes = doc.save();
+            let mut loaded = AutoCommit::load(&bytes).unwrap();
+            let after = RevisionHistory::from_document(&mut loaded);
+            assert_eq!(after, before);
+        }
+        // phase: restoring_a_branch_is_forward_history_and_is_undoable
+        {
+            let (doc, base, alice, _bob, merge) = forked_document();
+            let mut state = crate::State::from_doc(doc);
+            assert!(
+                state
+                    .restore_revision(alice, None, Some("Alice branch".into()), None)
+                    .unwrap()
+            );
+            assert!(state.doc.get(&ROOT, "alice").unwrap().is_some());
+            assert!(state.doc.get(&ROOT, "bob").unwrap().is_none());
+            assert!(state.doc.get(&ROOT, "merged").unwrap().is_none());
 
-    #[test]
-    fn graph_round_trips_with_the_document() {
-        let (mut doc, _, _, _, _) = forked_document();
-        let before = RevisionHistory::from_document(&mut doc);
-        let bytes = doc.save();
-        let mut loaded = AutoCommit::load(&bytes).unwrap();
-        let after = RevisionHistory::from_document(&mut loaded);
-        assert_eq!(after, before);
-    }
+            let graph = state.revision_history();
+            assert!(graph.get(base).unwrap().is_branch_point());
+            assert!(
+                graph.get(merge).is_some(),
+                "the previous future is retained"
+            );
 
-    #[test]
-    fn restoring_a_branch_is_forward_history_and_is_undoable() {
-        let (doc, base, alice, _bob, merge) = forked_document();
-        let mut state = crate::State::from_doc(doc);
-        assert!(
             state
-                .restore_revision(alice, None, Some("Alice branch".into()), None)
-                .unwrap()
-        );
-        assert!(state.doc.get(&ROOT, "alice").unwrap().is_some());
-        assert!(state.doc.get(&ROOT, "bob").unwrap().is_none());
-        assert!(state.doc.get(&ROOT, "merged").unwrap().is_none());
-
-        let graph = state.revision_history();
-        assert!(graph.get(base).unwrap().is_branch_point());
-        assert!(
-            graph.get(merge).is_some(),
-            "the previous future is retained"
-        );
-
-        state
-            .undo(None, None)
-            .expect("the restore itself is undoable");
-        assert!(state.doc.get(&ROOT, "bob").unwrap().is_some());
-        assert!(state.doc.get(&ROOT, "merged").unwrap().is_some());
-    }
-
-    #[test]
-    fn restore_rejects_a_revision_from_another_document() {
-        let mut other = AutoCommit::new();
-        other.put(&ROOT, "other", true).unwrap();
-        let foreign = commit(&mut other, "foreign");
-        let mut state = crate::State::new();
-        assert_eq!(
-            state.restore_revision(foreign, None, None, None),
-            Err(UnknownRevision(foreign))
-        );
+                .undo(None, None)
+                .expect("the restore itself is undoable");
+            assert!(state.doc.get(&ROOT, "bob").unwrap().is_some());
+            assert!(state.doc.get(&ROOT, "merged").unwrap().is_some());
+        }
+        // phase: restore_rejects_a_revision_from_another_document
+        {
+            let mut other = AutoCommit::new();
+            other.put(&ROOT, "other", true).unwrap();
+            let foreign = commit(&mut other, "foreign");
+            let mut state = crate::State::new();
+            assert_eq!(
+                state.restore_revision(foreign, None, None, None),
+                Err(UnknownRevision(foreign))
+            );
+        }
     }
 }

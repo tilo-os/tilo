@@ -1,0 +1,68 @@
+# Shortcuts — Tilo application manifest.
+#
+# Drafts are CRDT state; saved shortcuts live in the workspace and are
+# reached through the session's action door. The app reads the action
+# catalogue to offer steps. A shortcut runs through the session, as the
+# person, within its grant — never through this app.
+
+[package]
+id       = "so.tilo.shortcuts"
+name     = "Shortcuts"
+category = "Utility"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.names]
+de = "Kurzbefehle"
+
+[package.isa]
+x86_64 = "v3"
+aarch64 = "aarch64"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+# Read the catalogue of actions the person is offered, to build steps from.
+# Invoke is only for asking the agent to draft a shortcut; like any other
+# app's action it is refused until the workspace grants it to Shortcuts.
+[actions]
+query = true
+invoke = true
+
+[sandbox]
+# `net` deliberately absent from `namespaces`: this app opens no
+# socket of its own.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "required@1"
+
+[entrypoint]
+bin             = "bin/shortcuts"
+type            = "gui"
+splash-segments = ["bin/shortcuts[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []

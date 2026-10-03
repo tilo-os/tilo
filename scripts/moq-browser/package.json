@@ -1,0 +1,16 @@
+{
+  "name": "tilo-moq-browser-bundle",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@moq/net": "0.4.0",
+    "@zod/mini": "4.5.0",
+    "zod": "4.5.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

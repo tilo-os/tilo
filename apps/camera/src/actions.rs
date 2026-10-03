@@ -22,9 +22,7 @@
 //!
 //! Variants carry everything [`Action::apply`] needs (the item id, the scanned
 //! payload, and a timestamp minted at authoring time); `apply` never touches
-//! the RNG or the wall-clock. Legacy favorite/removal variants remain decodable
-//! for replicated history, but Camera no longer publishes them as media-library
-//! affordances. A malformed payload or an oversized legacy list is an explicit
+//! the RNG or the wall-clock. A malformed payload is an explicit
 //! [`ActionError::Refused`], so the invoker never mistakes a rejected durable
 //! mutation for success.
 
@@ -33,7 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, ResourceProvider,
+    OperationKind, Resource,
 };
 
 use crate::doc;
@@ -113,11 +111,6 @@ pub enum CameraAction {
         label: String,
         facing: Facing,
     },
-    /// Legacy history payload retained only so old documents fail honestly;
-    /// media removal belongs to Photos or Video Player.
-    RemoveCapture {
-        id: String,
-    },
     SetMode {
         mode: CaptureMode,
     },
@@ -153,12 +146,6 @@ pub enum CameraAction {
     },
     SetDefaultFacing {
         facing: Facing,
-    },
-    /// Legacy payload retained for old action history. New Camera surfaces do
-    /// not publish or apply media-library favorite management.
-    SetFavorite {
-        id: String,
-        on: bool,
     },
     /// Record a decoded code into the shared scan history. The QR/barcode
     /// decode is device I/O (external); this metadata row-insert is the
@@ -200,11 +187,6 @@ impl Action for CameraAction {
                 },
             )
             .map_err(ActionError::Refused)?,
-            CameraAction::RemoveCapture { .. } => {
-                return Err(ActionError::Refused(
-                    "Camera no longer removes media; use Photos or Video Player".into(),
-                ));
-            }
             CameraAction::SetMode { mode } => doc::write_mode(doc, &ROOT, *mode),
             CameraAction::SetFacing { facing } => doc::write_facing(doc, &ROOT, *facing),
             CameraAction::SetResolution { resolution } => {
@@ -221,11 +203,6 @@ impl Action for CameraAction {
             CameraAction::SetHdr { on } => doc::set_hdr(doc, &ROOT, *on),
             CameraAction::SetDefaultFacing { facing } => {
                 doc::set_default_facing(doc, &ROOT, *facing);
-            }
-            CameraAction::SetFavorite { .. } => {
-                return Err(ActionError::Refused(
-                    "Camera no longer manages favorites; use Photos".into(),
-                ));
             }
             CameraAction::RecordScan { raw, ts } => {
                 doc::record_scan(doc, &ROOT, raw, *ts).map_err(ActionError::Refused)?;
@@ -449,18 +426,18 @@ pub(crate) fn capture_resource(it: &CaptureItem) -> Resource {
     child
 }
 
-/// Build Camera's contextual resource tree: one recent capture with a typed
-/// handoff action when verified and portable. Photos owns still-media
-/// library operations; Video Player owns recorded-video operations.
-#[allow(
-    clippy::too_many_lines,
-    reason = "capture, scanner, document, and settings are Camera's bounded resource roots; keeping their complete typed inventory together makes the contract auditable"
-)]
-pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    // This app root is semantic discovery, not a visual destination rail.
-    // Ctrl+K, a screen reader, and an agent use these local reveal operations
-    // while the on-screen app stays entirely on the edge-to-edge capture stage.
-    let mut camera = Resource::new("camera", "camera", "Camera");
+pub(crate) fn capture_item_from_shared(shared: &doc::SharedCapture) -> CaptureItem {
+    CaptureItem {
+        id: shared.id.clone(),
+        label: shared.label.clone(),
+        is_video: matches!(shared.kind, CaptureKind::Video),
+        media_id: Some(shared.media_id.clone()).filter(|id| !id.is_empty()),
+    }
+}
+
+/// Screen reveal Views for [`crate::resource::Camera::local_operations`].
+pub(crate) fn screen_view_specs() -> Vec<ActionSpec> {
+    let mut specs = Vec::new();
     for screen in Screen::ALL {
         if let Ok(spec) = ActionSpec::operation(
             format!("open-{}", screen.as_str()),
@@ -469,13 +446,187 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             CAMERA_OPERATION_TYPE,
             &CameraOperation::Reveal { screen },
         ) {
-            camera = camera.with_action(spec);
+            specs.push(spec);
         }
     }
+    specs
+}
+
+/// Mode / lens Document actions bound from live capture state.
+pub(crate) fn bound_mode_facing_actions(facing: Facing, recording: bool) -> Vec<ActionSpec> {
+    let mut specs = Vec::new();
+    for (id, label, mode) in [
+        ("photo-mode", "Use photo mode", CaptureMode::Photo),
+        ("video-mode", "Use video mode", CaptureMode::Video),
+    ] {
+        if let Some(spec) = immediate_spec(id, label, &CameraAction::SetMode { mode }) {
+            specs.push(if recording {
+                spec.unavailable("recording_active", "Stop recording before changing mode")
+            } else {
+                spec
+            });
+        }
+    }
+    for next in Facing::ALL {
+        if let Some(spec) = immediate_spec(
+            &format!("lens-{}", next.as_str()),
+            &format!("Use {} lens", next.label()),
+            &CameraAction::SetFacing { facing: next },
+        ) {
+            specs.push(if next == facing {
+                spec.unavailable("already_selected", "This lens is already selected")
+            } else {
+                spec
+            });
+        }
+    }
+    specs
+}
+
+/// Capture-settings Document child for [`tilo_resource::publish`].
+#[allow(
+    clippy::too_many_lines,
+    reason = "settings surface lists every capture preference inline"
+)]
+pub(crate) fn settings_document_resource(settings: &Settings) -> Resource {
+    let mut node = Resource::new("camera.settings", "camera.settings", "Capture settings");
+    for resolution in Resolution::ALL {
+        if let Some(spec) = immediate_spec(
+            &format!("resolution-{}", resolution.as_str()),
+            &format!("Use {} resolution", resolution.label()),
+            &CameraAction::SetResolution { resolution },
+        ) {
+            node = node.with_action(if resolution == settings.resolution {
+                spec.unavailable("already_selected", "This resolution is already selected")
+            } else {
+                spec
+            });
+        }
+    }
+    for photo_format in PhotoFormat::ALL {
+        if let Some(spec) = immediate_spec(
+            &format!("format-{}", photo_format.as_str()),
+            &format!("Use {} photos", photo_format.label()),
+            &CameraAction::SetPhotoFormat { photo_format },
+        ) {
+            node = node.with_action(if photo_format == settings.photo_format {
+                spec.unavailable("already_selected", "This photo format is already selected")
+            } else {
+                spec
+            });
+        }
+    }
+    for timer in Timer::ALL {
+        if let Some(spec) = immediate_spec(
+            &format!("timer-{}", timer.seconds()),
+            &format!("Use {} timer", timer.label()),
+            &CameraAction::SetTimer { timer },
+        ) {
+            node = node.with_action(if timer == settings.timer {
+                spec.unavailable("already_selected", "This timer is already selected")
+            } else {
+                spec
+            });
+        }
+    }
+    for (id, label, action) in [
+        (
+            "grid",
+            if settings.grid {
+                "Turn off composition grid"
+            } else {
+                "Turn on composition grid"
+            },
+            CameraAction::SetGrid { on: !settings.grid },
+        ),
+        (
+            "level",
+            if settings.level {
+                "Turn off level guide"
+            } else {
+                "Turn on level guide"
+            },
+            CameraAction::SetLevel {
+                on: !settings.level,
+            },
+        ),
+        (
+            "mirror-front",
+            if settings.mirror_front {
+                "Turn off front-camera mirroring"
+            } else {
+                "Turn on front-camera mirroring"
+            },
+            CameraAction::SetMirrorFront {
+                on: !settings.mirror_front,
+            },
+        ),
+        (
+            "geotag",
+            if settings.geotag {
+                "Turn off photo location"
+            } else {
+                "Turn on photo location"
+            },
+            CameraAction::SetGeotag {
+                on: !settings.geotag,
+            },
+        ),
+        (
+            "hdr",
+            if settings.hdr {
+                "Turn off HDR"
+            } else {
+                "Turn on HDR"
+            },
+            CameraAction::SetHdr { on: !settings.hdr },
+        ),
+    ] {
+        if let Some(spec) = immediate_spec(id, label, &action) {
+            node = node.with_action(spec);
+        }
+    }
+    for next in Facing::ALL {
+        if let Some(spec) = immediate_spec(
+            &format!("default-lens-{}", next.as_str()),
+            &format!("Use {} as the default camera", next.label()),
+            &CameraAction::SetDefaultFacing { facing: next },
+        ) {
+            node = node.with_action(if next == settings.default_facing {
+                spec.unavailable(
+                    "already_selected",
+                    "This default camera is already selected",
+                )
+            } else {
+                spec
+            });
+        }
+    }
+    node
+}
+
+/// Document-derived children: settings, recent handoff, scan history rows.
+pub(crate) fn publish_document_children(
+    settings: &Settings,
+    recent: Option<&CaptureItem>,
+    scans: &[crate::model::ScanEntry],
+) -> Vec<Resource> {
+    let mut children = vec![settings_document_resource(settings)];
+    if let Some(it) = recent {
+        children.push(capture_resource(it));
+    }
+    for scan in scans.iter().take(32) {
+        children.push(Resource::new(
+            format!("camera.scan:{}", scan.ts),
+            "camera.scan",
+            scan.raw.clone(),
+        ));
+    }
+    children
+}
+
+fn capture_effect_root(ctx: &CameraResourceCtx) -> Resource {
     let mut root = Resource::new("camera.capture", "camera.capture", "Capture");
-    // A focused capture app can always hand people to the single owner of
-    // photo browsing. This is intentionally an action, rather than a Camera
-    // gallery resource, so it creates no local collection state to drift.
     root = root.with_action(open_photos_action());
     if let Ok(spec) = ActionSpec::operation(
         "capture",
@@ -571,151 +722,10 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             )
         });
     }
-    for (id, label, mode) in [
-        ("photo-mode", "Use photo mode", CaptureMode::Photo),
-        ("video-mode", "Use video mode", CaptureMode::Video),
-    ] {
-        if let Some(spec) = immediate_spec(id, label, &CameraAction::SetMode { mode }) {
-            root = root.with_action(if ctx.recording {
-                spec.unavailable("recording_active", "Stop recording before changing mode")
-            } else {
-                spec
-            });
-        }
-    }
-    for facing in Facing::ALL {
-        if let Some(spec) = immediate_spec(
-            &format!("lens-{}", facing.as_str()),
-            &format!("Use {} lens", facing.label()),
-            &CameraAction::SetFacing { facing },
-        ) {
-            root = root.with_action(if facing == ctx.facing {
-                spec.unavailable("already_selected", "This lens is already selected")
-            } else {
-                spec
-            });
-        }
-    }
-    if let Some(it) = &ctx.recent {
-        root = root.with_child(capture_resource(it));
-    }
-    let mut settings = Resource::new("camera.settings", "camera.settings", "Capture settings");
-    for resolution in Resolution::ALL {
-        if let Some(spec) = immediate_spec(
-            &format!("resolution-{}", resolution.as_str()),
-            &format!("Use {} resolution", resolution.label()),
-            &CameraAction::SetResolution { resolution },
-        ) {
-            settings = settings.with_action(if resolution == ctx.settings.resolution {
-                spec.unavailable("already_selected", "This resolution is already selected")
-            } else {
-                spec
-            });
-        }
-    }
-    for photo_format in PhotoFormat::ALL {
-        if let Some(spec) = immediate_spec(
-            &format!("format-{}", photo_format.as_str()),
-            &format!("Use {} photos", photo_format.label()),
-            &CameraAction::SetPhotoFormat { photo_format },
-        ) {
-            settings = settings.with_action(if photo_format == ctx.settings.photo_format {
-                spec.unavailable("already_selected", "This photo format is already selected")
-            } else {
-                spec
-            });
-        }
-    }
-    for timer in Timer::ALL {
-        if let Some(spec) = immediate_spec(
-            &format!("timer-{}", timer.seconds()),
-            &format!("Use {} timer", timer.label()),
-            &CameraAction::SetTimer { timer },
-        ) {
-            settings = settings.with_action(if timer == ctx.settings.timer {
-                spec.unavailable("already_selected", "This timer is already selected")
-            } else {
-                spec
-            });
-        }
-    }
-    for (id, label, action) in [
-        (
-            "grid",
-            if ctx.settings.grid {
-                "Turn off composition grid"
-            } else {
-                "Turn on composition grid"
-            },
-            CameraAction::SetGrid {
-                on: !ctx.settings.grid,
-            },
-        ),
-        (
-            "level",
-            if ctx.settings.level {
-                "Turn off level guide"
-            } else {
-                "Turn on level guide"
-            },
-            CameraAction::SetLevel {
-                on: !ctx.settings.level,
-            },
-        ),
-        (
-            "mirror-front",
-            if ctx.settings.mirror_front {
-                "Turn off front-camera mirroring"
-            } else {
-                "Turn on front-camera mirroring"
-            },
-            CameraAction::SetMirrorFront {
-                on: !ctx.settings.mirror_front,
-            },
-        ),
-        (
-            "geotag",
-            if ctx.settings.geotag {
-                "Turn off photo location"
-            } else {
-                "Turn on photo location"
-            },
-            CameraAction::SetGeotag {
-                on: !ctx.settings.geotag,
-            },
-        ),
-        (
-            "hdr",
-            if ctx.settings.hdr {
-                "Turn off HDR"
-            } else {
-                "Turn on HDR"
-            },
-            CameraAction::SetHdr {
-                on: !ctx.settings.hdr,
-            },
-        ),
-    ] {
-        if let Some(spec) = immediate_spec(id, label, &action) {
-            settings = settings.with_action(spec);
-        }
-    }
-    for facing in Facing::ALL {
-        if let Some(spec) = immediate_spec(
-            &format!("default-lens-{}", facing.as_str()),
-            &format!("Use {} as the default camera", facing.label()),
-            &CameraAction::SetDefaultFacing { facing },
-        ) {
-            settings = settings.with_action(if facing == ctx.settings.default_facing {
-                spec.unavailable(
-                    "already_selected",
-                    "This default camera is already selected",
-                )
-            } else {
-                spec
-            });
-        }
-    }
+    root
+}
+
+fn scanner_effect_root(ctx: &CameraResourceCtx) -> Resource {
     let mut scanner = Resource::new("camera.scanner", "camera.scanner", "Code scanner");
     if let Ok(spec) = ActionSpec::operation(
         "import-image",
@@ -730,7 +740,10 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             spec
         });
     }
+    scanner
+}
 
+fn document_effect_root(ctx: &CameraResourceCtx) -> Resource {
     let mut document = Resource::new(
         "camera.document-scanner",
         "camera.document-scanner",
@@ -811,35 +824,105 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             });
         }
     }
-    vec![root, scanner, document, settings, camera]
+    document
 }
 
-/// Resolve a stable root or the single recent-capture handoff independently
-/// of the bounded contextual snapshot. Camera never enumerates a roll.
+/// Hosted-only extras that are not document state: shutter / record / device
+/// chooser, code-scanner import, and document-scanner Effects. Mode, lens and
+/// settings Document ops live on [`tilo_resource::publish`].
+pub(crate) fn live_effect_extras(ctx: &CameraResourceCtx) -> Vec<Resource> {
+    vec![
+        capture_effect_root(ctx),
+        scanner_effect_root(ctx),
+        document_effect_root(ctx),
+    ]
+}
+
+fn state_from_ctx(ctx: &CameraResourceCtx) -> crate::resource::CameraState {
+    crate::resource::CameraState {
+        mode: ctx.mode,
+        facing: ctx.facing,
+        settings: ctx.settings,
+        scans: Vec::new(),
+        recent: ctx.recent.as_ref().map(|item| doc::SharedCapture {
+            id: item.id.clone(),
+            media_id: item.media_id.clone().unwrap_or_default(),
+            kind: if item.is_video {
+                CaptureKind::Video
+            } else {
+                CaptureKind::Photo
+            },
+            ts: 0,
+            w: 0,
+            h: 0,
+            dur_ms: 0,
+            label: item.label.clone(),
+            facing: ctx.facing,
+        }),
+    }
+}
+
+/// The published camera door plus live shutter and scanner extras.
+///
+/// Document mode, lens, settings, and the recent handoff come from
+/// [`tilo_resource::publish`]. Capture, code-scanner, and document-scanner
+/// Effects stay beside that root because they are device I/O, not shared state.
+pub fn provide_resources(ctx: &CameraResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    // Mode, lens, and settings are the document once `mode` has been written.
+    // A caller that has not written them yet still publishes its context.
+    // Shutter and scanner Effects stay live extras.
+    let has_document = automerge::ReadDoc::get(doc, &automerge::ROOT, "mode")
+        .ok()
+        .flatten()
+        .is_some();
+    let state = if has_document {
+        <crate::resource::Camera as ui::tilo_resource::Resource>::read(doc)
+            .unwrap_or_else(|_| state_from_ctx(ctx))
+    } else {
+        state_from_ctx(ctx)
+    };
+    let mut resources = vec![ui::tilo_resource::publish::<crate::resource::Camera>(
+        crate::resource::CAMERA_RESOURCE_ID,
+        "Camera",
+        &state,
+    )];
+    resources.extend(live_effect_extras(ctx));
+    resources
+}
+
+fn find_resource(resource: &Resource, id: &str) -> Option<Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource.clone());
+    }
+    resource
+        .children
+        .iter()
+        .find_map(|child| find_resource(child, id))
+}
+
+/// Resolve a stable root or the single recent-capture handoff from the
+/// published camera tree. Camera never enumerates a roll.
 pub fn resolve_resource(ctx: &CameraResourceCtx, doc: &AutoCommit, id: &str) -> Option<Resource> {
-    if matches!(
-        id,
-        "camera.capture"
-            | "camera.scanner"
-            | "camera.document-scanner"
-            | "camera.settings"
-            | "camera"
-    ) {
-        return provide_resources(ctx, doc)
-            .into_iter()
-            .find(|resource| resource.id.as_str() == id);
-    }
-    ctx.recent
-        .as_ref()
-        .and_then(|item| (id == capture_resource_id(item)).then(|| capture_resource(item)))
+    provide_resources(ctx, doc)
+        .iter()
+        .find_map(|resource| find_resource(resource, id))
 }
 
-impl ResourceProvider for crate::app::CameraApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.camera_resource_ctx(), doc)
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::CameraApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        let state =
+            <crate::resource::Camera as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+        let mut resources = vec![ui::tilo_resource::publish::<crate::resource::Camera>(
+            crate::resource::CAMERA_RESOURCE_ID,
+            "Camera",
+            &state,
+        )];
+        resources.extend(live_effect_extras(&self.camera_resource_ctx()));
+        resources
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         self.resolve_camera_resource(doc, id)
     }
 }
@@ -866,101 +949,11 @@ mod tests {
         (app, doc)
     }
 
-    /// Camera publishes capture/scanner/settings operations plus at most one
-    /// contextual handoff, never a media library management surface.
-    #[test]
-    fn published_resources_respect_camera_ownership() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        assert!(
-            resources.len() >= 3,
-            "capture, scanner, document scanner, settings, and Camera discovery"
-        );
-        let captures = resources
-            .iter()
-            .find(|resource| resource.id.as_str() == "camera.capture")
-            .expect("capture root");
-        assert_eq!(captures.kind, "camera.capture");
-        let browse = captures
-            .actions
-            .iter()
-            .find(|action| action.id == "open-photos")
-            .expect("capture surface routes browsing to Photos");
-        assert_eq!(
-            browse.operation_type.as_deref(),
-            Some(APPLICATION_LAUNCH_TYPE)
-        );
-        let ActionInput::Immediate(encoded) = &browse.input else {
-            panic!("Photos browse is a zero-argument application handoff");
-        };
-        let browse_payload: serde_json::Value =
-            serde_json::from_slice(&encoded.payload).expect("Photos handoff payload JSON");
-        assert_eq!(browse_payload["app_id"].as_str(), Some("so.tilo.photos"));
-        assert!(browse_payload.get("content_hash").is_none());
-        assert!(captures.children.len() <= 1);
-        for resource in &captures.children {
-            let action = resource
-                .actions
-                .iter()
-                .find(|action| action.id == "open")
-                .expect("capture has its typed open handoff");
-            assert_eq!(
-                action.operation_type.as_deref(),
-                Some(APPLICATION_LAUNCH_TYPE)
-            );
-            assert!(
-                !resource.actions.iter().any(|action| {
-                    matches!(action.id.as_str(), "favorite" | "share" | "delete-file")
-                }),
-                "Camera does not publish media-library management"
-            );
-            let ActionInput::Immediate(encoded) = &action.input else {
-                panic!("zero-argument handoff must be immediate");
-            };
-            let payload: serde_json::Value =
-                serde_json::from_slice(&encoded.payload).expect("handoff payload JSON");
-            assert!(matches!(
-                payload["app_id"].as_str(),
-                Some("so.tilo.photos" | "so.tilo.video-player")
-            ));
-            assert!(
-                payload["content_hash"]
-                    .as_str()
-                    .is_some_and(|hash| hash.len() == 64)
-            );
-        }
-        let ids: Vec<_> = resources
-            .iter()
-            .map(|resource| resource.id.as_str())
-            .collect();
-        assert!(ids.contains(&"camera.scanner"));
-        assert!(ids.contains(&"camera.document-scanner"));
-        assert!(ids.contains(&"camera.settings"));
-        assert!(
-            !ids.iter()
-                .any(|id| { matches!(*id, "so.tilo.photos.app" | "so.tilo.video-player.app") }),
-            "handoff applications are destinations on the current capture, never Camera roots"
-        );
-        assert!(
-            !ids.iter()
-                .any(|id| id.contains("gallery") || id.contains("library"))
-        );
-    }
-
-    #[test]
-    fn capture_handoff_destination_is_typed_and_kind_specific() {
-        assert_eq!(capture_destination(false), ("so.tilo.photos", "Photos"));
-        assert_eq!(
-            capture_destination(true),
-            ("so.tilo.video-player", "Video Player")
-        );
-    }
-
     /// The resource tree a sample Camera publishes once it has synced `doc`.
     fn published(doc: &AutoCommit) -> Vec<Resource> {
         let mut app = CameraApp::sample();
         app.sync(&mut doc.clone(), &ROOT);
-        Widget::resources(&app, doc)
+        ui::resources::resources(&app, doc)
     }
 
     fn encoded(action: &CameraAction) -> EncodedAction {
@@ -1004,7 +997,7 @@ mod tests {
             set_mode => |_| encoded(&CameraAction::SetMode { mode: CaptureMode::Video }),
         ],
         encodes: [
-            video_mode => ("camera.capture", "video-mode", |_, _| {
+            video_mode => ("camera", "video-mode", |_, _| {
                 encoded(&CameraAction::SetMode { mode: CaptureMode::Video })
             }),
             resolution_4k => ("camera.settings", "resolution-4k", |_, _| {
@@ -1019,166 +1012,278 @@ mod tests {
     }
 
     #[test]
-    fn legacy_media_management_actions_are_decodable_but_refused() {
-        let mut doc = AutoCommit::new();
-        let action = CameraAction::RemoveCapture {
-            id: "IMG_refuse.jpg".into(),
-        };
-        assert!(matches!(
-            action.apply(&mut doc),
-            Err(ActionError::Refused(message)) if message.contains("Photos or Video Player")
-        ));
-        let favorite = CameraAction::SetFavorite {
-            id: "IMG_refuse.jpg".into(),
-            on: true,
-        };
-        assert!(matches!(
-            favorite.apply(&mut doc),
-            Err(ActionError::Refused(message)) if message.contains("Photos")
-        ));
-    }
-
-    #[test]
-    fn camera_root_is_a_local_reveal_operation_and_discoverable_resource() {
-        let resources = provide_resources(&CameraResourceCtx::default(), &AutoCommit::new());
-        let camera = resources
-            .iter()
-            .find(|resource| resource.id.as_str() == "camera")
-            .expect("camera discovery resource");
-        assert!(camera.actions.iter().any(|spec| spec.id == "open-scanner"));
-        let scanner = camera
-            .actions
-            .iter()
-            .find(|spec| spec.id == "open-scanner")
-            .expect("scanner reveal action");
-        assert_eq!(scanner.kind, OperationKind::View);
-    }
-
-    #[test]
-    fn ctrl_k_exposes_every_capture_preference() {
-        let resources = provide_resources(&CameraResourceCtx::default(), &AutoCommit::new());
-        let settings = resources
-            .iter()
-            .find(|resource| resource.id.as_str() == "camera.settings")
-            .expect("stable settings resource");
-        let ids: Vec<&str> = settings
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect();
-        for id in [
-            "resolution-4k",
-            "format-png",
-            "timer-3",
-            "grid",
-            "level",
-            "mirror-front",
-            "geotag",
-            "hdr",
-            "default-lens-front",
-        ] {
-            assert!(ids.contains(&id), "missing settings action {id}: {ids:?}");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn published_resources_hand_captures_to_their_owners_and_refuse_library_management() {
+        // Phase `published_resources_respect_camera_ownership`.
+        // Camera publishes capture/scanner/settings operations plus at most one
+        // contextual handoff, never a media library management surface.
+        {
+            let (app, doc) = seeded();
+            let resources = ui::resources::resources(&app, &doc);
+            assert!(
+                resources.len() >= 3,
+                "capture, scanner, document scanner, settings, and Camera discovery"
+            );
+            let captures = resources
+                .iter()
+                .find(|resource| resource.id.as_str() == "camera.capture")
+                .expect("capture root");
+            assert_eq!(captures.kind, "camera.capture");
+            let browse = captures
+                .actions
+                .iter()
+                .find(|action| action.id == "open-photos")
+                .expect("capture surface routes browsing to Photos");
+            assert_eq!(
+                browse.operation_type.as_deref(),
+                Some(APPLICATION_LAUNCH_TYPE)
+            );
+            let ActionInput::Immediate(encoded) = &browse.input else {
+                panic!("Photos browse is a zero-argument application handoff");
+            };
+            let browse_payload: serde_json::Value =
+                serde_json::from_slice(&encoded.payload).expect("Photos handoff payload JSON");
+            assert_eq!(browse_payload["app_id"].as_str(), Some("so.tilo.photos"));
+            assert!(browse_payload.get("content_hash").is_none());
+            assert!(captures.children.len() <= 1);
+            let camera = resources
+                .iter()
+                .find(|resource| resource.id.as_str() == "camera")
+                .expect("camera resource");
+            for resource in camera.children.iter().filter(|resource| {
+                matches!(resource.kind.as_str(), "camera.photo" | "camera.video")
+            }) {
+                let action = resource
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "open")
+                    .expect("capture has its typed open handoff");
+                assert_eq!(
+                    action.operation_type.as_deref(),
+                    Some(APPLICATION_LAUNCH_TYPE)
+                );
+                assert!(
+                    !resource.actions.iter().any(|action| {
+                        matches!(action.id.as_str(), "favorite" | "share" | "delete-file")
+                    }),
+                    "Camera does not publish media-library management"
+                );
+                let ActionInput::Immediate(encoded) = &action.input else {
+                    panic!("zero-argument handoff must be immediate");
+                };
+                let payload: serde_json::Value =
+                    serde_json::from_slice(&encoded.payload).expect("handoff payload JSON");
+                assert!(matches!(
+                    payload["app_id"].as_str(),
+                    Some("so.tilo.photos" | "so.tilo.video-player")
+                ));
+                assert!(
+                    payload["content_hash"]
+                        .as_str()
+                        .is_some_and(|hash| hash.len() == 64)
+                );
+            }
+            let ids: Vec<_> = resources
+                .iter()
+                .flat_map(|resource| {
+                    std::iter::once(resource.id.as_str())
+                        .chain(resource.children.iter().map(|child| child.id.as_str()))
+                })
+                .collect();
+            assert!(ids.contains(&"camera.scanner"));
+            assert!(ids.contains(&"camera.document-scanner"));
+            assert!(ids.contains(&"camera.settings"));
+            assert!(
+                !ids.iter()
+                    .any(|id| { matches!(*id, "so.tilo.photos.app" | "so.tilo.video-player.app") }),
+                "handoff applications are destinations on the current capture, never Camera roots"
+            );
+            assert!(
+                !ids.iter()
+                    .any(|id| id.contains("gallery") || id.contains("library"))
+            );
         }
-    }
-
-    #[test]
-    fn device_effects_are_honest_and_unverified_captures_publish_no_action() {
-        let resources = provide_resources(
-            &CameraResourceCtx {
+        // Phase `capture_handoff_destination_is_typed_and_kind_specific`.
+        {
+            assert_eq!(capture_destination(false), ("so.tilo.photos", "Photos"));
+            assert_eq!(
+                capture_destination(true),
+                ("so.tilo.video-player", "Video Player")
+            );
+        }
+        // Phase `capture_surface_exposes_at_most_one_recent_handoff`.
+        {
+            let ctx = CameraResourceCtx {
                 recent: Some(CaptureItem {
-                    id: "IMG_1.jpg".into(),
-                    label: "Capture".into(),
+                    id: "IMG_latest.jpg".into(),
+                    label: "Latest capture".into(),
                     is_video: false,
-                    media_id: None,
+                    media_id: Some(format!("{}{:064x}", crate::media::MEDIA_PREFIX, 1)),
                 }),
                 ..CameraResourceCtx::default()
-            },
-            &AutoCommit::new(),
-        );
-        let capture = resources[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "capture")
-            .unwrap();
-        assert_eq!(capture.kind, OperationKind::Effect);
-        assert!(
-            !capture.contract.availability.is_available(),
-            "a palette must not claim capture works without a feed"
-        );
-        assert!(resources[0].children[0].actions.is_empty());
-
-        let available = provide_resources(
-            &CameraResourceCtx {
-                feed_available: true,
-                ..CameraResourceCtx::default()
-            },
-            &AutoCommit::new(),
-        );
-        let capture = available[0]
-            .actions
-            .iter()
-            .find(|action| action.id == "capture")
-            .unwrap();
-        assert!(capture.contract.availability.is_available());
-    }
-
-    #[test]
-    fn unavailable_camera_publishes_real_recovery_operations() {
-        let resources = provide_resources(
-            &CameraResourceCtx {
-                camera_permission_denied: true,
-                camera_devices: vec!["/dev/video0".into(), "/dev/video2".into()],
-                ..CameraResourceCtx::default()
-            },
-            &AutoCommit::new(),
-        );
-        let actions = &resources[0].actions;
-        let ids: Vec<&str> = actions.iter().map(|action| action.id.as_str()).collect();
-        for id in [
-            "retry-camera",
-            "open-camera-privacy",
-            "camera-device-/dev/video0",
-            "camera-device-/dev/video2",
-        ] {
-            assert!(ids.contains(&id), "missing recovery action {id}: {ids:?}");
-        }
-        assert!(
-            actions
+            };
+            let doc = AutoCommit::new();
+            let page = provide_resources(&ctx, &doc);
+            assert_eq!(
+                page[0]
+                    .children
+                    .iter()
+                    .filter(|child| matches!(child.kind.as_str(), "camera.photo" | "camera.video"))
+                    .count(),
+                1
+            );
+            let recent = resolve_resource(&ctx, &doc, "camera.photo:IMG_latest.jpg")
+                .expect("recent capture resolves");
+            let open = recent
+                .actions
                 .iter()
-                .filter(|action| {
-                    matches!(
-                        action.id.as_str(),
-                        "retry-camera"
-                            | "open-camera-privacy"
-                            | "camera-device-/dev/video0"
-                            | "camera-device-/dev/video2"
-                    )
-                })
-                .all(|action| action.kind == OperationKind::Effect)
-        );
+                .find(|action| action.id == "open")
+                .expect("capture has a canonical open action");
+            assert_eq!(open.kind, OperationKind::Effect);
+        }
     }
 
     #[test]
-    fn capture_surface_exposes_at_most_one_recent_handoff() {
-        let ctx = CameraResourceCtx {
-            recent: Some(CaptureItem {
-                id: "IMG_latest.jpg".into(),
-                label: "Latest capture".into(),
-                is_video: false,
-                media_id: Some(format!("{}{:064x}", crate::media::MEDIA_PREFIX, 1)),
-            }),
-            ..CameraResourceCtx::default()
-        };
-        let doc = AutoCommit::new();
-        let page = provide_resources(&ctx, &doc);
-        assert_eq!(page[0].children.len(), 1);
-        let recent = resolve_resource(&ctx, &doc, "camera.photo:IMG_latest.jpg")
-            .expect("recent capture resolves");
-        let open = recent
-            .actions
-            .iter()
-            .find(|action| action.id == "open")
-            .expect("capture has a canonical open action");
-        assert_eq!(open.kind, OperationKind::Effect);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn provided_resources_are_honest_about_devices_and_expose_every_preference() {
+        // Phase `camera_root_is_a_local_reveal_operation_and_discoverable_resource`.
+        {
+            let resources = provide_resources(&CameraResourceCtx::default(), &AutoCommit::new());
+            let camera = resources
+                .iter()
+                .find(|resource| resource.id.as_str() == "camera")
+                .expect("camera discovery resource");
+            assert!(camera.actions.iter().any(|spec| spec.id == "open-scanner"));
+            let scanner = camera
+                .actions
+                .iter()
+                .find(|spec| spec.id == "open-scanner")
+                .expect("scanner reveal action");
+            assert_eq!(scanner.kind, OperationKind::View);
+        }
+        // Phase `ctrl_k_exposes_every_capture_preference`.
+        {
+            let resources = provide_resources(&CameraResourceCtx::default(), &AutoCommit::new());
+            let settings = resources
+                .iter()
+                .flat_map(|resource| std::iter::once(resource).chain(resource.children.iter()))
+                .find(|resource| resource.id.as_str() == "camera.settings")
+                .expect("stable settings resource");
+            let ids: Vec<&str> = settings
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect();
+            for id in [
+                "resolution-4k",
+                "format-png",
+                "timer-3",
+                "grid",
+                "level",
+                "mirror-front",
+                "geotag",
+                "hdr",
+                "default-lens-front",
+            ] {
+                assert!(ids.contains(&id), "missing settings action {id}: {ids:?}");
+            }
+        }
+        // Phase `device_effects_are_honest_and_unverified_captures_publish_no_action`.
+        {
+            let resources = provide_resources(
+                &CameraResourceCtx {
+                    recent: Some(CaptureItem {
+                        id: "IMG_1.jpg".into(),
+                        label: "Capture".into(),
+                        is_video: false,
+                        media_id: None,
+                    }),
+                    ..CameraResourceCtx::default()
+                },
+                &AutoCommit::new(),
+            );
+            let capture_root = resources
+                .iter()
+                .find(|resource| resource.id.as_str() == "camera.capture")
+                .expect("capture effect root");
+            let capture = capture_root
+                .actions
+                .iter()
+                .find(|a| a.id == "capture")
+                .unwrap();
+            assert_eq!(capture.kind, OperationKind::Effect);
+            assert!(
+                !capture.contract.availability.is_available(),
+                "a palette must not claim capture works without a feed"
+            );
+            let unverified = resources[0]
+                .children
+                .iter()
+                .find(|child| child.kind.as_str() == "camera.photo")
+                .expect("recent handoff");
+            assert!(unverified.actions.is_empty());
+
+            let available = provide_resources(
+                &CameraResourceCtx {
+                    feed_available: true,
+                    ..CameraResourceCtx::default()
+                },
+                &AutoCommit::new(),
+            );
+            let capture = available
+                .iter()
+                .find(|resource| resource.id.as_str() == "camera.capture")
+                .expect("capture effect root")
+                .actions
+                .iter()
+                .find(|action| action.id == "capture")
+                .unwrap();
+            assert!(capture.contract.availability.is_available());
+        }
+        // Phase `unavailable_camera_publishes_real_recovery_operations`.
+        {
+            let resources = provide_resources(
+                &CameraResourceCtx {
+                    camera_permission_denied: true,
+                    camera_devices: vec!["/dev/video0".into(), "/dev/video2".into()],
+                    ..CameraResourceCtx::default()
+                },
+                &AutoCommit::new(),
+            );
+            let actions = &resources
+                .iter()
+                .find(|resource| resource.id.as_str() == "camera.capture")
+                .expect("capture effect root")
+                .actions;
+            let ids: Vec<&str> = actions.iter().map(|action| action.id.as_str()).collect();
+            for id in [
+                "retry-camera",
+                "open-camera-privacy",
+                "camera-device-/dev/video0",
+                "camera-device-/dev/video2",
+            ] {
+                assert!(ids.contains(&id), "missing recovery action {id}: {ids:?}");
+            }
+            assert!(
+                actions
+                    .iter()
+                    .filter(|action| {
+                        matches!(
+                            action.id.as_str(),
+                            "retry-camera"
+                                | "open-camera-privacy"
+                                | "camera-device-/dev/video0"
+                                | "camera-device-/dev/video2"
+                        )
+                    })
+                    .all(|action| action.kind == OperationKind::Effect)
+            );
+        }
     }
 }

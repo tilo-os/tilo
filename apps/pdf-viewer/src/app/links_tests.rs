@@ -11,7 +11,7 @@ use crate::source::LinkTarget;
 
 fn links_fixture() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../crates/doc/pdf/tests/fixtures/links.pdf")
+        .join("../../crates/platform/tilo-pdf/tests/fixtures/links.pdf")
 }
 
 /// The reader on the four-page links fixture, sized like a desktop window,
@@ -24,7 +24,7 @@ fn open_links() -> Option<(PdfApp, ui::State)> {
         return None;
     }
     let mut state = ui::State::new();
-    let checkout = app.record_intent().expect("a markup record");
+    let checkout = ui::record::capability::record_intent(&app).expect("a markup record");
     ui::RecordSet::in_memory().checkout(&mut state, None, &checkout);
     app.sync(&mut state.doc, &state.root);
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
@@ -79,14 +79,16 @@ fn click(app: &mut PdfApp, state: &mut ui::State, p: Point) {
         let mut focus = None;
         app.handle_event(
             &ev,
-            1.0,
-            &mods,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 }
@@ -95,10 +97,13 @@ fn is_internal(t: &LinkTarget) -> bool {
     matches!(t, LinkTarget::Page { .. })
 }
 
+/// Without an engine on this host the first open skips (with a message)
+/// and no later case runs either, exactly as each case skipped on its own.
 #[test]
 #[serial_test::serial(pdfium)]
-fn hovering_a_link_shows_a_pointer_only_in_the_select_tool() {
+fn internal_links_show_a_pointer_and_navigate_through_the_page_plan() {
     use ui::Widget as _;
+    // Hovering shows a pointer only in the select tool.
     let Some((mut app, _state)) = open_links() else {
         return;
     };
@@ -119,66 +124,78 @@ fn hovering_a_link_shows_a_pointer_only_in_the_select_tool() {
         None,
         "markup tools draw over links rather than follow them"
     );
+
+    // Clicking an internal link goes to its destination.
+    {
+        let (mut app, mut state) = open_links().expect("the engine opened the fixture above");
+        let at = link_centre(&mut app, 1, is_internal);
+        click(&mut app, &mut state, at);
+        assert_eq!(app.current_page, 3, "the appendix is on page three");
+        // The heading sits part way down its page, and the view scrolls to it
+        // rather than to the top of the page.
+        let page_top = 2.0 * app.stack_unit() * app.zoom();
+        assert!(
+            app.scroll_y() > page_top + 20.0 * app.zoom(),
+            "scrolled to the destination point ({} vs page top {page_top})",
+            app.scroll_y()
+        );
+    }
+
+    // An internal link follows its page through reorder and deletion.
+    {
+        let (mut app, mut state) = open_links().expect("the engine opened the fixture above");
+        // Move the appendix (source page 3) to the front: it is now page 1 and
+        // the link's own page is page 2.
+        app.perform_action(&mut state.doc, &move_page_plan_action("source-3", None));
+        app.sync(&mut state.doc, &state.root);
+        assert_eq!(app.resource_page_sources, vec![3, 1, 2, 4]);
+        app.go_to_page(2);
+        let at = link_centre(&mut app, 2, is_internal);
+        click(&mut app, &mut state, at);
+        assert_eq!(app.current_page, 1, "the destination moved to the front");
+
+        // Delete the appendix: the link says so instead of jumping anywhere.
+        app.perform_action(&mut state.doc, &delete_page_plan_action("source-3"));
+        app.sync(&mut state.doc, &state.root);
+        assert_eq!(app.resource_page_sources, vec![1, 2, 4]);
+        app.go_to_page(1);
+        let at = link_centre(&mut app, 1, is_internal);
+        // A separate click much later, not the second half of a double-click
+        // on the same screen spot.
+        app.drag_select = DragSelect::new();
+        click(&mut app, &mut state, at);
+        assert_eq!(app.current_page, 1);
+        assert!(
+            app.status_note
+                .as_deref()
+                .is_some_and(|note| note.contains("no longer in the document")),
+            "{:?}",
+            app.status_note
+        );
+    }
+
+    // Markup over a link keeps its own click.
+    {
+        let (mut app, mut state) = open_links().expect("the engine opened the fixture above");
+        let at = link_centre(&mut app, 1, is_internal);
+        let (_, pt) = app.hit_page(at).expect("on page one");
+        app.annotations.push(Annotation::new(
+            1,
+            AnnoKind::highlight(PtRect::new(pt.0 - 5.0, pt.1 - 5.0, 10.0, 10.0)),
+            Swatch::Yellow,
+            "Ada",
+        ));
+        let id = app.annotations.last().unwrap().id.clone();
+        click(&mut app, &mut state, at);
+        assert_eq!(app.selected_anno.as_deref(), Some(id.as_str()));
+        assert_eq!(app.current_page, 1, "the link underneath was not followed");
+    }
 }
 
 #[test]
 #[serial_test::serial(pdfium)]
-fn clicking_an_internal_link_goes_to_its_destination() {
-    let Some((mut app, mut state)) = open_links() else {
-        return;
-    };
-    let at = link_centre(&mut app, 1, is_internal);
-    click(&mut app, &mut state, at);
-    assert_eq!(app.current_page, 3, "the appendix is on page three");
-    // The heading sits part way down its page, and the view scrolls to it
-    // rather than to the top of the page.
-    let page_top = 2.0 * app.stack_unit() * app.zoom();
-    assert!(
-        app.scroll_y() > page_top + 20.0 * app.zoom(),
-        "scrolled to the destination point ({} vs page top {page_top})",
-        app.scroll_y()
-    );
-}
-
-#[test]
-#[serial_test::serial(pdfium)]
-fn an_internal_link_follows_its_page_through_reorder_and_deletion() {
-    let Some((mut app, mut state)) = open_links() else {
-        return;
-    };
-    // Move the appendix (source page 3) to the front: it is now page 1 and
-    // the link's own page is page 2.
-    app.perform_action(&mut state.doc, &move_page_plan_action("source-3", None));
-    app.sync(&mut state.doc, &state.root);
-    assert_eq!(app.resource_page_sources, vec![3, 1, 2, 4]);
-    app.go_to_page(2);
-    let at = link_centre(&mut app, 2, is_internal);
-    click(&mut app, &mut state, at);
-    assert_eq!(app.current_page, 1, "the destination moved to the front");
-
-    // Delete the appendix: the link says so instead of jumping anywhere.
-    app.perform_action(&mut state.doc, &delete_page_plan_action("source-3"));
-    app.sync(&mut state.doc, &state.root);
-    assert_eq!(app.resource_page_sources, vec![1, 2, 4]);
-    app.go_to_page(1);
-    let at = link_centre(&mut app, 1, is_internal);
-    // A separate click much later, not the second half of a double-click
-    // on the same screen spot.
-    app.drag_select = DragSelect::new();
-    click(&mut app, &mut state, at);
-    assert_eq!(app.current_page, 1);
-    assert!(
-        app.status_note
-            .as_deref()
-            .is_some_and(|note| note.contains("no longer in the document")),
-        "{:?}",
-        app.status_note
-    );
-}
-
-#[test]
-#[serial_test::serial(pdfium)]
-fn clicking_an_external_link_hands_the_url_to_the_host() {
+fn external_links_hand_only_web_and_mail_urls_to_the_host() {
+    // Clicking an external link hands the URL to the host.
     let Some((mut app, mut state)) = open_links() else {
         return;
     };
@@ -187,52 +204,29 @@ fn clicking_an_external_link_hands_the_url_to_the_host() {
     ui::host::scoped(&services, || click(&mut app, &mut state, at));
     assert_eq!(recorder.opened_uris(), ["https://example.org/docs"]);
     assert_eq!(app.current_page, 1, "an external link does not navigate");
-}
 
-#[test]
-#[serial_test::serial(pdfium)]
-fn only_web_and_mail_links_are_opened() {
-    let Some((mut app, _state)) = open_links() else {
-        return;
-    };
-    let (services, recorder) = ui::host::HostServices::recording();
-    let rect = PtRect::new(0.0, 0.0, 10.0, 10.0);
-    ui::host::scoped(&services, || {
-        for target in [
-            LinkTarget::Uri("mailto:ada@example.org".into()),
-            LinkTarget::Uri("javascript:alert(1)".into()),
-            LinkTarget::Uri("file:///etc/passwd".into()),
-            LinkTarget::File("other.pdf".into()),
-        ] {
-            app.activate_link(1, &crate::source::PageLink { rect, target });
-        }
-    });
-    assert_eq!(recorder.opened_uris(), ["mailto:ada@example.org"]);
-    assert!(
-        app.status_note
-            .as_deref()
-            .is_some_and(|note| note.contains("other files")),
-        "{:?}",
-        app.status_note
-    );
-}
-
-#[test]
-#[serial_test::serial(pdfium)]
-fn markup_over_a_link_keeps_its_own_click() {
-    let Some((mut app, mut state)) = open_links() else {
-        return;
-    };
-    let at = link_centre(&mut app, 1, is_internal);
-    let (_, pt) = app.hit_page(at).expect("on page one");
-    app.annotations.push(Annotation::new(
-        1,
-        AnnoKind::highlight(PtRect::new(pt.0 - 5.0, pt.1 - 5.0, 10.0, 10.0)),
-        Swatch::Yellow,
-        "Ada",
-    ));
-    let id = app.annotations.last().unwrap().id.clone();
-    click(&mut app, &mut state, at);
-    assert_eq!(app.selected_anno.as_deref(), Some(id.as_str()));
-    assert_eq!(app.current_page, 1, "the link underneath was not followed");
+    // Only web and mail links are opened.
+    {
+        let (mut app, _state) = open_links().expect("the engine opened the fixture above");
+        let (services, recorder) = ui::host::HostServices::recording();
+        let rect = PtRect::new(0.0, 0.0, 10.0, 10.0);
+        ui::host::scoped(&services, || {
+            for target in [
+                LinkTarget::Uri("mailto:ada@example.org".into()),
+                LinkTarget::Uri("javascript:alert(1)".into()),
+                LinkTarget::Uri("file:///etc/passwd".into()),
+                LinkTarget::File("other.pdf".into()),
+            ] {
+                app.activate_link(1, &crate::source::PageLink { rect, target });
+            }
+        });
+        assert_eq!(recorder.opened_uris(), ["mailto:ada@example.org"]);
+        assert!(
+            app.status_note
+                .as_deref()
+                .is_some_and(|note| note.contains("other files")),
+            "{:?}",
+            app.status_note
+        );
+    }
 }

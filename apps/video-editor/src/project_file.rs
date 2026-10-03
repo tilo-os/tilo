@@ -229,7 +229,7 @@ pub fn decode(bytes: &[u8]) -> Result<Project, ProjectFileError> {
 ///
 /// [`ProjectFileError::Io`] when the file cannot be written.
 pub fn save(path: &Path, project: &Project) -> Result<(), ProjectFileError> {
-    std::fs::write(path, encode(project))
+    crate::files::save(path, &encode(project))
         .map_err(|e| ProjectFileError::Io(format!("Could not save: {e}")))
 }
 
@@ -240,8 +240,8 @@ pub fn save(path: &Path, project: &Project) -> Result<(), ProjectFileError> {
 /// [`ProjectFileError::Io`] when the file cannot be read, otherwise whatever
 /// [`decode`] reports for its contents.
 pub fn load(path: &Path) -> Result<Project, ProjectFileError> {
-    let bytes =
-        std::fs::read(path).map_err(|e| ProjectFileError::Io(format!("Could not open: {e}")))?;
+    let bytes = crate::files::read(path)
+        .map_err(|e| ProjectFileError::Io(format!("Could not open: {e}")))?;
     decode(&bytes)
 }
 
@@ -329,7 +329,7 @@ pub mod recents {
         if id.contains('/') || id.contains('\\') || id == "." || id == ".." {
             return None;
         }
-        let base = xdg_paths::xdg::data_home()?;
+        let base = tilo_paths::xdg::data_home()?;
         Some(base.join(id))
     }
 
@@ -345,7 +345,10 @@ pub mod recents {
     /// volume must not permanently forget the project on it.
     pub fn load() -> Vec<PathBuf> {
         let Some(p) = path() else { return Vec::new() };
-        let Ok(text) = std::fs::read_to_string(&p) else {
+        let Some(text) = crate::files::read(&p)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+        else {
             return Vec::new();
         };
         let all: Vec<PathBuf> = serde_json::from_str(&text).unwrap_or_default();
@@ -373,13 +376,10 @@ pub mod recents {
     /// in-memory list is still correct for this session.
     pub fn remember(list: &[PathBuf], entry: &Path) -> Vec<PathBuf> {
         let next = promote(list, entry);
-        if let Some(p) = path() {
-            if let Some(parent) = p.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Ok(text) = serde_json::to_string(&next) {
-                let _ = std::fs::write(&p, text);
-            }
+        if let Some(p) = path()
+            && let Ok(text) = serde_json::to_string(&next)
+        {
+            let _ = crate::files::write(&p, text.as_bytes());
         }
         next
     }
@@ -455,314 +455,311 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_project_comes_back_whole() {
-        // Not "it decoded" — every field that has ever been added to the
-        // model, read back and compared. A format that loses `solo` or the
-        // keyframe curve is a format that silently eats a user's work.
-        let p = rich_project();
-        let back = decode(&encode(&p)).expect("round-trips");
+    fn project_files_round_trip_whole_with_their_ids() {
+        // Case `a_saved_project_comes_back_whole`.
+        {
+            // Not "it decoded" — every field that has ever been added to the
+            // model, read back and compared. A format that loses `solo` or the
+            // keyframe curve is a format that silently eats a user's work.
+            let p = rich_project();
+            let back = decode(&encode(&p)).expect("round-trips");
 
-        assert_eq!(back.name, "Coastline");
-        assert_eq!((back.fps, back.width, back.height), (24.0, 3840, 2160));
-        assert_eq!(back.markers.len(), 1);
-        assert_eq!(back.markers[0].name, "Act two");
-        assert!((back.markers[0].t - 12.5).abs() < 1e-9);
+            assert_eq!(back.name, "Coastline");
+            assert_eq!((back.fps, back.width, back.height), (24.0, 3840, 2160));
+            assert_eq!(back.markers.len(), 1);
+            assert_eq!(back.markers[0].name, "Act two");
+            assert!((back.markers[0].t - 12.5).abs() < 1e-9);
 
-        assert_eq!(back.media.len(), 1);
-        assert_eq!(back.media[0].name, "Drone.mov");
-        assert_eq!(back.media[0].path, "media/Drone.mov");
-        assert_eq!(back.media[0].width, 3840);
+            assert_eq!(back.media.len(), 1);
+            assert_eq!(back.media[0].name, "Drone.mov");
+            assert_eq!(back.media[0].path, "media/Drone.mov");
+            assert_eq!(back.media[0].width, 3840);
 
-        assert_eq!(back.tracks.len(), 1);
-        assert!(back.tracks[0].solo, "solo survives the file");
+            assert_eq!(back.tracks.len(), 1);
+            assert!(back.tracks[0].solo, "solo survives the file");
 
-        assert_eq!(back.clips.len(), 1);
-        let c = &back.clips[0];
-        assert!((c.start - 3.0).abs() < 1e-9);
-        assert!((c.in_point - 1.0).abs() < 1e-9);
-        assert!((c.out_point - 9.0).abs() < 1e-9);
-        assert!((c.transition_duration - 1.25).abs() < 1e-9);
-        assert_eq!(c.transform, p.clips[0].transform, "geometry survives");
-        assert_eq!(c.speed, p.clips[0].speed, "speed + reverse survive");
-        assert_eq!(c.anim, p.clips[0].anim, "keyframe curves survive");
-    }
-
-    #[test]
-    fn the_ids_survive_so_a_reopened_project_is_the_same_project() {
-        // If ids were re-minted on load, a collaborator opening the same file
-        // would produce a *disjoint* project that merges into duplicates
-        // rather than converging, and every clip would lose its source.
-        let p = rich_project();
-        let back = decode(&encode(&p)).expect("round-trips");
-        assert_eq!(back.media[0].id, p.media[0].id);
-        assert_eq!(back.tracks[0].id, p.tracks[0].id);
-        assert_eq!(back.clips[0].id, p.clips[0].id);
-        assert_eq!(back.clips[0].track, p.tracks[0].id);
-        assert_eq!(back.clips[0].media, p.media[0].id);
-    }
-
-    #[test]
-    fn the_header_is_the_documented_layout() {
-        let bytes = encode(&Project::new("x"));
-        assert_eq!(&bytes[..MAGIC.len()], b"TiloVEPRJ");
-        assert_eq!(u16::from_le_bytes([bytes[9], bytes[10]]), FORMAT_VERSION);
-        assert_eq!(
-            u16::from_le_bytes([bytes[11], bytes[12]]),
-            MIN_READER_VERSION
-        );
-        let declared = u32::from_le_bytes([bytes[13], bytes[14], bytes[15], bytes[16]]) as usize;
-        assert_eq!(
-            declared,
-            bytes.len() - HEADER_LEN,
-            "the declared payload length is the actual payload length",
-        );
-    }
-
-    #[test]
-    fn something_that_is_not_a_project_is_named_as_such() {
-        // The overwhelmingly likely cause is picking the wrong file, so the
-        // error has to say that and not "parse error at byte 0".
-        assert_eq!(
-            decode(b"not a project at all").unwrap_err(),
-            ProjectFileError::NotAProject
-        );
-        assert_eq!(decode(b"").unwrap_err(), ProjectFileError::NotAProject);
-        // A file shorter than the header is not a readable project either.
-        assert_eq!(
-            header_versions(&[0u8; 4]).unwrap_err(),
-            ProjectFileError::NotAProject
-        );
-    }
-
-    #[test]
-    fn every_short_prefix_of_a_header_is_not_a_project() {
-        let bytes = encode(&Project::new("t"));
-        for n in 0..HEADER_LEN {
+            assert_eq!(back.clips.len(), 1);
+            let c = &back.clips[0];
+            assert!((c.start - 3.0).abs() < 1e-9);
+            assert!((c.in_point - 1.0).abs() < 1e-9);
+            assert!((c.out_point - 9.0).abs() < 1e-9);
+            assert!((c.transition_duration - 1.25).abs() < 1e-9);
+            assert_eq!(c.transform, p.clips[0].transform, "geometry survives");
+            assert_eq!(c.speed, p.clips[0].speed, "speed + reverse survive");
+            assert_eq!(c.anim, p.clips[0].anim, "keyframe curves survive");
+        }
+        // Case `the_ids_survive_so_a_reopened_project_is_the_same_project`.
+        {
+            // If ids were re-minted on load, a collaborator opening the same file
+            // would produce a *disjoint* project that merges into duplicates
+            // rather than converging, and every clip would lose its source.
+            let p = rich_project();
+            let back = decode(&encode(&p)).expect("round-trips");
+            assert_eq!(back.media[0].id, p.media[0].id);
+            assert_eq!(back.tracks[0].id, p.tracks[0].id);
+            assert_eq!(back.clips[0].id, p.clips[0].id);
+            assert_eq!(back.clips[0].track, p.tracks[0].id);
+            assert_eq!(back.clips[0].media, p.media[0].id);
+        }
+        // Case `saving_and_loading_a_real_file_round_trips`.
+        {
+            let path = std::env::temp_dir()
+                .join(format!("tilo-ve-proj-{}.{EXTENSION}", std::process::id()));
+            let p = rich_project();
+            save(&path, &p).expect("saves");
+            let back = load(&path).expect("loads");
+            assert_eq!(back.name, p.name);
+            assert_eq!(back.clips.len(), 1);
+            std::fs::remove_file(&path).ok();
+        }
+        // Case `a_newer_writer_that_only_added_fields_still_opens_here`.
+        {
+            // The other half of the contract, and the reason there are two
+            // version numbers. A future build that adds an optional field bumps
+            // `version` and leaves `min_reader` alone; this build must open that
+            // file, because the document layer already defaults what it cannot
+            // see. Without this, every field addition would orphan old files.
+            let mut bytes = encode(&rich_project());
+            bytes[9..11].copy_from_slice(&(FORMAT_VERSION + 7).to_le_bytes());
+            let back = decode(&bytes).expect("a compatible newer file still opens");
+            assert_eq!(back.clips.len(), 1);
             assert_eq!(
-                header_versions(&bytes[..n]),
-                Err(ProjectFileError::NotAProject),
-                "{n} bytes"
+                header_versions(&bytes).unwrap(),
+                (FORMAT_VERSION + 7, MIN_READER_VERSION)
             );
         }
-        assert_eq!(
-            header_versions(&bytes[..HEADER_LEN]),
-            Ok((FORMAT_VERSION, MIN_READER_VERSION))
-        );
     }
 
     #[test]
-    fn a_truncated_file_is_refused_rather_than_half_loaded() {
-        // This is the case the length field exists for. Automerge can often
-        // load a prefix of a document and hand back *some* of the clips —
-        // exactly the plausible-but-wrong result that must never reach a user
-        // who believes they opened their project.
-        let full = encode(&rich_project());
-        let cut = &full[..full.len() - 8];
-        match decode(cut) {
-            Err(ProjectFileError::Truncated { declared, present }) => {
-                assert_eq!(declared, full.len() - HEADER_LEN);
-                assert_eq!(present, declared - 8);
+    fn project_header_refuses_foreign_truncated_newer_or_damaged_files() {
+        // Case `the_header_is_the_documented_layout`.
+        {
+            let bytes = encode(&Project::new("x"));
+            assert_eq!(&bytes[..MAGIC.len()], b"TiloVEPRJ");
+            assert_eq!(u16::from_le_bytes([bytes[9], bytes[10]]), FORMAT_VERSION);
+            assert_eq!(
+                u16::from_le_bytes([bytes[11], bytes[12]]),
+                MIN_READER_VERSION
+            );
+            let declared =
+                u32::from_le_bytes([bytes[13], bytes[14], bytes[15], bytes[16]]) as usize;
+            assert_eq!(
+                declared,
+                bytes.len() - HEADER_LEN,
+                "the declared payload length is the actual payload length",
+            );
+        }
+        // Case `something_that_is_not_a_project_is_named_as_such`.
+        {
+            // The overwhelmingly likely cause is picking the wrong file, so the
+            // error has to say that and not "parse error at byte 0".
+            assert_eq!(
+                decode(b"not a project at all").unwrap_err(),
+                ProjectFileError::NotAProject
+            );
+            assert_eq!(decode(b"").unwrap_err(), ProjectFileError::NotAProject);
+            // A file shorter than the header is not a readable project either.
+            assert_eq!(
+                header_versions(&[0u8; 4]).unwrap_err(),
+                ProjectFileError::NotAProject
+            );
+        }
+        // Case `every_short_prefix_of_a_header_is_not_a_project`.
+        {
+            let bytes = encode(&Project::new("t"));
+            for n in 0..HEADER_LEN {
+                assert_eq!(
+                    header_versions(&bytes[..n]),
+                    Err(ProjectFileError::NotAProject),
+                    "{n} bytes"
+                );
             }
-            other => panic!("a short file must be refused, got {other:?}"),
+            assert_eq!(
+                header_versions(&bytes[..HEADER_LEN]),
+                Ok((FORMAT_VERSION, MIN_READER_VERSION))
+            );
         }
-    }
-
-    #[test]
-    fn a_file_from_a_newer_editor_is_refused_with_both_versions() {
-        // Refuse, never guess: an unknown layout read with today's rules
-        // produces a project that looks fine and is wrong.
-        let mut bytes = encode(&rich_project());
-        bytes[11..13].copy_from_slice(&(MIN_READER_VERSION + 1).to_le_bytes());
-        match decode(&bytes) {
-            Err(ProjectFileError::TooNew {
-                file_min_reader,
-                this_reader,
-            }) => {
-                assert_eq!(file_min_reader, MIN_READER_VERSION + 1);
-                assert_eq!(this_reader, MIN_READER_VERSION);
+        // Case `a_truncated_file_is_refused_rather_than_half_loaded`.
+        {
+            // This is the case the length field exists for. Automerge can often
+            // load a prefix of a document and hand back *some* of the clips —
+            // exactly the plausible-but-wrong result that must never reach a user
+            // who believes they opened their project.
+            let full = encode(&rich_project());
+            let cut = &full[..full.len() - 8];
+            match decode(cut) {
+                Err(ProjectFileError::Truncated { declared, present }) => {
+                    assert_eq!(declared, full.len() - HEADER_LEN);
+                    assert_eq!(present, declared - 8);
+                }
+                other => panic!("a short file must be refused, got {other:?}"),
             }
-            other => panic!("a newer file must be refused, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn a_newer_writer_that_only_added_fields_still_opens_here() {
-        // The other half of the contract, and the reason there are two
-        // version numbers. A future build that adds an optional field bumps
-        // `version` and leaves `min_reader` alone; this build must open that
-        // file, because the document layer already defaults what it cannot
-        // see. Without this, every field addition would orphan old files.
-        let mut bytes = encode(&rich_project());
-        bytes[9..11].copy_from_slice(&(FORMAT_VERSION + 7).to_le_bytes());
-        let back = decode(&bytes).expect("a compatible newer file still opens");
-        assert_eq!(back.clips.len(), 1);
-        assert_eq!(
-            header_versions(&bytes).unwrap(),
-            (FORMAT_VERSION + 7, MIN_READER_VERSION)
-        );
-    }
-
-    #[test]
-    fn a_damaged_payload_is_reported_as_damage() {
-        let mut bytes = encode(&rich_project());
-        // Scribble over the middle of the Automerge document, leaving the
-        // header (and so the length) intact.
-        let mid = HEADER_LEN + (bytes.len() - HEADER_LEN) / 2;
-        for b in &mut bytes[mid..mid + 8] {
-            *b ^= 0xff;
+        // Case `a_file_from_a_newer_editor_is_refused_with_both_versions`.
+        {
+            // Refuse, never guess: an unknown layout read with today's rules
+            // produces a project that looks fine and is wrong.
+            let mut bytes = encode(&rich_project());
+            bytes[11..13].copy_from_slice(&(MIN_READER_VERSION + 1).to_le_bytes());
+            match decode(&bytes) {
+                Err(ProjectFileError::TooNew {
+                    file_min_reader,
+                    this_reader,
+                }) => {
+                    assert_eq!(file_min_reader, MIN_READER_VERSION + 1);
+                    assert_eq!(this_reader, MIN_READER_VERSION);
+                }
+                other => panic!("a newer file must be refused, got {other:?}"),
+            }
         }
-        match decode(&bytes) {
-            Err(ProjectFileError::Corrupt(_)) => {}
-            other => panic!("a scribbled payload must not load, got {other:?}"),
+        // Case `a_damaged_payload_is_reported_as_damage`.
+        {
+            let mut bytes = encode(&rich_project());
+            // Scribble over the middle of the Automerge document, leaving the
+            // header (and so the length) intact.
+            let mid = HEADER_LEN + (bytes.len() - HEADER_LEN) / 2;
+            for b in &mut bytes[mid..mid + 8] {
+                *b ^= 0xff;
+            }
+            match decode(&bytes) {
+                Err(ProjectFileError::Corrupt(_)) => {}
+                other => panic!("a scribbled payload must not load, got {other:?}"),
+            }
         }
-    }
-
-    #[test]
-    fn saving_and_loading_a_real_file_round_trips() {
-        let path =
-            std::env::temp_dir().join(format!("tilo-ve-proj-{}.{EXTENSION}", std::process::id()));
-        let p = rich_project();
-        save(&path, &p).expect("saves");
-        let back = load(&path).expect("loads");
-        assert_eq!(back.name, p.name);
-        assert_eq!(back.clips.len(), 1);
-        std::fs::remove_file(&path).ok();
-    }
-
-    #[test]
-    fn opening_something_that_is_not_there_says_so() {
-        let missing = Path::new("/definitely/not/here-xyz.qvp");
-        match load(missing) {
-            Err(ProjectFileError::Io(msg)) => assert!(msg.contains("Could not open"), "{msg}"),
-            other => panic!("a missing file is an IO error, got {other:?}"),
+        // Case `opening_something_that_is_not_there_says_so`.
+        {
+            let missing = Path::new("/definitely/not/here-xyz.qvp");
+            match load(missing) {
+                Err(ProjectFileError::Io(msg)) => assert!(msg.contains("Could not open"), "{msg}"),
+                other => panic!("a missing file is an IO error, got {other:?}"),
+            }
         }
-    }
-
-    #[test]
-    fn the_suggested_filename_gains_the_extension_exactly_once() {
-        assert_eq!(with_extension("Holiday"), "Holiday.qvp");
-        assert_eq!(with_extension("Holiday.qvp"), "Holiday.qvp");
-        assert_eq!(with_extension("Holiday.QVP"), "Holiday.QVP");
-        // A name that merely contains a dot is not already extended.
-        assert_eq!(with_extension("v1.2 cut"), "v1.2 cut.qvp");
-        assert_eq!(with_extension("   "), "Untitled.qvp");
-    }
-
-    #[test]
-    fn the_project_name_follows_the_file_it_was_opened_from() {
-        assert_eq!(
-            name_from_path(Path::new("/home/a/Holiday.qvp")).as_deref(),
-            Some("Holiday"),
-        );
-        assert_eq!(name_from_path(Path::new("/")), None);
-    }
-
-    #[test]
-    fn the_most_recent_project_comes_first_and_never_appears_twice() {
-        use super::recents::promote;
-        let a = std::path::PathBuf::from("/p/a.qvp");
-        let b = std::path::PathBuf::from("/p/b.qvp");
-        let c = std::path::PathBuf::from("/p/c.qvp");
-
-        let list = promote(&[], &a);
-        assert_eq!(list, vec![a.clone()]);
-        let list = promote(&list, &b);
-        assert_eq!(list, vec![b.clone(), a.clone()]);
-        // Re-opening one already in the list moves it up rather than adding a
-        // second copy — a duplicate entry is a menu that lies about history.
-        let list = promote(&list, &a);
-        assert_eq!(list, vec![a.clone(), b.clone()]);
-        let list = promote(&list, &c);
-        assert_eq!(list, vec![c, a, b]);
-    }
-
-    #[test]
-    fn the_recents_list_is_capped() {
-        use super::recents::{MAX, promote};
-        let mut list = Vec::new();
-        for i in 0..MAX + 5 {
-            list = promote(&list, std::path::Path::new(&format!("/p/{i}.qvp")));
-        }
-        assert_eq!(list.len(), MAX, "the menu cannot grow without bound");
-        assert_eq!(
-            list[0],
-            std::path::PathBuf::from(&format!("/p/{}.qvp", MAX + 4))
-        );
     }
 
     #[test]
     #[serial_test::serial]
-    fn recents_survive_a_restart_and_drop_files_that_are_gone() {
-        // Drives the real on-disk path, not just `promote`: a recents list
-        // that is only ever held in memory is exactly the bug this replaces.
-        let tmp = std::env::temp_dir().join(format!("tilo-ve-recents-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp).unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_DATA_HOME", &tmp)
-            .set("TILO_PACKAGE_ID", "so.tilo.video-editor-test");
+    fn project_names_recents_and_missing_sources_are_tracked() {
+        // Case `the_suggested_filename_gains_the_extension_exactly_once`.
+        {
+            assert_eq!(with_extension("Holiday"), "Holiday.qvp");
+            assert_eq!(with_extension("Holiday.qvp"), "Holiday.qvp");
+            assert_eq!(with_extension("Holiday.QVP"), "Holiday.QVP");
+            // A name that merely contains a dot is not already extended.
+            assert_eq!(with_extension("v1.2 cut"), "v1.2 cut.qvp");
+            assert_eq!(with_extension("   "), "Untitled.qvp");
+        }
+        // Case `the_project_name_follows_the_file_it_was_opened_from`.
+        {
+            assert_eq!(
+                name_from_path(Path::new("/home/a/Holiday.qvp")).as_deref(),
+                Some("Holiday"),
+            );
+            assert_eq!(name_from_path(Path::new("/")), None);
+        }
+        // Case `the_most_recent_project_comes_first_and_never_appears_twice`.
+        {
+            use super::recents::promote;
+            let a = std::path::PathBuf::from("/p/a.qvp");
+            let b = std::path::PathBuf::from("/p/b.qvp");
+            let c = std::path::PathBuf::from("/p/c.qvp");
 
-        let present = tmp.join("Present.qvp");
-        save(&present, &Project::new("Present")).unwrap();
-        let gone = tmp.join("Gone.qvp");
+            let list = promote(&[], &a);
+            assert_eq!(list, vec![a.clone()]);
+            let list = promote(&list, &b);
+            assert_eq!(list, vec![b.clone(), a.clone()]);
+            // Re-opening one already in the list moves it up rather than adding a
+            // second copy — a duplicate entry is a menu that lies about history.
+            let list = promote(&list, &a);
+            assert_eq!(list, vec![a.clone(), b.clone()]);
+            let list = promote(&list, &c);
+            assert_eq!(list, vec![c, a, b]);
+        }
+        // Case `the_recents_list_is_capped`.
+        {
+            use super::recents::{MAX, promote};
+            let mut list = Vec::new();
+            for i in 0..MAX + 5 {
+                list = promote(&list, std::path::Path::new(&format!("/p/{i}.qvp")));
+            }
+            assert_eq!(list.len(), MAX, "the menu cannot grow without bound");
+            assert_eq!(
+                list[0],
+                std::path::PathBuf::from(&format!("/p/{}.qvp", MAX + 4))
+            );
+        }
+        // Case `recents_survive_a_restart_and_drop_files_that_are_gone`.
+        {
+            // Drives the real on-disk path, not just `promote`: a recents list
+            // that is only ever held in memory is exactly the bug this replaces.
+            let tmp = std::env::temp_dir().join(format!("tilo-ve-recents-{}", std::process::id()));
+            std::fs::create_dir_all(&tmp).unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_DATA_HOME", &tmp)
+                .set("TILO_PACKAGE_ID", "so.tilo.video-editor-test");
 
-        let list = super::recents::remember(&[], &gone);
-        let list = super::recents::remember(&list, &present);
-        assert_eq!(list.len(), 2, "both are remembered in memory");
+            let present = tmp.join("Present.qvp");
+            save(&present, &Project::new("Present")).unwrap();
+            let gone = tmp.join("Gone.qvp");
 
-        // A fresh process reads it back — and silently skips the entry whose
-        // file no longer exists rather than offering a menu item that fails.
-        let reloaded = super::recents::load();
-        assert_eq!(
-            reloaded,
-            vec![present.clone()],
-            "only the file that is there"
-        );
-        assert_eq!(super::recents::label(&present), "Present");
+            let list = super::recents::remember(&[], &gone);
+            let list = super::recents::remember(&list, &present);
+            assert_eq!(list.len(), 2, "both are remembered in memory");
 
-        drop(env);
-        std::fs::remove_dir_all(&tmp).ok();
-    }
+            // A fresh process reads it back — and silently skips the entry whose
+            // file no longer exists rather than offering a menu item that fails.
+            let reloaded = super::recents::load();
+            assert_eq!(
+                reloaded,
+                vec![present.clone()],
+                "only the file that is there"
+            );
+            assert_eq!(super::recents::label(&present), "Present");
 
-    #[test]
-    fn missing_sources_separate_absent_bytes_from_titles_and_present_files() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove("TILO_VE_MEDIA_DIR");
+            drop(env);
+            std::fs::remove_dir_all(&tmp).ok();
+        }
+        // Case `missing_sources_separate_absent_bytes_from_titles_and_present_files`.
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.remove("TILO_VE_MEDIA_DIR");
 
-        let mut p = Project::new("moved");
-        // A reference whose bytes are nowhere on this box.
-        p.media.push(MediaItem {
-            id: Uuid::new_v4(),
-            name: "Gone.mov".into(),
-            kind: MediaKind::Video,
-            path: "/definitely/not/here-xyz.mov".into(),
-            ..Default::default()
-        });
-        // A title has no bytes at all, so it is not "missing".
-        p.media.push(MediaItem {
-            id: Uuid::new_v4(),
-            name: "Card".into(),
-            kind: MediaKind::Text,
-            path: String::new(),
-            text: Some(crate::model::TextSource::new("Card")),
-            ..Default::default()
-        });
-        // A source that really is here.
-        let here = std::env::temp_dir().join(format!("tilo-ve-here-{}.mp4", std::process::id()));
-        std::fs::write(&here, b"bytes").unwrap();
-        p.media.push(MediaItem {
-            id: Uuid::new_v4(),
-            name: "Here.mp4".into(),
-            kind: MediaKind::Video,
-            path: here.to_string_lossy().into_owned(),
-            ..Default::default()
-        });
+            let mut p = Project::new("moved");
+            // A reference whose bytes are nowhere on this box.
+            p.media.push(MediaItem {
+                id: Uuid::new_v4(),
+                name: "Gone.mov".into(),
+                kind: MediaKind::Video,
+                path: "/definitely/not/here-xyz.mov".into(),
+                ..Default::default()
+            });
+            // A title has no bytes at all, so it is not "missing".
+            p.media.push(MediaItem {
+                id: Uuid::new_v4(),
+                name: "Card".into(),
+                kind: MediaKind::Text,
+                path: String::new(),
+                text: Some(crate::model::TextSource::new("Card")),
+                ..Default::default()
+            });
+            // A source that really is here.
+            let here =
+                std::env::temp_dir().join(format!("tilo-ve-here-{}.mp4", std::process::id()));
+            std::fs::write(&here, b"bytes").unwrap();
+            p.media.push(MediaItem {
+                id: Uuid::new_v4(),
+                name: "Here.mp4".into(),
+                kind: MediaKind::Video,
+                path: here.to_string_lossy().into_owned(),
+                ..Default::default()
+            });
 
-        let missing = missing_sources(&p);
-        assert_eq!(
-            missing,
-            vec![("Gone.mov".to_string(), crate::media::Hydration::Projected)],
-            "only the source whose bytes are absent is reported",
-        );
-        std::fs::remove_file(&here).ok();
+            let missing = missing_sources(&p);
+            assert_eq!(
+                missing,
+                vec![("Gone.mov".to_string(), crate::media::Hydration::Projected)],
+                "only the source whose bytes are absent is reported",
+            );
+            std::fs::remove_file(&here).ok();
+        }
     }
 }

@@ -52,8 +52,11 @@ pub fn set_brightness(pct: f32) -> Result<(), String> {
                           with no sign loss"
             )]
             let percent = clamped.round() as u32;
-            run("brightnessctl", &["set", &format!("{percent}%")])
-                .map_err(|tool_err| format!("{sysfs_err}; brightnessctl also failed: {tool_err}"))
+            run(
+                "brightnessctl",
+                &["-c", "backlight", "set", &format!("{percent}%")],
+            )
+            .map_err(|tool_err| format!("{sysfs_err}; brightnessctl also failed: {tool_err}"))
         }
     }
 }
@@ -71,7 +74,9 @@ pub fn get_brightness() -> Result<f32, String> {
             if !which("brightnessctl") {
                 return Err(sysfs_err);
             }
-            let out = run_capture("brightnessctl", &["-m"])?;
+            // Without a class, brightnessctl falls back to any device, which on a
+            // machine with no backlight is a keyboard LED.
+            let out = run_capture("brightnessctl", &["-m", "-c", "backlight"])?;
             parse_brightness_machine(&out)
         }
     }
@@ -157,12 +162,16 @@ impl AmbientBrightnessController {
 }
 
 fn get_brightness_in(root: &Path) -> Result<f32, String> {
-    let dev = preferred_device(root).ok_or("no backlight device")?;
-    let max = read_u32(&dev, "max_brightness").ok_or("backlight max_brightness unreadable")?;
+    get_backlight(&preferred_device(root).ok_or("no backlight device")?)
+}
+
+/// Read one backlight device as a `0.0..=1.0` fraction.
+pub(crate) fn get_backlight(dev: &Path) -> Result<f32, String> {
+    let max = read_u32(dev, "max_brightness").ok_or("backlight max_brightness unreadable")?;
     if max == 0 {
         return Err("backlight max_brightness is 0".to_string());
     }
-    let now = read_u32(&dev, "brightness").ok_or("backlight brightness unreadable")?;
+    let now = read_u32(dev, "brightness").ok_or("backlight brightness unreadable")?;
     #[allow(
         clippy::cast_precision_loss,
         reason = "backlight raw values are far below 2^24, so the f32 division loses no \
@@ -173,8 +182,20 @@ fn get_brightness_in(root: &Path) -> Result<f32, String> {
 }
 
 fn set_brightness_in(root: &Path, pct: f32) -> Result<(), String> {
-    let dev = preferred_device(root).ok_or("no backlight device")?;
-    let max = read_u32(&dev, "max_brightness").ok_or("backlight max_brightness unreadable")?;
+    set_backlight(&preferred_device(root).ok_or("no backlight device")?, pct)
+}
+
+/// Write `pct` percent to one backlight device.
+pub(crate) fn set_backlight(dev: &Path, pct: f32) -> Result<(), String> {
+    set_backlight_with(dev, pct, logind_set_brightness)
+}
+
+fn set_backlight_with(
+    dev: &Path,
+    pct: f32,
+    refused: impl FnOnce(&str, u32) -> Result<(), String>,
+) -> Result<(), String> {
+    let max = read_u32(dev, "max_brightness").ok_or("backlight max_brightness unreadable")?;
     if max == 0 {
         return Err("backlight max_brightness is 0".to_string());
     }
@@ -190,14 +211,55 @@ fn set_brightness_in(root: &Path, pct: f32) -> Result<(), String> {
     // with no way for the user to see the screen well enough to bring it back.
     let raw = if pct > 0.0 { raw.max(1) } else { raw };
     let path = dev.join("brightness");
-    fs::write(&path, raw.to_string()).map_err(|e| format!("write {}: {e}", path.display()))
+    let Err(write_err) = fs::write(&path, raw.to_string()) else {
+        return Ok(());
+    };
+    let name = dev
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("backlight device has no name")?;
+    refused(name, raw)
+        .map_err(|logind_err| format!("write {}: {write_err}; {logind_err}", path.display()))
+}
+
+/// A host session (Silverblue, Bazzite) has no udev rule handing the attribute to
+/// the user, and the user is usually not in `video`. logind's `SetBrightness`
+/// lets the seat's active session set it; it is how GNOME and KDE dim there. The
+/// connection is kept because brightness keys auto-repeat.
+fn logind_set_brightness(name: &str, raw: u32) -> Result<(), String> {
+    static SYSTEM_BUS: std::sync::Mutex<Option<zbus::Connection>> = std::sync::Mutex::new(None);
+    let name = name.to_owned();
+    crate::block_on(async move {
+        let cached = SYSTEM_BUS.lock().ok().and_then(|bus| bus.clone());
+        let bus = if let Some(bus) = cached {
+            bus
+        } else {
+            let bus = zbus::Connection::system()
+                .await
+                .map_err(|e| format!("cannot reach the system bus: {e}"))?;
+            if let Ok(mut slot) = SYSTEM_BUS.lock() {
+                *slot = Some(bus.clone());
+            }
+            bus
+        };
+        bus.call_method(
+            Some("org.freedesktop.login1"),
+            "/org/freedesktop/login1/session/auto",
+            Some("org.freedesktop.login1.Session"),
+            "SetBrightness",
+            &("backlight", name.as_str(), raw),
+        )
+        .await
+        .map_err(|e| format!("logind SetBrightness: {e}"))?;
+        Ok(())
+    })
 }
 
 /// Pick which backlight to drive when the kernel exposes several. `acpi_video*` is the
 /// firmware's generic interface, usually a no-op or coarse duplicate of the native one, so
 /// the native device (`intel_backlight`, `amdgpu_bl0`, `nv_backlight`, …) is preferred. Ties
 /// break on name so the choice is stable rather than following readdir order.
-fn preferred_device(root: &Path) -> Option<PathBuf> {
+pub(crate) fn preferred_device(root: &Path) -> Option<PathBuf> {
     let mut devices: Vec<PathBuf> = fs::read_dir(root)
         .ok()?
         .flatten()
@@ -229,6 +291,9 @@ fn parse_brightness_machine(stdout: &str) -> Result<f32, String> {
     if fields.len() < 4 {
         return Err(format!("brightnessctl -m unexpected: {line}"));
     }
+    if fields.get(1) != Some(&"backlight") {
+        return Err(format!("brightnessctl -m found no backlight: {line}"));
+    }
     // Field 3 is the percentage with a trailing `%`.
     let pct_str = fields
         .get(3)
@@ -258,78 +323,123 @@ mod tests {
     }
 
     #[test]
-    fn brightness_is_the_raw_value_over_max() {
-        let t = tree(&[("intel_backlight", 4800, 24000)]);
-        let v = get_brightness_in(t.path()).unwrap();
-        assert!((v - 0.20).abs() < 1e-6, "4800/24000 = 20%, got {v}");
-    }
+    fn a_refused_sysfs_write_asks_logind_for_the_same_raw_level() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dev = dir.path().join("nvidia_wmi_ec_backlight");
+        // A directory in place of the attribute refuses the write even as root.
+        fs::create_dir_all(dev.join("brightness")).unwrap();
+        fs::write(dev.join("max_brightness"), "200\n").unwrap();
 
-    #[test]
-    fn setting_a_percentage_writes_the_scaled_raw_value() {
-        let t = tree(&[("intel_backlight", 0, 24000)]);
-        set_brightness_in(t.path(), 75.0).unwrap();
-        let raw = fs::read_to_string(t.path().join("intel_backlight/brightness")).unwrap();
-        assert_eq!(raw, "18000", "75% of 24000");
-        // And it round-trips through the getter.
-        let v = get_brightness_in(t.path()).unwrap();
-        assert!((v - 0.75).abs() < 1e-4);
-    }
+        let mut asked = None;
+        set_backlight_with(&dev, 40.0, |name, raw| {
+            asked = Some((name.to_owned(), raw));
+            Ok(())
+        })
+        .expect("logind accepted the level");
+        assert_eq!(asked, Some(("nvidia_wmi_ec_backlight".to_owned(), 80)));
 
-    #[test]
-    fn a_native_device_is_preferred_over_the_firmware_one() {
-        let t = tree(&[("acpi_video0", 5, 10), ("intel_backlight", 100, 1000)]);
-        let dev = preferred_device(t.path()).unwrap();
-        assert_eq!(
-            dev.file_name().unwrap(),
-            "intel_backlight",
-            "acpi_video* is the coarse firmware shim, not the panel"
-        );
-        let v = get_brightness_in(t.path()).unwrap();
-        assert!((v - 0.10).abs() < 1e-6, "read from the native device");
-    }
-
-    #[test]
-    fn a_firmware_only_machine_still_works() {
-        let t = tree(&[("acpi_video0", 5, 10)]);
-        assert!((get_brightness_in(t.path()).unwrap() - 0.5).abs() < 1e-6);
-    }
-
-    #[test]
-    fn a_nonzero_percentage_never_writes_a_hard_zero() {
-        // 0.4% of 100 rounds to 0, which on some panels is "off".
-        let t = tree(&[("intel_backlight", 50, 100)]);
-        set_brightness_in(t.path(), 0.4).unwrap();
-        let raw = fs::read_to_string(t.path().join("intel_backlight/brightness")).unwrap();
-        assert_eq!(raw, "1", "a dim request must stay visible, not go dark");
-    }
-
-    #[test]
-    fn an_explicit_zero_is_honoured() {
-        let t = tree(&[("intel_backlight", 50, 100)]);
-        set_brightness_in(t.path(), 0.0).unwrap();
-        let raw = fs::read_to_string(t.path().join("intel_backlight/brightness")).unwrap();
-        assert_eq!(raw, "0");
-    }
-
-    #[test]
-    fn a_nonsense_percentage_never_writes_past_the_device_maximum() {
-        // The kernel rejects a value above max_brightness with EINVAL, so an out-of-range request
-        // must saturate rather than fail the whole write and leave the panel where it was.
-        let t = tree(&[("intel_backlight", 0, 100)]);
-        set_brightness_in(t.path(), 500.0).unwrap();
-        assert_eq!(
-            fs::read_to_string(t.path().join("intel_backlight/brightness")).unwrap(),
-            "100",
-            "saturates at max_brightness"
+        let err = set_backlight_with(
+            &dev,
+            40.0,
+            |_, _| Err("logind SetBrightness: denied".into()),
+        )
+        .expect_err("both paths refused");
+        assert!(
+            err.contains("write ") && err.contains("logind SetBrightness: denied"),
+            "{err}"
         );
     }
 
     #[test]
-    fn a_machine_with_no_backlight_reports_so_rather_than_guessing() {
-        let t = tree(&[]);
-        assert!(!has_backlight_in(t.path()));
-        assert!(get_brightness_in(t.path()).is_err());
-        assert!(set_brightness_in(t.path(), 50.0).is_err());
+    fn a_writable_attribute_never_reaches_logind() {
+        let dir = tree(&[("intel_backlight", 10, 100)]);
+        set_backlight_with(&dir.path().join("intel_backlight"), 55.0, |_, _| {
+            panic!("logind asked although sysfs accepted the write")
+        })
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("intel_backlight/brightness")).unwrap(),
+            "55"
+        );
+    }
+
+    #[test]
+    fn backlight_devices_are_chosen_read_and_written_within_bounds() {
+        // Phase `brightness_is_the_raw_value_over_max`.
+        {
+            let t = tree(&[("intel_backlight", 4800, 24000)]);
+            let v = get_brightness_in(t.path()).unwrap();
+            assert!((v - 0.20).abs() < 1e-6, "4800/24000 = 20%, got {v}");
+        }
+        // Phase `setting_a_percentage_writes_the_scaled_raw_value`.
+        {
+            let t = tree(&[("intel_backlight", 0, 24000)]);
+            set_brightness_in(t.path(), 75.0).unwrap();
+            let raw = fs::read_to_string(t.path().join("intel_backlight/brightness")).unwrap();
+            assert_eq!(raw, "18000", "75% of 24000");
+            // And it round-trips through the getter.
+            let v = get_brightness_in(t.path()).unwrap();
+            assert!((v - 0.75).abs() < 1e-4);
+        }
+        // Phase `a_native_device_is_preferred_over_the_firmware_one`.
+        {
+            let t = tree(&[("acpi_video0", 5, 10), ("intel_backlight", 100, 1000)]);
+            let dev = preferred_device(t.path()).unwrap();
+            assert_eq!(
+                dev.file_name().unwrap(),
+                "intel_backlight",
+                "acpi_video* is the coarse firmware shim, not the panel"
+            );
+            let v = get_brightness_in(t.path()).unwrap();
+            assert!((v - 0.10).abs() < 1e-6, "read from the native device");
+        }
+        // Phase `a_firmware_only_machine_still_works`.
+        {
+            let t = tree(&[("acpi_video0", 5, 10)]);
+            assert!((get_brightness_in(t.path()).unwrap() - 0.5).abs() < 1e-6);
+        }
+        // Phase `a_nonzero_percentage_never_writes_a_hard_zero`.
+        {
+            // 0.4% of 100 rounds to 0, which on some panels is "off".
+            let t = tree(&[("intel_backlight", 50, 100)]);
+            set_brightness_in(t.path(), 0.4).unwrap();
+            let raw = fs::read_to_string(t.path().join("intel_backlight/brightness")).unwrap();
+            assert_eq!(raw, "1", "a dim request must stay visible, not go dark");
+        }
+        // Phase `an_explicit_zero_is_honoured`.
+        {
+            let t = tree(&[("intel_backlight", 50, 100)]);
+            set_brightness_in(t.path(), 0.0).unwrap();
+            let raw = fs::read_to_string(t.path().join("intel_backlight/brightness")).unwrap();
+            assert_eq!(raw, "0");
+        }
+        // Phase `a_nonsense_percentage_never_writes_past_the_device_maximum`.
+        {
+            // The kernel rejects a value above max_brightness with EINVAL, so an out-of-range request
+            // must saturate rather than fail the whole write and leave the panel where it was.
+            let t = tree(&[("intel_backlight", 0, 100)]);
+            set_brightness_in(t.path(), 500.0).unwrap();
+            assert_eq!(
+                fs::read_to_string(t.path().join("intel_backlight/brightness")).unwrap(),
+                "100",
+                "saturates at max_brightness"
+            );
+        }
+        // Phase `a_machine_with_no_backlight_reports_so_rather_than_guessing`.
+        {
+            let t = tree(&[]);
+            assert!(!has_backlight_in(t.path()));
+            assert!(get_brightness_in(t.path()).is_err());
+            assert!(set_brightness_in(t.path(), 50.0).is_err());
+        }
+        // Phase `a_directory_missing_max_brightness_is_not_a_backlight`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let d = dir.path().join("bogus");
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("brightness"), "5\n").unwrap();
+            assert!(preferred_device(dir.path()).is_none());
+        }
     }
 
     fn has_backlight_in(root: &Path) -> bool {
@@ -337,75 +447,62 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_missing_max_brightness_is_not_a_backlight() {
-        let dir = tempfile::tempdir().unwrap();
-        let d = dir.path().join("bogus");
-        fs::create_dir_all(&d).unwrap();
-        fs::write(d.join("brightness"), "5\n").unwrap();
-        assert!(preferred_device(dir.path()).is_none());
-    }
-
-    #[test]
-    fn parse_brightness_machine_returns_fraction() {
-        let s = "acpi_video0,backlight,4,40%,10";
-        let v = parse_brightness_machine(s).unwrap();
-        assert!((v - 0.40).abs() < 1e-6);
-    }
-
-    #[test]
-    fn parse_brightness_machine_handles_zero() {
-        let s = "acpi_video0,backlight,0,0%,10";
-        assert!(parse_brightness_machine(s).unwrap().abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn parse_brightness_machine_clamps_above_one() {
-        // brightnessctl will never emit >100%, but a hypothetical 110% must not surface as a >1.0 fraction.
-        let s = "x,b,11,110%,10";
-        assert!((parse_brightness_machine(s).unwrap() - 1.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn parse_brightness_machine_empty_is_err() {
-        assert!(parse_brightness_machine("").is_err());
-    }
-
-    /// The public setter must never panic, whatever the host looks like — it runs on machines
-    /// with a backlight, without one, and with a root-owned one this process cannot write.
-    #[test]
-    fn set_brightness_never_panics_on_this_host() {
-        let result = set_brightness(50.0);
-        if let Err(e) = result {
-            assert!(!e.is_empty(), "a failure must say why");
+    fn brightnessctl_machine_output_parses_to_a_clamped_fraction() {
+        // Phase `parse_brightness_machine_returns_fraction`.
+        {
+            let s = "acpi_video0,backlight,4,40%,10";
+            let v = parse_brightness_machine(s).unwrap();
+            assert!((v - 0.40).abs() < 1e-6);
+        }
+        // Phase `parse_brightness_machine_handles_zero`.
+        {
+            let s = "acpi_video0,backlight,0,0%,10";
+            assert!(parse_brightness_machine(s).unwrap().abs() < f32::EPSILON);
+        }
+        // Phase `parse_brightness_machine_clamps_above_one`.
+        {
+            // brightnessctl will never emit >100%, but a hypothetical 110% must not surface as a >1.0 fraction.
+            let s = "x,backlight,11,110%,10";
+            assert!((parse_brightness_machine(s).unwrap() - 1.0).abs() < f32::EPSILON);
+        }
+        // Phase `parse_brightness_machine_empty_is_err`.
+        {
+            assert!(parse_brightness_machine("").is_err());
+        }
+        // A machine with no backlight: a keyboard LED is not a display.
+        {
+            assert!(parse_brightness_machine("input3::capslock,leds,0,0%,1").is_err());
         }
     }
 
     #[test]
-    fn ambient_sensor_accepts_processed_and_scaled_iio_forms() {
-        let root = tempfile::tempdir().unwrap();
-        let d = root.path().join("iio:device0");
-        fs::create_dir_all(&d).unwrap();
-        fs::write(d.join("in_illuminance_raw"), "200\n").unwrap();
-        fs::write(d.join("in_illuminance_scale"), "0.5\n").unwrap();
-        assert_eq!(ambient_lux_from(root.path()), Some(100.0));
-        fs::write(d.join("in_illuminance_input"), "42.5\n").unwrap();
-        assert_eq!(ambient_lux_from(root.path()), Some(42.5));
-    }
-
-    #[test]
-    fn ambient_controller_smooths_and_ignores_small_changes() {
-        let mut c = AmbientBrightnessController::default();
-        let first = c.update(100.0).unwrap();
-        assert!((40.0..60.0).contains(&first));
-        assert_eq!(
-            c.update(102.0),
-            None,
-            "sensor noise stays inside the deadband"
-        );
-        let mut changed = None;
-        for _ in 0..12 {
-            changed = c.update(10_000.0).or(changed);
+    fn ambient_light_is_read_from_iio_and_smoothed() {
+        // Phase `ambient_sensor_accepts_processed_and_scaled_iio_forms`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let d = root.path().join("iio:device0");
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("in_illuminance_raw"), "200\n").unwrap();
+            fs::write(d.join("in_illuminance_scale"), "0.5\n").unwrap();
+            assert_eq!(ambient_lux_from(root.path()), Some(100.0));
+            fs::write(d.join("in_illuminance_input"), "42.5\n").unwrap();
+            assert_eq!(ambient_lux_from(root.path()), Some(42.5));
         }
-        assert!(changed.is_some(), "a sustained daylight change is applied");
+        // Phase `ambient_controller_smooths_and_ignores_small_changes`.
+        {
+            let mut c = AmbientBrightnessController::default();
+            let first = c.update(100.0).unwrap();
+            assert!((40.0..60.0).contains(&first));
+            assert_eq!(
+                c.update(102.0),
+                None,
+                "sensor noise stays inside the deadband"
+            );
+            let mut changed = None;
+            for _ in 0..12 {
+                changed = c.update(10_000.0).or(changed);
+            }
+            assert!(changed.is_some(), "a sustained daylight change is applied");
+        }
     }
 }

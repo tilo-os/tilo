@@ -28,3 +28,37 @@ chat-emoji-search = Search emoji
 chat-emoji-recent = Recently used
 chat-emoji-results = Results
 chat-emoji-no-results = No emoji found
+chat-emoji-insert = Insert emoji
+chat-emoji-group = Emoji group
+# A picker cell; the name is the emoji's name in the desktop's language.
+chat-emoji-choose = Choose { $name }
+# A reaction chip under a message, which adds or removes the user's own.
+chat-reaction-add = Add { $emoji } reaction
+chat-reaction-remove = Remove { $emoji } reaction
+
+# Governed voice status, shared by native and browser hosts.
+chat-call-issue-unavailable = Voice is unavailable
+chat-call-issue-denied = Call access was denied
+chat-call-issue-permission-denied = Microphone permission was denied
+chat-call-issue-source-lost = Microphone disconnected
+chat-call-issue-capture-failed = Microphone could not start
+chat-call-issue-transport-failed = Call disconnected
+chat-call-issue-session-ended = Call ended
+chat-call-issue-stale = Call session expired
+
+chat-call-title = Call: { $channel }
+chat-call-open = Open call conversation
+chat-call-join = Join muted
+chat-call-leave-action = Leave call
+chat-call-mute-action = Mute microphone
+chat-call-unmute-action = Request microphone
+chat-call-status = Call status
+chat-call-select-input = Select microphone
+chat-call-input = Input
+chat-call-input-hint = Input from call status
+
+chat-call-connected = Connected
+chat-call-reconnecting = Reconnecting
+chat-call-joining = Joining
+chat-call-unavailable = Unavailable
+chat-call-stream-status = { $count } audio streams · { $status }

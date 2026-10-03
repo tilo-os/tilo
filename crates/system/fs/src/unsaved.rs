@@ -110,8 +110,8 @@ impl UnsavedStore {
     pub fn stage(&self, entry: &UnsavedEntry, bytes: &[u8]) -> io::Result<()> {
         let (bytes_path, entry_path) = self.paths(&entry.key)?;
         let json = serde_json::to_vec_pretty(entry).map_err(io::Error::other)?;
-        atomic_file::write_private(&bytes_path, bytes)?;
-        atomic_file::write_private(&entry_path, &json)?;
+        tilo_files::native::atomic::write_private(&bytes_path, bytes)?;
+        tilo_files::native::atomic::write_private(&entry_path, &json)?;
         Ok(())
     }
 
@@ -129,7 +129,7 @@ impl UnsavedStore {
                 Err(error) => return Err(error),
             }
         }
-        atomic_file::sync_directory(&self.dir)
+        tilo_files::native::atomic::sync_directory(&self.dir)
     }
 
     /// Whether an entry exists for `key`.
@@ -227,39 +227,40 @@ mod tests {
     }
 
     #[test]
-    fn staged_bytes_round_trip_and_are_replaced_whole() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = UnsavedStore::open(dir.path().join("unsaved")).unwrap();
-        store.stage(&entry("k1", b"first"), b"first").unwrap();
-        store.stage(&entry("k1", b"second!"), b"second!").unwrap();
-        let (loaded, damaged) = store.load_all();
-        assert!(damaged.is_empty());
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].bytes, b"second!");
-        assert!(store.contains("k1"));
-        store.remove("k1").unwrap();
-        assert!(!store.contains("k1"));
-        assert!(store.load_all().0.is_empty());
-    }
-
-    #[test]
-    fn a_torn_pair_is_reported_not_trusted() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = UnsavedStore::open(dir.path()).unwrap();
-        store
-            .stage(&entry("k2", b"described"), b"described")
-            .unwrap();
-        std::fs::write(dir.path().join("k2.bytes"), b"other bytes").unwrap();
-        let (loaded, damaged) = store.load_all();
-        assert!(loaded.is_empty());
-        assert_eq!(damaged.len(), 1);
-    }
-
-    #[test]
-    fn keys_cannot_escape_the_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = UnsavedStore::open(dir.path()).unwrap();
-        assert!(store.stage(&entry("../x", b""), b"").is_err());
-        assert!(store.remove("a/b").is_err());
+    fn unsaved_bytes_stage_whole_and_torn_or_escaping_keys_are_refused() {
+        // Phase `staged_bytes_round_trip_and_are_replaced_whole`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = UnsavedStore::open(dir.path().join("unsaved")).unwrap();
+            store.stage(&entry("k1", b"first"), b"first").unwrap();
+            store.stage(&entry("k1", b"second!"), b"second!").unwrap();
+            let (loaded, damaged) = store.load_all();
+            assert!(damaged.is_empty());
+            assert_eq!(loaded.len(), 1);
+            assert_eq!(loaded[0].bytes, b"second!");
+            assert!(store.contains("k1"));
+            store.remove("k1").unwrap();
+            assert!(!store.contains("k1"));
+            assert!(store.load_all().0.is_empty());
+        }
+        // Phase `a_torn_pair_is_reported_not_trusted`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = UnsavedStore::open(dir.path()).unwrap();
+            store
+                .stage(&entry("k2", b"described"), b"described")
+                .unwrap();
+            std::fs::write(dir.path().join("k2.bytes"), b"other bytes").unwrap();
+            let (loaded, damaged) = store.load_all();
+            assert!(loaded.is_empty());
+            assert_eq!(damaged.len(), 1);
+        }
+        // Phase `keys_cannot_escape_the_directory`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = UnsavedStore::open(dir.path()).unwrap();
+            assert!(store.stage(&entry("../x", b""), b"").is_err());
+            assert!(store.remove("a/b").is_err());
+        }
     }
 }

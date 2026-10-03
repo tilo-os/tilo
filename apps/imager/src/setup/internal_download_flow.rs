@@ -767,7 +767,7 @@ fn presentation_from_facts(
 impl SelectionPreference {
     #[cfg(not(test))]
     fn live() -> Result<Self, String> {
-        let root = xdg_paths::data_local_dir()
+        let root = tilo_paths::data_local_dir()
             .ok_or("A device-local settings folder is unavailable on this computer.")?;
         Ok(Self::at(
             root.join("tilo")
@@ -856,7 +856,7 @@ mod tests {
         atomic::{AtomicBool, Ordering},
         mpsc,
     };
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     fn release() -> InternalRelease {
         let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
@@ -872,544 +872,642 @@ mod tests {
     }
 
     fn wait_for(flow: &mut InternalDownloadFlow, phase: Phase) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
+        tilo_test_env::wait_until(format_args!("the download flow to reach {phase:?}"), || {
             flow.poll();
-            if flow.presentation().phase == Some(phase) {
-                return;
-            }
-            assert!(Instant::now() < deadline, "timed out waiting for {phase:?}");
-            std::thread::sleep(Duration::from_millis(2));
+            flow.presentation().phase == Some(phase)
+        });
+    }
+
+    /// Saved and offered selection, preference round trip and failures.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn internal_download_selection_and_preference_are_strict_and_advisory() {
+        // Phase `saved_selection_is_bounded_strict_and_versioned`.
+        // Catches accepting a preference that can smuggle authority beyond the exact bounded key.
+        {
+            let key = SelectionKey::from_release(&release());
+            let bytes = key.encode().unwrap();
+            assert_eq!(SelectionKey::decode(&bytes).unwrap(), key);
+
+            let mut extra: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            extra["manifest_url"] = serde_json::json!("https://evil.test/manifest.json");
+            assert!(SelectionKey::decode(&serde_json::to_vec(&extra).unwrap()).is_err());
+            assert!(SelectionKey::decode(&vec![b' '; MAX_PREFERENCE_BYTES + 1]).is_err());
+
+            let mut old: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            old["schema"] = serde_json::json!(0);
+            assert!(SelectionKey::decode(&serde_json::to_vec(&old).unwrap()).is_err());
+        }
+
+        // Phase `offered_selection_requires_exactly_one_current_host_entry`.
+        // Catches selecting array order when the embedded catalog has zero or several host entries.
+        {
+            assert!(offered_selection(Vec::new(), "x86_64").is_err());
+            assert!(offered_selection(vec![release(), release()], "x86_64").is_err());
+
+            let key = offered_selection(vec![release()], "x86_64").unwrap();
+            assert_eq!(key.release_id, "fixture-only");
+            assert_eq!(key.architecture, "x86_64");
+        }
+
+        // Phase `preference_round_trip_contains_only_the_advisory_key`.
+        // Catches persisting worker authority or leaving a partially written restart record.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("setup").join("internal-download.json");
+            let preference = SelectionPreference::at(path.clone());
+            let key = SelectionKey::from_release(&release());
+
+            preference.save(&key).unwrap();
+            assert_eq!(preference.load().unwrap(), Some(key.clone()));
+            let mut replacement = key;
+            replacement.release_id = "fixture-replacement".into();
+            preference.save(&replacement).unwrap();
+            assert_eq!(preference.load().unwrap(), Some(replacement));
+            let value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(value.as_object().unwrap().len(), 4);
+            assert_eq!(
+                std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+                1
+            );
+        }
+
+        // Phase `invalid_preference_is_ignored_and_write_failure_is_reported`.
+        // Catches malformed local state becoming authority or silently accepting a failed write.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("selection.json");
+            std::fs::write(&path, br#"{"schema":1,"release_id":"x"}"#).unwrap();
+            let preference = SelectionPreference::at(path);
+            assert_eq!(preference.load().unwrap(), None);
+
+            let blocker = temp.path().join("not-a-directory");
+            std::fs::write(&blocker, b"ordinary file").unwrap();
+            let failed = SelectionPreference::at(blocker.join("selection.json"));
+            assert!(
+                failed
+                    .save(&SelectionKey::from_release(&release()))
+                    .is_err()
+            );
+        }
+
+        // Phase `changed_ambiguous_or_unsupported_selection_never_starts_the_worker`.
+        // Catches catalog drift, ambiguity, or capability fixtures issuing a worker command.
+        {
+            let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+            let mut changed = bytes.clone();
+            changed.push(b' ');
+            let server = Server::new(Vec::new());
+            let root = tempfile::tempdir().unwrap();
+            let preference_root = tempfile::tempdir().unwrap();
+            let key = SelectionKey::from_release(&server.release(&bytes));
+            let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
+                Err("Protected staging is unavailable.".into())
+            });
+            let mut changed_flow = InternalDownloadFlow::fixture(
+                supported(),
+                SelectionPreference::at(preference_root.path().join("changed.json")),
+                worker,
+                vec![vec![server.release(&bytes)], vec![server.release(&changed)]],
+                "x86_64",
+            );
+            assert!(changed_flow.start_selected(key.clone()).is_err());
+            assert!(changed_flow.token.is_none());
+            assert!(server.requests().is_empty());
+
+            let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
+                Err("Protected staging is unavailable.".into())
+            });
+            let mut ambiguous = InternalDownloadFlow::fixture(
+                supported(),
+                SelectionPreference::at(preference_root.path().join("ambiguous.json")),
+                worker,
+                vec![
+                    vec![server.release(&bytes)],
+                    vec![server.release(&bytes), server.release(&bytes)],
+                ],
+                "x86_64",
+            );
+            assert!(ambiguous.start_selected(key.clone()).is_err());
+            assert!(ambiguous.token.is_none());
+
+            let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
+                Err("Protected staging is unavailable.".into())
+            });
+            let mut unsupported_capabilities = supported();
+            unsupported_capabilities.internal_dual_boot = false;
+            let mut unsupported = InternalDownloadFlow::fixture(
+                unsupported_capabilities,
+                SelectionPreference::at(preference_root.path().join("unsupported.json")),
+                worker,
+                vec![vec![server.release(&bytes)], vec![server.release(&bytes)]],
+                "x86_64",
+            );
+            assert!(unsupported.start_selected(key).is_err());
+            assert!(unsupported.token.is_none());
+            assert!(server.requests().is_empty());
         }
     }
 
-    // Catches accepting a preference that can smuggle authority beyond the exact bounded key.
+    /// Real worker, duplicate and stale starts.
     #[test]
-    fn saved_selection_is_bounded_strict_and_versioned() {
-        let key = SelectionKey::from_release(&release());
-        let bytes = key.encode().unwrap();
-        assert_eq!(SelectionKey::decode(&bytes).unwrap(), key);
-
-        let mut extra: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        extra["manifest_url"] = serde_json::json!("https://evil.test/manifest.json");
-        assert!(SelectionKey::decode(&serde_json::to_vec(&extra).unwrap()).is_err());
-        assert!(SelectionKey::decode(&vec![b' '; MAX_PREFERENCE_BYTES + 1]).is_err());
-
-        let mut old: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        old["schema"] = serde_json::json!(0);
-        assert!(SelectionKey::decode(&serde_json::to_vec(&old).unwrap()).is_err());
-    }
-
-    // Catches selecting array order when the embedded catalog has zero or several host entries.
-    #[test]
-    fn offered_selection_requires_exactly_one_current_host_entry() {
-        assert!(offered_selection(Vec::new(), "x86_64").is_err());
-        assert!(offered_selection(vec![release(), release()], "x86_64").is_err());
-
-        let key = offered_selection(vec![release()], "x86_64").unwrap();
-        assert_eq!(key.release_id, "fixture-only");
-        assert_eq!(key.architecture, "x86_64");
-    }
-
-    // Catches persisting worker authority or leaving a partially written restart record.
-    #[test]
-    fn preference_round_trip_contains_only_the_advisory_key() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("setup").join("internal-download.json");
-        let preference = SelectionPreference::at(path.clone());
-        let key = SelectionKey::from_release(&release());
-
-        preference.save(&key).unwrap();
-        assert_eq!(preference.load().unwrap(), Some(key.clone()));
-        let mut replacement = key;
-        replacement.release_id = "fixture-replacement".into();
-        preference.save(&replacement).unwrap();
-        assert_eq!(preference.load().unwrap(), Some(replacement));
-        let value: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value.as_object().unwrap().len(), 4);
-        assert_eq!(
-            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
-            1
-        );
-    }
-
-    // Catches malformed local state becoming authority or silently accepting a failed write.
-    #[test]
-    fn invalid_preference_is_ignored_and_write_failure_is_reported() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("selection.json");
-        std::fs::write(&path, br#"{"schema":1,"release_id":"x"}"#).unwrap();
-        let preference = SelectionPreference::at(path);
-        assert_eq!(preference.load().unwrap(), None);
-
-        let blocker = temp.path().join("not-a-directory");
-        std::fs::write(&blocker, b"ordinary file").unwrap();
-        let failed = SelectionPreference::at(blocker.join("selection.json"));
-        assert!(
-            failed
-                .save(&SelectionKey::from_release(&release()))
-                .is_err()
-        );
-    }
-
-    // Catches detaching from the real worker, claiming installation, or polling held Ready forever.
-    #[test]
-    fn real_worker_reaches_held_ready_and_keeps_verified_data_for_later() {
-        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
-        let server = Server::new(vec![
-            response(200, "", &bytes),
-            response(200, "", &vec![b'E'; 4096]),
-            response(200, "", &vec![b'R'; 8192]),
-        ]);
-        let root = tempfile::tempdir().unwrap();
-        let preference_root = tempfile::tempdir().unwrap();
-        let key = SelectionKey::from_release(&server.release(&bytes));
-        let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-            Err("Protected staging is not available in this build.".into())
-        });
-        let mut flow = InternalDownloadFlow::fixture(
-            supported(),
-            SelectionPreference::at(preference_root.path().join("selection.json")),
-            worker,
-            vec![vec![server.release(&bytes)], vec![server.release(&bytes)]],
-            "x86_64",
-        );
-
-        assert_eq!(flow.offered_selection(), Some(key.clone()));
-        flow.start_selected(key).unwrap();
-        assert!(flow.has_pending_operation());
-        wait_for(&mut flow, Phase::Ready);
-        assert_eq!(flow.presentation().title, "Download ready");
-        assert!(
-            flow.presentation()
-                .details
-                .contains("Download verified. Installation has not started.")
-        );
-        assert!(!flow.has_pending_operation());
-
-        flow.release().unwrap();
-        assert!(flow.has_pending_operation());
-        wait_for(&mut flow, Phase::Released);
-        assert_eq!(flow.presentation().title, "Kept for later");
-        assert!(!flow.has_pending_operation());
-    }
-
-    // Catches a duplicate Start replacing an active token or repeating selection side effects.
-    #[test]
-    fn duplicate_start_during_active_download_preserves_token_preference_catalog_and_requests() {
-        use std::os::unix::fs::MetadataExt;
-
-        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
-        let (blocked_tx, blocked_rx) = mpsc::sync_channel(0);
-        let (continue_tx, continue_rx) = mpsc::sync_channel(0);
-        let mut request = 0;
-        let server = Server::on_request(
-            vec![
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn internal_download_worker_start_is_idempotent_and_holds_verified_data() {
+        // Phase `real_worker_reaches_held_ready_and_keeps_verified_data_for_later`.
+        // Catches detaching from the real worker, claiming installation, or polling held Ready forever.
+        {
+            let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+            let server = Server::new(vec![
                 response(200, "", &bytes),
                 response(200, "", &vec![b'E'; 4096]),
                 response(200, "", &vec![b'R'; 8192]),
-                response(200, "", &bytes),
-                response(200, "", &vec![b'E'; 4096]),
-                response(200, "", &vec![b'R'; 8192]),
-            ],
-            move || {
-                request += 1;
-                if request == 2 {
-                    blocked_tx.send(()).unwrap();
-                    continue_rx.recv().unwrap();
-                }
-            },
-        );
-        let root = tempfile::tempdir().unwrap();
-        let preference_root = tempfile::tempdir().unwrap();
-        let preference_path = preference_root.path().join("selection.json");
-        let key = SelectionKey::from_release(&server.release(&bytes));
-        let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-            Err("Protected staging is unavailable.".into())
-        });
-        let mut flow = InternalDownloadFlow::fixture(
-            supported(),
-            SelectionPreference::at(preference_path.clone()),
-            worker,
-            vec![
-                vec![server.release(&bytes)],
-                vec![server.release(&bytes)],
-                vec![server.release(&bytes)],
-            ],
-            "x86_64",
-        );
-        flow.start_selected(key.clone()).unwrap();
-        blocked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        let token = flow.token.clone().unwrap();
-        let preference_inode = std::fs::metadata(&preference_path).unwrap().ino();
-        let catalogs = flow.catalogs.len();
-        let requests = server.requests().len();
+            ]);
+            let root = tempfile::tempdir().unwrap();
+            let preference_root = tempfile::tempdir().unwrap();
+            let key = SelectionKey::from_release(&server.release(&bytes));
+            let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
+                Err("Protected staging is not available in this build.".into())
+            });
+            let mut flow = InternalDownloadFlow::fixture(
+                supported(),
+                SelectionPreference::at(preference_root.path().join("selection.json")),
+                worker,
+                vec![vec![server.release(&bytes)], vec![server.release(&bytes)]],
+                "x86_64",
+            );
 
-        let duplicate = flow.start_selected(key);
-        let token_after = flow.token.clone().unwrap();
-        let preference_inode_after = std::fs::metadata(&preference_path).unwrap().ino();
-        let catalogs_after = flow.catalogs.len();
-        let requests_after = server.requests().len();
-        continue_tx.send(()).unwrap();
+            assert_eq!(flow.offered_selection(), Some(key.clone()));
+            flow.start_selected(key).unwrap();
+            assert!(flow.has_pending_operation());
+            wait_for(&mut flow, Phase::Ready);
+            assert_eq!(flow.presentation().title, "Download ready");
+            assert!(
+                flow.presentation()
+                    .details
+                    .contains("Download verified. Installation has not started.")
+            );
+            assert!(!flow.has_pending_operation());
 
-        assert_eq!(
-            duplicate.unwrap_err(),
-            "A Full Tilo download cannot start in its current state."
-        );
-        assert_eq!(token_after, token);
-        assert_eq!(preference_inode_after, preference_inode);
-        assert_eq!(catalogs_after, catalogs);
-        assert_eq!(requests_after, requests);
-        wait_for(&mut flow, Phase::Ready);
-        assert_eq!(server.requests().len(), 3);
-    }
+            flow.release().unwrap();
+            assert!(flow.has_pending_operation());
+            wait_for(&mut flow, Phase::Released);
+            assert_eq!(flow.presentation().title, "Kept for later");
+            assert!(!flow.has_pending_operation());
+        }
 
-    // Catches a stale Start replacing the token and leases held at verified Ready.
-    #[test]
-    fn stale_start_at_held_ready_preserves_token_and_request_count() {
-        use std::os::unix::fs::MetadataExt;
+        // Phase `duplicate_start_during_active_download_preserves_token_preference_catalog_and_requests`.
+        // Catches a duplicate Start replacing an active token or repeating selection side effects.
+        {
+            use std::os::unix::fs::MetadataExt;
 
-        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
-        let server = Server::new(vec![
-            response(200, "", &bytes),
-            response(200, "", &vec![b'E'; 4096]),
-            response(200, "", &vec![b'R'; 8192]),
-            response(200, "", &bytes),
-            response(200, "", &vec![b'E'; 4096]),
-            response(200, "", &vec![b'R'; 8192]),
-        ]);
-        let root = tempfile::tempdir().unwrap();
-        let preference_root = tempfile::tempdir().unwrap();
-        let preference_path = preference_root.path().join("selection.json");
-        let key = SelectionKey::from_release(&server.release(&bytes));
-        let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-            Err("Protected staging is unavailable.".into())
-        });
-        let mut flow = InternalDownloadFlow::fixture(
-            supported(),
-            SelectionPreference::at(preference_path.clone()),
-            worker,
-            vec![
-                vec![server.release(&bytes)],
-                vec![server.release(&bytes)],
-                vec![server.release(&bytes)],
-            ],
-            "x86_64",
-        );
-        flow.start_selected(key.clone()).unwrap();
-        wait_for(&mut flow, Phase::Ready);
-        let token = flow.token.clone().unwrap();
-        let preference_inode = std::fs::metadata(&preference_path).unwrap().ino();
-        let catalogs = flow.catalogs.len();
-        let requests = server.requests().len();
-
-        assert_eq!(
-            flow.start_selected(key).unwrap_err(),
-            "A Full Tilo download cannot start in its current state."
-        );
-        assert_eq!(flow.token.as_ref(), Some(&token));
-        assert_eq!(
-            std::fs::metadata(&preference_path).unwrap().ino(),
-            preference_inode
-        );
-        assert_eq!(flow.catalogs.len(), catalogs);
-        assert_eq!(server.requests().len(), requests);
-
-        flow.release().unwrap();
-        wait_for(&mut flow, Phase::Released);
-        assert_eq!(server.requests().len(), 3);
-    }
-
-    // Catches retaining a token/handle across restart or starting network work implicitly.
-    #[test]
-    fn pause_close_and_reconstruct_resume_with_a_new_token() {
-        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
-        let (blocked_tx, blocked_rx) = mpsc::sync_channel(0);
-        let (continue_tx, continue_rx) = mpsc::sync_channel(0);
-        let mut request = 0;
-        let server = Server::on_request(
-            vec![
-                response(200, "", &bytes),
-                response(200, "", &vec![b'E'; 4096]),
-            ],
-            move || {
-                request += 1;
-                if request == 2 {
-                    blocked_tx.send(()).unwrap();
-                    continue_rx.recv().unwrap();
-                }
-            },
-        );
-        let root = tempfile::tempdir().unwrap();
-        let preference_root = tempfile::tempdir().unwrap();
-        let preference_path = preference_root.path().join("selection.json");
-        let key = SelectionKey::from_release(&server.release(&bytes));
-        let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-            Err("Protected staging is unavailable.".into())
-        });
-        let mut flow = InternalDownloadFlow::fixture(
-            supported(),
-            SelectionPreference::at(preference_path.clone()),
-            worker,
-            vec![vec![server.release(&bytes)], vec![server.release(&bytes)]],
-            "x86_64",
-        );
-        flow.start_selected(key).unwrap();
-        blocked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        let first_token = flow.token.clone().unwrap();
-        flow.pause().unwrap();
-        assert!(flow.presentation().pending);
-        continue_tx.send(()).unwrap();
-        wait_for(&mut flow, Phase::Paused);
-        drop(flow);
-        drop(server);
-
-        let resumed_server = Server::new(vec![
-            response(200, "", &bytes),
-            response(200, "", &vec![b'E'; 4096]),
-            response(200, "", &vec![b'R'; 8192]),
-        ]);
-        let resumed_worker =
-            Worker::fixture_for_test(root.path(), resumed_server.transport(), |_, _, _, _| {
+            let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+            let (blocked_tx, blocked_rx) = mpsc::sync_channel(0);
+            let (continue_tx, continue_rx) = mpsc::sync_channel(0);
+            let mut request = 0;
+            let server = Server::on_request(
+                vec![
+                    response(200, "", &bytes),
+                    response(200, "", &vec![b'E'; 4096]),
+                    response(200, "", &vec![b'R'; 8192]),
+                    response(200, "", &bytes),
+                    response(200, "", &vec![b'E'; 4096]),
+                    response(200, "", &vec![b'R'; 8192]),
+                ],
+                move || {
+                    request += 1;
+                    if request == 2 {
+                        blocked_tx.send(()).unwrap();
+                        continue_rx.recv().unwrap();
+                    }
+                },
+            );
+            let root = tempfile::tempdir().unwrap();
+            let preference_root = tempfile::tempdir().unwrap();
+            let preference_path = preference_root.path().join("selection.json");
+            let key = SelectionKey::from_release(&server.release(&bytes));
+            let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
                 Err("Protected staging is unavailable.".into())
             });
-        let mut resumed = InternalDownloadFlow::fixture(
-            supported(),
-            SelectionPreference::at(preference_path),
-            resumed_worker,
-            vec![
-                vec![resumed_server.release(&bytes)],
-                vec![resumed_server.release(&bytes)],
-            ],
-            "x86_64",
-        );
-        assert!(resumed.can_resume());
-        assert!(!resumed.can_start());
-        assert!(resumed_server.requests().is_empty());
-        resumed.resume().unwrap();
-        let second_token = resumed.token.clone().unwrap();
-        assert_ne!(first_token, second_token);
-        wait_for(&mut resumed, Phase::Ready);
-    }
+            let mut flow = InternalDownloadFlow::fixture(
+                supported(),
+                SelectionPreference::at(preference_path.clone()),
+                worker,
+                vec![
+                    vec![server.release(&bytes)],
+                    vec![server.release(&bytes)],
+                    vec![server.release(&bytes)],
+                ],
+                "x86_64",
+            );
+            flow.start_selected(key.clone()).unwrap();
+            tilo_test_env::recv("the download to block", &blocked_rx);
+            let token = flow.token.clone().unwrap();
+            let preference_inode = std::fs::metadata(&preference_path).unwrap().ino();
+            let catalogs = flow.catalogs.len();
+            let requests = server.requests().len();
 
-    // Catches a queued Ready/progress snapshot defeating cancel or discard reusing its token.
-    #[test]
-    fn accepted_cancel_stays_pending_until_cancelled_then_discard_uses_new_token() {
-        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
-        let (blocked_tx, blocked_rx) = mpsc::sync_channel(0);
-        let (continue_tx, continue_rx) = mpsc::sync_channel(0);
-        let mut request = 0;
-        let server = Server::on_request(
-            vec![
-                response(200, "", &bytes),
-                response(200, "", &vec![b'E'; 4096]),
-                response(200, "", &bytes),
-            ],
-            move || {
-                request += 1;
-                if request == 2 {
-                    blocked_tx.send(()).unwrap();
-                    continue_rx.recv().unwrap();
-                }
-            },
-        );
-        let root = tempfile::tempdir().unwrap();
-        let preference_root = tempfile::tempdir().unwrap();
-        let key = SelectionKey::from_release(&server.release(&bytes));
-        let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-            Err("Protected staging is unavailable.".into())
-        });
-        let mut flow = InternalDownloadFlow::fixture(
-            supported(),
-            SelectionPreference::at(preference_root.path().join("selection.json")),
-            worker,
-            vec![
-                vec![server.release(&bytes)],
-                vec![server.release(&bytes)],
-                vec![server.release(&bytes)],
-            ],
-            "x86_64",
-        );
-        flow.start_selected(key).unwrap();
-        blocked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        let transfer_token = flow.token.clone().unwrap();
-        flow.cancel().unwrap();
-        flow.poll();
-        assert!(flow.presentation().pending);
-        assert_eq!(flow.presentation().title, "Cancelling download…");
-        continue_tx.send(()).unwrap();
-        wait_for(&mut flow, Phase::Cancelled);
-        let cancelled = flow.worker.as_ref().unwrap().status().unwrap();
-
-        flow.discard().unwrap();
-        let cleanup_token = flow.token.clone().unwrap();
-        assert_ne!(transfer_token, cleanup_token);
-        assert!(!flow.accept_status(cancelled));
-        assert!(flow.presentation().pending);
-        wait_for(&mut flow, Phase::Discarded);
-        assert!(flow.presentation().details.contains("may remain"));
-    }
-
-    // Catches leaving held readers/root leases behind when the setup view closes at Ready.
-    #[test]
-    fn dropping_held_ready_releases_leases_and_retains_verified_components() {
-        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
-        let server = Server::new(vec![
-            response(200, "", &bytes),
-            response(200, "", &vec![b'E'; 4096]),
-            response(200, "", &vec![b'R'; 8192]),
-        ]);
-        let root = tempfile::tempdir().unwrap();
-        let preference_root = tempfile::tempdir().unwrap();
-        let key = SelectionKey::from_release(&server.release(&bytes));
-        let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-            Err("Protected staging is unavailable.".into())
-        });
-        let mut flow = InternalDownloadFlow::fixture(
-            supported(),
-            SelectionPreference::at(preference_root.path().join("selection.json")),
-            worker,
-            vec![vec![server.release(&bytes)], vec![server.release(&bytes)]],
-            "x86_64",
-        );
-        flow.start_selected(key).unwrap();
-        wait_for(&mut flow, Phase::Ready);
-        let first_token = flow.token.clone().unwrap();
-        drop(flow);
-        drop(server);
-
-        let reopened_server = Server::new(vec![response(200, "", &bytes)]);
-        let reopened_worker =
-            Worker::fixture_for_test(root.path(), reopened_server.transport(), |_, _, _, _| {
-                Err("Protected staging is unavailable.".into())
-            });
-        let mut reopened = InternalDownloadFlow::fixture(
-            supported(),
-            SelectionPreference::at(preference_root.path().join("selection.json")),
-            reopened_worker,
-            vec![
-                vec![reopened_server.release(&bytes)],
-                vec![reopened_server.release(&bytes)],
-            ],
-            "x86_64",
-        );
-        assert!(reopened.can_resume());
-        reopened.resume().unwrap();
-        assert_ne!(first_token, reopened.token.clone().unwrap());
-        wait_for(&mut reopened, Phase::Ready);
-        assert_eq!(reopened_server.requests().len(), 1);
-    }
-
-    // Catches dropping the controller while leaving an in-flight worker detached.
-    #[test]
-    fn dropping_during_authentication_waits_for_cooperative_worker_shutdown() {
-        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
-        let (entered_tx, entered_rx) = mpsc::sync_channel(0);
-        let (continue_tx, continue_rx) = mpsc::sync_channel(0);
-        let request_returned = Arc::new(AtomicBool::new(false));
-        let returned = Arc::clone(&request_returned);
-        let server = Server::on_request(vec![response(200, "", &bytes)], move || {
-            entered_tx.send(()).unwrap();
-            continue_rx.recv().unwrap();
-            returned.store(true, Ordering::Release);
-        });
-        let root = tempfile::tempdir().unwrap();
-        let preference_root = tempfile::tempdir().unwrap();
-        let key = SelectionKey::from_release(&server.release(&bytes));
-        let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-            Err("Protected staging is unavailable.".into())
-        });
-        let mut flow = InternalDownloadFlow::fixture(
-            supported(),
-            SelectionPreference::at(preference_root.path().join("selection.json")),
-            worker,
-            vec![vec![server.release(&bytes)], vec![server.release(&bytes)]],
-            "x86_64",
-        );
-        flow.start_selected(key).unwrap();
-        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        let unblock = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(25));
+            let duplicate = flow.start_selected(key);
+            let token_after = flow.token.clone().unwrap();
+            let preference_inode_after = std::fs::metadata(&preference_path).unwrap().ino();
+            let catalogs_after = flow.catalogs.len();
+            let requests_after = server.requests().len();
             continue_tx.send(()).unwrap();
-        });
-        drop(flow);
-        unblock.join().unwrap();
-        assert!(request_returned.load(Ordering::Acquire));
+
+            assert_eq!(
+                duplicate.unwrap_err(),
+                "A Full Tilo download cannot start in its current state."
+            );
+            assert_eq!(token_after, token);
+            assert_eq!(preference_inode_after, preference_inode);
+            assert_eq!(catalogs_after, catalogs);
+            assert_eq!(requests_after, requests);
+            wait_for(&mut flow, Phase::Ready);
+            assert_eq!(server.requests().len(), 3);
+        }
+
+        // Phase `stale_start_at_held_ready_preserves_token_and_request_count`.
+        // Catches a stale Start replacing the token and leases held at verified Ready.
+        {
+            use std::os::unix::fs::MetadataExt;
+
+            let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+            let server = Server::new(vec![
+                response(200, "", &bytes),
+                response(200, "", &vec![b'E'; 4096]),
+                response(200, "", &vec![b'R'; 8192]),
+                response(200, "", &bytes),
+                response(200, "", &vec![b'E'; 4096]),
+                response(200, "", &vec![b'R'; 8192]),
+            ]);
+            let root = tempfile::tempdir().unwrap();
+            let preference_root = tempfile::tempdir().unwrap();
+            let preference_path = preference_root.path().join("selection.json");
+            let key = SelectionKey::from_release(&server.release(&bytes));
+            let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
+                Err("Protected staging is unavailable.".into())
+            });
+            let mut flow = InternalDownloadFlow::fixture(
+                supported(),
+                SelectionPreference::at(preference_path.clone()),
+                worker,
+                vec![
+                    vec![server.release(&bytes)],
+                    vec![server.release(&bytes)],
+                    vec![server.release(&bytes)],
+                ],
+                "x86_64",
+            );
+            flow.start_selected(key.clone()).unwrap();
+            wait_for(&mut flow, Phase::Ready);
+            let token = flow.token.clone().unwrap();
+            let preference_inode = std::fs::metadata(&preference_path).unwrap().ino();
+            let catalogs = flow.catalogs.len();
+            let requests = server.requests().len();
+
+            assert_eq!(
+                flow.start_selected(key).unwrap_err(),
+                "A Full Tilo download cannot start in its current state."
+            );
+            assert_eq!(flow.token.as_ref(), Some(&token));
+            assert_eq!(
+                std::fs::metadata(&preference_path).unwrap().ino(),
+                preference_inode
+            );
+            assert_eq!(flow.catalogs.len(), catalogs);
+            assert_eq!(server.requests().len(), requests);
+
+            flow.release().unwrap();
+            wait_for(&mut flow, Phase::Released);
+            assert_eq!(server.requests().len(), 3);
+        }
     }
 
-    // Catches catalog drift, ambiguity, or capability fixtures issuing a worker command.
+    /// Pause, cancel, discard and drop.
     #[test]
-    fn changed_ambiguous_or_unsupported_selection_never_starts_the_worker() {
-        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
-        let mut changed = bytes.clone();
-        changed.push(b' ');
-        let server = Server::new(Vec::new());
-        let root = tempfile::tempdir().unwrap();
-        let preference_root = tempfile::tempdir().unwrap();
-        let key = SelectionKey::from_release(&server.release(&bytes));
-        let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-            Err("Protected staging is unavailable.".into())
-        });
-        let mut changed_flow = InternalDownloadFlow::fixture(
-            supported(),
-            SelectionPreference::at(preference_root.path().join("changed.json")),
-            worker,
-            vec![vec![server.release(&bytes)], vec![server.release(&changed)]],
-            "x86_64",
-        );
-        assert!(changed_flow.start_selected(key.clone()).is_err());
-        assert!(changed_flow.token.is_none());
-        assert!(server.requests().is_empty());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn internal_download_pause_cancel_and_drop_manage_tokens_and_leases() {
+        // Phase `pause_close_and_reconstruct_resume_with_a_new_token`.
+        // Catches retaining a token/handle across restart or starting network work implicitly.
+        {
+            let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+            let (blocked_tx, blocked_rx) = mpsc::sync_channel(0);
+            let (continue_tx, continue_rx) = mpsc::sync_channel(0);
+            let mut request = 0;
+            let server = Server::on_request(
+                vec![
+                    response(200, "", &bytes),
+                    response(200, "", &vec![b'E'; 4096]),
+                ],
+                move || {
+                    request += 1;
+                    if request == 2 {
+                        blocked_tx.send(()).unwrap();
+                        continue_rx.recv().unwrap();
+                    }
+                },
+            );
+            let root = tempfile::tempdir().unwrap();
+            let preference_root = tempfile::tempdir().unwrap();
+            let preference_path = preference_root.path().join("selection.json");
+            let key = SelectionKey::from_release(&server.release(&bytes));
+            let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
+                Err("Protected staging is unavailable.".into())
+            });
+            let mut flow = InternalDownloadFlow::fixture(
+                supported(),
+                SelectionPreference::at(preference_path.clone()),
+                worker,
+                vec![vec![server.release(&bytes)], vec![server.release(&bytes)]],
+                "x86_64",
+            );
+            flow.start_selected(key).unwrap();
+            tilo_test_env::recv("the download to block", &blocked_rx);
+            let first_token = flow.token.clone().unwrap();
+            flow.pause().unwrap();
+            assert!(flow.presentation().pending);
+            continue_tx.send(()).unwrap();
+            wait_for(&mut flow, Phase::Paused);
+            drop(flow);
+            drop(server);
 
-        let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-            Err("Protected staging is unavailable.".into())
-        });
-        let mut ambiguous = InternalDownloadFlow::fixture(
-            supported(),
-            SelectionPreference::at(preference_root.path().join("ambiguous.json")),
-            worker,
-            vec![
-                vec![server.release(&bytes)],
-                vec![server.release(&bytes), server.release(&bytes)],
-            ],
-            "x86_64",
-        );
-        assert!(ambiguous.start_selected(key.clone()).is_err());
-        assert!(ambiguous.token.is_none());
+            let resumed_server = Server::new(vec![
+                response(200, "", &bytes),
+                response(200, "", &vec![b'E'; 4096]),
+                response(200, "", &vec![b'R'; 8192]),
+            ]);
+            let resumed_worker =
+                Worker::fixture_for_test(root.path(), resumed_server.transport(), |_, _, _, _| {
+                    Err("Protected staging is unavailable.".into())
+                });
+            let mut resumed = InternalDownloadFlow::fixture(
+                supported(),
+                SelectionPreference::at(preference_path),
+                resumed_worker,
+                vec![
+                    vec![resumed_server.release(&bytes)],
+                    vec![resumed_server.release(&bytes)],
+                ],
+                "x86_64",
+            );
+            assert!(resumed.can_resume());
+            assert!(!resumed.can_start());
+            assert!(resumed_server.requests().is_empty());
+            resumed.resume().unwrap();
+            let second_token = resumed.token.clone().unwrap();
+            assert_ne!(first_token, second_token);
+            wait_for(&mut resumed, Phase::Ready);
+        }
 
-        let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-            Err("Protected staging is unavailable.".into())
-        });
-        let mut unsupported_capabilities = supported();
-        unsupported_capabilities.internal_dual_boot = false;
-        let mut unsupported = InternalDownloadFlow::fixture(
-            unsupported_capabilities,
-            SelectionPreference::at(preference_root.path().join("unsupported.json")),
-            worker,
-            vec![vec![server.release(&bytes)], vec![server.release(&bytes)]],
-            "x86_64",
-        );
-        assert!(unsupported.start_selected(key).is_err());
-        assert!(unsupported.token.is_none());
-        assert!(server.requests().is_empty());
+        // Phase `accepted_cancel_stays_pending_until_cancelled_then_discard_uses_new_token`.
+        // Catches a queued Ready/progress snapshot defeating cancel or discard reusing its token.
+        {
+            let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+            let (blocked_tx, blocked_rx) = mpsc::sync_channel(0);
+            let (continue_tx, continue_rx) = mpsc::sync_channel(0);
+            let mut request = 0;
+            let server = Server::on_request(
+                vec![
+                    response(200, "", &bytes),
+                    response(200, "", &vec![b'E'; 4096]),
+                    response(200, "", &bytes),
+                ],
+                move || {
+                    request += 1;
+                    if request == 2 {
+                        blocked_tx.send(()).unwrap();
+                        continue_rx.recv().unwrap();
+                    }
+                },
+            );
+            let root = tempfile::tempdir().unwrap();
+            let preference_root = tempfile::tempdir().unwrap();
+            let key = SelectionKey::from_release(&server.release(&bytes));
+            let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
+                Err("Protected staging is unavailable.".into())
+            });
+            let mut flow = InternalDownloadFlow::fixture(
+                supported(),
+                SelectionPreference::at(preference_root.path().join("selection.json")),
+                worker,
+                vec![
+                    vec![server.release(&bytes)],
+                    vec![server.release(&bytes)],
+                    vec![server.release(&bytes)],
+                ],
+                "x86_64",
+            );
+            flow.start_selected(key).unwrap();
+            tilo_test_env::recv("the download to block", &blocked_rx);
+            let transfer_token = flow.token.clone().unwrap();
+            flow.cancel().unwrap();
+            flow.poll();
+            assert!(flow.presentation().pending);
+            assert_eq!(flow.presentation().title, "Cancelling download…");
+            continue_tx.send(()).unwrap();
+            wait_for(&mut flow, Phase::Cancelled);
+            let cancelled = flow.worker.as_ref().unwrap().status().unwrap();
+
+            flow.discard().unwrap();
+            let cleanup_token = flow.token.clone().unwrap();
+            assert_ne!(transfer_token, cleanup_token);
+            assert!(!flow.accept_status(cancelled));
+            assert!(flow.presentation().pending);
+            wait_for(&mut flow, Phase::Discarded);
+            assert!(flow.presentation().details.contains("may remain"));
+        }
+
+        // Phase `dropping_held_ready_releases_leases_and_retains_verified_components`.
+        // Catches leaving held readers/root leases behind when the setup view closes at Ready.
+        {
+            let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+            let server = Server::new(vec![
+                response(200, "", &bytes),
+                response(200, "", &vec![b'E'; 4096]),
+                response(200, "", &vec![b'R'; 8192]),
+            ]);
+            let root = tempfile::tempdir().unwrap();
+            let preference_root = tempfile::tempdir().unwrap();
+            let key = SelectionKey::from_release(&server.release(&bytes));
+            let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
+                Err("Protected staging is unavailable.".into())
+            });
+            let mut flow = InternalDownloadFlow::fixture(
+                supported(),
+                SelectionPreference::at(preference_root.path().join("selection.json")),
+                worker,
+                vec![vec![server.release(&bytes)], vec![server.release(&bytes)]],
+                "x86_64",
+            );
+            flow.start_selected(key).unwrap();
+            wait_for(&mut flow, Phase::Ready);
+            let first_token = flow.token.clone().unwrap();
+            drop(flow);
+            drop(server);
+
+            let reopened_server = Server::new(vec![response(200, "", &bytes)]);
+            let reopened_worker =
+                Worker::fixture_for_test(root.path(), reopened_server.transport(), |_, _, _, _| {
+                    Err("Protected staging is unavailable.".into())
+                });
+            let mut reopened = InternalDownloadFlow::fixture(
+                supported(),
+                SelectionPreference::at(preference_root.path().join("selection.json")),
+                reopened_worker,
+                vec![
+                    vec![reopened_server.release(&bytes)],
+                    vec![reopened_server.release(&bytes)],
+                ],
+                "x86_64",
+            );
+            assert!(reopened.can_resume());
+            reopened.resume().unwrap();
+            assert_ne!(first_token, reopened.token.clone().unwrap());
+            wait_for(&mut reopened, Phase::Ready);
+            assert_eq!(reopened_server.requests().len(), 1);
+        }
+
+        // Phase `dropping_during_authentication_waits_for_cooperative_worker_shutdown`.
+        // Catches dropping the controller while leaving an in-flight worker detached.
+        {
+            let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+            let (entered_tx, entered_rx) = mpsc::sync_channel(0);
+            let (continue_tx, continue_rx) = mpsc::sync_channel(0);
+            let request_returned = Arc::new(AtomicBool::new(false));
+            let returned = Arc::clone(&request_returned);
+            let server = Server::on_request(vec![response(200, "", &bytes)], move || {
+                entered_tx.send(()).unwrap();
+                continue_rx.recv().unwrap();
+                returned.store(true, Ordering::Release);
+            });
+            let root = tempfile::tempdir().unwrap();
+            let preference_root = tempfile::tempdir().unwrap();
+            let key = SelectionKey::from_release(&server.release(&bytes));
+            let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
+                Err("Protected staging is unavailable.".into())
+            });
+            let mut flow = InternalDownloadFlow::fixture(
+                supported(),
+                SelectionPreference::at(preference_root.path().join("selection.json")),
+                worker,
+                vec![vec![server.release(&bytes)], vec![server.release(&bytes)]],
+                "x86_64",
+            );
+            flow.start_selected(key).unwrap();
+            tilo_test_env::recv("the download request", &entered_rx);
+            let unblock = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(25));
+                continue_tx.send(()).unwrap();
+            });
+            drop(flow);
+            unblock.join().unwrap();
+            assert!(request_returned.load(Ordering::Acquire));
+        }
     }
 
-    // Catches normalizing away the coordinator's R1/R2 uncertainty and boundary errors.
+    /// Terminal and paused presentation.
     #[test]
-    fn terminal_wording_retains_bytes_components_residue_uncertainty_and_original_error() {
-        for phase in [Phase::Failed, Phase::Cancelled] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn internal_download_wording_reports_only_known_retained_facts() {
+        // Phase `terminal_wording_retains_bytes_components_residue_uncertainty_and_original_error`.
+        // Catches normalizing away the coordinator's R1/R2 uncertainty and boundary errors.
+        {
+            for phase in [Phase::Failed, Phase::Cancelled] {
+                let presentation = presentation_from_facts(
+                    phase,
+                    [17, 29],
+                    None,
+                    [true, false],
+                    true,
+                    true,
+                    Some("journal normalization failed; held-reader boundary: readback changed"),
+                );
+                assert!(presentation.details.contains("17 bytes"));
+                assert!(presentation.details.contains("29 bytes"));
+                assert!(
+                    presentation
+                        .details
+                        .contains("1 completed and verified component")
+                );
+                assert!(presentation.details.contains("Some download data remains"));
+                assert!(presentation.details.contains("may have changed"));
+                assert!(
+                    presentation
+                        .details
+                        .contains("journal normalization failed")
+                );
+                assert!(
+                    presentation
+                        .details
+                        .contains("held-reader boundary: readback changed")
+                );
+                assert!(!presentation.details.contains("acknowledged prefix"));
+                assert!(!presentation.details.contains("private cache"));
+                assert_ne!(presentation.title, "Download ready");
+            }
+        }
+
+        // Phase `false_residue_makes_no_global_absence_claim`.
+        // Catches residue=false being upgraded into a claim that all retained data is absent.
+        {
             let presentation = presentation_from_facts(
-                phase,
-                [17, 29],
+                Phase::Discarded,
+                [0, 0],
+                None,
+                [false, false],
+                false,
+                false,
+                None,
+            );
+            assert!(!presentation.details.contains("no download data"));
+            assert!(!presentation.details.contains("cache cleared"));
+            assert!(presentation.details.contains("may remain"));
+        }
+
+        // Phase `paused_zero_fact_presentation_is_neutral_about_retained_data`.
+        // Catches a pause with no established retained facts claiming data or completed components.
+        {
+            let presentation = presentation_from_facts(
+                Phase::Paused,
+                [0, 0],
+                None,
+                [false, false],
+                false,
+                false,
+                None,
+            );
+            assert_eq!(presentation.title, "Download paused");
+            assert_eq!(
+                presentation.details,
+                "The download is paused. Resume will recheck any retained download data before continuing."
+            );
+        }
+
+        // Phase `paused_presentation_retains_known_bytes_components_residue_uncertainty_and_error`.
+        // Catches neutral pause copy dropping facts the worker did establish.
+        {
+            let presentation = presentation_from_facts(
+                Phase::Paused,
+                [512, 0],
                 None,
                 [true, false],
                 true,
                 true,
-                Some("journal normalization failed; held-reader boundary: readback changed"),
+                Some("pause boundary changed"),
             );
-            assert!(presentation.details.contains("17 bytes"));
-            assert!(presentation.details.contains("29 bytes"));
+            assert!(presentation.details.contains("component 1 has 512 bytes"));
             assert!(
                 presentation
                     .details
@@ -1417,78 +1515,7 @@ mod tests {
             );
             assert!(presentation.details.contains("Some download data remains"));
             assert!(presentation.details.contains("may have changed"));
-            assert!(
-                presentation
-                    .details
-                    .contains("journal normalization failed")
-            );
-            assert!(
-                presentation
-                    .details
-                    .contains("held-reader boundary: readback changed")
-            );
-            assert!(!presentation.details.contains("acknowledged prefix"));
-            assert!(!presentation.details.contains("private cache"));
-            assert_ne!(presentation.title, "Download ready");
+            assert!(presentation.details.contains("pause boundary changed"));
         }
-    }
-
-    // Catches residue=false being upgraded into a claim that all retained data is absent.
-    #[test]
-    fn false_residue_makes_no_global_absence_claim() {
-        let presentation = presentation_from_facts(
-            Phase::Discarded,
-            [0, 0],
-            None,
-            [false, false],
-            false,
-            false,
-            None,
-        );
-        assert!(!presentation.details.contains("no download data"));
-        assert!(!presentation.details.contains("cache cleared"));
-        assert!(presentation.details.contains("may remain"));
-    }
-
-    // Catches a pause with no established retained facts claiming data or completed components.
-    #[test]
-    fn paused_zero_fact_presentation_is_neutral_about_retained_data() {
-        let presentation = presentation_from_facts(
-            Phase::Paused,
-            [0, 0],
-            None,
-            [false, false],
-            false,
-            false,
-            None,
-        );
-        assert_eq!(presentation.title, "Download paused");
-        assert_eq!(
-            presentation.details,
-            "The download is paused. Resume will recheck any retained download data before continuing."
-        );
-    }
-
-    // Catches neutral pause copy dropping facts the worker did establish.
-    #[test]
-    fn paused_presentation_retains_known_bytes_components_residue_uncertainty_and_error() {
-        let presentation = presentation_from_facts(
-            Phase::Paused,
-            [512, 0],
-            None,
-            [true, false],
-            true,
-            true,
-            Some("pause boundary changed"),
-        );
-        assert!(presentation.details.contains("component 1 has 512 bytes"));
-        assert!(
-            presentation
-                .details
-                .contains("1 completed and verified component")
-        );
-        assert!(presentation.details.contains("Some download data remains"));
-        assert!(presentation.details.contains("may have changed"));
-        assert!(presentation.details.contains("pause boundary changed"));
     }
 }

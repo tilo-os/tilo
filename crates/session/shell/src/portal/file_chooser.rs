@@ -33,8 +33,6 @@ use zbus::object_server::SignalEmitter;
 use zbus::zvariant::ObjectPath;
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
-use std::os::unix::ffi::OsStrExt as _;
 use std::path::PathBuf;
 
 use zbus::zvariant::{OwnedValue, Value};
@@ -62,10 +60,6 @@ impl FileChooserBackend {
 #[cfg(target_os = "linux")]
 impl FileChooserBackend {
     /// `OpenFile` — request one or more existing files.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.FileChooser.OpenFile D-Bus signature"
-    )]
     async fn open_file(
         &self,
         #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
@@ -92,10 +86,6 @@ impl FileChooserBackend {
     }
 
     /// `SaveFile` — request a destination for one new file.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.FileChooser.SaveFile D-Bus signature"
-    )]
     async fn save_file(
         &self,
         #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
@@ -128,10 +118,6 @@ impl FileChooserBackend {
     }
 
     /// `SaveFiles` — request a folder + multiple destination filenames.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.FileChooser.SaveFiles D-Bus signature"
-    )]
     async fn save_files(
         &self,
         #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
@@ -277,21 +263,10 @@ pub(super) fn paths_to_open_response(
     (0, results)
 }
 
-/// Encode an absolute Unix path as an RFC 8089 file URI without forcing
-/// arbitrary filesystem bytes through lossy UTF-8 conversion.
+/// Encode an absolute path as an RFC 8089 file URI, percent-encoding bytes
+/// that are not UTF-8 rather than converting them lossily.
 pub(crate) fn file_uri(path: &std::path::Path) -> Option<String> {
-    if !path.is_absolute() {
-        return None;
-    }
-    let mut uri = String::from("file://");
-    for byte in path.as_os_str().as_bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'.' | b'_' | b'~') {
-            uri.push(char::from(*byte));
-        } else {
-            write!(uri, "%{byte:02X}").ok()?;
-        }
-    }
-    Some(uri)
+    url::Url::from_file_path(path).ok().map(String::from)
 }
 
 #[cfg(test)]
@@ -300,6 +275,7 @@ mod tests {
     use crate::portal::{GrantStoreHandle, MockFilePickerSpawner};
     use crate::shell::state::WorkspaceAuthority as _;
     use crate::shell::state::{Workspace, WorkspaceId};
+    use std::os::unix::ffi::OsStrExt as _;
 
     use std::sync::Arc;
 
@@ -308,165 +284,98 @@ mod tests {
     }
 
     #[test]
-    fn open_options_default_to_file_selection() {
-        let opts = decode_open_options(
-            PortalCaller::new(WorkspaceId(30), "org.example"),
-            "Open".into(),
-            &HashMap::new(),
-        );
-        assert!(!opts.directory);
-        assert!(!opts.multiple);
+    fn open_options_decode_selection_mode_independently() {
+        // Phase `open_options_default_to_file_selection`.
+        {
+            let opts = decode_open_options(
+                PortalCaller::new(WorkspaceId(30), "org.example"),
+                "Open".into(),
+                &HashMap::new(),
+            );
+            assert!(!opts.directory);
+            assert!(!opts.multiple);
+        }
+        // Phase `open_options_decode_directory_independently_of_multiple_and_label`.
+        {
+            let mut options = HashMap::new();
+            options.insert(
+                "directory".into(),
+                OwnedValue::try_from(Value::Bool(true)).unwrap(),
+            );
+            options.insert(
+                "multiple".into(),
+                OwnedValue::try_from(Value::Bool(true)).unwrap(),
+            );
+            options.insert(
+                "accept_label".into(),
+                OwnedValue::try_from(Value::new("Attach folder".to_string())).unwrap(),
+            );
+            let opts = decode_open_options(
+                PortalCaller::new(WorkspaceId(31), "org.example"),
+                "Choose".into(),
+                &options,
+            );
+            assert!(opts.directory);
+            assert!(opts.multiple);
+            assert_eq!(opts.accept_label.as_deref(), Some("Attach folder"));
+        }
     }
 
     #[test]
-    fn open_options_decode_directory_independently_of_multiple_and_label() {
-        let mut options = HashMap::new();
-        options.insert(
-            "directory".into(),
-            OwnedValue::try_from(Value::Bool(true)).unwrap(),
-        );
-        options.insert(
-            "multiple".into(),
-            OwnedValue::try_from(Value::Bool(true)).unwrap(),
-        );
-        options.insert(
-            "accept_label".into(),
-            OwnedValue::try_from(Value::new("Attach folder".to_string())).unwrap(),
-        );
-        let opts = decode_open_options(
-            PortalCaller::new(WorkspaceId(31), "org.example"),
-            "Choose".into(),
-            &options,
-        );
-        assert!(opts.directory);
-        assert!(opts.multiple);
-        assert_eq!(opts.accept_label.as_deref(), Some("Attach folder"));
-    }
+    fn chooser_paths_map_to_portal_responses_and_encoded_uris() {
+        // Phase `paths_allow_returns_response_zero_and_uri`.
+        {
+            let (code, results) = paths_to_open_response(
+                Some(vec![PathBuf::from("/tmp/x.txt")]),
+                /*save=*/ false,
+            );
+            assert_eq!(code, 0);
+            assert!(results.contains_key("uris"));
+            assert!(!results.contains_key("writable"));
+        }
+        // Phase `paths_save_returns_writable_true`.
+        {
+            let (code, results) = paths_to_open_response(
+                Some(vec![PathBuf::from("/tmp/out.bin")]),
+                /*save=*/ true,
+            );
+            assert_eq!(code, 0);
+            assert!(results.contains_key("uris"));
+            assert!(results.contains_key("writable"));
+        }
+        // Phase `paths_none_returns_response_one_no_results`.
+        {
+            let (code, results) = paths_to_open_response(None, /*save=*/ false);
+            assert_eq!(code, 1);
+            assert!(results.is_empty());
+        }
+        // Phase `paths_empty_returns_response_one`.
+        {
+            // Empty list ≡ cancel — keeps the contract symmetric with `None` (the spawner uses an empty Vec ≡ cancel internally).
+            let (code, results) = paths_to_open_response(Some(vec![]), /*save=*/ false);
+            assert_eq!(code, 1);
+            assert!(results.is_empty());
+        }
+        // Phase `paths_serialise_to_file_uri`.
+        {
+            let (_code, results) =
+                paths_to_open_response(Some(vec![PathBuf::from("/tmp/a.txt")]), false);
+            let uris_v = results.get("uris").expect("uris");
+            let cloned: OwnedValue = uris_v.try_clone().expect("clone OwnedValue");
+            let uris: Vec<String> = Vec::<String>::try_from(cloned).expect("Vec<String>");
+            assert_eq!(uris, vec!["file:///tmp/a.txt".to_string()]);
+        }
+        // Phase `file_uri_percent_encodes_reserved_and_non_utf8_bytes`.
+        {
+            use std::ffi::OsStr;
 
-    #[test]
-    fn paths_allow_returns_response_zero_and_uri() {
-        let (code, results) = paths_to_open_response(
-            Some(vec![PathBuf::from("/tmp/x.txt")]),
-            /*save=*/ false,
-        );
-        assert_eq!(code, 0);
-        assert!(results.contains_key("uris"));
-        assert!(!results.contains_key("writable"));
-    }
-
-    #[test]
-    fn paths_save_returns_writable_true() {
-        let (code, results) = paths_to_open_response(
-            Some(vec![PathBuf::from("/tmp/out.bin")]),
-            /*save=*/ true,
-        );
-        assert_eq!(code, 0);
-        assert!(results.contains_key("uris"));
-        assert!(results.contains_key("writable"));
-    }
-
-    #[test]
-    fn paths_none_returns_response_one_no_results() {
-        let (code, results) = paths_to_open_response(None, /*save=*/ false);
-        assert_eq!(code, 1);
-        assert!(results.is_empty());
-    }
-
-    #[test]
-    fn paths_empty_returns_response_one() {
-        // Empty list ≡ cancel — keeps the contract symmetric with `None` (the spawner uses an empty Vec ≡ cancel internally).
-        let (code, results) = paths_to_open_response(Some(vec![]), /*save=*/ false);
-        assert_eq!(code, 1);
-        assert!(results.is_empty());
-    }
-
-    #[test]
-    fn paths_serialise_to_file_uri() {
-        let (_code, results) =
-            paths_to_open_response(Some(vec![PathBuf::from("/tmp/a.txt")]), false);
-        let uris_v = results.get("uris").expect("uris");
-        let cloned: OwnedValue = uris_v.try_clone().expect("clone OwnedValue");
-        let uris: Vec<String> = Vec::<String>::try_from(cloned).expect("Vec<String>");
-        assert_eq!(uris, vec!["file:///tmp/a.txt".to_string()]);
-    }
-
-    #[test]
-    fn file_uri_percent_encodes_reserved_and_non_utf8_bytes() {
-        use std::ffi::OsStr;
-
-        let path = PathBuf::from(OsStr::from_bytes(b"/tmp/a #\xff.txt"));
-        assert_eq!(
-            file_uri(&path).as_deref(),
-            Some("file:///tmp/a%20%23%FF.txt")
-        );
-        assert!(file_uri(std::path::Path::new("relative.txt")).is_none());
-    }
-
-    /// Wires a `MockFilePickerSpawner` returning `/tmp/test.txt`, calls the
-    /// backend's response builder, and asserts the response contains `file:///tmp/test.txt`.
-    #[test]
-    fn open_file_returns_user_selected_uri() {
-        let (_store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(33));
-        let mock = Arc::new(MockFilePickerSpawner::returning(vec![PathBuf::from(
-            "/tmp/test.txt",
-        )]));
-        let fp = FilePickerSpawnerHandle::new(mock.clone());
-        let caller = PortalCaller::new(ws_id, "org.example");
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let (code, results) = rt.block_on(pick_and_grant(
-            &fp,
-            FilePickerOptions::new(caller, "Open file", /*save=*/ false),
-            FsMode::Read,
-        ));
-        assert_eq!(code, 0);
-        let uris_v = results.get("uris").expect("uris");
-        let cloned: OwnedValue = uris_v.try_clone().expect("clone OwnedValue");
-        let uris: Vec<String> = Vec::<String>::try_from(cloned).expect("Vec<String>");
-        assert_eq!(uris, vec!["file:///tmp/test.txt".to_string()]);
-        let seen = mock.requests();
-        assert_eq!(seen.len(), 1);
-        assert_eq!(seen[0].1, "Open file");
-        assert!(!seen[0].2);
-    }
-
-    #[test]
-    fn a_pick_is_left_to_the_document_portal_and_not_replicated_to_peers() {
-        let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(36));
-        let picked = PathBuf::from("/tmp/only-this-one.txt");
-        let fp = FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::returning(vec![
-            picked.clone(),
-        ])));
-        let caller = PortalCaller::new(ws_id, "org.example");
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let (code, _) = rt.block_on(pick_and_grant(
-            &fp,
-            FilePickerOptions::new(caller.clone(), "Open", false),
-            FsMode::Read,
-        ));
-        assert_eq!(code, 0);
-
-        // Read the capabilities back out of the workspace the store wrote to, not out of anything this test built.
-        let tree = store.tree_handle();
-        let grant_count = {
-            let guard = tree.read();
-            let ws = guard
-                .desktop
-                .workspaces
-                .iter()
-                .find(|w| w.id == ws_id)
-                .expect("workspace");
-            ws.app_capabilities(&caller.app_id).into_iter().count()
-        };
-        assert_eq!(
-            grant_count, 0,
-            "private file choices must not enter the collaborative workspace document"
-        );
+            let path = PathBuf::from(OsStr::from_bytes(b"/tmp/a #\xff.txt"));
+            assert_eq!(
+                file_uri(&path).as_deref(),
+                Some("file:///tmp/a%20%23%FF.txt")
+            );
+            assert!(file_uri(std::path::Path::new("relative.txt")).is_none());
+        }
     }
 
     #[test]
@@ -475,68 +384,137 @@ mod tests {
         reason = "the read guard protects `ws`, which the closure below needs through the \
                   block's final `.count()` — already dropped at the earliest possible point"
     )]
-    fn a_cancelled_dialog_grants_nothing() {
-        use crate::shell::state::Capability;
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn open_and_save_flows_grant_only_what_the_user_picked() {
+        // Phase `open_file_returns_user_selected_uri`.
+        // Wires a `MockFilePickerSpawner` returning `/tmp/test.txt`, calls the
+        // backend's response builder, and asserts the response contains `file:///tmp/test.txt`.
+        {
+            let (_store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(33));
+            let mock = Arc::new(MockFilePickerSpawner::returning(vec![PathBuf::from(
+                "/tmp/test.txt",
+            )]));
+            let fp = FilePickerSpawnerHandle::new(mock.clone());
+            let caller = PortalCaller::new(ws_id, "org.example");
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let (code, results) = rt.block_on(pick_and_grant(
+                &fp,
+                FilePickerOptions::new(caller, "Open file", /*save=*/ false),
+                FsMode::Read,
+            ));
+            assert_eq!(code, 0);
+            let uris_v = results.get("uris").expect("uris");
+            let cloned: OwnedValue = uris_v.try_clone().expect("clone OwnedValue");
+            let uris: Vec<String> = Vec::<String>::try_from(cloned).expect("Vec<String>");
+            assert_eq!(uris, vec!["file:///tmp/test.txt".to_string()]);
+            let seen = mock.requests();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].1, "Open file");
+            assert!(!seen[0].2);
+        }
+        // Phase `a_pick_is_left_to_the_document_portal_and_not_replicated_to_peers`.
+        {
+            let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(36));
+            let picked = PathBuf::from("/tmp/only-this-one.txt");
+            let fp =
+                FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::returning(vec![
+                    picked.clone(),
+                ])));
+            let caller = PortalCaller::new(ws_id, "org.example");
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let (code, _) = rt.block_on(pick_and_grant(
+                &fp,
+                FilePickerOptions::new(caller.clone(), "Open", false),
+                FsMode::Read,
+            ));
+            assert_eq!(code, 0);
 
-        let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(37));
-        let fp = FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::always_cancel()));
-        let caller = PortalCaller::new(ws_id, "org.example");
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let (code, _) = rt.block_on(pick_and_grant(
-            &fp,
-            FilePickerOptions::new(caller.clone(), "Open", false),
-            FsMode::Read,
-        ));
-        assert_eq!(code, 1, "a cancelled dialog is response=1");
+            // Read the capabilities back out of the workspace the store wrote to, not out of anything this test built.
+            let tree = store.tree_handle();
+            let grant_count = {
+                let guard = tree.read();
+                let ws = guard
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .find(|w| w.id == ws_id)
+                    .expect("workspace");
+                ws.app_capabilities(&caller.app_id).into_iter().count()
+            };
+            assert_eq!(
+                grant_count, 0,
+                "private file choices must not enter the collaborative workspace document"
+            );
+        }
+        // Phase `a_cancelled_dialog_grants_nothing`.
+        {
+            use crate::shell::state::Capability;
 
-        let tree = store.tree_handle();
-        let granted_fs = {
-            let guard = tree.read();
-            let ws = guard
-                .desktop
-                .workspaces
-                .iter()
-                .find(|w| w.id == ws_id)
-                .expect("workspace");
-            ws.app_capabilities(&caller.app_id)
-                .into_iter()
-                .filter(|c| {
-                    matches!(
-                        Capability::from_capability(c),
-                        Some(Capability::Filesystem { .. })
-                    )
-                })
-                .count()
-        };
-        assert_eq!(
-            granted_fs, 0,
-            "declining the dialog must not hand the app any filesystem access"
-        );
-    }
+            let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(37));
+            let fp = FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::always_cancel()));
+            let caller = PortalCaller::new(ws_id, "org.example");
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let (code, _) = rt.block_on(pick_and_grant(
+                &fp,
+                FilePickerOptions::new(caller.clone(), "Open", false),
+                FsMode::Read,
+            ));
+            assert_eq!(code, 1, "a cancelled dialog is response=1");
 
-    #[test]
-    fn open_file_with_cancelled_spawner_returns_response_one() {
-        let (_store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(34));
-        let fp = FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::always_cancel()));
-        let caller = PortalCaller::new(ws_id, "org.example");
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let (code, results) = rt.block_on(pick_and_grant(
-            &fp,
-            FilePickerOptions::new(caller, "Open", false),
-            FsMode::Read,
-        ));
-        assert_eq!(code, 1);
-        assert!(results.is_empty());
-    }
-
-    #[test]
-    fn save_responses_are_writable_and_open_responses_are_not() {
+            let tree = store.tree_handle();
+            let granted_fs = {
+                let guard = tree.read();
+                let ws = guard
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .find(|w| w.id == ws_id)
+                    .expect("workspace");
+                ws.app_capabilities(&caller.app_id)
+                    .into_iter()
+                    .filter(|c| {
+                        matches!(
+                            Capability::from_capability(c),
+                            Some(Capability::Filesystem { .. })
+                        )
+                    })
+                    .count()
+            };
+            assert_eq!(
+                granted_fs, 0,
+                "declining the dialog must not hand the app any filesystem access"
+            );
+        }
+        // Phase `open_file_with_cancelled_spawner_returns_response_one`.
+        {
+            let (_store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(34));
+            let fp = FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::always_cancel()));
+            let caller = PortalCaller::new(ws_id, "org.example");
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let (code, results) = rt.block_on(pick_and_grant(
+                &fp,
+                FilePickerOptions::new(caller, "Open", false),
+                FsMode::Read,
+            ));
+            assert_eq!(code, 1);
+            assert!(results.is_empty());
+        }
+        // Phase `save_responses_are_writable_and_open_responses_are_not`.
         for (save, mode, expect_write) in [
             (false, FsMode::Read, false),
             (true, FsMode::ReadWrite, true),
@@ -572,3 +550,9 @@ mod tests {
         }
     }
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;

@@ -573,22 +573,94 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rich_metadata_projection_is_small_and_self_validating() {
-        let projection = MetadataProjectionV1 {
-            schema_version: METADATA_PROJECTION_VERSION,
-            record_id: FileRecordId::new(),
-            properties: collab_types::FilePropertiesV1 {
-                schema_version: collab_types::files::FILE_PROPERTIES_VERSION,
-                image_width: None,
-                image_height: None,
-                duration_ms: None,
-                page_count: Some(12),
-                codec: Some("pdf".into()),
-                container: Some("pdf".into()),
-            },
-        };
-        projection.validate().unwrap();
-        assert!(serde_json::to_vec(&projection).unwrap().len() <= MAX_METADATA_XATTR_BYTES);
+    fn sync_state_projections_round_trip_every_dimension() {
+        // Phase `rich_metadata_projection_is_small_and_self_validating`.
+        {
+            let projection = MetadataProjectionV1 {
+                schema_version: METADATA_PROJECTION_VERSION,
+                record_id: FileRecordId::new(),
+                properties: collab_types::FilePropertiesV1 {
+                    schema_version: collab_types::files::FILE_PROPERTIES_VERSION,
+                    image_width: None,
+                    image_height: None,
+                    duration_ms: None,
+                    page_count: Some(12),
+                    codec: Some("pdf".into()),
+                    container: Some("pdf".into()),
+                },
+            };
+            projection.validate().unwrap();
+            assert!(serde_json::to_vec(&projection).unwrap().len() <= MAX_METADATA_XATTR_BYTES);
+        }
+        // Phase `state_strings_round_trip`.
+        {
+            for s in [
+                SyncState::Local,
+                SyncState::Projected,
+                SyncState::Downloading,
+            ] {
+                assert_eq!(SyncState::parse(s.as_str()), Some(s), "round-trip {s:?}");
+            }
+            assert_eq!(SyncState::parse("bogus"), None);
+            // The xattr name is the documented, stable contract with the app.
+            assert_eq!(SYNC_XATTR, "user.tilo.sync");
+            assert_eq!(SHARE_XATTR, "user.tilo.share");
+        }
+        // Phase `availability_projection_round_trips_every_ui_dimension`.
+        {
+            let record = rich_record();
+            let projection = AvailabilityProjectionV1::from_record_with_policy(
+                &record,
+                AvailabilityPolicy::Pinned,
+            );
+            let bytes = projection.to_xattr_bytes().unwrap();
+
+            assert!(bytes.len() <= MAX_AVAILABILITY_XATTR_BYTES);
+            assert_eq!(
+                AvailabilityProjectionV1::parse_xattr(&bytes).unwrap(),
+                projection
+            );
+            assert_eq!(projection.schema_version, AVAILABILITY_PROJECTION_VERSION);
+            assert_eq!(projection.record_id, record.record_id);
+            assert_eq!(projection.residency, record.residency);
+            assert_eq!(projection.transfer.phase, TransferPhase::Downloading);
+            assert_eq!(projection.policy, AvailabilityPolicy::Pinned);
+            assert_eq!(
+                projection.replicas,
+                ProjectedReplicaEvidence::Known {
+                    reachable: 2,
+                    durable: 1
+                }
+            );
+            assert_eq!(projection.freshness.replicas_observed_at_ms, Some(7_900));
+            assert_eq!(AVAILABILITY_XATTR, "user.tilo.availability");
+        }
+        // Phase `replica_counts_are_unknown_without_current_version_evidence`.
+        {
+            let mut record = rich_record();
+            let old_version = FileVersionId::new();
+            record.replicas.acknowledged_version = Some(old_version);
+            let projection = AvailabilityProjectionV1::from_record(&record);
+            assert_eq!(projection.replicas, ProjectedReplicaEvidence::Unknown);
+
+            record.replicas.acknowledged_version = record.current_version;
+            record.freshness.replicas_observed_at_ms = None;
+            let projection = AvailabilityProjectionV1::from_record(&record);
+            assert_eq!(projection.replicas, ProjectedReplicaEvidence::Unknown);
+
+            // Unknown is distinct from a valid observation that found zero peers.
+            record.freshness.replicas_observed_at_ms = Some(9_000);
+            record.replicas.reachable = 0;
+            record.replicas.durable = 0;
+            let projection = AvailabilityProjectionV1::from_record(&record);
+            assert_eq!(
+                projection.replicas,
+                ProjectedReplicaEvidence::Known {
+                    reachable: 0,
+                    durable: 0
+                }
+            );
+        }
     }
     use crate::availability::{
         Freshness, RecordKind, ReplicaEvidence, TransferError, TransferState,
@@ -635,127 +707,62 @@ mod tests {
     }
 
     #[test]
-    fn state_strings_round_trip() {
-        for s in [
-            SyncState::Local,
-            SyncState::Projected,
-            SyncState::Downloading,
-        ] {
-            assert_eq!(SyncState::parse(s.as_str()), Some(s), "round-trip {s:?}");
+    fn sync_state_parsing_bounds_errors_and_rejects_inconsistent_values() {
+        // Phase `long_utf8_errors_are_truncated_safely_and_marked`.
+        {
+            let mut record = rich_record();
+            record.transfer.last_error.as_mut().unwrap().message = "é".repeat(300);
+            let projection = AvailabilityProjectionV1::from_record(&record);
+            let message = projection.transfer.last_error.as_deref().unwrap();
+            assert!(message.len() <= MAX_PROJECTED_ERROR_BYTES);
+            assert!(message.is_char_boundary(message.len()));
+            assert!(projection.transfer.error_truncated);
+            assert!(projection.to_xattr_bytes().unwrap().len() <= MAX_AVAILABILITY_XATTR_BYTES);
         }
-        assert_eq!(SyncState::parse("bogus"), None);
-        // The xattr name is the documented, stable contract with the app.
-        assert_eq!(SYNC_XATTR, "user.tilo.sync");
-        assert_eq!(SHARE_XATTR, "user.tilo.share");
-    }
+        // Phase `parser_rejects_oversize_future_and_inconsistent_values`.
+        {
+            assert!(matches!(
+                AvailabilityProjectionV1::parse_xattr(&vec![
+                    b' ';
+                    MAX_AVAILABILITY_XATTR_BYTES + 1
+                ]),
+                Err(AvailabilityProjectionError::TooLarge)
+            ));
 
-    #[test]
-    fn availability_projection_round_trips_every_ui_dimension() {
-        let record = rich_record();
-        let projection =
-            AvailabilityProjectionV1::from_record_with_policy(&record, AvailabilityPolicy::Pinned);
-        let bytes = projection.to_xattr_bytes().unwrap();
+            let mut projection = AvailabilityProjectionV1::from_record(&rich_record());
+            projection.schema_version = AVAILABILITY_PROJECTION_VERSION + 1;
+            let bytes = serde_json::to_vec(&projection).unwrap();
+            assert!(matches!(
+                AvailabilityProjectionV1::parse_xattr(&bytes),
+                Err(AvailabilityProjectionError::UnsupportedVersion(_))
+            ));
 
-        assert!(bytes.len() <= MAX_AVAILABILITY_XATTR_BYTES);
-        assert_eq!(
-            AvailabilityProjectionV1::parse_xattr(&bytes).unwrap(),
-            projection
-        );
-        assert_eq!(projection.schema_version, AVAILABILITY_PROJECTION_VERSION);
-        assert_eq!(projection.record_id, record.record_id);
-        assert_eq!(projection.residency, record.residency);
-        assert_eq!(projection.transfer.phase, TransferPhase::Downloading);
-        assert_eq!(projection.policy, AvailabilityPolicy::Pinned);
-        assert_eq!(
-            projection.replicas,
-            ProjectedReplicaEvidence::Known {
-                reachable: 2,
-                durable: 1
-            }
-        );
-        assert_eq!(projection.freshness.replicas_observed_at_ms, Some(7_900));
-        assert_eq!(AVAILABILITY_XATTR, "user.tilo.availability");
-    }
+            let mut projection = AvailabilityProjectionV1::from_record(&rich_record());
+            projection.transfer.progress = Some(TransferProgress {
+                completed_bytes: 2,
+                total_bytes: Some(1),
+            });
+            let bytes = serde_json::to_vec(&projection).unwrap();
+            assert!(matches!(
+                AvailabilityProjectionV1::parse_xattr(&bytes),
+                Err(AvailabilityProjectionError::InvalidProgress)
+            ));
 
-    #[test]
-    fn replica_counts_are_unknown_without_current_version_evidence() {
-        let mut record = rich_record();
-        let old_version = FileVersionId::new();
-        record.replicas.acknowledged_version = Some(old_version);
-        let projection = AvailabilityProjectionV1::from_record(&record);
-        assert_eq!(projection.replicas, ProjectedReplicaEvidence::Unknown);
+            let mut projection = AvailabilityProjectionV1::from_record(&rich_record());
+            projection.transfer.last_error = None;
+            let bytes = serde_json::to_vec(&projection).unwrap();
+            assert!(matches!(
+                AvailabilityProjectionV1::parse_xattr(&bytes),
+                Err(AvailabilityProjectionError::InvalidTransferError)
+            ));
 
-        record.replicas.acknowledged_version = record.current_version;
-        record.freshness.replicas_observed_at_ms = None;
-        let projection = AvailabilityProjectionV1::from_record(&record);
-        assert_eq!(projection.replicas, ProjectedReplicaEvidence::Unknown);
-
-        // Unknown is distinct from a valid observation that found zero peers.
-        record.freshness.replicas_observed_at_ms = Some(9_000);
-        record.replicas.reachable = 0;
-        record.replicas.durable = 0;
-        let projection = AvailabilityProjectionV1::from_record(&record);
-        assert_eq!(
-            projection.replicas,
-            ProjectedReplicaEvidence::Known {
-                reachable: 0,
-                durable: 0
-            }
-        );
-    }
-
-    #[test]
-    fn long_utf8_errors_are_truncated_safely_and_marked() {
-        let mut record = rich_record();
-        record.transfer.last_error.as_mut().unwrap().message = "é".repeat(300);
-        let projection = AvailabilityProjectionV1::from_record(&record);
-        let message = projection.transfer.last_error.as_deref().unwrap();
-        assert!(message.len() <= MAX_PROJECTED_ERROR_BYTES);
-        assert!(message.is_char_boundary(message.len()));
-        assert!(projection.transfer.error_truncated);
-        assert!(projection.to_xattr_bytes().unwrap().len() <= MAX_AVAILABILITY_XATTR_BYTES);
-    }
-
-    #[test]
-    fn parser_rejects_oversize_future_and_inconsistent_values() {
-        assert!(matches!(
-            AvailabilityProjectionV1::parse_xattr(&vec![b' '; MAX_AVAILABILITY_XATTR_BYTES + 1]),
-            Err(AvailabilityProjectionError::TooLarge)
-        ));
-
-        let mut projection = AvailabilityProjectionV1::from_record(&rich_record());
-        projection.schema_version = AVAILABILITY_PROJECTION_VERSION + 1;
-        let bytes = serde_json::to_vec(&projection).unwrap();
-        assert!(matches!(
-            AvailabilityProjectionV1::parse_xattr(&bytes),
-            Err(AvailabilityProjectionError::UnsupportedVersion(_))
-        ));
-
-        let mut projection = AvailabilityProjectionV1::from_record(&rich_record());
-        projection.transfer.progress = Some(TransferProgress {
-            completed_bytes: 2,
-            total_bytes: Some(1),
-        });
-        let bytes = serde_json::to_vec(&projection).unwrap();
-        assert!(matches!(
-            AvailabilityProjectionV1::parse_xattr(&bytes),
-            Err(AvailabilityProjectionError::InvalidProgress)
-        ));
-
-        let mut projection = AvailabilityProjectionV1::from_record(&rich_record());
-        projection.transfer.last_error = None;
-        let bytes = serde_json::to_vec(&projection).unwrap();
-        assert!(matches!(
-            AvailabilityProjectionV1::parse_xattr(&bytes),
-            Err(AvailabilityProjectionError::InvalidTransferError)
-        ));
-
-        let mut projection = AvailabilityProjectionV1::from_record(&rich_record());
-        projection.current_version = None;
-        let bytes = serde_json::to_vec(&projection).unwrap();
-        assert!(matches!(
-            AvailabilityProjectionV1::parse_xattr(&bytes),
-            Err(AvailabilityProjectionError::InvalidReplicaEvidence)
-        ));
+            let mut projection = AvailabilityProjectionV1::from_record(&rich_record());
+            projection.current_version = None;
+            let bytes = serde_json::to_vec(&projection).unwrap();
+            assert!(matches!(
+                AvailabilityProjectionV1::parse_xattr(&bytes),
+                Err(AvailabilityProjectionError::InvalidReplicaEvidence)
+            ));
+        }
     }
 }

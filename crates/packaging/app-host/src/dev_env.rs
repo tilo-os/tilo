@@ -82,37 +82,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_gate_tracks_the_build_profile_and_feature() {
-        assert_eq!(
-            DEV_ENV_OVERRIDES,
-            cfg!(any(debug_assertions, feature = "dev-overrides"))
-        );
-    }
-
-    #[test]
-    fn a_closed_gate_ignores_every_override() {
-        let name = LAUNCHER_BIN_ENV;
-        assert_eq!(
-            dev_override_from(false, name, Some("/attacker".into())),
-            None
-        );
-        assert_eq!(
-            dev_override_from(true, name, Some("/dev".into())),
-            Some(OsString::from("/dev"))
-        );
-    }
-
-    #[test]
-    fn the_warning_names_the_variable_and_how_to_enable_it() {
-        let warning = ignored_warning(LAUNCHER_BIN_ENV);
-        assert!(warning.contains(LAUNCHER_BIN_ENV));
-        assert!(warning.contains("--features dev-overrides"));
-    }
-
-    #[test]
-    fn each_variable_warns_only_once() {
-        const NAME: &str = "TILO_APP_HOST_WARN_ONCE_TEST";
-        assert!(first_ignore(NAME));
-        assert!(!first_ignore(NAME));
+    fn dev_overrides_pass_only_through_an_open_gate_and_warn_once() {
+        // Phase `the_gate_tracks_the_build_profile_and_feature`.
+        {
+            assert_eq!(
+                DEV_ENV_OVERRIDES,
+                cfg!(any(debug_assertions, feature = "dev-overrides"))
+            );
+        }
+        // Phase `a_closed_gate_ignores_every_override`.
+        {
+            let name = LAUNCHER_BIN_ENV;
+            assert_eq!(
+                dev_override_from(false, name, Some("/attacker".into())),
+                None
+            );
+            assert_eq!(
+                dev_override_from(true, name, Some("/dev".into())),
+                Some(OsString::from("/dev"))
+            );
+        }
+        // Phase `the_warning_names_the_variable_and_how_to_enable_it`.
+        {
+            let warning = ignored_warning(LAUNCHER_BIN_ENV);
+            assert!(warning.contains(LAUNCHER_BIN_ENV));
+            assert!(warning.contains("--features dev-overrides"));
+        }
+        // Phase `each_variable_warns_only_once`.
+        {
+            const NAME: &str = "TILO_APP_HOST_WARN_ONCE_TEST";
+            assert!(first_ignore(NAME));
+            assert!(!first_ignore(NAME));
+        }
     }
 }

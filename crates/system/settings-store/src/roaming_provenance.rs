@@ -204,7 +204,7 @@ impl RoamingProvenance {
         self.normalise()?;
         let mut bytes = serde_json::to_vec_pretty(self).map_err(|_| ProvenanceError::Invalid)?;
         bytes.push(b'\n');
-        atomic_file::write_creating_parent_with_mode(path, &bytes, 0o600)
+        tilo_files::native::atomic::write_creating_parent_with_mode(path, &bytes, 0o600)
             .map_err(|error| ProvenanceError::Io(error.to_string()))
     }
 
@@ -286,67 +286,67 @@ mod tests {
     }
 
     #[test]
-    fn v1_migrates_without_inventing_wifi_or_conflicts() {
-        let decoded = RoamingProvenance::from_slice(
-            br#"{"schema_version":1,"generated_unix_ms":7,"settings":[{"key":"tilo.appearance.theme","device_id":"laptop","counter":4}]}"#,
-        )
-        .unwrap();
-        assert_eq!(decoded.schema_version, SCHEMA_VERSION);
-        assert_eq!(decoded.generated_unix_ms, 7);
-        assert_eq!(decoded.settings[0].winner.device_label, "laptop");
-        assert!(decoded.settings[0].alternatives.is_empty());
-        assert!(decoded.wifi.is_empty());
-    }
-
-    #[test]
-    fn future_schema_fails_closed() {
-        assert_eq!(
-            RoamingProvenance::from_slice(br#"{"schema_version":99}"#),
-            Err(ProvenanceError::UnsupportedSchema(99))
-        );
-    }
-
-    #[test]
-    fn round_trip_is_deterministic_bounded_and_secret_free() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(FILE_NAME);
-        let mut projection = RoamingProvenance {
-            schema_version: SCHEMA_VERSION,
-            generated_unix_ms: 9,
-            settings: vec![SettingResolution {
-                key: "tilo.appearance.theme".into(),
-                winner: origin("b", 3),
-                alternatives: vec![origin("c", 1), origin("a", 2)],
-            }],
-            wifi: vec![WifiResolution {
-                network_id: "ab".repeat(32),
-                ssid: "Cafe".into(),
-                security: "wpa2".into(),
-                winner: origin("b", 3),
-                alternatives: vec![origin("a", 2)],
-            }],
-        };
-        projection.save_at(&path).unwrap();
-        let bytes = std::fs::read(&path).unwrap();
-        let text = String::from_utf8(bytes).unwrap();
-        assert!(!text.contains("password"));
-        assert!(!text.contains("sealed_secret"));
-        let loaded = RoamingProvenance::load_at(&path).unwrap();
-        assert_eq!(loaded.settings[0].alternatives[0].device_id, "a");
-        assert_eq!(loaded, projection);
-    }
-
-    #[test]
-    fn unknown_setting_cannot_enter_projection() {
-        let mut projection = RoamingProvenance {
-            settings: vec![SettingResolution {
-                key: "tilo.future.secretish".into(),
-                winner: origin("a", 1),
-                alternatives: Vec::new(),
-            }],
-            ..RoamingProvenance::default()
-        };
-        let path = tempfile::tempdir().unwrap().path().join(FILE_NAME);
-        assert_eq!(projection.save_at(&path), Err(ProvenanceError::Invalid));
+    fn roaming_provenance_migrates_round_trips_and_fails_closed() {
+        // Phase `v1_migrates_without_inventing_wifi_or_conflicts`.
+        {
+            let decoded = RoamingProvenance::from_slice(
+                br#"{"schema_version":1,"generated_unix_ms":7,"settings":[{"key":"tilo.appearance.theme","device_id":"laptop","counter":4}]}"#,
+            )
+            .unwrap();
+            assert_eq!(decoded.schema_version, SCHEMA_VERSION);
+            assert_eq!(decoded.generated_unix_ms, 7);
+            assert_eq!(decoded.settings[0].winner.device_label, "laptop");
+            assert!(decoded.settings[0].alternatives.is_empty());
+            assert!(decoded.wifi.is_empty());
+        }
+        // Phase `future_schema_fails_closed`.
+        {
+            assert_eq!(
+                RoamingProvenance::from_slice(br#"{"schema_version":99}"#),
+                Err(ProvenanceError::UnsupportedSchema(99))
+            );
+        }
+        // Phase `round_trip_is_deterministic_bounded_and_secret_free`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(FILE_NAME);
+            let mut projection = RoamingProvenance {
+                schema_version: SCHEMA_VERSION,
+                generated_unix_ms: 9,
+                settings: vec![SettingResolution {
+                    key: "tilo.appearance.theme".into(),
+                    winner: origin("b", 3),
+                    alternatives: vec![origin("c", 1), origin("a", 2)],
+                }],
+                wifi: vec![WifiResolution {
+                    network_id: "ab".repeat(32),
+                    ssid: "Cafe".into(),
+                    security: "wpa2".into(),
+                    winner: origin("b", 3),
+                    alternatives: vec![origin("a", 2)],
+                }],
+            };
+            projection.save_at(&path).unwrap();
+            let bytes = std::fs::read(&path).unwrap();
+            let text = String::from_utf8(bytes).unwrap();
+            assert!(!text.contains("password"));
+            assert!(!text.contains("sealed_secret"));
+            let loaded = RoamingProvenance::load_at(&path).unwrap();
+            assert_eq!(loaded.settings[0].alternatives[0].device_id, "a");
+            assert_eq!(loaded, projection);
+        }
+        // Phase `unknown_setting_cannot_enter_projection`.
+        {
+            let mut projection = RoamingProvenance {
+                settings: vec![SettingResolution {
+                    key: "tilo.future.secretish".into(),
+                    winner: origin("a", 1),
+                    alternatives: Vec::new(),
+                }],
+                ..RoamingProvenance::default()
+            };
+            let path = tempfile::tempdir().unwrap().path().join(FILE_NAME);
+            assert_eq!(projection.save_at(&path), Err(ProvenanceError::Invalid));
+        }
     }
 }

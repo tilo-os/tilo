@@ -48,7 +48,7 @@ static REVISION: AtomicU64 = AtomicU64::new(0);
 /// list is a few hundred small structs.
 pub fn cached_scan() -> Scan {
     let dirs = crate::scan::application_dirs();
-    let desktop = vec![crate::scan::CURRENT_DESKTOP.to_string()];
+    let desktop = crate::scan::current_desktops();
     let mut guard = cell()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -115,53 +115,54 @@ fn fingerprint(dirs: &[PathBuf]) -> Vec<(PathBuf, Option<SystemTime>)> {
 mod tests {
     use super::*;
 
-    /// Two calls in a row must not re-read the filesystem, and
-    /// `invalidate` must undo that.
     #[test]
-    fn the_cache_is_warm_on_the_second_call_and_cold_after_invalidate() {
-        invalidate();
-        let first = cached_scan();
-        let second = cached_scan();
-        assert_eq!(
-            first.entries.len(),
-            second.entries.len(),
-            "a warm read returns the same list"
-        );
-        invalidate();
-        let third = cached_scan();
-        assert_eq!(first.entries.len(), third.entries.len());
-    }
-
-    #[test]
-    fn a_fingerprint_notices_a_new_entry_in_a_watched_directory() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dirs = vec![tmp.path().to_path_buf()];
-        let before = fingerprint(&dirs);
-        // Some CI filesystems expose directory mtimes at coarse granularity.
-        // Keep mutating the directory until its timestamp advances, but put a
-        // firm bound on the retry: production deliberately remains one cheap
-        // `stat` per application directory and the TTL is its fallback.
-        let deadline = Instant::now() + Duration::from_secs(3);
-        let mut attempt = 0u32;
-        loop {
-            std::fs::write(tmp.path().join(format!("entry-{attempt}.desktop")), []).unwrap();
-            let after = fingerprint(&dirs);
-            if after != before {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "directory mtime did not advance before the retry deadline"
+    fn cache_fingerprints_track_watched_directories_and_invalidation() {
+        // Phase `the_cache_is_warm_on_the_second_call_and_cold_after_invalidate`.
+        // Two calls in a row must not re-read the filesystem, and
+        // `invalidate` must undo that.
+        {
+            invalidate();
+            let first = cached_scan();
+            let second = cached_scan();
+            assert_eq!(
+                first.entries.len(),
+                second.entries.len(),
+                "a warm read returns the same list"
             );
-            attempt += 1;
-            std::thread::sleep(Duration::from_millis(10));
+            invalidate();
+            let third = cached_scan();
+            assert_eq!(first.entries.len(), third.entries.len());
         }
-    }
-
-    #[test]
-    fn a_missing_directory_fingerprints_as_absent_rather_than_failing() {
-        let fp = fingerprint(&[PathBuf::from("/nonexistent/tilo/applications")]);
-        assert_eq!(fp.len(), 1);
-        assert!(fp[0].1.is_none());
+        // Phase `a_fingerprint_notices_a_new_entry_in_a_watched_directory`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let dirs = vec![tmp.path().to_path_buf()];
+            let before = fingerprint(&dirs);
+            // Some CI filesystems expose directory mtimes at coarse granularity.
+            // Keep mutating the directory until its timestamp advances, but put a
+            // firm bound on the retry: production deliberately remains one cheap
+            // `stat` per application directory and the TTL is its fallback.
+            let deadline = tilo_test_env::hang_deadline();
+            let mut attempt = 0u32;
+            loop {
+                std::fs::write(tmp.path().join(format!("entry-{attempt}.desktop")), []).unwrap();
+                let after = fingerprint(&dirs);
+                if after != before {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "directory mtime did not advance before the retry deadline"
+                );
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        // Phase `a_missing_directory_fingerprints_as_absent_rather_than_failing`.
+        {
+            let fp = fingerprint(&[PathBuf::from("/nonexistent/tilo/applications")]);
+            assert_eq!(fp.len(), 1);
+            assert!(fp[0].1.is_none());
+        }
     }
 }

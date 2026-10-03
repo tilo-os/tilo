@@ -11,17 +11,17 @@
 //! The outcome of the most recent edit is polled once via [`take_outcome`]
 //! (rising-edge, like [`TextInput::take_dirty`]).
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::text_render::{FontChoice, TextRenderer, TextWeight};
+use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{TextInput, TextInputKind, Widget};
@@ -41,6 +41,8 @@ pub enum EditOutcome {
 
 pub struct EditableLabel {
     id: String,
+    accessible_name: Option<String>,
+    semantic_target: Option<String>,
     value: String,
     /// Live only while editing; owns the caret/selection and every
     /// editing affordance.
@@ -54,12 +56,22 @@ pub struct EditableLabel {
     /// (blur-commit) without the press event carrying a position.
     last_pointer: Point,
     outcome: EditOutcome,
+    /// Invoked with each committed new value.
+    action: Option<crate::widget::ActionEmitter<String>>,
+    /// A double click on the idle label begins an edit.
+    renames: bool,
+    /// When the last press on the idle label was, to count the second.
+    last_press: Option<crate::time::Instant>,
+    /// Take the width the row leaves.
+    grow: bool,
 }
 
 impl EditableLabel {
     pub fn new(value: &str) -> Self {
         Self {
             id: String::new(),
+            accessible_name: None,
+            semantic_target: None,
             value: value.to_string(),
             input: TextInput::local().with_kind(TextInputKind::Name),
             editing: false,
@@ -69,7 +81,34 @@ impl EditableLabel {
             rect: Rect::ZERO,
             last_pointer: Point::ZERO,
             outcome: EditOutcome::None,
+            action: None,
+            renames: false,
+            last_press: None,
+            grow: false,
         }
+    }
+
+    /// Invoke `binding` with each committed value that differs from the one
+    /// before: a rename is the app's own action.
+    #[must_use]
+    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
+        self.action = Some(crate::widget::ActionEmitter::new(binding));
+        self
+    }
+
+    /// Begin an edit on a double click, the way a list renames its items in
+    /// place. A single click is left to what is beneath (selecting the row).
+    #[must_use]
+    pub fn renames_on_double_click(mut self) -> Self {
+        self.renames = true;
+        self
+    }
+
+    /// Take the width the row leaves, eliding a long value.
+    #[must_use]
+    pub fn filling(mut self) -> Self {
+        self.grow = true;
+        self
     }
 
     #[must_use]
@@ -106,6 +145,18 @@ impl EditableLabel {
     pub fn with_id(mut self, id: &str) -> Self {
         self.id = id.to_string();
         self
+    }
+
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
+        self
+    }
+
+    /// Bind the editable surface to its current model identity. Changing the
+    /// target retires semantic routes from the previously displayed model.
+    pub fn set_semantic_target(&mut self, target: Option<String>) {
+        self.semantic_target = target;
     }
 
     pub fn value(&self) -> &str {
@@ -148,12 +199,16 @@ impl EditableLabel {
             return;
         }
         let trimmed = self.input.value().trim().to_string();
+        let changed = !trimmed.is_empty() && trimmed != self.value;
         if !trimmed.is_empty() {
             self.value = trimmed;
         }
         self.editing = false;
         self.input.set_focus(false);
         self.outcome = EditOutcome::Committed(self.value.clone());
+        if changed && let Some(action) = self.action.as_mut() {
+            let _ = action.emit(self.value.clone());
+        }
     }
 
     /// No-op when not editing.
@@ -177,6 +232,33 @@ impl EditableLabel {
         self.input.apply_layout_external(rect);
     }
 
+    /// A second press on the idle label soon after the first begins an edit.
+    fn count_double_click(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if !self.renames
+            || !matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            )
+            || !self.rect.contains(self.last_pointer)
+        {
+            return;
+        }
+        let now = crate::time::now();
+        let second = self.last_press.is_some_and(|at| {
+            now.saturating_duration_since(at) < crate::gesture::multi_click_interval()
+        });
+        self.last_press = if second { None } else { Some(now) };
+        if second {
+            self.begin_edit();
+            *ctx.focus_target = Some(ctx.node_id);
+            *ctx.handled = true;
+        }
+    }
+
     /// Matches [`TextInput`]'s own centring so text doesn't shift on edit.
     fn text_band(&self) -> (f64, f64) {
         let line_height = f64::from(self.size * LINE_HEIGHT_RATIO);
@@ -186,7 +268,7 @@ impl EditableLabel {
 }
 
 impl Widget for EditableLabel {
-    fn sync(&mut self, _state: &mut AutoCommit, _root: &ObjId) {}
+    crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn build_layout(
         &mut self,
@@ -200,7 +282,11 @@ impl Widget for EditableLabel {
                 height: Dimension::length((self.size * LINE_HEIGHT_RATIO).max(28.0)),
             },
             flex_shrink: 1.0,
-            flex_grow: 0.0,
+            flex_grow: if self.grow { 1.0 } else { 0.0 },
+            min_size: Size {
+                width: Dimension::length(0.0),
+                height: Dimension::auto(),
+            },
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -267,35 +353,23 @@ impl Widget for EditableLabel {
             reason = "label width in logical pixels is far below f32::MAX for any realistic UI element"
         )]
         let width = self.rect.width() as f32 + 1.0;
-        text_renderer.draw_text_font(
+        text_renderer.draw_style(
             scene,
             &self.value,
-            self.size,
             color,
             text_transform,
             Some(width),
-            TextWeight::Regular,
-            false,
-            &self.family,
+            &TextStyle::new(self.size).with_family(self.family.clone()),
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_pointer =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         if !self.editing {
+            self.count_double_click(event, ctx);
             return;
         }
         match event {
@@ -311,7 +385,7 @@ impl Widget for EditableLabel {
                 ..
             } => {
                 self.commit();
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -323,7 +397,7 @@ impl Widget for EditableLabel {
                 ..
             } => {
                 self.cancel();
-                *handled = true;
+                *ctx.handled = true;
             }
             // Deliberately NOT consumed, so the click still reaches whatever
             // is under it — clicking away both saves and acts, like a
@@ -339,34 +413,14 @@ impl Widget for EditableLabel {
             // A plain hover move is forwarded but not claimed, so the host
             // keeps its own pointer bookkeeping.
             WindowEvent::CursorMoved { .. } => {
-                let was = *handled;
-                self.input.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    root,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
+                let was = *ctx.handled;
+                self.input.handle_event(event, ctx);
                 if !self.input.is_dragging() {
-                    *handled = was;
+                    *ctx.handled = was;
                 }
             }
             _ => {
-                self.input.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    root,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
+                self.input.handle_event(event, ctx);
             }
         }
     }
@@ -427,30 +481,50 @@ impl Widget for EditableLabel {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        if self.editing {
-            return self.input.accessibility();
-        }
-        if self.value.is_empty() {
-            return None;
-        }
-        Some(
+        let mut node = if self.editing {
+            self.input.accessibility()?
+        } else {
+            if self.value.is_empty() && self.accessible_name.is_none() {
+                return None;
+            }
             AccessNode::new(Role::TextInput)
                 .with_optional_value(Some(self.value.clone()))
-                .with_state(AccessState {
-                    focusable: true,
-                    ..Default::default()
-                }),
-        )
+                .with_state(AccessState::new().focusable(true))
+        };
+        node.name.clone_from(&self.accessible_name);
+        if let Some(target) = &self.semantic_target {
+            node = node
+                .with_semantic_key(target.clone())
+                .with_action_target(target.clone());
+        }
+        Some(node)
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut AppModel,
+        path: &ModelPath,
+    ) -> bool {
+        self.semantic_target.as_deref() == Some(target) && self.perform_action(action, state, path)
     }
 
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, path) = crate::doc::document(state, path);
 
+        if matches!(action, Action::Focus | Action::Activate) {
+            if !self.editing {
+                self.begin_edit();
+            }
+            return true;
+        }
         if !self.editing {
             match action {
                 Action::SetValue(_) | Action::SetSelection { .. } => self.begin_edit(),
@@ -461,9 +535,47 @@ impl Widget for EditableLabel {
     }
 }
 
+impl crate::widget::controls::ActionControls for EditableLabel {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.action {
+            let _ = action.install_custody(domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.action
+            .as_mut()
+            .and_then(crate::widget::ActionEmitter::take)
+    }
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let Some(action) = &self.action else {
+            return Vec::new();
+        };
+        let control_id = self
+            .semantic_target
+            .as_deref()
+            .or_else(|| self.test_id())
+            .unwrap_or("editable_label");
+        vec![action.metadata(control_id)]
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
+    use winit::event::Modifiers;
 
     fn drive(el: &mut EditableLabel, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {
         let mut handled = false;
@@ -472,14 +584,16 @@ mod tests {
         let node = taffy.leaf_node(Style::default());
         el.handle_event(
             ev,
-            1.0,
-            &m,
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -538,153 +652,161 @@ mod tests {
     }
 
     #[test]
-    fn blur_commit_saves_typed_value_on_click_outside() {
-        let mut el = EditableLabel::new("Old Name");
-        el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
-        let mut doc = AutoCommit::new();
+    fn editable_label_commits_on_enter_or_blur_and_cancels_on_escape() {
+        fn blur_commit_saves_typed_value_on_click_outside() {
+            let mut el = EditableLabel::new("Old Name");
+            el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
+            let mut doc = AutoCommit::new();
 
-        el.begin_edit();
-        assert!(el.is_editing());
+            el.begin_edit();
+            assert!(el.is_editing());
 
-        // begin_edit selects-all, so the first keystroke replaces the value.
-        drive(&mut el, &mut doc, &char_key("N"), no_mods());
-        drive(&mut el, &mut doc, &char_key("e"), no_mods());
-        drive(&mut el, &mut doc, &char_key("w"), no_mods());
-        assert_eq!(
-            el.current_text(),
-            "New",
-            "typing replaced the selected value"
-        );
-        assert!(el.is_editing(), "still editing until a commit trigger");
-
-        // Move the pointer well outside the field, then press — a click away.
-        drive(&mut el, &mut doc, &mouse_move(500.0, 500.0), no_mods());
-        let consumed = drive(&mut el, &mut doc, &left_press(), no_mods());
-
-        assert!(!el.is_editing(), "click outside ends the edit");
-        assert_eq!(el.value(), "New", "blur committed the typed value");
-        assert!(
-            !consumed,
-            "the outside click is not swallowed — it still reaches the host",
-        );
-        assert_eq!(el.take_outcome(), EditOutcome::Committed("New".into()));
-        assert_eq!(
-            el.take_outcome(),
-            EditOutcome::None,
-            "outcome is rising-edge"
-        );
-    }
-
-    #[test]
-    fn modal_paint_suppression_retains_title_draft_and_selection() {
-        let mut label = EditableLabel::new("Draft title");
-        label.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 50.0));
-        label.begin_edit();
-        let before = label.input.get_state();
-        let mut renderer = crate::TextRenderer::new();
-        let mut draw = |label: &mut EditableLabel| {
-            let mut scene = Scene::new();
-            label.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut renderer,
-                &Theme::dark(),
-                &PresenceCtx::empty(),
+            // begin_edit selects-all, so the first keystroke replaces the value.
+            drive(&mut el, &mut doc, &char_key("N"), no_mods());
+            drive(&mut el, &mut doc, &char_key("e"), no_mods());
+            drive(&mut el, &mut doc, &char_key("w"), no_mods());
+            assert_eq!(
+                el.current_text(),
+                "New",
+                "typing replaced the selected value"
             );
-            scene.encoding().draw_tags.len()
-        };
-        let visible = draw(&mut label);
-        label.suppress_caret_paint(true);
-        assert_eq!(draw(&mut label).saturating_add(1), visible);
-        assert!(label.is_editing());
-        assert_eq!(label.input.get_state(), before);
-        assert_eq!(label.current_text(), "Draft title");
-        label.suppress_caret_paint(false);
-        assert_eq!(draw(&mut label), visible);
+            assert!(el.is_editing(), "still editing until a commit trigger");
+
+            // Move the pointer well outside the field, then press — a click away.
+            drive(&mut el, &mut doc, &mouse_move(500.0, 500.0), no_mods());
+            let consumed = drive(&mut el, &mut doc, &left_press(), no_mods());
+
+            assert!(!el.is_editing(), "click outside ends the edit");
+            assert_eq!(el.value(), "New", "blur committed the typed value");
+            assert!(
+                !consumed,
+                "the outside click is not swallowed — it still reaches the host",
+            );
+            assert_eq!(el.take_outcome(), EditOutcome::Committed("New".into()));
+            assert_eq!(
+                el.take_outcome(),
+                EditOutcome::None,
+                "outcome is rising-edge"
+            );
+        }
+
+        fn enter_commits_and_consumes() {
+            let mut el = EditableLabel::new("first");
+            el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
+            let mut doc = AutoCommit::new();
+            el.begin_edit();
+            drive(&mut el, &mut doc, &char_key("z"), no_mods()); // replaces selection → "z"
+            let consumed = drive(&mut el, &mut doc, &named_key(NamedKey::Enter), no_mods());
+            assert!(consumed, "Enter is consumed");
+            assert!(!el.is_editing());
+            assert_eq!(el.value(), "z");
+            assert_eq!(el.take_outcome(), EditOutcome::Committed("z".into()));
+        }
+
+        fn escape_cancels_and_keeps_previous_value() {
+            let mut el = EditableLabel::new("keep me");
+            el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
+            let mut doc = AutoCommit::new();
+            el.begin_edit();
+            drive(&mut el, &mut doc, &char_key("X"), no_mods()); // would-be new value
+            let consumed = drive(&mut el, &mut doc, &named_key(NamedKey::Escape), no_mods());
+            assert!(consumed, "Esc is consumed");
+            assert!(!el.is_editing());
+            assert_eq!(el.value(), "keep me", "cancel restores the previous value");
+            assert_eq!(el.take_outcome(), EditOutcome::Cancelled);
+        }
+
+        fn blank_commit_keeps_previous_value() {
+            let mut el = EditableLabel::new("Original");
+            el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
+            let mut doc = AutoCommit::new();
+            el.begin_edit(); // selects all
+            // select-all is already active; type a space then backspace to empty it.
+            drive(&mut el, &mut doc, &char_key(" "), no_mods()); // → " "
+            drive(
+                &mut el,
+                &mut doc,
+                &named_key(NamedKey::Backspace),
+                no_mods(),
+            ); // → ""
+            assert_eq!(el.current_text(), "", "field is empty before commit");
+            el.commit();
+            assert_eq!(el.value(), "Original", "blank commit keeps the old value");
+        }
+
+        fn focus_loss_blur_commits() {
+            let mut el = EditableLabel::new("before");
+            el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
+            let mut doc = AutoCommit::new();
+            el.begin_edit();
+            drive(&mut el, &mut doc, &char_key("A"), no_mods()); // → "A"
+            el.set_focus(false);
+            assert!(!el.is_editing());
+            assert_eq!(el.value(), "A");
+            assert_eq!(el.take_outcome(), EditOutcome::Committed("A".into()));
+        }
+
+        blur_commit_saves_typed_value_on_click_outside();
+        enter_commits_and_consumes();
+        escape_cancels_and_keeps_previous_value();
+        blank_commit_keeps_previous_value();
+        focus_loss_blur_commits();
     }
 
     #[test]
-    fn enter_commits_and_consumes() {
-        let mut el = EditableLabel::new("first");
-        el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
-        let mut doc = AutoCommit::new();
-        el.begin_edit();
-        drive(&mut el, &mut doc, &char_key("z"), no_mods()); // replaces selection → "z"
-        let consumed = drive(&mut el, &mut doc, &named_key(NamedKey::Enter), no_mods());
-        assert!(consumed, "Enter is consumed");
-        assert!(!el.is_editing());
-        assert_eq!(el.value(), "z");
-        assert_eq!(el.take_outcome(), EditOutcome::Committed("z".into()));
-    }
+    fn editable_label_draft_survives_modal_paint_and_selects_all() {
+        fn modal_paint_suppression_retains_title_draft_and_selection() {
+            let mut label = EditableLabel::new("Draft title");
+            label.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 50.0));
+            label.begin_edit();
+            let before = crate::undo::get_state(&label.input);
+            let mut renderer = crate::TextRenderer::new();
+            let mut draw = |label: &mut EditableLabel| {
+                let mut scene = Scene::new();
+                label.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut renderer,
+                    &Theme::dark(),
+                    &PresenceCtx::empty(),
+                );
+                scene.encoding().draw_tags.len()
+            };
+            let visible = draw(&mut label);
+            label.suppress_caret_paint(true);
+            assert_eq!(draw(&mut label).saturating_add(1), visible);
+            assert!(label.is_editing());
+            assert_eq!(crate::undo::get_state(&label.input), before);
+            assert_eq!(label.current_text(), "Draft title");
+            label.suppress_caret_paint(false);
+            assert_eq!(draw(&mut label), visible);
+        }
 
-    #[test]
-    fn escape_cancels_and_keeps_previous_value() {
-        let mut el = EditableLabel::new("keep me");
-        el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
-        let mut doc = AutoCommit::new();
-        el.begin_edit();
-        drive(&mut el, &mut doc, &char_key("X"), no_mods()); // would-be new value
-        let consumed = drive(&mut el, &mut doc, &named_key(NamedKey::Escape), no_mods());
-        assert!(consumed, "Esc is consumed");
-        assert!(!el.is_editing());
-        assert_eq!(el.value(), "keep me", "cancel restores the previous value");
-        assert_eq!(el.take_outcome(), EditOutcome::Cancelled);
-    }
+        fn ctrl_a_selects_all_through_embedded_field() {
+            let mut el = EditableLabel::new("hello world");
+            el.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 30.0));
+            let mut doc = AutoCommit::new();
+            el.begin_edit();
+            // Collapse the initial select-all by pressing Right (caret to end).
+            drive(
+                &mut el,
+                &mut doc,
+                &named_key(NamedKey::ArrowRight),
+                no_mods(),
+            );
+            // Now Ctrl+A must reselect everything, then typing replaces it all.
+            let mut ctrl = winit::keyboard::ModifiersState::empty();
+            ctrl |= winit::keyboard::ModifiersState::CONTROL;
+            drive(&mut el, &mut doc, &char_key("a"), Modifiers::from(ctrl));
+            drive(&mut el, &mut doc, &char_key("Z"), no_mods());
+            assert_eq!(
+                el.current_text(),
+                "Z",
+                "Ctrl+A selected the whole value so the next keystroke replaced it",
+            );
+        }
 
-    #[test]
-    fn blank_commit_keeps_previous_value() {
-        let mut el = EditableLabel::new("Original");
-        el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
-        let mut doc = AutoCommit::new();
-        el.begin_edit(); // selects all
-        // select-all is already active; type a space then backspace to empty it.
-        drive(&mut el, &mut doc, &char_key(" "), no_mods()); // → " "
-        drive(
-            &mut el,
-            &mut doc,
-            &named_key(NamedKey::Backspace),
-            no_mods(),
-        ); // → ""
-        assert_eq!(el.current_text(), "", "field is empty before commit");
-        el.commit();
-        assert_eq!(el.value(), "Original", "blank commit keeps the old value");
-    }
-
-    #[test]
-    fn focus_loss_blur_commits() {
-        let mut el = EditableLabel::new("before");
-        el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
-        let mut doc = AutoCommit::new();
-        el.begin_edit();
-        drive(&mut el, &mut doc, &char_key("A"), no_mods()); // → "A"
-        el.set_focus(false);
-        assert!(!el.is_editing());
-        assert_eq!(el.value(), "A");
-        assert_eq!(el.take_outcome(), EditOutcome::Committed("A".into()));
-    }
-
-    #[test]
-    fn ctrl_a_selects_all_through_embedded_field() {
-        let mut el = EditableLabel::new("hello world");
-        el.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 30.0));
-        let mut doc = AutoCommit::new();
-        el.begin_edit();
-        // Collapse the initial select-all by pressing Right (caret to end).
-        drive(
-            &mut el,
-            &mut doc,
-            &named_key(NamedKey::ArrowRight),
-            no_mods(),
-        );
-        // Now Ctrl+A must reselect everything, then typing replaces it all.
-        let mut ctrl = winit::keyboard::ModifiersState::empty();
-        ctrl |= winit::keyboard::ModifiersState::CONTROL;
-        drive(&mut el, &mut doc, &char_key("a"), Modifiers::from(ctrl));
-        drive(&mut el, &mut doc, &char_key("Z"), no_mods());
-        assert_eq!(
-            el.current_text(),
-            "Z",
-            "Ctrl+A selected the whole value so the next keystroke replaced it",
-        );
+        modal_paint_suppression_retains_title_draft_and_selection();
+        ctrl_a_selects_all_through_embedded_field();
     }
 }

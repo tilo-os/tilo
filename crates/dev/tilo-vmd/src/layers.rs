@@ -387,40 +387,153 @@ mod tests {
     use super::*;
 
     #[test]
-    fn labeler_sees_the_staged_tree_before_publication() {
-        let root = tempfile::tempdir().unwrap();
-        let store = LayerStore::new(root.path());
-        let mut seen = Vec::new();
-        let (hash, _) = store
-            .import_tar(
-                tarball(&[("usr/bin/shell", b"v1")]).as_slice(),
-                &provenance(),
-                &mut |path| {
-                    assert!(path.join("usr/bin/shell").is_file());
-                    assert!(path.join(PROVENANCE).is_file());
-                    seen.push(path.to_owned());
-                    Ok(())
-                },
-            )
-            .unwrap();
-        assert_eq!(seen.len(), 1);
-        assert!(seen[0].starts_with(root.path().join("staging")));
-        // A failing labeler means no layer.
-        let error = store
-            .import_tar(
-                tarball(&[("usr/bin/other", b"v1")]).as_slice(),
-                &provenance(),
-                &mut |_| {
-                    Err(DaemonError::Apply {
-                        step: "setfiles".into(),
-                        detail: "denied".into(),
-                    })
-                },
-            )
-            .unwrap_err();
-        assert!(matches!(error, DaemonError::Apply { .. }));
-        assert_eq!(store.list().unwrap().len(), 1);
-        assert_eq!(store.list().unwrap()[0].hash, hash);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn layer_imports_are_content_addressed_and_atomic() {
+        // Phase `labeler_sees_the_staged_tree_before_publication`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = LayerStore::new(root.path());
+            let mut seen = Vec::new();
+            let (hash, _) = store
+                .import_tar(
+                    tarball(&[("usr/bin/shell", b"v1")]).as_slice(),
+                    &provenance(),
+                    &mut |path| {
+                        assert!(path.join("usr/bin/shell").is_file());
+                        assert!(path.join(PROVENANCE).is_file());
+                        seen.push(path.to_owned());
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            assert_eq!(seen.len(), 1);
+            assert!(seen[0].starts_with(root.path().join("staging")));
+            // A failing labeler means no layer.
+            let error = store
+                .import_tar(
+                    tarball(&[("usr/bin/other", b"v1")]).as_slice(),
+                    &provenance(),
+                    &mut |_| {
+                        Err(DaemonError::Apply {
+                            step: "setfiles".into(),
+                            detail: "denied".into(),
+                        })
+                    },
+                )
+                .unwrap_err();
+            assert!(matches!(error, DaemonError::Apply { .. }));
+            assert_eq!(store.list().unwrap().len(), 1);
+            assert_eq!(store.list().unwrap()[0].hash, hash);
+        }
+        // Phase `identical_content_is_one_layer`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = LayerStore::new(root.path());
+            let tar = tarball(&[("usr/bin/shell", b"v1")]);
+            let (a, existed_a) = store
+                .import_tar(tar.as_slice(), &provenance(), &mut |_| Ok(()))
+                .unwrap();
+            let (b, existed_b) = store
+                .import_tar(tar.as_slice(), &provenance(), &mut |_| Ok(()))
+                .unwrap();
+            assert_eq!(a, b);
+            assert!(!existed_a);
+            assert!(existed_b);
+            assert!(is_hash(&a));
+            let layer = store.require(&a).unwrap();
+            assert_eq!(fs::read(layer.join("usr/bin/shell")).unwrap(), b"v1");
+            let release =
+                fs::read_to_string(layer.join(format!("{RELEASE_DIR}/extension-release.{a}")))
+                    .unwrap();
+            assert!(release.starts_with("ID=_any\n"));
+            assert!(layer.join("provenance.json").is_file());
+            // The published layer hashes to its own name: the release file is excluded.
+            assert_eq!(tree_hash(&layer).unwrap(), a);
+            assert_eq!(store.list().unwrap().len(), 1);
+            assert_eq!(
+                fs::read_dir(root.path().join("staging")).unwrap().count(),
+                0
+            );
+        }
+        // Phase `different_content_different_hash`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = LayerStore::new(root.path());
+            let (a, _) = store
+                .import_tar(
+                    tarball(&[("usr/bin/shell", b"v1")]).as_slice(),
+                    &provenance(),
+                    &mut |_| Ok(()),
+                )
+                .unwrap();
+            let (b, _) = store
+                .import_tar(
+                    tarball(&[("usr/bin/shell", b"v2")]).as_slice(),
+                    &provenance(),
+                    &mut |_| Ok(()),
+                )
+                .unwrap();
+            let (c, _) = store
+                .import_tar(
+                    tarball(&[("usr/bin/shel", b"v1")]).as_slice(),
+                    &provenance(),
+                    &mut |_| Ok(()),
+                )
+                .unwrap();
+            assert_ne!(a, b);
+            assert_ne!(a, c);
+        }
+        // Phase `rejected_import_leaves_nothing`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = LayerStore::new(root.path());
+            let error = store
+                .import_tar(
+                    tarball(&[("etc/passwd", b"x")]).as_slice(),
+                    &provenance(),
+                    &mut |_| Ok(()),
+                )
+                .unwrap_err();
+            assert!(matches!(error, DaemonError::InvalidLayer(_)));
+            let error = store
+                .import_tar(
+                    &b"not a tar at all, definitely"[..],
+                    &provenance(),
+                    &mut |_| Ok(()),
+                )
+                .unwrap_err();
+            assert!(matches!(error, DaemonError::InvalidLayer(_)));
+            assert!(store.list().unwrap().is_empty());
+            assert_eq!(
+                fs::read_dir(root.path().join("staging")).unwrap().count(),
+                0
+            );
+            assert_eq!(fs::read_dir(root.path().join("layers")).unwrap().count(), 0);
+        }
+        // Phase `directory_import_matches_tar_import`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = LayerStore::new(root.path());
+            let (from_tar, _) = store
+                .import_tar(
+                    tarball(&[("usr/bin/shell", b"v1")]).as_slice(),
+                    &provenance(),
+                    &mut |_| Ok(()),
+                )
+                .unwrap();
+            let source = tempfile::tempdir().unwrap();
+            fs::create_dir_all(source.path().join("usr/bin")).unwrap();
+            fs::write(source.path().join("usr/bin/shell"), b"v1").unwrap();
+            fsutil::set_executable(&source.path().join("usr/bin/shell")).unwrap();
+            let (from_dir, existed) = store
+                .import_path(source.path(), &provenance(), &mut |_| Ok(()))
+                .unwrap();
+            assert_eq!(from_tar, from_dir);
+            assert!(existed);
+        }
     }
 
     fn provenance() -> Provenance {
@@ -440,187 +553,80 @@ mod tests {
     }
 
     #[test]
-    fn identical_content_is_one_layer() {
-        let root = tempfile::tempdir().unwrap();
-        let store = LayerStore::new(root.path());
-        let tar = tarball(&[("usr/bin/shell", b"v1")]);
-        let (a, existed_a) = store
-            .import_tar(tar.as_slice(), &provenance(), &mut |_| Ok(()))
-            .unwrap();
-        let (b, existed_b) = store
-            .import_tar(tar.as_slice(), &provenance(), &mut |_| Ok(()))
-            .unwrap();
-        assert_eq!(a, b);
-        assert!(!existed_a);
-        assert!(existed_b);
-        assert!(is_hash(&a));
-        let layer = store.require(&a).unwrap();
-        assert_eq!(fs::read(layer.join("usr/bin/shell")).unwrap(), b"v1");
-        let release =
-            fs::read_to_string(layer.join(format!("{RELEASE_DIR}/extension-release.{a}"))).unwrap();
-        assert!(release.starts_with("ID=_any\n"));
-        assert!(layer.join("provenance.json").is_file());
-        // The published layer hashes to its own name: the release file is excluded.
-        assert_eq!(tree_hash(&layer).unwrap(), a);
-        assert_eq!(store.list().unwrap().len(), 1);
-        assert_eq!(
-            fs::read_dir(root.path().join("staging")).unwrap().count(),
-            0
-        );
-    }
-
-    #[test]
-    fn different_content_different_hash() {
-        let root = tempfile::tempdir().unwrap();
-        let store = LayerStore::new(root.path());
-        let (a, _) = store
-            .import_tar(
-                tarball(&[("usr/bin/shell", b"v1")]).as_slice(),
-                &provenance(),
-                &mut |_| Ok(()),
-            )
-            .unwrap();
-        let (b, _) = store
-            .import_tar(
-                tarball(&[("usr/bin/shell", b"v2")]).as_slice(),
-                &provenance(),
-                &mut |_| Ok(()),
-            )
-            .unwrap();
-        let (c, _) = store
-            .import_tar(
-                tarball(&[("usr/bin/shel", b"v1")]).as_slice(),
-                &provenance(),
-                &mut |_| Ok(()),
-            )
-            .unwrap();
-        assert_ne!(a, b);
-        assert_ne!(a, c);
-    }
-
-    #[test]
-    fn rejected_import_leaves_nothing() {
-        let root = tempfile::tempdir().unwrap();
-        let store = LayerStore::new(root.path());
-        let error = store
-            .import_tar(
-                tarball(&[("etc/passwd", b"x")]).as_slice(),
-                &provenance(),
-                &mut |_| Ok(()),
-            )
-            .unwrap_err();
-        assert!(matches!(error, DaemonError::InvalidLayer(_)));
-        let error = store
-            .import_tar(
-                &b"not a tar at all, definitely"[..],
-                &provenance(),
-                &mut |_| Ok(()),
-            )
-            .unwrap_err();
-        assert!(matches!(error, DaemonError::InvalidLayer(_)));
-        assert!(store.list().unwrap().is_empty());
-        assert_eq!(
-            fs::read_dir(root.path().join("staging")).unwrap().count(),
-            0
-        );
-        assert_eq!(fs::read_dir(root.path().join("layers")).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn directory_import_matches_tar_import() {
-        let root = tempfile::tempdir().unwrap();
-        let store = LayerStore::new(root.path());
-        let (from_tar, _) = store
-            .import_tar(
-                tarball(&[("usr/bin/shell", b"v1")]).as_slice(),
-                &provenance(),
-                &mut |_| Ok(()),
-            )
-            .unwrap();
-        let source = tempfile::tempdir().unwrap();
-        fs::create_dir_all(source.path().join("usr/bin")).unwrap();
-        fs::write(source.path().join("usr/bin/shell"), b"v1").unwrap();
-        fsutil::set_executable(&source.path().join("usr/bin/shell")).unwrap();
-        let (from_dir, existed) = store
-            .import_path(source.path(), &provenance(), &mut |_| Ok(()))
-            .unwrap();
-        assert_eq!(from_tar, from_dir);
-        assert!(existed);
-    }
-
-    #[test]
-    fn collect_removes_only_old_unreferenced_layers() {
-        let root = tempfile::tempdir().unwrap();
-        let store = LayerStore::new(root.path());
-        let (keep, _) = store
-            .import_tar(
-                tarball(&[("usr/bin/a", b"1")]).as_slice(),
-                &provenance(),
-                &mut |_| Ok(()),
-            )
-            .unwrap();
-        let (drop, _) = store
-            .import_tar(
-                tarball(&[("usr/bin/b", b"2")]).as_slice(),
-                &provenance(),
-                &mut |_| Ok(()),
-            )
-            .unwrap();
-        let referenced = std::collections::BTreeSet::from([keep.clone()]);
-        // Too young: an import waiting for its swap survives.
-        let young = store
-            .collect(&referenced, std::time::Duration::from_secs(3600), false)
-            .unwrap();
-        assert!(young.removed.is_empty());
-        // ... and is reported, so gc can say why it stayed.
-        assert_eq!(young.young.len(), 1);
-        assert_eq!(young.young[0].0, drop);
-        let dry = store
-            .collect(&referenced, std::time::Duration::ZERO, true)
-            .unwrap();
-        assert_eq!(dry.removed, std::slice::from_ref(&drop));
-        assert!(dry.freed > 0);
-        assert!(dry.young.is_empty());
-        assert!(store.require(&drop).is_ok(), "dry run keeps the layer");
-        store
-            .collect(&referenced, std::time::Duration::ZERO, false)
-            .unwrap();
-        assert!(store.require(&drop).is_err());
-        assert!(store.require(&keep).is_ok());
-    }
-
-    #[test]
-    fn files_lists_what_the_slot_sees_with_digests() {
-        let root = tempfile::tempdir().unwrap();
-        let store = LayerStore::new(root.path());
-        let (hash, _) = store
-            .import_tar(
-                tarball(&[("usr/bin/shell", b"v1"), ("usr/share/tilo/x.toml", b"k")]).as_slice(),
-                &provenance(),
-                &mut |_| Ok(()),
-            )
-            .unwrap();
-        let files = store.files(&hash).unwrap();
-        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
-        // The importer's release file and provenance are not the layer's content.
-        assert_eq!(paths, ["/usr/bin/shell", "/usr/share/tilo/x.toml"]);
-        let digest = hex::encode(Sha256::digest(b"v1"));
-        assert_eq!(files[0].sha256.as_deref(), Some(digest.as_str()));
-        assert!(files[0].executable);
-        assert!(store.files("0".repeat(64).as_str()).is_err());
-    }
-
-    #[test]
-    fn unknown_hash_is_not_found() {
-        let root = tempfile::tempdir().unwrap();
-        let store = LayerStore::new(root.path());
-        assert!(matches!(
-            store.require("../etc"),
-            Err(DaemonError::LayerNotFound(_))
-        ));
-        assert!(matches!(
-            store.require(&"a".repeat(64)),
-            Err(DaemonError::LayerNotFound(_))
-        ));
+    fn layer_lookup_listing_and_collection() {
+        // Phase `collect_removes_only_old_unreferenced_layers`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = LayerStore::new(root.path());
+            let (keep, _) = store
+                .import_tar(
+                    tarball(&[("usr/bin/a", b"1")]).as_slice(),
+                    &provenance(),
+                    &mut |_| Ok(()),
+                )
+                .unwrap();
+            let (drop, _) = store
+                .import_tar(
+                    tarball(&[("usr/bin/b", b"2")]).as_slice(),
+                    &provenance(),
+                    &mut |_| Ok(()),
+                )
+                .unwrap();
+            let referenced = std::collections::BTreeSet::from([keep.clone()]);
+            // Too young: an import waiting for its swap survives.
+            let young = store
+                .collect(&referenced, std::time::Duration::from_secs(3600), false)
+                .unwrap();
+            assert!(young.removed.is_empty());
+            // ... and is reported, so gc can say why it stayed.
+            assert_eq!(young.young.len(), 1);
+            assert_eq!(young.young[0].0, drop);
+            let dry = store
+                .collect(&referenced, std::time::Duration::ZERO, true)
+                .unwrap();
+            assert_eq!(dry.removed, std::slice::from_ref(&drop));
+            assert!(dry.freed > 0);
+            assert!(dry.young.is_empty());
+            assert!(store.require(&drop).is_ok(), "dry run keeps the layer");
+            store
+                .collect(&referenced, std::time::Duration::ZERO, false)
+                .unwrap();
+            assert!(store.require(&drop).is_err());
+            assert!(store.require(&keep).is_ok());
+        }
+        // Phase `files_lists_what_the_slot_sees_with_digests`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = LayerStore::new(root.path());
+            let (hash, _) = store
+                .import_tar(
+                    tarball(&[("usr/bin/shell", b"v1"), ("usr/share/tilo/x.toml", b"k")])
+                        .as_slice(),
+                    &provenance(),
+                    &mut |_| Ok(()),
+                )
+                .unwrap();
+            let files = store.files(&hash).unwrap();
+            let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+            // The importer's release file and provenance are not the layer's content.
+            assert_eq!(paths, ["/usr/bin/shell", "/usr/share/tilo/x.toml"]);
+            let digest = hex::encode(Sha256::digest(b"v1"));
+            assert_eq!(files[0].sha256.as_deref(), Some(digest.as_str()));
+            assert!(files[0].executable);
+            assert!(store.files("0".repeat(64).as_str()).is_err());
+        }
+        // Phase `unknown_hash_is_not_found`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = LayerStore::new(root.path());
+            assert!(matches!(
+                store.require("../etc"),
+                Err(DaemonError::LayerNotFound(_))
+            ));
+            assert!(matches!(
+                store.require(&"a".repeat(64)),
+                Err(DaemonError::LayerNotFound(_))
+            ));
+        }
     }
 }

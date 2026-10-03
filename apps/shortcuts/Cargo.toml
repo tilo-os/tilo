@@ -1,0 +1,37 @@
+[package]
+name = "shortcuts"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "shortcuts"
+path = "src/lib.rs"
+
+[[bin]]
+name = "shortcuts"
+path = "src/main.rs"
+
+[features]
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+# The shortcut program, its checker and the least-authority grant vocabulary.
+tilo-automation = { path = "../../crates/collab/automation" }
+collab-types = { path = "../../crates/collab/collab-types" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tilo-test-env = { path = "../../crates/dev/test-env" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

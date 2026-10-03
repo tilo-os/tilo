@@ -21,13 +21,17 @@
 #   STORE          app store root; becomes TILO_APPS_DATA_DIR
 #                                          [default: /usr/share/tilo-apps]
 #   STAGE          scratch for payload trees + .tapp files  [default: mktemp]
+#   TILO_IMAGE_BUILD=1 pins the scratch path and registry install time to
+#                  SOURCE_DATE_EPOCH for independently reproduced OS images
 #   IDENTITY_JSON  signing key; generated if absent    [default: $STAGE/id.json]
 #   PUBKEY_OUT     write the signing pubkey here (optional)
 #   PKG_BIN / INSTALL_BIN / BUNDLE_BIN / SHIM_BIN
 #                  tool paths                        [default: $BIN_DIR/<name>]
 #   REQUIRE_MIN    fail unless at least this many packages install [default: 1]
-#   MAX_TAPP_BYTES refuse a larger archive; defaults to the canonical 5 MiB
-#                  application-format ceiling and may only be made stricter
+#   MAX_TAPP_BYTES refuse a larger archive; defaults to the canonical
+#                  application-format ceiling (the byte count in
+#                  crates/packaging/tilo-app-package/max-app-bytes, which the
+#                  Rust package checks compile in) and may only be made stricter
 #
 # STORE is written at its *final* path on purpose: `tilo-install` records
 # absolute payload paths in registry.toml, so staging it elsewhere and moving
@@ -46,7 +50,13 @@ BIN_DIR="${BIN_DIR:-/out}"
 STORE="${STORE:-/usr/share/tilo-apps}"
 owned_stage=0
 if [ -z "${STAGE:-}" ]; then
-    STAGE=$(mktemp -d)
+    if [ "${TILO_IMAGE_BUILD:-0}" = 1 ]; then
+        STAGE=/tmp/tilo-image-app-pack-stage
+        [ ! -e "$STAGE" ] || { printf 'image app stage already exists\n' >&2; exit 1; }
+        [ -n "${SOURCE_DATE_EPOCH:-}" ] || { printf 'image app build needs SOURCE_DATE_EPOCH\n' >&2; exit 1; }
+    else
+        STAGE=$(mktemp -d)
+    fi
     owned_stage=1
 fi
 # The default stage contains an ephemeral private publisher key. Remove it
@@ -67,16 +77,20 @@ SHIM_BIN="${SHIM_BIN:-$BIN_DIR/tilo-cli-shim}"
 TAPP_DIR="${TAPP_DIR:-}"
 EXPECTED_PUBKEY="${EXPECTED_PUBKEY:-}"
 REQUIRE_MIN="${REQUIRE_MIN:-1}"
-POLICY_MAX_TAPP_BYTES=5242880
-MAX_TAPP_BYTES="${MAX_TAPP_BYTES:-$POLICY_MAX_TAPP_BYTES}"
-
 msg() { printf '[pack-apps] %s\n' "$*" >&2; }
 die() { printf '[pack-apps] ERROR: %s\n' "$*" >&2; exit 1; }
+
+SIZE_POLICY="$(dirname "${BASH_SOURCE[0]}")/../../crates/packaging/tilo-app-package/max-app-bytes"
+POLICY_MAX_TAPP_BYTES="$(cat "$SIZE_POLICY" 2>/dev/null)" \
+    || die "cannot read the application size policy at $SIZE_POLICY"
+[[ "$POLICY_MAX_TAPP_BYTES" =~ ^[1-9][0-9]*$ ]] \
+    || die "$SIZE_POLICY must hold a positive byte count"
+MAX_TAPP_BYTES="${MAX_TAPP_BYTES:-$POLICY_MAX_TAPP_BYTES}"
 
 [[ "$MAX_TAPP_BYTES" =~ ^[0-9]+$ ]] \
     || die "MAX_TAPP_BYTES must be an integer"
 (( MAX_TAPP_BYTES <= POLICY_MAX_TAPP_BYTES )) \
-    || die "MAX_TAPP_BYTES cannot exceed the 5 MiB application policy"
+    || die "MAX_TAPP_BYTES cannot exceed the $POLICY_MAX_TAPP_BYTES-byte application policy"
 
 for t in "$PKG_BIN" "$INSTALL_BIN" "$BUNDLE_BIN"; do
     [ -x "$t" ] || die "$t not found or not executable"
@@ -101,6 +115,9 @@ else
     fi
     PUBKEY="$("$BUNDLE_BIN" key pubkey --identity "$IDENTITY_JSON")"
     [ -n "$PUBKEY" ] || die "could not read the signing pubkey"
+    if [ -n "$EXPECTED_PUBKEY" ] && [ "${PUBKEY,,}" != "${EXPECTED_PUBKEY,,}" ]; then
+        die "source-pack identity does not match EXPECTED_PUBKEY"
+    fi
     [ -z "$PUBKEY_OUT" ] || { mkdir -p "$(dirname "$PUBKEY_OUT")"; printf '%s\n' "$PUBKEY" > "$PUBKEY_OUT"; }
     msg "signing as ed25519:$PUBKEY"
 fi

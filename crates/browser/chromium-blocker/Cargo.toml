@@ -12,3 +12,4 @@ crate-type = ["staticlib", "rlib"]
 adblock = { version = "0.12", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling"] }
 serde_json.workspace = true
 url.workspace = true
+workspace-hack = { version = "0.1" }

@@ -9,6 +9,8 @@
 //! │     └── <id> (Map) { read: bool, starred: bool, folder: Str }
 //! ├── "messages" (Map)  externally-ingested ids `{ present, purged }`
 //! └── "draft"   (Map)  the message currently being composed
+//!       ├── to, cc, bcc, subject, body, html_body, … (Str) as last saved
+//!       └── "rich_body" (Map) the body being written: qdoc rich text
 //! ```
 //!
 //! The immutable message corpus (headers/bodies/attachments) is *not* stored
@@ -21,10 +23,27 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use ui::doc::{read_bool, read_str};
 
+use tilo_document::RichText;
+use ui::widget::{BlockContent, BlockKind};
+
+use crate::actions::DraftBodySeed;
 use crate::attachment_store;
 use crate::model::{Draft, DraftAttachment, Folder, Mailbox, Message};
 
+/// The draft's key holding the body being written.
+const RICH_BODY: &str = "rich_body";
+
 pub struct MailDoc;
+
+/// Per-message collaborative flags projected from the document for publish.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MessageFlags {
+    pub id: String,
+    pub folder: Folder,
+    pub read: bool,
+    pub starred: bool,
+    pub labels: Vec<String>,
+}
 
 impl MailDoc {
     // ---- generic scalar helpers ----
@@ -59,16 +78,41 @@ impl MailDoc {
     /// remote `MailAction`; server flags merely establish the first baseline
     /// for a newly hydrated message.
     pub fn ingest_message_flags(doc: &mut AutoCommit, msg: &Message) {
-        Self::register_message(doc, &msg.id.to_string());
-        let key = msg.id.to_string();
-        if Self::get_read(doc, &key).is_none() {
-            Self::set_read(doc, &key, msg.read);
+        Self::ingest_baseline(
+            doc,
+            &msg.id.to_string(),
+            Some(msg.read),
+            Some(msg.starred),
+            Some(msg.folder),
+        );
+    }
+
+    /// Register `id` and, when a flag is still unset, record the server baseline.
+    pub fn ingest_baseline(
+        doc: &mut AutoCommit,
+        id: &str,
+        read: Option<bool>,
+        starred: Option<bool>,
+        folder: Option<Folder>,
+    ) {
+        if id.is_empty() {
+            return;
         }
-        if Self::get_starred(doc, &key).is_none() {
-            Self::set_starred(doc, &key, msg.starred);
+        Self::register_message(doc, id);
+        if let Some(read) = read
+            && Self::get_read(doc, id).is_none()
+        {
+            Self::set_read(doc, id, read);
         }
-        if Self::get_folder_for(doc, &key).is_none() {
-            Self::set_folder_for(doc, &key, msg.folder);
+        if let Some(starred) = starred
+            && Self::get_starred(doc, id).is_none()
+        {
+            Self::set_starred(doc, id, starred);
+        }
+        if let Some(folder) = folder
+            && Self::get_folder_for(doc, id).is_none()
+        {
+            Self::set_folder_for(doc, id, folder);
         }
     }
 
@@ -167,6 +211,50 @@ impl MailDoc {
         }
     }
 
+    /// The body being written: rich text under the draft's `rich_body`,
+    /// once started. Never writes.
+    pub fn draft_body(doc: &AutoCommit) -> Option<ObjId> {
+        let Ok(Some((Value::Object(ObjType::Map), d))) = doc.get(&ROOT, "draft") else {
+            return None;
+        };
+        match doc.get(&d, RICH_BODY) {
+            Ok(Some((Value::Object(ObjType::Map), body))) => Some(body),
+            _ => None,
+        }
+    }
+
+    /// Start the body being written afresh from `seed`. Backs
+    /// [`crate::actions::MailAction::StartDraftBody`].
+    pub fn start_draft_body(doc: &mut AutoCommit, seed: &DraftBodySeed) {
+        let d = Self::map(doc, &ROOT, "draft");
+        let Ok(body) = doc.put_object(&d, RICH_BODY, ObjType::Map) else {
+            return;
+        };
+        if let Some(html) = seed.html.as_deref().filter(|html| !html.trim().is_empty()) {
+            // Mail bodies carry no inline images; any the HTML embeds are left out.
+            let mut images = tilo_content::ContentInputs::new();
+            tilo_doc_codecs::html::import_html_under(doc, &body, html, &mut images);
+            return;
+        }
+        if RichText::initialize_under(doc, &body).is_err() {
+            return;
+        }
+        let blocks: Vec<BlockContent> = seed
+            .text
+            .split('\n')
+            .map(|line| match line.strip_prefix("> ") {
+                Some(quoted) => BlockContent {
+                    kind: BlockKind::Quote,
+                    ..BlockContent::paragraph("", quoted)
+                },
+                None => BlockContent::paragraph("", line),
+            })
+            .collect();
+        if let Err(error) = tilo_rich_text::fill_under(doc, &body, &blocks) {
+            tracing::warn!(%error, "draft body could not be started");
+        }
+    }
+
     /// Clear the persisted draft so a later open no longer re-materialises it.
     /// Backs [`crate::actions::MailAction::DiscardDraft`].
     pub fn clear_draft(doc: &mut AutoCommit) {
@@ -180,6 +268,7 @@ impl MailDoc {
             "html_body",
             "calendar_ics",
             "attachments",
+            RICH_BODY,
         ] {
             if doc.get(&d, key).ok().flatten().is_some() {
                 let _ = doc.delete(&d, key);
@@ -225,19 +314,16 @@ impl MailDoc {
     }
 
     /// Whether an id is currently a valid, materialised message target.
-    /// Explicit tombstones fail closed. A legacy flags entry remains accepted
-    /// so documents created before this registry was introduced retain their
-    /// existing action history rather than becoming read-only after upgrade.
+    /// Explicit tombstones and unregistered ids fail closed.
     pub fn is_present_message(doc: &AutoCommit, id: &str) -> bool {
-        if let Ok(Some((Value::Object(ObjType::Map), messages))) = doc.get(&ROOT, "messages")
-            && let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&messages, id)
-        {
-            if read_bool(doc, &entry, "purged") == Some(true) {
-                return false;
-            }
-            return read_bool(doc, &entry, "present").unwrap_or(false);
-        }
-        Self::flag_entry_ref(doc, id).is_some()
+        let Ok(Some((Value::Object(ObjType::Map), messages))) = doc.get(&ROOT, "messages") else {
+            return false;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&messages, id) else {
+            return false;
+        };
+        read_bool(doc, &entry, "purged") != Some(true)
+            && read_bool(doc, &entry, "present").unwrap_or(false)
     }
 
     /// Record a permanent local purge. Unlike a missing registry entry this is
@@ -359,6 +445,28 @@ impl MailDoc {
         read_str_list(doc, &list)
     }
 
+    /// Collaborative flag projection for every non-purged message id. The
+    /// immutable corpus (subject, body, attachments) stays outside Automerge;
+    /// Document ops only need ids and flag/label/folder state.
+    pub fn list_message_flags(doc: &AutoCommit) -> Vec<MessageFlags> {
+        let Ok(Some((Value::Object(ObjType::Map), flags))) = doc.get(&ROOT, "flags") else {
+            return Vec::new();
+        };
+        let mut out: Vec<MessageFlags> = doc
+            .keys(&flags)
+            .filter(|id| !Self::is_message_purged(doc, id))
+            .map(|id| MessageFlags {
+                id: id.clone(),
+                folder: Self::get_folder_for(doc, &id).unwrap_or(Folder::Inbox),
+                read: Self::get_read(doc, &id).unwrap_or(false),
+                starred: Self::get_starred(doc, &id).unwrap_or(false),
+                labels: Self::get_labels(doc, &id),
+            })
+            .collect();
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out
+    }
+
     /// Add a label to a message. A no-op when the label is already present, so
     /// the operation is deterministic and the list stays a set.
     pub fn add_label(doc: &mut AutoCommit, id: &str, label: &str) {
@@ -463,193 +571,207 @@ mod tests {
     use crate::sample::sample_mailbox;
 
     #[test]
-    fn flags_persist_and_overlay() {
-        let mut doc = AutoCommit::new();
-        let mut mb = sample_mailbox();
-        let id = *mb.messages.keys().next().unwrap();
-        mb.mark_read(id, true);
-        mb.toggle_star(id);
-        let starred = mb.get(id).unwrap().starred;
-        MailDoc::ingest_message_flags(&mut doc, mb.get(id).unwrap());
-
-        // Fresh corpus with default flags; overlay should restore them.
-        let mut mb2 = sample_mailbox();
-        // Ensure the same id exists (it won't, since uuids regenerate) — so
-        // store/overlay round-trips on the SAME mailbox instance instead.
-        MailDoc::apply_flags(&doc, &mut mb2);
-        // The flagged id is from mb (different uuid space). Re-test on mb:
-        let mut mb3 = mb.clone();
-        for m in mb3.messages.values_mut() {
-            m.read = false;
-            m.starred = false;
-        }
-        MailDoc::ingest_message_flags(&mut doc, mb.get(id).unwrap());
-        MailDoc::apply_flags(&doc, &mut mb3);
-        assert_eq!(mb3.get(id).unwrap().starred, starred);
-        assert!(mb3.get(id).unwrap().read);
-    }
-
-    #[test]
-    fn delayed_ingestion_never_overwrites_a_canonical_flag_action() {
-        let mut doc = AutoCommit::new();
-        let mut mailbox = sample_mailbox();
-        let id = *mailbox.messages.keys().next().expect("sample message");
-        let fetched = mailbox.get(id).expect("sample message").clone();
-        MailDoc::ingest_message_flags(&mut doc, &fetched);
-        MailDoc::set_read(&mut doc, &id.to_string(), true);
-
-        let mut stale_fetch = fetched;
-        stale_fetch.read = false;
-        MailDoc::ingest_message_flags(&mut doc, &stale_fetch);
-        assert_eq!(MailDoc::get_read(&doc, &id.to_string()), Some(true));
-
-        MailDoc::apply_flags(&doc, &mut mailbox);
-        assert!(mailbox.get(id).is_some_and(|message| message.read));
-    }
-
-    #[test]
-    fn purge_tombstone_removes_the_hydrated_copy_on_peer_sync() {
-        let mut doc = AutoCommit::new();
-        let mut mailbox = sample_mailbox();
-        let id = *mailbox.messages.keys().next().expect("sample message");
-        MailDoc::ingest_message_flags(&mut doc, mailbox.get(id).expect("message"));
-        MailDoc::mark_message_purged(&mut doc, &id.to_string());
-
-        MailDoc::apply_flags(&doc, &mut mailbox);
-        assert!(
-            mailbox.get(id).is_none(),
-            "a peer converges by dropping the tombstoned hydrated message"
-        );
-    }
-
-    #[test]
-    fn stale_ingestion_cannot_resurrect_a_purged_message() {
-        let mut doc = AutoCommit::new();
-        MailDoc::register_message(&mut doc, "m1");
-        MailDoc::mark_message_purged(&mut doc, "m1");
-        // A delayed external hydration is explicitly allowed to try to
-        // register its stable id, but the write-once purge marker wins.
-        MailDoc::register_message(&mut doc, "m1");
-        assert!(!MailDoc::is_present_message(&doc, "m1"));
-        assert!(MailDoc::is_message_purged(&doc, "m1"));
-    }
-
-    #[test]
-    fn draft_round_trips() {
-        let mut doc = AutoCommit::new();
-        let content = tilo_content::ContentStore::memory();
-        let attachment =
-            crate::attachment_store::stage_bytes(&content, b"draft blob", "agenda.txt")
-                .expect("portable attachment");
-        let draft = Draft {
-            to: "x@y.example".into(),
-            subject: "Hi".into(),
-            body: "Body".into(),
-            attachments: vec![attachment.clone()],
-            ..Default::default()
-        };
-        MailDoc::store_draft(&mut doc, &draft);
-        let loaded = MailDoc::load_draft(&doc);
-        assert_eq!(loaded.to, "x@y.example");
-        assert_eq!(loaded.subject, "Hi");
-        assert_eq!(loaded.attachments, vec![attachment]);
-    }
-
-    #[test]
-    fn labels_add_remove_and_round_trip() {
-        let mut doc = AutoCommit::new();
-        MailDoc::add_label(&mut doc, "m1", "work");
-        MailDoc::add_label(&mut doc, "m1", "urgent");
-        // Duplicate add is a no-op — labels stay a set.
-        MailDoc::add_label(&mut doc, "m1", "work");
-        assert_eq!(MailDoc::get_labels(&doc, "m1"), vec!["work", "urgent"]);
-        MailDoc::remove_label(&mut doc, "m1", "work");
-        assert_eq!(MailDoc::get_labels(&doc, "m1"), vec!["urgent"]);
-        // Removing an absent label is a no-op.
-        MailDoc::remove_label(&mut doc, "m1", "nope");
-        assert_eq!(MailDoc::get_labels(&doc, "m1"), vec!["urgent"]);
-    }
-
-    #[test]
-    fn local_folder_registry_crud() {
-        let mut doc = AutoCommit::new();
-        assert!(MailDoc::list_folders(&doc).is_empty());
-        MailDoc::create_folder(&mut doc, "f-a", "Receipts");
-        MailDoc::create_folder(&mut doc, "f-b", "Travel");
-        assert_eq!(
-            MailDoc::list_folders(&doc),
-            vec![
-                ("f-a".to_string(), "Receipts".to_string()),
-                ("f-b".to_string(), "Travel".to_string())
-            ]
-        );
-        MailDoc::rename_folder(&mut doc, "f-a", "Invoices");
-        // Renaming an unknown id does nothing.
-        MailDoc::rename_folder(&mut doc, "ghost", "X");
-        MailDoc::delete_folder(&mut doc, "f-b");
-        assert_eq!(
-            MailDoc::list_folders(&doc),
-            vec![("f-a".to_string(), "Invoices".to_string())]
-        );
-    }
-
-    #[test]
-    fn granular_flag_setters_and_clear_draft() {
-        let mut doc = AutoCommit::new();
-        MailDoc::set_read(&mut doc, "m1", true);
-        MailDoc::set_starred(&mut doc, "m1", true);
-        MailDoc::set_folder_for(&mut doc, "m1", Folder::Archive);
-        let mut mb = sample_mailbox();
-        // Point a real message at the same id so the overlay is observable.
-        let some = *mb.messages.keys().next().unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn flags_and_purges_converge_without_resurrection() {
+        // Phase `flags_persist_and_overlay`.
         {
-            let m = mb.get_mut(some).unwrap();
-            m.read = false;
-            m.starred = false;
-            m.folder = Folder::Inbox;
-        }
-        MailDoc::set_read(&mut doc, &some.to_string(), true);
-        MailDoc::set_starred(&mut doc, &some.to_string(), true);
-        MailDoc::set_folder_for(&mut doc, &some.to_string(), Folder::Archive);
-        MailDoc::add_label(&mut doc, &some.to_string(), "work");
-        MailDoc::apply_flags(&doc, &mut mb);
-        let m = mb.get(some).unwrap();
-        assert!(m.read && m.starred);
-        assert_eq!(m.folder, Folder::Archive);
-        assert_eq!(m.labels, vec!["work"]);
+            let mut doc = AutoCommit::new();
+            let mut mb = sample_mailbox();
+            let id = *mb.messages.keys().next().unwrap();
+            mb.mark_read(id, true);
+            mb.toggle_star(id);
+            let starred = mb.get(id).unwrap().starred;
+            MailDoc::ingest_message_flags(&mut doc, mb.get(id).unwrap());
 
-        let draft = Draft {
-            to: "x@y.example".into(),
-            subject: "Hi".into(),
-            ..Default::default()
-        };
-        MailDoc::store_draft(&mut doc, &draft);
-        assert!(!MailDoc::load_draft(&doc).to.is_empty());
-        MailDoc::clear_draft(&mut doc);
-        assert!(
-            MailDoc::load_draft(&doc).to.is_empty(),
-            "discard clears the persisted draft"
-        );
+            // Fresh corpus with default flags; overlay should restore them.
+            let mut mb2 = sample_mailbox();
+            // Ensure the same id exists (it won't, since uuids regenerate) — so
+            // store/overlay round-trips on the SAME mailbox instance instead.
+            MailDoc::apply_flags(&doc, &mut mb2);
+            // The flagged id is from mb (different uuid space). Re-test on mb:
+            let mut mb3 = mb.clone();
+            for m in mb3.messages.values_mut() {
+                m.read = false;
+                m.starred = false;
+            }
+            MailDoc::ingest_message_flags(&mut doc, mb.get(id).unwrap());
+            MailDoc::apply_flags(&doc, &mut mb3);
+            assert_eq!(mb3.get(id).unwrap().starred, starred);
+            assert!(mb3.get(id).unwrap().read);
+        }
+
+        // Phase `delayed_ingestion_never_overwrites_a_canonical_flag_action`.
+        {
+            let mut doc = AutoCommit::new();
+            let mut mailbox = sample_mailbox();
+            let id = *mailbox.messages.keys().next().expect("sample message");
+            let fetched = mailbox.get(id).expect("sample message").clone();
+            MailDoc::ingest_message_flags(&mut doc, &fetched);
+            MailDoc::set_read(&mut doc, &id.to_string(), true);
+
+            let mut stale_fetch = fetched;
+            stale_fetch.read = false;
+            MailDoc::ingest_message_flags(&mut doc, &stale_fetch);
+            assert_eq!(MailDoc::get_read(&doc, &id.to_string()), Some(true));
+
+            MailDoc::apply_flags(&doc, &mut mailbox);
+            assert!(mailbox.get(id).is_some_and(|message| message.read));
+        }
+
+        // Phase `purge_tombstone_removes_the_hydrated_copy_on_peer_sync`.
+        {
+            let mut doc = AutoCommit::new();
+            let mut mailbox = sample_mailbox();
+            let id = *mailbox.messages.keys().next().expect("sample message");
+            MailDoc::ingest_message_flags(&mut doc, mailbox.get(id).expect("message"));
+            MailDoc::mark_message_purged(&mut doc, &id.to_string());
+
+            MailDoc::apply_flags(&doc, &mut mailbox);
+            assert!(
+                mailbox.get(id).is_none(),
+                "a peer converges by dropping the tombstoned hydrated message"
+            );
+        }
+
+        // Phase `stale_ingestion_cannot_resurrect_a_purged_message`.
+        {
+            let mut doc = AutoCommit::new();
+            MailDoc::register_message(&mut doc, "m1");
+            MailDoc::mark_message_purged(&mut doc, "m1");
+            // A delayed external hydration is explicitly allowed to try to
+            // register its stable id, but the write-once purge marker wins.
+            MailDoc::register_message(&mut doc, "m1");
+            assert!(!MailDoc::is_present_message(&doc, "m1"));
+            assert!(MailDoc::is_message_purged(&doc, "m1"));
+        }
+
+        // Phase `granular_flag_setters_and_clear_draft`.
+        {
+            let mut doc = AutoCommit::new();
+            MailDoc::set_read(&mut doc, "m1", true);
+            MailDoc::set_starred(&mut doc, "m1", true);
+            MailDoc::set_folder_for(&mut doc, "m1", Folder::Archive);
+            let mut mb = sample_mailbox();
+            // Point a real message at the same id so the overlay is observable.
+            let some = *mb.messages.keys().next().unwrap();
+            {
+                let m = mb.get_mut(some).unwrap();
+                m.read = false;
+                m.starred = false;
+                m.folder = Folder::Inbox;
+            }
+            MailDoc::set_read(&mut doc, &some.to_string(), true);
+            MailDoc::set_starred(&mut doc, &some.to_string(), true);
+            MailDoc::set_folder_for(&mut doc, &some.to_string(), Folder::Archive);
+            MailDoc::add_label(&mut doc, &some.to_string(), "work");
+            MailDoc::apply_flags(&doc, &mut mb);
+            let m = mb.get(some).unwrap();
+            assert!(m.read && m.starred);
+            assert_eq!(m.folder, Folder::Archive);
+            assert_eq!(m.labels, vec!["work"]);
+
+            let draft = Draft {
+                to: "x@y.example".into(),
+                subject: "Hi".into(),
+                ..Default::default()
+            };
+            MailDoc::store_draft(&mut doc, &draft);
+            assert!(!MailDoc::load_draft(&doc).to.is_empty());
+            MailDoc::clear_draft(&mut doc);
+            assert!(
+                MailDoc::load_draft(&doc).to.is_empty(),
+                "discard clears the persisted draft"
+            );
+        }
     }
 
     #[test]
-    fn repeated_store_draft_keeps_doc_bounded() {
-        let mut doc = AutoCommit::new();
-        let draft = Draft {
-            to: "x@y.example".into(),
-            subject: "Hi".into(),
-            body: "Body".repeat(50),
-            ..Default::default()
-        };
-        MailDoc::store_draft(&mut doc, &draft);
-        let a = doc.save().len();
-        for _ in 0..50 {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn drafts_labels_and_folders_round_trip_and_stay_bounded() {
+        // Phase `draft_round_trips`.
+        {
+            let mut doc = AutoCommit::new();
+            let content = tilo_content::ContentStore::memory();
+            let attachment =
+                crate::attachment_store::stage_bytes(&content, b"draft blob", "agenda.txt")
+                    .expect("portable attachment");
+            let draft = Draft {
+                to: "x@y.example".into(),
+                subject: "Hi".into(),
+                body: "Body".into(),
+                attachments: vec![attachment.clone()],
+                ..Default::default()
+            };
             MailDoc::store_draft(&mut doc, &draft);
+            let loaded = MailDoc::load_draft(&doc);
+            assert_eq!(loaded.to, "x@y.example");
+            assert_eq!(loaded.subject, "Hi");
+            assert_eq!(loaded.attachments, vec![attachment]);
         }
-        let b = doc.save().len();
-        assert_eq!(
-            a, b,
-            "re-storing an unchanged draft grew the document {a} -> {b}"
-        );
+
+        // Phase `labels_add_remove_and_round_trip`.
+        {
+            let mut doc = AutoCommit::new();
+            MailDoc::add_label(&mut doc, "m1", "work");
+            MailDoc::add_label(&mut doc, "m1", "urgent");
+            // Duplicate add is a no-op — labels stay a set.
+            MailDoc::add_label(&mut doc, "m1", "work");
+            assert_eq!(MailDoc::get_labels(&doc, "m1"), vec!["work", "urgent"]);
+            MailDoc::remove_label(&mut doc, "m1", "work");
+            assert_eq!(MailDoc::get_labels(&doc, "m1"), vec!["urgent"]);
+            // Removing an absent label is a no-op.
+            MailDoc::remove_label(&mut doc, "m1", "nope");
+            assert_eq!(MailDoc::get_labels(&doc, "m1"), vec!["urgent"]);
+        }
+
+        // Phase `local_folder_registry_crud`.
+        {
+            let mut doc = AutoCommit::new();
+            assert!(MailDoc::list_folders(&doc).is_empty());
+            MailDoc::create_folder(&mut doc, "f-a", "Receipts");
+            MailDoc::create_folder(&mut doc, "f-b", "Travel");
+            assert_eq!(
+                MailDoc::list_folders(&doc),
+                vec![
+                    ("f-a".to_string(), "Receipts".to_string()),
+                    ("f-b".to_string(), "Travel".to_string())
+                ]
+            );
+            MailDoc::rename_folder(&mut doc, "f-a", "Invoices");
+            // Renaming an unknown id does nothing.
+            MailDoc::rename_folder(&mut doc, "ghost", "X");
+            MailDoc::delete_folder(&mut doc, "f-b");
+            assert_eq!(
+                MailDoc::list_folders(&doc),
+                vec![("f-a".to_string(), "Invoices".to_string())]
+            );
+        }
+
+        // Phase `repeated_store_draft_keeps_doc_bounded`.
+        {
+            let mut doc = AutoCommit::new();
+            let draft = Draft {
+                to: "x@y.example".into(),
+                subject: "Hi".into(),
+                body: "Body".repeat(50),
+                ..Default::default()
+            };
+            MailDoc::store_draft(&mut doc, &draft);
+            let a = doc.save().len();
+            for _ in 0..50 {
+                MailDoc::store_draft(&mut doc, &draft);
+            }
+            let b = doc.save().len();
+            assert_eq!(
+                a, b,
+                "re-storing an unchanged draft grew the document {a} -> {b}"
+            );
+        }
     }
 }

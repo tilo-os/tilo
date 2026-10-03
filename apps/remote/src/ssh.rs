@@ -121,7 +121,8 @@ fn load_known_hosts(path: &Path) -> Result<KnownHosts, String> {
 fn write_known_hosts(path: &Path, known_hosts: &KnownHosts) -> Result<(), String> {
     validate_private_store_path(path)?;
     let bytes = serde_json::to_vec_pretty(known_hosts).map_err(|error| error.to_string())?;
-    atomic_file::write_with_mode(path, &bytes, 0o600).map_err(|error| error.to_string())?;
+    tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
+        .map_err(|error| error.to_string())?;
     validate_private_store_path(path)
 }
 
@@ -138,7 +139,7 @@ pub fn default_known_hosts_path() -> Result<PathBuf, String> {
         validate_private_store_path(&path)?;
         return Ok(path);
     }
-    let state = xdg_paths::xdg::state_home()
+    let state = tilo_paths::xdg::state_home()
         .ok_or_else(|| "no private state directory is available for SSH host trust".to_string())?;
     let directory = state.join("tilo").join("remote");
     ensure_private_directory(&directory)?;
@@ -174,12 +175,7 @@ fn ensure_private_directory(path: &Path) -> Result<(), String> {
         Ok(_) => validate_private_directory(path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             fs::create_dir_all(path).map_err(|error| error.to_string())?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-                    .map_err(|error| error.to_string())?;
-            }
+            private_fs::restrict_directory(path).map_err(|error| error.to_string())?;
             validate_private_directory(path)
         }
         Err(error) => Err(error.to_string()),
@@ -194,20 +190,12 @@ fn validate_private_directory(path: &Path) -> Result<(), String> {
     validate_private_mode(&metadata, "SSH host-key store parent")
 }
 
-#[cfg(unix)]
 fn validate_private_mode(metadata: &fs::Metadata, label: &str) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    let mode = metadata.permissions().mode() & 0o777;
-    if mode & 0o077 != 0 {
+    if !private_fs::is_owner_only(metadata) {
         return Err(format!(
             "{label} must not be accessible to group or other users"
         ));
     }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn validate_private_mode(_metadata: &fs::Metadata, _label: &str) -> Result<(), String> {
     Ok(())
 }
 
@@ -325,9 +313,7 @@ pub fn resolve_auth(
 
 /// Standard on-disk identity paths, most-preferred first.
 pub fn default_key_paths() -> Vec<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
+    let home = tilo_paths::home().unwrap_or_default();
     ["id_ed25519", "id_ecdsa"]
         .iter()
         .map(|n| home.join(".ssh").join(n))
@@ -653,41 +639,47 @@ async fn run_session(
 mod tests {
     use super::*;
 
-    #[test]
-    fn resolve_auth_password_reads_env() {
-        let env = |k: &str| (k == "REMOTE_SSH_PASSWORD").then(|| "hunter2".to_string());
-        match resolve_auth(false, env, &[]).unwrap() {
-            SshAuth::Password(p) => assert_eq!(p, "hunter2"),
-            other @ SshAuth::Key { .. } => panic!("expected password auth, got {other:?}"),
-        }
-    }
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: Duration = Duration::from_secs(30);
 
     #[test]
-    fn resolve_auth_password_missing_is_error() {
-        assert!(resolve_auth(false, |_| None, &[]).is_err());
-    }
-
-    #[test]
-    fn resolve_auth_key_prefers_env_over_defaults() {
-        let env = |k: &str| match k {
-            "REMOTE_SSH_KEY" => Some("/keys/explicit".to_string()),
-            "REMOTE_SSH_KEY_PASSPHRASE" => Some("pw".to_string()),
-            _ => None,
-        };
-        let defaults = vec![PathBuf::from("/keys/default")];
-        match resolve_auth(true, env, &defaults).unwrap() {
-            SshAuth::Key { path, passphrase } => {
-                assert_eq!(path, PathBuf::from("/keys/explicit"));
-                assert_eq!(passphrase.as_deref(), Some("pw"));
+    fn auth_resolution_reads_env_and_default_keys() {
+        eprintln!("phase resolve_auth_password_reads_env");
+        {
+            let env = |k: &str| (k == "REMOTE_SSH_PASSWORD").then(|| "hunter2".to_string());
+            match resolve_auth(false, env, &[]).unwrap() {
+                SshAuth::Password(p) => assert_eq!(p, "hunter2"),
+                other @ SshAuth::Key { .. } => panic!("expected password auth, got {other:?}"),
             }
-            other @ SshAuth::Password(_) => panic!("expected key auth, got {other:?}"),
         }
-    }
 
-    #[test]
-    fn default_key_paths_are_under_dot_ssh() {
-        let paths = default_key_paths();
-        assert!(paths.iter().any(|p| p.ends_with(".ssh/id_ed25519")));
+        eprintln!("phase resolve_auth_password_missing_is_error");
+        {
+            assert!(resolve_auth(false, |_| None, &[]).is_err());
+        }
+
+        eprintln!("phase resolve_auth_key_prefers_env_over_defaults");
+        {
+            let env = |k: &str| match k {
+                "REMOTE_SSH_KEY" => Some("/keys/explicit".to_string()),
+                "REMOTE_SSH_KEY_PASSPHRASE" => Some("pw".to_string()),
+                _ => None,
+            };
+            let defaults = vec![PathBuf::from("/keys/default")];
+            match resolve_auth(true, env, &defaults).unwrap() {
+                SshAuth::Key { path, passphrase } => {
+                    assert_eq!(path, PathBuf::from("/keys/explicit"));
+                    assert_eq!(passphrase.as_deref(), Some("pw"));
+                }
+                other @ SshAuth::Password(_) => panic!("expected key auth, got {other:?}"),
+            }
+        }
+
+        eprintln!("phase default_key_paths_are_under_dot_ssh");
+        {
+            let paths = default_key_paths();
+            assert!(paths.iter().any(|p| p.ends_with(".ssh/id_ed25519")));
+        }
     }
 
     fn test_known_hosts_path() -> PathBuf {
@@ -703,57 +695,60 @@ mod tests {
     }
 
     #[test]
-    fn device_private_known_hosts_fails_closed_until_an_exact_key_is_trusted() {
-        let path = test_known_hosts_path();
-        let first = HostKeyIdentity {
-            algorithm: "ssh-ed25519".into(),
-            fingerprint: "SHA256:first".into(),
-        };
-        let changed = HostKeyIdentity {
-            algorithm: "ssh-ed25519".into(),
-            fingerprint: "SHA256:changed".into(),
-        };
+    fn known_hosts_store_fails_closed_until_exactly_trusted() {
+        eprintln!("phase device_private_known_hosts_fails_closed_until_an_exact_key_is_trusted");
+        {
+            let path = test_known_hosts_path();
+            let first = HostKeyIdentity {
+                algorithm: "ssh-ed25519".into(),
+                fingerprint: "SHA256:first".into(),
+            };
+            let changed = HostKeyIdentity {
+                algorithm: "ssh-ed25519".into(),
+                fingerprint: "SHA256:changed".into(),
+            };
 
-        let empty = load_known_hosts(&path).unwrap();
-        assert!(
-            matches!(
-                verify_known_host(&empty, "host.example", 2222, first.clone()),
-                Err(HostKeyIssue::FirstContact { observed }) if observed == first
-            ),
-            "first contact must fail closed until the displayed key is explicitly trusted"
-        );
-        trust_host_key(&path, "host.example", 2222, &first).unwrap();
-        let stored = load_known_hosts(&path).unwrap();
-        assert_eq!(stored.entries[0].identity, first);
-        assert!(
-            verify_known_host(&stored, "host.example", 2222, first.clone()).is_ok(),
-            "an exact host:port:key match reconnects"
-        );
-        assert!(
-            matches!(
-                verify_known_host(&stored, "host.example", 2222, changed.clone()),
-                Err(HostKeyIssue::Changed { expected, observed }) if expected == first && observed == changed
-            ),
-            "a changed key must fail closed"
-        );
-        assert!(
-            trust_host_key(&path, "host.example", 2222, &changed).is_err(),
-            "a changed key cannot silently replace a pin"
-        );
-        assert!(forget_host_key(&path, "host.example", 2222).unwrap());
-        assert!(!forget_host_key(&path, "host.example", 2222).unwrap());
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
+            let empty = load_known_hosts(&path).unwrap();
+            assert!(
+                matches!(
+                    verify_known_host(&empty, "host.example", 2222, first.clone()),
+                    Err(HostKeyIssue::FirstContact { observed }) if observed == first
+                ),
+                "first contact must fail closed until the displayed key is explicitly trusted"
+            );
+            trust_host_key(&path, "host.example", 2222, &first).unwrap();
+            let stored = load_known_hosts(&path).unwrap();
+            assert_eq!(stored.entries[0].identity, first);
+            assert!(
+                verify_known_host(&stored, "host.example", 2222, first.clone()).is_ok(),
+                "an exact host:port:key match reconnects"
+            );
+            assert!(
+                matches!(
+                    verify_known_host(&stored, "host.example", 2222, changed.clone()),
+                    Err(HostKeyIssue::Changed { expected, observed }) if expected == first && observed == changed
+                ),
+                "a changed key must fail closed"
+            );
+            assert!(
+                trust_host_key(&path, "host.example", 2222, &changed).is_err(),
+                "a changed key cannot silently replace a pin"
+            );
+            assert!(forget_host_key(&path, "host.example", 2222).unwrap());
+            assert!(!forget_host_key(&path, "host.example", 2222).unwrap());
+            fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
 
-    #[test]
-    fn corrupt_known_hosts_store_fails_closed() {
-        let path = test_known_hosts_path();
-        fs::write(&path, b"not JSON").unwrap();
-        assert!(
-            load_known_hosts(&path).is_err(),
-            "corrupt trust state cannot be treated as empty"
-        );
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        eprintln!("phase corrupt_known_hosts_store_fails_closed");
+        {
+            let path = test_known_hosts_path();
+            fs::write(&path, b"not JSON").unwrap();
+            assert!(
+                load_known_hosts(&path).is_err(),
+                "corrupt trust state cannot be treated as empty"
+            );
+            fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
     }
 
     #[cfg(unix)]
@@ -905,7 +900,8 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
 
         // Poll to Connected.
         let mut connected = false;
-        for _ in 0..200 {
+        let deadline = ui::time::now() + HANG_BOUND;
+        while ui::time::now() < deadline {
             match ssh.status() {
                 SessionStatus::Connected => {
                     connected = true;
@@ -919,7 +915,8 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
 
         // Drain the banner into the grid.
         let mut saw_banner = false;
-        for _ in 0..200 {
+        let deadline = ui::time::now() + HANG_BOUND;
+        while ui::time::now() < deadline {
             ssh.pump();
             if ssh.grid().lines().iter().any(|l| {
                 l.cells
@@ -939,13 +936,14 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
         let acknowledgement = ssh.send_input_ack(b"Z".to_vec()).unwrap();
         assert_eq!(
             acknowledgement
-                .recv_timeout(Duration::from_secs(2))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .unwrap(),
             Ok(()),
             "resource input is acknowledged only after the SSH channel write"
         );
         let mut saw_echo = false;
-        for _ in 0..200 {
+        let deadline = ui::time::now() + HANG_BOUND;
+        while ui::time::now() < deadline {
             ssh.pump();
             if ssh.grid().lines().iter().any(|l| {
                 l.cells

@@ -34,7 +34,6 @@
     clippy::struct_excessive_bools,
     clippy::struct_field_names,
     clippy::suspicious_operation_groupings,
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     clippy::type_complexity,
     clippy::unnecessary_mut_passed,
@@ -111,14 +110,17 @@ pub mod app;
 pub mod customize;
 pub mod doc;
 mod export_dialog;
+pub mod handoff;
 mod host;
 pub mod model;
 pub mod probe;
 pub mod profile;
 pub mod profile_cli;
 pub mod release;
+pub mod resource;
 pub mod setup;
 pub mod write;
+pub mod write_setup;
 
 /// The imager's spacing rhythm (HIG §7b): the same relationship always gets
 /// the same step, and every step is a token of `Spacing::BASE` — the
@@ -294,30 +296,57 @@ fn demo_iso_source() -> crate::model::Source {
     }
 }
 
+fn select_source(doc: &mut automerge::AutoCommit, source: crate::model::Source) {
+    let _ = ui::tilo_actions::Action::apply(
+        &crate::actions::ImagerAction::SelectSource {
+            source: Box::new(source),
+            previous: None,
+            recent_rank: 0,
+        },
+        doc,
+    );
+}
+
+fn ensure_empty_records(doc: &mut automerge::AutoCommit) {
+    let _ = ui::tilo_actions::Action::apply(&crate::actions::ImagerAction::EnsureRecords, doc);
+}
+
 fn seed_scenario_drive_empty(doc: &mut automerge::AutoCommit) {
-    use crate::doc::ImagerDoc;
-    ImagerDoc::seed(doc, &[]);
-    ImagerDoc::set_source(doc, Some(&demo_iso_source()));
+    ensure_empty_records(doc);
+    select_source(doc, demo_iso_source());
 }
 
 fn seed_scenario_source_empty(doc: &mut automerge::AutoCommit) {
-    use crate::doc::ImagerDoc;
-    ImagerDoc::seed(doc, &[]);
+    ensure_empty_records(doc);
 }
 
 fn seed_scenario_drive_internal(doc: &mut automerge::AutoCommit) {
-    use crate::doc::ImagerDoc;
     use crate::model::sample_source;
-    ImagerDoc::seed(doc, &[]);
-    ImagerDoc::set_source(doc, Some(&sample_source()));
+    ensure_empty_records(doc);
+    select_source(doc, sample_source());
 }
 
 /// Pose the "drive", "customize", "confirm", "progress", "done" and
 /// "done-failed" stations (plus the "source"/unknown default) on top of the
 /// already-seeded demo document.
 fn seed_scenario_common(doc: &mut automerge::AutoCommit, scenario: &str) {
-    use crate::doc::ImagerDoc;
     if scenario == "drive" {
-        ImagerDoc::set_source(doc, Some(&demo_iso_source()));
+        select_source(doc, demo_iso_source());
+    }
+}
+pub use resource::{Imager, ImagerShell};
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn drive_scenario_selects_the_iso_through_the_source_action() {
+        let mut doc = ui::automerge::AutoCommit::new();
+        super::seed_scenario(&mut doc, "drive-empty");
+        assert!(
+            !crate::doc::ImagerDoc::is_empty(&doc),
+            "the scenario record is created by EnsureRecords"
+        );
+        let source = crate::doc::ImagerDoc::source(&doc).expect("iso selected");
+        assert!(source.name.contains("Fedora"));
     }
 }

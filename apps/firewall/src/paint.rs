@@ -12,8 +12,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 
+use ui::paint::PaintCtx;
 pub use ui::paint::{fill_rect, fill_round, stroke_round};
-use ui::text_render::TextRenderer;
+use ui::text_render::{TextRenderer, TextStyle};
 
 /// Top edge that vertically centres `text` inside `[y0, y0 + h]`, using the
 /// height the renderer will actually paint at its current accessibility
@@ -58,113 +59,82 @@ pub fn dot(scene: &mut Scene, t: Affine, center: Point, r: f64, color: Color) {
     scene.fill(Fill::NonZero, t, color, None, &Circle::new(center, r));
 }
 
-/// Draw `text` with its top-left at `(x, y)`, clipped to `max_w`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "a text-draw primitive called from dozens of sites across app.rs; bundling \
-              position/size/color into a struct would only add construction boilerplate \
-              at every call site for no real readability gain"
-)]
+/// Draw `text` with its top-left at `origin`, clipped to `max_w`.
 pub fn label(
-    tr: &mut TextRenderer,
-    scene: &mut Scene,
-    t: Affine,
+    ctx: &mut PaintCtx<'_>,
     text: &str,
     size: f32,
     color: Color,
-    x: f64,
-    y: f64,
+    origin: Point,
     max_w: f64,
 ) {
-    tr.draw_text(
-        scene,
+    ctx.text(
         text,
-        size,
+        &TextStyle::new(size),
         color,
-        t * Affine::translate((x, y)),
+        origin,
         Some(max_w as f32 + 1.0),
     );
 }
 
-/// Draw `text` vertically centred within `[y0, y0+h]`, left edge at `x`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "a text-draw primitive called from dozens of sites across app.rs; bundling \
-              position/size/color into a struct would only add construction boilerplate \
-              at every call site for no real readability gain"
-)]
-pub fn label_v(
-    tr: &mut TextRenderer,
-    scene: &mut Scene,
-    t: Affine,
-    text: &str,
-    size: f32,
-    color: Color,
-    x: f64,
-    y0: f64,
-    h: f64,
-    max_w: f64,
-) {
-    let y = centered_top(tr, text, size, y0, h);
-    label(tr, scene, t, text, size, color, x, y, max_w);
+/// Draw `text` vertically centred within `rect`, left edge at `rect.x0`,
+/// clipped to its width.
+pub fn label_v(ctx: &mut PaintCtx<'_>, text: &str, size: f32, color: Color, rect: Rect) {
+    let y = centered_top(ctx.text, text, size, rect.y0, rect.height());
+    label(ctx, text, size, color, Point::new(rect.x0, y), rect.width());
 }
 
-/// Draw `text` right-aligned so its right edge sits at `x_right`,
-/// vertically centred in `[y0, y0+h]`.
-#[allow(
-    clippy::too_many_arguments,
-    clippy::many_single_char_names,
-    reason = "a text-draw primitive called from dozens of sites across app.rs; bundling \
-              position/size/color into a struct would only add construction boilerplate \
-              at every call site for no real readability gain, and the short names (t, \
-              h, w, x, y) mirror the affine/geometry vocabulary used throughout paint.rs"
-)]
-pub fn label_right_v(
-    tr: &mut TextRenderer,
-    scene: &mut Scene,
-    t: Affine,
-    text: &str,
-    size: f32,
-    color: Color,
-    x_right: f64,
-    y0: f64,
-    h: f64,
-) {
-    let (w, text_h) = tr.measure(text, size, None);
-    let x = x_right - f64::from(w);
-    let y = y0 + (h - f64::from(text_h)) / 2.0;
-    label(tr, scene, t, text, size, color, x, y, f64::from(w) + 2.0);
+/// Draw `text` right-aligned so its right edge sits at `row.x1`,
+/// vertically centred in `row`.
+pub fn label_right_v(ctx: &mut PaintCtx<'_>, text: &str, size: f32, color: Color, row: Rect) {
+    let (w, text_h) = ctx.text.measure(text, size, None);
+    let x = row.x1 - f64::from(w);
+    let y = row.y0 + (row.height() - f64::from(text_h)) / 2.0;
+    label(ctx, text, size, color, Point::new(x, y), f64::from(w) + 2.0);
 }
 
-/// A filled pill with centred label. Returns the pill width used. The fill
+/// How a [`chip`] is painted: its label size and ink, its fill, and the
+/// capsule's horizontal padding, height and corner radius.
+pub struct ChipStyle {
+    pub size: f32,
+    pub ink: Color,
+    pub fill: Color,
+    pub pad_x: f64,
+    pub height: f64,
+    pub radius: f64,
+}
+
+/// A filled pill with centred label, starting at `left_mid.x` and
+/// vertically centred on `left_mid.y`. Returns the pill width used. The fill
 /// is a tint or a solid accent, so the pill reads as a contrast step against
 /// the surface it sits on rather than needing a declared border.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "a pill-draw primitive called from dozens of sites across app.rs; bundling \
-              position/size/color into a struct would only add construction boilerplate \
-              at every call site for no real readability gain"
-)]
-pub fn chip(
-    tr: &mut TextRenderer,
-    scene: &mut Scene,
-    t: Affine,
-    text: &str,
-    size: f32,
-    text_color: Color,
-    bg: Color,
-    x: f64,
-    y_center: f64,
-    pad_x: f64,
-    height: f64,
-    radius: f64,
-) -> f64 {
-    let (w, text_h) = tr.measure(text, size, None);
-    let w = f64::from(w) + pad_x * 2.0;
-    let rect = Rect::new(x, y_center - height / 2.0, x + w, y_center + height / 2.0);
-    ui::surface::pill(scene, t, rect, bg, None, Some(radius));
+pub fn chip(ctx: &mut PaintCtx<'_>, text: &str, style: &ChipStyle, left_mid: Point) -> f64 {
+    let (x, y_center) = (left_mid.x, left_mid.y);
+    let (w, text_h) = ctx.text.measure(text, style.size, None);
+    let w = f64::from(w) + style.pad_x * 2.0;
+    let rect = Rect::new(
+        x,
+        y_center - style.height / 2.0,
+        x + w,
+        y_center + style.height / 2.0,
+    );
+    ui::surface::pill(
+        ctx.scene,
+        ctx.transform,
+        rect,
+        style.fill,
+        None,
+        Some(style.radius),
+    );
     let ty = y_center - f64::from(text_h) / 2.0;
-    label(tr, scene, t, text, size, text_color, x + pad_x, ty, w);
+    label(
+        ctx,
+        text,
+        style.size,
+        style.ink,
+        Point::new(x + style.pad_x, ty),
+        w,
+    );
     w
 }
 

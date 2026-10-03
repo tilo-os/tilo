@@ -21,7 +21,7 @@ use automerge::{AutoCommit, ROOT};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
     Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
+    ExecutionLocus, OperationKind, Resource, RetryPolicy,
 };
 
 use crate::doc::{BackupsDoc, PolicyField};
@@ -230,36 +230,16 @@ fn policy_contract() -> ActionContract {
     }
 }
 
-/// The resource tree Backups publishes: the retention policy, with a child per
-/// class exporting set / increase / decrease, each the same action the
-/// on-screen affordance dispatches.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the complete stable resource hierarchy is intentionally visible together"
-)]
-pub fn provide_resources(
-    policy: &RetentionPolicy,
-    catalog: &Catalog,
-    configured: bool,
-) -> Vec<Resource> {
-    provide_resources_with_unavailable_reason(policy, catalog, configured, None)
-}
+/// Stable id for the published workspace root ([`tilo_resource::publish`]).
+pub const BACKUPS_RESOURCE_ID: &str = "backups";
 
-/// As [`provide_resources`], but lets a live local backend surface the reason
-/// an otherwise-saved configuration is unavailable. The public three-argument
-/// form keeps deterministic callers and tests independent of host-only paths.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the complete stable resource hierarchy is intentionally visible together"
-)]
-pub fn provide_resources_with_unavailable_reason(
-    policy: &RetentionPolicy,
-    catalog: &Catalog,
-    configured: bool,
-    unavailable_reason: Option<&str>,
-) -> Vec<Resource> {
-    let unavailable_reason =
-        unavailable_reason.unwrap_or("Choose a source and destination before running a backup");
+const DEFAULT_UNAVAILABLE: &str = "Choose a source and destination before running a backup";
+
+/// Retention-policy Document tree: one child per class with set / increase /
+/// decrease — the same actions the on-screen affordances dispatch. Rides
+/// [`crate::resource::Backups::children`] so hosted palette traffic goes through
+/// [`tilo_resource::publish`], never a second hand-built `backups.policy` root.
+pub(crate) fn publish_policy_document(policy: &RetentionPolicy) -> Resource {
     let mut root = Resource::new("backups.policy", "backups.policy", "Retention policy");
 
     for field in PolicyField::ALL {
@@ -301,15 +281,23 @@ pub fn provide_resources_with_unavailable_reason(
 
         root = root.with_child(fr);
     }
+    root
+}
 
-    let mut backups = Resource::new("backups", "backups.workspace", "Backups");
+/// Workspace View / Effect ops that are not document state (run backup, set up).
+/// Published via [`crate::resource::Backups::local_operations`].
+pub(crate) fn workspace_effect_specs(
+    configured: bool,
+    unavailable_reason: &str,
+) -> Vec<ActionSpec> {
+    let mut specs = Vec::new();
     if let Some(spec) = operation_spec(
         "backup-now",
         "Run backup now",
         OperationKind::Effect,
         &BackupOperation::BackupNow,
     ) {
-        backups = backups.with_action(if configured {
+        specs.push(if configured {
             spec
         } else {
             spec.unavailable("not_configured", unavailable_reason)
@@ -321,9 +309,12 @@ pub fn provide_resources_with_unavailable_reason(
         OperationKind::Effect,
         &BackupOperation::Setup,
     ) {
-        backups = backups.with_action(spec);
+        specs.push(spec);
     }
+    specs
+}
 
+fn catalog_source_set(catalog: &Catalog) -> Resource {
     let mut sources = Resource::new("backups.sources", "backups.source-set", "Backup sources");
     for source in &catalog.sources {
         let source_id = source.id.clone();
@@ -361,8 +352,10 @@ pub fn provide_resources_with_unavailable_reason(
         }
         sources = sources.with_child(source_resource.with_child(schedule));
     }
-    backups = backups.with_child(sources);
+    sources
+}
 
+fn catalog_destination_set(catalog: &Catalog) -> Resource {
     let mut destinations = Resource::new(
         "backups.destinations",
         "backups.destination-set",
@@ -386,8 +379,10 @@ pub fn provide_resources_with_unavailable_reason(
         }
         destinations = destinations.with_child(destination_resource);
     }
-    backups = backups.with_child(destinations);
+    destinations
+}
 
+fn catalog_snapshot_set(catalog: &Catalog, configured: bool, unavailable_reason: &str) -> Resource {
     let mut snapshots = Resource::new(
         "backups.snapshots",
         "backups.snapshot-set",
@@ -397,11 +392,80 @@ pub fn provide_resources_with_unavailable_reason(
         snapshots =
             snapshots.with_child(snapshot_resource(snapshot, configured, unavailable_reason));
     }
-    backups = backups.with_child(snapshots);
+    snapshots
+}
 
-    // Keep the long-standing policy root first: automation clients that began
-    // at the original public root retain a stable traversal order.
-    vec![root, backups]
+/// Live catalog Views/Effects that are not document state. Hosted
+/// [`PublishesResources`] returns these beside [`tilo_resource::publish`] —
+/// never a second `backups.policy` / `backups` Document door.
+pub(crate) fn live_catalog_extras(
+    catalog: &Catalog,
+    configured: bool,
+    unavailable_reason: Option<&str>,
+) -> Vec<Resource> {
+    let reason = unavailable_reason.unwrap_or(DEFAULT_UNAVAILABLE);
+    vec![
+        catalog_source_set(catalog),
+        catalog_destination_set(catalog),
+        catalog_snapshot_set(catalog, configured, reason),
+    ]
+}
+
+/// The resource tree Backups publishes standalone / `--shots` / unit tests:
+/// retention policy Document ops plus the safe backup automation catalog.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the complete stable resource hierarchy is intentionally visible together"
+)]
+pub fn provide_resources(
+    policy: &RetentionPolicy,
+    catalog: &Catalog,
+    configured: bool,
+) -> Vec<Resource> {
+    provide_resources_with_unavailable_reason(policy, catalog, configured, None)
+}
+
+/// As [`provide_resources`], but lets a live local backend surface the reason
+/// an otherwise-saved configuration is unavailable. The public three-argument
+/// form keeps deterministic callers and tests independent of host-only paths.
+pub fn provide_resources_with_unavailable_reason(
+    policy: &RetentionPolicy,
+    catalog: &Catalog,
+    configured: bool,
+    unavailable_reason: Option<&str>,
+) -> Vec<Resource> {
+    let unavailable_reason = unavailable_reason.unwrap_or(DEFAULT_UNAVAILABLE);
+    let state = crate::resource::BackupsState { policy: *policy };
+    let mut backups = ui::tilo_resource::publish::<crate::resource::Backups>(
+        BACKUPS_RESOURCE_ID,
+        "Backups",
+        &state,
+    );
+    let mut extra = Vec::new();
+    for spec in workspace_effect_specs(configured, unavailable_reason) {
+        if let Some(existing) = backups
+            .actions
+            .iter_mut()
+            .find(|action| action.id == spec.id)
+        {
+            *existing = spec;
+        } else {
+            extra.push(spec);
+        }
+    }
+    for spec in extra {
+        backups = backups.with_action(spec);
+    }
+    backups = backups
+        .with_child(catalog_source_set(catalog))
+        .with_child(catalog_destination_set(catalog))
+        .with_child(catalog_snapshot_set(
+            catalog,
+            configured,
+            unavailable_reason,
+        ));
+
+    vec![backups]
 }
 
 /// Resolve one stable resource without requiring it to be in the contextual
@@ -456,6 +520,18 @@ pub fn resource_with_unavailable_reason(
         .children
         .into_iter()
         .find(|child| child.id.as_str() == id)
+}
+
+fn find_backup(resources: &[Resource], id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_backup(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn snapshot_resource(snapshot: &Snapshot, configured: bool, unavailable_reason: &str) -> Resource {
@@ -553,8 +629,9 @@ fn snapshot_resource(snapshot: &Snapshot, configured: bool, unavailable_reason: 
     resource
 }
 
-impl ResourceProvider for crate::app::BackupsApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::BackupsApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         // Level-triggered: recomputed each frame from the document, the source of
         // truth every action reads and writes.
         provide_resources_with_unavailable_reason(
@@ -565,7 +642,11 @@ impl ResourceProvider for crate::app::BackupsApp {
         )
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if let Some(found) = find_backup(&self.publish_resources(doc), id) {
+            return Some(found);
+        }
+        // A snapshot outside the recent page stays addressable.
         resource_with_unavailable_reason(
             &BackupsDoc::policy(doc, &ROOT),
             self.resource_catalog(),
@@ -600,27 +681,50 @@ mod tests {
     }
 
     fn field_resource(root: &Resource, field: PolicyField) -> &Resource {
+        let policy = if root.kind == "backups.policy" {
+            root
+        } else {
+            root.children
+                .iter()
+                .find(|resource| resource.kind == "backups.policy")
+                .unwrap_or(root)
+        };
         let id = format!("backups.retention:{}", field.key());
-        root.children
+        policy
+            .children
             .iter()
             .find(|r| r.id.as_str() == id)
             .unwrap_or_else(|| panic!("a resource for {id}"))
     }
 
-    /// Drives the real resource hook and the real palette, not a mock tree.
+    /// The exported resource tree: the retention classes and catalog hierarchy,
+    /// bounded steppers, unavailable-repository reasons and honest effect
+    /// contracts; each case builds its own resources.
     #[test]
+    fn resource_tree_publishes_retention_catalog_and_honest_contracts() {
+        ctrl_k_publishes_the_retention_tree();
+        bounded_fields_omit_the_impossible_move();
+        unavailable_repository_reason_reaches_the_canonical_backup_action();
+        local_effects_publish_honest_retry_risk_and_restore_target_contracts();
+    }
+
+    /// Drives the real resource hook and the real palette, not a mock tree.
+    /// Case of `resource_tree_publishes_retention_catalog_and_honest_contracts`.
     fn ctrl_k_publishes_the_retention_tree() {
         let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
+        let resources = ui::resources::resources(&app, &doc);
         assert_eq!(
             resources.len(),
-            2,
-            "the stored policy and the safe backup automation catalog are exported"
+            1,
+            "the workspace publishes the policy and the backup catalog"
         );
-        let root = resources
+        let workspace = &resources[0];
+        assert_eq!(workspace.kind, "backups.workspace");
+        let root = workspace
+            .children
             .iter()
             .find(|resource| resource.kind == "backups.policy")
-            .expect("retention-policy root");
+            .expect("retention-policy child");
         assert_eq!(root.kind, "backups.policy");
         assert_eq!(root.children.len(), 4, "one child per retention class");
 
@@ -680,7 +784,7 @@ mod tests {
         assert!(snapshot.id.as_str().starts_with("backups.snapshot:"));
     }
 
-    #[test]
+    /// Case of `resource_tree_publishes_retention_catalog_and_honest_contracts`.
     fn bounded_fields_omit_the_impossible_move() {
         let (_app, mut doc) = seeded();
         BackupsDoc::set_retention(&mut doc, &ROOT, PolicyField::Weekly, 0);
@@ -714,7 +818,7 @@ mod tests {
         assert!(m_actions.contains(&"decrement"), "{m_actions:?}");
     }
 
-    #[test]
+    /// Case of `resource_tree_publishes_retention_catalog_and_honest_contracts`.
     fn unavailable_repository_reason_reaches_the_canonical_backup_action() {
         let reason = "The saved backup location is unavailable. Choose another location.";
         let resources = provide_resources_with_unavailable_reason(
@@ -738,7 +842,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    /// Case of `resource_tree_publishes_retention_catalog_and_honest_contracts`.
     fn local_effects_publish_honest_retry_risk_and_restore_target_contracts() {
         let resources = provide_resources(&RetentionPolicy::default(), &Catalog::sample(), true);
         let workspace = resources
@@ -800,7 +904,15 @@ mod tests {
         );
     }
 
+    /// The on-screen +/- control dispatches the same action as the palette, and
+    /// an unchanged set is a no-op; each case uses a fresh seeded app.
     #[test]
+    fn retention_controls_dispatch_the_palette_action_and_skip_no_ops() {
+        redundant_action_is_a_no_op();
+        bump_button_dispatches_the_palette_action();
+    }
+
+    /// Case of `retention_controls_dispatch_the_palette_action_and_skip_no_ops`.
     fn redundant_action_is_a_no_op() {
         let (_app, mut doc) = seeded();
         doc.commit();
@@ -823,7 +935,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: seeded().1,
         registry: registry(),
-        resources: |doc| Widget::resources(&BackupsApp::new(), doc),
+        resources: |doc| ui::resources::resources(&BackupsApp::new(), doc),
         palette: ["Set daily retention", "Increase by one", "Decrease by one", "Set up backups"],
         replay: [
             set_monthly => |doc| encode(&set_retention_action(
@@ -849,13 +961,13 @@ mod tests {
 
     /// `bump_retention` is what both the mouse hit and the keyboard arrow/`+`/`-`
     /// handlers funnel through.
-    #[test]
+    /// Case of `retention_controls_dispatch_the_palette_action_and_skip_no_ops`.
     fn bump_button_dispatches_the_palette_action() {
         let (mut app, mut doc) = seeded();
 
         // The palette spec for Daily's increment, captured before we mutate.
         let (cur, spec_encoded) = {
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let daily = field_resource(&resources[0], PolicyField::Daily);
             let spec = daily.actions.iter().find(|a| a.id == "increment").unwrap();
             (

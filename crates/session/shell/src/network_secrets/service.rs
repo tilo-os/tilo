@@ -1,0 +1,407 @@
+//! `org.freedesktop.NetworkManager.SecretAgent` on the system bus,
+//! registered with `NetworkManager`'s agent manager for this session.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, PoisonError};
+
+use tokio_util::sync::CancellationToken;
+use zbus::message::Header;
+use zbus::zvariant::{OwnedObjectPath, OwnedValue};
+
+use super::store::SecretStore;
+use super::{
+    AgentError, ConnectionDict, SecretPrompter, SecretRequest, SheetAnswer, agent_owned_secrets,
+    connection_uuid, request_secrets,
+};
+use crate::shell::portal_dialog::{
+    NetworkSecretsDecision, NetworkSecretsRequest, PortalDialogQueue,
+};
+
+/// Where `NetworkManager` looks for every agent.
+pub const AGENT_PATH: &str = "/org/freedesktop/NetworkManager/SecretAgent";
+/// This agent's identifier: stable, so `NetworkManager` treats a restarted
+/// shell as the same agent.
+pub const AGENT_IDENTIFIER: &str = "so.tilo.shell";
+pub const NM_BUS_NAME: &str = "org.freedesktop.NetworkManager";
+pub const AGENT_MANAGER_PATH: &str = "/org/freedesktop/NetworkManager/AgentManager";
+pub const AGENT_MANAGER_INTERFACE: &str = "org.freedesktop.NetworkManager.AgentManager";
+/// `NM_SECRET_AGENT_CAPABILITY_VPN_HINTS`: VPN secret keys arrive as hints,
+/// so the sheet can ask for them without a plugin's own dialog.
+pub const CAPABILITY_VPN_HINTS: u32 = 0x1;
+
+/// The sheet the compositor draws for one request.
+pub struct SheetPrompter {
+    queue: PortalDialogQueue,
+    handle: String,
+}
+
+impl SheetPrompter {
+    /// `number` tells apart requests for the same setting, so a request
+    /// `NetworkManager` replaced never takes down its successor's sheet.
+    pub fn new(
+        queue: PortalDialogQueue,
+        number: u64,
+        connection_path: &str,
+        setting_name: &str,
+    ) -> Self {
+        Self {
+            queue,
+            handle: format!("nm-secrets:{number}:{connection_path}/{setting_name}"),
+        }
+    }
+
+    pub fn handle(&self) -> &str {
+        &self.handle
+    }
+}
+
+impl SecretPrompter for SheetPrompter {
+    async fn ask(&self, request: &SecretRequest) -> Option<SheetAnswer> {
+        let receiver = self
+            .queue
+            .enqueue_network_secrets(NetworkSecretsRequest {
+                handle: self.handle.clone(),
+                title: request.title.clone(),
+                detail: request.detail.clone(),
+                fields: request.fields.clone(),
+                remember: Some(request.remember_default),
+            })
+            .ok()?;
+        match receiver.await.ok()? {
+            NetworkSecretsDecision::Answered { values, remember } => {
+                Some(SheetAnswer { values, remember })
+            }
+            NetworkSecretsDecision::Cancelled => None,
+        }
+    }
+}
+
+/// Whether a call came from `NetworkManager`. On a bus that is the owner of
+/// `NetworkManager`'s name; a peer-to-peer connection has only the one peer.
+async fn from_network_manager(connection: &zbus::Connection, header: &Header<'_>) -> bool {
+    if connection.unique_name().is_none() {
+        return true;
+    }
+    let Some(sender) = header.sender() else {
+        return false;
+    };
+    let Ok(bus) = zbus::fdo::DBusProxy::new(connection).await else {
+        return false;
+    };
+    let Ok(name) = zbus::names::BusName::try_from(NM_BUS_NAME) else {
+        return false;
+    };
+    bus.get_name_owner(name)
+        .await
+        .is_ok_and(|owner| owner.as_str() == sender.as_str())
+}
+
+/// Requests in flight by connection path and setting, each with the
+/// number it was started under.
+type LiveRequests = Arc<Mutex<HashMap<(String, String), (u64, CancellationToken)>>>;
+
+pub struct SecretAgent {
+    queue: PortalDialogQueue,
+    store: Arc<dyn SecretStore>,
+    live: LiveRequests,
+    started: std::sync::atomic::AtomicU64,
+}
+
+impl SecretAgent {
+    pub fn new(queue: PortalDialogQueue, store: Arc<dyn SecretStore>) -> Self {
+        Self {
+            queue,
+            store,
+            live: Arc::default(),
+            started: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+}
+
+fn outcome_label(outcome: &Result<super::SettingSecrets, AgentError>) -> &'static str {
+    match outcome {
+        Ok(_) => "answered",
+        Err(AgentError::UserCanceled(_)) => "dismissed",
+        Err(AgentError::AgentCanceled(_)) => "withdrawn",
+        Err(AgentError::NoSecrets(_)) => "no secrets",
+        Err(_) => "failed",
+    }
+}
+
+#[zbus::interface(name = "org.freedesktop.NetworkManager.SecretAgent")]
+impl SecretAgent {
+    /// `NetworkManager` needs secrets for `setting_name` of a connection.
+    /// Answered from what is remembered, from the sheet, or with an error.
+    async fn get_secrets(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] bus: &zbus::Connection,
+        connection: ConnectionDict,
+        connection_path: OwnedObjectPath,
+        setting_name: String,
+        hints: Vec<String>,
+        flags: u32,
+    ) -> Result<HashMap<String, HashMap<String, OwnedValue>>, AgentError> {
+        if !from_network_manager(bus, &header).await {
+            return Err(AgentError::PermissionDenied(
+                "only NetworkManager may ask for secrets".into(),
+            ));
+        }
+        let request = SecretRequest::parse(
+            &connection,
+            connection_path.as_str(),
+            &setting_name,
+            &hints,
+            flags,
+        )?;
+        let key = (connection_path.to_string(), setting_name.clone());
+        let number = self
+            .started
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let token = CancellationToken::new();
+        let stale = self
+            .live
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key.clone(), (number, token.clone()));
+        if let Some((_, stale)) = stale {
+            stale.cancel();
+        }
+        let prompter = SheetPrompter::new(
+            self.queue.clone(),
+            number,
+            connection_path.as_str(),
+            &setting_name,
+        );
+        let outcome = tokio::select! {
+            outcome = request_secrets(&request, &self.store, &prompter) => outcome,
+            () = token.cancelled() => Err(AgentError::AgentCanceled("withdrawn by NetworkManager".into())),
+        };
+        self.queue.cancel(prompter.handle());
+        {
+            let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
+            if live
+                .get(&key)
+                .is_some_and(|(current, _)| *current == number)
+            {
+                live.remove(&key);
+            }
+        }
+        tracing::info!(
+            target: "shell::network_secrets",
+            connection = %request.connection_id,
+            setting = %setting_name,
+            flags,
+            outcome = outcome_label(&outcome),
+            "network secrets request finished"
+        );
+        outcome.map(|secrets| request.response(&secrets))
+    }
+
+    /// `NetworkManager` no longer needs the secrets it asked for; the sheet
+    /// goes away.
+    async fn cancel_get_secrets(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] bus: &zbus::Connection,
+        connection_path: OwnedObjectPath,
+        setting_name: String,
+    ) -> Result<(), AgentError> {
+        if !from_network_manager(bus, &header).await {
+            return Err(AgentError::PermissionDenied(
+                "only NetworkManager may cancel".into(),
+            ));
+        }
+        let token = self
+            .live
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&(connection_path.to_string(), setting_name));
+        if let Some((_, token)) = token {
+            token.cancel();
+        }
+        Ok(())
+    }
+
+    /// Keep the agent-owned secrets of a connection `NetworkManager` saved.
+    async fn save_secrets(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] bus: &zbus::Connection,
+        connection: ConnectionDict,
+        connection_path: OwnedObjectPath,
+    ) -> Result<(), AgentError> {
+        if !from_network_manager(bus, &header).await {
+            return Err(AgentError::PermissionDenied(
+                "only NetworkManager may save secrets".into(),
+            ));
+        }
+        let _ = connection_path;
+        let uuid = connection_uuid(&connection)
+            .ok_or_else(|| AgentError::InvalidConnection("the connection has no uuid".into()))?;
+        let owned = agent_owned_secrets(&connection);
+        let store = Arc::clone(&self.store);
+        let saved = tokio::task::spawn_blocking(move || {
+            owned.into_iter().try_for_each(|(setting, secrets)| {
+                let key = super::store::StoreKey {
+                    uuid: uuid.clone(),
+                    setting,
+                    roaming_wifi: None,
+                };
+                store.keep(&key, &secrets)
+            })
+        })
+        .await
+        .map_err(|_| AgentError::InvalidConnection("the secret store stopped".into()))?;
+        saved.map_err(|error| {
+            tracing::warn!(target: "shell::network_secrets", %error, "could not keep saved secrets");
+            AgentError::InvalidConnection(error)
+        })
+    }
+
+    /// Forget everything remembered for a deleted connection.
+    async fn delete_secrets(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] bus: &zbus::Connection,
+        connection: ConnectionDict,
+        connection_path: OwnedObjectPath,
+    ) -> Result<(), AgentError> {
+        if !from_network_manager(bus, &header).await {
+            return Err(AgentError::PermissionDenied(
+                "only NetworkManager may delete secrets".into(),
+            ));
+        }
+        let _ = connection_path;
+        let uuid = connection_uuid(&connection)
+            .ok_or_else(|| AgentError::InvalidConnection("the connection has no uuid".into()))?;
+        let store = Arc::clone(&self.store);
+        tokio::task::spawn_blocking(move || store.forget_connection(&uuid))
+            .await
+            .map_err(|_| AgentError::InvalidConnection("the secret store stopped".into()))?
+            .map_err(AgentError::InvalidConnection)
+    }
+}
+
+/// Keeps the agent registered while held.
+pub struct AgentHandle {
+    connection: zbus::Connection,
+    reregister: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl AgentHandle {
+    pub fn connection(&self) -> &zbus::Connection {
+        &self.connection
+    }
+}
+
+impl Drop for AgentHandle {
+    fn drop(&mut self) {
+        if let Some(task) = self.reregister.take() {
+            task.abort();
+        }
+    }
+}
+
+/// Tell `NetworkManager` this agent answers for the session.
+///
+/// # Errors
+///
+/// When `NetworkManager`'s agent manager refuses or cannot be reached.
+pub async fn register(connection: &zbus::Connection) -> zbus::Result<()> {
+    let manager = zbus::Proxy::new(
+        connection,
+        NM_BUS_NAME,
+        AGENT_MANAGER_PATH,
+        AGENT_MANAGER_INTERFACE,
+    )
+    .await?;
+    manager
+        .call::<_, _, ()>(
+            "RegisterWithCapabilities",
+            &(AGENT_IDENTIFIER, CAPABILITY_VPN_HINTS),
+        )
+        .await
+}
+
+/// `NetworkManager` forgets its agents when it restarts; register again
+/// whenever its name gets a new owner.
+async fn reregister_on_restart(connection: zbus::Connection) {
+    use futures_util::StreamExt as _;
+
+    let Ok(bus) = zbus::fdo::DBusProxy::new(&connection).await else {
+        return;
+    };
+    let Ok(mut changes) = bus
+        .receive_name_owner_changed_with_args(&[(0, NM_BUS_NAME)])
+        .await
+    else {
+        return;
+    };
+    while let Some(change) = changes.next().await {
+        let Ok(args) = change.args() else {
+            continue;
+        };
+        if args.new_owner().is_none() {
+            continue;
+        }
+        match register(&connection).await {
+            Ok(()) => tracing::info!(
+                target: "shell::network_secrets",
+                "registered again with a restarted NetworkManager"
+            ),
+            Err(error) => tracing::warn!(
+                target: "shell::network_secrets",
+                %error,
+                "could not register with a restarted NetworkManager"
+            ),
+        }
+    }
+}
+
+/// Serve the agent on `connection` and register it with `NetworkManager`.
+///
+/// # Errors
+///
+/// When the object cannot be served or `NetworkManager` refuses the agent.
+pub async fn serve_on(
+    connection: zbus::Connection,
+    queue: PortalDialogQueue,
+    store: Arc<dyn SecretStore>,
+) -> zbus::Result<AgentHandle> {
+    connection
+        .object_server()
+        .at(AGENT_PATH, SecretAgent::new(queue, store))
+        .await?;
+    register(&connection).await?;
+    let reregister = connection
+        .unique_name()
+        .is_some()
+        .then(|| tokio::spawn(reregister_on_restart(connection.clone())));
+    Ok(AgentHandle {
+        connection,
+        reregister,
+    })
+}
+
+/// Serve the agent on the system bus for this session.
+///
+/// # Errors
+///
+/// When the system bus or `NetworkManager` cannot be reached, or no vault
+/// location exists for this session.
+pub async fn serve(
+    queue: PortalDialogQueue,
+    roaming: super::store::RoamingWifiSlot,
+) -> zbus::Result<AgentHandle> {
+    // Choosing the vault's custody probes the secret store over a blocking
+    // D-Bus call, which must not run on a runtime thread.
+    let store = tokio::task::spawn_blocking(move || super::store::VaultStore::for_session(roaming))
+        .await
+        .map_err(|error| zbus::Error::Failure(format!("network secrets vault: {error}")))?
+        .ok_or_else(|| {
+            zbus::Error::Failure("no configuration directory for the network secrets vault".into())
+        })?;
+    let connection = zbus::Connection::system().await?;
+    serve_on(connection, queue, Arc::new(store)).await
+}

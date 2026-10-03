@@ -48,6 +48,10 @@ pub fn run_with_options(enable_peer_sync: bool) {
     clippy::too_many_lines,
     reason = "hosted session startup deliberately keeps the ordered ownership, networking, portal, identity-broker, and event-loop lifetimes visible in one orchestration path"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "`peer_sync` and `host` are keep-alives for the event loop that `app.run()` drives"
+)]
 pub fn run_with_full_options(opts: HostedOptions) {
     let wake_scope = ui::wake::WakeScope::new();
     let _wake_entry = wake_scope.enter();
@@ -124,11 +128,23 @@ pub fn run_with_full_options(opts: HostedOptions) {
     let mut host = attach_peer_sync_bridge(host, peer_sync.as_ref(), tree_handle.clone());
     if let Some(broker) = collab_broker.as_ref() {
         let dispatcher = broker.follow_dispatcher();
+        chrome
+            .borrow_mut()
+            .window_transfers
+            .set_handoff_link(Box::new(crate::shell::window_transfer::BrokerHandoff::new(
+                dispatcher.clone(),
+            )));
         host.set_follow_bridge(std::rc::Rc::new(move |room, peer_id| {
             dispatcher.set(&room.to_string(), peer_id);
         }));
     }
     if let Some(network) = peer_sync.as_ref() {
+        chrome
+            .borrow_mut()
+            .window_transfers
+            .set_hosted_rooms(Box::new(crate::shell::document_import::NativeHostedRooms(
+                Arc::clone(network),
+            )));
         let follow_network = Arc::clone(network);
         let status_network = Arc::clone(network);
         host.set_follow_presence_bridge(std::rc::Rc::new(move |room, target| {
@@ -305,18 +321,8 @@ fn prepare_workspace_namespace(enable_peer_sync: bool, state_path: &std::path::P
     }
 }
 
-/// Mints a room identity and an owner for any workspace restored from a state file written before
-/// either concept existed — otherwise nobody can grant anything in it, or "yesterday's workspace"
-/// and "today's" resolve to different rooms.
+/// Adopts every ownerless workspace for its selected identity.
 fn adopt_tree_ownership(tree: &mut WorkspaceTree) {
-    let roomless = tree.adopt_roomless_workspaces();
-    if !roomless.is_empty() {
-        tracing::info!(
-            "collaboration: minted a room identity for {} workspace(s)",
-            roomless.len()
-        );
-    }
-
     // Someone has to own each room or nobody can grant anything in it.
     // Resolve per room so hosted mode uses the same selected identity that
     // its certified collaboration join presents.
@@ -392,9 +398,11 @@ fn attach_peer_sync_bridge(
         }
         crate::shell::overlay_host::PeerSyncRequest::AcceptInvite(token) => {
             let active = tree_for_bridge.read().desktop.active;
-            net.accept_invite(active, &token)
-                .map(|room| room.to_string())
-                .map(crate::shell::overlay_host::PeerSyncResponse::Message)
+            net.accept_peer_invitation(active, &token)
+        }
+        crate::shell::overlay_host::PeerSyncRequest::PollEnrollment(id) => net.poll_enrollment(id),
+        crate::shell::overlay_host::PeerSyncRequest::CancelEnrollment(id) => {
+            net.cancel_enrollment(id)
         }
         crate::shell::overlay_host::PeerSyncRequest::ListPendingInvitations => {
             let room = tree_for_bridge
@@ -457,6 +465,10 @@ fn set_active_room_presence_scope(app: &mut App, tree_snapshot: &WorkspaceTree) 
 /// Installs the cursor-presence pump: pipes every local `broadcast_presence` Pointer event into
 /// `NetCmd::Publish { msg: PresenceMoved }` and drains received updates into the chrome's
 /// remote-cursors overlay.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "`recv_net` moves into the frame-tick closure after the inbound handle is taken"
+)]
 fn install_presence_pump(
     app: &mut App,
     net: &Arc<ShellNetwork>,
@@ -492,6 +504,16 @@ fn install_presence_pump(
         let received = !drained.is_empty();
         let now = std::time::Instant::now();
         for entry in drained {
+            // A pointer anchored to a tab's tile is placed by the native frame loop over its own
+            // tiles; this window has no tile map to place it with, and its offset is no desktop point.
+            if matches!(
+                serde_json::from_str::<ui::presence::PresenceKey>(&entry.key)
+                    .ok()
+                    .and_then(|key| key.pointer_space()),
+                Some(ui::presence::PointerSpace::Tile { .. })
+            ) {
+                continue;
+            }
             // A frame addressed to a room is this session learning a named person is in it; putting them on
             // that room's roster is what the avatar stack, wheel-disc dots, and collaborators overlay render from.
             if let Ok(ui::presence::PresenceKey::Workspace { id }) =

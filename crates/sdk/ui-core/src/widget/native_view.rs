@@ -7,9 +7,9 @@
 //! toolkit's layout, focus, platform conventions, visibility, accessibility,
 //! and teardown lifecycle.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
@@ -331,9 +331,7 @@ impl NativeViewLifecycle for NativeView {
 }
 
 impl Widget for NativeView {
-    fn native_view_lifecycle_mut(&mut self) -> Option<&mut dyn NativeViewLifecycle> {
-        Some(self)
-    }
+    crate::provides!(dyn crate::widget::NativeViewLifecycle);
 
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
@@ -352,13 +350,13 @@ impl Widget for NativeView {
         }
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if let Some(fallback) = &mut self.fallback {
             fallback.sync(state, path);
         }
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.fallback
             .as_mut()
             .is_some_and(|fallback| fallback.update(state, path))
@@ -466,39 +464,19 @@ impl Widget for NativeView {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.enabled {
             return;
         }
         if !self.mounted {
             if let (Some(fallback), Some(child)) = (&mut self.fallback, self.fallback_node) {
-                fallback.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    child,
-                    taffy,
-                );
+                fallback.handle_event(event, &mut ctx.reborrow(ctx.path, child));
             }
             return;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         let pointer_event = matches!(
             event,
@@ -525,8 +503,8 @@ impl Widget for NativeView {
             event,
             NativeViewInput {
                 local_position,
-                scale_factor,
-                modifiers: modifiers.state(),
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers.state(),
             },
         ) {
             if matches!(
@@ -537,9 +515,9 @@ impl Widget for NativeView {
                     ..
                 }
             ) {
-                *focus_target = Some(node_id);
+                *ctx.focus_target = Some(ctx.node_id);
             }
-            *handled = true;
+            *ctx.handled = true;
         }
     }
 
@@ -649,6 +627,7 @@ impl Widget for NativeView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -724,171 +703,181 @@ mod tests {
     }
 
     #[test]
-    fn mount_geometry_visibility_focus_and_unmount_are_one_lifecycle() {
-        use crate::platform::Platform;
+    fn native_mount_lifecycle_is_idempotent_and_owns_geometry_visibility_and_focus() {
+        // Case `mount_geometry_visibility_focus_and_unmount_are_one_lifecycle`.
+        {
+            use crate::platform::Platform;
 
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let mut view = NativeView::new("Calendar", backend(&calls));
-        view.rect = Rect::new(10.0, 20.0, 110.0, 70.0);
-        let host = NativeViewHost::headless(PlatformConventions::new(Platform::Windows), 1.5);
-        view.mount_native_view(&host);
-        assert!(view.is_mounted());
-        assert!(calls.borrow().contains(&Call::Geometry(NativeViewGeometry {
-            logical: view.rect,
-            physical_x: 15,
-            physical_y: 30,
-            physical_width: 150,
-            physical_height: 75,
-            scale_factor: 1.5,
-        })));
-        view.set_focus(true);
-        view.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-            &PresenceCtx::default(),
-        );
-        view.native_view_frame_start();
-        view.unmount_native_view();
+            let calls = Rc::new(RefCell::new(Vec::new()));
+            let mut view = NativeView::new("Calendar", backend(&calls));
+            view.rect = Rect::new(10.0, 20.0, 110.0, 70.0);
+            let host = NativeViewHost::headless(PlatformConventions::new(Platform::Windows), 1.5);
+            crate::widget::mount_native_views(&mut view, &host);
+            assert!(view.is_mounted());
+            assert!(calls.borrow().contains(&Call::Geometry(NativeViewGeometry {
+                logical: view.rect,
+                physical_x: 15,
+                physical_y: 30,
+                physical_width: 150,
+                physical_height: 75,
+                scale_factor: 1.5,
+            })));
+            view.set_focus(true);
+            view.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &PresenceCtx::default(),
+            );
+            crate::widget::native_view_frame_start(&mut view);
+            crate::widget::unmount_native_views(&mut view);
 
-        let calls = calls.borrow();
-        assert!(calls.contains(&Call::Platform(host.platform())));
-        assert!(calls.contains(&Call::Focus(true)));
-        assert!(calls.contains(&Call::Visible(true)));
-        assert!(calls.contains(&Call::Visible(false)));
-        assert_eq!(calls.last(), Some(&Call::Unmount));
+            let calls = calls.borrow();
+            assert!(calls.contains(&Call::Platform(host.platform())));
+            assert!(calls.contains(&Call::Focus(true)));
+            assert!(calls.contains(&Call::Visible(true)));
+            assert!(calls.contains(&Call::Visible(false)));
+            assert_eq!(calls.last(), Some(&Call::Unmount));
+        }
+
+        // Case `mounting_is_idempotent_and_real_host_changes_do_not_recreate_the_child`.
+        {
+            let calls = Rc::new(RefCell::new(Vec::new()));
+            let mut view = NativeView::new("Preview", backend(&calls));
+            let host = NativeViewHost::headless(PlatformConventions::default(), 1.0);
+            view.mount_native_view(&host);
+            view.mount_native_view(&host);
+            let scaled = NativeViewHost::headless(PlatformConventions::default(), 2.0);
+            view.mount_native_view(&scaled);
+            assert_eq!(
+                calls
+                    .borrow()
+                    .iter()
+                    .filter(|call| matches!(call, Call::Mount))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                calls
+                    .borrow()
+                    .iter()
+                    .filter(|call| matches!(call, Call::HostChanged))
+                    .count(),
+                1,
+                "only the scale change reaches host_changed"
+            );
+        }
+
+        // Case `forwarded_input_is_local_and_a_handled_press_requests_focus`.
+        {
+            let calls = Rc::new(RefCell::new(Vec::new()));
+            let mut view = NativeView::new("Native editor", backend(&calls));
+            view.rect = Rect::new(10.0, 20.0, 210.0, 120.0);
+            view.mount_native_view(&NativeViewHost::headless(
+                PlatformConventions::default(),
+                1.0,
+            ));
+            let mut taffy = TaffyTree::new();
+            let node = taffy.leaf_node(Style::default());
+            let mut state = AutoCommit::new();
+            let mut handled = false;
+            let mut focus = None;
+            let modifiers = winit::event::Modifiers::default();
+            let cursor = WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(40.0, 70.0),
+            };
+            view.handle_event(
+                &cursor,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+            let press = WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            };
+            view.handle_event(
+                &press,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+            assert!(handled);
+            assert_eq!(focus, Some(node));
+            assert!(
+                calls
+                    .borrow()
+                    .contains(&Call::Input(Some(Point::new(30.0, 50.0))))
+            );
+        }
     }
 
     #[test]
-    fn mounting_is_idempotent_and_real_host_changes_do_not_recreate_the_child() {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let mut view = NativeView::new("Preview", backend(&calls));
-        let host = NativeViewHost::headless(PlatformConventions::default(), 1.0);
-        view.mount_native_view(&host);
-        view.mount_native_view(&host);
-        let scaled = NativeViewHost::headless(PlatformConventions::default(), 2.0);
-        view.mount_native_view(&scaled);
-        assert_eq!(
-            calls
-                .borrow()
-                .iter()
-                .filter(|call| matches!(call, Call::Mount))
-                .count(),
-            1
-        );
-        assert_eq!(
-            calls
-                .borrow()
-                .iter()
-                .filter(|call| matches!(call, Call::HostChanged))
-                .count(),
-            1,
-            "only the scale change reaches host_changed"
-        );
-    }
+    fn native_mount_failure_and_platform_accessibility_stay_truthful() {
+        // Case `mount_failure_is_visible_and_accessible_without_fake_native_state`.
+        {
+            let calls = Rc::new(RefCell::new(Vec::new()));
+            let mut view = NativeView::new(
+                "System account picker",
+                ProbeBackend {
+                    calls,
+                    fail_mount: true,
+                },
+            );
+            view.mount_native_view(&NativeViewHost::headless(
+                PlatformConventions::default(),
+                1.0,
+            ));
+            assert!(!view.is_mounted());
+            assert_eq!(view.mount_error(), Some("native API unavailable"));
+            let node = view
+                .accessibility()
+                .expect("failure wrapper remains semantic");
+            assert_eq!(node.name.as_deref(), Some("System account picker"));
+            assert_eq!(node.description.as_deref(), Some("native API unavailable"));
+        }
 
-    #[test]
-    fn mount_failure_is_visible_and_accessible_without_fake_native_state() {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let mut view = NativeView::new(
-            "System account picker",
-            ProbeBackend {
-                calls,
-                fail_mount: true,
-            },
-        );
-        view.mount_native_view(&NativeViewHost::headless(
-            PlatformConventions::default(),
-            1.0,
-        ));
-        assert!(!view.is_mounted());
-        assert_eq!(view.mount_error(), Some("native API unavailable"));
-        let node = view
-            .accessibility()
-            .expect("failure wrapper remains semantic");
-        assert_eq!(node.name.as_deref(), Some("System account picker"));
-        assert_eq!(node.description.as_deref(), Some("native API unavailable"));
-    }
+        // Case `platform_owned_accessibility_does_not_export_a_duplicate_wrapper`.
+        {
+            let calls = Rc::new(RefCell::new(Vec::new()));
+            let view = NativeView::platform_accessible(backend(&calls));
+            assert!(view.accessibility().is_none());
+        }
 
-    #[test]
-    fn platform_owned_accessibility_does_not_export_a_duplicate_wrapper() {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let view = NativeView::platform_accessible(backend(&calls));
-        assert!(view.accessibility().is_none());
-    }
-
-    #[test]
-    fn forwarded_input_is_local_and_a_handled_press_requests_focus() {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let mut view = NativeView::new("Native editor", backend(&calls));
-        view.rect = Rect::new(10.0, 20.0, 210.0, 120.0);
-        view.mount_native_view(&NativeViewHost::headless(
-            PlatformConventions::default(),
-            1.0,
-        ));
-        let mut taffy = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut state = AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        let modifiers = winit::event::Modifiers::default();
-        let cursor = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(40.0, 70.0),
-        };
-        view.handle_event(
-            &cursor,
-            1.0,
-            &modifiers,
-            &mut state,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-        let press = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: winit::event::ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-        };
-        view.handle_event(
-            &press,
-            1.0,
-            &modifiers,
-            &mut state,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-        assert!(handled);
-        assert_eq!(focus, Some(node));
-        assert!(
-            calls
-                .borrow()
-                .contains(&Call::Input(Some(Point::new(30.0, 50.0))))
-        );
-    }
-
-    #[test]
-    fn toolkit_fallback_remains_in_the_tree_when_native_mounting_fails() {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let mut view = NativeView::new(
-            "System picker",
-            ProbeBackend {
-                calls,
-                fail_mount: true,
-            },
-        )
-        .with_fallback(Box::new(crate::widget::Text::new("Portable picker")));
-        view.mount_native_view(&NativeViewHost::headless(
-            PlatformConventions::default(),
-            1.0,
-        ));
-        assert_eq!(view.children().len(), 1);
-        assert_eq!(view.children()[0].name(), "Text");
+        // Case `toolkit_fallback_remains_in_the_tree_when_native_mounting_fails`.
+        {
+            let calls = Rc::new(RefCell::new(Vec::new()));
+            let mut view = NativeView::new(
+                "System picker",
+                ProbeBackend {
+                    calls,
+                    fail_mount: true,
+                },
+            )
+            .with_fallback(Box::new(crate::widget::Text::new("Portable picker")));
+            view.mount_native_view(&NativeViewHost::headless(
+                PlatformConventions::default(),
+                1.0,
+            ));
+            assert_eq!(view.children().len(), 1);
+            assert_eq!(view.children()[0].name(), "Text");
+        }
     }
 }

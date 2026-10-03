@@ -7,12 +7,9 @@
 //! bounded by the transport's socket deadlines.
 
 use std::collections::HashSet;
-use std::fs::OpenOptions;
-use std::io::{self, Read};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use ui::time::{Duration, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -29,7 +26,7 @@ const MAX_PEERS: usize = 64;
 const AUTO_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 fn now() -> i64 {
-    SystemTime::now()
+    ui::time::wall()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs() as i64)
 }
@@ -100,21 +97,20 @@ impl PeerStore {
     }
 
     fn load(&self) -> SyncResult<Vec<PeerRecord>> {
-        let file = match OpenOptions::new().read(true).open(&self.path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(SyncError::Persistence(error.to_string())),
+        let persistence = |error: tilo_files::FsError| SyncError::Persistence(error.to_string());
+        let (dir, name) = tilo_files::file_at(&self.path).map_err(persistence)?;
+        let metadata = match tilo_files::blocking::metadata(&dir, &name) {
+            Ok(metadata) => metadata,
+            Err(tilo_files::FsError::NotFound) => return Ok(Vec::new()),
+            Err(error) => return Err(persistence(error)),
         };
-        let metadata = file
-            .metadata()
-            .map_err(|error| SyncError::Persistence(error.to_string()))?;
-        if !metadata.is_file() || metadata.len() > MAX_STORE_BYTES {
+        if metadata.kind != tilo_files::Kind::File || metadata.len > MAX_STORE_BYTES {
             return Err(SyncError::Persistence("invalid peer store".into()));
         }
-        let mut bytes = Vec::new();
-        file.take(MAX_STORE_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|error| SyncError::Persistence(error.to_string()))?;
+        let bytes = tilo_files::blocking::read(&dir, &name).map_err(persistence)?;
+        if bytes.len() as u64 > MAX_STORE_BYTES {
+            return Err(SyncError::Persistence("invalid peer store".into()));
+        }
         let file: PeerFile = serde_json::from_slice(&bytes)
             .map_err(|error| SyncError::Persistence(error.to_string()))?;
         if file.version != STORE_VERSION {
@@ -148,7 +144,8 @@ impl PeerStore {
             peers: peers.to_vec(),
         })
         .map_err(|error| SyncError::Persistence(error.to_string()))?;
-        atomic_file::write_private(&self.path, &bytes)
+        tilo_files::file_at(&self.path)
+            .and_then(|(dir, name)| tilo_files::blocking::write_private(&dir, &name, &bytes))
             .map_err(|error| SyncError::Persistence(error.to_string()))
     }
 }
@@ -282,18 +279,16 @@ impl DeviceSync {
         let (command_tx, command_rx) = mpsc::sync_channel(8);
         let (event_tx, event_rx) = mpsc::channel();
         let worker_public_key = public_key;
-        let spawned = thread::Builder::new()
-            .name("tube-grayjay-sync".into())
-            .spawn(move || {
-                worker(WorkerContext {
-                    transport,
-                    store,
-                    public_key: worker_public_key,
-                    commands: command_rx,
-                    events: event_tx,
-                });
-            })
-            .is_ok();
+        let spawned = ui::rt::spawn_thread("tube-grayjay-sync", move || {
+            worker(WorkerContext {
+                transport,
+                store,
+                public_key: worker_public_key,
+                commands: command_rx,
+                events: event_tx,
+            });
+        })
+        .is_ok();
         if !spawned {
             return Self::unavailable("Could not start the device-sync worker.".into());
         }
@@ -382,25 +377,54 @@ impl Drop for DeviceSync {
     }
 }
 
-fn production_parts(device_name: &str) -> SyncResult<(GrayjaySyncTransport, PeerStore, String)> {
-    let portal_secret = Zeroizing::new(
-        runtime_portal_xdg::Secret::retrieve()
-            .map_err(|error| SyncError::KeyUnavailable(error.to_string()))?,
-    );
-    if portal_secret.len() < 16 {
+/// Tube's namespace in the system secret store, and the random seed its
+/// Grayjay device key derives from.
+const SECRETS_APP: &str = "so.tilo.tube";
+const DEVICE_SEED: &str = "grayjay-device-seed";
+
+/// This device's seed from the system secret store, created on first use.
+fn device_seed() -> SyncResult<Zeroizing<Vec<u8>>> {
+    let unavailable =
+        |error: tilo_secrets::SecretError| SyncError::KeyUnavailable(error.to_string());
+    let store = tilo_secrets::SecretStore::for_app(SECRETS_APP);
+    if store
+        .get_blocking(DEVICE_SEED)
+        .map_err(unavailable)?
+        .is_none()
+    {
+        let mut seed = Zeroizing::new(vec![0_u8; 32]);
+        getrandom::fill(&mut seed)
+            .map_err(|error| SyncError::KeyUnavailable(format!("no randomness: {error}")))?;
+        let label = Some("Tube Grayjay device key".to_owned());
+        store
+            .put_blocking(DEVICE_SEED, &seed, tilo_secrets::PutOptions { label })
+            .map_err(unavailable)?;
+    }
+    // Read back what the store kept, which a concurrent first run may have
+    // replaced.
+    let seed = store
+        .get_blocking(DEVICE_SEED)
+        .map_err(unavailable)?
+        .ok_or_else(|| SyncError::KeyUnavailable("the secret store lost the device key".into()))?;
+    if seed.expose().len() < 16 {
         return Err(SyncError::KeyUnavailable(
-            "host secret broker returned insufficient key material".into(),
+            "the secret store returned insufficient key material".into(),
         ));
     }
+    Ok(Zeroizing::new(seed.expose().to_vec()))
+}
+
+fn production_parts(device_name: &str) -> SyncResult<(GrayjaySyncTransport, PeerStore, String)> {
+    let seed = device_seed()?;
     let mut digest = Sha256::new();
     digest.update(b"tilo.tube.grayjay-noise-static-v1\0");
-    digest.update(portal_secret.as_slice());
+    digest.update(seed.as_slice());
     let private = Zeroizing::new(digest.finalize().to_vec());
     let key = DeviceKey::from_private(private.as_slice())?;
     let public_key = key.public_base64();
     let transport = GrayjaySyncTransport::with_device(key, device_name);
-    let base = xdg_paths::env_dir("XDG_STATE_HOME")
-        .or_else(xdg_paths::state_dir)
+    let base = tilo_paths::env_dir("XDG_STATE_HOME")
+        .or_else(tilo_paths::state_dir)
         .ok_or_else(|| SyncError::Persistence("no private state directory is available".into()))?;
     Ok((
         transport,
@@ -791,49 +815,50 @@ mod tests {
     }
 
     #[test]
-    fn peer_store_survives_restart_and_keeps_revocation_tombstone() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = PeerStore::new(dir.path().join("peers.json"));
-        let record = PeerRecord {
-            id: "public-key".into(),
-            name: "Phone".into(),
-            descriptor: descriptor("public-key"),
-            approved_at: 7,
-            pending_approval: false,
-            revoked_at: Some(9),
-            last_sync_at: None,
-            last_error: None,
-        };
-        store.save(std::slice::from_ref(&record)).unwrap();
-        assert_eq!(store.load().unwrap(), vec![record]);
-        let text = fs::read_to_string(dir.path().join("peers.json")).unwrap();
-        assert!(!text.contains("private"));
-        assert!(!text.contains("pairingCode"));
-    }
-
-    #[test]
-    fn independently_derived_device_keys_are_stable_and_distinct() {
-        let a = DeviceKey::from_private(&[1; 32]).unwrap();
-        let a_restart = DeviceKey::from_private(&[1; 32]).unwrap();
-        let b = DeviceKey::from_private(&[2; 32]).unwrap();
-        assert_eq!(a.public_base64(), a_restart.public_base64());
-        assert_ne!(a.public_base64(), b.public_base64());
-    }
-
-    #[test]
-    fn collaborative_merge_is_additive_and_never_adds_unknown_entities() {
-        let mut model = crate::sample::model();
-        let channel = model.channels[0].clone();
-        let video = model.videos[0].clone();
-        model.subscriptions.clear();
-        model.history.clear();
-        let remote = SyncState {
-            subscriptions: vec![format!("https://youtube.com/{}", channel.handle)],
-            watch_history: vec![video.id.clone(), "unknown-secret-looking-value".into()],
-            settings: None,
-        };
-        assert!(merge_remote_state(&mut model, &remote));
-        assert_eq!(model.subscriptions, vec![channel.id]);
-        assert_eq!(model.history, vec![video.id]);
+    fn device_sync_lifecycle_persists_keys_peers_and_merges_additively() {
+        // Case `peer_store_survives_restart_and_keeps_revocation_tombstone`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = PeerStore::new(dir.path().join("peers.json"));
+            let record = PeerRecord {
+                id: "public-key".into(),
+                name: "Phone".into(),
+                descriptor: descriptor("public-key"),
+                approved_at: 7,
+                pending_approval: false,
+                revoked_at: Some(9),
+                last_sync_at: None,
+                last_error: None,
+            };
+            store.save(std::slice::from_ref(&record)).unwrap();
+            assert_eq!(store.load().unwrap(), vec![record]);
+            let text = fs::read_to_string(dir.path().join("peers.json")).unwrap();
+            assert!(!text.contains("private"));
+            assert!(!text.contains("pairingCode"));
+        }
+        // Case `independently_derived_device_keys_are_stable_and_distinct`.
+        {
+            let a = DeviceKey::from_private(&[1; 32]).unwrap();
+            let a_restart = DeviceKey::from_private(&[1; 32]).unwrap();
+            let b = DeviceKey::from_private(&[2; 32]).unwrap();
+            assert_eq!(a.public_base64(), a_restart.public_base64());
+            assert_ne!(a.public_base64(), b.public_base64());
+        }
+        // Case `collaborative_merge_is_additive_and_never_adds_unknown_entities`.
+        {
+            let mut model = crate::sample::model();
+            let channel = model.channels[0].clone();
+            let video = model.videos[0].clone();
+            model.subscriptions.clear();
+            model.history.clear();
+            let remote = SyncState {
+                subscriptions: vec![format!("https://youtube.com/{}", channel.handle)],
+                watch_history: vec![video.id.clone(), "unknown-secret-looking-value".into()],
+                settings: None,
+            };
+            assert!(merge_remote_state(&mut model, &remote));
+            assert_eq!(model.subscriptions, vec![channel.id]);
+            assert_eq!(model.history, vec![video.id]);
+        }
     }
 }

@@ -383,200 +383,216 @@ mod tests {
         }
     }
 
+    /// Desktop support, back navigation and capability loss.
     #[test]
-    fn supported_linux_desktop_advances_and_windows_desktop_does_not() {
-        let mut linux = SetupController::new(linux_desktop());
-        assert!(linux.choose_experience(Experience::Desktop));
-        assert_eq!(linux.next(), Ok(()));
-        assert_eq!(linux.page(), SetupPage::Folders);
+    fn setup_navigation_keeps_folder_choices_and_blocks_on_lost_capability() {
+        // Phase `supported_linux_desktop_advances_and_windows_desktop_does_not`.
+        {
+            let mut linux = SetupController::new(linux_desktop());
+            assert!(linux.choose_experience(Experience::Desktop));
+            assert_eq!(linux.next(), Ok(()));
+            assert_eq!(linux.page(), SetupPage::Folders);
 
-        let mut windows = SetupController::new(Capabilities {
-            host: HostOs::Windows,
-            desktop_session: false,
-            internal_dual_boot: false,
-        });
-        assert!(!windows.choose_experience(Experience::Desktop));
-        assert!(windows.next().is_err());
-        assert_eq!(windows.page(), SetupPage::Experience);
-    }
-
-    #[test]
-    fn back_retains_folder_selections() {
-        let mut setup = SetupController::new(linux_desktop());
-        assert!(setup.choose_experience(Experience::Desktop));
-        setup.next().unwrap();
-        setup
-            .add_folder(scan("source/Documents", 12), test_path("tilo/Documents"))
-            .unwrap();
-        setup.next().unwrap();
-
-        setup.back();
-        assert_eq!(setup.page(), SetupPage::Folders);
-        assert_eq!(setup.plan().folders.len(), 1);
-        assert_eq!(setup.plan().folders[0].bytes, 12);
-    }
-
-    #[test]
-    fn common_later_preserves_explicit_copy_and_connected_overrides() {
-        let mut setup = SetupController::new(linux_desktop());
-        assert_eq!(setup.default_mode(), FolderMode::Copy);
-        assert!(setup.choose_experience(Experience::Desktop));
-        setup.next().unwrap();
-        setup
-            .add_folder(scan("source/one", 1), test_path("tilo/one"))
-            .unwrap();
-        setup
-            .add_folder(scan("source/two", 2), test_path("tilo/two"))
-            .unwrap();
-        setup
-            .add_folder(scan("source/three", 3), test_path("tilo/three"))
-            .unwrap();
-        setup
-            .add_folder(scan("source/four", 4), test_path("tilo/four"))
-            .unwrap();
-        assert!(setup.set_folder_mode(1, FolderMode::Copy));
-        assert!(setup.set_folder_mode(2, FolderMode::Connected));
-        assert!(setup.set_folder_mode(3, FolderMode::Later));
-
-        setup.set_mode(FolderMode::Later);
-
-        assert_eq!(setup.plan().folders.len(), 2);
-        assert_eq!(setup.plan().folders[0].source, test_path("source/two"));
-        assert_eq!(setup.plan().folders[0].mode, FolderMode::Copy);
-        assert_eq!(setup.plan().folders[1].source, test_path("source/three"));
-        assert_eq!(setup.plan().folders[1].mode, FolderMode::Connected);
-        assert_eq!(setup.folders()[0].mode, FolderMode::Later);
-        assert!(!setup.folders()[0].mode_overridden);
-        assert_eq!(setup.folders()[3].mode, FolderMode::Later);
-        assert!(setup.folders()[3].mode_overridden);
-
-        setup.set_mode(FolderMode::Copy);
-
-        assert_eq!(setup.plan().folders.len(), 3);
-        assert_eq!(setup.plan().folders[0].source, test_path("source/one"));
-        assert_eq!(setup.plan().folders[1].source, test_path("source/two"));
-        assert_eq!(setup.plan().folders[2].source, test_path("source/three"));
-    }
-
-    #[test]
-    fn later_hides_remembered_folders_from_the_effective_plan() {
-        let mut setup = SetupController::new(linux_desktop());
-        assert!(setup.choose_experience(Experience::Desktop));
-        setup.next().unwrap();
-        setup
-            .add_folder(scan("source/Documents", 12), test_path("tilo/Documents"))
-            .unwrap();
-
-        setup.set_mode(FolderMode::Later);
-
-        assert!(setup.plan().folders.is_empty());
-        setup.set_mode(FolderMode::Copy);
-        assert_eq!(setup.plan().folders.len(), 1);
-        assert_eq!(
-            setup.plan().folders[0].source,
-            test_path("source/Documents")
-        );
-    }
-
-    #[test]
-    fn a_change_invalidates_review_and_a_scan_never_infers_safe_sync() {
-        let mut setup = SetupController::new(linux_desktop());
-        assert!(setup.choose_experience(Experience::Desktop));
-        setup.next().unwrap();
-        setup
-            .add_folder(scan("source/Documents", 12), test_path("tilo/Documents"))
-            .unwrap();
-        setup.next().unwrap();
-        assert_eq!(setup.page(), SetupPage::Review);
-        assert!(!setup.plan().folders[0].safe_sync);
-
-        setup.set_mode(FolderMode::Connected);
-
-        assert_eq!(setup.page(), SetupPage::Folders);
-        assert!(!setup.plan().folders[0].safe_sync);
-    }
-
-    #[test]
-    fn remembered_folder_details_support_view_removal_and_override_reset() {
-        let mut setup = SetupController::new(linux_desktop());
-        assert!(setup.choose_experience(Experience::Desktop));
-        setup.next().unwrap();
-        setup
-            .add_folder(scan("source/one", 7), test_path("tilo/one"))
-            .unwrap();
-        setup
-            .add_folder(scan("source/two", 9), test_path("tilo/two"))
-            .unwrap();
-        assert!(setup.set_folder_mode(0, FolderMode::Connected));
-        assert!(setup.clear_folder_mode_override(0));
-        setup.set_mode(FolderMode::Later);
-
-        assert_eq!(setup.folders().len(), 2);
-        assert_eq!(setup.folders()[0].scan.file_count, 1);
-        assert_eq!(setup.folders()[0].mode, FolderMode::Later);
-        assert!(!setup.folders()[0].mode_overridden);
-        assert!(setup.remove_folder(0));
-        assert_eq!(setup.folders().len(), 1);
-        assert_eq!(setup.folders()[0].scan.bytes, 9);
-        assert!(!setup.remove_folder(4));
-    }
-
-    #[test]
-    fn duplicate_and_nested_destinations_are_rejected() {
-        let mut setup = SetupController::new(linux_desktop());
-        setup
-            .add_folder(scan("source/one", 1), test_path("tilo/Documents"))
-            .unwrap();
-
-        for (source, destination) in [
-            ("source/two", "tilo/Documents"),
-            ("source/three", "tilo/Documents/Projects"),
-            ("source/four", "tilo"),
-        ] {
-            let error = setup
-                .add_folder(scan(source, 1), test_path(destination))
-                .unwrap_err();
-            assert!(error.contains("destination overlaps"), "{error}");
+            let mut windows = SetupController::new(Capabilities {
+                host: HostOs::Windows,
+                desktop_session: false,
+                internal_dual_boot: false,
+            });
+            assert!(!windows.choose_experience(Experience::Desktop));
+            assert!(windows.next().is_err());
+            assert_eq!(windows.page(), SetupPage::Experience);
         }
 
-        assert_eq!(setup.folders().len(), 1);
+        // Phase `back_retains_folder_selections`.
+        {
+            let mut setup = SetupController::new(linux_desktop());
+            assert!(setup.choose_experience(Experience::Desktop));
+            setup.next().unwrap();
+            setup
+                .add_folder(scan("source/Documents", 12), test_path("tilo/Documents"))
+                .unwrap();
+            setup.next().unwrap();
+
+            setup.back();
+            assert_eq!(setup.page(), SetupPage::Folders);
+            assert_eq!(setup.plan().folders.len(), 1);
+            assert_eq!(setup.plan().folders[0].bytes, 12);
+        }
+
+        // Phase `live_capability_loss_blocks_navigation_without_forgetting_choices`.
+        {
+            let mut setup = SetupController::new(linux_desktop());
+            assert!(setup.choose_experience(Experience::Desktop));
+            setup.next().unwrap();
+            setup
+                .add_folder(scan("source/Documents", 12), test_path("tilo/Documents"))
+                .unwrap();
+            setup.back();
+
+            setup.set_capabilities(Capabilities {
+                host: HostOs::Linux,
+                desktop_session: false,
+                internal_dual_boot: false,
+            });
+
+            assert!(setup.next().is_err());
+            assert_eq!(setup.folders().len(), 1);
+            assert_eq!(setup.default_mode(), FolderMode::Copy);
+        }
     }
 
+    /// Later choices, remembered folders and overrides.
     #[test]
-    fn live_capability_loss_blocks_navigation_without_forgetting_choices() {
-        let mut setup = SetupController::new(linux_desktop());
-        assert!(setup.choose_experience(Experience::Desktop));
-        setup.next().unwrap();
-        setup
-            .add_folder(scan("source/Documents", 12), test_path("tilo/Documents"))
-            .unwrap();
-        setup.back();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn later_and_remembered_folders_shape_the_effective_plan() {
+        // Phase `common_later_preserves_explicit_copy_and_connected_overrides`.
+        {
+            let mut setup = SetupController::new(linux_desktop());
+            assert_eq!(setup.default_mode(), FolderMode::Copy);
+            assert!(setup.choose_experience(Experience::Desktop));
+            setup.next().unwrap();
+            setup
+                .add_folder(scan("source/one", 1), test_path("tilo/one"))
+                .unwrap();
+            setup
+                .add_folder(scan("source/two", 2), test_path("tilo/two"))
+                .unwrap();
+            setup
+                .add_folder(scan("source/three", 3), test_path("tilo/three"))
+                .unwrap();
+            setup
+                .add_folder(scan("source/four", 4), test_path("tilo/four"))
+                .unwrap();
+            assert!(setup.set_folder_mode(1, FolderMode::Copy));
+            assert!(setup.set_folder_mode(2, FolderMode::Connected));
+            assert!(setup.set_folder_mode(3, FolderMode::Later));
 
-        setup.set_capabilities(Capabilities {
-            host: HostOs::Linux,
-            desktop_session: false,
-            internal_dual_boot: false,
-        });
+            setup.set_mode(FolderMode::Later);
 
-        assert!(setup.next().is_err());
-        assert_eq!(setup.folders().len(), 1);
-        assert_eq!(setup.default_mode(), FolderMode::Copy);
+            assert_eq!(setup.plan().folders.len(), 2);
+            assert_eq!(setup.plan().folders[0].source, test_path("source/two"));
+            assert_eq!(setup.plan().folders[0].mode, FolderMode::Copy);
+            assert_eq!(setup.plan().folders[1].source, test_path("source/three"));
+            assert_eq!(setup.plan().folders[1].mode, FolderMode::Connected);
+            assert_eq!(setup.folders()[0].mode, FolderMode::Later);
+            assert!(!setup.folders()[0].mode_overridden);
+            assert_eq!(setup.folders()[3].mode, FolderMode::Later);
+            assert!(setup.folders()[3].mode_overridden);
+
+            setup.set_mode(FolderMode::Copy);
+
+            assert_eq!(setup.plan().folders.len(), 3);
+            assert_eq!(setup.plan().folders[0].source, test_path("source/one"));
+            assert_eq!(setup.plan().folders[1].source, test_path("source/two"));
+            assert_eq!(setup.plan().folders[2].source, test_path("source/three"));
+        }
+
+        // Phase `later_hides_remembered_folders_from_the_effective_plan`.
+        {
+            let mut setup = SetupController::new(linux_desktop());
+            assert!(setup.choose_experience(Experience::Desktop));
+            setup.next().unwrap();
+            setup
+                .add_folder(scan("source/Documents", 12), test_path("tilo/Documents"))
+                .unwrap();
+
+            setup.set_mode(FolderMode::Later);
+
+            assert!(setup.plan().folders.is_empty());
+            setup.set_mode(FolderMode::Copy);
+            assert_eq!(setup.plan().folders.len(), 1);
+            assert_eq!(
+                setup.plan().folders[0].source,
+                test_path("source/Documents")
+            );
+        }
+
+        // Phase `remembered_folder_details_support_view_removal_and_override_reset`.
+        {
+            let mut setup = SetupController::new(linux_desktop());
+            assert!(setup.choose_experience(Experience::Desktop));
+            setup.next().unwrap();
+            setup
+                .add_folder(scan("source/one", 7), test_path("tilo/one"))
+                .unwrap();
+            setup
+                .add_folder(scan("source/two", 9), test_path("tilo/two"))
+                .unwrap();
+            assert!(setup.set_folder_mode(0, FolderMode::Connected));
+            assert!(setup.clear_folder_mode_override(0));
+            setup.set_mode(FolderMode::Later);
+
+            assert_eq!(setup.folders().len(), 2);
+            assert_eq!(setup.folders()[0].scan.file_count, 1);
+            assert_eq!(setup.folders()[0].mode, FolderMode::Later);
+            assert!(!setup.folders()[0].mode_overridden);
+            assert!(setup.remove_folder(0));
+            assert_eq!(setup.folders().len(), 1);
+            assert_eq!(setup.folders()[0].scan.bytes, 9);
+            assert!(!setup.remove_folder(4));
+        }
     }
 
+    /// Review invalidation, destination validation and unresolved destinations.
     #[test]
-    fn unresolved_destination_retains_reviewed_folder_intent_without_authorizing_copy() {
-        let mut setup = SetupController::new(linux_desktop());
-        assert!(setup.choose_experience(Experience::Desktop));
-        setup.next().unwrap();
+    fn review_is_invalidated_and_unsafe_destinations_never_authorize_copy() {
+        // Phase `a_change_invalidates_review_and_a_scan_never_infers_safe_sync`.
+        {
+            let mut setup = SetupController::new(linux_desktop());
+            assert!(setup.choose_experience(Experience::Desktop));
+            setup.next().unwrap();
+            setup
+                .add_folder(scan("source/Documents", 12), test_path("tilo/Documents"))
+                .unwrap();
+            setup.next().unwrap();
+            assert_eq!(setup.page(), SetupPage::Review);
+            assert!(!setup.plan().folders[0].safe_sync);
 
-        setup.add_folder_unresolved(scan("source/Documents", 12));
+            setup.set_mode(FolderMode::Connected);
 
-        assert_eq!(setup.folders().len(), 1);
-        assert!(matches!(
-            &setup.folders()[0].destination,
-            FolderDestination::Unresolved
-        ));
-        assert!(setup.plan().folders.is_empty());
-        assert_eq!(setup.selected_folder_bytes(), Ok(12));
+            assert_eq!(setup.page(), SetupPage::Folders);
+            assert!(!setup.plan().folders[0].safe_sync);
+        }
+
+        // Phase `duplicate_and_nested_destinations_are_rejected`.
+        {
+            let mut setup = SetupController::new(linux_desktop());
+            setup
+                .add_folder(scan("source/one", 1), test_path("tilo/Documents"))
+                .unwrap();
+
+            for (source, destination) in [
+                ("source/two", "tilo/Documents"),
+                ("source/three", "tilo/Documents/Projects"),
+                ("source/four", "tilo"),
+            ] {
+                let error = setup
+                    .add_folder(scan(source, 1), test_path(destination))
+                    .unwrap_err();
+                assert!(error.contains("destination overlaps"), "{error}");
+            }
+
+            assert_eq!(setup.folders().len(), 1);
+        }
+
+        // Phase `unresolved_destination_retains_reviewed_folder_intent_without_authorizing_copy`.
+        {
+            let mut setup = SetupController::new(linux_desktop());
+            assert!(setup.choose_experience(Experience::Desktop));
+            setup.next().unwrap();
+
+            setup.add_folder_unresolved(scan("source/Documents", 12));
+
+            assert_eq!(setup.folders().len(), 1);
+            assert!(matches!(
+                &setup.folders()[0].destination,
+                FolderDestination::Unresolved
+            ));
+            assert!(setup.plan().folders.is_empty());
+            assert_eq!(setup.selected_folder_bytes(), Ok(12));
+        }
     }
 }

@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::ColorCompat;
 use ui::presence::PresenceCtx;
@@ -19,6 +18,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{MouseScrollDelta, WindowEvent};
+
+use crate::shell::i18n::t_args;
 
 pub(crate) struct CaptureMirrorHandoffLayer {
     pub rgba: Arc<[u8]>,
@@ -82,7 +83,7 @@ impl<'a> CaptureSurfaceRequest<'a> {
             } => (
                 Image::from_rgba(rgba, width, height)
                     .with_fit(ImageFit::Contain)
-                    .with_alt(format!("Live capture: {title}")),
+                    .with_alt(t_args("capture-live-alt", &[("title", title.into())])),
                 preferred_size,
                 handoff_layers,
                 None,
@@ -97,7 +98,7 @@ impl<'a> CaptureSurfaceRequest<'a> {
                 };
                 let image = Image::from_rgba(rgba, width, height)
                     .with_fit(fit)
-                    .with_alt(format!("Pinned screenshot: {title}"));
+                    .with_alt(t_args("capture-pinned-alt", &[("title", title.into())]));
                 let preview_rgba: Vec<u8> = preview
                     .pixels
                     .into_iter()
@@ -109,7 +110,10 @@ impl<'a> CaptureSurfaceRequest<'a> {
                     u32::from(preview.rows.max(1)),
                 )
                 .with_fit(ImageFit::Fill)
-                .with_alt(format!("Pinned screenshot preview: {title}"));
+                .with_alt(t_args(
+                    "capture-pinned-preview-alt",
+                    &[("title", title.into())],
+                ));
                 (
                     image,
                     document_aspect.map(|_| vello::kurbo::Size::new(340.0, 420.0)),
@@ -300,8 +304,6 @@ impl CaptureMirrorImage {
 }
 
 impl Widget for CaptureMirrorImage {
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -388,18 +390,7 @@ impl Widget for CaptureMirrorImage {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        handled: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.document_aspect.is_none() {
             return;
         }
@@ -408,10 +399,10 @@ impl Widget for CaptureMirrorImage {
         };
         let movement = match delta {
             MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 54.0,
-            MouseScrollDelta::PixelDelta(position) => -position.y / scale_factor.max(0.1),
+            MouseScrollDelta::PixelDelta(position) => -position.y / ctx.scale_factor.max(0.1),
         };
         if self.scroll_document_by(movement) {
-            *handled = true;
+            *ctx.handled = true;
         }
     }
 
@@ -536,173 +527,188 @@ mod tests {
     }
 
     #[test]
-    fn request_materialization_keeps_live_and_pinned_policies_distinct() {
-        let spawn = Rect::new(40.0, 50.0, 140.0, 100.0);
-        let live = CaptureSurfaceRequest {
-            id: "live",
-            title: "Live region",
-            rgba: Arc::from(vec![0_u8; 8]),
-            width: 2,
-            height: 1,
-            spawn_from: Some(spawn),
-            kind: CaptureSurfaceKind::Live {
-                preferred_size: Some(vello::kurbo::Size::new(480.0, 270.0)),
-                handoff_layers: vec![CaptureMirrorHandoffLayer {
-                    rgba: pixel(255),
+    fn capture_requests_keep_live_and_pinned_policies_and_retained_layout() {
+        fn request_materialization_keeps_live_and_pinned_policies_distinct() {
+            let spawn = Rect::new(40.0, 50.0, 140.0, 100.0);
+            let live = CaptureSurfaceRequest {
+                id: "live",
+                title: "Live region",
+                rgba: Arc::from(vec![0_u8; 8]),
+                width: 2,
+                height: 1,
+                spawn_from: Some(spawn),
+                kind: CaptureSurfaceKind::Live {
+                    preferred_size: Some(vello::kurbo::Size::new(480.0, 270.0)),
+                    handoff_layers: vec![CaptureMirrorHandoffLayer {
+                        rgba: pixel(255),
+                        width: 1,
+                        height: 1,
+                        source: Rect::new(0.0, 0.0, 1.0, 1.0),
+                        target: Rect::new(0.0, 0.0, 1.0, 1.0),
+                    }],
+                },
+            }
+            .prepare();
+            assert_eq!(live.pixel_aspect, 2.0);
+            assert_eq!(live.spawn_from, Some(spawn));
+            assert_eq!(
+                live.preferred_size,
+                Some(vello::kurbo::Size::new(480.0, 270.0))
+            );
+            assert_eq!(live.handoff_layers.len(), 1);
+            assert!(live.crossfade_preview.is_none());
+            assert!(live.document_aspect.is_none());
+
+            let pinned = CaptureSurfaceRequest {
+                id: "pinned",
+                title: "Tall screenshot",
+                rgba: Arc::from(vec![0_u8; 16]),
+                width: 1,
+                height: 4,
+                spawn_from: None,
+                kind: CaptureSurfaceKind::Pinned {
+                    preview: ui::widget::CapturePreview {
+                        columns: 1,
+                        rows: 1,
+                        pixels: vec![[0, 0, 0, 255]],
+                    },
+                },
+            }
+            .prepare();
+            assert_eq!(pinned.pixel_aspect, 0.25);
+            assert_eq!(pinned.document_aspect, Some(0.25));
+            assert_eq!(
+                pinned.preferred_size,
+                Some(vello::kurbo::Size::new(340.0, 420.0))
+            );
+            assert!(pinned.handoff_layers.is_empty());
+            assert!(pinned.crossfade_preview.is_some());
+        }
+
+        fn rearranged_pip_holds_spatial_pixels_then_yields_to_live_layout() {
+            let source = Rect::new(0.0, 0.0, 0.4, 0.5);
+            let target = Rect::new(0.0, 0.0, 0.5, 1.0);
+            let mut mirror = CaptureMirrorImage::new(
+                Image::from_rgba(pixel(0), 1, 1),
+                vec![CaptureMirrorHandoffLayer {
+                    rgba: pixel(0),
                     width: 1,
                     height: 1,
-                    source: Rect::new(0.0, 0.0, 1.0, 1.0),
-                    target: Rect::new(0.0, 0.0, 1.0, 1.0),
+                    source,
+                    target,
                 }],
-            },
+            );
+
+            mirror.set_handoff_progress(0);
+            assert_eq!(mirror.handoff_mix(), 0.0);
+            mirror.set_handoff_progress(400);
+            assert!((mirror.handoff_mix() - 0.352).abs() < 0.000_001);
+            mirror.set_handoff_progress(600);
+            assert!((mirror.handoff_mix() - 0.648).abs() < 0.000_001);
+            mirror.set_handoff_progress(1_000);
+            assert_eq!(mirror.handoff_mix(), 1.0);
+            assert_eq!(lerp_normalized_rect(source, target, 0.0), source);
+            assert_eq!(lerp_normalized_rect(source, target, 1.0), target);
         }
-        .prepare();
-        assert_eq!(live.pixel_aspect, 2.0);
-        assert_eq!(live.spawn_from, Some(spawn));
-        assert_eq!(
-            live.preferred_size,
-            Some(vello::kurbo::Size::new(480.0, 270.0))
-        );
-        assert_eq!(live.handoff_layers.len(), 1);
-        assert!(live.crossfade_preview.is_none());
-        assert!(live.document_aspect.is_none());
 
-        let pinned = CaptureSurfaceRequest {
-            id: "pinned",
-            title: "Tall screenshot",
-            rgba: Arc::from(vec![0_u8; 16]),
-            width: 1,
-            height: 4,
-            spawn_from: None,
-            kind: CaptureSurfaceKind::Pinned {
-                preview: ui::widget::CapturePreview {
-                    columns: 1,
-                    rows: 1,
-                    pixels: vec![[0, 0, 0, 255]],
-                },
-            },
+        fn live_frame_refresh_preserves_retained_layout() {
+            let mut mirror =
+                CaptureMirrorImage::new(Image::from_rgba(pixel(255), 1, 1), Vec::new());
+            mirror.rect = Rect::new(20.0, 30.0, 220.0, 130.0);
+
+            mirror.set_image(Image::from_rgba(pixel(128), 1, 1));
+
+            assert_eq!(mirror.rect, Rect::new(20.0, 30.0, 220.0, 130.0));
         }
-        .prepare();
-        assert_eq!(pinned.pixel_aspect, 0.25);
-        assert_eq!(pinned.document_aspect, Some(0.25));
-        assert_eq!(
-            pinned.preferred_size,
-            Some(vello::kurbo::Size::new(340.0, 420.0))
-        );
-        assert!(pinned.handoff_layers.is_empty());
-        assert!(pinned.crossfade_preview.is_some());
+
+        request_materialization_keeps_live_and_pinned_policies_distinct();
+        rearranged_pip_holds_spatial_pixels_then_yields_to_live_layout();
+        live_frame_refresh_preserves_retained_layout();
     }
 
     #[test]
-    fn pip_placement_avoids_its_source_and_keeps_edge_margin() {
-        let bounds = Rect::new(0.0, 0.0, 1_600.0, 900.0);
-        let size = vello::kurbo::Size::new(420.0, 200.0);
-        let bottom_right_source = Rect::new(900.0, 400.0, 1_580.0, 880.0);
-        let origin = capture_mirror_origin(bounds, Some(bottom_right_source), size);
-        let placed = Rect::from_origin_size(origin, size);
-        assert_eq!(placed.x1, 1_584.0);
-        assert_eq!(
-            placed.y0, 52.0,
-            "top-right should beat an obscured bottom-right"
-        );
-        assert_eq!(placed.intersect(bottom_right_source).area(), 0.0);
-        assert_eq!(
-            capture_mirror_origin(bounds, None, size),
-            Point::new(1_164.0, 684.0)
-        );
-    }
+    fn pip_placement_avoids_its_source_enters_from_its_edge_and_sizes_by_aspect() {
+        fn pip_placement_avoids_its_source_and_keeps_edge_margin() {
+            let bounds = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+            let size = vello::kurbo::Size::new(420.0, 200.0);
+            let bottom_right_source = Rect::new(900.0, 400.0, 1_580.0, 880.0);
+            let origin = capture_mirror_origin(bounds, Some(bottom_right_source), size);
+            let placed = Rect::from_origin_size(origin, size);
+            assert_eq!(placed.x1, 1_584.0);
+            assert_eq!(
+                placed.y0, 52.0,
+                "top-right should beat an obscured bottom-right"
+            );
+            assert_eq!(placed.intersect(bottom_right_source).area(), 0.0);
+            assert_eq!(
+                capture_mirror_origin(bounds, None, size),
+                Point::new(1_164.0, 684.0)
+            );
+        }
 
-    #[test]
-    fn offscreen_pip_source_enters_from_its_virtual_desktop_edge() {
-        let bounds = Rect::new(0.0, 0.0, 1_600.0, 900.0);
-        let left = visible_capture_spawn(bounds, Some(Rect::new(-1_200.0, 180.0, -200.0, 780.0)))
-            .unwrap_or(Rect::ZERO);
-        assert_eq!(left.x0, 6.0);
-        assert!(left.y0 >= 48.0 && left.y1 <= 894.0);
+        fn offscreen_pip_source_enters_from_its_virtual_desktop_edge() {
+            let bounds = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+            let left =
+                visible_capture_spawn(bounds, Some(Rect::new(-1_200.0, 180.0, -200.0, 780.0)))
+                    .unwrap_or(Rect::ZERO);
+            assert_eq!(left.x0, 6.0);
+            assert!(left.y0 >= 48.0 && left.y1 <= 894.0);
 
-        let right = visible_capture_spawn(bounds, Some(Rect::new(1_900.0, 120.0, 2_900.0, 720.0)))
-            .unwrap_or(Rect::ZERO);
-        assert_eq!(right.x1, 1_594.0);
+            let right =
+                visible_capture_spawn(bounds, Some(Rect::new(1_900.0, 120.0, 2_900.0, 720.0)))
+                    .unwrap_or(Rect::ZERO);
+            assert_eq!(right.x1, 1_594.0);
 
-        let partly_visible = Rect::new(1_500.0, 100.0, 1_900.0, 500.0);
-        assert_eq!(
-            visible_capture_spawn(bounds, Some(partly_visible)),
-            Some(Rect::new(1_500.0, 100.0, 1_600.0, 500.0))
-        );
-    }
+            let partly_visible = Rect::new(1_500.0, 100.0, 1_900.0, 500.0);
+            assert_eq!(
+                visible_capture_spawn(bounds, Some(partly_visible)),
+                Some(Rect::new(1_500.0, 100.0, 1_600.0, 500.0))
+            );
+        }
 
-    #[test]
-    fn initial_size_preserves_aspect_without_dominating_viewport() {
-        let compact = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let size = capture_mirror_initial_size(compact, 16.0 / 9.0, None);
-        assert_eq!(size.width, 352.0);
-        assert_eq!(size.height, 198.0);
-        assert!(size.width < compact.width() / 2.0);
+        fn initial_size_preserves_aspect_without_dominating_viewport() {
+            let compact = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let size = capture_mirror_initial_size(compact, 16.0 / 9.0, None);
+            assert_eq!(size.width, 352.0);
+            assert_eq!(size.height, 198.0);
+            assert!(size.width < compact.width() / 2.0);
 
-        let preferred =
-            capture_mirror_initial_size(compact, 1.0, Some(vello::kurbo::Size::new(480.0, 270.0)));
-        assert_eq!(preferred.width, 352.0);
-        assert_eq!(preferred.height, 198.0);
+            let preferred = capture_mirror_initial_size(
+                compact,
+                1.0,
+                Some(vello::kurbo::Size::new(480.0, 270.0)),
+            );
+            assert_eq!(preferred.width, 352.0);
+            assert_eq!(preferred.height, 198.0);
 
-        let document = capture_mirror_initial_size(
-            compact,
-            524.0 / 3_021.0,
-            Some(vello::kurbo::Size::new(340.0, 420.0)),
-        );
-        assert_eq!(document.width, 340.0);
-        assert_eq!(document.height, 330.0);
-    }
+            let document = capture_mirror_initial_size(
+                compact,
+                524.0 / 3_021.0,
+                Some(vello::kurbo::Size::new(340.0, 420.0)),
+            );
+            assert_eq!(document.width, 340.0);
+            assert_eq!(document.height, 330.0);
+        }
 
-    #[test]
-    fn tall_pinned_document_unfolds_to_full_width_and_scrolls() {
-        let image = Image::from_rgba(pixel(255), 1, 1).with_fit(ImageFit::Fill);
-        let preview = Image::from_rgba(pixel(255), 1, 1).with_fit(ImageFit::Fill);
-        let mut mirror = CaptureMirrorImage::new_crossfade(image, preview, Some(524.0 / 3_021.0));
-        mirror.rect = Rect::new(0.0, 0.0, 340.0, 300.0);
-        mirror.set_handoff_progress(1_000);
+        fn tall_pinned_document_unfolds_to_full_width_and_scrolls() {
+            let image = Image::from_rgba(pixel(255), 1, 1).with_fit(ImageFit::Fill);
+            let preview = Image::from_rgba(pixel(255), 1, 1).with_fit(ImageFit::Fill);
+            let mut mirror =
+                CaptureMirrorImage::new_crossfade(image, preview, Some(524.0 / 3_021.0));
+            mirror.rect = Rect::new(0.0, 0.0, 340.0, 300.0);
+            mirror.set_handoff_progress(1_000);
 
-        let painted = mirror.painted_image_rect(mirror.handoff_mix());
-        assert_eq!(painted.width(), 340.0);
-        assert!(painted.height() > 1_900.0, "full pixels fit the card width");
-        assert!(mirror.crossfade_handoff);
-        assert!(mirror.scroll_document_by(54.0));
-        assert_eq!(mirror.document_scroll_y, 54.0);
-    }
+            let painted = mirror.painted_image_rect(mirror.handoff_mix());
+            assert_eq!(painted.width(), 340.0);
+            assert!(painted.height() > 1_900.0, "full pixels fit the card width");
+            assert!(mirror.crossfade_handoff);
+            assert!(mirror.scroll_document_by(54.0));
+            assert_eq!(mirror.document_scroll_y, 54.0);
+        }
 
-    #[test]
-    fn rearranged_pip_holds_spatial_pixels_then_yields_to_live_layout() {
-        let source = Rect::new(0.0, 0.0, 0.4, 0.5);
-        let target = Rect::new(0.0, 0.0, 0.5, 1.0);
-        let mut mirror = CaptureMirrorImage::new(
-            Image::from_rgba(pixel(0), 1, 1),
-            vec![CaptureMirrorHandoffLayer {
-                rgba: pixel(0),
-                width: 1,
-                height: 1,
-                source,
-                target,
-            }],
-        );
-
-        mirror.set_handoff_progress(0);
-        assert_eq!(mirror.handoff_mix(), 0.0);
-        mirror.set_handoff_progress(400);
-        assert!((mirror.handoff_mix() - 0.352).abs() < 0.000_001);
-        mirror.set_handoff_progress(600);
-        assert!((mirror.handoff_mix() - 0.648).abs() < 0.000_001);
-        mirror.set_handoff_progress(1_000);
-        assert_eq!(mirror.handoff_mix(), 1.0);
-        assert_eq!(lerp_normalized_rect(source, target, 0.0), source);
-        assert_eq!(lerp_normalized_rect(source, target, 1.0), target);
-    }
-
-    #[test]
-    fn live_frame_refresh_preserves_retained_layout() {
-        let mut mirror = CaptureMirrorImage::new(Image::from_rgba(pixel(255), 1, 1), Vec::new());
-        mirror.rect = Rect::new(20.0, 30.0, 220.0, 130.0);
-
-        mirror.set_image(Image::from_rgba(pixel(128), 1, 1));
-
-        assert_eq!(mirror.rect, Rect::new(20.0, 30.0, 220.0, 130.0));
+        pip_placement_avoids_its_source_and_keeps_edge_margin();
+        offscreen_pip_source_enters_from_its_virtual_desktop_edge();
+        initial_size_preserves_aspect_without_dominating_viewport();
+        tall_pinned_document_unfolds_to_full_width_and_scrolls();
     }
 }

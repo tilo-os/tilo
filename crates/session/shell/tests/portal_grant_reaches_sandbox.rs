@@ -75,173 +75,179 @@ fn plan_for(store: &GrantStoreHandle, ws: WorkspaceId, app: &str) -> CapabilityP
 }
 
 #[test]
-fn an_opened_file_is_bound_read_only_at_the_next_launch() {
-    let (store, ws) = store();
-    let caller = PortalCaller::new(ws, APP);
-    let picked = PathBuf::from("/home/someone/Documents/report.odt");
+fn portal_grants_bind_read_only_or_writable_but_never_the_root() {
+    // Phase `an_opened_file_is_bound_read_only_at_the_next_launch`.
+    {
+        let (store, ws) = store();
+        let caller = PortalCaller::new(ws, APP);
+        let picked = PathBuf::from("/home/someone/Documents/report.odt");
 
-    // Exactly what `pick_and_grant` records for a confirmed OpenFile dialog.
-    store.insert(
-        &caller,
-        &Capability::Filesystem {
-            path: picked.clone(),
-            mode: FsMode::Read,
-            scope: GRANT_SESSION,
-        },
-    );
+        // Exactly what `pick_and_grant` records for a confirmed OpenFile dialog.
+        store.insert(
+            &caller,
+            &Capability::Filesystem {
+                path: picked.clone(),
+                mode: FsMode::Read,
+                scope: GRANT_SESSION,
+            },
+        );
 
-    let plan = plan_for(&store, ws, APP);
+        let plan = plan_for(&store, ws, APP);
 
-    assert!(
-        plan.ro_paths.contains(&picked),
-        "the picked file must be bound read-only into the sandbox; \
-         ro={:?} rw={:?}",
-        plan.ro_paths,
-        plan.rw_paths
-    );
-    assert!(
-        !plan.rw_paths.contains(&picked),
-        "an Open must not produce a writable bind; rw={:?}",
-        plan.rw_paths
-    );
+        assert!(
+            plan.ro_paths.contains(&picked),
+            "the picked file must be bound read-only into the sandbox; \
+             ro={:?} rw={:?}",
+            plan.ro_paths,
+            plan.rw_paths
+        );
+        assert!(
+            !plan.rw_paths.contains(&picked),
+            "an Open must not produce a writable bind; rw={:?}",
+            plan.rw_paths
+        );
+    }
+
+    // Phase `a_saved_file_is_bound_writable_at_the_next_launch`.
+    {
+        let (store, ws) = store();
+        let caller = PortalCaller::new(ws, APP);
+        let picked = PathBuf::from("/home/someone/Documents/new-notes.md");
+
+        store.insert(
+            &caller,
+            &Capability::Filesystem {
+                path: picked.clone(),
+                mode: FsMode::ReadWrite,
+                scope: GRANT_SESSION,
+            },
+        );
+
+        let plan = plan_for(&store, ws, APP);
+
+        assert!(
+            plan.rw_paths.contains(&picked),
+            "a Save must be bound writable, or the app's next save fails on a \
+             read-only mount; ro={:?} rw={:?}",
+            plan.ro_paths,
+            plan.rw_paths
+        );
+    }
+
+    // Phase `the_launcher_refuses_to_bind_the_filesystem_root`.
+    // The launcher refuses to bind the filesystem root, and must keep
+    // refusing: `is_bindable_path` rejects `"/"` outright. Load-bearing, so
+    // the guard isn't relaxed on the grounds that nothing mints a `/` grant.
+    {
+        let (store, ws) = store();
+        let caller = PortalCaller::new(ws, APP);
+
+        // The exact capability the removed sentinel produced.
+        store.insert(
+            &caller,
+            &Capability::Filesystem {
+                path: PathBuf::from("/"),
+                mode: FsMode::Read,
+                scope: GRANT_SESSION,
+            },
+        );
+
+        let plan = plan_for(&store, ws, APP);
+        let root = PathBuf::from("/");
+        assert!(
+            !plan.ro_paths.contains(&root) && !plan.rw_paths.contains(&root),
+            "the launcher must never bind '/' into a sandbox; ro={:?} rw={:?}",
+            plan.ro_paths,
+            plan.rw_paths
+        );
+    }
 }
 
 #[test]
-fn a_saved_file_is_bound_writable_at_the_next_launch() {
-    let (store, ws) = store();
-    let caller = PortalCaller::new(ws, APP);
-    let picked = PathBuf::from("/home/someone/Documents/new-notes.md");
+fn portal_grants_cover_exactly_the_named_path_for_the_asking_app() {
+    // Phase `a_root_grant_makes_every_path_read_as_already_granted`.
+    // Why a `"/"` grant is dangerous even though the launcher refuses to bind
+    // it: `Scope::FsPath("/")` is a prefix match over every path, so every
+    // compositor-side "already granted?" check answers yes for anything —
+    // including `crates/system/fs/src/acl.rs`'s open/read/write checks and `flow::resolve`.
+    {
+        let (store, ws) = store();
+        let caller = PortalCaller::new(ws, APP);
 
-    store.insert(
-        &caller,
-        &Capability::Filesystem {
-            path: picked.clone(),
-            mode: FsMode::ReadWrite,
-            scope: GRANT_SESSION,
-        },
-    );
+        let secret = std::path::Path::new("/home/someone/.ssh/id_ed25519");
+        assert!(
+            !store.filesystem_path_granted(&caller, secret),
+            "precondition: the app starts with nothing granted"
+        );
 
-    let plan = plan_for(&store, ws, APP);
+        store.insert(
+            &caller,
+            &Capability::Filesystem {
+                path: PathBuf::from("/"),
+                mode: FsMode::Read,
+                scope: GRANT_SESSION,
+            },
+        );
 
-    assert!(
-        plan.rw_paths.contains(&picked),
-        "a Save must be bound writable, or the app's next save fails on a \
-         read-only mount; ro={:?} rw={:?}",
-        plan.ro_paths,
-        plan.rw_paths
-    );
-}
+        assert!(
+            store.filesystem_path_granted(&caller, secret),
+            "a '/' grant covers its whole subtree — this is the blast radius \
+             the FileChooser sentinel used to record on an 'Always' click, and \
+             the reason the dialog now grants only the path the user picked"
+        );
+    }
 
-/// The launcher refuses to bind the filesystem root, and must keep
-/// refusing: `is_bindable_path` rejects `"/"` outright. Load-bearing, so
-/// the guard isn't relaxed on the grounds that nothing mints a `/` grant.
-#[test]
-fn the_launcher_refuses_to_bind_the_filesystem_root() {
-    let (store, ws) = store();
-    let caller = PortalCaller::new(ws, APP);
+    // Phase `a_grant_covers_the_named_path_and_nothing_beside_it`.
+    {
+        let (store, ws) = store();
+        let caller = PortalCaller::new(ws, APP);
+        let picked = PathBuf::from("/home/someone/Documents/report.odt");
+        store.insert(
+            &caller,
+            &Capability::Filesystem {
+                path: picked.clone(),
+                mode: FsMode::Read,
+                scope: GRANT_SESSION,
+            },
+        );
 
-    // The exact capability the removed sentinel produced.
-    store.insert(
-        &caller,
-        &Capability::Filesystem {
-            path: PathBuf::from("/"),
-            mode: FsMode::Read,
-            scope: GRANT_SESSION,
-        },
-    );
+        let plan = plan_for(&store, ws, APP);
 
-    let plan = plan_for(&store, ws, APP);
-    let root = PathBuf::from("/");
-    assert!(
-        !plan.ro_paths.contains(&root) && !plan.rw_paths.contains(&root),
-        "the launcher must never bind '/' into a sandbox; ro={:?} rw={:?}",
-        plan.ro_paths,
-        plan.rw_paths
-    );
-}
+        assert_eq!(
+            plan.ro_paths,
+            vec![picked],
+            "one pick is one bind — no parent directory, no siblings"
+        );
+        assert!(plan.rw_paths.is_empty());
+        assert!(
+            !plan.allow_network,
+            "a file grant must not carry network access"
+        );
+        assert!(
+            plan.devices.is_empty(),
+            "a file grant must not carry devices"
+        );
+    }
 
-/// Why a `"/"` grant is dangerous even though the launcher refuses to bind
-/// it: `Scope::FsPath("/")` is a prefix match over every path, so every
-/// compositor-side "already granted?" check answers yes for anything —
-/// including `crates/system/fs/src/acl.rs`'s open/read/write checks and `flow::resolve`.
-#[test]
-fn a_root_grant_makes_every_path_read_as_already_granted() {
-    let (store, ws) = store();
-    let caller = PortalCaller::new(ws, APP);
+    // Phase `a_grant_is_scoped_to_the_app_that_asked`.
+    {
+        let (store, ws) = store();
+        let picked = PathBuf::from("/home/someone/Documents/private.odt");
+        store.insert(
+            &PortalCaller::new(ws, APP),
+            &Capability::Filesystem {
+                path: picked.clone(),
+                mode: FsMode::Read,
+                scope: GRANT_SESSION,
+            },
+        );
 
-    let secret = std::path::Path::new("/home/someone/.ssh/id_ed25519");
-    assert!(
-        !store.filesystem_path_granted(&caller, secret),
-        "precondition: the app starts with nothing granted"
-    );
-
-    store.insert(
-        &caller,
-        &Capability::Filesystem {
-            path: PathBuf::from("/"),
-            mode: FsMode::Read,
-            scope: GRANT_SESSION,
-        },
-    );
-
-    assert!(
-        store.filesystem_path_granted(&caller, secret),
-        "a '/' grant covers its whole subtree — this is the blast radius \
-         the FileChooser sentinel used to record on an 'Always' click, and \
-         the reason the dialog now grants only the path the user picked"
-    );
-}
-
-#[test]
-fn a_grant_covers_the_named_path_and_nothing_beside_it() {
-    let (store, ws) = store();
-    let caller = PortalCaller::new(ws, APP);
-    let picked = PathBuf::from("/home/someone/Documents/report.odt");
-    store.insert(
-        &caller,
-        &Capability::Filesystem {
-            path: picked.clone(),
-            mode: FsMode::Read,
-            scope: GRANT_SESSION,
-        },
-    );
-
-    let plan = plan_for(&store, ws, APP);
-
-    assert_eq!(
-        plan.ro_paths,
-        vec![picked],
-        "one pick is one bind — no parent directory, no siblings"
-    );
-    assert!(plan.rw_paths.is_empty());
-    assert!(
-        !plan.allow_network,
-        "a file grant must not carry network access"
-    );
-    assert!(
-        plan.devices.is_empty(),
-        "a file grant must not carry devices"
-    );
-}
-
-#[test]
-fn a_grant_is_scoped_to_the_app_that_asked() {
-    let (store, ws) = store();
-    let picked = PathBuf::from("/home/someone/Documents/private.odt");
-    store.insert(
-        &PortalCaller::new(ws, APP),
-        &Capability::Filesystem {
-            path: picked.clone(),
-            mode: FsMode::Read,
-            scope: GRANT_SESSION,
-        },
-    );
-
-    let other = plan_for(&store, ws, "so.tilo.other");
-    assert!(
-        !other.ro_paths.contains(&picked),
-        "an app that did not open the dialog must not receive the grant; \
-         got {:?}",
-        other.ro_paths
-    );
+        let other = plan_for(&store, ws, "so.tilo.other");
+        assert!(
+            !other.ro_paths.contains(&picked),
+            "an app that did not open the dialog must not receive the grant; \
+             got {:?}",
+            other.ro_paths
+        );
+    }
 }

@@ -36,7 +36,7 @@ grep -q 'refusing unsafe home-peer configuration inode' "$firstboot"
 cert_check_line="$(grep -n 'valid_device_certificate && \[\[ -s "\$home_peer" \]\]' "$firstboot" | cut -d: -f1)"
 pair_line="$(grep -n 'tilo-enroll pair' "$firstboot" | cut -d: -f1)"
 (( cert_check_line < pair_line ))
-grep -q 'atomic_file::write_with_mode' "$enroll"
+grep -q 'tilo_files::native::atomic::write_with_mode' "$enroll"
 grep -q '0o644' "$enroll"
 grep -q 'relay_service_node_id' "$enroll"
 grep -q '/usr/libexec/tilo-home-peer-control' "$policy"
@@ -67,6 +67,7 @@ for daemon in "$relay_unit" "$replica_unit"; do
   grep -Fqx 'After=tilo-relay-state-migrate.service' "$daemon"
 done
 grep -q 'BindsTo=tilo-relay.service' "$replica_unit"
+grep -Fqx 'RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK' "$relay_unit"
 for sandboxed_daemon in "$relay_unit" "$replica_unit"; do
  for identity in 'User=tilo-relay' 'Group=tilo-relay' 'SupplementaryGroups=tilo-identity'; do
    grep -Fqx "$identity" "$sandboxed_daemon"

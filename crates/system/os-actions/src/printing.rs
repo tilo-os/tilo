@@ -685,76 +685,77 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_queue_health_and_accepting_state() {
-        let q = parse_queues(
-            "printer Office is printing Office-8. enabled since now\nprinter Lab is disabled since now - media-empty\nsystem default destination: Office\n",
-            "Office accepting requests since now\nLab not accepting requests since now\n",
-        );
-        assert_eq!(q.len(), 2);
-        assert!(q[0].default && q[0].accepting_jobs);
-        assert_eq!(q[1].state, QueueState::Paused);
-        assert_eq!(q[1].reason.as_deref(), Some("media-empty"));
-        assert!(!q[1].accepting_jobs);
-    }
+    fn cups_queues_devices_supplies_and_identifiers_parse_bounded() {
+        // Phase `parses_queue_health_and_accepting_state`.
+        {
+            let q = parse_queues(
+                "printer Office is printing Office-8. enabled since now\nprinter Lab is disabled since now - media-empty\nsystem default destination: Office\n",
+                "Office accepting requests since now\nLab not accepting requests since now\n",
+            );
+            assert_eq!(q.len(), 2);
+            assert!(q[0].default && q[0].accepting_jobs);
+            assert_eq!(q[1].state, QueueState::Paused);
+            assert_eq!(q[1].reason.as_deref(), Some("media-empty"));
+            assert!(!q[1].accepting_jobs);
+        }
+        // Phase `parses_driverless_and_scanners`.
+        {
+            let d =
+                parse_driverless("ipps://office.local/ipp/print \"Acme Laser 4\" \"Copy room\"\n");
+            assert_eq!(d[0].name, "Acme Laser 4");
+            assert_eq!(d[0].location.as_deref(), Some("Copy room"));
+            let s = parse_scanners("device `airscan:e0:Office' is a Acme network scanner\n");
+            assert_eq!(s[0].device, "airscan:e0:Office");
+        }
+        // Phase `validates_all_external_identifiers`.
+        {
+            assert!(validate_uri("ipps://printer.local/ipp/print").is_ok());
+            assert!(validate_uri("file:///etc/shadow").is_err());
+            assert!(validate_job_id("Office-42").is_ok());
+            assert!(validate_job_id("Office;shutdown-42").is_err());
+            assert_eq!(queue_name("Office Laser").unwrap(), "Office_Laser");
+            let invalid = ScanSettings {
+                resolution_dpi: 301,
+                color: ScanColor::Color,
+                source: ScanSource::Flatbed,
+            };
+            assert!(scan_page("scanner", invalid).is_err());
+            let valid = ScanSettings {
+                resolution_dpi: 300,
+                ..invalid
+            };
+            assert!(scan_page("scanner\n--batch", valid).is_err());
+            assert!(
+                print_document(
+                    "Office",
+                    std::path::Path::new("/does/not/matter"),
+                    PrintSettings {
+                        copies: 0,
+                        two_sided: false,
+                    },
+                )
+                .is_err()
+            );
+        }
+        // Phase `parses_bounded_ipp_supplies_and_job_progress`.
+        {
+            let telemetry = parse_ipp_printer_attributes(
+                " marker-names (1setOf nameWithoutLanguage) = \"Black Toner\",\"Cyan\u{1b} Toner\"\n marker-colors (1setOf nameWithoutLanguage) = black,cyan\n marker-levels (1setOf integer) = 83,-1\n printer-state-reasons (1setOf keyword) = none,media-low\n",
+            );
+            assert!(telemetry.available);
+            let supplies = telemetry.supplies.unwrap();
+            assert_eq!(supplies[0].level_percent, Some(83));
+            assert_eq!(supplies[1].level_percent, None);
+            assert!(!supplies[1].name.contains('\u{1b}'));
+            assert_eq!(telemetry.state_reasons, ["media-low"]);
 
-    #[test]
-    fn parses_driverless_and_scanners() {
-        let d = parse_driverless("ipps://office.local/ipp/print \"Acme Laser 4\" \"Copy room\"\n");
-        assert_eq!(d[0].name, "Acme Laser 4");
-        assert_eq!(d[0].location.as_deref(), Some("Copy room"));
-        let s = parse_scanners("device `airscan:e0:Office' is a Acme network scanner\n");
-        assert_eq!(s[0].device, "airscan:e0:Office");
-    }
-
-    #[test]
-    fn validates_all_external_identifiers() {
-        assert!(validate_uri("ipps://printer.local/ipp/print").is_ok());
-        assert!(validate_uri("file:///etc/shadow").is_err());
-        assert!(validate_job_id("Office-42").is_ok());
-        assert!(validate_job_id("Office;shutdown-42").is_err());
-        assert_eq!(queue_name("Office Laser").unwrap(), "Office_Laser");
-        let invalid = ScanSettings {
-            resolution_dpi: 301,
-            color: ScanColor::Color,
-            source: ScanSource::Flatbed,
-        };
-        assert!(scan_page("scanner", invalid).is_err());
-        let valid = ScanSettings {
-            resolution_dpi: 300,
-            ..invalid
-        };
-        assert!(scan_page("scanner\n--batch", valid).is_err());
-        assert!(
-            print_document(
-                "Office",
-                std::path::Path::new("/does/not/matter"),
-                PrintSettings {
-                    copies: 0,
-                    two_sided: false,
-                },
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn parses_bounded_ipp_supplies_and_job_progress() {
-        let telemetry = parse_ipp_printer_attributes(
-            " marker-names (1setOf nameWithoutLanguage) = \"Black Toner\",\"Cyan\u{1b} Toner\"\n marker-colors (1setOf nameWithoutLanguage) = black,cyan\n marker-levels (1setOf integer) = 83,-1\n printer-state-reasons (1setOf keyword) = none,media-low\n",
-        );
-        assert!(telemetry.available);
-        let supplies = telemetry.supplies.unwrap();
-        assert_eq!(supplies[0].level_percent, Some(83));
-        assert_eq!(supplies[1].level_percent, None);
-        assert!(!supplies[1].name.contains('\u{1b}'));
-        assert_eq!(telemetry.state_reasons, ["media-low"]);
-
-        let jobs = parse_ipp_jobs(
-            " job-id (integer) = 42\n job-name (nameWithoutLanguage) = \"Travel itinerary.pdf\"\n job-state (enum) = processing\n job-state-reasons (1setOf keyword) = job-printing\n job-impressions-completed (integer) = 3\n job-impressions (integer) = 12\n",
-        );
-        assert_eq!(jobs[&42].title.as_deref(), Some("Travel itinerary.pdf"));
-        assert_eq!(jobs[&42].state, Some(JobState::Processing));
-        assert_eq!(jobs[&42].impressions_completed, Some(3));
-        assert_eq!(jobs[&42].impressions_total, Some(12));
+            let jobs = parse_ipp_jobs(
+                " job-id (integer) = 42\n job-name (nameWithoutLanguage) = \"Travel itinerary.pdf\"\n job-state (enum) = processing\n job-state-reasons (1setOf keyword) = job-printing\n job-impressions-completed (integer) = 3\n job-impressions (integer) = 12\n",
+            );
+            assert_eq!(jobs[&42].title.as_deref(), Some("Travel itinerary.pdf"));
+            assert_eq!(jobs[&42].state, Some(JobState::Processing));
+            assert_eq!(jobs[&42].impressions_completed, Some(3));
+            assert_eq!(jobs[&42].impressions_total, Some(12));
+        }
     }
 }

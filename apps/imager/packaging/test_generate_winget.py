@@ -40,31 +40,34 @@ class ManifestTests(unittest.TestCase):
             self.assertIn(hashlib.sha256(arch.encode()).hexdigest().upper(), installer)
             self.assertIn(f"{self.url}/tilo-imager-setup-windows-{arch}.exe", installer)
 
-    def test_missing_arm_installer_fails(self):
-        (self.root / "aarch64/tilo-imager-setup-windows-aarch64.exe").unlink()
-        with self.assertRaises(ValueError):
-            winget.manifests(self.root, "1.2.3", self.url)
+    def test_invalid_installer_sets_and_release_origins_fail(self):
+        arm = "aarch64/tilo-imager-setup-windows-aarch64.exe"
+        for case, mutate, message in (
+            ("missing arm installer", lambda: (self.root / arm).unlink(), None),
+            ("tampered installer", lambda: (self.root / arm).write_bytes(b"changed"),
+             "invalid aarch64 setup digest"),
+            ("duplicate installer",
+             lambda: (self.root / "tilo-imager-setup-windows-aarch64.exe").write_bytes(b"duplicate"), None),
+        ):
+            with self.subTest(case=case):
+                self.setUp()
+                mutate()
+                if message is None:
+                    with self.assertRaises(ValueError):
+                        winget.manifests(self.root, "1.2.3", self.url)
+                else:
+                    with self.assertRaisesRegex(ValueError, message):
+                        winget.manifests(self.root, "1.2.3", self.url)
 
-    def test_tampered_installer_fails(self):
-        (self.root / "aarch64/tilo-imager-setup-windows-aarch64.exe").write_bytes(b"changed")
-        with self.assertRaisesRegex(ValueError, "invalid aarch64 setup digest"):
-            winget.manifests(self.root, "1.2.3", self.url)
-
-    def test_duplicate_installer_fails(self):
-        (self.root / "tilo-imager-setup-windows-aarch64.exe").write_bytes(b"duplicate")
-        with self.assertRaises(ValueError):
-            winget.manifests(self.root, "1.2.3", self.url)
-
-    def test_wrong_release_or_origin_fails(self):
+        self.setUp()
         for url in (self.url.replace("1.2.3", "1.2.4"), self.url.replace("github.com", "example.org"), self.url + "?token=bad"):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 winget.manifests(self.root, "1.2.3", url)
 
-    def test_insecure_configured_origin_fails(self):
-        with patch.dict(os.environ, {"TILO_RELEASE_SERVER": "http://github.internal:3000"}):
-            with self.assertRaisesRegex(ValueError, "release server must be an HTTPS origin"):
-                winget.manifests(self.root, "1.2.3", self.url)
-
+        with self.subTest(case="insecure configured origin"):
+            with patch.dict(os.environ, {"TILO_RELEASE_SERVER": "http://github.internal:3000"}):
+                with self.assertRaisesRegex(ValueError, "release server must be an HTTPS origin"):
+                    winget.manifests(self.root, "1.2.3", self.url)
 
 if __name__ == "__main__":
     unittest.main()

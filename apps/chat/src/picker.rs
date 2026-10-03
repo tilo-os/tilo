@@ -1,9 +1,10 @@
 //! Choosing a real file to share into a channel.
 //!
-//! Tilo files live in the P2P FUSE workspace mounted at `/var/workspace`; a
-//! chat attachment is imported as bounded shared bytes before it is projected
-//! into a message. The composer's "+" opens this picker over the workspace so
-//! a share is always a *real* file the user selected, never fabricated content.
+//! Tilo files live in the P2P FUSE workspace ([`tilo_paths::workspace_root`]);
+//! a chat attachment is imported as bounded shared bytes before it is
+//! projected into a message. The composer's "+" opens this picker over the
+//! workspace so a share is always a *real* file the user selected, never
+//! fabricated content.
 //!
 //! The browsed directory is the workspace mount, overridable with
 //! `TILO_CHAT_ATTACH_DIR` (for tests and for an install that mounts the shared
@@ -15,7 +16,9 @@ use std::path::{Path, PathBuf};
 /// Where the picker browses: the P2P workspace mount by default.
 pub fn attach_dir() -> PathBuf {
     std::env::var_os("TILO_CHAT_ATTACH_DIR")
-        .map_or_else(|| PathBuf::from("/var/workspace"), PathBuf::from)
+        .map(PathBuf::from)
+        .or_else(tilo_paths::workspace_root)
+        .unwrap_or_else(|| PathBuf::from(tilo_paths::WORKSPACE_MOUNT))
 }
 
 /// One selectable file in the picker.
@@ -95,27 +98,39 @@ fn list_filtered(dir: &Path, accept: fn(&str) -> bool) -> Vec<PickEntry> {
     out
 }
 
+/// Whether `dir` can be listed.
+pub fn folder_readable(dir: &Path) -> bool {
+    tilo_files::Dir::open(tilo_files::Location::Native(dir.to_path_buf()))
+        .and_then(|folder| tilo_files::blocking::list(&folder, &tilo_files::VPath::root()))
+        .is_ok()
+}
+
 fn collect(dir: &Path, depth: usize, accept: fn(&str) -> bool, out: &mut Vec<PickEntry>) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
+    let Ok(folder) = tilo_files::Dir::open(tilo_files::Location::Native(dir.to_path_buf())) else {
         return;
     };
-    for entry in rd.flatten() {
+    let Ok(entries) = tilo_files::blocking::list(&folder, &tilo_files::VPath::root()) else {
+        return;
+    };
+    for entry in entries {
         if out.len() >= 200 {
             return;
         }
-        let path = entry.path();
-        let Ok(ft) = entry.file_type() else { continue };
-        if ft.is_dir() {
+        let path = dir.join(&entry.name);
+        if entry.kind == tilo_files::Kind::Dir {
             if depth > 0 {
                 collect(&path, depth - 1, accept, out);
             }
             continue;
         }
-        let name = entry.file_name().to_string_lossy().into_owned();
+        let name = entry.name;
         if !accept(&name) {
             continue;
         }
-        let size = entry.metadata().map_or(0, |m| m.len());
+        let size = tilo_files::VPath::new(&name)
+            .ok()
+            .and_then(|vpath| tilo_files::blocking::metadata(&folder, &vpath).ok())
+            .map_or(0, |meta| meta.len);
         let is_video = is_video_name(&name);
         out.push(PickEntry {
             path,
@@ -151,83 +166,85 @@ mod tests {
     }
 
     #[test]
-    fn lists_only_images_and_reads_real_dimensions() {
-        let dir = tempfile::tempdir().unwrap();
-        let png = write_png(dir.path(), "shot.png", 320, 200);
-        std::fs::write(dir.path().join("notes.md"), b"not an image").unwrap();
+    fn listings_offer_only_their_kind_and_flag_videos() {
+        // Phase: video_extension_detection.
+        {
+            assert!(is_video_name("demo.MP4"));
+            assert!(is_video_name("capture.webm"));
+            assert!(!is_video_name("photo.png"));
+            assert!(is_media_name("photo.png"));
+            assert!(is_media_name("demo.mov"));
+            assert!(!is_media_name("readme.txt"));
+        }
+        // Phase: lists_only_images_and_reads_real_dimensions.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let png = write_png(dir.path(), "shot.png", 320, 200);
+            std::fs::write(dir.path().join("notes.md"), b"not an image").unwrap();
 
-        let entries = list_images(dir.path());
-        assert_eq!(entries.len(), 1, "only the image is offered");
-        assert_eq!(entries[0].name, "shot.png");
-        assert!(entries[0].size > 0);
-        assert!(!entries[0].is_video);
-        assert_eq!(image_dimensions(&png), Some((320, 200)), "real header dims");
+            let entries = list_images(dir.path());
+            assert_eq!(entries.len(), 1, "only the image is offered");
+            assert_eq!(entries[0].name, "shot.png");
+            assert!(entries[0].size > 0);
+            assert!(!entries[0].is_video);
+            assert_eq!(image_dimensions(&png), Some((320, 200)), "real header dims");
+        }
+        // Phase: list_media_offers_images_and_videos_and_flags_them.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            write_png(dir.path(), "shot.png", 64, 64);
+            std::fs::write(dir.path().join("clip.mp4"), b"\x00\x00\x00\x18ftypmp42").unwrap();
+            std::fs::write(dir.path().join("notes.md"), b"nope").unwrap();
+
+            let entries = list_media(dir.path());
+            assert_eq!(
+                entries.len(),
+                2,
+                "the image and the video are both offered, the .md is not"
+            );
+            let vid = entries
+                .iter()
+                .find(|e| e.name == "clip.mp4")
+                .expect("video listed");
+            assert!(
+                vid.is_video,
+                "the video is flagged so it posts as a video card"
+            );
+            let img = entries
+                .iter()
+                .find(|e| e.name == "shot.png")
+                .expect("image listed");
+            assert!(!img.is_video);
+            // The image-only listing excludes the video.
+            assert!(list_images(dir.path()).iter().all(|e| e.name != "clip.mp4"));
+        }
+        // Phase: list_attachments_includes_generic_files.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("notes.md"), b"portable shared bytes").unwrap();
+
+            let entries = list_attachments(dir.path());
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].name, "notes.md");
+            assert!(!entries[0].is_video);
+        }
     }
 
     #[test]
-    fn list_media_offers_images_and_videos_and_flags_them() {
-        let dir = tempfile::tempdir().unwrap();
-        write_png(dir.path(), "shot.png", 64, 64);
-        std::fs::write(dir.path().join("clip.mp4"), b"\x00\x00\x00\x18ftypmp42").unwrap();
-        std::fs::write(dir.path().join("notes.md"), b"nope").unwrap();
-
-        let entries = list_media(dir.path());
-        assert_eq!(
-            entries.len(),
-            2,
-            "the image and the video are both offered, the .md is not"
-        );
-        let vid = entries
-            .iter()
-            .find(|e| e.name == "clip.mp4")
-            .expect("video listed");
-        assert!(
-            vid.is_video,
-            "the video is flagged so it posts as a video card"
-        );
-        let img = entries
-            .iter()
-            .find(|e| e.name == "shot.png")
-            .expect("image listed");
-        assert!(!img.is_video);
-        // The image-only listing excludes the video.
-        assert!(list_images(dir.path()).iter().all(|e| e.name != "clip.mp4"));
-    }
-
-    #[test]
-    fn list_attachments_includes_generic_files() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("notes.md"), b"portable shared bytes").unwrap();
-
-        let entries = list_attachments(dir.path());
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].name, "notes.md");
-        assert!(!entries[0].is_video);
-    }
-
-    #[test]
-    fn video_extension_detection() {
-        assert!(is_video_name("demo.MP4"));
-        assert!(is_video_name("capture.webm"));
-        assert!(!is_video_name("photo.png"));
-        assert!(is_media_name("photo.png"));
-        assert!(is_media_name("demo.mov"));
-        assert!(!is_media_name("readme.txt"));
-    }
-
-    #[test]
-    fn descends_one_subdirectory_level() {
-        let dir = tempfile::tempdir().unwrap();
-        let sub = dir.path().join("designs");
-        std::fs::create_dir(&sub).unwrap();
-        write_png(&sub, "nested.png", 64, 64);
-        let entries = list_images(dir.path());
-        assert!(entries.iter().any(|e| e.name == "nested.png"));
-    }
-
-    #[test]
-    fn missing_directory_is_empty_not_a_panic() {
-        assert!(list_images(Path::new("/definitely/not/here/at/all")).is_empty());
-        assert!(image_dimensions(Path::new("/definitely/not/here.png")).is_none());
+    fn listing_descends_one_level_and_tolerates_missing_paths() {
+        // Phase: descends_one_subdirectory_level.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let sub = dir.path().join("designs");
+            std::fs::create_dir(&sub).unwrap();
+            write_png(&sub, "nested.png", 64, 64);
+            let entries = list_images(dir.path());
+            assert!(entries.iter().any(|e| e.name == "nested.png"));
+        }
+        // Phase: missing_directory_is_empty_not_a_panic.
+        {
+            assert!(list_images(Path::new("/definitely/not/here/at/all")).is_empty());
+            assert!(image_dimensions(Path::new("/definitely/not/here.png")).is_none());
+        }
     }
 }

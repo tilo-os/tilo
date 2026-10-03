@@ -15,8 +15,8 @@
 //! search panel can never come from two different definitions of a match.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
@@ -488,7 +488,7 @@ const REPLACE_ONE_W: f64 = 80.0;
 const REPLACE_ALL_W: f64 = 48.0;
 
 impl Widget for FindBar {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.find.sync(state, path);
         self.replace.sync(state, path);
         // A field reports its own edits (including its clear button) here, so
@@ -661,27 +661,12 @@ impl Widget for FindBar {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The Widget event contract supplies input, CRDT state, handled/focus outputs, and layout routing to the find controls."
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if !self.visible {
             return;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+            let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             if self.rect.contains(p) != self.rect.contains(self.hover) || self.rect.contains(p) {
                 self.needs_redraw = true;
             }
@@ -704,16 +689,16 @@ impl Widget for FindBar {
                 Key::Named(NamedKey::Escape) => {
                     self.close();
                     self.events.push(FindEvent::Close);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 Key::Named(NamedKey::Enter) => {
-                    if modifiers.state().shift_key() {
+                    if ctx.modifiers.state().shift_key() {
                         self.events.push(FindEvent::Prev);
                     } else {
                         self.events.push(FindEvent::Next);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 _ => {}
@@ -737,46 +722,28 @@ impl Widget for FindBar {
             if enabled {
                 self.press(b);
             }
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
 
         // Otherwise the fields own it.
-        let Ok(rows) = taffy.children(node_id) else {
+        let Ok(rows) = ctx.taffy.children(ctx.node_id) else {
             return;
         };
         if let Some(&find_row) = rows.first()
-            && let Ok(kids) = taffy.children(find_row)
+            && let Ok(kids) = ctx.taffy.children(find_row)
             && let Some(&k) = kids.first()
         {
-            self.find.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                k,
-                taffy,
-            );
+            self.find
+                .handle_event(event, &mut ctx.reborrow(ctx.path, k));
         }
         if self.replace_open
             && let Some(&replace_row) = rows.get(1)
-            && let Ok(kids) = taffy.children(replace_row)
+            && let Ok(kids) = ctx.taffy.children(replace_row)
             && let Some(&k) = kids.first()
         {
-            self.replace.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                k,
-                taffy,
-            );
+            self.replace
+                .handle_event(event, &mut ctx.reborrow(ctx.path, k));
         }
     }
 
@@ -1036,6 +1003,15 @@ mod tests {
     }
 
     #[test]
+    fn matches_are_in_document_order_and_navigation_wraps() {
+        // Each phase computes its own matches; no state is shared.
+        matches_are_found_across_lines_in_document_order();
+        an_empty_query_matches_nothing();
+        next_starts_from_the_caret_and_wraps();
+        prev_steps_backwards_and_wraps();
+        navigation_on_no_matches_is_none_rather_than_a_panic();
+    }
+
     fn matches_are_found_across_lines_in_document_order() {
         let text = "let foo = 1;\nfn bar() {}\n// foo again foo\n";
         let m = matches_in(text, &q("foo"));
@@ -1066,12 +1042,10 @@ mod tests {
         );
     }
 
-    #[test]
     fn an_empty_query_matches_nothing() {
         assert!(matches_in("anything at all", &q("")).is_empty());
     }
 
-    #[test]
     fn next_starts_from_the_caret_and_wraps() {
         let text = "a\nb a\nc a\n";
         let m = matches_in(text, &q("a"));
@@ -1084,7 +1058,6 @@ mod tests {
         assert_eq!(next_from(&m, 99, 0), Some(0));
     }
 
-    #[test]
     fn prev_steps_backwards_and_wraps() {
         let text = "a\nb a\nc a\n";
         let m = matches_in(text, &q("a"));
@@ -1092,13 +1065,19 @@ mod tests {
         assert_eq!(prev_from(&m, 0, 0), Some(2), "wraps to the last match");
     }
 
-    #[test]
     fn navigation_on_no_matches_is_none_rather_than_a_panic() {
         assert_eq!(next_from(&[], 0, 0), None);
         assert_eq!(prev_from(&[], 0, 0), None);
     }
 
     #[test]
+    fn find_bar_reports_its_query_options_and_status() {
+        // Each phase builds a fresh bar.
+        the_bar_reports_its_query_and_options();
+        a_multiline_selection_does_not_seed_the_query();
+        the_status_readout_says_what_is_true();
+    }
+
     fn the_bar_reports_its_query_and_options() {
         let mut bar = FindBar::new();
         bar.open(false, Some("needle"));
@@ -1114,7 +1093,6 @@ mod tests {
         assert!(bar.take_events().contains(&FindEvent::QueryChanged));
     }
 
-    #[test]
     fn a_multiline_selection_does_not_seed_the_query() {
         // Ctrl+F with a paragraph selected should open an empty find, not a
         // query containing newlines that can never match a line.
@@ -1123,7 +1101,6 @@ mod tests {
         assert_eq!(bar.query().needle, "");
     }
 
-    #[test]
     fn the_status_readout_says_what_is_true() {
         let mut bar = FindBar::new();
         bar.open(false, None);
@@ -1141,6 +1118,13 @@ mod tests {
     }
 
     #[test]
+    fn find_bar_controls_emit_actions_close_and_are_addressable() {
+        // Each phase builds a fresh bar.
+        the_transport_and_replace_controls_emit_their_actions();
+        closing_hides_the_bar_and_collapses_its_height();
+        the_bar_is_addressable_by_name_for_headless_driving();
+    }
+
     fn the_transport_and_replace_controls_emit_their_actions() {
         let mut bar = FindBar::new();
         bar.open(true, Some("a"));
@@ -1162,7 +1146,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn closing_hides_the_bar_and_collapses_its_height() {
         let mut bar = FindBar::new();
         assert_eq!(bar.height(), 0.0, "hidden bar takes no space");
@@ -1180,7 +1163,6 @@ mod tests {
         assert!(bar.take_events().contains(&FindEvent::Close));
     }
 
-    #[test]
     fn the_bar_is_addressable_by_name_for_headless_driving() {
         let bar = FindBar::new();
         assert_eq!(Widget::test_id(&bar), Some("find-bar"));

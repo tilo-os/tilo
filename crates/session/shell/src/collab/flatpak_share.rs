@@ -250,10 +250,6 @@ impl SharedFlatpakSession {
     /// Same failure modes as [`Self::start`], plus
     /// [`ShareError::EncoderUnavailable`] when this machine can produce no
     /// codec every receiver decodes.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the session identity, geometry, configuration, viewers and metrics are independent inputs"
-    )]
     pub fn start_with_metrics(
         host_user_id: PeerId,
         app_id: impl Into<String>,
@@ -863,246 +859,254 @@ mod tests {
     }
 
     #[test]
-    fn a_hardware_preference_still_starts_a_share() {
-        // Preferring a vendor is a preference: without that hardware the
-        // media stack falls through to software.
-        for choice in [EncoderChoice::Vaapi, EncoderChoice::Nvenc] {
+    #[allow(
+        clippy::items_after_statements,
+        reason = "a phase with an early return keeps its original body as a nested fn"
+    )]
+    fn share_start_negotiates_a_codec_every_viewer_decodes() {
+        // Phase `a_hardware_preference_still_starts_a_share`.
+        {
+            // Preferring a vendor is a preference: without that hardware the
+            // media stack falls through to software.
+            for choice in [EncoderChoice::Vaapi, EncoderChoice::Nvenc] {
+                let cfg = FlatpakShareConfig {
+                    encoder: choice,
+                    ..cfg_software()
+                };
+                SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, 64, 64, &cfg)
+                    .expect("a preference never makes a share fail to start");
+            }
+        }
+        // Phase `a_software_share_never_claims_hardware`.
+        {
+            let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, &cfg_software()).expect("start");
+            assert!(
+                !s.chosen_encoder().is_hardware(),
+                "{:?}",
+                s.chosen_encoder()
+            );
+        }
+        // Phase `a_legacy_viewer_pins_h264_and_its_departure_allows_a_switch`.
+        fn a_legacy_viewer_pins_h264_and_its_departure_allows_a_switch() {
+            let cfg = cfg_software();
+            let local = usable_local(cfg.encoder.policy());
+            if !local.can_encode(Codec::H264) {
+                eprintln!("no H.264 encoder here (no hardware, no Cisco openh264); not run");
+                return;
+            }
+            let legacy = [CodecCapabilities::legacy_peer()];
+            let s =
+                SharedFlatpakSession::start_with_metrics(1, "x", 7, 64, 64, &cfg, &legacy, None)
+                    .expect("start");
+            assert_eq!(s.chosen_codec(), Codec::H264);
+            assert!(!s.renegotiate(&legacy), "same viewers, same codec");
+        }
+        a_legacy_viewer_pins_h264_and_its_departure_allows_a_switch();
+        // Phase `a_share_nobody_can_decode_fails_to_start`.
+        fn a_share_nobody_can_decode_fails_to_start() {
+            let cfg = cfg_software();
+            let local = usable_local(cfg.encoder.policy());
+            let legacy = [CodecCapabilities::legacy_peer()];
+            if local.can_encode(Codec::H264) {
+                eprintln!("an H.264 encoder exists here; the failure case cannot occur");
+                return;
+            }
+            assert!(matches!(
+                SharedFlatpakSession::start_with_metrics(1, "x", 7, 64, 64, &cfg, &legacy, None),
+                Err(ShareError::EncoderUnavailable { .. })
+            ));
+        }
+        a_share_nobody_can_decode_fails_to_start();
+        // Phase `start_rejects_zero_and_oversized_dimensions`.
+        {
+            match SharedFlatpakSession::start(1, "x", 1, 0, 64, &cfg_software()) {
+                Err(ShareError::DimensionsExceeded { .. }) => {}
+                Err(other) => panic!("expected DimensionsExceeded for 0 width, got {other:?}"),
+                Ok(_) => panic!("zero-width session should not construct"),
+            }
+            match SharedFlatpakSession::start(1, "x", 1, 5000, 64, &cfg_software()) {
+                Err(ShareError::DimensionsExceeded { .. }) => {}
+                Err(other) => {
+                    panic!("expected DimensionsExceeded for 5000 width, got {other:?}")
+                }
+                Ok(_) => panic!("oversized-width session should not construct"),
+            }
+        }
+        // Phase `target_fps_clamps_to_software_ceiling`.
+        {
             let cfg = FlatpakShareConfig {
-                encoder: choice,
+                target_fps: 60,
                 ..cfg_software()
             };
-            SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, 64, 64, &cfg)
-                .expect("a preference never makes a share fail to start");
+            let s =
+                SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, 64, 64, &cfg).expect("start");
+            assert_eq!(
+                s.snapshot_config().target_fps,
+                SOFTWARE_FPS_CEILING,
+                "SW encoder must clamp target_fps to the ceiling"
+            );
         }
     }
 
     #[test]
-    fn a_software_share_never_claims_hardware() {
-        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, &cfg_software()).expect("start");
-        assert!(
-            !s.chosen_encoder().is_hardware(),
-            "{:?}",
-            s.chosen_encoder()
-        );
-    }
-
-    #[test]
-    fn a_legacy_viewer_pins_h264_and_its_departure_allows_a_switch() {
-        let cfg = cfg_software();
-        let local = usable_local(cfg.encoder.policy());
-        if !local.can_encode(Codec::H264) {
-            eprintln!("no H.264 encoder here (no hardware, no Cisco openh264); not run");
-            return;
-        }
-        let legacy = [CodecCapabilities::legacy_peer()];
-        let s = SharedFlatpakSession::start_with_metrics(1, "x", 7, 64, 64, &cfg, &legacy, None)
-            .expect("start");
-        assert_eq!(s.chosen_codec(), Codec::H264);
-        assert!(!s.renegotiate(&legacy), "same viewers, same codec");
-    }
-
-    #[test]
-    fn a_share_nobody_can_decode_fails_to_start() {
-        let cfg = cfg_software();
-        let local = usable_local(cfg.encoder.policy());
-        let legacy = [CodecCapabilities::legacy_peer()];
-        if local.can_encode(Codec::H264) {
-            eprintln!("an H.264 encoder exists here; the failure case cannot occur");
-            return;
-        }
-        assert!(matches!(
-            SharedFlatpakSession::start_with_metrics(1, "x", 7, 64, 64, &cfg, &legacy, None),
-            Err(ShareError::EncoderUnavailable { .. })
-        ));
-    }
-
-    #[test]
-    fn start_rejects_zero_and_oversized_dimensions() {
-        match SharedFlatpakSession::start(1, "x", 1, 0, 64, &cfg_software()) {
-            Err(ShareError::DimensionsExceeded { .. }) => {}
-            Err(other) => panic!("expected DimensionsExceeded for 0 width, got {other:?}"),
-            Ok(_) => panic!("zero-width session should not construct"),
-        }
-        match SharedFlatpakSession::start(1, "x", 1, 5000, 64, &cfg_software()) {
-            Err(ShareError::DimensionsExceeded { .. }) => {}
-            Err(other) => {
-                panic!("expected DimensionsExceeded for 5000 width, got {other:?}")
-            }
-            Ok(_) => panic!("oversized-width session should not construct"),
-        }
-    }
-
-    #[test]
-    fn target_fps_clamps_to_software_ceiling() {
-        let cfg = FlatpakShareConfig {
-            target_fps: 60,
-            ..cfg_software()
-        };
-        let s = SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, 64, 64, &cfg).expect("start");
-        assert_eq!(
-            s.snapshot_config().target_fps,
-            SOFTWARE_FPS_CEILING,
-            "SW encoder must clamp target_fps to the ceiling"
-        );
-    }
-
-    #[test]
-    fn stream_start_and_end_messages_carry_the_session_ids() {
-        let s = SharedFlatpakSession::start(0xBEEF, "org.gimp.GIMP", 42, 64, 64, &cfg_software())
-            .expect("start");
-        match s.stream_start_msg() {
-            NeighbourMsg::SurfaceStreamStart {
-                surface,
-                source_peer,
-                width,
-                height,
-                codec,
-                ts,
-                sender_monotonic_ns_at_send,
-                colorimetry,
-                hdr_static_metadata,
-                bit_depth,
-                app_id,
-            } => {
-                assert_eq!(surface, 42);
-                assert_eq!(source_peer, 0xBEEF);
-                assert_eq!(width, 64);
-                assert_eq!(height, 64);
-                assert_eq!(codec, s.chosen_codec().wire_label());
-                assert_eq!(app_id, "org.gimp.GIMP");
-                assert!(sender_monotonic_ns_at_send > 0);
-                assert_eq!(sender_monotonic_ns_at_send, ts);
-                assert_eq!(
+    fn share_stream_encodes_staged_frames_and_announces_its_session() {
+        // Phase `stream_start_and_end_messages_carry_the_session_ids`.
+        {
+            let s =
+                SharedFlatpakSession::start(0xBEEF, "org.gimp.GIMP", 42, 64, 64, &cfg_software())
+                    .expect("start");
+            match s.stream_start_msg() {
+                NeighbourMsg::SurfaceStreamStart {
+                    surface,
+                    source_peer,
+                    width,
+                    height,
+                    codec,
+                    ts,
+                    sender_monotonic_ns_at_send,
                     colorimetry,
-                    Some(crate::collab::colorimetry::Colorimetry::sdr_bt709())
-                );
-                assert!(hdr_static_metadata.is_none());
-                assert_eq!(bit_depth, 8);
+                    hdr_static_metadata,
+                    bit_depth,
+                    app_id,
+                } => {
+                    assert_eq!(surface, 42);
+                    assert_eq!(source_peer, 0xBEEF);
+                    assert_eq!(width, 64);
+                    assert_eq!(height, 64);
+                    assert_eq!(codec, s.chosen_codec().wire_label());
+                    assert_eq!(app_id, "org.gimp.GIMP");
+                    assert!(sender_monotonic_ns_at_send > 0);
+                    assert_eq!(sender_monotonic_ns_at_send, ts);
+                    assert_eq!(
+                        colorimetry,
+                        Some(crate::collab::colorimetry::Colorimetry::sdr_bt709())
+                    );
+                    assert!(hdr_static_metadata.is_none());
+                    assert_eq!(bit_depth, 8);
+                }
+                other => panic!("expected SurfaceStreamStart, got {other:?}"),
             }
-            other => panic!("expected SurfaceStreamStart, got {other:?}"),
-        }
-        match s.stream_end_msg() {
-            NeighbourMsg::SurfaceStreamEnd {
-                surface,
-                source_peer,
-                ..
-            } => {
-                assert_eq!(surface, 42);
-                assert_eq!(source_peer, 0xBEEF);
+            match s.stream_end_msg() {
+                NeighbourMsg::SurfaceStreamEnd {
+                    surface,
+                    source_peer,
+                    ..
+                } => {
+                    assert_eq!(surface, 42);
+                    assert_eq!(source_peer, 0xBEEF);
+                }
+                other => panic!("expected SurfaceStreamEnd, got {other:?}"),
             }
-            other => panic!("expected SurfaceStreamEnd, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn encode_next_frame_produces_annex_b_bytes() {
-        const W: u32 = 64;
-        const H: u32 = 64;
-        let s = SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, W, H, &cfg_software())
-            .expect("start");
-        s.deposit_captured_rgba(gradient_frame(W, H));
-        let frame = s
-            .encode_next_frame(Instant::now())
-            .expect("encoder should yield a frame");
-        assert_eq!(frame.surface, 7);
-        assert!(!frame.nalus.is_empty(), "empty NALU payload");
-        let msg = frame.clone().into_neighbour_msg();
-        match msg {
-            NeighbourMsg::SurfaceFrame {
-                surface,
-                source_peer,
-                encoded_h264,
-                ts,
-            } => {
-                assert_eq!(surface, 7);
-                assert_eq!(source_peer, 1);
-                assert_eq!(encoded_h264, frame.nalus);
-                assert_eq!(ts, frame.capture_ts_ns);
+        // Phase `encode_next_frame_produces_annex_b_bytes`.
+        {
+            const W: u32 = 64;
+            const H: u32 = 64;
+            let s = SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, W, H, &cfg_software())
+                .expect("start");
+            s.deposit_captured_rgba(gradient_frame(W, H));
+            let frame = s
+                .encode_next_frame(Instant::now())
+                .expect("encoder should yield a frame");
+            assert_eq!(frame.surface, 7);
+            assert!(!frame.nalus.is_empty(), "empty NALU payload");
+            let msg = frame.clone().into_neighbour_msg();
+            match msg {
+                NeighbourMsg::SurfaceFrame {
+                    surface,
+                    source_peer,
+                    encoded_h264,
+                    ts,
+                } => {
+                    assert_eq!(surface, 7);
+                    assert_eq!(source_peer, 1);
+                    assert_eq!(encoded_h264, frame.nalus);
+                    assert_eq!(ts, frame.capture_ts_ns);
+                }
+                other => panic!("expected SurfaceFrame, got {other:?}"),
             }
-            other => panic!("expected SurfaceFrame, got {other:?}"),
+        }
+        // Phase `encode_next_frame_none_when_no_staged_frame`.
+        {
+            let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, &cfg_software()).expect("start");
+            assert!(s.encode_next_frame(Instant::now()).is_none());
+        }
+        // Phase `stop_short_circuits_encode_next_frame`.
+        {
+            const W: u32 = 64;
+            const H: u32 = 64;
+            let s = SharedFlatpakSession::start(1, "x", 7, W, H, &cfg_software()).expect("start");
+            s.deposit_captured_rgba(gradient_frame(W, H));
+            // Flip `active` directly (bypassing `stop`) to isolate the short-circuit.
+            let active = s.active.clone();
+            active.store(false, Ordering::Release);
+            assert!(s.encode_next_frame(Instant::now()).is_none());
         }
     }
 
     #[test]
-    fn encode_next_frame_none_when_no_staged_frame() {
-        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, &cfg_software()).expect("start");
-        assert!(s.encode_next_frame(Instant::now()).is_none());
-    }
+    fn viewer_membership_gates_remote_input() {
+        // Phase `viewer_registration_gates_remote_input`.
+        {
+            let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, &cfg_software()).expect("start");
+            let peer: PeerId = 99;
 
-    #[test]
-    fn stop_short_circuits_encode_next_frame() {
-        const W: u32 = 64;
-        const H: u32 = 64;
-        let s = SharedFlatpakSession::start(1, "x", 7, W, H, &cfg_software()).expect("start");
-        s.deposit_captured_rgba(gradient_frame(W, H));
-        // Flip `active` directly (bypassing `stop`) to isolate the short-circuit.
-        let active = s.active.clone();
-        active.store(false, Ordering::Release);
-        assert!(s.encode_next_frame(Instant::now()).is_none());
-    }
+            assert!(!s.accept_remote_input(peer));
 
-    #[test]
-    fn viewer_registration_gates_remote_input() {
-        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, &cfg_software()).expect("start");
-        let peer: PeerId = 99;
+            s.add_viewer(peer, false);
+            assert!(s.accept_remote_input(peer));
 
-        assert!(!s.accept_remote_input(peer));
+            s.set_read_only(peer, true);
+            assert!(!s.accept_remote_input(peer));
 
-        s.add_viewer(peer, false);
-        assert!(s.accept_remote_input(peer));
+            s.set_read_only(peer, false);
+            assert!(s.accept_remote_input(peer));
 
-        s.set_read_only(peer, true);
-        assert!(!s.accept_remote_input(peer));
+            s.drop_viewer(peer);
+            assert!(!s.accept_remote_input(peer));
+        }
+        // Phase `viewer_reconciliation_adds_and_retires_exact_recipients`.
+        {
+            let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, &cfg_software()).expect("start");
+            s.add_viewer(10, false);
+            s.set_read_only(10, true);
 
-        s.set_read_only(peer, false);
-        assert!(s.accept_remote_input(peer));
+            s.sync_viewers(&std::collections::HashSet::from([10, 20]));
+            assert!(
+                !s.accept_remote_input(10),
+                "an existing read-only grant must stay read-only"
+            );
+            assert!(s.accept_remote_input(20), "new recipients receive control");
 
-        s.drop_viewer(peer);
-        assert!(!s.accept_remote_input(peer));
-    }
+            s.sync_viewers(&std::collections::HashSet::from([20]));
+            assert!(
+                s.viewer_share(10).is_none(),
+                "removed recipients are retired"
+            );
+            assert!(s.accept_remote_input(20));
+        }
+        // Phase `route_input_delivers_only_when_accepted`.
+        {
+            let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, &cfg_software()).expect("start");
+            let peer: PeerId = 42;
+            let mut sink = RecordingSink::default();
 
-    #[test]
-    fn viewer_reconciliation_adds_and_retires_exact_recipients() {
-        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, &cfg_software()).expect("start");
-        s.add_viewer(10, false);
-        s.set_read_only(10, true);
+            assert!(!s.route_input(
+                peer,
+                InputEvent::PointerMotion { x: 1.0, y: 2.0 },
+                &mut sink
+            ));
+            assert!(sink.events.is_empty());
 
-        s.sync_viewers(&std::collections::HashSet::from([10, 20]));
-        assert!(
-            !s.accept_remote_input(10),
-            "an existing read-only grant must stay read-only"
-        );
-        assert!(s.accept_remote_input(20), "new recipients receive control");
-
-        s.sync_viewers(&std::collections::HashSet::from([20]));
-        assert!(
-            s.viewer_share(10).is_none(),
-            "removed recipients are retired"
-        );
-        assert!(s.accept_remote_input(20));
-    }
-
-    #[test]
-    fn route_input_delivers_only_when_accepted() {
-        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, &cfg_software()).expect("start");
-        let peer: PeerId = 42;
-        let mut sink = RecordingSink::default();
-
-        assert!(!s.route_input(
-            peer,
-            InputEvent::PointerMotion { x: 1.0, y: 2.0 },
-            &mut sink
-        ));
-        assert!(sink.events.is_empty());
-
-        s.add_viewer(peer, false);
-        assert!(s.route_input(
-            peer,
-            InputEvent::PointerMotion { x: 3.0, y: 4.0 },
-            &mut sink
-        ));
-        assert_eq!(sink.events.len(), 1);
-        assert_eq!(sink.events[0].0, peer);
-        assert_eq!(sink.events[0].1, 7);
+            s.add_viewer(peer, false);
+            assert!(s.route_input(
+                peer,
+                InputEvent::PointerMotion { x: 3.0, y: 4.0 },
+                &mut sink
+            ));
+            assert_eq!(sink.events.len(), 1);
+            assert_eq!(sink.events[0].0, peer);
+            assert_eq!(sink.events[0].1, 7);
+        }
     }
 }

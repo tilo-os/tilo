@@ -193,94 +193,94 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
     #[test]
-    fn ntfs_time_conversion_preserves_pre_epoch_and_fractional_100ns_values() {
-        assert_eq!(
-            UNIX_EPOCH
-                .duration_since(ntfs_time_to_system_time(116_444_735_999_999_999).unwrap())
-                .unwrap(),
-            Duration::new(0, 100)
-        );
-        assert_eq!(
-            ntfs_time_to_system_time(116_444_736_012_345_678)
-                .unwrap()
-                .duration_since(UNIX_EPOCH)
-                .unwrap(),
-            Duration::new(1, 234_567_800)
-        );
-    }
+    fn protocol_times_and_entries_are_typed_and_sessions_refuse_replay() {
+        // Phase `ntfs_time_conversion_preserves_pre_epoch_and_fractional_100ns_values`.
+        {
+            assert_eq!(
+                UNIX_EPOCH
+                    .duration_since(ntfs_time_to_system_time(116_444_735_999_999_999).unwrap())
+                    .unwrap(),
+                Duration::new(0, 100)
+            );
+            assert_eq!(
+                ntfs_time_to_system_time(116_444_736_012_345_678)
+                    .unwrap()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap(),
+                Duration::new(1, 234_567_800)
+            );
+        }
+        // Phase `entry_wire_requires_typed_copy_time_availability`.
+        {
+            let missing = serde_json::json!({
+                "token":"", "path":[], "key":[], "record":5, "sequence":1,
+                "size":0, "directory":true, "metadata_digest":"digest",
+                "content_readable":false, "enumeration_complete":true,
+                "fidelity_pending":[]
+            });
+            assert!(serde_json::from_value::<Entry>(missing).is_err());
 
-    #[test]
-    fn entry_wire_requires_typed_copy_time_availability() {
-        let missing = serde_json::json!({
-            "token":"", "path":[], "key":[], "record":5, "sequence":1,
-            "size":0, "directory":true, "metadata_digest":"digest",
-            "content_readable":false, "enumeration_complete":true,
-            "fidelity_pending":[]
-        });
-        assert!(serde_json::from_value::<Entry>(missing).is_err());
-
-        let available = serde_json::json!({
-            "token":"", "path":[], "key":[], "record":5, "sequence":1,
-            "size":0, "directory":true, "metadata_digest":"digest",
-            "content_readable":false, "enumeration_complete":true,
-            "copy_times": {
-                "last_access_100ns": 116_444_736_012_345_678_i64,
-                "last_data_change_100ns": 116_444_735_999_999_999_i64
-            },
-            "copy_times_unavailable_reason": null,
-            "fidelity_pending":[]
-        });
-        let entry: Entry = serde_json::from_value(available).unwrap();
-        assert!(entry.copy_times_valid());
-        let mut neither = entry.clone();
-        neither.copy_times = None;
-        assert!(!neither.copy_times_valid());
-        let mut both = entry;
-        both.copy_times_unavailable_reason =
-            Some(CopyTimesUnavailableReason::InvalidStandardInformationCoverage);
-        assert!(!both.copy_times_valid());
-    }
-
-    #[test]
-    fn wire_schema_two_is_permanently_refused() {
-        let mut sequence = Sequence::default();
-        let old = Request {
-            schema: 2,
-            nonce: "selected".into(),
-            id: 0,
-            operation: Operation::Hello,
-        };
-        assert!(sequence.accept(&old, "selected").is_err());
-        let current = Request {
-            schema: SCHEMA,
-            ..old
-        };
-        assert!(sequence.accept(&current, "selected").is_err());
-    }
-
-    #[test]
-    fn duplicate_request_permanently_invalidates_session() {
-        let mut s = Sequence::default();
-        let r = Request {
-            schema: SCHEMA,
-            nonce: "selected".into(),
-            id: 0,
-            operation: Operation::Hello,
-        };
-        s.accept(&r, "selected").unwrap();
-        assert!(s.accept(&r, "selected").is_err());
-        let r = Request { id: 1, ..r };
-        assert!(s.accept(&r, "selected").is_err());
-    }
-    #[test]
-    fn foreign_nonce_cannot_authorize() {
-        let mut s = Sequence::default();
-        let r = Request {
-            schema: SCHEMA,
-            nonce: "other".into(),
-            id: 0,
-            operation: Operation::Hello,
-        };
-        assert!(s.accept(&r, "selected").is_err());
+            let available = serde_json::json!({
+                "token":"", "path":[], "key":[], "record":5, "sequence":1,
+                "size":0, "directory":true, "metadata_digest":"digest",
+                "content_readable":false, "enumeration_complete":true,
+                "copy_times": {
+                    "last_access_100ns": 116_444_736_012_345_678_i64,
+                    "last_data_change_100ns": 116_444_735_999_999_999_i64
+                },
+                "copy_times_unavailable_reason": null,
+                "fidelity_pending":[]
+            });
+            let entry: Entry = serde_json::from_value(available).unwrap();
+            assert!(entry.copy_times_valid());
+            let mut neither = entry.clone();
+            neither.copy_times = None;
+            assert!(!neither.copy_times_valid());
+            let mut both = entry;
+            both.copy_times_unavailable_reason =
+                Some(CopyTimesUnavailableReason::InvalidStandardInformationCoverage);
+            assert!(!both.copy_times_valid());
+        }
+        // Phase `wire_schema_two_is_permanently_refused`.
+        {
+            let mut sequence = Sequence::default();
+            let old = Request {
+                schema: 2,
+                nonce: "selected".into(),
+                id: 0,
+                operation: Operation::Hello,
+            };
+            assert!(sequence.accept(&old, "selected").is_err());
+            let current = Request {
+                schema: SCHEMA,
+                ..old
+            };
+            assert!(sequence.accept(&current, "selected").is_err());
+        }
+        // Phase `duplicate_request_permanently_invalidates_session`.
+        {
+            let mut s = Sequence::default();
+            let r = Request {
+                schema: SCHEMA,
+                nonce: "selected".into(),
+                id: 0,
+                operation: Operation::Hello,
+            };
+            s.accept(&r, "selected").unwrap();
+            assert!(s.accept(&r, "selected").is_err());
+            let r = Request { id: 1, ..r };
+            assert!(s.accept(&r, "selected").is_err());
+        }
+        // Phase `foreign_nonce_cannot_authorize`.
+        {
+            let mut s = Sequence::default();
+            let r = Request {
+                schema: SCHEMA,
+                nonce: "other".into(),
+                id: 0,
+                operation: Operation::Hello,
+            };
+            assert!(s.accept(&r, "selected").is_err());
+        }
     }
 }

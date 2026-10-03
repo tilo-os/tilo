@@ -41,6 +41,7 @@ pub mod draw;
 pub mod gallery;
 pub mod model;
 pub mod preview;
+pub mod resource;
 pub mod store;
 pub mod widgets;
 
@@ -51,6 +52,14 @@ use ui::widget::Widget;
 /// Build and return the app's root widget tree.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(ThemesApp::new())
+}
+
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.themes", app_root)
+        .history(&framework_history::HISTORY)
+        .component_actions(actions::register)
+        .as_definition("Theme Studio")
 }
 
 /// Build the root widget tree for a headless `--shots` capture at the given
@@ -73,7 +82,9 @@ pub fn app_root_for_shot(width: u32) -> Box<dyn Widget> {
     Box::new(app)
 }
 
-#[cfg(test)]
-mod framework_history_tests;
+pub use resource::{Themes, ThemesShell};
 
 pub mod framework_history;
+
+#[cfg(test)]
+mod framework_history_tests;

@@ -3,10 +3,10 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use ui_core::widget::{AppModel, ModelPath};
 
 use tilo_resource::Resource;
 use ui_core::PresencePayload;
-use ui_core::automerge::{AutoCommit, ObjId};
 use ui_core::presence::PresenceKey;
 use ui_core::widget::{Decorator, Widget};
 
@@ -104,6 +104,12 @@ impl<R: Resource> SurfaceCx<R> {
     pub fn read_only(&self) -> bool {
         self.dispatch.read_only()
     }
+
+    /// The id of the app the surface is part of, which its presence keys
+    /// name ([`ResourceSelection::presence`]).
+    pub fn app_id(&self) -> &'static str {
+        self.dispatch.app_id()
+    }
 }
 
 /// Where a participant is inside a resource, in the resource's own terms, so
@@ -191,7 +197,7 @@ impl<R: Resource, S: ResourceSurface<R>> Decorator for SurfaceHost<R, S> {
         &mut self.surface
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let read_only = self.dispatch.read_only();
         if read_only != self.read_only {
             self.read_only = read_only;

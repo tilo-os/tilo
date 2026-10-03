@@ -13,12 +13,10 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{BlendMode, Fill};
-use winit::event::WindowEvent;
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -58,8 +56,6 @@ impl StatusLog {
 }
 
 impl Widget for StatusLog {
-    fn sync(&mut self, _state: &mut AutoCommit, _root: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -154,20 +150,6 @@ impl Widget for StatusLog {
         scene.pop_layer();
     }
 
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "StatusLog"
     }
@@ -207,35 +189,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn newest_progress_line_is_a_stable_polite_live_region() {
-        let log = StatusLog::new(
-            vec![
-                "Preparing encrypted storage…".into(),
-                "Creating your account…".into(),
-            ],
-            200.0,
-        );
-        let node = log.accessibility().expect("status semantics");
-        assert_eq!(node.name.as_deref(), Some("Creating your account…"));
-        assert_eq!(node.live, Some(ui::a11y::Politeness::Polite));
-        assert_eq!(
-            node.semantic_key.as_deref(),
-            Some("installer.install-status")
-        );
-    }
-
-    #[test]
-    fn failures_and_hardware_touch_prompts_are_assertive() {
-        for line in [
-            "error: target identity changed",
-            "Touch your security key to continue…",
-        ] {
-            let log = StatusLog::new(vec![line.into()], 200.0);
-            assert_eq!(
-                log.accessibility().and_then(|node| node.live),
-                Some(ui::a11y::Politeness::Assertive),
-                "did not announce {line:?} immediately"
+    fn status_log_live_region_politeness_follows_severity() {
+        // Phase `newest_progress_line_is_a_stable_polite_live_region`.
+        {
+            let log = StatusLog::new(
+                vec![
+                    "Preparing encrypted storage…".into(),
+                    "Creating your account…".into(),
+                ],
+                200.0,
             );
+            let node = log.accessibility().expect("status semantics");
+            assert_eq!(node.name.as_deref(), Some("Creating your account…"));
+            assert_eq!(node.live, Some(ui::a11y::Politeness::Polite));
+            assert_eq!(
+                node.semantic_key.as_deref(),
+                Some("installer.install-status")
+            );
+        }
+        // Phase `failures_and_hardware_touch_prompts_are_assertive`.
+        {
+            for line in [
+                "error: target identity changed",
+                "Touch your security key to continue…",
+            ] {
+                let log = StatusLog::new(vec![line.into()], 200.0);
+                assert_eq!(
+                    log.accessibility().and_then(|node| node.live),
+                    Some(ui::a11y::Politeness::Assertive),
+                    "did not announce {line:?} immediately"
+                );
+            }
         }
     }
 }

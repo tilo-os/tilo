@@ -6,6 +6,12 @@
 //! - **Add** and **Edit** use one device-local form for email, `CalDAV`, `WebDAV`,
 //!   and Nextcloud metadata; email setup auto-configures IMAP/SMTP.
 //! - **Sign in again** replaces only the sealed vault credential.
+//! - Google Drive, `OneDrive` and Dropbox connect through `OAuth` in the
+//!   system browser, Nextcloud through Login Flow v2 (an app password minted
+//!   for this device, never a typed password), and `iCloud` Drive with an
+//!   Apple ID and verification code; see `cloud_signin`. A provider without
+//!   a configured client id shows why it cannot be connected instead of
+//!   starting a flow that cannot finish.
 //! - **Remove** is explicitly confirmed, then transactionally clears the
 //!   canonical metadata, sealed credential, and local sync-health record.
 //!
@@ -21,6 +27,7 @@
 
 use std::collections::HashMap;
 use ui::doc::read_bool;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
@@ -29,27 +36,29 @@ use ui::theme::Theme;
 use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, TextInputKind, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
-use crate::accounts::{
-    AccountConfig, AccountDirectory, AccountKind, AccountRoot, AccountView, NEXTCLOUD_TYPE,
-    WEBDAV_TYPE,
-};
+use crate::accounts::{AccountConfig, AccountDirectory, AccountKind, AccountRoot, AccountView};
+use crate::i18n::{t, t_args};
 use crate::widgets::{
-    El, caption, card, card_with_action, rows, setting_row, status_pill, value_row,
+    El, StatusTone, caption, card, card_with_action, rows, semantic_status_pill, setting_row,
+    value_row,
 };
 
-/// Height (logical px) of the per-account maintenance buttons. The shared
-/// `Button` default — the same height as the card's trailing "Add account"
-/// button and every dropdown in Settings — so one card never mixes two
-/// control heights.
-const ACTION_BUTTON_H: f32 = 40.0;
+mod cloud_signin;
+pub use cloud_signin::{BrowserOpener, PortalOpener};
+#[cfg(test)]
+mod signin_tests;
 
 /// Key the "Add" button on the Email card writes to open the form.
 pub const ADD_MAIL_KEY: &str = "settings.accounts.add.mail";
 pub const ADD_CALDAV_KEY: &str = "settings.accounts.add.caldav";
 pub const ADD_WEBDAV_KEY: &str = "settings.accounts.add.webdav";
 pub const ADD_NEXTCLOUD_KEY: &str = "settings.accounts.add.nextcloud";
+pub const ADD_GOOGLE_DRIVE_KEY: &str = "settings.accounts.add.google-drive";
+pub const ADD_ONEDRIVE_KEY: &str = "settings.accounts.add.onedrive";
+pub const ADD_DROPBOX_KEY: &str = "settings.accounts.add.dropbox";
+pub const ADD_ICLOUD_DRIVE_KEY: &str = "settings.accounts.add.icloud-drive";
 /// Keys the inline form's Save / Cancel buttons write.
 pub const FORM_SAVE_KEY: &str = "settings.accounts.form.save";
 pub const FORM_CANCEL_KEY: &str = "settings.accounts.form.cancel";
@@ -72,7 +81,6 @@ fn edit_key(id: &str) -> String {
 }
 
 #[allow(
-    clippy::too_many_arguments,
     clippy::needless_pass_by_value,
     reason = "the resource action binding mirrors the framework's distinct address, label, operation, and destructive fields"
 )]
@@ -101,6 +109,56 @@ fn account_action_button(
     }
 }
 
+fn pane_label() -> String {
+    t("settings-category-external-accounts")
+}
+
+fn kind_shown(kind: AccountKind) -> String {
+    t(match kind {
+        AccountKind::Mail => "accounts-kind-mail",
+        AccountKind::CalDav => "accounts-kind-caldav",
+        AccountKind::WebDav => "accounts-kind-webdav",
+        AccountKind::Nextcloud => "accounts-kind-nextcloud",
+        AccountKind::GoogleDrive => "accounts-kind-google",
+        AccountKind::OneDrive => "accounts-kind-onedrive",
+        AccountKind::Dropbox => "accounts-kind-dropbox",
+        AccountKind::ICloudDrive => "accounts-kind-icloud",
+    })
+}
+
+fn account_status(
+    is_sample: bool,
+    enabled: bool,
+    health: Option<accounts::AccountSyncHealth>,
+) -> (String, StatusTone) {
+    if is_sample {
+        (t("accounts-status-example"), StatusTone::Neutral)
+    } else if !enabled {
+        (t("accounts-status-disabled"), StatusTone::Neutral)
+    } else {
+        match health {
+            Some(accounts::AccountSyncHealth::Syncing) => {
+                (t("accounts-status-syncing"), StatusTone::Accent)
+            }
+            Some(accounts::AccountSyncHealth::Healthy) => {
+                (t("accounts-status-healthy"), StatusTone::Success)
+            }
+            Some(accounts::AccountSyncHealth::Offline) => {
+                (t("accounts-status-offline"), StatusTone::Warning)
+            }
+            Some(accounts::AccountSyncHealth::NeedsAuthentication) => {
+                (t("accounts-status-reauth"), StatusTone::Warning)
+            }
+            Some(accounts::AccountSyncHealth::Error) => {
+                (t("accounts-status-error"), StatusTone::Warning)
+            }
+            Some(accounts::AccountSyncHealth::Never) | None => {
+                (t("accounts-status-never"), StatusTone::Neutral)
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AccountViewCommand {
     Add(AccountKind),
@@ -112,10 +170,13 @@ pub enum AccountViewCommand {
     CancelReauthentication,
 }
 
-struct PendingFormSave {
+/// The account form's fields, as checked and then committed.
+struct AccountDraft {
     kind: AccountKind,
+    /// The account being edited; `None` adds a new one.
     existing_id: Option<String>,
-    assigned_id: accounts::AccountId,
+    /// The id a new account takes once its draft has been checked.
+    assigned_id: Option<accounts::AccountId>,
     name: String,
     identity: String,
     username: String,
@@ -125,7 +186,7 @@ struct PendingFormSave {
 
 struct ProbeJob {
     receiver: std::sync::mpsc::Receiver<Result<String, String>>,
-    deadline: std::time::Instant,
+    deadline: ui::time::Instant,
 }
 
 impl ProbeJob {
@@ -134,7 +195,7 @@ impl ProbeJob {
     fn new(receiver: std::sync::mpsc::Receiver<Result<String, String>>) -> Self {
         Self {
             receiver,
-            deadline: std::time::Instant::now() + Self::DEADLINE,
+            deadline: ui::time::now() + Self::DEADLINE,
         }
     }
 
@@ -142,10 +203,8 @@ impl ProbeJob {
         match self.receiver.try_recv() {
             Ok(result) => Some(result),
             Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(stopped.into())),
-            Err(std::sync::mpsc::TryRecvError::Empty)
-                if std::time::Instant::now() >= self.deadline =>
-            {
-                Some(Err("connection check timed out".into()))
+            Err(std::sync::mpsc::TryRecvError::Empty) if ui::time::now() >= self.deadline => {
+                Some(Err(t("accounts-timeout")))
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => None,
         }
@@ -182,10 +241,14 @@ pub struct AccountsPane {
     reauth_id: Option<String>,
     account_tester: std::sync::Arc<dyn crate::account_probe::AccountTester>,
     form_probe: Option<ProbeJob>,
-    form_candidate: Option<PendingFormSave>,
+    form_candidate: Option<AccountDraft>,
     reauth_probe: Option<ProbeJob>,
     reauth_candidate: Option<(accounts::AccountId, accounts::Secret)>,
     pending_remove: Option<(AccountKind, String)>,
+    /// A running browser or Apple ID sign-in.
+    sign_in: Option<cloud_signin::SignInFlow>,
+    custodian: account_custody::Custodian,
+    opener: std::sync::Arc<dyn BrowserOpener>,
     /// Ids we've already removed this session, so a stale key edge doesn't
     /// try to remove twice.
     removed: Vec<String>,
@@ -216,7 +279,6 @@ impl AccountsPane {
             dir: AccountDirectory::load_in(&account_root),
             sync_statuses: account_root.statuses(),
             vault: account_root.vault(),
-            account_root,
             is_sample: false,
             form_kind: None,
             form_error: None,
@@ -240,10 +302,14 @@ impl AccountsPane {
             reauth_probe: None,
             reauth_candidate: None,
             pending_remove: None,
+            sign_in: None,
+            custodian: account_root.custodian(),
+            opener: std::sync::Arc::new(PortalOpener),
             removed: Vec::new(),
             structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
+            account_root,
         }
     }
 
@@ -260,7 +326,6 @@ impl AccountsPane {
             dir,
             sync_statuses: accounts::AccountSyncStatusStore::default(),
             vault: account_root.vault(),
-            account_root,
             is_sample,
             form_kind: None,
             form_error: None,
@@ -284,10 +349,14 @@ impl AccountsPane {
             reauth_probe: None,
             reauth_candidate: None,
             pending_remove: None,
+            sign_in: None,
+            custodian: account_root.custodian(),
+            opener: std::sync::Arc::new(PortalOpener),
             removed: Vec::new(),
             structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
+            account_root,
         }
     }
 
@@ -333,8 +402,8 @@ impl AccountsPane {
         state: &mut AutoCommit,
         root: &ObjId,
     ) -> bool {
-        let deadline = std::time::Instant::now() + ProbeJob::DEADLINE;
-        while self.form_open() && std::time::Instant::now() < deadline {
+        let deadline = ui::time::now() + ProbeJob::DEADLINE;
+        while self.form_open() && ui::time::now() < deadline {
             self.sync(state, root);
             if self.form_open() {
                 std::thread::sleep(std::time::Duration::from_millis(1));
@@ -361,11 +430,181 @@ impl AccountsPane {
         self
     }
 
+    /// Use `custodian` for cloud sign-ins (tests point it at a fake
+    /// provider; builds link an iCloud provider through it).
+    #[must_use]
+    pub fn with_custodian(mut self, custodian: account_custody::Custodian) -> Self {
+        self.custodian = custodian;
+        self
+    }
+
+    /// Open sign-in pages with `opener` instead of the desktop portal.
+    #[must_use]
+    pub fn with_browser_opener(mut self, opener: std::sync::Arc<dyn BrowserOpener>) -> Self {
+        self.opener = opener;
+        self
+    }
+
+    pub fn sign_in_open(&self) -> bool {
+        self.sign_in.is_some()
+    }
+
+    #[doc(hidden)]
+    pub fn sign_in_message_for_test(&self) -> Option<&str> {
+        self.sign_in
+            .as_ref()
+            .and_then(cloud_signin::SignInFlow::message)
+    }
+
+    #[doc(hidden)]
+    pub fn sign_in_awaiting_code_for_test(&self) -> bool {
+        self.sign_in
+            .as_ref()
+            .is_some_and(cloud_signin::SignInFlow::awaiting_code)
+    }
+
+    #[doc(hidden)]
+    pub fn set_sign_in_fields_for_test(
+        &self,
+        name: &str,
+        server: &str,
+        apple_id: &str,
+        password: &str,
+    ) {
+        if let Some(flow) = &self.sign_in {
+            flow.set_fields_for_test(name, server, apple_id, password);
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn set_sign_in_code_for_test(&self, code: &str) {
+        if let Some(flow) = &self.sign_in {
+            flow.set_code_for_test(code);
+        }
+    }
+
+    /// Block until the running sign-in step reports, then apply it exactly
+    /// as `sync` would. Returns whether a step reported before `timeout`.
+    #[doc(hidden)]
+    pub fn finish_sign_in_step_for_test(&mut self, timeout: std::time::Duration) -> bool {
+        let Some(flow) = self.sign_in.as_mut() else {
+            // The step completed and the sync that started it already saved it.
+            return true;
+        };
+        if !flow.busy() {
+            // Already reported and applied by the sync that started it.
+            return true;
+        }
+        let reported = flow.wait_for_test(timeout);
+        self.poll_sign_in();
+        reported
+    }
+
+    fn open_sign_in(&mut self, kind: AccountKind, existing: Option<&accounts::Account>) {
+        self.form_kind = None;
+        self.reauth_id = None;
+        self.sign_in = Some(cloud_signin::SignInFlow::new(
+            kind,
+            existing,
+            self.custodian.clone(),
+            std::sync::Arc::clone(&self.opener),
+        ));
+        self.structure_dirty = true;
+    }
+
+    fn close_sign_in(&mut self) {
+        if let Some(flow) = self.sign_in.as_mut() {
+            flow.cancel();
+        }
+        self.sign_in = None;
+        self.structure_dirty = true;
+    }
+
+    fn poll_sign_in(&mut self) {
+        let Some(flow) = self.sign_in.as_mut() else {
+            return;
+        };
+        let (completed, changed) = flow.poll();
+        if changed {
+            self.structure_dirty = true;
+        }
+        let Some(completed) = completed else {
+            return;
+        };
+        match Self::save_signed_in(&self.account_root, &completed) {
+            Ok(id) => {
+                let custodian = self.custodian.clone();
+                // Publishing may renew a session over the network; the
+                // account is already saved, so this never blocks the pane.
+                std::thread::spawn(move || {
+                    if let Err(error) = custodian.signed_in(&id) {
+                        warn!(target: "tilo::settings", %error, "could not publish the first credential for a new sign-in");
+                    }
+                });
+                self.sign_in = None;
+                self.reload();
+            }
+            Err(error) => {
+                if let Some(flow) = self.sign_in.as_mut() {
+                    flow.save_failed(&error);
+                }
+            }
+        }
+        self.structure_dirty = true;
+    }
+
+    /// Persist a completed sign-in: the sealed grant first, then the
+    /// account metadata, journaled like every other account mutation.
+    fn save_signed_in(
+        account_root: &AccountRoot,
+        completed: &cloud_signin::Completed,
+    ) -> Result<accounts::AccountId, String> {
+        let type_id = completed.kind.type_id();
+        let shared = account_root.store();
+        let id = completed.existing_id.clone().map_or_else(
+            || {
+                accounts::AccountId::from(format!(
+                    "{}-{}",
+                    completed.kind.slug(),
+                    uuid::Uuid::new_v4()
+                ))
+            },
+            accounts::AccountId::from,
+        );
+        let mut stored = match (completed.existing_id.is_some(), shared.get(&id)) {
+            (true, Some(stored)) if stored.type_id.as_str() == type_id => stored.clone(),
+            (true, Some(_)) => {
+                return Err("account type changed; refresh Settings and try again".into());
+            }
+            (true, None) => return Err("account no longer exists".into()),
+            (false, Some(_)) => return Err("this account is already configured".into()),
+            (false, None) => accounts::Account::new(id.clone(), type_id),
+        };
+        stored.display_name.clone_from(&completed.display_name);
+        merge_config(&mut stored.config, completed.config.clone());
+        if completed.kind == AccountKind::Nextcloud {
+            let mut identity = serde_json::Map::new();
+            identity.insert("id".into(), id.as_str().into());
+            for service in ["use_files", "use_calendar", "use_mail"] {
+                if stored.config.get(service).is_none() {
+                    identity.insert(service.into(), true.into());
+                }
+            }
+            merge_config(&mut stored.config, serde_json::Value::Object(identity));
+        }
+        Self::commit_account(account_root, stored, Some(&completed.secret))?;
+        Ok(id)
+    }
+
     /// Seed the ordinary add surface for a deterministic acceptance capture.
     #[must_use]
     pub(crate) fn with_open_form_for_shot(mut self, kind: AccountKind) -> Self {
-        self.form_kind = Some(kind);
-        self.form_account_id = None;
+        if kind.signs_in() {
+            self.open_sign_in(kind, None);
+        } else {
+            self.form_kind = Some(kind);
+            self.form_account_id = None;
+        }
         self
     }
 
@@ -380,15 +619,11 @@ impl AccountsPane {
     }
 
     fn open_edit(&mut self, id: &str) {
-        let Some(view) = [
-            AccountKind::Mail,
-            AccountKind::CalDav,
-            AccountKind::WebDav,
-            AccountKind::Nextcloud,
-        ]
-        .into_iter()
-        .flat_map(|kind| self.dir.views_of(kind))
-        .find(|view| view.id == id) else {
+        let Some(view) = AccountKind::ALL
+            .into_iter()
+            .flat_map(|kind| self.dir.views_of(kind))
+            .find(|view| view.id == id)
+        else {
             return;
         };
         let kind = view.kind;
@@ -445,7 +680,11 @@ impl AccountsPane {
         let command = self.commands.with(Clone::clone);
         self.commands.set(None);
         match command {
+            Some(AccountViewCommand::Add(kind)) if kind.signs_in() => {
+                self.open_sign_in(kind, None);
+            }
             Some(AccountViewCommand::Add(kind)) => {
+                self.sign_in = None;
                 self.form_kind = Some(kind);
                 self.form_account_id = None;
                 self.form_error = None;
@@ -454,18 +693,42 @@ impl AccountsPane {
                 self.structure_dirty = true;
             }
             Some(AccountViewCommand::Edit(id)) => self.open_edit(&id),
-            Some(AccountViewCommand::Reauthenticate(id)) => {
-                self.reauth_id = Some(id);
-                self.reauth_error = None;
-                self.reauth_password.set(String::new());
+            Some(AccountViewCommand::Reauthenticate(id)) => self.open_reauthentication(id),
+            Some(AccountViewCommand::Submit) if self.sign_in.is_some() => {
+                if let Some(flow) = self.sign_in.as_mut() {
+                    flow.submit();
+                }
                 self.structure_dirty = true;
             }
+            Some(AccountViewCommand::Cancel) if self.sign_in.is_some() => self.close_sign_in(),
             Some(AccountViewCommand::Submit) => self.form_submit = true,
             Some(AccountViewCommand::Cancel) => self.form_cancel = true,
             Some(AccountViewCommand::SubmitReauthentication) => self.reauth_submit = true,
             Some(AccountViewCommand::CancelReauthentication) => self.reauth_cancel = true,
             None => {}
         }
+    }
+
+    /// "Sign in again": a new browser / Apple ID sign-in for accounts that
+    /// sign in, a replacement password otherwise.
+    fn open_reauthentication(&mut self, id: String) {
+        let stored = self
+            .account_root
+            .store()
+            .get(&accounts::AccountId::from(id.clone()))
+            .cloned();
+        if let Some(account) = stored
+            && let Some(kind) = AccountKind::from_type_id(account.type_id.as_str())
+            && kind.signs_in()
+        {
+            self.open_sign_in(kind, Some(&account));
+            return;
+        }
+        self.sign_in = None;
+        self.reauth_id = Some(id);
+        self.reauth_error = None;
+        self.reauth_password.set(String::new());
+        self.structure_dirty = true;
     }
 
     fn clear_form_fields(&self) {
@@ -480,32 +743,17 @@ impl AccountsPane {
         let mut panel: Vec<El> = Vec::new();
 
         let mut intro: Vec<El> = Vec::new();
-        intro.push(Box::new(
-            Text::new(
-                "Connect email, calendars and files once, then use them in compatible apps. \
-                 Account details and credentials stay on this device; they are never shared \
-                 with a workspace or collaborators.",
-            )
-            .with_size(12.0),
-        ));
+        intro.push(Box::new(Text::new(&t("accounts-intro")).with_size(12.0)));
         if self.vault.custody() == accounts::SecretCustody::LocalFile {
-            intro.push(caption(
-                "The desktop Secret Service is unavailable, so this session uses an owner-only local vault key. Install or unlock a Secret Service for stronger key custody.",
-            ));
+            intro.push(caption(&t("accounts-vault-local")));
         }
         if self.is_sample {
             // Be honest that the visible rows are an illustration, not real
             // connected accounts — the store is empty until you add one.
-            intro.push(caption(
-                "You have no accounts yet. The entries below are examples of \
-                 what you can add — use \u{201c}Add\u{201d} to create a real one.",
-            ));
+            intro.push(caption(&t("accounts-empty-sample")));
         } else if self.dir.is_empty() {
             // The live empty state: honest, no fabricated rows.
-            intro.push(caption(
-                "You have no accounts yet. Use \u{201c}Add\u{201d} to connect \
-                 your first account.",
-            ));
+            intro.push(caption(&t("accounts-empty")));
         }
         let mut introduction = Column::new()
             .with_no_padding()
@@ -516,7 +764,9 @@ impl AccountsPane {
         }
         panel.push(Box::new(introduction));
 
-        if let Some(kind) = self.form_kind {
+        if let Some(flow) = &self.sign_in {
+            panel.push(flow.card());
+        } else if let Some(kind) = self.form_kind {
             panel.push(self.account_form(kind));
         }
         if let Some(id) = &self.reauth_id {
@@ -529,25 +779,33 @@ impl AccountsPane {
                 .into_iter()
                 .find(|view| &view.id == id)
         {
+            let remove = t("accounts-remove-confirm");
+            let cancel = t("accounts-cancel");
             panel.push(card(
-                "Remove account?",
+                &t("accounts-remove-title"),
                 rows(vec![
-                    caption(&format!(
-                        "{} will be removed from this device. Locally cached copies may be removed by its apps; data on the provider is not deleted. The encrypted credential and local sync-health record are removed.",
-                        view.label
+                    caption(&t_args(
+                        "accounts-remove-body",
+                        &[("name", view.label.as_str().into())],
                     )),
                     Box::new(
                         Row::new()
-                            .push(Box::new(Button::new(
-                                "settings.accounts.remove.confirm",
-                                "Remove from this device",
-                                Some(REMOVE_CONFIRM_KEY),
-                            )))
-                            .push(Box::new(Button::new(
-                                "settings.accounts.remove.cancel",
-                                "Cancel",
-                                Some(REMOVE_CANCEL_KEY),
-                            )))
+                            .push(Box::new(
+                                Button::new(
+                                    "settings.accounts.remove.confirm",
+                                    &remove,
+                                    Some(REMOVE_CONFIRM_KEY),
+                                )
+                                .content_sized(),
+                            ))
+                            .push(Box::new(
+                                Button::new(
+                                    "settings.accounts.remove.cancel",
+                                    &cancel,
+                                    Some(REMOVE_CANCEL_KEY),
+                                )
+                                .content_sized(),
+                            ))
                             .push(Box::new(Spacer::new())),
                     ),
                 ]),
@@ -558,58 +816,82 @@ impl AccountsPane {
         panel.push(self.kind_card(AccountKind::CalDav, theme));
         panel.push(self.kind_card(AccountKind::WebDav, theme));
         panel.push(self.kind_card(AccountKind::Nextcloud, theme));
+        for kind in [
+            AccountKind::GoogleDrive,
+            AccountKind::OneDrive,
+            AccountKind::Dropbox,
+            AccountKind::ICloudDrive,
+        ] {
+            panel.push(self.kind_card(kind, theme));
+        }
 
         crate::widgets::cards(panel)
     }
 
     fn mail_card(&self, theme: &Theme) -> El {
-        let title = AccountKind::Mail.label();
-        let add_btn: El = Box::new(account_action_button(
-            "settings.accounts.add.mail",
-            "Add account",
-            crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
-            "External Accounts".into(),
-            "add-mail",
-            tilo_actions::OperationKind::View,
-            crate::actions::AccountOperation::Add {
-                kind: "mail".into(),
-            },
-            false,
-        ));
+        let title = kind_shown(AccountKind::Mail);
+        let add = t("accounts-add");
+        let add_btn: El = Box::new(
+            account_action_button(
+                "settings.accounts.add.mail",
+                &add,
+                crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
+                pane_label(),
+                "add-mail",
+                tilo_actions::OperationKind::View,
+                crate::actions::AccountOperation::Add {
+                    kind: "mail".into(),
+                },
+                false,
+            )
+            .content_sized(),
+        );
         let views = self.dir.views_of(AccountKind::Mail);
         let body = self.kind_body(AccountKind::Mail, &views, theme);
-        card_with_action(title, add_btn, body)
+        card_with_action(&title, add_btn, body)
     }
 
     fn kind_card(&self, kind: AccountKind, theme: &Theme) -> El {
         let views = self.dir.views_of(kind);
+        let add = t("accounts-add");
         card_with_action(
-            kind.label(),
-            Box::new(account_action_button(
-                &format!("settings.accounts.add.{}", kind.slug()),
-                "Add account",
-                crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
-                "External Accounts".into(),
-                &format!("add-{}", kind.slug()),
-                tilo_actions::OperationKind::View,
-                crate::actions::AccountOperation::Add {
-                    kind: kind.slug().into(),
-                },
-                false,
-            )),
+            &kind_shown(kind),
+            Box::new(
+                account_action_button(
+                    &format!("settings.accounts.add.{}", kind.slug()),
+                    &add,
+                    crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
+                    pane_label(),
+                    &format!("add-{}", kind.slug()),
+                    tilo_actions::OperationKind::View,
+                    crate::actions::AccountOperation::Add {
+                        kind: kind.slug().into(),
+                    },
+                    false,
+                )
+                .content_sized(),
+            ),
             self.kind_body(kind, &views, theme),
         )
     }
 
     fn kind_body(&self, kind: AccountKind, views: &[AccountView], theme: &Theme) -> El {
-        if views.is_empty() {
-            rows(vec![caption(&format!(
-                "No {} accounts yet.",
-                kind.label().to_lowercase()
-            ))])
+        let mut body: Vec<El> = if views.is_empty() {
+            vec![caption(&t_args(
+                "accounts-kind-empty",
+                &[("kind", kind_shown(kind).into())],
+            ))]
         } else {
-            rows(views.iter().map(|v| self.account_row(v, theme)).collect())
+            views.iter().map(|v| self.account_row(v, theme)).collect()
+        };
+        if kind.is_cloud_storage()
+            && let Some(reason) = cloud_signin::unavailable_reason(kind, &self.custodian)
+        {
+            body.push(caption(&reason));
+        } else if kind.best_effort() {
+            body.push(caption(&t("accounts-best-effort-icloud")));
         }
+        rows(body)
     }
 
     /// One account: label + connection summary, status, and a Remove button
@@ -621,75 +903,73 @@ impl AccountsPane {
         clippy::too_many_lines,
         reason = "the full account-row action hierarchy is kept together for auditability"
     )]
-    fn account_row(&self, view: &AccountView, theme: &Theme) -> El {
+    fn account_row(&self, view: &AccountView, _theme: &Theme) -> El {
         let id = accounts::AccountId::from(view.id.clone());
         let runtime = self.sync_statuses.get(&id);
-        let (status, status_color) = if self.is_sample {
-            ("Example", theme.text_dim)
-        } else if !view.enabled {
-            ("Disabled", theme.text_dim)
-        } else {
-            match runtime.map(|status| status.health) {
-                Some(accounts::AccountSyncHealth::Syncing) => {
-                    ("Syncing", theme.tokens.colors.accent[5])
-                }
-                Some(accounts::AccountSyncHealth::Healthy) => ("Up to date", theme.status_success),
-                Some(accounts::AccountSyncHealth::Offline) => {
-                    ("Offline", theme.tokens.colors.semantic.warning)
-                }
-                Some(accounts::AccountSyncHealth::NeedsAuthentication) => {
-                    ("Sign in again", theme.tokens.colors.semantic.warning)
-                }
-                Some(accounts::AccountSyncHealth::Error) => {
-                    ("Needs attention", theme.tokens.colors.semantic.danger)
-                }
-                Some(accounts::AccountSyncHealth::Never) | None => {
-                    ("Not checked yet", theme.text_dim)
-                }
-            }
-        };
+        let (status, status_tone) = account_status(
+            self.is_sample,
+            view.enabled,
+            runtime.map(|status| status.health),
+        );
 
         // Keep identity and health together; maintenance actions get their own
         // row so narrow layouts remain legible and touch targets never crush
         // the connection summary.
-        let top = Row::new()
+        let mut top = Row::new()
             .push(Box::new(Text::new(&view.label).with_size(13.0)))
-            .push(Box::new(Spacer::new()))
-            .push(status_pill(status, status_color));
+            .push(Box::new(Spacer::new()));
+        if view.kind.best_effort() {
+            top = top.push(semantic_status_pill(
+                &t("accounts-best-effort"),
+                StatusTone::Neutral,
+            ));
+        }
+        let top = top.push(semantic_status_pill(&status, status_tone));
 
         let mut column = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .push(Box::new(top))
-            .push(Box::new(
-                Text::new(&view.summary)
-                    .with_size(11.0)
-                    .with_color(theme.text_dim),
-            ));
+            .push(Box::new(Text::new(&view.summary).with_size(11.0).dimmed()));
         if !self.is_sample {
             let sync_line = runtime.map_or_else(
-                || "No application has reported a sync for this account.".to_string(),
+                || t("accounts-sync-none"),
                 |status| {
                     let when = status
                         .last_success_unix
-                        .map_or_else(|| "never completed".into(), relative_sync_time);
+                        .map_or_else(|| t("accounts-sync-never"), relative_sync_time);
                     match status.message.as_deref() {
-                        Some(message) => format!("Last successful sync: {when} · {message}"),
-                        None => format!("Last successful sync: {when}"),
+                        Some(message) => t_args(
+                            "accounts-sync-when-msg",
+                            &[("when", when.as_str().into()), ("message", message.into())],
+                        ),
+                        None => t_args("accounts-sync-when", &[("when", when.into())]),
                     }
                 },
             );
-            column = column.push(Box::new(
-                Text::new(&sync_line)
-                    .with_size(11.0)
-                    .with_color(theme.text_dim),
-            ));
+            column = column.push(Box::new(Text::new(&sync_line).with_size(11.0).dimmed()));
             let account_resource = format!("settings.account:{}", view.id);
-            let primary_actions = Row::new()
-                .push(Box::new(
+            let needs_sign_in = runtime.is_some_and(|status| {
+                status.health == accounts::AccountSyncHealth::NeedsAuthentication
+            });
+            let reauth_label = if view.kind == AccountKind::ICloudDrive && needs_sign_in {
+                t("accounts-reauth-icloud")
+            } else {
+                t("accounts-reauth")
+            };
+            let edit = t("accounts-edit");
+            let check = if view.kind == AccountKind::Mail {
+                t("accounts-check-server")
+            } else {
+                t("accounts-verify")
+            };
+            let remove = t("accounts-remove");
+            let mut primary_actions = Row::new();
+            if !view.kind.is_cloud_storage() {
+                primary_actions = primary_actions.push(Box::new(
                     account_action_button(
                         &format!("settings.accounts.edit.{}", view.id),
-                        "Edit",
+                        &edit,
                         account_resource.clone(),
                         view.label.clone(),
                         "edit",
@@ -699,12 +979,14 @@ impl AccountsPane {
                         },
                         false,
                     )
-                    .fit_content(ACTION_BUTTON_H),
-                ))
+                    .content_sized(),
+                ));
+            }
+            let primary_actions = primary_actions
                 .push(Box::new(
                     account_action_button(
                         &format!("settings.accounts.reauth.{}", view.id),
-                        "Sign in again",
+                        &reauth_label,
                         account_resource.clone(),
                         view.label.clone(),
                         "reauthenticate",
@@ -714,18 +996,14 @@ impl AccountsPane {
                         },
                         false,
                     )
-                    .fit_content(ACTION_BUTTON_H),
+                    .content_sized(),
                 ))
                 .push(Box::new(Spacer::new()));
             let secondary_actions = Row::new()
                 .push(Box::new(
                     account_action_button(
                         &format!("settings.accounts.test.{}", view.id),
-                        if view.kind == AccountKind::Mail {
-                            "Check server"
-                        } else {
-                            "Verify sign-in"
-                        },
+                        &check,
                         account_resource.clone(),
                         view.label.clone(),
                         "test",
@@ -735,13 +1013,13 @@ impl AccountsPane {
                         },
                         false,
                     )
-                    .fit_content(ACTION_BUTTON_H),
+                    .content_sized(),
                 ))
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(
                     account_action_button(
                         &format!("settings.accounts.remove.{}", view.id),
-                        "Remove",
+                        &remove,
                         account_resource,
                         view.label.clone(),
                         "remove",
@@ -752,7 +1030,7 @@ impl AccountsPane {
                         true,
                     )
                     .danger()
-                    .fit_content(ACTION_BUTTON_H),
+                    .content_sized(),
                 ));
             column = column
                 .push(Box::new(primary_actions))
@@ -767,11 +1045,42 @@ impl AccountsPane {
         reason = "the form declares every credential field and accessibility label in one reviewable surface"
     )]
     fn account_form(&self, kind: AccountKind) -> El {
+        let display_name = t("accounts-display-name");
+        let identity_name = if kind == AccountKind::Mail {
+            t("accounts-email")
+        } else {
+            t("accounts-username")
+        };
+        let identity_placeholder = if kind == AccountKind::Mail {
+            "you@example.com".to_string()
+        } else {
+            t("accounts-username-or-email")
+        };
+        let login_name = t("accounts-login-name");
+        let login_placeholder = t("accounts-login-placeholder");
+        let password_label = t("accounts-password");
+        let password_short = t("accounts-password-short");
+        let server_label = t("accounts-server");
+        let server_url = t("accounts-server-url");
+        let server_placeholder = match kind {
+            AccountKind::CalDav => "https://calendar.example.com/.well-known/caldav".to_string(),
+            AccountKind::WebDav => {
+                "https://files.example.com/remote.php/dav/files/you/".to_string()
+            }
+            AccountKind::Nextcloud => "https://cloud.example.com".to_string(),
+            AccountKind::Mail => t("accounts-server-mail"),
+            AccountKind::GoogleDrive
+            | AccountKind::OneDrive
+            | AccountKind::Dropbox
+            | AccountKind::ICloudDrive => String::new(),
+        };
+        let save = t("accounts-save");
+        let cancel = t("accounts-cancel");
         let name = TextInput::from_state(&self.form_name)
             .with_kind(TextInputKind::Name)
             .with_id("accounts.form.name")
-            .with_accessible_name("Display name")
-            .with_placeholder("Display name")
+            .with_accessible_name(&display_name)
+            .with_placeholder(&display_name)
             .with_font_size(13.0);
         let identity = TextInput::from_state(if kind == AccountKind::Mail {
             &self.form_email
@@ -784,95 +1093,86 @@ impl AccountsPane {
             TextInputKind::Username
         })
         .with_id("accounts.form.identity")
-        .with_accessible_name(if kind == AccountKind::Mail {
-            "Email address"
-        } else {
-            "Username"
-        })
-        .with_placeholder(if kind == AccountKind::Mail {
-            "you@example.com"
-        } else {
-            "Username or email"
-        })
+        .with_accessible_name(&identity_name)
+        .with_placeholder(&identity_placeholder)
         .with_font_size(13.0);
         let user = TextInput::from_state(&self.form_user)
             .with_kind(TextInputKind::Username)
             .with_id("accounts.form.username")
-            .with_accessible_name("Login name")
-            .with_placeholder("Username (defaults to your address)")
+            .with_accessible_name(&login_name)
+            .with_placeholder(&login_placeholder)
             .with_font_size(13.0);
         let password = TextInput::from_state(&self.form_password)
             .with_kind(TextInputKind::Password)
             .with_id("accounts.form.password")
-            .with_accessible_name("Password or app password")
+            .with_accessible_name(&password_label)
             .with_secret(true)
-            .with_placeholder("Password")
+            .with_placeholder(&password_short)
             .with_font_size(13.0);
         let server = TextInput::from_state(&self.form_server)
             .with_kind(TextInputKind::Url)
             .with_id("accounts.form.server")
-            .with_accessible_name("Server URL")
-            .with_placeholder(match kind {
-                AccountKind::CalDav => "https://calendar.example.com/.well-known/caldav",
-                AccountKind::WebDav => "https://files.example.com/remote.php/dav/files/you/",
-                AccountKind::Nextcloud => "https://cloud.example.com",
-                AccountKind::Mail => "Detected from your email address",
-            })
+            .with_accessible_name(&server_url)
+            .with_placeholder(&server_placeholder)
             .with_font_size(13.0);
         let buttons = Row::new()
-            .push(Box::new(account_action_button(
-                "settings.accounts.form.save",
-                "Save account",
-                crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
-                "External Accounts".into(),
-                "save-form",
-                tilo_actions::OperationKind::Effect,
-                crate::actions::AccountOperation::SubmitForm,
-                false,
-            )))
-            .push(Box::new(account_action_button(
-                "settings.accounts.form.cancel",
-                "Cancel",
-                crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
-                "External Accounts".into(),
-                "cancel-form",
-                tilo_actions::OperationKind::View,
-                crate::actions::AccountOperation::CancelForm,
-                false,
-            )))
+            .push(Box::new(
+                account_action_button(
+                    "settings.accounts.form.save",
+                    &save,
+                    crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
+                    pane_label(),
+                    "save-form",
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::AccountOperation::SubmitForm,
+                    false,
+                )
+                .content_sized(),
+            ))
+            .push(Box::new(
+                account_action_button(
+                    "settings.accounts.form.cancel",
+                    &cancel,
+                    crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
+                    pane_label(),
+                    "cancel-form",
+                    tilo_actions::OperationKind::View,
+                    crate::actions::AccountOperation::CancelForm,
+                    false,
+                )
+                .content_sized(),
+            ))
             .push(Box::new(Spacer::new()));
+        let title = t_args(
+            if self.form_account_id.is_some() {
+                "accounts-form-edit"
+            } else {
+                "accounts-form-add"
+            },
+            &[("kind", kind_shown(kind).into())],
+        );
         card(
-            &format!(
-                "{} {} account",
-                if self.form_account_id.is_some() {
-                    "Edit"
-                } else {
-                    "Add"
-                },
-                kind.label()
-            ),
+            &title,
             rows({
                 let mut fields = vec![
-                    setting_row("Display name", Box::new(name)),
-                    setting_row(
-                        if kind == AccountKind::Mail {
-                            "Email address"
-                        } else {
-                            "Username"
-                        },
-                        Box::new(identity),
-                    ),
+                    setting_row(&display_name, Box::new(name)),
+                    setting_row(&identity_name, Box::new(identity)),
                 ];
                 if kind == AccountKind::Mail {
-                    fields.push(setting_row("Login name", Box::new(user)));
+                    fields.push(setting_row(&login_name, Box::new(user)));
                 } else {
-                    fields.push(setting_row("Server", Box::new(server)));
+                    fields.push(setting_row(&server_label, Box::new(server)));
                 }
-                fields.push(setting_row("Password or app password", Box::new(password)));
+                if kind != AccountKind::Nextcloud {
+                    fields.push(setting_row(&password_label, Box::new(password)));
+                }
                 if let Some(error) = &self.form_error {
-                    fields.push(caption(&format!("Could not save: {error}")));
+                    fields.push(caption(&t_args(
+                        "accounts-save-error",
+                        &[("error", error.as_str().into())],
+                    )));
                 }
-                fields.push(caption("Required fields, the secure endpoint, and the credential are checked with a bounded protocol sign-in before anything is saved. Credentials and drafts stay device-local; they never enter collaboration state or account metadata."));
+                fields.push(caption(&t("accounts-form-caption")));
                 fields.push(Box::new(buttons));
                 fields
             }),
@@ -880,48 +1180,62 @@ impl AccountsPane {
     }
 
     fn reauth_form(&self, id: &str) -> El {
+        let password_label = t("accounts-reauth-password");
+        let save = t("accounts-reauth-save");
+        let cancel = t("accounts-cancel");
         let password = TextInput::from_state(&self.reauth_password)
             .with_kind(TextInputKind::Password)
             .with_id("accounts.reauth.password")
-            .with_accessible_name("New password or app password")
+            .with_accessible_name(&password_label)
             .with_secret(true)
-            .with_placeholder("New password or app password")
+            .with_placeholder(&password_label)
             .with_font_size(13.0);
         let mut fields = vec![
-            value_row("Account", id),
-            setting_row("Credential", Box::new(password)),
-            caption(
-                "This replaces an existing password or app password in the OS account vault. OAuth authorization remains with the owning application.",
-            ),
+            value_row(&t("accounts-reauth-account"), id),
+            setting_row(&t("accounts-reauth-credential"), Box::new(password)),
+            caption(&t("accounts-reauth-caption")),
         ];
         if let Some(error) = &self.reauth_error {
-            fields.push(caption(&format!("Could not update credential: {error}")));
+            fields.push(caption(&t_args(
+                "accounts-reauth-error",
+                &[("error", error.as_str().into())],
+            )));
         }
         fields.push(Box::new(
             Row::new()
-                .push(Box::new(account_action_button(
-                    "settings.accounts.reauth.save",
-                    "Update credential",
-                    crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
-                    "External Accounts".into(),
-                    "save-reauthentication",
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::AccountOperation::SubmitReauthentication,
-                    false,
-                )))
-                .push(Box::new(account_action_button(
-                    "settings.accounts.reauth.cancel",
-                    "Cancel",
-                    crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
-                    "External Accounts".into(),
-                    "cancel-reauthentication",
-                    tilo_actions::OperationKind::View,
-                    crate::actions::AccountOperation::CancelReauthentication,
-                    false,
-                )))
+                .push(Box::new(
+                    account_action_button(
+                        "settings.accounts.reauth.save",
+                        &save,
+                        crate::actions::pane_resource_id(
+                            crate::categories::Category::ExternalAccounts,
+                        ),
+                        pane_label(),
+                        "save-reauthentication",
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::AccountOperation::SubmitReauthentication,
+                        false,
+                    )
+                    .content_sized(),
+                ))
+                .push(Box::new(
+                    account_action_button(
+                        "settings.accounts.reauth.cancel",
+                        &cancel,
+                        crate::actions::pane_resource_id(
+                            crate::categories::Category::ExternalAccounts,
+                        ),
+                        pane_label(),
+                        "cancel-reauthentication",
+                        tilo_actions::OperationKind::View,
+                        crate::actions::AccountOperation::CancelReauthentication,
+                        false,
+                    )
+                    .content_sized(),
+                ))
                 .push(Box::new(Spacer::new())),
         ));
-        card("Replace saved password", rows(fields))
+        card(&t("accounts-reauth-title"), rows(fields))
     }
 
     /// Reload the real directory after a mutation. The live pane never
@@ -934,12 +1248,7 @@ impl AccountsPane {
     }
 
     fn account_type(kind: AccountKind) -> &'static str {
-        match kind {
-            AccountKind::Mail => "email",
-            AccountKind::CalDav => "caldav",
-            AccountKind::WebDav => WEBDAV_TYPE,
-            AccountKind::Nextcloud => NEXTCLOUD_TYPE,
-        }
+        kind.type_id()
     }
 
     /// Build the exact non-secret metadata and sealed credential that will be
@@ -947,27 +1256,26 @@ impl AccountsPane {
     /// envelopes are cloned so fields contributed by another app or a newer
     /// provider survive an edit.
     #[allow(
-        clippy::too_many_arguments,
-        reason = "Account preparation validates the account kind, existing or assigned ID, display name, identity, login, server, and credential together."
-    )]
-    #[allow(
         clippy::too_many_lines,
         reason = "one canonical conversion validates the complete set of account kinds and credential fields"
     )]
     fn prepare_account(
         account_root: &AccountRoot,
-        kind: AccountKind,
-        existing_id: Option<&str>,
-        assigned_id: Option<&accounts::AccountId>,
-        name: &str,
-        identity: &str,
-        username: &str,
-        server: &str,
-        password: &str,
+        draft: &AccountDraft,
     ) -> Result<(accounts::Account, accounts::Secret), String> {
-        let identity = identity.trim();
-        let username = username.trim();
-        let server = server.trim().trim_end_matches('/');
+        let kind = draft.kind;
+        let existing_id = draft.existing_id.as_deref();
+        let name = draft.name.as_str();
+        let password = draft.password.as_str();
+        if kind.is_cloud_storage() {
+            return Err(format!(
+                "{} accounts are connected by signing in",
+                kind.label()
+            ));
+        }
+        let identity = draft.identity.trim();
+        let username = draft.username.trim();
+        let server = draft.server.trim().trim_end_matches('/');
         if name.trim().is_empty() {
             return Err("enter a display name".into());
         }
@@ -1005,7 +1313,7 @@ impl AccountsPane {
         let shared = account_root.store();
         let id = existing_id.map_or_else(
             || {
-                assigned_id.cloned().unwrap_or_else(|| {
+                draft.assigned_id.clone().unwrap_or_else(|| {
                     accounts::AccountId::from(match kind {
                         AccountKind::Mail => identity.to_ascii_lowercase(),
                         _ => format!("{}-{}", kind.slug(), uuid::Uuid::new_v4()),
@@ -1059,6 +1367,15 @@ impl AccountsPane {
                 &mut stored.config,
                 serde_json::json!({"id": id.to_string(), "label": name.trim(), "server_url": server, "username": identity}),
             ),
+            AccountKind::GoogleDrive
+            | AccountKind::OneDrive
+            | AccountKind::Dropbox
+            | AccountKind::ICloudDrive => {
+                return Err(format!(
+                    "{} accounts are connected by signing in",
+                    kind.label()
+                ));
+            }
         }
         let mut secret = account_root.vault().get(&id).unwrap_or_default();
         if password.trim().is_empty() {
@@ -1075,32 +1392,37 @@ impl AccountsPane {
 
     /// Commit a draft after its protocol probe succeeds. The draft is rebuilt
     /// over the latest canonical envelope to preserve concurrent/newer fields.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Account persistence passes the full validated draft, including existing or assigned ID and credential, into canonical preparation."
-    )]
     fn save_account_with_id(
         account_root: &AccountRoot,
-        kind: AccountKind,
-        existing_id: Option<&str>,
-        assigned_id: Option<&accounts::AccountId>,
-        name: &str,
-        identity: &str,
-        username: &str,
-        server: &str,
-        password: &str,
+        draft: &AccountDraft,
     ) -> Result<(), String> {
-        let (stored, prepared_secret) = Self::prepare_account(
+        let (stored, prepared_secret) = Self::prepare_account(account_root, draft)?;
+        let password = draft.password.as_str();
+        let publishes = matches!(draft.kind, AccountKind::WebDav | AccountKind::Nextcloud);
+        let id = stored.id.clone();
+        Self::commit_account(
             account_root,
-            kind,
-            existing_id,
-            assigned_id,
-            name,
-            identity,
-            username,
-            server,
-            password,
+            stored,
+            (!password.trim().is_empty()).then_some(&prepared_secret),
         )?;
+        if publishes && !password.trim().is_empty() {
+            // Replace the daemon's Basic credential right away rather than
+            // after its next rejected request.
+            if let Err(error) = account_root.custodian().publish(&id, false) {
+                warn!(target: "tilo::settings", %error, "could not publish the updated credential");
+            }
+        }
+        Ok(())
+    }
+
+    /// Journal and persist `stored` with its credential (when given): the
+    /// vault first, so a metadata failure never leaves an account whose
+    /// credential is missing.
+    fn commit_account(
+        account_root: &AccountRoot,
+        stored: accounts::Account,
+        secret: Option<&accounts::Secret>,
+    ) -> Result<(), String> {
         let id = stored.id.clone();
         let mut shared = account_root.store();
         let original_store = shared.clone();
@@ -1110,10 +1432,10 @@ impl AccountsPane {
         // residue is an unreachable encrypted vault entry, never an account
         // that applications try to use without its credential.
         let mut previous_secret = None;
-        if !password.trim().is_empty() {
+        if let Some(prepared_secret) = secret {
             let mut vault = account_root.vault();
             previous_secret = Some(vault.get(&id));
-            vault.put(&id, &prepared_secret);
+            vault.put(&id, prepared_secret);
             if let Err(error) = vault.try_save() {
                 let _ = account_root.finish_mutation();
                 return Err(format!("could not save credential: {error}"));
@@ -1143,10 +1465,6 @@ impl AccountsPane {
     }
 
     #[cfg(test)]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the validated draft fields of save_account_with_id"
-    )]
     fn save_account(
         account_root: &AccountRoot,
         kind: AccountKind,
@@ -1159,29 +1477,27 @@ impl AccountsPane {
     ) -> Result<(), String> {
         Self::save_account_with_id(
             account_root,
-            kind,
-            existing_id,
-            None,
-            name,
-            identity,
-            username,
-            server,
-            password,
+            &AccountDraft {
+                kind,
+                existing_id: existing_id.map(str::to_string),
+                assigned_id: None,
+                name: name.to_string(),
+                identity: identity.to_string(),
+                username: username.to_string(),
+                server: server.to_string(),
+                password: password.to_string(),
+            },
         )
     }
 
     /// Remove an account of `kind` by id from its owning store, persisting.
     pub(crate) fn remove_account(
         account_root: &AccountRoot,
+        custodian: &account_custody::Custodian,
         kind: AccountKind,
         id: &str,
     ) -> Result<(), String> {
-        let expected_type = match kind {
-            AccountKind::Mail => "email",
-            AccountKind::CalDav => "caldav",
-            AccountKind::WebDav => WEBDAV_TYPE,
-            AccountKind::Nextcloud => NEXTCLOUD_TYPE,
-        };
+        let expected_type = kind.type_id();
         let account_id = accounts::AccountId::from(id.to_string());
         let original_store = account_root.store();
         if let Some(account) = original_store.get(&account_id)
@@ -1246,21 +1562,31 @@ impl AccountsPane {
             }
             return Err(result);
         }
-        finish_or_recover(account_root, "account removal")
+        finish_or_recover(account_root, "account removal")?;
+        // Give the grant back to the provider and withdraw the daemon's
+        // handoff credential. Best effort, off the UI thread: the account is
+        // already gone locally.
+        if let (Some(account), Some(secret)) = (original_store.get(&account_id), original_secret)
+            && account_custody::is_cloud_type(account.type_id.as_str())
+        {
+            let account = account.clone();
+            let custodian = custodian.clone();
+            std::thread::spawn(move || custodian.revoke(&account, &secret));
+        }
+        Ok(())
     }
 
     /// Open the add-email form (and seed its bound `Text` objects).
     fn handle_add(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        for kind in [
-            AccountKind::Mail,
-            AccountKind::CalDav,
-            AccountKind::WebDav,
-            AccountKind::Nextcloud,
-        ] {
+        for kind in AccountKind::ALL {
             let key = add_key(kind);
             if read_bool(state, root, key).unwrap_or(false) {
                 let _ = state.put(root, key, automerge::ScalarValue::Boolean(false));
-                if self.form_kind.is_none() {
+                if kind.signs_in() {
+                    if self.sign_in.is_none() {
+                        self.open_sign_in(kind, None);
+                    }
+                } else if self.form_kind.is_none() && self.sign_in.is_none() {
                     self.form_kind = Some(kind);
                     self.form_error = None;
                     self.form_account_id = None;
@@ -1276,12 +1602,7 @@ impl AccountsPane {
         if self.is_sample {
             return;
         }
-        for kind in [
-            AccountKind::Mail,
-            AccountKind::CalDav,
-            AccountKind::WebDav,
-            AccountKind::Nextcloud,
-        ] {
+        for kind in AccountKind::ALL {
             for view in self.dir.views_of(kind) {
                 let key = edit_key(&view.id);
                 if !read_bool(state, root, &key).unwrap_or(false) {
@@ -1302,6 +1623,10 @@ impl AccountsPane {
                 FORM_CANCEL_KEY,
                 automerge::ScalarValue::Boolean(false),
             );
+            if self.sign_in.is_some() {
+                self.close_sign_in();
+                return;
+            }
             if self.form_kind.is_some() {
                 self.form_kind = None;
                 self.form_error = None;
@@ -1322,6 +1647,11 @@ impl AccountsPane {
         if self.form_submit || read_bool(state, root, FORM_SAVE_KEY).unwrap_or(false) {
             self.form_submit = false;
             let _ = state.put(root, FORM_SAVE_KEY, automerge::ScalarValue::Boolean(false));
+            if let Some(flow) = self.sign_in.as_mut() {
+                flow.submit();
+                self.structure_dirty = true;
+                return;
+            }
             let name = self.form_name.with(Clone::clone);
             let email = self.form_email.with(Clone::clone);
             let user = self.form_user.with(Clone::clone);
@@ -1334,41 +1664,31 @@ impl AccountsPane {
                 return;
             }
             let identity = if kind == AccountKind::Mail {
-                &email
+                email
             } else {
-                &user
+                user.clone()
             };
-            let prepared = Self::prepare_account(
-                &self.account_root,
+            let mut draft = AccountDraft {
                 kind,
-                self.form_account_id.as_deref(),
-                None,
-                &name,
+                existing_id: self.form_account_id.clone(),
+                assigned_id: None,
+                name,
                 identity,
-                &user,
-                &server,
-                &password,
-            );
-            match prepared {
+                username: user,
+                server,
+                password,
+            };
+            match Self::prepare_account(&self.account_root, &draft) {
                 Ok((account, secret)) => {
-                    let candidate = PendingFormSave {
-                        kind,
-                        existing_id: self.form_account_id.clone(),
-                        assigned_id: account.id.clone(),
-                        name,
-                        identity: identity.clone(),
-                        username: user,
-                        server,
-                        password,
-                    };
+                    draft.assigned_id = Some(account.id.clone());
                     let tester = std::sync::Arc::clone(&self.account_tester);
                     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
                     std::thread::spawn(move || {
                         let _ = sender.send(tester.test(&account, &secret));
                     });
-                    self.form_candidate = Some(candidate);
+                    self.form_candidate = Some(draft);
                     self.form_probe = Some(ProbeJob::new(receiver));
-                    self.form_error = Some("Checking the account before saving…".into());
+                    self.form_error = Some(t("accounts-checking"));
                     self.structure_dirty = true;
                 }
                 Err(error) => {
@@ -1397,17 +1717,7 @@ impl AccountsPane {
                 self.structure_dirty = true;
                 return;
             };
-            match Self::save_account_with_id(
-                &self.account_root,
-                candidate.kind,
-                candidate.existing_id.as_deref(),
-                Some(&candidate.assigned_id),
-                &candidate.name,
-                &candidate.identity,
-                &candidate.username,
-                &candidate.server,
-                &candidate.password,
-            ) {
+            match Self::save_account_with_id(&self.account_root, &candidate) {
                 Ok(()) => {
                     self.form_kind = None;
                     self.form_error = None;
@@ -1427,30 +1737,22 @@ impl AccountsPane {
         if self.is_sample {
             return;
         }
-        let views: Vec<_> = [
-            AccountKind::Mail,
-            AccountKind::CalDav,
-            AccountKind::WebDav,
-            AccountKind::Nextcloud,
-        ]
-        .into_iter()
-        .flat_map(|kind| self.dir.views_of(kind))
-        .collect();
+        let views: Vec<_> = AccountKind::ALL
+            .into_iter()
+            .flat_map(|kind| self.dir.views_of(kind))
+            .collect();
         for view in views {
             let has_password = self
                 .vault
                 .get(&accounts::AccountId::from(view.id.clone()))
                 .is_some_and(|secret| !secret.password.is_empty());
-            if !has_password {
+            if !has_password && !view.kind.signs_in() {
                 continue;
             }
             let key = reauth_key(&view.id);
             if read_bool(state, root, &key).unwrap_or(false) {
                 let _ = state.put(root, key, automerge::ScalarValue::Boolean(false));
-                self.reauth_id = Some(view.id);
-                self.reauth_error = None;
-                self.reauth_password.set(String::new());
-                self.structure_dirty = true;
+                self.open_reauthentication(view.id);
             }
         }
     }
@@ -1492,7 +1794,7 @@ impl AccountsPane {
                 }
                 let account_id = accounts::AccountId::from(id);
                 let Some(account) = self.account_root.store().get(&account_id).cloned() else {
-                    self.reauth_error = Some("account no longer exists".into());
+                    self.reauth_error = Some(t("accounts-gone"));
                     self.structure_dirty = true;
                     return;
                 };
@@ -1510,7 +1812,7 @@ impl AccountsPane {
                 });
                 self.reauth_candidate = Some((account_id, secret));
                 self.reauth_probe = Some(ProbeJob::new(receiver));
-                self.reauth_error = Some("Checking the replacement credential…".into());
+                self.reauth_error = Some(t("accounts-checking-reauth"));
                 self.structure_dirty = true;
             }
         }
@@ -1568,7 +1870,7 @@ impl AccountsPane {
                 automerge::ScalarValue::Boolean(false),
             );
             if let Some((kind, id)) = self.pending_remove.take() {
-                match Self::remove_account(&self.account_root, kind, &id) {
+                match Self::remove_account(&self.account_root, &self.custodian, kind, &id) {
                     Ok(()) => {
                         self.removed.push(id);
                         self.reload();
@@ -1589,20 +1891,15 @@ impl AccountsPane {
         if self.is_sample {
             return;
         }
-        let targets: Vec<(AccountKind, String, String)> = [
-            AccountKind::Mail,
-            AccountKind::CalDav,
-            AccountKind::WebDav,
-            AccountKind::Nextcloud,
-        ]
-        .into_iter()
-        .flat_map(|kind| {
-            self.dir
-                .views_of(kind)
-                .into_iter()
-                .map(move |v| (kind, v.id.clone(), remove_key(&v.id)))
-        })
-        .collect();
+        let targets: Vec<(AccountKind, String, String)> = AccountKind::ALL
+            .into_iter()
+            .flat_map(|kind| {
+                self.dir
+                    .views_of(kind)
+                    .into_iter()
+                    .map(move |v| (kind, v.id.clone(), remove_key(&v.id)))
+            })
+            .collect();
         for (kind, id, key) in targets {
             if !read_bool(state, root, &key).unwrap_or(false) || self.removed.contains(&id) {
                 continue;
@@ -1616,15 +1913,15 @@ impl AccountsPane {
 }
 
 fn relative_sync_time(unix: i64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let now = ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs() as i64);
     let age = now.saturating_sub(unix).max(0);
     match age {
-        0..=59 => "just now".into(),
-        60..=3_599 => format!("{} min ago", age / 60),
-        3_600..=86_399 => format!("{} h ago", age / 3_600),
-        _ => format!("{} d ago", age / 86_400),
+        0..=59 => t("accounts-just-now"),
+        60..=3_599 => t_args("accounts-min-ago", &[("count", (age / 60).into())]),
+        3_600..=86_399 => t_args("accounts-h-ago", &[("count", (age / 3_600).into())]),
+        _ => t_args("accounts-d-ago", &[("count", (age / 86_400).into())]),
     }
 }
 
@@ -1701,13 +1998,15 @@ pub fn build_with(dir: &AccountDirectory) -> Box<dyn Widget> {
 }
 
 impl Widget for AccountsPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.handle_local_command();
         self.handle_add(state, root);
         self.handle_edit_triggers(state, root);
         self.handle_form_cancel(state, root);
         self.handle_form_save(state, root);
         self.poll_form_probe();
+        self.poll_sign_in();
         self.handle_reauth_triggers(state, root);
         self.handle_reauth_cancel(state, root);
         self.handle_reauth_save(state, root);
@@ -1780,33 +2079,12 @@ impl Widget for AccountsPane {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
     }
 
@@ -1829,6 +2107,10 @@ impl Widget for AccountsPane {
     fn needs_idle_sync(&self) -> bool {
         self.form_probe.is_some()
             || self.reauth_probe.is_some()
+            || self
+                .sign_in
+                .as_ref()
+                .is_some_and(cloud_signin::SignInFlow::busy)
             || self
                 .composed
                 .as_ref()
@@ -1859,6 +2141,10 @@ fn add_key(kind: AccountKind) -> &'static str {
         AccountKind::CalDav => ADD_CALDAV_KEY,
         AccountKind::WebDav => ADD_WEBDAV_KEY,
         AccountKind::Nextcloud => ADD_NEXTCLOUD_KEY,
+        AccountKind::GoogleDrive => ADD_GOOGLE_DRIVE_KEY,
+        AccountKind::OneDrive => ADD_ONEDRIVE_KEY,
+        AccountKind::Dropbox => ADD_DROPBOX_KEY,
+        AccountKind::ICloudDrive => ADD_ICLOUD_DRIVE_KEY,
     }
 }
 
@@ -1894,16 +2180,13 @@ mod tests {
     /// Drive the host's polling until the pending account probe reports,
     /// however long the probe thread takes to be scheduled.
     fn settle_probes(pane: &mut AccountsPane, doc: &mut AutoCommit) {
-        let deadline = std::time::Instant::now() + ProbeJob::DEADLINE;
+        let deadline = ui::time::now() + ProbeJob::DEADLINE;
         loop {
             pane.sync(doc, &automerge::ROOT);
             if pane.form_probe.is_none() && pane.reauth_probe.is_none() {
                 return;
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "account probe never reported"
-            );
+            assert!(ui::time::now() < deadline, "account probe never reported");
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
@@ -1943,300 +2226,385 @@ mod tests {
         let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
     }
 
+    /// Sample directories are read-only, real ones get labelled destructive remove buttons, and empty stores stay empty.
     #[test]
-    fn sample_directory_renders_read_only_without_remove_buttons() {
-        // The sample is illustration: one live Add button per provider kind,
-        // and no Remove buttons.
-        let mut pane = AccountsPane::from_dir(sample_directory(), true);
-        lay_out(&mut pane);
-        assert_eq!(
-            count_named(&pane, "Button"),
-            4,
-            "every provider kind can be added over the sample"
-        );
+    fn accounts_pane_renders_only_real_accounts_as_removable() {
+        // Case `sample_directory_renders_read_only_without_remove_buttons`.
+        {
+            // The sample is illustration: one live Add button per provider kind,
+            // and no Remove buttons.
+            let mut pane = AccountsPane::from_dir(sample_directory(), true);
+            lay_out(&mut pane);
+            assert_eq!(
+                count_named(&pane, "Button"),
+                AccountKind::ALL.len(),
+                "every provider kind can be added over the sample"
+            );
+        }
+
+        // Case `real_directory_renders_remove_buttons`.
+        {
+            // Without stored passwords, real rows offer removal but do not invent
+            // a reauthentication action.
+            let dir = sample_directory(); // 2 mail + 1 cal + 1 nextcloud = 4 accounts
+            let mut pane = AccountsPane::from_dir(dir, false);
+            lay_out(&mut pane);
+            // One Add per kind + four maintenance actions on each of four accounts.
+            assert_eq!(count_named(&pane, "Button"), AccountKind::ALL.len() + 16);
+        }
+
+        // Case `account_removal_is_labeled_and_visibly_destructive`.
+        {
+            // Real accounts get an explicit Remove action rather than a lone
+            // trash glyph. The confirmation flow still owns the mutation; this
+            // assertion guards the decision point users see before it.
+            let mut pane = AccountsPane::from_dir(sample_directory(), false);
+            lay_out(&mut pane);
+            let mut labels = Vec::new();
+            button_labels(&pane, &mut labels);
+            assert_eq!(
+                labels
+                    .iter()
+                    .filter(|label| label.as_str() == "Remove")
+                    .count(),
+                4,
+                "one explicit Remove action per real account"
+            );
+            assert_eq!(
+                labels
+                    .iter()
+                    .filter(|label| label.as_str() == "Add account")
+                    .count(),
+                AccountKind::ALL.len(),
+                "each provider card exposes a compact add action"
+            );
+        }
+
+        // Case `live_pane_over_empty_store_does_not_fabricate_sample`.
+        {
+            let (_dir, root) = scratch_root();
+            let pane = AccountsPane::in_root(root);
+            assert!(!pane.is_sample(), "the live pane never flags the sample");
+            assert!(
+                pane.directory().is_empty(),
+                "an empty store renders empty — no fabricated ada@example.com rows"
+            );
+            // And no account of any kind leaked in from the sample.
+            for kind in AccountKind::ALL {
+                assert!(
+                    pane.directory().views_of(kind).is_empty(),
+                    "{kind:?} must be empty"
+                );
+            }
+        }
     }
 
+    /// The inline add form: local drafts, labelled fields, empty-email no-op and rejected adds.
     #[test]
-    fn real_directory_renders_remove_buttons() {
-        // Without stored passwords, real rows offer removal but do not invent
-        // a reauthentication action.
-        let dir = sample_directory(); // 2 mail + 1 cal + 1 nextcloud = 4 accounts
-        let mut pane = AccountsPane::from_dir(dir, false);
-        lay_out(&mut pane);
-        // 4 Add + four maintenance actions on each of four accounts.
-        assert_eq!(count_named(&pane, "Button"), 20);
-    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn account_form_drafts_are_local_accessible_and_validated() {
+        // Case `add_button_opens_the_inline_form`.
+        {
+            let mut pane = AccountsPane::from_dir(sample_directory(), true);
+            assert!(!pane.form_open());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let _ = doc.put(&root, ADD_MAIL_KEY, true);
+            pane.sync(&mut doc, &root);
+            assert!(pane.form_open(), "Add opens the form");
+            assert!(
+                pane.take_structure_dirty(),
+                "opening the form requests a rebuild"
+            );
+            // Cancel closes it.
+            let _ = doc.put(&root, FORM_CANCEL_KEY, true);
+            pane.sync(&mut doc, &root);
+            assert!(!pane.form_open(), "Cancel closes the form");
+        }
 
-    #[test]
-    fn account_removal_is_labeled_and_visibly_destructive() {
-        // Real accounts get an explicit Remove action rather than a lone
-        // trash glyph. The confirmation flow still owns the mutation; this
-        // assertion guards the decision point users see before it.
-        let mut pane = AccountsPane::from_dir(sample_directory(), false);
-        lay_out(&mut pane);
-        let mut labels = Vec::new();
-        button_labels(&pane, &mut labels);
-        assert_eq!(
-            labels
+        // Case `form_drafts_are_local_and_every_field_has_explicit_accessibility`.
+        {
+            let commands = ui::LocalState::new(None);
+            let mut pane =
+                AccountsPane::from_dir(sample_directory(), true).with_command_state(&commands);
+            let mut doc = AutoCommit::new();
+            commands.set(Some(AccountViewCommand::Add(AccountKind::WebDav)));
+            pane.sync(&mut doc, &automerge::ROOT);
+            pane.set_form_fields_for_test("Home files", "", "ada", "https://files.example.test");
+            pane.set_form_password_for_test("never-collaborate-this");
+            pane.sync(&mut doc, &automerge::ROOT);
+            for key in [
+                "accounts.form.name",
+                "accounts.form.email",
+                "accounts.form.username",
+                "accounts.form.server",
+                "accounts.form.password",
+            ] {
+                assert!(
+                    doc.get(&automerge::ROOT, key)
+                        .expect("read draft key")
+                        .is_none(),
+                    "device-local form field {key} must never enter Automerge"
+                );
+            }
+
+            lay_out(&mut pane);
+            let mut nodes = Vec::new();
+            access_nodes(&pane, &mut nodes);
+            for name in [
+                "Display name",
+                "Username",
+                "Server URL",
+                "Password or app password",
+            ] {
+                assert!(
+                    nodes.iter().any(|node| {
+                        node.role == ui::a11y::Role::TextInput && node.name.as_deref() == Some(name)
+                    }),
+                    "missing named text input: {name}"
+                );
+            }
+            let password = nodes
                 .iter()
-                .filter(|label| label.as_str() == "Remove")
-                .count(),
-            4,
-            "one explicit Remove action per real account"
-        );
-        assert_eq!(
-            labels
-                .iter()
-                .filter(|label| label.as_str() == "Add account")
-                .count(),
-            4,
-            "each provider card exposes a compact add action"
-        );
-    }
-
-    #[test]
-    fn add_button_opens_the_inline_form() {
-        let mut pane = AccountsPane::from_dir(sample_directory(), true);
-        assert!(!pane.form_open());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let _ = doc.put(&root, ADD_MAIL_KEY, true);
-        pane.sync(&mut doc, &root);
-        assert!(pane.form_open(), "Add opens the form");
-        assert!(
-            pane.take_structure_dirty(),
-            "opening the form requests a rebuild"
-        );
-        // Cancel closes it.
-        let _ = doc.put(&root, FORM_CANCEL_KEY, true);
-        pane.sync(&mut doc, &root);
-        assert!(!pane.form_open(), "Cancel closes the form");
-    }
-
-    #[test]
-    fn form_drafts_are_local_and_every_field_has_explicit_accessibility() {
-        let commands = ui::LocalState::new(None);
-        let mut pane =
-            AccountsPane::from_dir(sample_directory(), true).with_command_state(&commands);
-        let mut doc = AutoCommit::new();
-        commands.set(Some(AccountViewCommand::Add(AccountKind::Nextcloud)));
-        pane.sync(&mut doc, &automerge::ROOT);
-        pane.set_form_fields_for_test("Home cloud", "", "ada", "https://cloud.example.test");
-        pane.set_form_password_for_test("never-collaborate-this");
-        pane.sync(&mut doc, &automerge::ROOT);
-        for key in [
-            "accounts.form.name",
-            "accounts.form.email",
-            "accounts.form.username",
-            "accounts.form.server",
-            "accounts.form.password",
-        ] {
-            assert!(
-                doc.get(&automerge::ROOT, key)
-                    .expect("read draft key")
-                    .is_none(),
-                "device-local form field {key} must never enter Automerge"
+                .find(|node| {
+                    node.role == ui::a11y::Role::TextInput
+                        && node.name.as_deref() == Some("Password or app password")
+                })
+                .expect("password field semantics");
+            assert!(password.state.protected);
+            assert_eq!(
+                password.value, None,
+                "screen readers must not receive secrets"
             );
         }
 
-        lay_out(&mut pane);
-        let mut nodes = Vec::new();
-        access_nodes(&pane, &mut nodes);
-        for name in [
-            "Display name",
-            "Username",
-            "Server URL",
-            "Password or app password",
-        ] {
+        // Case `save_with_empty_email_is_a_noop`.
+        {
+            // Guard: saving a blank address must not create an account (and must
+            // not touch disk). We assert the pure guard directly.
+            let (_dir, root) = scratch_root();
             assert!(
-                nodes.iter().any(|node| {
-                    node.role == ui::a11y::Role::TextInput && node.name.as_deref() == Some(name)
-                }),
-                "missing named text input: {name}"
-            );
-        }
-        let password = nodes
-            .iter()
-            .find(|node| {
-                node.role == ui::a11y::Role::TextInput
-                    && node.name.as_deref() == Some("Password or app password")
-            })
-            .expect("password field semantics");
-        assert!(password.state.protected);
-        assert_eq!(
-            password.value, None,
-            "screen readers must not receive secrets"
-        );
-    }
-
-    #[test]
-    fn live_pane_over_empty_store_does_not_fabricate_sample() {
-        let (_dir, root) = scratch_root();
-        let pane = AccountsPane::in_root(root);
-        assert!(!pane.is_sample(), "the live pane never flags the sample");
-        assert!(
-            pane.directory().is_empty(),
-            "an empty store renders empty — no fabricated ada@example.com rows"
-        );
-        // And no account of any kind leaked in from the sample.
-        for kind in [
-            AccountKind::Mail,
-            AccountKind::CalDav,
-            AccountKind::WebDav,
-            AccountKind::Nextcloud,
-        ] {
-            assert!(
-                pane.directory().views_of(kind).is_empty(),
-                "{kind:?} must be empty"
-            );
-        }
-    }
-
-    #[test]
-    fn save_with_empty_email_is_a_noop() {
-        // Guard: saving a blank address must not create an account (and must
-        // not touch disk). We assert the pure guard directly.
-        let (_dir, root) = scratch_root();
-        assert!(
-            AccountsPane::save_account(&root, AccountKind::Mail, None, "Nobody", "  ", "", "", "")
+                AccountsPane::save_account(
+                    &root,
+                    AccountKind::Mail,
+                    None,
+                    "Nobody",
+                    "  ",
+                    "",
+                    "",
+                    ""
+                )
                 .is_err()
-        );
-        assert!(root.store().is_empty());
+            );
+            assert!(root.store().is_empty());
+        }
+
+        // Case `add_rejection_keeps_the_draft_open_and_persists_nothing`.
+        {
+            let (_dir, root) = scratch_root();
+            let commands = ui::LocalState::new(None);
+            let mut pane = AccountsPane::in_root(root.clone())
+                .with_command_state(&commands)
+                .with_account_tester(std::sync::Arc::new(RejectCandidate));
+            let mut doc = AutoCommit::new();
+            commands.set(Some(AccountViewCommand::Add(AccountKind::Mail)));
+            pane.sync(&mut doc, &automerge::ROOT);
+            pane.set_form_fields_for_test(
+                "Rejected",
+                "rejected@example.test",
+                "rejected@example.test",
+                "",
+            );
+            pane.set_form_password_for_test("candidate-password");
+            commands.set(Some(AccountViewCommand::Submit));
+            pane.sync(&mut doc, &automerge::ROOT);
+            settle_probes(&mut pane, &mut doc);
+            assert_eq!(
+                pane.form_error.as_deref(),
+                Some("server rejected candidate")
+            );
+            assert!(pane.form_open(), "a rejected draft remains editable");
+            assert!(root.store().is_empty());
+            assert!(
+                root.vault()
+                    .get(&accounts::AccountId::from("rejected@example.test"))
+                    .is_none(),
+                "a rejected credential never reaches the vault"
+            );
+        }
     }
 
     #[test]
-    fn edit_preserves_envelope_unknown_config_and_service_toggles() {
-        let (_dir, root) = scratch_root();
-        let id = accounts::AccountId::from("nextcloud-stable-id");
-        let mut original = accounts::Account::new(id.clone(), NEXTCLOUD_TYPE);
-        original.display_name = "Old label".into();
-        original.enabled = false;
-        original.tint = 7;
-        original.owner = Some("local-owner".into());
-        original.config = serde_json::json!({
-            "id": "nextcloud-stable-id",
-            "label": "Old label",
-            "server_url": "https://old.example",
-            "username": "old-user",
-            "use_files": false,
-            "use_calendar": true,
-            "use_mail": false,
-            "future_provider_field": {"kept": true}
-        });
+    fn vault_save_failure_preserves_existing_account_metadata() {
+        // Isolate custody selection from an actual session Secret Service, and
+        // isolate ConfigGuard's environment from other tests in this process.
+        const CHILD: &str = "TILO_SETTINGS_VAULT_FAILURE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "panes::accounts::tests::vault_save_failure_preserves_existing_account_metadata", "--nocapture"])
+                .env(CHILD, "1")
+                .env("PATH", "")
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let (_dir, account_root) = scratch_root();
+        let root = account_root.path().unwrap();
+        let old_id = accounts::AccountId::from("existing@example.test");
         let mut store = accounts::AccountStore::new();
-        store.upsert(original);
-        root.save_store(&store).expect("seed canonical account");
-        let mut vault = root.vault();
-        vault.put(
-            &id,
-            &accounts::Secret {
-                password: "old-password".into(),
-                token: Some("future-provider-token".into()),
-            },
+        store.upsert(accounts::Account::new(old_id.clone(), "email"));
+        account_root.save_store(&store).unwrap();
+        let store_path = accounts::store_path_in(&root);
+        let metadata_before = std::fs::read(&store_path).unwrap();
+        let mut vault = accounts::SecretVault::open_in(&root);
+        vault.put(&old_id, &accounts::Secret::password("old-password"));
+        vault.try_save().unwrap();
+        assert_eq!(
+            accounts::SecretVault::open_in(&root).custody(),
+            accounts::SecretCustody::LocalFile
         );
-        vault.try_save().expect("seed credential");
+        let dir = accounts::vault_dir_in(&root);
+        let ciphertext_before = std::fs::read(dir.join("vault.enc")).unwrap();
+        let malformed_key = [7u8; 31];
+        std::fs::write(dir.join("vault.key"), malformed_key).unwrap();
 
-        AccountsPane::save_account(
-            &root,
-            AccountKind::Nextcloud,
-            Some(id.as_str()),
-            "New label",
-            "new-user",
+        let error = AccountsPane::save_account(
+            &account_root,
+            AccountKind::Mail,
+            None,
+            "New account",
+            "new@example.test",
+            "new@example.test",
             "",
-            "https://new.example/",
-            "",
+            "new-password",
         )
-        .expect("edit account");
-
-        let saved = root.store().get(&id).cloned().expect("saved account");
-        assert!(!saved.enabled);
-        assert_eq!(saved.tint, 7);
-        assert_eq!(saved.owner.as_deref(), Some("local-owner"));
-        assert_eq!(saved.config["use_files"], false);
-        assert_eq!(saved.config["use_calendar"], true);
-        assert_eq!(saved.config["use_mail"], false);
-        assert_eq!(saved.config["future_provider_field"]["kept"], true);
-        assert_eq!(saved.config["server_url"], "https://new.example");
-        assert_eq!(saved.config["username"], "new-user");
-        assert_eq!(
-            root.vault().get(&id),
-            Some(accounts::Secret {
-                password: "old-password".into(),
-                token: Some("future-provider-token".into()),
-            })
-        );
-    }
-
-    #[test]
-    fn reauthentication_probes_candidate_before_persisting() {
-        let (_dir, root) = scratch_root();
-        let id = accounts::AccountId::from("reauth@example.test");
-        let mut account = accounts::Account::new(id.clone(), "email");
-        account.display_name = "Reauth".into();
-        account.config = serde_json::json!({
-            "email": id.as_str(), "username": id.as_str(),
-            "imap_host": "imap.example.test", "imap_port": 993
-        });
-        let mut store = accounts::AccountStore::new();
-        store.upsert(account);
-        root.save_store(&store).expect("seed account");
-        let mut vault = root.vault();
-        vault.put(&id, &accounts::Secret::password("old-password"));
-        vault.try_save().expect("seed credential");
-
-        let commands = ui::LocalState::new(None);
-        let mut pane = AccountsPane::in_root(root.clone())
-            .with_command_state(&commands)
-            .with_account_tester(std::sync::Arc::new(RejectCandidate));
-        let mut doc = AutoCommit::new();
-        commands.set(Some(AccountViewCommand::Reauthenticate(id.to_string())));
-        pane.sync(&mut doc, &automerge::ROOT);
-        pane.set_reauth_password_for_test("candidate-password");
-        commands.set(Some(AccountViewCommand::SubmitReauthentication));
-        pane.sync(&mut doc, &automerge::ROOT);
-        settle_probes(&mut pane, &mut doc);
-        assert_eq!(
-            pane.reauth_error_for_test(),
-            Some("server rejected candidate")
-        );
-        assert_eq!(
-            root.vault().get(&id).map(|secret| secret.password),
-            Some("old-password".into()),
-            "rejected candidate must never replace the stored credential"
-        );
-    }
-
-    #[test]
-    fn add_rejection_keeps_the_draft_open_and_persists_nothing() {
-        let (_dir, root) = scratch_root();
-        let commands = ui::LocalState::new(None);
-        let mut pane = AccountsPane::in_root(root.clone())
-            .with_command_state(&commands)
-            .with_account_tester(std::sync::Arc::new(RejectCandidate));
-        let mut doc = AutoCommit::new();
-        commands.set(Some(AccountViewCommand::Add(AccountKind::Mail)));
-        pane.sync(&mut doc, &automerge::ROOT);
-        pane.set_form_fields_for_test(
-            "Rejected",
-            "rejected@example.test",
-            "rejected@example.test",
-            "",
-        );
-        pane.set_form_password_for_test("candidate-password");
-        commands.set(Some(AccountViewCommand::Submit));
-        pane.sync(&mut doc, &automerge::ROOT);
-        settle_probes(&mut pane, &mut doc);
-        assert_eq!(
-            pane.form_error.as_deref(),
-            Some("server rejected candidate")
-        );
-        assert!(pane.form_open(), "a rejected draft remains editable");
-        assert!(root.store().is_empty());
+        .unwrap_err();
         assert!(
-            root.vault()
-                .get(&accounts::AccountId::from("rejected@example.test"))
-                .is_none(),
-            "a rejected credential never reaches the vault"
+            error.starts_with("could not save credential:"),
+            "must reach vault save, not fail account intent: {error}"
         );
+        assert_eq!(std::fs::read(dir.join("vault.key")).unwrap(), malformed_key);
+        assert_eq!(
+            std::fs::read(dir.join("vault.enc")).unwrap(),
+            ciphertext_before
+        );
+        assert_eq!(std::fs::read(&store_path).unwrap(), metadata_before);
+        let saved = account_root.store();
+        assert_eq!(saved.all().len(), 1);
+        assert!(saved.get(&old_id).is_some());
+        assert!(
+            saved
+                .get(&accounts::AccountId::from("new@example.test"))
+                .is_none()
+        );
+    }
+
+    /// Edits keep unknown config and toggles; re-authentication probes before persisting.
+    #[test]
+    fn account_edits_preserve_config_and_probe_before_persisting() {
+        // Case `edit_preserves_envelope_unknown_config_and_service_toggles`.
+        {
+            let (_dir, root) = scratch_root();
+            let id = accounts::AccountId::from("nextcloud-stable-id");
+            let mut original = accounts::Account::new(id.clone(), crate::accounts::NEXTCLOUD_TYPE);
+            original.display_name = "Old label".into();
+            original.enabled = false;
+            original.tint = 7;
+            original.owner = Some("local-owner".into());
+            original.config = serde_json::json!({
+                "id": "nextcloud-stable-id",
+                "label": "Old label",
+                "server_url": "https://old.example",
+                "username": "old-user",
+                "use_files": false,
+                "use_calendar": true,
+                "use_mail": false,
+                "future_provider_field": {"kept": true}
+            });
+            let mut store = accounts::AccountStore::new();
+            store.upsert(original);
+            root.save_store(&store).expect("seed canonical account");
+            let mut vault = root.vault();
+            vault.put(
+                &id,
+                &accounts::Secret {
+                    password: "old-password".into(),
+                    token: Some("future-provider-token".into()),
+                },
+            );
+            vault.try_save().expect("seed credential");
+
+            AccountsPane::save_account(
+                &root,
+                AccountKind::Nextcloud,
+                Some(id.as_str()),
+                "New label",
+                "new-user",
+                "",
+                "https://new.example/",
+                "",
+            )
+            .expect("edit account");
+
+            let saved = root.store().get(&id).cloned().expect("saved account");
+            assert!(!saved.enabled);
+            assert_eq!(saved.tint, 7);
+            assert_eq!(saved.owner.as_deref(), Some("local-owner"));
+            assert_eq!(saved.config["use_files"], false);
+            assert_eq!(saved.config["use_calendar"], true);
+            assert_eq!(saved.config["use_mail"], false);
+            assert_eq!(saved.config["future_provider_field"]["kept"], true);
+            assert_eq!(saved.config["server_url"], "https://new.example");
+            assert_eq!(saved.config["username"], "new-user");
+            assert_eq!(
+                root.vault().get(&id),
+                Some(accounts::Secret {
+                    password: "old-password".into(),
+                    token: Some("future-provider-token".into()),
+                })
+            );
+        }
+
+        // Case `reauthentication_probes_candidate_before_persisting`.
+        {
+            let (_dir, root) = scratch_root();
+            let id = accounts::AccountId::from("reauth@example.test");
+            let mut account = accounts::Account::new(id.clone(), "email");
+            account.display_name = "Reauth".into();
+            account.config = serde_json::json!({
+                "email": id.as_str(), "username": id.as_str(),
+                "imap_host": "imap.example.test", "imap_port": 993
+            });
+            let mut store = accounts::AccountStore::new();
+            store.upsert(account);
+            root.save_store(&store).expect("seed account");
+            let mut vault = root.vault();
+            vault.put(&id, &accounts::Secret::password("old-password"));
+            vault.try_save().expect("seed credential");
+
+            let commands = ui::LocalState::new(None);
+            let mut pane = AccountsPane::in_root(root.clone())
+                .with_command_state(&commands)
+                .with_account_tester(std::sync::Arc::new(RejectCandidate));
+            let mut doc = AutoCommit::new();
+            commands.set(Some(AccountViewCommand::Reauthenticate(id.to_string())));
+            pane.sync(&mut doc, &automerge::ROOT);
+            pane.set_reauth_password_for_test("candidate-password");
+            commands.set(Some(AccountViewCommand::SubmitReauthentication));
+            pane.sync(&mut doc, &automerge::ROOT);
+            settle_probes(&mut pane, &mut doc);
+            assert_eq!(
+                pane.reauth_error_for_test(),
+                Some("server rejected candidate")
+            );
+            assert_eq!(
+                root.vault().get(&id).map(|secret| secret.password),
+                Some("old-password".into()),
+                "rejected candidate must never replace the stored credential"
+            );
+        }
     }
 }

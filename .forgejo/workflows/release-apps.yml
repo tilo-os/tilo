@@ -229,7 +229,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 15
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
     outputs:
       builder_image: ${{ steps.builder.outputs.image }}
       apps: ${{ steps.plan.outputs.apps }}
@@ -240,7 +240,17 @@ jobs:
       version: ${{ steps.plan.outputs.version }}
       publish: ${{ steps.plan.outputs.publish }}
       collection: ${{ steps.plan.outputs.collection }}
+      complete: ${{ steps.plan.outputs.complete }}
+      prior_x86_url: ${{ steps.plan.outputs.prior_x86_url }}
+      prior_x86_sha256: ${{ steps.plan.outputs.prior_x86_sha256 }}
+      prior_arm64_url: ${{ steps.plan.outputs.prior_arm64_url }}
+      prior_arm64_sha256: ${{ steps.plan.outputs.prior_arm64_sha256 }}
     steps:
+      - name: Disable automatic Git maintenance in the disposable job container
+        # Git 2.54 maintenance can rewrite shallow history between fetches.
+        # Checkout copies this global config before its first fetch.
+        run: git config --global maintenance.auto false
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.sha }}
@@ -263,15 +273,18 @@ jobs:
           SOURCE_TOKEN: ${{ github.token }}
           COORDINATOR_INTENT: ${{ github.event.inputs.coordinator_intent }}
           BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}
+          COLLECTION_SOURCE: ${{ vars.TILO_APP_COLLECTION_SOURCE }}
         run: |
           set -euo pipefail
           base=
           if [[ -n ${COORDINATOR_INTENT:-} ]]; then
             base=${BASELINE_SHA:-}
+          elif [[ $GITHUB_EVENT_NAME == push ]]; then
+            base=${COLLECTION_SOURCE:-}
           elif [[ $GITHUB_EVENT_NAME != workflow_dispatch ]]; then
             base='${{ github.event.pull_request.base.sha }}'
-            [[ -n $base && $base != null ]] || base='${{ github.event.before }}'
           fi
+          [[ $base != null ]] || base=
           if [[ -z $base || $base == 0000000000000000000000000000000000000000 ]]; then
             unset SOURCE_TOKEN
             exit 0
@@ -316,7 +329,11 @@ jobs:
             fi
           done
           unset credential auth
-          $connected || { printf 'cannot establish bounded release comparison\n' >&2; exit 1; }
+          if ! $connected; then
+            printf 'cannot establish bounded release comparison\n' >&2
+            # Main then rebuilds the whole collection.
+            [[ $GITHUB_EVENT_NAME == push ]] || exit 1
+          fi
       - name: Validate prepared nonpublishing coordinator qualification
         env:
           COORDINATOR_ENABLED: ${{ vars.TILO_APP_COORDINATOR_QUALIFICATION }}
@@ -343,12 +360,30 @@ jobs:
           MAIN_ARCHITECTURES: ${{ vars.TILO_APP_MAIN_ARCHITECTURES }}
           COORDINATOR_INTENT: ${{ github.event.inputs.coordinator_intent }}
           BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}
+          COLLECTION_SOURCE: ${{ vars.TILO_APP_COLLECTION_SOURCE }}
+          COLLECTION_BUILDER: ${{ vars.TILO_APP_COLLECTION_BUILDER }}
+          BUILDER: ${{ steps.builder.outputs.image }}
+          PRIOR_X86_URL: ${{ vars.TILO_APP_COLLECTION_URL_X86_64 || vars.TILO_APP_COLLECTION_URL }}
+          PRIOR_X86_SHA256: ${{ vars.TILO_APP_COLLECTION_SHA256_X86_64 || vars.TILO_APP_COLLECTION_SHA256 }}
+          PRIOR_ARM64_URL: ${{ vars.TILO_APP_COLLECTION_URL_AARCH64 }}
+          PRIOR_ARM64_SHA256: ${{ vars.TILO_APP_COLLECTION_SHA256_AARCH64 }}
         run: |
           set -euo pipefail
           args=(--github-output "$GITHUB_OUTPUT")
+          # Publication reuses exactly the collection this selection was made
+          # against, never one a later run moved the channel to.
+          {
+            echo "prior_x86_url=${PRIOR_X86_URL:-}"
+            echo "prior_x86_sha256=${PRIOR_X86_SHA256:-}"
+            echo "prior_arm64_url=${PRIOR_ARM64_URL:-}"
+            echo "prior_arm64_sha256=${PRIOR_ARM64_SHA256:-}"
+          } >> "$GITHUB_OUTPUT"
+          # Whether this selection covers every change since the published
+          # collection's source, so publishing may record this commit as it.
+          complete=false
           use_base() {
             python3 -I tools/ci/python.py tools/ci/app_release_history.py \
-              fetch-base "$1" "$GITHUB_SHA"
+              fetch-base "$1" "$GITHUB_SHA" || return 1
             args+=(--base "$1")
           }
           if [[ -n ${COORDINATOR_INTENT:-} ]]; then
@@ -361,17 +396,29 @@ jobs:
             args+=(--apps "$REQUESTED_APPS")
           elif [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
             args+=(--collection "${REQUESTED_COLLECTION:-default}")
+            complete=true
+          elif [[ $GITHUB_EVENT_NAME == push ]]; then
+            # Main publishes the default collection below. Select the tapps
+            # affected since the published collection's source, so unchanged
+            # immutable members are reused and runs superseded in the queue
+            # lose nothing; without a usable source, or when the published
+            # collection's runtime came from another builder, rebuild them all.
+            complete=true
+            base=$(python3 -I tools/ci/python.py tools/apps/app_release.py \
+              --prior-collection-base --collection-source "${COLLECTION_SOURCE:-}" \
+              --collection-builder "${COLLECTION_BUILDER:-}" --builder "${BUILDER:-}")
+            if ! [[ $base =~ ^[0-9a-f]{40}$ ]] || ! use_base "$base"; then
+              args+=(--collection default)
+            fi
           else
-            # Main still publishes the default collection below. Select
-            # affected tapps here so unchanged immutable members can be reused.
             base='${{ github.event.pull_request.base.sha }}'
-            [[ -n $base && $base != null ]] || base='${{ github.event.before }}'
-            if [[ -z $base || $base == 0000000000000000000000000000000000000000 ]]; then
+            if [[ -z $base || $base == null ]]; then
               args+=(--collection default)
             else
               use_base "$base"
             fi
           fi
+          echo "complete=$complete" >> "$GITHUB_OUTPUT"
           python3 -I tools/ci/python.py tools/apps/app_release.py "${args[@]}" | tee app-release-plan.json
           collection=
           if [[ $GITHUB_REF == refs/heads/main ]]; then
@@ -455,8 +502,8 @@ jobs:
     if: "github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.count != '0'"
     needs: [plan, authorize-publish]
     name: apps / ${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 240
+    runs-on: ${{ matrix.build_runner }}
+    timeout-minutes: 180
     # App feature sets include native media, graphics and portal bindings.
     # Keep those system headers in the versioned CI builder image instead of
     # resolving distro packages independently in every release job.
@@ -472,7 +519,6 @@ jobs:
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
       # v2 retires a malformed archive written by the original app namespace.
       TILO_SCCACHE_KEY_PREFIX: tilo/apps/v2/${{ matrix.arch }}
-      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -485,14 +531,45 @@ jobs:
         run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
       - name: Restore Cargo downloads
         uses: ./.forgejo/actions/restore-cargo-downloads
-      # A publication signs these tapps, and the collection ships in signed OS
-      # images. Every CI job and agent sandbox can write any object in the
-      # shared compiler cache, so publications compile without it: no wrapper,
-      # and the runner's cache credentials are removed before compiling.
+      # The runner's compiler cache (infra docs/ci-caching.md). Pull request
+      # jobs write only their own scope; the shared scope a main build reads
+      # is written only by trusted events of users who can push to this
+      # repository. Signing secrets never reach the compile step below.
       - name: Prepare compiler cache
-        if: needs.plan.outputs.publish != 'true'
         run: bash tools/ci/sccache.sh prepare
       - name: Build and verify selected tapps once for this architecture
+        env:
+          TILO_RELEASE_APPS: ${{ needs.plan.outputs.apps }}
+          TILO_APP_RELEASE_SOURCE: ${{ needs.plan.outputs.publish == 'true' && github.sha || '' }}
+          TILO_APP_RELEASE_SEQUENCE: ${{ needs.plan.outputs.publish == 'true' && github.run_number || '' }}
+          TILO_APP_COMPILE_ONLY: "1"
+        run: |
+          # Every core compiles, bounded by memory: 2 GiB per job is what the
+          # smaller runners have always given this graph.
+          cpus=$(nproc)
+          if read -r quota period 2>/dev/null < /sys/fs/cgroup/cpu.max && [[ $quota != max ]]; then
+            cpus=$(( (quota + period - 1) / period ))
+          fi
+          memory=$(( $(sed -n 's/^MemTotal: *\([0-9]*\) kB$/\1/p' /proc/meminfo) << 10 ))
+          if read -r limit 2>/dev/null < /sys/fs/cgroup/memory.max && [[ $limit =~ ^[0-9]+$ ]]; then
+            (( limit < memory )) && memory=$limit
+          fi
+          jobs=$(( memory / (2 << 30) ))
+          (( jobs > cpus )) && jobs=$cpus
+          (( jobs < 1 )) && jobs=1
+          export CARGO_BUILD_JOBS=$jobs
+          echo "::notice::cargo jobs: $jobs of $cpus CPUs, $(( memory >> 30 )) GiB"
+          build_log=$(mktemp "$RUNNER_TEMP/tilo-app-build.XXXXXX")
+          if ! dist/apps/package-apps.sh 2> >(tee "$build_log" >&2); then
+            if ! grep -Eq 'truncated or malformed archive|failed to read object file' "$build_log"; then
+              exit 1
+            fi
+            echo '::warning::discarding malformed compiler-cache output and rebuilding it once'
+            find target/thin-app target/release -mindepth 1 -depth -delete 2>/dev/null || true
+            SCCACHE_RECACHE=1 dist/apps/package-apps.sh
+          fi
+          [[ -z ${RUSTC_WRAPPER:-} ]] || "$RUSTC_WRAPPER" --show-stats || true
+      - name: Package and sign selected tapps
         env:
           TILO_RELEASE_APPS: ${{ needs.plan.outputs.apps }}
           TILO_APP_RELEASE_SOURCE: ${{ needs.plan.outputs.publish == 'true' && github.sha || '' }}
@@ -500,13 +577,6 @@ jobs:
           TAPP_PUBLISHER_IDENTITY: ${{ needs.plan.outputs.publish == 'true' && secrets.TAPP_PUBLISHER_IDENTITY || '' }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ needs.plan.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
         run: |
-          if [[ '${{ needs.plan.outputs.publish }}' == true ]]; then
-            while IFS= read -r name; do
-              unset "$name"
-            done < <(compgen -e | grep -E '^(AWS_|SCCACHE_)' || true)
-            export RUSTC_WRAPPER=
-            echo '::notice::publication: compiling without the shared compiler cache'
-          fi
           if [[ -n ${TAPP_PUBLISHER_IDENTITY:-} ]]; then
             identity="$RUNNER_TEMP/tilo-app-publisher.json"
             (umask 077; printf '%s' "$TAPP_PUBLISHER_IDENTITY" > "$identity")
@@ -523,20 +593,13 @@ jobs:
             printf 'RUNTIME_BUNDLE_SIGNING_KEY is required for publication\n' >&2
             exit 1
           fi
+          unset TAPP_PUBLISHER_IDENTITY RUNTIME_BUNDLE_SIGNING_KEY
           cleanup_identities() {
             [[ -z ${identity:-} ]] || rm -f "$identity"
             [[ -z ${runtime_identity:-} ]] || rm -f "$runtime_identity"
           }
           trap cleanup_identities EXIT
-          build_log=$(mktemp "$RUNNER_TEMP/tilo-app-build.XXXXXX")
-          if ! dist/apps/package-apps.sh 2> >(tee "$build_log" >&2); then
-            if ! grep -Eq 'truncated or malformed archive|failed to read object file' "$build_log"; then
-              exit 1
-            fi
-            echo '::warning::discarding malformed compiler-cache output and rebuilding it once'
-            find target/thin-app target/release -mindepth 1 -depth -delete 2>/dev/null || true
-            SCCACHE_RECACHE=1 dist/apps/package-apps.sh
-          fi
+          dist/apps/package-apps.sh
           # The publish job reuses this already-built CLI to create signed
           # registry mutations from the final tapp bytes.
           install -m 0755 target/release/tilo-app-package dist/app-release/tilo-app-package
@@ -564,10 +627,9 @@ jobs:
             dist/app-release/verification-policy.json
             dist/app-release/tilo-app-package
           if-no-files-found: error
-      - name: Report compiler-cache effectiveness
-        if: always()
-        run: bash tools/ci/sccache.sh report || true
-
+          # Read only by this run's qualify-collection and publish jobs; the
+          # cross-run baseline is final-app-collection-<arch>.
+          retention-days: 1
   qualify-collection:
     # Coordinator guard keeps this qualification disabled; no publisher OIDC.
     if: github.event.inputs.coordinator_intent != '' && needs.plan.outputs.publish == 'false' && needs.build.result == 'success'
@@ -678,10 +740,11 @@ jobs:
           MAIN_AUDIENCE: ${{ vars.TILO_APP_RELEASE_MAIN_AUDIENCE }}
           VERSION: ${{ needs.plan.outputs.version }}
           COLLECTION: ${{ needs.plan.outputs.collection }}
-          PRIOR_X86_URL: ${{ vars.TILO_APP_COLLECTION_URL_X86_64 || vars.TILO_APP_COLLECTION_URL }}
-          PRIOR_X86_SHA256: ${{ vars.TILO_APP_COLLECTION_SHA256_X86_64 || vars.TILO_APP_COLLECTION_SHA256 }}
-          PRIOR_ARM64_URL: ${{ vars.TILO_APP_COLLECTION_URL_AARCH64 }}
-          PRIOR_ARM64_SHA256: ${{ vars.TILO_APP_COLLECTION_SHA256_AARCH64 }}
+          COMPLETE: ${{ needs.plan.outputs.complete }}
+          PRIOR_X86_URL: ${{ needs.plan.outputs.prior_x86_url }}
+          PRIOR_X86_SHA256: ${{ needs.plan.outputs.prior_x86_sha256 }}
+          PRIOR_ARM64_URL: ${{ needs.plan.outputs.prior_arm64_url }}
+          PRIOR_ARM64_SHA256: ${{ needs.plan.outputs.prior_arm64_sha256 }}
           TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
           TILO_REGISTRY_URL: ${{ vars.TILO_REGISTRY_URL || 'https://apps.tilo.so' }}
           TAPP_PUBLISHER_IDENTITY: ${{ secrets.TAPP_PUBLISHER_IDENTITY }}
@@ -765,17 +828,16 @@ jobs:
           # every generated icon or screenshot with its real image type.
           # This guards against the package upload and public proxy drifting
           # apart and avoids publishing Store cards that render as blanks.
-          while IFS=$'\t' read -r media media_url; do
+          check_media() {
+            local media=$1 media_url=$2 expected_type headers status=000 content_type= attempt
             case "$media" in
               *.svg) expected_type='image/svg+xml' ;;
               *.png) expected_type='image/png' ;;
               *.jpg|*.jpeg) expected_type='image/jpeg' ;;
               *.webp) expected_type='image/webp' ;;
-              *) printf 'unsupported registry media type: %s\n' "$media" >&2; exit 1 ;;
+              *) printf 'unsupported registry media type: %s\n' "$media" >&2; return 1 ;;
             esac
-            headers="$RUNNER_TEMP/tilo-registry-media-headers"
-            status='000'
-            content_type=''
+            headers=$(mktemp "$RUNNER_TEMP/tilo-registry-media-headers.XXXXXX")
             for attempt in 1 2 3 4 5; do
               : > "$headers"
               status=$(curl --silent --show-error --location --head --dump-header "$headers" \
@@ -784,12 +846,17 @@ jobs:
               [[ $status == 200 && $content_type == "$expected_type" ]] && break
               (( attempt < 5 )) && sleep "$attempt"
             done
+            rm -f "$headers"
             [[ $status == 200 && $content_type == "$expected_type" ]] || {
               printf 'public registry media is unavailable or has the wrong type (%s: HTTP %s, %s; expected %s)\n' \
                 "$media_url" "$status" "${content_type:-no Content-Type}" "$expected_type" >&2
-              exit 1
+              return 1
             }
-          done < "$registry_media_urls"
+          }
+          export -f check_media
+          export RUNNER_TEMP
+          tr '\t' '\n' < "$registry_media_urls" \
+            | xargs -d '\n' -n 2 -P 8 bash -c 'check_media "$1" "$2"' _
 
           # Submit every newly built immutable tapp to the signed registry.
           # The request is signed by the same identity as the package; retries
@@ -834,32 +901,42 @@ jobs:
           # architecture into that entry before POSTing so the registry never
           # has to synthesize or re-sign publisher data. This also upgrades an
           # already-published single-architecture entry append-only.
+          # One snapshot serves every id; only a refused attempt re-reads it.
+          fetch_snapshot() {
+            curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
+              --retry 3 --retry-all-errors "$registry_url/entries" --output "$snapshot"
+            jq -e '.entries | type == "array"' "$snapshot" >/dev/null
+          }
+          fetch_snapshot
           while IFS= read -r id; do
             accepted=false
             architectures=$(awk -F $'\t' -v id="$id" '$1 == id {print $4}' \
               "$publication_plan" | paste -sd, -)
             for attempt in 1 2 3; do
-              curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
-                --retry 3 --retry-all-errors "$registry_url/entries" --output "$snapshot"
-              jq -e '.entries | type == "array"' "$snapshot" >/dev/null
+              (( attempt == 1 )) || fetch_snapshot
               matches=$(jq --arg id "$id" '[.entries[] | select(.package_id == $id)] | length' "$snapshot")
               previous="$RUNNER_TEMP/tilo-registry-previous.json"
               aggregate="$RUNNER_TEMP/tilo-registry-aggregate.json"
               request="$RUNNER_TEMP/tilo-registry-request.json"
               rm -f "$previous" "$aggregate" "$request"
+              # A request still waiting for review is replaced by this one and
+              # must keep its versions, so build on it when there is one.
+              "$registry_cli" pending --registry "$registry_url" \
+                --identity "$registry_identity" "$id" > "$previous"
+              [[ -s $previous ]] || rm -f "$previous"
               case "$matches" in
                 0) action=add ;;
                 1)
                   action=update
-                  jq --arg id "$id" '.entries[] | select(.package_id == $id)' \
-                    "$snapshot" > "$previous"
-                  cp "$previous" "$aggregate"
+                  [[ -f $previous ]] || jq --arg id "$id" \
+                    '.entries[] | select(.package_id == $id)' "$snapshot" > "$previous"
                   ;;
                 *)
                   printf 'registry snapshot contains duplicate package id %s\n' "$id" >&2
                   exit 1
                   ;;
               esac
+              [[ -f $previous ]] && cp "$previous" "$aggregate"
               while IFS=$'\t' read -r planned_id name file arch artifact_root; do
                 [[ $planned_id == "$id" ]] || continue
                 tapp="$artifact_root/tapp/$file"
@@ -897,10 +974,9 @@ jobs:
               # A concurrent publication can make the fetched predecessor
               # stale. Re-read and regenerate the signed aggregate before the
               # next bounded attempt; all other failures remain visible.
-              [[ $status == 409 || $status == 429 || $status == 5?? ]] || {
-                printf 'registry rejected %s with HTTP %s\n' "$id" "$status" >&2
-                exit 1
-              }
+              printf 'registry answered %s with HTTP %s: %s\n' \
+                "$id" "$status" "$(head -c 1000 "$response")" >&2
+              [[ $status == 409 || $status == 429 || $status == 5?? ]] || exit 1
               sleep "$attempt"
             done
             [[ $accepted == true ]] || {
@@ -1025,6 +1101,13 @@ jobs:
             if [[ -n ${arm64_channel_url:-} ]]; then
               update_variable TILO_APP_COLLECTION_URL_AARCH64 "$arm64_channel_url"
               update_variable TILO_APP_COLLECTION_SHA256_AARCH64 "$arm64_channel_sha"
+            fi
+            # Its runtime carries this builder's system libraries; the next
+            # main run may reuse the collection only with the same builder.
+            update_variable TILO_APP_COLLECTION_BUILDER "$BUILDER_IMAGE"
+            # The next main run selects its tapps relative to this commit.
+            if [[ $COMPLETE == true ]]; then
+              update_variable TILO_APP_COLLECTION_SOURCE "$GITHUB_SHA"
             fi
             echo '::notice::advanced the default OS app-collection channel'
           fi

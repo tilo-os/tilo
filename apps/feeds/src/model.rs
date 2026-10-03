@@ -149,12 +149,9 @@ pub struct Article {
 pub type TagKey = u64;
 
 pub fn tag_key(tag: &str) -> TagKey {
-    tag.trim()
-        .to_lowercase()
-        .bytes()
-        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-            (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
-        })
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, tag.trim().to_lowercase().as_bytes());
+    std::hash::Hasher::finish(&hasher)
 }
 
 /// Which subset of articles the list pane is showing.
@@ -212,7 +209,7 @@ impl ReadTheme {
 }
 
 /// Reading face. Unlike the ebook reader (which only offered Sans/Mono because
-/// it draws through the proportional/monospace `draw_text_styled` path), the
+/// it draws through the proportional/monospace `draw_style` path), the
 /// feeds reader renders the body through `ui::richtext::RichTextLayout`, which
 /// exposes a real `FontFamily::Serif`. So we offer a genuine serif option for
 /// long-form reading, plus the proportional sans and a fixed-width mono.
@@ -632,147 +629,155 @@ mod tests {
         }
     }
 
+    /// The store sorts articles, tracks unread counts, filters, marks read, dedups by URL and removes only a feed's own articles.
     #[test]
-    fn articles_for_sorts_newest_first() {
-        let mut s = Store::new();
-        let f = Uuid::new_v4();
-        s.upsert_feed(feed(f, None));
-        s.insert_article_dedup(art(Uuid::new_v4(), f, false, false, 100));
-        s.insert_article_dedup(art(Uuid::new_v4(), f, false, false, 300));
-        s.insert_article_dedup(art(Uuid::new_v4(), f, false, false, 200));
-        let got: Vec<i64> = s
-            .articles_for(Filter::All)
-            .iter()
-            .map(|a| a.published)
-            .collect();
-        assert_eq!(got, vec![300, 200, 100]);
-    }
-
-    #[test]
-    fn unread_counts_track_feed_and_folder() {
-        let mut s = Store::new();
-        let folder = Uuid::new_v4();
-        s.upsert_folder(Folder {
-            id: folder,
-            name: "N".into(),
-            order: 0,
-            collapsed: false,
-        });
-        let f = Uuid::new_v4();
-        s.upsert_feed(feed(f, Some(folder)));
-        s.insert_article_dedup(art(Uuid::new_v4(), f, false, false, 1));
-        s.insert_article_dedup(art(Uuid::new_v4(), f, true, false, 2));
-        assert_eq!(s.unread_for_feed(f), 1);
-        assert_eq!(s.unread_for_folder(folder), 1);
-        assert_eq!(s.total_unread(), 1);
-    }
-
-    #[test]
-    fn filter_unread_and_starred() {
-        let mut s = Store::new();
-        let f = Uuid::new_v4();
-        s.upsert_feed(feed(f, None));
-        let a1 = Uuid::new_v4();
-        let a2 = Uuid::new_v4();
-        s.insert_article_dedup(art(a1, f, false, true, 1));
-        s.insert_article_dedup(art(a2, f, true, false, 2));
-        assert_eq!(s.articles_for(Filter::Unread).len(), 1);
-        assert_eq!(s.articles_for(Filter::Starred).len(), 1);
-        assert_eq!(s.articles_for(Filter::Starred)[0].id, a1);
-    }
-
-    #[test]
-    fn mark_all_read_clears_filter() {
-        let mut s = Store::new();
-        let f = Uuid::new_v4();
-        s.upsert_feed(feed(f, None));
-        s.insert_article_dedup(art(Uuid::new_v4(), f, false, false, 1));
-        s.insert_article_dedup(art(Uuid::new_v4(), f, false, false, 2));
-        let affected = s.mark_all_read(Filter::All);
-        assert_eq!(affected.len(), 2);
-        assert_eq!(s.total_unread(), 0);
-    }
-
-    #[test]
-    fn dedup_blocks_same_url() {
-        let mut s = Store::new();
-        let f = Uuid::new_v4();
-        s.upsert_feed(feed(f, None));
-        let a = art(Uuid::new_v4(), f, false, false, 1);
-        assert!(s.insert_article_dedup(a.clone()));
-        let mut a2 = a;
-        a2.id = Uuid::new_v4();
-        assert!(!s.insert_article_dedup(a2), "same url is a dup");
-    }
-
-    #[test]
-    fn remove_feed_drops_feed_and_its_articles_only() {
-        let mut s = Store::new();
-        let keep = Uuid::new_v4();
-        let drop = Uuid::new_v4();
-        s.upsert_feed(feed(keep, None));
-        s.upsert_feed(feed(drop, None));
-        let survivor = Uuid::new_v4();
-        s.insert_article_dedup(art(survivor, keep, false, false, 1));
-        let doomed = Uuid::new_v4();
-        s.insert_article_dedup(art(doomed, drop, false, false, 2));
-
-        let removed = s.remove_feed(drop);
-        assert_eq!(removed, vec![doomed], "returns the removed article ids");
-        assert!(s.feed(drop).is_none(), "the feed is gone");
-        assert!(s.feed(keep).is_some(), "the other feed survives");
-        assert_eq!(
-            s.articles.len(),
-            1,
-            "only the doomed feed's article is dropped"
-        );
-        assert_eq!(s.articles[0].id, survivor);
-        // Removing an unknown feed is a harmless no-op.
-        assert!(s.remove_feed(Uuid::new_v4()).is_empty());
-    }
-
-    #[test]
-    fn read_settings_round_trip_strings_and_clamp() {
-        for t in ReadTheme::ALL {
-            assert_eq!(ReadTheme::from_key(t.as_str()), t);
+    fn store_orders_filters_counts_and_dedups_articles() {
+        // --- phase: articles_for_sorts_newest_first ---
+        {
+            let mut s = Store::new();
+            let f = Uuid::new_v4();
+            s.upsert_feed(feed(f, None));
+            s.insert_article_dedup(art(Uuid::new_v4(), f, false, false, 100));
+            s.insert_article_dedup(art(Uuid::new_v4(), f, false, false, 300));
+            s.insert_article_dedup(art(Uuid::new_v4(), f, false, false, 200));
+            let got: Vec<i64> = s
+                .articles_for(Filter::All)
+                .iter()
+                .map(|a| a.published)
+                .collect();
+            assert_eq!(got, vec![300, 200, 100]);
         }
-        for f in ReadFont::ALL {
-            assert_eq!(ReadFont::from_key(f.as_str()), f);
+
+        // --- phase: unread_counts_track_feed_and_folder ---
+        {
+            let mut s = Store::new();
+            let folder = Uuid::new_v4();
+            s.upsert_folder(Folder {
+                id: folder,
+                name: "N".into(),
+                order: 0,
+                collapsed: false,
+            });
+            let f = Uuid::new_v4();
+            s.upsert_feed(feed(f, Some(folder)));
+            s.insert_article_dedup(art(Uuid::new_v4(), f, false, false, 1));
+            s.insert_article_dedup(art(Uuid::new_v4(), f, true, false, 2));
+            assert_eq!(s.unread_for_feed(f), 1);
+            assert_eq!(s.unread_for_folder(folder), 1);
+            assert_eq!(s.total_unread(), 1);
         }
-        // Serif is a first-class option (the differentiator vs the ebook reader).
-        assert_eq!(ReadFont::from_key("serif"), ReadFont::Serif);
-        // Cycle visits all three faces.
-        assert_eq!(ReadFont::Sans.next(), ReadFont::Serif);
-        assert_eq!(ReadFont::Serif.next(), ReadFont::Mono);
-        assert_eq!(ReadFont::Mono.next(), ReadFont::Sans);
-        // Clamp keeps font_scale inside bounds.
-        let s = ReadSettings {
-            font_scale: 5.0,
-            ..Default::default()
+
+        // --- phase: filter_unread_and_starred ---
+        {
+            let mut s = Store::new();
+            let f = Uuid::new_v4();
+            s.upsert_feed(feed(f, None));
+            let a1 = Uuid::new_v4();
+            let a2 = Uuid::new_v4();
+            s.insert_article_dedup(art(a1, f, false, true, 1));
+            s.insert_article_dedup(art(a2, f, true, false, 2));
+            assert_eq!(s.articles_for(Filter::Unread).len(), 1);
+            assert_eq!(s.articles_for(Filter::Starred).len(), 1);
+            assert_eq!(s.articles_for(Filter::Starred)[0].id, a1);
         }
-        .clamped();
-        assert_eq!(s.font_scale, ReadSettings::FONT_MAX);
-        let s = ReadSettings {
-            font_scale: 0.1,
-            ..Default::default()
+
+        // --- phase: mark_all_read_clears_filter ---
+        {
+            let mut s = Store::new();
+            let f = Uuid::new_v4();
+            s.upsert_feed(feed(f, None));
+            s.insert_article_dedup(art(Uuid::new_v4(), f, false, false, 1));
+            s.insert_article_dedup(art(Uuid::new_v4(), f, false, false, 2));
+            let affected = s.mark_all_read(Filter::All);
+            assert_eq!(affected.len(), 2);
+            assert_eq!(s.total_unread(), 0);
         }
-        .clamped();
-        assert_eq!(s.font_scale, ReadSettings::FONT_MIN);
-        // Body size scales with the multiplier.
-        let s = ReadSettings {
-            font_scale: 1.5,
-            ..Default::default()
-        };
-        assert!((s.body_size() - ReadSettings::BASE_SIZE * 1.5).abs() < 0.01);
+
+        // --- phase: dedup_blocks_same_url ---
+        {
+            let mut s = Store::new();
+            let f = Uuid::new_v4();
+            s.upsert_feed(feed(f, None));
+            let a = art(Uuid::new_v4(), f, false, false, 1);
+            assert!(s.insert_article_dedup(a.clone()));
+            let mut a2 = a;
+            a2.id = Uuid::new_v4();
+            assert!(!s.insert_article_dedup(a2), "same url is a dup");
+        }
+
+        // --- phase: remove_feed_drops_feed_and_its_articles_only ---
+        {
+            let mut s = Store::new();
+            let keep = Uuid::new_v4();
+            let drop = Uuid::new_v4();
+            s.upsert_feed(feed(keep, None));
+            s.upsert_feed(feed(drop, None));
+            let survivor = Uuid::new_v4();
+            s.insert_article_dedup(art(survivor, keep, false, false, 1));
+            let doomed = Uuid::new_v4();
+            s.insert_article_dedup(art(doomed, drop, false, false, 2));
+
+            let removed = s.remove_feed(drop);
+            assert_eq!(removed, vec![doomed], "returns the removed article ids");
+            assert!(s.feed(drop).is_none(), "the feed is gone");
+            assert!(s.feed(keep).is_some(), "the other feed survives");
+            assert_eq!(
+                s.articles.len(),
+                1,
+                "only the doomed feed's article is dropped"
+            );
+            assert_eq!(s.articles[0].id, survivor);
+            // Removing an unknown feed is a harmless no-op.
+            assert!(s.remove_feed(Uuid::new_v4()).is_empty());
+        }
     }
 
+    /// Reading settings round-trip their strings and clamp; relative times fall in the right buckets.
     #[test]
-    fn relative_time_buckets() {
-        let now = 2_000_000_000i64;
-        assert_eq!(relative_time(0, now), "—");
-        assert_eq!(relative_time(now - 30, now), "now");
-        assert_eq!(relative_time(now - 120, now), "2m");
-        assert_eq!(relative_time(now - 3 * 3600, now), "3h");
-        assert_eq!(relative_time(now - 2 * 86400, now), "2d");
+    fn reading_settings_and_relative_time_format_stably() {
+        // --- phase: read_settings_round_trip_strings_and_clamp ---
+        {
+            for t in ReadTheme::ALL {
+                assert_eq!(ReadTheme::from_key(t.as_str()), t);
+            }
+            for f in ReadFont::ALL {
+                assert_eq!(ReadFont::from_key(f.as_str()), f);
+            }
+            // Serif is a first-class option (the differentiator vs the ebook reader).
+            assert_eq!(ReadFont::from_key("serif"), ReadFont::Serif);
+            // Cycle visits all three faces.
+            assert_eq!(ReadFont::Sans.next(), ReadFont::Serif);
+            assert_eq!(ReadFont::Serif.next(), ReadFont::Mono);
+            assert_eq!(ReadFont::Mono.next(), ReadFont::Sans);
+            // Clamp keeps font_scale inside bounds.
+            let s = ReadSettings {
+                font_scale: 5.0,
+                ..Default::default()
+            }
+            .clamped();
+            assert_eq!(s.font_scale, ReadSettings::FONT_MAX);
+            let s = ReadSettings {
+                font_scale: 0.1,
+                ..Default::default()
+            }
+            .clamped();
+            assert_eq!(s.font_scale, ReadSettings::FONT_MIN);
+            // Body size scales with the multiplier.
+            let s = ReadSettings {
+                font_scale: 1.5,
+                ..Default::default()
+            };
+            assert!((s.body_size() - ReadSettings::BASE_SIZE * 1.5).abs() < 0.01);
+        }
+
+        // --- phase: relative_time_buckets ---
+        {
+            let now = 2_000_000_000i64;
+            assert_eq!(relative_time(0, now), "—");
+            assert_eq!(relative_time(now - 30, now), "now");
+            assert_eq!(relative_time(now - 120, now), "2m");
+            assert_eq!(relative_time(now - 3 * 3600, now), "3h");
+            assert_eq!(relative_time(now - 2 * 86400, now), "2d");
+        }
     }
 }

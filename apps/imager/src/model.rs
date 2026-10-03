@@ -597,10 +597,8 @@ impl InstallMode {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Filesystem {
-    #[serde(alias = "BtrfsSubvols")]
     #[default]
     Btrfs,
-    #[serde(alias = "WholeDisk", alias = "SeparateHome")]
     Ext4,
     Xfs,
 }
@@ -623,7 +621,7 @@ impl Filesystem {
     pub fn from_key(k: &str) -> Option<Self> {
         match k {
             "btrfs" => Some(Self::Btrfs),
-            "ext4" | "whole" | "home" => Some(Self::Ext4),
+            "ext4" => Some(Self::Ext4),
             "xfs" => Some(Self::Xfs),
             _ => None,
         }
@@ -670,13 +668,23 @@ pub struct InstallProfile {
     pub locale: String,
     pub keyboard: String,
     pub timezone: String,
-    #[serde(default, alias = "layout")]
     pub filesystem: Filesystem,
     pub encrypt: bool,
     /// Host-session draft value only; never serialized into installation media.
     pub encryption_passphrase: String,
     /// Persistence overlay size in MB, for `InstallMode::Persistent`.
     pub persist_mb: u64,
+    /// Wi-Fi network the new machine should join. The passphrase stays in the
+    /// write request, never in this collaborative profile.
+    #[serde(default)]
+    pub wifi_ssid: String,
+    /// Name of the device identity created for the target.
+    #[serde(default)]
+    pub device_label: String,
+    /// Certify a new device under the setup machine's person and place it on
+    /// the target. The human root secret stays on the setup machine.
+    #[serde(default)]
+    pub enroll_local_identity: bool,
 }
 
 impl Default for InstallProfile {
@@ -692,6 +700,9 @@ impl Default for InstallProfile {
             encrypt: false,
             encryption_passphrase: String::new(),
             persist_mb: 4096,
+            wifi_ssid: String::new(),
+            device_label: String::new(),
+            enroll_local_identity: false,
         }
     }
 }
@@ -874,6 +885,9 @@ impl InstallProfile {
             encrypt: true,
             encryption_passphrase: "•••••••••".into(),
             persist_mb: 0,
+            wifi_ssid: String::new(),
+            device_label: String::new(),
+            enroll_local_identity: false,
         }
     }
 
@@ -1181,307 +1195,313 @@ pub fn fmt_rate(bps: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Source identity across handles, renames and equal bytes.
     #[test]
-    #[cfg(any(unix, windows))]
-    fn source_identity_tracks_the_file_across_handles_and_renames() {
-        use super::SourceIdentity;
-        let directory = tempfile::tempdir().unwrap();
-        let original = directory.path().join("original.img");
-        let renamed = directory.path().join("renamed.img");
-        std::fs::write(&original, b"same bytes").unwrap();
-        let file = std::fs::File::open(&original).unwrap();
-        let identity = SourceIdentity::from_file(&file)
-            .expect("read native file identity")
-            .expect("native file identity");
-        assert_eq!(
-            SourceIdentity::from_file(&file.try_clone().unwrap())
-                .expect("read cloned file identity"),
-            Some(identity)
-        );
-        std::fs::rename(&original, &renamed).unwrap();
-        std::fs::write(&original, b"same bytes").unwrap();
-        assert_eq!(
-            SourceIdentity::from_file(&file).expect("read file identity"),
-            Some(identity)
-        );
-        assert_eq!(
-            SourceIdentity::from_file(&std::fs::File::open(&renamed).unwrap())
-                .expect("read renamed file identity"),
-            Some(identity)
-        );
-        let replacement = SourceIdentity::from_file(&std::fs::File::open(&original).unwrap())
-            .expect("read replacement file identity")
-            .expect("replacement file identity");
-        assert_ne!(replacement, identity);
-    }
-
-    use super::*;
-
-    #[cfg(any(unix, target_os = "windows"))]
-    #[test]
-    fn held_source_identity_survives_rename_and_distinguishes_same_bytes() {
-        let root = tempfile::tempdir().unwrap();
-        let selected = root.path().join("selected.img");
-        let renamed = root.path().join("renamed.img");
-        std::fs::write(&selected, b"same image bytes").unwrap();
-        let held = std::fs::File::open(&selected).unwrap();
-        let identity = SourceIdentity::from_file(&held)
-            .unwrap()
-            .expect("platform exposes file identity");
-
-        std::fs::rename(&selected, &renamed).unwrap();
-        std::fs::write(&selected, b"same image bytes").unwrap();
-        let replacement = std::fs::File::open(&selected).unwrap();
-        assert_eq!(
-            held.metadata().unwrap().len(),
-            replacement.metadata().unwrap().len()
-        );
-        assert_eq!(SourceIdentity::from_file(&held).unwrap(), Some(identity));
-        assert_eq!(
-            SourceIdentity::from_file(&std::fs::File::open(&renamed).unwrap()).unwrap(),
-            Some(identity)
-        );
-        assert_ne!(
-            SourceIdentity::from_file(&replacement).unwrap(),
-            Some(identity)
-        );
-    }
-
-    #[test]
-    fn sample_has_usb_and_nvme_targets() {
-        let t = sample_targets();
-        assert_eq!(t.len(), 2);
-        assert_eq!(t[0].kind, TargetKind::Usb);
-        assert!(t[0].removable);
-        assert_eq!(t[1].kind, TargetKind::Nvme);
-        assert!(!t[1].removable);
-    }
-
-    #[test]
-    fn sample_source_is_installable_tilo() {
-        let s = sample_source();
-        assert_eq!(s.kind, SourceKind::TiloImage);
-        assert!(s.installable);
-        assert!(s.size > 0);
-    }
-
-    #[test]
-    fn release_without_authenticated_image_digest_fails_closed() {
-        let mut release = sample_releases().remove(0);
-        release.image_sha256.clear();
-        let source = release.to_source();
-        assert_eq!(source.kind, SourceKind::IsoFile);
-        assert!(!source.installable);
-        assert!(source.expected_sha256.is_none());
-    }
-
-    #[test]
-    fn embedded_profile_contains_only_applied_non_secret_fields() {
-        let prof = InstallProfile::sample_workstation();
-        let src = sample_source();
-        let tgt = sample_targets()[1].clone();
-        let cfg = prof.to_headless_config(Some(&src), Some(&tgt));
-        assert!(cfg.contains("\"schema\": 1"));
-        assert!(cfg.contains("\"hostname\": \"tilo-workstation\""));
-        assert!(cfg.contains("\"username\": \"quinten\""));
-        assert!(!cfg.contains(&src.path));
-        assert!(!cfg.contains(&tgt.dev_path()));
-        assert!(!cfg.contains("password"));
-        assert!(!cfg.contains("passphrase"));
-        assert!(!cfg.contains(&prof.user.password) || prof.user.password.contains('•'));
-    }
-
-    #[test]
-    fn every_filesystem_serializes_to_the_installer_contract() {
-        for filesystem in Filesystem::all() {
-            let profile = InstallProfile {
-                filesystem,
-                ..InstallProfile::default()
-            };
-            let value: serde_json::Value =
-                serde_json::from_slice(&profile.to_media_profile_json().unwrap()).unwrap();
-            assert_eq!(value["filesystem"], filesystem.key());
+    fn source_identity_follows_the_file_across_handles_and_renames() {
+        // Phase `source_identity_tracks_the_file_across_handles_and_renames`.
+        #[cfg(any(unix, windows))]
+        {
+            use super::SourceIdentity;
+            let directory = tempfile::tempdir().unwrap();
+            let original = directory.path().join("original.img");
+            let renamed = directory.path().join("renamed.img");
+            std::fs::write(&original, b"same bytes").unwrap();
+            let file = std::fs::File::open(&original).unwrap();
+            let identity = SourceIdentity::from_file(&file)
+                .expect("read native file identity")
+                .expect("native file identity");
+            assert_eq!(
+                SourceIdentity::from_file(&file.try_clone().unwrap())
+                    .expect("read cloned file identity"),
+                Some(identity)
+            );
+            std::fs::rename(&original, &renamed).unwrap();
+            std::fs::write(&original, b"same bytes").unwrap();
+            assert_eq!(
+                SourceIdentity::from_file(&file).expect("read file identity"),
+                Some(identity)
+            );
+            assert_eq!(
+                SourceIdentity::from_file(&std::fs::File::open(&renamed).unwrap())
+                    .expect("read renamed file identity"),
+                Some(identity)
+            );
+            let replacement = SourceIdentity::from_file(&std::fs::File::open(&original).unwrap())
+                .expect("read replacement file identity")
+                .expect("replacement file identity");
+            assert_ne!(replacement, identity);
         }
-    }
 
-    #[test]
-    fn legacy_layout_profile_migrates_to_typed_filesystem() {
-        let value = serde_json::json!({
-            "mode": "Live",
-            "hostname": "tilo",
-            "user": UserAccount::default(),
-            "locale": "en_US.UTF-8",
-            "keyboard": "us",
-            "timezone": "UTC",
-            "layout": "WholeDisk",
-            "encrypt": false,
-            "encryption_passphrase": "",
-            "persist_mb": 4096
-        });
-        let profile: InstallProfile = serde_json::from_value(value).unwrap();
-        assert_eq!(profile.filesystem, Filesystem::Ext4);
-    }
+        // Phase `held_source_identity_survives_rename_and_distinguishes_same_bytes`.
+        #[cfg(any(unix, target_os = "windows"))]
+        {
+            let root = tempfile::tempdir().unwrap();
+            let selected = root.path().join("selected.img");
+            let renamed = root.path().join("renamed.img");
+            std::fs::write(&selected, b"same image bytes").unwrap();
+            let held = std::fs::File::open(&selected).unwrap();
+            let identity = SourceIdentity::from_file(&held)
+                .unwrap()
+                .expect("platform exposes file identity");
 
-    #[test]
-    fn media_profile_validation_rejects_each_consumer_invalid_field() {
-        let good = InstallProfile::default();
-        good.validate_media_profile().unwrap();
-
-        let mut cases = Vec::new();
-        let mut profile = good.clone();
-        profile.hostname = "bad host".into();
-        cases.push(("hostname", profile));
-        let mut profile = good.clone();
-        profile.user.username = "root".into();
-        cases.push(("username", profile));
-        let mut profile = good.clone();
-        profile.user.full_name = "Bad:Name".into();
-        cases.push(("full name", profile));
-        let mut profile = good.clone();
-        profile.locale = "zz_ZZ.UTF-8".into();
-        cases.push(("locale", profile));
-        let mut profile = good.clone();
-        profile.keyboard = "not-a-layout".into();
-        cases.push(("keyboard", profile));
-        let mut profile = good;
-        profile.timezone = "../../etc".into();
-        cases.push(("time zone", profile));
-
-        for (field, profile) in cases {
-            let message = profile
-                .validate_media_profile()
-                .expect_err("invalid producer field must be rejected before writing");
-            assert!(
-                message.to_ascii_lowercase().contains(field),
-                "{field} produced an unhelpful error: {message}"
+            std::fs::rename(&selected, &renamed).unwrap();
+            std::fs::write(&selected, b"same image bytes").unwrap();
+            let replacement = std::fs::File::open(&selected).unwrap();
+            assert_eq!(
+                held.metadata().unwrap().len(),
+                replacement.metadata().unwrap().len()
+            );
+            assert_eq!(SourceIdentity::from_file(&held).unwrap(), Some(identity));
+            assert_eq!(
+                SourceIdentity::from_file(&std::fs::File::open(&renamed).unwrap()).unwrap(),
+                Some(identity)
+            );
+            assert_ne!(
+                SourceIdentity::from_file(&replacement).unwrap(),
+                Some(identity)
             );
         }
     }
 
-    #[test]
-    fn fits_respects_capacity() {
-        let usb = &sample_targets()[0];
-        assert!(usb.fits(2_000_000_000));
-        assert!(!usb.fits(40_000_000_000));
-        assert!(usb.fits(0)); // unknown size always "fits" for the check
-    }
+    use super::*;
 
+    /// Sample data, release digests, capacity, sizes and target kinds.
     #[test]
-    fn fmt_size_picks_sane_units() {
-        assert_eq!(fmt_size(0), "—");
-        assert_eq!(fmt_size(512), "512 B");
-        assert_eq!(fmt_size(1_000_000_000_000), "1.0 TB");
-        assert!(fmt_size(2_415_919_104).ends_with("GB"));
-    }
+    fn samples_releases_and_targets_are_classified_truthfully() {
+        // Phase `sample_has_usb_and_nvme_targets`.
+        {
+            let t = sample_targets();
+            assert_eq!(t.len(), 2);
+            assert_eq!(t[0].kind, TargetKind::Usb);
+            assert!(t[0].removable);
+            assert_eq!(t[1].kind, TargetKind::Nvme);
+            assert!(!t[1].removable);
+        }
 
-    #[test]
-    fn round_trips_through_json() {
-        let prof = InstallProfile::sample_workstation();
-        let json = serde_json::to_string(&prof).unwrap();
-        let back: InstallProfile = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.hostname, prof.hostname);
-        assert_eq!(back.encrypt, prof.encrypt);
-        assert_eq!(back.filesystem, prof.filesystem);
-    }
+        // Phase `sample_source_is_installable_tilo`.
+        {
+            let s = sample_source();
+            assert_eq!(s.kind, SourceKind::TiloImage);
+            assert!(s.installable);
+            assert!(s.size > 0);
+        }
 
-    #[test]
-    fn step_flow_advances_and_retreats_and_saturates() {
-        assert_eq!(Step::Source.next(), Step::Drive);
-        assert_eq!(Step::Drive.next(), Step::Customize);
-        assert_eq!(Step::Customize.next(), Step::Confirm);
-        assert_eq!(Step::Confirm.next(), Step::Write);
-        assert_eq!(Step::Write.next(), Step::Done);
-        assert_eq!(Step::Done.next(), Step::Done, "last step saturates");
-        assert_eq!(Step::Done.prev(), Step::Write);
-        assert_eq!(Step::Write.prev(), Step::Confirm);
-        assert_eq!(Step::Confirm.prev(), Step::Customize);
-        assert_eq!(Step::Source.prev(), Step::Source, "first step saturates");
-        assert_eq!(Step::all().len(), 6);
-        // Every station round-trips through its stable document key.
-        for s in Step::all() {
-            assert_eq!(Step::from_key(s.key()), s);
+        // Phase `release_without_authenticated_image_digest_fails_closed`.
+        {
+            let mut release = sample_releases().remove(0);
+            release.image_sha256.clear();
+            let source = release.to_source();
+            assert_eq!(source.kind, SourceKind::IsoFile);
+            assert!(!source.installable);
+            assert!(source.expected_sha256.is_none());
+        }
+
+        // Phase `fits_respects_capacity`.
+        {
+            let usb = &sample_targets()[0];
+            assert!(usb.fits(2_000_000_000));
+            assert!(!usb.fits(40_000_000_000));
+            assert!(usb.fits(0)); // unknown size always "fits" for the check
+        }
+
+        // Phase `fmt_size_picks_sane_units`.
+        {
+            assert_eq!(fmt_size(0), "—");
+            assert_eq!(fmt_size(512), "512 B");
+            assert_eq!(fmt_size(1_000_000_000_000), "1.0 TB");
+            assert!(fmt_size(2_415_919_104).ends_with("GB"));
+        }
+
+        // Phase `target_kind_classifies_from_lsblk`.
+        {
+            assert_eq!(
+                TargetKind::from_lsblk(false, Some("usb"), true),
+                TargetKind::Usb
+            );
+            assert_eq!(
+                TargetKind::from_lsblk(false, Some("nvme"), false),
+                TargetKind::Nvme
+            );
+            assert_eq!(
+                TargetKind::from_lsblk(true, Some("sata"), false),
+                TargetKind::Hdd
+            );
+            assert_eq!(
+                TargetKind::from_lsblk(false, Some("sata"), false),
+                TargetKind::Ssd
+            );
+            assert_eq!(
+                TargetKind::from_lsblk(false, Some("mmc"), true),
+                TargetKind::SdCard
+            );
         }
     }
 
+    /// Embedded profile contract, filesystems, migration, validation and JSON.
     #[test]
-    fn progress_overall_and_eta_track_phase() {
-        let idle = Progress::default();
-        assert_eq!(idle.overall(), 0.0);
-        assert_eq!(idle.eta_secs(1_000_000), None);
-        let writing = Progress {
-            phase: JobPhase::Writing,
-            write_frac: 0.5,
-            verify_frac: 0.0,
-            rate_bps: 100,
-            error: None,
-        };
-        assert!((writing.overall() - 0.425).abs() < 1e-9);
-        // Half of a 1000-byte image left at 100 B/s → ~5s.
-        assert_eq!(writing.eta_secs(1000), Some(5));
-        let done = Progress {
-            phase: JobPhase::Success,
-            write_frac: 1.0,
-            verify_frac: 1.0,
-            rate_bps: 0,
-            error: None,
-        };
-        assert_eq!(done.overall(), 1.0);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn media_profile_serializes_migrates_and_validates_the_installer_contract() {
+        // Phase `embedded_profile_contains_only_applied_non_secret_fields`.
+        {
+            let prof = InstallProfile::sample_workstation();
+            let src = sample_source();
+            let tgt = sample_targets()[1].clone();
+            let cfg = prof.to_headless_config(Some(&src), Some(&tgt));
+            assert!(cfg.contains("\"schema\": 1"));
+            assert!(cfg.contains("\"hostname\": \"tilo-workstation\""));
+            assert!(cfg.contains("\"username\": \"quinten\""));
+            assert!(!cfg.contains(&src.path));
+            assert!(!cfg.contains(&tgt.dev_path()));
+            assert!(!cfg.contains("password"));
+            assert!(!cfg.contains("passphrase"));
+            assert!(!cfg.contains(&prof.user.password) || prof.user.password.contains('•'));
+        }
+
+        // Phase `every_filesystem_serializes_to_the_installer_contract`.
+        {
+            for filesystem in Filesystem::all() {
+                let profile = InstallProfile {
+                    filesystem,
+                    ..InstallProfile::default()
+                };
+                let value: serde_json::Value =
+                    serde_json::from_slice(&profile.to_media_profile_json().unwrap()).unwrap();
+                assert_eq!(value["filesystem"], filesystem.key());
+            }
+        }
+
+        // Phase `media_profile_validation_rejects_each_consumer_invalid_field`.
+        {
+            let good = InstallProfile::default();
+            good.validate_media_profile().unwrap();
+
+            let mut cases = Vec::new();
+            let mut profile = good.clone();
+            profile.hostname = "bad host".into();
+            cases.push(("hostname", profile));
+            let mut profile = good.clone();
+            profile.user.username = "root".into();
+            cases.push(("username", profile));
+            let mut profile = good.clone();
+            profile.user.full_name = "Bad:Name".into();
+            cases.push(("full name", profile));
+            let mut profile = good.clone();
+            profile.locale = "zz_ZZ.UTF-8".into();
+            cases.push(("locale", profile));
+            let mut profile = good.clone();
+            profile.keyboard = "not-a-layout".into();
+            cases.push(("keyboard", profile));
+            let mut profile = good;
+            profile.timezone = "../../etc".into();
+            cases.push(("time zone", profile));
+
+            for (field, profile) in cases {
+                let message = profile
+                    .validate_media_profile()
+                    .expect_err("invalid producer field must be rejected before writing");
+                assert!(
+                    message.to_ascii_lowercase().contains(field),
+                    "{field} produced an unhelpful error: {message}"
+                );
+            }
+        }
+
+        // Phase `round_trips_through_json`.
+        {
+            let prof = InstallProfile::sample_workstation();
+            let json = serde_json::to_string(&prof).unwrap();
+            let back: InstallProfile = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.hostname, prof.hostname);
+            assert_eq!(back.encrypt, prof.encrypt);
+            assert_eq!(back.filesystem, prof.filesystem);
+        }
     }
 
+    /// Step flow, progress, ETA and supervision recovery.
     #[test]
-    fn restored_active_phases_fail_closed_when_supervision_is_lost() {
-        for phase in [JobPhase::Writing, JobPhase::Verifying] {
-            let mut progress = Progress {
-                phase,
-                write_frac: 0.7,
-                verify_frac: 0.2,
-                rate_bps: 42_000_000,
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn step_and_progress_state_advance_and_fail_closed_on_lost_supervision() {
+        // Phase `step_flow_advances_and_retreats_and_saturates`.
+        {
+            assert_eq!(Step::Source.next(), Step::Drive);
+            assert_eq!(Step::Drive.next(), Step::Customize);
+            assert_eq!(Step::Customize.next(), Step::Confirm);
+            assert_eq!(Step::Confirm.next(), Step::Write);
+            assert_eq!(Step::Write.next(), Step::Done);
+            assert_eq!(Step::Done.next(), Step::Done, "last step saturates");
+            assert_eq!(Step::Done.prev(), Step::Write);
+            assert_eq!(Step::Write.prev(), Step::Confirm);
+            assert_eq!(Step::Confirm.prev(), Step::Customize);
+            assert_eq!(Step::Source.prev(), Step::Source, "first step saturates");
+            assert_eq!(Step::all().len(), 6);
+            // Every station round-trips through its stable document key.
+            for s in Step::all() {
+                assert_eq!(Step::from_key(s.key()), s);
+            }
+        }
+
+        // Phase `progress_overall_and_eta_track_phase`.
+        {
+            let idle = Progress::default();
+            assert_eq!(idle.overall(), 0.0);
+            assert_eq!(idle.eta_secs(1_000_000), None);
+            let writing = Progress {
+                phase: JobPhase::Writing,
+                write_frac: 0.5,
+                verify_frac: 0.0,
+                rate_bps: 100,
                 error: None,
             };
-
-            assert!(progress.fail_if_supervision_lost());
-            assert_eq!(progress.phase, JobPhase::Failed);
-            assert_eq!(progress.rate_bps, 0);
-            assert!(progress.error.as_deref().is_some_and(|message| {
-                message.contains("outcome is unknown") && message.contains("incomplete")
-            }));
-            assert_ne!(progress.phase, JobPhase::Success);
-        }
-    }
-
-    #[test]
-    fn supervision_recovery_does_not_rewrite_terminal_or_idle_phases() {
-        for phase in [JobPhase::Idle, JobPhase::Success, JobPhase::Failed] {
-            let mut progress = Progress {
-                phase,
-                ..Progress::default()
+            assert!((writing.overall() - 0.425).abs() < 1e-9);
+            // Half of a 1000-byte image left at 100 B/s → ~5s.
+            assert_eq!(writing.eta_secs(1000), Some(5));
+            let done = Progress {
+                phase: JobPhase::Success,
+                write_frac: 1.0,
+                verify_frac: 1.0,
+                rate_bps: 0,
+                error: None,
             };
-            assert!(!progress.fail_if_supervision_lost());
-            assert_eq!(progress.phase, phase);
+            assert_eq!(done.overall(), 1.0);
         }
-    }
 
-    #[test]
-    fn target_kind_classifies_from_lsblk() {
-        assert_eq!(
-            TargetKind::from_lsblk(false, Some("usb"), true),
-            TargetKind::Usb
-        );
-        assert_eq!(
-            TargetKind::from_lsblk(false, Some("nvme"), false),
-            TargetKind::Nvme
-        );
-        assert_eq!(
-            TargetKind::from_lsblk(true, Some("sata"), false),
-            TargetKind::Hdd
-        );
-        assert_eq!(
-            TargetKind::from_lsblk(false, Some("sata"), false),
-            TargetKind::Ssd
-        );
-        assert_eq!(
-            TargetKind::from_lsblk(false, Some("mmc"), true),
-            TargetKind::SdCard
-        );
+        // Phase `restored_active_phases_fail_closed_when_supervision_is_lost`.
+        {
+            for phase in [JobPhase::Writing, JobPhase::Verifying] {
+                let mut progress = Progress {
+                    phase,
+                    write_frac: 0.7,
+                    verify_frac: 0.2,
+                    rate_bps: 42_000_000,
+                    error: None,
+                };
+
+                assert!(progress.fail_if_supervision_lost());
+                assert_eq!(progress.phase, JobPhase::Failed);
+                assert_eq!(progress.rate_bps, 0);
+                assert!(progress.error.as_deref().is_some_and(|message| {
+                    message.contains("outcome is unknown") && message.contains("incomplete")
+                }));
+                assert_ne!(progress.phase, JobPhase::Success);
+            }
+        }
+
+        // Phase `supervision_recovery_does_not_rewrite_terminal_or_idle_phases`.
+        {
+            for phase in [JobPhase::Idle, JobPhase::Success, JobPhase::Failed] {
+                let mut progress = Progress {
+                    phase,
+                    ..Progress::default()
+                };
+                assert!(!progress.fail_if_supervision_lost());
+                assert_eq!(progress.phase, phase);
+            }
+        }
     }
 }

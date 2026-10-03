@@ -23,6 +23,10 @@ EXPECTED_COPIES = (
     "os/scripts/cargo-freshness.sh /build/os/scripts/",
     "COPY os/usr/share/tilo/installer-locales.txt "
     "/build/os/usr/share/tilo/installer-locales.txt",
+    "COPY tools/policy/app_portability_rules.toml "
+    "/build/tools/policy/app_portability_rules.toml",
+    "COPY tools/policy/app_capability_usage.toml "
+    "/build/tools/policy/app_capability_usage.toml",
 )
 
 
@@ -43,17 +47,17 @@ def stages(recipe: str) -> dict[str, list[str]]:
 
 
 class DevBuilderStagingTest(unittest.TestCase):
-    def test_selective_inputs_are_staged_on_scratch(self) -> None:
-        recipe = RECIPE.read_text(encoding="utf-8")
-        self.assertIn("FROM scratch AS dev-builder-sources", recipe)
-        instructions = stages(recipe)["dev-builder-sources"]
-        self.assertEqual(instructions, list(EXPECTED_COPIES))
-
-    def test_toolchain_receives_one_staged_source_layer(self) -> None:
-        instructions = stages(RECIPE.read_text(encoding="utf-8"))["dev-builder"]
-        copies = [line for line in instructions if line.startswith("COPY ")]
-        self.assertEqual(copies, ["COPY --from=dev-builder-sources /build/ /build/"])
-        self.assertFalse(any("COPY . /build" in line for line in instructions))
+    def test_inputs_are_staged_once_on_scratch(self):
+        with self.subTest(phase="selective_inputs_are_staged_on_scratch"):
+            recipe = RECIPE.read_text(encoding="utf-8")
+            self.assertIn("FROM scratch AS dev-builder-sources", recipe)
+            instructions = stages(recipe)["dev-builder-sources"]
+            self.assertEqual(instructions, list(EXPECTED_COPIES))
+        with self.subTest(phase="toolchain_receives_one_staged_source_layer"):
+            instructions = stages(RECIPE.read_text(encoding="utf-8"))["dev-builder"]
+            copies = [line for line in instructions if line.startswith("COPY ")]
+            self.assertEqual(copies, ["COPY --from=dev-builder-sources /build/ /build/"])
+            self.assertFalse(any("COPY . /build" in line for line in instructions))
 
 
 if __name__ == "__main__":

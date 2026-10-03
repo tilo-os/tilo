@@ -1,0 +1,43 @@
+[package]
+name = "cloud-source-gdrive"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Google Drive accounts as a cloud-source provider: Drive API v3 ids and parents, the changes feed, ranged reads, resumable uploads, revisions, native documents and exports."
+
+[dependencies]
+hex = { workspace = true, optional = true }
+chrono = { workspace = true, features = ["std"] }
+cloud-source = { version = "0.1.0", path = "../cloud-source" }
+reqwest = { workspace = true, features = ["blocking"] }
+serde.workspace = true
+serde_json.workspace = true
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["blocking"] }
+# The in-memory Drive server behind `fake-server`.
+md-5 = { workspace = true, optional = true }
+sha1 = { version = "0.11", optional = true }
+sha2 = { workspace = true, optional = true }
+test-http = { version = "0.1.0", path = "../../dev/test-http", optional = true }
+
+[features]
+# `cloud_source_gdrive::fake::FakeDrive`, an in-memory Drive API v3 server on
+# the shared test responder, for this crate's conformance run and the storage
+# daemon's end-to-end tests. Test support only.
+fake-server = ["dep:test-http", "dep:md-5", "dep:sha1", "dep:sha2", "dep:hex"]
+
+[dev-dependencies]
+cloud-source = { path = "../cloud-source", features = ["conformance"] }
+# The conformance run needs the fake server of this very crate.
+cloud-source-gdrive = { path = ".", features = ["fake-server"] }
+uuid.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

@@ -508,7 +508,6 @@ pub struct Device {
 }
 
 pub struct Surface {
-    #[cfg(feature = "tilo-presentation-feedback")]
     next_present_observer: Mutex<Option<Arc<dyn Fn(f64, u64) + Send + Sync>>>,
     render_layer: Mutex<Retained<CAMetalLayer>>,
     swapchain_format: RwLock<Option<wgt::TextureFormat>>,
@@ -613,7 +612,6 @@ impl crate::Queue for Queue {
         texture: SurfaceTexture,
     ) -> Result<(), crate::SurfaceError> {
         autoreleasepool(|_| {
-            #[cfg(feature = "tilo-presentation-feedback")]
             if let Some(observer) = _surface.next_present_observer.lock().take() {
                 // The block owns reporting state, never the drawable itself.
                 // Metal retains/copies this block for asynchronous invocation.

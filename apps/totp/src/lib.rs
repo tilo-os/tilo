@@ -63,6 +63,7 @@ pub mod i18n;
 pub mod list;
 pub mod model;
 pub mod qr;
+pub mod resource;
 pub mod ring;
 pub mod search_provider;
 pub mod storage;
@@ -81,6 +82,13 @@ use ui::widget::Widget;
 /// It never fabricates sample accounts.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(AuthenticatorApp::new())
+}
+
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.totp", app_root)
+        .component_actions(actions::register)
+        .as_definition("TOTP")
 }
 
 /// Build the root widget seeded with a deterministic sample vault. Used by
@@ -142,3 +150,4 @@ pub fn app_root_persistence_error() -> Box<dyn Widget> {
 pub fn app_root_missing_secret() -> Box<dyn Widget> {
     Box::new(AuthenticatorApp::demo_missing_secret())
 }
+pub use resource::{Totp, TotpShell, launch_spec};

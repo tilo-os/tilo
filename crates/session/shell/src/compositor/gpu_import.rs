@@ -164,7 +164,24 @@ impl GpuImporter {
         dmabuf: &Dmabuf,
         out: &mut Vec<u8>,
     ) -> Result<(u32, u32), GpuImportError> {
-        let result = self.read_back(dmabuf, out);
+        self.import_as(dmabuf, out, Fourcc::Abgr8888)
+    }
+
+    /// [`Self::import`] reading back in `readback`: `Abgr8888` (RGBA8, `X`
+    /// formats forced opaque), or `Abgr2101010` / `Abgr16161616f` to keep a
+    /// 10-bit or half-float buffer's precision, as-is.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::import`], and [`GpuImportError::ReadbackFailed`] when the
+    /// driver cannot read back in `readback`.
+    pub fn import_as(
+        &mut self,
+        dmabuf: &Dmabuf,
+        out: &mut Vec<u8>,
+        readback: Fourcc,
+    ) -> Result<(u32, u32), GpuImportError> {
+        let result = self.read_back(dmabuf, out, readback);
         self.release_readback_scratch();
         result
     }
@@ -193,6 +210,7 @@ impl GpuImporter {
         &mut self,
         dmabuf: &Dmabuf,
         out: &mut Vec<u8>,
+        readback: Fourcc,
     ) -> Result<(u32, u32), GpuImportError> {
         let width = dmabuf.width();
         let height = dmabuf.height();
@@ -219,7 +237,7 @@ impl GpuImporter {
         );
         let mapping = self
             .renderer
-            .copy_texture(&texture, region, Fourcc::Abgr8888)
+            .copy_texture(&texture, region, readback)
             .map_err(|e| GpuImportError::ReadbackFailed(e.to_string()))?;
         let bytes = self
             .renderer
@@ -228,9 +246,14 @@ impl GpuImporter {
 
         // Also client-controlled: a buffer whose reported area overflows `usize` is rejected
         // rather than silently wrapping into a too-small allocation.
+        let bytes_per_pixel = if readback == Fourcc::Abgr16161616f {
+            8
+        } else {
+            4
+        };
         let expected = (width as usize)
             .checked_mul(height as usize)
-            .and_then(|area| area.checked_mul(4))
+            .and_then(|area| area.checked_mul(bytes_per_pixel))
             .ok_or(GpuImportError::InvalidDimensions { width, height })?;
         let Some(head) = bytes.get(..expected) else {
             return Err(GpuImportError::ReadbackFailed(format!(
@@ -243,7 +266,7 @@ impl GpuImporter {
         out.extend_from_slice(head);
 
         // The `X` FourCCs have no alpha channel — the fourth byte is undefined padding that would otherwise show up as a see-through tile. Force it opaque, same as the CPU importer's swizzle.
-        if is_opaque_fourcc(dmabuf.format().code) {
+        if readback == Fourcc::Abgr8888 && is_opaque_fourcc(dmabuf.format().code) {
             for px in out.chunks_exact_mut(4) {
                 if let Some(alpha) = px.last_mut() {
                     *alpha = 0xFF;
@@ -341,82 +364,106 @@ mod tests {
         saw_any.then_some(total)
     }
 
-    /// Every readback allocates a pixel-pack buffer the size of the whole client image, handed back
-    /// only when someone drains the renderer's destruction queue. The invariant is about
-    /// *repetition*: a hundred readbacks must not cost more than a few — this drives the same
-    /// `copy_texture` → `map_texture` → drop → release sequence [`GpuImporter::read_back`] runs per commit, from a texture the test can make without a client.
     #[test]
-    fn repeated_readbacks_do_not_accumulate_gpu_memory() {
-        use smithay::backend::renderer::ImportMem;
-
-        // Big enough that a leaked buffer cannot hide inside a driver's small-allocation slab: one readback is 4 MiB.
-        const SIDE: i32 = 1024;
-        const ROUNDS: usize = 24;
-
-        let Ok(node) = crate::compositor::render_node::probe() else {
-            eprintln!("skipping: no advertisable render node on this machine");
-            return;
-        };
-        let mut importer = match GpuImporter::new(&node.path) {
-            Ok(importer) => importer,
-            Err(e) => panic!(
-                "the compositor advertises {} as the dmabuf main device but cannot \
-                 build a GL import context on it: {e}",
-                node.path.display()
-            ),
-        };
-
-        let pixels = vec![0x40_u8; (SIDE * SIDE * 4) as usize];
-        let size = Size::from((SIDE, SIDE));
-        let texture = importer
-            .renderer
-            .import_memory(&pixels, Fourcc::Abgr8888, size, false)
-            .expect("importing a linear RGBA texture from memory");
-        let region = Rectangle::new(Point::from((0, 0)), size);
-
-        let read_back_once = |importer: &mut GpuImporter| {
-            let mapping = importer
-                .renderer
-                .copy_texture(&texture, region, Fourcc::Abgr8888)
-                .expect("GPU readback into a pixel-pack buffer");
-            let bytes = importer
-                .renderer
-                .map_texture(&mapping)
-                .expect("mapping the pixel-pack buffer");
-            assert!(!bytes.is_empty(), "a readback must return pixels");
-            drop(mapping);
-            importer.release_readback_scratch();
-        };
-
-        // One warm-up: the first readback also pays for whatever the driver allocates lazily, a one-off, not a leak.
-        read_back_once(&mut importer);
-
-        let Some(before) = own_gpu_memory_kib() else {
-            panic!(
-                "GL import works on {} but /proc/self/fdinfo reports no \
-                 drm-memory-* accounting, so this test cannot see whether \
-                 readback buffers are freed. An unobservable invariant is \
-                 not a passing one.",
-                node.path.display()
-            )
-        };
-        for _ in 0..ROUNDS {
-            read_back_once(&mut importer);
+    fn importer_builds_on_the_render_node_and_does_not_leak_gpu_memory() {
+        // Phase `importer_builds_on_the_advertised_render_node`.
+        // On a machine with a usable GPU the importer must actually build — the gate that separates "GPU import is wired up" from "everything silently fell back to the CPU path".
+        fn importer_builds_on_the_advertised_render_node() {
+            let Ok(node) = crate::compositor::render_node::probe() else {
+                eprintln!("skipping: no advertisable render node on this machine");
+                return;
+            };
+            match GpuImporter::new(&node.path) {
+                Ok(imp) => assert_eq!(imp.device(), node.path.as_path()),
+                Err(e) => panic!(
+                    "the compositor advertises {} as the dmabuf main device but cannot \
+                     build a GL import context on it: {e}",
+                    node.path.display()
+                ),
+            }
         }
-        let after = own_gpu_memory_kib().expect("accounting was present a moment ago");
+        // Phase `repeated_readbacks_do_not_accumulate_gpu_memory`.
+        // Every readback allocates a pixel-pack buffer the size of the whole client image, handed back
+        // only when someone drains the renderer's destruction queue. The invariant is about
+        // *repetition*: a hundred readbacks must not cost more than a few — this drives the same
+        // `copy_texture` → `map_texture` → drop → release sequence [`GpuImporter::read_back`] runs per commit, from a texture the test can make without a client.
+        fn repeated_readbacks_do_not_accumulate_gpu_memory() {
+            use smithay::backend::renderer::ImportMem;
 
-        let grew_kib = after.saturating_sub(before);
-        let leaked_all_kib = (ROUNDS as u64) * (SIDE as u64) * (SIDE as u64) * 4 / 1024;
-        assert!(
-            grew_kib < leaked_all_kib / 4,
-            "{ROUNDS} readbacks grew this process's GPU memory by {grew_kib} KiB; \
-             holding on to every pixel-pack buffer would cost {leaked_all_kib} KiB, \
-             so the renderer's destruction queue is not being drained"
-        );
+            // Big enough that a leaked buffer cannot hide inside a driver's small-allocation slab: one readback is 4 MiB.
+            const SIDE: i32 = 1024;
+            const ROUNDS: usize = 24;
+
+            let Ok(node) = crate::compositor::render_node::probe() else {
+                eprintln!("skipping: no advertisable render node on this machine");
+                return;
+            };
+            let mut importer = match GpuImporter::new(&node.path) {
+                Ok(importer) => importer,
+                Err(e) => panic!(
+                    "the compositor advertises {} as the dmabuf main device but cannot \
+                     build a GL import context on it: {e}",
+                    node.path.display()
+                ),
+            };
+
+            let pixels = vec![0x40_u8; (SIDE * SIDE * 4) as usize];
+            let size = Size::from((SIDE, SIDE));
+            let texture = importer
+                .renderer
+                .import_memory(&pixels, Fourcc::Abgr8888, size, false)
+                .expect("importing a linear RGBA texture from memory");
+            let region = Rectangle::new(Point::from((0, 0)), size);
+
+            let read_back_once = |importer: &mut GpuImporter| {
+                let mapping = importer
+                    .renderer
+                    .copy_texture(&texture, region, Fourcc::Abgr8888)
+                    .expect("GPU readback into a pixel-pack buffer");
+                let bytes = importer
+                    .renderer
+                    .map_texture(&mapping)
+                    .expect("mapping the pixel-pack buffer");
+                assert!(!bytes.is_empty(), "a readback must return pixels");
+                drop(mapping);
+                importer.release_readback_scratch();
+            };
+
+            // One warm-up: the first readback also pays for whatever the driver allocates lazily, a one-off, not a leak.
+            read_back_once(&mut importer);
+
+            let Some(before) = own_gpu_memory_kib() else {
+                panic!(
+                    "GL import works on {} but /proc/self/fdinfo reports no \
+                     drm-memory-* accounting, so this test cannot see whether \
+                     readback buffers are freed. An unobservable invariant is \
+                     not a passing one.",
+                    node.path.display()
+                )
+            };
+            for _ in 0..ROUNDS {
+                read_back_once(&mut importer);
+            }
+            let after = own_gpu_memory_kib().expect("accounting was present a moment ago");
+
+            let grew_kib = after.saturating_sub(before);
+            let leaked_all_kib = (ROUNDS as u64) * (SIDE as u64) * (SIDE as u64) * 4 / 1024;
+            assert!(
+                grew_kib < leaked_all_kib / 4,
+                "{ROUNDS} readbacks grew this process's GPU memory by {grew_kib} KiB; \
+                 holding on to every pixel-pack buffer would cost {leaked_all_kib} KiB, \
+                 so the renderer's destruction queue is not being drained"
+            );
+        }
+        // Phase `importer_builds_on_the_advertised_render_node` (defined above).
+        importer_builds_on_the_advertised_render_node();
+        // Phase `repeated_readbacks_do_not_accumulate_gpu_memory` (defined above).
+        repeated_readbacks_do_not_accumulate_gpu_memory();
     }
 
     #[test]
-    fn opaque_fourccs_are_exactly_the_x_variants() {
+    fn fourcc_opacity_and_error_stages_are_exact() {
+        // Phase `opaque_fourccs_are_exactly_the_x_variants`.
         assert!(is_opaque_fourcc(Fourcc::Xrgb8888));
         assert!(is_opaque_fourcc(Fourcc::Xbgr8888));
         assert!(
@@ -424,10 +471,7 @@ mod tests {
             "ARGB carries real alpha; forcing it opaque would break client transparency"
         );
         assert!(!is_opaque_fourcc(Fourcc::Abgr8888));
-    }
-
-    #[test]
-    fn errors_name_the_failing_stage() {
+        // Phase `errors_name_the_failing_stage`.
         assert!(
             GpuImportError::Unavailable("eglCreateContext: nope".into())
                 .to_string()
@@ -440,22 +484,5 @@ mod tests {
                 .contains("readback"),
             "readback failures must be distinguishable from import failures"
         );
-    }
-
-    /// On a machine with a usable GPU the importer must actually build — the gate that separates "GPU import is wired up" from "everything silently fell back to the CPU path".
-    #[test]
-    fn importer_builds_on_the_advertised_render_node() {
-        let Ok(node) = crate::compositor::render_node::probe() else {
-            eprintln!("skipping: no advertisable render node on this machine");
-            return;
-        };
-        match GpuImporter::new(&node.path) {
-            Ok(imp) => assert_eq!(imp.device(), node.path.as_path()),
-            Err(e) => panic!(
-                "the compositor advertises {} as the dmabuf main device but cannot \
-                 build a GL import context on it: {e}",
-                node.path.display()
-            ),
-        }
     }
 }

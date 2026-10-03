@@ -12,24 +12,27 @@ use std::time::Duration;
 use tilo_ui::widget::{STRIP_COOLDOWN_MS, StripView};
 
 #[test]
-fn wheel_paginate_cooldown_blocks_second_call() {
-    let mut v = StripView::new(vec!["a".into(), "b".into(), "c".into()], 0);
-    assert!(v.try_paginate(1, Duration::from_millis(0)));
-    assert_eq!(v.active_index(), 1);
-    // second call inside cooldown → blocked
-    assert!(!v.try_paginate(1, Duration::from_millis(100)));
-    assert_eq!(v.active_index(), 1);
-    // past cooldown → allowed
-    assert!(v.try_paginate(1, Duration::from_millis(STRIP_COOLDOWN_MS + 10)));
-    assert_eq!(v.active_index(), 2);
-    // clamps at end
-    assert!(!v.try_paginate(1, Duration::from_secs(10)));
-    assert_eq!(v.active_index(), 2);
-}
+fn wheel_pagination_respects_cooldown_and_bounds() {
+    // Case `wheel_paginate_cooldown_blocks_second_call`.
+    {
+        let mut v = StripView::new(vec!["a".into(), "b".into(), "c".into()], 0);
+        assert!(v.try_paginate(1, Duration::from_millis(0)));
+        assert_eq!(v.active_index(), 1);
+        // second call inside cooldown → blocked
+        assert!(!v.try_paginate(1, Duration::from_millis(100)));
+        assert_eq!(v.active_index(), 1);
+        // past cooldown → allowed
+        assert!(v.try_paginate(1, Duration::from_millis(STRIP_COOLDOWN_MS + 10)));
+        assert_eq!(v.active_index(), 2);
+        // clamps at end
+        assert!(!v.try_paginate(1, Duration::from_secs(10)));
+        assert_eq!(v.active_index(), 2);
+    }
 
-#[test]
-fn wheel_paginate_negative_wraps_none() {
-    let mut v = StripView::new(vec!["a".into(), "b".into()], 0);
-    assert!(!v.try_paginate(-1, Duration::from_millis(0)));
-    assert_eq!(v.active_index(), 0);
+    // Case `wheel_paginate_negative_wraps_none`.
+    {
+        let mut v = StripView::new(vec!["a".into(), "b".into()], 0);
+        assert!(!v.try_paginate(-1, Duration::from_millis(0)));
+        assert_eq!(v.active_index(), 0);
+    }
 }

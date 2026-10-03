@@ -19,6 +19,9 @@
 #   ${XDG_CACHE_HOME:-$HOME/.cache}/tilo/test-env). An existing
 #   TILO_NTFS_FIXTURES is kept; TILO_TEST_NTFS_FIXTURES=0 skips generating them
 #   when the selected tests do not need them;
+# - TILO_TEST_CACHE_DIR, exported, so fixtures a test generates itself (the
+#   media decode clip) are encoded once and shared by every test process of
+#   the run instead of once per process in its fresh HOME;
 # - a private software audio endpoint, via tools/with-headless-audio.sh.
 set -euo pipefail
 
@@ -27,6 +30,8 @@ if [[ $# -eq 0 ]]; then
     exit 2
 fi
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+export TILO_TEST_CACHE_DIR="${TILO_TEST_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tilo/test-env}"
+mkdir -p "$TILO_TEST_CACHE_DIR"
 
 unset DISPLAY WAYLAND_DISPLAY WAYLAND_SOCKET DBUS_SESSION_BUS_ADDRESS
 
@@ -49,7 +54,7 @@ ntfs_fixtures() {
     # digest) and the C fixture writer determine the images.
     key=$(cat "$crate/tests/build_native_fixtures.py" "$crate/build_native.py" \
         "$crate/tests/fixture_builder.c" | sha256sum | cut -c1-16)
-    root="${TILO_TEST_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tilo/test-env}/ntfs-fixtures"
+    root="$TILO_TEST_CACHE_DIR/ntfs-fixtures"
     dir="$root/$key"
     mkdir -p "$root"
     exec 9>"$root/.lock"
@@ -79,7 +84,7 @@ if [[ -z ${TILO_NTFS_FIXTURES:-} && ${TILO_TEST_NTFS_FIXTURES:-1} != 0 ]]; then
     ntfs_fixtures
 fi
 
-# The fixture cache above lives under the caller's HOME; the tests themselves
-# get a fresh one.
+# The fixture cache lives under the caller's HOME; the tests themselves get a
+# fresh one.
 exec bash "$repo/tools/with-test-environment.sh" \
     bash "$repo/tools/with-headless-audio.sh" "$@"

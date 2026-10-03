@@ -240,7 +240,8 @@ impl TrustedAttestors {
             std::fs::create_dir_all(parent).map_err(|e| TrustLoadError::Io(e.to_string()))?;
         }
         let text = self.to_toml_string()?;
-        atomic_file::write(path, text.as_bytes()).map_err(|e| TrustLoadError::Io(e.to_string()))?;
+        tilo_files::native::atomic::write(path, text.as_bytes())
+            .map_err(|e| TrustLoadError::Io(e.to_string()))?;
         Ok(())
     }
 
@@ -338,7 +339,8 @@ impl RevocationList {
             std::fs::create_dir_all(parent).map_err(|e| TrustLoadError::Io(e.to_string()))?;
         }
         let text = self.to_toml_string()?;
-        atomic_file::write(path, text.as_bytes()).map_err(|e| TrustLoadError::Io(e.to_string()))?;
+        tilo_files::native::atomic::write(path, text.as_bytes())
+            .map_err(|e| TrustLoadError::Io(e.to_string()))?;
         Ok(())
     }
 
@@ -402,113 +404,111 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scope_roundtrip_all() {
-        let s = AttestorScope::All;
-        assert_eq!(s.render(), "all");
-        assert_eq!(AttestorScope::parse("all").unwrap(), s);
+    fn attestation_scopes_parse_round_trip_and_match() {
+        // phase: scope_roundtrip_all
+        {
+            let s = AttestorScope::All;
+            assert_eq!(s.render(), "all");
+            assert_eq!(AttestorScope::parse("all").unwrap(), s);
+        }
+        // phase: scope_roundtrip_mime
+        {
+            let s = AttestorScope::Mime(vec!["application/pdf".into()]);
+            assert_eq!(s.render(), "mime:application/pdf");
+            assert_eq!(AttestorScope::parse("mime:application/pdf").unwrap(), s);
+        }
+        // phase: scope_roundtrip_prefix
+        {
+            let s = AttestorScope::Prefix(vec!["so.tilo.".into(), "dev.example.".into()]);
+            assert_eq!(s.render(), "prefix:so.tilo.,dev.example.");
+            assert_eq!(
+                AttestorScope::parse("prefix:so.tilo.,dev.example.").unwrap(),
+                s
+            );
+        }
+        // phase: scope_rejects_garbage
+        {
+            assert!(matches!(
+                AttestorScope::parse("hello"),
+                Err(TrustLoadError::BadScope(_))
+            ));
+            assert!(matches!(
+                AttestorScope::parse("mime:"),
+                Err(TrustLoadError::BadScope(_))
+            ));
+        }
+        // phase: scope_covers_matches_prefix
+        {
+            let s = AttestorScope::Prefix(vec!["so.tilo.".into()]);
+            assert!(s.covers("so.tilo.editor", &[]));
+            assert!(!s.covers("com.example.foo", &[]));
+        }
+        // phase: scope_covers_matches_mime
+        {
+            let s = AttestorScope::Mime(vec!["application/pdf".into()]);
+            assert!(s.covers("dev.foo", &["application/pdf".into()]));
+            assert!(!s.covers("dev.foo", &["text/plain".into()]));
+        }
     }
 
     #[test]
-    fn scope_roundtrip_mime() {
-        let s = AttestorScope::Mime(vec!["application/pdf".into()]);
-        assert_eq!(s.render(), "mime:application/pdf");
-        assert_eq!(AttestorScope::parse("mime:application/pdf").unwrap(), s);
-    }
-
-    #[test]
-    fn scope_roundtrip_prefix() {
-        let s = AttestorScope::Prefix(vec!["so.tilo.".into(), "dev.example.".into()]);
-        assert_eq!(s.render(), "prefix:so.tilo.,dev.example.");
-        assert_eq!(
-            AttestorScope::parse("prefix:so.tilo.,dev.example.").unwrap(),
-            s
-        );
-    }
-
-    #[test]
-    fn scope_rejects_garbage() {
-        assert!(matches!(
-            AttestorScope::parse("hello"),
-            Err(TrustLoadError::BadScope(_))
-        ));
-        assert!(matches!(
-            AttestorScope::parse("mime:"),
-            Err(TrustLoadError::BadScope(_))
-        ));
-    }
-
-    #[test]
-    fn scope_covers_matches_prefix() {
-        let s = AttestorScope::Prefix(vec!["so.tilo.".into()]);
-        assert!(s.covers("so.tilo.editor", &[]));
-        assert!(!s.covers("com.example.foo", &[]));
-    }
-
-    #[test]
-    fn scope_covers_matches_mime() {
-        let s = AttestorScope::Mime(vec!["application/pdf".into()]);
-        assert!(s.covers("dev.foo", &["application/pdf".into()]));
-        assert!(!s.covers("dev.foo", &["text/plain".into()]));
-    }
-
-    #[test]
-    fn trusted_attestors_toml_roundtrip() {
-        let orig = TrustedAttestors {
-            attestor: vec![
-                TrustedAttestor {
-                    id: "tilo-curated/2026.07".into(),
-                    pubkey_hex: "aa".repeat(32),
-                    scope: AttestorScope::All,
-                },
-                TrustedAttestor {
-                    id: "acme/1".into(),
-                    pubkey_hex: "bb".repeat(32),
-                    scope: AttestorScope::Prefix(vec!["com.acme.".into()]),
-                },
-            ],
-        };
-        let text = orig.to_toml_string().unwrap();
-        let decoded = TrustedAttestors::from_toml_str(&text).unwrap();
-        assert_eq!(decoded, orig);
-    }
-
-    #[test]
-    fn revocation_toml_roundtrip() {
-        let orig = RevocationList {
-            revoked: vec![RevokedKey {
-                pubkey_hex: "cc".repeat(32),
-                reason: "compromised 2026-07-05".into(),
-            }],
-        };
-        let text = orig.to_toml_string().unwrap();
-        let decoded = RevocationList::from_toml_str(&text).unwrap();
-        assert_eq!(decoded, orig);
-    }
-
-    #[test]
-    fn revocation_list_finds_by_pubkey() {
-        let list = RevocationList {
-            revoked: vec![RevokedKey {
-                pubkey_hex: "de".repeat(32),
-                reason: "test".into(),
-            }],
-        };
-        assert!(list.find(&[0xde; 32]).is_some());
-        assert!(list.find(&[0x00; 32]).is_none());
-    }
-
-    #[test]
-    fn attestation_preimage_is_domain_separated() {
-        let root = BlobHash([1u8; 32]);
-        let pk = [2u8; 32];
-        let msg = attestation_preimage(&root, &pk);
-        assert!(msg.starts_with(ATTESTATION_DOMAIN));
-        // Different payload root → different preimage.
-        let root2 = BlobHash([9u8; 32]);
-        let msg2 = attestation_preimage(&root2, &pk);
-        assert_ne!(&msg[..], &msg2[..]);
-        // Different publisher → different preimage.
-        let msg3 = attestation_preimage(&root, &[7u8; 32]);
-        assert_ne!(&msg[..], &msg3[..]);
+    fn trust_lists_round_trip_and_attestations_are_domain_separated() {
+        // phase: trusted_attestors_toml_roundtrip
+        {
+            let orig = TrustedAttestors {
+                attestor: vec![
+                    TrustedAttestor {
+                        id: "tilo-curated/2026.07".into(),
+                        pubkey_hex: "aa".repeat(32),
+                        scope: AttestorScope::All,
+                    },
+                    TrustedAttestor {
+                        id: "acme/1".into(),
+                        pubkey_hex: "bb".repeat(32),
+                        scope: AttestorScope::Prefix(vec!["com.acme.".into()]),
+                    },
+                ],
+            };
+            let text = orig.to_toml_string().unwrap();
+            let decoded = TrustedAttestors::from_toml_str(&text).unwrap();
+            assert_eq!(decoded, orig);
+        }
+        // phase: revocation_toml_roundtrip
+        {
+            let orig = RevocationList {
+                revoked: vec![RevokedKey {
+                    pubkey_hex: "cc".repeat(32),
+                    reason: "compromised 2026-07-05".into(),
+                }],
+            };
+            let text = orig.to_toml_string().unwrap();
+            let decoded = RevocationList::from_toml_str(&text).unwrap();
+            assert_eq!(decoded, orig);
+        }
+        // phase: revocation_list_finds_by_pubkey
+        {
+            let list = RevocationList {
+                revoked: vec![RevokedKey {
+                    pubkey_hex: "de".repeat(32),
+                    reason: "test".into(),
+                }],
+            };
+            assert!(list.find(&[0xde; 32]).is_some());
+            assert!(list.find(&[0x00; 32]).is_none());
+        }
+        // phase: attestation_preimage_is_domain_separated
+        {
+            let root = BlobHash([1u8; 32]);
+            let pk = [2u8; 32];
+            let msg = attestation_preimage(&root, &pk);
+            assert!(msg.starts_with(ATTESTATION_DOMAIN));
+            // Different payload root → different preimage.
+            let root2 = BlobHash([9u8; 32]);
+            let msg2 = attestation_preimage(&root2, &pk);
+            assert_ne!(&msg[..], &msg2[..]);
+            // Different publisher → different preimage.
+            let msg3 = attestation_preimage(&root, &[7u8; 32]);
+            assert_ne!(&msg[..], &msg3[..]);
+        }
     }
 }

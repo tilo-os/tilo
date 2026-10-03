@@ -79,6 +79,7 @@
 )]
 
 mod error;
+#[cfg(not(target_arch = "wasm32"))]
 mod espeak;
 mod factory;
 mod null;
@@ -88,6 +89,7 @@ mod speaker;
 mod speechd;
 
 pub use error::TtsError;
+#[cfg(not(target_arch = "wasm32"))]
 pub use espeak::EspeakSpeaker;
 pub use factory::{default_speaker, select_speaker};
 pub use null::NullSpeaker;
@@ -103,58 +105,58 @@ mod integration_tests {
     use super::*;
 
     #[test]
-    fn focus_storm_coalesces_to_latest() {
-        // Simulate a fast Tab through a toolbar: five focus changes arrive before anything is
-        // spoken. Only the last should survive (interrupt semantics).
-        let mut q = SpeechQueue::new();
-        for label in ["New", "Open", "Save", "Print", "Close"] {
-            q.push(Utterance::new(format!("{label} button")));
+    fn speech_through_the_trait_object_coalesces_stops_and_keeps_settings() {
+        // Phase `focus_storm_coalesces_to_latest`.
+        {
+            // Simulate a fast Tab through a toolbar: five focus changes arrive before anything is
+            // spoken. Only the last should survive (interrupt semantics).
+            let mut q = SpeechQueue::new();
+            for label in ["New", "Open", "Save", "Print", "Close"] {
+                q.push(Utterance::new(format!("{label} button")));
+            }
+            assert_eq!(q.len(), 1);
+            let mut spk = NullSpeaker::new();
+            q.drive(&mut spk);
+            assert_eq!(spk.spoken(), &["Close button".to_string()]);
         }
-        assert_eq!(q.len(), 1);
-        let mut spk = NullSpeaker::new();
-        q.drive(&mut spk);
-        assert_eq!(spk.spoken(), &["Close button".to_string()]);
-    }
+        // Phase `error_survives_focus_change_then_both_spoken`.
+        {
+            let mut q = SpeechQueue::new();
+            q.push(Utterance::new("Permission denied").with_priority(Priority::Important));
+            q.push(Utterance::new("Allow button")); // Message interrupt
+            let mut spk = NullSpeaker::new();
+            q.drive(&mut spk);
+            assert_eq!(
+                spk.spoken(),
+                &["Permission denied".to_string(), "Allow button".to_string()]
+            );
+        }
+        // Phase `stop_clears_queue_and_silences`.
+        {
+            // The "silence key": stop() on the speaker + clear() on the queue.
+            let mut q = SpeechQueue::new();
+            q.push(Utterance::new("a long say-all").with_priority(Priority::Text));
+            let mut spk = NullSpeaker::new();
+            spk.speak("currently talking", true);
+            assert!(spk.is_speaking());
 
-    #[test]
-    fn error_survives_focus_change_then_both_spoken() {
-        let mut q = SpeechQueue::new();
-        q.push(Utterance::new("Permission denied").with_priority(Priority::Important));
-        q.push(Utterance::new("Allow button")); // Message interrupt
-        let mut spk = NullSpeaker::new();
-        q.drive(&mut spk);
-        assert_eq!(
-            spk.spoken(),
-            &["Permission denied".to_string(), "Allow button".to_string()]
-        );
-    }
+            // Silence:
+            spk.stop();
+            q.clear();
 
-    #[test]
-    fn stop_clears_queue_and_silences() {
-        // The "silence key": stop() on the speaker + clear() on the queue.
-        let mut q = SpeechQueue::new();
-        q.push(Utterance::new("a long say-all").with_priority(Priority::Text));
-        let mut spk = NullSpeaker::new();
-        spk.speak("currently talking", true);
-        assert!(spk.is_speaking());
-
-        // Silence:
-        spk.stop();
-        q.clear();
-
-        assert!(!spk.is_speaking());
-        assert!(q.is_empty());
-        assert_eq!(spk.stop_count(), 1);
-    }
-
-    #[test]
-    fn rate_and_voice_round_trip_through_trait_object() {
-        let mut spk: Box<dyn Speaker> = Box::new(NullSpeaker::new());
-        spk.set_rate(1.5);
-        spk.set_voice("en-us");
-        // Down-cast not needed; behaviour is observable via the concrete mock in its own tests.
-        // Here we just prove the trait-object path doesn't panic.
-        spk.speak("hi", true);
-        assert!(spk.is_speaking());
+            assert!(!spk.is_speaking());
+            assert!(q.is_empty());
+            assert_eq!(spk.stop_count(), 1);
+        }
+        // Phase `rate_and_voice_round_trip_through_trait_object`.
+        {
+            let mut spk: Box<dyn Speaker> = Box::new(NullSpeaker::new());
+            spk.set_rate(1.5);
+            spk.set_voice("en-us");
+            // Down-cast not needed; behaviour is observable via the concrete mock in its own tests.
+            // Here we just prove the trait-object path doesn't panic.
+            spk.speak("hi", true);
+            assert!(spk.is_speaking());
+        }
     }
 }

@@ -28,6 +28,7 @@ pub mod proxy;
 
 /// Signed media URLs are accepted only from `YouTube`'s HTTPS media origin.
 /// A substring check would also accept `googlevideo.com.attacker.invalid`.
+#[cfg(any(feature = "live", test))]
 pub(crate) fn trusted_googlevideo_url(raw: &str) -> bool {
     if raw.len() > 16 * 1024 {
         return false;
@@ -460,47 +461,54 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_backend_is_offline_and_cannot_stream() {
-        let b = default_backend();
-        assert!(!b.is_live());
-        // Offline search never errors; it just yields nothing (local library
-        // is what the app renders offline).
-        assert!(b.search_tracks("aurora").unwrap().is_empty());
-        // Resolution reports it cannot stream, rather than faking a URL.
-        assert!(b.resolve_audio("dQw4w9WgXcQ").is_err());
-    }
-
-    #[test]
-    fn default_backend_multi_type_search_is_empty_bundle() {
-        let b = default_backend();
-        // The multi-type search shape exists on the real trait; offline it just
-        // yields an empty bundle across every bucket (never an error).
-        let bundle = b.search_all("aurora").unwrap();
-        assert!(bundle.is_empty());
-        assert!(bundle.tracks.is_empty());
-        assert!(bundle.albums.is_empty());
-        assert!(bundle.artists.is_empty());
-        assert!(bundle.playlists.is_empty());
-        assert!(bundle.top.is_none());
-        for kind in [
-            SearchKind::Songs,
-            SearchKind::Albums,
-            SearchKind::Artists,
-            SearchKind::Playlists,
-        ] {
-            assert!(b.search_more("aurora", kind).unwrap().is_empty());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn default_backend_is_offline_empty_and_cannot_stream() {
+        // Phase `default_backend_is_offline_and_cannot_stream`.
+        {
+            let b = default_backend();
+            assert!(!b.is_live());
+            // Offline search never errors; it just yields nothing (local library
+            // is what the app renders offline).
+            assert!(b.search_tracks("aurora").unwrap().is_empty());
+            // Resolution reports it cannot stream, rather than faking a URL.
+            assert!(b.resolve_audio("dQw4w9WgXcQ").is_err());
         }
-    }
 
-    #[test]
-    fn preferred_backend_offline_build_notes_and_is_offline() {
-        // A deliberately feature-minimal build remains honest and offline;
-        // the ordinary default build has `live` enabled.
-        let mut msg = String::new();
-        let b = preferred_backend(|m| msg = m);
-        assert!(!msg.is_empty());
-        #[cfg(not(feature = "live"))]
-        assert!(!b.is_live());
-        let _ = b;
+        // Phase `default_backend_multi_type_search_is_empty_bundle`.
+        {
+            let b = default_backend();
+            // The multi-type search shape exists on the real trait; offline it just
+            // yields an empty bundle across every bucket (never an error).
+            let bundle = b.search_all("aurora").unwrap();
+            assert!(bundle.is_empty());
+            assert!(bundle.tracks.is_empty());
+            assert!(bundle.albums.is_empty());
+            assert!(bundle.artists.is_empty());
+            assert!(bundle.playlists.is_empty());
+            assert!(bundle.top.is_none());
+            for kind in [
+                SearchKind::Songs,
+                SearchKind::Albums,
+                SearchKind::Artists,
+                SearchKind::Playlists,
+            ] {
+                assert!(b.search_more("aurora", kind).unwrap().is_empty());
+            }
+        }
+
+        // Phase `preferred_backend_offline_build_notes_and_is_offline`.
+        {
+            // A deliberately feature-minimal build remains honest and offline;
+            // the ordinary default build has `live` enabled.
+            let mut msg = String::new();
+            let b = preferred_backend(|m| msg = m);
+            assert!(!msg.is_empty());
+            #[cfg(not(feature = "live"))]
+            assert!(!b.is_live());
+            let _ = b;
+        }
     }
 }

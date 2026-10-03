@@ -12,9 +12,11 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace};
 
+use crate::shell::i18n::t;
+
 use crate::shell::quick_settings::BtDevice;
 use crate::shell::quick_settings::actions::{QsActions, log_qs_result};
-use crate::shell::quick_settings::drill_in::{
+use tilo_desktop::drill_in::{
     CONTROL_INSET, DrillInList, GLYPH, LIST_TOP, STATUS_DOT, trailing_dot_center,
     trailing_status_glyph,
 };
@@ -99,32 +101,34 @@ impl QuickSettingsBluetoothPane {
         use ui::a11y::{AccessNode, AccessState, Role};
 
         let mut children = vec![
-            AccessNode::new(Role::Button).with_name("Back").with_state(
-                AccessState::new()
-                    .focusable(true)
-                    .focused(self.keyboard_focus == Some(Self::BACK_FOCUS)),
-            ),
+            AccessNode::new(Role::Button)
+                .with_name(t("qs-back"))
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.keyboard_focus == Some(Self::BACK_FOCUS)),
+                ),
         ];
         children.extend(devices.iter().enumerate().map(|(index, device)| {
             AccessNode::new(Role::Button)
                 .with_name(device.name.clone())
-                .with_description(if device.connected {
-                    "Connected; open device actions"
+                .with_description(t(if device.connected {
+                    "qs-bluetooth-device-connected-a11y"
                 } else {
-                    "Paired; activate to connect"
-                })
+                    "qs-bluetooth-device-paired-a11y"
+                }))
                 .with_position(index.saturating_add(1), devices.len())
                 .with_state(AccessState::new().focusable(true).focused(
                     self.keyboard_focus == Some(Self::DEVICE_FOCUS_START.saturating_add(index)),
                 ))
         }));
         AccessNode::new(Role::Dialog)
-            .with_name("Bluetooth")
-            .with_description(if devices.is_empty() {
-                "No paired Bluetooth devices found"
+            .with_name(t("qs-bluetooth"))
+            .with_description(t(if devices.is_empty() {
+                "qs-bluetooth-none-a11y"
             } else {
-                "Choose a paired Bluetooth device"
-            })
+                "qs-bluetooth-choose-a11y"
+            }))
             .with_state(AccessState::new().modal(true))
             .with_children(children)
     }
@@ -243,11 +247,6 @@ impl QuickSettingsBluetoothPane {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, matching the sibling \
-                  wifi/vpn drill-in panes this is called alongside"
-    )]
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -259,8 +258,15 @@ impl QuickSettingsBluetoothPane {
         devices: &[BtDevice],
     ) {
         self.list.layout(panel, devices.len());
-        self.list
-            .draw_header(scene, transform, text, theme, panel, cursor, "Bluetooth");
+        self.list.draw_header(
+            scene,
+            transform,
+            text,
+            theme,
+            panel,
+            cursor,
+            &t("qs-bluetooth"),
+        );
         if self.keyboard_focus == Some(Self::BACK_FOCUS) {
             Button::paint(
                 scene,
@@ -271,11 +277,18 @@ impl QuickSettingsBluetoothPane {
                     .ghost()
                     .icon(ui::icons::Icon::ChevronLeft)
                     .focused(true)
-                    .accessible_name("Back"),
+                    .accessible_name(&t("qs-back")),
             );
         }
         if devices.is_empty() {
-            DrillInList::draw_empty(scene, transform, text, theme, panel, "No devices found");
+            DrillInList::draw_empty(
+                scene,
+                transform,
+                text,
+                theme,
+                panel,
+                &t("qs-bluetooth-empty"),
+            );
             return;
         }
         let colors = &theme.tokens.colors;
@@ -284,12 +297,8 @@ impl QuickSettingsBluetoothPane {
                 continue;
             };
             let glyph = DrillInList::draw_discovery_row(
-                scene,
-                transform,
-                text,
-                theme,
+                &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
                 *row,
-                index,
                 cursor,
                 72.0,
                 &device.name,

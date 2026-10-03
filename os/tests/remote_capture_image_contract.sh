@@ -76,7 +76,7 @@ fi
 
 if grep -Fq 'COPY --from=remote-capture-files / /' "$containerfile" \
     && grep -Fq 'COPY os/etc/modprobe.d/tilo-remote-camera.conf /etc/modprobe.d/tilo-remote-camera.conf' "$containerfile" \
-    && grep -Fq 'COPY os/etc/modules-load.d/tilo-remote-camera.conf /etc/modules-load.d/tilo-remote-camera.conf' "$containerfile"; then
+    && grep -Eq '^COPY os/etc/modules-load\.d/tilo-remote-camera\.conf( [^ ]+)* /etc/modules-load\.d/(tilo-remote-camera\.conf)?$' "$containerfile"; then
   ok 'image installs both remote camera module configurations'
 else
   bad 'image does not install the remote camera module configuration overlay'

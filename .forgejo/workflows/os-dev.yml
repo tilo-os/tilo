@@ -1,0 +1,109 @@
+name: Build / OS dev
+
+# The loop for iterating on the OS image with tilo-vm: every main push and
+# every pull request that touches the image builds it fully cached and
+# publishes, per architecture,
+#
+#   registry.tilo.so/tilo/tilo-ci:<ref>-<sha7>-<arch>   the unsigned OS image
+#   registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-ci       its dev image
+#
+# (<ref> is main or pr-<number>), so `tilo-vm vm upgrade --from sha:<commit>`
+# moves a VM onto any pushed commit. No reproduction lane, no signing, no
+# release channel: those are Release / OS (build-image.yml), which this calls.
+#
+# A pull request builds only when its own diff touches the image, builds
+# x86_64, and adds aarch64 when it changes an architecture-specific input or
+# carries the `os-arm64` label
+# (tools/ci/os_dev_arches.py). Main builds x86_64 here and aarch64 in
+# Build / OS dev (aarch64) (os-dev-arm.yml), newest commit only.
+on:
+  workflow_dispatch:
+    inputs:
+      arches:
+        description: 'JSON architecture list for a targeted cached dev build, for example ["aarch64"].'
+        required: false
+        default: '["x86_64","aarch64"]'
+      fex_payload_candidate:
+        description: 'Optional immutable ARM FEX payload; provide together with windows_guest_candidate.'
+        required: false
+        default: ''
+      windows_guest_candidate:
+        description: 'Optional immutable x86 Windows guest; provide together with fex_payload_candidate.'
+        required: false
+        default: ''
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - "os/**"
+      # Unit tests and docs never enter the image.
+      - "!os/tests/test_*.py"
+      - "!os/dev/test_*.py"
+      - "!os/dev/installer-console.py"
+      # Windows host transport and its native test never enter the OS image.
+      - "!os/dev/vm-windows.ps1"
+      - "!os/tests/vm-windows-tool-resolver-test.ps1"
+      - "!os/docs/**"
+      - "!os/**/*.md"
+      - ".forgejo/workflows/os-dev.yml"
+      - ".forgejo/workflows/build-image.yml"
+      - ".forgejo/actions/setup-buildx/**"
+      - "tools/ci/os_dev_arches.py"
+
+# One run per pull request: its newest commit cancels the build of the one
+# before. Every main commit builds at once, side by side with the ones before
+# it; the moving tags they publish only move forward
+# (os/dev/move-tag-forward.sh).
+concurrency:
+  group: os-dev-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  arches:
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
+    outputs:
+      arches: ${{ steps.arches.outputs.arches }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - id: arches
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+          REQUESTED_ARCHES: ${{ github.event.inputs.arches }}
+        run: |
+          set -euo pipefail
+          if [[ $EVENT == workflow_dispatch ]]; then
+            arches="$(jq -ec '
+              if type == "array" and length > 0
+                 and all(.[]; . == "x86_64" or . == "aarch64")
+                 and length == (unique | length)
+              then . else error("arches must be a nonempty unique list of x86_64 or aarch64") end
+            ' <<< "$REQUESTED_ARCHES")"
+            echo "arches=$arches" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          args=(--event "$EVENT")
+          if [[ $EVENT == pull_request ]]; then
+            args+=(--base "$BASE" --head "$HEAD")
+            for label in $LABELS; do args+=(--label "$label"); done
+          fi
+          python3 -I tools/ci/os_dev_arches.py "${args[@]}"
+
+  image:
+    needs: arches
+    uses: ./.forgejo/workflows/build-image.yml
+    with:
+      arches: ${{ needs.arches.outputs.arches }}
+      fex_payload_candidate: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.fex_payload_candidate || '' }}
+      windows_guest_candidate: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.windows_guest_candidate || '' }}
+    secrets: inherit

@@ -370,12 +370,7 @@ fn verify_collaboration_identity_entrypoint(provision_requested: bool) -> std::p
         eprintln!("identity verification failed: primary identity has no parent directory");
         return std::process::ExitCode::FAILURE;
     };
-    let now_ns = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-        .try_into()
-        .unwrap_or(u64::MAX);
+    let now_ns = tilo_clock::unix_now_ns();
     if let Err(error) = firstboot::verify_collaboration_identity(
         identity_dir,
         &firstboot::collaboration_identity_paths(),
@@ -393,11 +388,26 @@ fn verify_collaboration_identity_entrypoint(provision_requested: bool) -> std::p
     reason = "startup decisions must remain in one ordered, single-threaded entry point before the compositor and its long-lived services start"
 )]
 pub fn run() -> std::process::ExitCode {
+    // Automerge isolation workers re-enter this binary; serve them before
+    // anything else starts.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        return std::process::ExitCode::from(code);
+    }
+    // Answered before identity, GPU or session setup, so asking a host what
+    // it has installed touches none of them.
+    if let Some(version) = version_request(std::env::args().skip(1)) {
+        println!("{version}");
+        return std::process::ExitCode::SUCCESS;
+    }
     // `init()` is a no-op unless the env var is set, so production boots pay
     // zero cost; the scope guard dumps recorded events to disk when `main` returns.
     tilo_startup_metrics::init();
     let _startup_dump = tilo_startup_metrics::ScopedDumper;
     tilo_startup_metrics::mark("main-start");
+
+    // The shell's copy and every toolkit widget it draws, in the desktop's
+    // language.
+    shell::shell::i18n::ensure();
 
     // Inspect process shape while startup is still single-threaded. Host
     // packages pass an explicit installation context; deriving it from a
@@ -606,48 +616,71 @@ fn run_portal_server_only() -> std::process::ExitCode {
     })
 }
 
+/// The session release, as packaged (`dist/VERSION`), for a lone
+/// `--version` or `-V`.
+fn version_request(mut args: impl Iterator<Item = String>) -> Option<String> {
+    let first = args.next()?;
+    (matches!(first.as_str(), "--version" | "-V") && args.next().is_none()).then(|| {
+        let version = include_str!("../../../../dist/VERSION").trim();
+        format!("tilo-shell {version}")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ExistingIdentityFailureAction, existing_identity_failure_action};
+
+    #[test]
+    fn version_is_answered_alone_and_names_the_packaged_release() {
+        let ask = |args: &[&str]| super::version_request(args.iter().map(|a| (*a).to_string()));
+        let packaged = include_str!("../../../../dist/VERSION").trim();
+        assert_eq!(ask(&["--version"]), Some(format!("tilo-shell {packaged}")));
+        assert_eq!(ask(&["-V"]), Some(format!("tilo-shell {packaged}")));
+        assert_eq!(ask(&[]), None);
+        assert_eq!(ask(&["--backend", "drm"]), None);
+        assert_eq!(ask(&["--version", "--backend"]), None);
+    }
     use shell::compositor::Mode;
     use std::io;
 
     #[test]
-    fn only_native_desktop_startup_can_defer_an_invalid_existing_chain_to_recovery() {
-        let invalid_cert = io::Error::new(
-            io::ErrorKind::InvalidData,
-            "device certificate signature is invalid",
-        );
-        let unavailable_keyring = io::Error::from_raw_os_error(libc::ENOKEY);
+    fn native_recovery_defers_only_an_invalid_existing_chain() {
+        // Phase `only_native_desktop_startup_can_defer_an_invalid_existing_chain_to_recovery`.
+        {
+            let invalid_cert = io::Error::new(
+                io::ErrorKind::InvalidData,
+                "device certificate signature is invalid",
+            );
+            let unavailable_keyring = io::Error::from_raw_os_error(libc::ENOKEY);
 
-        assert_eq!(
-            existing_identity_failure_action(false, Mode::Native, &invalid_cert),
-            ExistingIdentityFailureAction::EnterTrustedRecovery,
-        );
-        assert_eq!(
-            existing_identity_failure_action(false, Mode::Native, &unavailable_keyring),
-            ExistingIdentityFailureAction::FailClosed,
-            "transient keyring unavailability must not be presented as identity corruption",
-        );
-        assert_eq!(
-            existing_identity_failure_action(false, Mode::Hosted, &invalid_cert),
-            ExistingIdentityFailureAction::FailClosed,
-        );
-        assert_eq!(
-            existing_identity_failure_action(true, Mode::Native, &invalid_cert),
-            ExistingIdentityFailureAction::FailClosed,
-        );
-    }
-
-    #[test]
-    fn native_recovery_does_not_mask_unrelated_startup_failures() {
-        let permission_denied = io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "identity directory is not private",
-        );
-        assert_eq!(
-            existing_identity_failure_action(false, Mode::Native, &permission_denied),
-            ExistingIdentityFailureAction::FailClosed,
-        );
+            assert_eq!(
+                existing_identity_failure_action(false, Mode::Native, &invalid_cert),
+                ExistingIdentityFailureAction::EnterTrustedRecovery,
+            );
+            assert_eq!(
+                existing_identity_failure_action(false, Mode::Native, &unavailable_keyring),
+                ExistingIdentityFailureAction::FailClosed,
+                "transient keyring unavailability must not be presented as identity corruption",
+            );
+            assert_eq!(
+                existing_identity_failure_action(false, Mode::Hosted, &invalid_cert),
+                ExistingIdentityFailureAction::FailClosed,
+            );
+            assert_eq!(
+                existing_identity_failure_action(true, Mode::Native, &invalid_cert),
+                ExistingIdentityFailureAction::FailClosed,
+            );
+        }
+        // Phase `native_recovery_does_not_mask_unrelated_startup_failures`.
+        {
+            let permission_denied = io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "identity directory is not private",
+            );
+            assert_eq!(
+                existing_identity_failure_action(false, Mode::Native, &permission_denied),
+                ExistingIdentityFailureAction::FailClosed,
+            );
+        }
     }
 }

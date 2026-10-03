@@ -7,8 +7,14 @@ use vello::Scene;
 use vello::kurbo::{Affine, Ellipse, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Fill, ImageBrush};
 
-use ui::text_render::{TextRenderer, TextWeight};
-use ui::theme::Theme;
+use ui::paint::PaintCtx;
+use ui::text_render::TextWeight;
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+use tilo_rich_text::RichTextView;
+use ui::widget::BlockEditor;
 
 use crate::assets::{ImageLookup, ImageState};
 use crate::model::{Element, ElementKind, Palette, SLIDE_W, Slide, TextAlign};
@@ -30,26 +36,40 @@ pub fn element_dest(dest: Rect, s: f64, e: &Element) -> Rect {
     )
 }
 
+/// The deck-wide values a slide's colour roles and image sources resolve
+/// against.
+#[derive(Clone, Copy)]
+pub struct DeckAssets<'a> {
+    pub palette: &'a Palette,
+    pub images: &'a dyn ImageLookup,
+}
+
 /// Paint one slide into `dest`. `corner` is the slide-card corner radius
 /// in pixels (0 for present mode's full-bleed render).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the shared draw context (scene, transform, text renderer, theme, palette, image \
-              store) plus the slide-specific geometry every caller (canvas, thumbnail, present \
-              view) passes; bundling them would only re-create this list as a throwaway struct"
-)]
 pub fn draw_slide(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    _theme: &Theme,
-    palette: &Palette,
+    ctx: &mut PaintCtx<'_>,
+    assets: DeckAssets<'_>,
     slide: &Slide,
     dest: Rect,
     corner: f64,
-    images: &dyn ImageLookup,
 ) {
+    draw_slide_except(ctx, assets, slide, dest, corner, None);
+}
+
+/// [`draw_slide`], leaving out the words of text element `editing`: the
+/// canvas draws that box's editor in their place.
+pub fn draw_slide_except(
+    ctx: &mut PaintCtx<'_>,
+    assets: DeckAssets<'_>,
+    slide: &Slide,
+    dest: Rect,
+    corner: f64,
+    editing: Option<&str>,
+) {
+    let (scene, transform) = (&mut *ctx.scene, ctx.transform);
     let s = dest.width() / SLIDE_W;
+    // Text roles resolve against this slide's own background.
+    let palette = &assets.palette.on(slide.background);
     let bg = palette.slide_bg(slide.background);
     let card = RoundedRect::from_rect(dest, corner);
     scene.fill(Fill::NonZero, transform, bg, None, &card);
@@ -58,10 +78,17 @@ pub fn draw_slide(
     // crisp at the rounded edge.
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &card);
     draw_decor(scene, transform, palette, slide, dest, s);
+    let assets = DeckAssets {
+        palette,
+        images: assets.images,
+    };
     for el in slide.z_sorted() {
-        draw_element(scene, transform, tr, palette, el, dest, s, images);
+        if el.kind == ElementKind::Text && editing == Some(el.id.as_str()) {
+            continue;
+        }
+        draw_element(ctx, assets, el, dest, s);
     }
-    scene.pop_layer();
+    ctx.scene.pop_layer();
 }
 
 /// Per-layout chrome: a faint footer rule + slide-number dot region so a
@@ -92,21 +119,8 @@ fn draw_decor(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the shared draw context plus the element and its resolved destination rect; see \
-              `draw_slide` above"
-)]
-fn draw_element(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    palette: &Palette,
-    e: &Element,
-    dest: Rect,
-    s: f64,
-    images: &dyn ImageLookup,
-) {
+fn draw_element(ctx: &mut PaintCtx<'_>, assets: DeckAssets<'_>, e: &Element, dest: Rect, s: f64) {
+    let (scene, transform, palette) = (&mut *ctx.scene, ctx.transform, assets.palette);
     let er = element_dest(dest, s, e);
     match e.kind {
         ElementKind::Rect => {
@@ -156,10 +170,10 @@ fn draw_element(
             );
         }
         ElementKind::Image => {
-            draw_image_element(scene, transform, tr, palette, e, er, s, images);
+            draw_image_element(ctx, assets, e, er, s);
         }
         ElementKind::Text => {
-            draw_text_element(scene, transform, tr, palette, e, er, s);
+            draw_text_element(ctx, palette, e, dest, s);
         }
     }
 }
@@ -167,21 +181,20 @@ fn draw_element(
 /// Paint an image element: the real decoded picture (object-fit *cover*,
 /// clipped to the element's rounded rect) once it has loaded, or a light
 /// loading / broken-file state until then.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the shared draw context plus the element and its resolved destination rect; see \
-              `draw_slide` above"
-)]
 fn draw_image_element(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    palette: &Palette,
+    ctx: &mut PaintCtx<'_>,
+    assets: DeckAssets<'_>,
     e: &Element,
     er: Rect,
     s: f64,
-    images: &dyn ImageLookup,
 ) {
+    let PaintCtx {
+        scene,
+        transform,
+        text: tr,
+        ..
+    } = ctx;
+    let (transform, palette, images) = (*transform, assets.palette, assets.images);
     let radius = (e.radius.max(4.0) * s).max(2.0);
     let frame = RoundedRect::from_rect(er, radius);
     match images.get(&e.src) {
@@ -257,89 +270,76 @@ fn draw_image_element(
     }
 }
 
-fn draw_text_element(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    palette: &Palette,
-    e: &Element,
-    er: Rect,
-    s: f64,
-) {
-    let color = palette.resolve_role(&e.fill).unwrap_or(palette.text);
-    let weight = if e.bold {
-        TextWeight::Bold
-    } else {
-        TextWeight::Regular
-    };
-    // Text scales *with* the slide — a thumbnail is just a smaller slide, so
-    // the font shrinks proportionally. The previous 6px floor oversized body
-    // text relative to its shrunken box at thumbnail scale, forcing spurious
-    // word-wraps that then collided into an illegible mush. A tiny floor keeps
-    // sub-pixel sizes from degenerating to nothing.
-    let font_px = (e.font_size * s).max(1.0) as f32;
-    // `draw_text_styled` and `measure_*` both lay lines out at `font_px * 1.25`,
-    // so match that here and the vertical cursor advances *exactly* past any
-    // wrapped continuation rows.
-    let line_h = f64::from(font_px) * 1.25;
-    let wrap_w = (er.width() + 4.0).max(1.0) as f32;
-    let lines: Vec<&str> = e.text.split('\n').collect();
-    // Each explicit (\n-split) line may itself word-wrap into several visual
-    // rows at this width. Measure the row count so the next line starts *below*
-    // the wrapped block instead of painting on top of it (the thumbnail garble).
-    let rows: Vec<usize> = lines
-        .iter()
-        .map(|line| {
-            if line.is_empty() {
-                1
-            } else {
-                let (_, h) =
-                    tr.measure_styled(line, font_px, Some(wrap_w), weight, e.italic, false);
-                ((f64::from(h) / line_h).round() as usize).max(1)
-            }
-        })
-        .collect();
-    let total_rows: usize = rows.iter().sum();
-    let total_h = total_rows as f64 * line_h;
-    // Vertically centre the text block within its box (looks right for
-    // titles and short bodies). Clamp to top if it would overflow.
-    let mut y = if total_h < er.height() {
-        er.y0 + (er.height() - total_h) / 2.0
-    } else {
-        er.y0
-    };
-    for (line, r) in lines.iter().zip(&rows) {
-        if !line.is_empty() {
-            // Alignment offsets the block by the widest wrapped run; wrapped
-            // rows stay left-aligned relative to each other (this draw path has
-            // no per-call align), which reads correctly for titles and bodies.
-            let x = match e.align {
-                // Justify anchors each row at the left edge; full inter-word
-                // spreading isn't done by this draw path, but the distinct
-                // alignment value is stored and round-trips.
-                TextAlign::Left | TextAlign::Justify => er.x0,
-                TextAlign::Center | TextAlign::Right => {
-                    let (lw, _) =
-                        tr.measure_styled(line, font_px, Some(wrap_w), weight, e.italic, false);
-                    if e.align == TextAlign::Center {
-                        er.x0 + (er.width() - f64::from(lw)) / 2.0
-                    } else {
-                        er.x1 - f64::from(lw)
-                    }
-                }
-            };
-            tr.draw_text_styled(
-                scene,
-                line,
-                font_px,
-                color,
-                transform * Affine::translate((x, y)),
-                Some(wrap_w),
-                weight,
-                e.italic,
-                false,
-            );
-        }
-        y += *r as f64 * line_h;
+thread_local! {
+    /// Each text element's words, laid out once at the slide's size and
+    /// drawn scaled wherever the slide is painted (the canvas, a thumbnail,
+    /// the presentation), so all of them wrap exactly alike.
+    static TEXT_VIEWS: RefCell<HashMap<String, RichTextView>> = RefCell::new(HashMap::new());
+}
+
+/// The most text boxes whose layout is kept between frames.
+const KEPT_TEXT_VIEWS: usize = 4_096;
+
+/// The block editor a text box is laid out with, for its words: the same
+/// for the read-only views and the canvas editor.
+pub fn text_box_editor(e: &Element) -> BlockEditor {
+    BlockEditor::new()
+        .with_wrap_lines(true)
+        .with_compact_paragraph_spacing(true)
+        .with_body_size(e.font_size as f32)
+        .with_text_align(text_align(e.align))
+}
+
+/// A text box's alignment as the toolkit draws it.
+pub fn text_align(align: TextAlign) -> ui::TextAlign {
+    match align {
+        TextAlign::Left => ui::TextAlign::Left,
+        TextAlign::Center => ui::TextAlign::Center,
+        TextAlign::Right => ui::TextAlign::Right,
+        TextAlign::Justify => ui::TextAlign::Justified,
     }
+}
+
+/// Where a text box laid out at the slide's size is drawn: into `dest` at
+/// scale `s`, its `content_h` of words centred vertically in the box (or
+/// from its top when they overflow it).
+pub fn text_box_transform(dest: Rect, s: f64, e: &Element, content_h: f64) -> Affine {
+    let dy = ((e.h - content_h) / 2.0).max(0.0);
+    Affine::translate((dest.x0, dest.y0)) * Affine::scale(s) * Affine::translate((0.0, dy))
+}
+
+/// A text box's own layout rectangle, in slide units.
+pub fn text_box_rect(e: &Element) -> Rect {
+    Rect::new(e.x, e.y, e.x + e.w.max(1.0), e.y)
+}
+
+fn draw_text_element(ctx: &mut PaintCtx<'_>, palette: &Palette, e: &Element, dest: Rect, s: f64) {
+    let PaintCtx {
+        scene,
+        transform,
+        text: tr,
+        theme,
+    } = ctx;
+    let (transform, theme) = (*transform, *theme);
+    let color = palette.resolve_role(&e.fill).unwrap_or(palette.text);
+    // Slide text is sized in slide units, whatever the reader's text scale.
+    let reader_scale = tr.text_scale();
+    tr.set_text_scale(1.0);
+    TEXT_VIEWS.with(|views| {
+        let mut views = views.borrow_mut();
+        if views.len() > KEPT_TEXT_VIEWS && !views.contains_key(&e.id) {
+            views.clear();
+        }
+        let view = views
+            .entry(e.id.clone())
+            .or_insert_with(|| RichTextView::with_editor(text_box_editor(e)));
+        view.editor_mut().set_body_size(e.font_size as f32);
+        view.editor_mut().set_text_align(text_align(e.align));
+        view.set_text_color(Some(color));
+        view.show(&e.rich_blocks());
+        let content_h = view.layout(text_box_rect(e), theme, tr);
+        view.set_transform(text_box_transform(dest, s, e, content_h));
+        view.draw(scene, transform, tr, theme);
+    });
+    tr.set_text_scale(reader_scale);
 }

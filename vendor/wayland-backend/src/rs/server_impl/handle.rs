@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     ffi::CString,
     os::unix::{
         io::{OwnedFd, RawFd},
@@ -25,6 +26,8 @@ pub struct State<D: 'static> {
     pub(crate) clients: ClientStore<D>,
     pub(crate) registry: Registry<D>,
     pub(crate) pending_destructors: Vec<PendingDestructor<D>>,
+    /// Clients with decoded requests left after a bounded dispatch turn.
+    pub(crate) pending_dispatch_clients: VecDeque<InnerClientId>,
     pub(crate) poll_fd: OwnedFd,
     pub(crate) default_max_buffer_size: usize,
 }
@@ -37,6 +40,7 @@ impl<D> State<D> {
             clients: ClientStore::new(debug),
             registry: Registry::new(),
             pending_destructors: Vec::new(),
+            pending_dispatch_clients: VecDeque::new(),
             poll_fd,
             default_max_buffer_size: DEFAULT_MAX_BUFFER_SIZE,
         }
@@ -83,6 +87,20 @@ impl<D> State<D> {
         if let Ok(client) = self.clients.get_client_mut(client) {
             client.socket.set_max_buffer_size(Some(max_buffer_size));
         }
+    }
+
+    pub(crate) fn queue_pending_dispatch(&mut self, client: InnerClientId) {
+        if !self.pending_dispatch_clients.contains(&client) {
+            self.pending_dispatch_clients.push_back(client);
+        }
+    }
+
+    pub(crate) fn take_pending_dispatches(&mut self) -> VecDeque<InnerClientId> {
+        std::mem::take(&mut self.pending_dispatch_clients)
+    }
+
+    pub(crate) fn has_pending_dispatches(&self) -> bool {
+        !self.pending_dispatch_clients.is_empty()
     }
 }
 

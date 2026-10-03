@@ -9,15 +9,32 @@
 //!     └── <workspace_id>/
 //!         ├── snapshot.automerge    # full pinned CRDT snapshot
 //!         ├── log.jsonl             # append-only delta metadata (audit)
+//!         ├── retained/v2/<author>-<channel>/
+//!         │   ├── CURRENT          # atomic generation selector
+//!         │   └── <generation>/    # shared checkpoint + immutable tail
 //!         └── pending/
 //!             └── <device_pubkey_hex>/
-//!                 └── <seq>.delta   # queued deltas for offline peers
+//!                 └── <seq>.delta   # non-retained offline deltas
 //! ```
 //!
 //! `snapshot.automerge` is only written when a workspace is
 //! `pin = true` in the config; unpinned workspaces are pure fan-out
 //! + store-and-forward. Pending directories exist regardless of
 //!   pin state — a peer can be offline and still catch up when it reconnects.
+
+pub(crate) mod bounded;
+pub(crate) mod compaction;
+pub(crate) mod continuity;
+pub(crate) mod replay;
+pub(crate) mod resume;
+pub(crate) mod retained;
+#[cfg(test)]
+pub(crate) mod shell_proof_fixture;
+#[cfg(test)]
+pub(crate) mod shell_proof_tests;
+pub(crate) mod shell_selection;
+#[cfg(test)]
+pub(crate) mod test_barrier;
 
 use std::fs;
 use std::io::{self, Write};
@@ -35,6 +52,8 @@ pub const LOG_FILE: &str = "log.jsonl";
 
 /// Durable device membership for offline store-and-forward.
 pub const MEMBERSHIP_FILE: &str = "membership.json";
+/// Atomic native-governance projection: exact room devices plus handshake roots.
+pub const GOVERNED_ACCESS_FILE: &str = "governed-access-v1.json";
 
 /// Retained bootstrap checkpoints and the incremental tails after them.
 pub const RETAINED_DIR: &str = "retained";
@@ -77,7 +96,7 @@ pub fn save_revocations(
     fs::create_dir_all(state_root)?;
     let bytes =
         serde_json::to_vec_pretty(entries).map_err(|error| StoreError::Json(error.to_string()))?;
-    atomic_file::write(&state_root.join(REVOCATIONS_FILE), &bytes)?;
+    tilo_files::native::atomic::write(&state_root.join(REVOCATIONS_FILE), &bytes)?;
     Ok(())
 }
 
@@ -108,11 +127,86 @@ pub struct LogEntry {
     pub delta_len: u64,
 }
 
+/// Ledger of admitted `Commit`s, see [`CommitRecord`].
+pub const COMMITS_FILE: &str = "commits.bin";
+
+const COMMIT_RECORD_BYTES: usize = 32 + 16 + 8 + 32;
+
+/// One commit the host admitted: resending the same `(author, op)` is
+/// answered from here instead of being persisted and fanned out again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommitRecord {
+    /// Authoring device.
+    pub author: [u8; 32],
+    /// The author's operation id.
+    pub op: [u8; 16],
+    /// Host order it was admitted at.
+    pub seq: u64,
+    /// BLAKE3 of the committed body.
+    pub digest: [u8; 32],
+}
+
+impl CommitRecord {
+    fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(COMMIT_RECORD_BYTES);
+        out.extend_from_slice(&self.author);
+        out.extend_from_slice(&self.op);
+        out.extend_from_slice(&self.seq.to_le_bytes());
+        out.extend_from_slice(&self.digest);
+        out
+    }
+
+    fn decode(bytes: &[u8]) -> Option<Self> {
+        Some(Self {
+            author: bytes.get(..32)?.try_into().ok()?,
+            op: bytes.get(32..48)?.try_into().ok()?,
+            seq: u64::from_le_bytes(bytes.get(48..56)?.try_into().ok()?),
+            digest: bytes.get(56..COMMIT_RECORD_BYTES)?.try_into().ok()?,
+        })
+    }
+}
+
 /// On-disk manager for one workspace's state.
+#[derive(Clone)]
 pub struct WorkspaceStore {
     root: PathBuf,
     workspace_id: u64,
     pinned: bool,
+    shell_authority: Option<tilo_peer_state::retained_proof::RetentionAuthority>,
+}
+
+/// One server-local projection of the native room governor. Both sets share a
+/// single atomic file so a crash cannot pair new roots with old devices (or the
+/// reverse).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct GovernedAccessRecord {
+    pub(crate) member_devices: Vec<[u8; 32]>,
+    pub(crate) member_user_roots: Vec<[u8; 32]>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GovernedAccessFile {
+    version: u8,
+    member_devices: Vec<String>,
+    member_user_roots: Vec<String>,
+}
+
+fn decode_public_keys(kind: &str, values: Vec<String>) -> Result<Vec<[u8; 32]>, StoreError> {
+    values
+        .into_iter()
+        .map(|value| {
+            let bytes = hex::decode(&value).map_err(|error| {
+                StoreError::Json(format!("invalid governed {kind} key {value:?}: {error}"))
+            })?;
+            bytes.try_into().map_err(|bytes: Vec<u8>| {
+                StoreError::Json(format!(
+                    "governed {kind} key must be 32 bytes, got {}",
+                    bytes.len()
+                ))
+            })
+        })
+        .collect()
 }
 
 /// One durable queue entry loaded for delivery but not yet acknowledged.
@@ -136,16 +230,18 @@ impl WorkspaceStore {
     /// can't be created.
     pub fn open(state_root: &Path, workspace_id: u64, pinned: bool) -> Result<Self, StoreError> {
         let root = state_root.join("workspaces").join(workspace_id.to_string());
+        #[cfg(test)]
+        test_barrier::pause(&root, "open");
         fs::create_dir_all(&root)?;
         fs::create_dir_all(root.join("pending"))?;
-        fs::create_dir_all(root.join(RETAINED_DIR).join("checkpoints"))?;
-        fs::create_dir_all(root.join(RETAINED_DIR).join("tails"))?;
+        fs::create_dir_all(root.join(RETAINED_DIR))?;
         fs::create_dir_all(root.join(COMPUTE_DIR))?;
         fs::create_dir_all(root.join(COMPUTE_PENDING_DIR))?;
         Ok(Self {
             root,
             workspace_id,
             pinned,
+            shell_authority: None,
         })
     }
 
@@ -157,6 +253,66 @@ impl WorkspaceStore {
     /// Workspace id.
     pub fn workspace_id(&self) -> u64 {
         self.workspace_id
+    }
+
+    /// Install a locally supplied shell pin before handing this store to the
+    /// ordered persistence owner. Persisted bytes are a conflict fence, never an
+    /// independent source of trust; `open` remains unbound until this call.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError` if the inputs violate this operation's bounds or invariants.
+    pub fn bind_shell_authority(
+        &mut self,
+        authority: tilo_peer_state::retained_proof::RetentionAuthority,
+    ) -> Result<(), StoreError> {
+        #[derive(Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Binding {
+            version: u32,
+            authority: tilo_peer_state::retained_proof::RetentionAuthority,
+        }
+        let invalid = |message| StoreError::Io(io::Error::new(io::ErrorKind::InvalidData, message));
+        if !crate::room_workspace_id_matches(authority.room(), self.workspace_id) {
+            return Err(invalid("shell authority room/workspace mismatch"));
+        }
+        if self
+            .shell_authority
+            .as_ref()
+            .is_some_and(|prior| prior != &authority)
+        {
+            return Err(invalid("conflicting local shell authority"));
+        }
+        let path = self.root.join("shell-authority-v1.json");
+        match fs::read(&path) {
+            Ok(bytes) => {
+                let prior: Binding =
+                    serde_json::from_slice(&bytes).map_err(|e| StoreError::Json(e.to_string()))?;
+                if prior.version != 1 || prior.authority != authority {
+                    return Err(invalid("conflicting persisted shell authority"));
+                }
+                // Re-establish the durability barrier even after an interrupted
+                // previous attempt left the exact file visible.
+                fs::File::open(&path)?.sync_all()?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let bytes = serde_json::to_vec(&Binding {
+                    version: 1,
+                    authority: authority.clone(),
+                })
+                .map_err(|e| StoreError::Json(e.to_string()))?;
+                tilo_files::native::atomic::write(&path, &bytes)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        fs::File::open(&self.root)?.sync_all()?;
+        self.shell_authority = Some(authority);
+        Ok(())
+    }
+
+    /// Exact locally supplied authority, absent for generic workspace stores.
+    pub fn shell_authority(&self) -> Option<&tilo_peer_state::retained_proof::RetentionAuthority> {
+        self.shell_authority.as_ref()
     }
 
     /// Whether this workspace is pinned (holds a persistent CRDT
@@ -189,7 +345,7 @@ impl WorkspaceStore {
         if !self.pinned {
             return Ok(());
         }
-        atomic_file::write(&self.root.join(SNAPSHOT_FILE), bytes)?;
+        tilo_files::native::atomic::write(&self.root.join(SNAPSHOT_FILE), bytes)?;
         Ok(())
     }
 
@@ -201,12 +357,18 @@ impl WorkspaceStore {
     /// to decode as JSON, or contains a device key that isn't valid
     /// hex or isn't exactly 32 bytes.
     pub fn load_membership(&self) -> Result<Vec<[u8; 32]>, StoreError> {
+        if let Some(access) = self.load_governed_access()? {
+            return Ok(access.member_devices);
+        }
         let path = self.root.join(MEMBERSHIP_FILE);
         if !path.exists() {
             return Ok(Vec::new());
         }
-        let encoded: Vec<String> = serde_json::from_slice(&fs::read(path)?)
-            .map_err(|error| StoreError::Json(error.to_string()))?;
+        let bytes = fs::read(path)?;
+        #[cfg(test)]
+        test_barrier::pause(&self.root, "membership-read");
+        let encoded: Vec<String> =
+            serde_json::from_slice(&bytes).map_err(|error| StoreError::Json(error.to_string()))?;
         encoded
             .into_iter()
             .map(|value| {
@@ -230,10 +392,66 @@ impl WorkspaceStore {
     /// Returns an error if `devices` can't be JSON-encoded or the
     /// atomic write fails.
     pub fn save_membership(&self, devices: &[[u8; 32]]) -> Result<(), StoreError> {
+        if let Some(mut access) = self.load_governed_access()? {
+            access.member_devices = devices.to_vec();
+            return self.save_governed_access(&access);
+        }
         let encoded: Vec<_> = devices.iter().map(hex::encode).collect();
         let bytes = serde_json::to_vec_pretty(&encoded)
             .map_err(|error| StoreError::Json(error.to_string()))?;
-        atomic_file::write(&self.root.join(MEMBERSHIP_FILE), &bytes)?;
+        #[cfg(test)]
+        test_barrier::pause(&self.root, "membership-write");
+        tilo_files::native::atomic::write(&self.root.join(MEMBERSHIP_FILE), &bytes)?;
+        Ok(())
+    }
+
+    /// Load the atomic native-governance projection. Absence is an empty
+    /// handshake-root projection; device-only membership remains readable through
+    /// [`Self::load_membership`] but can never admit another user root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unreadable, malformed, wrong-version, or invalid
+    /// key data. Callers fail closed rather than partially applying it.
+    pub(crate) fn load_governed_access(&self) -> Result<Option<GovernedAccessRecord>, StoreError> {
+        let path = self.root.join(GOVERNED_ACCESS_FILE);
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let encoded: GovernedAccessFile =
+            serde_json::from_slice(&bytes).map_err(|error| StoreError::Json(error.to_string()))?;
+        if encoded.version != 1 {
+            return Err(StoreError::Json(format!(
+                "unsupported governed access version {}",
+                encoded.version
+            )));
+        }
+        Ok(Some(GovernedAccessRecord {
+            member_devices: decode_public_keys("device", encoded.member_devices)?,
+            member_user_roots: decode_public_keys("user root", encoded.member_user_roots)?,
+        }))
+    }
+
+    /// Atomically replace exact room devices and global-handshake roots in one
+    /// crash-safe record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if encoding or atomic replacement fails.
+    pub(crate) fn save_governed_access(
+        &self,
+        access: &GovernedAccessRecord,
+    ) -> Result<(), StoreError> {
+        let encoded = GovernedAccessFile {
+            version: 1,
+            member_devices: access.member_devices.iter().map(hex::encode).collect(),
+            member_user_roots: access.member_user_roots.iter().map(hex::encode).collect(),
+        };
+        let bytes = serde_json::to_vec_pretty(&encoded)
+            .map_err(|error| StoreError::Json(error.to_string()))?;
+        tilo_files::native::atomic::write(&self.root.join(GOVERNED_ACCESS_FILE), &bytes)?;
         Ok(())
     }
 
@@ -306,7 +524,7 @@ impl WorkspaceStore {
         }
         let bytes =
             serde_json::to_vec(record).map_err(|error| StoreError::Json(error.to_string()))?;
-        atomic_file::write(&path, &bytes)?;
+        tilo_files::native::atomic::write(&path, &bytes)?;
         Ok(())
     }
 
@@ -336,7 +554,7 @@ impl WorkspaceStore {
             .join(hex::encode(device));
         fs::create_dir_all(&directory)?;
         let path = directory.join(format!("{sequence:016x}.compute"));
-        atomic_file::write(&path, bytes)?;
+        tilo_files::native::atomic::write(&path, bytes)?;
         Ok(path)
     }
 
@@ -427,18 +645,49 @@ impl WorkspaceStore {
         seq: u64,
         bytes: &[u8],
     ) -> Result<PathBuf, StoreError> {
+        #[cfg(test)]
+        test_barrier::pause(&self.root, "pending-persist");
         let pending_dir = self.pending_dir_for(device_pubkey);
         fs::create_dir_all(&pending_dir)?;
-        let filename = format!("{seq:016x}.delta");
+        let filename = format!("{seq:016x}-{}.delta", blake3::hash(bytes).to_hex());
         let path = pending_dir.join(filename);
         // A crash mid-write must not leave a truncated delta for the peer to
         // receive. The temp file is process-scoped, so two writers filling the
         // same peer's queue cannot publish each other's half-written bytes —
         // the fixed `.partial` name this used to use could.
-        atomic_file::write(&path, bytes)?;
+        tilo_files::native::atomic::write(&path, bytes)?;
+        // A live fanout may now rely on this exact fallback. Require directory
+        // durability instead of treating the atomic helper's best effort as a
+        // successful publication barrier.
+        for directory in pending_dir.ancestors().take(3) {
+            fs::File::open(directory)?.sync_all()?;
+        }
         Ok(path)
     }
 
+    pub(crate) fn enqueue_continuity_pending(
+        &self,
+        device: &[u8; 32],
+        bytes: &[u8],
+        receipt: &continuity::Receipt,
+    ) -> Result<PathBuf, StoreError> {
+        let directory = self.pending_dir_for(device);
+        fs::create_dir_all(&directory)?;
+        let path = directory.join(format!(
+            "{:016x}-continuity-{}.delta",
+            receipt.sequence,
+            hex::encode(rand::random::<[u8; 16]>())
+        ));
+        continuity::write(self, &path, bytes, receipt)?;
+        tilo_files::native::atomic::write(&path, bytes)?;
+        for directory in directory.ancestors().take(3) {
+            fs::File::open(directory)?.sync_all()?;
+        }
+        Ok(path)
+    }
+
+    /// Eager helper; bounded storage paths must use replay cursors, not this
+    /// loader.
     /// Load the pending queue in delivery order without acknowledging it.
     /// The peer task removes entries only after their replay is written.
     pub(crate) fn load_pending(
@@ -504,51 +753,36 @@ impl WorkspaceStore {
         Ok(u32::try_from(n).unwrap_or(u32::MAX))
     }
 
-    /// Replace the durable checkpoint for `channel` and discard the tail that
-    /// preceded it. `bytes` is a complete encoded relay envelope.
+    /// Commit a checkpoint for the envelope's authenticated author/channel.
+    /// Raw Automerge causal containment permits atomic replacement of covered
+    /// history. Opaque checkpoints are shared in receipt order without inferring
+    /// supersedence. `bytes` is a full relay frame.
     ///
     /// # Errors
-    ///
-    /// Returns an error if the atomic write fails, the old tail
-    /// directory can't be removed, or the fresh tail directory can't
-    /// be created.
+    /// Returns an error on invalid metadata or failed durable storage.
     pub fn retain_checkpoint(&self, channel: &[u8; 32], bytes: &[u8]) -> Result<(), StoreError> {
-        let name = hex::encode(channel);
-        atomic_file::write(
-            &self.root.join(RETAINED_DIR).join("checkpoints").join(&name),
-            bytes,
-        )?;
-        let tail = self.root.join(RETAINED_DIR).join("tails").join(name);
-        if tail.exists() {
-            fs::remove_dir_all(&tail)?;
-        }
-        fs::create_dir_all(tail)?;
-        Ok(())
+        #[cfg(test)]
+        test_barrier::pause(&self.root, "state-persist");
+        self.retain_shared(channel, None, bytes).map(|_| ())
     }
 
-    /// Append one encoded relay envelope to the retained tail for `channel`.
+    /// Durably append a tail to the envelope's authenticated author/channel.
     ///
     /// # Errors
-    ///
-    /// Returns an error if the tail directory can't be created or the
-    /// atomic write fails.
+    /// Returns an error on invalid metadata or failed durable storage.
     pub fn retain_delta(
         &self,
         channel: &[u8; 32],
         seq: u64,
         bytes: &[u8],
     ) -> Result<(), StoreError> {
-        let tail = self
-            .root
-            .join(RETAINED_DIR)
-            .join("tails")
-            .join(hex::encode(channel));
-        fs::create_dir_all(&tail)?;
-        atomic_file::write(&tail.join(format!("{seq:016x}.delta")), bytes)?;
-        Ok(())
+        self.retain_shared(channel, Some(seq), bytes).map(|_| ())
     }
 
-    /// Load every retained checkpoint followed by its post-checkpoint tail.
+    /// Eager compatibility helper for maintenance callers.
+    /// New bounded replay and retention paths never call this method.
+    /// Load retained replay coverage: proven raw baselines before uncovered
+    /// tails, and opaque checkpoint histories in original receipt order.
     /// Documents are independent, so channel ordering is irrelevant; ordering
     /// within a channel is stable.
     ///
@@ -557,33 +791,65 @@ impl WorkspaceStore {
     /// Returns an error if a channel directory can't be listed, or a
     /// checkpoint / tail file can't be read.
     pub fn load_retained(&self) -> Result<Vec<Vec<u8>>, StoreError> {
-        let retained = self.root.join(RETAINED_DIR);
-        let checkpoint_dir = retained.join("checkpoints");
-        let tails_dir = retained.join("tails");
-        let mut channels = std::collections::BTreeSet::new();
-        for dir in [&checkpoint_dir, &tails_dir] {
-            for entry in fs::read_dir(dir)?.flatten() {
-                channels.insert(entry.file_name());
-            }
-        }
-        let mut out = Vec::new();
-        for channel in channels {
-            let checkpoint = checkpoint_dir.join(&channel);
-            if checkpoint.is_file() {
-                out.push(fs::read(checkpoint)?);
-            }
-            let tail = tails_dir.join(&channel);
-            if tail.is_dir() {
-                let mut entries: Vec<_> = fs::read_dir(tail)?.flatten().collect();
-                entries.sort_by_key(std::fs::DirEntry::file_name);
-                for entry in entries {
-                    if entry.path().is_file() {
-                        out.push(fs::read(entry.path())?);
-                    }
-                }
-            }
-        }
+        let mut out = self.load_shared()?;
+        let mut seen = std::collections::HashSet::new();
+        out.retain(|bytes| seen.insert(bytes.clone()));
         Ok(out)
+    }
+
+    /// Load the admitted-commit ledger, oldest first. A record torn by a
+    /// crash mid-append is cut off, so later appends stay aligned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the ledger exists but can't be read or trimmed.
+    pub fn load_commits(&self) -> Result<Vec<CommitRecord>, StoreError> {
+        let path = self.root.join(COMMITS_FILE);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let bytes = fs::read(&path)?;
+        let torn = bytes.len() % COMMIT_RECORD_BYTES;
+        if torn != 0 {
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&path)?
+                .set_len((bytes.len().saturating_sub(torn)) as u64)?;
+        }
+        Ok(bytes
+            .chunks_exact(COMMIT_RECORD_BYTES)
+            .filter_map(CommitRecord::decode)
+            .collect())
+    }
+
+    /// Append one admitted commit to the ledger. Not synced: losing the
+    /// newest records to a power cut only lets a resend of those commits be
+    /// admitted again, which the document merge absorbs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the ledger can't be opened or written.
+    pub fn append_commit(&self, record: &CommitRecord) -> Result<(), StoreError> {
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.root.join(COMMITS_FILE))?;
+        file.write_all(&record.encode())?;
+        Ok(())
+    }
+
+    /// Atomically replace the ledger with `records`, dropping evicted ones.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the atomic write fails.
+    pub fn rewrite_commits(&self, records: &[CommitRecord]) -> Result<(), StoreError> {
+        let mut bytes = Vec::with_capacity(records.len().saturating_mul(COMMIT_RECORD_BYTES));
+        for record in records {
+            bytes.extend_from_slice(&record.encode());
+        }
+        tilo_files::native::atomic::write(&self.root.join(COMMITS_FILE), &bytes)?;
+        Ok(())
     }
 
     fn pending_dir_for(&self, device_pubkey: &[u8; 32]) -> PathBuf {
@@ -637,153 +903,177 @@ mod tests {
     use super::*;
 
     #[test]
-    fn open_creates_layout() {
+    fn commit_ledger_round_trips_and_ignores_a_torn_tail() {
         let tmp = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
-        assert!(store.root().is_dir());
-        assert!(store.root().join("pending").is_dir());
-    }
-
-    #[test]
-    fn snapshot_round_trip() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
-        assert!(store.load_snapshot().unwrap().is_none());
-        store.save_snapshot(b"HELLO").unwrap();
-        assert_eq!(store.load_snapshot().unwrap().unwrap(), b"HELLO");
-    }
-
-    #[test]
-    fn snapshot_ignored_when_unpinned() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
-        store.save_snapshot(b"HELLO").unwrap();
-        assert!(store.load_snapshot().unwrap().is_none());
-    }
-
-    #[test]
-    fn pending_queue_orderly_drain() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
-        let peer = [3u8; 32];
-        store.enqueue_pending(&peer, 100, b"one").unwrap();
-        store.enqueue_pending(&peer, 200, b"two").unwrap();
-        store.enqueue_pending(&peer, 300, b"three").unwrap();
-        assert_eq!(store.count_pending(&peer).unwrap(), 3);
-        let out = store.drain_pending(&peer).unwrap();
-        assert_eq!(out.len(), 3);
-        assert_eq!(out[0], b"one");
-        assert_eq!(out[1], b"two");
-        assert_eq!(out[2], b"three");
-        // Empty after drain.
-        assert_eq!(store.count_pending(&peer).unwrap(), 0);
-    }
-
-    #[test]
-    fn loading_pending_does_not_acknowledge_before_wire_delivery() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 8, false).unwrap();
-        let peer = [4u8; 32];
-        store.enqueue_pending(&peer, 100, b"one").unwrap();
-
-        let loaded = store.load_pending(&peer).unwrap();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].bytes, b"one");
-        assert_eq!(store.count_pending(&peer).unwrap(), 1);
-
-        std::fs::remove_file(&loaded[0].path).unwrap();
-        assert_eq!(store.count_pending(&peer).unwrap(), 0);
-    }
-
-    #[test]
-    fn pending_isolated_per_peer() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
-        store.enqueue_pending(&[1u8; 32], 100, b"a").unwrap();
-        store.enqueue_pending(&[2u8; 32], 200, b"b").unwrap();
-        let out1 = store.drain_pending(&[1u8; 32]).unwrap();
-        assert_eq!(out1, vec![b"a".to_vec()]);
-        let out2 = store.drain_pending(&[2u8; 32]).unwrap();
-        assert_eq!(out2, vec![b"b".to_vec()]);
-    }
-
-    #[test]
-    fn retained_checkpoint_replaces_its_old_tail() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
-        let channel = [9u8; 32];
-        store.retain_checkpoint(&channel, b"checkpoint-1").unwrap();
-        store.retain_delta(&channel, 10, b"delta-1").unwrap();
+        let record = |n: u8| CommitRecord {
+            author: [n; 32],
+            op: [n; 16],
+            seq: u64::from(n) * 10,
+            digest: [n.wrapping_add(1); 32],
+        };
+        store.append_commit(&record(1)).unwrap();
+        store.append_commit(&record(2)).unwrap();
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(store.root().join(COMMITS_FILE))
+            .unwrap();
+        file.write_all(&[9; 40]).unwrap();
+        assert_eq!(store.load_commits().unwrap(), vec![record(1), record(2)]);
+        store.append_commit(&record(3)).unwrap();
         assert_eq!(
-            store.load_retained().unwrap(),
-            vec![b"checkpoint-1".to_vec(), b"delta-1".to_vec()]
+            store.load_commits().unwrap(),
+            vec![record(1), record(2), record(3)],
+            "an append after a torn record stays aligned"
         );
-        store.retain_checkpoint(&channel, b"checkpoint-2").unwrap();
-        assert_eq!(
-            store.load_retained().unwrap(),
-            vec![b"checkpoint-2".to_vec()]
-        );
+        store.rewrite_commits(&[record(2)]).unwrap();
+        assert_eq!(store.load_commits().unwrap(), vec![record(2)]);
     }
 
     #[test]
-    fn iroh_secret_stable_across_calls() {
-        let tmp = tempfile::tempdir().unwrap();
-        let a = load_or_create_iroh_secret(tmp.path()).unwrap();
-        let b = load_or_create_iroh_secret(tmp.path()).unwrap();
-        assert_eq!(a, b);
-        assert_ne!(a, [0u8; 32]);
-    }
-
-    #[test]
-    fn iroh_secret_is_never_replaced() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("iroh-secret.bin");
-        std::fs::write(&path, [7u8; 32]).unwrap();
-        assert_eq!(load_or_create_iroh_secret(tmp.path()).unwrap(), [7u8; 32]);
-        // A malformed secret is an error, not a reason to mint a new identity.
-        std::fs::write(&path, b"short").unwrap();
-        assert!(load_or_create_iroh_secret(tmp.path()).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), b"short");
-    }
-
-    #[test]
-    fn unreadable_iroh_secret_is_never_replaced() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("iroh-secret.bin");
-        // A directory in the secret's place fails every read, whatever the
-        // caller's privileges (a mode-000 file is still readable by root).
-        std::fs::create_dir(&path).unwrap();
-        std::fs::write(path.join("marker"), b"kept").unwrap();
-        assert!(load_or_create_iroh_secret(tmp.path()).is_err());
-        assert!(path.is_dir(), "the unreadable secret must not be replaced");
-        assert_eq!(std::fs::read(path.join("marker")).unwrap(), b"kept");
-        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn simultaneous_starts_share_one_iroh_secret() {
-        for _ in 0..8 {
+    fn store_persists_layout_snapshots_logs_and_per_peer_pending_queues() {
+        // Phase `open_creates_layout`.
+        {
             let tmp = tempfile::tempdir().unwrap();
-            let root = tmp.path().to_path_buf();
-            let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
-            // Spawn every participant before joining: interleaving spawn/join
-            // would deadlock the barrier.
-            let mut workers = Vec::with_capacity(4);
-            for _ in 0..4 {
-                let root = root.clone();
-                let gate = std::sync::Arc::clone(&gate);
-                workers.push(std::thread::spawn(move || {
-                    gate.wait();
-                    load_or_create_iroh_secret(&root).unwrap()
-                }));
+            let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
+            assert!(store.root().is_dir());
+            assert!(store.root().join("pending").is_dir());
+        }
+        // Phase `snapshot_round_trip`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
+            assert!(store.load_snapshot().unwrap().is_none());
+            store.save_snapshot(b"HELLO").unwrap();
+            assert_eq!(store.load_snapshot().unwrap().unwrap(), b"HELLO");
+        }
+        // Phase `snapshot_ignored_when_unpinned`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            store.save_snapshot(b"HELLO").unwrap();
+            assert!(store.load_snapshot().unwrap().is_none());
+        }
+        // Phase `log_append`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
+            store
+                .append_log(&LogEntry {
+                    workspace_id: 7,
+                    received_at_ns: 1,
+                    author_device_hex: "aa".repeat(32),
+                    authored_at_ns: 0,
+                    delta_len: 42,
+                })
+                .unwrap();
+            let text = fs::read_to_string(store.root().join(LOG_FILE)).unwrap();
+            assert!(text.contains("\"workspace_id\":7"));
+        }
+        // Phase `pending_queue_orderly_drain`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let peer = [3u8; 32];
+            store.enqueue_pending(&peer, 100, b"one").unwrap();
+            store.enqueue_pending(&peer, 200, b"two").unwrap();
+            store.enqueue_pending(&peer, 300, b"three").unwrap();
+            assert_eq!(store.count_pending(&peer).unwrap(), 3);
+            let out = store.drain_pending(&peer).unwrap();
+            assert_eq!(out.len(), 3);
+            assert_eq!(out[0], b"one");
+            assert_eq!(out[1], b"two");
+            assert_eq!(out[2], b"three");
+            // Empty after drain.
+            assert_eq!(store.count_pending(&peer).unwrap(), 0);
+        }
+        // Phase `loading_pending_does_not_acknowledge_before_wire_delivery`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 8, false).unwrap();
+            let peer = [4u8; 32];
+            store.enqueue_pending(&peer, 100, b"one").unwrap();
+
+            let loaded = store.load_pending(&peer).unwrap();
+            assert_eq!(loaded.len(), 1);
+            assert_eq!(loaded[0].bytes, b"one");
+            assert_eq!(store.count_pending(&peer).unwrap(), 1);
+
+            std::fs::remove_file(&loaded[0].path).unwrap();
+            assert_eq!(store.count_pending(&peer).unwrap(), 0);
+        }
+        // Phase `pending_isolated_per_peer`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            store.enqueue_pending(&[1u8; 32], 100, b"a").unwrap();
+            store.enqueue_pending(&[2u8; 32], 200, b"b").unwrap();
+            let out1 = store.drain_pending(&[1u8; 32]).unwrap();
+            assert_eq!(out1, vec![b"a".to_vec()]);
+            let out2 = store.drain_pending(&[2u8; 32]).unwrap();
+            assert_eq!(out2, vec![b"b".to_vec()]);
+        }
+    }
+
+    #[test]
+    fn iroh_secret_is_minted_once_and_never_replaced() {
+        // Phase `iroh_secret_stable_across_calls`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let a = load_or_create_iroh_secret(tmp.path()).unwrap();
+            let b = load_or_create_iroh_secret(tmp.path()).unwrap();
+            assert_eq!(a, b);
+            assert_ne!(a, [0u8; 32]);
+        }
+        // Phase `iroh_secret_is_never_replaced`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("iroh-secret.bin");
+            std::fs::write(&path, [7u8; 32]).unwrap();
+            assert_eq!(load_or_create_iroh_secret(tmp.path()).unwrap(), [7u8; 32]);
+            // A malformed secret is an error, not a reason to mint a new identity.
+            std::fs::write(&path, b"short").unwrap();
+            assert!(load_or_create_iroh_secret(tmp.path()).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), b"short");
+        }
+        // Phase `unreadable_iroh_secret_is_never_replaced`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("iroh-secret.bin");
+            // A directory in the secret's place fails every read, whatever the
+            // caller's privileges (a mode-000 file is still readable by root).
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(path.join("marker"), b"kept").unwrap();
+            assert!(load_or_create_iroh_secret(tmp.path()).is_err());
+            assert!(path.is_dir(), "the unreadable secret must not be replaced");
+            assert_eq!(std::fs::read(path.join("marker")).unwrap(), b"kept");
+            assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
+        }
+        // Phase `simultaneous_starts_share_one_iroh_secret`.
+        {
+            for _ in 0..8 {
+                let tmp = tempfile::tempdir().unwrap();
+                let root = tmp.path().to_path_buf();
+                let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
+                // Spawn every participant before joining: interleaving spawn/join
+                // would deadlock the barrier.
+                let mut workers = Vec::with_capacity(4);
+                for _ in 0..4 {
+                    let root = root.clone();
+                    let gate = std::sync::Arc::clone(&gate);
+                    workers.push(std::thread::spawn(move || {
+                        gate.wait();
+                        load_or_create_iroh_secret(&root).unwrap()
+                    }));
+                }
+                let secrets: Vec<_> = workers
+                    .into_iter()
+                    .map(|worker| worker.join().unwrap())
+                    .collect();
+                let persisted = std::fs::read(root.join("iroh-secret.bin")).unwrap();
+                assert!(secrets.iter().all(|secret| secret.as_slice() == persisted));
+                assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
             }
-            let secrets: Vec<_> = workers
-                .into_iter()
-                .map(|worker| worker.join().unwrap())
-                .collect();
-            let persisted = std::fs::read(root.join("iroh-secret.bin")).unwrap();
-            assert!(secrets.iter().all(|secret| secret.as_slice() == persisted));
-            assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
         }
     }
 
@@ -801,19 +1091,90 @@ mod tests {
     }
 
     #[test]
-    fn log_append() {
+    fn governed_access_is_one_authoritative_device_and_root_record() {
         let tmp = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
+        store.save_membership(&[[9; 32]]).unwrap();
         store
-            .append_log(&LogEntry {
-                workspace_id: 7,
-                received_at_ns: 1,
-                author_device_hex: "aa".repeat(32),
-                authored_at_ns: 0,
-                delta_len: 42,
+            .save_governed_access(&GovernedAccessRecord {
+                member_devices: vec![[1; 32]],
+                member_user_roots: vec![[2; 32]],
             })
             .unwrap();
-        let text = fs::read_to_string(store.root().join(LOG_FILE)).unwrap();
-        assert!(text.contains("\"workspace_id\":7"));
+
+        assert_eq!(store.load_membership().unwrap(), vec![[1; 32]]);
+        assert_eq!(
+            store.load_governed_access().unwrap().unwrap(),
+            GovernedAccessRecord {
+                member_devices: vec![[1; 32]],
+                member_user_roots: vec![[2; 32]],
+            }
+        );
+        store.save_membership(&[[3; 32]]).unwrap();
+        assert_eq!(
+            store.load_governed_access().unwrap().unwrap(),
+            GovernedAccessRecord {
+                member_devices: vec![[3; 32]],
+                member_user_roots: vec![[2; 32]],
+            },
+            "device-only membership writers must preserve the governed root half"
+        );
+        assert!(store.root().join(GOVERNED_ACCESS_FILE).exists());
+    }
+
+    fn retained(author: u8, channel: u8, checkpoint: bool, value: u8) -> Vec<u8> {
+        let payload = if checkpoint {
+            crate::coedit::CoeditPayload::Checkpoint {
+                channel: [channel; 32],
+                body: vec![value],
+            }
+        } else {
+            crate::coedit::CoeditPayload::RetainedDelta {
+                channel: [channel; 32],
+                body: vec![value],
+            }
+        };
+        crate::transport::encode(&crate::transport::Envelope::Delta {
+            workspace_id: 7,
+            author_device_public_key: [author; 32],
+            authored_at_ns: 1,
+            delta: payload.encode().unwrap(),
+            signature: [0; 64],
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn retained_replacement_preserves_other_publishers_channels_and_unproven_history() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let a1 = retained(1, 9, true, 1);
+        let a2 = retained(1, 9, true, 2);
+        let b = retained(2, 9, true, 1);
+        let c = retained(1, 8, true, 1);
+        store.retain_checkpoint(&[9; 32], &a1).unwrap();
+        store
+            .retain_delta(&[9; 32], 10, &retained(1, 9, false, 5))
+            .unwrap();
+        store.retain_checkpoint(&[9; 32], &b).unwrap();
+        store.retain_checkpoint(&[8; 32], &c).unwrap();
+        store.retain_checkpoint(&[9; 32], &a2).unwrap();
+        let actual = store.load_retained().unwrap();
+        assert_eq!(actual.len(), 5);
+        for expected in [a1, a2, b, c, retained(1, 9, false, 5)] {
+            assert!(actual.contains(&expected));
+        }
+    }
+
+    #[test]
+    fn retry_of_current_checkpoint_does_not_erase_later_tail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let cp = retained(1, 9, true, 1);
+        let tail = retained(1, 9, false, 1);
+        store.retain_checkpoint(&[9; 32], &cp).unwrap();
+        store.retain_delta(&[9; 32], 10, &tail).unwrap();
+        store.retain_checkpoint(&[9; 32], &cp).unwrap();
+        assert_eq!(store.load_retained().unwrap(), vec![cp, tail]);
     }
 }

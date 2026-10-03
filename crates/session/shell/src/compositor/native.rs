@@ -4,12 +4,13 @@
 //! TTY, talk to DRM/KMS, render, or forward input — those live elsewhere.
 
 use crate::shell::input_policy::{
-    is_lock_chord, is_remote_input_kill_switch, winit_event_to_lock_key,
+    is_lock_chord, is_mouse_keys_toggle, is_remote_input_kill_switch, winit_event_to_lock_key,
 };
 pub use crate::shell::session_policy::*;
 use crate::shell::state::WorkspaceAuthority as _;
 pub use crate::shell::test_control::{
-    ReadLineError, TEST_CONTROL_MAX_LINE_BYTES, keyboard_input_event, read_bounded_line,
+    AGENT_CONTROL_NOT_PERMITTED, ReadLineError, TEST_CONTROL_MAX_LINE_BYTES, keyboard_input_event,
+    read_bounded_line,
 };
 use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Write};
@@ -23,6 +24,7 @@ use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 
+use crate::shell::collab_broker_capnp::LocalSessionLifecycle;
 use crate::shell::search::action_api::{ActionArgs, ActionVisibility, ResourceRef};
 use crate::shell::search::visibility::CapabilityVisibility;
 
@@ -90,6 +92,7 @@ use crate::compositor::floating_service::{FloatingServiceEvent, FloatingSurfaceS
 use crate::compositor::foreign;
 use crate::compositor::frame::{FrameBuilder, FramePaint};
 use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
+use crate::compositor::input_environment::InputEnvironment;
 use crate::compositor::lock_auth;
 use crate::compositor::lock_controller::{LockController, LockKey, UnlockOutcome};
 use crate::compositor::lock_screen::{self, LockOutput, LockView};
@@ -102,22 +105,22 @@ use crate::compositor::surface_outputs::{
     Change as SurfaceOutputChange, Memberships as SurfaceOutputMemberships,
 };
 
-#[derive(Clone)]
-struct PendingLegacyStream {
-    source_peer: u64,
-    surface: u64,
-    local_peer: u64,
-    app_id: String,
-    codec: String,
-    /// The size the sender announced; decoded pictures are cropped to it.
-    display_size: Option<(u32, u32)>,
-    hdr_static_metadata: Option<crate::collab::hdr_metadata::Hdr10Metadata>,
-    input_sink: Arc<dyn Fn(crate::network::streaming::InputEvent) + Send + Sync>,
-}
-
+/// The legacy windows to encode for viewers: none while nobody watches the
+/// backend, so a headless machine's encoders stop and receivers get
+/// `SurfaceStreamEnd` at once.
+///
+/// `viewer_hosts` are the peer handles of the active room's workspace hosts
+/// when the backend is headless: its viewers watch through that host (which
+/// decides which of them see and control what), so every legacy window of
+/// the active workspace is shared with it, not only the explicitly shared.
 fn desired_legacy_shares(
     tree: &crate::shell::state::WorkspaceTree,
+    watched: bool,
+    viewer_hosts: &std::collections::HashSet<u64>,
 ) -> HashMap<u64, (String, std::collections::HashSet<u64>)> {
+    if !watched {
+        return HashMap::new();
+    }
     let Some(workspace) = tree
         .desktop
         .workspaces
@@ -126,33 +129,34 @@ fn desired_legacy_shares(
     else {
         return HashMap::new();
     };
-    workspace
-        .shared_surfaces
+    let mut desired = HashMap::new();
+    for tab in workspace
+        .strips
         .iter()
-        .filter_map(|(surface, peers)| {
-            let app_id = workspace
-                .strips
-                .iter()
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .find_map(|tab| match &tab.tile {
-                    crate::shell::state::TileContent::Foreign { app_id, surface_id }
-                        if *surface_id == surface =>
-                    {
-                        Some(app_id.clone())
-                    }
-                    _ => None,
-                })?;
-            Some((surface, (app_id, peers.clone())))
-        })
-        .collect()
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+    {
+        let crate::shell::state::TileContent::Foreign { app_id, surface_id } = &tab.tile else {
+            continue;
+        };
+        let mut peers = workspace
+            .shared_surfaces
+            .iter()
+            .find_map(|(surface, peers)| (surface == *surface_id).then(|| peers.clone()))
+            .unwrap_or_default();
+        peers.extend(viewer_hosts);
+        if !peers.is_empty() {
+            desired.insert(*surface_id, (app_id.clone(), peers));
+        }
+    }
+    desired
 }
 use crate::compositor::switch_control::{SwitchAction, SwitchControlRuntime};
 
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
     self, ControlState, KeyTag, NamedKeyTag, PlannedAction, PointerButtonKind, TouchPhaseKind,
-    parse_command, serialise_response,
+    parse_request, serialise_response,
 };
 use crate::compositor::{BackendKind, parse_backend_from_args};
 use crate::shell::overlay_host::PeerSyncRequest;
@@ -175,7 +179,6 @@ struct NativeRedrawReasons {
     /// motion while the shell must still repaint its own cursor.
     visible_input: bool,
     session: bool,
-    accessibility: bool,
     revision: bool,
     hidden_desktop_animation: bool,
     apps: bool,
@@ -195,7 +198,6 @@ impl NativeRedrawReasons {
             || self.backend_event
             || self.visible_input
             || self.session
-            || self.accessibility
             || self.revision
             || (!session_locked
                 && (self.hidden_desktop_animation
@@ -211,6 +213,9 @@ impl NativeRedrawReasons {
 const LOCK_CLOCK_REFRESH: Duration = Duration::from_secs(60);
 const IDLE_BACKEND_POLL: Duration = Duration::from_millis(50);
 const WAYLAND_CLIENT_SERVICE_FALLBACK: Duration = Duration::from_millis(4);
+const WAYLAND_REQUESTS_PER_CLIENT_PER_TICK: usize = 64;
+const WAYLAND_PENDING_RETRY_FLOOR: Duration = Duration::from_millis(1);
+const SLOW_WAYLAND_CLIENT_DISPATCH: Duration = Duration::from_millis(10);
 const SLOW_PREPAINT_PHASE: Duration = Duration::from_millis(50);
 
 fn slow_prepaint_phase(elapsed: Duration) -> bool {
@@ -225,25 +230,137 @@ fn wayland_client_service_deadline(wake_registered: bool, now: Instant) -> Optio
     }
 }
 
-/// Select how long calloop may sleep. Presentation cadence is a deadline only
-/// while visual work is pending; a static desktop instead sleeps until the
-/// earliest real service/widget deadline and wakes early on registered fds.
+/// Client requests are dispatched after the tick's pump and paint decision,
+/// and what they change (a new toplevel awaiting its first configure, a
+/// title, a selection) is only picked up by the next tick's pump. Nothing
+/// else need wake that tick on a backend that is never polled, so run it at
+/// once; a tick that dispatches nothing parks normally.
+///
+/// A commit that only carries `wl_surface.frame` changes neither pixels nor
+/// protocol the pump reads. Answering that callback is not a reason to run
+/// the pump again: doing so woke an idle desktop about twice a second and
+/// painted the client's echo.
+fn client_followup_needed(clients_dispatched: bool, pump_visible: bool) -> bool {
+    clients_dispatched && pump_visible
+}
+
+fn client_followup_deadline(pump_needed: bool, now: Instant) -> Option<Instant> {
+    pump_needed.then_some(now)
+}
+
+fn dispatch_wayland_clients_fairly(
+    display: &mut Display<State>,
+    state: &mut State,
+) -> std::io::Result<usize> {
+    let started = Instant::now();
+    let dispatched = display
+        .backend()
+        .dispatch_ready_clients_bounded(state, WAYLAND_REQUESTS_PER_CLIENT_PER_TICK)?;
+    let elapsed = started.elapsed();
+    if elapsed >= SLOW_WAYLAND_CLIENT_DISPATCH {
+        tracing::warn!(
+            target: "tilo::wayland_dispatch",
+            dispatched,
+            elapsed_ms = elapsed.as_secs_f64() * 1000.0,
+            per_client_limit = WAYLAND_REQUESTS_PER_CLIENT_PER_TICK,
+            "slow bounded Wayland client batch"
+        );
+    }
+    Ok(dispatched)
+}
+
+/// [`native_loop_park_named`]'s timeout alone, for tests about how long the
+/// loop sleeps rather than why.
+#[cfg(test)]
 fn native_loop_park(
     now: Instant,
     backend_has_event_wake: bool,
+    wayland_dispatch_pending: bool,
     cadence_needed: bool,
     frame_deadline: Instant,
     deadlines: impl IntoIterator<Item = Option<Instant>>,
 ) -> Option<Duration> {
+    native_loop_park_named(
+        now,
+        backend_has_event_wake,
+        wayland_dispatch_pending,
+        cadence_needed,
+        frame_deadline,
+        deadlines.into_iter().map(|deadline| ("deadline", deadline)),
+    )
+    .0
+}
+
+/// Select how long calloop may sleep. Presentation cadence is a deadline only
+/// while visual work is pending; a static desktop instead sleeps until the
+/// earliest real service/widget deadline and wakes early on registered fds.
+///
+/// Also names the deadline the park ends on — the `wake` column of the frame
+/// trace, and what paint-stats blames when an idle desktop keeps waking.
+/// `None` names a park only an fd can end.
+fn native_loop_park_named(
+    now: Instant,
+    backend_has_event_wake: bool,
+    wayland_dispatch_pending: bool,
+    cadence_needed: bool,
+    frame_deadline: Instant,
+    deadlines: impl IntoIterator<Item = (&'static str, Option<Instant>)>,
+) -> (Option<Duration>, Option<&'static str>) {
+    let wayland_retry = wayland_dispatch_pending
+        .then(|| now.checked_add(WAYLAND_PENDING_RETRY_FLOOR).unwrap_or(now));
     let semantic_deadline = deadlines
         .into_iter()
-        .flatten()
-        .chain(cadence_needed.then_some(frame_deadline))
-        .min();
+        .filter_map(|(name, deadline)| deadline.map(|at| (at, name)))
+        .chain(wayland_retry.map(|at| (at, "wayland-retry")))
+        .chain(cadence_needed.then_some((frame_deadline, "cadence")))
+        .min_by_key(|(at, _)| *at);
 
-    semantic_deadline
-        .map(|deadline| deadline.saturating_duration_since(now))
-        .or_else(|| (!backend_has_event_wake).then_some(IDLE_BACKEND_POLL))
+    match semantic_deadline {
+        Some((deadline, name)) => (Some(deadline.saturating_duration_since(now)), Some(name)),
+        None if !backend_has_event_wake => (Some(IDLE_BACKEND_POLL), Some("idle-backend-poll")),
+        None => (None, None),
+    }
+}
+
+/// Name what ended a park of `park` that lasted `slept`: the deadline it was
+/// set for when the timeout ran out, [`metrics::WAKE_IO`] when an fd fired
+/// first. A timeout returns a little late, never early, so a sleep within
+/// [`WAKE_TIMER_SLACK`] of the timeout still counts as the timer.
+fn park_wake_reason(
+    park: Option<Duration>,
+    deadline: Option<&'static str>,
+    slept: Duration,
+) -> &'static str {
+    match (park, deadline) {
+        (Some(timeout), Some(name)) if slept.saturating_add(WAKE_TIMER_SLACK) >= timeout => name,
+        _ => super::metrics::WAKE_IO,
+    }
+}
+
+const WAKE_TIMER_SLACK: Duration = Duration::from_micros(200);
+
+/// Paint-stats' count of what ended each park, by wake name.
+#[derive(Default)]
+struct WakeTally(Vec<(&'static str, u32)>);
+
+impl WakeTally {
+    fn note(&mut self, reason: &'static str) {
+        match self.0.iter_mut().find(|(name, _)| *name == reason) {
+            Some((_, count)) => *count = count.saturating_add(1),
+            None => self.0.push((reason, 1)),
+        }
+    }
+
+    fn take_summary(&mut self) -> String {
+        let summary = self
+            .0
+            .iter()
+            .map(|(name, count)| format!("{name}={count}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        self.0.clear();
+        summary
+    }
 }
 
 /// A lock-state edge replaces every pixel on screen.  Keep that edge pending
@@ -254,12 +371,91 @@ fn retain_session_redraw(session_changed: bool, frame_submitted: bool) -> bool {
     session_changed && !frame_submitted
 }
 
+/// Wall clock and date for the lock surface, read here rather than in its
+/// pure paint and tree builders.
+struct LockClock {
+    clock: String,
+    date: String,
+}
+
+impl LockClock {
+    fn now() -> Self {
+        let now = chrono::Local::now();
+        Self {
+            clock: now.format("%H:%M").to_string(),
+            date: now.format("%A, %B %-d").to_string(),
+        }
+    }
+
+    fn view<'a>(
+        &'a self,
+        lock: &'a LockController,
+        notification_count: usize,
+        now_playing: Option<&'a crate::shell::now_playing::PlayerSnapshot>,
+    ) -> LockView<'a> {
+        LockView {
+            password_len: lock.buffer_len(),
+            error: lock.error(),
+            clock: &self.clock,
+            date: &self.date,
+            notification_count,
+            verifying: lock.is_verifying(),
+            now_playing,
+        }
+    }
+}
+
+/// Hand AccessKit the current semantic tree. It needs a laid-out widget tree,
+/// not a presented frame: an activation or action is answered in the tick
+/// that drained it, whether or not that tick paints.
+fn publish_accessibility_tree(
+    accessibility: &mut NativeAccessibility,
+    frame_builder: &FrameBuilder,
+    outputs: &[Output],
+    lock: Option<&LockView<'_>>,
+    focus: Option<NodeId>,
+) {
+    accessibility.set_window_focus(true);
+    if let Some(view) = lock {
+        let outputs = lock_outputs(outputs, frame_builder.scene_size());
+        accessibility.update_if_active(|| {
+            lock_screen::build_accessibility_tree(&outputs, frame_builder.theme(), view)
+        });
+    } else {
+        accessibility.update_if_active(|| frame_builder.build_a11y_tree_update(focus, 1.0));
+    }
+}
+
+/// A widget poll already ran in this tick's pump. Its deadline waking the
+/// loop is not a present: the tree, the layout, and any animation are the
+/// pump's result and the animation bit. Painting because the deadline
+/// merely came due kept idle apps submitting frames.
+fn present_for_app_poll(pump_changed: bool, _deadline_due: bool) -> bool {
+    pump_changed
+}
+
+/// A `wl_surface.frame` on a commit that did not change the tree, the
+/// layout, or an animation is not a present. Release it on its own.
+/// While locked the desktop is not shown, and the callback stays until a
+/// real lock or unlock frame, as it did before idle apps stopped driving
+/// cadence.
+fn release_idle_client_callback(locked: bool, content_changed: bool) -> bool {
+    !locked && !content_changed
+}
+
 /// Whether the next park must keep the frame deadline for a pending frame.
 /// While the bounded presenter is full, an already-due frame deadline would
 /// make every park a zero timeout and spin the loop until a frame retires;
 /// the presenter's retirement ping wakes calloop as soon as capacity returns.
 fn cadence_wait_needed(pipe_ready: bool, frame_pending: bool) -> bool {
     pipe_ready && frame_pending
+}
+
+/// A transition the presenter could not take stays pending. The park while
+/// the pipe is full is not animation time; the next submit still has the
+/// frame run ahead of it.
+fn present_hold_credit(presenter_full: bool, transition_pending: bool) -> bool {
+    presenter_full && transition_pending
 }
 
 /// A widget deadline only matters while the presenter can accept the frame
@@ -279,6 +475,113 @@ fn widget_deadline_for_presenter(
 // carry the pending frame; future animation deadlines still wake the idle loop.
 fn lock_animation_park_deadline(now: Instant, deadline: Option<Instant>) -> Option<Instant> {
     deadline.filter(|deadline| *deadline > now)
+}
+
+/// How long after the last input a visible lock backdrop keeps moving. It
+/// then holds still until someone touches the machine: a locked laptop left
+/// on the desk must not repaint at the backdrop's cadence until it blanks.
+const LOCK_BACKDROP_MOTION: Duration = Duration::from_secs(20);
+
+/// The lock backdrop animates only while it can be seen and someone is
+/// there. Behind a blanked panel the backend drops every frame, so building
+/// them would keep an unattended, locked machine awake at the backdrop's
+/// cadence.
+fn lock_animation_deadline(
+    theme: &ui::theme::Theme,
+    session: &SessionManager,
+    has_wallpaper: bool,
+    last_frame: Instant,
+    now: Instant,
+) -> Option<Instant> {
+    lock_screen::animation_deadline(
+        theme,
+        session.is_locked()
+            && !session.is_blanked()
+            && session.idle_for(now) < LOCK_BACKDROP_MOTION,
+        has_wallpaper,
+        last_frame,
+    )
+}
+
+/// How often a locked session re-reads its players, so the lock card follows
+/// a track change or a pause made elsewhere.
+const LOCK_MEDIA_REFRESH: Duration = Duration::from_secs(1);
+
+/// Every output the lock overlay covers, or one spanning the viewport before
+/// any output has been reported.
+fn lock_outputs(
+    outputs: &[crate::compositor::backend::Output],
+    viewport: (f64, f64),
+) -> Vec<LockOutput> {
+    let outputs: Vec<LockOutput> = outputs
+        .iter()
+        .map(|o| LockOutput {
+            origin: (f64::from(o.position.0), f64::from(o.position.1)),
+            size: (f64::from(o.size.0), f64::from(o.size.1)),
+            scale: f64::from(o.scale),
+        })
+        .collect();
+    if outputs.is_empty() {
+        vec![LockOutput {
+            origin: (0.0, 0.0),
+            size: viewport,
+            scale: 1.0,
+        }]
+    } else {
+        outputs
+    }
+}
+
+/// The player the lock screen shows: the one the now-playing card would,
+/// among players that are playing or paused. A stopped player has nothing
+/// to control from a locked screen.
+fn lock_now_playing() -> Option<crate::shell::now_playing::PlayerSnapshot> {
+    use crate::shell::now_playing::{MprisSource, NowPlayingSource, PlaybackStatus, active_index};
+    let source = MprisSource;
+    source.refresh();
+    let players: Vec<_> = source
+        .players()
+        .into_iter()
+        .filter(|player| player.status != PlaybackStatus::Stopped)
+        .collect();
+    let index = active_index(&players, None)?;
+    players.into_iter().nth(index)
+}
+
+/// Whether the lock card must repaint: anything it shows changed. The
+/// playhead is not shown on the lock screen, so its movement is not a change.
+fn lock_media_changed(
+    before: Option<&crate::shell::now_playing::PlayerSnapshot>,
+    after: Option<&crate::shell::now_playing::PlayerSnapshot>,
+) -> bool {
+    match (before, after) {
+        (None, None) => false,
+        (Some(before), Some(after)) => {
+            before.bus_name != after.bus_name
+                || before.status != after.status
+                || before.title != after.title
+                || before.artist != after.artist
+                || before.artwork != after.artwork
+                || before.can_play != after.can_play
+                || before.can_pause != after.can_pause
+                || before.can_go_next != after.can_go_next
+                || before.can_go_previous != after.can_go_previous
+        }
+        _ => true,
+    }
+}
+
+/// Send one lock-screen transport command to exactly the player the lock
+/// card shows. Transport is all a locked session may do to media.
+fn send_lock_transport(
+    player: Option<&crate::shell::now_playing::PlayerSnapshot>,
+    transport: crate::shell::quick_settings::now_playing::Transport,
+) -> bool {
+    use crate::shell::now_playing::{MprisSource, NowPlayingSource};
+    let Some(player) = player.filter(|player| transport.enabled(player)) else {
+        return false;
+    };
+    MprisSource.send(&player.bus_name, transport.command())
 }
 
 fn lock_clock_refresh_due(session_locked: bool, now: Instant, last_refresh: &mut Instant) -> bool {
@@ -318,6 +621,17 @@ fn wayland_peer_credentials(stream: &UnixStream) -> Option<libc::ucred> {
     (credentials.pid > 0).then_some(credentials)
 }
 
+/// The executable of the process on the other end of `stream`, as the
+/// kernel reports it — the identity a trusted display tool is keyed by.
+fn peer_executable(stream: &UnixStream) -> Option<String> {
+    let credentials = wayland_peer_credentials(stream)?;
+    std::fs::read_link(format!("/proc/{}/exe", credentials.pid))
+        .ok()?
+        .into_os_string()
+        .into_string()
+        .ok()
+}
+
 fn peer_shares_host_security_namespaces(pid: u32) -> bool {
     ["user", "mnt"].into_iter().all(|namespace| {
         let host = std::fs::metadata(format!("/proc/self/ns/{namespace}"));
@@ -339,10 +653,15 @@ fn public_client_state(stream: &UnixStream) -> Option<Arc<ClientState>> {
         return None;
     }
     if let Some(identity) = crate::shell::launcher::verified_launch_for_descendant(pid) {
-        return Some(ClientState::attributed_arc(identity));
+        return Some(ClientState::attributed_arc(identity, pid));
     }
     unattributed_host_client_allowed(credentials.uid, peer_shares_host_security_namespaces(pid))
-        .then(ClientState::new_arc)
+        .then(|| {
+            Arc::new(ClientState {
+                pid: Some(pid),
+                ..ClientState::default()
+            })
+        })
 }
 
 fn external_floating_id(connection: u64, id: &str) -> String {
@@ -558,6 +877,64 @@ fn frozen_floating_return_frame(
 )]
 fn app_local_to_desktop(rect: Rect, app_rect: Rect) -> Rect {
     rect + app_rect.origin().to_vec2()
+}
+
+/// Serve the shell's own file choosers when apps have no portal to reach: no
+/// session bus, as on a provider's headless guest. `attended` says whether an
+/// agent is driving the screen; an unattended session (one that saves into
+/// `TILO_SAVE_DIRECTORY`) otherwise leaves its choosers to the apps.
+fn start_chooser_service(
+    portal: Option<&PortalBackend>,
+    attended: Arc<AtomicBool>,
+    wake: crate::session_runtime::Wake,
+) -> Option<crate::compositor::chooser_service::ChooserService> {
+    if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|address| !address.is_empty()) {
+        return None;
+    }
+    let portal = portal?;
+    let save_directory = std::env::var_os(tilo_dialogs::portal::SAVE_DIRECTORY_ENV)
+        .filter(|directory| !directory.is_empty())
+        .map(std::path::PathBuf::from);
+    let unattended = save_directory.is_some();
+    let context = crate::compositor::chooser_service::ChooserContext {
+        grants: portal.media_grants.clone(),
+        pickers: Arc::new(portal.pickers.clone()),
+        presence: Arc::new(move || !unattended || attended.load(Ordering::Acquire)),
+        save_directory,
+        wake,
+    };
+    match crate::compositor::chooser_service::ChooserService::start(context) {
+        Ok(service) => {
+            tracing::info!("serving the shell's file choosers to apps without a portal");
+            Some(service)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "file chooser service unavailable");
+            None
+        }
+    }
+}
+
+/// Open the files apps asked the chooser service to open, each in the app
+/// that owns its type, in the asking app's workspace.
+fn pump_chooser_opens(
+    service: &crate::compositor::chooser_service::ChooserService,
+    chrome: &crate::shell::chrome_state::Chrome,
+) {
+    for open in service.drain_opens() {
+        let active = chrome.borrow().tree().desktop.active;
+        let outcome = if open.caller.workspace_id == active {
+            crate::shell::doc_open::open_in_workspace(&open.path, chrome)
+                .map(|_| ())
+                .map_err(|error| error.user_message())
+        } else {
+            Err(crate::shell::i18n::t("portal-chooser-other-workspace"))
+        };
+        if let Err(reason) = &outcome {
+            tracing::info!(app = %open.caller.app_id, path = %open.path.display(), %reason, "chooser open refused");
+        }
+        let _ = open.reply.send(outcome);
+    }
 }
 
 // This is the ordered protocol event pump; its branches share authentication
@@ -851,6 +1228,17 @@ fn pump_floating_surface_service(
                         &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id },
                     );
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::SetCaptureProtection {
+                    protected,
+                } => {
+                    // The app id is the one the launcher vouched for, so a
+                    // request can only ever withhold the asking app's own
+                    // windows. It narrows what leaves the display, never
+                    // widens it, so any app may ask.
+                    foreign::store().request_app_capture_protection(connection, &app_id, protected);
+                    tracing::debug!(connection, %app_id, protected, "capture protection requested");
+                    changed = true;
+                }
                 ui::floating_surface::FloatingSurfaceClientMessage::Dismiss { id } => {
                     let internal = external_floating_id(connection, &id);
                     capture.dismiss_external_floating(internal.clone());
@@ -869,6 +1257,7 @@ fn pump_floating_surface_service(
                     capture.dismiss_external_floating(id);
                 }
                 state.dismiss_floating_connection(connection);
+                foreign::store().release_capture_protection(connection);
                 tracing::debug!(connection, %app_id, "shell-ui client disconnected");
                 changed = true;
             }
@@ -1066,7 +1455,6 @@ const TEST_STATE_DUMP_ENV: &str = "TILO_TEST_STATE_DUMP";
 /// locked — so it is a **developer-build** surface, gated on
 /// [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`].
 const TEST_CONTROL_ENV: &str = crate::shell::test_control_socket::TEST_CONTROL_ENV;
-const TEST_CONTROL_WAKE_ENV: &str = "TILO_TEST_CONTROL_WAKE_FD";
 
 /// RAII guard that unlinks a unix-socket file when dropped. [`run`] also
 /// drops these explicitly in shutdown order so endpoints disappear before
@@ -1149,22 +1537,160 @@ fn bind_test_control_socket() -> Option<(UnixListener, UnlinkOnDrop)> {
         crate::compositor::dev_env::DEV_ENV_OVERRIDES,
         std::env::var_os(TEST_CONTROL_ENV),
     )?;
+    bind_control_listener(path, "test_control")
+}
+
+/// Environment variable naming the agent-control socket.
+pub const AGENT_CONTROL_ENV: &str = "TILO_AGENT_CONTROL";
+
+/// Resolve the agent-control socket path. Only a build with the
+/// non-default `agent-control` feature, running the headless backend (a
+/// hosted machine an agent drives, with no local person or lock screen),
+/// binds one; `enabled` and `headless` are parameters so every branch is
+/// testable from any build.
+pub(crate) fn agent_control_path(
+    enabled: bool,
+    headless: bool,
+    raw: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    if !enabled || !headless {
+        return None;
+    }
+    raw.map(PathBuf::from).filter(|path| path.is_absolute())
+}
+
+fn bind_agent_control_socket(headless: bool) -> Option<(UnixListener, UnlinkOnDrop)> {
+    let path = agent_control_path(
+        cfg!(feature = "agent-control"),
+        headless,
+        std::env::var_os(AGENT_CONTROL_ENV),
+    )?;
+    bind_control_listener(path, "agent_control")
+}
+
+/// Serve the runtime's MCP projection of this session's broker over HTTP
+/// (`TILO_RUNTIME_MCP_HTTP`), with the canonical pixel tools driving this
+/// compositor through its agent-control socket. Apps an agent opens are
+/// launched by this session, so they are its own attested clients.
+#[cfg(feature = "agent-control")]
+fn spawn_agent_mcp(
+    broker: &crate::shell::collab_broker::BrokerHandle,
+    tree_handle: &crate::shell::state::WorkspaceTreeHandle,
+    headless: bool,
+) {
+    let Some(agent_socket) =
+        agent_control_path(true, headless, std::env::var_os(AGENT_CONTROL_ENV))
+    else {
+        return;
+    };
+    let config = match tilo_runtime::mcp_http::Config::from_env() {
+        Ok(Some(config)) => config,
+        Ok(None) => return,
+        Err(error) => {
+            eprintln!("tilo compositor: agent MCP endpoint: {error}");
+            return;
+        }
+    };
+    let Some(action_broker) = broker.app_action_broker() else {
+        eprintln!("tilo compositor: agent MCP endpoint: the action broker is unavailable");
+        return;
+    };
+    let principal = {
+        let tree = tree_handle.read();
+        tree.desktop.active_workspace().map(|workspace| {
+            (
+                workspace.room.to_string(),
+                crate::shell::state::local_user_id_for_room(&workspace.room),
+            )
+        })
+    };
+    let Some((room, actor)) = principal else {
+        eprintln!("tilo compositor: agent MCP endpoint: no active workspace");
+        return;
+    };
+    let scratch = xdg_paths::xdg::cache_home().map(|cache| cache.join("tilo").join("computer"));
+    let Some(scratch) = scratch.filter(|path| {
+        std::fs::create_dir_all(path).is_ok()
+            && std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+                .is_ok()
+    }) else {
+        eprintln!("tilo compositor: agent MCP endpoint: no private screenshot directory");
+        return;
+    };
+    let computer =
+        std::sync::Arc::new(tilo_runtime::computer::Computer::new(agent_socket, scratch));
+    // Viewer invitations keep their ledger with the session's durable state.
+    let viewer_state = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+        .map(|state| state.join("tilo"))
+        .filter(|path| std::fs::create_dir_all(path).is_ok());
+    let viewer = match viewer_state.map(|state| tilo_runtime::viewer::start_from_env(&state)) {
+        Some(Ok(viewer)) => viewer,
+        Some(Err(error)) => {
+            eprintln!("tilo compositor: viewer invitations unavailable: {error}");
+            None
+        }
+        None => None,
+    };
+    let endpoint = tilo_runtime::mcp_http::Endpoint::with_viewer(
+        crate::shell::remote_actions::BrokerActionHost::new(action_broker),
+        room,
+        actor,
+        config.token.clone(),
+        Some(computer),
+        viewer,
+    );
+    match tilo_runtime::mcp_http::spawn(&config, endpoint) {
+        Ok(bound) => eprintln!("tilo compositor agent MCP endpoint listening on {bound}"),
+        Err(error) => eprintln!("tilo compositor: agent MCP endpoint: {error}"),
+    }
+}
+
+fn bind_control_listener(path: PathBuf, label: &str) -> Option<(UnixListener, UnlinkOnDrop)> {
     // Replaces a stale socket; only this user can ever connect.
     match crate::shell::test_control_socket::bind_private(&path) {
         Ok(listener) => {
             if let Err(e) = listener.set_nonblocking(true) {
-                eprintln!("tilo compositor: test_control set_nonblocking: {e}");
+                eprintln!("tilo compositor: {label} set_nonblocking: {e}");
                 return None;
             }
-            eprintln!(
-                "tilo compositor test_control listening on {}",
-                path.display()
-            );
+            eprintln!("tilo compositor {label} listening on {}", path.display());
             let guard = UnlinkOnDrop(path);
             Some((listener, guard))
         }
         Err(e) => {
-            eprintln!("tilo compositor: test_control bind {}: {e}", path.display());
+            eprintln!("tilo compositor: {label} bind {}: {e}", path.display());
+            None
+        }
+    }
+}
+
+/// Register a duplicate of a control listener as a wake token so a driver
+/// which connects to an idle compositor is serviced immediately. Accepting
+/// and executing requests stays on the compositor thread; this source only
+/// prevents the outer calloop from sleeping through the listener's
+/// readability.
+fn control_listener_wake(
+    listener: &UnixListener,
+    handle: &calloop::LoopHandle<'static, State>,
+) -> Option<calloop::RegistrationToken> {
+    let duplicate = unsafe { libc::fcntl(listener.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+    if duplicate < 0 {
+        eprintln!(
+            "tilo compositor: control listener duplicate: {}",
+            std::io::Error::last_os_error()
+        );
+        return None;
+    }
+    // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
+    let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) };
+    match handle.insert_source(Generic::new(fd, Interest::READ, Mode::Level), |_, _, _| {
+        Ok(PostAction::Continue)
+    }) {
+        Ok(token) => Some(token),
+        Err(error) => {
+            eprintln!("tilo compositor: control listener wake source: {error}");
             None
         }
     }
@@ -1211,7 +1737,8 @@ fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop
     }
     // 0600: not a secret, but nothing else should write it; applied before
     // the rename so it's never briefly visible wider than intended.
-    match atomic_file::write_with_mode(&path, socket_name.as_encoded_bytes(), 0o600) {
+    match tilo_files::native::atomic::write_with_mode(&path, socket_name.as_encoded_bytes(), 0o600)
+    {
         Ok(()) => Some(UnlinkOnDrop(path)),
         Err(e) => {
             eprintln!("tilo compositor: publishing {}: {e}", path.display());
@@ -1247,24 +1774,16 @@ fn bind_privileged_socket() -> Result<(ListeningSocketSource, std::ffi::OsString
     Ok((socket, socket_name))
 }
 
-/// Bind the private display used only by the compositor-launched OSK. The
-/// random suffix keeps it out of well-known socket-name guesses; unlike the
-/// clipboard socket it is never exported in the session environment.
-fn bind_osk_socket() -> Result<(ListeningSocketSource, PathBuf), String> {
-    let name = format!(
-        "tilo-osk-{}-{}",
-        std::process::id(),
-        uuid::Uuid::new_v4().simple()
-    );
-    let socket = ListeningSocketSource::with_name(&name).map_err(|e| e.to_string())?;
-    let path = crate::shell::launcher::runtime_dir().join(socket.socket_name());
-    Ok((socket, path))
-}
-
 /// Per-connection state for the test-control protocol: a buffered reader
 /// over a non-blocking `UnixStream`, so partial lines accumulate across ticks.
 struct TestControlConn {
     reader: BufReader<UnixStream>,
+    /// Accepted on the agent-control socket: only
+    /// [`test_control::Command::agent_permitted`] commands are served.
+    agent: bool,
+    /// Wakes the compositor loop when request bytes arrive on this stream;
+    /// removed from the loop together with the connection.
+    wake: Option<calloop::RegistrationToken>,
     closed: bool,
     pending_invocation: Option<PendingTestControlInvocation>,
     output: Vec<u8>,
@@ -1297,18 +1816,45 @@ impl PendingTestControlInvocation {
 }
 
 impl TestControlConn {
-    fn new(stream: UnixStream) -> Option<Self> {
+    fn new(stream: UnixStream, agent: bool) -> Option<Self> {
         if let Err(e) = stream.set_nonblocking(true) {
             eprintln!("tilo compositor: test_control conn set_nonblocking: {e}");
             return None;
         }
         Some(Self {
             reader: BufReader::new(stream),
+            agent,
+            wake: None,
             closed: false,
             pending_invocation: None,
             output: Vec::new(),
             output_offset: 0,
         })
+    }
+
+    /// Register this stream with `handle` as an edge-triggered wake. A
+    /// driver's `connect` makes the listener readable and is accepted at
+    /// once; its request line arrives separately, possibly only after this
+    /// iteration has already found the stream empty. Without its own wake
+    /// an idle compositor would sleep on the unread request until some
+    /// unrelated event. Edge-triggered, because every pump drains the stream
+    /// until it would block, and a level registration would spin on a peer
+    /// that half-closed while it waits for its response.
+    fn watch(&mut self, handle: &calloop::LoopHandle<'static, State>) {
+        let clone = match self.reader.get_ref().try_clone() {
+            Ok(clone) => clone,
+            Err(error) => {
+                eprintln!("tilo compositor: test_control conn wake clone: {error}");
+                return;
+            }
+        };
+        match handle.insert_source(
+            Generic::new(clone, Interest::READ, Mode::Edge),
+            |_, _, _| Ok(PostAction::Continue),
+        ) {
+            Ok(token) => self.wake = Some(token),
+            Err(error) => eprintln!("tilo compositor: test_control conn wake source: {error}"),
+        }
     }
 
     fn peer_disconnected(&self) -> bool {
@@ -1327,11 +1873,28 @@ impl TestControlConn {
         }
         if ready < 0 {
             let error = std::io::Error::last_os_error();
-            eprintln!("nirios compositor: test_control connection check: {error}");
+            eprintln!("tilo compositor: test_control connection check: {error}");
             return true;
         }
         descriptor.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
     }
+}
+
+/// Every window tab with artwork, across all workspaces, as the pill paints it.
+fn tab_icons_json(tree: &crate::shell::state::WorkspaceTree) -> serde_json::Value {
+    let rows: Vec<serde_json::Value> = tree
+        .desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .filter_map(|tab| {
+            let icon = crate::app_icons::for_tile(&tab.tile)?;
+            Some(serde_json::json!({ "tab": tab.id, "icon": icon.key() }))
+        })
+        .collect();
+    serde_json::Value::Array(rows)
 }
 
 /// `ControlState` impl walking the frame builder. Captures a fresh snapshot
@@ -1348,6 +1911,37 @@ struct FrameBuilderControlState<'a> {
     /// the native transport supplies it so an acceptance client can wait for
     /// an asynchronous verifier before entering a retry.
     lock: Option<&'a LockController>,
+}
+
+impl FrameBuilderControlState<'_> {
+    /// Which windows each display holds, in the order they are laid out,
+    /// and which display has focus: the per-device partition as the person
+    /// sees it. Lists every connected display, a single one included.
+    fn displays_json(&self) -> Vec<serde_json::Value> {
+        let summary = self.fb.host().display_partition_summary();
+        let chrome = self.fb.chrome();
+        let tree = chrome.tree();
+        let partition = &tree.desktop.outputs;
+        // An unpartitioned desktop (one display, ever) lists just that one.
+        let primary = partition
+            .primary()
+            .or_else(|| summary.first().map(|(id, _)| *id));
+        let focused = partition.focused_display().or(primary);
+        let displays = summary
+            .into_iter()
+            .map(|(id, groups)| {
+                serde_json::json!({
+                    "id": id,
+                    "primary": primary == Some(id),
+                    "focused": focused == Some(id),
+                    "groups": groups,
+                })
+            })
+            .collect();
+        drop(tree);
+        drop(chrome);
+        displays
+    }
 }
 
 impl ControlState for FrameBuilderControlState<'_> {
@@ -1383,22 +1977,24 @@ impl ControlState for FrameBuilderControlState<'_> {
         // A pointer is not a roster — different questions. Derived from
         // `collaborator_roster_rows` rather than re-walked, so reads can't drift from what a person sees.
         let chrome = self.fb.chrome();
-        let roster: Vec<serde_json::Value> =
-            crate::shell::overlay_host::collaborator_roster_rows(&chrome.tree())
-                .into_iter()
-                .map(|row| {
-                    serde_json::json!({
-                        "label": row.label,
-                        "role": row.role,
-                        // Kept separate from the label, same as the panel: inferring which of
-                        // these is a person from the label alone is the one mistake to avoid.
-                        "is_agent": row.is_agent,
-                        // Named but not arrived — the one thing a harness watching a join needs,
-                        // and what a screenshot of a dimmed row can't be asserted on.
-                        "invited": row.invited,
-                    })
-                })
-                .collect();
+        let roster: Vec<serde_json::Value> = tilo_desktop::collaborators::collaborator_roster_rows(
+            &chrome.tree().desktop,
+            &crate::shell::state::local_user_id(),
+        )
+        .into_iter()
+        .map(|row| {
+            serde_json::json!({
+                "label": row.label,
+                "role": row.role,
+                // Kept separate from the label, same as the panel: inferring which of
+                // these is a person from the label alone is the one mistake to avoid.
+                "is_agent": row.is_agent,
+                // Named but not arrived — the one thing a harness watching a join needs,
+                // and what a screenshot of a dimmed row can't be asserted on.
+                "invited": row.invited,
+            })
+        })
+        .collect();
         serde_json::json!({ "pointers": rows, "roster": roster })
     }
 
@@ -1670,7 +2266,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                 serde_json::json!({
                     "provider": a.resource.provider,
                     "id": a.resource.id,
-                    "kind": a.kind.label(),
+                    "kind": a.kind.id(),
                     "operation_kind": a.operation_kind,
                     "title": a.title,
                     "subtitle": a.subtitle,
@@ -1729,7 +2325,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         Ok(serde_json::json!({
             "provider": provider,
             "id": id,
-            "kind": selected.kind().label(),
+            "kind": selected.kind().id(),
             "title": selected.title(),
             "params": params_json(selected.params()),
             "contract": selected.contract(),
@@ -1740,6 +2336,10 @@ impl ControlState for FrameBuilderControlState<'_> {
     /// manually rather than `derive(Serialize)` because the chrome owns
     /// `Rc<RefCell<…>>` widget handles that can't sensibly serialise; this also
     /// lets fields like `search_scope` pick a wire-friendly enum-as-string form.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one flat JSON literal with a line per dumped chrome field"
+    )]
     fn chrome_state_json(&self) -> serde_json::Value {
         let chrome = self.fb.chrome();
         let overlays = &chrome.overlays;
@@ -1752,13 +2352,26 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "ws_settings": overlays.ws_settings,
                 "collaborators": overlays.collaborators,
                 "room_activity": overlays.room_activity,
+                "power_menu": self.fb.host().power_menu_open(),
             },
             // What the pointer shows: a drawn shape, the focused client's
             // own surface, or nothing because the client hid it.
             "pointer": self.fb.pointer_image().describe(),
+            // The input hardware and last-used modality the chrome adapts
+            // to, and the language the desktop help overlay is written in.
+            "input": input_environment_json(self.fb.host().interaction_environment(), self.fb.host().shortcut_help_modality()),
             "search_scope": format!("{:?}", chrome.search_scope),
+            "displays": self.displays_json(),
             // Applications' status-notifier items and their menus, as the top bar shows them.
             "tray": crate::tray::Tray::global().state_json(),
+            // Each tab pill's artwork: `toplevel:` when the window set its
+            // own, `theme:` for its application's icon.
+            "tab_icons": tab_icons_json(&chrome.tree()),
+            // The Alt+Tab switcher while it is open: its windows in order,
+            // the selected one, and whether each card shows a live preview
+            // (`live`), its app mark because the app holds secrets
+            // (`withheld`), or its app mark for now (`none`).
+            "window_switcher": self.fb.host().window_switcher_state_json(),
             // Nested resource search is a visible place in the palette, not
             // merely provider-internal state. Expose the authenticated route
             // and label so agents and accessibility tooling can tell exactly
@@ -1787,11 +2400,14 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "title": n.title,
                 "body": n.body,
                 "severity": format!("{:?}", n.severity),
-                "persistent": n.dismiss_after >= crate::shell::notification::PERSISTENT_DISMISS,
+                "persistent": n.dismiss_after >= tilo_desktop::notifications::PERSISTENT_DISMISS,
             })).collect::<Vec<_>>(),
         // The hosted file manager's drag, if in flight, and whether the compositor took it over to a client.
             "files_drag": file_explorer::external_drag::unclaimed().map(|d| d.paths),
             "files_drag_handed_off": file_explorer::external_drag::is_handed_off(),
+            // The compositor-owned sheet on screen (portal review, polkit,
+            // network secrets); masked values appear only as their length.
+            "portal_dialog": self.fb.host().portal_dialog_state_json(),
             "editing_workspace_name": chrome.editing_workspace_name,
             "pending_grants_count": chrome.pending_grants.len(),
         // Mirrored from the SessionManager each tick; lets a headless test observe lock/unlock transitions.
@@ -1837,7 +2453,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                     .tree()
                     .desktop.active_workspace()
                     .and_then(|ws| {
-                        crate::shell::workspace_settings::draft_subject(
+                        tilo_desktop::workspace_settings::draft_subject(
                             ws,
                             &chrome.ws_grant_draft,
                         )
@@ -1870,6 +2486,18 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "maximize": { "x": maximize.x0, "y": maximize.y0, "w": maximize.width(), "h": maximize.height() },
                     "restore": { "x": restore.x0, "y": restore.y0, "w": restore.width(), "h": restore.height() },
                 })),
+            // Super+S detaches the workspace wheel from the strip's left
+            // edge and places it at this point. `null` means docked. The
+            // disc's `test_id` is always `wheel_disc`, so a harness that
+            // only diffs target names cannot see the summon.
+            "wheel_summon": chrome.wheel_summon().map(|p| serde_json::json!({
+                "x": p.x,
+                "y": p.y,
+            })),
+            // Super+F on a Tilo window sets this; a client xdg fullscreen does too.
+            // Maximize is a different field (`workspace_tree` group.maximized).
+            "fullscreen_group": chrome.fullscreen_group(),
+            "fullscreen": chrome.is_fullscreen(),
         })
     }
 }
@@ -1900,6 +2528,26 @@ fn palette_json(fb: &FrameBuilder) -> serde_json::Value {
     })
 }
 
+/// How long a screenshot waits for the client frame an input asked for.
+/// A render-on-demand client draws nothing until its frame callback
+/// fires, and that commit arrives after the input that requested the shot.
+const CLIENT_SNAPSHOT_SETTLE: Duration = Duration::from_millis(400);
+
+/// A screenshot whose file is written once the client commits, or once
+/// [`CLIENT_SNAPSHOT_SETTLE`] runs out with no commit.
+struct PendingClientSnapshot {
+    path: std::path::PathBuf,
+    crop: Option<vello::kurbo::Rect>,
+    /// [`foreign::client_pump_epoch`] at the input. A later commit moves it.
+    epoch: u64,
+    started: Instant,
+}
+
+/// Still waiting on the client frame that input at `input_epoch` asked for.
+fn client_snapshot_still_due(input_epoch: u64, now_epoch: u64, waited: Duration) -> bool {
+    now_epoch == input_epoch && waited < CLIENT_SNAPSHOT_SETTLE
+}
+
 /// Per-process state the test-control wire needs to execute
 /// [`PlannedAction`]s, mirroring `ShellDriver`'s fields: modifier snapshot, auxiliary `AutoCommit` doc, root `ObjId`, focus cursor.
 struct TestControlCtx {
@@ -1912,6 +2560,26 @@ struct TestControlCtx {
     /// precisely the ownership handoff DRM uses before emitting real
     /// `wl_touch` traffic to its Wayland clients.
     direct_touch: DirectTouchOwnership,
+    /// Synthetic touchpad gestures go through the tracker the DRM runtime
+    /// feeds from libinput, so they mean exactly what the fingers would.
+    gestures: crate::compositor::backend::drm::gestures::GestureTracker,
+    /// Attached input devices and the last kind of input used, from the
+    /// backend or from injected test-control input alike. The shell chrome's
+    /// shortcut help follows it.
+    input: InputEnvironment,
+    /// The latest `watch` answer, for the loop to hand to the backend.
+    watch_request: Option<bool>,
+    /// One seat and strip per agent driving this compositor.
+    agents: crate::compositor::agent_seats::AgentSeats,
+    /// While an agent's command runs, the screen region its snapshots show:
+    /// its strip's viewport.
+    snapshot_crop: Option<vello::kurbo::Rect>,
+    /// Pump epoch at the last injected input that reached a client. The
+    /// next snapshot waits until a commit moves it.
+    client_frame_due: Option<u64>,
+    /// Screenshot not written yet: the client has not committed the frame
+    /// the preceding input asked for.
+    pending_snapshot: Option<PendingClientSnapshot>,
 }
 
 impl TestControlCtx {
@@ -1923,6 +2591,48 @@ impl TestControlCtx {
             focus: None,
             cursor: PhysicalPosition::new(0.0, 0.0),
             direct_touch: DirectTouchOwnership::default(),
+            gestures: crate::compositor::backend::drm::gestures::GestureTracker::default(),
+            input: InputEnvironment::default(),
+            watch_request: None,
+            agents: crate::compositor::agent_seats::AgentSeats::new(),
+            snapshot_crop: None,
+            client_frame_due: None,
+            pending_snapshot: None,
+        }
+    }
+
+    /// Hand the current input environment to the shell chrome.
+    fn publish_input_environment(&self, fb: &mut FrameBuilder) {
+        fb.host_mut()
+            .apply_input_environment(self.input.environment());
+    }
+
+    /// Fold injected test-control input into the input environment exactly
+    /// as a backend reports physical devices: a named touch device is
+    /// attached by its first contact, and every event class counts as used.
+    fn note_injected_input(&mut self, action: &PlannedAction, fb: &mut FrameBuilder) {
+        let changed = match action {
+            PlannedAction::Touch { device, phase, .. } => {
+                let attached = self.input.device_added(
+                    format!("test-control:{device}"),
+                    ui::InputAvailability::NONE.with(ui::InputDevice::Touch),
+                );
+                let used = matches!(phase, TouchPhaseKind::Down)
+                    && self.input.note_used(ui::InputModality::Touch);
+                attached || used
+            }
+            PlannedAction::KeyboardKey { pressed: true, .. } => {
+                self.input.note_used(ui::InputModality::Keyboard)
+            }
+            PlannedAction::CursorMoved { .. }
+            | PlannedAction::MouseLeftButton { .. }
+            | PlannedAction::MousePointerButton { .. }
+            | PlannedAction::MouseWheel { .. }
+            | PlannedAction::Touchpad(_) => self.input.note_used(ui::InputModality::Pointer),
+            _ => false,
+        };
+        if changed {
+            self.publish_input_environment(fb);
         }
     }
 }
@@ -2091,7 +2801,12 @@ fn pump_controller_navigation(
         // the next intent so it lands in the window now in front.
         frame_builder.host_mut().flush_active_tab_writeback();
         client_input::sync_keyboard_focus(state, frame_builder);
-        frame_builder.host_mut().note_controller_input(family);
+        // Controller use is classified here, at its source. The keystrokes
+        // it synthesised above never reach the input environment, so they
+        // do not count as typing on a keyboard.
+        if ctx.input.note_controller(family) {
+            ctx.publish_input_environment(frame_builder);
+        }
     }
     true
 }
@@ -2194,12 +2909,12 @@ fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) 
             state.cancel_host_launch_activation(&token);
             frame_builder.with_chrome(|chrome| {
                 chrome.push_notification_full(
-                    crate::shell::notification::Notification::new(
+                    tilo_desktop::notifications::Notification::new(
                         crate::shell::launcher::launch_failure_title(&request.app.name),
                         error.notification_message(),
                     )
-                    .with_severity(crate::shell::notification::NotificationSeverity::Error)
-                    .with_app_name("Host Apps")
+                    .with_severity(tilo_desktop::notifications::NotificationSeverity::Error)
+                    .with_app_name(crate::shell::i18n::t("notification-app-host-apps"))
                     .with_dismiss_after(crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
                 );
                 chrome.bump();
@@ -2234,6 +2949,7 @@ fn dispatch_synth_event(
     state: &mut Option<&mut State>,
 ) {
     if to_client(state, fb, event, ctx.modifiers) {
+        ctx.client_frame_due = Some(foreign::client_pump_epoch());
         return;
     }
     if let Some(st) = state.as_deref_mut() {
@@ -2267,6 +2983,38 @@ fn touch_tap_pointer_events(x: f64, y: f64) -> [WindowEvent; 3] {
             button: MouseButton::Left,
         },
     ]
+}
+
+/// Wire name of an input modality in `state-dump`.
+fn input_modality_name(modality: ui::InputModality) -> &'static str {
+    match modality {
+        ui::InputModality::Pointer => "pointer",
+        ui::InputModality::Touch => "touch",
+        ui::InputModality::Keyboard => "keyboard",
+        ui::InputModality::Controller => "controller",
+    }
+}
+
+/// `state-dump`'s view of the chrome's input environment.
+fn input_environment_json(
+    environment: ui::InteractionEnvironment,
+    help_modality: ui::InputModality,
+) -> serde_json::Value {
+    let available = [
+        (ui::InputDevice::Keyboard, "keyboard"),
+        (ui::InputDevice::Pointer, "pointer"),
+        (ui::InputDevice::Touch, "touch"),
+        (ui::InputDevice::Controller, "controller"),
+    ]
+    .into_iter()
+    .filter(|(device, _)| environment.available.contains(*device))
+    .map(|(_, name)| name)
+    .collect::<Vec<_>>();
+    serde_json::json!({
+        "modality": input_modality_name(environment.modality),
+        "available": available,
+        "help_modality": input_modality_name(help_modality),
+    })
 }
 
 /// Build the shell-side raw touch event for the test-control adapter. The
@@ -2311,10 +3059,6 @@ fn forward_test_control_touch(
 /// the DRM ownership arena rather than reimplementing a test-only notion of
 /// "third finger": E2E assertions therefore cover the exact cancel/frame
 /// decision production hardware uses before the native loop forwards it.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "The test-control touch wire contract keeps each protocol field explicit at the dispatch boundary so fixture inputs map one-to-one onto compositor touch events."
-)]
 fn dispatch_test_control_touch(
     device: &str,
     slot: u32,
@@ -2494,6 +3238,7 @@ fn execute_planned_action(
     state: Option<&mut State>,
 ) -> Option<Result<crate::shell::search::InvocationDisposition, InvokeFailure>> {
     let mut state = state;
+    ctx.note_injected_input(action, fb);
     match action {
         PlannedAction::CursorMoved { x, y } => {
             ctx.cursor = PhysicalPosition::new(*x, *y);
@@ -2549,6 +3294,11 @@ fn execute_planned_action(
             x,
             y,
         } => dispatch_test_control_touch(device, *slot, *phase, *x, *y, fb, ctx, &mut state),
+        PlannedAction::Touchpad(edge) => {
+            if let Some(gesture) = feed_touchpad_edge(&mut ctx.gestures, *edge) {
+                apply_shell_gesture(fb, gesture);
+            }
+        }
         PlannedAction::KeyboardKey { key, pressed } => {
             let winit_key = keytag_into_winit_key(*key);
             let event = keyboard_input_event(&winit_key, *pressed);
@@ -2588,6 +3338,11 @@ fn execute_planned_action(
             }
             // Mutate the modifier snapshot directly — the host reads it on the next chord dispatch, no event needed.
             apply_modifier_mask(ctx, mask);
+            // No key event carries this change, so a gesture held open by a
+            // modifier (Alt+Tab) hears the release here.
+            if fb.host_mut().note_modifiers(mask) {
+                fb.host_mut().flush_active_tab_writeback();
+            }
         }
         PlannedAction::Snapshot { path } => {
             // Re-render into a fresh OffscreenRenderer rather than tap a backend-cached
@@ -2596,21 +3351,26 @@ fn execute_planned_action(
             // returned `Ok`, and crashing on a stray bad path defeats the point of a
             // test surface. A snapshot must show a drag's carried item too, drawn by
             // the live present loop on top of the scene.
-            let drag = state.as_ref().and_then(|s| {
-                (s.selection.dnd_active
-                    || s.selection.chrome_drag.is_some()
-                    || file_explorer::external_drag::unclaimed().is_some())
-                .then(|| {
-                    let (cx, cy) = s.client_input.cursor();
-                    (
-                        vello::kurbo::Point::new(cx, cy),
-                        s.selection.dnd_label.snapshot(),
-                    )
-                })
-            });
-            write_snapshot_png(fb, path, drag);
+            if !defer_client_snapshot(ctx, path, state.as_deref_mut()) {
+                let drag = snapshot_drag(state.as_deref());
+                write_snapshot_png(fb, path, drag, ctx.snapshot_crop);
+            }
         }
-        PlannedAction::InvokeAction { provider, id, args } => {
+        PlannedAction::InvokeAction {
+            provider,
+            id,
+            args,
+            device,
+        } => {
+            if let Some(device) = device {
+                return match fb.invoke_enrolled_device(device, provider, id, args) {
+                    Ok(()) => None,
+                    Err(message) => Some(Err(InvokeFailure {
+                        code: "action_failed".into(),
+                        message,
+                    })),
+                };
+            }
             return Some(execute_invoke_action(provider, id, args, fb, ctx));
         }
     }
@@ -2654,6 +3414,7 @@ fn execute_locked_action(
         | PlannedAction::MouseLeftButton { .. }
         | PlannedAction::MousePointerButton { .. }
         | PlannedAction::Touch { .. }
+        | PlannedAction::Touchpad(_)
         | PlannedAction::MouseWheel { .. }
         | PlannedAction::SetModifiers { .. }
         | PlannedAction::Snapshot { .. }
@@ -2687,6 +3448,79 @@ static SNAPSHOT_RENDERER: std::sync::OnceLock<
 static SNAPSHOT_RENDERERS_BUILT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+/// The drag ornament a snapshot has to draw on top of the scene, if a
+/// drag is in flight. Absent, the PNG is the scene alone.
+fn snapshot_drag(
+    state: Option<&State>,
+) -> Option<(
+    vello::kurbo::Point,
+    crate::compositor::drag_feedback::DragVisual,
+)> {
+    state.and_then(|s| {
+        (s.selection.dnd_active
+            || s.selection.chrome_drag.is_some()
+            || file_explorer::external_drag::unclaimed().is_some())
+        .then(|| {
+            let (cx, cy) = s.client_input.cursor();
+            (
+                vello::kurbo::Point::new(cx, cy),
+                s.selection.dnd_label.snapshot(),
+            )
+        })
+    })
+}
+
+/// Hold `path` until the client commits the frame the last input asked
+/// for. Returns whether the write was deferred. A chrome-only action, or
+/// a commit that already landed, writes immediately at the call site.
+fn defer_client_snapshot(
+    ctx: &mut TestControlCtx,
+    path: &std::path::Path,
+    state: Option<&mut State>,
+) -> bool {
+    let Some(epoch) = ctx.client_frame_due else {
+        return false;
+    };
+    if !client_snapshot_still_due(epoch, foreign::client_pump_epoch(), Duration::ZERO) {
+        ctx.client_frame_due = None;
+        return false;
+    }
+    // The client is waiting on its frame callback. Releasing it here is
+    // what lets the commit this screenshot is waiting for happen at all
+    // on a headless seat that did not paint.
+    if let Some(st) = state {
+        foreign::release_frame_throttle(st);
+    }
+    ctx.pending_snapshot = Some(PendingClientSnapshot {
+        path: path.to_path_buf(),
+        crop: ctx.snapshot_crop,
+        epoch,
+        started: Instant::now(),
+    });
+    true
+}
+
+/// Write a deferred screenshot once its client commit has landed, or the
+/// wait has run out. A shot that is still due stays pending.
+fn publish_settled_snapshot(ctx: &mut TestControlCtx, fb: &mut FrameBuilder, state: &State) {
+    let still_due = ctx.pending_snapshot.as_ref().is_some_and(|pending| {
+        client_snapshot_still_due(
+            pending.epoch,
+            foreign::client_pump_epoch(),
+            pending.started.elapsed(),
+        )
+    });
+    if still_due {
+        return;
+    }
+    let Some(pending) = ctx.pending_snapshot.take() else {
+        return;
+    };
+    ctx.client_frame_due = None;
+    let drag = snapshot_drag(Some(state));
+    write_snapshot_png(fb, &pending.path, drag, pending.crop);
+}
+
 /// Re-paint the current scene into a cached `OffscreenRenderer` and encode
 /// it as a PNG at `path`. Best-effort: bad viewport / missing adapter / I/O
 /// or encoder failures log to stderr and return rather than take the
@@ -2699,6 +3533,7 @@ fn write_snapshot_png(
         vello::kurbo::Point,
         crate::compositor::drag_feedback::DragVisual,
     )>,
+    crop: Option<vello::kurbo::Rect>,
 ) {
     let (w, h) = fb.scene_size();
     // Scene dimensions are always non-negative pixel counts; clamped rather
@@ -2736,7 +3571,9 @@ fn write_snapshot_png(
         );
         fb.compose_layout_scene(&feedback, &mut scene);
     }
-    let scene = scene;
+    // The snapshot leaves the display — to a script, a test or an agent — so
+    // it sees protected windows and secret prompts as a capture does.
+    let scene = fb.capture_scene(&scene).into_owned();
     // The renderer is kept between snapshots, rebuilt only on viewport resize.
     //
     // `OffscreenRenderer::try_new` initialises every vello shader pipeline, so
@@ -2784,12 +3621,45 @@ fn write_snapshot_png(
         drop(slot);
         rgba
     };
+    let (w, h, rgba) = match crop {
+        Some(crop) => crop_rgba(&rgba, (w, h), crop),
+        None => (w, h, rgba),
+    };
+    if w == 0 || h == 0 {
+        eprintln!("tilo compositor: test_control snapshot: the crop is empty, nothing to write");
+        return;
+    }
     if let Err(e) = ui::png::write_rgba8(path, w, h, &rgba) {
         eprintln!(
             "tilo compositor: test_control snapshot: write {}: {e}",
             path.display()
         );
     }
+}
+
+/// The part of a `size` RGBA8 frame inside `crop`, clamped to the frame.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "every edge is clamped to [0, frame size] and rounded before the cast"
+)]
+fn crop_rgba(rgba: &[u8], (w, h): (u32, u32), crop: vello::kurbo::Rect) -> (u32, u32, Vec<u8>) {
+    let edge = |value: f64, max: u32| value.round().clamp(0.0, f64::from(max)) as u32;
+    let (x0, x1) = (edge(crop.x0, w), edge(crop.x1, w));
+    let (y0, y1) = (edge(crop.y0, h), edge(crop.y1, h));
+    let (cw, ch) = (x1.saturating_sub(x0), y1.saturating_sub(y0));
+    let stride = (w as usize).saturating_mul(4).max(1);
+    let start = (x0 as usize).saturating_mul(4);
+    let end = start.saturating_add((cw as usize).saturating_mul(4));
+    let out = rgba
+        .chunks_exact(stride)
+        .skip(y0 as usize)
+        .take(ch as usize)
+        .filter_map(|row| row.get(start..end))
+        .flatten()
+        .copied()
+        .collect();
+    (cw, ch, out)
 }
 
 /// Drain pending bytes from `conn`'s buffer: for each complete `\n`-line,
@@ -2835,7 +3705,7 @@ fn flush_test_control_output(conn: &mut TestControlConn) -> PendingConnectionPro
         let pending = &conn.output[conn.output_offset..];
         match conn.reader.get_mut().write(pending) {
             Ok(0) => {
-                eprintln!("nirios compositor: test_control write: disconnected");
+                eprintln!("tilo compositor: test_control write: disconnected");
                 conn.closed = true;
                 return PendingConnectionProgress::Closed;
             }
@@ -2844,7 +3714,7 @@ fn flush_test_control_output(conn: &mut TestControlConn) -> PendingConnectionPro
                 return PendingConnectionProgress::OutputPending;
             }
             Err(error) => {
-                eprintln!("nirios compositor: test_control write: {error}");
+                eprintln!("tilo compositor: test_control write: {error}");
                 conn.closed = true;
                 return PendingConnectionProgress::Closed;
             }
@@ -2889,6 +3759,492 @@ fn pump_pending_test_control_conn(conn: &mut TestControlConn) -> PendingConnecti
     }
 }
 
+/// The agent a command on the agent-control socket acts for when it names
+/// none: a single-agent client keeps working without knowing about seats.
+const DEFAULT_AGENT: &str = "agent";
+
+/// The agent one control command runs for, once it holds the shared seat.
+struct AgentScope {
+    agent: String,
+    peer: crate::network::protocol::PeerId,
+    strip: crate::shell::state::StripId,
+    /// What the agent sees ([`agent_viewport`], or the window it aimed at):
+    /// its coordinates' origin and its screenshots' extent.
+    viewport: Rect,
+    /// The app id of the window the command aimed at, when it named one.
+    window: Option<String>,
+}
+
+/// Where one app's window lives in the workspace tree.
+struct WindowTarget {
+    workspace: crate::shell::state::WorkspaceId,
+    strip: crate::shell::state::StripId,
+    group: crate::shell::state::GroupId,
+    tab: u64,
+    surface: foreign::SurfaceId,
+}
+
+/// The window of `app_id` that `agent` may act in: one in its own strip
+/// first, else one in a strip no other agent works in. Refusals name what
+/// the agent can aim at instead.
+#[allow(
+    clippy::result_large_err,
+    reason = "the refusal is the wire Response the transport writes back as is, like parse_request's"
+)]
+fn agent_window(
+    fb: &FrameBuilder,
+    agents: &crate::compositor::agent_seats::AgentSeats,
+    agent: &str,
+    app_id: &str,
+) -> Result<WindowTarget, test_control::Response> {
+    let own = agents.seat(agent).and_then(|seat| seat.strip);
+    let mut open = Vec::new();
+    let mut busy = false;
+    let mut found: Option<WindowTarget> = None;
+    {
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        let Some(ws) = tree.desktop.active_workspace() else {
+            return Err(agent_refusal("no_workspace", "no active workspace"));
+        };
+        for strip in &ws.strips {
+            let owner = agents.strip_owner(strip.id).filter(|owner| *owner != agent);
+            for group in &strip.window_groups {
+                for tab in &group.tabs {
+                    let crate::shell::state::TileContent::Foreign {
+                        app_id: tab_app,
+                        surface_id,
+                    } = &tab.tile
+                    else {
+                        continue;
+                    };
+                    if tab_app != app_id {
+                        open.push(tab_app.clone());
+                        continue;
+                    }
+                    if owner.is_some() {
+                        busy = true;
+                        continue;
+                    }
+                    let better = found
+                        .as_ref()
+                        .is_none_or(|current| own == Some(strip.id) && own != Some(current.strip));
+                    if better {
+                        found = Some(WindowTarget {
+                            workspace: ws.id,
+                            strip: strip.id,
+                            group: group.id,
+                            tab: tab.id,
+                            surface: *surface_id,
+                        });
+                    }
+                }
+            }
+        }
+        drop(tree);
+        drop(chrome);
+    }
+    found.ok_or_else(|| {
+        if busy {
+            agent_refusal(
+                "window_busy",
+                &format!("another agent works in the strip holding {app_id}'s window"),
+            )
+        } else {
+            open.sort();
+            open.dedup();
+            agent_refusal(
+                "unknown_window",
+                &format!(
+                    "no window of {app_id} is open; open windows: [{}] (or none, for the whole screen)",
+                    open.join(", ")
+                ),
+            )
+        }
+    })
+}
+
+/// The rect `target`'s window is drawn into, on screen.
+fn window_viewport(fb: &FrameBuilder, target: &WindowTarget) -> Option<Rect> {
+    let screen = agent_viewport(fb)?;
+    let rect = foreign::store()
+        .placement(target.surface)?
+        .intersect(screen);
+    (rect.width() >= 1.0 && rect.height() >= 1.0).then_some(rect)
+}
+
+impl AgentScope {
+    fn origin(&self) -> (f64, f64) {
+        (self.viewport.x0, self.viewport.y0)
+    }
+}
+
+fn agent_refusal(code: &str, message: &str) -> test_control::Response {
+    test_control::Response::Err {
+        code: code.to_string(),
+        message: message.to_string(),
+    }
+}
+
+/// Run `actions` on the shared seat as `peer`'s input.
+fn run_as_participant(
+    peer: crate::network::protocol::PeerId,
+    actions: &[PlannedAction],
+    fb: &mut FrameBuilder,
+    ctx: &mut TestControlCtx,
+    state: &mut State,
+) {
+    if actions.is_empty() {
+        return;
+    }
+    state.client_input.set_participant(Some(peer));
+    for action in actions {
+        let _ = execute_planned_action(action, fb, ctx, Some(state));
+    }
+    state.client_input.set_participant(None);
+}
+
+/// Give `agent` the shared seat before its command runs: find or make its
+/// strip, release what the previous agent holds to that agent's window, focus
+/// the strip (keyboard focus follows its active tab, and a launch lands in it)
+/// and press again what `agent` itself holds. `Ok(None)` when the command was
+/// `agent_leave`, which this completes.
+#[allow(
+    clippy::result_large_err,
+    reason = "the refusal is the wire Response the transport writes back as is, like parse_request's"
+)]
+fn seat_agent(
+    agent: &test_control::Agent,
+    window: Option<&str>,
+    command: &test_control::Command,
+    fb: &mut FrameBuilder,
+    ctx: &mut TestControlCtx,
+    state: &mut State,
+) -> Result<Option<AgentScope>, test_control::Response> {
+    if matches!(command, test_control::Command::AgentLeave) {
+        leave_agent(&agent.id, fb, ctx, state);
+        return Ok(None);
+    }
+    let label = agent.label.clone().unwrap_or_else(|| agent.id.clone());
+    let target = window
+        .map(|app_id| agent_window(fb, &ctx.agents, &agent.id, app_id))
+        .transpose()?;
+    let mut strip = None;
+    {
+        let agents = &ctx.agents;
+        let claimed = |id| {
+            agents
+                .strip_owner(id)
+                .is_some_and(|owner| owner != agent.id)
+        };
+        let mut current = agents.seat(&agent.id).and_then(|seat| seat.strip);
+        // The seated agent moved to another strip nobody else works in: that
+        // strip is its own now, so its next command does not pull it back.
+        if agents.seated() == Some(agent.id.as_str())
+            && let Some(active) = fb.chrome().active_strip_id()
+            && !claimed(active)
+        {
+            current = Some(active);
+        }
+        // Aiming at a window makes the strip holding it the agent's own.
+        if let Some(target) = &target {
+            current = Some(target.strip);
+        }
+        fb.with_chrome(|chrome| {
+            // An agent seeing the whole screen sees its strip alone. One aimed
+            // at a window sees just that window, which keeps the size it has,
+            // so its app is not resized under it by the agent's arrival.
+            if target.is_none() {
+                chrome.set_single_strip(true);
+            }
+            strip = chrome.agent_strip(current, claimed, &label);
+        });
+    }
+    let strip = strip.ok_or_else(|| agent_refusal("no_workspace", "no active workspace"))?;
+    let peer = {
+        let seat = ctx.agents.seat_mut(&agent.id, &label);
+        seat.strip = Some(strip);
+        seat.peer
+    };
+    fb.relayout();
+    let screen = agent_viewport(fb)
+        .ok_or_else(|| agent_refusal("no_screen", "the compositor has no screen yet"))?;
+    let mut viewport = target
+        .as_ref()
+        .and_then(|target| window_viewport(fb, target))
+        .unwrap_or(screen);
+    let handover = ctx.agents.hand_over(
+        &agent.id,
+        &label,
+        ctx.modifiers.state(),
+        (viewport.x0, viewport.y0),
+    );
+    if let Some((previous, releases)) = &handover.release {
+        run_as_participant(*previous, releases, fb, ctx, state);
+    }
+    let mut focused = false;
+    fb.with_chrome(|chrome| {
+        focused = match &target {
+            Some(target) if !window_focused(chrome, target) => {
+                chrome.focus_tab(target.workspace, target.strip, target.group, target.tab);
+                true
+            }
+            Some(_) => false,
+            None => chrome.focus_strip(strip),
+        };
+    });
+    if focused {
+        fb.relayout();
+        fb.reconcile_native_focus(&mut ctx.focus);
+    }
+    if let Some(target) = &target
+        && let Some(screen) = agent_viewport(fb)
+        && foreign::store()
+            .placement(target.surface)
+            .is_some_and(|rect| rect.intersect(screen) != rect)
+        && fb.host_mut().reveal_group_now(target.strip, target.group)
+    {
+        // The window runs off the screen: bring all of it into view.
+        fb.relayout();
+    }
+    if let Some(target) = &target {
+        viewport = window_viewport(fb, target).ok_or_else(|| {
+            agent_refusal(
+                "window_not_shown",
+                "the window is not on screen yet; it may still be opening, try again",
+            )
+        })?;
+    }
+    client_input::sync_keyboard_focus(state, fb);
+    run_as_participant(peer, &handover.restore, fb, ctx, state);
+    if let Some(modifiers) = handover.modifiers {
+        apply_modifier_mask(ctx, modifiers);
+    }
+    Ok(Some(AgentScope {
+        agent: agent.id.clone(),
+        peer,
+        strip,
+        viewport,
+        window: window.map(str::to_owned),
+    }))
+}
+
+/// Whether `target`'s tab is the one shown and focused already.
+fn window_focused(chrome: &crate::shell::chrome_state::ChromeState, target: &WindowTarget) -> bool {
+    let tree = chrome.tree();
+    let desktop = &tree.desktop;
+    let focused = desktop.active == target.workspace
+        && desktop.active_strip.get(&target.workspace) == Some(&target.strip)
+        && desktop.active_group.get(&target.strip) == Some(&target.group)
+        && desktop
+            .active_workspace()
+            .and_then(|ws| ws.strips.iter().find(|s| s.id == target.strip))
+            .and_then(|s| s.window_groups.iter().find(|g| g.id == target.group))
+            .is_some_and(|g| g.active_tab == target.tab);
+    drop(tree);
+    focused
+}
+
+/// Where an agent sees and acts: the whole screen. While agents drive the
+/// compositor only the focused strip is presented, filling the work area, and
+/// the seat focuses the agent's own strip on its turn; the launcher, palette,
+/// menus and dialogs its actions open are drawn over the whole screen, so
+/// anything narrower would hide them from it.
+fn agent_viewport(fb: &FrameBuilder) -> Option<Rect> {
+    let (w, h) = fb.scene_size();
+    (w > 0.0 && h > 0.0).then(|| Rect::new(0.0, 0.0, w, h))
+}
+
+/// Retire `agent`: its window sees the release of everything it still holds,
+/// the shared-seat ledger forgets it, and its strip goes if it holds no window.
+fn leave_agent(agent: &str, fb: &mut FrameBuilder, ctx: &mut TestControlCtx, state: &mut State) {
+    let Some((seat, releases)) = ctx.agents.leave(agent) else {
+        return;
+    };
+    run_as_participant(seat.peer, &releases, fb, ctx, state);
+    state.remote_seats.drop_peer(seat.peer);
+    let last = ctx.agents.is_empty();
+    let mut changed = false;
+    fb.with_chrome(|chrome| {
+        if let Some(strip) = seat.strip {
+            changed = chrome.remove_strip_if_empty(strip);
+        }
+        if last && chrome.single_strip() {
+            chrome.set_single_strip(false);
+            changed = true;
+        }
+    });
+    if changed {
+        fb.relayout();
+        client_input::sync_keyboard_focus(state, fb);
+    }
+}
+
+/// Dispatch `command` for the seated agent in `scope`: its coordinates are
+/// relative to its viewport, what it lists is what its viewport shows, and a
+/// pointer it would move outside the viewport is refused.
+fn dispatch_for_agent(
+    command: test_control::Command,
+    scope: &AgentScope,
+    fb: &FrameBuilder,
+    ctx: &mut TestControlCtx,
+    state: &mut State,
+    lock: &LockController,
+) -> (test_control::Response, Vec<PlannedAction>) {
+    use test_control::{Command, Response};
+    let (ox, oy) = scope.origin();
+    let command = match command {
+        Command::AgentSeat => {
+            let v = scope.viewport;
+            return (
+                Response::Answer(serde_json::json!({
+                    "agent": scope.agent,
+                    "strip": scope.strip.0,
+                    "viewport": [v.x0, v.y0, v.width(), v.height()],
+                    "window": scope.window,
+                })),
+                Vec::new(),
+            );
+        }
+        Command::ClickAt { x, y } => Command::ClickAt {
+            x: x + ox,
+            y: y + oy,
+        },
+        Command::PointerMove { x, y } => Command::PointerMove {
+            x: x + ox,
+            y: y + oy,
+        },
+        Command::Drag {
+            x_from,
+            y_from,
+            x_to,
+            y_to,
+            steps,
+        } => Command::Drag {
+            x_from: x_from + ox,
+            y_from: y_from + oy,
+            x_to: x_to + ox,
+            y_to: y_to + oy,
+            steps,
+        },
+        other => other,
+    };
+    let (response, actions) = dispatch_control_command(command, fb, ctx, state, lock);
+    let viewport = scope.viewport;
+    let inside =
+        |x: f64, y: f64| x >= viewport.x0 && x < viewport.x1 && y >= viewport.y0 && y < viewport.y1;
+    if actions
+        .iter()
+        .any(|action| matches!(action, PlannedAction::CursorMoved { x, y } if !inside(*x, *y)))
+    {
+        let message = match &scope.window {
+            Some(app_id) => format!(
+                "the pointer would leave {app_id}'s window, which is {}x{} pixels from its top-left",
+                viewport.width().round(),
+                viewport.height().round()
+            ),
+            None => "the pointer would leave the screen".to_owned(),
+        };
+        return (agent_refusal("outside_viewport", &message), Vec::new());
+    }
+    let response = match response {
+        Response::Targets(targets) => Response::Targets(
+            targets
+                .into_iter()
+                .filter(|target| {
+                    let [x, y, w, h] = target.rect;
+                    inside(x + w / 2.0, y + h / 2.0)
+                })
+                .map(|mut target| {
+                    target.rect[0] -= ox;
+                    target.rect[1] -= oy;
+                    target
+                })
+                .collect(),
+        ),
+        other => other,
+    };
+    (response, actions)
+}
+
+/// Record where the agent `peer`'s keyboard and pointer landed on its
+/// shared-seat ledger entry, for attribution.
+fn note_agent_focus(state: &mut State, peer: crate::network::protocol::PeerId) {
+    let keyboard = state.client_input.keyboard_focus();
+    let pointer = state.client_input.pointer_focus();
+    let seat = state.remote_seats.seat_mut(peer);
+    match keyboard {
+        Some(surface) => {
+            let _ = seat.enter(surface);
+        }
+        None => {
+            let _ = seat.leave();
+        }
+    }
+    match pointer {
+        Some(surface) => {
+            let _ = seat.pointer_enter(surface);
+        }
+        None => {
+            let _ = seat.pointer_leave();
+        }
+    }
+}
+
+/// Plan one control command against the live frame, as the transport's
+/// person or the agent already seated for it.
+fn dispatch_control_command(
+    command: test_control::Command,
+    frame_builder: &FrameBuilder,
+    ctx: &mut TestControlCtx,
+    state: &mut State,
+    lock: &LockController,
+) -> (test_control::Response, Vec<PlannedAction>) {
+    match command {
+        test_control::Command::Watch { watching } => {
+            ctx.watch_request = Some(watching);
+            (test_control::Response::Ok { frame: 0 }, Vec::new())
+        }
+        test_control::Command::MintHostLaunchActivation {
+            desktop_id,
+            display_name,
+        } => {
+            // Mirror the production host-palette transaction: it records the
+            // destination against every desktop-entry window identity before
+            // minting the optional activation token. Without this, a real X11
+            // client which maps through StartupWMClass but does not bind
+            // xdg-activation can never exercise the production placement path.
+            let placement = crate::compositor::tab_binding::Placement::NewGroup;
+            let identities = crate::shell::host_apps::find(&desktop_id)
+                .map_or_else(|| vec![desktop_id.clone()], |app| app.window_identities);
+            crate::shell::launcher::set_pending_placement_for_identities(
+                &desktop_id,
+                &identities,
+                placement,
+            );
+            let token = state.issue_host_launch_activation(desktop_id, display_name, placement);
+            (
+                test_control::Response::Answer(serde_json::json!({
+                    "activation_token": token,
+                })),
+                Vec::new(),
+            )
+        }
+        test_control::Command::ProvisionTestIdentity => {
+            (crate::compositor::dev_test_identity::respond(), Vec::new())
+        }
+        cmd => {
+            let state = FrameBuilderControlState {
+                fb: frame_builder,
+                doc: Some((&ctx.doc, &ctx.root_obj)),
+                shares: Some(&state.share_registry),
+                lock: Some(lock),
+            };
+            test_control::dispatch_command(&cmd, &state)
+        }
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "Connection pumping preserves request order, response framing, and frame-state mutation in one transaction to make test-control behavior deterministic."
@@ -2920,8 +4276,16 @@ fn pump_test_control_conn(
                 return injected_input;
             }
             Ok(Some(())) => {
-                let (resp, actions) = match parse_command(&line) {
-                    Ok(cmd) => {
+                let mut scope: Option<AgentScope> = None;
+                let (resp, actions) = match parse_request(&line) {
+                    Ok(request) if conn.agent && !request.command.agent_permitted() => (
+                        test_control::Response::Err {
+                            code: "not_permitted".to_string(),
+                            message: AGENT_CONTROL_NOT_PERMITTED.to_string(),
+                        },
+                        Vec::new(),
+                    ),
+                    Ok(request) => {
                         // Settle layout before anything reads a rect. The relayout after an action
                         // (below) covers a tree the *socket* changed, not one a **client** changed
                         // — a window map/close/resize rearranges the strip with no command sent,
@@ -2930,55 +4294,70 @@ fn pump_test_control_conn(
                         // the round-trip that asked for it.
                         frame_builder.relayout();
                         frame_builder.reconcile_native_focus(&mut ctx.focus);
-                        match cmd {
-                            test_control::Command::MintHostLaunchActivation {
-                                desktop_id,
-                                display_name,
-                            } => {
-                                // Mirror the production host-palette
-                                // transaction: it records the destination
-                                // against every desktop-entry window
-                                // identity before minting the optional
-                                // activation token. Without this, a real X11
-                                // client which maps through StartupWMClass but
-                                // does not bind xdg-activation can never
-                                // exercise the production placement path.
-                                let placement = crate::compositor::tab_binding::Placement::NewGroup;
-                                let identities = crate::shell::host_apps::find(&desktop_id)
-                                    .map_or_else(
-                                        || vec![desktop_id.clone()],
-                                        |app| app.window_identities,
-                                    );
-                                crate::shell::launcher::set_pending_placement_for_identities(
-                                    &desktop_id,
-                                    &identities,
-                                    placement,
-                                );
-                                let token = state.issue_host_launch_activation(
-                                    desktop_id,
-                                    display_name,
-                                    placement,
-                                );
+                        // Everything the agent socket carries acts for some agent.
+                        let agent = request.agent.or_else(|| {
+                            conn.agent.then(|| test_control::Agent {
+                                id: DEFAULT_AGENT.to_string(),
+                                label: None,
+                            })
+                        });
+                        match agent {
+                            Some(_)
+                                if session.is_locked()
+                                    && matches!(
+                                        request.command,
+                                        test_control::Command::AgentSeat
+                                            | test_control::Command::AgentLeave
+                                    ) =>
+                            {
                                 (
-                                    test_control::Response::Answer(serde_json::json!({
-                                        "activation_token": token,
-                                    })),
+                                    agent_refusal("session_locked", "the session is locked"),
                                     Vec::new(),
                                 )
                             }
-                            cmd => {
-                                let state = FrameBuilderControlState {
-                                    fb: frame_builder,
-                                    doc: Some((&ctx.doc, &ctx.root_obj)),
-                                    shares: Some(&state.share_registry),
-                                    lock: Some(lock),
-                                };
-                                test_control::dispatch_command(&cmd, &state)
+                            // Locked, input belongs to the lock screen, whoever sends it.
+                            Some(agent) if !session.is_locked() => {
+                                match seat_agent(
+                                    &agent,
+                                    request.window.as_deref(),
+                                    &request.command,
+                                    frame_builder,
+                                    ctx,
+                                    state,
+                                ) {
+                                    Ok(Some(seated)) => {
+                                        let reply = dispatch_for_agent(
+                                            request.command,
+                                            &seated,
+                                            frame_builder,
+                                            ctx,
+                                            state,
+                                            lock,
+                                        );
+                                        scope = Some(seated);
+                                        reply
+                                    }
+                                    Ok(None) => {
+                                        (test_control::Response::Ok { frame: 0 }, Vec::new())
+                                    }
+                                    Err(refusal) => (refusal, Vec::new()),
+                                }
                             }
+                            _ => dispatch_control_command(
+                                request.command,
+                                frame_builder,
+                                ctx,
+                                state,
+                                lock,
+                            ),
                         }
                     }
                     Err(err_resp) => (err_resp, Vec::new()),
                 };
+                if let Some(scope) = &scope {
+                    state.client_input.set_participant(Some(scope.peer));
+                    ctx.snapshot_crop = Some(scope.viewport);
+                }
                 // A planned action that could not run replaces this command's answer.
                 // Actions execute before the reply is written; first failure wins, the rest still run.
                 let mut failed: Option<InvokeFailure> = None;
@@ -3004,6 +4383,14 @@ fn pump_test_control_conn(
                             }
                         }
                     }
+                    if let Some(scope) = &scope {
+                        ctx.agents.record(&scope.agent, action, scope.origin());
+                    }
+                }
+                if let Some(scope) = &scope {
+                    state.client_input.set_participant(None);
+                    ctx.snapshot_crop = None;
+                    note_agent_focus(state, scope.peer);
                 }
                 // Re-run layout so the next command/paint sees rects post-mutation — a
                 // chrome state change can alter structural layout, leaving stale rects otherwise.
@@ -3078,8 +4465,20 @@ fn apply_session_transition(
     transition: SessionTransition,
     backend: &mut dyn Backend,
     pipe: Option<&present::PresentPipe>,
+    local_session: Option<&LocalSessionLifecycle>,
     dimmer: &mut ScreenDimmer<impl Backlight>,
 ) {
+    if let Some(local_session) = local_session {
+        match transition {
+            SessionTransition::Locked => local_session.set_locked(true),
+            SessionTransition::Unlocked => local_session.set_locked(false),
+            SessionTransition::Dimmed
+            | SessionTransition::Undimmed
+            | SessionTransition::Blanked
+            | SessionTransition::Woke
+            | SessionTransition::Suspend => {}
+        }
+    }
     match transition {
         SessionTransition::Dimmed => dimmer.dim(),
         SessionTransition::Undimmed => dimmer.restore(),
@@ -3098,6 +4497,32 @@ fn apply_session_transition(
         // Lock/Unlock are reflected via `SessionManager::is_locked`; Suspend is
         // gated by the inhibitor registry + issued through the power service, never here.
         SessionTransition::Locked | SessionTransition::Unlocked | SessionTransition::Suspend => {}
+    }
+}
+
+fn publish_native_session_state(
+    local_session: Option<&LocalSessionLifecycle>,
+    session: &SessionManager,
+    onboarding_active: bool,
+) {
+    if let Some(local_session) = local_session {
+        local_session.publish_native_state(session.is_locked(), onboarding_active);
+    }
+}
+
+fn install_native_session_lifecycle(
+    broker: &crate::shell::collab_broker::BrokerHandle,
+    session: &SessionManager,
+    onboarding_active: bool,
+) -> LocalSessionLifecycle {
+    let local_session = broker.local_session_lifecycle();
+    publish_native_session_state(Some(&local_session), session, onboarding_active);
+    local_session
+}
+
+fn close_native_session_authority(local_session: Option<&LocalSessionLifecycle>) {
+    if let Some(local_session) = local_session {
+        local_session.close();
     }
 }
 
@@ -3483,7 +4908,8 @@ mod spatial_edge_tests {
     use crate::shell::device_fabric::DisplayEdge;
 
     #[test]
-    fn pointer_can_depart_through_all_four_edges() {
+    fn pointer_departs_through_edges_and_arms_nearby_drops() {
+        // Phase `pointer_can_depart_through_all_four_edges`.
         assert_eq!(
             spatial_departure_edge(0.0, 400.0, 1_000, 800, -2.0, 0.0),
             Some(DisplayEdge::Left)
@@ -3500,10 +4926,7 @@ mod spatial_edge_tests {
             spatial_departure_edge(500.0, 799.0, 1_000, 800, 0.0, 2.0),
             Some(DisplayEdge::Bottom)
         );
-    }
-
-    #[test]
-    fn corner_departure_follows_the_dominant_motion_axis() {
+        // Phase `corner_departure_follows_the_dominant_motion_axis`.
         assert_eq!(
             spatial_departure_edge(999.0, 799.0, 1_000, 800, 8.0, 3.0),
             Some(DisplayEdge::Right)
@@ -3516,28 +4939,27 @@ mod spatial_edge_tests {
             spatial_departure_edge(500.0, 400.0, 1_000, 800, 8.0, 8.0),
             None
         );
-    }
-
-    #[test]
-    fn one_safe_file_or_folder_can_arm_a_nearby_drop() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("note.txt");
-        std::fs::write(&path, b"hello").unwrap();
-        assert_eq!(
-            nearby_drop_candidate(Some(std::slice::from_ref(&path))),
-            Ok(Some(path.clone()))
-        );
-        let folder = temp.path().join("folder");
-        std::fs::create_dir(&folder).unwrap();
-        assert_eq!(
-            nearby_drop_candidate(Some(std::slice::from_ref(&folder))),
-            Ok(Some(folder))
-        );
-        let link = temp.path().join("link");
-        std::os::unix::fs::symlink(&path, &link).unwrap();
-        assert!(nearby_drop_candidate(Some(&[link])).is_err());
-        assert!(nearby_drop_candidate(Some(&[path.clone(), path])).is_err());
-        assert!(nearby_drop_candidate(Some(&[])).is_err());
+        // Phase `one_safe_file_or_folder_can_arm_a_nearby_drop`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("note.txt");
+            std::fs::write(&path, b"hello").unwrap();
+            assert_eq!(
+                nearby_drop_candidate(Some(std::slice::from_ref(&path))),
+                Ok(Some(path.clone()))
+            );
+            let folder = temp.path().join("folder");
+            std::fs::create_dir(&folder).unwrap();
+            assert_eq!(
+                nearby_drop_candidate(Some(std::slice::from_ref(&folder))),
+                Ok(Some(folder))
+            );
+            let link = temp.path().join("link");
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            assert!(nearby_drop_candidate(Some(&[link])).is_err());
+            assert!(nearby_drop_candidate(Some(&[path.clone(), path])).is_err());
+            assert!(nearby_drop_candidate(Some(&[])).is_err());
+        }
     }
 }
 
@@ -3683,7 +5105,7 @@ fn power_notification_to_incoming(
 ) -> crate::notifications::IncomingNotification {
     crate::notifications::IncomingNotification {
         dbus_id: bridge.alloc_id(),
-        app_name: "Power".to_string(),
+        app_name: crate::shell::i18n::t("notification-app-power"),
         summary: n.summary,
         body: n.body,
         actions: Vec::new(),
@@ -3693,6 +5115,7 @@ fn power_notification_to_incoming(
         caller: None,
         badge_count: None,
         contact_endpoint: None,
+        sound: Some(settings_store::system_sounds::SystemSoundEvent::LowBattery),
     }
 }
 
@@ -3747,6 +5170,9 @@ enum PriorityRoute {
     VtSwitch(i32),
     RemoteInputKillSwitch,
     LockSession,
+    /// Shift+Alt+Num Lock flips mouse keys; it works whichever client has
+    /// focus, since the person who needs it may have no other pointer.
+    ToggleMouseKeys,
     /// Nothing claims the event ahead of spatial forwarding, input capture
     /// and ordinary client/chrome routing.
     Continue,
@@ -3779,6 +5205,8 @@ fn priority_route(
         PriorityRoute::RemoteInputKillSwitch
     } else if is_lock_chord(event, modifiers, shortcuts) {
         PriorityRoute::LockSession
+    } else if is_mouse_keys_toggle(event, modifiers) {
+        PriorityRoute::ToggleMouseKeys
     } else if let Some(key) = media_key {
         PriorityRoute::MediaKey(key)
     } else {
@@ -3874,19 +5302,25 @@ fn load_session_tree(
         tree.flush_to_disk();
     }
 
-    let roomless = tree.adopt_roomless_workspaces();
-    if !roomless.is_empty() {
-        tracing::info!(
-            "collaboration: minted a room identity for {} workspace(s)",
-            roomless.len()
-        );
-    }
     let adopted = tree.adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
     if !adopted.is_empty() {
         tracing::info!(
             "capabilities: {} workspace(s) adopted by their selected identities",
             adopted.len()
         );
+    }
+    if let Some(account) = std::env::var("USER")
+        .ok()
+        .filter(|account| !account.is_empty())
+    {
+        let rebound = tree
+            .rebind_account_owned_workspaces(&account, crate::shell::state::local_user_id_for_room);
+        if !rebound.is_empty() {
+            tracing::info!(
+                "capabilities: {} workspace(s) created before this device's identity now belong to it",
+                rebound.len()
+            );
+        }
     }
     // Replay the persisted aggregate on every boot. A previous session may
     // have stopped while the authority socket was unavailable; the
@@ -3919,7 +5353,10 @@ fn spawn_session_collab_broker(
         );
         chrome
             .borrow_mut()
-            .set_collab_unavailable(format!("The service directory could not be created: {e}"));
+            .set_collab_unavailable(crate::shell::i18n::t_args(
+                "collab-unavailable-services-root",
+                &[("error", e.to_string().into())],
+            ));
         return None;
     }
 
@@ -3931,9 +5368,9 @@ fn spawn_session_collab_broker(
              collaboration.",
             capnp_path.display()
         );
-        chrome.borrow_mut().set_collab_unavailable(
-            "Another session on this machine already owns the collaboration socket.",
-        );
+        chrome
+            .borrow_mut()
+            .set_collab_unavailable(crate::shell::i18n::t("collab-unavailable-socket-taken"));
         return None;
     }
 
@@ -3962,7 +5399,10 @@ fn spawn_session_collab_broker(
             );
             chrome
                 .borrow_mut()
-                .set_collab_unavailable(format!("The broker could not start: {e}"));
+                .set_collab_unavailable(crate::shell::i18n::t_args(
+                    "collab-unavailable-broker",
+                    &[("error", e.to_string().into())],
+                ));
             None
         }
     }
@@ -4049,6 +5489,12 @@ fn install_device_fabric_bridge(
                 DeviceFabricUiAction::RouteLocalAudio { node_id } => {
                     crate::shell::device_fabric_runtime::route_local_audio(node_id)?;
                 }
+                DeviceFabricUiAction::SelectLocalInput { node_id } => {
+                    crate::shell::device_fabric_runtime::select_local_input(node_id)?;
+                }
+                DeviceFabricUiAction::StepInputLevel { node_id, raise } => {
+                    crate::shell::device_fabric_runtime::step_input_level(node_id, raise)?;
+                }
                 DeviceFabricUiAction::HandoffBluetooth {
                     address,
                     name,
@@ -4097,7 +5543,7 @@ fn install_device_fabric_bridge(
                     target,
                 } => {
                     let binding = active_physical_gamepad_binding(&tree_handle.read())
-                        .ok_or_else(|| "focus an app before forwarding a controller".to_string())?;
+                        .ok_or_else(|| crate::shell::i18n::t("fabric-focus-app-for-controller"))?;
                     let _ = crate::shell::physical_gamepad::start_physical_gamepad_forwarding(
                         &fabric_net,
                         source_token,
@@ -4137,16 +5583,21 @@ fn install_device_fabric_bridge(
                         session_id,
                     )?;
                 }
-                DeviceFabricUiAction::ResolveSpeakerGroupConsent { group, approved } => {
+                DeviceFabricUiAction::ResolveSpeakerGroupConsent {
+                    group,
+                    kind,
+                    approved,
+                } => {
                     crate::shell::device_fabric_runtime::require_speaker_groups()?;
                     crate::shell::speaker_group_runtime::resolve_consent(
                         &fabric_net,
                         group,
+                        kind,
                         approved,
                     )?;
                 }
-                DeviceFabricUiAction::LeaveSpeakerGroup { group } => {
-                    crate::shell::speaker_group_runtime::leave_group(&fabric_net, group)?;
+                DeviceFabricUiAction::LeaveSpeakerGroup { group, kind } => {
+                    crate::shell::speaker_group_runtime::leave_group(&fabric_net, group, kind)?;
                 }
                 DeviceFabricUiAction::StartSpeakerGroupAudio {
                     source_token,
@@ -4169,8 +5620,10 @@ fn install_device_fabric_bridge(
                     crate::shell::speaker_group_runtime::stop_session(&fabric_net, session_id)?;
                 }
                 DeviceFabricUiAction::RequestRemoteCapture { peer, kind } => {
-                    let binding = active_physical_gamepad_binding(&tree_handle.read())
-                        .ok_or_else(|| "focus an app before using a remote input".to_string())?;
+                    let binding =
+                        active_physical_gamepad_binding(&tree_handle.read()).ok_or_else(|| {
+                            crate::shell::i18n::t("fabric-focus-app-for-remote-input")
+                        })?;
                     let app =
                         crate::shell::realtime_session::VerifiedAppRegistration::new_verified(
                             binding.app_id,
@@ -4384,12 +5837,29 @@ fn install_session_peer_sync(
     let _ = handle.join_default_workspace();
     tracing::info!("peer-sync: actor spawned, default workspace joined");
     let net = Arc::new(handle);
+    net.join_at_boot();
+    frame_builder.set_enrolled_action_network(Arc::clone(&net));
     install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
+    crate::network_secrets::store::RoamingWifiSlot::global().set(Arc::clone(&net) as _);
     install_device_fabric_bridge(
         frame_builder.host_mut(),
         Arc::clone(&net),
         tree_handle.clone(),
     );
+    frame_builder.host_mut().set_personal_devices(Arc::new(
+        crate::shell::device_fabric_runtime::FabricDeviceDirectory::new(Arc::clone(&net)),
+    ));
+    let records = crate::shell::document_import::NativeHostedRooms(Arc::clone(&net));
+    crate::shell::peer_windows::set_hosted_record_reader(Box::new(move |room, app, record| {
+        use crate::shell::document_import::HostedRooms as _;
+        records.read(room, app, record)
+    }));
+    let hosted_net = Arc::clone(&net);
+    frame_builder.with_chrome(move |chrome| {
+        chrome.window_transfers.set_hosted_rooms(Box::new(
+            crate::shell::document_import::NativeHostedRooms(hosted_net),
+        ));
+    });
     let stream_net = Arc::clone(&net);
     state.set_legacy_stream_publisher(Arc::new(move |message| {
         stream_net.publish_legacy_active(message)
@@ -4419,10 +5889,11 @@ fn install_session_peer_sync(
                         role,
                     )
                     .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                PeerSyncRequest::AcceptInvite(token) => bridge_net
-                    .accept_invite(active, &token)
-                    .map(|room| room.to_string())
-                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                PeerSyncRequest::AcceptInvite(token) => {
+                    bridge_net.accept_peer_invitation(active, &token)
+                }
+                PeerSyncRequest::PollEnrollment(id) => bridge_net.poll_enrollment(id),
+                PeerSyncRequest::CancelEnrollment(id) => bridge_net.cancel_enrollment(id),
                 PeerSyncRequest::ListPendingInvitations => {
                     let room = tree_handle
                         .read()
@@ -4469,12 +5940,23 @@ fn attach_collab_broker_bridges(
     broker: &crate::shell::collab_broker::BrokerHandle,
 ) {
     let dispatcher = broker.follow_dispatcher();
+    let handoff = dispatcher.clone();
+    frame_builder.with_chrome(move |chrome| {
+        chrome.window_transfers.set_handoff_link(Box::new(
+            crate::shell::window_transfer::BrokerHandoff::new(handoff),
+        ));
+    });
     frame_builder
         .host_mut()
         .set_follow_bridge(std::rc::Rc::new(move |room, peer_id| {
             dispatcher.set(&room.to_string(), peer_id);
         }));
     if let Some(action_broker) = broker.app_action_broker() {
+        // An app reaching for another app's action is asked about on this
+        // session's own sheet, which the overlay host draws and answers.
+        action_broker.set_app_action_consent(std::sync::Arc::new(
+            crate::shell::app_action_consent::SheetPrompter::session(),
+        ));
         frame_builder
             .host_mut()
             .attach_app_action_broker(action_broker);
@@ -4704,6 +6186,11 @@ impl crate::portal::desktop_services::ScreenshotService for NativeScreenshotServ
 }
 
 struct PortalBackend {
+    media_grants: crate::portal::GrantStoreHandle,
+    media_prompts: crate::portal::PromptQueueHandle,
+    /// The on-screen file chooser's queue, shared with the chooser service
+    /// that apps without a portal reach.
+    pickers: crate::portal::FilePickerQueue,
     #[allow(
         dead_code,
         reason = "Retaining the registration keeps its D-Bus connection, bus name, and object server alive once registered."
@@ -4958,7 +6445,7 @@ fn start_portal_backend(
     };
 
     let ctx = crate::portal::PortalContext {
-        grants,
+        grants: grants.clone(),
         prompts: prompts.clone(),
         caller_map: crate::portal::CallerMap::new(),
         file_picker: crate::portal::FilePickerSpawnerHandle::new(Arc::new(pickers.clone())),
@@ -4985,14 +6472,12 @@ fn start_portal_backend(
         "portal",
         async move {
             let conn = zbus::connection::Builder::session()?.build().await?;
-            crate::portal::serve_with_inhibit_and_clipboard(
-                conn,
-                ctx,
-                inhibit_registry,
-                crate::portal::clipboard::ClipboardBrokerHandle::new(Arc::new(
-                    crate::portal::clipboard::CompositorClipboardBroker::new(selection),
-                )),
-            )
+            crate::portal::serve_with_inhibit_and_clipboard(conn, ctx, inhibit_registry, {
+                let broker = crate::portal::clipboard::CompositorClipboardBroker::new(selection);
+                let wake = broker.wake.clone();
+                crate::portal::clipboard::ClipboardBrokerHandle::new(Arc::new(broker))
+                    .with_selection_wake(wake)
+            })
             .await
         },
         move |server: &crate::portal::ServerHandle| {
@@ -5016,9 +6501,11 @@ fn start_portal_backend(
         },
     );
 
-    // The queues are drained by the overlay host; a portal whose registration
-    // fails never fills them, so attaching them now costs nothing.
-    frame_builder.host_mut().set_portal_queues(prompts, pickers);
+    // The queues are useless until drained; attaching them to the overlay host
+    // here (not at construction) keeps "portal up" and "prompts reach a screen" one fact.
+    frame_builder
+        .host_mut()
+        .set_portal_queues(prompts.clone(), pickers.clone());
 
     if !documents.reaches_confined_apps() {
         // Say it out loud: a sandboxed app getting ENOENT after picking a file
@@ -5030,6 +6517,9 @@ fn start_portal_backend(
         );
     }
     Some(PortalBackend {
+        media_grants: grants,
+        media_prompts: prompts,
+        pickers,
         server,
         remote_input: remote_input_rx,
         input_capture,
@@ -5098,6 +6588,55 @@ fn build_backend(kind: BackendKind) -> Box<dyn Backend> {
 /// Clamped rather than wrapped: a client-visible fullscreen target derived
 /// from a bogus size is far less harmful than the sign flip a bare `as`
 /// cast would produce, and no real display size comes anywhere near `i32::MAX`.
+/// A headless session has no seat anyone sits at: blanking, locking or
+/// suspending it on idle protects nothing, and a lock strands the agents
+/// driving it, since nobody there can type the unlock password. Explicit
+/// locking stays available.
+fn idle_policy_for_backend(
+    policy: tilo_power_mgmt::PowerPolicy,
+    headless: bool,
+) -> tilo_power_mgmt::PowerPolicy {
+    if !headless {
+        return policy;
+    }
+    tilo_power_mgmt::PowerPolicy {
+        idle_blank: None,
+        idle_lock: None,
+        idle_suspend: None,
+        ..policy
+    }
+}
+
+#[cfg(test)]
+mod idle_policy_tests {
+    use super::idle_policy_for_backend;
+    use std::time::Duration;
+
+    #[test]
+    fn only_a_headless_session_drops_idle_blank_lock_and_suspend() {
+        let configured = tilo_power_mgmt::PowerPolicy {
+            idle_blank: Some(Duration::from_secs(60)),
+            idle_lock: Some(Duration::from_secs(300)),
+            idle_suspend: Some(Duration::from_secs(900)),
+            ..tilo_power_mgmt::config::default_policy()
+        };
+        let seated = idle_policy_for_backend(configured, false);
+        assert_eq!(seated.idle_lock, configured.idle_lock);
+        assert_eq!(seated.idle_blank, configured.idle_blank);
+        assert_eq!(seated.idle_suspend, configured.idle_suspend);
+        let headless = idle_policy_for_backend(configured, true);
+        assert_eq!(
+            (
+                headless.idle_blank,
+                headless.idle_lock,
+                headless.idle_suspend
+            ),
+            (None, None, None)
+        );
+        assert_eq!(headless.lid_close_action, configured.lid_close_action);
+    }
+}
+
 fn size_to_signed(size: (u32, u32)) -> (i32, i32) {
     (
         i32::try_from(size.0).unwrap_or(i32::MAX),
@@ -5280,8 +6819,32 @@ pub fn run() {
             }
         }
     } else {
-        false
+        !backend.needs_idle_poll()
     };
+    // Move presentation onto its own thread where the backend supports it.
+    // Headless declines: its bytes are read back synchronously by `snapshot`.
+    // Spawned as soon as the backend exists: the render thread builds its
+    // renderer while the rest of the compositor starts, not when the first
+    // frame arrives.
+    let mut present_pipe = backend.take_presenter().map(|p| {
+        eprintln!("tilo compositor: presenting on a dedicated render thread");
+        // Wake the loop when a frame retires — otherwise a tick that declined to
+        // paint for lack of pipe capacity would park out the whole interval, halving throughput.
+        let (ping, ping_source) = match calloop::ping::make_ping() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("tilo compositor: create present-retire ping failed: {e}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(e) = event_loop.handle().insert_source(ping_source, |(), (), _| {
+            // Waking is the whole effect: the loop re-evaluates its paint gate next iteration and now finds room.
+        }) {
+            eprintln!("tilo compositor: insert present-retire ping source failed: {e}");
+            std::process::exit(1);
+        }
+        present::PresentPipe::spawn(p, Box::new(move || ping.ping()))
+    });
     let (capture_ping, capture_ping_source) = match calloop::ping::make_ping() {
         Ok(pair) => pair,
         Err(error) => {
@@ -5297,6 +6860,21 @@ pub fn run() {
         std::process::exit(1);
     }
     crate::compositor::foreign::install_completion_ping(&capture_ping);
+    // Convertibles: the accelerometer turns the built-in panel. The ping
+    // only wakes the loop; the change itself is drained below.
+    let device_rotation = match calloop::ping::make_ping() {
+        Ok((ping, source)) => match event_loop.handle().insert_source(source, |(), (), _| {}) {
+            Ok(_) => crate::compositor::device_rotation::spawn(move || ping.ping()),
+            Err(error) => {
+                tracing::warn!(%error, "could not register the device rotation wake source");
+                None
+            }
+        },
+        Err(error) => {
+            tracing::warn!(%error, "could not create the device rotation wake source");
+            None
+        }
+    };
 
     // Accept readiness is also part of the outer loop. Accepted streams get
     // their own source below; this source prevents the first request from
@@ -5327,11 +6905,19 @@ pub fn run() {
     // isolation, not a first-login fixture; letting OOBE capture input would
     // make every real-client input test time out before its first keypress.
     // Release builds ignore TILO_TEST_CONTROL entirely via DEV_ENV_OVERRIDES.
+    // A hosted machine an agent drives has no person at first login either;
+    // its identity is provisioned without the ceremony.
     let test_control_session = test_control_path(
         crate::compositor::dev_env::DEV_ENV_OVERRIDES,
         std::env::var_os(TEST_CONTROL_ENV),
     )
-    .is_some();
+    .is_some()
+        || agent_control_path(
+            cfg!(feature = "agent-control"),
+            backend_kind == BackendKind::Headless,
+            std::env::var_os(AGENT_CONTROL_ENV),
+        )
+        .is_some();
     let progress_pending = identity_store
         .path()
         .parent()
@@ -5480,6 +7066,9 @@ pub fn run() {
             st.attach_notification_history_store(store);
         }
     });
+    if let Some(store) = crate::shell::emoji_recents::FileRecentsStore::for_user() {
+        frame_builder.host_mut().attach_emoji_recents_store(store);
+    }
     let inhibit_registry = tilo_power_mgmt::InhibitRegistry::new();
     frame_builder
         .host_mut()
@@ -5517,7 +7106,17 @@ pub fn run() {
         .flatten();
     if let Some(broker) = collab_broker.as_ref() {
         attach_collab_broker_bridges(&mut frame_builder, broker);
+        #[cfg(feature = "agent-control")]
+        spawn_agent_mcp(broker, &tree_handle, backend_kind == BackendKind::Headless);
+        if let (Some(portal), Some(service)) =
+            (portal_backend.as_ref(), broker.native_media_service())
+        {
+            service.install_consent(portal.media_grants.clone(), portal.media_prompts.clone());
+        }
     }
+    let mut local_session_lifecycle = collab_broker
+        .as_ref()
+        .map(crate::shell::collab_broker::BrokerHandle::local_session_lifecycle);
     let mut realtime_fabric_bridge = collab_broker
         .as_ref()
         .and_then(crate::shell::collab_broker::BrokerHandle::realtime_fabric_bridge);
@@ -5676,45 +7275,15 @@ pub fn run() {
         }
     };
 
-    // A third display is the input-method trust boundary. The OSK package is
-    // sandboxed exactly like any other app, but receives this one socket as
-    // its display; public clients cannot see the input-method/virtual-keyboard
-    // globals at all. The preference controls both accepting connections and
-    // the supervised service process.
-    let mut osk_socket_path = None;
-    let mut osk_service = match bind_osk_socket() {
-        Ok((osk_socket, path)) => {
-            osk_socket_path = Some(path.clone());
-            let mut service = crate::compositor::osk_service::OskService::new(path.clone());
-            let authorization = service.socket_authorization();
-            if let Err(error) = event_loop.handle().insert_source(
-                osk_socket,
-                move |client_stream, (), state| {
-                    if !authorization.allows(&client_stream) {
-                        tracing::warn!(target: "tilo::osk", "rejected connection to private OSK display");
-                        return;
-                    }
-                    if let Err(error) = state
-                        .display_handle
-                        .insert_client(client_stream, ClientState::osk_arc())
-                    {
-                        tracing::warn!(target: "tilo::osk", %error, "could not accept OSK Wayland connection");
-                    }
-                },
-            ) {
-                tracing::warn!(target: "tilo::osk", %error, "private OSK socket source rejected");
-                None
-            } else {
-                tracing::info!(target: "tilo::osk", socket = %path.display(), "private OSK display ready");
-                service.reload_preference();
-                Some(service)
-            }
-        }
-        Err(error) => {
-            tracing::warn!(target: "tilo::osk", %error, "private OSK display unavailable");
-            None
-        }
-    };
+    // Private displays are the input-method trust boundary. The OSK package
+    // is sandboxed exactly like any other app and the composer is the image's
+    // own executable; each receives only its own socket as its display, and
+    // public clients cannot see the input-method/virtual-keyboard globals at
+    // all. The input-source and OSK preferences decide which one owns the
+    // seat and runs (see `compositor::input_method`).
+    let mut input_methods =
+        crate::compositor::input_method_service::InputMethodServices::start(&event_loop.handle());
+    input_methods.reload(&mut state);
 
     // A second Wayland socket for clients the session trusts with
     // authority-bearing protocols — clipboard-manager access and session
@@ -5733,9 +7302,10 @@ pub fn run() {
             if let Err(err) = event_loop.handle().insert_source(
                 privileged_socket,
                 move |client_stream, (), state| {
+                    let executable = peer_executable(&client_stream);
                     if let Err(err) = state
                         .display_handle
-                        .insert_client(client_stream, ClientState::privileged_arc())
+                        .insert_client(client_stream, ClientState::privileged_tool_arc(executable))
                     {
                         eprintln!("tilo compositor: failed to insert privileged client: {err}");
                     }
@@ -5764,106 +7334,32 @@ pub fn run() {
         Some((l, g)) => (Some(l), Some(g)),
         None => (None, None),
     };
+    // The agent-control socket (`TILO_AGENT_CONTROL`, `agent-control`
+    // builds on the headless backend only) serves the input and screenshot
+    // subset of the same protocol to an agent driving a hosted machine.
+    let (agent_control_listener, agent_control_unlink) =
+        match bind_agent_control_socket(backend_kind == BackendKind::Headless) {
+            Some((l, g)) => (Some(l), Some(g)),
+            None => (None, None),
+        };
     let mut test_control_conns: Vec<TestControlConn> = Vec::new();
-    // A test-control client is itself an event source.  Register a duplicate
-    // of the listener as a wake token so a driver which connects to an idle
-    // compositor is serviced immediately.  Accepting and executing requests
-    // stays below on the compositor thread; this source only prevents the
-    // outer calloop from sleeping through the listener's readability.
-    //
-    // The inherited eventfd below remains useful for older harnesses which
-    // write to an already-connected stream, but a plain Unix-socket client
-    // must never depend on that private side channel.
-    let _test_control_listener_wake = test_control_listener.as_ref().and_then(|listener| {
-        let duplicate = unsafe { libc::fcntl(listener.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
-        if duplicate < 0 {
-            eprintln!(
-                "tilo compositor: test_control listener duplicate: {}",
-                std::io::Error::last_os_error()
-            );
-            return None;
-        }
-        // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
-        let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) };
-        match event_loop
-            .handle()
-            .insert_source(Generic::new(fd, Interest::READ, Mode::Level), |_, _, _| {
-                Ok(PostAction::Continue)
-            }) {
-            Ok(token) => Some(token),
-            Err(error) => {
-                eprintln!("tilo compositor: test_control listener wake source: {error}");
-                None
-            }
-        }
-    });
-    // Test drivers pass an inherited eventfd and increment it after writing a
-    // command. That gives this manually-pumped protocol a proper outer-loop
-    // wake without registering a persistent Unix stream as permanently
-    // readable. The release build ignores test-control environment overrides.
-    let _test_control_wake = if crate::compositor::dev_env::DEV_ENV_OVERRIDES {
-        std::env::var(TEST_CONTROL_WAKE_ENV)
-            .ok()
-            .and_then(|raw| raw.parse::<std::os::fd::RawFd>().ok())
-            .filter(|raw| *raw >= 0)
-            .and_then(|raw| {
-                // Duplicate rather than adopting the inherited number: the
-                // pre-existing Rust/Python process machinery may also own an
-                // object at that numeric fd. The duplicate gives calloop
-                // unambiguous lifetime ownership while preserving the same
-                // eventfd counter shared with the driver.
-                let duplicate = unsafe { libc::fcntl(raw, libc::F_DUPFD_CLOEXEC, 3) };
-                if duplicate < 0 {
-                    eprintln!(
-                        "tilo compositor: test_control duplicate wake fd {raw}: {}",
-                        std::io::Error::last_os_error()
-                    );
-                    return None;
-                }
-                // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
-                let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) };
-                match event_loop.handle().insert_source(
-                    Generic::new(fd, Interest::READ, Mode::Level),
-                    |_, fd, _| {
-                        let mut value = 0u64;
-                        // SAFETY: eventfd's read ABI is exactly one native
-                        // u64. Drain through EAGAIN to clear level readiness.
-                        let result = unsafe {
-                            libc::read(
-                                fd.as_raw_fd(),
-                                (&raw mut value).cast::<libc::c_void>(),
-                                std::mem::size_of::<u64>(),
-                            )
-                        };
-                        if result < 0
-                            && std::io::Error::last_os_error().kind()
-                                != std::io::ErrorKind::WouldBlock
-                        {
-                            eprintln!(
-                                "tilo compositor: test_control wake read: {}",
-                                std::io::Error::last_os_error()
-                            );
-                        }
-                        Ok(PostAction::Continue)
-                    },
-                ) {
-                    Ok(token) => {
-                        eprintln!("tilo compositor: test_control wake fd {raw} registered");
-                        Some(token)
-                    }
-                    Err(error) => {
-                        eprintln!("tilo compositor: test_control wake source: {error}");
-                        None
-                    }
-                }
-            })
-    } else {
-        None
-    };
+    // A control client is itself an event source. Each accepted stream gets
+    // its own wake (see `TestControlConn::watch`), because a connection is
+    // accepted as soon as it exists, which is often before the request bytes
+    // that follow it have arrived.
+    let _test_control_listener_wake = test_control_listener
+        .as_ref()
+        .and_then(|listener| control_listener_wake(listener, &event_loop.handle()));
+    let _agent_control_listener_wake = agent_control_listener
+        .as_ref()
+        .and_then(|listener| control_listener_wake(listener, &event_loop.handle()));
     // Per-process input context shared by the physical-seat and optional
     // test-control paths. Keeping one focus cursor makes injected and real
     // keyboard traversal exercise the exact same widgets.
     let mut test_control_ctx = TestControlCtx::new();
+    // Nothing is known about the input hardware until the backend announces
+    // devices; the chrome must not keep the toolkit's desktop assumption.
+    test_control_ctx.publish_input_environment(&mut frame_builder);
     frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
     // Compositor chrome has no application window for `accesskit_winit` to
     // attach to. Publish its existing `ui::Widget` semantics directly over
@@ -5902,19 +7398,33 @@ pub fn run() {
             std::process::exit(1);
         }
     };
+    if let Some(net) = peer_sync.as_ref() {
+        net.set_wake(Arc::clone(&session_wake));
+    }
+    let chooser_attended = Arc::new(AtomicBool::new(false));
+    let chooser_service = start_chooser_service(
+        portal_backend.as_ref(),
+        Arc::clone(&chooser_attended),
+        Arc::clone(&session_wake),
+    );
+    // An `app.<id>/close` action, from the broker's thread.
+    let app_closes = crate::shell::app_close::install(Arc::clone(&session_wake));
     let mut network_start: Option<
         crate::session_runtime::PendingStart<crate::shell::network::ShellNetwork>,
     > = None;
     // A media player's answer to a transport key, as the OSD to raise.
     let (transport_osd, transport_osds) =
         crate::session_runtime::mailbox::<crate::shell::osd::Osd>(Arc::clone(&session_wake));
+    let mut super_tap = crate::shell::input_policy::SuperTap::default();
 
     // Idle / DPMS-blank / session-lock state machine (pure logic, see
     // `compositor::idle`); transitions become `backend.set_dpms` calls and
     // lock-overlay paints. The power policy from `settings.json` owns the
     // blank and suspend timeouts at startup and on live reload; environment
     // values only seed the headless/default config before that policy applies.
-    let mut power_policy = tilo_power_mgmt::config::load_policy();
+    let headless = backend_kind == BackendKind::Headless;
+    let mut power_policy =
+        idle_policy_for_backend(tilo_power_mgmt::config::load_policy(), headless);
     let idle_config = if crate::compositor::dev_env::DEV_ENV_OVERRIDES
         && (std::env::var_os(crate::compositor::idle::BLANK_SECS_ENV).is_some()
             || std::env::var_os(crate::compositor::idle::LOCK_SECS_ENV).is_some()
@@ -5932,6 +7442,12 @@ pub fn run() {
             .with_suspend(power_policy.idle_suspend)
     };
     let mut session = SessionManager::new(idle_config, Instant::now());
+    let mut previous_onboarding_active = frame_builder.host().onboarding_active();
+    publish_native_session_state(
+        local_session_lifecycle.as_ref(),
+        &session,
+        previous_onboarding_active,
+    );
     // Session-lock unlock: input + auth state machine. Verifier is the fixed
     // test password (`TILO_LOCK_TEST_PASSWORD`) or real greetd/PAM; fail-closed otherwise.
     let mut lock = LockController::new(
@@ -5966,9 +7482,23 @@ pub fn run() {
     // Mailbox the async power service uses to reach this loop (lock, battery
     // toast, idle-reset on resume) and this loop uses to reach it (request suspend).
     let power_bridge = tilo_power_mgmt::PowerBridge::new();
-    frame_builder
-        .host_mut()
-        .set_power_bridge(power_bridge.clone());
+    // Only a DRM session owns the seat. A headless or nested session runs
+    // beside another desktop on the same machine and logind, so it must never
+    // suspend, lock-on-lid or power off that machine, nor take its lid and
+    // power-key delegation.
+    let owns_host_power = matches!(backend_kind, BackendKind::Drm);
+    if owns_host_power {
+        frame_builder
+            .host_mut()
+            .set_power_bridge(power_bridge.clone());
+    } else {
+        frame_builder.host_mut().detach_from_host();
+        tracing::info!(
+            target: "tilo::power",
+            ?backend_kind,
+            "session does not own the seat: host power actions and logind power service disabled"
+        );
+    }
 
     // The `org.freedesktop.Notifications` D-Bus service — the compositor owns
     // it so sandboxed apps' toasts render as OS-drawn chrome. The bridge is the
@@ -5976,9 +7506,9 @@ pub fn run() {
     // runtime) and this loop's sync chrome pump. Failure to reach the session
     // bus downgrades to a warning; shell-internal notifications keep working regardless.
     let priority_contacts = crate::priority_contacts::PriorityContactRegistry::open_default();
-    let notification_sound = media::notification_sound::NotificationSoundPlayer::new();
+    let system_sounds = crate::shell::system_sounds::SystemSounds::new();
     frame_builder.with_chrome(|st| {
-        st.set_notification_runtime(notification_sound.clone(), priority_contacts.clone());
+        st.set_notification_runtime(system_sounds.clone(), priority_contacts.clone());
     });
     // The session runtime keeps driving zbus dispatch in the background for
     // the life of the process.
@@ -6039,9 +7569,8 @@ pub fn run() {
             rt.handle(),
             "tray",
             async move {
-                let conn = zbus::connection::Builder::session()?.build().await?;
                 crate::tray::watcher::serve(
-                    conn,
+                    zbus::connection::Builder::session()?,
                     std::sync::Arc::clone(crate::tray::Tray::global()),
                 )
                 .await
@@ -6072,11 +7601,45 @@ pub fn run() {
         )
     });
 
+    // NetworkManager secret agent: a Wi-Fi password that changed, 802.1X
+    // sign-in, VPN secrets and SIM PINs become a sheet only the compositor
+    // draws, instead of a connection that silently fails.
+    let network_secret_agent: Option<
+        crate::session_runtime::Registration<crate::network_secrets::service::AgentHandle>,
+    > = notif_runtime.map(|rt| {
+        crate::session_runtime::Registration::start(
+            rt.handle(),
+            "network secret agent",
+            crate::network_secrets::service::serve(
+                crate::shell::portal_dialog::PortalDialogQueue::global(),
+                crate::network_secrets::store::RoamingWifiSlot::global(),
+            ),
+            |_| tracing::info!("network: secret agent registered with NetworkManager"),
+        )
+    });
+
+    // Bluetooth pairing agent: BlueZ's default agent for this session, so a
+    // passkey, PIN, confirmation or service authorisation from any pairing
+    // becomes a dialog only the compositor draws, instead of a pairing that
+    // silently fails.
+    let pairing_prompts = crate::bluetooth::PairingPromptHandle::global();
+    pairing_prompts.set_wake(Arc::clone(&session_wake));
+    let bluetooth_agent: Option<
+        crate::session_runtime::Registration<crate::bluetooth::PairingService>,
+    > = notif_runtime.map(|rt| {
+        crate::session_runtime::Registration::start(
+            rt.handle(),
+            "bluetooth pairing agent",
+            crate::bluetooth::PairingService::start(pairing_prompts),
+            |_| tracing::info!("bluetooth: pairing agent registered with BlueZ"),
+        )
+    });
+
     // Power service: async orchestrator suspending via logind, mirroring the
     // inhibitor registry into a logind lock, watching the battery and lid.
     // Spawned on the session runtime; if the system bus/logind/UPower are
     // unreachable it logs and falls back to the pure idle policy (still blanks/locks/honours env timeouts, just can't actuate real suspend).
-    if let Some(rt) = notif_runtime {
+    if owns_host_power && let Some(rt) = notif_runtime {
         let bridge = power_bridge.clone();
         let registry = inhibit_registry.clone();
         let policy = power_policy;
@@ -6115,31 +7678,12 @@ pub fn run() {
     let frame_period = frame_clock.interval();
     let mut projection_capture = super::projection_capture::ProjectionCapture::default();
 
-    // Move presentation onto its own thread where the backend supports it.
-    // Headless declines: its bytes are read back synchronously by `snapshot`.
-    let mut present_pipe = backend.take_presenter().map(|p| {
-        eprintln!("tilo compositor: presenting on a dedicated render thread");
-        // Wake the loop when a frame retires — otherwise a tick that declined to
-        // paint for lack of pipe capacity would park out the whole interval, halving throughput.
-        let (ping, ping_source) = match calloop::ping::make_ping() {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("tilo compositor: create present-retire ping failed: {e}");
-                std::process::exit(1);
-            }
-        };
-        if let Err(e) = event_loop.handle().insert_source(ping_source, |(), (), _| {
-            // Waking is the whole effect: the loop re-evaluates its paint gate next iteration and now finds room.
-        }) {
-            eprintln!("tilo compositor: insert present-retire ping source failed: {e}");
-            std::process::exit(1);
-        }
-        present::PresentPipe::spawn(p, Box::new(move || ping.ping()))
-    });
     // Reused per-iteration scratch so backend events process *after*
     // `poll_events` returns — the input arm needs `&mut backend` (for `set_dpms`), unborrowable inside the poll closure.
     let mut pending_events: std::collections::VecDeque<BackendEvent> =
         std::collections::VecDeque::new();
+    // The pad whose map is held open, with its saved settings.
+    let mut pad_map_hold: Option<(String, Box<settings_store::hardware::TabletConfig>)> = None;
 
     // `wl_output` globals: advertising the manager without an output means no
     // client learns a display exists. Synced here at startup and on every hotplug.
@@ -6157,6 +7701,7 @@ pub fn run() {
             &outs,
             refresh_mhz_of(&*backend),
         );
+        state.set_output_heads(backend.output_heads());
     }
     // Set when the output set changed this tick, so derived state is re-derived once per batch, not per udev edge.
     let mut outputs_dirty = false;
@@ -6164,6 +7709,22 @@ pub fn run() {
     // Pointer/keyboard preferences are read once at startup; this notices a
     // new Settings write so changes take effect this session, not the next.
     let mut settings_watch = crate::compositor::backend::drm::input_config::SettingsWatch::new();
+    // The poll runs only on a loop tick, and an idle desktop parks with no
+    // deadline, so a write from Settings or a display transaction staged by
+    // another process wakes the loop and is looked at on that tick.
+    let settings_written = Arc::new(AtomicBool::new(false));
+    let _settings_file_watch = {
+        let written = Arc::clone(&settings_written);
+        let wake = Arc::clone(&session_wake);
+        settings_store::watch::watch_settings(move || {
+            written.store(true, Ordering::Release);
+            wake();
+        })
+        .map_err(|error| {
+            tracing::warn!(%error, "settings file watch unavailable; an idle desktop applies Settings changes on its next wake");
+        })
+        .ok()
+    };
     let mut switch_control = SwitchControlRuntime::new(Instant::now());
     // Local game controllers drive the desktop through the same input
     // funnel; their evdev descriptors wake this loop like hardware input.
@@ -6181,6 +7742,9 @@ pub fn run() {
     let mut last_lock_animation_frame = lock_animation_epoch;
     let mut lock_has_wallpaper = false;
     let mut last_lock_clock_refresh = Instant::now();
+    let mut lock_player: Option<crate::shell::now_playing::PlayerSnapshot> = None;
+    let mut lock_pointer: Option<vello::kurbo::Point> = None;
+    let mut last_lock_media_poll = Instant::now();
     let mut last_revision = frame_builder.chrome_revision();
     let mut force_first_paint = true;
     // `output_presentation_frame_changed` observes live foreign-frame
@@ -6192,8 +7756,10 @@ pub fn run() {
     // describe, and a workspace rebuild can replace a mounted runtime
     // widget. Retain descriptors until explicit stream end and retry their
     // cheap idempotent mount every network tick.
-    let mut pending_legacy_streams: HashMap<(u64, u64), PendingLegacyStream> = HashMap::new();
+    let mut pending_legacy_streams: HashMap<(u64, u64), crate::shell::peer_view::PeerStreamStart> =
+        HashMap::new();
     let legacy_share_config = crate::config::load_config().flatpak_share;
+    let mut hosted_legacy_checked = Instant::now();
     // Optional paint-rate diagnostics (`TILO_PAINT_STATS=1`).
     let paint_stats = std::env::var("TILO_PAINT_STATS").is_ok();
     // Slow iterations are exceptional and always worth preserving in the
@@ -6273,23 +7839,43 @@ pub fn run() {
     let (mut cause_events, mut cause_revision, mut cause_anim) = (0u32, 0u32, 0u32);
     let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
     let mut animation_sources_seen = crate::shell::frame::AnimationDemand::default();
+    let mut animating_content_leaves: Vec<String> = Vec::new();
+    let mut wakes_seen = WakeTally::default();
+    let mut widget_wake_owner: Option<String> = None;
     // Test-control commands are intentionally serviced after this tick's
     // paint gate. Preserve their redraw edge for the following iteration;
     // dropping it here records input latency forever without ever producing
     // the reflecting frame.
     let mut injected_redraw_pending = false;
     let mut frame_clock_retired_serial = 0u64;
+    // Privacy's `pw-dump` monitor restarts only on the edge into a requested
+    // frame. An idle park must not arm that watch on a timer.
+    let mut privacy_frame_open = false;
+    // Park spent waiting on a full presenter. Applied on the next tick,
+    // before animation demand is sampled, so the transition does not finish
+    // in the model with nothing presented.
+    let mut transition_hold_sleep = Duration::ZERO;
+    let mut credit_transition_hold;
     while !close_requested {
         let iter_t0 = Instant::now();
         let injected_redraw = std::mem::take(&mut injected_redraw_pending);
         metrics.begin_tick(iter_t0);
+        if !transition_hold_sleep.is_zero() {
+            frame_builder
+                .host_mut()
+                .defer_running_transitions(transition_hold_sleep);
+            transition_hold_sleep = Duration::ZERO;
+        }
         if let Some((serial, retired_at)) = present_pipe
             .as_ref()
             .and_then(present::PresentPipe::latest_retirement)
         {
             metrics.note_retirement(serial, retired_at);
             if serial > frame_clock_retired_serial {
-                frame_clock.note_presented(retired_at);
+                // A virtual present can retire several intervals after the
+                // frame was admitted. The grid point after that late time
+                // would hold the waiting frame for another interval.
+                frame_clock.note_blocked_retirement(retired_at);
                 frame_clock_retired_serial = serial;
             }
         }
@@ -6328,13 +7914,17 @@ pub fn run() {
         // environment before GDM admits the next desktop.
         if os_actions::take_logout_request() {
             tracing::info!(target: "tilo::session", "logout request observed by compositor loop");
+            close_native_session_authority(local_session_lifecycle.as_ref());
             close_requested = true;
             continue;
         }
         // Poll before processing launch actions so closed workspaces have
         // released their displays and a waiting X11 client gets its bridge.
         if let Some(xwayland) = xwayland.as_mut() {
-            xwayland.poll(&frame_builder.chrome_handle());
+            xwayland.poll(
+                &frame_builder.chrome_handle(),
+                &state.mapped_xwayland_pids(),
+            );
         }
         if let Some(service) = floating_surface_service.as_ref()
             && pump_floating_surface_service(
@@ -6354,6 +7944,9 @@ pub fn run() {
         {
             force_first_paint = true;
         }
+        if let Some(service) = chooser_service.as_ref() {
+            pump_chooser_opens(service, &frame_builder.chrome_handle());
+        }
         // Contextual routes from Personal Settings cross a worker-thread
         // service, then land here because ChromeState intentionally remains
         // compositor-thread owned.
@@ -6363,6 +7956,93 @@ pub fn run() {
             service.pump_identity_backup(&chrome, || {
                 frame_builder.host_mut().open_portable_identity_backup()
             });
+        }
+        // A pen goes to a tablet-aware client directly and stands in for the
+        // pointer everywhere else, so it expands into ordinary input here,
+        // in order, before the batch is dispatched.
+        // A pad follows keyboard focus the same way, with its settings'
+        // mapping standing in wherever no tablet-aware app is focused.
+        if pending_events.iter().any(|event| {
+            matches!(
+                event,
+                BackendEvent::Tablet(_)
+                    | BackendEvent::TabletPad(_)
+                    | BackendEvent::TabletPadMap { .. }
+                    | BackendEvent::TabletPadAdded(_)
+                    | BackendEvent::TabletPadRemoved(_)
+            )
+        }) {
+            for event in std::mem::take(&mut pending_events) {
+                match event {
+                    BackendEvent::Tablet(input) => {
+                        pending_events.extend(client_input::route_tablet_event(
+                            &mut state,
+                            &frame_builder,
+                            &input,
+                            session.is_locked(),
+                        ));
+                    }
+                    BackendEvent::TabletPad(pad) => {
+                        if let crate::compositor::backend::PadAction::ModeSwitch {
+                            mode,
+                            modes,
+                            ..
+                        } = pad.action
+                        {
+                            frame_builder.with_chrome(|st| {
+                                st.show_osd(crate::shell::osd::Osd::pad_mode(mode, modes));
+                            });
+                        }
+                        pending_events.extend(client_input::route_pad_event(
+                            &mut state,
+                            &frame_builder,
+                            pad,
+                            session.is_locked(),
+                        ));
+                    }
+                    BackendEvent::TabletPadMap {
+                        pad,
+                        shown,
+                        time_msec,
+                    } => match shown {
+                        // Not on the lock screen: the map names what the
+                        // apps behind it do.
+                        Some(config) if !session.is_locked() => {
+                            let target =
+                                client_input::pad_focus_target(&state, &frame_builder, false);
+                            // The app learns the pad is there now, so it can
+                            // label the controls while the map is up.
+                            state.focus_tablet_pad(&pad, target, time_msec);
+                            pad_map_hold = Some((pad, config));
+                        }
+                        Some(_) => {}
+                        None => {
+                            if pad_map_hold.as_ref().is_some_and(|(held, _)| *held == pad) {
+                                pad_map_hold = None;
+                            }
+                        }
+                    },
+                    BackendEvent::TabletPadAdded(description) => {
+                        state.add_tablet_pad(description);
+                    }
+                    BackendEvent::TabletPadRemoved(pad) => state.remove_tablet_pad(&pad),
+                    other => pending_events.push_back(other),
+                }
+            }
+        }
+        // Rebuilt every tick while held, so labels an app sends after a mode
+        // switch replace the ones it gave for the last mode.
+        if pad_map_hold.is_some() && session.is_locked() {
+            pad_map_hold = None;
+        }
+        let pad_map = pad_map_hold
+            .as_ref()
+            .and_then(|(pad, config)| state.tablet_pad_map(pad, config));
+        if pad_map.is_none() {
+            pad_map_hold = None;
+        }
+        if pad_map.is_some() || frame_builder.chrome().pad_map.is_some() {
+            frame_builder.with_chrome(|st| st.set_pad_map(pad_map));
         }
         let had_backend_events = !pending_events.is_empty();
         let mut session_changed = false;
@@ -6381,9 +8061,17 @@ pub fn run() {
                     }
                     if session.is_locked() {
                         // The lock owns a deliberately tiny, non-leaking tree.
-                        // Only its password field is actionable; stale ids from
-                        // the hidden desktop are rejected here.
-                        if request.target_node == lock_screen::LOCK_PASSWORD_ID {
+                        // Only its password field and the now-playing
+                        // transport are actionable; stale ids from the hidden
+                        // desktop are rejected here.
+                        if let Some(transport) =
+                            lock_screen::transport_for_node(request.target_node)
+                        {
+                            if request.action == ui::accesskit::Action::Click {
+                                session_changed |=
+                                    send_lock_transport(lock_player.as_ref(), transport);
+                            }
+                        } else if request.target_node == lock_screen::LOCK_PASSWORD_ID {
                             match (request.action, request.data.as_ref()) {
                                 (
                                     ui::accesskit::Action::SetValue,
@@ -6489,12 +8177,21 @@ pub fn run() {
                             t,
                             backend.as_mut(),
                             present_pipe.as_ref(),
+                            local_session_lifecycle.as_ref(),
                             &mut screen_dimmer,
                         );
                     }
                     // Physical priority: the host's own keyboard/mouse blocks every remote
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
                     state.remote_input_firewall.note_local_input(Instant::now());
+                    // A lone Super tap opens global search. Observed ahead of every
+                    // branch below, so a chord one of them handles still disarms it.
+                    if super_tap.observe(wev) && !session.is_locked() {
+                        frame_builder
+                            .host_mut()
+                            .open_global_search(&test_control_ctx.doc, &test_control_ctx.root_obj);
+                        session_changed = true;
+                    }
 
                     let locked = session.is_locked();
                     let route = priority_route(
@@ -6523,6 +8220,35 @@ pub fn run() {
                     if route == PriorityRoute::LockScreen {
                         // Locked: every input is captured by the lock surface, into the password
                         // field, never apps/chrome; unlocks only when `lock.poll_verification()` observes success.
+                        match wev {
+                            WindowEvent::CursorMoved { position, .. } => {
+                                lock_pointer =
+                                    Some(vello::kurbo::Point::new(position.x, position.y));
+                            }
+                            WindowEvent::MouseInput {
+                                state: ElementState::Pressed,
+                                button: MouseButton::Left,
+                                ..
+                            } => {
+                                let outputs =
+                                    lock_outputs(backend.outputs(), frame_builder.viewport());
+                                let view = LockView {
+                                    now_playing: lock_player.as_ref(),
+                                    ..LockView::default()
+                                };
+                                if let Some(transport) = lock_pointer.and_then(|point| {
+                                    lock_screen::transport_at(
+                                        &outputs,
+                                        frame_builder.theme(),
+                                        &view,
+                                        point,
+                                    )
+                                }) {
+                                    send_lock_transport(lock_player.as_ref(), transport);
+                                }
+                            }
+                            _ => {}
+                        }
                         let key = winit_event_to_lock_key(wev);
                         lock.handle_key(key);
                         // Any keystroke changes the masked field / error, so force a repaint this tick.
@@ -6543,6 +8269,7 @@ pub fn run() {
                                         t,
                                         backend.as_mut(),
                                         present_pipe.as_ref(),
+                                        local_session_lifecycle.as_ref(),
                                         &mut screen_dimmer,
                                     );
                                 }
@@ -6563,6 +8290,30 @@ pub fn run() {
                             spatial_control = None;
                         }
                         session_changed = true;
+                    } else if (state.pointer_lock.is_engaged()
+                        || state.shortcut_inhibit.is_active())
+                        && crate::compositor::pointer_lock::is_release_chord(
+                            wev,
+                            test_control_ctx.modifiers,
+                        )
+                    {
+                        // Ctrl+Alt+Esc: always gets the pointer back from a
+                        // game that locked or confined it, and the shell
+                        // shortcuts back from an app that captured them —
+                        // ahead of the client router, so the app cannot
+                        // swallow it.
+                        if let Some(change) = state.release_pointer_constraint() {
+                            apply_pointer_constraint_change(backend.as_mut(), change);
+                            frame_builder.with_chrome(|chrome| {
+                                chrome.show_osd(crate::shell::osd::Osd::pointer_held(false));
+                            });
+                        }
+                        if state.suspend_shortcut_inhibit() {
+                            frame_builder.with_chrome(|chrome| {
+                                chrome.show_osd(crate::shell::osd::Osd::keys_captured(false));
+                            });
+                        }
+                        session_changed = true;
                     } else if route == PriorityRoute::LockSession {
                         // Super+L locks immediately.
                         for t in session.request_lock(Instant::now()) {
@@ -6570,8 +8321,19 @@ pub fn run() {
                                 t,
                                 backend.as_mut(),
                                 present_pipe.as_ref(),
+                                local_session_lifecycle.as_ref(),
                                 &mut screen_dimmer,
                             );
+                        }
+                    } else if route == PriorityRoute::ToggleMouseKeys {
+                        // The compositor applies the flipped preference on its
+                        // next settings poll; the readout confirms it now.
+                        if let Some(osd) = settings_store::settings_path()
+                            .as_deref()
+                            .and_then(crate::shell::media_keys::toggle_mouse_keys)
+                        {
+                            frame_builder.with_chrome(|st| publish_media_osd(st, osd));
+                            session_changed = true;
                         }
                     } else if let PriorityRoute::MediaKey(mk) = route {
                         // Hardware media/brightness/machine keys belong to the machine, not
@@ -6581,6 +8343,18 @@ pub fn run() {
                         let airplane_mode =
                             frame_builder.chrome().quick_settings.radios.airplane_mode;
                         let settings = settings_store::settings_path();
+                        let displays = if matches!(
+                            mk,
+                            crate::shell::media_keys::MediaKey::BrightnessUp
+                                | crate::shell::media_keys::MediaKey::BrightnessDown
+                        ) {
+                            os_actions::BrightnessService::global().levels()
+                        } else {
+                            Vec::new()
+                        };
+                        let pointer = frame_builder.host().pointer_position();
+                        let under_pointer = pointer
+                            .and_then(|p| output_connector_at(backend.outputs(), (p.x, p.y)));
                         let response = crate::shell::media_keys::apply(
                             mk,
                             &crate::shell::media_keys::Context {
@@ -6589,6 +8363,10 @@ pub fn run() {
                                 transport_osd: &transport_osd,
                                 airplane_mode,
                                 settings: settings.as_deref(),
+                                brightness: crate::shell::media_keys::BrightnessKeys {
+                                    displays: &displays,
+                                    under_pointer,
+                                },
                             },
                         );
                         match response {
@@ -6677,15 +8455,37 @@ pub fn run() {
                         }
                     }
                 }
-                BackendEvent::RelativePointerMotion { dx, dy } => {
+                BackendEvent::RelativePointerMotion {
+                    dx,
+                    dy,
+                    dx_unaccel,
+                    dy_unaccel,
+                    time_usec,
+                } => {
                     if session.is_locked() {
                         if let Some(network) = peer_sync.as_ref() {
                             end_spatial_control(network, &mut spatial_control);
                         } else {
                             spatial_control = None;
                         }
-                    } else if let Some(network) = peer_sync.as_ref() {
-                        let _ = move_spatial_pointer(&state, network, &mut spatial_control, dx, dy);
+                    } else if state.pointer_lock.is_engaged() {
+                        // A game holding the pointer reads every delta; the
+                        // pointer must not wander onto another device.
+                        state.forward_client_relative_motion(
+                            (dx, dy),
+                            (dx_unaccel, dy_unaccel),
+                            time_usec,
+                        );
+                    } else if peer_sync.as_ref().is_some_and(|network| {
+                        move_spatial_pointer(&state, network, &mut spatial_control, dx, dy)
+                    }) {
+                        // The pointer is on an adjacent device.
+                    } else {
+                        state.forward_client_relative_motion(
+                            (dx, dy),
+                            (dx_unaccel, dy_unaccel),
+                            time_usec,
+                        );
                     }
                 }
                 BackendEvent::ModifiersChanged(modifiers) => {
@@ -6726,6 +8526,7 @@ pub fn run() {
                                 t,
                                 backend.as_mut(),
                                 present_pipe.as_ref(),
+                                local_session_lifecycle.as_ref(),
                                 &mut screen_dimmer,
                             );
                         }
@@ -6780,6 +8581,27 @@ pub fn run() {
                         }
                     }
                 }
+                BackendEvent::InputDeviceAdded { id, capabilities } => {
+                    if test_control_ctx.input.device_added(id, capabilities) {
+                        test_control_ctx.publish_input_environment(&mut frame_builder);
+                        session_changed = true;
+                    }
+                }
+                BackendEvent::InputDeviceRemoved { id } => {
+                    if test_control_ctx.input.device_removed(&id) {
+                        test_control_ctx.publish_input_environment(&mut frame_builder);
+                        session_changed = true;
+                    }
+                }
+                BackendEvent::TabletMode(on) => {
+                    test_control_ctx.input.set_tablet_mode(on);
+                }
+                BackendEvent::InputUsed(modality) => {
+                    if test_control_ctx.input.note_used(modality) {
+                        test_control_ctx.publish_input_environment(&mut frame_builder);
+                        session_changed = true;
+                    }
+                }
                 BackendEvent::Focus(focused) => {
                     if !focused {
                         if let Some(network) = peer_sync.as_ref() {
@@ -6789,8 +8611,19 @@ pub fn run() {
                         }
                     }
                 }
-                BackendEvent::Redraw => {
+                BackendEvent::VisualAlert => {
+                    frame_builder.with_chrome(|st| st.flash_visual_alert(Instant::now()));
+                    session_changed = true;
+                }
+                BackendEvent::Redraw
+                | BackendEvent::Tablet(_)
+                | BackendEvent::TabletPad(_)
+                | BackendEvent::TabletPadMap { .. }
+                | BackendEvent::TabletPadAdded(_)
+                | BackendEvent::TabletPadRemoved(_) => {
                     // Redraw is implicit: the native loop paints every tick.
+                    // Pen and pad events were expanded into client or
+                    // ordinary input before the batch.
                 }
             }
         }
@@ -6836,6 +8669,7 @@ pub fn run() {
                     t,
                     backend.as_mut(),
                     present_pipe.as_ref(),
+                    local_session_lifecycle.as_ref(),
                     &mut screen_dimmer,
                 );
             }
@@ -6906,10 +8740,18 @@ pub fn run() {
 
         // The Settings app writes to a file with no notification, so poll cheaply
         // (once/sec) to reach input devices and display scale.
+        if settings_written.swap(false, Ordering::AcqRel) {
+            settings_watch.check_now();
+        }
         if settings_watch.changed(Instant::now()) {
             tracing::info!("compositor: settings changed on disk; re-applying");
             state.reload_keyboard_settings();
             backend.reload_input_settings();
+            // The backend has now reconciled any staged display plan; tell
+            // the output-management clients that asked for it how it went.
+            state.output_management.resolve_transactions(
+                settings_store::hardware::DisplayTransaction::load().as_ref(),
+            );
             if let Some(xwayland) = xwayland.as_mut() {
                 xwayland.reload_keyboard_settings();
             }
@@ -6932,19 +8774,50 @@ pub fn run() {
                 settings_store::hardware::DesktopControlsConfig::load(),
             );
             frame_builder.host_mut().poll_display_identify();
-            let policy = tilo_power_mgmt::config::load_policy();
+            // Input/display reload above does not re-theme. An appearance
+            // write must rebuild chrome on this tick and wake tiled apps so
+            // they paint the new Theme instead of keeping the last buffer.
+            frame_builder
+                .with_chrome(crate::shell::chrome_state::ChromeState::note_appearance_change);
+            for toplevel in state.xdg_shell_state.toplevel_surfaces() {
+                if toplevel.is_initial_configure_sent() {
+                    toplevel.send_configure();
+                }
+            }
+            force_first_paint = true;
+            let policy = idle_policy_for_backend(tilo_power_mgmt::config::load_policy(), headless);
             power_policy = policy;
             session.set_blank_timeout(policy.idle_blank);
             session.set_lock_timeout(policy.idle_lock);
             session.set_suspend_timeout(policy.idle_suspend);
             power_bridge.update_policy(policy);
             outputs_dirty = true;
-            if let Some(service) = osk_service.as_mut() {
-                service.reload_preference();
-            }
+            input_methods.reload(&mut state);
         }
-        if let Some(service) = osk_service.as_mut() {
-            service.tick();
+        input_methods.follow_input(&mut state, &test_control_ctx.input);
+        input_methods.tick();
+        for (output, on) in state.output_management.take_power_requests() {
+            backend.set_output_power(output, on);
+        }
+        if let Some(rotation) = device_rotation
+            .as_ref()
+            .and_then(|changes| changes.try_iter().last())
+        {
+            backend.set_device_rotation(Some(rotation));
+        }
+        if let Some(confirmation) = state.output_management.take_confirmation() {
+            frame_builder
+                .host_mut()
+                .show_display_confirmation(confirmation.transaction, confirmation.tool);
+        }
+        for notice in state.output_management.take_notices() {
+            match notice {
+                crate::compositor::output_management::DisplayToolNotice::ReappliedAfterRevert {
+                    tool,
+                } => frame_builder
+                    .host_mut()
+                    .report_refused_display_reapply(tool.as_ref()),
+            }
         }
 
         // Re-derive everything depending on the output set once, after the whole
@@ -6999,6 +8872,7 @@ pub fn run() {
                 &outs,
                 refresh_mhz_of(&*backend),
             );
+            state.set_output_heads(backend.output_heads());
             if refresh_override.is_none()
                 && let Some(interval) = backend.refresh_interval()
                 && frame_clock.set_interval(interval)
@@ -7042,6 +8916,7 @@ pub fn run() {
                     t,
                     backend.as_mut(),
                     present_pipe.as_ref(),
+                    local_session_lifecycle.as_ref(),
                     &mut screen_dimmer,
                 );
             }
@@ -7070,6 +8945,7 @@ pub fn run() {
                     t,
                     backend.as_mut(),
                     present_pipe.as_ref(),
+                    local_session_lifecycle.as_ref(),
                     &mut screen_dimmer,
                 );
             }
@@ -7088,6 +8964,7 @@ pub fn run() {
                             t,
                             backend.as_mut(),
                             present_pipe.as_ref(),
+                            local_session_lifecycle.as_ref(),
                             &mut screen_dimmer,
                         );
                     }
@@ -7102,6 +8979,7 @@ pub fn run() {
                             t,
                             backend.as_mut(),
                             present_pipe.as_ref(),
+                            local_session_lifecycle.as_ref(),
                             &mut screen_dimmer,
                         );
                     }
@@ -7125,6 +9003,7 @@ pub fn run() {
                                 t,
                                 backend.as_mut(),
                                 present_pipe.as_ref(),
+                                local_session_lifecycle.as_ref(),
                                 &mut screen_dimmer,
                             );
                         }
@@ -7139,6 +9018,7 @@ pub fn run() {
                             t,
                             backend.as_mut(),
                             present_pipe.as_ref(),
+                            local_session_lifecycle.as_ref(),
                             &mut screen_dimmer,
                         );
                     }
@@ -7154,6 +9034,7 @@ pub fn run() {
                     session_changed = true;
                 }
                 tilo_power_mgmt::PowerSignal::IdleSuspendChanged(timeout) => {
+                    let timeout = timeout.filter(|_| !headless);
                     session.set_suspend_timeout(timeout);
                     tracing::info!(target: "tilo::power", ?timeout, "live idle-suspend timeout updated");
                 }
@@ -7209,6 +9090,7 @@ pub fn run() {
                     t,
                     backend.as_mut(),
                     present_pipe.as_ref(),
+                    local_session_lifecycle.as_ref(),
                     &mut screen_dimmer,
                 );
             }
@@ -7226,6 +9108,7 @@ pub fn run() {
                         t,
                         backend.as_mut(),
                         present_pipe.as_ref(),
+                        local_session_lifecycle.as_ref(),
                         &mut screen_dimmer,
                     );
                 }
@@ -7270,7 +9153,12 @@ pub fn run() {
 
         // Pump the D-Bus notification bridge into the toast stack and mirror lock
         // state into the chrome so it can suppress content while locked; cheap no-ops when unchanged.
+        crate::shell::app_action_consent::set_session_attended(!session.is_locked());
+        let device_sounds = frame_builder.host().drain_audio_device_sounds();
         frame_builder.with_chrome(|st| {
+            for event in device_sounds {
+                let _ = st.play_system_sound(event);
+            }
             st.set_session_locked(session.is_locked());
             st.set_active_exposures(
                 state
@@ -7311,27 +9199,35 @@ pub fn run() {
             // the normal desktop way; it is not a process kill.
             let mut close_requests = Vec::new();
             frame_builder.with_chrome(|chrome| {
+                for request in app_closes.drain() {
+                    let tabs = crate::shell::app_close::tabs_of(&chrome.tree().desktop, &request);
+                    for tab in tabs {
+                        let _ = crate::shell::window_actions::close_tab(chrome, tab);
+                    }
+                }
                 close_requests = chrome.take_surface_close_requests();
             });
             for surface_id in close_requests {
-                let _ = {
-                    let mut tree = state.workspace_tree.write();
-                    crate::compositor::tab_binding::close_tab_for_destroyed_surface_and_persist(
-                        &mut tree, surface_id,
-                    )
-                };
-                if let Some(toplevel) = state
-                    .xdg_shell_state
-                    .toplevel_surfaces()
-                    .iter()
-                    .find(|toplevel| {
-                        crate::compositor::state::surface_id(toplevel.wl_surface()) == surface_id
-                    })
-                    .cloned()
-                {
-                    toplevel.send_close();
-                }
-                state.close_sheets_over(surface_id);
+                state.close_surface_on_request(surface_id);
+            }
+            let mut fullscreen_toggle = false;
+            frame_builder.with_chrome(|chrome| {
+                fullscreen_toggle = chrome.take_fullscreen_toggle_request();
+            });
+            if fullscreen_toggle {
+                toggle_focused_client_fullscreen(&mut state, &mut frame_builder);
+            }
+            let mut input_source = None;
+            frame_builder.with_chrome(|chrome| {
+                input_source = chrome.take_input_source_request();
+            });
+            if let Some(index) = input_source {
+                state.activate_keyboard_source(index);
+                backend.set_keyboard_source(index);
+                // The saved choice may be an input-method engine (or leave
+                // one): hand typing to its owner now, not on the next
+                // settings poll.
+                input_methods.reload(&mut state);
             }
 
             // Protocol callbacks and the frame builder share one tree handle, so
@@ -7357,6 +9253,13 @@ pub fn run() {
         } else {
             client_input::sync_keyboard_focus(&mut state, &frame_builder);
         }
+        // A picked emoji goes to the field that just got the keyboard back,
+        // through the seat's input method; what arrived feeds the recents.
+        let _ = crate::compositor::text_commit::relay(
+            &mut state,
+            frame_builder.host_mut(),
+            Instant::now(),
+        );
         // An app's idle inhibitor holds the screen on only while its window is visible.
         crate::compositor::idle_inhibit::sync_idle_inhibitors(
             &mut state,
@@ -7381,6 +9284,10 @@ pub fn run() {
             .map(|surface| (surface.surface_id, surface.app_id.clone(), surface.rect))
             .collect::<Vec<_>>();
         frame_builder.set_floating_surfaces(&floating_surfaces);
+        state.sync_capture_protection();
+        state.set_capture_placeholder_fill(
+            crate::shell::capture_protection::placeholder_fill_rgba8(frame_builder.theme()),
+        );
         let mut transient_surfaces = state.popup_surfaces();
         transient_surfaces.extend(state.input_method_popup_surfaces());
         frame_builder.set_transient_surfaces(&transient_surfaces);
@@ -7388,12 +9295,26 @@ pub fn run() {
             &state.pending_floating_toplevels,
             &state.floating_toplevels,
         );
-        reconcile_fullscreen_overlay(
+        let fullscreen_output = reconcile_fullscreen_overlay(
             &mut state,
             &mut frame_builder,
             &output_globals,
             backend.outputs(),
         );
+        // Adaptive sync engages where a fullscreen client is shown; while it
+        // is on, frames follow the content instead of the fixed refresh grid.
+        backend.set_fullscreen_output(fullscreen_output);
+        publish_output_colors(&state, backend.as_ref());
+        if frame_clock.set_adaptive(backend.adaptive_sync_active()) {
+            eprintln!(
+                "tilo compositor: pacing {}",
+                if frame_clock.is_adaptive() {
+                    "by content readiness (adaptive sync engaged)".to_owned()
+                } else {
+                    format!("to {:.3} Hz", 1.0 / frame_clock.interval().as_secs_f64())
+                }
+            );
+        }
         // A file dragged out of the hosted file manager over a client's window becomes a real Wayland drag — see `pump_chrome_drag`.
         client_input::pump_chrome_drag(&mut state, &mut frame_builder);
 
@@ -7405,6 +9326,25 @@ pub fn run() {
         {
             backend.set_pointer_image(image);
             // A software cursor is drawn into the frame, so it needs one.
+            injected_redraw_pending = true;
+        }
+        if let Some(change) =
+            client_input::sync_pointer_constraint(&mut state, &frame_builder, session.is_locked())
+        {
+            if change.engaged {
+                frame_builder.with_chrome(|chrome| {
+                    chrome.show_osd(crate::shell::osd::Osd::pointer_held(true));
+                });
+                injected_redraw_pending = true;
+            }
+            apply_pointer_constraint_change(backend.as_mut(), change);
+        }
+        let inhibit_allowed = !session.is_locked()
+            && !crate::shell::input_policy::chrome_captures_input(&frame_builder);
+        if state.sync_shortcut_inhibit(inhibit_allowed) == Some(true) {
+            frame_builder.with_chrome(|chrome| {
+                chrome.show_osd(crate::shell::osd::Osd::keys_captured(true));
+            });
             injected_redraw_pending = true;
         }
 
@@ -7617,34 +9557,38 @@ pub fn run() {
                 nearby_drop_event_count,
                 for event in nearby_drop_events {
                     use crate::shell::device_fabric_runtime::NearbyDropEvent;
+                    use crate::shell::i18n::{t, t_args};
                     let fabric = net.device_fabric();
                     let peer_label = |peer: &crate::shell::personal_continuity::DeviceId| {
                         fabric.snapshots().get(peer).map_or_else(
-                            || "your device".to_string(),
+                            || t("nearby-drop-your-device"),
                             |snapshot| snapshot.presence.label.clone(),
                         )
                     };
+                    let line = |key: &str, file: String, peer: String| {
+                        t_args(key, &[("file", file.into()), ("device", peer.into())])
+                    };
                     let (title, body) = match event {
                         NearbyDropEvent::Sending { file_name, peer } => (
-                            "Sending nearby".to_string(),
-                            format!("{file_name} to {}", peer_label(&peer)),
+                            t("nearby-drop-sending"),
+                            line("nearby-drop-sending-body", file_name, peer_label(&peer)),
                         ),
                         NearbyDropEvent::Sent { file_name, peer } => (
-                            "Sent nearby".to_string(),
-                            format!("{file_name} to {}", peer_label(&peer)),
+                            t("nearby-drop-sent"),
+                            line("nearby-drop-sent-body", file_name, peer_label(&peer)),
                         ),
                         NearbyDropEvent::Failed { file_name, peer } => (
-                            "Nearby drop failed".to_string(),
-                            format!("{file_name} · {}", peer_label(&peer)),
+                            t("nearby-drop-failed"),
+                            line("nearby-drop-failed-body", file_name, peer_label(&peer)),
                         ),
                         NearbyDropEvent::Received { path, peer } => (
-                            "Received nearby".to_string(),
-                            format!(
-                                "{} from {}",
+                            t("nearby-drop-received"),
+                            line(
+                                "nearby-drop-received-body",
                                 path.file_name()
                                     .and_then(|name| name.to_str())
-                                    .unwrap_or("File"),
-                                peer_label(&peer)
+                                    .map_or_else(|| t("doc-open-unnamed-file"), str::to_string),
+                                peer_label(&peer),
                             ),
                         ),
                     };
@@ -7654,10 +9598,43 @@ pub fn run() {
                 }
             );
             let desired = {
+                let viewer_hosts = if backend_kind == BackendKind::Headless {
+                    let active_room = {
+                        let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
+                        let tree = tree_handle.read();
+                        tree.desktop
+                            .active_workspace()
+                            .map(|workspace| workspace.room)
+                    };
+                    active_room.map_or_else(std::collections::HashSet::new, |room| {
+                        net.viewer_hosts(room)
+                    })
+                } else {
+                    std::collections::HashSet::new()
+                };
                 let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
                 let tree = tree_handle.read();
-                desired_legacy_shares(&tree)
+                desired_legacy_shares(&tree, backend.watched(), &viewer_hosts)
             };
+            // This session's legacy windows, as its own tabs in the rooms
+            // other devices govern, so their members have a tab to show.
+            if hosted_legacy_checked.elapsed() >= std::time::Duration::from_millis(500) {
+                hosted_legacy_checked = Instant::now();
+                let (salt, rooms) = {
+                    let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
+                    let tree = tree_handle.read();
+                    let rooms = tree
+                        .desktop
+                        .workspaces
+                        .iter()
+                        .map(|workspace| (workspace.room, workspace.strips.clone()))
+                        .collect::<Vec<_>>();
+                    (tree.local_salt(), rooms)
+                };
+                for (room, strips) in rooms {
+                    net.publish_hosted_legacy_windows(room, &strips, salt);
+                }
+            }
             pump_phase!(
                 "legacy-share-reconcile",
                 state.reconcile_legacy_share_sessions(
@@ -7698,7 +9675,7 @@ pub fn run() {
                                     );
                                 }
                             });
-                            let stream = PendingLegacyStream {
+                            let stream = crate::shell::peer_view::PeerStreamStart {
                                 source_peer,
                                 surface,
                                 local_peer,
@@ -7709,16 +9686,7 @@ pub fn run() {
                                 input_sink,
                             };
                             let mounted = !stream.app_id.is_empty()
-                                && frame_builder.host_mut().mount_peer_stream(
-                                    stream.source_peer,
-                                    stream.surface,
-                                    stream.local_peer,
-                                    &stream.app_id,
-                                    &stream.codec,
-                                    stream.display_size,
-                                    stream.hdr_static_metadata,
-                                    Arc::clone(&stream.input_sink),
-                                );
+                                && frame_builder.host_mut().mount_peer_stream(&stream);
                             if !mounted {
                                 tracing::warn!(
                                     source_peer,
@@ -7783,16 +9751,7 @@ pub fn run() {
                 pending_legacy_count,
                 for stream in pending_legacy_streams.values() {
                     if !stream.app_id.is_empty() {
-                        let _ = frame_builder.host_mut().mount_peer_stream(
-                            stream.source_peer,
-                            stream.surface,
-                            stream.local_peer,
-                            &stream.app_id,
-                            &stream.codec,
-                            stream.display_size,
-                            stream.hdr_static_metadata,
-                            Arc::clone(&stream.input_sink),
-                        );
+                        let _ = frame_builder.host_mut().mount_peer_stream(stream);
                     }
                 }
             );
@@ -7804,10 +9763,10 @@ pub fn run() {
         // room mid-session and the subscription must follow.
         let pump_network_done = Instant::now();
         let pump_presence_started = pump_network_done;
+        // The pointer as the input state knows it — "nowhere", not the origin, for
+        // a session that never moved one; being level-triggered, `cursor()` would paint a cursor for nobody.
+        frame_builder.note_local_pointer(state.client_input.pointer_position());
         let peers_moved = if let Some(relay) = frame_builder.peer_presence() {
-            // The pointer as the input state knows it — "nowhere", not the origin, for
-            // a session that never moved one; being level-triggered, `cursor()` would paint a cursor for nobody.
-            relay.set_cursor_position(state.client_input.pointer_position());
             let (rooms, here) = {
                 // Clone the tree handle and drop the `ChromeState` borrow before
                 // locking the tree — nothing here needs the RefCell guard itself.
@@ -7830,8 +9789,8 @@ pub fn run() {
                 (rooms, here)
             };
             relay.set_rooms(rooms);
-            // Say where this session's pointer is regardless of what's running — the
-            // app-driven republish alone stayed silent on an empty desktop, so peers never saw each other.
+            // Say where this session's pointer is whether or not an app is publishing —
+            // the app-driven republish alone stays silent over a window whose app draws no cursor.
             if let Some(here) = here.as_deref() {
                 relay.publish_local_cursor(here);
             }
@@ -7851,9 +9810,16 @@ pub fn run() {
         crate::shell::launcher::record_presented_launches(|surface| {
             crate::compositor::foreign::store().frame_seq(surface)
         });
+        let onboarding_active = frame_builder.host().onboarding_active();
+        if onboarding_active != previous_onboarding_active {
+            if let Some(local_session) = local_session_lifecycle.as_ref() {
+                local_session.set_onboarding_active(onboarding_active);
+            }
+            previous_onboarding_active = onboarding_active;
+        }
         if desktop_continuation
             .as_mut()
-            .is_some_and(|continuation| continuation.pump(frame_builder.host().onboarding_active()))
+            .is_some_and(|continuation| continuation.pump(onboarding_active))
             && let Err(error) = crate::shell::desktop_continuation::launch_request()
                 .and_then(crate::shell::host_apps::queue_launch)
         {
@@ -7861,10 +9827,7 @@ pub fn run() {
         }
         let pump_apps_done = Instant::now();
         pump_checkpoint!("widget-pump");
-        if take_deferred_peer_sync_activation(
-            &mut deferred_peer_sync,
-            frame_builder.host().onboarding_active(),
-        ) {
+        if take_deferred_peer_sync_activation(&mut deferred_peer_sync, onboarding_active) {
             // `pump_apps` just observed the trusted onboarding completion.
             // Apps were withheld until this edge. The network starts off the
             // loop; launches wait until it and the broker over it exist, so
@@ -7889,6 +9852,9 @@ pub fn run() {
                         tree_handle.clone(),
                         network,
                     ));
+                    if let Some(net) = peer_sync.as_ref() {
+                        net.set_wake(Arc::clone(&session_wake));
+                    }
                     None
                 }
                 Err(error) => {
@@ -7899,7 +9865,18 @@ pub fn run() {
             collab_broker =
                 spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
             if let Some(broker) = collab_broker.as_ref() {
+                local_session_lifecycle = Some(install_native_session_lifecycle(
+                    broker,
+                    &session,
+                    onboarding_active,
+                ));
                 attach_collab_broker_bridges(&mut frame_builder, broker);
+                if let (Some(portal), Some(service)) =
+                    (portal_backend.as_ref(), broker.native_media_service())
+                {
+                    service
+                        .install_consent(portal.media_grants.clone(), portal.media_prompts.clone());
+                }
                 realtime_fabric_bridge = broker.realtime_fabric_bridge();
                 if let (Some(runtime), Some(bridge)) = (
                     device_fabric_runtime.as_mut(),
@@ -7934,17 +9911,31 @@ pub fn run() {
             // run normally.
             match start_failure {
                 None => crate::shell::launcher::release_held_launches(),
-                Some(error) => crate::shell::launcher::fail_held_launches(&format!(
-                    "the desktop's network could not start ({error})"
-                )),
+                Some(error) => {
+                    crate::shell::launcher::fail_held_launches(&crate::shell::i18n::t_args(
+                        "launch-held-network-failed",
+                        &[("error", error.into())],
+                    ));
+                }
             }
             apps_changed = true;
+        }
+        if desktop_continuation
+            .as_mut()
+            .is_some_and(|continuation| continuation.pump(onboarding_active))
+            && let Err(error) = crate::shell::desktop_continuation::launch_request()
+                .and_then(crate::shell::host_apps::queue_launch)
+        {
+            tracing::warn!(%error, "Could not queue Desktop folder continuation; reopen Add folders to Tilo");
         }
         let pump_finalize_started = Instant::now();
         let revision = frame_builder.chrome_revision();
         let revision_changed = revision != last_revision;
         let animation_demand = frame_builder.animation_demand();
-        let animating = animation_demand.any();
+        // Host demand clears when the crossfade settles (e2e). Keep
+        // painting until this many compositor frames have actually run (W16).
+        let transition_run = frame_builder.chrome().transition_paints_remaining() > 0;
+        let animating = animation_demand.any() || transition_run;
         let widget_deadline_due = frame_builder
             .next_wake_deadline()
             .is_some_and(|deadline| deadline <= iter_t0);
@@ -7958,6 +9949,19 @@ pub fn run() {
         let keepalive_due = false;
         let lock_clock_due =
             lock_clock_refresh_due(session.is_locked(), iter_t0, &mut last_lock_clock_refresh);
+        if session.is_locked() {
+            if iter_t0.saturating_duration_since(last_lock_media_poll) >= LOCK_MEDIA_REFRESH {
+                last_lock_media_poll = iter_t0;
+                let player = lock_now_playing();
+                if lock_media_changed(lock_player.as_ref(), player.as_ref()) {
+                    session_changed = true;
+                }
+                lock_player = player;
+            }
+        } else {
+            lock_player = None;
+            lock_pointer = None;
+        }
         let pump_done = Instant::now();
         let pump_total = pump_done
             .duration_since(iter_t0)
@@ -8004,10 +10008,14 @@ pub fn run() {
             backend_event: had_backend_events,
             visible_input: visible_input_changed,
             session: session_changed || injected_redraw,
-            accessibility: accessibility_changed,
             revision: revision_changed,
             hidden_desktop_animation: animating,
-            apps: apps_changed || widget_deadline_due,
+            // A client frame callback is not a present. A configure ack or a
+            // title carries one and changes no pixels; painting to release
+            // it kept the shell busy while apps sat still. The callback is
+            // fired after dispatch when this tick will not build a frame,
+            // and that answer does not schedule another pump.
+            apps: present_for_app_poll(apps_changed, widget_deadline_due),
             peers: peers_moved,
             presentation: presentation_frame_changed,
             capture: capture_executor.has_live_mirrors()
@@ -8020,11 +10028,12 @@ pub fn run() {
                     .is_some_and(|portal| portal.screencast.has_streams()),
             keepalive: keepalive_due,
             lock_clock: lock_clock_due,
-            lock_animation: lock_screen::animation_deadline(
+            lock_animation: lock_animation_deadline(
                 frame_builder.theme(),
-                session.is_locked(),
+                &session,
                 lock_has_wallpaper,
                 last_lock_animation_frame,
+                iter_t0,
             )
             .is_some_and(|deadline| iter_t0 >= deadline),
             lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
@@ -8038,6 +10047,10 @@ pub fn run() {
         let pipe_ready = present_pipe
             .as_ref()
             .is_none_or(super::present::PresentPipe::has_capacity);
+        credit_transition_hold = present_hold_credit(
+            !pipe_ready,
+            frame_builder.host().transition_present_pending(),
+        );
         if content_changed
             && cadence_due
             && !pipe_ready
@@ -8055,6 +10068,14 @@ pub fn run() {
             pipe_ready,
             (content_changed && !cadence_due) || (!session.is_locked() && animating),
         );
+        let (frame_open, notify_privacy) = crate::shell::status::privacy_frame_interest(
+            privacy_frame_open,
+            should_paint || cadence_needed,
+        );
+        privacy_frame_open = frame_open;
+        if notify_privacy && let Some(bridge) = frame_builder.host().status_bridge() {
+            bridge.notify_frame_requested();
+        }
 
         // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
         // vs idled and why, confirming the loop actually idles without guessing.
@@ -8077,6 +10098,10 @@ pub fn run() {
                     animation_sources_seen.floating |= animation_demand.floating;
                     animation_sources_seen.transient |= animation_demand.transient;
                     animation_sources_seen.osk |= animation_demand.osk;
+                    if animation_demand.host & (1 << 10) != 0 && animating_content_leaves.is_empty()
+                    {
+                        animating_content_leaves = frame_builder.content_animating_leaves();
+                    }
                 }
                 if keepalive_due
                     && !(had_backend_events || session_changed || revision_changed || animating)
@@ -8093,10 +10118,14 @@ pub fn run() {
                     "paint-stats: {frames_painted}/{frames_total} painted | \
                      events={cause_events} revision={cause_revision} anim={cause_anim} \
                      session={cause_session} keepalive={cause_keepalive} | \
-                     anim_sources host=0x{:04x} host_labels={:?} floating={} transient={} osk={} | \
+                     locked={} blanked={} | \
+                     anim_sources host=0x{:04x} host_labels={:?} content={:?} floating={} transient={} osk={} | \
                      {:.3} Hz target | present={} backpressure={}",
+                    session.is_locked(),
+                    session.is_blanked(),
                     animation_sources_seen.host,
                     animation_host_labels,
+                    animating_content_leaves.join(","),
                     animation_sources_seen.floating,
                     animation_sources_seen.transient,
                     animation_sources_seen.osk,
@@ -8115,12 +10144,21 @@ pub fn run() {
                 cause_anim = 0;
                 cause_session = 0;
                 cause_keepalive = 0;
+                eprintln!(
+                    "paint-stats: wakes {} | widget-deadline owner {:?}",
+                    wakes_seen.take_summary(),
+                    widget_wake_owner.take().unwrap_or_default(),
+                );
                 animation_sources_seen = crate::shell::frame::AnimationDemand::default();
+                animating_content_leaves.clear();
                 stats_since = Instant::now();
             }
         }
 
         if should_paint {
+            frame_builder.with_chrome(
+                super::super::shell::chrome_state::ChromeState::consume_transition_paint,
+            );
             // Lay out only when about to paint — any structural change (spliced group,
             // tab switch, resize) is applied here, right before the scene is built.
             let t_layout_start = Instant::now();
@@ -8137,92 +10175,52 @@ pub fn run() {
                 backend.outputs(),
                 &output_globals,
             );
-            native_accessibility.set_window_focus(true);
             if session.is_locked() {
-                let lock_outputs: Vec<LockOutput> = backend
-                    .outputs()
-                    .iter()
-                    .map(|o| LockOutput {
-                        origin: (f64::from(o.position.0), f64::from(o.position.1)),
-                        size: (f64::from(o.size.0), f64::from(o.size.1)),
-                        scale: f64::from(o.scale),
-                    })
-                    .collect();
-                let lock_outputs = if lock_outputs.is_empty() {
-                    let vp = frame_builder.scene_size();
-                    vec![LockOutput {
-                        origin: (0.0, 0.0),
-                        size: (vp.0, vp.1),
-                        scale: 1.0,
-                    }]
-                } else {
-                    lock_outputs
-                };
-                let now = chrono::Local::now();
-                let clock = now.format("%H:%M").to_string();
-                let date = now.format("%A, %B %-d").to_string();
-                let view = LockView {
-                    password_len: lock.buffer_len(),
-                    error: lock.error(),
-                    clock: &clock,
-                    date: &date,
-                    notification_count: frame_builder.chrome().notification_count(),
-                    verifying: lock.is_verifying(),
-                };
-                native_accessibility.update_if_active(|| {
-                    lock_screen::build_accessibility_tree(
-                        &lock_outputs,
-                        frame_builder.theme(),
-                        &view,
-                    )
-                });
+                let clock = LockClock::now();
+                let view = clock.view(
+                    &lock,
+                    frame_builder.chrome().notification_count(),
+                    lock_player.as_ref(),
+                );
+                publish_accessibility_tree(
+                    &mut native_accessibility,
+                    &frame_builder,
+                    backend.outputs(),
+                    Some(&view),
+                    test_control_ctx.focus,
+                );
+                if frame_builder.narrator_enabled() {
+                    frame_builder.narrate(&lock_screen::narration_tree(&view));
+                }
             } else {
-                native_accessibility.update_if_active(|| {
-                    frame_builder.build_a11y_tree_update(test_control_ctx.focus, 1.0)
-                });
+                publish_accessibility_tree(
+                    &mut native_accessibility,
+                    &frame_builder,
+                    backend.outputs(),
+                    None,
+                    test_control_ctx.focus,
+                );
+                frame_builder.note_keyboard_focus(test_control_ctx.focus);
+                frame_builder.narrate_chrome();
             }
             let layout_took = t_layout_start.elapsed();
             metrics.mark_layout(layout_took);
             let t_scene_start = Instant::now();
             // When locked, paint the compositor-owned lock overlay instead of the chrome — app content is never submitted while locked.
             let retained_damage_supported = backend.supports_retained_scene_damage();
+            frame_builder.set_session_locked(session.is_locked());
             let mut frame_paint = if session.is_locked() {
                 let theme = frame_builder.theme().clone();
-                // The lock overlay covers every known output, centred on each (single on
-                // winit/headless; DRM lays monitors side-by-side); falls back to one output spanning the viewport if none reported yet.
-                let lock_outputs: Vec<LockOutput> = backend
-                    .outputs()
-                    .iter()
-                    .map(|o| LockOutput {
-                        origin: (f64::from(o.position.0), f64::from(o.position.1)),
-                        size: (f64::from(o.size.0), f64::from(o.size.1)),
-                        scale: f64::from(o.scale),
-                    })
-                    .collect();
-                let lock_outputs = if lock_outputs.is_empty() {
-                    let vp = frame_builder.scene_size();
-                    vec![LockOutput {
-                        origin: (0.0, 0.0),
-                        size: (vp.0, vp.1),
-                        scale: 1.0,
-                    }]
-                } else {
-                    lock_outputs
-                };
-                // Count-only summary on the lock screen — no bodies leak.
-                let notif_count = frame_builder.chrome().notification_count();
-                // Wall clock/date computed here (not in the pure paint) so the lock surface renders as themed compositor chrome.
-                let now = chrono::Local::now();
-                let clock = now.format("%H:%M").to_string();
-                let date = now.format("%A, %B %-d").to_string();
-                let view = LockView {
-                    password_len: lock.buffer_len(),
-                    error: lock.error(),
-                    clock: &clock,
-                    date: &date,
-                    notification_count: notif_count,
-                    verifying: lock.is_verifying(),
-                };
+                // The lock overlay covers every known output (single on winit/headless;
+                // DRM lays monitors side-by-side).
+                let lock_outputs = lock_outputs(backend.outputs(), frame_builder.scene_size());
+                let clock = LockClock::now();
+                let view = clock.view(
+                    &lock,
+                    // Count-only summary on the lock screen — no bodies leak.
+                    frame_builder.chrome().notification_count(),
+                    lock_player.as_ref(),
+                );
                 let wallpaper = {
                     let chrome = frame_builder.chrome();
                     let tree = chrome.tree();
@@ -8268,7 +10266,8 @@ pub fn run() {
                 let mut frame_paint = if retained_damage_supported {
                     frame_builder.paint_with_damage()
                 } else {
-                    FramePaint::full(frame_builder.paint())
+                    let scene = frame_builder.paint();
+                    FramePaint::full(scene).with_hdr_layers(frame_builder.take_hdr_layers())
                 };
                 // Audience presentation surfaces bypass WorkspaceTree and
                 // paint only into their requested output rectangles. The DRM
@@ -8349,6 +10348,33 @@ pub fn run() {
                             // shell receipt, so a second notification would
                             // obscure work and split the next action.
                             tracing::info!(path = %path.display(), "screenshot saved");
+                            frame_builder.host_mut().set_capture_send_devices(
+                                peer_sync.as_deref().map_or_else(Vec::new, |network| {
+                                    crate::shell::screenshot_send::online_devices(network)
+                                }),
+                            );
+                        }
+                        CaptureOutcome::ScreenshotSendRequested { path, target } => {
+                            let mut bridge = crate::shell::screenshot_send::FabricSendBridge {
+                                network: peer_sync.as_deref(),
+                                workspace_root: crate::shell::screenshot_send::workspace_files_root(
+                                ),
+                            };
+                            match crate::shell::screenshot_send::route(&path, &target, &mut bridge)
+                            {
+                                Ok(receipt) => frame_builder.with_chrome(|chrome| {
+                                    chrome.push_notification(
+                                        crate::shell::i18n::t("capture-screenshot-sent"),
+                                        receipt.message(),
+                                    );
+                                }),
+                                Err(error) => frame_builder.with_chrome(|chrome| {
+                                    chrome.push_error_notification(
+                                        crate::shell::i18n::t("capture-screenshot-not-sent"),
+                                        error,
+                                    );
+                                }),
+                            }
                         }
                         CaptureOutcome::Copied { width, height } => {
                             tracing::info!(width, height, "screenshot copied");
@@ -8392,8 +10418,14 @@ pub fn run() {
                         CaptureOutcome::RecordingAudioLost { path, reason } => {
                             frame_builder.with_chrome(|chrome| {
                                 chrome.push_notification(
-                                    "Recording continues without audio",
-                                    format!("{} · {reason}", path.display()),
+                                    crate::shell::i18n::t("capture-recording-audio-lost"),
+                                    crate::shell::i18n::t_args(
+                                        "capture-recording-audio-lost-body",
+                                        &[
+                                            ("path", path.display().to_string().into()),
+                                            ("reason", reason.into()),
+                                        ],
+                                    ),
                                 );
                             });
                         }
@@ -8421,7 +10453,7 @@ pub fn run() {
                         CaptureOutcome::ReplayAudioLost(reason) => {
                             frame_builder.with_chrome(|chrome| {
                                 chrome.push_warning_notification(
-                                    "Recent capture continues without audio",
+                                    crate::shell::i18n::t("capture-recent-audio-lost"),
                                     reason,
                                 );
                             });
@@ -8449,7 +10481,10 @@ pub fn run() {
                         CaptureOutcome::Failed(error) => {
                             tracing::warn!(%error, "capture failed");
                             frame_builder.with_chrome(|chrome| {
-                                chrome.push_error_notification("Capture failed", error);
+                                chrome.push_error_notification(
+                                    crate::shell::i18n::t("capture-failed"),
+                                    error,
+                                );
                             });
                         }
                     }
@@ -8503,7 +10538,8 @@ pub fn run() {
                     viewport.0.round().clamp(1.0, f64::from(u32::MAX)) as u32,
                     viewport.1.round().clamp(1.0, f64::from(u32::MAX)) as u32,
                 );
-                let _ = projection_capture.submit_scene(&frame_paint.scene, clamped_viewport);
+                let source = frame_builder.capture_scene(&frame_paint.scene);
+                let _ = projection_capture.submit_scene(&source, clamped_viewport);
             }
             // The idle dim goes on last, after captures and casts took their clean copy, so only
             // the local panel darkens.
@@ -8617,7 +10653,7 @@ pub fn run() {
             state.client_cursor.send_frame_callbacks(
                 u32::try_from(state.start_time.elapsed().as_millis()).unwrap_or(u32::MAX),
             );
-        } else if had_backend_events {
+        } else if had_backend_events || accessibility_changed {
             // Input was dispatched but the frame deferred — lay out anyway so the *next*
             // event hit-tests post-input rects, not the pre-overlay tree. Layout is ~0.01ms.
             frame_builder.relayout();
@@ -8629,8 +10665,27 @@ pub fn run() {
                 backend.outputs(),
                 &output_globals,
             );
+            // An assistive client waits on this tree, not on pixels: a static
+            // screen may not paint again for as long as it stays unchanged.
+            if accessibility_changed {
+                let clock = session.is_locked().then(LockClock::now);
+                let view = clock.as_ref().map(|clock| {
+                    clock.view(
+                        &lock,
+                        frame_builder.chrome().notification_count(),
+                        lock_player.as_ref(),
+                    )
+                });
+                publish_accessibility_tree(
+                    &mut native_accessibility,
+                    &frame_builder,
+                    backend.outputs(),
+                    view.as_ref(),
+                    test_control_ctx.focus,
+                );
+            }
         }
-        if retain_session_redraw(session_changed, should_paint) {
+        if retain_session_redraw(session_changed || injected_redraw, should_paint) {
             injected_redraw_pending = true;
         }
         let t_paint_done = iter_t0.elapsed();
@@ -8644,23 +10699,25 @@ pub fn run() {
         }
 
         // Accept new test-control connections and drain them in this same
-        // iteration. Previously new connections were appended here but only
-        // pumped after the following calloop sleep. With no inherited wake fd
-        // that made a freshly connected test driver wait until an unrelated
-        // desktop event; with the wake fd it created a fragile two-phase
-        // handshake. Keeping accept+drain together makes the control protocol
-        // deterministic and leaves production builds unaffected.
-        if let Some(listener) = &test_control_listener {
+        // iteration, so a request already written is answered without
+        // another calloop sleep. One written after this drain wakes the loop
+        // through the connection's own source.
+        for (listener, agent) in [
+            (test_control_listener.as_ref(), false),
+            (agent_control_listener.as_ref(), true),
+        ] {
+            let Some(listener) = listener else { continue };
             loop {
                 match listener.accept() {
                     Ok((stream, _addr)) => {
-                        if let Some(conn) = TestControlConn::new(stream) {
+                        if let Some(mut conn) = TestControlConn::new(stream, agent) {
+                            conn.watch(&event_loop.handle());
                             test_control_conns.push(conn);
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                     Err(e) => {
-                        eprintln!("tilo compositor: test_control accept: {e}");
+                        eprintln!("tilo compositor: control accept: {e}");
                         break;
                     }
                 }
@@ -8679,8 +10736,36 @@ pub fn run() {
                 metrics.note_input(Instant::now());
                 injected_redraw_pending = true;
             }
+            // An agent at work is the person's activity on a hosted machine:
+            // without this it locks under its agents after the idle timeout.
+            if injected && conn.agent {
+                for t in session.note_activity(Instant::now()) {
+                    apply_session_transition(
+                        t,
+                        backend.as_mut(),
+                        present_pipe.as_ref(),
+                        local_session_lifecycle.as_ref(),
+                        &mut screen_dimmer,
+                    );
+                }
+            }
         }
-        test_control_conns.retain(|conn| !conn.closed);
+        if let Some(watching) = test_control_ctx.watch_request.take()
+            && backend.set_watched(watching)
+        {
+            injected_redraw_pending = true;
+        }
+        // An agent driving the screen answers the shell's choosers; a viewer
+        // only watching cannot click one.
+        chooser_attended.store(!test_control_ctx.agents.is_empty(), Ordering::Release);
+        test_control_conns.retain_mut(|conn| {
+            if conn.closed
+                && let Some(token) = conn.wake.take()
+            {
+                event_loop.handle().remove(token);
+            }
+            !conn.closed
+        });
         let t_testctl_done = iter_t0.elapsed();
         metrics.mark_testctl(t_testctl_done.checked_sub(t_paint_done).unwrap_or_default());
 
@@ -8690,8 +10775,9 @@ pub fn run() {
             portal.pump_remote_input(&mut state, session.is_locked());
         }
         state.pump_selection();
+        let pump_epoch = foreign::client_pump_epoch();
         let dispatch_started = Instant::now();
-        match display.dispatch_clients(&mut state) {
+        let clients_dispatched = match dispatch_wayland_clients_fairly(&mut display, &mut state) {
             Ok(dispatched) => {
                 let elapsed = dispatch_started.elapsed();
                 if dispatched > 0 || elapsed > Duration::from_millis(10) {
@@ -8702,18 +10788,20 @@ pub fn run() {
                         "Wayland client requests dispatched"
                     );
                 }
+                dispatched > 0
             }
             Err(err) => {
                 eprintln!("tilo compositor: dispatch_clients error: {err}");
                 break;
             }
-        }
+        };
         // A client commit can enqueue a GPU readback while this dispatch is
         // running, and the worker may complete before we return. Re-apply
         // released transactions here as well as at tick start; otherwise a
         // continuously chatty client can keep its first buffer stranded until
         // the next outer-loop iteration even though capture already finished.
-        if state.pump_foreign_capture_barriers(&display_handle_for_outputs) {
+        let capture_ready = state.pump_foreign_capture_barriers(&display_handle_for_outputs);
+        if capture_ready {
             injected_redraw_pending = true;
         }
         if let Err(err) = display.flush_clients() {
@@ -8735,6 +10823,29 @@ pub fn run() {
             }
             injected_redraw_pending = true;
         }
+        let client_changed = foreign::client_pump_epoch() != pump_epoch;
+        // An agent's screenshot is taken before this dispatch. If the
+        // input reached a client, the PNG waits for the commit just
+        // imported — or for the settle deadline below.
+        publish_settled_snapshot(&mut test_control_ctx, &mut frame_builder, &state);
+        // A frame callback that arrived without a new buffer, title, or
+        // configure is not a present and not another pump. Release it here,
+        // on the tick that saw the commit, so the client is not left waiting
+        // on FIFO and the shell does not wake itself to do the same work again.
+        if release_idle_client_callback(session.is_locked(), content_changed)
+            && !client_changed
+            && configured_after_dispatch == 0
+            && !capture_ready
+            && foreign::release_idle_frame_callbacks(&mut state)
+            && let Err(err) = display.flush_clients()
+        {
+            eprintln!("tilo compositor: idle frame callback flush error: {err}");
+            break;
+        }
+        let client_pump_needed = client_followup_needed(
+            clients_dispatched,
+            client_changed || configured_after_dispatch > 0 || capture_ready,
+        );
         let t_work_done = iter_t0.elapsed();
         metrics.mark_clients(t_work_done.checked_sub(t_testctl_done).unwrap_or_default());
         if (loop_timing || t_work_done > Duration::from_millis(100))
@@ -8762,27 +10873,63 @@ pub fn run() {
             .is_locked()
             .then(|| last_lock_clock_refresh.checked_add(LOCK_CLOCK_REFRESH))
             .flatten();
-        let park = native_loop_park(
+        // Follow the players while the lock is visible; a blanked display
+        // shows nothing, so it does not wake for them.
+        let lock_media_deadline = (session.is_locked() && !session.is_blanked())
+            .then(|| last_lock_media_poll.checked_add(LOCK_MEDIA_REFRESH))
+            .flatten();
+        // A redraw requested after this tick's paint decision (control-socket
+        // input, a configure flush, a released capture barrier) has no fd
+        // left to wake the loop; its frame is due on the next cadence.
+        let cadence_needed =
+            cadence_needed || cadence_wait_needed(pipe_ready, injected_redraw_pending);
+        let (park, park_deadline) = native_loop_park_named(
             park_now,
             backend_event_wake,
+            display.backend().has_pending_client_dispatch(),
             cadence_needed,
             frame_clock.next_deadline(),
             [
-                widget_deadline_for_presenter(pipe_ready, frame_builder.next_wake_deadline()),
-                lock_animation_park_deadline(
-                    park_now,
-                    lock_screen::animation_deadline(
-                        frame_builder.theme(),
-                        session.is_locked(),
-                        lock_has_wallpaper,
-                        last_lock_animation_frame,
+                (
+                    "widget",
+                    widget_deadline_for_presenter(pipe_ready, frame_builder.next_wake_deadline()),
+                ),
+                (
+                    "lock-animation",
+                    lock_animation_park_deadline(
+                        park_now,
+                        lock_animation_deadline(
+                            frame_builder.theme(),
+                            &session,
+                            lock_has_wallpaper,
+                            last_lock_animation_frame,
+                            park_now,
+                        ),
                     ),
                 ),
-                lock_clock_deadline,
-                run_deadline,
-                controller_nav.next_deadline(park_now),
-                backend.next_service_deadline(),
-                wayland_client_service_deadline(wayland_client_wake, park_now),
+                ("lock-clock", lock_clock_deadline),
+                ("lock-media", lock_media_deadline),
+                ("run-deadline", run_deadline),
+                ("controller-nav", controller_nav.next_deadline(park_now)),
+                ("backend-service", backend.next_service_deadline()),
+                (
+                    "wayland-client-fallback",
+                    wayland_client_service_deadline(wayland_client_wake, park_now),
+                ),
+                ("text-commit", state.text_commit_deadline()),
+                (
+                    "client-followup",
+                    client_followup_deadline(client_pump_needed, park_now),
+                ),
+                (
+                    "snapshot-settle",
+                    test_control_ctx.pending_snapshot.as_ref().map(|pending| {
+                        pending
+                            .started
+                            .checked_add(CLIENT_SNAPSHOT_SETTLE)
+                            .unwrap_or(pending.started)
+                    }),
+                ),
             ],
         );
         let t_sleep_start = Instant::now();
@@ -8790,7 +10937,19 @@ pub fn run() {
             eprintln!("tilo compositor: event loop dispatch error: {err}");
             break;
         }
-        metrics.mark_sleep(t_sleep_start.elapsed());
+        let slept = t_sleep_start.elapsed();
+        metrics.mark_sleep(slept);
+        if credit_transition_hold {
+            transition_hold_sleep = slept;
+        }
+        let wake = park_wake_reason(park, park_deadline, slept);
+        metrics.mark_wake(wake);
+        if paint_stats {
+            wakes_seen.note(wake);
+            if wake == "widget" && widget_wake_owner.is_none() {
+                widget_wake_owner = Some(frame_builder.wake_deadline_owners().join(","));
+            }
+        }
         metrics.end_tick();
         if let Some(deadline) = run_deadline
             && Instant::now() >= deadline
@@ -8803,7 +10962,8 @@ pub fn run() {
         // tempfile-in-the-same-dir + rename so a concurrently-polling test always sees a consistent snapshot.
         if let Some(path) = test_dump_path.as_ref()
             && let Ok(json) = serde_json::to_vec(&*state.workspace_tree.read())
-            && let Err(e) = atomic_file::write_creating_parent(std::path::Path::new(path), &json)
+            && let Err(e) =
+                tilo_files::native::atomic::write_creating_parent(std::path::Path::new(path), &json)
         {
             tracing::warn!(error = %e, path = ?path, "workspace tree save failed");
         }
@@ -8835,6 +10995,7 @@ pub fn run() {
     // Explicitly drop service guards in dependency order so the next session
     // cannot observe stale endpoints while backend teardown finishes.
     drop(test_control_unlink);
+    drop(agent_control_unlink);
     // Same reasoning for the collab broker: its `Drop` quiesces the drain
     // thread and unlinks both sockets, else the next session must tell a stale file from a live one.
     drop(collab_broker);
@@ -8843,10 +11004,11 @@ pub fn run() {
     drop(windows_compat);
     drop(identity_broker);
     drop(floating_surface_service);
-    drop(osk_service);
+    let input_method_sockets = input_methods.sockets().to_vec();
+    drop(input_methods);
     drop(display_file);
     unlink_wayland_endpoint(&public_socket_path);
-    if let Some(path) = osk_socket_path.as_deref() {
+    for path in &input_method_sockets {
         unlink_wayland_endpoint(path);
     }
     if let Some(path) = privileged_socket_path.as_deref() {
@@ -8857,17 +11019,40 @@ pub fn run() {
     drop(notif_handle);
     drop(tray_handle);
     drop(polkit_agent);
+    drop(network_secret_agent);
+    drop(bluetooth_agent);
 }
 
 /// Publish a successful machine-level change to every shell surface that
 /// mirrors it before raising the transient readout. Quick Settings may be
 /// open while a hardware key is pressed, so waiting for its next device read
 /// would leave the visible slider behind the value in the OSD.
+/// Hand a pointer lock/confinement change to the backend, placing the
+/// pointer where a released lock asked.
+fn apply_pointer_constraint_change(
+    backend: &mut dyn Backend,
+    change: crate::compositor::pointer_lock::ConstraintChange,
+) {
+    backend.set_pointer_constraint(change.region);
+    if let Some((x, y)) = change.warp_to {
+        backend.warp_pointer(x, y);
+    }
+}
+
 fn publish_media_osd(
     chrome: &mut crate::shell::chrome_state::ChromeState,
     osd: crate::shell::osd::Osd,
 ) {
     sync_quick_settings_from_osd(&mut chrome.quick_settings, osd);
+    // The volume you just picked, heard at that volume. A muted output has
+    // nothing to hear.
+    if matches!(
+        osd.kind,
+        crate::shell::osd::OsdKind::Volume { muted: false }
+    ) {
+        let _ =
+            chrome.play_system_sound(settings_store::system_sounds::SystemSoundEvent::VolumeChange);
+    }
     chrome.show_osd(osd);
 }
 
@@ -8889,7 +11074,13 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::Transport(_)
         | crate::shell::osd::OsdKind::KeyboardBacklight
         | crate::shell::osd::OsdKind::NoBacklight
-        | crate::shell::osd::OsdKind::Touchpad { .. } => {}
+        | crate::shell::osd::OsdKind::Touchpad { .. }
+        | crate::shell::osd::OsdKind::PointerHeld { .. }
+        | crate::shell::osd::OsdKind::MouseKeys { .. }
+        | crate::shell::osd::OsdKind::Magnifier { .. }
+        | crate::shell::osd::OsdKind::InputSource(_)
+        | crate::shell::osd::OsdKind::KeysCaptured { .. }
+        | crate::shell::osd::OsdKind::PadMode { .. } => {}
     }
 }
 
@@ -8923,19 +11114,45 @@ mod media_osd_publication_tests {
 /// Session-owned ambient-light loop. Settings only records policy; the
 /// compositor owns the display and therefore owns applying that policy after
 /// Settings exits. Missing sensors/backlights simply produce no write.
+/// Connector of the output containing `point` in compositor coordinates.
+fn output_connector_at(
+    outputs: &[crate::compositor::backend::Output],
+    point: (f64, f64),
+) -> Option<&str> {
+    outputs
+        .iter()
+        .find(|output| {
+            let (x, y) = (f64::from(output.position.0), f64::from(output.position.1));
+            point.0 >= x
+                && point.1 >= y
+                && point.0 < x + f64::from(output.size.0)
+                && point.1 < y + f64::from(output.size.1)
+        })
+        .map(|output| output.identity.connector.as_str())
+        .filter(|connector| !connector.is_empty())
+}
+
 fn spawn_auto_brightness_worker() {
     let _ = std::thread::Builder::new()
         .name("tilo-auto-brightness".into())
         .spawn(|| {
             let mut controller = os_actions::AmbientBrightnessController::default();
+            let mut seen = false;
+            let mut cached_stamp = None;
+            let mut enabled = false;
             loop {
-                let settings = settings_store::load();
-                let enabled = settings_store::bool_at(
-                    &settings,
-                    "display",
-                    "auto_brightness",
-                )
-                .unwrap_or(false);
+                let current = settings_store::stamp();
+                if settings_store::document_changed(seen, cached_stamp, current) {
+                    let settings = settings_store::load();
+                    enabled = settings_store::bool_at(
+                        &settings,
+                        "display",
+                        "auto_brightness",
+                    )
+                    .unwrap_or(false);
+                    seen = true;
+                    cached_stamp = current;
+                }
                 if enabled && !crate::compositor::screen_dim::backlight_held() {
                     if let Some(lux) = os_actions::ambient_lux()
                         && let Some(percent) = controller.update(lux)
@@ -8956,28 +11173,154 @@ fn spawn_auto_brightness_worker() {
     clippy::float_cmp,
     reason = "deterministic control-path geometry fixtures use exactly representable values"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     //! Unit coverage for the test-control execution path. The integration test
     //! (`tests/control_socket_test.rs`) needs a Wayland display and is
     //! `#[ignore]` by default; these exercise the same `execute_planned_action`
     //! → `FrameBuilder::dispatch_event` wire without a process, so CI without winit still gates here.
     use super::*;
+    use crate::shell::collab_broker_capnp::{
+        native_consent_fixture_root, run_isolated_native_consent_test,
+        wait_for_local_session_worker_teardown,
+    };
 
     #[test]
-    fn consumed_shell_input_is_a_redraw_edge() {
-        let mut session_changed = false;
-        session_changed |= true;
+    fn a_client_snapshot_waits_for_its_commit_then_gives_up() {
+        assert!(client_snapshot_still_due(3, 3, Duration::ZERO));
+        assert!(client_snapshot_still_due(3, 3, Duration::from_millis(399)));
         assert!(
-            NativeRedrawReasons {
-                session: session_changed,
-                ..NativeRedrawReasons::default()
-            }
-            .content_changed(false)
+            !client_snapshot_still_due(3, 4, Duration::ZERO),
+            "a commit after the input is the frame the shot should show"
+        );
+        assert!(!client_snapshot_still_due(3, 3, CLIENT_SNAPSHOT_SETTLE));
+    }
+
+    #[test]
+    fn dispatched_client_requests_get_a_follow_up_tick() {
+        let now = Instant::now();
+        let frame = now + Duration::from_millis(8);
+        assert_eq!(
+            native_loop_park(
+                now,
+                true,
+                false,
+                false,
+                frame,
+                [client_followup_deadline(true, now)]
+            ),
+            Some(Duration::ZERO),
+            "a new toplevel's first configure must not wait for an unrelated wake"
+        );
+        assert_eq!(
+            native_loop_park(
+                now,
+                true,
+                false,
+                false,
+                frame,
+                [client_followup_deadline(false, now)]
+            ),
+            None,
+            "a tick that dispatched nothing parks"
+        );
+        assert!(
+            !client_followup_needed(true, false),
+            "a wl_surface.frame with no new pixels, title, or configure must not schedule another shell tick"
+        );
+        assert!(
+            client_followup_needed(true, true),
+            "a buffer or protocol change still pumps on the next tick"
+        );
+        assert!(
+            release_idle_client_callback(false, false),
+            "an unchanged desktop releases a waiting callback without presenting"
+        );
+        assert!(
+            !present_for_app_poll(false, true),
+            "a poll whose tree, layout, and animations did not change must not present"
+        );
+        assert!(present_for_app_poll(true, true));
+        assert!(!present_for_app_poll(false, false));
+        assert_eq!(
+            client_followup_deadline(client_followup_needed(true, false), now),
+            None,
+            "answering that callback must not schedule another shell tick"
+        );
+        assert!(
+            !release_idle_client_callback(false, true),
+            "a real change still presents, and that present releases the callback"
         );
     }
 
     #[test]
-    fn client_routed_pointer_motion_still_redraws_the_compositor_cursor() {
+    fn a_park_names_the_deadline_that_ends_it() {
+        let now = Instant::now();
+        let frame = now + Duration::from_millis(8);
+        let (park, name) = native_loop_park_named(
+            now,
+            true,
+            false,
+            false,
+            frame,
+            [
+                ("lock-clock", Some(now + Duration::from_secs(30))),
+                ("widget", Some(now + Duration::from_millis(250))),
+                ("text-commit", None),
+            ],
+        );
+        assert_eq!(park, Some(Duration::from_millis(250)));
+        assert_eq!(name, Some("widget"), "the earliest deadline owns the wake");
+        assert_eq!(
+            park_wake_reason(park, name, Duration::from_millis(250)),
+            "widget",
+            "a park that ran its full timeout was ended by that deadline"
+        );
+        assert_eq!(
+            park_wake_reason(park, name, Duration::from_millis(40)),
+            super::metrics::WAKE_IO,
+            "a park cut short was ended by an fd, not the deadline"
+        );
+        assert_eq!(
+            native_loop_park_named(now, true, false, true, frame, []).1,
+            Some("cadence")
+        );
+        assert_eq!(
+            native_loop_park_named(now, false, false, false, frame, []).1,
+            Some("idle-backend-poll"),
+            "the bounded poll that stands in for a missing wake fd is named too"
+        );
+        assert_eq!(
+            park_wake_reason(None, None, Duration::from_secs(5)),
+            super::metrics::WAKE_IO,
+            "only an fd can end an unbounded park"
+        );
+        let mut tally = WakeTally::default();
+        for wake in ["widget", "io", "widget"] {
+            tally.note(wake);
+        }
+        assert_eq!(tally.take_summary(), "widget=2,io=1");
+        assert_eq!(
+            tally.take_summary(),
+            "",
+            "each report covers its own window"
+        );
+    }
+
+    #[test]
+    fn redraw_edges_and_idle_parking_follow_real_wake_sources() {
+        // Phase `consumed_shell_input_is_a_redraw_edge`.
+        assert!(
+            NativeRedrawReasons {
+                session: true,
+                ..NativeRedrawReasons::default()
+            }
+            .content_changed(false)
+        );
+        // Phase `client_routed_pointer_motion_still_redraws_the_compositor_cursor`.
         assert!(
             NativeRedrawReasons {
                 visible_input: true,
@@ -8986,161 +11329,229 @@ mod tests {
             .content_changed(false),
             "the cursor belongs to the compositor, so a client consuming its motion must not suppress the reflecting frame"
         );
-    }
-
-    #[test]
-    fn idle_park_ignores_display_cadence() {
-        let now = Instant::now();
-        let frame = now + Duration::from_millis(8);
-        let keepalive = now + Duration::from_secs(1);
-        assert_eq!(
-            native_loop_park(now, true, false, frame, [Some(keepalive)]),
-            Some(Duration::from_secs(1)),
-            "a registered backend wake fd lets a static desktop sleep until semantic work"
-        );
-    }
-
-    #[test]
-    fn idle_park_without_any_semantic_deadline_still_services_nested_backend() {
-        let now = Instant::now();
-        assert_eq!(
-            native_loop_park(now, true, false, now + Duration::from_millis(8), []),
-            None,
-            "a static DRM session can block indefinitely because libinput wakes the outer loop"
-        );
-    }
-
-    #[test]
-    fn failed_backend_wake_registration_keeps_the_bounded_idle_poll() {
-        let now = Instant::now();
-        assert_eq!(
-            native_loop_park(now, false, false, now + Duration::from_millis(8), []),
-            Some(IDLE_BACKEND_POLL),
-            "a backend whose wake fd could not be registered must still be serviced"
-        );
-    }
-
-    #[test]
-    fn backend_owned_repeat_deadline_wakes_an_otherwise_idle_loop() {
-        let now = Instant::now();
-        let repeat = now + Duration::from_millis(275);
-        assert_eq!(
-            native_loop_park(
-                now,
-                true,
-                false,
-                now + Duration::from_millis(8),
-                [Some(repeat)],
-            ),
-            Some(Duration::from_millis(275)),
-            "registered backend fds do not replace timers synthesized inside the backend"
-        );
-    }
-
-    #[test]
-    fn registered_wayland_wake_removes_periodic_idle_poll() {
-        let now = Instant::now();
-
-        assert_eq!(wayland_client_service_deadline(true, now), None);
-        assert_eq!(
-            native_loop_park(
-                now,
-                true,
-                false,
-                now + Duration::from_millis(8),
-                [wayland_client_service_deadline(true, now)],
-            ),
-            None,
-            "a static desktop must block on registered fds instead of waking every 4 ms"
-        );
-    }
-
-    #[test]
-    fn failed_wayland_wake_registration_keeps_bounded_service_fallback() {
-        let now = Instant::now();
-
-        assert_eq!(
-            wayland_client_service_deadline(false, now),
-            Some(now + WAYLAND_CLIENT_SERVICE_FALLBACK),
-            "an unsupported edge-triggered wake must not strand Wayland client requests"
-        );
-    }
-
-    #[test]
-    fn stale_private_wayland_endpoints_are_recovered_without_touching_live_pids() {
-        let runtime = tempfile::tempdir().expect("temporary runtime");
-        let dead_pid = u32::MAX;
-        let live_pid = std::process::id();
-        for name in [
-            format!("tilo-privileged-{dead_pid}"),
-            format!("tilo-osk-{dead_pid}-old"),
-            format!("tilo-privileged-{live_pid}"),
-            format!("tilo-osk-{live_pid}-live"),
-        ] {
-            std::fs::write(runtime.path().join(&name), b"").expect("socket fixture");
-            std::fs::write(runtime.path().join(format!("{name}.lock")), b"").expect("lock fixture");
+        // Phase `idle_park_ignores_display_cadence`.
+        {
+            let now = Instant::now();
+            let frame = now + Duration::from_millis(8);
+            let keepalive = now + Duration::from_secs(1);
+            assert_eq!(
+                native_loop_park(now, true, false, false, frame, [Some(keepalive)]),
+                Some(Duration::from_secs(1)),
+                "a registered backend wake fd lets a static desktop sleep until semantic work"
+            );
         }
-
-        remove_stale_private_wayland_endpoints(runtime.path());
-
-        for name in [
-            format!("tilo-privileged-{dead_pid}"),
-            format!("tilo-osk-{dead_pid}-old"),
-        ] {
-            assert!(!runtime.path().join(&name).exists());
-            assert!(!runtime.path().join(format!("{name}.lock")).exists());
+        // Phase `idle_park_without_any_semantic_deadline_still_services_nested_backend`.
+        {
+            let now = Instant::now();
+            assert_eq!(
+                native_loop_park(now, true, false, false, now + Duration::from_millis(8), []),
+                None,
+                "a static DRM session can block indefinitely because libinput wakes the outer loop"
+            );
         }
-        for name in [
-            format!("tilo-privileged-{live_pid}"),
-            format!("tilo-osk-{live_pid}-live"),
-        ] {
-            assert!(runtime.path().join(&name).exists());
-            assert!(runtime.path().join(format!("{name}.lock")).exists());
+        // Phase `failed_backend_wake_registration_keeps_the_bounded_idle_poll`.
+        {
+            let now = Instant::now();
+            assert_eq!(
+                native_loop_park(now, false, false, false, now + Duration::from_millis(8), []),
+                Some(IDLE_BACKEND_POLL),
+                "a backend whose wake fd could not be registered must still be serviced"
+            );
+        }
+        // Phase `backend_owned_repeat_deadline_wakes_an_otherwise_idle_loop`.
+        {
+            let now = Instant::now();
+            let repeat = now + Duration::from_millis(275);
+            assert_eq!(
+                native_loop_park(
+                    now,
+                    true,
+                    false,
+                    false,
+                    now + Duration::from_millis(8),
+                    [Some(repeat)],
+                ),
+                Some(Duration::from_millis(275)),
+                "registered backend fds do not replace timers synthesized inside the backend"
+            );
+        }
+        // Phase `registered_wayland_wake_removes_periodic_idle_poll`.
+        {
+            let now = Instant::now();
+
+            assert_eq!(wayland_client_service_deadline(true, now), None);
+            assert_eq!(
+                native_loop_park(
+                    now,
+                    true,
+                    false,
+                    false,
+                    now + Duration::from_millis(8),
+                    [wayland_client_service_deadline(true, now)],
+                ),
+                None,
+                "a static desktop must block on registered fds instead of waking every 4 ms"
+            );
+        }
+        // Phase `failed_wayland_wake_registration_keeps_bounded_service_fallback`.
+        {
+            let now = Instant::now();
+
+            assert_eq!(
+                wayland_client_service_deadline(false, now),
+                Some(now + WAYLAND_CLIENT_SERVICE_FALLBACK),
+                "an unsupported edge-triggered wake must not strand Wayland client requests"
+            );
+        }
+        // Phase `visual_work_parks_on_frame_cadence`.
+        {
+            let now = Instant::now();
+            let frame = now + Duration::from_millis(8);
+            let keepalive = now + Duration::from_secs(1);
+            assert_eq!(
+                native_loop_park(now, true, false, true, frame, [Some(keepalive)]),
+                Some(Duration::from_millis(8))
+            );
+        }
+        // Phase `decoded_wayland_work_gets_a_fair_follow_up_without_spinning`.
+        {
+            let now = Instant::now();
+            assert_eq!(
+                native_loop_park(now, true, true, false, now + Duration::from_millis(8), []),
+                Some(WAYLAND_PENDING_RETRY_FLOOR),
+                "decoded requests left by a bounded turn need another turn even after epoll is drained"
+            );
         }
     }
 
     #[test]
-    fn visual_work_parks_on_frame_cadence() {
-        let now = Instant::now();
-        let frame = now + Duration::from_millis(8);
-        let keepalive = now + Duration::from_secs(1);
-        assert_eq!(
-            native_loop_park(now, true, true, frame, [Some(keepalive)]),
-            Some(Duration::from_millis(8))
+    fn wayland_socket_attribution_and_cleanup_fail_closed() {
+        // Phase `stale_private_wayland_endpoints_are_recovered_without_touching_live_pids`.
+        {
+            let runtime = tempfile::tempdir().expect("temporary runtime");
+            let dead_pid = u32::MAX;
+            let live_pid = std::process::id();
+            for name in [
+                format!("tilo-privileged-{dead_pid}"),
+                format!("tilo-osk-{dead_pid}-old"),
+                format!("tilo-privileged-{live_pid}"),
+                format!("tilo-osk-{live_pid}-live"),
+            ] {
+                std::fs::write(runtime.path().join(&name), b"").expect("socket fixture");
+                std::fs::write(runtime.path().join(format!("{name}.lock")), b"")
+                    .expect("lock fixture");
+            }
+
+            remove_stale_private_wayland_endpoints(runtime.path());
+
+            for name in [
+                format!("tilo-privileged-{dead_pid}"),
+                format!("tilo-osk-{dead_pid}-old"),
+            ] {
+                assert!(!runtime.path().join(&name).exists());
+                assert!(!runtime.path().join(format!("{name}.lock")).exists());
+            }
+            for name in [
+                format!("tilo-privileged-{live_pid}"),
+                format!("tilo-osk-{live_pid}-live"),
+            ] {
+                assert!(runtime.path().join(&name).exists());
+                assert!(runtime.path().join(format!("{name}.lock")).exists());
+            }
+        }
+        // Phase `public_socket_attribution_reads_kernel_peer_pid`.
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            let path = runtime.path().join("peer.sock");
+            let listener = UnixListener::bind(path.clone()).unwrap();
+            let client = UnixStream::connect(path).unwrap();
+            let (server, _) = listener.accept().unwrap();
+            assert_eq!(
+                wayland_peer_credentials(&server).map(|credentials| credentials.pid),
+                i32::try_from(std::process::id()).ok()
+            );
+            assert!(
+                public_client_state(&server)
+                    .expect("same-namespace host clients remain compatible")
+                    .package_id
+                    .is_none()
+            );
+            drop(client);
+        }
+        // Phase `unattributed_public_clients_fail_closed_outside_host_namespaces`.
+        {
+            // SAFETY: `geteuid` has no failure mode.
+            let uid = unsafe { libc::geteuid() };
+            assert!(unattributed_host_client_allowed(uid, true));
+            assert!(!unattributed_host_client_allowed(uid, false));
+            assert!(!unattributed_host_client_allowed(
+                uid.saturating_add(1),
+                true
+            ));
+        }
+        // Phase `unlink_on_drop_removes_socket_file_on_drop`.
+        // Dropping an `UnlinkOnDrop` removes the file at its path — `run` holds
+        // one around the test-control socket so it unlinks on clean exit + panic-unwind.
+        {
+            let tmpdir = tempfile::tempdir().expect("tempdir");
+            let path = tmpdir.path().join("tilo-test-control.sock");
+            // Use an arbitrary regular-file stand-in — the guard removes anything
+            // `remove_file` accepts, no real unix socket needed to exercise the contract.
+            std::fs::write(&path, b"").expect("create stand-in file");
+            assert!(path.exists(), "test setup: file should exist after write");
+            let guard = UnlinkOnDrop(path.clone());
+            drop(guard);
+            assert!(
+                !path.exists(),
+                "UnlinkOnDrop must remove the file at its path on drop \
+                 (D-3); got lingering file at {path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_full_presenter_holds_a_pending_transition() {
+        assert!(present_hold_credit(true, true));
+        assert!(!present_hold_credit(false, true));
+        assert!(
+            !present_hold_credit(true, false),
+            "an idle desktop must not freeze its clock on a full presenter"
         );
     }
 
     #[test]
-    fn prepaint_stall_threshold_reports_fifty_milliseconds_and_above() {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn presenter_backpressure_and_deadlines_schedule_work() {
+        // Phase `prepaint_stall_threshold_reports_fifty_milliseconds_and_above`.
         assert!(!slow_prepaint_phase(Duration::from_millis(49)));
         assert!(slow_prepaint_phase(Duration::from_millis(50)));
         assert!(slow_prepaint_phase(Duration::from_secs(2)));
-    }
-
-    #[test]
-    fn full_presenter_parks_instead_of_spinning_on_overdue_deadlines() {
-        let now = Instant::now();
-        let stale = now
-            .checked_sub(Duration::from_millis(1))
-            .expect("monotonic clock is past its origin");
-        // Animation stays dirty and both the frame and widget deadlines are
-        // already due, but the presenter has no capacity.
-        let cadence_needed = cadence_wait_needed(false, true);
-        assert_eq!(
-            native_loop_park(
-                now,
-                false,
-                cadence_needed,
-                stale,
-                [widget_deadline_for_presenter(false, Some(stale))],
-            ),
-            Some(IDLE_BACKEND_POLL),
-            "a saturated presenter must wait for its retirement wake, not poll with a zero timeout"
-        );
-    }
-
-    #[test]
-    fn lock_state_edge_survives_presenter_backpressure_until_submitted() {
+        // Phase `full_presenter_parks_instead_of_spinning_on_overdue_deadlines`.
+        {
+            let now = Instant::now();
+            let stale = now
+                .checked_sub(Duration::from_millis(1))
+                .expect("monotonic clock is past its origin");
+            // Animation stays dirty and both the frame and widget deadlines are
+            // already due, but the presenter has no capacity.
+            let cadence_needed = cadence_wait_needed(false, true);
+            assert_eq!(
+                native_loop_park(
+                    now,
+                    false,
+                    false,
+                    cadence_needed,
+                    stale,
+                    [widget_deadline_for_presenter(false, Some(stale))],
+                ),
+                Some(IDLE_BACKEND_POLL),
+                "a saturated presenter must wait for its retirement wake, not poll with a zero timeout"
+            );
+        }
+        // Phase `lock_state_edge_survives_presenter_backpressure_until_submitted`.
         assert!(retain_session_redraw(true, false));
         assert!(
             !retain_session_redraw(true, true),
@@ -9150,50 +11561,138 @@ mod tests {
             !retain_session_redraw(false, false),
             "ordinary idle ticks must not manufacture redraw work"
         );
+        // Phase `an_idle_frame_callback_does_not_present`.
+        assert!(
+            release_idle_client_callback(false, false),
+            "a callback with no tree, layout, or animation change is released without a frame"
+        );
+        assert!(
+            !release_idle_client_callback(false, true),
+            "a real change still presents, and that present releases the callback"
+        );
+        assert!(
+            !release_idle_client_callback(true, false),
+            "a locked session does not answer hidden clients with an idle release"
+        );
+        // Phase `available_presenter_keeps_overdue_work_immediate`.
+        {
+            let now = Instant::now();
+            let stale = now
+                .checked_sub(Duration::from_millis(1))
+                .expect("monotonic clock is past its origin");
+            assert_eq!(
+                widget_deadline_for_presenter(true, Some(stale)),
+                Some(stale)
+            );
+            let frame = now + Duration::from_millis(7);
+            assert_eq!(
+                native_loop_park(
+                    now,
+                    false,
+                    false,
+                    cadence_wait_needed(true, true),
+                    frame,
+                    []
+                ),
+                Some(Duration::from_millis(7)),
+                "the back-pressure guard must not weaken normal animation pacing"
+            );
+        }
+        // Phase `earliest_non_frame_deadline_wins_and_overdue_is_immediate`.
+        {
+            let now = Instant::now();
+            let frame = now + Duration::from_millis(8);
+            let widget = now + Duration::from_millis(300);
+            let keepalive = now + Duration::from_secs(1);
+            assert_eq!(
+                native_loop_park(
+                    now,
+                    true,
+                    false,
+                    false,
+                    frame,
+                    [Some(keepalive), Some(widget)],
+                ),
+                Some(Duration::from_millis(300))
+            );
+            assert_eq!(
+                native_loop_park(
+                    now + Duration::from_millis(1),
+                    true,
+                    false,
+                    false,
+                    frame,
+                    [Some(now)]
+                ),
+                Some(Duration::ZERO)
+            );
+        }
+        // Phase `apply_transition_drives_backend_dpms`.
+        // `apply_session_transition` maps Blanked/Woke to `set_dpms`;
+        // Locked/Unlocked are pure state and touch no backend — asserted via a spy backend recording `set_dpms` calls.
+        {
+            use crate::compositor::backend::{Backend, BackendEvent, Output};
+            use vello::Scene;
+
+            #[derive(Default)]
+            struct SpyBackend {
+                dpms_calls: Vec<bool>,
+                outputs: Vec<Output>,
+            }
+            impl Backend for SpyBackend {
+                fn submit_frame(&mut self, _scene: &Scene, _output: OutputId) {}
+                fn poll_events(&mut self, _cb: &mut dyn FnMut(BackendEvent)) {}
+                fn outputs(&self) -> &[Output] {
+                    &self.outputs
+                }
+                fn set_dpms(&mut self, on: bool) {
+                    self.dpms_calls.push(on);
+                }
+            }
+
+            struct NoBacklight;
+            impl crate::compositor::screen_dim::Backlight for NoBacklight {
+                fn brightness(&self) -> Option<f32> {
+                    None
+                }
+                fn set_brightness(&self, _fraction: f32) -> bool {
+                    false
+                }
+            }
+
+            let mut backend = SpyBackend::default();
+            let mut dimmer = ScreenDimmer::new(NoBacklight);
+            for t in [
+                SessionTransition::Dimmed,
+                SessionTransition::Blanked,
+                SessionTransition::Woke,
+                SessionTransition::Locked,
+                SessionTransition::Unlocked,
+            ] {
+                apply_session_transition(t, &mut backend, None, None, &mut dimmer);
+            }
+            // Blanked → set_dpms(false), Woke → set_dpms(true); Locked/Unlocked produce no backend calls.
+            assert_eq!(backend.dpms_calls, vec![false, true]);
+            // Without a backlight the dim falls back to the paint overlay, lifted by Undimmed.
+            assert!(dimmer.overlay_alpha().is_some());
+            apply_session_transition(
+                SessionTransition::Undimmed,
+                &mut backend,
+                None,
+                None,
+                &mut dimmer,
+            );
+            assert_eq!(dimmer.overlay_alpha(), None);
+        }
     }
 
     #[test]
-    fn available_presenter_keeps_overdue_work_immediate() {
-        let now = Instant::now();
-        let stale = now
-            .checked_sub(Duration::from_millis(1))
-            .expect("monotonic clock is past its origin");
-        assert_eq!(
-            widget_deadline_for_presenter(true, Some(stale)),
-            Some(stale)
-        );
-        let frame = now + Duration::from_millis(7);
-        assert_eq!(
-            native_loop_park(now, false, cadence_wait_needed(true, true), frame, []),
-            Some(Duration::from_millis(7)),
-            "the back-pressure guard must not weaken normal animation pacing"
-        );
-    }
-
-    #[test]
-    fn earliest_non_frame_deadline_wins_and_overdue_is_immediate() {
-        let now = Instant::now();
-        let frame = now + Duration::from_millis(8);
-        let widget = now + Duration::from_millis(300);
-        let keepalive = now + Duration::from_secs(1);
-        assert_eq!(
-            native_loop_park(now, true, false, frame, [Some(keepalive), Some(widget)],),
-            Some(Duration::from_millis(300))
-        );
-        assert_eq!(
-            native_loop_park(
-                now + Duration::from_millis(1),
-                true,
-                false,
-                frame,
-                [Some(now)]
-            ),
-            Some(Duration::ZERO)
-        );
-    }
-
-    #[test]
-    fn locked_redraw_ignores_hidden_desktop_work_but_keeps_lock_edges() {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn locked_redraw_repaints_only_lock_edges() {
+        // Phase `locked_redraw_ignores_hidden_desktop_work_but_keeps_lock_edges`.
         for hidden in [
             NativeRedrawReasons {
                 hidden_desktop_animation: true,
@@ -9237,10 +11736,6 @@ mod tests {
                 ..NativeRedrawReasons::default()
             },
             NativeRedrawReasons {
-                accessibility: true,
-                ..NativeRedrawReasons::default()
-            },
-            NativeRedrawReasons {
                 revision: true,
                 ..NativeRedrawReasons::default()
             },
@@ -9251,98 +11746,146 @@ mod tests {
         ] {
             assert!(visible_lock_edge.content_changed(true));
         }
-    }
-
-    #[test]
-    fn due_lock_animation_waits_for_cadence_or_presenter_instead_of_spinning() {
-        let due_at = Instant::now();
-        let now = due_at + Duration::from_millis(1);
-        let due = Some(due_at);
-        let frame = now + Duration::from_millis(8);
-        assert_eq!(
-            native_loop_park(
-                now,
-                false,
+        // Phase `due_lock_animation_waits_for_cadence_or_presenter_instead_of_spinning`.
+        {
+            let due_at = Instant::now();
+            let now = due_at + Duration::from_millis(1);
+            let due = Some(due_at);
+            let frame = now + Duration::from_millis(8);
+            assert_eq!(
+                native_loop_park(
+                    now,
+                    false,
+                    false,
+                    true,
+                    frame,
+                    [lock_animation_park_deadline(now, due)]
+                ),
+                Some(Duration::from_millis(8))
+            );
+            assert_eq!(
+                native_loop_park(
+                    now,
+                    false,
+                    false,
+                    false,
+                    frame,
+                    [lock_animation_park_deadline(now, due)]
+                ),
+                Some(IDLE_BACKEND_POLL)
+            );
+            let future = Some(now + Duration::from_millis(42));
+            assert_eq!(
+                native_loop_park(
+                    now,
+                    false,
+                    false,
+                    false,
+                    frame,
+                    [lock_animation_park_deadline(now, future)]
+                ),
+                Some(Duration::from_millis(42))
+            );
+        }
+        // Phase `blanked_lock_stops_animating_until_the_panel_wakes`.
+        {
+            let theme = ui::theme::Theme::dark();
+            let t0 = Instant::now();
+            let config = IdleConfig {
+                blank_timeout: Some(Duration::from_secs(10)),
+                lock_timeout: Some(Duration::from_secs(5)),
+                suspend_timeout: None,
+            };
+            let mut session = SessionManager::new(config, t0);
+            let at = |secs| t0 + Duration::from_secs(secs);
+            session.tick(at(6));
+            assert!(session.is_locked() && !session.is_blanked());
+            assert!(
+                lock_animation_deadline(&theme, &session, false, t0, at(6)).is_some(),
+                "a visible lock animates its backdrop"
+            );
+            session.tick(at(11));
+            assert!(session.is_locked() && session.is_blanked());
+            assert!(
+                lock_animation_deadline(&theme, &session, false, t0, at(11)).is_none(),
+                "a blanked panel must not keep the loop building lock frames"
+            );
+            session.note_activity(at(12));
+            assert!(session.is_locked() && !session.is_blanked());
+            assert!(lock_animation_deadline(&theme, &session, false, t0, at(12)).is_some());
+        }
+        // Phase `an_untouched_visible_lock_stops_animating`.
+        {
+            let theme = ui::theme::Theme::dark();
+            let t0 = Instant::now();
+            let config = IdleConfig {
+                blank_timeout: None,
+                lock_timeout: Some(Duration::from_secs(5)),
+                suspend_timeout: None,
+            };
+            let mut session = SessionManager::new(config, t0);
+            let at = |secs| t0 + Duration::from_secs(secs);
+            session.tick(at(6));
+            assert!(session.is_locked() && !session.is_blanked());
+            assert!(lock_animation_deadline(&theme, &session, false, t0, at(6)).is_some());
+            session.tick(at(21));
+            assert!(
+                lock_animation_deadline(&theme, &session, false, t0, at(21)).is_none(),
+                "a lock nobody has touched for {LOCK_BACKDROP_MOTION:?} holds still"
+            );
+            session.note_activity(at(30));
+            assert!(
+                lock_animation_deadline(&theme, &session, false, t0, at(30)).is_some(),
+                "input moves it again"
+            );
+        }
+        // Phase `lock_osd_fade_repaints_only_while_the_lock_is_visible`.
+        {
+            let fading = NativeRedrawReasons {
+                lock_osd: true,
+                ..NativeRedrawReasons::default()
+            };
+            assert!(fading.content_changed(true));
+            assert!(
+                !fading.content_changed(false),
+                "the unlocked host drives its own OSD frames"
+            );
+        }
+        // Phase `artwork_repaints_only_while_the_lock_is_visible`.
+        {
+            let artwork = NativeRedrawReasons {
+                lock_animation: true,
+                ..NativeRedrawReasons::default()
+            };
+            assert!(artwork.content_changed(true));
+            assert!(!artwork.content_changed(false));
+        }
+        // Phase `locked_clock_gets_an_explicit_minute_refresh_edge`.
+        {
+            let start = Instant::now();
+            let mut last = start;
+            assert!(!lock_clock_refresh_due(true, start, &mut last));
+            assert!(!lock_clock_refresh_due(
                 true,
-                frame,
-                [lock_animation_park_deadline(now, due)]
-            ),
-            Some(Duration::from_millis(8))
-        );
-        assert_eq!(
-            native_loop_park(
-                now,
-                false,
-                false,
-                frame,
-                [lock_animation_park_deadline(now, due)]
-            ),
-            Some(IDLE_BACKEND_POLL)
-        );
-        let future = Some(now + Duration::from_millis(42));
-        assert_eq!(
-            native_loop_park(
-                now,
-                false,
-                false,
-                frame,
-                [lock_animation_park_deadline(now, future)]
-            ),
-            Some(Duration::from_millis(42))
-        );
-    }
+                start + Duration::from_millis(59_999),
+                &mut last,
+            ));
+            assert!(lock_clock_refresh_due(
+                true,
+                start + LOCK_CLOCK_REFRESH,
+                &mut last,
+            ));
+            assert!(!lock_clock_refresh_due(
+                true,
+                start + LOCK_CLOCK_REFRESH + Duration::from_secs(1),
+                &mut last,
+            ));
 
-    #[test]
-    fn lock_osd_fade_repaints_only_while_the_lock_is_visible() {
-        let fading = NativeRedrawReasons {
-            lock_osd: true,
-            ..NativeRedrawReasons::default()
-        };
-        assert!(fading.content_changed(true));
-        assert!(
-            !fading.content_changed(false),
-            "the unlocked host drives its own OSD frames"
-        );
-    }
-
-    #[test]
-    fn artwork_repaints_only_while_the_lock_is_visible() {
-        let artwork = NativeRedrawReasons {
-            lock_animation: true,
-            ..NativeRedrawReasons::default()
-        };
-        assert!(artwork.content_changed(true));
-        assert!(!artwork.content_changed(false));
-    }
-
-    #[test]
-    fn locked_clock_gets_an_explicit_minute_refresh_edge() {
-        let start = Instant::now();
-        let mut last = start;
-        assert!(!lock_clock_refresh_due(true, start, &mut last));
-        assert!(!lock_clock_refresh_due(
-            true,
-            start + Duration::from_millis(59_999),
-            &mut last,
-        ));
-        assert!(lock_clock_refresh_due(
-            true,
-            start + LOCK_CLOCK_REFRESH,
-            &mut last,
-        ));
-        assert!(!lock_clock_refresh_due(
-            true,
-            start + LOCK_CLOCK_REFRESH + Duration::from_secs(1),
-            &mut last,
-        ));
-
-        let unlocked = start + Duration::from_secs(75);
-        assert!(!lock_clock_refresh_due(false, unlocked, &mut last));
-        assert_eq!(last, unlocked);
-    }
-
-    #[test]
-    fn force_and_password_feedback_edges_always_repaint_the_lock() {
+            let unlocked = start + Duration::from_secs(75);
+            assert!(!lock_clock_refresh_due(false, unlocked, &mut last));
+            assert_eq!(last, unlocked);
+        }
+        // Phase `force_and_password_feedback_edges_always_repaint_the_lock`.
         for visible in [
             NativeRedrawReasons {
                 force: true,
@@ -9360,49 +11903,17 @@ mod tests {
     }
 
     #[test]
-    fn deferred_peer_sync_starts_in_the_session_that_finishes_onboarding() {
-        let mut deferred = true;
-        assert!(!take_deferred_peer_sync_activation(&mut deferred, true));
-        assert!(deferred, "onboarding retains the pending start");
-        assert!(take_deferred_peer_sync_activation(&mut deferred, false));
-        assert!(!deferred, "the current-session start is one-shot");
-        assert!(!take_deferred_peer_sync_activation(&mut deferred, false));
-    }
-
-    #[test]
-    fn output_presentation_removal_stays_pending_until_a_full_frame_submits() {
-        let mut pending = false;
-        let mut previous_surface_count = 1;
-
-        assert!(update_output_presentation_repaint_pending(
-            &mut pending,
-            &mut previous_surface_count,
-            0,
-            false,
-        ));
-        assert_eq!(previous_surface_count, 0);
-        assert!(
-            pending,
-            "an off-cadence removal must survive until the next submitted frame"
-        );
-
-        pending = false;
-        assert!(!update_output_presentation_repaint_pending(
-            &mut pending,
-            &mut previous_surface_count,
-            0,
-            false,
-        ));
-        assert!(update_output_presentation_repaint_pending(
-            &mut pending,
-            &mut previous_surface_count,
-            0,
-            true,
-        ));
-    }
-
-    #[test]
-    fn unfinished_post_identity_setup_reactivates_trusted_first_use_chrome() {
+    fn onboarding_and_lock_gate_session_services_and_input() {
+        // Phase `deferred_peer_sync_starts_in_the_session_that_finishes_onboarding`.
+        {
+            let mut deferred = true;
+            assert!(!take_deferred_peer_sync_activation(&mut deferred, true));
+            assert!(deferred, "onboarding retains the pending start");
+            assert!(take_deferred_peer_sync_activation(&mut deferred, false));
+            assert!(!deferred, "the current-session start is one-shot");
+            assert!(!take_deferred_peer_sync_activation(&mut deferred, false));
+        }
+        // Phase `unfinished_post_identity_setup_reactivates_trusted_first_use_chrome`.
         assert!(should_activate_first_use(false, true, false, false));
         assert!(
             !should_activate_first_use(false, false, false, false),
@@ -9416,288 +11927,447 @@ mod tests {
             !should_activate_first_use(true, true, true, true),
             "the explicit development control session remains isolated"
         );
-    }
-
-    #[test]
-    fn portal_screencast_never_publishes_a_locked_frame() {
+        // Phase `onboarding_blocks_every_client_input_route`.
+        {
+            let mut fb = FrameBuilder::new((800, 600));
+            assert!(client_input_allowed(&fb));
+            fb.enable_onboarding(std::path::PathBuf::from("/tmp/tilo-onboarding-test"));
+            assert!(fb.host().onboarding_active());
+            assert!(
+                !client_input_allowed(&fb),
+                "trusted first-login chrome must own input before any Wayland client"
+            );
+        }
+        // Phase `portal_screencast_never_publishes_a_locked_frame`.
         assert!(portal_screencast_should_publish(true, false));
         assert!(!portal_screencast_should_publish(true, true));
         assert!(!portal_screencast_should_publish(false, false));
     }
 
     #[test]
-    fn switching_tabs_leaves_the_hidden_surface_and_enters_the_visible_one() {
-        use crate::compositor::tab_binding::{self, Placement};
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn output_membership_waits_for_submitted_frames_and_relayout() {
+        // Phase `output_presentation_removal_stays_pending_until_a_full_frame_submits`.
+        {
+            let mut pending = false;
+            let mut previous_surface_count = 1;
 
-        const FIRST_SURFACE: u64 = 71_001;
-        const SECOND_SURFACE: u64 = 71_002;
-
-        let mut fb = FrameBuilder::new((1600, 900));
-        let _ = fb.paint_settled();
-
-        let mut ids = None;
-        fb.with_chrome(|chrome| {
-            let mut tree = chrome.tree_mut();
-            let first = tab_binding::adopt_toplevel_at(
-                &mut tree,
-                FIRST_SURFACE,
-                Some("org.example.first".into()),
-                Placement::NewGroup,
+            assert!(update_output_presentation_repaint_pending(
+                &mut pending,
+                &mut previous_surface_count,
+                0,
+                false,
+            ));
+            assert_eq!(previous_surface_count, 0);
+            assert!(
+                pending,
+                "an off-cadence removal must survive until the next submitted frame"
             );
-            let (strip, group) = tree
-                .desktop
-                .active_workspace()
-                .and_then(|workspace| {
-                    workspace.strips.iter().find_map(|strip| {
-                        strip
-                            .window_groups
-                            .iter()
-                            .find(|group| group.tabs.iter().any(|tab| tab.id == first))
-                            .map(|group| (strip.id, group.id))
+
+            pending = false;
+            assert!(!update_output_presentation_repaint_pending(
+                &mut pending,
+                &mut previous_surface_count,
+                0,
+                false,
+            ));
+            assert!(update_output_presentation_repaint_pending(
+                &mut pending,
+                &mut previous_surface_count,
+                0,
+                true,
+            ));
+        }
+        // Phase `switching_tabs_leaves_the_hidden_surface_and_enters_the_visible_one`.
+        {
+            use crate::compositor::tab_binding::{self, Placement};
+
+            const FIRST_SURFACE: u64 = 71_001;
+            const SECOND_SURFACE: u64 = 71_002;
+
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+
+            let mut ids = None;
+            fb.with_chrome(|chrome| {
+                let mut tree = chrome.tree_mut();
+                let first = tab_binding::adopt_toplevel_at(
+                    &mut tree,
+                    FIRST_SURFACE,
+                    Some("org.example.first".into()),
+                    Placement::NewGroup,
+                );
+                let (strip, group) = tree
+                    .desktop
+                    .active_workspace()
+                    .and_then(|workspace| {
+                        workspace.strips.iter().find_map(|strip| {
+                            strip
+                                .window_groups
+                                .iter()
+                                .find(|group| group.tabs.iter().any(|tab| tab.id == first))
+                                .map(|group| (strip.id, group.id))
+                        })
                     })
-                })
-                .expect("the first foreign tab has a group");
-            let second = tab_binding::adopt_toplevel_at(
-                &mut tree,
-                SECOND_SURFACE,
-                Some("org.example.second".into()),
-                Placement::TabIn(group),
-            );
-            ids = Some((strip, group, first, second));
-            drop(tree);
-            chrome.bump();
-        });
-        let (strip, group, first, _second) = ids.expect("fixture ids");
-        let _ = fb.paint_settled();
+                    .expect("the first foreign tab has a group");
+                let second = tab_binding::adopt_toplevel_at(
+                    &mut tree,
+                    SECOND_SURFACE,
+                    Some("org.example.second".into()),
+                    Placement::TabIn(group),
+                );
+                ids = Some((strip, group, first, second));
+                drop(tree);
+                chrome.bump();
+            });
+            let (strip, group, first, _second) = ids.expect("fixture ids");
+            let _ = fb.paint_settled();
 
-        let output = Output {
-            id: OutputId(0),
-            position: (0, 0),
-            size: (1600, 900),
-            scale: 1.0,
-            transform: settings_store::hardware::OutputTransform::Normal,
-            color_profile: None,
-            refresh_mhz: None,
-            logical_position: (0, 0),
-            identity: crate::compositor::backend::OutputIdentity::default(),
-        };
-        let mut memberships = SurfaceOutputMemberships::default();
-        assert_eq!(
-            visible_tiled_surface_rects(&fb)
-                .into_iter()
-                .map(|(surface, _)| surface)
-                .collect::<Vec<_>>(),
-            vec![SECOND_SURFACE],
-            "only the active tab is painted"
-        );
-        assert_eq!(
-            memberships.reconcile(
-                std::slice::from_ref(&output),
-                &visible_tiled_surface_rects(&fb)
-            ),
-            vec![SurfaceOutputChange::Enter {
+            let output = Output {
+                id: OutputId(0),
+                position: (0, 0),
+                size: (1600, 900),
+                scale: 1.0,
+                transform: settings_store::hardware::OutputTransform::Normal,
+                color_profile: None,
+                refresh_mhz: None,
+                logical_position: (0, 0),
+                identity: crate::compositor::backend::OutputIdentity::default(),
+            };
+            let mut memberships = SurfaceOutputMemberships::default();
+            assert_eq!(
+                visible_tiled_surface_rects(&fb)
+                    .into_iter()
+                    .map(|(surface, _)| surface)
+                    .collect::<Vec<_>>(),
+                vec![SECOND_SURFACE],
+                "only the active tab is painted"
+            );
+            assert_eq!(
+                memberships.reconcile(
+                    std::slice::from_ref(&output),
+                    &visible_tiled_surface_rects(&fb)
+                ),
+                vec![SurfaceOutputChange::Enter {
+                    surface_id: SECOND_SURFACE,
+                    output: OutputId(0),
+                }]
+            );
+
+            assert!(
+                fb.host_mut().focus_window_on_strip(strip, group, first),
+                "the existing tab can be focused through the production focus path"
+            );
+            let _ = fb.paint_settled();
+            assert_eq!(
+                visible_tiled_surface_rects(&fb)
+                    .into_iter()
+                    .map(|(surface, _)| surface)
+                    .collect::<Vec<_>>(),
+                vec![FIRST_SURFACE]
+            );
+            let changes = memberships.reconcile(&[output], &visible_tiled_surface_rects(&fb));
+            assert_eq!(changes.len(), 2);
+            assert!(changes.contains(&SurfaceOutputChange::Leave {
                 surface_id: SECOND_SURFACE,
                 output: OutputId(0),
-            }]
-        );
+            }));
+            assert!(changes.contains(&SurfaceOutputChange::Enter {
+                surface_id: FIRST_SURFACE,
+                output: OutputId(0),
+            }));
+        }
+        // Phase `changed_output_geometry_waits_for_relayout_before_membership_diff`.
+        {
+            let output = |id, x| Output {
+                id: OutputId(id),
+                position: (x, 0),
+                size: (100, 100),
+                scale: 1.0,
+                transform: settings_store::hardware::OutputTransform::Normal,
+                color_profile: None,
+                refresh_mhz: None,
+                logical_position: (x, 0),
+                identity: crate::compositor::backend::OutputIdentity::default(),
+            };
+            let old_outputs = [output(0, 0), output(1, 100)];
+            let moved_outputs = [output(0, 100), output(1, 0)];
+            let old_rect = Rect::new(10.0, 10.0, 60.0, 60.0);
+            let relaid_rect = Rect::new(110.0, 10.0, 160.0, 60.0);
+            let mut memberships = SurfaceOutputMemberships::default();
+            memberships.reconcile(&old_outputs, &[(7, old_rect)]);
 
-        assert!(
-            fb.host_mut().focus_window_on_strip(strip, group, first),
-            "the existing tab can be focused through the production focus path"
-        );
-        let _ = fb.paint_settled();
-        assert_eq!(
-            visible_tiled_surface_rects(&fb)
-                .into_iter()
-                .map(|(surface, _)| surface)
-                .collect::<Vec<_>>(),
-            vec![FIRST_SURFACE]
-        );
-        let changes = memberships.reconcile(&[output], &visible_tiled_surface_rects(&fb));
-        assert_eq!(changes.len(), 2);
-        assert!(changes.contains(&SurfaceOutputChange::Leave {
-            surface_id: SECOND_SURFACE,
-            output: OutputId(0),
-        }));
-        assert!(changes.contains(&SurfaceOutputChange::Enter {
-            surface_id: FIRST_SURFACE,
-            output: OutputId(0),
-        }));
+            let mut counterexample = SurfaceOutputMemberships::default();
+            counterexample.reconcile(&old_outputs, &[(7, old_rect)]);
+            assert_eq!(
+                counterexample.reconcile(&moved_outputs, &[(7, old_rect)]),
+                vec![
+                    SurfaceOutputChange::Leave {
+                        surface_id: 7,
+                        output: OutputId(0),
+                    },
+                    SurfaceOutputChange::Enter {
+                        surface_id: 7,
+                        output: OutputId(1),
+                    },
+                ],
+                "old tile coordinates compared with new outputs create false wire transitions"
+            );
+
+            assert!(
+                !surface_output_geometry_is_current(true),
+                "the pre-layout reconciliation must be skipped after an output change"
+            );
+            assert!(
+                memberships
+                    .reconcile(&moved_outputs, &[(7, relaid_rect)])
+                    .is_empty(),
+                "post-layout geometry keeps the surface on the same physical output"
+            );
+        }
     }
 
-    #[test]
-    fn changed_output_geometry_waits_for_relayout_before_membership_diff() {
-        let output = |id, x| Output {
-            id: OutputId(id),
-            position: (x, 0),
-            size: (100, 100),
-            scale: 1.0,
-            transform: settings_store::hardware::OutputTransform::Normal,
-            color_profile: None,
-            refresh_mhz: None,
-            logical_position: (x, 0),
-            identity: crate::compositor::backend::OutputIdentity::default(),
-        };
-        let old_outputs = [output(0, 0), output(1, 100)];
-        let moved_outputs = [output(0, 100), output(1, 0)];
-        let old_rect = Rect::new(10.0, 10.0, 60.0, 60.0);
-        let relaid_rect = Rect::new(110.0, 10.0, 160.0, 60.0);
-        let mut memberships = SurfaceOutputMemberships::default();
-        memberships.reconcile(&old_outputs, &[(7, old_rect)]);
-
-        let mut counterexample = SurfaceOutputMemberships::default();
-        counterexample.reconcile(&old_outputs, &[(7, old_rect)]);
-        assert_eq!(
-            counterexample.reconcile(&moved_outputs, &[(7, old_rect)]),
-            vec![
-                SurfaceOutputChange::Leave {
-                    surface_id: 7,
-                    output: OutputId(0),
-                },
-                SurfaceOutputChange::Enter {
-                    surface_id: 7,
-                    output: OutputId(1),
-                },
-            ],
-            "old tile coordinates compared with new outputs create false wire transitions"
-        );
-
-        assert!(
-            !surface_output_geometry_is_current(true),
-            "the pre-layout reconciliation must be skipped after an output change"
-        );
-        assert!(
-            memberships
-                .reconcile(&moved_outputs, &[(7, relaid_rect)])
-                .is_empty(),
-            "post-layout geometry keeps the surface on the same physical output"
-        );
-    }
-
-    #[test]
-    fn onboarding_blocks_every_client_input_route() {
-        let mut fb = FrameBuilder::new((800, 600));
-        assert!(client_input_allowed(&fb));
-        fb.enable_onboarding(std::path::PathBuf::from("/tmp/tilo-onboarding-test"));
-        assert!(fb.host().onboarding_active());
-        assert!(
-            !client_input_allowed(&fb),
-            "trusted first-login chrome must own input before any Wayland client"
-        );
-    }
-
-    /// The compositor binds the socket the launcher dials. Assert across both
-    /// production paths, not either one's idea of the path: bind with the
-    /// compositor's spawn function, resolve with the launcher's resolver,
-    /// require an open descriptor. `required@1` makes a divergence an error, not the skip an optional service gets.
     #[test]
     #[serial_test::serial(process_env)]
-    fn compositor_binds_the_socket_the_launcher_dials() {
-        let runtime = tempfile::tempdir().expect("tempdir");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_RUNTIME_DIR", runtime.path());
-        let fb = FrameBuilder::new((800, 600));
-        let chrome = fb.chrome_handle();
-        let broker = spawn_session_collab_broker(&chrome, None)
-            .expect("the compositor must be able to bind its own collab socket");
+    fn collab_socket_is_bound_once_for_the_launcher() {
+        // Phase `compositor_binds_the_socket_the_launcher_dials`.
+        // The compositor binds the socket the launcher dials. Assert across both
+        // production paths, not either one's idea of the path: bind with the
+        // compositor's spawn function, resolve with the launcher's resolver,
+        // require an open descriptor. `required@1` makes a divergence an error, not the skip an optional service gets.
+        {
+            let runtime = tempfile::tempdir().expect("tempdir");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_RUNTIME_DIR", runtime.path());
+            let fb = FrameBuilder::new((800, 600));
+            let chrome = fb.chrome_handle();
+            let broker = spawn_session_collab_broker(&chrome, None)
+                .expect("the compositor must be able to bind its own collab socket");
 
-        assert!(
-            chrome.borrow().collab_available(),
-            "a session that bound its broker must not report collaboration unavailable: {:?}",
-            chrome.borrow().collab_unavailable
-        );
+            assert!(
+                chrome.borrow().collab_available(),
+                "a session that bound its broker must not report collaboration unavailable: {:?}",
+                chrome.borrow().collab_unavailable
+            );
 
-        // The launcher's real resolver, on a manifest demanding the service.
-        // Use the authenticated launch path: collaboration deliberately rejects
-        // a bare socket connection with no app/workspace handoff.
-        let mut services = std::collections::BTreeMap::new();
-        services.insert(
-            launcher::services::COLLAB_SERVICE.to_string(),
-            "required@1".to_string(),
-        );
-        let resolved = launcher::services::resolve_service_binds_for_launch(
-            &services,
-            false,
-            launcher::services::ServiceLaunchContext {
-                app_id: "so.tilo.socket-contract-test",
-                workspace_id: Some("socket-contract-workspace"),
-            },
-        )
-        .expect("the launcher must authenticate with the socket the compositor just bound");
+            // The launcher's real resolver, on a manifest demanding the service.
+            // Use the authenticated launch path: collaboration deliberately rejects
+            // a bare socket connection with no app/workspace handoff.
+            let mut services = std::collections::BTreeMap::new();
+            services.insert(
+                launcher::services::COLLAB_SERVICE.to_string(),
+                "required@1".to_string(),
+            );
+            let resolved = launcher::services::resolve_service_binds_for_launch(
+                &services,
+                false,
+                launcher::services::ServiceLaunchContext {
+                    app_id: "so.tilo.socket-contract-test",
+                    workspace_id: Some("socket-contract-workspace"),
+                },
+            )
+            .expect("the launcher must authenticate with the socket the compositor just bound");
 
-        assert_eq!(
-            resolved.len(),
-            1,
-            "expected exactly one resolved service, got {resolved:?}"
-        );
-        assert_eq!(resolved[0].name, launcher::services::COLLAB_SERVICE);
-        assert!(
-            resolved[0].host_fd() >= 0,
-            "the launcher must hand the app a real connected descriptor"
-        );
+            assert_eq!(
+                resolved.len(),
+                1,
+                "expected exactly one resolved service, got {resolved:?}"
+            );
+            assert_eq!(resolved[0].name, launcher::services::COLLAB_SERVICE);
+            assert!(
+                resolved[0].host_fd() >= 0,
+                "the launcher must hand the app a real connected descriptor"
+            );
 
-        drop(broker);
+            drop(broker);
+        }
+        // Phase `a_second_session_refuses_to_take_a_live_collab_socket`.
+        // A live socket is not taken away from the session that owns it. Two
+        // compositors against one `XDG_RUNTIME_DIR` is what a second login (or
+        // stray test) produces, and the broker unlinks before binding — without
+        // the liveness probe, the newcomer would silently strand the first session's apps. Refusing loudly is correct, and must reach the chrome.
+        {
+            let runtime = tempfile::tempdir().expect("tempdir");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_RUNTIME_DIR", runtime.path());
+
+            let first_fb = FrameBuilder::new((800, 600));
+            let first_chrome = first_fb.chrome_handle();
+            let first =
+                spawn_session_collab_broker(&first_chrome, None).expect("first broker binds");
+
+            let second_fb = FrameBuilder::new((800, 600));
+            let second_chrome = second_fb.chrome_handle();
+            let second = spawn_session_collab_broker(&second_chrome, None);
+
+            assert!(
+                second.is_none(),
+                "a second session must not bind over a live collab socket"
+            );
+            assert!(
+                !second_chrome.borrow().collab_available(),
+                "the refused session must report collaboration as unavailable"
+            );
+            assert!(
+                first_chrome.borrow().collab_available(),
+                "the session that owns the socket must be left working"
+            );
+            // And the first broker still answers — the point of refusing.
+            assert!(
+                collab_socket_is_live(&launcher::services::collab_socket()),
+                "the original broker must still be listening after the refusal"
+            );
+
+            drop(second);
+            drop(first);
+        }
     }
 
-    /// A live socket is not taken away from the session that owns it. Two
-    /// compositors against one `XDG_RUNTIME_DIR` is what a second login (or
-    /// stray test) produces, and the broker unlinks before binding — without
-    /// the liveness probe, the newcomer would silently strand the first session's apps. Refusing loudly is correct, and must reach the chrome.
     #[test]
-    #[serial_test::serial(process_env)]
-    fn a_second_session_refuses_to_take_a_live_collab_socket() {
-        let runtime = tempfile::tempdir().expect("tempdir");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_RUNTIME_DIR", runtime.path());
+    fn agent_control_binds_only_for_an_agent_control_build_on_the_headless_backend() {
+        let raw = || Some(std::ffi::OsString::from("/run/tilo/agent.sock"));
+        assert_eq!(agent_control_path(false, true, raw()), None);
+        assert_eq!(agent_control_path(true, false, raw()), None);
+        assert_eq!(
+            agent_control_path(true, true, raw()),
+            Some(PathBuf::from("/run/tilo/agent.sock"))
+        );
+        assert_eq!(agent_control_path(true, true, None), None);
+        assert_eq!(
+            agent_control_path(true, true, Some("relative.sock".into())),
+            None
+        );
+    }
 
-        let first_fb = FrameBuilder::new((800, 600));
-        let first_chrome = first_fb.chrome_handle();
-        let first = spawn_session_collab_broker(&first_chrome, None).expect("first broker binds");
+    #[test]
+    fn shared_legacy_windows_are_encoded_only_while_watched() {
+        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree};
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let workspace = &mut tree.desktop.workspaces[0];
+        workspace.strips[0].window_groups.push(WindowGroup {
+            id: 11,
+            tabs: vec![Tab {
+                id: 12,
+                title: "GIMP".into(),
+                tile: TileContent::Foreign {
+                    app_id: "org.gimp.GIMP".into(),
+                    surface_id: 7,
+                },
+            }],
+            active_tab: 12,
+            width: WindowWidth::Normal,
+            maximized: false,
+        });
+        workspace.strips[0].window_groups.push(WindowGroup {
+            id: 13,
+            tabs: vec![Tab {
+                id: 14,
+                title: "Chromium".into(),
+                tile: TileContent::Foreign {
+                    app_id: "org.chromium.Chromium".into(),
+                    surface_id: 8,
+                },
+            }],
+            active_tab: 14,
+            width: WindowWidth::Normal,
+            maximized: false,
+        });
+        workspace.shared_surfaces.share(7, 9);
+        let none = std::collections::HashSet::new();
 
-        let second_fb = FrameBuilder::new((800, 600));
-        let second_chrome = second_fb.chrome_handle();
-        let second = spawn_session_collab_broker(&second_chrome, None);
-
-        assert!(
-            second.is_none(),
-            "a second session must not bind over a live collab socket"
+        let watched = desired_legacy_shares(&tree, true, &none);
+        assert_eq!(
+            watched.get(&7),
+            Some(&("org.gimp.GIMP".to_string(), [9].into_iter().collect()))
         );
         assert!(
-            !second_chrome.borrow().collab_available(),
-            "the refused session must report collaboration as unavailable"
+            !watched.contains_key(&8),
+            "without a viewer host only explicit shares stream"
+        );
+        let hosts = [42].into_iter().collect();
+        let through_host = desired_legacy_shares(&tree, true, &hosts);
+        assert_eq!(
+            through_host.get(&7),
+            Some(&("org.gimp.GIMP".to_string(), [9, 42].into_iter().collect()))
+        );
+        assert_eq!(
+            through_host.get(&8),
+            Some(&(
+                "org.chromium.Chromium".to_string(),
+                [42].into_iter().collect()
+            )),
+            "a viewer host receives every legacy window of the active workspace"
         );
         assert!(
-            first_chrome.borrow().collab_available(),
-            "the session that owns the socket must be left working"
+            desired_legacy_shares(&tree, false, &hosts).is_empty(),
+            "unwatched, every encoder stops"
         );
-        // And the first broker still answers — the point of refusing.
-        assert!(
-            collab_socket_is_live(&launcher::services::collab_socket()),
-            "the original broker must still be listening after the refusal"
-        );
+    }
 
-        drop(second);
-        drop(first);
+    #[test]
+    fn the_agent_control_socket_serves_input_screenshots_and_the_watch_signal_only() {
+        use test_control::Command;
+        for permitted in [
+            r#"{"op":"click_at","x":1,"y":2}"#,
+            r#"{"op":"type","text":"hi"}"#,
+            r#"{"op":"key_down","key":"Control"}"#,
+            r#"{"op":"snapshot","path":"/tmp/x.png"}"#,
+            r#"{"op":"pointer_button","pressed":true,"button":"right"}"#,
+            r#"{"op":"clipboard_paste"}"#,
+            r#"{"op":"watch","watching":true}"#,
+            r#"{"op":"watch","watching":false}"#,
+        ] {
+            let command: Command = serde_json::from_str(permitted).unwrap();
+            assert!(command.agent_permitted(), "{permitted}");
+        }
+        for refused in [
+            r#"{"op":"grant","subject":"agent:x","scope":"workspace","verb":"admin"}"#,
+            r#"{"op":"revoke","id":"x"}"#,
+            r#"{"op":"state_dump"}"#,
+            r#"{"op":"actions_invoke","provider":"actions","id":"x"}"#,
+            r#"{"op":"mint_host_launch_activation","desktop_id":"x","display_name":"x"}"#,
+            r#"{"op":"seed_files_drag","paths":[]}"#,
+        ] {
+            let command: Command = serde_json::from_str(refused).unwrap();
+            assert!(!command.agent_permitted(), "{refused}");
+        }
     }
 
     // developer surfaces are absent from a shipped build
 
     #[test]
-    fn shipped_build_never_binds_a_test_control_socket() {
+    fn test_control_surfaces_exist_only_in_dev_builds() {
+        // Phase `shipped_build_never_binds_a_test_control_socket`.
         assert_eq!(
             test_control_path(false, Some(std::ffi::OsString::from("/tmp/ctl.sock"))),
             None,
             "a release compositor must not open a remote-control socket"
         );
-    }
-
-    #[test]
-    fn dev_build_binds_the_test_control_socket_the_harness_asks_for() {
+        // Phase `dev_build_binds_the_test_control_socket_the_harness_asks_for`.
         assert_eq!(
             test_control_path(true, Some(std::ffi::OsString::from("/tmp/ctl.sock"))),
             Some(PathBuf::from("/tmp/ctl.sock")),
         );
         assert_eq!(test_control_path(true, None), None);
+        // Phase `shipped_build_never_dumps_its_workspace_tree`.
+        assert_eq!(
+            test_state_dump_path(false, Some(std::ffi::OsString::from("/tmp/tree.json"))),
+            None,
+        );
+        assert_eq!(
+            test_state_dump_path(true, Some(std::ffi::OsString::from("/tmp/tree.json"))),
+            Some(std::ffi::OsString::from("/tmp/tree.json")),
+        );
+        // Phase `the_gate_the_compositor_actually_uses_is_the_build_profile`.
+        // The two functions above are only meaningful if `run` passes the real
+        // constant — tied here so flipping the production call site to a literal `true` fails.
+        assert_eq!(
+            crate::compositor::dev_env::DEV_ENV_OVERRIDES,
+            cfg!(debug_assertions) || cfg!(feature = "dev-overrides")
+        );
     }
 
     fn socket_response(reader: &mut BufReader<UnixStream>) -> test_control::Response {
@@ -9737,664 +12407,647 @@ mod tests {
     }
 
     #[test]
-    #[expect(
+    #[allow(
         clippy::too_many_lines,
-        reason = "an end-to-end test scenario that reads top to bottom"
+        reason = "each phase keeps one former test's body verbatim"
     )]
-    fn socket_dispatch_retains_real_directory_admission_and_request_order() {
-        use std::io::Write as _;
+    fn socket_dispatch_preserves_directory_admission_and_request_order() {
+        // Phase `socket_dispatch_retains_real_directory_admission_and_request_order`.
+        {
+            use std::io::Write as _;
 
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        tokio::task::LocalSet::new().block_on(&runtime, async {
-            let tree = directory_test_tree();
-            let mut directory =
-                crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
-                    tree.clone(),
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            tokio::task::LocalSet::new().block_on(&runtime, async {
+                let tree = directory_test_tree();
+                let mut directory =
+                    crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
+                        tree.clone(),
+                    );
+                let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
+                frame_builder
+                    .host_mut()
+                    .attach_app_action_broker(directory.broker.clone());
+                let mut ctx = TestControlCtx::new();
+                let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+                let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
+                let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+                let display: Display<State> = Display::new().expect("display");
+                let mut state = State::new(event_loop.handle(), display.handle());
+
+                let (server, client) = UnixStream::pair().expect("socket pair");
+                let mut writer = client.try_clone().expect("client writer");
+                let mut reader = BufReader::new(client);
+                reader
+                    .get_mut()
+                    .set_nonblocking(true)
+                    .expect("nonblocking client");
+                let mut conn = TestControlConn::new(server, false).expect("server connection");
+
+                writer
+                    .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
+                    .expect("queue cold directory query");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
                 );
-            let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
-            frame_builder
-                .host_mut()
-                .attach_app_action_broker(directory.broker.clone());
-            let mut ctx = TestControlCtx::new();
-            let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
-            let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
-            let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
-            let display: Display<State> = Display::new().expect("display");
-            let mut state = State::new(event_loop.handle(), display.handle());
+                let _cold = socket_response(&mut reader);
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
 
-            let (server, client) = UnixStream::pair().expect("socket pair");
-            let mut writer = client.try_clone().expect("client writer");
-            let mut reader = BufReader::new(client);
-            reader
-                .get_mut()
-                .set_nonblocking(true)
-                .expect("nonblocking client");
-            let mut conn = TestControlConn::new(server).expect("server connection");
-
-            writer
-                .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
-                .expect("queue cold directory query");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let _cold = socket_response(&mut reader);
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
-
-            writer
-                .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
-                .expect("queue warm directory query");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let warm = socket_response(&mut reader);
-            let test_control::Response::Answer(rows) = warm else {
-                panic!("warm directory query must enumerate the action");
-            };
-            let action_id = rows["actions"]
-                .as_array()
-                .expect("enumeration array")
-                .iter()
-                .find(|row| row["provider"] == "app-actions" && row["title"] == "Open Atlas")
-                .and_then(|row| row["id"].as_str())
-                .expect("directory action id")
-                .to_string();
-
-            let invoke = serde_json::json!({
-                "op": "actions_invoke",
-                "provider": "app-actions",
-                "id": action_id,
-            });
-            let later = serde_json::json!({"op": "actions_enumerate", "query": "settings"});
-            writer
-                .write_all(format!("{invoke}\n{later}\n").as_bytes())
-                .expect("pipeline invoke and later request");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            assert_socket_pending(&mut reader);
-
-            let (other_server, other_client) = UnixStream::pair().expect("second socket pair");
-            let mut other_writer = other_client.try_clone().expect("second writer");
-            let mut other_reader = BufReader::new(other_client);
-            other_reader
-                .get_mut()
-                .set_nonblocking(true)
-                .expect("nonblocking second client");
-            let mut other_conn = TestControlConn::new(other_server).expect("second connection");
-            other_writer
-                .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"settings\"}\n")
-                .expect("second connection request");
-            pump_test_control_conn(
-                &mut other_conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            assert!(matches!(
-                socket_response(&mut other_reader),
-                test_control::Response::Answer(_)
-            ));
-
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let test_control::Response::Answer(admitted) = socket_response(&mut reader) else {
-                panic!("broker admission must be returned first");
-            };
-            let broker_id = admitted["receipt"]["broker_invocation_id"]
-                .as_u64()
-                .expect("real broker invocation id");
-            assert_ne!(broker_id, 0);
-            assert!(matches!(
-                socket_response(&mut reader),
-                test_control::Response::Answer(_)
-            ));
-            assert_eq!(
-                directory.resolve_count(),
-                1,
-                "one socket command starts admission once"
-            );
-            assert!(
-                directory.take_invocation_actor().is_some(),
-                "the real application stream receives the invocation"
-            );
-
-            // The deliberately pipelined later query replaced the provider's
-            // one retained search page. Rediscover the opaque address before
-            // testing authority revocation; a stale address must fail as
-            // unknown, while this phase is specifically proving that a
-            // currently disclosed address is re-resolved by the broker.
-            writer
-                .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
-                .expect("refresh directory query after pipelined request");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let _ = socket_response(&mut reader);
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
-            writer
-                .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
-                .expect("read refreshed directory query");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let test_control::Response::Answer(refreshed) = socket_response(&mut reader) else {
-                panic!("refreshed directory query must enumerate the action");
-            };
-            assert!(
-                refreshed["actions"]
+                writer
+                    .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
+                    .expect("queue warm directory query");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let warm = socket_response(&mut reader);
+                let test_control::Response::Answer(rows) = warm else {
+                    panic!("warm directory query must enumerate the action");
+                };
+                let action_id = rows["actions"]
                     .as_array()
-                    .expect("refreshed enumeration array")
+                    .expect("enumeration array")
                     .iter()
-                    .any(|row| row["provider"] == "app-actions" && row["id"] == action_id)
-            );
+                    .find(|row| row["provider"] == "app-actions" && row["title"] == "Open Atlas")
+                    .and_then(|row| row["id"].as_str())
+                    .expect("directory action id")
+                    .to_string();
 
-            directory.set_resolve_mode(
-                crate::shell::collab_broker_capnp::tests::DirectoryResolveMode::NotFound,
-            );
-            writer
-                .write_all(format!("{invoke}\n").as_bytes())
-                .expect("queue revoked invocation");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let rejection = socket_response(&mut reader);
-            assert!(
-                matches!(
-                    rejection,
-                    test_control::Response::Err { ref code, ref message }
-                        if code == "action_failed" && message.contains("no such action is offered")
-                ),
-                "unexpected revoked-action response: {rejection:?}"
-            );
-            assert_eq!(directory.resolve_count(), 2);
-            assert!(
-                directory.take_invocation_actor().is_none(),
-                "revoked authority must not reach the application"
-            );
-        });
-    }
-
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "an end-to-end test scenario that reads top to bottom"
-    )]
-    fn socket_write_half_close_still_receives_real_directory_admission() {
-        use std::io::Write as _;
-
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        tokio::task::LocalSet::new().block_on(&runtime, async {
-            let tree = directory_test_tree();
-            let mut directory =
-                crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
-                    tree.clone(),
+                let invoke = serde_json::json!({
+                    "op": "actions_invoke",
+                    "provider": "app-actions",
+                    "id": action_id,
+                });
+                let later = serde_json::json!({"op": "actions_enumerate", "query": "settings"});
+                writer
+                    .write_all(format!("{invoke}\n{later}\n").as_bytes())
+                    .expect("pipeline invoke and later request");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
                 );
-            let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
-            frame_builder
-                .host_mut()
-                .attach_app_action_broker(directory.broker.clone());
-            let mut ctx = TestControlCtx::new();
-            let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
-            let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
-            let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
-            let display: Display<State> = Display::new().expect("display");
-            let mut state = State::new(event_loop.handle(), display.handle());
+                assert_socket_pending(&mut reader);
 
-            let (server, client) = UnixStream::pair().expect("socket pair");
-            let mut writer = client.try_clone().expect("client writer");
-            let mut reader = BufReader::new(client);
-            reader
-                .get_mut()
-                .set_nonblocking(true)
-                .expect("nonblocking client");
-            let mut conn = TestControlConn::new(server).expect("server connection");
-            let enumerate = b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n";
-            writer.write_all(enumerate).expect("cold directory query");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let _ = socket_response(&mut reader);
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
-            writer.write_all(enumerate).expect("warm directory query");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let test_control::Response::Answer(rows) = socket_response(&mut reader) else {
-                panic!("warm query must enumerate the directory action");
-            };
-            let action_id = rows["actions"]
-                .as_array()
-                .expect("actions array")
-                .iter()
-                .find(|row| row["provider"] == "app-actions" && row["title"] == "Open Atlas")
-                .and_then(|row| row["id"].as_str())
-                .expect("directory action id");
-            let invoke = serde_json::json!({
-                "op": "actions_invoke",
-                "provider": "app-actions",
-                "id": action_id,
-            });
-            writer
-                .write_all(format!("{invoke}\n").as_bytes())
-                .expect("queue invocation");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            assert_socket_pending(&mut reader);
+                let (other_server, other_client) = UnixStream::pair().expect("second socket pair");
+                let mut other_writer = other_client.try_clone().expect("second writer");
+                let mut other_reader = BufReader::new(other_client);
+                other_reader
+                    .get_mut()
+                    .set_nonblocking(true)
+                    .expect("nonblocking second client");
+                let mut other_conn = TestControlConn::new(other_server, false).expect("second connection");
+                other_writer
+                    .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"settings\"}\n")
+                    .expect("second connection request");
+                pump_test_control_conn(
+                    &mut other_conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                assert!(matches!(
+                    socket_response(&mut other_reader),
+                    test_control::Response::Answer(_)
+                ));
 
-            writer
-                .shutdown(std::net::Shutdown::Write)
-                .expect("client finishes its request stream");
-            assert_eq!(
-                pump_pending_test_control_conn(&mut conn),
-                PendingConnectionProgress::Waiting,
-                "write-side EOF must not discard a response the client can still read"
-            );
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
-            assert_eq!(
-                pump_pending_test_control_conn(&mut conn),
-                PendingConnectionProgress::WroteResponse
-            );
-            let test_control::Response::Answer(admitted) = socket_response(&mut reader) else {
-                panic!("half-closed client must receive the broker admission receipt");
-            };
-            assert_ne!(
-                admitted["receipt"]["broker_invocation_id"]
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let test_control::Response::Answer(admitted) = socket_response(&mut reader) else {
+                    panic!("broker admission must be returned first");
+                };
+                let broker_id = admitted["receipt"]["broker_invocation_id"]
                     .as_u64()
-                    .expect("real broker invocation id"),
-                0
-            );
-            assert!(directory.take_invocation_actor().is_some());
-        });
+                    .expect("real broker invocation id");
+                assert_ne!(broker_id, 0);
+                assert!(matches!(
+                    socket_response(&mut reader),
+                    test_control::Response::Answer(_)
+                ));
+                assert_eq!(
+                    directory.resolve_count(),
+                    1,
+                    "one socket command starts admission once"
+                );
+                assert!(
+                    directory.take_invocation_actor().is_some(),
+                    "the real application stream receives the invocation"
+                );
+
+                // The deliberately pipelined later query replaced the provider's
+                // one retained search page. Rediscover the opaque address before
+                // testing authority revocation; a stale address must fail as
+                // unknown, while this phase is specifically proving that a
+                // currently disclosed address is re-resolved by the broker.
+                writer
+                    .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
+                    .expect("refresh directory query after pipelined request");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let _ = socket_response(&mut reader);
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                writer
+                    .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
+                    .expect("read refreshed directory query");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let test_control::Response::Answer(refreshed) = socket_response(&mut reader) else {
+                    panic!("refreshed directory query must enumerate the action");
+                };
+                assert!(
+                    refreshed["actions"]
+                        .as_array()
+                        .expect("refreshed enumeration array")
+                        .iter()
+                        .any(|row| row["provider"] == "app-actions" && row["id"] == action_id)
+                );
+
+                directory.set_resolve_mode(
+                    crate::shell::collab_broker_capnp::tests::DirectoryResolveMode::NotFound,
+                );
+                writer
+                    .write_all(format!("{invoke}\n").as_bytes())
+                    .expect("queue revoked invocation");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let rejection = socket_response(&mut reader);
+                assert!(
+                    matches!(
+                        rejection,
+                        test_control::Response::Err { ref code, ref message }
+                            if code == "action_failed" && message.contains("no such action is offered")
+                    ),
+                    "unexpected revoked-action response: {rejection:?}"
+                );
+                assert_eq!(directory.resolve_count(), 2);
+                assert!(
+                    directory.take_invocation_actor().is_none(),
+                    "revoked authority must not reach the application"
+                );
+            });
+        }
+        // Phase `socket_write_half_close_still_receives_real_directory_admission`.
+        {
+            use std::io::Write as _;
+
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            tokio::task::LocalSet::new().block_on(&runtime, async {
+                let tree = directory_test_tree();
+                let mut directory =
+                    crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
+                        tree.clone(),
+                    );
+                let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
+                frame_builder
+                    .host_mut()
+                    .attach_app_action_broker(directory.broker.clone());
+                let mut ctx = TestControlCtx::new();
+                let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+                let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
+                let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+                let display: Display<State> = Display::new().expect("display");
+                let mut state = State::new(event_loop.handle(), display.handle());
+
+                let (server, client) = UnixStream::pair().expect("socket pair");
+                let mut writer = client.try_clone().expect("client writer");
+                let mut reader = BufReader::new(client);
+                reader
+                    .get_mut()
+                    .set_nonblocking(true)
+                    .expect("nonblocking client");
+                let mut conn = TestControlConn::new(server, false).expect("server connection");
+                let enumerate = b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n";
+                writer.write_all(enumerate).expect("cold directory query");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let _ = socket_response(&mut reader);
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                writer.write_all(enumerate).expect("warm directory query");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let test_control::Response::Answer(rows) = socket_response(&mut reader) else {
+                    panic!("warm query must enumerate the directory action");
+                };
+                let action_id = rows["actions"]
+                    .as_array()
+                    .expect("actions array")
+                    .iter()
+                    .find(|row| row["provider"] == "app-actions" && row["title"] == "Open Atlas")
+                    .and_then(|row| row["id"].as_str())
+                    .expect("directory action id");
+                let invoke = serde_json::json!({
+                    "op": "actions_invoke",
+                    "provider": "app-actions",
+                    "id": action_id,
+                });
+                writer
+                    .write_all(format!("{invoke}\n").as_bytes())
+                    .expect("queue invocation");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                assert_socket_pending(&mut reader);
+
+                writer
+                    .shutdown(std::net::Shutdown::Write)
+                    .expect("client finishes its request stream");
+                assert_eq!(
+                    pump_pending_test_control_conn(&mut conn),
+                    PendingConnectionProgress::Waiting,
+                    "write-side EOF must not discard a response the client can still read"
+                );
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                assert_eq!(
+                    pump_pending_test_control_conn(&mut conn),
+                    PendingConnectionProgress::WroteResponse
+                );
+                let test_control::Response::Answer(admitted) = socket_response(&mut reader) else {
+                    panic!("half-closed client must receive the broker admission receipt");
+                };
+                assert_ne!(
+                    admitted["receipt"]["broker_invocation_id"]
+                        .as_u64()
+                        .expect("real broker invocation id"),
+                    0
+                );
+                assert!(directory.take_invocation_actor().is_some());
+            });
+        }
     }
 
     #[test]
-    #[expect(
+    #[allow(
         clippy::too_many_lines,
-        reason = "an end-to-end test scenario that reads top to bottom"
+        reason = "each phase keeps one former test's body verbatim"
     )]
-    fn socket_directory_admission_times_out_and_disconnects_without_restart() {
-        use std::io::Write as _;
+    fn socket_admission_times_out_and_partial_responses_are_retained() {
+        // Phase `socket_directory_admission_times_out_and_disconnects_without_restart`.
+        {
+            use std::io::Write as _;
 
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        tokio::task::LocalSet::new().block_on(&runtime, async {
-            let tree = directory_test_tree();
-            let mut directory =
-                crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
-                    tree.clone(),
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            tokio::task::LocalSet::new().block_on(&runtime, async {
+                let tree = directory_test_tree();
+                let mut directory =
+                    crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
+                        tree.clone(),
+                    );
+                let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
+                frame_builder
+                    .host_mut()
+                    .attach_app_action_broker(directory.broker.clone());
+                let mut ctx = TestControlCtx::new();
+                let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+                let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
+                let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+                let display: Display<State> = Display::new().expect("display");
+                let mut state = State::new(event_loop.handle(), display.handle());
+                let (server, client) = UnixStream::pair().expect("socket pair");
+                let mut writer = client.try_clone().expect("client writer");
+                let mut reader = BufReader::new(client);
+                reader
+                    .get_mut()
+                    .set_nonblocking(true)
+                    .expect("nonblocking client");
+                let mut conn = TestControlConn::new(server, false).expect("server connection");
+
+                let enumerate = b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n";
+                writer.write_all(enumerate).expect("cold directory query");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
                 );
-            let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
-            frame_builder
-                .host_mut()
-                .attach_app_action_broker(directory.broker.clone());
-            let mut ctx = TestControlCtx::new();
-            let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
-            let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
-            let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
-            let display: Display<State> = Display::new().expect("display");
-            let mut state = State::new(event_loop.handle(), display.handle());
-            let (server, client) = UnixStream::pair().expect("socket pair");
-            let mut writer = client.try_clone().expect("client writer");
-            let mut reader = BufReader::new(client);
-            reader
-                .get_mut()
-                .set_nonblocking(true)
-                .expect("nonblocking client");
-            let mut conn = TestControlConn::new(server).expect("server connection");
+                let _ = socket_response(&mut reader);
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                writer.write_all(enumerate).expect("warm directory query");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let test_control::Response::Answer(rows) = socket_response(&mut reader) else {
+                    panic!("warm query must enumerate the directory action");
+                };
+                let action_id = rows["actions"]
+                    .as_array()
+                    .expect("actions array")
+                    .iter()
+                    .find(|row| row["provider"] == "app-actions" && row["title"] == "Open Atlas")
+                    .and_then(|row| row["id"].as_str())
+                    .expect("directory action id")
+                    .to_string();
+                let invoke = serde_json::json!({
+                    "op": "actions_invoke",
+                    "provider": "app-actions",
+                    "id": action_id,
+                });
 
-            let enumerate = b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n";
-            writer.write_all(enumerate).expect("cold directory query");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let _ = socket_response(&mut reader);
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
-            writer.write_all(enumerate).expect("warm directory query");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let test_control::Response::Answer(rows) = socket_response(&mut reader) else {
-                panic!("warm query must enumerate the directory action");
-            };
-            let action_id = rows["actions"]
-                .as_array()
-                .expect("actions array")
-                .iter()
-                .find(|row| row["provider"] == "app-actions" && row["title"] == "Open Atlas")
-                .and_then(|row| row["id"].as_str())
-                .expect("directory action id")
-                .to_string();
-            let invoke = serde_json::json!({
-                "op": "actions_invoke",
-                "provider": "app-actions",
-                "id": action_id,
+                crate::shell::search::providers::live_app_actions::set_directory_start_timeout_for_test(
+                    Some(Duration::ZERO),
+                );
+                writer
+                    .write_all(format!("{invoke}\n").as_bytes())
+                    .expect("queue timeout invocation");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let timeout_response = socket_response(&mut reader);
+                assert!(
+                    matches!(
+                        timeout_response,
+                    test_control::Response::Err { ref code, ref message }
+                        if code == "action_failed" && message.contains("timed out")
+                    ),
+                    "unexpected timeout response: {timeout_response:?}"
+                );
+                crate::shell::search::providers::live_app_actions::set_directory_start_timeout_for_test(
+                    None,
+                );
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                assert!(directory.take_invocation_actor().is_none());
+
+                writer
+                    .write_all(enumerate)
+                    .expect("refresh invalidated directory page");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let _ = socket_response(&mut reader);
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                writer
+                    .write_all(enumerate)
+                    .expect("read refreshed directory page");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                let _ = socket_response(&mut reader);
+
+                writer
+                    .write_all(format!("{invoke}\n").as_bytes())
+                    .expect("queue invocation before disconnect");
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                assert_socket_pending(&mut reader);
+                drop(reader);
+                drop(writer);
+                assert_eq!(
+                    pump_pending_test_control_conn(&mut conn),
+                    PendingConnectionProgress::Closed
+                );
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                assert!(directory.take_invocation_actor().is_none());
             });
-
-            crate::shell::search::providers::live_app_actions::set_directory_start_timeout_for_test(
-                Some(Duration::ZERO),
-            );
-            writer
-                .write_all(format!("{invoke}\n").as_bytes())
-                .expect("queue timeout invocation");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let timeout_response = socket_response(&mut reader);
-            assert!(
-                matches!(
-                    timeout_response,
-                test_control::Response::Err { ref code, ref message }
-                    if code == "action_failed" && message.contains("timed out")
-                ),
-                "unexpected timeout response: {timeout_response:?}"
-            );
             crate::shell::search::providers::live_app_actions::set_directory_start_timeout_for_test(
                 None,
             );
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
-            assert!(directory.take_invocation_actor().is_none());
+        }
+        // Phase `nonblocking_socket_retains_a_partial_response_until_the_frame_is_complete`.
+        {
+            use std::io::Read as _;
 
-            writer
-                .write_all(enumerate)
-                .expect("refresh invalidated directory page");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let _ = socket_response(&mut reader);
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
-            writer
-                .write_all(enumerate)
-                .expect("read refreshed directory page");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            let _ = socket_response(&mut reader);
+            let (server, mut client) = UnixStream::pair().expect("socket pair");
+            client.set_nonblocking(true).expect("nonblocking client");
+            let mut conn = TestControlConn::new(server, false).expect("server connection");
+            let response = test_control::Response::Answer(serde_json::json!({
+                "blob": "x".repeat(8 * 1024 * 1024),
+            }));
+            let mut expected = serialise_response(&response).into_bytes();
+            expected.push(b'\n');
 
-            writer
-                .write_all(format!("{invoke}\n").as_bytes())
-                .expect("queue invocation before disconnect");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
-            assert_socket_pending(&mut reader);
-            drop(reader);
-            drop(writer);
             assert_eq!(
-                pump_pending_test_control_conn(&mut conn),
-                PendingConnectionProgress::Closed
+                queue_test_control_response(&mut conn, &response),
+                PendingConnectionProgress::OutputPending,
+                "a payload larger than the Unix receive buffer must exercise WouldBlock"
             );
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
-            assert!(directory.take_invocation_actor().is_none());
-        });
-        crate::shell::search::providers::live_app_actions::set_directory_start_timeout_for_test(
-            None,
-        );
-    }
+            assert!(
+                conn.output_offset > 0,
+                "the first write must be a real short write"
+            );
+            assert!(conn.output_offset < conn.output.len());
 
-    #[test]
-    fn nonblocking_socket_retains_a_partial_response_until_the_frame_is_complete() {
-        use std::io::Read as _;
-
-        let (server, mut client) = UnixStream::pair().expect("socket pair");
-        client.set_nonblocking(true).expect("nonblocking client");
-        let mut conn = TestControlConn::new(server).expect("server connection");
-        let response = test_control::Response::Answer(serde_json::json!({
-            "blob": "x".repeat(8 * 1024 * 1024),
-        }));
-        let mut expected = serialise_response(&response).into_bytes();
-        expected.push(b'\n');
-
-        assert_eq!(
-            queue_test_control_response(&mut conn, &response),
-            PendingConnectionProgress::OutputPending,
-            "a payload larger than the Unix receive buffer must exercise WouldBlock"
-        );
-        assert!(
-            conn.output_offset > 0,
-            "the first write must be a real short write"
-        );
-        assert!(conn.output_offset < conn.output.len());
-
-        let mut received = Vec::with_capacity(expected.len());
-        let mut chunk = vec![0_u8; 64 * 1024];
-        for _ in 0..1024 {
-            loop {
-                match client.read(&mut chunk) {
-                    Ok(0) => panic!("socket closed before the retained frame completed"),
-                    Ok(read) => received.extend_from_slice(&chunk[..read]),
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(error) => panic!("read retained response: {error}"),
+            let mut received = Vec::with_capacity(expected.len());
+            let mut chunk = vec![0_u8; 64 * 1024];
+            for _ in 0..1024 {
+                loop {
+                    match client.read(&mut chunk) {
+                        Ok(0) => panic!("socket closed before the retained frame completed"),
+                        Ok(read) => received.extend_from_slice(&chunk[..read]),
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(error) => panic!("read retained response: {error}"),
+                    }
+                }
+                match flush_test_control_output(&mut conn) {
+                    PendingConnectionProgress::OutputPending => {}
+                    PendingConnectionProgress::WroteResponse => break,
+                    progress => panic!("unexpected output progress: {progress:?}"),
                 }
             }
-            match flush_test_control_output(&mut conn) {
-                PendingConnectionProgress::OutputPending => {}
-                PendingConnectionProgress::WroteResponse => break,
-                progress => panic!("unexpected output progress: {progress:?}"),
+            loop {
+                match client.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(read) => received.extend_from_slice(&chunk[..read]),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) => panic!("read final retained response: {error}"),
+                }
             }
+            assert!(
+                conn.output.is_empty(),
+                "the entire queued frame was flushed"
+            );
+            assert_eq!(
+                received, expected,
+                "backpressure must not truncate or duplicate JSON bytes"
+            );
         }
-        loop {
-            match client.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(read) => received.extend_from_slice(&chunk[..read]),
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(error) => panic!("read final retained response: {error}"),
-            }
-        }
+    }
+
+    /// A driver's request often lands after its connection was accepted and
+    /// found empty. The accepted stream must then wake an otherwise idle
+    /// loop itself, rather than leave the request for an unrelated event.
+    #[test]
+    fn a_request_written_after_accept_wakes_an_idle_loop() {
+        use std::io::Write as _;
+
+        let mut event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let (server, mut client) = UnixStream::pair().expect("socket pair");
+        let mut conn = TestControlConn::new(server, false).expect("server connection");
+        conn.watch(&event_loop.handle());
+
+        // Nothing to read yet, so the loop sleeps out its whole timeout.
+        let idle = Instant::now();
+        event_loop
+            .dispatch(Some(Duration::from_millis(200)), &mut state)
+            .expect("idle dispatch");
         assert!(
-            conn.output.is_empty(),
-            "the entire queued frame was flushed"
+            idle.elapsed() >= Duration::from_millis(150),
+            "the loop must be idle before the request, or this proves nothing"
         );
-        assert_eq!(
-            received, expected,
-            "backpressure must not truncate or duplicate JSON bytes"
-        );
-    }
 
-    #[test]
-    fn shipped_build_never_dumps_its_workspace_tree() {
-        assert_eq!(
-            test_state_dump_path(false, Some(std::ffi::OsString::from("/tmp/tree.json"))),
-            None,
-        );
-        assert_eq!(
-            test_state_dump_path(true, Some(std::ffi::OsString::from("/tmp/tree.json"))),
-            Some(std::ffi::OsString::from("/tmp/tree.json")),
-        );
-    }
-
-    #[test]
-    fn the_gate_the_compositor_actually_uses_is_the_build_profile() {
-        // The two functions above are only meaningful if `run` passes the real
-        // constant — tied here so flipping the production call site to a literal `true` fails.
-        assert_eq!(
-            crate::compositor::dev_env::DEV_ENV_OVERRIDES,
-            cfg!(debug_assertions) || cfg!(feature = "dev-overrides")
+        client
+            .write_all(b"{\"op\":\"list_targets\"}\n")
+            .expect("write the request");
+        let woke = Instant::now();
+        event_loop
+            .dispatch(Some(Duration::from_secs(30)), &mut state)
+            .expect("dispatch");
+        assert!(
+            woke.elapsed() < Duration::from_secs(10),
+            "the request did not wake the loop (slept {:?})",
+            woke.elapsed()
         );
     }
 
     // publishing the socket name for the nested dev loop
 
     #[test]
-    fn public_socket_attribution_reads_kernel_peer_pid() {
-        let runtime = tempfile::tempdir().unwrap();
-        let path = runtime.path().join("peer.sock");
-        let listener = UnixListener::bind(path.clone()).unwrap();
-        let client = UnixStream::connect(path).unwrap();
-        let (server, _) = listener.accept().unwrap();
-        assert_eq!(
-            wayland_peer_credentials(&server).map(|credentials| credentials.pid),
-            i32::try_from(std::process::id()).ok()
-        );
-        assert!(
-            public_client_state(&server)
-                .expect("same-namespace host clients remain compatible")
-                .package_id
-                .is_none()
-        );
-        drop(client);
-    }
-
-    #[test]
-    fn unattributed_public_clients_fail_closed_outside_host_namespaces() {
-        // SAFETY: `geteuid` has no failure mode.
-        let uid = unsafe { libc::geteuid() };
-        assert!(unattributed_host_client_allowed(uid, true));
-        assert!(!unattributed_host_client_allowed(uid, false));
-        assert!(!unattributed_host_client_allowed(
-            uid.saturating_add(1),
-            true
-        ));
-    }
-
-    #[test]
-    fn display_path_lands_under_the_runtime_dir() {
+    fn display_file_is_published_under_the_runtime_dir() {
+        // Phase `display_path_lands_under_the_runtime_dir`.
         assert_eq!(
             session_display_path(Some(std::ffi::OsString::from("/run/user/1000"))),
             Some(PathBuf::from("/run/user/1000/tilo-session/wayland-display")),
         );
-    }
-
-    #[test]
-    fn display_path_declines_an_unset_or_relative_runtime_dir() {
+        // Phase `display_path_declines_an_unset_or_relative_runtime_dir`.
         assert_eq!(session_display_path(None), None);
         assert_eq!(
             session_display_path(Some(std::ffi::OsString::from("relative/dir"))),
             None,
             "a session-scoped file must not be placed by a relative path"
         );
-    }
+        // Phase `published_display_file_is_exactly_the_socket_name`.
+        {
+            use std::os::unix::fs::PermissionsExt;
 
-    #[test]
-    fn published_display_file_is_exactly_the_socket_name() {
-        use std::os::unix::fs::PermissionsExt;
+            // Round-trip through the real writer: what lands on disk must be usable as
+            // `WAYLAND_DISPLAY=$(cat …)` — no trailing newline, no quoting.
+            let dir =
+                std::env::temp_dir().join(format!("tilo-display-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("create temp runtime dir");
+            let path = session_display_path(Some(dir.clone().into_os_string()))
+                .expect("absolute temp dir yields a path");
+            std::fs::create_dir_all(path.parent().unwrap()).expect("create tilo-session dir");
+            tilo_files::native::atomic::write_with_mode(&path, b"wayland-7", 0o600)
+                .expect("write display file");
 
-        // Round-trip through the real writer: what lands on disk must be usable as
-        // `WAYLAND_DISPLAY=$(cat …)` — no trailing newline, no quoting.
-        let dir = std::env::temp_dir().join(format!("tilo-display-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create temp runtime dir");
-        let path = session_display_path(Some(dir.clone().into_os_string()))
-            .expect("absolute temp dir yields a path");
-        std::fs::create_dir_all(path.parent().unwrap()).expect("create tilo-session dir");
-        atomic_file::write_with_mode(&path, b"wayland-7", 0o600).expect("write display file");
+            let read = std::fs::read_to_string(&path).expect("read back");
+            assert_eq!(read, "wayland-7");
 
-        let read = std::fs::read_to_string(&path).expect("read back");
-        assert_eq!(read, "wayland-7");
+            let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "session file must not be readable by others");
 
-        let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "session file must not be readable by others");
-
-        let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// These unit tests exercise the *chrome* half of the executor with no
@@ -10407,207 +13060,279 @@ mod tests {
         super::execute_planned_action(action, fb, ctx, None);
     }
 
-    /// Sanity: `CursorMoved` updates the cached cursor and dispatches without
-    /// panicking — matters because `MouseInput` (no position on winit) hit-tests against `last_cursor` inside the host.
     #[test]
-    fn cursor_moved_action_updates_ctx_cursor() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let mut ctx = TestControlCtx::new();
-        execute_planned_action(
-            &PlannedAction::CursorMoved { x: 250.0, y: 75.0 },
-            &mut fb,
-            &mut ctx,
-        );
-        assert_eq!(ctx.cursor.x, 250.0);
-        assert_eq!(ctx.cursor.y, 75.0);
-    }
-
-    /// The full click sequence (`CursorMoved` + down + up) dispatches all
-    /// three without panicking — `click_at` returns them, and all three must reach `ShellOverlayHost::handle_event`.
-    #[test]
-    fn full_click_sequence_dispatches_without_panic() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let mut ctx = TestControlCtx::new();
-        let actions = vec![
-            PlannedAction::CursorMoved { x: 800.0, y: 450.0 },
-            PlannedAction::MouseLeftButton { pressed: true },
-            PlannedAction::MouseLeftButton { pressed: false },
-        ];
-        for action in &actions {
-            execute_planned_action(action, &mut fb, &mut ctx);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn test_control_input_actions_drive_the_frame_context() {
+        // Phase `cursor_moved_action_updates_ctx_cursor`.
+        // Sanity: `CursorMoved` updates the cached cursor and dispatches without
+        // panicking — matters because `MouseInput` (no position on winit) hit-tests against `last_cursor` inside the host.
+        {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let mut ctx = TestControlCtx::new();
+            execute_planned_action(
+                &PlannedAction::CursorMoved { x: 250.0, y: 75.0 },
+                &mut fb,
+                &mut ctx,
+            );
+            assert_eq!(ctx.cursor.x, 250.0);
+            assert_eq!(ctx.cursor.y, 75.0);
         }
-        // No panic + relayout still works = wire intact.
-        fb.relayout();
-        let scene = fb.paint();
-        assert!(!scene.encoding().is_empty());
-    }
-
-    /// Click sequence at the wheel-disc's plus slot mutates chrome state —
-    /// proves planned actions reach the host's click handlers, not a void.
-    ///
-    /// The bootstrap tree seeds three demo workspaces; the plus slot calls
-    /// `chrome.add_workspace("Untitled")`, growing the count to four —
-    /// asserting on the count is more robust than internal widget state, since chrome is the contract every consumer sees.
-    #[test]
-    fn click_on_wheel_plus_slot_grows_workspace_count() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        // Paint once so the wheel-disc populates its plus_rect (the press handler
-        // hit-tests against it; it's `Rect::ZERO` until the first draw pass).
-        let _ = fb.paint();
-        // Find the wheel disc rect by its opt-in `test_id`, then search it for the
-        // affordance rather than re-deriving where `draw` puts it — scanning the whole footprint keeps the test layout-agnostic.
-        let registry = fb.widget_registry();
-        let wheel_rect = registry
-            .get("wheel_disc")
-            .copied()
-            .expect("wheel_disc test_id resolves on bootstrap tree");
-
-        let initial_count = fb.chrome().tree().desktop.workspaces.len();
-
-        // Sweep the footprint bottom-up in 4px rows until one click lands on
-        // the affordance; misses are harmless (rim press drags back, row press switches workspace).
-        let mut ctx = TestControlCtx::new();
-        let mut found = false;
-        // Integer-counted sweep (not a float-terminated `while`): the `if`
-        // breaks below reproduce the original `y > y0` / `x < x1` bounds
-        // exactly, so a generously wide static loop cap is safe — it never
-        // runs anywhere near it before hitting one of them.
-        'sweep: for row in 0..10_000u32 {
-            let y = wheel_rect.y1 - 4.0 - f64::from(row) * 4.0;
-            if y <= wheel_rect.y0 {
-                break;
+        // Phase `full_click_sequence_dispatches_without_panic`.
+        // The full click sequence (`CursorMoved` + down + up) dispatches all
+        // three without panicking — `click_at` returns them, and all three must reach `ShellOverlayHost::handle_event`.
+        {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let mut ctx = TestControlCtx::new();
+            let actions = vec![
+                PlannedAction::CursorMoved { x: 800.0, y: 450.0 },
+                PlannedAction::MouseLeftButton { pressed: true },
+                PlannedAction::MouseLeftButton { pressed: false },
+            ];
+            for action in &actions {
+                execute_planned_action(action, &mut fb, &mut ctx);
             }
-            for col in 0..10_000u32 {
-                let x = wheel_rect.x0 + 4.0 + f64::from(col) * 8.0;
-                if x >= wheel_rect.x1 {
+            // No panic + relayout still works = wire intact.
+            fb.relayout();
+            let scene = fb.paint();
+            assert!(!scene.encoding().is_empty());
+        }
+        // Phase `click_on_wheel_plus_slot_grows_workspace_count`.
+        // Click sequence at the wheel-disc's plus slot mutates chrome state —
+        // proves planned actions reach the host's click handlers, not a void.
+        //
+        // The bootstrap tree seeds three demo workspaces; the plus slot calls
+        // `chrome.add_workspace("Untitled")`, growing the count to four —
+        // asserting on the count is more robust than internal widget state, since chrome is the contract every consumer sees.
+        {
+            let mut fb = FrameBuilder::new((1600, 900));
+            // Paint once so the wheel-disc populates its plus_rect (the press handler
+            // hit-tests against it; it's `Rect::ZERO` until the first draw pass).
+            let _ = fb.paint();
+            // Find the wheel disc rect by its opt-in `test_id`, then search it for the
+            // affordance rather than re-deriving where `draw` puts it — scanning the whole footprint keeps the test layout-agnostic.
+            let registry = fb.widget_registry();
+            let wheel_rect = registry
+                .get("wheel_disc")
+                .copied()
+                .expect("wheel_disc test_id resolves on bootstrap tree");
+
+            let initial_count = fb.chrome().tree().desktop.workspaces.len();
+
+            // Sweep the footprint bottom-up in 4px rows until one click lands on
+            // the affordance; misses are harmless (rim press drags back, row press switches workspace).
+            let mut ctx = TestControlCtx::new();
+            let mut found = false;
+            // Integer-counted sweep (not a float-terminated `while`): the `if`
+            // breaks below reproduce the original `y > y0` / `x < x1` bounds
+            // exactly, so a generously wide static loop cap is safe — it never
+            // runs anywhere near it before hitting one of them.
+            'sweep: for row in 0..10_000u32 {
+                let y = wheel_rect.y1 - 4.0 - f64::from(row) * 4.0;
+                if y <= wheel_rect.y0 {
                     break;
                 }
-                execute_planned_action(&PlannedAction::CursorMoved { x, y }, &mut fb, &mut ctx);
-                execute_planned_action(
-                    &PlannedAction::MouseLeftButton { pressed: true },
-                    &mut fb,
-                    &mut ctx,
-                );
-                execute_planned_action(
-                    &PlannedAction::MouseLeftButton { pressed: false },
-                    &mut fb,
-                    &mut ctx,
-                );
-                if fb.chrome().tree().desktop.workspaces.len() > initial_count {
-                    found = true;
-                    break 'sweep;
+                for col in 0..10_000u32 {
+                    let x = wheel_rect.x0 + 4.0 + f64::from(col) * 8.0;
+                    if x >= wheel_rect.x1 {
+                        break;
+                    }
+                    execute_planned_action(&PlannedAction::CursorMoved { x, y }, &mut fb, &mut ctx);
+                    execute_planned_action(
+                        &PlannedAction::MouseLeftButton { pressed: true },
+                        &mut fb,
+                        &mut ctx,
+                    );
+                    execute_planned_action(
+                        &PlannedAction::MouseLeftButton { pressed: false },
+                        &mut fb,
+                        &mut ctx,
+                    );
+                    if fb.chrome().tree().desktop.workspaces.len() > initial_count {
+                        found = true;
+                        break 'sweep;
+                    }
                 }
             }
+            assert!(
+                found,
+                "sweep of clicks across the wheel disc's footprint should hit the \
+                 add-workspace affordance and grow the workspace count from \
+                 {initial_count}"
+            );
         }
-        assert!(
-            found,
-            "sweep of clicks across the wheel disc's footprint should hit the \
-             add-workspace affordance and grow the workspace count from \
-             {initial_count}"
-        );
-    }
+        // Phase `synthetic_touchpad_gestures_reach_the_shell_through_the_tracker`.
+        // The same tracker as libinput's path decides what the fingers meant.
+        {
+            use crate::shell::test_control::TouchpadEdge;
+            let mut fb = FrameBuilder::new((1600, 900));
+            let mut ctx = TestControlCtx::new();
+            let mut run = |fb: &mut FrameBuilder, edges: &[TouchpadEdge]| {
+                for edge in edges {
+                    execute_planned_action(&PlannedAction::Touchpad(*edge), fb, &mut ctx);
+                }
+            };
+            run(
+                &mut fb,
+                &[
+                    TouchpadEdge::PinchBegin { fingers: 3 },
+                    TouchpadEdge::PinchUpdate { scale: 0.7 },
+                    TouchpadEdge::PinchEnd,
+                ],
+            );
+            assert!(
+                fb.chrome().overlays.overview,
+                "pinching in opens the overview"
+            );
+            run(
+                &mut fb,
+                &[
+                    TouchpadEdge::PinchBegin { fingers: 3 },
+                    TouchpadEdge::PinchUpdate { scale: 1.4 },
+                    TouchpadEdge::PinchEnd,
+                ],
+            );
+            assert!(!fb.chrome().overlays.overview, "pinching out closes it");
 
-    // drag / key / type / modifiers executor coverage
-
-    /// `SetModifiers` mutates `ctx.modifiers` directly; the host reads the
-    /// snapshot on the next chord, so this is what chord injection (Ctrl+K, …) depends on.
-    #[test]
-    fn set_modifiers_action_updates_ctx_mask() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let mut ctx = TestControlCtx::new();
-        execute_planned_action(
-            &PlannedAction::SetModifiers {
-                ctrl: true,
-                shift: false,
-                alt: false,
-                logo: true,
-            },
-            &mut fb,
-            &mut ctx,
-        );
-        assert!(ctx.modifiers.state().control_key());
-        assert!(ctx.modifiers.state().super_key());
-        assert!(!ctx.modifiers.state().shift_key());
-        assert!(!ctx.modifiers.state().alt_key());
-    }
-
-    /// A keyboard press+release pair dispatches without panicking — same bar
-    /// as `full_click_sequence_dispatches_without_panic`, for both press and release.
-    #[test]
-    fn keyboard_key_press_release_dispatches_without_panic() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let mut ctx = TestControlCtx::new();
-        for pressed in [true, false] {
+            let first = fb.chrome().tree().desktop.active;
+            run(
+                &mut fb,
+                &[
+                    TouchpadEdge::SwipeBegin { fingers: 4 },
+                    TouchpadEdge::SwipeUpdate { dx: 0.0, dy: 80.0 },
+                    TouchpadEdge::SwipeUpdate { dx: 0.0, dy: 80.0 },
+                    TouchpadEdge::SwipeEnd { cancelled: false },
+                ],
+            );
+            assert_ne!(
+                fb.chrome().tree().desktop.active,
+                first,
+                "a four-finger downward swipe switches workspace"
+            );
+        }
+        // Phase `set_modifiers_action_updates_ctx_mask`.
+        // `SetModifiers` mutates `ctx.modifiers` directly; the host reads the
+        // snapshot on the next chord, so this is what chord injection (Ctrl+K, …) depends on.
+        {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let mut ctx = TestControlCtx::new();
             execute_planned_action(
-                &PlannedAction::KeyboardKey {
-                    key: KeyTag::Named(NamedKeyTag::Escape),
-                    pressed,
+                &PlannedAction::SetModifiers {
+                    ctrl: true,
+                    shift: false,
+                    alt: false,
+                    logo: true,
                 },
                 &mut fb,
                 &mut ctx,
             );
+            assert!(ctx.modifiers.state().control_key());
+            assert!(ctx.modifiers.state().super_key());
+            assert!(!ctx.modifiers.state().shift_key());
+            assert!(!ctx.modifiers.state().alt_key());
         }
-        fb.relayout();
-        let _ = fb.paint();
+        // Phase `keyboard_key_press_release_dispatches_without_panic`.
+        // A keyboard press+release pair dispatches without panicking — same bar
+        // as `full_click_sequence_dispatches_without_panic`, for both press and release.
+        {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let mut ctx = TestControlCtx::new();
+            for pressed in [true, false] {
+                execute_planned_action(
+                    &PlannedAction::KeyboardKey {
+                        key: KeyTag::Named(NamedKeyTag::Escape),
+                        pressed,
+                    },
+                    &mut fb,
+                    &mut ctx,
+                );
+            }
+            fb.relayout();
+            let _ = fb.paint();
+        }
+        // Phase `cmd_tab_chord_via_test_control_opens_overview`.
+        // Cmd+Tab via `test_control` opens the overview overlay — proves
+        // modifiers + named-key chords reach the host's chord handler, like `ShellDriver::press_key` in-process.
+        {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint();
+            assert!(
+                !fb.chrome().overlays.overview,
+                "bootstrap layout starts with overview closed"
+            );
+            let mut ctx = TestControlCtx::new();
+            // Plant the Super modifier, then dispatch Tab press+release.
+            execute_planned_action(
+                &PlannedAction::SetModifiers {
+                    ctrl: false,
+                    shift: false,
+                    alt: false,
+                    logo: true,
+                },
+                &mut fb,
+                &mut ctx,
+            );
+            execute_planned_action(
+                &PlannedAction::KeyboardKey {
+                    key: KeyTag::Named(NamedKeyTag::Tab),
+                    pressed: true,
+                },
+                &mut fb,
+                &mut ctx,
+            );
+            execute_planned_action(
+                &PlannedAction::KeyboardKey {
+                    key: KeyTag::Named(NamedKeyTag::Tab),
+                    pressed: false,
+                },
+                &mut fb,
+                &mut ctx,
+            );
+            assert!(
+                fb.chrome().overlays.overview,
+                "Super+Tab via test_control should toggle overview on"
+            );
+        }
     }
+
+    // drag / key / type / modifiers executor coverage
 
     // snapshot executor coverage
 
-    /// Sanity: `Snapshot` against a fresh `FrameBuilder` writes a real PNG,
-    /// asserting the magic bytes and a non-trivial byte count (a
-    /// corrupted/truncated PNG would pass the magic check but be tiny).
-    ///
-    /// Skipped without a wgpu adapter (CI without llvmpipe), where the
-    /// executor logs and returns with no file. Serialised with the other [`SNAPSHOT_RENDERER`] tests, now a shared process-wide cache.
     #[test]
     #[serial_test::serial(snapshot_renderer)]
-    fn execute_snapshot_writes_a_png_at_path() {
-        let tmpdir = tempfile::tempdir().expect("create tempdir for snapshot test");
-        let path = tmpdir.path().join("test.png");
-        let mut fb = FrameBuilder::new((640, 360));
-        let mut ctx = TestControlCtx::new();
-        execute_planned_action(
-            &PlannedAction::Snapshot { path: path.clone() },
-            &mut fb,
-            &mut ctx,
-        );
-        // If the renderer wasn't available the executor logged + returned with no
-        // file — treat as a soft skip, mirrors `sidebar_wheel_disc_snapshot.rs::try_new_renderer`.
-        if !path.exists() {
-            eprintln!(
-                "execute_snapshot_writes_a_png_at_path: no wgpu adapter, \
-                 skipping pixel assertions"
+    fn snapshot_renderer_writes_pngs_and_survives_its_builder_thread() {
+        // Phase `execute_snapshot_with_bogus_dir_does_not_crash`.
+        // Hostile path inputs — the executor must log and return without
+        // panicking: the dispatcher's `Ok` is already on the wire, so a client typo must not kill the compositor.
+        fn execute_snapshot_with_bogus_dir_does_not_crash() {
+            let mut fb = FrameBuilder::new((640, 360));
+            let mut ctx = TestControlCtx::new();
+            // Path under a nonexistent parent — File::create fails ENOENT; the executor must log and return.
+            execute_planned_action(
+                &PlannedAction::Snapshot {
+                    path: std::path::PathBuf::from("/nonexistent/dir/x.png"),
+                },
+                &mut fb,
+                &mut ctx,
             );
-            return;
+            // No panic == pass; sanity-check the FrameBuilder is still usable after
+            // the failed snapshot (not left half-painted).
+            fb.relayout();
+            let _ = fb.paint();
         }
-        let bytes = std::fs::read(&path).expect("read snapshot PNG");
-        // PNG magic: \x89PNG\r\n\x1a\n.
-        assert_eq!(
-            &bytes[..8],
-            &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
-            "expected PNG magic at start of {path:?}"
-        );
-        assert!(
-            bytes.len() > 1024,
-            "expected non-trivial PNG output (>1KB); got {} bytes",
-            bytes.len()
-        );
-    }
-
-    /// The snapshot renderer must outlive the thread that built it — see
-    /// [`SNAPSHOT_RENDERER`] for why a per-thread cache aborts the process. An
-    /// abort can't be observed from inside the binary it kills, so this
-    /// asserts the preventing property instead: a snapshot on a thread that
-    /// then exits must leave its renderer behind, so the next snapshot at the
-    /// same viewport builds nothing new. A per-thread cache fails this on the count, before it can abort anything.
-    #[test]
-    #[serial_test::serial(snapshot_renderer)]
-    fn snapshot_renderer_outlives_the_thread_that_built_it() {
-        use std::sync::atomic::Ordering;
-
-        fn take_snapshot() -> bool {
+        // Phase `execute_snapshot_writes_a_png_at_path`.
+        // Sanity: `Snapshot` against a fresh `FrameBuilder` writes a real PNG,
+        // asserting the magic bytes and a non-trivial byte count (a
+        // corrupted/truncated PNG would pass the magic check but be tiny).
+        //
+        // Skipped without a wgpu adapter (CI without llvmpipe), where the
+        // executor logs and returns with no file. Serialised with the other [`SNAPSHOT_RENDERER`] tests, now a shared process-wide cache.
+        fn execute_snapshot_writes_a_png_at_path() {
             let tmpdir = tempfile::tempdir().expect("create tempdir for snapshot test");
-            let path = tmpdir.path().join("shot.png");
+            let path = tmpdir.path().join("test.png");
             let mut fb = FrameBuilder::new((640, 360));
             let mut ctx = TestControlCtx::new();
             execute_planned_action(
@@ -10615,61 +13340,87 @@ mod tests {
                 &mut fb,
                 &mut ctx,
             );
-            path.exists()
-        }
-
-        // Warm the cache on a thread that then exits — with a per-thread cache, this join is where the process died.
-        let warmed = std::thread::spawn(take_snapshot)
-            .join()
-            .expect("the snapshot thread should not panic");
-        if !warmed {
-            eprintln!(
-                "snapshot_renderer_outlives_the_thread_that_built_it: \
-                 no wgpu adapter, skipping"
+            // If the renderer wasn't available the executor logged + returned with no
+            // file — treat as a soft skip, mirrors `sidebar_wheel_disc_snapshot.rs::try_new_renderer`.
+            if !path.exists() {
+                eprintln!(
+                    "execute_snapshot_writes_a_png_at_path: no wgpu adapter, \
+                     skipping pixel assertions"
+                );
+                return;
+            }
+            let bytes = std::fs::read(&path).expect("read snapshot PNG");
+            // PNG magic: \x89PNG\r\n\x1a\n.
+            assert_eq!(
+                &bytes[..8],
+                &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+                "expected PNG magic at start of {path:?}"
             );
-            return;
+            assert!(
+                bytes.len() > 1024,
+                "expected non-trivial PNG output (>1KB); got {} bytes",
+                bytes.len()
+            );
         }
+        // Phase `snapshot_renderer_outlives_the_thread_that_built_it`.
+        // The snapshot renderer must outlive the thread that built it — see
+        // [`SNAPSHOT_RENDERER`] for why a per-thread cache aborts the process. An
+        // abort can't be observed from inside the binary it kills, so this
+        // asserts the preventing property instead: a snapshot on a thread that
+        // then exits must leave its renderer behind, so the next snapshot at the
+        // same viewport builds nothing new. A per-thread cache fails this on the count, before it can abort anything.
+        fn snapshot_renderer_outlives_the_thread_that_built_it() {
+            use std::sync::atomic::Ordering;
 
-        let built = SNAPSHOT_RENDERERS_BUILT.load(Ordering::Relaxed);
-        assert!(
-            take_snapshot(),
-            "a snapshot on this thread should still write a PNG"
-        );
-        assert_eq!(
-            SNAPSHOT_RENDERERS_BUILT.load(Ordering::Relaxed),
-            built,
-            "the renderer built on the now-dead thread must be reused, not \
-             rebuilt — a per-thread cache is what aborts the suite"
-        );
-    }
+            fn take_snapshot() -> bool {
+                let tmpdir = tempfile::tempdir().expect("create tempdir for snapshot test");
+                let path = tmpdir.path().join("shot.png");
+                let mut fb = FrameBuilder::new((640, 360));
+                let mut ctx = TestControlCtx::new();
+                execute_planned_action(
+                    &PlannedAction::Snapshot { path: path.clone() },
+                    &mut fb,
+                    &mut ctx,
+                );
+                path.exists()
+            }
 
-    /// Hostile path inputs — the executor must log and return without
-    /// panicking: the dispatcher's `Ok` is already on the wire, so a client typo must not kill the compositor.
-    #[test]
-    #[serial_test::serial(snapshot_renderer)]
-    fn execute_snapshot_with_bogus_dir_does_not_crash() {
-        let mut fb = FrameBuilder::new((640, 360));
-        let mut ctx = TestControlCtx::new();
-        // Path under a nonexistent parent — File::create fails ENOENT; the executor must log and return.
-        execute_planned_action(
-            &PlannedAction::Snapshot {
-                path: std::path::PathBuf::from("/nonexistent/dir/x.png"),
-            },
-            &mut fb,
-            &mut ctx,
-        );
-        // No panic == pass; sanity-check the FrameBuilder is still usable after
-        // the failed snapshot (not left half-painted).
-        fb.relayout();
-        let _ = fb.paint();
+            // Warm the cache on a thread that then exits — with a per-thread cache, this join is where the process died.
+            let warmed = std::thread::spawn(take_snapshot)
+                .join()
+                .expect("the snapshot thread should not panic");
+            if !warmed {
+                eprintln!(
+                    "snapshot_renderer_outlives_the_thread_that_built_it: \
+                     no wgpu adapter, skipping"
+                );
+                return;
+            }
+
+            let built = SNAPSHOT_RENDERERS_BUILT.load(Ordering::Relaxed);
+            assert!(
+                take_snapshot(),
+                "a snapshot on this thread should still write a PNG"
+            );
+            assert_eq!(
+                SNAPSHOT_RENDERERS_BUILT.load(Ordering::Relaxed),
+                built,
+                "the renderer built on the now-dead thread must be reused, not \
+                 rebuilt — a per-thread cache is what aborts the suite"
+            );
+        }
+        // Phase `execute_snapshot_writes_a_png_at_path` (defined above).
+        execute_snapshot_writes_a_png_at_path();
+        // Phase `snapshot_renderer_outlives_the_thread_that_built_it` (defined above).
+        snapshot_renderer_outlives_the_thread_that_built_it();
+        // Phase `execute_snapshot_with_bogus_dir_does_not_crash` (defined above).
+        execute_snapshot_with_bogus_dir_does_not_crash();
     }
 
     // state_dump
 
-    /// `chrome_state_json` returns an object with an `overlays` key carrying
-    /// the four flags — matches what `tilo-control state-dump` queries, so a regression here silently breaks the CLI.
     #[test]
-    fn state_dump_chrome_includes_overlays_field() {
+    fn state_dump_chrome_includes_wheel_summon() {
         let fb = FrameBuilder::new((1600, 900));
         let state = FrameBuilderControlState {
             fb: &fb,
@@ -10677,490 +13428,714 @@ mod tests {
             shares: None,
             lock: None,
         };
-        let chrome = state.chrome_state_json();
-        let overlays = chrome
-            .get("overlays")
-            .expect("chrome_state_json should carry `overlays` key");
-        // The four bool flags should be reachable through the `overlays`
-        // sub-object — addressing by string mirrors how the CLI/harness reads them.
-        for key in ["overview", "quick_settings", "ws_settings", "collaborators"] {
-            assert!(
-                overlays
-                    .get(key)
-                    .and_then(serde_json::Value::as_bool)
-                    .is_some(),
-                "overlays should carry boolean `{key}`; got {overlays:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn state_dump_exposes_retry_ready_lock_auth_without_password_contents() {
-        let fb = FrameBuilder::new((1600, 900));
-        let mut lock = LockController::new(
-            std::sync::Arc::new(crate::compositor::lock_auth::FixedVerifier::new("correct")),
-            "alice",
-        );
-        lock.push_str("secret-value");
-        let state = FrameBuilderControlState {
-            fb: &fb,
-            doc: None,
-            shares: None,
-            lock: Some(&lock),
-        };
-        let chrome = state.chrome_state_json();
-        let auth = chrome
-            .get("lock_auth")
-            .expect("native state dump must expose lock authentication status");
-        assert_eq!(auth.get("verifying"), Some(&serde_json::Value::Bool(false)));
         assert_eq!(
-            auth.get("password_len").and_then(serde_json::Value::as_u64),
-            Some(12)
+            state.chrome_state_json().get("wheel_summon"),
+            Some(&serde_json::Value::Null),
+            "the wheel starts docked"
         );
-        assert_eq!(auth.get("error"), Some(&serde_json::Value::Null));
-        assert!(
-            !chrome.to_string().contains("secret-value"),
-            "state dump must never disclose the password buffer"
-        );
+
+        fb.chrome_handle()
+            .borrow_mut()
+            .set_wheel_summon(Some(vello::kurbo::Point::new(1180.0, 450.0)));
+        let summoned = &state.chrome_state_json()["wheel_summon"];
+        assert_eq!(summoned["x"].as_f64(), Some(1180.0));
+        assert_eq!(summoned["y"].as_f64(), Some(450.0));
     }
 
+    /// `chrome.displays` names what is painted: every connected display and
+    /// the groups on it, including the one display left after an unplug.
     #[test]
-    fn state_dump_identifies_the_exact_nested_search_resource() {
-        let fb = FrameBuilder::new((1600, 900));
-        fb.chrome_handle().borrow_mut().search_resource_scope =
-            Some(crate::shell::chrome_state::SearchResourceScope {
-                peer_id: 0x42,
-                cluster_id: "room:design".into(),
-                app_id: "so.tilo.reader".into(),
-                resource: "book:architecture/chapter:7".into(),
-                label: "Rendering and state".into(),
-            });
-        let state = FrameBuilderControlState {
-            fb: &fb,
-            doc: None,
-            shares: None,
-            lock: None,
+    fn state_dump_lists_the_remaining_display_after_an_unplug() {
+        use crate::compositor::backend::{combined_geometry, headless, output_geometry};
+        use crate::shell::state::{
+            AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+            WorkspaceId, WorkspaceTree,
         };
 
-        let scope = &state.chrome_state_json()["search_resource_scope"];
-        assert_eq!(scope["peer_id"], 0x42);
-        assert_eq!(scope["cluster_id"], "room:design");
-        assert_eq!(scope["app_id"], "so.tilo.reader");
-        assert_eq!(scope["resource"], "book:architecture/chapter:7");
-        assert_eq!(scope["label"], "Rendering and state");
-    }
-
-    #[test]
-    fn state_dump_exposes_own_presence_privacy_and_follow_state() {
-        let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState {
-            fb: &fb,
-            doc: None,
-            shares: None,
-            lock: None,
-        };
-
-        let presence = &state.chrome_state_json()["presence"];
-        assert!(
-            matches!(
-                presence["status_sharing"].as_str(),
-                Some("off" | "manual" | "automatic")
-            ),
-            "presence privacy must be an explicit wire value: {presence}"
-        );
-        assert!(
-            presence["own_status"].is_null() || presence["own_status"].is_string(),
-            "manual status must remain inspectable: {presence}"
-        );
-        assert!(presence["following"].is_null());
-    }
-
-    #[test]
-    fn action_enumeration_preserves_directory_resource_hierarchy() {
-        use crate::shell::collab_broker_capnp::{ActionDirectoryRoot, CapnpBrokerState};
-        use crate::shell::search::providers::live_app_actions::fixture_with_directory_page;
-
-        let mut fb = FrameBuilder::new((800, 600));
-        let (room, actor) = {
-            let chrome = fb.chrome();
-            let room = chrome.tree().desktop.active_workspace().unwrap().room;
-            (room.to_string(), chrome.local_user_for_room(&room))
-        };
-        fb.chrome()
-            .tree_handle()
-            .write()
-            .desktop
-            .active_workspace_mut()
-            .unwrap()
-            .owner = Some(actor.clone());
-        let broker = CapnpBrokerState::test_broker_with_membership(fb.chrome().tree_handle());
-        broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
-            peer_id: 4096,
-            app_id: "dev.tilo.calculator".into(),
-            cluster_id: room.clone(),
-            record_id: "calculator-document".into(),
-        }]);
-        let page = tilo_actions::remote::CataloguePage {
-            revision: "revision-3".into(),
-            rows: vec![tilo_actions::remote::CatalogueRow {
-                provider: "4096".into(),
-                app_id: "dev.tilo.calculator".into(),
-                parent_resource: String::new(),
-                resource: tilo_actions::remote::CatalogueResource {
-                    id: "calculator.graph:curve2d:stable-17".into(),
-                    kind: "calculator.graph".into(),
-                    label: "A presentation label without routing metadata".into(),
-                    presentation: None,
+        let group = |id: u64| WindowGroup {
+            id,
+            tabs: vec![Tab {
+                id: id + 100,
+                title: format!("W{id}"),
+                tile: TileContent::Stub {
+                    kind: AppKind::Other("Test".into()),
+                    label: format!("W{id}"),
                 },
-                action: Some(tilo_actions::ActionDescriptor {
-                    address: tilo_actions::ActionAddress::new(
-                        "calculator.graph:curve2d:stable-17",
-                        "toggle-visibility",
-                    ),
-                    resource_kind: "calculator.graph".into(),
-                    resource_label: "A presentation label without routing metadata".into(),
-                    action_label: "Hide".into(),
-                    description: Some("Do not infer identity from this text".into()),
-                    locus: tilo_actions::ExecutionLocus::default(),
-                    kind: tilo_actions::OperationKind::View,
-                    contract: tilo_actions::ActionContract::view(),
-                    input: tilo_actions::InputSpec::None,
-                    params: Vec::new(),
-                    view: None,
-                }),
-                has_children: false,
-                visibility: None,
             }],
-            exhausted: true,
-            ..tilo_actions::remote::CataloguePage::default()
+            active_tab: id + 100,
+            width: WindowWidth::Fraction(600),
+            maximized: false,
         };
-        let provider = fixture_with_directory_page(broker, 4096, actor, page);
-        crate::shell::overlay_host::install_fixture_search_provider(fb.host_mut(), provider);
-        let doc = AutoCommit::new();
-        let state = FrameBuilderControlState {
-            fb: &fb,
-            doc: Some((&doc, &automerge::ROOT)),
-            shares: None,
-            lock: None,
+        let ws_id = WorkspaceId(7);
+        let strip = StripId(77);
+        let mut ws = Workspace::new(ws_id, "Desk");
+        ws.strips = vec![Strip {
+            id: strip,
+            name: "Main".into(),
+            window_groups: vec![group(1), group(2)],
+        }];
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces = vec![ws];
+        tree.desktop.active = ws_id;
+        tree.desktop.active_strip.insert(ws_id, strip);
+
+        let outputs = headless::output_fixture("docked-laptop").expect("fixture");
+        let mut fb = FrameBuilder::with_tree(tree, combined_geometry(&outputs));
+        fb.set_output_geometry(output_geometry(&outputs));
+        fb.relayout();
+        assert!(
+            fb.chrome_handle()
+                .borrow()
+                .tree_mut()
+                .move_group_to_display(2, 1),
+            "group 2 moves to the second display"
+        );
+        fb.relayout();
+        let displays = |fb: &FrameBuilder| {
+            FrameBuilderControlState {
+                fb,
+                doc: None,
+                shares: None,
+                lock: None,
+            }
+            .chrome_state_json()["displays"]
+                .clone()
         };
-        let answer = state.enumerate_actions("").expect("enumerated actions");
-        let row = answer["actions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|row| row["provider"] == "app-actions" && row["title"] == "Hide")
-            .expect("real directory action must be visible");
-        assert_eq!(row["application"], "dev.tilo.calculator");
-        assert_eq!(row["room"], room);
-        assert_eq!(row["record"], "calculator-document");
-        assert_eq!(row["resource"], "calculator.graph:curve2d:stable-17");
-        assert_eq!(row["operation"], "toggle-visibility");
+        let both = displays(&fb);
+        assert_eq!(both[0]["groups"], serde_json::json!([1]), "{both:#}");
+        assert_eq!(both[1]["groups"], serde_json::json!([2]), "{both:#}");
+
+        // Unplug the second display: its group moves onto the first, and the
+        // dump says so although the desktop is no longer partitioned.
+        fb.set_output_geometry(output_geometry(&outputs[..1]));
+        fb.relayout();
+        let one = displays(&fb);
         assert_eq!(
-            row["id"],
-            "directory\u{1f}4096\u{1f}revision-3\u{1f}calculator.graph:curve2d:stable-17\u{1f}toggle-visibility"
+            one,
+            serde_json::json!([{"id": 0, "primary": true, "focused": true, "groups": [1, 2]}]),
+            "the remaining display holds every group"
         );
+
+        // A device that has only ever had one display carries no partition;
+        // its display still holds the whole strip.
+        let mut single = FrameBuilder::new((1600, 900));
+        single.set_output_geometry(output_geometry(&outputs[..1]));
+        single.relayout();
+        let only = displays(&single);
+        assert_eq!(only.as_array().map(Vec::len), Some(1), "{only:#}");
+        assert_eq!(only[0]["primary"], true, "{only:#}");
     }
 
-    /// `workspace_tree_json` exposes a `workspaces` array on the bootstrap
-    /// layout — the CLI's `state-dump` smoke depends on it as the consumer's entrypoint to the workspace list.
     #[test]
-    fn state_dump_workspace_tree_includes_workspaces_array() {
-        let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState {
-            fb: &fb,
-            doc: None,
-            shares: None,
-            lock: None,
-        };
-        let tree = state.workspace_tree_json();
-        let workspaces = tree
-            .get("workspaces")
-            .and_then(|v| v.as_array())
-            .expect("workspace_tree_json should carry `workspaces` array");
-        // `FrameBuilder::new` uses the demo tree, matching the `bootstrap_demo`
-        // assertions in `shell/state.rs`.
-        assert!(
-            !workspaces.is_empty(),
-            "bootstrap workspace tree should not be empty"
-        );
-    }
-
-    /// The state dump has to carry the roster — how a harness observes who
-    /// the shell believes is present. `Workspace::collaborators` is
-    /// `#[serde(skip_deserializing)]` (a restarted shell must not paint gone
-    /// sessions), but write stays open: closing it with a plain `skip` would silently empty the roster from the socket, looking like agreement.
-    #[test]
-    fn state_dump_carries_the_roster_it_is_asked_about() {
-        let fb = FrameBuilder::new((1600, 900));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn state_dump_and_action_enumeration_describe_chrome_and_workspaces() {
+        // Phase `state_dump_chrome_includes_overlays_field`.
+        // `chrome_state_json` returns an object with an `overlays` key carrying
+        // the four flags — matches what `tilo-control state-dump` queries, so a regression here silently breaks the CLI.
         {
-            let chrome = fb.chrome();
-            // Drop the `ChromeState` borrow before locking the tree — nothing
-            // here needs it once the handle is cloned out.
-            let tree_handle = chrome.tree_handle();
-            drop(chrome);
-            let mut tree = tree_handle.write();
-            let room = tree
-                .desktop
-                .active_workspace()
-                .expect("active workspace")
-                .room;
-            let noted = tree.note_peer_present(room, 0x51, "alice");
-            drop(tree);
-            assert!(noted);
+            let fb = FrameBuilder::new((1600, 900));
+            let state = FrameBuilderControlState {
+                fb: &fb,
+                doc: None,
+                shares: None,
+                lock: None,
+            };
+            let chrome = state.chrome_state_json();
+            let overlays = chrome
+                .get("overlays")
+                .expect("chrome_state_json should carry `overlays` key");
+            // The four bool flags should be reachable through the `overlays`
+            // sub-object — addressing by string mirrors how the CLI/harness reads them.
+            for key in ["overview", "quick_settings", "ws_settings", "collaborators"] {
+                assert!(
+                    overlays
+                        .get(key)
+                        .and_then(serde_json::Value::as_bool)
+                        .is_some(),
+                    "overlays should carry boolean `{key}`; got {overlays:?}"
+                );
+            }
         }
-        let state = FrameBuilderControlState {
-            fb: &fb,
-            doc: None,
-            shares: None,
-            lock: None,
-        };
-        let tree = state.workspace_tree_json();
-        let found = tree
-            .get("workspaces")
-            .and_then(|v| v.as_array())
-            .expect("workspaces array")
-            .iter()
-            .filter_map(|w| w.get("collaborators")?.as_array())
-            .flatten()
-            .filter_map(|c| c.get("id")?.as_str())
-            .any(|id| id == "alice");
-        assert!(
-            found,
-            "a peer the shell has admitted must appear in the control \
-             socket's state dump; without it a harness cannot tell an \
-             empty roster from an unreported one. Got: {tree}"
-        );
+        // Phase `state_dump_identifies_the_exact_nested_search_resource`.
+        {
+            let fb = FrameBuilder::new((1600, 900));
+            fb.chrome_handle().borrow_mut().search_resource_scope =
+                Some(crate::shell::chrome_state::SearchResourceScope {
+                    peer_id: 0x42,
+                    cluster_id: "room:design".into(),
+                    app_id: "so.tilo.reader".into(),
+                    resource: "book:architecture/chapter:7".into(),
+                    label: "Rendering and state".into(),
+                    kind: String::new(),
+                });
+            let state = FrameBuilderControlState {
+                fb: &fb,
+                doc: None,
+                shares: None,
+                lock: None,
+            };
+
+            let scope = &state.chrome_state_json()["search_resource_scope"];
+            assert_eq!(scope["peer_id"], 0x42);
+            assert_eq!(scope["cluster_id"], "room:design");
+            assert_eq!(scope["app_id"], "so.tilo.reader");
+            assert_eq!(scope["resource"], "book:architecture/chapter:7");
+            assert_eq!(scope["label"], "Rendering and state");
+        }
+        // Phase `action_enumeration_preserves_directory_resource_hierarchy`.
+        {
+            use crate::shell::collab_broker_capnp::ActionDirectoryRoot;
+            use crate::shell::search::providers::live_app_actions::fixture_with_directory_page;
+
+            let mut fb = FrameBuilder::new((800, 600));
+            let (room, actor) = {
+                let chrome = fb.chrome();
+                let room = chrome.tree().desktop.active_workspace().unwrap().room;
+                (room.to_string(), chrome.local_user_for_room(&room))
+            };
+            fb.chrome()
+                .tree_handle()
+                .write()
+                .desktop
+                .active_workspace_mut()
+                .unwrap()
+                .owner = Some(actor.clone());
+            let broker = crate::shell::broker_services::test_broker_with_membership(
+                fb.chrome().tree_handle(),
+            );
+            broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+                peer_id: 4096,
+                app_id: "dev.tilo.calculator".into(),
+                cluster_id: room.clone(),
+                record_id: "calculator-document".into(),
+            }]);
+            let page = tilo_actions::remote::CataloguePage {
+                revision: "revision-3".into(),
+                rows: vec![tilo_actions::remote::CatalogueRow {
+                    provider: "4096".into(),
+                    app_id: "dev.tilo.calculator".into(),
+                    parent_resource: String::new(),
+                    resource: tilo_actions::remote::CatalogueResource {
+                        id: "calculator.graph:curve2d:stable-17".into(),
+                        kind: "calculator.graph".into(),
+                        label: "A presentation label without routing metadata".into(),
+                        presentation: None,
+                    },
+                    action: Some(tilo_actions::ActionDescriptor {
+                        address: tilo_actions::ActionAddress::new(
+                            "calculator.graph:curve2d:stable-17",
+                            "toggle-visibility",
+                        ),
+                        resource_kind: "calculator.graph".into(),
+                        resource_label: "A presentation label without routing metadata".into(),
+                        action_label: "Hide".into(),
+                        description: Some("Do not infer identity from this text".into()),
+                        locus: tilo_actions::ExecutionLocus::default(),
+                        kind: tilo_actions::OperationKind::View,
+                        contract: tilo_actions::ActionContract::view(),
+                        input: tilo_actions::InputSpec::None,
+                        params: Vec::new(),
+                        view: None,
+                    }),
+                    has_children: false,
+                    visibility: None,
+                }],
+                exhausted: true,
+                ..tilo_actions::remote::CataloguePage::default()
+            };
+            let provider = fixture_with_directory_page(broker, 4096, actor, page);
+            crate::shell::overlay_host::install_fixture_search_provider(fb.host_mut(), provider);
+            let doc = AutoCommit::new();
+            let state = FrameBuilderControlState {
+                fb: &fb,
+                doc: Some((&doc, &automerge::ROOT)),
+                shares: None,
+                lock: None,
+            };
+            let answer = state.enumerate_actions("").expect("enumerated actions");
+            let row = answer["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["provider"] == "app-actions" && row["title"] == "Hide")
+                .expect("real directory action must be visible");
+            assert_eq!(row["application"], "dev.tilo.calculator");
+            assert_eq!(row["room"], room);
+            assert_eq!(row["record"], "calculator-document");
+            assert_eq!(row["resource"], "calculator.graph:curve2d:stable-17");
+            assert_eq!(row["operation"], "toggle-visibility");
+            assert_eq!(
+                row["id"],
+                "directory\u{1f}4096\u{1f}revision-3\u{1f}calculator.graph:curve2d:stable-17\u{1f}toggle-visibility"
+            );
+        }
+        // Phase `state_dump_workspace_tree_includes_workspaces_array`.
+        // `workspace_tree_json` exposes a `workspaces` array on the bootstrap
+        // layout — the CLI's `state-dump` smoke depends on it as the consumer's entrypoint to the workspace list.
+        {
+            let fb = FrameBuilder::new((1600, 900));
+            let state = FrameBuilderControlState {
+                fb: &fb,
+                doc: None,
+                shares: None,
+                lock: None,
+            };
+            let tree = state.workspace_tree_json();
+            let workspaces = tree
+                .get("workspaces")
+                .and_then(|v| v.as_array())
+                .expect("workspace_tree_json should carry `workspaces` array");
+            // `FrameBuilder::new` uses the demo tree, matching the `bootstrap_demo`
+            // assertions in `shell/state.rs`.
+            assert!(
+                !workspaces.is_empty(),
+                "bootstrap workspace tree should not be empty"
+            );
+        }
+        // Phase `dispatch_state_dump_against_frame_builder_returns_state`.
+        // Dispatching `Command::StateDump` returns `Response::State` with no
+        // actions. Integration round-trip lives in `tests/control_socket_test.rs`; this smoke catches regressions needing no spawned compositor.
+        {
+            let fb = FrameBuilder::new((1600, 900));
+            let state = FrameBuilderControlState {
+                fb: &fb,
+                doc: None,
+                shares: None,
+                lock: None,
+            };
+            let (resp, actions) =
+                test_control::dispatch_command(&test_control::Command::StateDump, &state);
+            assert!(actions.is_empty());
+            let test_control::Response::State {
+                workspace_tree,
+                chrome,
+                peers: _,
+                sharing: _,
+            } = resp
+            else {
+                panic!("expected Response::State; got something else");
+            };
+            // Sanity: both blobs are non-null and shaped like objects.
+            assert!(
+                workspace_tree.is_object(),
+                "workspace_tree should be an object"
+            );
+            assert!(chrome.is_object(), "chrome should be an object");
+        }
     }
 
-    /// Agents and automation use the same semantic inspection surface as
-    /// accessibility tooling. Screen exposure therefore has to retain the
-    /// viewer's principal kind, exact target, and control authority rather
-    /// than degrading to an anonymous "sharing" boolean.
     #[test]
-    fn state_dump_attributes_agent_screen_exposure_to_its_exact_target() {
-        use crate::compositor::tab_binding::{self, Placement};
-        use crate::network::streaming::{ShareRegistry, StreamingShare};
-        use crate::shell::state::{CapOverride, Subject, Verb};
-
-        const AGENT_PEER: u64 = 0xA9;
-        const SURFACE: u64 = 71_900;
-
-        let fb = FrameBuilder::new((1600, 900));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn state_dump_exposes_privacy_relevant_state_without_secrets() {
+        // Phase `state_dump_carries_the_roster_it_is_asked_about`.
+        // The state dump has to carry the roster — how a harness observes who
+        // the shell believes is present. `Workspace::collaborators` is
+        // `#[serde(skip_deserializing)]` (a restarted shell must not paint gone
+        // sessions), but write stays open: closing it with a plain `skip` would silently empty the roster from the socket, looking like agreement.
+        fn state_dump_carries_the_roster_it_is_asked_about() {
+            let fb = FrameBuilder::new((1600, 900));
+            {
+                let chrome = fb.chrome();
+                // Drop the `ChromeState` borrow before locking the tree — nothing
+                // here needs it once the handle is cloned out.
+                let tree_handle = chrome.tree_handle();
+                drop(chrome);
+                let mut tree = tree_handle.write();
+                let room = tree
+                    .desktop
+                    .active_workspace()
+                    .expect("active workspace")
+                    .room;
+                let noted = tree.note_peer_present(room, 0x51, "alice");
+                drop(tree);
+                assert!(noted);
+            }
+            let state = FrameBuilderControlState {
+                fb: &fb,
+                doc: None,
+                shares: None,
+                lock: None,
+            };
+            let tree = state.workspace_tree_json();
+            let found = tree
+                .get("workspaces")
+                .and_then(|v| v.as_array())
+                .expect("workspaces array")
+                .iter()
+                .filter_map(|w| w.get("collaborators")?.as_array())
+                .flatten()
+                .filter_map(|c| c.get("id")?.as_str())
+                .any(|id| id == "alice");
+            assert!(
+                found,
+                "a peer the shell has admitted must appear in the control \
+                 socket's state dump; without it a harness cannot tell an \
+                 empty roster from an unreported one. Got: {tree}"
+            );
+        }
+        // Phase `state_dump_exposes_retry_ready_lock_auth_without_password_contents`.
         {
-            let chrome = fb.chrome();
-            let tree_handle = chrome.tree_handle();
-            drop(chrome);
-            let mut tree = tree_handle.write();
-            let workspace = tree
-                .desktop
-                .active_workspace_mut()
-                .expect("active workspace");
-            workspace.owner = Some("owner".to_string());
-            let room = workspace.id.raw().to_string();
-            workspace
-                .grant_as(
-                    &"owner".to_string(),
-                    CapOverride::membership(Subject::agent("release-notes"), room, Verb::Write),
-                )
-                .expect("owner admits agent");
-            workspace.collaborators.push(
-                crate::shell::state::Collaborator::new("release-notes", "Release Notes Agent")
-                    .with_session(AGENT_PEER),
+            let fb = FrameBuilder::new((1600, 900));
+            let mut lock = LockController::new(
+                std::sync::Arc::new(crate::compositor::lock_auth::FixedVerifier::new("correct")),
+                "alice",
             );
-            tab_binding::adopt_toplevel_at(
-                &mut tree,
-                SURFACE,
-                Some("org.libreoffice.Writer".into()),
-                Placement::NewGroup,
+            lock.push_str("secret-value");
+            let state = FrameBuilderControlState {
+                fb: &fb,
+                doc: None,
+                shares: None,
+                lock: Some(&lock),
+            };
+            let chrome = state.chrome_state_json();
+            let auth = chrome
+                .get("lock_auth")
+                .expect("native state dump must expose lock authentication status");
+            assert_eq!(auth.get("verifying"), Some(&serde_json::Value::Bool(false)));
+            assert_eq!(
+                auth.get("password_len").and_then(serde_json::Value::as_u64),
+                Some(12)
             );
-            let tab = tree
-                .desktop
-                .active_workspace_mut()
-                .into_iter()
-                .flat_map(|workspace| &mut workspace.strips)
-                .flat_map(|strip| &mut strip.window_groups)
-                .flat_map(|group| &mut group.tabs)
-                .find(|tab| {
-                    matches!(
-                        tab.tile,
-                        crate::shell::state::TileContent::Foreign { surface_id, .. }
-                            if surface_id == SURFACE
+            assert_eq!(auth.get("error"), Some(&serde_json::Value::Null));
+            assert!(
+                !chrome.to_string().contains("secret-value"),
+                "state dump must never disclose the password buffer"
+            );
+        }
+        // Phase `state_dump_exposes_own_presence_privacy_and_follow_state`.
+        {
+            let fb = FrameBuilder::new((1600, 900));
+            let state = FrameBuilderControlState {
+                fb: &fb,
+                doc: None,
+                shares: None,
+                lock: None,
+            };
+
+            let presence = &state.chrome_state_json()["presence"];
+            assert!(
+                matches!(
+                    presence["status_sharing"].as_str(),
+                    Some("off" | "manual" | "automatic")
+                ),
+                "presence privacy must be an explicit wire value: {presence}"
+            );
+            assert!(
+                presence["own_status"].is_null() || presence["own_status"].is_string(),
+                "manual status must remain inspectable: {presence}"
+            );
+            assert!(presence["following"].is_null());
+        }
+        // Phase `state_dump_carries_the_roster_it_is_asked_about` (defined above).
+        state_dump_carries_the_roster_it_is_asked_about();
+        // Phase `state_dump_attributes_agent_screen_exposure_to_its_exact_target`.
+        // Agents and automation use the same semantic inspection surface as
+        // accessibility tooling. Screen exposure therefore has to retain the
+        // viewer's principal kind, exact target, and control authority rather
+        // than degrading to an anonymous "sharing" boolean.
+        {
+            use crate::compositor::tab_binding::{self, Placement};
+            use crate::network::streaming::{ShareRegistry, StreamingShare};
+            use crate::shell::state::{CapOverride, Subject, Verb};
+
+            const AGENT_PEER: u64 = 0xA9;
+            const SURFACE: u64 = 71_900;
+
+            let fb = FrameBuilder::new((1600, 900));
+            {
+                let chrome = fb.chrome();
+                let tree_handle = chrome.tree_handle();
+                drop(chrome);
+                let mut tree = tree_handle.write();
+                let workspace = tree
+                    .desktop
+                    .active_workspace_mut()
+                    .expect("active workspace");
+                workspace.owner = Some("owner".to_string());
+                let room = workspace.id.raw().to_string();
+                workspace
+                    .grant_as(
+                        &"owner".to_string(),
+                        CapOverride::membership(Subject::agent("release-notes"), room, Verb::Write),
                     )
-                })
-                .expect("adopted foreign tab");
-            tab.title = "Quarterly Plan".to_string();
-            drop(tree);
+                    .expect("owner admits agent");
+                workspace.collaborators.push(
+                    crate::shell::state::Collaborator::new("release-notes", "Release Notes Agent")
+                        .with_session(AGENT_PEER),
+                );
+                tab_binding::adopt_toplevel_at(
+                    &mut tree,
+                    SURFACE,
+                    Some("org.libreoffice.Writer".into()),
+                    Placement::NewGroup,
+                );
+                let tab = tree
+                    .desktop
+                    .active_workspace_mut()
+                    .into_iter()
+                    .flat_map(|workspace| &mut workspace.strips)
+                    .flat_map(|strip| &mut strip.window_groups)
+                    .flat_map(|group| &mut group.tabs)
+                    .find(|tab| {
+                        matches!(
+                            tab.tile,
+                            crate::shell::state::TileContent::Foreign { surface_id, .. }
+                                if surface_id == SURFACE
+                        )
+                    })
+                    .expect("adopted foreign tab");
+                tab.title = "Quarterly Plan".to_string();
+                drop(tree);
+            }
+
+            let mut shares = ShareRegistry::new();
+            shares.insert(AGENT_PEER, SURFACE, StreamingShare::new());
+            let state = FrameBuilderControlState {
+                fb: &fb,
+                doc: None,
+                shares: Some(&shares),
+                lock: None,
+            };
+            let rows = state
+                .sharing_json()
+                .get("exposures")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .expect("state dump exposure rows");
+            assert_eq!(rows.len(), 1);
+            let row = &rows[0];
+            assert_eq!(row["name"], "Release Notes Agent");
+            assert_eq!(row["kind"], "agent");
+            assert_eq!(row["target"], "Quarterly Plan");
+            assert_eq!(row["can_see"], true);
+            assert_eq!(row["can_control"], true);
         }
-
-        let mut shares = ShareRegistry::new();
-        shares.insert(AGENT_PEER, SURFACE, StreamingShare::new());
-        let state = FrameBuilderControlState {
-            fb: &fb,
-            doc: None,
-            shares: Some(&shares),
-            lock: None,
-        };
-        let rows = state
-            .sharing_json()
-            .get("exposures")
-            .and_then(serde_json::Value::as_array)
-            .cloned()
-            .expect("state dump exposure rows");
-        assert_eq!(rows.len(), 1);
-        let row = &rows[0];
-        assert_eq!(row["name"], "Release Notes Agent");
-        assert_eq!(row["kind"], "agent");
-        assert_eq!(row["target"], "Quarterly Plan");
-        assert_eq!(row["can_see"], true);
-        assert_eq!(row["can_control"], true);
-    }
-
-    /// Dispatching `Command::StateDump` returns `Response::State` with no
-    /// actions. Integration round-trip lives in `tests/control_socket_test.rs`; this smoke catches regressions needing no spawned compositor.
-    #[test]
-    fn dispatch_state_dump_against_frame_builder_returns_state() {
-        let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState {
-            fb: &fb,
-            doc: None,
-            shares: None,
-            lock: None,
-        };
-        let (resp, actions) =
-            test_control::dispatch_command(&test_control::Command::StateDump, &state);
-        assert!(actions.is_empty());
-        let test_control::Response::State {
-            workspace_tree,
-            chrome,
-            peers: _,
-            sharing: _,
-        } = resp
-        else {
-            panic!("expected Response::State; got something else");
-        };
-        // Sanity: both blobs are non-null and shaped like objects.
-        assert!(
-            workspace_tree.is_object(),
-            "workspace_tree should be an object"
-        );
-        assert!(chrome.is_object(), "chrome should be an object");
-    }
-
-    /// Cmd+Tab via `test_control` opens the overview overlay — proves
-    /// modifiers + named-key chords reach the host's chord handler, like `ShellDriver::press_key` in-process.
-    #[test]
-    fn cmd_tab_chord_via_test_control_opens_overview() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let _ = fb.paint();
-        assert!(
-            !fb.chrome().overlays.overview,
-            "bootstrap layout starts with overview closed"
-        );
-        let mut ctx = TestControlCtx::new();
-        // Plant the Super modifier, then dispatch Tab press+release.
-        execute_planned_action(
-            &PlannedAction::SetModifiers {
-                ctrl: false,
-                shift: false,
-                alt: false,
-                logo: true,
-            },
-            &mut fb,
-            &mut ctx,
-        );
-        execute_planned_action(
-            &PlannedAction::KeyboardKey {
-                key: KeyTag::Named(NamedKeyTag::Tab),
-                pressed: true,
-            },
-            &mut fb,
-            &mut ctx,
-        );
-        execute_planned_action(
-            &PlannedAction::KeyboardKey {
-                key: KeyTag::Named(NamedKeyTag::Tab),
-                pressed: false,
-            },
-            &mut fb,
-            &mut ctx,
-        );
-        assert!(
-            fb.chrome().overlays.overview,
-            "Super+Tab via test_control should toggle overview on"
-        );
-    }
-
-    /// Dropping an `UnlinkOnDrop` removes the file at its path — `run` holds
-    /// one around the test-control socket so it unlinks on clean exit + panic-unwind.
-    #[test]
-    fn unlink_on_drop_removes_socket_file_on_drop() {
-        let tmpdir = tempfile::tempdir().expect("tempdir");
-        let path = tmpdir.path().join("tilo-test-control.sock");
-        // Use an arbitrary regular-file stand-in — the guard removes anything
-        // `remove_file` accepts, no real unix socket needed to exercise the contract.
-        std::fs::write(&path, b"").expect("create stand-in file");
-        assert!(path.exists(), "test setup: file should exist after write");
-        let guard = UnlinkOnDrop(path.clone());
-        drop(guard);
-        assert!(
-            !path.exists(),
-            "UnlinkOnDrop must remove the file at its path on drop \
-             (D-3); got lingering file at {path:?}"
-        );
     }
 
     // session lock chord / unlock detection
 
-    /// `apply_session_transition` maps Blanked/Woke to `set_dpms`;
-    /// Locked/Unlocked are pure state and touch no backend — asserted via a spy backend recording `set_dpms` calls.
     #[test]
-    fn apply_transition_drives_backend_dpms() {
-        use crate::compositor::backend::{Backend, BackendEvent, Output};
-        use vello::Scene;
+    fn native_consent_bootstrap_and_onboarding_publish_actual_state() {
+        const TEST: &str = "compositor::native::tests::native_consent_bootstrap_and_onboarding_publish_actual_state";
+        run_isolated_native_consent_test(TEST, || {
+            let mut frame_builder = FrameBuilder::new((800, 600));
+            let broker = spawn_session_collab_broker(&frame_builder.chrome_handle(), None)
+                .expect("spawn native collaboration broker");
+            let session = SessionManager::new(
+                IdleConfig {
+                    blank_timeout: None,
+                    lock_timeout: None,
+                    suspend_timeout: None,
+                },
+                Instant::now(),
+            );
+            let lifecycle = install_native_session_lifecycle(
+                &broker,
+                &session,
+                frame_builder.host().onboarding_active(),
+            );
+            assert_eq!(
+                lifecycle.snapshot().expect("native bootstrap").liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Active
+            );
 
-        #[derive(Default)]
-        struct SpyBackend {
-            dpms_calls: Vec<bool>,
-            outputs: Vec<Output>,
-        }
-        impl Backend for SpyBackend {
-            fn submit_frame(&mut self, _scene: &Scene, _output: OutputId) {}
-            fn poll_events(&mut self, _cb: &mut dyn FnMut(BackendEvent)) {}
-            fn outputs(&self) -> &[Output] {
-                &self.outputs
-            }
-            fn set_dpms(&mut self, on: bool) {
-                self.dpms_calls.push(on);
-            }
-        }
+            let fixture = native_consent_fixture_root();
+            frame_builder.enable_onboarding(fixture.join("onboarding"));
+            publish_native_session_state(
+                Some(&lifecycle),
+                &session,
+                frame_builder.host().onboarding_active(),
+            );
+            assert_eq!(
+                lifecycle
+                    .snapshot()
+                    .expect("onboarding revocation")
+                    .liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Inactive
+            );
+            drop(broker);
+            wait_for_local_session_worker_teardown(&lifecycle);
+        });
+    }
 
-        struct NoBacklight;
-        impl crate::compositor::screen_dim::Backlight for NoBacklight {
-            fn brightness(&self) -> Option<f32> {
-                None
-            }
-            fn set_brightness(&self, _fraction: f32) -> bool {
-                false
-            }
-        }
+    #[test]
+    fn native_consent_lock_is_synchronous_and_unlock_uses_fresh_generation() {
+        const TEST: &str = "compositor::native::tests::native_consent_lock_is_synchronous_and_unlock_uses_fresh_generation";
+        run_isolated_native_consent_test(TEST, || {
+            use crate::compositor::backend::{Backend, BackendEvent, Output};
+            use vello::Scene;
 
-        let mut backend = SpyBackend::default();
-        let mut dimmer = ScreenDimmer::new(NoBacklight);
-        for t in [
-            SessionTransition::Dimmed,
-            SessionTransition::Blanked,
-            SessionTransition::Woke,
-            SessionTransition::Locked,
-            SessionTransition::Unlocked,
-        ] {
-            apply_session_transition(t, &mut backend, None, &mut dimmer);
-        }
-        // Blanked → set_dpms(false), Woke → set_dpms(true); Locked/Unlocked produce no backend calls.
-        assert_eq!(backend.dpms_calls, vec![false, true]);
-        // Without a backlight the dim falls back to the paint overlay, lifted by Undimmed.
-        assert!(dimmer.overlay_alpha().is_some());
-        apply_session_transition(SessionTransition::Undimmed, &mut backend, None, &mut dimmer);
-        assert_eq!(dimmer.overlay_alpha(), None);
+            #[derive(Default)]
+            struct SpyBackend {
+                outputs: Vec<Output>,
+            }
+            impl Backend for SpyBackend {
+                fn submit_frame(&mut self, _scene: &Scene, _output: OutputId) {}
+                fn poll_events(&mut self, _cb: &mut dyn FnMut(BackendEvent)) {}
+                fn outputs(&self) -> &[Output] {
+                    &self.outputs
+                }
+            }
+
+            let frame_builder = FrameBuilder::new((800, 600));
+            let broker = spawn_session_collab_broker(&frame_builder.chrome_handle(), None)
+                .expect("spawn native collaboration broker");
+            let session = SessionManager::new(
+                IdleConfig {
+                    blank_timeout: None,
+                    lock_timeout: None,
+                    suspend_timeout: None,
+                },
+                Instant::now(),
+            );
+            let lifecycle = install_native_session_lifecycle(
+                &broker,
+                &session,
+                frame_builder.host().onboarding_active(),
+            );
+            let active = lifecycle.snapshot().expect("active native session");
+            let mut backend = SpyBackend::default();
+
+            apply_session_transition(
+                SessionTransition::Locked,
+                &mut backend,
+                None,
+                Some(&lifecycle),
+                &mut ScreenDimmer::default(),
+            );
+            let locked = lifecycle.snapshot().expect("synchronous lock revoke");
+            assert_eq!(
+                locked.liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Inactive
+            );
+            assert!(locked.generation > active.generation);
+
+            apply_session_transition(
+                SessionTransition::Unlocked,
+                &mut backend,
+                None,
+                Some(&lifecycle),
+                &mut ScreenDimmer::default(),
+            );
+            let unlocked = lifecycle.snapshot().expect("fresh unlock");
+            assert_eq!(
+                unlocked.liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Active
+            );
+            assert!(unlocked.generation > locked.generation);
+            assert_eq!(unlocked.epoch, active.epoch);
+            drop(broker);
+            wait_for_local_session_worker_teardown(&lifecycle);
+        });
+    }
+
+    #[test]
+    fn native_consent_deferred_install_publishes_before_continuation() {
+        const TEST: &str = "compositor::native::tests::native_consent_deferred_install_publishes_before_continuation";
+        run_isolated_native_consent_test(TEST, || {
+            let mut deferred = true;
+            assert!(take_deferred_peer_sync_activation(&mut deferred, false));
+            let frame_builder = FrameBuilder::new((800, 600));
+            let broker = spawn_session_collab_broker(&frame_builder.chrome_handle(), None)
+                .expect("spawn deferred collaboration broker");
+            let session = SessionManager::new(
+                IdleConfig {
+                    blank_timeout: None,
+                    lock_timeout: None,
+                    suspend_timeout: None,
+                },
+                Instant::now(),
+            );
+            let lifecycle = install_native_session_lifecycle(
+                &broker,
+                &session,
+                frame_builder.host().onboarding_active(),
+            );
+            assert_eq!(
+                lifecycle
+                    .snapshot()
+                    .expect("deferred native state")
+                    .liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Active,
+                "the deferred broker must publish current native state before launch preparation"
+            );
+            drop(broker);
+            wait_for_local_session_worker_teardown(&lifecycle);
+        });
+    }
+
+    #[test]
+    fn native_consent_logout_closes_before_loop_exit() {
+        const TEST: &str =
+            "compositor::native::tests::native_consent_logout_closes_before_loop_exit";
+        run_isolated_native_consent_test(TEST, || {
+            let frame_builder = FrameBuilder::new((800, 600));
+            let broker = spawn_session_collab_broker(&frame_builder.chrome_handle(), None)
+                .expect("spawn native collaboration broker");
+            let lifecycle = broker.local_session_lifecycle();
+            lifecycle.publish_native_state(false, false);
+            close_native_session_authority(Some(&lifecycle));
+            assert_eq!(
+                lifecycle.snapshot().expect("logout close").liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Closed
+            );
+            drop(broker);
+            wait_for_local_session_worker_teardown(&lifecycle);
+        });
+    }
+
+    /// A window that set its own icon reports it as its tab's artwork.
+    #[test]
+    fn state_dump_reports_the_artwork_each_window_tab_paints() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let surface = 0x51c0_0001;
+        let mut tab = 0;
+        fb.with_chrome(|chrome| {
+            tab = crate::shell::tab_binding::adopt_toplevel(
+                &mut chrome.tree_mut(),
+                surface,
+                Some("org.example.UnlistedGame".into()),
+            );
+            chrome.bump();
+        });
+        let pixels = vello::peniko::ImageData {
+            data: vello::peniko::Blob::new(std::sync::Arc::new(vec![0; 16 * 16 * 4])),
+            format: vello::peniko::ImageFormat::Rgba8,
+            alpha_type: vello::peniko::ImageAlphaType::AlphaPremultiplied,
+            width: 16,
+            height: 16,
+        };
+        crate::compositor::toplevel_icon::set(
+            surface,
+            1,
+            Some(crate::compositor::toplevel_icon::ToplevelIcon::Pixels(
+                std::sync::Arc::new(vec![pixels]),
+            )),
+        );
+        let state = FrameBuilderControlState {
+            fb: &fb,
+            doc: None,
+            shares: None,
+            lock: None,
+        };
+        let icons = state.chrome_state_json()["tab_icons"].clone();
+        crate::compositor::toplevel_icon::forget(surface);
+        let row = icons
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["tab"] == tab))
+            .unwrap_or_else(|| panic!("the window's tab reports artwork: {icons}"));
+        assert!(
+            row["icon"]
+                .as_str()
+                .is_some_and(|key| key.starts_with(&format!("toplevel:{surface}:"))),
+            "{row}"
+        );
     }
 }
 
@@ -11254,6 +14229,32 @@ fn reconcile_surface_output_memberships(
     send_surface_output_changes(state, output_globals, changes);
 }
 
+/// What one synthetic touchpad edge means to `tracker`, as the DRM
+/// runtime asks it of every libinput gesture event.
+fn feed_touchpad_edge(
+    tracker: &mut crate::compositor::backend::drm::gestures::GestureTracker,
+    edge: crate::shell::test_control::TouchpadEdge,
+) -> Option<crate::compositor::backend::drm::gestures::GestureAction> {
+    use crate::shell::test_control::TouchpadEdge;
+    match edge {
+        TouchpadEdge::SwipeBegin { fingers } => {
+            tracker.swipe_begin(fingers);
+            None
+        }
+        TouchpadEdge::SwipeUpdate { dx, dy } => tracker.swipe_update(dx, dy),
+        TouchpadEdge::SwipeEnd { cancelled } => tracker.swipe_end_with_cancel(cancelled),
+        TouchpadEdge::PinchBegin { fingers } => {
+            tracker.pinch_begin(fingers);
+            None
+        }
+        TouchpadEdge::PinchUpdate { scale } => tracker.pinch_update(scale),
+        TouchpadEdge::PinchEnd => {
+            tracker.pinch_end();
+            None
+        }
+    }
+}
+
 /// Perform the navigation a claimed touchpad gesture resolved to — a second
 /// way to ask for something the shell already does, not a parallel model.
 fn apply_shell_gesture(
@@ -11276,57 +14277,145 @@ fn apply_shell_gesture(
         }
         _ => {}
     }
-    frame_builder.with_chrome(|st| match action {
+    match action {
+        GestureAction::SwitchStrip(dir) => {
+            frame_builder.with_chrome(|st| {
+                st.switch_strip(dir);
+            });
+        }
         GestureAction::SwitchWorkspace(dir) => {
-            st.switch_workspace(dir);
+            let mut switched = false;
+            frame_builder.with_chrome(|st| {
+                switched = st.switch_workspace(dir);
+            });
+            if switched {
+                frame_builder.host_mut().start_workspace_switch_frames();
+            }
+        }
+        GestureAction::ShowOverview => {
+            frame_builder.with_chrome(|st| {
+                if !st.overlays.overview {
+                    st.overlays.overview = true;
+                    st.bump();
+                }
+            });
+            frame_builder.host_mut().latch_overview_transition();
+        }
+        GestureAction::HideOverview => {
+            frame_builder.with_chrome(|st| {
+                if st.overlays.overview {
+                    st.overlays.overview = false;
+                    st.bump();
+                }
+            });
+            frame_builder.host_mut().latch_overview_transition();
         }
         // Handled (and returned on) above; a panic here would take down the
         // whole session for a gesture that already did its job.
         GestureAction::StripPanUpdate { .. } | GestureAction::StripPanEnd { .. } => {}
-        GestureAction::ShowOverview => {
-            if !st.overlays.overview {
-                st.overlays.overview = true;
-                st.bump();
-            }
-        }
-        GestureAction::HideOverview => {
-            if st.overlays.overview {
-                st.overlays.overview = false;
-                st.bump();
-            }
-        }
-    });
+    }
 }
 
 /// Resolve an xdg fullscreen request to one live backend output and paint it
-/// above the normal tiled scene.  The requested `wl_output` wins; if it was
+/// above the normal tiled scene.  A compositor pin (the presenter view beside
+/// an audience surface) wins, then the requested `wl_output`; if it was
 /// removed, use the output currently containing the window's centre, then the
 /// first live output as a deterministic hotplug fallback.
+/// Super+F on a Tilo window covers the output, including the wheel.
+/// Hosted Tilo apps are xdg clients too; sending them a protocol
+/// fullscreen never sets `chrome.fullscreen_group` (W07). Maximize
+/// (Super+M) stays beside the wheel. A focused xdg surface with no
+/// window group still takes the protocol path.
+fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder) {
+    use smithay::wayland::shell::xdg::XdgShellHandler;
+    if frame.host_mut().toggle_focused_group_fullscreen() {
+        return;
+    }
+    let toplevel = state.client_input.keyboard_focus().and_then(|surface_id| {
+        state
+            .xdg_shell_state
+            .toplevel_surfaces()
+            .iter()
+            .find(|toplevel| {
+                crate::compositor::state::surface_id(toplevel.wl_surface()) == surface_id
+            })
+            .cloned()
+            .map(|toplevel| (surface_id, toplevel))
+    });
+    let Some((surface_id, toplevel)) = toplevel else {
+        return;
+    };
+    if state
+        .fullscreen_target
+        .as_ref()
+        .is_some_and(|target| target.surface_id == surface_id)
+    {
+        state.unfullscreen_request(toplevel);
+    } else {
+        state.fullscreen_request(toplevel, None);
+    }
+}
+
+/// Tell colour-managed clients what each output displays: the HDR signal of
+/// an output driven in HDR, SDR otherwise. Surfaces are asked to render in
+/// HDR only while every output is HDR, since an SDR output can show an HDR
+/// surface only tone-mapped.
+fn publish_output_colors(state: &State, backend: &dyn crate::compositor::backend::Backend) {
+    use crate::wayland::color_management::OutputDescription;
+    let outputs = backend.outputs();
+    let described: Vec<_> = outputs
+        .iter()
+        .map(|output| {
+            let description = backend
+                .output_hdr(output.id)
+                .map(|hdr| OutputDescription::hdr_pq(&hdr.display, hdr.sdr_white_nits));
+            (output.id, description)
+        })
+        .collect();
+    state.color_manager.update_outputs(|resource| {
+        let id = output_globals::output_id_of(resource)?;
+        described
+            .iter()
+            .find_map(|(output, description)| (*output == id).then_some(*description))
+            .flatten()
+    });
+    let preferred = match described.as_slice() {
+        [(_, Some(first)), rest @ ..] if rest.iter().all(|(_, d)| d.is_some()) => *first,
+        _ => OutputDescription::sdr(),
+    };
+    state.color_manager.set_preferred(preferred);
+}
+
+/// Place the fullscreen client, if any, and return the output it covers.
 fn reconcile_fullscreen_overlay(
     state: &mut State,
     frame: &mut FrameBuilder,
     globals: &output_globals::OutputGlobals,
     outputs: &[crate::compositor::backend::Output],
-) {
+) -> Option<crate::compositor::backend::OutputId> {
     let Some(target) = state.fullscreen_target.as_mut() else {
         frame.set_fullscreen_surface(None);
-        return;
+        return None;
     };
-    let requested_id = target
-        .requested_output
-        .as_ref()
-        .and_then(|output| globals.id_for_resource(output));
+    let requested_id = target.pinned_output.or_else(|| {
+        target
+            .requested_output
+            .as_ref()
+            .and_then(|output| globals.id_for_resource(output))
+    });
     let current_rect = frame.foreign_surface_rect(target.surface_id);
     let centre = current_rect.map(|rect| rect.center());
     let output = select_fullscreen_output(requested_id, centre, outputs);
     let Some(output) = output else {
         frame.set_fullscreen_surface(None);
-        return;
+        return None;
     };
     // Logical, like every other configure: a 2x output's fullscreen client
     // is asked for half its pixels and renders them at scale 2.
     let size = size_to_signed(output.logical_size());
-    if target.configured_size != Some(size) {
+    // A compositor-placed presenter view is sized through its pinned
+    // placement by the ordinary configure pass, never told it is fullscreen.
+    if target.pinned_output.is_none() && target.configured_size != Some(size) {
         target.surface.with_pending_state(|pending| {
             pending.states.set(
                 smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
@@ -11338,6 +14427,7 @@ fn reconcile_fullscreen_overlay(
     }
     let rect = output.logical_rect();
     frame.set_fullscreen_surface(Some((target.surface_id, "Fullscreen".to_string(), rect)));
+    Some(output.id)
 }
 
 fn select_fullscreen_output(
@@ -11409,25 +14499,25 @@ mod vt_chord_tests {
     }
 
     #[test]
-    fn ctrl_alt_f_maps_to_the_matching_vt() {
-        let m = mods(ModifiersState::CONTROL | ModifiersState::ALT);
-        assert_eq!(
-            vt_switch_chord(&key(NamedKey::F1, ElementState::Pressed), m),
-            Some(1)
-        );
-        assert_eq!(
-            vt_switch_chord(&key(NamedKey::F3, ElementState::Pressed), m),
-            Some(3),
-            "Ctrl+Alt+F3 is the one the seat diagnosis tells people to use"
-        );
-        assert_eq!(
-            vt_switch_chord(&key(NamedKey::F12, ElementState::Pressed), m),
-            Some(12)
-        );
-    }
-
-    #[test]
-    fn either_modifier_alone_is_not_the_chord() {
+    fn ctrl_alt_f_press_alone_is_the_vt_switch_chord() {
+        // Phase `ctrl_alt_f_maps_to_the_matching_vt`.
+        {
+            let m = mods(ModifiersState::CONTROL | ModifiersState::ALT);
+            assert_eq!(
+                vt_switch_chord(&key(NamedKey::F1, ElementState::Pressed), m),
+                Some(1)
+            );
+            assert_eq!(
+                vt_switch_chord(&key(NamedKey::F3, ElementState::Pressed), m),
+                Some(3),
+                "Ctrl+Alt+F3 is the one the seat diagnosis tells people to use"
+            );
+            assert_eq!(
+                vt_switch_chord(&key(NamedKey::F12, ElementState::Pressed), m),
+                Some(12)
+            );
+        }
+        // Phase `either_modifier_alone_is_not_the_chord`.
         // Alt+F4 closes a window on every desktop; claiming it as a VT switch would be a spectacular regression.
         assert_eq!(
             vt_switch_chord(
@@ -11450,29 +14540,27 @@ mod vt_chord_tests {
             ),
             None
         );
-    }
-
-    #[test]
-    fn only_the_press_switches() {
-        // Acting on the release too would switch twice per chord.
-        let m = mods(ModifiersState::CONTROL | ModifiersState::ALT);
-        assert_eq!(
-            vt_switch_chord(&key(NamedKey::F2, ElementState::Released), m),
-            None
-        );
-    }
-
-    #[test]
-    fn other_keys_with_the_modifiers_held_are_not_vt_switches() {
-        let m = mods(ModifiersState::CONTROL | ModifiersState::ALT);
-        assert_eq!(
-            vt_switch_chord(&key(NamedKey::Delete, ElementState::Pressed), m),
-            None
-        );
-        assert_eq!(
-            vt_switch_chord(&key(NamedKey::Tab, ElementState::Pressed), m),
-            None
-        );
+        // Phase `only_the_press_switches`.
+        {
+            // Acting on the release too would switch twice per chord.
+            let m = mods(ModifiersState::CONTROL | ModifiersState::ALT);
+            assert_eq!(
+                vt_switch_chord(&key(NamedKey::F2, ElementState::Released), m),
+                None
+            );
+        }
+        // Phase `other_keys_with_the_modifiers_held_are_not_vt_switches`.
+        {
+            let m = mods(ModifiersState::CONTROL | ModifiersState::ALT);
+            assert_eq!(
+                vt_switch_chord(&key(NamedKey::Delete, ElementState::Pressed), m),
+                None
+            );
+            assert_eq!(
+                vt_switch_chord(&key(NamedKey::Tab, ElementState::Pressed), m),
+                None
+            );
+        }
     }
 
     fn character(c: &str) -> WindowEvent {
@@ -11572,11 +14660,37 @@ mod vt_chord_tests {
             route(&character("l"), ModifiersState::SUPER, false),
             PriorityRoute::LockSession
         );
+        assert_eq!(
+            route(
+                &key(NamedKey::NumLock, ElementState::Pressed),
+                ModifiersState::SHIFT | ModifiersState::ALT,
+                false
+            ),
+            PriorityRoute::ToggleMouseKeys
+        );
+        assert_eq!(
+            route(&key(NamedKey::NumLock, ElementState::Pressed), none, false),
+            PriorityRoute::Continue,
+            "a bare Num Lock is the client's"
+        );
+        assert_eq!(
+            route(
+                &key(NamedKey::NumLock, ElementState::Pressed),
+                ModifiersState::SHIFT | ModifiersState::ALT,
+                true
+            ),
+            PriorityRoute::LockScreen,
+            "the lock keeps the chord"
+        );
         assert_eq!(route(&character("a"), none, false), PriorityRoute::Continue);
     }
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod gesture_wireup_tests {
     use super::{apply_shell_gesture, backend_nested_loop_uses_edge_wake, refresh_mhz_of};
     use crate::compositor::backend::drm::gestures::GestureAction;
@@ -11590,102 +14704,134 @@ mod gesture_wireup_tests {
     }
 
     #[test]
-    fn a_swipe_up_switches_the_workspace_the_chrome_is_on() {
-        let mut fb = builder();
-        // A second workspace to switch to — a one-workspace tree has nowhere to
-        // go, so the assertion would pass vacuously. The new one is active, appended last, so "up" is where we came from.
-        fb.with_chrome(|st| {
-            st.add_workspace("second");
-        });
-        let before = fb.chrome().tree().desktop.active;
-        // What a three-finger swipe up resolves to — same value `gestures::swipe_action` produces for an upward delta.
-        apply_shell_gesture(&mut fb, GestureAction::SwitchWorkspace(-1));
-        let after = fb.chrome().tree().desktop.active;
-        assert_ne!(
-            before, after,
-            "a three-finger swipe must move the active workspace, not just resolve to an intent"
-        );
-    }
-
-    #[test]
-    fn a_four_finger_swipe_opens_and_closes_the_overview() {
-        let mut fb = builder();
-        assert!(!fb.chrome().overlays.overview);
-        apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
-        assert!(fb.chrome().overlays.overview);
-        apply_shell_gesture(&mut fb, GestureAction::HideOverview);
-        assert!(!fb.chrome().overlays.overview);
-    }
-
-    #[test]
-    fn showing_an_already_open_overview_is_a_no_op() {
-        // The gesture fires once per swipe; a second swipe in the same direction must not bump the revision for nothing.
-        let mut fb = builder();
-        apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
-        let revision = fb.chrome().revision;
-        apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
-        assert_eq!(fb.chrome().revision, revision);
-    }
-
-    #[test]
-    fn a_backend_with_no_display_advertises_no_refresh_rate() {
-        // The headless backend has no display, so `wl_output` falls back to the conventional rate rather than zero.
-        let backend = HeadlessBackend::new(800, 600).expect("headless backend");
-        assert_eq!(refresh_mhz_of(&backend as &dyn Backend), None);
-    }
-
-    #[test]
-    fn a_refresh_interval_becomes_millihertz() {
-        struct Paced(std::time::Duration);
-        impl Backend for Paced {
-            fn submit_frame(&mut self, _s: &vello::Scene, _o: OutputId) {}
-            fn poll_events(&mut self, _cb: &mut dyn FnMut(BackendEvent)) {}
-            fn outputs(&self) -> &[Output] {
-                &[]
-            }
-            fn refresh_interval(&self) -> Option<std::time::Duration> {
-                Some(self.0)
-            }
+    fn gestures_drive_workspace_switch_and_overview() {
+        // Phase `a_swipe_up_switches_the_workspace_the_chrome_is_on`.
+        {
+            let mut fb = builder();
+            // A second workspace to switch to — a one-workspace tree has nowhere to
+            // go, so the assertion would pass vacuously. The new one is active, appended last, so "up" is where we came from.
+            fb.with_chrome(|st| {
+                st.add_workspace("second");
+            });
+            let before = fb.chrome().tree().desktop.active;
+            // What a four-finger swipe up resolves to — same value `gestures::swipe_action` produces for an upward delta.
+            apply_shell_gesture(&mut fb, GestureAction::SwitchWorkspace(-1));
+            let after = fb.chrome().tree().desktop.active;
+            assert_ne!(
+                before, after,
+                "a four-finger swipe must move the active workspace, not just resolve to an intent"
+            );
         }
-        let sixty = Paced(std::time::Duration::from_nanos(16_666_667));
-        assert_eq!(refresh_mhz_of(&sixty as &dyn Backend), Some(60_000));
-        // 59.94 Hz must not round to 60 000 — the whole reason DRM derives its interval from raw mode timing.
-        let ntsc = Paced(std::time::Duration::from_nanos(16_683_333));
-        assert_eq!(refresh_mhz_of(&ntsc as &dyn Backend), Some(59_940));
+        // Phase `a_three_finger_vertical_swipe_focuses_the_neighbouring_strip`.
+        {
+            let mut fb = builder();
+            fb.with_chrome(|st| {
+                let mut tree = st.tree_mut();
+                let ws = tree.desktop.active_workspace_mut().expect("a workspace");
+                ws.strips.push(crate::shell::state::Strip::new(
+                    crate::shell::state::StripId(9_000),
+                    "Below".to_owned(),
+                ));
+                drop(tree);
+                st.bump();
+            });
+            let workspace = fb.chrome().tree().desktop.active;
+            let (_, focused) = fb.chrome().strip_focus();
+            apply_shell_gesture(&mut fb, GestureAction::SwitchStrip(1));
+            assert_eq!(
+                fb.chrome().strip_focus().1,
+                focused + 1,
+                "a three-finger swipe down must focus the strip below, as Super+↓ does"
+            );
+            assert_eq!(
+                fb.chrome().tree().desktop.active,
+                workspace,
+                "a strip switch stays on the workspace"
+            );
+        }
+        // Phase `a_pinch_opens_and_closes_the_overview`.
+        {
+            let mut fb = builder();
+            assert!(!fb.chrome().overlays.overview);
+            apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
+            assert!(fb.chrome().overlays.overview);
+            apply_shell_gesture(&mut fb, GestureAction::HideOverview);
+            assert!(!fb.chrome().overlays.overview);
+        }
+        // Phase `showing_an_already_open_overview_is_a_no_op`.
+        {
+            // The gesture fires once per swipe; a second swipe in the same direction must not bump the revision for nothing.
+            let mut fb = builder();
+            apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
+            let revision = fb.chrome().revision;
+            apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
+            assert_eq!(fb.chrome().revision, revision);
+        }
     }
 
     #[test]
-    fn drm_nested_loop_readiness_is_coalesced_to_one_outer_wake() {
-        let source = include_str!("native.rs");
-        assert!(
-            backend_nested_loop_uses_edge_wake(source),
-            "the nested DRM calloop fd is only a wake token; level readiness can spin the outer loop thousands of times after the inner source was drained"
-        );
+    fn backend_refresh_rate_is_advertised_in_millihertz() {
+        // Phase `a_backend_with_no_display_advertises_no_refresh_rate`.
+        {
+            // The headless backend has no display, so `wl_output` falls back to the conventional rate rather than zero.
+            let backend = HeadlessBackend::new(800, 600).expect("headless backend");
+            assert_eq!(refresh_mhz_of(&backend as &dyn Backend), None);
+        }
+        // Phase `a_refresh_interval_becomes_millihertz`.
+        {
+            struct Paced(std::time::Duration);
+            impl Backend for Paced {
+                fn submit_frame(&mut self, _s: &vello::Scene, _o: OutputId) {}
+                fn poll_events(&mut self, _cb: &mut dyn FnMut(BackendEvent)) {}
+                fn outputs(&self) -> &[Output] {
+                    &[]
+                }
+                fn refresh_interval(&self) -> Option<std::time::Duration> {
+                    Some(self.0)
+                }
+            }
+            let sixty = Paced(std::time::Duration::from_nanos(16_666_667));
+            assert_eq!(refresh_mhz_of(&sixty as &dyn Backend), Some(60_000));
+            // 59.94 Hz must not round to 60 000 — the whole reason DRM derives its interval from raw mode timing.
+            let ntsc = Paced(std::time::Duration::from_nanos(16_683_333));
+            assert_eq!(refresh_mhz_of(&ntsc as &dyn Backend), Some(59_940));
+        }
     }
 
-    /// A normal logout must unwind the backend, event loop and libseat
-    /// handles. Unlinking the public sockets is not enough: terminating the
-    /// process from inside `run` skips those destructors and can leave the
-    /// display manager unable to acquire the physical seat.
     #[test]
-    fn ordinary_logout_returns_from_run_instead_of_exiting_the_process() {
-        let source = include_str!("native.rs");
-        let run = source
-            .split_once("pub fn run() {")
-            .expect("native run entry point")
-            .1
-            .split_once("/// Session-owned ambient-light loop")
-            .expect("end of native run entry point")
-            .0;
+    fn session_loop_wakes_once_per_readiness_and_exits_cleanly() {
+        // Phase `drm_nested_loop_readiness_is_coalesced_to_one_outer_wake`.
+        {
+            let source = include_str!("native.rs");
+            assert!(
+                backend_nested_loop_uses_edge_wake(source),
+                "the nested DRM calloop fd is only a wake token; level readiness can spin the outer loop thousands of times after the inner source was drained"
+            );
+        }
+        // Phase `ordinary_logout_returns_from_run_instead_of_exiting_the_process`.
+        // A normal logout must unwind the backend, event loop and libseat
+        // handles. Unlinking the public sockets is not enough: terminating the
+        // process from inside `run` skips those destructors and can leave the
+        // display manager unable to acquire the physical seat.
+        {
+            let source = include_str!("native.rs");
+            let run = source
+                .split_once("pub fn run() {")
+                .expect("native run entry point")
+                .1
+                .split_once("/// Session-owned ambient-light loop")
+                .expect("end of native run entry point")
+                .0;
 
-        assert!(
-            !run.contains("std::process::exit(0)"),
-            "ordinary logout must return so DRM/libseat resources unwind"
-        );
-        assert!(
-            run.contains("drop(display);") && run.contains("drop(notif_handle);"),
-            "service endpoints must still be torn down before returning"
-        );
+            assert!(
+                !run.contains("std::process::exit(0)"),
+                "ordinary logout must return so DRM/libseat resources unwind"
+            );
+            assert!(
+                run.contains("drop(display);") && run.contains("drop(notif_handle);"),
+                "service endpoints must still be torn down before returning"
+            );
+        }
     }
 }
 
@@ -11757,86 +14903,92 @@ mod output_geometry_tests {
         );
     }
 
-    /// A single monitor maps to one display at the origin — the case every screenshot and test runs in.
     #[test]
-    fn single_output_maps_to_one_display() {
-        let outs = [Output::new(OutputId(0), (3840, 2160), 1.0)];
-        let geo = output_geometry(&outs);
-        assert_eq!(geo.len(), 1);
-        assert_eq!(
-            (geo[0].x, geo[0].width, geo[0].height),
-            (0.0, 3840.0, 2160.0)
-        );
-    }
-
-    /// Two monitors side by side stay two displays, each with its own width —
-    /// what stops a full-width window spanning both (combined geometry here is 3520px, neither display is that wide).
-    #[test]
-    fn side_by_side_outputs_stay_separate_displays() {
-        let outs = [
-            Output::new(OutputId(0), (1600, 900), 1.0),
-            Output {
-                id: OutputId(1),
-                position: (1600, 0),
-                size: (1920, 1080),
-                scale: 1.0,
-                transform: settings_store::hardware::OutputTransform::Normal,
-                color_profile: None,
-                refresh_mhz: None,
-                logical_position: (1600, 0),
-                identity: crate::compositor::backend::OutputIdentity::default(),
-            },
-        ];
-        let geo = output_geometry(&outs);
-        assert_eq!(geo.len(), 2);
-        assert_eq!((geo[0].x, geo[0].width), (0.0, 1600.0));
-        assert_eq!((geo[1].x, geo[1].width), (1600.0, 1920.0));
-    }
-
-    /// A connector mid-modeset reports 0x0; a strip can't place a window on it, so it must not appear as a display.
-    #[test]
-    fn zero_sized_outputs_are_dropped() {
-        let outs = [
-            Output::new(OutputId(0), (1600, 900), 1.0),
-            Output::new(OutputId(1), (0, 0), 1.0),
-        ];
-        assert_eq!(output_geometry(&outs).len(), 1);
-    }
-
-    #[test]
-    fn fullscreen_prefers_requested_output_then_rehomes_after_hotplug() {
-        let outputs = [
-            Output::new(OutputId(0), (1600, 900), 1.0),
-            Output {
-                id: OutputId(1),
-                position: (1600, 0),
-                size: (1920, 1080),
-                scale: 1.0,
-                transform: settings_store::hardware::OutputTransform::Normal,
-                color_profile: None,
-                refresh_mhz: None,
-                logical_position: (1600, 0),
-                identity: crate::compositor::backend::OutputIdentity::default(),
-            },
-        ];
-        let centre = vello::kurbo::Point::new(2000.0, 400.0);
-        assert_eq!(
-            select_fullscreen_output(Some(OutputId(1)), Some(centre), &outputs).map(|out| out.id),
-            Some(OutputId(1)),
-            "requested wl_output wins over the old tiled placement"
-        );
-        let remaining = &outputs[..1];
-        assert_eq!(
-            select_fullscreen_output(Some(OutputId(1)), Some(centre), remaining).map(|out| out.id),
-            Some(OutputId(0)),
-            "removed requested output deterministically rehomes fullscreen"
-        );
-        assert_eq!(
-            select_fullscreen_output(None, Some(vello::kurbo::Point::new(300.0, 400.0)), &outputs)
+    fn output_geometry_maps_outputs_to_displays_and_rehomes_fullscreen() {
+        // Phase `single_output_maps_to_one_display`.
+        // A single monitor maps to one display at the origin — the case every screenshot and test runs in.
+        {
+            let outs = [Output::new(OutputId(0), (3840, 2160), 1.0)];
+            let geo = output_geometry(&outs);
+            assert_eq!(geo.len(), 1);
+            assert_eq!(
+                (geo[0].x, geo[0].width, geo[0].height),
+                (0.0, 3840.0, 2160.0)
+            );
+        }
+        // Phase `side_by_side_outputs_stay_separate_displays`.
+        // Two monitors side by side stay two displays, each with its own width —
+        // what stops a full-width window spanning both (combined geometry here is 3520px, neither display is that wide).
+        {
+            let outs = [
+                Output::new(OutputId(0), (1600, 900), 1.0),
+                Output {
+                    id: OutputId(1),
+                    position: (1600, 0),
+                    size: (1920, 1080),
+                    scale: 1.0,
+                    transform: settings_store::hardware::OutputTransform::Normal,
+                    color_profile: None,
+                    refresh_mhz: None,
+                    logical_position: (1600, 0),
+                    identity: crate::compositor::backend::OutputIdentity::default(),
+                },
+            ];
+            let geo = output_geometry(&outs);
+            assert_eq!(geo.len(), 2);
+            assert_eq!((geo[0].x, geo[0].width), (0.0, 1600.0));
+            assert_eq!((geo[1].x, geo[1].width), (1600.0, 1920.0));
+        }
+        // Phase `zero_sized_outputs_are_dropped`.
+        // A connector mid-modeset reports 0x0; a strip can't place a window on it, so it must not appear as a display.
+        {
+            let outs = [
+                Output::new(OutputId(0), (1600, 900), 1.0),
+                Output::new(OutputId(1), (0, 0), 1.0),
+            ];
+            assert_eq!(output_geometry(&outs).len(), 1);
+        }
+        // Phase `fullscreen_prefers_requested_output_then_rehomes_after_hotplug`.
+        {
+            let outputs = [
+                Output::new(OutputId(0), (1600, 900), 1.0),
+                Output {
+                    id: OutputId(1),
+                    position: (1600, 0),
+                    size: (1920, 1080),
+                    scale: 1.0,
+                    transform: settings_store::hardware::OutputTransform::Normal,
+                    color_profile: None,
+                    refresh_mhz: None,
+                    logical_position: (1600, 0),
+                    identity: crate::compositor::backend::OutputIdentity::default(),
+                },
+            ];
+            let centre = vello::kurbo::Point::new(2000.0, 400.0);
+            assert_eq!(
+                select_fullscreen_output(Some(OutputId(1)), Some(centre), &outputs)
+                    .map(|out| out.id),
+                Some(OutputId(1)),
+                "requested wl_output wins over the old tiled placement"
+            );
+            let remaining = &outputs[..1];
+            assert_eq!(
+                select_fullscreen_output(Some(OutputId(1)), Some(centre), remaining)
+                    .map(|out| out.id),
+                Some(OutputId(0)),
+                "removed requested output deterministically rehomes fullscreen"
+            );
+            assert_eq!(
+                select_fullscreen_output(
+                    None,
+                    Some(vello::kurbo::Point::new(300.0, 400.0)),
+                    &outputs
+                )
                 .map(|out| out.id),
-            Some(OutputId(0)),
-            "no requested output uses the window's owning display"
-        );
+                Some(OutputId(0)),
+                "no requested output uses the window's owning display"
+            );
+        }
     }
 }
 
@@ -11867,206 +15019,238 @@ mod external_floating_security_tests {
     }
 
     #[test]
-    fn authenticated_app_region_is_translated_and_clipped_to_its_surface() {
-        let app = Rect::new(300.0, 80.0, 1100.0, 680.0);
-        let source = FloatingSource::AppRegion {
-            app_id: "so.tilo.chat".into(),
-            region: Rect::new(720.0, 20.0, 880.0, 220.0),
-        };
-        let translated = translate_external_source(source, "so.tilo.chat", app).unwrap();
-        let FloatingSource::AppRegion { region, .. } = translated else {
-            panic!("app region must remain an app region");
-        };
-        assert_eq!(region, Rect::new(1020.0, 100.0, 1100.0, 300.0));
+    fn external_floating_identity_is_authenticated_and_unspoofable() {
+        // Phase `authenticated_app_region_is_translated_and_clipped_to_its_surface`.
+        {
+            let app = Rect::new(300.0, 80.0, 1100.0, 680.0);
+            let source = FloatingSource::AppRegion {
+                app_id: "so.tilo.chat".into(),
+                region: Rect::new(720.0, 20.0, 880.0, 220.0),
+            };
+            let translated = translate_external_source(source, "so.tilo.chat", app).unwrap();
+            let FloatingSource::AppRegion { region, .. } = translated else {
+                panic!("app region must remain an app region");
+            };
+            assert_eq!(region, Rect::new(1020.0, 100.0, 1100.0, 300.0));
 
-        let semantic = FloatingSource::AppElement {
-            app_id: "so.tilo.chat".into(),
-            element_id: "call:shared-screen".into(),
-            region: Rect::new(40.0, 30.0, 440.0, 280.0),
-        };
-        let translated = translate_external_source(semantic, "so.tilo.chat", app).unwrap();
-        let FloatingSource::AppElement {
-            app_id,
-            element_id,
-            region,
-        } = translated
-        else {
-            panic!("semantic app element must retain its identity");
-        };
-        assert_eq!(app_id, "so.tilo.chat");
-        assert_eq!(element_id, "call:shared-screen");
-        assert_eq!(region, Rect::new(340.0, 110.0, 740.0, 360.0));
-    }
-
-    #[test]
-    fn external_mirror_identity_round_trips_connection_and_public_id() {
-        let internal = external_floating_id(42, "browser.media-pip:main");
-        assert_eq!(
-            external_floating_parts(&internal),
-            Some((42, "browser.media-pip:main"))
-        );
-        assert!(external_floating_parts("capture-mirror:7").is_none());
-    }
-
-    #[test]
-    fn external_client_cannot_spoof_another_app_or_surface_id() {
-        let app = Rect::new(300.0, 80.0, 1100.0, 680.0);
-        assert!(
-            translate_external_source(
-                FloatingSource::AppRegion {
-                    app_id: "so.tilo.mail".into(),
-                    region: Rect::new(0.0, 0.0, 200.0, 120.0),
-                },
-                "so.tilo.chat",
-                app,
-            )
-            .is_err()
-        );
-        assert!(
-            translate_external_source(
-                FloatingSource::Surface { surface_id: 42 },
-                "so.tilo.chat",
-                app,
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn app_owned_native_surface_accepts_local_source_but_not_spoofed_identity() {
-        let source = FloatingSource::AppRegion {
-            app_id: "so.tilo.chat".into(),
-            region: Rect::new(420.0, 80.0, 780.0, 300.0),
-        };
-        assert!(validate_app_owned_source(&source, "so.tilo.chat").is_ok());
-        assert_eq!(
-            app_owned_source_region(
-                &source,
-                "so.tilo.chat",
-                vello::kurbo::Size::new(1_000.0, 700.0)
-            ),
-            Some(Rect::new(420.0, 80.0, 780.0, 300.0))
-        );
-        assert!(validate_app_owned_source(&source, "so.tilo.maps").is_err());
-        assert!(
-            validate_app_owned_source(&FloatingSource::Surface { surface_id: 42 }, "so.tilo.chat")
+            let semantic = FloatingSource::AppElement {
+                app_id: "so.tilo.chat".into(),
+                element_id: "call:shared-screen".into(),
+                region: Rect::new(40.0, 30.0, 440.0, 280.0),
+            };
+            let translated = translate_external_source(semantic, "so.tilo.chat", app).unwrap();
+            let FloatingSource::AppElement {
+                app_id,
+                element_id,
+                region,
+            } = translated
+            else {
+                panic!("semantic app element must retain its identity");
+            };
+            assert_eq!(app_id, "so.tilo.chat");
+            assert_eq!(element_id, "call:shared-screen");
+            assert_eq!(region, Rect::new(340.0, 110.0, 740.0, 360.0));
+        }
+        // Phase `external_mirror_identity_round_trips_connection_and_public_id`.
+        {
+            let internal = external_floating_id(42, "browser.media-pip:main");
+            assert_eq!(
+                external_floating_parts(&internal),
+                Some((42, "browser.media-pip:main"))
+            );
+            assert!(external_floating_parts("capture-mirror:7").is_none());
+        }
+        // Phase `external_client_cannot_spoof_another_app_or_surface_id`.
+        {
+            let app = Rect::new(300.0, 80.0, 1100.0, 680.0);
+            assert!(
+                translate_external_source(
+                    FloatingSource::AppRegion {
+                        app_id: "so.tilo.mail".into(),
+                        region: Rect::new(0.0, 0.0, 200.0, 120.0),
+                    },
+                    "so.tilo.chat",
+                    app,
+                )
                 .is_err()
-        );
+            );
+            assert!(
+                translate_external_source(
+                    FloatingSource::Surface { surface_id: 42 },
+                    "so.tilo.chat",
+                    app,
+                )
+                .is_err()
+            );
+        }
+        // Phase `app_owned_native_surface_accepts_local_source_but_not_spoofed_identity`.
+        {
+            let source = FloatingSource::AppRegion {
+                app_id: "so.tilo.chat".into(),
+                region: Rect::new(420.0, 80.0, 780.0, 300.0),
+            };
+            assert!(validate_app_owned_source(&source, "so.tilo.chat").is_ok());
+            assert_eq!(
+                app_owned_source_region(
+                    &source,
+                    "so.tilo.chat",
+                    vello::kurbo::Size::new(1_000.0, 700.0)
+                ),
+                Some(Rect::new(420.0, 80.0, 780.0, 300.0))
+            );
+            assert!(validate_app_owned_source(&source, "so.tilo.maps").is_err());
+            assert!(
+                validate_app_owned_source(
+                    &FloatingSource::Surface { surface_id: 42 },
+                    "so.tilo.chat"
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]
-    fn app_owned_transfer_keeps_visible_soft_chrome_at_the_parent_edge() {
-        let source = FloatingSource::AppElement {
-            app_id: "so.tilo.chat".into(),
-            element_id: "active-call".into(),
-            // A live drag has already carried most of the content beyond the
-            // primary window. Its final visible strip is still a valid source
-            // and must not make the transfer proxy disappear altogether.
-            region: Rect::new(1_180.0, 80.0, 1_420.0, 260.0),
-        };
-        let presentation = Rect::new(1_156.0, 32.0, 1_444.0, 352.0);
-        let visible = app_owned_transfer_region(
-            &source,
-            Some(presentation),
-            "so.tilo.chat",
-            vello::kurbo::Size::new(1_200.0, 700.0),
-        )
-        .expect("the visible decorated edge becomes the warm-up proxy");
-        assert_eq!(visible, Rect::new(1_156.0, 32.0, 1_200.0, 352.0));
-    }
-
-    #[test]
-    fn app_owned_transfer_prefers_decoration_over_content_only_source() {
-        let source = FloatingSource::AppRegion {
-            app_id: "so.tilo.maps".into(),
-            region: Rect::new(720.0, 120.0, 1_080.0, 276.0),
-        };
-        let window = Rect::new(712.0, 112.0, 1_088.0, 284.0);
-        assert_eq!(
-            app_owned_transfer_region(
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn floating_handoff_geometry_moves_chrome_and_content_as_one_shape() {
+        // Phase `app_owned_transfer_keeps_visible_soft_chrome_at_the_parent_edge`.
+        {
+            let source = FloatingSource::AppElement {
+                app_id: "so.tilo.chat".into(),
+                element_id: "active-call".into(),
+                // A live drag has already carried most of the content beyond the
+                // primary window. Its final visible strip is still a valid source
+                // and must not make the transfer proxy disappear altogether.
+                region: Rect::new(1_180.0, 80.0, 1_420.0, 260.0),
+            };
+            let presentation = Rect::new(1_156.0, 32.0, 1_444.0, 352.0);
+            let visible = app_owned_transfer_region(
                 &source,
+                Some(presentation),
+                "so.tilo.chat",
+                vello::kurbo::Size::new(1_200.0, 700.0),
+            )
+            .expect("the visible decorated edge becomes the warm-up proxy");
+            assert_eq!(visible, Rect::new(1_156.0, 32.0, 1_200.0, 352.0));
+        }
+        // Phase `app_owned_transfer_prefers_decoration_over_content_only_source`.
+        {
+            let source = FloatingSource::AppRegion {
+                app_id: "so.tilo.maps".into(),
+                region: Rect::new(720.0, 120.0, 1_080.0, 276.0),
+            };
+            let window = Rect::new(712.0, 112.0, 1_088.0, 284.0);
+            assert_eq!(
+                app_owned_transfer_region(
+                    &source,
+                    Some(window),
+                    "so.tilo.maps",
+                    vello::kurbo::Size::new(1_280.0, 720.0),
+                ),
                 Some(window),
-                "so.tilo.maps",
-                vello::kurbo::Size::new(1_280.0, 720.0),
-            ),
-            Some(window),
-            "title, controls, silhouette and shadow must not vanish during adoption"
-        );
-    }
-
-    #[test]
-    fn app_owned_handoff_translates_content_and_soft_window_without_a_jump() {
-        let app = Rect::new(262.0, 124.0, 1_572.0, 892.0);
-        let local_content = Rect::new(938.0, 56.0, 1_266.0, 233.0);
-        let local_window = Rect::new(918.0, 8.0, 1_286.0, 397.0);
-        let desktop_content = app_local_to_desktop(local_content, app);
-        let desktop_window = app_local_to_desktop(local_window, app);
-        assert_eq!(
-            desktop_content.origin(),
-            vello::kurbo::Point::new(1_200.0, 180.0)
-        );
-        assert_eq!(
-            desktop_window.origin(),
-            vello::kurbo::Point::new(1_180.0, 132.0)
-        );
-        assert_eq!(desktop_content.size(), local_content.size());
-        assert_eq!(desktop_window.size(), local_window.size());
-    }
-
-    #[test]
-    fn clamping_moves_soft_window_and_interactive_content_as_one_shape() {
-        let desktop = Rect::new(0.0, 0.0, 1_600.0, 900.0);
-        let window = Rect::new(1_700.0, 40.0, 2_092.0, 292.0);
-        let content = Rect::new(1_708.0, 48.0, 2_084.0, 284.0);
-        let (clamped_window, clamped_content) =
-            clamp_external_floating_geometry(window, content, desktop);
-        assert_eq!(
-            clamped_window.origin() - window.origin(),
-            clamped_content.origin() - content.origin()
-        );
-        assert_eq!(
-            clamped_content - clamped_window.origin().to_vec2(),
-            Rect::new(8.0, 8.0, 384.0, 244.0)
-        );
-        assert_eq!(clamped_window.x0, desktop.x1 - 64.0);
-    }
-
-    #[test]
-    fn touching_outputs_remain_one_continuous_drag_surface() {
-        let outputs = [
-            output(0, (0, 0), (1_920, 1_080), 2.0),
-            output(1, (1_920, 0), (2_560, 1_440), 1.0),
-        ];
-        let window = Rect::new(1_760.0, 220.0, 2_160.0, 480.0);
-        let content = Rect::new(1_768.0, 228.0, 2_152.0, 472.0);
-        assert_eq!(
-            clamp_external_floating_geometry_to_outputs(window, content, &outputs, (4_480, 1_440),),
-            (window, content),
-            "crossing a real shared edge must not magnetise the float to either display"
-        );
-    }
-
-    #[test]
-    fn l_shaped_desktop_gap_cannot_swallow_a_floating_surface() {
-        let outputs = [
-            output(0, (0, 0), (1_920, 1_080), 2.0),
-            output(1, (1_920, 400), (2_560, 1_440), 1.0),
-        ];
-        let window = Rect::new(2_050.0, 100.0, 2_450.0, 280.0);
-        let content = Rect::new(2_058.0, 108.0, 2_442.0, 272.0);
-        let (clamped_window, clamped_content) =
-            clamp_external_floating_geometry_to_outputs(window, content, &outputs, (4_480, 1_840));
-        assert_eq!(clamped_window.y1, 464.0);
-        assert_eq!(
-            clamped_window
-                .intersect(Rect::new(1_920.0, 400.0, 4_480.0, 1_840.0))
-                .height(),
-            64.0
-        );
-        assert_eq!(
-            clamped_window.origin() - window.origin(),
-            clamped_content.origin() - content.origin(),
-            "soft chrome and its interactive content must re-home as one shape"
-        );
+                "title, controls, silhouette and shadow must not vanish during adoption"
+            );
+        }
+        // Phase `app_owned_handoff_translates_content_and_soft_window_without_a_jump`.
+        {
+            let app = Rect::new(262.0, 124.0, 1_572.0, 892.0);
+            let local_content = Rect::new(938.0, 56.0, 1_266.0, 233.0);
+            let local_window = Rect::new(918.0, 8.0, 1_286.0, 397.0);
+            let desktop_content = app_local_to_desktop(local_content, app);
+            let desktop_window = app_local_to_desktop(local_window, app);
+            assert_eq!(
+                desktop_content.origin(),
+                vello::kurbo::Point::new(1_200.0, 180.0)
+            );
+            assert_eq!(
+                desktop_window.origin(),
+                vello::kurbo::Point::new(1_180.0, 132.0)
+            );
+            assert_eq!(desktop_content.size(), local_content.size());
+            assert_eq!(desktop_window.size(), local_window.size());
+        }
+        // Phase `clamping_moves_soft_window_and_interactive_content_as_one_shape`.
+        {
+            let desktop = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+            let window = Rect::new(1_700.0, 40.0, 2_092.0, 292.0);
+            let content = Rect::new(1_708.0, 48.0, 2_084.0, 284.0);
+            let (clamped_window, clamped_content) =
+                clamp_external_floating_geometry(window, content, desktop);
+            assert_eq!(
+                clamped_window.origin() - window.origin(),
+                clamped_content.origin() - content.origin()
+            );
+            assert_eq!(
+                clamped_content - clamped_window.origin().to_vec2(),
+                Rect::new(8.0, 8.0, 384.0, 244.0)
+            );
+            assert_eq!(clamped_window.x0, desktop.x1 - 64.0);
+        }
+        // Phase `touching_outputs_remain_one_continuous_drag_surface`.
+        {
+            let outputs = [
+                output(0, (0, 0), (1_920, 1_080), 2.0),
+                output(1, (1_920, 0), (2_560, 1_440), 1.0),
+            ];
+            let window = Rect::new(1_760.0, 220.0, 2_160.0, 480.0);
+            let content = Rect::new(1_768.0, 228.0, 2_152.0, 472.0);
+            assert_eq!(
+                clamp_external_floating_geometry_to_outputs(
+                    window,
+                    content,
+                    &outputs,
+                    (4_480, 1_440),
+                ),
+                (window, content),
+                "crossing a real shared edge must not magnetise the float to either display"
+            );
+        }
+        // Phase `l_shaped_desktop_gap_cannot_swallow_a_floating_surface`.
+        {
+            let outputs = [
+                output(0, (0, 0), (1_920, 1_080), 2.0),
+                output(1, (1_920, 400), (2_560, 1_440), 1.0),
+            ];
+            let window = Rect::new(2_050.0, 100.0, 2_450.0, 280.0);
+            let content = Rect::new(2_058.0, 108.0, 2_442.0, 272.0);
+            let (clamped_window, clamped_content) = clamp_external_floating_geometry_to_outputs(
+                window,
+                content,
+                &outputs,
+                (4_480, 1_840),
+            );
+            assert_eq!(clamped_window.y1, 464.0);
+            assert_eq!(
+                clamped_window
+                    .intersect(Rect::new(1_920.0, 400.0, 4_480.0, 1_840.0))
+                    .height(),
+                64.0
+            );
+            assert_eq!(
+                clamped_window.origin() - window.origin(),
+                clamped_content.origin() - content.origin(),
+                "soft chrome and its interactive content must re-home as one shape"
+            );
+        }
     }
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;
+
+#[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "viewport geometry fixtures compare exactly the values the compositor laid out"
+)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the fixture owns the compositor's lock and tree guards for the whole scenario, as the socket tests' do"
+)]
+#[path = "native_agent_seats_tests.rs"]
+mod agent_seats_tests;

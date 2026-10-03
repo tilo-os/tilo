@@ -95,6 +95,7 @@ struct Results {
     sequence: u64,
     last_progress: Option<(usize, &'static str, u64)>,
     error: bool,
+    publication_error: Option<tilo_files::native::atomic::PublicationError>,
 }
 struct Control {
     cancel: AtomicBool,
@@ -111,11 +112,17 @@ impl FsJob {
     }
     /// Drain this job's bounded updates. Durable host reports survive consumption.
     /// # Errors
-    /// Returns `StoreUnavailable` if terminal receipt durability failed.
+    /// After queued updates drain, returns the first owned `Publication` error
+    /// once, then sticky `StoreUnavailable` on later polls. The error may outlive
+    /// this job, but carries no writer lock: keep the `OperationOwner` alive before
+    /// manually retrying its commit. A retry does not resume or repair bookkeeping.
     pub fn poll(&mut self) -> Result<Vec<FsUpdate>, FsError> {
         let mut results = lock(&self.control.results)?;
         if results.error && results.queue.is_empty() {
-            return Err(FsError::StoreUnavailable);
+            return Err(results
+                .publication_error
+                .take()
+                .map_or(FsError::StoreUnavailable, FsError::Publication));
         }
         Ok(results.queue.drain(..).collect())
     }
@@ -309,6 +316,7 @@ fn admit(
             sequence: 0,
             last_progress: None,
             error: false,
+            publication_error: None,
         }),
     });
     #[cfg(test)]
@@ -466,6 +474,12 @@ impl Context<'_> {
             record.acknowledged = false;
         }
         let saved = self.work.owner.checkpoint(&self.work.id, &step);
+        // The first publication failure owns its phase/commit obligation. A
+        // subsequent poisoned-store save cannot replace it with a generic code.
+        let error = match (error, saved) {
+            (original @ FsError::Publication(_), _) | (original, Ok(())) => original,
+            (_, Err(followup)) => followup,
+        };
         ItemOutcome {
             item: self.item,
             state: match kind {
@@ -476,7 +490,7 @@ impl Context<'_> {
                 RecoveryKind::PublishedSourceRetained => ItemState::CopiedSourceRetained,
             },
             destination,
-            error: Some(saved.err().unwrap_or(error)),
+            error: Some(error),
             recoveries: vec![recovery],
         }
     }
@@ -502,7 +516,7 @@ fn execute(work: Work) {
         if index == 1 {
             ctx.barrier("before-item-two");
         }
-        let outcome = match ctx.cancelled() {
+        let mut outcome = match ctx.cancelled() {
             Err(e) => ctx.failure(e),
             Ok(()) => match &work.request {
                 Request::Operation(operation) => perform(&mut ctx, operation),
@@ -526,9 +540,16 @@ fn execute(work: Work) {
             ItemState::Cancelled => cancelled = cancelled.saturating_add(1),
             _ => failed = failed.saturating_add(1),
         }
-        if work.owner.item(&work.id, &outcome).is_err() {
+        if let Err(error) = work.owner.item(&work.id, &outcome) {
             if let Ok(mut results) = work.control.results.lock() {
                 results.error = true;
+                let first = match outcome.error.take() {
+                    Some(original @ FsError::Publication(_)) => original,
+                    _ => error,
+                };
+                if let FsError::Publication(publication) = first {
+                    results.publication_error.get_or_insert(publication);
+                }
             }
             return;
         }
@@ -538,9 +559,12 @@ fn execute(work: Work) {
             return;
         }
     }
-    if work.owner.finish(&work.id).is_err() {
+    if let Err(error) = work.owner.finish(&work.id) {
         if let Ok(mut results) = work.control.results.lock() {
             results.error = true;
+            if let FsError::Publication(publication) = error {
+                results.publication_error.get_or_insert(publication);
+            }
         }
         return;
     }
@@ -567,13 +591,33 @@ fn perform(ctx: &mut Context<'_>, operation: &FsOperation) -> ItemOutcome {
             parent,
             name,
             conflict,
-        } => copy_publish(ctx, None, parent, name, *conflict, None, false),
+        } => copy_publish(
+            ctx,
+            PublishRequest {
+                source: None,
+                into: parent,
+                name,
+                policy: *conflict,
+                bytes: None,
+                moving: false,
+            },
+        ),
         FsOperation::CreateFile {
             parent,
             name,
             bytes,
             conflict,
-        } => copy_publish(ctx, None, parent, name, *conflict, Some(bytes), false),
+        } => copy_publish(
+            ctx,
+            PublishRequest {
+                source: None,
+                into: parent,
+                name,
+                policy: *conflict,
+                bytes: Some(bytes),
+                moving: false,
+            },
+        ),
         FsOperation::Copy {
             entries: _,
             into,
@@ -587,12 +631,14 @@ fn perform(ctx: &mut Context<'_>, operation: &FsOperation) -> ItemOutcome {
                 let name = source.name.clone();
                 copy_publish(
                     ctx,
-                    Some((entry, source)),
-                    into,
-                    &name,
-                    *conflict,
-                    None,
-                    false,
+                    PublishRequest {
+                        source: Some((entry, source)),
+                        into,
+                        name: &name,
+                        policy: *conflict,
+                        bytes: None,
+                        moving: false,
+                    },
                 )
             }
             Err(e) => Err(e),
@@ -792,13 +838,33 @@ fn move_entry(
                 if e.raw_os_error() == Some(rustix::io::Errno::XDEV.raw_os_error()) =>
             {
                 let name = source.name.clone();
-                return copy_publish(ctx, Some((entry, source)), into, &name, policy, None, true);
+                return copy_publish(
+                    ctx,
+                    PublishRequest {
+                        source: Some((entry, source)),
+                        into,
+                        name: &name,
+                        policy,
+                        bytes: None,
+                        moving: true,
+                    },
+                );
             }
             Err(FsError::Io(ref e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(e),
         }
     }
     Err(FsError::Conflict)
+}
+/// One item to publish as `name` in `into`: a copy (or, `moving`, a move) of `source`, or
+/// without one a new file holding `bytes`, or a new directory when there are none.
+struct PublishRequest<'a> {
+    source: Option<(&'a GrantedEntry, MutationSource)>,
+    into: &'a DirectoryGrant,
+    name: &'a EntryName,
+    policy: ConflictPolicy,
+    bytes: Option<&'a Vec<u8>>,
+    moving: bool,
 }
 #[allow(
     clippy::too_many_lines,
@@ -807,38 +873,25 @@ fn move_entry(
 )]
 fn copy_publish(
     ctx: &mut Context<'_>,
-    source: Option<(&GrantedEntry, MutationSource)>,
-    into: &DirectoryGrant,
-    name: &EntryName,
-    policy: ConflictPolicy,
-    bytes: Option<&Vec<u8>>,
-    moving: bool,
+    request: PublishRequest<'_>,
 ) -> Result<ItemOutcome, FsError> {
+    let PublishRequest {
+        into, name, moving, ..
+    } = request;
     let destination = ctx.session().mutation_directory(into)?;
     let right = if moving { FsRight::Move } else { FsRight::Copy };
-    let auth = source.as_ref().map(|(entry, _)| (*entry, right));
-    if let Some((_, source)) = &source {
+    let auth = request.source.as_ref().map(|(entry, _)| (*entry, right));
+    if let Some((_, source)) = &request.source {
         ctx.effect(auth, Some(into), || reject_ancestry(source, &destination))?;
     }
     let stage_name =
         EntryName::new(format!(".tilo-stage-{}-{}", ctx.work.id.native(), ctx.item).into())?;
     let mut step = ctx.work.owner.step(&ctx.work.id, ctx.item)?;
-    step.source = source.as_ref().map(|(_, s)| s.locator.clone());
+    step.source = request.source.as_ref().map(|(_, s)| s.locator.clone());
     step.stage = Some(ctx.session().mutation_locator(into, &stage_name, None)?);
     step.destination = Some(ctx.session().mutation_locator(into, name, None)?);
     ctx.checkpoint(&mut step, "Admitted")?;
-    let result = copy_publish_staged(
-        ctx,
-        source,
-        into,
-        name,
-        policy,
-        bytes,
-        moving,
-        &destination,
-        &stage_name,
-        &mut step,
-    );
+    let result = copy_publish_staged(ctx, request, &destination, &stage_name, &mut step);
     match result {
         Err(error) if ctx.stage_created && !ctx.stage_published => {
             if let Some(stage) = step.stage.as_mut() {
@@ -885,38 +938,35 @@ fn copy_publish(
     }
 }
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     clippy::needless_pass_by_value,
     reason = "one owner encloses every post-creation exit while the inner scope tracks publication/removal"
 )]
 fn copy_publish_staged(
     ctx: &mut Context<'_>,
-    source: Option<(&GrantedEntry, MutationSource)>,
-    into: &DirectoryGrant,
-    name: &EntryName,
-    policy: ConflictPolicy,
-    bytes: Option<&Vec<u8>>,
-    moving: bool,
+    request: PublishRequest<'_>,
     destination: &Dir,
     stage_name: &EntryName,
     step: &mut Step,
 ) -> Result<ItemOutcome, FsError> {
+    let PublishRequest {
+        source,
+        into,
+        name,
+        policy,
+        bytes,
+        moving,
+    } = request;
     let right = if moving { FsRight::Move } else { FsRight::Copy };
     let auth = source.as_ref().map(|(entry, _)| (*entry, right));
     let copied = if let Some((_, source)) = &source {
-        let mut count = 0;
-        copy_object(
-            ctx,
-            auth,
+        TreeCopy {
+            ctx: &mut *ctx,
+            source: auth,
             into,
-            &source.parent,
-            &source.name,
-            destination,
-            stage_name,
-            0,
-            &mut count,
-        )
+            count: 0,
+        }
+        .object(&source.parent, &source.name, destination, stage_name, 0)
     } else if let Some(bytes) = bytes {
         create_bytes(ctx, auth, into, destination, stage_name, bytes)
     } else {
@@ -1192,153 +1242,156 @@ fn create_bytes(
         sync_dir(parent)
     })
 }
-#[allow(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "one bounded recursion frame owns each file, directory or link copy"
-)]
-fn copy_object(
-    ctx: &mut Context<'_>,
-    source: Option<(&GrantedEntry, FsRight)>,
-    into: &DirectoryGrant,
-    from: &Dir,
-    name: &EntryName,
-    to: &Dir,
-    target: &EntryName,
-    depth: usize,
-    count: &mut usize,
-) -> Result<(), FsError> {
-    if depth > MAX_DEPTH || *count == MAX_TREE_ENTRIES {
-        return Err(FsError::LimitExceeded);
-    }
-    *count = count.checked_add(1).ok_or(FsError::LimitExceeded)?;
-    let metadata = ctx.effect(source, Some(into), || {
-        from.symlink_metadata(name.as_os_str()).map_err(io_error)
-    })?;
-    let identity = NativeIdentity::of(&metadata);
-    if metadata.is_symlink() {
-        ctx.effect(source, Some(into), || {
-            let contents = from
-                .read_link_contents(name.as_os_str())
-                .map_err(io_error)?;
-            check_named(from, name, identity)?;
-            rustix::fs::symlinkat(contents.as_os_str(), to, target.as_os_str())
-                .map_err(|e| io_error(e.into()))?;
-            Ok(())
+/// One bounded recursive copy of an object tree, every effect authorised as `source` within
+/// `into`; `count` is the entries copied so far.
+struct TreeCopy<'c, 'a> {
+    ctx: &'c mut Context<'a>,
+    source: Option<(&'c GrantedEntry, FsRight)>,
+    into: &'c DirectoryGrant,
+    count: usize,
+}
+impl TreeCopy<'_, '_> {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one bounded recursion frame owns each file, directory or link copy"
+    )]
+    fn object(
+        &mut self,
+        from: &Dir,
+        name: &EntryName,
+        to: &Dir,
+        target: &EntryName,
+        depth: usize,
+    ) -> Result<(), FsError> {
+        if depth > MAX_DEPTH || self.count == MAX_TREE_ENTRIES {
+            return Err(FsError::LimitExceeded);
+        }
+        self.count = self.count.checked_add(1).ok_or(FsError::LimitExceeded)?;
+        let metadata = self.ctx.effect(self.source, Some(self.into), || {
+            from.symlink_metadata(name.as_os_str()).map_err(io_error)
         })?;
-        if depth == 0 {
-            ctx.stage_created = true;
-            ctx.staged_identity = Some(NativeIdentity::of(
-                &to.symlink_metadata(target.as_os_str()).map_err(io_error)?,
-            ));
-        }
-        ctx.effect(source, Some(into), || sync_dir(to))?;
-        ctx.progress("copy")?;
-        return Ok(());
-    }
-    if !metadata.is_file() && !metadata.is_dir() {
-        return Err(FsError::Unsupported("special file copy"));
-    }
-    let input = ctx.effect(source, Some(into), || {
-        let input = open_object(from, name, metadata.is_dir())?;
-        if NativeIdentity::of(&input.metadata().map_err(io_error)?) != identity {
-            return Err(FsError::StaleEntry);
-        }
-        Ok(input)
-    })?;
-    if metadata.is_dir() {
-        let input = Dir::from_std_file(input.into_std());
-        ctx.effect(source, Some(into), || {
-            rustix::fs::mkdirat(
-                to,
-                target.as_os_str(),
-                rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR | rustix::fs::Mode::XUSR,
-            )
-            .map_err(|e| io_error(e.into()))
-        })?;
-        if depth == 0 {
-            ctx.stage_created = true;
-        }
-        let output = ctx.effect(source, Some(into), || {
-            Ok(Dir::from_std_file(
-                open_object(to, target, true)?.into_std(),
-            ))
-        })?;
-        if depth == 0 {
-            ctx.staged_identity = Some(NativeIdentity::of(
-                &output.dir_metadata().map_err(io_error)?,
-            ));
-        }
-        let mut entries = ctx.effect(source, Some(into), || input.entries().map_err(io_error))?;
-        loop {
-            let next = ctx.effect(source, Some(into), || {
-                entries.next().transpose().map_err(io_error)
-            })?;
-            let Some(next) = next else { break };
-            let child = EntryName::new(next.file_name())?;
-            copy_object(
-                ctx,
-                source,
-                into,
-                &input,
-                &child,
-                &output,
-                &child,
-                depth.saturating_add(1),
-                count,
-            )?;
-        }
-        ctx.effect(source, Some(into), || {
-            check_named(from, name, identity)?;
-            sync_dir(&output)?;
-            sync_dir(to)
-        })?;
-    } else {
-        let output = ctx.effect(source, Some(into), || create_file(to, target))?;
-        if depth == 0 {
-            ctx.stage_created = true;
-            ctx.staged_identity = Some(NativeIdentity::of(&output.metadata().map_err(io_error)?));
-        }
-        let mut buffer = vec![0; COPY_CHUNK];
-        let mut offset = 0;
-        loop {
-            #[cfg(test)]
-            if offset > 0 && ctx.work.hooks.copy_eio {
-                return Err(FsError::Io(rustix::io::Errno::IO.into()));
-            }
-            let read = ctx.effect(source, Some(into), || {
+        let identity = NativeIdentity::of(&metadata);
+        if metadata.is_symlink() {
+            self.ctx.effect(self.source, Some(self.into), || {
+                let contents = from
+                    .read_link_contents(name.as_os_str())
+                    .map_err(io_error)?;
                 check_named(from, name, identity)?;
-                rustix::io::pread(&input, &mut buffer, offset).map_err(|e| io_error(e.into()))
+                rustix::fs::symlinkat(contents.as_os_str(), to, target.as_os_str())
+                    .map_err(|e| io_error(e.into()))?;
+                Ok(())
             })?;
-            if read == 0 {
-                break;
+            if depth == 0 {
+                self.ctx.stage_created = true;
+                self.ctx.staged_identity = Some(NativeIdentity::of(
+                    &to.symlink_metadata(target.as_os_str()).map_err(io_error)?,
+                ));
             }
-            ctx.effect(source, Some(into), || {
-                write_chunk(
-                    &output,
-                    buffer.get(..read).ok_or(FsError::LimitExceeded)?,
-                    offset,
-                )
-            })?;
-            offset = offset
-                .checked_add(read as u64)
-                .ok_or(FsError::LimitExceeded)?;
-            ctx.bytes = ctx
-                .bytes
-                .checked_add(read as u64)
-                .ok_or(FsError::LimitExceeded)?;
-            ctx.progress("copy")?;
-            #[cfg(test)]
-            if offset == COPY_CHUNK as u64 || offset == metadata.len() {
-                ctx.barrier("after-chunk");
-            }
+            self.ctx
+                .effect(self.source, Some(self.into), || sync_dir(to))?;
+            self.ctx.progress("copy")?;
+            return Ok(());
         }
-        ctx.effect(source, Some(into), || {
-            output.sync_all().map_err(io_error)?;
-            sync_dir(to)
+        if !metadata.is_file() && !metadata.is_dir() {
+            return Err(FsError::Unsupported("special file copy"));
+        }
+        let input = self.ctx.effect(self.source, Some(self.into), || {
+            let input = open_object(from, name, metadata.is_dir())?;
+            if NativeIdentity::of(&input.metadata().map_err(io_error)?) != identity {
+                return Err(FsError::StaleEntry);
+            }
+            Ok(input)
         })?;
+        if metadata.is_dir() {
+            let input = Dir::from_std_file(input.into_std());
+            self.ctx.effect(self.source, Some(self.into), || {
+                rustix::fs::mkdirat(
+                    to,
+                    target.as_os_str(),
+                    rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR | rustix::fs::Mode::XUSR,
+                )
+                .map_err(|e| io_error(e.into()))
+            })?;
+            if depth == 0 {
+                self.ctx.stage_created = true;
+            }
+            let output = self.ctx.effect(self.source, Some(self.into), || {
+                Ok(Dir::from_std_file(
+                    open_object(to, target, true)?.into_std(),
+                ))
+            })?;
+            if depth == 0 {
+                self.ctx.staged_identity = Some(NativeIdentity::of(
+                    &output.dir_metadata().map_err(io_error)?,
+                ));
+            }
+            let mut entries = self.ctx.effect(self.source, Some(self.into), || {
+                input.entries().map_err(io_error)
+            })?;
+            loop {
+                let next = self.ctx.effect(self.source, Some(self.into), || {
+                    entries.next().transpose().map_err(io_error)
+                })?;
+                let Some(next) = next else { break };
+                let child = EntryName::new(next.file_name())?;
+                self.object(&input, &child, &output, &child, depth.saturating_add(1))?;
+            }
+            self.ctx.effect(self.source, Some(self.into), || {
+                check_named(from, name, identity)?;
+                sync_dir(&output)?;
+                sync_dir(to)
+            })?;
+        } else {
+            let output = self
+                .ctx
+                .effect(self.source, Some(self.into), || create_file(to, target))?;
+            if depth == 0 {
+                self.ctx.stage_created = true;
+                self.ctx.staged_identity =
+                    Some(NativeIdentity::of(&output.metadata().map_err(io_error)?));
+            }
+            let mut buffer = vec![0; COPY_CHUNK];
+            let mut offset = 0;
+            loop {
+                #[cfg(test)]
+                if offset > 0 && self.ctx.work.hooks.copy_eio {
+                    return Err(FsError::Io(rustix::io::Errno::IO.into()));
+                }
+                let read = self.ctx.effect(self.source, Some(self.into), || {
+                    check_named(from, name, identity)?;
+                    rustix::io::pread(&input, &mut buffer, offset).map_err(|e| io_error(e.into()))
+                })?;
+                if read == 0 {
+                    break;
+                }
+                self.ctx.effect(self.source, Some(self.into), || {
+                    write_chunk(
+                        &output,
+                        buffer.get(..read).ok_or(FsError::LimitExceeded)?,
+                        offset,
+                    )
+                })?;
+                offset = offset
+                    .checked_add(read as u64)
+                    .ok_or(FsError::LimitExceeded)?;
+                self.ctx.bytes = self
+                    .ctx
+                    .bytes
+                    .checked_add(read as u64)
+                    .ok_or(FsError::LimitExceeded)?;
+                self.ctx.progress("copy")?;
+                #[cfg(test)]
+                if offset == COPY_CHUNK as u64 || offset == metadata.len() {
+                    self.ctx.barrier("after-chunk");
+                }
+            }
+            self.ctx.effect(self.source, Some(self.into), || {
+                output.sync_all().map_err(io_error)?;
+                sync_dir(to)
+            })?;
+        }
+        Ok(())
     }
-    Ok(())
 }
 fn remove_object(parent: &Dir, name: &EntryName) -> Result<(), FsError> {
     let metadata = parent
@@ -1357,10 +1410,6 @@ struct VerifiedRemoval {
     content: Option<Fingerprint>,
     children: Vec<(EntryName, Self)>,
 }
-#[allow(
-    clippy::too_many_arguments,
-    reason = "source removal needs the verified grant, destination and rollback context together"
-)]
 fn remove_source_object(
     ctx: &Context<'_>,
     entry: &GrantedEntry,
@@ -1507,20 +1556,15 @@ fn fingerprint_with_tree(
     parent: &Dir,
     name: &EntryName,
 ) -> Result<(Fingerprint, VerifiedRemoval), FsError> {
-    let mut hasher = blake3::Hasher::new();
-    let mut length = 0;
-    let mut count = 0;
-    let verified = hash_object(
+    let mut walk = TreeFingerprint {
         ctx,
         source,
         into,
-        parent,
-        name,
-        &mut hasher,
-        &mut length,
-        0,
-        &mut count,
-    )?;
+        hash: blake3::Hasher::new(),
+        length: 0,
+        count: 0,
+    };
+    let verified = walk.object(parent, name, 0)?;
     let identity = NativeIdentity::of(
         &parent
             .symlink_metadata(name.as_os_str())
@@ -1532,163 +1576,171 @@ fn fingerprint_with_tree(
     Ok((
         Fingerprint {
             identity,
-            length,
-            digest: *hasher.finalize().as_bytes(),
+            length: walk.length,
+            digest: *walk.hash.finalize().as_bytes(),
         },
         verified,
     ))
 }
-#[allow(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "one bounded traversal produces both the content fingerprint and its exact removal set"
-)]
-fn hash_object(
-    ctx: &Context<'_>,
-    source: Option<(&GrantedEntry, FsRight)>,
-    into: &DirectoryGrant,
-    parent: &Dir,
-    name: &EntryName,
-    hash: &mut blake3::Hasher,
-    length: &mut u64,
-    depth: usize,
-    count: &mut usize,
-) -> Result<VerifiedRemoval, FsError> {
-    if depth > MAX_DEPTH || *count == MAX_TREE_ENTRIES {
-        return Err(FsError::LimitExceeded);
-    }
-    *count = count.checked_add(1).ok_or(FsError::LimitExceeded)?;
-    let metadata = ctx.effect(source, Some(into), || {
-        parent.symlink_metadata(name.as_os_str()).map_err(io_error)
-    })?;
-    let mut content = blake3::Hasher::new();
-    let initial_length = *length;
-    let mut children = Vec::new();
-    if metadata.is_symlink() {
-        let target = ctx.effect(source, Some(into), || {
-            parent
-                .read_link_contents(name.as_os_str())
-                .map_err(io_error)
+/// One bounded fingerprint walk over an object tree, every effect authorised as `source`
+/// within `into`: the whole-tree `hash`, the content `length` it covers, and the entries
+/// visited so far.
+struct TreeFingerprint<'c, 'a> {
+    ctx: &'c Context<'a>,
+    source: Option<(&'c GrantedEntry, FsRight)>,
+    into: &'c DirectoryGrant,
+    hash: blake3::Hasher,
+    length: u64,
+    count: usize,
+}
+impl TreeFingerprint<'_, '_> {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one bounded traversal produces both the content fingerprint and its exact removal set"
+    )]
+    fn object(
+        &mut self,
+        parent: &Dir,
+        name: &EntryName,
+        depth: usize,
+    ) -> Result<VerifiedRemoval, FsError> {
+        if depth > MAX_DEPTH || self.count == MAX_TREE_ENTRIES {
+            return Err(FsError::LimitExceeded);
+        }
+        self.count = self.count.checked_add(1).ok_or(FsError::LimitExceeded)?;
+        let metadata = self.ctx.effect(self.source, Some(self.into), || {
+            parent.symlink_metadata(name.as_os_str()).map_err(io_error)
         })?;
-        hash.update(b"link");
-        content.update(b"link");
-        hash.update(&(target.as_os_str().as_bytes().len() as u64).to_le_bytes());
-        content.update(&(target.as_os_str().as_bytes().len() as u64).to_le_bytes());
-        hash.update(target.as_os_str().as_bytes());
-        content.update(target.as_os_str().as_bytes());
-        *length = length
-            .checked_add(target.as_os_str().as_bytes().len() as u64)
-            .ok_or(FsError::LimitExceeded)?;
-    } else if metadata.is_file() {
-        hash.update(b"file");
-        content.update(b"file");
-        hash.update(&metadata.len().to_le_bytes());
-        content.update(&metadata.len().to_le_bytes());
-        let file = ctx.effect(source, Some(into), || {
-            let file = open_object(parent, name, false)?;
-            if NativeIdentity::of(&file.metadata().map_err(io_error)?)
-                != NativeIdentity::of(&metadata)
-            {
-                return Err(FsError::StaleEntry);
-            }
-            Ok(file)
-        })?;
-        let mut buffer = vec![0; COPY_CHUNK];
-        let mut offset = 0;
-        while offset < metadata.len() {
-            let len = usize::try_from(metadata.len().saturating_sub(offset).min(COPY_CHUNK as u64))
-                .map_err(|_| FsError::LimitExceeded)?;
-            let n = ctx.effect(source, Some(into), || {
-                rustix::io::pread(
-                    &file,
-                    buffer.get_mut(..len).ok_or(FsError::LimitExceeded)?,
-                    offset,
-                )
-                .map_err(|e| io_error(e.into()))
+        let mut content = blake3::Hasher::new();
+        let initial_length = self.length;
+        let mut children = Vec::new();
+        if metadata.is_symlink() {
+            let target = self.ctx.effect(self.source, Some(self.into), || {
+                parent
+                    .read_link_contents(name.as_os_str())
+                    .map_err(io_error)
             })?;
-            if n == 0 {
-                return Err(FsError::StaleEntry);
-            }
-            hash.update(buffer.get(..n).ok_or(FsError::LimitExceeded)?);
-            content.update(buffer.get(..n).ok_or(FsError::LimitExceeded)?);
-            offset = offset.checked_add(n as u64).ok_or(FsError::LimitExceeded)?;
-            *length = length.checked_add(n as u64).ok_or(FsError::LimitExceeded)?;
-        }
-        ctx.effect(source, Some(into), || {
-            let observed = file.metadata().map_err(io_error)?;
-            if observed.len() != metadata.len()
-                || observed.mtime() != metadata.mtime()
-                || observed.mtime_nsec() != metadata.mtime_nsec()
-            {
-                return Err(FsError::StaleEntry);
-            }
-            Ok(())
-        })?;
-    } else if metadata.is_dir() {
-        hash.update(b"dir");
-        let dir = ctx.effect(source, Some(into), || {
-            let dir = Dir::from_std_file(open_object(parent, name, true)?.into_std());
-            if NativeIdentity::of(&dir.dir_metadata().map_err(io_error)?)
-                != NativeIdentity::of(&metadata)
-            {
-                return Err(FsError::StaleEntry);
-            }
-            Ok(dir)
-        })?;
-        let mut entries = ctx.effect(source, Some(into), || dir.entries().map_err(io_error))?;
-        let mut names = Vec::new();
-        loop {
-            let next = ctx.effect(source, Some(into), || {
-                entries.next().transpose().map_err(io_error)
+            self.hash.update(b"link");
+            content.update(b"link");
+            self.hash
+                .update(&(target.as_os_str().as_bytes().len() as u64).to_le_bytes());
+            content.update(&(target.as_os_str().as_bytes().len() as u64).to_le_bytes());
+            self.hash.update(target.as_os_str().as_bytes());
+            content.update(target.as_os_str().as_bytes());
+            self.length = self
+                .length
+                .checked_add(target.as_os_str().as_bytes().len() as u64)
+                .ok_or(FsError::LimitExceeded)?;
+        } else if metadata.is_file() {
+            self.hash.update(b"file");
+            content.update(b"file");
+            self.hash.update(&metadata.len().to_le_bytes());
+            content.update(&metadata.len().to_le_bytes());
+            let file = self.ctx.effect(self.source, Some(self.into), || {
+                let file = open_object(parent, name, false)?;
+                if NativeIdentity::of(&file.metadata().map_err(io_error)?)
+                    != NativeIdentity::of(&metadata)
+                {
+                    return Err(FsError::StaleEntry);
+                }
+                Ok(file)
             })?;
-            let Some(next) = next else { break };
-            if names.len() >= MAX_TREE_ENTRIES.saturating_sub(*count) {
-                return Err(FsError::LimitExceeded);
+            let mut buffer = vec![0; COPY_CHUNK];
+            let mut offset = 0;
+            while offset < metadata.len() {
+                let len =
+                    usize::try_from(metadata.len().saturating_sub(offset).min(COPY_CHUNK as u64))
+                        .map_err(|_| FsError::LimitExceeded)?;
+                let n = self.ctx.effect(self.source, Some(self.into), || {
+                    rustix::io::pread(
+                        &file,
+                        buffer.get_mut(..len).ok_or(FsError::LimitExceeded)?,
+                        offset,
+                    )
+                    .map_err(|e| io_error(e.into()))
+                })?;
+                if n == 0 {
+                    return Err(FsError::StaleEntry);
+                }
+                self.hash
+                    .update(buffer.get(..n).ok_or(FsError::LimitExceeded)?);
+                content.update(buffer.get(..n).ok_or(FsError::LimitExceeded)?);
+                offset = offset.checked_add(n as u64).ok_or(FsError::LimitExceeded)?;
+                self.length = self
+                    .length
+                    .checked_add(n as u64)
+                    .ok_or(FsError::LimitExceeded)?;
             }
-            names.push(next.file_name());
-        }
-        names.sort();
-        for native in names {
-            hash.update(&(native.as_bytes().len() as u64).to_le_bytes());
-            hash.update(native.as_bytes());
-            let child = EntryName::new(native)?;
-            let verified = hash_object(
-                ctx,
-                source,
-                into,
-                &dir,
-                &child,
-                hash,
-                length,
-                depth.saturating_add(1),
-                count,
-            )?;
-            children.push((child, verified));
-        }
-        hash.update(b"end");
-    } else {
-        return Err(FsError::Unsupported("special staged object"));
-    }
-    ctx.effect(source, Some(into), || {
-        check_named(parent, name, NativeIdentity::of(&metadata))
-    })?;
-    Ok(VerifiedRemoval {
-        identity: NativeIdentity::of(&metadata),
-        length: metadata.len(),
-        modified: (metadata.mtime(), metadata.mtime_nsec()),
-        content: if metadata.is_dir() {
-            None
+            self.ctx.effect(self.source, Some(self.into), || {
+                let observed = file.metadata().map_err(io_error)?;
+                if observed.len() != metadata.len()
+                    || observed.mtime() != metadata.mtime()
+                    || observed.mtime_nsec() != metadata.mtime_nsec()
+                {
+                    return Err(FsError::StaleEntry);
+                }
+                Ok(())
+            })?;
+        } else if metadata.is_dir() {
+            self.hash.update(b"dir");
+            let dir = self.ctx.effect(self.source, Some(self.into), || {
+                let dir = Dir::from_std_file(open_object(parent, name, true)?.into_std());
+                if NativeIdentity::of(&dir.dir_metadata().map_err(io_error)?)
+                    != NativeIdentity::of(&metadata)
+                {
+                    return Err(FsError::StaleEntry);
+                }
+                Ok(dir)
+            })?;
+            let mut entries = self.ctx.effect(self.source, Some(self.into), || {
+                dir.entries().map_err(io_error)
+            })?;
+            let mut names = Vec::new();
+            loop {
+                let next = self.ctx.effect(self.source, Some(self.into), || {
+                    entries.next().transpose().map_err(io_error)
+                })?;
+                let Some(next) = next else { break };
+                if names.len() >= MAX_TREE_ENTRIES.saturating_sub(self.count) {
+                    return Err(FsError::LimitExceeded);
+                }
+                names.push(next.file_name());
+            }
+            names.sort();
+            for native in names {
+                self.hash
+                    .update(&(native.as_bytes().len() as u64).to_le_bytes());
+                self.hash.update(native.as_bytes());
+                let child = EntryName::new(native)?;
+                let verified = self.object(&dir, &child, depth.saturating_add(1))?;
+                children.push((child, verified));
+            }
+            self.hash.update(b"end");
         } else {
-            Some(Fingerprint {
-                identity: NativeIdentity::of(&metadata),
-                length: length
-                    .checked_sub(initial_length)
-                    .ok_or(FsError::LimitExceeded)?,
-                digest: *content.finalize().as_bytes(),
-            })
-        },
-        children,
-    })
+            return Err(FsError::Unsupported("special staged object"));
+        }
+        self.ctx.effect(self.source, Some(self.into), || {
+            check_named(parent, name, NativeIdentity::of(&metadata))
+        })?;
+        Ok(VerifiedRemoval {
+            identity: NativeIdentity::of(&metadata),
+            length: metadata.len(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()),
+            content: if metadata.is_dir() {
+                None
+            } else {
+                Some(Fingerprint {
+                    identity: NativeIdentity::of(&metadata),
+                    length: self
+                        .length
+                        .checked_sub(initial_length)
+                        .ok_or(FsError::LimitExceeded)?,
+                    digest: *content.finalize().as_bytes(),
+                })
+            },
+            children,
+        })
+    }
 }
 fn restore(
     ctx: &Context<'_>,
@@ -1796,9 +1848,321 @@ pub(super) mod tests {
     use std::{
         fs,
         sync::{Arc, Condvar, Mutex},
-        time::{Duration, Instant},
+        time::Instant,
     };
     use tempfile::TempDir;
+
+    fn assert_publication(error: &FsError, expected: tilo_files::native::atomic::PublicationState) {
+        let source = std::error::Error::source(error).expect("owned publication source");
+        let publication = source
+            .downcast_ref::<tilo_files::native::atomic::PublicationError>()
+            .expect("typed publication error");
+        assert_eq!(publication.state(), expected);
+    }
+
+    #[test]
+    fn receipt_publication_initial_admission_phases() {
+        use tilo_files::native::atomic::{
+            PublicationState as State,
+            test_support::{Checkpoint, with_failure},
+        };
+        for (fault, state) in [
+            (Checkpoint::BeforeDataFlush, State::NotPublished),
+            (Checkpoint::PublishSubmitted, State::PublicationUnknown),
+            (Checkpoint::AfterPublish, State::PublicationUnknown),
+            (Checkpoint::BeforeCommit, State::PublishedDurabilityUnknown),
+        ] {
+            let f = Fixture::new();
+            fs::write(f.source("a"), b"source").unwrap();
+            let failed = with_failure(fault, || f.session.start(f.copy("a")));
+            let error = failed
+                .err()
+                .expect("receipt publication must fail before job admission");
+            assert_publication(&error, state);
+            assert_eq!(f.store.submissions.load(Ordering::SeqCst), 0);
+            assert!(!f.dest("a").exists());
+            if state == State::NotPublished {
+                let mut job = f.session.start(f.copy("a")).unwrap();
+                drain(&mut job);
+            } else {
+                assert!(matches!(
+                    f.session.start(f.copy("a")),
+                    Err(FsError::StoreUnavailable)
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn receipt_publication_worker_preserves_first_failure_and_drains_updates() {
+        use tilo_files::native::atomic::{PublicationState as State, test_support::Checkpoint};
+        for phase in ["Staged", "Published", "Item", "Finished"] {
+            for (fault, expected) in [
+                (Checkpoint::BeforeDataFlush, State::NotPublished),
+                (Checkpoint::PublishSubmitted, State::PublicationUnknown),
+                (Checkpoint::AfterPublish, State::PublicationUnknown),
+                (Checkpoint::BeforeCommit, State::PublishedDurabilityUnknown),
+            ] {
+                let f = Fixture::new();
+                fs::write(f.source("a"), b"source").unwrap();
+                f.hooks(Hooks {
+                    publication_failure: Some((phase, fault)),
+                    ..Hooks::default()
+                });
+                let mut job = f.session.start(f.copy("a")).unwrap();
+                let id = job.operation_id();
+                let deadline = tilo_test_env::hang_deadline();
+                let mut updates = vec![];
+                let error = loop {
+                    match job.poll() {
+                        Ok(batch) => updates.extend(batch),
+                        Err(error) => break error,
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "terminal receipt failure was not surfaced"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                };
+                assert_publication(&error, expected);
+                assert!(matches!(job.poll(), Err(FsError::StoreUnavailable)));
+                assert!(
+                    !updates
+                        .iter()
+                        .any(|u| matches!(u, FsUpdate::Finished { .. }))
+                );
+                assert!(!f.store.checkpoints(&id).unwrap().iter().any(|p| p == phase));
+                assert!(matches!(
+                    f.store.admit(uuid::Uuid::nil(), 1),
+                    Err(FsError::StoreUnavailable)
+                ));
+                assert_eq!(fs::read(f.source("a")).unwrap(), b"source");
+                if phase != "Staged" {
+                    assert_eq!(fs::read(f.dest("a")).unwrap(), b"source");
+                }
+                if phase == "Finished" {
+                    assert!(updates.iter().any(|u| matches!(u, FsUpdate::Item(_))));
+                }
+                if phase == "Staged" {
+                    assert_eq!(fs::read(f.stage()).unwrap(), b"source");
+                }
+                drop(job);
+                // The original error can outlive the job. A successful manual
+                // commit while retaining the owner cannot repair its bookkeeping.
+                if fault == Checkpoint::BeforeCommit {
+                    let FsError::Publication(publication) = error else {
+                        panic!("publication lost")
+                    };
+                    publication.retry_commit().unwrap();
+                    assert!(matches!(
+                        f.store.admit(uuid::Uuid::nil(), 1),
+                        Err(FsError::StoreUnavailable)
+                    ));
+                } else {
+                    drop(error);
+                }
+                let f = f.reopen();
+                if phase == "Staged" {
+                    assert_eq!(fs::read(f.stage()).unwrap(), b"source");
+                    assert_eq!(
+                        f.store.report(&id).unwrap().state,
+                        OperationState::RecoveryRequired
+                    );
+                } else {
+                    assert_eq!(fs::read(f.dest("a")).unwrap(), b"source");
+                    if phase == "Published" {
+                        assert_eq!(
+                            f.store.report(&id).unwrap().state,
+                            OperationState::RecoveryRequired
+                        );
+                        assert_eq!(
+                            f.store.recoveries().unwrap()[0].kind,
+                            RecoveryKind::PublishedSourceRetained
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn receipt_publication_later_failure_drains_already_queued_success_first() {
+        let f = Fixture::new();
+        fs::write(f.source("a"), b"first").unwrap();
+        fs::write(f.source("b"), b"second").unwrap();
+        let barrier = Arc::new(Barrier::default());
+        let _release = Release(Arc::clone(&barrier));
+        f.hooks(Hooks {
+            barrier: Some(("before-item-two", Arc::clone(&barrier))),
+            ..Hooks::default()
+        });
+        let mut job = f
+            .session
+            .start(FsOperation::Copy {
+                entries: vec![f.entry("a"), f.entry("b")],
+                into: f.dst.clone(),
+                conflict: ConflictPolicy::Fail,
+            })
+            .unwrap();
+        barrier.entered();
+        f.store.hooks.lock().unwrap().publication_failure = Some((
+            "Item",
+            tilo_files::native::atomic::test_support::Checkpoint::BeforeCommit,
+        ));
+        barrier.release();
+        let deadline = tilo_test_env::hang_deadline();
+        // Wait for the terminal error without consuming the queued first item.
+        while !job.control.results.lock().unwrap().error {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let updates = job.poll().unwrap();
+        assert!(updates.iter().any(|u| matches!(u, FsUpdate::Item(item) if item.item == 0 && item.state == ItemState::Completed)));
+        assert!(
+            !updates
+                .iter()
+                .any(|u| matches!(u, FsUpdate::Finished { .. }))
+        );
+        assert_publication(
+            &job.poll().unwrap_err(),
+            tilo_files::native::atomic::PublicationState::PublishedDurabilityUnknown,
+        );
+        assert!(matches!(job.poll(), Err(FsError::StoreUnavailable)));
+        assert_eq!(fs::read(f.dest("a")).unwrap(), b"first");
+        assert_eq!(fs::read(f.dest("b")).unwrap(), b"second");
+    }
+
+    #[test]
+    fn receipt_publication_native_move_effect_is_not_undone_by_unpublished_receipt() {
+        let f = Fixture::new();
+        fs::write(f.source("a"), b"moved").unwrap();
+        f.hooks(Hooks {
+            publication_failure: Some((
+                "Published",
+                tilo_files::native::atomic::test_support::Checkpoint::BeforeDataFlush,
+            )),
+            ..Hooks::default()
+        });
+        let mut job = f.session.start(f.moving("a")).unwrap();
+        let id = job.operation_id();
+        let deadline = tilo_test_env::hang_deadline();
+        let error = loop {
+            if let Err(error) = job.poll() {
+                break error;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        assert_publication(
+            &error,
+            tilo_files::native::atomic::PublicationState::NotPublished,
+        );
+        assert!(!f.source("a").exists());
+        assert_eq!(fs::read(f.dest("a")).unwrap(), b"moved");
+        drop(job);
+        drop(error);
+        let f = f.reopen();
+        assert_eq!(
+            f.store.recoveries().unwrap()[0].kind,
+            RecoveryKind::UnknownNativeCommit
+        );
+        assert_eq!(
+            f.store.report(&id).unwrap().items[0].state,
+            ItemState::OutcomeUnknown
+        );
+        assert_eq!(fs::read(f.dest("a")).unwrap(), b"moved");
+    }
+
+    #[test]
+    fn receipt_publication_restore_preserves_committed_user_bytes() {
+        let f = Fixture::new();
+        fs::write(f.source("a"), b"restore bytes").unwrap();
+        f.hooks(Hooks {
+            stop_after_stage: true,
+            ..Hooks::default()
+        });
+        f.run(f.copy("a"));
+        let recovery = f.store.recoveries().unwrap().remove(0);
+        let stage = f.stage();
+        f.hooks(Hooks {
+            publication_failure: Some((
+                "Published",
+                tilo_files::native::atomic::test_support::Checkpoint::BeforeDataFlush,
+            )),
+            ..Hooks::default()
+        });
+        let mut job = f
+            .store
+            .resolve(
+                &recovery.id,
+                &f.session,
+                RecoveryResolution::RestoreKnown {
+                    parent: f.dst.clone(),
+                    name: name("restored"),
+                },
+            )
+            .unwrap();
+        let deadline = tilo_test_env::hang_deadline();
+        let error = loop {
+            if let Err(error) = job.poll() {
+                break error;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        assert_publication(
+            &error,
+            tilo_files::native::atomic::PublicationState::NotPublished,
+        );
+        assert_eq!(fs::read(f.dest("restored")).unwrap(), b"restore bytes");
+        assert!(!stage.exists());
+        assert!(
+            !f.store
+                .recoveries()
+                .unwrap()
+                .iter()
+                .find(|r| r.id == recovery.id)
+                .unwrap()
+                .acknowledged
+        );
+        assert!(matches!(job.poll(), Err(FsError::StoreUnavailable)));
+    }
+
+    #[test]
+    fn receipt_publication_recovery_save_surfaces_publication_after_native_failure() {
+        let f = Fixture::new();
+        fs::write(f.source("a"), b"retained source").unwrap();
+        let barrier = Arc::new(Barrier::default());
+        let _release = Release(Arc::clone(&barrier));
+        f.hooks(Hooks {
+            rename_error: Some(rustix::io::Errno::XDEV),
+            remove_error: true,
+            barrier: Some(("before-source-removal", Arc::clone(&barrier))),
+            ..Hooks::default()
+        });
+        let mut job = f.session.start(f.moving("a")).unwrap();
+        barrier.entered();
+        f.store.hooks.lock().unwrap().publication_failure = Some((
+            "SourceRemovalStarted",
+            tilo_files::native::atomic::test_support::Checkpoint::BeforeCommit,
+        ));
+        barrier.release();
+        let deadline = tilo_test_env::hang_deadline();
+        let error = loop {
+            if let Err(error) = job.poll() {
+                break error;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        assert_publication(
+            &error,
+            tilo_files::native::atomic::PublicationState::PublishedDurabilityUnknown,
+        );
+        assert_eq!(fs::read(f.source("a")).unwrap(), b"retained source");
+        assert_eq!(fs::read(f.dest("a")).unwrap(), b"retained source");
+        assert!(matches!(job.poll(), Err(FsError::StoreUnavailable)));
+    }
 
     #[derive(Clone, Default)]
     #[allow(
@@ -1808,6 +2172,10 @@ pub(super) mod tests {
     pub(crate) struct Hooks {
         pub rename_error: Option<rustix::io::Errno>,
         pub fail_checkpoint: Option<&'static str>,
+        pub publication_failure: Option<(
+            &'static str,
+            tilo_files::native::atomic::test_support::Checkpoint,
+        )>,
         pub stop_after_stage: bool,
         pub copy_eio: bool,
         pub remove_error: bool,
@@ -1836,7 +2204,7 @@ pub(super) mod tests {
             drop(state);
         }
         fn entered(&self) {
-            let deadline = Instant::now() + Duration::from_secs(15);
+            let deadline = tilo_test_env::hang_deadline();
             let mut s = self.state.lock().unwrap();
             while !s.0 {
                 let left = deadline
@@ -1889,7 +2257,12 @@ pub(super) mod tests {
     impl Fixture {
         fn new() -> Self {
             let disk = tempfile::tempdir().unwrap();
-            let meta = tempfile::tempdir().unwrap();
+            let meta = tempfile::Builder::new()
+                .permissions(
+                    <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+                )
+                .tempdir()
+                .unwrap();
             fs::create_dir(disk.path().join("src")).unwrap();
             fs::create_dir(disk.path().join("dst")).unwrap();
             let authority = NativeGrantAuthority::new();
@@ -2034,7 +2407,7 @@ pub(super) mod tests {
         }
     }
     fn drain(job: &mut FsJob) -> Vec<FsUpdate> {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = tilo_test_env::hang_deadline();
         let mut updates = vec![];
         loop {
             updates.extend(job.poll().unwrap());
@@ -2060,7 +2433,7 @@ pub(super) mod tests {
             .unwrap()
     }
     fn terminal(f: &Fixture, id: &crate::recovery::OperationId) {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = tilo_test_env::hang_deadline();
         while f.store.report(id).unwrap().state == OperationState::Running {
             assert!(
                 Instant::now() < deadline,
@@ -2071,331 +2444,638 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn recovery_storage_failure_prevents_first_effect() {
-        let f = Fixture::new();
-        fs::write(f.source("a"), b"original").unwrap();
-        f.hooks(Hooks {
-            fail_checkpoint: Some("Admitted"),
-            ..Hooks::default()
-        });
-        assert!(matches!(
-            f.session.start(f.copy("a")),
-            Err(FsError::StoreUnavailable)
-        ));
-        assert_eq!(fs::read(f.source("a")).unwrap(), b"original");
-        assert_eq!(fs::read_dir(f.dest("")).unwrap().count(), 0);
-        assert!(f.receipt_bytes().is_empty());
-    }
-    #[test]
-    fn restart_known_stage_requires_new_grant() {
-        let f = Fixture::new();
-        fs::write(f.source("a"), b"recover me").unwrap();
-        f.hooks(Hooks {
-            stop_after_stage: true,
-            ..Hooks::default()
-        });
-        let (id, u) = f.run(f.copy("a"));
-        assert_eq!(item(&u).state, ItemState::RecoveryRequired);
-        let old = f.dst.clone();
-        let stage = f.stage();
-        assert_eq!(fs::read(&stage).unwrap(), b"recover me");
-        let f = f.reopen();
-        assert_eq!(
-            f.store.report(&id).unwrap().state,
-            OperationState::RecoveryRequired
-        );
-        let r = f.store.recoveries().unwrap().remove(0);
-        assert_eq!(r.kind, RecoveryKind::KnownStaged);
-        assert!(
-            f.store
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn recovery_state_is_durable_before_and_after_every_effect() {
+        // phase: recovery_storage_failure_prevents_first_effect
+        {
+            let f = Fixture::new();
+            fs::write(f.source("a"), b"original").unwrap();
+            f.hooks(Hooks {
+                fail_checkpoint: Some("Admitted"),
+                ..Hooks::default()
+            });
+            assert!(matches!(
+                f.session.start(f.copy("a")),
+                Err(FsError::StoreUnavailable)
+            ));
+            assert_eq!(fs::read(f.source("a")).unwrap(), b"original");
+            assert_eq!(fs::read_dir(f.dest("")).unwrap().count(), 0);
+            assert!(f.receipt_bytes().is_empty());
+        }
+        // phase: restart_known_stage_requires_new_grant
+        {
+            let f = Fixture::new();
+            fs::write(f.source("a"), b"recover me").unwrap();
+            f.hooks(Hooks {
+                stop_after_stage: true,
+                ..Hooks::default()
+            });
+            let (id, u) = f.run(f.copy("a"));
+            assert_eq!(item(&u).state, ItemState::RecoveryRequired);
+            let old = f.dst.clone();
+            let stage = f.stage();
+            assert_eq!(fs::read(&stage).unwrap(), b"recover me");
+            let f = f.reopen();
+            assert_eq!(
+                f.store.report(&id).unwrap().state,
+                OperationState::RecoveryRequired
+            );
+            let r = f.store.recoveries().unwrap().remove(0);
+            assert_eq!(r.kind, RecoveryKind::KnownStaged);
+            assert!(
+                f.store
+                    .resolve(
+                        &r.id,
+                        &f.session,
+                        RecoveryResolution::RestoreKnown {
+                            parent: old,
+                            name: name("restored")
+                        }
+                    )
+                    .is_err()
+            );
+            fs::write(f.dest("restored"), b"collision").unwrap();
+            let mut job = f
+                .store
                 .resolve(
                     &r.id,
                     &f.session,
                     RecoveryResolution::RestoreKnown {
-                        parent: old,
-                        name: name("restored")
-                    }
+                        parent: f.dst.clone(),
+                        name: name("restored"),
+                    },
                 )
-                .is_err()
-        );
-        fs::write(f.dest("restored"), b"collision").unwrap();
-        let mut job = f
-            .store
-            .resolve(
-                &r.id,
-                &f.session,
-                RecoveryResolution::RestoreKnown {
-                    parent: f.dst.clone(),
-                    name: name("restored"),
-                },
-            )
-            .unwrap();
-        assert_eq!(item(&drain(&mut job)).state, ItemState::Failed);
-        assert_eq!(fs::read(f.dest("restored")).unwrap(), b"collision");
-        assert_eq!(fs::read(&stage).unwrap(), b"recover me");
-        drop(job);
-        fs::remove_file(f.dest("restored")).unwrap();
-        let mut job = f
-            .store
-            .resolve(
-                &r.id,
-                &f.session,
-                RecoveryResolution::RestoreKnown {
-                    parent: f.dst.clone(),
-                    name: name("restored"),
-                },
-            )
-            .unwrap();
-        assert_eq!(item(&drain(&mut job)).state, ItemState::Completed);
-        assert_eq!(fs::read(f.dest("restored")).unwrap(), b"recover me");
-        assert!(!stage.exists());
-        assert!(
-            f.store
+                .unwrap();
+            assert_eq!(item(&drain(&mut job)).state, ItemState::Failed);
+            assert_eq!(fs::read(f.dest("restored")).unwrap(), b"collision");
+            assert_eq!(fs::read(&stage).unwrap(), b"recover me");
+            drop(job);
+            fs::remove_file(f.dest("restored")).unwrap();
+            let mut job = f
+                .store
+                .resolve(
+                    &r.id,
+                    &f.session,
+                    RecoveryResolution::RestoreKnown {
+                        parent: f.dst.clone(),
+                        name: name("restored"),
+                    },
+                )
+                .unwrap();
+            assert_eq!(item(&drain(&mut job)).state, ItemState::Completed);
+            assert_eq!(fs::read(f.dest("restored")).unwrap(), b"recover me");
+            assert!(!stage.exists());
+            assert!(
+                f.store
+                    .recoveries()
+                    .unwrap()
+                    .iter()
+                    .find(|i| i.id == r.id)
+                    .unwrap()
+                    .acknowledged
+            );
+        }
+        // phase: recovery_quota_never_deletes_staged_user_bytes
+        {
+            use std::os::unix::fs::MetadataExt;
+            let f = Fixture::new();
+            let bytes = vec![82; 1024 * 1024 + 23];
+            fs::write(f.source("a"), &bytes).unwrap();
+            f.hooks(Hooks {
+                stop_after_stage: true,
+                report_limit: Some(1),
+                ..Hooks::default()
+            });
+            f.run(f.copy("a"));
+            let stage = f.stage();
+            let inode = fs::metadata(&stage).unwrap().ino();
+            let receipts = f.receipt_bytes();
+            assert!(matches!(
+                f.session.start(f.copy("a")),
+                Err(FsError::Busy | FsError::LimitExceeded)
+            ));
+            assert_eq!(fs::read(&stage).unwrap(), bytes);
+            assert_eq!(fs::metadata(stage).unwrap().ino(), inode);
+            assert_eq!(f.receipt_bytes(), receipts);
+            assert_eq!(f.store.recoveries().unwrap().len(), 1);
+        }
+        // phase: failed_publish_checkpoint_keeps_durable_stage_recovery
+        {
+            let f = Fixture::new();
+            fs::write(f.source("a"), b"recoverable").unwrap();
+            f.hooks(Hooks {
+                fail_checkpoint: Some("PublishStarted"),
+                ..Hooks::default()
+            });
+            let (id, u) = f.run(f.copy("a"));
+            assert_eq!(item(&u).state, ItemState::RecoveryRequired);
+            assert!(!f.dest("a").exists());
+            assert_eq!(fs::read(f.stage()).unwrap(), b"recoverable");
+            let recoveries = f.store.recoveries().unwrap();
+            assert_eq!(recoveries.len(), 1);
+            assert_eq!(recoveries[0].kind, RecoveryKind::KnownStaged);
+            assert_eq!(item(&u).recoveries, [recoveries[0].id.clone()]);
+            let f = f.reopen();
+            assert_eq!(
+                f.store.report(&id).unwrap().state,
+                OperationState::RecoveryRequired
+            );
+            assert_eq!(f.store.recoveries().unwrap().len(), 1);
+        }
+        // phase: terminal_metadata_room_is_reserved_before_first_effect
+        {
+            let f = Fixture::new();
+            fs::write(f.source("a"), b"quota guarded").unwrap();
+            f.hooks(Hooks {
+                metadata_limit: Some(2048),
+                ..Hooks::default()
+            });
+            assert!(matches!(
+                f.session.start(FsOperation::Copy {
+                    entries: vec![f.entry("a"); 20],
+                    into: f.dst.clone(),
+                    conflict: ConflictPolicy::Fail
+                }),
+                Err(FsError::LimitExceeded)
+            ));
+            assert!(f.receipt_bytes().is_empty());
+            assert_eq!(fs::read_dir(f.dest("")).unwrap().count(), 0);
+            assert_eq!(fs::read(f.source("a")).unwrap(), b"quota guarded");
+        }
+    }
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn uncertain_outcomes_are_acknowledged_and_never_replayed() {
+        // phase: uncertain_native_trash_is_not_replayed
+        {
+            let f = Fixture::new();
+            fs::write(f.source("a"), b"uncertain").unwrap();
+            f.hooks(Hooks {
+                unknown_trash: true,
+                ..Hooks::default()
+            });
+            let (id, u) = f.run(FsOperation::Trash {
+                entries: vec![f.entry("a")],
+            });
+            assert_eq!(item(&u).state, ItemState::OutcomeUnknown);
+            assert_eq!(
+                f.store
+                    .submissions
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                1
+            );
+            let f = f.reopen();
+            assert_eq!(
+                f.store
+                    .submissions
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                0
+            );
+            let r = f.store.recoveries().unwrap().remove(0);
+            assert_eq!(r.kind, RecoveryKind::UnknownNativeCommit);
+            assert!(matches!(
+                f.store.resolve(
+                    &r.id,
+                    &f.session,
+                    RecoveryResolution::AcknowledgeUnknown {
+                        note: "x".repeat(1025)
+                    }
+                ),
+                Err(FsError::LimitExceeded)
+            ));
+            let mut job = f
+                .store
+                .resolve(
+                    &r.id,
+                    &f.session,
+                    RecoveryResolution::AcknowledgeUnknown {
+                        note: "uncertainty accepted".into(),
+                    },
+                )
+                .unwrap();
+            drain(&mut job);
+            assert_eq!(
+                f.store.report(&id).unwrap().state,
+                OperationState::OutcomeUnknown
+            );
+            assert_eq!(fs::read(f.source("a")).unwrap(), b"uncertain");
+            assert!(f.store.recoveries().unwrap()[0].acknowledged);
+        }
+        // phase: uncertain_non_trash_boundary_is_acknowledged_without_replay
+        {
+            let f = Fixture::new();
+            fs::write(f.source("a"), b"native rename").unwrap();
+            f.hooks(Hooks {
+                fail_checkpoint: Some("Published"),
+                ..Hooks::default()
+            });
+            let (id, updates) = f.run(f.moving("a"));
+            assert_eq!(item(&updates).state, ItemState::OutcomeUnknown);
+            assert!(item(&updates).destination.is_some());
+            assert!(!f.source("a").exists());
+            assert_eq!(fs::read(f.dest("a")).unwrap(), b"native rename");
+            fs::rename(f.dest("a"), f.dest("held")).unwrap();
+            let f = f.reopen();
+            let recovery = f
+                .store
                 .recoveries()
                 .unwrap()
-                .iter()
-                .find(|i| i.id == r.id)
-                .unwrap()
-                .acknowledged
-        );
-    }
-    #[test]
-    fn uncertain_native_trash_is_not_replayed() {
-        let f = Fixture::new();
-        fs::write(f.source("a"), b"uncertain").unwrap();
-        f.hooks(Hooks {
-            unknown_trash: true,
-            ..Hooks::default()
-        });
-        let (id, u) = f.run(FsOperation::Trash {
-            entries: vec![f.entry("a")],
-        });
-        assert_eq!(item(&u).state, ItemState::OutcomeUnknown);
-        assert_eq!(
-            f.store
-                .submissions
-                .load(std::sync::atomic::Ordering::SeqCst),
-            1
-        );
-        let f = f.reopen();
-        assert_eq!(
-            f.store
-                .submissions
-                .load(std::sync::atomic::Ordering::SeqCst),
-            0
-        );
-        let r = f.store.recoveries().unwrap().remove(0);
-        assert_eq!(r.kind, RecoveryKind::UnknownNativeCommit);
-        assert!(matches!(
-            f.store.resolve(
-                &r.id,
-                &f.session,
-                RecoveryResolution::AcknowledgeUnknown {
-                    note: "x".repeat(1025)
-                }
-            ),
-            Err(FsError::LimitExceeded)
-        ));
-        let mut job = f
-            .store
-            .resolve(
-                &r.id,
-                &f.session,
-                RecoveryResolution::AcknowledgeUnknown {
-                    note: "uncertainty accepted".into(),
-                },
-            )
-            .unwrap();
-        drain(&mut job);
-        assert_eq!(
-            f.store.report(&id).unwrap().state,
-            OperationState::OutcomeUnknown
-        );
-        assert_eq!(fs::read(f.source("a")).unwrap(), b"uncertain");
-        assert!(f.store.recoveries().unwrap()[0].acknowledged);
-    }
-    #[test]
-    fn recovery_quota_never_deletes_staged_user_bytes() {
-        use std::os::unix::fs::MetadataExt;
-        let f = Fixture::new();
-        let bytes = vec![82; 1024 * 1024 + 23];
-        fs::write(f.source("a"), &bytes).unwrap();
-        f.hooks(Hooks {
-            stop_after_stage: true,
-            report_limit: Some(1),
-            ..Hooks::default()
-        });
-        f.run(f.copy("a"));
-        let stage = f.stage();
-        let inode = fs::metadata(&stage).unwrap().ino();
-        let receipts = f.receipt_bytes();
-        assert!(matches!(
-            f.session.start(f.copy("a")),
-            Err(FsError::Busy | FsError::LimitExceeded)
-        ));
-        assert_eq!(fs::read(&stage).unwrap(), bytes);
-        assert_eq!(fs::metadata(stage).unwrap().ino(), inode);
-        assert_eq!(f.receipt_bytes(), receipts);
-        assert_eq!(f.store.recoveries().unwrap().len(), 1);
-    }
-    #[test]
-    fn cancel_after_first_item_retains_committed_item() {
-        let f = Fixture::new();
-        for n in ["a", "b"] {
-            fs::write(f.source(n), n.as_bytes()).unwrap();
+                .into_iter()
+                .find(|r| r.operation == id)
+                .unwrap();
+            assert_eq!(recovery.kind, RecoveryKind::UnknownNativeCommit);
+            assert_eq!(
+                f.store.report(&id).unwrap().state,
+                OperationState::OutcomeUnknown
+            );
+            let mut job = f
+                .store
+                .resolve(
+                    &recovery.id,
+                    &f.session,
+                    RecoveryResolution::AcknowledgeUnknown {
+                        note: "cannot establish current rename outcome".into(),
+                    },
+                )
+                .unwrap();
+            drain(&mut job);
+            assert_eq!(
+                f.store.report(&id).unwrap().state,
+                OperationState::OutcomeUnknown
+            );
+            assert!(!f.source("a").exists());
+            assert!(!f.dest("a").exists());
+            assert_eq!(fs::read(f.dest("held")).unwrap(), b"native rename");
         }
-        let barrier = Arc::new(Barrier::default());
-        f.hooks(Hooks {
-            barrier: Some(("before-item-two", barrier.clone())),
-            ..Hooks::default()
-        });
-        let mut job = f
-            .session
-            .start(FsOperation::Copy {
-                entries: vec![f.entry("a"), f.entry("b")],
-                into: f.dst.clone(),
-                conflict: ConflictPolicy::Fail,
-            })
-            .unwrap();
-        let release = Release(barrier.clone());
-        barrier.entered();
-        assert_eq!(fs::read(f.dest("a")).unwrap(), b"a");
-        job.request_cancel();
-        drop(release);
-        let u = drain(&mut job);
-        let states: Vec<_> = u
-            .iter()
-            .filter_map(|u| {
-                if let FsUpdate::Item(i) = u {
-                    Some(i.state)
+        // phase: acknowledge_report_preserves_retained_source_history
+        {
+            let f = Fixture::new();
+            let (id, _) = retained(&f);
+            f.store.acknowledge_report(&id).unwrap();
+            let f = f.reopen();
+            assert_eq!(
+                f.store.report(&id).unwrap().items[0].state,
+                ItemState::CopiedSourceRetained
+            );
+            assert_eq!(
+                f.store.report(&id).unwrap().state,
+                OperationState::RecoveryRequired
+            );
+            assert!(f.store.recoveries().unwrap()[0].acknowledged);
+            for p in [f.source("a"), f.dest("a")] {
+                assert_eq!(fs::read(p).unwrap(), b"both");
+            }
+        }
+        // phase: acknowledge_report_atomically_refuses_mixed_unresolved_recoveries
+        {
+            for unknown in [false, true] {
+                let f = Fixture::new();
+                let (id, _) = retained(&f);
+                fs::write(f.source("b"), b"blocked recovery").unwrap();
+                f.hooks(Hooks {
+                    unknown_trash: unknown,
+                    stop_after_stage: !unknown,
+                    ..Hooks::default()
+                });
+                let (second, _) = if unknown {
+                    f.run(FsOperation::Trash {
+                        entries: vec![f.entry("b")],
+                    })
                 } else {
-                    None
-                }
-            })
-            .collect();
-        assert_eq!(states, [ItemState::Completed, ItemState::Cancelled]);
-        assert!(matches!(
-            u.last(),
-            Some(FsUpdate::Finished {
-                completed: 1,
-                failed: 0,
-                cancelled: 1
-            })
-        ));
-        assert!(!f.dest("b").exists());
-    }
-    #[test]
-    fn revocation_during_copy_does_not_remove_source() {
-        let f = Fixture::new();
-        let bytes = vec![65; 2 * 1024 * 1024];
-        fs::write(f.source("a"), &bytes).unwrap();
-        let barrier = Arc::new(Barrier::default());
-        f.hooks(Hooks {
-            rename_error: Some(rustix::io::Errno::XDEV),
-            barrier: Some(("after-chunk", barrier.clone())),
-            ..Hooks::default()
-        });
-        let mut job = f.session.start(f.moving("a")).unwrap();
-        let release = Release(barrier.clone());
-        barrier.entered();
-        f.authority.revoke_directory(&f.src).unwrap();
-        drop(release);
-        let u = drain(&mut job);
-        assert_ne!(item(&u).state, ItemState::Completed);
-        assert_eq!(fs::read(f.source("a")).unwrap(), bytes);
-        assert!(!f.dest("a").exists());
-    }
-    #[test]
-    fn cross_device_copy_remove_stages() {
-        let f = Fixture::new();
-        fs::write(f.source("a"), b"staged").unwrap();
-        f.hooks(Hooks {
-            rename_error: Some(rustix::io::Errno::XDEV),
-            ..Hooks::default()
-        });
-        let (id, u) = f.run(f.moving("a"));
-        assert_eq!(item(&u).state, ItemState::Completed);
-        assert_eq!(fs::read(f.dest("a")).unwrap(), b"staged");
-        assert!(!f.source("a").exists());
-        let phases: Vec<_> = u
-            .iter()
-            .filter_map(|u| {
-                if let FsUpdate::Progress { phase, .. } = u {
-                    Some(*phase)
+                    f.run(f.copy("b"))
+                };
+                f.store.merge_recovery_for_test(&id, &second).unwrap();
+                let before = f.receipt_bytes();
+                assert!(f.store.acknowledge_report(&id).is_err());
+                assert_eq!(f.receipt_bytes(), before);
+                assert!(
+                    f.store
+                        .recoveries()
+                        .unwrap()
+                        .iter()
+                        .all(|r| !r.acknowledged)
+                );
+                let blocked = f
+                    .store
+                    .recoveries()
+                    .unwrap()
+                    .into_iter()
+                    .find(|r| r.operation == id && r.kind != RecoveryKind::PublishedSourceRetained)
+                    .unwrap();
+                f.hooks(Hooks::default());
+                let resolution = if unknown {
+                    RecoveryResolution::AcknowledgeUnknown {
+                        note: "accepted unknown".into(),
+                    }
                 } else {
-                    None
+                    assert_eq!(fs::read(f.stage()).unwrap(), b"blocked recovery");
+                    RecoveryResolution::RestoreKnown {
+                        parent: f.dst.clone(),
+                        name: name("restored-b"),
+                    }
+                };
+                let mut job = f
+                    .store
+                    .resolve(&blocked.id, &f.session, resolution)
+                    .unwrap();
+                assert_eq!(item(&drain(&mut job)).state, ItemState::Completed);
+                drop(job);
+                f.store.acknowledge_report(&id).unwrap();
+                assert!(
+                    f.store
+                        .recoveries()
+                        .unwrap()
+                        .iter()
+                        .filter(|r| r.operation == id)
+                        .all(|r| r.acknowledged)
+                );
+                for p in [f.source("a"), f.dest("a")] {
+                    assert_eq!(fs::read(p).unwrap(), b"both");
                 }
-            })
-            .collect();
-        assert_eq!(phases, ["copy", "publish", "remove-source"]);
-        assert_eq!(
-            f.store.checkpoints(&id).unwrap(),
-            [
-                "Admitted",
-                "PublishStarted",
-                "Admitted",
-                "Staged",
-                "PublishStarted",
-                "Published",
-                "SourceRemovalStarted",
-                "SourceRemovalCompleted",
-                "Item",
-                "Finished"
-            ]
-        );
+            }
+        }
     }
     #[test]
-    fn non_exdev_rename_failure_never_copies() {
-        let f = Fixture::new();
-        fs::write(f.source("a"), b"original").unwrap();
-        f.hooks(Hooks {
-            rename_error: Some(rustix::io::Errno::IO),
-            ..Hooks::default()
-        });
-        let (_, u) = f.run(f.moving("a"));
-        assert_eq!(item(&u).state, ItemState::Failed);
-        assert_eq!(fs::read(f.source("a")).unwrap(), b"original");
-        assert_eq!(fs::read_dir(f.dest("")).unwrap().count(), 0);
-        assert!(
-            !u.iter()
-                .any(|u| matches!(u, FsUpdate::Progress { phase: "copy", .. }))
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn cancellation_revocation_and_teardown_keep_committed_work() {
+        // phase: cancel_after_first_item_retains_committed_item
+        {
+            let f = Fixture::new();
+            for n in ["a", "b"] {
+                fs::write(f.source(n), n.as_bytes()).unwrap();
+            }
+            let barrier = Arc::new(Barrier::default());
+            f.hooks(Hooks {
+                barrier: Some(("before-item-two", barrier.clone())),
+                ..Hooks::default()
+            });
+            let mut job = f
+                .session
+                .start(FsOperation::Copy {
+                    entries: vec![f.entry("a"), f.entry("b")],
+                    into: f.dst.clone(),
+                    conflict: ConflictPolicy::Fail,
+                })
+                .unwrap();
+            let release = Release(barrier.clone());
+            barrier.entered();
+            assert_eq!(fs::read(f.dest("a")).unwrap(), b"a");
+            job.request_cancel();
+            drop(release);
+            let u = drain(&mut job);
+            let states: Vec<_> = u
+                .iter()
+                .filter_map(|u| {
+                    if let FsUpdate::Item(i) = u {
+                        Some(i.state)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(states, [ItemState::Completed, ItemState::Cancelled]);
+            assert!(matches!(
+                u.last(),
+                Some(FsUpdate::Finished {
+                    completed: 1,
+                    failed: 0,
+                    cancelled: 1
+                })
+            ));
+            assert!(!f.dest("b").exists());
+        }
+        // phase: revocation_during_copy_does_not_remove_source
+        {
+            let f = Fixture::new();
+            let bytes = vec![65; 2 * 1024 * 1024];
+            fs::write(f.source("a"), &bytes).unwrap();
+            let barrier = Arc::new(Barrier::default());
+            f.hooks(Hooks {
+                rename_error: Some(rustix::io::Errno::XDEV),
+                barrier: Some(("after-chunk", barrier.clone())),
+                ..Hooks::default()
+            });
+            let mut job = f.session.start(f.moving("a")).unwrap();
+            let release = Release(barrier.clone());
+            barrier.entered();
+            f.authority.revoke_directory(&f.src).unwrap();
+            drop(release);
+            let u = drain(&mut job);
+            assert_ne!(item(&u).state, ItemState::Completed);
+            assert_eq!(fs::read(f.source("a")).unwrap(), bytes);
+            assert!(!f.dest("a").exists());
+        }
+        // phase: worker_teardown_joins_after_last_owner
+        {
+            let f = Fixture::new();
+            fs::write(f.source("a"), vec![17; 2 * 1024 * 1024]).unwrap();
+            let barrier = Arc::new(Barrier::default());
+            f.hooks(Hooks {
+                barrier: Some(("after-chunk", barrier.clone())),
+                ..Hooks::default()
+            });
+            let job = f.session.start(f.copy("a")).unwrap();
+            let id = job.operation_id();
+            let release = Release(barrier.clone());
+            barrier.entered();
+            f.session.close();
+            drop(job);
+            drop(release);
+            terminal(&f, &id);
+            let store = f.store.clone();
+            drop(f.authority);
+            assert_ne!(store.report(&id).unwrap().state, OperationState::Running);
+        }
+        // phase: non_droppable_terminal_updates_survive_progress_pressure
+        {
+            let f = Fixture::new();
+            for n in ["a", "b"] {
+                fs::write(f.source(n), vec![13; 8 * 1024 * 1024]).unwrap();
+            }
+            let mut job = f
+                .session
+                .start(FsOperation::Copy {
+                    entries: vec![f.entry("a"), f.entry("b")],
+                    into: f.dst.clone(),
+                    conflict: ConflictPolicy::Fail,
+                })
+                .unwrap();
+            terminal(&f, &job.operation_id());
+            let u = drain(&mut job);
+            assert_eq!(
+                u.iter().filter(|u| matches!(u, FsUpdate::Item(_))).count(),
+                2
+            );
+            assert_eq!(
+                u.iter()
+                    .filter(|u| matches!(u, FsUpdate::Finished { .. }))
+                    .count(),
+                1
+            );
+            assert!(matches!(
+                u.last(),
+                Some(FsUpdate::Finished {
+                    completed: 2,
+                    failed: 0,
+                    cancelled: 0
+                })
+            ));
+        }
     }
     #[test]
-    fn empty_directory_cross_device_move_reports_all_phases() {
-        let f = Fixture::new();
-        fs::create_dir(f.source("empty")).unwrap();
-        f.hooks(Hooks {
-            rename_error: Some(rustix::io::Errno::XDEV),
-            ..Hooks::default()
-        });
-        let (_, updates) = f.run(f.moving("empty"));
-        assert_eq!(item(&updates).state, ItemState::Completed);
-        assert!(f.dest("empty").is_dir());
-        assert!(!f.source("empty").exists());
-        let phases: Vec<_> = updates
-            .iter()
-            .filter_map(|update| match update {
-                FsUpdate::Progress { phase, .. } => Some(*phase),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(phases, ["copy", "publish", "remove-source"]);
-    }
-    #[test]
-    fn copy_eio_after_one_real_chunk_never_publishes() {
-        let f = Fixture::new();
-        let bytes = vec![53; 2 * 1024 * 1024];
-        fs::write(f.source("a"), &bytes).unwrap();
-        f.hooks(Hooks {
-            copy_eio: true,
-            ..Hooks::default()
-        });
-        let (_, u) = f.run(f.copy("a"));
-        assert_ne!(item(&u).state, ItemState::Completed);
-        assert_eq!(fs::read(f.source("a")).unwrap(), bytes);
-        assert!(!f.dest("a").exists());
-        assert_eq!(fs::read_dir(f.dest("")).unwrap().count(), 0);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn cross_device_moves_copy_then_remove_and_retain_sources_on_failure() {
+        // phase: cross_device_copy_remove_stages
+        {
+            let f = Fixture::new();
+            fs::write(f.source("a"), b"staged").unwrap();
+            f.hooks(Hooks {
+                rename_error: Some(rustix::io::Errno::XDEV),
+                ..Hooks::default()
+            });
+            let (id, u) = f.run(f.moving("a"));
+            assert_eq!(item(&u).state, ItemState::Completed);
+            assert_eq!(fs::read(f.dest("a")).unwrap(), b"staged");
+            assert!(!f.source("a").exists());
+            let phases: Vec<_> = u
+                .iter()
+                .filter_map(|u| {
+                    if let FsUpdate::Progress { phase, .. } = u {
+                        Some(*phase)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(phases, ["copy", "publish", "remove-source"]);
+            assert_eq!(
+                f.store.checkpoints(&id).unwrap(),
+                [
+                    "Admitted",
+                    "PublishStarted",
+                    "Admitted",
+                    "Staged",
+                    "PublishStarted",
+                    "Published",
+                    "SourceRemovalStarted",
+                    "SourceRemovalCompleted",
+                    "Item",
+                    "Finished"
+                ]
+            );
+        }
+        // phase: non_exdev_rename_failure_never_copies
+        {
+            let f = Fixture::new();
+            fs::write(f.source("a"), b"original").unwrap();
+            f.hooks(Hooks {
+                rename_error: Some(rustix::io::Errno::IO),
+                ..Hooks::default()
+            });
+            let (_, u) = f.run(f.moving("a"));
+            assert_eq!(item(&u).state, ItemState::Failed);
+            assert_eq!(fs::read(f.source("a")).unwrap(), b"original");
+            assert_eq!(fs::read_dir(f.dest("")).unwrap().count(), 0);
+            assert!(
+                !u.iter()
+                    .any(|u| matches!(u, FsUpdate::Progress { phase: "copy", .. }))
+            );
+        }
+        // phase: empty_directory_cross_device_move_reports_all_phases
+        {
+            let f = Fixture::new();
+            fs::create_dir(f.source("empty")).unwrap();
+            f.hooks(Hooks {
+                rename_error: Some(rustix::io::Errno::XDEV),
+                ..Hooks::default()
+            });
+            let (_, updates) = f.run(f.moving("empty"));
+            assert_eq!(item(&updates).state, ItemState::Completed);
+            assert!(f.dest("empty").is_dir());
+            assert!(!f.source("empty").exists());
+            let phases: Vec<_> = updates
+                .iter()
+                .filter_map(|update| match update {
+                    FsUpdate::Progress { phase, .. } => Some(*phase),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(phases, ["copy", "publish", "remove-source"]);
+        }
+        // phase: copy_eio_after_one_real_chunk_never_publishes
+        {
+            let f = Fixture::new();
+            let bytes = vec![53; 2 * 1024 * 1024];
+            fs::write(f.source("a"), &bytes).unwrap();
+            f.hooks(Hooks {
+                copy_eio: true,
+                ..Hooks::default()
+            });
+            let (_, u) = f.run(f.copy("a"));
+            assert_ne!(item(&u).state, ItemState::Completed);
+            assert_eq!(fs::read(f.source("a")).unwrap(), bytes);
+            assert!(!f.dest("a").exists());
+            assert_eq!(fs::read_dir(f.dest("")).unwrap().count(), 0);
+        }
+        // phase: remove_failure_reports_copied_source_retained
+        {
+            let f = Fixture::new();
+            let (id, u) = retained(&f);
+            assert_eq!(item(&u).state, ItemState::CopiedSourceRetained);
+            assert!(item(&u).destination.is_some());
+            assert_eq!(
+                f.store.recoveries().unwrap()[0].kind,
+                RecoveryKind::PublishedSourceRetained
+            );
+            assert_eq!(
+                f.store.report(&id).unwrap().state,
+                OperationState::RecoveryRequired
+            );
+            for p in [f.source("a"), f.dest("a")] {
+                assert_eq!(fs::read(p).unwrap(), b"both");
+            }
+            assert!(matches!(
+                u.last(),
+                Some(FsUpdate::Finished {
+                    completed: 0,
+                    failed: 1,
+                    cancelled: 0
+                })
+            ));
+        }
+        // phase: directory_move_retains_new_source_bytes_before_removal
+        {
+            let f = Fixture::new();
+            fs::create_dir(f.source("tree")).unwrap();
+            fs::write(f.source("tree/original"), b"copied").unwrap();
+            let barrier = Arc::new(Barrier::default());
+            f.hooks(Hooks {
+                rename_error: Some(rustix::io::Errno::XDEV),
+                barrier: Some(("before-source-removal", barrier.clone())),
+                ..Hooks::default()
+            });
+            let mut job = f.session.start(f.moving("tree")).unwrap();
+            let release = Release(barrier.clone());
+            barrier.entered();
+            fs::write(f.source("tree/new"), b"new user bytes").unwrap();
+            drop(release);
+            let u = drain(&mut job);
+            assert_eq!(item(&u).state, ItemState::CopiedSourceRetained);
+            assert_eq!(fs::read(f.source("tree/new")).unwrap(), b"new user bytes");
+            assert_eq!(fs::read(f.dest("tree/original")).unwrap(), b"copied");
+        }
     }
     fn retained(f: &Fixture) -> (crate::recovery::OperationId, Vec<FsUpdate>) {
         fs::write(f.source("a"), b"both").unwrap();
@@ -2407,377 +3087,448 @@ pub(super) mod tests {
         f.run(f.moving("a"))
     }
     #[test]
-    fn remove_failure_reports_copied_source_retained() {
-        let f = Fixture::new();
-        let (id, u) = retained(&f);
-        assert_eq!(item(&u).state, ItemState::CopiedSourceRetained);
-        assert!(item(&u).destination.is_some());
-        assert_eq!(
-            f.store.recoveries().unwrap()[0].kind,
-            RecoveryKind::PublishedSourceRetained
-        );
-        assert_eq!(
-            f.store.report(&id).unwrap().state,
-            OperationState::RecoveryRequired
-        );
-        for p in [f.source("a"), f.dest("a")] {
-            assert_eq!(fs::read(p).unwrap(), b"both");
-        }
-        assert!(matches!(
-            u.last(),
-            Some(FsUpdate::Finished {
-                completed: 0,
-                failed: 1,
-                cancelled: 0
-            })
-        ));
-    }
-    #[test]
-    fn acknowledge_report_preserves_retained_source_history() {
-        let f = Fixture::new();
-        let (id, _) = retained(&f);
-        f.store.acknowledge_report(&id).unwrap();
-        let f = f.reopen();
-        assert_eq!(
-            f.store.report(&id).unwrap().items[0].state,
-            ItemState::CopiedSourceRetained
-        );
-        assert_eq!(
-            f.store.report(&id).unwrap().state,
-            OperationState::RecoveryRequired
-        );
-        assert!(f.store.recoveries().unwrap()[0].acknowledged);
-        for p in [f.source("a"), f.dest("a")] {
-            assert_eq!(fs::read(p).unwrap(), b"both");
-        }
-    }
-    #[test]
-    fn acknowledge_report_atomically_refuses_mixed_unresolved_recoveries() {
-        for unknown in [false, true] {
+    fn queue_item_and_candidate_limits_precede_effects() {
+        // phase: worker_queue_and_item_limits_precede_effects
+        {
             let f = Fixture::new();
-            let (id, _) = retained(&f);
-            fs::write(f.source("b"), b"blocked recovery").unwrap();
+            fs::write(f.source("a"), b"queued").unwrap();
+            assert!(matches!(
+                f.session.start(FsOperation::Copy {
+                    entries: vec![f.entry("a"); 257],
+                    into: f.dst.clone(),
+                    conflict: ConflictPolicy::Fail
+                }),
+                Err(FsError::LimitExceeded)
+            ));
+            assert!(f.receipt_bytes().is_empty());
+            let barrier = Arc::new(Barrier::default());
             f.hooks(Hooks {
-                unknown_trash: unknown,
-                stop_after_stage: !unknown,
+                barrier: Some(("after-chunk", barrier.clone())),
                 ..Hooks::default()
             });
-            let (second, _) = if unknown {
-                f.run(FsOperation::Trash {
-                    entries: vec![f.entry("b")],
-                })
-            } else {
-                f.run(f.copy("b"))
-            };
-            f.store.merge_recovery_for_test(&id, &second).unwrap();
-            let before = f.receipt_bytes();
-            assert!(f.store.acknowledge_report(&id).is_err());
-            assert_eq!(f.receipt_bytes(), before);
-            assert!(
-                f.store
-                    .recoveries()
-                    .unwrap()
-                    .iter()
-                    .all(|r| !r.acknowledged)
-            );
-            let blocked = f
-                .store
-                .recoveries()
-                .unwrap()
-                .into_iter()
-                .find(|r| r.operation == id && r.kind != RecoveryKind::PublishedSourceRetained)
-                .unwrap();
-            f.hooks(Hooks::default());
-            let resolution = if unknown {
-                RecoveryResolution::AcknowledgeUnknown {
-                    note: "accepted unknown".into(),
-                }
-            } else {
-                assert_eq!(fs::read(f.stage()).unwrap(), b"blocked recovery");
-                RecoveryResolution::RestoreKnown {
-                    parent: f.dst.clone(),
-                    name: name("restored-b"),
-                }
-            };
-            let mut job = f
-                .store
-                .resolve(&blocked.id, &f.session, resolution)
-                .unwrap();
-            assert_eq!(item(&drain(&mut job)).state, ItemState::Completed);
-            drop(job);
-            f.store.acknowledge_report(&id).unwrap();
-            assert!(
-                f.store
-                    .recoveries()
-                    .unwrap()
-                    .iter()
-                    .filter(|r| r.operation == id)
-                    .all(|r| r.acknowledged)
-            );
-            for p in [f.source("a"), f.dest("a")] {
-                assert_eq!(fs::read(p).unwrap(), b"both");
+            let job = f.session.start(f.copy("a")).unwrap();
+            let release = Release(barrier.clone());
+            barrier.entered();
+            assert!(matches!(f.session.start(f.copy("a")), Err(FsError::Busy)));
+            let mut jobs = vec![];
+            for i in 0..32 {
+                let session = f
+                    .authority
+                    .bind(
+                        owner(),
+                        uuid::Uuid::from_u128(100 + i),
+                        &[f.src.clone(), f.dst.clone()],
+                        &[],
+                    )
+                    .unwrap();
+                jobs.push(
+                    session
+                        .start(FsOperation::CreateDirectory {
+                            parent: f.dst.clone(),
+                            name: name(&format!("queued-{i}")),
+                            conflict: ConflictPolicy::Fail,
+                        })
+                        .unwrap(),
+                );
             }
-        }
-    }
-    #[test]
-    fn worker_queue_and_item_limits_precede_effects() {
-        let f = Fixture::new();
-        fs::write(f.source("a"), b"queued").unwrap();
-        assert!(matches!(
-            f.session.start(FsOperation::Copy {
-                entries: vec![f.entry("a"); 257],
-                into: f.dst.clone(),
-                conflict: ConflictPolicy::Fail
-            }),
-            Err(FsError::LimitExceeded)
-        ));
-        assert!(f.receipt_bytes().is_empty());
-        let barrier = Arc::new(Barrier::default());
-        f.hooks(Hooks {
-            barrier: Some(("after-chunk", barrier.clone())),
-            ..Hooks::default()
-        });
-        let job = f.session.start(f.copy("a")).unwrap();
-        let release = Release(barrier.clone());
-        barrier.entered();
-        assert!(matches!(f.session.start(f.copy("a")), Err(FsError::Busy)));
-        let mut jobs = vec![];
-        for i in 0..32 {
             let session = f
                 .authority
                 .bind(
                     owner(),
-                    uuid::Uuid::from_u128(100 + i),
-                    &[f.src.clone(), f.dst.clone()],
+                    uuid::Uuid::from_u128(999),
+                    std::slice::from_ref(&f.dst),
                     &[],
                 )
                 .unwrap();
-            jobs.push(
-                session
-                    .start(FsOperation::CreateDirectory {
-                        parent: f.dst.clone(),
-                        name: name(&format!("queued-{i}")),
-                        conflict: ConflictPolicy::Fail,
-                    })
-                    .unwrap(),
-            );
-        }
-        let session = f
-            .authority
-            .bind(
-                owner(),
-                uuid::Uuid::from_u128(999),
-                std::slice::from_ref(&f.dst),
-                &[],
-            )
-            .unwrap();
-        let before = f.receipt_bytes();
-        assert!(matches!(
-            session.start(FsOperation::CreateDirectory {
-                parent: f.dst.clone(),
-                name: name("overflow"),
-                conflict: ConflictPolicy::Fail
-            }),
-            Err(FsError::Busy)
-        ));
-        assert_eq!(f.receipt_bytes(), before);
-        assert!(!f.dest("overflow").exists());
-        job.request_cancel();
-        for j in &jobs {
-            j.request_cancel();
-        }
-        drop(release);
-        drop(job);
-        for mut j in jobs {
-            drain(&mut j);
-        }
-    }
-    #[test]
-    fn non_droppable_terminal_updates_survive_progress_pressure() {
-        let f = Fixture::new();
-        for n in ["a", "b"] {
-            fs::write(f.source(n), vec![13; 8 * 1024 * 1024]).unwrap();
-        }
-        let mut job = f
-            .session
-            .start(FsOperation::Copy {
-                entries: vec![f.entry("a"), f.entry("b")],
-                into: f.dst.clone(),
-                conflict: ConflictPolicy::Fail,
-            })
-            .unwrap();
-        terminal(&f, &job.operation_id());
-        let u = drain(&mut job);
-        assert_eq!(
-            u.iter().filter(|u| matches!(u, FsUpdate::Item(_))).count(),
-            2
-        );
-        assert_eq!(
-            u.iter()
-                .filter(|u| matches!(u, FsUpdate::Finished { .. }))
-                .count(),
-            1
-        );
-        assert!(matches!(
-            u.last(),
-            Some(FsUpdate::Finished {
-                completed: 2,
-                failed: 0,
-                cancelled: 0
-            })
-        ));
-    }
-    #[test]
-    fn worker_teardown_joins_after_last_owner() {
-        let f = Fixture::new();
-        fs::write(f.source("a"), vec![17; 2 * 1024 * 1024]).unwrap();
-        let barrier = Arc::new(Barrier::default());
-        f.hooks(Hooks {
-            barrier: Some(("after-chunk", barrier.clone())),
-            ..Hooks::default()
-        });
-        let job = f.session.start(f.copy("a")).unwrap();
-        let id = job.operation_id();
-        let release = Release(barrier.clone());
-        barrier.entered();
-        f.session.close();
-        drop(job);
-        drop(release);
-        terminal(&f, &id);
-        let store = f.store.clone();
-        drop(f.authority);
-        assert_ne!(store.report(&id).unwrap().state, OperationState::Running);
-    }
-    #[test]
-    fn keep_both_exhaustion_preserves_every_candidate() {
-        let f = Fixture::new();
-        fs::write(f.dest("a"), b"one").unwrap();
-        fs::write(f.dest("a 2"), b"two").unwrap();
-        f.hooks(Hooks {
-            attempts: Some(2),
-            ..Hooks::default()
-        });
-        let (_, u) = f.run(FsOperation::CreateFile {
-            parent: f.dst.clone(),
-            name: name("a"),
-            bytes: b"new".to_vec(),
-            conflict: ConflictPolicy::KeepBoth,
-        });
-        assert!(matches!(item(&u).error, Some(FsError::Conflict)));
-        assert_eq!(fs::read(f.dest("a")).unwrap(), b"one");
-        assert_eq!(fs::read(f.dest("a 2")).unwrap(), b"two");
-    }
-    #[test]
-    fn replaced_stage_is_never_published_or_cleaned_as_owned() {
-        let f = Fixture::new();
-        let bytes = vec![37; 2 * 1024 * 1024];
-        fs::write(f.source("a"), &bytes).unwrap();
-        let barrier = Arc::new(Barrier::default());
-        f.hooks(Hooks {
-            barrier: Some(("after-chunk", barrier.clone())),
-            ..Hooks::default()
-        });
-        let mut job = f.session.start(f.copy("a")).unwrap();
-        let release = Release(barrier.clone());
-        barrier.entered();
-        let stage = f.stage();
-        fs::rename(&stage, f.dest("held-provider-bytes")).unwrap();
-        fs::write(&stage, b"unrelated replacement").unwrap();
-        drop(release);
-        let u = drain(&mut job);
-        assert_ne!(item(&u).state, ItemState::Completed);
-        assert!(!f.dest("a").exists());
-        assert_eq!(fs::read(&stage).unwrap(), b"unrelated replacement");
-        assert_eq!(fs::read(f.source("a")).unwrap(), bytes);
-    }
-    #[test]
-    fn failed_publish_checkpoint_keeps_durable_stage_recovery() {
-        let f = Fixture::new();
-        fs::write(f.source("a"), b"recoverable").unwrap();
-        f.hooks(Hooks {
-            fail_checkpoint: Some("PublishStarted"),
-            ..Hooks::default()
-        });
-        let (id, u) = f.run(f.copy("a"));
-        assert_eq!(item(&u).state, ItemState::RecoveryRequired);
-        assert!(!f.dest("a").exists());
-        assert_eq!(fs::read(f.stage()).unwrap(), b"recoverable");
-        let recoveries = f.store.recoveries().unwrap();
-        assert_eq!(recoveries.len(), 1);
-        assert_eq!(recoveries[0].kind, RecoveryKind::KnownStaged);
-        assert_eq!(item(&u).recoveries, [recoveries[0].id.clone()]);
-        let f = f.reopen();
-        assert_eq!(
-            f.store.report(&id).unwrap().state,
-            OperationState::RecoveryRequired
-        );
-        assert_eq!(f.store.recoveries().unwrap().len(), 1);
-    }
-    #[test]
-    fn restore_rejects_unbound_changed_and_revoked_stages() {
-        let f = Fixture::new();
-        fs::write(f.source("a"), b"expected").unwrap();
-        f.hooks(Hooks {
-            stop_after_stage: true,
-            ..Hooks::default()
-        });
-        f.run(f.copy("a"));
-        let f = f.reopen();
-        let recovery = f.store.recoveries().unwrap().remove(0);
-        let unbound = f
-            .authority
-            .bind(
-                owner(),
-                uuid::Uuid::from_u128(0xc33),
-                std::slice::from_ref(&f.src),
-                &[],
-            )
-            .unwrap();
-        assert!(matches!(
-            f.store.resolve(
-                &recovery.id,
-                &unbound,
-                RecoveryResolution::RestoreKnown {
-                    parent: f.src.clone(),
-                    name: name("restore")
-                }
-            ),
-            Err(FsError::Denied)
-        ));
-        let stage = f.stage();
-        fs::write(&stage, b"modified").unwrap();
-        let mut job = f
-            .store
-            .resolve(
-                &recovery.id,
-                &f.session,
-                RecoveryResolution::RestoreKnown {
+            let before = f.receipt_bytes();
+            assert!(matches!(
+                session.start(FsOperation::CreateDirectory {
                     parent: f.dst.clone(),
-                    name: name("restore"),
-                },
-            )
-            .unwrap();
-        assert!(matches!(
-            item(&drain(&mut job)).error,
-            Some(FsError::StaleEntry)
-        ));
-        drop(job);
-        assert!(!f.dest("restore").exists());
-        assert_eq!(fs::read(&stage).unwrap(), b"modified");
-        f.authority.revoke_directory(&f.dst).unwrap();
-        assert!(
-            f.store
+                    name: name("overflow"),
+                    conflict: ConflictPolicy::Fail
+                }),
+                Err(FsError::Busy)
+            ));
+            assert_eq!(f.receipt_bytes(), before);
+            assert!(!f.dest("overflow").exists());
+            job.request_cancel();
+            for j in &jobs {
+                j.request_cancel();
+            }
+            drop(release);
+            drop(job);
+            for mut j in jobs {
+                drain(&mut j);
+            }
+        }
+        // phase: keep_both_exhaustion_preserves_every_candidate
+        {
+            let f = Fixture::new();
+            fs::write(f.dest("a"), b"one").unwrap();
+            fs::write(f.dest("a 2"), b"two").unwrap();
+            f.hooks(Hooks {
+                attempts: Some(2),
+                ..Hooks::default()
+            });
+            let (_, u) = f.run(FsOperation::CreateFile {
+                parent: f.dst.clone(),
+                name: name("a"),
+                bytes: b"new".to_vec(),
+                conflict: ConflictPolicy::KeepBoth,
+            });
+            assert!(matches!(item(&u).error, Some(FsError::Conflict)));
+            assert_eq!(fs::read(f.dest("a")).unwrap(), b"one");
+            assert_eq!(fs::read(f.dest("a 2")).unwrap(), b"two");
+        }
+    }
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn stages_are_published_or_cleaned_only_when_owned_and_accounted() {
+        // phase: replaced_stage_is_never_published_or_cleaned_as_owned
+        {
+            let f = Fixture::new();
+            let bytes = vec![37; 2 * 1024 * 1024];
+            fs::write(f.source("a"), &bytes).unwrap();
+            let barrier = Arc::new(Barrier::default());
+            f.hooks(Hooks {
+                barrier: Some(("after-chunk", barrier.clone())),
+                ..Hooks::default()
+            });
+            let mut job = f.session.start(f.copy("a")).unwrap();
+            let release = Release(barrier.clone());
+            barrier.entered();
+            let stage = f.stage();
+            fs::rename(&stage, f.dest("held-provider-bytes")).unwrap();
+            fs::write(&stage, b"unrelated replacement").unwrap();
+            drop(release);
+            let u = drain(&mut job);
+            assert_ne!(item(&u).state, ItemState::Completed);
+            assert!(!f.dest("a").exists());
+            assert_eq!(fs::read(&stage).unwrap(), b"unrelated replacement");
+            assert_eq!(fs::read(f.source("a")).unwrap(), bytes);
+        }
+        // phase: fix1_cleanup_sync_failure_never_claims_known_stage
+        {
+            let f = Fixture::new();
+            fs::write(f.source("a"), b"source bytes").unwrap();
+            fs::write(f.dest("a"), b"collision bytes").unwrap();
+            f.hooks(Hooks {
+                cleanup_sync_error: true,
+                ..Hooks::default()
+            });
+            let (id, updates) = f.run(f.copy("a"));
+            assert_eq!(item(&updates).state, ItemState::RecoveryRequired);
+            let recovery = f.store.recoveries().unwrap().remove(0);
+            assert_eq!(recovery.kind, RecoveryKind::NeedsRevalidation);
+            assert!(!recovery.acknowledged);
+            assert_eq!(fs::read_dir(f.dest("")).unwrap().count(), 1);
+            assert!(f.store.acknowledge_report(&id).is_err());
+            let f = f.reopen();
+            assert_eq!(
+                f.store.recoveries().unwrap()[0].kind,
+                RecoveryKind::UnknownNativeCommit
+            );
+            assert!(f.store.acknowledge_report(&id).is_err());
+            assert_eq!(fs::read(f.dest("a")).unwrap(), b"collision bytes");
+            assert_eq!(fs::read(f.source("a")).unwrap(), b"source bytes");
+        }
+        // phase: fix1_conflict_cleanup_failure_preserves_restorable_stage
+        {
+            let f = Fixture::new();
+            fs::write(f.source("a"), b"staged bytes").unwrap();
+            fs::write(f.dest("a"), b"existing bytes").unwrap();
+            f.hooks(Hooks {
+                cleanup_error: true,
+                ..Hooks::default()
+            });
+            let (id, updates) = f.run(f.copy("a"));
+            assert_eq!(item(&updates).state, ItemState::RecoveryRequired);
+            assert_eq!(fs::read(f.stage()).unwrap(), b"staged bytes");
+            assert!(f.store.acknowledge_report(&id).is_err());
+            let f = f.reopen();
+            let recovery = f.store.recoveries().unwrap().remove(0);
+            assert_eq!(recovery.kind, RecoveryKind::KnownStaged);
+            let mut job = f
+                .store
                 .resolve(
                     &recovery.id,
                     &f.session,
                     RecoveryResolution::RestoreKnown {
                         parent: f.dst.clone(),
+                        name: name("restored"),
+                    },
+                )
+                .unwrap();
+            assert_eq!(item(&drain(&mut job)).state, ItemState::Completed);
+            assert_eq!(fs::read(f.dest("restored")).unwrap(), b"staged bytes");
+            assert_eq!(fs::read(f.dest("a")).unwrap(), b"existing bytes");
+        }
+        // phase: fix1_stage_fingerprint_and_cleanup_errors_keep_unresolved_receipt
+        {
+            let f = Fixture::new();
+            fs::write(f.source("a"), b"unverified bytes").unwrap();
+            f.hooks(Hooks {
+                stage_fingerprint_error: true,
+                cleanup_error: true,
+                ..Hooks::default()
+            });
+            let (id, updates) = f.run(f.copy("a"));
+            assert_eq!(item(&updates).state, ItemState::RecoveryRequired);
+            assert!(!item(&updates).recoveries.is_empty());
+            assert_eq!(fs::read(f.stage()).unwrap(), b"unverified bytes");
+            assert!(f.store.acknowledge_report(&id).is_err());
+            let f = f.reopen();
+            assert_eq!(
+                f.store.recoveries().unwrap()[0].kind,
+                RecoveryKind::NeedsRevalidation
+            );
+            assert!(!f.store.recoveries().unwrap()[0].acknowledged);
+            assert!(f.store.acknowledge_report(&id).is_err());
+            assert_eq!(fs::read(f.stage()).unwrap(), b"unverified bytes");
+        }
+        // phase: fix1_cancel_during_stage_fingerprint_accounts_for_stage
+        {
+            let f = Fixture::new();
+            fs::write(f.source("a"), b"copied bytes").unwrap();
+            let barrier = Arc::new(Barrier::default());
+            f.hooks(Hooks {
+                barrier: Some(("stage-fingerprint", barrier.clone())),
+                ..Hooks::default()
+            });
+            let mut job = f.session.start(f.copy("a")).unwrap();
+            let id = job.operation_id();
+            let release = Release(barrier.clone());
+            barrier.entered();
+            assert_eq!(fs::read(f.stage()).unwrap(), b"copied bytes");
+            job.request_cancel();
+            drop(release);
+            let updates = drain(&mut job);
+            assert_eq!(item(&updates).state, ItemState::Cancelled);
+            assert_eq!(fs::read_dir(f.dest("")).unwrap().count(), 0);
+            assert!(
+                f.store
+                    .checkpoints(&id)
+                    .unwrap()
+                    .iter()
+                    .any(|p| p == "StageDiscarded")
+            );
+            drop(job);
+            let f = f.reopen();
+            assert!(f.store.recoveries().unwrap().is_empty());
+            f.store.acknowledge_report(&id).unwrap();
+        }
+        // phase: fix1_later_receipt_failure_does_not_hide_durable_item
+        {
+            let f = Fixture::new();
+            fs::write(f.source("a"), b"first").unwrap();
+            fs::write(f.source("b"), b"second").unwrap();
+            let barrier = Arc::new(Barrier::default());
+            f.hooks(Hooks {
+                barrier: Some(("before-item-two", barrier.clone())),
+                ..Hooks::default()
+            });
+            let mut job = f
+                .session
+                .start(FsOperation::Copy {
+                    entries: vec![f.entry("a"), f.entry("b")],
+                    into: f.dst.clone(),
+                    conflict: ConflictPolicy::Fail,
+                })
+                .unwrap();
+            let id = job.operation_id();
+            let release = Release(barrier.clone());
+            barrier.entered();
+            f.hooks(Hooks {
+                fail_checkpoint: Some("Item"),
+                ..Hooks::default()
+            });
+            drop(release);
+            let deadline = tilo_test_env::hang_deadline();
+            while !job.control.results.lock().unwrap().error {
+                assert!(Instant::now() < deadline, "receipt error deadline");
+                std::thread::yield_now();
+            }
+            let updates = job.poll().unwrap();
+            assert_eq!(item(&updates).item, 0);
+            assert_eq!(item(&updates).state, ItemState::Completed);
+            assert!(item(&updates).destination.is_some());
+            assert!(
+                !updates
+                    .iter()
+                    .any(|u| matches!(u, FsUpdate::Finished { .. }))
+            );
+            assert!(matches!(job.poll(), Err(FsError::StoreUnavailable)));
+            assert_eq!(fs::read(f.dest("a")).unwrap(), b"first");
+            let report = f.store.report(&id).unwrap();
+            assert_eq!(report.state, OperationState::Running);
+            assert_eq!(report.items.len(), 1);
+        }
+    }
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn restore_binds_fresh_separate_grants_and_reports_its_commit() {
+        // phase: restore_rejects_unbound_changed_and_revoked_stages
+        {
+            let f = Fixture::new();
+            fs::write(f.source("a"), b"expected").unwrap();
+            f.hooks(Hooks {
+                stop_after_stage: true,
+                ..Hooks::default()
+            });
+            f.run(f.copy("a"));
+            let f = f.reopen();
+            let recovery = f.store.recoveries().unwrap().remove(0);
+            let unbound = f
+                .authority
+                .bind(
+                    owner(),
+                    uuid::Uuid::from_u128(0xc33),
+                    std::slice::from_ref(&f.src),
+                    &[],
+                )
+                .unwrap();
+            assert!(matches!(
+                f.store.resolve(
+                    &recovery.id,
+                    &unbound,
+                    RecoveryResolution::RestoreKnown {
+                        parent: f.src.clone(),
                         name: name("restore")
                     }
+                ),
+                Err(FsError::Denied)
+            ));
+            let stage = f.stage();
+            fs::write(&stage, b"modified").unwrap();
+            let mut job = f
+                .store
+                .resolve(
+                    &recovery.id,
+                    &f.session,
+                    RecoveryResolution::RestoreKnown {
+                        parent: f.dst.clone(),
+                        name: name("restore"),
+                    },
                 )
-                .is_err()
-        );
-        assert!(!f.store.recoveries().unwrap()[0].acknowledged);
+                .unwrap();
+            assert!(matches!(
+                item(&drain(&mut job)).error,
+                Some(FsError::StaleEntry)
+            ));
+            drop(job);
+            assert!(!f.dest("restore").exists());
+            assert_eq!(fs::read(&stage).unwrap(), b"modified");
+            f.authority.revoke_directory(&f.dst).unwrap();
+            assert!(
+                f.store
+                    .resolve(
+                        &recovery.id,
+                        &f.session,
+                        RecoveryResolution::RestoreKnown {
+                            parent: f.dst.clone(),
+                            name: name("restore")
+                        }
+                    )
+                    .is_err()
+            );
+            assert!(!f.store.recoveries().unwrap()[0].acknowledged);
+        }
+        // phase: restore_checkpoint_failure_reports_committed_destination
+        {
+            let f = Fixture::new();
+            fs::write(f.source("a"), b"restore bytes").unwrap();
+            f.hooks(Hooks {
+                stop_after_stage: true,
+                ..Hooks::default()
+            });
+            f.run(f.copy("a"));
+            let recovery = f.store.recoveries().unwrap().remove(0);
+            f.hooks(Hooks {
+                fail_checkpoint: Some("Published"),
+                ..Hooks::default()
+            });
+            let mut job = f
+                .store
+                .resolve(
+                    &recovery.id,
+                    &f.session,
+                    RecoveryResolution::RestoreKnown {
+                        parent: f.dst.clone(),
+                        name: name("restored"),
+                    },
+                )
+                .unwrap();
+            let u = drain(&mut job);
+            assert_eq!(item(&u).state, ItemState::OutcomeUnknown);
+            assert!(item(&u).destination.is_some());
+            assert!(!item(&u).recoveries.is_empty());
+            assert_eq!(fs::read(f.dest("restored")).unwrap(), b"restore bytes");
+            assert!(
+                !f.store
+                    .recoveries()
+                    .unwrap()
+                    .iter()
+                    .find(|r| r.id == recovery.id)
+                    .unwrap()
+                    .acknowledged
+            );
+        }
+        // phase: restore_uses_separate_read_and_create_grants
+        {
+            let f = Fixture::new();
+            fs::write(f.source("a"), b"separate rights").unwrap();
+            f.hooks(Hooks {
+                stop_after_stage: true,
+                ..Hooks::default()
+            });
+            f.run(f.copy("a"));
+            f.hooks(Hooks::default());
+            let create = f
+                .authority
+                .admit_directory(
+                    fs::File::open(f.dest("")).unwrap(),
+                    owner(),
+                    vec![FsRight::Create],
+                )
+                .unwrap();
+            let read = f
+                .authority
+                .admit_directory(
+                    fs::File::open(f.dest("")).unwrap(),
+                    owner(),
+                    vec![FsRight::Read],
+                )
+                .unwrap();
+            let session = f
+                .authority
+                .bind(
+                    owner(),
+                    uuid::Uuid::from_u128(0xb22),
+                    &[create.clone(), read],
+                    &[],
+                )
+                .unwrap();
+            let id = f.store.recoveries().unwrap()[0].id.clone();
+            let mut job = f
+                .store
+                .resolve(
+                    &id,
+                    &session,
+                    RecoveryResolution::RestoreKnown {
+                        parent: create,
+                        name: name("restored"),
+                    },
+                )
+                .unwrap();
+            assert_eq!(item(&drain(&mut job)).state, ItemState::Completed);
+            assert_eq!(fs::read(f.dest("restored")).unwrap(), b"separate rights");
+        }
     }
     #[test]
     fn metadata_only_reopen_requires_fresh_readable_reconciliation() {
@@ -2887,183 +3638,6 @@ pub(super) mod tests {
         drop(disk);
         drop(meta);
     }
-    #[test]
-    fn uncertain_non_trash_boundary_is_acknowledged_without_replay() {
-        let f = Fixture::new();
-        fs::write(f.source("a"), b"native rename").unwrap();
-        f.hooks(Hooks {
-            fail_checkpoint: Some("Published"),
-            ..Hooks::default()
-        });
-        let (id, updates) = f.run(f.moving("a"));
-        assert_eq!(item(&updates).state, ItemState::OutcomeUnknown);
-        assert!(item(&updates).destination.is_some());
-        assert!(!f.source("a").exists());
-        assert_eq!(fs::read(f.dest("a")).unwrap(), b"native rename");
-        fs::rename(f.dest("a"), f.dest("held")).unwrap();
-        let f = f.reopen();
-        let recovery = f
-            .store
-            .recoveries()
-            .unwrap()
-            .into_iter()
-            .find(|r| r.operation == id)
-            .unwrap();
-        assert_eq!(recovery.kind, RecoveryKind::UnknownNativeCommit);
-        assert_eq!(
-            f.store.report(&id).unwrap().state,
-            OperationState::OutcomeUnknown
-        );
-        let mut job = f
-            .store
-            .resolve(
-                &recovery.id,
-                &f.session,
-                RecoveryResolution::AcknowledgeUnknown {
-                    note: "cannot establish current rename outcome".into(),
-                },
-            )
-            .unwrap();
-        drain(&mut job);
-        assert_eq!(
-            f.store.report(&id).unwrap().state,
-            OperationState::OutcomeUnknown
-        );
-        assert!(!f.source("a").exists());
-        assert!(!f.dest("a").exists());
-        assert_eq!(fs::read(f.dest("held")).unwrap(), b"native rename");
-    }
-    #[test]
-    fn directory_move_retains_new_source_bytes_before_removal() {
-        let f = Fixture::new();
-        fs::create_dir(f.source("tree")).unwrap();
-        fs::write(f.source("tree/original"), b"copied").unwrap();
-        let barrier = Arc::new(Barrier::default());
-        f.hooks(Hooks {
-            rename_error: Some(rustix::io::Errno::XDEV),
-            barrier: Some(("before-source-removal", barrier.clone())),
-            ..Hooks::default()
-        });
-        let mut job = f.session.start(f.moving("tree")).unwrap();
-        let release = Release(barrier.clone());
-        barrier.entered();
-        fs::write(f.source("tree/new"), b"new user bytes").unwrap();
-        drop(release);
-        let u = drain(&mut job);
-        assert_eq!(item(&u).state, ItemState::CopiedSourceRetained);
-        assert_eq!(fs::read(f.source("tree/new")).unwrap(), b"new user bytes");
-        assert_eq!(fs::read(f.dest("tree/original")).unwrap(), b"copied");
-    }
-    #[test]
-    fn terminal_metadata_room_is_reserved_before_first_effect() {
-        let f = Fixture::new();
-        fs::write(f.source("a"), b"quota guarded").unwrap();
-        f.hooks(Hooks {
-            metadata_limit: Some(2048),
-            ..Hooks::default()
-        });
-        assert!(matches!(
-            f.session.start(FsOperation::Copy {
-                entries: vec![f.entry("a"); 20],
-                into: f.dst.clone(),
-                conflict: ConflictPolicy::Fail
-            }),
-            Err(FsError::LimitExceeded)
-        ));
-        assert!(f.receipt_bytes().is_empty());
-        assert_eq!(fs::read_dir(f.dest("")).unwrap().count(), 0);
-        assert_eq!(fs::read(f.source("a")).unwrap(), b"quota guarded");
-    }
-    #[test]
-    fn restore_checkpoint_failure_reports_committed_destination() {
-        let f = Fixture::new();
-        fs::write(f.source("a"), b"restore bytes").unwrap();
-        f.hooks(Hooks {
-            stop_after_stage: true,
-            ..Hooks::default()
-        });
-        f.run(f.copy("a"));
-        let recovery = f.store.recoveries().unwrap().remove(0);
-        f.hooks(Hooks {
-            fail_checkpoint: Some("Published"),
-            ..Hooks::default()
-        });
-        let mut job = f
-            .store
-            .resolve(
-                &recovery.id,
-                &f.session,
-                RecoveryResolution::RestoreKnown {
-                    parent: f.dst.clone(),
-                    name: name("restored"),
-                },
-            )
-            .unwrap();
-        let u = drain(&mut job);
-        assert_eq!(item(&u).state, ItemState::OutcomeUnknown);
-        assert!(item(&u).destination.is_some());
-        assert!(!item(&u).recoveries.is_empty());
-        assert_eq!(fs::read(f.dest("restored")).unwrap(), b"restore bytes");
-        assert!(
-            !f.store
-                .recoveries()
-                .unwrap()
-                .iter()
-                .find(|r| r.id == recovery.id)
-                .unwrap()
-                .acknowledged
-        );
-    }
-    #[test]
-    fn restore_uses_separate_read_and_create_grants() {
-        let f = Fixture::new();
-        fs::write(f.source("a"), b"separate rights").unwrap();
-        f.hooks(Hooks {
-            stop_after_stage: true,
-            ..Hooks::default()
-        });
-        f.run(f.copy("a"));
-        f.hooks(Hooks::default());
-        let create = f
-            .authority
-            .admit_directory(
-                fs::File::open(f.dest("")).unwrap(),
-                owner(),
-                vec![FsRight::Create],
-            )
-            .unwrap();
-        let read = f
-            .authority
-            .admit_directory(
-                fs::File::open(f.dest("")).unwrap(),
-                owner(),
-                vec![FsRight::Read],
-            )
-            .unwrap();
-        let session = f
-            .authority
-            .bind(
-                owner(),
-                uuid::Uuid::from_u128(0xb22),
-                &[create.clone(), read],
-                &[],
-            )
-            .unwrap();
-        let id = f.store.recoveries().unwrap()[0].id.clone();
-        let mut job = f
-            .store
-            .resolve(
-                &id,
-                &session,
-                RecoveryResolution::RestoreKnown {
-                    parent: create,
-                    name: name("restored"),
-                },
-            )
-            .unwrap();
-        assert_eq!(item(&drain(&mut job)).state, ItemState::Completed);
-        assert_eq!(fs::read(f.dest("restored")).unwrap(), b"separate rights");
-    }
     fn changed_after_source_fingerprint(change: &str) {
         let f = Fixture::new();
         fs::create_dir(f.source("tree")).unwrap();
@@ -3099,147 +3673,11 @@ pub(super) mod tests {
         }
     }
     #[test]
-    fn fix1_added_child_after_fingerprint_is_retained() {
-        changed_after_source_fingerprint("added");
-    }
-    #[test]
-    fn fix1_replaced_child_after_fingerprint_is_retained() {
-        changed_after_source_fingerprint("replaced");
-    }
-    #[test]
-    fn fix1_modified_child_after_fingerprint_is_retained() {
-        changed_after_source_fingerprint("modified");
-    }
-    #[test]
-    fn fix1_cancel_during_stage_fingerprint_accounts_for_stage() {
-        let f = Fixture::new();
-        fs::write(f.source("a"), b"copied bytes").unwrap();
-        let barrier = Arc::new(Barrier::default());
-        f.hooks(Hooks {
-            barrier: Some(("stage-fingerprint", barrier.clone())),
-            ..Hooks::default()
-        });
-        let mut job = f.session.start(f.copy("a")).unwrap();
-        let id = job.operation_id();
-        let release = Release(barrier.clone());
-        barrier.entered();
-        assert_eq!(fs::read(f.stage()).unwrap(), b"copied bytes");
-        job.request_cancel();
-        drop(release);
-        let updates = drain(&mut job);
-        assert_eq!(item(&updates).state, ItemState::Cancelled);
-        assert_eq!(fs::read_dir(f.dest("")).unwrap().count(), 0);
-        assert!(
-            f.store
-                .checkpoints(&id)
-                .unwrap()
-                .iter()
-                .any(|p| p == "StageDiscarded")
-        );
-        drop(job);
-        let f = f.reopen();
-        assert!(f.store.recoveries().unwrap().is_empty());
-        f.store.acknowledge_report(&id).unwrap();
-    }
-    #[test]
-    fn fix1_stage_fingerprint_and_cleanup_errors_keep_unresolved_receipt() {
-        let f = Fixture::new();
-        fs::write(f.source("a"), b"unverified bytes").unwrap();
-        f.hooks(Hooks {
-            stage_fingerprint_error: true,
-            cleanup_error: true,
-            ..Hooks::default()
-        });
-        let (id, updates) = f.run(f.copy("a"));
-        assert_eq!(item(&updates).state, ItemState::RecoveryRequired);
-        assert!(!item(&updates).recoveries.is_empty());
-        assert_eq!(fs::read(f.stage()).unwrap(), b"unverified bytes");
-        assert!(f.store.acknowledge_report(&id).is_err());
-        let f = f.reopen();
-        assert_eq!(
-            f.store.recoveries().unwrap()[0].kind,
-            RecoveryKind::NeedsRevalidation
-        );
-        assert!(!f.store.recoveries().unwrap()[0].acknowledged);
-        assert!(f.store.acknowledge_report(&id).is_err());
-        assert_eq!(fs::read(f.stage()).unwrap(), b"unverified bytes");
-    }
-    #[test]
-    fn fix1_conflict_cleanup_failure_preserves_restorable_stage() {
-        let f = Fixture::new();
-        fs::write(f.source("a"), b"staged bytes").unwrap();
-        fs::write(f.dest("a"), b"existing bytes").unwrap();
-        f.hooks(Hooks {
-            cleanup_error: true,
-            ..Hooks::default()
-        });
-        let (id, updates) = f.run(f.copy("a"));
-        assert_eq!(item(&updates).state, ItemState::RecoveryRequired);
-        assert_eq!(fs::read(f.stage()).unwrap(), b"staged bytes");
-        assert!(f.store.acknowledge_report(&id).is_err());
-        let f = f.reopen();
-        let recovery = f.store.recoveries().unwrap().remove(0);
-        assert_eq!(recovery.kind, RecoveryKind::KnownStaged);
-        let mut job = f
-            .store
-            .resolve(
-                &recovery.id,
-                &f.session,
-                RecoveryResolution::RestoreKnown {
-                    parent: f.dst.clone(),
-                    name: name("restored"),
-                },
-            )
-            .unwrap();
-        assert_eq!(item(&drain(&mut job)).state, ItemState::Completed);
-        assert_eq!(fs::read(f.dest("restored")).unwrap(), b"staged bytes");
-        assert_eq!(fs::read(f.dest("a")).unwrap(), b"existing bytes");
-    }
-    #[test]
-    fn fix1_later_receipt_failure_does_not_hide_durable_item() {
-        let f = Fixture::new();
-        fs::write(f.source("a"), b"first").unwrap();
-        fs::write(f.source("b"), b"second").unwrap();
-        let barrier = Arc::new(Barrier::default());
-        f.hooks(Hooks {
-            barrier: Some(("before-item-two", barrier.clone())),
-            ..Hooks::default()
-        });
-        let mut job = f
-            .session
-            .start(FsOperation::Copy {
-                entries: vec![f.entry("a"), f.entry("b")],
-                into: f.dst.clone(),
-                conflict: ConflictPolicy::Fail,
-            })
-            .unwrap();
-        let id = job.operation_id();
-        let release = Release(barrier.clone());
-        barrier.entered();
-        f.hooks(Hooks {
-            fail_checkpoint: Some("Item"),
-            ..Hooks::default()
-        });
-        drop(release);
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while !job.control.results.lock().unwrap().error {
-            assert!(Instant::now() < deadline, "receipt error deadline");
-            std::thread::yield_now();
+    fn fix1_a_child_changed_after_the_fingerprint_is_retained() {
+        for change in ["added", "replaced", "modified"] {
+            eprintln!("case: {change} child after fingerprint");
+            changed_after_source_fingerprint(change);
         }
-        let updates = job.poll().unwrap();
-        assert_eq!(item(&updates).item, 0);
-        assert_eq!(item(&updates).state, ItemState::Completed);
-        assert!(item(&updates).destination.is_some());
-        assert!(
-            !updates
-                .iter()
-                .any(|u| matches!(u, FsUpdate::Finished { .. }))
-        );
-        assert!(matches!(job.poll(), Err(FsError::StoreUnavailable)));
-        assert_eq!(fs::read(f.dest("a")).unwrap(), b"first");
-        let report = f.store.report(&id).unwrap();
-        assert_eq!(report.state, OperationState::Running);
-        assert_eq!(report.items.len(), 1);
     }
     fn published_interruption(create: bool) {
         let f = Fixture::new();
@@ -3340,36 +3778,13 @@ pub(super) mod tests {
         drop(meta);
     }
     #[test]
-    fn fix1_interrupted_published_copy_requires_revalidation() {
-        published_interruption(false);
-    }
-    #[test]
-    fn fix1_interrupted_published_create_requires_revalidation() {
-        published_interruption(true);
-    }
-    #[test]
-    fn fix1_cleanup_sync_failure_never_claims_known_stage() {
-        let f = Fixture::new();
-        fs::write(f.source("a"), b"source bytes").unwrap();
-        fs::write(f.dest("a"), b"collision bytes").unwrap();
-        f.hooks(Hooks {
-            cleanup_sync_error: true,
-            ..Hooks::default()
-        });
-        let (id, updates) = f.run(f.copy("a"));
-        assert_eq!(item(&updates).state, ItemState::RecoveryRequired);
-        let recovery = f.store.recoveries().unwrap().remove(0);
-        assert_eq!(recovery.kind, RecoveryKind::NeedsRevalidation);
-        assert!(!recovery.acknowledged);
-        assert_eq!(fs::read_dir(f.dest("")).unwrap().count(), 1);
-        assert!(f.store.acknowledge_report(&id).is_err());
-        let f = f.reopen();
-        assert_eq!(
-            f.store.recoveries().unwrap()[0].kind,
-            RecoveryKind::UnknownNativeCommit
-        );
-        assert!(f.store.acknowledge_report(&id).is_err());
-        assert_eq!(fs::read(f.dest("a")).unwrap(), b"collision bytes");
-        assert_eq!(fs::read(f.source("a")).unwrap(), b"source bytes");
+    fn fix1_an_interrupted_published_copy_or_create_requires_revalidation() {
+        for create in [false, true] {
+            eprintln!(
+                "case: interrupted published {}",
+                if create { "create" } else { "copy" }
+            );
+            published_interruption(create);
+        }
     }
 }

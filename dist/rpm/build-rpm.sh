@@ -12,6 +12,9 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 out=${TILO_PACKAGE_OUT:-$repo_root/dist/rpm/build}
 name=tilo-session
 version=$(<"$repo_root/dist/VERSION")
+# Published packages are release 1; dist/rpm/host-update.sh names the commit.
+release=${TILO_RPM_RELEASE:-1}
+[[ $release =~ ^[0-9][0-9A-Za-z._+~]*$ ]] || { echo "invalid TILO_RPM_RELEASE: $release" >&2; exit 1; }
 
 run_cargo=1
 [[ ${1:-} == --no-cargo ]] && run_cargo=0
@@ -34,7 +37,7 @@ if (( run_cargo )); then
     # `shell` also owns developer tools such as `shots` and `tilo-control`.
     # Building the package without an explicit target compiles and LTO-links
     # those large binaries even though stage-payload never ships them.
-    ( cd "$repo_root" && cargo build --release --locked -p shell --bin shell --no-default-features )
+    ( cd "$repo_root" && cargo build --release --locked -p shell --bin shell --bin tilo-runtime-mcp --no-default-features )
 fi
 
 # Cargo resolves a relative CARGO_TARGET_DIR from the repository root (the
@@ -108,7 +111,7 @@ for socket in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
     install -pm 0644 "$repo_root/os/usr/lib/systemd/user/$socket.socket" \
         "$app_stage/systemd-user/$socket.socket"
 done
-install -pm 0644 "$repo_root/os/usr/lib/user-tmpfiles.d/tilo-model-manager.conf" \
+install -pm 0644 "$repo_root/os/usr/share/user-tmpfiles.d/tilo-model-manager.conf" \
     "$app_stage/user-tmpfiles/tilo-model-manager.conf"
 mkdir -p "$app_stage/profile.d"
 install -pm 0644 "$repo_root/os/etc/profile.d/tilo-apps.sh" \
@@ -128,6 +131,7 @@ rpmbuild_cmd=(
     rpmbuild -bb
     --define "_topdir $out"
     --define "tilo_version $version"
+    --define "tilo_release $release"
     "$out/SPECS/$name.spec"
 )
 if command -v rpmbuild >/dev/null 2>&1; then

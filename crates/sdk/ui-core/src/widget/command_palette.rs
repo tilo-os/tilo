@@ -1,13 +1,15 @@
-//! `CommandPalette` primitive — a fuzzy-matching searchable command list.
+//! `CommandPalette` primitive — a searchable command list that narrows as you type.
 //!
 //! Enter invokes the selected entry's `on_select` with the CRDT handle and
 //! root path directly — there is no message layer.
 
-use crate::search::fuzzy_score;
+use crate::search::ListIndex;
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashSet;
 use std::sync::Arc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_search::FieldWeight;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Color;
@@ -16,9 +18,10 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 use crate::icons::{self, Icon};
+use crate::paint::PaintCtx;
 use crate::platform::{PlatformConventions, Shortcut};
 use crate::presence::PresenceCtx;
-use crate::query_text::{QueryComposition, QueryEventChange};
+use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
 use crate::text_metrics::centered_text_top;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -148,6 +151,9 @@ pub struct CommandEntry {
     /// section can report what it's hiding instead of the painted count.
     pub group_total: Option<usize>,
     pub icon: Option<Icon>,
+    /// The application's own artwork, painted in place of `icon` when it
+    /// decodes.
+    pub image: Option<icons::AppImage>,
     pub on_select: Option<Arc<SelectFn>>,
     action_address: Option<ActionAddress>,
     action_argument: Option<String>,
@@ -166,6 +172,7 @@ impl std::fmt::Debug for CommandEntry {
             .field("group", &self.group)
             .field("group_total", &self.group_total)
             .field("icon", &self.icon)
+            .field("image", &self.image)
             .field("on_select", &self.on_select.as_ref().map(|_| "<fn>"))
             .field("action_address", &self.action_address)
             .field("action_argument", &self.action_argument)
@@ -186,6 +193,7 @@ impl CommandEntry {
             group: None,
             group_total: None,
             icon: None,
+            image: None,
             on_select: None,
             action_address: None,
             action_argument: None,
@@ -223,6 +231,12 @@ impl CommandEntry {
     }
 
     #[must_use]
+    pub fn image(mut self, image: icons::AppImage) -> Self {
+        self.image = Some(image);
+        self
+    }
+
+    #[must_use]
     pub fn keybinding(mut self, k: impl Into<String>) -> Self {
         self.keybinding = Some(k.into());
         self
@@ -240,23 +254,28 @@ impl CommandEntry {
         self.shortcut
             .as_ref()
             .map(|shortcut| shortcut.label(platform))
-            .or_else(|| self.keybinding.clone())
+            .or_else(|| self.free_text_keycaps().map(|caps| caps.join("+")))
     }
 
     fn keycap_labels(&self, platform: PlatformConventions) -> Option<Vec<String>> {
         self.shortcut
             .as_ref()
             .map(|shortcut| shortcut.keycap_labels(platform))
-            .or_else(|| {
-                self.keybinding.as_ref().map(|binding| {
-                    binding
-                        .split('+')
-                        .map(str::trim)
-                        .filter(|part| !part.is_empty())
-                        .map(str::to_owned)
-                        .collect()
-                })
-            })
+            .or_else(|| self.free_text_keycaps())
+    }
+
+    /// A free-text keybinding (`Super+H`), one cap per `+`-separated part,
+    /// each in the legends of the active keyboard layout.
+    fn free_text_keycaps(&self) -> Option<Vec<String>> {
+        let keycaps = crate::keycaps::active();
+        self.keybinding.as_ref().map(|binding| {
+            binding
+                .split('+')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(|part| keycaps.token(part))
+                .collect()
+        })
     }
 
     #[must_use]
@@ -322,17 +341,6 @@ impl CommandEntry {
         }
         entry.action_address = Some(ActionAddress::new(&fa.resource_id.0, &fa.action.id));
         entry
-    }
-
-    /// Case-insensitive subsequence match over label *or* description. Empty
-    /// query always matches.
-    fn matches(&self, query: &str) -> bool {
-        if fuzzy_score(query, &self.label).is_some() {
-            return true;
-        }
-        self.description
-            .as_deref()
-            .is_some_and(|d| fuzzy_score(query, d).is_some())
     }
 }
 
@@ -400,6 +408,15 @@ struct ArgState {
 /// A predicate narrowing which [`CommandEntry`] rows are shown.
 type EntryFilter = Box<dyn Fn(&CommandEntry) -> bool + Send + Sync>;
 
+/// A filter chip's colours in one state: its body fill, an optional
+/// hairline edge, and its label ink.
+#[derive(Clone, Copy)]
+struct FilterChipLook {
+    body: Color,
+    edge: Option<Color>,
+    text: Color,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is an independent, orthogonal display/behavior toggle \
@@ -409,6 +426,9 @@ type EntryFilter = Box<dyn Fn(&CommandEntry) -> bool + Send + Sync>;
 )]
 pub struct CommandPalette {
     entries: Vec<CommandEntry>,
+    /// Labels and descriptions of `entries`, indexed while they stay the
+    /// same.
+    entry_index: ListIndex,
     query: String,
     /// Hint shown while the main query is empty. Hosts use this to name the
     /// resource being searched (files, commands, applications, ...).
@@ -434,7 +454,7 @@ pub struct CommandPalette {
     /// Native palette rows enqueue an inert address+arguments request here.
     /// The application host re-resolves it against the fresh resource tree,
     /// exactly like a bound Button; the palette never executes app code.
-    action_invocation: Option<ControlInvocation>,
+    action_invocation: crate::control_custody::ControlHolder,
     /// Skip the built-in fuzzy filter when `true`, for provider hosts whose
     /// pre-matched result set should show verbatim.
     bypass_fuzzy: bool,
@@ -479,8 +499,9 @@ impl CommandPalette {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
+            entry_index: ListIndex::default(),
             query: String::new(),
-            query_placeholder: "Search\u{2026}".to_string(),
+            query_placeholder: crate::i18n!("palette-placeholder"),
             query_selection: crate::text_selection::Selection::collapsed(0),
             query_composition: QueryComposition::new(),
             filter: None,
@@ -495,7 +516,9 @@ impl CommandPalette {
             arg_state: None,
             direct_argument: false,
             outcome: None,
-            action_invocation: None,
+            action_invocation: crate::control_custody::ControlHolder::new(
+                crate::control_custody::ControlProducerDiscipline::ReplaceOne,
+            ),
             bypass_fuzzy: false,
             hide_filter_strip: false,
             host_filter_strip: false,
@@ -546,7 +569,7 @@ impl CommandPalette {
         self.arg_state = None;
         self.direct_argument = false;
         self.outcome = None;
-        self.action_invocation = None;
+        self.action_invocation.clear();
         self.cursor = 0;
         self.rebuild();
     }
@@ -598,7 +621,7 @@ impl CommandPalette {
         self.set_entries(vec![entry]);
         self.is_focused = true;
         self.outcome = None;
-        self.action_invocation = None;
+        self.action_invocation.clear();
         self.direct_argument = true;
         self.arg_state = Some(ArgState {
             entry_id: id,
@@ -811,7 +834,8 @@ impl CommandPalette {
             if let (Some(name), Some(value)) = (&entry.action_argument, argument) {
                 arguments.insert(name.clone(), serde_json::Value::String(value));
             }
-            self.action_invocation = Some(ControlInvocation { address, arguments });
+            self.action_invocation
+                .emit(ControlInvocation { address, arguments });
             self.outcome = None;
             self.arg_state = None;
             if self.mode == PaletteMode::Commands {
@@ -839,12 +863,6 @@ impl CommandPalette {
     /// full parameter list is the same key/state/path threading every other
     /// event handler in this file needs, so splitting it up would only
     /// fragment one cohesive state transition.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "immediate-mode key routing needs the raw event, the decoded \
-                  key and modifiers, and the CRDT handle to run the entry — \
-                  every parameter is independently load-bearing"
-    )]
     fn handle_arg_key(
         &mut self,
         event: &WindowEvent,
@@ -1234,12 +1252,13 @@ impl CommandPalette {
                 tx += f64::from(hw);
             }
             arg.composition.draw(
-                scene,
-                transform,
-                text_renderer,
-                &arg.buffer,
-                &arg.selection,
-                &arg.placeholder,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                QueryView {
+                    text: &arg.buffer,
+                    selection: &arg.selection,
+                    placeholder: &arg.placeholder,
+                    show_caret: self.is_focused,
+                },
                 Rect::new(
                     tx,
                     layout.input_rect.y0,
@@ -1247,27 +1266,20 @@ impl CommandPalette {
                     layout.input_rect.y1,
                 ),
                 &style,
-                colors.text_primary,
-                colors.text_dim,
-                colors.accent[5].with_alpha_factor(0.3),
-                colors.accent[5],
-                self.is_focused,
+                QueryInk::accented(colors.text_primary, colors.text_dim, colors.accent[5]),
             );
         } else {
             self.query_composition.draw(
-                scene,
-                transform,
-                text_renderer,
-                &self.query,
-                &self.query_selection,
-                &self.query_placeholder,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                QueryView {
+                    text: &self.query,
+                    selection: &self.query_selection,
+                    placeholder: &self.query_placeholder,
+                    show_caret: self.is_focused,
+                },
                 layout.input_rect,
                 &style,
-                colors.text_primary,
-                colors.text_dim,
-                colors.accent[5].with_alpha_factor(0.3),
-                colors.accent[5],
-                self.is_focused,
+                QueryInk::accented(colors.text_primary, colors.text_dim, colors.accent[5]),
             );
         }
     }
@@ -1290,59 +1302,58 @@ impl CommandPalette {
         let strip = self.filter_strip_rect();
         let chip_text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
 
-        let active_fill = theme.tokens.colors.accent[5];
+        let active = FilterChipLook {
+            body: theme.tokens.colors.accent[5],
+            edge: None,
+            text: theme.tokens.colors.text_primary,
+        };
         // Idle scope chips are Selectors (HIG §9.5): no fill, outlined by a
         // hairline derived against the panel ground they sit on — a white
         // veneer disappeared on a light palette, and a base-relative lift
         // reads as a well on a panel ground darker than `raised`.
-        let idle_fill = Color::TRANSPARENT;
-        let idle_edge = Some(crate::surface::edge_on(crate::chrome::panel_ground(theme)));
-        let active_text = theme.tokens.colors.text_primary;
-        let idle_text = theme.tokens.colors.text_dim;
+        let idle = FilterChipLook {
+            body: Color::TRANSPARENT,
+            edge: Some(crate::surface::edge_on(crate::chrome::panel_ground(theme))),
+            text: theme.tokens.colors.text_dim,
+        };
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
 
         let mut x = strip.x0;
         for (scope, label) in [
             (SearchScope::Workspace, "WORKSPACE"),
             (SearchScope::All, "ALL"),
         ] {
-            let (w, _) = text_renderer.measure(label, chip_text_size, None);
+            let (w, _) = ctx.text.measure(label, chip_text_size, None);
             let chip_w = f64::from(w) + 16.0;
             let chip = Self::chip_rect(strip, x, chip_w);
-            let active = self.search_filter.scope == scope;
-            Self::draw_chip(
-                scene,
-                transform,
-                text_renderer,
-                chip,
-                label,
-                chip_text_size,
-                if active { active_fill } else { idle_fill },
-                if active { None } else { idle_edge },
-                if active { active_text } else { idle_text },
-            );
+            let look = if self.search_filter.scope == scope {
+                active
+            } else {
+                idle
+            };
+            Self::draw_chip(&mut ctx, chip, label, chip_text_size, look);
             x += chip_w + 6.0;
         }
 
         let ft_label = "FULL TEXT";
-        let (ft_w, _) = text_renderer.measure(ft_label, chip_text_size, None);
+        let (ft_w, _) = ctx.text.measure(ft_label, chip_text_size, None);
         let ft_chip_w = f64::from(ft_w) + 16.0;
         let ft_chip = Self::chip_rect(strip, strip.x1 - ft_chip_w, ft_chip_w);
         let ft_on = self.search_filter.full_text;
         // "On" is a semantic state the theme defines (HIG §9.4), not a
         // Tailwind emerald that ignores the palette.
         let success = theme.tokens.colors.semantic.success;
-        let ft_active_fill = success.with_alpha_factor(0.2);
-        let ft_active_text = success;
+        let ft_active = FilterChipLook {
+            body: success.with_alpha_factor(0.2),
+            edge: None,
+            text: success,
+        };
         Self::draw_chip(
-            scene,
-            transform,
-            text_renderer,
+            &mut ctx,
             ft_chip,
             ft_label,
             chip_text_size,
-            if ft_on { ft_active_fill } else { idle_fill },
-            if ft_on { None } else { idle_edge },
-            if ft_on { ft_active_text } else { idle_text },
+            if ft_on { ft_active } else { idle },
         );
 
         // Filetype chips fill the gap up to 8 px before the full-text toggle.
@@ -1350,53 +1361,46 @@ impl CommandPalette {
         let max_x = ft_chip.x0 - 8.0;
         for ft in Filetype::ALL {
             let label = ft.label();
-            let (w, _) = text_renderer.measure(label, chip_text_size, None);
+            let (w, _) = ctx.text.measure(label, chip_text_size, None);
             let chip_w = f64::from(w) + 16.0;
             if fx + chip_w > max_x {
                 break;
             }
             let chip = Self::chip_rect(strip, fx, chip_w);
-            let active = self.search_filter.filetypes.contains(&ft);
-            Self::draw_chip(
-                scene,
-                transform,
-                text_renderer,
-                chip,
-                label,
-                chip_text_size,
-                if active { active_fill } else { idle_fill },
-                if active { None } else { idle_edge },
-                if active { active_text } else { idle_text },
-            );
+            let look = if self.search_filter.filetypes.contains(&ft) {
+                active
+            } else {
+                idle
+            };
+            Self::draw_chip(&mut ctx, chip, label, chip_text_size, look);
             fx += chip_w + 6.0;
         }
     }
 
-    // Standard immediate-mode paint-helper signature for this vello
-    // renderer (scene + transform + text_renderer + theme, plus this
-    // draw's own content); every parameter is independently load-bearing.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one paint-helper signature reused by every chip in the \
-                  strip; each parameter is an independently load-bearing \
-                  piece of what gets drawn"
-    )]
     fn draw_chip(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
+        ctx: &mut PaintCtx<'_>,
         chip: Rect,
         label: &str,
         text_size: f32,
-        body: Color,
-        edge: Option<Color>,
-        text_color: Color,
+        look: FilterChipLook,
     ) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            ..
+        } = ctx.reborrow();
         // `rounded-full` ≈ half-height radius.
         let radius = chip.height() / 2.0;
         let shape = RoundedRect::from_rect(chip, radius);
-        scene.fill(vello::peniko::Fill::NonZero, transform, body, None, &shape);
-        if let Some(edge) = edge {
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            look.body,
+            None,
+            &shape,
+        );
+        if let Some(edge) = look.edge {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -1412,7 +1416,7 @@ impl CommandPalette {
             scene,
             label,
             text_size,
-            text_color,
+            look.text,
             transform.pre_translate(Vec2::new(tx, ty)),
             None,
         );
@@ -1453,19 +1457,16 @@ impl CommandPalette {
         let chip_h = (footer.height() - 12.0).max(13.0);
 
         let mut x = footer.x0 + 6.0;
-        let hints: &[(&str, &str)] = match self.mode {
-            PaletteMode::Search => &[
-                ("\u{2191}\u{2193}", "Navigate"),
-                ("\u{21b5}", "Open"),
-                ("Esc", "Close"),
-            ],
-            PaletteMode::Commands => &[
-                ("\u{2191}\u{2193}", "Navigate"),
-                ("\u{21b5}", "Run"),
-                ("Esc", "Close"),
-            ],
+        let activate = match self.mode {
+            PaletteMode::Search => "palette-hint-open",
+            PaletteMode::Commands => "palette-hint-run",
         };
-        for (key, label) in hints {
+        let hints = [
+            ("\u{2191}\u{2193}", crate::i18n!("palette-hint-navigate")),
+            ("\u{21b5}", crate::i18n!(activate)),
+            ("Esc", crate::i18n!("palette-hint-close")),
+        ];
+        for (key, label) in &hints {
             let (kw, kh) = text_renderer.measure(key, size, None);
             let chip_w = (f64::from(kw) + 10.0).max(chip_h);
             let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
@@ -1502,11 +1503,7 @@ impl CommandPalette {
 
         let n = self.result_total();
         if n > 0 {
-            let right = if n == 1 {
-                "1 result".to_string()
-            } else {
-                format!("{n} results")
-            };
+            let right = crate::i18n!("palette-result-count", "count" => n);
             let (sw, sh) = text_renderer.measure(&right, size, None);
             text_renderer.draw_text(
                 scene,
@@ -1531,8 +1528,6 @@ impl CommandPalette {
         theme: &Theme,
     ) {
         let colors = &theme.tokens.colors;
-        let label_size = theme.tokens.typography.scale.sm;
-        let desc_size = (theme.tokens.typography.scale.xs).max(10.0);
         let header_size = (theme.tokens.typography.scale.xs).max(9.0);
         let rh = self.row_height();
         let x0 = self.rect.x0 + PADDING;
@@ -1577,17 +1572,11 @@ impl CommandPalette {
                         .and_then(|&idx| self.entries.get(idx))
                     {
                         let selected = *entry_i == self.cursor;
-                        Self::draw_one_row(
-                            scene,
-                            transform,
-                            text_renderer,
-                            theme,
+                        self.draw_one_row(
+                            &mut PaintCtx::new(scene, transform, text_renderer, theme),
                             row_rect,
                             entry,
                             selected,
-                            label_size,
-                            desc_size,
-                            self.platform,
                         );
                     }
                     y += rh;
@@ -1646,6 +1635,29 @@ impl CommandPalette {
 
     /// Paints the row's leading icon, if any, and returns where the label
     /// text should start.
+    fn row_icon_rect(row: Rect) -> Rect {
+        let size = 16.0;
+        let cy = f64::midpoint(row.y0, row.y1);
+        Rect::new(
+            row.x0 + 12.0,
+            cy - size / 2.0,
+            row.x0 + 12.0 + size,
+            cy + size / 2.0,
+        )
+    }
+
+    /// The row's application artwork; the x its label starts at, or `None`
+    /// when the artwork has no pixels and the glyph must stand in.
+    fn draw_row_image(
+        scene: &mut Scene,
+        transform: Affine,
+        row: Rect,
+        image: &icons::AppImage,
+    ) -> Option<f64> {
+        let icon_rect = Self::row_icon_rect(row);
+        icons::draw_app_image(scene, transform, icon_rect, image).then_some(icon_rect.x1 + 10.0)
+    }
+
     fn draw_row_icon(
         scene: &mut Scene,
         transform: Affine,
@@ -1654,14 +1666,7 @@ impl CommandPalette {
         colors: &crate::tokens::Colors,
         selected: bool,
     ) -> f64 {
-        let size = 16.0;
-        let cy = f64::midpoint(row.y0, row.y1);
-        let icon_rect = Rect::new(
-            row.x0 + 12.0,
-            cy - size / 2.0,
-            row.x0 + 12.0 + size,
-            cy + size / 2.0,
-        );
+        let icon_rect = Self::row_icon_rect(row);
         let tint = if selected {
             colors.text_primary
         } else {
@@ -1674,23 +1679,21 @@ impl CommandPalette {
     /// Paints the row's trailing decoration — a keybinding chip or an
     /// argument-entry cue, mutually exclusive — and returns the x the label
     /// text must stay clear of.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one paint-helper for the row's trailing decoration; each \
-                  parameter is independently load-bearing"
-    )]
     fn draw_row_trailing(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        &self,
+        ctx: &mut PaintCtx<'_>,
         row: Rect,
         entry: &CommandEntry,
-        colors: &crate::tokens::Colors,
-        label_size: f32,
         selected: bool,
-        platform: PlatformConventions,
     ) -> f64 {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let colors = &theme.tokens.colors;
+        let (label_size, _) = Self::row_text_sizes(theme);
         // Reserved before measuring the text, so a long title is ellipsised
         // rather than painted under the chip.
         if let Some(badge) = &entry.badge {
@@ -1729,7 +1732,7 @@ impl CommandPalette {
                 None,
             );
             pill.x0 - 8.0
-        } else if let Some(labels) = entry.keycap_labels(platform) {
+        } else if let Some(labels) = entry.keycap_labels(self.platform) {
             let chip_w =
                 crate::widget::InputHint::measure_keycap_labels(&labels, text_renderer, theme);
             let chip_h = 26.0;
@@ -1774,26 +1777,27 @@ impl CommandPalette {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "standard immediate-mode paint-helper signature for this \
-                  vello renderer (scene + transform + text_renderer + theme, \
-                  plus this row's own content); every parameter is \
-                  independently load-bearing"
-    )]
+    /// Type sizes of a result row's title and of its description line.
+    fn row_text_sizes(theme: &Theme) -> (f32, f32) {
+        let scale = &theme.tokens.typography.scale;
+        (scale.sm, scale.xs.max(10.0))
+    }
+
     fn draw_one_row(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        &self,
+        ctx: &mut PaintCtx<'_>,
         row: Rect,
         entry: &CommandEntry,
         selected: bool,
-        label_size: f32,
-        desc_size: f32,
-        platform: PlatformConventions,
     ) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
         let colors = &theme.tokens.colors;
+        let (label_size, desc_size) = Self::row_text_sizes(theme);
         let row_ground = Self::row_ground(theme, selected);
         // Needs contrast against the selection wash: take the nearest
         // legible step from the theme's dim tone rather than promoting it
@@ -1810,21 +1814,21 @@ impl CommandPalette {
         }
 
         let mut text_x = row.x0 + 12.0;
-        if let Some(icon) = entry.icon {
+        let image_x = entry
+            .image
+            .as_ref()
+            .and_then(|image| Self::draw_row_image(scene, transform, row, image));
+        if let Some(x) = image_x {
+            text_x = x;
+        } else if let Some(icon) = entry.icon {
             text_x = Self::draw_row_icon(scene, transform, row, icon, colors, selected);
         }
 
-        let text_right = Self::draw_row_trailing(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+        let text_right = self.draw_row_trailing(
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             row,
             entry,
-            colors,
-            label_size,
             selected,
-            platform,
         );
         let avail = (text_right - text_x).max(0.0);
 
@@ -1911,7 +1915,8 @@ impl CommandPalette {
             None,
         );
         let hint_size = (theme.tokens.typography.scale.xs).max(10.0);
-        let hint = "Try fewer words, or widen the scope";
+        let hint = crate::i18n!("palette-no-results-hint");
+        let hint = hint.as_str();
         let (hw, _) = text_renderer.measure(hint, hint_size, None);
         text_renderer.draw_text(
             scene,
@@ -1928,9 +1933,9 @@ impl CommandPalette {
 
     fn empty_results_title(&self) -> String {
         if self.query.is_empty() {
-            "Nothing to show".to_string()
+            crate::i18n!("palette-empty")
         } else {
-            format!("No results for “{}”", self.query)
+            crate::i18n!("palette-no-results", "query" => self.query.as_str())
         }
     }
 
@@ -1945,13 +1950,30 @@ impl CommandPalette {
 
     fn rebuild(&mut self) {
         self.visible.clear();
+        let matching = (!self.bypass_fuzzy).then(|| {
+            self.entry_index.ranks(
+                &self.query,
+                self.entries.iter().map(|entry| {
+                    [
+                        (entry.label.as_str(), FieldWeight::TITLE),
+                        (
+                            entry.description.as_deref().unwrap_or_default(),
+                            FieldWeight::SUBTITLE,
+                        ),
+                    ]
+                }),
+            )
+        });
         for (i, e) in self.entries.iter().enumerate() {
             if let Some(f) = &self.filter
                 && !f(e)
             {
                 continue;
             }
-            if !self.bypass_fuzzy && !e.matches(&self.query) {
+            if matching
+                .as_ref()
+                .is_some_and(|ranks| ranks.get(i).is_none_or(Option::is_none))
+            {
                 continue;
             }
             self.visible.push(i);
@@ -2014,30 +2036,11 @@ const FILTER_STRIP_HEIGHT: f64 = 36.0;
 const FOOTER_HEIGHT: f64 = 28.0;
 
 impl Widget for CommandPalette {
-    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.action_invocation.take()
-    }
-
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        self.entries
-            .iter()
-            .filter_map(|entry| {
-                entry
-                    .action_address
-                    .clone()
-                    .map(|address| crate::widget::ControlBindingMetadata {
-                        control_id: entry.id.clone(),
-                        kind: crate::widget::ControlBindingKind::Action(address),
-                    })
-            })
-            .collect()
-    }
+    crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
     }
-
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
     fn build_layout(
         &mut self,
@@ -2158,22 +2161,11 @@ impl Widget for CommandPalette {
         text_renderer.set_text_scale(renderer_scale);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.is_focused {
             return;
         }
-        if self.handle_pointer_event(event, scale_factor, state, path, handled) {
+        if self.handle_pointer_event(event, ctx.scale_factor, ctx.state, ctx.path, ctx.handled) {
             return;
         }
         if matches!(event, WindowEvent::Ime(_)) {
@@ -2197,7 +2189,7 @@ impl Widget for CommandPalette {
             if self.arg_state.is_none() && change == QueryEventChange::Edited {
                 self.rebuild();
             }
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if let WindowEvent::KeyboardInput {
@@ -2213,11 +2205,19 @@ impl Widget for CommandPalette {
             if *element_state != ElementState::Pressed {
                 return;
             }
-            let mods = modifiers.state();
+            let mods = ctx.modifiers.state();
             let shift = mods.shift_key();
             let ctrl = mods.control_key() || mods.super_key();
             if self.arg_state.is_some() {
-                self.handle_arg_key(event, logical_key, shift, ctrl, state, path, handled);
+                self.handle_arg_key(
+                    event,
+                    logical_key,
+                    shift,
+                    ctrl,
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
+                );
                 return;
             }
             match logical_key {
@@ -2229,19 +2229,19 @@ impl Widget for CommandPalette {
                             .min(self.visible.len().saturating_sub(1));
                     }
                     // Consume even at the list end so it never scrolls the app.
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 Key::Named(NamedKey::ArrowUp) => {
                     self.cursor = self.cursor.saturating_sub(1);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 Key::Named(NamedKey::Enter) => {
-                    self.activate_selected(state, path);
-                    *handled = true;
+                    self.activate_selected(ctx.state, ctx.path);
+                    *ctx.handled = true;
                 }
                 Key::Named(NamedKey::Escape) => {
                     self.is_focused = false;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 _ => {
                     let change = self.query_composition.handle_event(
@@ -2255,7 +2255,7 @@ impl Widget for CommandPalette {
                         self.rebuild();
                     }
                     if change != QueryEventChange::Ignored {
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
             }
@@ -2323,7 +2323,7 @@ impl Widget for CommandPalette {
         use crate::a11y::{AccessNode, AccessState, Role};
         let open = self.is_open();
         let mut node = AccessNode::new(Role::Dialog)
-            .with_name("Command palette")
+            .with_name(crate::i18n!("palette-name"))
             .with_state(AccessState {
                 focusable: self.is_focusable(),
                 focused: self.is_focused(),
@@ -2345,10 +2345,19 @@ impl Widget for CommandPalette {
             .map_or((&self.query_placeholder, &self.query), |arg| {
                 (&arg.placeholder, &arg.buffer)
             });
+        // The caret makes the field a text field for assistive technology
+        // (AT-SPI Text and EditableText), not only a labelled value: a screen
+        // reader can then read and set the query as it would any other input.
+        let (anchor, caret) = if self.arg_state.is_some() {
+            (query.1.len(), query.1.len())
+        } else {
+            (self.query_selection.anchor, self.query_selection.cursor)
+        };
         let query_node = AccessNode::new(Role::TextInput)
             .with_action_target("command-palette:query")
             .with_name(query.0.clone())
             .with_value(query.1.clone())
+            .with_text_selection(anchor, caret)
             .with_bounds(self.input_row_rect())
             .with_state(AccessState {
                 focusable: true,
@@ -2392,14 +2401,14 @@ impl Widget for CommandPalette {
             result_children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name(self.empty_results_title())
-                    .with_description("Try fewer words, or widen the scope")
+                    .with_description(crate::i18n!("palette-no-results-hint"))
                     .with_bounds(self.empty_results_rect()),
             );
         }
         node = node.with_children(vec![
             query_node,
             AccessNode::new(Role::List)
-                .with_name("Results")
+                .with_name(crate::i18n!("palette-results"))
                 .with_bounds(Rect::new(
                     self.rect.x0 + PADDING,
                     self.list_top_y(),
@@ -2451,8 +2460,8 @@ impl Widget for CommandPalette {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         match action {
             crate::a11y::Action::Focus | crate::a11y::Action::Activate => {
@@ -2467,15 +2476,23 @@ impl Widget for CommandPalette {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, path) = crate::doc::document(state, path);
 
         if target == "command-palette:query" {
             return match action {
                 Action::Focus | Action::Activate => {
                     self.is_focused = true;
+                    true
+                }
+                // Assistive technology and agents set the query as a value,
+                // exactly as typing it would.
+                Action::SetValue(value) if self.arg_state.is_none() => {
+                    self.is_focused = true;
+                    self.set_query(value);
                     true
                 }
                 _ => false,
@@ -2501,6 +2518,33 @@ impl Widget for CommandPalette {
     }
 }
 
+impl crate::widget::controls::ActionControls for CommandPalette {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        let _ = self.action_invocation.install(domain, attachment);
+    }
+    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
+        self.action_invocation.take()
+    }
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        self.entries
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .action_address
+                    .clone()
+                    .map(|address| crate::widget::ControlBindingMetadata {
+                        control_id: entry.id.clone(),
+                        kind: crate::widget::ControlBindingKind::Action(address),
+                    })
+            })
+            .collect()
+    }
+}
+
 impl CommandPalette {
     /// For hosts rendering the palette as a free-floating overlay.
     /// `handle_event` ignores the taffy tree + node id, so a throwaway
@@ -2519,14 +2563,16 @@ impl CommandPalette {
         <Self as Widget>::handle_event(
             self,
             event,
-            1.0,
-            modifiers,
-            state,
-            path,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers,
+                state,
+                path,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -2559,414 +2605,678 @@ mod tests {
     }
 
     #[test]
-    fn large_text_palette_reserves_painted_rows_and_scales_fonts_once() {
-        let mut p = CommandPalette::new();
-        p.push(
-            CommandEntry::new("files", "Open Files")
-                .description("Opens beside")
-                .group("Applications"),
-        );
-        p.push(
-            CommandEntry::new("editor", "Open Editor")
-                .description("Opens beside")
-                .group("Applications"),
-        );
-        p.open();
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut tree = TaffyTree::new();
-        p.build_layout(&mut tree, &theme, &mut std::collections::HashMap::new());
-        let (_, height) = p.desired_size();
-        p.set_rect(Rect::new(16.0, 96.0, 784.0, 96.0 + height));
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let (_, label_h) = tr.measure("Open Files", theme.tokens.typography.scale.sm / 2.0, None);
-        let (_, desc_h) = tr.measure("Opens beside", theme.tokens.typography.scale.xs / 2.0, None);
-        assert!(p.row_height() >= f64::from(label_h + desc_h) + 6.0);
-        let mut scene = Scene::new();
-        p.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::default(),
-        );
-        let runs = &scene.encoding().resources.glyph_runs;
-        assert!(
-            runs.iter()
-                .all(|run| run.font_size <= theme.tokens.typography.scale.base)
-        );
-        assert!(
-            runs.iter()
-                .any(|run| (run.font_size - theme.tokens.typography.scale.sm).abs() < 0.01)
-        );
-        assert!(p.row_rect(1).unwrap().y1 <= p.footer_rect().y0);
-        tr.set_text_scale(1.0); // palette paint's already-scaled theme space
-        let mut rows_scene = Scene::new();
-        p.draw_result_rows(&mut rows_scene, Affine::IDENTITY, &mut tr, &theme);
-        let first = p.row_rect(0).unwrap();
-        let second = p.row_rect(1).unwrap();
-        let header = Rect::new(first.x0, p.list_top_y(), first.x1, first.y0);
-        for run in &rows_scene.encoding().resources.glyph_runs {
-            let top = f64::from(run.transform.translation[1]);
-            let (_, height) = tr.measure("Ag", run.font_size, None);
+    fn palette_card_geometry_rows_and_footer() {
+        fn large_text_palette_reserves_painted_rows_and_scales_fonts_once() {
+            let mut p = CommandPalette::new();
+            p.push(
+                CommandEntry::new("files", "Open Files")
+                    .description("Opens beside")
+                    .group("Applications"),
+            );
+            p.push(
+                CommandEntry::new("editor", "Open Editor")
+                    .description("Opens beside")
+                    .group("Applications"),
+            );
+            p.open();
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut tree = TaffyTree::new();
+            p.build_layout(&mut tree, &theme, &mut std::collections::HashMap::new());
+            let (_, height) = p.desired_size();
+            p.set_rect(Rect::new(16.0, 96.0, 784.0, 96.0 + height));
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(2.0);
+            let (_, label_h) =
+                tr.measure("Open Files", theme.tokens.typography.scale.sm / 2.0, None);
+            let (_, desc_h) =
+                tr.measure("Opens beside", theme.tokens.typography.scale.xs / 2.0, None);
+            assert!(p.row_height() >= f64::from(label_h + desc_h) + 6.0);
+            let mut scene = Scene::new();
+            p.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::default(),
+            );
+            let runs = &scene.encoding().resources.glyph_runs;
             assert!(
-                [header, first, second]
-                    .iter()
-                    .any(|band| top >= band.y0 - 0.01 && top + f64::from(height) <= band.y1 + 0.01),
-                "painted glyph line escapes row/header: y={top}, h={height}"
+                runs.iter()
+                    .all(|run| run.font_size <= theme.tokens.typography.scale.base)
+            );
+            assert!(
+                runs.iter()
+                    .any(|run| (run.font_size - theme.tokens.typography.scale.sm).abs() < 0.01)
+            );
+            assert!(p.row_rect(1).unwrap().y1 <= p.footer_rect().y0);
+            tr.set_text_scale(1.0); // palette paint's already-scaled theme space
+            let mut rows_scene = Scene::new();
+            p.draw_result_rows(&mut rows_scene, Affine::IDENTITY, &mut tr, &theme);
+            let first = p.row_rect(0).unwrap();
+            let second = p.row_rect(1).unwrap();
+            let header = Rect::new(first.x0, p.list_top_y(), first.x1, first.y0);
+            for run in &rows_scene.encoding().resources.glyph_runs {
+                let top = f64::from(run.transform.translation[1]);
+                let (_, height) = tr.measure("Ag", run.font_size, None);
+                assert!(
+                    [header, first, second]
+                        .iter()
+                        .any(|band| top >= band.y0 - 0.01
+                            && top + f64::from(height) <= band.y1 + 0.01),
+                    "painted glyph line escapes row/header: y={top}, h={height}"
+                );
+            }
+            let mut footer_scene = Scene::new();
+            p.draw_footer(&mut footer_scene, Affine::IDENTITY, &mut tr, &theme);
+            for run in &footer_scene.encoding().resources.glyph_runs {
+                let top = f64::from(run.transform.translation[1]);
+                let (_, height) = tr.measure("Ag", run.font_size, None);
+                assert!(
+                    top >= p.footer_rect().y0 - 0.01
+                        && top + f64::from(height) <= p.footer_rect().y1 + 0.01
+                );
+            }
+        }
+
+        fn palette_card_radius_is_24_px() {
+            let palette = CommandPalette::new();
+            assert_eq!(
+                palette.surface_radius_px(),
+                24.0,
+                "concept palette uses rounded-3xl = 24 px"
             );
         }
-        let mut footer_scene = Scene::new();
-        p.draw_footer(&mut footer_scene, Affine::IDENTITY, &mut tr, &theme);
-        for run in &footer_scene.encoding().resources.glyph_runs {
-            let top = f64::from(run.transform.translation[1]);
-            let (_, height) = tr.measure("Ag", run.font_size, None);
+
+        /// Pins that nothing may reserve a slot for a kbd chip in the query row.
+        fn input_row_layout_gives_the_query_the_full_trailing_width() {
+            const ROW_W: f64 = 640.0;
+            const EDGE: f64 = 12.0;
+            let palette = CommandPalette::new();
+            let layout = palette.compute_input_layout(Rect::new(0.0, 0.0, ROW_W, 56.0));
             assert!(
-                top >= p.footer_rect().y0 - 0.01
-                    && top + f64::from(height) <= p.footer_rect().y1 + 0.01
+                layout.icon_rect.width() >= 24.0 && layout.icon_rect.width() <= 40.0,
+                "leading icon slot must be 24..=40 px wide; got {}",
+                layout.icon_rect.width()
             );
-        }
-    }
-
-    #[test]
-    fn empty_search_exposes_feedback_and_recovery() {
-        let mut p = CommandPalette::new();
-        p.open();
-        p.set_rect(Rect::new(20.0, 30.0, 380.0, 310.0));
-        p.set_query("missing");
-        let node = Widget::accessibility(&p).unwrap();
-        let results = &node.children[1];
-        assert!(results.children.iter().any(|child| child.name.as_deref()
-            == Some("No results for “missing”")
-            && child.description.as_deref() == Some("Try fewer words, or widen the scope")));
-    }
-
-    #[test]
-    fn fuzzy_score_empty_query_matches_everything() {
-        assert_eq!(fuzzy_score("", "anything"), Some(0));
-    }
-
-    #[test]
-    fn fuzzy_score_subsequence_matches() {
-        assert!(fuzzy_score("ren", "Rename Workspace").is_some());
-    }
-
-    #[test]
-    fn fuzzy_score_non_subsequence_is_none() {
-        assert_eq!(fuzzy_score("xyz", "Rename Workspace"), None);
-    }
-
-    #[test]
-    fn set_cursor_clamps_to_visible_len() {
-        let mut p = CommandPalette::new();
-        p.push(CommandEntry::new("a", "Alpha"));
-        p.push(CommandEntry::new("b", "Bravo"));
-        p.set_cursor(99);
-        assert_eq!(p.cursor(), 1);
-    }
-
-    #[test]
-    fn selected_id_reflects_cursor_position() {
-        let mut p = CommandPalette::new();
-        p.push(CommandEntry::new("a", "Alpha"));
-        p.push(CommandEntry::new("b", "Bravo"));
-        assert_eq!(p.selected_id(), Some("a"));
-        p.set_cursor(1);
-        assert_eq!(p.selected_id(), Some("b"));
-    }
-
-    #[test]
-    fn immediate_resource_action_enqueues_an_address_not_a_private_outcome() {
-        let spec = tilo_actions::ActionSpec::operation(
-            "save",
-            "Save",
-            tilo_actions::OperationKind::Effect,
-            "test.save",
-            &(),
-        )
-        .unwrap();
-        let resources = vec![
-            tilo_actions::Resource::new("document:1", "document", "Document").with_action(spec),
-        ];
-        let flat = tilo_actions::flatten(&resources);
-        let mut palette = CommandPalette::commands();
-        palette.set_entries(vec![CommandEntry::from_flat_action(&flat[0])]);
-        palette.open();
-        palette.activate_selected(&mut AutoCommit::new(), &automerge::ROOT);
-
-        assert!(palette.take_outcome().is_none());
-        let invocation = Widget::take_control_invocation(&mut palette).unwrap();
-        assert_eq!(invocation.address, ActionAddress::new("document:1", "save"));
-        assert!(invocation.arguments.is_empty());
-    }
-
-    #[test]
-    fn prompted_resource_action_binds_its_declared_argument() {
-        let spec = tilo_actions::ActionSpec::prompted(
-            "rename",
-            "Rename",
-            "New name",
-            "name…",
-            tilo_actions::ExecutionLocus::ClientLocal,
-            |name| tilo_actions::EncodedAction::encode_operation("test.rename", &name).unwrap(),
-        );
-        let resources = vec![
-            tilo_actions::Resource::new("document:1", "document", "Document").with_action(spec),
-        ];
-        let flat = tilo_actions::flatten(&resources);
-        let entry = CommandEntry::from_flat_action(&flat[0]);
-        let mut palette = CommandPalette::commands();
-        palette.open_action_argument(entry, Some("Project Atlas".into()));
-
-        let mut handled = false;
-        dispatch_h(
-            &mut palette,
-            &key_press(Key::Named(NamedKey::Enter)),
-            Modifiers::default(),
-            &mut handled,
-        );
-        assert!(handled);
-        assert!(palette.take_outcome().is_none());
-        let invocation = Widget::take_control_invocation(&mut palette).unwrap();
-        assert_eq!(
-            invocation.address,
-            ActionAddress::new("document:1", "rename")
-        );
-        assert_eq!(invocation.arguments[PROMPTED_PARAM], "Project Atlas");
-
-        let encoded = flat[0].action.build_json(&invocation.arguments).unwrap();
-        assert_eq!(encoded.type_id, "test.rename");
-    }
-
-    #[test]
-    fn selected_id_is_none_when_filter_removes_everything() {
-        let mut p = CommandPalette::new();
-        p.push(CommandEntry::new("a", "Alpha"));
-        p.set_filter(Box::new(|_| false));
-        assert_eq!(p.selected_id(), None);
-    }
-
-    #[test]
-    fn palette_card_radius_is_24_px() {
-        let palette = CommandPalette::new();
-        assert_eq!(
-            palette.surface_radius_px(),
-            24.0,
-            "concept palette uses rounded-3xl = 24 px"
-        );
-    }
-
-    /// Pins that nothing may reserve a slot for a kbd chip in the query row.
-    #[test]
-    fn input_row_layout_gives_the_query_the_full_trailing_width() {
-        const ROW_W: f64 = 640.0;
-        const EDGE: f64 = 12.0;
-        let palette = CommandPalette::new();
-        let layout = palette.compute_input_layout(Rect::new(0.0, 0.0, ROW_W, 56.0));
-        assert!(
-            layout.icon_rect.width() >= 24.0 && layout.icon_rect.width() <= 40.0,
-            "leading icon slot must be 24..=40 px wide; got {}",
-            layout.icon_rect.width()
-        );
-        assert!(
-            layout.input_rect.x0 > layout.icon_rect.x1,
-            "input must start after the icon"
-        );
-        assert!(
-            layout.input_rect.x1 <= ROW_W - EDGE,
-            "input must stay inside the row's trailing inset"
-        );
-        assert_eq!(
-            ROW_W - layout.input_rect.x1,
-            EDGE,
-            "the query runs to the trailing inset — no reserved chip slot \
+            assert!(
+                layout.input_rect.x0 > layout.icon_rect.x1,
+                "input must start after the icon"
+            );
+            assert!(
+                layout.input_rect.x1 <= ROW_W - EDGE,
+                "input must stay inside the row's trailing inset"
+            );
+            assert_eq!(
+                ROW_W - layout.input_rect.x1,
+                EDGE,
+                "the query runs to the trailing inset — no reserved chip slot \
              between it and the row edge",
-        );
+            );
+        }
+
+        fn row_at_finds_visible_row_inside_the_post_layout_rect() {
+            let mut p = CommandPalette::new();
+            p.push(CommandEntry::new("a", "Alpha"));
+            p.push(CommandEntry::new("b", "Bravo"));
+            // Must accommodate input row + filter strip + 2 result rows + footer.
+            p.rect = Rect::new(0.0, 0.0, 360.0, 280.0);
+            let mid_row_1 = p.row_rect(1).unwrap().center();
+            assert_eq!(p.row_at(mid_row_1), Some(1));
+            assert!(p.row_at(Point::new(1000.0, 1000.0)).is_none());
+        }
+
+        fn footer_sits_below_results_at_card_bottom() {
+            let mut p = CommandPalette::new();
+            p.push(CommandEntry::new("a", "Alpha"));
+            p.rect = Rect::new(0.0, 0.0, 360.0, 280.0);
+            let row0 = p.row_rect(0).expect("seeded row 0 must lay out");
+            let footer = p.footer_rect();
+            assert!(
+                footer.y0 >= row0.y1,
+                "footer must sit below the result list (row0.y1={}, footer.y0={})",
+                row0.y1,
+                footer.y0,
+            );
+            assert!(
+                footer.y1 <= p.rect.y1,
+                "footer must stay inside the card (rect.y1={}, footer.y1={})",
+                p.rect.y1,
+                footer.y1,
+            );
+            assert!(
+                footer.height() >= 24.0,
+                "footer must be tall enough for kbd chips (got {})",
+                footer.height(),
+            );
+        }
+
+        large_text_palette_reserves_painted_rows_and_scales_fonts_once();
+        palette_card_radius_is_24_px();
+        input_row_layout_gives_the_query_the_full_trailing_width();
+        row_at_finds_visible_row_inside_the_post_layout_rect();
+        footer_sits_below_results_at_card_bottom();
     }
 
     #[test]
-    fn row_at_finds_visible_row_inside_the_post_layout_rect() {
-        let mut p = CommandPalette::new();
-        p.push(CommandEntry::new("a", "Alpha"));
-        p.push(CommandEntry::new("b", "Bravo"));
-        // Must accommodate input row + filter strip + 2 result rows + footer.
-        p.rect = Rect::new(0.0, 0.0, 360.0, 280.0);
-        let mid_row_1 = p.row_rect(1).unwrap().center();
-        assert_eq!(p.row_at(mid_row_1), Some(1));
-        assert!(p.row_at(Point::new(1000.0, 1000.0)).is_none());
+    fn typing_narrows_the_list_with_feedback() {
+        fn typing_filters_visible_entries() {
+            let mut p = CommandPalette::new();
+            p.push(CommandEntry::new("a", "Alpha"));
+            p.push(CommandEntry::new("h", "Hotel"));
+            p.push(CommandEntry::new("b", "Bravo"));
+            p.set_focus(true);
+
+            let total = p.entries.len();
+            assert_eq!(p.visible_entries().len(), total);
+
+            let event = key_press(Key::Character(SmolStr::new("h")));
+            let mut doc = AutoCommit::new();
+            let doc_root = automerge::ROOT.clone();
+            let modifiers = Modifiers::default();
+            let mut handled = false;
+            let mut focus: Option<NodeId> = None;
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.leaf_node(Style::default());
+
+            p.handle_event(
+                &event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+
+            assert_eq!(p.query(), "h", "typing must update the query string");
+            assert!(
+                p.visible_entries().len() < total,
+                "typing 'h' must filter out non-matching entries (visible={}, total={})",
+                p.visible_entries().len(),
+                total,
+            );
+            assert!(handled, "the palette must consume the keystroke");
+        }
+
+        fn empty_search_exposes_feedback_and_recovery() {
+            let mut p = CommandPalette::new();
+            p.open();
+            p.set_rect(Rect::new(20.0, 30.0, 380.0, 310.0));
+            p.set_query("missing");
+            let node = Widget::accessibility(&p).unwrap();
+            let results = &node.children[1];
+            assert!(results.children.iter().any(|child| child.name.as_deref()
+                == Some("No results for “missing”")
+                && child.description.as_deref() == Some("Try fewer words, or widen the scope")));
+        }
+
+        typing_filters_visible_entries();
+        empty_search_exposes_feedback_and_recovery();
     }
 
     #[test]
-    fn search_filter_full_text_toggles() {
-        let mut f = SearchFilter::default();
-        assert!(!f.full_text);
-        f.toggle_full_text();
-        assert!(f.full_text);
-        f.toggle_full_text();
-        assert!(!f.full_text);
+    fn cursor_selection_clamps_and_tracks_filtered_entries() {
+        fn set_cursor_clamps_to_visible_len() {
+            let mut p = CommandPalette::new();
+            p.push(CommandEntry::new("a", "Alpha"));
+            p.push(CommandEntry::new("b", "Bravo"));
+            p.set_cursor(99);
+            assert_eq!(p.cursor(), 1);
+        }
+
+        fn selected_id_reflects_cursor_position() {
+            let mut p = CommandPalette::new();
+            p.push(CommandEntry::new("a", "Alpha"));
+            p.push(CommandEntry::new("b", "Bravo"));
+            assert_eq!(p.selected_id(), Some("a"));
+            p.set_cursor(1);
+            assert_eq!(p.selected_id(), Some("b"));
+        }
+
+        fn selected_id_is_none_when_filter_removes_everything() {
+            let mut p = CommandPalette::new();
+            p.push(CommandEntry::new("a", "Alpha"));
+            p.set_filter(Box::new(|_| false));
+            assert_eq!(p.selected_id(), None);
+        }
+
+        fn pointer_hover_and_click_select_the_painted_row_through_enter_path() {
+            let mut p = CommandPalette::new();
+            p.push(CommandEntry::new("alpha", "Alpha"));
+            p.push(CommandEntry::new("bravo", "Bravo"));
+            p.open();
+            p.set_rect(Rect::new(0.0, 0.0, 360.0, 280.0));
+            let row = p.row_rect(1).expect("second result is painted");
+            let modifiers = Modifiers::default();
+            let mut doc = AutoCommit::new();
+
+            assert!(p.handle_overlay_key(
+                &WindowEvent::CursorMoved {
+                    device_id: unsafe { std::mem::zeroed() },
+                    position: winit::dpi::PhysicalPosition::new(row.center().x, row.center().y),
+                },
+                &modifiers,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(p.cursor(), 1, "hover highlights the hit-tested row");
+            assert_eq!(
+                Widget::cursor_shape(&p, row.center()),
+                Some(winit::window::CursorIcon::Pointer)
+            );
+            assert!(p.handle_overlay_key(
+                &WindowEvent::MouseInput {
+                    device_id: unsafe { std::mem::zeroed() },
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+                &modifiers,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(
+                p.take_outcome(),
+                Some(CommandOutcome {
+                    id: "bravo".into(),
+                    argument: None
+                })
+            );
+        }
+
+        fn semantic_result_focus_and_activation_use_the_same_selected_entry_path() {
+            let mut p = CommandPalette::commands();
+            p.push(CommandEntry::new("alpha", "Alpha"));
+            p.push(CommandEntry::new("bravo", "Bravo"));
+            p.open();
+            p.set_rect(Rect::new(0.0, 0.0, 480.0, 260.0));
+            let target = Widget::accessibility(&p).unwrap().children[1].children[1]
+                .action_target
+                .clone()
+                .expect("result has a stable semantic target");
+            let mut doc = AutoCommit::new();
+
+            assert!(Widget::perform_semantic_action(
+                &mut p,
+                &target,
+                &crate::a11y::Action::Focus,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(p.selected_id(), Some("bravo"));
+            assert!(Widget::perform_semantic_action(
+                &mut p,
+                &target,
+                &crate::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(
+                p.take_outcome(),
+                Some(CommandOutcome {
+                    id: "bravo".into(),
+                    argument: None
+                })
+            );
+            assert!(!p.is_open(), "command activation closes exactly like Enter");
+        }
+
+        set_cursor_clamps_to_visible_len();
+        selected_id_reflects_cursor_position();
+        selected_id_is_none_when_filter_removes_everything();
+        pointer_hover_and_click_select_the_painted_row_through_enter_path();
+        semantic_result_focus_and_activation_use_the_same_selected_entry_path();
     }
 
     #[test]
-    fn search_filter_filetypes_multi_select() {
-        let mut f = SearchFilter::default();
-        f.toggle_filetype(Filetype::Code);
-        f.toggle_filetype(Filetype::Docs);
-        assert!(f.filetypes.contains(&Filetype::Code));
-        assert!(f.filetypes.contains(&Filetype::Docs));
-        f.toggle_filetype(Filetype::Code);
-        assert!(!f.filetypes.contains(&Filetype::Code));
-        assert!(f.filetypes.contains(&Filetype::Docs));
+    fn resource_actions_enqueue_addresses_and_bind_arguments() {
+        fn immediate_resource_action_enqueues_an_address_not_a_private_outcome() {
+            let spec = tilo_actions::ActionSpec::operation(
+                "save",
+                "Save",
+                tilo_actions::OperationKind::Effect,
+                "test.save",
+                &(),
+            )
+            .unwrap();
+            let resources = vec![
+                tilo_actions::Resource::new("document:1", "document", "Document").with_action(spec),
+            ];
+            let flat = tilo_actions::flatten(&resources);
+            let mut palette = CommandPalette::commands();
+            palette.set_entries(vec![CommandEntry::from_flat_action(&flat[0])]);
+            palette.open();
+            palette.activate_selected(&mut AutoCommit::new(), &automerge::ROOT);
+
+            assert!(palette.take_outcome().is_none());
+            let invocation =
+                crate::widget::controls::take_control_invocation(&mut palette).unwrap();
+            assert_eq!(invocation.address, ActionAddress::new("document:1", "save"));
+            assert!(invocation.arguments.is_empty());
+        }
+
+        fn prompted_resource_action_binds_its_declared_argument() {
+            let spec = tilo_actions::ActionSpec::prompted(
+                "rename",
+                "Rename",
+                "New name",
+                "name…",
+                tilo_actions::ExecutionLocus::ClientLocal,
+                |name| tilo_actions::EncodedAction::encode_operation("test.rename", &name).unwrap(),
+            );
+            let resources = vec![
+                tilo_actions::Resource::new("document:1", "document", "Document").with_action(spec),
+            ];
+            let flat = tilo_actions::flatten(&resources);
+            let entry = CommandEntry::from_flat_action(&flat[0]);
+            let mut palette = CommandPalette::commands();
+            palette.open_action_argument(entry, Some("Project Atlas".into()));
+
+            let mut handled = false;
+            dispatch_h(
+                &mut palette,
+                &key_press(Key::Named(NamedKey::Enter)),
+                Modifiers::default(),
+                &mut handled,
+            );
+            assert!(handled);
+            assert!(palette.take_outcome().is_none());
+            let invocation =
+                crate::widget::controls::take_control_invocation(&mut palette).unwrap();
+            assert_eq!(
+                invocation.address,
+                ActionAddress::new("document:1", "rename")
+            );
+            assert_eq!(invocation.arguments[PROMPTED_PARAM], "Project Atlas");
+
+            let encoded = flat[0].action.build_json(&invocation.arguments).unwrap();
+            assert_eq!(encoded.type_id, "test.rename");
+        }
+
+        fn semantic_shortcut_labels_follow_the_palette_platform() {
+            use crate::platform::{Platform, PlatformConventions};
+
+            let entry = CommandEntry::new("find", "Find").shortcut(Shortcut::command("F"));
+            assert_eq!(
+                entry.keybinding_label(PlatformConventions::new(Platform::MacOs)),
+                Some("⌘F".into())
+            );
+            assert_eq!(
+                entry.keybinding_label(PlatformConventions::new(Platform::Windows)),
+                Some("Ctrl+F".into())
+            );
+        }
+
+        immediate_resource_action_enqueues_an_address_not_a_private_outcome();
+        prompted_resource_action_binds_its_declared_argument();
+        semantic_shortcut_labels_follow_the_palette_platform();
     }
 
     #[test]
-    fn search_filter_default_scope_is_workspace() {
-        let f = SearchFilter::default();
-        assert_eq!(f.scope, SearchScope::Workspace);
+    fn search_filters_toggle_scope_and_filetypes() {
+        fn search_filter_full_text_toggles() {
+            let mut f = SearchFilter::default();
+            assert!(!f.full_text);
+            f.toggle_full_text();
+            assert!(f.full_text);
+            f.toggle_full_text();
+            assert!(!f.full_text);
+        }
+
+        fn search_filter_filetypes_multi_select() {
+            let mut f = SearchFilter::default();
+            f.toggle_filetype(Filetype::Code);
+            f.toggle_filetype(Filetype::Docs);
+            assert!(f.filetypes.contains(&Filetype::Code));
+            assert!(f.filetypes.contains(&Filetype::Docs));
+            f.toggle_filetype(Filetype::Code);
+            assert!(!f.filetypes.contains(&Filetype::Code));
+            assert!(f.filetypes.contains(&Filetype::Docs));
+        }
+
+        fn search_filter_default_scope_is_workspace() {
+            let f = SearchFilter::default();
+            assert_eq!(f.scope, SearchScope::Workspace);
+        }
+
+        fn filter_strip_sits_below_input_row_and_above_results() {
+            let mut p = CommandPalette::new();
+            p.push(CommandEntry::new("a", "Alpha"));
+            p.rect = Rect::new(0.0, 0.0, 360.0, 280.0);
+            let input = p.input_row_rect();
+            let strip = p.filter_strip_rect();
+            let row0 = p.row_rect(0).expect("seeded row 0 must lay out");
+            assert!(
+                strip.y0 >= input.y1,
+                "filter strip must start at or below input row (input.y1={}, strip.y0={})",
+                input.y1,
+                strip.y0,
+            );
+            assert!(
+                strip.y1 <= row0.y0,
+                "results list must start at or below filter strip (strip.y1={}, row0.y0={})",
+                strip.y1,
+                row0.y0,
+            );
+            assert!(
+                strip.height() >= 32.0,
+                "filter strip must be tall enough for chip pills (got {})",
+                strip.height(),
+            );
+        }
+
+        fn a_host_filter_strip_is_reserved_on_the_cards_inset() {
+            let mut p = CommandPalette::new();
+            p.set_host_filter_strip(true);
+            p.set_rect(Rect::new(0.0, 0.0, 640.0, 400.0));
+            let band = p.filter_strip_rect();
+            let field = p.input_row_rect();
+            assert_eq!(
+                band.x0, field.x0,
+                "the host band must share the field's left edge"
+            );
+            assert_eq!(band.x1, field.x1);
+            assert_eq!(band.x0, p.rect.x0 + p.content_inset_px());
+            assert!(band.y0 >= field.y1, "the band sits under the field");
+            assert!(
+                p.list_top_y() >= band.y1,
+                "rows start below the band, not behind it"
+            );
+        }
+
+        fn a_host_can_reserve_more_than_one_row_of_filter_band() {
+            let mut one = CommandPalette::new();
+            one.set_host_filter_strip(true);
+            one.set_rect(Rect::new(0.0, 0.0, 640.0, 400.0));
+            let (_, one_high) = one.desired_size();
+            let one_band = one.filter_strip_rect();
+
+            let mut two = CommandPalette::new();
+            two.set_host_filter_strip(true);
+            assert!(
+                two.set_host_filter_strip_rows(2),
+                "asking for a different row count is a change"
+            );
+            assert!(
+                !two.set_host_filter_strip_rows(2),
+                "asking for the same row count again is not"
+            );
+            two.set_rect(Rect::new(0.0, 0.0, 640.0, 400.0));
+            let (_, two_high) = two.desired_size();
+            let band = two.filter_strip_rect();
+
+            assert_eq!(two.host_filter_strip_rows(), 2);
+            assert_eq!(
+                band.height(),
+                one_band.height() + two.filter_strip_row_height(),
+                "the band grows by exactly one row"
+            );
+            assert_eq!(
+                two_high - one_high,
+                two.filter_strip_row_height(),
+                "and so does the card, so nothing else moves"
+            );
+            assert!(
+                two.list_top_y() >= band.y1,
+                "rows still start below the band: {} vs {}",
+                two.list_top_y(),
+                band.y1
+            );
+            assert_eq!(
+                band.y0, one_band.y0,
+                "the band still starts under the field — it grows downward"
+            );
+        }
+
+        search_filter_full_text_toggles();
+        search_filter_filetypes_multi_select();
+        search_filter_default_scope_is_workspace();
+        filter_strip_sits_below_input_row_and_above_results();
+        a_host_filter_strip_is_reserved_on_the_cards_inset();
+        a_host_can_reserve_more_than_one_row_of_filter_band();
     }
 
     #[test]
-    fn filter_strip_sits_below_input_row_and_above_results() {
-        let mut p = CommandPalette::new();
-        p.push(CommandEntry::new("a", "Alpha"));
-        p.rect = Rect::new(0.0, 0.0, 360.0, 280.0);
-        let input = p.input_row_rect();
-        let strip = p.filter_strip_rect();
-        let row0 = p.row_rect(0).expect("seeded row 0 must lay out");
-        assert!(
-            strip.y0 >= input.y1,
-            "filter strip must start at or below input row (input.y1={}, strip.y0={})",
-            input.y1,
-            strip.y0,
-        );
-        assert!(
-            strip.y1 <= row0.y0,
-            "results list must start at or below filter strip (strip.y1={}, row0.y0={})",
-            strip.y1,
-            row0.y0,
-        );
-        assert!(
-            strip.height() >= 32.0,
-            "filter strip must be tall enough for chip pills (got {})",
-            strip.height(),
-        );
-    }
+    fn query_editing_follows_the_caret_selection_and_ime() {
+        fn ime_preedit_is_visible_but_filters_only_after_atomic_commit() {
+            let mut palette = CommandPalette::new();
+            palette.push(CommandEntry::new("jp", "東京"));
+            palette.push(CommandEntry::new("en", "London"));
+            palette.set_focus(true);
+            palette.rect = Rect::new(0.0, 0.0, 420.0, 260.0);
+            let mut document = AutoCommit::new();
+            let modifiers = Modifiers::default();
 
-    #[test]
-    fn typing_filters_visible_entries() {
-        let mut p = CommandPalette::new();
-        p.push(CommandEntry::new("a", "Alpha"));
-        p.push(CommandEntry::new("h", "Hotel"));
-        p.push(CommandEntry::new("b", "Bravo"));
-        p.set_focus(true);
+            assert!(palette.handle_overlay_key(
+                &WindowEvent::Ime(winit::event::Ime::Preedit(
+                    "東京".into(),
+                    Some(("東".len(), "東".len())),
+                )),
+                &modifiers,
+                &mut document,
+                &automerge::ROOT,
+            ));
+            assert_eq!(palette.query(), "", "preedit is not committed query state");
+            assert_eq!(
+                palette.visible_entries().len(),
+                2,
+                "preedit does not filter"
+            );
 
-        let total = p.entries.len();
-        assert_eq!(p.visible_entries().len(), total);
+            let mut scene = Scene::new();
+            let mut renderer = TextRenderer::new();
+            Widget::draw(
+                &mut palette,
+                &mut scene,
+                Affine::IDENTITY,
+                &mut renderer,
+                &Theme::dark(),
+                &PresenceCtx::empty(),
+            );
+            let candidate = Widget::ime_cursor_rect(&palette).expect("query publishes IME caret");
+            assert!(palette.input_row_rect().contains(candidate.center()));
 
-        let event = key_press(Key::Character(SmolStr::new("h")));
-        let mut doc = AutoCommit::new();
-        let doc_root = automerge::ROOT.clone();
-        let modifiers = Modifiers::default();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
+            assert!(palette.handle_overlay_key(
+                &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
+                &modifiers,
+                &mut document,
+                &automerge::ROOT,
+            ));
+            assert_eq!(palette.query(), "東京");
+            assert_eq!(palette.visible_entries().len(), 1);
+            assert_eq!(palette.visible_entries()[0].label, "東京");
+        }
 
-        p.handle_event(
-            &event,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &doc_root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
+        /// `ArrowLeft` / `ArrowRight` move the caret inside the query without
+        /// touching the row cursor.
+        fn arrow_keys_move_caret_inside_query() {
+            let mut p = CommandPalette::new();
+            p.set_focus(true);
+            p.set_query("hello");
+            assert_eq!(p.query_selection.cursor, 5);
+            dispatch(
+                &mut p,
+                &key_press(Key::Named(NamedKey::ArrowLeft)),
+                Modifiers::default(),
+            );
+            assert_eq!(p.query_selection.cursor, 4);
+            dispatch(
+                &mut p,
+                &key_press(Key::Named(NamedKey::Home)),
+                Modifiers::default(),
+            );
+            assert_eq!(p.query_selection.cursor, 0);
+        }
 
-        assert_eq!(p.query(), "h", "typing must update the query string");
-        assert!(
-            p.visible_entries().len() < total,
-            "typing 'h' must filter out non-matching entries (visible={}, total={})",
-            p.visible_entries().len(),
-            total,
-        );
-        assert!(handled, "the palette must consume the keystroke");
-    }
+        fn backspace_deletes_at_caret_not_end() {
+            let mut p = CommandPalette::new();
+            p.set_focus(true);
+            p.set_query("abc");
+            p.query_selection.cursor = 1;
+            p.query_selection.anchor = 1;
+            dispatch(
+                &mut p,
+                &key_press(Key::Named(NamedKey::Backspace)),
+                Modifiers::default(),
+            );
+            assert_eq!(p.query(), "bc");
+            assert_eq!(p.query_selection.cursor, 0);
+        }
 
-    #[test]
-    fn ime_preedit_is_visible_but_filters_only_after_atomic_commit() {
-        let mut palette = CommandPalette::new();
-        palette.push(CommandEntry::new("jp", "東京"));
-        palette.push(CommandEntry::new("en", "London"));
-        palette.set_focus(true);
-        palette.rect = Rect::new(0.0, 0.0, 420.0, 260.0);
-        let mut document = AutoCommit::new();
-        let modifiers = Modifiers::default();
+        fn typing_inserts_at_caret() {
+            let mut p = CommandPalette::new();
+            p.set_focus(true);
+            p.set_query("ac");
+            p.query_selection.cursor = 1;
+            p.query_selection.anchor = 1;
+            dispatch(
+                &mut p,
+                &key_press(Key::Character(SmolStr::new("b"))),
+                Modifiers::default(),
+            );
+            assert_eq!(p.query(), "abc");
+            assert_eq!(p.query_selection.cursor, 2);
+        }
 
-        assert!(palette.handle_overlay_key(
-            &WindowEvent::Ime(winit::event::Ime::Preedit(
-                "東京".into(),
-                Some(("東".len(), "東".len())),
-            )),
-            &modifiers,
-            &mut document,
-            &automerge::ROOT,
-        ));
-        assert_eq!(palette.query(), "", "preedit is not committed query state");
-        assert_eq!(
-            palette.visible_entries().len(),
-            2,
-            "preedit does not filter"
-        );
+        fn ctrl_a_selects_query() {
+            let mut p = CommandPalette::new();
+            p.set_focus(true);
+            p.set_query("hello");
+            let mut mods_state = winit::keyboard::ModifiersState::empty();
+            mods_state.set(winit::keyboard::ModifiersState::CONTROL, true);
+            dispatch(
+                &mut p,
+                &key_press(Key::Character(SmolStr::new("a"))),
+                Modifiers::from(mods_state),
+            );
+            assert_eq!(p.query_selection.anchor, 0);
+            assert_eq!(p.query_selection.cursor, 5);
+        }
 
-        let mut scene = Scene::new();
-        let mut renderer = TextRenderer::new();
-        Widget::draw(
-            &mut palette,
-            &mut scene,
-            Affine::IDENTITY,
-            &mut renderer,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
-        let candidate = Widget::ime_cursor_rect(&palette).expect("query publishes IME caret");
-        assert!(palette.input_row_rect().contains(candidate.center()));
+        fn typing_replaces_selection() {
+            let mut p = CommandPalette::new();
+            p.set_focus(true);
+            p.set_query("hello");
+            p.query_selection.anchor = 1;
+            p.query_selection.cursor = 4;
+            dispatch(
+                &mut p,
+                &key_press(Key::Character(SmolStr::new("i"))),
+                Modifiers::default(),
+            );
+            assert_eq!(p.query(), "hio");
+            assert_eq!(p.query_selection.cursor, 2);
+        }
 
-        assert!(palette.handle_overlay_key(
-            &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
-            &modifiers,
-            &mut document,
-            &automerge::ROOT,
-        ));
-        assert_eq!(palette.query(), "東京");
-        assert_eq!(palette.visible_entries().len(), 1);
-        assert_eq!(palette.visible_entries()[0].label, "東京");
-    }
-
-    #[test]
-    fn footer_sits_below_results_at_card_bottom() {
-        let mut p = CommandPalette::new();
-        p.push(CommandEntry::new("a", "Alpha"));
-        p.rect = Rect::new(0.0, 0.0, 360.0, 280.0);
-        let row0 = p.row_rect(0).expect("seeded row 0 must lay out");
-        let footer = p.footer_rect();
-        assert!(
-            footer.y0 >= row0.y1,
-            "footer must sit below the result list (row0.y1={}, footer.y0={})",
-            row0.y1,
-            footer.y0,
-        );
-        assert!(
-            footer.y1 <= p.rect.y1,
-            "footer must stay inside the card (rect.y1={}, footer.y1={})",
-            p.rect.y1,
-            footer.y1,
-        );
-        assert!(
-            footer.height() >= 24.0,
-            "footer must be tall enough for kbd chips (got {})",
-            footer.height(),
-        );
+        ime_preedit_is_visible_but_filters_only_after_atomic_commit();
+        arrow_keys_move_caret_inside_query();
+        backspace_deletes_at_caret_not_end();
+        typing_inserts_at_caret();
+        ctrl_a_selects_query();
+        typing_replaces_selection();
     }
 
     fn dispatch(p: &mut CommandPalette, event: &WindowEvent, modifiers: Modifiers) {
@@ -2978,270 +3288,128 @@ mod tests {
         let node = taffy.leaf_node(Style::default());
         p.handle_event(
             event,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &doc_root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-    }
-
-    /// `ArrowLeft` / `ArrowRight` move the caret inside the query without
-    /// touching the row cursor.
-    #[test]
-    fn arrow_keys_move_caret_inside_query() {
-        let mut p = CommandPalette::new();
-        p.set_focus(true);
-        p.set_query("hello");
-        assert_eq!(p.query_selection.cursor, 5);
-        dispatch(
-            &mut p,
-            &key_press(Key::Named(NamedKey::ArrowLeft)),
-            Modifiers::default(),
-        );
-        assert_eq!(p.query_selection.cursor, 4);
-        dispatch(
-            &mut p,
-            &key_press(Key::Named(NamedKey::Home)),
-            Modifiers::default(),
-        );
-        assert_eq!(p.query_selection.cursor, 0);
-    }
-
-    #[test]
-    fn backspace_deletes_at_caret_not_end() {
-        let mut p = CommandPalette::new();
-        p.set_focus(true);
-        p.set_query("abc");
-        p.query_selection.cursor = 1;
-        p.query_selection.anchor = 1;
-        dispatch(
-            &mut p,
-            &key_press(Key::Named(NamedKey::Backspace)),
-            Modifiers::default(),
-        );
-        assert_eq!(p.query(), "bc");
-        assert_eq!(p.query_selection.cursor, 0);
-    }
-
-    #[test]
-    fn typing_inserts_at_caret() {
-        let mut p = CommandPalette::new();
-        p.set_focus(true);
-        p.set_query("ac");
-        p.query_selection.cursor = 1;
-        p.query_selection.anchor = 1;
-        dispatch(
-            &mut p,
-            &key_press(Key::Character(SmolStr::new("b"))),
-            Modifiers::default(),
-        );
-        assert_eq!(p.query(), "abc");
-        assert_eq!(p.query_selection.cursor, 2);
-    }
-
-    #[test]
-    fn ctrl_a_selects_query() {
-        let mut p = CommandPalette::new();
-        p.set_focus(true);
-        p.set_query("hello");
-        let mut mods_state = winit::keyboard::ModifiersState::empty();
-        mods_state.set(winit::keyboard::ModifiersState::CONTROL, true);
-        dispatch(
-            &mut p,
-            &key_press(Key::Character(SmolStr::new("a"))),
-            Modifiers::from(mods_state),
-        );
-        assert_eq!(p.query_selection.anchor, 0);
-        assert_eq!(p.query_selection.cursor, 5);
-    }
-
-    #[test]
-    fn accessibility_reports_open_state_modal_mode_and_painted_result_children() {
-        use crate::a11y::Role;
-        let mut p = CommandPalette::new();
-        p.push(CommandEntry::new("alpha", "Alpha"));
-        p.push(
-            CommandEntry::new("bravo", "Bravo")
-                .description("Second result")
-                .badge("Live"),
-        );
-        p.set_rect(Rect::new(20.0, 30.0, 380.0, 310.0));
-
-        let closed = Widget::accessibility(&p).expect("palette is semantic while closed");
-        assert!(
-            closed.state.hidden,
-            "closed palettes leave the reading order"
-        );
-        assert_eq!(closed.state.expanded, Some(false));
-        assert!(!closed.state.modal, "search chrome is not modal");
-        assert!(
-            closed.children.is_empty(),
-            "closed palettes expose no stale rows"
-        );
-
-        p.open();
-        let node = Widget::accessibility(&p).expect("open palette is semantic");
-        assert_eq!(node.role, Role::Dialog);
-        assert_eq!(node.name.as_deref(), Some("Command palette"));
-        assert!(!node.state.hidden);
-        assert_eq!(node.state.expanded, Some(true));
-        assert!(!node.state.modal, "search chrome is an ordinary overlay");
-        assert!(node.state.focusable);
-        assert!(node.state.focused, "open palette owns its query focus");
-        assert_eq!(node.children.len(), 2, "query plus its result list");
-        let query = &node.children[0];
-        assert_eq!(query.role, Role::TextInput);
-        assert_eq!(query.value.as_deref(), Some(""));
-        assert!(
-            query.action_target.is_some(),
-            "query has a stable synthetic id"
-        );
-        assert_eq!(query.bounds, Some(p.input_row_rect().into()));
-
-        let results = &node.children[1];
-        assert_eq!(results.role, Role::List);
-        assert_eq!(
-            results.children.len(),
-            2,
-            "one synthetic item per painted row"
-        );
-        let selected = &results.children[0];
-        assert_eq!(selected.name.as_deref(), Some("Alpha"));
-        assert!(selected.state.selected);
-        assert_eq!(selected.pos_in_set, Some(1));
-        assert_eq!(selected.set_size, Some(2));
-        assert_eq!(selected.bounds, p.row_rect(0).map(Into::into));
-        assert_eq!(
-            results.children[1].description.as_deref(),
-            Some("Second result. Status: Live")
-        );
-        assert_eq!(
-            selected.action_target.as_deref(),
-            Some("command-palette:result:alpha"),
-            "row ids are model-stable rather than paint ordinals"
-        );
-        assert_eq!(
-            p.synthetic_accessibility_rect(&[0]),
-            Some(p.input_row_rect())
-        );
-        assert_eq!(p.synthetic_accessibility_rect(&[1, 1]), p.row_rect(1));
-
-        let mut commands = CommandPalette::commands();
-        commands.open();
-        assert!(
-            Widget::accessibility(&commands).unwrap().state.modal,
-            "command chrome advertises its focus trap as modal"
-        );
-    }
-
-    #[test]
-    fn accessibility_focus_tracks_focus_state() {
-        let mut p = CommandPalette::new();
-        p.set_focus(true);
-        let node = Widget::accessibility(&p).unwrap();
-        assert!(node.state.focused);
-    }
-
-    #[test]
-    fn pointer_hover_and_click_select_the_painted_row_through_enter_path() {
-        let mut p = CommandPalette::new();
-        p.push(CommandEntry::new("alpha", "Alpha"));
-        p.push(CommandEntry::new("bravo", "Bravo"));
-        p.open();
-        p.set_rect(Rect::new(0.0, 0.0, 360.0, 280.0));
-        let row = p.row_rect(1).expect("second result is painted");
-        let modifiers = Modifiers::default();
-        let mut doc = AutoCommit::new();
-
-        assert!(p.handle_overlay_key(
-            &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(row.center().x, row.center().y),
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &doc_root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
             },
-            &modifiers,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(p.cursor(), 1, "hover highlights the hit-tested row");
-        assert_eq!(
-            Widget::cursor_shape(&p, row.center()),
-            Some(winit::window::CursorIcon::Pointer)
-        );
-        assert!(p.handle_overlay_key(
-            &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            &modifiers,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(
-            p.take_outcome(),
-            Some(CommandOutcome {
-                id: "bravo".into(),
-                argument: None
-            })
         );
     }
 
     #[test]
-    fn semantic_result_focus_and_activation_use_the_same_selected_entry_path() {
-        let mut p = CommandPalette::commands();
-        p.push(CommandEntry::new("alpha", "Alpha"));
-        p.push(CommandEntry::new("bravo", "Bravo"));
-        p.open();
-        p.set_rect(Rect::new(0.0, 0.0, 480.0, 260.0));
-        let target = Widget::accessibility(&p).unwrap().children[1].children[1]
-            .action_target
-            .clone()
-            .expect("result has a stable semantic target");
-        let mut doc = AutoCommit::new();
+    fn palette_accessibility_reports_open_modal_and_focus() {
+        fn accessibility_reports_open_state_modal_mode_and_painted_result_children() {
+            use crate::a11y::Role;
+            let mut p = CommandPalette::new();
+            p.push(CommandEntry::new("alpha", "Alpha"));
+            p.push(
+                CommandEntry::new("bravo", "Bravo")
+                    .description("Second result")
+                    .badge("Live"),
+            );
+            p.set_rect(Rect::new(20.0, 30.0, 380.0, 310.0));
 
-        assert!(Widget::perform_semantic_action(
-            &mut p,
-            &target,
-            &crate::a11y::Action::Focus,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(p.selected_id(), Some("bravo"));
-        assert!(Widget::perform_semantic_action(
-            &mut p,
-            &target,
-            &crate::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(
-            p.take_outcome(),
-            Some(CommandOutcome {
-                id: "bravo".into(),
-                argument: None
-            })
-        );
-        assert!(!p.is_open(), "command activation closes exactly like Enter");
-    }
+            let closed = Widget::accessibility(&p).expect("palette is semantic while closed");
+            assert!(
+                closed.state.hidden,
+                "closed palettes leave the reading order"
+            );
+            assert_eq!(closed.state.expanded, Some(false));
+            assert!(!closed.state.modal, "search chrome is not modal");
+            assert!(
+                closed.children.is_empty(),
+                "closed palettes expose no stale rows"
+            );
 
-    #[test]
-    fn typing_replaces_selection() {
-        let mut p = CommandPalette::new();
-        p.set_focus(true);
-        p.set_query("hello");
-        p.query_selection.anchor = 1;
-        p.query_selection.cursor = 4;
-        dispatch(
-            &mut p,
-            &key_press(Key::Character(SmolStr::new("i"))),
-            Modifiers::default(),
-        );
-        assert_eq!(p.query(), "hio");
-        assert_eq!(p.query_selection.cursor, 2);
+            p.open();
+            let node = Widget::accessibility(&p).expect("open palette is semantic");
+            assert_eq!(node.role, Role::Dialog);
+            assert_eq!(node.name.as_deref(), Some("Command palette"));
+            assert!(!node.state.hidden);
+            assert_eq!(node.state.expanded, Some(true));
+            assert!(!node.state.modal, "search chrome is an ordinary overlay");
+            assert!(node.state.focusable);
+            assert!(node.state.focused, "open palette owns its query focus");
+            assert_eq!(node.children.len(), 2, "query plus its result list");
+            let query = &node.children[0];
+            assert_eq!(query.role, Role::TextInput);
+            assert!(
+                query.text_selection.is_some(),
+                "the query carries a caret, so AT-SPI exposes it as editable text"
+            );
+            assert_eq!(query.value.as_deref(), Some(""));
+            assert!(
+                query.action_target.is_some(),
+                "query has a stable synthetic id"
+            );
+            assert_eq!(query.bounds, Some(p.input_row_rect().into()));
+
+            let results = &node.children[1];
+            assert_eq!(results.role, Role::List);
+            assert_eq!(
+                results.children.len(),
+                2,
+                "one synthetic item per painted row"
+            );
+            let selected = &results.children[0];
+            assert_eq!(selected.name.as_deref(), Some("Alpha"));
+            assert!(selected.state.selected);
+            assert_eq!(selected.pos_in_set, Some(1));
+            assert_eq!(selected.set_size, Some(2));
+            assert_eq!(selected.bounds, p.row_rect(0).map(Into::into));
+            assert_eq!(
+                results.children[1].description.as_deref(),
+                Some("Second result. Status: Live")
+            );
+            assert_eq!(
+                selected.action_target.as_deref(),
+                Some("command-palette:result:alpha"),
+                "row ids are model-stable rather than paint ordinals"
+            );
+            assert_eq!(
+                p.synthetic_accessibility_rect(&[0]),
+                Some(p.input_row_rect())
+            );
+            assert_eq!(p.synthetic_accessibility_rect(&[1, 1]), p.row_rect(1));
+
+            let mut commands = CommandPalette::commands();
+            commands.open();
+            assert!(
+                Widget::accessibility(&commands).unwrap().state.modal,
+                "command chrome advertises its focus trap as modal"
+            );
+        }
+
+        fn accessibility_focus_tracks_focus_state() {
+            let mut p = CommandPalette::new();
+            p.set_focus(true);
+            let node = Widget::accessibility(&p).unwrap();
+            assert!(node.state.focused);
+        }
+
+        fn command_mode_traps_focus_search_does_not() {
+            let mut cmd = seeded_command_palette();
+            cmd.set_rect(Rect::new(0.0, 0.0, 480.0, 400.0));
+            assert!(Widget::traps_focus(&cmd), "command palette must trap focus");
+            assert!(Widget::modal_capture(&cmd).is_some());
+            cmd.close();
+            assert!(!Widget::traps_focus(&cmd), "closed palette releases focus");
+
+            let mut search = CommandPalette::new();
+            search.push(CommandEntry::new("a", "Alpha"));
+            search.set_focus(true);
+            assert!(!Widget::traps_focus(&search), "search palette never traps");
+            assert!(Widget::modal_capture(&search).is_none());
+        }
+
+        accessibility_reports_open_state_modal_mode_and_painted_result_children();
+        accessibility_focus_tracks_focus_state();
+        command_mode_traps_focus_search_does_not();
     }
 
     fn seeded_command_palette() -> CommandPalette {
@@ -3266,450 +3434,368 @@ mod tests {
     }
 
     #[test]
-    fn command_mode_traps_focus_search_does_not() {
-        let mut cmd = seeded_command_palette();
-        cmd.set_rect(Rect::new(0.0, 0.0, 480.0, 400.0));
-        assert!(Widget::traps_focus(&cmd), "command palette must trap focus");
-        assert!(Widget::modal_capture(&cmd).is_some());
-        cmd.close();
-        assert!(!Widget::traps_focus(&cmd), "closed palette releases focus");
+    fn command_mode_navigates_filters_and_scrolls() {
+        fn command_mode_arrows_and_enter_are_captured_and_navigate() {
+            let mut p = seeded_command_palette();
+            assert_eq!(p.selected_id(), Some("goto"));
 
-        let mut search = CommandPalette::new();
-        search.push(CommandEntry::new("a", "Alpha"));
-        search.set_focus(true);
-        assert!(!Widget::traps_focus(&search), "search palette never traps");
-        assert!(Widget::modal_capture(&search).is_none());
-    }
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT.clone();
+            for _ in 0..2 {
+                let mut handled = false;
+                let mut focus = None;
+                let mut taffy: TaffyTree<()> = TaffyTree::new();
+                let node = taffy.leaf_node(Style::default());
+                p.handle_event(
+                    &key_press(Key::Named(NamedKey::ArrowDown)),
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &Modifiers::default(),
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
+                );
+                assert!(handled, "ArrowDown must be consumed by the palette");
+            }
+            assert_eq!(p.selected_id(), Some("export"), "cursor advanced two rows");
 
-    #[test]
-    fn command_mode_arrows_and_enter_are_captured_and_navigate() {
-        let mut p = seeded_command_palette();
-        assert_eq!(p.selected_id(), Some("goto"));
-
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT.clone();
-        for _ in 0..2 {
             let mut handled = false;
-            let mut focus = None;
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let node = taffy.leaf_node(Style::default());
-            p.handle_event(
-                &key_press(Key::Named(NamedKey::ArrowDown)),
-                1.0,
-                &Modifiers::default(),
-                &mut doc,
-                &root,
+            dispatch_h(
+                &mut p,
+                &key_press(Key::Named(NamedKey::ArrowUp)),
+                Modifiers::default(),
                 &mut handled,
-                &mut focus,
-                node,
-                &taffy,
             );
-            assert!(handled, "ArrowDown must be consumed by the palette");
+            assert!(handled);
+            assert_eq!(p.selected_id(), Some("sum"));
+
+            let mut handled = false;
+            dispatch_h(
+                &mut p,
+                &key_press(Key::Named(NamedKey::Enter)),
+                Modifiers::default(),
+                &mut handled,
+            );
+            assert!(handled, "Enter is consumed");
+            let outcome = p.take_outcome().expect("Enter emits an outcome");
+            assert_eq!(outcome.id, "sum");
+            assert_eq!(outcome.argument, None);
+            assert!(!p.is_open(), "running a command closes the palette");
         }
-        assert_eq!(p.selected_id(), Some("export"), "cursor advanced two rows");
 
-        let mut handled = false;
-        dispatch_h(
-            &mut p,
-            &key_press(Key::Named(NamedKey::ArrowUp)),
-            Modifiers::default(),
-            &mut handled,
-        );
-        assert!(handled);
-        assert_eq!(p.selected_id(), Some("sum"));
+        fn command_mode_filter_matches_label_and_description() {
+            let mut p = seeded_command_palette();
+            // "csv" only appears in the Export entry's description.
+            p.set_query("csv");
+            let ids: Vec<&str> = p.visible_entries().iter().map(|e| e.id.as_str()).collect();
+            assert_eq!(ids, vec!["export"], "description text is searchable");
 
-        let mut handled = false;
-        dispatch_h(
-            &mut p,
-            &key_press(Key::Named(NamedKey::Enter)),
-            Modifiers::default(),
-            &mut handled,
-        );
-        assert!(handled, "Enter is consumed");
-        let outcome = p.take_outcome().expect("Enter emits an outcome");
-        assert_eq!(outcome.id, "sum");
-        assert_eq!(outcome.argument, None);
-        assert!(!p.is_open(), "running a command closes the palette");
+            p.set_query("sum");
+            let ids: Vec<&str> = p.visible_entries().iter().map(|e| e.id.as_str()).collect();
+            assert_eq!(ids, vec!["sum"]);
+        }
+
+        fn command_mode_geometry_differs_from_search() {
+            let cmd = seeded_command_palette();
+            let (cw, _) = cmd.desired_size();
+            assert_eq!(cw, CMD_CARD_WIDTH);
+            assert_eq!(cmd.row_height(), TWO_LINE_ROW_HEIGHT);
+            assert_eq!(cmd.filter_block(), 0.0, "no filter strip in command mode");
+
+            let search = CommandPalette::new();
+            let (sw, _) = search.desired_size();
+            assert_eq!(sw, SEARCH_CARD_WIDTH);
+            assert_eq!(search.row_height(), ROW_HEIGHT);
+            assert!(search.filter_block() > 0.0, "search keeps its filter strip");
+        }
+
+        fn command_mode_scrolls_to_keep_cursor_visible() {
+            let mut p = CommandPalette::commands();
+            for i in 0..20 {
+                p.push(CommandEntry::new(format!("id{i}"), format!("Command {i}")));
+            }
+            p.open();
+            let (w, h) = p.desired_size();
+            p.set_rect(Rect::new(0.0, 0.0, w, h));
+            assert!(p.row_rect(0).is_some());
+            assert!(
+                p.row_rect(CommandPalette::max_visible_rows()).is_none(),
+                "row past the cap is scrolled off"
+            );
+
+            p.set_cursor(19);
+            assert!(
+                p.row_rect(19).is_some(),
+                "highlighted last row stays visible"
+            );
+            assert!(p.row_rect(0).is_none(), "the top row scrolled out of view");
+        }
+
+        command_mode_arrows_and_enter_are_captured_and_navigate();
+        command_mode_filter_matches_label_and_description();
+        command_mode_geometry_differs_from_search();
+        command_mode_scrolls_to_keep_cursor_visible();
     }
 
     #[test]
-    fn command_mode_filter_matches_label_and_description() {
-        let mut p = seeded_command_palette();
-        // "csv" only appears in the Export entry's description.
-        p.set_query("csv");
-        let ids: Vec<&str> = p.visible_entries().iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, vec!["export"], "description text is searchable");
+    fn command_argument_prompts_return_values_or_back_out() {
+        fn command_mode_argument_flow_returns_typed_value() {
+            let mut p = seeded_command_palette();
+            assert_eq!(p.selected_id(), Some("goto"));
 
-        p.set_query("sum");
-        let ids: Vec<&str> = p.visible_entries().iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, vec!["sum"]);
-    }
+            let mut handled = false;
+            dispatch_h(
+                &mut p,
+                &key_press(Key::Named(NamedKey::Enter)),
+                Modifiers::default(),
+                &mut handled,
+            );
+            assert!(handled);
+            assert!(
+                p.in_argument_mode(),
+                "entry with an argument opens the arg step"
+            );
+            assert_eq!(p.argument_buffer(), Some("A1"));
+            assert!(
+                p.take_outcome().is_none(),
+                "no outcome until the argument is confirmed"
+            );
 
-    #[test]
-    fn command_mode_argument_flow_returns_typed_value() {
-        let mut p = seeded_command_palette();
-        assert_eq!(p.selected_id(), Some("goto"));
+            for ch in ["B", "1", "2"] {
+                let mut h = false;
+                dispatch_h(
+                    &mut p,
+                    &key_press(Key::Character(SmolStr::new(ch))),
+                    Modifiers::default(),
+                    &mut h,
+                );
+                assert!(h, "typing in the arg field is consumed");
+            }
+            assert_eq!(p.argument_buffer(), Some("B12"));
 
-        let mut handled = false;
-        dispatch_h(
-            &mut p,
-            &key_press(Key::Named(NamedKey::Enter)),
-            Modifiers::default(),
-            &mut handled,
-        );
-        assert!(handled);
-        assert!(
-            p.in_argument_mode(),
-            "entry with an argument opens the arg step"
-        );
-        assert_eq!(p.argument_buffer(), Some("A1"));
-        assert!(
-            p.take_outcome().is_none(),
-            "no outcome until the argument is confirmed"
-        );
+            let mut handled = false;
+            dispatch_h(
+                &mut p,
+                &key_press(Key::Named(NamedKey::Enter)),
+                Modifiers::default(),
+                &mut handled,
+            );
+            assert!(handled);
+            let outcome = p.take_outcome().expect("confirming emits an outcome");
+            assert_eq!(outcome.id, "goto");
+            assert_eq!(outcome.argument.as_deref(), Some("B12"));
+            assert!(!p.is_open());
+        }
 
-        for ch in ["B", "1", "2"] {
+        fn direct_argument_mode_skips_the_artificial_command_row() {
+            let mut p = CommandPalette::commands();
+            p.open_argument(
+                "goto-line",
+                "Go to line",
+                "Line number\u{2026}",
+                Some("42".into()),
+            );
+            assert!(p.is_open());
+            assert!(p.in_argument_mode());
+            assert_eq!(p.argument_buffer(), Some("42"));
+            let mut handled = false;
+            dispatch_h(
+                &mut p,
+                &key_press(Key::Named(NamedKey::Enter)),
+                Modifiers::default(),
+                &mut handled,
+            );
+            assert!(handled);
+            assert_eq!(
+                p.take_outcome(),
+                Some(CommandOutcome {
+                    id: "goto-line".into(),
+                    argument: Some("42".into()),
+                })
+            );
+            assert!(!p.is_open());
+        }
+
+        fn escape_closes_a_direct_argument_prompt() {
+            let mut p = CommandPalette::commands();
+            p.open_argument("goto-line", "Go to line", "Line number…", None);
+            let mut handled = false;
+            dispatch_h(
+                &mut p,
+                &key_press(Key::Named(NamedKey::Escape)),
+                Modifiers::default(),
+                &mut handled,
+            );
+            assert!(handled);
+            assert!(!p.is_open());
+            assert!(!p.in_argument_mode());
+        }
+
+        fn command_mode_escape_from_argument_returns_to_list() {
+            let mut p = seeded_command_palette();
             let mut h = false;
             dispatch_h(
                 &mut p,
-                &key_press(Key::Character(SmolStr::new(ch))),
+                &key_press(Key::Named(NamedKey::Enter)),
                 Modifiers::default(),
                 &mut h,
             );
-            assert!(h, "typing in the arg field is consumed");
+            assert!(p.in_argument_mode());
+            let mut h = false;
+            dispatch_h(
+                &mut p,
+                &key_press(Key::Named(NamedKey::Escape)),
+                Modifiers::default(),
+                &mut h,
+            );
+            assert!(h, "Escape is consumed");
+            assert!(!p.in_argument_mode(), "Escape leaves the argument step");
+            assert!(p.is_open(), "…but the palette is still open on the list");
+            assert!(p.take_outcome().is_none());
         }
-        assert_eq!(p.argument_buffer(), Some("B12"));
 
-        let mut handled = false;
-        dispatch_h(
-            &mut p,
-            &key_press(Key::Named(NamedKey::Enter)),
-            Modifiers::default(),
-            &mut handled,
-        );
-        assert!(handled);
-        let outcome = p.take_outcome().expect("confirming emits an outcome");
-        assert_eq!(outcome.id, "goto");
-        assert_eq!(outcome.argument.as_deref(), Some("B12"));
-        assert!(!p.is_open());
+        command_mode_argument_flow_returns_typed_value();
+        direct_argument_mode_skips_the_artificial_command_row();
+        escape_closes_a_direct_argument_prompt();
+        command_mode_escape_from_argument_returns_to_list();
     }
 
     #[test]
-    fn direct_argument_mode_skips_the_artificial_command_row() {
-        let mut p = CommandPalette::commands();
-        p.open_argument(
-            "goto-line",
-            "Go to line",
-            "Line number\u{2026}",
-            Some("42".into()),
-        );
-        assert!(p.is_open());
-        assert!(p.in_argument_mode());
-        assert_eq!(p.argument_buffer(), Some("42"));
-        let mut handled = false;
-        dispatch_h(
-            &mut p,
-            &key_press(Key::Named(NamedKey::Enter)),
-            Modifiers::default(),
-            &mut handled,
-        );
-        assert!(handled);
-        assert_eq!(
-            p.take_outcome(),
-            Some(CommandOutcome {
-                id: "goto-line".into(),
-                argument: Some("42".into()),
-            })
-        );
-        assert!(!p.is_open());
-    }
-
-    #[test]
-    fn escape_closes_a_direct_argument_prompt() {
-        let mut p = CommandPalette::commands();
-        p.open_argument("goto-line", "Go to line", "Line number…", None);
-        let mut handled = false;
-        dispatch_h(
-            &mut p,
-            &key_press(Key::Named(NamedKey::Escape)),
-            Modifiers::default(),
-            &mut handled,
-        );
-        assert!(handled);
-        assert!(!p.is_open());
-        assert!(!p.in_argument_mode());
-    }
-
-    #[test]
-    fn command_mode_escape_from_argument_returns_to_list() {
-        let mut p = seeded_command_palette();
-        let mut h = false;
-        dispatch_h(
-            &mut p,
-            &key_press(Key::Named(NamedKey::Enter)),
-            Modifiers::default(),
-            &mut h,
-        );
-        assert!(p.in_argument_mode());
-        let mut h = false;
-        dispatch_h(
-            &mut p,
-            &key_press(Key::Named(NamedKey::Escape)),
-            Modifiers::default(),
-            &mut h,
-        );
-        assert!(h, "Escape is consumed");
-        assert!(!p.in_argument_mode(), "Escape leaves the argument step");
-        assert!(p.is_open(), "…but the palette is still open on the list");
-        assert!(p.take_outcome().is_none());
-    }
-
-    #[test]
-    fn command_mode_geometry_differs_from_search() {
-        let cmd = seeded_command_palette();
-        let (cw, _) = cmd.desired_size();
-        assert_eq!(cw, CMD_CARD_WIDTH);
-        assert_eq!(cmd.row_height(), TWO_LINE_ROW_HEIGHT);
-        assert_eq!(cmd.filter_block(), 0.0, "no filter strip in command mode");
-
-        let search = CommandPalette::new();
-        let (sw, _) = search.desired_size();
-        assert_eq!(sw, SEARCH_CARD_WIDTH);
-        assert_eq!(search.row_height(), ROW_HEIGHT);
-        assert!(search.filter_block() > 0.0, "search keeps its filter strip");
-    }
-
-    #[test]
-    fn command_mode_scrolls_to_keep_cursor_visible() {
-        let mut p = CommandPalette::commands();
-        for i in 0..20 {
-            p.push(CommandEntry::new(format!("id{i}"), format!("Command {i}")));
-        }
-        p.open();
-        let (w, h) = p.desired_size();
-        p.set_rect(Rect::new(0.0, 0.0, w, h));
-        assert!(p.row_rect(0).is_some());
-        assert!(
-            p.row_rect(CommandPalette::max_visible_rows()).is_none(),
-            "row past the cap is scrolled off"
-        );
-
-        p.set_cursor(19);
-        assert!(
-            p.row_rect(19).is_some(),
-            "highlighted last row stays visible"
-        );
-        assert!(p.row_rect(0).is_none(), "the top row scrolled out of view");
-    }
-
-    #[test]
-    fn grouped_entries_plan_one_header_per_section() {
-        let mut p = CommandPalette::new();
-        p.set_bypass_fuzzy(true);
-        p.set_entries(vec![
-            CommandEntry::new("a", "Open Calculator").group("Applications"),
-            CommandEntry::new("b", "calc.rs").group("Files"),
-            CommandEntry::new("c", "calculator.rs").group("Files"),
-        ]);
-        let headers: Vec<&str> = p
-            .rows
-            .iter()
-            .filter_map(|r| match r {
-                VisualRow::Header { label, .. } => Some(label.as_str()),
-                VisualRow::Entry(_) => None,
-            })
-            .collect();
-        assert_eq!(headers, vec!["Applications", "Files"]);
-        assert_eq!(
-            p.rows.len(),
-            5,
-            "two headers plus three entries: {:?}",
-            p.rows
-        );
-    }
-
-    #[test]
-    fn a_trimmed_section_reports_its_untrimmed_count() {
-        let mut p = CommandPalette::new();
-        p.set_bypass_fuzzy(true);
-        p.set_entries(vec![
-            CommandEntry::new("a", "one").group("Files").group_total(40),
-            CommandEntry::new("b", "two").group("Files").group_total(40),
-        ]);
-        match &p.rows[0] {
-            VisualRow::Header { label, total } => {
-                assert_eq!(label, "Files");
-                assert_eq!(*total, 40);
-            }
-            VisualRow::Entry(i) => panic!("expected a header, got entry row {i}"),
-        }
-        assert_eq!(
-            p.result_total(),
-            40,
-            "the footer count must not contradict the section header"
-        );
-    }
-
-    #[test]
-    fn a_scrolled_list_hit_tests_the_row_it_painted() {
-        let mut p = CommandPalette::new();
-        p.set_bypass_fuzzy(true);
-        p.set_entries(
-            (0..30)
-                .map(|i| {
-                    CommandEntry::new(format!("id{i}"), format!("Result {i}"))
-                        .description(format!("~/path/to/{i}"))
-                        .group("Files")
+    fn grouped_results_plan_headers_counts_and_painted_hits() {
+        fn grouped_entries_plan_one_header_per_section() {
+            let mut p = CommandPalette::new();
+            p.set_bypass_fuzzy(true);
+            p.set_entries(vec![
+                CommandEntry::new("a", "Open Calculator").group("Applications"),
+                CommandEntry::new("b", "calc.rs").group("Files"),
+                CommandEntry::new("c", "calculator.rs").group("Files"),
+            ]);
+            let headers: Vec<&str> = p
+                .rows
+                .iter()
+                .filter_map(|r| match r {
+                    VisualRow::Header { label, .. } => Some(label.as_str()),
+                    VisualRow::Entry(_) => None,
                 })
-                .collect(),
-        );
-        let (w, h) = p.desired_size();
-        p.set_rect(Rect::new(0.0, 0.0, w, h));
-
-        p.set_cursor(29);
-        let painted: Vec<usize> = (0..30).filter(|&i| p.row_rect(i).is_some()).collect();
-        assert!(
-            painted.contains(&29),
-            "the cursor's row must be painted: {painted:?}"
-        );
-        assert!(
-            !painted.contains(&0),
-            "row 0 must have scrolled off: {painted:?}"
-        );
-        for i in painted {
-            let r = p.row_rect(i).expect("painted");
+                .collect();
+            assert_eq!(headers, vec!["Applications", "Files"]);
             assert_eq!(
-                p.row_at(r.center()),
-                Some(i),
-                "row {i} painted at {r:?} but hit-tests as {:?}",
-                p.row_at(r.center())
+                p.rows.len(),
+                5,
+                "two headers plus three entries: {:?}",
+                p.rows
             );
         }
-    }
 
-    #[test]
-    fn no_painted_row_overlaps_the_footer() {
-        let mut p = CommandPalette::new();
-        p.set_bypass_fuzzy(true);
-        p.set_entries(
-            (0..40)
-                .map(|i| {
-                    CommandEntry::new(format!("id{i}"), format!("Result {i}"))
-                        .description("sub")
-                        .group(if i < 3 { "Actions" } else { "Files" })
-                })
-                .collect(),
-        );
-        let (w, h) = p.desired_size();
-        p.set_rect(Rect::new(0.0, 0.0, w, h));
-        let footer_top = p.footer_rect().y0;
-        for i in 0..40 {
-            if let Some(r) = p.row_rect(i) {
-                assert!(
-                    r.y1 <= footer_top,
-                    "row {i} at {r:?} runs into the footer at {footer_top}"
-                );
-                assert!(
-                    r.y0 >= p.list_top_y() - 0.01,
-                    "row {i} starts above the list"
+        fn a_trimmed_section_reports_its_untrimmed_count() {
+            let mut p = CommandPalette::new();
+            p.set_bypass_fuzzy(true);
+            p.set_entries(vec![
+                CommandEntry::new("a", "one").group("Files").group_total(40),
+                CommandEntry::new("b", "two").group("Files").group_total(40),
+            ]);
+            match &p.rows[0] {
+                VisualRow::Header { label, total } => {
+                    assert_eq!(label, "Files");
+                    assert_eq!(*total, 40);
+                }
+                VisualRow::Entry(i) => panic!("expected a header, got entry row {i}"),
+            }
+            assert_eq!(
+                p.result_total(),
+                40,
+                "the footer count must not contradict the section header"
+            );
+        }
+
+        fn a_scrolled_list_hit_tests_the_row_it_painted() {
+            let mut p = CommandPalette::new();
+            p.set_bypass_fuzzy(true);
+            p.set_entries(
+                (0..30)
+                    .map(|i| {
+                        CommandEntry::new(format!("id{i}"), format!("Result {i}"))
+                            .description(format!("~/path/to/{i}"))
+                            .group("Files")
+                    })
+                    .collect(),
+            );
+            let (w, h) = p.desired_size();
+            p.set_rect(Rect::new(0.0, 0.0, w, h));
+
+            p.set_cursor(29);
+            let painted: Vec<usize> = (0..30).filter(|&i| p.row_rect(i).is_some()).collect();
+            assert!(
+                painted.contains(&29),
+                "the cursor's row must be painted: {painted:?}"
+            );
+            assert!(
+                !painted.contains(&0),
+                "row 0 must have scrolled off: {painted:?}"
+            );
+            for i in painted {
+                let r = p.row_rect(i).expect("painted");
+                assert_eq!(
+                    p.row_at(r.center()),
+                    Some(i),
+                    "row {i} painted at {r:?} but hit-tests as {:?}",
+                    p.row_at(r.center())
                 );
             }
         }
-    }
 
-    #[test]
-    fn an_empty_result_set_still_gets_a_readable_card() {
-        let mut p = CommandPalette::new();
-        p.set_bypass_fuzzy(true);
-        p.set_query("nothing matches this");
-        p.set_entries(vec![]);
-        let (_, h) = p.desired_size();
-        p.set_rect(Rect::new(0.0, 0.0, 640.0, h));
-        let room = p.footer_rect().y0 - p.list_top_y();
-        assert!(
-            room >= EMPTY_STATE_HEIGHT - 1.0,
-            "the zero-state needs {EMPTY_STATE_HEIGHT} px of list area, got {room}"
-        );
-    }
+        fn no_painted_row_overlaps_the_footer() {
+            let mut p = CommandPalette::new();
+            p.set_bypass_fuzzy(true);
+            p.set_entries(
+                (0..40)
+                    .map(|i| {
+                        CommandEntry::new(format!("id{i}"), format!("Result {i}"))
+                            .description("sub")
+                            .group(if i < 3 { "Actions" } else { "Files" })
+                    })
+                    .collect(),
+            );
+            let (w, h) = p.desired_size();
+            p.set_rect(Rect::new(0.0, 0.0, w, h));
+            let footer_top = p.footer_rect().y0;
+            for i in 0..40 {
+                if let Some(r) = p.row_rect(i) {
+                    assert!(
+                        r.y1 <= footer_top,
+                        "row {i} at {r:?} runs into the footer at {footer_top}"
+                    );
+                    assert!(
+                        r.y0 >= p.list_top_y() - 0.01,
+                        "row {i} starts above the list"
+                    );
+                }
+            }
+        }
 
-    #[test]
-    fn a_host_filter_strip_is_reserved_on_the_cards_inset() {
-        let mut p = CommandPalette::new();
-        p.set_host_filter_strip(true);
-        p.set_rect(Rect::new(0.0, 0.0, 640.0, 400.0));
-        let band = p.filter_strip_rect();
-        let field = p.input_row_rect();
-        assert_eq!(
-            band.x0, field.x0,
-            "the host band must share the field's left edge"
-        );
-        assert_eq!(band.x1, field.x1);
-        assert_eq!(band.x0, p.rect.x0 + p.content_inset_px());
-        assert!(band.y0 >= field.y1, "the band sits under the field");
-        assert!(
-            p.list_top_y() >= band.y1,
-            "rows start below the band, not behind it"
-        );
-    }
+        fn an_empty_result_set_still_gets_a_readable_card() {
+            let mut p = CommandPalette::new();
+            p.set_bypass_fuzzy(true);
+            p.set_query("nothing matches this");
+            p.set_entries(vec![]);
+            let (_, h) = p.desired_size();
+            p.set_rect(Rect::new(0.0, 0.0, 640.0, h));
+            let room = p.footer_rect().y0 - p.list_top_y();
+            assert!(
+                room >= EMPTY_STATE_HEIGHT - 1.0,
+                "the zero-state needs {EMPTY_STATE_HEIGHT} px of list area, got {room}"
+            );
+        }
 
-    #[test]
-    fn a_host_can_reserve_more_than_one_row_of_filter_band() {
-        let mut one = CommandPalette::new();
-        one.set_host_filter_strip(true);
-        one.set_rect(Rect::new(0.0, 0.0, 640.0, 400.0));
-        let (_, one_high) = one.desired_size();
-        let one_band = one.filter_strip_rect();
-
-        let mut two = CommandPalette::new();
-        two.set_host_filter_strip(true);
-        assert!(
-            two.set_host_filter_strip_rows(2),
-            "asking for a different row count is a change"
-        );
-        assert!(
-            !two.set_host_filter_strip_rows(2),
-            "asking for the same row count again is not"
-        );
-        two.set_rect(Rect::new(0.0, 0.0, 640.0, 400.0));
-        let (_, two_high) = two.desired_size();
-        let band = two.filter_strip_rect();
-
-        assert_eq!(two.host_filter_strip_rows(), 2);
-        assert_eq!(
-            band.height(),
-            one_band.height() + two.filter_strip_row_height(),
-            "the band grows by exactly one row"
-        );
-        assert_eq!(
-            two_high - one_high,
-            two.filter_strip_row_height(),
-            "and so does the card, so nothing else moves"
-        );
-        assert!(
-            two.list_top_y() >= band.y1,
-            "rows still start below the band: {} vs {}",
-            two.list_top_y(),
-            band.y1
-        );
-        assert_eq!(
-            band.y0, one_band.y0,
-            "the band still starts under the field — it grows downward"
-        );
-    }
-
-    #[test]
-    fn semantic_shortcut_labels_follow_the_palette_platform() {
-        use crate::platform::{Platform, PlatformConventions};
-
-        let entry = CommandEntry::new("find", "Find").shortcut(Shortcut::command("F"));
-        assert_eq!(
-            entry.keybinding_label(PlatformConventions::new(Platform::MacOs)),
-            Some("⌘F".into())
-        );
-        assert_eq!(
-            entry.keybinding_label(PlatformConventions::new(Platform::Windows)),
-            Some("Ctrl+F".into())
-        );
+        grouped_entries_plan_one_header_per_section();
+        a_trimmed_section_reports_its_untrimmed_count();
+        a_scrolled_list_hit_tests_the_row_it_painted();
+        no_painted_row_overlaps_the_footer();
+        an_empty_result_set_still_gets_a_readable_card();
     }
 
     fn dispatch_h(
@@ -3724,7 +3810,17 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.leaf_node(Style::default());
         p.handle_event(
-            event, 1.0, &modifiers, &mut doc, &root, handled, &mut focus, node, &taffy,
+            event,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &root,
+                handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 }

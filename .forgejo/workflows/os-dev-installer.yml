@@ -1,0 +1,182 @@
+name: Build / OS dev installer
+
+# Build a disposable WHPX installer medium from an already published unsigned
+# ARM64 OS image. This is an on-demand development artifact: local tilo-vm runs
+# the install scenarios, while release signing and reproduction stay separate.
+on:
+  workflow_dispatch:
+    inputs:
+      os_image:
+        description: "Exact ARM64 CI-built image (registry.tilo.so/tilo/tilo-vm or tilo-ci, pinned by digest)"
+        required: true
+        type: string
+      installer_rootfs:
+        description: "Live installer root filesystem; ext4 avoids WHPX Btrfs fs-verity read failures"
+        required: false
+        default: "btrfs"
+        type: string
+      target_image:
+        description: "Optional separate ARM64 dev target pinned by digest; empty means installer self-copy"
+        required: false
+        type: string
+      target_ci_run_id:
+        description: "Internal Forgejo run ID that built the separate target (locator, not a signature)"
+        required: false
+        type: string
+      target_update_origin:
+        description: "Published tilo-vm update tag for the separate target"
+        required: false
+        type: string
+      target_profile:
+        description: "Separate target profile: generic or lenovo-83ed"
+        required: false
+        default: "lenovo-83ed"
+        type: string
+
+concurrency:
+  group: os-dev-installer-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  medium:
+    runs-on: runner-large-arm64
+    timeout-minutes: 120
+    env:
+      TILO_DISTROBOX: ""
+      TILO_LOCAL_TAG: dev-installer-${{ github.run_id }}
+      TILO_OUTPUT: /var/tmp/tilo-dev-installer-${{ github.run_id }}
+      TILO_IMAGE: ${{ github.event.inputs.os_image }}
+      TILO_INSTALLER_ROOTFS: ${{ github.event.inputs.installer_rootfs || 'btrfs' }}
+      TILO_DEV_TARGET_IMAGE: ${{ github.event.inputs.target_image }}
+      TILO_DEV_TARGET_RUN_ID: ${{ github.event.inputs.target_ci_run_id }}
+      TILO_DEV_TARGET_ORIGIN: ${{ github.event.inputs.target_update_origin }}
+      TILO_DEV_TARGET_PROFILE: ${{ github.event.inputs.target_profile || 'lenovo-83ed' }}
+      # The nested Podman build must reach Cargo's GitHub sources; its private
+      # network stalled there while the native runner's network was available.
+      TILO_PODMAN_BUILD_NETWORK: host
+      # This disposable, unsigned medium is exercised only in the WHPX VM.
+      # Physical Windows-direct installs use paired CI-signed offline targets.
+      TILO_UNVERIFIED_VM_INSTALL: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Require a native ARM64 host and an immutable dev image
+        run: |
+          set -euo pipefail
+          ./os/dev/assert-native-arch.sh aarch64
+          [[ "$TILO_IMAGE" =~ ^registry\.tilo\.so/tilo/tilo-(ci|vm)@sha256:[0-9a-f]{64}$ ]] || {
+            echo '::error::os_image must pin one published ARM64 dev image by digest'; exit 1;
+          }
+          case "$TILO_INSTALLER_ROOTFS" in
+            btrfs|ext4) ;;
+            *) echo '::error::installer_rootfs must be btrfs or ext4'; exit 1 ;;
+          esac
+      - name: Install native disk builder dependencies
+        run: |
+          set -euo pipefail
+          sudo -n true
+          if command -v apt-get >/dev/null; then
+            export DEBIAN_FRONTEND=noninteractive
+            sudo -n apt-get -o Acquire::Retries=3 update
+            sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+              btrfs-progs cryptsetup dosfstools e2fsprogs fdisk jq mtools \
+              podman fuse-overlayfs qemu-utils skopeo slirp4netns uidmap util-linux zstd
+          elif command -v dnf >/dev/null; then
+            sudo -n dnf --setopt=retries=3 install -y \
+              btrfs-progs cryptsetup dosfstools e2fsprogs jq mtools \
+              podman fuse-overlayfs qemu-img skopeo slirp4netns shadow-utils util-linux zstd
+          else
+            echo '::error::native ARM64 runner must provide apt-get or dnf'; exit 1
+          fi
+          command -v debugfs losetup mattrib mkfs.vfat podman qemu-img skopeo zstd >/dev/null
+      - name: Use the native overlay disk-builder store
+        run: |
+          set -euo pipefail
+          bash os/dev/ci-prepare-disk-devices.sh --kata-job
+          bash os/dev/ci-native-podman-store.sh
+      - name: Pull the published dev image and build its installer overlay
+        run: |
+          set -euo pipefail
+          podman pull "$TILO_IMAGE"
+          test "$(podman image inspect "$TILO_IMAGE" --format '{{.Architecture}}')" = arm64
+          source_revision="$(podman image inspect "$TILO_IMAGE" --format '{{index .Labels "org.opencontainers.image.revision"}}')"
+          [[ "$source_revision" =~ ^[0-9a-f]{40}$ ]] || {
+            echo '::error::dev image does not identify its source revision'; exit 1;
+          }
+          printf 'base_image=%s\nbase_source=%s\nbuild_source=%s\n' \
+            "$TILO_IMAGE" "$source_revision" "$GITHUB_SHA" > dev-installer-source.txt
+          if [ -n "$TILO_DEV_TARGET_IMAGE" ]; then
+            # Keep the generic live UI and the board target separate, using
+            # the same source cohort. No OS rebuild or signature upload.
+            export TILO_INSTALLER_DEV_TARGET=1
+            export TILO_INSTALLER_OFFLINE_TARGET_DIR="$TILO_OUTPUT/dev-target"
+            mkdir -p "$TILO_OUTPUT"
+            python3 os/dev/prepare-dev-installer-target.py \
+              --image "$TILO_DEV_TARGET_IMAGE" --source-revision "$source_revision" \
+              --ci-run-id "$TILO_DEV_TARGET_RUN_ID" --hardware-profile "$TILO_DEV_TARGET_PROFILE" \
+              --update-origin "$TILO_DEV_TARGET_ORIGIN" \
+              --output "$TILO_INSTALLER_OFFLINE_TARGET_DIR"
+            printf 'target_image=%s\ntarget_ci_run_id=%s\ntarget_update_origin=%s\n' \
+              "$TILO_DEV_TARGET_IMAGE" "$TILO_DEV_TARGET_RUN_ID" "$TILO_DEV_TARGET_ORIGIN" \
+              >> dev-installer-source.txt
+          elif [ -n "$TILO_DEV_TARGET_RUN_ID$TILO_DEV_TARGET_ORIGIN" ]; then
+            echo '::error::target metadata requires target_image'; exit 1
+          fi
+          if [[ "$TILO_IMAGE" = registry.tilo.so/tilo/tilo-vm@* ]]; then
+            # Generic dev images deliberately have no UKI. The installer uses
+            # the UKI boot layout for encrypted target installs; adapt only its
+            # boot files, retaining every already-built dev component.
+            layout="$(podman run --rm --entrypoint /bin/sh "$TILO_IMAGE" -ec '
+              test "$(cat /usr/lib/tilo/image-flavour)" = dev
+              set -- /boot/EFI/Linux/*.efi
+              if [ "$#" = 1 ] && [ -f "$1" ]; then
+                echo sealed
+              elif [ "$#" = 1 ] && [ "$1" = "/boot/EFI/Linux/*.efi" ] && [ ! -e "$1" ]; then
+                echo unsealed
+              else
+                echo "ambiguous dev UKI tree" >&2; exit 1
+              fi
+            ')"
+            if [ "$layout" = unsealed ]; then
+              ./os/dev/install-cached-cosign.sh
+              # GITHUB_PATH applies to later steps, not this current shell.
+              export PATH="$RUNNER_TEMP/tilo-cosign-tools:$PATH"
+              RPMS_REF="$(./os/dev/resolve-rpm-snapshot.sh)"
+              adapted="localhost/tilo-dev-installer-base:$GITHUB_RUN_ID"
+              adapter_context="$TILO_OUTPUT/boot-adapter"
+              mkdir -p "$adapter_context/os/dev"
+              cp os/dev/uki.sh os/dev/uki-hardware-profile.py \
+                os/dev/hardware_profile.py os/dev/make-boot-splash.py "$adapter_context/os/dev/"
+              podman build --build-arg "BASE_IMAGE=$TILO_IMAGE" \
+                --build-arg "RPMS_REF=$RPMS_REF" \
+                -t "$adapted" -f os/Containerfile.dev-installer-base "$adapter_context"
+              printf 'boot_adapter=%s\n' "$(podman image inspect "$adapted" --format '{{.Id}}')" \
+                >> dev-installer-source.txt
+              export TILO_IMAGE="$adapted"
+            elif [ "$layout" != sealed ]; then
+              echo '::error::dev image boot layout is ambiguous'; exit 1
+            fi
+          fi
+          ./os/dev/build-custom-installer.sh --reuse-image-installer
+      - name: Pack the sparse medium once for Windows WHPX
+        run: |
+          set -euo pipefail
+          medium="$TILO_OUTPUT/installer/qcow2/disk.qcow2"
+          test -s "$medium"
+          mkdir -p dist/dev-installer
+          output=dist/dev-installer/tilo-dev-installer-aarch64.qcow2.zst
+          zstd --threads=0 -1 --sparse -f "$medium" -o "$output"
+          (cd dist/dev-installer && sha256sum "$(basename "$output")") > "$output.sha256"
+          printf '%s  tilo-dev-installer-aarch64.qcow2\n' \
+            "$(sha256sum "$medium" | awk '{print $1}')" \
+            > dist/dev-installer/tilo-dev-installer-aarch64.qcow2.sha256
+          mv dev-installer-source.txt dist/dev-installer/source.txt
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: tilo-dev-installer-aarch64-${{ github.run_id }}
+          path: dist/dev-installer/
+          if-no-files-found: error
+      - name: Remove this run's disk scratch
+        if: always()
+        run: |
+          test "$TILO_OUTPUT" = "/var/tmp/tilo-dev-installer-$GITHUB_RUN_ID"
+          rm -rf -- "$TILO_OUTPUT"

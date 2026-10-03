@@ -435,45 +435,50 @@ impl QueryResult {
 mod tests {
     use super::*;
 
+    /// Columns classify integer families, reals display without trailing zeros, hostile text is refused, and profiles report local or network engines.
     #[test]
-    fn classify_picks_integer_for_int_family() {
-        assert_eq!(TypeClass::classify("INTEGER"), TypeClass::Integer);
-        assert_eq!(TypeClass::classify("BIGINT"), TypeClass::Integer);
-        assert_eq!(TypeClass::classify("VARCHAR(255)"), TypeClass::Text);
-        assert_eq!(TypeClass::classify("DATETIME"), TypeClass::DateTime);
-        assert_eq!(TypeClass::classify("NUMERIC(10,2)"), TypeClass::Numeric);
-        assert_eq!(TypeClass::classify(""), TypeClass::Blob);
-    }
+    fn cell_and_profile_classification() {
+        // --- phase: classify_picks_integer_for_int_family ---
+        {
+            assert_eq!(TypeClass::classify("INTEGER"), TypeClass::Integer);
+            assert_eq!(TypeClass::classify("BIGINT"), TypeClass::Integer);
+            assert_eq!(TypeClass::classify("VARCHAR(255)"), TypeClass::Text);
+            assert_eq!(TypeClass::classify("DATETIME"), TypeClass::DateTime);
+            assert_eq!(TypeClass::classify("NUMERIC(10,2)"), TypeClass::Numeric);
+            assert_eq!(TypeClass::classify(""), TypeClass::Blob);
+        }
 
-    #[test]
-    fn cell_display_formats_reals_without_trailing_zeros() {
-        assert_eq!(Cell::Real(3.0).display(), "3.0");
-        assert_eq!(Cell::Real(3.50).display(), "3.5");
-        assert_eq!(Cell::Null.display(), "NULL");
-    }
+        // --- phase: cell_display_formats_reals_without_trailing_zeros ---
+        {
+            assert_eq!(Cell::Real(3.0).display(), "3.0");
+            assert_eq!(Cell::Real(3.50).display(), "3.5");
+            assert_eq!(Cell::Null.display(), "NULL");
+        }
 
-    #[test]
-    fn bounded_text_refuses_hostile_cells() {
-        let Cell::Text(value) = Cell::bounded_text("x".repeat(Cell::MAX_RETAINED_TEXT_BYTES + 99))
-        else {
-            unreachable!()
-        };
-        assert!(value.len() <= Cell::MAX_RETAINED_TEXT_BYTES + 32);
-        assert!(value.ends_with("… [truncated]"));
-    }
+        // --- phase: bounded_text_refuses_hostile_cells ---
+        {
+            let Cell::Text(value) =
+                Cell::bounded_text("x".repeat(Cell::MAX_RETAINED_TEXT_BYTES + 99))
+            else {
+                unreachable!()
+            };
+            assert!(value.len() <= Cell::MAX_RETAINED_TEXT_BYTES + 32);
+            assert!(value.ends_with("… [truncated]"));
+        }
 
-    #[test]
-    fn sample_profile_is_connected_and_local() {
-        let p = ConnectionProfile::sqlite_sample();
-        assert!(p.connected);
-        assert!(!p.is_remote());
-        assert!(p.is_sample);
-    }
+        // --- phase: sample_profile_is_connected_and_local ---
+        {
+            let p = ConnectionProfile::sqlite_sample();
+            assert!(p.connected);
+            assert!(!p.is_remote());
+            assert!(p.is_sample);
+        }
 
-    #[test]
-    fn remote_profile_flags_network_engines() {
-        assert!(ConnectionProfile::new("x", Engine::Postgres).is_remote());
-        assert!(ConnectionProfile::new("x", Engine::MySql).is_remote());
-        assert!(!ConnectionProfile::new("x", Engine::Sqlite).is_remote());
+        // --- phase: remote_profile_flags_network_engines ---
+        {
+            assert!(ConnectionProfile::new("x", Engine::Postgres).is_remote());
+            assert!(ConnectionProfile::new("x", Engine::MySql).is_remote());
+            assert!(!ConnectionProfile::new("x", Engine::Sqlite).is_remote());
+        }
     }
 }

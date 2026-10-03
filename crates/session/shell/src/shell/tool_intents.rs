@@ -13,7 +13,7 @@ use std::time::Duration;
 use os_actions::{TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest};
 
 use crate::shell::chrome_state::Chrome;
-use crate::shell::workspace_settings::WsTab;
+use tilo_desktop::workspace_settings::WsTab;
 
 pub const TOOL_SERVICE: &str = "tools";
 const MAX_WIRE_BYTES: u64 = 4 * 1024;
@@ -37,10 +37,11 @@ struct ShellRequest {
 impl Drop for ToolServiceHandle {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Release);
-        // Wake the nonblocking listener immediately rather than waiting for a
-        // scheduling tick during compositor shutdown.
-        let _ = UnixStream::connect(&self.path);
-        if let Some(thread) = self.thread.take() {
+        // The listener sleeps in `accept`; one connection wakes it to see the
+        // flag. If nothing can connect it is not waited for.
+        if let Some(thread) = self.thread.take()
+            && UnixStream::connect(&self.path).is_ok()
+        {
             let _ = thread.join();
         }
         let _ = std::fs::remove_file(&self.path);
@@ -110,7 +111,6 @@ fn spawn_at(
         std::fs::remove_file(&path)?;
     }
     let listener = UnixListener::bind(&path)?;
-    listener.set_nonblocking(true)?;
     let shutdown = Arc::new(AtomicBool::new(false));
     let worker_shutdown = Arc::clone(&shutdown);
     // Launches a client asks for report to the session that started the
@@ -118,8 +118,9 @@ fn spawn_at(
     let thread = crate::shell::launcher::spawn_reporting(
         std::thread::Builder::new().name("tilo-tool-intents".into()),
         move || {
-            while !worker_shutdown.load(Ordering::Acquire) {
+            loop {
                 match listener.accept() {
+                    Ok(_) if worker_shutdown.load(Ordering::Acquire) => break,
                     Ok((stream, _)) => {
                         let handler = Arc::clone(&handler);
                         let _ = crate::shell::launcher::spawn_reporting(
@@ -127,9 +128,7 @@ fn spawn_at(
                             move || serve_client(stream, &handler),
                         );
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                     Err(e) => {
                         tracing::warn!(error = %e, "tool-intent listener failed");
                         break;
@@ -292,139 +291,171 @@ mod tests {
     use super::*;
     use os_actions::{ToolIntent, VpnRoute, WorkspaceSettingsRoute};
 
+    #[cfg(target_os = "linux")]
     #[test]
-    fn service_accepts_only_versioned_typed_requests() {
+    fn idle_listener_sleeps_until_a_client_arrives() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tools.sock");
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let record = Arc::clone(&seen);
-        let _service = spawn_at(
-            path.clone(),
-            Arc::new(move |r| {
-                record.lock().unwrap().push(r.intent);
-                Ok(())
-            }),
-            Arc::new(Mutex::new(Vec::new())),
-            Arc::new(Mutex::new(Vec::new())),
-        )
-        .unwrap();
-
-        let mut stream = UnixStream::connect(path).unwrap();
-        let request = ToolRequest {
-            protocol: TOOL_PROTOCOL_VERSION,
-            workspace_id: "7690fd4b-55aa-4a4f-8339-7405f4ad18ac".into(),
-            intent: ToolIntent::Vpn {
-                route: VpnRoute::Profile,
-                profile: Some("Work VPN".into()),
-            },
-        };
-        serde_json::to_writer(&mut stream, &request).unwrap();
-        stream.write_all(b"\n").unwrap();
-        let mut response = String::new();
-        BufReader::new(stream).read_line(&mut response).unwrap();
-        assert!(
-            serde_json::from_str::<ToolReply>(&response)
+        let (service, listener) =
+            crate::idle_thread_probe::spawned_thread("tilo-tool-inten", || {
+                spawn_at(
+                    path.clone(),
+                    Arc::new(|_| Ok(())),
+                    Arc::new(Mutex::new(Vec::new())),
+                    Arc::new(Mutex::new(Vec::new())),
+                )
                 .unwrap()
-                .accepted
-        );
-        assert_eq!(seen.lock().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn workspace_route_opens_exact_tab_for_active_room() {
-        let chrome = crate::shell::chrome_state::ChromeState::new(
-            crate::shell::state::WorkspaceTree::bootstrap_demo(),
-        );
-        let room = chrome
-            .borrow()
-            .tree()
-            .desktop
-            .active_workspace()
-            .unwrap()
-            .room
-            .to_string();
-        let request = ToolRequest {
-            protocol: TOOL_PROTOCOL_VERSION,
-            workspace_id: room,
-            intent: ToolIntent::WorkspaceSettings {
-                route: WorkspaceSettingsRoute::PrivacySecurity,
-            },
-        };
-
-        apply_workspace_settings(&chrome, &request).unwrap();
-
-        let state = chrome.borrow();
-        assert!(state.overlays.ws_settings);
-        assert_eq!(state.ws_settings_tab, WsTab::Permissions);
-    }
-
-    #[test]
-    fn workspace_route_cannot_switch_or_target_another_room() {
-        let chrome = crate::shell::chrome_state::ChromeState::new(
-            crate::shell::state::WorkspaceTree::bootstrap_demo(),
-        );
-        let request = ToolRequest {
-            protocol: TOOL_PROTOCOL_VERSION,
-            workspace_id: "7690fd4b-55aa-4a4f-8339-7405f4ad18ac".into(),
-            intent: ToolIntent::WorkspaceSettings {
-                route: WorkspaceSettingsRoute::Members,
-            },
-        };
-
-        assert!(apply_workspace_settings(&chrome, &request).is_err());
-        let state = chrome.borrow();
-        assert!(!state.overlays.ws_settings);
-        assert_eq!(state.ws_settings_tab, WsTab::General);
-    }
-
-    #[test]
-    fn identity_backup_route_opens_trusted_flow_for_current_workspace() {
-        let chrome = crate::shell::chrome_state::ChromeState::new(
-            crate::shell::state::WorkspaceTree::bootstrap_demo(),
-        );
-        let room = chrome
-            .borrow()
-            .tree()
-            .desktop
-            .active_workspace()
-            .unwrap()
-            .room
-            .to_string();
-        let request = ToolRequest {
-            protocol: TOOL_PROTOCOL_VERSION,
-            workspace_id: room,
-            intent: ToolIntent::IdentityBackup,
-        };
-        let mut opens = 0;
-
-        apply_identity_backup(&chrome, &request, &mut || {
-            opens += 1;
-            Ok(())
-        })
-        .unwrap();
-
-        assert_eq!(opens, 1);
-    }
-
-    #[test]
-    fn identity_backup_route_cannot_target_another_workspace() {
-        let chrome = crate::shell::chrome_state::ChromeState::new(
-            crate::shell::state::WorkspaceTree::bootstrap_demo(),
-        );
-        let request = ToolRequest {
-            protocol: TOOL_PROTOCOL_VERSION,
-            workspace_id: "7690fd4b-55aa-4a4f-8339-7405f4ad18ac".into(),
-            intent: ToolIntent::IdentityBackup,
-        };
-        let mut opens = 0;
-
+            });
+        crate::idle_thread_probe::assert_stays_asleep(&listener, "tool-intent listener");
+        UnixStream::connect(&path).expect("still accepts clients");
+        let started = std::time::Instant::now();
+        drop(service);
         assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "drop waited on its listener"
+        );
+        assert!(!path.exists(), "drop unlinks the socket");
+    }
+
+    #[test]
+    fn workspace_tool_intents_are_typed_and_confined_to_the_active_room() {
+        // Phase `service_accepts_only_versioned_typed_requests`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("tools.sock");
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let record = Arc::clone(&seen);
+            let _service = spawn_at(
+                path.clone(),
+                Arc::new(move |r| {
+                    record.lock().unwrap().push(r.intent);
+                    Ok(())
+                }),
+                Arc::new(Mutex::new(Vec::new())),
+                Arc::new(Mutex::new(Vec::new())),
+            )
+            .unwrap();
+
+            let mut stream = UnixStream::connect(path).unwrap();
+            let request = ToolRequest {
+                protocol: TOOL_PROTOCOL_VERSION,
+                workspace_id: "7690fd4b-55aa-4a4f-8339-7405f4ad18ac".into(),
+                intent: ToolIntent::Vpn {
+                    route: VpnRoute::Profile,
+                    profile: Some("Work VPN".into()),
+                },
+            };
+            serde_json::to_writer(&mut stream, &request).unwrap();
+            stream.write_all(b"\n").unwrap();
+            let mut response = String::new();
+            BufReader::new(stream).read_line(&mut response).unwrap();
+            assert!(
+                serde_json::from_str::<ToolReply>(&response)
+                    .unwrap()
+                    .accepted
+            );
+            assert_eq!(seen.lock().unwrap().len(), 1);
+        }
+
+        // Phase `workspace_route_opens_exact_tab_for_active_room`.
+        {
+            let chrome = crate::shell::chrome_state::ChromeState::new(
+                crate::shell::state::WorkspaceTree::bootstrap_demo(),
+            );
+            let room = chrome
+                .borrow()
+                .tree()
+                .desktop
+                .active_workspace()
+                .unwrap()
+                .room
+                .to_string();
+            let request = ToolRequest {
+                protocol: TOOL_PROTOCOL_VERSION,
+                workspace_id: room,
+                intent: ToolIntent::WorkspaceSettings {
+                    route: WorkspaceSettingsRoute::PrivacySecurity,
+                },
+            };
+
+            apply_workspace_settings(&chrome, &request).unwrap();
+
+            let state = chrome.borrow();
+            assert!(state.overlays.ws_settings);
+            assert_eq!(state.ws_settings_tab, WsTab::Permissions);
+        }
+
+        // Phase `workspace_route_cannot_switch_or_target_another_room`.
+        {
+            let chrome = crate::shell::chrome_state::ChromeState::new(
+                crate::shell::state::WorkspaceTree::bootstrap_demo(),
+            );
+            let request = ToolRequest {
+                protocol: TOOL_PROTOCOL_VERSION,
+                workspace_id: "7690fd4b-55aa-4a4f-8339-7405f4ad18ac".into(),
+                intent: ToolIntent::WorkspaceSettings {
+                    route: WorkspaceSettingsRoute::Members,
+                },
+            };
+
+            assert!(apply_workspace_settings(&chrome, &request).is_err());
+            let state = chrome.borrow();
+            assert!(!state.overlays.ws_settings);
+            assert_eq!(state.ws_settings_tab, WsTab::General);
+        }
+    }
+
+    #[test]
+    fn identity_backup_intents_open_the_trusted_flow_only_for_this_workspace() {
+        // Phase `identity_backup_route_opens_trusted_flow_for_current_workspace`.
+        {
+            let chrome = crate::shell::chrome_state::ChromeState::new(
+                crate::shell::state::WorkspaceTree::bootstrap_demo(),
+            );
+            let room = chrome
+                .borrow()
+                .tree()
+                .desktop
+                .active_workspace()
+                .unwrap()
+                .room
+                .to_string();
+            let request = ToolRequest {
+                protocol: TOOL_PROTOCOL_VERSION,
+                workspace_id: room,
+                intent: ToolIntent::IdentityBackup,
+            };
+            let mut opens = 0;
+
             apply_identity_backup(&chrome, &request, &mut || {
                 opens += 1;
                 Ok(())
             })
-            .is_err()
-        );
-        assert_eq!(opens, 0);
+            .unwrap();
+
+            assert_eq!(opens, 1);
+        }
+
+        // Phase `identity_backup_route_cannot_target_another_workspace`.
+        {
+            let chrome = crate::shell::chrome_state::ChromeState::new(
+                crate::shell::state::WorkspaceTree::bootstrap_demo(),
+            );
+            let request = ToolRequest {
+                protocol: TOOL_PROTOCOL_VERSION,
+                workspace_id: "7690fd4b-55aa-4a4f-8339-7405f4ad18ac".into(),
+                intent: ToolIntent::IdentityBackup,
+            };
+            let mut opens = 0;
+
+            assert!(
+                apply_identity_backup(&chrome, &request, &mut || {
+                    opens += 1;
+                    Ok(())
+                })
+                .is_err()
+            );
+            assert_eq!(opens, 0);
+        }
     }
 }

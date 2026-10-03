@@ -9,7 +9,7 @@
 //! the scroll offset (via the shared [`ui::widget::Scrollbar`]) and passes it
 //! in as `scroll_x`.
 //!
-//! Everything tints from the active [`Theme`]; the accent is passed in so the
+//! Everything tints from the active [`ui::theme::Theme`]; the accent is passed in so the
 //! caller can shift it for the day/night cue.
 
 use vello::Scene;
@@ -18,8 +18,8 @@ use vello::peniko::{BlendMode, Color, Fill};
 
 use ui::charts::{Sparkline, TrendCurve, TrendFill, TrendRange, TrendStyle};
 use ui::color_compat::ColorCompat;
-use ui::text_render::{TextRenderer, TextWeight};
-use ui::theme::Theme;
+use ui::paint::PaintCtx;
+use ui::text_render::TextWeight;
 use ui::tokens::spacing::Spacing;
 
 use crate::icon;
@@ -176,45 +176,157 @@ impl StripGeometry {
     }
 }
 
-/// Draw the scrollable hourly strip into `band`. Columns are `col_w` wide and
-/// laid out left-to-right from `band.x0 - scroll_x`; content wider than the
-/// band is clipped to it (the caller supplies the scrollbar).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one strip-drawing entry point taking scene/t/theme/tr (the universal draw-context) plus the strip's own band/cols/col_w/scroll_x/accent/temp_suffix — a context struct would just move the same count into a constructor call at the one call site"
-)]
-pub fn draw_hourly_strip(
-    scene: &mut Scene,
-    t: Affine,
-    band: Rect,
-    cols: &[HourColumn],
-    col_w: f64,
-    scroll_x: f64,
-    accent: Color,
-    theme: &Theme,
-    tr: &mut TextRenderer,
-    temp_suffix: &str,
-) {
-    if cols.is_empty() {
-        return;
+/// The hourly strip's content: its columns, each `col_w` wide and scrolled
+/// left by `scroll_x`, tinted with `accent`, temperatures suffixed with
+/// `temp_suffix`.
+pub struct HourlyStrip<'a> {
+    pub cols: &'a [HourColumn],
+    pub col_w: f64,
+    pub scroll_x: f64,
+    pub accent: Color,
+    pub temp_suffix: &'a str,
+}
+
+impl HourlyStrip<'_> {
+    /// Draw the scrollable strip into `band`. Columns are laid out
+    /// left-to-right from `band.x0 - scroll_x`; content wider than the band
+    /// is clipped to it (the caller supplies the scrollbar).
+    pub fn draw(&self, ctx: &mut PaintCtx<'_>, band: Rect) {
+        if self.cols.is_empty() {
+            return;
+        }
+        let geo = StripGeometry::new(
+            band,
+            self.cols,
+            self.col_w,
+            self.scroll_x,
+            &ctx.theme.tokens.spacing,
+            ctx.text.text_scale(),
+        );
+        let t = ctx.transform;
+
+        // Clip everything to the band so scrolled-off columns don't bleed out.
+        ctx.scene
+            .push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &band);
+
+        draw_now_highlight(ctx.scene, t, self.cols, &geo, self.accent);
+        let pts = draw_trend_curve(ctx.scene, t, self.cols, &geo, self.accent);
+        self.draw_column_marks(ctx, &pts, &geo);
+
+        ctx.scene.pop_layer();
     }
-    let geo = StripGeometry::new(
-        band,
-        cols,
-        col_w,
-        scroll_x,
-        &theme.tokens.spacing,
-        tr.text_scale(),
-    );
 
-    // Clip everything to the band so scrolled-off columns don't bleed out.
-    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &band);
+    /// Per-column temperature value, curve dot, weather glyph, precipitation
+    /// read-out and hour label. Columns scrolled entirely outside the band are
+    /// culled before any of it is painted.
+    fn draw_column_marks(&self, ctx: &mut PaintCtx<'_>, pts: &[Point], geo: &StripGeometry) {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let (cols, temp_suffix, accent) = (self.cols, self.temp_suffix, self.accent);
+        let c = &theme.tokens.colors;
+        for (i, p) in cols.iter().enumerate() {
+            let cx = geo.x_center(i);
+            // Cull columns entirely outside the band.
+            if cx + geo.col_w / 2.0 < geo.band.x0 - 1.0 || cx - geo.col_w / 2.0 > geo.band.x1 + 1.0
+            {
+                continue;
+            }
+            let Some(&pt) = pts.get(i) else {
+                continue;
+            };
 
-    draw_now_highlight(scene, t, cols, &geo, accent);
-    let pts = draw_trend_curve(scene, t, cols, &geo, accent);
-    draw_column_marks(scene, t, cols, &pts, &geo, theme, tr, temp_suffix, accent);
+            // Temperature value.
+            let val = format!("{}{}", p.temp.round() as i64, temp_suffix);
+            let (vw, _) = tr.measure_weighted(&val, geo.value_text, None, TextWeight::Semibold);
+            tr.draw_text_weighted(
+                scene,
+                &val,
+                geo.value_text,
+                c.text_primary,
+                t * Affine::translate((cx - f64::from(vw) / 2.0, geo.value_y)),
+                None,
+                TextWeight::Semibold,
+            );
 
-    scene.pop_layer();
+            // The current hour's curve dot is ringed over the trend's own.
+            if p.is_now {
+                scene.fill(
+                    Fill::NonZero,
+                    t,
+                    accent,
+                    None,
+                    &Circle::new(pt, geo.now_dot_r),
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    t,
+                    c.surfaces.raised,
+                    None,
+                    &Circle::new(pt, 1.8),
+                );
+            }
+
+            // Weather glyph.
+            icon::draw_icon(
+                scene,
+                t,
+                Sky::from_code(p.code),
+                p.is_day,
+                Rect::new(
+                    cx - geo.icon_edge / 2.0,
+                    geo.icon_cy - geo.icon_edge / 2.0,
+                    cx + geo.icon_edge / 2.0,
+                    geo.icon_cy + geo.icon_edge / 2.0,
+                ),
+                theme,
+            );
+
+            // Precipitation probability (only when it's worth showing).
+            if p.precip >= 5.0 {
+                // Dot, an `s1`, then the read-out — one cluster centred on the
+                // column, so a scaled label grows away from the dot instead of
+                // into it.
+                let txt = format!("{}%", p.precip.round() as i64);
+                let (pw, _) = tr.measure(&txt, geo.small_text, None);
+                let dot_r = 2.4;
+                let gap = f64::from(theme.tokens.spacing.s1);
+                let cluster_w = 2.0 * dot_r + gap + f64::from(pw);
+                let cluster_x0 = cx - cluster_w / 2.0;
+                let drop_c = Point::new(cluster_x0 + dot_r, geo.precip_y + 4.0);
+                scene.fill(
+                    Fill::NonZero,
+                    t,
+                    c.semantic.info,
+                    None,
+                    &Circle::new(drop_c, dot_r),
+                );
+                tr.draw_text(
+                    scene,
+                    &txt,
+                    geo.small_text,
+                    c.semantic.info,
+                    t * Affine::translate((cluster_x0 + 2.0 * dot_r + gap, geo.precip_y - 2.0)),
+                    None,
+                );
+            }
+
+            // Hour label ("Now" for the current hour).
+            let (label, weight, color) = if p.is_now {
+                ("Now".to_string(), TextWeight::Bold, accent)
+            } else {
+                (format!("{}:00", p.hour), TextWeight::Regular, c.text_dim)
+            };
+            let (lw, _) = tr.measure_weighted(&label, geo.small_text, None, weight);
+            tr.draw_text_weighted(
+                scene,
+                &label,
+                geo.small_text,
+                color,
+                t * Affine::translate((cx - f64::from(lw) / 2.0, geo.label_y)),
+                None,
+                weight,
+            );
+        }
+    }
 }
 
 /// The "Now" column's highlight pill, painted behind everything else.
@@ -270,129 +382,6 @@ fn draw_trend_curve(
         .with_markers(2.6);
     Sparkline::paint(scene, t, rect, &temps, geo.range, accent, &style);
     Sparkline::points(rect, &temps, geo.range)
-}
-
-/// Per-column temperature value, curve dot, weather glyph, precipitation
-/// read-out and hour label. Columns scrolled entirely outside the band are
-/// culled before any of it is painted.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one drawing pass over every per-column mark, needing scene/t/theme/tr (the universal draw-context) plus cols/pts/geo/temp_suffix/accent — splitting further would just thread the same values through more calls"
-)]
-fn draw_column_marks(
-    scene: &mut Scene,
-    t: Affine,
-    cols: &[HourColumn],
-    pts: &[Point],
-    geo: &StripGeometry,
-    theme: &Theme,
-    tr: &mut TextRenderer,
-    temp_suffix: &str,
-    accent: Color,
-) {
-    let c = &theme.tokens.colors;
-    for (i, p) in cols.iter().enumerate() {
-        let cx = geo.x_center(i);
-        // Cull columns entirely outside the band.
-        if cx + geo.col_w / 2.0 < geo.band.x0 - 1.0 || cx - geo.col_w / 2.0 > geo.band.x1 + 1.0 {
-            continue;
-        }
-        let Some(&pt) = pts.get(i) else {
-            continue;
-        };
-
-        // Temperature value.
-        let val = format!("{}{}", p.temp.round() as i64, temp_suffix);
-        let (vw, _) = tr.measure_weighted(&val, geo.value_text, None, TextWeight::Semibold);
-        tr.draw_text_weighted(
-            scene,
-            &val,
-            geo.value_text,
-            c.text_primary,
-            t * Affine::translate((cx - f64::from(vw) / 2.0, geo.value_y)),
-            None,
-            TextWeight::Semibold,
-        );
-
-        // The current hour's curve dot is ringed over the trend's own.
-        if p.is_now {
-            scene.fill(
-                Fill::NonZero,
-                t,
-                accent,
-                None,
-                &Circle::new(pt, geo.now_dot_r),
-            );
-            scene.fill(
-                Fill::NonZero,
-                t,
-                c.surfaces.raised,
-                None,
-                &Circle::new(pt, 1.8),
-            );
-        }
-
-        // Weather glyph.
-        icon::draw_icon(
-            scene,
-            t,
-            Sky::from_code(p.code),
-            p.is_day,
-            Rect::new(
-                cx - geo.icon_edge / 2.0,
-                geo.icon_cy - geo.icon_edge / 2.0,
-                cx + geo.icon_edge / 2.0,
-                geo.icon_cy + geo.icon_edge / 2.0,
-            ),
-            theme,
-        );
-
-        // Precipitation probability (only when it's worth showing).
-        if p.precip >= 5.0 {
-            // Dot, an `s1`, then the read-out — one cluster centred on the
-            // column, so a scaled label grows away from the dot instead of
-            // into it.
-            let txt = format!("{}%", p.precip.round() as i64);
-            let (pw, _) = tr.measure(&txt, geo.small_text, None);
-            let dot_r = 2.4;
-            let gap = f64::from(theme.tokens.spacing.s1);
-            let cluster_w = 2.0 * dot_r + gap + f64::from(pw);
-            let cluster_x0 = cx - cluster_w / 2.0;
-            let drop_c = Point::new(cluster_x0 + dot_r, geo.precip_y + 4.0);
-            scene.fill(
-                Fill::NonZero,
-                t,
-                c.semantic.info,
-                None,
-                &Circle::new(drop_c, dot_r),
-            );
-            tr.draw_text(
-                scene,
-                &txt,
-                geo.small_text,
-                c.semantic.info,
-                t * Affine::translate((cluster_x0 + 2.0 * dot_r + gap, geo.precip_y - 2.0)),
-                None,
-            );
-        }
-
-        // Hour label ("Now" for the current hour).
-        let (label, weight, color) = if p.is_now {
-            ("Now".to_string(), TextWeight::Bold, accent)
-        } else {
-            (format!("{}:00", p.hour), TextWeight::Regular, c.text_dim)
-        };
-        let (lw, _) = tr.measure_weighted(&label, geo.small_text, None, weight);
-        tr.draw_text_weighted(
-            scene,
-            &label,
-            geo.small_text,
-            color,
-            t * Affine::translate((cx - f64::from(lw) / 2.0, geo.label_y)),
-            None,
-            weight,
-        );
-    }
 }
 
 #[cfg(test)]
@@ -451,37 +440,39 @@ mod incoming_geometry_tests {
     }
 
     #[test]
-    fn geometry_applies_horizontal_scroll_to_every_column() {
-        let columns = [column(10.0), column(20.0)];
-        let geometry = StripGeometry::new(
-            Rect::new(100.0, 0.0, 300.0, 180.0),
-            &columns,
-            80.0,
-            30.0,
-            &ui::tokens::Spacing::BASE,
-            1.0,
-        );
+    fn incoming_chart_geometry_is_scrolled_and_finite() {
+        // Case `geometry_applies_horizontal_scroll_to_every_column`.
+        {
+            let columns = [column(10.0), column(20.0)];
+            let geometry = StripGeometry::new(
+                Rect::new(100.0, 0.0, 300.0, 180.0),
+                &columns,
+                80.0,
+                30.0,
+                &ui::tokens::Spacing::BASE,
+                1.0,
+            );
 
-        assert!((geometry.x_center(0) - 110.0).abs() < f64::EPSILON);
-        assert!((geometry.x_center(1) - 190.0).abs() < f64::EPSILON);
-    }
+            assert!((geometry.x_center(0) - 110.0).abs() < f64::EPSILON);
+            assert!((geometry.x_center(1) - 190.0).abs() < f64::EPSILON);
+        }
+        // Case `flat_temperature_series_still_has_a_finite_curve_range`.
+        {
+            let columns = [column(12.0), column(12.0)];
+            let geometry = StripGeometry::new(
+                Rect::new(0.0, 0.0, 200.0, 180.0),
+                &columns,
+                80.0,
+                0.0,
+                &ui::tokens::Spacing::BASE,
+                1.0,
+            );
 
-    #[test]
-    fn flat_temperature_series_still_has_a_finite_curve_range() {
-        let columns = [column(12.0), column(12.0)];
-        let geometry = StripGeometry::new(
-            Rect::new(0.0, 0.0, 200.0, 180.0),
-            &columns,
-            80.0,
-            0.0,
-            &ui::tokens::Spacing::BASE,
-            1.0,
-        );
-
-        let y = geometry.y_at(12.0);
-        assert!(y.is_finite());
-        assert!(
-            (y - f64::midpoint(geometry.curve_top, geometry.curve_bottom)).abs() < f64::EPSILON
-        );
+            let y = geometry.y_at(12.0);
+            assert!(y.is_finite());
+            assert!(
+                (y - f64::midpoint(geometry.curve_top, geometry.curve_bottom)).abs() < f64::EPSILON
+            );
+        }
     }
 }

@@ -191,22 +191,129 @@ impl FileRestoreSession {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn open_request_distinguishes_idle_unspecified_and_exact_version_and_is_consumed_once() {
-        let source = super::FileHistorySource::default();
-        assert!(!source.wants_open());
-        assert!(source.take_open().is_none());
-        source.open(None);
-        assert!(source.wants_open());
-        assert_eq!(source.take_open().unwrap().version, None);
-        assert!(!source.wants_open());
-        assert!(source.take_open().is_none());
-        let version = collab_types::FileVersionId(uuid::Uuid::new_v4());
-        source.open(Some(version));
-        assert_eq!(source.take_open().unwrap().version, Some(version));
-        assert!(source.take_open().is_none());
-        source.open(Some(version));
-        source.open(None);
-        assert_eq!(source.take_open().unwrap().version, None);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn checked_file_requests_are_exact_consumed_once_and_undo_only_real_changes() {
+        // phase: open_request_distinguishes_idle_unspecified_and_exact_version_and_is_consumed_once
+        {
+            let source = super::FileHistorySource::default();
+            assert!(!source.wants_open());
+            assert!(source.take_open().is_none());
+            source.open(None);
+            assert!(source.wants_open());
+            assert_eq!(source.take_open().unwrap().version, None);
+            assert!(!source.wants_open());
+            assert!(source.take_open().is_none());
+            let version = collab_types::FileVersionId(uuid::Uuid::new_v4());
+            source.open(Some(version));
+            assert_eq!(source.take_open().unwrap().version, Some(version));
+            assert!(source.take_open().is_none());
+            source.open(Some(version));
+            source.open(None);
+            assert_eq!(source.take_open().unwrap().version, None);
+        }
+        // phase: files_uncertain_result_keeps_exact_request_and_blocks_replacement
+        {
+            let mut session = FileRestoreSession::default();
+            let request = session
+                .prepare(
+                    review(),
+                    Operation::Restore {
+                        version_id: FileVersionId(uuid::Uuid::from_u128(5)),
+                    },
+                )
+                .unwrap();
+            assert!(session.receive(
+                request,
+                Outcome::RecoveryPending {
+                    intent_id: request.intent_id
+                }
+            ));
+            assert_eq!(session.request, Some(request));
+            assert!(session.prepare(review(), request.operation).is_err());
+            assert!(session.receive(request, Outcome::Unavailable));
+            assert_eq!(session.request, Some(request));
+            let mut foreign = request;
+            foreign.review.record_id = FileRecordId(uuid::Uuid::from_u128(6));
+            assert!(!session.receive(foreign, Outcome::NotVisible));
+            assert_eq!(session.request, Some(request));
+        }
+        // phase: files_late_completion_of_a_settled_request_is_recognised_as_stale
+        {
+            let mut session = FileRestoreSession::default();
+            let request = session
+                .prepare(
+                    review(),
+                    Operation::Restore {
+                        version_id: FileVersionId(uuid::Uuid::from_u128(5)),
+                    },
+                )
+                .unwrap();
+            assert!(
+                !session.has_settled(&request),
+                "a pending request is not stale"
+            );
+            assert!(session.receive(request, Outcome::ReadOnly));
+            assert!(session.has_settled(&request));
+            let mut foreign = request;
+            foreign.intent_id = uuid::Uuid::from_u128(9);
+            assert!(!session.has_settled(&foreign));
+            let next = session
+                .prepare(
+                    review(),
+                    Operation::Restore {
+                        version_id: FileVersionId(uuid::Uuid::from_u128(6)),
+                    },
+                )
+                .unwrap();
+            assert!(session.has_settled(&request));
+            assert!(!session.has_settled(&next));
+        }
+        // phase: files_unchanged_and_definite_rejections_do_not_create_undo_entries
+        {
+            for outcome in [
+                Outcome::ReviewRequired,
+                Outcome::ReadOnly,
+                Outcome::PendingWrites,
+                Outcome::UnsupportedOwner {
+                    mapping: "tilo-doc".into(),
+                },
+                Outcome::InvalidRequest,
+            ] {
+                let mut session = FileRestoreSession::default();
+                let request = session
+                    .prepare(
+                        review(),
+                        Operation::Restore {
+                            version_id: FileVersionId(uuid::Uuid::from_u128(5)),
+                        },
+                    )
+                    .unwrap();
+                assert!(session.receive(request, outcome));
+                assert!(session.request.is_none());
+                assert!(session.receipts.is_empty());
+            }
+            let mut session = FileRestoreSession::default();
+            let request = session
+                .prepare(
+                    review(),
+                    Operation::Restore {
+                        version_id: FileVersionId(uuid::Uuid::from_u128(5)),
+                    },
+                )
+                .unwrap();
+            assert!(session.receive(
+                request,
+                Outcome::Unchanged {
+                    intent_id: request.intent_id,
+                    review: request.review
+                }
+            ));
+            assert!(session.request.is_none());
+            assert!(session.receipts.is_empty());
+        }
     }
 
     use super::*;
@@ -218,105 +325,5 @@ mod tests {
             record_id: FileRecordId(uuid::Uuid::from_u128(3)),
             frontier: [4; 32],
         }
-    }
-    #[test]
-    fn files_uncertain_result_keeps_exact_request_and_blocks_replacement() {
-        let mut session = FileRestoreSession::default();
-        let request = session
-            .prepare(
-                review(),
-                Operation::Restore {
-                    version_id: FileVersionId(uuid::Uuid::from_u128(5)),
-                },
-            )
-            .unwrap();
-        assert!(session.receive(
-            request,
-            Outcome::RecoveryPending {
-                intent_id: request.intent_id
-            }
-        ));
-        assert_eq!(session.request, Some(request));
-        assert!(session.prepare(review(), request.operation).is_err());
-        assert!(session.receive(request, Outcome::Unavailable));
-        assert_eq!(session.request, Some(request));
-        let mut foreign = request;
-        foreign.review.record_id = FileRecordId(uuid::Uuid::from_u128(6));
-        assert!(!session.receive(foreign, Outcome::NotVisible));
-        assert_eq!(session.request, Some(request));
-    }
-    #[test]
-    fn files_late_completion_of_a_settled_request_is_recognised_as_stale() {
-        let mut session = FileRestoreSession::default();
-        let request = session
-            .prepare(
-                review(),
-                Operation::Restore {
-                    version_id: FileVersionId(uuid::Uuid::from_u128(5)),
-                },
-            )
-            .unwrap();
-        assert!(
-            !session.has_settled(&request),
-            "a pending request is not stale"
-        );
-        assert!(session.receive(request, Outcome::ReadOnly));
-        assert!(session.has_settled(&request));
-        let mut foreign = request;
-        foreign.intent_id = uuid::Uuid::from_u128(9);
-        assert!(!session.has_settled(&foreign));
-        let next = session
-            .prepare(
-                review(),
-                Operation::Restore {
-                    version_id: FileVersionId(uuid::Uuid::from_u128(6)),
-                },
-            )
-            .unwrap();
-        assert!(session.has_settled(&request));
-        assert!(!session.has_settled(&next));
-    }
-    #[test]
-    fn files_unchanged_and_definite_rejections_do_not_create_undo_entries() {
-        for outcome in [
-            Outcome::ReviewRequired,
-            Outcome::ReadOnly,
-            Outcome::PendingWrites,
-            Outcome::UnsupportedOwner {
-                mapping: "qdoc".into(),
-            },
-            Outcome::InvalidRequest,
-        ] {
-            let mut session = FileRestoreSession::default();
-            let request = session
-                .prepare(
-                    review(),
-                    Operation::Restore {
-                        version_id: FileVersionId(uuid::Uuid::from_u128(5)),
-                    },
-                )
-                .unwrap();
-            assert!(session.receive(request, outcome));
-            assert!(session.request.is_none());
-            assert!(session.receipts.is_empty());
-        }
-        let mut session = FileRestoreSession::default();
-        let request = session
-            .prepare(
-                review(),
-                Operation::Restore {
-                    version_id: FileVersionId(uuid::Uuid::from_u128(5)),
-                },
-            )
-            .unwrap();
-        assert!(session.receive(
-            request,
-            Outcome::Unchanged {
-                intent_id: request.intent_id,
-                review: request.review
-            }
-        ));
-        assert!(session.request.is_none());
-        assert!(session.receipts.is_empty());
     }
 }

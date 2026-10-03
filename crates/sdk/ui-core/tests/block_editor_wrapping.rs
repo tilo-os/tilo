@@ -109,14 +109,16 @@ impl RetainedCode {
                 event,
                 is_synthetic: true,
             },
-            1.0,
-            &Modifiers::default(),
-            &mut self.doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut None,
-            self.root,
-            &self.tree,
+            &mut tilo_ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut self.doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut None,
+                node_id: self.root,
+                taffy: &self.tree,
+            },
         );
         assert!(handled, "real editor must receive every keystroke");
         self.editor.is_dirty();

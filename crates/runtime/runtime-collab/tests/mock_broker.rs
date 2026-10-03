@@ -196,17 +196,15 @@ async fn named_pipe_join_send_subscribe_read() {
         .create(&name)
         .expect("test-owned named pipe");
     let client = ClientOptions::new().open(&name).expect("connect test pipe");
-    tokio::time::timeout(std::time::Duration::from_secs(5), server.connect())
+    tilo_test_env::within("the named pipe connection", server.connect())
         .await
-        .expect("named pipe connection deadline")
         .expect("named pipe connected");
     let connection = CapnpClient::from_connected_io(client, rpc_twoparty_capnp::Side::Client);
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
+    tilo_test_env::within(
+        "the named pipe round trip",
         assert_round_trip(server, connection),
     )
-    .await
-    .expect("named pipe RPC deadline");
+    .await;
 }
 
 #[cfg(unix)]
@@ -216,6 +214,92 @@ async fn round_trip_join_send_subscribe_read() {
     let fd = client_side.into_std().unwrap().into_raw_fd();
     let connection = CapnpClient::from_connected_fd(fd, rpc_twoparty_capnp::Side::Client).unwrap();
     assert_round_trip(server_side, connection).await;
+}
+
+/// Two clients of the one launcher-inherited socket — an app's own manager
+/// beside the framework's, or a room and a record manager — each get a
+/// working connection; neither owns the inherited descriptor, so dropping
+/// one never closes it under the other (which used to corrupt both RPC
+/// streams and then abort with "owned file descriptor already closed").
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn clients_share_the_inherited_connection() {
+    use std::os::fd::AsRawFd;
+
+    let (server_side, inherited) = UnixStream::pair().unwrap();
+    let inherited = inherited.into_std().unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.remove("TILO_RUNTIME_CONNECTION_OWNER_PID")
+        .set("TILO_SVC_COLLAB_FD", inherited.as_raw_fd().to_string());
+
+    LocalSet::new()
+        .run_until(async {
+            let captured_joins = CapturedJoins::default();
+            let captured_ops = Rc::new(RefCell::new(Vec::<Vec<u8>>::new()));
+            let broker: collab_service::Client = capnp_rpc::new_client(FakeBroker {
+                captured_joins: captured_joins.clone(),
+                captured_ops: captured_ops.clone(),
+                seed_backlog: Vec::new(),
+            });
+            let (read, write) = tokio::io::split(server_side);
+            let server = RpcSystem::new(
+                Box::new(twoparty::VatNetwork::new(
+                    read.compat(),
+                    write.compat_write(),
+                    rpc_twoparty_capnp::Side::Server,
+                    ReaderOptions::default(),
+                )),
+                Some(broker.client),
+            );
+            tokio::task::spawn_local(async move {
+                let _ = server.await;
+            });
+
+            let deadline = std::time::Duration::from_secs(10);
+            let first = runtime_collab::try_connect().expect("first client");
+            let second = runtime_collab::try_connect().expect("second client");
+            let room = tokio::time::timeout(deadline, first.join_channel("room", b"first"))
+                .await
+                .expect("first join deadline")
+                .expect("first join");
+            let record = tokio::time::timeout(deadline, second.join_channel("record", b"second"))
+                .await
+                .expect("second join deadline")
+                .expect("second join");
+            room.send(b"room-op").await.expect("room send");
+            drop((room, first));
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            tokio::time::timeout(deadline, record.send(b"record-op"))
+                .await
+                .expect("send after the other client dropped")
+                .expect("record send");
+            let third = runtime_collab::try_connect().expect("a later client");
+            tokio::time::timeout(deadline, third.join_channel("later", b"third"))
+                .await
+                .expect("third join deadline")
+                .expect("third join");
+
+            let joins = captured_joins.borrow().clone();
+            assert_eq!(
+                joins,
+                vec![
+                    ("room".to_owned(), b"first".to_vec()),
+                    ("record".to_owned(), b"second".to_vec()),
+                    ("later".to_owned(), b"third".to_vec()),
+                ]
+            );
+            assert_eq!(
+                *captured_ops.borrow(),
+                vec![b"room-op".to_vec(), b"record-op".to_vec()]
+            );
+        })
+        .await;
+
+    // The inherited descriptor is still open, now close-on-exec.
+    // SAFETY: fcntl only inspects the descriptor `inherited` owns.
+    let flags = unsafe { libc::fcntl(inherited.as_raw_fd(), libc::F_GETFD) };
+    assert!(flags >= 0, "the inherited descriptor was closed");
+    assert_ne!(flags & libc::FD_CLOEXEC, 0);
 }
 
 #[expect(

@@ -603,210 +603,226 @@ impl Session {
 mod tests {
     use super::*;
 
-    #[test]
-    fn session_seeds_sample_and_runs_default_query() {
-        let s = Session::with_sample();
-        assert!(s.connected, "the sample engine connected");
-        assert!(s.schema.table_count() >= 4);
-        let r = s.query_result.as_ref().expect("default query ran");
-        assert!(r.is_select);
-        assert!(!r.rows.is_empty());
-    }
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
+    /// Sessions seed only in demo, start empty live, open `SQLite` for real, load tables and report unreachable servers honestly.
     #[test]
-    fn selecting_table_loads_its_data() {
-        let mut s = Session::with_sample();
-        s.select_table("tracks");
-        s.block_until_idle();
-        let d = s.data_result.as_ref().expect("table data loaded");
-        assert!(d.is_select);
-        assert!(!d.columns.is_empty());
-    }
+    fn session_opens_connections_and_loads_tables_honestly() {
+        // --- phase: session_seeds_sample_and_runs_default_query ---
+        {
+            let s = Session::with_sample();
+            assert!(s.connected, "the sample engine connected");
+            assert!(s.schema.table_count() >= 4);
+            let r = s.query_result.as_ref().expect("default query ran");
+            assert!(r.is_select);
+            assert!(!r.rows.is_empty());
+        }
 
-    #[test]
-    fn remote_connection_to_unreachable_server_errors_honestly() {
-        // A real Postgres connect to a closed port fails through the driver on
-        // the worker: no live engine, no fabricated schema, and an honest error
-        // banner — never a faked "connected" state.
-        let mut s = Session::new();
-        let mut pg = ConnectionProfile::new("Unreachable pg", Engine::Postgres);
-        pg.host = "127.0.0.1".into();
-        pg.port = 1; // reserved/closed — connection is refused immediately.
-        pg.database = "nope".into();
-        pg.user = "nobody".into();
-        s.add_connection_blocking(pg);
+        // --- phase: selecting_table_loads_its_data ---
+        {
+            let mut s = Session::with_sample();
+            s.select_table("tracks");
+            s.block_until_idle();
+            let d = s.data_result.as_ref().expect("table data loaded");
+            assert!(d.is_select);
+            assert!(!d.columns.is_empty());
+        }
 
-        assert!(
-            !s.connected,
-            "no live engine when the server is unreachable"
-        );
-        assert_eq!(s.schema.table_count(), 0, "no fabricated schema on failure");
-        assert!(
-            !s.connections[s.active].connected,
-            "profile is not marked connected on failure"
-        );
-        match &s.status {
-            RunStatus::Error(_) => {}
-            other => panic!("expected an honest connection error, got {other:?}"),
+        // --- phase: remote_connection_to_unreachable_server_errors_honestly ---
+        {
+            // A real Postgres connect to a closed port fails through the driver on
+            // the worker: no live engine, no fabricated schema, and an honest error
+            // banner — never a faked "connected" state.
+            let mut s = Session::new();
+            let mut pg = ConnectionProfile::new("Unreachable pg", Engine::Postgres);
+            pg.host = "127.0.0.1".into();
+            pg.port = 1; // reserved/closed — connection is refused immediately.
+            pg.database = "nope".into();
+            pg.user = "nobody".into();
+            s.add_connection_blocking(pg);
+
+            assert!(
+                !s.connected,
+                "no live engine when the server is unreachable"
+            );
+            assert_eq!(s.schema.table_count(), 0, "no fabricated schema on failure");
+            assert!(
+                !s.connections[s.active].connected,
+                "profile is not marked connected on failure"
+            );
+            match &s.status {
+                RunStatus::Error(_) => {}
+                other => panic!("expected an honest connection error, got {other:?}"),
+            }
+        }
+
+        // --- phase: live_session_starts_empty ---
+        {
+            // A fresh live session fabricates nothing: no sample database, no
+            // connection profiles, no live engine.
+            let s = Session::new();
+            assert!(
+                s.connections.is_empty(),
+                "no fabricated connection profiles"
+            );
+            assert!(!s.connected, "no live engine on a fresh machine");
+            assert!(s.active_connection().is_none(), "nothing active when empty");
+            assert!(s.query_result.is_none(), "no canned query result");
+            assert_eq!(s.schema.table_count(), 0, "no fabricated schema");
+        }
+
+        // --- phase: added_sqlite_connection_opens_for_real ---
+        {
+            let dir = std::env::temp_dir().join(format!("db-client-{}", Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let db_file = dir.join("app.db");
+
+            let mut s = Session::new();
+            let mut profile = ConnectionProfile::new("Local app DB", Engine::Sqlite);
+            profile.file_path = db_file.to_string_lossy().into_owned();
+            s.add_connection_blocking(profile);
+
+            assert!(s.connected, "a local SQLite file connects for real");
+            assert_eq!(s.connections.len(), 1);
         }
     }
 
+    /// Setting connections preserves the active id and passwords are refilled but kept out of the profiles list.
     #[test]
-    fn live_session_starts_empty() {
-        // A fresh live session fabricates nothing: no sample database, no
-        // connection profiles, no live engine.
-        let s = Session::new();
-        assert!(
-            s.connections.is_empty(),
-            "no fabricated connection profiles"
-        );
-        assert!(!s.connected, "no live engine on a fresh machine");
-        assert!(s.active_connection().is_none(), "nothing active when empty");
-        assert!(s.query_result.is_none(), "no canned query result");
-        assert_eq!(s.schema.table_count(), 0, "no fabricated schema");
+    fn session_profiles_keep_active_id_and_secrets_out() {
+        // --- phase: set_connections_preserves_the_active_id ---
+        {
+            let mut s = Session::new();
+            let a = ConnectionProfile::new("A", Engine::Postgres);
+            let b = ConnectionProfile::new("B", Engine::MySql);
+            s.set_connections(vec![a.clone(), b.clone()]);
+            s.active = 1; // B is active
+            // A reorder that keeps both keeps B active by id.
+            s.set_connections(vec![b.clone(), a.clone()]);
+            assert_eq!(s.active_connection().unwrap().id, b.id);
+            // Removing the active one resets to the first + clears view state.
+            s.set_connections(vec![a.clone()]);
+            assert_eq!(s.active_connection().unwrap().id, a.id);
+            assert!(!s.connected);
+        }
+
+        // --- phase: passwords_are_refilled_but_kept_out_of_profiles_list ---
+        {
+            let mut s = Session::new();
+            let p = ConnectionProfile::new("A", Engine::Postgres);
+            s.remember_password(p.id, "secret".into());
+            // set_connections refills the password onto the in-memory profile...
+            s.set_connections(vec![p]);
+            assert_eq!(s.connections[0].password, "secret");
+            // ...but a profile with no remembered password stays empty.
+            let q = ConnectionProfile::new("B", Engine::MySql);
+            s.set_connections(vec![q]);
+            assert!(s.connections[0].password.is_empty());
+        }
     }
 
+    /// Stale, cancelled and exhausted query generations and stale table pages are refused, and `SQLite` cancellation releases the worker.
     #[test]
-    fn added_sqlite_connection_opens_for_real() {
-        let dir = std::env::temp_dir().join(format!("db-client-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db_file = dir.join("app.db");
+    fn query_generations_fence_stale_and_cancelled_replies() {
+        // --- phase: stale_query_reply_is_ignored_after_switching_connections ---
+        {
+            let mut s = Session::new();
+            let a = ConnectionProfile::new("A", Engine::Sqlite);
+            let b = ConnectionProfile::new("B", Engine::Sqlite);
+            s.set_connections(vec![a.clone(), b]);
+            s.active = 1;
 
-        let mut s = Session::new();
-        let mut profile = ConnectionProfile::new("Local app DB", Engine::Sqlite);
-        profile.file_path = db_file.to_string_lossy().into_owned();
-        s.add_connection_blocking(profile);
+            s.apply_reply(DbReply::Queried {
+                connection_id: a.id,
+                generation: 1,
+                result: Ok(QueryResult {
+                    columns: vec!["stale".into()],
+                    ..Default::default()
+                }),
+                schema: None,
+            });
 
-        assert!(s.connected, "a local SQLite file connects for real");
-        assert_eq!(s.connections.len(), 1);
-    }
+            assert!(s.query_result.is_none(), "a reply for A cannot overwrite B");
+            assert_eq!(s.query_gen, 0);
+        }
 
-    #[test]
-    fn set_connections_preserves_the_active_id() {
-        let mut s = Session::new();
-        let a = ConnectionProfile::new("A", Engine::Postgres);
-        let b = ConnectionProfile::new("B", Engine::MySql);
-        s.set_connections(vec![a.clone(), b.clone()]);
-        s.active = 1; // B is active
-        // A reorder that keeps both keeps B active by id.
-        s.set_connections(vec![b.clone(), a.clone()]);
-        assert_eq!(s.active_connection().unwrap().id, b.id);
-        // Removing the active one resets to the first + clears view state.
-        s.set_connections(vec![a.clone()]);
-        assert_eq!(s.active_connection().unwrap().id, a.id);
-        assert!(!s.connected);
-    }
+        // --- phase: cancelled_reply_cannot_clear_a_newer_query_generation ---
+        {
+            let mut s = Session::new();
+            let profile = ConnectionProfile::new("A", Engine::Sqlite);
+            let id = profile.id;
+            s.set_connections(vec![profile]);
+            s.active_query = Some((id, 2));
+            s.cancelled_query = Some((id, 1));
+            s.status = RunStatus::Busy("Running…".into());
+            s.apply_reply(DbReply::Queried {
+                connection_id: id,
+                generation: 1,
+                result: Err("interrupted".into()),
+                schema: None,
+            });
+            assert_eq!(s.active_query, Some((id, 2)));
+            assert!(matches!(s.status, RunStatus::Busy(_)));
+        }
 
-    #[test]
-    fn passwords_are_refilled_but_kept_out_of_profiles_list() {
-        let mut s = Session::new();
-        let p = ConnectionProfile::new("A", Engine::Postgres);
-        s.remember_password(p.id, "secret".into());
-        // set_connections refills the password onto the in-memory profile...
-        s.set_connections(vec![p]);
-        assert_eq!(s.connections[0].password, "secret");
-        // ...but a profile with no remembered password stays empty.
-        let q = ConnectionProfile::new("B", Engine::MySql);
-        s.set_connections(vec![q]);
-        assert!(s.connections[0].password.is_empty());
-    }
+        // --- phase: exhausted_query_generation_refuses_without_reusing_authority ---
+        {
+            let mut s = Session::new();
+            s.set_connections(vec![ConnectionProfile::new("A", Engine::Sqlite)]);
+            s.next_query_generation = u64::MAX;
 
-    #[test]
-    fn stale_query_reply_is_ignored_after_switching_connections() {
-        let mut s = Session::new();
-        let a = ConnectionProfile::new("A", Engine::Sqlite);
-        let b = ConnectionProfile::new("B", Engine::Sqlite);
-        s.set_connections(vec![a.clone(), b]);
-        s.active = 1;
+            s.run_query("SELECT 1");
 
-        s.apply_reply(DbReply::Queried {
-            connection_id: a.id,
-            generation: 1,
-            result: Ok(QueryResult {
-                columns: vec!["stale".into()],
-                ..Default::default()
-            }),
-            schema: None,
-        });
+            assert_eq!(s.next_query_generation, u64::MAX);
+            assert!(s.active_query.is_none());
+            assert!(matches!(
+                s.status,
+                RunStatus::Error(ref message) if message.contains("identity space exhausted")
+            ));
+        }
 
-        assert!(s.query_result.is_none(), "a reply for A cannot overwrite B");
-        assert_eq!(s.query_gen, 0);
-    }
-
-    #[test]
-    fn cancelled_reply_cannot_clear_a_newer_query_generation() {
-        let mut s = Session::new();
-        let profile = ConnectionProfile::new("A", Engine::Sqlite);
-        let id = profile.id;
-        s.set_connections(vec![profile]);
-        s.active_query = Some((id, 2));
-        s.cancelled_query = Some((id, 1));
-        s.status = RunStatus::Busy("Running…".into());
-        s.apply_reply(DbReply::Queried {
-            connection_id: id,
-            generation: 1,
-            result: Err("interrupted".into()),
-            schema: None,
-        });
-        assert_eq!(s.active_query, Some((id, 2)));
-        assert!(matches!(s.status, RunStatus::Busy(_)));
-    }
-
-    #[test]
-    fn exhausted_query_generation_refuses_without_reusing_authority() {
-        let mut s = Session::new();
-        s.set_connections(vec![ConnectionProfile::new("A", Engine::Sqlite)]);
-        s.next_query_generation = u64::MAX;
-
-        s.run_query("SELECT 1");
-
-        assert_eq!(s.next_query_generation, u64::MAX);
-        assert!(s.active_query.is_none());
-        assert!(matches!(
-            s.status,
-            RunStatus::Error(ref message) if message.contains("identity space exhausted")
-        ));
-    }
-
-    #[test]
-    fn sqlite_cancellation_interrupts_the_worker_and_releases_busy_state() {
-        let mut s = Session::with_sample();
-        s.run_query(
+        // --- phase: sqlite_cancellation_interrupts_the_worker_and_releases_busy_state ---
+        {
+            let mut s = Session::with_sample();
+            s.run_query(
             "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 1000000000) \
              SELECT sum(x) FROM n",
         );
-        let mut requested = false;
-        for _ in 0..100 {
-            if s.cancel_in_flight_query() {
-                requested = true;
-                break;
+            let mut requested = false;
+            let deadline = ui::time::now() + HANG_BOUND;
+            while ui::time::now() < deadline {
+                if s.cancel_in_flight_query() {
+                    requested = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
             }
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            assert!(requested, "the worker must publish the active SQLite query");
+            s.block_until_idle();
+            assert!(!s.busy());
+            assert!(matches!(s.status, RunStatus::Idle));
         }
-        assert!(requested, "the worker must publish the active SQLite query");
-        s.block_until_idle();
-        assert!(!s.busy());
-        assert!(matches!(s.status, RunStatus::Idle));
-    }
 
-    #[test]
-    fn stale_table_page_is_ignored_after_selection_changes() {
-        let mut s = Session::with_sample();
-        let id = s.active_connection_id().unwrap();
-        s.selected_relation = Some(RelationRef {
-            schema: "main".into(),
-            name: "artists".into(),
-        });
-        s.data_offset = 100;
+        // --- phase: stale_table_page_is_ignored_after_selection_changes ---
+        {
+            let mut s = Session::with_sample();
+            let id = s.active_connection_id().unwrap();
+            s.selected_relation = Some(RelationRef {
+                schema: "main".into(),
+                name: "artists".into(),
+            });
+            s.data_offset = 100;
 
-        s.apply_reply(DbReply::Browsed {
-            connection_id: id,
-            schema: "main".into(),
-            table: "tracks".into(),
-            offset: 0,
-            result: Ok(QueryResult::default()),
-        });
+            s.apply_reply(DbReply::Browsed {
+                connection_id: id,
+                schema: "main".into(),
+                table: "tracks".into(),
+                offset: 0,
+                result: Ok(QueryResult::default()),
+            });
 
-        assert!(s.data_result.is_none(), "a stale table page must not flash");
+            assert!(s.data_result.is_none(), "a stale table page must not flash");
+        }
     }
 }

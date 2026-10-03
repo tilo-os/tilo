@@ -109,10 +109,8 @@ history.
   (MLS application message) keeps the exact bytes and signing bytes of every
   earlier op, so version-1 ciphertexts still decrypt for members at that
   epoch. Tag `2` is the content-key scheme.
-- Sealed member state is now a `tilo-seal` envelope that also carries the
-  keyring. State files from earlier builds (`QMLSG` v1) still load. Their
-  keyring starts at the loaded epoch, and the next save writes the current
-  format.
+- Sealed member state is a `tilo-seal` envelope that also carries the
+  keyring; any other state file is refused.
 - `AddWithKeyHistory` is a new trailing variant, so journals written before
   it still decode.
 
@@ -130,8 +128,12 @@ chain with no forks to reconcile.
   admitted again. `outbox()` lists, for each device with an unacknowledged
   delivery, the frames after the last one it acknowledged, and
   `acknowledge` applies a device's cumulative acknowledgement. Each change
-  stages the commit, writes the group, appends the frame, then merges; a
-  crash at any point is finished or rolled back on the next open.
+  stages the commit, writes the group, signs the frame, writes the ledger,
+  appends the frame, then merges; a crash at any point is finished or rolled
+  back on the next open. Its records live in a [`StewardStore`]: files on a
+  native device (`FileStewardStore`), or memory a browser exports to
+  `IndexedDB` (`MemoryStewardStore`). It signs through a [`StewardSigner`],
+  which may answer later, as a browser's `WebCrypto` key does.
 - [`ChannelMember`] is every other device's view. It starts `Waiting` and
   signs `MlsAccessRequestV1`s that carry fresh key packages. Its MLS
   credential is the device's certified key, and the steward refuses a
@@ -210,6 +212,14 @@ plaintext path.
   `CollabEvent::ChannelAccess` and `App::channel_access()`. Once keys arrive
   it seals, sends and opens them in order. A send refused after a membership
   change is re-sealed under the new epoch and retried.
+- **Committed routes** stay cleartext. When the broker serves a route as a
+  committed document, its owner (the shell's native workspace owner)
+  admits and applies each edit itself, and
+  it holds no channel keys: it could not open a sealed edit, and after one
+  it refuses cleartext on the route as a downgrade. Endpoints therefore do
+  not ask for keys on committed routes, and a host-signed endpoint commits
+  through its host. Committed routes take encryption once their owner runs
+  as a service member.
 - **Brokers and relays** hold gates, never keys. Every ingress path checks
   the channel's gate (`ChannelGate`): plaintext is closed off, and content
   sealed before the latest membership change is refused. Relays store and
@@ -229,41 +239,6 @@ content only as a **service member** (`shell/service_members.rs`):
 - When the deadline passes, or `revoke_service_member` ends the job, the
   steward removes it. The removal is a commit, so content keys rotate: the
   service keeps what it read and cannot open anything written afterwards.
-
-### What the Cloud host must adopt
-
-The Cloud stack (`tilo-cloud-host` and its agent workers) currently holds
-documents as a plaintext, full CRDT peer, enrolled as one more device of the
-owner. `tilo-peer-state` parks encrypted payloads as
-`RetryLater(PersistedMls)`, so on encrypted channels it stalls. With
-encryption on everywhere, it has to become a service member:
-
-1. **Device identity.** Keep the host's own device key and root-signed
-   `DeviceCert` from cloud enrolment. That key is its MLS credential
-   (`MemberKey::for_device`). A host certificate grants no reading by
-   itself.
-2. **Grant.** The owner's shell grants the host (or one agent run's
-   device) a service membership per room, with a purpose and a deadline:
-   the job's `GrantOffer.expires_at`, or the end of the agent run
-   (`grant_service_member` / `revoke_service_member`). The run's
-   `GrantAction`s stay as they are; they authorise actions, not key access.
-3. **Channel service.** Run `ChannelEncryption` on the host with a
-   `ChannelDirectory` that names the room's governor as steward, a
-   persistent state root, and a `VaultKey` from the host's secret custody.
-   Pump it with the room transport (`NeighbourMsg::Mls*` over the workspace
-   host session). It asks for access, applies Welcomes and commits, and
-   acknowledges.
-4. **Documents.** Decrypt with the route's `ChannelContentKeys` where
-   `tilo-peer-state` admits a document (`Encrypted { .. }`), instead of
-   parking it, and seal outbound changes the same way
-   (`local_outbox`, media governance). Workers that run through
-   `CollaborationManager` get this from the SDK once they are launched with
-   an identity service that answers `Request::ChannelKeys`. For
-   `HostDocuments`, answer it from the host's channel service.
-5. **Expiry.** When the grant ends, the host is removed from the group.
-   It must drop plaintext it derived for the ended job (previews, indexes)
-   under the job's retention rules, since keys it held for earlier epochs
-   stay valid for content it already had.
 
 The relay and the action broker need no change: they route and retain
 ciphertext and MLS control material without decoding either.
@@ -345,5 +320,5 @@ versioned handshake.
 ## Building
 
 ```bash
-rcargo test --locked -p channel-crypto
+cargo test --locked -p channel-crypto
 ```

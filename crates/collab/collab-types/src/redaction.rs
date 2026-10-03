@@ -21,8 +21,8 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::time::SystemTime;
 use thiserror::Error;
+use web_time::SystemTime;
 
 use crate::canonical::{CanonicalError, canonical_bytes, from_canonical_bytes};
 use crate::channel::ArtifactId;
@@ -250,7 +250,7 @@ mod tests {
     use crate::channel::ArtifactId;
     use crate::crypto::generate_keypair;
     use crate::identity::AttestationId;
-    use std::time::SystemTime;
+    use web_time::SystemTime;
 
     fn dummy_op(seq: u64) -> SignedOp {
         let (_, pk) = generate_keypair();
@@ -265,197 +265,211 @@ mod tests {
         )
     }
 
+    /// Op ids are deterministic, change with signature, seq or author, and match their byte view;
+    /// the target-op hash is deterministic and changes with the payload.
     #[test]
-    fn op_id_is_deterministic_for_the_same_op() {
-        let op = dummy_op(7);
-        let a = OpId::from_op(&op);
-        let b = OpId::from_op(&op);
-        assert_eq!(a, b);
+    fn op_ids_and_target_hashes_identify_exactly_one_op() {
+        // Phase: op_id_is_deterministic_for_the_same_op.
+        {
+            let op = dummy_op(7);
+            let a = OpId::from_op(&op);
+            let b = OpId::from_op(&op);
+            assert_eq!(a, b);
+        }
+
+        // Phase: op_id_changes_on_signature_change.
+        {
+            // OpId is derived from signing-bytes (envelope minus signature), so
+            // changing JUST the signature does not change the id — the audit
+            // log's id stays stable through a post-hoc signature refresh.
+            let mut op = dummy_op(7);
+            let id_before = OpId::from_op(&op);
+            op.signature = crate::crypto::Signature::from_bytes([0xff; 64]);
+            let id_after = OpId::from_op(&op);
+            assert_eq!(id_before, id_after);
+        }
+
+        // Phase: op_id_changes_on_seq_or_author_change.
+        {
+            let a = dummy_op(7);
+            let mut b = a.clone();
+            b.seq = 8;
+            assert_ne!(OpId::from_op(&a), OpId::from_op(&b));
+
+            let (_, other_pk) = generate_keypair();
+            let mut c = a.clone();
+            c.author = other_pk;
+            assert_ne!(OpId::from_op(&a), OpId::from_op(&c));
+        }
+
+        // Phase: op_id_byte_view_matches_constructor.
+        {
+            let id = OpId::from_bytes([0x77; 16]);
+            assert_eq!(id.as_bytes(), &[0x77; 16]);
+        }
+
+        // Phase: hash_target_op_is_deterministic_and_changes_with_payload.
+        {
+            let mut op = dummy_op(3);
+            let h1 = hash_target_op(&op).expect("hash");
+            let h2 = hash_target_op(&op).expect("hash");
+            assert_eq!(h1, h2);
+            // Mutating the payload (the redaction-rewrite case) produces a
+            // different hash — `target_op_hash` is sensitive to mint-time bytes.
+            op.payload = vec![0xff; 16];
+            let h3 = hash_target_op(&op).expect("hash");
+            assert_ne!(h1, h3);
+        }
     }
 
+    /// Redact payloads round-trip and reject a wrong op class, an over-long reason and a redactor
+    /// mismatch; the redacted marker and redact request round-trip canonically.
     #[test]
-    fn op_id_changes_on_signature_change() {
-        // OpId is derived from signing-bytes (envelope minus signature), so
-        // changing JUST the signature does not change the id — the audit
-        // log's id stays stable through a post-hoc signature refresh.
-        let mut op = dummy_op(7);
-        let id_before = OpId::from_op(&op);
-        op.signature = crate::crypto::Signature::from_bytes([0xff; 64]);
-        let id_after = OpId::from_op(&op);
-        assert_eq!(id_before, id_after);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn redaction_payloads_round_trip_and_reject_what_they_cannot_honour() {
+        // Phase: parse_redact_payload_round_trip.
+        {
+            let (_, pk) = generate_keypair();
+            let req = RedactRequest {
+                artifact: ArtifactId::new(),
+                target_op_id: OpId::from_bytes([0xab; 16]),
+                target_op_hash: [0xcd; 32],
+                reason: "GDPR request".into(),
+                redacted_by: pk,
+                redacted_at: SystemTime::UNIX_EPOCH,
+            };
+            let bytes = encode_redact_payload(&req).expect("encode");
 
-    #[test]
-    fn op_id_changes_on_seq_or_author_change() {
-        let a = dummy_op(7);
-        let mut b = a.clone();
-        b.seq = 8;
-        assert_ne!(OpId::from_op(&a), OpId::from_op(&b));
+            let op = SignedOp::new_unsigned(
+                bytes,
+                req.artifact,
+                pk,
+                AttestationId::new(),
+                OpClass::Redact,
+                SystemTime::UNIX_EPOCH,
+                42,
+            );
+            let parsed = parse_redact_payload(&op).expect("parse");
+            assert_eq!(parsed, req);
+        }
 
-        let (_, other_pk) = generate_keypair();
-        let mut c = a.clone();
-        c.author = other_pk;
-        assert_ne!(OpId::from_op(&a), OpId::from_op(&c));
-    }
-
-    #[test]
-    fn parse_redact_payload_round_trip() {
-        let (_, pk) = generate_keypair();
-        let req = RedactRequest {
-            artifact: ArtifactId::new(),
-            target_op_id: OpId::from_bytes([0xab; 16]),
-            target_op_hash: [0xcd; 32],
-            reason: "GDPR request".into(),
-            redacted_by: pk,
-            redacted_at: SystemTime::UNIX_EPOCH,
-        };
-        let bytes = encode_redact_payload(&req).expect("encode");
-
-        let op = SignedOp::new_unsigned(
-            bytes,
-            req.artifact,
-            pk,
-            AttestationId::new(),
-            OpClass::Redact,
-            SystemTime::UNIX_EPOCH,
-            42,
-        );
-        let parsed = parse_redact_payload(&op).expect("parse");
-        assert_eq!(parsed, req);
-    }
-
-    #[test]
-    fn parse_redact_payload_rejects_wrong_op_class() {
-        let (_, pk) = generate_keypair();
-        let req = RedactRequest {
-            artifact: ArtifactId::new(),
-            target_op_id: OpId::from_bytes([0; 16]),
-            target_op_hash: [0; 32],
-            reason: String::new(),
-            redacted_by: pk,
-            redacted_at: SystemTime::UNIX_EPOCH,
-        };
-        let bytes = encode_redact_payload(&req).expect("encode");
-        let op = SignedOp::new_unsigned(
-            bytes,
-            req.artifact,
-            pk,
-            AttestationId::new(),
-            OpClass::Splice, // wrong on purpose
-            SystemTime::UNIX_EPOCH,
-            1,
-        );
-        match parse_redact_payload(&op) {
-            Err(RedactionError::WrongOpClass { actual }) => {
-                assert_eq!(actual, OpClass::Splice);
+        // Phase: parse_redact_payload_rejects_wrong_op_class.
+        {
+            let (_, pk) = generate_keypair();
+            let req = RedactRequest {
+                artifact: ArtifactId::new(),
+                target_op_id: OpId::from_bytes([0; 16]),
+                target_op_hash: [0; 32],
+                reason: String::new(),
+                redacted_by: pk,
+                redacted_at: SystemTime::UNIX_EPOCH,
+            };
+            let bytes = encode_redact_payload(&req).expect("encode");
+            let op = SignedOp::new_unsigned(
+                bytes,
+                req.artifact,
+                pk,
+                AttestationId::new(),
+                OpClass::Splice, // wrong on purpose
+                SystemTime::UNIX_EPOCH,
+                1,
+            );
+            match parse_redact_payload(&op) {
+                Err(RedactionError::WrongOpClass { actual }) => {
+                    assert_eq!(actual, OpClass::Splice);
+                }
+                other => panic!("expected WrongOpClass, got {other:?}"),
             }
-            other => panic!("expected WrongOpClass, got {other:?}"),
         }
-    }
 
-    #[test]
-    fn parse_redact_payload_rejects_long_reason() {
-        let (_, pk) = generate_keypair();
-        let req = RedactRequest {
-            artifact: ArtifactId::new(),
-            target_op_id: OpId::from_bytes([0; 16]),
-            target_op_hash: [0; 32],
-            reason: "x".repeat(MAX_REDACTION_REASON_BYTES + 1),
-            redacted_by: pk,
-            redacted_at: SystemTime::UNIX_EPOCH,
-        };
-        let bytes = encode_redact_payload(&req).expect("encode");
-        let op = SignedOp::new_unsigned(
-            bytes,
-            req.artifact,
-            pk,
-            AttestationId::new(),
-            OpClass::Redact,
-            SystemTime::UNIX_EPOCH,
-            1,
-        );
-        match parse_redact_payload(&op) {
-            Err(RedactionError::ReasonTooLong(n)) => {
-                assert_eq!(n, MAX_REDACTION_REASON_BYTES + 1);
+        // Phase: parse_redact_payload_rejects_long_reason.
+        {
+            let (_, pk) = generate_keypair();
+            let req = RedactRequest {
+                artifact: ArtifactId::new(),
+                target_op_id: OpId::from_bytes([0; 16]),
+                target_op_hash: [0; 32],
+                reason: "x".repeat(MAX_REDACTION_REASON_BYTES + 1),
+                redacted_by: pk,
+                redacted_at: SystemTime::UNIX_EPOCH,
+            };
+            let bytes = encode_redact_payload(&req).expect("encode");
+            let op = SignedOp::new_unsigned(
+                bytes,
+                req.artifact,
+                pk,
+                AttestationId::new(),
+                OpClass::Redact,
+                SystemTime::UNIX_EPOCH,
+                1,
+            );
+            match parse_redact_payload(&op) {
+                Err(RedactionError::ReasonTooLong(n)) => {
+                    assert_eq!(n, MAX_REDACTION_REASON_BYTES + 1);
+                }
+                other => panic!("expected ReasonTooLong, got {other:?}"),
             }
-            other => panic!("expected ReasonTooLong, got {other:?}"),
         }
-    }
 
-    #[test]
-    fn parse_redact_payload_rejects_redactor_mismatch() {
-        // Envelope says "signed by Bob", payload claims "redacted by Alice" —
-        // must fail; the validator relies on this to refuse a malicious
-        // "redact in someone else's name" envelope.
-        let (_, author_pk) = generate_keypair();
-        let (_, claimed_pk) = generate_keypair();
-        let req = RedactRequest {
-            artifact: ArtifactId::new(),
-            target_op_id: OpId::from_bytes([0; 16]),
-            target_op_hash: [0; 32],
-            reason: String::new(),
-            redacted_by: claimed_pk, // not the envelope author
-            redacted_at: SystemTime::UNIX_EPOCH,
-        };
-        let bytes = encode_redact_payload(&req).expect("encode");
-        let op = SignedOp::new_unsigned(
-            bytes,
-            req.artifact,
-            author_pk,
-            AttestationId::new(),
-            OpClass::Redact,
-            SystemTime::UNIX_EPOCH,
-            1,
-        );
-        match parse_redact_payload(&op) {
-            Err(RedactionError::RedactorMismatch) => {}
-            other => panic!("expected RedactorMismatch, got {other:?}"),
+        // Phase: parse_redact_payload_rejects_redactor_mismatch.
+        {
+            // Envelope says "signed by Bob", payload claims "redacted by Alice" —
+            // must fail; the validator relies on this to refuse a malicious
+            // "redact in someone else's name" envelope.
+            let (_, author_pk) = generate_keypair();
+            let (_, claimed_pk) = generate_keypair();
+            let req = RedactRequest {
+                artifact: ArtifactId::new(),
+                target_op_id: OpId::from_bytes([0; 16]),
+                target_op_hash: [0; 32],
+                reason: String::new(),
+                redacted_by: claimed_pk, // not the envelope author
+                redacted_at: SystemTime::UNIX_EPOCH,
+            };
+            let bytes = encode_redact_payload(&req).expect("encode");
+            let op = SignedOp::new_unsigned(
+                bytes,
+                req.artifact,
+                author_pk,
+                AttestationId::new(),
+                OpClass::Redact,
+                SystemTime::UNIX_EPOCH,
+                1,
+            );
+            match parse_redact_payload(&op) {
+                Err(RedactionError::RedactorMismatch) => {}
+                other => panic!("expected RedactorMismatch, got {other:?}"),
+            }
         }
-    }
 
-    #[test]
-    fn redacted_marker_canonical_round_trip() {
-        let marker = RedactedMarker::v1();
-        let bytes = marker.canonical().expect("encode");
-        let back: RedactedMarker = from_canonical_bytes(&bytes).expect("decode");
-        assert_eq!(marker, back);
-    }
+        // Phase: redacted_marker_canonical_round_trip.
+        {
+            let marker = RedactedMarker::v1();
+            let bytes = marker.canonical().expect("encode");
+            let back: RedactedMarker = from_canonical_bytes(&bytes).expect("decode");
+            assert_eq!(marker, back);
+        }
 
-    #[test]
-    fn hash_target_op_is_deterministic_and_changes_with_payload() {
-        let mut op = dummy_op(3);
-        let h1 = hash_target_op(&op).expect("hash");
-        let h2 = hash_target_op(&op).expect("hash");
-        assert_eq!(h1, h2);
-        // Mutating the payload (the redaction-rewrite case) produces a
-        // different hash — `target_op_hash` is sensitive to mint-time bytes.
-        op.payload = vec![0xff; 16];
-        let h3 = hash_target_op(&op).expect("hash");
-        assert_ne!(h1, h3);
-    }
-
-    #[test]
-    fn op_id_byte_view_matches_constructor() {
-        let id = OpId::from_bytes([0x77; 16]);
-        assert_eq!(id.as_bytes(), &[0x77; 16]);
-    }
-
-    // Belt-and-braces: canonical encoding of `RedactRequest` must
-    // round-trip through postcard so the wire layer doesn't silently drop
-    // fields when the struct grows.
-    #[test]
-    fn redact_request_canonical_round_trip() {
-        let (_, pk) = generate_keypair();
-        let req = RedactRequest {
-            artifact: ArtifactId::new(),
-            target_op_id: OpId::from_bytes([1; 16]),
-            target_op_hash: [2; 32],
-            reason: "compliance".into(),
-            redacted_by: pk,
-            redacted_at: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(123_456),
-        };
-        let bytes = canonical_bytes(&req).expect("encode");
-        let back: RedactRequest = from_canonical_bytes(&bytes).expect("decode");
-        assert_eq!(req, back);
+        // Phase: redact_request_canonical_round_trip.
+        // Belt-and-braces: canonical encoding of `RedactRequest` must
+        // round-trip through postcard so the wire layer doesn't silently drop
+        // fields when the struct grows.
+        {
+            let (_, pk) = generate_keypair();
+            let req = RedactRequest {
+                artifact: ArtifactId::new(),
+                target_op_id: OpId::from_bytes([1; 16]),
+                target_op_hash: [2; 32],
+                reason: "compliance".into(),
+                redacted_by: pk,
+                redacted_at: SystemTime::UNIX_EPOCH + web_time::Duration::from_secs(123_456),
+            };
+            let bytes = canonical_bytes(&req).expect("encode");
+            let back: RedactRequest = from_canonical_bytes(&bytes).expect("decode");
+            assert_eq!(req, back);
+        }
     }
 }

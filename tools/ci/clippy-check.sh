@@ -20,6 +20,16 @@ set -uo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$root" || exit 2
 
+# Let sccache cache Clippy's workspace crates. Cargo runs them as
+# `$RUSTC_WRAPPER clippy-driver $RUSTC ...`, and sccache recognises that shape
+# only when the compiler argument is literally `rustc`: under rustup Cargo
+# otherwise passes the toolchain's full rustc path, which sccache takes for a
+# second input file and compiles uncached. The key still covers everything
+# Clippy decides on: its arguments (the workspace lint table), sources,
+# dependency metadata, and the Cargo.toml, clippy.toml and CLIPPY_ARGS that
+# clippy-driver records in its dep-info. A lint failure is never cached.
+export RUSTC="${RUSTC:-rustc}"
+
 messages="$root/target/ci/clippy-head.json"
 stderr_log="$root/target/ci/clippy-head.stderr"
 mkdir -p "$root/target/ci" || exit 2

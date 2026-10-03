@@ -1,0 +1,50 @@
+[package]
+name = "cloud-source-icloud"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "iCloud Drive as a best-effort cloud-source provider over Apple's undocumented web API: SRP sign-in with 2FA and trust tokens, drivews/docws listing, ranged downloads, uploads, moves and trash."
+
+[dependencies]
+mime_guess.workspace = true
+chrono = { workspace = true, features = ["std"] }
+cloud-source = { version = "0.1.0", path = "../cloud-source" }
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["blocking"] }
+reqwest = { workspace = true, features = ["blocking"] }
+url = { workspace = true, features = ["serde"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+base64.workspace = true
+sha2.workspace = true
+pbkdf2.workspace = true
+num-bigint.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+uuid.workspace = true
+unicode-normalization = "0.1.25"
+# The in-memory iCloud endpoints behind `fake-server`.
+test-http = { version = "0.1.0", path = "../../dev/test-http", optional = true }
+
+[features]
+# `cloud_source_icloud::fake::FakeICloud`: Apple's sign-in, setup, drivews,
+# docws and content endpoints in memory on the shared test responder, for this
+# crate's conformance run and the storage daemon's end-to-end tests. Test
+# support only.
+fake-server = ["dep:test-http"]
+
+[dev-dependencies]
+cloud-source = { path = "../cloud-source", features = ["conformance"] }
+# The conformance run needs the fake server of this very crate.
+cloud-source-icloud = { path = ".", features = ["fake-server"] }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

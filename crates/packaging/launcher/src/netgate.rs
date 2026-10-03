@@ -399,38 +399,18 @@ impl NetGate {
             tokio::net::UnixListener::from_std(listener).map_err(bind_error)?
         };
 
-        let stats = Arc::new(GateStats::default());
-        let (stop, stopped) = oneshot::channel();
-        let gate = NetGate {
-            socket_path: socket_path.to_path_buf(),
-            stats: Arc::clone(&stats),
-            _stop: stop,
-        };
-
         tracing::info!(
             socket = %socket_path.display(),
             hosts = ?policy.hosts(),
             "egress gate listening; the sandbox netns stays empty and this socket is its \
              only route out"
         );
-
-        let policy = Arc::new(policy);
-        runtime.spawn(accept_bounded(
-            listener,
-            max_connections,
-            stopped,
-            move |client| {
-                let policy = Arc::clone(&policy);
-                let stats = Arc::clone(&stats);
-                async move {
-                    if let Err(e) = serve_connection(client, &policy, &stats).await {
-                        tracing::debug!(error = %e, "egress gate connection ended");
-                    }
-                }
-            },
-        ));
-
-        Ok(gate)
+        let (stats, stop) = serve_gate(runtime, listener, policy, max_connections);
+        Ok(NetGate {
+            socket_path: socket_path.to_path_buf(),
+            stats,
+            _stop: stop,
+        })
     }
 
     pub fn socket_path(&self) -> &Path {
@@ -447,6 +427,115 @@ impl Drop for NetGate {
         // `_stop` is dropped right after this, which ends the accept loop.
         let _ = std::fs::remove_file(&self.socket_path);
     }
+}
+
+/// A gate on a loopback TCP port, for a host with no network namespace to
+/// leave empty (macOS): there the sandbox profile admits connections to this
+/// one port, and the proxy environment names it. Same protocols, same policy
+/// and the same device-local rule as [`NetGate`]; dropping it stops it.
+///
+/// Any local process can connect to the port. That grants nothing: an
+/// unconfined process already has the network, and what the gate reaches is
+/// at most what the policy names.
+#[derive(Debug)]
+pub struct LoopbackGate {
+    addr: SocketAddr,
+    stats: Arc<GateStats>,
+    _stop: oneshot::Sender<()>,
+}
+
+impl LoopbackGate {
+    /// Bind a free port on `127.0.0.1` and serve `policy` on it until
+    /// dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GateError::Bind`] if no port can be bound, or
+    /// [`GateError::Runtime`] if the runtime that serves it can't start.
+    pub fn start(policy: EgressPolicy) -> Result<LoopbackGate, GateError> {
+        let bind_error = |source| GateError::Bind {
+            path: PathBuf::from("127.0.0.1:0"),
+            source,
+        };
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(bind_error)?;
+        let addr = listener.local_addr().map_err(bind_error)?;
+        listener.set_nonblocking(true).map_err(bind_error)?;
+        let runtime = egress_runtime().map_err(GateError::Runtime)?;
+        let listener = {
+            let _entered = runtime.enter();
+            tokio::net::TcpListener::from_std(listener).map_err(bind_error)?
+        };
+        tracing::info!(%addr, hosts = ?policy.hosts(), "loopback egress gate listening");
+        let (stats, stop) = serve_gate(runtime, listener, policy, MAX_CONNECTIONS);
+        Ok(LoopbackGate {
+            addr,
+            stats,
+            _stop: stop,
+        })
+    }
+
+    pub fn local_addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    pub fn stats(&self) -> &Arc<GateStats> {
+        &self.stats
+    }
+}
+
+/// Serve every connection `listener` accepts against `policy` on
+/// `runtime`, until the returned sender is dropped.
+fn serve_gate<L>(
+    runtime: &tokio::runtime::Handle,
+    listener: L,
+    policy: EgressPolicy,
+    max_connections: usize,
+) -> (Arc<GateStats>, oneshot::Sender<()>)
+where
+    L: Acceptor,
+    L::Conn: AsyncRead + AsyncWrite + Unpin,
+{
+    let stats = Arc::new(GateStats::default());
+    let (stop, stopped) = oneshot::channel();
+    let policy = Arc::new(policy);
+    let served = Arc::clone(&stats);
+    runtime.spawn(accept_bounded(
+        listener,
+        max_connections,
+        stopped,
+        move |client| {
+            let policy = Arc::clone(&policy);
+            let stats = Arc::clone(&served);
+            async move {
+                if let Err(e) = serve_connection(client, &policy, &stats).await {
+                    tracing::debug!(error = %e, "egress gate connection ended");
+                }
+            }
+        },
+    ));
+    (stats, stop)
+}
+
+/// The proxy environment that sends an ordinary HTTP client through a gate
+/// listening on `127.0.0.1:port`.
+///
+/// Both proxy forms are advertised, since picking one breaks apps:
+/// `HTTP(S)_PROXY` works with no feature flags (`reqwest`'s SOCKS support is
+/// non-default); `ALL_PROXY` is `socks5h://…`, where the `h` sends the
+/// **hostname** to the proxy instead of resolving locally, which a confined
+/// app cannot do.
+pub fn proxy_env(port: u16) -> Vec<(&'static str, String)> {
+    let http = format!("http://127.0.0.1:{port}");
+    let socks = format!("socks5h://127.0.0.1:{port}");
+    ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"]
+        .into_iter()
+        .map(|var| (var, http.clone()))
+        .chain(
+            ["ALL_PROXY", "all_proxy"]
+                .into_iter()
+                .map(|var| (var, socks.clone())),
+        )
+        .collect()
 }
 
 /// The runtime every egress relay in this process serves on — each
@@ -819,8 +908,8 @@ fn head_text(head: Vec<u8>) -> io::Result<String> {
     })
 }
 
-async fn serve_connection(
-    mut client: UnixStream,
+async fn serve_connection<C: AsyncRead + AsyncWrite + Unpin>(
+    mut client: C,
     policy: &EgressPolicy,
     stats: &GateStats,
 ) -> io::Result<()> {
@@ -1225,180 +1314,322 @@ mod tests {
     }
 
     #[test]
-    fn a_manifest_allowlist_is_enforced_instead_of_being_dropped() {
-        let maps = v(&[
-            "tile.openstreetmap.org",
-            "nominatim.openstreetmap.org",
-            "overpass-api.de",
-            "router.project-osrm.org",
-            "api.transitous.org",
-        ]);
-        let decision = EgressDecision::resolve("allowlist", &maps, &[]);
-        let policy = decision.policy().expect("an allowlist must be filtered");
-        assert!(policy.permits("tile.openstreetmap.org"));
+    fn egress_policy_without_grants_follows_the_manifest() {
+        // Phase `a_manifest_allowlist_is_enforced_instead_of_being_dropped`.
+        {
+            let maps = v(&[
+                "tile.openstreetmap.org",
+                "nominatim.openstreetmap.org",
+                "overpass-api.de",
+                "router.project-osrm.org",
+                "api.transitous.org",
+            ]);
+            let decision = EgressDecision::resolve("allowlist", &maps, &[]);
+            let policy = decision.policy().expect("an allowlist must be filtered");
+            assert!(policy.permits("tile.openstreetmap.org"));
+            assert!(
+                !policy.permits("evil.example.com"),
+                "a host outside the manifest's allowlist must not be permitted"
+            );
+            assert!(
+                !decision.shares_host_network(),
+                "a filtered decision must not share the host network: {decision:?}"
+            );
+        }
+        // Phase `a_host_manifest_with_no_grants_stays_unrestricted`.
+        {
+            // The ten apps whose endpoint is user data keep working
+            // exactly as before when the user has granted nothing.
+            assert_eq!(
+                EgressDecision::resolve("host", &[], &[]),
+                EgressDecision::Unrestricted
+            );
+        }
+        // Phase `no_manifest_network_and_no_grant_is_blocked`.
+        {
+            assert_eq!(
+                EgressDecision::resolve("off", &[], &[]),
+                EgressDecision::Blocked
+            );
+        }
+        // Phase `dns_only_does_not_fall_through_to_unrestricted`.
+        {
+            // The canonical manifest vocabulary has a `dns-only` mode, answered
+            // explicitly rather than falling into "not off means unrestricted".
+            assert_eq!(
+                EgressDecision::resolve("dns-only", &[], &[]),
+                EgressDecision::Blocked
+            );
+        }
+    }
+
+    #[test]
+    fn grants_narrow_but_never_widen_the_manifest_allowlist() {
+        // Phase `a_specific_grant_narrows_a_host_manifest`.
+        {
+            // The point of the whole exercise: a user who granted one host
+            // to an app whose manifest asks for `host` gets one host.
+            let decision = EgressDecision::resolve("host", &[], &v(&["mail.example.com"]));
+            let policy = decision.policy().expect("a named host must be filtered");
+            assert!(policy.permits("mail.example.com"));
+            assert!(!policy.permits("github.com"));
+            assert!(
+                !decision.shares_host_network(),
+                "a grant naming one host must not share the whole host network: {decision:?}"
+            );
+        }
+        // Phase `a_star_grant_is_unrestricted`.
+        {
+            assert_eq!(
+                EgressDecision::resolve("host", &[], &v(&["*"])),
+                EgressDecision::Unrestricted
+            );
+            assert_eq!(
+                EgressDecision::resolve("off", &[], &v(&["*"])),
+                EgressDecision::Unrestricted
+            );
+        }
+        // Phase `a_star_grant_narrows_to_an_explicit_manifest_allowlist`.
+        {
+            // "Allow everything this app asks for" must mean the declared
+            // endpoints, not the whole internet.
+            let weather = v(&["api.open-meteo.com", "geocoding-api.open-meteo.com"]);
+            let decision = EgressDecision::resolve("allowlist", &weather, &v(&["*"]));
+            let policy = decision
+                .policy()
+                .unwrap_or_else(|| panic!("expected the declared endpoints, got {decision:?}"));
+            assert_eq!(policy.hosts(), weather.as_slice());
+            assert!(
+                !decision.shares_host_network(),
+                "a `*` grant must not widen a package that enumerated its endpoints: {decision:?}"
+            );
+        }
+        // Phase `a_suffix_grant_selects_the_declared_endpoints_under_it`.
+        {
+            let maps = v(&[
+                "tile.openstreetmap.org",
+                "nominatim.openstreetmap.org",
+                "overpass-api.de",
+            ]);
+            let decision = EgressDecision::resolve("allowlist", &maps, &v(&[".openstreetmap.org"]));
+            let policy = decision.policy().expect("filtered");
+            assert_eq!(
+                policy.hosts(),
+                ["tile.openstreetmap.org", "nominatim.openstreetmap.org"]
+            );
+            assert!(
+                !policy.permits("overpass-api.de"),
+                "an endpoint outside the granted suffix must not survive: {policy:?}"
+            );
+        }
+        // Phase `a_grant_cannot_exceed_an_explicit_manifest_allowlist`.
+        {
+            let decision = EgressDecision::resolve(
+                "allowlist",
+                &v(&["api.open-meteo.com"]),
+                &v(&["api.open-meteo.com", "exfil.example.com"]),
+            );
+            let policy = decision.policy().expect("filtered");
+            assert!(policy.permits("api.open-meteo.com"));
+            assert!(
+                !policy.permits("exfil.example.com"),
+                "a runtime grant must not widen the endpoint surface the packager declared: \
+                 {policy:?}"
+            );
+        }
+        // Phase `a_grant_outside_the_manifest_allowlist_leaving_nothing_blocks`.
+        {
+            let decision = EgressDecision::resolve(
+                "allowlist",
+                &v(&["api.open-meteo.com"]),
+                &v(&["exfil.example.com"]),
+            );
+            assert_eq!(decision, EgressDecision::Blocked);
+        }
+        // Phase `an_address_literal_never_matches_a_hostname_grant`.
+        {
+            // The bypass this closes: resolving the allowed name yourself then
+            // asking the gate for the address would make every name-scoped grant
+            // an any-host grant.
+            let policy = EgressPolicy::new(v(&["mail.example.com"]));
+            assert!(policy.permits("mail.example.com"));
+            assert!(
+                !policy.permits("93.184.216.34"),
+                "an address literal must not satisfy a hostname allowlist entry"
+            );
+            // An entry that IS a literal still works, for a grant the user
+            // actually phrased that way.
+            let by_addr = EgressPolicy::new(v(&["93.184.216.34"]));
+            assert!(by_addr.permits("93.184.216.34"));
+        }
+        // Phase `subdomain_grants_use_the_shared_matcher`.
+        {
+            // `.example.com` is `host_covers`' suffix form, the same spelling the
+            // compositor evaluates — asserted so a matcher change shows up here.
+            let policy = EgressPolicy::new(v(&[".example.com"]));
+            assert!(policy.permits("example.com"));
+            assert!(policy.permits("mail.example.com"));
+            assert!(!policy.permits("example.com.evil.net"));
+            assert!(!policy.permits("notexample.com"));
+        }
+    }
+
+    #[test]
+    fn the_gate_relay_bounds_its_resources_and_forwards_early_bytes() {
+        // Phase `gate_socket_path_is_short_enough_for_sun_path`.
+        {
+            // 108 bytes including the NUL. A path over the limit cannot be
+            // connected to, and the failure surfaces far from its cause.
+            let p = gate_socket_path(1000, 4_194_304);
+            assert!(
+                p.as_os_str().len() < 100,
+                "gate socket path {p:?} is too long for sun_path"
+            );
+            assert!(SANDBOX_GATE_PATH.len() < 100);
+        }
+        // Phase `the_gate_serves_no_more_than_its_connection_limit_at_once`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("gate.sock");
+            let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = service.local_addr().unwrap().port();
+            let gate =
+                NetGate::start_limited(&socket, EgressPolicy::new(v(&["localhost"])), 1).unwrap();
+
+            // The one slot: a tunnel that stays open.
+            let mut first = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+            first.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
+            assert_eq!(socks_connect_localhost(&mut first, port), reply::SUCCESS);
+            let (held, _) = service.accept().unwrap();
+
+            // The kernel queues a second client, but the gate leaves it there.
+            let mut second = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+            second.write_all(&[0x05, 0x01, 0x00]).unwrap();
+            second.set_read_timeout(Some(NOT_SERVED_WITHIN)).unwrap();
+            assert_not_answered(&mut second, "a second gate client");
+
+            // Closing the tunnel frees the slot, and the waiting client is served.
+            drop(first);
+            drop(held);
+            second.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
+            let mut greeting = [0u8; 2];
+            second.read_exact(&mut greeting).unwrap();
+            assert_eq!(greeting, [0x05, 0x00]);
+            assert_eq!(gate.stats().allowed(), 1);
+        }
+        // Phase `the_relay_carries_no_more_than_its_connection_limit_at_once`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("gate.sock");
+            // A stand-in gate that echoes, one thread per connection.
+            let echo = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            std::thread::spawn(move || {
+                for stream in echo.incoming() {
+                    let Ok(stream) = stream else { continue };
+                    std::thread::spawn(move || {
+                        let (mut r, mut w) = (&stream, &stream);
+                        let _ = io::copy(&mut r, &mut w);
+                    });
+                }
+            });
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let relay = listener.local_addr().unwrap();
+            std::thread::spawn(move || serve_relay_limited(listener, &socket, 1));
+
+            let mut first = TcpStream::connect(relay).unwrap();
+            first.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
+            first.write_all(b"a").unwrap();
+            let mut byte = [0u8; 1];
+            first.read_exact(&mut byte).unwrap();
+            assert_eq!(&byte, b"a");
+
+            let mut second = TcpStream::connect(relay).unwrap();
+            second.write_all(b"b").unwrap();
+            second.set_read_timeout(Some(NOT_SERVED_WITHIN)).unwrap();
+            assert_not_answered(&mut second, "a second relay client");
+
+            drop(first);
+            second.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
+            second.read_exact(&mut byte).unwrap();
+            assert_eq!(&byte, b"b");
+        }
+        // Phase `bytes_sent_ahead_of_the_socks5_reply_reach_the_upstream`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("gate.sock");
+            let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = service.local_addr().unwrap().port();
+            let _gate = NetGate::start(&socket, EgressPolicy::new(v(&["localhost"]))).unwrap();
+
+            // Greeting, request and payload in one write, as an optimistic
+            // client sends them.
+            let mut all = vec![0x05, 0x01, 0x00, 0x05, 0x01, 0x00, 0x03, 9];
+            all.extend_from_slice(b"localhost");
+            all.extend_from_slice(&port.to_be_bytes());
+            all.extend_from_slice(b"PING");
+            let mut client = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+            client.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
+            client.write_all(&all).unwrap();
+
+            let (mut upstream, _) = service.accept().unwrap();
+            upstream.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
+            let mut payload = [0u8; 4];
+            upstream.read_exact(&mut payload).unwrap();
+            assert_eq!(&payload, b"PING");
+
+            let mut replies = [0u8; 12];
+            client.read_exact(&mut replies).unwrap();
+            assert_eq!(&replies[..2], &[0x05, 0x00]);
+            assert_eq!(replies[3], reply::SUCCESS);
+        }
+    }
+
+    #[test]
+    fn the_loopback_gate_tunnels_granted_hosts_and_refuses_the_rest() {
+        let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = service.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            while let Ok((mut s, _)) = service.accept() {
+                let _ = s.write_all(b"LOCAL-SERVICE");
+            }
+        });
+        let gate = LoopbackGate::start(EgressPolicy::new(v(&["localhost"]))).unwrap();
+        assert!(gate.local_addr().ip().is_loopback());
+        let connect = |target: &str| {
+            let mut client = TcpStream::connect(gate.local_addr()).unwrap();
+            client.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
+            client
+                .write_all(format!("CONNECT {target} HTTP/1.1\r\n\r\n").as_bytes())
+                .unwrap();
+            let mut answer = Vec::new();
+            let _ = client.read_to_end(&mut answer);
+            String::from_utf8_lossy(&answer).into_owned()
+        };
+
+        let granted = connect(&format!("localhost:{port}"));
         assert!(
-            !policy.permits("evil.example.com"),
-            "a host outside the manifest's allowlist must not be permitted"
+            granted.starts_with("HTTP/1.1 200") && granted.ends_with("LOCAL-SERVICE"),
+            "{granted}"
         );
-        assert!(
-            !decision.shares_host_network(),
-            "a filtered decision must not share the host network: {decision:?}"
-        );
+        let refused = connect(&format!("127.0.0.1:{port}"));
+        assert!(refused.starts_with("HTTP/1.1 502"), "{refused}");
+        assert_eq!((gate.stats().allowed(), gate.stats().denied()), (1, 1));
     }
 
     #[test]
-    fn a_host_manifest_with_no_grants_stays_unrestricted() {
-        // The ten apps whose endpoint is user data keep working
-        // exactly as before when the user has granted nothing.
-        assert_eq!(
-            EgressDecision::resolve("host", &[], &[]),
-            EgressDecision::Unrestricted
-        );
-    }
-
-    #[test]
-    fn no_manifest_network_and_no_grant_is_blocked() {
-        assert_eq!(
-            EgressDecision::resolve("off", &[], &[]),
-            EgressDecision::Blocked
-        );
-    }
-
-    #[test]
-    fn dns_only_does_not_fall_through_to_unrestricted() {
-        // The canonical manifest vocabulary has a `dns-only` mode, answered
-        // explicitly rather than falling into "not off means unrestricted".
-        assert_eq!(
-            EgressDecision::resolve("dns-only", &[], &[]),
-            EgressDecision::Blocked
-        );
-    }
-
-    #[test]
-    fn a_specific_grant_narrows_a_host_manifest() {
-        // The point of the whole exercise: a user who granted one host
-        // to an app whose manifest asks for `host` gets one host.
-        let decision = EgressDecision::resolve("host", &[], &v(&["mail.example.com"]));
-        let policy = decision.policy().expect("a named host must be filtered");
-        assert!(policy.permits("mail.example.com"));
-        assert!(!policy.permits("github.com"));
-        assert!(
-            !decision.shares_host_network(),
-            "a grant naming one host must not share the whole host network: {decision:?}"
-        );
-    }
-
-    #[test]
-    fn a_star_grant_is_unrestricted() {
-        assert_eq!(
-            EgressDecision::resolve("host", &[], &v(&["*"])),
-            EgressDecision::Unrestricted
-        );
-        assert_eq!(
-            EgressDecision::resolve("off", &[], &v(&["*"])),
-            EgressDecision::Unrestricted
-        );
-    }
-
-    #[test]
-    fn a_star_grant_narrows_to_an_explicit_manifest_allowlist() {
-        // "Allow everything this app asks for" must mean the declared
-        // endpoints, not the whole internet.
-        let weather = v(&["api.open-meteo.com", "geocoding-api.open-meteo.com"]);
-        let decision = EgressDecision::resolve("allowlist", &weather, &v(&["*"]));
-        let policy = decision
-            .policy()
-            .unwrap_or_else(|| panic!("expected the declared endpoints, got {decision:?}"));
-        assert_eq!(policy.hosts(), weather.as_slice());
-        assert!(
-            !decision.shares_host_network(),
-            "a `*` grant must not widen a package that enumerated its endpoints: {decision:?}"
-        );
-    }
-
-    #[test]
-    fn a_suffix_grant_selects_the_declared_endpoints_under_it() {
-        let maps = v(&[
-            "tile.openstreetmap.org",
-            "nominatim.openstreetmap.org",
-            "overpass-api.de",
-        ]);
-        let decision = EgressDecision::resolve("allowlist", &maps, &v(&[".openstreetmap.org"]));
-        let policy = decision.policy().expect("filtered");
-        assert_eq!(
-            policy.hosts(),
-            ["tile.openstreetmap.org", "nominatim.openstreetmap.org"]
-        );
-        assert!(
-            !policy.permits("overpass-api.de"),
-            "an endpoint outside the granted suffix must not survive: {policy:?}"
-        );
-    }
-
-    #[test]
-    fn a_grant_cannot_exceed_an_explicit_manifest_allowlist() {
-        let decision = EgressDecision::resolve(
-            "allowlist",
-            &v(&["api.open-meteo.com"]),
-            &v(&["api.open-meteo.com", "exfil.example.com"]),
-        );
-        let policy = decision.policy().expect("filtered");
-        assert!(policy.permits("api.open-meteo.com"));
-        assert!(
-            !policy.permits("exfil.example.com"),
-            "a runtime grant must not widen the endpoint surface the packager declared: \
-             {policy:?}"
-        );
-    }
-
-    #[test]
-    fn a_grant_outside_the_manifest_allowlist_leaving_nothing_blocks() {
-        let decision = EgressDecision::resolve(
-            "allowlist",
-            &v(&["api.open-meteo.com"]),
-            &v(&["exfil.example.com"]),
-        );
-        assert_eq!(decision, EgressDecision::Blocked);
-    }
-
-    #[test]
-    fn an_address_literal_never_matches_a_hostname_grant() {
-        // The bypass this closes: resolving the allowed name yourself then
-        // asking the gate for the address would make every name-scoped grant
-        // an any-host grant.
-        let policy = EgressPolicy::new(v(&["mail.example.com"]));
-        assert!(policy.permits("mail.example.com"));
-        assert!(
-            !policy.permits("93.184.216.34"),
-            "an address literal must not satisfy a hostname allowlist entry"
-        );
-        // An entry that IS a literal still works, for a grant the user
-        // actually phrased that way.
-        let by_addr = EgressPolicy::new(v(&["93.184.216.34"]));
-        assert!(by_addr.permits("93.184.216.34"));
-    }
-
-    #[test]
-    fn subdomain_grants_use_the_shared_matcher() {
-        // `.example.com` is `host_covers`' suffix form, the same spelling the
-        // compositor evaluates — asserted so a matcher change shows up here.
-        let policy = EgressPolicy::new(v(&[".example.com"]));
-        assert!(policy.permits("example.com"));
-        assert!(policy.permits("mail.example.com"));
-        assert!(!policy.permits("example.com.evil.net"));
-        assert!(!policy.permits("notexample.com"));
-    }
-
-    #[test]
-    fn gate_socket_path_is_short_enough_for_sun_path() {
-        // 108 bytes including the NUL. A path over the limit cannot be
-        // connected to, and the failure surfaces far from its cause.
-        let p = gate_socket_path(1000, 4_194_304);
-        assert!(
-            p.as_os_str().len() < 100,
-            "gate socket path {p:?} is too long for sun_path"
-        );
-        assert!(SANDBOX_GATE_PATH.len() < 100);
+    fn the_proxy_environment_names_the_gate_for_every_client_convention() {
+        let env = proxy_env(9050);
+        let get = |name: &str| {
+            env.iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| v.as_str())
+        };
+        for var in ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"] {
+            assert_eq!(get(var), Some("http://127.0.0.1:9050"));
+        }
+        for var in ["ALL_PROXY", "all_proxy"] {
+            assert_eq!(get(var), Some("socks5h://127.0.0.1:9050"));
+        }
     }
 
     /// Drive the real handshake parser over an in-memory stream.
@@ -1428,233 +1659,232 @@ mod tests {
     }
 
     #[test]
-    fn parses_a_domain_connect_request() {
-        let mut req = vec![0x05, 0x01, 0x00, 0x03, 11];
-        req.extend_from_slice(b"example.com");
-        req.extend_from_slice(&443u16.to_be_bytes());
-        let mut p = pipe(req);
-        assert_eq!(
-            socks5_request(&mut p).unwrap(),
-            Destination::Domain("example.com".to_string(), 443)
-        );
-    }
-
-    #[test]
-    fn parses_an_ipv4_connect_request() {
-        let mut req = vec![0x05, 0x01, 0x00, 0x01, 198, 51, 100, 9];
-        req.extend_from_slice(&80u16.to_be_bytes());
-        let mut p = pipe(req);
-        let dest = socks5_request(&mut p).unwrap();
-        assert_eq!(dest.host_key(), "198.51.100.9");
-        assert_eq!(dest.port(), 80);
-    }
-
-    #[test]
-    fn a_non_connect_command_is_refused_with_a_reply() {
-        // 0x03 is UDP ASSOCIATE.
-        let req = vec![0x05, 0x03, 0x00, 0x01, 1, 2, 3, 4, 0, 80];
-        let mut p = pipe(req);
-        assert!(socks5_request(&mut p).is_err());
-        assert_eq!(
-            p.output[1],
-            reply::COMMAND_NOT_SUPPORTED,
-            "a refused command must still get a well-formed SOCKS reply so the client fails \
-             fast instead of hanging: {:?}",
-            p.output
-        );
-    }
-
-    #[test]
-    fn greeting_rejects_a_non_socks5_peer() {
-        let mut p = pipe(vec![0x04, 0x01]);
-        assert!(socks5_greet(&mut p).is_err());
-    }
-
-    #[test]
-    fn the_first_byte_picks_the_protocol() {
-        assert_eq!(detect_protocol(0x05), Protocol::Socks5);
-        // Every HTTP method starts with an uppercase letter.
-        for m in *b"CGPH" {
-            assert_eq!(detect_protocol(m), Protocol::HttpConnect);
+    fn socks5_greetings_and_requests_parse_or_are_refused() {
+        // Phase `the_first_byte_picks_the_protocol`.
+        {
+            assert_eq!(detect_protocol(0x05), Protocol::Socks5);
+            // Every HTTP method starts with an uppercase letter.
+            for m in *b"CGPH" {
+                assert_eq!(detect_protocol(m), Protocol::HttpConnect);
+            }
+        }
+        // Phase `greeting_rejects_a_non_socks5_peer`.
+        {
+            let mut p = pipe(vec![0x04, 0x01]);
+            assert!(socks5_greet(&mut p).is_err());
+        }
+        // Phase `parses_a_domain_connect_request`.
+        {
+            let mut req = vec![0x05, 0x01, 0x00, 0x03, 11];
+            req.extend_from_slice(b"example.com");
+            req.extend_from_slice(&443u16.to_be_bytes());
+            let mut p = pipe(req);
+            assert_eq!(
+                socks5_request(&mut p).unwrap(),
+                Destination::Domain("example.com".to_string(), 443)
+            );
+        }
+        // Phase `parses_an_ipv4_connect_request`.
+        {
+            let mut req = vec![0x05, 0x01, 0x00, 0x01, 198, 51, 100, 9];
+            req.extend_from_slice(&80u16.to_be_bytes());
+            let mut p = pipe(req);
+            let dest = socks5_request(&mut p).unwrap();
+            assert_eq!(dest.host_key(), "198.51.100.9");
+            assert_eq!(dest.port(), 80);
+        }
+        // Phase `a_non_connect_command_is_refused_with_a_reply`.
+        {
+            // 0x03 is UDP ASSOCIATE.
+            let req = vec![0x05, 0x03, 0x00, 0x01, 1, 2, 3, 4, 0, 80];
+            let mut p = pipe(req);
+            assert!(socks5_request(&mut p).is_err());
+            assert_eq!(
+                p.output[1],
+                reply::COMMAND_NOT_SUPPORTED,
+                "a refused command must still get a well-formed SOCKS reply so the client fails \
+                 fast instead of hanging: {:?}",
+                p.output
+            );
         }
     }
 
     #[test]
-    fn connect_carries_the_name_the_client_asked_for() {
-        // The property that matters: an HTTP CONNECT names a host, so the
-        // policy sees a name, same as socks5h, without a client feature flag.
-        let req = parse_http_proxy_head(
-            "CONNECT api.open-meteo.com:443 HTTP/1.1\r\nHost: api.open-meteo.com:443\r\n\r\n",
-        )
-        .expect("parses");
-        assert_eq!(
-            req.dest,
-            Destination::Domain("api.open-meteo.com".to_string(), 443)
-        );
-        assert!(req.tunnel);
-    }
-
-    #[test]
-    fn connect_without_a_port_defaults_to_443() {
-        let req = parse_http_proxy_head("CONNECT example.com HTTP/1.1\r\n\r\n").expect("parses");
-        assert_eq!(
-            req.dest,
-            Destination::Domain("example.com".to_string(), 443)
-        );
-    }
-
-    #[test]
-    fn an_absolute_form_request_is_rewritten_to_origin_form() {
-        // A plain-HTTP proxied request arrives with an absolute URI, which
-        // origin servers aren't required to accept, so it's rewritten first.
-        let req = parse_http_proxy_head(
-            "GET http://tile.openstreetmap.org/1/2/3.png HTTP/1.1\r\nUser-Agent: x\r\n\r\n",
-        )
-        .expect("parses");
-        assert_eq!(
-            req.dest,
-            Destination::Domain("tile.openstreetmap.org".to_string(), 80)
-        );
-        assert!(!req.tunnel);
-        let forward = String::from_utf8(req.forward).unwrap();
-        assert!(
-            forward.starts_with("GET /1/2/3.png HTTP/1.1\r\n"),
-            "request line must be origin-form: {forward:?}"
-        );
-        assert!(
-            forward.contains("User-Agent: x"),
-            "headers must survive the rewrite: {forward:?}"
-        );
-    }
-
-    #[test]
-    fn an_ipv6_literal_authority_parses() {
-        let req =
-            parse_http_proxy_head("CONNECT [2001:db8::1]:8443 HTTP/1.1\r\n\r\n").expect("parses");
-        assert_eq!(
-            req.dest,
-            Destination::Domain("2001:db8::1".to_string(), 8443)
-        );
-        // And it is still matched as a literal, so it cannot satisfy a
-        // hostname grant.
-        let policy = EgressPolicy::new(v(&["example.com"]));
-        assert!(!policy.permits(&req.dest.host_key()));
-    }
-
-    #[test]
-    fn a_malformed_head_parses_to_nothing_rather_than_a_default_host() {
-        assert!(parse_http_proxy_head("").is_none());
-        assert!(parse_http_proxy_head("GARBAGE\r\n\r\n").is_none());
-        // An absolute-form URI with a scheme we do not proxy must not
-        // silently become a hostname.
-        assert!(parse_http_proxy_head("GET ftp://example.com/x HTTP/1.1\r\n\r\n").is_none());
+    fn http_proxy_heads_parse_to_the_requested_authority() {
+        // Phase `connect_carries_the_name_the_client_asked_for`.
+        {
+            // The property that matters: an HTTP CONNECT names a host, so the
+            // policy sees a name, same as socks5h, without a client feature flag.
+            let req = parse_http_proxy_head(
+                "CONNECT api.open-meteo.com:443 HTTP/1.1\r\nHost: api.open-meteo.com:443\r\n\r\n",
+            )
+            .expect("parses");
+            assert_eq!(
+                req.dest,
+                Destination::Domain("api.open-meteo.com".to_string(), 443)
+            );
+            assert!(req.tunnel);
+        }
+        // Phase `connect_without_a_port_defaults_to_443`.
+        {
+            let req =
+                parse_http_proxy_head("CONNECT example.com HTTP/1.1\r\n\r\n").expect("parses");
+            assert_eq!(
+                req.dest,
+                Destination::Domain("example.com".to_string(), 443)
+            );
+        }
+        // Phase `an_absolute_form_request_is_rewritten_to_origin_form`.
+        {
+            // A plain-HTTP proxied request arrives with an absolute URI, which
+            // origin servers aren't required to accept, so it's rewritten first.
+            let req = parse_http_proxy_head(
+                "GET http://tile.openstreetmap.org/1/2/3.png HTTP/1.1\r\nUser-Agent: x\r\n\r\n",
+            )
+            .expect("parses");
+            assert_eq!(
+                req.dest,
+                Destination::Domain("tile.openstreetmap.org".to_string(), 80)
+            );
+            assert!(!req.tunnel);
+            let forward = String::from_utf8(req.forward).unwrap();
+            assert!(
+                forward.starts_with("GET /1/2/3.png HTTP/1.1\r\n"),
+                "request line must be origin-form: {forward:?}"
+            );
+            assert!(
+                forward.contains("User-Agent: x"),
+                "headers must survive the rewrite: {forward:?}"
+            );
+        }
+        // Phase `an_ipv6_literal_authority_parses`.
+        {
+            let req = parse_http_proxy_head("CONNECT [2001:db8::1]:8443 HTTP/1.1\r\n\r\n")
+                .expect("parses");
+            assert_eq!(
+                req.dest,
+                Destination::Domain("2001:db8::1".to_string(), 8443)
+            );
+            // And it is still matched as a literal, so it cannot satisfy a
+            // hostname grant.
+            let policy = EgressPolicy::new(v(&["example.com"]));
+            assert!(!policy.permits(&req.dest.host_key()));
+        }
+        // Phase `a_malformed_head_parses_to_nothing_rather_than_a_default_host`.
+        {
+            assert!(parse_http_proxy_head("").is_none());
+            assert!(parse_http_proxy_head("GARBAGE\r\n\r\n").is_none());
+            // An absolute-form URI with a scheme we do not proxy must not
+            // silently become a hostname.
+            assert!(parse_http_proxy_head("GET ftp://example.com/x HTTP/1.1\r\n\r\n").is_none());
+        }
     }
 
     // Device-local egress.
 
     #[test]
-    fn loopback_and_link_local_are_device_local_in_every_spelling() {
-        for addr in [
-            "127.0.0.1",
-            "127.0.0.53",
-            "0.0.0.0",
-            "::1",
-            "::",
-            "169.254.169.254",
-            "fe80::1",
-            // IPv4-mapped and IPv4-compatible loopback. A test written
-            // only against `is_loopback()` misses both.
-            "::ffff:127.0.0.1",
-            "::127.0.0.1",
-        ] {
-            assert!(
-                is_device_local(addr.parse().unwrap()),
-                "{addr} is an address of this device"
-            );
-        }
-    }
-
-    #[test]
-    fn a_public_address_is_not_device_local() {
-        // Reserved for documentation (RFC 5737 / 3849), so no machine
-        // running this test holds them.
-        for addr in ["198.51.100.9", "203.0.113.7", "2001:db8::1"] {
-            assert!(
-                !is_device_local(addr.parse().unwrap()),
-                "{addr} is not this device"
-            );
-        }
-    }
-
-    #[test]
-    fn this_hosts_own_addresses_are_device_local_even_when_they_look_public() {
-        // Every address the host holds routes to its own services; loopback
-        // is assertable without knowing the network.
-        assert!(is_device_local("127.0.0.1".parse().unwrap()));
-        // The mechanism itself: an address the host does not hold cannot
-        // be bound.
-        assert!(!is_assigned_to_this_host("198.51.100.9".parse().unwrap()));
-    }
-
-    #[test]
-    fn only_an_exact_grant_or_the_wildcard_reaches_this_device() {
-        let suffix = EgressPolicy::new(v(&[".localhost"]));
-        assert!(
-            suffix.permits("localhost"),
-            "the suffix pattern does cover the name — the access decision is unchanged"
-        );
-        assert!(
-            !suffix.permits_device_local("localhost"),
-            "but covering a name is not naming it, so it must not reach the device itself"
-        );
-
-        let exact = EgressPolicy::new(v(&["localhost"]));
-        assert!(exact.permits_device_local("localhost"));
-
-        // A wildcard allowlist becomes `--share-net` in production; the gate
-        // must not be stricter than the sandbox it stands in for.
-        assert!(EgressPolicy::new(v(&["*"])).permits_device_local("localhost"));
-
-        // An exact grant for one host does not carry device-local access
-        // for a different one.
-        assert!(!exact.permits_device_local("other.localhost"));
-    }
-
-    // The production connect path, against a real listener on the host's
-    // loopback — the shape a local service actually has.
-    #[test]
-    fn a_suffix_grant_cannot_reach_a_loopback_service_an_exact_grant_can() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback service");
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            while let Ok((mut s, _)) = listener.accept() {
-                let _ = s.write_all(b"LOCAL-SERVICE");
+    fn device_local_destinations_need_an_exact_or_wildcard_grant() {
+        // Phase `loopback_and_link_local_are_device_local_in_every_spelling`.
+        {
+            for addr in [
+                "127.0.0.1",
+                "127.0.0.53",
+                "0.0.0.0",
+                "::1",
+                "::",
+                "169.254.169.254",
+                "fe80::1",
+                // IPv4-mapped and IPv4-compatible loopback. A test written
+                // only against `is_loopback()` misses both.
+                "::ffff:127.0.0.1",
+                "::127.0.0.1",
+            ] {
+                assert!(
+                    is_device_local(addr.parse().unwrap()),
+                    "{addr} is an address of this device"
+                );
             }
-        });
+        }
+        // Phase `a_public_address_is_not_device_local`.
+        {
+            // Reserved for documentation (RFC 5737 / 3849), so no machine
+            // running this test holds them.
+            for addr in ["198.51.100.9", "203.0.113.7", "2001:db8::1"] {
+                assert!(
+                    !is_device_local(addr.parse().unwrap()),
+                    "{addr} is not this device"
+                );
+            }
+        }
+        // Phase `this_hosts_own_addresses_are_device_local_even_when_they_look_public`.
+        {
+            // Every address the host holds routes to its own services; loopback
+            // is assertable without knowing the network.
+            assert!(is_device_local("127.0.0.1".parse().unwrap()));
+            // The mechanism itself: an address the host does not hold cannot
+            // be bound.
+            assert!(!is_assigned_to_this_host("198.51.100.9".parse().unwrap()));
+        }
+        // Phase `only_an_exact_grant_or_the_wildcard_reaches_this_device`.
+        {
+            let suffix = EgressPolicy::new(v(&[".localhost"]));
+            assert!(
+                suffix.permits("localhost"),
+                "the suffix pattern does cover the name — the access decision is unchanged"
+            );
+            assert!(
+                !suffix.permits_device_local("localhost"),
+                "but covering a name is not naming it, so it must not reach the device itself"
+            );
 
-        let dest = Destination::Domain("localhost".to_string(), port);
+            let exact = EgressPolicy::new(v(&["localhost"]));
+            assert!(exact.permits_device_local("localhost"));
 
-        let suffix = EgressPolicy::new(v(&[".localhost"]));
-        let err = connect_upstream(&dest, &suffix)
-            .expect_err("a suffix grant must not reach this device");
-        assert_eq!(
-            err.raw_os_error(),
-            Some(libc::ENETUNREACH),
-            "and the failure must look like an absence of network, not a refusal: {err}"
-        );
+            // A wildcard allowlist becomes `--share-net` in production; the gate
+            // must not be stricter than the sandbox it stands in for.
+            assert!(EgressPolicy::new(v(&["*"])).permits_device_local("localhost"));
 
-        let exact = EgressPolicy::new(v(&["localhost"]));
-        let mut stream = connect_upstream(&dest, &exact)
-            .expect("an exact grant for a device-local host must reach it");
-        let mut buf = Vec::new();
-        stream
-            .read_to_end(&mut buf)
-            .expect("read the service reply");
-        assert_eq!(
-            String::from_utf8_lossy(&buf),
-            "LOCAL-SERVICE",
-            "the same service, the same request — only the spelling of the grant differed"
-        );
+            // An exact grant for one host does not carry device-local access
+            // for a different one.
+            assert!(!exact.permits_device_local("other.localhost"));
+        }
+        // Phase `a_suffix_grant_cannot_reach_a_loopback_service_an_exact_grant_can`.
+        // The production connect path, against a real listener on the host's
+        // loopback — the shape a local service actually has.
+        {
+            let listener =
+                std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback service");
+            let port = listener.local_addr().unwrap().port();
+            std::thread::spawn(move || {
+                while let Ok((mut s, _)) = listener.accept() {
+                    let _ = s.write_all(b"LOCAL-SERVICE");
+                }
+            });
+
+            let dest = Destination::Domain("localhost".to_string(), port);
+
+            let suffix = EgressPolicy::new(v(&[".localhost"]));
+            let err = connect_upstream(&dest, &suffix)
+                .expect_err("a suffix grant must not reach this device");
+            assert_eq!(
+                err.raw_os_error(),
+                Some(libc::ENETUNREACH),
+                "and the failure must look like an absence of network, not a refusal: {err}"
+            );
+
+            let exact = EgressPolicy::new(v(&["localhost"]));
+            let mut stream = connect_upstream(&dest, &exact)
+                .expect("an exact grant for a device-local host must reach it");
+            let mut buf = Vec::new();
+            stream
+                .read_to_end(&mut buf)
+                .expect("read the service reply");
+            assert_eq!(
+                String::from_utf8_lossy(&buf),
+                "LOCAL-SERVICE",
+                "the same service, the same request — only the spelling of the grant differed"
+            );
+        }
     }
 
     /// Long enough that a connection the gate would serve has been
@@ -1690,103 +1920,5 @@ mod tests {
         let mut reply = [0u8; 10];
         stream.read_exact(&mut reply).unwrap();
         reply[1]
-    }
-
-    #[test]
-    fn the_gate_serves_no_more_than_its_connection_limit_at_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("gate.sock");
-        let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = service.local_addr().unwrap().port();
-        let gate =
-            NetGate::start_limited(&socket, EgressPolicy::new(v(&["localhost"])), 1).unwrap();
-
-        // The one slot: a tunnel that stays open.
-        let mut first = std::os::unix::net::UnixStream::connect(&socket).unwrap();
-        first.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
-        assert_eq!(socks_connect_localhost(&mut first, port), reply::SUCCESS);
-        let (held, _) = service.accept().unwrap();
-
-        // The kernel queues a second client, but the gate leaves it there.
-        let mut second = std::os::unix::net::UnixStream::connect(&socket).unwrap();
-        second.write_all(&[0x05, 0x01, 0x00]).unwrap();
-        second.set_read_timeout(Some(NOT_SERVED_WITHIN)).unwrap();
-        assert_not_answered(&mut second, "a second gate client");
-
-        // Closing the tunnel frees the slot, and the waiting client is served.
-        drop(first);
-        drop(held);
-        second.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
-        let mut greeting = [0u8; 2];
-        second.read_exact(&mut greeting).unwrap();
-        assert_eq!(greeting, [0x05, 0x00]);
-        assert_eq!(gate.stats().allowed(), 1);
-    }
-
-    #[test]
-    fn the_relay_carries_no_more_than_its_connection_limit_at_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("gate.sock");
-        // A stand-in gate that echoes, one thread per connection.
-        let echo = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        std::thread::spawn(move || {
-            for stream in echo.incoming() {
-                let Ok(stream) = stream else { continue };
-                std::thread::spawn(move || {
-                    let (mut r, mut w) = (&stream, &stream);
-                    let _ = io::copy(&mut r, &mut w);
-                });
-            }
-        });
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let relay = listener.local_addr().unwrap();
-        std::thread::spawn(move || serve_relay_limited(listener, &socket, 1));
-
-        let mut first = TcpStream::connect(relay).unwrap();
-        first.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
-        first.write_all(b"a").unwrap();
-        let mut byte = [0u8; 1];
-        first.read_exact(&mut byte).unwrap();
-        assert_eq!(&byte, b"a");
-
-        let mut second = TcpStream::connect(relay).unwrap();
-        second.write_all(b"b").unwrap();
-        second.set_read_timeout(Some(NOT_SERVED_WITHIN)).unwrap();
-        assert_not_answered(&mut second, "a second relay client");
-
-        drop(first);
-        second.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
-        second.read_exact(&mut byte).unwrap();
-        assert_eq!(&byte, b"b");
-    }
-
-    #[test]
-    fn bytes_sent_ahead_of_the_socks5_reply_reach_the_upstream() {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("gate.sock");
-        let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = service.local_addr().unwrap().port();
-        let _gate = NetGate::start(&socket, EgressPolicy::new(v(&["localhost"]))).unwrap();
-
-        // Greeting, request and payload in one write, as an optimistic
-        // client sends them.
-        let mut all = vec![0x05, 0x01, 0x00, 0x05, 0x01, 0x00, 0x03, 9];
-        all.extend_from_slice(b"localhost");
-        all.extend_from_slice(&port.to_be_bytes());
-        all.extend_from_slice(b"PING");
-        let mut client = std::os::unix::net::UnixStream::connect(&socket).unwrap();
-        client.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
-        client.write_all(&all).unwrap();
-
-        let (mut upstream, _) = service.accept().unwrap();
-        upstream.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
-        let mut payload = [0u8; 4];
-        upstream.read_exact(&mut payload).unwrap();
-        assert_eq!(&payload, b"PING");
-
-        let mut replies = [0u8; 12];
-        client.read_exact(&mut replies).unwrap();
-        assert_eq!(&replies[..2], &[0x05, 0x00]);
-        assert_eq!(replies[3], reply::SUCCESS);
     }
 }

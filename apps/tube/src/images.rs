@@ -1,7 +1,7 @@
 //! Real image loading for video thumbnails, channel avatars and banners.
 //!
 //! Wires the toolkit's [`ui::ImageStore`] (async fetch + decode + GPU-image
-//! cache, keyed by URL) to a blocking `reqwest` transport so the real
+//! cache, keyed by URL) to a `tilo_net` transport so the real
 //! i.ytimg.com / yt3.googleusercontent.com images yt-dlp reports are fetched,
 //! decoded and painted. Until a URL's image is ready — and always on the
 //! hermetic `--shots`/offline path — the caller shows the seed gradient /
@@ -13,11 +13,13 @@ use std::time::Duration;
 use ui::{Fetcher, ImageStore};
 use vello::peniko::ImageData as PenikoImage;
 
-/// A blocking-`reqwest` transport for the [`ImageStore`]. Runs on the store's
-/// background threads, so it may block on I/O. A browser-ish User-Agent avoids
-/// the occasional 403 the image CDNs return to unknown clients.
+/// A `tilo_net` transport for the [`ImageStore`]: the request runs on the app
+/// runtime and the store's loader waits on it from its own worker. A
+/// browser-ish User-Agent avoids the occasional 403 the image CDNs return to
+/// unknown clients.
 pub fn image_fetcher() -> Fetcher {
-    let client = tilo_net::http::blocking_client()
+    const MAX_IMAGE_BYTES: usize = 16 * 1024 * 1024;
+    let client = tilo_net::Client::builder()
         .user_agent("Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0")
         .timeout(Duration::from_secs(10))
         .build()
@@ -25,23 +27,21 @@ pub fn image_fetcher() -> Fetcher {
         // a fetcher must not panic.
         .ok();
     Arc::new(move |url: &str| {
-        let client = client.as_ref()?;
+        let client = client.clone()?;
         // Promote protocol-relative CDN URLs (`//yt3.ggpht.com/…`) to https so
-        // the request has a scheme — some sources hand these back and reqwest
-        // rejects them otherwise, silently blanking the image.
+        // the request has a scheme — some sources hand these back and they
+        // would otherwise be rejected, silently blanking the image.
         let url = if let Some(rest) = url.strip_prefix("//") {
             format!("https://{rest}")
         } else {
             url.to_string()
         };
-        client
-            .get(&url)
-            .send()
+        ui::rt::app()
+            .block_on(async move {
+                let resp = client.get(url).send().await.ok()?.error_for_status().ok()?;
+                resp.bytes_limited(MAX_IMAGE_BYTES).await.ok()
+            })
             .ok()?
-            .error_for_status()
-            .ok()?
-            .bytes()
-            .ok()
             .map(|b| b.to_vec())
     })
 }

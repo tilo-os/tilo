@@ -302,10 +302,14 @@ mod tests {
         Destination::channel("c_general", "general")
     }
 
-    /// The label is deliberately misleading: a consumer that reads it instead of
-    /// the address gets the wrong answer.
+    /// A channel remark is written as chat's own `SendMessage` and read back
+    /// structurally; a private one refuses to become a channel row; nothing
+    /// that is not a remark is read as one.
     #[test]
-    fn a_consumer_recovers_text_address_and_recipient_without_parsing_prose() {
+    fn a_channel_remark_round_trips_through_chats_send_message() {
+        // Phase: a consumer recovers text, address and recipient without
+        // parsing prose. The label is deliberately misleading: a consumer that
+        // reads it instead of the address gets the wrong answer.
         let mut reference = run_sheet();
         reference.label = "something else entirely".into();
         let remark = Remark::new("the times contradict the prose", reference, general());
@@ -331,10 +335,8 @@ mod tests {
             }
         );
         assert_eq!(got.author, "u_me");
-    }
 
-    #[test]
-    fn a_remark_is_encoded_as_chats_own_send_message() {
+        // Phase: a remark is encoded as chat's own send message.
         let encoded = Remark::new("look at this", run_sheet(), general())
             .to_chat_action("m_1", "u_me", 42)
             .unwrap();
@@ -362,24 +364,8 @@ mod tests {
         }
         assert_eq!(f["channel"], json!("c_general"));
         assert_eq!(f["parent"], Value::Null);
-    }
 
-    #[test]
-    fn a_private_remark_refuses_to_become_a_channel_row() {
-        let remark = Remark::new(
-            "just for you",
-            run_sheet(),
-            Destination::participant("u_ada", "Ada", false),
-        );
-        assert_eq!(
-            remark.to_chat_action("m_1", "u_me", 42),
-            Err(Undeliverable::PrivateNeedsDirectTransport { to: "u_ada".into() }),
-            "a private delivery must fail closed, never widen to the channel"
-        );
-    }
-
-    #[test]
-    fn a_mention_rides_along_and_the_channel_still_receives_it() {
+        // Phase: a mention rides along and the channel still receives it.
         let remark = Remark::new("@Ada thoughts?", run_sheet(), general())
             .with_mentions(vec![MentionRef::new("u_ada", 0, 4, false)]);
         let encoded = remark.to_chat_action("m_1", "u_me", 42).unwrap();
@@ -395,10 +381,20 @@ mod tests {
         assert_eq!(got.mentions, vec![MentionRef::new("u_ada", 0, 4, false)]);
         let v: Value = serde_json::from_slice(&encoded.payload).unwrap();
         assert_eq!(v["SendMessage"]["channel"], json!("c_general"));
-    }
 
-    #[test]
-    fn a_plain_chat_message_is_not_read_as_a_remark() {
+        // Phase: a private remark refuses to become a channel row.
+        let remark = Remark::new(
+            "just for you",
+            run_sheet(),
+            Destination::participant("u_ada", "Ada", false),
+        );
+        assert_eq!(
+            remark.to_chat_action("m_1", "u_me", 42),
+            Err(Undeliverable::PrivateNeedsDirectTransport { to: "u_ada".into() }),
+            "a private delivery must fail closed, never widen to the channel"
+        );
+
+        // Phase: a plain chat message is not read as a remark.
         let payload = json!({"SendMessage": {
             "channel": "c_general", "id": "m_2", "author": "u_me",
             "ts": 42, "text": "morning", "parent": null, "attachment": null
@@ -406,6 +402,13 @@ mod tests {
         let encoded = EncodedAction {
             type_id: CHAT_ACTION_TYPE.into(),
             payload: serde_json::to_vec(&payload).unwrap(),
+        };
+        assert_eq!(read_chat_action(&encoded), None);
+
+        // Phase: another app's action is not read as a remark.
+        let encoded = EncodedAction {
+            type_id: "word-processor.action".into(),
+            payload: b"{}".to_vec(),
         };
         assert_eq!(read_chat_action(&encoded), None);
     }
@@ -418,8 +421,11 @@ mod tests {
         DirectRoom::between(ADA, BOB).expect("two people name a room")
     }
 
+    /// A private remark becomes an ordinary chat message in the pair's own
+    /// room, written by either member, and stays private even with mentions.
     #[test]
-    fn a_private_remark_becomes_a_message_in_the_two_member_room() {
+    fn a_private_remark_travels_in_the_pairs_direct_room() {
+        // Phase: a private remark becomes a message in the two-member room.
         let remark = Remark::new(
             "just for you",
             run_sheet(),
@@ -446,10 +452,8 @@ mod tests {
         // channel post to anything deciding where it may be shown.
         assert_eq!(got.delivery, Delivery::Private { to: BOB.into() });
         assert_eq!(got.delivery.addressed(), [BOB.to_string()]);
-    }
 
-    #[test]
-    fn either_member_writes_into_the_same_room() {
+        // Phase: either member writes into the same room.
         let to_bob = Remark::new(
             "a",
             run_sheet(),
@@ -468,71 +472,9 @@ mod tests {
             let v: Value = serde_json::from_slice(&encoded.payload).unwrap();
             assert_eq!(v["SendMessage"]["channel"], json!(ROOM_CONVERSATION));
         }
-    }
 
-    #[test]
-    fn a_room_that_is_not_the_pairs_refuses_to_carry_their_message() {
-        let wrong = DirectRoom::between(ADA, CAROL).unwrap();
-        let remark = Remark::new(
-            "just for you",
-            run_sheet(),
-            Destination::participant(BOB, "Bob", false),
-        );
-        assert_eq!(
-            remark.to_direct_action(&wrong, "m_1", ADA, 42),
-            Err(Undeliverable::NotThisPairsRoom {
-                to: BOB.into(),
-                room: wrong.room_id(),
-            }),
-            "a private message must never be written into a room its recipient is not in"
-        );
-    }
-
-    #[test]
-    fn an_author_outside_the_room_cannot_write_into_it() {
-        let remark = Remark::new(
-            "just for you",
-            run_sheet(),
-            Destination::participant(BOB, "Bob", false),
-        );
-        assert!(matches!(
-            remark.to_direct_action(&pair(), "m_1", CAROL, 42),
-            Err(Undeliverable::NotThisPairsRoom { .. })
-        ));
-    }
-
-    #[test]
-    fn a_remark_addressed_to_its_own_author_is_refused() {
-        // Both ends are in the room, so a membership check passes each of them
-        // separately. Writing it would put a remark addressed to nobody but Ada
-        // into the room Bob reads.
-        let remark = Remark::new(
-            "a note to myself",
-            run_sheet(),
-            Destination::participant(ADA, "Ada", false),
-        );
-        assert!(matches!(
-            remark.to_direct_action(&pair(), "m_1", ADA, 42),
-            Err(Undeliverable::NotThisPairsRoom { .. })
-        ));
-    }
-
-    #[test]
-    fn a_channel_remark_handed_a_room_is_refused_rather_than_redirected() {
-        let remark = Remark::new("look at this", run_sheet(), general());
-        assert_eq!(
-            remark.to_direct_action(&pair(), "m_1", ADA, 42),
-            Err(Undeliverable::NotPrivate {
-                delivery: Delivery::Channel {
-                    channel: "c_general".into()
-                }
-            }),
-        );
-    }
-
-    /// The invariant `deliver` upholds, which this path must not undo.
-    #[test]
-    fn a_mention_in_a_private_remark_does_not_widen_it() {
+        // Phase: a mention in a private remark does not widen it — the
+        // invariant `deliver` upholds, which this path must not undo.
         let remark = Remark::new(
             "@Ada thoughts?",
             run_sheet(),
@@ -548,12 +490,60 @@ mod tests {
         );
     }
 
+    /// Direct delivery refuses every room/author/remark combination that would
+    /// put a message where its recipient is not, or redirect a channel remark.
     #[test]
-    fn another_apps_action_is_not_read_as_a_remark() {
-        let encoded = EncodedAction {
-            type_id: "word-processor.action".into(),
-            payload: b"{}".to_vec(),
-        };
-        assert_eq!(read_chat_action(&encoded), None);
+    fn direct_delivery_refuses_what_it_cannot_keep_between_the_pair() {
+        // Case: a room that is not the pair's refuses to carry their message.
+        let wrong = DirectRoom::between(ADA, CAROL).unwrap();
+        let remark = Remark::new(
+            "just for you",
+            run_sheet(),
+            Destination::participant(BOB, "Bob", false),
+        );
+        assert_eq!(
+            remark.to_direct_action(&wrong, "m_1", ADA, 42),
+            Err(Undeliverable::NotThisPairsRoom {
+                to: BOB.into(),
+                room: wrong.room_id(),
+            }),
+            "a private message must never be written into a room its recipient is not in"
+        );
+
+        // Case: an author outside the room cannot write into it.
+        let remark = Remark::new(
+            "just for you",
+            run_sheet(),
+            Destination::participant(BOB, "Bob", false),
+        );
+        assert!(matches!(
+            remark.to_direct_action(&pair(), "m_1", CAROL, 42),
+            Err(Undeliverable::NotThisPairsRoom { .. })
+        ));
+
+        // Case: a remark addressed to its own author is refused.
+        // Both ends are in the room, so a membership check passes each of them
+        // separately. Writing it would put a remark addressed to nobody but Ada
+        // into the room Bob reads.
+        let remark = Remark::new(
+            "a note to myself",
+            run_sheet(),
+            Destination::participant(ADA, "Ada", false),
+        );
+        assert!(matches!(
+            remark.to_direct_action(&pair(), "m_1", ADA, 42),
+            Err(Undeliverable::NotThisPairsRoom { .. })
+        ));
+
+        // Case: a channel remark handed a room is refused rather than redirected.
+        let remark = Remark::new("look at this", run_sheet(), general());
+        assert_eq!(
+            remark.to_direct_action(&pair(), "m_1", ADA, 42),
+            Err(Undeliverable::NotPrivate {
+                delivery: Delivery::Channel {
+                    channel: "c_general".into()
+                }
+            }),
+        );
     }
 }

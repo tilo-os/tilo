@@ -28,11 +28,10 @@ use durable_store::{
 };
 
 use crate::{
-    ACTOR_FILE, CANONICAL_GATE, DEFAULT_DEBOUNCE, DOCUMENT_FILE, LEGACY_PACKAGE_ROOM_CLAIM,
-    LEGACY_RECORD_ROOM_CLAIM, LOCK_FILE, RECORD_SUCCESSOR_CLAIM, RECORDS_DIR, ROOMS_DIR,
-    StoreError, acquire_gate, acquire_writer_lock, claim_legacy_room_migration, ensure_state_dir,
-    io_err, open_directory, same_file, sync_directory_ancestors, validate_absolute_directory,
-    validate_package_id, validate_record_key,
+    ACTOR_FILE, CANONICAL_GATE, DEFAULT_DEBOUNCE, DOCUMENT_FILE, LOCK_FILE, RECORD_SUCCESSOR_CLAIM,
+    RECORDS_DIR, ROOMS_DIR, StoreError, acquire_gate, acquire_writer_lock, claim_marker,
+    ensure_state_dir, io_err, open_directory, same_file, sync_directory_ancestors,
+    validate_absolute_directory, validate_package_id, validate_record_key,
 };
 
 /// Directory below the profile root holding every instance's local view.
@@ -252,12 +251,6 @@ impl FsStore {
                 validate_record_key(workspace)?;
                 Ok(Target::Document(
                     self.package_dir(package)?.join(ROOMS_DIR).join(workspace),
-                ))
-            }
-            StorageKey::PackageRecord { package, record } => {
-                validate_record_key(record)?;
-                Ok(Target::Document(
-                    self.package_dir(package)?.join(RECORDS_DIR).join(record),
                 ))
             }
             StorageKey::View {
@@ -558,16 +551,6 @@ impl DurableStore for FsStore {
     fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, SeamError> {
         validate_record_key(claimant)?;
         let marker = match key {
-            StorageKey::Package { package } => {
-                self.package_dir(package)?.join(LEGACY_PACKAGE_ROOM_CLAIM)
-            }
-            StorageKey::PackageRecord { package, record } => {
-                validate_record_key(record)?;
-                self.package_dir(package)?
-                    .join(RECORDS_DIR)
-                    .join(record)
-                    .join(LEGACY_RECORD_ROOM_CLAIM)
-            }
             // A room record adopted under a new identity (see
             // `ui::RecordCheckout::formerly`): the claimant is its successor.
             StorageKey::Record { .. } => match self.target(key)? {
@@ -582,7 +565,7 @@ impl DurableStore for FsStore {
             _ => {
                 return Err(SeamError::InvalidKey {
                     key: key.to_string(),
-                    reason: "only retained package documents and room records are claimed".into(),
+                    reason: "only room records are claimed".into(),
                 });
             }
         };
@@ -590,7 +573,7 @@ impl DurableStore for FsStore {
             fs::create_dir_all(parent)
                 .map_err(|e| io_err(format!("creating {}", parent.display()), e))?;
         }
-        Ok(claim_legacy_room_migration(&marker, claimant)?)
+        Ok(claim_marker(&marker, claimant)?)
     }
 
     fn local_path(&self, key: &StorageKey) -> Option<PathBuf> {
@@ -709,8 +692,7 @@ fn open_owner(shared: &Shared, directory: &Path) -> Result<Owner, StoreError> {
 }
 
 /// Join a document's shared writers: the shared gate keeps exclusive owners
-/// out, and whoever wins the writer lock is primary. A path an older layout
-/// left as a file is recovered first (see [`ensure_state_dir`]).
+/// out, and whoever wins the writer lock is primary.
 fn open_shared_owner(directory: &Path) -> Result<Owner, StoreError> {
     ensure_state_dir(directory)?;
     let handle =
@@ -915,13 +897,13 @@ fn commit(shared: &Shared, taken: &Taken) -> Result<(), StoreError> {
         owner.check()?;
         if let Some(writer) = &batch.writer {
             let sidecar = owner.directory.join(ACTOR_FILE);
-            atomic_file::write(&sidecar, hex::encode(writer).as_bytes())
+            tilo_files::native::atomic::write(&sidecar, hex::encode(writer).as_bytes())
                 .map_err(|e| io_err(format!("writing {}", sidecar.display()), e))?;
         }
         let document = owner.directory.join(DOCUMENT_FILE);
         return match &batch.op {
             WriteOp::Replace(bytes) => {
-                atomic_file::write(&document, bytes)
+                tilo_files::native::atomic::write(&document, bytes)
                     .map_err(|e| io_err(format!("writing {}", document.display()), e))?;
                 sync_ancestors(shared, &owner.directory)?;
                 owner.check()
@@ -935,7 +917,7 @@ fn commit(shared: &Shared, taken: &Taken) -> Result<(), StoreError> {
                 fs::create_dir_all(parent)
                     .map_err(|e| io_err(format!("creating {}", parent.display()), e))?;
             }
-            atomic_file::write(view, bytes)
+            tilo_files::native::atomic::write(view, bytes)
                 .map_err(|e| io_err(format!("writing {}", view.display()), e))
         }
         WriteOp::Append(bytes) => {
@@ -992,241 +974,227 @@ mod tests {
     }
 
     #[test]
-    fn passes_the_shared_conformance_suite_and_survives_reopening() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().join("profile");
-        let store = FsStore::with_debounce(&root, Duration::from_millis(5));
-        let subject = durable_store::conformance::Subject {
-            store: &store,
-            settle: &|| {},
-        };
-        durable_store::conformance::run(&subject);
-        durable_store::conformance::reopen(&subject, &|| Box::new(FsStore::new(&root)));
-    }
-
-    #[test]
-    fn keys_map_onto_the_existing_profile_layout() {
-        let tmp = TempDir::new().unwrap();
-        let store = FsStore::new(tmp.path());
-        let key = record("rec");
-        let lease = store.lease(&key).unwrap();
-        store
-            .write(&key, WriteOp::Replace(b"doc".to_vec()), Some(&[0xab, 0x01]))
-            .unwrap();
-        let view = StorageKey::view("D", "A", 3);
-        store
-            .write(&view, WriteOp::Replace(b"view".to_vec()), None)
-            .unwrap();
-        store.flush(None).unwrap();
-        let directory =
-            DocStore::room_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec").unwrap();
-        assert_eq!(fs::read(directory.join(DOCUMENT_FILE)).unwrap(), b"doc");
-        assert_eq!(fs::read(directory.join(ACTOR_FILE)).unwrap(), b"ab01");
-        assert!(directory.join(CANONICAL_GATE).is_file());
-        assert_eq!(
-            fs::read(tmp.path().join("instance-views/44/41/3.postcard")).unwrap(),
-            b"view"
-        );
-        // The gate is the one legacy and canonical openers already respect.
-        assert!(matches!(
-            DocStore::open_canonical_at("so.tilo.test", &directory),
-            Err(StoreError::WriterBusy { .. })
-        ));
-        drop(lease);
-        assert!(DocStore::open_canonical_at("so.tilo.test", &directory).is_ok());
-    }
-
-    #[test]
-    fn record_writes_require_a_lease_and_invalid_keys_are_refused() {
-        let tmp = TempDir::new().unwrap();
-        let store = FsStore::new(tmp.path());
-        assert!(matches!(
-            store.write(&record("rec"), WriteOp::Replace(vec![1]), None),
-            Err(SeamError::NotLeased(_))
-        ));
-        for key in [record("../escape"), record(""), record("a/b")] {
-            assert!(store.lease(&key).is_err(), "{key}");
-            assert!(store.read(&key).is_err(), "{key}");
-        }
-        let relative = FsStore::new("relative/profile");
-        assert!(relative.lease(&record("rec")).is_err());
-        assert!(
-            relative
-                .write(
-                    &StorageKey::view("D", "A", 1),
-                    WriteOp::Replace(vec![1]),
-                    None
-                )
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn a_torn_append_requires_a_replacement_without_duplicating_bytes() {
-        let tmp = TempDir::new().unwrap();
-        let store = FsStore::with_debounce(tmp.path(), Duration::from_secs(600));
-        let key = record("rec");
-        let _lease = store.lease(&key).unwrap();
-        let base = store
-            .write(&key, WriteOp::Replace(b"base".to_vec()), None)
-            .unwrap();
-        store.flush(Some(&key)).unwrap();
-        store.faults().append_prefix = Some(2);
-        let torn = store
-            .write(&key, WriteOp::Append(b"+one".to_vec()), None)
-            .unwrap();
-        assert!(store.flush(Some(&key)).is_err());
-        assert!(matches!(
-            store.durability(&key, torn),
-            Durability::Failed(_)
-        ));
-        assert_eq!(store.durability(&key, base), Durability::Durable);
-        let refused = store
-            .write(&key, WriteOp::Append(b"+two".to_vec()), None)
-            .unwrap();
-        assert!(store.flush(Some(&key)).is_err());
-        assert!(matches!(
-            store.durability(&key, refused),
-            Durability::Failed(_)
-        ));
-        assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"base+o");
-        let replaced = store
-            .write(&key, WriteOp::Replace(b"base+one+two".to_vec()), None)
-            .unwrap();
-        store.flush(Some(&key)).unwrap();
-        assert_eq!(store.durability(&key, replaced), Durability::Durable);
-        assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"base+one+two");
-    }
-
-    #[test]
-    fn directory_sync_failure_leaves_the_replacement_unacknowledged() {
-        let tmp = TempDir::new().unwrap();
-        let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
-        let key = record("rec");
-        let _lease = store.lease(&key).unwrap();
-        let directory =
-            DocStore::room_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec").unwrap();
-        store.faults().sync_failure = Some(fs::canonicalize(&directory).unwrap());
-        let revision = store
-            .write(&key, WriteOp::Replace(b"visible".to_vec()), None)
-            .unwrap();
-        assert!(store.flush(Some(&key)).is_err());
-        assert!(matches!(
-            store.durability(&key, revision),
-            Durability::Failed(_)
-        ));
-        store.faults().sync_failure = None;
-        let retry = store
-            .write(&key, WriteOp::Replace(b"visible".to_vec()), None)
-            .unwrap();
-        store.flush(Some(&key)).unwrap();
-        assert_eq!(store.durability(&key, retry), Durability::Durable);
-    }
-
-    #[test]
-    fn a_replaced_record_directory_is_never_written_or_recreated() {
-        let tmp = TempDir::new().unwrap();
-        let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
-        let key = record("rec");
-        let _lease = store.lease(&key).unwrap();
-        let directory =
-            DocStore::room_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec").unwrap();
-        fs::remove_file(directory.join(CANONICAL_GATE)).unwrap();
-        fs::write(directory.join(CANONICAL_GATE), b"replacement").unwrap();
-        store
-            .write(&key, WriteOp::Replace(b"forbidden".to_vec()), None)
-            .unwrap();
-        assert!(store.flush(Some(&key)).is_err());
-        assert!(!directory.join(DOCUMENT_FILE).exists());
-    }
-
-    #[test]
-    fn writes_coalesce_until_their_debounce_or_a_flush() {
-        let tmp = TempDir::new().unwrap();
-        let store = FsStore::with_debounce(tmp.path(), Duration::from_secs(600));
-        let key = StorageKey::view("D", "A", 1);
-        let first = store
-            .write(&key, WriteOp::Replace(b"a".to_vec()), None)
-            .unwrap();
-        let second = store
-            .write(&key, WriteOp::Append(b"b".to_vec()), None)
-            .unwrap();
-        assert_eq!(store.durability(&key, first), Durability::Pending);
-        assert!(!tmp.path().join(INSTANCE_VIEWS_DIR).exists());
-        store.flush(Some(&key)).unwrap();
-        assert_eq!(store.durability(&key, first), Durability::Durable);
-        assert_eq!(store.durability(&key, second), Durability::Durable);
-        assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"ab");
-    }
-
-    #[test]
-    fn dropping_the_store_commits_accepted_writes() {
-        let tmp = TempDir::new().unwrap();
-        let key = StorageKey::view("D", "A", 1);
+    fn accepted_writes_become_durable_on_debounce_flush_drop_and_reopen() {
+        // Phase `passes_the_shared_conformance_suite_and_survives_reopening`.
         {
-            let store = FsStore::with_debounce(tmp.path(), Duration::from_secs(600));
-            store
-                .write(&key, WriteOp::Replace(b"kept".to_vec()), None)
-                .unwrap();
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().join("profile");
+            let store = FsStore::with_debounce(&root, Duration::from_millis(5));
+            let subject = durable_store::conformance::Subject {
+                store: &store,
+                settle: &|| {},
+            };
+            durable_store::conformance::run(&subject);
+            durable_store::conformance::reopen(&subject, &|| Box::new(FsStore::new(&root)));
         }
-        assert_eq!(
-            FsStore::new(tmp.path()).read(&key).unwrap().unwrap().bytes,
-            b"kept"
-        );
+        // Phase `writes_coalesce_until_their_debounce_or_a_flush`.
+        {
+            let tmp = TempDir::new().unwrap();
+            let store = FsStore::with_debounce(tmp.path(), Duration::from_secs(600));
+            let key = StorageKey::view("D", "A", 1);
+            let first = store
+                .write(&key, WriteOp::Replace(b"a".to_vec()), None)
+                .unwrap();
+            let second = store
+                .write(&key, WriteOp::Append(b"b".to_vec()), None)
+                .unwrap();
+            assert_eq!(store.durability(&key, first), Durability::Pending);
+            assert!(!tmp.path().join(INSTANCE_VIEWS_DIR).exists());
+            store.flush(Some(&key)).unwrap();
+            assert_eq!(store.durability(&key, first), Durability::Durable);
+            assert_eq!(store.durability(&key, second), Durability::Durable);
+            assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"ab");
+        }
+        // Phase `dropping_the_store_commits_accepted_writes`.
+        {
+            let tmp = TempDir::new().unwrap();
+            let key = StorageKey::view("D", "A", 1);
+            {
+                let store = FsStore::with_debounce(tmp.path(), Duration::from_secs(600));
+                store
+                    .write(&key, WriteOp::Replace(b"kept".to_vec()), None)
+                    .unwrap();
+            }
+            assert_eq!(
+                FsStore::new(tmp.path()).read(&key).unwrap().unwrap().bytes,
+                b"kept"
+            );
+        }
     }
 
     #[test]
-    fn package_scoped_keys_map_onto_the_launch_environment_layout() {
-        let tmp = TempDir::new().unwrap();
-        let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
-        let package = tmp.path().join("so.tilo.test");
-        for (key, directory) in [
-            (StorageKey::package("so.tilo.test"), package.clone()),
-            (
-                StorageKey::room_index("so.tilo.test", "room-a"),
-                package.join(ROOMS_DIR).join("room-a"),
-            ),
-            (
-                StorageKey::package_record("so.tilo.test", "rec"),
-                package.join(RECORDS_DIR).join("rec"),
-            ),
-        ] {
-            let shared = store.lease_shared(&key).unwrap();
-            assert!(shared.primary);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn keys_map_onto_profile_and_launch_layouts_and_invalid_keys_are_refused() {
+        // Phase `keys_map_onto_the_existing_profile_layout`.
+        {
+            let tmp = TempDir::new().unwrap();
+            let store = FsStore::new(tmp.path());
+            let key = record("rec");
+            let lease = store.lease(&key).unwrap();
             store
-                .write(&key, WriteOp::Replace(b"doc".to_vec()), None)
+                .write(&key, WriteOp::Replace(b"doc".to_vec()), Some(&[0xab, 0x01]))
+                .unwrap();
+            let view = StorageKey::view("D", "A", 3);
+            store
+                .write(&view, WriteOp::Replace(b"view".to_vec()), None)
+                .unwrap();
+            store.flush(None).unwrap();
+            let directory =
+                DocStore::room_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec").unwrap();
+            assert_eq!(fs::read(directory.join(DOCUMENT_FILE)).unwrap(), b"doc");
+            assert_eq!(fs::read(directory.join(ACTOR_FILE)).unwrap(), b"ab01");
+            assert!(directory.join(CANONICAL_GATE).is_file());
+            assert_eq!(
+                fs::read(tmp.path().join("instance-views/44/41/3.postcard")).unwrap(),
+                b"view"
+            );
+            // The gate is the one legacy and canonical openers already respect.
+            assert!(matches!(
+                DocStore::open_canonical_at("so.tilo.test", &directory),
+                Err(StoreError::WriterBusy { .. })
+            ));
+            drop(lease);
+            assert!(DocStore::open_canonical_at("so.tilo.test", &directory).is_ok());
+        }
+        // Phase `package_scoped_keys_map_onto_the_launch_environment_layout`.
+        {
+            let tmp = TempDir::new().unwrap();
+            let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
+            let package = tmp.path().join("so.tilo.test");
+            for (key, directory) in [
+                (StorageKey::package("so.tilo.test"), package.clone()),
+                (
+                    StorageKey::room_index("so.tilo.test", "room-a"),
+                    package.join(ROOMS_DIR).join("room-a"),
+                ),
+            ] {
+                let shared = store.lease_shared(&key).unwrap();
+                assert!(shared.primary);
+                store
+                    .write(&key, WriteOp::Replace(b"doc".to_vec()), None)
+                    .unwrap();
+                store.flush(Some(&key)).unwrap();
+                assert_eq!(fs::read(directory.join(DOCUMENT_FILE)).unwrap(), b"doc");
+                assert!(directory.join(LOCK_FILE).is_file());
+                assert_eq!(store.local_path(&key), Some(directory.join(DOCUMENT_FILE)));
+            }
+        }
+        // Phase `record_writes_require_a_lease_and_invalid_keys_are_refused`.
+        {
+            let tmp = TempDir::new().unwrap();
+            let store = FsStore::new(tmp.path());
+            assert!(matches!(
+                store.write(&record("rec"), WriteOp::Replace(vec![1]), None),
+                Err(SeamError::NotLeased(_))
+            ));
+            for key in [record("../escape"), record(""), record("a/b")] {
+                assert!(store.lease(&key).is_err(), "{key}");
+                assert!(store.read(&key).is_err(), "{key}");
+            }
+            let relative = FsStore::new("relative/profile");
+            assert!(relative.lease(&record("rec")).is_err());
+            assert!(
+                relative
+                    .write(
+                        &StorageKey::view("D", "A", 1),
+                        WriteOp::Replace(vec![1]),
+                        None
+                    )
+                    .is_err()
+            );
+        }
+        // Phase `hex_round_trips_and_rejects_malformed_sidecars`.
+        {
+            assert_eq!(
+                unhex(&hex::encode([0, 0xff, 0x10])),
+                Some(vec![0, 0xff, 0x10])
+            );
+            for bad in ["", "a", "zz", "é0"] {
+                assert_eq!(unhex(bad), None, "{bad}");
+            }
+        }
+    }
+
+    #[test]
+    fn failed_writes_stay_unacknowledged_until_a_safe_replacement() {
+        // Phase `a_torn_append_requires_a_replacement_without_duplicating_bytes`.
+        {
+            let tmp = TempDir::new().unwrap();
+            let store = FsStore::with_debounce(tmp.path(), Duration::from_secs(600));
+            let key = record("rec");
+            let _lease = store.lease(&key).unwrap();
+            let base = store
+                .write(&key, WriteOp::Replace(b"base".to_vec()), None)
                 .unwrap();
             store.flush(Some(&key)).unwrap();
-            assert_eq!(fs::read(directory.join(DOCUMENT_FILE)).unwrap(), b"doc");
-            assert!(directory.join(LOCK_FILE).is_file());
-            assert_eq!(store.local_path(&key), Some(directory.join(DOCUMENT_FILE)));
+            store.faults().append_prefix = Some(2);
+            let torn = store
+                .write(&key, WriteOp::Append(b"+one".to_vec()), None)
+                .unwrap();
+            assert!(store.flush(Some(&key)).is_err());
+            assert!(matches!(
+                store.durability(&key, torn),
+                Durability::Failed(_)
+            ));
+            assert_eq!(store.durability(&key, base), Durability::Durable);
+            let refused = store
+                .write(&key, WriteOp::Append(b"+two".to_vec()), None)
+                .unwrap();
+            assert!(store.flush(Some(&key)).is_err());
+            assert!(matches!(
+                store.durability(&key, refused),
+                Durability::Failed(_)
+            ));
+            assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"base+o");
+            let replaced = store
+                .write(&key, WriteOp::Replace(b"base+one+two".to_vec()), None)
+                .unwrap();
+            store.flush(Some(&key)).unwrap();
+            assert_eq!(store.durability(&key, replaced), Durability::Durable);
+            assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"base+one+two");
         }
-    }
-
-    #[test]
-    fn a_stale_state_file_is_moved_aside_for_shared_writers_only() {
-        let tmp = TempDir::new().unwrap();
-        let store = FsStore::new(tmp.path());
-        let path = tmp.path().join("so.tilo.test");
-        fs::write(&path, b"old layout").unwrap();
-        let key = StorageKey::package("so.tilo.test");
-        assert!(store.lease(&key).is_err(), "exclusive owners never adopt");
-        let _shared = store.lease_shared(&key).unwrap();
-        assert!(path.is_dir());
-        assert_eq!(
-            fs::read(tmp.path().join("so.tilo.test.stale")).unwrap(),
-            b"old layout"
-        );
-    }
-
-    #[test]
-    fn hex_round_trips_and_rejects_malformed_sidecars() {
-        assert_eq!(
-            unhex(&hex::encode([0, 0xff, 0x10])),
-            Some(vec![0, 0xff, 0x10])
-        );
-        for bad in ["", "a", "zz", "é0"] {
-            assert_eq!(unhex(bad), None, "{bad}");
+        // Phase `directory_sync_failure_leaves_the_replacement_unacknowledged`.
+        {
+            let tmp = TempDir::new().unwrap();
+            let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
+            let key = record("rec");
+            let _lease = store.lease(&key).unwrap();
+            let directory =
+                DocStore::room_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec").unwrap();
+            store.faults().sync_failure = Some(fs::canonicalize(&directory).unwrap());
+            let revision = store
+                .write(&key, WriteOp::Replace(b"visible".to_vec()), None)
+                .unwrap();
+            assert!(store.flush(Some(&key)).is_err());
+            assert!(matches!(
+                store.durability(&key, revision),
+                Durability::Failed(_)
+            ));
+            store.faults().sync_failure = None;
+            let retry = store
+                .write(&key, WriteOp::Replace(b"visible".to_vec()), None)
+                .unwrap();
+            store.flush(Some(&key)).unwrap();
+            assert_eq!(store.durability(&key, retry), Durability::Durable);
+        }
+        // Phase `a_replaced_record_directory_is_never_written_or_recreated`.
+        {
+            let tmp = TempDir::new().unwrap();
+            let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
+            let key = record("rec");
+            let _lease = store.lease(&key).unwrap();
+            let directory =
+                DocStore::room_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec").unwrap();
+            fs::remove_file(directory.join(CANONICAL_GATE)).unwrap();
+            fs::write(directory.join(CANONICAL_GATE), b"replacement").unwrap();
+            store
+                .write(&key, WriteOp::Replace(b"forbidden".to_vec()), None)
+                .unwrap();
+            assert!(store.flush(Some(&key)).is_err());
+            assert!(!directory.join(DOCUMENT_FILE).exists());
         }
     }
 }

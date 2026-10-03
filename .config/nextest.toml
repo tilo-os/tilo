@@ -6,90 +6,100 @@ fail-fast = false
 
 # Also the profile for the whole suite outside CI, under tools/test-env.sh;
 # DEVELOPMENT.md ("The whole suite, as CI runs it") has the command, which keeps
-# the visual goldens (GOLDEN_FILTER in the workflows) for an idle renderer.
+# the visual goldens (.config/nextest-filters.toml) for an idle renderer.
 [profile.ci]
-slow-timeout = { period = "120s", terminate-after = 4 }
+# A test still running after 30 s prints a SLOW line each period, so a log
+# shows where shard time goes while it runs; tools/ci/nextest_report.py lists
+# the slowest tests from the JUnit report. The hang bound stays 30 s x 16 = 8 min.
+slow-timeout = { period = "30s", terminate-after = 16 }
 failure-output = "immediate-final"
 fail-fast = false
-# Permit one retry for timing-sensitive GPU and socket tests. A retried test
-# is still reported: TRY 2 lines while running, FLAKY in the final summary,
-# and tools/ci/nextest_report.py lists both from the JUnit report.
-retries = 1
-status-level = "retry"
+# No second attempt. A test that fails on the first run fails the job.
+# Timing-sensitive tests pin their clock or wait on the production signal;
+# a retry would record that race as FLAKY and let the shard pass.
+retries = 0
+status-level = "slow"
 final-status-level = "flaky"
 
 [profile.ci.junit]
 path = "junit.xml"
 
 # Process-isolated compositor, GPU, and collaboration tests need shared limits.
+#
+# Nextest starts tests in order and a test that needs every thread waits for
+# all running tests to finish, idling the rest of the pool. Tests that take the
+# whole pool therefore have the highest priority: they run back to back while
+# the pool is still empty. The two-wide compositor group and the longest tests
+# follow, so a run ends on short tests.
 [test-groups]
 compositor = { max-threads = 2 }
 gpu-golden = { max-threads = 1 }
 agent-collaboration = { max-threads = 1 }
+imager-durable-disk = { max-threads = 2 }
+browser-peer-relay = { max-threads = 2 }
+agent-participant-sessions = { max-threads = 2 }
 
 # Golden rendering shares Vulkan resources across test processes.
 [[profile.default.overrides]]
 filter = '(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))'
 test-group = "gpu-golden"
 
-[[profile.ci.overrides]]
-filter = '(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))'
-test-group = "gpu-golden"
-
 [[profile.default.overrides]]
 filter = 'binary(it) and (test(clipboard_e2e::) or test(interaction_test::) or test(wayland_test::))'
 test-group = "compositor"
+priority = 90
 
-[[profile.ci.overrides]]
-filter = 'binary(it) and (test(clipboard_e2e::) or test(interaction_test::) or test(wayland_test::))'
-test-group = "compositor"
-
-# Collaboration binaries share bounded socket resources.
+# Not started with the pool-wide and longest tests: each suite's first route
+# join runs under the SDK's 4.5 s primary-route deadline, which the opening
+# burst of a whole-workspace shard (every slot starting a process at once)
+# exceeds.
 [[profile.default.overrides]]
-filter = 'package(agent) and (binary(presence_semantics) or binary(relay_roundtrip) or binary(discovered_operations) or binary(concurrent_edit))'
+filter = 'package(agent) and binary(it) and (test(presence_semantics::) or test(relay_roundtrip::) or test(discovered_operations::) or test(concurrent_edit::))'
 test-group = "agent-collaboration"
-threads-required = "num-cpus"
 
-[[profile.ci.overrides]]
-filter = 'package(agent) and (binary(presence_semantics) or binary(relay_roundtrip) or binary(discovered_operations) or binary(concurrent_edit))'
-test-group = "agent-collaboration"
-threads-required = "num-cpus"
-
-# This real-time codec test needs an uncontended CPU budget.
 [[profile.default.overrides]]
 filter = 'package(shell) and binary(it) and test(flatpak_share_e2e::session_delivers_30_frames_in_3_seconds_at_bounded_latency)'
 threads-required = "num-cpus"
+priority = 100
 
-[[profile.ci.overrides]]
-filter = 'package(shell) and binary(it) and test(flatpak_share_e2e::session_delivers_30_frames_in_3_seconds_at_bounded_latency)'
-threads-required = "num-cpus"
-
-# Native-4K renderer tests need an uncontended CPU budget.
 [[profile.default.overrides]]
 filter = 'package(shell) and (test(shell::frame::retained_tests::native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycle) or test(shell::frame::retained_tests::native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense) or test(shell::frame::retained_tests::workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels) or test(native_4k_framebuilder_actions_match_current_staging_for_one_and_two_targets) or test(native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions))'
 threads-required = "num-cpus"
+priority = 100
 
-[[profile.ci.overrides]]
-filter = 'package(shell) and (test(shell::frame::retained_tests::native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycle) or test(shell::frame::retained_tests::native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense) or test(shell::frame::retained_tests::workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels) or test(native_4k_framebuilder_actions_match_current_staging_for_one_and_two_targets) or test(native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions))'
-threads-required = "num-cpus"
-
-# Shared GPU targets use real devices and deterministic completion fault seams. Keep their
-# adapter/copy/overflow oracles exclusive of other tests in normal and CI selections.
 [[profile.default.overrides]]
 filter = 'package(shell) and test(shell::render::paint::tests::gpu_target_)'
 threads-required = "num-cpus"
+priority = 100
 
-[[profile.ci.overrides]]
-filter = 'package(shell) and test(shell::render::paint::tests::gpu_target_)'
-threads-required = "num-cpus"
-
-# These render complete application/compositor frames and are intentionally
-# expensive. Running them beside the rest of a 10k-test shard saturates the
-# runner's memory/CPU budget and turns bounded animations into timeouts.
 [[profile.default.overrides]]
 filter = '(package(notes) and binary(it) and (test(screenshot_critique::) or test(capture_runtime::))) or (package(shell) and binary(it) and test(foreign_surface_compositing::))'
 threads-required = "num-cpus"
+priority = 100
 
-[[profile.ci.overrides]]
-filter = '(package(notes) and binary(it) and (test(screenshot_critique::) or test(capture_runtime::))) or (package(shell) and binary(it) and test(foreign_surface_compositing::))'
+[[profile.default.overrides]]
+filter = 'package(imager) and (test(/^setup::import_view::tests::/) or test(/^setup::desktop_continuation::tests::/) or test(/^setup::migration_worker::tests::/) or test(/^setup::internal_cache::/) or test(/^setup::internal_download::/) or test(/^setup::internal_download_flow::/))'
+test-group = "imager-durable-disk"
+
+# Each tilo-browser-peer integration test runs a relay host and its browser
+# sessions against fixed deadlines; the multi-megabyte ones starve the rest.
+[[profile.default.overrides]]
+filter = 'package(tilo-browser-peer) and kind(test)'
+test-group = "browser-peer-relay"
+
+# Each tilo-agent-participant integration test runs a relay host, agents and
+# browser sessions that drive every web app natively against fixed deadlines;
+# the all-app coverage runs starve a concurrent session of the CPU it needs.
+[[profile.default.overrides]]
+filter = 'package(tilo-agent-participant) and kind(test)'
+test-group = "agent-participant-sessions"
+
+# Megabytes of fsynced commits: these need the runner's disk and CPUs to
+# themselves to finish within their deadlines.
+[[profile.default.overrides]]
+filter = 'package(tilo-browser-peer) and (binary(compaction) or binary(backpressure))'
 threads-required = "num-cpus"
+
+[[profile.default.overrides]]
+filter = '(package(tilo-fs) and (test(/^fs::checked_restore::tests::/) or binary(collab_release_matrix))) or (package(shell) and (test(=shell::collab_history::tests::history_outlives_the_memory_window_and_a_restart) or binary(shots))) or (package(tilo-media) and test(/^real::/)) or (package(imager) and test(/^setup::staging::fake::tests::/)) or (package(notes) and binary(it) and test(/^canonical_import::/)) or (package(scratchpad) and binary(native_proof)) or (package(tilo-rollback) and binary(mechanism)) or (package(tilo-automerge) and binary(patch_log_memory)) or (package(tilo-relay) and (binary(held_memory) or test(/^daemon::tests::/) or test(=store::replay::tests::bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch) or test(=store::shell_selection::tests::projected_checkpoint_prefix_exposes_the_route_count_cutoff) or test(=peer::private_transport_tests::thirty_four_route_prefix_uses_one_all_original_selection_then_converges))) or (package(tilo-ui) and (binary(held-memory) or test(/^incremental_render_regressions::/) or test(/^app::large_document_tests::/) or test(/^app::semantic_tree_app_tests::/) or test(/^presence::render::tests::/))) or (package(video-editor) and (test(/^export::tests::/) or test(/^shot::tests::/))) or (package(tilo-app-state) and test(/^fs_store::tests::/))'
+priority = 50

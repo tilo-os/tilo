@@ -2286,10 +2286,6 @@ impl Namespace {
     }
 
     /// [`Self::create_node`] bound to an existing stable `record_id`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "every field a new node is written with, once"
-    )]
     fn create_node_as(
         &mut self,
         parent_id: &str,
@@ -2490,7 +2486,7 @@ impl Namespace {
         self.set_field(&id, "codec", codec);
         let node = self.node(&id)?;
         let root = self.doc.put_object(&node, "doc", ObjType::Map).ok()?;
-        qdoc::model::init(&mut self.doc, &root);
+        tilo_doc::model::init(&mut self.doc, &root);
         let ino = self.ino_for_id(&id);
         self.index_insert_node(&id);
         Some(ino)
@@ -2513,17 +2509,17 @@ impl Namespace {
     pub fn export_document(
         &self,
         ino: u64,
-        registry: &qdoc_codecs::Registry,
+        registry: &tilo_doc_codecs::Registry,
         content: &dyn tilo_content::ContentSource,
     ) -> Option<Vec<u8>> {
         let id = self.ino_to_id.get(&ino)?.clone();
         let codec = read_str(&self.doc, &self.node(&id)?, "codec")?;
         let provider = registry.provider_for_ext(&codec)?;
         let root = self.document_root(&id)?;
-        let containers = qdoc::model::open(&self.doc, &root).ok()?;
+        let containers = tilo_doc::model::open(&self.doc, &root).ok()?;
         provider
             .export(
-                qdoc::DocRef {
+                tilo_doc::DocRef {
                     doc: &self.doc,
                     c: &containers,
                 },
@@ -2538,7 +2534,7 @@ impl Namespace {
     pub fn import_document(
         &mut self,
         ino: u64,
-        registry: &qdoc_codecs::Registry,
+        registry: &tilo_doc_codecs::Registry,
         bytes: &[u8],
         mtime: u64,
         content: &tilo_content::ContentStore,
@@ -2556,7 +2552,7 @@ impl Namespace {
             return false;
         };
         // Parse into a throwaway document first — a malformed input must never destroy existing content.
-        let mut probe = qdoc::Document::new();
+        let mut probe = tilo_doc::Document::new();
         let mut inputs = tilo_content::ContentInputs::new();
         if provider
             .import(bytes, &mut probe.as_mut(), &mut inputs)
@@ -2572,13 +2568,13 @@ impl Namespace {
         let Ok(root) = self.doc.put_object(&node, "doc", ObjType::Map) else {
             return false;
         };
-        qdoc::model::init(&mut self.doc, &root);
-        let Ok(containers) = qdoc::model::open(&self.doc, &root) else {
+        tilo_doc::model::init(&mut self.doc, &root);
+        let Ok(containers) = tilo_doc::model::open(&self.doc, &root) else {
             return false;
         };
-        let mut ids = qdoc::model::seeded_id_gen(&self.doc, &containers);
+        let mut ids = tilo_doc::model::seeded_id_gen(&self.doc, &containers);
         {
-            let mut dmut = qdoc::DocMut {
+            let mut dmut = tilo_doc::DocMut {
                 doc: &mut self.doc,
                 c: &containers,
                 ids: &mut ids,
@@ -2609,12 +2605,16 @@ impl Namespace {
 
     // Fine-grained document edits: the path that merges semantically.
 
-    fn with_doc_mut<R>(&mut self, ino: u64, f: impl FnOnce(&mut qdoc::DocMut) -> R) -> Option<R> {
+    fn with_doc_mut<R>(
+        &mut self,
+        ino: u64,
+        f: impl FnOnce(&mut tilo_doc::DocMut) -> R,
+    ) -> Option<R> {
         let id = self.ino_to_id.get(&ino)?.clone();
         let root = self.document_root(&id)?;
-        let containers = qdoc::model::open(&self.doc, &root).ok()?;
-        let mut ids = qdoc::model::seeded_id_gen(&self.doc, &containers);
-        let mut dmut = qdoc::DocMut {
+        let containers = tilo_doc::model::open(&self.doc, &root).ok()?;
+        let mut ids = tilo_doc::model::seeded_id_gen(&self.doc, &containers);
+        let mut dmut = tilo_doc::DocMut {
             doc: &mut self.doc,
             c: &containers,
             ids: &mut ids,
@@ -2650,8 +2650,8 @@ impl Namespace {
         let Some(root) = self.document_root(id) else {
             return Vec::new();
         };
-        match qdoc::model::open(&self.doc, &root) {
-            Ok(c) => qdoc::model::blocks_in_order(&self.doc, &c),
+        match tilo_doc::model::open(&self.doc, &root) {
+            Ok(c) => tilo_doc::model::blocks_in_order(&self.doc, &c),
             Err(_) => Vec::new(),
         }
     }
@@ -2659,8 +2659,8 @@ impl Namespace {
     pub fn document_block_text(&self, ino: u64, block_id: &str) -> Option<String> {
         let id = self.ino_to_id.get(&ino)?;
         let root = self.document_root(id)?;
-        let containers = qdoc::model::open(&self.doc, &root).ok()?;
-        qdoc::model::block_text(&self.doc, &containers, block_id)
+        let containers = tilo_doc::model::open(&self.doc, &root).ok()?;
+        tilo_doc::model::block_text(&self.doc, &containers, block_id)
     }
 
     pub fn document_remove_block(&mut self, ino: u64, block_id: &str) -> bool {
@@ -2668,12 +2668,12 @@ impl Namespace {
             .is_some()
     }
 
-    pub fn document_snapshot(&self, ino: u64) -> Option<qdoc::DocSnapshot> {
+    pub fn document_snapshot(&self, ino: u64) -> Option<tilo_doc::DocSnapshot> {
         let id = self.ino_to_id.get(&ino)?;
         let root = self.document_root(id)?;
-        let containers = qdoc::model::open(&self.doc, &root).ok()?;
+        let containers = tilo_doc::model::open(&self.doc, &root).ok()?;
         Some(
-            qdoc::DocRef {
+            tilo_doc::DocRef {
                 doc: &self.doc,
                 c: &containers,
             }
@@ -3226,564 +3226,700 @@ mod tests {
     }
 
     #[test]
-    fn root_is_inode_one_and_listable() {
-        let mut ns = Namespace::new("a").unwrap();
-        assert_eq!(ns.id_for_ino(ROOT_INO), Some(ROOT_ID));
-        assert!(ns.record_id_for(ROOT_INO).is_some());
-        assert_eq!(ns.getattr(ROOT_INO).unwrap().kind, FileType::Directory);
-        assert_eq!(ns.readdir(ROOT_INO).unwrap().len(), 2); // "." ".."
+    fn tree_operations_create_move_trash_and_persist() {
+        // Phase `root_is_inode_one_and_listable`.
+        {
+            let mut ns = Namespace::new("a").unwrap();
+            assert_eq!(ns.id_for_ino(ROOT_INO), Some(ROOT_ID));
+            assert!(ns.record_id_for(ROOT_INO).is_some());
+            assert_eq!(ns.getattr(ROOT_INO).unwrap().kind, FileType::Directory);
+            assert_eq!(ns.readdir(ROOT_INO).unwrap().len(), 2); // "." ".."
+        }
+        // Phase `create_lookup_and_nested_readdir`.
+        {
+            let mut ns = Namespace::new("a").unwrap();
+            let ino = ns
+                .create_file(ROOT_INO, "hello.txt", Some(&h(7)), 12, 1)
+                .unwrap();
+            let attr = ns.lookup(ROOT_INO, "hello.txt").unwrap();
+            assert_eq!(attr.ino, INodeNo(ino));
+            assert_eq!(attr.size, 12);
+            assert_eq!(ns.hash_for(ino), Some(h(7)));
+
+            let dir = ns.create_dir(ROOT_INO, "docs", 1).unwrap();
+            ns.create_file(dir, "a.txt", Some(&h(1)), 1, 1).unwrap();
+            assert!(
+                ns.readdir(dir)
+                    .unwrap()
+                    .into_iter()
+                    .any(|(_, _, name)| name == "a.txt")
+            );
+            let dotdot = ns
+                .readdir(dir)
+                .unwrap()
+                .into_iter()
+                .find(|(_, _, n)| n == "..")
+                .unwrap();
+            assert_eq!(dotdot.0, ROOT_INO);
+        }
+        // Phase `remove_moves_subtree_to_trash`.
+        {
+            let mut ns = Namespace::new("a").unwrap();
+            let dir = ns.create_dir(ROOT_INO, "d", 1).unwrap();
+            let child = ns.create_file(dir, "c.txt", Some(&h(1)), 1, 1).unwrap();
+            assert!(ns.remove(dir));
+            assert!(ns.getattr(dir).is_none(), "removed dir not visible");
+            assert!(
+                ns.getattr(child).is_none(),
+                "child follows parent into trash"
+            );
+            assert!(ns.lookup(ROOT_INO, "d").is_none());
+        }
+        // Phase `rename_is_a_move_that_preserves_inode`.
+        {
+            let mut ns = Namespace::new("a").unwrap();
+            let ino = ns.create_file(ROOT_INO, "old", Some(&h(9)), 4, 1).unwrap();
+            let record_id = ns.record_id_for(ino).unwrap();
+            let dir = ns.create_dir(ROOT_INO, "sub", 1).unwrap();
+            assert!(ns.rename(ROOT_INO, "old", dir, "new", 2));
+            assert!(ns.lookup(ROOT_INO, "old").is_none());
+            let moved = ns.lookup(dir, "new").unwrap();
+            assert_eq!(moved.ino, INodeNo(ino), "inode preserved across move");
+            assert_eq!(
+                ns.record_id_for(moved.ino.0),
+                Some(record_id),
+                "rename and move preserve collaborative identity"
+            );
+            assert_eq!(ns.hash_for(ino), Some(h(9)));
+        }
+        // Phase `rename_rejects_move_into_own_descendant`.
+        {
+            let mut ns = Namespace::new("a").unwrap();
+            let d1 = ns.create_dir(ROOT_INO, "d1", 1).unwrap();
+            let d2 = ns.create_dir(d1, "d2", 1).unwrap();
+            assert!(
+                !ns.rename(ROOT_INO, "d1", d2, "d1", 2),
+                "cannot move d1 under d1/d2"
+            );
+            assert!(ns.lookup(ROOT_INO, "d1").is_some());
+        }
+        // Phase `tree_survives_save_and_reload`.
+        {
+            let mut a = Namespace::new("a").unwrap();
+            let dir = a.create_dir(ROOT_INO, "docs", 1).unwrap();
+            a.create_file(dir, "f.txt", Some(&h(5)), 5, 1).unwrap();
+            let bytes = a.save();
+
+            let mut b = Namespace::from_bytes("a", &bytes).unwrap();
+            let d = b.lookup(ROOT_INO, "docs").expect("dir restored");
+            let f = b.lookup(d.ino.0, "f.txt").expect("nested file restored");
+            assert_eq!(b.hash_for(f.ino.0), Some(h(5)));
+        }
     }
 
     #[test]
-    fn verified_bindings_move_by_stable_parent_and_never_replace_a_sibling() {
-        let mut ns = Namespace::new("a").unwrap();
-        let left = ns.create_dir(ROOT_INO, "left", 1).unwrap();
-        let right = ns.create_dir(ROOT_INO, "right", 1).unwrap();
-        let file = ns
-            .create_file(left, "before.txt", Some(&h(1)), 1, 1)
-            .unwrap();
-        let occupied = ns
-            .create_file(right, "occupied.txt", Some(&h(2)), 1, 1)
-            .unwrap();
-        let actor = FileActor {
-            person: collab_types::Ed25519PublicKey([3; 32]),
-            device: collab_types::Ed25519PublicKey([4; 32]),
-        };
-        let binding = FileBindingV1 {
-            schema_version: FILE_BINDING_VERSION,
-            record_id: ns.record_id_for(file).unwrap(),
-            parent: Some(ns.record_id_for(right).unwrap()),
-            name: "after.txt".into(),
-            kind: FileNodeKind::File,
-            tombstoned: false,
-            actor,
-            observed_at_ms: 2,
-        };
-        assert_eq!(ns.apply_signed_binding(&binding), Ok(true));
-        assert_eq!(ns.lookup(right, "after.txt").unwrap().ino.0, file);
-        assert_eq!(ns.apply_signed_binding(&binding), Ok(false));
-
-        let occupied_binding = FileBindingV1 {
-            name: "occupied.txt".into(),
-            ..binding.clone()
-        };
-        assert_eq!(
-            ns.apply_signed_binding(&occupied_binding),
-            Err(BindingProjectionError::OccupiedDestination)
-        );
-        assert_eq!(ns.lookup(right, "occupied.txt").unwrap().ino.0, occupied);
-
-        let deleted = FileBindingV1 {
-            tombstoned: true,
-            ..binding
-        };
-        assert_eq!(ns.apply_signed_binding(&deleted), Ok(true));
-        assert_eq!(ns.apply_signed_binding(&deleted), Ok(false));
-        assert!(ns.lookup(right, "after.txt").is_none());
-    }
-
-    // This scenario intentionally covers every durable phase and replay of a
-    // two-record replacement transaction in one linear assertion trace.
     #[allow(
         clippy::too_many_lines,
         reason = "The signed two-record fixture verifies source replacement, victim tombstoning, emitted namespace delta, and idempotent replay together."
     )]
-    #[test]
-    fn complete_replacement_transaction_moves_source_tombstones_victim_and_replays() {
-        use collab_types::{
-            ContentHash, FILE_MUTATION_TRANSACTION_VERSION, FileMutationOperation,
-            FileMutationParticipant, FileMutationTransactionManifest, FileProvenance,
-            FileVersionId, FileVersionV1,
-        };
-        use ed25519_dalek::SigningKey;
-        use getrandom::{SysRng, rand_core::UnwrapErr};
-
-        let mut ns = Namespace::new("a").unwrap();
-        let source_ino = ns
-            .create_file(ROOT_INO, "source.txt", Some(&h(1)), 1, 1)
-            .unwrap();
-        let victim_ino = ns
-            .create_file(ROOT_INO, "destination.txt", Some(&h(2)), 1, 1)
-            .unwrap();
-        let source_record = ns.record_id_for(source_ino).unwrap();
-        let victim_record = ns.record_id_for(victim_ino).unwrap();
-        let root_record = ns.record_id_for(ROOT_INO).unwrap();
-        let source_expected = FileVersionId::new();
-        let victim_expected = FileVersionId::new();
-        for (ino, record_id, version_id, byte) in [
-            (source_ino, source_record, source_expected, 1_u8),
-            (victim_ino, victim_record, victim_expected, 2_u8),
-        ] {
-            assert!(ns.set_content_revision(
-                ino,
-                &ContentRevisionV1 {
-                    schema_version: collab_types::CONTENT_REVISION_VERSION,
-                    record_id,
-                    version_id,
-                    content_hash: Some(ContentHash([byte; 32])),
-                    byte_len: 1,
-                    metadata_hash: ContentHash([byte + 2; 32]),
-                },
-                1,
-            ));
-        }
-        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let actor = FileActor {
-            person: collab_types::Ed25519PublicKey([9; 32]),
-            device: collab_types::Ed25519PublicKey(key.verifying_key().to_bytes()),
-        };
-        let participant = |record_id, expected_version, role, content_byte| {
-            let version = FileVersionV1 {
-                id: FileVersionId::new(),
-                record_id,
-                parents: vec![expected_version],
-                actor,
-                timestamp_ms: 2,
-                content_hash: Some(ContentHash([content_byte; 32])),
-                metadata_hash: ContentHash([content_byte + 2; 32]),
-                provenance: match role {
-                    FileMutationParticipantRole::Source => FileProvenance::Rename,
-                    FileMutationParticipantRole::Replaced => FileProvenance::Delete,
-                    _ => unreachable!("replacement fixture role"),
-                },
+    fn signed_bindings_and_replacements_are_verified_exact_and_fail_closed() {
+        // Phase `verified_bindings_move_by_stable_parent_and_never_replace_a_sibling`.
+        {
+            let mut ns = Namespace::new("a").unwrap();
+            let left = ns.create_dir(ROOT_INO, "left", 1).unwrap();
+            let right = ns.create_dir(ROOT_INO, "right", 1).unwrap();
+            let file = ns
+                .create_file(left, "before.txt", Some(&h(1)), 1, 1)
+                .unwrap();
+            let occupied = ns
+                .create_file(right, "occupied.txt", Some(&h(2)), 1, 1)
+                .unwrap();
+            let actor = FileActor {
+                person: collab_types::Ed25519PublicKey([3; 32]),
+                device: collab_types::Ed25519PublicKey([4; 32]),
             };
-            let mut participant = FileMutationParticipant {
-                record_id,
-                role,
-                expected_version,
-                proposed_binding: FileBindingV1 {
-                    schema_version: FILE_BINDING_VERSION,
+            let binding = FileBindingV1 {
+                schema_version: FILE_BINDING_VERSION,
+                record_id: ns.record_id_for(file).unwrap(),
+                parent: Some(ns.record_id_for(right).unwrap()),
+                name: "after.txt".into(),
+                kind: FileNodeKind::File,
+                tombstoned: false,
+                actor,
+                observed_at_ms: 2,
+            };
+            assert_eq!(ns.apply_signed_binding(&binding), Ok(true));
+            assert_eq!(ns.lookup(right, "after.txt").unwrap().ino.0, file);
+            assert_eq!(ns.apply_signed_binding(&binding), Ok(false));
+
+            let occupied_binding = FileBindingV1 {
+                name: "occupied.txt".into(),
+                ..binding.clone()
+            };
+            assert_eq!(
+                ns.apply_signed_binding(&occupied_binding),
+                Err(BindingProjectionError::OccupiedDestination)
+            );
+            assert_eq!(ns.lookup(right, "occupied.txt").unwrap().ino.0, occupied);
+
+            let deleted = FileBindingV1 {
+                tombstoned: true,
+                ..binding
+            };
+            assert_eq!(ns.apply_signed_binding(&deleted), Ok(true));
+            assert_eq!(ns.apply_signed_binding(&deleted), Ok(false));
+            assert!(ns.lookup(right, "after.txt").is_none());
+        }
+        // Phase `complete_replacement_transaction_moves_source_tombstones_victim_and_replays`.
+        // This scenario intentionally covers every durable phase and replay of a
+        // two-record replacement transaction in one linear assertion trace.
+        {
+            use collab_types::{
+                ContentHash, FILE_MUTATION_TRANSACTION_VERSION, FileMutationOperation,
+                FileMutationParticipant, FileMutationTransactionManifest, FileProvenance,
+                FileVersionId, FileVersionV1,
+            };
+            use ed25519_dalek::SigningKey;
+            use getrandom::{SysRng, rand_core::UnwrapErr};
+
+            let mut ns = Namespace::new("a").unwrap();
+            let source_ino = ns
+                .create_file(ROOT_INO, "source.txt", Some(&h(1)), 1, 1)
+                .unwrap();
+            let victim_ino = ns
+                .create_file(ROOT_INO, "destination.txt", Some(&h(2)), 1, 1)
+                .unwrap();
+            let source_record = ns.record_id_for(source_ino).unwrap();
+            let victim_record = ns.record_id_for(victim_ino).unwrap();
+            let root_record = ns.record_id_for(ROOT_INO).unwrap();
+            let source_expected = FileVersionId::new();
+            let victim_expected = FileVersionId::new();
+            for (ino, record_id, version_id, byte) in [
+                (source_ino, source_record, source_expected, 1_u8),
+                (victim_ino, victim_record, victim_expected, 2_u8),
+            ] {
+                assert!(ns.set_content_revision(
+                    ino,
+                    &ContentRevisionV1 {
+                        schema_version: collab_types::CONTENT_REVISION_VERSION,
+                        record_id,
+                        version_id,
+                        content_hash: Some(ContentHash([byte; 32])),
+                        byte_len: 1,
+                        metadata_hash: ContentHash([byte + 2; 32]),
+                    },
+                    1,
+                ));
+            }
+            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+            let actor = FileActor {
+                person: collab_types::Ed25519PublicKey([9; 32]),
+                device: collab_types::Ed25519PublicKey(key.verifying_key().to_bytes()),
+            };
+            let participant = |record_id, expected_version, role, content_byte| {
+                let version = FileVersionV1 {
+                    id: FileVersionId::new(),
                     record_id,
-                    parent: Some(root_record),
-                    name: "destination.txt".into(),
-                    kind: FileNodeKind::File,
-                    tombstoned: role == FileMutationParticipantRole::Replaced,
+                    parents: vec![expected_version],
                     actor,
-                    observed_at_ms: 2,
-                },
-                proposed_content_revision: Some(ContentRevisionV1 {
-                    schema_version: collab_types::CONTENT_REVISION_VERSION,
+                    timestamp_ms: 2,
+                    content_hash: Some(ContentHash([content_byte; 32])),
+                    metadata_hash: ContentHash([content_byte + 2; 32]),
+                    provenance: match role {
+                        FileMutationParticipantRole::Source => FileProvenance::Rename,
+                        FileMutationParticipantRole::Replaced => FileProvenance::Delete,
+                        _ => unreachable!("replacement fixture role"),
+                    },
+                };
+                let mut participant = FileMutationParticipant {
                     record_id,
-                    version_id: version.id,
-                    content_hash: version.content_hash,
-                    byte_len: 1,
-                    metadata_hash: version.metadata_hash,
-                }),
-                proposed_version: version,
-                projection_hash: ContentHash([0; 32]),
+                    role,
+                    expected_version,
+                    proposed_binding: FileBindingV1 {
+                        schema_version: FILE_BINDING_VERSION,
+                        record_id,
+                        parent: Some(root_record),
+                        name: "destination.txt".into(),
+                        kind: FileNodeKind::File,
+                        tombstoned: role == FileMutationParticipantRole::Replaced,
+                        actor,
+                        observed_at_ms: 2,
+                    },
+                    proposed_content_revision: Some(ContentRevisionV1 {
+                        schema_version: collab_types::CONTENT_REVISION_VERSION,
+                        record_id,
+                        version_id: version.id,
+                        content_hash: version.content_hash,
+                        byte_len: 1,
+                        metadata_hash: version.metadata_hash,
+                    }),
+                    proposed_version: version,
+                    projection_hash: ContentHash([0; 32]),
+                };
+                participant.projection_hash = participant.computed_projection_hash().unwrap();
+                participant
             };
-            participant.projection_hash = participant.computed_projection_hash().unwrap();
-            participant
-        };
-        let mut participants = vec![
-            participant(
-                source_record,
-                source_expected,
-                FileMutationParticipantRole::Source,
-                1,
-            ),
-            participant(
-                victim_record,
-                victim_expected,
-                FileMutationParticipantRole::Replaced,
-                2,
-            ),
-        ];
-        participants.sort_by_key(|participant| participant.record_id);
-        let transaction = collab_types::FileMutationTransaction::signed(
-            FileMutationTransactionManifest {
-                schema_version: FILE_MUTATION_TRANSACTION_VERSION,
-                transaction_id: Uuid::new_v4(),
-                workspace_id: Uuid::new_v4(),
-                actor,
-                timestamp_ms: 2,
-                operation: FileMutationOperation::ReplacementRename {
-                    source_parent: root_record,
-                    source_name: "source.txt".into(),
-                    destination_parent: root_record,
-                    destination_name: "destination.txt".into(),
+            let mut participants = vec![
+                participant(
                     source_record,
-                    replaced_record: victim_record,
+                    source_expected,
+                    FileMutationParticipantRole::Source,
+                    1,
+                ),
+                participant(
+                    victim_record,
+                    victim_expected,
+                    FileMutationParticipantRole::Replaced,
+                    2,
+                ),
+            ];
+            participants.sort_by_key(|participant| participant.record_id);
+            let transaction = collab_types::FileMutationTransaction::signed(
+                FileMutationTransactionManifest {
+                    schema_version: FILE_MUTATION_TRANSACTION_VERSION,
+                    transaction_id: Uuid::new_v4(),
+                    workspace_id: Uuid::new_v4(),
+                    actor,
+                    timestamp_ms: 2,
+                    operation: FileMutationOperation::ReplacementRename {
+                        source_parent: root_record,
+                        source_name: "source.txt".into(),
+                        destination_parent: root_record,
+                        destination_name: "destination.txt".into(),
+                        source_record,
+                        replaced_record: victim_record,
+                    },
+                    participants,
                 },
-                participants,
-            },
-            &key,
-        )
-        .unwrap();
-        let delta = ns
-            .apply_replacement_transaction(&transaction)
-            .unwrap()
+                &key,
+            )
             .unwrap();
-        assert!(!delta.is_empty());
-        assert_eq!(
-            ns.lookup(ROOT_INO, "destination.txt").unwrap().ino.0,
-            source_ino
-        );
-        assert!(ns.lookup(ROOT_INO, "source.txt").is_none());
-        assert!(ns.ino_for_record_id(victim_record).is_none());
-        assert_eq!(ns.apply_replacement_transaction(&transaction), Ok(None));
-    }
-
-    #[test]
-    fn record_ids_survive_save_reload_and_root_is_persisted() {
-        let mut original = Namespace::new("a").unwrap();
-        let file = original
-            .create_file(ROOT_INO, "stable.txt", Some(&h(1)), 1, 1)
-            .unwrap();
-        let root_record = original.record_id_for(ROOT_INO).unwrap();
-        let file_record = original.record_id_for(file).unwrap();
-        assert_ne!(root_record, file_record);
-
-        let bytes = original.save();
-        let mut reloaded = Namespace::from_bytes("a", &bytes).unwrap();
-        let reloaded_file = reloaded.lookup(ROOT_INO, "stable.txt").unwrap().ino.0;
-        assert_eq!(reloaded.record_id_for(ROOT_INO), Some(root_record));
-        assert_eq!(reloaded.record_id_for(reloaded_file), Some(file_record));
-        assert_eq!(
-            reloaded.entry_at("stable.txt").unwrap().record_id,
-            file_record
-        );
-    }
-
-    #[test]
-    fn concurrent_content_revisions_never_expose_a_torn_hash_size_tuple() {
-        let mut a = Namespace::new("a").unwrap();
-        let ino = a
-            .create_file(ROOT_INO, "atomic.bin", Some(&h(1)), 1, 1)
-            .unwrap();
-        let record_id = a.record_id_for(ino).unwrap();
-        let bytes = a.save();
-        let mut b = Namespace::from_bytes("b", &bytes).unwrap();
-        let bino = b.lookup(ROOT_INO, "atomic.bin").unwrap().ino.0;
-        let revision_a = ContentRevisionV1 {
-            schema_version: collab_types::CONTENT_REVISION_VERSION,
-            record_id,
-            version_id: collab_types::FileVersionId::new(),
-            content_hash: Some(collab_types::ContentHash([10; 32])),
-            byte_len: 10,
-            metadata_hash: collab_types::ContentHash([11; 32]),
-        };
-        let revision_b = ContentRevisionV1 {
-            schema_version: collab_types::CONTENT_REVISION_VERSION,
-            record_id,
-            version_id: collab_types::FileVersionId::new(),
-            content_hash: Some(collab_types::ContentHash([20; 32])),
-            byte_len: 20,
-            metadata_hash: collab_types::ContentHash([21; 32]),
-        };
-        assert!(a.set_content_revision(ino, &revision_a, 2));
-        assert!(b.set_content_revision(bino, &revision_b, 2));
-        a.merge_doc(&mut b).unwrap();
-
-        let winner = a.content_revision_for(ino).unwrap();
-        assert!(winner == revision_a || winner == revision_b);
-        let entry = a.entry_at("atomic.bin").unwrap();
-        assert_eq!(
-            entry.hash,
-            winner.content_hash.map(|hash| Hash::from(hash.0))
-        );
-        assert_eq!(entry.size, winner.byte_len);
-        let id = a.id_for_ino(ino).unwrap();
-        let conflicts = a.content_revision_conflicts(id);
-        assert_eq!(conflicts.len(), 2);
-        assert!(conflicts.iter().any(|(_, value)| value == &revision_a));
-        assert!(conflicts.iter().any(|(_, value)| value == &revision_b));
-    }
-
-    #[test]
-    fn legacy_content_write_explicitly_supersedes_atomic_revision() {
-        let mut ns = Namespace::new("a").unwrap();
-        let ino = ns
-            .create_file(ROOT_INO, "compat.bin", Some(&h(1)), 1, 1)
-            .unwrap();
-        let revision = ContentRevisionV1 {
-            schema_version: collab_types::CONTENT_REVISION_VERSION,
-            record_id: ns.record_id_for(ino).unwrap(),
-            version_id: collab_types::FileVersionId::new(),
-            content_hash: None,
-            byte_len: 0,
-            metadata_hash: collab_types::ContentHash([7; 32]),
-        };
-        assert!(ns.set_content_revision(ino, &revision, 2));
-        assert_eq!(ns.hash_for(ino), None, "None must not resurrect the mirror");
-        assert!(ns.set_content(ino, Some(&h(3)), 3, 3));
-        assert_eq!(ns.content_revision_for(ino), None);
-        assert_eq!(ns.hash_for(ino), Some(h(3)));
-        assert_eq!(ns.getattr(ino).unwrap().size, 3);
-    }
-
-    #[test]
-    fn signed_mode_ignores_forged_namespace_content_and_thumbnail_fields() {
-        let mut ns = Namespace::new("owner").unwrap();
-        let ino = ns
-            .create_file(ROOT_INO, "verified.bin", Some(&h(1)), 1, 1)
-            .unwrap();
-        assert!(ns.set_thumb(ino, &h(2)));
-        let record_id = ns.record_id_for(ino).unwrap();
-        ns.enable_signed_content_authority();
-        assert_eq!(ns.hash_for(ino), None);
-        assert_eq!(ns.getattr(ino).unwrap().size, 0);
-        assert_eq!(ns.thumb_hash(ino), None);
-        assert!(ns.live_paths_for_blob(h(1)).is_empty());
-
-        let revision = ContentRevisionV1 {
-            schema_version: collab_types::CONTENT_REVISION_VERSION,
-            record_id,
-            version_id: collab_types::FileVersionId::new(),
-            content_hash: Some(collab_types::ContentHash([3; 32])),
-            byte_len: 3,
-            metadata_hash: collab_types::ContentHash([4; 32]),
-        };
-        assert!(ns.install_verified_content_revision(revision));
-        assert!(ns.install_verified_thumbnail(record_id, Some(h(4))));
-
-        let id = ns.id_for_ino(ino).unwrap().to_string();
-        ns.set_field(&id, "hash", hash_to_hex(&h(9)));
-        ns.set_field(&id, "size", 999_u64);
-        ns.set_field(&id, "thumb", hash_to_hex(&h(9)));
-        let mut forged = revision;
-        forged.version_id = collab_types::FileVersionId::new();
-        forged.content_hash = Some(collab_types::ContentHash([9; 32]));
-        forged.byte_len = 999;
-        ns.set_field(
-            &id,
-            CONTENT_REVISION_KEY,
-            ScalarValue::Bytes(revision_to_bytes(&forged).unwrap()),
-        );
-
-        assert_eq!(ns.hash_for(ino), Some(h(3)));
-        assert_eq!(ns.getattr(ino).unwrap().size, 3);
-        assert_eq!(ns.thumb_hash(ino), Some(h(4)));
-        assert_eq!(ns.content_revision_for(ino), Some(revision));
-        assert!(ns.live_paths_for_blob(h(9)).is_empty());
-        assert_eq!(ns.live_paths_for_blob(h(3)), vec!["/verified.bin"]);
-        assert!(!ns.set_content(ino, Some(&h(8)), 8, 8));
-        assert!(!ns.set_thumb(ino, &h(8)));
-    }
-
-    #[test]
-    fn duplicate_live_record_bindings_fail_closed_in_signed_mode() {
-        let mut ns = Namespace::new("owner").unwrap();
-        let first = ns.create_file(ROOT_INO, "a", None, 0, 1).unwrap();
-        let duplicate = ns.create_file(ROOT_INO, "b", None, 0, 1).unwrap();
-        let record_id = ns.record_id_for(first).unwrap();
-        let duplicate_id = ns.id_for_ino(duplicate).unwrap().to_string();
-        let duplicate_obj = ns.node(&duplicate_id).unwrap();
-        ns.doc
-            .put(&duplicate_obj, RECORD_ID_KEY, record_id.0.to_string())
-            .unwrap();
-        ns.rebuild_record_index();
-        assert!(
-            ns.indexed_record(record_id).is_none(),
-            "an ambiguous durable record identity must be withheld, not routed to an arbitrary node"
-        );
-        ns.enable_signed_content_authority();
-        let revision = ContentRevisionV1 {
-            schema_version: collab_types::CONTENT_REVISION_VERSION,
-            record_id,
-            version_id: collab_types::FileVersionId::new(),
-            content_hash: Some(collab_types::ContentHash([3; 32])),
-            byte_len: 3,
-            metadata_hash: collab_types::ContentHash([4; 32]),
-        };
-        assert!(!ns.install_verified_content_revision(revision));
-        assert_eq!(ns.hash_for(first), None);
-        assert_eq!(ns.hash_for(duplicate), None);
-    }
-
-    #[test]
-    fn malformed_parent_cycle_cannot_loop_record_index_rebuild() {
-        let mut ns = Namespace::new("owner").unwrap();
-        let a = ns.create_dir(ROOT_INO, "a", 1).unwrap();
-        let b = ns.create_dir(ROOT_INO, "b", 1).unwrap();
-        let a_id = ns.id_for_ino(a).unwrap().to_string();
-        let b_id = ns.id_for_ino(b).unwrap().to_string();
-        ns.set_field(&a_id, "parent", b_id.clone());
-        ns.set_field(&b_id, "parent", a_id);
-
-        ns.rebuild_record_index();
-        assert_eq!(
-            ns.indexed_record_count(),
-            0,
-            "unreachable cyclic nodes must be withheld rather than making a rebuild non-terminating"
-        );
-    }
-
-    #[test]
-    fn projected_file_uses_exact_remote_record_and_refuses_aliases() {
-        let mut ns = Namespace::new("recipient").unwrap();
-        let record = FileRecordId::new();
-        let ino = ns
-            .create_projected_file(ROOT_INO, "shared.png", record, Some(&h(8)), 42, 9)
-            .unwrap();
-        assert_eq!(ns.record_id_for(ino), Some(record));
-        assert_eq!(ns.hash_for(ino), Some(h(8)));
-        assert_eq!(ns.getattr(ino).unwrap().size, 42);
-        assert!(
-            ns.create_projected_file(ROOT_INO, "alias.png", record, None, 0, 0)
-                .is_none()
-        );
-        assert!(
-            ns.create_projected_file(ROOT_INO, "shared.png", FileRecordId::new(), None, 0, 0)
-                .is_none()
-        );
-        assert!(
-            ns.create_projected_file(ROOT_INO, "../escape", FileRecordId::new(), None, 0, 0)
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn legacy_snapshots_migrate_record_ids_deterministically_on_next_save() {
-        let mut legacy = Namespace::new("legacy").unwrap();
-        legacy
-            .create_file(ROOT_INO, "old.txt", Some(&h(2)), 2, 1)
-            .unwrap();
-        let ids: Vec<_> = legacy.doc.keys(&legacy.nodes).collect();
-        let _ = legacy.doc.delete(&ROOT, ROOT_RECORD_ID_KEY);
-        for id in ids {
-            let node = legacy.node(&id).unwrap();
-            let _ = legacy.doc.delete(&node, RECORD_ID_KEY);
+            let delta = ns
+                .apply_replacement_transaction(&transaction)
+                .unwrap()
+                .unwrap();
+            assert!(!delta.is_empty());
+            assert_eq!(
+                ns.lookup(ROOT_INO, "destination.txt").unwrap().ino.0,
+                source_ino
+            );
+            assert!(ns.lookup(ROOT_INO, "source.txt").is_none());
+            assert!(ns.ino_for_record_id(victim_record).is_none());
+            assert_eq!(ns.apply_replacement_transaction(&transaction), Ok(None));
         }
-        let legacy_bytes = legacy.doc.save();
+        // Phase `signed_mode_ignores_forged_namespace_content_and_thumbnail_fields`.
+        {
+            let mut ns = Namespace::new("owner").unwrap();
+            let ino = ns
+                .create_file(ROOT_INO, "verified.bin", Some(&h(1)), 1, 1)
+                .unwrap();
+            assert!(ns.set_thumb(ino, &h(2)));
+            let record_id = ns.record_id_for(ino).unwrap();
+            ns.enable_signed_content_authority();
+            assert_eq!(ns.hash_for(ino), None);
+            assert_eq!(ns.getattr(ino).unwrap().size, 0);
+            assert_eq!(ns.thumb_hash(ino), None);
+            assert!(ns.live_paths_for_blob(h(1)).is_empty());
 
-        let mut first = Namespace::from_bytes("first", &legacy_bytes).unwrap();
-        let mut second = Namespace::from_bytes("second", &legacy_bytes).unwrap();
-        let first_ino = first.lookup(ROOT_INO, "old.txt").unwrap().ino.0;
-        let second_ino = second.lookup(ROOT_INO, "old.txt").unwrap().ino.0;
-        assert_eq!(
-            first.record_id_for(ROOT_INO),
-            second.record_id_for(ROOT_INO),
-            "root migration must not depend on the loading peer"
-        );
-        assert_eq!(
-            first.record_id_for(first_ino),
-            second.record_id_for(second_ino),
-            "node migration must not depend on the loading peer"
-        );
+            let revision = ContentRevisionV1 {
+                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                record_id,
+                version_id: collab_types::FileVersionId::new(),
+                content_hash: Some(collab_types::ContentHash([3; 32])),
+                byte_len: 3,
+                metadata_hash: collab_types::ContentHash([4; 32]),
+            };
+            assert!(ns.install_verified_content_revision(revision));
+            assert!(ns.install_verified_thumbnail(record_id, Some(h(4))));
 
-        let expected_root = first.record_id_for(ROOT_INO).unwrap();
-        let expected_file = first.record_id_for(first_ino).unwrap();
-        let migrated_bytes = first.save();
-        let mut persisted = Namespace::from_bytes("third", &migrated_bytes).unwrap();
-        let persisted_ino = persisted.lookup(ROOT_INO, "old.txt").unwrap().ino.0;
-        assert_eq!(persisted.record_id_for(ROOT_INO), Some(expected_root));
-        assert_eq!(persisted.record_id_for(persisted_ino), Some(expected_file));
+            let id = ns.id_for_ino(ino).unwrap().to_string();
+            ns.set_field(&id, "hash", hash_to_hex(&h(9)));
+            ns.set_field(&id, "size", 999_u64);
+            ns.set_field(&id, "thumb", hash_to_hex(&h(9)));
+            let mut forged = revision;
+            forged.version_id = collab_types::FileVersionId::new();
+            forged.content_hash = Some(collab_types::ContentHash([9; 32]));
+            forged.byte_len = 999;
+            ns.set_field(
+                &id,
+                CONTENT_REVISION_KEY,
+                ScalarValue::Bytes(revision_to_bytes(&forged).unwrap()),
+            );
+
+            assert_eq!(ns.hash_for(ino), Some(h(3)));
+            assert_eq!(ns.getattr(ino).unwrap().size, 3);
+            assert_eq!(ns.thumb_hash(ino), Some(h(4)));
+            assert_eq!(ns.content_revision_for(ino), Some(revision));
+            assert!(ns.live_paths_for_blob(h(9)).is_empty());
+            assert_eq!(ns.live_paths_for_blob(h(3)), vec!["/verified.bin"]);
+            assert!(!ns.set_content(ino, Some(&h(8)), 8, 8));
+            assert!(!ns.set_thumb(ino, &h(8)));
+        }
+        // Phase `duplicate_live_record_bindings_fail_closed_in_signed_mode`.
+        {
+            let mut ns = Namespace::new("owner").unwrap();
+            let first = ns.create_file(ROOT_INO, "a", None, 0, 1).unwrap();
+            let duplicate = ns.create_file(ROOT_INO, "b", None, 0, 1).unwrap();
+            let record_id = ns.record_id_for(first).unwrap();
+            let duplicate_id = ns.id_for_ino(duplicate).unwrap().to_string();
+            let duplicate_obj = ns.node(&duplicate_id).unwrap();
+            ns.doc
+                .put(&duplicate_obj, RECORD_ID_KEY, record_id.0.to_string())
+                .unwrap();
+            ns.rebuild_record_index();
+            assert!(
+                ns.indexed_record(record_id).is_none(),
+                "an ambiguous durable record identity must be withheld, not routed to an arbitrary node"
+            );
+            ns.enable_signed_content_authority();
+            let revision = ContentRevisionV1 {
+                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                record_id,
+                version_id: collab_types::FileVersionId::new(),
+                content_hash: Some(collab_types::ContentHash([3; 32])),
+                byte_len: 3,
+                metadata_hash: collab_types::ContentHash([4; 32]),
+            };
+            assert!(!ns.install_verified_content_revision(revision));
+            assert_eq!(ns.hash_for(first), None);
+            assert_eq!(ns.hash_for(duplicate), None);
+        }
+        // Phase `projected_file_uses_exact_remote_record_and_refuses_aliases`.
+        {
+            let mut ns = Namespace::new("recipient").unwrap();
+            let record = FileRecordId::new();
+            let ino = ns
+                .create_projected_file(ROOT_INO, "shared.png", record, Some(&h(8)), 42, 9)
+                .unwrap();
+            assert_eq!(ns.record_id_for(ino), Some(record));
+            assert_eq!(ns.hash_for(ino), Some(h(8)));
+            assert_eq!(ns.getattr(ino).unwrap().size, 42);
+            assert!(
+                ns.create_projected_file(ROOT_INO, "alias.png", record, None, 0, 0)
+                    .is_none()
+            );
+            assert!(
+                ns.create_projected_file(ROOT_INO, "shared.png", FileRecordId::new(), None, 0, 0)
+                    .is_none()
+            );
+            assert!(
+                ns.create_projected_file(ROOT_INO, "../escape", FileRecordId::new(), None, 0, 0)
+                    .is_none()
+            );
+        }
     }
 
     #[test]
-    fn legacy_string_name_loads_exactly_and_next_rename_persists_bytes() {
-        let mut legacy = Namespace::new("legacy-name").unwrap();
-        let ino = legacy
-            .create_file(ROOT_INO, "placeholder", None, 0, 1)
-            .unwrap();
-        let id = legacy.id_for_ino(ino).unwrap().to_string();
-        let node = legacy.node(&id).unwrap();
-        legacy
-            .doc
-            .put(&node, "name", ScalarValue::Str("café.txt".into()))
-            .unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn record_ids_are_stable_persisted_backfilled_and_resolve_live_blobs() {
+        // Phase `record_ids_survive_save_reload_and_root_is_persisted`.
+        {
+            let mut original = Namespace::new("a").unwrap();
+            let file = original
+                .create_file(ROOT_INO, "stable.txt", Some(&h(1)), 1, 1)
+                .unwrap();
+            let root_record = original.record_id_for(ROOT_INO).unwrap();
+            let file_record = original.record_id_for(file).unwrap();
+            assert_ne!(root_record, file_record);
 
-        let mut migrated = Namespace::from_bytes("migrated", &legacy.doc.save()).unwrap();
-        assert!(migrated.lookup(ROOT_INO, "café.txt").is_some());
-        assert!(migrated.rename(ROOT_INO, "café.txt", ROOT_INO, b"caf\xc3\xa9-final.txt", 2,));
+            let bytes = original.save();
+            let mut reloaded = Namespace::from_bytes("a", &bytes).unwrap();
+            let reloaded_file = reloaded.lookup(ROOT_INO, "stable.txt").unwrap().ino.0;
+            assert_eq!(reloaded.record_id_for(ROOT_INO), Some(root_record));
+            assert_eq!(reloaded.record_id_for(reloaded_file), Some(file_record));
+            assert_eq!(
+                reloaded.entry_at("stable.txt").unwrap().record_id,
+                file_record
+            );
+        }
+        // Phase `legacy_snapshots_migrate_record_ids_deterministically_on_next_save`.
+        {
+            let mut legacy = Namespace::new("legacy").unwrap();
+            legacy
+                .create_file(ROOT_INO, "old.txt", Some(&h(2)), 2, 1)
+                .unwrap();
+            let ids: Vec<_> = legacy.doc.keys(&legacy.nodes).collect();
+            let _ = legacy.doc.delete(&ROOT, ROOT_RECORD_ID_KEY);
+            for id in ids {
+                let node = legacy.node(&id).unwrap();
+                let _ = legacy.doc.delete(&node, RECORD_ID_KEY);
+            }
+            let legacy_bytes = legacy.doc.save();
 
-        let node = migrated.node(&id).unwrap();
-        assert!(matches!(
-            migrated.doc.get(&node, "name").unwrap(),
-            Some((Value::Scalar(value), _))
-                if matches!(value.as_ref(), ScalarValue::Bytes(bytes) if bytes.as_slice() == b"caf\xc3\xa9-final.txt")
-        ));
-        let mut reopened = Namespace::from_bytes("reopened", &migrated.save()).unwrap();
-        assert!(
-            reopened
-                .lookup(ROOT_INO, b"caf\xc3\xa9-final.txt")
-                .is_some(),
-            "legacy UTF-8 identity must survive byte-scalar migration and restart"
-        );
+            let mut first = Namespace::from_bytes("first", &legacy_bytes).unwrap();
+            let mut second = Namespace::from_bytes("second", &legacy_bytes).unwrap();
+            let first_ino = first.lookup(ROOT_INO, "old.txt").unwrap().ino.0;
+            let second_ino = second.lookup(ROOT_INO, "old.txt").unwrap().ino.0;
+            assert_eq!(
+                first.record_id_for(ROOT_INO),
+                second.record_id_for(ROOT_INO),
+                "root migration must not depend on the loading peer"
+            );
+            assert_eq!(
+                first.record_id_for(first_ino),
+                second.record_id_for(second_ino),
+                "node migration must not depend on the loading peer"
+            );
+
+            let expected_root = first.record_id_for(ROOT_INO).unwrap();
+            let expected_file = first.record_id_for(first_ino).unwrap();
+            let migrated_bytes = first.save();
+            let mut persisted = Namespace::from_bytes("third", &migrated_bytes).unwrap();
+            let persisted_ino = persisted.lookup(ROOT_INO, "old.txt").unwrap().ino.0;
+            assert_eq!(persisted.record_id_for(ROOT_INO), Some(expected_root));
+            assert_eq!(persisted.record_id_for(persisted_ino), Some(expected_file));
+        }
+        // Phase `conflict_copy_gets_a_distinct_record_id`.
+        {
+            let mut ns = Namespace::new("a").unwrap();
+            let original = ns.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
+            let original_record = ns.record_id_for(original).unwrap();
+            assert!(ns.create_conflict_copy(ROOT_ID, "doc.sync-conflict", &h(2), 1, 2));
+            let copy = ns.resolve_path_ino("doc.sync-conflict").unwrap();
+            assert_ne!(ns.record_id_for(copy), Some(original_record));
+            assert!(ns.record_id_for(copy).is_some());
+        }
+        // Phase `save_incremental_still_backfills_record_ids_after_an_import`.
+        {
+            let mut ns = Namespace::new("a").unwrap();
+            ns.create_file(ROOT_INO, "x", Some(&h(1)), 1, 1).unwrap();
+            let mut copy = ns.clone_doc();
+            assert!(copy.record_ids_complete);
+            let copied = copy.lookup(ROOT_INO, "x").unwrap().ino.0;
+            let original = ns.lookup(ROOT_INO, "x").unwrap().ino.0;
+            assert_eq!(copy.record_id_for(copied), ns.record_id_for(original));
+        }
+        // Phase `malformed_parent_cycle_cannot_loop_record_index_rebuild`.
+        {
+            let mut ns = Namespace::new("owner").unwrap();
+            let a = ns.create_dir(ROOT_INO, "a", 1).unwrap();
+            let b = ns.create_dir(ROOT_INO, "b", 1).unwrap();
+            let a_id = ns.id_for_ino(a).unwrap().to_string();
+            let b_id = ns.id_for_ino(b).unwrap().to_string();
+            ns.set_field(&a_id, "parent", b_id.clone());
+            ns.set_field(&b_id, "parent", a_id);
+
+            ns.rebuild_record_index();
+            assert_eq!(
+                ns.indexed_record_count(),
+                0,
+                "unreachable cyclic nodes must be withheld rather than making a rebuild non-terminating"
+            );
+        }
+        // Phase `direct_blob_lookup_returns_only_live_stable_records`.
+        {
+            let mut ns = Namespace::new("a").unwrap();
+            let first = ns
+                .create_file(ROOT_INO, "first", Some(&h(1)), 4, 1)
+                .unwrap();
+            let second = ns
+                .create_file(ROOT_INO, "second", Some(&h(9)), 4, 1)
+                .unwrap();
+            let first_record = ns.record_id_for(first).unwrap();
+            let second_record = ns.record_id_for(second).unwrap();
+            assert!(ns.set_thumb(second, &h(1)));
+            assert_eq!(
+                ns.live_record_ids_for_direct_blob(h(1), 8).unwrap(),
+                vec![first_record, second_record]
+                    .into_iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                ns.live_record_ids_for_direct_blob(h(1), 1),
+                Err(LiveRecordBlobScanError::LimitExceeded { limit: 1 })
+            );
+
+            assert!(ns.remove(first));
+            assert_eq!(
+                ns.live_record_ids_for_direct_blob(h(1), 8).unwrap(),
+                vec![second_record]
+            );
+            assert!(
+                ns.live_record_ids_for_direct_blob(h(77), 8)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        // Phase `live_blob_paths_follow_rename_thumbnail_and_delete`.
+        {
+            let mut ns = Namespace::new("a").unwrap();
+            let docs = ns.create_dir(ROOT_INO, "docs", 1).unwrap();
+            let ino = ns.create_file(docs, "old.png", Some(&h(1)), 4, 1).unwrap();
+            assert!(ns.set_thumb(ino, &h(2)));
+
+            assert_eq!(ns.live_paths_for_blob(h(1)), vec!["/docs/old.png"]);
+            assert_eq!(ns.live_paths_for_blob(h(2)), vec!["/docs/old.png"]);
+
+            assert!(ns.rename(docs, "old.png", ROOT_INO, "new.png", 2));
+            assert_eq!(ns.live_paths_for_blob(h(1)), vec!["/new.png"]);
+            assert_eq!(ns.live_paths_for_blob(h(2)), vec!["/new.png"]);
+
+            assert!(ns.remove(ino));
+            assert!(ns.live_paths_for_blob(h(1)).is_empty());
+            assert!(ns.live_paths_for_blob(h(2)).is_empty());
+        }
     }
 
     #[test]
-    fn create_lookup_and_nested_readdir() {
-        let mut ns = Namespace::new("a").unwrap();
-        let ino = ns
-            .create_file(ROOT_INO, "hello.txt", Some(&h(7)), 12, 1)
-            .unwrap();
-        let attr = ns.lookup(ROOT_INO, "hello.txt").unwrap();
-        assert_eq!(attr.ino, INodeNo(ino));
-        assert_eq!(attr.size, 12);
-        assert_eq!(ns.hash_for(ino), Some(h(7)));
+    fn content_revisions_are_never_torn_and_legacy_writes_supersede_explicitly() {
+        // Phase `concurrent_content_revisions_never_expose_a_torn_hash_size_tuple`.
+        {
+            let mut a = Namespace::new("a").unwrap();
+            let ino = a
+                .create_file(ROOT_INO, "atomic.bin", Some(&h(1)), 1, 1)
+                .unwrap();
+            let record_id = a.record_id_for(ino).unwrap();
+            let bytes = a.save();
+            let mut b = Namespace::from_bytes("b", &bytes).unwrap();
+            let bino = b.lookup(ROOT_INO, "atomic.bin").unwrap().ino.0;
+            let revision_a = ContentRevisionV1 {
+                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                record_id,
+                version_id: collab_types::FileVersionId::new(),
+                content_hash: Some(collab_types::ContentHash([10; 32])),
+                byte_len: 10,
+                metadata_hash: collab_types::ContentHash([11; 32]),
+            };
+            let revision_b = ContentRevisionV1 {
+                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                record_id,
+                version_id: collab_types::FileVersionId::new(),
+                content_hash: Some(collab_types::ContentHash([20; 32])),
+                byte_len: 20,
+                metadata_hash: collab_types::ContentHash([21; 32]),
+            };
+            assert!(a.set_content_revision(ino, &revision_a, 2));
+            assert!(b.set_content_revision(bino, &revision_b, 2));
+            a.merge_doc(&mut b).unwrap();
 
-        let dir = ns.create_dir(ROOT_INO, "docs", 1).unwrap();
-        ns.create_file(dir, "a.txt", Some(&h(1)), 1, 1).unwrap();
-        assert!(
-            ns.readdir(dir)
-                .unwrap()
-                .into_iter()
-                .any(|(_, _, name)| name == "a.txt")
-        );
-        let dotdot = ns
-            .readdir(dir)
-            .unwrap()
-            .into_iter()
-            .find(|(_, _, n)| n == "..")
-            .unwrap();
-        assert_eq!(dotdot.0, ROOT_INO);
+            let winner = a.content_revision_for(ino).unwrap();
+            assert!(winner == revision_a || winner == revision_b);
+            let entry = a.entry_at("atomic.bin").unwrap();
+            assert_eq!(
+                entry.hash,
+                winner.content_hash.map(|hash| Hash::from(hash.0))
+            );
+            assert_eq!(entry.size, winner.byte_len);
+            let id = a.id_for_ino(ino).unwrap();
+            let conflicts = a.content_revision_conflicts(id);
+            assert_eq!(conflicts.len(), 2);
+            assert!(conflicts.iter().any(|(_, value)| value == &revision_a));
+            assert!(conflicts.iter().any(|(_, value)| value == &revision_b));
+        }
+        // Phase `legacy_content_write_explicitly_supersedes_atomic_revision`.
+        {
+            let mut ns = Namespace::new("a").unwrap();
+            let ino = ns
+                .create_file(ROOT_INO, "compat.bin", Some(&h(1)), 1, 1)
+                .unwrap();
+            let revision = ContentRevisionV1 {
+                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                record_id: ns.record_id_for(ino).unwrap(),
+                version_id: collab_types::FileVersionId::new(),
+                content_hash: None,
+                byte_len: 0,
+                metadata_hash: collab_types::ContentHash([7; 32]),
+            };
+            assert!(ns.set_content_revision(ino, &revision, 2));
+            assert_eq!(ns.hash_for(ino), None, "None must not resurrect the mirror");
+            assert!(ns.set_content(ino, Some(&h(3)), 3, 3));
+            assert_eq!(ns.content_revision_for(ino), None);
+            assert_eq!(ns.hash_for(ino), Some(h(3)));
+            assert_eq!(ns.getattr(ino).unwrap().size, 3);
+        }
     }
 
     #[test]
-    fn byte_names_survive_save_lookup_and_rename_exactly() {
-        let mut ns = Namespace::new("bytes").unwrap();
-        let original = b"photo-\xFF.png";
-        let renamed = b"photo-\xFE.png";
-        let ino = ns.create_file(ROOT_INO, original, None, 0, 1).unwrap();
-        assert_eq!(ns.lookup(ROOT_INO, original).unwrap().ino.0, ino);
-        assert!(
-            ns.readdir(ROOT_INO)
-                .unwrap()
-                .iter()
-                .any(|entry| entry.2.as_bytes() == original)
-        );
+    fn byte_names_survive_load_save_rename_and_replication_exactly() {
+        // Phase `legacy_string_name_loads_exactly_and_next_rename_persists_bytes`.
+        {
+            let mut legacy = Namespace::new("legacy-name").unwrap();
+            let ino = legacy
+                .create_file(ROOT_INO, "placeholder", None, 0, 1)
+                .unwrap();
+            let id = legacy.id_for_ino(ino).unwrap().to_string();
+            let node = legacy.node(&id).unwrap();
+            legacy
+                .doc
+                .put(&node, "name", ScalarValue::Str("café.txt".into()))
+                .unwrap();
 
-        let snapshot = ns.save();
-        let mut reopened = Namespace::from_bytes("reopened", &snapshot).unwrap();
-        let reopened_ino = reopened.lookup(ROOT_INO, original).unwrap().ino.0;
-        let record_id = reopened.record_id_for(reopened_ino).unwrap();
-        assert!(reopened.rename(ROOT_INO, original, ROOT_INO, renamed, 2));
-        assert!(reopened.lookup(ROOT_INO, original).is_none());
-        assert_eq!(
-            reopened.lookup(ROOT_INO, renamed).unwrap().ino.0,
-            reopened_ino
-        );
+            let mut migrated = Namespace::from_bytes("migrated", &legacy.doc.save()).unwrap();
+            assert!(migrated.lookup(ROOT_INO, "café.txt").is_some());
+            assert!(migrated.rename(ROOT_INO, "café.txt", ROOT_INO, b"caf\xc3\xa9-final.txt", 2,));
 
-        let renamed_snapshot = reopened.save();
-        let mut final_open = Namespace::from_bytes("final", &renamed_snapshot).unwrap();
-        assert!(final_open.lookup(ROOT_INO, original).is_none());
-        let final_ino = final_open.lookup(ROOT_INO, renamed).unwrap().ino.0;
-        assert_eq!(final_open.record_id_for(final_ino), Some(record_id));
-    }
+            let node = migrated.node(&id).unwrap();
+            assert!(matches!(
+                migrated.doc.get(&node, "name").unwrap(),
+                Some((Value::Scalar(value), _))
+                    if matches!(value.as_ref(), ScalarValue::Bytes(bytes) if bytes.as_slice() == b"caf\xc3\xa9-final.txt")
+            ));
+            let mut reopened = Namespace::from_bytes("reopened", &migrated.save()).unwrap();
+            assert!(
+                reopened
+                    .lookup(ROOT_INO, b"caf\xc3\xa9-final.txt")
+                    .is_some(),
+                "legacy UTF-8 identity must survive byte-scalar migration and restart"
+            );
+        }
+        // Phase `byte_names_survive_save_lookup_and_rename_exactly`.
+        {
+            let mut ns = Namespace::new("bytes").unwrap();
+            let original = b"photo-\xFF.png";
+            let renamed = b"photo-\xFE.png";
+            let ino = ns.create_file(ROOT_INO, original, None, 0, 1).unwrap();
+            assert_eq!(ns.lookup(ROOT_INO, original).unwrap().ino.0, ino);
+            assert!(
+                ns.readdir(ROOT_INO)
+                    .unwrap()
+                    .iter()
+                    .any(|entry| entry.2.as_bytes() == original)
+            );
 
-    #[test]
-    fn byte_names_replicate_without_display_normalization() {
-        let name = b"replicated-\xFF.bin";
-        let mut source = Namespace::new("source").unwrap();
-        source.create_file(ROOT_INO, name, None, 0, 1).unwrap();
-        let snapshot = source.save();
-        let mut peer = Namespace::from_bytes("peer", &snapshot).unwrap();
-        assert!(peer.lookup(ROOT_INO, name).is_some());
-        assert!(
-            peer.readdir(ROOT_INO)
-                .unwrap()
-                .iter()
-                .any(|entry| entry.2.as_bytes() == name)
-        );
+            let snapshot = ns.save();
+            let mut reopened = Namespace::from_bytes("reopened", &snapshot).unwrap();
+            let reopened_ino = reopened.lookup(ROOT_INO, original).unwrap().ino.0;
+            let record_id = reopened.record_id_for(reopened_ino).unwrap();
+            assert!(reopened.rename(ROOT_INO, original, ROOT_INO, renamed, 2));
+            assert!(reopened.lookup(ROOT_INO, original).is_none());
+            assert_eq!(
+                reopened.lookup(ROOT_INO, renamed).unwrap().ino.0,
+                reopened_ino
+            );
 
-        let renamed = b"replicated-\xFE.bin";
-        assert!(source.rename(ROOT_INO, name, ROOT_INO, renamed, 2));
-        let delta = source.save_incremental();
-        peer.apply_remote_and_resolve(&delta).unwrap();
-        assert!(peer.lookup(ROOT_INO, name).is_none());
-        assert!(peer.lookup(ROOT_INO, renamed).is_some());
+            let renamed_snapshot = reopened.save();
+            let mut final_open = Namespace::from_bytes("final", &renamed_snapshot).unwrap();
+            assert!(final_open.lookup(ROOT_INO, original).is_none());
+            let final_ino = final_open.lookup(ROOT_INO, renamed).unwrap().ino.0;
+            assert_eq!(final_open.record_id_for(final_ino), Some(record_id));
+        }
+        // Phase `byte_names_replicate_without_display_normalization`.
+        {
+            let name = b"replicated-\xFF.bin";
+            let mut source = Namespace::new("source").unwrap();
+            source.create_file(ROOT_INO, name, None, 0, 1).unwrap();
+            let snapshot = source.save();
+            let mut peer = Namespace::from_bytes("peer", &snapshot).unwrap();
+            assert!(peer.lookup(ROOT_INO, name).is_some());
+            assert!(
+                peer.readdir(ROOT_INO)
+                    .unwrap()
+                    .iter()
+                    .any(|entry| entry.2.as_bytes() == name)
+            );
+
+            let renamed = b"replicated-\xFE.bin";
+            assert!(source.rename(ROOT_INO, name, ROOT_INO, renamed, 2));
+            let delta = source.save_incremental();
+            peer.apply_remote_and_resolve(&delta).unwrap();
+            assert!(peer.lookup(ROOT_INO, name).is_none());
+            assert!(peer.lookup(ROOT_INO, renamed).is_some());
+        }
     }
 
     #[test]
@@ -3811,373 +3947,305 @@ mod tests {
     }
 
     #[test]
-    fn remove_moves_subtree_to_trash() {
-        let mut ns = Namespace::new("a").unwrap();
-        let dir = ns.create_dir(ROOT_INO, "d", 1).unwrap();
-        let child = ns.create_file(dir, "c.txt", Some(&h(1)), 1, 1).unwrap();
-        assert!(ns.remove(dir));
-        assert!(ns.getattr(dir).is_none(), "removed dir not visible");
-        assert!(
-            ns.getattr(child).is_none(),
-            "child follows parent into trash"
-        );
-        assert!(ns.lookup(ROOT_INO, "d").is_none());
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn concurrent_namespace_changes_merge_and_converge() {
+        // Phase `disjoint_inserts_merge`.
+        {
+            let mut a = Namespace::new("a").unwrap();
+            let bytes = a.save();
+            let mut b = Namespace::from_bytes("b", &bytes).unwrap();
+            a.create_file(ROOT_INO, "from_a", Some(&h(1)), 1, 1)
+                .unwrap();
+            b.create_file(ROOT_INO, "from_b", Some(&h(2)), 1, 1)
+                .unwrap();
+            a.merge_doc(&mut b).unwrap();
+            assert!(a.lookup(ROOT_INO, "from_a").is_some());
+            assert!(a.lookup(ROOT_INO, "from_b").is_some());
+        }
+        // Phase `concurrent_cross_move_resolves_acyclically_and_converges`.
+        {
+            let mut a = Namespace::new("a").unwrap();
+            let xino = a.create_dir(ROOT_INO, "X", 1).unwrap();
+            let yino = a.create_dir(ROOT_INO, "Y", 1).unwrap();
+            let snap = a.save();
+            let mut b = Namespace::from_bytes("b", &snap).unwrap();
 
-    #[test]
-    fn rename_is_a_move_that_preserves_inode() {
-        let mut ns = Namespace::new("a").unwrap();
-        let ino = ns.create_file(ROOT_INO, "old", Some(&h(9)), 4, 1).unwrap();
-        let record_id = ns.record_id_for(ino).unwrap();
-        let dir = ns.create_dir(ROOT_INO, "sub", 1).unwrap();
-        assert!(ns.rename(ROOT_INO, "old", dir, "new", 2));
-        assert!(ns.lookup(ROOT_INO, "old").is_none());
-        let moved = ns.lookup(dir, "new").unwrap();
-        assert_eq!(moved.ino, INodeNo(ino), "inode preserved across move");
-        assert_eq!(
-            ns.record_id_for(moved.ino.0),
-            Some(record_id),
-            "rename and move preserve collaborative identity"
-        );
-        assert_eq!(ns.hash_for(ino), Some(h(9)));
-    }
+            // A moves X under Y; B moves Y under X (concurrently).
+            let a_y = a.lookup(ROOT_INO, "Y").unwrap().ino.0;
+            a.rename(ROOT_INO, "X", a_y, "X", 5);
+            let b_x = b.lookup(ROOT_INO, "X").unwrap().ino.0;
+            b.rename(ROOT_INO, "Y", b_x, "Y", 5);
+            let _ = (xino, yino);
 
-    #[test]
-    fn conflict_copy_gets_a_distinct_record_id() {
-        let mut ns = Namespace::new("a").unwrap();
-        let original = ns.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
-        let original_record = ns.record_id_for(original).unwrap();
-        assert!(ns.create_conflict_copy(ROOT_ID, "doc.sync-conflict", &h(2), 1, 2));
-        let copy = ns.resolve_path_ino("doc.sync-conflict").unwrap();
-        assert_ne!(ns.record_id_for(copy), Some(original_record));
-        assert!(ns.record_id_for(copy).is_some());
-    }
+            let mut a2 = Namespace::from_bytes("a", &a.save()).unwrap();
+            let mut b2 = Namespace::from_bytes("b", &b.save()).unwrap();
+            let _ = a2.merge_doc(&mut b2.clone_doc());
+            let _ = b2.merge_doc(&mut a.clone_doc());
+            a2.resolve();
+            b2.resolve();
 
-    #[test]
-    fn live_blob_paths_follow_rename_thumbnail_and_delete() {
-        let mut ns = Namespace::new("a").unwrap();
-        let docs = ns.create_dir(ROOT_INO, "docs", 1).unwrap();
-        let ino = ns.create_file(docs, "old.png", Some(&h(1)), 4, 1).unwrap();
-        assert!(ns.set_thumb(ino, &h(2)));
+            assert!(
+                a2.find_cycle().is_none(),
+                "a side must be acyclic after resolve"
+            );
+            assert!(
+                b2.find_cycle().is_none(),
+                "b side must be acyclic after resolve"
+            );
 
-        assert_eq!(ns.live_paths_for_blob(h(1)), vec!["/docs/old.png"]);
-        assert_eq!(ns.live_paths_for_blob(h(2)), vec!["/docs/old.png"]);
-
-        assert!(ns.rename(docs, "old.png", ROOT_INO, "new.png", 2));
-        assert_eq!(ns.live_paths_for_blob(h(1)), vec!["/new.png"]);
-        assert_eq!(ns.live_paths_for_blob(h(2)), vec!["/new.png"]);
-
-        assert!(ns.remove(ino));
-        assert!(ns.live_paths_for_blob(h(1)).is_empty());
-        assert!(ns.live_paths_for_blob(h(2)).is_empty());
-    }
-
-    #[test]
-    fn direct_blob_lookup_returns_only_live_stable_records() {
-        let mut ns = Namespace::new("a").unwrap();
-        let first = ns
-            .create_file(ROOT_INO, "first", Some(&h(1)), 4, 1)
-            .unwrap();
-        let second = ns
-            .create_file(ROOT_INO, "second", Some(&h(9)), 4, 1)
-            .unwrap();
-        let first_record = ns.record_id_for(first).unwrap();
-        let second_record = ns.record_id_for(second).unwrap();
-        assert!(ns.set_thumb(second, &h(1)));
-        assert_eq!(
-            ns.live_record_ids_for_direct_blob(h(1), 8).unwrap(),
-            vec![first_record, second_record]
+            let xid = a2
+                .live_node_ids()
                 .into_iter()
-                .collect::<std::collections::BTreeSet<_>>()
+                .find(|i| a2.name_of(i).as_deref() == Some(b"X"));
+            let yid = a2
+                .live_node_ids()
                 .into_iter()
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            ns.live_record_ids_for_direct_blob(h(1), 1),
-            Err(LiveRecordBlobScanError::LimitExceeded { limit: 1 })
-        );
+                .find(|i| a2.name_of(i).as_deref() == Some(b"Y"));
+            assert!(
+                xid.is_some() && yid.is_some(),
+                "both dirs survive resolution"
+            );
 
-        assert!(ns.remove(first));
-        assert_eq!(
-            ns.live_record_ids_for_direct_blob(h(1), 8).unwrap(),
-            vec![second_record]
-        );
-        assert!(
-            ns.live_record_ids_for_direct_blob(h(77), 8)
-                .unwrap()
-                .is_empty()
-        );
-    }
+            for id in a2.live_node_ids() {
+                assert_eq!(
+                    a2.parent_of(&id),
+                    b2.parent_of(&id),
+                    "peers must converge on parent of {id}"
+                );
+            }
+        }
+        // Phase `delete_dir_vs_create_child_converges_to_deleted`.
+        {
+            let mut a = Namespace::new("a").unwrap();
+            let dino = a.create_dir(ROOT_INO, "d", 1).unwrap();
+            let snap = a.save();
+            let mut b = Namespace::from_bytes("b", &snap).unwrap();
 
-    #[test]
-    fn rename_rejects_move_into_own_descendant() {
-        let mut ns = Namespace::new("a").unwrap();
-        let d1 = ns.create_dir(ROOT_INO, "d1", 1).unwrap();
-        let d2 = ns.create_dir(d1, "d2", 1).unwrap();
-        assert!(
-            !ns.rename(ROOT_INO, "d1", d2, "d1", 2),
-            "cannot move d1 under d1/d2"
-        );
-        assert!(ns.lookup(ROOT_INO, "d1").is_some());
-    }
+            a.remove(dino);
+            let b_d = b.lookup(ROOT_INO, "d").unwrap().ino.0;
+            b.create_file(b_d, "new.txt", Some(&h(3)), 3, 1).unwrap();
 
-    #[test]
-    fn disjoint_inserts_merge() {
-        let mut a = Namespace::new("a").unwrap();
-        let bytes = a.save();
-        let mut b = Namespace::from_bytes("b", &bytes).unwrap();
-        a.create_file(ROOT_INO, "from_a", Some(&h(1)), 1, 1)
-            .unwrap();
-        b.create_file(ROOT_INO, "from_b", Some(&h(2)), 1, 1)
-            .unwrap();
-        a.merge_doc(&mut b).unwrap();
-        assert!(a.lookup(ROOT_INO, "from_a").is_some());
-        assert!(a.lookup(ROOT_INO, "from_b").is_some());
-    }
+            let _ = a.merge_doc(&mut b);
+            a.resolve();
 
-    #[test]
-    fn concurrent_cross_move_resolves_acyclically_and_converges() {
-        let mut a = Namespace::new("a").unwrap();
-        let xino = a.create_dir(ROOT_INO, "X", 1).unwrap();
-        let yino = a.create_dir(ROOT_INO, "Y", 1).unwrap();
-        let snap = a.save();
-        let mut b = Namespace::from_bytes("b", &snap).unwrap();
-
-        // A moves X under Y; B moves Y under X (concurrently).
-        let a_y = a.lookup(ROOT_INO, "Y").unwrap().ino.0;
-        a.rename(ROOT_INO, "X", a_y, "X", 5);
-        let b_x = b.lookup(ROOT_INO, "X").unwrap().ino.0;
-        b.rename(ROOT_INO, "Y", b_x, "Y", 5);
-        let _ = (xino, yino);
-
-        let mut a2 = Namespace::from_bytes("a", &a.save()).unwrap();
-        let mut b2 = Namespace::from_bytes("b", &b.save()).unwrap();
-        let _ = a2.merge_doc(&mut b2.clone_doc());
-        let _ = b2.merge_doc(&mut a.clone_doc());
-        a2.resolve();
-        b2.resolve();
-
-        assert!(
-            a2.find_cycle().is_none(),
-            "a side must be acyclic after resolve"
-        );
-        assert!(
-            b2.find_cycle().is_none(),
-            "b side must be acyclic after resolve"
-        );
-
-        let xid = a2
-            .live_node_ids()
-            .into_iter()
-            .find(|i| a2.name_of(i).as_deref() == Some(b"X"));
-        let yid = a2
-            .live_node_ids()
-            .into_iter()
-            .find(|i| a2.name_of(i).as_deref() == Some(b"Y"));
-        assert!(
-            xid.is_some() && yid.is_some(),
-            "both dirs survive resolution"
-        );
-
-        for id in a2.live_node_ids() {
-            assert_eq!(
-                a2.parent_of(&id),
-                b2.parent_of(&id),
-                "peers must converge on parent of {id}"
+            assert!(a.lookup(ROOT_INO, "d").is_none(), "d stays deleted");
+            let new_id = a
+                .doc
+                .keys(&a.nodes)
+                .find(|i| a.name_of(i).as_deref() == Some(b"new.txt"));
+            assert!(
+                new_id.is_some(),
+                "the node still exists in the doc (not lost)"
+            );
+            assert!(
+                !a.reaches_root(&new_id.unwrap()),
+                "but it is not reachable from root (consistently trashed, not orphaned)"
             );
         }
-    }
-
-    #[test]
-    fn delete_dir_vs_create_child_converges_to_deleted() {
-        let mut a = Namespace::new("a").unwrap();
-        let dino = a.create_dir(ROOT_INO, "d", 1).unwrap();
-        let snap = a.save();
-        let mut b = Namespace::from_bytes("b", &snap).unwrap();
-
-        a.remove(dino);
-        let b_d = b.lookup(ROOT_INO, "d").unwrap().ino.0;
-        b.create_file(b_d, "new.txt", Some(&h(3)), 3, 1).unwrap();
-
-        let _ = a.merge_doc(&mut b);
-        a.resolve();
-
-        assert!(a.lookup(ROOT_INO, "d").is_none(), "d stays deleted");
-        let new_id = a
-            .doc
-            .keys(&a.nodes)
-            .find(|i| a.name_of(i).as_deref() == Some(b"new.txt"));
-        assert!(
-            new_id.is_some(),
-            "the node still exists in the doc (not lost)"
-        );
-        assert!(
-            !a.reaches_root(&new_id.unwrap()),
-            "but it is not reachable from root (consistently trashed, not orphaned)"
-        );
-    }
-
-    #[test]
-    fn tree_survives_save_and_reload() {
-        let mut a = Namespace::new("a").unwrap();
-        let dir = a.create_dir(ROOT_INO, "docs", 1).unwrap();
-        a.create_file(dir, "f.txt", Some(&h(5)), 5, 1).unwrap();
-        let bytes = a.save();
-
-        let mut b = Namespace::from_bytes("a", &bytes).unwrap();
-        let d = b.lookup(ROOT_INO, "docs").expect("dir restored");
-        let f = b.lookup(d.ino.0, "f.txt").expect("nested file restored");
-        assert_eq!(b.hash_for(f.ino.0), Some(h(5)));
-    }
-
-    #[test]
-    fn incremental_apply_and_resolve() {
-        let mut a = Namespace::new("a").unwrap();
-        let snap = a.save();
-        let mut b = Namespace::from_bytes("b", &snap).unwrap();
-        let _ = a.save_incremental();
-        a.create_file(ROOT_INO, "delta.txt", Some(&h(4)), 7, 1)
-            .unwrap();
-        let delta = a.save_incremental();
-        b.apply_remote_and_resolve(&delta).unwrap();
-        assert_eq!(b.lookup(ROOT_INO, "delta.txt").unwrap().size, 7);
-    }
-
-    #[test]
-    fn sync_protocol_converges_two_namespaces() {
-        // Diverge from a shared base doc; the incremental sync ping-pong must converge them.
-        let mut a = Namespace::new("a").unwrap();
-        a.create_file(ROOT_INO, "base", Some(&h(1)), 1, 1).unwrap();
-        let mut b = Namespace::from_bytes("b", &a.save()).unwrap();
-
-        a.create_file(ROOT_INO, "from_a", Some(&h(2)), 1, 1)
-            .unwrap();
-        b.create_file(ROOT_INO, "from_b", Some(&h(3)), 1, 1)
-            .unwrap();
-
-        let mut sa = automerge::sync::State::new();
-        let mut sb = automerge::sync::State::new();
-        for _ in 0..20 {
-            let ma = a.sync_generate(&mut sa);
-            if let Some(m) = &ma {
-                b.sync_receive(&mut sb, m).unwrap();
-            }
-            let mb = b.sync_generate(&mut sb);
-            if let Some(m) = &mb {
-                a.sync_receive(&mut sa, m).unwrap();
-            }
-            if ma.is_none() && mb.is_none() {
-                break;
-            }
+        // Phase `incremental_apply_and_resolve`.
+        {
+            let mut a = Namespace::new("a").unwrap();
+            let snap = a.save();
+            let mut b = Namespace::from_bytes("b", &snap).unwrap();
+            let _ = a.save_incremental();
+            a.create_file(ROOT_INO, "delta.txt", Some(&h(4)), 7, 1)
+                .unwrap();
+            let delta = a.save_incremental();
+            b.apply_remote_and_resolve(&delta).unwrap();
+            assert_eq!(b.lookup(ROOT_INO, "delta.txt").unwrap().size, 7);
         }
-        assert!(a.lookup(ROOT_INO, "from_b").is_some(), "a got b's change");
-        assert!(b.lookup(ROOT_INO, "from_a").is_some(), "b got a's change");
+        // Phase `sync_protocol_converges_two_namespaces`.
+        {
+            // Diverge from a shared base doc; the incremental sync ping-pong must converge them.
+            let mut a = Namespace::new("a").unwrap();
+            a.create_file(ROOT_INO, "base", Some(&h(1)), 1, 1).unwrap();
+            let mut b = Namespace::from_bytes("b", &a.save()).unwrap();
+
+            a.create_file(ROOT_INO, "from_a", Some(&h(2)), 1, 1)
+                .unwrap();
+            b.create_file(ROOT_INO, "from_b", Some(&h(3)), 1, 1)
+                .unwrap();
+
+            let mut sa = automerge::sync::State::new();
+            let mut sb = automerge::sync::State::new();
+            for _ in 0..20 {
+                let ma = a.sync_generate(&mut sa);
+                if let Some(m) = &ma {
+                    b.sync_receive(&mut sb, m).unwrap();
+                }
+                let mb = b.sync_generate(&mut sb);
+                if let Some(m) = &mb {
+                    a.sync_receive(&mut sa, m).unwrap();
+                }
+                if ma.is_none() && mb.is_none() {
+                    break;
+                }
+            }
+            assert!(a.lookup(ROOT_INO, "from_b").is_some(), "a got b's change");
+            assert!(b.lookup(ROOT_INO, "from_a").is_some(), "b got a's change");
+        }
     }
 
     #[test]
-    fn document_import_export_roundtrips() {
-        let reg = qdoc_codecs::builtin_registry();
-        let mut ns = Namespace::new("a").unwrap();
-        let ino = ns.create_document(ROOT_INO, "note.md", "md", 1).unwrap();
-        assert_eq!(ns.document_codec(ino).as_deref(), Some("md"));
+    fn documents_import_export_and_merge_semantically() {
+        // Phase `document_import_export_roundtrips`.
+        {
+            let reg = tilo_doc_codecs::builtin_registry();
+            let mut ns = Namespace::new("a").unwrap();
+            let ino = ns.create_document(ROOT_INO, "note.md", "md", 1).unwrap();
+            assert_eq!(ns.document_codec(ino).as_deref(), Some("md"));
 
-        let md = b"# Title\n\nHello world\n";
-        assert!(ns.import_document(ino, &reg, md, 2, &tilo_content::ContentStore::memory()));
-        let out = ns
-            .export_document(ino, &reg, &tilo_content::NoContent)
-            .expect("export");
-        let s = String::from_utf8_lossy(&out);
-        assert!(
-            s.contains("Title") && s.contains("Hello world"),
-            "round-trip lost content: {s}"
-        );
-    }
-
-    #[test]
-    fn failed_import_preserves_existing_document() {
-        let reg = qdoc_codecs::builtin_registry();
-        let mut ns = Namespace::new("a").unwrap();
-        let ino = ns.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
-        assert!(ns.import_document(
-            ino,
-            &reg,
-            b"# Keep\n\nimportant\n",
-            2,
-            &tilo_content::ContentStore::memory()
-        ));
-        let before = ns
-            .export_document(ino, &reg, &tilo_content::NoContent)
-            .unwrap();
-
-        // invalid UTF-8 is rejected by the markdown codec
-        assert!(
-            !ns.import_document(
+            let md = b"# Title\n\nHello world\n";
+            assert!(ns.import_document(ino, &reg, md, 2, &tilo_content::ContentStore::memory()));
+            let out = ns
+                .export_document(ino, &reg, &tilo_content::NoContent)
+                .expect("export");
+            let s = String::from_utf8_lossy(&out);
+            assert!(
+                s.contains("Title") && s.contains("Hello world"),
+                "round-trip lost content: {s}"
+            );
+        }
+        // Phase `failed_import_preserves_existing_document`.
+        {
+            let reg = tilo_doc_codecs::builtin_registry();
+            let mut ns = Namespace::new("a").unwrap();
+            let ino = ns.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
+            assert!(ns.import_document(
                 ino,
                 &reg,
-                &[0xff, 0xfe, 0x00],
-                3,
+                b"# Keep\n\nimportant\n",
+                2,
                 &tilo_content::ContentStore::memory()
-            ),
-            "malformed import must be rejected"
-        );
-        let after = ns
-            .export_document(ino, &reg, &tilo_content::NoContent)
-            .unwrap();
-        assert_eq!(
-            before, after,
-            "existing document must survive a rejected import"
-        );
-    }
+            ));
+            let before = ns
+                .export_document(ino, &reg, &tilo_content::NoContent)
+                .unwrap();
 
-    #[test]
-    fn document_concurrent_edits_merge_semantically() {
-        // The point of model B: concurrent edits to the same document merge at the text level, not a conflict copy.
-        let mut a = Namespace::new("a").unwrap();
-        let ino = a.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
-        let bid = a.document_insert_block(ino, None, "paragraph").unwrap();
-        a.document_splice(ino, &bid, 0, 0, "Hello world");
-
-        let snap = a.save();
-        let mut b = Namespace::from_bytes("b", &snap).unwrap();
-        let bino = b.lookup(ROOT_INO, "doc.md").unwrap().ino.0;
-
-        // concurrent in-place edits to the same paragraph
-        a.document_splice(ino, &bid, 5, 0, " dear");
-        b.document_splice(bino, &bid, 11, 0, " (B)");
-
-        a.merge_doc(&mut b).unwrap();
-        let text = a.document_block_text(ino, &bid).unwrap();
-        assert!(text.contains("dear"), "A's edit must survive: {text}");
-        assert!(
-            text.contains("(B)"),
-            "B's edit must survive (text-level merge): {text}"
-        );
-    }
-
-    #[test]
-    fn indexed_record_tail_page_is_direct_and_does_not_rebuild_the_namespace() {
-        let mut ns = Namespace::new("a").unwrap();
-        ns.record_index.clear();
-        ns.record_index_order.clear();
-        for value in 1..=100_001_u128 {
-            let record_id = FileRecordId(Uuid::from_u128(value));
-            ns.record_index.insert(
-                record_id,
-                IndexedRecord {
-                    record_id,
-                    node_id: format!("synthetic/{value}"),
-                    parent_id: ROOT_ID.into(),
-                    path: format!("/synthetic-{value}"),
-                    is_dir: false,
-                },
+            // invalid UTF-8 is rejected by the markdown codec
+            assert!(
+                !ns.import_document(
+                    ino,
+                    &reg,
+                    &[0xff, 0xfe, 0x00],
+                    3,
+                    &tilo_content::ContentStore::memory()
+                ),
+                "malformed import must be rejected"
             );
-            ns.record_index_order.push(record_id);
+            let after = ns
+                .export_document(ino, &reg, &tilo_content::NoContent)
+                .unwrap();
+            assert_eq!(
+                before, after,
+                "existing document must survive a rejected import"
+            );
         }
-        let before = ns.record_index_rebuild_count();
-        let page = ns.indexed_record_page(100_000, 128);
-        assert_eq!(page.len(), 1);
-        assert_eq!(page[0].path, "/synthetic-100001");
-        assert_eq!(ns.record_index_rebuild_count(), before);
+        // Phase `document_concurrent_edits_merge_semantically`.
+        {
+            // The point of model B: concurrent edits to the same document merge at the text level, not a conflict copy.
+            let mut a = Namespace::new("a").unwrap();
+            let ino = a.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
+            let bid = a.document_insert_block(ino, None, "paragraph").unwrap();
+            a.document_splice(ino, &bid, 0, 0, "Hello world");
+
+            let snap = a.save();
+            let mut b = Namespace::from_bytes("b", &snap).unwrap();
+            let bino = b.lookup(ROOT_INO, "doc.md").unwrap().ino.0;
+
+            // concurrent in-place edits to the same paragraph
+            a.document_splice(ino, &bid, 5, 0, " dear");
+            b.document_splice(bino, &bid, 11, 0, " (B)");
+
+            a.merge_doc(&mut b).unwrap();
+            let text = a.document_block_text(ino, &bid).unwrap();
+            assert!(text.contains("dear"), "A's edit must survive: {text}");
+            assert!(
+                text.contains("(B)"),
+                "B's edit must survive (text-level merge): {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn record_indexes_track_structure_and_page_tails_directly() {
+        // Phase `indexed_record_tail_page_is_direct_and_does_not_rebuild_the_namespace`.
+        {
+            let mut ns = Namespace::new("a").unwrap();
+            ns.record_index.clear();
+            ns.record_index_order.clear();
+            for value in 1..=100_001_u128 {
+                let record_id = FileRecordId(Uuid::from_u128(value));
+                ns.record_index.insert(
+                    record_id,
+                    IndexedRecord {
+                        record_id,
+                        node_id: format!("synthetic/{value}"),
+                        parent_id: ROOT_ID.into(),
+                        path: format!("/synthetic-{value}"),
+                        is_dir: false,
+                    },
+                );
+                ns.record_index_order.push(record_id);
+            }
+            let before = ns.record_index_rebuild_count();
+            let page = ns.indexed_record_page(100_000, 128);
+            assert_eq!(page.len(), 1);
+            assert_eq!(page[0].path, "/synthetic-100001");
+            assert_eq!(ns.record_index_rebuild_count(), before);
+        }
+        // Phase `structural_index_tracks_creates_moves_deletes_and_merges`.
+        {
+            let mut a = Namespace::new("a").unwrap();
+            let dir = a.create_dir(ROOT_INO, "dir", 1).unwrap();
+            for i in 0..50_u64 {
+                let parent = if i % 3 == 0 { dir } else { ROOT_INO };
+                a.create_file(parent, format!("f{i}"), Some(&h(1)), 1, i)
+                    .unwrap();
+            }
+            assert_indexes_match_rebuild(&a);
+            assert!(a.rename(ROOT_INO, "f1", dir, "moved", 2));
+            assert!(
+                a.rename(dir, "f3", dir, "f6", 3),
+                "rename over an existing name"
+            );
+            let gone = a.lookup(ROOT_INO, "f2").unwrap().ino.0;
+            assert!(a.remove(gone));
+            assert_indexes_match_rebuild(&a);
+            assert!(a.lookup(ROOT_INO, "f1").is_none());
+            assert!(a.lookup(dir, "moved").is_some());
+            assert!(a.lookup(ROOT_INO, "f2").is_none());
+
+            // Concurrent same-name creates on two replicas: the lowest id wins
+            // the name, exactly as the unindexed scan chose.
+            let mut b = a.clone_doc();
+            b.author = "b".into();
+            a.create_file(ROOT_INO, "same", Some(&h(2)), 1, 9).unwrap();
+            b.create_file(ROOT_INO, "same", Some(&h(3)), 1, 9).unwrap();
+            let delta = b.save_incremental();
+            a.apply_remote_and_resolve(&delta).unwrap();
+            assert_indexes_match_rebuild(&a);
+            let winner = a.lookup(ROOT_INO, "same").unwrap().ino.0;
+            let mut same: Vec<String> = a
+                .doc
+                .keys(&a.nodes)
+                .filter(|id| a.name_of(id).is_some_and(|name| name.as_bytes() == b"same"))
+                .collect();
+            same.sort();
+            assert_eq!(a.id_for_ino(winner), same.first().map(String::as_str));
+            let names: Vec<_> = a
+                .readdir(ROOT_INO)
+                .unwrap()
+                .into_iter()
+                .map(|(_, _, name)| name)
+                .collect();
+            let mut sorted = names.clone();
+            sorted.sort();
+            assert_eq!(names, sorted);
+        }
     }
 
     /// The incrementally maintained structural index and record digest must
@@ -4190,67 +4258,6 @@ mod tests {
         assert_eq!(ns.tree.children, rebuilt.tree.children);
         assert_eq!(ns.record_index_digest, rebuilt.record_index_digest);
         assert_eq!(ns.record_index_revision, rebuilt.record_index_revision);
-    }
-
-    #[test]
-    fn structural_index_tracks_creates_moves_deletes_and_merges() {
-        let mut a = Namespace::new("a").unwrap();
-        let dir = a.create_dir(ROOT_INO, "dir", 1).unwrap();
-        for i in 0..50_u64 {
-            let parent = if i % 3 == 0 { dir } else { ROOT_INO };
-            a.create_file(parent, format!("f{i}"), Some(&h(1)), 1, i)
-                .unwrap();
-        }
-        assert_indexes_match_rebuild(&a);
-        assert!(a.rename(ROOT_INO, "f1", dir, "moved", 2));
-        assert!(
-            a.rename(dir, "f3", dir, "f6", 3),
-            "rename over an existing name"
-        );
-        let gone = a.lookup(ROOT_INO, "f2").unwrap().ino.0;
-        assert!(a.remove(gone));
-        assert_indexes_match_rebuild(&a);
-        assert!(a.lookup(ROOT_INO, "f1").is_none());
-        assert!(a.lookup(dir, "moved").is_some());
-        assert!(a.lookup(ROOT_INO, "f2").is_none());
-
-        // Concurrent same-name creates on two replicas: the lowest id wins
-        // the name, exactly as the unindexed scan chose.
-        let mut b = a.clone_doc();
-        b.author = "b".into();
-        a.create_file(ROOT_INO, "same", Some(&h(2)), 1, 9).unwrap();
-        b.create_file(ROOT_INO, "same", Some(&h(3)), 1, 9).unwrap();
-        let delta = b.save_incremental();
-        a.apply_remote_and_resolve(&delta).unwrap();
-        assert_indexes_match_rebuild(&a);
-        let winner = a.lookup(ROOT_INO, "same").unwrap().ino.0;
-        let mut same: Vec<String> = a
-            .doc
-            .keys(&a.nodes)
-            .filter(|id| a.name_of(id).is_some_and(|name| name.as_bytes() == b"same"))
-            .collect();
-        same.sort();
-        assert_eq!(a.id_for_ino(winner), same.first().map(String::as_str));
-        let names: Vec<_> = a
-            .readdir(ROOT_INO)
-            .unwrap()
-            .into_iter()
-            .map(|(_, _, name)| name)
-            .collect();
-        let mut sorted = names.clone();
-        sorted.sort();
-        assert_eq!(names, sorted);
-    }
-
-    #[test]
-    fn save_incremental_still_backfills_record_ids_after_an_import() {
-        let mut ns = Namespace::new("a").unwrap();
-        ns.create_file(ROOT_INO, "x", Some(&h(1)), 1, 1).unwrap();
-        let mut copy = ns.clone_doc();
-        assert!(copy.record_ids_complete);
-        let copied = copy.lookup(ROOT_INO, "x").unwrap().ino.0;
-        let original = ns.lookup(ROOT_INO, "x").unwrap().ino.0;
-        assert_eq!(copy.record_id_for(copied), ns.record_id_for(original));
     }
 
     // test-only helper to merge using a fresh loaded copy

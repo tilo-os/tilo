@@ -248,209 +248,221 @@ mod tests {
     use super::*;
 
     #[test]
-    fn single_sample_holds_position() {
-        let t0 = Instant::now();
-        let mut i = CursorInterpolator::new();
-        i.push_sample("alice", "Alice", [50.0, 50.0], t0);
-        let cs = i.sample_at(t0);
-        assert_eq!(cs.len(), 1);
-        assert_eq!(cs[0].position, [50.0, 50.0]);
-        assert_eq!(cs[0].alpha, 1.0);
-    }
-
-    #[test]
-    fn interpolates_between_samples() {
-        let t0 = Instant::now();
-        let t100 = t0 + Duration::from_millis(100);
-        let t50 = t0 + Duration::from_millis(50);
-        let mut i = CursorInterpolator::new();
-        i.push_sample("alice", "Alice", [0.0, 0.0], t0);
-        i.push_sample("alice", "Alice", [100.0, 100.0], t100);
-        let cs = i.sample_at(t50);
-        assert_eq!(cs.len(), 1);
-        // Cubic ease at t=0.5 is exactly 0.5 (smoothstep symmetry).
-        let (x, y) = (cs[0].position[0], cs[0].position[1]);
-        assert!(
-            (x - 50.0).abs() < 5.0 && (y - 50.0).abs() < 5.0,
-            "expected (50\u{b1}5, 50\u{b1}5), got ({x}, {y})",
-        );
-    }
-
-    #[test]
-    fn holds_latest_position_past_the_window() {
-        let t0 = Instant::now();
-        let t100 = t0 + Duration::from_millis(100);
-        let mut i = CursorInterpolator::new();
-        i.push_sample("alice", "Alice", [0.0, 0.0], t0);
-        i.push_sample("alice", "Alice", [100.0, 100.0], t100);
-        let cs = i.sample_at(t100 + Duration::from_millis(500)); // well past t100, before fade
-        assert_eq!(cs[0].position, [100.0, 100.0]);
-    }
-
-    #[test]
-    fn stream_of_samples_never_moves_backwards() {
-        let t0 = Instant::now();
-        let t100 = t0 + Duration::from_millis(100);
-        let mut i = CursorInterpolator::new();
-        i.push_sample("alice", "", [0.0, 0.0], t0);
-        i.push_sample("alice", "", [100.0, 100.0], t100);
-
-        let mut xs = vec![];
-        for ms in [0u64, 25, 50, 75, 100] {
-            let cs = i.sample_at(t0 + Duration::from_millis(ms));
-            xs.push(cs[0].position[0]);
+    fn cursor_samples_interpolate_forward_and_hold_the_latest_position() {
+        fn single_sample_holds_position() {
+            let t0 = Instant::now();
+            let mut i = CursorInterpolator::new();
+            i.push_sample("alice", "Alice", [50.0, 50.0], t0);
+            let cs = i.sample_at(t0);
+            assert_eq!(cs.len(), 1);
+            assert_eq!(cs[0].position, [50.0, 50.0]);
+            assert_eq!(cs[0].alpha, 1.0);
         }
-        for w in xs.windows(2) {
+
+        fn interpolates_between_samples() {
+            let t0 = Instant::now();
+            let t100 = t0 + Duration::from_millis(100);
+            let t50 = t0 + Duration::from_millis(50);
+            let mut i = CursorInterpolator::new();
+            i.push_sample("alice", "Alice", [0.0, 0.0], t0);
+            i.push_sample("alice", "Alice", [100.0, 100.0], t100);
+            let cs = i.sample_at(t50);
+            assert_eq!(cs.len(), 1);
+            // Cubic ease at t=0.5 is exactly 0.5 (smoothstep symmetry).
+            let (x, y) = (cs[0].position[0], cs[0].position[1]);
             assert!(
-                w[1] >= w[0] - 0.01,
-                "position must not go backwards across samples: {xs:?}",
+                (x - 50.0).abs() < 5.0 && (y - 50.0).abs() < 5.0,
+                "expected (50\u{b1}5, 50\u{b1}5), got ({x}, {y})",
             );
         }
-        assert!((xs[2] - 50.0).abs() <= 5.0);
+
+        fn holds_latest_position_past_the_window() {
+            let t0 = Instant::now();
+            let t100 = t0 + Duration::from_millis(100);
+            let mut i = CursorInterpolator::new();
+            i.push_sample("alice", "Alice", [0.0, 0.0], t0);
+            i.push_sample("alice", "Alice", [100.0, 100.0], t100);
+            let cs = i.sample_at(t100 + Duration::from_millis(500)); // well past t100, before fade
+            assert_eq!(cs[0].position, [100.0, 100.0]);
+        }
+
+        fn stream_of_samples_never_moves_backwards() {
+            let t0 = Instant::now();
+            let t100 = t0 + Duration::from_millis(100);
+            let mut i = CursorInterpolator::new();
+            i.push_sample("alice", "", [0.0, 0.0], t0);
+            i.push_sample("alice", "", [100.0, 100.0], t100);
+
+            let mut xs = vec![];
+            for ms in [0u64, 25, 50, 75, 100] {
+                let cs = i.sample_at(t0 + Duration::from_millis(ms));
+                xs.push(cs[0].position[0]);
+            }
+            for w in xs.windows(2) {
+                assert!(
+                    w[1] >= w[0] - 0.01,
+                    "position must not go backwards across samples: {xs:?}",
+                );
+            }
+            assert!((xs[2] - 50.0).abs() <= 5.0);
+        }
+
+        fn label_updates_on_non_empty_push() {
+            let t0 = Instant::now();
+            let mut i = CursorInterpolator::new();
+            i.push_sample("alice", "Alice", [0.0, 0.0], t0);
+            i.push_sample("alice", "", [10.0, 10.0], t0);
+            assert_eq!(i.sample_at(t0)[0].label, "Alice");
+            i.push_sample("alice", "Alice S.", [10.0, 10.0], t0);
+            assert_eq!(i.sample_at(t0)[0].label, "Alice S.");
+        }
+
+        single_sample_holds_position();
+        interpolates_between_samples();
+        holds_latest_position_past_the_window();
+        stream_of_samples_never_moves_backwards();
+        label_updates_on_non_empty_push();
     }
 
     #[test]
-    fn fades_out_after_inactivity() {
-        let t0 = Instant::now();
-        let mut i = CursorInterpolator::new();
-        i.push_sample("alice", "Alice", [10.0, 10.0], t0);
+    fn silent_cursors_fade_and_are_collected_or_removed() {
+        fn fades_out_after_inactivity() {
+            let t0 = Instant::now();
+            let mut i = CursorInterpolator::new();
+            i.push_sample("alice", "Alice", [10.0, 10.0], t0);
 
-        let cs = i.sample_at(t0 + FADE_AFTER); // just before fade begins
-        assert!(cs[0].alpha >= 0.99);
+            let cs = i.sample_at(t0 + FADE_AFTER); // just before fade begins
+            assert!(cs[0].alpha >= 0.99);
 
-        let cs = i.sample_at(t0 + FADE_AFTER + FADE_DURATION / 2); // mid-fade
-        assert!(cs[0].alpha > 0.0 && cs[0].alpha < 1.0);
+            let cs = i.sample_at(t0 + FADE_AFTER + FADE_DURATION / 2); // mid-fade
+            assert!(cs[0].alpha > 0.0 && cs[0].alpha < 1.0);
 
-        let cs = i.sample_at(t0 + FADE_AFTER + FADE_DURATION * 2); // after fade: gone
-        assert!(cs.is_empty());
-    }
+            let cs = i.sample_at(t0 + FADE_AFTER + FADE_DURATION * 2); // after fade: gone
+            assert!(cs.is_empty());
+        }
 
-    #[test]
-    fn gc_drops_faded_peers() {
-        let t0 = Instant::now();
-        let mut i = CursorInterpolator::new();
-        i.push_sample("alice", "Alice", [10.0, 10.0], t0);
-        i.push_sample("bob", "Bob", [20.0, 20.0], t0 + Duration::from_secs(1));
-        assert_eq!(i.len(), 2);
-        i.gc(t0 + Duration::from_secs(1) + FADE_AFTER + FADE_DURATION * 2); // well past both fade windows
-        assert_eq!(i.len(), 0);
-    }
+        fn gc_drops_faded_peers() {
+            let t0 = Instant::now();
+            let mut i = CursorInterpolator::new();
+            i.push_sample("alice", "Alice", [10.0, 10.0], t0);
+            i.push_sample("bob", "Bob", [20.0, 20.0], t0 + Duration::from_secs(1));
+            assert_eq!(i.len(), 2);
+            i.gc(t0 + Duration::from_secs(1) + FADE_AFTER + FADE_DURATION * 2); // well past both fade windows
+            assert_eq!(i.len(), 0);
+        }
 
-    #[test]
-    fn remove_drops_peer() {
-        let t0 = Instant::now();
-        let mut i = CursorInterpolator::new();
-        i.push_sample("alice", "Alice", [0.0, 0.0], t0);
-        i.push_sample("bob", "Bob", [0.0, 0.0], t0);
-        i.remove("alice");
-        assert_eq!(i.len(), 1);
-        assert_eq!(i.sample_at(t0)[0].user_id, "bob");
-    }
+        fn remove_drops_peer() {
+            let t0 = Instant::now();
+            let mut i = CursorInterpolator::new();
+            i.push_sample("alice", "Alice", [0.0, 0.0], t0);
+            i.push_sample("bob", "Bob", [0.0, 0.0], t0);
+            i.remove("alice");
+            assert_eq!(i.len(), 1);
+            assert_eq!(i.sample_at(t0)[0].user_id, "bob");
+        }
 
-    #[test]
-    fn label_updates_on_non_empty_push() {
-        let t0 = Instant::now();
-        let mut i = CursorInterpolator::new();
-        i.push_sample("alice", "Alice", [0.0, 0.0], t0);
-        i.push_sample("alice", "", [10.0, 10.0], t0);
-        assert_eq!(i.sample_at(t0)[0].label, "Alice");
-        i.push_sample("alice", "Alice S.", [10.0, 10.0], t0);
-        assert_eq!(i.sample_at(t0)[0].label, "Alice S.");
+        fades_out_after_inactivity();
+        gc_drops_faded_peers();
+        remove_drops_peer();
     }
 
     // --- apply_to: the path the compositor's frame tick actually runs ---
 
     #[test]
-    fn unchanged_projection_does_not_request_another_frame() {
-        let t0 = Instant::now();
-        let mut ctx = PresenceCtx::empty();
-        let mut i = CursorInterpolator::new();
-        i.push_sample("alice", "Alice", [40.0, 20.0], t0);
-        assert!(i.apply_to(&mut ctx, t0));
-        assert!(!i.apply_to(&mut ctx, t0 + Duration::from_millis(16)));
-    }
+    fn apply_to_smooths_owned_cursors_with_the_shared_palette_only() {
+        fn unchanged_projection_does_not_request_another_frame() {
+            let t0 = Instant::now();
+            let mut ctx = PresenceCtx::empty();
+            let mut i = CursorInterpolator::new();
+            i.push_sample("alice", "Alice", [40.0, 20.0], t0);
+            assert!(i.apply_to(&mut ctx, t0));
+            assert!(!i.apply_to(&mut ctx, t0 + Duration::from_millis(16)));
+        }
 
-    #[test]
-    fn apply_to_smooths_the_cursor_the_overlay_reads() {
-        let t0 = Instant::now();
-        let mut ctx = PresenceCtx::empty();
-        let mut i = CursorInterpolator::new();
-        i.push_sample("alice", "Alice", [0.0, 0.0], t0);
-        i.push_sample(
-            "alice",
-            "Alice",
-            [100.0, 100.0],
-            t0 + Duration::from_millis(100),
-        );
+        fn apply_to_smooths_the_cursor_the_overlay_reads() {
+            let t0 = Instant::now();
+            let mut ctx = PresenceCtx::empty();
+            let mut i = CursorInterpolator::new();
+            i.push_sample("alice", "Alice", [0.0, 0.0], t0);
+            i.push_sample(
+                "alice",
+                "Alice",
+                [100.0, 100.0],
+                t0 + Duration::from_millis(100),
+            );
 
-        i.apply_to(&mut ctx, t0 + Duration::from_millis(50));
+            i.apply_to(&mut ctx, t0 + Duration::from_millis(50));
 
-        assert_eq!(ctx.remote_cursors.len(), 1);
-        let c = &ctx.remote_cursors[0];
-        assert_eq!(c.user_id, "alice");
-        assert_eq!(c.label, "Alice");
-        assert!(
-            (c.position[0] - 50.0).abs() < 5.0 && (c.position[1] - 50.0).abs() < 5.0,
-            "expected the eased midpoint, got {:?}",
-            c.position,
-        );
-    }
+            assert_eq!(ctx.remote_cursors.len(), 1);
+            let c = &ctx.remote_cursors[0];
+            assert_eq!(c.user_id, "alice");
+            assert_eq!(c.label, "Alice");
+            assert!(
+                (c.position[0] - 50.0).abs() < 5.0 && (c.position[1] - 50.0).abs() < 5.0,
+                "expected the eased midpoint, got {:?}",
+                c.position,
+            );
+        }
 
-    #[test]
-    fn apply_to_uses_the_shared_palette_not_a_private_one() {
-        let t0 = Instant::now();
-        let mut ctx = PresenceCtx::empty();
-        let mut interp = CursorInterpolator::new();
-        interp.push_sample("alice", "Alice", [1.0, 2.0], t0);
-        interp.apply_to(&mut ctx, t0);
+        fn apply_to_uses_the_shared_palette_not_a_private_one() {
+            let t0 = Instant::now();
+            let mut ctx = PresenceCtx::empty();
+            let mut interp = CursorInterpolator::new();
+            interp.push_sample("alice", "Alice", [1.0, 2.0], t0);
+            interp.apply_to(&mut ctx, t0);
 
-        let (red, green, blue) = ui::presence::user_color("alice");
-        let cursor = &ctx.remote_cursors[0];
-        assert!((cursor.color[0] - f32::from(red) / 255.0).abs() < 1e-3);
-        assert!((cursor.color[1] - f32::from(green) / 255.0).abs() < 1e-3);
-        assert!((cursor.color[2] - f32::from(blue) / 255.0).abs() < 1e-3);
-    }
+            let (red, green, blue) = ui::presence::user_color("alice");
+            let cursor = &ctx.remote_cursors[0];
+            assert!((cursor.color[0] - f32::from(red) / 255.0).abs() < 1e-3);
+            assert!((cursor.color[1] - f32::from(green) / 255.0).abs() < 1e-3);
+            assert!((cursor.color[2] - f32::from(blue) / 255.0).abs() < 1e-3);
+        }
 
-    #[test]
-    fn apply_to_fades_then_retires_a_silent_peer() {
-        let t0 = Instant::now();
-        let mut ctx = PresenceCtx::empty();
-        let mut i = CursorInterpolator::new();
-        i.push_sample("alice", "Alice", [10.0, 10.0], t0);
+        fn apply_to_fades_then_retires_a_silent_peer() {
+            let t0 = Instant::now();
+            let mut ctx = PresenceCtx::empty();
+            let mut i = CursorInterpolator::new();
+            i.push_sample("alice", "Alice", [10.0, 10.0], t0);
 
-        i.apply_to(&mut ctx, t0);
-        assert_eq!(
-            ctx.remote_cursors[0].color[3], 1.0,
-            "fresh sample is opaque"
-        );
+            i.apply_to(&mut ctx, t0);
+            assert_eq!(
+                ctx.remote_cursors[0].color[3], 1.0,
+                "fresh sample is opaque"
+            );
 
-        i.apply_to(&mut ctx, t0 + FADE_AFTER + FADE_DURATION / 2); // mid-fade
-        assert_eq!(ctx.remote_cursors.len(), 1);
-        let a = ctx.remote_cursors[0].color[3];
-        assert!(a > 0.0 && a < 1.0, "expected a partial fade, got {a}");
+            i.apply_to(&mut ctx, t0 + FADE_AFTER + FADE_DURATION / 2); // mid-fade
+            assert_eq!(ctx.remote_cursors.len(), 1);
+            let a = ctx.remote_cursors[0].color[3];
+            assert!(a > 0.0 && a < 1.0, "expected a partial fade, got {a}");
 
-        i.apply_to(&mut ctx, t0 + FADE_AFTER + FADE_DURATION * 2); // past the fade window
-        assert!(
-            ctx.remote_cursors.is_empty(),
-            "a peer that went silent must not leave a cursor behind",
-        );
-    }
+            i.apply_to(&mut ctx, t0 + FADE_AFTER + FADE_DURATION * 2); // past the fade window
+            assert!(
+                ctx.remote_cursors.is_empty(),
+                "a peer that went silent must not leave a cursor behind",
+            );
+        }
 
-    #[test]
-    fn apply_to_leaves_cursors_it_does_not_own_alone() {
-        let t0 = Instant::now();
-        let mut ctx = PresenceCtx::empty();
-        ctx.upsert_remote_cursor("bob".into(), [7.0, 7.0], Some("Bob"));
+        fn apply_to_leaves_cursors_it_does_not_own_alone() {
+            let t0 = Instant::now();
+            let mut ctx = PresenceCtx::empty();
+            ctx.upsert_remote_cursor("bob".into(), [7.0, 7.0], Some("Bob"));
 
-        let mut i = CursorInterpolator::new();
-        i.push_sample("alice", "Alice", [10.0, 10.0], t0);
-        i.apply_to(&mut ctx, t0 + FADE_AFTER + FADE_DURATION * 2);
+            let mut i = CursorInterpolator::new();
+            i.push_sample("alice", "Alice", [10.0, 10.0], t0);
+            i.apply_to(&mut ctx, t0 + FADE_AFTER + FADE_DURATION * 2);
 
-        let ids: Vec<&str> = ctx
-            .remote_cursors
-            .iter()
-            .map(|c| c.user_id.as_str())
-            .collect();
-        assert_eq!(ids, vec!["bob"]);
+            let ids: Vec<&str> = ctx
+                .remote_cursors
+                .iter()
+                .map(|c| c.user_id.as_str())
+                .collect();
+            assert_eq!(ids, vec!["bob"]);
+        }
+
+        unchanged_projection_does_not_request_another_frame();
+        apply_to_smooths_the_cursor_the_overlay_reads();
+        apply_to_uses_the_shared_palette_not_a_private_one();
+        apply_to_fades_then_retires_a_silent_peer();
+        apply_to_leaves_cursors_it_does_not_own_alone();
     }
 }

@@ -6,6 +6,7 @@
 use super::*;
 use crate::{
     State,
+    i18n::I18nManager,
     permissions::{PermissionContext, UserId},
     widget::ModalDialog,
 };
@@ -62,26 +63,30 @@ impl HistoryHost {
             };
         self.review = Some(ReviewPanel {
             token,
-            dialog: ModalDialog::new(format!("Restore {title}"), Text::new(message.as_ref()))
-                .open(true)
-                .primary_action(
-                    if ready {
-                        "Restore version"
-                    } else {
-                        "Refresh review"
-                    },
-                    move || confirm.borrow_mut().push_back(Command::Review(command)),
-                )
-                .secondary_action("Cancel", move || {
-                    cancel
-                        .borrow_mut()
-                        .push_back(Command::Review(ReviewCommand::Cancel));
-                })
-                .on_dismiss(move || {
-                    dismiss
-                        .borrow_mut()
-                        .push_back(Command::Review(ReviewCommand::Cancel));
-                }),
+            dialog: ModalDialog::new(
+                I18nManager::format("history-review-title", &[("resource", title.into())]),
+                Text::new(message.as_ref()),
+            )
+            .with_test_id("history-restore-review")
+            .open(true)
+            .primary_action(
+                if ready {
+                    "history-review-confirm"
+                } else {
+                    "history-review-refresh"
+                },
+                move || confirm.borrow_mut().push_back(Command::Review(command)),
+            )
+            .secondary_action("history-review-cancel", move || {
+                cancel
+                    .borrow_mut()
+                    .push_back(Command::Review(ReviewCommand::Cancel));
+            })
+            .on_dismiss(move || {
+                dismiss
+                    .borrow_mut()
+                    .push_back(Command::Review(ReviewCommand::Cancel));
+            }),
         });
     }
     pub(crate) fn take_restored_source(&mut self) -> Option<HistorySourceRegistration> {
@@ -111,6 +116,18 @@ impl HistoryHost {
             self.invalidate_owner();
             return false;
         }
+        let Some(scope) = self.registration.definition.scopes.get(self.active_scope) else {
+            return false;
+        };
+        if let Err(reason) =
+            crate::history_mode::capability::history_restore_readiness(root, scope.key)
+        {
+            if let Some(files) = &mut self.files {
+                files.cancel_review();
+            }
+            self.show_review(None, reason);
+            return false;
+        }
         if matches!(
             self.source(),
             HistorySourceRegistration::CheckedFiles { .. }
@@ -121,6 +138,19 @@ impl HistoryHost {
         if matches!(command, ReviewCommand::FileConfirm(_)) {
             return false;
         }
+        if matches!(command, ReviewCommand::Open | ReviewCommand::Refresh) {
+            // Review against a finished boundary: the word still being typed
+            // becomes its own step, and the review sees the frontier after it.
+            if let HistorySourceRegistration::OwnedDocument { owner, .. } = self.source() {
+                owner.close_open_step(&mut state.doc);
+            }
+            let document = self.source().document(&state.doc).ok();
+            if let (Some(controller), Some(document)) = (self.controller.as_mut(), document)
+                && let Err(error) = controller.refresh(&document)
+            {
+                tracing::debug!(%error, "history review could not observe the live frontier");
+            }
+        }
         let Some(controller) = &self.controller else {
             return false;
         };
@@ -130,10 +160,21 @@ impl HistoryHost {
                 .selected
                 .first()
                 .and_then(|id| controller.entries().iter().find(|entry| &entry.id == id))
-                .map_or("Selected version", |entry| entry.summary.as_str());
+                .map_or_else(
+                    || I18nManager::lookup_plain("history-review-selected-version"),
+                    |entry| entry.summary.clone(),
+                );
             match review {
-                Ok(review) => self.show_review(Some(review), format!("Version: {version}\n\nRestoring creates a new change. Existing history remains available.\n\nRestore version or Cancel.")),
-                Err(_) => self.show_review(None, "This activity does not contain restorable document content."),
+                Ok(review) => self.show_review(
+                    Some(review),
+                    I18nManager::format("history-review-body", &[("version", version.into())]),
+                ),
+                Err(_) => {
+                    self.show_review(
+                        None,
+                        I18nManager::lookup_plain("history-review-not-content"),
+                    );
+                }
             }
             return false;
         }
@@ -143,25 +184,20 @@ impl HistoryHost {
         let Some(scope) = self.registration.definition.scopes.get(self.active_scope) else {
             return false;
         };
-        let Some(schema) = scope.content_schema else {
-            return false;
-        };
         let Some(now) = (self.clock)() else {
-            self.show_review(
-                None,
-                "The current time is unavailable. Restore cannot check permission expiry.",
-            );
+            self.show_review(None, I18nManager::lookup_plain("history-review-no-clock"));
             return false;
         };
         let result = crate::state::owned_restore::restore_reviewed_history(
             state,
-            self.source(),
-            controller,
-            review,
-            schema,
+            &crate::state::owned_restore::ReviewedRestore {
+                source: self.source(),
+                scope,
+                controller,
+                review,
+            },
             authority,
             author,
-            scope.title,
             now,
         );
         match result {

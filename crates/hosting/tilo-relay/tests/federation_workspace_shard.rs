@@ -17,13 +17,15 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
-
-use std::time::Duration;
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay, wait_for};
+use crate::common::{TestUser, client_endpoint, spawn_relay, wait_until};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sharded_topology_isolates_per_workspace() {
@@ -35,8 +37,8 @@ async fn sharded_topology_isolates_per_workspace() {
 
     // Relay1 hosts workspace 20 only; relay2 hosts workspace 21
     // only — non-overlapping shards.
-    let relay1 = spawn_relay(&user, relay_dev_1, &[20], &members).await;
-    let relay2 = spawn_relay(&user, relay_dev_2, &[21], &members).await;
+    let relay1 = Box::pin(spawn_relay(&user, relay_dev_1, &[20], &members)).await;
+    let relay2 = Box::pin(spawn_relay(&user, relay_dev_2, &[21], &members)).await;
 
     // Federate anyway — the intersection is empty.
     relay1
@@ -48,14 +50,10 @@ async fn sharded_topology_isolates_per_workspace() {
     // Both peer-relay sessions authenticated, so the relays have met and
     // found nothing in common rather than not having met yet.
     let (metrics_1, metrics_2) = (relay1.relay.handle().metrics, relay2.relay.handle().metrics);
-    assert!(
-        wait_for(
-            || metrics_1.snapshot().conns_authed > 0 && metrics_2.snapshot().conns_authed > 0,
-            1000
-        )
-        .await,
-        "the relays never completed a peer-relay handshake"
-    );
+    wait_until("the relays to complete a peer-relay handshake", || {
+        metrics_1.snapshot().conns_authed > 0 && metrics_2.snapshot().conns_authed > 0
+    })
+    .await;
 
     // The author dials relay1, subscribes to 20, publishes on 20.
     let ep = client_endpoint().await;
@@ -70,9 +68,7 @@ async fn sharded_topology_isolates_per_workspace() {
     .await
     .unwrap();
     a.send(Envelope::Subscribe { workspace_id: 20 }).unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(3), a.recv())
-        .await
-        .expect("Ready(20)");
+    let _ = tilo_test_env::within("Ready(20)", a.recv()).await;
 
     a.send(Envelope::Delta {
         workspace_id: 20,
@@ -82,7 +78,18 @@ async fn sharded_topology_isolates_per_workspace() {
         signature: [1u8; 64],
     })
     .unwrap();
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Wait until the host that *should* record the delta has done so —
+    // then the isolation check is about the production write path, not a
+    // guess that 300 ms was enough for a leak to show up.
+    let log20 = relay1
+        .state_root
+        .join("workspaces")
+        .join("20")
+        .join("log.jsonl");
+    wait_until("relay1 persisted the delta for workspace 20", || {
+        std::fs::read(&log20).is_ok_and(|b| !b.is_empty())
+    })
+    .await;
 
     // Assertion: relay2 must not have persisted anything for ws20.
     // Its state root has no `workspaces/20/` dir at all.
@@ -105,9 +112,7 @@ async fn sharded_topology_isolates_per_workspace() {
     .await
     .unwrap();
     b.send(Envelope::Subscribe { workspace_id: 21 }).unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(3), b.recv())
-        .await
-        .expect("Ready(21)");
+    let _ = tilo_test_env::within("Ready(21)", b.recv()).await;
 
     b.send(Envelope::Delta {
         workspace_id: 21,
@@ -117,7 +122,15 @@ async fn sharded_topology_isolates_per_workspace() {
         signature: [1u8; 64],
     })
     .unwrap();
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let log21 = relay2
+        .state_root
+        .join("workspaces")
+        .join("21")
+        .join("log.jsonl");
+    wait_until("relay2 persisted the delta for workspace 21", || {
+        std::fs::read(&log21).is_ok_and(|b| !b.is_empty())
+    })
+    .await;
 
     let ws21_on_r1 = relay1.state_root.join("workspaces").join("21");
     assert!(

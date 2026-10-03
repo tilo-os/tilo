@@ -29,7 +29,9 @@ while read -r source mountpoint; do
     /|/boot|/boot/*|/sysroot|/sysroot/*|/run/initramfs/live|/run/initramfs/live/*|/run/rootfsbase|/run/rootfsbase/*) ;;
     *) continue ;;
   esac
-  disk="$(lsblk -spno NAME,TYPE "$source" 2>/dev/null | awk '$2 == "disk" || $2 == "rom" { print $1; exit }')"
+  # NAME is a tree column even with --noheadings. Raw output is required:
+  # otherwise a parent disk becomes "└─/dev/vda", which is not a device path.
+  disk="$(lsblk -srpno NAME,TYPE "$source" 2>/dev/null | awk '$2 == "disk" || $2 == "rom" { print $1; exit }')"
   [ -n "$disk" ] && candidates+=("$disk")
 done < <(findmnt -rn -o SOURCE,TARGET 2>/dev/null)
 
@@ -113,6 +115,86 @@ if [ "$valid" -eq 1 ]; then
 elif [ "$valid" -gt 1 ]; then
   rm -f "$out_file".*
   report_error "More than one attached device contains a Tilo installation profile. Remove the extra media and reboot."
+fi
+
+# A live installer has no installed root. The imager then stores Wi-Fi and the
+# certified device in the slack immediately before the profile block. Unpack
+# one valid payload into a root-only directory the installer copies later.
+handoff_header_size=4096
+handoff_magic=TILO_SETUP_HANDOFF_V1
+handoff_dir="$out_dir/setup-handoff"
+handoffs=0
+for disk in "${candidates[@]}"; do
+  if [ ! -b "$disk" ]; then
+    [ "${TILO_INSTALLER_PROFILE_ALLOW_FILE:-0}" = 1 ] && [ -f "$disk" ] || continue
+  fi
+  if [ -b "$disk" ]; then
+    size="$(blockdev --getsize64 "$disk" 2>/dev/null || true)"
+  else
+    size="$(stat -c %s "$disk" 2>/dev/null || true)"
+  fi
+  case "$size" in ''|*[!0-9]*) continue ;; esac
+  [ "$size" -ge $((block_size + handoff_header_size)) ] || continue
+  header_at=$((size - block_size - handoff_header_size))
+  header="$tmp_dir/handoff-header"
+  dd if="$disk" of="$header" bs=1 skip="$header_at" count="$handoff_header_size" status=none 2>/dev/null || continue
+  magic=""
+  digest=""
+  length=""
+  {
+    IFS= read -r magic || true
+    IFS= read -r digest || true
+    IFS= read -r length || true
+  } < "$header"
+  [ "$magic" = "$handoff_magic" ] || continue
+  case "$digest" in ''|*[!0-9a-f]*) continue ;; esac
+  [ "${#digest}" -eq 64 ] || continue
+  case "$length" in ''|*[!0-9]*) continue ;; esac
+  [ "$length" -le "$header_at" ] || continue
+  payload="$tmp_dir/handoff-payload"
+  dd if="$disk" of="$payload" bs=1 skip="$((header_at - length))" count="$length" status=none 2>/dev/null || continue
+  actual="$(sha256sum "$payload" 2>/dev/null | awk '{print $1}')"
+  [ "$actual" = "$digest" ] || continue
+  unpack="$tmp_dir/handoff-unpack"
+  rm -rf "$unpack"
+  mkdir -p "$unpack"
+  python3 - "$payload" "$unpack" <<'PY' || continue
+import pathlib, sys
+payload, dest = pathlib.Path(sys.argv[1]).read_bytes(), pathlib.Path(sys.argv[2])
+offset = 0
+while offset < len(payload):
+    end = payload.find(b"\n", offset)
+    if end < 0:
+        raise SystemExit(1)
+    relative = payload[offset:end].decode()
+    offset = end + 1
+    end = payload.find(b"\n", offset)
+    if end < 0:
+        raise SystemExit(1)
+    size = int(payload[offset:end])
+    offset = end + 1
+    chunk = payload[offset:offset + size]
+    if len(chunk) != size or relative.startswith("/") or ".." in pathlib.PurePosixPath(relative).parts:
+        raise SystemExit(1)
+    target = dest / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(chunk)
+    offset += size
+PY
+  handoffs=$((handoffs + 1))
+  rm -rf "$handoff_dir"
+  install -d -m 0700 "$handoff_dir"
+  cp -a "$unpack/." "$handoff_dir/"
+  find "$handoff_dir" -type d -exec chmod 0700 {} +
+  key="$handoff_dir/var/lib/tilo/device-private/keypair.bin"
+  if [ -f "$key" ]; then
+    chmod 0640 "$key"
+  fi
+  find "$handoff_dir" -type f -name '*.nmconnection' -exec chmod 0600 {} +
+done
+if [ "$handoffs" -gt 1 ]; then
+  rm -rf "$handoff_dir"
+  report_error "More than one attached device contains a Tilo setup handoff. Remove the extra media and reboot."
 fi
 
 exit 0

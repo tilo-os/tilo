@@ -1,6 +1,8 @@
 use ui::ColorCompat;
+use ui::widget::{AppModel, ModelPath};
 use ui::{
     Theme,
+    paint::PaintCtx,
     text_render::{FontChoice, TextRenderer, TextStyle, TextWeight},
     widget::{PressOutcome, ScrollMetrics, Scrollbar, TextInput, Widget},
 };
@@ -22,9 +24,7 @@ use ui::collaboration::PresencePayload;
 use ui::icons::{Icon, draw_icon};
 use ui::permissions::{AppKind as PermAppKind, PermissionContext};
 use ui::presence::{PresenceCtx, PresenceKey};
-use ui::tilo_actions::{
-    ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource, RetryPolicy,
-};
+use ui::tilo_actions::{ActionSpec, OperationKind, Resource, RetryPolicy};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::{
     DragSelect, Granularity, clipboard_copy, clipboard_copy_primary, clipboard_paste,
@@ -38,7 +38,7 @@ use vello::peniko::{BlendMode, Color, Fill};
 use vte::{Parser, Perform};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::EventLoopProxy;
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 
 use crate::graphics::{
     GraphicsScanner, StreamEvent, TerminalImagePlacement, decode_for_rendering, parse_kitty,
@@ -764,6 +764,14 @@ pub struct TerminalWidget {
     /// presence (`PresenceKey::App { sub }`), so a peer's caret/selection is
     /// attributed to this pane rather than colliding with another terminal.
     pane_id: String,
+    /// Set by [`ResourceSurface::attach`]. The framework root already publishes
+    /// the session door; this widget then returns only the live transcript.
+    framework_hosted: bool,
+    /// Dispatcher stored by [`ResourceSurface::attach`]. Document-level session
+    /// actions submit through it while this widget is hosted.
+    framework_dispatch: Option<ui::framework::Dispatcher<crate::resource::Terminal>>,
+    /// Standalone session actions submit through this host.
+    session_actions: ui::ActionHost,
     /// Identifies the local PTY whose presentation is mirrored into this
     /// record. A terminal tab is durable, but its process is not: after a
     /// logout the next login spawns a new shell. Without an incarnation
@@ -797,6 +805,10 @@ pub struct TerminalWidget {
 }
 
 impl TerminalWidget {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "terminal MainBody wires many host services at construction"
+    )]
     pub fn new(
         writer: Arc<Mutex<Box<dyn Write + Send>>>,
         master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
@@ -904,6 +916,9 @@ impl TerminalWidget {
             content,
             graphics_scanner: GraphicsScanner::default(),
             pane_id: uuid::Uuid::new_v4().to_string(),
+            framework_hosted: false,
+            framework_dispatch: None,
+            session_actions: ui::ActionHost::new(),
             local_session_id: None,
             local_session_bound: false,
             waker: Arc::new(Mutex::new(None)),
@@ -946,18 +961,10 @@ impl TerminalWidget {
         // the tab. Delete the old objects atomically before `init_crdt`
         // creates blank replacements for the new process. Notes/editor data
         // and the tab itself are separate records and remain untouched.
-        for key in [
-            "terminal_grid",
-            "terminal_grid_alt",
-            "cursor",
-            "terminal_links",
-            "terminal_images",
-            "terminal_title",
-            "terminal_pane_id",
-        ] {
-            let _ = state.delete(root, key);
-        }
-        let _ = state.put(root, "terminal_local_session", session_id);
+        let action = crate::resource::TerminalAction::BindLocalSession {
+            session_id: session_id.to_string(),
+        };
+        self.apply_session_action(state, &action);
 
         self.grid_id = None;
         self.alt_grid_id = None;
@@ -1187,102 +1194,65 @@ impl TerminalWidget {
         transcript
     }
 
-    #[allow(
-        clippy::expect_used,
-        reason = "JSON serialization of an owned String is infallible"
-    )]
     fn session_resource(&self) -> Resource {
+        self.session_resource_with(None)
+    }
+
+    /// Title and pane come from the document once it stores them. Paste and
+    /// the context menu, which have no document, keep the widget session.
+    fn session_resource_with(&self, doc: Option<&AutoCommit>) -> Resource {
+        let (title, pane_id) = self.published_session(doc);
         let disconnected = self.is_disconnected();
         let unavailable_reason =
             "The terminal process has ended or its PTY failed; input cannot be sent.";
-        let label = if self.title == "Terminal" {
+        let label = if title == "Terminal" {
             "Terminal session".to_string()
         } else {
-            format!("Terminal — {}", self.title)
+            format!("Terminal — {title}")
         };
-        let mut terminal = Resource::new(self.terminal_resource_id(), "terminal.session", label);
-        for (id, label, prompt, placeholder, type_id) in [
-            ("send", "Send text", "Text to send", "text", "terminal.send"),
-            (
-                "run",
-                "Run command",
-                "Command to run",
-                "command",
-                "terminal.run",
-            ),
-        ] {
-            let mut spec = ActionSpec::prompted_operation(
-                id,
-                label,
-                prompt,
-                placeholder,
-                OperationKind::Effect,
-                type_id,
-                move |text| {
-                    EncodedAction::encode_operation(type_id, &text).expect("string payload")
-                },
-            )
-            .with_description(if id == "run" {
-                "Runs one reviewed command in this live process; confirmation is required."
-            } else {
-                "Writes reviewed text without pressing Enter; confirmation is required."
-            })
-            .privileged()
-            .retry_policy(RetryPolicy::AtMostOnce);
-            if disconnected {
-                spec = spec.unavailable("session_disconnected", unavailable_reason);
-            }
-            terminal.actions.push(spec);
-        }
-        for (id, label) in [
-            ("interrupt", "Interrupt process"),
-            ("clear", "Clear screen"),
-        ] {
-            if let Ok(spec) =
-                ActionSpec::operation(id, label, OperationKind::Effect, "terminal.control", &id)
-            {
-                let mut control = spec.privileged().retry_policy(RetryPolicy::AtMostOnce);
-                if disconnected {
-                    control = control.unavailable("session_disconnected", unavailable_reason);
+        let resource_id = if pane_id.is_empty() {
+            self.terminal_resource_id()
+        } else {
+            format!("terminal:{pane_id}")
+        };
+        let state = crate::resource::SessionState { title, pane_id };
+        let mut terminal =
+            ui::tilo_resource::publish::<crate::resource::Terminal>(&resource_id, &label, &state);
+        if disconnected {
+            for action in &mut terminal.actions {
+                if matches!(
+                    action.id.as_str(),
+                    "send" | "run" | "interrupt" | "clear" | "paste" | "paste-primary"
+                ) {
+                    let current = action.clone();
+                    *action = current.unavailable("session_disconnected", unavailable_reason);
                 }
-                terminal.actions.push(control);
             }
-        }
-        for (id, label) in [
-            ("paste", "Paste"),
-            ("paste-primary", "Paste primary selection"),
-        ] {
-            let mut paste = ActionSpec::typed_operation(
-                id,
-                label,
-                "text",
-                OperationKind::Effect,
-                "terminal.paste",
-                vec![ActionParam::required(
-                    "text",
-                    ParamType::Text,
-                    "Exact text to paste after confirmation",
-                )],
-                |args| {
-                    EncodedAction::encode_operation(
-                        "terminal.paste",
-                        &args.text("text").unwrap_or_default(),
-                    )
-                    .expect("a borrowed string always serializes")
-                },
-            )
-            .with_description(
-                "Pastes the exact supplied text; clipboard contents are never re-read after confirmation.",
-            )
-            .privileged()
-            .retry_policy(RetryPolicy::AtMostOnce);
-            if disconnected {
-                paste = paste.unavailable("session_disconnected", unavailable_reason);
-            }
-            terminal.actions.push(paste);
         }
         terminal.children.push(self.transcript_resource());
         terminal
+    }
+
+    fn published_session(&self, doc: Option<&AutoCommit>) -> (String, String) {
+        let widget = (self.title.clone(), self.pane_id.clone());
+        let Some(doc) = doc else {
+            return widget;
+        };
+        let recorded = automerge::ReadDoc::get(doc, &automerge::ROOT, "terminal_title")
+            .ok()
+            .flatten()
+            .is_some()
+            || automerge::ReadDoc::get(doc, &automerge::ROOT, "terminal_pane_id")
+                .ok()
+                .flatten()
+                .is_some();
+        if !recorded {
+            return widget;
+        }
+        match <crate::resource::Terminal as ui::tilo_resource::Resource>::read(doc) {
+            Ok(state) => (state.title, state.pane_id),
+            Err(_) => widget,
+        }
     }
 
     fn visible_link_accessibility(&self) -> Vec<ui::a11y::AccessNode> {
@@ -1593,10 +1563,6 @@ impl TerminalWidget {
         self.forced_cell = true;
     }
 
-    fn cell_h(measured_line_h: f32) -> f64 {
-        f64::from(measured_line_h).ceil().max(1.0)
-    }
-
     /// The inner grid content rect (below the header, inside the padding).
     /// Test accessor for the chrome-inset geometry.
     #[cfg(test)]
@@ -1682,6 +1648,30 @@ impl TerminalWidget {
     pub fn find_test_target(&self, control: &str) -> String {
         format!("terminal.find:{}:{control}", self.pane_id)
     }
+
+    /// Tee subsequent PTY writes so a compositor-path test can see them.
+    #[cfg(any(test, debug_assertions))]
+    pub fn attach_input_probe(&self) -> std::sync::mpsc::Receiver<Vec<u8>> {
+        struct ProbeWriter {
+            inner: Box<dyn Write + Send>,
+            tx: std::sync::mpsc::Sender<Vec<u8>>,
+        }
+        impl Write for ProbeWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                let _ = self.tx.send(buf.to_vec());
+                self.inner.write(buf)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.inner.flush()
+            }
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        if let Ok(mut guard) = self.pty_write.lock() {
+            let inner = std::mem::replace(&mut *guard, Box::new(std::io::sink()));
+            *guard = Box::new(ProbeWriter { inner, tx });
+        }
+        rx
+    }
     /// The parsed attribute for the mirrored grid cell at `(row, col)`.
     /// Test accessor for SGR-parsing assertions.
     #[cfg(test)]
@@ -1764,6 +1754,15 @@ impl TerminalWidget {
         let sp = &theme.tokens.spacing;
         self.chrome_body_pad = f64::from(sp.s3);
         self.chrome_scrollbar_w = f64::from(sp.s2);
+    }
+
+    /// Row pitch of the cell grid from the renderer's measured line box for
+    /// one cell — the single number `measure`, `draw`, selection bands, the
+    /// block cursor and pointer hit-testing all step rows by. Rounded up so
+    /// rows land on whole pixels (20 px at 1× for the 14 px base font), never
+    /// below one pixel.
+    fn cell_h(measured_line_h: f32) -> f64 {
+        f64::from(measured_line_h).ceil().max(1.0)
     }
 
     /// The inner grid content rect for a given widget rect: the widget rect
@@ -2011,7 +2010,8 @@ impl TerminalWidget {
         if let Some(t) = title_out
             && t != self.title
         {
-            let _ = state.put(root, "terminal_title", t.clone());
+            let action = crate::resource::TerminalAction::SetTitle { title: t.clone() };
+            self.apply_session_action(state, &action);
             self.title = t;
         }
 
@@ -2152,59 +2152,63 @@ impl TerminalWidget {
     }
 
     pub(crate) fn init_crdt(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        // Session actions cover the document root and a code-editor terminal
+        // panel. Any other embedding still keeps its grid on that object.
+        let actions_cover = root == &automerge::ROOT
+            || matches!(
+                state.get(&automerge::ROOT, "terminal_panel"),
+                Ok(Some((_, id))) if &id == root
+            );
+        if actions_cover {
+            self.apply_session_action(state, &crate::resource::TerminalAction::EnsureStructure);
+        }
         if self.grid_id.is_none() {
-            if let Ok(Some((Value::Object(ObjType::List), id))) = state.get(root, "terminal_grid") {
-                self.grid_id = Some(id);
-            } else {
-                // If the doc rejects this `put_object` there is no grid to
-                // stand up; bail rather than unwrap into a panic.
-                let Ok(id) = state.put_object(root, "terminal_grid", ObjType::List) else {
-                    return;
-                };
-                self.grid_id = Some(id);
+            self.grid_id =
+                adopt_or_create(state, root, "terminal_grid", ObjType::List, actions_cover);
+            if self.grid_id.is_none() {
+                return;
             }
         }
         let Some(grid_id) = self.grid_id.clone() else {
             return;
         };
-        Self::ensure_lines(state, &grid_id, self.height, &mut self.line_ids);
+        Self::ensure_lines(state, &grid_id, false, self.height, &mut self.line_ids);
 
         if self.alt_grid_id.is_none() {
-            if let Ok(Some((Value::Object(ObjType::List), id))) =
-                state.get(root, "terminal_grid_alt")
-            {
-                self.alt_grid_id = Some(id);
-            } else {
-                let Ok(id) = state.put_object(root, "terminal_grid_alt", ObjType::List) else {
-                    return;
-                };
-                self.alt_grid_id = Some(id);
+            self.alt_grid_id = adopt_or_create(
+                state,
+                root,
+                "terminal_grid_alt",
+                ObjType::List,
+                actions_cover,
+            );
+            if self.alt_grid_id.is_none() {
+                return;
             }
         }
         let Some(alt_grid_id) = self.alt_grid_id.clone() else {
             return;
         };
-        Self::ensure_lines(state, &alt_grid_id, self.height, &mut self.alt_line_ids);
+        Self::ensure_lines(
+            state,
+            &alt_grid_id,
+            true,
+            self.height,
+            &mut self.alt_line_ids,
+        );
 
         if self.links_id.is_none() {
-            if let Ok(Some((Value::Object(ObjType::Map), id))) = state.get(root, "terminal_links") {
-                self.links_id = Some(id);
-            } else {
-                let Ok(id) = state.put_object(root, "terminal_links", ObjType::Map) else {
-                    return;
-                };
-                self.links_id = Some(id);
+            self.links_id =
+                adopt_or_create(state, root, "terminal_links", ObjType::Map, actions_cover);
+            if self.links_id.is_none() {
+                return;
             }
         }
         if self.images_id.is_none() {
-            if let Ok(Some((Value::Object(ObjType::List), id))) = state.get(root, "terminal_images")
-            {
-                self.images_id = Some(id);
-            } else {
-                let Ok(id) = state.put_object(root, "terminal_images", ObjType::List) else {
-                    return;
-                };
-                self.images_id = Some(id);
+            self.images_id =
+                adopt_or_create(state, root, "terminal_images", ObjType::List, actions_cover);
+            if self.images_id.is_none() {
+                return;
             }
         }
 
@@ -2214,6 +2218,14 @@ impl TerminalWidget {
         // to touch the doc writes its id; late joiners read it back.
         if let Some(id) = Self::shared_pane_id(state, root) {
             self.pane_id = id;
+        } else if actions_cover {
+            let action = crate::resource::TerminalAction::ClaimPane {
+                pane_id: self.pane_id.clone(),
+            };
+            self.apply_session_action(state, &action);
+            if let Some(id) = Self::shared_pane_id(state, root) {
+                self.pane_id = id;
+            }
         } else {
             let _ = state.put(root, "terminal_pane_id", self.pane_id.clone());
         }
@@ -2230,7 +2242,18 @@ impl TerminalWidget {
                         .saturating_sub(history_offset)
                         .min(self.height.saturating_sub(1));
                 }
-            } else if let Ok(cursor_id) = state.put_object(root, "cursor", ObjType::Map)
+            } else if actions_cover
+                && ui::tilo_actions::Action::apply(
+                    &crate::resource::TerminalAction::SetCursor { x: 0, y: 0 },
+                    state,
+                )
+                .is_ok()
+                && let Ok(Some((Value::Object(ObjType::Map), cursor_id))) =
+                    state.get(root, "cursor")
+            {
+                self.cursor_id = Some(cursor_id);
+            } else if !actions_cover
+                && let Ok(cursor_id) = state.put_object(root, "cursor", ObjType::Map)
                 && state.put(&cursor_id, "x", 0u64).is_ok()
                 && state.put(&cursor_id, "y", 0u64).is_ok()
             {
@@ -2243,23 +2266,35 @@ impl TerminalWidget {
     /// `ids` to mirror the list. Shared by the main and alternate buffers.
     /// Lines are created empty; `print` grows them on demand (see below),
     /// so no width is needed here.
-    fn ensure_lines(state: &mut AutoCommit, grid_id: &ObjId, min_len: usize, ids: &mut Vec<ObjId>) {
-        let current_len = state.length(grid_id);
-        if current_len < min_len {
-            // Blank lines are created *empty*, not pre-filled with `width`
-            // spaces. Pre-filling every new line splices `width` characters
-            // into a fresh Automerge `Text` per row, and the columnar op-set
-            // insert is O(doc) per character — so seeding a full screen the
-            // first time a terminal syncs cost seconds (≈3 s in debug for an
-            // 80-col screen) and froze the whole compositor. A short/empty
-            // line renders as blank cells (the draw path already pads
-            // visually) and the write path (`print`) pads a line on demand
-            // when the cursor lands past its current end, so nothing depends
-            // on the eager fill.
-            for y in current_len..min_len {
-                // A failed insert means the doc rejected this op; further
-                // inserts at later indices would only compound the
-                // misalignment, so stop rather than push on.
+    fn ensure_lines(
+        state: &mut AutoCommit,
+        grid_id: &ObjId,
+        alternate: bool,
+        min_len: usize,
+        ids: &mut Vec<ObjId>,
+    ) {
+        // Blank lines stay empty. Pre-filling every new line with spaces
+        // splices a full row of characters into a fresh text object, and that
+        // insert is O(doc) per character — seeding an 80-column screen froze
+        // the compositor. Drawing pads visually; print grows a line when the
+        // cursor lands past its end.
+        let Some(min_len) = u32::try_from(min_len).ok() else {
+            return;
+        };
+        let key = if alternate {
+            "terminal_grid_alt"
+        } else {
+            "terminal_grid"
+        };
+        if grid_is_document_root(state, key, grid_id) {
+            let _ = ui::tilo_actions::Action::apply(
+                &crate::resource::TerminalAction::EnsureLines { alternate, min_len },
+                state,
+            );
+        } else {
+            let target = min_len as usize;
+            let current_len = state.length(grid_id);
+            for y in current_len..target {
                 let Ok(line_id) = state.insert_object(grid_id, y, ObjType::Map) else {
                     break;
                 };
@@ -2276,6 +2311,40 @@ impl TerminalWidget {
             }
         }
     }
+}
+
+fn grid_is_document_root(state: &AutoCommit, key: &str, grid_id: &ObjId) -> bool {
+    let at = |parent: &ObjId| {
+        matches!(
+            state.get(parent, key),
+            Ok(Some((_, id))) if &id == grid_id
+        )
+    };
+    if at(&automerge::ROOT) {
+        return true;
+    }
+    matches!(
+        state.get(&automerge::ROOT, "terminal_panel"),
+        Ok(Some((Value::Object(ObjType::Map), panel))) if at(&panel)
+    )
+}
+
+fn adopt_or_create(
+    state: &mut AutoCommit,
+    root: &ObjId,
+    key: &str,
+    kind: ObjType,
+    at_document_root: bool,
+) -> Option<ObjId> {
+    if let Ok(Some((Value::Object(found), id))) = state.get(root, key)
+        && found == kind
+    {
+        return Some(id);
+    }
+    if at_document_root {
+        return None;
+    }
+    state.put_object(root, key, kind).ok()
 }
 
 /// Retained scrollback lines for the main buffer. Sized for a daily-driver
@@ -2317,107 +2386,8 @@ impl TerminalWidget {
     }
 }
 
-impl Widget for TerminalWidget {
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.gesture_effects.pop_front().or_else(|| {
-            self.menu_effects
-                .values_mut()
-                .find_map(ui::widget::ActionEmitter::take)
-        })
-    }
-
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
-        for (index, emitter) in &self.menu_effects {
-            let id = format!("terminal.menu:{}:{index}", self.pane_id);
-            bindings.retain(|binding| binding.control_id != id);
-            bindings.push(emitter.metadata(id));
-        }
-        bindings
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<ui::tilo_actions::ActionAddress>,
-    ) {
-        self.allowed_menu_actions = Some(allowed.clone());
-        let mut availability = Vec::with_capacity(self.menu_effects.len());
-        for (index, emitter) in &mut self.menu_effects {
-            emitter.refresh_availability(allowed);
-            availability.push((*index, emitter.is_available()));
-        }
-        for (index, available) in availability {
-            self.context_menu.set_item_enabled(index, available);
-        }
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        Some("terminal")
-    }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[
-            "terminal.send",
-            "terminal.run",
-            "terminal.paste",
-            "terminal.control",
-            "terminal.open-link",
-        ]
-    }
-
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        vec![self.session_resource()]
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        _doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        let resources = (cursor.is_empty() && max_results > 0)
-            .then(|| self.session_resource())
-            .into_iter()
-            .collect();
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-
-    fn action_directory_revision(&self, _doc: &AutoCommit) -> Option<String> {
-        use std::hash::{Hash, Hasher};
-
-        let mut revision = std::collections::hash_map::DefaultHasher::new();
-        self.pane_id.hash(&mut revision);
-        self.title.hash(&mut revision);
-        self.grid.len().hash(&mut revision);
-        self.current_visible_rows().hash(&mut revision);
-        self.scroll_offset.hash(&mut revision);
-        self.is_disconnected().hash(&mut revision);
-        for link_id in self.visible_link_ids() {
-            link_id.hash(&mut revision);
-            self.links.get(&link_id).hash(&mut revision);
-        }
-        Some(format!("{:016x}", revision.finish()))
-    }
-
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if id == self.terminal_resource_id() {
-            return Some(self.session_resource());
-        }
-        if id == self.terminal_transcript_target() {
-            return Some(self.transcript_resource());
-        }
-        let prefix = format!("terminal.link:{}:", self.pane_id);
-        let link_id = id.strip_prefix(&prefix)?.parse::<u16>().ok()?;
-        self.links
-            .get(&link_id)
-            .map(|url| self.link_resource(link_id, url))
-    }
-
-    fn invoke_resource_operation(
+impl TerminalWidget {
+    fn answer_resource_operation(
         &mut self,
         kind: OperationKind,
         type_id: &str,
@@ -2519,6 +2489,50 @@ impl Widget for TerminalWidget {
         }
         Ok(true)
     }
+}
+
+impl Widget for TerminalWidget {
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources,
+        dyn ui::presence::capability::PublishesPresence
+    );
+
+    fn test_id(&self) -> Option<&str> {
+        Some("terminal")
+    }
+
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[
+            "terminal.send",
+            "terminal.run",
+            "terminal.paste",
+            "terminal.control",
+            "terminal.open-link",
+        ]
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
+    }
 
     fn measure(
         &mut self,
@@ -2552,7 +2566,8 @@ impl Widget for TerminalWidget {
         taffy::Size::ZERO
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.reset_stale_local_session(state, root);
         self.find_input.sync(state, root);
         // Drain any bytes the PTY reader thread has queued and replay them
@@ -2607,7 +2622,8 @@ impl Widget for TerminalWidget {
         }
     }
 
-    fn update(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, root: &ModelPath) -> bool {
+        let (state, root) = ui::doc::document(state, root);
         self.pump(state, root)
     }
 
@@ -2634,7 +2650,7 @@ impl Widget for TerminalWidget {
     /// flag so the reader can request the next one; the App's redraw drives
     /// `sync`, which drains the queued PTY bytes. The payload is unused — the
     /// wake itself is the signal.
-    fn on_external_event(&mut self, _payload: &str, _state: &mut AutoCommit, _root: &ObjId) {
+    fn on_external_event(&mut self, _payload: &str, _state: &mut AppModel, _root: &ModelPath) {
         self.wake_pending.store(false, Ordering::Release);
     }
 
@@ -2833,33 +2849,10 @@ impl Widget for TerminalWidget {
             visible_rows,
         );
 
-        self.draw_cell_rows(
-            scene,
-            transform,
-            text_renderer,
-            font_size,
-            palette,
-            &mono,
-            grid_rect,
-            padding_x,
-            start_y,
-            visible_rows,
-        );
-
-        self.draw_block_cursor(
-            scene,
-            transform,
-            text_renderer,
-            font_size,
-            palette,
-            &mono,
-            grid_rect,
-            padding_x,
-            start_y,
-            visible_rows,
-            scroll,
-            cursor_color,
-        );
+        let cell_style = TextStyle::new(font_size).with_family(mono);
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+        self.draw_cell_rows(&mut ctx, &cell_style, start_y, visible_rows);
+        self.draw_block_cursor(&mut ctx, &cell_style, start_y, visible_rows);
 
         // A themed scrollbar indicator in the reserved right gutter, shown only
         // when the buffer overflows the viewport.
@@ -2880,19 +2873,8 @@ impl Widget for TerminalWidget {
         self.draw_find_overlay(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.init_crdt(state, root);
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.init_crdt(ctx.state, ctx.path);
 
         // The menu is app-owned overlay content, so route every event to the
         // shared primitive while it is open and do not let keys/clicks fall
@@ -2903,19 +2885,15 @@ impl Widget for TerminalWidget {
             Widget::handle_event(
                 &mut self.context_menu,
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                root,
-                &mut menu_handled,
-                focus_target,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    handled: &mut menu_handled,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
             );
             if let Some(index) = self.context_menu.take_selection() {
                 self.activate_context_menu_item(index);
             }
-            *handled |= menu_handled;
+            *ctx.handled |= menu_handled;
             return;
         }
 
@@ -2928,56 +2906,65 @@ impl Widget for TerminalWidget {
                 },
             ..
         } = event
-            && self.find_shortcut_matches(modifiers.state())
+            && self.find_shortcut_matches(ctx.modifiers.state())
             && matches!(logical_key, Key::Character(key) if key.eq_ignore_ascii_case("f"))
         {
             self.open_find();
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
 
         if self.find_open {
-            self.handle_find_event(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                root,
-                focus_target,
-                node_id,
-                taffy,
-                handled,
-            );
+            self.handle_find_event(event, ctx);
             return;
         }
 
         match event {
             WindowEvent::MouseWheel { delta, .. } => {
-                self.handle_wheel_event(delta, *modifiers, handled);
+                self.handle_wheel_event(delta, *ctx.modifiers, ctx.handled);
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved_event(*position, scale_factor, *modifiers, handled);
+                self.handle_cursor_moved_event(
+                    *position,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.handled,
+                );
             }
             WindowEvent::MouseInput {
                 state: element_state,
                 button,
                 ..
-            } => self.handle_mouse_button_event(*element_state, *button, *modifiers, handled),
+            } => {
+                self.handle_mouse_button_event(
+                    *element_state,
+                    *button,
+                    *ctx.modifiers,
+                    ctx.handled,
+                );
+            }
             WindowEvent::Focused(focused) if self.modes.focus_report => {
                 self.write_input(if *focused { b"\x1b[I" } else { b"\x1b[O" });
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
                         logical_key,
+                        physical_key,
                         text,
                         state: element_state,
                         ..
                     },
                 ..
             } if *element_state == ElementState::Pressed => {
-                self.handle_key_press_event(logical_key, text.as_deref(), *modifiers, handled);
+                self.handle_key_press_event(
+                    logical_key,
+                    *physical_key,
+                    text.as_deref(),
+                    *ctx.modifiers,
+                    ctx.handled,
+                );
             }
             // Preedit is owned by the platform IME and must not be sent to a
             // terminal process. Once it commits, however, it is ordinary
@@ -2987,7 +2974,7 @@ impl Widget for TerminalWidget {
             {
                 self.write_input(text.as_bytes());
                 self.scroll_offset = 0;
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -2995,6 +2982,9 @@ impl Widget for TerminalWidget {
 
     fn name(&self) -> &'static str {
         "Terminal"
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
     fn get_rect(&self) -> Rect {
         self.rect
@@ -3131,8 +3121,8 @@ impl Widget for TerminalWidget {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         match action {
             ui::a11y::Action::ShowContextMenu => {
@@ -3154,8 +3144,8 @@ impl Widget for TerminalWidget {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         if target == self.terminal_transcript_target() {
             return self.perform_action(action, state, path);
@@ -3217,6 +3207,43 @@ impl Widget for TerminalWidget {
         }
     }
 
+    /// Paint the terminal, then overlay remote collaborators' selections and
+    /// carets in their own colours on top (following the `TextInput` model).
+    /// Grid content is shared via the CRDT; this adds the per-peer decoration.
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        _permissions: &PermissionContext,
+    ) {
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
+        self.draw(scene, transform, text_renderer, theme, presence);
+
+        if let Some(key) = ui::presence::capability::presence_key(self) {
+            if let Some(list) = presence.selections.get(&key) {
+                for (user, range) in list {
+                    for rect in self.peer_selection_rects(range.start, range.end) {
+                        presence.draw_peer_selection(scene, theme, transform, user, rect);
+                    }
+                }
+            }
+            if let Some(list) = presence.carets.get(&key) {
+                for (user, caret) in list {
+                    if let Some(rect) = self.peer_caret_rect(*caret) {
+                        presence.draw_peer_caret(scene, theme, transform, user, rect);
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl ui::presence::capability::PublishesPresence for TerminalWidget {
     /// Scope this terminal's collaboration presence to a shared pane id (see
     /// `terminal_pane_id` in the CRDT) so both peers of a shared session file
     /// their caret/selection under the same key and can find each other's.
@@ -3226,7 +3253,6 @@ impl Widget for TerminalWidget {
             sub: self.pane_id.clone(),
         })
     }
-
     /// Broadcast the local view state to peers: the active text selection when
     /// there is one (so peers see what this user is selecting), otherwise the
     /// cursor position. The grid/scrollback itself rides the shared CRDT, so
@@ -3250,40 +3276,193 @@ impl Widget for TerminalWidget {
         };
         Some((key, payload))
     }
+}
 
-    /// Paint the terminal, then overlay remote collaborators' selections and
-    /// carets in their own colours on top (following the `TextInput` model).
-    /// Grid content is shared via the CRDT; this adds the per-peer decoration.
-    fn draw_with_presence(
+impl TerminalWidget {
+    pub(crate) fn mark_framework_hosted(&mut self) {
+        self.framework_hosted = true;
+    }
+
+    #[allow(
+        dead_code,
+        reason = "called from this crate's tests; dependents compile the library without cfg(test)"
+    )]
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.framework_hosted
+    }
+
+    #[allow(
+        dead_code,
+        reason = "called from this crate's tests; dependents compile the library without cfg(test)"
+    )]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.framework_hosted = true;
+    }
+
+    pub(crate) fn attach_framework(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Terminal>,
     ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
+        self.framework_dispatch = Some(dispatcher);
+        self.mark_framework_hosted();
+    }
 
-        if let Some(key) = self.presence_key() {
-            if let Some(list) = presence.selections.get(&key) {
-                for (user, range) in list {
-                    for rect in self.peer_selection_rects(range.start, range.end) {
-                        presence.draw_peer_selection(scene, theme, transform, user, rect);
-                    }
-                }
-            }
-            if let Some(list) = presence.carets.get(&key) {
-                for (user, caret) in list {
-                    if let Some(rect) = self.peer_caret_rect(*caret) {
-                        presence.draw_peer_caret(scene, theme, transform, user, rect);
-                    }
-                }
-            }
+    /// Document-level session action: the stored dispatcher when hosted, the
+    /// local action host otherwise.
+    pub(crate) fn apply_session_action(
+        &mut self,
+        doc: &mut AutoCommit,
+        action: &crate::resource::TerminalAction,
+    ) {
+        let context =
+            ui::tilo_actions::ActionContext::for_action("so.tilo.terminal", "Terminal", action);
+        if let Some(dispatcher) = self.framework_dispatch.clone() {
+            let _ = dispatcher.apply_now_with(doc, action, context);
+        } else {
+            self.session_actions.dispatch_with_context(
+                doc,
+                <crate::resource::Terminal as ui::tilo_resource::Resource>::ACTION_TYPE,
+                action,
+                context,
+            );
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retains_framework_dispatcher(&self) -> bool {
+        self.framework_dispatch.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_session_action(&self) -> Option<&ui::tilo_actions::EncodedAction> {
+        self.session_actions.last_dispatched()
+    }
+}
+
+impl ui::resources::PublishesResources for TerminalWidget {
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        if self.framework_hosted {
+            return vec![self.transcript_resource()];
+        }
+        vec![self.session_resource_with(Some(doc))]
+    }
+    fn action_directory_resource_page(
+        &self,
+        doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        let resources = (cursor.is_empty() && max_results > 0)
+            .then(|| {
+                if self.framework_hosted {
+                    self.transcript_resource()
+                } else {
+                    self.session_resource_with(Some(doc))
+                }
+            })
+            .into_iter()
+            .collect();
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+    fn action_directory_revision(&self, _doc: &AutoCommit) -> Option<String> {
+        use std::hash::{Hash, Hasher};
+
+        let mut revision = std::collections::hash_map::DefaultHasher::new();
+        self.pane_id.hash(&mut revision);
+        self.title.hash(&mut revision);
+        self.grid.len().hash(&mut revision);
+        self.current_visible_rows().hash(&mut revision);
+        self.scroll_offset.hash(&mut revision);
+        self.is_disconnected().hash(&mut revision);
+        for link_id in self.visible_link_ids() {
+            link_id.hash(&mut revision);
+            self.links.get(&link_id).hash(&mut revision);
+        }
+        Some(format!("{:016x}", revision.finish()))
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        fn find(resource: &Resource, id: &str) -> Option<Resource> {
+            if resource.id.as_str() == id {
+                return Some(resource.clone());
+            }
+            for child in &resource.children {
+                if let Some(found) = find(child, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        if self.framework_hosted {
+            if id == self.terminal_resource_id() {
+                return None;
+            }
+            let transcript = self.transcript_resource();
+            if let Some(found) = find(&transcript, id) {
+                return Some(found);
+            }
+            return self.linked_resource(id);
+        }
+        let session = self.session_resource_with(Some(doc));
+        if id == self.terminal_resource_id() || id == session.id.as_str() {
+            return Some(session);
+        }
+        if let Some(found) = session.children.iter().find_map(|child| find(child, id)) {
+            return Some(found);
+        }
+        self.linked_resource(id)
+    }
+}
+
+impl TerminalWidget {
+    fn linked_resource(&self, id: &str) -> Option<ui::tilo_actions::Resource> {
+        let prefix = format!("terminal.link:{}:", self.pane_id);
+        let link_id = id.strip_prefix(&prefix)?.parse::<u16>().ok()?;
+        self.links
+            .get(&link_id)
+            .map(|url| self.link_resource(link_id, url))
+    }
+}
+
+impl ui::widget::controls::ActionControls for TerminalWidget {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.gesture_effects.pop_front().or_else(|| {
+            self.menu_effects
+                .values_mut()
+                .find_map(ui::widget::ActionEmitter::take)
+        })
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
+        for (index, emitter) in &self.menu_effects {
+            let id = format!("terminal.menu:{}:{index}", self.pane_id);
+            bindings.retain(|binding| binding.control_id != id);
+            bindings.push(emitter.metadata(id));
+        }
+        bindings
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<ui::tilo_actions::ActionAddress>,
+    ) {
+        self.allowed_menu_actions = Some(allowed.clone());
+        let mut availability = Vec::with_capacity(self.menu_effects.len());
+        for (index, emitter) in &mut self.menu_effects {
+            emitter.refresh_availability(allowed);
+            availability.push((*index, emitter.is_available()));
+        }
+        for (index, available) in availability {
+            self.context_menu.set_item_enabled(index, available);
+        }
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for TerminalWidget {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 }
 
@@ -3292,24 +3471,10 @@ impl TerminalWidget {
     /// keystrokes must not leak into the foreground process: the query is a
     /// private viewport aid, not shell input. Enter cycles matches, Shift
     /// Enter reverses, and Escape restores direct terminal typing.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Widget event forwarding requires the framework context for the embedded shared TextInput"
-    )]
-    fn handle_find_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-        handled: &mut bool,
-    ) {
+    fn handle_find_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor_pos =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         if let WindowEvent::KeyboardInput {
             event:
@@ -3324,12 +3489,12 @@ impl TerminalWidget {
             match logical_key {
                 Key::Named(NamedKey::Escape) => {
                     self.close_find();
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 Key::Named(NamedKey::Enter) => {
-                    self.step_find_match(modifiers.state().shift_key());
-                    *handled = true;
+                    self.step_find_match(ctx.modifiers.state().shift_key());
+                    *ctx.handled = true;
                     return;
                 }
                 _ => {}
@@ -3343,17 +3508,17 @@ impl TerminalWidget {
         {
             if self.find_previous_rect.contains(self.last_cursor_pos) {
                 self.step_find_match(true);
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if self.find_next_rect.contains(self.last_cursor_pos) {
                 self.step_find_match(false);
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if self.find_close_rect.contains(self.last_cursor_pos) {
                 self.close_find();
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
@@ -3362,21 +3527,17 @@ impl TerminalWidget {
         Widget::handle_event(
             &mut self.find_input,
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            root,
-            &mut input_handled,
-            focus_target,
-            node_id,
-            taffy,
+            &mut ui::widget::EventCtx {
+                handled: &mut input_handled,
+                ..ctx.reborrow(ctx.path, ctx.node_id)
+            },
         );
         if self.find_input.value() != before {
             self.refresh_find_matches();
         }
         // A find overlay is a focus boundary. Even navigation keys and clicks
         // outside its panel must not reach a running shell behind it.
-        *handled = true;
+        *ctx.handled = true;
     }
 
     /// Helper for [`Widget::handle_event`]'s `WindowEvent::MouseWheel` arm.
@@ -3671,6 +3832,7 @@ impl TerminalWidget {
     fn handle_key_press_event(
         &mut self,
         logical_key: &Key,
+        physical_key: PhysicalKey,
         text: Option<&str>,
         modifiers: winit::event::Modifiers,
         handled: &mut bool,
@@ -3775,7 +3937,24 @@ impl TerminalWidget {
             }
         }
 
+        self.deliver_mapped_key_bytes(logical_key, physical_key, text, modifiers, handled);
+    }
+
+    /// Map a key press to PTY bytes and write them. Physical Enter/Space
+    /// fill in when the logical key and `text` are empty (control-socket
+    /// and some compositor paths).
+    fn deliver_mapped_key_bytes(
+        &mut self,
+        logical_key: &Key,
+        physical_key: PhysicalKey,
+        text: Option<&str>,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+    ) {
         let mut bytes = self.map_key(logical_key, modifiers);
+        if bytes.is_none() {
+            bytes = Self::map_physical_key(physical_key);
+        }
         if bytes.is_none()
             && let Some(t) = text
             && !t.chars().any(|c| c as u32 == 0x23CE || c as u32 == 0x21B5)
@@ -3964,10 +4143,6 @@ impl TerminalWidget {
     /// row only paints when it falls inside the current viewport window
     /// `[start_y, start_y + visible_rows)`, translated to an on-screen row.
     /// Helper for [`Widget::draw`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one drawing pass, geometry threaded through explicitly"
-    )]
     fn draw_selection_highlight(
         &self,
         scene: &mut Scene,
@@ -3998,10 +4173,6 @@ impl TerminalWidget {
     /// Paint only the active find match. The index remains local and the
     /// overlay never serializes query/match information into the shared
     /// transcript; this is a visual locator over already-rendered cells.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The terminal grid's shared paint metrics keep selection and find-match overlays pixel-aligned"
-    )]
     fn draw_find_match_highlight(
         &self,
         scene: &mut Scene,
@@ -4311,25 +4482,17 @@ impl TerminalWidget {
     }
 
     /// Paint every visible row's cell text as colour runs (consecutive cells
-    /// sharing one [`Attr`] drawn in a single [`Self::draw_run`] call).
-    /// Helper for [`Widget::draw`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one drawing pass, geometry threaded through explicitly"
-    )]
+    /// sharing one [`Attr`] drawn in a single [`Self::draw_run`] call), in
+    /// `cell_style`'s size and monospace family. Helper for [`Widget::draw`].
     fn draw_cell_rows(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        font_size: f32,
-        palette: &ui::tokens::TerminalPalette,
-        mono: &FontChoice,
-        grid_rect: Rect,
-        padding_x: f64,
+        ctx: &mut PaintCtx<'_>,
+        cell_style: &TextStyle,
         start_y: usize,
         visible_rows: usize,
     ) {
+        let grid_rect = self.grid_rect;
+        let padding_x = self.last_padding_x;
         for (y, line_text) in self
             .grid
             .iter()
@@ -4360,16 +4523,11 @@ impl TerminalWidget {
                         && let Some(prev_attr) = current_attr
                     {
                         self.draw_run(
-                            scene,
+                            ctx,
+                            cell_style,
                             &current_run,
                             prev_attr,
-                            py,
-                            run_start_cell_idx as f64 * self.char_w + padding_x,
-                            text_renderer,
-                            transform,
-                            font_size,
-                            palette,
-                            mono,
+                            Point::new(run_start_cell_idx as f64 * self.char_w + padding_x, py),
                         );
                     }
                     current_run.clear();
@@ -4383,16 +4541,11 @@ impl TerminalWidget {
                 && let Some(prev_attr) = current_attr
             {
                 self.draw_run(
-                    scene,
+                    ctx,
+                    cell_style,
                     &current_run,
                     prev_attr,
-                    py,
-                    run_start_cell_idx as f64 * self.char_w + padding_x,
-                    text_renderer,
-                    transform,
-                    font_size,
-                    palette,
-                    mono,
+                    Point::new(run_start_cell_idx as f64 * self.char_w + padding_x, py),
                 );
             }
         }
@@ -4402,25 +4555,24 @@ impl TerminalWidget {
     /// has scrolled back into history it hides (matching xterm/kitty), so
     /// it doesn't imply the caret is somewhere on an old line. Helper for
     /// [`Widget::draw`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one drawing pass, geometry threaded through explicitly"
-    )]
     fn draw_block_cursor(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        font_size: f32,
-        palette: &ui::tokens::TerminalPalette,
-        mono: &FontChoice,
-        grid_rect: Rect,
-        padding_x: f64,
+        ctx: &mut PaintCtx<'_>,
+        cell_style: &TextStyle,
         start_y: usize,
         visible_rows: usize,
-        scroll: usize,
-        cursor_color: Color,
     ) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let palette = &theme.tokens.terminal_palette;
+        let grid_rect = self.grid_rect;
+        let padding_x = self.last_padding_x;
+        let scroll = self.scroll_offset;
+        let cursor_color = self.last_cursor_color;
         // Absolute grid row of the cursor → visible row (may be scrolled off).
         let cursor_abs = self.grid.len().saturating_sub(self.height) + self.cursor_y;
         let scrolled_back = !self.alt_active && scroll > 0;
@@ -4451,38 +4603,36 @@ impl TerminalWidget {
                 .and_then(|line| cell_char_at(line, self.cursor_x))
                 && !ch.is_whitespace()
             {
-                text_renderer.draw_text_font(
+                text_renderer.draw_style(
                     scene,
                     &ch.to_string(),
-                    font_size,
                     palette.bg_default,
                     transform * Affine::translate((cx, cy)),
                     None,
-                    TextWeight::Regular,
-                    false,
-                    mono,
+                    cell_style,
                 );
             }
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one terminal run draw needs each independent scene, text, style, and clip input"
-    )]
+    /// Paint one run of cells sharing `attr`, starting `at.x` into the grid
+    /// on the row whose top is `at.y`.
     fn draw_run(
         &self,
-        scene: &mut Scene,
+        ctx: &mut PaintCtx<'_>,
+        cell_style: &TextStyle,
         text: &str,
         attr: Attr,
-        py: f64,
-        rx: f64,
-        text_renderer: &mut TextRenderer,
-        transform: Affine,
-        font_size: f32,
-        palette: &ui::tokens::TerminalPalette,
-        font: &FontChoice,
+        at: Point,
     ) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let palette = &theme.tokens.terminal_palette;
+        let (rx, py) = (at.x, at.y);
         let (mut fg, bg_opt) = resolve_pair(attr, palette);
         // SGR 2 (faint): blend the foreground toward the background so it
         // reads as dimmed, matching xterm/kitty. Applied after reverse so a
@@ -4521,16 +4671,17 @@ impl TerminalWidget {
         } else {
             TextWeight::Regular
         };
-        text_renderer.draw_text_font(
+        text_renderer.draw_style(
             scene,
             text,
-            font_size,
             fg,
             transform * Affine::translate((tx, py)),
             None,
-            weight,
-            attr.italic,
-            font, // the OS's monospace face — a terminal must render fixed-width
+            // The OS's monospace face — a terminal must render fixed-width.
+            &cell_style
+                .clone()
+                .with_weight(weight)
+                .with_italic(attr.italic),
         );
 
         if attr.underline || is_link {
@@ -5275,6 +5426,14 @@ impl TerminalWidget {
         Some(out)
     }
 
+    fn map_physical_key(physical: PhysicalKey) -> Option<Vec<u8>> {
+        match physical {
+            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => Some(vec![b'\r']),
+            PhysicalKey::Code(KeyCode::Space) => Some(vec![b' ']),
+            _ => None,
+        }
+    }
+
     fn map_key(&self, key: &Key, modifiers: winit::event::Modifiers) -> Option<Vec<u8>> {
         let mods = modifiers.state();
         let shift = mods.shift_key();
@@ -5301,6 +5460,11 @@ impl TerminalWidget {
             Key::Character(c) if alt && !ctrl && !mods.super_key() => {
                 Self::map_alt_char(c.as_str())
             }
+            // Hardware Space arrives as `Named(Space)` (often with no `text`).
+            // Control-socket `type` sends `Character` glyphs whose `text` may
+            // also be empty. Both used to fall through, so App/Frame treated
+            // unconsumed Space/Enter as Activate and the PTY never saw them.
+            Key::Character(c) if !ctrl && !alt && !mods.super_key() => Some(c.as_bytes().to_vec()),
             _ => None,
         }
     }
@@ -5361,6 +5525,7 @@ impl TerminalWidget {
     ) -> Option<Vec<u8>> {
         match named {
             NamedKey::Enter => Some(vec![b'\r']),
+            NamedKey::Space => Some(vec![b' ']),
             NamedKey::Backspace => Some(vec![127]),
             // Shift+Tab is back-tab (CSI Z) — reverse field / completion.
             NamedKey::Tab if shift => Some(b"\x1b[Z".to_vec()),
@@ -5493,9 +5658,31 @@ pub struct TerminalPerformer<'a> {
 /// other emulator action runs, or the feed ends.
 pub struct PrintBuf {
     line_obj: ObjId,
-    text_id: ObjId,
     text: String,
     attrs: Vec<u8>,
+    alternate: bool,
+    index: u32,
+}
+
+fn splice_chars(text: &str, at: usize, delete: usize, insert: &str) -> String {
+    let mut chars: Vec<char> = text.chars().collect();
+    let at = at.min(chars.len());
+    let end = (at + delete).min(chars.len());
+    chars.splice(at..end, insert.chars());
+    chars.into_iter().collect()
+}
+
+fn blank_attr_range(attrs: &mut [u8], from: usize, count: usize) {
+    if count == 0 {
+        return;
+    }
+    let empty = Attr::default().pack();
+    for index in from..(from + count) {
+        let start = index * ATTR_BYTES;
+        if let Some(dest) = attrs.get_mut(start..start + ATTR_BYTES) {
+            dest.copy_from_slice(&empty);
+        }
+    }
 }
 
 /// Name this emulator reports for itself in the XTVERSION reply
@@ -5527,6 +5714,9 @@ impl Perform for TerminalPerformer<'_> {
         }
 
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
+        let Some(index) = u32::try_from(y).ok() else {
+            return;
+        };
         let Some(line_obj) = self.active_line_id(y) else {
             return;
         };
@@ -5557,9 +5747,10 @@ impl Perform for TerminalPerformer<'_> {
             };
             self.print_buf = Some(PrintBuf {
                 line_obj,
-                text_id,
                 text,
                 attrs,
+                alternate: *self.alt_active,
+                index,
             });
         }
         // `need_load` above always leaves `print_buf` populated by this
@@ -5763,8 +5954,10 @@ impl Perform for TerminalPerformer<'_> {
                     && let Some(id) = self.next_link_id.checked_add(1)
                 {
                     *self.next_link_id = id;
-                    let _ = self.state.put(&self.links_id, id.to_string(), url);
-                    self.current_link_id = id;
+                    let action = crate::resource::TerminalAction::RegisterLink { id, url };
+                    if ui::tilo_actions::Action::apply(&action, self.state).is_ok() {
+                        self.current_link_id = id;
+                    }
                 }
             }
             _ => {}
@@ -5792,36 +5985,20 @@ impl TerminalPerformer<'_> {
                 return;
             }
         };
-        let index = self.state.length(&self.images_id);
-        let Ok(placement) = self
-            .state
-            .insert_object(&self.images_id, index, ObjType::Map)
-        else {
-            return;
+        let action = crate::resource::TerminalAction::PlaceImage {
+            hash,
+            mime: image.mime.to_string(),
+            byte_len: image.bytes.len() as u64,
+            row: self.absolute_y() as u64,
+            col: self.cursor_x as u64,
+            columns: u64::from(image.columns),
+            rows: u64::from(image.rows),
+            pixel_width: u64::from(image.pixel_width),
+            pixel_height: u64::from(image.pixel_height),
+            protocol_id: image.protocol_id.map(u64::from),
+            alternate_screen: *self.alt_active,
         };
-        let _ = self.state.put(&placement, "hash", hash);
-        let _ = self.state.put(&placement, "mime", image.mime);
-        let _ = self
-            .state
-            .put(&placement, "byte_len", image.bytes.len() as u64);
-        let _ = self.state.put(&placement, "row", self.absolute_y() as u64);
-        let _ = self.state.put(&placement, "col", self.cursor_x as u64);
-        let _ = self
-            .state
-            .put(&placement, "columns", u64::from(image.columns));
-        let _ = self.state.put(&placement, "rows", u64::from(image.rows));
-        let _ = self
-            .state
-            .put(&placement, "pixel_width", u64::from(image.pixel_width));
-        let _ = self
-            .state
-            .put(&placement, "pixel_height", u64::from(image.pixel_height));
-        let _ = self
-            .state
-            .put(&placement, "alternate_screen", *self.alt_active);
-        if let Some(id) = image.protocol_id {
-            let _ = self.state.put(&placement, "protocol_id", u64::from(id));
-        }
+        let _ = ui::tilo_actions::Action::apply(&action, self.state);
     }
 
     fn csi_first(p: &vte::Params) -> u16 {
@@ -5995,60 +6172,110 @@ impl TerminalPerformer<'_> {
     /// callers skip the line rather than fabricate an id).
     fn make_blank_line(&mut self, idx: usize) -> Option<ObjId> {
         let grid_id = self.active_grid_id();
-        let line_id = self.state.insert_object(&grid_id, idx, ObjType::Map).ok()?;
-        let text_id = self
-            .state
-            .put_object(&line_id, "text", ObjType::Text)
-            .ok()?;
-        let _ = self
-            .state
-            .splice_text(&text_id, 0, 0, &" ".repeat(self.width));
-        let attr_bytes: Vec<u8> = vec![Attr::default().pack(); self.width].concat();
-        let _ = self.state.put(&line_id, "attrs", attr_bytes);
-        Some(line_id)
-    }
-
-    fn newline(&mut self) {
-        // A line feed leaves the current line; commit any buffered prints first
-        // so the appended/scrolled structure is computed over fresh CRDT state
-        // (and so a print → auto-wrap → newline doesn't strand the old line).
-        self.flush_print_buf();
-        self.cursor_y += 1;
-        if self.cursor_y < self.height {
-            return;
-        }
-        self.cursor_y = self.height - 1;
-
-        if *self.alt_active {
-            // Fixed-height alternate buffer: scroll the region up in place.
-            self.scroll_region_up(1);
+        let text = " ".repeat(self.width);
+        let attrs = vec![Attr::default().pack(); self.width].concat();
+        let key = if *self.alt_active {
+            "terminal_grid_alt"
         } else {
-            // Main buffer accumulates scrollback.
-            let grid_id = self.main_grid_id.clone();
-            let idx = self.main_line_ids.len();
-            if let Some(line_id) = self.make_blank_line(idx) {
-                self.main_line_ids.push(line_id);
-            }
-
-            // Bound the retained scrollback. Trimming one line at a time on
-            // every append made `Vec::remove(0)` an O(n) shift per output line
-            // (O(n²) over a flood); instead let history overrun by a slack
-            // margin and drop the overflow in a single `drain`. The trimmed
-            // count feeds the widget's incremental `sync` so the render mirror
-            // stays aligned.
-            if self.main_line_ids.len() > MAX_HISTORY + HISTORY_TRIM_SLACK {
-                let overflow = self.main_line_ids.len() - MAX_HISTORY;
-                for _ in 0..overflow {
-                    let _ = self.state.delete(&grid_id, 0);
-                }
-                self.main_line_ids.drain(0..overflow);
-                self.shift_main_image_placements(overflow);
-                *self.trimmed_front += overflow;
-            }
+            "terminal_grid"
+        };
+        if grid_is_document_root(self.state, key, &grid_id) {
+            let index = u32::try_from(idx).ok()?;
+            ui::tilo_actions::Action::apply(
+                &crate::resource::TerminalAction::InsertBlankLine {
+                    alternate: *self.alt_active,
+                    index,
+                    text,
+                    attrs,
+                },
+                self.state,
+            )
+            .ok()?;
+        } else {
+            let line_id = self.state.insert_object(&grid_id, idx, ObjType::Map).ok()?;
+            let text_id = self
+                .state
+                .put_object(&line_id, "text", ObjType::Text)
+                .ok()?;
+            let _ = self.state.splice_text(&text_id, 0, 0, &text);
+            let _ = self.state.put(&line_id, "attrs", attrs);
+        }
+        match self.state.get(&grid_id, idx).ok().flatten() {
+            Some((Value::Object(ObjType::Map), id)) => Some(id),
+            _ => None,
         }
     }
 
-    fn shift_main_image_placements(&mut self, removed_rows: usize) {
+    fn delete_grid_line(&mut self, index: usize) {
+        let grid_id = self.active_grid_id();
+        let key = if *self.alt_active {
+            "terminal_grid_alt"
+        } else {
+            "terminal_grid"
+        };
+        if grid_is_document_root(self.state, key, &grid_id) {
+            let Some(index) = u32::try_from(index).ok() else {
+                return;
+            };
+            let _ = ui::tilo_actions::Action::apply(
+                &crate::resource::TerminalAction::DeleteGridLine {
+                    alternate: *self.alt_active,
+                    index,
+                },
+                self.state,
+            );
+        } else {
+            let _ = self.state.delete(&grid_id, index);
+        }
+    }
+
+    fn write_grid_line(&mut self, index: usize, text: String, attrs: Vec<u8>) {
+        let grid_id = self.active_grid_id();
+        let key = if *self.alt_active {
+            "terminal_grid_alt"
+        } else {
+            "terminal_grid"
+        };
+        if grid_is_document_root(self.state, key, &grid_id) {
+            let Some(index) = u32::try_from(index).ok() else {
+                return;
+            };
+            let _ = ui::tilo_actions::Action::apply(
+                &crate::resource::TerminalAction::WriteLine {
+                    alternate: *self.alt_active,
+                    index,
+                    text,
+                    attrs,
+                },
+                self.state,
+            );
+        } else if let Some(line) = self.active_line_id(index) {
+            if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line, "text")
+            {
+                ui::doc::splice_text_diffed(self.state, &text_id, &text);
+            }
+            let _ = self.state.put(&line, "attrs", attrs);
+        }
+    }
+
+    fn line_text_and_attrs(&self, line_obj: &ObjId) -> Option<(String, Vec<u8>)> {
+        let Some((Value::Object(ObjType::Text), text_id)) =
+            self.state.get(line_obj, "text").ok().flatten()
+        else {
+            return None;
+        };
+        let text = self.state.text(&text_id).unwrap_or_default();
+        let attrs = match self.state.get(line_obj, "attrs").ok().flatten() {
+            Some((Value::Scalar(value), _)) => match value.as_ref() {
+                automerge::ScalarValue::Bytes(bytes) => bytes.clone(),
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        };
+        Some((text, attrs))
+    }
+
+    fn shift_nested_image_placements(&mut self, removed_rows: usize) {
         for index in (0..self.state.length(&self.images_id)).rev() {
             let Ok(Some((Value::Object(ObjType::Map), placement))) =
                 self.state.get(&self.images_id, index)
@@ -6061,9 +6288,8 @@ impl TerminalPerformer<'_> {
                 .ok()
                 .flatten()
                 .and_then(|(value, _)| value.into_scalar().ok())
-                .and_then(|value| match value {
-                    automerge::ScalarValue::Boolean(value) => Some(value),
-                    _ => None,
+                .and_then(|value| {
+                    matches!(value, automerge::ScalarValue::Boolean(true)).then_some(true)
                 })
                 .unwrap_or(false);
             if alternate {
@@ -6088,6 +6314,60 @@ impl TerminalPerformer<'_> {
         }
     }
 
+    fn newline(&mut self) {
+        // A line feed leaves the current line; commit any buffered prints first
+        // so the appended/scrolled structure is computed over fresh CRDT state
+        // (and so a print → auto-wrap → newline doesn't strand the old line).
+        self.flush_print_buf();
+        self.cursor_y += 1;
+        if self.cursor_y < self.height {
+            return;
+        }
+        self.cursor_y = self.height - 1;
+
+        if *self.alt_active {
+            // Fixed-height alternate buffer: scroll the region up in place.
+            self.scroll_region_up(1);
+        } else {
+            // Main buffer accumulates scrollback.
+            let idx = self.main_line_ids.len();
+            if let Some(line_id) = self.make_blank_line(idx) {
+                self.main_line_ids.push(line_id);
+            }
+
+            // Bound the retained scrollback. Trimming one line at a time on
+            // every append made `Vec::remove(0)` an O(n) shift per output line
+            // (O(n²) over a flood); instead let history overrun by a slack
+            // margin and drop the overflow in a single `drain`. The trimmed
+            // count feeds the widget's incremental `sync` so the render mirror
+            // stays aligned.
+            if self.main_line_ids.len() > MAX_HISTORY + HISTORY_TRIM_SLACK {
+                let overflow = self.main_line_ids.len() - MAX_HISTORY;
+                if grid_is_document_root(self.state, "terminal_grid", &self.main_grid_id) {
+                    if let Ok(count) = u32::try_from(overflow) {
+                        let _ = ui::tilo_actions::Action::apply(
+                            &crate::resource::TerminalAction::TrimGridPrefix { count },
+                            self.state,
+                        );
+                        let _ = ui::tilo_actions::Action::apply(
+                            &crate::resource::TerminalAction::ShiftImageRows {
+                                removed_rows: count,
+                            },
+                            self.state,
+                        );
+                    }
+                } else {
+                    for _ in 0..overflow {
+                        let _ = self.state.delete(&self.main_grid_id, 0);
+                    }
+                    self.shift_nested_image_placements(overflow);
+                }
+                self.main_line_ids.drain(0..overflow);
+                *self.trimmed_front += overflow;
+            }
+        }
+    }
+
     /// Scroll the current scrolling region up by `n` lines (content moves up;
     /// blank lines appear at the bottom of the region). Honours the DEC
     /// scrolling margins.
@@ -6103,8 +6383,7 @@ impl TerminalPerformer<'_> {
         }
         let n = n.min(bot - top + 1);
         for _ in 0..n {
-            let grid_id = self.active_grid_id();
-            let _ = self.state.delete(&grid_id, top);
+            self.delete_grid_line(top);
             self.active_line_ids_mut().remove(top);
             if let Some(line) = self.make_blank_line(bot) {
                 self.active_line_ids_mut().insert(bot, line);
@@ -6126,8 +6405,7 @@ impl TerminalPerformer<'_> {
         }
         let n = n.min(bot - top + 1);
         for _ in 0..n {
-            let grid_id = self.active_grid_id();
-            let _ = self.state.delete(&grid_id, bot);
+            self.delete_grid_line(bot);
             self.active_line_ids_mut().remove(bot);
             if let Some(line) = self.make_blank_line(top) {
                 self.active_line_ids_mut().insert(top, line);
@@ -6148,8 +6426,7 @@ impl TerminalPerformer<'_> {
         }
         let n = n.min(bot - at + 1);
         for _ in 0..n {
-            let grid_id = self.active_grid_id();
-            let _ = self.state.delete(&grid_id, bot);
+            self.delete_grid_line(bot);
             self.active_line_ids_mut().remove(bot);
             if let Some(line) = self.make_blank_line(at) {
                 self.active_line_ids_mut().insert(at, line);
@@ -6171,8 +6448,7 @@ impl TerminalPerformer<'_> {
         }
         let n = n.min(bot - at + 1);
         for _ in 0..n {
-            let grid_id = self.active_grid_id();
-            let _ = self.state.delete(&grid_id, at);
+            self.delete_grid_line(at);
             self.active_line_ids_mut().remove(at);
             if let Some(line) = self.make_blank_line(bot) {
                 self.active_line_ids_mut().insert(bot, line);
@@ -6187,25 +6463,27 @@ impl TerminalPerformer<'_> {
             return;
         }
         let screen_top = len.saturating_sub(self.height);
+        let cursor_y = self.absolute_y().min(len - 1);
+        // The cursor's own row is erased only up to or from the cursor, as
+        // `EL` would; blanking it whole wipes a prompt drawn before the cursor.
         let range: Vec<usize> = match mode {
-            0 => (self.absolute_y()..len).collect(), // cursor → end
-            1 => (screen_top..=self.absolute_y().min(len - 1)).collect(), // start → cursor
-            2 | 3 => (screen_top..len).collect(),    // whole screen
+            0 => {
+                self.erase_line(0);
+                (cursor_y + 1..len).collect()
+            }
+            1 => {
+                self.erase_line(1);
+                (screen_top..cursor_y).collect()
+            }
+            2 | 3 => (screen_top..len).collect(), // whole screen
             _ => return,
         };
         for abs_y in range {
-            if let Some(line_obj) = self.active_line_id(abs_y) {
-                if let Ok(Some((Value::Object(ObjType::Text), text_id))) =
-                    self.state.get(&line_obj, "text")
-                {
-                    let l = self.state.length(&text_id);
-                    let _ =
-                        self.state
-                            .splice_text(&text_id, 0, l as isize, &" ".repeat(self.width));
-                }
-                let attr_bytes: Vec<u8> = vec![Attr::default().pack(); self.width].concat();
-                let _ = self.state.put(&line_obj, "attrs", attr_bytes);
-            }
+            self.write_grid_line(
+                abs_y,
+                " ".repeat(self.width),
+                vec![Attr::default().pack(); self.width].concat(),
+            );
         }
     }
 
@@ -6214,22 +6492,22 @@ impl TerminalPerformer<'_> {
         let Some(line_obj) = self.active_line_id(y) else {
             return;
         };
-        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
-        {
-            let len = self.state.length(&text_id);
-            let (from, count): (usize, usize) = match mode {
-                0 => (self.cursor_x, len.saturating_sub(self.cursor_x)), // cursor → end
-                1 => (0, self.cursor_x.min(len)),                        // start → cursor
-                2 => (0, len),                                           // whole line
-                _ => return,
-            };
-            if count > 0 {
-                let _ = self
-                    .state
-                    .splice_text(&text_id, from, count as isize, &" ".repeat(count));
-            }
-            self.reset_attr_range(&line_obj, from, count);
+        let Some((text, mut attrs)) = self.line_text_and_attrs(&line_obj) else {
+            return;
+        };
+        let len = text.chars().count();
+        let (from, count): (usize, usize) = match mode {
+            0 => (self.cursor_x, len.saturating_sub(self.cursor_x)),
+            1 => (0, self.cursor_x.min(len)),
+            2 => (0, len),
+            _ => return,
+        };
+        if count == 0 {
+            return;
         }
+        let text = splice_chars(&text, from, count, &" ".repeat(count));
+        blank_attr_range(&mut attrs, from, count);
+        self.write_grid_line(y, text, attrs);
     }
 
     fn erase_chars(&mut self, n: usize) {
@@ -6237,20 +6515,17 @@ impl TerminalPerformer<'_> {
         let Some(line_obj) = self.active_line_id(y) else {
             return;
         };
-        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
-        {
-            let len = self.state.length(&text_id);
-            let count = n.min(len.saturating_sub(self.cursor_x));
-            if count > 0 {
-                let _ = self.state.splice_text(
-                    &text_id,
-                    self.cursor_x,
-                    count as isize,
-                    &" ".repeat(count),
-                );
-                self.reset_attr_range(&line_obj, self.cursor_x, count);
-            }
+        let Some((text, mut attrs)) = self.line_text_and_attrs(&line_obj) else {
+            return;
+        };
+        let len = text.chars().count();
+        let count = n.min(len.saturating_sub(self.cursor_x));
+        if count == 0 {
+            return;
         }
+        let text = splice_chars(&text, self.cursor_x, count, &" ".repeat(count));
+        blank_attr_range(&mut attrs, self.cursor_x, count);
+        self.write_grid_line(y, text, attrs);
     }
 
     fn insert_chars(&mut self, n: usize) {
@@ -6258,23 +6533,18 @@ impl TerminalPerformer<'_> {
         let Some(line_obj) = self.active_line_id(y) else {
             return;
         };
-        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
-        {
-            let n = n.min(self.width.saturating_sub(self.cursor_x));
-            if n == 0 {
-                return;
-            }
-            let _ = self
-                .state
-                .splice_text(&text_id, self.cursor_x, 0, &" ".repeat(n));
-            // Truncate back to the grid width.
-            let len = self.state.length(&text_id);
-            if len > self.width {
-                let _ =
-                    self.state
-                        .splice_text(&text_id, self.width, (len - self.width) as isize, "");
-            }
+        let Some((text, attrs)) = self.line_text_and_attrs(&line_obj) else {
+            return;
+        };
+        let n = n.min(self.width.saturating_sub(self.cursor_x));
+        if n == 0 {
+            return;
         }
+        let mut text = splice_chars(&text, self.cursor_x, 0, &" ".repeat(n));
+        if text.chars().count() > self.width {
+            text = text.chars().take(self.width).collect();
+        }
+        self.write_grid_line(y, text, attrs);
     }
 
     fn delete_chars(&mut self, n: usize) {
@@ -6282,44 +6552,20 @@ impl TerminalPerformer<'_> {
         let Some(line_obj) = self.active_line_id(y) else {
             return;
         };
-        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
-        {
-            let len = self.state.length(&text_id);
-            let count = n.min(len.saturating_sub(self.cursor_x));
-            if count == 0 {
-                return;
-            }
-            let _ = self
-                .state
-                .splice_text(&text_id, self.cursor_x, count as isize, "");
-            // Pad blanks at the end to restore the width.
-            let new_len = self.state.length(&text_id);
-            if new_len < self.width {
-                let _ =
-                    self.state
-                        .splice_text(&text_id, new_len, 0, &" ".repeat(self.width - new_len));
-            }
-        }
-    }
-
-    /// Reset the packed attrs for cells `[from, from+count)` to default.
-    fn reset_attr_range(&mut self, line_obj: &ObjId, from: usize, count: usize) {
+        let Some((text, attrs)) = self.line_text_and_attrs(&line_obj) else {
+            return;
+        };
+        let len = text.chars().count();
+        let count = n.min(len.saturating_sub(self.cursor_x));
         if count == 0 {
             return;
         }
-        if let Ok(Some((Value::Scalar(v), _))) = self.state.get(line_obj, "attrs")
-            && let automerge::ScalarValue::Bytes(bytes) = v.as_ref()
-        {
-            let mut attr_bytes = bytes.clone();
-            let empty = Attr::default().pack();
-            for i in from..(from + count) {
-                let s = i * ATTR_BYTES;
-                if let Some(dest) = attr_bytes.get_mut(s..s + ATTR_BYTES) {
-                    dest.copy_from_slice(&empty);
-                }
-            }
-            let _ = self.state.put(line_obj, "attrs", attr_bytes);
+        let mut text = splice_chars(&text, self.cursor_x, count, "");
+        let new_len = text.chars().count();
+        if new_len < self.width {
+            text.push_str(&" ".repeat(self.width - new_len));
         }
+        self.write_grid_line(y, text, attrs);
     }
 
     /// DEC private set/reset — `CSI ? Ps h` / `CSI ? Ps l`.
@@ -6399,20 +6645,15 @@ impl TerminalPerformer<'_> {
     /// `height` lines (a previous alt session may have left it longer).
     fn clear_alt_buffer(&mut self) {
         let width = self.width;
-        let ids: Vec<ObjId> = self.alt_line_ids.clone();
-        for id in &ids {
-            if let Ok(Some((Value::Object(ObjType::Text), tid))) = self.state.get(id, "text") {
-                let l = self.state.length(&tid);
-                let _ = self
-                    .state
-                    .splice_text(&tid, 0, l as isize, &" ".repeat(width));
-            }
-            let attr_bytes: Vec<u8> = vec![Attr::default().pack(); width].concat();
-            let _ = self.state.put(id, "attrs", attr_bytes);
+        let count = self.alt_line_ids.len();
+        let text = " ".repeat(width);
+        let attrs = vec![Attr::default().pack(); width].concat();
+        for index in 0..count {
+            self.write_grid_line(index, text.clone(), attrs.clone());
         }
         while self.alt_line_ids.len() > self.height {
             let idx = self.alt_line_ids.len() - 1;
-            let _ = self.state.delete(&self.alt_grid_id, idx);
+            self.delete_grid_line(idx);
             self.alt_line_ids.pop();
         }
     }
@@ -6541,8 +6782,32 @@ impl TerminalPerformer<'_> {
     /// A no-op when nothing is buffered.
     pub(crate) fn flush_print_buf(&mut self) {
         if let Some(buf) = self.print_buf.take() {
-            ui::doc::splice_text_diffed(self.state, &buf.text_id, &buf.text);
-            let _ = self.state.put(&buf.line_obj, "attrs", buf.attrs);
+            let grid = if buf.alternate {
+                &self.alt_grid_id
+            } else {
+                &self.main_grid_id
+            };
+            let key = if buf.alternate {
+                "terminal_grid_alt"
+            } else {
+                "terminal_grid"
+            };
+            if grid_is_document_root(self.state, key, grid) {
+                let _ = ui::tilo_actions::Action::apply(
+                    &crate::resource::TerminalAction::WriteLine {
+                        alternate: buf.alternate,
+                        index: buf.index,
+                        text: buf.text,
+                        attrs: buf.attrs,
+                    },
+                    self.state,
+                );
+            } else if let Ok(Some((Value::Object(ObjType::Text), text_id))) =
+                self.state.get(&buf.line_obj, "text")
+            {
+                ui::doc::splice_text_diffed(self.state, &text_id, &buf.text);
+                let _ = self.state.put(&buf.line_obj, "attrs", buf.attrs);
+            }
         }
     }
 
@@ -6555,8 +6820,15 @@ impl TerminalPerformer<'_> {
         self.flush_print_buf();
         let x = self.cursor_x as u64;
         let y = self.absolute_y() as u64;
-        let _ = self.state.put(&self.cursor_id, "x", x);
-        let _ = self.state.put(&self.cursor_id, "y", y);
+        if grid_is_document_root(self.state, "terminal_grid", &self.main_grid_id) {
+            let _ = ui::tilo_actions::Action::apply(
+                &crate::resource::TerminalAction::SetCursor { x, y },
+                self.state,
+            );
+        } else {
+            let _ = self.state.put(&self.cursor_id, "x", x);
+            let _ = self.state.put(&self.cursor_id, "y", y);
+        }
     }
 
     /// Stage `bytes` to be written back to the PTY once this feed's parse

@@ -94,43 +94,101 @@ mod tests {
     const TAB_B: u64 = 22;
 
     #[test]
-    fn history_rebuilt_group_waits_for_missing_record_then_accepts_hydration() {
-        let store = RecordStore::in_memory();
-        let mut group = UiGroup::new(
-            1,
-            vec![(
-                ui::widget::TabDescriptor {
-                    id: TAB_A,
-                    title: "Saved note".into(),
-                    app_kind: None,
-                },
-                UiTile::App(Box::new(NotesApp::new())),
-            )],
-            TAB_A,
-            ui::widget::WindowWidth::Normal,
-        );
-        let mut parent = AutoCommit::new();
-        bind_group_records(&mut group, &store);
-        group.sync(&mut parent, &automerge::ROOT);
-        bind_group_records(&mut group, &store);
-        group.sync(&mut parent, &automerge::ROOT);
-        assert!(
-            store.open_records().is_empty(),
-            "rebuilds cannot create a missing saved record"
-        );
-        assert!(group.active_host().unwrap().history_owner().is_none());
-        // Simulate the existing record arriving from its storage/replication owner.
-        store.open_record(&scratch_tab_record(TAB_A));
-        store.with(&RecordId::for_tab(TAB_A), |doc| {
-            NotesApp::with_seed("hydrated content").sync(doc, &automerge::ROOT);
-        });
-        group.sync(&mut parent, &automerge::ROOT);
-        assert_eq!(
-            tab_body(&store, TAB_A, BODY_KEY).as_deref(),
-            Some("hydrated content")
-        );
-        assert!(group.active_host().unwrap().history_owner().is_some());
-        assert!(crate::shell::crdt_text::read_body(&parent, &automerge::ROOT, BODY_KEY).is_none());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn tab_documents_hydrate_rebuilt_groups_and_reach_their_writer() {
+        // Phase `history_rebuilt_group_waits_for_missing_record_then_accepts_hydration`.
+        {
+            let store = RecordStore::in_memory();
+            let mut group = UiGroup::new(
+                1,
+                vec![(
+                    ui::widget::TabDescriptor {
+                        id: TAB_A,
+                        title: "Saved note".into(),
+                        app_kind: None,
+                        icon: None,
+                    },
+                    UiTile::App(Box::new(NotesApp::new())),
+                )],
+                TAB_A,
+                ui::widget::WindowWidth::Normal,
+            );
+            let mut parent = AutoCommit::new();
+            bind_group_records(&mut group, &store);
+            group.sync(&mut parent, &automerge::ROOT);
+            bind_group_records(&mut group, &store);
+            group.sync(&mut parent, &automerge::ROOT);
+            assert!(
+                store.open_records().is_empty(),
+                "rebuilds cannot create a missing saved record"
+            );
+            assert!(group.active_host().unwrap().history_owner().is_none());
+            // Simulate the existing record arriving from its storage/replication owner.
+            store.open_record(&scratch_tab_record(TAB_A));
+            store.with(&RecordId::for_tab(TAB_A), |doc| {
+                NotesApp::with_seed("hydrated content").sync(doc, &automerge::ROOT);
+            });
+            group.sync(&mut parent, &automerge::ROOT);
+            assert_eq!(
+                tab_body(&store, TAB_A, BODY_KEY).as_deref(),
+                Some("hydrated content")
+            );
+            assert!(group.active_host().unwrap().history_owner().is_some());
+            assert!(
+                crate::shell::crdt_text::read_body(&parent, &automerge::ROOT, BODY_KEY).is_none()
+            );
+        }
+
+        // Phase `a_frame_offers_every_open_tab_to_its_writer`.
+        // The store's writers are debounced and off-thread, so something has
+        // to offer them the documents each frame. Read back from a
+        // *different* store, so it's the file on disk being checked, not the
+        // live copy.
+        {
+            const PACKAGE: &str = "so.tilo.test-frame-writeback";
+
+            let tmp = tempfile::tempdir().expect("temp dir");
+
+            let store = store_at(tmp.path(), PACKAGE);
+            store.create_record(&scratch_tab_record(TAB_A)).unwrap();
+            store.create_record(&scratch_tab_record(TAB_B)).unwrap();
+            let (mut host, _chrome) = crate::shell::build_tilo_overlay_host_with_records(
+                tree_with_two_note_tabs(),
+                false,
+                store.clone(),
+            );
+            // What a tab's app writes when the user types into it.
+            store.with(&RecordId::for_tab(TAB_A), |doc| {
+                let mut app = NotesApp::with_seed("written by a frame");
+                app.sync(doc, &automerge::ROOT);
+            });
+
+            let mut shell_doc = AutoCommit::new();
+            host.update(&mut shell_doc, &automerge::ROOT);
+            // Nothing but the frame offers the edit to the debounced writer, and
+            // awaiting the writer submits nothing, so the record reaches
+            // `Saved` only if the frame did.
+            let tab_a = RecordId::for_tab(TAB_A);
+            store
+                .await_submitted(&tab_a)
+                .unwrap_or_else(|error| panic!("the tab's writer failed: {error}"));
+            assert_eq!(
+                store.save_status(&tab_a).unwrap(),
+                ui::record::RecordSaveStatus::Saved,
+                "a frame must offer each open tab's document to its writer"
+            );
+
+            let reader = store_at(tmp.path(), PACKAGE);
+            reader.open_record(&scratch_tab_record(TAB_A));
+            assert_eq!(
+                tab_body(&reader, TAB_A, BODY_KEY).as_deref(),
+                Some("written by a frame"),
+                "a frame must offer each open tab's document to its writer",
+            );
+        }
     }
 
     /// One hosted tile, laid out on its own taffy tree so keystrokes
@@ -172,14 +230,16 @@ mod tests {
             let mut focus_target = None;
             self.host.handle_event(
                 event,
-                1.0,
-                &mods,
-                doc,
-                &automerge::ROOT,
-                &mut handled,
-                &mut focus_target,
-                self.node,
-                &self.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: doc,
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: self.node,
+                    taffy: &self.taffy,
+                },
             );
         }
     }
@@ -251,126 +311,207 @@ mod tests {
         }))
     }
 
-    /// Every Notes tab must own its body: a word typed into one must not
-    /// be found in the other.
     #[test]
-    fn a_word_typed_into_one_notes_tab_is_not_found_in_the_other() {
-        let store = RecordStore::in_memory();
-        let chrome = ChromeState::new_with_handle(tree_with_two_note_tabs());
-        chrome.borrow_mut().set_records(store.clone());
-        let mut shared = AutoCommit::new();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn each_tab_of_one_app_owns_its_document_undo_and_presence() {
+        // Phase `a_word_typed_into_one_notes_tab_is_not_found_in_the_other`.
+        // Every Notes tab must own its body: a word typed into one must not
+        // be found in the other.
+        {
+            let store = RecordStore::in_memory();
+            let chrome = ChromeState::new_with_handle(tree_with_two_note_tabs());
+            chrome.borrow_mut().set_records(store.clone());
+            let mut shared = AutoCommit::new();
 
-        let mut a = Tile::notes(TAB_A, &store);
-        let mut b = Tile::notes(TAB_B, &store);
-        a.type_str(&mut shared, "alpha");
-        b.type_str(&mut shared, "xylophone");
+            let mut a = Tile::notes(TAB_A, &store);
+            let mut b = Tile::notes(TAB_B, &store);
+            a.type_str(&mut shared, "alpha");
+            b.type_str(&mut shared, "xylophone");
 
-        let chrome_st = chrome.borrow();
-        let hits = NotesProvider::new().query(SearchContext {
-            needle: "xylophone",
-            wanted: &[ResourceKind::Note],
-            chrome: &chrome_st,
-            doc: &shared,
-            doc_root: &automerge::ROOT,
-        });
-        let ids: Vec<String> = hits.iter().map(|r| r.id.clone()).collect();
-        assert_eq!(
-            ids,
-            vec![ui::record::RecordId::for_tab(TAB_B).to_string()],
-            "a word typed into one Notes tab must not be found in the other; \
-             both tabs matching means both are showing one body",
-        );
-    }
+            let chrome_st = chrome.borrow();
+            let hits = NotesProvider::new().query(SearchContext {
+                needle: "xylophone",
+                wanted: &[ResourceKind::Note],
+                chrome: &chrome_st,
+                doc: &shared,
+                doc_root: &automerge::ROOT,
+            });
+            let ids: Vec<String> = hits.iter().map(|r| r.id.clone()).collect();
+            assert_eq!(
+                ids,
+                vec![ui::record::RecordId::for_tab(TAB_B).to_string()],
+                "a word typed into one Notes tab must not be found in the other; \
+                 both tabs matching means both are showing one body",
+            );
+        }
 
-    /// Asserted where the content actually lives, so a tab's body cannot
-    /// be "right on screen" while the document behind it is shared.
-    #[test]
-    fn each_tab_writes_into_its_own_document() {
-        let store = RecordStore::in_memory();
-        let mut shared = AutoCommit::new();
-        let mut a = Tile::notes(TAB_A, &store);
-        let mut b = Tile::notes(TAB_B, &store);
-        a.type_str(&mut shared, "alpha");
-        b.type_str(&mut shared, "beta");
+        // Phase `each_tab_writes_into_its_own_document`.
+        // Asserted where the content actually lives, so a tab's body cannot
+        // be "right on screen" while the document behind it is shared.
+        {
+            let store = RecordStore::in_memory();
+            let mut shared = AutoCommit::new();
+            let mut a = Tile::notes(TAB_A, &store);
+            let mut b = Tile::notes(TAB_B, &store);
+            a.type_str(&mut shared, "alpha");
+            b.type_str(&mut shared, "beta");
 
-        assert_eq!(
-            tab_body(&store, TAB_A, BODY_KEY).as_deref(),
-            Some("alpha"),
-            "tab A's document holds what was typed into tab A",
-        );
-        assert_eq!(
-            tab_body(&store, TAB_B, BODY_KEY).as_deref(),
-            Some("beta"),
-            "and tab B's holds its own",
-        );
-        assert_eq!(
-            crate::shell::crdt_text::read_body(&shared, &automerge::ROOT, BODY_KEY),
-            None,
-            "nothing was written into the shell's own document",
-        );
-    }
+            assert_eq!(
+                tab_body(&store, TAB_A, BODY_KEY).as_deref(),
+                Some("alpha"),
+                "tab A's document holds what was typed into tab A",
+            );
+            assert_eq!(
+                tab_body(&store, TAB_B, BODY_KEY).as_deref(),
+                Some("beta"),
+                "and tab B's holds its own",
+            );
+            assert_eq!(
+                crate::shell::crdt_text::read_body(&shared, &automerge::ROOT, BODY_KEY),
+                None,
+                "nothing was written into the shell's own document",
+            );
+        }
 
-    /// An `UndoEntry` is a pair of change hashes inside one document's
-    /// change graph, so a stack shared across tabs would revert against
-    /// the wrong history.
-    #[test]
-    fn undo_in_one_tab_leaves_the_other_alone() {
-        let store = RecordStore::in_memory();
-        let mut shared = AutoCommit::new();
-        let mut a = Tile::notes(TAB_A, &store);
-        let mut b = Tile::notes(TAB_B, &store);
-        a.type_str(&mut shared, "alpha");
-        b.type_str(&mut shared, "beta");
-        // Close the typing bursts the way an idle frame does.
-        a.host.update(&mut shared, &automerge::ROOT);
-        b.host.update(&mut shared, &automerge::ROOT);
+        // Phase `undo_in_one_tab_leaves_the_other_alone`.
+        // An `UndoEntry` is a pair of change hashes inside one document's
+        // change graph, so a stack shared across tabs would revert against
+        // the wrong history.
+        {
+            let store = RecordStore::in_memory();
+            let mut shared = AutoCommit::new();
+            let mut a = Tile::notes(TAB_A, &store);
+            let mut b = Tile::notes(TAB_B, &store);
+            a.type_str(&mut shared, "alpha");
+            b.type_str(&mut shared, "beta");
+            // Close the typing bursts the way an idle frame does.
+            a.host.update(&mut shared, &automerge::ROOT);
+            b.host.update(&mut shared, &automerge::ROOT);
 
-        let ctrl = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-        let z = key_press(&Key::Character(winit::keyboard::SmolStr::new("z")));
-        b.dispatch(&mut shared, &z, ctrl);
+            let ctrl = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+            let z = key_press(&Key::Character(winit::keyboard::SmolStr::new("z")));
+            b.dispatch(&mut shared, &z, ctrl);
 
-        assert_eq!(
-            tab_body(&store, TAB_B, BODY_KEY).as_deref(),
-            Some(""),
-            "undo in tab B reverts tab B's own typing",
-        );
-        assert_eq!(
-            tab_body(&store, TAB_A, BODY_KEY).as_deref(),
-            Some("alpha"),
-            "and leaves tab A untouched",
-        );
-    }
+            assert_eq!(
+                tab_body(&store, TAB_B, BODY_KEY).as_deref(),
+                Some(""),
+                "undo in tab B reverts tab B's own typing",
+            );
+            assert_eq!(
+                tab_body(&store, TAB_A, BODY_KEY).as_deref(),
+                Some("alpha"),
+                "and leaves tab A untouched",
+            );
+        }
 
-    /// Undo in the tab that typed **first**: undoing whoever typed last
-    /// would pass even on a single shared stack (the topmost entry happens
-    /// to be right anyway). Undoing the tab that typed first is the case
-    /// that actually separates a shared stack from a per-tab one.
-    #[test]
-    fn undo_in_the_tab_that_typed_first_still_reverts_that_tab() {
-        let store = RecordStore::in_memory();
-        let mut shared = AutoCommit::new();
-        let mut a = Tile::notes(TAB_A, &store);
-        let mut b = Tile::notes(TAB_B, &store);
-        a.type_str(&mut shared, "alpha");
-        b.type_str(&mut shared, "beta");
-        a.host.update(&mut shared, &automerge::ROOT);
-        b.host.update(&mut shared, &automerge::ROOT);
+        // Phase `undo_in_the_tab_that_typed_first_still_reverts_that_tab`.
+        // Undo in the tab that typed **first**: undoing whoever typed last
+        // would pass even on a single shared stack (the topmost entry happens
+        // to be right anyway). Undoing the tab that typed first is the case
+        // that actually separates a shared stack from a per-tab one.
+        {
+            let store = RecordStore::in_memory();
+            let mut shared = AutoCommit::new();
+            let mut a = Tile::notes(TAB_A, &store);
+            let mut b = Tile::notes(TAB_B, &store);
+            a.type_str(&mut shared, "alpha");
+            b.type_str(&mut shared, "beta");
+            a.host.update(&mut shared, &automerge::ROOT);
+            b.host.update(&mut shared, &automerge::ROOT);
 
-        let ctrl = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-        let z = key_press(&Key::Character(winit::keyboard::SmolStr::new("z")));
-        a.dispatch(&mut shared, &z, ctrl);
+            let ctrl = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+            let z = key_press(&Key::Character(winit::keyboard::SmolStr::new("z")));
+            a.dispatch(&mut shared, &z, ctrl);
 
-        assert_eq!(
-            tab_body(&store, TAB_A, BODY_KEY).as_deref(),
-            Some(""),
-            "undo in tab A reverts tab A's own typing, even though tab B \
-             typed more recently",
-        );
-        assert_eq!(
-            tab_body(&store, TAB_B, BODY_KEY).as_deref(),
-            Some("beta"),
-            "and leaves tab B's text alone",
-        );
+            assert_eq!(
+                tab_body(&store, TAB_A, BODY_KEY).as_deref(),
+                Some(""),
+                "undo in tab A reverts tab A's own typing, even though tab B \
+                 typed more recently",
+            );
+            assert_eq!(
+                tab_body(&store, TAB_B, BODY_KEY).as_deref(),
+                Some("beta"),
+                "and leaves tab B's text alone",
+            );
+        }
+
+        // Phase `both_tabs_come_back_with_their_own_content_after_a_restart`.
+        {
+            const PACKAGE: &str = crate::shell::SHELL_RECORDS_PACKAGE;
+
+            let tmp = tempfile::tempdir().expect("temp dir");
+
+            {
+                let store = store_at(tmp.path(), PACKAGE);
+                store.create_record(&scratch_tab_record(TAB_A)).unwrap();
+                store.create_record(&scratch_tab_record(TAB_B)).unwrap();
+                let mut shared = AutoCommit::new();
+                let mut a = Tile::notes(TAB_A, &store);
+                let mut b = Tile::notes(TAB_B, &store);
+                a.type_str(&mut shared, "first tab");
+                b.type_str(&mut shared, "second tab");
+                assert_eq!(
+                    tab_body(&store, TAB_A, BODY_KEY).as_deref(),
+                    Some("first tab")
+                );
+                assert_eq!(
+                    tab_body(&store, TAB_B, BODY_KEY).as_deref(),
+                    Some("second tab")
+                );
+                store.try_flush().expect("both tab records reached storage");
+            }
+
+            // A fresh session: same tab ids out of the persisted window tree,
+            // nothing else carried over.
+            let store = store_at(tmp.path(), PACKAGE);
+            let mut shared = AutoCommit::new();
+            let mut a = Tile::notes(TAB_A, &store);
+            let mut b = Tile::notes(TAB_B, &store);
+            a.host.sync(&mut shared, &automerge::ROOT);
+            b.host.sync(&mut shared, &automerge::ROOT);
+
+            assert_eq!(
+                tab_body(&store, TAB_A, BODY_KEY).as_deref(),
+                Some("first tab"),
+                "the first tab came back with its own content",
+            );
+            assert_eq!(
+                tab_body(&store, TAB_B, BODY_KEY).as_deref(),
+                Some("second tab"),
+                "and the second with its own, not the first's",
+            );
+        }
+
+        // Phase `two_tabs_of_one_app_have_distinct_presence_keys`.
+        // A peer's caret is a position in *a* document; the wrong key paints
+        // it in the wrong tab.
+        {
+            let store = RecordStore::in_memory();
+            let a = Tile::notes(TAB_A, &store);
+            let b = Tile::notes(TAB_B, &store);
+            let ka = ui::presence::capability::presence_key(&a.host);
+            let kb = ui::presence::capability::presence_key(&b.host);
+            assert!(ka.is_some(), "a hosted tab has a presence identity");
+            assert_ne!(ka, kb, "two tabs of one app must not share a presence key");
+
+            // Same for the key the *body* publishes under (what
+            // `EditorApp::draw` looks caret up by): the record must be part
+            // of it or the caret is drawn in both tabs at once.
+            let body_key = |t: &Tile| match t.host.content() {
+                UiTile::App(w) => ui::presence::capability::presence_key(w.as_ref()),
+                _ => None,
+            };
+            let ba = body_key(&a).expect("the notes body publishes presence");
+            let bb = body_key(&b).expect("and so does the other tab's");
+            assert_ne!(
+                ba, bb,
+                "two tabs' bodies must not publish under one presence key",
+            );
+        }
     }
 
     /// A scratch tab has no file to be found by, so this is the whole of
@@ -384,126 +525,5 @@ mod tests {
             package,
             uuid::Uuid::nil().to_string(),
         ))
-    }
-
-    #[test]
-    fn both_tabs_come_back_with_their_own_content_after_a_restart() {
-        const PACKAGE: &str = crate::shell::SHELL_RECORDS_PACKAGE;
-
-        let tmp = tempfile::tempdir().expect("temp dir");
-
-        {
-            let store = store_at(tmp.path(), PACKAGE);
-            store.create_record(&scratch_tab_record(TAB_A)).unwrap();
-            store.create_record(&scratch_tab_record(TAB_B)).unwrap();
-            let mut shared = AutoCommit::new();
-            let mut a = Tile::notes(TAB_A, &store);
-            let mut b = Tile::notes(TAB_B, &store);
-            a.type_str(&mut shared, "first tab");
-            b.type_str(&mut shared, "second tab");
-            store.flush();
-        }
-
-        // A fresh session: same tab ids out of the persisted window tree,
-        // nothing else carried over.
-        let store = store_at(tmp.path(), PACKAGE);
-        let mut shared = AutoCommit::new();
-        let mut a = Tile::notes(TAB_A, &store);
-        let mut b = Tile::notes(TAB_B, &store);
-        a.host.sync(&mut shared, &automerge::ROOT);
-        b.host.sync(&mut shared, &automerge::ROOT);
-
-        assert_eq!(
-            tab_body(&store, TAB_A, BODY_KEY).as_deref(),
-            Some("first tab"),
-            "the first tab came back with its own content",
-        );
-        assert_eq!(
-            tab_body(&store, TAB_B, BODY_KEY).as_deref(),
-            Some("second tab"),
-            "and the second with its own, not the first's",
-        );
-    }
-
-    /// The store's writers are debounced and off-thread, so something has
-    /// to offer them the documents each frame. Read back from a
-    /// *different* store, so it's the file on disk being checked, not the
-    /// live copy.
-    #[test]
-    fn a_frame_offers_every_open_tab_to_its_writer() {
-        const PACKAGE: &str = "so.tilo.test-frame-writeback";
-
-        let tmp = tempfile::tempdir().expect("temp dir");
-
-        let store = store_at(tmp.path(), PACKAGE);
-        store.create_record(&scratch_tab_record(TAB_A)).unwrap();
-        store.create_record(&scratch_tab_record(TAB_B)).unwrap();
-        let (mut host, _chrome) = crate::shell::build_tilo_overlay_host_with_records(
-            tree_with_two_note_tabs(),
-            false,
-            store.clone(),
-        );
-        // What a tab's app writes when the user types into it.
-        store.with(&RecordId::for_tab(TAB_A), |doc| {
-            let mut app = NotesApp::with_seed("written by a frame");
-            app.sync(doc, &automerge::ROOT);
-        });
-
-        let mut shell_doc = AutoCommit::new();
-        host.update(&mut shell_doc, &automerge::ROOT);
-        // Nothing but the frame offers the edit to the debounced writer, so
-        // the record reaches `Saved` only if the frame did. The deadline is
-        // a hang guard, far past the writer's debounce.
-        let tab_a = RecordId::for_tab(TAB_A);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            match store.save_status(&tab_a) {
-                Ok(ui::record::RecordSaveStatus::Saved) => break,
-                Ok(ui::record::RecordSaveStatus::Failed(error)) => {
-                    panic!("the tab's writer failed: {error}")
-                }
-                _ => {}
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "a frame must offer each open tab's document to its writer"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-
-        let reader = store_at(tmp.path(), PACKAGE);
-        reader.open_record(&scratch_tab_record(TAB_A));
-        assert_eq!(
-            tab_body(&reader, TAB_A, BODY_KEY).as_deref(),
-            Some("written by a frame"),
-            "a frame must offer each open tab's document to its writer",
-        );
-    }
-
-    /// A peer's caret is a position in *a* document; the wrong key paints
-    /// it in the wrong tab.
-    #[test]
-    fn two_tabs_of_one_app_have_distinct_presence_keys() {
-        let store = RecordStore::in_memory();
-        let a = Tile::notes(TAB_A, &store);
-        let b = Tile::notes(TAB_B, &store);
-        let ka = a.host.presence_key();
-        let kb = b.host.presence_key();
-        assert!(ka.is_some(), "a hosted tab has a presence identity");
-        assert_ne!(ka, kb, "two tabs of one app must not share a presence key");
-
-        // Same for the key the *body* publishes under (what
-        // `EditorApp::draw` looks caret up by): the record must be part
-        // of it or the caret is drawn in both tabs at once.
-        let body_key = |t: &Tile| match t.host.content() {
-            UiTile::App(w) => w.presence_key(),
-            _ => None,
-        };
-        let ba = body_key(&a).expect("the notes body publishes presence");
-        let bb = body_key(&b).expect("and so does the other tab's");
-        assert_ne!(
-            ba, bb,
-            "two tabs' bodies must not publish under one presence key",
-        );
     }
 }

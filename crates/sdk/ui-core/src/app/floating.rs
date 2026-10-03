@@ -24,6 +24,11 @@ pub(super) struct FloatingRuntime {
     pub coordinate_offsets: HashMap<String, Vec2>,
     pub suspended_ids: HashSet<String>,
     pub host_messages: Vec<FloatingSurfaceHostMessage>,
+    /// Whether the app wants its windows withheld from captures.
+    pub capture_protected: bool,
+    /// What the shell was last told (it starts unprotected), so the
+    /// request goes out once per change.
+    pub capture_protection_sent: bool,
 }
 
 impl FloatingRuntime {
@@ -36,7 +41,25 @@ impl FloatingRuntime {
             coordinate_offsets: HashMap::new(),
             suspended_ids: HashSet::new(),
             host_messages: Vec::new(),
+            capture_protected: false,
+            capture_protection_sent: false,
         }
+    }
+}
+
+impl App {
+    /// Withhold this app's windows from screenshots, recordings, screen
+    /// sharing and remote viewers — for windows that show secrets, such as a
+    /// password manager's. The local display is unaffected; captures show a
+    /// themed placeholder instead. Outside a Tilo session this is a no-op.
+    pub fn set_capture_protected(&mut self, protected: bool) {
+        self.floating.capture_protected = protected;
+    }
+
+    /// Whether [`Self::set_capture_protected`] asked for protection.
+    #[must_use]
+    pub fn capture_protected(&self) -> bool {
+        self.floating.capture_protected
     }
 }
 
@@ -118,6 +141,14 @@ impl App {
         client: &mut FloatingSurfaceServiceClient,
         changed: &mut bool,
     ) -> Result<(), String> {
+        if self.floating.capture_protection_sent != self.floating.capture_protected {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::SetCaptureProtection {
+                    protected: self.floating.capture_protected,
+                },
+            )?;
+            self.floating.capture_protection_sent = self.floating.capture_protected;
+        }
         while let Some(mode) = self.root_widget.take_capture_studio_request() {
             let mode = match mode {
                 crate::widget::CaptureMode::Screenshot => {

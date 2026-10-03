@@ -21,8 +21,8 @@
 //!    so a pure scroll stays on the cheap re-apply path.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
@@ -124,7 +124,7 @@ impl ChannelAvatar {
 }
 
 impl Widget for ChannelAvatar {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         // Lazily resolve the real avatar. Only touch the store until we have the
         // image (an `Arc` clone thereafter would be wasted work); a freshly
         // decoded photo flips `dirty` so the next frame repaints it — no rebuild.
@@ -176,20 +176,6 @@ impl Widget for ChannelAvatar {
         _presence: &PresenceCtx,
     ) {
         self.paint(scene, transform, text_renderer, theme);
-    }
-
-    fn handle_event(
-        &mut self,
-        _e: &winit::event::WindowEvent,
-        _sf: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<NodeId>,
-        _n: NodeId,
-        _t: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {
@@ -245,51 +231,52 @@ mod tests {
         scene.encoding().draw_tags.clone()
     }
 
-    /// A resolved avatar paints a circle-clipped IMAGE (`BEGIN_CLIP` < IMAGE <
-    /// `END_CLIP`) — proof the real creator photo reaches the scene.
     #[test]
-    fn resolved_avatar_paints_circle_clipped_image() {
-        let mut av = ChannelAvatar::new(None, "http://x/a.png", "Blender", 40.0)
-            .with_image(Some(tiny_image()));
-        let tags = draw_tags(&mut av);
-        let begin = tags.iter().position(|t| *t == DrawTag::BEGIN_CLIP);
-        let image = tags.iter().position(|t| *t == DrawTag::IMAGE);
-        let end = tags.iter().rposition(|t| *t == DrawTag::END_CLIP);
-        assert!(
-            matches!((begin, image, end), (Some(b), Some(i), Some(e)) if b < i && i < e),
-            "avatar image must be circle-clipped (BEGIN_CLIP < IMAGE < END_CLIP); got {:?}",
-            tags.iter().map(|t| t.0).collect::<Vec<_>>(),
-        );
-    }
-
-    /// Without an image the avatar paints the initials chip (a COLOR circle),
-    /// never an IMAGE — so the offline/`--shots` path is unchanged.
-    #[test]
-    fn unresolved_avatar_paints_initials_not_image() {
-        let mut av = ChannelAvatar::new(None, "", "Blender", 40.0);
-        let tags = draw_tags(&mut av);
-        assert!(!tags.contains(&DrawTag::IMAGE), "no image → initials only");
-        assert!(
-            tags.contains(&DrawTag::COLOR),
-            "initials chip fills a circle"
-        );
-    }
-
-    /// A culled (never-drawn) avatar with a real rect reports it is NOT layout
-    /// dirty — the property that stops the enclosing split re-solving on scroll.
-    /// (The `ui::Avatar` bug this widget was written to avoid fails exactly here.)
-    #[test]
-    fn laid_out_but_never_drawn_avatar_is_not_layout_dirty() {
-        let mut av = ChannelAvatar::new(None, "", "Blender", 40.0);
-        assert!(
-            av.is_layout_dirty(),
-            "a fresh avatar (rect ZERO) is layout-dirty"
-        );
-        // Give it a real rect (as `apply_layout` would) but never draw it.
-        av.rect = Rect::new(0.0, 5000.0, 40.0, 5040.0);
-        assert!(
-            !av.is_layout_dirty(),
-            "a laid-out avatar must be layout-clean even if it was never drawn (culled)",
-        );
+    fn channel_avatar_paints_image_or_initials_and_stays_clean() {
+        // Case `resolved_avatar_paints_circle_clipped_image`:
+        // A resolved avatar paints a circle-clipped IMAGE (`BEGIN_CLIP` < IMAGE <
+        // `END_CLIP`) — proof the real creator photo reaches the scene.
+        {
+            let mut av = ChannelAvatar::new(None, "http://x/a.png", "Blender", 40.0)
+                .with_image(Some(tiny_image()));
+            let tags = draw_tags(&mut av);
+            let begin = tags.iter().position(|t| *t == DrawTag::BEGIN_CLIP);
+            let image = tags.iter().position(|t| *t == DrawTag::IMAGE);
+            let end = tags.iter().rposition(|t| *t == DrawTag::END_CLIP);
+            assert!(
+                matches!((begin, image, end), (Some(b), Some(i), Some(e)) if b < i && i < e),
+                "avatar image must be circle-clipped (BEGIN_CLIP < IMAGE < END_CLIP); got {:?}",
+                tags.iter().map(|t| t.0).collect::<Vec<_>>(),
+            );
+        }
+        // Case `unresolved_avatar_paints_initials_not_image`:
+        // Without an image the avatar paints the initials chip (a COLOR circle),
+        // never an IMAGE — so the offline/`--shots` path is unchanged.
+        {
+            let mut av = ChannelAvatar::new(None, "", "Blender", 40.0);
+            let tags = draw_tags(&mut av);
+            assert!(!tags.contains(&DrawTag::IMAGE), "no image → initials only");
+            assert!(
+                tags.contains(&DrawTag::COLOR),
+                "initials chip fills a circle"
+            );
+        }
+        // Case `laid_out_but_never_drawn_avatar_is_not_layout_dirty`:
+        // A culled (never-drawn) avatar with a real rect reports it is NOT layout
+        // dirty — the property that stops the enclosing split re-solving on scroll.
+        // (The `ui::Avatar` bug this widget was written to avoid fails exactly here.)
+        {
+            let mut av = ChannelAvatar::new(None, "", "Blender", 40.0);
+            assert!(
+                av.is_layout_dirty(),
+                "a fresh avatar (rect ZERO) is layout-dirty"
+            );
+            // Give it a real rect (as `apply_layout` would) but never draw it.
+            av.rect = Rect::new(0.0, 5000.0, 40.0, 5040.0);
+            assert!(
+                !av.is_layout_dirty(),
+                "a laid-out avatar must be layout-clean even if it was never drawn (culled)",
+            );
+        }
     }
 }

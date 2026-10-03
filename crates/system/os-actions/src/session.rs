@@ -171,30 +171,31 @@ mod tests {
     }
 
     #[test]
-    fn switch_user_targets_the_gdm_factory_not_a_fictional_logind_session() {
-        let call = invocation(SessionAction::SwitchUser);
-        assert_eq!(call.binary, "busctl");
-        assert_eq!(call.args.last(), Some(&"CreateTransientDisplay"));
-        assert!(!call.args.contains(&"greeter"));
-    }
-
-    #[test]
-    fn logout_request_is_private_atomic_and_never_calls_loginctl() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("logout-request");
-        request_wrapper_logout_at(&path).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "logout\n");
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        assert!(request_wrapper_logout_at(&path).is_err());
-    }
-
-    #[test]
-    fn compositor_logout_edge_is_consumed_once() {
-        LOGOUT_REQUESTED.store(true, Ordering::Release);
-        assert!(take_logout_request());
-        assert!(!take_logout_request());
+    fn session_switch_and_logout_use_the_right_private_paths() {
+        // Phase `switch_user_targets_the_gdm_factory_not_a_fictional_logind_session`.
+        {
+            let call = invocation(SessionAction::SwitchUser);
+            assert_eq!(call.binary, "busctl");
+            assert_eq!(call.args.last(), Some(&"CreateTransientDisplay"));
+            assert!(!call.args.contains(&"greeter"));
+        }
+        // Phase `logout_request_is_private_atomic_and_never_calls_loginctl`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("logout-request");
+            request_wrapper_logout_at(&path).unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "logout\n");
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert!(request_wrapper_logout_at(&path).is_err());
+        }
+        // Phase `compositor_logout_edge_is_consumed_once`.
+        {
+            LOGOUT_REQUESTED.store(true, Ordering::Release);
+            assert!(take_logout_request());
+            assert!(!take_logout_request());
+        }
     }
 }

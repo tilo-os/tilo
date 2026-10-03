@@ -192,36 +192,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn operations_round_trip_and_unknown_fields_are_refused() {
-        for operation in [
-            Operation::Next,
-            Operation::SelectDisk {
-                device: "/dev/vdb".into(),
-            },
-            Operation::SetIdentity {
-                username: Some("ada".into()),
-                full_name: None,
-            },
-            Operation::BeginInstall {
-                target: "/dev/vdb".into(),
-            },
-        ] {
-            let bytes = serde_json::to_vec(&operation).unwrap();
-            assert!(Operation::decode(&bytes).unwrap() == operation);
+    fn operations_round_trip_and_refusals_never_echo_secrets() {
+        // Phase `operations_round_trip_and_unknown_fields_are_refused`.
+        {
+            for operation in [
+                Operation::Next,
+                Operation::SelectDisk {
+                    device: "/dev/vdb".into(),
+                },
+                Operation::SetIdentity {
+                    username: Some("ada".into()),
+                    full_name: None,
+                },
+                Operation::BeginInstall {
+                    target: "/dev/vdb".into(),
+                },
+            ] {
+                let bytes = serde_json::to_vec(&operation).unwrap();
+                assert!(Operation::decode(&bytes).unwrap() == operation);
+            }
+            assert!(
+                Operation::decode(br#"{"op":"select_disk","device":"/dev/vdb","extra":1}"#)
+                    .is_err()
+            );
+            assert!(Operation::decode(br#"{"op":"format_everything"}"#).is_err());
         }
-        assert!(
-            Operation::decode(br#"{"op":"select_disk","device":"/dev/vdb","extra":1}"#).is_err()
-        );
-        assert!(Operation::decode(br#"{"op":"format_everything"}"#).is_err());
-    }
-
-    #[test]
-    fn a_refused_payload_never_echoes_its_secret() {
-        let error = Operation::decode(
-            br#"{"op":"set_passphrase","passphrase":"hunter2-correct-horse","confirmation":5}"#,
-        )
-        .err()
-        .unwrap();
-        assert!(!error.contains("hunter2"), "{error}");
+        // Phase `a_refused_payload_never_echoes_its_secret`.
+        {
+            let error = Operation::decode(
+                br#"{"op":"set_passphrase","passphrase":"hunter2-correct-horse","confirmation":5}"#,
+            )
+            .err()
+            .unwrap();
+            assert!(!error.contains("hunter2"), "{error}");
+        }
     }
 }

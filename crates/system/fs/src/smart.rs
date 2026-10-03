@@ -26,7 +26,10 @@ pub const DEFAULT_MAX_QUEUED_PREDICTIVE_BYTES: u64 = 128 * 1024 * 1024;
 /// monitors. A false gate cancels queued/running speculation; foreground reads
 /// are deliberately outside this policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(clippy::struct_excessive_bools)] // Independent runtime gates are the policy's public contract.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent runtime gates are the policy's public contract"
+)]
 pub struct PredictivePolicy {
     pub enabled: bool,
     pub network_allows: bool,
@@ -262,50 +265,52 @@ mod tests {
     use iroh::protocol::Router;
 
     #[test]
-    fn every_runtime_gate_blocks_speculation() {
-        let base = PredictivePolicy::default();
-        for policy in [
-            PredictivePolicy {
-                enabled: false,
-                ..base
-            },
-            PredictivePolicy {
-                network_allows: false,
-                ..base
-            },
-            PredictivePolicy {
-                power_allows: false,
-                ..base
-            },
-            PredictivePolicy {
-                storage_allows: false,
-                ..base
-            },
-            PredictivePolicy {
-                max_queued_bytes: 0,
-                ..base
-            },
-        ] {
-            let mut pending = HashMap::new();
-            assert!(!admit_pending(&mut pending, Hash::from([1; 32]), 1, policy));
-            assert!(pending.is_empty());
+    fn speculation_is_gated_and_budgeted() {
+        // Phase `every_runtime_gate_blocks_speculation`.
+        {
+            let base = PredictivePolicy::default();
+            for policy in [
+                PredictivePolicy {
+                    enabled: false,
+                    ..base
+                },
+                PredictivePolicy {
+                    network_allows: false,
+                    ..base
+                },
+                PredictivePolicy {
+                    power_allows: false,
+                    ..base
+                },
+                PredictivePolicy {
+                    storage_allows: false,
+                    ..base
+                },
+                PredictivePolicy {
+                    max_queued_bytes: 0,
+                    ..base
+                },
+            ] {
+                let mut pending = HashMap::new();
+                assert!(!admit_pending(&mut pending, Hash::from([1; 32]), 1, policy));
+                assert!(pending.is_empty());
+            }
         }
-    }
-
-    #[test]
-    fn aggregate_byte_budget_and_duplicate_hashes_are_bounded() {
-        let policy = PredictivePolicy {
-            max_queued_bytes: 10,
-            ..PredictivePolicy::default()
-        };
-        let first = Hash::from([1; 32]);
-        let second = Hash::from([2; 32]);
-        let mut pending = HashMap::new();
-        assert!(admit_pending(&mut pending, first, 6, policy));
-        assert!(!admit_pending(&mut pending, first, 1, policy));
-        assert!(!admit_pending(&mut pending, second, 5, policy));
-        assert!(admit_pending(&mut pending, second, 4, policy));
-        assert_eq!(pending.values().copied().sum::<u64>(), 10);
+        // Phase `aggregate_byte_budget_and_duplicate_hashes_are_bounded`.
+        {
+            let policy = PredictivePolicy {
+                max_queued_bytes: 10,
+                ..PredictivePolicy::default()
+            };
+            let first = Hash::from([1; 32]);
+            let second = Hash::from([2; 32]);
+            let mut pending = HashMap::new();
+            assert!(admit_pending(&mut pending, first, 6, policy));
+            assert!(!admit_pending(&mut pending, first, 1, policy));
+            assert!(!admit_pending(&mut pending, second, 5, policy));
+            assert!(admit_pending(&mut pending, second, 4, policy));
+            assert_eq!(pending.values().copied().sum::<u64>(), 10);
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -335,7 +340,7 @@ mod tests {
             "the admitted prediction is observable and byte-bounded"
         );
 
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tilo_test_env::within("the open-triggered sibling prefetch", async {
             loop {
                 if hydrator.sync_state(sibling_hash).await == crate::syncstate::SyncState::Local
                     && heuristics.pending_work() == (0, 0)
@@ -345,8 +350,7 @@ mod tests {
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .expect("open-triggered sibling prefetch must complete");
+        .await;
         assert_eq!(
             hydrator
                 .read(sibling_hash, 0, sibling.len() as u64)

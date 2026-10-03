@@ -17,18 +17,94 @@ pub type Row = u32;
 /// A cell coordinate, `(col, row)`, zero-based.
 pub type Addr = (Col, Row);
 
+/// One inserted or deleted row/column: the unit every structural action
+/// replays in (a multi-row delete applies one row at a time).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GridEdit {
+    /// A blank row inserted above this row.
+    InsertRow(Row),
+    DeleteRow(Row),
+    /// A blank column inserted left of this column.
+    InsertColumn(Col),
+    DeleteColumn(Col),
+}
+
+impl GridEdit {
+    /// Where the cell at `addr` lands; `None` when its row/column is deleted.
+    pub fn map_addr(self, (col, row): Addr) -> Option<Addr> {
+        match self {
+            Self::InsertRow(at) => Some((col, insert_shift(row, at))),
+            Self::DeleteRow(at) => Some((col, delete_shift(row, at)?)),
+            Self::InsertColumn(at) => Some((insert_shift(col, at), row)),
+            Self::DeleteColumn(at) => Some((delete_shift(col, at)?, row)),
+        }
+    }
+
+    /// Where the rectangle with corners `a` and `b` (in either order) lands,
+    /// each corner keeping its role. Mapping the corners independently is
+    /// wrong: deleting a range's first or last line shrinks the range, and
+    /// only deleting every line it covers removes it (`None`).
+    pub fn map_range(self, a: Addr, b: Addr) -> Option<(Addr, Addr)> {
+        match self {
+            Self::InsertRow(_) | Self::InsertColumn(_) => {
+                Some((self.map_addr(a)?, self.map_addr(b)?))
+            }
+            Self::DeleteRow(at) => {
+                let (ra, rb) = delete_span(a.1, b.1, at)?;
+                Some(((a.0, ra), (b.0, rb)))
+            }
+            Self::DeleteColumn(at) => {
+                let (ca, cb) = delete_span(a.0, b.0, at)?;
+                Some(((ca, a.1), (cb, b.1)))
+            }
+        }
+    }
+}
+
+fn insert_shift(line: u32, at: u32) -> u32 {
+    if line >= at {
+        line.saturating_add(1)
+    } else {
+        line
+    }
+}
+
+fn delete_shift(line: u32, at: u32) -> Option<u32> {
+    match line.cmp(&at) {
+        std::cmp::Ordering::Equal => None,
+        std::cmp::Ordering::Greater => Some(line.saturating_sub(1)),
+        std::cmp::Ordering::Less => Some(line),
+    }
+}
+
+/// Map a span's two ends (in either order) through deleting line `at`.
+fn delete_span(a: u32, b: u32, at: u32) -> Option<(u32, u32)> {
+    let (lo, hi) = (a.min(b), a.max(b));
+    if lo == at && hi == at {
+        return None;
+    }
+    // A deleted first line is replaced by the next one sliding up into it.
+    let new_lo = if lo > at { lo.saturating_sub(1) } else { lo };
+    let new_hi = if hi >= at { hi.saturating_sub(1) } else { hi };
+    Some(if a <= b {
+        (new_lo, new_hi)
+    } else {
+        (new_hi, new_lo)
+    })
+}
+
 /// Convert a zero-based column index to spreadsheet letters.
 /// `0 -> "A"`, `25 -> "Z"`, `26 -> "AA"`, `701 -> "ZZ"`. The letters are
 /// qdoc's, the same the `.xlsx`/`.ods` codecs write.
 pub fn col_to_letters(col: Col) -> String {
-    qdoc::sheet::a1::index_to_col(col.saturating_add(1))
+    tilo_doc::sheet::a1::index_to_col(col.saturating_add(1))
 }
 
 /// Parse spreadsheet column letters (case-insensitive) into a zero-based
 /// index. Returns `None` for empty or non-alphabetic input, and for a run of
 /// more than three letters (`XFD`, the last column, has three).
 pub fn letters_to_col(s: &str) -> Option<Col> {
-    qdoc::sheet::a1::col_to_index(s)?.checked_sub(1)
+    tilo_doc::sheet::a1::col_to_index(s)?.checked_sub(1)
 }
 
 /// Format an address as an A1 string: `(0, 0) -> "A1"`.
@@ -689,8 +765,8 @@ pub fn weekday_from_serial(serial: f64) -> u32 {
 /// Uses the system clock in UTC — there is no timezone database in this
 /// environment, so `TODAY()`/`NOW()` read as UTC dates.
 pub fn now_serial() -> f64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
+    use ui::time::UNIX_EPOCH;
+    let secs = ui::time::wall()
         .duration_since(UNIX_EPOCH)
         .map_or(0.0, |d| d.as_secs_f64());
     secs / 86400.0 + 25569.0
@@ -713,118 +789,126 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn column_letters_round_trip() {
-        assert_eq!(col_to_letters(0), "A");
-        assert_eq!(col_to_letters(25), "Z");
-        assert_eq!(col_to_letters(26), "AA");
-        assert_eq!(col_to_letters(701), "ZZ");
-        assert_eq!(letters_to_col("A"), Some(0));
-        assert_eq!(letters_to_col("Z"), Some(25));
-        assert_eq!(letters_to_col("AA"), Some(26));
-        assert_eq!(letters_to_col("ZZ"), Some(701));
-        assert_eq!(letters_to_col("XFD"), Some(16_383));
-        // Past the last column a run of letters is a name, not a column.
-        assert_eq!(letters_to_col("ABCD"), None);
-    }
-
-    #[test]
-    fn a1_parses_with_absolute_markers() {
-        assert_eq!(a1_to_addr("A1"), Some((0, 0)));
-        assert_eq!(a1_to_addr("$A$1"), Some((0, 0)));
-        assert_eq!(a1_to_addr("B3"), Some((1, 2)));
-        assert_eq!(a1_to_addr("AA10"), Some((26, 9)));
-        assert_eq!(a1_to_addr("A0"), None);
-        assert_eq!(a1_to_addr("1A"), None);
-        assert_eq!(a1_to_addr(""), None);
-    }
-
-    #[test]
-    fn thousands_grouping() {
-        assert_eq!(format_thousands(1234.5, 2), "1,234.50");
-        assert_eq!(format_thousands(-1200.0, 2), "-1,200.00");
-        assert_eq!(format_thousands(12.0, 0), "12");
-    }
-
+    /// Column letters, A1 parsing, grouping and General trimming.
     #[test]
     #[allow(
         clippy::approx_constant,
         reason = "3.14 is the value under test, not an approximation of PI"
     )]
-    fn general_trims_trailing_zeros() {
-        assert_eq!(format_number_general(42.0), "42");
-        assert_eq!(format_number_general(3.14), "3.14");
-        assert_eq!(format_number_general(0.5), "0.5");
-    }
+    fn cell_addresses_and_number_formatting() {
+        // Case `column_letters_round_trip`.
+        {
+            assert_eq!(col_to_letters(0), "A");
+            assert_eq!(col_to_letters(25), "Z");
+            assert_eq!(col_to_letters(26), "AA");
+            assert_eq!(col_to_letters(701), "ZZ");
+            assert_eq!(letters_to_col("A"), Some(0));
+            assert_eq!(letters_to_col("Z"), Some(25));
+            assert_eq!(letters_to_col("AA"), Some(26));
+            assert_eq!(letters_to_col("ZZ"), Some(701));
+            assert_eq!(letters_to_col("XFD"), Some(16_383));
+            // Past the last column a run of letters is a name, not a column.
+            assert_eq!(letters_to_col("ABCD"), None);
+        }
 
-    #[test]
-    fn currency_symbol_placement_and_decimals() {
-        // USD: leading $, two decimals, comma grouping.
-        assert_eq!(format_currency(1234.5, Currency::USD), "$1,234.50");
-        assert_eq!(format_currency(-1200.0, Currency::USD), "-$1,200.00");
-        // EUR: trailing €, dot grouping, comma decimal.
-        assert_eq!(format_currency(1234.5, Currency::EUR), "1.234,50 \u{20AC}");
-        // GBP: leading £.
-        assert_eq!(format_currency(99.9, Currency::GBP), "\u{00A3}99.90");
-        // JPY: leading ¥, no decimals.
-        assert_eq!(format_currency(1234.5, Currency::JPY), "\u{00A5}1,235");
-        // CHF: trailing code.
-        assert_eq!(format_currency(50.0, Currency::CHF), "50.00 CHF");
-    }
+        // Case `a1_parses_with_absolute_markers`.
+        {
+            assert_eq!(a1_to_addr("A1"), Some((0, 0)));
+            assert_eq!(a1_to_addr("$A$1"), Some((0, 0)));
+            assert_eq!(a1_to_addr("B3"), Some((1, 2)));
+            assert_eq!(a1_to_addr("AA10"), Some((26, 9)));
+            assert_eq!(a1_to_addr("A0"), None);
+            assert_eq!(a1_to_addr("1A"), None);
+            assert_eq!(a1_to_addr(""), None);
+        }
 
-    #[test]
-    fn currency_format_round_trips_through_string() {
-        for c in Currency::ALL {
-            let fmt = CellFormat::Currency(c);
-            let s = fmt.as_str();
-            assert_eq!(CellFormat::from_str(&s), fmt, "round trip {s}");
+        // Case `thousands_grouping`.
+        {
+            assert_eq!(format_thousands(1234.5, 2), "1,234.50");
+            assert_eq!(format_thousands(-1200.0, 2), "-1,200.00");
+            assert_eq!(format_thousands(12.0, 0), "12");
+        }
+
+        // Case `general_trims_trailing_zeros`.
+        {
+            assert_eq!(format_number_general(42.0), "42");
+            assert_eq!(format_number_general(3.14), "3.14");
+            assert_eq!(format_number_general(0.5), "0.5");
         }
     }
 
+    /// Currency, date and time formats and format-string round-trips.
     #[test]
-    fn date_styles_render() {
-        let serial = date_to_serial(2023, 3, 15);
-        assert_eq!(serial_to_date(serial, DateStyle::Iso), "2023-03-15");
-        assert_eq!(serial_to_date(serial, DateStyle::Us), "03/15/2023");
-        assert_eq!(serial_to_date(serial, DateStyle::Eu), "15/03/2023");
-        assert_eq!(serial_to_date(serial, DateStyle::Long), "15 Mar 2023");
-    }
+    fn currency_date_and_time_formats_render_and_round_trip() {
+        // Case `currency_symbol_placement_and_decimals`.
+        {
+            // USD: leading $, two decimals, comma grouping.
+            assert_eq!(format_currency(1234.5, Currency::USD), "$1,234.50");
+            assert_eq!(format_currency(-1200.0, Currency::USD), "-$1,200.00");
+            // EUR: trailing €, dot grouping, comma decimal.
+            assert_eq!(format_currency(1234.5, Currency::EUR), "1.234,50 \u{20AC}");
+            // GBP: leading £.
+            assert_eq!(format_currency(99.9, Currency::GBP), "\u{00A3}99.90");
+            // JPY: leading ¥, no decimals.
+            assert_eq!(format_currency(1234.5, Currency::JPY), "\u{00A5}1,235");
+            // CHF: trailing code.
+            assert_eq!(format_currency(50.0, Currency::CHF), "50.00 CHF");
+        }
 
-    #[test]
-    fn date_serial_round_trips() {
-        // 45000 ~ 2023-03-15 per the LibreOffice 1899-12-30 epoch.
-        let s = serial_to_date(45000.0, DateStyle::Iso);
-        assert!(s.starts_with("2023-"), "got {s}");
-        let serial = date_to_serial(2023, 3, 15);
-        let back = serial_to_date(serial, DateStyle::Iso);
-        assert_eq!(back, "2023-03-15");
-    }
+        // Case `currency_format_round_trips_through_string`.
+        {
+            for c in Currency::ALL {
+                let fmt = CellFormat::Currency(c);
+                let s = fmt.as_str();
+                assert_eq!(CellFormat::from_str(&s), fmt, "round trip {s}");
+            }
+        }
 
-    #[test]
-    fn time_styles_render() {
-        // 0.5 of a day == noon.
-        assert_eq!(serial_to_time(0.5, TimeStyle::H24), "12:00");
-        assert_eq!(serial_to_time(0.5, TimeStyle::H12), "12:00 PM");
-        // 14:05 == (14*3600 + 5*60)/86400.
-        let serial = (14.0 * 3600.0 + 5.0 * 60.0) / 86400.0;
-        assert_eq!(serial_to_time(serial, TimeStyle::H24), "14:05");
-        assert_eq!(serial_to_time(serial, TimeStyle::H12), "2:05 PM");
-    }
+        // Case `date_styles_render`.
+        {
+            let serial = date_to_serial(2023, 3, 15);
+            assert_eq!(serial_to_date(serial, DateStyle::Iso), "2023-03-15");
+            assert_eq!(serial_to_date(serial, DateStyle::Us), "03/15/2023");
+            assert_eq!(serial_to_date(serial, DateStyle::Eu), "15/03/2023");
+            assert_eq!(serial_to_date(serial, DateStyle::Long), "15 Mar 2023");
+        }
 
-    #[test]
-    fn format_string_round_trip_all_variants() {
-        let cases = [
-            CellFormat::General,
-            CellFormat::Number,
-            CellFormat::Percent,
-            CellFormat::Boolean,
-            CellFormat::Text,
-            CellFormat::Currency(Currency::EUR),
-            CellFormat::Date(DateStyle::Eu),
-            CellFormat::Time(TimeStyle::H12),
-        ];
-        for f in cases {
-            assert_eq!(CellFormat::from_str(&f.as_str()), f);
+        // Case `date_serial_round_trips`.
+        {
+            // 45000 ~ 2023-03-15 per the LibreOffice 1899-12-30 epoch.
+            let s = serial_to_date(45000.0, DateStyle::Iso);
+            assert!(s.starts_with("2023-"), "got {s}");
+            let serial = date_to_serial(2023, 3, 15);
+            let back = serial_to_date(serial, DateStyle::Iso);
+            assert_eq!(back, "2023-03-15");
+        }
+
+        // Case `time_styles_render`.
+        {
+            // 0.5 of a day == noon.
+            assert_eq!(serial_to_time(0.5, TimeStyle::H24), "12:00");
+            assert_eq!(serial_to_time(0.5, TimeStyle::H12), "12:00 PM");
+            // 14:05 == (14*3600 + 5*60)/86400.
+            let serial = (14.0 * 3600.0 + 5.0 * 60.0) / 86400.0;
+            assert_eq!(serial_to_time(serial, TimeStyle::H24), "14:05");
+            assert_eq!(serial_to_time(serial, TimeStyle::H12), "2:05 PM");
+        }
+
+        // Case `format_string_round_trip_all_variants`.
+        {
+            let cases = [
+                CellFormat::General,
+                CellFormat::Number,
+                CellFormat::Percent,
+                CellFormat::Boolean,
+                CellFormat::Text,
+                CellFormat::Currency(Currency::EUR),
+                CellFormat::Date(DateStyle::Eu),
+                CellFormat::Time(TimeStyle::H12),
+            ];
+            for f in cases {
+                assert_eq!(CellFormat::from_str(&f.as_str()), f);
+            }
         }
     }
 }

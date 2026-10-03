@@ -204,10 +204,6 @@ pub(super) fn hatch_rect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect
     }
     scene.pop_layer();
 }
-#[expect(
-    clippy::too_many_arguments,
-    reason = "a paint primitive: scene and transform, colour, both endpoints and the width"
-)]
 pub(super) fn stroke_line(
     scene: &mut Scene,
     tf: Affine,
@@ -226,10 +222,6 @@ pub(super) fn stroke_line(
         &Line::new(Point::new(x0, y0), Point::new(x1, y1)),
     );
 }
-#[expect(
-    clippy::too_many_arguments,
-    reason = "a paint primitive: scene, text context and transform, the run, its size, colour and origin"
-)]
 pub(super) fn text(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -242,29 +234,22 @@ pub(super) fn text(
 ) {
     tr.draw_text(scene, s, size, color, tf * Affine::translate((x, y)), None);
 }
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Weighted text painting combines scene/renderer/transform with content, size, color, origin, and weight."
-)]
 pub(super) fn text_w(
     scene: &mut Scene,
     tr: &mut TextRenderer,
     tf: Affine,
     s: &str,
-    size: f32,
+    style: &TextStyle,
     color: Color,
-    x: f64,
-    y: f64,
-    weight: TextWeight,
+    origin: Point,
 ) {
-    tr.draw_text_weighted(
+    tr.draw_style(
         scene,
         s,
-        size,
         color,
-        tf * Affine::translate((x, y)),
+        tf * Affine::translate(origin.to_vec2()),
         None,
-        weight,
+        style,
     );
 }
 
@@ -273,10 +258,6 @@ pub(super) fn text_w(
 /// that own their own hit-testing — so these buttons get the fleet's fill,
 /// border, hover, press and disabled treatment instead of a local
 /// approximation that had no hover state at all.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the paint context plus the button's rect, label and state flags"
-)]
 pub(super) fn draw_button(
     scene: &mut Scene,
     tf: Affine,
@@ -287,7 +268,14 @@ pub(super) fn draw_button(
     primary: bool,
     hovered: bool,
 ) {
-    draw_button_enabled(scene, tf, tr, theme, rect, label, primary, hovered, true);
+    draw_button_enabled(
+        &mut PaintCtx::new(scene, tf, tr, theme),
+        rect,
+        label,
+        primary,
+        hovered,
+        true,
+    );
 }
 
 /// A compact command keeps the same shared button face and semantic name as
@@ -327,15 +315,8 @@ pub(super) fn draw_icon_button(
 /// [`draw_button`] plus an explicit enabled flag, so a control the app cannot
 /// actually perform is painted with the toolkit's own disabled treatment
 /// instead of an inviting primary fill it will only refuse.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the paint context plus the button's rect, label and state flags"
-)]
 pub(super) fn draw_button_enabled(
-    scene: &mut Scene,
-    tf: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
+    ctx: &mut PaintCtx<'_>,
     rect: Rect,
     label: &str,
     primary: bool,
@@ -343,6 +324,7 @@ pub(super) fn draw_button_enabled(
     enabled: bool,
 ) {
     use ui::widget::{Button, ButtonFace, ButtonStyle};
+    let theme = ctx.theme;
     let face = ButtonFace::new(rect, label)
         .style(if primary {
             ButtonStyle::Primary
@@ -353,7 +335,7 @@ pub(super) fn draw_button_enabled(
         .text_size(13.0)
         .hovered(hovered && enabled)
         .disabled(!enabled);
-    Button::paint(scene, tf, tr, theme, &face);
+    Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
 }
 
 /// A danger-styled button face (the inspector's Delete).
@@ -450,10 +432,6 @@ pub(super) fn draw_track(
 /// shared [`ui::widget::ToggleGroup::paint`], so the transition row and the
 /// export dialog's option groups look like every other segmented control in
 /// the fleet — including a hover state, which the local painter had none of.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the paint context plus the segments, their labels, the selection and the pointer"
-)]
 pub(super) fn draw_segmented(
     scene: &mut Scene,
     tf: Affine,
@@ -465,7 +443,12 @@ pub(super) fn draw_segmented(
     cursor: Point,
 ) {
     draw_segmented_sized(
-        scene, tf, tr, theme, segments, labels, selected, cursor, 11.5,
+        &mut PaintCtx::new(scene, tf, tr, theme),
+        segments,
+        labels,
+        selected,
+        cursor,
+        11.5,
     );
 }
 
@@ -1176,27 +1159,21 @@ pub(super) fn paint_icon_toggle(
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the paint context plus the segments, their labels, the selection, the pointer and the text size"
-)]
 pub(super) fn draw_segmented_sized(
-    scene: &mut Scene,
-    tf: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
+    ctx: &mut PaintCtx<'_>,
     segments: &[Rect],
     labels: &[&str],
     selected: usize,
     cursor: Point,
     text_size: f32,
 ) {
+    let theme = ctx.theme;
     let hovered = segments.iter().position(|r| r.contains(cursor));
     let face = ui::widget::SegmentedFace::new(segments, labels, selected)
         .hovered(hovered)
         .radius(6.0)
         .text_size(text_size);
-    ui::widget::ToggleGroup::paint(scene, tf, tr, theme, &face);
+    ui::widget::ToggleGroup::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
 }
 
 pub(super) fn tinted(base: Color, tint: Color, t: f64) -> Color {

@@ -646,481 +646,497 @@ mod tests {
     }
 
     #[test]
-    fn card_centres_on_the_viewport() {
-        let spec = ModalSpec::new("Workspace invite").body_height(120.0);
-        let l = lay(&spec, &Theme::dark());
-        let cx = f64::midpoint(l.card.x0, l.card.x1);
-        let cy = f64::midpoint(l.card.y0, l.card.y1);
-        assert!(
-            (cx - 800.0).abs() < 0.5,
-            "card centre x = {cx}, viewport centre is 800"
-        );
-        assert!(
-            (cy - 500.0).abs() < 0.5,
-            "card centre y = {cy}, viewport centre is 500"
-        );
+    fn card_sizes_to_its_body_within_viewport_margins() {
+        // Case `card_centres_on_the_viewport`.
+        {
+            let spec = ModalSpec::new("Workspace invite").body_height(120.0);
+            let l = lay(&spec, &Theme::dark());
+            let cx = f64::midpoint(l.card.x0, l.card.x1);
+            let cy = f64::midpoint(l.card.y0, l.card.y1);
+            assert!(
+                (cx - 800.0).abs() < 0.5,
+                "card centre x = {cx}, viewport centre is 800"
+            );
+            assert!(
+                (cy - 500.0).abs() < 0.5,
+                "card centre y = {cy}, viewport centre is 500"
+            );
+        }
+
+        // Case `an_oversized_body_clamps_the_card_and_reports_the_overflow`.
+        // A body taller than the screen clamps the card to the viewport and says
+        // so, rather than drawing an action row off the bottom edge.
+        {
+            let actions = [ModalAction::primary("OK")];
+            let spec = ModalSpec::new("Tall").actions(&actions).body_height(9000.0);
+            let l = lay(&spec, &Theme::dark());
+            assert!(
+                l.body_overflows,
+                "a 9000px body in a 1000px viewport must report overflow"
+            );
+            assert!(
+                l.card.y0 >= VIEWPORT.y0 && l.card.y1 <= VIEWPORT.y1,
+                "the card {:?} escaped the viewport {:?}",
+                l.card,
+                VIEWPORT,
+            );
+            let action = l.actions[0];
+            assert!(
+                VIEWPORT.contains(action.center()),
+                "the action row at {action:?} is off screen — nobody can reach it",
+            );
+        }
+
+        // Case `a_body_that_fits_does_not_report_overflow`.
+        {
+            let spec = ModalSpec::new("Short").body_height(100.0);
+            assert!(!lay(&spec, &Theme::dark()).body_overflows);
+        }
+
+        // Case `the_card_keeps_its_margin_on_a_small_output`.
+        // The card never touches an edge, even on an output smaller than the
+        // card's own maximum.
+        {
+            let small = Rect::new(0.0, 0.0, 420.0, 360.0);
+            let spec = ModalSpec::new("Workspace invite").body_height(600.0);
+            let mut tr = TextRenderer::new();
+            let l = ModalFrame::layout(small, &spec, &mut tr, &Theme::dark());
+            assert!(l.card.x0 >= small.x0, "card runs off the left edge");
+            assert!(l.card.x1 <= small.x1, "card runs off the right edge");
+            assert!(l.card.y0 >= small.y0, "card runs off the top edge");
+            assert!(l.card.y1 <= small.y1, "card runs off the bottom edge");
+            assert!(
+                l.card.width() <= small.width() - MODAL_VIEWPORT_MARGIN * 2.0 + 0.5,
+                "card width {} leaves no margin in a {}-wide output",
+                l.card.width(),
+                small.width(),
+            );
+        }
+
+        // Case `the_card_stops_growing_at_its_maximum`.
+        {
+            let wide = Rect::new(0.0, 0.0, 3840.0, 2160.0);
+            let spec = ModalSpec::new("Workspace invite").body_height(200.0);
+            let mut tr = TextRenderer::new();
+            let l = ModalFrame::layout(wide, &spec, &mut tr, &Theme::dark());
+            assert!(
+                l.card.width() <= MODAL_MAX_WIDTH + 0.5,
+                "card is {} wide on a 4K output; the cap is {MODAL_MAX_WIDTH}",
+                l.card.width(),
+            );
+        }
+
+        // Case `a_modal_without_actions_gives_the_room_to_its_body`.
+        // A modal with no actions has no action row, and its body takes the space
+        // back.
+        {
+            let actions = [ModalAction::primary("OK")];
+            let with = ModalSpec::new("T").actions(&actions).body_height(100.0);
+            let without = ModalSpec::new("T").body_height(100.0);
+            let theme = Theme::dark();
+            let a = lay(&with, &theme);
+            let b = lay(&without, &theme);
+            assert!(b.actions.is_empty());
+            assert!(
+                b.card.height() < a.card.height(),
+                "an action-less modal ({}) should be shorter than one with a row ({})",
+                b.card.height(),
+                a.card.height(),
+            );
+        }
+
+        // Case `body_width_is_what_the_layout_hands_back`.
+        // The width a caller predicts before measuring its rows is the width
+        // the layout hands back — on every scale axis a theme can carry, and
+        // on a viewport too small for the card's natural size.
+        {
+            let actions = [ModalAction::primary("Continue")];
+            let cases = [
+                ("dark", Theme::dark(), VIEWPORT),
+                ("light", Theme::light(), VIEWPORT),
+                ("text-1.5", Theme::dark().with_text_scale(1.5), VIEWPORT),
+                ("ui-1.25", Theme::dark().with_ui_scale(1.25), VIEWPORT),
+                (
+                    "small output",
+                    Theme::dark(),
+                    Rect::new(0.0, 0.0, 300.0, 240.0),
+                ),
+            ];
+            for (name, theme, viewport) in cases {
+                for max_width in [MODAL_MAX_WIDTH, 560.0] {
+                    let spec = ModalSpec::new("Title")
+                        .actions(&actions)
+                        .max_width(max_width)
+                        .body_height(120.0);
+                    let predicted = ModalFrame::body_width(viewport, &spec, &theme);
+                    let mut tr = TextRenderer::new();
+                    let l = ModalFrame::layout(viewport, &spec, &mut tr, &theme);
+                    assert!(
+                        (l.body.width() - predicted).abs() < 0.01,
+                        "{name} @ max {max_width}: predicted {predicted}, layout gave {}",
+                        l.body.width(),
+                    );
+                    assert!(
+                        (l.card.width() - ModalFrame::card_width(viewport, &spec, &theme)).abs()
+                            < 0.01,
+                        "{name} @ max {max_width}: card_width disagrees with the layout",
+                    );
+                }
+            }
+        }
     }
 
-    /// A closable modal always has a close control, and it is a real hit
-    /// target rather than a decorative glyph.
     #[test]
-    fn a_closable_modal_has_a_close_control_you_can_hit() {
-        let spec = ModalSpec::new("Workspace invite").body_height(120.0);
-        for (name, theme) in themes() {
-            let l = lay(&spec, &theme);
-            let close = l
-                .close
-                .unwrap_or_else(|| panic!("{name}: no close control"));
-            assert!(
-                close.width() >= 28.0 && close.height() >= 28.0,
-                "{name}: close target is {}x{} — too small to hit",
-                close.width(),
-                close.height(),
-            );
-            assert!(
-                l.card.contains(close.center()),
-                "{name}: close control is outside the card",
-            );
+    fn modal_controls_are_hittable_and_show_their_states() {
+        // Case `a_closable_modal_has_a_close_control_you_can_hit`.
+        // A closable modal always has a close control, and it is a real hit
+        // target rather than a decorative glyph.
+        {
+            let spec = ModalSpec::new("Workspace invite").body_height(120.0);
+            for (name, theme) in themes() {
+                let l = lay(&spec, &theme);
+                let close = l
+                    .close
+                    .unwrap_or_else(|| panic!("{name}: no close control"));
+                assert!(
+                    close.width() >= 28.0 && close.height() >= 28.0,
+                    "{name}: close target is {}x{} — too small to hit",
+                    close.width(),
+                    close.height(),
+                );
+                assert!(
+                    l.card.contains(close.center()),
+                    "{name}: close control is outside the card",
+                );
+                assert_eq!(
+                    l.hit(close.center()),
+                    Some(ModalHit::Close),
+                    "{name}: the close control does not hit-test as Close",
+                );
+                assert!(
+                    l.dismisses(close.center()),
+                    "{name}: clicking close does not dismiss"
+                );
+            }
+        }
+
+        // Case `an_action_shows_hover_press_and_focus`.
+        // A modal action reacts. A focused one in particular has to draw the
+        // ring, because a modal takes the keyboard and a keyboard user needs to
+        // see where they are in it.
+        {
+            let theme = Theme::dark();
+
+            let paint = |a: ModalAction<'_>| {
+                let actions = [a];
+                let spec = ModalSpec::new("Invite someone")
+                    .actions(&actions)
+                    .body_height(80.0);
+                let mut tr = TextRenderer::new();
+                let layout = ModalFrame::layout(VIEWPORT, &spec, &mut tr, &theme);
+                let mut scene = Scene::new();
+                ModalFrame::paint_actions(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut tr,
+                    &theme,
+                    &layout,
+                    &spec,
+                );
+                scene.encoding().draw_data.clone()
+            };
+
+            let rest = paint(ModalAction::secondary("Cancel"));
+            for (what, face) in [
+                ("hover", ModalAction::secondary("Cancel").hovered(true)),
+                ("press", ModalAction::secondary("Cancel").pressed(true)),
+                ("focus", ModalAction::secondary("Cancel").focused(true)),
+            ] {
+                assert_ne!(
+                    paint(face),
+                    rest,
+                    "a {what}ed action paints the same as one at rest — the \
+                 state never reached the face",
+                );
+            }
+
+            // Hover on something that cannot be clicked is a lie about what will
+            // happen.
             assert_eq!(
-                l.hit(close.center()),
-                Some(ModalHit::Close),
-                "{name}: the close control does not hit-test as Close",
+                paint(
+                    ModalAction::secondary("Cancel")
+                        .enabled(false)
+                        .hovered(true)
+                ),
+                paint(ModalAction::secondary("Cancel").enabled(false)),
+                "a disabled action must not react to the pointer",
             );
+        }
+
+        // Case `the_close_control_shows_hover_and_focus`.
+        // The close control reacts too. It is the visible way out of a modal, and
+        // one that does not respond to the pointer reads as decoration.
+        {
+            let theme = Theme::light();
+            let paint = |spec: &ModalSpec<'_>| {
+                let mut tr = TextRenderer::new();
+                let layout = ModalFrame::layout(VIEWPORT, spec, &mut tr, &theme);
+                let mut scene = Scene::new();
+                ModalFrame::paint_backdrop(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut tr,
+                    &theme,
+                    &layout,
+                    spec,
+                );
+                scene.encoding().draw_data.clone()
+            };
+            let base = ModalSpec::new("Invite someone").body_height(80.0);
+            let rest = paint(&base);
+            assert_ne!(paint(&base.clone().close_hovered(true)), rest, "hover");
+            assert_ne!(paint(&base.clone().close_focused(true)), rest, "focus");
+        }
+
+        // Case `the_title_band_stops_before_the_close_control`.
+        {
+            let spec = ModalSpec::new("A title long enough to want the whole row and then some");
+            let l = lay(&spec, &Theme::dark());
+            let close = l.close.expect("closable by default");
             assert!(
-                l.dismisses(close.center()),
-                "{name}: clicking close does not dismiss"
+                l.title.x1 <= close.x0,
+                "title band ends at {} but the close control starts at {}",
+                l.title.x1,
+                close.x0,
             );
         }
     }
 
-    /// A modal action reacts. A focused one in particular has to draw the
-    /// ring, because a modal takes the keyboard and a keyboard user needs to
-    /// see where they are in it.
     #[test]
-    fn an_action_shows_hover_press_and_focus() {
-        let theme = Theme::dark();
+    fn actions_follow_platform_order_inside_the_card() {
+        // Case `linux_actions_are_left_to_right_with_the_last_at_the_right_edge`.
+        // The default Linux convention puts the primary action at the trailing
+        // edge while preserving authored indices for event dispatch.
+        {
+            let actions = [
+                ModalAction::secondary("Cancel"),
+                ModalAction::primary("Create invite"),
+            ];
+            let spec = ModalSpec::new("Workspace invite")
+                .actions(&actions)
+                .platform_conventions(crate::platform::PlatformConventions::new(
+                    crate::platform::Platform::Linux,
+                ))
+                .body_height(100.0);
+            let l = lay(&spec, &Theme::dark());
+            assert_eq!(l.actions.len(), 2);
+            assert!(
+                l.actions[0].x1 <= l.actions[1].x0,
+                "Cancel ({:?}) should sit left of Create invite ({:?})",
+                l.actions[0],
+                l.actions[1],
+            );
+            assert!(
+                (l.actions[1].x1 - (l.card.x1 - MODAL_PAD)).abs() < 0.5,
+                "the last action should hug the card's right padding; got {} vs {}",
+                l.actions[1].x1,
+                l.card.x1 - MODAL_PAD,
+            );
+            assert_eq!(l.primary, Some(1), "Enter should fire the primary action");
+        }
 
-        let paint = |a: ModalAction<'_>| {
-            let actions = [a];
-            let spec = ModalSpec::new("Invite someone")
+        // Case `action_geometry_follows_platform_order_without_changing_indices`.
+        {
+            use crate::platform::{Platform, PlatformConventions};
+
+            // Intentionally author primary first: semantic emphasis, rather than
+            // slice position, determines visual order.
+            let actions = [
+                ModalAction::primary("Save"),
+                ModalAction::secondary("Cancel"),
+            ];
+            let mac = ModalSpec::new("Save changes?")
+                .actions(&actions)
+                .platform_conventions(PlatformConventions::new(Platform::MacOs));
+            let mac_layout = lay(&mac, &Theme::dark());
+            assert!(mac_layout.actions[0].x0 > mac_layout.actions[1].x0);
+            assert_eq!(
+                mac_layout.hit(mac_layout.actions[0].center()),
+                Some(ModalHit::Action(0))
+            );
+
+            let windows = ModalSpec::new("Save changes?")
+                .actions(&actions)
+                .platform_conventions(PlatformConventions::new(Platform::Windows));
+            let windows_layout = lay(&windows, &Theme::dark());
+            assert!(windows_layout.actions[0].x0 < windows_layout.actions[1].x0);
+            assert_eq!(
+                windows_layout.hit(windows_layout.actions[0].center()),
+                Some(ModalHit::Action(0))
+            );
+        }
+
+        // Case `every_action_is_inside_the_card_and_hit_tests_to_itself`.
+        {
+            let actions = [
+                ModalAction::secondary("Paste"),
+                ModalAction::secondary("Cancel"),
+                ModalAction::primary("Join"),
+            ];
+            let spec = ModalSpec::new("Join a workspace")
+                .actions(&actions)
+                .body_height(120.0);
+            let l = lay(&spec, &Theme::dark());
+            for (i, r) in l.actions.iter().enumerate() {
+                assert!(r.area() > 0.0, "action {i} has no area");
+                assert!(
+                    l.card.contains(r.center()),
+                    "action {i} at {r:?} is outside the card {:?}",
+                    l.card,
+                );
+                assert_eq!(l.hit(r.center()), Some(ModalHit::Action(i)));
+                assert!(
+                    !l.dismisses(r.center()),
+                    "an action click must not dismiss on its own"
+                );
+            }
+        }
+
+        // Case `a_disabled_action_is_not_the_default_action`.
+        {
+            let actions = [ModalAction::primary("Join").enabled(false)];
+            let spec = ModalSpec::new("Join a workspace")
                 .actions(&actions)
                 .body_height(80.0);
-            let mut tr = TextRenderer::new();
-            let layout = ModalFrame::layout(VIEWPORT, &spec, &mut tr, &theme);
-            let mut scene = Scene::new();
-            ModalFrame::paint_actions(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &layout,
-                &spec,
-            );
-            scene.encoding().draw_data.clone()
-        };
-
-        let rest = paint(ModalAction::secondary("Cancel"));
-        for (what, face) in [
-            ("hover", ModalAction::secondary("Cancel").hovered(true)),
-            ("press", ModalAction::secondary("Cancel").pressed(true)),
-            ("focus", ModalAction::secondary("Cancel").focused(true)),
-        ] {
-            assert_ne!(
-                paint(face),
-                rest,
-                "a {what}ed action paints the same as one at rest — the \
-                 state never reached the face",
+            let l = lay(&spec, &Theme::dark());
+            assert_eq!(
+                l.primary, None,
+                "a disabled action must not be what Enter fires"
             );
         }
 
-        // Hover on something that cannot be clicked is a lie about what will
-        // happen.
-        assert_eq!(
-            paint(
-                ModalAction::secondary("Cancel")
-                    .enabled(false)
-                    .hovered(true)
-            ),
-            paint(ModalAction::secondary("Cancel").enabled(false)),
-            "a disabled action must not react to the pointer",
-        );
-    }
-
-    /// The close control reacts too. It is the visible way out of a modal, and
-    /// one that does not respond to the pointer reads as decoration.
-    #[test]
-    fn the_close_control_shows_hover_and_focus() {
-        let theme = Theme::light();
-        let paint = |spec: &ModalSpec<'_>| {
-            let mut tr = TextRenderer::new();
-            let layout = ModalFrame::layout(VIEWPORT, spec, &mut tr, &theme);
-            let mut scene = Scene::new();
-            ModalFrame::paint_backdrop(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &layout,
-                spec,
-            );
-            scene.encoding().draw_data.clone()
-        };
-        let base = ModalSpec::new("Invite someone").body_height(80.0);
-        let rest = paint(&base);
-        assert_ne!(paint(&base.clone().close_hovered(true)), rest, "hover");
-        assert_ne!(paint(&base.clone().close_focused(true)), rest, "focus");
-    }
-
-    #[test]
-    fn the_title_band_stops_before_the_close_control() {
-        let spec = ModalSpec::new("A title long enough to want the whole row and then some");
-        let l = lay(&spec, &Theme::dark());
-        let close = l.close.expect("closable by default");
-        assert!(
-            l.title.x1 <= close.x0,
-            "title band ends at {} but the close control starts at {}",
-            l.title.x1,
-            close.x0,
-        );
-    }
-
-    /// The default Linux convention puts the primary action at the trailing
-    /// edge while preserving authored indices for event dispatch.
-    #[test]
-    fn linux_actions_are_left_to_right_with_the_last_at_the_right_edge() {
-        let actions = [
-            ModalAction::secondary("Cancel"),
-            ModalAction::primary("Create invite"),
-        ];
-        let spec = ModalSpec::new("Workspace invite")
-            .actions(&actions)
-            .platform_conventions(crate::platform::PlatformConventions::new(
-                crate::platform::Platform::Linux,
-            ))
-            .body_height(100.0);
-        let l = lay(&spec, &Theme::dark());
-        assert_eq!(l.actions.len(), 2);
-        assert!(
-            l.actions[0].x1 <= l.actions[1].x0,
-            "Cancel ({:?}) should sit left of Create invite ({:?})",
-            l.actions[0],
-            l.actions[1],
-        );
-        assert!(
-            (l.actions[1].x1 - (l.card.x1 - MODAL_PAD)).abs() < 0.5,
-            "the last action should hug the card's right padding; got {} vs {}",
-            l.actions[1].x1,
-            l.card.x1 - MODAL_PAD,
-        );
-        assert_eq!(l.primary, Some(1), "Enter should fire the primary action");
-    }
-
-    #[test]
-    fn action_geometry_follows_platform_order_without_changing_indices() {
-        use crate::platform::{Platform, PlatformConventions};
-
-        // Intentionally author primary first: semantic emphasis, rather than
-        // slice position, determines visual order.
-        let actions = [
-            ModalAction::primary("Save"),
-            ModalAction::secondary("Cancel"),
-        ];
-        let mac = ModalSpec::new("Save changes?")
-            .actions(&actions)
-            .platform_conventions(PlatformConventions::new(Platform::MacOs));
-        let mac_layout = lay(&mac, &Theme::dark());
-        assert!(mac_layout.actions[0].x0 > mac_layout.actions[1].x0);
-        assert_eq!(
-            mac_layout.hit(mac_layout.actions[0].center()),
-            Some(ModalHit::Action(0))
-        );
-
-        let windows = ModalSpec::new("Save changes?")
-            .actions(&actions)
-            .platform_conventions(PlatformConventions::new(Platform::Windows));
-        let windows_layout = lay(&windows, &Theme::dark());
-        assert!(windows_layout.actions[0].x0 < windows_layout.actions[1].x0);
-        assert_eq!(
-            windows_layout.hit(windows_layout.actions[0].center()),
-            Some(ModalHit::Action(0))
-        );
-    }
-
-    #[test]
-    fn every_action_is_inside_the_card_and_hit_tests_to_itself() {
-        let actions = [
-            ModalAction::secondary("Paste"),
-            ModalAction::secondary("Cancel"),
-            ModalAction::primary("Join"),
-        ];
-        let spec = ModalSpec::new("Join a workspace")
-            .actions(&actions)
-            .body_height(120.0);
-        let l = lay(&spec, &Theme::dark());
-        for (i, r) in l.actions.iter().enumerate() {
-            assert!(r.area() > 0.0, "action {i} has no area");
-            assert!(
-                l.card.contains(r.center()),
-                "action {i} at {r:?} is outside the card {:?}",
-                l.card,
-            );
-            assert_eq!(l.hit(r.center()), Some(ModalHit::Action(i)));
-            assert!(
-                !l.dismisses(r.center()),
-                "an action click must not dismiss on its own"
-            );
-        }
-    }
-
-    #[test]
-    fn a_disabled_action_is_not_the_default_action() {
-        let actions = [ModalAction::primary("Join").enabled(false)];
-        let spec = ModalSpec::new("Join a workspace")
-            .actions(&actions)
-            .body_height(80.0);
-        let l = lay(&spec, &Theme::dark());
-        assert_eq!(
-            l.primary, None,
-            "a disabled action must not be what Enter fires"
-        );
-    }
-
-    /// The scrim covers the viewport, and a click on it dismisses only when
-    /// the spec allows — but is never passed through either way.
-    #[test]
-    fn the_scrim_covers_everything_and_only_dismisses_when_asked() {
-        let corner = Point::new(4.0, 4.0);
-
-        let spec = ModalSpec::new("Workspace invite").body_height(100.0);
-        let l = lay(&spec, &Theme::dark());
-        assert_eq!(l.scrim, VIEWPORT, "the scrim must cover the whole viewport");
-        assert_eq!(l.hit(corner), Some(ModalHit::Scrim));
-        assert!(
-            l.dismisses(corner),
-            "the default modal dismisses on a scrim click"
-        );
-
-        let sticky = ModalSpec::new("Workspace invite")
-            .body_height(100.0)
-            .dismiss_on_scrim(false);
-        let l = lay(&sticky, &Theme::dark());
-        assert_eq!(
-            l.hit(corner),
-            Some(ModalHit::Scrim),
-            "a sticky modal still swallows the click — it just does not close",
-        );
-        assert!(!l.dismisses(corner));
-    }
-
-    #[test]
-    fn the_card_swallows_clicks_that_hit_no_control() {
-        let spec = ModalSpec::new("Workspace invite").body_height(160.0);
-        let l = lay(&spec, &Theme::dark());
-        let p = l.body.center();
-        assert_eq!(l.hit(p), Some(ModalHit::Card));
-        assert!(!l.dismisses(p), "clicking the body must never dismiss");
-    }
-
-    /// A body taller than the screen clamps the card to the viewport and says
-    /// so, rather than drawing an action row off the bottom edge.
-    #[test]
-    fn an_oversized_body_clamps_the_card_and_reports_the_overflow() {
-        let actions = [ModalAction::primary("OK")];
-        let spec = ModalSpec::new("Tall").actions(&actions).body_height(9000.0);
-        let l = lay(&spec, &Theme::dark());
-        assert!(
-            l.body_overflows,
-            "a 9000px body in a 1000px viewport must report overflow"
-        );
-        assert!(
-            l.card.y0 >= VIEWPORT.y0 && l.card.y1 <= VIEWPORT.y1,
-            "the card {:?} escaped the viewport {:?}",
-            l.card,
-            VIEWPORT,
-        );
-        let action = l.actions[0];
-        assert!(
-            VIEWPORT.contains(action.center()),
-            "the action row at {action:?} is off screen — nobody can reach it",
-        );
-    }
-
-    #[test]
-    fn a_body_that_fits_does_not_report_overflow() {
-        let spec = ModalSpec::new("Short").body_height(100.0);
-        assert!(!lay(&spec, &Theme::dark()).body_overflows);
-    }
-
-    /// The card never touches an edge, even on an output smaller than the
-    /// card's own maximum.
-    #[test]
-    fn the_card_keeps_its_margin_on_a_small_output() {
-        let small = Rect::new(0.0, 0.0, 420.0, 360.0);
-        let spec = ModalSpec::new("Workspace invite").body_height(600.0);
-        let mut tr = TextRenderer::new();
-        let l = ModalFrame::layout(small, &spec, &mut tr, &Theme::dark());
-        assert!(l.card.x0 >= small.x0, "card runs off the left edge");
-        assert!(l.card.x1 <= small.x1, "card runs off the right edge");
-        assert!(l.card.y0 >= small.y0, "card runs off the top edge");
-        assert!(l.card.y1 <= small.y1, "card runs off the bottom edge");
-        assert!(
-            l.card.width() <= small.width() - MODAL_VIEWPORT_MARGIN * 2.0 + 0.5,
-            "card width {} leaves no margin in a {}-wide output",
-            l.card.width(),
-            small.width(),
-        );
-    }
-
-    #[test]
-    fn the_card_stops_growing_at_its_maximum() {
-        let wide = Rect::new(0.0, 0.0, 3840.0, 2160.0);
-        let spec = ModalSpec::new("Workspace invite").body_height(200.0);
-        let mut tr = TextRenderer::new();
-        let l = ModalFrame::layout(wide, &spec, &mut tr, &Theme::dark());
-        assert!(
-            l.card.width() <= MODAL_MAX_WIDTH + 0.5,
-            "card is {} wide on a 4K output; the cap is {MODAL_MAX_WIDTH}",
-            l.card.width(),
-        );
-    }
-
-    /// The modal's own ink clears AA against the card it is painted on, on
-    /// every theme the OS ships.
-    #[test]
-    fn modal_ink_is_legible_on_every_theme() {
-        for (name, theme) in themes() {
-            let card = ModalFrame::card_fill(&theme);
-            let (ink, dim) = ModalFrame::ink(&theme);
-            let r = contrast_ratio(ink, card);
-            assert!(
-                r >= MODAL_MIN_INK_CONTRAST,
-                "{name}: modal ink contrast is {r:.2}:1 against the card — AA needs {MODAL_MIN_INK_CONTRAST}",
-            );
-            // The dim tier is secondary, so it is held to the large-text bar
-            // rather than the body bar.
-            let rd = contrast_ratio(dim, card);
-            assert!(
-                rd >= 3.0,
-                "{name}: dim ink contrast is {rd:.2}:1 — unreadable as a sub-label"
-            );
-        }
-    }
-
-    /// Every action label is legible on the fill it is painted on, on every
-    /// theme and in every emphasis — asserted on the colour the shared face
-    /// actually resolves, so it keeps holding when the accent ramp is re-themed.
-    #[test]
-    fn every_action_label_is_legible_on_its_own_fill() {
-        let styles = [
-            (ModalEmphasis::Primary, ButtonStyle::Primary),
-            (ModalEmphasis::Secondary, ButtonStyle::Neutral),
-            (ModalEmphasis::Danger, ButtonStyle::Danger),
-        ];
-        for (name, theme) in themes() {
-            for (emphasis, style) in styles {
-                let face =
-                    ButtonFace::new(Rect::new(0.0, 0.0, 100.0, 34.0), "Create invite").style(style);
-                let (bg, _border, painted) = face.colors(&theme);
-                let r = contrast_ratio(painted, bg);
-                assert!(
-                    r >= 4.5,
-                    "{name}/{emphasis:?}: label contrast is {r:.2}:1 on its fill — AA needs 4.5",
-                );
-                // Never worse than plain chrome ink would have been.
-                let naive = contrast_ratio(theme.text_primary, bg);
-                assert!(
-                    r >= naive,
-                    "{name}/{emphasis:?}: measured label ({r:.2}:1) is worse than chrome ink ({naive:.2}:1)",
-                );
+        // Case `action_height_is_the_height_of_every_action_rect`.
+        // `action_height` is the height of every action rect the layout
+        // produces, so a body control sized from it shares the row's line.
+        {
+            let actions = [
+                ModalAction::secondary("Back"),
+                ModalAction::primary("Continue"),
+            ];
+            for theme in [Theme::dark(), Theme::dark().with_text_scale(2.0)] {
+                let spec = ModalSpec::new("Title").actions(&actions).body_height(80.0);
+                let l = lay(&spec, &theme);
+                let expected = ModalFrame::action_height(&theme);
+                assert!(expected > 0.0);
+                for (i, r) in l.actions.iter().enumerate() {
+                    assert!(
+                        (r.height() - expected).abs() < 0.01,
+                        "text_scale {}: action {i} is {} tall, action_height says {expected}",
+                        theme.text_scale,
+                        r.height(),
+                    );
+                }
             }
         }
     }
 
-    /// A modal with no actions has no action row, and its body takes the space
-    /// back.
     #[test]
-    fn a_modal_without_actions_gives_the_room_to_its_body() {
-        let actions = [ModalAction::primary("OK")];
-        let with = ModalSpec::new("T").actions(&actions).body_height(100.0);
-        let without = ModalSpec::new("T").body_height(100.0);
-        let theme = Theme::dark();
-        let a = lay(&with, &theme);
-        let b = lay(&without, &theme);
-        assert!(b.actions.is_empty());
-        assert!(
-            b.card.height() < a.card.height(),
-            "an action-less modal ({}) should be shorter than one with a row ({})",
-            b.card.height(),
-            a.card.height(),
-        );
-    }
+    fn scrim_and_card_route_clicks_that_hit_no_control() {
+        // Case `the_scrim_covers_everything_and_only_dismisses_when_asked`.
+        // The scrim covers the viewport, and a click on it dismisses only when
+        // the spec allows — but is never passed through either way.
+        {
+            let corner = Point::new(4.0, 4.0);
 
-    #[test]
-    fn a_point_off_the_viewport_hits_nothing() {
-        let spec = ModalSpec::new("T").body_height(100.0);
-        let l = lay(&spec, &Theme::dark());
-        assert_eq!(l.hit(Point::new(-10.0, -10.0)), None);
-    }
+            let spec = ModalSpec::new("Workspace invite").body_height(100.0);
+            let l = lay(&spec, &Theme::dark());
+            assert_eq!(l.scrim, VIEWPORT, "the scrim must cover the whole viewport");
+            assert_eq!(l.hit(corner), Some(ModalHit::Scrim));
+            assert!(
+                l.dismisses(corner),
+                "the default modal dismisses on a scrim click"
+            );
 
-    /// The width a caller predicts before measuring its rows is the width
-    /// the layout hands back — on every scale axis a theme can carry, and
-    /// on a viewport too small for the card's natural size.
-    #[test]
-    fn body_width_is_what_the_layout_hands_back() {
-        let actions = [ModalAction::primary("Continue")];
-        let cases = [
-            ("dark", Theme::dark(), VIEWPORT),
-            ("light", Theme::light(), VIEWPORT),
-            ("text-1.5", Theme::dark().with_text_scale(1.5), VIEWPORT),
-            ("ui-1.25", Theme::dark().with_ui_scale(1.25), VIEWPORT),
-            (
-                "small output",
-                Theme::dark(),
-                Rect::new(0.0, 0.0, 300.0, 240.0),
-            ),
-        ];
-        for (name, theme, viewport) in cases {
-            for max_width in [MODAL_MAX_WIDTH, 560.0] {
-                let spec = ModalSpec::new("Title")
-                    .actions(&actions)
-                    .max_width(max_width)
-                    .body_height(120.0);
-                let predicted = ModalFrame::body_width(viewport, &spec, &theme);
-                let mut tr = TextRenderer::new();
-                let l = ModalFrame::layout(viewport, &spec, &mut tr, &theme);
-                assert!(
-                    (l.body.width() - predicted).abs() < 0.01,
-                    "{name} @ max {max_width}: predicted {predicted}, layout gave {}",
-                    l.body.width(),
-                );
-                assert!(
-                    (l.card.width() - ModalFrame::card_width(viewport, &spec, &theme)).abs() < 0.01,
-                    "{name} @ max {max_width}: card_width disagrees with the layout",
-                );
-            }
+            let sticky = ModalSpec::new("Workspace invite")
+                .body_height(100.0)
+                .dismiss_on_scrim(false);
+            let l = lay(&sticky, &Theme::dark());
+            assert_eq!(
+                l.hit(corner),
+                Some(ModalHit::Scrim),
+                "a sticky modal still swallows the click — it just does not close",
+            );
+            assert!(!l.dismisses(corner));
+        }
+
+        // Case `the_card_swallows_clicks_that_hit_no_control`.
+        {
+            let spec = ModalSpec::new("Workspace invite").body_height(160.0);
+            let l = lay(&spec, &Theme::dark());
+            let p = l.body.center();
+            assert_eq!(l.hit(p), Some(ModalHit::Card));
+            assert!(!l.dismisses(p), "clicking the body must never dismiss");
+        }
+
+        // Case `a_point_off_the_viewport_hits_nothing`.
+        {
+            let spec = ModalSpec::new("T").body_height(100.0);
+            let l = lay(&spec, &Theme::dark());
+            assert_eq!(l.hit(Point::new(-10.0, -10.0)), None);
         }
     }
 
-    /// `action_height` is the height of every action rect the layout
-    /// produces, so a body control sized from it shares the row's line.
     #[test]
-    fn action_height_is_the_height_of_every_action_rect() {
-        let actions = [
-            ModalAction::secondary("Back"),
-            ModalAction::primary("Continue"),
-        ];
-        for theme in [Theme::dark(), Theme::dark().with_text_scale(2.0)] {
-            let spec = ModalSpec::new("Title").actions(&actions).body_height(80.0);
-            let l = lay(&spec, &theme);
-            let expected = ModalFrame::action_height(&theme);
-            assert!(expected > 0.0);
-            for (i, r) in l.actions.iter().enumerate() {
+    fn modal_ink_and_action_labels_are_legible_on_every_theme() {
+        // Case `modal_ink_is_legible_on_every_theme`.
+        // The modal's own ink clears AA against the card it is painted on, on
+        // every theme the OS ships.
+        {
+            for (name, theme) in themes() {
+                let card = ModalFrame::card_fill(&theme);
+                let (ink, dim) = ModalFrame::ink(&theme);
+                let r = contrast_ratio(ink, card);
                 assert!(
-                    (r.height() - expected).abs() < 0.01,
-                    "text_scale {}: action {i} is {} tall, action_height says {expected}",
-                    theme.text_scale,
-                    r.height(),
+                    r >= MODAL_MIN_INK_CONTRAST,
+                    "{name}: modal ink contrast is {r:.2}:1 against the card — AA needs {MODAL_MIN_INK_CONTRAST}",
                 );
+                // The dim tier is secondary, so it is held to the large-text bar
+                // rather than the body bar.
+                let rd = contrast_ratio(dim, card);
+                assert!(
+                    rd >= 3.0,
+                    "{name}: dim ink contrast is {rd:.2}:1 — unreadable as a sub-label"
+                );
+            }
+        }
+
+        // Case `every_action_label_is_legible_on_its_own_fill`.
+        // Every action label is legible on the fill it is painted on, on every
+        // theme and in every emphasis — asserted on the colour the shared face
+        // actually resolves, so it keeps holding when the accent ramp is re-themed.
+        {
+            let styles = [
+                (ModalEmphasis::Primary, ButtonStyle::Primary),
+                (ModalEmphasis::Secondary, ButtonStyle::Neutral),
+                (ModalEmphasis::Danger, ButtonStyle::Danger),
+            ];
+            for (name, theme) in themes() {
+                for (emphasis, style) in styles {
+                    let face = ButtonFace::new(Rect::new(0.0, 0.0, 100.0, 34.0), "Create invite")
+                        .style(style);
+                    let (bg, _border, painted) = face.colors(&theme);
+                    let r = contrast_ratio(painted, bg);
+                    assert!(
+                        r >= 4.5,
+                        "{name}/{emphasis:?}: label contrast is {r:.2}:1 on its fill — AA needs 4.5",
+                    );
+                    // Never worse than plain chrome ink would have been.
+                    let naive = contrast_ratio(theme.text_primary, bg);
+                    assert!(
+                        r >= naive,
+                        "{name}/{emphasis:?}: measured label ({r:.2}:1) is worse than chrome ink ({naive:.2}:1)",
+                    );
+                }
             }
         }
     }

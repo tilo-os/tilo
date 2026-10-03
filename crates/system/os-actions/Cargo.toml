@@ -34,11 +34,13 @@ tilo-bluez = { path = "../tilo-bluez" }
 tilo-power-mgmt = { path = "../power" }
 tilo-rt.workspace = true
 zbus = { workspace = true, features = ["tokio"] }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # Fixture sysfs trees for testing the backlight reader/writer against
 # representative directory layouts.
 tempfile = { workspace = true }
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

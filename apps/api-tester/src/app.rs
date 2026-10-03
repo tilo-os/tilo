@@ -33,6 +33,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -48,7 +49,7 @@ use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::richtext::{RichSpan, RichTextLayout, TextAlign};
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
@@ -393,7 +394,7 @@ pub struct ApiTesterApp {
     /// environment or variable, select the active environment) is encoded and
     /// applied through this host, which brackets the undo boundary and remembers
     /// the last action — the same path a Ctrl+K palette dispatch takes.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     search_provider: crate::search_provider::ApiSearchProvider,
     search_error: Option<ui::search::SearchCatalogError>,
 
@@ -417,6 +418,9 @@ pub struct ApiTesterApp {
     last_cursor: Point,
     seeded: bool,
     adopted: bool,
+    /// Mounted on a record another participant created: its content is
+    /// theirs to seed, so an empty document is left untouched.
+    joined: bool,
     dirty: bool,
     /// Set when the child set changed; drained by `take_structure_dirty`.
     last_sig: ChildSig,
@@ -656,7 +660,7 @@ impl ApiTesterApp {
             nav_rows_replaced: false,
             nav_meta: Vec::new(),
             sink: widgets.sink,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             search_provider: crate::search_provider::ApiSearchProvider::new(),
             search_error: None,
             tx,
@@ -675,6 +679,7 @@ impl ApiTesterApp {
             last_cursor: Point::ZERO,
             seeded: false,
             adopted: false,
+            joined: ui::launch::record_launch() == Some(ui::launch::RecordLaunch::Joined),
             dirty: true,
             last_sig: ChildSig::default(),
             persisted_once: false,
@@ -991,7 +996,7 @@ impl ApiTesterApp {
         http::build_outgoing(&req, &self.env_vars())
     }
 
-    /// Kick off a real request on a worker thread.
+    /// Kick off a real request on the app runtime.
     fn send(&mut self) {
         if self.sending {
             return;
@@ -1002,8 +1007,8 @@ impl ApiTesterApp {
         self.error = None;
         self.dirty = true;
         let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let outcome = match http::send_blocking(&out) {
+        drop(ui::rt::app().spawn(async move {
+            let outcome = match http::send(&out).await {
                 Ok(response) => SendOutcome::Ok {
                     response,
                     method,
@@ -1012,7 +1017,7 @@ impl ApiTesterApp {
                 Err(e) => SendOutcome::Err(e),
             };
             let _ = tx.send(outcome);
-        });
+        }));
     }
 
     /// Drain any finished send result from the worker.
@@ -1138,6 +1143,66 @@ impl ApiTesterApp {
         self.refresh_search();
     }
 
+    /// Show collection and environment names the framework resource holds.
+    /// An empty projection does not wipe a workspace that has not been published yet.
+    /// Requests stay on the document; `sync` reads those full records.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::WorkspaceState) {
+        if state.collections.is_empty()
+            && state.environments.is_empty()
+            && (!self.collections.is_empty() || !self.environments.is_empty())
+        {
+            return;
+        }
+        for (id, name) in &state.collections {
+            let Ok(id) = id.parse::<crate::model::Id>() else {
+                continue;
+            };
+            if let Some(collection) = self
+                .collections
+                .iter_mut()
+                .find(|collection| collection.id == id)
+            {
+                collection.name.clone_from(name);
+            }
+        }
+        let mut renamed_env = false;
+        for (id, name) in &state.environments {
+            let Ok(id) = id.parse::<crate::model::Id>() else {
+                continue;
+            };
+            if let Some(environment) = self
+                .environments
+                .iter_mut()
+                .find(|environment| environment.id == id)
+                && environment.name != *name
+            {
+                environment.name.clone_from(name);
+                renamed_env = true;
+            }
+        }
+        if renamed_env {
+            self.rebuild_env_dropdown();
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::ApiTester>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn actions_are_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_actions_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
     /// Dispatch one canonical action against the document's current projection.
     /// Presentation commands never flush the in-memory workspace first; the
     /// action owns the precise durable record it mutates, then we re-adopt the
@@ -1147,7 +1212,7 @@ impl ApiTesterApp {
             state,
             API_TESTER_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.ApiTester", "API Tester", action),
+            tilo_actions::ActionContext::for_action("so.tilo.api-tester", "API Tester", action),
         );
         self.adopt_workspace(state, path);
         self.dirty = true;
@@ -2883,16 +2948,13 @@ impl ApiTesterApp {
                 let mut cx = text_x0;
                 for tok in &line.tokens {
                     let col = token_color(theme, tok.kind);
-                    tr.draw_text_styled(
+                    tr.draw_style(
                         scene,
                         &tok.text,
-                        size,
                         col,
                         t * Affine::translate((cx, screen_y + 3.0)),
                         None,
-                        TextWeight::Regular,
-                        false,
-                        true,
+                        &TextStyle::new(size).with_family(FontChoice::Monospace),
                     );
                     let (w, _) =
                         tr.measure_styled(&tok.text, size, None, TextWeight::Regular, false, true);
@@ -2945,16 +3007,13 @@ impl ApiTesterApp {
         let mut y = area.y0 + 8.0 - self.body_scroll;
         for line in body.lines() {
             if y + line_h >= area.y0 && y <= area.y1 {
-                tr.draw_text_styled(
+                tr.draw_style(
                     scene,
                     line,
-                    size,
                     c.text_primary,
                     t * Affine::translate((area.x0 + PAD, y + 3.0)),
                     None,
-                    TextWeight::Regular,
-                    false,
-                    true,
+                    &TextStyle::new(size).with_family(FontChoice::Monospace),
                 );
             }
             y += line_h;
@@ -3362,11 +3421,21 @@ fn draw_fold_caret(scene: &mut Scene, t: Affine, center: Point, color: Color, ex
 // ===========================================================================
 
 impl Widget for ApiTesterApp {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::API_TESTER_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
+        if self.joined && !self.adopted && ApiDoc::is_empty(state, path) {
+            return;
+        }
         if !self.adopted {
             if ApiDoc::is_empty(state, path) {
                 if !self.seeded {
@@ -3625,23 +3694,13 @@ impl Widget for ApiTesterApp {
         clippy::too_many_lines,
         reason = "event routing is ordered by precedence (escape, overlays, sidebar, editors); splitting it would hide that order"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
 
-        let child_nodes = taffy.children(node_id).unwrap_or_default();
+        let child_nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         if matches!(
             event,
             WindowEvent::KeyboardInput {
@@ -3678,9 +3737,9 @@ impl Widget for ApiTesterApp {
                     .iter()
                     .position(|child| child.test_id() == Some(target))
                 {
-                    *focus_target = child_nodes.get(index).copied();
+                    *ctx.focus_target = child_nodes.get(index).copied();
                 }
-                *handled = true;
+                *ctx.handled = true;
                 self.dirty = true;
                 return;
             }
@@ -3700,16 +3759,16 @@ impl Widget for ApiTesterApp {
                     .iter()
                     .position(|child| child.test_id() == Some("api.request-divider"))
                 {
-                    *focus_target = child_nodes.get(index).copied();
+                    *ctx.focus_target = child_nodes.get(index).copied();
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::CursorMoved { .. } if self.request_drag.is_some() => {
                 if let Some((start, height)) = self.request_drag {
                     self.request_height_override =
                         Some((height + self.last_cursor.y - start).max(0.0));
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -3717,7 +3776,7 @@ impl Widget for ApiTesterApp {
                 ..
             } if self.request_drag.is_some() => {
                 self.request_drag = None;
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseWheel { delta, .. }
                 if self.layout.nav_viewport.contains(self.last_cursor) =>
@@ -3732,11 +3791,11 @@ impl Widget for ApiTesterApp {
                 } else if dy > 0.0 {
                     self.nav_start = self.nav_start.saturating_sub(1);
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
-        if *handled {
+        if *ctx.handled {
             self.dirty = true;
             return;
         }
@@ -3759,7 +3818,7 @@ impl Widget for ApiTesterApp {
             && !self.layout.sidebar.contains(self.last_cursor)
         {
             self.rail.snap(false);
-            *handled = true;
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
@@ -3771,24 +3830,14 @@ impl Widget for ApiTesterApp {
             });
         // Route the event through the child widgets (pointer-capture aware),
         // exactly like a `Column`.
-        let child_nodes = taffy.children(node_id).unwrap_or_default();
+        let child_nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         {
             let mut kids = self.children_mut_ref();
             if let Some(idx) = kids.iter().position(|k| k.wants_pointer_capture()) {
                 if let Some(&cnode) = child_nodes.get(idx)
                     && let Some(k) = kids.get_mut(idx)
                 {
-                    k.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cnode,
-                        taffy,
-                    );
+                    k.handle_event(event, &mut ctx.reborrow(ctx.path, cnode));
                 }
             } else {
                 let sidebar_start = kids.len().saturating_sub(sidebar_count);
@@ -3799,35 +3848,25 @@ impl Widget for ApiTesterApp {
                         continue;
                     }
                     if cursor_move {
-                        *handled = false;
+                        *ctx.handled = false;
                     }
-                    k.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                    any_handled |= *handled;
-                    if *handled && !cursor_move {
+                    k.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
+                    any_handled |= *ctx.handled;
+                    if *ctx.handled && !cursor_move {
                         break;
                     }
                 }
-                *handled |= any_handled;
+                *ctx.handled |= any_handled;
             }
         }
 
         // Apply any commands the children queued, then reconcile the pickers.
-        let did = self.drain_commands(state, path);
-        self.reconcile_pickers(state, path);
-        if did || *handled {
+        let did = self.drain_commands(ctx.state, ctx.path);
+        self.reconcile_pickers(ctx.state, ctx.path);
+        if did || *ctx.handled {
             self.dirty = true;
         }
-        if *handled {
+        if *ctx.handled {
             return;
         }
 
@@ -3845,7 +3884,7 @@ impl Widget for ApiTesterApp {
                 if self.rail.layout() == SplitLayout::Overlay && self.rail.is_open() {
                     self.rail.close();
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -3859,11 +3898,11 @@ impl Widget for ApiTesterApp {
                     // runaway wheel event cannot hide it indefinitely.
                     self.sidebar_scroll = (self.sidebar_scroll + dy).clamp(0.0, 1200.0);
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if self.layout.body_region.contains(self.last_cursor) {
                     self.body_scroll = (self.body_scroll + dy).max(0.0);
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -3906,27 +3945,138 @@ impl Widget for ApiTesterApp {
         self.rect
     }
 
-    /// Publish the resource tree the shell's one Ctrl+K palette walks — the
-    /// collections, saved requests, environments, and variables currently in the
-    /// shared document. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        for child in self.children_mut_ref() {
+            if let Some(update) =
+                child.poll_resource_operation(invocation, cancellation_requested, doc, path)
+            {
+                return Some(update);
+            }
+        }
+        self.poll_worker();
+        if self
+            .resource_send_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            self.resource_send_result.take()
+        } else {
+            None
+        }
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        // Drain child structure-dirty flags per the trait contract, then add
+        // our own child-set changes. A plain loop, not `.any()`: every child
+        // must be drained regardless of an earlier `true`, which `.any()`
+        // would short-circuit past.
+        let mut child_changed = false;
+        for c in self.children_mut_ref() {
+            child_changed |= c.take_structure_dirty();
+        }
+        let sig = self.child_sig();
+        let self_changed = sig != self.last_sig;
+        self.last_sig = sig;
+        let rows_replaced = std::mem::take(&mut self.nav_rows_replaced);
+        child_changed || self_changed || rows_replaced
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+            || self.sending
+            || self.rail.is_animating()
+            || self.children_ref().iter().any(|c| c.needs_redraw())
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.rail.is_animating()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        for c in self.children_mut_ref() {
+            c.mark_drawn();
+        }
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        self.sending || !self.pending_history.is_empty() || !self.adopted
+    }
+}
+
+impl ui::search::capability::SearchSource for ApiTesterApp {
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(self.search_provider.clone())]
     }
+}
 
+impl ui::resources::PublishesResources for ApiTesterApp {
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns the
+    /// workspace door — keep only the search-catalog diagnostic when present.
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.actions.is_hosted() {
+            return crate::actions::live_search_status_resources(self.search_error_message());
+        }
+        self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.actions.is_hosted() && id == "api_tester.workspace" {
+            return None;
+        }
+        self.publish_resource(doc, id)
+    }
+}
+
+impl ui::undo::CommittedActions for ApiTesterApp {
     /// Drain the undo boundary the [`ActionHost`](ui::ActionHost) bracketed for
     /// this event so the shell records exactly one undo point per dispatched
     /// action — the same path a Ctrl+K palette dispatch takes.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }
+}
 
-    fn invoke_resource_operation(
+impl ApiTesterApp {
+    fn answer_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
         type_id: &str,
@@ -4008,7 +4158,7 @@ impl Widget for ApiTesterApp {
         Ok(true)
     }
 
-    fn start_resource_operation(
+    fn admit_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
         kind: tilo_actions::OperationKind,
@@ -4017,15 +4167,6 @@ impl Widget for ApiTesterApp {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        // This container also owns retained controls with native view/effect
-        // actions. Preserve their canonical dispatch before admitting Send.
-        for child in self.children_mut_ref() {
-            if let Some(started) =
-                child.start_resource_operation(invocation, kind, type_id, payload, doc, path)?
-            {
-                return Ok(Some(started));
-            }
-        }
         if kind != tilo_actions::OperationKind::Effect
             || type_id != crate::actions::API_TESTER_OPERATION_TYPE
         {
@@ -4034,75 +4175,11 @@ impl Widget for ApiTesterApp {
         if self.sending || self.resource_send_invocation.is_some() {
             return Err("another API request is already running".into());
         }
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
             return Ok(None);
         }
         self.resource_send_invocation = Some(invocation);
         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        for child in self.children_mut_ref() {
-            if let Some(update) =
-                child.poll_resource_operation(invocation, cancellation_requested, doc, path)
-            {
-                return Some(update);
-            }
-        }
-        self.poll_worker();
-        if self
-            .resource_send_result
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            self.resource_send_result.take()
-        } else {
-            None
-        }
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        // Drain child structure-dirty flags per the trait contract, then add
-        // our own child-set changes. A plain loop, not `.any()`: every child
-        // must be drained regardless of an earlier `true`, which `.any()`
-        // would short-circuit past.
-        let mut child_changed = false;
-        for c in self.children_mut_ref() {
-            child_changed |= c.take_structure_dirty();
-        }
-        let sig = self.child_sig();
-        let self_changed = sig != self.last_sig;
-        self.last_sig = sig;
-        let rows_replaced = std::mem::take(&mut self.nav_rows_replaced);
-        child_changed || self_changed || rows_replaced
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-            || self.sending
-            || self.rail.is_animating()
-            || self.children_ref().iter().any(|c| c.needs_redraw())
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        self.rail.is_animating()
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-        for c in self.children_mut_ref() {
-            c.mark_drawn();
-        }
-    }
-
-    fn needs_idle_sync(&self) -> bool {
-        self.sending || !self.pending_history.is_empty() || !self.adopted
     }
 }
 
@@ -4138,7 +4215,19 @@ impl ApiTesterApp {
 mod tests {
     use super::*;
 
+    /// The request builder's derived state: placeholder highlighting, active
+    /// environment resolution, the outgoing URL, tab counts and loading a saved
+    /// request, each on a fresh app.
     #[test]
+    fn request_builder_resolves_environment_highlights_placeholders_and_loads_saved_requests() {
+        value_spans_highlight_each_closed_placeholder();
+        env_vars_resolve_from_active_environment();
+        outgoing_substitutes_environment_into_url();
+        loading_a_saved_request_swaps_the_builder();
+        tab_count_reflects_enabled_rows();
+    }
+
+    /// Case of `request_builder_resolves_environment_highlights_placeholders_and_loads_saved_requests`.
     fn value_spans_highlight_each_closed_placeholder() {
         let texts = |value: &str| -> Vec<(String, bool)> {
             ApiTesterApp::value_spans(value, [1, 2, 3])
@@ -4167,10 +4256,22 @@ mod tests {
         );
     }
 
+    /// The navigation rail: token spacing, one retained row per nav entry, every
+    /// row reachable at large text, focus surviving row replacement, and
+    /// activation of the named item.
+    #[test]
+    fn navigation_rail_rows_keep_rhythm_reachability_and_focus() {
+        rail_controls_share_one_token_gap();
+        demo_builds_nav_rows_for_collections_and_history();
+        scaled_rail_keeps_every_users_request_before_history();
+        composition_same_count_nav_replacement_keeps_old_focus_alive_until_rebuild();
+        composition_long_displayed_navigation_activates_the_named_item();
+    }
+
     /// The rail's stacked controls share one rhythm step (HIG §7b): the
     /// named gap is the `s2` token, and every stacked pair in the computed
     /// layout is separated by exactly that step.
-    #[test]
+    /// Case of `navigation_rail_rows_keep_rhythm_reachability_and_focus`.
     fn rail_controls_share_one_token_gap() {
         let mut app = ApiTesterApp::new();
         let rail_gap = app.rail_row_gap;
@@ -4228,7 +4329,16 @@ mod tests {
         ApiTesterApp::new_demo()
     }
 
+    /// The live constructor fabricates nothing, the demo constructor seeds a full
+    /// workspace, and a seeded workspace survives a CRDT round trip.
     #[test]
+    fn constructors_start_live_empty_demo_seeded_and_persist_through_crdt() {
+        demo_app_has_seeded_workspace();
+        live_app_starts_empty();
+        persist_then_adopt_round_trips_through_crdt();
+    }
+
+    /// Case of `constructors_start_live_empty_demo_seeded_and_persist_through_crdt`.
     fn demo_app_has_seeded_workspace() {
         let a = ApiTesterApp::new_demo();
         assert!(!a.collections.is_empty());
@@ -4237,7 +4347,7 @@ mod tests {
         assert!(a.response.is_some());
     }
 
-    #[test]
+    /// Case of `constructors_start_live_empty_demo_seeded_and_persist_through_crdt`.
     fn live_app_starts_empty() {
         let a = ApiTesterApp::new();
         assert!(a.collections.is_empty(), "no fabricated collections");
@@ -4249,7 +4359,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `request_builder_resolves_environment_highlights_placeholders_and_loads_saved_requests`.
     fn env_vars_resolve_from_active_environment() {
         let a = app();
         let vars = a.env_vars();
@@ -4259,7 +4369,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `request_builder_resolves_environment_highlights_placeholders_and_loads_saved_requests`.
     fn outgoing_substitutes_environment_into_url() {
         let a = app();
         let out = a.outgoing();
@@ -4269,7 +4379,7 @@ mod tests {
         assert!(!out.url.contains("sort="));
     }
 
-    #[test]
+    /// Case of `request_builder_resolves_environment_highlights_placeholders_and_loads_saved_requests`.
     fn loading_a_saved_request_swaps_the_builder() {
         let mut a = app();
         a.load_request(0, 2);
@@ -4279,7 +4389,7 @@ mod tests {
         assert_eq!(a.selected, Some((0, 2)));
     }
 
-    #[test]
+    /// Case of `request_builder_resolves_environment_highlights_placeholders_and_loads_saved_requests`.
     fn tab_count_reflects_enabled_rows() {
         let a = app();
         assert_eq!(a.tab_count(RequestTab::Params), 2);
@@ -4287,7 +4397,7 @@ mod tests {
         assert_eq!(a.tab_count(RequestTab::Auth), 1);
     }
 
-    #[test]
+    /// Case of `constructors_start_live_empty_demo_seeded_and_persist_through_crdt`.
     fn persist_then_adopt_round_trips_through_crdt() {
         let a = app();
         let mut doc = AutoCommit::new();
@@ -4301,11 +4411,23 @@ mod tests {
         assert_eq!(b.collections.len(), a.collections.len());
     }
 
+    /// Visible commands either dispatch the canonical action (affordance ==
+    /// `ActionSpec`) or stay device-local without touching document heads; each
+    /// case uses a fresh app and document.
+    #[test]
+    fn ui_commands_dispatch_canonical_actions_or_stay_device_local() {
+        selecting_environment_dispatches_the_set_active_action();
+        visible_workspace_management_commands_use_canonical_actions();
+        folding_a_collection_is_device_local_and_emits_no_document_change();
+        visible_context_menus_open_real_request_and_environment_workflows();
+        composition_view_commands_never_change_document_heads_or_leave_hidden_rects();
+    }
+
     /// The environment picker is wired through the action host: selecting a new
     /// environment dispatches exactly the [`SetActiveEnvironment`] the Ctrl+K
     /// "activate" spec would build (affordance == `ActionSpec`), and the choice
     /// lands in the shared document. Drives the real reconcile path.
-    #[test]
+    /// Case of `ui_commands_dispatch_canonical_actions_or_stay_device_local`.
     fn selecting_environment_dispatches_the_set_active_action() {
         let mut a = ApiTesterApp::new_demo();
         let mut doc = AutoCommit::new();
@@ -4344,7 +4466,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `ui_commands_dispatch_canonical_actions_or_stay_device_local`.
     fn visible_workspace_management_commands_use_canonical_actions() {
         let mut a = ApiTesterApp::new_demo();
         let mut doc = AutoCommit::new();
@@ -4390,7 +4512,7 @@ mod tests {
         assert_eq!(set_variable.type_id, API_TESTER_ACTION_TYPE);
     }
 
-    #[test]
+    /// Case of `ui_commands_dispatch_canonical_actions_or_stay_device_local`.
     fn folding_a_collection_is_device_local_and_emits_no_document_change() {
         let mut a = ApiTesterApp::new_demo();
         let mut doc = AutoCommit::new();
@@ -4403,7 +4525,7 @@ mod tests {
         assert!(a.collapsed.contains(&0));
     }
 
-    #[test]
+    /// Case of `navigation_rail_rows_keep_rhythm_reachability_and_focus`.
     fn demo_builds_nav_rows_for_collections_and_history() {
         let a = app();
         // At least the collection headers + the seeded history entries.
@@ -4414,7 +4536,7 @@ mod tests {
         assert_eq!(a.nav_rows.len(), a.nav_meta.len());
     }
 
-    #[test]
+    /// Case of `navigation_rail_rows_keep_rhythm_reachability_and_focus`.
     fn scaled_rail_keeps_every_users_request_before_history() {
         let mut a = app();
         a.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
@@ -4481,7 +4603,18 @@ mod tests {
         );
     }
 
+    /// Request and response chrome geometry at phone, overlay and desktop widths.
     #[test]
+    fn request_and_response_chrome_adapts_between_phone_and_desktop() {
+        compact_tab_strip_reserves_no_overlapping_hint_space();
+        desktop_request_controls_keep_save_and_overflow_visible();
+        phone_url_bar_gives_the_endpoint_a_full_second_row();
+        compact_response_chrome_gets_a_separate_switcher_row();
+        wide_response_chrome_keeps_the_inline_switcher();
+        overlay_hamburger_is_square_and_kv_indicator_scales_with_text();
+    }
+
+    /// Case of `request_and_response_chrome_adapts_between_phone_and_desktop`.
     fn compact_tab_strip_reserves_no_overlapping_hint_space() {
         let mut a = app();
         a.rect = Rect::new(0.0, 0.0, 400.0, 844.0);
@@ -4496,7 +4629,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `request_and_response_chrome_adapts_between_phone_and_desktop`.
     fn desktop_request_controls_keep_save_and_overflow_visible() {
         let mut a = app();
         a.rect = Rect::new(0.0, 0.0, 1440.0, 900.0);
@@ -4521,10 +4654,10 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `ui_commands_dispatch_canonical_actions_or_stay_device_local`.
     fn visible_context_menus_open_real_request_and_environment_workflows() {
         let mut a = app();
-        let doc = AutoCommit::new();
+        let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
 
         let request = serde_json::to_vec(&crate::actions::ApiTesterOperation::RequestMenu {
@@ -4532,14 +4665,19 @@ mod tests {
         })
         .expect("operation encodes");
         assert_eq!(
-            a.invoke_resource_operation(
-                tilo_actions::OperationKind::View,
-                crate::actions::API_TESTER_OPERATION_TYPE,
-                &request,
-                &doc,
-                &root,
+            a.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    crate::actions::API_TESTER_OPERATION_TYPE,
+                    &request
+                ),
+                &mut doc,
+                &root
             ),
-            Ok(true)
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                ui::tilo_actions::ActionOutput::default()
+            )))
         );
         assert_eq!(a.form, Some(FormMode::RenameRequest));
         assert_eq!(a.request_actions.selected(), "Request actions");
@@ -4551,20 +4689,25 @@ mod tests {
             })
             .expect("operation encodes");
         assert_eq!(
-            a.invoke_resource_operation(
-                tilo_actions::OperationKind::View,
-                crate::actions::API_TESTER_OPERATION_TYPE,
-                &environment,
-                &doc,
-                &root,
+            a.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    crate::actions::API_TESTER_OPERATION_TYPE,
+                    &environment
+                ),
+                &mut doc,
+                &root
             ),
-            Ok(true)
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                ui::tilo_actions::ActionOutput::default()
+            )))
         );
         assert_eq!(a.form, Some(FormMode::NewVariable));
         assert_eq!(a.environment_actions.selected(), "Environment actions");
     }
 
-    #[test]
+    /// Case of `request_and_response_chrome_adapts_between_phone_and_desktop`.
     fn phone_url_bar_gives_the_endpoint_a_full_second_row() {
         let mut a = app();
         a.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
@@ -4580,7 +4723,7 @@ mod tests {
         assert!(layout.tab_strip.y0 >= layout.url.y1 + 8.0);
     }
 
-    #[test]
+    /// Case of `request_and_response_chrome_adapts_between_phone_and_desktop`.
     fn compact_response_chrome_gets_a_separate_switcher_row() {
         let mut a = app();
         a.response = Some(http::sample_response());
@@ -4603,7 +4746,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `request_and_response_chrome_adapts_between_phone_and_desktop`.
     fn wide_response_chrome_keeps_the_inline_switcher() {
         let mut a = app();
         a.response = Some(http::sample_response());
@@ -4614,7 +4757,17 @@ mod tests {
         assert!(layout.resp_view.y0 < layout.resp_status.y1);
     }
 
+    /// The resource surface: Send performs a real HTTP round trip and
+    /// reports worker completion exactly once, and a late record resolves by
+    /// one indexed lookup.
     #[test]
+    fn resource_provider_sends_for_real_and_resolves_exact_records() {
+        resource_send_performs_a_real_http_round_trip();
+        resource_send_reports_worker_completion_instead_of_queue_success();
+        resource_provider_resolves_a_late_record_without_scanning_the_workspace();
+    }
+
+    /// Case of `resource_provider_sends_for_real_and_resolves_exact_records`.
     #[expect(
         clippy::too_many_lines,
         reason = "end-to-end scenario that reads top-to-bottom"
@@ -4622,20 +4775,20 @@ mod tests {
     fn resource_send_performs_a_real_http_round_trip() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
-        use std::time::{Duration, Instant};
+        use ui::time::Duration;
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
-            let started = Instant::now();
+            let deadline = tilo_test_env::hang_deadline();
             let mut stream = loop {
                 match listener.accept() {
                     Ok((stream, _)) => break stream,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         assert!(
-                            started.elapsed() < Duration::from_secs(10),
-                            "request never arrived"
+                            ui::time::now() < deadline,
+                            "the app's HTTP request never reached the probe server"
                         );
                         std::thread::sleep(Duration::from_millis(10));
                     }
@@ -4645,10 +4798,10 @@ mod tests {
             // Windows inherits the listener's nonblocking mode on accept.
             stream.set_nonblocking(false).unwrap();
             stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             stream
-                .set_write_timeout(Some(Duration::from_secs(5)))
+                .set_write_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let mut request = Vec::new();
             while !request.ends_with(b"\r\n\r\n") {
@@ -4685,12 +4838,14 @@ mod tests {
         let payload =
             serde_json::to_vec(&crate::actions::ApiTesterOperation::SendActiveRequest).unwrap();
         assert!(matches!(
-            app.start_resource_operation(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::API_TESTER_OPERATION_TYPE,
-                &payload,
-                &doc,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::API_TESTER_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
                 &automerge::ROOT
             )
             .unwrap(),
@@ -4700,23 +4855,13 @@ mod tests {
         // must describe the request sent, not these later edits.
         app.url_input.set_text("http://127.0.0.1/edited-after-send");
         app.request.method = HttpMethod::Post;
-        let started = Instant::now();
-        loop {
-            if let Some(update) =
-                app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-            {
-                assert!(matches!(
-                    update,
-                    tilo_actions::InvocationUpdate::Succeeded { .. }
-                ));
-                break;
-            }
-            assert!(
-                started.elapsed() < Duration::from_secs(15),
-                "HTTP worker never completed"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        let update = tilo_test_env::wait_for("the HTTP worker to complete the request", || {
+            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+        });
+        assert!(matches!(
+            update,
+            tilo_actions::InvocationUpdate::Succeeded { .. }
+        ));
         server.join().unwrap();
         let response = app.response.as_ref().expect("the response is displayed");
         assert_eq!(response.status, 200);
@@ -4750,7 +4895,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `resource_provider_sends_for_real_and_resolves_exact_records`.
     fn resource_send_reports_worker_completion_instead_of_queue_success() {
         let mut a = app();
         let invocation = tilo_actions::InvocationId::new();
@@ -4772,7 +4917,16 @@ mod tests {
             "terminal delivery is at most once"
         );
     }
+    /// Key/value rows size to wrapped content, keep glyphs inside their rows and
+    /// drive the automatic editor height without overriding a manual preference.
     #[test]
+    fn kv_table_rows_fit_their_content_and_drive_the_editor_height() {
+        composition_auto_height_tracks_rows_and_auth_fields_without_changing_manual_preference();
+        composition_long_kv_glyphs_fit_allocated_rows();
+        composition_long_tables_share_wrapped_height_and_centered_indicators();
+    }
+
+    /// Case of `kv_table_rows_fit_their_content_and_drive_the_editor_height`.
     #[expect(
         clippy::float_cmp,
         reason = "layout values are compared for exact reproduction, not approximate equality"
@@ -4813,7 +4967,7 @@ mod tests {
         assert_eq!(a.compute_layout().editor.height(), 410.0);
     }
 
-    #[test]
+    /// Case of `ui_commands_dispatch_canonical_actions_or_stay_device_local`.
     fn composition_view_commands_never_change_document_heads_or_leave_hidden_rects() {
         let mut a = app();
         let mut doc = AutoCommit::new();
@@ -4845,7 +4999,7 @@ mod tests {
         );
         assert_eq!(doc.get_heads(), heads);
     }
-    #[test]
+    /// Case of `kv_table_rows_fit_their_content_and_drive_the_editor_height`.
     #[expect(
         clippy::float_cmp,
         reason = "layout values are compared for exact reproduction, not approximate equality"
@@ -4887,7 +5041,7 @@ mod tests {
     /// The overlay hamburger is as wide as the row's controls are tall at
     /// every text scale (a 36px slab beside a 52px picker read as a broken
     /// button), and the KV enable box scales with the text it toggles.
-    #[test]
+    /// Case of `request_and_response_chrome_adapts_between_phone_and_desktop`.
     fn overlay_hamburger_is_square_and_kv_indicator_scales_with_text() {
         for scale in [1.0f32, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
@@ -4931,7 +5085,7 @@ mod tests {
         }
     }
 
-    #[test]
+    /// Case of `navigation_rail_rows_keep_rhythm_reachability_and_focus`.
     fn composition_same_count_nav_replacement_keeps_old_focus_alive_until_rebuild() {
         let mut app = app();
         let mut tree = TaffyTree::new();
@@ -5009,7 +5163,7 @@ mod tests {
         app
     }
 
-    #[test]
+    /// Case of `kv_table_rows_fit_their_content_and_drive_the_editor_height`.
     #[expect(
         clippy::float_cmp,
         reason = "layout values are compared for exact reproduction, not approximate equality"
@@ -5086,7 +5240,7 @@ mod tests {
         }
     }
 
-    #[test]
+    /// Case of `navigation_rail_rows_keep_rhythm_reachability_and_focus`.
     fn composition_long_displayed_navigation_activates_the_named_item() {
         use ui::headless::Driver;
         for (width, height, scale) in [(480, 900, 1.0), (800, 900, 2.0)] {
@@ -5137,8 +5291,16 @@ mod tests {
         }
     }
 
+    /// Manual capture tool: writes PNG and target JSON for the named routes and
+    /// the long-content routes.
     #[test]
-    #[ignore = "writes long-content route captures for review; set API_TESTER_CAPTURE_DIR"]
+    #[ignore = "writes named route and long-content route captures for review; set API_TESTER_CAPTURE_DIR"]
+    fn composition_capture_named_and_long_content_routes() {
+        composition_long_content_capture_routes();
+        composition_capture_routes();
+    }
+
+    /// Case of `composition_capture_named_and_long_content_routes`.
     fn composition_long_content_capture_routes() {
         use ui::headless::Driver;
         let directory = std::path::PathBuf::from(std::env::var("API_TESTER_CAPTURE_DIR").unwrap());
@@ -5189,8 +5351,7 @@ mod tests {
         }
     }
 
-    #[test]
-    #[ignore = "writes named route captures for review; set API_TESTER_CAPTURE_DIR"]
+    /// Case of `composition_capture_named_and_long_content_routes`.
     fn composition_capture_routes() {
         use ui::headless::Driver;
         let directory = std::path::PathBuf::from(std::env::var("API_TESTER_CAPTURE_DIR").unwrap());
@@ -5259,7 +5420,7 @@ mod tests {
         }
     }
 
-    #[test]
+    /// Case of `resource_provider_sends_for_real_and_resolves_exact_records`.
     fn resource_provider_resolves_a_late_record_without_scanning_the_workspace() {
         let mut a = app();
         let mut collection = Collection::new("Load test");
@@ -5273,14 +5434,14 @@ mod tests {
 
         let doc = AutoCommit::new();
         let id = format!("api_tester.request:{request}");
-        let resource = <ApiTesterApp as tilo_actions::ResourceProvider>::resource(&a, &doc, &id)
-            .expect("late exact address resolves");
+        let resource =
+            ApiTesterApp::publish_resource(&a, &doc, &id).expect("late exact address resolves");
         assert_eq!(resource.id.0, id);
         assert!(resource.actions.iter().any(|action| action.id == "send"));
         assert_eq!(
             a.search_provider.last_exact_inspected(),
             1,
-            "the ResourceProvider performs one indexed address lookup"
+            "the performs one indexed address lookup"
         );
     }
 }

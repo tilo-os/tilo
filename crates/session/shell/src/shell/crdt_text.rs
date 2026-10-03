@@ -34,10 +34,43 @@ pub const COMMIT_DEBOUNCE: Duration = Duration::from_millis(800);
 /// through [`crate::shell::tab_documents::tab_body`], which knows which
 /// document a tab is.
 pub fn read_body(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-    match doc.get(root, key) {
-        Ok(Some((Value::Object(ObjType::Text), id))) => doc.text(&id).ok(),
-        _ => None,
+    let values = body_values(doc, root, key);
+    (!values.is_empty()).then(|| project(doc, &values))
+}
+
+/// Every `Text` stored under `<root>/<key>`, in Automerge's
+/// deterministic conflict order (identical on every replica).
+///
+/// The body is created on first sync, so two replicas that open the same
+/// empty record before syncing each create their own `Text`: a key
+/// conflict where a plain `get` shows one winner and the other replica's
+/// typing vanishes from view. Reads therefore project every value.
+fn body_values(doc: &AutoCommit, root: &ObjId, key: &str) -> Vec<ObjId> {
+    doc.get_all(root, key)
+        .map(|values| {
+            values
+                .into_iter()
+                .filter_map(|(value, id)| {
+                    matches!(value, Value::Object(ObjType::Text)).then_some(id)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The characters a body shows: its `Text`, or every conflicting value
+/// joined in conflict order. A value identical to an earlier one (two
+/// replicas that each wrote the same seed and nothing else) is shown once;
+/// dropping an exact duplicate loses no characters.
+fn project(doc: &AutoCommit, values: &[ObjId]) -> String {
+    let mut seen: Vec<String> = Vec::with_capacity(values.len());
+    for id in values {
+        let text = doc.text(id).unwrap_or_default();
+        if !seen.contains(&text) {
+            seen.push(text);
+        }
     }
+    seen.concat()
 }
 
 /// A single Automerge `Text` object plus the mirror and caret arithmetic
@@ -105,29 +138,37 @@ impl CrdtTextBody {
 
     /// Resolve (or create) the `Text` object backing this body. `None`
     /// only on a corrupt document; callers treat it as "skip this edit".
+    ///
+    /// A body left with several values (see [`body_values`]) is merged in
+    /// place into one `Text` holding exactly the projection the mirror
+    /// shows, so the caller's offsets stay valid.
     fn resolve(&self, state: &mut AutoCommit, root: &ObjId) -> Option<ObjId> {
-        if let Ok(Some((Value::Object(ObjType::Text), id))) = state.get(root, self.key) {
-            return Some(id);
+        let values = body_values(state, root, self.key);
+        if let [id] = values.as_slice() {
+            return Some(id.clone());
         }
-        state.put_object(root, self.key, ObjType::Text).ok()
+        let projected = project(state, &values);
+        let id = state.put_object(root, self.key, ObjType::Text).ok()?;
+        if !projected.is_empty() {
+            state.splice_text(&id, 0, 0, &projected).ok()?;
+        }
+        Some(id)
     }
 
     /// `Widget::sync` body: reads the CRDT into the mirror, seeding it from
     /// the constructor's text only if no body exists yet.
     pub fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        match state.get(root, self.key) {
-            Ok(Some((Value::Object(ObjType::Text), id))) => {
-                if let Ok(t) = state.text(&id) {
-                    self.text = t;
-                }
+        let values = body_values(state, root, self.key);
+        if let [id] = values.as_slice() {
+            if let Ok(t) = state.text(id) {
+                self.text = t;
             }
-            _ => {
-                if let Ok(id) = state.put_object(root, self.key, ObjType::Text)
-                    && !self.text.is_empty()
-                {
-                    let _ = state.splice_text(&id, 0, 0, &self.text);
-                }
-            }
+        } else if !values.is_empty() {
+            self.text = project(state, &values);
+        } else if let Ok(id) = state.put_object(root, self.key, ObjType::Text)
+            && !self.text.is_empty()
+        {
+            let _ = state.splice_text(&id, 0, 0, &self.text);
         }
     }
 
@@ -260,6 +301,7 @@ pub fn full_bleed_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_automerge::ApplyIncoming as _;
 
     const KEY: &str = "test_body";
 
@@ -272,128 +314,184 @@ mod tests {
     }
 
     #[test]
-    fn sync_seeds_the_crdt_then_reads_it_back() {
-        let (mut doc, tile) = bind();
-        let mut a = CrdtTextBody::with_seed(KEY, "hello");
-        a.sync(&mut doc, &tile);
+    fn crdt_text_seeds_and_splices_only_the_changed_char_span() {
+        fn sync_seeds_the_crdt_then_reads_it_back() {
+            let (mut doc, tile) = bind();
+            let mut a = CrdtTextBody::with_seed(KEY, "hello");
+            a.sync(&mut doc, &tile);
 
-        let (val, id) = doc.get(&tile, KEY).unwrap().expect("body exists");
-        assert!(matches!(val, Value::Object(ObjType::Text)));
-        assert_eq!(doc.text(&id).unwrap(), "hello");
+            let (val, id) = doc.get(&tile, KEY).unwrap().expect("body exists");
+            assert!(matches!(val, Value::Object(ObjType::Text)));
+            assert_eq!(doc.text(&id).unwrap(), "hello");
 
-        // A second body bound to the same doc reads it through rather than
-        // re-seeding — otherwise every boot would append the welcome text.
-        let mut b = CrdtTextBody::with_seed(KEY, "a different seed");
-        b.sync(&mut doc, &tile);
-        assert_eq!(b.text, "hello");
-        assert_eq!(doc.text(&id).unwrap(), "hello");
+            // A second body bound to the same doc reads it through rather than
+            // re-seeding — otherwise every boot would append the welcome text.
+            let mut b = CrdtTextBody::with_seed(KEY, "a different seed");
+            b.sync(&mut doc, &tile);
+            assert_eq!(b.text, "hello");
+            assert_eq!(doc.text(&id).unwrap(), "hello");
+        }
+
+        fn splice_inserts_deletes_and_replaces_in_both_places() {
+            let (mut doc, tile) = bind();
+            let mut b = CrdtTextBody::new(KEY);
+            b.sync(&mut doc, &tile);
+
+            let caret = b.splice(&mut doc, &tile, 0..0, "abcd");
+            assert_eq!(caret, 4);
+            assert_eq!(b.text, "abcd");
+
+            let caret = b.splice(&mut doc, &tile, 1..3, ""); // delete
+            assert_eq!(caret, 1);
+            assert_eq!(b.text, "ad");
+
+            let caret = b.splice(&mut doc, &tile, 0..1, "XY"); // replace
+            assert_eq!(caret, 2);
+            assert_eq!(b.text, "XYd");
+
+            let (_, id) = doc.get(&tile, KEY).unwrap().expect("body exists");
+            assert_eq!(doc.text(&id).unwrap(), "XYd");
+        }
+
+        fn splice_only_touches_the_changed_span() {
+            // Appending one char must cost one inserted element, not a rewrite
+            // of the whole text.
+            let (mut doc, tile) = bind();
+            let mut b = CrdtTextBody::with_seed(KEY, "x".repeat(64));
+            b.sync(&mut doc, &tile);
+            let (_, id) = doc.get(&tile, KEY).unwrap().expect("body exists");
+            let before = doc.length(&id);
+
+            b.splice(&mut doc, &tile, 64..64, "y");
+
+            assert_eq!(
+                doc.length(&id),
+                before + 1,
+                "a one-char append must add exactly one element",
+            );
+            assert!(doc.text(&id).unwrap().ends_with("xy"));
+        }
+
+        fn multibyte_splices_address_chars_not_bytes() {
+            let (mut doc, tile) = bind();
+            let mut b = CrdtTextBody::with_seed(KEY, "aβc");
+            b.sync(&mut doc, &tile);
+            // Delete the two-byte β, which sits at bytes 1..3 / char 1.
+            b.splice(&mut doc, &tile, 1..3, "");
+            assert_eq!(b.text, "ac");
+            let (_, id) = doc.get(&tile, KEY).unwrap().expect("body exists");
+            assert_eq!(
+                doc.text(&id).unwrap(),
+                "ac",
+                "byte offsets must be converted to char offsets before splicing",
+            );
+        }
+
+        sync_seeds_the_crdt_then_reads_it_back();
+        splice_inserts_deletes_and_replaces_in_both_places();
+        splice_only_touches_the_changed_span();
+        multibyte_splices_address_chars_not_bytes();
+    }
+
+    /// Two replicas open the same empty record and each type first: each
+    /// sync created its own body `Text`, and a plain read showed only one.
+    #[test]
+    fn concurrent_first_edits_on_two_replicas_both_survive() {
+        for _ in 0..16 {
+            let (mut base, tile) = bind();
+            base.commit();
+            let mut left_doc = base.fork();
+            let mut right_doc = base.fork();
+            let mut left = CrdtTextBody::new(KEY);
+            let mut right = CrdtTextBody::new(KEY);
+            left.sync(&mut left_doc, &tile);
+            right.sync(&mut right_doc, &tile);
+            left.splice(&mut left_doc, &tile, 0..0, "left");
+            right.splice(&mut right_doc, &tile, 0..0, "right");
+            left_doc.merge_incoming(&mut right_doc).unwrap();
+            left.sync(&mut left_doc, &tile);
+            assert!(
+                left.text.contains("left") && left.text.contains("right"),
+                "both first edits survive; got {:?}",
+                left.text
+            );
+            let shown = read_body(&left_doc, &tile, KEY).unwrap();
+            assert_eq!(shown, left.text);
+            // The next edit upgrades to one Text holding exactly what was shown.
+            let end = left.text.len();
+            left.splice(&mut left_doc, &tile, end..end, "!");
+            assert_eq!(
+                read_body(&left_doc, &tile, KEY).unwrap(),
+                format!("{shown}!")
+            );
+            assert_eq!(left_doc.get_all(&tile, KEY).unwrap().len(), 1);
+        }
+    }
+
+    /// Two replicas that each seeded the same welcome text show it once.
+    #[test]
+    fn concurrent_identical_seeds_are_shown_once() {
+        let (mut base, tile) = bind();
+        base.commit();
+        let mut left_doc = base.fork();
+        let mut right_doc = base.fork();
+        CrdtTextBody::with_seed(KEY, "hello").sync(&mut left_doc, &tile);
+        CrdtTextBody::with_seed(KEY, "hello").sync(&mut right_doc, &tile);
+        left_doc.merge_incoming(&mut right_doc).unwrap();
+        assert_eq!(read_body(&left_doc, &tile, KEY).unwrap(), "hello");
     }
 
     #[test]
-    fn splice_inserts_deletes_and_replaces_in_both_places() {
-        let (mut doc, tile) = bind();
-        let mut b = CrdtTextBody::new(KEY);
-        b.sync(&mut doc, &tile);
+    fn crdt_text_char_boundaries_commit_debounce_and_presence_key() {
+        fn boundaries_step_whole_chars() {
+            let b = CrdtTextBody::with_seed(KEY, "aβc");
+            // β occupies bytes 1..3.
+            assert_eq!(b.next_boundary(1), 3);
+            assert_eq!(b.prev_boundary(3), 1);
+            // Ends are saturating, not wrapping.
+            assert_eq!(b.prev_boundary(0), 0);
+            assert_eq!(b.next_boundary(4), 4);
+            // Clamp snaps into the middle of a char, and past the end.
+            assert_eq!(b.clamp(2), 1);
+            assert_eq!(b.clamp(99), 4);
+        }
 
-        let caret = b.splice(&mut doc, &tile, 0..0, "abcd");
-        assert_eq!(caret, 4);
-        assert_eq!(b.text, "abcd");
+        fn char_index_to_byte_handles_multibyte_and_overrun() {
+            let b = CrdtTextBody::with_seed(KEY, "aβc");
+            assert_eq!(b.char_index_to_byte(0), 0);
+            assert_eq!(b.char_index_to_byte(1), 1);
+            assert_eq!(b.char_index_to_byte(2), 3);
+            // A peer whose caret ran past our copy must not panic us.
+            assert_eq!(b.char_index_to_byte(99), 4);
+        }
 
-        let caret = b.splice(&mut doc, &tile, 1..3, ""); // delete
-        assert_eq!(caret, 1);
-        assert_eq!(b.text, "ad");
+        fn commit_debounce_opens_on_edit_and_closes_on_commit() {
+            let (mut doc, tile) = bind();
+            let mut b = CrdtTextBody::new(KEY);
+            b.sync(&mut doc, &tile);
+            assert!(!b.needs_commit(), "an untouched body has nothing to commit");
+            b.splice(&mut doc, &tile, 0..0, "hi");
+            // Still inside the debounce window, so the burst stays open.
+            assert!(!b.needs_commit());
+            b.last_edit = Some(Instant::now().checked_sub(COMMIT_DEBOUNCE).unwrap());
+            assert!(b.needs_commit(), "a quiet burst must close");
+            b.on_commit();
+            assert!(!b.needs_commit());
+        }
 
-        let caret = b.splice(&mut doc, &tile, 0..1, "XY"); // replace
-        assert_eq!(caret, 2);
-        assert_eq!(b.text, "XYd");
+        fn presence_key_names_the_body_field() {
+            let b = CrdtTextBody::new(KEY);
+            assert_eq!(
+                b.presence_key(),
+                PresenceKey::Widget {
+                    path: vec![PathSegment::Field(KEY.into())],
+                }
+            );
+        }
 
-        let (_, id) = doc.get(&tile, KEY).unwrap().expect("body exists");
-        assert_eq!(doc.text(&id).unwrap(), "XYd");
-    }
-
-    #[test]
-    fn splice_only_touches_the_changed_span() {
-        // Appending one char must cost one inserted element, not a rewrite
-        // of the whole text.
-        let (mut doc, tile) = bind();
-        let mut b = CrdtTextBody::with_seed(KEY, "x".repeat(64));
-        b.sync(&mut doc, &tile);
-        let (_, id) = doc.get(&tile, KEY).unwrap().expect("body exists");
-        let before = doc.length(&id);
-
-        b.splice(&mut doc, &tile, 64..64, "y");
-
-        assert_eq!(
-            doc.length(&id),
-            before + 1,
-            "a one-char append must add exactly one element",
-        );
-        assert!(doc.text(&id).unwrap().ends_with("xy"));
-    }
-
-    #[test]
-    fn multibyte_splices_address_chars_not_bytes() {
-        let (mut doc, tile) = bind();
-        let mut b = CrdtTextBody::with_seed(KEY, "aβc");
-        b.sync(&mut doc, &tile);
-        // Delete the two-byte β, which sits at bytes 1..3 / char 1.
-        b.splice(&mut doc, &tile, 1..3, "");
-        assert_eq!(b.text, "ac");
-        let (_, id) = doc.get(&tile, KEY).unwrap().expect("body exists");
-        assert_eq!(
-            doc.text(&id).unwrap(),
-            "ac",
-            "byte offsets must be converted to char offsets before splicing",
-        );
-    }
-
-    #[test]
-    fn boundaries_step_whole_chars() {
-        let b = CrdtTextBody::with_seed(KEY, "aβc");
-        // β occupies bytes 1..3.
-        assert_eq!(b.next_boundary(1), 3);
-        assert_eq!(b.prev_boundary(3), 1);
-        // Ends are saturating, not wrapping.
-        assert_eq!(b.prev_boundary(0), 0);
-        assert_eq!(b.next_boundary(4), 4);
-        // Clamp snaps into the middle of a char, and past the end.
-        assert_eq!(b.clamp(2), 1);
-        assert_eq!(b.clamp(99), 4);
-    }
-
-    #[test]
-    fn char_index_to_byte_handles_multibyte_and_overrun() {
-        let b = CrdtTextBody::with_seed(KEY, "aβc");
-        assert_eq!(b.char_index_to_byte(0), 0);
-        assert_eq!(b.char_index_to_byte(1), 1);
-        assert_eq!(b.char_index_to_byte(2), 3);
-        // A peer whose caret ran past our copy must not panic us.
-        assert_eq!(b.char_index_to_byte(99), 4);
-    }
-
-    #[test]
-    fn commit_debounce_opens_on_edit_and_closes_on_commit() {
-        let (mut doc, tile) = bind();
-        let mut b = CrdtTextBody::new(KEY);
-        b.sync(&mut doc, &tile);
-        assert!(!b.needs_commit(), "an untouched body has nothing to commit");
-        b.splice(&mut doc, &tile, 0..0, "hi");
-        // Still inside the debounce window, so the burst stays open.
-        assert!(!b.needs_commit());
-        b.last_edit = Some(Instant::now().checked_sub(COMMIT_DEBOUNCE).unwrap());
-        assert!(b.needs_commit(), "a quiet burst must close");
-        b.on_commit();
-        assert!(!b.needs_commit());
-    }
-
-    #[test]
-    fn presence_key_names_the_body_field() {
-        let b = CrdtTextBody::new(KEY);
-        assert_eq!(
-            b.presence_key(),
-            PresenceKey::Widget {
-                path: vec![PathSegment::Field(KEY.into())],
-            }
-        );
+        boundaries_step_whole_chars();
+        char_index_to_byte_handles_multibyte_and_overrun();
+        commit_debounce_opens_on_edit_and_closes_on_commit();
+        presence_key_names_the_body_field();
     }
 }

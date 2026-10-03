@@ -17,7 +17,9 @@ name = "install"
 path = "src/lib.rs"
 
 [dependencies]
-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+fnv.workspace = true
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
 tilo-app-package = { path = "../tilo-app-package" }
 # The one installed-package registry and content store, shared with the
 # launcher, the shell and the app host.
@@ -34,6 +36,11 @@ semver.workspace = true
 # uses, so there is one implementation of "fetch and verify a tapp".
 app-registry = { path = "../app-registry" }
 tilo-rt.workspace = true
+workspace-hack = { version = "0.1" }
+
+# Registers the runtime's GNOME Shell and KRunner search providers.
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+tilo-os-search = { path = "../../runtime/os-search" }
 
 [dev-dependencies]
 getrandom.workspace = true

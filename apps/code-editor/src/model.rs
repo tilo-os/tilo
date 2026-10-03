@@ -1065,6 +1065,14 @@ mod tests {
     }
 
     #[test]
+    fn in_memory_tree_orders_expands_and_adopts_document_ids() {
+        // Each phase builds its own project.
+        tree_visible_rows_respect_expansion();
+        folders_sort_before_files();
+        adopt_file_tracks_a_document_buffer_and_advances_the_allocator();
+        durable_tree_ids_project_across_different_local_arena_layouts();
+    }
+
     fn tree_visible_rows_respect_expansion() {
         let mut p = Project::new("proj");
         let src = p.add_folder(p.root, "src");
@@ -1077,7 +1085,6 @@ mod tests {
         assert_eq!(rows.len(), 2);
     }
 
-    #[test]
     fn folders_sort_before_files() {
         let mut p = Project::new("proj");
         let _z = p.add_file(p.root, "z.rs", "");
@@ -1087,7 +1094,6 @@ mod tests {
         assert!(p.get(rows[0]).unwrap().is_folder());
     }
 
-    #[test]
     fn adopt_file_tracks_a_document_buffer_and_advances_the_allocator() {
         let mut p = Project::new("proj");
         // A buffer id from the document that the in-memory tree does not know.
@@ -1107,6 +1113,14 @@ mod tests {
     }
 
     #[test]
+    fn session_tabs_follow_the_active_buffer_and_compare_dirty_state() {
+        // Each phase builds its own session or buffer.
+        open_file_is_idempotent();
+        close_tab_adjusts_active();
+        reorder_tab_moves_the_buffer_and_keeps_active_pointed_at_it();
+        dirty_is_a_comparison_with_disk_not_a_sticky_flag();
+    }
+
     fn open_file_is_idempotent() {
         let mut p = Project::new("proj");
         let f = p.add_file(p.root, "a.rs", "x");
@@ -1142,6 +1156,17 @@ mod tests {
     }
 
     #[test]
+    fn disk_projection_is_lazy_and_reads_files_on_demand() {
+        // Each phase builds a fresh on-disk fixture and projection.
+        from_dir_projects_the_real_top_level_only();
+        expanding_a_folder_reads_its_children_on_demand();
+        load_children_is_idempotent();
+        reveal_path_walks_a_never_expanded_tree_down_to_the_file();
+        file_seed_reads_the_real_bytes_and_reports_a_stamp();
+        an_unreadable_file_surfaces_its_error_instead_of_an_empty_buffer();
+        the_sample_project_is_not_disk_backed_but_a_real_one_is();
+    }
+
     fn from_dir_projects_the_real_top_level_only() {
         let d = disk_fixture();
         let p = Project::from_dir(d.path()).expect("open the fixture directory");
@@ -1162,7 +1187,6 @@ mod tests {
         assert_eq!(p.nodes.len(), 3, "root + src + Cargo.toml, nothing deeper");
     }
 
-    #[test]
     fn expanding_a_folder_reads_its_children_on_demand() {
         let d = disk_fixture();
         let mut p = Project::from_dir(d.path()).unwrap();
@@ -1177,7 +1201,6 @@ mod tests {
         assert!(!shown.contains(&"deep.rs".to_string()));
     }
 
-    #[test]
     fn load_children_is_idempotent() {
         let d = disk_fixture();
         let mut p = Project::from_dir(d.path()).unwrap();
@@ -1192,7 +1215,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn reveal_path_walks_a_never_expanded_tree_down_to_the_file() {
         // This is the search-hit path: a hit names a file several folders deep
         // that the lazy tree has no node for yet.
@@ -1210,7 +1232,6 @@ mod tests {
         assert_eq!(p.reveal_path(&target), Some(id));
     }
 
-    #[test]
     fn file_seed_reads_the_real_bytes_and_reports_a_stamp() {
         let d = disk_fixture();
         let mut p = Project::from_dir(d.path()).unwrap();
@@ -1222,7 +1243,6 @@ mod tests {
         assert_eq!(stamp.expect("a disk file has a stamp").len, 13);
     }
 
-    #[test]
     fn an_unreadable_file_surfaces_its_error_instead_of_an_empty_buffer() {
         // Opening a binary as a silently-empty buffer would let the next Ctrl+S
         // truncate it, so the failure has to be returned.
@@ -1239,6 +1259,13 @@ mod tests {
     }
 
     #[test]
+    fn opening_a_path_roots_single_files_and_rejects_missing_or_non_directories() {
+        // Each phase uses its own fixture (or none).
+        opening_a_single_file_gives_a_project_rooted_at_its_folder();
+        opening_a_missing_path_fails_rather_than_opening_an_empty_project();
+        a_file_is_not_a_project_directory();
+    }
+
     fn opening_a_single_file_gives_a_project_rooted_at_its_folder() {
         let d = disk_fixture();
         let file = d.path().join("src/main.rs");
@@ -1248,13 +1275,11 @@ mod tests {
         assert_eq!(p.disk_path_of(node).as_deref(), Some(file.as_path()));
     }
 
-    #[test]
     fn opening_a_missing_path_fails_rather_than_opening_an_empty_project() {
         assert!(Project::from_dir(Path::new("/nonexistent/tilo/project")).is_err());
         assert!(Project::open_single_file(Path::new("/nonexistent/tilo/a.rs")).is_err());
     }
 
-    #[test]
     fn a_file_is_not_a_project_directory() {
         let d = disk_fixture();
         assert!(
@@ -1263,7 +1288,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn the_sample_project_is_not_disk_backed_but_a_real_one_is() {
         assert!(!crate::sample_project::build().is_disk_backed());
         let d = disk_fixture();
@@ -1272,7 +1296,6 @@ mod tests {
         assert_eq!(p.root_path(), Some(crate::disk::canonical(d.path())));
     }
 
-    #[test]
     fn dirty_is_a_comparison_with_disk_not_a_sticky_flag() {
         let mut buf = OpenBuffer {
             node: 0,
@@ -1297,7 +1320,6 @@ mod tests {
         assert!(!buf.is_dirty("new"));
     }
 
-    #[test]
     #[allow(
         clippy::many_single_char_names,
         reason = "each single-letter binding names exactly the file it opens (a.rs, b.rs, c.rs); spelling them out would just repeat the string literal two lines down"
@@ -1318,7 +1340,6 @@ mod tests {
         assert_eq!(s.open.len(), 2);
     }
 
-    #[test]
     #[allow(
         clippy::many_single_char_names,
         reason = "each single-letter binding names exactly the file it opens (a.rs, b.rs, c.rs); spelling them out would just repeat the string literal two lines down"
@@ -1357,7 +1378,6 @@ mod tests {
         assert_eq!(s.open.len(), 3);
     }
 
-    #[test]
     fn durable_tree_ids_project_across_different_local_arena_layouts() {
         let folder = "00000000-0000-4000-8000-000000000101";
         let file = "00000000-0000-4000-8000-000000000102";

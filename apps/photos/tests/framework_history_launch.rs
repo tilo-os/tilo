@@ -9,7 +9,7 @@
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use photos::{
     doc::PhotosDoc,
-    model::{Edits, LibraryPhoto, OpenImage, PhotoLibrary},
+    model::{Edits, OpenImage},
 };
 use ui::widget::Widget;
 
@@ -139,16 +139,16 @@ fn bounded_output(command: &mut std::process::Command) -> std::process::Output {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut child = command.spawn().unwrap();
-    let start = std::time::Instant::now();
+    let start = ui::time::now();
     loop {
         if child.try_wait().unwrap().is_some() {
             return child.wait_with_output().unwrap();
         }
-        if start.elapsed() > std::time::Duration::from_secs(45) {
+        if start.elapsed() > tilo_test_env::hang_bound() {
             let _ = child.kill();
             let output = child.wait_with_output().unwrap();
             panic!(
-                "headless test child timed out: {} {}",
+                "headless test child never exited within the hang bound: {} {}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
@@ -156,14 +156,16 @@ fn bounded_output(command: &mut std::process::Command) -> std::process::Output {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }
+/// The `#[test]` each stage child re-runs, as the `it` harness names it (module path
+/// included). With `--exact`, a stale name selects nothing and the child "passes" without
+/// running its stage, so `child` also requires `CHILD_DONE` on the child's stdout.
+const CHILD_TEST: &str = "framework_history_launch::actual_binary_saved_current_blank_history_restore_and_explicit_import";
+const CHILD_DONE: &str = "photos-launch-stage-done";
+
 fn child(store: &content_store::Server, stage: &str, dir: &std::path::Path, kind: &str) {
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command
-        .args([
-            "--exact",
-            "actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import",
-            "--nocapture",
-        ])
+        .args(["--exact", CHILD_TEST, "--nocapture"])
         .env("TILO_PHOTOS_LAUNCH_STAGE", stage)
         .env("TILO_PHOTOS_LAUNCH_KIND", kind)
         .env("TILO_PHOTOS_TEST_HOME", dir)
@@ -175,6 +177,12 @@ fn child(store: &content_store::Server, stage: &str, dir: &std::path::Path, kind
     assert!(
         out.status.success(),
         "{stage}/{kind}: {} {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains(&format!("{CHILD_DONE} {stage}")),
+        "{stage}/{kind}: the child never ran its stage (is {CHILD_TEST} still the test name?): {} {}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
@@ -220,7 +228,7 @@ fn binary(
     clippy::too_many_lines,
     reason = "one end-to-end launch scenario whose steps depend on each other in order"
 )]
-fn actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import() {
+fn actual_binary_saved_current_blank_history_restore_and_explicit_import() {
     if let Ok(stage) = std::env::var("TILO_PHOTOS_LAUNCH_STAGE") {
         assert!(
             tilo_content::ContentStore::device().is_some(),
@@ -241,32 +249,7 @@ fn actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import(
                     .doc
                     .put(ROOT, "operational_receipt", "current receipt")
                     .unwrap();
-                if kind == "legacy" {
-                    state
-                        .doc
-                        .put(ROOT, "image", serde_json::to_string(&Some(&image)).unwrap())
-                        .unwrap();
-                    state
-                        .doc
-                        .put(
-                            ROOT,
-                            "edits",
-                            serde_json::to_string(&Edits::default().rotated_right()).unwrap(),
-                        )
-                        .unwrap();
-                    state
-                        .doc
-                        .put(
-                            ROOT,
-                            "library",
-                            serde_json::to_string(&PhotoLibrary {
-                                photos: vec![LibraryPhoto::from_image(image)],
-                                albums: vec![],
-                            })
-                            .unwrap(),
-                        )
-                        .unwrap();
-                } else if kind == "current" {
+                if kind == "current" {
                     PhotosDoc::set_image(&mut state.doc, Some(&image));
                     PhotosDoc::set_edits(&mut state.doc, &Edits::default().rotated_right());
                 }
@@ -336,10 +319,6 @@ fn actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import(
                         Some(&photos::pixels::render(&rgba, Edits::default().crop, 1))
                     );
                 }
-                if kind == "legacy" {
-                    assert!(state.doc.get(ROOT, "edits").unwrap().is_some());
-                    assert!(state.doc.get(ROOT, "photos_edits").unwrap().is_none());
-                }
                 assert_eq!(
                     state
                         .doc
@@ -363,10 +342,11 @@ fn actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import(
             }
             _ => panic!("unexpected test stage"),
         }
+        println!("{CHILD_DONE} {stage}");
         return;
     }
     let store = content_store::Server::start();
-    for kind in ["current", "legacy", "blank"] {
+    for kind in ["current", "blank"] {
         let temp = tempfile::tempdir().unwrap();
         let dir = temp.path();
         child(&store, "seed", dir, kind);

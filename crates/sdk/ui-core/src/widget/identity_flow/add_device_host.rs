@@ -17,7 +17,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use collab_types::Ed25519PublicKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand_core::Rng;
@@ -27,6 +26,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -361,30 +361,19 @@ impl AddDeviceHostScreen {
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
     // received; bundling it would mean bundling the trait method too.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "screen event handling preserves the Widget event contract, including CRDT, focus and layout parameters"
-    )]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) -> ScreenOutcome {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = p;
                 let h = self.cancel_rect.contains(p);
                 if h != self.cancel_hovered {
                     self.cancel_hovered = h;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
             }
@@ -394,14 +383,14 @@ impl AddDeviceHostScreen {
                 ..
             } => {
                 if self.cancel_rect.contains(self.last_cursor) {
-                    *handled = true;
+                    *ctx.handled = true;
                     return ScreenOutcome::Back;
                 }
                 ScreenOutcome::Stay
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.scroll.wheel(delta) {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
             }
@@ -415,7 +404,7 @@ impl AddDeviceHostScreen {
                 ..
             } => {
                 if self.scroll.key(logical_key, self.body_height) {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
             }
@@ -491,8 +480,6 @@ impl AddDeviceHostScreen {
 }
 
 impl Widget for AddDeviceHostScreen {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -553,10 +540,7 @@ impl Widget for AddDeviceHostScreen {
         } else {
             paint_cell(scene, transform, theme, plan.qr, false);
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 plan.qr,
                 QR_PLACEHOLDER,
                 Role::Caption,
@@ -565,10 +549,7 @@ impl Widget for AddDeviceHostScreen {
             );
         }
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             plan.code,
             &self.code_text(),
             Role::Code,
@@ -576,10 +557,7 @@ impl Widget for AddDeviceHostScreen {
             false,
         );
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             plan.status,
             &self.status,
             Role::Caption,
@@ -588,20 +566,6 @@ impl Widget for AddDeviceHostScreen {
         );
         scene.pop_layer();
         sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {
@@ -641,169 +605,171 @@ mod tests {
     }
 
     #[test]
-    fn begin_populates_qr_payload_code_and_nonce() {
-        let (s, nonce) = fixture_host();
-        assert!(s.qr.is_some());
-        let code = s.pairing_code_display().unwrap();
-        assert_eq!(code.len(), 6);
-        assert_eq!(derive_pairing_code(&nonce), s.handshake().unwrap().code);
-    }
-
-    #[test]
-    fn payload_round_trips_to_same_code() {
-        let (s, _) = fixture_host();
-        let json = s.payload_json().unwrap();
-        let payload = PairingPayload::from_json_bytes(&json).unwrap();
-        let derived = AddDeviceHostScreen::derive_code_from_payload(&payload).unwrap();
-        assert_eq!(
-            format_pairing_code(derived),
-            s.pairing_code_display().unwrap()
-        );
-    }
-
-    #[test]
-    fn pairer_reply_with_wrong_mac_is_rejected() {
-        let (mut s, nonce) = fixture_host();
-        let mut rng = UnwrapErr(SysRng);
-        let mut pairer = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        let (_session, round1) = pairer.begin_enrolment(2, 2, 2, &mut rng).unwrap();
-        let reply = EnrolmentRound2 {
-            from_share_index: 2,
-            to_share_index: 1,
-            package_bytes: vec![1, 2, 3, 4],
-        };
-        let wrong_key = derive_pairing_mac_key(&[0xFFu8; 16]);
-        let payload = postcard::to_allocvec(&reply).unwrap();
-        let wrong_mac = compute_pairing_mac(&wrong_key, &payload);
-        let err = s.host_complete_dkg(round1, reply, wrong_mac).unwrap_err();
-        assert!(matches!(err, IdentityFlowError::PairingMacInvalid));
-        let _ = nonce; // explicit unused
-    }
-
-    #[test]
-    fn poll_handshake_returns_false_when_no_reply() {
-        let (mut s, _) = fixture_host();
-        let hs = PairingHandshake::new();
-        assert!(!s.poll_handshake(&hs).unwrap());
-    }
-
-    #[test]
-    fn broker_handshake_exchanges_both_real_dkg_rounds() {
-        let (mut host, _) = fixture_host();
-        let payload = host.handshake().unwrap().payload.clone();
-        let channel = PairingHandshake::new();
-        let pairer_channel = channel.clone();
-        let pairer = std::thread::spawn(move || {
-            let mut screen = crate::widget::identity_flow::pair_device::PairDeviceScreen::new();
-            screen.perform_pairing(&payload, &pairer_channel).unwrap()
-        });
-        let mut completed = false;
-        for _ in 0..500 {
-            if host.poll_handshake(&channel).unwrap() {
-                completed = true;
-                break;
-            }
-            std::thread::sleep(crate::time::Duration::from_millis(2));
+    fn host_begin_publishes_qr_payload_code_and_layout() {
+        fn begin_populates_qr_payload_code_and_nonce() {
+            let (s, nonce) = fixture_host();
+            assert!(s.qr.is_some());
+            let code = s.pairing_code_display().unwrap();
+            assert_eq!(code.len(), 6);
+            assert_eq!(derive_pairing_code(&nonce), s.handshake().unwrap().code);
         }
-        assert!(completed);
-        let host_identity = host.take_completed_identity().unwrap();
-        let pairer_identity = pairer.join().unwrap();
-        assert_eq!(
-            host_identity.group_public_key(),
-            pairer_identity.group_public_key()
-        );
-        assert!(!host_identity.is_single_device());
-        assert!(!pairer_identity.is_single_device());
+
+        fn payload_round_trips_to_same_code() {
+            let (s, _) = fixture_host();
+            let json = s.payload_json().unwrap();
+            let payload = PairingPayload::from_json_bytes(&json).unwrap();
+            let derived = AddDeviceHostScreen::derive_code_from_payload(&payload).unwrap();
+            assert_eq!(
+                format_pairing_code(derived),
+                s.pairing_code_display().unwrap()
+            );
+        }
+
+        fn begin_without_handshake_returns_no_code() {
+            let s = AddDeviceHostScreen::new();
+            assert!(s.pairing_code_display().is_none());
+            assert!(s.payload_json().is_none());
+        }
+
+        /// The QR is square and centred; the code and status stack under it on
+        /// the spacing scale.
+        fn plan_centres_a_square_qr_with_code_and_status_beneath() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let body = Rect::new(100.0, 200.0, 620.0, 200.0);
+            let (s, _) = fixture_host();
+            let plan = s.plan(Rows::new(body), &mut tr, &theme);
+            let sp = &theme.tokens.spacing;
+            assert!((plan.qr.width() - plan.qr.height()).abs() < 1e-9);
+            assert!((plan.qr.center().x - body.center().x).abs() < 1e-9);
+            assert!(plan.qr.width() <= body.width());
+            assert!((plan.code.y0 - plan.qr.y1 - f64::from(sp.s4)).abs() < 1e-9);
+            assert!((plan.status.y0 - plan.code.y1 - f64::from(sp.s2)).abs() < 1e-9);
+            assert!((plan.bottom - plan.status.y1).abs() < 1e-9);
+        }
+
+        begin_populates_qr_payload_code_and_nonce();
+        payload_round_trips_to_same_code();
+        begin_without_handshake_returns_no_code();
+        plan_centres_a_square_qr_with_code_and_status_beneath();
     }
 
     #[test]
-    fn host_retries_contended_round2_publication_without_regenerating_identity() {
-        let (mut host, nonce) = fixture_host();
-        let payload = host.handshake().unwrap().payload.clone();
-        let mut rng = UnwrapErr(SysRng);
-        let mut pairer = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        let (mut pairer_session, pairer_round1) =
-            pairer.begin_enrolment(2, 2, 2, &mut rng).unwrap();
-        let outgoing = pairer_session
-            .receive_round1(&[payload.initiator_round1().unwrap()])
-            .unwrap();
-        let reply = outgoing.get(&1).unwrap().clone();
-        let mac = super::super::pairing_transcript_mac(
-            &payload,
-            "pairer-to-host",
-            &pairer_round1,
-            &reply,
-        )
-        .unwrap();
-        let outcome = host
-            .host_complete_dkg(pairer_round1.clone(), reply, mac)
-            .unwrap();
-        let expected_key = *outcome.identity.as_ref().unwrap().group_public_key();
-        let round2 = outcome.round2_to_pairer.as_ref().unwrap().clone();
-        let tag = super::super::pairing_transcript_mac(
-            &payload,
-            "host-to-pairer",
-            &pairer_round1,
-            &round2,
-        )
-        .unwrap();
-        // Pause at the production publication boundary, after the one-shot
-        // DKG session has been consumed, with a real competing mailbox lock.
-        host.pending_completion = Some((outcome, round2, tag));
-        let temp = tempfile::tempdir().unwrap();
-        let channel = PairingHandshake::durable(
-            temp.path(),
-            crate::time::wall() + crate::time::Duration::from_secs(60),
-        )
-        .unwrap();
-        let lock_path = temp.path().join(format!("{}.lock", hex::encode(nonce)));
-        let lock = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock_path)
-            .unwrap();
-        assert!(!host.poll_handshake(&channel).unwrap());
-        assert!(host.take_completed_identity().is_none());
-        assert!(host.pending_completion.is_some());
-        assert!(host.handshake().unwrap().session.is_none());
-        drop(lock);
-        std::fs::remove_file(lock_path).unwrap();
+    fn host_handshake_verifies_replies_and_runs_both_dkg_rounds() {
+        fn pairer_reply_with_wrong_mac_is_rejected() {
+            let (mut s, nonce) = fixture_host();
+            let mut rng = UnwrapErr(SysRng);
+            let mut pairer = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+            let (_session, round1) = pairer.begin_enrolment(2, 2, 2, &mut rng).unwrap();
+            let reply = EnrolmentRound2 {
+                from_share_index: 2,
+                to_share_index: 1,
+                package_bytes: vec![1, 2, 3, 4],
+            };
+            let wrong_key = derive_pairing_mac_key(&[0xFFu8; 16]);
+            let payload = postcard::to_allocvec(&reply).unwrap();
+            let wrong_mac = compute_pairing_mac(&wrong_key, &payload);
+            let err = s.host_complete_dkg(round1, reply, wrong_mac).unwrap_err();
+            assert!(matches!(err, IdentityFlowError::PairingMacInvalid));
+            let _ = nonce; // explicit unused
+        }
 
-        assert!(host.poll_handshake(&channel).unwrap());
-        let identity = host.take_completed_identity().unwrap();
-        assert_eq!(*identity.group_public_key(), expected_key);
-        let (delivered, delivered_tag) = channel.take_host_round2(&nonce).unwrap();
-        assert_eq!(delivered_tag, tag);
-        pairer_session.receive_round2(&[delivered]).unwrap();
-        pairer.adopt_dkg_outcome(pairer_session).unwrap();
-        assert_eq!(identity.group_public_key(), pairer.group_public_key());
-        assert!(host.pending_completion.is_none());
-        assert!(!host.poll_handshake(&channel).unwrap());
-        assert!(channel.take_host_round2(&nonce).is_none());
-    }
+        fn poll_handshake_returns_false_when_no_reply() {
+            let (mut s, _) = fixture_host();
+            let hs = PairingHandshake::new();
+            assert!(!s.poll_handshake(&hs).unwrap());
+        }
 
-    #[test]
-    fn begin_without_handshake_returns_no_code() {
-        let s = AddDeviceHostScreen::new();
-        assert!(s.pairing_code_display().is_none());
-        assert!(s.payload_json().is_none());
-    }
+        fn broker_handshake_exchanges_both_real_dkg_rounds() {
+            let (mut host, _) = fixture_host();
+            let payload = host.handshake().unwrap().payload.clone();
+            let channel = PairingHandshake::new();
+            let pairer_channel = channel.clone();
+            let pairer = std::thread::spawn(move || {
+                let mut screen = crate::widget::identity_flow::pair_device::PairDeviceScreen::new();
+                screen.perform_pairing(&payload, &pairer_channel).unwrap()
+            });
+            tilo_test_env::wait_until("the host's pairing handshake", || {
+                host.poll_handshake(&channel).unwrap()
+            });
+            let host_identity = host.take_completed_identity().unwrap();
+            let pairer_identity = pairer.join().unwrap();
+            assert_eq!(
+                host_identity.group_public_key(),
+                pairer_identity.group_public_key()
+            );
+            assert!(!host_identity.is_single_device());
+            assert!(!pairer_identity.is_single_device());
+        }
 
-    /// The QR is square and centred; the code and status stack under it on
-    /// the spacing scale.
-    #[test]
-    fn plan_centres_a_square_qr_with_code_and_status_beneath() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let body = Rect::new(100.0, 200.0, 620.0, 200.0);
-        let (s, _) = fixture_host();
-        let plan = s.plan(Rows::new(body), &mut tr, &theme);
-        let sp = &theme.tokens.spacing;
-        assert!((plan.qr.width() - plan.qr.height()).abs() < 1e-9);
-        assert!((plan.qr.center().x - body.center().x).abs() < 1e-9);
-        assert!(plan.qr.width() <= body.width());
-        assert!((plan.code.y0 - plan.qr.y1 - f64::from(sp.s4)).abs() < 1e-9);
-        assert!((plan.status.y0 - plan.code.y1 - f64::from(sp.s2)).abs() < 1e-9);
-        assert!((plan.bottom - plan.status.y1).abs() < 1e-9);
+        fn host_retries_contended_round2_publication_without_regenerating_identity() {
+            let (mut host, nonce) = fixture_host();
+            let payload = host.handshake().unwrap().payload.clone();
+            let mut rng = UnwrapErr(SysRng);
+            let mut pairer = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+            let (mut pairer_session, pairer_round1) =
+                pairer.begin_enrolment(2, 2, 2, &mut rng).unwrap();
+            let outgoing = pairer_session
+                .receive_round1(&[payload.initiator_round1().unwrap()])
+                .unwrap();
+            let reply = outgoing.get(&1).unwrap().clone();
+            let mac = super::super::pairing_transcript_mac(
+                &payload,
+                "pairer-to-host",
+                &pairer_round1,
+                &reply,
+            )
+            .unwrap();
+            let outcome = host
+                .host_complete_dkg(pairer_round1.clone(), reply, mac)
+                .unwrap();
+            let expected_key = *outcome.identity.as_ref().unwrap().group_public_key();
+            let round2 = outcome.round2_to_pairer.as_ref().unwrap().clone();
+            let tag = super::super::pairing_transcript_mac(
+                &payload,
+                "host-to-pairer",
+                &pairer_round1,
+                &round2,
+            )
+            .unwrap();
+            // Pause at the production publication boundary, after the one-shot
+            // DKG session has been consumed, with a real competing mailbox lock.
+            host.pending_completion = Some((outcome, round2, tag));
+            let temp = tempfile::tempdir().unwrap();
+            let channel = PairingHandshake::durable(
+                temp.path(),
+                crate::time::wall() + crate::time::Duration::from_secs(60),
+            )
+            .unwrap();
+            let lock_path = temp.path().join(format!("{}.lock", hex::encode(nonce)));
+            let lock = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_path)
+                .unwrap();
+            assert!(!host.poll_handshake(&channel).unwrap());
+            assert!(host.take_completed_identity().is_none());
+            assert!(host.pending_completion.is_some());
+            assert!(host.handshake().unwrap().session.is_none());
+            drop(lock);
+            std::fs::remove_file(lock_path).unwrap();
+
+            assert!(host.poll_handshake(&channel).unwrap());
+            let identity = host.take_completed_identity().unwrap();
+            assert_eq!(*identity.group_public_key(), expected_key);
+            let (delivered, delivered_tag) = channel.take_host_round2(&nonce).unwrap();
+            assert_eq!(delivered_tag, tag);
+            pairer_session.receive_round2(&[delivered]).unwrap();
+            pairer.adopt_dkg_outcome(pairer_session).unwrap();
+            assert_eq!(identity.group_public_key(), pairer.group_public_key());
+            assert!(host.pending_completion.is_none());
+            assert!(!host.poll_handshake(&channel).unwrap());
+            assert!(channel.take_host_round2(&nonce).is_none());
+        }
+
+        pairer_reply_with_wrong_mac_is_rejected();
+        poll_handshake_returns_false_when_no_reply();
+        broker_handshake_exchanges_both_real_dkg_rounds();
+        host_retries_contended_round2_publication_without_regenerating_identity();
     }
 }

@@ -24,6 +24,7 @@ esac
 SYSTEMCTL=/usr/bin/systemctl
 SYSTEMD_CAT=/usr/bin/systemd-cat
 DBUS_UPDATE=/usr/bin/dbus-update-activation-environment
+LOGINCTL=/usr/bin/loginctl
 FLIGHT_RECORDER=/usr/libexec/tilo-flight-recorder
 SESSION_TARGET=tilo-graphical-session.target
 target_started=0
@@ -33,6 +34,8 @@ logout_request=
 flight_log=
 flight_pipe=
 flight_relay_pid=
+dev_attestation=${TILO_DEV_SESSION_ATTESTATION:-}
+logout_completed=0
 
 # `DesktopNames=tilo` in the .desktop entry selects tilo-portals.conf;
 # display managers export it as XDG_CURRENT_DESKTOP, but not every one does,
@@ -67,6 +70,12 @@ if [ ! -x "$FLIGHT_RECORDER" ]; then
 fi
 
 stop_target() {
+    if [ -n "$dev_attestation" ] && [ -r "$dev_attestation" ]; then
+        attested_runner=$(sed -n 's/^runner_pid=//p' "$dev_attestation" 2>/dev/null || true)
+        if [ "$attested_runner" = "$$" ]; then
+            rm -f -- "$dev_attestation"
+        fi
+    fi
     if [ -n "$flight_relay_pid" ]; then
         wait "$flight_relay_pid" 2>/dev/null || true
         flight_relay_pid=
@@ -95,6 +104,14 @@ stop_target() {
             >/dev/null 2>&1 || true
         environment_imported=0
     fi
+}
+
+terminate_logind_session_after_cleanup() {
+    [ "$logout_completed" = 1 ] || return 0
+    case "${XDG_SESSION_ID:-}" in
+        ''|*[!A-Za-z0-9_-]*) return 0 ;;
+    esac
+    "$LOGINCTL" terminate-session "$XDG_SESSION_ID" >/dev/null 2>&1 || true
 }
 
 # Failures before the compositor starts would otherwise go only to whatever
@@ -169,7 +186,7 @@ forward_signal() {
     exit "$status"
 }
 
-trap stop_target EXIT
+trap 'stop_target; terminate_logind_session_after_cleanup' EXIT
 trap 'forward_signal HUP 129' HUP
 trap 'forward_signal INT 130' INT
 trap 'forward_signal TERM 143' TERM
@@ -304,6 +321,17 @@ set +e
 "$TILO_SHELL" --host-desktop-session --firstboot --backend drm "$@" \
     >"$flight_pipe" 2>&1 &
 shell_pid=$!
+if [ -n "$dev_attestation" ]; then
+    attest_tmp=$dev_attestation.$$
+    {
+        printf 'runner_pid=%s\n' "$$"
+        printf 'compositor_pid=%s\n' "$shell_pid"
+        sed -n '/^path=/p;/^sha256=/p;/^revision=/p;/^source_state=/p' \
+            "$dev_attestation"
+    } >"$attest_tmp"
+    chmod 0600 -- "$attest_tmp"
+    mv -f -- "$attest_tmp" "$dev_attestation"
+fi
 wait "$shell_pid"
 status=$?
 set -e
@@ -315,6 +343,7 @@ printf 'tilo-flight-record-v1 end=%s status=%s logout_request=%s\n' \
     >>"$flight_log"
 if [ -e "$logout_request" ]; then
     status=0
+    logout_completed=1
 else
     journal_unexpected_shell_exit "$status"
     if [ "$status" = 0 ]; then

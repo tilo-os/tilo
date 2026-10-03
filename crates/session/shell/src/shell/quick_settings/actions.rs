@@ -21,6 +21,8 @@ pub(crate) struct QsActionAvailability {
     pub(crate) wifi: bool,
     pub(crate) power_profile: bool,
     pub(crate) vpn: bool,
+    pub(crate) bluetooth: bool,
+    pub(crate) airplane_mode: bool,
 }
 
 impl QsActionAvailability {
@@ -31,6 +33,8 @@ impl QsActionAvailability {
             wifi: true,
             power_profile: true,
             vpn: true,
+            bluetooth: true,
+            airplane_mode: true,
         }
     }
 
@@ -38,10 +42,19 @@ impl QsActionAvailability {
         #[cfg(target_os = "linux")]
         {
             let mut availability = Self::from_probe(command_on_path);
-            // The production brightness path writes the kernel backlight class
-            // directly and only falls back to `brightnessctl` on development
-            // hosts, so the binary alone is not its capability source.
-            availability.brightness |= os_actions::display::has_backlight();
+            // Tools on PATH are not hardware. A VM ships nmcli, brightnessctl
+            // and bluetoothctl with no backlight, Wi-Fi radio or adapter; the
+            // actions must then be unavailable rather than a working-looking
+            // toggle that fails or no-ops.
+            availability.brightness = os_actions::display::has_backlight();
+            if let Ok(radios) = os_actions::get_radio_state() {
+                availability.wifi = radios.wifi_available;
+                availability.airplane_mode = radios.wifi_available || radios.wwan_available;
+            } else {
+                availability.wifi = false;
+                availability.airplane_mode = false;
+            }
+            availability.bluetooth = os_actions::bluez::has_adapter();
             availability
         }
         #[cfg(not(target_os = "linux"))]
@@ -57,6 +70,9 @@ impl QsActionAvailability {
             wifi: network_manager,
             power_profile: present("powerprofilesctl"),
             vpn: network_manager,
+            // The radio is BlueZ's; its client ships with the daemon.
+            bluetooth: present("bluetoothctl"),
+            airplane_mode: network_manager,
         }
     }
 }
@@ -144,22 +160,45 @@ mod availability_tests {
     use super::QsActionAvailability;
 
     #[test]
-    fn mechanisms_are_probed_independently_before_discovery() {
-        let found =
-            QsActionAvailability::from_probe(|command| matches!(command, "wpctl" | "nmcli"));
-        assert!(!found.brightness);
-        assert!(found.volume);
-        assert!(found.wifi);
-        assert!(!found.power_profile);
-        assert!(found.vpn);
+    fn quick_settings_mechanisms_are_probed_independently_and_absent_when_unsupported() {
+        fn mechanisms_are_probed_independently_before_discovery() {
+            let found =
+                QsActionAvailability::from_probe(|command| matches!(command, "wpctl" | "nmcli"));
+            assert!(!found.brightness);
+            assert!(found.volume);
+            assert!(found.wifi);
+            assert!(!found.power_profile);
+            assert!(found.vpn);
+            assert!(!found.bluetooth);
+            assert!(found.airplane_mode);
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        fn unsupported_host_advertises_no_quick_settings_mechanism() {
+            assert_eq!(
+                QsActionAvailability::detect(),
+                QsActionAvailability::default()
+            );
+        }
+
+        mechanisms_are_probed_independently_before_discovery();
+        #[cfg(not(target_os = "linux"))]
+        unsupported_host_advertises_no_quick_settings_mechanism();
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "linux")]
     #[test]
-    fn unsupported_host_advertises_no_quick_settings_mechanism() {
+    fn detect_uses_hardware_not_tools_on_the_path() {
+        let found = QsActionAvailability::detect();
         assert_eq!(
-            QsActionAvailability::detect(),
-            QsActionAvailability::default()
+            found.brightness,
+            os_actions::display::has_backlight(),
+            "brightnessctl on PATH must not advertise a backlight this machine does not have"
         );
+        let wifi = os_actions::get_radio_state()
+            .ok()
+            .is_some_and(|radios| radios.wifi_available);
+        assert_eq!(found.wifi, wifi);
+        assert_eq!(found.bluetooth, os_actions::bluez::has_adapter());
     }
 }

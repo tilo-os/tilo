@@ -5,23 +5,22 @@
 //! instead of editing qdoc itself: the parent editor remains the sole owner of
 //! undoable document mutations.
 
-use automerge::{AutoCommit, ObjId};
-use qdoc::snapshot::BlockView;
-use taffy::{NodeId, TaffyTree};
+use tilo_doc::snapshot::BlockView;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{TextInput, TextInputKind, Widget};
+use ui::widget::{EventCtx, TextInput, TextInputKind, Widget};
 
 use crate::i18n::{arg, t, t_args};
 use crate::num;
 use crate::paint_context::PaintContext;
+use crate::text_offsets::byte_to_char;
 
 /// Classic 1× bar height, the floor of the measured [`FindMetrics::bar_h`].
 pub(crate) const HEIGHT: f64 = 42.0;
@@ -177,18 +176,6 @@ struct DrawCtx<'a> {
     palette: FindPalette,
 }
 
-/// Host routing state used by both embedded text fields for one event.
-pub(crate) struct FindEventContext<'a> {
-    pub(crate) scale_factor: f64,
-    pub(crate) modifiers: Modifiers,
-    pub(crate) state: &'a mut AutoCommit,
-    pub(crate) path: &'a ObjId,
-    pub(crate) handled: &'a mut bool,
-    pub(crate) focus_target: &'a mut Option<NodeId>,
-    pub(crate) node_id: NodeId,
-    pub(crate) taffy: &'a TaffyTree<()>,
-}
-
 impl FindBar {
     pub(crate) fn is_open(&self) -> bool {
         self.open
@@ -286,6 +273,12 @@ impl FindBar {
         self.replacement.value()
     }
 
+    /// The Find query as typed; with [`Self::matches`] it is the window's
+    /// Find state in its participant view.
+    pub(crate) fn query(&self) -> &str {
+        self.query.value()
+    }
+
     #[cfg(test)]
     pub(crate) fn set_queries_for_tests(&mut self, query: &str, replacement: &str) {
         self.query.set_text(query);
@@ -335,7 +328,7 @@ impl FindBar {
     pub(crate) fn handle_event(
         &mut self,
         event: &WindowEvent,
-        context: &mut FindEventContext<'_>,
+        context: &mut EventCtx<'_>,
         blocks: &[BlockView],
     ) -> FindEffect {
         if !self.open {
@@ -350,18 +343,7 @@ impl FindBar {
             // Each field must see cursor movement so hover/drag state stays
             // correct even when focus is about to move between them.
             for input in [&mut self.query, &mut self.replacement] {
-                Widget::handle_event(
-                    input,
-                    event,
-                    context.scale_factor,
-                    &context.modifiers,
-                    context.state,
-                    context.path,
-                    context.handled,
-                    context.focus_target,
-                    context.node_id,
-                    context.taffy,
-                );
+                Widget::handle_event(input, event, context);
             }
             return FindEffect::None;
         }
@@ -426,18 +408,7 @@ impl FindBar {
         } else {
             &mut self.query
         };
-        Widget::handle_event(
-            input,
-            event,
-            context.scale_factor,
-            &context.modifiers,
-            context.state,
-            context.path,
-            context.handled,
-            context.focus_target,
-            context.node_id,
-            context.taffy,
-        );
+        Widget::handle_event(input, event, context);
 
         let query_changed = self.query.take_dirty().is_some();
         let _ = self.replacement.take_dirty();
@@ -847,11 +818,6 @@ impl FindBar {
     }
 }
 
-fn byte_to_char(text: &str, byte_offset: usize) -> usize {
-    text.get(..byte_offset)
-        .map_or(0, |prefix| prefix.chars().count())
-}
-
 fn is_word_match(chars: &[char], start: usize, end: usize) -> bool {
     let word = |c: char| c.is_alphanumeric() || c == '_';
     let left_ok = start == 0 || chars.get(start.wrapping_sub(1)).is_none_or(|c| !word(*c));
@@ -862,6 +828,9 @@ fn is_word_match(chars: &[char], start: usize, end: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
+    use taffy::{NodeId, TaffyTree};
+    use winit::event::Modifiers;
     use winit::keyboard::{NativeKeyCode, PhysicalKey, SmolStr};
 
     fn block(text: &str) -> BlockView {
@@ -897,9 +866,9 @@ mod tests {
         let mut focus_target = None;
         let effect = bar.handle_event(
             event,
-            &mut FindEventContext {
+            &mut EventCtx {
                 scale_factor: 1.0,
-                modifiers,
+                modifiers: &modifiers,
                 state: &mut state,
                 path: &automerge::ROOT,
                 handled: &mut handled,
@@ -915,148 +884,158 @@ mod tests {
         }
     }
 
+    /// Literal modes and regex are owned by the component; navigation wraps and close drops stale hits;
+    /// drawn button geometry drives click navigation; the shared input handles IME preedit, commit and match
+    /// refresh and preserves select-all and field traversal shortcuts.
     #[test]
-    fn literal_modes_and_regex_are_owned_by_the_component() {
-        let blocks = [block("Hello hello HELLO category cat a1 b22")];
-        let mut bar = FindBar::default();
-        bar.query.set_text("hello");
-        bar.recompute(&blocks);
-        assert_eq!(bar.matches.len(), 3);
-        bar.apply(Action::ToggleCase, &blocks);
-        assert_eq!(bar.matches.len(), 1);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn the_find_bar_owns_matching_navigation_and_its_input() {
+        // Phase: literal_modes_and_regex_are_owned_by_the_component.
+        {
+            let blocks = [block("Hello hello HELLO category cat a1 b22")];
+            let mut bar = FindBar::default();
+            bar.query.set_text("hello");
+            bar.recompute(&blocks);
+            assert_eq!(bar.matches.len(), 3);
+            bar.apply(Action::ToggleCase, &blocks);
+            assert_eq!(bar.matches.len(), 1);
 
-        bar.query.set_text("cat");
-        bar.options.case_sensitive = false;
-        bar.recompute(&blocks);
-        assert_eq!(bar.matches.len(), 2);
-        bar.apply(Action::ToggleWord, &blocks);
-        assert_eq!(bar.matches.len(), 1);
+            bar.query.set_text("cat");
+            bar.options.case_sensitive = false;
+            bar.recompute(&blocks);
+            assert_eq!(bar.matches.len(), 2);
+            bar.apply(Action::ToggleWord, &blocks);
+            assert_eq!(bar.matches.len(), 1);
 
-        bar.query.set_text(r"\d+");
-        bar.options.whole_word = false;
-        bar.apply(Action::ToggleRegex, &blocks);
-        assert_eq!(bar.matches.len(), 2);
-        bar.query.set_text("(");
-        bar.recompute(&blocks);
-        assert!(bar.regex_error);
-        assert!(bar.matches.is_empty());
-    }
+            bar.query.set_text(r"\d+");
+            bar.options.whole_word = false;
+            bar.apply(Action::ToggleRegex, &blocks);
+            assert_eq!(bar.matches.len(), 2);
+            bar.query.set_text("(");
+            bar.recompute(&blocks);
+            assert!(bar.regex_error);
+            assert!(bar.matches.is_empty());
+        }
 
-    #[test]
-    fn navigation_wraps_and_close_drops_stale_hits() {
-        let blocks = [block("one one")];
-        let mut bar = FindBar::default();
-        bar.query.set_text("one");
-        bar.open(None, &blocks);
-        bar.set_host_focused(false);
-        assert!(!Widget::is_focused(&bar.query));
-        bar.set_host_focused(true);
-        assert!(Widget::is_focused(&bar.query));
-        assert_eq!(bar.jump(-1), FindEffect::SelectActive);
-        assert_eq!(bar.index, 1);
-        bar.buttons
-            .push((Action::Next, Rect::new(0.0, 0.0, 10.0, 10.0)));
-        bar.close();
-        assert!(!bar.is_open());
-        assert!(bar.matches.is_empty());
-        assert!(bar.buttons.is_empty());
-    }
+        // Phase: navigation_wraps_and_close_drops_stale_hits.
+        {
+            let blocks = [block("one one")];
+            let mut bar = FindBar::default();
+            bar.query.set_text("one");
+            bar.open(None, &blocks);
+            bar.set_host_focused(false);
+            assert!(!Widget::is_focused(&bar.query));
+            bar.set_host_focused(true);
+            assert!(Widget::is_focused(&bar.query));
+            assert_eq!(bar.jump(-1), FindEffect::SelectActive);
+            assert_eq!(bar.index, 1);
+            bar.buttons
+                .push((Action::Next, Rect::new(0.0, 0.0, 10.0, 10.0)));
+            bar.close();
+            assert!(!bar.is_open());
+            assert!(bar.matches.is_empty());
+            assert!(bar.buttons.is_empty());
+        }
 
-    #[test]
-    fn drawn_button_geometry_drives_click_navigation() {
-        let blocks = [block("one one")];
-        let mut bar = FindBar::default();
-        bar.query.set_text("one");
-        bar.open(None, &blocks);
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        let palette = FindPalette {
-            bar: Color::BLACK,
-            chip: Color::BLACK,
-            border: Color::WHITE,
-            text: Color::WHITE,
-            text_dim: Color::WHITE,
-            accent: Color::WHITE,
-            on_accent: Color::BLACK,
-            danger: Color::WHITE,
-        };
-        bar.draw(
-            PaintContext::new(&mut scene, Affine::IDENTITY, &mut text),
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-            palette,
-            Rect::new(0.0, 0.0, 1200.0, HEIGHT),
-        );
-        let next = bar
-            .buttons
-            .iter()
-            .find(|(action, _)| *action == Action::Next)
-            .map(|(_, rect)| rect.center())
-            .expect("draw records a Next target");
-        assert_eq!(bar.click(next, &blocks), FindEffect::SelectActive);
-        assert_eq!(bar.index, 1);
-    }
+        // Phase: drawn_button_geometry_drives_click_navigation.
+        {
+            let blocks = [block("one one")];
+            let mut bar = FindBar::default();
+            bar.query.set_text("one");
+            bar.open(None, &blocks);
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            let palette = FindPalette {
+                bar: Color::BLACK,
+                chip: Color::BLACK,
+                border: Color::WHITE,
+                text: Color::WHITE,
+                text_dim: Color::WHITE,
+                accent: Color::WHITE,
+                on_accent: Color::BLACK,
+                danger: Color::WHITE,
+            };
+            bar.draw(
+                PaintContext::new(&mut scene, Affine::IDENTITY, &mut text),
+                &Theme::dark(),
+                &PresenceCtx::empty(),
+                palette,
+                Rect::new(0.0, 0.0, 1200.0, HEIGHT),
+            );
+            let next = bar
+                .buttons
+                .iter()
+                .find(|(action, _)| *action == Action::Next)
+                .map(|(_, rect)| rect.center())
+                .expect("draw records a Next target");
+            assert_eq!(bar.click(next, &blocks), FindEffect::SelectActive);
+            assert_eq!(bar.index, 1);
+        }
 
-    #[test]
-    fn shared_input_handles_ime_preedit_commit_and_match_refresh() {
-        let blocks = [block("before 漢 after")];
-        let mut bar = FindBar::default();
-        bar.open(None, &blocks);
+        // Phase: shared_input_handles_ime_preedit_commit_and_match_refresh.
+        {
+            let blocks = [block("before 漢 after")];
+            let mut bar = FindBar::default();
+            bar.open(None, &blocks);
 
-        drive(
-            &mut bar,
-            &WindowEvent::Ime(winit::event::Ime::Preedit(
-                "漢".into(),
-                Some(("漢".len(), "漢".len())),
-            )),
-            Modifiers::default(),
-            &blocks,
-        );
-        assert_eq!(bar.query.value(), "", "preedit remains display-only");
-        assert!(bar.matches().is_empty());
+            drive(
+                &mut bar,
+                &WindowEvent::Ime(winit::event::Ime::Preedit(
+                    "漢".into(),
+                    Some(("漢".len(), "漢".len())),
+                )),
+                Modifiers::default(),
+                &blocks,
+            );
+            assert_eq!(bar.query.value(), "", "preedit remains display-only");
+            assert!(bar.matches().is_empty());
 
-        drive(
-            &mut bar,
-            &WindowEvent::Ime(winit::event::Ime::Commit("漢".into())),
-            Modifiers::default(),
-            &blocks,
-        );
-        assert_eq!(bar.query.value(), "漢");
-        assert_eq!(bar.matches(), &[("p1".to_string(), 7, 8)]);
-    }
+            drive(
+                &mut bar,
+                &WindowEvent::Ime(winit::event::Ime::Commit("漢".into())),
+                Modifiers::default(),
+                &blocks,
+            );
+            assert_eq!(bar.query.value(), "漢");
+            assert_eq!(bar.matches(), &[("p1".to_string(), 7, 8)]);
+        }
 
-    #[test]
-    fn shared_input_preserves_select_all_and_field_traversal_shortcuts() {
-        use winit::keyboard::ModifiersState;
+        // Phase: shared_input_preserves_select_all_and_field_traversal_shortcuts.
+        {
+            use winit::keyboard::ModifiersState;
 
-        let blocks = [block("one two")];
-        let mut bar = FindBar::default();
-        bar.open(Some("one"), &blocks);
-        let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        drive(
-            &mut bar,
-            &key_event(Key::Character(SmolStr::new("a")), Some("a")),
-            ctrl,
-            &blocks,
-        );
-        assert_eq!(bar.query.selection_range_public(), Some((0, 3)));
-        drive(
-            &mut bar,
-            &key_event(Key::Character(SmolStr::new("two")), Some("two")),
-            Modifiers::default(),
-            &blocks,
-        );
-        assert_eq!(bar.query.value(), "two");
-        assert_eq!(bar.matches(), &[("p1".to_string(), 4, 7)]);
+            let blocks = [block("one two")];
+            let mut bar = FindBar::default();
+            bar.open(Some("one"), &blocks);
+            let ctrl = Modifiers::from(ModifiersState::CONTROL);
+            drive(
+                &mut bar,
+                &key_event(Key::Character(SmolStr::new("a")), Some("a")),
+                ctrl,
+                &blocks,
+            );
+            assert_eq!(bar.query.selection_range_public(), Some((0, 3)));
+            drive(
+                &mut bar,
+                &key_event(Key::Character(SmolStr::new("two")), Some("two")),
+                Modifiers::default(),
+                &blocks,
+            );
+            assert_eq!(bar.query.value(), "two");
+            assert_eq!(bar.matches(), &[("p1".to_string(), 4, 7)]);
 
-        drive(
-            &mut bar,
-            &key_event(Key::Named(NamedKey::Tab), None),
-            Modifiers::default(),
-            &blocks,
-        );
-        assert!(bar.on_replace);
-        assert!(Widget::is_focused(&bar.replacement));
-        assert!(!Widget::is_focused(&bar.query));
+            drive(
+                &mut bar,
+                &key_event(Key::Named(NamedKey::Tab), None),
+                Modifiers::default(),
+                &blocks,
+            );
+            assert!(bar.on_replace);
+            assert!(Widget::is_focused(&bar.replacement));
+            assert!(!Widget::is_focused(&bar.query));
+        }
     }
 }

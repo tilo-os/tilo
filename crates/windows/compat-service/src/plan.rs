@@ -1012,56 +1012,249 @@ mod tests {
     }
 
     #[test]
-    fn immutable_registry_matches_containerfile_artifacts() {
-        let wine = SystemRuntimeRegistry::resolve_for_host(
-            Layer::Wine,
-            &Runner::new("wine", "system").unwrap(),
-            "x86_64",
-        )
-        .unwrap();
-        assert!(
-            wine.host_paths()
-                .any(|path| path == Path::new("/usr/bin/wine"))
-        );
-        assert_eq!(wine.sandbox_entrypoint(), Path::new("/usr/bin/wine"));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn runtime_selection_follows_host_architecture_and_shipped_artifacts() {
+        // Phase `immutable_registry_matches_containerfile_artifacts`.
+        {
+            let wine = SystemRuntimeRegistry::resolve_for_host(
+                Layer::Wine,
+                &Runner::new("wine", "system").unwrap(),
+                "x86_64",
+            )
+            .unwrap();
+            assert!(
+                wine.host_paths()
+                    .any(|path| path == Path::new("/usr/bin/wine"))
+            );
+            assert_eq!(wine.sandbox_entrypoint(), Path::new("/usr/bin/wine"));
 
-        let proton = SystemRuntimeRegistry::resolve_for_host(
-            Layer::Proton,
-            &Runner::new("umu-proton", "UMU-Proton-10.0-4").unwrap(),
-            "x86_64",
-        )
-        .unwrap();
-        assert!(
-            proton
-                .host_paths()
-                .any(|path| path == Path::new("/usr/libexec/tilo-umu-run"))
-        );
-        assert!(
-            proton
-                .host_paths()
-                .any(|path| path == Path::new("/usr/bin/env"))
-        );
-        assert!(
-            proton
-                .host_paths()
-                .any(|path| path == Path::new(PROTON_HOST))
-        );
-        assert!(
-            proton
-                .environment
-                .contains(&("PROTONPATH", PROTON_MOUNT.to_string()))
-        );
-        assert!(
-            proton
-                .environment
-                .contains(&("UMU_RUNTIME_UPDATE", "0".to_string()))
-        );
-        assert!(
-            proton
-                .environment
-                .contains(&("PROTON_USE_NTSYNC", "1".to_string()))
-        );
-        assert!(proton.needs_nested_runtime);
+            let proton = SystemRuntimeRegistry::resolve_for_host(
+                Layer::Proton,
+                &Runner::new("umu-proton", "UMU-Proton-10.0-4").unwrap(),
+                "x86_64",
+            )
+            .unwrap();
+            assert!(
+                proton
+                    .host_paths()
+                    .any(|path| path == Path::new("/usr/libexec/tilo-umu-run"))
+            );
+            assert!(
+                proton
+                    .host_paths()
+                    .any(|path| path == Path::new("/usr/bin/env"))
+            );
+            assert!(
+                proton
+                    .host_paths()
+                    .any(|path| path == Path::new(PROTON_HOST))
+            );
+            assert!(
+                proton
+                    .environment
+                    .contains(&("PROTONPATH", PROTON_MOUNT.to_string()))
+            );
+            assert!(
+                proton
+                    .environment
+                    .contains(&("UMU_RUNTIME_UPDATE", "0".to_string()))
+            );
+            assert!(
+                proton
+                    .environment
+                    .contains(&("PROTON_USE_NTSYNC", "1".to_string()))
+            );
+            assert!(proton.needs_nested_runtime);
+        }
+        // Phase `host_architecture_selects_runtime_and_syscall_policy`.
+        {
+            for host in ["x86_64", "aarch64"] {
+                for layer in [Layer::Wine, Layer::Proton] {
+                    for architecture in [Architecture::Win32, Architecture::Win64] {
+                        let mut route = route(layer);
+                        route.settings.architecture = architecture;
+                        let (_directory, store, state, program) = setup(&route);
+                        let session = session();
+                        let registry = TestHostRegistry(host);
+                        let planner = SandboxPlanner::new(&store, &registry, &session).unwrap();
+                        let command = planner
+                            .plan(
+                                &route,
+                                &state,
+                                &program,
+                                &CapabilityPlan::empty(),
+                                "workspace",
+                                &LaunchLease::deny_all("lease"),
+                            )
+                            .unwrap();
+                        let expected_filter = match (host, layer) {
+                            (_, Layer::Proton) => None,
+                            ("aarch64", _) => Some(SeccompProfile::TiloJit),
+                            _ => Some(SeccompProfile::TiloDefault),
+                        };
+                        assert_eq!(command.seccomp_profile, expected_filter);
+                        assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));
+                        assert!(
+                            command
+                                .bwrap_argv
+                                .iter()
+                                .any(|arg| arg == "--net-restricted")
+                        );
+                        if host == "aarch64" {
+                            let mode = match (layer, architecture) {
+                                (Layer::Proton, _) => "proton",
+                                (_, Architecture::Win32) => "wine32",
+                                (_, Architecture::Win64) => "wine64",
+                            };
+                            assert!(
+                                command
+                                    .bwrap_argv
+                                    .windows(2)
+                                    .any(|args| args == [TRANSLATED_HELPER, mode])
+                            );
+                            assert!(command.bwrap_argv.windows(3).any(|args| {
+                                args == ["--ro-bind", X86_ROOTFS_HOST, crate::translated::ROOTFS]
+                            }));
+                            if layer == Layer::Wine {
+                                assert!(
+                                    !command.bwrap_argv.iter().any(|arg| arg == "/usr/bin/wine")
+                                );
+                                for resource in ["usr/lib/wine", "usr/lib64/wine"] {
+                                    let source = format!("{X86_ROOTFS_HOST}/{resource}");
+                                    let destination = format!("/{resource}");
+                                    assert!(command.bwrap_argv.windows(3).any(|args| {
+                                        args == ["--ro-bind", &source, &destination]
+                                    }));
+                                }
+                                assert!(
+                                    !command
+                                        .bwrap_argv
+                                        .iter()
+                                        .any(|arg| arg.contains("wine-wow64"))
+                                );
+                            }
+                        } else {
+                            assert!(
+                                !command
+                                    .bwrap_argv
+                                    .iter()
+                                    .any(|arg| arg == TRANSLATED_HELPER)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // Phase `only_translated_runtimes_read_their_private_procfs`.
+        {
+            for host in ["x86_64", "aarch64"] {
+                for layer in [Layer::Wine, Layer::Proton] {
+                    let route = route(layer);
+                    let (_directory, store, state, program) = setup(&route);
+                    let session = session();
+                    let registry = TestHostRegistry(host);
+                    let command = SandboxPlanner::new(&store, &registry, &session)
+                        .unwrap()
+                        .plan(
+                            &route,
+                            &state,
+                            &program,
+                            &CapabilityPlan::empty(),
+                            "workspace",
+                            &LaunchLease::deny_all("lease"),
+                        )
+                        .unwrap();
+                    let shim_position = command
+                        .bwrap_argv
+                        .iter()
+                        .position(|argument| {
+                            argument == launcher::landlock_shim::SANDBOX_EXEC_SUBCOMMAND
+                        })
+                        .unwrap();
+                    let shim = launcher::landlock_shim::ShimArgs::parse(
+                        &command.bwrap_argv[shim_position + 1..],
+                    )
+                    .unwrap();
+                    assert_eq!(shim.ro.contains(&PathBuf::from("/proc")), host == "aarch64");
+                    assert!(!shim.rw.iter().any(|path| path.starts_with("/proc")));
+                    assert!(!shim.no_landlock);
+                    let namespace = &command.bwrap_argv[..shim_position];
+                    assert!(namespace.iter().any(|argument| argument == "--unshare-all"));
+                    assert!(
+                        namespace
+                            .windows(2)
+                            .any(|arguments| arguments == ["--proc", "/proc"])
+                    );
+                    assert!(!namespace.iter().any(|argument| argument == "--share-pid"));
+                    assert!(
+                        !namespace
+                            .windows(3)
+                            .any(|arguments| arguments[0].contains("bind")
+                                && (Path::new(&arguments[1]).starts_with("/proc")
+                                    || Path::new(&arguments[2]).starts_with("/proc")))
+                    );
+                }
+            }
+        }
+        // Phase `arm_capsules_require_the_assembled_translated_provider`.
+        {
+            assert!(
+                require_translated_provider(Some(r#"{"provider":"fex-traditional-wine"}"#)).is_ok()
+            );
+            for manifest in [
+                Some(r#"{"schema_version":1,"host_architecture":"aarch64","provider":"none"}"#),
+                Some(r#"{"provider":"native-wine"}"#),
+                Some("not json"),
+                None,
+            ] {
+                assert!(matches!(
+                    require_translated_provider(manifest),
+                    Err(PlanError::WindowsProviderNotIncluded)
+                ));
+            }
+        }
+        // Phase `unknown_host_architecture_fails_closed`.
+        {
+            let error = SystemRuntimeRegistry::resolve_for_host(
+                Layer::Wine,
+                &Runner::new("wine", "system").unwrap(),
+                "riscv64",
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, PlanError::UnsupportedHostArchitecture(host) if host == "riscv64")
+            );
+        }
+        // Phase `shipped_fex_manifests_match_the_fixed_mount_contract`.
+        {
+            let emulator: serde_json::Value = serde_json::from_str(include_str!(
+                "../../../../os/usr/share/tilo/windows/fex-emulator.json"
+            ))
+            .unwrap();
+            let graphics: serde_json::Value = serde_json::from_str(include_str!(
+                "../../../../os/usr/share/tilo/windows/fex-graphics-provider.json"
+            ))
+            .unwrap();
+            assert_eq!(
+                emulator["emulator_v0"]["environment"]["FEX_ROOTFS"],
+                crate::translated::ROOTFS
+            );
+            assert_eq!(
+                emulator["emulator_v0"]["container_environment"]["FEX_ROOTFS"],
+                ""
+            );
+            assert_eq!(
+                emulator["emulator_v0"]["argv"],
+                serde_json::json!(["/usr/bin/FEX"])
+            );
+            assert_eq!(
+                graphics["graphics_provider_v0"]["root"],
+                crate::translated::ROOTFS
+            );
+        }
     }
 
     struct TestHostRegistry(&'static str);
@@ -1073,325 +1266,137 @@ mod tests {
     }
 
     #[test]
-    fn host_architecture_selects_runtime_and_syscall_policy() {
-        for host in ["x86_64", "aarch64"] {
-            for layer in [Layer::Wine, Layer::Proton] {
-                for architecture in [Architecture::Win32, Architecture::Win64] {
-                    let mut route = route(layer);
-                    route.settings.architecture = architecture;
-                    let (_directory, store, state, program) = setup(&route);
-                    let session = session();
-                    let registry = TestHostRegistry(host);
-                    let planner = SandboxPlanner::new(&store, &registry, &session).unwrap();
-                    let command = planner
-                        .plan(
-                            &route,
-                            &state,
-                            &program,
-                            &CapabilityPlan::empty(),
-                            "workspace",
-                            &LaunchLease::deny_all("lease"),
-                        )
-                        .unwrap();
-                    let expected_filter = match (host, layer) {
-                        (_, Layer::Proton) => None,
-                        ("aarch64", _) => Some(SeccompProfile::TiloJit),
-                        _ => Some(SeccompProfile::TiloDefault),
-                    };
-                    assert_eq!(command.seccomp_profile, expected_filter);
-                    assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));
-                    assert!(
-                        command
-                            .bwrap_argv
-                            .iter()
-                            .any(|arg| arg == "--net-restricted")
-                    );
-                    if host == "aarch64" {
-                        let mode = match (layer, architecture) {
-                            (Layer::Proton, _) => "proton",
-                            (_, Architecture::Win32) => "wine32",
-                            (_, Architecture::Win64) => "wine64",
-                        };
-                        assert!(
-                            command
-                                .bwrap_argv
-                                .windows(2)
-                                .any(|args| args == [TRANSLATED_HELPER, mode])
-                        );
-                        assert!(command.bwrap_argv.windows(3).any(|args| {
-                            args == ["--ro-bind", X86_ROOTFS_HOST, crate::translated::ROOTFS]
-                        }));
-                        if layer == Layer::Wine {
-                            assert!(!command.bwrap_argv.iter().any(|arg| arg == "/usr/bin/wine"));
-                            for resource in ["usr/lib/wine", "usr/lib64/wine"] {
-                                let source = format!("{X86_ROOTFS_HOST}/{resource}");
-                                let destination = format!("/{resource}");
-                                assert!(
-                                    command.bwrap_argv.windows(3).any(|args| {
-                                        args == ["--ro-bind", &source, &destination]
-                                    })
-                                );
-                            }
-                            assert!(
-                                !command
-                                    .bwrap_argv
-                                    .iter()
-                                    .any(|arg| arg.contains("wine-wow64"))
-                            );
-                        }
-                    } else {
-                        assert!(
-                            !command
-                                .bwrap_argv
-                                .iter()
-                                .any(|arg| arg == TRANSLATED_HELPER)
-                        );
-                    }
-                }
-            }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn wine_plans_are_default_deny_with_fixed_artifacts_and_no_injection() {
+        // Phase `uninstalled_runner_version_is_not_turned_into_a_path`.
+        {
+            let error = SystemRuntimeRegistry::new()
+                .resolve(Layer::Wine, &Runner::new("wine", "../../evil").unwrap())
+                .unwrap_err();
+            assert!(matches!(error, PlanError::InvalidRunner));
+            let error = SystemRuntimeRegistry::new()
+                .resolve(Layer::Wine, &Runner::new("wine", "11.0").unwrap())
+                .unwrap_err();
+            assert!(matches!(error, PlanError::RunnerNotInstalled(_)));
         }
-    }
-
-    #[test]
-    fn only_translated_runtimes_read_their_private_procfs() {
-        for host in ["x86_64", "aarch64"] {
-            for layer in [Layer::Wine, Layer::Proton] {
-                let route = route(layer);
-                let (_directory, store, state, program) = setup(&route);
-                let session = session();
-                let registry = TestHostRegistry(host);
-                let command = SandboxPlanner::new(&store, &registry, &session)
-                    .unwrap()
-                    .plan(
-                        &route,
-                        &state,
-                        &program,
-                        &CapabilityPlan::empty(),
-                        "workspace",
-                        &LaunchLease::deny_all("lease"),
-                    )
-                    .unwrap();
-                let shim_position = command
-                    .bwrap_argv
-                    .iter()
-                    .position(|argument| {
-                        argument == launcher::landlock_shim::SANDBOX_EXEC_SUBCOMMAND
-                    })
-                    .unwrap();
-                let shim = launcher::landlock_shim::ShimArgs::parse(
-                    &command.bwrap_argv[shim_position + 1..],
+        // Phase `catalogue_cannot_inject_environment_or_host_paths`.
+        {
+            let mut route = route(Layer::Wine);
+            route
+                .settings
+                .environment
+                .insert("LD_PRELOAD".to_string(), "/home/user/evil.so".to_string());
+            let (_directory, store, state, program) = setup(&route);
+            let registry = SystemRuntimeRegistry::assuming_provider();
+            let host = session();
+            let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
+            let error = planner
+                .plan(
+                    &route,
+                    &state,
+                    &program,
+                    &CapabilityPlan::empty(),
+                    "workspace",
+                    &LaunchLease::deny_all("lease"),
+                )
+                .unwrap_err();
+            assert!(matches!(error, PlanError::ForbiddenEnvironment(key) if key == "LD_PRELOAD"));
+        }
+        // Phase `wine_plan_is_default_deny_and_uses_fixed_artifacts`.
+        {
+            let route = route(Layer::Wine);
+            let (_directory, store, state, program) = setup(&route);
+            let registry = SystemRuntimeRegistry::assuming_provider();
+            let host = session();
+            let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
+            let command = planner
+                .plan(
+                    &route,
+                    &state,
+                    &program,
+                    &CapabilityPlan::empty(),
+                    "workspace",
+                    &LaunchLease::deny_all("lease"),
                 )
                 .unwrap();
-                assert_eq!(shim.ro.contains(&PathBuf::from("/proc")), host == "aarch64");
-                assert!(!shim.rw.iter().any(|path| path.starts_with("/proc")));
-                assert!(!shim.no_landlock);
-                let namespace = &command.bwrap_argv[..shim_position];
-                assert!(namespace.iter().any(|argument| argument == "--unshare-all"));
-                assert!(
-                    namespace
-                        .windows(2)
-                        .any(|arguments| arguments == ["--proc", "/proc"])
-                );
-                assert!(!namespace.iter().any(|argument| argument == "--share-pid"));
-                assert!(
-                    !namespace
-                        .windows(3)
-                        .any(|arguments| arguments[0].contains("bind")
-                            && (Path::new(&arguments[1]).starts_with("/proc")
-                                || Path::new(&arguments[2]).starts_with("/proc")))
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn arm_capsules_require_the_assembled_translated_provider() {
-        assert!(
-            require_translated_provider(Some(r#"{"provider":"fex-traditional-wine"}"#)).is_ok()
-        );
-        for manifest in [
-            Some(r#"{"schema_version":1,"host_architecture":"aarch64","provider":"none"}"#),
-            Some(r#"{"provider":"native-wine"}"#),
-            Some("not json"),
-            None,
-        ] {
-            assert!(matches!(
-                require_translated_provider(manifest),
-                Err(PlanError::WindowsProviderNotIncluded)
-            ));
-        }
-    }
-
-    #[test]
-    fn unknown_host_architecture_fails_closed() {
-        let error = SystemRuntimeRegistry::resolve_for_host(
-            Layer::Wine,
-            &Runner::new("wine", "system").unwrap(),
-            "riscv64",
-        )
-        .unwrap_err();
-        assert!(matches!(error, PlanError::UnsupportedHostArchitecture(host) if host == "riscv64"));
-    }
-
-    #[test]
-    fn shipped_fex_manifests_match_the_fixed_mount_contract() {
-        let emulator: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../os/usr/share/tilo/windows/fex-emulator.json"
-        ))
-        .unwrap();
-        let graphics: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../os/usr/share/tilo/windows/fex-graphics-provider.json"
-        ))
-        .unwrap();
-        assert_eq!(
-            emulator["emulator_v0"]["environment"]["FEX_ROOTFS"],
-            crate::translated::ROOTFS
-        );
-        assert_eq!(
-            emulator["emulator_v0"]["container_environment"]["FEX_ROOTFS"],
-            ""
-        );
-        assert_eq!(
-            emulator["emulator_v0"]["argv"],
-            serde_json::json!(["/usr/bin/FEX"])
-        );
-        assert_eq!(
-            graphics["graphics_provider_v0"]["root"],
-            crate::translated::ROOTFS
-        );
-    }
-
-    #[test]
-    fn uninstalled_runner_version_is_not_turned_into_a_path() {
-        let error = SystemRuntimeRegistry::new()
-            .resolve(Layer::Wine, &Runner::new("wine", "../../evil").unwrap())
-            .unwrap_err();
-        assert!(matches!(error, PlanError::InvalidRunner));
-        let error = SystemRuntimeRegistry::new()
-            .resolve(Layer::Wine, &Runner::new("wine", "11.0").unwrap())
-            .unwrap_err();
-        assert!(matches!(error, PlanError::RunnerNotInstalled(_)));
-    }
-
-    #[test]
-    fn catalogue_cannot_inject_environment_or_host_paths() {
-        let mut route = route(Layer::Wine);
-        route
-            .settings
-            .environment
-            .insert("LD_PRELOAD".to_string(), "/home/user/evil.so".to_string());
-        let (_directory, store, state, program) = setup(&route);
-        let registry = SystemRuntimeRegistry::assuming_provider();
-        let host = session();
-        let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
-        let error = planner
-            .plan(
-                &route,
-                &state,
-                &program,
-                &CapabilityPlan::empty(),
-                "workspace",
-                &LaunchLease::deny_all("lease"),
-            )
-            .unwrap_err();
-        assert!(matches!(error, PlanError::ForbiddenEnvironment(key) if key == "LD_PRELOAD"));
-    }
-
-    #[test]
-    fn wine_plan_is_default_deny_and_uses_fixed_artifacts() {
-        let route = route(Layer::Wine);
-        let (_directory, store, state, program) = setup(&route);
-        let registry = SystemRuntimeRegistry::assuming_provider();
-        let host = session();
-        let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
-        let command = planner
-            .plan(
-                &route,
-                &state,
-                &program,
-                &CapabilityPlan::empty(),
-                "workspace",
-                &LaunchLease::deny_all("lease"),
-            )
-            .unwrap();
-        assert!(command.bwrap_argv.iter().any(|arg| arg == "--clearenv"));
-        assert!(
-            command
-                .bwrap_argv
-                .windows(2)
-                .any(|args| { args == ["--chdir", &format!("{PREFIX_MOUNT}/drive_c")] })
-        );
-        assert_eq!(command.identity_uid, host.uid);
-        for (fd, path) in [
-            (crate::execute::PASSWD_CHILD_FD, "/etc/passwd"),
-            (crate::execute::GROUP_CHILD_FD, "/etc/group"),
-        ] {
-            assert!(
-                command
-                    .bwrap_argv
-                    .windows(3)
-                    .any(|args| args == ["--ro-bind-data", fd.to_string().as_str(), path])
-            );
+            assert!(command.bwrap_argv.iter().any(|arg| arg == "--clearenv"));
             assert!(
                 command
                     .bwrap_argv
                     .windows(2)
-                    .any(|args| args == ["--ro", path])
+                    .any(|args| { args == ["--chdir", &format!("{PREFIX_MOUNT}/drive_c")] })
             );
+            assert_eq!(command.identity_uid, host.uid);
+            for (fd, path) in [
+                (crate::execute::PASSWD_CHILD_FD, "/etc/passwd"),
+                (crate::execute::GROUP_CHILD_FD, "/etc/group"),
+            ] {
+                assert!(
+                    command
+                        .bwrap_argv
+                        .windows(3)
+                        .any(|args| args == ["--ro-bind-data", fd.to_string().as_str(), path])
+                );
+                assert!(
+                    command
+                        .bwrap_argv
+                        .windows(2)
+                        .any(|args| args == ["--ro", path])
+                );
+                assert!(
+                    !command
+                        .bwrap_argv
+                        .windows(3)
+                        .any(|args| matches!(args[0].as_str(), "--bind" | "--ro-bind")
+                            && args[1] == path)
+                );
+            }
+            for key in ["USER", "LOGNAME"] {
+                assert!(
+                    command
+                        .bwrap_argv
+                        .windows(3)
+                        .any(|args| args == ["--setenv", key, "tilo"])
+                );
+            }
+            assert!(command.bwrap_argv.iter().any(|arg| arg == "--unshare-all"));
+            assert!(
+                command
+                    .bwrap_argv
+                    .iter()
+                    .any(|arg| arg == "--net-restricted")
+            );
+            assert!(!command.latency_sensitive);
+            assert!(command.bwrap_argv.iter().any(|arg| arg == "--seccomp"));
+            assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));
+            let expected_entry = if std::env::consts::ARCH == "aarch64" {
+                TRANSLATED_HELPER
+            } else {
+                "/usr/bin/wine"
+            };
+            assert!(command.bwrap_argv.iter().any(|arg| arg == expected_entry));
+            assert!(command.bwrap_argv.iter().any(|arg| {
+                arg == "/run/tilo/capsule/prefix/drive_c/Program Files/App/app.exe"
+            }));
             assert!(
                 !command
                     .bwrap_argv
-                    .windows(3)
-                    .any(|args| matches!(args[0].as_str(), "--bind" | "--ro-bind")
-                        && args[1] == path)
+                    .iter()
+                    .any(|arg| arg.contains("/home/user"))
             );
-        }
-        for key in ["USER", "LOGNAME"] {
-            assert!(
-                command
-                    .bwrap_argv
-                    .windows(3)
-                    .any(|args| args == ["--setenv", key, "tilo"])
-            );
-        }
-        assert!(command.bwrap_argv.iter().any(|arg| arg == "--unshare-all"));
-        assert!(
-            command
-                .bwrap_argv
-                .iter()
-                .any(|arg| arg == "--net-restricted")
-        );
-        assert!(!command.latency_sensitive);
-        assert!(command.bwrap_argv.iter().any(|arg| arg == "--seccomp"));
-        assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));
-        let expected_entry = if std::env::consts::ARCH == "aarch64" {
-            TRANSLATED_HELPER
-        } else {
-            "/usr/bin/wine"
-        };
-        assert!(command.bwrap_argv.iter().any(|arg| arg == expected_entry));
-        assert!(
-            command
-                .bwrap_argv
-                .iter()
-                .any(|arg| { arg == "/run/tilo/capsule/prefix/drive_c/Program Files/App/app.exe" })
-        );
-        assert!(
-            !command
-                .bwrap_argv
-                .iter()
-                .any(|arg| arg.contains("/home/user"))
-        );
-        for (fd, destination) in [
-            (crate::execute::PREFIX_CHILD_FD, PREFIX_MOUNT),
-            (crate::execute::HOME_CHILD_FD, HOME_MOUNT),
-        ] {
-            assert!(
-                command
-                    .bwrap_argv
-                    .windows(3)
-                    .any(|args| { args == ["--bind-fd", fd.to_string().as_str(), destination] })
-            );
+            for (fd, destination) in [
+                (crate::execute::PREFIX_CHILD_FD, PREFIX_MOUNT),
+                (crate::execute::HOME_CHILD_FD, HOME_MOUNT),
+            ] {
+                assert!(
+                    command.bwrap_argv.windows(3).any(|args| {
+                        args == ["--bind-fd", fd.to_string().as_str(), destination]
+                    })
+                );
+            }
         }
     }
 
@@ -1682,66 +1687,200 @@ mod tests {
     }
 
     #[test]
-    fn proton_provisions_immutable_runtime_with_private_lock_and_metadata() {
-        let route = route(Layer::Proton);
-        let (_directory, store, state, program) = setup(&route);
-        let host = session();
-        let planner = SandboxPlanner::new(&store, &TEST_REGISTRY, &host).unwrap();
-        let command = planner
-            .plan(
-                &route,
-                &state,
-                &program,
-                &CapabilityPlan::empty(),
-                "workspace",
-                &LaunchLease::deny_all("lease"),
-            )
-            .unwrap();
-        assert!(command.runtime_lock_required);
-        let platform = format!("{STEAM_RUNTIME_MOUNT}/{STEAM_PLATFORM}");
-        let lock = format!("{platform}/files/.ref");
-        let platform_bind = command
-            .bwrap_argv
-            .windows(3)
-            .position(|args| args[0] == "--ro-bind" && args[2] == platform)
-            .unwrap();
-        let lock_bind = command
-            .bwrap_argv
-            .windows(3)
-            .position(|args| {
-                args == [
-                    "--bind-data",
-                    crate::execute::RUNTIME_LOCK_CHILD_FD.to_string().as_str(),
-                    &lock,
-                ]
-            })
-            .unwrap();
-        assert!(lock_bind > platform_bind);
-        assert!(
-            command
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn capsules_provision_private_storage_brokered_audio_and_proton_runtimes() {
+        // Phase `proton_provisions_immutable_runtime_with_private_lock_and_metadata`.
+        {
+            let route = route(Layer::Proton);
+            let (_directory, store, state, program) = setup(&route);
+            let host = session();
+            let planner = SandboxPlanner::new(&store, &TEST_REGISTRY, &host).unwrap();
+            let command = planner
+                .plan(
+                    &route,
+                    &state,
+                    &program,
+                    &CapabilityPlan::empty(),
+                    "workspace",
+                    &LaunchLease::deny_all("lease"),
+                )
+                .unwrap();
+            assert!(command.runtime_lock_required);
+            let platform = format!("{STEAM_RUNTIME_MOUNT}/{STEAM_PLATFORM}");
+            let lock = format!("{platform}/files/.ref");
+            let platform_bind = command
                 .bwrap_argv
                 .windows(3)
-                .any(|args| { args == ["--setenv", "UMU_FOLDERS_PATH", UMU_FOLDERS_MOUNT] })
-        );
-        assert!(
-            command
+                .position(|args| args[0] == "--ro-bind" && args[2] == platform)
+                .unwrap();
+            let lock_bind = command
                 .bwrap_argv
                 .windows(3)
-                .any(|args| { args == ["--setenv", "UMU_RUNTIME_UPDATE", "0"] })
-        );
-        assert!(
-            !command
-                .bwrap_argv
-                .windows(3)
-                .any(|args| { args[0] == "--bind" && args[1].starts_with(STEAM_RUNTIME_HOST) })
-        );
-        assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));
-    }
+                .position(|args| {
+                    args == [
+                        "--bind-data",
+                        crate::execute::RUNTIME_LOCK_CHILD_FD.to_string().as_str(),
+                        &lock,
+                    ]
+                })
+                .unwrap();
+            assert!(lock_bind > platform_bind);
+            assert!(
+                command
+                    .bwrap_argv
+                    .windows(3)
+                    .any(|args| { args == ["--setenv", "UMU_FOLDERS_PATH", UMU_FOLDERS_MOUNT] })
+            );
+            assert!(
+                command
+                    .bwrap_argv
+                    .windows(3)
+                    .any(|args| { args == ["--setenv", "UMU_RUNTIME_UPDATE", "0"] })
+            );
+            assert!(
+                !command
+                    .bwrap_argv
+                    .windows(3)
+                    .any(|args| { args[0] == "--bind" && args[1].starts_with(STEAM_RUNTIME_HOST) })
+            );
+            assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));
+        }
+        // Phase `capsule_temporary_storage_is_private_and_writable`.
+        {
+            for layer in [Layer::Wine, Layer::Proton] {
+                let route = route(layer);
+                let (_directory, store, state, program) = setup(&route);
+                let registry = SystemRuntimeRegistry::assuming_provider();
+                let host = session();
+                let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
+                let command = planner
+                    .plan(
+                        &route,
+                        &state,
+                        &program,
+                        &CapabilityPlan::empty(),
+                        "workspace",
+                        &LaunchLease::deny_all("lease"),
+                    )
+                    .unwrap();
+                let shim_position = command
+                    .bwrap_argv
+                    .iter()
+                    .position(|arg| arg == launcher::landlock_shim::SANDBOX_EXEC_SUBCOMMAND)
+                    .unwrap();
+                let shim = launcher::landlock_shim::ShimArgs::parse(
+                    &command.bwrap_argv[shim_position + 1..],
+                )
+                .unwrap();
+                assert!(shim.rw.contains(&PathBuf::from("/tmp")));
+                assert!(!shim.no_landlock);
+                assert!(shim.net_restricted);
+                let mounts = &command.bwrap_argv[..shim_position];
+                assert!(mounts.windows(2).any(|args| args == ["--tmpfs", "/tmp"]));
+                assert!(!mounts.windows(3).any(|args| {
+                    args[0].contains("bind") && (args[1] == "/tmp" || args[2] == "/tmp")
+                }));
+            }
+        }
+        // Phase `microphone_capsule_uses_brokered_audio_without_raw_sound_device`.
+        {
+            let route = route(Layer::Wine);
+            let (_directory, store, state, program) = setup(&route);
+            let registry = SystemRuntimeRegistry::assuming_provider();
+            let host = session();
+            let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
+            let capabilities = CapabilityPlan {
+                rw_paths: vec![
+                    PathBuf::from("/run/user/1000/pipewire-0"),
+                    PathBuf::from("/dev/snd"),
+                ],
+                devices: vec!["microphone".to_string()],
+                ..CapabilityPlan::empty()
+            };
+            let lease = LaunchLease {
+                id: "audio-lease".to_string(),
+                audio: vec![
+                    AudioBinding {
+                        protocol: AudioProtocol::PipeWire,
+                        host_socket: PathBuf::from(
+                            "/run/tilo/windows-compat/leases/audio-lease/audio/pipewire-0",
+                        ),
+                        input_enabled: true,
+                    },
+                    AudioBinding {
+                        protocol: AudioProtocol::Pulse,
+                        host_socket: PathBuf::from(
+                            "/run/tilo/windows-compat/leases/audio-lease/audio/pulse/native",
+                        ),
+                        input_enabled: true,
+                    },
+                ],
+                net_gate: None,
+            };
+            let command = planner
+                .plan(&route, &state, &program, &capabilities, "workspace", &lease)
+                .unwrap();
+            assert!(
+                command.bwrap_argv.iter().any(
+                    |arg| arg == "/run/tilo/windows-compat/leases/audio-lease/audio/pipewire-0"
+                )
+            );
+            assert!(
+                command
+                    .bwrap_argv
+                    .iter()
+                    .any(|arg| arg
+                        == "/run/tilo/windows-compat/leases/audio-lease/audio/pulse/native")
+            );
+            assert!(!command.bwrap_argv.iter().any(|arg| arg == "/dev/snd"));
+            // The sandbox must name its own runtime destination so clients can
+            // resolve the private PipeWire endpoint. The host socket occurs only
+            // as the source half of the explicit broker bind above, never as a
+            // capability-derived bind.
+            assert!(
+                command
+                    .bwrap_argv
+                    .iter()
+                    .any(|arg| arg == "/run/user/1000/pipewire-0")
+            );
+        }
+        // Phase `planner_rejects_a_symlinked_capsule_data_component`.
+        {
+            use std::os::unix::fs::symlink;
 
-    #[test]
-    fn capsule_temporary_storage_is_private_and_writable() {
-        for layer in [Layer::Wine, Layer::Proton] {
-            let route = route(layer);
+            let route = route(Layer::Wine);
+            let (_directory, store, state, program) = setup(&route);
+            let outside = TempDir::new().unwrap();
+            let data = store.root().join("capsules").join(&state.id).join("data");
+            std::fs::remove_dir_all(&data).unwrap();
+            symlink(outside.path(), &data).unwrap();
+            let registry = SystemRuntimeRegistry::assuming_provider();
+            let host = session();
+            let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
+
+            assert!(
+                planner
+                    .plan(
+                        &route,
+                        &state,
+                        &program,
+                        &CapabilityPlan::empty(),
+                        "workspace",
+                        &LaunchLease::deny_all("lease"),
+                    )
+                    .is_err()
+            );
+            assert!(
+                !outside.path().join("prefix").exists(),
+                "planner must not bind a path through an attacker symlink"
+            );
+        }
+        // Phase `proton_plan_uses_umu_and_protonpath_without_blocking_its_nested_runtime`.
+        {
+            let route = route(Layer::Proton);
             let (_directory, store, state, program) = setup(&route);
             let registry = SystemRuntimeRegistry::assuming_provider();
             let host = session();
@@ -1756,162 +1895,32 @@ mod tests {
                     &LaunchLease::deny_all("lease"),
                 )
                 .unwrap();
-            let shim_position = command
-                .bwrap_argv
-                .iter()
-                .position(|arg| arg == launcher::landlock_shim::SANDBOX_EXEC_SUBCOMMAND)
-                .unwrap();
-            let shim =
-                launcher::landlock_shim::ShimArgs::parse(&command.bwrap_argv[shim_position + 1..])
-                    .unwrap();
-            assert!(shim.rw.contains(&PathBuf::from("/tmp")));
-            assert!(!shim.no_landlock);
-            assert!(shim.net_restricted);
-            let mounts = &command.bwrap_argv[..shim_position];
-            assert!(mounts.windows(2).any(|args| args == ["--tmpfs", "/tmp"]));
-            assert!(!mounts.windows(3).any(|args| {
-                args[0].contains("bind") && (args[1] == "/tmp" || args[2] == "/tmp")
-            }));
+            assert!(
+                command
+                    .bwrap_argv
+                    .iter()
+                    .any(|arg| arg == "/usr/libexec/tilo-umu-run")
+            );
+            assert!(
+                command
+                    .bwrap_argv
+                    .windows(3)
+                    .any(|args| { args == ["--setenv", "PROTONPATH", PROTON_MOUNT] })
+            );
+            assert!(
+                command
+                    .bwrap_argv
+                    .windows(3)
+                    .any(|args| { args == ["--setenv", "PROTON_USE_NTSYNC", "1"] })
+            );
+            assert!(command.seccomp_profile.is_none());
+            assert!(command.latency_sensitive);
+            assert!(
+                command
+                    .bwrap_argv
+                    .windows(3)
+                    .any(|args| { args == ["--dev-bind", "/dev/ntsync", "/dev/ntsync"] })
+            );
         }
-    }
-
-    #[test]
-    fn microphone_capsule_uses_brokered_audio_without_raw_sound_device() {
-        let route = route(Layer::Wine);
-        let (_directory, store, state, program) = setup(&route);
-        let registry = SystemRuntimeRegistry::assuming_provider();
-        let host = session();
-        let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
-        let capabilities = CapabilityPlan {
-            rw_paths: vec![
-                PathBuf::from("/run/user/1000/pipewire-0"),
-                PathBuf::from("/dev/snd"),
-            ],
-            devices: vec!["microphone".to_string()],
-            ..CapabilityPlan::empty()
-        };
-        let lease = LaunchLease {
-            id: "audio-lease".to_string(),
-            audio: vec![
-                AudioBinding {
-                    protocol: AudioProtocol::PipeWire,
-                    host_socket: PathBuf::from(
-                        "/run/tilo/windows-compat/leases/audio-lease/audio/pipewire-0",
-                    ),
-                    input_enabled: true,
-                },
-                AudioBinding {
-                    protocol: AudioProtocol::Pulse,
-                    host_socket: PathBuf::from(
-                        "/run/tilo/windows-compat/leases/audio-lease/audio/pulse/native",
-                    ),
-                    input_enabled: true,
-                },
-            ],
-            net_gate: None,
-        };
-        let command = planner
-            .plan(&route, &state, &program, &capabilities, "workspace", &lease)
-            .unwrap();
-        assert!(
-            command
-                .bwrap_argv
-                .iter()
-                .any(|arg| arg == "/run/tilo/windows-compat/leases/audio-lease/audio/pipewire-0")
-        );
-        assert!(
-            command
-                .bwrap_argv
-                .iter()
-                .any(|arg| arg == "/run/tilo/windows-compat/leases/audio-lease/audio/pulse/native")
-        );
-        assert!(!command.bwrap_argv.iter().any(|arg| arg == "/dev/snd"));
-        // The sandbox must name its own runtime destination so clients can
-        // resolve the private PipeWire endpoint. The host socket occurs only
-        // as the source half of the explicit broker bind above, never as a
-        // capability-derived bind.
-        assert!(
-            command
-                .bwrap_argv
-                .iter()
-                .any(|arg| arg == "/run/user/1000/pipewire-0")
-        );
-    }
-
-    #[test]
-    fn planner_rejects_a_symlinked_capsule_data_component() {
-        use std::os::unix::fs::symlink;
-
-        let route = route(Layer::Wine);
-        let (_directory, store, state, program) = setup(&route);
-        let outside = TempDir::new().unwrap();
-        let data = store.root().join("capsules").join(&state.id).join("data");
-        std::fs::remove_dir_all(&data).unwrap();
-        symlink(outside.path(), &data).unwrap();
-        let registry = SystemRuntimeRegistry::assuming_provider();
-        let host = session();
-        let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
-
-        assert!(
-            planner
-                .plan(
-                    &route,
-                    &state,
-                    &program,
-                    &CapabilityPlan::empty(),
-                    "workspace",
-                    &LaunchLease::deny_all("lease"),
-                )
-                .is_err()
-        );
-        assert!(
-            !outside.path().join("prefix").exists(),
-            "planner must not bind a path through an attacker symlink"
-        );
-    }
-
-    #[test]
-    fn proton_plan_uses_umu_and_protonpath_without_blocking_its_nested_runtime() {
-        let route = route(Layer::Proton);
-        let (_directory, store, state, program) = setup(&route);
-        let registry = SystemRuntimeRegistry::assuming_provider();
-        let host = session();
-        let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
-        let command = planner
-            .plan(
-                &route,
-                &state,
-                &program,
-                &CapabilityPlan::empty(),
-                "workspace",
-                &LaunchLease::deny_all("lease"),
-            )
-            .unwrap();
-        assert!(
-            command
-                .bwrap_argv
-                .iter()
-                .any(|arg| arg == "/usr/libexec/tilo-umu-run")
-        );
-        assert!(
-            command
-                .bwrap_argv
-                .windows(3)
-                .any(|args| { args == ["--setenv", "PROTONPATH", PROTON_MOUNT] })
-        );
-        assert!(
-            command
-                .bwrap_argv
-                .windows(3)
-                .any(|args| { args == ["--setenv", "PROTON_USE_NTSYNC", "1"] })
-        );
-        assert!(command.seccomp_profile.is_none());
-        assert!(command.latency_sensitive);
-        assert!(
-            command
-                .bwrap_argv
-                .windows(3)
-                .any(|args| { args == ["--dev-bind", "/dev/ntsync", "/dev/ntsync"] })
-        );
     }
 }

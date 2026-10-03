@@ -10,8 +10,9 @@ import native_app_capture
 from fixture_host_tools import fixture_path
 
 class SettingsCollectorTests(unittest.TestCase):
-    def test_normal_launch_isolated_roots_no_fixture_or_screenshot_flags(self):
-        with tempfile.TemporaryDirectory() as directory:
+    def test_collector_launches_settings_only_through_normal_typing_route(self):
+        with self.subTest(case='normal launch, isolated roots, no fixture or screenshot flags'), \
+             tempfile.TemporaryDirectory() as directory:
             root=Path(directory);app=root/'app'
             app.write_text('''#!/usr/bin/env python3
 import os,sys,json
@@ -40,9 +41,8 @@ raise SystemExit(7)
             meta=json.loads((run/'metadata.json').read_text())
             self.assertEqual(meta['hashes_before'],meta['hashes_after'])
             self.assertEqual(list(meta['hashes_before']),[str(app.resolve())])
-
-    def test_unsupported_scroll_mode_does_not_launch_settings(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with self.subTest(case='unsupported scroll mode does not launch settings'), \
+             tempfile.TemporaryDirectory() as directory:
             root=Path(directory);app=root/'app';marker=root/'launched'
             app.write_text('#!/usr/bin/env python3\nfrom pathlib import Path\nPath('+repr(str(marker))+').touch()\n')
             app.chmod(0o755)

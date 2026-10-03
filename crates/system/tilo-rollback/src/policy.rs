@@ -178,7 +178,7 @@ pub fn write_signed_prediction(
     };
     let path = dir.join(name);
     let json = serde_json::to_string_pretty(&doc)?;
-    atomic_file::write_with_mode(&path, json.as_bytes(), 0o644)
+    tilo_files::native::atomic::write_with_mode(&path, json.as_bytes(), 0o644)
         .with_context(|| format!("atomically writing {}", path.display()))?;
     Ok(path)
 }
@@ -311,6 +311,34 @@ pub struct NvConstraint {
     pub operand: u64,
 }
 
+/// Everything one generation's seal policy is built from: what sealing commits to, what a
+/// token records, and what unlocking replays.
+#[derive(Debug, Clone, Copy)]
+pub struct GenerationPolicy<'a> {
+    /// The generation, which is also the `PolicyAuthorize` policy reference.
+    pub generation: u64,
+    /// TPM Name of the prediction authority's public key.
+    pub key_name: &'a [u8],
+    pub pcr_bank: &'a str,
+    /// PCRs covered by the signed prediction, before `PolicyAuthorize`.
+    pub pcrs: &'a [u32],
+    /// Device-local PCRs applied after `PolicyAuthorize`.
+    pub platform_pcrs: &'a [u32],
+    pub nv: NvConstraint,
+    /// Is a PIN (`PolicyAuthValue`) part of the policy?
+    pub pin: bool,
+}
+
+impl GenerationPolicy<'_> {
+    fn selection(&self) -> String {
+        pcr_selection(self.pcr_bank, self.pcrs)
+    }
+
+    fn platform_selection(&self) -> String {
+        pcr_selection(self.pcr_bank, self.platform_pcrs)
+    }
+}
+
 /// The full seal policy digest for one generation.
 ///
 /// # Errors
@@ -319,17 +347,14 @@ pub struct NvConstraint {
 pub fn seal_policy(
     runner: &dyn Runner,
     ws: &Workspace,
-    key_name: &[u8],
-    platform_selection: &str,
-    gen_num: u64,
-    nv: NvConstraint,
-    with_pin: bool,
+    policy: &GenerationPolicy<'_>,
 ) -> Result<Vec<u8>> {
     flush(runner);
-    let name_file = ws.put("signkey.name", key_name)?;
-    let ref_file = ws.put("policyref.bin", &generation::policy_ref(gen_num))?;
-    let operand_file = ws.put("operand.bin", &nv.operand.to_be_bytes())?;
-    let idx = format!("0x{:08X}", nv.index);
+    let name_file = ws.put("signkey.name", policy.key_name)?;
+    let ref_file = ws.put("policyref.bin", &generation::policy_ref(policy.generation))?;
+    let operand_file = ws.put("operand.bin", &policy.nv.operand.to_be_bytes())?;
+    let idx = format!("0x{:08X}", policy.nv.index);
+    let platform_selection = policy.platform_selection();
     let sess = ws.path("trial_seal.ctx");
 
     require(
@@ -358,7 +383,7 @@ pub fn seal_policy(
         require(
             runner,
             "tpm2_policypcr",
-            &argv!["-S", sess.as_os_str(), "-l", platform_selection],
+            &argv!["-S", sess.as_os_str(), "-l", &platform_selection],
             "binding the seal to this machine's platform PCRs",
         )?;
         require(
@@ -376,7 +401,7 @@ pub fn seal_policy(
             ],
             "computing the rollback-floor PolicyNV digest",
         )?;
-        if with_pin {
+        if policy.pin {
             require(
                 runner,
                 "tpm2_policyauthvalue",
@@ -445,40 +470,19 @@ struct PredictionTicket {
 /// Returns an error if loading the prediction key or minting its verification ticket fails
 /// outright (as opposed to simply not verifying), if the policy session fails to start, if
 /// reading live PCRs fails, or if the rollback-floor `PolicyNV` step fails.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each argument is an independent input of the TPM policy the prediction was sealed against"
-)]
 pub fn satisfy(
     runner: &dyn Runner,
     ws: &Workspace,
     public_key_pem: &Path,
-    key_name: &[u8],
+    policy: &GenerationPolicy<'_>,
     prediction: &Prediction,
-    gen_num: u64,
-    selection: &str,
-    platform_selection: &str,
-    nv_index: u32,
-    nv_operand: u64,
-    with_pin: bool,
 ) -> Result<Option<SatisfiedSession>> {
     let Some(prediction_ticket) =
-        verify_prediction_signature(runner, ws, public_key_pem, prediction, gen_num)?
+        verify_prediction_signature(runner, ws, public_key_pem, prediction, policy.generation)?
     else {
         return Ok(None);
     };
-    drive_policy_session(
-        runner,
-        ws,
-        key_name,
-        gen_num,
-        selection,
-        platform_selection,
-        nv_index,
-        nv_operand,
-        with_pin,
-        &prediction_ticket,
-    )
+    drive_policy_session(runner, ws, policy, &prediction_ticket)
 }
 
 /// Stage 1 of [`satisfy`]: mint the verification ticket with only the external key loaded.
@@ -548,22 +552,15 @@ fn verify_prediction_signature(
 }
 
 /// Stage 2 of [`satisfy`]: the real policy session, spending the ticket stage 1 minted.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "stage 2 takes the same policy inputs as satisfy, plus the stage 1 ticket"
-)]
 fn drive_policy_session(
     runner: &dyn Runner,
     ws: &Workspace,
-    key_name: &[u8],
-    gen_num: u64,
-    selection: &str,
-    platform_selection: &str,
-    nv_index: u32,
-    nv_operand: u64,
-    with_pin: bool,
+    policy: &GenerationPolicy<'_>,
     prediction_ticket: &PredictionTicket,
 ) -> Result<Option<SatisfiedSession>> {
+    let gen_num = policy.generation;
+    let selection = policy.selection();
+    let platform_selection = policy.platform_selection();
     let sess = ws.path("policy.ctx");
     require(
         runner,
@@ -571,16 +568,16 @@ fn drive_policy_session(
         &argv!["--policy-session", "-S", sess.as_os_str()],
         "starting the unseal policy session",
     )?;
-    let name_file = ws.put("signkey.name", key_name)?;
+    let name_file = ws.put("signkey.name", policy.key_name)?;
     let ref_file = ws.put("policyref.bin", &generation::policy_ref(gen_num))?;
-    let operand_file = ws.put("operand.bin", &nv_operand.to_be_bytes())?;
-    let idx = format!("0x{nv_index:08X}");
+    let operand_file = ws.put("operand.bin", &policy.nv.operand.to_be_bytes())?;
+    let idx = format!("0x{:08X}", policy.nv.index);
 
     let drive = || -> Result<Option<()>> {
         // Live PCRs.
         let pcr = runner.run(
             "tpm2_policypcr",
-            &argv!["-S", sess.as_os_str(), "-l", selection],
+            &argv!["-S", sess.as_os_str(), "-l", &selection],
             None,
         )?;
         if !pcr.ok() {
@@ -609,7 +606,7 @@ fn drive_policy_session(
         }
         let platform = runner.run(
             "tpm2_policypcr",
-            &argv!["-S", sess.as_os_str(), "-l", platform_selection],
+            &argv!["-S", sess.as_os_str(), "-l", &platform_selection],
             None,
         )?;
         if !platform.ok() {
@@ -640,7 +637,7 @@ fn drive_policy_session(
                 nv.last_error_line()
             );
         }
-        if with_pin {
+        if policy.pin {
             require(
                 runner,
                 "tpm2_policyauthvalue",
@@ -669,32 +666,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pcr_selection_matches_the_tools_syntax() {
-        assert_eq!(pcr_selection("sha256", &[7, 11]), "sha256:7,11");
-        assert_eq!(pcr_selection("sha384", &[0]), "sha384:0");
-    }
-
-    #[test]
-    fn rsassa_marshalling_has_the_tpm_structure_layout() {
-        let sig = vec![0xABu8; 256];
-        let m = marshal_rsassa_sha256(&sig).unwrap();
-        assert_eq!(m.len(), 256 + 6);
-        assert_eq!(&m[0..2], &[0x00, 0x14], "sigAlg must be TPM_ALG_RSASSA");
-        assert_eq!(&m[2..4], &[0x00, 0x0B], "hash must be TPM_ALG_SHA256");
-        assert_eq!(&m[4..6], &[0x01, 0x00], "size must be 256 big-endian");
-        assert_eq!(&m[6..], &sig[..]);
-    }
-
-    #[test]
-    fn an_oversized_signature_is_refused_rather_than_truncated() {
-        assert!(marshal_rsassa_sha256(&vec![0u8; 70_000]).is_err());
-    }
-
-    #[test]
-    fn workspace_writes_scratch_files() {
-        let d = tempfile::tempdir().unwrap();
-        let ws = Workspace::new(d.path());
-        let p = ws.put("x.bin", b"abc").unwrap();
-        assert_eq!(std::fs::read(p).unwrap(), b"abc");
+    fn policy_marshalling_matches_tool_and_tpm_layouts() {
+        // Phase `pcr_selection_matches_the_tools_syntax`.
+        {
+            assert_eq!(pcr_selection("sha256", &[7, 11]), "sha256:7,11");
+            assert_eq!(pcr_selection("sha384", &[0]), "sha384:0");
+        }
+        // Phase `rsassa_marshalling_has_the_tpm_structure_layout`.
+        {
+            let sig = vec![0xABu8; 256];
+            let m = marshal_rsassa_sha256(&sig).unwrap();
+            assert_eq!(m.len(), 256 + 6);
+            assert_eq!(&m[0..2], &[0x00, 0x14], "sigAlg must be TPM_ALG_RSASSA");
+            assert_eq!(&m[2..4], &[0x00, 0x0B], "hash must be TPM_ALG_SHA256");
+            assert_eq!(&m[4..6], &[0x01, 0x00], "size must be 256 big-endian");
+            assert_eq!(&m[6..], &sig[..]);
+        }
+        // Phase `an_oversized_signature_is_refused_rather_than_truncated`.
+        {
+            assert!(marshal_rsassa_sha256(&vec![0u8; 70_000]).is_err());
+        }
+        // Phase `workspace_writes_scratch_files`.
+        {
+            let d = tempfile::tempdir().unwrap();
+            let ws = Workspace::new(d.path());
+            let p = ws.put("x.bin", b"abc").unwrap();
+            assert_eq!(std::fs::read(p).unwrap(), b"abc");
+        }
     }
 }

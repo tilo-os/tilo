@@ -14,7 +14,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
@@ -204,8 +203,6 @@ impl ImageViewer {
 }
 
 impl Widget for ImageViewer {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -253,21 +250,11 @@ impl Widget for ImageViewer {
         clippy::arithmetic_side_effects,
         reason = "kurbo::Vec2 arithmetic is f64 component-wise math; it never panics or overflows, unlike integer +/-/*"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical = Vec2::new(position.x / scale_factor, position.y / scale_factor);
+                let logical =
+                    Vec2::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let prev = self.cursor;
                 self.cursor = Some(logical);
                 // `pan` is image-space, so the screen delta is divided by
@@ -280,7 +267,7 @@ impl Widget for ImageViewer {
                         let total_scale = base * f64::from(self.zoom);
                         let delta = logical - prev_pos;
                         self.pan += Vec2::new(delta.x / total_scale, delta.y / total_scale);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
             }
@@ -294,14 +281,14 @@ impl Widget for ImageViewer {
                         let p = Point::new(c.x, c.y);
                         if self.rect.contains(p) {
                             self.drag_origin = Some(c);
-                            *handled = true;
+                            *ctx.handled = true;
                         }
                     }
                 }
                 ElementState::Released => {
                     if self.drag_origin.is_some() {
                         self.drag_origin = None;
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
             },
@@ -330,14 +317,14 @@ impl Widget for ImageViewer {
                 let factor = ZOOM_STEP.powf(scroll_y);
                 let new_zoom = (self.zoom * factor).clamp(ZOOM_MIN, ZOOM_MAX);
                 if (new_zoom - self.zoom).abs() < f32::EPSILON {
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 self.zoom = new_zoom;
                 if let (Some(before), Some(after)) = (before, self.screen_to_image(cursor)) {
                     self.pan += after - before;
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -363,6 +350,7 @@ impl Widget for ImageViewer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::sync::Arc;
     use vello::peniko::{Blob, ImageAlphaType, ImageData as Image, ImageFormat as Format};
     use winit::dpi::PhysicalPosition;
@@ -382,11 +370,198 @@ mod tests {
     }
 
     #[test]
-    fn accessibility_reports_image_role() {
-        use crate::a11y::Role;
-        let v = ImageViewer::new(make_image());
-        let node = Widget::accessibility(&v).expect("viewer is not presentational");
-        assert_eq!(node.role, Role::Image);
+    fn image_viewer_zooms_pans_fits_and_reports_role() {
+        fn accessibility_reports_image_role() {
+            use crate::a11y::Role;
+            let v = ImageViewer::new(make_image());
+            let node = Widget::accessibility(&v).expect("viewer is not presentational");
+            assert_eq!(node.role, Role::Image);
+        }
+
+        fn image_viewer_default_zoom_is_one() {
+            let iv = ImageViewer::new(make_image());
+            assert_eq!(iv.zoom(), 1.0);
+            assert_eq!(iv.pan(), Vec2::ZERO);
+        }
+
+        fn image_viewer_scroll_up_zooms_in() {
+            let mut iv = ImageViewer::new(make_image());
+            // Bypasses taffy — a real layout pass would need a parent.
+            iv.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+
+            let dev = dummy_device_id();
+            let modifiers = Modifiers::default();
+            let mut state = AutoCommit::new();
+            let root = automerge::ROOT.clone();
+            let mut handled = false;
+            let mut focus = None;
+            let mut taffy = TaffyTree::<()>::new();
+            let node = taffy.leaf_node(Style::DEFAULT);
+
+            // So the wheel handler's `inside` check passes.
+            iv.handle_event(
+                &WindowEvent::CursorMoved {
+                    device_id: dev,
+                    position: PhysicalPosition::new(50.0, 50.0),
+                },
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+
+            iv.handle_event(
+                &WindowEvent::MouseWheel {
+                    device_id: dev,
+                    delta: MouseScrollDelta::LineDelta(0.0, 1.0),
+                    phase: winit::event::TouchPhase::Moved,
+                },
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+
+            assert!(
+                iv.zoom() > 1.0,
+                "positive scroll y must increase zoom; got {}",
+                iv.zoom()
+            );
+            assert!(handled, "wheel event over the viewer must be claimed");
+        }
+
+        fn image_viewer_drag_pans() {
+            let mut iv = ImageViewer::new(make_image());
+            // The public surface doesn't need a rect setter — callers run
+            // through taffy in production.
+            iv.rect = Rect::new(0.0, 0.0, 200.0, 200.0);
+
+            let dev = dummy_device_id();
+            let modifiers = Modifiers::default();
+            let mut state = AutoCommit::new();
+            let root = automerge::ROOT.clone();
+            let mut handled = false;
+            let mut focus = None;
+            let mut taffy = TaffyTree::<()>::new();
+            let node = taffy.leaf_node(Style::DEFAULT);
+
+            iv.handle_event(
+                &WindowEvent::CursorMoved {
+                    device_id: dev,
+                    position: PhysicalPosition::new(50.0, 50.0),
+                },
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+
+            iv.handle_event(
+                &WindowEvent::MouseInput {
+                    device_id: dev,
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+            assert!(
+                iv.drag_origin.is_some(),
+                "Pressed inside rect must start a drag"
+            );
+
+            // Move cursor 30px right, 20px down; the magnitude is delta /
+            // base_scale (zoom is 1.0, so total_scale == base_scale).
+            iv.handle_event(
+                &WindowEvent::CursorMoved {
+                    device_id: dev,
+                    position: PhysicalPosition::new(80.0, 70.0),
+                },
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+
+            iv.handle_event(
+                &WindowEvent::MouseInput {
+                    device_id: dev,
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                },
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+
+            assert!(iv.drag_origin.is_none(), "Release must clear drag origin");
+            let pan = iv.pan();
+            assert_ne!(pan, Vec2::ZERO, "drag must produce a non-zero pan");
+            assert!(
+                pan.x > 0.0,
+                "rightward drag must increase pan.x; got {}",
+                pan.x
+            );
+            assert!(
+                pan.y > 0.0,
+                "downward drag must increase pan.y; got {}",
+                pan.y
+            );
+        }
+
+        fn image_viewer_fit_resets_zoom_and_pan() {
+            let mut iv = ImageViewer::new(make_image());
+            iv.set_zoom(2.0);
+            iv.set_pan(Vec2::new(10.0, 10.0));
+            iv.fit_to_viewport();
+            assert_eq!(iv.zoom(), 1.0);
+            assert_eq!(iv.pan(), Vec2::ZERO);
+        }
+
+        accessibility_reports_image_role();
+        image_viewer_default_zoom_is_one();
+        image_viewer_scroll_up_zooms_in();
+        image_viewer_drag_pans();
+        image_viewer_fit_resets_zoom_and_pan();
     }
 
     /// `DeviceId` has no public constructor; `mem::zeroed` is the
@@ -397,176 +572,5 @@ mod tests {
         // a zeroed value is what winit itself uses for the "no device"
         // sentinel on every backend. No fields require validity.
         unsafe { std::mem::zeroed() }
-    }
-
-    #[test]
-    fn image_viewer_default_zoom_is_one() {
-        let iv = ImageViewer::new(make_image());
-        assert_eq!(iv.zoom(), 1.0);
-        assert_eq!(iv.pan(), Vec2::ZERO);
-    }
-
-    #[test]
-    fn image_viewer_scroll_up_zooms_in() {
-        let mut iv = ImageViewer::new(make_image());
-        // Bypasses taffy — a real layout pass would need a parent.
-        iv.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
-
-        let dev = dummy_device_id();
-        let modifiers = Modifiers::default();
-        let mut state = AutoCommit::new();
-        let root = automerge::ROOT.clone();
-        let mut handled = false;
-        let mut focus = None;
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.leaf_node(Style::DEFAULT);
-
-        // So the wheel handler's `inside` check passes.
-        iv.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: dev,
-                position: PhysicalPosition::new(50.0, 50.0),
-            },
-            1.0,
-            &modifiers,
-            &mut state,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-
-        iv.handle_event(
-            &WindowEvent::MouseWheel {
-                device_id: dev,
-                delta: MouseScrollDelta::LineDelta(0.0, 1.0),
-                phase: winit::event::TouchPhase::Moved,
-            },
-            1.0,
-            &modifiers,
-            &mut state,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-
-        assert!(
-            iv.zoom() > 1.0,
-            "positive scroll y must increase zoom; got {}",
-            iv.zoom()
-        );
-        assert!(handled, "wheel event over the viewer must be claimed");
-    }
-
-    #[test]
-    fn image_viewer_drag_pans() {
-        let mut iv = ImageViewer::new(make_image());
-        // The public surface doesn't need a rect setter — callers run
-        // through taffy in production.
-        iv.rect = Rect::new(0.0, 0.0, 200.0, 200.0);
-
-        let dev = dummy_device_id();
-        let modifiers = Modifiers::default();
-        let mut state = AutoCommit::new();
-        let root = automerge::ROOT.clone();
-        let mut handled = false;
-        let mut focus = None;
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.leaf_node(Style::DEFAULT);
-
-        iv.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: dev,
-                position: PhysicalPosition::new(50.0, 50.0),
-            },
-            1.0,
-            &modifiers,
-            &mut state,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-
-        iv.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: dev,
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            1.0,
-            &modifiers,
-            &mut state,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-        assert!(
-            iv.drag_origin.is_some(),
-            "Pressed inside rect must start a drag"
-        );
-
-        // Move cursor 30px right, 20px down; the magnitude is delta /
-        // base_scale (zoom is 1.0, so total_scale == base_scale).
-        iv.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: dev,
-                position: PhysicalPosition::new(80.0, 70.0),
-            },
-            1.0,
-            &modifiers,
-            &mut state,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-
-        iv.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: dev,
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
-            1.0,
-            &modifiers,
-            &mut state,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-
-        assert!(iv.drag_origin.is_none(), "Release must clear drag origin");
-        let pan = iv.pan();
-        assert_ne!(pan, Vec2::ZERO, "drag must produce a non-zero pan");
-        assert!(
-            pan.x > 0.0,
-            "rightward drag must increase pan.x; got {}",
-            pan.x
-        );
-        assert!(
-            pan.y > 0.0,
-            "downward drag must increase pan.y; got {}",
-            pan.y
-        );
-    }
-
-    #[test]
-    fn image_viewer_fit_resets_zoom_and_pan() {
-        let mut iv = ImageViewer::new(make_image());
-        iv.set_zoom(2.0);
-        iv.set_pan(Vec2::new(10.0, 10.0));
-        iv.fit_to_viewport();
-        assert_eq!(iv.zoom(), 1.0);
-        assert_eq!(iv.pan(), Vec2::ZERO);
     }
 }

@@ -7,10 +7,10 @@
 //! caller persists a choice into its own (e.g. CRDT-backed) storage.
 
 use crate::time::{Duration, Instant};
+use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, Size, Style, TaffyTree};
 use vello::Scene;
@@ -903,6 +903,11 @@ pub struct TreeView<T, M = TreeNode<T>> {
     trailing_edge: bool,
     /// A row to reveal once a filling tree first has a viewport.
     pending_reveal: Option<NodeId>,
+    /// Set by changes the view signature cannot see (model content, layout,
+    /// input the tree acted on); cleared once the tree is drawn.
+    paint_dirty: bool,
+    /// [`Self::paint_signature`] as of the last completed draw.
+    drawn_signature: Option<u64>,
 }
 
 /// Matches `theme.tokens.spacing.s4` (16.0); also the per-depth indent unit.
@@ -1085,6 +1090,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
             indent_guides: false,
             trailing_edge: false,
             pending_reveal: None,
+            paint_dirty: true,
+            drawn_signature: None,
         };
         view.refresh_anchor();
         view.refresh_transition_snapshot();
@@ -1172,7 +1179,10 @@ impl<T, M: TreeModel> TreeView<T, M> {
 
     /// Replace the heading (see [`Self::with_heading`]).
     pub fn set_heading(&mut self, heading: Option<String>) {
-        self.heading = heading;
+        if self.heading != heading {
+            self.heading = heading;
+            self.paint_dirty = true;
+        }
     }
 
     /// Paint the tree on a surface other than `surfaces.base` (a raised
@@ -1558,6 +1568,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let reconcile = Self::changes_require_reconcile(changes);
         let anchor = reconcile.then(|| self.capture_view_anchor()).flatten();
         let result = update(&mut self.model);
+        self.paint_dirty = true;
         self.invalidate_changed_delegates(changes);
         self.resolve_changed_slots(changes);
         if reconcile {
@@ -1570,6 +1581,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// geometry; structural and slot-state changes rebuild once and preserve
     /// the current viewport anchor by stable row identity.
     pub fn notify_model_changes(&mut self, changes: &[TreeModelChange]) {
+        self.paint_dirty = true;
         self.invalidate_changed_slots(changes);
         self.invalidate_changed_delegates(changes);
         self.resolve_changed_slots(changes);
@@ -1760,6 +1772,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     }
 
     fn reconcile_visible(&mut self, anchor: Option<&SparseAnchor<TreeRowKey>>) {
+        self.paint_dirty = true;
         let old_snapshot = self.transition_snapshot.clone();
         let next = SparseTreeIndex::build(&self.model, &self.expanded, self.index.root_hidden);
         self.viewport.reconcile(
@@ -2606,56 +2619,24 @@ impl<T, M: TreeModel> TreeView<T, M> {
         self.mounted_rows = mounted;
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the Widget event contract plus its handled/focus outputs"
-    )]
-    fn route_to_delegates(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<taffy::NodeId>,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn route_to_delegates(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         if let Some(row) = self
             .mounted_rows
             .iter_mut()
             .find(|row| row.widget.wants_pointer_capture())
             && let Some(node) = row.node
         {
-            row.widget.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node,
-                taffy,
-            );
+            row.widget
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
             return;
         }
         for row in self.mounted_rows.iter_mut().rev() {
             let Some(node) = row.node else {
                 continue;
             };
-            row.widget.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node,
-                taffy,
-            );
-            if *handled {
+            row.widget
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled {
                 break;
             }
         }
@@ -2686,16 +2667,17 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         }
         self.mark_delegate_window_dirty();
         self.refresh_anchor();
+        self.paint_dirty = true;
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.reconcile_mounted_rows();
         for row in &mut self.mounted_rows {
             row.widget.sync(state, path);
         }
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let model_changes = self.model.poll_changes();
         let received_changes = !model_changes.is_empty();
         if received_changes {
@@ -2737,6 +2719,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         for row in &mut self.mounted_rows {
             changed |= row.widget.update(state, path);
         }
+        self.paint_dirty |= changed;
         changed
     }
 
@@ -2746,6 +2729,9 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         theme: &Theme,
         node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
+        // A layout pass may carry a new theme or text scale; the next draw
+        // repaints every row with it.
+        self.paint_dirty = true;
         self.transition_duration = theme.tokens.motion.durations.base();
         self.reduce_motion = theme.reduce_motion;
         if self.reduce_motion {
@@ -2804,6 +2790,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: taffy::NodeId, origin: Point) {
+        self.paint_dirty = true;
         let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
@@ -3291,229 +3278,26 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         self.paint_context_menu(scene, transform, text_renderer, theme, presence);
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "keeps delegate, reorder, disclosure, selection, scroll, and keyboard precedence explicit"
-    )]
-    fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        let scale_factor = ctx.scale_factor;
-        let modifiers = ctx.modifiers;
-        let state = &mut *ctx.state;
-        let path = ctx.path;
-        let handled = &mut *ctx.handled;
-        let focus_target = &mut *ctx.focus_target;
-        let node_id = ctx.node_id;
-        let taffy = ctx.taffy;
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            let point = Point::new(position.x / scale_factor, position.y / scale_factor);
-            self.last_cursor = Some(point);
-            self.hovered = self.row_key_at(point);
-        }
-        if let WindowEvent::CursorLeft { .. } = event {
-            self.hovered = None;
-        }
-        if self.route_context_menu(
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        self.route_event(event, ctx);
+        // Pointer motion repaints only through what the view signature sees
+        // (hover, affordance hover, drags), so a resting pointer stays inert.
+        // Other input the tree acted on, or could have, repaints it.
+        let motion = matches!(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
-            return;
-        }
-        if self.route_rename(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
-            return;
-        }
-        if !self.reorder.is_tracking() && !self.drag_scroll.is_tracking() {
-            self.route_to_delegates(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                taffy,
-            );
-        }
-        if *handled {
-            return;
-        }
-        match event {
-            WindowEvent::CursorMoved { .. } if self.reorder.is_tracking() => {
-                if let Some(cursor) = self.last_cursor {
-                    let now = crate::time::now();
-                    self.update_reorder_pointer(cursor, now);
-                    self.last_tick = Some(now);
-                    *handled = self.reorder.is_active();
-                }
-            }
-            WindowEvent::CursorMoved { .. } if self.drag_scroll.is_tracking() => {
-                if let Some(cursor) = self.last_cursor {
-                    let now = crate::time::now();
-                    if let Some(update) = self.drag_scroll.update(cursor.y, now) {
-                        self.momentum.stop();
-                        self.set_scroll_offset(update.target_offset);
-                        self.last_tick = Some(now);
-                        *handled = true;
-                    }
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.momentum.stop();
-                if let Some(cursor) = self.last_cursor
-                    && self.rect.contains(cursor)
-                    && self.press_affordance(cursor)
-                {
-                    *focus_target = Some(node_id);
-                    *handled = true;
-                    return;
-                }
-                let reorderable = self.reorder_validator.is_some() && self.reorder_commit.is_some();
-                let source = reorderable
-                    .then(|| self.reorder_source_at_cursor())
-                    .flatten();
-                let toggle = modifiers.state().control_key() || modifiers.state().super_key();
-                let extend = modifiers.state().shift_key();
-                if reorderable && self.disclosure_at_cursor() {
-                    // Rows of a reorderable tree act on press, so its
-                    // disclosure does too.
-                    *handled = self.on_left_press(node_id, focus_target, toggle, extend);
-                } else if let (Some(source), Some(cursor)) = (source, self.last_cursor) {
-                    self.on_left_press(node_id, focus_target, toggle, extend);
-                    // A double click that opened the rename field is not
-                    // the start of a drag.
-                    if self.rename.is_none() {
-                        self.reorder.begin(source, cursor);
-                        self.last_tick = Some(crate::time::now());
-                    }
-                    *handled = true;
-                } else if let Some(cursor) = self.last_cursor
-                    && self.rect.contains(cursor)
-                {
-                    self.drag_scroll
-                        .begin(cursor.y, self.scroll_offset(), crate::time::now());
-                    *focus_target = Some(node_id);
-                    *handled = true;
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Right,
-                ..
-            } if self.context_menu_items.is_some() => {
-                if let Some(cursor) = self.last_cursor
-                    && self.rect.contains(cursor)
-                {
-                    self.reorder.cancel();
-                    self.drag_scroll.cancel();
-                    match self.row_key_at(cursor) {
-                        Some(TreeRowKey::Node(id)) => {
-                            self.open_row_menu(id, cursor);
-                        }
-                        _ => {
-                            self.open_context_menu(None, cursor);
-                        }
-                    }
-                    *focus_target = Some(node_id);
-                    *handled = true;
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } if self.reorder.is_tracking() => {
-                if let Some(dropped) = self.reorder.finish() {
-                    self.commit_reorder(dropped);
-                }
-                *handled = true;
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } if self.drag_scroll.is_tracking() => {
-                if let Some(drag) = self.drag_scroll.finish(crate::time::now()) {
-                    if drag.dragged {
-                        if self.reduce_motion {
-                            self.momentum.stop();
-                        } else {
-                            self.momentum.fling(drag.velocity);
-                            self.last_tick = Some(crate::time::now());
-                        }
-                    } else {
-                        let toggle =
-                            modifiers.state().control_key() || modifiers.state().super_key();
-                        let extend = modifiers.state().shift_key();
-                        self.on_left_press(node_id, focus_target, toggle, extend);
-                    }
-                    *handled = true;
-                }
-            }
-            WindowEvent::MouseWheel { delta, phase, .. }
-                if self
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::CursorLeft { .. }
+                | WindowEvent::CursorEntered { .. }
+        );
+        if !motion
+            && (*ctx.handled
+                || ctx.focus_target.is_some()
+                || self.is_focused
+                || self
                     .last_cursor
-                    .is_some_and(|point| self.rect.contains(point)) =>
-            {
-                self.drag_scroll.cancel();
-                *handled = self.on_wheel(delta, *phase);
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } if self.is_focused => {
-                self.momentum.stop();
-                let mods = modifiers.state();
-                let menu_key = matches!(logical_key, Key::Named(NamedKey::ContextMenu))
-                    || (mods.shift_key() && matches!(logical_key, Key::Named(NamedKey::F10)));
-                if *logical_key == Key::Named(NamedKey::Escape)
-                    && (self.reorder.cancel() || self.drag_scroll.cancel())
-                {
-                    *handled = true;
-                } else if menu_key && self.context_menu_items.is_some() {
-                    *handled = self.open_menu_from_keyboard();
-                } else if *logical_key == Key::Named(NamedKey::F2) && self.on_rename.is_some() {
-                    *handled = self.command_node().is_some_and(|id| self.begin_rename(id));
-                } else if *logical_key == Key::Named(NamedKey::Delete) && self.on_delete.is_some() {
-                    if let (Some(id), Some(callback)) = (self.command_node(), &mut self.on_delete) {
-                        callback(id);
-                        *handled = true;
-                    }
-                } else if let Some(movement) = self.key_move(logical_key, mods) {
-                    *handled = self
-                        .command_node()
-                        .is_some_and(|id| self.move_node(id, movement));
-                } else {
-                    let toggle = modifiers.state().control_key() || modifiers.state().super_key();
-                    let extend = modifiers.state().shift_key();
-                    *handled = self.on_key_with_modifiers(logical_key, toggle, extend);
-                }
-            }
-            _ => {}
+                    .is_some_and(|point| self.rect.contains(point)))
+        {
+            self.paint_dirty = true;
         }
     }
 
@@ -3558,6 +3342,37 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 .mounted_rows
                 .iter()
                 .any(|row| row.widget.wants_pointer_capture())
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.paint_dirty
+            || self.drawn_signature != Some(self.paint_signature())
+            || self.momentum.is_active()
+            || self.reorder.is_active()
+            || self.transitions.is_active(crate::time::now())
+            || self.menu.is_open() && self.menu.needs_redraw()
+            || self
+                .rename
+                .as_ref()
+                .is_some_and(|field| field.input.needs_redraw())
+            || self
+                .mounted_rows
+                .iter()
+                .any(|row| row.widget.needs_redraw())
+    }
+
+    fn mark_drawn(&mut self) {
+        self.paint_dirty = false;
+        self.drawn_signature = Some(self.paint_signature());
+        if let Some(field) = self.rename.as_mut() {
+            field.input.mark_drawn();
+        }
+        if self.menu.is_open() {
+            self.menu.mark_drawn();
+        }
+        for row in &mut self.mounted_rows {
+            row.widget.mark_drawn();
+        }
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -3811,11 +3626,13 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, path) = crate::doc::document(state, path);
 
+        self.paint_dirty = true;
         if let Some(performed) = self.perform_affordance_action(target, action, state, path) {
             return performed;
         }
@@ -3895,12 +3712,307 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     }
 }
 
+impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keeps delegate, reorder, disclosure, selection, scroll, and keyboard precedence explicit"
+    )]
+    fn route_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        let scale_factor = ctx.scale_factor;
+        let modifiers = ctx.modifiers;
+        let state = &mut *ctx.state;
+        let path = ctx.path;
+        let handled = &mut *ctx.handled;
+        let focus_target = &mut *ctx.focus_target;
+        let node_id = ctx.node_id;
+        let taffy = ctx.taffy;
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor = Some(point);
+            self.hovered = self.row_key_at(point);
+        }
+        if let WindowEvent::CursorLeft { .. } = event {
+            self.hovered = None;
+        }
+        if self.route_context_menu(
+            event,
+            &mut crate::widget::EventCtx {
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
+        ) {
+            return;
+        }
+        if self.route_rename(
+            event,
+            &mut crate::widget::EventCtx {
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
+        ) {
+            return;
+        }
+        if !self.reorder.is_tracking() && !self.drag_scroll.is_tracking() {
+            self.route_to_delegates(
+                event,
+                &mut EventCtx {
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    node_id,
+                    taffy,
+                },
+            );
+        }
+        if *handled {
+            return;
+        }
+        match event {
+            WindowEvent::CursorMoved { .. } if self.reorder.is_tracking() => {
+                if let Some(cursor) = self.last_cursor {
+                    let now = crate::time::now();
+                    self.update_reorder_pointer(cursor, now);
+                    self.last_tick = Some(now);
+                    *handled = self.reorder.is_active();
+                }
+            }
+            WindowEvent::CursorMoved { .. } if self.drag_scroll.is_tracking() => {
+                if let Some(cursor) = self.last_cursor {
+                    let now = crate::time::now();
+                    if let Some(update) = self.drag_scroll.update(cursor.y, now) {
+                        self.momentum.stop();
+                        self.set_scroll_offset(update.target_offset);
+                        self.last_tick = Some(now);
+                        *handled = true;
+                    }
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.momentum.stop();
+                if let Some(cursor) = self.last_cursor
+                    && self.rect.contains(cursor)
+                    && self.press_affordance(cursor)
+                {
+                    *focus_target = Some(node_id);
+                    *handled = true;
+                    return;
+                }
+                let reorderable = self.reorder_validator.is_some() && self.reorder_commit.is_some();
+                let source = reorderable
+                    .then(|| self.reorder_source_at_cursor())
+                    .flatten();
+                let toggle = modifiers.state().control_key() || modifiers.state().super_key();
+                let extend = modifiers.state().shift_key();
+                if reorderable && self.disclosure_at_cursor() {
+                    // Rows of a reorderable tree act on press, so its
+                    // disclosure does too.
+                    *handled = self.on_left_press(node_id, focus_target, toggle, extend);
+                } else if let (Some(source), Some(cursor)) = (source, self.last_cursor) {
+                    self.on_left_press(node_id, focus_target, toggle, extend);
+                    // A double click that opened the rename field is not
+                    // the start of a drag.
+                    if self.rename.is_none() {
+                        self.reorder.begin(source, cursor);
+                        self.last_tick = Some(crate::time::now());
+                    }
+                    *handled = true;
+                } else if let Some(cursor) = self.last_cursor
+                    && self.rect.contains(cursor)
+                {
+                    self.drag_scroll
+                        .begin(cursor.y, self.scroll_offset(), crate::time::now());
+                    *focus_target = Some(node_id);
+                    *handled = true;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } if self.context_menu_items.is_some() => {
+                if let Some(cursor) = self.last_cursor
+                    && self.rect.contains(cursor)
+                {
+                    self.reorder.cancel();
+                    self.drag_scroll.cancel();
+                    match self.row_key_at(cursor) {
+                        Some(TreeRowKey::Node(id)) => {
+                            self.open_row_menu(id, cursor);
+                        }
+                        _ => {
+                            self.open_context_menu(None, cursor);
+                        }
+                    }
+                    *focus_target = Some(node_id);
+                    *handled = true;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.reorder.is_tracking() => {
+                if let Some(dropped) = self.reorder.finish() {
+                    self.commit_reorder(dropped);
+                }
+                *handled = true;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.drag_scroll.is_tracking() => {
+                if let Some(drag) = self.drag_scroll.finish(crate::time::now()) {
+                    if drag.dragged {
+                        if self.reduce_motion {
+                            self.momentum.stop();
+                        } else {
+                            self.momentum.fling(drag.velocity);
+                            self.last_tick = Some(crate::time::now());
+                        }
+                    } else {
+                        let toggle =
+                            modifiers.state().control_key() || modifiers.state().super_key();
+                        let extend = modifiers.state().shift_key();
+                        self.on_left_press(node_id, focus_target, toggle, extend);
+                    }
+                    *handled = true;
+                }
+            }
+            WindowEvent::MouseWheel { delta, phase, .. }
+                if self
+                    .last_cursor
+                    .is_some_and(|point| self.rect.contains(point)) =>
+            {
+                self.drag_scroll.cancel();
+                *handled = self.on_wheel(delta, *phase);
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if self.is_focused => {
+                self.momentum.stop();
+                let mods = modifiers.state();
+                let menu_key = matches!(logical_key, Key::Named(NamedKey::ContextMenu))
+                    || (mods.shift_key() && matches!(logical_key, Key::Named(NamedKey::F10)));
+                if *logical_key == Key::Named(NamedKey::Escape)
+                    && (self.reorder.cancel() || self.drag_scroll.cancel())
+                {
+                    *handled = true;
+                } else if menu_key && self.context_menu_items.is_some() {
+                    *handled = self.open_menu_from_keyboard();
+                } else if *logical_key == Key::Named(NamedKey::F2) && self.on_rename.is_some() {
+                    *handled = self.command_node().is_some_and(|id| self.begin_rename(id));
+                } else if *logical_key == Key::Named(NamedKey::Delete) && self.on_delete.is_some() {
+                    if let (Some(id), Some(callback)) = (self.command_node(), &mut self.on_delete) {
+                        callback(id);
+                        *handled = true;
+                    }
+                } else if let Some(movement) = self.key_move(logical_key, mods) {
+                    *handled = self
+                        .command_node()
+                        .is_some_and(|id| self.move_node(id, movement));
+                } else {
+                    let toggle = modifiers.state().control_key() || modifiers.state().super_key();
+                    let extend = modifiers.state().shift_key();
+                    *handled = self.on_key_with_modifiers(logical_key, toggle, extend);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A digest of the view state the paint pass reads outside the model:
+    /// geometry, scroll, expansion, selection, focus, hover and the pointer
+    /// affordances. Model content changes set `paint_dirty` instead.
+    fn paint_signature(&self) -> u64 {
+        use std::hash::{BuildHasher, Hash, Hasher};
+
+        // Unordered sets fold with a commutative sum so iteration order does
+        // not change the digest.
+        let hasher =
+            std::hash::BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default();
+        let unordered = |keys: &mut dyn Iterator<Item = NodeId>| {
+            keys.fold(0_u64, |sum, key| sum.wrapping_add(hasher.hash_one(key)))
+        };
+        let mut state = hasher.build_hasher();
+        for edge in [self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y1] {
+            edge.to_bits().hash(&mut state);
+        }
+        self.viewport.offset().to_bits().hash(&mut state);
+        self.viewport.viewport().to_bits().hash(&mut state);
+        self.viewport.content_extent().to_bits().hash(&mut state);
+        self.index.len().hash(&mut state);
+        unordered(&mut self.expanded.iter().copied()).hash(&mut state);
+        unordered(&mut self.selection.stored_keys().copied()).hash(&mut state);
+        self.selection.is_select_all().hash(&mut state);
+        self.selection.primary().hash(&mut state);
+        self.selection.anchor().hash(&mut state);
+        self.focused.hash(&mut state);
+        self.current.hash(&mut state);
+        self.hovered.hash(&mut state);
+        self.is_focused.hash(&mut state);
+        self.heading.hash(&mut state);
+        self.rename.as_ref().map(|field| field.id).hash(&mut state);
+        self.menu.is_open().hash(&mut state);
+        self.menu_target.hash(&mut state);
+        self.reorder.is_tracking().hash(&mut state);
+        self.reorder.is_active().hash(&mut state);
+        self.drag_scroll.is_tracking().hash(&mut state);
+        self.momentum.is_active().hash(&mut state);
+        self.transitions
+            .is_active(crate::time::now())
+            .hash(&mut state);
+        // Pointer-driven chrome: the heading action and the hovered row's
+        // actions lift under the pointer.
+        let cursor = self.last_cursor;
+        let over = |rect: Rect| cursor.is_some_and(|point| rect.contains(point));
+        self.heading_action_rect()
+            .is_some_and(over)
+            .hash(&mut state);
+        match self.hovered {
+            Some(TreeRowKey::Node(id)) if self.row_actions_visible(TreeRowKey::Node(id)) => self
+                .row_rect(id)
+                .and_then(|row| self.row_action_rects(row).into_iter().position(over)),
+            _ => None,
+        }
+        .hash(&mut state);
+        // While a drag, menu or rename follows the pointer, every move shows.
+        if self.reorder.is_tracking() || self.menu.is_open() || self.rename.is_some() {
+            cursor
+                .map(|point| (point.x.to_bits(), point.y.to_bits()))
+                .hash(&mut state);
+        }
+        state.finish()
+    }
+}
+
 /// Paint a decorated row's leading icon centred vertically on `anchor.y`,
 /// starting at `anchor.x`. Returns the width it occupied.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one icon's paint context: scene, transform, text, theme, the icon, its anchor, the row's line box and the row's transition opacity"
-)]
 fn paint_row_icon(
     scene: &mut Scene,
     transform: Affine,
@@ -3979,6 +4091,7 @@ fn paint_row_icon(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use taffy::TaffyTree;
@@ -4025,73 +4138,104 @@ mod tests {
     }
 
     #[test]
-    fn owned_tree_reorder_moves_complete_subtrees_across_parents() {
-        let mut tree = reorder_tree();
-        assert!(tree.reorder(&ReorderDrop {
-            source: 4,
-            target: DropTarget::new(6, DropPlacement::Inside),
-        }));
-        assert_eq!(tree.parent_id(4), Some(6));
-        assert_eq!(tree.child_id(2, 0), Some(3));
-        assert_eq!(tree.child_id(6, 0), Some(4));
-        assert_eq!(tree.find(5).map(|node| node.data), Some("leaf-data"));
+    fn owned_tree_reorder_moves_subtrees_rejects_invalid_targets_and_commits_drops() {
+        // Case `owned_tree_reorder_moves_complete_subtrees_across_parents`.
+        {
+            let mut tree = reorder_tree();
+            assert!(tree.reorder(&ReorderDrop {
+                source: 4,
+                target: DropTarget::new(6, DropPlacement::Inside),
+            }));
+            assert_eq!(tree.parent_id(4), Some(6));
+            assert_eq!(tree.child_id(2, 0), Some(3));
+            assert_eq!(tree.child_id(6, 0), Some(4));
+            assert_eq!(tree.find(5).map(|node| node.data), Some("leaf-data"));
 
-        assert!(tree.reorder(&ReorderDrop {
-            source: 3,
-            target: DropTarget::new(7, DropPlacement::After),
-        }));
-        assert_eq!(tree.parent_id(3), Some(1));
-        assert_eq!(
-            tree.children.iter().map(|node| node.id).collect::<Vec<_>>(),
-            vec![2, 6, 7, 3]
-        );
-        assert_eq!(tree.find(3).map(|node| node.data), Some("first-data"));
-    }
-
-    #[test]
-    fn owned_tree_reorder_rejects_cycles_invalid_targets_and_noops() {
-        let mut tree = reorder_tree();
-        let original = tree.children.iter().map(|node| node.id).collect::<Vec<_>>();
-        for dropped in [
-            ReorderDrop {
-                source: 1,
-                target: DropTarget::new(2, DropPlacement::Before),
-            },
-            ReorderDrop {
-                source: 2,
-                target: DropTarget::new(4, DropPlacement::Inside),
-            },
-            ReorderDrop {
+            assert!(tree.reorder(&ReorderDrop {
                 source: 3,
-                target: DropTarget::new(7, DropPlacement::Inside),
-            },
-            ReorderDrop {
-                source: 99,
                 target: DropTarget::new(7, DropPlacement::After),
-            },
-            ReorderDrop {
-                source: 3,
-                target: DropTarget::new(4, DropPlacement::Before),
-            },
-            ReorderDrop {
-                source: 5,
-                target: DropTarget::new(4, DropPlacement::Inside),
-            },
-        ] {
-            assert!(!tree.reorder(&dropped));
+            }));
+            assert_eq!(tree.parent_id(3), Some(1));
+            assert_eq!(
+                tree.children.iter().map(|node| node.id).collect::<Vec<_>>(),
+                vec![2, 6, 7, 3]
+            );
+            assert_eq!(tree.find(3).map(|node| node.data), Some("first-data"));
         }
-        assert_eq!(
-            tree.children.iter().map(|node| node.id).collect::<Vec<_>>(),
-            original
-        );
-        assert_eq!(tree.parent_id(5), Some(4));
-    }
 
-    #[test]
-    fn owned_tree_reorderable_installs_safe_default_controller() {
-        let view = TreeView::new(reorder_tree()).reorderable();
-        assert!(view.reorder_validator.is_some());
-        assert!(view.reorder_commit.is_some());
+        // Case `owned_tree_reorder_rejects_cycles_invalid_targets_and_noops`.
+        {
+            let mut tree = reorder_tree();
+            let original = tree.children.iter().map(|node| node.id).collect::<Vec<_>>();
+            for dropped in [
+                ReorderDrop {
+                    source: 1,
+                    target: DropTarget::new(2, DropPlacement::Before),
+                },
+                ReorderDrop {
+                    source: 2,
+                    target: DropTarget::new(4, DropPlacement::Inside),
+                },
+                ReorderDrop {
+                    source: 3,
+                    target: DropTarget::new(7, DropPlacement::Inside),
+                },
+                ReorderDrop {
+                    source: 99,
+                    target: DropTarget::new(7, DropPlacement::After),
+                },
+                ReorderDrop {
+                    source: 3,
+                    target: DropTarget::new(4, DropPlacement::Before),
+                },
+                ReorderDrop {
+                    source: 5,
+                    target: DropTarget::new(4, DropPlacement::Inside),
+                },
+            ] {
+                assert!(!tree.reorder(&dropped));
+            }
+            assert_eq!(
+                tree.children.iter().map(|node| node.id).collect::<Vec<_>>(),
+                original
+            );
+            assert_eq!(tree.parent_id(5), Some(4));
+        }
+
+        // Case `owned_tree_reorderable_installs_safe_default_controller`.
+        {
+            let view = TreeView::new(reorder_tree()).reorderable();
+            assert!(view.reorder_validator.is_some());
+            assert!(view.reorder_commit.is_some());
+        }
+
+        // Case `owned_tree_reorderable_commits_the_pointer_drop_without_app_bookkeeping`.
+        {
+            let mut view = TreeView::new(sample_tree())
+                .with_expanded([1])
+                .reorderable();
+            view.set_viewport(88.0, px(ROW_HEIGHT));
+            let (taffy, node) = lay_out_tree(&mut view, 240.0);
+
+            dispatch_laid_out(&mut view, &cursor_moved(80.0, 33.0), &taffy, node);
+            dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
+            dispatch_laid_out(&mut view, &cursor_moved(80.0, 65.0), &taffy, node);
+            assert_eq!(
+                view.reorder_target(),
+                Some(&DropTarget::new(3, DropPlacement::After))
+            );
+            dispatch_laid_out(&mut view, &mouse_release(), &taffy, node);
+
+            assert_eq!(
+                view.model()
+                    .children
+                    .iter()
+                    .map(|node| node.id)
+                    .collect::<Vec<_>>(),
+                vec![3, 2]
+            );
+            assert_eq!(view.visible_index_of(2), Some(2));
+        }
     }
 
     struct ExternalNode {
@@ -4495,8 +4639,6 @@ mod tests {
     }
 
     impl Widget for DelegateProbe {
-        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -4534,7 +4676,7 @@ mod tests {
         ) {
         }
 
-        fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.cursor = Some(Point::new(position.x, position.y));
             }
@@ -4639,14 +4781,16 @@ mod tests {
         let root = automerge::ROOT;
         view.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 
@@ -4661,1228 +4805,1368 @@ mod tests {
         let mut doc = AutoCommit::new();
         view.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy,
+            },
         );
         handled
     }
 
-    /// At 2× text the disclosure column is painted at the `sm` line width
-    /// (30 px), not the 1× 16 px. A press between the two must toggle the
-    /// branch: the hit zone is the painted column, not the pinned constant.
     #[test]
-    fn disclosure_hit_zone_is_the_painted_column_at_two_x() {
-        let root = TreeNode::branch(1, "crates", (), vec![TreeNode::leaf(2, "main.rs", ())]);
-        let mut view = TreeView::new(root);
-        let mut doc = AutoCommit::new();
-        view.sync(&mut doc, &automerge::ROOT);
-        let mut taffy = TaffyTree::new();
-        let mut node_map = HashMap::new();
-        let theme = Theme::dark().with_text_scale(2.0);
-        let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(320.0),
-                    height: taffy::AvailableSpace::Definite(px(view.body_height())),
-                },
-            )
-            .unwrap();
-        view.apply_layout(&taffy, node, Point::ZERO);
-        assert!(
-            view.disclosure_w > DISCLOSURE_WIDTH,
-            "2x resolves a wider disclosure column: {}",
-            view.disclosure_w
-        );
-        assert!(view.viewport.estimated_height() > ROW_HEIGHT);
-        assert!(!view.expanded.contains(&1));
-
-        let x = f64::midpoint(DISCLOSURE_WIDTH, view.disclosure_w);
-        let y = view.viewport.estimated_height() / 2.0;
-        dispatch_laid_out(&mut view, &cursor_moved(x, y), &taffy, node);
-        dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
-        dispatch_laid_out(&mut view, &mouse_release(), &taffy, node);
-        assert!(
-            view.expanded.contains(&1),
-            "a press at x={x} inside the painted disclosure column toggles the branch"
-        );
-    }
-
-    #[test]
-    fn tree_view_expand_node_shows_children() {
-        let mut view = TreeView::new(sample_tree());
-        let rows = view.visible_rows();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].0, 1);
-
-        view.toggle_expand(1);
-        let rows = view.visible_rows();
-        let ids: Vec<NodeId> = rows.iter().map(|(id, _, _)| *id).collect();
-        assert!(
-            ids.contains(&2),
-            "child1 must be visible after expanding root"
-        );
-        assert!(
-            ids.contains(&3),
-            "child2 must be visible after expanding root"
-        );
-        assert_eq!(rows.len(), 3);
-    }
-
-    #[test]
-    fn tree_view_select_node_calls_on_select() {
-        let captured: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
-        let captured_clone = captured.clone();
-        let mut view = TreeView::new(sample_tree()).on_select(move |id| {
-            *captured_clone.borrow_mut() = Some(id);
-        });
-        view.toggle_expand(1);
-
-        // Taffy's `auto` width on a leaf inside a block container collapses
-        // to zero under `MAX_CONTENT`, so wrap it in a fixed-width parent
-        // and patch `view.rect` manually rather than trust
-        // `apply_layout`'s width.
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
-        let node = view.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let root_taffy = taffy.parent_node(
-            Style {
-                size: Size {
-                    width: Dimension::length(200.0),
-                    height: Dimension::length(80.0),
-                },
-                ..Default::default()
-            },
-            &[node],
-        );
-        taffy
-            .compute_layout(root_taffy, taffy::Size::MAX_CONTENT)
-            .unwrap();
-        view.apply_layout(&taffy, node, Point::ZERO);
-        view.rect = Rect::new(
-            0.0,
-            0.0,
-            200.0,
-            idx_to_f64(view.visible_rows().len()) * ROW_HEIGHT,
-        );
-        let target_id = view.visible_rows()[1].0;
-        let target_rect = Rect::new(0.0, ROW_HEIGHT, 200.0, ROW_HEIGHT * 2.0);
-        assert_eq!(target_id, 2);
-        let click_x = target_rect.x0 + 60.0; // past depth-1 indent + glyph
-        let click_y = target_rect.y0 + target_rect.height() / 2.0;
-
-        dispatch(&mut view, &cursor_moved(click_x, click_y));
-        dispatch(&mut view, &mouse_press());
-        assert_eq!(
-            *captured.borrow(),
-            None,
-            "selection waits until the gesture is known to be a click"
-        );
-        dispatch(&mut view, &mouse_release());
-
-        assert_eq!(
-            *captured.borrow(),
-            Some(2),
-            "on_select must fire with child1 id"
-        );
-        assert_eq!(view.selected(), Some(2));
-    }
-
-    #[test]
-    fn multiselect_uses_stable_ids_and_survives_collapse_and_move() {
-        let mut view = TreeView::from_model(external_model())
-            .with_expanded([1, 2])
-            .multi_select(true);
-        view.apply_selection_gesture(20, false, false);
-        view.apply_selection_gesture(3, true, false);
-        assert!(view.selection().is_selected(&20));
-        assert!(view.selection().is_selected(&3));
-
-        view.set_expanded(2, false);
-        assert!(
-            view.selection().is_selected(&20),
-            "hidden nodes stay selected"
-        );
-        view.update_source(
-            &[TreeModelChange::RowsMoved {
-                parent: 1,
-                from: 1,
-                to: 0,
-                count: 1,
-            }],
-            |model| {
-                let children = &mut model.nodes.get_mut(&1).unwrap().children;
-                let moved = children.remove(1);
-                children.insert(0, moved);
-            },
-        );
-        assert!(view.selection().is_selected(&3));
-        assert!(view.selection().is_selected(&20));
-    }
-
-    #[test]
-    fn multiselect_supports_visible_ranges_and_constant_space_select_all() {
-        let mut view = TreeView::from_model(external_model())
-            .with_expanded([1, 2])
-            .multi_select(true);
-        view.apply_selection_gesture(2, false, false);
-        view.apply_selection_gesture(4, false, true);
-        assert!(view.selection().is_selected(&2));
-        assert!(view.selection().is_selected(&20));
-        assert!(view.selection().is_selected(&3));
-        assert!(view.selection().is_selected(&4));
-
-        assert!(view.on_key_with_modifiers(&Key::Character("a".into()), true, false));
-        assert!(view.selection().is_select_all());
-        assert_eq!(view.selection().stored_keys().count(), 0);
-        assert!(view.selection().is_selected(&20));
-
-        view.apply_selection_gesture(3, true, false);
-        assert!(!view.selection().is_selected(&3));
-        assert_eq!(
-            view.selection().stored_keys().copied().collect::<Vec<_>>(),
-            vec![3]
-        );
-    }
-
-    #[test]
-    fn tree_view_arrow_right_expands_focused_node() {
-        let mut view = TreeView::new(sample_tree());
-        view.set_focus(true);
-        view.focused = Some(TreeRowKey::Node(1));
-        assert!(!view.is_expanded(1));
-
-        dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowRight)));
-
-        assert!(
-            view.is_expanded(1),
-            "ArrowRight must expand the focused branch"
-        );
-    }
-
-    #[test]
-    fn tree_view_arrow_down_moves_focus_to_next_visible_row() {
-        let mut view = TreeView::new(sample_tree());
-        view.toggle_expand(1);
-        view.set_focus(true);
-        view.focused = Some(TreeRowKey::Node(1));
-
-        dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowDown)));
-
-        let rows = view.visible_rows();
-        let second_id = rows[1].0;
-        assert_eq!(
-            view.focused(),
-            Some(second_id),
-            "ArrowDown must move focus from row 0 to row 1",
-        );
-    }
-
-    #[test]
-    fn accessibility_reports_tree_role_and_no_value_when_unselected() {
-        use crate::a11y::Role;
-        let view = TreeView::new(sample_tree());
-        let node = Widget::accessibility(&view).expect("tree is not presentational");
-        assert_eq!(node.role, Role::Tree);
-        assert_eq!(node.name, None, "the tree has no intrinsic label");
-        assert_eq!(node.value, None, "no value until a row is selected");
-        assert!(node.state.focusable);
-        assert!(!node.state.disabled);
-        assert!(!node.state.focused);
-    }
-
-    #[test]
-    fn tree_view_exposes_an_explicit_stable_id() {
-        let view = TreeView::new(sample_tree()).with_id("workspace-tree");
-        assert_eq!(Widget::test_id(&view), Some("workspace-tree"));
-    }
-
-    #[test]
-    fn tree_viewport_builder_enables_the_bounded_internal_window() {
-        let children = (2_u64..102)
-            .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
-            .collect();
-        let view = TreeView::new(TreeNode::branch(1, "root", (), children))
-            .with_expanded([1])
-            .with_viewport(44.0, 30.0);
-        assert_eq!(view.viewport.viewport(), 44.0);
-        assert_eq!(view.viewport.estimated_height(), 30.0);
-        assert!(view.visible_row_range().len() < view.visible_len());
-    }
-
-    #[test]
-    fn accessibility_value_is_selected_row_label() {
-        let mut view = TreeView::new(sample_tree());
-        view.toggle_expand(1);
-        view.select(2); // "child1"
-        let node = Widget::accessibility(&view).unwrap();
-        assert_eq!(
-            node.value.as_deref(),
-            Some("child1"),
-            "value is the selected node's label",
-        );
-    }
-
-    #[test]
-    fn accessibility_reflects_focus_state() {
-        let mut view = TreeView::new(sample_tree());
-        view.set_focus(true);
-        let node = Widget::accessibility(&view).unwrap();
-        assert!(
-            node.state.focused,
-            "widget focus surfaces in the access node"
-        );
-    }
-
-    #[test]
-    fn empty_branch_remains_expandable_for_lazy_population() {
-        let mut view = TreeView::new(TreeNode::branch(1, "loading", (), Vec::new()));
-        view.toggle_expand(1);
-        assert!(view.is_expanded(1));
-        let node = Widget::accessibility(&view).unwrap();
-        assert_eq!(node.children[0].state.expanded, Some(true));
-    }
-
-    #[test]
-    fn expansion_has_a_persistable_builder_and_change_callback() {
-        let changes = Rc::new(RefCell::new(Vec::new()));
-        let sink = changes.clone();
-        let mut view = TreeView::new(sample_tree())
-            .with_expanded([1])
-            .with_accessible_name("Project files")
-            .on_expand(move |id, expanded| sink.borrow_mut().push((id, expanded)));
-
-        assert!(view.is_expanded(1));
-        assert!(view.set_expanded(1, false));
-        assert!(!view.set_expanded(1, false), "idempotent controlled update");
-        assert!(!view.set_expanded(2, true), "a leaf cannot expand");
-        assert_eq!(*changes.borrow(), vec![(1, false)]);
-        assert_eq!(
-            Widget::accessibility(&view).unwrap().name.as_deref(),
-            Some("Project files")
-        );
-    }
-
-    #[test]
-    fn batched_model_updates_reconcile_lazy_children_and_deleted_selection() {
-        let mut view =
-            TreeView::new(TreeNode::branch(1, "root", (), Vec::new())).with_expanded([1]);
-        view.update_model(|root| {
-            root.children.push(TreeNode::leaf(2, "loaded", ()));
-        });
-        assert_eq!(
-            view.visible_rows()
-                .iter()
-                .map(|(id, _, _)| *id)
-                .collect::<Vec<_>>(),
-            vec![1, 2]
-        );
-
-        view.select(2);
-        view.focused = Some(TreeRowKey::Node(2));
-        view.update_model(|root| root.children.clear());
-        assert_eq!(view.selected(), None, "deleted ids leave selection sane");
-        assert_eq!(view.focused(), None, "deleted ids leave focus sane");
-        assert!(view.is_expanded(1), "the surviving lazy branch stays open");
-    }
-
-    #[test]
-    fn expanding_above_viewport_preserves_the_stable_row_anchor() {
-        let root = TreeNode::branch(
-            1,
-            "root",
-            (),
-            vec![
-                TreeNode::branch(
-                    2,
-                    "folder",
-                    (),
-                    vec![
-                        TreeNode::leaf(3, "a", ()),
-                        TreeNode::leaf(4, "b", ()),
-                        TreeNode::leaf(5, "c", ()),
-                    ],
-                ),
-                TreeNode::leaf(10, "anchor", ()),
-                TreeNode::leaf(11, "after", ()),
-            ],
-        );
-        let mut view = TreeView::new(root);
-        view.toggle_expand(1);
-        view.set_viewport(px(ROW_HEIGHT), px(ROW_HEIGHT));
-        view.set_scroll_y(px(ROW_HEIGHT * 2.0 + 5.0));
-        let before = view.viewport.item_view_top(2);
-
-        view.toggle_expand(2);
-
-        let anchor = view.visible_index_of(10).expect("anchor remains visible");
-        assert_eq!(view.viewport.item_view_top(anchor), before);
-    }
-
-    #[test]
-    fn large_tree_bounds_paint_and_accessibility_windows() {
-        let children = (2_u64..=100_001)
-            .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
-            .collect();
-        let mut view = TreeView::new(TreeNode::branch(1, "root", (), children));
-        view.toggle_expand(1);
-        view.set_viewport(110.0, px(ROW_HEIGHT));
-        view.set_scroll_y(view.max_scroll_y() / 2.0);
-
-        let visible = view.visible_row_range();
-        assert!(visible.len() <= 12, "bounded geometry window: {visible:?}");
-        let node = Widget::accessibility(&view).unwrap();
-        assert!(node.children.len() <= 12, "bounded semantic window");
-        let first = node.children.first().expect("visible tree item");
-        assert_eq!(first.role, crate::a11y::Role::TreeItem);
-        assert_eq!(first.set_size, Some(100_001));
-        assert!(first.pos_in_set.expect("absolute position") > 49_000);
-    }
-
-    #[test]
-    fn semantic_tree_rows_publish_scrolled_viewport_geometry() {
-        let mut view = TreeView::new(sample_tree());
-        view.toggle_expand(1);
-        view.set_viewport(px(ROW_HEIGHT * 2.0), px(ROW_HEIGHT));
-        view.set_scroll_y(10.0);
-        let _ = lay_out_tree(&mut view, 320.0);
-
-        let semantics = Widget::accessibility(&view).expect("tree semantics");
-        let first = semantics.children.first().expect("first visible row");
-        assert_eq!(
-            first.bounds.expect("tree row bounds").to_rect(),
-            Rect::new(0.0, -10.0, 320.0, ROW_HEIGHT - 10.0),
-        );
-    }
-
-    #[test]
-    fn page_navigation_and_accelerated_wheel_share_sparse_row_geometry() {
-        let children = (2_u64..=101)
-            .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
-            .collect();
-        let mut view = TreeView::new(TreeNode::branch(1, "root", (), children));
-        view.toggle_expand(1);
-        view.set_viewport(100.0, px(ROW_HEIGHT));
-        assert!(view.set_row_height(0, 300.0));
-        assert!(view.focus_at(0));
-
-        assert!(view.on_key_with_modifiers(&Key::Named(NamedKey::PageDown), false, false,));
-        assert_eq!(view.focused(), Some(1));
-        assert_eq!(view.scroll_y(), 90.0);
-        assert!(view.on_key_with_modifiers(&Key::Named(NamedKey::PageUp), false, false,));
-        assert_eq!(view.scroll_y(), 0.0);
-
-        assert!(view.on_wheel(&MouseScrollDelta::LineDelta(0.0, -1.0), TouchPhase::Moved));
-        let immediate = view.scroll_y();
-        assert_eq!(immediate, 60.0);
-        assert!(view.needs_animation_frame());
-        view.last_tick = Some(
-            crate::time::now()
-                .checked_sub(Duration::from_millis(16))
-                .expect("a 16 ms earlier instant is representable"),
-        );
-        assert!(Widget::update(
-            &mut view,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-        assert!(view.scroll_y() > immediate, "momentum advances after input");
-    }
-
-    #[test]
-    fn body_drag_scrolls_tree_without_selecting_but_click_still_selects() {
-        let children = (2_u64..=101)
-            .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
-            .collect();
-        let mut view = TreeView::new(TreeNode::branch(1, "root", (), children));
-        view.toggle_expand(1);
-        view.set_viewport(100.0, px(ROW_HEIGHT));
-        let (taffy, node) = lay_out_tree(&mut view, 320.0);
-
-        dispatch_laid_out(&mut view, &cursor_moved(100.0, 80.0), &taffy, node);
-        dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
-        assert!(view.wants_pointer_capture());
-        dispatch_laid_out(&mut view, &cursor_moved(100.0, 20.0), &taffy, node);
-        dispatch_laid_out(&mut view, &mouse_release(), &taffy, node);
-        assert_eq!(view.scroll_y(), 60.0);
-        assert_eq!(view.selected(), None, "panning does not select a row");
-
-        view.set_scroll_y(0.0);
-        dispatch_laid_out(&mut view, &cursor_moved(100.0, 10.0), &taffy, node);
-        dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
-        dispatch_laid_out(&mut view, &mouse_release(), &taffy, node);
-        assert_eq!(
-            view.selected(),
-            Some(1),
-            "release below threshold is a click"
-        );
-    }
-
-    #[test]
-    fn tree_items_publish_level_expansion_selection_and_focus() {
-        let mut view = TreeView::new(sample_tree());
-        view.toggle_expand(1);
-        view.select(2);
-        view.focused = Some(TreeRowKey::Node(2));
-        view.set_focus(true);
-        let node = Widget::accessibility(&view).unwrap();
-
-        assert_eq!(node.children.len(), 3);
-        assert_eq!(node.children[0].state.expanded, Some(true));
-        assert_eq!(node.children[0].level, Some(1));
-        assert_eq!(node.children[1].level, Some(2));
-        assert!(node.children[1].state.selected);
-        assert!(node.children[1].state.focused);
-        assert_eq!(node.children[1].name.as_deref(), Some("child1"));
-    }
-
-    #[test]
-    fn keyboard_navigation_reveals_focus_and_follows_tree_parents() {
-        let children = (2_u64..=20)
-            .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
-            .collect();
-        let mut view = TreeView::new(TreeNode::branch(1, "root", (), children));
-        view.toggle_expand(1);
-        view.set_viewport(44.0, px(ROW_HEIGHT));
-        view.set_focus(true);
-        view.focused = Some(TreeRowKey::Node(1));
-
-        dispatch(&mut view, &key_press(Key::Named(NamedKey::End)));
-        assert_eq!(view.focused(), Some(20));
-        assert!(view.scroll_y() > 0.0, "End reveals the final row");
-
-        dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowLeft)));
-        assert_eq!(view.focused(), Some(1), "Left on a leaf focuses its parent");
-        assert_eq!(view.scroll_y(), 0.0, "revealing the root returns to top");
-    }
-
-    #[test]
-    fn external_model_queries_only_expanded_branches_and_preserves_insert_anchor() {
-        let mut view = TreeView::from_model(external_model());
-        assert_eq!(
-            view.model().child_queries.get(),
-            0,
-            "a collapsed root does not query its children"
-        );
-        view = view.with_expanded([1]);
-        assert_eq!(view.model().child_queries.get(), 1);
-        assert_eq!(
-            view.visible_rows()
-                .iter()
-                .map(|(id, _, _)| *id)
-                .collect::<Vec<_>>(),
-            vec![1, 2, 3, 4],
-            "the collapsed folder's child is not queried into visible order"
-        );
-
-        view.set_viewport(px(ROW_HEIGHT), px(ROW_HEIGHT));
-        view.set_scroll_y(px(ROW_HEIGHT * 2.0 + 5.0));
-        let before = view
-            .viewport
-            .item_view_top(view.visible_index_of(3).unwrap());
-        view.update_source(
-            &[TreeModelChange::RowsInserted {
-                parent: 1,
-                index: 0,
-                count: 1,
-            }],
-            |model| {
-                model.nodes.insert(
-                    5,
-                    ExternalNode {
-                        label: "inserted".into(),
-                        branch: false,
-                        children: Vec::new(),
+    fn expansion_toggles_from_disclosure_and_keys_and_persists_quietly() {
+        // Case `disclosure_hit_zone_is_the_painted_column_at_two_x`.
+        // At 2× text the disclosure column is painted at the `sm` line width
+        // (30 px), not the 1× 16 px. A press between the two must toggle the
+        // branch: the hit zone is the painted column, not the pinned constant.
+        {
+            let root = TreeNode::branch(1, "crates", (), vec![TreeNode::leaf(2, "main.rs", ())]);
+            let mut view = TreeView::new(root);
+            let mut doc = AutoCommit::new();
+            view.sync(&mut doc, &automerge::ROOT);
+            let mut taffy = TaffyTree::new();
+            let mut node_map = HashMap::new();
+            let theme = Theme::dark().with_text_scale(2.0);
+            let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+            taffy
+                .compute_layout(
+                    node,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(320.0),
+                        height: taffy::AvailableSpace::Definite(px(view.body_height())),
                     },
-                );
-                model.nodes.get_mut(&1).unwrap().children.insert(0, 5);
-            },
-        );
-        let anchor = view.visible_index_of(3).expect("stable id remains");
-        assert_eq!(view.viewport.item_view_top(anchor), before);
+                )
+                .unwrap();
+            view.apply_layout(&taffy, node, Point::ZERO);
+            assert!(
+                view.disclosure_w > DISCLOSURE_WIDTH,
+                "2x resolves a wider disclosure column: {}",
+                view.disclosure_w
+            );
+            assert!(view.viewport.estimated_height() > ROW_HEIGHT);
+            assert!(!view.expanded.contains(&1));
+
+            let x = f64::midpoint(DISCLOSURE_WIDTH, view.disclosure_w);
+            let y = view.viewport.estimated_height() / 2.0;
+            dispatch_laid_out(&mut view, &cursor_moved(x, y), &taffy, node);
+            dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
+            dispatch_laid_out(&mut view, &mouse_release(), &taffy, node);
+            assert!(
+                view.expanded.contains(&1),
+                "a press at x={x} inside the painted disclosure column toggles the branch"
+            );
+        }
+
+        // Case `tree_view_expand_node_shows_children`.
+        {
+            let mut view = TreeView::new(sample_tree());
+            let rows = view.visible_rows();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].0, 1);
+
+            view.toggle_expand(1);
+            let rows = view.visible_rows();
+            let ids: Vec<NodeId> = rows.iter().map(|(id, _, _)| *id).collect();
+            assert!(
+                ids.contains(&2),
+                "child1 must be visible after expanding root"
+            );
+            assert!(
+                ids.contains(&3),
+                "child2 must be visible after expanding root"
+            );
+            assert_eq!(rows.len(), 3);
+        }
+
+        // Case `tree_view_arrow_right_expands_focused_node`.
+        {
+            let mut view = TreeView::new(sample_tree());
+            view.set_focus(true);
+            view.focused = Some(TreeRowKey::Node(1));
+            assert!(!view.is_expanded(1));
+
+            dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowRight)));
+
+            assert!(
+                view.is_expanded(1),
+                "ArrowRight must expand the focused branch"
+            );
+        }
+
+        // Case `empty_branch_remains_expandable_for_lazy_population`.
+        {
+            let mut view = TreeView::new(TreeNode::branch(1, "loading", (), Vec::new()));
+            view.toggle_expand(1);
+            assert!(view.is_expanded(1));
+            let node = Widget::accessibility(&view).unwrap();
+            assert_eq!(node.children[0].state.expanded, Some(true));
+        }
+
+        // Case `expansion_has_a_persistable_builder_and_change_callback`.
+        {
+            let changes = Rc::new(RefCell::new(Vec::new()));
+            let sink = changes.clone();
+            let mut view = TreeView::new(sample_tree())
+                .with_expanded([1])
+                .with_accessible_name("Project files")
+                .on_expand(move |id, expanded| sink.borrow_mut().push((id, expanded)));
+
+            assert!(view.is_expanded(1));
+            assert!(view.set_expanded(1, false));
+            assert!(!view.set_expanded(1, false), "idempotent controlled update");
+            assert!(!view.set_expanded(2, true), "a leaf cannot expand");
+            assert_eq!(*changes.borrow(), vec![(1, false)]);
+            assert_eq!(
+                Widget::accessibility(&view).unwrap().name.as_deref(),
+                Some("Project files")
+            );
+        }
+
+        // Case `restoring_expansion_does_not_echo_to_the_host`.
+        {
+            let echoed = Rc::new(Cell::new(0));
+            let count = Rc::clone(&echoed);
+            let mut view = TreeView::new(navigator_tree())
+                .hide_root()
+                .on_expand(move |_, _| count.set(count.get() + 1));
+            view.restore_expanded([2, 5, 99]);
+            assert!(view.is_expanded(2));
+            assert!(!view.is_expanded(5), "leaves are not expandable");
+            assert_eq!(echoed.get(), 0);
+            view.set_expanded(2, false);
+            assert_eq!(echoed.get(), 1, "a user change still reports");
+        }
+
+        // Case `the_disclosure_toggles_without_activating`.
+        {
+            let (view, activated, _) = logged(
+                TreeView::new(navigator_tree())
+                    .hide_root()
+                    .click_activation(TreeClickActivation::SingleClick),
+            );
+            let mut view = view;
+            let (taffy, node) = lay_out_tree(&mut view, 240.0);
+            let at = Point::new(view.rect.x0 + 2.0, row_center(&view, 2).y);
+            dispatch_laid_out(&mut view, &cursor_moved(at.x, at.y), &taffy, node);
+            dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
+            dispatch_laid_out(&mut view, &mouse_release(), &taffy, node);
+            assert!(view.is_expanded(2));
+            assert!(activated.borrow().is_empty());
+        }
     }
 
     #[test]
-    fn post_mutation_notification_uses_the_cached_stable_anchor() {
-        let children = Rc::new(RefCell::new(vec![2, 3, 4]));
-        let mut view = TreeView::from_model(SharedOrderModel {
-            children: Rc::clone(&children),
-        })
-        .with_expanded([1]);
-        view.set_viewport(px(ROW_HEIGHT), px(ROW_HEIGHT));
-        view.set_scroll_offset(ROW_HEIGHT * 2.0 + 5.0);
-        let before = view
-            .viewport
-            .item_view_top(view.visible_index_of(3).unwrap());
+    fn selection_reports_callbacks_and_multiselect_by_stable_id() {
+        // Case `tree_view_select_node_calls_on_select`.
+        {
+            let captured: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+            let captured_clone = captured.clone();
+            let mut view = TreeView::new(sample_tree()).on_select(move |id| {
+                *captured_clone.borrow_mut() = Some(id);
+            });
+            view.toggle_expand(1);
 
-        children.borrow_mut().insert(0, 5);
-        view.notify_model_changes(&[TreeModelChange::RowsInserted {
-            parent: 1,
-            index: 0,
-            count: 1,
-        }]);
+            // Taffy's `auto` width on a leaf inside a block container collapses
+            // to zero under `MAX_CONTENT`, so wrap it in a fixed-width parent
+            // and patch `view.rect` manually rather than trust
+            // `apply_layout`'s width.
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
+            let node = view.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+            let root_taffy = taffy.parent_node(
+                Style {
+                    size: Size {
+                        width: Dimension::length(200.0),
+                        height: Dimension::length(80.0),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            );
+            taffy
+                .compute_layout(root_taffy, taffy::Size::MAX_CONTENT)
+                .unwrap();
+            view.apply_layout(&taffy, node, Point::ZERO);
+            view.rect = Rect::new(
+                0.0,
+                0.0,
+                200.0,
+                idx_to_f64(view.visible_rows().len()) * ROW_HEIGHT,
+            );
+            let target_id = view.visible_rows()[1].0;
+            let target_rect = Rect::new(0.0, ROW_HEIGHT, 200.0, ROW_HEIGHT * 2.0);
+            assert_eq!(target_id, 2);
+            let click_x = target_rect.x0 + 60.0; // past depth-1 indent + glyph
+            let click_y = target_rect.y0 + target_rect.height() / 2.0;
 
-        let anchor = view.visible_index_of(3).expect("stable id remains");
-        assert_eq!(view.viewport.item_view_top(anchor), before);
+            dispatch(&mut view, &cursor_moved(click_x, click_y));
+            dispatch(&mut view, &mouse_press());
+            assert_eq!(
+                *captured.borrow(),
+                None,
+                "selection waits until the gesture is known to be a click"
+            );
+            dispatch(&mut view, &mouse_release());
+
+            assert_eq!(
+                *captured.borrow(),
+                Some(2),
+                "on_select must fire with child1 id"
+            );
+            assert_eq!(view.selected(), Some(2));
+        }
+
+        // Case `multiselect_uses_stable_ids_and_survives_collapse_and_move`.
+        {
+            let mut view = TreeView::from_model(external_model())
+                .with_expanded([1, 2])
+                .multi_select(true);
+            view.apply_selection_gesture(20, false, false);
+            view.apply_selection_gesture(3, true, false);
+            assert!(view.selection().is_selected(&20));
+            assert!(view.selection().is_selected(&3));
+
+            view.set_expanded(2, false);
+            assert!(
+                view.selection().is_selected(&20),
+                "hidden nodes stay selected"
+            );
+            view.update_source(
+                &[TreeModelChange::RowsMoved {
+                    parent: 1,
+                    from: 1,
+                    to: 0,
+                    count: 1,
+                }],
+                |model| {
+                    let children = &mut model.nodes.get_mut(&1).unwrap().children;
+                    let moved = children.remove(1);
+                    children.insert(0, moved);
+                },
+            );
+            assert!(view.selection().is_selected(&3));
+            assert!(view.selection().is_selected(&20));
+        }
+
+        // Case `multiselect_supports_visible_ranges_and_constant_space_select_all`.
+        {
+            let mut view = TreeView::from_model(external_model())
+                .with_expanded([1, 2])
+                .multi_select(true);
+            view.apply_selection_gesture(2, false, false);
+            view.apply_selection_gesture(4, false, true);
+            assert!(view.selection().is_selected(&2));
+            assert!(view.selection().is_selected(&20));
+            assert!(view.selection().is_selected(&3));
+            assert!(view.selection().is_selected(&4));
+
+            assert!(view.on_key_with_modifiers(&Key::Character("a".into()), true, false));
+            assert!(view.selection().is_select_all());
+            assert_eq!(view.selection().stored_keys().count(), 0);
+            assert!(view.selection().is_selected(&20));
+
+            view.apply_selection_gesture(3, true, false);
+            assert!(!view.selection().is_selected(&3));
+            assert_eq!(
+                view.selection().stored_keys().copied().collect::<Vec<_>>(),
+                vec![3]
+            );
+        }
     }
 
     #[test]
-    fn granular_external_changes_refresh_data_and_reconcile_removed_state() {
-        let mut view = TreeView::from_model(external_model())
-            .with_expanded([1])
-            .with_selected(Some(3));
-        view.focused = Some(TreeRowKey::Node(3));
-        view.set_viewport(66.0, px(ROW_HEIGHT));
-        let offset = view.scroll_y();
+    fn keyboard_navigation_moves_focus_and_separates_selection_from_activation() {
+        // Case `tree_view_arrow_down_moves_focus_to_next_visible_row`.
+        {
+            let mut view = TreeView::new(sample_tree());
+            view.toggle_expand(1);
+            view.set_focus(true);
+            view.focused = Some(TreeRowKey::Node(1));
 
-        view.update_source(&[TreeModelChange::RowsChanged { ids: vec![3] }], |model| {
-            model.nodes.get_mut(&3).unwrap().label = "renamed".into();
-        });
-        assert_eq!(view.scroll_y(), offset, "data changes preserve geometry");
-        assert!(
-            Widget::accessibility(&view)
-                .unwrap()
+            dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowDown)));
+
+            let rows = view.visible_rows();
+            let second_id = rows[1].0;
+            assert_eq!(
+                view.focused(),
+                Some(second_id),
+                "ArrowDown must move focus from row 0 to row 1",
+            );
+        }
+
+        // Case `keyboard_navigation_reveals_focus_and_follows_tree_parents`.
+        {
+            let children = (2_u64..=20)
+                .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
+                .collect();
+            let mut view = TreeView::new(TreeNode::branch(1, "root", (), children));
+            view.toggle_expand(1);
+            view.set_viewport(44.0, px(ROW_HEIGHT));
+            view.set_focus(true);
+            view.focused = Some(TreeRowKey::Node(1));
+
+            dispatch(&mut view, &key_press(Key::Named(NamedKey::End)));
+            assert_eq!(view.focused(), Some(20));
+            assert!(view.scroll_y() > 0.0, "End reveals the final row");
+
+            dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowLeft)));
+            assert_eq!(view.focused(), Some(1), "Left on a leaf focuses its parent");
+            assert_eq!(view.scroll_y(), 0.0, "revealing the root returns to top");
+        }
+
+        // Case `enter_activates_while_space_and_arrows_only_select`.
+        {
+            let (view, activated, selected) = logged(
+                TreeView::new(navigator_tree())
+                    .hide_root()
+                    .selection_follows_focus(true),
+            );
+            let mut view = view;
+            view.set_focus(true);
+            view.focused = Some(TreeRowKey::Node(2));
+
+            dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowDown)));
+            assert_eq!(view.focused(), Some(5));
+            assert_eq!(view.selected(), Some(5), "selection follows keyboard focus");
+            assert!(activated.borrow().is_empty(), "browsing opens nothing");
+
+            dispatch(&mut view, &key_press(Key::Character(" ".into())));
+            assert!(
+                activated.borrow().is_empty(),
+                "Space selects without activating"
+            );
+
+            dispatch(&mut view, &key_press(Key::Named(NamedKey::Enter)));
+            assert_eq!(*activated.borrow(), [5], "Enter activates the focused row");
+            assert!(selected.borrow().contains(&5));
+        }
+
+        // Case `arrows_do_not_select_unless_selection_follows_focus`.
+        {
+            let (mut view, activated, _) = logged(TreeView::new(navigator_tree()).hide_root());
+            view.set_focus(true);
+            view.focused = Some(TreeRowKey::Node(2));
+            dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowDown)));
+            assert_eq!(view.focused(), Some(5));
+            assert_eq!(view.selected(), None);
+            assert!(activated.borrow().is_empty());
+        }
+
+        // Case `an_unfocused_tree_leaves_keys_to_its_siblings`.
+        {
+            let (mut view, activated, _) = logged(TreeView::new(navigator_tree()).hide_root());
+            view.focused = Some(TreeRowKey::Node(2));
+            dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowDown)));
+            dispatch(&mut view, &key_press(Key::Named(NamedKey::Enter)));
+            assert_eq!(view.focused(), Some(2), "keys reach only a focused tree");
+            assert!(activated.borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn accessibility_reports_tree_role_value_focus_and_row_state() {
+        // Case `accessibility_reports_tree_role_and_no_value_when_unselected`.
+        {
+            use crate::a11y::Role;
+            let view = TreeView::new(sample_tree());
+            let node = Widget::accessibility(&view).expect("tree is not presentational");
+            assert_eq!(node.role, Role::Tree);
+            assert_eq!(node.name, None, "the tree has no intrinsic label");
+            assert_eq!(node.value, None, "no value until a row is selected");
+            assert!(node.state.focusable);
+            assert!(!node.state.disabled);
+            assert!(!node.state.focused);
+        }
+
+        // Case `tree_view_exposes_an_explicit_stable_id`.
+        {
+            let view = TreeView::new(sample_tree()).with_id("workspace-tree");
+            assert_eq!(Widget::test_id(&view), Some("workspace-tree"));
+        }
+
+        // Case `accessibility_value_is_selected_row_label`.
+        {
+            let mut view = TreeView::new(sample_tree());
+            view.toggle_expand(1);
+            view.select(2); // "child1"
+            let node = Widget::accessibility(&view).unwrap();
+            assert_eq!(
+                node.value.as_deref(),
+                Some("child1"),
+                "value is the selected node's label",
+            );
+        }
+
+        // Case `accessibility_reflects_focus_state`.
+        {
+            let mut view = TreeView::new(sample_tree());
+            view.set_focus(true);
+            let node = Widget::accessibility(&view).unwrap();
+            assert!(
+                node.state.focused,
+                "widget focus surfaces in the access node"
+            );
+        }
+
+        // Case `tree_items_publish_level_expansion_selection_and_focus`.
+        {
+            let mut view = TreeView::new(sample_tree());
+            view.toggle_expand(1);
+            view.select(2);
+            view.focused = Some(TreeRowKey::Node(2));
+            view.set_focus(true);
+            let node = Widget::accessibility(&view).unwrap();
+
+            assert_eq!(node.children.len(), 3);
+            assert_eq!(node.children[0].state.expanded, Some(true));
+            assert_eq!(node.children[0].level, Some(1));
+            assert_eq!(node.children[1].level, Some(2));
+            assert!(node.children[1].state.selected);
+            assert!(node.children[1].state.focused);
+            assert_eq!(node.children[1].name.as_deref(), Some("child1"));
+        }
+
+        // Case `decorations_see_row_state_and_describe_rows`.
+        {
+            let seen = Rc::new(RefCell::new(Vec::new()));
+            let log = Rc::clone(&seen);
+            let mut view = TreeView::new(navigator_tree())
+                .hide_root()
+                .with_row_decoration(move |_, row, theme| {
+                    log.borrow_mut().push(row);
+                    TreeRowDecoration::new()
+                        .icon(
+                            if row.is_branch {
+                                Icon::Folder
+                            } else {
+                                Icon::File
+                            },
+                            theme.tokens.colors.text_dim,
+                        )
+                        .trailing("3")
+                        .description(if row.is_branch { "Folder" } else { "File" })
+                });
+            view.set_current(Some(5));
+            view.select(2);
+            let _ = lay_out_tree(&mut view, 240.0);
+            draw_view(&mut view);
+            let rows = seen.borrow().clone();
+            let readme = rows
+                .iter()
+                .find(|row| row.id == 5)
+                .expect("README decorated");
+            assert!(readme.current && !readme.selected && !readme.is_branch);
+            let src = rows.iter().find(|row| row.id == 2).expect("src decorated");
+            assert!(src.selected && src.is_branch && !src.expanded && !src.current);
+
+            let semantics = Widget::accessibility(&view).unwrap();
+            let described: Vec<_> = semantics
                 .children
                 .iter()
-                .any(|row| row.name.as_deref() == Some("renamed")),
-            "semantics query the fresh model label"
-        );
-
-        view.update_source(
-            &[TreeModelChange::RowsRemoved {
-                parent: 1,
-                index: 1,
-                count: 1,
-            }],
-            |model| {
-                model.nodes.get_mut(&1).unwrap().children.remove(1);
-                model.nodes.remove(&3);
-            },
-        );
-        assert_eq!(view.selected(), None);
-        assert_eq!(view.focused(), None);
-        assert_eq!(view.visible_index_of(3), None);
+                .map(|item| item.description.clone())
+                .collect();
+            assert_eq!(
+                described,
+                [Some("Folder".to_owned()), Some("File".to_owned())]
+            );
+            assert_eq!(view.current(), Some(5));
+            view.set_current(Some(99));
+            assert_eq!(view.current(), None, "an unknown id is not current");
+        }
     }
 
     #[test]
-    fn external_move_keeps_measurements_attached_to_node_ids() {
-        let mut view = TreeView::from_model(external_model()).with_expanded([1]);
-        let old_index = view.visible_index_of(3).unwrap();
-        assert!(view.set_row_height(old_index, 73.0));
+    fn bounded_viewport_windows_paint_and_semantics_around_a_stable_anchor() {
+        // Case `tree_viewport_builder_enables_the_bounded_internal_window`.
+        {
+            let children = (2_u64..102)
+                .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
+                .collect();
+            let view = TreeView::new(TreeNode::branch(1, "root", (), children))
+                .with_expanded([1])
+                .with_viewport(44.0, 30.0);
+            assert_eq!(view.viewport.viewport(), 44.0);
+            assert_eq!(view.viewport.estimated_height(), 30.0);
+            assert!(view.visible_row_range().len() < view.visible_len());
+        }
 
-        view.update_source(
-            &[TreeModelChange::RowsMoved {
-                parent: 1,
-                from: 1,
-                to: 0,
-                count: 1,
-            }],
-            |model| {
-                let children = &mut model.nodes.get_mut(&1).unwrap().children;
-                let moved = children.remove(1);
-                children.insert(0, moved);
-            },
-        );
+        // Case `large_tree_bounds_paint_and_accessibility_windows`.
+        {
+            let children = (2_u64..=100_001)
+                .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
+                .collect();
+            let mut view = TreeView::new(TreeNode::branch(1, "root", (), children));
+            view.toggle_expand(1);
+            view.set_viewport(110.0, px(ROW_HEIGHT));
+            view.set_scroll_y(view.max_scroll_y() / 2.0);
 
-        let new_index = view.visible_index_of(3).unwrap();
-        assert_eq!(new_index, 1);
-        assert_eq!(view.viewport.item_height(new_index), Some(73.0));
+            let visible = view.visible_row_range();
+            assert!(visible.len() <= 12, "bounded geometry window: {visible:?}");
+            let node = Widget::accessibility(&view).unwrap();
+            assert!(node.children.len() <= 12, "bounded semantic window");
+            let first = node.children.first().expect("visible tree item");
+            assert_eq!(first.role, crate::a11y::Role::TreeItem);
+            assert_eq!(first.set_size, Some(100_001));
+            assert!(first.pos_in_set.expect("absolute position") > 49_000);
+        }
+
+        // Case `semantic_tree_rows_publish_scrolled_viewport_geometry`.
+        {
+            let mut view = TreeView::new(sample_tree());
+            view.toggle_expand(1);
+            view.set_viewport(px(ROW_HEIGHT * 2.0), px(ROW_HEIGHT));
+            view.set_scroll_y(10.0);
+            let _ = lay_out_tree(&mut view, 320.0);
+
+            let semantics = Widget::accessibility(&view).expect("tree semantics");
+            let first = semantics.children.first().expect("first visible row");
+            assert_eq!(
+                first.bounds.expect("tree row bounds").to_rect(),
+                Rect::new(0.0, -10.0, 320.0, ROW_HEIGHT - 10.0),
+            );
+        }
+
+        // Case `expanding_above_viewport_preserves_the_stable_row_anchor`.
+        {
+            let root = TreeNode::branch(
+                1,
+                "root",
+                (),
+                vec![
+                    TreeNode::branch(
+                        2,
+                        "folder",
+                        (),
+                        vec![
+                            TreeNode::leaf(3, "a", ()),
+                            TreeNode::leaf(4, "b", ()),
+                            TreeNode::leaf(5, "c", ()),
+                        ],
+                    ),
+                    TreeNode::leaf(10, "anchor", ()),
+                    TreeNode::leaf(11, "after", ()),
+                ],
+            );
+            let mut view = TreeView::new(root);
+            view.toggle_expand(1);
+            view.set_viewport(px(ROW_HEIGHT), px(ROW_HEIGHT));
+            view.set_scroll_y(px(ROW_HEIGHT * 2.0 + 5.0));
+            let before = view.viewport.item_view_top(2);
+
+            view.toggle_expand(2);
+
+            let anchor = view.visible_index_of(10).expect("anchor remains visible");
+            assert_eq!(view.viewport.item_view_top(anchor), before);
+        }
     }
 
     #[test]
-    fn paged_tree_demands_only_the_visible_window_once() {
-        let requests = Rc::new(RefCell::new(Vec::new()));
-        let captured = Rc::clone(&requests);
-        let mut view = TreeView::from_model(PagedModel {
-            count: 100_000_000,
-            states: Rc::new(RefCell::new(HashMap::new())),
-            self_loading: false,
-            requests: Vec::new(),
-            changes: Vec::new(),
-        })
-        .with_expanded([1])
-        .on_load_request(move |request| captured.borrow_mut().push(request));
-        view.set_viewport(66.0, px(ROW_HEIGHT));
-        view.set_scroll_offset(idx_to_f64(50_000_000) * ROW_HEIGHT);
+    fn external_model_changes_reconcile_state_and_keep_anchors() {
+        // Case `batched_model_updates_reconcile_lazy_children_and_deleted_selection`.
+        {
+            let mut view =
+                TreeView::new(TreeNode::branch(1, "root", (), Vec::new())).with_expanded([1]);
+            view.update_model(|root| {
+                root.children.push(TreeNode::leaf(2, "loaded", ()));
+            });
+            assert_eq!(
+                view.visible_rows()
+                    .iter()
+                    .map(|(id, _, _)| *id)
+                    .collect::<Vec<_>>(),
+                vec![1, 2]
+            );
 
-        let demanded = view.request_visible_rows();
-        assert!(demanded > 0);
-        assert!(demanded <= 8, "overscan must keep page demand bounded");
-        assert_eq!(view.request_visible_rows(), 0, "requests are deduplicated");
-        let requests = requests.borrow();
-        assert_eq!(requests.len(), demanded);
-        assert!(
-            requests
-                .iter()
-                .all(|request| request.reason == TreeLoadReason::Visible)
-        );
-        assert!(requests.iter().all(|request| {
-            request.slot.index.abs_diff(50_000_000) <= 5 && request.slot.parent == 1
-        }));
-        assert_eq!(view.visible_len(), 100_000_001);
-    }
+            view.select(2);
+            view.focused = Some(TreeRowKey::Node(2));
+            view.update_model(|root| root.children.clear());
+            assert_eq!(view.selected(), None, "deleted ids leave selection sane");
+            assert_eq!(view.focused(), None, "deleted ids leave focus sane");
+            assert!(view.is_expanded(1), "the surviving lazy branch stays open");
+        }
 
-    #[test]
-    fn model_owned_paged_tree_drains_slot_completions_during_update() {
-        let mut view = TreeView::from_model(PagedModel {
-            count: 4,
-            states: Rc::new(RefCell::new(HashMap::new())),
-            self_loading: true,
-            requests: Vec::new(),
-            changes: Vec::new(),
-        })
-        .with_expanded([1]);
-        view.set_viewport(66.0, px(ROW_HEIGHT));
-        assert!(matches!(
-            view.index.row_at(&view.model, 1).map(|(key, _)| key),
-            Some(TreeRowKey::Slot(_))
-        ));
-        assert!(view.focus_at(1));
+        // Case `external_model_queries_only_expanded_branches_and_preserves_insert_anchor`.
+        {
+            let mut view = TreeView::from_model(external_model());
+            assert_eq!(
+                view.model().child_queries.get(),
+                0,
+                "a collapsed root does not query its children"
+            );
+            view = view.with_expanded([1]);
+            assert_eq!(view.model().child_queries.get(), 1);
+            assert_eq!(
+                view.visible_rows()
+                    .iter()
+                    .map(|(id, _, _)| *id)
+                    .collect::<Vec<_>>(),
+                vec![1, 2, 3, 4],
+                "the collapsed folder's child is not queried into visible order"
+            );
 
-        let demanded = view.request_visible_rows();
-        assert!(demanded > 0);
-        assert_eq!(view.model().requests.len(), demanded);
-
-        let mut document = AutoCommit::new();
-        assert!(Widget::update(&mut view, &mut document, &automerge::ROOT));
-
-        let first = PagedModel::id(0).expect("stable paged id");
-        assert_eq!(
-            view.index.row_at(&view.model, 1).map(|(key, _)| key),
-            Some(TreeRowKey::Node(first))
-        );
-        assert_eq!(view.focused(), Some(first));
-        assert_eq!(view.visible_row(1), Some((first, "loaded row", 1)));
-        assert_eq!(view.request_visible_rows(), 0);
-    }
-
-    #[test]
-    fn paged_error_is_keyboard_retryable_and_ready_row_inherits_focus_and_anchor() {
-        let states = Rc::new(RefCell::new(HashMap::from([(0, PagedSlotState::Error)])));
-        let requests = Rc::new(RefCell::new(Vec::new()));
-        let captured = Rc::clone(&requests);
-        let mut view = TreeView::from_model(PagedModel {
-            count: 1,
-            states: Rc::clone(&states),
-            self_loading: false,
-            requests: Vec::new(),
-            changes: Vec::new(),
-        })
-        .with_expanded([1])
-        .on_load_request(move |request| captured.borrow_mut().push(request));
-        view.set_viewport(px(ROW_HEIGHT), px(ROW_HEIGHT));
-        view.set_scroll_offset(ROW_HEIGHT + 5.0);
-        assert!(view.focus_at(1));
-        view.set_focus(true);
-        let before = view.viewport.item_view_top(1);
-
-        let semantics = Widget::accessibility(&view).unwrap();
-        let error = semantics
-            .children
-            .iter()
-            .find(|row| row.state.invalid)
-            .expect("error placeholder is exposed");
-        assert!(error.state.focusable);
-        assert!(error.state.focused);
-        assert!(error.name.as_deref().unwrap().contains("Activate to retry"));
-
-        assert!(view.on_key_with_modifiers(&Key::Named(NamedKey::Enter), false, false));
-        assert_eq!(
-            requests.borrow().as_slice(),
-            &[TreeLoadRequest {
-                slot: TreeSlot {
+            view.set_viewport(px(ROW_HEIGHT), px(ROW_HEIGHT));
+            view.set_scroll_y(px(ROW_HEIGHT * 2.0 + 5.0));
+            let before = view
+                .viewport
+                .item_view_top(view.visible_index_of(3).unwrap());
+            view.update_source(
+                &[TreeModelChange::RowsInserted {
                     parent: 1,
                     index: 0,
+                    count: 1,
+                }],
+                |model| {
+                    model.nodes.insert(
+                        5,
+                        ExternalNode {
+                            label: "inserted".into(),
+                            branch: false,
+                            children: Vec::new(),
+                        },
+                    );
+                    model.nodes.get_mut(&1).unwrap().children.insert(0, 5);
                 },
-                reason: TreeLoadReason::Retry,
-            }]
-        );
+            );
+            let anchor = view.visible_index_of(3).expect("stable id remains");
+            assert_eq!(view.viewport.item_view_top(anchor), before);
+        }
 
-        states.borrow_mut().insert(0, PagedSlotState::Ready);
-        view.notify_model_changes(&[TreeModelChange::SlotsChanged {
-            slots: vec![TreeSlot {
+        // Case `post_mutation_notification_uses_the_cached_stable_anchor`.
+        {
+            let children = Rc::new(RefCell::new(vec![2, 3, 4]));
+            let mut view = TreeView::from_model(SharedOrderModel {
+                children: Rc::clone(&children),
+            })
+            .with_expanded([1]);
+            view.set_viewport(px(ROW_HEIGHT), px(ROW_HEIGHT));
+            view.set_scroll_offset(ROW_HEIGHT * 2.0 + 5.0);
+            let before = view
+                .viewport
+                .item_view_top(view.visible_index_of(3).unwrap());
+
+            children.borrow_mut().insert(0, 5);
+            view.notify_model_changes(&[TreeModelChange::RowsInserted {
                 parent: 1,
                 index: 0,
-            }],
-        }]);
+                count: 1,
+            }]);
 
-        let id = PagedModel::id(0).unwrap();
-        assert_eq!(view.focused(), Some(id));
-        assert_eq!(view.visible_row(1), Some((id, "loaded row", 1)));
-        assert_eq!(view.viewport.item_view_top(1), before);
-        let loaded = Widget::accessibility(&view)
-            .unwrap()
-            .children
-            .into_iter()
-            .find(|row| row.name.as_deref() == Some("loaded row"))
-            .expect("loaded row replaces placeholder semantics");
-        assert!(!loaded.state.busy);
-        assert!(!loaded.state.invalid);
-        assert!(loaded.state.focused);
-    }
+            let anchor = view.visible_index_of(3).expect("stable id remains");
+            assert_eq!(view.viewport.item_view_top(anchor), before);
+        }
 
-    #[test]
-    fn paged_slot_delegate_localizes_measures_and_rebuilds_changed_placeholders() {
-        let states = Rc::new(RefCell::new(HashMap::from([
-            (0, PagedSlotState::Loading),
-            (1, PagedSlotState::Error),
-        ])));
-        let builds = Rc::new(Cell::new(0_usize));
-        let captured = Rc::clone(&builds);
-        let mut view = TreeView::from_model(PagedModel {
-            count: 2,
-            states: Rc::clone(&states),
-            self_loading: false,
-            requests: Vec::new(),
-            changes: Vec::new(),
-        })
-        .with_expanded([1])
-        .with_slot_delegate(move |_, slot, _, state| {
-            captured.set(captured.get().saturating_add(1));
-            let (label, height) = match state {
-                TreeSlotState::Loading => (format!("Chargement {}", slot.index), 34.0),
-                TreeSlotState::Error { message } => (
-                    format!("Réessayer {} — {}", slot.index, message.unwrap_or("Erreur")),
-                    48.0,
-                ),
-            };
-            Box::new(DelegateProbe::new(
-                label,
-                height,
-                false,
-                Rc::new(Cell::new(0)),
-            ))
-        });
-        view.set_viewport(120.0, px(ROW_HEIGHT));
-        let _ = lay_out_tree(&mut view, 360.0);
+        // Case `granular_external_changes_refresh_data_and_reconcile_removed_state`.
+        {
+            let mut view = TreeView::from_model(external_model())
+                .with_expanded([1])
+                .with_selected(Some(3));
+            view.focused = Some(TreeRowKey::Node(3));
+            view.set_viewport(66.0, px(ROW_HEIGHT));
+            let offset = view.scroll_y();
 
-        assert_eq!(builds.get(), 2);
-        assert_eq!(view.viewport.item_height(1), Some(34.0));
-        assert_eq!(view.viewport.item_height(2), Some(48.0));
-        let semantics = Widget::accessibility(&view).unwrap();
-        let loading = semantics
-            .children
-            .iter()
-            .find(|row| row.action_target.as_deref() == Some("slot:1:0"))
-            .expect("localized loading slot semantics");
-        assert_eq!(loading.name.as_deref(), Some("Chargement 0"));
-        assert!(loading.state.busy);
-        assert_eq!(
-            loading
-                .children
-                .first()
-                .expect("delegated child semantics")
-                .role,
-            crate::a11y::Role::Button
-        );
-        let error = semantics
-            .children
-            .iter()
-            .find(|row| row.action_target.as_deref() == Some("slot:1:1"))
-            .expect("localized error slot semantics");
-        assert_eq!(
-            error.name.as_deref(),
-            Some("Réessayer 1 — Network unavailable")
-        );
-        assert!(error.state.invalid);
-
-        states.borrow_mut().insert(0, PagedSlotState::Error);
-        view.notify_model_changes(&[TreeModelChange::SlotsChanged {
-            slots: vec![TreeSlot {
-                parent: 1,
-                index: 0,
-            }],
-        }]);
-        let _ = lay_out_tree(&mut view, 360.0);
-        assert_eq!(builds.get(), 3, "only the changed slot is rebuilt");
-        let changed = Widget::accessibility(&view)
-            .unwrap()
-            .children
-            .into_iter()
-            .find(|row| row.action_target.as_deref() == Some("slot:1:0"))
-            .expect("changed slot semantics");
-        assert_eq!(
-            changed.name.as_deref(),
-            Some("Réessayer 0 — Network unavailable")
-        );
-        assert!(changed.state.invalid);
-    }
-
-    #[test]
-    fn delegated_tree_mounts_only_the_hundred_million_row_window() {
-        let builds = Rc::new(Cell::new(0_usize));
-        let captured = Rc::clone(&builds);
-        let mut view = TreeView::from_model(HugeModel {
-            child_id_queries: Cell::new(0),
-        })
-        .with_expanded([1, HugeModel::branch_id()])
-        .with_row_delegate(move |_, id, _| {
-            captured.set(captured.get().saturating_add(1));
-            Box::new(DelegateProbe::new(
-                id.to_string(),
-                22.0,
-                false,
-                Rc::new(Cell::new(0)),
-            ))
-        });
-        view.set_viewport(110.0, px(ROW_HEIGHT));
-        view.set_scroll_offset(idx_to_f64(HUGE_BRANCH_POSITION) * ROW_HEIGHT);
-        let _ = lay_out_tree(&mut view, 320.0);
-
-        assert_eq!(view.visible_len(), 100_000_003);
-        assert!(view.mounted_rows.len() <= 10);
-        assert_eq!(builds.get(), view.mounted_rows.len());
-        assert!(view.model().child_id_queries.get() < 100);
-    }
-
-    #[test]
-    fn interactive_tree_delegate_wins_before_row_selection_and_nests_semantics() {
-        let presses = Rc::new(Cell::new(0_usize));
-        let captured = Rc::clone(&presses);
-        let mut view = TreeView::new(sample_tree())
-            .with_expanded([1])
-            .with_row_delegate(move |model, id, _| {
-                Box::new(DelegateProbe::new(
-                    model.label(id).unwrap_or("row"),
-                    22.0,
-                    true,
-                    Rc::clone(&captured),
-                ))
+            view.update_source(&[TreeModelChange::RowsChanged { ids: vec![3] }], |model| {
+                model.nodes.get_mut(&3).unwrap().label = "renamed".into();
             });
-        view.set_viewport(66.0, px(ROW_HEIGHT));
-        let (taffy, node) = lay_out_tree(&mut view, 260.0);
+            assert_eq!(view.scroll_y(), offset, "data changes preserve geometry");
+            assert!(
+                Widget::accessibility(&view)
+                    .unwrap()
+                    .children
+                    .iter()
+                    .any(|row| row.name.as_deref() == Some("renamed")),
+                "semantics query the fresh model label"
+            );
 
-        dispatch_laid_out(&mut view, &cursor_moved(80.0, 11.0), &taffy, node);
-        assert!(dispatch_laid_out(&mut view, &mouse_press(), &taffy, node));
-        assert_eq!(presses.get(), 1);
-        assert_eq!(view.selected(), None);
+            view.update_source(
+                &[TreeModelChange::RowsRemoved {
+                    parent: 1,
+                    index: 1,
+                    count: 1,
+                }],
+                |model| {
+                    model.nodes.get_mut(&1).unwrap().children.remove(1);
+                    model.nodes.remove(&3);
+                },
+            );
+            assert_eq!(view.selected(), None);
+            assert_eq!(view.focused(), None);
+            assert_eq!(view.visible_index_of(3), None);
+        }
 
-        let semantics = view.accessibility().unwrap();
-        assert_eq!(semantics.children[0].role, crate::a11y::Role::TreeItem);
-        assert_eq!(
-            semantics.children[0].children[0].role,
-            crate::a11y::Role::Button
-        );
+        // Case `external_move_keeps_measurements_attached_to_node_ids`.
+        {
+            let mut view = TreeView::from_model(external_model()).with_expanded([1]);
+            let old_index = view.visible_index_of(3).unwrap();
+            assert!(view.set_row_height(old_index, 73.0));
+
+            view.update_source(
+                &[TreeModelChange::RowsMoved {
+                    parent: 1,
+                    from: 1,
+                    to: 0,
+                    count: 1,
+                }],
+                |model| {
+                    let children = &mut model.nodes.get_mut(&1).unwrap().children;
+                    let moved = children.remove(1);
+                    children.insert(0, moved);
+                },
+            );
+
+            let new_index = view.visible_index_of(3).unwrap();
+            assert_eq!(new_index, 1);
+            assert_eq!(view.viewport.item_height(new_index), Some(73.0));
+        }
     }
 
     #[test]
-    fn delegated_tree_measures_variable_rows_and_invalidates_only_changed_ids() {
-        let builds = Rc::new(Cell::new(0_usize));
-        let captured = Rc::clone(&builds);
-        let mut view = TreeView::from_model(external_model())
+    fn scroll_input_pages_wheels_and_drags_over_sparse_rows() {
+        // Case `page_navigation_and_accelerated_wheel_share_sparse_row_geometry`.
+        {
+            let children = (2_u64..=101)
+                .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
+                .collect();
+            let mut view = TreeView::new(TreeNode::branch(1, "root", (), children));
+            view.toggle_expand(1);
+            view.set_viewport(100.0, px(ROW_HEIGHT));
+            assert!(view.set_row_height(0, 300.0));
+            assert!(view.focus_at(0));
+
+            assert!(view.on_key_with_modifiers(&Key::Named(NamedKey::PageDown), false, false,));
+            assert_eq!(view.focused(), Some(1));
+            assert_eq!(view.scroll_y(), 90.0);
+            assert!(view.on_key_with_modifiers(&Key::Named(NamedKey::PageUp), false, false,));
+            assert_eq!(view.scroll_y(), 0.0);
+
+            assert!(view.on_wheel(&MouseScrollDelta::LineDelta(0.0, -1.0), TouchPhase::Moved));
+            let immediate = view.scroll_y();
+            assert_eq!(immediate, 60.0);
+            assert!(view.needs_animation_frame());
+            view.last_tick = Some(
+                crate::time::now()
+                    .checked_sub(Duration::from_millis(16))
+                    .expect("a 16 ms earlier instant is representable"),
+            );
+            assert!(Widget::update(
+                &mut view,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+            assert!(view.scroll_y() > immediate, "momentum advances after input");
+        }
+
+        // Case `body_drag_scrolls_tree_without_selecting_but_click_still_selects`.
+        {
+            let children = (2_u64..=101)
+                .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
+                .collect();
+            let mut view = TreeView::new(TreeNode::branch(1, "root", (), children));
+            view.toggle_expand(1);
+            view.set_viewport(100.0, px(ROW_HEIGHT));
+            let (taffy, node) = lay_out_tree(&mut view, 320.0);
+
+            dispatch_laid_out(&mut view, &cursor_moved(100.0, 80.0), &taffy, node);
+            dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
+            assert!(view.wants_pointer_capture());
+            dispatch_laid_out(&mut view, &cursor_moved(100.0, 20.0), &taffy, node);
+            dispatch_laid_out(&mut view, &mouse_release(), &taffy, node);
+            assert_eq!(view.scroll_y(), 60.0);
+            assert_eq!(view.selected(), None, "panning does not select a row");
+
+            view.set_scroll_y(0.0);
+            dispatch_laid_out(&mut view, &cursor_moved(100.0, 10.0), &taffy, node);
+            dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
+            dispatch_laid_out(&mut view, &mouse_release(), &taffy, node);
+            assert_eq!(
+                view.selected(),
+                Some(1),
+                "release below threshold is a click"
+            );
+        }
+
+        // Case `reduced_motion_keeps_direct_scroll_without_wheel_or_drag_decay`.
+        {
+            let children = (2_u64..102)
+                .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
+                .collect();
+            let mut view = TreeView::new(TreeNode::branch(1, "root", (), children));
+            view.set_expanded(1, true);
+            view.set_viewport(100.0, 22.0);
+            view.reduce_motion = true;
+
+            assert!(view.on_wheel(&MouseScrollDelta::LineDelta(0.0, -1.0), TouchPhase::Moved));
+            assert_eq!(view.scroll_y(), 60.0_f32);
+            assert!(!view.momentum.is_active());
+
+            let now = crate::time::now();
+            let started = now.checked_sub(Duration::from_millis(20)).unwrap_or(now);
+            let moved = now.checked_sub(Duration::from_millis(5)).unwrap_or(now);
+            view.drag_scroll
+                .begin(50.0, f64::from(view.scroll_y()), started);
+            assert!(view.drag_scroll.update(10.0, moved).is_some());
+            dispatch(&mut view, &mouse_release());
+            assert!(!view.momentum.is_active());
+            assert!(!view.needs_animation_frame());
+        }
+    }
+
+    #[test]
+    fn paged_tree_demands_visible_slots_and_recovers_from_errors() {
+        // Case `paged_tree_demands_only_the_visible_window_once`.
+        {
+            let requests = Rc::new(RefCell::new(Vec::new()));
+            let captured = Rc::clone(&requests);
+            let mut view = TreeView::from_model(PagedModel {
+                count: 100_000_000,
+                states: Rc::new(RefCell::new(HashMap::new())),
+                self_loading: false,
+                requests: Vec::new(),
+                changes: Vec::new(),
+            })
             .with_expanded([1])
-            .with_row_delegate(move |model, id, _| {
+            .on_load_request(move |request| captured.borrow_mut().push(request));
+            view.set_viewport(66.0, px(ROW_HEIGHT));
+            view.set_scroll_offset(idx_to_f64(50_000_000) * ROW_HEIGHT);
+
+            let demanded = view.request_visible_rows();
+            assert!(demanded > 0);
+            assert!(demanded <= 8, "overscan must keep page demand bounded");
+            assert_eq!(view.request_visible_rows(), 0, "requests are deduplicated");
+            let requests = requests.borrow();
+            assert_eq!(requests.len(), demanded);
+            assert!(
+                requests
+                    .iter()
+                    .all(|request| request.reason == TreeLoadReason::Visible)
+            );
+            assert!(requests.iter().all(|request| {
+                request.slot.index.abs_diff(50_000_000) <= 5 && request.slot.parent == 1
+            }));
+            assert_eq!(view.visible_len(), 100_000_001);
+        }
+
+        // Case `model_owned_paged_tree_drains_slot_completions_during_update`.
+        {
+            let mut view = TreeView::from_model(PagedModel {
+                count: 4,
+                states: Rc::new(RefCell::new(HashMap::new())),
+                self_loading: true,
+                requests: Vec::new(),
+                changes: Vec::new(),
+            })
+            .with_expanded([1]);
+            view.set_viewport(66.0, px(ROW_HEIGHT));
+            assert!(matches!(
+                view.index.row_at(&view.model, 1).map(|(key, _)| key),
+                Some(TreeRowKey::Slot(_))
+            ));
+            assert!(view.focus_at(1));
+
+            let demanded = view.request_visible_rows();
+            assert!(demanded > 0);
+            assert_eq!(view.model().requests.len(), demanded);
+
+            let mut document = AutoCommit::new();
+            assert!(Widget::update(&mut view, &mut document, &automerge::ROOT));
+
+            let first = PagedModel::id(0).expect("stable paged id");
+            assert_eq!(
+                view.index.row_at(&view.model, 1).map(|(key, _)| key),
+                Some(TreeRowKey::Node(first))
+            );
+            assert_eq!(view.focused(), Some(first));
+            assert_eq!(view.visible_row(1), Some((first, "loaded row", 1)));
+            assert_eq!(view.request_visible_rows(), 0);
+        }
+
+        // Case `paged_error_is_keyboard_retryable_and_ready_row_inherits_focus_and_anchor`.
+        {
+            let states = Rc::new(RefCell::new(HashMap::from([(0, PagedSlotState::Error)])));
+            let requests = Rc::new(RefCell::new(Vec::new()));
+            let captured = Rc::clone(&requests);
+            let mut view = TreeView::from_model(PagedModel {
+                count: 1,
+                states: Rc::clone(&states),
+                self_loading: false,
+                requests: Vec::new(),
+                changes: Vec::new(),
+            })
+            .with_expanded([1])
+            .on_load_request(move |request| captured.borrow_mut().push(request));
+            view.set_viewport(px(ROW_HEIGHT), px(ROW_HEIGHT));
+            view.set_scroll_offset(ROW_HEIGHT + 5.0);
+            assert!(view.focus_at(1));
+            view.set_focus(true);
+            let before = view.viewport.item_view_top(1);
+
+            let semantics = Widget::accessibility(&view).unwrap();
+            let error = semantics
+                .children
+                .iter()
+                .find(|row| row.state.invalid)
+                .expect("error placeholder is exposed");
+            assert!(error.state.focusable);
+            assert!(error.state.focused);
+            assert!(error.name.as_deref().unwrap().contains("Activate to retry"));
+
+            assert!(view.on_key_with_modifiers(&Key::Named(NamedKey::Enter), false, false));
+            assert_eq!(
+                requests.borrow().as_slice(),
+                &[TreeLoadRequest {
+                    slot: TreeSlot {
+                        parent: 1,
+                        index: 0,
+                    },
+                    reason: TreeLoadReason::Retry,
+                }]
+            );
+
+            states.borrow_mut().insert(0, PagedSlotState::Ready);
+            view.notify_model_changes(&[TreeModelChange::SlotsChanged {
+                slots: vec![TreeSlot {
+                    parent: 1,
+                    index: 0,
+                }],
+            }]);
+
+            let id = PagedModel::id(0).unwrap();
+            assert_eq!(view.focused(), Some(id));
+            assert_eq!(view.visible_row(1), Some((id, "loaded row", 1)));
+            assert_eq!(view.viewport.item_view_top(1), before);
+            let loaded = Widget::accessibility(&view)
+                .unwrap()
+                .children
+                .into_iter()
+                .find(|row| row.name.as_deref() == Some("loaded row"))
+                .expect("loaded row replaces placeholder semantics");
+            assert!(!loaded.state.busy);
+            assert!(!loaded.state.invalid);
+            assert!(loaded.state.focused);
+        }
+
+        // Case `paged_slot_delegate_localizes_measures_and_rebuilds_changed_placeholders`.
+        {
+            let states = Rc::new(RefCell::new(HashMap::from([
+                (0, PagedSlotState::Loading),
+                (1, PagedSlotState::Error),
+            ])));
+            let builds = Rc::new(Cell::new(0_usize));
+            let captured = Rc::clone(&builds);
+            let mut view = TreeView::from_model(PagedModel {
+                count: 2,
+                states: Rc::clone(&states),
+                self_loading: false,
+                requests: Vec::new(),
+                changes: Vec::new(),
+            })
+            .with_expanded([1])
+            .with_slot_delegate(move |_, slot, _, state| {
                 captured.set(captured.get().saturating_add(1));
+                let (label, height) = match state {
+                    TreeSlotState::Loading => (format!("Chargement {}", slot.index), 34.0),
+                    TreeSlotState::Error { message } => (
+                        format!("Réessayer {} — {}", slot.index, message.unwrap_or("Erreur")),
+                        48.0,
+                    ),
+                };
                 Box::new(DelegateProbe::new(
-                    model.label(id).unwrap_or("row"),
-                    if id == 2 { 55.0 } else { 22.0 },
+                    label,
+                    height,
                     false,
                     Rc::new(Cell::new(0)),
                 ))
             });
-        view.set_viewport(120.0, px(ROW_HEIGHT));
-        let _ = lay_out_tree(&mut view, 260.0);
-        assert_eq!(builds.get(), 4);
-        assert_eq!(view.viewport.item_height(1), Some(55.0));
-        assert_eq!(view.viewport.item_top(2), Some(77.0));
+            view.set_viewport(120.0, px(ROW_HEIGHT));
+            let _ = lay_out_tree(&mut view, 360.0);
 
-        view.update_source(&[TreeModelChange::RowsChanged { ids: vec![2] }], |model| {
-            model.nodes.get_mut(&2).unwrap().label = "renamed".into();
-        });
-        let _ = lay_out_tree(&mut view, 260.0);
-        assert_eq!(builds.get(), 5, "only the invalidated id is rebuilt");
-        assert_eq!(
-            view.mounted_rows
-                .iter()
-                .find(|row| row.key == TreeRowKey::Node(2))
-                .and_then(|row| row.widget.accessibility())
-                .and_then(|node| node.name),
-            Some("renamed".into())
-        );
-    }
-
-    #[test]
-    fn tree_reorder_previews_and_commits_a_valid_sibling_drop() {
-        let mut view = TreeView::from_model(external_model())
-            .with_expanded([1])
-            .with_reorder(
-                |_, _, _| true,
-                |model, dropped| {
-                    let Some(parent) = model.parent_id(dropped.source) else {
-                        return false;
-                    };
-                    let Some(from) = model.child_index(parent, dropped.source) else {
-                        return false;
-                    };
-                    let Some(target_parent) = model.parent_id(dropped.target.key) else {
-                        return false;
-                    };
-                    if target_parent != parent {
-                        return false;
-                    }
-                    let Some(target) = model.child_index(parent, dropped.target.key) else {
-                        return false;
-                    };
-                    let boundary = match dropped.target.placement {
-                        DropPlacement::Before => target,
-                        DropPlacement::After => target.saturating_add(1),
-                        DropPlacement::Inside => return false,
-                    };
-                    let to = if boundary > from {
-                        boundary.saturating_sub(1)
-                    } else {
-                        boundary
-                    };
-                    let children = &mut model.nodes.get_mut(&parent).unwrap().children;
-                    let moved = children.remove(from);
-                    children.insert(to, moved);
-                    true
-                },
-            );
-        view.set_viewport(88.0, px(ROW_HEIGHT));
-        let (taffy, node) = lay_out_tree(&mut view, 240.0);
-
-        dispatch_laid_out(&mut view, &cursor_moved(80.0, 55.0), &taffy, node);
-        dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
-        dispatch_laid_out(&mut view, &cursor_moved(80.0, 86.0), &taffy, node);
-        assert_eq!(
-            view.reorder_target(),
-            Some(&DropTarget::new(4, DropPlacement::After))
-        );
-        assert!(view.reorder_preview().is_some());
-        dispatch_laid_out(&mut view, &mouse_release(), &taffy, node);
-
-        assert_eq!(view.model().nodes.get(&1).unwrap().children, vec![2, 4, 3]);
-        assert_eq!(view.visible_index_of(3), Some(3));
-        assert_eq!(view.reorder_target(), None);
-    }
-
-    #[test]
-    fn owned_tree_reorderable_commits_the_pointer_drop_without_app_bookkeeping() {
-        let mut view = TreeView::new(sample_tree())
-            .with_expanded([1])
-            .reorderable();
-        view.set_viewport(88.0, px(ROW_HEIGHT));
-        let (taffy, node) = lay_out_tree(&mut view, 240.0);
-
-        dispatch_laid_out(&mut view, &cursor_moved(80.0, 33.0), &taffy, node);
-        dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
-        dispatch_laid_out(&mut view, &cursor_moved(80.0, 65.0), &taffy, node);
-        assert_eq!(
-            view.reorder_target(),
-            Some(&DropTarget::new(3, DropPlacement::After))
-        );
-        dispatch_laid_out(&mut view, &mouse_release(), &taffy, node);
-
-        assert_eq!(
-            view.model()
+            assert_eq!(builds.get(), 2);
+            assert_eq!(view.viewport.item_height(1), Some(34.0));
+            assert_eq!(view.viewport.item_height(2), Some(48.0));
+            let semantics = Widget::accessibility(&view).unwrap();
+            let loading = semantics
                 .children
                 .iter()
-                .map(|node| node.id)
-                .collect::<Vec<_>>(),
-            vec![3, 2]
-        );
-        assert_eq!(view.visible_index_of(2), Some(2));
+                .find(|row| row.action_target.as_deref() == Some("slot:1:0"))
+                .expect("localized loading slot semantics");
+            assert_eq!(loading.name.as_deref(), Some("Chargement 0"));
+            assert!(loading.state.busy);
+            assert_eq!(
+                loading
+                    .children
+                    .first()
+                    .expect("delegated child semantics")
+                    .role,
+                crate::a11y::Role::Button
+            );
+            let error = semantics
+                .children
+                .iter()
+                .find(|row| row.action_target.as_deref() == Some("slot:1:1"))
+                .expect("localized error slot semantics");
+            assert_eq!(
+                error.name.as_deref(),
+                Some("Réessayer 1 — Network unavailable")
+            );
+            assert!(error.state.invalid);
+
+            states.borrow_mut().insert(0, PagedSlotState::Error);
+            view.notify_model_changes(&[TreeModelChange::SlotsChanged {
+                slots: vec![TreeSlot {
+                    parent: 1,
+                    index: 0,
+                }],
+            }]);
+            let _ = lay_out_tree(&mut view, 360.0);
+            assert_eq!(builds.get(), 3, "only the changed slot is rebuilt");
+            let changed = Widget::accessibility(&view)
+                .unwrap()
+                .children
+                .into_iter()
+                .find(|row| row.action_target.as_deref() == Some("slot:1:0"))
+                .expect("changed slot semantics");
+            assert_eq!(
+                changed.name.as_deref(),
+                Some("Réessayer 0 — Network unavailable")
+            );
+            assert!(changed.state.invalid);
+        }
     }
 
     #[test]
-    fn tree_reorder_rejects_a_drop_into_its_own_descendant() {
-        let mut view = TreeView::from_model(external_model())
-            .with_expanded([1, 2])
-            .with_reorder(|_, _, _| true, |_, _| true);
-        view.set_viewport(110.0, px(ROW_HEIGHT));
-        let (taffy, node) = lay_out_tree(&mut view, 240.0);
+    fn hundred_million_child_trees_stay_sparse_end_to_end() {
+        // Case `sparse_tree_index_resolves_a_hundred_million_children`.
+        {
+            let model = HugeModel {
+                child_id_queries: Cell::new(0),
+            };
+            let branch = HugeModel::branch_id();
+            let expanded = HashSet::from([1, branch]);
+            let index = SparseTreeIndex::build(&model, &expanded, false);
 
-        dispatch_laid_out(&mut view, &cursor_moved(80.0, 33.0), &taffy, node);
-        dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
-        dispatch_laid_out(&mut view, &cursor_moved(80.0, 60.0), &taffy, node);
-        assert!(view.reorder_preview().is_none());
-        dispatch_laid_out(&mut view, &mouse_release(), &taffy, node);
-        assert_eq!(view.model().nodes.get(&1).unwrap().children, vec![2, 3, 4]);
-    }
+            assert_eq!(index.len(), 100_000_003);
+            assert_eq!(index.row_at(&model, 0), Some((TreeRowKey::Node(1), 0)));
+            assert_eq!(
+                index.row_at(&model, HUGE_BRANCH_POSITION.saturating_add(1)),
+                Some((TreeRowKey::Node(branch), 1))
+            );
+            assert_eq!(
+                index.row_at(&model, HUGE_BRANCH_POSITION.saturating_add(2)),
+                Some((TreeRowKey::Node(HUGE_GRANDCHILD_A), 2))
+            );
+            assert_eq!(
+                index.row_at(&model, HUGE_BRANCH_POSITION.saturating_add(3)),
+                Some((TreeRowKey::Node(HUGE_GRANDCHILD_B), 2))
+            );
+            let after_branch =
+                HugeModel::direct_id(HUGE_BRANCH_POSITION.saturating_add(1)).unwrap();
+            assert_eq!(
+                index.row_at(&model, HUGE_BRANCH_POSITION.saturating_add(4)),
+                Some((TreeRowKey::Node(after_branch), 1))
+            );
+            assert_eq!(index.index_of(&model, HUGE_GRANDCHILD_B), Some(50_000_003));
+            assert_eq!(index.index_of(&model, after_branch), Some(50_000_004));
+            assert!(
+                model.child_id_queries.get() < 10,
+                "resolution must not scan the enormous sibling set"
+            );
+        }
 
-    #[test]
-    fn tree_reorder_hover_expands_a_collapsed_inside_target() {
-        let mut view = TreeView::from_model(external_model())
-            .with_expanded([1])
-            .with_reorder(|_, _, _| true, |_, _| false);
-        view.reorder = ReorderController::new()
-            .with_drag_threshold(0.0)
-            .with_hover_expand_delay(Duration::ZERO);
-        view.set_viewport(88.0, px(ROW_HEIGHT));
-        let (taffy, node) = lay_out_tree(&mut view, 240.0);
+        // Case `tree_view_virtualizes_a_hundred_million_child_model_end_to_end`.
+        {
+            let model = HugeModel {
+                child_id_queries: Cell::new(0),
+            };
+            let mut view = TreeView::from_model(model)
+                .with_expanded([1, HugeModel::branch_id()])
+                .with_accessible_name("Huge tree");
+            view.set_viewport(720.0, px(ROW_HEIGHT));
+            view.set_scroll_offset(idx_to_f64(HUGE_BRANCH_POSITION) * ROW_HEIGHT);
 
-        dispatch_laid_out(&mut view, &cursor_moved(80.0, 55.0), &taffy, node);
-        dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
-        dispatch_laid_out(&mut view, &cursor_moved(80.0, 33.0), &taffy, node);
-        assert_eq!(
-            view.reorder_target(),
-            Some(&DropTarget::new(2, DropPlacement::Inside))
-        );
-        let mut state = AutoCommit::new();
-        assert!(view.update(&mut state, &automerge::ROOT));
-        assert!(view.is_expanded(2));
-        assert_eq!(view.visible_index_of(20), Some(2));
-    }
+            assert_eq!(view.visible_len(), 100_000_003);
+            assert_eq!(view.viewport.resident_measurements(), 0);
+            assert!(view.visible_row_range().len() <= 40);
+            let semantics = Widget::accessibility(&view).unwrap();
+            assert_eq!(semantics.name.as_deref(), Some("Huge tree"));
+            assert!(semantics.children.len() <= 40);
+            assert_eq!(semantics.children[0].set_size, Some(100_000_003));
+            assert!(
+                view.model().child_id_queries.get() < 100,
+                "one frame must query only its sparse window"
+            );
+        }
 
-    #[test]
-    fn keyed_tree_transitions_move_survivors_and_retain_departing_rows() {
-        let mut view = TreeView::from_model(external_model()).with_expanded([1]);
-        view.set_viewport(110.0, px(ROW_HEIGHT));
-        let _ = lay_out_tree(&mut view, 240.0);
-        view.transitions.clear();
-        view.refresh_transition_snapshot();
-
-        assert!(view.set_expanded(2, true));
-        let now = crate::time::now();
-        let anchor_index = view.visible_index_of(3).unwrap();
-        let settled = RowGeometry::new(
-            view.viewport.item_view_top(anchor_index).unwrap(),
-            view.viewport.item_height(anchor_index).unwrap(),
-        );
-        let moving = view.transitions.visual(&TreeRowKey::Node(3), settled, now);
-        assert!(moving.geometry.top < settled.top);
-        let child_index = view.visible_index_of(20).unwrap();
-        let entering = view.transitions.visual(
-            &TreeRowKey::Node(20),
-            RowGeometry::new(
-                view.viewport.item_view_top(child_index).unwrap(),
-                view.viewport.item_height(child_index).unwrap(),
-            ),
-            now,
-        );
-        assert!(entering.opacity < 1.0);
-        assert!(view.transitions.is_active(now));
-
-        view.transitions.clear();
-        view.refresh_transition_snapshot();
-        assert!(view.set_expanded(2, false));
-        assert!(
-            view.transitions
-                .exiting(crate::time::now())
-                .any(|(key, payload, visual)| {
-                    *key == TreeRowKey::Node(20)
-                        && payload.label == "hidden child"
-                        && visual.opacity > 0.0
-                })
-        );
-    }
-
-    #[test]
-    fn reduced_motion_snaps_tree_structure_without_transition_state() {
-        let mut view = TreeView::from_model(external_model()).with_expanded([1]);
-        view.set_viewport(110.0, px(ROW_HEIGHT));
-        view.reduce_motion = true;
-        view.transitions.clear();
-        view.refresh_transition_snapshot();
-
-        assert!(view.set_expanded(2, true));
-        let now = crate::time::now();
-        assert!(!view.transitions.is_active(now));
-        assert_eq!(view.transitions.exiting(now).count(), 0);
-        let child = view.visible_index_of(20).unwrap();
-        let settled = RowGeometry::new(
-            view.viewport.item_view_top(child).unwrap(),
-            view.viewport.item_height(child).unwrap(),
-        );
-        assert_eq!(
-            view.transitions
-                .visual(&TreeRowKey::Node(20), settled, now)
-                .opacity,
-            1.0
-        );
-    }
-
-    #[test]
-    fn reduced_motion_keeps_direct_scroll_without_wheel_or_drag_decay() {
-        let children = (2_u64..102)
-            .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
-            .collect();
-        let mut view = TreeView::new(TreeNode::branch(1, "root", (), children));
-        view.set_expanded(1, true);
-        view.set_viewport(100.0, 22.0);
-        view.reduce_motion = true;
-
-        assert!(view.on_wheel(&MouseScrollDelta::LineDelta(0.0, -1.0), TouchPhase::Moved));
-        assert_eq!(view.scroll_y(), 60.0_f32);
-        assert!(!view.momentum.is_active());
-
-        let now = crate::time::now();
-        let started = now.checked_sub(Duration::from_millis(20)).unwrap_or(now);
-        let moved = now.checked_sub(Duration::from_millis(5)).unwrap_or(now);
-        view.drag_scroll
-            .begin(50.0, f64::from(view.scroll_y()), started);
-        assert!(view.drag_scroll.update(10.0, moved).is_some());
-        dispatch(&mut view, &mouse_release());
-        assert!(!view.momentum.is_active());
-        assert!(!view.needs_animation_frame());
-    }
-
-    #[test]
-    fn sparse_tree_index_resolves_a_hundred_million_children() {
-        let model = HugeModel {
-            child_id_queries: Cell::new(0),
-        };
-        let branch = HugeModel::branch_id();
-        let expanded = HashSet::from([1, branch]);
-        let index = SparseTreeIndex::build(&model, &expanded, false);
-
-        assert_eq!(index.len(), 100_000_003);
-        assert_eq!(index.row_at(&model, 0), Some((TreeRowKey::Node(1), 0)));
-        assert_eq!(
-            index.row_at(&model, HUGE_BRANCH_POSITION.saturating_add(1)),
-            Some((TreeRowKey::Node(branch), 1))
-        );
-        assert_eq!(
-            index.row_at(&model, HUGE_BRANCH_POSITION.saturating_add(2)),
-            Some((TreeRowKey::Node(HUGE_GRANDCHILD_A), 2))
-        );
-        assert_eq!(
-            index.row_at(&model, HUGE_BRANCH_POSITION.saturating_add(3)),
-            Some((TreeRowKey::Node(HUGE_GRANDCHILD_B), 2))
-        );
-        let after_branch = HugeModel::direct_id(HUGE_BRANCH_POSITION.saturating_add(1)).unwrap();
-        assert_eq!(
-            index.row_at(&model, HUGE_BRANCH_POSITION.saturating_add(4)),
-            Some((TreeRowKey::Node(after_branch), 1))
-        );
-        assert_eq!(index.index_of(&model, HUGE_GRANDCHILD_B), Some(50_000_003));
-        assert_eq!(index.index_of(&model, after_branch), Some(50_000_004));
-        assert!(
-            model.child_id_queries.get() < 10,
-            "resolution must not scan the enormous sibling set"
-        );
-    }
-
-    #[test]
-    fn tree_view_virtualizes_a_hundred_million_child_model_end_to_end() {
-        let model = HugeModel {
-            child_id_queries: Cell::new(0),
-        };
-        let mut view = TreeView::from_model(model)
+        // Case `delegated_tree_mounts_only_the_hundred_million_row_window`.
+        {
+            let builds = Rc::new(Cell::new(0_usize));
+            let captured = Rc::clone(&builds);
+            let mut view = TreeView::from_model(HugeModel {
+                child_id_queries: Cell::new(0),
+            })
             .with_expanded([1, HugeModel::branch_id()])
-            .with_accessible_name("Huge tree");
-        view.set_viewport(720.0, px(ROW_HEIGHT));
-        view.set_scroll_offset(idx_to_f64(HUGE_BRANCH_POSITION) * ROW_HEIGHT);
+            .with_row_delegate(move |_, id, _| {
+                captured.set(captured.get().saturating_add(1));
+                Box::new(DelegateProbe::new(
+                    id.to_string(),
+                    22.0,
+                    false,
+                    Rc::new(Cell::new(0)),
+                ))
+            });
+            view.set_viewport(110.0, px(ROW_HEIGHT));
+            view.set_scroll_offset(idx_to_f64(HUGE_BRANCH_POSITION) * ROW_HEIGHT);
+            let _ = lay_out_tree(&mut view, 320.0);
 
-        assert_eq!(view.visible_len(), 100_000_003);
-        assert_eq!(view.viewport.resident_measurements(), 0);
-        assert!(view.visible_row_range().len() <= 40);
-        let semantics = Widget::accessibility(&view).unwrap();
-        assert_eq!(semantics.name.as_deref(), Some("Huge tree"));
-        assert!(semantics.children.len() <= 40);
-        assert_eq!(semantics.children[0].set_size, Some(100_000_003));
-        assert!(
-            view.model().child_id_queries.get() < 100,
-            "one frame must query only its sparse window"
-        );
+            assert_eq!(view.visible_len(), 100_000_003);
+            assert!(view.mounted_rows.len() <= 10);
+            assert_eq!(builds.get(), view.mounted_rows.len());
+            assert!(view.model().child_id_queries.get() < 100);
+        }
+    }
+
+    #[test]
+    fn delegated_rows_mount_measure_and_handle_input_before_selection() {
+        // Case `interactive_tree_delegate_wins_before_row_selection_and_nests_semantics`.
+        {
+            let presses = Rc::new(Cell::new(0_usize));
+            let captured = Rc::clone(&presses);
+            let mut view = TreeView::new(sample_tree())
+                .with_expanded([1])
+                .with_row_delegate(move |model, id, _| {
+                    Box::new(DelegateProbe::new(
+                        model.label(id).unwrap_or("row"),
+                        22.0,
+                        true,
+                        Rc::clone(&captured),
+                    ))
+                });
+            view.set_viewport(66.0, px(ROW_HEIGHT));
+            let (taffy, node) = lay_out_tree(&mut view, 260.0);
+
+            dispatch_laid_out(&mut view, &cursor_moved(80.0, 11.0), &taffy, node);
+            assert!(dispatch_laid_out(&mut view, &mouse_press(), &taffy, node));
+            assert_eq!(presses.get(), 1);
+            assert_eq!(view.selected(), None);
+
+            let semantics = view.accessibility().unwrap();
+            assert_eq!(semantics.children[0].role, crate::a11y::Role::TreeItem);
+            assert_eq!(
+                semantics.children[0].children[0].role,
+                crate::a11y::Role::Button
+            );
+        }
+
+        // Case `delegated_tree_measures_variable_rows_and_invalidates_only_changed_ids`.
+        {
+            let builds = Rc::new(Cell::new(0_usize));
+            let captured = Rc::clone(&builds);
+            let mut view = TreeView::from_model(external_model())
+                .with_expanded([1])
+                .with_row_delegate(move |model, id, _| {
+                    captured.set(captured.get().saturating_add(1));
+                    Box::new(DelegateProbe::new(
+                        model.label(id).unwrap_or("row"),
+                        if id == 2 { 55.0 } else { 22.0 },
+                        false,
+                        Rc::new(Cell::new(0)),
+                    ))
+                });
+            view.set_viewport(120.0, px(ROW_HEIGHT));
+            let _ = lay_out_tree(&mut view, 260.0);
+            assert_eq!(builds.get(), 4);
+            assert_eq!(view.viewport.item_height(1), Some(55.0));
+            assert_eq!(view.viewport.item_top(2), Some(77.0));
+
+            view.update_source(&[TreeModelChange::RowsChanged { ids: vec![2] }], |model| {
+                model.nodes.get_mut(&2).unwrap().label = "renamed".into();
+            });
+            let _ = lay_out_tree(&mut view, 260.0);
+            assert_eq!(builds.get(), 5, "only the invalidated id is rebuilt");
+            assert_eq!(
+                view.mounted_rows
+                    .iter()
+                    .find(|row| row.key == TreeRowKey::Node(2))
+                    .and_then(|row| row.widget.accessibility())
+                    .and_then(|node| node.name),
+                Some("renamed".into())
+            );
+        }
+    }
+
+    #[test]
+    fn tree_reorder_drag_previews_commits_rejects_and_hover_expands() {
+        // Case `tree_reorder_previews_and_commits_a_valid_sibling_drop`.
+        fn tree_reorder_previews_and_commits_a_valid_sibling_drop() {
+            let mut view = TreeView::from_model(external_model())
+                .with_expanded([1])
+                .with_reorder(
+                    |_, _, _| true,
+                    |model, dropped| {
+                        let Some(parent) = model.parent_id(dropped.source) else {
+                            return false;
+                        };
+                        let Some(from) = model.child_index(parent, dropped.source) else {
+                            return false;
+                        };
+                        let Some(target_parent) = model.parent_id(dropped.target.key) else {
+                            return false;
+                        };
+                        if target_parent != parent {
+                            return false;
+                        }
+                        let Some(target) = model.child_index(parent, dropped.target.key) else {
+                            return false;
+                        };
+                        let boundary = match dropped.target.placement {
+                            DropPlacement::Before => target,
+                            DropPlacement::After => target.saturating_add(1),
+                            DropPlacement::Inside => return false,
+                        };
+                        let to = if boundary > from {
+                            boundary.saturating_sub(1)
+                        } else {
+                            boundary
+                        };
+                        let children = &mut model.nodes.get_mut(&parent).unwrap().children;
+                        let moved = children.remove(from);
+                        children.insert(to, moved);
+                        true
+                    },
+                );
+            view.set_viewport(88.0, px(ROW_HEIGHT));
+            let (taffy, node) = lay_out_tree(&mut view, 240.0);
+
+            dispatch_laid_out(&mut view, &cursor_moved(80.0, 55.0), &taffy, node);
+            dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
+            dispatch_laid_out(&mut view, &cursor_moved(80.0, 86.0), &taffy, node);
+            assert_eq!(
+                view.reorder_target(),
+                Some(&DropTarget::new(4, DropPlacement::After))
+            );
+            assert!(view.reorder_preview().is_some());
+            dispatch_laid_out(&mut view, &mouse_release(), &taffy, node);
+
+            assert_eq!(view.model().nodes.get(&1).unwrap().children, vec![2, 4, 3]);
+            assert_eq!(view.visible_index_of(3), Some(3));
+            assert_eq!(view.reorder_target(), None);
+        }
+        tree_reorder_previews_and_commits_a_valid_sibling_drop();
+
+        // Case `tree_reorder_rejects_a_drop_into_its_own_descendant`.
+        {
+            let mut view = TreeView::from_model(external_model())
+                .with_expanded([1, 2])
+                .with_reorder(|_, _, _| true, |_, _| true);
+            view.set_viewport(110.0, px(ROW_HEIGHT));
+            let (taffy, node) = lay_out_tree(&mut view, 240.0);
+
+            dispatch_laid_out(&mut view, &cursor_moved(80.0, 33.0), &taffy, node);
+            dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
+            dispatch_laid_out(&mut view, &cursor_moved(80.0, 60.0), &taffy, node);
+            assert!(view.reorder_preview().is_none());
+            dispatch_laid_out(&mut view, &mouse_release(), &taffy, node);
+            assert_eq!(view.model().nodes.get(&1).unwrap().children, vec![2, 3, 4]);
+        }
+
+        // Case `tree_reorder_hover_expands_a_collapsed_inside_target`.
+        {
+            let mut view = TreeView::from_model(external_model())
+                .with_expanded([1])
+                .with_reorder(|_, _, _| true, |_, _| false);
+            view.reorder = ReorderController::new()
+                .with_drag_threshold(0.0)
+                .with_hover_expand_delay(Duration::ZERO);
+            view.set_viewport(88.0, px(ROW_HEIGHT));
+            let (taffy, node) = lay_out_tree(&mut view, 240.0);
+
+            dispatch_laid_out(&mut view, &cursor_moved(80.0, 55.0), &taffy, node);
+            dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
+            dispatch_laid_out(&mut view, &cursor_moved(80.0, 33.0), &taffy, node);
+            assert_eq!(
+                view.reorder_target(),
+                Some(&DropTarget::new(2, DropPlacement::Inside))
+            );
+            let mut state = AutoCommit::new();
+            assert!(view.update(&mut state, &automerge::ROOT));
+            assert!(view.is_expanded(2));
+            assert_eq!(view.visible_index_of(20), Some(2));
+        }
+    }
+
+    #[test]
+    fn structural_transitions_animate_keyed_rows_unless_motion_is_reduced() {
+        // Case `keyed_tree_transitions_move_survivors_and_retain_departing_rows`.
+        {
+            let mut view = TreeView::from_model(external_model()).with_expanded([1]);
+            view.set_viewport(110.0, px(ROW_HEIGHT));
+            let _ = lay_out_tree(&mut view, 240.0);
+            view.transitions.clear();
+            view.refresh_transition_snapshot();
+
+            assert!(view.set_expanded(2, true));
+            let now = crate::time::now();
+            let anchor_index = view.visible_index_of(3).unwrap();
+            let settled = RowGeometry::new(
+                view.viewport.item_view_top(anchor_index).unwrap(),
+                view.viewport.item_height(anchor_index).unwrap(),
+            );
+            let moving = view.transitions.visual(&TreeRowKey::Node(3), settled, now);
+            assert!(moving.geometry.top < settled.top);
+            let child_index = view.visible_index_of(20).unwrap();
+            let entering = view.transitions.visual(
+                &TreeRowKey::Node(20),
+                RowGeometry::new(
+                    view.viewport.item_view_top(child_index).unwrap(),
+                    view.viewport.item_height(child_index).unwrap(),
+                ),
+                now,
+            );
+            assert!(entering.opacity < 1.0);
+            assert!(view.transitions.is_active(now));
+
+            view.transitions.clear();
+            view.refresh_transition_snapshot();
+            assert!(view.set_expanded(2, false));
+            assert!(
+                view.transitions
+                    .exiting(crate::time::now())
+                    .any(|(key, payload, visual)| {
+                        *key == TreeRowKey::Node(20)
+                            && payload.label == "hidden child"
+                            && visual.opacity > 0.0
+                    })
+            );
+        }
+
+        // Case `reduced_motion_snaps_tree_structure_without_transition_state`.
+        {
+            let mut view = TreeView::from_model(external_model()).with_expanded([1]);
+            view.set_viewport(110.0, px(ROW_HEIGHT));
+            view.reduce_motion = true;
+            view.transitions.clear();
+            view.refresh_transition_snapshot();
+
+            assert!(view.set_expanded(2, true));
+            let now = crate::time::now();
+            assert!(!view.transitions.is_active(now));
+            assert_eq!(view.transitions.exiting(now).count(), 0);
+            let child = view.visible_index_of(20).unwrap();
+            let settled = RowGeometry::new(
+                view.viewport.item_view_top(child).unwrap(),
+                view.viewport.item_height(child).unwrap(),
+            );
+            assert_eq!(
+                view.transitions
+                    .visual(&TreeRowKey::Node(20), settled, now)
+                    .opacity,
+                1.0
+            );
+        }
     }
 
     // --- activation, navigator configuration, decoration -------------------
@@ -5951,262 +6235,140 @@ mod tests {
     }
 
     #[test]
-    fn enter_activates_while_space_and_arrows_only_select() {
-        let (view, activated, selected) = logged(
-            TreeView::new(navigator_tree())
+    fn activation_follows_click_mode_and_semantic_activate() {
+        // Case `single_click_activation_opens_on_one_click`.
+        {
+            let (view, activated, _) = logged(
+                TreeView::new(navigator_tree())
+                    .hide_root()
+                    .click_activation(TreeClickActivation::SingleClick),
+            );
+            let mut view = view;
+            let (taffy, node) = lay_out_tree(&mut view, 240.0);
+            click_row(&mut view, &taffy, node, 5);
+            assert_eq!(*activated.borrow(), [5]);
+            assert_eq!(view.selected(), Some(5));
+        }
+
+        // Case `double_click_activation_needs_a_second_click`.
+        {
+            let (view, activated, _) = logged(TreeView::new(navigator_tree()).hide_root());
+            let mut view = view;
+            let (taffy, node) = lay_out_tree(&mut view, 240.0);
+            click_row(&mut view, &taffy, node, 5);
+            assert!(activated.borrow().is_empty(), "one click only selects");
+            assert_eq!(view.selected(), Some(5));
+            click_row(&mut view, &taffy, node, 5);
+            assert_eq!(*activated.borrow(), [5], "the second click activates");
+        }
+
+        // Case `semantic_activate_selects_and_activates`.
+        {
+            let (mut view, activated, _) = logged(TreeView::new(navigator_tree()).hide_root());
+            let mut doc = AutoCommit::new();
+            assert!(Widget::perform_semantic_action(
+                &mut view,
+                "node:5",
+                &crate::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(*activated.borrow(), [5]);
+            assert_eq!(view.selected(), Some(5));
+        }
+    }
+
+    #[test]
+    fn layout_places_heading_hidden_root_and_viewport() {
+        // Case `a_hidden_root_puts_its_children_at_the_top_level`.
+        {
+            let mut view = TreeView::new(navigator_tree()).hide_root();
+            assert_eq!(
+                view.visible_rows()
+                    .into_iter()
+                    .map(|(id, _, depth)| (id, depth))
+                    .collect::<Vec<_>>(),
+                [(2, 0), (5, 0)]
+            );
+            view.set_expanded(2, true);
+            assert_eq!(
+                view.visible_row(1).map(|(id, _, depth)| (id, depth)),
+                Some((3, 1))
+            );
+            assert_eq!(view.visible_index_of(5), Some(3));
+            assert_eq!(view.visible_index_of(1), None, "the root is not a row");
+
+            view.set_focus(true);
+            view.focused = Some(TreeRowKey::Node(2));
+            dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowLeft)));
+            dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowLeft)));
+            assert_eq!(
+                view.focused(),
+                Some(2),
+                "Left never walks onto the hidden root"
+            );
+        }
+
+        // Case `the_heading_sits_above_the_rows_and_names_the_tree`.
+        {
+            let mut view = TreeView::new(navigator_tree())
                 .hide_root()
-                .selection_follows_focus(true),
-        );
-        let mut view = view;
-        view.set_focus(true);
-        view.focused = Some(TreeRowKey::Node(2));
+                .with_heading("Explorer");
+            let (taffy, node) = lay_out_tree(&mut view, 240.0);
+            assert!(view.heading_h > 0.0);
+            assert!(view.get_rect().height() >= view.heading_h + view.body_height() - 0.5);
+            let in_heading = Point::new(view.rect.x0 + 40.0, view.rect.y0 + view.heading_h / 2.0);
+            assert_eq!(
+                view.row_key_at(in_heading),
+                None,
+                "the heading is not a row"
+            );
+            assert_eq!(
+                view.row_key_at(row_center(&view, 2)),
+                Some(TreeRowKey::Node(2))
+            );
+            dispatch_laid_out(
+                &mut view,
+                &cursor_moved(in_heading.x, in_heading.y),
+                &taffy,
+                node,
+            );
+            dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
+            dispatch_laid_out(&mut view, &mouse_release(), &taffy, node);
+            assert_eq!(
+                view.selected(),
+                None,
+                "a press on the heading selects nothing"
+            );
+            let semantics = Widget::accessibility(&view).unwrap();
+            assert_eq!(semantics.name.as_deref(), Some("Explorer"));
+        }
 
-        dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowDown)));
-        assert_eq!(view.focused(), Some(5));
-        assert_eq!(view.selected(), Some(5), "selection follows keyboard focus");
-        assert!(activated.borrow().is_empty(), "browsing opens nothing");
-
-        dispatch(&mut view, &key_press(Key::Character(" ".into())));
-        assert!(
-            activated.borrow().is_empty(),
-            "Space selects without activating"
-        );
-
-        dispatch(&mut view, &key_press(Key::Named(NamedKey::Enter)));
-        assert_eq!(*activated.borrow(), [5], "Enter activates the focused row");
-        assert!(selected.borrow().contains(&5));
-    }
-
-    #[test]
-    fn arrows_do_not_select_unless_selection_follows_focus() {
-        let (mut view, activated, _) = logged(TreeView::new(navigator_tree()).hide_root());
-        view.set_focus(true);
-        view.focused = Some(TreeRowKey::Node(2));
-        dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowDown)));
-        assert_eq!(view.focused(), Some(5));
-        assert_eq!(view.selected(), None);
-        assert!(activated.borrow().is_empty());
-    }
-
-    #[test]
-    fn an_unfocused_tree_leaves_keys_to_its_siblings() {
-        let (mut view, activated, _) = logged(TreeView::new(navigator_tree()).hide_root());
-        view.focused = Some(TreeRowKey::Node(2));
-        dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowDown)));
-        dispatch(&mut view, &key_press(Key::Named(NamedKey::Enter)));
-        assert_eq!(view.focused(), Some(2), "keys reach only a focused tree");
-        assert!(activated.borrow().is_empty());
-    }
-
-    #[test]
-    fn single_click_activation_opens_on_one_click() {
-        let (view, activated, _) = logged(
-            TreeView::new(navigator_tree())
+        // Case `place_at_moves_paint_hit_testing_and_a_filling_viewport`.
+        {
+            let children = (2_u64..=40)
+                .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
+                .collect();
+            let mut view = TreeView::new(TreeNode::branch(1, "root", (), children))
                 .hide_root()
-                .click_activation(TreeClickActivation::SingleClick),
-        );
-        let mut view = view;
-        let (taffy, node) = lay_out_tree(&mut view, 240.0);
-        click_row(&mut view, &taffy, node, 5);
-        assert_eq!(*activated.borrow(), [5]);
-        assert_eq!(view.selected(), Some(5));
-    }
-
-    #[test]
-    fn double_click_activation_needs_a_second_click() {
-        let (view, activated, _) = logged(TreeView::new(navigator_tree()).hide_root());
-        let mut view = view;
-        let (taffy, node) = lay_out_tree(&mut view, 240.0);
-        click_row(&mut view, &taffy, node, 5);
-        assert!(activated.borrow().is_empty(), "one click only selects");
-        assert_eq!(view.selected(), Some(5));
-        click_row(&mut view, &taffy, node, 5);
-        assert_eq!(*activated.borrow(), [5], "the second click activates");
-    }
-
-    #[test]
-    fn the_disclosure_toggles_without_activating() {
-        let (view, activated, _) = logged(
-            TreeView::new(navigator_tree())
-                .hide_root()
-                .click_activation(TreeClickActivation::SingleClick),
-        );
-        let mut view = view;
-        let (taffy, node) = lay_out_tree(&mut view, 240.0);
-        let at = Point::new(view.rect.x0 + 2.0, row_center(&view, 2).y);
-        dispatch_laid_out(&mut view, &cursor_moved(at.x, at.y), &taffy, node);
-        dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
-        dispatch_laid_out(&mut view, &mouse_release(), &taffy, node);
-        assert!(view.is_expanded(2));
-        assert!(activated.borrow().is_empty());
-    }
-
-    #[test]
-    fn semantic_activate_selects_and_activates() {
-        let (mut view, activated, _) = logged(TreeView::new(navigator_tree()).hide_root());
-        let mut doc = AutoCommit::new();
-        assert!(Widget::perform_semantic_action(
-            &mut view,
-            "node:5",
-            &crate::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(*activated.borrow(), [5]);
-        assert_eq!(view.selected(), Some(5));
-    }
-
-    #[test]
-    fn a_hidden_root_puts_its_children_at_the_top_level() {
-        let mut view = TreeView::new(navigator_tree()).hide_root();
-        assert_eq!(
-            view.visible_rows()
-                .into_iter()
-                .map(|(id, _, depth)| (id, depth))
-                .collect::<Vec<_>>(),
-            [(2, 0), (5, 0)]
-        );
-        view.set_expanded(2, true);
-        assert_eq!(
-            view.visible_row(1).map(|(id, _, depth)| (id, depth)),
-            Some((3, 1))
-        );
-        assert_eq!(view.visible_index_of(5), Some(3));
-        assert_eq!(view.visible_index_of(1), None, "the root is not a row");
-
-        view.set_focus(true);
-        view.focused = Some(TreeRowKey::Node(2));
-        dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowLeft)));
-        dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowLeft)));
-        assert_eq!(
-            view.focused(),
-            Some(2),
-            "Left never walks onto the hidden root"
-        );
-    }
-
-    #[test]
-    fn the_heading_sits_above_the_rows_and_names_the_tree() {
-        let mut view = TreeView::new(navigator_tree())
-            .hide_root()
-            .with_heading("Explorer");
-        let (taffy, node) = lay_out_tree(&mut view, 240.0);
-        assert!(view.heading_h > 0.0);
-        assert!(view.get_rect().height() >= view.heading_h + view.body_height() - 0.5);
-        let in_heading = Point::new(view.rect.x0 + 40.0, view.rect.y0 + view.heading_h / 2.0);
-        assert_eq!(
-            view.row_key_at(in_heading),
-            None,
-            "the heading is not a row"
-        );
-        assert_eq!(
-            view.row_key_at(row_center(&view, 2)),
-            Some(TreeRowKey::Node(2))
-        );
-        dispatch_laid_out(
-            &mut view,
-            &cursor_moved(in_heading.x, in_heading.y),
-            &taffy,
-            node,
-        );
-        dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
-        dispatch_laid_out(&mut view, &mouse_release(), &taffy, node);
-        assert_eq!(
-            view.selected(),
-            None,
-            "a press on the heading selects nothing"
-        );
-        let semantics = Widget::accessibility(&view).unwrap();
-        assert_eq!(semantics.name.as_deref(), Some("Explorer"));
-    }
-
-    #[test]
-    fn place_at_moves_paint_hit_testing_and_a_filling_viewport() {
-        let children = (2_u64..=40)
-            .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
-            .collect();
-        let mut view = TreeView::new(TreeNode::branch(1, "root", (), children))
-            .hide_root()
-            .fill();
-        view.place_at(Rect::new(-120.0, 50.0, 120.0, 250.0));
-        assert!(
-            (view.viewport.viewport() - 200.0).abs() < 0.01,
-            "the viewport is the rect"
-        );
-        assert!(view.max_scroll_offset() > 0.0, "39 rows overflow 200 px");
-        assert_eq!(
-            view.row_key_at(Point::new(0.0, 51.0)),
-            Some(TreeRowKey::Node(2)),
-            "hit-testing follows the external rect"
-        );
-        assert_eq!(view.row_key_at(Point::new(200.0, 51.0)), None);
-        view.place_at(Rect::new(0.0, 0.0, 240.0, 100.0));
-        assert!(
-            (view.viewport.viewport() - 100.0).abs() < 0.01,
-            "and follows it each frame"
-        );
-    }
-
-    #[test]
-    fn restoring_expansion_does_not_echo_to_the_host() {
-        let echoed = Rc::new(Cell::new(0));
-        let count = Rc::clone(&echoed);
-        let mut view = TreeView::new(navigator_tree())
-            .hide_root()
-            .on_expand(move |_, _| count.set(count.get() + 1));
-        view.restore_expanded([2, 5, 99]);
-        assert!(view.is_expanded(2));
-        assert!(!view.is_expanded(5), "leaves are not expandable");
-        assert_eq!(echoed.get(), 0);
-        view.set_expanded(2, false);
-        assert_eq!(echoed.get(), 1, "a user change still reports");
-    }
-
-    #[test]
-    fn decorations_see_row_state_and_describe_rows() {
-        let seen = Rc::new(RefCell::new(Vec::new()));
-        let log = Rc::clone(&seen);
-        let mut view = TreeView::new(navigator_tree())
-            .hide_root()
-            .with_row_decoration(move |_, row, theme| {
-                log.borrow_mut().push(row);
-                TreeRowDecoration::new()
-                    .icon(
-                        if row.is_branch {
-                            Icon::Folder
-                        } else {
-                            Icon::File
-                        },
-                        theme.tokens.colors.text_dim,
-                    )
-                    .trailing("3")
-                    .description(if row.is_branch { "Folder" } else { "File" })
-            });
-        view.set_current(Some(5));
-        view.select(2);
-        let _ = lay_out_tree(&mut view, 240.0);
-        draw_view(&mut view);
-        let rows = seen.borrow().clone();
-        let readme = rows
-            .iter()
-            .find(|row| row.id == 5)
-            .expect("README decorated");
-        assert!(readme.current && !readme.selected && !readme.is_branch);
-        let src = rows.iter().find(|row| row.id == 2).expect("src decorated");
-        assert!(src.selected && src.is_branch && !src.expanded && !src.current);
-
-        let semantics = Widget::accessibility(&view).unwrap();
-        let described: Vec<_> = semantics
-            .children
-            .iter()
-            .map(|item| item.description.clone())
-            .collect();
-        assert_eq!(
-            described,
-            [Some("Folder".to_owned()), Some("File".to_owned())]
-        );
-        assert_eq!(view.current(), Some(5));
-        view.set_current(Some(99));
-        assert_eq!(view.current(), None, "an unknown id is not current");
+                .fill();
+            view.place_at(Rect::new(-120.0, 50.0, 120.0, 250.0));
+            assert!(
+                (view.viewport.viewport() - 200.0).abs() < 0.01,
+                "the viewport is the rect"
+            );
+            assert!(view.max_scroll_offset() > 0.0, "39 rows overflow 200 px");
+            assert_eq!(
+                view.row_key_at(Point::new(0.0, 51.0)),
+                Some(TreeRowKey::Node(2)),
+                "hit-testing follows the external rect"
+            );
+            assert_eq!(view.row_key_at(Point::new(200.0, 51.0)), None);
+            view.place_at(Rect::new(0.0, 0.0, 240.0, 100.0));
+            assert!(
+                (view.viewport.viewport() - 100.0).abs() < 0.01,
+                "and follows it each frame"
+            );
+        }
     }
 }

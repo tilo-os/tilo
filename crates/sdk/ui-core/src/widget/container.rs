@@ -4,7 +4,9 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
+use std::any::Any;
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -22,6 +24,8 @@ use winit::event::WindowEvent;
 )]
 pub struct Container {
     child: Option<Box<dyn Widget>>,
+    /// Stable graph / test identity when built from a serialized UI node.
+    id: Option<String>,
     rect: Rect,
     has_background: bool,
     focus_trap: bool,
@@ -65,6 +69,7 @@ impl Container {
     pub fn new() -> Self {
         Self {
             child: None,
+            id: None,
             rect: Rect::ZERO,
             has_background: false,
             focus_trap: false,
@@ -119,6 +124,41 @@ impl Container {
     pub fn with_child(mut self, child: Box<dyn Widget>) -> Self {
         self.child = Some(child);
         self
+    }
+
+    /// Address this container by a stable id in inspection and graph reconcile.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    /// Take the single child for identity-preserving reconcile.
+    pub fn take_child(&mut self) -> Option<Box<dyn Widget>> {
+        self.child.take()
+    }
+
+    /// Replace the single child after a graph reconcile pass.
+    pub fn set_child(&mut self, child: Box<dyn Widget>) {
+        self.child = Some(child);
+    }
+
+    /// Apply layout flags from a serialized container node without rebuilding.
+    pub fn apply_graph_props(
+        &mut self,
+        id: &str,
+        background: bool,
+        no_padding: bool,
+        fill_height: bool,
+        width: Option<f32>,
+        height: Option<f32>,
+    ) {
+        self.id = Some(id.to_owned());
+        self.has_background = background;
+        self.no_padding = no_padding;
+        self.fill_height = fill_height;
+        self.fixed_width = width;
+        self.fixed_height = height;
     }
 
     #[must_use]
@@ -205,34 +245,23 @@ impl Container {
 }
 
 impl Widget for Container {
-    fn start_resource_operation_with_document(
+    crate::provides!(
+        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::undo::UndoPoints
+    );
+
+    fn start_operation(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
+        op: &crate::widget::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        // This container owns no operation handler. Preserve mutable admission
-        // down the retained tree without a second read-only fallback traversal.
-        for child in self.children_mut() {
-            if let Some(started) = child.start_resource_operation_with_document(
-                invocation, kind, type_id, payload, doc, path,
-            )? {
-                return Ok(Some(started));
-            }
-        }
-        Ok(None)
+        // This container owns no operation handler: offer each child once.
+        crate::widget::start_in_children(self, op, doc, path)
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        if let Some(child) = &mut self.child {
-            child.sync(state, path);
-        }
-    }
-
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         match &mut self.child {
             Some(child) => child.update(state, path),
             None => false,
@@ -352,32 +381,11 @@ impl Widget for Container {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let Some(child) = &mut self.child
-            && let Some(&child_node) = taffy.children(node_id).unwrap_or_default().first()
+            && let Some(&child_node) = ctx.taffy.children(ctx.node_id).unwrap_or_default().first()
         {
-            child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
+            child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
         }
     }
 
@@ -429,36 +437,22 @@ impl Widget for Container {
         "Container"
     }
 
+    fn test_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        Some(self)
+    }
+
     fn is_focused(&self) -> bool {
         false
-    }
-    fn needs_commit(&self) -> bool {
-        self.children().iter().any(|c| c.needs_commit())
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            child.on_commit();
-        }
     }
 
     fn take_structure_dirty(&mut self) -> bool {
         self.child
             .as_mut()
             .is_some_and(|c| c.take_structure_dirty())
-    }
-
-    fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
-    }
-
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
     }
 
     fn draw_with_presence(
@@ -493,7 +487,7 @@ impl Widget for Container {
             );
         }
 
-        if let Some(scope) = self.permission_scope()
+        if let Some(scope) = crate::permissions::capability::permission_scope(self)
             && !permissions.check(&scope)
         {
             let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
@@ -506,12 +500,43 @@ impl Widget for Container {
             );
         }
 
-        if let Some(key) = self.presence_key()
+        if let Some(key) = crate::presence::capability::presence_key(self)
             && let Some(peers) = presence.here.get(&key)
             && let Some(user) = peers.first()
         {
             presence.draw_peer_focus(scene, theme, user, self.rect);
         }
+    }
+}
+
+impl crate::undo::UndoPoints for Container {
+    fn needs_commit(&self) -> bool {
+        self.children()
+            .iter()
+            .any(|c| crate::undo::needs_commit(*c))
+    }
+    fn on_commit(&mut self) {
+        for child in self.children_mut() {
+            crate::undo::on_commit(child);
+        }
+    }
+}
+
+impl crate::presence::capability::PublishesPresence for Container {
+    fn presence_key(&self) -> Option<PresenceKey> {
+        if self.presence_path.is_empty() {
+            None
+        } else {
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
+        }
+    }
+}
+
+impl crate::permissions::capability::PermissionGated for Container {
+    fn permission_scope(&self) -> Option<PermissionScope> {
+        self.permission_scope.clone()
     }
 }
 
@@ -544,87 +569,92 @@ mod tests {
     }
 
     #[test]
-    fn with_width_pins_outer_width() {
-        let (_c, rect) = lay_out(Container::new().with_width(280.0));
-        assert!(
-            (rect.width() - 280.0).abs() < 0.5,
-            "with_width(280) must pin the container to 280 px, got {}",
-            rect.width()
-        );
-        assert!(
-            rect.width() < 799.0,
-            "a pinned-width container must NOT fill the 800 px viewport"
-        );
-    }
+    fn container_sizing_padding_centering_and_fill() {
+        fn with_width_pins_outer_width() {
+            let (_c, rect) = lay_out(Container::new().with_width(280.0));
+            assert!(
+                (rect.width() - 280.0).abs() < 0.5,
+                "with_width(280) must pin the container to 280 px, got {}",
+                rect.width()
+            );
+            assert!(
+                rect.width() < 799.0,
+                "a pinned-width container must NOT fill the 800 px viewport"
+            );
+        }
 
-    #[test]
-    fn with_size_pins_both_dimensions() {
-        let (_c, rect) = lay_out(Container::new().with_size(120.0, 64.0));
-        assert!((rect.width() - 120.0).abs() < 0.5, "width pinned to 120");
-        assert!((rect.height() - 64.0).abs() < 0.5, "height pinned to 64");
-    }
+        fn with_size_pins_both_dimensions() {
+            let (_c, rect) = lay_out(Container::new().with_size(120.0, 64.0));
+            assert!((rect.width() - 120.0).abs() < 0.5, "width pinned to 120");
+            assert!((rect.height() - 64.0).abs() < 0.5, "height pinned to 64");
+        }
 
-    #[test]
-    fn default_container_still_fills_width() {
-        let (_c, rect) = lay_out(Container::new());
-        assert!(
-            (rect.width() - 800.0).abs() < 0.5,
-            "default container must fill the viewport width, got {}",
-            rect.width()
-        );
-    }
+        fn default_container_still_fills_width() {
+            let (_c, rect) = lay_out(Container::new());
+            assert!(
+                (rect.width() - 800.0).abs() < 0.5,
+                "default container must fill the viewport width, got {}",
+                rect.width()
+            );
+        }
 
-    #[test]
-    fn padding_override_insets_child_without_losing_fluid_width() {
-        let (container, rect) = lay_out(
-            Container::new()
-                .with_padding(8.0)
-                .with_child(Box::new(Container::new().with_size(10.0, 10.0))),
-        );
-        let child = container.children()[0].get_rect();
-        assert!((rect.width() - 800.0).abs() < 0.5);
-        assert!((child.x0 - 8.0).abs() < 0.5);
-        assert!((child.y0 - 8.0).abs() < 0.5);
-        assert!((rect.y1 - child.y1 - 8.0).abs() < 0.5);
-    }
+        fn padding_override_insets_child_without_losing_fluid_width() {
+            let (container, rect) = lay_out(
+                Container::new()
+                    .with_padding(8.0)
+                    .with_child(Box::new(Container::new().with_size(10.0, 10.0))),
+            );
+            let child = container.children()[0].get_rect();
+            assert!((rect.width() - 800.0).abs() < 0.5);
+            assert!((child.x0 - 8.0).abs() < 0.5);
+            assert!((child.y0 - 8.0).abs() < 0.5);
+            assert!((rect.y1 - child.y1 - 8.0).abs() < 0.5);
+        }
 
-    #[test]
-    fn centered_max_width_caps_wide_parent_and_remains_fluid() {
-        let (wide, _) = lay_out(
-            Container::new().with_child(Box::new(Container::new().with_centered_max_width(480.0))),
-        );
-        let wide_child = wide.children()[0].get_rect();
-        assert!((wide_child.width() - 480.0).abs() < 0.5);
-        assert!(
-            (wide_child.x0 - 160.0).abs() < 0.5,
-            "capped child must be centred, got {wide_child:?}"
-        );
+        fn centered_max_width_caps_wide_parent_and_remains_fluid() {
+            let (wide, _) = lay_out(
+                Container::new()
+                    .with_child(Box::new(Container::new().with_centered_max_width(480.0))),
+            );
+            let wide_child = wide.children()[0].get_rect();
+            assert!((wide_child.width() - 480.0).abs() < 0.5);
+            assert!(
+                (wide_child.x0 - 160.0).abs() < 0.5,
+                "capped child must be centred, got {wide_child:?}"
+            );
 
-        let (_narrow, narrow_rect) = lay_out(Container::new().with_centered_max_width(960.0));
-        assert!(
-            (narrow_rect.width() - 800.0).abs() < 0.5,
-            "cap above available width must remain fluid"
-        );
-    }
+            let (_narrow, narrow_rect) = lay_out(Container::new().with_centered_max_width(960.0));
+            assert!(
+                (narrow_rect.width() - 800.0).abs() < 0.5,
+                "cap above available width must remain fluid"
+            );
+        }
 
-    #[test]
-    fn with_fill_emits_background_distinct_from_bg_primary() {
-        let custom = Color::from_rgb8(10, 20, 30);
-        let (mut c, _rect) = lay_out(Container::new().with_fill(custom));
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = crate::presence::PresenceCtx::default();
-        let mut scene = Scene::new();
-        c.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        let fills = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::COLOR)
-            .count();
-        assert!(
-            fills >= 1,
-            "with_fill must emit at least one COLOR fill (the surface tint)"
-        );
+        fn with_fill_emits_background_distinct_from_bg_primary() {
+            let custom = Color::from_rgb8(10, 20, 30);
+            let (mut c, _rect) = lay_out(Container::new().with_fill(custom));
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let presence = crate::presence::PresenceCtx::default();
+            let mut scene = Scene::new();
+            c.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            let fills = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::COLOR)
+                .count();
+            assert!(
+                fills >= 1,
+                "with_fill must emit at least one COLOR fill (the surface tint)"
+            );
+        }
+
+        with_width_pins_outer_width();
+        with_size_pins_both_dimensions();
+        default_container_still_fills_width();
+        padding_override_insets_child_without_losing_fluid_width();
+        centered_max_width_caps_wide_parent_and_remains_fluid();
+        with_fill_emits_background_distinct_from_bg_primary();
     }
 }

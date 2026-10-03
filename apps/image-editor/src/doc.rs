@@ -1,9 +1,8 @@
 //! Granular, replicated image-editor project document.
 //!
-//! The original implementation stored `Project` as one JSON scalar. That
-//! converged on one whole-project value, but two people changing different
-//! adjustments still lost work. V2 gives every independently editable thing
-//! its own CRDT location: project metadata, nodes, operation fields, order,
+//! A single JSON scalar would converge on one whole-project value, so two
+//! people changing different adjustments would still lose work. Every
+//! independently editable thing instead has its own CRDT location: project metadata, nodes, operation fields, order,
 //! expert connection overrides, and delete tombstones.
 //!
 //! `order` is the approachable adjustment stack. Concurrent inserts use
@@ -22,7 +21,6 @@ use automerge::{
 use ui::doc::{read_bool, read_number, read_str, read_u64};
 use ui::graph_editor::{Edge, Graph, GraphNode, GraphPoint, Port};
 
-const LEGACY_KEY: &str = "image-editor.project";
 const V2_KEY: &str = "image-editor.project.v2";
 const METADATA: &str = "metadata";
 const NODES: &str = "nodes";
@@ -32,27 +30,81 @@ const CONNECTIONS: &str = "connections";
 const TOMBSTONES: &str = "tombstones";
 const HISTORY_HIDDEN: &str = "history_hidden";
 
+/// The actor of the shared blank-project change. Nobody edits as it.
+const GENESIS_ACTOR: &[u8] = b"so.tilo.image-editor.project.v2.genesis";
+
+/// The canonical blank-project change, built once per process. `Project::blank`
+/// and every writer it drives iterate ordered collections, so the change is
+/// the same bytes on every machine.
+fn blank_genesis() -> Option<&'static [u8]> {
+    static GENESIS: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    let bytes = GENESIS.get_or_init(|| {
+        let mut doc = AutoCommit::new();
+        doc.set_actor(automerge::ActorId::from(GENESIS_ACTOR));
+        ProjectDoc::seed(&mut doc);
+        doc.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+        doc.save()
+    });
+    (!bytes.is_empty()).then_some(bytes.as_slice())
+}
+
 /// Stateless access to the one canonical image project document.
 pub struct ProjectDoc;
 
 impl ProjectDoc {
-    /// Seed v2 and migrate a pre-v2 scalar project once. The legacy scalar is
-    /// retained, so an older installed version can still recover its work.
+    /// Seed the blank project into a document that has none yet.
     pub fn seed(doc: &mut AutoCommit) {
         if Self::v2(doc).is_some() {
             return;
         }
-        let legacy = Self::legacy(doc).unwrap_or_else(Project::blank);
-        Self::write_fresh(doc, &legacy);
+        Self::write_fresh(doc, &Project::blank());
+    }
+
+    /// Give a document that has no project yet the *shared* blank project,
+    /// then [`Self::seed`]. Called where the app opens the document (`sync`),
+    /// outside any action transaction.
+    ///
+    /// `seed` writes the blank project under the current actor, so two
+    /// replicas that each open the same empty record before syncing mint two
+    /// `image-editor.project.v2` maps; a merge keeps one and every adjustment
+    /// made under the other disappears. The blank project is instead adopted
+    /// from one canonical change (fixed actor, no dependencies, time 0), which
+    /// is byte-identical on every replica and so deduplicates on merge.
+    pub fn open_shared(doc: &mut AutoCommit) {
+        let untouched = doc.get_all(&ROOT, V2_KEY).is_ok_and(|v| v.is_empty());
+        if untouched && let Some(genesis) = blank_genesis() {
+            let _ = tilo_automerge::ApplyIncoming::load_incoming(doc, genesis);
+        }
+        Self::seed(doc);
     }
 
     /// Materialize the bounded project projection used by the UI, search,
     /// history and agents. One document remains the canonical resource.
     #[must_use]
     pub fn read(doc: &AutoCommit) -> Project {
-        Self::read_v2(doc)
-            .or_else(|| Self::legacy(doc))
-            .unwrap_or_else(Project::blank)
+        Self::read_v2(doc).unwrap_or_else(Project::blank)
+    }
+
+    /// Set the source image path and the project name. Other adjustments stay.
+    pub fn set_source(doc: &mut AutoCommit, path: &str, name: &str) {
+        Self::seed(doc);
+        let root = Self::root_map(doc);
+        let metadata = Self::map(doc, &root, METADATA);
+        let name = if name.is_empty() {
+            "Untitled image"
+        } else {
+            name
+        };
+        put_if_changed(doc, &metadata, "name", name);
+        let operations = Self::map(doc, &root, OPERATIONS);
+        Self::write_operation(
+            doc,
+            &operations,
+            "source",
+            &Operation::Source {
+                path: path.to_string(),
+            },
+        );
     }
 
     /// Compatibility upsert for local UI code. Missing rows are never
@@ -81,10 +133,12 @@ impl ProjectDoc {
             if let Some(operation) = project.operations.get(id) {
                 Self::write_operation(doc, &operations, id, operation);
             }
-            if id != "source" && id != "output" {
-                Self::append_order_once(doc, &order, id);
-            }
         }
+        // The approachable stack order must follow evaluation order, never
+        // HashMap iteration — otherwise undo of hide re-exposes steps in the
+        // wrong sequence (`contrast` before `exposure`).
+        Self::sync_order(doc, &order, project);
+        Self::sync_connections(doc, project);
     }
 
     /// Add an adjustment to the shared stack. `id` is permanent and explicit,
@@ -393,15 +447,6 @@ impl ProjectDoc {
         })
     }
 
-    fn legacy(doc: &AutoCommit) -> Option<Project> {
-        doc.get(&ROOT, LEGACY_KEY)
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| value.into_scalar().ok())
-            .and_then(|value| value.as_str().map(str::to_owned))
-            .and_then(|json| serde_json::from_str(&json).ok())
-    }
-
     fn v2(doc: &AutoCommit) -> Option<ObjId> {
         get_map(doc, &ROOT, V2_KEY)
     }
@@ -538,6 +583,20 @@ impl ProjectDoc {
         }
         let _ = doc.insert(order, doc.length(order), id);
     }
+
+    /// Replace the shared stack list so it matches [`Self::project_order`].
+    fn sync_order(doc: &mut AutoCommit, order: &ObjId, project: &Project) {
+        let desired = Self::project_order(project);
+        if Self::order_ids(doc, order) == desired {
+            return;
+        }
+        while doc.length(order) > 0 {
+            let _ = doc.delete(order, 0);
+        }
+        for id in desired {
+            let _ = doc.insert(order, doc.length(order), id);
+        }
+    }
     fn order_ids(doc: &AutoCommit, order: &ObjId) -> Vec<String> {
         (0..doc.length(order))
             .filter_map(|index| read_str(doc, order, index))
@@ -639,18 +698,55 @@ mod tests {
         let mut copy = AutoCommit::load(&right.save()).unwrap();
         left.merge_incoming(&mut copy).unwrap();
     }
+    /// Two replicas open the same empty record and each add an adjustment
+    /// before syncing: both must survive the merge.
     #[test]
-    fn migrates_legacy_scalar_without_changing_project_identity() {
-        let project = Project::blank();
-        let mut doc = AutoCommit::new();
-        doc.put(&ROOT, LEGACY_KEY, serde_json::to_string(&project).unwrap())
-            .unwrap();
-        ProjectDoc::seed(&mut doc);
-        assert_eq!(ProjectDoc::read(&doc), project);
-        assert!(doc.get(&ROOT, V2_KEY).unwrap().is_some());
-        assert!(doc.get(&ROOT, LEGACY_KEY).unwrap().is_some());
+    fn concurrent_first_opens_on_two_replicas_keep_both_adjustments() {
+        for _ in 0..8 {
+            let mut base = AutoCommit::new();
+            base.commit();
+            let mut a = base.fork();
+            let mut b = base.fork();
+            ProjectDoc::open_shared(&mut a);
+            ProjectDoc::open_shared(&mut b);
+            let exposure = Operation::Exposure { stops: 0.5 };
+            assert!(ProjectDoc::add_adjustment(
+                &mut a,
+                "exposure-a",
+                "Exposure",
+                &exposure
+            ));
+            assert!(ProjectDoc::add_adjustment(
+                &mut b,
+                "exposure-b",
+                "Exposure",
+                &exposure
+            ));
+            a.merge_incoming(&mut b).unwrap();
+            let project = ProjectDoc::read(&a);
+            assert!(
+                project.graph.nodes.contains_key("exposure-a")
+                    && project.graph.nodes.contains_key("exposure-b"),
+                "both replicas' adjustments survive; got {:?}",
+                project.graph.nodes.keys().collect::<Vec<_>>()
+            );
+        }
     }
+
+    /// Storage shape: repeated snapshot writes stay bounded.
     #[test]
+    fn project_doc_storage_stays_bounded() {
+        repetitive_snapshot_writes_do_not_materialize_unbounded_graphs();
+    }
+    /// Concurrent participants converge per adjustment: interleaved adds, independent
+    /// metadata/parameter edits, and delete-wins without resurrection.
+    #[test]
+    fn concurrent_project_edits_converge_per_node() {
+        two_participants_keep_interleaved_adjustments();
+        independent_metadata_and_node_parameters_converge_without_graph_replacement();
+        delete_wins_over_interleaved_parameter_edit_without_resurrection();
+    }
+
     fn two_participants_keep_interleaved_adjustments() {
         let mut a = AutoCommit::new();
         ProjectDoc::seed(&mut a);
@@ -676,7 +772,6 @@ mod tests {
         assert!(pa.operations.contains_key("contrast-b"));
         assert_eq!(pa.graph.evaluation_order().unwrap().len(), 4);
     }
-    #[test]
     fn independent_metadata_and_node_parameters_converge_without_graph_replacement() {
         let mut a = AutoCommit::new();
         ProjectDoc::seed(&mut a);
@@ -722,7 +817,6 @@ mod tests {
             matches!(project.operations["crop-b"], Operation::Crop { x, y, width, height } if (x, y, width, height) == (0.1, 0.2, 0.7, 0.6))
         );
     }
-    #[test]
     fn delete_wins_over_interleaved_parameter_edit_without_resurrection() {
         let mut a = AutoCommit::new();
         ProjectDoc::seed(&mut a);
@@ -747,7 +841,6 @@ mod tests {
             &Operation::Exposure { stops: 0.5 }
         ));
     }
-    #[test]
     fn repetitive_snapshot_writes_do_not_materialize_unbounded_graphs() {
         let mut doc = AutoCommit::new();
         ProjectDoc::seed(&mut doc);

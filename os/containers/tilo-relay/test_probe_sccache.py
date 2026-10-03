@@ -38,8 +38,7 @@ if args and args[0] == "rustc":
 if args == ["--show-stats", "--stats-format=json"]:
     count = int(state.read_text())
     location = "Local disk" if mode == "local" else (
-        "s3, name: " + os.environ["SCCACHE_BUCKET"] + ", prefix: /" +
-        os.environ["SCCACHE_S3_KEY_PREFIX"] + "/"
+        "ghac, name: sccache-v0.test-" + os.environ["SCCACHE_GHA_VERSION"] + ", prefix: /sccache/"
     )
     stats = {"cache_hits": int(count > 1), "cache_misses": int(count == 1),
              "cache_writes": int(count == 1), "cache_errors": 0,
@@ -62,8 +61,7 @@ class ProbeTests(unittest.TestCase):
         env = os.environ.copy()
         env.update(
             PATH=str(root) + os.pathsep + env["PATH"],
-            SCCACHE_BUCKET="test-bucket",
-            SCCACHE_S3_KEY_PREFIX="forgejo-runners/v1",
+            SCCACHE_GHA_VERSION="tilo-relay-v1",
             TILO_CACHE_PROBE_NONCE="test-run",
             TILO_CACHE_PROBE_TIMEOUT_SECONDS=timeout,
             TILO_FAKE_SCCACHE_MODE=mode,
@@ -83,29 +81,23 @@ class ProbeTests(unittest.TestCase):
         self.assertIn("remote compiler cache probe: PASS", result.stdout)
         self.assertEqual(commands[-1], "--stop-server")
 
-    def test_local_cache_is_rejected_and_server_is_stopped(self):
-        result, commands, _ = self.run_probe("local")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("did not use the bound remote S3 cache", result.stderr)
-        self.assertEqual(commands[-1], "--stop-server")
-
-    def test_remote_io_error_is_rejected_and_server_is_stopped(self):
-        result, commands, _ = self.run_probe("io")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("authentication or I/O error", result.stderr)
-        self.assertEqual(commands[-1], "--stop-server")
-
-    def test_client_failure_still_stops_server(self):
-        result, commands, _ = self.run_probe("auth")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(commands[-1], "--stop-server")
-
-    def test_client_timeout_is_bounded_and_stops_server(self):
-        result, commands, elapsed = self.run_probe("timeout", "0.05")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertLess(elapsed, 2)
-        self.assertEqual(commands[-1], "--stop-server")
-
+    def test_failed_or_untrusted_probes_are_rejected_and_stop_server(self):
+        for mode, timeout, stderr in (
+            ("local", "1", "did not use the bound remote cache"),
+            ("io", "1", "authentication or I/O error"),
+            # A failing client still stops the server.
+            ("auth", "1", None),
+            # A hung client is bounded by the probe timeout.
+            ("timeout", "0.05", None),
+        ):
+            with self.subTest(mode=mode):
+                result, commands, elapsed = self.run_probe(mode, timeout)
+                self.assertNotEqual(result.returncode, 0)
+                if stderr is not None:
+                    self.assertIn(stderr, result.stderr)
+                if mode == "timeout":
+                    self.assertLess(elapsed, 2)
+                self.assertEqual(commands[-1], "--stop-server")
 
 if __name__ == "__main__":
     unittest.main()

@@ -23,6 +23,8 @@ pub enum KeyboardModifier {
     /// Desktop/system modifier: Command on Mac keyboards, Windows/Super elsewhere.
     System,
     Fn,
+    /// The right Alt key of layouts that type a third symbol with it.
+    AltGr,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -43,6 +45,9 @@ pub enum KeyLegend {
     End,
     PageUp,
     PageDown,
+    Insert,
+    PrintScreen,
+    NumLock,
     Function(u8),
 }
 
@@ -63,6 +68,9 @@ impl KeyLegend {
             "end" => Self::End,
             "pageup" | "page_up" => Self::PageUp,
             "pagedown" | "page_down" => Self::PageDown,
+            "insert" | "ins" => Self::Insert,
+            "printscreen" | "print" => Self::PrintScreen,
+            "numlock" => Self::NumLock,
             value => value
                 .strip_prefix('f')
                 .and_then(|number| number.parse::<u8>().ok())
@@ -79,27 +87,38 @@ impl KeyLegend {
         self.label_for(platform, family)
     }
 
+    /// The legend of this key on a keyboard of `family` typing with the
+    /// active layout ([`crate::keycaps::active`]).
     pub fn label_for(&self, _platform: PlatformConventions, family: KeyboardFamily) -> String {
+        let keycaps = crate::keycaps::active().on_family(family);
         match self {
-            Self::Character(value) => value.to_uppercase(),
-            Self::Left => "Left".into(),
-            Self::Right => "Right".into(),
-            Self::Up => "Up".into(),
-            Self::Down => "Down".into(),
-            Self::Tab => "⇥".into(),
-            Self::Enter if family == KeyboardFamily::Apple => "↩".into(),
-            Self::Enter => "Enter".into(),
-            Self::Escape => "esc".into(),
-            Self::Space => "Space".into(),
-            Self::Backspace if family == KeyboardFamily::Apple => "⌫".into(),
-            Self::Backspace => "Backspace".into(),
-            Self::Delete if family == KeyboardFamily::Apple => "⌦".into(),
-            Self::Delete => "Del".into(),
-            Self::Home => "Home".into(),
-            Self::End => "End".into(),
-            Self::PageUp => "Page ↑".into(),
-            Self::PageDown => "Page ↓".into(),
+            Self::Character(value) => keycaps.key(value),
             Self::Function(number) => format!("F{number}"),
+            named => keycaps.key(named.name()),
+        }
+    }
+
+    /// The canonical name of a named key.
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Character(_) | Self::Function(_) => "",
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Up => "up",
+            Self::Down => "down",
+            Self::Tab => "tab",
+            Self::Enter => "enter",
+            Self::Escape => "escape",
+            Self::Space => "space",
+            Self::Backspace => "backspace",
+            Self::Delete => "delete",
+            Self::Home => "home",
+            Self::End => "end",
+            Self::PageUp => "pageup",
+            Self::PageDown => "pagedown",
+            Self::Insert => "insert",
+            Self::PrintScreen => "printscreen",
+            Self::NumLock => "numlock",
         }
     }
 }
@@ -150,13 +169,7 @@ impl KeyboardBinding {
         family: KeyboardFamily,
     ) -> Vec<String> {
         let mut display_modifiers = self.modifiers.clone();
-        display_modifiers.sort_by_key(|modifier| match modifier {
-            KeyboardModifier::Command | KeyboardModifier::System => 0,
-            KeyboardModifier::Control => 1,
-            KeyboardModifier::Alt => 2,
-            KeyboardModifier::Shift => 3,
-            KeyboardModifier::Fn => 4,
-        });
+        display_modifiers.sort_by_key(|modifier| crate::keycaps::display_rank(*modifier));
         display_modifiers
             .into_iter()
             .map(|modifier| modifier_label(modifier, platform, family).to_owned())
@@ -169,36 +182,30 @@ impl KeyboardBinding {
     }
 }
 
+/// What `modifier` is called: the platform's own convention where the host
+/// is macOS or Windows, otherwise the legend the active layout prints on it.
 fn modifier_label(
     modifier: KeyboardModifier,
     platform: PlatformConventions,
     family: KeyboardFamily,
 ) -> &'static str {
-    if family == KeyboardFamily::Apple {
-        return match modifier {
-            KeyboardModifier::Command | KeyboardModifier::System => "⌘",
-            KeyboardModifier::Control => "⌃",
-            KeyboardModifier::Alt => "⌥",
-            KeyboardModifier::Shift => "⇧",
-            KeyboardModifier::Fn => "fn",
-        };
+    let family = if platform.platform() == Platform::MacOs {
+        KeyboardFamily::Apple
+    } else {
+        family
+    };
+    if (modifier, platform.platform(), family)
+        == (
+            KeyboardModifier::System,
+            Platform::Windows,
+            KeyboardFamily::Pc,
+        )
+    {
+        return "⊞";
     }
-
-    match (modifier, platform.platform()) {
-        (KeyboardModifier::Command | KeyboardModifier::System, Platform::MacOs) => "⌘",
-        (
-            KeyboardModifier::Command | KeyboardModifier::Control,
-            Platform::Windows | Platform::Linux | Platform::Other,
-        ) => "Ctrl",
-        (KeyboardModifier::Control, Platform::MacOs) => "⌃",
-        (KeyboardModifier::Alt, Platform::MacOs) => "⌥",
-        (KeyboardModifier::Alt, _) => "Alt",
-        (KeyboardModifier::Shift, Platform::MacOs) => "⇧",
-        (KeyboardModifier::Shift, _) => "Shift",
-        (KeyboardModifier::System, Platform::Windows) => "⊞",
-        (KeyboardModifier::System, Platform::Linux | Platform::Other) => "Super",
-        (KeyboardModifier::Fn, _) => "fn",
-    }
+    crate::keycaps::active()
+        .on_family(family)
+        .modifier(modifier)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -433,60 +440,63 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mac_legends_use_the_symbols_printed_on_apple_keyboards() {
-        let binding = KeyboardBinding::new(
-            [
-                KeyboardModifier::Command,
-                KeyboardModifier::Alt,
-                KeyboardModifier::Shift,
-            ],
-            KeyLegend::Enter,
-        );
-        assert_eq!(
-            binding.keycap_labels(PlatformConventions::new(Platform::MacOs)),
-            ["⌘", "⌥", "⇧", "↩"]
-        );
-        let external_apple = KeyboardBinding::new(
-            [KeyboardModifier::System, KeyboardModifier::Alt],
-            KeyLegend::Enter,
-        );
-        assert_eq!(
-            external_apple.keycap_labels_for(
-                PlatformConventions::new(Platform::Linux),
-                KeyboardFamily::Apple,
-            ),
-            ["⌘", "⌥", "↩"]
-        );
-    }
+    fn input_legends_follow_the_device_and_rebinding_reports_conflicts() {
+        // Case `mac_legends_use_the_symbols_printed_on_apple_keyboards`.
+        {
+            let binding = KeyboardBinding::new(
+                [
+                    KeyboardModifier::Command,
+                    KeyboardModifier::Alt,
+                    KeyboardModifier::Shift,
+                ],
+                KeyLegend::Enter,
+            );
+            assert_eq!(
+                binding.keycap_labels(PlatformConventions::new(Platform::MacOs)),
+                ["⌘", "⌥", "⇧", "↩"]
+            );
+            let external_apple = KeyboardBinding::new(
+                [KeyboardModifier::System, KeyboardModifier::Alt],
+                KeyLegend::Enter,
+            );
+            assert_eq!(
+                external_apple.keycap_labels_for(
+                    PlatformConventions::new(Platform::Linux),
+                    KeyboardFamily::Apple,
+                ),
+                ["⌘", "⌥", "↩"]
+            );
+        }
 
-    #[test]
-    fn face_button_labels_follow_the_connected_controller() {
-        assert_eq!(ControllerButton::South.label(ControllerFamily::Xbox), "A");
-        assert_eq!(
-            ControllerButton::South.label(ControllerFamily::PlayStation),
-            "×"
-        );
-        assert_eq!(
-            ControllerButton::South.label(ControllerFamily::Nintendo),
-            "B"
-        );
-        assert_eq!(
-            ControllerButton::South.label(ControllerFamily::JoyConLeft),
-            "←"
-        );
-    }
+        // Case `face_button_labels_follow_the_connected_controller`.
+        {
+            assert_eq!(ControllerButton::South.label(ControllerFamily::Xbox), "A");
+            assert_eq!(
+                ControllerButton::South.label(ControllerFamily::PlayStation),
+                "×"
+            );
+            assert_eq!(
+                ControllerButton::South.label(ControllerFamily::Nintendo),
+                "B"
+            );
+            assert_eq!(
+                ControllerButton::South.label(ControllerFamily::JoyConLeft),
+                "←"
+            );
+        }
 
-    #[test]
-    fn rebinding_reports_the_action_that_already_owns_a_chord() {
-        let chord = InputBinding::Keyboard(KeyboardBinding::command("k"));
-        let mut set = BindingSet::default();
-        set.insert_action("search", "Search", vec![chord.clone()]);
-        set.insert_action("link", "Insert link", vec![]);
-        assert_eq!(
-            set.rebind("link", 0, chord, false),
-            Err(BindingConflict {
-                action_id: "search".into()
-            })
-        );
+        // Case `rebinding_reports_the_action_that_already_owns_a_chord`.
+        {
+            let chord = InputBinding::Keyboard(KeyboardBinding::command("k"));
+            let mut set = BindingSet::default();
+            set.insert_action("search", "Search", vec![chord.clone()]);
+            set.insert_action("link", "Insert link", vec![]);
+            assert_eq!(
+                set.rebind("link", 0, chord, false),
+                Err(BindingConflict {
+                    action_id: "search".into()
+                })
+            );
+        }
     }
 }

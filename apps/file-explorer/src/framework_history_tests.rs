@@ -24,8 +24,7 @@ impl SubmitReturns {
     /// Drive frames until `count` submits returned.
     fn wait(&self, driver: &mut ui::headless::FrameHarness, count: usize) {
         assert!(
-            driver.wait_until(std::time::Duration::from_secs(120), |_| self.count()
-                >= count),
+            driver.wait_until(tilo_test_env::hang_bound(), |_| self.count() >= count),
             "the backend returned {} of {count} submits",
             self.count()
         );
@@ -111,7 +110,7 @@ impl FileHistoryTransport for Counted {
 const UNAVAILABLE_ACK: &str = "Restore acknowledgement is unavailable";
 fn wait(driver: &mut ui::headless::FrameHarness, text: &str) {
     assert!(
-        driver.wait_until(std::time::Duration::from_secs(5), |driver| driver
+        driver.wait_until(tilo_test_env::hang_bound(), |driver| driver
             .inspection_json()
             .unwrap()
             .contains(text)),
@@ -121,7 +120,7 @@ fn wait(driver: &mut ui::headless::FrameHarness, text: &str) {
 }
 fn confirm(driver: &mut ui::headless::FrameHarness, phase: &str) {
     assert!(
-        driver.wait_until(std::time::Duration::from_secs(5), |driver| driver
+        driver.wait_until(tilo_test_env::hang_bound(), |driver| driver
             .a11y_node_named("Restore version")
             .is_some()),
         "confirmation missing in {phase}: {}",
@@ -227,7 +226,9 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
         label: "report.txt".into(),
         transport: transport.clone(),
     }));
-    let registration = root.history_registration().unwrap().unwrap();
+    let registration = ui::history_mode::capability::history_registration(&root)
+        .unwrap()
+        .unwrap();
     let mut state = ui::State::new();
     state
         .doc
@@ -362,328 +363,339 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     endpoint.close().await;
 }
 
-#[test]
-fn framework_history_production_registration_rejects_foreign_or_replaced_source_witness() {
-    let root = FileExplorerWidget::new();
-    let registration = root.history_registration().unwrap().unwrap();
-    let foreign = FileExplorerWidget::new();
-    assert!(matches!(
-        ui::headless::FrameHarness::from_managed_root(
-            ui::State::new(),
-            ManagedRoot::new(Box::new(foreign), registration),
-            (900, 650)
-        ),
-        Err(ui::history_mode::HistoryRegistrationError::UnsupportedOwner)
-    ));
-    let mut root = FileExplorerWidget::new();
-    let registration = root.history_registration().unwrap().unwrap();
-    root.framework_history = ui::history_mode::checked_files::FileHistorySource::default();
-    assert!(matches!(
-        ui::headless::FrameHarness::from_managed_root(
-            ui::State::new(),
-            ManagedRoot::new(Box::new(root), registration),
-            (900, 650)
-        ),
-        Err(ui::history_mode::HistoryRegistrationError::UnsupportedOwner)
-    ));
-}
-
-#[test]
-fn framework_history_embedded_files_root_has_shared_entry_and_preserves_incidental_document() {
-    let directory = tempfile::tempdir().unwrap();
-    let mut owners = ui::record::RecordOwners::new(directory.path().to_path_buf());
-    let store = owners
-        .open("so.tilo.file-explorer", "embedded-history-test")
-        .unwrap();
-    let checkout = ui::RecordCheckout::new(
-        ui::RecordId::for_tab(501),
-        ui::RecordKind::new("files-view-state"),
-    );
-    let mut tile = ui::widget::TileHost::new(ui::widget::TileContent::App(Box::new(
-        FileExplorerWidget::new(),
-    )));
-    tile.bind_or_create_record(store, checkout);
-    let mut driver = ui::headless::FrameHarness::new(ui::State::new(), Box::new(tile), (1000, 700));
-    assert!(driver.targets().contains_key("history-open"));
-    let heads = driver.state_mut().doc.get_heads();
-    driver.click_named("history-open").unwrap();
-    assert!(
-        driver
-            .inspection_json()
-            .unwrap()
-            .contains("Select a file with versioned history")
-    );
-    assert_eq!(driver.state_mut().doc.get_heads(), heads);
-}
-
-/// Ordinary xattrs exercise production target construction/session routing,
-/// not backend authority. The separate `QuickFS` fixture proves real operations.
-#[test]
+/// Production registration rejects foreign witnesses, the embedded root shares an entry, and round-1 targets recover sessions after A/B/A.
 #[expect(
     clippy::too_many_lines,
     reason = "end-to-end A/B/A session recovery scenario reads top to bottom"
 )]
-fn round1_production_targets_recover_pending_and_applied_session_after_a_b_a() {
-    fn install(
-        path: &std::path::Path,
-        record: u128,
-    ) -> (collab_types::FileRecordId, collab_types::FileVersionId) {
-        let record_id = collab_types::FileRecordId(uuid::Uuid::from_u128(record));
-        let id = collab_types::FileVersionId(uuid::Uuid::from_u128(record + 100));
-        std::fs::write(path, b"live file").unwrap();
-        let scope = FileHistoryReadScopeV1 {
-            workspace_id: uuid::Uuid::from_u128(1),
-            mount_lifetime: uuid::Uuid::from_u128(2),
-            record_id,
-            frontier: [record as u8; 32],
-        };
-        let version = collab_types::FileVersionV1 {
-            id,
-            record_id,
-            parents: vec![],
-            actor: collab_types::FileActor {
-                person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
-                device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
-            },
-            timestamp_ms: 1,
-            content_hash: Some(collab_types::ContentHash([5; 32])),
-            metadata_hash: collab_types::ContentHash([6; 32]),
-            provenance: collab_types::FileProvenance::Create,
-        };
-        let page = FileHistoryReadValueV1::Page(FileHistoryPageV1 {
-            scope,
-            versions: vec![version.clone()],
-            total_versions: 1,
-            heads: vec![id],
-            current_revision: None,
-            next_after: None,
-        });
-        xattr::set(
-            path,
-            HISTORY_READ_XATTR,
-            &serde_json::to_vec(&FileHistoryReadResponseV1 {
-                schema_version: 1,
-                result: Ok(page),
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        xattr::set(
-            path,
-            FileHistoryReadQueryV1::Version {
-                frontier: scope.frontier,
-                version_id: id,
-            }
-            .xattr_name(),
-            &serde_json::to_vec(&FileHistoryReadResponseV1 {
-                schema_version: 1,
-                result: Ok(FileHistoryReadValueV1::Version { scope, version }),
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        xattr::set(
-            path,
-            FileHistoryReadQueryV1::Preview {
-                frontier: scope.frontier,
-                version_id: id,
-            }
-            .xattr_name(),
-            b"historical bytes",
-        )
-        .unwrap();
-        xattr::set(
-            path,
-            CHECKED_HISTORY_REVIEW_XATTR,
-            &serde_json::to_vec(&CheckedHistoryReviewResponseV1 {
-                schema_version: 1,
-                result: Ok(FileRestoreReviewV1 {
-                    schema_version: 1,
-                    workspace_id: scope.workspace_id,
-                    mount_lifetime: scope.mount_lifetime,
-                    record_id,
-                    frontier: scope.frontier,
-                }),
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        (record_id, id)
+#[test]
+fn framework_history_production_registration_and_session_recovery() {
+    // --- phase: framework_history_production_registration_rejects_foreign_or_replaced_source_witness ---
+    {
+        let root = FileExplorerWidget::new();
+        let registration = ui::history_mode::capability::history_registration(&root)
+            .unwrap()
+            .unwrap();
+        let foreign = FileExplorerWidget::new();
+        assert!(matches!(
+            ui::headless::FrameHarness::from_managed_root(
+                ui::State::new(),
+                ManagedRoot::new(Box::new(foreign), registration),
+                (900, 650)
+            ),
+            Err(ui::history_mode::HistoryRegistrationError::UnsupportedOwner)
+        ));
+        let mut root = FileExplorerWidget::new();
+        let registration = ui::history_mode::capability::history_registration(&root)
+            .unwrap()
+            .unwrap();
+        root.framework_history = ui::history_mode::checked_files::FileHistorySource::default();
+        assert!(matches!(
+            ui::headless::FrameHarness::from_managed_root(
+                ui::State::new(),
+                ManagedRoot::new(Box::new(root), registration),
+                (900, 650)
+            ),
+            Err(ui::history_mode::HistoryRegistrationError::UnsupportedOwner)
+        ));
     }
-    let directory = tempfile::tempdir().unwrap();
-    let a = directory.path().join("A");
-    let b = directory.path().join("B");
-    let (record_a, version_a) = install(&a, 3);
-    let (record_b, version_b) = install(&b, 4);
-    let returned = Arc::new(SubmitReturns::default());
-    let target = |path: &std::path::Path, record, label: &str| {
-        let target = crate::framework_history::target(path, record, label.into()).unwrap();
-        FileHistoryTarget {
-            transport: Arc::new(Counted {
-                inner: target.transport.clone(),
-                returned: returned.clone(),
-            }),
-            ..target
+
+    // --- phase: framework_history_embedded_files_root_has_shared_entry_and_preserves_incidental_document ---
+    {
+        let directory = tempfile::tempdir().unwrap();
+        let mut owners = ui::record::RecordOwners::new(directory.path().to_path_buf());
+        let store = owners
+            .open("so.tilo.file-explorer", "embedded-history-test")
+            .unwrap();
+        let checkout = ui::RecordCheckout::new(
+            ui::RecordId::for_tab(501),
+            ui::RecordKind::new("files-view-state"),
+        );
+        let mut tile = ui::widget::TileHost::new(ui::widget::TileContent::App(Box::new(
+            FileExplorerWidget::new(),
+        )));
+        tile.bind_or_create_record(store, checkout);
+        let mut driver =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(tile), (1000, 700));
+        assert!(driver.targets().contains_key("history-open"));
+        let heads = driver.state_mut().doc.get_heads();
+        driver.click_named("history-open").unwrap();
+        assert!(
+            driver
+                .inspection_json()
+                .unwrap()
+                .contains("Select a file with versioned history")
+        );
+        assert_eq!(driver.state_mut().doc.get_heads(), heads);
+    }
+
+    // --- phase: round1_production_targets_recover_pending_and_applied_session_after_a_b_a ---
+    // Ordinary xattrs exercise production target construction/session routing,
+    // not backend authority. The separate `QuickFS` fixture proves real operations.
+    {
+        fn install(
+            path: &std::path::Path,
+            record: u128,
+        ) -> (collab_types::FileRecordId, collab_types::FileVersionId) {
+            let record_id = collab_types::FileRecordId(uuid::Uuid::from_u128(record));
+            let id = collab_types::FileVersionId(uuid::Uuid::from_u128(record + 100));
+            std::fs::write(path, b"live file").unwrap();
+            let scope = FileHistoryReadScopeV1 {
+                workspace_id: uuid::Uuid::from_u128(1),
+                mount_lifetime: uuid::Uuid::from_u128(2),
+                record_id,
+                frontier: [record as u8; 32],
+            };
+            let version = collab_types::FileVersionV1 {
+                id,
+                record_id,
+                parents: vec![],
+                actor: collab_types::FileActor {
+                    person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
+                    device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
+                },
+                timestamp_ms: 1,
+                content_hash: Some(collab_types::ContentHash([5; 32])),
+                metadata_hash: collab_types::ContentHash([6; 32]),
+                provenance: collab_types::FileProvenance::Create,
+            };
+            let page = FileHistoryReadValueV1::Page(FileHistoryPageV1 {
+                scope,
+                versions: vec![version.clone()],
+                total_versions: 1,
+                heads: vec![id],
+                current_revision: None,
+                next_after: None,
+            });
+            xattr::set(
+                path,
+                HISTORY_READ_XATTR,
+                &serde_json::to_vec(&FileHistoryReadResponseV1 {
+                    schema_version: 1,
+                    result: Ok(page),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            xattr::set(
+                path,
+                FileHistoryReadQueryV1::Version {
+                    frontier: scope.frontier,
+                    version_id: id,
+                }
+                .xattr_name(),
+                &serde_json::to_vec(&FileHistoryReadResponseV1 {
+                    schema_version: 1,
+                    result: Ok(FileHistoryReadValueV1::Version { scope, version }),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            xattr::set(
+                path,
+                FileHistoryReadQueryV1::Preview {
+                    frontier: scope.frontier,
+                    version_id: id,
+                }
+                .xattr_name(),
+                b"historical bytes",
+            )
+            .unwrap();
+            xattr::set(
+                path,
+                CHECKED_HISTORY_REVIEW_XATTR,
+                &serde_json::to_vec(&CheckedHistoryReviewResponseV1 {
+                    schema_version: 1,
+                    result: Ok(FileRestoreReviewV1 {
+                        schema_version: 1,
+                        workspace_id: scope.workspace_id,
+                        mount_lifetime: scope.mount_lifetime,
+                        record_id,
+                        frontier: scope.frontier,
+                    }),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            (record_id, id)
         }
-    };
-    let root = FileExplorerWidget::new();
-    let source = root.framework_history.clone();
-    source.set_target(Some(target(&a, record_a, "A")));
-    let registration = root.history_registration().unwrap().unwrap();
-    let mut driver = ui::headless::FrameHarness::from_managed_root(
-        ui::State::new(),
-        ManagedRoot::new(Box::new(root), registration),
-        (1100, 750),
-    )
-    .unwrap();
-    driver.click_named("history-open").unwrap();
-    let select = format!("timeline-entry:{}", version_a.0.simple());
-    wait(&mut driver, &select);
-    driver
-        .perform_semantic_named(
-            "activity_timeline",
-            Some(&select),
-            &ui::a11y::Action::Activate,
+        let directory = tempfile::tempdir().unwrap();
+        let a = directory.path().join("A");
+        let b = directory.path().join("B");
+        let (record_a, version_a) = install(&a, 3);
+        let (record_b, version_b) = install(&b, 4);
+        let returned = Arc::new(SubmitReturns::default());
+        let target = |path: &std::path::Path, record, label: &str| {
+            let target = crate::framework_history::target(path, record, label.into()).unwrap();
+            FileHistoryTarget {
+                transport: Arc::new(Counted {
+                    inner: target.transport.clone(),
+                    returned: returned.clone(),
+                }),
+                ..target
+            }
+        };
+        let root = FileExplorerWidget::new();
+        let source = root.framework_history.clone();
+        source.set_target(Some(target(&a, record_a, "A")));
+        let registration = ui::history_mode::capability::history_registration(&root)
+            .unwrap()
+            .unwrap();
+        let mut driver = ui::headless::FrameHarness::from_managed_root(
+            ui::State::new(),
+            ManagedRoot::new(Box::new(root), registration),
+            (1100, 750),
         )
         .unwrap();
-    wait(&mut driver, "historical bytes");
-    source.open(Some(version_a));
-    driver.relayout();
-    wait(&mut driver, "historical bytes");
-    driver.click_named("history-restore").unwrap();
-    confirm(
-        &mut driver,
-        "production initial restore after repeated open",
-    );
-    // Confirming relabels the dialog at once; the submit that writes the
-    // request runs in the background and settles with the missing receipt.
-    wait(&mut driver, "Refresh review");
-    returned.wait(&mut driver, 1);
-    wait(&mut driver, UNAVAILABLE_ACK);
-    driver.key("Escape");
-    let original: CheckedHistoryRequestV1 = serde_json::from_slice(
-        &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
-            .unwrap()
-            .unwrap(),
-    )
-    .unwrap();
-    // Model the projection consuming the request. A retry must republish the
-    // controller's retained exact intent even when the transport no longer
-    // exposes the earlier write.
-    xattr::remove(&a, CHECKED_HISTORY_RESTORE_XATTR).unwrap();
-    source.set_target(Some(target(&b, record_b, "B")));
-    wait(
-        &mut driver,
-        &format!("timeline-entry:{}", version_b.0.simple()),
-    );
-    source.set_target(Some(target(&a, record_a, "A again")));
-    // The result button survives target changes. Wait for A's immutable
-    // timeline entry instead so the A -> B -> A reconciliation has completed
-    // before the retry command is produced; commands from the superseded B
-    // presentation are deliberately discarded by the host.
-    wait(&mut driver, &select);
-    assert!(
-        !driver.inspection_json().unwrap().contains(UNAVAILABLE_ACK),
-        "the reloaded timeline replaced the earlier report, so the next one is the retry's"
-    );
-    // This case exercises exact session routing across descriptor swaps, not
-    // button hit-testing. Activate the semantic control directly so the
-    // controller's background completions cannot rebuild the toolbar
-    // between `click_named` resolving its rect and dispatching the pointer.
-    driver
-        .perform_semantic_named("history-files-retry", None, &ui::a11y::Action::Activate)
-        .unwrap();
-    // The retry writes the request and then looks the receipt up. Let its
-    // report reach the session so it cannot land on the steps below.
-    returned.wait(&mut driver, 2);
-    wait(&mut driver, UNAVAILABLE_ACK);
-    let retry: CheckedHistoryRequestV1 = serde_json::from_slice(
-        &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
-            .unwrap()
-            .expect("the retry rewrote the checked restore request"),
-    )
-    .unwrap();
-    assert_eq!(retry, original);
-    wait(&mut driver, &select);
-    driver
-        .perform_semantic_named(
-            "activity_timeline",
-            Some(&select),
-            &ui::a11y::Action::Activate,
-        )
-        .unwrap();
-    wait(&mut driver, "historical bytes");
-    driver.click_named("history-restore").unwrap();
-    confirm(&mut driver, "production replacement-intent refusal");
-    wait(&mut driver, "An earlier restore is still pending");
-    driver.key("Escape");
-    assert_eq!(
-        serde_json::from_slice::<CheckedHistoryRequestV1>(
+        driver.click_named("history-open").unwrap();
+        let select = format!("timeline-entry:{}", version_a.0.simple());
+        wait(&mut driver, &select);
+        driver
+            .perform_semantic_named(
+                "activity_timeline",
+                Some(&select),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
+        wait(&mut driver, "historical bytes");
+        source.open(Some(version_a));
+        driver.relayout();
+        wait(&mut driver, "historical bytes");
+        driver.click_named("history-restore").unwrap();
+        confirm(
+            &mut driver,
+            "production initial restore after repeated open",
+        );
+        // Confirming relabels the dialog at once; the submit that writes the
+        // request runs in the background and settles with the missing receipt.
+        wait(&mut driver, "Refresh review");
+        returned.wait(&mut driver, 1);
+        wait(&mut driver, UNAVAILABLE_ACK);
+        driver.key("Escape");
+        let original: CheckedHistoryRequestV1 = serde_json::from_slice(
             &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
                 .unwrap()
-                .unwrap()
+                .unwrap(),
         )
-        .unwrap(),
-        original
-    );
-    let revision = |id| collab_types::ContentRevisionV1 {
-        schema_version: 1,
-        record_id: record_a,
-        version_id: collab_types::FileVersionId(uuid::Uuid::from_u128(id)),
-        content_hash: Some(collab_types::ContentHash([5; 32])),
-        byte_len: 16,
-        metadata_hash: collab_types::ContentHash([6; 32]),
-    };
-    let receipt = FileRestoreReceiptV1 {
-        schema_version: 1,
-        intent_id: original.intent_id,
-        workspace_id: original.review.workspace_id,
-        mount_lifetime: original.review.mount_lifetime,
-        record_id: record_a,
-        selected_version: version_a,
-        prior_revision: revision(200),
-        prior_reference: FileRestorePriorReferenceV1::ObservedRevision,
-        restored_revision: revision(201),
-        compensates: None,
-    };
-    xattr::set(
-        &a,
-        format!(
-            "{CHECKED_HISTORY_RESULT_XATTR_PREFIX}{}",
-            original.intent_id
-        ),
-        &serde_json::to_vec(&CheckedHistoryResponseV1 {
-            schema_version: 1,
-            outcome: CheckedHistoryOutcomeV1::Applied { receipt },
-        })
-        .unwrap(),
-    )
-    .unwrap();
-    driver.click_named("history-files-result").unwrap();
-    wait(&mut driver, "Restored revision");
-    source.set_target(Some(target(&b, record_b, "B again")));
-    wait(
-        &mut driver,
-        &format!("timeline-entry:{}", version_b.0.simple()),
-    );
-    source.set_target(Some(target(&a, record_a, "A third")));
-    wait(&mut driver, "history-files-undo");
-    wait(&mut driver, &select);
-    driver.click_named("history-files-undo").unwrap();
-    confirm(&mut driver, "production undo after receipt recovery");
-    returned.wait(&mut driver, 3);
-    wait(&mut driver, UNAVAILABLE_ACK);
-    let undo: CheckedHistoryRequestV1 = serde_json::from_slice(
-        &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
-            .unwrap()
+        .unwrap();
+        // Model the projection consuming the request. A retry must republish the
+        // controller's retained exact intent even when the transport no longer
+        // exposes the earlier write.
+        xattr::remove(&a, CHECKED_HISTORY_RESTORE_XATTR).unwrap();
+        source.set_target(Some(target(&b, record_b, "B")));
+        wait(
+            &mut driver,
+            &format!("timeline-entry:{}", version_b.0.simple()),
+        );
+        source.set_target(Some(target(&a, record_a, "A again")));
+        // The result button survives target changes. Wait for A's immutable
+        // timeline entry instead so the A -> B -> A reconciliation has completed
+        // before the retry command is produced; commands from the superseded B
+        // presentation are deliberately discarded by the host.
+        wait(&mut driver, &select);
+        assert!(
+            !driver.inspection_json().unwrap().contains(UNAVAILABLE_ACK),
+            "the reloaded timeline replaced the earlier report, so the next one is the retry's"
+        );
+        // This case exercises exact session routing across descriptor swaps, not
+        // button hit-testing. Activate the semantic control directly so the
+        // controller's background completions cannot rebuild the toolbar
+        // between `click_named` resolving its rect and dispatching the pointer.
+        driver
+            .perform_semantic_named("history-files-retry", None, &ui::a11y::Action::Activate)
+            .unwrap();
+        // The retry writes the request and then looks the receipt up. Let its
+        // report reach the session so it cannot land on the steps below.
+        returned.wait(&mut driver, 2);
+        wait(&mut driver, UNAVAILABLE_ACK);
+        let retry: CheckedHistoryRequestV1 = serde_json::from_slice(
+            &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
+                .unwrap()
+                .expect("the retry rewrote the checked restore request"),
+        )
+        .unwrap();
+        assert_eq!(retry, original);
+        wait(&mut driver, &select);
+        driver
+            .perform_semantic_named(
+                "activity_timeline",
+                Some(&select),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
+        wait(&mut driver, "historical bytes");
+        driver.click_named("history-restore").unwrap();
+        confirm(&mut driver, "production replacement-intent refusal");
+        wait(&mut driver, "An earlier restore is still pending");
+        driver.key("Escape");
+        assert_eq!(
+            serde_json::from_slice::<CheckedHistoryRequestV1>(
+                &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
+                    .unwrap()
+                    .unwrap()
+            )
             .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        undo.operation,
-        CheckedHistoryOperationV1::Undo {
-            restore_intent: original.intent_id
-        }
-    );
-    assert_ne!(undo.intent_id, original.intent_id);
+            original
+        );
+        let revision = |id| collab_types::ContentRevisionV1 {
+            schema_version: 1,
+            record_id: record_a,
+            version_id: collab_types::FileVersionId(uuid::Uuid::from_u128(id)),
+            content_hash: Some(collab_types::ContentHash([5; 32])),
+            byte_len: 16,
+            metadata_hash: collab_types::ContentHash([6; 32]),
+        };
+        let receipt = FileRestoreReceiptV1 {
+            schema_version: 1,
+            intent_id: original.intent_id,
+            workspace_id: original.review.workspace_id,
+            mount_lifetime: original.review.mount_lifetime,
+            record_id: record_a,
+            selected_version: version_a,
+            prior_revision: revision(200),
+            prior_reference: FileRestorePriorReferenceV1::ObservedRevision,
+            restored_revision: revision(201),
+            compensates: None,
+        };
+        xattr::set(
+            &a,
+            format!(
+                "{CHECKED_HISTORY_RESULT_XATTR_PREFIX}{}",
+                original.intent_id
+            ),
+            &serde_json::to_vec(&CheckedHistoryResponseV1 {
+                schema_version: 1,
+                outcome: CheckedHistoryOutcomeV1::Applied { receipt },
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        driver.click_named("history-files-result").unwrap();
+        wait(&mut driver, "Restored revision");
+        source.set_target(Some(target(&b, record_b, "B again")));
+        wait(
+            &mut driver,
+            &format!("timeline-entry:{}", version_b.0.simple()),
+        );
+        source.set_target(Some(target(&a, record_a, "A third")));
+        wait(&mut driver, "history-files-undo");
+        wait(&mut driver, &select);
+        driver.click_named("history-files-undo").unwrap();
+        confirm(&mut driver, "production undo after receipt recovery");
+        returned.wait(&mut driver, 3);
+        wait(&mut driver, UNAVAILABLE_ACK);
+        let undo: CheckedHistoryRequestV1 = serde_json::from_slice(
+            &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            undo.operation,
+            CheckedHistoryOperationV1::Undo {
+                restore_intent: original.intent_id
+            }
+        );
+        assert_ne!(undo.intent_id, original.intent_id);
+    }
 }

@@ -157,80 +157,85 @@ mod tests {
         disk
     }
 
+    /// Formats are told apart by their first bytes; entries without a format are qcow2; UNC paths are
+    /// network paths; an import is keyed by source, size and time and converts then compares every byte.
     #[test]
-    fn formats_are_told_apart_by_their_first_bytes() {
-        assert_eq!(detect(b"QFI\xfb\0\0\0\x03"), Ok(Format::Qcow2));
-        assert_eq!(detect(&raw_with_gpt()), Ok(Format::Raw));
-        let blank = detect(&[0_u8; 1024]).unwrap_err();
-        assert!(blank.contains("EFI PART"), "{blank}");
-        let empty = detect(&[]).unwrap_err();
-        assert!(empty.contains("0 bytes"), "{empty}");
+    fn disk_images_are_identified_and_imported_byte_exactly() {
+        // Phase: formats_are_told_apart_by_their_first_bytes.
+        {
+            assert_eq!(detect(b"QFI\xfb\0\0\0\x03"), Ok(Format::Qcow2));
+            assert_eq!(detect(&raw_with_gpt()), Ok(Format::Raw));
+            let blank = detect(&[0_u8; 1024]).unwrap_err();
+            assert!(blank.contains("EFI PART"), "{blank}");
+            let empty = detect(&[]).unwrap_err();
+            assert!(empty.contains("0 bytes"), "{empty}");
 
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("disk.raw");
-        std::fs::write(&file, raw_with_gpt()).unwrap();
-        assert_eq!(format_of(&file), Ok(Format::Raw));
-        assert!(format_of(&dir.path().join("missing")).is_err());
-    }
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("disk.raw");
+            std::fs::write(&file, raw_with_gpt()).unwrap();
+            assert_eq!(format_of(&file), Ok(Format::Raw));
+            assert!(format_of(&dir.path().join("missing")).is_err());
+        }
 
-    #[test]
-    fn entries_without_a_format_are_qcow2() {
-        assert_eq!(Format::from_entry(None), Format::Qcow2);
-        assert_eq!(Format::from_entry(Some("qcow2")), Format::Qcow2);
-        assert_eq!(Format::from_entry(Some("raw")), Format::Raw);
-    }
+        // Phase: entries_without_a_format_are_qcow2.
+        {
+            assert_eq!(Format::from_entry(None), Format::Qcow2);
+            assert_eq!(Format::from_entry(Some("qcow2")), Format::Qcow2);
+            assert_eq!(Format::from_entry(Some("raw")), Format::Raw);
+        }
 
-    #[test]
-    fn unc_paths_are_network_paths() {
-        assert!(is_network_path(
-            r"\\wsl.localhost\FedoraLinux-42\home\me\disk.raw"
-        ));
-        assert!(is_network_path(r"\\wsl$\Fedora\disk.raw"));
-        assert!(is_network_path(r"\\server\share\disk.qcow2"));
-        assert!(is_network_path("//server/share/disk.qcow2"));
-        assert!(is_network_path(r"\\?\UNC\server\share\disk.raw"));
-        assert!(!is_network_path(r"\\?\C:\vms\disk.raw"));
-        assert!(!is_network_path(r"\\.\PhysicalDrive0"));
-        assert!(!is_network_path(r"C:\tilo-build\disk.raw"));
-        assert!(!is_network_path("/home/me/disk.raw"));
-    }
+        // Phase: unc_paths_are_network_paths.
+        {
+            assert!(is_network_path(
+                r"\\wsl.localhost\FedoraLinux-42\home\me\disk.raw"
+            ));
+            assert!(is_network_path(r"\\wsl$\Fedora\disk.raw"));
+            assert!(is_network_path(r"\\server\share\disk.qcow2"));
+            assert!(is_network_path("//server/share/disk.qcow2"));
+            assert!(is_network_path(r"\\?\UNC\server\share\disk.raw"));
+            assert!(!is_network_path(r"\\?\C:\vms\disk.raw"));
+            assert!(!is_network_path(r"\\.\PhysicalDrive0"));
+            assert!(!is_network_path(r"C:\tilo-build\disk.raw"));
+            assert!(!is_network_path("/home/me/disk.raw"));
+        }
 
-    #[test]
-    fn an_import_is_keyed_by_source_size_and_time() {
-        let cache = Path::new("/cache");
-        let a = import_path(cache, r"\\wsl.localhost\F\disk.raw", 10, 1);
-        assert!(a.starts_with("/cache/tilo-vm/imports"), "{}", a.display());
-        assert_eq!(a.extension().unwrap(), "qcow2");
-        assert_eq!(a, import_path(cache, r"\\wsl.localhost\F\disk.raw", 10, 1));
-        assert_ne!(a, import_path(cache, r"\\wsl.localhost\F\disk.raw", 10, 2));
-        assert_ne!(a, import_path(cache, r"\\wsl.localhost\F\disk.raw", 11, 1));
-        assert_ne!(a, import_path(cache, r"\\wsl.localhost\F\other.raw", 10, 1));
-        assert_eq!(
-            import_part(&a).display().to_string(),
-            format!("{}.part", a.display())
-        );
-    }
+        // Phase: an_import_is_keyed_by_source_size_and_time.
+        {
+            let cache = Path::new("/cache");
+            let a = import_path(cache, r"\\wsl.localhost\F\disk.raw", 10, 1);
+            assert!(a.starts_with("/cache/tilo-vm/imports"), "{}", a.display());
+            assert_eq!(a.extension().unwrap(), "qcow2");
+            assert_eq!(a, import_path(cache, r"\\wsl.localhost\F\disk.raw", 10, 1));
+            assert_ne!(a, import_path(cache, r"\\wsl.localhost\F\disk.raw", 10, 2));
+            assert_ne!(a, import_path(cache, r"\\wsl.localhost\F\disk.raw", 11, 1));
+            assert_ne!(a, import_path(cache, r"\\wsl.localhost\F\other.raw", 10, 1));
+            assert_eq!(
+                import_part(&a).display().to_string(),
+                format!("{}.part", a.display())
+            );
+        }
 
-    #[test]
-    fn an_import_converts_then_compares_every_byte() {
-        let commands = import_commands(
-            "qemu-img.exe",
-            r"\\wsl.localhost\F\disk.raw",
-            Format::Raw,
-            Path::new(r"C:\cache\x.qcow2.part"),
-        );
-        let shown: Vec<String> = commands.iter().map(CommandLine::display).collect();
-        assert_eq!(shown.len(), 2);
-        assert!(
-            shown[0].starts_with("qemu-img.exe convert -f raw -O qcow2"),
-            "{}",
-            shown[0]
-        );
-        assert!(
-            shown[1].starts_with("qemu-img.exe compare -f raw -F qcow2"),
-            "{}",
-            shown[1]
-        );
-        assert!(shown.iter().all(|c| c.contains("x.qcow2.part")));
+        // Phase: an_import_converts_then_compares_every_byte.
+        {
+            let commands = import_commands(
+                "qemu-img.exe",
+                r"\\wsl.localhost\F\disk.raw",
+                Format::Raw,
+                Path::new(r"C:\cache\x.qcow2.part"),
+            );
+            let shown: Vec<String> = commands.iter().map(CommandLine::display).collect();
+            assert_eq!(shown.len(), 2);
+            assert!(
+                shown[0].starts_with("qemu-img.exe convert -f raw -O qcow2"),
+                "{}",
+                shown[0]
+            );
+            assert!(
+                shown[1].starts_with("qemu-img.exe compare -f raw -F qcow2"),
+                "{}",
+                shown[1]
+            );
+            assert!(shown.iter().all(|c| c.contains("x.qcow2.part")));
+        }
     }
 }

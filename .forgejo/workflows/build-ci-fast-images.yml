@@ -1,0 +1,132 @@
+name: Build / CI fast images
+
+# Publishes registry.tilo.so/tilo/ci-fast (lint, planning and other quick jobs)
+# and registry.tilo.so/tilo/ci-control (ci-fast plus the Docker client, for
+# builder resolution). Consumers pin both by digest. Pull requests from this
+# repository and manual dispatches publish candidate tags so the tested digests
+# can be pinned before merge; main publishes source-SHA tags. There is no
+# moving tag. check.yml's builder job runs the named public-trust fixture in
+# ci-control, and lint.yml runs in ci-fast, so pinning a candidate qualifies it
+# in the real pipeline.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "os/Containerfile.ci-fast"
+      - "os/Containerfile.ci-control"
+      - ".forgejo/workflows/build-ci-fast-images.yml"
+  push:
+    branches: [main]
+    paths:
+      - "os/Containerfile.ci-fast"
+      - "os/Containerfile.ci-control"
+      - ".forgejo/workflows/build-ci-fast-images.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-fast-image-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # Both images are x86_64 only: ci-fast copies the builder's x86_64 Rust
+    # toolchain, and every lane that uses them is an amd64 runner.
+    runs-on: runner
+    timeout-minutes: 45
+    env:
+      SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+      PUBLISH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            os/Containerfile.ci-fast
+            os/Containerfile.ci-control
+            os/dev/assert-native-arch.sh
+            .forgejo/actions/setup-buildx
+          sparse-checkout-cone-mode: false
+
+      - name: Require a native build host
+        run: ./os/dev/assert-native-arch.sh x86_64
+
+      - name: Log in to registry.tilo.so
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up buildx
+        uses: ./.forgejo/actions/setup-buildx
+
+      - name: Build and exercise both images
+        run: |
+          set -euo pipefail
+          if [[ $GITHUB_EVENT_NAME == push ]]; then
+            tag="sha-$SOURCE_REVISION"
+          else
+            tag="candidate-$SOURCE_REVISION"
+          fi
+          fast="registry.tilo.so/tilo/ci-fast:$tag"
+          control="registry.tilo.so/tilo/ci-control:$tag"
+          printf 'CI_FAST_REF=%s\nCI_CONTROL_REF=%s\n' "$fast" "$control" >> "$GITHUB_ENV"
+          # Neither recipe copies from its context; never send the checkout.
+          context=$(mktemp -d)
+          trap 'rm -rf -- "$context"' EXIT
+          cache=()
+          # The runner's compiler cache (infra docs/ci-caching.md).
+          if [[ -n ${ACTIONS_CACHE_URL:-} && -n ${ACTIONS_RUNTIME_TOKEN:-} ]]; then
+            cache+=(--secret id=actions_cache_url,env=ACTIONS_CACHE_URL
+                    --secret id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN)
+          fi
+          docker buildx build --pull --load --progress=plain --provenance=false \
+            --platform linux/amd64 "${cache[@]}" \
+            --cache-from type=gha,scope=ci-fast-x86_64 \
+            --cache-to type=gha,scope=ci-fast-x86_64,mode=max,ignore-error=true \
+            --file os/Containerfile.ci-fast --tag "$fast" "$context"
+          # ci-control builds on the ci-fast image just built, not the pin. The
+          # docker-container builder cannot read that loaded image, so the
+          # daemon's own builder adds the Docker client; it compiles nothing.
+          docker buildx build --builder default --platform linux/amd64 --build-arg "CI_FAST_IMAGE=$fast" \
+            --file os/Containerfile.ci-control --tag "$control" "$context"
+          docker run --rm --network=none "$fast" bash -euo pipefail -c '
+            . /etc/os-release
+            printf "%s %s\n" "$NAME" "$VERSION_ID"
+            cargo --version
+            rustc --version
+            cargo fmt --version
+            cargo deny --version
+            cargo machete --version
+            cargo hakari --version
+            sccache --version
+            for tool in git python3 jq rg node gpg curl diff which; do
+              command -v "$tool"
+            done
+            # The security-boundary invariants must not skip for a missing tool.
+            for tool in cc modinfo clang ld.lld rpmbuild rpmkeys systemd-escape fc-match; do
+              command -v "$tool"
+            done
+            python3 -c "import PIL"
+            fc-match -f "%{family}" "Noto Sans" | grep -Fq "Noto Sans"
+            test -n "$(find /etc/pki/rpm-gpg -maxdepth 1 -name "RPM-GPG-KEY-fedora-*-primary" -print -quit)"'
+          docker run --rm --network=none "$control" bash -euo pipefail -c '
+            docker --version
+            docker buildx version
+            cargo --version'
+
+      - name: Publish the tested images
+        if: env.PUBLISH == 'true'
+        run: |
+          set -euo pipefail
+          summary="### CI fast images"$'\n\n'
+          for ref in "$CI_FAST_REF" "$CI_CONTROL_REF"; do
+            output=$(docker push "$ref" 2>&1)
+            printf '%s\n' "$output"
+            digest=$(sed -n 's/^.*digest: \(sha256:[0-9a-f]\{64\}\).*$/\1/p' <<<"$output" | tail -1)
+            [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+            summary+="- \`${ref%:*}@$digest\`"$'\n'
+          done
+          printf '%s' "$summary" | tee -a "$GITHUB_STEP_SUMMARY"

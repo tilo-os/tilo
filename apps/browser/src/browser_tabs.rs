@@ -4,16 +4,17 @@ use crate::BrowserWidget;
 use crate::browser_tab_strip::BrowserTabStrip;
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 use taffy::style_helpers::{auto, length};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::time::{Duration, Instant};
 use ui::widget::{
     AppKind, AppWidget, ContextMenu, Continuable, FloatingSurfaceProvider, FullscreenProvider,
     IconDescriptor, MenuItem, TabDescriptor, TaffyTreeExt, Widget, WindowCloseAdmission,
 };
+use ui::widget::{AppModel, ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, WindowEvent};
@@ -175,7 +176,7 @@ impl BrowserTabs {
         self.fullscreen_hint = None;
     }
     fn start_fullscreen_hint(&mut self) {
-        self.fullscreen_hint_deadline = Some(Instant::now() + FULLSCREEN_HINT_DURATION);
+        self.fullscreen_hint_deadline = Some(ui::time::now() + FULLSCREEN_HINT_DURATION);
         self.fullscreen_hint = Some(Self::make_fullscreen_hint());
     }
     fn reconcile_active_content_fullscreen(&mut self) {
@@ -443,7 +444,17 @@ impl BrowserTabs {
         if self.layout_immersive == Some(true) {
             if let Some(page) = children.first() {
                 self.active_mut().handle_event(
-                    event, scale, modifiers, state, path, handled, focus, *page, taffy,
+                    event,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: scale,
+                        modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target: focus,
+                        node_id: *page,
+                        taffy,
+                    },
                 );
             }
             return;
@@ -452,21 +463,33 @@ impl BrowserTabs {
             if let Some(panel_node) = children.get(1) {
                 panel.handle_event(
                     event,
-                    scale,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus,
-                    *panel_node,
-                    taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: scale,
+                        modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target: focus,
+                        node_id: *panel_node,
+                        taffy,
+                    },
                 );
             }
             return;
         }
         if let Some(bar) = children.first() {
             self.bar.handle_event(
-                event, scale, modifiers, state, path, handled, focus, *bar, taffy,
+                event,
+                &mut ui::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target: focus,
+                    node_id: *bar,
+                    taffy,
+                },
             );
         }
         if let Some(id) = self.bar.take_close() {
@@ -513,7 +536,17 @@ impl BrowserTabs {
         }
         if !*handled && let Some(page) = children.get(1) {
             self.active_mut().handle_event(
-                event, scale, modifiers, state, path, handled, focus, *page, taffy,
+                event,
+                &mut ui::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target: focus,
+                    node_id: *page,
+                    taffy,
+                },
             );
         }
     }
@@ -862,9 +895,18 @@ impl BrowserTabs {
 }
 
 impl Widget for BrowserTabs {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    ui::provides!(
+        dyn ui::widget::FullscreenProvider,
+        dyn ui::widget::FloatingSurfaceProvider,
+        dyn ui::widget::Continuable,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::search::capability::SearchSource,
+        dyn ui::component_lifecycle::ComponentLifecycle
+    );
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if self.fullscreen_hint_deadline.is_some()
-            && !fullscreen_hint_visible(self.fullscreen_hint_deadline, Instant::now())
+            && !fullscreen_hint_visible(self.fullscreen_hint_deadline, ui::time::now())
         {
             self.clear_fullscreen_hint();
             self.dirty = true;
@@ -1130,28 +1172,17 @@ impl Widget for BrowserTabs {
         self.active_mut()
             .draw(scene, transform, tr, theme, presence);
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if *handled {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if *ctx.handled {
             return;
         }
         if let Some(recovery) = self.recovery.as_mut() {
-            if let Ok(children) = taffy.children(node)
+            if let Ok(children) = ctx.taffy.children(ctx.node_id)
                 && let Some(panel) = children.first()
             {
-                recovery.panel.handle_event(
-                    event, scale, modifiers, state, path, handled, focus, *panel, taffy,
-                );
+                recovery
+                    .panel
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, *panel));
             }
             return;
         }
@@ -1166,33 +1197,31 @@ impl Widget for BrowserTabs {
             self.observed_active_content_fullscreen = false;
             self.clear_fullscreen_hint();
             self.dirty = true;
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if self.tab_menu.is_open() {
-            self.tab_menu.handle_event(
-                event, scale, modifiers, state, path, handled, focus, node, taffy,
-            );
+            self.tab_menu.handle_event(event, ctx);
             if let Some(index) = self.tab_menu.take_selection() {
                 self.apply_tab_menu(index);
                 self.dirty = true;
             }
-            if *handled {
+            if *ctx.handled {
                 return;
             }
         }
-        if self.hold_input_until_layout(event, modifiers.state()) {
-            *handled = true;
+        if self.hold_input_until_layout(event, ctx.modifiers.state()) {
+            *ctx.handled = true;
             return;
         }
         if let Some(address) = self.address_focus_node.take() {
-            *focus = Some(address);
+            *ctx.focus_target = Some(address);
         }
         if matches!(
             event,
             WindowEvent::MouseInput { .. } | WindowEvent::ModifiersChanged(_)
         ) {
-            let m = modifiers.state();
+            let m = ctx.modifiers.state();
             self.active()
                 .engine_handle()
                 .set_modifiers(ui::webview::KeyModifiers {
@@ -1203,10 +1232,10 @@ impl Widget for BrowserTabs {
                 });
         }
         for tab in &mut self.tabs {
-            tab.widget.set_window_scale(scale);
+            tab.widget.set_window_scale(ctx.scale_factor);
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / scale, position.y / scale);
+            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         if let WindowEvent::KeyboardInput { event: key, .. } = event {
             if self.exit_state == ExitState::Choice
@@ -1216,34 +1245,34 @@ impl Widget for BrowserTabs {
                 self.exit_state = ExitState::Normal;
                 self.exit_panel = None;
                 self.dirty = true;
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if key.state == ElementState::Pressed
-                && self.shortcut(&key.logical_key, modifiers.state())
+                && self.shortcut(&key.logical_key, ctx.modifiers.state())
             {
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
         self.handle_retained_event(RetainedEvent {
             event,
-            scale,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus,
-            node,
-            taffy,
+            scale: ctx.scale_factor,
+            modifiers: ctx.modifiers,
+            state: ctx.state,
+            path: ctx.path,
+            handled: ctx.handled,
+            focus: ctx.focus_target,
+            node: ctx.node_id,
+            taffy: ctx.taffy,
         });
     }
     fn perform_semantic_action(
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         if let Some(recovery) = self.recovery.as_mut() {
             return recovery
@@ -1303,9 +1332,6 @@ impl Widget for BrowserTabs {
             tab.widget
                 .poll_resource_operation(invocation, cancellation_requested, doc, path)
         })
-    }
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        self.active().search_providers()
     }
     fn children(&self) -> Vec<&dyn Widget> {
         if let Some(recovery) = self.recovery.as_ref() {
@@ -1433,7 +1459,7 @@ impl Widget for BrowserTabs {
         dirty || page || self.bar.take_structure_dirty()
     }
     fn needs_animation_frame(&self) -> bool {
-        fullscreen_hint_visible(self.fullscreen_hint_deadline, Instant::now())
+        fullscreen_hint_visible(self.fullscreen_hint_deadline, ui::time::now())
             || self.bar.needs_animation_frame()
             || self.active().needs_animation_frame()
     }
@@ -1442,31 +1468,6 @@ impl Widget for BrowserTabs {
         for tab in &mut self.tabs {
             tab.widget.set_motion_reduced(reduced);
         }
-    }
-    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
-        Some(self)
-    }
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
-        Some(self)
-    }
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        if let Some(recovery) = self.recovery.as_mut() {
-            return recovery.panel.take_control_invocation();
-        }
-        if let Some(invocation) = self
-            .exit_panel
-            .as_mut()
-            .and_then(|panel| panel.take_control_invocation())
-        {
-            return Some(invocation);
-        }
-        self.active_mut().take_control_invocation()
-    }
-    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
-    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
-        Some(self)
     }
     fn modal_capture(&self) -> Option<Rect> {
         if let Some(panel) = self.exit_panel.as_ref() {
@@ -1480,12 +1481,6 @@ impl Widget for BrowserTabs {
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.active().cursor_shape(point)
     }
-    fn continuable(&self) -> Option<&dyn Continuable> {
-        Some(self)
-    }
-    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
-        Some(self)
-    }
     fn name(&self) -> &'static str {
         "BrowserTabs"
     }
@@ -1495,6 +1490,9 @@ impl Widget for BrowserTabs {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+}
+
+impl ui::component_lifecycle::ComponentLifecycle for BrowserTabs {
     fn on_window_close_requested(&mut self) -> WindowCloseAdmission {
         match self.exit_state {
             ExitState::Choice | ExitState::Cancelling => WindowCloseAdmission::Defer,
@@ -1514,6 +1512,28 @@ impl Widget for BrowserTabs {
     }
     fn take_window_close_intent(&mut self) -> bool {
         std::mem::take(&mut self.close_intent)
+    }
+}
+
+impl ui::search::capability::SearchSource for BrowserTabs {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        self.active().search_providers()
+    }
+}
+
+impl ui::widget::controls::ActionControls for BrowserTabs {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        if let Some(recovery) = self.recovery.as_mut() {
+            return ui::widget::controls::take_control_invocation(recovery.panel.as_mut());
+        }
+        if let Some(invocation) = self
+            .exit_panel
+            .as_mut()
+            .and_then(|panel| ui::widget::controls::take_control_invocation(panel.as_mut()))
+        {
+            return Some(invocation);
+        }
+        self.active_mut().take_control_invocation()
     }
 }
 
@@ -1741,14 +1761,16 @@ mod tests {
         let mut handled = false;
         tabs.handle_event(
             &key_event_with_state(named, state),
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-            &mut handled,
-            &mut None,
-            root,
-            tree,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut AutoCommit::new(),
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut None,
+                node_id: root,
+                taffy: tree,
+            },
         );
         handled
     }
@@ -1776,230 +1798,407 @@ mod tests {
             .collect()
     }
 
+    /// Content fullscreen ownership, hint lifetime and exit routes.
     #[test]
-    fn active_content_fullscreen_uses_root_window_contract_and_hides_both_chrome_layers() {
-        let (mut tabs, engine) = fullscreen_workspace();
-        engine.emit(WebViewEvent::FullscreenChanged(true));
-        tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
-        assert_eq!(tabs.fullscreen_intent(), Some(true));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn content_fullscreen_owner_hint_and_exit_follow_the_root_window() {
+        // Phase `active_content_fullscreen_uses_root_window_contract_and_hides_both_chrome_layers`.
+        {
+            let (mut tabs, engine) = fullscreen_workspace();
+            engine.emit(WebViewEvent::FullscreenChanged(true));
+            tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            assert_eq!(tabs.fullscreen_intent(), Some(true));
 
-        tabs.on_fullscreen_changed(true);
-        let rects = layout_rects(&mut tabs);
-        assert!(rects.contains_key("browser.surface"), "{rects:?}");
-        assert!(rects.contains_key("browser.fullscreen-hint"), "{rects:?}");
-        assert!(!rects.contains_key("browser.tab-strip"), "{rects:?}");
-        assert!(!rects.contains_key("browser.url_input"), "{rects:?}");
-        assert_eq!(rects["browser.surface"], Rect::new(0.0, 0.0, 1000.0, 700.0));
-        assert!(rects["browser.fullscreen-hint"].height() > 0.0);
-        assert!(rects["browser.fullscreen-hint"].y0 >= 24.0);
-        assert!(tabs.needs_animation_frame());
+            tabs.on_fullscreen_changed(true);
+            let rects = layout_rects(&mut tabs);
+            assert!(rects.contains_key("browser.surface"), "{rects:?}");
+            assert!(rects.contains_key("browser.fullscreen-hint"), "{rects:?}");
+            assert!(!rects.contains_key("browser.tab-strip"), "{rects:?}");
+            assert!(!rects.contains_key("browser.url_input"), "{rects:?}");
+            assert_eq!(rects["browser.surface"], Rect::new(0.0, 0.0, 1000.0, 700.0));
+            assert!(rects["browser.fullscreen-hint"].height() > 0.0);
+            assert!(rects["browser.fullscreen-hint"].y0 >= 24.0);
+            assert!(tabs.needs_animation_frame());
 
-        let mut tree = TaffyTree::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
-        let mut handled = false;
-        tabs.handle_event(
-            &key_event(NamedKey::Escape),
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-            &mut handled,
-            &mut None,
-            node,
-            &tree,
-        );
-        assert!(handled);
-        assert_eq!(tabs.fullscreen_intent(), Some(false));
-        assert_eq!(
-            engine
-                .commands
-                .lock()
+            let mut tree = TaffyTree::new();
+            let node = tree.new_leaf(Style::default()).unwrap();
+            let mut handled = false;
+            tabs.handle_event(
+                &key_event(NamedKey::Escape),
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut AutoCommit::new(),
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut None,
+                    node_id: node,
+                    taffy: &tree,
+                },
+            );
+            assert!(handled);
+            assert_eq!(tabs.fullscreen_intent(), Some(false));
+            assert_eq!(
+                engine
+                    .commands
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|command| matches!(command, WebViewCommand::ExitFullscreen))
+                    .count(),
+                1
+            );
+            tabs.on_fullscreen_changed(false);
+            let rects = layout_rects(&mut tabs);
+            assert!(rects.contains_key("browser.tab-strip"), "{rects:?}");
+            assert!(rects.contains_key("browser.url_input"), "{rects:?}");
+            assert!(!rects.contains_key("browser.fullscreen-hint"), "{rects:?}");
+        }
+
+        // Phase `ordinary_os_fullscreen_keeps_browser_chrome_and_has_no_hint`.
+        {
+            let (mut tabs, _engine) = fullscreen_workspace();
+            tabs.on_fullscreen_changed(true);
+            assert_eq!(tabs.fullscreen_intent(), Some(false));
+            let rects = layout_rects(&mut tabs);
+            assert!(rects.contains_key("browser.tab-strip"), "{rects:?}");
+            assert!(rects.contains_key("browser.url_input"), "{rects:?}");
+            assert!(!rects.contains_key("browser.fullscreen-hint"), "{rects:?}");
+        }
+
+        // Phase `page_entry_while_window_is_already_fullscreen_starts_hint_and_blocks_stale_tree_events`.
+        {
+            let (mut tabs, engine) = fullscreen_workspace();
+            tabs.on_fullscreen_changed(true);
+            let (tree, root) = retained_layout(&mut tabs);
+            assert!(tabs.fullscreen_hint.is_none());
+
+            engine.emit(WebViewEvent::FullscreenChanged(true));
+            tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
+
+            assert!(tabs.fullscreen_hint.is_some());
+            assert!(tabs.needs_animation_frame());
+            assert!(dispatch_key(
+                &mut tabs,
+                &tree,
+                root,
+                NamedKey::Enter,
+                ElementState::Released,
+            ));
+        }
+
+        // Phase `escape_release_is_blocked_until_immersive_tree_is_rebuilt`.
+        {
+            let (mut tabs, engine) = fullscreen_workspace();
+            engine.emit(WebViewEvent::FullscreenChanged(true));
+            tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            tabs.on_fullscreen_changed(true);
+            let (tree, root) = retained_layout(&mut tabs);
+
+            assert!(dispatch_key(
+                &mut tabs,
+                &tree,
+                root,
+                NamedKey::Escape,
+                ElementState::Pressed,
+            ));
+            assert!(dispatch_key(
+                &mut tabs,
+                &tree,
+                root,
+                NamedKey::Escape,
+                ElementState::Released,
+            ));
+            assert_eq!(
+                engine
+                    .commands
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|command| matches!(command, WebViewCommand::ExitFullscreen))
+                    .count(),
+                1
+            );
+        }
+
+        // Phase `tab_switch_and_active_close_exit_the_outgoing_fullscreen_owner`.
+        {
+            let (mut tabs, engine) = fullscreen_workspace();
+            engine.emit(WebViewEvent::FullscreenChanged(true));
+            tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            tabs.on_fullscreen_changed(true);
+            tabs.open(Some("https://next.test/".into()), true).unwrap();
+            let replacement = tabs.tabs[1].id;
+            tabs.activate(replacement);
+            assert_eq!(tabs.fullscreen_intent(), Some(false));
+            assert!(
+                engine
+                    .commands
+                    .lock()
+                    .unwrap()
+                    .contains(&WebViewCommand::ExitFullscreen)
+            );
+            assert!(!tabs.needs_animation_frame());
+
+            let child = engine.children.lock().unwrap()[0].clone();
+            child.emit(WebViewEvent::FullscreenChanged(true));
+            tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            tabs.on_fullscreen_changed(true);
+            tabs.finish_close(replacement);
+            assert_eq!(tabs.fullscreen_intent(), Some(false));
+            assert!(
+                child
+                    .commands
+                    .lock()
+                    .unwrap()
+                    .contains(&WebViewCommand::ExitFullscreen)
+            );
+        }
+
+        // Phase `fullscreen_hint_lifetime_is_exactly_three_seconds`.
+        {
+            let entered = ui::time::now();
+            let deadline = entered + FULLSCREEN_HINT_DURATION;
+            assert!(fullscreen_hint_visible(Some(deadline), entered));
+            assert!(fullscreen_hint_visible(
+                Some(deadline),
+                deadline
+                    .checked_sub(std::time::Duration::from_nanos(1))
+                    .unwrap()
+            ));
+            assert!(!fullscreen_hint_visible(Some(deadline), deadline));
+            assert!(!fullscreen_hint_visible(None, entered));
+            assert_eq!(FULLSCREEN_HINT_DURATION, std::time::Duration::from_secs(3));
+        }
+    }
+
+    /// Crash recovery prompt and clean session restore.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keeps the four pointer/keyboard and Restore/Fresh routes in one shared scenario"
+    )]
+    fn crash_recovery_and_clean_restore_keep_session_state() {
+        // Phase `crash_recovery_waits_for_explicit_choice_and_survives_prompt_close`.
+        {
+            use crate::session::{SavedTab, SessionMode, SessionStore, Snapshot};
+            let dir = tempfile::tempdir().unwrap();
+            let dirty = Snapshot {
+                version: 1,
+                tabs: vec![SavedTab {
+                    url: "https://crash.test/".into(),
+                    pinned: false,
+                }],
+                active: 0,
+                clean_exit: false,
+            };
+            let store = SessionStore::open(dir.path(), SessionMode::Normal)
                 .unwrap()
-                .iter()
-                .filter(|command| matches!(command, WebViewCommand::ExitFullscreen))
-                .count(),
-            1
-        );
-        tabs.on_fullscreen_changed(false);
-        let rects = layout_rects(&mut tabs);
-        assert!(rects.contains_key("browser.tab-strip"), "{rects:?}");
-        assert!(rects.contains_key("browser.url_input"), "{rects:?}");
-        assert!(!rects.contains_key("browser.fullscreen-hint"), "{rects:?}");
-    }
-
-    #[test]
-    fn ordinary_os_fullscreen_keeps_browser_chrome_and_has_no_hint() {
-        let (mut tabs, _engine) = fullscreen_workspace();
-        tabs.on_fullscreen_changed(true);
-        assert_eq!(tabs.fullscreen_intent(), Some(false));
-        let rects = layout_rects(&mut tabs);
-        assert!(rects.contains_key("browser.tab-strip"), "{rects:?}");
-        assert!(rects.contains_key("browser.url_input"), "{rects:?}");
-        assert!(!rects.contains_key("browser.fullscreen-hint"), "{rects:?}");
-    }
-
-    #[test]
-    fn page_entry_while_window_is_already_fullscreen_starts_hint_and_blocks_stale_tree_events() {
-        let (mut tabs, engine) = fullscreen_workspace();
-        tabs.on_fullscreen_changed(true);
-        let (tree, root) = retained_layout(&mut tabs);
-        assert!(tabs.fullscreen_hint.is_none());
-
-        engine.emit(WebViewEvent::FullscreenChanged(true));
-        tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
-
-        assert!(tabs.fullscreen_hint.is_some());
-        assert!(tabs.needs_animation_frame());
-        assert!(dispatch_key(
-            &mut tabs,
-            &tree,
-            root,
-            NamedKey::Enter,
-            ElementState::Released,
-        ));
-    }
-
-    #[test]
-    fn escape_release_is_blocked_until_immersive_tree_is_rebuilt() {
-        let (mut tabs, engine) = fullscreen_workspace();
-        engine.emit(WebViewEvent::FullscreenChanged(true));
-        tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
-        tabs.on_fullscreen_changed(true);
-        let (tree, root) = retained_layout(&mut tabs);
-
-        assert!(dispatch_key(
-            &mut tabs,
-            &tree,
-            root,
-            NamedKey::Escape,
-            ElementState::Pressed,
-        ));
-        assert!(dispatch_key(
-            &mut tabs,
-            &tree,
-            root,
-            NamedKey::Escape,
-            ElementState::Released,
-        ));
-        assert_eq!(
-            engine
-                .commands
-                .lock()
+                .unwrap();
+            store.save(&dirty).unwrap();
+            let mut tabs = workspace().with_session(store).unwrap();
+            tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            assert!(tabs.recovery.is_some());
+            drop(tabs);
+            let store = SessionStore::open(dir.path(), SessionMode::Normal)
                 .unwrap()
-                .iter()
-                .filter(|command| matches!(command, WebViewCommand::ExitFullscreen))
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn tab_switch_and_active_close_exit_the_outgoing_fullscreen_owner() {
-        let (mut tabs, engine) = fullscreen_workspace();
-        engine.emit(WebViewEvent::FullscreenChanged(true));
-        tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
-        tabs.on_fullscreen_changed(true);
-        tabs.open(Some("https://next.test/".into()), true).unwrap();
-        let replacement = tabs.tabs[1].id;
-        tabs.activate(replacement);
-        assert_eq!(tabs.fullscreen_intent(), Some(false));
-        assert!(
-            engine
-                .commands
-                .lock()
+                .unwrap();
+            assert_eq!(store.load().unwrap(), Some(dirty));
+            let mut tabs = workspace().with_session(store).unwrap();
+            // Exercise the exact action-bound button operation used by the host.
+            let result = tabs
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        ui::tilo_actions::OperationKind::Effect,
+                        "tilo.ui.control.invoke",
+                        &serde_json::to_vec("browser.session.fresh").unwrap(),
+                    ),
+                    &mut AutoCommit::new(),
+                    &automerge::ROOT,
+                )
+                .unwrap();
+            assert!(result.is_some());
+            tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            assert!(tabs.recovery.is_none());
+            assert_eq!(tabs.session_snapshot(false).tabs[0].url, "about:blank");
+            drop(tabs);
+            let store = SessionStore::open(dir.path(), SessionMode::Normal)
                 .unwrap()
-                .contains(&WebViewCommand::ExitFullscreen)
-        );
-        assert!(!tabs.needs_animation_frame());
+                .unwrap();
+            let fresh = store.load().unwrap().unwrap();
+            assert!(fresh.clean_exit);
+            assert_eq!(fresh.tabs.len(), 1);
+            assert_eq!(fresh.tabs[0].url, "about:blank");
+        }
 
-        let child = engine.children.lock().unwrap()[0].clone();
-        child.emit(WebViewEvent::FullscreenChanged(true));
-        tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
-        tabs.on_fullscreen_changed(true);
-        tabs.finish_close(replacement);
-        assert_eq!(tabs.fullscreen_intent(), Some(false));
-        assert!(
-            child
-                .commands
-                .lock()
+        // Phase `recovery_layout_has_workspace_bounds_and_root_identity`.
+        {
+            let (_dir, mut tabs) = recovery_fixture();
+            let (tree, root, nodes) = recovery_layout(&mut tabs);
+            assert_eq!(tabs.rect, Rect::new(0.0, 0.0, 800.0, 620.0));
+            assert_eq!(unsafe { (&*nodes[&root]).name() }, tabs.name());
+            assert_eq!(tree.children(root).unwrap().len(), 1);
+        }
+
+        // Phase `recovery_choices_accept_pointer_and_keyboard_through_workspace`.
+        {
+            for keyboard in [false, true] {
+                for restore in [false, true] {
+                    let (_dir, mut tabs) = recovery_fixture();
+                    let (tree, root, nodes) = recovery_layout(&mut tabs);
+                    let id = if restore {
+                        "browser.session.restore"
+                    } else {
+                        "browser.session.fresh"
+                    };
+                    let (&button_node, &button) = nodes
+                        .iter()
+                        .find(|(_, w)| unsafe { (&***w).test_id() == Some(id) })
+                        .unwrap();
+                    let center = unsafe { (&*button).get_rect() }.center();
+                    let mut doc = AutoCommit::new();
+                    let mut focus = None;
+                    let device_id = unsafe { std::mem::zeroed() };
+                    let events = if keyboard {
+                        focus = Some(button_node);
+                        unsafe {
+                            (&mut *button).set_focus(true);
+                        }
+                        let mut key: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+                        key.logical_key = Key::Named(NamedKey::Enter);
+                        key.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+                            winit::keyboard::NativeKeyCode::Unidentified,
+                        );
+                        key.location = winit::keyboard::KeyLocation::Standard;
+                        key.state = ElementState::Pressed;
+                        vec![WindowEvent::KeyboardInput {
+                            device_id,
+                            event: key,
+                            is_synthetic: false,
+                        }]
+                    } else {
+                        vec![
+                            WindowEvent::CursorMoved {
+                                device_id,
+                                position: winit::dpi::PhysicalPosition::new(center.x, center.y),
+                            },
+                            WindowEvent::MouseInput {
+                                device_id,
+                                state: ElementState::Pressed,
+                                button: winit::event::MouseButton::Left,
+                            },
+                            WindowEvent::MouseInput {
+                                device_id,
+                                state: ElementState::Released,
+                                button: winit::event::MouseButton::Left,
+                            },
+                        ]
+                    };
+                    for event in events {
+                        let mut handled = false;
+                        tabs.handle_event(
+                            &event,
+                            &mut ui::widget::EventCtx {
+                                scale_factor: 1.0,
+                                modifiers: &winit::event::Modifiers::default(),
+                                state: &mut doc,
+                                path: &automerge::ROOT,
+                                handled: &mut handled,
+                                focus_target: &mut focus,
+                                node_id: root,
+                                taffy: &tree,
+                            },
+                        );
+                        if keyboard {
+                            assert!(
+                                !handled,
+                                "workspace must allow the host activation-key fallback"
+                            );
+                            // The host's unconsumed Enter path activates its focused node.
+                            assert!(unsafe {
+                                (&mut *nodes[&focus.unwrap()]).perform_action(
+                                    &ui::a11y::Action::Activate,
+                                    &mut doc,
+                                    &automerge::ROOT,
+                                )
+                            });
+                        }
+                    }
+                    let invocation = ui::widget::controls::take_control_invocation(&mut tabs)
+                        .expect("ordinary input must emit the button's canonical action");
+                    assert_eq!(invocation.address.resource, format!("tilo.control:{id}"));
+                    tabs.start_operation(
+                        &ui::widget::ResourceOperation::local(
+                            ui::tilo_actions::InvocationId::new(),
+                            ui::tilo_actions::OperationKind::Effect,
+                            "tilo.ui.control.invoke",
+                            &serde_json::to_vec(id).unwrap(),
+                        ),
+                        &mut doc,
+                        &automerge::ROOT,
+                    )
+                    .unwrap()
+                    .unwrap();
+                    tabs.sync(&mut doc, &automerge::ROOT);
+                    assert!(tabs.recovery.is_none());
+                    assert_eq!(
+                        tabs.session_snapshot(false).tabs[0].url,
+                        if restore {
+                            "https://restored.test/"
+                        } else {
+                            "about:blank"
+                        }
+                    );
+                }
+            }
+        }
+
+        // Phase `clean_session_restores_order_pin_active_and_committed_urls`.
+        {
+            use crate::session::{SavedTab, SessionMode, SessionStore, Snapshot};
+            let dir = tempfile::tempdir().unwrap();
+            let saved = Snapshot {
+                version: 1,
+                tabs: vec![
+                    SavedTab {
+                        url: "https://alpha.test/".into(),
+                        pinned: true,
+                    },
+                    SavedTab {
+                        url: "https://beta.test/second".into(),
+                        pinned: false,
+                    },
+                    SavedTab {
+                        url: "https://gamma.test/".into(),
+                        pinned: false,
+                    },
+                ],
+                active: 1,
+                clean_exit: true,
+            };
+            let store = SessionStore::open(dir.path(), SessionMode::Normal)
                 .unwrap()
-                .contains(&WebViewCommand::ExitFullscreen)
-        );
-    }
-
-    #[test]
-    fn fullscreen_hint_lifetime_is_exactly_three_seconds() {
-        let entered = std::time::Instant::now();
-        let deadline = entered + FULLSCREEN_HINT_DURATION;
-        assert!(fullscreen_hint_visible(Some(deadline), entered));
-        assert!(fullscreen_hint_visible(
-            Some(deadline),
-            deadline
-                .checked_sub(std::time::Duration::from_nanos(1))
+                .unwrap();
+            store.save(&saved).unwrap();
+            let mut tabs = workspace().with_session(store).unwrap();
+            assert_eq!(tabs.session_snapshot(true), saved);
+            assert_eq!(tabs.tabs.len(), 3);
+            tabs.active_mut()
+                .buffer_tab_address(&Key::Character("draft must not persist".into()), true);
+            assert_eq!(tabs.session_snapshot(true), saved);
+            tabs.close(tabs.tabs[2].id);
+            drop(tabs);
+            let store = SessionStore::open(dir.path(), SessionMode::Normal)
                 .unwrap()
-        ));
-        assert!(!fullscreen_hint_visible(Some(deadline), deadline));
-        assert!(!fullscreen_hint_visible(None, entered));
-        assert_eq!(FULLSCREEN_HINT_DURATION, std::time::Duration::from_secs(3));
-    }
-    #[test]
-    fn crash_recovery_waits_for_explicit_choice_and_survives_prompt_close() {
-        use crate::session::{SavedTab, SessionMode, SessionStore, Snapshot};
-        let dir = tempfile::tempdir().unwrap();
-        let dirty = Snapshot {
-            version: 1,
-            tabs: vec![SavedTab {
-                url: "https://crash.test/".into(),
-                pinned: false,
-            }],
-            active: 0,
-            clean_exit: false,
-        };
-        let store = SessionStore::open(dir.path(), SessionMode::Normal)
-            .unwrap()
-            .unwrap();
-        store.save(&dirty).unwrap();
-        let mut tabs = workspace().with_session(store).unwrap();
-        tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
-        assert!(tabs.recovery.is_some());
-        drop(tabs);
-        let store = SessionStore::open(dir.path(), SessionMode::Normal)
-            .unwrap()
-            .unwrap();
-        assert_eq!(store.load().unwrap(), Some(dirty));
-        let mut tabs = workspace().with_session(store).unwrap();
-        // Exercise the exact action-bound button operation used by the host.
-        let result = tabs
-            .start_resource_operation(
-                ui::tilo_actions::InvocationId::new(),
-                ui::tilo_actions::OperationKind::Effect,
-                "tilo.ui.control.invoke",
-                &serde_json::to_vec("browser.session.fresh").unwrap(),
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            )
-            .unwrap();
-        assert!(result.is_some());
-        tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
-        assert!(tabs.recovery.is_none());
-        assert_eq!(tabs.session_snapshot(false).tabs[0].url, "about:blank");
-        drop(tabs);
-        let store = SessionStore::open(dir.path(), SessionMode::Normal)
-            .unwrap()
-            .unwrap();
-        let fresh = store.load().unwrap().unwrap();
-        assert!(fresh.clean_exit);
-        assert_eq!(fresh.tabs.len(), 1);
-        assert_eq!(fresh.tabs[0].url, "about:blank");
-    }
-
-    #[test]
-    fn recovery_layout_has_workspace_bounds_and_root_identity() {
-        let (_dir, mut tabs) = recovery_fixture();
-        let (tree, root, nodes) = recovery_layout(&mut tabs);
-        assert_eq!(tabs.rect, Rect::new(0.0, 0.0, 800.0, 620.0));
-        assert_eq!(unsafe { (&*nodes[&root]).name() }, tabs.name());
-        assert_eq!(tree.children(root).unwrap().len(), 1);
+                .unwrap();
+            let restored = store.load().unwrap().unwrap();
+            assert!(restored.clean_exit);
+            assert_eq!(restored.tabs.len(), 2);
+        }
     }
 
     fn recovery_fixture() -> (tempfile::TempDir, BrowserTabs) {
@@ -2040,288 +2239,65 @@ mod tests {
         (tree, root, nodes)
     }
 
+    /// Close admission and download-exit lifecycle.
     #[test]
     #[allow(
         clippy::too_many_lines,
-        reason = "keeps the four pointer/keyboard and Restore/Fresh routes in one shared scenario"
+        reason = "keeps the local engine fixture and complete download-exit lifecycle together"
     )]
-    fn recovery_choices_accept_pointer_and_keyboard_through_workspace() {
-        for keyboard in [false, true] {
-            for restore in [false, true] {
-                let (_dir, mut tabs) = recovery_fixture();
-                let (tree, root, nodes) = recovery_layout(&mut tabs);
-                let id = if restore {
-                    "browser.session.restore"
-                } else {
-                    "browser.session.fresh"
-                };
-                let (&button_node, &button) = nodes
-                    .iter()
-                    .find(|(_, w)| unsafe { (&***w).test_id() == Some(id) })
-                    .unwrap();
-                let center = unsafe { (&*button).get_rect() }.center();
-                let mut doc = AutoCommit::new();
-                let mut focus = None;
-                let device_id = unsafe { std::mem::zeroed() };
-                let events = if keyboard {
-                    focus = Some(button_node);
-                    unsafe {
-                        (&mut *button).set_focus(true);
-                    }
-                    let mut key: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-                    key.logical_key = Key::Named(NamedKey::Enter);
-                    key.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                        winit::keyboard::NativeKeyCode::Unidentified,
-                    );
-                    key.location = winit::keyboard::KeyLocation::Standard;
-                    key.state = ElementState::Pressed;
-                    vec![WindowEvent::KeyboardInput {
-                        device_id,
-                        event: key,
-                        is_synthetic: false,
-                    }]
-                } else {
-                    vec![
-                        WindowEvent::CursorMoved {
-                            device_id,
-                            position: winit::dpi::PhysicalPosition::new(center.x, center.y),
-                        },
-                        WindowEvent::MouseInput {
-                            device_id,
-                            state: ElementState::Pressed,
-                            button: winit::event::MouseButton::Left,
-                        },
-                        WindowEvent::MouseInput {
-                            device_id,
-                            state: ElementState::Released,
-                            button: winit::event::MouseButton::Left,
-                        },
-                    ]
-                };
-                for event in events {
-                    let mut handled = false;
-                    tabs.handle_event(
-                        &event,
-                        1.0,
-                        &winit::event::Modifiers::default(),
-                        &mut doc,
-                        &automerge::ROOT,
-                        &mut handled,
-                        &mut focus,
-                        root,
-                        &tree,
-                    );
-                    if keyboard {
-                        assert!(
-                            !handled,
-                            "workspace must allow the host activation-key fallback"
-                        );
-                        // The host's unconsumed Enter path activates its focused node.
-                        assert!(unsafe {
-                            (&mut *nodes[&focus.unwrap()]).perform_action(
-                                &ui::a11y::Action::Activate,
-                                &mut doc,
-                                &automerge::ROOT,
-                            )
-                        });
-                    }
+    fn tab_and_window_close_wait_for_native_owners_and_explicit_download_choice() {
+        // Phase `native_close_admission_keeps_tab_visible_until_closed_event`.
+        {
+            struct ClosingEngine {
+                page: Arc<TestEngine>,
+                events: std::sync::Mutex<Vec<WebViewEvent>>,
+            }
+            impl WebViewEngine for ClosingEngine {
+                fn create_tab(&self) -> Result<SharedEngine, String> {
+                    Ok(Arc::new(Engine(TestEngine::new())))
                 }
-                let invocation = tabs
-                    .take_control_invocation()
-                    .expect("ordinary input must emit the button's canonical action");
-                assert_eq!(invocation.address.resource, format!("tilo.control:{id}"));
-                tabs.start_resource_operation(
-                    ui::tilo_actions::InvocationId::new(),
-                    ui::tilo_actions::OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    &serde_json::to_vec(id).unwrap(),
-                    &doc,
-                    &automerge::ROOT,
-                )
-                .unwrap()
-                .unwrap();
-                tabs.sync(&mut doc, &automerge::ROOT);
-                assert!(tabs.recovery.is_none());
-                assert_eq!(
-                    tabs.session_snapshot(false).tabs[0].url,
-                    if restore {
-                        "https://restored.test/"
-                    } else {
-                        "about:blank"
-                    }
-                );
+                fn send(&self, command: WebViewCommand) {
+                    self.page.send(command);
+                }
+                fn frames(&self) -> FrameSlot {
+                    self.page.frames()
+                }
+                fn drain_events(&self) -> Vec<WebViewEvent> {
+                    std::mem::take(&mut *self.events.lock().unwrap())
+                }
+                fn request_close(&self) -> bool {
+                    false
+                }
             }
-        }
-    }
-
-    #[test]
-    fn clean_session_restores_order_pin_active_and_committed_urls() {
-        use crate::session::{SavedTab, SessionMode, SessionStore, Snapshot};
-        let dir = tempfile::tempdir().unwrap();
-        let saved = Snapshot {
-            version: 1,
-            tabs: vec![
-                SavedTab {
-                    url: "https://alpha.test/".into(),
-                    pinned: true,
-                },
-                SavedTab {
-                    url: "https://beta.test/second".into(),
-                    pinned: false,
-                },
-                SavedTab {
-                    url: "https://gamma.test/".into(),
-                    pinned: false,
-                },
-            ],
-            active: 1,
-            clean_exit: true,
-        };
-        let store = SessionStore::open(dir.path(), SessionMode::Normal)
-            .unwrap()
-            .unwrap();
-        store.save(&saved).unwrap();
-        let mut tabs = workspace().with_session(store).unwrap();
-        assert_eq!(tabs.session_snapshot(true), saved);
-        assert_eq!(tabs.tabs.len(), 3);
-        tabs.active_mut()
-            .buffer_tab_address(&Key::Character("draft must not persist".into()), true);
-        assert_eq!(tabs.session_snapshot(true), saved);
-        tabs.close(tabs.tabs[2].id);
-        drop(tabs);
-        let store = SessionStore::open(dir.path(), SessionMode::Normal)
-            .unwrap()
-            .unwrap();
-        let restored = store.load().unwrap().unwrap();
-        assert!(restored.clean_exit);
-        assert_eq!(restored.tabs.len(), 2);
-    }
-
-    #[test]
-    fn native_close_admission_keeps_tab_visible_until_closed_event() {
-        struct ClosingEngine {
-            page: Arc<TestEngine>,
-            events: std::sync::Mutex<Vec<WebViewEvent>>,
-        }
-        impl WebViewEngine for ClosingEngine {
-            fn create_tab(&self) -> Result<SharedEngine, String> {
-                Ok(Arc::new(Engine(TestEngine::new())))
-            }
-            fn send(&self, command: WebViewCommand) {
-                self.page.send(command);
-            }
-            fn frames(&self) -> FrameSlot {
-                self.page.frames()
-            }
-            fn drain_events(&self) -> Vec<WebViewEvent> {
-                std::mem::take(&mut *self.events.lock().unwrap())
-            }
-            fn request_close(&self) -> bool {
-                false
-            }
-        }
-        let engine = Arc::new(ClosingEngine {
-            page: TestEngine::new(),
-            events: std::sync::Mutex::default(),
-        });
-        let mut tabs = BrowserTabs::new(BrowserWidget::with_engine(engine.clone(), true));
-        let mut doc = AutoCommit::new();
-        tabs.bar.start_closing(1);
-        tabs.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(tabs.bar.tabs().len(), 1);
-        assert_eq!(tabs.bar.active_id(), 1);
-        assert!(!tabs.bar.has_closing());
-        assert_eq!(tabs.tabs.len(), 1);
-        engine
-            .events
-            .lock()
-            .unwrap()
-            .push(WebViewEvent::TabCloseBlocked);
-        tabs.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(tabs.active_id, 1);
-        assert!(tabs.retired.is_empty());
-        tabs.close(1);
-        engine.events.lock().unwrap().push(WebViewEvent::TabClosed);
-        tabs.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(tabs.tabs.len(), 1);
-        assert_ne!(tabs.active_id, 1);
-    }
-
-    fn invoke_exit_choice(tabs: &mut BrowserTabs, id: &str, doc: &mut AutoCommit) {
-        let (_tree, _root, nodes) = recovery_layout(tabs);
-        let &button = nodes
-            .values()
-            .find(|widget| unsafe { (&***widget).test_id() == Some(id) })
-            .expect("exit choice button");
-        assert!(unsafe {
-            (&mut *button).perform_action(&ui::a11y::Action::Activate, doc, &automerge::ROOT)
-        });
-        let invocation = tabs
-            .take_control_invocation()
-            .expect("exit choice must reach the root action broker");
-        assert_eq!(invocation.address.resource, format!("tilo.control:{id}"));
-        assert!(
-            tabs.start_resource_operation(
-                ui::tilo_actions::InvocationId::new(),
-                ui::tilo_actions::OperationKind::Effect,
-                "tilo.ui.control.invoke",
-                &serde_json::to_vec(id).unwrap(),
-                doc,
-                &automerge::ROOT,
-            )
-            .unwrap()
-            .is_some()
-        );
-    }
-    #[test]
-    fn fullscreen_download_close_exposes_both_exit_choices() {
-        let (mut tabs, engine) = fullscreen_workspace();
-        let mut doc = AutoCommit::new();
-        engine.emit(WebViewEvent::FullscreenChanged(true));
-        engine.emit(WebViewEvent::DownloadRuntime {
-            admitted: 1,
-            detached: 0,
-            accepting: true,
-            error: String::new(),
-        });
-        tabs.sync(&mut doc, &automerge::ROOT);
-        tabs.on_fullscreen_changed(true);
-        let _immersive_layout = retained_layout(&mut tabs);
-        assert_eq!(tabs.fullscreen_intent(), Some(true));
-
-        assert_eq!(
-            tabs.on_window_close_requested(),
-            WindowCloseAdmission::Defer
-        );
-        assert_eq!(tabs.fullscreen_intent(), Some(false));
-        assert!(tabs.fullscreen_hint.is_none());
-        assert!(tabs.take_structure_dirty());
-        let rects = layout_rects(&mut tabs);
-        for id in ["browser.download-exit.keep", "browser.download-exit.cancel"] {
-            let rect = rects.get(id).expect("visible fullscreen exit choice");
-            assert!(rect.width() > 0.0 && rect.height() > 0.0);
-        }
-        let commands = engine.commands.lock().unwrap();
-        assert!(commands.contains(&WebViewCommand::ExitFullscreen));
-        assert!(!commands.contains(&WebViewCommand::CancelAllDownloads));
-        drop(commands);
-        assert!(!tabs.take_window_close_intent());
-        invoke_exit_choice(&mut tabs, "browser.download-exit.keep", &mut doc);
-        tabs.sync(&mut doc, &automerge::ROOT);
-        assert!(tabs.exit_panel.is_none());
-        assert!(!tabs.take_window_close_intent());
-        assert!(
-            !engine
-                .commands
+            let engine = Arc::new(ClosingEngine {
+                page: TestEngine::new(),
+                events: std::sync::Mutex::default(),
+            });
+            let mut tabs = BrowserTabs::new(BrowserWidget::with_engine(engine.clone(), true));
+            let mut doc = AutoCommit::new();
+            tabs.bar.start_closing(1);
+            tabs.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(tabs.bar.tabs().len(), 1);
+            assert_eq!(tabs.bar.active_id(), 1);
+            assert!(!tabs.bar.has_closing());
+            assert_eq!(tabs.tabs.len(), 1);
+            engine
+                .events
                 .lock()
                 .unwrap()
-                .contains(&WebViewCommand::CancelAllDownloads)
-        );
-    }
+                .push(WebViewEvent::TabCloseBlocked);
+            tabs.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(tabs.active_id, 1);
+            assert!(tabs.retired.is_empty());
+            tabs.close(1);
+            engine.events.lock().unwrap().push(WebViewEvent::TabClosed);
+            tabs.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(tabs.tabs.len(), 1);
+            assert_ne!(tabs.active_id, 1);
+        }
 
-    #[test]
-    fn download_exit_flow_rejects_late_fullscreen_entry() {
-        for cancelling in [false, true] {
+        // Phase `fullscreen_download_close_exposes_both_exit_choices`.
+        {
             let (mut tabs, engine) = fullscreen_workspace();
             let mut doc = AutoCommit::new();
             engine.emit(WebViewEvent::FullscreenChanged(true));
@@ -2333,748 +2309,871 @@ mod tests {
             });
             tabs.sync(&mut doc, &automerge::ROOT);
             tabs.on_fullscreen_changed(true);
+            let _immersive_layout = retained_layout(&mut tabs);
+            assert_eq!(tabs.fullscreen_intent(), Some(true));
+
             assert_eq!(
-                tabs.on_window_close_requested(),
+                ui::component_lifecycle::on_window_close_requested(&mut tabs),
                 WindowCloseAdmission::Defer
             );
-            if cancelling {
-                invoke_exit_choice(&mut tabs, "browser.download-exit.cancel", &mut doc);
-                tabs.sync(&mut doc, &automerge::ROOT);
-            }
-            engine.emit(WebViewEvent::FullscreenChanged(true));
-            tabs.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(
-                tabs.fullscreen_intent(),
-                Some(false),
-                "cancelling={cancelling}"
-            );
+            assert_eq!(tabs.fullscreen_intent(), Some(false));
+            assert!(tabs.fullscreen_hint.is_none());
+            assert!(tabs.take_structure_dirty());
             let rects = layout_rects(&mut tabs);
-            assert!(tabs.exit_panel.as_ref().unwrap().get_rect().height() > 0.0);
-            if !cancelling {
-                assert!(rects.contains_key("browser.download-exit.keep"));
-                assert!(rects.contains_key("browser.download-exit.cancel"));
+            for id in ["browser.download-exit.keep", "browser.download-exit.cancel"] {
+                let rect = rects.get(id).expect("visible fullscreen exit choice");
+                assert!(rect.width() > 0.0 && rect.height() > 0.0);
             }
-            assert!(!tabs.take_window_close_intent());
+            let commands = engine.commands.lock().unwrap();
+            assert!(commands.contains(&WebViewCommand::ExitFullscreen));
+            assert!(!commands.contains(&WebViewCommand::CancelAllDownloads));
+            drop(commands);
+            assert!(!ui::component_lifecycle::take_window_close_intent(
+                &mut tabs
+            ));
+            invoke_exit_choice(&mut tabs, "browser.download-exit.keep", &mut doc);
+            tabs.sync(&mut doc, &automerge::ROOT);
+            assert!(tabs.exit_panel.is_none());
+            assert!(!ui::component_lifecycle::take_window_close_intent(
+                &mut tabs
+            ));
+            assert!(
+                !engine
+                    .commands
+                    .lock()
+                    .unwrap()
+                    .contains(&WebViewCommand::CancelAllDownloads)
+            );
+        }
+
+        // Phase `download_exit_flow_rejects_late_fullscreen_entry`.
+        {
+            for cancelling in [false, true] {
+                let (mut tabs, engine) = fullscreen_workspace();
+                let mut doc = AutoCommit::new();
+                engine.emit(WebViewEvent::FullscreenChanged(true));
+                engine.emit(WebViewEvent::DownloadRuntime {
+                    admitted: 1,
+                    detached: 0,
+                    accepting: true,
+                    error: String::new(),
+                });
+                tabs.sync(&mut doc, &automerge::ROOT);
+                tabs.on_fullscreen_changed(true);
+                assert_eq!(
+                    ui::component_lifecycle::on_window_close_requested(&mut tabs),
+                    WindowCloseAdmission::Defer
+                );
+                if cancelling {
+                    invoke_exit_choice(&mut tabs, "browser.download-exit.cancel", &mut doc);
+                    tabs.sync(&mut doc, &automerge::ROOT);
+                }
+                engine.emit(WebViewEvent::FullscreenChanged(true));
+                tabs.sync(&mut doc, &automerge::ROOT);
+                assert_eq!(
+                    tabs.fullscreen_intent(),
+                    Some(false),
+                    "cancelling={cancelling}"
+                );
+                let rects = layout_rects(&mut tabs);
+                assert!(tabs.exit_panel.as_ref().unwrap().get_rect().height() > 0.0);
+                if !cancelling {
+                    assert!(rects.contains_key("browser.download-exit.keep"));
+                    assert!(rects.contains_key("browser.download-exit.cancel"));
+                }
+                assert!(!ui::component_lifecycle::take_window_close_intent(
+                    &mut tabs
+                ));
+            }
+        }
+
+        // Phase `window_close_requires_an_explicit_choice_and_waits_for_native_owner_cleanup`.
+        {
+            struct ExitEngine {
+                commands: std::sync::Mutex<Vec<WebViewCommand>>,
+                events: std::sync::Mutex<Vec<WebViewEvent>>,
+                frames: FrameSlot,
+            }
+            impl WebViewEngine for ExitEngine {
+                fn create_tab(&self) -> Result<SharedEngine, String> {
+                    Err("unused".into())
+                }
+                fn send(&self, command: WebViewCommand) {
+                    self.commands.lock().unwrap().push(command);
+                }
+                fn frames(&self) -> FrameSlot {
+                    self.frames.clone()
+                }
+                fn drain_events(&self) -> Vec<WebViewEvent> {
+                    std::mem::take(&mut *self.events.lock().unwrap())
+                }
+            }
+            let engine = Arc::new(ExitEngine {
+                commands: std::sync::Mutex::default(),
+                events: std::sync::Mutex::new(vec![WebViewEvent::DownloadUpdated {
+                    id: 11,
+                    state: "progress".into(),
+                    path: "/tmp/file".into(),
+                    name: "file".into(),
+                    url: "https://downloads.test/file".into(),
+                    retryable: true,
+                    received: 10,
+                    total: 20,
+                    error: String::new(),
+                }]),
+                frames: Arc::new(std::sync::Mutex::new(None)),
+            });
+            let mut tabs = BrowserTabs::new(BrowserWidget::with_engine(engine.clone(), true));
+            let mut doc = AutoCommit::new();
+            tabs.sync(&mut doc, &automerge::ROOT);
+            engine
+                .events
+                .lock()
+                .unwrap()
+                .push(WebViewEvent::DownloadRuntime {
+                    admitted: 1,
+                    detached: 0,
+                    accepting: true,
+                    error: String::new(),
+                });
+            tabs.sync(&mut doc, &automerge::ROOT);
+
+            assert_eq!(
+                ui::component_lifecycle::on_window_close_requested(&mut tabs),
+                ui::widget::WindowCloseAdmission::Defer
+            );
+            assert!(tabs.exit_panel.is_some(), "both exit choices are visible");
+
+            invoke_exit_choice(&mut tabs, "browser.download-exit.keep", &mut doc);
+            tabs.sync(&mut doc, &automerge::ROOT);
+            assert!(!ui::component_lifecycle::take_window_close_intent(
+                &mut tabs
+            ));
+            assert!(
+                !engine
+                    .commands
+                    .lock()
+                    .unwrap()
+                    .contains(&WebViewCommand::CancelAllDownloads)
+            );
+            assert_eq!(
+                ui::component_lifecycle::on_window_close_requested(&mut tabs),
+                ui::widget::WindowCloseAdmission::Defer,
+                "keeping downloads does not arm a delayed automatic quit"
+            );
+
+            engine.events.lock().unwrap().extend([
+                WebViewEvent::DownloadUpdated {
+                    id: 11,
+                    state: "complete".into(),
+                    path: "/tmp/file".into(),
+                    name: String::new(),
+                    url: String::new(),
+                    retryable: false,
+                    received: 20,
+                    total: 20,
+                    error: String::new(),
+                },
+                WebViewEvent::DownloadRuntime {
+                    admitted: 0,
+                    detached: 0,
+                    accepting: true,
+                    error: String::new(),
+                },
+            ]);
+            tabs.sync(&mut doc, &automerge::ROOT);
+            invoke_exit_choice(&mut tabs, "browser.download-exit.cancel", &mut doc);
+            tabs.sync(&mut doc, &automerge::ROOT);
+            assert!(
+                engine
+                    .commands
+                    .lock()
+                    .unwrap()
+                    .contains(&WebViewCommand::CancelAllDownloads)
+            );
+            assert!(!ui::component_lifecycle::take_window_close_intent(
+                &mut tabs
+            ));
+            assert_eq!(
+                ui::component_lifecycle::on_window_close_requested(&mut tabs),
+                ui::widget::WindowCloseAdmission::Defer,
+                "repeated close cannot bypass native cancellation"
+            );
+
+            engine.events.lock().unwrap().extend([
+                WebViewEvent::DownloadUpdated {
+                    id: 12,
+                    state: "progress".into(),
+                    path: "/tmp/new".into(),
+                    name: "new".into(),
+                    url: "https://downloads.test/new".into(),
+                    retryable: true,
+                    received: 1,
+                    total: 2,
+                    error: String::new(),
+                },
+                WebViewEvent::DownloadRuntime {
+                    admitted: 1,
+                    detached: 0,
+                    accepting: true,
+                    error: String::new(),
+                },
+            ]);
+            tabs.sync(&mut doc, &automerge::ROOT);
+            assert!(
+                !ui::component_lifecycle::take_window_close_intent(&mut tabs),
+                "new admission precedes cancel barrier"
+            );
+            engine.events.lock().unwrap().extend([
+                WebViewEvent::DownloadUpdated {
+                    id: 12,
+                    state: "cancelled".into(),
+                    path: String::new(),
+                    name: String::new(),
+                    url: String::new(),
+                    retryable: false,
+                    received: 0,
+                    total: 0,
+                    error: String::new(),
+                },
+                WebViewEvent::DownloadRuntime {
+                    admitted: 0,
+                    detached: 1,
+                    accepting: false,
+                    error: String::new(),
+                },
+            ]);
+            tabs.sync(&mut doc, &automerge::ROOT);
+            assert!(
+                !ui::component_lifecycle::take_window_close_intent(&mut tabs),
+                "physical owner is still closing"
+            );
+            engine
+                .events
+                .lock()
+                .unwrap()
+                .push(WebViewEvent::DownloadRuntime {
+                    admitted: 0,
+                    detached: 0,
+                    accepting: false,
+                    error: String::new(),
+                });
+            tabs.sync(&mut doc, &automerge::ROOT);
+            assert!(ui::component_lifecycle::take_window_close_intent(&mut tabs));
+            assert!(
+                !ui::component_lifecycle::take_window_close_intent(&mut tabs),
+                "approval is one shot"
+            );
+        }
+
+        // Phase `admitted_close_releases_cached_favicon_and_visual_state`.
+        {
+            let mut tabs = workspace();
+            for _ in 0..12 {
+                tabs.open(Some("https://icon.test/".into()), false).unwrap();
+                let id = tabs.active_id;
+                tabs.bar.set_fixture_visual(id, None, true, true, false);
+                tabs.close(id);
+                assert!(tabs.bar.visual_count() <= tabs.tabs.len());
+            }
         }
     }
 
+    fn invoke_exit_choice(tabs: &mut BrowserTabs, id: &str, doc: &mut AutoCommit) {
+        let (_tree, _root, nodes) = recovery_layout(tabs);
+        let &button = nodes
+            .values()
+            .find(|widget| unsafe { (&***widget).test_id() == Some(id) })
+            .expect("exit choice button");
+        assert!(unsafe {
+            (&mut *button).perform_action(&ui::a11y::Action::Activate, doc, &automerge::ROOT)
+        });
+        let invocation = ui::widget::controls::take_control_invocation(tabs)
+            .expect("exit choice must reach the root action broker");
+        assert_eq!(invocation.address.resource, format!("tilo.control:{id}"));
+        assert!(
+            tabs.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    ui::tilo_actions::OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    &serde_json::to_vec(id).unwrap()
+                ),
+                doc,
+                &automerge::ROOT
+            )
+            .unwrap()
+            .is_some()
+        );
+    }
+    /// Accessibility tree and tab intents of the workspace.
     #[test]
     #[allow(
         clippy::too_many_lines,
-        reason = "keeps the local engine fixture and complete download-exit lifecycle together"
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn window_close_requires_an_explicit_choice_and_waits_for_native_owner_cleanup() {
-        struct ExitEngine {
-            commands: std::sync::Mutex<Vec<WebViewCommand>>,
-            events: std::sync::Mutex<Vec<WebViewEvent>>,
-            frames: FrameSlot,
+    fn workspace_accessibility_exports_and_applies_tab_intents() {
+        // Phase `accessibility_tab_intents_are_applied_without_an_extra_pointer_event`.
+        {
+            let mut tabs = workspace();
+            let mut doc = AutoCommit::new();
+            assert!(tabs.bar.perform_semantic_action(
+                "tab-new",
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT
+            ));
+            tabs.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(tabs.tabs.len(), 2);
+            assert!(tabs.bar.perform_semantic_action(
+                "tab-close:2",
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT
+            ));
+            tabs.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(tabs.tabs.len(), 1);
         }
-        impl WebViewEngine for ExitEngine {
-            fn create_tab(&self) -> Result<SharedEngine, String> {
-                Err("unused".into())
-            }
-            fn send(&self, command: WebViewCommand) {
-                self.commands.lock().unwrap().push(command);
-            }
-            fn frames(&self) -> FrameSlot {
-                self.frames.clone()
-            }
-            fn drain_events(&self) -> Vec<WebViewEvent> {
-                std::mem::take(&mut *self.events.lock().unwrap())
-            }
-        }
-        let engine = Arc::new(ExitEngine {
-            commands: std::sync::Mutex::default(),
-            events: std::sync::Mutex::new(vec![WebViewEvent::DownloadUpdated {
-                id: 11,
-                state: "progress".into(),
-                path: "/tmp/file".into(),
-                name: "file".into(),
-                url: "https://downloads.test/file".into(),
-                retryable: true,
-                received: 10,
-                total: 20,
-                error: String::new(),
-            }]),
-            frames: Arc::new(std::sync::Mutex::new(None)),
-        });
-        let mut tabs = BrowserTabs::new(BrowserWidget::with_engine(engine.clone(), true));
-        let mut doc = AutoCommit::new();
-        tabs.sync(&mut doc, &automerge::ROOT);
-        engine
-            .events
-            .lock()
-            .unwrap()
-            .push(WebViewEvent::DownloadRuntime {
-                admitted: 1,
-                detached: 0,
-                accepting: true,
-                error: String::new(),
-            });
-        tabs.sync(&mut doc, &automerge::ROOT);
 
-        assert_eq!(
-            tabs.on_window_close_requested(),
-            ui::widget::WindowCloseAdmission::Defer
-        );
-        assert!(tabs.exit_panel.is_some(), "both exit choices are visible");
-
-        invoke_exit_choice(&mut tabs, "browser.download-exit.keep", &mut doc);
-        tabs.sync(&mut doc, &automerge::ROOT);
-        assert!(!tabs.take_window_close_intent());
-        assert!(
-            !engine
-                .commands
-                .lock()
-                .unwrap()
-                .contains(&WebViewCommand::CancelAllDownloads)
-        );
-        assert_eq!(
-            tabs.on_window_close_requested(),
-            ui::widget::WindowCloseAdmission::Defer,
-            "keeping downloads does not arm a delayed automatic quit"
-        );
-
-        engine.events.lock().unwrap().extend([
-            WebViewEvent::DownloadUpdated {
-                id: 11,
-                state: "complete".into(),
-                path: "/tmp/file".into(),
-                name: String::new(),
-                url: String::new(),
-                retryable: false,
-                received: 20,
-                total: 20,
-                error: String::new(),
-            },
-            WebViewEvent::DownloadRuntime {
-                admitted: 0,
-                detached: 0,
-                accepting: true,
-                error: String::new(),
-            },
-        ]);
-        tabs.sync(&mut doc, &automerge::ROOT);
-        invoke_exit_choice(&mut tabs, "browser.download-exit.cancel", &mut doc);
-        tabs.sync(&mut doc, &automerge::ROOT);
-        assert!(
-            engine
-                .commands
-                .lock()
-                .unwrap()
-                .contains(&WebViewCommand::CancelAllDownloads)
-        );
-        assert!(!tabs.take_window_close_intent());
-        assert_eq!(
-            tabs.on_window_close_requested(),
-            ui::widget::WindowCloseAdmission::Defer,
-            "repeated close cannot bypass native cancellation"
-        );
-
-        engine.events.lock().unwrap().extend([
-            WebViewEvent::DownloadUpdated {
-                id: 12,
-                state: "progress".into(),
-                path: "/tmp/new".into(),
-                name: "new".into(),
-                url: "https://downloads.test/new".into(),
-                retryable: true,
-                received: 1,
-                total: 2,
-                error: String::new(),
-            },
-            WebViewEvent::DownloadRuntime {
-                admitted: 1,
-                detached: 0,
-                accepting: true,
-                error: String::new(),
-            },
-        ]);
-        tabs.sync(&mut doc, &automerge::ROOT);
-        assert!(
-            !tabs.take_window_close_intent(),
-            "new admission precedes cancel barrier"
-        );
-        engine.events.lock().unwrap().extend([
-            WebViewEvent::DownloadUpdated {
-                id: 12,
-                state: "cancelled".into(),
-                path: String::new(),
-                name: String::new(),
-                url: String::new(),
-                retryable: false,
-                received: 0,
-                total: 0,
-                error: String::new(),
-            },
-            WebViewEvent::DownloadRuntime {
-                admitted: 0,
-                detached: 1,
-                accepting: false,
-                error: String::new(),
-            },
-        ]);
-        tabs.sync(&mut doc, &automerge::ROOT);
-        assert!(
-            !tabs.take_window_close_intent(),
-            "physical owner is still closing"
-        );
-        engine
-            .events
-            .lock()
-            .unwrap()
-            .push(WebViewEvent::DownloadRuntime {
-                admitted: 0,
-                detached: 0,
-                accepting: false,
-                error: String::new(),
-            });
-        tabs.sync(&mut doc, &automerge::ROOT);
-        assert!(tabs.take_window_close_intent());
-        assert!(!tabs.take_window_close_intent(), "approval is one shot");
-    }
-
-    #[test]
-    fn accessibility_tab_intents_are_applied_without_an_extra_pointer_event() {
-        let mut tabs = workspace();
-        let mut doc = AutoCommit::new();
-        assert!(tabs.bar.perform_semantic_action(
-            "tab-new",
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT
-        ));
-        tabs.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(tabs.tabs.len(), 2);
-        assert!(tabs.bar.perform_semantic_action(
-            "tab-close:2",
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT
-        ));
-        tabs.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(tabs.tabs.len(), 1);
-    }
-
-    #[test]
-    fn accessibility_exports_tabs_new_tab_and_open_context_menu_actions() {
-        use ui::a11y::Role;
-        let mut tabs = workspace();
-        tabs.open(Some("https://two.test".into()), false).unwrap();
-        let strip = tabs.bar.accessibility().expect("tab strip semantics");
-        assert_eq!(strip.role, Role::TabBar);
-        assert!(strip.children.iter().any(|node| node.role == Role::Tab));
-        assert!(
-            strip.children.iter().any(|node| {
+        // Phase `accessibility_exports_tabs_new_tab_and_open_context_menu_actions`.
+        {
+            use ui::a11y::Role;
+            let mut tabs = workspace();
+            tabs.open(Some("https://two.test".into()), false).unwrap();
+            let strip = tabs.bar.accessibility().expect("tab strip semantics");
+            assert_eq!(strip.role, Role::TabBar);
+            assert!(strip.children.iter().any(|node| node.role == Role::Tab));
+            assert!(strip.children.iter().any(|node| {
                 node.role == Role::Button && node.name.as_deref() == Some("New tab")
-            })
-        );
+            }));
 
-        tabs.open_tab_menu(2, Point::new(20.0, 20.0));
-        let workspace = tabs.accessibility().expect("workspace semantics");
-        let menu = workspace
-            .children
-            .iter()
-            .find(|node| node.role == Role::Menu)
-            .expect("open tab menu");
-        assert!(
-            menu.children.iter().any(|node| {
-                node.role == Role::MenuItem && node.name.as_deref() == Some("Mute")
-            })
-        );
-        let mute_target = menu
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Mute"))
-            .and_then(|node| node.action_target.clone())
-            .expect("mute action route");
-        let mut doc = AutoCommit::new();
-        assert!(tabs.perform_semantic_action(
-            &mute_target,
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT
-        ));
-        assert!(
-            tabs.tabs
+            tabs.open_tab_menu(2, Point::new(20.0, 20.0));
+            let workspace = tabs.accessibility().expect("workspace semantics");
+            let menu = workspace
+                .children
                 .iter()
-                .find(|tab| tab.id == 2)
-                .unwrap()
-                .widget
-                .tab_muted()
-        );
-    }
+                .find(|node| node.role == Role::Menu)
+                .expect("open tab menu");
+            assert!(menu.children.iter().any(|node| {
+                node.role == Role::MenuItem && node.name.as_deref() == Some("Mute")
+            }));
+            let mute_target = menu
+                .children
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Mute"))
+                .and_then(|node| node.action_target.clone())
+                .expect("mute action route");
+            let mut doc = AutoCommit::new();
+            assert!(tabs.perform_semantic_action(
+                &mute_target,
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT
+            ));
+            assert!(
+                tabs.tabs
+                    .iter()
+                    .find(|tab| tab.id == 2)
+                    .unwrap()
+                    .widget
+                    .tab_muted()
+            );
+        }
 
-    #[test]
-    fn composed_accesskit_tree_accepts_workspace_and_retained_strip_on_first_update() {
-        let mut tabs = workspace();
-        tabs.open(Some("https://two.test".into()), false).unwrap();
-        let mut tree = TaffyTree::new();
-        let mut nodes = HashMap::new();
-        let root = tabs.build_layout(&mut tree, &Theme::dark(), &mut nodes);
-        tree.compute_layout(
-            root,
-            Size {
-                width: taffy::AvailableSpace::Definite(800.0),
-                height: taffy::AvailableSpace::Definite(620.0),
-            },
-        )
-        .unwrap();
-        tabs.apply_layout(&tree, root, Point::ORIGIN);
-        let update = ui::accesskit_bridge::build_tree_update(&tabs, &nodes, None, 1.0);
-        let _consumer = accesskit_consumer::Tree::new(update, true);
-    }
+        // Phase `composed_accesskit_tree_accepts_workspace_and_retained_strip_on_first_update`.
+        {
+            let mut tabs = workspace();
+            tabs.open(Some("https://two.test".into()), false).unwrap();
+            let mut tree = TaffyTree::new();
+            let mut nodes = HashMap::new();
+            let root = tabs.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+            tree.compute_layout(
+                root,
+                Size {
+                    width: taffy::AvailableSpace::Definite(800.0),
+                    height: taffy::AvailableSpace::Definite(620.0),
+                },
+            )
+            .unwrap();
+            tabs.apply_layout(&tree, root, Point::ORIGIN);
+            let update = ui::accesskit_bridge::build_tree_update(&tabs, &nodes, None, 1.0);
+            let _consumer = accesskit_consumer::Tree::new(update, true);
+        }
 
-    #[test]
-    fn workspace_spinner_respects_loading_and_reduced_motion() {
-        let mut tabs = workspace();
-        tabs.bar.set_fixture_visual(1, None, true, false, false);
-        Widget::set_motion_reduced(&mut tabs, false);
-        assert!(Widget::needs_animation_frame(&tabs));
-        Widget::set_motion_reduced(&mut tabs, true);
-        assert!(!Widget::needs_animation_frame(&tabs));
-    }
-
-    #[test]
-    fn admitted_close_releases_cached_favicon_and_visual_state() {
-        let mut tabs = workspace();
-        for _ in 0..12 {
-            tabs.open(Some("https://icon.test/".into()), false).unwrap();
-            let id = tabs.active_id;
-            tabs.bar.set_fixture_visual(id, None, true, true, false);
-            tabs.close(id);
-            assert!(tabs.bar.visual_count() <= tabs.tabs.len());
+        // Phase `workspace_spinner_respects_loading_and_reduced_motion`.
+        {
+            let mut tabs = workspace();
+            tabs.bar.set_fixture_visual(1, None, true, false, false);
+            Widget::set_motion_reduced(&mut tabs, false);
+            assert!(Widget::needs_animation_frame(&tabs));
+            Widget::set_motion_reduced(&mut tabs, true);
+            assert!(!Widget::needs_animation_frame(&tabs));
         }
     }
 
-    #[test]
-    fn switching_retains_independent_documents_and_reorder_keeps_identity() {
-        let mut tabs = workspace();
-        let first = tabs.active_id;
-        let first_engine = tabs.active().engine_handle();
-        tabs.open(Some("https://two.test".into()), false).unwrap();
-        let second = tabs.active_id;
-        assert_ne!(first, second);
-        assert!(!Arc::ptr_eq(&first_engine, &tabs.active().engine_handle()));
-        tabs.activate(first);
-        assert!(Arc::ptr_eq(&first_engine, &tabs.active().engine_handle()));
-        tabs.reorder(0, 1);
-        assert_eq!(tabs.active_id, first);
-        assert_eq!(tabs.tabs[1].id, first);
-    }
-    #[test]
-    fn reorder_keeps_layout_widget_addresses_stable() {
-        let mut tabs = workspace();
-        tabs.open(None, true).unwrap();
-        let before = std::ptr::from_ref(tabs.active());
-        tabs.reorder(0, 1);
-        assert_eq!(std::ptr::from_ref(tabs.active()), before);
-    }
-
-    #[test]
-    fn close_reopen_and_last_tab_preserve_a_usable_workspace() {
-        let mut tabs = workspace();
-        tabs.open(Some("https://two.test".into()), false).unwrap();
-        let closed = tabs.active_id;
-        tabs.close(closed);
-        assert_eq!(tabs.tabs.len(), 1);
-        tabs.reopen().unwrap();
-        assert_eq!(tabs.tabs.len(), 2);
-        assert_ne!(tabs.active_id, closed);
-        assert_eq!(tabs.active().tab_url(), "https://two.test");
-        let ids: Vec<_> = tabs.tabs.iter().map(|tab| tab.id).collect();
-        for id in ids {
-            tabs.close(id);
-        }
-        assert_eq!(tabs.tabs.len(), 1);
-    }
-    #[test]
-    fn background_tabs_do_not_steal_selection_and_limit_is_bounded() {
-        let mut tabs = workspace();
-        let first = tabs.active_id;
-        for _ in 1..32 {
-            tabs.open(None, true).unwrap();
-        }
-        assert_eq!(tabs.active_id, first);
-        assert!(tabs.open(None, true).is_err());
-        assert_eq!(tabs.tabs.len(), 32);
-    }
+    /// Switching, reordering, closing, pinning and tab limits.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "checks interactions between pinning, tab actions and overflow in one retained workspace"
     )]
-    fn pin_partition_duplicate_close_others_mute_and_overflow() {
-        let mut tabs = workspace();
-        tabs.open(Some("https://one.test".into()), false).unwrap();
-        let one = tabs.active_id;
-        tabs.open(Some("https://two.test".into()), false).unwrap();
-        let two = tabs.active_id;
-        tabs.set_pinned(two, true);
-        assert_eq!(
-            tabs.tabs[0].id, two,
-            "pinned tabs form the leading partition"
-        );
-        tabs.duplicate(one).unwrap();
-        assert_eq!(tabs.active().tab_url(), "https://one.test");
-        tabs.set_muted(two, true);
-        assert!(
-            tabs.tabs
-                .iter()
-                .find(|tab| tab.id == two)
-                .unwrap()
-                .widget
-                .tab_muted()
-        );
-        tabs.close_others(one);
-        assert!(tabs.tabs.iter().any(|tab| tab.id == one));
-        assert!(
-            tabs.tabs.iter().any(|tab| tab.id == two),
-            "pinned tabs are protected"
-        );
-        for _ in tabs.tabs.len()..32 {
+    fn tab_management_keeps_documents_identity_and_a_usable_workspace() {
+        // Phase `switching_retains_independent_documents_and_reorder_keeps_identity`.
+        {
+            let mut tabs = workspace();
+            let first = tabs.active_id;
+            let first_engine = tabs.active().engine_handle();
+            tabs.open(Some("https://two.test".into()), false).unwrap();
+            let second = tabs.active_id;
+            assert_ne!(first, second);
+            assert!(!Arc::ptr_eq(&first_engine, &tabs.active().engine_handle()));
+            tabs.activate(first);
+            assert!(Arc::ptr_eq(&first_engine, &tabs.active().engine_handle()));
+            tabs.reorder(0, 1);
+            assert_eq!(tabs.active_id, first);
+            assert_eq!(tabs.tabs[1].id, first);
+        }
+
+        // Phase `reorder_keeps_layout_widget_addresses_stable`.
+        {
+            let mut tabs = workspace();
             tabs.open(None, true).unwrap();
+            let before = std::ptr::from_ref(tabs.active());
+            tabs.reorder(0, 1);
+            assert_eq!(std::ptr::from_ref(tabs.active()), before);
         }
-        tabs.activate(*tabs.tabs.last().map(|tab| &tab.id).unwrap());
-        tabs.bar.debug_layout(800.0);
-        assert!(tabs.bar.overflow_targets_meet_minimum_size());
-        let semantics = tabs.bar.accessibility().expect("overflow semantics");
-        assert!(
-            semantics
-                .children
-                .iter()
-                .any(|node| node.action_target.as_deref() == Some("tab-overflow-before"))
-        );
-        assert!(
-            semantics
-                .children
-                .iter()
-                .any(|node| node.action_target.as_deref() == Some("tab-overflow-after"))
-        );
-        let previous = semantics
-            .children
-            .iter()
-            .find(|node| node.action_target.as_deref() == Some("tab-overflow-before"))
-            .expect("previous overflow control");
-        assert!(
-            !previous.state.disabled,
-            "pinned prefix must not hide earlier normal tabs"
-        );
-        let before = tabs.bar.active_id();
-        let mut doc = AutoCommit::new();
-        assert!(tabs.bar.perform_semantic_action(
-            "tab-overflow-before",
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_ne!(tabs.bar.active_id(), before);
-        tabs.bar.set_active(before);
-        let mut tree = TaffyTree::new();
-        let node = tabs
-            .bar
-            .build_layout(&mut tree, &Theme::dark(), &mut HashMap::new());
-        tree.set_style(
-            node,
-            Style {
-                size: Size {
-                    width: Dimension::length(800.0),
-                    height: Dimension::length(40.0),
-                },
-                ..Style::default()
-            },
-        )
-        .unwrap();
-        tree.compute_layout(
-            node,
-            Size {
-                width: taffy::AvailableSpace::Definite(800.0),
-                height: taffy::AvailableSpace::Definite(40.0),
-            },
-        )
-        .unwrap();
-        tabs.bar.apply_layout(&tree, node, Point::ORIGIN);
-        assert!(tabs.bar.active_is_visible());
-        assert!(
-            tabs.bar
-                .active_rect()
-                .is_some_and(|rect| rect.width() >= 118.0 && rect.contains(rect.center())),
-            "active overflow tab is actually drawn and hittable"
-        );
-        assert!(
-            tabs.bar.new_tab_rect().width() >= 28.0,
-            "new-tab control remains fixed and hittable"
-        );
-        assert!(
-            tabs.bar.controls_are_outside_tabs(),
-            "overflow buttons and new-tab control use reserved geometry outside tab pills"
-        );
-        let visible_media = tabs.bar.visible_ids()[2];
-        tabs.bar
-            .set_fixture_visual(visible_media, None, false, true, false);
-        assert!(
-            tabs.bar.media_control_precedes_title(visible_media),
-            "media control occupies the reserved leading glyph slot before title text"
-        );
-        let all_ids: Vec<_> = tabs.tabs.iter().map(|tab| tab.id).collect();
-        for id in &all_ids {
-            tabs.bar.set_pinned(*id, true);
-        }
-        let last = *all_ids.last().unwrap();
-        tabs.bar.set_active(last);
-        tabs.bar.debug_layout(800.0);
-        assert!(
-            tabs.bar.visible_ids().len() <= 17 && tabs.bar.visible_ids().contains(&last),
-            "all-pinned overflow stays bounded and retains active"
-        );
-        let before = tabs.bar.active_id();
-        tabs.bar.overflow_step(false);
-        assert_ne!(tabs.bar.active_id(), before);
-        assert!(
-            tabs.bar.active_is_visible(),
-            "pointer scroll path reaches and reveals hidden pinned tabs"
-        );
-    }
-    #[test]
-    fn resources_are_owned_only_by_the_page() {
-        let tabs = workspace();
-        assert!(tabs.resources(&AutoCommit::new()).is_empty());
-        assert!(!tabs.active().resources(&AutoCommit::new()).is_empty());
-    }
 
-    #[test]
-    fn immediate_new_tab_typing_and_enter_survive_before_first_layout() {
-        fn address(widget: &dyn Widget) -> Option<(String, String)> {
-            if widget.test_id() == Some("browser.url_input") {
-                return widget
-                    .text_review()
-                    .map(|(_, text)| (text, widget.get_state().unwrap()));
+        // Phase `close_reopen_and_last_tab_preserve_a_usable_workspace`.
+        {
+            let mut tabs = workspace();
+            tabs.open(Some("https://two.test".into()), false).unwrap();
+            let closed = tabs.active_id;
+            tabs.close(closed);
+            assert_eq!(tabs.tabs.len(), 1);
+            tabs.reopen().unwrap();
+            assert_eq!(tabs.tabs.len(), 2);
+            assert_ne!(tabs.active_id, closed);
+            assert_eq!(tabs.active().tab_url(), "https://two.test");
+            let ids: Vec<_> = tabs.tabs.iter().map(|tab| tab.id).collect();
+            for id in ids {
+                tabs.close(id);
             }
-            widget.children().iter().find_map(|child| address(*child))
+            assert_eq!(tabs.tabs.len(), 1);
         }
 
-        let mut tabs = workspace();
-        let mut tree = TaffyTree::new();
-        let root = tabs.build_layout(&mut tree, &Theme::dark(), &mut HashMap::new());
-        tabs.open(None, false).unwrap();
-        let mut doc = AutoCommit::new();
-        let url = "http://127.0.0.1:63921/";
-        let keys = url
-            .chars()
-            .map(|c| Key::Character(c.to_string().into()))
-            .chain(std::iter::once(Key::Named(NamedKey::Enter)));
-        for logical_key in keys {
-            let mut key: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            key.logical_key = logical_key;
-            key.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
+        // Phase `background_tabs_do_not_steal_selection_and_limit_is_bounded`.
+        {
+            let mut tabs = workspace();
+            let first = tabs.active_id;
+            for _ in 1..32 {
+                tabs.open(None, true).unwrap();
+            }
+            assert_eq!(tabs.active_id, first);
+            assert!(tabs.open(None, true).is_err());
+            assert_eq!(tabs.tabs.len(), 32);
+        }
+
+        // Phase `pin_partition_duplicate_close_others_mute_and_overflow`.
+        {
+            let mut tabs = workspace();
+            tabs.open(Some("https://one.test".into()), false).unwrap();
+            let one = tabs.active_id;
+            tabs.open(Some("https://two.test".into()), false).unwrap();
+            let two = tabs.active_id;
+            tabs.set_pinned(two, true);
+            assert_eq!(
+                tabs.tabs[0].id, two,
+                "pinned tabs form the leading partition"
             );
-            key.location = winit::keyboard::KeyLocation::Standard;
-            key.state = ElementState::Pressed;
-            tabs.handle_event(
-                &WindowEvent::KeyboardInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    event: key,
-                    is_synthetic: false,
-                },
-                1.0,
-                &winit::event::Modifiers::default(),
+            tabs.duplicate(one).unwrap();
+            assert_eq!(tabs.active().tab_url(), "https://one.test");
+            tabs.set_muted(two, true);
+            assert!(
+                tabs.tabs
+                    .iter()
+                    .find(|tab| tab.id == two)
+                    .unwrap()
+                    .widget
+                    .tab_muted()
+            );
+            tabs.close_others(one);
+            assert!(tabs.tabs.iter().any(|tab| tab.id == one));
+            assert!(
+                tabs.tabs.iter().any(|tab| tab.id == two),
+                "pinned tabs are protected"
+            );
+            for _ in tabs.tabs.len()..32 {
+                tabs.open(None, true).unwrap();
+            }
+            tabs.activate(*tabs.tabs.last().map(|tab| &tab.id).unwrap());
+            tabs.bar.debug_layout(800.0);
+            assert!(tabs.bar.overflow_targets_meet_minimum_size());
+            let semantics = tabs.bar.accessibility().expect("overflow semantics");
+            assert!(
+                semantics
+                    .children
+                    .iter()
+                    .any(|node| node.action_target.as_deref() == Some("tab-overflow-before"))
+            );
+            assert!(
+                semantics
+                    .children
+                    .iter()
+                    .any(|node| node.action_target.as_deref() == Some("tab-overflow-after"))
+            );
+            let previous = semantics
+                .children
+                .iter()
+                .find(|node| node.action_target.as_deref() == Some("tab-overflow-before"))
+                .expect("previous overflow control");
+            assert!(
+                !previous.state.disabled,
+                "pinned prefix must not hide earlier normal tabs"
+            );
+            let before = tabs.bar.active_id();
+            let mut doc = AutoCommit::new();
+            assert!(tabs.bar.perform_semantic_action(
+                "tab-overflow-before",
+                &ui::a11y::Action::Activate,
                 &mut doc,
                 &automerge::ROOT,
-                &mut false,
-                &mut None,
-                root,
-                &tree,
+            ));
+            assert_ne!(tabs.bar.active_id(), before);
+            tabs.bar.set_active(before);
+            let mut tree = TaffyTree::new();
+            let node = tabs
+                .bar
+                .build_layout(&mut tree, &Theme::dark(), &mut HashMap::new());
+            tree.set_style(
+                node,
+                Style {
+                    size: Size {
+                        width: Dimension::length(800.0),
+                        height: Dimension::length(40.0),
+                    },
+                    ..Style::default()
+                },
+            )
+            .unwrap();
+            tree.compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(800.0),
+                    height: taffy::AvailableSpace::Definite(40.0),
+                },
+            )
+            .unwrap();
+            tabs.bar.apply_layout(&tree, node, Point::ORIGIN);
+            assert!(tabs.bar.active_is_visible());
+            assert!(
+                tabs.bar
+                    .active_rect()
+                    .is_some_and(|rect| rect.width() >= 118.0 && rect.contains(rect.center())),
+                "active overflow tab is actually drawn and hittable"
+            );
+            assert!(
+                tabs.bar.new_tab_rect().width() >= 28.0,
+                "new-tab control remains fixed and hittable"
+            );
+            assert!(
+                tabs.bar.controls_are_outside_tabs(),
+                "overflow buttons and new-tab control use reserved geometry outside tab pills"
+            );
+            let visible_media = tabs.bar.visible_ids()[2];
+            tabs.bar
+                .set_fixture_visual(visible_media, None, false, true, false);
+            assert!(
+                tabs.bar.media_control_precedes_title(visible_media),
+                "media control occupies the reserved leading glyph slot before title text"
+            );
+            let all_ids: Vec<_> = tabs.tabs.iter().map(|tab| tab.id).collect();
+            for id in &all_ids {
+                tabs.bar.set_pinned(*id, true);
+            }
+            let last = *all_ids.last().unwrap();
+            tabs.bar.set_active(last);
+            tabs.bar.debug_layout(800.0);
+            assert!(
+                tabs.bar.visible_ids().len() <= 17 && tabs.bar.visible_ids().contains(&last),
+                "all-pinned overflow stays bounded and retains active"
+            );
+            let before = tabs.bar.active_id();
+            tabs.bar.overflow_step(false);
+            assert_ne!(tabs.bar.active_id(), before);
+            assert!(
+                tabs.bar.active_is_visible(),
+                "pointer scroll path reaches and reveals hidden pinned tabs"
             );
         }
-        assert!(
-            tabs.active_mut().take_control_invocation().is_some(),
-            "Enter must queue the complete address even before layout"
-        );
-        let mut new_tree = TaffyTree::new();
-        tabs.build_layout(&mut new_tree, &Theme::dark(), &mut HashMap::new());
-        let (text, caret) = address(&tabs).unwrap();
-        assert_eq!(text, url);
-        assert_eq!(
-            caret,
-            url.len().to_string(),
-            "buffered prefix must not be selected and replaced by remaining typing"
-        );
-    }
 
+        // Phase `resources_are_owned_only_by_the_page`.
+        {
+            let tabs = workspace();
+            assert!(ui::resources::resources(&tabs, &AutoCommit::new()).is_empty());
+            assert!(!ui::resources::resources(tabs.active(), &AutoCommit::new()).is_empty());
+        }
+    }
+    /// New tab typing, focus and stale layout nodes.
     #[test]
-    fn new_tab_address_is_focused_after_layout() {
-        fn focused(widget: &dyn Widget) -> bool {
-            (widget.test_id() == Some("browser.url_input") && widget.is_focused())
-                || widget.children().iter().any(|child| focused(*child))
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn new_tab_input_survives_before_layout_and_rebuilds() {
+        // Phase `immediate_new_tab_typing_and_enter_survive_before_first_layout`.
+        {
+            fn address(widget: &dyn Widget) -> Option<(String, String)> {
+                if widget.test_id() == Some("browser.url_input") {
+                    return widget
+                        .text_review()
+                        .map(|(_, text)| (text, ui::undo::get_state(widget).unwrap()));
+                }
+                widget.children().iter().find_map(|child| address(*child))
+            }
+
+            let mut tabs = workspace();
+            let mut tree = TaffyTree::new();
+            let root = tabs.build_layout(&mut tree, &Theme::dark(), &mut HashMap::new());
+            tabs.open(None, false).unwrap();
+            let mut doc = AutoCommit::new();
+            let url = "http://127.0.0.1:63921/";
+            let keys = url
+                .chars()
+                .map(|c| Key::Character(c.to_string().into()))
+                .chain(std::iter::once(Key::Named(NamedKey::Enter)));
+            for logical_key in keys {
+                let mut key: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+                key.logical_key = logical_key;
+                key.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+                    winit::keyboard::NativeKeyCode::Unidentified,
+                );
+                key.location = winit::keyboard::KeyLocation::Standard;
+                key.state = ElementState::Pressed;
+                tabs.handle_event(
+                    &WindowEvent::KeyboardInput {
+                        device_id: unsafe { std::mem::zeroed() },
+                        event: key,
+                        is_synthetic: false,
+                    },
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: &mut doc,
+                        path: &automerge::ROOT,
+                        handled: &mut false,
+                        focus_target: &mut None,
+                        node_id: root,
+                        taffy: &tree,
+                    },
+                );
+            }
+            assert!(
+                ui::widget::controls::take_control_invocation(tabs.active_mut()).is_some(),
+                "Enter must queue the complete address even before layout"
+            );
+            let mut new_tree = TaffyTree::new();
+            tabs.build_layout(&mut new_tree, &Theme::dark(), &mut HashMap::new());
+            let (text, caret) = address(&tabs).unwrap();
+            assert_eq!(text, url);
+            assert_eq!(
+                caret,
+                url.len().to_string(),
+                "buffered prefix must not be selected and replaced by remaining typing"
+            );
         }
 
-        let mut tabs = workspace();
-        tabs.open(None, false).unwrap();
-        let mut doc = AutoCommit::new();
-        tabs.sync(&mut doc, &automerge::ROOT);
-        let mut tree = TaffyTree::new();
-        tabs.build_layout(&mut tree, &Theme::dark(), &mut HashMap::new());
-        assert!(focused(&tabs));
-    }
+        // Phase `new_tab_address_is_focused_after_layout`.
+        {
+            fn focused(widget: &dyn Widget) -> bool {
+                (widget.test_id() == Some("browser.url_input") && widget.is_focused())
+                    || widget.children().iter().any(|child| focused(*child))
+            }
 
-    #[test]
-    fn switching_before_rebuild_does_not_dispatch_stale_layout_nodes() {
-        let mut tabs = workspace();
-        let mut tree = TaffyTree::new();
-        for _ in 0..128 {
-            tree.new_leaf(Style::default()).unwrap();
+            let mut tabs = workspace();
+            tabs.open(None, false).unwrap();
+            let mut doc = AutoCommit::new();
+            tabs.sync(&mut doc, &automerge::ROOT);
+            let mut tree = TaffyTree::new();
+            tabs.build_layout(&mut tree, &Theme::dark(), &mut HashMap::new());
+            assert!(focused(&tabs));
         }
-        tabs.build_layout(&mut tree, &Theme::dark(), &mut HashMap::new());
-        tabs.open(None, false).unwrap();
-        let mut tree = TaffyTree::new();
-        let root = tabs.build_layout(&mut tree, &Theme::dark(), &mut HashMap::new());
-        tabs.activate(1);
-        tabs.handle_event(
-            &WindowEvent::Focused(true),
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-            &mut false,
-            &mut None,
-            root,
-            &tree,
-        );
-    }
 
-    #[test]
-    fn history_pause_is_shared_by_existing_and_new_tabs() {
-        let mut tabs = workspace();
-        tabs.open(None, true).unwrap();
-        tabs.active_mut().debug_show_history_paused();
-        assert!(tabs.tabs.iter().all(|tab| tab.widget.history_paused()));
-        tabs.open(None, false).unwrap();
-        assert!(tabs.active().history_paused());
-    }
-
-    #[test]
-    fn background_navigation_keeps_its_invocation_route() {
-        let mut tabs = workspace();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        tabs.sync(&mut doc, &root);
-        let resources = tabs.active().resources(&doc);
-        let page = resources[0]
-            .children
-            .iter()
-            .find(|r| r.id.0 == "browser.page")
-            .unwrap();
-        let navigate = page
-            .actions
-            .iter()
-            .find(|action| action.id == "navigate")
-            .unwrap();
-        let args = serde_json::from_value(serde_json::json!({"url": "https://one.test"})).unwrap();
-        let encoded = navigate.build_json(&args).unwrap();
-        let invocation = ui::tilo_actions::InvocationId::new();
-        tabs.start_resource_operation(
-            invocation,
-            navigate.kind,
-            &encoded.type_id,
-            &encoded.payload,
-            &doc,
-            &root,
-        )
-        .unwrap();
-        tabs.open(None, false).unwrap();
-        tabs.sync(&mut doc, &root);
-        assert!(matches!(
-            tabs.poll_resource_operation(invocation, false, &doc, &root),
-            Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
-        ));
-    }
-    #[test]
-    fn pip_host_adoption_and_close_route_to_original_background_tab() {
-        let mut tabs = workspace();
-        let first = tabs.active_id;
-        tabs.active_mut().debug_show_active_pip();
-        let id = tabs.active().active_floating_surface_ids()[0].clone();
-        tabs.open(None, false).unwrap();
-        assert_ne!(tabs.active_id, first);
-        tabs.on_floating_surface_host_message(
-            &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
-                id: id.clone(),
-                rect: [0.0, 0.0, 400.0, 300.0],
-            },
-        );
-        assert!(tabs.active().active_floating_surface_ids().is_empty());
-        assert_eq!(tabs.active_floating_surface_ids(), vec![id.clone()]);
-        tabs.active_mut().debug_show_active_pip();
-        let second = tabs.active().active_floating_surface_ids()[0].clone();
-        assert_ne!(id, second);
-        tabs.on_floating_surface_host_message(
-            &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id },
-        );
-        assert_eq!(tabs.active_floating_surface_ids(), vec![second]);
-    }
-    #[test]
-    fn background_pip_delivers_request_and_completes_invocation() {
-        let engine = TestEngine::new();
-        engine.set_media_element(Some(ui::webview::MediaElementInfo {
-            element_id: "media:one".into(),
-            viewport_rect: [0.1, 0.1, 0.8, 0.8],
-            intrinsic_size: [1920, 1080],
-            label: "Video".into(),
-        }));
-        let mut tabs = BrowserTabs::new(BrowserWidget::with_engine(Arc::new(Engine(engine)), true));
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        tabs.sync(&mut doc, &root);
-        let mut tree = TaffyTree::new();
-        let node = tree
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(900.0),
-                    height: Dimension::length(600.0),
+        // Phase `switching_before_rebuild_does_not_dispatch_stale_layout_nodes`.
+        {
+            let mut tabs = workspace();
+            let mut tree = TaffyTree::new();
+            for _ in 0..128 {
+                tree.new_leaf(Style::default()).unwrap();
+            }
+            tabs.build_layout(&mut tree, &Theme::dark(), &mut HashMap::new());
+            tabs.open(None, false).unwrap();
+            let mut tree = TaffyTree::new();
+            let root = tabs.build_layout(&mut tree, &Theme::dark(), &mut HashMap::new());
+            tabs.activate(1);
+            tabs.handle_event(
+                &WindowEvent::Focused(true),
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut AutoCommit::new(),
+                    path: &automerge::ROOT,
+                    handled: &mut false,
+                    focus_target: &mut None,
+                    node_id: root,
+                    taffy: &tree,
                 },
-                ..Default::default()
-            })
+            );
+        }
+    }
+
+    /// Background navigation, picture-in-picture and shared history pause.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn background_tabs_keep_shared_state_and_invocation_routes() {
+        // Phase `history_pause_is_shared_by_existing_and_new_tabs`.
+        {
+            let mut tabs = workspace();
+            tabs.open(None, true).unwrap();
+            tabs.active_mut().debug_show_history_paused();
+            assert!(tabs.tabs.iter().all(|tab| tab.widget.history_paused()));
+            tabs.open(None, false).unwrap();
+            assert!(tabs.active().history_paused());
+        }
+
+        // Phase `background_navigation_keeps_its_invocation_route`.
+        {
+            let mut tabs = workspace();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            tabs.sync(&mut doc, &root);
+            let resources = ui::resources::resources(tabs.active(), &doc);
+            let page = resources[0]
+                .children
+                .iter()
+                .find(|r| r.id.0 == "browser.page")
+                .unwrap();
+            let navigate = page
+                .actions
+                .iter()
+                .find(|action| action.id == "navigate")
+                .unwrap();
+            let args =
+                serde_json::from_value(serde_json::json!({"url": "https://one.test"})).unwrap();
+            let encoded = navigate.build_json(&args).unwrap();
+            let invocation = ui::tilo_actions::InvocationId::new();
+            tabs.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    navigate.kind,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut doc,
+                &root,
+            )
             .unwrap();
-        tree.compute_layout(
-            node,
-            Size {
-                width: taffy::AvailableSpace::MaxContent,
-                height: taffy::AvailableSpace::MaxContent,
-            },
-        )
-        .unwrap();
-        tabs.active_mut().apply_layout(&tree, node, Point::ORIGIN);
-        let resources = tabs.active().resources(&doc);
-        let page = resources[0]
-            .children
-            .iter()
-            .find(|r| r.id.0 == "browser.page")
+            tabs.open(None, false).unwrap();
+            tabs.sync(&mut doc, &root);
+            assert!(matches!(
+                tabs.poll_resource_operation(invocation, false, &doc, &root),
+                Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
+            ));
+        }
+
+        // Phase `pip_host_adoption_and_close_route_to_original_background_tab`.
+        {
+            let mut tabs = workspace();
+            let first = tabs.active_id;
+            tabs.active_mut().debug_show_active_pip();
+            let id = tabs.active().active_floating_surface_ids()[0].clone();
+            tabs.open(None, false).unwrap();
+            assert_ne!(tabs.active_id, first);
+            tabs.on_floating_surface_host_message(
+                &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+                    id: id.clone(),
+                    rect: [0.0, 0.0, 400.0, 300.0],
+                },
+            );
+            assert!(tabs.active().active_floating_surface_ids().is_empty());
+            assert_eq!(tabs.active_floating_surface_ids(), vec![id.clone()]);
+            tabs.active_mut().debug_show_active_pip();
+            let second = tabs.active().active_floating_surface_ids()[0].clone();
+            assert_ne!(id, second);
+            tabs.on_floating_surface_host_message(
+                &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id },
+            );
+            assert_eq!(tabs.active_floating_surface_ids(), vec![second]);
+        }
+
+        // Phase `background_pip_delivers_request_and_completes_invocation`.
+        {
+            let engine = TestEngine::new();
+            engine.set_media_element(Some(ui::webview::MediaElementInfo {
+                element_id: "media:one".into(),
+                viewport_rect: [0.1, 0.1, 0.8, 0.8],
+                intrinsic_size: [1920, 1080],
+                label: "Video".into(),
+            }));
+            let mut tabs =
+                BrowserTabs::new(BrowserWidget::with_engine(Arc::new(Engine(engine)), true));
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            tabs.sync(&mut doc, &root);
+            let mut tree = TaffyTree::new();
+            let node = tree
+                .new_leaf(Style {
+                    size: Size {
+                        width: Dimension::length(900.0),
+                        height: Dimension::length(600.0),
+                    },
+                    ..Default::default()
+                })
+                .unwrap();
+            tree.compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::MaxContent,
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+            )
             .unwrap();
-        let pip = page
-            .actions
-            .iter()
-            .find(|action| action.id == "picture-in-picture")
+            tabs.active_mut().apply_layout(&tree, node, Point::ORIGIN);
+            let resources = ui::resources::resources(tabs.active(), &doc);
+            let page = resources[0]
+                .children
+                .iter()
+                .find(|r| r.id.0 == "browser.page")
+                .unwrap();
+            let pip = page
+                .actions
+                .iter()
+                .find(|action| action.id == "picture-in-picture")
+                .unwrap();
+            let invocation = ui::tilo_actions::InvocationId::new();
+            tabs.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    pip.kind,
+                    pip.operation_type.as_deref().unwrap(),
+                    br#"{"operation":"toggle-picture-in-picture"}"#,
+                ),
+                &mut doc,
+                &root,
+            )
             .unwrap();
-        let invocation = ui::tilo_actions::InvocationId::new();
-        tabs.start_resource_operation(
-            invocation,
-            pip.kind,
-            pip.operation_type.as_deref().unwrap(),
-            br#"{"operation":"toggle-picture-in-picture"}"#,
-            &doc,
-            &root,
-        )
-        .unwrap();
-        tabs.open(None, false).unwrap();
-        tabs.sync(&mut doc, &root);
-        let request = tabs
-            .take_floating_surface_request()
-            .expect("background tab request is delivered");
-        assert_eq!(request.id, "browser.media-pip.1");
-        assert!(matches!(
-            tabs.poll_resource_operation(invocation, false, &doc, &root),
-            Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
-        ));
+            tabs.open(None, false).unwrap();
+            tabs.sync(&mut doc, &root);
+            let request = tabs
+                .take_floating_surface_request()
+                .expect("background tab request is delivered");
+            assert_eq!(request.id, "browser.media-pip.1");
+            assert!(matches!(
+                tabs.poll_resource_operation(invocation, false, &doc, &root),
+                Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
+            ));
+        }
     }
 }

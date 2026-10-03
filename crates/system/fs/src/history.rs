@@ -180,6 +180,9 @@ pub struct FileHistoryStore {
     state: Mutex<HistoryState>,
     /// Threads whose appends are deferred to one durable write.
     deferring: Mutex<HashSet<std::thread::ThreadId>>,
+    /// Log entries after which the log is folded into the snapshot;
+    /// [`LOG_COMPACT_AFTER_ENTRIES`] outside tests.
+    compact_after: usize,
 }
 
 /// Defers the durable log write of this thread's history appends until
@@ -666,7 +669,7 @@ impl FileHistoryStore {
             if let Some(parent) = self.log_path.parent()
                 && !parent.as_os_str().is_empty()
             {
-                atomic_file::sync_directory(parent)?;
+                tilo_files::native::atomic::sync_directory(parent)?;
             }
             file.set_len(state.log.len)?;
             state.log.file = Some(file);
@@ -686,7 +689,7 @@ impl FileHistoryStore {
     }
 
     fn maybe_compact(&self, state: &mut HistoryState) {
-        if state.log.entries >= LOG_COMPACT_AFTER_ENTRIES
+        if state.log.entries >= self.compact_after
             && let Err(error) = self.compact_locked(state)
         {
             // The log already holds every entry durably; compaction only
@@ -795,7 +798,16 @@ impl FileHistoryStore {
             log_path,
             state: Mutex::new(state),
             deferring: Mutex::new(HashSet::new()),
+            compact_after: LOG_COMPACT_AFTER_ENTRIES,
         })
+    }
+
+    /// Fold the log after `entries` instead of [`LOG_COMPACT_AFTER_ENTRIES`],
+    /// so a test crosses the bound without thousands of synced appends.
+    #[cfg(test)]
+    pub(crate) fn with_compact_after(mut self, entries: usize) -> Self {
+        self.compact_after = entries;
+        self
     }
 
     /// Append one immutable version. Returns `false` for an exact replay and
@@ -1187,219 +1199,222 @@ mod tests {
     }
 
     #[test]
-    fn deferred_appends_are_one_log_line_written_when_the_batch_finishes() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("history.json");
-        let record = FileRecordId::new();
-        let root = version(record, vec![], FileProvenance::Create, 1);
-        let edit = version(record, vec![root.id], FileProvenance::Edit, 2);
-        let store = FileHistoryStore::open(&path).unwrap();
-        let log = log_path_for(&path);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn history_appends_and_batches_are_exact_atomic_and_durable() {
+        // Phase `deferred_appends_are_one_log_line_written_when_the_batch_finishes`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("history.json");
+            let record = FileRecordId::new();
+            let root = version(record, vec![], FileProvenance::Create, 1);
+            let edit = version(record, vec![root.id], FileProvenance::Edit, 2);
+            let store = FileHistoryStore::open(&path).unwrap();
+            let log = log_path_for(&path);
 
-        let batch = store.defer_durability();
-        store.append(root).unwrap();
-        store.append(edit.clone()).unwrap();
-        // Visible at once, on disk only when the batch finishes.
-        assert_eq!(store.snapshot(record).unwrap().versions.len(), 2);
-        assert!(std::fs::read(&log).unwrap_or_default().is_empty());
-        // Another thread's append is durable when it returns: it writes the
-        // deferred ones first, so the log keeps the order of memory.
-        let third = version(record, vec![edit.id], FileProvenance::Edit, 3);
-        std::thread::scope(|scope| {
-            scope.spawn(|| store.append(third.clone()).unwrap());
-        });
-        assert_eq!(store.pending_log_entries(), 2);
-        batch.finish().unwrap();
-        drop(store);
-        assert_eq!(
-            FileHistoryStore::open(&path)
-                .unwrap()
-                .snapshot(record)
-                .unwrap()
-                .versions
-                .len(),
-            3
-        );
+            let batch = store.defer_durability();
+            store.append(root).unwrap();
+            store.append(edit.clone()).unwrap();
+            // Visible at once, on disk only when the batch finishes.
+            assert_eq!(store.snapshot(record).unwrap().versions.len(), 2);
+            assert!(std::fs::read(&log).unwrap_or_default().is_empty());
+            // Another thread's append is durable when it returns: it writes the
+            // deferred ones first, so the log keeps the order of memory.
+            let third = version(record, vec![edit.id], FileProvenance::Edit, 3);
+            std::thread::scope(|scope| {
+                scope.spawn(|| store.append(third.clone()).unwrap());
+            });
+            assert_eq!(store.pending_log_entries(), 2);
+            batch.finish().unwrap();
+            drop(store);
+            assert_eq!(
+                FileHistoryStore::open(&path)
+                    .unwrap()
+                    .snapshot(record)
+                    .unwrap()
+                    .versions
+                    .len(),
+                3
+            );
 
-        // A batch that never finishes (a crash) leaves nothing behind.
-        let other = FileRecordId::new();
-        let store = FileHistoryStore::open(&path).unwrap();
-        let batch = store.defer_durability();
-        store
-            .append(version(other, vec![], FileProvenance::Create, 4))
-            .unwrap();
-        std::mem::forget(batch);
-        let on_disk = std::fs::read(&log).unwrap();
-        drop(store);
-        assert_eq!(std::fs::read(&log).unwrap(), on_disk);
-        assert!(
-            FileHistoryStore::open(&path)
-                .unwrap()
-                .snapshot(other)
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn append_branches_and_restart_preserve_exact_heads() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("history.json");
-        let store = FileHistoryStore::open(&path).unwrap();
-        let record = FileRecordId::new();
-        let root = version(record, vec![], FileProvenance::Create, 1);
-        assert!(store.append(root.clone()).unwrap());
-        assert!(!store.append(root.clone()).unwrap(), "exact replay");
-        let left = version(record, vec![root.id], FileProvenance::Edit, 2);
-        let right = version(record, vec![root.id], FileProvenance::Edit, 3);
-        store.append(left.clone()).unwrap();
-        store.append(right.clone()).unwrap();
-        drop(store);
-
-        let reopened = FileHistoryStore::open(path).unwrap();
-        let snapshot = reopened.snapshot(record).unwrap();
-        assert_eq!(snapshot.versions, vec![root, left.clone(), right.clone()]);
-        let mut expected_heads = vec![left.id, right.id];
-        expected_heads.sort();
-        assert_eq!(snapshot.heads, expected_heads);
-    }
-
-    #[test]
-    fn missing_parent_and_global_id_collision_leave_disk_unchanged() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("history.json");
-        let store = FileHistoryStore::open(&path).unwrap();
-        let record = FileRecordId::new();
-        let root = version(record, vec![], FileProvenance::Create, 1);
-        store.append(root.clone()).unwrap();
-        let before = disk_state(&path);
-        let orphan = version(record, vec![FileVersionId::new()], FileProvenance::Edit, 2);
-        assert!(matches!(
-            store.append(orphan),
-            Err(HistoryError::MissingParent(_))
-        ));
-        let mut collision = version(FileRecordId::new(), vec![], FileProvenance::Create, 1);
-        collision.id = root.id;
-        assert!(matches!(
-            store.append(collision),
-            Err(HistoryError::VersionIdCollision(_))
-        ));
-        assert_eq!(disk_state(&path), before);
-    }
-
-    #[test]
-    fn multi_record_batch_is_all_or_nothing_and_survives_restart() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("history.json");
-        let store = FileHistoryStore::open(&path).unwrap();
-        let source_record = FileRecordId::new();
-        let destination_record = FileRecordId::new();
-        let source_root = version(source_record, vec![], FileProvenance::Create, 1);
-        let destination_root = version(destination_record, vec![], FileProvenance::Create, 1);
-        assert_eq!(
+            // A batch that never finishes (a crash) leaves nothing behind.
+            let other = FileRecordId::new();
+            let store = FileHistoryStore::open(&path).unwrap();
+            let batch = store.defer_durability();
             store
-                .append_batch(&[source_root.clone(), destination_root.clone()])
-                .unwrap(),
-            vec![true, true]
-        );
-
-        let source_move = version(
-            source_record,
-            vec![source_root.id],
-            FileProvenance::Rename,
-            2,
-        );
-        let mut destination_delete = version(
-            destination_record,
-            vec![destination_root.id],
-            FileProvenance::Delete,
-            2,
-        );
-        destination_delete.parents = vec![FileVersionId::new()];
-        let before = disk_state(&path);
-        assert!(matches!(
-            store.append_batch(&[source_move.clone(), destination_delete]),
-            Err(HistoryError::MissingParent(_))
-        ));
-        assert_eq!(disk_state(&path), before);
-        assert_eq!(store.snapshot(source_record).unwrap().versions.len(), 1);
-        assert_eq!(
-            store.snapshot(destination_record).unwrap().versions.len(),
-            1
-        );
-
-        let destination_delete = version(
-            destination_record,
-            vec![destination_root.id],
-            FileProvenance::Delete,
-            2,
-        );
-        assert_eq!(
-            store
-                .append_batch(&[source_move.clone(), destination_delete.clone()])
-                .unwrap(),
-            vec![true, true]
-        );
-        drop(store);
-
-        let reopened = FileHistoryStore::open(path).unwrap();
-        assert_eq!(
-            reopened.snapshot(source_record).unwrap().versions,
-            vec![source_root, source_move]
-        );
-        assert_eq!(
-            reopened.snapshot(destination_record).unwrap().versions,
-            vec![destination_root, destination_delete]
-        );
-    }
-
-    #[test]
-    fn conflict_resolution_is_first_class_idempotent_and_durable() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("history.json");
-        let store = FileHistoryStore::open(&path).unwrap();
-        let record = FileRecordId::new();
-        let root = version(record, vec![], FileProvenance::Create, 1);
-        let left = version(record, vec![root.id], FileProvenance::Edit, 2);
-        let right = version(record, vec![root.id], FileProvenance::Edit, 3);
-        for item in [root, left.clone(), right.clone()] {
-            store.append(item).unwrap();
+                .append(version(other, vec![], FileProvenance::Create, 4))
+                .unwrap();
+            std::mem::forget(batch);
+            let on_disk = std::fs::read(&log).unwrap();
+            drop(store);
+            assert_eq!(std::fs::read(&log).unwrap(), on_disk);
+            assert!(
+                FileHistoryStore::open(&path)
+                    .unwrap()
+                    .snapshot(other)
+                    .is_none()
+            );
         }
-        let conflict_id = Uuid::new_v4();
-        let conflict = FileConflictV1 {
-            id: conflict_id,
-            record_id: record,
-            versions: vec![left.id, right.id],
-            status: ConflictStatus::Open,
-            resolution: None,
-        };
-        assert!(store.record_conflict(conflict.clone()).unwrap());
-        assert!(!store.record_conflict(conflict).unwrap());
+        // Phase `append_branches_and_restart_preserve_exact_heads`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("history.json");
+            let store = FileHistoryStore::open(&path).unwrap();
+            let record = FileRecordId::new();
+            let root = version(record, vec![], FileProvenance::Create, 1);
+            assert!(store.append(root.clone()).unwrap());
+            assert!(!store.append(root.clone()).unwrap(), "exact replay");
+            let left = version(record, vec![root.id], FileProvenance::Edit, 2);
+            let right = version(record, vec![root.id], FileProvenance::Edit, 3);
+            store.append(left.clone()).unwrap();
+            store.append(right.clone()).unwrap();
+            drop(store);
 
-        let result = version(
-            record,
-            vec![left.id, right.id],
-            FileProvenance::ConflictResolution,
-            4,
-        );
-        store.append(result.clone()).unwrap();
-        let resolution = ConflictResolution {
-            strategy: ConflictStrategy::KeepCurrent,
-            result: result.id,
-            actor: result.actor,
-            timestamp_ms: result.timestamp_ms,
-        };
-        assert!(
-            store
-                .resolve(record, conflict_id, resolution.clone())
-                .unwrap()
-        );
-        assert!(!store.resolve(record, conflict_id, resolution).unwrap());
-        drop(store);
+            let reopened = FileHistoryStore::open(path).unwrap();
+            let snapshot = reopened.snapshot(record).unwrap();
+            assert_eq!(snapshot.versions, vec![root, left.clone(), right.clone()]);
+            let mut expected_heads = vec![left.id, right.id];
+            expected_heads.sort();
+            assert_eq!(snapshot.heads, expected_heads);
+        }
+        // Phase `missing_parent_and_global_id_collision_leave_disk_unchanged`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("history.json");
+            let store = FileHistoryStore::open(&path).unwrap();
+            let record = FileRecordId::new();
+            let root = version(record, vec![], FileProvenance::Create, 1);
+            store.append(root.clone()).unwrap();
+            let before = disk_state(&path);
+            let orphan = version(record, vec![FileVersionId::new()], FileProvenance::Edit, 2);
+            assert!(matches!(
+                store.append(orphan),
+                Err(HistoryError::MissingParent(_))
+            ));
+            let mut collision = version(FileRecordId::new(), vec![], FileProvenance::Create, 1);
+            collision.id = root.id;
+            assert!(matches!(
+                store.append(collision),
+                Err(HistoryError::VersionIdCollision(_))
+            ));
+            assert_eq!(disk_state(&path), before);
+        }
+        // Phase `multi_record_batch_is_all_or_nothing_and_survives_restart`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("history.json");
+            let store = FileHistoryStore::open(&path).unwrap();
+            let source_record = FileRecordId::new();
+            let destination_record = FileRecordId::new();
+            let source_root = version(source_record, vec![], FileProvenance::Create, 1);
+            let destination_root = version(destination_record, vec![], FileProvenance::Create, 1);
+            assert_eq!(
+                store
+                    .append_batch(&[source_root.clone(), destination_root.clone()])
+                    .unwrap(),
+                vec![true, true]
+            );
 
-        let reopened = FileHistoryStore::open(path).unwrap();
-        let conflict = &reopened.snapshot(record).unwrap().conflicts[0];
-        assert_eq!(conflict.status, ConflictStatus::Resolved);
-        assert_eq!(conflict.resolution.as_ref().unwrap().result, result.id);
+            let source_move = version(
+                source_record,
+                vec![source_root.id],
+                FileProvenance::Rename,
+                2,
+            );
+            let mut destination_delete = version(
+                destination_record,
+                vec![destination_root.id],
+                FileProvenance::Delete,
+                2,
+            );
+            destination_delete.parents = vec![FileVersionId::new()];
+            let before = disk_state(&path);
+            assert!(matches!(
+                store.append_batch(&[source_move.clone(), destination_delete]),
+                Err(HistoryError::MissingParent(_))
+            ));
+            assert_eq!(disk_state(&path), before);
+            assert_eq!(store.snapshot(source_record).unwrap().versions.len(), 1);
+            assert_eq!(
+                store.snapshot(destination_record).unwrap().versions.len(),
+                1
+            );
+
+            let destination_delete = version(
+                destination_record,
+                vec![destination_root.id],
+                FileProvenance::Delete,
+                2,
+            );
+            assert_eq!(
+                store
+                    .append_batch(&[source_move.clone(), destination_delete.clone()])
+                    .unwrap(),
+                vec![true, true]
+            );
+            drop(store);
+
+            let reopened = FileHistoryStore::open(path).unwrap();
+            assert_eq!(
+                reopened.snapshot(source_record).unwrap().versions,
+                vec![source_root, source_move]
+            );
+            assert_eq!(
+                reopened.snapshot(destination_record).unwrap().versions,
+                vec![destination_root, destination_delete]
+            );
+        }
+        // Phase `conflict_resolution_is_first_class_idempotent_and_durable`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("history.json");
+            let store = FileHistoryStore::open(&path).unwrap();
+            let record = FileRecordId::new();
+            let root = version(record, vec![], FileProvenance::Create, 1);
+            let left = version(record, vec![root.id], FileProvenance::Edit, 2);
+            let right = version(record, vec![root.id], FileProvenance::Edit, 3);
+            for item in [root, left.clone(), right.clone()] {
+                store.append(item).unwrap();
+            }
+            let conflict_id = Uuid::new_v4();
+            let conflict = FileConflictV1 {
+                id: conflict_id,
+                record_id: record,
+                versions: vec![left.id, right.id],
+                status: ConflictStatus::Open,
+                resolution: None,
+            };
+            assert!(store.record_conflict(conflict.clone()).unwrap());
+            assert!(!store.record_conflict(conflict).unwrap());
+
+            let result = version(
+                record,
+                vec![left.id, right.id],
+                FileProvenance::ConflictResolution,
+                4,
+            );
+            store.append(result.clone()).unwrap();
+            let resolution = ConflictResolution {
+                strategy: ConflictStrategy::KeepCurrent,
+                result: result.id,
+                actor: result.actor,
+                timestamp_ms: result.timestamp_ms,
+            };
+            assert!(
+                store
+                    .resolve(record, conflict_id, resolution.clone())
+                    .unwrap()
+            );
+            assert!(!store.resolve(record, conflict_id, resolution).unwrap());
+            drop(store);
+
+            let reopened = FileHistoryStore::open(path).unwrap();
+            let conflict = &reopened.snapshot(record).unwrap().conflicts[0];
+            assert_eq!(conflict.status, ConflictStatus::Resolved);
+            assert_eq!(conflict.resolution.as_ref().unwrap().result, result.id);
+        }
     }
 
     /// Everything the store keeps on disk: snapshot and log bytes.
@@ -1411,109 +1426,175 @@ mod tests {
     }
 
     #[test]
-    fn a_whole_file_history_from_earlier_releases_is_read_and_extended() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("history.json");
-        let record = FileRecordId::new();
-        let root = version(record, vec![], FileProvenance::Create, 1);
-        let edit = version(record, vec![root.id], FileProvenance::Edit, 2);
-        // Earlier releases rewrote this one document on every append.
-        let mut legacy = HistoryState::default();
-        let candidate = stage_versions(&legacy, &[root.clone(), edit.clone()]).unwrap();
-        install_versions(&mut legacy, candidate);
-        persist(&path, &legacy).unwrap();
-        let legacy_bytes = std::fs::read(&path).unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn history_logs_read_legacy_and_fail_closed_on_damage() {
+        // Phase `a_whole_file_history_from_earlier_releases_is_read_and_extended`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("history.json");
+            let record = FileRecordId::new();
+            let root = version(record, vec![], FileProvenance::Create, 1);
+            let edit = version(record, vec![root.id], FileProvenance::Edit, 2);
+            // Earlier releases rewrote this one document on every append.
+            let mut legacy = HistoryState::default();
+            let candidate = stage_versions(&legacy, &[root.clone(), edit.clone()]).unwrap();
+            install_versions(&mut legacy, candidate);
+            persist(&path, &legacy).unwrap();
+            let legacy_bytes = std::fs::read(&path).unwrap();
 
-        let store = FileHistoryStore::open(&path).unwrap();
-        assert_eq!(
-            store.snapshot(record).unwrap().versions,
-            vec![root.clone(), edit.clone()]
-        );
-        let next = version(record, vec![edit.id], FileProvenance::Edit, 3);
-        assert!(store.append(next.clone()).unwrap());
-        assert!(!store.append(root.clone()).unwrap(), "exact replay");
-        assert_eq!(
-            std::fs::read(&path).unwrap(),
-            legacy_bytes,
-            "an append writes only the log"
-        );
-        assert_eq!(store.pending_log_entries(), 1);
-        drop(store);
+            let store = FileHistoryStore::open(&path).unwrap();
+            assert_eq!(
+                store.snapshot(record).unwrap().versions,
+                vec![root.clone(), edit.clone()]
+            );
+            let next = version(record, vec![edit.id], FileProvenance::Edit, 3);
+            assert!(store.append(next.clone()).unwrap());
+            assert!(!store.append(root.clone()).unwrap(), "exact replay");
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                legacy_bytes,
+                "an append writes only the log"
+            );
+            assert_eq!(store.pending_log_entries(), 1);
+            drop(store);
 
-        let reopened = FileHistoryStore::open(&path).unwrap();
-        assert_eq!(
-            reopened.snapshot(record).unwrap().versions,
-            vec![root.clone(), edit.clone(), next.clone()]
-        );
-        reopened.compact().unwrap();
-        assert_eq!(reopened.pending_log_entries(), 0);
-        assert!(disk_state(&path).1.is_empty());
-        drop(reopened);
-        let compacted = FileHistoryStore::open(&path).unwrap();
-        assert_eq!(
-            compacted.snapshot(record).unwrap().versions,
-            vec![root, edit, next]
-        );
-    }
+            let reopened = FileHistoryStore::open(&path).unwrap();
+            assert_eq!(
+                reopened.snapshot(record).unwrap().versions,
+                vec![root.clone(), edit.clone(), next.clone()]
+            );
+            reopened.compact().unwrap();
+            assert_eq!(reopened.pending_log_entries(), 0);
+            assert!(disk_state(&path).1.is_empty());
+            drop(reopened);
+            let compacted = FileHistoryStore::open(&path).unwrap();
+            assert_eq!(
+                compacted.snapshot(record).unwrap().versions,
+                vec![root, edit, next]
+            );
+        }
+        // Phase `a_torn_final_log_line_is_dropped_and_damage_before_it_fails_closed`.
+        {
+            use std::io::Write as _;
 
-    #[test]
-    fn a_torn_final_log_line_is_dropped_and_damage_before_it_fails_closed() {
-        use std::io::Write as _;
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("history.json");
+            let record = FileRecordId::new();
+            let root = version(record, vec![], FileProvenance::Create, 1);
+            let edit = version(record, vec![root.id], FileProvenance::Edit, 2);
+            let store = FileHistoryStore::open(&path).unwrap();
+            store.append(root).unwrap();
+            let edit_id = edit.id;
+            store.append(edit).unwrap();
+            drop(store);
+            let log = log_path_for(&path);
+            let intact = std::fs::read(&log).unwrap();
 
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("history.json");
-        let record = FileRecordId::new();
-        let root = version(record, vec![], FileProvenance::Create, 1);
-        let edit = version(record, vec![root.id], FileProvenance::Edit, 2);
-        let store = FileHistoryStore::open(&path).unwrap();
-        store.append(root).unwrap();
-        let edit_id = edit.id;
-        store.append(edit).unwrap();
-        drop(store);
-        let log = log_path_for(&path);
-        let intact = std::fs::read(&log).unwrap();
+            // A write that never returned: half a line, no newline.
+            let mut file = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+            file.write_all(b"0123456789abcdef {\"op\":\"vers").unwrap();
+            drop(file);
+            let store = FileHistoryStore::open(&path).unwrap();
+            assert_eq!(store.snapshot(record).unwrap().versions.len(), 2);
+            assert_eq!(std::fs::read(&log).unwrap(), intact, "torn tail removed");
+            let later = version(record, vec![edit_id], FileProvenance::Edit, 3);
+            store.append(later).unwrap();
+            drop(store);
+            assert_eq!(
+                FileHistoryStore::open(&path)
+                    .unwrap()
+                    .snapshot(record)
+                    .unwrap()
+                    .versions
+                    .len(),
+                3
+            );
 
-        // A write that never returned: half a line, no newline.
-        let mut file = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
-        file.write_all(b"0123456789abcdef {\"op\":\"vers").unwrap();
-        drop(file);
-        let store = FileHistoryStore::open(&path).unwrap();
-        assert_eq!(store.snapshot(record).unwrap().versions.len(), 2);
-        assert_eq!(std::fs::read(&log).unwrap(), intact, "torn tail removed");
-        let later = version(record, vec![edit_id], FileProvenance::Edit, 3);
-        store.append(later).unwrap();
-        drop(store);
-        assert_eq!(
-            FileHistoryStore::open(&path)
-                .unwrap()
-                .snapshot(record)
-                .unwrap()
-                .versions
-                .len(),
-            3
-        );
-
-        // Damage to an acknowledged entry is never silently skipped.
-        let mut damaged = std::fs::read(&log).unwrap();
-        damaged[70] ^= 0x01;
-        std::fs::write(&log, &damaged).unwrap();
-        assert!(matches!(
-            FileHistoryStore::open(&path),
-            Err(HistoryError::DamagedLog(_))
-        ));
-        assert_eq!(std::fs::read(&log).unwrap(), damaged, "evidence kept");
+            // Damage to an acknowledged entry is never silently skipped.
+            let mut damaged = std::fs::read(&log).unwrap();
+            damaged[70] ^= 0x01;
+            std::fs::write(&log, &damaged).unwrap();
+            assert!(matches!(
+                FileHistoryStore::open(&path),
+                Err(HistoryError::DamagedLog(_))
+            ));
+            assert_eq!(std::fs::read(&log).unwrap(), damaged, "evidence kept");
+        }
+        // Phase `corrupt_heads_are_rejected_on_open`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("history.json");
+            let store = FileHistoryStore::open(&path).unwrap();
+            let record = FileRecordId::new();
+            store
+                .append(version(record, vec![], FileProvenance::Create, 1))
+                .unwrap();
+            store.compact().unwrap();
+            drop(store);
+            let mut document: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            document["records"][0]["heads"] = serde_json::json!([]);
+            std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+            assert!(matches!(
+                FileHistoryStore::open(path),
+                Err(HistoryError::InvalidHeads)
+            ));
+        }
+        // Phase `xattr_projection_is_bounded_recent_and_round_trips`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = FileHistoryStore::open(dir.path().join("history.json")).unwrap();
+            let record = FileRecordId::new();
+            let mut parent = None;
+            for timestamp in 0..20 {
+                let item = version(
+                    record,
+                    parent.into_iter().collect(),
+                    if timestamp == 0 {
+                        FileProvenance::Create
+                    } else {
+                        FileProvenance::Edit
+                    },
+                    timestamp,
+                );
+                parent = Some(item.id);
+                store.append(item).unwrap();
+            }
+            let projection = store.projection(record).unwrap();
+            assert_eq!(projection.total_versions, 20);
+            assert!(projection.versions_truncated);
+            assert_eq!(projection.versions.len(), MAX_PROJECTED_VERSIONS);
+            assert_eq!(projection.versions.first().unwrap().timestamp_ms, 8);
+            let bytes = projection.to_xattr_bytes().unwrap();
+            assert!(bytes.len() <= MAX_HISTORY_PROJECTION_BYTES);
+            assert_eq!(
+                HistoryProjectionV1::parse_xattr(&bytes).unwrap(),
+                projection
+            );
+        }
     }
 
     #[test]
     fn the_log_folds_into_the_snapshot_after_its_bound() {
+        const BOUND: usize = 64;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("history.json");
-        let store = FileHistoryStore::open(&path).unwrap();
+        let store = FileHistoryStore::open(&path)
+            .unwrap()
+            .with_compact_after(BOUND);
         let record = FileRecordId::new();
         let mut parent = version(record, vec![], FileProvenance::Create, 0);
         store.append(parent.clone()).unwrap();
-        for i in 1..LOG_COMPACT_AFTER_ENTRIES as u64 {
-            let next = version(record, vec![parent.id], FileProvenance::Edit, i);
+        for i in 1..BOUND {
+            assert_eq!(
+                store.pending_log_entries(),
+                i,
+                "the log is not folded before its bound"
+            );
+            let next = version(record, vec![parent.id], FileProvenance::Edit, i as u64);
             store.append(next.clone()).unwrap();
             parent = next;
         }
@@ -1521,63 +1602,6 @@ mod tests {
         assert!(disk_state(&path).1.is_empty());
         drop(store);
         let reopened = FileHistoryStore::open(&path).unwrap();
-        assert_eq!(
-            reopened.snapshot(record).unwrap().versions.len(),
-            LOG_COMPACT_AFTER_ENTRIES
-        );
-    }
-
-    #[test]
-    fn corrupt_heads_are_rejected_on_open() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("history.json");
-        let store = FileHistoryStore::open(&path).unwrap();
-        let record = FileRecordId::new();
-        store
-            .append(version(record, vec![], FileProvenance::Create, 1))
-            .unwrap();
-        store.compact().unwrap();
-        drop(store);
-        let mut document: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        document["records"][0]["heads"] = serde_json::json!([]);
-        std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
-        assert!(matches!(
-            FileHistoryStore::open(path),
-            Err(HistoryError::InvalidHeads)
-        ));
-    }
-
-    #[test]
-    fn xattr_projection_is_bounded_recent_and_round_trips() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = FileHistoryStore::open(dir.path().join("history.json")).unwrap();
-        let record = FileRecordId::new();
-        let mut parent = None;
-        for timestamp in 0..20 {
-            let item = version(
-                record,
-                parent.into_iter().collect(),
-                if timestamp == 0 {
-                    FileProvenance::Create
-                } else {
-                    FileProvenance::Edit
-                },
-                timestamp,
-            );
-            parent = Some(item.id);
-            store.append(item).unwrap();
-        }
-        let projection = store.projection(record).unwrap();
-        assert_eq!(projection.total_versions, 20);
-        assert!(projection.versions_truncated);
-        assert_eq!(projection.versions.len(), MAX_PROJECTED_VERSIONS);
-        assert_eq!(projection.versions.first().unwrap().timestamp_ms, 8);
-        let bytes = projection.to_xattr_bytes().unwrap();
-        assert!(bytes.len() <= MAX_HISTORY_PROJECTION_BYTES);
-        assert_eq!(
-            HistoryProjectionV1::parse_xattr(&bytes).unwrap(),
-            projection
-        );
+        assert_eq!(reopened.snapshot(record).unwrap().versions.len(), BOUND);
     }
 }

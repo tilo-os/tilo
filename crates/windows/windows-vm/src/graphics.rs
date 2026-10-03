@@ -391,117 +391,120 @@ mod tests {
     }
 
     #[test]
-    fn no_partition_interface_keeps_the_host_gpu_and_reports_2d_fallback() {
-        let sysfs = TempDir::new().unwrap();
-        let gpu = sysfs.path().join("bus/pci/devices/0000:00:02.0");
-        file(&gpu.join("class"), "0x030000\n");
-        file(&gpu.join("vendor"), "0x8086\n");
-        file(&gpu.join("device"), "0x1234\n");
-        let probe = GraphicsCapabilities::probe_sysfs(sysfs.path()).unwrap();
-        assert_eq!(probe.recommendation, GraphicsRecommendation::Paravirtual2d);
-        assert!(!probe.automatic_assignment);
-        assert_eq!(probe.devices.len(), 1);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn gpu_partitions_are_ready_only_when_isolated_and_otherwise_fall_back() {
+        // Phase `no_partition_interface_keeps_the_host_gpu_and_reports_2d_fallback`.
+        {
+            let sysfs = TempDir::new().unwrap();
+            let gpu = sysfs.path().join("bus/pci/devices/0000:00:02.0");
+            file(&gpu.join("class"), "0x030000\n");
+            file(&gpu.join("vendor"), "0x8086\n");
+            file(&gpu.join("device"), "0x1234\n");
+            let probe = GraphicsCapabilities::probe_sysfs(sysfs.path()).unwrap();
+            assert_eq!(probe.recommendation, GraphicsRecommendation::Paravirtual2d);
+            assert!(!probe.automatic_assignment);
+            assert_eq!(probe.devices.len(), 1);
+        }
+        // Phase `mdev_capability_is_not_misreported_as_an_assignment`.
+        {
+            let sysfs = TempDir::new().unwrap();
+            let gpu = sysfs.path().join("bus/pci/devices/0000:01:00.0");
+            file(&gpu.join("class"), "0x030200\n");
+            let kind = gpu.join("mdev_supported_types/nvidia-1");
+            file(&kind.join("available_instances"), "2\n");
+            file(&kind.join("device_api"), "vfio-pci\n");
+            file(&kind.join("name"), "one display\n");
+            fs::create_dir_all(kind.join("devices")).unwrap();
+            let probe = GraphicsCapabilities::probe_sysfs(sysfs.path()).unwrap();
+            assert_eq!(
+                probe.recommendation,
+                GraphicsRecommendation::PartitionCapableNotConfigured
+            );
+            assert!(
+                probe.devices[0].mediated_types[0]
+                    .created_devices
+                    .is_empty()
+            );
+        }
+        // Phase `only_an_iommu_isolated_vfio_bound_virtual_function_is_ready`.
+        {
+            let sysfs = TempDir::new().unwrap();
+            let pci = sysfs.path().join("bus/pci/devices");
+            let pf = pci.join("0000:03:00.0");
+            let vf = pci.join("0000:03:00.1");
+            file(&pf.join("class"), "0x030000\n");
+            file(&pf.join("sriov_totalvfs"), "4\n");
+            file(&pf.join("sriov_numvfs"), "1\n");
+            file(&vf.join("class"), "0x030000\n");
+            let driver = sysfs.path().join("bus/pci/drivers/vfio-pci");
+            let group = sysfs.path().join("kernel/iommu_groups/12");
+            fs::create_dir_all(&driver).unwrap();
+            fs::create_dir_all(group.join("devices/0000:03:00.1")).unwrap();
+            symlink(&vf, pf.join("virtfn0")).unwrap();
+            symlink(&driver, vf.join("driver")).unwrap();
+            symlink(&group, vf.join("iommu_group")).unwrap();
+            let probe = GraphicsCapabilities::probe_sysfs(sysfs.path()).unwrap();
+            assert_eq!(
+                probe.recommendation,
+                GraphicsRecommendation::PartitionReadyForExplicitAssignment
+            );
+            let parent = probe
+                .devices
+                .iter()
+                .find(|device| device.pci_address == "0000:03:00.0")
+                .unwrap();
+            assert_eq!(
+                parent.sriov.as_ref().unwrap().vfio_ready_vfs,
+                ["0000:03:00.1"]
+            );
+            let assignment = probe.sriov_assignment("0000:03:00.1").unwrap();
+            let xml = assignment.domain_xml().unwrap();
+            assert!(xml.contains("domain='0x0000' bus='0x03' slot='0x00' function='0x1'"));
+            assert!(xml.contains("managed='no'"));
+            assert!(probe.sriov_assignment("0000:03:00.0").is_none());
 
-    #[test]
-    fn mdev_capability_is_not_misreported_as_an_assignment() {
-        let sysfs = TempDir::new().unwrap();
-        let gpu = sysfs.path().join("bus/pci/devices/0000:01:00.0");
-        file(&gpu.join("class"), "0x030200\n");
-        let kind = gpu.join("mdev_supported_types/nvidia-1");
-        file(&kind.join("available_instances"), "2\n");
-        file(&kind.join("device_api"), "vfio-pci\n");
-        file(&kind.join("name"), "one display\n");
-        fs::create_dir_all(kind.join("devices")).unwrap();
-        let probe = GraphicsCapabilities::probe_sysfs(sysfs.path()).unwrap();
-        assert_eq!(
-            probe.recommendation,
-            GraphicsRecommendation::PartitionCapableNotConfigured
-        );
-        assert!(
-            probe.devices[0].mediated_types[0]
-                .created_devices
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn only_an_iommu_isolated_vfio_bound_virtual_function_is_ready() {
-        let sysfs = TempDir::new().unwrap();
-        let pci = sysfs.path().join("bus/pci/devices");
-        let pf = pci.join("0000:03:00.0");
-        let vf = pci.join("0000:03:00.1");
-        file(&pf.join("class"), "0x030000\n");
-        file(&pf.join("sriov_totalvfs"), "4\n");
-        file(&pf.join("sriov_numvfs"), "1\n");
-        file(&vf.join("class"), "0x030000\n");
-        let driver = sysfs.path().join("bus/pci/drivers/vfio-pci");
-        let group = sysfs.path().join("kernel/iommu_groups/12");
-        fs::create_dir_all(&driver).unwrap();
-        fs::create_dir_all(group.join("devices/0000:03:00.1")).unwrap();
-        symlink(&vf, pf.join("virtfn0")).unwrap();
-        symlink(&driver, vf.join("driver")).unwrap();
-        symlink(&group, vf.join("iommu_group")).unwrap();
-        let probe = GraphicsCapabilities::probe_sysfs(sysfs.path()).unwrap();
-        assert_eq!(
-            probe.recommendation,
-            GraphicsRecommendation::PartitionReadyForExplicitAssignment
-        );
-        let parent = probe
-            .devices
-            .iter()
-            .find(|device| device.pci_address == "0000:03:00.0")
-            .unwrap();
-        assert_eq!(
-            parent.sriov.as_ref().unwrap().vfio_ready_vfs,
-            ["0000:03:00.1"]
-        );
-        let assignment = probe.sriov_assignment("0000:03:00.1").unwrap();
-        let xml = assignment.domain_xml().unwrap();
-        assert!(xml.contains("domain='0x0000' bus='0x03' slot='0x00' function='0x1'"));
-        assert!(xml.contains("managed='no'"));
-        assert!(probe.sriov_assignment("0000:03:00.0").is_none());
-
-        // Presence of an IOMMU group alone is insufficient: Tilo never offers
-        // a VF whose group also contains a host device it would strand.
-        fs::create_dir_all(group.join("devices/0000:00:1f.0")).unwrap();
-        let shared_group_probe = GraphicsCapabilities::probe_sysfs(sysfs.path()).unwrap();
-        assert!(
-            shared_group_probe
-                .sriov_assignment("0000:03:00.1")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn mediated_assignment_requires_an_existing_device_and_escapes_nothing() {
-        let sysfs = TempDir::new().unwrap();
-        let gpu = sysfs.path().join("bus/pci/devices/0000:01:00.0");
-        file(&gpu.join("class"), "0x030200\n");
-        let kind = gpu.join("mdev_supported_types/vendor-display");
-        file(&kind.join("available_instances"), "1\n");
-        file(&kind.join("device_api"), "vfio-pci\n");
-        let uuid = "53764d0e-85a0-42b4-af5c-2046b460b1dc";
-        fs::create_dir_all(kind.join("devices")).unwrap();
-        file(&kind.join("devices").join(uuid).join("remove"), "");
-        let probe = GraphicsCapabilities::probe_sysfs(sysfs.path()).unwrap();
-        let assignment = probe.mediated_assignment(uuid).unwrap();
-        assert!(assignment.domain_xml().unwrap().contains(uuid));
-        assert!(
-            probe
-                .mediated_assignment("../../active-host-device")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn non_display_sriov_devices_are_ignored() {
-        let sysfs = TempDir::new().unwrap();
-        let nic = sysfs.path().join("bus/pci/devices/0000:04:00.0");
-        file(&nic.join("class"), "0x020000\n");
-        file(&nic.join("sriov_totalvfs"), "8\n");
-        let probe = GraphicsCapabilities::probe_sysfs(sysfs.path()).unwrap();
-        assert!(probe.devices.is_empty());
-        assert_eq!(probe.recommendation, GraphicsRecommendation::Paravirtual2d);
+            // Presence of an IOMMU group alone is insufficient: Tilo never offers
+            // a VF whose group also contains a host device it would strand.
+            fs::create_dir_all(group.join("devices/0000:00:1f.0")).unwrap();
+            let shared_group_probe = GraphicsCapabilities::probe_sysfs(sysfs.path()).unwrap();
+            assert!(
+                shared_group_probe
+                    .sriov_assignment("0000:03:00.1")
+                    .is_none()
+            );
+        }
+        // Phase `mediated_assignment_requires_an_existing_device_and_escapes_nothing`.
+        {
+            let sysfs = TempDir::new().unwrap();
+            let gpu = sysfs.path().join("bus/pci/devices/0000:01:00.0");
+            file(&gpu.join("class"), "0x030200\n");
+            let kind = gpu.join("mdev_supported_types/vendor-display");
+            file(&kind.join("available_instances"), "1\n");
+            file(&kind.join("device_api"), "vfio-pci\n");
+            let uuid = "53764d0e-85a0-42b4-af5c-2046b460b1dc";
+            fs::create_dir_all(kind.join("devices")).unwrap();
+            file(&kind.join("devices").join(uuid).join("remove"), "");
+            let probe = GraphicsCapabilities::probe_sysfs(sysfs.path()).unwrap();
+            let assignment = probe.mediated_assignment(uuid).unwrap();
+            assert!(assignment.domain_xml().unwrap().contains(uuid));
+            assert!(
+                probe
+                    .mediated_assignment("../../active-host-device")
+                    .is_none()
+            );
+        }
+        // Phase `non_display_sriov_devices_are_ignored`.
+        {
+            let sysfs = TempDir::new().unwrap();
+            let nic = sysfs.path().join("bus/pci/devices/0000:04:00.0");
+            file(&nic.join("class"), "0x020000\n");
+            file(&nic.join("sriov_totalvfs"), "8\n");
+            let probe = GraphicsCapabilities::probe_sysfs(sysfs.path()).unwrap();
+            assert!(probe.devices.is_empty());
+            assert_eq!(probe.recommendation, GraphicsRecommendation::Paravirtual2d);
+        }
     }
 }

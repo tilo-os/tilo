@@ -343,11 +343,18 @@ impl DocOwner {
                 }
             }
         } else {
-            self.store.flush(Some(&self.key))?;
+            let durable = match self.store.flush(Some(&self.key)) {
+                Ok(()) => Some(heads.clone()),
+                // Read, but its host has not committed it yet (a peer's change
+                // stored for this record a moment ago): it is the document,
+                // durable once that commit lands.
+                Err(SeamError::Pending(_)) => None,
+                Err(error) => return Err(error.into()),
+            };
             Accepted {
-                heads: heads.clone(),
+                heads,
                 base: loaded.source.len(),
-                durable: Some(heads),
+                durable,
                 pending: None,
             }
         };
@@ -779,137 +786,161 @@ mod tests {
     }
 
     #[test]
-    fn a_burst_of_edits_is_durable_after_a_flush_and_reopens_as_the_same_writer() {
-        for subject in Subject::all() {
-            let owner = subject.owner("burst");
-            let mut doc = owner.new_document().unwrap();
-            let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
-            let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
-            for (i, ch) in "persisted".chars().enumerate() {
-                doc.splice_text(&body, i, 0, &ch.to_string()).unwrap();
-                writer.request(&mut doc);
-            }
-            subject.flush(&writer).unwrap();
-            assert_eq!(
-                writer.durability_snapshot().durable_heads,
-                Some(doc.get_heads()),
-                "{}",
-                subject.name
-            );
-            let actor = owner.actor().clone();
-            drop((writer, owner));
-            let reopened = subject.reopen("burst");
-            assert_eq!(text(&reopened, "body"), "persisted", "{}", subject.name);
-            assert_eq!(reopened.get_actor(), &actor, "{}", subject.name);
-        }
-    }
-
-    #[test]
-    fn steady_edits_append_and_the_log_is_eventually_compacted() {
-        for subject in Subject::all() {
-            let owner = subject.owner("growth");
-            let mut doc = owner.new_document().unwrap();
-            let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
-            doc.splice_text(&body, 0, 0, "seed").unwrap();
-            let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
-            subject.flush(&writer).unwrap();
-            for i in 0..50 {
-                doc.splice_text(&body, 4 + i, 0, "y").unwrap();
-                writer.request(&mut doc);
-            }
-            subject.flush(&writer).unwrap();
-            assert_eq!(writer.full_writes(), 1, "{}", subject.name);
-            assert_eq!(writer.appends(), 50, "{}", subject.name);
-            // Each single-character change is about a hundred bytes, so this
-            // passes the compaction floor.
-            for i in 0..1200 {
-                doc.splice_text(&body, 54 + i, 0, "z").unwrap();
-                writer.request(&mut doc);
-            }
-            subject.flush(&writer).unwrap();
-            assert!(writer.full_writes() >= 2, "{}", subject.name);
-            drop((writer, owner));
-            assert_eq!(
-                text(&subject.reopen("growth"), "body").chars().count(),
-                4 + 50 + 1200,
-                "{}",
-                subject.name
-            );
-        }
-    }
-
-    #[test]
-    fn an_older_acknowledgement_never_marks_newer_edits_saved() {
-        for subject in Subject::all() {
-            let owner = subject.owner("status");
-            let mut doc = owner.new_document().unwrap();
-            let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
-            subject.flush(&writer).unwrap();
-            doc.put(ROOT, "value", 1_u64).unwrap();
-            writer.request(&mut doc);
-            let older = doc.get_heads();
-            subject.flush(&writer).unwrap();
-            doc.put(ROOT, "value", 2_u64).unwrap();
-            writer.request(&mut doc);
-            if subject.name != "memory" {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn writer_edits_become_durable_through_appends_checkpoints_and_acknowledgements() {
+        // Phase `a_burst_of_edits_is_durable_after_a_flush_and_reopens_as_the_same_writer`.
+        {
+            for subject in Subject::all() {
+                let owner = subject.owner("burst");
+                let mut doc = owner.new_document().unwrap();
+                let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
+                let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
+                for (i, ch) in "persisted".chars().enumerate() {
+                    doc.splice_text(&body, i, 0, &ch.to_string()).unwrap();
+                    writer.request(&mut doc);
+                }
+                subject.flush(&writer).unwrap();
                 assert_eq!(
                     writer.durability_snapshot().durable_heads,
-                    Some(older),
+                    Some(doc.get_heads()),
+                    "{}",
+                    subject.name
+                );
+                let actor = owner.actor().clone();
+                drop((writer, owner));
+                let reopened = subject.reopen("burst");
+                assert_eq!(text(&reopened, "body"), "persisted", "{}", subject.name);
+                assert_eq!(reopened.get_actor(), &actor, "{}", subject.name);
+            }
+        }
+        // Phase `steady_edits_append_and_the_log_is_eventually_compacted`.
+        {
+            for subject in Subject::all() {
+                let owner = subject.owner("growth");
+                let mut doc = owner.new_document().unwrap();
+                let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
+                doc.splice_text(&body, 0, 0, "seed").unwrap();
+                let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
+                subject.flush(&writer).unwrap();
+                for i in 0..50 {
+                    doc.splice_text(&body, 4 + i, 0, "y").unwrap();
+                    writer.request(&mut doc);
+                }
+                subject.flush(&writer).unwrap();
+                assert_eq!(writer.full_writes(), 1, "{}", subject.name);
+                assert_eq!(writer.appends(), 50, "{}", subject.name);
+                // Each single-character change is about a hundred bytes, so this
+                // passes the compaction floor.
+                for i in 0..1200 {
+                    doc.splice_text(&body, 54 + i, 0, "z").unwrap();
+                    writer.request(&mut doc);
+                }
+                subject.flush(&writer).unwrap();
+                assert!(writer.full_writes() >= 2, "{}", subject.name);
+                drop((writer, owner));
+                assert_eq!(
+                    text(&subject.reopen("growth"), "body").chars().count(),
+                    4 + 50 + 1200,
                     "{}",
                     subject.name
                 );
             }
-            subject.flush(&writer).unwrap();
-            assert_eq!(
-                writer.durability_snapshot().durable_heads,
-                Some(doc.get_heads()),
-                "{}",
-                subject.name
-            );
         }
-    }
-
-    #[test]
-    fn a_failed_write_requires_a_full_checkpoint_without_consuming_typing() {
-        for subject in Subject::all() {
-            if subject.queued.is_none() && subject.faults.is_none() {
-                continue; // an immediately durable store cannot fail
+        // Phase `an_older_acknowledgement_never_marks_newer_edits_saved`.
+        {
+            for subject in Subject::all() {
+                let owner = subject.owner("status");
+                let mut doc = owner.new_document().unwrap();
+                let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
+                subject.flush(&writer).unwrap();
+                doc.put(ROOT, "value", 1_u64).unwrap();
+                writer.request(&mut doc);
+                let older = doc.get_heads();
+                subject.flush(&writer).unwrap();
+                doc.put(ROOT, "value", 2_u64).unwrap();
+                writer.request(&mut doc);
+                if subject.name != "memory" {
+                    assert_eq!(
+                        writer.durability_snapshot().durable_heads,
+                        Some(older),
+                        "{}",
+                        subject.name
+                    );
+                }
+                subject.flush(&writer).unwrap();
+                assert_eq!(
+                    writer.durability_snapshot().durable_heads,
+                    Some(doc.get_heads()),
+                    "{}",
+                    subject.name
+                );
             }
-            let owner = subject.owner("failure");
-            let mut doc = owner.new_document().unwrap();
-            doc.put(ROOT, "body", "original").unwrap();
-            let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
-            subject.flush(&writer).unwrap();
-            let acknowledged = writer.durability_snapshot().durable_heads;
-            if let Some(fs) = &subject.faults {
-                fs.faults().append_prefix = Some(8);
+        }
+        // Phase `a_failed_write_requires_a_full_checkpoint_without_consuming_typing`.
+        {
+            for subject in Subject::all() {
+                if subject.queued.is_none() && subject.faults.is_none() {
+                    continue; // an immediately durable store cannot fail
+                }
+                let owner = subject.owner("failure");
+                let mut doc = owner.new_document().unwrap();
+                doc.put(ROOT, "body", "original").unwrap();
+                let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
+                subject.flush(&writer).unwrap();
+                let acknowledged = writer.durability_snapshot().durable_heads;
+                if let Some(fs) = &subject.faults {
+                    fs.faults().append_prefix = Some(8);
+                }
+                doc.put(ROOT, "body", "partial").unwrap();
+                writer.request(&mut doc);
+                subject.pump_with(&Err("quota".into()));
+                assert!(writer.try_flush().is_err(), "{}", subject.name);
+                assert_eq!(writer.durability_snapshot().durable_heads, acknowledged);
+                doc.put(ROOT, "body", "latest").unwrap();
+                let pending = doc.pending_ops();
+                writer.request(&mut doc);
+                assert_eq!(doc.pending_ops(), pending, "{}", subject.name);
+                assert!(writer.try_flush().is_err(), "{}", subject.name);
+                writer.save(&mut doc);
+                subject.flush(&writer).unwrap();
+                assert_eq!(writer.last_error(), None, "{}", subject.name);
+                assert_eq!(
+                    writer.durability_snapshot().durable_heads,
+                    Some(doc.get_heads())
+                );
+                drop((writer, owner));
+                let mut restored = subject.reopen("failure");
+                assert_eq!(restored.get_heads(), doc.get_heads(), "{}", subject.name);
+                assert_eq!(
+                    restored.get_changes(&[]).len(),
+                    doc.get_changes(&[]).len(),
+                    "{}",
+                    subject.name
+                );
             }
-            doc.put(ROOT, "body", "partial").unwrap();
-            writer.request(&mut doc);
-            subject.pump_with(&Err("quota".into()));
-            assert!(writer.try_flush().is_err(), "{}", subject.name);
-            assert_eq!(writer.durability_snapshot().durable_heads, acknowledged);
-            doc.put(ROOT, "body", "latest").unwrap();
-            let pending = doc.pending_ops();
-            writer.request(&mut doc);
-            assert_eq!(doc.pending_ops(), pending, "{}", subject.name);
-            assert!(writer.try_flush().is_err(), "{}", subject.name);
-            writer.save(&mut doc);
-            subject.flush(&writer).unwrap();
-            assert_eq!(writer.last_error(), None, "{}", subject.name);
-            assert_eq!(
-                writer.durability_snapshot().durable_heads,
-                Some(doc.get_heads())
-            );
-            drop((writer, owner));
-            let mut restored = subject.reopen("failure");
-            assert_eq!(restored.get_heads(), doc.get_heads(), "{}", subject.name);
-            assert_eq!(
-                restored.get_changes(&[]).len(),
-                doc.get_changes(&[]).len(),
-                "{}",
-                subject.name
-            );
+        }
+        // Phase `a_seeded_writer_appends_only_what_follows_the_stored_document`.
+        {
+            for subject in Subject::all() {
+                let owner = subject.owner("seeded");
+                let mut doc = owner.new_document().unwrap();
+                doc.put(ROOT, "body", "stored").unwrap();
+                store_raw_leased(&subject, &owner, doc.save());
+                let mut writer = DocWriter::try_start(&owner).unwrap();
+                writer.seed(&mut doc);
+                doc.put(ROOT, "body", "edited").unwrap();
+                writer.request(&mut doc);
+                subject.flush(&writer).unwrap();
+                assert_eq!(
+                    (writer.full_writes(), writer.appends()),
+                    (0, 1),
+                    "{}",
+                    subject.name
+                );
+            }
         }
     }
 
@@ -943,174 +974,156 @@ mod tests {
     }
 
     #[test]
-    fn undecodable_bytes_are_refused_and_never_overwritten() {
-        for subject in Subject::all() {
-            for (n, bytes) in [b"not automerge".to_vec(), Vec::new()]
-                .into_iter()
-                .enumerate()
-            {
-                let record = format!("corrupt-{n}");
-                store_raw(&subject, &record, bytes.clone());
-                let owner = subject.owner(&record);
-                assert!(owner.load().is_err(), "{}", subject.name);
+    fn stored_bytes_are_accepted_only_when_decodable_unchanged_and_current() {
+        // Phase `undecodable_bytes_are_refused_and_never_overwritten`.
+        {
+            for subject in Subject::all() {
+                for (n, bytes) in [b"not automerge".to_vec(), Vec::new()]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let record = format!("corrupt-{n}");
+                    store_raw(&subject, &record, bytes.clone());
+                    let owner = subject.owner(&record);
+                    assert!(owner.load().is_err(), "{}", subject.name);
+                    assert!(owner.load_complete().is_err(), "{}", subject.name);
+                    assert_eq!(
+                        subject.store.read(owner.key()).unwrap().unwrap().bytes,
+                        bytes,
+                        "{}",
+                        subject.name
+                    );
+                }
+            }
+        }
+        // Phase `a_torn_tail_is_repaired_only_on_acceptance_by_its_owner`.
+        {
+            for subject in Subject::all() {
+                let mut doc = AutoCommit::new();
+                doc.put(ROOT, "body", "prefix").unwrap();
+                let torn = with_torn_tail(&mut doc);
+                store_raw(&subject, "torn", torn.clone());
+                let owner = subject.owner("torn");
                 assert!(owner.load_complete().is_err(), "{}", subject.name);
+                let loaded = owner.load().unwrap().unwrap();
                 assert_eq!(
                     subject.store.read(owner.key()).unwrap().unwrap().bytes,
-                    bytes,
-                    "{}",
+                    torn,
+                    "decoding publishes nothing ({})",
                     subject.name
+                );
+                let other = subject.owner("elsewhere");
+                assert!(matches!(
+                    other.accept(loaded),
+                    Err(StoreError::SourceChanged { .. })
+                ));
+                let loaded = owner.load().unwrap().unwrap();
+                let mut accepted = owner.accept(loaded).unwrap();
+                subject.pump();
+                let writer = DocWriter::try_start(&owner).unwrap();
+                subject.flush(&writer).unwrap();
+                assert_eq!(
+                    writer.durability_snapshot().durable_heads,
+                    Some(accepted.get_heads())
+                );
+                let repaired = subject.store.read(owner.key()).unwrap().unwrap().bytes;
+                assert!(AutoCommit::load(&repaired).is_ok(), "{}", subject.name);
+            }
+        }
+        // Phase `a_changed_source_is_never_accepted`.
+        {
+            for subject in Subject::all() {
+                let mut doc = AutoCommit::new();
+                doc.put(ROOT, "body", "original").unwrap();
+                store_raw(&subject, "changed", doc.save());
+                let owner = subject.owner("changed");
+                let loaded = owner.load().unwrap().unwrap();
+                owner
+                    .store()
+                    .write(owner.key(), WriteOp::Replace(b"replacement".to_vec()), None)
+                    .unwrap();
+                subject.pump();
+                assert!(matches!(
+                    owner.accept(loaded),
+                    Err(StoreError::SourceChanged { .. })
+                ));
+            }
+        }
+        // Phase `schema_refusal_leaves_newer_documents_untouched`.
+        {
+            for subject in Subject::all() {
+                let mut doc = AutoCommit::new();
+                doc.put(ROOT, SCHEMA_VERSION_KEY, u64::from(SCHEMA_VERSION) + 1)
+                    .unwrap();
+                let bytes = doc.save();
+                store_raw(&subject, "newer", bytes.clone());
+                let owner = subject.owner("newer");
+                assert!(matches!(owner.load(), Err(StoreError::NewerSchema { .. })));
+                assert_eq!(
+                    subject.store.read(owner.key()).unwrap().unwrap().bytes,
+                    bytes
                 );
             }
         }
     }
 
     #[test]
-    fn a_torn_tail_is_repaired_only_on_acceptance_by_its_owner() {
-        for subject in Subject::all() {
+    fn writer_ownership_is_exclusive_shared_or_disabled() {
+        // Phase `owners_and_writers_are_exclusive`.
+        {
+            for subject in Subject::all() {
+                let owner = subject.owner("exclusive");
+                assert!(matches!(
+                    DocOwner::acquire(
+                        Rc::clone(&subject.store),
+                        StorageKey::record("so.tilo.test", "room", "exclusive"),
+                    ),
+                    Err(StoreError::WriterBusy { .. })
+                ));
+                let writer = DocWriter::try_start(&owner).unwrap();
+                assert!(matches!(
+                    DocWriter::try_start(&owner),
+                    Err(StoreError::WriterBusy { .. })
+                ));
+                drop(writer);
+                assert!(DocWriter::try_start(&owner).is_ok());
+            }
+        }
+        // Phase `only_the_primary_shared_writer_continues_the_stored_actor`.
+        {
+            for subject in Subject::all() {
+                let key = StorageKey::package("so.tilo.shared");
+                let primary = Rc::new(
+                    DocOwner::acquire_shared(Rc::clone(&subject.store), key.clone()).unwrap(),
+                );
+                let mut doc = primary.new_document().unwrap();
+                let writer = DocWriter::start_new(&primary, &mut doc).unwrap();
+                subject.flush(&writer).unwrap();
+                let secondary = Rc::new(
+                    DocOwner::acquire_shared(Rc::clone(&subject.store), key.clone()).unwrap(),
+                );
+                assert_ne!(secondary.actor(), primary.actor(), "{}", subject.name);
+                let mut other = secondary.new_document().unwrap();
+                other.put(ROOT, "from", "secondary").unwrap();
+                let second = DocWriter::start_new(&secondary, &mut other).unwrap();
+                subject.flush(&second).unwrap();
+                let actor = primary.actor().clone();
+                drop((writer, second, primary, secondary));
+                let reopened = DocOwner::acquire_shared(Rc::clone(&subject.store), key).unwrap();
+                assert_eq!(reopened.actor(), &actor, "{}", subject.name);
+            }
+        }
+        // Phase `a_disabled_writer_reports_why_and_persists_nothing`.
+        {
+            let mut writer = DocWriter::disabled("no storage");
             let mut doc = AutoCommit::new();
-            doc.put(ROOT, "body", "prefix").unwrap();
-            let torn = with_torn_tail(&mut doc);
-            store_raw(&subject, "torn", torn.clone());
-            let owner = subject.owner("torn");
-            assert!(owner.load_complete().is_err(), "{}", subject.name);
-            let loaded = owner.load().unwrap().unwrap();
-            assert_eq!(
-                subject.store.read(owner.key()).unwrap().unwrap().bytes,
-                torn,
-                "decoding publishes nothing ({})",
-                subject.name
-            );
-            let other = subject.owner("elsewhere");
-            assert!(matches!(
-                other.accept(loaded),
-                Err(StoreError::SourceChanged { .. })
-            ));
-            let loaded = owner.load().unwrap().unwrap();
-            let mut accepted = owner.accept(loaded).unwrap();
-            subject.pump();
-            let writer = DocWriter::try_start(&owner).unwrap();
-            subject.flush(&writer).unwrap();
-            assert_eq!(
-                writer.durability_snapshot().durable_heads,
-                Some(accepted.get_heads())
-            );
-            let repaired = subject.store.read(owner.key()).unwrap().unwrap().bytes;
-            assert!(AutoCommit::load(&repaired).is_ok(), "{}", subject.name);
-        }
-    }
-
-    #[test]
-    fn a_changed_source_is_never_accepted() {
-        for subject in Subject::all() {
-            let mut doc = AutoCommit::new();
-            doc.put(ROOT, "body", "original").unwrap();
-            store_raw(&subject, "changed", doc.save());
-            let owner = subject.owner("changed");
-            let loaded = owner.load().unwrap().unwrap();
-            owner
-                .store()
-                .write(owner.key(), WriteOp::Replace(b"replacement".to_vec()), None)
-                .unwrap();
-            subject.pump();
-            assert!(matches!(
-                owner.accept(loaded),
-                Err(StoreError::SourceChanged { .. })
-            ));
-        }
-    }
-
-    #[test]
-    fn owners_and_writers_are_exclusive() {
-        for subject in Subject::all() {
-            let owner = subject.owner("exclusive");
-            assert!(matches!(
-                DocOwner::acquire(
-                    Rc::clone(&subject.store),
-                    StorageKey::record("so.tilo.test", "room", "exclusive"),
-                ),
-                Err(StoreError::WriterBusy { .. })
-            ));
-            let writer = DocWriter::try_start(&owner).unwrap();
-            assert!(matches!(
-                DocWriter::try_start(&owner),
-                Err(StoreError::WriterBusy { .. })
-            ));
-            drop(writer);
-            assert!(DocWriter::try_start(&owner).is_ok());
-        }
-    }
-
-    #[test]
-    fn only_the_primary_shared_writer_continues_the_stored_actor() {
-        for subject in Subject::all() {
-            let key = StorageKey::package("so.tilo.shared");
-            let primary =
-                Rc::new(DocOwner::acquire_shared(Rc::clone(&subject.store), key.clone()).unwrap());
-            let mut doc = primary.new_document().unwrap();
-            let writer = DocWriter::start_new(&primary, &mut doc).unwrap();
-            subject.flush(&writer).unwrap();
-            let secondary =
-                Rc::new(DocOwner::acquire_shared(Rc::clone(&subject.store), key.clone()).unwrap());
-            assert_ne!(secondary.actor(), primary.actor(), "{}", subject.name);
-            let mut other = secondary.new_document().unwrap();
-            other.put(ROOT, "from", "secondary").unwrap();
-            let second = DocWriter::start_new(&secondary, &mut other).unwrap();
-            subject.flush(&second).unwrap();
-            let actor = primary.actor().clone();
-            drop((writer, second, primary, secondary));
-            let reopened = DocOwner::acquire_shared(Rc::clone(&subject.store), key).unwrap();
-            assert_eq!(reopened.actor(), &actor, "{}", subject.name);
-        }
-    }
-
-    #[test]
-    fn a_disabled_writer_reports_why_and_persists_nothing() {
-        let mut writer = DocWriter::disabled("no storage");
-        let mut doc = AutoCommit::new();
-        doc.put(ROOT, "k", "v").unwrap();
-        writer.request(&mut doc);
-        writer.request_checkpoint(&mut doc);
-        assert!(!writer.is_enabled());
-        assert_eq!(writer.last_error().as_deref(), Some("no storage"));
-        assert!(writer.try_flush().is_err());
-        assert_eq!(writer.document_path(), Path::new(""));
-    }
-
-    #[test]
-    fn a_seeded_writer_appends_only_what_follows_the_stored_document() {
-        for subject in Subject::all() {
-            let owner = subject.owner("seeded");
-            let mut doc = owner.new_document().unwrap();
-            doc.put(ROOT, "body", "stored").unwrap();
-            store_raw_leased(&subject, &owner, doc.save());
-            let mut writer = DocWriter::try_start(&owner).unwrap();
-            writer.seed(&mut doc);
-            doc.put(ROOT, "body", "edited").unwrap();
+            doc.put(ROOT, "k", "v").unwrap();
             writer.request(&mut doc);
-            subject.flush(&writer).unwrap();
-            assert_eq!(
-                (writer.full_writes(), writer.appends()),
-                (0, 1),
-                "{}",
-                subject.name
-            );
-        }
-    }
-
-    #[test]
-    fn schema_refusal_leaves_newer_documents_untouched() {
-        for subject in Subject::all() {
-            let mut doc = AutoCommit::new();
-            doc.put(ROOT, SCHEMA_VERSION_KEY, u64::from(SCHEMA_VERSION) + 1)
-                .unwrap();
-            let bytes = doc.save();
-            store_raw(&subject, "newer", bytes.clone());
-            let owner = subject.owner("newer");
-            assert!(matches!(owner.load(), Err(StoreError::NewerSchema { .. })));
-            assert_eq!(
-                subject.store.read(owner.key()).unwrap().unwrap().bytes,
-                bytes
-            );
+            writer.request_checkpoint(&mut doc);
+            assert!(!writer.is_enabled());
+            assert_eq!(writer.last_error().as_deref(), Some("no storage"));
+            assert!(writer.try_flush().is_err());
+            assert_eq!(writer.document_path(), Path::new(""));
         }
     }
 }

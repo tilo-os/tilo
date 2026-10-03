@@ -14,12 +14,12 @@ use std::sync::{Arc, Mutex};
 
 use iroh::endpoint::{Connection, Endpoint};
 use iroh_base::EndpointAddr;
-use tilo_clock::unix_now_ns;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::frame::{FrameReader, read_frame, write_frame};
+use crate::signer::DeviceSigner;
 use tilo_relay_protocol::auth::{self, AuthError, AuthenticatedPeer, Hello, HelloAck};
 use tilo_relay_protocol::transport::{
     ALPN, ContentEndpointAdvertisement, ContentEndpointRequest, ContentPeerRegistration,
@@ -55,7 +55,7 @@ pub struct RelayClient {
     /// The task driving the send/recv split. Dropping this handle detaches the
     /// task, which owns the endpoint until it can finish the stream cleanly.
     /// A `Connection` alone does not keep its endpoint socket open.
-    _pump: tokio::task::JoinHandle<()>,
+    _pump: n0_future::task::JoinHandle<()>,
 }
 
 impl Drop for RelayClient {
@@ -97,6 +97,9 @@ pub enum ClientError {
     /// I/O.
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    /// The device signer refused or failed.
+    #[error("signer: {0}")]
+    Sign(String),
 }
 
 impl RelayClient {
@@ -107,10 +110,6 @@ impl RelayClient {
     ///
     /// Returns [`ClientError`] when dialing, framing, or mutual authentication
     /// fails, including when the relay's pinned user or device differs.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "public compatibility API mirrors the independently supplied endpoint, pinned identity, and caller credentials"
-    )]
     pub async fn manage_home_peer(
         endpoint: &Endpoint,
         relay_addr: EndpointAddr,
@@ -149,7 +148,7 @@ impl RelayClient {
             &ack,
             &expected_server_user,
             &revocations,
-            unix_now_ns(),
+            crate::clock::now_ns(),
             &nonce,
         )?;
         if ack.cert.device_public_key != expected_server_device {
@@ -179,10 +178,6 @@ impl RelayClient {
     ///
     /// Returns [`ClientError`] when dialing, framing, or authenticated
     /// discovery fails.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "public compatibility API keeps caller credentials and pinned relay identity explicit"
-    )]
     pub async fn discover_content_endpoint(
         endpoint: &Endpoint,
         relay_addr: EndpointAddr,
@@ -213,10 +208,6 @@ impl RelayClient {
     ///
     /// Returns [`ClientError`] when dialing, framing, or authenticated
     /// discovery fails.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "public compatibility API keeps caller credentials and pinned relay identity explicit"
-    )]
     pub async fn discover_content_peer(
         endpoint: &Endpoint,
         relay_addr: EndpointAddr,
@@ -247,10 +238,6 @@ impl RelayClient {
     ///
     /// Returns [`ClientError`] when dialing, framing, or authenticated
     /// discovery fails.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "public compatibility API keeps caller credentials and the explicit pinned host identity separate"
-    )]
     pub async fn discover_content_endpoint_to_pinned_host(
         endpoint: &Endpoint,
         relay_addr: EndpointAddr,
@@ -310,9 +297,11 @@ impl RelayClient {
             .map_err(|error| ClientError::Codec(error.to_string()))?;
         match expected_server.as_ref() {
             Some((user, _)) => {
-                auth::verify_hello_ack(&ack, user, &revocations, unix_now_ns(), &nonce)?
+                auth::verify_hello_ack(&ack, user, &revocations, crate::clock::now_ns(), &nonce)?
             }
-            None => auth::verify_pinned_host_ack(&ack, &revocations, unix_now_ns(), &nonce)?,
+            None => {
+                auth::verify_pinned_host_ack(&ack, &revocations, crate::clock::now_ns(), &nonce)?
+            }
         };
         if let Some((_, expected_device)) = expected_server
             && ack.cert.device_public_key != expected_device
@@ -383,13 +372,13 @@ impl RelayClient {
         own_sk: ed25519_dalek::SigningKey,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
-        Self::connect_with_server_trust(
+        Self::connect_with_signer(
             endpoint,
             relay_addr,
             Some(own_user_public_key),
             None,
             own_cert,
-            own_sk,
+            &own_sk,
             revocations,
         )
         .await
@@ -412,13 +401,13 @@ impl RelayClient {
         own_sk: ed25519_dalek::SigningKey,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
-        Self::connect_with_server_trust(
+        Self::connect_with_signer(
             endpoint,
             relay_addr,
             None,
             None,
             own_cert,
-            own_sk,
+            &own_sk,
             revocations,
         )
         .await
@@ -442,27 +431,42 @@ impl RelayClient {
         own_sk: ed25519_dalek::SigningKey,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
-        Self::connect_with_server_trust(
+        Self::connect_with_signer(
             endpoint,
             relay_addr,
             Some(expected_server_user),
             Some(expected_server_device),
             own_cert,
-            own_sk,
+            &own_sk,
             revocations,
         )
         .await
     }
 
-    async fn connect_with_server_trust(
+    /// Connect with a device key held by `signer`, for devices that cannot
+    /// hand over the key bytes (a browser's non-extractable `WebCrypto` key).
+    /// `expected_server_user` pins the relay's user root (`None` accepts any
+    /// valid host certificate behind the pinned endpoint);
+    /// `expected_server_device` additionally pins its device key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] as [`Self::connect`] does, or
+    /// [`ClientError::Sign`] when the signer fails.
+    pub async fn connect_with_signer(
         endpoint: Endpoint,
         relay_addr: EndpointAddr,
         expected_server_user: Option<[u8; 32]>,
         expected_server_device: Option<[u8; 32]>,
         own_cert: DeviceCert,
-        own_sk: ed25519_dalek::SigningKey,
+        signer: &dyn DeviceSigner,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
+        if signer.device_public_key() != own_cert.device_public_key {
+            return Err(ClientError::Sign(
+                "signer does not hold the certified device key".into(),
+            ));
+        }
         let endpoint_keepalive = endpoint.clone();
         let conn = endpoint
             .connect(relay_addr, ALPN)
@@ -489,7 +493,7 @@ impl RelayClient {
         let ack_bytes = read_frame(&mut recv, MAX_FRAME_BYTES).await?;
         let ack: HelloAck =
             postcard::from_bytes(&ack_bytes).map_err(|e| ClientError::Codec(e.to_string()))?;
-        let now = unix_now_ns();
+        let now = crate::clock::now_ns();
         let relay_peer = match expected_server_user.as_ref() {
             Some(expected_user) => {
                 let relay_peer =
@@ -504,7 +508,9 @@ impl RelayClient {
             None => auth::verify_pinned_host_ack(&ack, &revocations, now, &client_nonce)?,
         };
 
-        let ack2 = auth::build_hello_ack2(&own_sk, &ack.server_nonce);
+        let ack2 = crate::signer::signed_ack2(signer, &ack.server_nonce)
+            .await
+            .map_err(ClientError::Sign)?;
         let own_ack2_bytes =
             postcard::to_allocvec(&ack2).map_err(|e| ClientError::Codec(e.to_string()))?;
         write_frame(&mut send, &own_ack2_bytes).await?;
@@ -513,7 +519,7 @@ impl RelayClient {
         let (outbound_tx, mut outbound_rx) = mpsc::channel::<Envelope>(256);
         let (inbound_tx, inbound_rx) = mpsc::channel::<Envelope>(256);
         let mut reader = FrameReader::new(recv);
-        let pump = tokio::spawn(async move {
+        let pump = n0_future::task::spawn(async move {
             // Keep the socket alive through the final queued Unsubscribe and
             // FIN even if the caller handed this client its only Endpoint.
             let _endpoint_keepalive = endpoint_keepalive;
@@ -529,7 +535,7 @@ impl RelayClient {
                             // Keep the endpoint alive long enough to flush the final
                             // Unsubscribe/FIN. Bound the wait so a dead network cannot
                             // strand this detached cleanup task indefinitely.
-                            let _ = tokio::time::timeout(
+                            let _ = n0_future::time::timeout(
                                 std::time::Duration::from_secs(2),
                                 send.stopped(),
                             )

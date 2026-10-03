@@ -27,16 +27,24 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-atomic-file = { path = "../../crates/system/atomic-file" }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+fnv.workspace = true
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Only pulled in under `--features thin`; see the `thin` feature above.
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
-qdoc = { path = "../../crates/doc/qdoc" }
-qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false, features = ["markdown", "html", "rtf", "epub", "docx", "odt"] }
-spellcheck = { path = "../../crates/text/spellcheck" }
-qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
-tilo-content = { path = "../../crates/system/content" }
+tilo-doc = { path = "../../crates/doc/tilo-doc" }
+tilo-resource = { path = "../../crates/sdk/tilo-resource" }
+tilo-document = { path = "../../crates/doc/tilo-document" }
+# Comment replies are written in the SDK rich-text editor, embedded.
+tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
+tilo-doc-codecs = { path = "../../crates/doc/tilo-doc-codecs", default-features = false, features = ["markdown", "html", "rtf", "epub", "docx", "odt"] }
+tilo-spellcheck = { path = "../../crates/text/spellcheck" }
+tilo-doc-pdf = { path = "../../crates/doc/tilo-doc-pdf" }
+# Content addressing everywhere; the device store where the launcher hands
+# one over.
+tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
 automerge.workspace = true
 tilo-automerge.workspace = true
 vello.workspace = true
@@ -45,7 +53,6 @@ winit.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 regex.workspace = true
-url.workspace = true
 # Host-native image open through the XDG Desktop Portal (FileChooser). The
 # portal round-trip runs on a worker thread; the chosen path comes back over a
 # channel drained each frame — the UI thread never blocks.
@@ -60,3 +67,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

@@ -1,0 +1,32 @@
+name: Resolve CI builder
+
+# The public tilo-builder lookup, once. Callers that only need the immutable
+# image use this job. Signing stays inline in the snapshot workflows: Forgejo
+# does not pass OIDC into a reusable workflow. Callers that do more than
+# resolve (check.yml's trust-context proof, focused-test admission) keep
+# their own job.
+on:
+  workflow_call:
+    outputs:
+      image:
+        description: Immutable tilo-builder index digest
+        value: ${{ jobs.resolve.outputs.image }}
+
+jobs:
+  resolve:
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      # Public image: a forge credential would only fail the pull.
+      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: tools/ci/resolve_builder.py
+          sparse-checkout-cone-mode: false
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Resolve the CI builder
+        id: resolve
+        run: python3 tools/ci/resolve_builder.py

@@ -764,233 +764,249 @@ pub fn sample_contacts() -> Vec<Contact> {
 mod tests {
     use super::*;
 
+    /// Birthdays parse ISO, common typed and year-less formats, round-trip and pretty-print month names.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn birthday_parses_iso_to_ymd() {
-        let b = Birthday::parse("1815-12-10").expect("valid ISO date");
-        assert_eq!(b.year(), Some(1815));
-        assert_eq!(b.month(), 12);
-        assert_eq!(b.day(), 10);
-        assert_eq!(
-            b,
-            Birthday::Full {
-                year: 1815,
-                month: 12,
-                day: 10
-            }
-        );
-    }
-
-    #[test]
-    fn birthday_accepts_common_typed_formats() {
-        // Year-first with any separator.
-        assert_eq!(
-            Birthday::parse("2001/03/09"),
-            Some(Birthday::Full {
-                year: 2001,
-                month: 3,
-                day: 9
-            })
-        );
-        // Basic 8-digit.
-        assert_eq!(
-            Birthday::parse("20010309"),
-            Some(Birthday::Full {
-                year: 2001,
-                month: 3,
-                day: 9
-            })
-        );
-        // US month-first, year-last.
-        assert_eq!(
-            Birthday::parse("03/09/2001"),
-            Some(Birthday::Full {
-                year: 2001,
-                month: 3,
-                day: 9
-            })
-        );
-        // European day-first with dots.
-        assert_eq!(
-            Birthday::parse("09.03.2001"),
-            Some(Birthday::Full {
-                year: 2001,
-                month: 3,
-                day: 9
-            })
-        );
-        // Ambiguous order disambiguated by an out-of-range day/month.
-        assert_eq!(
-            Birthday::parse("25/12/1990"),
-            Some(Birthday::Full {
-                year: 1990,
-                month: 12,
-                day: 25
-            })
-        );
-        // Garbage is rejected, not silently coerced.
-        assert_eq!(Birthday::parse("not a date"), None);
-        assert_eq!(Birthday::parse(""), None);
-        assert_eq!(Birthday::parse("2001-13-40"), None);
-    }
-
-    #[test]
-    fn birthday_handles_year_less_month_day() {
-        // Typed MM-DD, and both vCard truncated forms, land on MonthDay.
-        assert_eq!(
-            Birthday::parse("12-10"),
-            Some(Birthday::MonthDay { month: 12, day: 10 })
-        );
-        assert_eq!(
-            Birthday::parse("--12-10"),
-            Some(Birthday::MonthDay { month: 12, day: 10 })
-        );
-        assert_eq!(
-            Birthday::parse("--1210"),
-            Some(Birthday::MonthDay { month: 12, day: 10 })
-        );
-        let b = Birthday::parse("12-10").unwrap();
-        assert_eq!(b.year(), None, "a year-less birthday has no year");
-        assert_eq!((b.month(), b.day()), (12, 10));
-    }
-
-    #[test]
-    fn birthday_iso_round_trips_through_parse() {
-        for b in [
-            Birthday::Full {
-                year: 1815,
-                month: 12,
-                day: 10,
-            },
-            Birthday::Full {
-                year: 2000,
-                month: 2,
-                day: 29,
-            },
-            Birthday::MonthDay { month: 6, day: 23 },
-        ] {
+    fn birthday_parses_formats_and_round_trips() {
+        // --- phase: birthday_parses_iso_to_ymd ---
+        {
+            let b = Birthday::parse("1815-12-10").expect("valid ISO date");
+            assert_eq!(b.year(), Some(1815));
+            assert_eq!(b.month(), 12);
+            assert_eq!(b.day(), 10);
             assert_eq!(
-                Birthday::parse(&b.iso()),
-                Some(b),
-                "{} round-trips",
-                b.iso()
+                b,
+                Birthday::Full {
+                    year: 1815,
+                    month: 12,
+                    day: 10
+                }
+            );
+        }
+
+        // --- phase: birthday_accepts_common_typed_formats ---
+        {
+            // Year-first with any separator.
+            assert_eq!(
+                Birthday::parse("2001/03/09"),
+                Some(Birthday::Full {
+                    year: 2001,
+                    month: 3,
+                    day: 9
+                })
+            );
+            // Basic 8-digit.
+            assert_eq!(
+                Birthday::parse("20010309"),
+                Some(Birthday::Full {
+                    year: 2001,
+                    month: 3,
+                    day: 9
+                })
+            );
+            // US month-first, year-last.
+            assert_eq!(
+                Birthday::parse("03/09/2001"),
+                Some(Birthday::Full {
+                    year: 2001,
+                    month: 3,
+                    day: 9
+                })
+            );
+            // European day-first with dots.
+            assert_eq!(
+                Birthday::parse("09.03.2001"),
+                Some(Birthday::Full {
+                    year: 2001,
+                    month: 3,
+                    day: 9
+                })
+            );
+            // Ambiguous order disambiguated by an out-of-range day/month.
+            assert_eq!(
+                Birthday::parse("25/12/1990"),
+                Some(Birthday::Full {
+                    year: 1990,
+                    month: 12,
+                    day: 25
+                })
+            );
+            // Garbage is rejected, not silently coerced.
+            assert_eq!(Birthday::parse("not a date"), None);
+            assert_eq!(Birthday::parse(""), None);
+            assert_eq!(Birthday::parse("2001-13-40"), None);
+        }
+
+        // --- phase: birthday_handles_year_less_month_day ---
+        {
+            // Typed MM-DD, and both vCard truncated forms, land on MonthDay.
+            assert_eq!(
+                Birthday::parse("12-10"),
+                Some(Birthday::MonthDay { month: 12, day: 10 })
+            );
+            assert_eq!(
+                Birthday::parse("--12-10"),
+                Some(Birthday::MonthDay { month: 12, day: 10 })
+            );
+            assert_eq!(
+                Birthday::parse("--1210"),
+                Some(Birthday::MonthDay { month: 12, day: 10 })
+            );
+            let b = Birthday::parse("12-10").unwrap();
+            assert_eq!(b.year(), None, "a year-less birthday has no year");
+            assert_eq!((b.month(), b.day()), (12, 10));
+        }
+
+        // --- phase: birthday_iso_round_trips_through_parse ---
+        {
+            for b in [
+                Birthday::Full {
+                    year: 1815,
+                    month: 12,
+                    day: 10,
+                },
+                Birthday::Full {
+                    year: 2000,
+                    month: 2,
+                    day: 29,
+                },
+                Birthday::MonthDay { month: 6, day: 23 },
+            ] {
+                assert_eq!(
+                    Birthday::parse(&b.iso()),
+                    Some(b),
+                    "{} round-trips",
+                    b.iso()
+                );
+            }
+        }
+
+        // --- phase: birthday_pretty_prints_month_name ---
+        {
+            assert_eq!(
+                Birthday::Full {
+                    year: 1815,
+                    month: 12,
+                    day: 10
+                }
+                .pretty(),
+                "December 10, 1815"
+            );
+            assert_eq!(
+                Birthday::MonthDay { month: 12, day: 10 }.pretty(),
+                "December 10"
             );
         }
     }
 
+    /// Display names fall back to org then placeholder, initials uppercase first and last, and matching searches across fields.
     #[test]
-    fn birthday_pretty_prints_month_name() {
-        assert_eq!(
-            Birthday::Full {
-                year: 1815,
-                month: 12,
-                day: 10
-            }
-            .pretty(),
-            "December 10, 1815"
-        );
-        assert_eq!(
-            Birthday::MonthDay { month: 12, day: 10 }.pretty(),
-            "December 10"
-        );
-    }
-
-    #[test]
-    fn display_name_falls_back_to_org_then_placeholder() {
-        let mut c = Contact::new();
-        assert_eq!(c.display_name(), "No Name");
-        c.org = "ACME".into();
-        assert_eq!(c.display_name(), "ACME");
-        c.first = "Jane".into();
-        c.last = "Doe".into();
-        assert_eq!(c.display_name(), "Jane Doe");
-    }
-
-    #[test]
-    fn initials_uppercase_first_and_last() {
-        let mut c = Contact::new();
-        c.first = "ada".into();
-        c.last = "lovelace".into();
-        assert_eq!(c.initials(), "AL");
-    }
-
-    #[test]
-    fn matches_searches_across_fields() {
-        let mut c = Contact::new();
-        c.first = "Grace".into();
-        c.emails.push(Labeled::new("work", "grace@navy.mil"));
-        assert!(c.matches(&"navy".to_lowercase()));
-        assert!(c.matches(&"grace".to_lowercase()));
-        assert!(!c.matches(&"zzz".to_lowercase()));
-    }
-
-    #[test]
-    fn filtered_sorted_by_name_and_group() {
-        let mut store = ContactStore::new();
-        for c in sample_contacts() {
-            store.upsert(c);
+    fn display_names_initials_and_field_matching() {
+        // --- phase: display_name_falls_back_to_org_then_placeholder ---
+        {
+            let mut c = Contact::new();
+            assert_eq!(c.display_name(), "No Name");
+            c.org = "ACME".into();
+            assert_eq!(c.display_name(), "ACME");
+            c.first = "Jane".into();
+            c.last = "Doe".into();
+            assert_eq!(c.display_name(), "Jane Doe");
         }
-        // Name sort puts "Berners-Lee" before "Hopper" before "Lovelace".
-        let ids = store.filtered_sorted("", None, SortKey::Name);
-        let names: Vec<String> = ids
-            .iter()
-            .map(|id| store.get(*id).unwrap().last.clone())
-            .collect();
-        let pos = |n: &str| names.iter().position(|x| x == n).unwrap();
-        assert!(pos("Berners-Lee") < pos("Hopper"));
-        assert!(pos("Hopper") < pos("Lovelace"));
 
-        // Group filter narrows to Friends only.
-        let friends = store.filtered_sorted("", Some("Friends"), SortKey::Name);
-        assert!(friends.iter().all(|id| {
-            store
-                .get(*id)
-                .unwrap()
-                .groups
+        // --- phase: initials_uppercase_first_and_last ---
+        {
+            let mut c = Contact::new();
+            c.first = "ada".into();
+            c.last = "lovelace".into();
+            assert_eq!(c.initials(), "AL");
+        }
+
+        // --- phase: matches_searches_across_fields ---
+        {
+            let mut c = Contact::new();
+            c.first = "Grace".into();
+            c.emails.push(Labeled::new("work", "grace@navy.mil"));
+            assert!(c.matches(&"navy".to_lowercase()));
+            assert!(c.matches(&"grace".to_lowercase()));
+            assert!(!c.matches(&"zzz".to_lowercase()));
+        }
+    }
+
+    /// The book filters and sorts by name and group, dedups groups case- and Unicode-insensitively and upserts in place.
+    #[test]
+    fn book_filters_sorts_groups_and_upserts() {
+        // --- phase: filtered_sorted_by_name_and_group ---
+        {
+            let mut store = ContactStore::new();
+            for c in sample_contacts() {
+                store.upsert(c);
+            }
+            // Name sort puts "Berners-Lee" before "Hopper" before "Lovelace".
+            let ids = store.filtered_sorted("", None, SortKey::Name);
+            let names: Vec<String> = ids
                 .iter()
-                .any(|g| g.value.eq_ignore_ascii_case("Friends"))
-        }));
-        assert!(!friends.is_empty());
-    }
+                .map(|id| store.get(*id).unwrap().last.clone())
+                .collect();
+            let pos = |n: &str| names.iter().position(|x| x == n).unwrap();
+            assert!(pos("Berners-Lee") < pos("Hopper"));
+            assert!(pos("Hopper") < pos("Lovelace"));
 
-    #[test]
-    fn all_groups_dedupes_case_insensitively() {
-        let mut store = ContactStore::new();
-        let mut a = Contact::new();
-        a.groups = vec![
-            GroupEntry::new("Work"),
-            GroupEntry::new("work"),
-            GroupEntry::new("Family"),
-        ];
-        store.upsert(a);
-        let groups = store.all_groups();
-        assert_eq!(groups.len(), 2, "Work/work collapse: {groups:?}");
-    }
+            // Group filter narrows to Friends only.
+            let friends = store.filtered_sorted("", Some("Friends"), SortKey::Name);
+            assert!(friends.iter().all(|id| {
+                store
+                    .get(*id)
+                    .unwrap()
+                    .groups
+                    .iter()
+                    .any(|g| g.value.eq_ignore_ascii_case("Friends"))
+            }));
+            assert!(!friends.is_empty());
+        }
 
-    #[test]
-    fn groups_and_search_handle_canonically_equivalent_unicode() {
-        let mut store = ContactStore::new();
-        let mut first = Contact::new();
-        first.groups.push(GroupEntry::new("Cafe\u{301}"));
-        let mut second = Contact::new();
-        second.groups.push(GroupEntry::new("CAFÉ"));
-        store.upsert(first.clone());
-        store.upsert(second.clone());
+        // --- phase: all_groups_dedupes_case_insensitively ---
+        {
+            let mut store = ContactStore::new();
+            let mut a = Contact::new();
+            a.groups = vec![
+                GroupEntry::new("Work"),
+                GroupEntry::new("work"),
+                GroupEntry::new("Family"),
+            ];
+            store.upsert(a);
+            let groups = store.all_groups();
+            assert_eq!(groups.len(), 2, "Work/work collapse: {groups:?}");
+        }
 
-        assert_eq!(store.all_groups(), vec!["CAFÉ".to_string()]);
-        let visible = store.filtered_sorted("", Some("café"), SortKey::Name);
-        assert_eq!(visible.len(), 2);
-        assert!(first.matches("CAFÉ"));
-    }
+        // --- phase: groups_and_search_handle_canonically_equivalent_unicode ---
+        {
+            let mut store = ContactStore::new();
+            let mut first = Contact::new();
+            first.groups.push(GroupEntry::new("Cafe\u{301}"));
+            let mut second = Contact::new();
+            second.groups.push(GroupEntry::new("CAFÉ"));
+            store.upsert(first.clone());
+            store.upsert(second.clone());
 
-    #[test]
-    fn upsert_replaces_in_place() {
-        let mut store = ContactStore::new();
-        let mut a = Contact::new();
-        a.first = "A".into();
-        let id = store.upsert(a.clone());
-        a.first = "B".into();
-        store.upsert(a);
-        assert_eq!(store.len(), 1);
-        assert_eq!(store.get(id).unwrap().first, "B");
+            assert_eq!(store.all_groups(), vec!["CAFÉ".to_string()]);
+            let visible = store.filtered_sorted("", Some("café"), SortKey::Name);
+            assert_eq!(visible.len(), 2);
+            assert!(first.matches("CAFÉ"));
+        }
+
+        // --- phase: upsert_replaces_in_place ---
+        {
+            let mut store = ContactStore::new();
+            let mut a = Contact::new();
+            a.first = "A".into();
+            let id = store.upsert(a.clone());
+            a.first = "B".into();
+            store.upsert(a);
+            assert_eq!(store.len(), 1);
+            assert_eq!(store.get(id).unwrap().first, "B");
+        }
     }
 }

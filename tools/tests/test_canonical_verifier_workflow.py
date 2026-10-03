@@ -10,7 +10,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / '.forgejo/workflows/canonical-verifier-bundle.yml'
+WORKFLOW = ROOT / '.forgejo/workflows/release-verifier-bundles.yml'
 BUILDER = 'registry.tilo.so/tilo/tilo-builder@sha256:' + 'a' * 64
 
 
@@ -21,25 +21,50 @@ def production_script():
 
 
 class VerifierWorkflowTests(unittest.TestCase):
-    def test_manual_native_only_no_publication_or_secret_expansion(self):
-        source = WORKFLOW.read_text()
-        triggers = source.split('\non:\n', 1)[1].split('\nconcurrency:', 1)[0]
-        self.assertEqual(['workflow_dispatch'], re.findall(r'^  ([a-z_]+):', triggers, re.M))
-        self.assertIn('arch: x86_64\n            runner: runner', source)
-        self.assertIn('arch: aarch64\n            runner: runner-arm64', source)
-        self.assertIn('image: ${{ needs.builder.outputs.image }}', source)
-        self.assertIn('BUILDER_IMAGE: ${{ needs.builder.outputs.image }}', source)
-        self.assertIn('uses: ./.forgejo/actions/restore-cargo-downloads', source)
-        self.assertEqual(set(), set(re.findall(r'secrets\.([A-Z_]+)', source)))
-        bundle_job = source.split('\n  bundle:\n', 1)[1]
-        self.assertNotIn('REGISTRY_TOKEN:', bundle_job)
-        self.assertNotIn('CARGO_TARGET_DIR', source)
-        self.assertNotIn('curl ', source)
-        self.assertNotIn('publish:', source)
-        self.assertIn('persist-credentials: false', bundle_job)
-        self.assertIn('if-no-files-found: error', source)
-        self.assertIn('retention-days: 14', source)
-        self.assertIn('python3 -I tools/ci/python.py tools/canonical_verifier_bundle.py produce', source)
+    def test_verifier_workflow_is_native_only_and_binds_only_valid_bundles(self):
+        with self.subTest(phase='manual native only no publication or secret expansion'):
+            source = WORKFLOW.read_text()
+            triggers = source.split('\non:\n', 1)[1].split('\nconcurrency:', 1)[0]
+            self.assertEqual(['workflow_dispatch'], re.findall(r'^  ([a-z_]+):', triggers, re.M))
+            self.assertIn('arch: x86_64\n            runner: runner', source)
+            self.assertIn('arch: aarch64\n            runner: runner-arm64', source)
+            self.assertIn('image: ${{ needs.builder.outputs.image }}', source)
+            self.assertIn('BUILDER_IMAGE: ${{ needs.builder.outputs.image }}', source)
+            self.assertIn('uses: ./.forgejo/actions/prepare-rust-build', source)
+            # No secret: the runner provides the compiler cache.
+            self.assertEqual(set(), set(re.findall(r'secrets\.([A-Z0-9_]+)', source)))
+            bundle_job = source.split('\n  bundle:\n', 1)[1]
+            self.assertNotIn('REGISTRY_TOKEN:', bundle_job)
+            self.assertNotIn('CARGO_TARGET_DIR', source)
+            self.assertNotIn('curl ', source)
+            self.assertNotIn('publish:', source)
+            self.assertIn('persist-credentials: false', bundle_job)
+            self.assertIn('if-no-files-found: error', source)
+            self.assertIn('retention-days: 14', source)
+            self.assertIn('python3 -I tools/ci/python.py tools/canonical_verifier_bundle.py produce', source)
+        with self.subTest(phase='actual shell only builds two packages and binds deterministic artifacts'):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                result, head = self.run_fixture(root)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(['build', '--release', '--locked', '-p', 'tilo-app-package-cli', '-p', 'runtime-bundle'],
+                                 (root / 'cargo-arguments.txt').read_text().splitlines())
+                arch = platform.machine()
+                descriptor = json.loads((root / f'target/verifier-bundle/{arch}.tar.descriptor.json').read_text())
+                self.assertEqual(head, descriptor['source_sha'])
+                self.assertEqual(BUILDER, descriptor['compatible_builder'])
+                self.assertEqual((root / f'target/verifier-bundle/{arch}.tar.gz').read_bytes(),
+                                 (root / f'target/verifier-repeat/{arch}.tar.gz').read_bytes())
+                self.assertEqual({'tilo_pkg_sha256', 'tilo_runtime_bundle_sha256'}, set(descriptor['canonical_binaries']))
+        with self.subTest(phase='wrong source wrong native lane or compile failure cannot emit bundle'):
+            for failure in ('head_ok', 'arch_ok', 'compile_ok'):
+                with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    result, _ = self.run_fixture(root, **{failure: False})
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertFalse((root / 'target/verifier-bundle').exists())
+                    if failure != 'compile_ok':
+                        self.assertFalse((root / 'cargo-arguments.txt').exists())
 
     def run_fixture(self, root, *, head_ok=True, arch_ok=True, compile_ok=True):
         (root / 'tools').mkdir()
@@ -65,31 +90,6 @@ class VerifierWorkflowTests(unittest.TestCase):
                    BUILDER_IMAGE=BUILDER, FIXTURE_CARGO_FAIL='0' if compile_ok else '1')
         return subprocess.run(['bash', '-c', production_script()], cwd=root, env=env,
                               capture_output=True, text=True), head
-
-    def test_actual_shell_only_builds_two_packages_and_binds_deterministic_artifacts(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            result, head = self.run_fixture(root)
-            self.assertEqual(0, result.returncode, result.stderr)
-            self.assertEqual(['build', '--release', '--locked', '-p', 'tilo-app-package-cli', '-p', 'runtime-bundle'],
-                             (root / 'cargo-arguments.txt').read_text().splitlines())
-            arch = platform.machine()
-            descriptor = json.loads((root / f'target/verifier-bundle/{arch}.tar.descriptor.json').read_text())
-            self.assertEqual(head, descriptor['source_sha'])
-            self.assertEqual(BUILDER, descriptor['compatible_builder'])
-            self.assertEqual((root / f'target/verifier-bundle/{arch}.tar.gz').read_bytes(),
-                             (root / f'target/verifier-repeat/{arch}.tar.gz').read_bytes())
-            self.assertEqual({'tilo_pkg_sha256', 'tilo_runtime_bundle_sha256'}, set(descriptor['canonical_binaries']))
-
-    def test_wrong_source_wrong_native_lane_or_compile_failure_cannot_emit_bundle(self):
-        for failure in ('head_ok', 'arch_ok', 'compile_ok'):
-            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                result, _ = self.run_fixture(root, **{failure: False})
-                self.assertNotEqual(0, result.returncode)
-                self.assertFalse((root / 'target/verifier-bundle').exists())
-                if failure != 'compile_ok':
-                    self.assertFalse((root / 'cargo-arguments.txt').exists())
 
 
 if __name__ == '__main__':

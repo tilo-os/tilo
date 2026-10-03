@@ -99,6 +99,28 @@ impl ChannelContentKeys {
         self.keyring.open(self.channel, artifact, metadata, payload)
     }
 
+    /// Open a new write's payload: only one sealed under the channel's
+    /// current epoch. A device removed from the channel still holds older
+    /// epochs' keys, so anything else is refused, never opened.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidState`] for another channel or epoch, and as
+    /// [`Self::open_content`].
+    pub fn open_current_content(
+        &self,
+        artifact: ArtifactId,
+        metadata: &EncryptionMetadata,
+        payload: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>> {
+        if metadata.epoch != self.epoch {
+            return Err(Error::InvalidState(
+                "payload is not sealed under the channel's current epoch".into(),
+            ));
+        }
+        self.open_content(artifact, metadata, payload)
+    }
+
     /// Encode for the session service's local socket to the app.
     ///
     /// # Errors

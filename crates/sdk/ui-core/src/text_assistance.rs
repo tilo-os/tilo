@@ -5,7 +5,7 @@
 //! reload it when its modification stamp changes, so Settings changes propagate
 //! to running apps without filesystem I/O on every draw or keypress.
 
-use crate::time::{Duration, Instant, SystemTime};
+use crate::time::{Duration, Instant};
 use std::sync::{Mutex, OnceLock};
 
 pub const SETTINGS_SECTION: &str = "text_assistance";
@@ -29,7 +29,7 @@ impl Default for TextAssistancePrefs {
 
 #[derive(Default)]
 struct CachedPrefs {
-    stamp: Option<SystemTime>,
+    stamp: Option<settings_store::SettingsStamp>,
     checked_at: Option<Instant>,
     loaded: bool,
     prefs: TextAssistancePrefs,
@@ -49,9 +49,7 @@ pub fn preferences() -> TextAssistancePrefs {
     {
         return cache.prefs;
     }
-    let stamp = settings_store::settings_path()
-        .and_then(|path| std::fs::metadata(path).ok())
-        .and_then(|metadata| metadata.modified().ok());
+    let stamp = settings_store::stamp();
     if !cache.loaded || cache.stamp != stamp {
         let doc = settings_store::load();
         cache.prefs = TextAssistancePrefs {

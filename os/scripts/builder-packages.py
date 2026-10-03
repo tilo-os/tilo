@@ -57,7 +57,7 @@ def stage_text(text: str, stage: str) -> str:
     return "".join(lines[start:end])
 
 
-def builder_packages(containerfile: Path, stage: str = "builder", arch: str = "x86_64") -> list[str]:
+def builder_packages(containerfile: Path, stage: str = "builder-base", arch: str = "x86_64") -> list[str]:
     derive = derive_module()
     with tempfile.NamedTemporaryFile("w", suffix=".Containerfile") as handle:
         handle.write(stage_text(containerfile.read_text(encoding="utf-8"), stage))
@@ -75,7 +75,7 @@ def render(specs: list[str]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--containerfile", type=Path, default=REPO / "os/Containerfile")
-    parser.add_argument("--stage", default="builder")
+    parser.add_argument("--stage", default="builder-base")
     parser.add_argument("--write", action="store_true", help=f"regenerate {LIST.relative_to(REPO)}")
     args = parser.parse_args()
     arch = platform.machine().lower()

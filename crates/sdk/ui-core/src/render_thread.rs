@@ -18,6 +18,9 @@
 //! On `exiting`, the App sends `RenderRequest::Shutdown` and `join()`s the
 //! worker, which drops its `RenderSurface<'static>` before the `Window` is
 //! dropped — required or wgpu panics on a surface outliving its window.
+//! On `suspended` the worker drops only the surface and hands its context
+//! and renderer back ([`RenderThreadHandle::shutdown_keeping_renderer`]), so
+//! the next surface does not open a device and compile pipelines again.
 #![allow(
     clippy::disallowed_methods,
     reason = "native host runner: the GPU render worker is a dedicated thread"
@@ -92,6 +95,9 @@ const _: fn() = || {
     clippy::large_enum_variant,
     reason = "keeping Scene inline removes a heap allocation on every frame; the bounded channel reserves only one slot"
 )]
+/// Runs on the render thread once a frame is presented.
+pub type PresentHook = Box<dyn FnOnce(crate::time::SystemTime) + Send>;
+
 pub enum RenderRequest {
     Frame {
         /// Originating CPU profile sample; auxiliary/unprofiled frames have none.
@@ -108,10 +114,38 @@ pub enum RenderRequest {
         damage_regions: Vec<Rect>,
         /// Resize, relayout, structure, or untracked overlay invalidation.
         full_redraw: bool,
+        /// Called with the time this frame, or the first later one, is
+        /// presented.
+        on_present: Option<PresentHook>,
     },
     /// Drain the channel and exit the worker loop. Sent from
     /// `AppHandler::exiting`; the App then `join()`s the handle.
-    Shutdown,
+    Shutdown { keep_renderer: bool },
+}
+
+/// A device and a renderer whose pipelines are compiled for it, with no
+/// surface yet.
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "only the native event-loop runner takes a renderer back to reuse"
+    )
+)]
+pub(crate) struct PreparedRenderer {
+    pub(crate) context: RenderContext,
+    pub(crate) device_id: usize,
+    pub(crate) renderer: Renderer,
+}
+
+impl PreparedRenderer {
+    #[cfg(feature = "native")]
+    pub(crate) fn device_lost(&self) -> bool {
+        self.context
+            .devices
+            .get(self.device_id)
+            .is_none_or(|device| device.loss_monitor().reason().is_some())
+    }
 }
 
 #[path = "render_retry.rs"]
@@ -147,7 +181,7 @@ pub struct RenderThreadHandle {
     pub(crate) buffers: BufferPool<(Scene, Vec<Rect>)>,
     pub frame_complete: Receiver<FrameOutcome>,
     pub(crate) retry: retry::RenderRetryState,
-    join: Option<JoinHandle<()>>,
+    join: Option<JoinHandle<Option<PreparedRenderer>>>,
 }
 
 /// One atomic reservation preserves both buffers across an aborted redraw.
@@ -195,6 +229,13 @@ impl<T> BufferPool<T> {
             Err(mpsc::TryRecvError::Empty) => Ok(false),
             Err(error) => Err(error),
         }
+    }
+
+    /// Put a reserved buffer back when this redraw will not present.
+    /// Dropping it would shrink the pool until the worker had nothing to return.
+    #[cfg(feature = "native")]
+    pub(crate) fn unprepare(&mut self, buffers: T) {
+        self.prepared = Some(buffers);
     }
 
     #[cfg(feature = "native")]
@@ -264,12 +305,23 @@ impl RenderThreadHandle {
     /// returns — it must die before the `Window` it was created against,
     /// or wgpu may panic on Vulkan backends.
     pub fn shutdown_and_join(&mut self) {
+        let _ = self.stop(false);
+    }
+
+    /// [`Self::shutdown_and_join`], taking back the worker's context and
+    /// renderer if it was still running.
+    #[cfg(feature = "native")]
+    pub(crate) fn shutdown_keeping_renderer(&mut self) -> Option<PreparedRenderer> {
+        self.stop(true)
+    }
+
+    fn stop(&mut self, keep_renderer: bool) -> Option<PreparedRenderer> {
         // Best-effort: the worker may already have crashed and dropped the
         // receiver, in which case the send errors and join yields immediately.
-        let _ = self.render_tx.send(RenderRequest::Shutdown);
-        if let Some(handle) = self.join.take() {
-            let _ = handle.join();
-        }
+        let _ = self
+            .render_tx
+            .send(RenderRequest::Shutdown { keep_renderer });
+        self.join.take()?.join().ok().flatten()
     }
 }
 
@@ -299,11 +351,12 @@ pub fn spawn_render_thread(
     let join = std::thread::Builder::new()
         .name("ui-render".into())
         .spawn(move || {
+            tilo_startup_metrics::mark("render-worker-start");
             tilo_rt::mark_ui_thread();
-            // `QUICK_UI_PRESENT=1` logs per-frame encode/acquire/present timings
+            // `TILO_UI_PRESENT=1` logs per-frame encode/acquire/present timings
             // — a slow compositor/present path shows up as a large acquire or
             // present, invisible to offscreen benches. Off by default.
-            let present_dbg = std::env::var("QUICK_UI_PRESENT").is_ok();
+            let present_dbg = crate::env::var("TILO_UI_PRESENT").is_ok();
             let present_origin = present_dbg.then(crate::time::now);
             let mut frame_ix: u64 = 0;
             let presentation = crate::presentation_feedback::Observer::from_env();
@@ -312,6 +365,7 @@ pub fn spawn_render_thread(
                 observer.log_native_config(&surface);
             }
             let mut first_present_recorded = false;
+            let mut present_hooks: Vec<PresentHook> = Vec::new();
             let geometric_capacity = damage_geometric_capacity_enabled();
             let mut damage_cache = DamageCache {
                 geometric_capacity,
@@ -319,12 +373,16 @@ pub fn spawn_render_thread(
             };
             let mut target_valid = false;
             let mut handoff = native_timing.map(|_| timing::handoff::Recorder::default());
+            let mut keep_renderer = false;
             loop {
                 let (message, receive_bounds) =
                     timing::around(native_timing.is_some(), || rx.recv());
                 let before_receive = receive_bounds.and_then(|bounds| bounds.before);
                 let received = receive_bounds.and_then(|bounds| bounds.after);
                 let Ok(msg) = message else { break };
+                if frame_ix == 0 {
+                    tilo_startup_metrics::mark("render-worker-first-frame-received");
+                }
                 let (
                     mut scene,
                     width,
@@ -342,16 +400,25 @@ pub fn spawn_render_thread(
                         damage_regions,
                         full_redraw,
                         cpu_frame_id,
-                    } => (
-                        scene,
-                        width,
-                        height,
-                        base_color,
-                        damage_regions,
-                        full_redraw,
-                        cpu_frame_id,
-                    ),
-                    RenderRequest::Shutdown => break,
+                        on_present,
+                    } => {
+                        present_hooks.extend(on_present);
+                        (
+                            scene,
+                            width,
+                            height,
+                            base_color,
+                            damage_regions,
+                            full_redraw,
+                            cpu_frame_id,
+                        )
+                    }
+                    RenderRequest::Shutdown {
+                        keep_renderer: keep,
+                    } => {
+                        keep_renderer = keep;
+                        break;
+                    }
                 };
                 let worker_timing = present_origin.map(|origin| (origin, crate::time::now()));
                 if let Some(observer) = native_timing {
@@ -416,17 +483,21 @@ pub fn spawn_render_thread(
                     &render_cx,
                     &surface,
                     &mut renderer,
-                    &scene,
-                    width,
-                    height,
-                    base_color,
-                    &damage_regions,
-                    full_redraw || !target_valid,
                     &mut damage_cache,
-                    present_dbg,
-                    frame_ix,
-                    cpu_frame_id,
-                    presentation.as_ref(),
+                    FrameContent {
+                        scene: &scene,
+                        width,
+                        height,
+                        base_color,
+                        damage_regions: &damage_regions,
+                        full_redraw: full_redraw || !target_valid,
+                    },
+                    FramePresentation {
+                        frame_ix,
+                        cpu_frame_id,
+                        present_dbg,
+                        observer: presentation.as_ref(),
+                    },
                 );
                 let render_host_end = native_timing.and_then(|_| timing::capture());
                 timing::handoff::set(
@@ -457,6 +528,12 @@ pub fn spawn_render_thread(
                 // length at typical refresh rates, nowhere near `u64::MAX`.
                 frame_ix = frame_ix.saturating_add(1);
                 target_valid = outcome == FrameOutcome::Presented;
+                if target_valid && !present_hooks.is_empty() {
+                    let presented = crate::time::wall();
+                    for hook in std::mem::take(&mut present_hooks) {
+                        hook(presented);
+                    }
+                }
                 if target_valid && !first_present_recorded {
                     first_present_recorded = true;
                     tilo_startup_metrics::mark("first-frame-presented");
@@ -488,9 +565,22 @@ pub fn spawn_render_thread(
             // the early resize-failure path that cannot recycle its scene.
             drop(pool_tx);
             notify_buffer_waiter(&waiting, wake.as_ref());
-            // Worker exits — `surface`, `renderer`, `render_cx` drop here in
-            // that order, which is the order wgpu requires (surface first
-            // releases the swapchain on the instance `render_cx` owns).
+            // The surface goes first: it releases its swapchain on the
+            // instance `render_cx` owns.
+            let device_id = surface.dev_id;
+            drop(damage_cache);
+            drop(surface);
+            if keep_renderer {
+                Some(PreparedRenderer {
+                    context: render_cx,
+                    device_id,
+                    renderer,
+                })
+            } else {
+                drop(renderer);
+                drop(render_cx);
+                None
+            }
         })
         .map_err(|e| format!("could not spawn the ui-render thread: {e}"))?;
     Ok(RenderThreadHandle {
@@ -640,23 +730,25 @@ fn resize_surface_checked(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::expect_used,
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "damage bounds are clamped to the u32 surface before narrowing; one bounded GPU transaction keeps retained-target correctness visible in one place"
 )]
 fn rasterize_damage(
-    device: &vello::wgpu::Device,
-    queue: &vello::wgpu::Queue,
+    gpu: &crate::gpu::DeviceHandle,
     surface: &RenderSurface<'static>,
     renderer: &mut Renderer,
-    scene: &Scene,
-    width: u32,
-    height: u32,
-    base_color: Color,
-    damage_regions: &[Rect],
-    full_redraw: bool,
     damage_cache: &mut DamageCache,
+    frame: &FrameContent<'_>,
 ) -> Result<u64, vello::Error> {
+    let crate::gpu::DeviceHandle { device, queue, .. } = gpu;
+    let FrameContent {
+        scene,
+        width,
+        height,
+        base_color,
+        damage_regions,
+        full_redraw,
+    } = *frame;
     let full_pixels = u64::from(width).saturating_mul(u64::from(height));
     let render_full = |renderer: &mut Renderer| {
         renderer.render_to_texture(
@@ -928,12 +1020,27 @@ fn rasterize_damage(
     Ok(raster_pixels)
 }
 
-// One call site: this is the whole worker's per-frame encode+present step,
-// and each parameter is a distinct, independently necessary piece of GPU
-// state or frame metadata. Bundling would trade nine named parameters for
-// an equally large ad-hoc struct with no behavioural change.
+/// One frame's scene, surface size and damage, as the worker received it.
+#[derive(Clone, Copy)]
+struct FrameContent<'a> {
+    scene: &'a Scene,
+    width: u32,
+    height: u32,
+    base_color: Color,
+    damage_regions: &'a [Rect],
+    full_redraw: bool,
+}
+
+/// How a presented frame is identified and observed.
+#[derive(Clone, Copy)]
+struct FramePresentation<'a> {
+    frame_ix: u64,
+    cpu_frame_id: Option<u64>,
+    present_dbg: bool,
+    observer: Option<&'a crate::presentation_feedback::Observer>,
+}
+
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "one render-thread frame transaction; splitting it would separate acquire/encode/present state and timings"
 )]
@@ -941,22 +1048,29 @@ fn render_one_frame(
     render_cx: &RenderContext,
     surface: &RenderSurface<'static>,
     renderer: &mut Renderer,
-    scene: &Scene,
-    width: u32,
-    height: u32,
-    base_color: Color,
-    damage_regions: &[Rect],
-    full_redraw: bool,
     damage_cache: &mut DamageCache,
-    present_dbg: bool,
-    frame_ix: u64,
-    cpu_frame_id: Option<u64>,
-    presentation: Option<&crate::presentation_feedback::Observer>,
+    frame: FrameContent<'_>,
+    present: FramePresentation<'_>,
 ) -> FrameOutcome {
+    let FrameContent {
+        scene,
+        width,
+        height,
+        ..
+    } = frame;
+    let FramePresentation {
+        frame_ix,
+        cpu_frame_id,
+        present_dbg,
+        observer: presentation,
+    } = present;
     let Some(device_handle) = render_cx.devices.get(surface.dev_id) else {
         tracing::info!("render device index out of range; stopping the render thread");
         return FrameOutcome::SurfaceGone;
     };
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-acquire-start");
+    }
 
     // Acquire before encoding. An occluded, timed-out, outdated, or destroyed
     // swapchain cannot consume the frame; discovering that only after Vello
@@ -999,20 +1113,24 @@ fn render_one_frame(
     };
 
     let acquire_us = t_acquire.map(|t| t.elapsed().as_secs_f64() * 1e6);
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-acquire-done");
+    }
 
     let t_encode = present_dbg.then(crate::time::now);
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-raster-start");
+    }
     let raster_pixels = match rasterize_damage(
-        &device_handle.device,
-        &device_handle.queue,
+        device_handle,
         surface,
         renderer,
-        scene,
-        width,
-        height,
-        base_color,
-        damage_regions,
-        full_redraw || POST_PROCESSOR_ACTIVE.load(std::sync::atomic::Ordering::Acquire),
         damage_cache,
+        &FrameContent {
+            full_redraw: frame.full_redraw
+                || POST_PROCESSOR_ACTIVE.load(std::sync::atomic::Ordering::Acquire),
+            ..frame
+        },
     ) {
         Ok(pixels) => pixels,
         Err(err) => {
@@ -1023,6 +1141,9 @@ fn render_one_frame(
             return FrameOutcome::Skipped;
         }
     };
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-raster-done");
+    }
 
     // Composite any post-processor content (the browser's zero-copy WebView
     // texture) into the intermediate texture before it goes to the surface.
@@ -1042,31 +1163,81 @@ fn render_one_frame(
     let encode_us = t_encode.map(|t| t.elapsed().as_secs_f64() * 1e6);
 
     let t_submit = present_dbg.then(crate::time::now);
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-blit-start");
+    }
     let mut encoder =
         device_handle
             .device
             .create_command_encoder(&vello::wgpu::CommandEncoderDescriptor {
                 label: Some("ui-render-thread blit-to-surface"),
             });
-    surface.blitter.copy(
-        &device_handle.device,
-        &mut encoder,
-        &surface.target_view,
-        &surface_texture
-            .texture
-            .create_view(&vello::wgpu::TextureViewDescriptor::default()),
-    );
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-encoder-done");
+    }
+    if surface
+        .config
+        .usage
+        .contains(vello::wgpu::TextureUsages::COPY_DST)
+    {
+        if frame_ix == 0 {
+            tilo_startup_metrics::mark("render-worker-first-direct-copy-start");
+        }
+        encoder.copy_texture_to_texture(
+            vello::wgpu::TexelCopyTextureInfo {
+                texture: &surface.target_texture,
+                mip_level: 0,
+                origin: vello::wgpu::Origin3d::ZERO,
+                aspect: vello::wgpu::TextureAspect::All,
+            },
+            vello::wgpu::TexelCopyTextureInfo {
+                texture: &surface_texture.texture,
+                mip_level: 0,
+                origin: vello::wgpu::Origin3d::ZERO,
+                aspect: vello::wgpu::TextureAspect::All,
+            },
+            vello::wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        if frame_ix == 0 {
+            tilo_startup_metrics::mark("render-worker-first-direct-copy-done");
+        }
+    } else {
+        surface.blitter.copy(
+            &device_handle.device,
+            &mut encoder,
+            &surface.target_view,
+            &surface_texture
+                .texture
+                .create_view(&vello::wgpu::TextureViewDescriptor::default()),
+        );
+    }
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-blit-copy-done");
+    }
     device_handle.queue.submit([encoder.finish()]);
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-blit-done");
+    }
 
     let submit_us = t_submit.map(|t| t.elapsed().as_secs_f64() * 1e6);
 
     let t_present = present_dbg.then(crate::time::now);
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-present-start");
+    }
     if let Some(observer) = presentation {
         observer.arm(&surface.surface, frame_ix, cpu_frame_id);
     }
     let ((), present_bounds) = timing::around(presentation.is_some() && timing::enabled(), || {
         surface_texture.present();
     });
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-present-done");
+    }
     if present_dbg {
         let present_us = t_present.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1e6);
         let encoding = scene.encoding();
@@ -1112,6 +1283,9 @@ fn render_one_frame(
     }
     // `Poll` is the non-blocking variant — nudges the queue without stalling.
     let _ = device_handle.device.poll(vello::wgpu::PollType::Poll);
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-poll-done");
+    }
     FrameOutcome::Presented
 }
 
@@ -1124,252 +1298,258 @@ mod admission_tests {
     };
 
     #[test]
-    fn occluded_primary_keeps_visible_sibling_projection_fresh_through_real_admission() {
-        use crate::widget::Widget;
-        use automerge::transaction::Transactable;
-        // The primary is the sole owner of this retained root's update/sync;
-        // auxiliary painting observes its Text projection rather than syncing.
-        struct Root {
-            text: crate::widget::Text,
-            pending: Option<&'static str>,
-        }
-        impl Widget for Root {
-            fn update(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) -> bool {
-                if let Some(value) = self.pending.take() {
-                    doc.put(path, "label", value).unwrap();
-                    true
-                } else {
-                    false
+    fn occlusion_admission_keeps_payloads_probes_and_sibling_projections() {
+        // Case `occluded_primary_keeps_visible_sibling_projection_fresh_through_real_admission`.
+        {
+            use crate::widget::Widget;
+            use automerge::transaction::Transactable;
+            // The primary is the sole owner of this retained root's update/sync;
+            // auxiliary painting observes its Text projection rather than syncing.
+            struct Root {
+                text: crate::widget::Text,
+                pending: Option<&'static str>,
+            }
+            impl Widget for Root {
+                fn update(
+                    &mut self,
+                    doc: &mut crate::widget::AppModel,
+                    path: &crate::widget::ModelPath,
+                ) -> bool {
+                    let (doc, path) = crate::doc::document(doc, path);
+                    if let Some(value) = self.pending.take() {
+                        doc.put(path, "label", value).unwrap();
+                        true
+                    } else {
+                        false
+                    }
+                }
+                fn sync(
+                    &mut self,
+                    doc: &mut crate::widget::AppModel,
+                    path: &crate::widget::ModelPath,
+                ) {
+                    self.text.sync(doc, path);
+                }
+                fn build_layout(
+                    &mut self,
+                    tree: &mut taffy::TaffyTree<()>,
+                    theme: &crate::Theme,
+                    map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+                ) -> taffy::NodeId {
+                    self.text.build_layout(tree, theme, map)
+                }
+                fn apply_layout(
+                    &mut self,
+                    tree: &taffy::TaffyTree<()>,
+                    node: taffy::NodeId,
+                    offset: vello::kurbo::Point,
+                ) {
+                    self.text.apply_layout(tree, node, offset);
+                }
+                fn draw(
+                    &mut self,
+                    scene: &mut Scene,
+                    transform: vello::kurbo::Affine,
+                    renderer: &mut crate::text_render::TextRenderer,
+                    theme: &crate::Theme,
+                    presence: &crate::presence::PresenceCtx,
+                ) {
+                    self.text.draw(scene, transform, renderer, theme, presence);
+                }
+                fn handle_event(
+                    &mut self,
+                    event: &winit::event::WindowEvent,
+                    ctx: &mut crate::widget::EventCtx<'_>,
+                ) {
+                    self.text.handle_event(event, ctx);
+                }
+                fn get_rect(&self) -> Rect {
+                    self.text.get_rect()
+                }
+                fn name(&self) -> &'static str {
+                    "shared-projection"
+                }
+                fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+                    self.text.accessibility()
                 }
             }
-            fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-                self.text.sync(doc, path);
-            }
-            fn build_layout(
-                &mut self,
-                tree: &mut taffy::TaffyTree<()>,
-                theme: &crate::Theme,
-                map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
-            ) -> taffy::NodeId {
-                self.text.build_layout(tree, theme, map)
-            }
-            fn apply_layout(
-                &mut self,
-                tree: &taffy::TaffyTree<()>,
-                node: taffy::NodeId,
-                offset: vello::kurbo::Point,
-            ) {
-                self.text.apply_layout(tree, node, offset);
-            }
-            fn draw(
-                &mut self,
-                scene: &mut Scene,
-                transform: vello::kurbo::Affine,
-                renderer: &mut crate::text_render::TextRenderer,
-                theme: &crate::Theme,
-                presence: &crate::presence::PresenceCtx,
-            ) {
-                self.text.draw(scene, transform, renderer, theme, presence);
-            }
-            fn handle_event(
-                &mut self,
-                event: &winit::event::WindowEvent,
-                scale: f64,
-                modifiers: &winit::event::Modifiers,
-                doc: &mut automerge::AutoCommit,
-                path: &automerge::ObjId,
-                handled: &mut bool,
-                focus: &mut Option<taffy::NodeId>,
-                node: taffy::NodeId,
-                tree: &taffy::TaffyTree<()>,
-            ) {
-                self.text.handle_event(
-                    event, scale, modifiers, doc, path, handled, focus, node, tree,
-                );
-            }
-            fn get_rect(&self) -> Rect {
-                self.text.get_rect()
-            }
-            fn name(&self) -> &'static str {
-                "shared-projection"
-            }
-            fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-                self.text.accessibility()
-            }
-        }
-        let mut root = Root {
-            text: crate::widget::Text::from_document_string("label"),
-            pending: Some("initial"),
-        };
-        let mut doc = automerge::AutoCommit::new();
-        root.update(&mut doc, &automerge::ROOT);
-        root.sync(&mut doc, &automerge::ROOT);
-        let now = crate::time::now();
-        let mut retry = retry::RenderRetryState::default();
-        for _ in 0..8 {
-            retry.observe(FrameOutcome::Occluded, now);
-        }
-        let (tx, rx) = mpsc::sync_channel(2);
-        let mut buffers = BufferPool::new(rx, Arc::new(AtomicBool::new(false)));
-        for (index, value) in ["animation tick", "auxiliary input"]
-            .into_iter()
-            .enumerate()
-        {
-            let tick = now + retry::FRAME_INTERVAL * (index as u32 + 1);
-            retry.observe_for_shared_root(
-                FrameOutcome::Occluded,
-                tick - retry::FRAME_INTERVAL,
-                true,
-            );
-            tx.send((Scene::new(), Vec::<Rect>::new())).unwrap();
-            root.pending = Some(value);
-            let admitted_at = if index == 1 {
-                assert!(retry.known_occluded());
-                assert!(
-                    retry.request_probe(),
-                    "auxiliary input also probes the shared primary"
-                );
-                tick - retry::FRAME_INTERVAL
-            } else {
-                tick
+            let mut root = Root {
+                text: crate::widget::Text::from_document_string("label"),
+                pending: Some("initial"),
             };
-            if prepare_frame(&mut retry, &mut buffers, admitted_at).unwrap() {
-                assert!(root.update(&mut doc, &automerge::ROOT));
-                root.sync(&mut doc, &automerge::ROOT);
-                let _ = buffers.recv().unwrap();
+            let mut doc = automerge::AutoCommit::new();
+            root.update(&mut doc, &automerge::ROOT);
+            root.sync(&mut doc, &automerge::ROOT);
+            let now = crate::time::now();
+            let mut retry = retry::RenderRetryState::default();
+            for _ in 0..8 {
+                retry.observe(FrameOutcome::Occluded, now);
             }
+            let (tx, rx) = mpsc::sync_channel(2);
+            let mut buffers = BufferPool::new(rx, Arc::new(AtomicBool::new(false)));
+            for (index, value) in ["animation tick", "auxiliary input"]
+                .into_iter()
+                .enumerate()
+            {
+                let tick = now + retry::FRAME_INTERVAL * (index as u32 + 1);
+                retry.observe_for_shared_root(
+                    FrameOutcome::Occluded,
+                    tick - retry::FRAME_INTERVAL,
+                    true,
+                );
+                tx.send((Scene::new(), Vec::<Rect>::new())).unwrap();
+                root.pending = Some(value);
+                let admitted_at = if index == 1 {
+                    assert!(retry.known_occluded());
+                    assert!(
+                        retry.request_probe(),
+                        "auxiliary input also probes the shared primary"
+                    );
+                    tick - retry::FRAME_INTERVAL
+                } else {
+                    tick
+                };
+                if prepare_frame(&mut retry, &mut buffers, admitted_at).unwrap() {
+                    assert!(root.update(&mut doc, &automerge::ROOT));
+                    root.sync(&mut doc, &automerge::ROOT);
+                    let _ = buffers.recv().unwrap();
+                }
+                assert_eq!(
+                    root.accessibility().unwrap().name.as_deref(),
+                    Some(value),
+                    "visible sibling must observe each shared update, not a 250ms-old projection"
+                );
+            }
+            for _ in 0..8 {
+                retry.observe_for_shared_root(FrameOutcome::Occluded, now, true);
+            }
+            assert!(
+                retry.known_occluded(),
+                "a sibling must not erase primary occlusion history"
+            );
+            retry.observe_for_shared_root(FrameOutcome::Occluded, now, false);
             assert_eq!(
-                root.accessibility().unwrap().name.as_deref(),
-                Some(value),
-                "visible sibling must observe each shared update, not a 250ms-old projection"
+                retry.deadline(),
+                Some(now + crate::time::Duration::from_millis(250))
             );
         }
-        for _ in 0..8 {
-            retry.observe_for_shared_root(FrameOutcome::Occluded, now, true);
-        }
-        assert!(
-            retry.known_occluded(),
-            "a sibling must not erase primary occlusion history"
-        );
-        retry.observe_for_shared_root(FrameOutcome::Occluded, now, false);
-        assert_eq!(
-            retry.deadline(),
-            Some(now + crate::time::Duration::from_millis(250))
-        );
-    }
 
-    #[test]
-    fn occlusion_admission_preserves_dirty_payload_and_probe_until_buffers_return() {
-        let now = crate::time::now();
-        let mut retry = retry::RenderRetryState::default();
-        for _ in 0..8 {
+        // Case `occlusion_admission_preserves_dirty_payload_and_probe_until_buffers_return`.
+        {
+            let now = crate::time::now();
+            let mut retry = retry::RenderRetryState::default();
+            for _ in 0..8 {
+                retry.observe(FrameOutcome::Occluded, now);
+            }
+            let (tx, rx) = mpsc::sync_channel(2);
+            let waiting = Arc::new(AtomicBool::new(false));
+            let mut pool = BufferPool::new(rx, waiting.clone());
+            tx.send(("scene", vec![1, 2, 3])).unwrap();
+            assert!(!prepare_frame(&mut retry, &mut pool, now).unwrap());
+            assert!(
+                !pool.redraw_deferred(),
+                "occlusion must not arm a false buffer wait"
+            );
+            retry.request_probe();
+            retry.observe(FrameOutcome::Occluded, now); // Older completion drained after input.
+            assert!(prepare_frame(&mut retry, &mut pool, now).unwrap());
+            assert_eq!(pool.recv().unwrap(), ("scene", vec![1, 2, 3]));
             retry.observe(FrameOutcome::Occluded, now);
+            retry.request_probe();
+            assert!(!prepare_frame(&mut retry, &mut pool, now).unwrap());
+            assert!(
+                retry.allows(now),
+                "buffer deferral must preserve explicit probe"
+            );
+            tx.send(("latest dirty scene", vec![4, 5])).unwrap();
+            notify_render_completion(&waiting, &|| {}, FrameOutcome::Occluded);
+            retry.observe(FrameOutcome::Occluded, now);
+            assert!(prepare_frame(&mut retry, &mut pool, now).unwrap());
+            assert_eq!(pool.recv().unwrap(), ("latest dirty scene", vec![4, 5]));
+            retry.observe(FrameOutcome::Occluded, now);
+            assert_eq!(retry.deadline(), Some(now + retry::FRAME_INTERVAL));
         }
-        let (tx, rx) = mpsc::sync_channel(2);
-        let waiting = Arc::new(AtomicBool::new(false));
-        let mut pool = BufferPool::new(rx, waiting.clone());
-        tx.send(("scene", vec![1, 2, 3])).unwrap();
-        assert!(!prepare_frame(&mut retry, &mut pool, now).unwrap());
-        assert!(
-            !pool.redraw_deferred(),
-            "occlusion must not arm a false buffer wait"
-        );
-        retry.request_probe();
-        retry.observe(FrameOutcome::Occluded, now); // Older completion drained after input.
-        assert!(prepare_frame(&mut retry, &mut pool, now).unwrap());
-        assert_eq!(pool.recv().unwrap(), ("scene", vec![1, 2, 3]));
-        retry.observe(FrameOutcome::Occluded, now);
-        retry.request_probe();
-        assert!(!prepare_frame(&mut retry, &mut pool, now).unwrap());
-        assert!(
-            retry.allows(now),
-            "buffer deferral must preserve explicit probe"
-        );
-        tx.send(("latest dirty scene", vec![4, 5])).unwrap();
-        notify_render_completion(&waiting, &|| {}, FrameOutcome::Occluded);
-        retry.observe(FrameOutcome::Occluded, now);
-        assert!(prepare_frame(&mut retry, &mut pool, now).unwrap());
-        assert_eq!(pool.recv().unwrap(), ("latest dirty scene", vec![4, 5]));
-        retry.observe(FrameOutcome::Occluded, now);
-        assert_eq!(retry.deadline(), Some(now + retry::FRAME_INTERVAL));
-    }
 
-    #[test]
-    fn failed_outcomes_wake_even_without_deferred_work() {
-        use std::cell::Cell;
-        let waiting = AtomicBool::new(false);
-        let wakes = Cell::new(0);
-        let wake = || wakes.set(wakes.get() + 1);
-        notify_render_completion(&waiting, &wake, FrameOutcome::Presented);
-        assert_eq!(wakes.get(), 0);
-        for outcome in [
-            FrameOutcome::Skipped,
-            FrameOutcome::Reconfigured,
-            FrameOutcome::Occluded,
-            FrameOutcome::SurfaceGone,
-        ] {
-            notify_render_completion(&waiting, &wake, outcome);
+        // Case `admission_defers_without_consuming_partial_state_and_retains_reservation`.
+        {
+            let (tx, rx) = mpsc::sync_channel(2);
+            let waiting = Arc::new(AtomicBool::new(false));
+            let mut pool = BufferPool::new(rx, waiting.clone());
+            assert!(!pool.prepare().unwrap());
+            assert!(waiting.load(Ordering::SeqCst));
+            tx.send(41).unwrap();
+            assert!(pool.prepare().unwrap());
+            assert!(!waiting.load(Ordering::SeqCst));
+            // An aborted layout keeps the reservation for the next redraw.
+            assert!(pool.prepare().unwrap());
+            assert_eq!(pool.recv().unwrap(), 41);
+            assert!(!pool.prepare().unwrap());
+            drop(tx);
+            assert!(pool.prepare().is_err());
         }
-        assert_eq!(wakes.get(), 4);
-        waiting.store(true, Ordering::SeqCst);
-        notify_render_completion(&waiting, &wake, FrameOutcome::Presented);
-        assert_eq!(wakes.get(), 5);
-        assert!(!waiting.load(Ordering::SeqCst));
     }
 
     #[test]
-    fn completion_wakes_only_deferred_work_and_cannot_lose_ready_buffers() {
-        use std::cell::Cell;
-        let (tx, rx) = mpsc::sync_channel(2);
-        let waiting = Arc::new(AtomicBool::new(false));
-        let mut pool = BufferPool::new(rx, waiting.clone());
-        let wakes = Cell::new(0);
-        let wake = || wakes.set(wakes.get() + 1);
-        notify_buffer_waiter(&waiting, &wake);
-        assert_eq!(wakes.get(), 0, "static completions must stay idle");
-        assert!(!pool.prepare().unwrap());
-        assert!(
-            pool.redraw_deferred(),
-            "periodic redraw demand must defer while busy"
-        );
-        tx.send(7).unwrap();
-        notify_buffer_waiter(&waiting, &wake);
-        notify_buffer_waiter(&waiting, &wake);
-        assert_eq!(wakes.get(), 1, "one wake services a deferred redraw");
-        assert!(
-            !pool.redraw_deferred(),
-            "completion re-enables periodic redraws"
-        );
-        assert!(pool.prepare().unwrap());
-        assert_eq!(pool.recv().unwrap(), 7);
-        // Completion before admission needs no wake: admission finds the pair.
-        tx.send(8).unwrap();
-        notify_buffer_waiter(&waiting, &wake);
-        assert!(pool.prepare().unwrap());
-        assert_eq!(pool.recv().unwrap(), 8);
-        assert_eq!(wakes.get(), 1);
-        assert!(!pool.prepare().unwrap());
-        drop(tx);
-        notify_buffer_waiter(&waiting, &wake);
-        assert_eq!(wakes.get(), 2, "worker exit wakes a pending admission");
-        assert!(pool.prepare().is_err());
-    }
+    fn completion_and_failure_wake_deferred_work_without_losing_buffers() {
+        // Case `failed_outcomes_wake_even_without_deferred_work`.
+        {
+            use std::cell::Cell;
+            let waiting = AtomicBool::new(false);
+            let wakes = Cell::new(0);
+            let wake = || wakes.set(wakes.get() + 1);
+            notify_render_completion(&waiting, &wake, FrameOutcome::Presented);
+            assert_eq!(wakes.get(), 0);
+            for outcome in [
+                FrameOutcome::Skipped,
+                FrameOutcome::Reconfigured,
+                FrameOutcome::Occluded,
+                FrameOutcome::SurfaceGone,
+            ] {
+                notify_render_completion(&waiting, &wake, outcome);
+            }
+            assert_eq!(wakes.get(), 4);
+            waiting.store(true, Ordering::SeqCst);
+            notify_render_completion(&waiting, &wake, FrameOutcome::Presented);
+            assert_eq!(wakes.get(), 5);
+            assert!(!waiting.load(Ordering::SeqCst));
+        }
 
-    #[test]
-    fn admission_defers_without_consuming_partial_state_and_retains_reservation() {
-        let (tx, rx) = mpsc::sync_channel(2);
-        let waiting = Arc::new(AtomicBool::new(false));
-        let mut pool = BufferPool::new(rx, waiting.clone());
-        assert!(!pool.prepare().unwrap());
-        assert!(waiting.load(Ordering::SeqCst));
-        tx.send(41).unwrap();
-        assert!(pool.prepare().unwrap());
-        assert!(!waiting.load(Ordering::SeqCst));
-        // An aborted layout keeps the reservation for the next redraw.
-        assert!(pool.prepare().unwrap());
-        assert_eq!(pool.recv().unwrap(), 41);
-        assert!(!pool.prepare().unwrap());
-        drop(tx);
-        assert!(pool.prepare().is_err());
+        // Case `completion_wakes_only_deferred_work_and_cannot_lose_ready_buffers`.
+        {
+            use std::cell::Cell;
+            let (tx, rx) = mpsc::sync_channel(2);
+            let waiting = Arc::new(AtomicBool::new(false));
+            let mut pool = BufferPool::new(rx, waiting.clone());
+            let wakes = Cell::new(0);
+            let wake = || wakes.set(wakes.get() + 1);
+            notify_buffer_waiter(&waiting, &wake);
+            assert_eq!(wakes.get(), 0, "static completions must stay idle");
+            assert!(!pool.prepare().unwrap());
+            assert!(
+                pool.redraw_deferred(),
+                "periodic redraw demand must defer while busy"
+            );
+            tx.send(7).unwrap();
+            notify_buffer_waiter(&waiting, &wake);
+            notify_buffer_waiter(&waiting, &wake);
+            assert_eq!(wakes.get(), 1, "one wake services a deferred redraw");
+            assert!(
+                !pool.redraw_deferred(),
+                "completion re-enables periodic redraws"
+            );
+            assert!(pool.prepare().unwrap());
+            assert_eq!(pool.recv().unwrap(), 7);
+            // Completion before admission needs no wake: admission finds the pair.
+            tx.send(8).unwrap();
+            notify_buffer_waiter(&waiting, &wake);
+            assert!(pool.prepare().unwrap());
+            assert_eq!(pool.recv().unwrap(), 8);
+            assert_eq!(wakes.get(), 1);
+            assert!(!pool.prepare().unwrap());
+            drop(tx);
+            notify_buffer_waiter(&waiting, &wake);
+            assert_eq!(wakes.get(), 2, "worker exit wakes a pending admission");
+            assert!(pool.prepare().is_err());
+        }
     }
 }

@@ -663,12 +663,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_analysis_has_no_searchable_whitespace() {
+    fn analysis_text_eligibility_and_legacy_provenance() {
         assert_eq!(ImageAnalysis::default().searchable_text(), "");
-    }
-
-    #[test]
-    fn searchable_analysis_joins_only_meaningful_fields() {
         let analysis = ImageAnalysis {
             ocr_text: "  MARKET  ".to_owned(),
             objects: vec!["sign".to_owned()],
@@ -676,42 +672,39 @@ mod tests {
             ..ImageAnalysis::default()
         };
         assert_eq!(analysis.searchable_text(), "MARKET sign");
-    }
 
-    #[test]
-    fn vision_eligibility_requires_matching_content_and_model_revision() {
+        // Vision eligibility requires matching content and model revision.
+        let provenance = |source: &str, model_revision: String| AnalysisProvenance {
+            source: source.into(),
+            model_revision,
+            content: "a".repeat(64),
+            ..Default::default()
+        };
         let analysis = ImageAnalysis {
             ocr_text: "receipt".into(),
-            provenance: AnalysisProvenance {
-                source: "local-ocr".into(),
-                content: "a".repeat(64),
-                ..Default::default()
-            },
-            ocr_provenance: Some(AnalysisProvenance {
-                source: "local-ocr".into(),
-                content: "a".repeat(64),
-                ..Default::default()
-            }),
+            provenance: provenance("local-ocr", String::new()),
+            ocr_provenance: Some(provenance("local-ocr", String::new())),
             ..Default::default()
         };
         assert!(!analysis.has_vision_component(Some(&"a".repeat(64)), &"b".repeat(64)));
-
         let analysis = ImageAnalysis {
-            vision_provenance: Some(AnalysisProvenance {
-                source: "local-vision".into(),
-                model_revision: "b".repeat(64),
-                content: "a".repeat(64),
-                ..Default::default()
-            }),
+            vision_provenance: Some(provenance("local-vision", "b".repeat(64))),
             ..analysis
         };
-        assert!(analysis.has_vision_component(Some(&"a".repeat(64)), &"b".repeat(64)));
-        assert!(!analysis.has_vision_component(Some(&"c".repeat(64)), &"b".repeat(64)));
-        assert!(!analysis.has_vision_component(Some(&"a".repeat(64)), &"d".repeat(64)));
-    }
+        // (content, model revision, eligible)
+        for (content, revision, eligible) in
+            [('a', 'b', true), ('c', 'b', false), ('a', 'd', false)]
+        {
+            assert_eq!(
+                analysis.has_vision_component(
+                    Some(&content.to_string().repeat(64)),
+                    &revision.to_string().repeat(64)
+                ),
+                eligible,
+                "content {content} revision {revision}"
+            );
+        }
 
-    #[test]
-    fn legacy_analysis_provenance_deserializes_without_model_identity() {
         let legacy = r#"{
             "source":"local-ocr",
             "engine":"tilo-ocr",
@@ -724,100 +717,69 @@ mod tests {
         assert!(provenance.model_revision.is_empty());
     }
 
-    #[test]
-    fn a_fresh_edit_set_is_the_identity() {
-        assert!(Edits::default().is_identity());
+    fn rect(left: f64, top: f64, width: f64, height: f64) -> Rect01 {
+        Rect01 {
+            x: left,
+            y: top,
+            w: width,
+            h: height,
+        }
     }
 
     #[test]
-    fn rotating_four_times_returns_to_the_identity() {
+    fn edits_compose_rotate_crop_and_clamp_into_the_unit_square() {
+        assert!(Edits::default().is_identity());
         let mut e = Edits::default();
         for _ in 0..4 {
             e = e.rotated_right();
         }
-        assert!(e.is_identity());
-    }
+        assert!(e.is_identity(), "four right turns");
+        assert!(
+            Edits::default()
+                .rotated_right()
+                .rotated_left()
+                .is_identity(),
+            "left and right cancel"
+        );
 
-    #[test]
-    fn left_and_right_cancel() {
-        let e = Edits::default().rotated_right().rotated_left();
-        assert!(e.is_identity());
-    }
-
-    #[test]
-    fn composing_two_half_crops_takes_a_quarter() {
-        let half = Rect01 {
-            x: 0.0,
-            y: 0.0,
-            w: 0.5,
-            h: 0.5,
-        };
+        let half = rect(0.0, 0.0, 0.5, 0.5);
         let out = half.compose(half);
         assert!((out.w - 0.25).abs() < 1e-9, "{out:?}");
         assert!((out.h - 0.25).abs() < 1e-9, "{out:?}");
-    }
-
-    #[test]
-    fn composing_offsets_into_the_outer_rect() {
-        let outer = Rect01 {
-            x: 0.5,
-            y: 0.0,
-            w: 0.5,
-            h: 1.0,
-        };
-        let inner = Rect01 {
-            x: 0.5,
-            y: 0.0,
-            w: 0.5,
-            h: 1.0,
-        };
-        let out = outer.compose(inner);
+        let right_half = rect(0.5, 0.0, 0.5, 1.0);
+        let out = right_half.compose(right_half);
         assert!((out.x - 0.75).abs() < 1e-9, "{out:?}");
         assert!((out.w - 0.25).abs() < 1e-9, "{out:?}");
-    }
 
-    #[test]
-    fn clamping_pulls_an_out_of_range_rect_inside_the_unit_square() {
-        let r = Rect01 {
-            x: -0.5,
-            y: 0.9,
-            w: 4.0,
-            h: 4.0,
-        }
-        .clamped();
+        let r = rect(-0.5, 0.9, 4.0, 4.0).clamped();
         assert!(r.x >= 0.0 && r.y >= 0.0);
         assert!(r.x + r.w <= 1.0 + 1e-9, "{r:?}");
         assert!(r.y + r.h <= 1.0 + 1e-9, "{r:?}");
     }
 
     #[test]
-    fn edited_size_swaps_the_axes_on_an_odd_turn() {
-        let img = OpenImage::from_path("/x/harbour.png", 800, 400);
-        assert_eq!(img.edited_size(&Edits::default()), (800, 400));
-        assert_eq!(
-            img.edited_size(&Edits::default().rotated_right()),
-            (400, 800)
-        );
-    }
-
-    #[test]
-    fn edited_size_shrinks_with_the_crop() {
-        let img = OpenImage::from_path("/x/harbour.png", 800, 400);
-        let e = Edits {
-            crop: Rect01 {
-                x: 0.0,
-                y: 0.0,
-                w: 0.5,
-                h: 0.5,
-            },
-            rotate_quarters: 0,
-        };
-        assert_eq!(img.edited_size(&e), (400, 200));
-    }
-
-    #[test]
-    fn a_name_is_derived_from_the_path() {
+    fn open_images_name_themselves_and_size_by_their_edits() {
         let img = OpenImage::from_path("/var/tmp/tilo/home/quinten/harbour.png", 1, 1);
         assert_eq!(img.name, "harbour.png");
+
+        let img = OpenImage::from_path("/x/harbour.png", 800, 400);
+        for (case, edits, size) in [
+            ("identity", Edits::default(), (800, 400)),
+            (
+                "odd turn swaps the axes",
+                Edits::default().rotated_right(),
+                (400, 800),
+            ),
+            (
+                "crop shrinks",
+                Edits {
+                    crop: rect(0.0, 0.0, 0.5, 0.5),
+                    rotate_quarters: 0,
+                },
+                (400, 200),
+            ),
+        ] {
+            assert_eq!(img.edited_size(&edits), size, "case {case}");
+        }
     }
 }

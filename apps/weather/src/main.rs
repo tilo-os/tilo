@@ -57,27 +57,42 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = tracing_subscriber::fmt::try_init();
         return run_probe();
     }
-    ui::launch::run(
-        &LaunchSpec::new("so.tilo.weather", weather::app_root)
-            .history(&weather::framework_history::HISTORY)
-            .shot_root(shot_root)
-            .configure_app(|app| weather::actions::register(app.action_registry_mut()))
-            .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
-            .scenarios(&[
-                "onboarding",
-                "detail",
-                "drag",
-                "scrolled",
-                "detail_scrolled",
-                "collapsed",
-                "search",
-                "search_loading",
-                "search_empty",
-                "offline",
-                "error",
-            ]),
-    )?;
+    if standalone_capture(&args) {
+        ui::launch::run(&shot_launch_spec())?;
+        return Ok(());
+    }
+    ui::framework::run::<weather::WeatherShell>();
     Ok(())
+}
+
+fn standalone_capture(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        arg == "--shots"
+            || arg.starts_with("--shots=")
+            || arg == "--responsive-matrix"
+            || arg.starts_with("--responsive-matrix=")
+    })
+}
+
+fn shot_launch_spec() -> LaunchSpec {
+    LaunchSpec::new("so.tilo.weather", weather::app_root)
+        .history(&weather::framework_history::HISTORY)
+        .shot_root(shot_root)
+        .configure_app(|app| weather::actions::register(app.action_registry_mut()))
+        .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
+        .scenarios(&[
+            "onboarding",
+            "detail",
+            "drag",
+            "scrolled",
+            "detail_scrolled",
+            "collapsed",
+            "search",
+            "search_loading",
+            "search_empty",
+            "offline",
+            "error",
+        ])
 }
 
 #[allow(
@@ -95,7 +110,7 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 /// [`weather::net::WeatherService`] the event loop drives. Invoked with
 /// `--probe`; it touches no UI and no window.
 fn run_probe() -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::{Duration, Instant};
+    use ui::time::Duration;
     use weather::model::SavedLocation;
     use weather::net::{Request, Response, WeatherService};
     use weather::units::Units;
@@ -120,43 +135,43 @@ fn run_probe() -> Result<(), Box<dyn std::error::Error>> {
         query: "Tokyo".to_string(),
     });
 
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = ui::time::now() + Duration::from_secs(10);
     let (mut got_forecast, mut got_geocode, mut got_aq) = (false, false, false);
-    while Instant::now() < deadline && !(got_forecast && got_geocode && got_aq) {
-        for resp in svc.drain() {
-            match resp {
-                Response::Tracked { .. } => {}
-                Response::Forecast(snap) => {
-                    got_forecast = true;
-                    println!(
-                        "probe: forecast Berlin — {:.1}°C, code {}, {} hourly pts, {} days (fetched_at={})",
-                        snap.current.temperature,
-                        snap.current.weather_code,
-                        snap.hourly.len(),
-                        snap.daily.len(),
-                        snap.fetched_at,
-                    );
-                }
-                Response::AirQuality(aq) => {
-                    got_aq = true;
-                    println!(
-                        "probe: air quality Berlin — EU AQI {:?}, PM2.5 {:?}, NO2 {:?} µg/m³",
-                        aq.european_aqi, aq.pm2_5, aq.nitrogen_dioxide,
-                    );
-                }
-                Response::Geocode { results, .. } => {
-                    got_geocode = true;
-                    let names: Vec<String> = results
-                        .iter()
-                        .take(3)
-                        .map(|r| format!("{} ({})", r.name, r.country))
-                        .collect();
-                    println!("probe: geocode 'Tokyo' → {}", names.join(", "));
-                }
-                Response::Error { message, .. } => println!("probe: error — {message}"),
+    while ui::time::now() < deadline && !(got_forecast && got_geocode && got_aq) {
+        let Some(resp) = svc.wait(Duration::from_millis(250)) else {
+            continue;
+        };
+        match resp {
+            Response::Tracked { .. } => {}
+            Response::Forecast(snap) => {
+                got_forecast = true;
+                println!(
+                    "probe: forecast Berlin — {:.1}°C, code {}, {} hourly pts, {} days (fetched_at={})",
+                    snap.current.temperature,
+                    snap.current.weather_code,
+                    snap.hourly.len(),
+                    snap.daily.len(),
+                    snap.fetched_at,
+                );
             }
+            Response::AirQuality(aq) => {
+                got_aq = true;
+                println!(
+                    "probe: air quality Berlin — EU AQI {:?}, PM2.5 {:?}, NO2 {:?} µg/m³",
+                    aq.european_aqi, aq.pm2_5, aq.nitrogen_dioxide,
+                );
+            }
+            Response::Geocode { results, .. } => {
+                got_geocode = true;
+                let names: Vec<String> = results
+                    .iter()
+                    .take(3)
+                    .map(|r| format!("{} ({})", r.name, r.country))
+                    .collect();
+                println!("probe: geocode 'Tokyo' → {}", names.join(", "));
+            }
+            Response::Error { message, .. } => println!("probe: error — {message}"),
         }
-        std::thread::sleep(Duration::from_millis(20));
     }
 
     if got_forecast && got_geocode && got_aq {

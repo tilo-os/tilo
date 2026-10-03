@@ -173,31 +173,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn semantics_tooltip_and_hit_test_share_one_face() {
-        let rect = Rect::new(8.0, 10.0, 40.0, 42.0);
-        let face = KeyframeFace::new(rect, "Opacity", KeyframeState::Off);
-        assert!(face.hit_test(rect.center()));
-        assert_eq!(
-            face.tooltip_target(rect.center()),
-            Some((rect, "Add keyframe at playhead".to_string()))
-        );
-        let node = face.accessibility_with_key(42);
-        assert_eq!(node.name.as_deref(), Some("Add keyframe for Opacity"));
-        assert_eq!(node.value.as_deref(), Some("Not animated"));
-        assert_eq!(
-            node.bounds.map(crate::a11y::AccessBounds::to_rect),
-            Some(rect)
-        );
-    }
+    fn keyframe_face_drives_semantics_hit_test_and_state_values() {
+        fn semantics_tooltip_and_hit_test_share_one_face() {
+            let rect = Rect::new(8.0, 10.0, 40.0, 42.0);
+            let face = KeyframeFace::new(rect, "Opacity", KeyframeState::Off);
+            assert!(face.hit_test(rect.center()));
+            assert_eq!(
+                face.tooltip_target(rect.center()),
+                Some((rect, "Add keyframe at playhead".to_string()))
+            );
+            let node = face.accessibility_with_key(42);
+            assert_eq!(node.name.as_deref(), Some("Add keyframe for Opacity"));
+            assert_eq!(node.value.as_deref(), Some("Not animated"));
+            assert_eq!(
+                node.bounds.map(crate::a11y::AccessBounds::to_rect),
+                Some(rect)
+            );
+        }
 
-    #[test]
-    fn all_three_states_have_distinct_spoken_values() {
-        let rect = Rect::ZERO;
-        let off = KeyframeFace::new(rect, "Scale", KeyframeState::Off);
-        let between = KeyframeFace::new(rect, "Scale", KeyframeState::Between);
-        let on = KeyframeFace::new(rect, "Scale", KeyframeState::OnKey);
-        assert_ne!(off.state.value(), between.state.value());
-        assert_ne!(between.state.value(), on.state.value());
-        assert_eq!(between.spoken_name(), "Edit keyframe for Scale");
+        fn all_three_states_have_distinct_spoken_values() {
+            let rect = Rect::ZERO;
+            let off = KeyframeFace::new(rect, "Scale", KeyframeState::Off);
+            let between = KeyframeFace::new(rect, "Scale", KeyframeState::Between);
+            let on = KeyframeFace::new(rect, "Scale", KeyframeState::OnKey);
+            assert_ne!(off.state.value(), between.state.value());
+            assert_ne!(between.state.value(), on.state.value());
+            assert_eq!(between.spoken_name(), "Edit keyframe for Scale");
+        }
+
+        semantics_tooltip_and_hit_test_share_one_face();
+        all_three_states_have_distinct_spoken_values();
     }
 }

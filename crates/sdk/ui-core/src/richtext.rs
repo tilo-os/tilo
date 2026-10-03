@@ -222,9 +222,23 @@ impl RichTextLayout {
         style: &crate::text_render::TextStyle,
         max_width: Option<f32>,
     ) -> Self {
+        Self::shape_plain_browser(fs, text, style, max_width, false)
+    }
+
+    pub(crate) fn shape_plain_browser(
+        fs: &mut FontSystem,
+        text: &str,
+        style: &crate::text_render::TextStyle,
+        max_width: Option<f32>,
+        browser_emoji: bool,
+    ) -> Self {
         let line_height = style.line_height_px();
         let offset_map = if max_width.is_some() {
-            style.hyphenation.offset_map(text)
+            let mut map = style.hyphenation.offset_map(text);
+            if text.len() > crate::text_break::HUGE_PARAGRAPH_BYTES {
+                map.add_paragraph_chunks(text);
+            }
+            map
         } else {
             OffsetMap::default()
         };
@@ -236,12 +250,21 @@ impl RichTextLayout {
         let shaping_text = offset_map.shape_text(text);
         let mut buffer = Buffer::new(fs, Metrics::new(style.size, line_height));
         let attrs = style.cosmic_attrs();
-        buffer.set_text(
-            &shaping_text,
-            &attrs,
-            Shaping::Advanced,
-            style.align.to_cosmic(),
-        );
+        if browser_emoji && crate::text_render::browser_text_demands_emoji(&shaping_text) {
+            buffer.set_rich_text(
+                crate::text_render::browser_emoji_runs(&shaping_text, &attrs, true),
+                &attrs,
+                Shaping::Advanced,
+                style.align.to_cosmic(),
+            );
+        } else {
+            buffer.set_text(
+                &shaping_text,
+                &attrs,
+                Shaping::Advanced,
+                style.align.to_cosmic(),
+            );
+        }
         let layout_width = max_width.map(|width| (width - discretionary_hyphen_width).max(0.0));
         buffer.set_size(layout_width, None);
         buffer.set_wrap(if max_width.is_some() {
@@ -274,52 +297,36 @@ impl RichTextLayout {
         }
     }
 
-    /// Shape `spans` into `width`. `base_bold` makes the whole block bold
-    /// (headings); `underlines` are byte ranges to underline; `align` sets
-    /// horizontal alignment. `line_height_mult` scales the line advance
-    /// (1.0 = default spacing).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the shaping contract keeps every text-style input explicit"
-    )]
-    pub fn shape(
-        fs: &mut FontSystem,
-        spans: &[RichSpan],
+    /// The complete style of a legacy text block for [`Self::shape_styled`]:
+    /// `base_bold` makes the whole block bold (headings) and
+    /// `line_height_mult` scales the default 1.4 line advance.
+    pub fn block_style(
         base_bold: bool,
         size: f32,
-        width: f32,
-        align: TextAlign,
         family: FontFamily,
-        underlines: Vec<(usize, usize)>,
-        strikes: Vec<(usize, usize)>,
         line_height_mult: f32,
-    ) -> Self {
+    ) -> crate::text_render::TextStyle {
         use crate::text_render::{FontChoice, TextStyle, TextWeight};
-
         let family = match family {
             FontFamily::Sans => FontChoice::SansSerif,
             FontFamily::Serif => FontChoice::Serif,
             FontFamily::Mono => FontChoice::Monospace,
         };
-        let style = TextStyle::new(size)
+        TextStyle::new(size)
             .with_line_height(1.4 * line_height_mult)
             .with_weight(if base_bold {
                 TextWeight::Bold
             } else {
                 TextWeight::Regular
             })
-            .with_family(family);
-        Self::shape_styled(fs, spans, &style, Some(width), align, underlines, strikes)
+            .with_family(family)
     }
 
     /// Shape attributed spans with the same complete block style used by
     /// plain application text. This is the preferred entry point for editors
     /// and custom widgets: font family, weight, size, and leading remain one
     /// value from measurement through painting.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the attributed shaping contract keeps geometry and decoration inputs explicit"
-    )]
+
     pub fn shape_styled(
         fs: &mut FontSystem,
         spans: &[RichSpan],
@@ -334,12 +341,26 @@ impl RichTextLayout {
         )
     }
 
+    pub(crate) fn shape_styled_browser(
+        fs: &mut FontSystem,
+        spans: &[RichSpan],
+        style: &crate::text_render::TextStyle,
+        max_width: Option<f32>,
+        align: TextAlign,
+        underlines: Vec<(usize, usize)>,
+        strikes: Vec<(usize, usize)>,
+        browser_emoji: bool,
+    ) -> Self {
+        Self::shape_styled_reusing_browser(fs, spans, style, max_width, align, None, browser_emoji)
+            .with_decorations(underlines, strikes)
+    }
+
     /// Reuse unchanged paragraphs from this renderer's previous layout.
     /// The caller must enforce the same font-system identity and generation;
     /// font replacement or locale changes require `previous = None`.
     /// Fresh paragraph construction remains authoritative for attributes and
     /// document offsets; only compatible cosmic shape/layout caches move over.
-    pub(crate) fn shape_styled_reusing(
+    pub fn shape_styled_reusing(
         fs: &mut FontSystem,
         spans: &[RichSpan],
         style: &crate::text_render::TextStyle,
@@ -349,9 +370,28 @@ impl RichTextLayout {
         strikes: Vec<(usize, usize)>,
         previous: Option<Self>,
     ) -> Self {
+        Self::shape_styled_reusing_browser(fs, spans, style, max_width, align, previous, false)
+            .with_decorations(underlines, strikes)
+    }
+
+    pub(crate) fn shape_styled_reusing_browser(
+        fs: &mut FontSystem,
+        spans: &[RichSpan],
+        style: &crate::text_render::TextStyle,
+        max_width: Option<f32>,
+        align: TextAlign,
+        previous: Option<Self>,
+        browser_emoji: bool,
+    ) -> Self {
         let full_text: String = spans.iter().map(|span| span.text.as_str()).collect();
         let offset_map = if max_width.is_some() {
-            style.hyphenation.offset_map(&full_text)
+            let mut map = style.hyphenation.offset_map(&full_text);
+            // Wrapped paragraphs beyond the huge-paragraph bound shape in
+            // content-defined chunks, so an edit reshapes one chunk.
+            if full_text.len() > crate::text_break::HUGE_PARAGRAPH_BYTES {
+                map.add_paragraph_chunks(&full_text);
+            }
+            map
         } else {
             OffsetMap::default()
         };
@@ -373,14 +413,25 @@ impl RichTextLayout {
         let (built, backgrounds, baselines) =
             Self::build_rich_runs(spans, style, &offset_map, &base, size, line_height_mult);
 
-        buffer.set_rich_text(
-            built
-                .iter()
-                .map(|(text, attrs)| (text.as_ref(), attrs.clone())),
-            &base,
-            Shaping::Advanced,
-            align.to_cosmic(),
-        );
+        if browser_emoji {
+            buffer.set_rich_text(
+                built.iter().flat_map(|(text, attrs)| {
+                    crate::text_render::browser_emoji_runs(text.as_ref(), attrs, true)
+                }),
+                &base,
+                Shaping::Advanced,
+                align.to_cosmic(),
+            );
+        } else {
+            buffer.set_rich_text(
+                built
+                    .iter()
+                    .map(|(text, attrs)| (text.as_ref(), attrs.clone())),
+                &base,
+                Shaping::Advanced,
+                align.to_cosmic(),
+            );
+        }
         // cosmic-text 0.19's rich setter omits the final empty paragraph after
         // an LF, unlike its plain setter. Restore that line at this boundary so
         // attributed and plain layouts expose the same bytes and geometry.
@@ -425,8 +476,8 @@ impl RichTextLayout {
             line_lens,
             offset_map,
             text_len: full_text.len(),
-            underlines,
-            strikes,
+            underlines: Vec::new(),
+            strikes: Vec::new(),
             backgrounds,
             baselines,
             discretionary_hyphen_width,
@@ -611,6 +662,19 @@ impl RichTextLayout {
             .fold(0.0f32, f32::max)
     }
 
+    /// Underline and strike through byte ranges of the shaped text; neither
+    /// affects shaping.
+    #[must_use]
+    pub(crate) fn with_decorations(
+        mut self,
+        underlines: Vec<(usize, usize)>,
+        strikes: Vec<(usize, usize)>,
+    ) -> Self {
+        self.underlines = underlines;
+        self.strikes = strikes;
+        self
+    }
+
     /// Add an underline decoration in this layout's global byte space. This
     /// is used for IME preedit, where the composition is shaped and painted
     /// but has not yet entered the document model.
@@ -772,12 +836,9 @@ impl RichTextLayout {
             let Some(index) = stops.iter().position(|(_, stop)| *stop == position) else {
                 continue;
             };
-            let target = if right {
-                index.saturating_add(1).min(stops.len().saturating_sub(1))
-            } else {
-                index.saturating_sub(1)
-            };
-            return stops.get(target).map_or(position, |(_, stop)| *stop);
+            return stops
+                .get(Self::visual_step(&stops, index, right))
+                .map_or(position, |(_, stop)| *stop);
         }
 
         // Byte-only callers conventionally enter with Before affinity. At a
@@ -791,14 +852,39 @@ impl RichTextLayout {
             else {
                 continue;
             };
-            let target = if right {
-                index.saturating_add(1).min(stops.len().saturating_sub(1))
-            } else {
-                index.saturating_sub(1)
-            };
-            return stops.get(target).map_or(position, |(_, stop)| *stop);
+            return stops
+                .get(Self::visual_step(&stops, index, right))
+                .map_or(position, |(_, stop)| *stop);
         }
         position
+    }
+
+    /// The stop one visual step from `index`: the next one at another place
+    /// on the line. The end of one glyph and the start of the next are two
+    /// stops at the same place (after "H", before "i"); stepping onto the
+    /// other would leave the caret where it was.
+    fn visual_step(stops: &[(f32, TextPosition)], index: usize, right: bool) -> usize {
+        let Some((x, _)) = stops.get(index) else {
+            return index;
+        };
+        let mut target = index;
+        loop {
+            let next = if right {
+                target.checked_add(1).filter(|next| *next < stops.len())
+            } else {
+                target.checked_sub(1)
+            };
+            let Some(next) = next else {
+                return target;
+            };
+            target = next;
+            if stops
+                .get(target)
+                .is_some_and(|(at, _)| (at - x).abs() > 0.5)
+            {
+                return target;
+            }
+        }
     }
 
     /// Byte-only compatibility wrapper for visual caret motion.
@@ -930,6 +1016,126 @@ impl RichTextLayout {
         }
         rects
     }
+
+    /// [`Self::selection_rects`] for several byte ranges in one pass over the
+    /// layout runs, in input order. A long paragraph is one logical line with
+    /// many visual runs; the per-range form walks every run and every glyph
+    /// of it once per range, so decorating every span of a pasted page
+    /// (spell-check squiggles, find matches) was quadratic in the paragraph
+    /// length. Here each run looks up only the ranges that can touch its byte
+    /// extent (sorted starts plus a running maximum of ends), which yields
+    /// exactly the same rectangles.
+    pub fn selection_rects_many(
+        &self,
+        ranges: &[(usize, usize)],
+    ) -> Vec<Vec<(f32, f32, f32, f32)>> {
+        self.selection_rects_many_within(ranges, f32::NEG_INFINITY, f32::INFINITY)
+    }
+
+    /// [`Self::selection_rects_many`] restricted to visual lines that overlap
+    /// the vertical band `[top, bottom]` (layout coordinates). Rectangles of
+    /// lines entirely outside the band are omitted; a caller passing its clip
+    /// paints exactly what the unrestricted form would have shown.
+    pub fn selection_rects_many_within(
+        &self,
+        ranges: &[(usize, usize)],
+        top: f32,
+        bottom: f32,
+    ) -> Vec<Vec<(f32, f32, f32, f32)>> {
+        let mut out = vec![Vec::new(); ranges.len()];
+        // (global shaped start, global shaped end, start cursor, end cursor, input index)
+        let mut index: Vec<(usize, usize, Cursor, Cursor, usize)> = ranges
+            .iter()
+            .enumerate()
+            .filter(|(_, (start, end))| start < end)
+            .map(|(i, &(start, end))| {
+                let (cursor_start, cursor_end) = (self.cursor_at(start), self.cursor_at(end));
+                (
+                    self.shaped_global(cursor_start),
+                    self.shaped_global(cursor_end),
+                    cursor_start,
+                    cursor_end,
+                    i,
+                )
+            })
+            .collect();
+        if index.is_empty() {
+            return out;
+        }
+        index.sort_by_key(|entry| entry.0);
+        let mut running_end = 0;
+        let running: Vec<usize> = index
+            .iter()
+            .map(|entry| {
+                running_end = running_end.max(entry.1);
+                running_end
+            })
+            .collect();
+        for run in self.buffer.layout_runs() {
+            if run.line_top + run.line_height < top || run.line_top > bottom {
+                continue;
+            }
+            let (mut low, mut high) = (usize::MAX, 0);
+            for glyph in run.glyphs {
+                low = low.min(glyph.start);
+                high = high.max(glyph.end);
+            }
+            if low == usize::MAX {
+                continue;
+            }
+            let line_start = self.line_starts.get(run.line_i).copied().unwrap_or(0);
+            let (global_low, global_high) = (line_start + low, line_start + high);
+            // Every range touching this run ends after `global_low`; ranges are
+            // sorted by start, and the running maximum of ends is monotonic.
+            let first = running.partition_point(|&end| end <= global_low);
+            for &(global_start, global_end, cursor_start, cursor_end, i) in &index[first..] {
+                if global_start >= global_high {
+                    break;
+                }
+                if global_end <= global_low
+                    || !(cursor_start.line..=cursor_end.line).contains(&run.line_i)
+                {
+                    continue;
+                }
+                // `highlight` selects a grapheme only when it ends after the
+                // start cursor and begins before the end cursor on their lines.
+                if (run.line_i == cursor_start.line && high <= cursor_start.index)
+                    || (run.line_i == cursor_end.line && low >= cursor_end.index)
+                {
+                    continue;
+                }
+                for (x, width) in run.highlight(cursor_start, cursor_end) {
+                    out[i].push((x, run.line_top, x + width, run.line_top + run.line_height));
+                }
+            }
+        }
+        out
+    }
+
+    /// Source byte range `[start, end)` covered by the visual lines that
+    /// overlap the vertical band `[top, bottom]`, or `None` when no line does.
+    /// Callers with many decorated spans use it to skip spans that cannot
+    /// reach the band before asking for their geometry.
+    pub fn source_range_within(&self, top: f32, bottom: f32) -> Option<(usize, usize)> {
+        let mut range: Option<(usize, usize)> = None;
+        for run in self.buffer.layout_runs() {
+            if run.line_top + run.line_height < top || run.line_top > bottom {
+                continue;
+            }
+            for glyph in run.glyphs {
+                let start = self.glyph_global_byte(run.line_i, glyph.start);
+                let end = self.glyph_global_byte(run.line_i, glyph.end);
+                range = Some(range.map_or((start, end), |(a, b)| (a.min(start), b.max(end))));
+            }
+        }
+        range
+    }
+
+    /// Position of a cursor in the paragraph-global shaped byte space (the
+    /// space of `line_starts` and of cosmic-text glyph offsets within a line).
+    fn shaped_global(&self, cursor: Cursor) -> usize {
+        self.line_starts.get(cursor.line).copied().unwrap_or(0) + cursor.index
+    }
 }
 
 #[cfg(test)]
@@ -937,150 +1143,305 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reused_paragraphs_keep_allocations_and_match_fresh_geometry() {
+    fn huge_paragraph_chunks_keep_source_offsets_and_reuse_shaping() {
         let mut fs = crate::font_catalog::fixture_font_system();
         let style = crate::text_render::TextStyle::new(16.0);
-        let initial = "first paragraph\nunchanged שלום world\nlast line\n";
-        let old = RichTextLayout::shape_styled(
+        let text = (0..7000)
+            .map(|i| format!("word{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(text.len() > crate::text_break::HUGE_PARAGRAPH_BYTES);
+        let layout = RichTextLayout::shape_styled(
             &mut fs,
-            &[RichSpan::new(initial)],
+            &[RichSpan::new(&text)],
             &style,
-            Some(180.0),
+            Some(400.0),
             TextAlign::Left,
             vec![],
             vec![],
         );
-        let retained = old.buffer.lines[1].layout_opt().unwrap().as_ptr();
-        let edited = "xfirst paragraph\nunchanged שלום world\nlast line\n";
+        assert!(layout.buffer.lines.len() > 3, "shaped in chunks");
+        let mut last_y = f32::MIN;
+        for byte in (0..=text.len()).step_by(211) {
+            let (x, y, h) = layout.caret_geometry(byte);
+            assert!(y >= last_y && h > 0.0, "caret order at {byte}");
+            last_y = y;
+            // Hitting the caret position lands on the same source byte.
+            let hit = layout.hit(x + 0.01, y + h / 2.0);
+            assert!(hit.abs_diff(byte) <= 12, "hit {hit} for {byte}");
+        }
+        assert_eq!(
+            layout.caret_geometry(text.len()).1,
+            last_y.max(layout.caret_geometry(text.len()).1)
+        );
+        // An edit near the end retains the shaped allocation of the first chunk.
+        let retained = layout.buffer.lines[0].layout_opt().unwrap().as_ptr();
+        let edited = format!("{text} tail");
         let reused = RichTextLayout::shape_styled_reusing(
             &mut fs,
-            &[RichSpan::new(edited)],
+            &[RichSpan::new(&edited)],
             &style,
-            Some(180.0),
+            Some(400.0),
             TextAlign::Left,
             vec![],
             vec![],
-            Some(old),
+            Some(layout),
         );
         assert_eq!(
             retained,
-            reused.buffer.lines[1].layout_opt().unwrap().as_ptr(),
-            "unchanged paragraph must retain its shaped layout allocation"
+            reused.buffer.lines[0].layout_opt().unwrap().as_ptr()
         );
-        let fresh = RichTextLayout::shape_styled(
+    }
+
+    #[test]
+    fn offscreen_visual_lines_are_culled_only_by_vertical_extent() {
+        use vello::kurbo::{Affine, Rect};
+        let mut fs = crate::font_catalog::fixture_font_system();
+        let style = crate::text_render::TextStyle::new(16.0);
+        let text = "word ".repeat(200);
+        let layout = RichTextLayout::shape_styled(
             &mut fs,
-            &[RichSpan::new(edited)],
+            &[RichSpan::new(&text)],
             &style,
-            Some(180.0),
+            Some(100.0),
             TextAlign::Left,
             vec![],
             vec![],
         );
-        assert_eq!(reused.width(), fresh.width());
-        assert_eq!(reused.height(), fresh.height());
-        for byte in edited.char_indices().map(|(i, _)| i).chain([edited.len()]) {
-            assert_eq!(reused.caret_geometry(byte), fresh.caret_geometry(byte));
-            assert_eq!(
-                reused.selection_rects(0, byte),
-                fresh.selection_rects(0, byte)
-            );
-        }
+        let runs: Vec<_> = layout.buffer.layout_runs().collect();
+        assert!(runs.len() > 10);
+        let clip = Rect::new(0.0, 0.0, 100.0, 40.0);
+        let outside = crate::text_render::rich_run_outside_clip;
+        assert!(!outside(&runs[0], Affine::IDENTITY, clip));
+        let last = runs.last().unwrap();
+        assert!(outside(last, Affine::IDENTITY, clip));
+        assert!(!outside(
+            last,
+            Affine::translate((0.0, -f64::from(last.line_top))),
+            clip
+        ));
+        assert!(
+            !outside(last, Affine::rotate(0.1), clip),
+            "rotation is never culled"
+        );
+        assert!(!outside(
+            last,
+            Affine::IDENTITY,
+            Rect::new(0.0, f64::NAN, 1.0, 1.0)
+        ));
     }
 
     #[test]
-    fn reused_paragraphs_match_fresh_after_edit_and_style_transitions() {
+    fn batched_selection_rects_match_per_range_geometry() {
         let mut fs = crate::font_catalog::fixture_font_system();
-        let base = crate::text_render::TextStyle::new(16.0);
-        let texts = [
-            "alpha beta gamma\nשלום mixed text\nemoji 👩‍💻 é\n",
-            "new paragraph\nalpha beta gamma\nשלום mixed text\nemoji 👩‍💻 é\n",
-            "new paragraph\nalpha beta gamma\nשלום changed text\nemoji 👩‍💻 é\n",
-            "alpha beta gamma\nשלום changed text\nemoji 👩‍💻 é",
-            "alpha beta gamma\nשלום changed text\nemoji 👩‍💻 é\n\n",
-            "",
-            "one\r\ntwo\nthree",
-            "one\nthree",
-        ];
-        let mut previous = None;
-        for (index, text) in texts.into_iter().cycle().take(32).enumerate() {
-            let mut style = base.clone();
-            if index >= 8 {
-                style.size = 20.0;
+        let style = crate::text_render::TextStyle::new(16.0);
+        let text = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau\nשלום mixed עברית text wraps here too\nemoji 👩‍💻 é end";
+        let layout = RichTextLayout::shape_styled(
+            &mut fs,
+            &[RichSpan::new(text)],
+            &style,
+            Some(120.0),
+            TextAlign::Left,
+            vec![],
+            vec![],
+        );
+        let bytes: Vec<usize> = text
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain([text.len()])
+            .collect();
+        let mut ranges = vec![(5, 5), (text.len(), 0), (0, text.len())];
+        for (i, &a) in bytes.iter().enumerate().step_by(3) {
+            for &b in bytes.iter().skip(i).step_by(7) {
+                ranges.push((a, b));
             }
-            if index >= 16 {
-                style.letter_spacing = 0.6;
-                style.italic = true;
+        }
+        let batched = layout.selection_rects_many(&ranges);
+        assert_eq!(batched.len(), ranges.len());
+        for (range, rects) in ranges.iter().zip(&batched) {
+            assert_eq!(
+                rects,
+                &layout.selection_rects(range.0, range.1),
+                "range {range:?}"
+            );
+        }
+        // The band's source range covers every range that has a rectangle in it.
+        let (lo, hi) = layout.source_range_within(0.0, 20.0).unwrap();
+        for (range, rects) in ranges
+            .iter()
+            .zip(&layout.selection_rects_many_within(&ranges, 0.0, 20.0))
+        {
+            if !rects.is_empty() {
+                assert!(range.1 > lo && range.0 < hi, "{range:?} outside {lo}..{hi}");
             }
-            if index >= 24 {
-                style.wrap_mode = crate::text_render::TextWrapMode::Balance;
-            }
-            let width = if index % 3 == 0 { 90.0 } else { 180.0 };
-            let align = if index % 5 == 0 {
-                TextAlign::Right
-            } else {
-                TextAlign::Left
-            };
-            let split = text.find('\n').unwrap_or(text.len());
-            let spans = [
-                RichSpan::new(&text[..split])
-                    .bold(index % 2 == 0)
-                    .background(Some([20, 30, 40])),
-                RichSpan::new(&text[split..]),
-            ];
+        }
+        assert_eq!(layout.source_range_within(1.0e6, 2.0e6), None);
+        // A band keeps exactly the unrestricted rectangles of the lines it overlaps.
+        let bottom = 20.0;
+        let banded = layout.selection_rects_many_within(&ranges, 0.0, bottom);
+        for (all, within) in batched.iter().zip(&banded) {
+            let expected: Vec<_> = all
+                .iter()
+                .copied()
+                .filter(|r| r.1 <= bottom && r.3 >= 0.0)
+                .collect();
+            assert_eq!(within, &expected);
+        }
+        assert!(banded.iter().any(|rects| !rects.is_empty()));
+        assert!(
+            batched.iter().map(Vec::len).sum::<usize>()
+                > banded.iter().map(Vec::len).sum::<usize>()
+        );
+    }
+
+    #[test]
+    fn reused_paragraphs_keep_allocations_and_match_fresh_geometry_through_edits() {
+        // Case `reused_paragraphs_keep_allocations_and_match_fresh_geometry`.
+        {
+            let mut fs = crate::font_catalog::fixture_font_system();
+            let style = crate::text_render::TextStyle::new(16.0);
+            let initial = "first paragraph\nunchanged שלום world\nlast line\n";
+            let old = RichTextLayout::shape_styled(
+                &mut fs,
+                &[RichSpan::new(initial)],
+                &style,
+                Some(180.0),
+                TextAlign::Left,
+                vec![],
+                vec![],
+            );
+            let retained = old.buffer.lines[1].layout_opt().unwrap().as_ptr();
+            let edited = "xfirst paragraph\nunchanged שלום world\nlast line\n";
             let reused = RichTextLayout::shape_styled_reusing(
                 &mut fs,
-                &spans,
+                &[RichSpan::new(edited)],
                 &style,
-                Some(width),
-                align,
-                vec![(0, split)],
+                Some(180.0),
+                TextAlign::Left,
                 vec![],
-                previous,
+                vec![],
+                Some(old),
+            );
+            assert_eq!(
+                retained,
+                reused.buffer.lines[1].layout_opt().unwrap().as_ptr(),
+                "unchanged paragraph must retain its shaped layout allocation"
             );
             let fresh = RichTextLayout::shape_styled(
                 &mut fs,
-                &spans,
+                &[RichSpan::new(edited)],
                 &style,
-                Some(width),
-                align,
-                vec![(0, split)],
+                Some(180.0),
+                TextAlign::Left,
+                vec![],
                 vec![],
             );
-            assert_eq!(reused.width(), fresh.width(), "case {index}");
-            assert_eq!(reused.height(), fresh.height(), "case {index}");
-            assert_eq!(reused.backgrounds, fresh.backgrounds);
-            assert_eq!(reused.logical_line_origins(), fresh.logical_line_origins());
-            // Compare full glyph layouts, not only overall dimensions.
-            for (a, b) in reused.buffer.lines.iter().zip(&fresh.buffer.lines) {
-                assert_eq!(
-                    format!("{:?}", a.layout_opt()),
-                    format!("{:?}", b.layout_opt())
-                );
-            }
-            for byte in text.char_indices().map(|(i, _)| i).chain([text.len()]) {
-                for affinity in [TextAffinity::Before, TextAffinity::After] {
-                    let position = TextPosition::with_affinity(byte, affinity);
-                    let actual = reused.caret_geometry_at(position);
-                    assert_eq!(
-                        actual,
-                        fresh.caret_geometry_at(position),
-                        "case {index} byte {byte}"
-                    );
-                    assert_eq!(
-                        reused.hit_position(actual.0, actual.1 + actual.2 / 2.0),
-                        fresh.hit_position(actual.0, actual.1 + actual.2 / 2.0)
-                    );
-                    assert_eq!(
-                        reused.visual_motion_position(position, true),
-                        fresh.visual_motion_position(position, true)
-                    );
-                }
+            assert_eq!(reused.width(), fresh.width());
+            assert_eq!(reused.height(), fresh.height());
+            for byte in edited.char_indices().map(|(i, _)| i).chain([edited.len()]) {
+                assert_eq!(reused.caret_geometry(byte), fresh.caret_geometry(byte));
                 assert_eq!(
                     reused.selection_rects(0, byte),
                     fresh.selection_rects(0, byte)
                 );
             }
-            previous = Some(reused);
+        }
+
+        // Case `reused_paragraphs_match_fresh_after_edit_and_style_transitions`.
+        {
+            let mut fs = crate::font_catalog::fixture_font_system();
+            let base = crate::text_render::TextStyle::new(16.0);
+            let texts = [
+                "alpha beta gamma\nשלום mixed text\nemoji 👩‍💻 é\n",
+                "new paragraph\nalpha beta gamma\nשלום mixed text\nemoji 👩‍💻 é\n",
+                "new paragraph\nalpha beta gamma\nשלום changed text\nemoji 👩‍💻 é\n",
+                "alpha beta gamma\nשלום changed text\nemoji 👩‍💻 é",
+                "alpha beta gamma\nשלום changed text\nemoji 👩‍💻 é\n\n",
+                "",
+                "one\r\ntwo\nthree",
+                "one\nthree",
+            ];
+            let mut previous = None;
+            for (index, text) in texts.into_iter().cycle().take(32).enumerate() {
+                let mut style = base.clone();
+                if index >= 8 {
+                    style.size = 20.0;
+                }
+                if index >= 16 {
+                    style.letter_spacing = 0.6;
+                    style.italic = true;
+                }
+                if index >= 24 {
+                    style.wrap_mode = crate::text_render::TextWrapMode::Balance;
+                }
+                let width = if index % 3 == 0 { 90.0 } else { 180.0 };
+                let align = if index % 5 == 0 {
+                    TextAlign::Right
+                } else {
+                    TextAlign::Left
+                };
+                let split = text.find('\n').unwrap_or(text.len());
+                let spans = [
+                    RichSpan::new(&text[..split])
+                        .bold(index % 2 == 0)
+                        .background(Some([20, 30, 40])),
+                    RichSpan::new(&text[split..]),
+                ];
+                let reused = RichTextLayout::shape_styled_reusing(
+                    &mut fs,
+                    &spans,
+                    &style,
+                    Some(width),
+                    align,
+                    vec![(0, split)],
+                    vec![],
+                    previous,
+                );
+                let fresh = RichTextLayout::shape_styled(
+                    &mut fs,
+                    &spans,
+                    &style,
+                    Some(width),
+                    align,
+                    vec![(0, split)],
+                    vec![],
+                );
+                assert_eq!(reused.width(), fresh.width(), "case {index}");
+                assert_eq!(reused.height(), fresh.height(), "case {index}");
+                assert_eq!(reused.backgrounds, fresh.backgrounds);
+                assert_eq!(reused.logical_line_origins(), fresh.logical_line_origins());
+                // Compare full glyph layouts, not only overall dimensions.
+                for (a, b) in reused.buffer.lines.iter().zip(&fresh.buffer.lines) {
+                    assert_eq!(
+                        format!("{:?}", a.layout_opt()),
+                        format!("{:?}", b.layout_opt())
+                    );
+                }
+                for byte in text.char_indices().map(|(i, _)| i).chain([text.len()]) {
+                    for affinity in [TextAffinity::Before, TextAffinity::After] {
+                        let position = TextPosition::with_affinity(byte, affinity);
+                        let actual = reused.caret_geometry_at(position);
+                        assert_eq!(
+                            actual,
+                            fresh.caret_geometry_at(position),
+                            "case {index} byte {byte}"
+                        );
+                        assert_eq!(
+                            reused.hit_position(actual.0, actual.1 + actual.2 / 2.0),
+                            fresh.hit_position(actual.0, actual.1 + actual.2 / 2.0)
+                        );
+                        assert_eq!(
+                            reused.visual_motion_position(position, true),
+                            fresh.visual_motion_position(position, true)
+                        );
+                    }
+                    assert_eq!(
+                        reused.selection_rects(0, byte),
+                        fresh.selection_rects(0, byte)
+                    );
+                }
+                previous = Some(reused);
+            }
         }
     }
 
@@ -1088,58 +1449,197 @@ mod tests {
         pub(super) static CARET_STOP_RUNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "sweeping integer pixel positions across a fixed 400.0-wide test layout: width().ceil() is always small and non-negative, so the round trip through usize is exact"
+    )]
     #[test]
-    fn caret_geometry_does_not_segment_unrelated_paragraphs() {
-        let text = "ordinary paragraph\n".repeat(1000);
-        let shaped = layout(&text, 300.0);
-        CARET_STOP_RUNS.with(|count| count.set(0));
-        let geometry = shaped.caret_geometry(0);
-        assert_eq!(geometry.0, 0.0);
-        let visited = CARET_STOP_RUNS.with(std::cell::Cell::get);
-        assert!(
-            visited <= 2,
-            "caret search segmented {visited} unrelated paragraphs"
-        );
-    }
+    fn caret_hit_and_selection_geometry_follow_visual_direction() {
+        // Case `caret_geometry_does_not_segment_unrelated_paragraphs`.
+        {
+            let text = "ordinary paragraph\n".repeat(1000);
+            let shaped = layout(&text, 300.0);
+            CARET_STOP_RUNS.with(|count| count.set(0));
+            let geometry = shaped.caret_geometry(0);
+            assert_eq!(geometry.0, 0.0);
+            let visited = CARET_STOP_RUNS.with(std::cell::Cell::get);
+            assert!(
+                visited <= 2,
+                "caret search segmented {visited} unrelated paragraphs"
+            );
+        }
 
-    #[test]
-    fn caret_geometry_matches_full_scan_for_all_byte_affinity_boundaries() {
-        for text in [
-            "",
-            "alpha beta gamma\nnext\n",
-            "a\r\nb\rc",
-            "שלום mixed العربية\n👩‍💻 é\n",
-            "ภาษาไทยทดสอบ\nខ្មែរ",
-            "soft\u{ad}hyphen word\n\n",
-        ] {
-            for width in [30.0, 180.0] {
-                let shaped = layout(text, width);
-                for byte in 0..=text.len() + 1 {
-                    for affinity in [TextAffinity::Before, TextAffinity::After] {
-                        let position = TextPosition::with_affinity(byte.min(text.len()), affinity);
-                        let mut fallback = None;
-                        let mut exact = None;
-                        'scan: for run in shaped.buffer.layout_runs() {
-                            for (x, stop) in shaped.caret_stops(&run) {
-                                let geometry = (x, run.line_top, run.line_height);
-                                if stop == position {
-                                    exact = Some(geometry);
-                                    break 'scan;
-                                }
-                                if stop.byte == position.byte && fallback.is_none() {
-                                    fallback = Some(geometry);
+        // Case `caret_geometry_matches_full_scan_for_all_byte_affinity_boundaries`.
+        {
+            for text in [
+                "",
+                "alpha beta gamma\nnext\n",
+                "a\r\nb\rc",
+                "שלום mixed العربية\n👩‍💻 é\n",
+                "ภาษาไทยทดสอบ\nខ្មែរ",
+                "soft\u{ad}hyphen word\n\n",
+            ] {
+                for width in [30.0, 180.0] {
+                    let shaped = layout(text, width);
+                    for byte in 0..=text.len() + 1 {
+                        for affinity in [TextAffinity::Before, TextAffinity::After] {
+                            let position =
+                                TextPosition::with_affinity(byte.min(text.len()), affinity);
+                            let mut fallback = None;
+                            let mut exact = None;
+                            'scan: for run in shaped.buffer.layout_runs() {
+                                for (x, stop) in shaped.caret_stops(&run) {
+                                    let geometry = (x, run.line_top, run.line_height);
+                                    if stop == position {
+                                        exact = Some(geometry);
+                                        break 'scan;
+                                    }
+                                    if stop.byte == position.byte && fallback.is_none() {
+                                        fallback = Some(geometry);
+                                    }
                                 }
                             }
+                            let expected =
+                                exact.or(fallback).unwrap_or((0.0, 0.0, shaped.line_height));
+                            assert_eq!(
+                                shaped
+                                    .caret_geometry_at(TextPosition::with_affinity(byte, affinity)),
+                                expected,
+                                "text {text:?}, width {width}, byte {byte}, affinity {affinity:?}"
+                            );
                         }
-                        let expected = exact.or(fallback).unwrap_or((0.0, 0.0, shaped.line_height));
-                        assert_eq!(
-                            shaped.caret_geometry_at(TextPosition::with_affinity(byte, affinity)),
-                            expected,
-                            "text {text:?}, width {width}, byte {byte}, affinity {affinity:?}"
-                        );
                     }
                 }
             }
+        }
+
+        // Case `shapes_caret_hit_and_selection`.
+        {
+            let mut fs = crate::font_catalog::fixture_font_system();
+            let layout = RichTextLayout::shape_styled(
+                &mut fs,
+                &[RichSpan::new("hello world")],
+                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                Some(400.0),
+                TextAlign::Left,
+                vec![],
+                vec![],
+            );
+            assert!(layout.height() > 0.0);
+            let (x0, _, h) = layout.caret_geometry(0);
+            assert!(x0 < 2.0 && h > 0.0);
+            let (xend, _, _) = layout.caret_geometry(11);
+            assert!(xend > x0);
+            assert!(layout.hit(xend - 1.0, 1.0) > 0);
+            let rects = layout.selection_rects(0, 5);
+            assert_eq!(rects.len(), 1);
+            assert!(rects[0].2 > rects[0].0);
+        }
+
+        // Case `multiline_hit_and_caret_use_global_byte_offsets`.
+        {
+            let text = "first\nשני";
+            let second_line = "first\n".len();
+            let layout = layout(text, 400.0);
+            let (_, first_top, first_h) = layout.caret_geometry(0);
+            let (second_x, second_top, second_h) = layout.caret_geometry(second_line);
+
+            assert!(second_top >= first_top + first_h * 0.9);
+            assert_eq!(
+                layout.hit(second_x + 1.0, second_top + second_h * 0.5),
+                second_line,
+                "a hit on line two must include the preceding line and newline bytes"
+            );
+            let rects = layout.selection_rects(0, text.len());
+            assert!(rects.len() >= 2, "a cross-line selection paints each line");
+        }
+
+        // Case `rtl_caret_geometry_follows_visual_direction`.
+        {
+            let text = "שלום";
+            let layout = layout(text, 400.0);
+            let (start_x, top, height) = layout.caret_geometry(0);
+            let (end_x, _, _) = layout.caret_geometry(text.len());
+
+            assert!(
+                start_x > end_x,
+                "the logical start of an RTL paragraph is its visual right edge: start={start_x}, end={end_x}"
+            );
+            assert_eq!(layout.hit(start_x + 1.0, top + height * 0.5), 0);
+            assert_eq!(
+                layout.hit((end_x - 1.0).max(0.0), top + height * 0.5),
+                text.len()
+            );
+        }
+
+        // Case `mixed_bidi_selection_can_produce_disjoint_visual_bands`.
+        {
+            let text = "abc אבג xyz";
+            // Logically select the Latin prefix plus the first Hebrew character.
+            // Visually that Hebrew character sits at the far side of its RTL run,
+            // so an unselected gap separates it from the Latin prefix.
+            let selected_end = "abc א".len();
+            let layout = layout(text, 400.0);
+            let rects = layout.selection_rects(0, selected_end);
+
+            assert_eq!(
+                rects.len(),
+                2,
+                "mixed-direction selection must preserve disjoint visual ranges: {rects:?}"
+            );
+            assert!(rects.iter().all(|(x0, y0, x1, y1)| x1 > x0 && y1 > y0));
+        }
+
+        // Case `mixed_bidi_boundary_preserves_both_visual_affinities`.
+        {
+            let layout = layout("abc אבג xyz", 400.0);
+            let (_, top, height) = layout.caret_geometry(0);
+            let y = top + height * 0.5;
+            let mut positions = Vec::new();
+            for x in 0..=layout.width().ceil() as usize {
+                let position = layout.hit_position(x as f32, y);
+                if positions.last() != Some(&position) {
+                    positions.push(position);
+                }
+            }
+            let pair = positions.iter().find_map(|before| {
+                let before_x = layout.caret_geometry_at(*before).0;
+                positions
+                    .iter()
+                    .find(|after| {
+                        before.byte == after.byte
+                            && before.affinity != after.affinity
+                            && (before_x - layout.caret_geometry_at(**after).0).abs() > 1.0
+                    })
+                    .map(|after| (*before, *after))
+            });
+            let (a, b) = pair.expect("mixed BiDi exposes two sides of one logical byte boundary");
+            let ax = layout.caret_geometry_at(a).0;
+            let bx = layout.caret_geometry_at(b).0;
+            assert!(
+                (ax - bx).abs() > 1.0,
+                "the two affinities occupy distinct visual positions: {a:?}={ax}, {b:?}={bx}"
+            );
+
+            let (left, right) = if ax < bx { (a, b) } else { (b, a) };
+            let mut walked = left;
+            for _ in 0..16 {
+                if walked == right {
+                    break;
+                }
+                let next = layout.visual_motion_position(walked, true);
+                assert_ne!(
+                    next, walked,
+                    "visual motion must not stall inside a BiDi run"
+                );
+                walked = next;
+            }
+            assert_eq!(
+                walked, right,
+                "walking across the intervening visual run reaches the other side of the same byte"
+            );
         }
     }
 
@@ -1152,733 +1652,580 @@ mod tests {
 
     fn layout(text: &str, width: f32) -> RichTextLayout {
         let mut fs = crate::font_catalog::fixture_font_system();
-        RichTextLayout::shape(
+        RichTextLayout::shape_styled(
             &mut fs,
             &[RichSpan::new(text)],
-            false,
-            18.0,
-            width,
+            &RichTextLayout::block_style(false, 18.0, FontFamily::Sans, 1.0),
+            Some(width),
             TextAlign::Left,
-            FontFamily::Sans,
             vec![],
             vec![],
-            1.0,
         )
     }
 
     #[test]
-    fn shapes_caret_hit_and_selection() {
-        let mut fs = crate::font_catalog::fixture_font_system();
-        let layout = RichTextLayout::shape(
-            &mut fs,
-            &[RichSpan::new("hello world")],
-            false,
-            16.0,
-            400.0,
-            TextAlign::Left,
-            FontFamily::Sans,
-            vec![],
-            vec![],
-            1.0,
-        );
-        assert!(layout.height() > 0.0);
-        let (x0, _, h) = layout.caret_geometry(0);
-        assert!(x0 < 2.0 && h > 0.0);
-        let (xend, _, _) = layout.caret_geometry(11);
-        assert!(xend > x0);
-        assert!(layout.hit(xend - 1.0, 1.0) > 0);
-        let rects = layout.selection_rects(0, 5);
-        assert_eq!(rects.len(), 1);
-        assert!(rects[0].2 > rects[0].0);
-    }
-
-    #[test]
-    fn attributed_terminal_lf_preserves_the_plain_layout_final_row() {
-        use crate::text_render::TextStyle;
-
-        for scale in [1.0, 2.0] {
-            let style = TextStyle::new(16.0 * scale).with_line_height(1.25);
-            let fixtures = [
-                ("x", vec![RichSpan::new("x")], 1usize),
-                ("x\ny", vec![RichSpan::new("x\ny")], 2),
-                ("x\n", vec![RichSpan::new("x\n")], 2),
-                ("\n", vec![RichSpan::new("\n")], 2),
-                ("x\n\n", vec![RichSpan::new("x\n\n")], 3),
-                (
-                    "x\n",
-                    vec![
-                        RichSpan::new("x").bold(true),
-                        RichSpan::new("\n").italic(true),
-                    ],
-                    2,
-                ),
-            ];
-
-            for (text, spans, expected_rows) in fixtures {
-                let mut fs = crate::font_catalog::fixture_font_system();
-                let plain = RichTextLayout::shape_plain(&mut fs, text, &style, Some(300.0));
-                let styled = RichTextLayout::shape_styled(
-                    &mut fs,
-                    &spans,
-                    &style,
-                    Some(300.0),
-                    TextAlign::Left,
-                    vec![],
-                    vec![],
-                );
-
-                assert_near(
-                    styled.height(),
-                    plain.height(),
-                    &format!("{text:?} styled and plain heights at {scale}x"),
-                );
-                let plain_eof = plain.caret_geometry(text.len());
-                let styled_eof = styled.caret_geometry(text.len());
-                assert_near(
-                    styled_eof.1,
-                    plain_eof.1,
-                    &format!("{text:?} EOF caret top at {scale}x"),
-                );
-                assert_near(
-                    styled_eof.2,
-                    plain_eof.2,
-                    &format!("{text:?} EOF caret height at {scale}x"),
-                );
-                assert_eq!(
-                    styled.visual_line_index(text.len()),
-                    expected_rows - 1,
-                    "{text:?} EOF visual row at {scale}x"
-                );
-                assert_eq!(
-                    styled.logical_line_bands(text.len()).len(),
-                    1,
-                    "{text:?} EOF logical line has one shaped band at {scale}x"
-                );
-                assert_eq!(
-                    styled.hit(0.0, styled.height() + style.line_height_px()),
-                    text.len(),
-                    "{text:?} hit below content resolves to EOF at {scale}x"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn terminal_empty_row_inherits_the_final_run_metrics_and_alignment() {
-        use crate::text_render::TextStyle;
-
-        let style = TextStyle::new(16.0).with_line_height(1.25);
-        let mut final_run = RichSpan::new("\n").bold(true).italic(true);
-        final_run.size = Some(24.0);
-        let mut fs = crate::font_catalog::fixture_font_system();
-        let layout = RichTextLayout::shape_styled(
-            &mut fs,
-            &[RichSpan::new("x"), final_run],
-            &style,
-            Some(300.0),
-            TextAlign::Center,
-            vec![],
-            vec![],
-        );
-
-        let final_line = layout.buffer.lines.last().expect("terminal empty line");
-        let attrs = final_line.attrs_list().defaults();
-        assert_eq!(final_line.text(), "");
-        assert_eq!(final_line.ending(), cosmic_text::LineEnding::None);
-        assert_eq!(final_line.align(), Some(Align::Center));
-        assert_eq!(attrs.weight, Weight::BOLD);
-        assert_eq!(attrs.style, Style::Italic);
-        assert_eq!(
-            attrs.metrics_opt,
-            Some(Metrics::new(24.0, 30.0).into()),
-            "the final empty row keeps the last effective run's metrics"
-        );
-    }
-
-    #[test]
-    fn rtl_caret_geometry_follows_visual_direction() {
-        let text = "שלום";
-        let layout = layout(text, 400.0);
-        let (start_x, top, height) = layout.caret_geometry(0);
-        let (end_x, _, _) = layout.caret_geometry(text.len());
-
-        assert!(
-            start_x > end_x,
-            "the logical start of an RTL paragraph is its visual right edge: start={start_x}, end={end_x}"
-        );
-        assert_eq!(layout.hit(start_x + 1.0, top + height * 0.5), 0);
-        assert_eq!(
-            layout.hit((end_x - 1.0).max(0.0), top + height * 0.5),
-            text.len()
-        );
-    }
-
-    #[test]
-    fn multiline_hit_and_caret_use_global_byte_offsets() {
-        let text = "first\nשני";
-        let second_line = "first\n".len();
-        let layout = layout(text, 400.0);
-        let (_, first_top, first_h) = layout.caret_geometry(0);
-        let (second_x, second_top, second_h) = layout.caret_geometry(second_line);
-
-        assert!(second_top >= first_top + first_h * 0.9);
-        assert_eq!(
-            layout.hit(second_x + 1.0, second_top + second_h * 0.5),
-            second_line,
-            "a hit on line two must include the preceding line and newline bytes"
-        );
-        let rects = layout.selection_rects(0, text.len());
-        assert!(rects.len() >= 2, "a cross-line selection paints each line");
-    }
-
-    #[test]
-    fn mixed_bidi_selection_can_produce_disjoint_visual_bands() {
-        let text = "abc אבג xyz";
-        // Logically select the Latin prefix plus the first Hebrew character.
-        // Visually that Hebrew character sits at the far side of its RTL run,
-        // so an unselected gap separates it from the Latin prefix.
-        let selected_end = "abc א".len();
-        let layout = layout(text, 400.0);
-        let rects = layout.selection_rects(0, selected_end);
-
-        assert_eq!(
-            rects.len(),
-            2,
-            "mixed-direction selection must preserve disjoint visual ranges: {rects:?}"
-        );
-        assert!(rects.iter().all(|(x0, y0, x1, y1)| x1 > x0 && y1 > y0));
-    }
-
-    #[test]
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::cast_precision_loss,
-        reason = "sweeping integer pixel positions across a fixed 400.0-wide test layout: width().ceil() is always small and non-negative, so the round trip through usize is exact"
-    )]
-    fn mixed_bidi_boundary_preserves_both_visual_affinities() {
-        let layout = layout("abc אבג xyz", 400.0);
-        let (_, top, height) = layout.caret_geometry(0);
-        let y = top + height * 0.5;
-        let mut positions = Vec::new();
-        for x in 0..=layout.width().ceil() as usize {
-            let position = layout.hit_position(x as f32, y);
-            if positions.last() != Some(&position) {
-                positions.push(position);
-            }
-        }
-        let pair = positions.iter().find_map(|before| {
-            let before_x = layout.caret_geometry_at(*before).0;
-            positions
-                .iter()
-                .find(|after| {
-                    before.byte == after.byte
-                        && before.affinity != after.affinity
-                        && (before_x - layout.caret_geometry_at(**after).0).abs() > 1.0
-                })
-                .map(|after| (*before, *after))
-        });
-        let (a, b) = pair.expect("mixed BiDi exposes two sides of one logical byte boundary");
-        let ax = layout.caret_geometry_at(a).0;
-        let bx = layout.caret_geometry_at(b).0;
-        assert!(
-            (ax - bx).abs() > 1.0,
-            "the two affinities occupy distinct visual positions: {a:?}={ax}, {b:?}={bx}"
-        );
-
-        let (left, right) = if ax < bx { (a, b) } else { (b, a) };
-        let mut walked = left;
-        for _ in 0..16 {
-            if walked == right {
-                break;
-            }
-            let next = layout.visual_motion_position(walked, true);
-            assert_ne!(
-                next, walked,
-                "visual motion must not stall inside a BiDi run"
-            );
-            walked = next;
-        }
-        assert_eq!(
-            walked, right,
-            "walking across the intervening visual run reaches the other side of the same byte"
-        );
-    }
-
-    #[test]
-    fn center_alignment_offsets_text() {
-        let mut fs = crate::font_catalog::fixture_font_system();
-        let left = RichTextLayout::shape(
-            &mut fs,
-            &[RichSpan::new("hi")],
-            false,
-            16.0,
-            400.0,
-            TextAlign::Left,
-            FontFamily::Sans,
-            vec![],
-            vec![],
-            1.0,
-        );
-        let center = RichTextLayout::shape(
-            &mut fs,
-            &[RichSpan::new("hi")],
-            false,
-            16.0,
-            400.0,
-            TextAlign::Center,
-            FontFamily::Sans,
-            vec![],
-            vec![],
-            1.0,
-        );
-        let lx = left.caret_geometry(0).0;
-        let cx = center.caret_geometry(0).0;
-        assert!(
-            cx > lx + 50.0,
-            "centered text should start further right: left={lx} center={cx}"
-        );
-    }
-
-    #[test]
-    fn wrapping_produces_multiple_lines() {
-        let mut fs = crate::font_catalog::fixture_font_system();
-        let long = "word ".repeat(60);
-        let one = RichTextLayout::shape(
-            &mut fs,
-            &[RichSpan::new("word")],
-            false,
-            16.0,
-            1000.0,
-            TextAlign::Left,
-            FontFamily::Sans,
-            vec![],
-            vec![],
-            1.0,
-        );
-        let wrapped = RichTextLayout::shape(
-            &mut fs,
-            &[RichSpan::new(long)],
-            false,
-            16.0,
-            120.0,
-            TextAlign::Left,
-            FontFamily::Sans,
-            vec![],
-            vec![],
-            1.0,
-        );
-        assert!(wrapped.height() > one.height() * 3.0);
-    }
-
-    #[test]
-    fn paragraph_controls_shape_and_fragment_the_authoritative_layout() {
-        let mut fs = crate::font_catalog::fixture_font_system();
-        let text = "Good typography makes a paragraph feel even before it is read. Spacing supports the argument without calling attention to itself.";
-        let justified = RichTextLayout::shape_plain(
-            &mut fs,
-            text,
-            &crate::TextStyle::new(16.0)
-                .with_align(crate::ParagraphAlign::Justified)
-                .with_fragmentation(2, 2),
-            Some(260.0),
-        );
-        let widths: Vec<_> = justified
-            .buffer
-            .layout_runs()
-            .map(|run| run.line_w)
-            .collect();
-        assert!(widths.len() >= 3);
-        assert!(
-            widths[..widths.len() - 1]
-                .iter()
-                .all(|width| (*width - 260.0).abs() < 1.0),
-            "every eligible line should fill the justified measure: {widths:?}"
-        );
-        assert_eq!(justified.fragment_line_count(1), 0);
-        assert_eq!(justified.fragment_line_count(2), 2);
-        assert_eq!(justified.fragment_line_count(widths.len()), widths.len());
-        let widow_safe = widths.len().saturating_sub(2);
-        assert_eq!(
-            justified.fragment_line_count(widths.len() - 1),
-            if widow_safe >= 2 { widow_safe } else { 0 }
-        );
-        assert_eq!(
-            justified.fragment_line_count_from(2, widths.len()),
-            widths.len() - 2
-        );
-    }
-
-    #[test]
-    fn balanced_wrap_avoids_a_short_final_line_without_adding_lines() {
-        let mut fs = crate::font_catalog::fixture_font_system();
-        let text = "A balanced heading wraps its thought into lines of comparable visual weight.";
-        let ordinary =
-            RichTextLayout::shape_plain(&mut fs, text, &crate::TextStyle::new(21.0), Some(520.0));
-        let balanced = RichTextLayout::shape_plain(
-            &mut fs,
-            text,
-            &crate::TextStyle::new(21.0).with_wrap_mode(crate::TextWrapMode::Balance),
-            Some(520.0),
-        );
-        let ordinary_widths: Vec<_> = ordinary
-            .buffer
-            .layout_runs()
-            .map(|run| run.line_w)
-            .collect();
-        let balanced_widths: Vec<_> = balanced
-            .buffer
-            .layout_runs()
-            .map(|run| run.line_w)
-            .collect();
-        assert_eq!(balanced_widths.len(), ordinary_widths.len());
-        let ordinary_range = ordinary_widths.iter().copied().fold(0.0, f32::max)
-            - ordinary_widths.iter().copied().fold(f32::MAX, f32::min);
-        let balanced_range = balanced_widths.iter().copied().fold(0.0, f32::max)
-            - balanced_widths.iter().copied().fold(f32::MAX, f32::min);
-        assert!(
-            balanced_range < ordinary_range,
-            "balanced widths {balanced_widths:?} should improve {ordinary_widths:?}"
-        );
-    }
-
-    #[test]
-    fn offset_map_round_trips_document_boundaries_around_virtual_breaks() {
-        let text = "ทุกสองสัปดาห์";
-        let map = OffsetMap::for_text_with_hyphenation(text, None);
-        assert_eq!(
-            map.insertions
-                .iter()
-                .map(|insertion| insertion.source)
-                .collect::<Vec<_>>(),
-            vec![9, 18]
-        );
-
-        for source in text
-            .char_indices()
-            .map(|(byte, _)| byte)
-            .chain(std::iter::once(text.len()))
+    fn paragraph_wrapping_alignment_and_final_rows_follow_controls() {
+        // Case `center_alignment_offsets_text`.
         {
-            assert_eq!(map.shaped_to_source(map.source_to_shaped(source)), source);
-        }
-        for insertion in &map.insertions {
-            let source = insertion.source;
-            let len = insertion.ch.len_utf8();
-            let before = map.source_to_shaped(source) - len;
-            assert_eq!(map.shaped_to_source(before), source);
-            assert_eq!(map.shaped_to_source(before + 1), source);
-            assert_eq!(map.shaped_to_source(before + len), source);
-        }
-    }
-
-    #[test]
-    fn attributed_thai_wraps_at_dictionary_boundaries_in_document_byte_space() {
-        let text = "ทุกสองสัปดาห์";
-        let first = &text[..9];
-        let second = &text[9..18];
-        let third = &text[18..];
-        let width = [first, second, third]
-            .into_iter()
-            .map(|word| layout(word, 400.0).width())
-            .fold(0.0f32, f32::max)
-            + 0.5;
-
-        let mut fs = crate::font_catalog::fixture_font_system();
-        let layout = RichTextLayout::shape(
-            &mut fs,
-            &[
-                RichSpan::new(first).background(Some([240, 220, 80])),
-                RichSpan::new(format!("{second}{third}")).bold(true),
-            ],
-            false,
-            18.0,
-            width,
-            TextAlign::Left,
-            FontFamily::Sans,
-            vec![(9, 18)],
-            vec![],
-            1.0,
-        );
-
-        assert_eq!(layout.visual_line_index(0), 0);
-        assert_eq!(layout.visual_line_index(9), 1);
-        assert_eq!(layout.visual_line_index(18), 2);
-        assert_eq!(layout.visual_line_index(text.len()), 2);
-        assert_eq!(layout.backgrounds[0].0..layout.backgrounds[0].1, 0..9);
-        assert_eq!(layout.selection_rects(9, 18).len(), 1);
-
-        for source in [0, 9, 18, text.len()] {
-            let (x, top, height) = layout.caret_geometry(source);
-            assert_eq!(
-                layout.hit(x, top + height * 0.5),
-                source,
-                "hit testing must never expose a virtual-break byte"
+            let mut fs = crate::font_catalog::fixture_font_system();
+            let left = RichTextLayout::shape_styled(
+                &mut fs,
+                &[RichSpan::new("hi")],
+                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                Some(400.0),
+                TextAlign::Left,
+                vec![],
+                vec![],
+            );
+            let center = RichTextLayout::shape_styled(
+                &mut fs,
+                &[RichSpan::new("hi")],
+                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                Some(400.0),
+                TextAlign::Center,
+                vec![],
+                vec![],
+            );
+            let lx = left.caret_geometry(0).0;
+            let cx = center.caret_geometry(0).0;
+            assert!(
+                cx > lx + 50.0,
+                "centered text should start further right: left={lx} center={cx}"
             );
         }
-    }
 
-    #[test]
-    fn plain_thai_layout_uses_the_same_dictionary_wrapping() {
-        use crate::text_render::TextStyle;
-
-        let text = "ทุกสองสัปดาห์";
-        let style = TextStyle::new(18.0);
-        let mut fs = crate::font_catalog::fixture_font_system();
-        let probe = RichTextLayout::shape_plain(&mut fs, &text[..9], &style, None);
-        let width = probe.width() + 0.5;
-        let layout = RichTextLayout::shape_plain(&mut fs, text, &style, Some(width));
-
-        assert_eq!(layout.visual_line_index(0), 0);
-        assert_eq!(layout.visual_line_index(9), 1);
-        assert_eq!(layout.visual_line_index(18), 2);
-        assert_eq!(
-            layout.hit(layout.caret_geometry(18).0, layout.caret_geometry(18).1),
-            18
-        );
-    }
-
-    #[test]
-    fn virtual_dictionary_hints_have_no_visible_advance() {
-        use crate::text_render::TextStyle;
-
-        let text = "ทุกสองสัปดาห์";
-        let style = TextStyle::new(18.0);
-        let mut fs = crate::font_catalog::fixture_font_system();
-        let source = RichTextLayout::shape_plain(&mut fs, text, &style, None);
-        let hinted = RichTextLayout::shape_plain(&mut fs, text, &style, Some(10_000.0));
-
-        assert!(
-            (source.width() - hinted.width()).abs() < 0.01,
-            "zero-width break hints must not alter visible text metrics"
-        );
-    }
-
-    #[test]
-    fn real_layout_wraps_cjk_but_preserves_nbsp_and_emoji_zwj_clusters() {
-        use crate::text_render::TextStyle;
-
-        let style = TextStyle::new(18.0);
-        let mut fs = crate::font_catalog::fixture_font_system();
-
-        let cjk = "東京京都";
-        let cjk_probe = RichTextLayout::shape_plain(&mut fs, "東京", &style, None);
-        let cjk_layout =
-            RichTextLayout::shape_plain(&mut fs, cjk, &style, Some(cjk_probe.width() + 0.5));
-        assert_eq!(cjk_layout.visual_line_index(0), 0);
-        assert!(cjk_layout.visual_line_index("東京".len()) >= 1);
-
-        let nbsp = "10\u{a0}km away";
-        let narrow = RichTextLayout::shape_plain(&mut fs, "10", &style, None).width() + 0.5;
-        let nbsp_layout = RichTextLayout::shape_plain(&mut fs, nbsp, &style, Some(narrow));
-        let protected_end = "10\u{a0}km".len();
-        assert_eq!(nbsp_layout.visual_line_index(0), 0);
-        assert_eq!(nbsp_layout.visual_line_index(protected_end), 0);
-        assert!(nbsp_layout.visual_line_index(protected_end + 1) >= 1);
-
-        let family = "👨‍👩‍👧‍👦";
-        let emoji = format!("{family} {family}");
-        let emoji_width = RichTextLayout::shape_plain(&mut fs, family, &style, None).width() + 0.5;
-        let emoji_layout = RichTextLayout::shape_plain(&mut fs, &emoji, &style, Some(emoji_width));
-        for (byte, _) in family.char_indices() {
-            assert_eq!(emoji_layout.visual_line_index(byte), 0);
+        // Case `wrapping_produces_multiple_lines`.
+        {
+            let mut fs = crate::font_catalog::fixture_font_system();
+            let long = "word ".repeat(60);
+            let one = RichTextLayout::shape_styled(
+                &mut fs,
+                &[RichSpan::new("word")],
+                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                Some(1000.0),
+                TextAlign::Left,
+                vec![],
+                vec![],
+            );
+            let wrapped = RichTextLayout::shape_styled(
+                &mut fs,
+                &[RichSpan::new(long)],
+                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                Some(120.0),
+                TextAlign::Left,
+                vec![],
+                vec![],
+            );
+            assert!(wrapped.height() > one.height() * 3.0);
         }
-        assert!(emoji_layout.visual_line_index(family.len() + 1) >= 1);
-    }
 
-    #[test]
-    fn hyphenated_attributed_layout_keeps_document_offsets_and_decorations() {
-        use crate::text_render::TextStyle;
-
-        let text = "extensive";
-        let style = TextStyle::new(20.0).with_auto_hyphenation("en-US");
-        let mut fs = crate::font_catalog::fixture_font_system();
-        let probe = RichTextLayout::shape_plain(&mut fs, "exten-", &TextStyle::new(20.0), None);
-        let layout = RichTextLayout::shape_styled(
-            &mut fs,
-            &[
-                RichSpan::new("exten").background(Some([240, 220, 80])),
-                RichSpan::new("sive").bold(true),
-            ],
-            &style,
-            Some(probe.width() + 0.5),
-            TextAlign::Left,
-            vec![(2, 5)],
-            vec![],
-        );
-
-        assert!(layout.visual_line_index(text.len()) >= 1);
-        assert!(layout.width() <= probe.width() + 0.51);
-        assert_eq!(layout.backgrounds[0].0..layout.backgrounds[0].1, 0..5);
-        assert!(!layout.selection_rects(2, 5).is_empty());
-        for source in 0..=text.len() {
-            let (x, top, height) = layout.caret_geometry(source);
+        // Case `paragraph_controls_shape_and_fragment_the_authoritative_layout`.
+        {
+            let mut fs = crate::font_catalog::fixture_font_system();
+            let text = "Good typography makes a paragraph feel even before it is read. Spacing supports the argument without calling attention to itself.";
+            let justified = RichTextLayout::shape_plain(
+                &mut fs,
+                text,
+                &crate::TextStyle::new(16.0)
+                    .with_align(crate::ParagraphAlign::Justified)
+                    .with_fragmentation(2, 2),
+                Some(260.0),
+            );
+            let widths: Vec<_> = justified
+                .buffer
+                .layout_runs()
+                .map(|run| run.line_w)
+                .collect();
+            assert!(widths.len() >= 3);
+            assert!(
+                widths[..widths.len() - 1]
+                    .iter()
+                    .all(|width| (*width - 260.0).abs() < 1.0),
+                "every eligible line should fill the justified measure: {widths:?}"
+            );
+            assert_eq!(justified.fragment_line_count(1), 0);
+            assert_eq!(justified.fragment_line_count(2), 2);
+            assert_eq!(justified.fragment_line_count(widths.len()), widths.len());
+            let widow_safe = widths.len().saturating_sub(2);
             assert_eq!(
-                layout.hit(x, top + height * 0.5),
-                source,
-                "virtual soft-hyphen bytes must never escape into editor state"
+                justified.fragment_line_count(widths.len() - 1),
+                if widow_safe >= 2 { widow_safe } else { 0 }
+            );
+            assert_eq!(
+                justified.fragment_line_count_from(2, widths.len()),
+                widths.len() - 2
             );
         }
-    }
 
-    #[test]
-    fn background_span_records_a_paintable_band() {
-        let mut fs = crate::font_catalog::fixture_font_system();
-        // "AAA" plain, "BBB" highlighted, "CCC" plain.
-        let spans = [
-            RichSpan::new("AAA"),
-            RichSpan::new("BBB").background(Some([255, 230, 0])),
-            RichSpan::new("CCC"),
-        ];
-        let layout = RichTextLayout::shape(
-            &mut fs,
-            &spans,
-            false,
-            16.0,
-            400.0,
-            TextAlign::Left,
-            FontFamily::Sans,
-            vec![],
-            vec![],
-            1.0,
-        );
-        // Exactly one background band, covering the "BBB" byte range [3, 6).
-        assert_eq!(layout.backgrounds.len(), 1);
-        let (s, e, rgb) = layout.backgrounds[0];
-        assert_eq!((s, e), (3, 6));
-        assert_eq!(rgb, [255, 230, 0]);
-        // The draw path fills exactly `selection_rects(s, e)`; that band must be
-        // a real, non-degenerate rectangle (x1 > x0, y1 > y0).
-        let rects = layout.selection_rects(s, e);
-        assert_eq!(rects.len(), 1, "highlight is a single contiguous band");
-        let (x0, y0, x1, y1) = rects[0];
-        assert!(x1 > x0, "highlight band must have positive width");
-        assert!(y1 > y0, "highlight band must have positive height");
-        // A span without a background contributes no band.
-        let plain = RichTextLayout::shape(
-            &mut fs,
-            &[RichSpan::new("AAA")],
-            false,
-            16.0,
-            400.0,
-            TextAlign::Left,
-            FontFamily::Sans,
-            vec![],
-            vec![],
-            1.0,
-        );
-        assert!(plain.backgrounds.is_empty());
-    }
+        // Case `balanced_wrap_avoids_a_short_final_line_without_adding_lines`.
+        {
+            let mut fs = crate::font_catalog::fixture_font_system();
+            let text =
+                "A balanced heading wraps its thought into lines of comparable visual weight.";
+            let ordinary = RichTextLayout::shape_plain(
+                &mut fs,
+                text,
+                &crate::TextStyle::new(21.0),
+                Some(520.0),
+            );
+            let balanced = RichTextLayout::shape_plain(
+                &mut fs,
+                text,
+                &crate::TextStyle::new(21.0).with_wrap_mode(crate::TextWrapMode::Balance),
+                Some(520.0),
+            );
+            let ordinary_widths: Vec<_> = ordinary
+                .buffer
+                .layout_runs()
+                .map(|run| run.line_w)
+                .collect();
+            let balanced_widths: Vec<_> = balanced
+                .buffer
+                .layout_runs()
+                .map(|run| run.line_w)
+                .collect();
+            assert_eq!(balanced_widths.len(), ordinary_widths.len());
+            let ordinary_range = ordinary_widths.iter().copied().fold(0.0, f32::max)
+                - ordinary_widths.iter().copied().fold(f32::MAX, f32::min);
+            let balanced_range = balanced_widths.iter().copied().fold(0.0, f32::max)
+                - balanced_widths.iter().copied().fold(f32::MAX, f32::min);
+            assert!(
+                balanced_range < ordinary_range,
+                "balanced widths {balanced_widths:?} should improve {ordinary_widths:?}"
+            );
+        }
 
-    #[test]
-    fn super_run_shapes_smaller_and_offsets_up() {
-        let mut fs = crate::font_catalog::fixture_font_system();
-        let base_size = 20.0f32;
-        // "x" normal, "2" superscript.
-        let spans = [
-            RichSpan::new("x"),
-            RichSpan::new("2").baseline(BaselineShift::Super),
-        ];
-        let layout = RichTextLayout::shape(
-            &mut fs,
-            &spans,
-            false,
-            base_size,
-            400.0,
-            TextAlign::Left,
-            FontFamily::Sans,
-            vec![],
-            vec![],
-            1.0,
-        );
-        // Recorded as a baseline range over the "2" byte [1, 2).
-        assert_eq!(layout.baselines.len(), 1);
-        assert_eq!((layout.baselines[0].0, layout.baselines[0].1), (1, 2));
-        assert_eq!(layout.baselines[0].2, BaselineShift::Super);
-        assert_eq!(layout.baseline_at(1), BaselineShift::Super);
-        assert_eq!(layout.baseline_at(0), BaselineShift::None);
+        // Case `attributed_terminal_lf_preserves_the_plain_layout_final_row`.
+        {
+            use crate::text_render::TextStyle;
 
-        // The superscript glyph is shaped at the reduced size; the base glyph
-        // keeps the full size.
-        let mut base_glyph_size = None;
-        let mut super_glyph_size = None;
-        for run in layout.buffer.layout_runs() {
-            for g in run.glyphs {
-                if g.start == 0 {
-                    base_glyph_size = Some(g.font_size);
-                } else if g.start == 1 {
-                    super_glyph_size = Some(g.font_size);
+            for scale in [1.0, 2.0] {
+                let style = TextStyle::new(16.0 * scale).with_line_height(1.25);
+                let fixtures = [
+                    ("x", vec![RichSpan::new("x")], 1usize),
+                    ("x\ny", vec![RichSpan::new("x\ny")], 2),
+                    ("x\n", vec![RichSpan::new("x\n")], 2),
+                    ("\n", vec![RichSpan::new("\n")], 2),
+                    ("x\n\n", vec![RichSpan::new("x\n\n")], 3),
+                    (
+                        "x\n",
+                        vec![
+                            RichSpan::new("x").bold(true),
+                            RichSpan::new("\n").italic(true),
+                        ],
+                        2,
+                    ),
+                ];
+
+                for (text, spans, expected_rows) in fixtures {
+                    let mut fs = crate::font_catalog::fixture_font_system();
+                    let plain = RichTextLayout::shape_plain(&mut fs, text, &style, Some(300.0));
+                    let styled = RichTextLayout::shape_styled(
+                        &mut fs,
+                        &spans,
+                        &style,
+                        Some(300.0),
+                        TextAlign::Left,
+                        vec![],
+                        vec![],
+                    );
+
+                    assert_near(
+                        styled.height(),
+                        plain.height(),
+                        &format!("{text:?} styled and plain heights at {scale}x"),
+                    );
+                    let plain_eof = plain.caret_geometry(text.len());
+                    let styled_eof = styled.caret_geometry(text.len());
+                    assert_near(
+                        styled_eof.1,
+                        plain_eof.1,
+                        &format!("{text:?} EOF caret top at {scale}x"),
+                    );
+                    assert_near(
+                        styled_eof.2,
+                        plain_eof.2,
+                        &format!("{text:?} EOF caret height at {scale}x"),
+                    );
+                    assert_eq!(
+                        styled.visual_line_index(text.len()),
+                        expected_rows - 1,
+                        "{text:?} EOF visual row at {scale}x"
+                    );
+                    assert_eq!(
+                        styled.logical_line_bands(text.len()).len(),
+                        1,
+                        "{text:?} EOF logical line has one shaped band at {scale}x"
+                    );
+                    assert_eq!(
+                        styled.hit(0.0, styled.height() + style.line_height_px()),
+                        text.len(),
+                        "{text:?} hit below content resolves to EOF at {scale}x"
+                    );
                 }
             }
         }
-        let bg = base_glyph_size.expect("base glyph present");
-        let sg = super_glyph_size.expect("super glyph present");
-        assert!(
-            (bg - base_size).abs() < 0.01,
-            "base run keeps full size: {bg}"
-        );
-        assert!(sg < bg, "super run shapes smaller: super={sg} base={bg}");
-        assert!(
-            (sg - base_size * BaselineShift::SCALE).abs() < 0.5,
-            "super ~0.7x: {sg}"
-        );
 
-        // The draw-time vertical offset moves super UP (negative screen-y) and
-        // sub DOWN (positive screen-y); None never moves.
-        assert!(
-            BaselineShift::Super.offset(sg) < 0.0,
-            "super lifts above baseline"
-        );
-        assert!(
-            BaselineShift::Sub.offset(sg) > 0.0,
-            "sub drops below baseline"
-        );
-        assert_eq!(BaselineShift::None.offset(sg), 0.0);
+        // Case `terminal_empty_row_inherits_the_final_run_metrics_and_alignment`.
+        {
+            use crate::text_render::TextStyle;
+
+            let style = TextStyle::new(16.0).with_line_height(1.25);
+            let mut final_run = RichSpan::new("\n").bold(true).italic(true);
+            final_run.size = Some(24.0);
+            let mut fs = crate::font_catalog::fixture_font_system();
+            let layout = RichTextLayout::shape_styled(
+                &mut fs,
+                &[RichSpan::new("x"), final_run],
+                &style,
+                Some(300.0),
+                TextAlign::Center,
+                vec![],
+                vec![],
+            );
+
+            let final_line = layout.buffer.lines.last().expect("terminal empty line");
+            let attrs = final_line.attrs_list().defaults();
+            assert_eq!(final_line.text(), "");
+            assert_eq!(final_line.ending(), cosmic_text::LineEnding::None);
+            assert_eq!(final_line.align(), Some(Align::Center));
+            assert_eq!(attrs.weight, Weight::BOLD);
+            assert_eq!(attrs.style, Style::Italic);
+            assert_eq!(
+                attrs.metrics_opt,
+                Some(Metrics::new(24.0, 30.0).into()),
+                "the final empty row keeps the last effective run's metrics"
+            );
+        }
     }
 
     #[test]
-    fn line_height_mult_scales_line_advance() {
-        let mut fs = crate::font_catalog::fixture_font_system();
-        // Force two lines so the gap between line tops reflects the line advance.
-        let long = "word ".repeat(40);
-        let single = RichTextLayout::shape(
-            &mut fs,
-            &[RichSpan::new(long.clone())],
-            false,
-            16.0,
-            120.0,
-            TextAlign::Left,
-            FontFamily::Sans,
-            vec![],
-            vec![],
-            1.0,
-        );
-        let doubled = RichTextLayout::shape(
-            &mut fs,
-            &[RichSpan::new(long)],
-            false,
-            16.0,
-            120.0,
-            TextAlign::Left,
-            FontFamily::Sans,
-            vec![],
-            vec![],
-            2.0,
-        );
-        let advance = |layout: &RichTextLayout| -> f32 {
-            let tops: Vec<f32> = layout.buffer.layout_runs().map(|r| r.line_top).collect();
-            assert!(
-                tops.len() >= 2,
-                "need at least two lines to measure advance"
+    fn script_aware_breaks_keep_document_offsets() {
+        // Case `offset_map_round_trips_document_boundaries_around_virtual_breaks`.
+        {
+            let text = "ทุกสองสัปดาห์";
+            let map = OffsetMap::for_text_with_hyphenation(text, None);
+            assert_eq!(
+                map.insertions
+                    .iter()
+                    .map(|insertion| insertion.source)
+                    .collect::<Vec<_>>(),
+                vec![9, 18]
             );
-            tops[1] - tops[0]
-        };
-        let a1 = advance(&single);
-        let a2 = advance(&doubled);
-        assert!(
-            (a2 - 2.0 * a1).abs() < a1 * 0.1,
-            "2.0 multiple should ~double the per-line advance: 1.0={a1} 2.0={a2}",
-        );
-        // And the reported block height scales with it too.
-        assert!(doubled.height() > single.height() * 1.8);
+
+            for source in text
+                .char_indices()
+                .map(|(byte, _)| byte)
+                .chain(std::iter::once(text.len()))
+            {
+                assert_eq!(map.shaped_to_source(map.source_to_shaped(source)), source);
+            }
+            for insertion in &map.insertions {
+                let source = insertion.source;
+                let len = insertion.ch.len_utf8();
+                let before = map.source_to_shaped(source) - len;
+                assert_eq!(map.shaped_to_source(before), source);
+                assert_eq!(map.shaped_to_source(before + 1), source);
+                assert_eq!(map.shaped_to_source(before + len), source);
+            }
+        }
+
+        // Case `attributed_thai_wraps_at_dictionary_boundaries_in_document_byte_space`.
+        {
+            let text = "ทุกสองสัปดาห์";
+            let first = &text[..9];
+            let second = &text[9..18];
+            let third = &text[18..];
+            let width = [first, second, third]
+                .into_iter()
+                .map(|word| layout(word, 400.0).width())
+                .fold(0.0f32, f32::max)
+                + 0.5;
+
+            let mut fs = crate::font_catalog::fixture_font_system();
+            let layout = RichTextLayout::shape_styled(
+                &mut fs,
+                &[
+                    RichSpan::new(first).background(Some([240, 220, 80])),
+                    RichSpan::new(format!("{second}{third}")).bold(true),
+                ],
+                &RichTextLayout::block_style(false, 18.0, FontFamily::Sans, 1.0),
+                Some(width),
+                TextAlign::Left,
+                vec![(9, 18)],
+                vec![],
+            );
+
+            assert_eq!(layout.visual_line_index(0), 0);
+            assert_eq!(layout.visual_line_index(9), 1);
+            assert_eq!(layout.visual_line_index(18), 2);
+            assert_eq!(layout.visual_line_index(text.len()), 2);
+            assert_eq!(layout.backgrounds[0].0..layout.backgrounds[0].1, 0..9);
+            assert_eq!(layout.selection_rects(9, 18).len(), 1);
+
+            for source in [0, 9, 18, text.len()] {
+                let (x, top, height) = layout.caret_geometry(source);
+                assert_eq!(
+                    layout.hit(x, top + height * 0.5),
+                    source,
+                    "hit testing must never expose a virtual-break byte"
+                );
+            }
+        }
+
+        // Case `plain_thai_layout_uses_the_same_dictionary_wrapping`.
+        {
+            use crate::text_render::TextStyle;
+
+            let text = "ทุกสองสัปดาห์";
+            let style = TextStyle::new(18.0);
+            let mut fs = crate::font_catalog::fixture_font_system();
+            let probe = RichTextLayout::shape_plain(&mut fs, &text[..9], &style, None);
+            let width = probe.width() + 0.5;
+            let layout = RichTextLayout::shape_plain(&mut fs, text, &style, Some(width));
+
+            assert_eq!(layout.visual_line_index(0), 0);
+            assert_eq!(layout.visual_line_index(9), 1);
+            assert_eq!(layout.visual_line_index(18), 2);
+            assert_eq!(
+                layout.hit(layout.caret_geometry(18).0, layout.caret_geometry(18).1),
+                18
+            );
+        }
+
+        // Case `virtual_dictionary_hints_have_no_visible_advance`.
+        {
+            use crate::text_render::TextStyle;
+
+            let text = "ทุกสองสัปดาห์";
+            let style = TextStyle::new(18.0);
+            let mut fs = crate::font_catalog::fixture_font_system();
+            let source = RichTextLayout::shape_plain(&mut fs, text, &style, None);
+            let hinted = RichTextLayout::shape_plain(&mut fs, text, &style, Some(10_000.0));
+
+            assert!(
+                (source.width() - hinted.width()).abs() < 0.01,
+                "zero-width break hints must not alter visible text metrics"
+            );
+        }
+
+        // Case `real_layout_wraps_cjk_but_preserves_nbsp_and_emoji_zwj_clusters`.
+        {
+            use crate::text_render::TextStyle;
+
+            let style = TextStyle::new(18.0);
+            let mut fs = crate::font_catalog::fixture_font_system();
+
+            let cjk = "東京京都";
+            let cjk_probe = RichTextLayout::shape_plain(&mut fs, "東京", &style, None);
+            let cjk_layout =
+                RichTextLayout::shape_plain(&mut fs, cjk, &style, Some(cjk_probe.width() + 0.5));
+            assert_eq!(cjk_layout.visual_line_index(0), 0);
+            assert!(cjk_layout.visual_line_index("東京".len()) >= 1);
+
+            let nbsp = "10\u{a0}km away";
+            let narrow = RichTextLayout::shape_plain(&mut fs, "10", &style, None).width() + 0.5;
+            let nbsp_layout = RichTextLayout::shape_plain(&mut fs, nbsp, &style, Some(narrow));
+            let protected_end = "10\u{a0}km".len();
+            assert_eq!(nbsp_layout.visual_line_index(0), 0);
+            assert_eq!(nbsp_layout.visual_line_index(protected_end), 0);
+            assert!(nbsp_layout.visual_line_index(protected_end + 1) >= 1);
+
+            let family = "👨‍👩‍👧‍👦";
+            let emoji = format!("{family} {family}");
+            let emoji_width =
+                RichTextLayout::shape_plain(&mut fs, family, &style, None).width() + 0.5;
+            let emoji_layout =
+                RichTextLayout::shape_plain(&mut fs, &emoji, &style, Some(emoji_width));
+            for (byte, _) in family.char_indices() {
+                assert_eq!(emoji_layout.visual_line_index(byte), 0);
+            }
+            assert!(emoji_layout.visual_line_index(family.len() + 1) >= 1);
+        }
+
+        // Case `hyphenated_attributed_layout_keeps_document_offsets_and_decorations`.
+        {
+            use crate::text_render::TextStyle;
+
+            let text = "extensive";
+            let style = TextStyle::new(20.0).with_auto_hyphenation("en-US");
+            let mut fs = crate::font_catalog::fixture_font_system();
+            let probe = RichTextLayout::shape_plain(&mut fs, "exten-", &TextStyle::new(20.0), None);
+            let layout = RichTextLayout::shape_styled(
+                &mut fs,
+                &[
+                    RichSpan::new("exten").background(Some([240, 220, 80])),
+                    RichSpan::new("sive").bold(true),
+                ],
+                &style,
+                Some(probe.width() + 0.5),
+                TextAlign::Left,
+                vec![(2, 5)],
+                vec![],
+            );
+
+            assert!(layout.visual_line_index(text.len()) >= 1);
+            assert!(layout.width() <= probe.width() + 0.51);
+            assert_eq!(layout.backgrounds[0].0..layout.backgrounds[0].1, 0..5);
+            assert!(!layout.selection_rects(2, 5).is_empty());
+            for source in 0..=text.len() {
+                let (x, top, height) = layout.caret_geometry(source);
+                assert_eq!(
+                    layout.hit(x, top + height * 0.5),
+                    source,
+                    "virtual soft-hyphen bytes must never escape into editor state"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn run_styles_paint_backgrounds_superscripts_and_line_heights() {
+        // Case `background_span_records_a_paintable_band`.
+        {
+            let mut fs = crate::font_catalog::fixture_font_system();
+            // "AAA" plain, "BBB" highlighted, "CCC" plain.
+            let spans = [
+                RichSpan::new("AAA"),
+                RichSpan::new("BBB").background(Some([255, 230, 0])),
+                RichSpan::new("CCC"),
+            ];
+            let layout = RichTextLayout::shape_styled(
+                &mut fs,
+                &spans,
+                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                Some(400.0),
+                TextAlign::Left,
+                vec![],
+                vec![],
+            );
+            // Exactly one background band, covering the "BBB" byte range [3, 6).
+            assert_eq!(layout.backgrounds.len(), 1);
+            let (s, e, rgb) = layout.backgrounds[0];
+            assert_eq!((s, e), (3, 6));
+            assert_eq!(rgb, [255, 230, 0]);
+            // The draw path fills exactly `selection_rects(s, e)`; that band must be
+            // a real, non-degenerate rectangle (x1 > x0, y1 > y0).
+            let rects = layout.selection_rects(s, e);
+            assert_eq!(rects.len(), 1, "highlight is a single contiguous band");
+            let (x0, y0, x1, y1) = rects[0];
+            assert!(x1 > x0, "highlight band must have positive width");
+            assert!(y1 > y0, "highlight band must have positive height");
+            // A span without a background contributes no band.
+            let plain = RichTextLayout::shape_styled(
+                &mut fs,
+                &[RichSpan::new("AAA")],
+                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                Some(400.0),
+                TextAlign::Left,
+                vec![],
+                vec![],
+            );
+            assert!(plain.backgrounds.is_empty());
+        }
+
+        // Case `super_run_shapes_smaller_and_offsets_up`.
+        {
+            let mut fs = crate::font_catalog::fixture_font_system();
+            let base_size = 20.0f32;
+            // "x" normal, "2" superscript.
+            let spans = [
+                RichSpan::new("x"),
+                RichSpan::new("2").baseline(BaselineShift::Super),
+            ];
+            let layout = RichTextLayout::shape_styled(
+                &mut fs,
+                &spans,
+                &RichTextLayout::block_style(false, base_size, FontFamily::Sans, 1.0),
+                Some(400.0),
+                TextAlign::Left,
+                vec![],
+                vec![],
+            );
+            // Recorded as a baseline range over the "2" byte [1, 2).
+            assert_eq!(layout.baselines.len(), 1);
+            assert_eq!((layout.baselines[0].0, layout.baselines[0].1), (1, 2));
+            assert_eq!(layout.baselines[0].2, BaselineShift::Super);
+            assert_eq!(layout.baseline_at(1), BaselineShift::Super);
+            assert_eq!(layout.baseline_at(0), BaselineShift::None);
+
+            // The superscript glyph is shaped at the reduced size; the base glyph
+            // keeps the full size.
+            let mut base_glyph_size = None;
+            let mut super_glyph_size = None;
+            for run in layout.buffer.layout_runs() {
+                for g in run.glyphs {
+                    if g.start == 0 {
+                        base_glyph_size = Some(g.font_size);
+                    } else if g.start == 1 {
+                        super_glyph_size = Some(g.font_size);
+                    }
+                }
+            }
+            let bg = base_glyph_size.expect("base glyph present");
+            let sg = super_glyph_size.expect("super glyph present");
+            assert!(
+                (bg - base_size).abs() < 0.01,
+                "base run keeps full size: {bg}"
+            );
+            assert!(sg < bg, "super run shapes smaller: super={sg} base={bg}");
+            assert!(
+                (sg - base_size * BaselineShift::SCALE).abs() < 0.5,
+                "super ~0.7x: {sg}"
+            );
+
+            // The draw-time vertical offset moves super UP (negative screen-y) and
+            // sub DOWN (positive screen-y); None never moves.
+            assert!(
+                BaselineShift::Super.offset(sg) < 0.0,
+                "super lifts above baseline"
+            );
+            assert!(
+                BaselineShift::Sub.offset(sg) > 0.0,
+                "sub drops below baseline"
+            );
+            assert_eq!(BaselineShift::None.offset(sg), 0.0);
+        }
+
+        // Case `line_height_mult_scales_line_advance`.
+        {
+            let mut fs = crate::font_catalog::fixture_font_system();
+            // Force two lines so the gap between line tops reflects the line advance.
+            let long = "word ".repeat(40);
+            let single = RichTextLayout::shape_styled(
+                &mut fs,
+                &[RichSpan::new(long.clone())],
+                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                Some(120.0),
+                TextAlign::Left,
+                vec![],
+                vec![],
+            );
+            let doubled = RichTextLayout::shape_styled(
+                &mut fs,
+                &[RichSpan::new(long)],
+                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 2.0),
+                Some(120.0),
+                TextAlign::Left,
+                vec![],
+                vec![],
+            );
+            let advance = |layout: &RichTextLayout| -> f32 {
+                let tops: Vec<f32> = layout.buffer.layout_runs().map(|r| r.line_top).collect();
+                assert!(
+                    tops.len() >= 2,
+                    "need at least two lines to measure advance"
+                );
+                tops[1] - tops[0]
+            };
+            let a1 = advance(&single);
+            let a2 = advance(&doubled);
+            assert!(
+                (a2 - 2.0 * a1).abs() < a1 * 0.1,
+                "2.0 multiple should ~double the per-line advance: 1.0={a1} 2.0={a2}",
+            );
+            // And the reported block height scales with it too.
+            assert!(doubled.height() > single.height() * 1.8);
+        }
     }
 }

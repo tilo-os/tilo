@@ -15,6 +15,7 @@ name = "tilo-rollback"
 path = "src/bin/tilo-rollback.rs"
 
 [dependencies]
+getrandom.workspace = true
 # The TPM and cryptsetup are driven through their command-line tools rather than
 # through tss-esapi/libcryptsetup bindings. Two reasons, both practical:
 #   * the OS image already needs `tpm2-tools` and `cryptsetup` present for
@@ -33,11 +34,12 @@ base64.workspace = true
 hex.workspace = true
 sha2.workspace = true
 zeroize.workspace = true
-atomic-file = { path = "../atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
 bounded-command = { path = "../bounded-command" }
 tilo-crypto = { path = "../tilo-crypto" }
 
 tempfile.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true

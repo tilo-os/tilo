@@ -22,6 +22,7 @@ use ui::offscreen::OffscreenRenderer;
 use ui::widget::{
     AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,
     CapturePreview, PipLayout, RecordingCommand, ReplayCommand, ScreenshotCommand,
+    ScreenshotSendTarget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Size};
@@ -90,6 +91,12 @@ pub enum CaptureOutcome {
     ScreenshotMarkupOpened(PathBuf),
     ScreenshotMarkupClosed,
     ScreenshotRevealed(PathBuf),
+    /// "Send…" chose a target for the saved screenshot; the compositor
+    /// routes it over the device fabric or into the workspace.
+    ScreenshotSendRequested {
+        path: PathBuf,
+        target: ScreenshotSendTarget,
+    },
     /// A Screenshot portal selection completed in trusted shell chrome. Kept
     /// distinct from a keyboard-initiated capture so its URI is returned only
     /// to the authenticated request that armed the selector.
@@ -114,6 +121,9 @@ pub struct CaptureExecutor {
     external_updates: Vec<(String, Rect, String, Rect)>,
     external_dismissals: Vec<String>,
     portal_screenshot_armed: bool,
+    /// Live window previews for the switcher and the overview, rendered
+    /// here because this is where live geometry and a GPU meet.
+    window_previews: super::window_previews::WindowPreviewRenderer,
 }
 
 struct LiveMirror {
@@ -336,7 +346,8 @@ impl CaptureExecutor {
             .clamp(0.0, f64::from(height.saturating_sub(1))) as usize;
         let mut renderer = OffscreenRenderer::try_new(width, height)
             .map_err(|error| format!("colour picker renderer {width}×{height}: {error}"))?;
-        let rgba = render_capture_rgba(&mut renderer, clean_screen_scene);
+        let source = frame_builder.capture_scene(clean_screen_scene);
+        let rgba = render_capture_rgba(&mut renderer, &source);
         let offset = y
             .checked_mul(width as usize)
             .and_then(|pixels| pixels.checked_add(x))
@@ -370,7 +381,8 @@ impl CaptureExecutor {
         let height = height.round().clamp(1.0, MAX_CAPTURE_EDGE) as u32;
         let mut renderer = OffscreenRenderer::try_new(width, height)
             .map_err(|error| format!("screen-share renderer {width}×{height}: {error}"))?;
-        let rgba = render_capture_rgba(&mut renderer, scene);
+        let source = frame_builder.capture_scene(scene);
+        let rgba = render_capture_rgba(&mut renderer, &source);
         let expected = (width as usize)
             .checked_mul(height as usize)
             .and_then(|pixels| pixels.checked_mul(4))
@@ -455,6 +467,12 @@ impl CaptureExecutor {
                 .map(|id| CaptureOutcome::FloatingClosed { id }),
         );
 
+        let mut app_surface_adopted = false;
+        let mirrors_before: Vec<String> = self
+            .live_mirrors
+            .iter()
+            .map(|mirror| mirror.id.clone())
+            .collect();
         for (id, region, app_id, local_region) in std::mem::take(&mut self.external_updates) {
             if let Some(mirror) = self.live_mirrors.iter_mut().find(|mirror| mirror.id == id) {
                 mirror.intent.regions = vec![region];
@@ -502,6 +520,7 @@ impl CaptureExecutor {
                     },
                 );
                 tracing::debug!(id = %request.id, ?request.role, "shell adopted live app-owned surface");
+                app_surface_adopted = true;
                 continue;
             }
             match self.adopt_floating_request(frame_builder, request, true) {
@@ -608,6 +627,16 @@ impl CaptureExecutor {
                     ScreenshotCommand::CopyLast => self
                         .copy_last_screenshot(frame_builder)
                         .unwrap_or_else(CaptureOutcome::Failed),
+                    ScreenshotCommand::SendLast(target) => {
+                        self.last_screenshot.clone().map_or_else(
+                            || {
+                                CaptureOutcome::Failed(
+                                    "there is no saved screenshot to send".into(),
+                                )
+                            },
+                            |path| CaptureOutcome::ScreenshotSendRequested { path, target },
+                        )
+                    }
                 }
             } else if let Some(command) = intent.replay_command {
                 match command {
@@ -656,12 +685,17 @@ impl CaptureExecutor {
                 self.sequence = self.sequence.saturating_add(1);
                 let title = intent.targets.first().map_or_else(
                     || match intent.source {
-                        ui::widget::SourceMode::Region => "Live selection".to_string(),
-                        ui::widget::SourceMode::Window => "Live app".to_string(),
-                        ui::widget::SourceMode::Display => "Live screen".to_string(),
-                        ui::widget::SourceMode::Multi => {
-                            format!("{} live areas", intent.regions.len())
+                        ui::widget::SourceMode::Region => {
+                            crate::shell::i18n::t("capture-live-selection")
                         }
+                        ui::widget::SourceMode::Window => crate::shell::i18n::t("capture-live-app"),
+                        ui::widget::SourceMode::Display => {
+                            crate::shell::i18n::t("capture-live-screen")
+                        }
+                        ui::widget::SourceMode::Multi => crate::shell::i18n::t_args(
+                            "capture-live-areas",
+                            &[("count", intent.regions.len().into())],
+                        ),
                     },
                     |target| target.title.clone(),
                 );
@@ -743,8 +777,30 @@ impl CaptureExecutor {
         // pass. Reconcile structural nodes now so its very first appended
         // frame has real geometry at `spawn_from` rather than Rect::ZERO.
         // This shared gate removes the blank first frame for both live PiP and
-        // frozen screenshot pins.
-        frame_builder.relayout();
+        // frozen screenshot pins. A frame that added no surface keeps the
+        // layout it already has: laying everything out a second time can size
+        // a window differently from the first pass and resize it every frame.
+        let surface_added = app_surface_adopted
+            || outcomes.iter().any(|outcome| {
+                matches!(
+                    outcome,
+                    CaptureOutcome::Pinned { .. } | CaptureOutcome::Floated { .. }
+                )
+            });
+        if surface_added
+            || self
+                .live_mirrors
+                .iter()
+                .any(|mirror| !mirrors_before.contains(&mirror.id))
+        {
+            frame_builder.relayout();
+        }
+        // Previews render from the frame store and a live repaint of each
+        // window, never from the presented scene, so chrome over a window
+        // never shows up inside its own preview.
+        let _ = self
+            .window_previews
+            .refresh(frame_builder, std::time::Instant::now());
         // Appended only after every mirror sampled the clean desktop, so a
         // region overlapping its own PiP never feeds back recursively.
         let capture_overlays_appended = frame_builder.draw_capture_overlays(clean_screen_scene);
@@ -905,6 +961,18 @@ impl CaptureExecutor {
         let path = recording.path.clone();
         let frames = recording.frames;
         let mut output = recording.output;
+        // The encoder may still hold the last frames; a failure to drain
+        // them must not cost the frames already written.
+        match recording.encoder.finish() {
+            Ok(tail) => {
+                for unit in tail {
+                    output.write_access_unit(&unit.data)?;
+                }
+            }
+            Err(error) => {
+                tracing::warn!("capture: recording ends without its last frames: {error}");
+            }
+        }
         for track in &mut recording.audio_tracks {
             if let Ok(bytes) = track.capture.drain(true)
                 && !bytes.is_empty()
@@ -1130,7 +1198,13 @@ impl CaptureExecutor {
         let preview = capture_preview(&rgba, width, height);
         let id = format!("pinned-capture:{}", self.sequence);
         self.sequence = self.sequence.saturating_add(1);
-        let title = format!("Screenshot · {width} × {height}");
+        let title = crate::shell::i18n::t_args(
+            "capture-pinned-title",
+            &[
+                ("width", width.to_string().into()),
+                ("height", height.to_string().into()),
+            ],
+        );
         frame_builder
             .host_mut()
             .upsert_capture_surface(CaptureSurfaceRequest {
@@ -1169,12 +1243,19 @@ impl CaptureExecutor {
         Ok(CaptureOutcome::Copied { width, height })
     }
 
-    fn execute_screenshot(
-        &mut self,
+    /// The pixels a screenshot of `intent` holds — straight RGBA with its
+    /// width and height — exactly as it is then saved, copied or handed to
+    /// a portal caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the selected source has nothing to paint or the
+    /// capture renderer cannot be created.
+    pub fn render_screenshot(
         frame_builder: &mut FrameBuilder,
         clean_screen_scene: &Scene,
         intent: &CaptureIntent,
-    ) -> Result<CaptureOutcome, String> {
+    ) -> Result<(Vec<u8>, u32, u32), String> {
         let (source, regions) = capture_source(frame_builder, clean_screen_scene, intent);
         if regions.is_empty() {
             return Err("the selected source has no paintable pixels".into());
@@ -1182,13 +1263,24 @@ impl CaptureExecutor {
         let (composed, width, height) = compose_scene(&source, &regions, intent.pip_layout)?;
         let mut renderer = OffscreenRenderer::try_new(width, height)
             .map_err(|error| format!("capture renderer {width}×{height}: {error}"))?;
-        let rgba = render_capture_rgba(&mut renderer, &composed);
+        Ok((render_capture_rgba(&mut renderer, &composed), width, height))
+    }
+
+    fn execute_screenshot(
+        &mut self,
+        frame_builder: &mut FrameBuilder,
+        clean_screen_scene: &Scene,
+        intent: &CaptureIntent,
+    ) -> Result<CaptureOutcome, String> {
+        let (rgba, width, height) =
+            Self::render_screenshot(frame_builder, clean_screen_scene, intent)?;
         let preview = capture_preview(&rgba, width, height);
         match intent.destination {
             CaptureDestination::Clipboard => {
                 let copied = ui::clipboard_copy_image(width as usize, height as usize, &rgba);
                 if copied {
                     frame_builder.set_capture_screenshot_finished(true, width, height, preview);
+                    play_shutter(frame_builder);
                     Ok(CaptureOutcome::Copied { width, height })
                 } else {
                     Err("the clipboard refused image data".into())
@@ -1208,6 +1300,7 @@ impl CaptureExecutor {
                     tracing::warn!(path = %path.display(), "screenshot saved but not copied");
                 }
                 frame_builder.set_capture_screenshot_finished(false, width, height, preview);
+                play_shutter(frame_builder);
                 Ok(CaptureOutcome::Saved(path))
             }
             CaptureDestination::FloatingWindow => {
@@ -1215,6 +1308,14 @@ impl CaptureExecutor {
             }
         }
     }
+}
+
+/// The shutter sound for a screenshot the person just took.
+fn play_shutter(frame_builder: &mut FrameBuilder) {
+    frame_builder.with_chrome(|chrome| {
+        let _ =
+            chrome.play_system_sound(settings_store::system_sounds::SystemSoundEvent::Screenshot);
+    });
 }
 
 fn refresh_mirror(
@@ -1428,12 +1529,12 @@ fn record_frame(
             fitted
         };
         let rgba = render_capture_rgba(&mut recording.renderer, &frame_scene);
-        let nalus = recording
+        let units = recording
             .encoder
             .encode(&rgba)
             .map_err(|error| format!("encode frame: {error}"))?;
-        if !nalus.is_empty() {
-            recording.output.write_access_unit(&nalus)?;
+        for unit in units {
+            recording.output.write_access_unit(&unit.data)?;
         }
         recording.frames = recording.frames.saturating_add(1);
         recording.last_frame = Instant::now();
@@ -1467,19 +1568,19 @@ fn record_replay_frame(
             fitted
         };
         let rgba = render_capture_rgba(&mut replay.renderer, &frame_scene);
-        let access_unit = replay
+        let units = replay
             .encoder
             .encode(&rgba)
             .map_err(|error| format!("encode recent frame: {error}"))?;
-        if !access_unit.is_empty() {
-            let keyframe = media::realtime::is_keyframe(replay.encoder.codec(), &access_unit);
-            replay.video_bytes = replay.video_bytes.saturating_add(access_unit.len());
+        for unit in units.into_iter().filter(|unit| !unit.data.is_empty()) {
+            let keyframe = media::realtime::is_keyframe(replay.encoder.codec(), &unit.data);
+            replay.video_bytes = replay.video_bytes.saturating_add(unit.data.len());
             replay.frames.push_back(BufferedReplayFrame {
-                access_unit,
+                access_unit: unit.data,
                 keyframe,
             });
-            trim_replay_video_frames(&mut replay.frames, &mut replay.video_bytes);
         }
+        trim_replay_video_frames(&mut replay.frames, &mut replay.video_bytes);
         replay.last_frame = Instant::now();
     }
     drain_replay_audio(replay);
@@ -1600,8 +1701,10 @@ fn capture_source(
         // The clean screen is the presented scene, where each display drew
         // its part of the desktop at its own scale; the regions were chosen
         // on the logical desktop.
+        // Protected windows, secret prompts and a locked session leave
+        // the display only as the placeholder.
         CaptureExtent::Visible => (
-            clean_screen_scene.clone(),
+            frame_builder.capture_scene(clean_screen_scene).into_owned(),
             intent
                 .regions
                 .iter()
@@ -1652,7 +1755,7 @@ fn render_capture_rgba(renderer: &mut OffscreenRenderer, scene: &Scene) -> Vec<u
     renderer.render_rgba_resilient(scene)
 }
 
-fn append_clipped(scene: &mut Scene, source: &Scene, region: Rect, transform: Affine) {
+pub(crate) fn append_clipped(scene: &mut Scene, source: &Scene, region: Rect, transform: Affine) {
     let mut clipped = Scene::new();
     clipped.push_layer(
         Fill::NonZero,
@@ -1931,6 +2034,10 @@ mod tests {
         clippy::too_many_lines,
         reason = "capture integration tests keep their full scenario setup explicit"
     )]
+    #![allow(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived permits and lock guards by design"
+    )]
 
     use super::*;
     use crate::shell::state::{AppKind, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree};
@@ -1958,495 +2065,516 @@ mod tests {
     }
 
     #[test]
-    fn saved_screenshot_round_trips_exact_pixels_for_receipt_copy() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("finished-capture.png");
-        let pixels = vec![
-            18, 32, 64, 255, 240, 120, 30, 255, 4, 220, 180, 96, 255, 255, 255, 0,
-        ];
+    fn screenshot_artifacts_keep_exact_pixels_and_exclusive_selection() {
+        // Phase `saved_screenshot_round_trips_exact_pixels_for_receipt_copy`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("finished-capture.png");
+            let pixels = vec![
+                18, 32, 64, 255, 240, 120, 30, 255, 4, 220, 180, 96, 255, 255, 255, 0,
+            ];
 
-        write_png(&path, 2, 2, &pixels).unwrap();
-        let (width, height, decoded) = read_png_rgba(&path).unwrap();
+            write_png(&path, 2, 2, &pixels).unwrap();
+            let (width, height, decoded) = read_png_rgba(&path).unwrap();
 
-        assert_eq!((width, height), (2, 2));
-        assert_eq!(decoded, pixels);
-    }
+            assert_eq!((width, height), (2, 2));
+            assert_eq!(decoded, pixels);
+        }
+        // Phase `portal_selector_reservation_is_exclusive_and_cancellable`.
+        {
+            let mut executor = CaptureExecutor::default();
+            assert!(executor.arm_portal_screenshot());
+            assert!(!executor.arm_portal_screenshot());
+            executor.cancel_portal_screenshot();
+            assert!(executor.arm_portal_screenshot());
+        }
+        // Phase `screenshot_open_requires_a_finished_file_artifact`.
+        {
+            let executor = CaptureExecutor::default();
+            assert_eq!(
+                executor.open_last_screenshot().unwrap_err(),
+                "there is no saved screenshot to open"
+            );
+        }
+        // Phase `pin_uses_finished_pixels_and_does_not_create_a_live_mirror`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("finished-capture.png");
+            let pixels = vec![18, 32, 64, 255, 240, 120, 30, 255];
+            write_png(&path, 2, 1, &pixels).unwrap();
 
-    #[test]
-    fn portal_selector_reservation_is_exclusive_and_cancellable() {
-        let mut executor = CaptureExecutor::default();
-        assert!(executor.arm_portal_screenshot());
-        assert!(!executor.arm_portal_screenshot());
-        executor.cancel_portal_screenshot();
-        assert!(executor.arm_portal_screenshot());
-    }
+            let mut executor = CaptureExecutor::default();
+            executor.last_screenshot = Some(path);
+            let mut frame_builder = FrameBuilder::new((800, 600));
+            let spawn = Rect::new(280.0, 6.0, 326.0, 30.0);
+            let outcome = executor
+                .pin_last_screenshot(&mut frame_builder, &[spawn])
+                .unwrap();
 
-    #[test]
-    fn screenshot_open_requires_a_finished_file_artifact() {
-        let executor = CaptureExecutor::default();
-        assert_eq!(
-            executor.open_last_screenshot().unwrap_err(),
-            "there is no saved screenshot to open"
-        );
-    }
-
-    #[test]
-    fn pin_uses_finished_pixels_and_does_not_create_a_live_mirror() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("finished-capture.png");
-        let pixels = vec![18, 32, 64, 255, 240, 120, 30, 255];
-        write_png(&path, 2, 1, &pixels).unwrap();
-
-        let mut executor = CaptureExecutor::default();
-        executor.last_screenshot = Some(path);
-        let mut frame_builder = FrameBuilder::new((800, 600));
-        let spawn = Rect::new(280.0, 6.0, 326.0, 30.0);
-        let outcome = executor
-            .pin_last_screenshot(&mut frame_builder, &[spawn])
-            .unwrap();
-
-        assert_eq!(
-            outcome,
-            CaptureOutcome::Pinned {
-                id: "pinned-capture:0".into()
+            assert_eq!(
+                outcome,
+                CaptureOutcome::Pinned {
+                    id: "pinned-capture:0".into()
+                }
+            );
+            assert!(
+                executor.live_mirrors.is_empty(),
+                "a pinned still must never enter the live refresh loop"
+            );
+            assert_eq!(frame_builder.host_mut().capture_mirror_count_for_tests(), 1);
+        }
+        // Phase `screenshot_preview_preserves_spatial_color_structure`.
+        {
+            let mut rgba = Vec::new();
+            for row in 0..4u8 {
+                for column in 0..6u8 {
+                    rgba.extend_from_slice(&[
+                        column.saturating_mul(30),
+                        row.saturating_mul(50),
+                        column.saturating_add(row).saturating_mul(20),
+                        255,
+                    ]);
+                }
             }
-        );
-        assert!(
-            executor.live_mirrors.is_empty(),
-            "a pinned still must never enter the live refresh loop"
-        );
-        assert_eq!(frame_builder.host_mut().capture_mirror_count_for_tests(), 1);
+            let preview = capture_preview(&rgba, 6, 4);
+            assert_eq!((preview.columns, preview.rows), (6, 4));
+            assert_eq!(preview.pixels.len(), 24);
+            assert_eq!(preview.pixels[0], [0, 0, 0, 255]);
+            assert_eq!(preview.pixels[5], [150, 0, 100, 255]);
+            assert_eq!(preview.pixels[18], [0, 150, 60, 255]);
+            assert_eq!(preview.pixels[23], [150, 150, 160, 255]);
+        }
     }
 
     #[test]
-    fn in_process_pip_retires_when_its_app_activity_disappears() {
-        let mut executor = CaptureExecutor::default();
-        executor.live_mirrors.push(LiveMirror {
-            id: "browser.media-pip".into(),
-            title: "Video".into(),
-            intent: CaptureIntent {
+    fn pip_targets_retire_with_their_app_and_keep_virtual_bounds() {
+        // Phase `in_process_pip_retires_when_its_app_activity_disappears`.
+        {
+            let mut executor = CaptureExecutor::default();
+            executor.live_mirrors.push(LiveMirror {
+                id: "browser.media-pip".into(),
+                title: "Video".into(),
+                intent: CaptureIntent {
+                    mode: CaptureMode::Pip,
+                    source: ui::widget::SourceMode::Region,
+                    destination: CaptureDestination::FloatingWindow,
+                    regions: vec![Rect::new(100.0, 80.0, 500.0, 305.0)],
+                    include_pointer: false,
+                    audio: AudioCaptureMode::None,
+                    extent: CaptureExtent::Visible,
+                    pip_layout: PipLayout::Auto,
+                    targets: Vec::new(),
+                    recording_command: None,
+                    replay_command: None,
+                    screenshot_command: None,
+                },
+                renderer: None,
+                preferred_size: Some(Size::new(400.0, 225.0)),
+                tracking_source: None,
+                close_when_app_inactive: true,
+                spawn_from: None,
+            });
+            let mut frame_builder = FrameBuilder::new((800, 600));
+            let mut clean = frame_builder.paint();
+
+            let (outcomes, _capture_overlays_appended) =
+                executor.execute_ready(&mut frame_builder, &mut clean);
+            assert_eq!(
+                outcomes,
+                vec![CaptureOutcome::FloatingClosed {
+                    id: "browser.media-pip".into()
+                }]
+            );
+            assert!(executor.live_mirrors.is_empty());
+        }
+        // Phase `offscreen_target_retains_virtual_bounds_for_pip_handoff`.
+        {
+            let virtual_rect = Rect::new(-1_300.0, 120.0, -300.0, 820.0);
+            let intent = CaptureIntent {
                 mode: CaptureMode::Pip,
-                source: ui::widget::SourceMode::Region,
+                source: ui::widget::SourceMode::Window,
                 destination: CaptureDestination::FloatingWindow,
-                regions: vec![Rect::new(100.0, 80.0, 500.0, 305.0)],
+                regions: Vec::new(),
                 include_pointer: false,
                 audio: AudioCaptureMode::None,
-                extent: CaptureExtent::Visible,
+                extent: CaptureExtent::FullApp,
                 pip_layout: PipLayout::Auto,
-                targets: Vec::new(),
+                targets: vec![ui::widget::CaptureTarget {
+                    id: "notes".into(),
+                    title: "Notes".into(),
+                    app_id: "so.tilo.notes".into(),
+                    visible_rect: Rect::ZERO,
+                    virtual_rect,
+                    complete_rect: Some(Rect::new(-1_300.0, 120.0, 10.0, 1_308.0)),
+                }],
                 recording_command: None,
                 replay_command: None,
                 screenshot_command: None,
-            },
-            renderer: None,
-            preferred_size: Some(Size::new(400.0, 225.0)),
-            tracking_source: None,
-            close_when_app_inactive: true,
-            spawn_from: None,
-        });
-        let mut frame_builder = FrameBuilder::new((800, 600));
-        let mut clean = frame_builder.paint();
-
-        let (outcomes, _capture_overlays_appended) =
-            executor.execute_ready(&mut frame_builder, &mut clean);
-        assert_eq!(
-            outcomes,
-            vec![CaptureOutcome::FloatingClosed {
-                id: "browser.media-pip".into()
-            }]
-        );
-        assert!(executor.live_mirrors.is_empty());
-    }
-
-    #[test]
-    fn screenshot_preview_preserves_spatial_color_structure() {
-        let mut rgba = Vec::new();
-        for row in 0..4u8 {
-            for column in 0..6u8 {
-                rgba.extend_from_slice(&[
-                    column.saturating_mul(30),
-                    row.saturating_mul(50),
-                    column.saturating_add(row).saturating_mul(20),
-                    255,
-                ]);
-            }
+            };
+            assert_eq!(intent_spawn_bounds(&intent), Some(virtual_rect));
         }
-        let preview = capture_preview(&rgba, 6, 4);
-        assert_eq!((preview.columns, preview.rows), (6, 4));
-        assert_eq!(preview.pixels.len(), 24);
-        assert_eq!(preview.pixels[0], [0, 0, 0, 255]);
-        assert_eq!(preview.pixels[5], [150, 0, 100, 255]);
-        assert_eq!(preview.pixels[18], [0, 150, 60, 255]);
-        assert_eq!(preview.pixels[23], [150, 150, 160, 255]);
     }
 
     #[test]
-    fn spatial_capture_can_frame_content_beyond_both_screen_edges() {
-        let source = two_source_cards();
-        let regions = [
-            Rect::new(-300.0, 20.0, -100.0, 120.0),
-            Rect::new(900.0, 40.0, 1_100.0, 140.0),
-        ];
-        let (scene, width, height) = compose_scene(&source, &regions, PipLayout::Auto).unwrap();
-        assert_eq!((width, height), (1_400, 120));
-        assert!(!scene.encoding().is_empty());
-    }
-
-    #[test]
-    fn grid_removes_the_unused_virtual_desktop_gap() {
-        let source = two_source_cards();
-        let regions = [
-            Rect::new(-300.0, 20.0, -100.0, 120.0),
-            Rect::new(900.0, 40.0, 1_100.0, 140.0),
-        ];
-        let (_, width, height) = compose_scene(&source, &regions, PipLayout::Grid).unwrap();
-        assert_eq!((width, height), (416, 100));
-    }
-
-    #[test]
-    fn multi_region_handoff_geometry_preserves_source_and_grid_endpoints() {
-        let regions = [
-            Rect::new(250.0, 180.0, 710.0, 410.0),
-            Rect::new(760.0, 310.0, 1_170.0, 590.0),
-        ];
-        let source_bounds = union_rects(&regions).unwrap();
-        let first_source = normalized_rect(regions[0], source_bounds);
-        assert_eq!(first_source.x0, 0.0);
-        assert_eq!(first_source.y0, 0.0);
-        assert!(first_source.x1 < 0.51);
-
-        let (width, height, placements) = grid_geometry(&regions);
-        let target_bounds = Rect::new(0.0, 0.0, width, height);
-        let first_target = normalized_rect(placements[0], target_bounds);
-        let second_target = normalized_rect(placements[1], target_bounds);
-        assert!(first_target.x1 < second_target.x0, "grid gap must survive");
-        assert!(first_target.height() < 1.0, "wide source is letterboxed");
-        assert_eq!(second_target.y0, 0.0);
-        assert_eq!(second_target.y1, 1.0);
-    }
-
-    #[test]
-    fn oversized_capture_scales_down_without_changing_aspect_ratio() {
-        let (_, _, scale) = output_dimensions(16_384.0, 8_192.0).unwrap();
-        assert_eq!(scale, 0.5);
-        assert_eq!(output_dimensions(16_384.0, 8_192.0).unwrap().0, 8_192);
-        assert_eq!(output_dimensions(16_384.0, 8_192.0).unwrap().1, 4_096);
-    }
-
-    #[test]
-    fn full_app_capture_paints_a_wholly_offscreen_live_group() {
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let (strip_id, target_group, target_tab) = {
-            let workspace = tree
-                .desktop
-                .active_workspace_mut()
-                .expect("bootstrap has an active workspace");
-            let strip = workspace.strips.first_mut().expect("bootstrap has a strip");
-            let target = strip
-                .window_groups
-                .first_mut()
-                .expect("bootstrap has a window group");
-            target.tabs.truncate(1);
-            target.active_tab = target.tabs[0].id;
-            target.width = WindowWidth::Fraction(1_000);
-            let target_group = target.id;
-            let target_tab = target.active_tab;
-            for (group_id, tab_id, label) in
-                [(70_001, 80_001, "Middle"), (70_002, 80_002, "Visible")]
-            {
-                strip.window_groups.push(WindowGroup {
-                    id: group_id,
-                    tabs: vec![Tab {
-                        id: tab_id,
-                        title: label.into(),
-                        tile: TileContent::Stub {
-                            kind: AppKind::Settings,
-                            label: label.into(),
-                        },
-                    }],
-                    active_tab: tab_id,
-                    width: WindowWidth::Fraction(1_000),
-                    maximized: false,
-                });
-            }
-            (strip.id, target_group, target_tab)
-        };
-        tree.desktop.set_active_group(strip_id, 70_002);
-
-        let mut frame_builder = FrameBuilder::with_tree(tree, (800, 600));
-        let _ = frame_builder.paint();
-        let long_note = (1..=72)
-            .map(|line| {
-                format!(
-                    "Capture foundation {line}: export the complete document without moving its live window."
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let store = frame_builder.chrome().records().clone();
-        let checkout = crate::shell::tab_documents::scratch_tab_record(target_tab);
-        if !store.open_record(&checkout) {
-            store
-                .create_record(&checkout)
-                .expect("capture fixture creates its Notes record");
+    fn spatial_capture_geometry_frames_regions_without_desktop_gaps() {
+        // Phase `spatial_multi_capture_leaves_unselected_gap_transparent`.
+        fn spatial_multi_capture_leaves_unselected_gap_transparent() {
+            let source = two_source_cards();
+            let regions = [
+                Rect::new(-300.0, 20.0, -100.0, 120.0),
+                Rect::new(900.0, 40.0, 1_100.0, 140.0),
+            ];
+            let (scene, width, height) = compose_scene(&source, &regions, PipLayout::Auto).unwrap();
+            let Ok(mut renderer) = OffscreenRenderer::try_new(width, height) else {
+                eprintln!("skipping pixel assertion: no offscreen GPU adapter");
+                return;
+            };
+            let rgba = renderer.render_rgba(&scene);
+            let alpha = |x: u32, y: u32| rgba[((y * width + x) * 4 + 3) as usize];
+            assert!(alpha(100, 50) > 0, "selected left card is present");
+            assert_eq!(
+                alpha(700, 50),
+                0,
+                "desktop pixels between selected regions must not leak into export"
+            );
+            assert!(alpha(1_300, 70) > 0, "selected right card is present");
         }
-        frame_builder
-            .host_mut()
-            .group_at_for_tests(strip_id, 0)
-            .expect("target Notes group")
-            .bind_tab_records(&store, crate::shell::tab_documents::scratch_tab_record);
-        store
-            .with(&checkout.id, |doc| {
-                let mut body =
-                    crate::shell::crdt_text::CrdtTextBody::new(crate::shell::notes_app::BODY_KEY);
-                body.sync(doc, &automerge::ROOT);
-                let end = body.clamp(usize::MAX);
-                body.splice(doc, &automerge::ROOT, 0..end, &long_note);
-            })
-            .expect("capture fixture writes the canonical Notes record");
-        let mut shell_document = automerge::AutoCommit::new();
-        frame_builder.pump_apps(&mut shell_document, &automerge::ROOT);
-        frame_builder.relayout();
-        let _ = frame_builder.paint();
-        assert!(
+        // Phase `spatial_capture_can_frame_content_beyond_both_screen_edges`.
+        {
+            let source = two_source_cards();
+            let regions = [
+                Rect::new(-300.0, 20.0, -100.0, 120.0),
+                Rect::new(900.0, 40.0, 1_100.0, 140.0),
+            ];
+            let (scene, width, height) = compose_scene(&source, &regions, PipLayout::Auto).unwrap();
+            assert_eq!((width, height), (1_400, 120));
+            assert!(!scene.encoding().is_empty());
+        }
+        // Phase `grid_removes_the_unused_virtual_desktop_gap`.
+        {
+            let source = two_source_cards();
+            let regions = [
+                Rect::new(-300.0, 20.0, -100.0, 120.0),
+                Rect::new(900.0, 40.0, 1_100.0, 140.0),
+            ];
+            let (_, width, height) = compose_scene(&source, &regions, PipLayout::Grid).unwrap();
+            assert_eq!((width, height), (416, 100));
+        }
+        // Phase `multi_region_handoff_geometry_preserves_source_and_grid_endpoints`.
+        {
+            let regions = [
+                Rect::new(250.0, 180.0, 710.0, 410.0),
+                Rect::new(760.0, 310.0, 1_170.0, 590.0),
+            ];
+            let source_bounds = union_rects(&regions).unwrap();
+            let first_source = normalized_rect(regions[0], source_bounds);
+            assert_eq!(first_source.x0, 0.0);
+            assert_eq!(first_source.y0, 0.0);
+            assert!(first_source.x1 < 0.51);
+
+            let (width, height, placements) = grid_geometry(&regions);
+            let target_bounds = Rect::new(0.0, 0.0, width, height);
+            let first_target = normalized_rect(placements[0], target_bounds);
+            let second_target = normalized_rect(placements[1], target_bounds);
+            assert!(first_target.x1 < second_target.x0, "grid gap must survive");
+            assert!(first_target.height() < 1.0, "wide source is letterboxed");
+            assert_eq!(second_target.y0, 0.0);
+            assert_eq!(second_target.y1, 1.0);
+        }
+        // Phase `oversized_capture_scales_down_without_changing_aspect_ratio`.
+        {
+            let (_, _, scale) = output_dimensions(16_384.0, 8_192.0).unwrap();
+            assert_eq!(scale, 0.5);
+            assert_eq!(output_dimensions(16_384.0, 8_192.0).unwrap().0, 8_192);
+            assert_eq!(output_dimensions(16_384.0, 8_192.0).unwrap().1, 4_096);
+        }
+        // Phase `spatial_multi_capture_leaves_unselected_gap_transparent` (defined above).
+        spatial_multi_capture_leaves_unselected_gap_transparent();
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn app_capture_follows_its_live_surface_and_never_fakes_success() {
+        // Phase `full_app_capture_paints_a_wholly_offscreen_live_group`.
+        fn full_app_capture_paints_a_wholly_offscreen_live_group() {
+            let mut tree = WorkspaceTree::bootstrap_demo();
+            let (strip_id, target_group, target_tab) = {
+                let workspace = tree
+                    .desktop
+                    .active_workspace_mut()
+                    .expect("bootstrap has an active workspace");
+                let strip = workspace.strips.first_mut().expect("bootstrap has a strip");
+                let target = strip
+                    .window_groups
+                    .first_mut()
+                    .expect("bootstrap has a window group");
+                target.tabs.truncate(1);
+                target.active_tab = target.tabs[0].id;
+                target.width = WindowWidth::Fraction(1_000);
+                let target_group = target.id;
+                let target_tab = target.active_tab;
+                for (group_id, tab_id, label) in
+                    [(70_001, 80_001, "Middle"), (70_002, 80_002, "Visible")]
+                {
+                    strip.window_groups.push(WindowGroup {
+                        id: group_id,
+                        tabs: vec![Tab {
+                            id: tab_id,
+                            title: label.into(),
+                            tile: TileContent::Stub {
+                                kind: AppKind::Settings,
+                                label: label.into(),
+                            },
+                        }],
+                        active_tab: tab_id,
+                        width: WindowWidth::Fraction(1_000),
+                        maximized: false,
+                    });
+                }
+                (strip.id, target_group, target_tab)
+            };
+            // Keep the strip parked on the target group. The desktop eases its
+            // active group into view on a wall-clock animation, so naming the
+            // last group active here would let a slow run finish that ease
+            // before the explicit pan below and leave nothing to scroll.
+            tree.desktop.set_active_group(strip_id, target_group);
+
+            let mut frame_builder = FrameBuilder::with_tree(tree, (800, 600));
+            let store = frame_builder.chrome().records().clone();
+            crate::shell::tab_documents::create_scratch_tab_record(&store, target_tab).unwrap();
+            let _ = frame_builder.paint();
+            let long_note = (1..=72)
+                .map(|line| {
+                    format!(
+                        "Capture foundation {line}: export the complete document without moving its live window."
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            // The record was created explicitly above by its owning action; the
+            // painted host already holds it open, so bind and write through it.
+            let checkout = crate::shell::tab_documents::scratch_tab_record(target_tab);
             frame_builder
                 .host_mut()
                 .group_at_for_tests(strip_id, 0)
-                .is_some_and(|group| group.complete_capture_rect().is_some()),
-            "long Notes document did not publish complete capture geometry"
-        );
-        assert!(
-            frame_builder
+                .expect("target Notes group")
+                .bind_tab_records(&store, crate::shell::tab_documents::scratch_tab_record);
+            store
+                .with(&checkout.id, |doc| {
+                    let mut body = crate::shell::crdt_text::CrdtTextBody::new(
+                        crate::shell::notes_app::BODY_KEY,
+                    );
+                    body.sync(doc, &automerge::ROOT);
+                    let end = body.clamp(usize::MAX);
+                    body.splice(doc, &automerge::ROOT, 0..end, &long_note);
+                })
+                .expect("capture fixture writes the canonical Notes record");
+            let mut shell_document = automerge::AutoCommit::new();
+            frame_builder.pump_apps(&mut shell_document, &automerge::ROOT);
+            frame_builder.relayout();
+            let _ = frame_builder.paint();
+            assert!(
+                frame_builder
+                    .host_mut()
+                    .group_at_for_tests(strip_id, 0)
+                    .is_some_and(|group| group.complete_capture_rect().is_some()),
+                "long Notes document did not publish complete capture geometry"
+            );
+            // Focusing the last group already eases the strip toward it on
+            // the wall clock, so whether this jump still moves the strip
+            // depends on how long the frames above took. Jump to the end of
+            // that ease and check where the strip rests instead.
+            let _ = frame_builder
                 .host_mut()
                 .group_row_mut_for_tests(strip_id)
                 .expect("live strip row")
-                .scroll_group_into_view(70_002),
-            "the last group must require scrolling"
-        );
-        frame_builder.relayout();
-        let clean_screen = frame_builder.paint();
-        let target_group_ref = frame_builder
-            .host_mut()
-            .group_at_for_tests(strip_id, 0)
-            .expect("offscreen target group");
-        let live_rect = target_group_ref.get_rect();
-        let target_rect = target_group_ref
-            .complete_capture_rect()
-            .expect("long Notes document has complete capture geometry");
-        assert!(
-            target_rect.height() > live_rect.height(),
-            "semantic app capture must extend below its live window"
-        );
-        assert_eq!(
-            target_rect
-                .intersect(Rect::new(0.0, 0.0, 800.0, 600.0))
-                .area(),
-            0.0,
-            "precondition: the selected app is wholly outside the physical output; got {target_rect:?}"
-        );
+                .scroll_group_into_view(70_002);
+            frame_builder.relayout();
+            let onscreen = frame_builder
+                .host_mut()
+                .group_row_mut_for_tests(strip_id)
+                .expect("live strip row")
+                .onscreen_group_ids();
+            assert!(
+                onscreen.contains(&70_002) && !onscreen.contains(&target_group),
+                "the strip must rest on the last group with the target offscreen: {onscreen:?}"
+            );
+            let clean_screen = frame_builder.paint();
+            let target_group_ref = frame_builder
+                .host_mut()
+                .group_at_for_tests(strip_id, 0)
+                .expect("offscreen target group");
+            let live_rect = target_group_ref.get_rect();
+            let target_rect = target_group_ref
+                .complete_capture_rect()
+                .expect("long Notes document has complete capture geometry");
+            assert!(
+                target_rect.height() > live_rect.height(),
+                "semantic app capture must extend below its live window"
+            );
+            assert_eq!(
+                target_rect
+                    .intersect(Rect::new(0.0, 0.0, 800.0, 600.0))
+                    .area(),
+                0.0,
+                "precondition: the selected app is wholly outside the physical output; got {target_rect:?}"
+            );
 
-        let intent = CaptureIntent {
-            mode: ui::widget::CaptureMode::Screenshot,
-            source: ui::widget::SourceMode::Window,
-            destination: CaptureDestination::File,
-            regions: Vec::new(),
-            include_pointer: false,
-            audio: AudioCaptureMode::None,
-            extent: CaptureExtent::FullApp,
-            pip_layout: PipLayout::Auto,
-            targets: vec![ui::widget::CaptureTarget {
-                id: format!("group:{target_group}:tab:{target_tab}"),
-                title: "Notes".into(),
-                app_id: "so.tilo.notes".into(),
-                visible_rect: Rect::ZERO,
-                // Deliberately stale: the live draw must win over picker-time
-                // geometry after strip motion.
-                virtual_rect: Rect::new(10_000.0, 0.0, 10_100.0, 100.0),
-                complete_rect: Some(Rect::new(10_000.0, 0.0, 10_100.0, 200.0)),
-            }],
-            recording_command: None,
-            replay_command: None,
-            screenshot_command: None,
-        };
-        let (source, regions) = capture_source(&mut frame_builder, &clean_screen, &intent);
-        assert_eq!(regions, vec![target_rect]);
-        assert!(
-            !source.encoding().is_empty(),
-            "the offscreen app must paint"
-        );
-        let (capture, width, height) = compose_scene(&source, &regions, PipLayout::Auto).unwrap();
-        assert_eq!(width, target_rect.width().ceil() as u32);
-        assert_eq!(height, target_rect.height().ceil() as u32);
-        let mut live_intent = intent.clone();
-        live_intent.mode = CaptureMode::Pip;
-        live_intent.destination = CaptureDestination::FloatingWindow;
-        let (_, live_regions) = capture_source(&mut frame_builder, &clean_screen, &live_intent);
-        assert_eq!(
-            live_regions,
-            vec![live_rect],
-            "PiP must keep the offscreen app window readable rather than flattening the complete document"
-        );
-        let Ok(mut renderer) = OffscreenRenderer::try_new(width, height) else {
-            eprintln!("skipping pixel assertion: no offscreen GPU adapter");
-            return;
-        };
-        let rgba = render_capture_rgba(&mut renderer, &capture);
-        assert!(
-            rgba.chunks_exact(4).any(|pixel| pixel[3] != 0),
-            "the compositor returned dimensions but no captured app pixels"
-        );
+            let intent = CaptureIntent {
+                mode: ui::widget::CaptureMode::Screenshot,
+                source: ui::widget::SourceMode::Window,
+                destination: CaptureDestination::File,
+                regions: Vec::new(),
+                include_pointer: false,
+                audio: AudioCaptureMode::None,
+                extent: CaptureExtent::FullApp,
+                pip_layout: PipLayout::Auto,
+                targets: vec![ui::widget::CaptureTarget {
+                    id: format!("group:{target_group}:tab:{target_tab}"),
+                    title: "Notes".into(),
+                    app_id: "so.tilo.notes".into(),
+                    visible_rect: Rect::ZERO,
+                    // Deliberately stale: the live draw must win over picker-time
+                    // geometry after strip motion.
+                    virtual_rect: Rect::new(10_000.0, 0.0, 10_100.0, 100.0),
+                    complete_rect: Some(Rect::new(10_000.0, 0.0, 10_100.0, 200.0)),
+                }],
+                recording_command: None,
+                replay_command: None,
+                screenshot_command: None,
+            };
+            let (source, regions) = capture_source(&mut frame_builder, &clean_screen, &intent);
+            assert_eq!(regions, vec![target_rect]);
+            assert!(
+                !source.encoding().is_empty(),
+                "the offscreen app must paint"
+            );
+            let (capture, width, height) =
+                compose_scene(&source, &regions, PipLayout::Auto).unwrap();
+            assert_eq!(width, target_rect.width().ceil() as u32);
+            assert_eq!(height, target_rect.height().ceil() as u32);
+            let mut live_intent = intent.clone();
+            live_intent.mode = CaptureMode::Pip;
+            live_intent.destination = CaptureDestination::FloatingWindow;
+            let (_, live_regions) = capture_source(&mut frame_builder, &clean_screen, &live_intent);
+            assert_eq!(
+                live_regions,
+                vec![live_rect],
+                "PiP must keep the offscreen app window readable rather than flattening the complete document"
+            );
+            let Ok(mut renderer) = OffscreenRenderer::try_new(width, height) else {
+                eprintln!("skipping pixel assertion: no offscreen GPU adapter");
+                return;
+            };
+            let rgba = render_capture_rgba(&mut renderer, &capture);
+            assert!(
+                rgba.chunks_exact(4).any(|pixel| pixel[3] != 0),
+                "the compositor returned dimensions but no captured app pixels"
+            );
+        }
+        // Phase `full_app_capture_paints_a_wholly_offscreen_live_group` (defined above).
+        full_app_capture_paints_a_wholly_offscreen_live_group();
+        // Phase `vanished_full_app_never_falls_back_to_a_blank_success`.
+        {
+            let mut frame_builder = FrameBuilder::new((800, 600));
+            let clean_screen = frame_builder.paint();
+            let intent = CaptureIntent {
+                mode: ui::widget::CaptureMode::Screenshot,
+                source: ui::widget::SourceMode::Window,
+                destination: CaptureDestination::File,
+                regions: Vec::new(),
+                include_pointer: false,
+                audio: AudioCaptureMode::None,
+                extent: CaptureExtent::FullApp,
+                pip_layout: PipLayout::Auto,
+                targets: vec![ui::widget::CaptureTarget {
+                    id: "group:999999:tab:999999".into(),
+                    title: "Gone".into(),
+                    app_id: "so.tilo.gone".into(),
+                    visible_rect: Rect::ZERO,
+                    virtual_rect: Rect::new(1_000.0, 100.0, 1_800.0, 700.0),
+                    complete_rect: None,
+                }],
+                recording_command: None,
+                replay_command: None,
+                screenshot_command: None,
+            };
+            let (_, regions) = capture_source(&mut frame_builder, &clean_screen, &intent);
+            assert!(regions.is_empty());
+            assert!(
+                compose_scene(&Scene::new(), &regions, PipLayout::Auto).is_err(),
+                "a vanished target must report failure instead of saving transparent pixels"
+            );
+        }
+        // Phase `tracked_app_region_follows_its_surface_without_changing_local_content`.
+        {
+            let local_video = Rect::new(80.0, 120.0, 560.0, 390.0);
+            let first_app = Rect::new(200.0, 60.0, 1_000.0, 660.0);
+            let moved_app = Rect::new(640.0, 90.0, 1_440.0, 690.0);
+            let first = app_local_region_on_surface(local_video, first_app).unwrap();
+            let moved = app_local_region_on_surface(local_video, moved_app).unwrap();
+            assert_eq!(first, Rect::new(280.0, 180.0, 760.0, 450.0));
+            assert_eq!(moved, Rect::new(720.0, 210.0, 1_200.0, 480.0));
+            assert_eq!(first.size(), moved.size());
+        }
+        // Phase `semantic_region_update_preserves_element_identity`.
+        {
+            let updated = updated_local_tracking_source(
+                Some(FloatingSource::AppElement {
+                    app_id: "so.tilo.browser".into(),
+                    element_id: "media:7".into(),
+                    region: Rect::new(10.0, 20.0, 410.0, 245.0),
+                }),
+                "so.tilo.browser".into(),
+                Rect::new(24.0, 36.0, 624.0, 374.0),
+            );
+            assert_eq!(
+                updated,
+                FloatingSource::AppElement {
+                    app_id: "so.tilo.browser".into(),
+                    element_id: "media:7".into(),
+                    region: Rect::new(24.0, 36.0, 624.0, 374.0),
+                }
+            );
+        }
     }
 
     #[test]
-    fn vanished_full_app_never_falls_back_to_a_blank_success() {
-        let mut frame_builder = FrameBuilder::new((800, 600));
-        let clean_screen = frame_builder.paint();
-        let intent = CaptureIntent {
-            mode: ui::widget::CaptureMode::Screenshot,
-            source: ui::widget::SourceMode::Window,
-            destination: CaptureDestination::File,
-            regions: Vec::new(),
-            include_pointer: false,
-            audio: AudioCaptureMode::None,
-            extent: CaptureExtent::FullApp,
-            pip_layout: PipLayout::Auto,
-            targets: vec![ui::widget::CaptureTarget {
-                id: "group:999999:tab:999999".into(),
-                title: "Gone".into(),
-                app_id: "so.tilo.gone".into(),
-                visible_rect: Rect::ZERO,
-                virtual_rect: Rect::new(1_000.0, 100.0, 1_800.0, 700.0),
-                complete_rect: None,
-            }],
-            recording_command: None,
-            replay_command: None,
-            screenshot_command: None,
-        };
-        let (_, regions) = capture_source(&mut frame_builder, &clean_screen, &intent);
-        assert!(regions.is_empty());
-        assert!(
-            compose_scene(&Scene::new(), &regions, PipLayout::Auto).is_err(),
-            "a vanished target must report failure instead of saving transparent pixels"
-        );
-    }
-
-    #[test]
-    fn tracked_app_region_follows_its_surface_without_changing_local_content() {
-        let local_video = Rect::new(80.0, 120.0, 560.0, 390.0);
-        let first_app = Rect::new(200.0, 60.0, 1_000.0, 660.0);
-        let moved_app = Rect::new(640.0, 90.0, 1_440.0, 690.0);
-        let first = app_local_region_on_surface(local_video, first_app).unwrap();
-        let moved = app_local_region_on_surface(local_video, moved_app).unwrap();
-        assert_eq!(first, Rect::new(280.0, 180.0, 760.0, 450.0));
-        assert_eq!(moved, Rect::new(720.0, 210.0, 1_200.0, 480.0));
-        assert_eq!(first.size(), moved.size());
-    }
-
-    #[test]
-    fn offscreen_target_retains_virtual_bounds_for_pip_handoff() {
-        let virtual_rect = Rect::new(-1_300.0, 120.0, -300.0, 820.0);
-        let intent = CaptureIntent {
-            mode: CaptureMode::Pip,
-            source: ui::widget::SourceMode::Window,
-            destination: CaptureDestination::FloatingWindow,
-            regions: Vec::new(),
-            include_pointer: false,
-            audio: AudioCaptureMode::None,
-            extent: CaptureExtent::FullApp,
-            pip_layout: PipLayout::Auto,
-            targets: vec![ui::widget::CaptureTarget {
-                id: "notes".into(),
-                title: "Notes".into(),
-                app_id: "so.tilo.notes".into(),
-                visible_rect: Rect::ZERO,
-                virtual_rect,
-                complete_rect: Some(Rect::new(-1_300.0, 120.0, 10.0, 1_308.0)),
-            }],
-            recording_command: None,
-            replay_command: None,
-            screenshot_command: None,
-        };
-        assert_eq!(intent_spawn_bounds(&intent), Some(virtual_rect));
-    }
-
-    #[test]
-    fn semantic_region_update_preserves_element_identity() {
-        let updated = updated_local_tracking_source(
-            Some(FloatingSource::AppElement {
-                app_id: "so.tilo.browser".into(),
-                element_id: "media:7".into(),
-                region: Rect::new(10.0, 20.0, 410.0, 245.0),
-            }),
-            "so.tilo.browser".into(),
-            Rect::new(24.0, 36.0, 624.0, 374.0),
-        );
-        assert_eq!(
-            updated,
-            FloatingSource::AppElement {
-                app_id: "so.tilo.browser".into(),
-                element_id: "media:7".into(),
-                region: Rect::new(24.0, 36.0, 624.0, 374.0),
-            }
-        );
-    }
-
-    #[test]
-    fn paused_recording_never_schedules_an_encoder_frame() {
+    fn recording_pauses_and_replay_buffers_stay_bounded() {
+        // Phase `paused_recording_never_schedules_an_encoder_frame`.
         assert!(!recording_frame_due(true, Duration::from_secs(30)));
         assert!(!recording_frame_due(false, Duration::from_millis(32)));
         assert!(recording_frame_due(false, Duration::from_millis(33)));
-    }
+        // Phase `replay_ring_is_bounded_and_always_begins_on_a_keyframe`.
+        {
+            let mut frames: VecDeque<_> = (0..REPLAY_FRAMES + 17)
+                .map(|index| BufferedReplayFrame {
+                    access_unit: vec![index as u8],
+                    keyframe: index % REPLAY_KEYFRAME_INTERVAL as usize == 0,
+                })
+                .collect();
+            let mut bytes = frames.len();
+            trim_replay_video_frames(&mut frames, &mut bytes);
+            assert!(frames.len() <= REPLAY_FRAMES);
+            assert!(frames.front().is_some_and(|frame| frame.keyframe));
+            assert_eq!(bytes, frames.len());
+        }
+        // Phase `replay_audio_tail_pads_warmup_and_keeps_the_newest_samples`.
+        {
+            let pcm: VecDeque<u8> = (0..12).collect();
+            let padded = replay_audio_tail(&pcm, 1);
+            assert_eq!(padded.len(), AUDIO_BYTES_PER_VIDEO_FRAME);
+            assert_eq!(&padded[padded.len() - 12..], &(0..12).collect::<Vec<_>>());
 
-    #[test]
-    fn replay_ring_is_bounded_and_always_begins_on_a_keyframe() {
-        let mut frames: VecDeque<_> = (0..REPLAY_FRAMES + 17)
-            .map(|index| BufferedReplayFrame {
-                access_unit: vec![index as u8],
-                keyframe: index % REPLAY_KEYFRAME_INTERVAL as usize == 0,
-            })
-            .collect();
-        let mut bytes = frames.len();
-        trim_replay_video_frames(&mut frames, &mut bytes);
-        assert!(frames.len() <= REPLAY_FRAMES);
-        assert!(frames.front().is_some_and(|frame| frame.keyframe));
-        assert_eq!(bytes, frames.len());
-    }
-
-    #[test]
-    fn replay_audio_tail_pads_warmup_and_keeps_the_newest_samples() {
-        let pcm: VecDeque<u8> = (0..12).collect();
-        let padded = replay_audio_tail(&pcm, 1);
-        assert_eq!(padded.len(), AUDIO_BYTES_PER_VIDEO_FRAME);
-        assert_eq!(&padded[padded.len() - 12..], &(0..12).collect::<Vec<_>>());
-
-        let pcm: VecDeque<u8> = (0..AUDIO_BYTES_PER_VIDEO_FRAME + 8)
-            .map(|value| value as u8)
-            .collect();
-        let tail = replay_audio_tail(&pcm, 1);
-        assert_eq!(tail[0], 8);
-        assert_eq!(tail.len(), AUDIO_BYTES_PER_VIDEO_FRAME);
-    }
-
-    #[test]
-    fn spatial_multi_capture_leaves_unselected_gap_transparent() {
-        let source = two_source_cards();
-        let regions = [
-            Rect::new(-300.0, 20.0, -100.0, 120.0),
-            Rect::new(900.0, 40.0, 1_100.0, 140.0),
-        ];
-        let (scene, width, height) = compose_scene(&source, &regions, PipLayout::Auto).unwrap();
-        let Ok(mut renderer) = OffscreenRenderer::try_new(width, height) else {
-            eprintln!("skipping pixel assertion: no offscreen GPU adapter");
-            return;
-        };
-        let rgba = renderer.render_rgba(&scene);
-        let alpha = |x: u32, y: u32| rgba[((y * width + x) * 4 + 3) as usize];
-        assert!(alpha(100, 50) > 0, "selected left card is present");
-        assert_eq!(
-            alpha(700, 50),
-            0,
-            "desktop pixels between selected regions must not leak into export"
-        );
-        assert!(alpha(1_300, 70) > 0, "selected right card is present");
+            let pcm: VecDeque<u8> = (0..AUDIO_BYTES_PER_VIDEO_FRAME + 8)
+                .map(|value| value as u8)
+                .collect();
+            let tail = replay_audio_tail(&pcm, 1);
+            assert_eq!(tail[0], 8);
+            assert_eq!(tail.len(), AUDIO_BYTES_PER_VIDEO_FRAME);
+        }
     }
 }

@@ -411,342 +411,359 @@ mod tests {
     }
 
     #[test]
-    fn narrow_scaled_regions_contain_content_and_resize_matches_fresh() {
-        fn geometry(node: &InspectionNode) -> Vec<[f64; 4]> {
-            let mut all = vec![node.rect];
-            for child in &node.children {
-                all.extend(geometry(child));
-            }
-            all
-        }
-
-        for scale in [1.0, 2.0] {
-            let theme = Theme::dark().with_text_scale(scale);
-            let mut resized = FrameHarness::new_with_theme(
-                crate::State::new(),
-                long_fixture(),
-                (1000, 1800),
-                theme.clone(),
-            );
-            resized.tab(false);
-            resized.resize((240, 1800)).unwrap();
-            let fresh = FrameHarness::new_with_theme(
-                crate::State::new(),
-                long_fixture(),
-                (240, 1800),
-                theme,
-            );
-            let a = resized.inspection();
-            let b = fresh.inspection();
-            assert_eq!(geometry(&a.root), geometry(&b.root));
-            for card in &a.root.children {
-                assert!(rect(card).width() <= 240.0);
-                for child in &card.children {
-                    assert_contained(child, rect(card));
+    fn scaled_card_regions_contain_content_and_match_fresh_geometry() {
+        fn narrow_scaled_regions_contain_content_and_resize_matches_fresh() {
+            fn geometry(node: &InspectionNode) -> Vec<[f64; 4]> {
+                let mut all = vec![node.rect];
+                for child in &node.children {
+                    all.extend(geometry(child));
                 }
-                assert!(rect(&card.children[1]).y1 <= rect(&card.children[2]).y0);
+                all
             }
-            let last = rect(a.root.children.last().unwrap());
-            assert!((last.y1 - rect(&a.root).y1).abs() < 1.0);
-            assert_eq!(
-                resized.focused_access_node().unwrap().name.as_deref(),
-                Some("View details")
-            );
-        }
-    }
 
-    #[test]
-    fn actions_trail_an_intrinsic_column_without_caller_widths() {
-        let root = crate::widget::Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(Actions::new(Button::new(
-                "save",
-                "Save changes",
-                None,
-            ))));
-        let harness = FrameHarness::new_with_theme(
-            crate::State::new(),
-            Box::new(root),
-            (600, 300),
-            Theme::dark(),
-        );
-        let snapshot = harness.inspection();
-        let action = &snapshot.root.children[0].children[0];
-        assert!((rect(action).x1 - 600.0).abs() < 1.0);
-    }
-
-    #[test]
-    fn scrolling_reaches_the_last_scaled_action() {
-        let root = crate::widget::Scrollable::new_vertical().with_child(long_fixture());
-        let mut harness = FrameHarness::new_with_theme(
-            crate::State::new(),
-            Box::new(root),
-            (240, 400),
-            Theme::dark().with_text_scale(2.0),
-        );
-        let before = harness.inspection();
-        let grid = &before.root.children[0];
-        assert!(rect(grid).height() > 400.0);
-        harness.click_at(5.0, 5.0);
-        harness.scroll(0.0, -1000.0);
-        let after = harness.inspection();
-        let last = after.root.children[0].children.last().unwrap();
-        let action = last.children[2].children.last().unwrap();
-        assert!(
-            rect(action).y0 >= 0.0 && rect(action).y1 <= 400.0,
-            "last action {:?}",
-            rect(action)
-        );
-        assert!((rect(last).y1 - 400.0).abs() < 1.0);
-    }
-
-    #[test]
-    fn automatic_content_cards_expand_a_short_scroll_stack() {
-        let invocations = Rc::new(Cell::new(0));
-        let mut harness = FrameHarness::new_with_theme(
-            crate::State::new(),
-            standalone_stack_fixture(invocations.clone()),
-            (480, 360),
-            Theme::dark(),
-        );
-        let before = harness.inspection();
-        let content = &before.root.children[0];
-        let cards = &content.children[..8];
-        for (index, card) in cards.iter().enumerate() {
-            assert_contained(card, rect(card));
-            if let Some(next) = cards.get(index + 1) {
-                assert!(
-                    rect(next).y0 >= rect(card).y1 + 7.0,
-                    "card {index} {:?} overlaps next card {:?}",
-                    rect(card),
-                    rect(next)
+            for scale in [1.0, 2.0] {
+                let theme = Theme::dark().with_text_scale(scale);
+                let mut resized = FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    long_fixture(),
+                    (1000, 1800),
+                    theme.clone(),
+                );
+                resized.tab(false);
+                resized.resize((240, 1800)).unwrap();
+                let fresh = FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    long_fixture(),
+                    (240, 1800),
+                    theme,
+                );
+                let a = resized.inspection();
+                let b = fresh.inspection();
+                assert_eq!(geometry(&a.root), geometry(&b.root));
+                for card in &a.root.children {
+                    assert!(rect(card).width() <= 240.0);
+                    for child in &card.children {
+                        assert_contained(child, rect(card));
+                    }
+                    assert!(rect(&card.children[1]).y1 <= rect(&card.children[2]).y0);
+                }
+                let last = rect(a.root.children.last().unwrap());
+                assert!((last.y1 - rect(&a.root).y1).abs() < 1.0);
+                assert_eq!(
+                    resized.focused_access_node().unwrap().name.as_deref(),
+                    Some("View details")
                 );
             }
         }
-        let trailing = rect(find(&before.root, "trailing-heading"));
-        assert!(trailing.y0 >= rect(cards.last().unwrap()).y1 + 7.0);
-        assert!(
-            rect(content).height() > 360.0,
-            "content must own scroll extent"
-        );
-        assert_eq!(rect(&before.root).height(), 360.0, "viewport stays fixed");
 
-        harness.click_at(8.0, 8.0);
-        harness.scroll(0.0, -10_000.0);
-        let final_rect = rect(find(&harness.inspection().root, "final-action"));
-        assert!(
-            final_rect.y0 >= 0.0 && final_rect.y1 <= 360.0,
-            "final action must be reachable after scrolling: {final_rect:?}"
-        );
-        harness.click_named("final-action").unwrap();
-        assert_eq!(invocations.get(), 1, "pointer activation fires once");
-        assert_eq!(
-            harness
-                .tab_through()
-                .last()
-                .and_then(|(_, name)| name.as_deref()),
-            Some("Open all applications")
-        );
-        harness
-            .perform_named("final-action", &crate::a11y::Action::Activate)
-            .unwrap();
-        assert_eq!(invocations.get(), 2, "focused activation fires once");
-    }
+        fn short_card_stack_resize_and_text_scale_match_fresh_geometry() {
+            fn geometry(node: &InspectionNode) -> Vec<[f64; 4]> {
+                let mut all = vec![node.rect];
+                for child in &node.children {
+                    all.extend(geometry(child));
+                }
+                all
+            }
 
-    #[test]
-    fn automatic_legacy_card_expands_in_a_short_intrinsic_grid() {
-        let mut rows = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(12.0);
-        for index in 0..6 {
-            rows = rows.push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_height(40.0)
-                    .with_child(Box::new(
-                        Text::new(&format!("Format control {index}"))
-                            .with_id(format!("format-{index}")),
-                    )),
-            ));
+            for scale in [1.0, 2.0] {
+                let theme = Theme::dark().with_text_scale(scale);
+                let mut resized = FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    section_fixture(true),
+                    (1000, 360),
+                    theme.clone(),
+                );
+                resized.resize((480, 360)).unwrap();
+                resized.resize((1000, 360)).unwrap();
+                let fresh = FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    section_fixture(true),
+                    (1000, 360),
+                    theme,
+                );
+                assert_eq!(
+                    geometry(&resized.inspection().root),
+                    geometry(&fresh.inspection().root)
+                );
+            }
         }
-        let content = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(20.0)
-            .push(Box::new(Card::titled("Region formats", Box::new(rows))))
-            .push(Box::new(Text::new("Preview").with_id("preview-heading")));
-        let harness = FrameHarness::new(
-            crate::State::new(),
-            Box::new(Scrollable::new_vertical().with_child(Box::new(content))),
-            (480, 360),
-        );
-        let snapshot = harness.inspection();
-        let content = &snapshot.root.children[0];
-        let card = &content.children[0];
-        let last_row = rect(find(card, "format-5"));
-        let preview = rect(find(&snapshot.root, "preview-heading"));
-        assert!(
-            last_row.y1 <= rect(card).y1 + 1.0,
-            "{last_row:?} escapes {:?}",
-            rect(card)
-        );
-        assert!(
-            preview.y0 >= rect(card).y1 + 19.0,
-            "preview {preview:?} overlaps legacy card {:?}",
-            rect(card)
-        );
-        assert!(rect(content).height() > 360.0);
-        assert_eq!(rect(&snapshot.root).height(), 360.0);
+
+        fn retained_regions_align_footers_before_paint() {
+            use automerge::ReadDoc;
+
+            let mut harness = FrameHarness::new_with_theme(
+                crate::State::new(),
+                fixture(),
+                (700, 800),
+                Theme::dark(),
+            );
+            let inspection = harness.inspection();
+            let cards = &inspection.root.children;
+            assert_eq!(rect(&cards[0]).height(), rect(&cards[1]).height());
+            assert_eq!(
+                rect(&cards[0].children[2]).y1,
+                rect(&cards[1].children[2]).y1
+            );
+            assert_eq!(
+                harness
+                    .tab_through()
+                    .iter()
+                    .map(|(_, name)| name.as_deref().unwrap_or(""))
+                    .collect::<Vec<_>>(),
+                ["Open", "Install"]
+            );
+            let action = rect(&cards[0].children[2].children[0]);
+            harness.click_at(action.center().x, action.center().y);
+            assert!(
+                harness
+                    .state_mut()
+                    .doc
+                    .get(automerge::ROOT, "opened")
+                    .unwrap()
+                    .is_some()
+            );
+        }
+
+        narrow_scaled_regions_contain_content_and_resize_matches_fresh();
+        short_card_stack_resize_and_text_scale_match_fresh_geometry();
+        retained_regions_align_footers_before_paint();
     }
 
     #[test]
-    fn nested_card_grids_propagate_content_minimum_to_following_sections() {
-        for (wide, viewport) in [(false, (480, 360)), (true, (1000, 360))] {
+    fn card_actions_trail_scroll_and_keep_manual_order() {
+        fn actions_trail_an_intrinsic_column_without_caller_widths() {
+            let root = crate::widget::Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(Box::new(Actions::new(Button::new(
+                    "save",
+                    "Save changes",
+                    None,
+                ))));
             let harness = FrameHarness::new_with_theme(
                 crate::State::new(),
-                section_fixture(wide),
-                viewport,
+                Box::new(root),
+                (600, 300),
                 Theme::dark(),
             );
             let snapshot = harness.inspection();
-            let content = &snapshot.root.children[0];
-            let (ready_grid, discover_grid) = if wide {
-                (
-                    content.children[0].children.last().unwrap(),
-                    content.children[2].children.last().unwrap(),
-                )
-            } else {
-                (&content.children[1], &content.children[4])
-            };
-            let ready_last_bottom = ready_grid
-                .children
-                .iter()
-                .map(|card| rect(card).y1)
-                .fold(f64::NEG_INFINITY, f64::max);
-            let discover_last_bottom = discover_grid
-                .children
-                .iter()
-                .map(|card| rect(card).y1)
-                .fold(f64::NEG_INFINITY, f64::max);
-            assert!(ready_last_bottom <= rect(ready_grid).y1 + 1.0);
-            assert!(discover_last_bottom <= rect(discover_grid).y1 + 1.0);
-            assert!(
-                rect(find(content, "discover-heading")).y0 >= ready_last_bottom + 15.0,
-                "{viewport:?}: discover section begins before ready cards end"
-            );
-            assert!(
-                rect(&snapshot.root.children[0]).height() > f64::from(viewport.1),
-                "{viewport:?}: section content must exceed the fixed viewport"
-            );
-        }
-    }
-
-    #[test]
-    fn short_card_stack_resize_and_text_scale_match_fresh_geometry() {
-        fn geometry(node: &InspectionNode) -> Vec<[f64; 4]> {
-            let mut all = vec![node.rect];
-            for child in &node.children {
-                all.extend(geometry(child));
-            }
-            all
+            let action = &snapshot.root.children[0].children[0];
+            assert!((rect(action).x1 - 600.0).abs() < 1.0);
         }
 
-        for scale in [1.0, 2.0] {
-            let theme = Theme::dark().with_text_scale(scale);
-            let mut resized = FrameHarness::new_with_theme(
+        fn scrolling_reaches_the_last_scaled_action() {
+            let root = crate::widget::Scrollable::new_vertical().with_child(long_fixture());
+            let mut harness = FrameHarness::new_with_theme(
                 crate::State::new(),
-                section_fixture(true),
-                (1000, 360),
-                theme.clone(),
+                Box::new(root),
+                (240, 400),
+                Theme::dark().with_text_scale(2.0),
             );
-            resized.resize((480, 360)).unwrap();
-            resized.resize((1000, 360)).unwrap();
-            let fresh = FrameHarness::new_with_theme(
+            let before = harness.inspection();
+            let grid = &before.root.children[0];
+            assert!(rect(grid).height() > 400.0);
+            harness.click_at(5.0, 5.0);
+            harness.scroll(0.0, -1000.0);
+            let after = harness.inspection();
+            let last = after.root.children[0].children.last().unwrap();
+            let action = last.children[2].children.last().unwrap();
+            assert!(
+                rect(action).y0 >= 0.0 && rect(action).y1 <= 400.0,
+                "last action {:?}",
+                rect(action)
+            );
+            assert!((rect(last).y1 - 400.0).abs() < 1.0);
+        }
+
+        fn actions_keep_manual_sizes_and_secondary_then_primary_order() {
+            let actions =
+                Actions::new(Button::new("primary", "Primary", None).with_size(97.0, 35.0))
+                    .secondary(Button::new("secondary", "Secondary", None).fit_content(33.0));
+            let harness = FrameHarness::new_with_theme(
                 crate::State::new(),
-                section_fixture(true),
-                (1000, 360),
-                theme,
+                Box::new(actions),
+                (600, 80),
+                Theme::dark().with_text_scale(2.0),
+            );
+            let snapshot = harness.inspection();
+            assert_eq!(
+                snapshot.root.children[0].test_id.as_deref(),
+                Some("secondary")
             );
             assert_eq!(
-                geometry(&resized.inspection().root),
-                geometry(&fresh.inspection().root)
+                snapshot.root.children[1].test_id.as_deref(),
+                Some("primary")
+            );
+            assert_eq!(rect(&snapshot.root.children[0]).height(), 33.0);
+            assert_eq!(
+                rect(&snapshot.root.children[1]).size(),
+                vello::kurbo::Size::new(97.0, 35.0)
             );
         }
+
+        actions_trail_an_intrinsic_column_without_caller_widths();
+        scrolling_reaches_the_last_scaled_action();
+        actions_keep_manual_sizes_and_secondary_then_primary_order();
     }
 
     #[test]
-    fn actions_keep_manual_sizes_and_secondary_then_primary_order() {
-        let actions = Actions::new(Button::new("primary", "Primary", None).with_size(97.0, 35.0))
-            .secondary(Button::new("secondary", "Secondary", None).fit_content(33.0));
-        let harness = FrameHarness::new_with_theme(
-            crate::State::new(),
-            Box::new(actions),
-            (600, 80),
-            Theme::dark().with_text_scale(2.0),
-        );
-        let snapshot = harness.inspection();
-        assert_eq!(
-            snapshot.root.children[0].test_id.as_deref(),
-            Some("secondary")
-        );
-        assert_eq!(
-            snapshot.root.children[1].test_id.as_deref(),
-            Some("primary")
-        );
-        assert_eq!(rect(&snapshot.root.children[0]).height(), 33.0);
-        assert_eq!(
-            rect(&snapshot.root.children[1]).size(),
-            vello::kurbo::Size::new(97.0, 35.0)
-        );
-    }
+    fn automatic_content_cards_expand_and_propagate_minimums() {
+        fn automatic_content_cards_expand_a_short_scroll_stack() {
+            let invocations = Rc::new(Cell::new(0));
+            let mut harness = FrameHarness::new_with_theme(
+                crate::State::new(),
+                standalone_stack_fixture(invocations.clone()),
+                (480, 360),
+                Theme::dark(),
+            );
+            let before = harness.inspection();
+            let content = &before.root.children[0];
+            let cards = &content.children[..8];
+            for (index, card) in cards.iter().enumerate() {
+                assert_contained(card, rect(card));
+                if let Some(next) = cards.get(index + 1) {
+                    assert!(
+                        rect(next).y0 >= rect(card).y1 + 7.0,
+                        "card {index} {:?} overlaps next card {:?}",
+                        rect(card),
+                        rect(next)
+                    );
+                }
+            }
+            let trailing = rect(find(&before.root, "trailing-heading"));
+            assert!(trailing.y0 >= rect(cards.last().unwrap()).y1 + 7.0);
+            assert!(
+                rect(content).height() > 360.0,
+                "content must own scroll extent"
+            );
+            assert_eq!(rect(&before.root).height(), 360.0, "viewport stays fixed");
 
-    #[test]
-    fn content_cards_keep_explicit_fixed_rows() {
-        let cards = vec![Box::new(
-            Card::composed(Box::new(Text::new(&"Long description. ".repeat(50))))
-                .with_title("Fixed card"),
-        ) as Element];
-        let harness = FrameHarness::new_with_theme(
-            crate::State::new(),
-            Box::new(CardGrid::content_sized(cards).with_card_height(180.0)),
-            (300, 600),
-            Theme::dark(),
-        );
-        assert_eq!(harness.inspection().root.children[0].rect[3], 180.0);
-    }
-
-    #[test]
-    fn retained_regions_align_footers_before_paint() {
-        use automerge::ReadDoc;
-
-        let mut harness =
-            FrameHarness::new_with_theme(crate::State::new(), fixture(), (700, 800), Theme::dark());
-        let inspection = harness.inspection();
-        let cards = &inspection.root.children;
-        assert_eq!(rect(&cards[0]).height(), rect(&cards[1]).height());
-        assert_eq!(
-            rect(&cards[0].children[2]).y1,
-            rect(&cards[1].children[2]).y1
-        );
-        assert_eq!(
+            harness.click_at(8.0, 8.0);
+            harness.scroll(0.0, -10_000.0);
+            let final_rect = rect(find(&harness.inspection().root, "final-action"));
+            assert!(
+                final_rect.y0 >= 0.0 && final_rect.y1 <= 360.0,
+                "final action must be reachable after scrolling: {final_rect:?}"
+            );
+            harness.click_named("final-action").unwrap();
+            assert_eq!(invocations.get(), 1, "pointer activation fires once");
+            assert_eq!(
+                harness
+                    .tab_through()
+                    .last()
+                    .and_then(|(_, name)| name.as_deref()),
+                Some("Open all applications")
+            );
             harness
-                .tab_through()
-                .iter()
-                .map(|(_, name)| name.as_deref().unwrap_or(""))
-                .collect::<Vec<_>>(),
-            ["Open", "Install"]
-        );
-        let action = rect(&cards[0].children[2].children[0]);
-        harness.click_at(action.center().x, action.center().y);
-        assert!(
-            harness
-                .state_mut()
-                .doc
-                .get(automerge::ROOT, "opened")
-                .unwrap()
-                .is_some()
-        );
+                .perform_named("final-action", &crate::a11y::Action::Activate)
+                .unwrap();
+            assert_eq!(invocations.get(), 2, "focused activation fires once");
+        }
+
+        fn automatic_legacy_card_expands_in_a_short_intrinsic_grid() {
+            let mut rows = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(12.0);
+            for index in 0..6 {
+                rows = rows.push(Box::new(
+                    Container::new()
+                        .with_no_padding()
+                        .with_height(40.0)
+                        .with_child(Box::new(
+                            Text::new(&format!("Format control {index}"))
+                                .with_id(format!("format-{index}")),
+                        )),
+                ));
+            }
+            let content = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(20.0)
+                .push(Box::new(Card::titled("Region formats", Box::new(rows))))
+                .push(Box::new(Text::new("Preview").with_id("preview-heading")));
+            let harness = FrameHarness::new(
+                crate::State::new(),
+                Box::new(Scrollable::new_vertical().with_child(Box::new(content))),
+                (480, 360),
+            );
+            let snapshot = harness.inspection();
+            let content = &snapshot.root.children[0];
+            let card = &content.children[0];
+            let last_row = rect(find(card, "format-5"));
+            let preview = rect(find(&snapshot.root, "preview-heading"));
+            assert!(
+                last_row.y1 <= rect(card).y1 + 1.0,
+                "{last_row:?} escapes {:?}",
+                rect(card)
+            );
+            assert!(
+                preview.y0 >= rect(card).y1 + 19.0,
+                "preview {preview:?} overlaps legacy card {:?}",
+                rect(card)
+            );
+            assert!(rect(content).height() > 360.0);
+            assert_eq!(rect(&snapshot.root).height(), 360.0);
+        }
+
+        fn nested_card_grids_propagate_content_minimum_to_following_sections() {
+            for (wide, viewport) in [(false, (480, 360)), (true, (1000, 360))] {
+                let harness = FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    section_fixture(wide),
+                    viewport,
+                    Theme::dark(),
+                );
+                let snapshot = harness.inspection();
+                let content = &snapshot.root.children[0];
+                let (ready_grid, discover_grid) = if wide {
+                    (
+                        content.children[0].children.last().unwrap(),
+                        content.children[2].children.last().unwrap(),
+                    )
+                } else {
+                    (&content.children[1], &content.children[4])
+                };
+                let ready_last_bottom = ready_grid
+                    .children
+                    .iter()
+                    .map(|card| rect(card).y1)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                let discover_last_bottom = discover_grid
+                    .children
+                    .iter()
+                    .map(|card| rect(card).y1)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                assert!(ready_last_bottom <= rect(ready_grid).y1 + 1.0);
+                assert!(discover_last_bottom <= rect(discover_grid).y1 + 1.0);
+                assert!(
+                    rect(find(content, "discover-heading")).y0 >= ready_last_bottom + 15.0,
+                    "{viewport:?}: discover section begins before ready cards end"
+                );
+                assert!(
+                    rect(&snapshot.root.children[0]).height() > f64::from(viewport.1),
+                    "{viewport:?}: section content must exceed the fixed viewport"
+                );
+            }
+        }
+
+        fn content_cards_keep_explicit_fixed_rows() {
+            let cards = vec![Box::new(
+                Card::composed(Box::new(Text::new(&"Long description. ".repeat(50))))
+                    .with_title("Fixed card"),
+            ) as Element];
+            let harness = FrameHarness::new_with_theme(
+                crate::State::new(),
+                Box::new(CardGrid::content_sized(cards).with_card_height(180.0)),
+                (300, 600),
+                Theme::dark(),
+            );
+            assert_eq!(harness.inspection().root.children[0].rect[3], 180.0);
+        }
+
+        automatic_content_cards_expand_a_short_scroll_stack();
+        automatic_legacy_card_expands_in_a_short_intrinsic_grid();
+        nested_card_grids_propagate_content_minimum_to_following_sections();
+        content_cards_keep_explicit_fixed_rows();
     }
 }

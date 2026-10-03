@@ -142,42 +142,33 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn envelope_roundtrip_subscribe() {
-        let e = Envelope::Subscribe { workspace_id: 42 };
-        let bytes = encode(&e).unwrap();
-        assert!(bytes.len() > PREFIX_BYTES);
-        let back = decode(&bytes[PREFIX_BYTES..]).unwrap();
-        assert_eq!(back, e);
-    }
-
-    #[test]
-    fn envelope_roundtrip_delta() {
-        let e = Envelope::Delta {
-            workspace_id: 7,
-            author_device_public_key: [1u8; 32],
-            authored_at_ns: 1_234_567_890,
-            delta: vec![1, 2, 3, 4, 5],
-            signature: [9u8; 64],
-        };
-        let bytes = encode(&e).unwrap();
-        let back = decode(&bytes[PREFIX_BYTES..]).unwrap();
-        assert_eq!(back, e);
-    }
-
-    #[test]
-    fn prefix_is_little_endian_length() {
-        assert_eq!(frame(&[7, 8, 9]).unwrap(), vec![3, 0, 0, 0, 7, 8, 9]);
-    }
-
     #[tokio::test]
-    async fn frame_reader_reads_multiple() {
+    async fn frames_are_length_prefixed_and_read_back_in_bounds() {
+        // Envelopes round-trip behind the length prefix.
+        for e in [
+            Envelope::Subscribe { workspace_id: 42 },
+            Envelope::Delta {
+                workspace_id: 7,
+                author_device_public_key: [1u8; 32],
+                authored_at_ns: 1_234_567_890,
+                delta: vec![1, 2, 3, 4, 5],
+                signature: [9u8; 64],
+            },
+        ] {
+            let bytes = encode(&e).unwrap();
+            assert!(bytes.len() > PREFIX_BYTES, "{e:?}");
+            assert_eq!(decode(&bytes[PREFIX_BYTES..]).unwrap(), e);
+        }
+
+        // The prefix is the little-endian length.
+        assert_eq!(frame(&[7, 8, 9]).unwrap(), vec![3, 0, 0, 0, 7, 8, 9]);
+
+        // A reader yields consecutive frames, then a clean end.
         let mut wire = Vec::new();
         wire.extend_from_slice(&encode(&Envelope::Ping).unwrap());
         wire.extend_from_slice(&encode(&Envelope::Subscribe { workspace_id: 1 }).unwrap());
         wire.extend_from_slice(&encode(&Envelope::Pong).unwrap());
-        let cursor = std::io::Cursor::new(wire);
-        let mut reader = FrameReader::new(cursor);
+        let mut reader = FrameReader::new(std::io::Cursor::new(wire));
         assert_eq!(reader.read_next().await.unwrap().unwrap(), Envelope::Ping);
         assert_eq!(
             reader.read_next().await.unwrap().unwrap(),
@@ -185,10 +176,8 @@ mod tests {
         );
         assert_eq!(reader.read_next().await.unwrap().unwrap(), Envelope::Pong);
         assert!(reader.read_next().await.unwrap().is_none());
-    }
 
-    #[tokio::test]
-    async fn frame_reader_rejects_oversize() {
+        // A length over the maximum is refused.
         let mut wire = Vec::new();
         wire.extend_from_slice(
             &u32::try_from(MAX_FRAME_BYTES)
@@ -197,27 +186,22 @@ mod tests {
                 .to_le_bytes(),
         );
         wire.extend_from_slice(&[0u8; 8]);
-        let cursor = std::io::Cursor::new(wire);
-        let mut reader = FrameReader::new(cursor);
+        let mut reader = FrameReader::new(std::io::Cursor::new(wire));
         match reader.read_next().await.unwrap_err() {
             FrameError::TooLarge(_) => {}
             other => panic!("expected TooLarge, got {other}"),
         }
-    }
 
-    #[tokio::test]
-    async fn read_frame_round_trips_and_bounds() {
+        // Raw frames round-trip and are bounded: EOF, oversize and empty.
         let mut wire = Vec::new();
         write_frame(&mut wire, b"hello").await.unwrap();
         let mut cursor = std::io::Cursor::new(wire.clone());
         assert_eq!(read_frame(&mut cursor, 16).await.unwrap(), b"hello");
         let eof = read_frame(&mut cursor, 16).await.unwrap_err();
         assert_eq!(eof.kind(), std::io::ErrorKind::UnexpectedEof);
-
         let mut cursor = std::io::Cursor::new(wire);
         let oversize = read_frame(&mut cursor, 4).await.unwrap_err();
         assert_eq!(oversize.kind(), std::io::ErrorKind::InvalidData);
-
         let mut cursor = std::io::Cursor::new(vec![0, 0, 0, 0]);
         let empty = read_frame(&mut cursor, 16).await.unwrap_err();
         assert_eq!(empty.kind(), std::io::ErrorKind::InvalidData);

@@ -533,7 +533,7 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
         }
         FirmwareConfig::Arm64Variables { .. } => "",
     };
-    let network = xml_escape(&config.host_only_network);
+    let network = quick_xml::escape::escape(&config.host_only_network);
     let cpu_attributes = match config.performance.cpu_mode {
         CpuMode::HostPassthrough => "mode='host-passthrough' check='none' migratable='off'",
         CpuMode::HostModel => "mode='host-model' check='partial'",
@@ -594,16 +594,7 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
 
 fn xml_path(path: &Path) -> Result<String, VmBackendError> {
     let text = path.to_str().ok_or(VmBackendError::NonUtf8Path)?;
-    Ok(xml_escape(text))
-}
-
-fn xml_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('\'', "&apos;")
-        .replace('"', "&quot;")
+    Ok(quick_xml::escape::escape(text).into_owned())
 }
 
 #[derive(Debug, Error)]
@@ -674,222 +665,225 @@ mod tests {
     }
 
     #[test]
-    fn domain_is_headless_and_default_deny() {
-        let xml = render_domain_xml(&config()).unwrap();
-        assert!(xml.contains("type='kvm'"));
-        assert!(xml.contains("host-passthrough"));
-        assert!(xml.contains("<hyperv mode='custom'>"));
-        assert!(xml.contains("<tpm model='tpm-crb'>"));
-        assert!(
-            xml.contains("<smbios mode='sysinfo'/>")
-                && xml
-                    .contains("<entry name='serial'>01234567-89ab-cdef-0123-456789abcdef</entry>")
-        );
-        assert!(xml.contains("<serial>tilo-windows-system</serial>"));
-        assert!(xml.contains("<listen type='none'/>"));
-        assert!(xml.contains("<sound model='ich9'>"));
-        assert!(xml.contains("name='com.redhat.spice.0'"));
-        assert!(xml.contains("<controller type='virtio-serial' index='0'/>"));
-        assert!(xml.contains("<acceleration accel3d='no'/>"));
-        assert!(xml.contains("<clipboard copypaste='no'/>"));
-        assert!(xml.contains("<filetransfer enable='no'/>"));
-        assert!(xml.contains("<audio id='1' type='spice'/>"));
-        assert!(xml.contains("a&amp;b.qcow2"));
-        assert!(xml.contains(INSTALL_MEDIA));
-        assert!(xml.contains(GUEST_TOOLS_MEDIA));
-        assert!(xml.contains("<boot dev='hd'/><boot dev='cdrom'/>"));
-        assert!(!xml.contains("<filesystem"));
-        assert!(!xml.contains("type='bridge'"));
-        assert!(!xml.contains("listen='0.0.0.0'"));
-        assert!(!xml.contains("<redirdev"));
-    }
-
-    #[test]
-    fn cpu_allocation_uses_one_socket_for_both_architectures_and_modes() {
-        for architecture in [
-            crate::GuestArchitecture::X86_64,
-            crate::GuestArchitecture::Aarch64,
-        ] {
-            for mode in [CpuMode::HostPassthrough, CpuMode::HostModel] {
-                for cores in [1, 4, 64] {
-                    let mut configuration = ApplianceConfig::recommended_for(
-                        architecture,
-                        "01234567-89ab-cdef-0123-456789abcdef",
-                        "/var/lib/tilo/windows/system.qcow2",
-                        "/var/lib/tilo/windows/firmware-state",
-                    );
-                    configuration.performance.cpu_mode = mode;
-                    configuration.performance.vcpus = cores;
-                    let xml = render_domain_xml(&configuration).unwrap();
-                    assert!(xml.contains(&format!("<vcpu placement='static'>{cores}</vcpu>")));
-                    assert!(xml.contains(&format!(
-                        "<topology sockets='1' cores='{cores}' threads='1'/>"
-                    )));
+    fn generated_domains_are_headless_default_deny_and_architecture_correct() {
+        // Phase `domain_is_headless_and_default_deny`.
+        {
+            let xml = render_domain_xml(&config()).unwrap();
+            assert!(xml.contains("type='kvm'"));
+            assert!(xml.contains("host-passthrough"));
+            assert!(xml.contains("<hyperv mode='custom'>"));
+            assert!(xml.contains("<tpm model='tpm-crb'>"));
+            assert!(
+                xml.contains("<smbios mode='sysinfo'/>")
+                    && xml.contains(
+                        "<entry name='serial'>01234567-89ab-cdef-0123-456789abcdef</entry>"
+                    )
+            );
+            assert!(xml.contains("<serial>tilo-windows-system</serial>"));
+            assert!(xml.contains("<listen type='none'/>"));
+            assert!(xml.contains("<sound model='ich9'>"));
+            assert!(xml.contains("name='com.redhat.spice.0'"));
+            assert!(xml.contains("<controller type='virtio-serial' index='0'/>"));
+            assert!(xml.contains("<acceleration accel3d='no'/>"));
+            assert!(xml.contains("<clipboard copypaste='no'/>"));
+            assert!(xml.contains("<filetransfer enable='no'/>"));
+            assert!(xml.contains("<audio id='1' type='spice'/>"));
+            assert!(xml.contains("a&amp;b.qcow2"));
+            assert!(xml.contains(INSTALL_MEDIA));
+            assert!(xml.contains(GUEST_TOOLS_MEDIA));
+            assert!(xml.contains("<boot dev='hd'/><boot dev='cdrom'/>"));
+            assert!(!xml.contains("<filesystem"));
+            assert!(!xml.contains("type='bridge'"));
+            assert!(!xml.contains("listen='0.0.0.0'"));
+            assert!(!xml.contains("<redirdev"));
+        }
+        // Phase `cpu_allocation_uses_one_socket_for_both_architectures_and_modes`.
+        {
+            for architecture in [
+                crate::GuestArchitecture::X86_64,
+                crate::GuestArchitecture::Aarch64,
+            ] {
+                for mode in [CpuMode::HostPassthrough, CpuMode::HostModel] {
+                    for cores in [1, 4, 64] {
+                        let mut configuration = ApplianceConfig::recommended_for(
+                            architecture,
+                            "01234567-89ab-cdef-0123-456789abcdef",
+                            "/var/lib/tilo/windows/system.qcow2",
+                            "/var/lib/tilo/windows/firmware-state",
+                        );
+                        configuration.performance.cpu_mode = mode;
+                        configuration.performance.vcpus = cores;
+                        let xml = render_domain_xml(&configuration).unwrap();
+                        assert!(xml.contains(&format!("<vcpu placement='static'>{cores}</vcpu>")));
+                        assert!(xml.contains(&format!(
+                            "<topology sockets='1' cores='{cores}' threads='1'/>"
+                        )));
+                    }
                 }
             }
         }
-    }
-
-    #[test]
-    fn arm64_domain_uses_protected_variables_and_native_devices() {
-        let configuration = ApplianceConfig::recommended_for(
-            crate::GuestArchitecture::Aarch64,
-            "01234567-89ab-cdef-0123-456789abcdef",
-            "/var/lib/tilo/windows/system.qcow2",
-            "/var/lib/tilo/windows/vars.json",
-        );
-        let xml = render_domain_xml(&configuration).unwrap();
-        assert!(xml.contains("arch='aarch64' machine='virt'"));
-        assert!(xml.contains("/usr/bin/qemu-system-aarch64"));
-        assert!(xml.contains("<varstore path='/var/lib/tilo/windows/vars.json'/>"));
-        assert!(xml.contains("enabled='yes' name='secure-boot'"));
-        assert!(xml.contains("enabled='yes' name='enrolled-keys'"));
-        assert!(xml.contains("<gic version='3'/>"));
-        assert!(!xml.contains("<pm>"));
-        assert!(xml.contains("<tpm model='tpm-tis'>"));
-        for x86_only in [
-            "<smm",
-            "<apic",
-            "<hyperv",
-            "<nvram",
-            "name='pit'",
-            "name='hpet'",
-        ] {
-            assert!(!xml.contains(x86_only), "unexpected x86 device: {x86_only}");
+        // Phase `arm64_domain_uses_protected_variables_and_native_devices`.
+        {
+            let configuration = ApplianceConfig::recommended_for(
+                crate::GuestArchitecture::Aarch64,
+                "01234567-89ab-cdef-0123-456789abcdef",
+                "/var/lib/tilo/windows/system.qcow2",
+                "/var/lib/tilo/windows/vars.json",
+            );
+            let xml = render_domain_xml(&configuration).unwrap();
+            assert!(xml.contains("arch='aarch64' machine='virt'"));
+            assert!(xml.contains("/usr/bin/qemu-system-aarch64"));
+            assert!(xml.contains("<varstore path='/var/lib/tilo/windows/vars.json'/>"));
+            assert!(xml.contains("enabled='yes' name='secure-boot'"));
+            assert!(xml.contains("enabled='yes' name='enrolled-keys'"));
+            assert!(xml.contains("<gic version='3'/>"));
+            assert!(!xml.contains("<pm>"));
+            assert!(xml.contains("<tpm model='tpm-tis'>"));
+            for x86_only in [
+                "<smm",
+                "<apic",
+                "<hyperv",
+                "<nvram",
+                "name='pit'",
+                "name='hpet'",
+            ] {
+                assert!(!xml.contains(x86_only), "unexpected x86 device: {x86_only}");
+            }
+            assert!(xml.contains("<listen type='none'/>"));
+            assert!(xml.contains("<clipboard copypaste='no'/>"));
+            assert!(xml.contains("<filetransfer enable='no'/>"));
+            assert!(!xml.contains("<filesystem"));
         }
-        assert!(xml.contains("<listen type='none'/>"));
-        assert!(xml.contains("<clipboard copypaste='no'/>"));
-        assert!(xml.contains("<filetransfer enable='no'/>"));
-        assert!(!xml.contains("<filesystem"));
     }
 
     #[test]
-    fn foreign_same_named_domain_is_refused() {
-        let runner = Runner::new(vec![
-            CommandOutput::successful("tilo-windows-appliance\n"),
-            CommandOutput::successful(
-                "<domain><name>tilo-windows-appliance</name><uuid>ffffffff-ffff-ffff-ffff-ffffffffffff</uuid></domain>",
-            ),
-        ]);
-        let backend = LibvirtBackend::new(runner);
-        assert!(matches!(
-            backend.ensure_singleton(&config()),
-            Err(VmBackendError::ForeignDomainCollision)
-        ));
-    }
-
-    #[test]
-    fn an_owned_domain_survives_a_metadata_namespace_migration() {
-        let domain = render_domain_xml(&config())
-            .unwrap()
-            .replace("https://tilo.sh/vm/1", "https://legacy.example.test/vm/1");
-        let runner = Runner::new(vec![
-            CommandOutput::successful("tilo-windows-appliance\n"),
-            CommandOutput::successful(domain),
-        ]);
-        let backend = LibvirtBackend::new(runner);
-        backend.ensure_singleton(&config()).unwrap();
-    }
-
-    #[test]
-    fn absent_domain_is_defined_through_stdin() {
-        let runner = Runner::new(vec![
-            CommandOutput::successful(""),
-            CommandOutput::successful("Domain defined"),
-        ]);
-        let backend = LibvirtBackend::new(runner);
-        backend.ensure_singleton(&config()).unwrap();
-        let requests = backend.runner.requests.lock().unwrap();
-        assert_eq!(requests.len(), 2);
-        assert!(requests[1].args.iter().any(|arg| arg == "/dev/stdin"));
-        assert!(String::from_utf8_lossy(&requests[1].stdin).contains("<domain type='kvm'>"));
-        drop(requests);
-    }
-
-    #[test]
-    fn an_explicit_partition_is_attached_persistently_only_while_shut_off() {
-        let domain = render_domain_xml(&config()).unwrap();
-        let runner = Runner::new(vec![
-            CommandOutput::successful("tilo-windows-appliance\n"),
-            CommandOutput::successful(domain.as_str()),
-            CommandOutput::successful("tilo-windows-appliance\n"),
-            CommandOutput::successful("shut off\n"),
-            CommandOutput::successful("Device attached\n"),
-        ]);
-        let backend = LibvirtBackend::new(runner);
-        backend
-            .attach_graphics(
-                &config(),
-                &GraphicsAssignment::SriovVf {
-                    pci_address: "0000:03:00.1".to_string(),
-                },
-            )
-            .unwrap();
-        let attach = backend
-            .runner
-            .requests
-            .lock()
-            .unwrap()
-            .last()
-            .unwrap()
-            .clone();
-        assert!(attach.args.iter().any(|arg| arg == "attach-device"));
-        assert!(attach.args.iter().any(|arg| arg == "--config"));
-        assert!(!attach.args.iter().any(|arg| arg == "--live"));
-        assert!(String::from_utf8_lossy(&attach.stdin).contains("managed='no'"));
-    }
-
-    #[test]
-    fn graphics_attachment_refuses_a_running_guest() {
-        let domain = render_domain_xml(&config()).unwrap();
-        let runner = Runner::new(vec![
-            CommandOutput::successful("tilo-windows-appliance\n"),
-            CommandOutput::successful(domain.as_str()),
-            CommandOutput::successful("tilo-windows-appliance\n"),
-            CommandOutput::successful("running\n"),
-        ]);
-        let backend = LibvirtBackend::new(runner);
-        assert!(matches!(
-            backend.attach_graphics(
-                &config(),
-                &GraphicsAssignment::MediatedDevice {
-                    uuid: "53764d0e-85a0-42b4-af5c-2046b460b1dc".to_string(),
-                },
-            ),
-            Err(VmBackendError::GraphicsRequiresShutoff)
-        ));
-    }
-
-    #[test]
-    fn enrollment_media_is_detached_live_and_persistently() {
-        let runner = Runner::new(vec![
-            CommandOutput::successful("<disk><target dev='sdb'/></disk>"),
-            CommandOutput::successful("Disk detached"),
-            CommandOutput::successful("<disk><target dev=\"sdc\"/></disk>"),
-            CommandOutput::successful("Disk detached"),
-            CommandOutput::successful("<disk><target dev='sdd'/></disk>"),
-            CommandOutput::successful("Disk detached"),
-        ]);
-        let backend = LibvirtBackend::new(runner);
-        backend.retire_installation_media(&config()).unwrap();
-        let requests = backend.runner.requests.lock().unwrap();
-        assert_eq!(requests.len(), 6);
-        for index in [1, 3, 5] {
-            assert!(requests[index].args.iter().any(|arg| arg == "--live"));
-            assert!(requests[index].args.iter().any(|arg| arg == "--config"));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn domain_ownership_definition_and_devices_change_only_safely() {
+        // Phase `foreign_same_named_domain_is_refused`.
+        {
+            let runner = Runner::new(vec![
+                CommandOutput::successful("tilo-windows-appliance\n"),
+                CommandOutput::successful(
+                    "<domain><name>tilo-windows-appliance</name><uuid>ffffffff-ffff-ffff-ffff-ffffffffffff</uuid></domain>",
+                ),
+            ]);
+            let backend = LibvirtBackend::new(runner);
+            assert!(matches!(
+                backend.ensure_singleton(&config()),
+                Err(VmBackendError::ForeignDomainCollision)
+            ));
         }
-        drop(requests);
-    }
-
-    #[test]
-    fn already_retired_media_is_an_idempotent_success() {
-        let runner = Runner::new(vec![
-            CommandOutput::successful("<domain/>"),
-            CommandOutput::successful("<domain/>"),
-            CommandOutput::successful("<domain/>"),
-        ]);
-        let backend = LibvirtBackend::new(runner);
-        backend.retire_installation_media(&config()).unwrap();
-        assert_eq!(backend.runner.requests.lock().unwrap().len(), 3);
+        // Phase `an_owned_domain_survives_a_metadata_namespace_migration`.
+        {
+            let domain = render_domain_xml(&config())
+                .unwrap()
+                .replace("https://tilo.sh/vm/1", "https://legacy.example.test/vm/1");
+            let runner = Runner::new(vec![
+                CommandOutput::successful("tilo-windows-appliance\n"),
+                CommandOutput::successful(domain),
+            ]);
+            let backend = LibvirtBackend::new(runner);
+            backend.ensure_singleton(&config()).unwrap();
+        }
+        // Phase `absent_domain_is_defined_through_stdin`.
+        {
+            let runner = Runner::new(vec![
+                CommandOutput::successful(""),
+                CommandOutput::successful("Domain defined"),
+            ]);
+            let backend = LibvirtBackend::new(runner);
+            backend.ensure_singleton(&config()).unwrap();
+            let requests = backend.runner.requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert!(requests[1].args.iter().any(|arg| arg == "/dev/stdin"));
+            assert!(String::from_utf8_lossy(&requests[1].stdin).contains("<domain type='kvm'>"));
+            drop(requests);
+        }
+        // Phase `an_explicit_partition_is_attached_persistently_only_while_shut_off`.
+        {
+            let domain = render_domain_xml(&config()).unwrap();
+            let runner = Runner::new(vec![
+                CommandOutput::successful("tilo-windows-appliance\n"),
+                CommandOutput::successful(domain.as_str()),
+                CommandOutput::successful("tilo-windows-appliance\n"),
+                CommandOutput::successful("shut off\n"),
+                CommandOutput::successful("Device attached\n"),
+            ]);
+            let backend = LibvirtBackend::new(runner);
+            backend
+                .attach_graphics(
+                    &config(),
+                    &GraphicsAssignment::SriovVf {
+                        pci_address: "0000:03:00.1".to_string(),
+                    },
+                )
+                .unwrap();
+            let attach = backend
+                .runner
+                .requests
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .clone();
+            assert!(attach.args.iter().any(|arg| arg == "attach-device"));
+            assert!(attach.args.iter().any(|arg| arg == "--config"));
+            assert!(!attach.args.iter().any(|arg| arg == "--live"));
+            assert!(String::from_utf8_lossy(&attach.stdin).contains("managed='no'"));
+        }
+        // Phase `graphics_attachment_refuses_a_running_guest`.
+        {
+            let domain = render_domain_xml(&config()).unwrap();
+            let runner = Runner::new(vec![
+                CommandOutput::successful("tilo-windows-appliance\n"),
+                CommandOutput::successful(domain.as_str()),
+                CommandOutput::successful("tilo-windows-appliance\n"),
+                CommandOutput::successful("running\n"),
+            ]);
+            let backend = LibvirtBackend::new(runner);
+            assert!(matches!(
+                backend.attach_graphics(
+                    &config(),
+                    &GraphicsAssignment::MediatedDevice {
+                        uuid: "53764d0e-85a0-42b4-af5c-2046b460b1dc".to_string(),
+                    },
+                ),
+                Err(VmBackendError::GraphicsRequiresShutoff)
+            ));
+        }
+        // Phase `enrollment_media_is_detached_live_and_persistently`.
+        {
+            let runner = Runner::new(vec![
+                CommandOutput::successful("<disk><target dev='sdb'/></disk>"),
+                CommandOutput::successful("Disk detached"),
+                CommandOutput::successful("<disk><target dev=\"sdc\"/></disk>"),
+                CommandOutput::successful("Disk detached"),
+                CommandOutput::successful("<disk><target dev='sdd'/></disk>"),
+                CommandOutput::successful("Disk detached"),
+            ]);
+            let backend = LibvirtBackend::new(runner);
+            backend.retire_installation_media(&config()).unwrap();
+            let requests = backend.runner.requests.lock().unwrap();
+            assert_eq!(requests.len(), 6);
+            for index in [1, 3, 5] {
+                assert!(requests[index].args.iter().any(|arg| arg == "--live"));
+                assert!(requests[index].args.iter().any(|arg| arg == "--config"));
+            }
+            drop(requests);
+        }
+        // Phase `already_retired_media_is_an_idempotent_success`.
+        {
+            let runner = Runner::new(vec![
+                CommandOutput::successful("<domain/>"),
+                CommandOutput::successful("<domain/>"),
+                CommandOutput::successful("<domain/>"),
+            ]);
+            let backend = LibvirtBackend::new(runner);
+            backend.retire_installation_media(&config()).unwrap();
+            assert_eq!(backend.runner.requests.lock().unwrap().len(), 3);
+        }
     }
 }

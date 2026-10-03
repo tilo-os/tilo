@@ -5,7 +5,6 @@
     clippy::cast_precision_loss,
     clippy::indexing_slicing,
     clippy::semicolon_if_nothing_returned,
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "immediate-mode capture geometry uses tiny fixed arrays and bounded screen coordinates"
 )]
@@ -15,6 +14,7 @@ use crate::text_metrics::renderer_type_size;
 use crate::{
     ColorCompat,
     icons::{self, Icon},
+    paint::PaintCtx,
     presence::PresenceCtx,
     surface,
     text_render::{TextRenderer, TextWeight},
@@ -166,6 +166,18 @@ pub enum CaptureExtent {
     WholeStrip,
 }
 
+/// The live apps a `FullApp` or `WholeStrip` capture repaints outside the
+/// output clip.
+#[derive(Clone, Copy, Debug)]
+pub struct LiveCapture<'a> {
+    /// `group:<group>:tab:<tab>` ids of the selected apps.
+    pub target_ids: &'a [String],
+    pub extent: CaptureExtent,
+    /// Paint a `FullApp` target's complete semantic content (page, document,
+    /// canvas) where its app provides one, rather than its virtual surface.
+    pub complete_semantic_content: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PipLayout {
     #[default]
@@ -268,7 +280,24 @@ pub enum ReplayCommand {
     Stop,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Where "Send…" delivers the last screenshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScreenshotSendTarget {
+    /// Save a copy into the active workspace's shared files.
+    Workspace,
+    /// Offer it to one of your certified devices; the receiver still decides.
+    Device(String),
+}
+
+/// One of your online devices, as the shell offers it to "Send…".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScreenshotSendDevice {
+    /// Opaque device-fabric identity the shell resolves again when sending.
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScreenshotCommand {
     /// Open the exact saved artifact in the shared native markup workspace.
     MarkupLast,
@@ -282,6 +311,8 @@ pub enum ScreenshotCommand {
     /// Copy the already-rendered last screenshot without recapturing a live
     /// scene that may have changed in the meantime.
     CopyLast,
+    /// Deliver the saved artifact itself to a device or the workspace.
+    SendLast(ScreenshotSendTarget),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -421,6 +452,11 @@ pub struct CaptureStudio {
     /// inserted the frozen surface into its own layout tree.
     screenshot_pin_pending: bool,
     screenshot_origin: Option<Point>,
+    /// Online devices "Send…" may offer, refreshed by the shell.
+    send_devices: Vec<ScreenshotSendDevice>,
+    /// The open "Send…" target picker and the target behind each row.
+    send_menu: Option<crate::widget::context_menu::ContextMenu>,
+    send_menu_targets: Vec<Option<ScreenshotSendTarget>>,
     delay_seconds: u8,
     armed_capture: Option<ArmedCapture>,
     /// Content-driven floor for the docked recorder's width above 1× type;
@@ -476,6 +512,9 @@ impl Default for CaptureStudio {
             replay_saved_at: None,
             screenshot_receipt: None,
             screenshot_pin_pending: false,
+            send_devices: Vec::new(),
+            send_menu: None,
+            send_menu_targets: Vec::new(),
             screenshot_origin: None,
             delay_seconds: 0,
             armed_capture: None,
@@ -555,6 +594,133 @@ impl CaptureStudio {
         self.drag = None;
         self.armed_capture = None;
         self.recording_finished_at = None;
+    }
+
+    /// The devices "Send…" lists. Called by the shell whenever a screenshot
+    /// is saved, so the picker names who is online now.
+    pub fn set_screenshot_send_devices(&mut self, devices: Vec<ScreenshotSendDevice>) {
+        self.send_devices = devices;
+    }
+
+    /// Send the last saved screenshot without the picker — the action door
+    /// for automation and assistive clients, and the picker's own result.
+    pub fn send_last_screenshot(&mut self, target: ScreenshotSendTarget) {
+        self.close_send_menu();
+        self.queue_screenshot_command(ScreenshotCommand::SendLast(target), None);
+    }
+
+    /// Whether the "Send…" target picker is open.
+    pub fn send_menu_open(&self) -> bool {
+        self.send_menu.as_ref().is_some_and(|menu| menu.is_open())
+    }
+
+    fn close_send_menu(&mut self) {
+        self.send_menu = None;
+        self.send_menu_targets.clear();
+    }
+
+    /// Open the target picker under the receipt's Send button: the workspace
+    /// first (always available), then each online device.
+    fn open_send_menu(&mut self, anchor: Rect) {
+        use crate::widget::context_menu::{ContextMenu, MenuItem};
+        let mut menu = ContextMenu::new();
+        let mut targets = Vec::new();
+        menu.push(MenuItem::icon_action(
+            Icon::FolderOpen,
+            "Save to this workspace's files",
+            || {},
+        ));
+        targets.push(Some(ScreenshotSendTarget::Workspace));
+        menu.push(MenuItem::separator());
+        targets.push(None);
+        if self.send_devices.is_empty() {
+            menu.push(MenuItem::action("No other device is online", || {}).with_enabled(false));
+            targets.push(None);
+        }
+        for device in &self.send_devices {
+            menu.push(MenuItem::icon_action(
+                Icon::Send,
+                format!("Send to {}", device.label),
+                || {},
+            ));
+            targets.push(Some(ScreenshotSendTarget::Device(device.id.clone())));
+        }
+        menu.open_anchored(anchor, self.status_rect());
+        menu.layout_at_position();
+        menu.focus_first_action();
+        self.send_menu = Some(menu);
+        self.send_menu_targets = targets;
+    }
+
+    /// Route one event to the open target picker. Returns whether it was
+    /// consumed; a pick queues the send and retires the receipt.
+    fn route_send_menu_event(
+        &mut self,
+        e: &WindowEvent,
+        scale: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        let Some(menu) = self.send_menu.as_mut() else {
+            return false;
+        };
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Named(NamedKey::Escape),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = e
+        {
+            self.close_send_menu();
+            return true;
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = e
+            && !menu.contains([self.cursor.x, self.cursor.y])
+        {
+            // A press outside the picker dismisses it and nothing else.
+            self.close_send_menu();
+            return true;
+        }
+        let mut taffy = TaffyTree::new();
+        let Ok(node) = taffy.new_leaf(Style::default()) else {
+            return true;
+        };
+        let mut handled = false;
+        let mut focus = None;
+        menu.handle_event(
+            e,
+            &mut crate::widget::EventCtx {
+                scale_factor: scale,
+                modifiers: &modifiers,
+                state,
+                path,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
+        );
+        if let Some(index) = menu.take_selection() {
+            self.choose_send_target(index);
+        }
+        handled
+    }
+
+    fn choose_send_target(&mut self, index: usize) {
+        let Some(Some(target)) = self.send_menu_targets.get(index).cloned() else {
+            return;
+        };
+        self.send_last_screenshot(target);
+        self.screenshot_receipt = None;
+        self.open = false;
     }
 
     pub fn set_screenshot_finished(
@@ -1635,7 +1801,7 @@ impl CaptureStudio {
         };
         let bounds = self.status_rect();
         let compact = bounds.width() < 1000.0;
-        let final_width = if compact { 360.0 } else { 320.0 };
+        let final_width = if compact { 394.0 } else { 354.0 };
         // Begin as a recognizable thumbnail rather than a nearly empty tiny
         // capsule. The object compresses vertically while it gains enough
         // horizontal room for metadata and actions in the top bar.
@@ -1677,6 +1843,11 @@ impl CaptureStudio {
         let copy = Rect::new(reveal.x0 - 34.0, reveal.y0, reveal.x0 - 4.0, reveal.y1);
         let pin = Rect::new(copy.x0 - 34.0, copy.y0, copy.x0 - 4.0, copy.y1);
         (pill, pin, copy, reveal, dismiss)
+    }
+
+    /// The receipt's Send button, left of Pin.
+    fn screenshot_receipt_send_rect(pin: Rect) -> Rect {
+        Rect::new(pin.x0 - 34.0, pin.y0, pin.x0 - 4.0, pin.y1)
     }
 
     fn fit_screenshot_preview(
@@ -2261,6 +2432,8 @@ impl CaptureStudio {
                 self.queue_screenshot_command(ScreenshotCommand::MarkupLast, Some(preview));
                 self.screenshot_receipt = None;
                 self.open = false;
+            } else if !receipt.copied && Self::screenshot_receipt_send_rect(pin).contains(p) {
+                self.open_send_menu(Self::screenshot_receipt_send_rect(pin));
             } else if !receipt.copied && pin.contains(p) {
                 self.queue_screenshot_command(ScreenshotCommand::PinLast, Some(preview));
                 self.screenshot_pin_pending = true;
@@ -2507,19 +2680,40 @@ impl CaptureStudio {
         Button::paint(scene, t, tr, theme, &face);
     }
 
+    /// The tint a capture in the current mode marks its selection with.
+    fn selection_color(&self, theme: &Theme) -> Color {
+        let c = &theme.tokens.colors;
+        match self.mode {
+            CaptureMode::Screenshot => c.accent[4],
+            CaptureMode::Recording => c.semantic.danger,
+            CaptureMode::Pip => c.semantic.info,
+        }
+    }
+
+    /// The highest a window candidate's badge may sit: clear of the
+    /// candidate picker, or of the top bar when there is none.
+    fn min_target_badge_y(&self) -> f64 {
+        self.candidate_picker_rects()
+            .first()
+            .map_or_else(|| self.top_bar().y1 + 8.0, |picker| picker.y1 + 8.0)
+    }
+
     fn target_badge(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        &self,
+        ctx: &mut PaintCtx<'_>,
         target: &CaptureTarget,
         rect: Rect,
         selected: bool,
-        full_app: bool,
-        mode: CaptureMode,
-        selection_color: Color,
-        min_badge_y: f64,
     ) {
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
+        let (mode, full_app) = (self.mode, self.extent == CaptureExtent::FullApp);
+        let selection_color = self.selection_color(theme);
+        let min_badge_y = self.min_target_badge_y();
         let c = &theme.tokens.colors;
         let prefix = if selected && mode == CaptureMode::Pip {
             "LIVE · "
@@ -2689,17 +2883,17 @@ impl CaptureStudio {
         }
     }
 
-    fn draw_offscreen_target(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        bounds: Rect,
-        target: &CaptureTarget,
-        mode: CaptureMode,
-        extent: CaptureExtent,
-        accent: Color,
-    ) {
+    /// A card in the selection bounds standing in for a selected `target`
+    /// with no useful on-screen aperture.
+    fn draw_offscreen_target(&self, ctx: &mut PaintCtx<'_>, target: &CaptureTarget) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let (bounds, mode, extent) = (self.selection_bounds(), self.mode, self.extent);
+        let accent = self.selection_color(theme);
         let colors = &theme.tokens.colors;
         let width = 430.0_f64.min(bounds.width() - 40.0);
         let card = Rect::from_center_size(bounds.center(), (width, 132.0));
@@ -2854,18 +3048,14 @@ impl CaptureStudio {
         }
     }
 
-    fn option_button(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
+    fn option_face<'a>(
         theme: &Theme,
         rect: Rect,
-        label: &str,
+        label: &'a str,
         icon: Icon,
         active: bool,
-        hovered: bool,
-    ) {
-        let face = if active {
+    ) -> ButtonFace<'a> {
+        if active {
             ButtonFace::new(rect, label).primary()
         } else {
             ButtonFace::new(rect, label)
@@ -2874,8 +3064,6 @@ impl CaptureStudio {
         .radius(9.0)
         .text_size(theme.tokens.typography.scale.sm)
         .weight(TextWeight::Medium)
-        .hovered(hovered);
-        Button::paint(scene, t, tr, theme, &face);
     }
 
     fn scrim_path(&self, regions: &[Rect]) -> BezPath {
@@ -3272,6 +3460,16 @@ impl CaptureStudio {
         }
         if self.screenshot_receipt.is_some() {
             self.draw_screenshot_receipt(scene, transform, text_renderer, theme);
+            if let Some(menu) = self.send_menu.as_mut() {
+                menu.layout_within(text_renderer, theme);
+                menu.draw(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    &PresenceCtx::default(),
+                );
+            }
             return;
         }
         if self.recording_start_pending {
@@ -3876,6 +4074,13 @@ impl CaptureStudio {
             return;
         };
         let elapsed = receipt.shown_at.elapsed();
+        // Choosing a Send target holds the receipt fully shown.
+        let choosing = self.send_menu.is_some();
+        let elapsed = if choosing {
+            SCREENSHOT_RECEIPT_ENTER
+        } else {
+            elapsed
+        };
         if elapsed >= SCREENSHOT_RECEIPT_DURATION && !self.screenshot_pin_pending {
             self.screenshot_receipt = None;
             self.open = false;
@@ -3992,7 +4197,11 @@ impl CaptureStudio {
         }
 
         let label_x = preview.x1 + 9.0;
-        let action_limit = if receipt.copied { dismiss.x0 } else { pin.x0 };
+        let action_limit = if receipt.copied {
+            dismiss.x0
+        } else {
+            Self::screenshot_receipt_send_rect(pin).x0
+        };
         let status = if receipt.copied { "Copied" } else { "Saved" };
         let dimensions = format!("{} × {}", receipt.width, receipt.height);
         let (status_width, status_height) = text_renderer.measure_weighted(
@@ -4038,6 +4247,27 @@ impl CaptureStudio {
         }
 
         if !receipt.copied {
+            let send = Self::screenshot_receipt_send_rect(pin);
+            let send_active = send.contains(self.cursor) || choosing;
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                if send_active {
+                    colors.accent[4].with_alpha_factor(0.20 * content_alpha)
+                } else {
+                    colors.lift(0.35).with_alpha_factor(content_alpha)
+                },
+                None,
+                &RoundedRect::from_rect(send, send.height() / 2.0),
+            );
+            icons::draw_icon(
+                scene,
+                transform,
+                send.inset(-6.0),
+                Icon::Send,
+                colors.text_dim.with_alpha_factor(content_alpha),
+                1.45,
+            );
             let pin_hovered = pin.contains(self.cursor);
             scene.fill(
                 Fill::NonZero,
@@ -4351,7 +4581,6 @@ impl CaptureStudio {
 }
 
 impl Widget for CaptureStudio {
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
     fn build_layout(
         &mut self,
         t: &mut TaffyTree<()>,
@@ -4408,11 +4637,7 @@ impl Widget for CaptureStudio {
         let top_t = t.pre_translate((0.0, -10.0 * f64::from(1.0 - eased)).into());
         let bottom_t = t.pre_translate((0.0, 12.0 * f64::from(1.0 - eased)).into());
         let c = &theme.tokens.colors;
-        let selection_color = match self.mode {
-            CaptureMode::Screenshot => c.accent[4],
-            CaptureMode::Recording => c.semantic.danger,
-            CaptureMode::Pip => c.semantic.info,
-        };
+        let selection_color = self.selection_color(theme);
         let active_control_fill = match self.mode {
             CaptureMode::Screenshot => c.accent[5],
             CaptureMode::Recording => c.semantic.danger.with_alpha_factor(0.28),
@@ -4452,10 +4677,6 @@ impl Widget for CaptureStudio {
             &self.scrim_path(&regions),
         );
         if self.source == SourceMode::Window {
-            let min_target_badge_y = self
-                .candidate_picker_rects()
-                .first()
-                .map_or_else(|| self.top_bar().y1 + 8.0, |picker| picker.y1 + 8.0);
             for target in &self.candidates {
                 let rect = target.visible_rect.intersect(self.selection_bounds());
                 if rect.area() <= 0.0 {
@@ -4497,19 +4718,7 @@ impl Widget for CaptureStudio {
                     ),
                 );
                 if !selected || Self::target_has_useful_aperture(target, self.status_rect()) {
-                    Self::target_badge(
-                        s,
-                        t,
-                        tr,
-                        theme,
-                        target,
-                        rect,
-                        selected,
-                        self.extent == CaptureExtent::FullApp,
-                        self.mode,
-                        selection_color,
-                        min_target_badge_y,
-                    );
+                    self.target_badge(&mut PaintCtx::new(s, t, tr, theme), target, rect, selected);
                 }
                 if selected && self.extent == CaptureExtent::FullApp {
                     Self::draw_continuation_markers(
@@ -4524,17 +4733,7 @@ impl Widget for CaptureStudio {
             if let Some(target) = self.selected_candidate().cloned()
                 && !Self::target_has_useful_aperture(&target, self.status_rect())
             {
-                Self::draw_offscreen_target(
-                    s,
-                    t,
-                    tr,
-                    theme,
-                    self.selection_bounds(),
-                    &target,
-                    self.mode,
-                    self.extent,
-                    selection_color,
-                );
+                self.draw_offscreen_target(&mut PaintCtx::new(s, t, tr, theme), &target);
                 if self.extent == CaptureExtent::FullApp {
                     Self::draw_continuation_markers(
                         s,
@@ -4903,17 +5102,9 @@ impl Widget for CaptureStudio {
                             CaptureExtent::WholeStrip,
                         ][i]
                 };
-                Self::option_button(
-                    s,
-                    bottom_t,
-                    tr,
-                    theme,
-                    r,
-                    label,
-                    icon,
-                    active,
-                    r.contains(self.cursor),
-                );
+                let face = Self::option_face(theme, r, label, icon, active)
+                    .hovered(r.contains(self.cursor));
+                Button::paint(s, bottom_t, tr, theme, &face);
             }
         }
         let pointer = self.pointer_rect();
@@ -5015,18 +5206,8 @@ impl Widget for CaptureStudio {
         }
         s.pop_layer()
     }
-    fn handle_event(
-        &mut self,
-        e: &WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        handled: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, e: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        let state = &mut *ctx.state;
         if !self.open {
             return;
         }
@@ -5043,7 +5224,7 @@ impl Widget for CaptureStudio {
                 }
             ) {
                 self.close();
-                *handled = true;
+                *ctx.handled = true;
             }
             return;
         }
@@ -5056,15 +5237,16 @@ impl Widget for CaptureStudio {
         if self.replay_active {
             match e {
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.cursor = Point::new(position.x / scale, position.y / scale);
-                    *handled = self.replay_indicator_rects().0.contains(self.cursor);
+                    self.cursor =
+                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                    *ctx.handled = self.replay_indicator_rects().0.contains(self.cursor);
                 }
                 WindowEvent::MouseInput {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                     ..
                 } if self.replay_indicator_rects().0.contains(self.cursor) => {
-                    *handled = true;
+                    *ctx.handled = true;
                     self.click(self.cursor);
                 }
                 _ => {}
@@ -5072,17 +5254,30 @@ impl Widget for CaptureStudio {
             return;
         }
         if self.screenshot_receipt.is_some() {
+            if let WindowEvent::CursorMoved { position, .. } = e {
+                self.cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            }
+            if self.send_menu.is_some() {
+                *ctx.handled = self.route_send_menu_event(
+                    e,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    state,
+                    ctx.path,
+                );
+                return;
+            }
             match e {
-                WindowEvent::CursorMoved { position, .. } => {
-                    self.cursor = Point::new(position.x / scale, position.y / scale);
-                    *handled = self.screenshot_receipt_rects().0.contains(self.cursor);
+                WindowEvent::CursorMoved { .. } => {
+                    *ctx.handled = self.screenshot_receipt_rects().0.contains(self.cursor);
                 }
                 WindowEvent::MouseInput {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                     ..
                 } if self.screenshot_receipt_rects().0.contains(self.cursor) => {
-                    *handled = true;
+                    *ctx.handled = true;
                     self.click(self.cursor);
                 }
                 WindowEvent::KeyboardInput {
@@ -5096,7 +5291,7 @@ impl Widget for CaptureStudio {
                 } => {
                     self.screenshot_receipt = None;
                     self.open = false;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 _ => {}
             }
@@ -5105,15 +5300,16 @@ impl Widget for CaptureStudio {
         if self.recording_finished_at.is_some() {
             match e {
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.cursor = Point::new(position.x / scale, position.y / scale);
-                    *handled = self.recording_receipt_rect().contains(self.cursor);
+                    self.cursor =
+                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                    *ctx.handled = self.recording_receipt_rect().contains(self.cursor);
                 }
                 WindowEvent::MouseInput {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                     ..
                 } if self.recording_receipt_rect().contains(self.cursor) => {
-                    *handled = true;
+                    *ctx.handled = true;
                     self.click(self.cursor);
                 }
                 WindowEvent::KeyboardInput {
@@ -5127,7 +5323,7 @@ impl Widget for CaptureStudio {
                 } => {
                     self.recording_finished_at = None;
                     self.open = false;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 _ => {}
             }
@@ -5136,15 +5332,16 @@ impl Widget for CaptureStudio {
         if self.recording_active {
             match e {
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.cursor = Point::new(position.x / scale, position.y / scale);
-                    *handled = self.recording_indicator_rects().0.contains(self.cursor);
+                    self.cursor =
+                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                    *ctx.handled = self.recording_indicator_rects().0.contains(self.cursor);
                 }
                 WindowEvent::MouseInput {
                     state,
                     button: MouseButton::Left,
                     ..
                 } if self.recording_indicator_rects().0.contains(self.cursor) => {
-                    *handled = true;
+                    *ctx.handled = true;
                     if *state == ElementState::Pressed {
                         self.click(self.cursor);
                     }
@@ -5153,10 +5350,11 @@ impl Widget for CaptureStudio {
             }
             return;
         }
-        *handled = true;
+        *ctx.handled = true;
         match e {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = Point::new(position.x / scale, position.y / scale);
+                self.cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 if let Some(d) = self.drag.as_mut() {
                     d.set_current(self.cursor)
                 }
@@ -5165,7 +5363,7 @@ impl Widget for CaptureStudio {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => self.click_with_additive(self.cursor, modifiers.state().shift_key()),
+            } => self.click_with_additive(self.cursor, ctx.modifiers.state().shift_key()),
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
@@ -5200,7 +5398,7 @@ impl Widget for CaptureStudio {
                 ..
             } => {
                 if !self.navigate_picker(*key) {
-                    let amount = if modifiers.state().shift_key() {
+                    let amount = if ctx.modifiers.state().shift_key() {
                         10.0
                     } else {
                         1.0
@@ -5326,6 +5524,10 @@ impl Widget for CaptureStudio {
                         receipt.width,
                         receipt.height,
                     ),
+                ));
+                rects.push((
+                    "capture.send-screenshot".into(),
+                    Self::screenshot_receipt_send_rect(pin),
                 ));
                 rects.push(("capture.pin-screenshot".into(), pin));
                 rects.push(("capture.copy-screenshot".into(), copy));
@@ -5474,1257 +5676,1409 @@ mod tests {
     )]
     use super::*;
     #[test]
-    fn picker_context_advances_from_instruction_to_ready_state() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0., 0., 1200., 800.);
-        assert_eq!(s.default_picker_context(), "Drag to select");
+    fn app_picker_names_workflows_and_commits_full_targets() {
+        fn picker_context_advances_from_instruction_to_ready_state() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0., 0., 1200., 800.);
+            assert_eq!(s.default_picker_context(), "Drag to select");
 
-        s.regions.push(Rect::new(20., 100., 640., 470.));
-        assert_eq!(s.default_picker_context(), "620 × 370 selected");
+            s.regions.push(Rect::new(20., 100., 640., 470.));
+            assert_eq!(s.default_picker_context(), "620 × 370 selected");
 
-        s.set_mode(CaptureMode::Recording);
-        assert_eq!(s.default_picker_context(), "620 × 370 selected");
+            s.set_mode(CaptureMode::Recording);
+            assert_eq!(s.default_picker_context(), "620 × 370 selected");
 
-        s.set_mode(CaptureMode::Pip);
-        s.set_source_mode(SourceMode::Multi);
-        s.regions.extend([
-            Rect::new(20., 100., 640., 470.),
-            Rect::new(700., 120., 1050., 420.),
-        ]);
-        assert_eq!(
-            s.default_picker_context(),
-            "2 areas selected. Shift-drag to add another."
-        );
-    }
-
-    #[test]
-    fn tiny_app_continuation_uses_symbolic_card_instead_of_cramped_badge() {
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let mut target = CaptureTarget {
-            id: "notes".into(),
-            title: "Notes".into(),
-            app_id: "so.tilo.notes".into(),
-            visible_rect: Rect::new(0.0, 90.0, 84.0, 590.0),
-            virtual_rect: Rect::new(-916.0, 90.0, 84.0, 590.0),
-            complete_rect: Some(Rect::new(-916.0, 90.0, 394.0, 1_278.0)),
-        };
-        assert!(!CaptureStudio::target_has_useful_aperture(
-            &target, viewport
-        ));
-
-        target.visible_rect = Rect::new(80.0, 90.0, 500.0, 590.0);
-        assert!(CaptureStudio::target_has_useful_aperture(&target, viewport));
-    }
-
-    #[test]
-    fn offscreen_app_card_names_each_workflow_honestly() {
-        assert_eq!(
-            CaptureStudio::offscreen_guidance(CaptureMode::Screenshot, CaptureExtent::FullApp),
-            "Capture it without moving it onto this screen"
-        );
-        assert_eq!(
-            CaptureStudio::offscreen_guidance(CaptureMode::Recording, CaptureExtent::FullApp),
-            "Record it without moving it onto this screen"
-        );
-        assert_eq!(
-            CaptureStudio::offscreen_guidance(CaptureMode::Pip, CaptureExtent::FullApp),
-            "Float it live without moving it onto this screen"
-        );
-    }
-
-    #[test]
-    fn symbolic_app_picker_commits_the_same_full_target_for_all_workflows() {
-        let target = CaptureTarget {
-            id: "notes".into(),
-            title: "Notes".into(),
-            app_id: "so.tilo.notes".into(),
-            visible_rect: Rect::new(0.0, 90.0, 84.0, 590.0),
-            virtual_rect: Rect::new(-916.0, 90.0, 84.0, 590.0),
-            complete_rect: Some(Rect::new(-916.0, 90.0, 394.0, 1_278.0)),
-        };
-        for (mode, destination) in [
-            (CaptureMode::Screenshot, CaptureDestination::File),
-            (CaptureMode::Recording, CaptureDestination::File),
-            (CaptureMode::Pip, CaptureDestination::FloatingWindow),
-        ] {
-            let mut studio = CaptureStudio::default();
-            studio.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
-            studio.set_candidates(vec![target.clone()]);
-            studio.set_source_mode(SourceMode::Window);
-            studio.set_extent(CaptureExtent::FullApp);
-            studio.set_mode(mode);
-            studio.commit(destination);
-
-            let intent = studio.take_intents().pop().expect("capture intent");
-            assert_eq!(intent.mode, mode);
-            assert_eq!(intent.destination, destination);
-            assert_eq!(intent.extent, CaptureExtent::FullApp);
-            assert_eq!(intent.targets, vec![target.clone()]);
+            s.set_mode(CaptureMode::Pip);
+            s.set_source_mode(SourceMode::Multi);
+            s.regions.extend([
+                Rect::new(20., 100., 640., 470.),
+                Rect::new(700., 120., 1050., 420.),
+            ]);
             assert_eq!(
-                intent.recording_command,
-                (mode == CaptureMode::Recording).then_some(RecordingCommand::Start)
+                s.default_picker_context(),
+                "2 areas selected. Shift-drag to add another."
             );
         }
-    }
 
-    #[test]
-    fn multi_keeps_each_region() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0., 0., 1200., 800.);
-        s.open();
-        s.set_mode(CaptureMode::Pip);
-        s.set_source_mode(SourceMode::Multi);
-        s.regions.extend([
-            Rect::new(20., 100., 300., 300.),
-            Rect::new(500., 120., 900., 420.),
-        ]);
-        s.commit(CaptureDestination::FloatingWindow);
-        let i = s.take_intents().pop().unwrap();
-        assert_eq!(i.regions.len(), 2);
-        assert_eq!(i.destination, CaptureDestination::FloatingWindow);
-        assert_eq!(i.source, SourceMode::Multi);
-        assert_eq!(i.mode, CaptureMode::Pip);
-    }
+        fn tiny_app_continuation_uses_symbolic_card_instead_of_cramped_badge() {
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let mut target = CaptureTarget {
+                id: "notes".into(),
+                title: "Notes".into(),
+                app_id: "so.tilo.notes".into(),
+                visible_rect: Rect::new(0.0, 90.0, 84.0, 590.0),
+                virtual_rect: Rect::new(-916.0, 90.0, 84.0, 590.0),
+                complete_rect: Some(Rect::new(-916.0, 90.0, 394.0, 1_278.0)),
+            };
+            assert!(!CaptureStudio::target_has_useful_aperture(
+                &target, viewport
+            ));
 
-    #[test]
-    fn multi_new_drag_replaces_unless_shift_extends_selection() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
-        s.open();
-        s.set_source_mode(SourceMode::Multi);
-        s.regions.push(Rect::new(80.0, 100.0, 260.0, 240.0));
-
-        s.click_with_additive(Point::new(420.0, 180.0), false);
-        s.drag
-            .as_mut()
-            .unwrap()
-            .set_current(Point::new(620.0, 360.0));
-        s.finish_region_drag();
-        assert_eq!(s.regions, vec![Rect::new(420.0, 180.0, 620.0, 360.0)]);
-
-        s.click_with_additive(Point::new(90.0, 390.0), true);
-        s.drag
-            .as_mut()
-            .unwrap()
-            .set_current(Point::new(290.0, 560.0));
-        s.finish_region_drag();
-        assert_eq!(s.regions.len(), 2, "Shift extends the existing selection");
-        assert_eq!(s.regions[0], Rect::new(420.0, 180.0, 620.0, 360.0));
-        assert_eq!(s.regions[1], Rect::new(90.0, 390.0, 290.0, 560.0));
-    }
-
-    #[test]
-    fn region_selection_reaches_output_edges_and_chrome_prefers_outside() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
-        s.open();
-        s.click(Point::new(200.0, 300.0));
-        s.drag.as_mut().unwrap().set_current(Point::new(500.0, 0.0));
-        assert_eq!(s.active_regions()[0].y0, 0.0);
-        s.drag
-            .as_mut()
-            .unwrap()
-            .set_current(Point::new(500.0, 600.0));
-        assert_eq!(s.active_regions()[0].y1, 600.0);
-
-        let middle = Rect::new(180.0, 180.0, 500.0, 380.0);
-        let outside = CaptureStudio::region_chrome_layout(middle, 90.0, s.rect, &[middle]);
-        assert!(outside.outside);
-        assert_eq!(outside.metadata.y1, middle.y0 - 6.0);
-
-        let full = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let inside = CaptureStudio::region_chrome_layout(full, 90.0, s.rect, &[full]);
-        assert!(
-            !inside.outside,
-            "a full-output selection has no outside lane"
-        );
-        assert!(full.contains(inside.metadata.center()));
-    }
-
-    #[test]
-    fn existing_region_moves_resizes_nudges_and_clamps_without_restarting() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
-        s.open();
-        s.set_mode(CaptureMode::Screenshot);
-        s.set_source_mode(SourceMode::Region);
-        s.regions.push(Rect::new(100.0, 150.0, 420.0, 390.0));
-
-        let original = s.regions[0];
-        s.click(original.center());
-        assert!(matches!(s.drag, Some(DragSelection::Move { .. })));
-        s.drag
-            .as_mut()
-            .unwrap()
-            .set_current(original.center() + vello::kurbo::Vec2::new(55.0, -24.0));
-        assert_eq!(
-            s.active_regions(),
-            vec![original + vello::kurbo::Vec2::new(55.0, -24.0)]
-        );
-        s.finish_region_drag();
-        assert_eq!(s.regions, s.active_regions());
-
-        let moved = s.regions[0];
-        let south_east = Point::new(moved.x1, moved.y1);
-        s.click(south_east);
-        assert!(matches!(s.drag, Some(DragSelection::Resize { .. })));
-        s.drag
-            .as_mut()
-            .unwrap()
-            .set_current(Point::new(900.0, 900.0));
-        let resized = s.active_regions()[0];
-        assert_eq!(resized.x0, moved.x0);
-        assert_eq!(resized.y0, moved.y0);
-        assert_eq!(resized.x1, s.selection_bounds().x1);
-        assert_eq!(resized.y1, s.selection_bounds().y1);
-        s.finish_region_drag();
-
-        let before_nudge = s.regions[0];
-        assert!(s.nudge_region(NamedKey::ArrowLeft, 10.0));
-        assert_eq!(s.regions[0].x0, before_nudge.x0 - 10.0);
-        assert_eq!(s.regions[0].x1, before_nudge.x1 - 10.0);
-
-        // Escape during a correction cancels only that correction; the picker
-        // and last committed geometry remain intact.
-        let committed = s.regions[0];
-        s.click(committed.center());
-        assert!(s.drag.take().is_some());
-        assert_eq!(s.regions[0], committed);
-        assert!(s.is_open());
-    }
-
-    #[test]
-    fn pip_has_one_live_primary_action_and_region_removal() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0., 0., 1200., 800.);
-        s.open();
-        s.include_pointer = true;
-        s.set_mode(CaptureMode::Pip);
-        s.set_source_mode(SourceMode::Multi);
-        s.regions.extend([
-            Rect::new(100., 120., 420., 340.),
-            Rect::new(500., 180., 900., 520.),
-        ]);
-        let actions = s.action_rects();
-        assert_eq!(actions[0], Rect::ZERO);
-        assert!(actions[1].area() > 0.0);
-        assert_eq!(actions[2], Rect::ZERO);
-        assert!(
-            !s.include_pointer,
-            "PiP does not inherit screenshot cursor trails"
-        );
-
-        let first = s.regions[0];
-        let remove = CaptureStudio::region_chrome_layout(first, 96.0, s.rect, &s.regions).remove;
-        s.region_remove_rects = vec![remove, Rect::ZERO];
-        s.click(remove.center());
-        assert_eq!(s.regions, vec![Rect::new(500., 180., 900., 520.)]);
-    }
-    #[test]
-    fn offscreen_extent_survives_into_compositor_intent() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0., 0., 1200., 800.);
-        s.open();
-        s.set_candidates(vec![CaptureTarget {
-            id: "notes".into(),
-            title: "Notes".into(),
-            app_id: "org.tilo.Notes".into(),
-            visible_rect: Rect::new(100., 100., 900., 600.),
-            virtual_rect: Rect::new(100., 100., 1500., 900.),
-            complete_rect: Some(Rect::new(100., 100., 1500., 1900.)),
-        }]);
-        s.set_source_mode(SourceMode::Window);
-        s.set_extent(CaptureExtent::FullApp);
-        s.commit(CaptureDestination::File);
-        let i = s.take_intents().pop().unwrap();
-        assert_eq!(i.source, SourceMode::Window);
-        assert_eq!(i.extent, CaptureExtent::FullApp);
-        assert_eq!(
-            i.targets[0].virtual_rect,
-            Rect::new(100., 100., 1500., 900.)
-        );
-        assert_eq!(
-            i.targets[0].full_rect(),
-            Rect::new(100., 100., 1500., 1900.),
-            "App selection keeps the provider's complete document geometry",
-        );
-        assert_eq!(
-            i.targets[0].full_app_rect(CaptureMode::Recording),
-            i.targets[0].virtual_rect,
-            "live video follows the app window rather than squeezing a complete document",
-        );
-        assert_eq!(
-            i.targets[0].full_app_rect(CaptureMode::Pip),
-            i.targets[0].virtual_rect,
-        );
-        assert_eq!(
-            i.targets[0].full_app_rect(CaptureMode::Screenshot),
-            i.targets[0].full_rect(),
-            "still capture retains the creative complete-document export",
-        );
-    }
-
-    #[test]
-    fn delayed_capture_is_non_modal_and_only_queues_after_expiry() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0., 0., 1200., 800.);
-        s.open();
-        s.set_source_mode(SourceMode::Display);
-        s.click(s.delay_rect().center());
-        assert_eq!(s.delay_seconds, 3);
-
-        s.commit(CaptureDestination::File);
-        assert!(s.open, "the lightweight countdown remains present");
-        assert!(s.modal_capture().is_none(), "apps must remain interactive");
-        assert!(s.take_intents().is_empty(), "capture is not queued early");
-
-        s.armed_capture.as_mut().unwrap().started_at = crate::time::now() - Duration::from_secs(4);
-        let intent = s.take_intents().pop().expect("expired delayed intent");
-        assert_eq!(intent.destination, CaptureDestination::File);
-        assert_eq!(intent.source, SourceMode::Display);
-        assert!(!s.open);
-    }
-
-    #[test]
-    fn audio_sources_and_delay_keep_independent_slots() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0., 0., 1200., 800.);
-        s.open();
-        s.set_mode(CaptureMode::Recording);
-        s.set_audio_available(true, true);
-        let pointer = s.pointer_rect();
-        let system = s.system_audio_rect();
-        let microphone = s.microphone_rect();
-        let delay = s.delay_rect();
-        assert!(pointer.x1 < system.x0);
-        assert!(system.x1 < microphone.x0);
-        assert!(microphone.x1 < delay.x0);
-        assert!(delay.x1 < s.action_rects()[2].x0);
-
-        s.click(system.center());
-        assert_eq!(s.audio, AudioCaptureMode::System);
-        s.click(microphone.center());
-        assert_eq!(s.audio, AudioCaptureMode::SystemAndMicrophone);
-
-        s.click(delay.center());
-        assert_eq!(s.delay_seconds, 3);
-        s.click(delay.center());
-        assert_eq!(s.delay_seconds, 10);
-        s.click(delay.center());
-        assert_eq!(s.delay_seconds, 0);
-    }
-    #[test]
-    fn display_source_is_whole_output_after_picker_controls_leave() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0., 0., 1000., 700.);
-        s.open();
-        s.set_source_mode(SourceMode::Display);
-        let r = s.active_regions()[0];
-        assert_eq!(r, s.rect);
-    }
-
-    #[test]
-    fn active_recording_can_stop_without_reselecting_a_source() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0., 0., 1000., 700.);
-        s.set_recording_active(true);
-        assert!(s.is_open(), "recording confirmation opens automatically");
-        assert!(s.modal_capture().is_none(), "recording status is non-modal");
-        s.regions.clear();
-        s.commit(CaptureDestination::File);
-        s.commit(CaptureDestination::File);
-        assert_eq!(s.pending.len(), 1, "Stop is idempotent while flushing");
-        let intent = s.take_intents().pop().expect("stop intent");
-        assert_eq!(intent.mode, CaptureMode::Recording);
-        assert_eq!(intent.recording_command, Some(RecordingCommand::Stop));
-        assert!(intent.regions.is_empty());
-        assert!(
-            s.is_open(),
-            "indicator remains until compositor confirmation"
-        );
-        s.set_recording_active(false);
-        assert!(!s.is_open());
-    }
-
-    #[test]
-    fn successful_stop_becomes_non_modal_recording_actions_receipt() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0., 0., 1200., 800.);
-        s.set_recording_active(true);
-        s.recording_started_at = Some(crate::time::now() - Duration::from_secs(42));
-        s.set_recording_finished();
-
-        assert!(!s.is_recording_active());
-        assert!(s.is_open());
-        assert!(s.modal_capture().is_none());
-        assert_eq!(s.recording_finished_duration.as_secs(), 42);
-        assert_eq!(s.test_rects().len(), 3);
-        let (_, open, _, _) = s.recording_receipt_rects();
-        s.click(open.center());
-        let intent = s.take_intents().pop().expect("open intent");
-        assert_eq!(intent.recording_command, Some(RecordingCommand::OpenLast));
-        assert!(!s.is_open());
-
-        s.set_recording_active(true);
-        s.set_recording_finished();
-        let (_, _, reveal, _) = s.recording_receipt_rects();
-        s.click(reveal.center());
-        let intent = s.take_intents().pop().expect("reveal intent");
-        assert_eq!(intent.recording_command, Some(RecordingCommand::RevealLast));
-        assert!(!s.is_open());
-
-        s.set_recording_active(true);
-        s.set_recording_finished();
-        let (_, _, _, dismiss) = s.recording_receipt_rects();
-        s.click(dismiss.center());
-        assert!(s.take_intents().is_empty());
-        assert!(!s.is_open());
-    }
-
-    #[test]
-    fn replay_arming_is_distinct_from_starting_a_recording() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0., 0., 1200., 800.);
-        s.open();
-        s.set_mode(CaptureMode::Recording);
-        s.set_source_mode(SourceMode::Display);
-        s.click(s.action_rects()[1].center());
-
-        let intent = s.take_intents().pop().expect("replay start intent");
-        assert_eq!(intent.replay_command, Some(ReplayCommand::Start));
-        assert_eq!(intent.recording_command, None);
-        assert_eq!(intent.source, SourceMode::Display);
-        assert!(!s.is_open());
-    }
-
-    #[test]
-    fn screenshot_receipt_is_visual_non_modal_and_revealable() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0., 0., 1600., 900.);
-        let preview = CapturePreview {
-            columns: 2,
-            rows: 2,
-            pixels: vec![
-                [12, 18, 28, 255],
-                [48, 96, 180, 255],
-                [26, 30, 38, 255],
-                [84, 138, 220, 255],
-            ],
-        };
-        s.set_screenshot_finished(false, 1_584, 716, preview.clone());
-        let origin = s.screenshot_receipt.as_ref().unwrap().origin;
-        let start = s.screenshot_receipt_rects_at(0.0, origin).0;
-        let start_preview = CaptureStudio::screenshot_receipt_preview_rect(0.0, start, 1_584, 716);
-        assert_eq!(start.width(), 156.0);
-        assert!((start.height() - 77.091).abs() < 0.01);
-        assert_eq!(start_preview.width(), 144.0);
-        assert!((start_preview.height() - 65.091).abs() < 0.01);
-        assert!(start.contains(start_preview.origin()));
-        assert!(start.contains(Point::new(start_preview.x1, start_preview.y1)));
-        s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
-        assert!(s.modal_capture().is_none());
-        let (pill, pin, copy, reveal, dismiss) = s.screenshot_receipt_rects();
-        assert_eq!(pill.width(), 320.0);
-        assert!(pill.contains(copy.center()));
-        assert!(pill.contains(pin.center()));
-        assert!(pill.contains(reveal.center()));
-        assert!(pill.contains(dismiss.center()));
-        assert_eq!(pill.x0 - (s.rect.center().x + 180.0), 12.0);
-        assert_eq!(s.test_rects().len(), 5);
-        let preview_rect = CaptureStudio::screenshot_receipt_preview_rect(1.0, pill, 1_584, 716);
-        s.click(preview_rect.center());
-        assert_eq!(
-            s.take_intents().pop().unwrap().screenshot_command,
-            Some(ScreenshotCommand::MarkupLast)
-        );
-        assert!(!s.is_open());
-
-        s.set_screenshot_finished(false, 1_584, 716, preview.clone());
-        s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
-        let (pill, pin, _, _, _) = s.screenshot_receipt_rects();
-        let pin_spawn = CaptureStudio::screenshot_receipt_preview_rect(1.0, pill, 1_584, 716);
-        s.click(pin.center());
-        let pin_intent = s.take_intents().pop().unwrap();
-        assert_eq!(
-            pin_intent.screenshot_command,
-            Some(ScreenshotCommand::PinLast)
-        );
-        assert_eq!(pin_intent.regions, vec![pin_spawn]);
-        assert!(
-            s.is_open(),
-            "the receipt proxies the source until shell adoption"
-        );
-        assert!(s.screenshot_pin_pending);
-        s.set_screenshot_pinned();
-        assert!(!s.is_open());
-
-        s.set_screenshot_finished(false, 1_584, 716, preview.clone());
-        s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
-        let (_, _, copy, _, _) = s.screenshot_receipt_rects();
-        s.click(copy.center());
-        assert_eq!(
-            s.take_intents().pop().unwrap().screenshot_command,
-            Some(ScreenshotCommand::CopyLast)
-        );
-        assert!(!s.is_open());
-
-        s.set_screenshot_finished(false, 1_584, 716, preview.clone());
-        s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
-        let (_, _, _, reveal, _) = s.screenshot_receipt_rects();
-        s.click(reveal.center());
-        assert_eq!(
-            s.take_intents().pop().unwrap().screenshot_command,
-            Some(ScreenshotCommand::RevealLast)
-        );
-        assert!(!s.is_open());
-
-        // The picker node may be relaid out into a wider content strip after
-        // modal chrome closes; status geometry must still use the compositor
-        // viewport supplied by its overlay pass.
-        s.rect = Rect::new(100., 43., 1_300., 643.);
-        s.set_overlay_rect(Rect::new(0., 0., 800., 600.));
-        s.set_screenshot_finished(true, 800, 600, preview);
-        s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
-        let (pill, _, _, _, dismiss) = s.screenshot_receipt_rects();
-        assert_eq!(pill.width(), 360.0);
-        assert_eq!(pill.height(), 28.0);
-        assert_eq!(pill.center().x, 400.0);
-        assert_eq!(pill.y0, 6.0);
-        assert_eq!(s.test_rects().len(), 1, "copied shots need only Dismiss");
-        s.click(dismiss.center());
-        assert!(s.take_intents().is_empty());
-        assert!(!s.is_open());
-    }
-
-    #[test]
-    fn visual_harness_can_pin_screenshot_receipt_transition() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
-        s.set_screenshot_finished(
-            true,
-            640,
-            360,
-            CapturePreview {
-                columns: 1,
-                rows: 1,
-                pixels: vec![[12, 18, 28, 255]],
-            },
-        );
-        s.set_screenshot_transition_progress(500);
-        let receipt = s.screenshot_receipt.as_ref().unwrap();
-        assert!((CaptureStudio::screenshot_receipt_motion(receipt) - 0.5).abs() < 0.02);
-    }
-
-    #[test]
-    fn replay_indicator_is_non_modal_and_supports_repeat_save_then_stop() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0., 0., 800., 600.);
-        s.set_replay_active(true, AudioCaptureMode::SystemAndMicrophone);
-        s.set_replay_buffered_seconds(30);
-        assert!(s.is_replay_active());
-        assert!(s.modal_capture().is_none());
-        assert_eq!(s.replay_indicator_rects_at(1.0).0.width(), 360.0);
-        assert_eq!(s.replay_status_label(false), "Replay · last 30s");
-        assert_eq!(
-            s.replay_status_detail(),
-            "30-second rolling buffer · system audio + microphone · Super+Shift+R saves now"
-        );
-
-        s.set_replay_buffered_seconds(0);
-        assert_eq!(s.replay_status_label(false), "Buffering…");
-        s.set_replay_buffered_seconds(4);
-        assert_eq!(s.replay_status_label(false), "Buffering · 4s");
-        assert_eq!(s.replay_status_label(true), "Saved · 4s");
-        s.set_replay_buffered_seconds(30);
-
-        let (_, save, stop) = s.replay_indicator_rects();
-        s.click(save.center());
-        assert_eq!(
-            s.take_intents().pop().unwrap().replay_command,
-            Some(ReplayCommand::SaveRecent)
-        );
-        assert!(s.is_replay_active(), "saving must not disarm the buffer");
-
-        s.set_replay_saved();
-        let (play, reveal) = s.replay_saved_action_rects();
-        s.click(play.center());
-        assert_eq!(
-            s.take_intents().pop().unwrap().recording_command,
-            Some(RecordingCommand::OpenLast)
-        );
-        assert!(s.is_replay_active(), "playing must not disarm the buffer");
-        s.click(reveal.center());
-        assert_eq!(
-            s.take_intents().pop().unwrap().recording_command,
-            Some(RecordingCommand::RevealLast)
-        );
-        assert_eq!(
-            s.test_rects()
-                .into_iter()
-                .map(|(name, _)| name)
-                .collect::<Vec<_>>(),
-            vec![
-                "capture.replay-status",
-                "capture.play-replay",
-                "capture.show-replay",
-                "capture.stop-replay"
-            ]
-        );
-
-        s.click(stop.center());
-        assert_eq!(
-            s.take_intents().pop().unwrap().replay_command,
-            Some(ReplayCommand::Stop)
-        );
-
-        for width in [800.0, 1600.0] {
-            s.rect = Rect::new(0.0, 0.0, width, 700.0);
-            let (pill, save, stop) = s.replay_indicator_rects_at(1.0);
-            assert!(pill.contains(save.center()));
-            assert!(pill.contains(stop.center()));
-            assert!(save.x1 + 3.9 <= stop.x0, "Save and Stop need separation");
-            assert_eq!(pill.width(), if width < 1000.0 { 360.0 } else { 276.0 });
-            assert_eq!(pill.height(), if width < 1000.0 { 28.0 } else { 34.0 });
+            target.visible_rect = Rect::new(80.0, 90.0, 500.0, 590.0);
+            assert!(CaptureStudio::target_has_useful_aperture(&target, viewport));
         }
 
-        s.rect = Rect::new(0.0, 0.0, 1600.0, 900.0);
-        let (pill, _, _) = s.replay_indicator_rects_at(1.0);
-        let clock_left = s.rect.center().x - 180.0;
-        assert_eq!(clock_left - pill.x1, 12.0, "wide capsules must not touch");
-    }
-
-    #[test]
-    fn active_recording_pause_resume_is_explicit_and_timer_excludes_pause() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0., 0., 1000., 700.);
-        s.set_recording_active(true);
-        s.recording_started_at = Some(crate::time::now() - Duration::from_secs(10));
-
-        let (_, pause, _) = s.recording_indicator_rects_at(1.0);
-        s.click(pause.center());
-        s.click(pause.center());
-        assert_eq!(s.pending.len(), 1, "pause is idempotent while pending");
-        assert_eq!(
-            s.take_intents()[0].recording_command,
-            Some(RecordingCommand::Pause)
-        );
-        s.set_recording_paused(true);
-        let frozen = s.recording_elapsed();
-        std::thread::sleep(Duration::from_millis(12));
-        assert!(
-            s.recording_elapsed().saturating_sub(frozen) < Duration::from_millis(2),
-            "elapsed recording time freezes while paused"
-        );
-        assert_eq!(s.test_rects()[0].0, "capture.resume");
-
-        let (_, resume, _) = s.recording_indicator_rects_at(1.0);
-        s.click(resume.center());
-        assert_eq!(
-            s.take_intents()[0].recording_command,
-            Some(RecordingCommand::Resume)
-        );
-        s.set_recording_paused(false);
-        assert!(!s.is_recording_paused());
-        assert_eq!(s.test_rects()[0].0, "capture.pause");
-    }
-
-    #[test]
-    fn settled_recording_controls_keep_spacing_at_wide_and_compact_widths() {
-        let mut s = CaptureStudio::default();
-        for width in [800.0, 1600.0] {
-            s.rect = Rect::new(0.0, 0.0, width, 700.0);
-            let (pill, pause, stop) = s.recording_indicator_rects_at(1.0);
-            assert!(pause.x0 >= pill.x0 && pause.x1 <= pill.x1);
-            assert!(pause.y0 >= pill.y0 && pause.y1 <= pill.y1);
-            assert!(stop.x0 >= pill.x0 && stop.x1 <= pill.x1);
-            assert!(stop.y0 >= pill.y0 && stop.y1 <= pill.y1);
-            assert!(
-                pause.x1 + 3.9 <= stop.x0,
-                "pause and Stop need a visual gap"
+        fn offscreen_app_card_names_each_workflow_honestly() {
+            assert_eq!(
+                CaptureStudio::offscreen_guidance(CaptureMode::Screenshot, CaptureExtent::FullApp),
+                "Capture it without moving it onto this screen"
             );
-            assert!(pause.width() >= 30.0 && stop.width() >= 64.0);
-            assert_eq!(pill.width(), if width < 1000.0 { 360.0 } else { 252.0 });
-            assert_eq!(pill.height(), if width < 1000.0 { 28.0 } else { 34.0 });
-            if width < 1000.0 {
-                assert_eq!(pill.center().x, s.rect.center().x);
-                assert_eq!(pill.y0, s.rect.y0 + 6.0);
-            }
+            assert_eq!(
+                CaptureStudio::offscreen_guidance(CaptureMode::Recording, CaptureExtent::FullApp),
+                "Record it without moving it onto this screen"
+            );
+            assert_eq!(
+                CaptureStudio::offscreen_guidance(CaptureMode::Pip, CaptureExtent::FullApp),
+                "Float it live without moving it onto this screen"
+            );
         }
 
-        let launch = s.recording_indicator_rects_at(0.0).0;
-        assert!(
-            launch.y0 >= s.rect.y0 + 120.0,
-            "launch confirmation belongs below app tabs: {launch:?}"
-        );
+        fn symbolic_app_picker_commits_the_same_full_target_for_all_workflows() {
+            let target = CaptureTarget {
+                id: "notes".into(),
+                title: "Notes".into(),
+                app_id: "so.tilo.notes".into(),
+                visible_rect: Rect::new(0.0, 90.0, 84.0, 590.0),
+                virtual_rect: Rect::new(-916.0, 90.0, 84.0, 590.0),
+                complete_rect: Some(Rect::new(-916.0, 90.0, 394.0, 1_278.0)),
+            };
+            for (mode, destination) in [
+                (CaptureMode::Screenshot, CaptureDestination::File),
+                (CaptureMode::Recording, CaptureDestination::File),
+                (CaptureMode::Pip, CaptureDestination::FloatingWindow),
+            ] {
+                let mut studio = CaptureStudio::default();
+                studio.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+                studio.set_candidates(vec![target.clone()]);
+                studio.set_source_mode(SourceMode::Window);
+                studio.set_extent(CaptureExtent::FullApp);
+                studio.set_mode(mode);
+                studio.commit(destination);
 
-        s.rect = Rect::new(0.0, 0.0, 1600.0, 900.0);
-        let (pill, _, _) = s.recording_indicator_rects_at(1.0);
-        let clock_right = s.rect.center().x + 180.0;
-        assert_eq!(pill.x0 - clock_right, 12.0, "wide capsules must not touch");
-
-        let clock = Rect::new(
-            s.rect.center().x - 180.0,
-            s.rect.y0 + 6.0,
-            clock_right,
-            s.rect.y0 + 34.0,
-        );
-        let halfway = s.recording_indicator_rects_at(0.5).0;
-        assert!(
-            halfway.y1 <= s.rect.y0 + 85.0,
-            "the travelling pill must clear the app tab row before moving sideways: {halfway:?}"
-        );
-        assert!(
-            halfway.x0 > s.rect.center().x - 152.0,
-            "the pill should make visible horizontal progress in the quiet lane: {halfway:?}"
-        );
-        for step in 0..=100 {
-            let moving = s.recording_indicator_rects_at(f64::from(step) / 100.0).0;
-            if moving.y0 < clock.y1 && moving.y1 > clock.y0 {
-                assert!(
-                    moving.x0 >= clock.x1 + 8.0,
-                    "pill must clear the clock before rising into its lane: step={step}, \
-                     pill={moving:?}, clock={clock:?}"
+                let intent = studio.take_intents().pop().expect("capture intent");
+                assert_eq!(intent.mode, mode);
+                assert_eq!(intent.destination, destination);
+                assert_eq!(intent.extent, CaptureExtent::FullApp);
+                assert_eq!(intent.targets, vec![target.clone()]);
+                assert_eq!(
+                    intent.recording_command,
+                    (mode == CaptureMode::Recording).then_some(RecordingCommand::Start)
                 );
             }
         }
-    }
 
-    #[test]
-    fn recording_start_names_and_outlines_the_exact_source_without_a_scrim() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
-        s.set_overlay_rect(s.rect);
-        s.set_candidates(vec![CaptureTarget {
-            id: "notes".into(),
-            title: "Notes".into(),
-            app_id: "so.tilo.notes".into(),
-            visible_rect: Rect::new(240.0, 120.0, 1_280.0, 820.0),
-            virtual_rect: Rect::new(-400.0, 120.0, 1_280.0, 820.0),
-            complete_rect: None,
-        }]);
-        s.set_source_mode(SourceMode::Window);
-        s.set_extent(CaptureExtent::FullApp);
-        s.set_recording_active(true);
-
-        assert_eq!(s.recording_scope, "Notes · app window");
-        assert_eq!(s.compact_recording_scope(10), "Notes");
-        assert_eq!(s.recording_scope_icon(), Icon::ChevronLeft);
-        assert_eq!(
-            s.recording_confirmation_regions,
-            vec![Rect::new(240.0, 120.0, 1_280.0, 820.0)]
-        );
-        assert_eq!(s.recording_indicator_rects_at(0.0).0.width(), 304.0);
-        assert!(
-            s.modal_capture().is_none(),
-            "a running recording must never retain the picker scrim"
-        );
-
-        s.set_recording_active(false);
-        assert!(s.recording_confirmation_regions.is_empty());
-        assert_eq!(s.recording_continuation_edges, [false; 4]);
-    }
-
-    #[test]
-    fn recording_request_is_acknowledged_without_claiming_success_or_blocking_apps() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
-        s.set_overlay_rect(s.rect);
-        s.set_mode(CaptureMode::Recording);
-        s.set_source_mode(SourceMode::Display);
-        let launch_rect = s.recording_indicator_rects_at(0.0).0;
-
-        s.commit(CaptureDestination::File);
-
-        assert!(s.is_recording_start_pending());
-        assert!(!s.is_recording_active());
-        assert!(s.is_open());
-        assert!(s.modal_capture().is_none(), "Preparing must be non-modal");
-        assert!(
-            s.test_rects().is_empty(),
-            "Preparing has no speculative controls"
-        );
-        assert_eq!(s.recording_scope, "Screen");
-        assert_eq!(s.recording_indicator_rects_at(0.0).0, launch_rect);
-        assert_eq!(
-            s.take_intents()[0].recording_command,
-            Some(RecordingCommand::Start)
-        );
-        assert!(
-            s.is_recording_start_pending(),
-            "taking the intent is not compositor success"
-        );
-
-        s.open();
-        assert!(
-            s.is_recording_start_pending(),
-            "repeating the shortcut must not reopen the picker"
-        );
-        s.set_recording_active(true);
-        assert!(!s.is_recording_start_pending());
-        assert!(s.is_recording_active());
-        assert_eq!(
-            s.recording_indicator_rects_at(0.0).0,
-            launch_rect,
-            "Preparing and Recording must hand off in the same geometry"
-        );
-    }
-
-    #[test]
-    fn failed_recording_setup_removes_the_preparing_surface() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
-        s.set_mode(CaptureMode::Recording);
-        s.set_source_mode(SourceMode::Display);
-        s.commit(CaptureDestination::File);
-        assert!(s.is_recording_start_pending());
-
-        s.set_recording_active(false);
-
-        assert!(!s.is_recording_start_pending());
-        assert!(!s.is_recording_active());
-        assert!(!s.is_open());
-    }
-
-    #[test]
-    fn screen_and_app_capture_do_not_inherit_picker_safe_insets() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
-        s.set_overlay_rect(s.rect);
-
-        s.set_source_mode(SourceMode::Display);
-        assert_eq!(
-            s.active_regions(),
-            vec![s.rect],
-            "Screen means the complete clean output, not the area between picker bars"
-        );
-
-        let app = Rect::new(18.0, 12.0, 1_582.0, 888.0);
-        s.set_candidates(vec![CaptureTarget {
-            id: "notes".into(),
-            title: "Notes".into(),
-            app_id: "so.tilo.notes".into(),
-            visible_rect: app,
-            virtual_rect: app,
-            complete_rect: None,
-        }]);
-        s.set_source_mode(SourceMode::Window);
-        assert_eq!(
-            s.active_regions(),
-            vec![app],
-            "temporary picker chrome must not crop a visible app"
-        );
-    }
-
-    #[test]
-    fn full_app_start_confirms_which_screen_edges_continue() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
-        s.set_overlay_rect(s.rect);
-        s.set_candidates(vec![CaptureTarget {
-            id: "canvas".into(),
-            title: "Canvas".into(),
-            app_id: "so.tilo.canvas".into(),
-            visible_rect: Rect::new(0.0, 80.0, 1_600.0, 900.0),
-            virtual_rect: Rect::new(-720.0, 80.0, 2_240.0, 1_480.0),
-            complete_rect: None,
-        }]);
-        s.set_source_mode(SourceMode::Window);
-        s.set_extent(CaptureExtent::FullApp);
-        s.set_recording_active(true);
-
-        assert_eq!(s.recording_continuation_edges, [true, false, true, true]);
-        assert_eq!(s.recording_scope, "Canvas · app window");
-        assert_eq!(s.recording_scope_icon(), Icon::Layers);
-    }
-
-    #[test]
-    fn settled_recording_scope_uses_symbolic_source_identity() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
-        s.set_overlay_rect(s.rect);
-        s.set_source_mode(SourceMode::Display);
-        s.set_recording_active(true);
-
-        assert_eq!(s.recording_scope, "Screen");
-        assert_eq!(s.recording_scope_icon(), Icon::Monitor);
-        assert_eq!(s.compact_recording_scope(10), "Screen");
-        assert_eq!(s.recording_status_detail(), "Screen · no audio");
-
-        s.include_pointer = true;
-        s.audio = AudioCaptureMode::SystemAndMicrophone;
-        assert_eq!(
-            s.recording_status_detail(),
-            "Screen · pointer · system audio + microphone"
-        );
-    }
-
-    #[test]
-    fn visual_harness_can_pin_each_recording_transition_phase() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
-        s.set_recording_active(true);
-
-        for (permille, expected) in [(0, 0.0), (500, 0.5), (1_000, 1.0)] {
-            s.set_recording_transition_progress(permille);
-            assert!((s.recording_motion() - expected).abs() < 0.01);
+        fn full_app_can_select_a_completely_offscreen_candidate() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0., 0., 1200., 800.);
+            s.set_candidates(vec![CaptureTarget {
+                id: "offscreen-notes".into(),
+                title: "Notes".into(),
+                app_id: "org.tilo.Notes".into(),
+                visible_rect: Rect::ZERO,
+                virtual_rect: Rect::new(1400., 80., 2300., 720.),
+                complete_rect: None,
+            }]);
+            s.set_source_mode(SourceMode::Window);
+            s.set_extent(CaptureExtent::FullApp);
+            assert!(s.active_regions().is_empty());
+            assert!(s.has_capture_source());
+            s.commit(CaptureDestination::File);
+            let intent = s.take_intents().pop().expect("full offscreen app intent");
+            assert_eq!(intent.targets[0].id, "offscreen-notes");
+            assert!(intent.regions.is_empty());
         }
-    }
 
-    #[test]
-    fn recording_dock_transition_never_loses_its_semantic_label() {
-        for step in 0..=100 {
-            let progress = f64::from(step) / 100.0;
-            let (intro, settled) = CaptureStudio::recording_label_alphas(progress);
-            assert!((intro + settled - 1.0).abs() < 0.001);
+        fn arrows_navigate_app_targets_scope_and_multi_layout_with_wraparound() {
+            let mut s = CaptureStudio::default();
+            s.set_candidates(vec![
+                CaptureTarget {
+                    id: "notes".into(),
+                    title: "Notes".into(),
+                    app_id: "org.tilo.Notes".into(),
+                    visible_rect: Rect::new(0.0, 0.0, 400.0, 400.0),
+                    virtual_rect: Rect::new(0.0, 0.0, 400.0, 400.0),
+                    complete_rect: None,
+                },
+                CaptureTarget {
+                    id: "files".into(),
+                    title: "Files".into(),
+                    app_id: "org.tilo.Files".into(),
+                    visible_rect: Rect::new(400.0, 0.0, 800.0, 400.0),
+                    virtual_rect: Rect::new(400.0, 0.0, 800.0, 400.0),
+                    complete_rect: None,
+                },
+            ]);
+            s.set_source_mode(SourceMode::Window);
+
+            assert_eq!(s.selected_target.as_deref(), Some("notes"));
+            assert!(s.navigate_picker(NamedKey::ArrowRight));
+            assert_eq!(s.selected_target.as_deref(), Some("files"));
+            assert!(s.navigate_picker(NamedKey::ArrowRight));
+            assert_eq!(s.selected_target.as_deref(), Some("notes"));
+            assert!(s.navigate_picker(NamedKey::ArrowLeft));
+            assert_eq!(s.selected_target.as_deref(), Some("files"));
+
+            assert_eq!(s.extent, CaptureExtent::Visible);
+            assert!(s.navigate_picker(NamedKey::ArrowDown));
+            assert_eq!(s.extent, CaptureExtent::FullApp);
+            assert!(s.navigate_picker(NamedKey::ArrowDown));
+            assert_eq!(s.extent, CaptureExtent::WholeStrip);
+            assert!(s.navigate_picker(NamedKey::ArrowDown));
+            assert_eq!(s.extent, CaptureExtent::Visible);
+            assert!(s.navigate_picker(NamedKey::ArrowUp));
+            assert_eq!(s.extent, CaptureExtent::WholeStrip);
+
+            s.set_source_mode(SourceMode::Multi);
+            assert_eq!(s.pip_layout, PipLayout::Auto);
+            assert!(s.navigate_picker(NamedKey::ArrowRight));
+            assert_eq!(s.pip_layout, PipLayout::Grid);
+            assert!(s.navigate_picker(NamedKey::ArrowDown));
+            assert_eq!(s.pip_layout, PipLayout::Stack);
+            assert!(s.navigate_picker(NamedKey::ArrowRight));
+            assert_eq!(s.pip_layout, PipLayout::Auto);
+            assert!(s.navigate_picker(NamedKey::ArrowLeft));
+            assert_eq!(s.pip_layout, PipLayout::Stack);
         }
+
+        picker_context_advances_from_instruction_to_ready_state();
+        tiny_app_continuation_uses_symbolic_card_instead_of_cramped_badge();
+        offscreen_app_card_names_each_workflow_honestly();
+        symbolic_app_picker_commits_the_same_full_target_for_all_workflows();
+        full_app_can_select_a_completely_offscreen_candidate();
+        arrows_navigate_app_targets_scope_and_multi_layout_with_wraparound();
     }
 
     #[test]
-    fn source_confirmation_yields_to_the_docked_recording_pill() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
-        s.set_recording_active(true);
+    fn region_selection_multi_edits_and_offscreen_extents() {
+        fn multi_keeps_each_region() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0., 0., 1200., 800.);
+            s.open();
+            s.set_mode(CaptureMode::Pip);
+            s.set_source_mode(SourceMode::Multi);
+            s.regions.extend([
+                Rect::new(20., 100., 300., 300.),
+                Rect::new(500., 120., 900., 420.),
+            ]);
+            s.commit(CaptureDestination::FloatingWindow);
+            let i = s.take_intents().pop().unwrap();
+            assert_eq!(i.regions.len(), 2);
+            assert_eq!(i.destination, CaptureDestination::FloatingWindow);
+            assert_eq!(i.source, SourceMode::Multi);
+            assert_eq!(i.mode, CaptureMode::Pip);
+        }
 
-        s.set_recording_transition_progress(0);
-        assert!(s.recording_scope_confirmation_alpha() > 0.70);
-        s.set_recording_transition_progress(500);
-        assert!(
-            s.recording_scope_confirmation_alpha() < 0.10,
-            "source confirmation should be nearly gone halfway to the top bar"
-        );
-        s.set_recording_transition_progress(1_000);
-        assert_eq!(s.recording_scope_confirmation_alpha(), 0.0);
-    }
+        fn multi_new_drag_replaces_unless_shift_extends_selection() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+            s.open();
+            s.set_source_mode(SourceMode::Multi);
+            s.regions.push(Rect::new(80.0, 100.0, 260.0, 240.0));
 
-    #[test]
-    fn visual_harness_pause_phase_does_not_drift_with_wall_time() {
-        let mut s = CaptureStudio::default();
-        s.set_recording_active(true);
-        s.set_recording_paused(true);
-        s.set_recording_state_transition_progress(500);
+            s.click_with_additive(Point::new(420.0, 180.0), false);
+            s.drag
+                .as_mut()
+                .unwrap()
+                .set_current(Point::new(620.0, 360.0));
+            s.finish_region_drag();
+            assert_eq!(s.regions, vec![Rect::new(420.0, 180.0, 620.0, 360.0)]);
 
-        let first = s.recording_state_motion();
-        std::thread::sleep(Duration::from_millis(12));
-        assert_eq!(first, 0.5);
-        assert_eq!(s.recording_state_motion(), first);
-    }
+            s.click_with_additive(Point::new(90.0, 390.0), true);
+            s.drag
+                .as_mut()
+                .unwrap()
+                .set_current(Point::new(290.0, 560.0));
+            s.finish_region_drag();
+            assert_eq!(s.regions.len(), 2, "Shift extends the existing selection");
+            assert_eq!(s.regions[0], Rect::new(420.0, 180.0, 620.0, 360.0));
+            assert_eq!(s.regions[1], Rect::new(90.0, 390.0, 290.0, 560.0));
+        }
 
-    #[test]
-    fn visual_harness_receipt_phase_outlives_slow_png_rendering() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
-        s.set_overlay_rect(s.rect);
-        s.set_recording_active(true);
-        s.set_recording_finished();
-        s.set_recording_receipt_transition_progress(500);
-        s.recording_finished_at = Some(crate::time::now() - RECORDING_RECEIPT_DURATION * 2);
+        fn region_selection_reaches_output_edges_and_chrome_prefers_outside() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+            s.open();
+            s.click(Point::new(200.0, 300.0));
+            s.drag.as_mut().unwrap().set_current(Point::new(500.0, 0.0));
+            assert_eq!(s.active_regions()[0].y0, 0.0);
+            s.drag
+                .as_mut()
+                .unwrap()
+                .set_current(Point::new(500.0, 600.0));
+            assert_eq!(s.active_regions()[0].y1, 600.0);
 
-        s.draw_recording_indicator(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-        );
+            let middle = Rect::new(180.0, 180.0, 500.0, 380.0);
+            let outside = CaptureStudio::region_chrome_layout(middle, 90.0, s.rect, &[middle]);
+            assert!(outside.outside);
+            assert_eq!(outside.metadata.y1, middle.y0 - 6.0);
 
-        assert!(s.recording_finished_at.is_some());
-        assert!(s.is_open());
-        assert_eq!(s.recording_receipt_progress_override, Some(0.5));
-        assert!(!s.needs_animation_frame());
-    }
+            let full = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let inside = CaptureStudio::region_chrome_layout(full, 90.0, s.rect, &[full]);
+            assert!(
+                !inside.outside,
+                "a full-output selection has no outside lane"
+            );
+            assert!(full.contains(inside.metadata.center()));
+        }
 
-    #[test]
-    fn full_app_can_select_a_completely_offscreen_candidate() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0., 0., 1200., 800.);
-        s.set_candidates(vec![CaptureTarget {
-            id: "offscreen-notes".into(),
-            title: "Notes".into(),
-            app_id: "org.tilo.Notes".into(),
-            visible_rect: Rect::ZERO,
-            virtual_rect: Rect::new(1400., 80., 2300., 720.),
-            complete_rect: None,
-        }]);
-        s.set_source_mode(SourceMode::Window);
-        s.set_extent(CaptureExtent::FullApp);
-        assert!(s.active_regions().is_empty());
-        assert!(s.has_capture_source());
-        s.commit(CaptureDestination::File);
-        let intent = s.take_intents().pop().expect("full offscreen app intent");
-        assert_eq!(intent.targets[0].id, "offscreen-notes");
-        assert!(intent.regions.is_empty());
-    }
+        fn existing_region_moves_resizes_nudges_and_clamps_without_restarting() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+            s.open();
+            s.set_mode(CaptureMode::Screenshot);
+            s.set_source_mode(SourceMode::Region);
+            s.regions.push(Rect::new(100.0, 150.0, 420.0, 390.0));
 
-    #[test]
-    fn arrows_navigate_app_targets_scope_and_multi_layout_with_wraparound() {
-        let mut s = CaptureStudio::default();
-        s.set_candidates(vec![
-            CaptureTarget {
+            let original = s.regions[0];
+            s.click(original.center());
+            assert!(matches!(s.drag, Some(DragSelection::Move { .. })));
+            s.drag
+                .as_mut()
+                .unwrap()
+                .set_current(original.center() + vello::kurbo::Vec2::new(55.0, -24.0));
+            assert_eq!(
+                s.active_regions(),
+                vec![original + vello::kurbo::Vec2::new(55.0, -24.0)]
+            );
+            s.finish_region_drag();
+            assert_eq!(s.regions, s.active_regions());
+
+            let moved = s.regions[0];
+            let south_east = Point::new(moved.x1, moved.y1);
+            s.click(south_east);
+            assert!(matches!(s.drag, Some(DragSelection::Resize { .. })));
+            s.drag
+                .as_mut()
+                .unwrap()
+                .set_current(Point::new(900.0, 900.0));
+            let resized = s.active_regions()[0];
+            assert_eq!(resized.x0, moved.x0);
+            assert_eq!(resized.y0, moved.y0);
+            assert_eq!(resized.x1, s.selection_bounds().x1);
+            assert_eq!(resized.y1, s.selection_bounds().y1);
+            s.finish_region_drag();
+
+            let before_nudge = s.regions[0];
+            assert!(s.nudge_region(NamedKey::ArrowLeft, 10.0));
+            assert_eq!(s.regions[0].x0, before_nudge.x0 - 10.0);
+            assert_eq!(s.regions[0].x1, before_nudge.x1 - 10.0);
+
+            // Escape during a correction cancels only that correction; the picker
+            // and last committed geometry remain intact.
+            let committed = s.regions[0];
+            s.click(committed.center());
+            assert!(s.drag.take().is_some());
+            assert_eq!(s.regions[0], committed);
+            assert!(s.is_open());
+        }
+
+        fn pip_has_one_live_primary_action_and_region_removal() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0., 0., 1200., 800.);
+            s.open();
+            s.include_pointer = true;
+            s.set_mode(CaptureMode::Pip);
+            s.set_source_mode(SourceMode::Multi);
+            s.regions.extend([
+                Rect::new(100., 120., 420., 340.),
+                Rect::new(500., 180., 900., 520.),
+            ]);
+            let actions = s.action_rects();
+            assert_eq!(actions[0], Rect::ZERO);
+            assert!(actions[1].area() > 0.0);
+            assert_eq!(actions[2], Rect::ZERO);
+            assert!(
+                !s.include_pointer,
+                "PiP does not inherit screenshot cursor trails"
+            );
+
+            let first = s.regions[0];
+            let remove =
+                CaptureStudio::region_chrome_layout(first, 96.0, s.rect, &s.regions).remove;
+            s.region_remove_rects = vec![remove, Rect::ZERO];
+            s.click(remove.center());
+            assert_eq!(s.regions, vec![Rect::new(500., 180., 900., 520.)]);
+        }
+
+        fn offscreen_extent_survives_into_compositor_intent() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0., 0., 1200., 800.);
+            s.open();
+            s.set_candidates(vec![CaptureTarget {
                 id: "notes".into(),
                 title: "Notes".into(),
                 app_id: "org.tilo.Notes".into(),
-                visible_rect: Rect::new(0.0, 0.0, 400.0, 400.0),
-                virtual_rect: Rect::new(0.0, 0.0, 400.0, 400.0),
-                complete_rect: None,
-            },
-            CaptureTarget {
-                id: "files".into(),
-                title: "Files".into(),
-                app_id: "org.tilo.Files".into(),
-                visible_rect: Rect::new(400.0, 0.0, 800.0, 400.0),
-                virtual_rect: Rect::new(400.0, 0.0, 800.0, 400.0),
-                complete_rect: None,
-            },
-        ]);
-        s.set_source_mode(SourceMode::Window);
-
-        assert_eq!(s.selected_target.as_deref(), Some("notes"));
-        assert!(s.navigate_picker(NamedKey::ArrowRight));
-        assert_eq!(s.selected_target.as_deref(), Some("files"));
-        assert!(s.navigate_picker(NamedKey::ArrowRight));
-        assert_eq!(s.selected_target.as_deref(), Some("notes"));
-        assert!(s.navigate_picker(NamedKey::ArrowLeft));
-        assert_eq!(s.selected_target.as_deref(), Some("files"));
-
-        assert_eq!(s.extent, CaptureExtent::Visible);
-        assert!(s.navigate_picker(NamedKey::ArrowDown));
-        assert_eq!(s.extent, CaptureExtent::FullApp);
-        assert!(s.navigate_picker(NamedKey::ArrowDown));
-        assert_eq!(s.extent, CaptureExtent::WholeStrip);
-        assert!(s.navigate_picker(NamedKey::ArrowDown));
-        assert_eq!(s.extent, CaptureExtent::Visible);
-        assert!(s.navigate_picker(NamedKey::ArrowUp));
-        assert_eq!(s.extent, CaptureExtent::WholeStrip);
-
-        s.set_source_mode(SourceMode::Multi);
-        assert_eq!(s.pip_layout, PipLayout::Auto);
-        assert!(s.navigate_picker(NamedKey::ArrowRight));
-        assert_eq!(s.pip_layout, PipLayout::Grid);
-        assert!(s.navigate_picker(NamedKey::ArrowDown));
-        assert_eq!(s.pip_layout, PipLayout::Stack);
-        assert!(s.navigate_picker(NamedKey::ArrowRight));
-        assert_eq!(s.pip_layout, PipLayout::Auto);
-        assert!(s.navigate_picker(NamedKey::ArrowLeft));
-        assert_eq!(s.pip_layout, PipLayout::Stack);
-    }
-
-    /// The centring helper follows the renderer's measured line box — not
-    /// the font size, not a fraction of it — so it holds when the renderer
-    /// scales type. `(top + height / 2) == centre` at both scales.
-    /// Both top-bar groups hug their buttons: one inset before the first,
-    /// one after the last, one gap between neighbours — the source group
-    /// used to trail ~50 px of empty pill after its last button and the
-    /// mode group had no trailing inset at all.
-    #[test]
-    fn top_bar_groups_hug_their_buttons_with_one_inset() {
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0.0, 0.0, 1400.0, 900.0);
-        let groups = [
-            (s.mode_group_rect(), s.mode_rects().to_vec()),
-            (s.source_group_rect(), s.source_rects().to_vec()),
-        ];
-        for (group, buttons) in &groups {
-            let first = buttons.first().expect("a group has buttons");
-            let last = buttons.last().expect("a group has buttons");
-            assert!(
-                (first.x0 - group.x0 - TOP_GROUP_PAD).abs() < 1e-9,
-                "leading inset of {group:?} is {}",
-                first.x0 - group.x0
+                visible_rect: Rect::new(100., 100., 900., 600.),
+                virtual_rect: Rect::new(100., 100., 1500., 900.),
+                complete_rect: Some(Rect::new(100., 100., 1500., 1900.)),
+            }]);
+            s.set_source_mode(SourceMode::Window);
+            s.set_extent(CaptureExtent::FullApp);
+            s.commit(CaptureDestination::File);
+            let i = s.take_intents().pop().unwrap();
+            assert_eq!(i.source, SourceMode::Window);
+            assert_eq!(i.extent, CaptureExtent::FullApp);
+            assert_eq!(
+                i.targets[0].virtual_rect,
+                Rect::new(100., 100., 1500., 900.)
             );
-            assert!(
-                (group.x1 - last.x1 - TOP_GROUP_PAD).abs() < 1e-9,
-                "trailing inset of {group:?} is {}",
-                group.x1 - last.x1
+            assert_eq!(
+                i.targets[0].full_rect(),
+                Rect::new(100., 100., 1500., 1900.),
+                "App selection keeps the provider's complete document geometry",
             );
-            for pair in buttons.windows(2) {
-                assert!((pair[1].x0 - pair[0].x1 - TOP_BUTTON_GAP).abs() < 1e-9);
-            }
-            for b in buttons {
-                assert!((b.width() - TOP_BUTTON_W).abs() < 1e-9);
-                assert!(
-                    b.height() >= 32.0,
-                    "{b:?} is under the minimum pointer target"
-                );
-            }
+            assert_eq!(
+                i.targets[0].full_app_rect(CaptureMode::Recording),
+                i.targets[0].virtual_rect,
+                "live video follows the app window rather than squeezing a complete document",
+            );
+            assert_eq!(
+                i.targets[0].full_app_rect(CaptureMode::Pip),
+                i.targets[0].virtual_rect,
+            );
+            assert_eq!(
+                i.targets[0].full_app_rect(CaptureMode::Screenshot),
+                i.targets[0].full_rect(),
+                "still capture retains the creative complete-document export",
+            );
         }
-        let (mode, source) = (s.mode_group_rect(), s.source_group_rect());
-        assert!((source.x0 - mode.x1 - TOP_GROUP_GAP).abs() < 1e-9);
-        let bar = s.top_bar();
-        assert!((bar.x0 - mode.x0).abs() < 1e-9 && (bar.x1 - source.x1).abs() < 1e-9);
+
+        multi_keeps_each_region();
+        multi_new_drag_replaces_unless_shift_extends_selection();
+        region_selection_reaches_output_edges_and_chrome_prefers_outside();
+        existing_region_moves_resizes_nudges_and_clamps_without_restarting();
+        pip_has_one_live_primary_action_and_region_removal();
+        offscreen_extent_survives_into_compositor_intent();
     }
 
-    /// The bar's geometry is the tokens' arithmetic, not a restatement of
-    /// it: the buttons come out exactly one `bar_height` tall inside a bar
-    /// that is that plus an `s2` inset top and bottom, and the group inset
-    /// and gap are the same `s2`.
     #[test]
-    fn top_bar_buttons_are_one_bar_height_tall_inside_token_insets() {
-        let theme = Theme::dark();
-        let tokens = &theme.tokens;
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0.0, 0.0, 1400.0, 900.0);
-        let bar = s.top_bar();
-        let button = s.mode_rects()[0];
-        assert!((button.height() - f64::from(tokens.metrics.bar_height)).abs() < 1e-9);
-        assert!((bar.height() - button.height() - 2.0 * f64::from(tokens.spacing.s2)).abs() < 1e-9);
-        assert!((TOP_GROUP_PAD - f64::from(tokens.spacing.s2)).abs() < 1e-9);
-        assert!((TOP_GROUP_GAP - f64::from(tokens.spacing.s2)).abs() < 1e-9);
-        assert!((TOP_BUTTON_W - bar.height()).abs() < 1e-9);
-    }
-
-    /// The docked recorder keeps its designed width at 1× and grows only
-    /// when the type does: at 2× the pill widens around its label and the
-    /// Stop button around its caption, and every control stays inside.
-    #[test]
-    fn docked_recording_pill_grows_with_its_content_above_one_x() {
-        let mut widths = Vec::new();
-        for scale in [1.0_f32, 2.0] {
-            // A matched host: the theme's type steps carry the scale the
-            // renderer is set to, so captions paint at 2x, not 4x (X1).
-            let theme = Theme::dark()
-                .with_reduce_motion(true)
-                .with_text_scale(scale);
+    fn capture_options_delay_audio_and_display_sources() {
+        fn delayed_capture_is_non_modal_and_only_queues_after_expiry() {
             let mut s = CaptureStudio::default();
-            s.rect = Rect::new(0.0, 0.0, 1400.0, 900.0);
+            s.rect = Rect::new(0., 0., 1200., 800.);
+            s.open();
+            s.set_source_mode(SourceMode::Display);
+            s.click(s.delay_rect().center());
+            assert_eq!(s.delay_seconds, 3);
+
+            s.commit(CaptureDestination::File);
+            assert!(s.open, "the lightweight countdown remains present");
+            assert!(s.modal_capture().is_none(), "apps must remain interactive");
+            assert!(s.take_intents().is_empty(), "capture is not queued early");
+
+            s.armed_capture.as_mut().unwrap().started_at =
+                crate::time::now() - Duration::from_secs(4);
+            let intent = s.take_intents().pop().expect("expired delayed intent");
+            assert_eq!(intent.destination, CaptureDestination::File);
+            assert_eq!(intent.source, SourceMode::Display);
+            assert!(!s.open);
+        }
+
+        fn audio_sources_and_delay_keep_independent_slots() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0., 0., 1200., 800.);
             s.open();
             s.set_mode(CaptureMode::Recording);
-            s.recording_scope = "Terminal · app window".to_string();
+            s.set_audio_available(true, true);
+            let pointer = s.pointer_rect();
+            let system = s.system_audio_rect();
+            let microphone = s.microphone_rect();
+            let delay = s.delay_rect();
+            assert!(pointer.x1 < system.x0);
+            assert!(system.x1 < microphone.x0);
+            assert!(microphone.x1 < delay.x0);
+            assert!(delay.x1 < s.action_rects()[2].x0);
+
+            s.click(system.center());
+            assert_eq!(s.audio, AudioCaptureMode::System);
+            s.click(microphone.center());
+            assert_eq!(s.audio, AudioCaptureMode::SystemAndMicrophone);
+
+            s.click(delay.center());
+            assert_eq!(s.delay_seconds, 3);
+            s.click(delay.center());
+            assert_eq!(s.delay_seconds, 10);
+            s.click(delay.center());
+            assert_eq!(s.delay_seconds, 0);
+        }
+
+        fn display_source_is_whole_output_after_picker_controls_leave() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0., 0., 1000., 700.);
+            s.open();
+            s.set_source_mode(SourceMode::Display);
+            let r = s.active_regions()[0];
+            assert_eq!(r, s.rect);
+        }
+
+        fn screen_and_app_capture_do_not_inherit_picker_safe_insets() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+            s.set_overlay_rect(s.rect);
+
+            s.set_source_mode(SourceMode::Display);
+            assert_eq!(
+                s.active_regions(),
+                vec![s.rect],
+                "Screen means the complete clean output, not the area between picker bars"
+            );
+
+            let app = Rect::new(18.0, 12.0, 1_582.0, 888.0);
+            s.set_candidates(vec![CaptureTarget {
+                id: "notes".into(),
+                title: "Notes".into(),
+                app_id: "so.tilo.notes".into(),
+                visible_rect: app,
+                virtual_rect: app,
+                complete_rect: None,
+            }]);
+            s.set_source_mode(SourceMode::Window);
+            assert_eq!(
+                s.active_regions(),
+                vec![app],
+                "temporary picker chrome must not crop a visible app"
+            );
+        }
+
+        fn full_app_start_confirms_which_screen_edges_continue() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+            s.set_overlay_rect(s.rect);
+            s.set_candidates(vec![CaptureTarget {
+                id: "canvas".into(),
+                title: "Canvas".into(),
+                app_id: "so.tilo.canvas".into(),
+                visible_rect: Rect::new(0.0, 80.0, 1_600.0, 900.0),
+                virtual_rect: Rect::new(-720.0, 80.0, 2_240.0, 1_480.0),
+                complete_rect: None,
+            }]);
+            s.set_source_mode(SourceMode::Window);
+            s.set_extent(CaptureExtent::FullApp);
             s.set_recording_active(true);
-            s.set_recording_transition_progress(1000);
-            let mut tr = TextRenderer::new();
-            tr.set_text_scale(scale);
-            let mut scene = Scene::new();
-            s.draw_recording_indicator(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-            let (pill, pause, stop) = s.recording_indicator_rects();
-            widths.push(pill.width());
+
+            assert_eq!(s.recording_continuation_edges, [true, false, true, true]);
+            assert_eq!(s.recording_scope, "Canvas · app window");
+            assert_eq!(s.recording_scope_icon(), Icon::Layers);
+        }
+
+        delayed_capture_is_non_modal_and_only_queues_after_expiry();
+        audio_sources_and_delay_keep_independent_slots();
+        display_source_is_whole_output_after_picker_controls_leave();
+        screen_and_app_capture_do_not_inherit_picker_safe_insets();
+        full_app_start_confirms_which_screen_edges_continue();
+    }
+
+    #[test]
+    fn active_recording_stops_pauses_and_leaves_non_modal_receipts() {
+        fn active_recording_can_stop_without_reselecting_a_source() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0., 0., 1000., 700.);
+            s.set_recording_active(true);
+            assert!(s.is_open(), "recording confirmation opens automatically");
+            assert!(s.modal_capture().is_none(), "recording status is non-modal");
+            s.regions.clear();
+            s.commit(CaptureDestination::File);
+            s.commit(CaptureDestination::File);
+            assert_eq!(s.pending.len(), 1, "Stop is idempotent while flushing");
+            let intent = s.take_intents().pop().expect("stop intent");
+            assert_eq!(intent.mode, CaptureMode::Recording);
+            assert_eq!(intent.recording_command, Some(RecordingCommand::Stop));
+            assert!(intent.regions.is_empty());
             assert!(
-                pause.x0 >= pill.x0 && stop.x1 <= pill.x1 && pause.x1 + 3.9 <= stop.x0,
-                "at {scale}x the controls left the pill: {pill:?} {pause:?} {stop:?}"
+                s.is_open(),
+                "indicator remains until compositor confirmation"
             );
-            let (stop_w, _) = tr.measure_weighted(
-                "Stop",
-                renderer_type_size(&tr, theme.tokens.typography.scale.xs),
-                None,
-                TextWeight::Semibold,
+            s.set_recording_active(false);
+            assert!(!s.is_open());
+        }
+
+        fn successful_stop_becomes_non_modal_recording_actions_receipt() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0., 0., 1200., 800.);
+            s.set_recording_active(true);
+            s.recording_started_at = Some(crate::time::now() - Duration::from_secs(42));
+            s.set_recording_finished();
+
+            assert!(!s.is_recording_active());
+            assert!(s.is_open());
+            assert!(s.modal_capture().is_none());
+            assert_eq!(s.recording_finished_duration.as_secs(), 42);
+            assert_eq!(s.test_rects().len(), 3);
+            let (_, open, _, _) = s.recording_receipt_rects();
+            s.click(open.center());
+            let intent = s.take_intents().pop().expect("open intent");
+            assert_eq!(intent.recording_command, Some(RecordingCommand::OpenLast));
+            assert!(!s.is_open());
+
+            s.set_recording_active(true);
+            s.set_recording_finished();
+            let (_, _, reveal, _) = s.recording_receipt_rects();
+            s.click(reveal.center());
+            let intent = s.take_intents().pop().expect("reveal intent");
+            assert_eq!(intent.recording_command, Some(RecordingCommand::RevealLast));
+            assert!(!s.is_open());
+
+            s.set_recording_active(true);
+            s.set_recording_finished();
+            let (_, _, _, dismiss) = s.recording_receipt_rects();
+            s.click(dismiss.center());
+            assert!(s.take_intents().is_empty());
+            assert!(!s.is_open());
+        }
+
+        fn active_recording_pause_resume_is_explicit_and_timer_excludes_pause() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0., 0., 1000., 700.);
+            s.set_recording_active(true);
+            s.recording_started_at = Some(crate::time::now() - Duration::from_secs(10));
+
+            let (_, pause, _) = s.recording_indicator_rects_at(1.0);
+            s.click(pause.center());
+            s.click(pause.center());
+            assert_eq!(s.pending.len(), 1, "pause is idempotent while pending");
+            assert_eq!(
+                s.take_intents()[0].recording_command,
+                Some(RecordingCommand::Pause)
+            );
+            s.set_recording_paused(true);
+            let frozen = s.recording_elapsed();
+            std::thread::sleep(Duration::from_millis(12));
+            assert!(
+                s.recording_elapsed().saturating_sub(frozen) < Duration::from_millis(2),
+                "elapsed recording time freezes while paused"
+            );
+            assert_eq!(s.test_rects()[0].0, "capture.resume");
+
+            let (_, resume, _) = s.recording_indicator_rects_at(1.0);
+            s.click(resume.center());
+            assert_eq!(
+                s.take_intents()[0].recording_command,
+                Some(RecordingCommand::Resume)
+            );
+            s.set_recording_paused(false);
+            assert!(!s.is_recording_paused());
+            assert_eq!(s.test_rects()[0].0, "capture.pause");
+        }
+
+        fn settled_recording_controls_keep_spacing_at_wide_and_compact_widths() {
+            let mut s = CaptureStudio::default();
+            for width in [800.0, 1600.0] {
+                s.rect = Rect::new(0.0, 0.0, width, 700.0);
+                let (pill, pause, stop) = s.recording_indicator_rects_at(1.0);
+                assert!(pause.x0 >= pill.x0 && pause.x1 <= pill.x1);
+                assert!(pause.y0 >= pill.y0 && pause.y1 <= pill.y1);
+                assert!(stop.x0 >= pill.x0 && stop.x1 <= pill.x1);
+                assert!(stop.y0 >= pill.y0 && stop.y1 <= pill.y1);
+                assert!(
+                    pause.x1 + 3.9 <= stop.x0,
+                    "pause and Stop need a visual gap"
+                );
+                assert!(pause.width() >= 30.0 && stop.width() >= 64.0);
+                assert_eq!(pill.width(), if width < 1000.0 { 360.0 } else { 252.0 });
+                assert_eq!(pill.height(), if width < 1000.0 { 28.0 } else { 34.0 });
+                if width < 1000.0 {
+                    assert_eq!(pill.center().x, s.rect.center().x);
+                    assert_eq!(pill.y0, s.rect.y0 + 6.0);
+                }
+            }
+
+            let launch = s.recording_indicator_rects_at(0.0).0;
+            assert!(
+                launch.y0 >= s.rect.y0 + 120.0,
+                "launch confirmation belongs below app tabs: {launch:?}"
+            );
+
+            s.rect = Rect::new(0.0, 0.0, 1600.0, 900.0);
+            let (pill, _, _) = s.recording_indicator_rects_at(1.0);
+            let clock_right = s.rect.center().x + 180.0;
+            assert_eq!(pill.x0 - clock_right, 12.0, "wide capsules must not touch");
+
+            let clock = Rect::new(
+                s.rect.center().x - 180.0,
+                s.rect.y0 + 6.0,
+                clock_right,
+                s.rect.y0 + 34.0,
+            );
+            let halfway = s.recording_indicator_rects_at(0.5).0;
+            assert!(
+                halfway.y1 <= s.rect.y0 + 85.0,
+                "the travelling pill must clear the app tab row before moving sideways: {halfway:?}"
             );
             assert!(
-                stop.width() >= 22.0 + f64::from(stop_w) + 8.0 - 1e-6,
-                "at {scale}x Stop {stop:?} cannot hold its {stop_w}px caption"
+                halfway.x0 > s.rect.center().x - 152.0,
+                "the pill should make visible horizontal progress in the quiet lane: {halfway:?}"
             );
-        }
-        assert!(
-            (widths[0] - 252.0).abs() < 1e-9,
-            "the 1x pill must keep its designed width, got {}",
-            widths[0]
-        );
-        assert!(
-            widths[1] > widths[0],
-            "the 2x pill ({}) did not grow around its content",
-            widths[1]
-        );
-    }
-
-    /// The delay count is type, not a glyph decoration: nothing in the
-    /// button paints under the floor of the type scale.
-    #[test]
-    fn delay_count_is_painted_at_the_type_floor_or_above() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        for seconds in [3_u8, 10] {
-            let mut scene = Scene::new();
-            CaptureStudio::delay_button(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                Rect::new(0.0, 0.0, 36.0, 36.0),
-                seconds,
-                false,
-            );
-            let runs = &scene.encoding().resources.glyph_runs;
-            assert!(!runs.is_empty(), "the count {seconds} was not painted");
-            for run in runs {
-                assert!(
-                    run.font_size >= theme.tokens.typography.scale.xs - 1e-6,
-                    "count {seconds} painted at {}px, under the {}px floor",
-                    run.font_size,
-                    theme.tokens.typography.scale.xs
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn label_centring_tracks_the_measured_line_box_at_every_text_scale() {
-        let theme = Theme::dark();
-        for scale in [1.0_f32, 2.0] {
-            let mut tr = TextRenderer::new();
-            tr.set_text_scale(scale);
-            for size in [
-                theme.tokens.typography.scale.xs,
-                theme.tokens.typography.scale.sm,
-                theme.tokens.typography.scale.lg,
-            ] {
-                let center = 100.0;
-                let top = centered_text_top(&mut tr, size, TextWeight::Semibold, center);
-                let (_, h) = tr.measure_weighted("Ag", size, None, TextWeight::Semibold);
-                assert!(
-                    (top + f64::from(h) / 2.0 - center).abs() < 1e-6,
-                    "size {size} at {scale}x: top {top} + half of {h} misses centre {center}"
-                );
-                // And it is genuinely the line box, not the font size.
-                assert!(
-                    f64::from(h) > f64::from(size) * f64::from(scale),
-                    "measured height {h} should exceed the bare size {size} × {scale}"
-                );
-            }
-        }
-    }
-
-    /// The docked recording pill's timer stays inside the pill when the
-    /// renderer doubles type. With the old `centre − 0.52 × sm` top the 2×
-    /// label's line box ran out below the pill.
-    #[test]
-    fn docked_recording_label_stays_inside_its_pill_at_two_x() {
-        use crate::offscreen::OffscreenRenderer;
-        let theme = Theme::dark();
-        let mut s = CaptureStudio::default();
-        s.rect = Rect::new(0.0, 0.0, 1400.0, 200.0);
-        s.open();
-        s.set_mode(CaptureMode::Recording);
-        s.set_recording_active(true);
-        s.set_recording_transition_progress(1000);
-        let (pill, pause, _stop) = s.recording_indicator_rects_at(1.0);
-
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let mut scene = Scene::new();
-        s.draw_recording_indicator(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-        let (w, h) = (1400_u32, 200_u32);
-        let rgba = OffscreenRenderer::new(w, h).render(&scene, Color::BLACK);
-
-        // The timer occupies the pill between the state mark and the pause
-        // button; look for its light ink in that column band, over a
-        // generous vertical window either side of the pill.
-        let x_lo = (pill.x0 + 43.0) as usize;
-        let x_hi = (pause.x0 - 4.0) as usize;
-        let y_lo = (pill.y0 - 30.0).max(0.0) as usize;
-        let y_hi = (pill.y1 + 30.0).min(f64::from(h)) as usize;
-        let mut ink_rows = Vec::new();
-        for y in y_lo..y_hi {
-            for x in x_lo..x_hi {
-                let i = (y * w as usize + x) * 4;
-                if rgba[i] > 170 && rgba[i + 1] > 170 && rgba[i + 2] > 170 {
-                    ink_rows.push(y);
-                    break;
+            for step in 0..=100 {
+                let moving = s.recording_indicator_rects_at(f64::from(step) / 100.0).0;
+                if moving.y0 < clock.y1 && moving.y1 > clock.y0 {
+                    assert!(
+                        moving.x0 >= clock.x1 + 8.0,
+                        "pill must clear the clock before rising into its lane: step={step}, \
+                     pill={moving:?}, clock={clock:?}"
+                    );
                 }
             }
         }
-        let top = *ink_rows.first().expect("the timer painted ink");
-        let bottom = *ink_rows.last().expect("the timer painted ink");
-        assert!(
-            f64::from(top as u32) >= pill.y0.floor() && f64::from(bottom as u32) < pill.y1.ceil(),
-            "timer ink rows {top}..={bottom} leave the pill {pill:?} at 2x"
-        );
+
+        fn settled_recording_scope_uses_symbolic_source_identity() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+            s.set_overlay_rect(s.rect);
+            s.set_source_mode(SourceMode::Display);
+            s.set_recording_active(true);
+
+            assert_eq!(s.recording_scope, "Screen");
+            assert_eq!(s.recording_scope_icon(), Icon::Monitor);
+            assert_eq!(s.compact_recording_scope(10), "Screen");
+            assert_eq!(s.recording_status_detail(), "Screen · no audio");
+
+            s.include_pointer = true;
+            s.audio = AudioCaptureMode::SystemAndMicrophone;
+            assert_eq!(
+                s.recording_status_detail(),
+                "Screen · pointer · system audio + microphone"
+            );
+        }
+
+        active_recording_can_stop_without_reselecting_a_source();
+        successful_stop_becomes_non_modal_recording_actions_receipt();
+        active_recording_pause_resume_is_explicit_and_timer_excludes_pause();
+        settled_recording_controls_keep_spacing_at_wide_and_compact_widths();
+        settled_recording_scope_uses_symbolic_source_identity();
+    }
+
+    #[test]
+    fn replay_and_screenshot_receipts_are_non_modal() {
+        fn replay_arming_is_distinct_from_starting_a_recording() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0., 0., 1200., 800.);
+            s.open();
+            s.set_mode(CaptureMode::Recording);
+            s.set_source_mode(SourceMode::Display);
+            s.click(s.action_rects()[1].center());
+
+            let intent = s.take_intents().pop().expect("replay start intent");
+            assert_eq!(intent.replay_command, Some(ReplayCommand::Start));
+            assert_eq!(intent.recording_command, None);
+            assert_eq!(intent.source, SourceMode::Display);
+            assert!(!s.is_open());
+        }
+
+        fn screenshot_receipt_is_visual_non_modal_and_revealable() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0., 0., 1600., 900.);
+            let preview = CapturePreview {
+                columns: 2,
+                rows: 2,
+                pixels: vec![
+                    [12, 18, 28, 255],
+                    [48, 96, 180, 255],
+                    [26, 30, 38, 255],
+                    [84, 138, 220, 255],
+                ],
+            };
+            s.set_screenshot_finished(false, 1_584, 716, preview.clone());
+            let origin = s.screenshot_receipt.as_ref().unwrap().origin;
+            let start = s.screenshot_receipt_rects_at(0.0, origin).0;
+            let start_preview =
+                CaptureStudio::screenshot_receipt_preview_rect(0.0, start, 1_584, 716);
+            assert_eq!(start.width(), 156.0);
+            assert!((start.height() - 77.091).abs() < 0.01);
+            assert_eq!(start_preview.width(), 144.0);
+            assert!((start_preview.height() - 65.091).abs() < 0.01);
+            assert!(start.contains(start_preview.origin()));
+            assert!(start.contains(Point::new(start_preview.x1, start_preview.y1)));
+            s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
+            assert!(s.modal_capture().is_none());
+            let (pill, pin, copy, reveal, dismiss) = s.screenshot_receipt_rects();
+            assert_eq!(pill.width(), 354.0);
+            assert!(pill.contains(copy.center()));
+            assert!(pill.contains(pin.center()));
+            assert!(pill.contains(reveal.center()));
+            assert!(pill.contains(dismiss.center()));
+            assert_eq!(pill.x0 - (s.rect.center().x + 180.0), 12.0);
+            assert_eq!(s.test_rects().len(), 6);
+            let preview_rect =
+                CaptureStudio::screenshot_receipt_preview_rect(1.0, pill, 1_584, 716);
+            s.click(preview_rect.center());
+            assert_eq!(
+                s.take_intents().pop().unwrap().screenshot_command,
+                Some(ScreenshotCommand::MarkupLast)
+            );
+            assert!(!s.is_open());
+
+            s.set_screenshot_finished(false, 1_584, 716, preview.clone());
+            s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
+            let (pill, pin, _, _, _) = s.screenshot_receipt_rects();
+            let pin_spawn = CaptureStudio::screenshot_receipt_preview_rect(1.0, pill, 1_584, 716);
+            s.click(pin.center());
+            let pin_intent = s.take_intents().pop().unwrap();
+            assert_eq!(
+                pin_intent.screenshot_command,
+                Some(ScreenshotCommand::PinLast)
+            );
+            assert_eq!(pin_intent.regions, vec![pin_spawn]);
+            assert!(
+                s.is_open(),
+                "the receipt proxies the source until shell adoption"
+            );
+            assert!(s.screenshot_pin_pending);
+            s.set_screenshot_pinned();
+            assert!(!s.is_open());
+
+            s.set_screenshot_finished(false, 1_584, 716, preview.clone());
+            s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
+            let (_, _, copy, _, _) = s.screenshot_receipt_rects();
+            s.click(copy.center());
+            assert_eq!(
+                s.take_intents().pop().unwrap().screenshot_command,
+                Some(ScreenshotCommand::CopyLast)
+            );
+            assert!(!s.is_open());
+
+            s.set_screenshot_finished(false, 1_584, 716, preview.clone());
+            s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
+            let (_, _, _, reveal, _) = s.screenshot_receipt_rects();
+            s.click(reveal.center());
+            assert_eq!(
+                s.take_intents().pop().unwrap().screenshot_command,
+                Some(ScreenshotCommand::RevealLast)
+            );
+            assert!(!s.is_open());
+
+            // The picker node may be relaid out into a wider content strip after
+            // modal chrome closes; status geometry must still use the compositor
+            // viewport supplied by its overlay pass.
+            s.rect = Rect::new(100., 43., 1_300., 643.);
+            s.set_overlay_rect(Rect::new(0., 0., 800., 600.));
+            s.set_screenshot_finished(true, 800, 600, preview);
+            s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
+            let (pill, _, _, _, dismiss) = s.screenshot_receipt_rects();
+            assert_eq!(pill.width(), 394.0);
+            assert_eq!(pill.height(), 28.0);
+            assert_eq!(pill.center().x, 400.0);
+            assert_eq!(pill.y0, 6.0);
+            assert_eq!(s.test_rects().len(), 1, "copied shots need only Dismiss");
+            s.click(dismiss.center());
+            assert!(s.take_intents().is_empty());
+            assert!(!s.is_open());
+        }
+
+        fn replay_indicator_is_non_modal_and_supports_repeat_save_then_stop() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0., 0., 800., 600.);
+            s.set_replay_active(true, AudioCaptureMode::SystemAndMicrophone);
+            s.set_replay_buffered_seconds(30);
+            assert!(s.is_replay_active());
+            assert!(s.modal_capture().is_none());
+            assert_eq!(s.replay_indicator_rects_at(1.0).0.width(), 360.0);
+            assert_eq!(s.replay_status_label(false), "Replay · last 30s");
+            assert_eq!(
+                s.replay_status_detail(),
+                "30-second rolling buffer · system audio + microphone · Super+Shift+R saves now"
+            );
+
+            s.set_replay_buffered_seconds(0);
+            assert_eq!(s.replay_status_label(false), "Buffering…");
+            s.set_replay_buffered_seconds(4);
+            assert_eq!(s.replay_status_label(false), "Buffering · 4s");
+            assert_eq!(s.replay_status_label(true), "Saved · 4s");
+            s.set_replay_buffered_seconds(30);
+
+            let (_, save, stop) = s.replay_indicator_rects();
+            s.click(save.center());
+            assert_eq!(
+                s.take_intents().pop().unwrap().replay_command,
+                Some(ReplayCommand::SaveRecent)
+            );
+            assert!(s.is_replay_active(), "saving must not disarm the buffer");
+
+            s.set_replay_saved();
+            let (play, reveal) = s.replay_saved_action_rects();
+            s.click(play.center());
+            assert_eq!(
+                s.take_intents().pop().unwrap().recording_command,
+                Some(RecordingCommand::OpenLast)
+            );
+            assert!(s.is_replay_active(), "playing must not disarm the buffer");
+            s.click(reveal.center());
+            assert_eq!(
+                s.take_intents().pop().unwrap().recording_command,
+                Some(RecordingCommand::RevealLast)
+            );
+            assert_eq!(
+                s.test_rects()
+                    .into_iter()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>(),
+                vec![
+                    "capture.replay-status",
+                    "capture.play-replay",
+                    "capture.show-replay",
+                    "capture.stop-replay"
+                ]
+            );
+
+            s.click(stop.center());
+            assert_eq!(
+                s.take_intents().pop().unwrap().replay_command,
+                Some(ReplayCommand::Stop)
+            );
+
+            for width in [800.0, 1600.0] {
+                s.rect = Rect::new(0.0, 0.0, width, 700.0);
+                let (pill, save, stop) = s.replay_indicator_rects_at(1.0);
+                assert!(pill.contains(save.center()));
+                assert!(pill.contains(stop.center()));
+                assert!(save.x1 + 3.9 <= stop.x0, "Save and Stop need separation");
+                assert_eq!(pill.width(), if width < 1000.0 { 360.0 } else { 276.0 });
+                assert_eq!(pill.height(), if width < 1000.0 { 28.0 } else { 34.0 });
+            }
+
+            s.rect = Rect::new(0.0, 0.0, 1600.0, 900.0);
+            let (pill, _, _) = s.replay_indicator_rects_at(1.0);
+            let clock_left = s.rect.center().x - 180.0;
+            assert_eq!(clock_left - pill.x1, 12.0, "wide capsules must not touch");
+        }
+
+        replay_arming_is_distinct_from_starting_a_recording();
+        screenshot_receipt_is_visual_non_modal_and_revealable();
+        replay_indicator_is_non_modal_and_supports_repeat_save_then_stop();
+    }
+
+    #[test]
+    fn visual_harness_pins_receipt_and_recording_phases() {
+        fn visual_harness_can_pin_screenshot_receipt_transition() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+            s.set_screenshot_finished(
+                true,
+                640,
+                360,
+                CapturePreview {
+                    columns: 1,
+                    rows: 1,
+                    pixels: vec![[12, 18, 28, 255]],
+                },
+            );
+            s.set_screenshot_transition_progress(500);
+            let receipt = s.screenshot_receipt.as_ref().unwrap();
+            assert!((CaptureStudio::screenshot_receipt_motion(receipt) - 0.5).abs() < 0.02);
+        }
+
+        fn visual_harness_can_pin_each_recording_transition_phase() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+            s.set_recording_active(true);
+
+            for (permille, expected) in [(0, 0.0), (500, 0.5), (1_000, 1.0)] {
+                s.set_recording_transition_progress(permille);
+                assert!((s.recording_motion() - expected).abs() < 0.01);
+            }
+        }
+
+        fn visual_harness_pause_phase_does_not_drift_with_wall_time() {
+            let mut s = CaptureStudio::default();
+            s.set_recording_active(true);
+            s.set_recording_paused(true);
+            s.set_recording_state_transition_progress(500);
+
+            let first = s.recording_state_motion();
+            std::thread::sleep(Duration::from_millis(12));
+            assert_eq!(first, 0.5);
+            assert_eq!(s.recording_state_motion(), first);
+        }
+
+        fn visual_harness_receipt_phase_outlives_slow_png_rendering() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+            s.set_overlay_rect(s.rect);
+            s.set_recording_active(true);
+            s.set_recording_finished();
+            s.set_recording_receipt_transition_progress(500);
+            s.recording_finished_at = Some(crate::time::now() - RECORDING_RECEIPT_DURATION * 2);
+
+            s.draw_recording_indicator(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+            );
+
+            assert!(s.recording_finished_at.is_some());
+            assert!(s.is_open());
+            assert_eq!(s.recording_receipt_progress_override, Some(0.5));
+            assert!(!s.needs_animation_frame());
+        }
+
+        visual_harness_can_pin_screenshot_receipt_transition();
+        visual_harness_can_pin_each_recording_transition_phase();
+        visual_harness_pause_phase_does_not_drift_with_wall_time();
+        visual_harness_receipt_phase_outlives_slow_png_rendering();
+    }
+
+    #[test]
+    fn recording_start_acknowledges_outlines_and_docks() {
+        fn recording_start_names_and_outlines_the_exact_source_without_a_scrim() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+            s.set_overlay_rect(s.rect);
+            s.set_candidates(vec![CaptureTarget {
+                id: "notes".into(),
+                title: "Notes".into(),
+                app_id: "so.tilo.notes".into(),
+                visible_rect: Rect::new(240.0, 120.0, 1_280.0, 820.0),
+                virtual_rect: Rect::new(-400.0, 120.0, 1_280.0, 820.0),
+                complete_rect: None,
+            }]);
+            s.set_source_mode(SourceMode::Window);
+            s.set_extent(CaptureExtent::FullApp);
+            s.set_recording_active(true);
+
+            assert_eq!(s.recording_scope, "Notes · app window");
+            assert_eq!(s.compact_recording_scope(10), "Notes");
+            assert_eq!(s.recording_scope_icon(), Icon::ChevronLeft);
+            assert_eq!(
+                s.recording_confirmation_regions,
+                vec![Rect::new(240.0, 120.0, 1_280.0, 820.0)]
+            );
+            assert_eq!(s.recording_indicator_rects_at(0.0).0.width(), 304.0);
+            assert!(
+                s.modal_capture().is_none(),
+                "a running recording must never retain the picker scrim"
+            );
+
+            s.set_recording_active(false);
+            assert!(s.recording_confirmation_regions.is_empty());
+            assert_eq!(s.recording_continuation_edges, [false; 4]);
+        }
+
+        fn recording_request_is_acknowledged_without_claiming_success_or_blocking_apps() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+            s.set_overlay_rect(s.rect);
+            s.set_mode(CaptureMode::Recording);
+            s.set_source_mode(SourceMode::Display);
+            let launch_rect = s.recording_indicator_rects_at(0.0).0;
+
+            s.commit(CaptureDestination::File);
+
+            assert!(s.is_recording_start_pending());
+            assert!(!s.is_recording_active());
+            assert!(s.is_open());
+            assert!(s.modal_capture().is_none(), "Preparing must be non-modal");
+            assert!(
+                s.test_rects().is_empty(),
+                "Preparing has no speculative controls"
+            );
+            assert_eq!(s.recording_scope, "Screen");
+            assert_eq!(s.recording_indicator_rects_at(0.0).0, launch_rect);
+            assert_eq!(
+                s.take_intents()[0].recording_command,
+                Some(RecordingCommand::Start)
+            );
+            assert!(
+                s.is_recording_start_pending(),
+                "taking the intent is not compositor success"
+            );
+
+            s.open();
+            assert!(
+                s.is_recording_start_pending(),
+                "repeating the shortcut must not reopen the picker"
+            );
+            s.set_recording_active(true);
+            assert!(!s.is_recording_start_pending());
+            assert!(s.is_recording_active());
+            assert_eq!(
+                s.recording_indicator_rects_at(0.0).0,
+                launch_rect,
+                "Preparing and Recording must hand off in the same geometry"
+            );
+        }
+
+        fn failed_recording_setup_removes_the_preparing_surface() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+            s.set_mode(CaptureMode::Recording);
+            s.set_source_mode(SourceMode::Display);
+            s.commit(CaptureDestination::File);
+            assert!(s.is_recording_start_pending());
+
+            s.set_recording_active(false);
+
+            assert!(!s.is_recording_start_pending());
+            assert!(!s.is_recording_active());
+            assert!(!s.is_open());
+        }
+
+        fn recording_dock_transition_never_loses_its_semantic_label() {
+            for step in 0..=100 {
+                let progress = f64::from(step) / 100.0;
+                let (intro, settled) = CaptureStudio::recording_label_alphas(progress);
+                assert!((intro + settled - 1.0).abs() < 0.001);
+            }
+        }
+
+        fn source_confirmation_yields_to_the_docked_recording_pill() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+            s.set_recording_active(true);
+
+            s.set_recording_transition_progress(0);
+            assert!(s.recording_scope_confirmation_alpha() > 0.70);
+            s.set_recording_transition_progress(500);
+            assert!(
+                s.recording_scope_confirmation_alpha() < 0.10,
+                "source confirmation should be nearly gone halfway to the top bar"
+            );
+            s.set_recording_transition_progress(1_000);
+            assert_eq!(s.recording_scope_confirmation_alpha(), 0.0);
+        }
+
+        recording_start_names_and_outlines_the_exact_source_without_a_scrim();
+        recording_request_is_acknowledged_without_claiming_success_or_blocking_apps();
+        failed_recording_setup_removes_the_preparing_surface();
+        recording_dock_transition_never_loses_its_semantic_label();
+        source_confirmation_yields_to_the_docked_recording_pill();
+    }
+
+    #[test]
+    fn top_bar_and_pill_geometry_follow_tokens_and_text_scale() {
+        /// The centring helper follows the renderer's measured line box — not
+        /// the font size, not a fraction of it — so it holds when the renderer
+        /// scales type. `(top + height / 2) == centre` at both scales.
+        /// Both top-bar groups hug their buttons: one inset before the first,
+        /// one after the last, one gap between neighbours — the source group
+        /// used to trail ~50 px of empty pill after its last button and the
+        /// mode group had no trailing inset at all.
+        fn top_bar_groups_hug_their_buttons_with_one_inset() {
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0.0, 0.0, 1400.0, 900.0);
+            let groups = [
+                (s.mode_group_rect(), s.mode_rects().to_vec()),
+                (s.source_group_rect(), s.source_rects().to_vec()),
+            ];
+            for (group, buttons) in &groups {
+                let first = buttons.first().expect("a group has buttons");
+                let last = buttons.last().expect("a group has buttons");
+                assert!(
+                    (first.x0 - group.x0 - TOP_GROUP_PAD).abs() < 1e-9,
+                    "leading inset of {group:?} is {}",
+                    first.x0 - group.x0
+                );
+                assert!(
+                    (group.x1 - last.x1 - TOP_GROUP_PAD).abs() < 1e-9,
+                    "trailing inset of {group:?} is {}",
+                    group.x1 - last.x1
+                );
+                for pair in buttons.windows(2) {
+                    assert!((pair[1].x0 - pair[0].x1 - TOP_BUTTON_GAP).abs() < 1e-9);
+                }
+                for b in buttons {
+                    assert!((b.width() - TOP_BUTTON_W).abs() < 1e-9);
+                    assert!(
+                        b.height() >= 32.0,
+                        "{b:?} is under the minimum pointer target"
+                    );
+                }
+            }
+            let (mode, source) = (s.mode_group_rect(), s.source_group_rect());
+            assert!((source.x0 - mode.x1 - TOP_GROUP_GAP).abs() < 1e-9);
+            let bar = s.top_bar();
+            assert!((bar.x0 - mode.x0).abs() < 1e-9 && (bar.x1 - source.x1).abs() < 1e-9);
+        }
+
+        /// The bar's geometry is the tokens' arithmetic, not a restatement of
+        /// it: the buttons come out exactly one `bar_height` tall inside a bar
+        /// that is that plus an `s2` inset top and bottom, and the group inset
+        /// and gap are the same `s2`.
+        fn top_bar_buttons_are_one_bar_height_tall_inside_token_insets() {
+            let theme = Theme::dark();
+            let tokens = &theme.tokens;
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0.0, 0.0, 1400.0, 900.0);
+            let bar = s.top_bar();
+            let button = s.mode_rects()[0];
+            assert!((button.height() - f64::from(tokens.metrics.bar_height)).abs() < 1e-9);
+            assert!(
+                (bar.height() - button.height() - 2.0 * f64::from(tokens.spacing.s2)).abs() < 1e-9
+            );
+            assert!((TOP_GROUP_PAD - f64::from(tokens.spacing.s2)).abs() < 1e-9);
+            assert!((TOP_GROUP_GAP - f64::from(tokens.spacing.s2)).abs() < 1e-9);
+            assert!((TOP_BUTTON_W - bar.height()).abs() < 1e-9);
+        }
+
+        /// The docked recorder keeps its designed width at 1× and grows only
+        /// when the type does: at 2× the pill widens around its label and the
+        /// Stop button around its caption, and every control stays inside.
+        fn docked_recording_pill_grows_with_its_content_above_one_x() {
+            let mut widths = Vec::new();
+            for scale in [1.0_f32, 2.0] {
+                // A matched host: the theme's type steps carry the scale the
+                // renderer is set to, so captions paint at 2x, not 4x (X1).
+                let theme = Theme::dark()
+                    .with_reduce_motion(true)
+                    .with_text_scale(scale);
+                let mut s = CaptureStudio::default();
+                s.rect = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                s.open();
+                s.set_mode(CaptureMode::Recording);
+                s.recording_scope = "Terminal · app window".to_string();
+                s.set_recording_active(true);
+                s.set_recording_transition_progress(1000);
+                let mut tr = TextRenderer::new();
+                tr.set_text_scale(scale);
+                let mut scene = Scene::new();
+                s.draw_recording_indicator(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+                let (pill, pause, stop) = s.recording_indicator_rects();
+                widths.push(pill.width());
+                assert!(
+                    pause.x0 >= pill.x0 && stop.x1 <= pill.x1 && pause.x1 + 3.9 <= stop.x0,
+                    "at {scale}x the controls left the pill: {pill:?} {pause:?} {stop:?}"
+                );
+                let (stop_w, _) = tr.measure_weighted(
+                    "Stop",
+                    renderer_type_size(&tr, theme.tokens.typography.scale.xs),
+                    None,
+                    TextWeight::Semibold,
+                );
+                assert!(
+                    stop.width() >= 22.0 + f64::from(stop_w) + 8.0 - 1e-6,
+                    "at {scale}x Stop {stop:?} cannot hold its {stop_w}px caption"
+                );
+            }
+            assert!(
+                (widths[0] - 252.0).abs() < 1e-9,
+                "the 1x pill must keep its designed width, got {}",
+                widths[0]
+            );
+            assert!(
+                widths[1] > widths[0],
+                "the 2x pill ({}) did not grow around its content",
+                widths[1]
+            );
+        }
+
+        /// The delay count is type, not a glyph decoration: nothing in the
+        /// button paints under the floor of the type scale.
+        fn delay_count_is_painted_at_the_type_floor_or_above() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            for seconds in [3_u8, 10] {
+                let mut scene = Scene::new();
+                CaptureStudio::delay_button(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut tr,
+                    &theme,
+                    Rect::new(0.0, 0.0, 36.0, 36.0),
+                    seconds,
+                    false,
+                );
+                let runs = &scene.encoding().resources.glyph_runs;
+                assert!(!runs.is_empty(), "the count {seconds} was not painted");
+                for run in runs {
+                    assert!(
+                        run.font_size >= theme.tokens.typography.scale.xs - 1e-6,
+                        "count {seconds} painted at {}px, under the {}px floor",
+                        run.font_size,
+                        theme.tokens.typography.scale.xs
+                    );
+                }
+            }
+        }
+
+        fn label_centring_tracks_the_measured_line_box_at_every_text_scale() {
+            let theme = Theme::dark();
+            for scale in [1.0_f32, 2.0] {
+                let mut tr = TextRenderer::new();
+                tr.set_text_scale(scale);
+                for size in [
+                    theme.tokens.typography.scale.xs,
+                    theme.tokens.typography.scale.sm,
+                    theme.tokens.typography.scale.lg,
+                ] {
+                    let center = 100.0;
+                    let top = centered_text_top(&mut tr, size, TextWeight::Semibold, center);
+                    let (_, h) = tr.measure_weighted("Ag", size, None, TextWeight::Semibold);
+                    assert!(
+                        (top + f64::from(h) / 2.0 - center).abs() < 1e-6,
+                        "size {size} at {scale}x: top {top} + half of {h} misses centre {center}"
+                    );
+                    // And it is genuinely the line box, not the font size.
+                    assert!(
+                        f64::from(h) > f64::from(size) * f64::from(scale),
+                        "measured height {h} should exceed the bare size {size} × {scale}"
+                    );
+                }
+            }
+        }
+
+        /// The docked recording pill's timer stays inside the pill when the
+        /// renderer doubles type. With the old `centre − 0.52 × sm` top the 2×
+        /// label's line box ran out below the pill.
+        fn docked_recording_label_stays_inside_its_pill_at_two_x() {
+            use crate::offscreen::OffscreenRenderer;
+            let theme = Theme::dark();
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0.0, 0.0, 1400.0, 200.0);
+            s.open();
+            s.set_mode(CaptureMode::Recording);
+            s.set_recording_active(true);
+            s.set_recording_transition_progress(1000);
+            let (pill, pause, _stop) = s.recording_indicator_rects_at(1.0);
+
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(2.0);
+            let mut scene = Scene::new();
+            s.draw_recording_indicator(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            let (w, h) = (1400_u32, 200_u32);
+            let rgba = OffscreenRenderer::new(w, h).render(&scene, Color::BLACK);
+
+            // The timer occupies the pill between the state mark and the pause
+            // button; look for its light ink in that column band, over a
+            // generous vertical window either side of the pill.
+            let x_lo = (pill.x0 + 43.0) as usize;
+            let x_hi = (pause.x0 - 4.0) as usize;
+            let y_lo = (pill.y0 - 30.0).max(0.0) as usize;
+            let y_hi = (pill.y1 + 30.0).min(f64::from(h)) as usize;
+            let mut ink_rows = Vec::new();
+            for y in y_lo..y_hi {
+                for x in x_lo..x_hi {
+                    let i = (y * w as usize + x) * 4;
+                    if rgba[i] > 170 && rgba[i + 1] > 170 && rgba[i + 2] > 170 {
+                        ink_rows.push(y);
+                        break;
+                    }
+                }
+            }
+            let top = *ink_rows.first().expect("the timer painted ink");
+            let bottom = *ink_rows.last().expect("the timer painted ink");
+            assert!(
+                f64::from(top as u32) >= pill.y0.floor()
+                    && f64::from(bottom as u32) < pill.y1.ceil(),
+                "timer ink rows {top}..={bottom} leave the pill {pill:?} at 2x"
+            );
+        }
+
+        /// The floating groups and every resting button inside them keep a
+        /// **visible derived edge** at 1× on both presets, and neighbouring
+        /// buttons keep one `s1` between them (HIG §7, §9.5). Before, the groups
+        /// were bare raised fills over the scrim and the buttons a 0.35 lift
+        /// 2 px apart; on the light preset the shadow tint was `neutral[0]` —
+        /// that palette's paper — so the groups floated with no shadow either.
+        ///
+        /// Writes `$UX1X_F4_OUT/<theme>/capture_studio.png` plus the harness
+        /// inspection when that variable is set; asserts regardless.
+        fn ux1x_groups_and_resting_buttons_keep_a_derived_edge_on_both_presets() {
+            use crate::offscreen::OffscreenRenderer;
+            const EDGE_MIN: f64 = 0.008;
+            let (w, h) = (1400.0, 900.0);
+            // Evidence first, for both presets, so a failing assertion on one
+            // preset still leaves the other's PNG and inspection on disk.
+            for theme in [Theme::dark(), Theme::light()] {
+                let theme = theme.with_reduce_motion(true);
+                if let Some(png) = ux1x_out(&theme, "capture_studio.png") {
+                    let harness = crate::headless::FrameHarness::new_with_theme(
+                        crate::State::new(),
+                        Box::new(ux1x_fixture()),
+                        (1400, 900),
+                        theme.clone(),
+                    );
+                    harness.render_window_png(&png);
+                    if let Ok(json) = harness.inspection_json() {
+                        std::fs::write(png.with_extension("inspection.json"), json)
+                            .expect("write inspection");
+                    }
+                }
+            }
+            for theme in [Theme::dark(), Theme::light()] {
+                let theme = theme.with_reduce_motion(true);
+                let mut s = ux1x_fixture();
+                s.rect = Rect::new(0.0, 0.0, w, h);
+                let mut tr = TextRenderer::new();
+                let presence = PresenceCtx::default();
+                let mut scene = Scene::new();
+                Widget::draw(
+                    &mut s,
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut tr,
+                    &theme,
+                    &presence,
+                );
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a 1400x900 test surface"
+                )]
+                let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a 1400x900 test surface"
+                )]
+                let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
+
+                // Group: its left edge against its own fill, on the group's centre
+                // line (clear of the 14 px corner arcs; the first button starts
+                // one `TOP_GROUP_PAD` in, so the columns beside the edge are fill).
+                let group = s.mode_group_rect();
+                let y = group.center().y;
+                let edge = lum(group.x0, y);
+                let fill = lum(group.x0 + 3.0, y);
+                assert!(
+                    (edge - fill).abs() >= EDGE_MIN,
+                    "{}: group edge {edge:.4} vs fill {fill:.4} did not register",
+                    theme.name
+                );
+
+                // Resting button: the second mode button (recording, not the
+                // active screenshot one) — its left edge against its own face.
+                let button = s.mode_rects()[1];
+                let bedge = lum(button.x0, button.center().y);
+                let face = lum(button.x0 + 3.0, button.center().y);
+                assert!(
+                    (bedge - face).abs() >= EDGE_MIN,
+                    "{}: button edge {bedge:.4} vs face {face:.4} did not register",
+                    theme.name
+                );
+
+                // Nothing touches: neighbours keep the smallest token step.
+                let s1 = f64::from(theme.tokens.spacing.s1);
+                for pair in s.mode_rects().windows(2) {
+                    let gap = pair[1].x0 - pair[0].x1;
+                    assert!(
+                        gap >= s1 - 1e-9,
+                        "{}: mode buttons {gap} px apart",
+                        theme.name
+                    );
+                }
+                for pair in s.source_rects().windows(2) {
+                    let gap = pair[1].x0 - pair[0].x1;
+                    assert!(
+                        gap >= s1 - 1e-9,
+                        "{}: source buttons {gap} px apart",
+                        theme.name
+                    );
+                }
+                let (mode, source) = (s.mode_group_rect(), s.source_group_rect());
+                assert!(
+                    source.x0 - mode.x1 >= s1 - 1e-9,
+                    "{}: groups touch",
+                    theme.name
+                );
+            }
+        }
+
+        top_bar_groups_hug_their_buttons_with_one_inset();
+        top_bar_buttons_are_one_bar_height_tall_inside_token_insets();
+        docked_recording_pill_grows_with_its_content_above_one_x();
+        delay_count_is_painted_at_the_type_floor_or_above();
+        label_centring_tracks_the_measured_line_box_at_every_text_scale();
+        docked_recording_label_stays_inside_its_pill_at_two_x();
+        ux1x_groups_and_resting_buttons_keep_a_derived_edge_on_both_presets();
     }
 
     /// Relative luminance of the composited pixel at (`x`, `y`).
@@ -6761,114 +7115,91 @@ mod tests {
         s
     }
 
-    /// The floating groups and every resting button inside them keep a
-    /// **visible derived edge** at 1× on both presets, and neighbouring
-    /// buttons keep one `s1` between them (HIG §7, §9.5). Before, the groups
-    /// were bare raised fills over the scrim and the buttons a 0.35 lift
-    /// 2 px apart; on the light preset the shadow tint was `neutral[0]` —
-    /// that palette's paper — so the groups floated with no shadow either.
-    ///
-    /// Writes `$UX1X_F4_OUT/<theme>/capture_studio.png` plus the harness
-    /// inspection when that variable is set; asserts regardless.
     #[test]
-    fn ux1x_groups_and_resting_buttons_keep_a_derived_edge_on_both_presets() {
-        use crate::offscreen::OffscreenRenderer;
-        const EDGE_MIN: f64 = 0.008;
-        let (w, h) = (1400.0, 900.0);
-        // Evidence first, for both presets, so a failing assertion on one
-        // preset still leaves the other's PNG and inspection on disk.
-        for theme in [Theme::dark(), Theme::light()] {
-            let theme = theme.with_reduce_motion(true);
-            if let Some(png) = ux1x_out(&theme, "capture_studio.png") {
-                let harness = crate::headless::FrameHarness::new_with_theme(
-                    crate::State::new(),
-                    Box::new(ux1x_fixture()),
-                    (1400, 900),
-                    theme.clone(),
-                );
-                harness.render_window_png(&png);
-                if let Ok(json) = harness.inspection_json() {
-                    std::fs::write(png.with_extension("inspection.json"), json)
-                        .expect("write inspection");
-                }
-            }
-        }
-        for theme in [Theme::dark(), Theme::light()] {
-            let theme = theme.with_reduce_motion(true);
-            let mut s = ux1x_fixture();
-            s.rect = Rect::new(0.0, 0.0, w, h);
-            let mut tr = TextRenderer::new();
-            let presence = PresenceCtx::default();
-            let mut scene = Scene::new();
-            Widget::draw(
-                &mut s,
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-            );
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "a 1400x900 test surface"
-            )]
-            let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "a 1400x900 test surface"
-            )]
-            let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
+    fn send_offers_the_workspace_and_online_devices_and_emits_the_pick() {
+        let mut s = CaptureStudio::default();
+        s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+        s.set_screenshot_send_devices(vec![ScreenshotSendDevice {
+            id: "device-laptop".into(),
+            label: "Ada's laptop".into(),
+        }]);
+        let preview = CapturePreview {
+            columns: 1,
+            rows: 1,
+            pixels: vec![[20, 40, 60, 255]],
+        };
+        s.set_screenshot_finished(false, 800, 600, preview.clone());
+        s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
+        let (pill, pin, ..) = s.screenshot_receipt_rects();
+        let send = CaptureStudio::screenshot_receipt_send_rect(pin);
+        assert!(pill.contains(send.center()), "Send sits inside the receipt");
+        assert!(
+            s.test_rects()
+                .iter()
+                .any(|(name, rect)| name == "capture.send-screenshot" && *rect == send)
+        );
 
-            // Group: its left edge against its own fill, on the group's centre
-            // line (clear of the 14 px corner arcs; the first button starts
-            // one `TOP_GROUP_PAD` in, so the columns beside the edge are fill).
-            let group = s.mode_group_rect();
-            let y = group.center().y;
-            let edge = lum(group.x0, y);
-            let fill = lum(group.x0 + 3.0, y);
-            assert!(
-                (edge - fill).abs() >= EDGE_MIN,
-                "{}: group edge {edge:.4} vs fill {fill:.4} did not register",
-                theme.name
-            );
+        s.click(send.center());
+        assert!(s.send_menu_open(), "Send opens the target picker");
+        assert!(s.take_intents().is_empty(), "nothing is sent before a pick");
+        let labels: Vec<String> = s
+            .send_menu
+            .as_ref()
+            .unwrap()
+            .items()
+            .iter()
+            .filter_map(|item| item.label().map(str::to_string))
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["Save to this workspace's files", "Send to Ada's laptop"]
+        );
+        // Picking stays alive past the receipt's normal lifetime.
+        s.screenshot_receipt.as_mut().unwrap().shown_at -= SCREENSHOT_RECEIPT_DURATION;
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        s.draw_recording_indicator(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark());
+        assert!(s.screenshot_receipt.is_some() && s.send_menu_open());
 
-            // Resting button: the second mode button (recording, not the
-            // active screenshot one) — its left edge against its own face.
-            let button = s.mode_rects()[1];
-            let bedge = lum(button.x0, button.center().y);
-            let face = lum(button.x0 + 3.0, button.center().y);
-            assert!(
-                (bedge - face).abs() >= EDGE_MIN,
-                "{}: button edge {bedge:.4} vs face {face:.4} did not register",
-                theme.name
-            );
+        let device_row = s.send_menu_targets.iter().position(|target| {
+            target == &Some(ScreenshotSendTarget::Device("device-laptop".into()))
+        });
+        s.choose_send_target(device_row.unwrap());
+        let intent = s.take_intents().pop().expect("the pick is an intent");
+        assert_eq!(
+            intent.screenshot_command,
+            Some(ScreenshotCommand::SendLast(ScreenshotSendTarget::Device(
+                "device-laptop".into()
+            )))
+        );
+        assert!(intent.regions.is_empty(), "a send never recaptures");
+        assert!(!s.is_open() && !s.send_menu_open());
 
-            // Nothing touches: neighbours keep the smallest token step.
-            let s1 = f64::from(theme.tokens.spacing.s1);
-            for pair in s.mode_rects().windows(2) {
-                let gap = pair[1].x0 - pair[0].x1;
-                assert!(
-                    gap >= s1 - 1e-9,
-                    "{}: mode buttons {gap} px apart",
-                    theme.name
-                );
-            }
-            for pair in s.source_rects().windows(2) {
-                let gap = pair[1].x0 - pair[0].x1;
-                assert!(
-                    gap >= s1 - 1e-9,
-                    "{}: source buttons {gap} px apart",
-                    theme.name
-                );
-            }
-            let (mode, source) = (s.mode_group_rect(), s.source_group_rect());
-            assert!(
-                source.x0 - mode.x1 >= s1 - 1e-9,
-                "{}: groups touch",
-                theme.name
-            );
-        }
+        // Without devices the workspace is still offered, and Escape backs
+        // out of the picker without sending.
+        s.set_screenshot_send_devices(Vec::new());
+        s.set_screenshot_finished(false, 800, 600, preview);
+        s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
+        let (_, pin, ..) = s.screenshot_receipt_rects();
+        s.click(CaptureStudio::screenshot_receipt_send_rect(pin).center());
+        assert_eq!(
+            s.send_menu_targets
+                .iter()
+                .flatten()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![ScreenshotSendTarget::Workspace]
+        );
+        s.close_send_menu();
+        assert!(
+            s.screenshot_receipt.is_some(),
+            "backing out keeps the receipt"
+        );
+
+        s.send_last_screenshot(ScreenshotSendTarget::Workspace);
+        assert_eq!(
+            s.take_intents().pop().unwrap().screenshot_command,
+            Some(ScreenshotCommand::SendLast(ScreenshotSendTarget::Workspace))
+        );
     }
 }

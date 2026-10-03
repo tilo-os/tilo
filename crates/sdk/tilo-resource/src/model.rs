@@ -724,53 +724,54 @@ mod tests {
     use tilo_automerge::ApplyIncoming;
 
     #[test]
-    fn unchanged_writes_produce_no_operations() {
-        let mut doc = Doc::new();
-        write_key(&mut doc, &ROOT, "title", &"hello".to_owned()).unwrap();
-        write_key(&mut doc, &ROOT, "count", &3_u32).unwrap();
-        write_key(&mut doc, &ROOT, "tags", &vec![1_i64, 2]).unwrap();
-        doc.commit();
-        write_key(&mut doc, &ROOT, "title", &"hello".to_owned()).unwrap();
-        write_key(&mut doc, &ROOT, "count", &3_u32).unwrap();
-        write_key(&mut doc, &ROOT, "tags", &vec![1_i64, 2]).unwrap();
-        assert_eq!(doc.pending_ops(), 0);
-        assert_eq!(read_key::<String>(&doc, &ROOT, "title").unwrap(), "hello");
-        assert_eq!(read_key::<Vec<i64>>(&doc, &ROOT, "tags").unwrap(), [1, 2]);
-        assert_eq!(read_key::<Option<u8>>(&doc, &ROOT, "absent").unwrap(), None);
-    }
-
-    #[test]
-    fn text_splices_merge_concurrent_edits() {
-        let mut base = Doc::new();
-        write_key(&mut base, &ROOT, "body", &"hello world".to_owned()).unwrap();
-        base.commit();
-        let mut left = base.fork();
-        let mut right = base.fork();
-        write_key(&mut left, &ROOT, "body", &"hello brave world".to_owned()).unwrap();
-        write_key(&mut right, &ROOT, "body", &"hello world!".to_owned()).unwrap();
-        left.merge_incoming(&mut right).unwrap();
-        assert_eq!(
-            read_key::<String>(&left, &ROOT, "body").unwrap(),
-            "hello brave world!"
-        );
-    }
-
-    #[test]
-    fn a_text_edit_is_one_splice_of_the_changed_span() {
-        for (old, new) in [
-            ("first thought", "second thought"),
-            ("café 日本語", "café 日本 語!"),
-            ("abc", ""),
-            ("", "abc"),
-            ("aaa", "aa"),
-            ("ab", "ba"),
-        ] {
+    fn writes_become_minimal_mergeable_operations() {
+        // phase: unchanged_writes_produce_no_operations
+        {
             let mut doc = Doc::new();
-            write_key(&mut doc, &ROOT, "t", &old.to_owned()).unwrap();
+            write_key(&mut doc, &ROOT, "title", &"hello".to_owned()).unwrap();
+            write_key(&mut doc, &ROOT, "count", &3_u32).unwrap();
+            write_key(&mut doc, &ROOT, "tags", &vec![1_i64, 2]).unwrap();
             doc.commit();
-            write_key(&mut doc, &ROOT, "t", &new.to_owned()).unwrap();
-            doc.commit();
-            assert_eq!(read_key::<String>(&doc, &ROOT, "t").unwrap(), new);
+            write_key(&mut doc, &ROOT, "title", &"hello".to_owned()).unwrap();
+            write_key(&mut doc, &ROOT, "count", &3_u32).unwrap();
+            write_key(&mut doc, &ROOT, "tags", &vec![1_i64, 2]).unwrap();
+            assert_eq!(doc.pending_ops(), 0);
+            assert_eq!(read_key::<String>(&doc, &ROOT, "title").unwrap(), "hello");
+            assert_eq!(read_key::<Vec<i64>>(&doc, &ROOT, "tags").unwrap(), [1, 2]);
+            assert_eq!(read_key::<Option<u8>>(&doc, &ROOT, "absent").unwrap(), None);
+        }
+        // phase: text_splices_merge_concurrent_edits
+        {
+            let mut base = Doc::new();
+            write_key(&mut base, &ROOT, "body", &"hello world".to_owned()).unwrap();
+            base.commit();
+            let mut left = base.fork();
+            let mut right = base.fork();
+            write_key(&mut left, &ROOT, "body", &"hello brave world".to_owned()).unwrap();
+            write_key(&mut right, &ROOT, "body", &"hello world!".to_owned()).unwrap();
+            left.merge_incoming(&mut right).unwrap();
+            assert_eq!(
+                read_key::<String>(&left, &ROOT, "body").unwrap(),
+                "hello brave world!"
+            );
+        }
+        // phase: a_text_edit_is_one_splice_of_the_changed_span
+        {
+            for (old, new) in [
+                ("first thought", "second thought"),
+                ("café 日本語", "café 日本 語!"),
+                ("abc", ""),
+                ("", "abc"),
+                ("aaa", "aa"),
+                ("ab", "ba"),
+            ] {
+                let mut doc = Doc::new();
+                write_key(&mut doc, &ROOT, "t", &old.to_owned()).unwrap();
+                doc.commit();
+                write_key(&mut doc, &ROOT, "t", &new.to_owned()).unwrap();
+                doc.commit();
+                assert_eq!(read_key::<String>(&doc, &ROOT, "t").unwrap(), new);
+            }
         }
     }
 }

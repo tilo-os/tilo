@@ -4,10 +4,7 @@
 //! collaboration state. An owner key inside a shared document is only a UI
 //! filter, never a confidentiality or replication boundary.
 
-use std::fs::{self, OpenOptions};
-use std::io::Read;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use tilo_files::{Dir, FsError, Kind, VPath, blocking};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
@@ -42,10 +39,6 @@ pub enum OwnerHistoryAction {
         cleared_at_ms: u64,
         clear_id: String,
     },
-    /// Records an explicit one-way import from an old shared document. This
-    /// marker prevents future shared-document reads; it does not and cannot
-    /// recall bytes that old collaborators already replicated.
-    LegacyMigrationComplete,
 }
 
 impl Action for OwnerHistoryAction {
@@ -80,13 +73,6 @@ impl Action for OwnerHistoryAction {
                     ScalarValue::Str(cleared_at_ms.to_string().into()),
                 )?;
             }
-            Self::LegacyMigrationComplete => {
-                doc.put(
-                    &history,
-                    "legacy_shared_migration_v1",
-                    ScalarValue::Boolean(true),
-                )?;
-            }
         }
         Ok(())
     }
@@ -112,50 +98,58 @@ fn child_map(doc: &mut tilo_actions::Doc, parent: &ObjId, key: &str) -> Result<O
 
 pub struct OwnerHistoryStore {
     doc: AutoCommit,
-    path: Option<PathBuf>,
+    location: Option<(Dir, VPath)>,
     recovery_disabled: bool,
 }
 
 impl OwnerHistoryStore {
+    /// The owner's history in the app data location (`$XDG_DATA_HOME/tilo`
+    /// natively, the page's storage on the web).
     pub fn open(owner_id: &str) -> Self {
-        let Some(base) = xdg_paths::data_local_dir() else {
-            return Self::memory();
-        };
-        Self::open_path(
-            base.join("tilo")
-                .join("tube")
-                .join("history")
-                .join(format!("{}.automerge", owner_file_id(owner_id))),
-        )
+        let dir = tilo_files::Dir::open(tilo_paths::AppPaths::for_app("tilo").data());
+        let name = VPath::new(&format!(
+            "tube/history/{}.automerge",
+            owner_file_id(owner_id)
+        ));
+        match (dir, name) {
+            (Ok(dir), Ok(name)) => Self::open_at(dir, name),
+            _ => Self::memory(),
+        }
     }
 
-    fn open_path(path: PathBuf) -> Self {
-        match fs::symlink_metadata(&path) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self {
+    #[cfg(test)]
+    fn open_path(path: &std::path::Path) -> Self {
+        let (dir, name) = tilo_files::file_at(path).unwrap();
+        Self::open_at(dir, name)
+    }
+
+    fn open_at(dir: Dir, name: VPath) -> Self {
+        match blocking::metadata(&dir, &name) {
+            Err(FsError::NotFound) => Self {
                 doc: AutoCommit::new(),
-                path: Some(path),
+                location: Some((dir, name)),
                 recovery_disabled: false,
             },
-            Ok(_) => match read_private_document(&path) {
+            Ok(_) => match read_private_document(&dir, &name) {
                 Ok(doc) => Self {
                     doc,
-                    path: Some(path),
+                    location: Some((dir, name)),
                     recovery_disabled: false,
                 },
                 Err(error) => {
-                    tracing::warn!(path = %path.display(), %error, "owner history recovery required; refusing to overwrite existing store");
+                    tracing::warn!(path = %name, %error, "owner history recovery required; refusing to overwrite existing store");
                     Self {
                         doc: AutoCommit::new(),
-                        path: None,
+                        location: None,
                         recovery_disabled: true,
                     }
                 }
             },
             Err(error) => {
-                tracing::warn!(path = %path.display(), %error, "could not inspect owner history store; persistence disabled");
+                tracing::warn!(path = %name, %error, "could not inspect owner history store; persistence disabled");
                 Self {
                     doc: AutoCommit::new(),
-                    path: None,
+                    location: None,
                     recovery_disabled: true,
                 }
             }
@@ -166,7 +160,7 @@ impl OwnerHistoryStore {
     pub fn memory() -> Self {
         Self {
             doc: AutoCommit::new(),
-            path: None,
+            location: None,
             recovery_disabled: false,
         }
     }
@@ -174,25 +168,6 @@ impl OwnerHistoryStore {
     #[must_use]
     pub fn document(&self) -> &AutoCommit {
         &self.doc
-    }
-
-    #[must_use]
-    pub fn has_legacy_migration_marker(&self) -> bool {
-        self.doc
-            .get(&ROOT, HISTORY_ROOT)
-            .ok()
-            .flatten()
-            .and_then(|(value, history)| {
-                matches!(value, Value::Object(ObjType::Map)).then_some(history)
-            })
-            .and_then(|history| {
-                self.doc
-                    .get(&history, "legacy_shared_migration_v1")
-                    .ok()
-                    .flatten()
-                    .and_then(|(value, _)| value.as_bool())
-            })
-            .unwrap_or(false)
     }
 
     #[must_use]
@@ -205,8 +180,7 @@ impl OwnerHistoryStore {
     /// never reroutes the operation through shared collaboration state.
     pub fn dispatch(&mut self, host: &mut ui::ActionHost, action: &OwnerHistoryAction) -> bool {
         let before = self.doc.save();
-        let context =
-            ActionContext::for_action("org.tilo.Tube", "Tube owner-local history", action);
+        let context = ActionContext::for_action("so.tilo.tube", "Tube owner-local history", action);
         if let Err(error) = host.try_dispatch_with_context(
             &mut self.doc,
             OWNER_HISTORY_ACTION_TYPE,
@@ -236,25 +210,20 @@ impl OwnerHistoryStore {
     /// Returns an error when recovery disabled persistence, directory setup,
     /// bounded serialization, or the atomic local write fails.
     pub fn persist(&mut self) -> std::io::Result<()> {
-        let Some(path) = &self.path else {
+        let Some((dir, name)) = &self.location else {
             return (!self.recovery_disabled).then_some(()).ok_or_else(|| {
                 std::io::Error::other("owner history persistence is disabled pending recovery")
             });
         };
-        let parent = path
-            .parent()
-            .ok_or_else(|| std::io::Error::other("history path has no parent"))?;
-        fs::create_dir_all(parent)?;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
         let bytes = self.doc.save();
         if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_HISTORY_BYTES {
             return Err(std::io::Error::other(
                 "history store exceeds its size limit",
             ));
         }
-        // Atomic helper writes a private sibling, fsyncs, renames, then fsyncs
-        // the directory. Rename replaces a final symlink rather than following it.
-        atomic_file::write_creating_parent_with_mode(path, &bytes, 0o600)
+        // Owner-only natively (the file 0600, its folder 0700), atomic
+        // everywhere.
+        blocking::write_private(dir, name, &bytes).map_err(std::io::Error::other)
     }
 
     fn restore_after_failed_dispatch(&mut self, before: &[u8]) {
@@ -283,7 +252,6 @@ impl OwnerHistoryStore {
         else {
             return Ok(());
         };
-        let migration_marker = self.has_legacy_migration_marker();
         let cleared_at_ms = self
             .doc
             .get(&history, "clears")
@@ -364,11 +332,6 @@ impl OwnerHistoryStore {
             .apply(&mut snapshot)
             .map_err(std::io::Error::other)?;
         }
-        if migration_marker {
-            OwnerHistoryAction::LegacyMigrationComplete
-                .apply(&mut snapshot)
-                .map_err(std::io::Error::other)?;
-        }
         snapshot.commit();
         self.doc = snapshot;
         Ok(())
@@ -383,7 +346,7 @@ impl OwnerHistoryStore {
     pub(crate) fn recovery_disabled_for_test() -> Self {
         Self {
             doc: AutoCommit::new(),
-            path: None,
+            location: None,
             recovery_disabled: true,
         }
     }
@@ -402,228 +365,196 @@ fn owner_file_id(owner_id: &str) -> String {
     blake3::hash(owner_id.as_bytes()).to_hex().to_string()
 }
 
-fn current_uid() -> u32 {
-    // SAFETY: `geteuid` has no preconditions and only reads the calling
-    // process's credential, which is exactly the ownership boundary checked
-    // before tightening an existing history file.
-    unsafe { libc::geteuid() }
-}
-
-fn read_private_document(path: &Path) -> std::io::Result<AutoCommit> {
-    // Never follow a history-file symlink. Check the opened descriptor too,
-    // so a rename between metadata and open cannot turn into a privileged read.
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.file_type().is_file() {
+/// Load the history file: a regular file, not a link, and bounded. A file
+/// with group or other access, where the storage has permissions, is
+/// rewritten owner-only once it loads.
+fn read_private_document(dir: &Dir, name: &VPath) -> std::io::Result<AutoCommit> {
+    let meta = blocking::metadata(dir, name).map_err(std::io::Error::other)?;
+    if meta.kind != Kind::File || meta.symlink {
         return Err(std::io::Error::other(
             "history target is not a regular file",
         ));
     }
-    if metadata.uid() != current_uid() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "history file is not owned by the current user",
-        ));
-    }
-    if metadata.len() > MAX_HISTORY_BYTES {
+    if meta.len > MAX_HISTORY_BYTES {
         return Err(std::io::Error::other("history file exceeds size limit"));
     }
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
-    let opened = file.metadata()?;
-    if !opened.file_type().is_file()
-        || opened.len() > MAX_HISTORY_BYTES
-        || opened.uid() != current_uid()
-        || opened.dev() != metadata.dev()
-        || opened.ino() != metadata.ino()
-    {
-        return Err(std::io::Error::other(
-            "history target changed while opening",
-        ));
-    }
-    if opened.permissions().mode() & 0o777 != 0o600 {
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-        if file.metadata()?.permissions().mode() & 0o777 != 0o600 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "could not enforce owner-only history file permissions",
-            ));
-        }
-    }
-    let mut bytes =
-        Vec::with_capacity(usize::try_from(opened.len()).map_err(std::io::Error::other)?);
-    file.take(MAX_HISTORY_BYTES + 1).read_to_end(&mut bytes)?;
+    let bytes = blocking::read(dir, name).map_err(std::io::Error::other)?;
     if u64::try_from(bytes.len()).map_err(std::io::Error::other)? > MAX_HISTORY_BYTES {
         return Err(std::io::Error::other("history read exceeds size limit"));
     }
-    AutoCommit::load(&bytes).map_err(std::io::Error::other)
+    let doc = AutoCommit::load(&bytes).map_err(std::io::Error::other)?;
+    if meta.mode.is_some_and(|mode| mode & 0o077 != 0) {
+        blocking::write_private(dir, name, &bytes).map_err(std::io::Error::other)?;
+    }
+    Ok(doc)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
     #[test]
-    fn in_memory_store_is_a_separate_document() {
-        let mut store = OwnerHistoryStore::memory();
-        let mut host = ui::ActionHost::new();
-        assert!(store.dispatch(
-            &mut host,
-            &OwnerHistoryAction::SetEntry {
-                video_id: "not-in-shared-doc".into(),
-                watched_at_ms: 1,
-                present: true,
-                mutation_id: "watch:1".into(),
-            }
-        ));
-        let shared = AutoCommit::new();
-        assert!(shared.get(&ROOT, HISTORY_ROOT).unwrap().is_none());
-        assert!(store.document().get(&ROOT, HISTORY_ROOT).unwrap().is_some());
-    }
-
-    #[test]
-    fn persisted_store_reopens_with_owner_only_permissions() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join("alice.automerge");
-        let mut store = OwnerHistoryStore::open_path(path.clone());
-        let mut host = ui::ActionHost::new();
-        assert!(store.dispatch(
-            &mut host,
-            &OwnerHistoryAction::SetEntry {
-                video_id: "restart-video".into(),
-                watched_at_ms: 1,
-                present: true,
-                mutation_id: "watch:1".into(),
-            }
-        ));
-        assert_eq!(
-            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        let reopened = OwnerHistoryStore::open_path(path);
-        assert!(
-            reopened
-                .document()
-                .get(&ROOT, HISTORY_ROOT)
-                .unwrap()
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn unsafe_existing_file_or_symlink_is_not_overwritten() {
-        let temp = TempDir::new().unwrap();
-        let unsafe_path = temp.path().join("unsafe.automerge");
-        fs::write(&unsafe_path, b"not an automerge document").unwrap();
-        fs::set_permissions(&unsafe_path, fs::Permissions::from_mode(0o600)).unwrap();
-        let mut unsafe_store = OwnerHistoryStore::open_path(unsafe_path.clone());
-        let mut host = ui::ActionHost::new();
-        assert!(unsafe_store.recovery_disabled());
-        assert!(!unsafe_store.dispatch(
-            &mut host,
-            &OwnerHistoryAction::SetEntry {
-                video_id: "must-not-overwrite".into(),
-                watched_at_ms: 1,
-                present: true,
-                mutation_id: "x".into(),
-            }
-        ));
-        assert_eq!(
-            fs::read(&unsafe_path).unwrap(),
-            b"not an automerge document"
-        );
-
-        let target = temp.path().join("target.automerge");
-        fs::write(&target, b"keep-the-target").unwrap();
-        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
-        let link = temp.path().join("link.automerge");
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        let mut linked_store = OwnerHistoryStore::open_path(link);
-        assert!(linked_store.recovery_disabled());
-        assert!(!linked_store.dispatch(
-            &mut host,
-            &OwnerHistoryAction::SetEntry {
-                video_id: "must-not-follow".into(),
-                watched_at_ms: 1,
-                present: true,
-                mutation_id: "y".into(),
-            }
-        ));
-        assert_eq!(fs::read(&target).unwrap(), b"keep-the-target");
-    }
-
-    #[test]
-    fn owned_broad_permissions_are_safely_tightened_before_loading() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join("broad.automerge");
-        fs::write(&path, AutoCommit::new().save()).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-        let store = OwnerHistoryStore::open_path(path.clone());
-        assert!(!store.recovery_disabled());
-        assert_eq!(
-            fs::metadata(path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-    }
-
-    #[test]
-    fn owner_names_do_not_alias_for_distinct_or_adversarial_ids() {
-        assert_ne!(owner_file_id("user:alice"), owner_file_id("user:bob"));
-        assert_ne!(owner_file_id("AaAaAaAa"), owner_file_id("BBBBBBBB"));
-        assert_eq!(owner_file_id("user:alice").len(), 64);
-    }
-
-    #[test]
-    fn compaction_keeps_bounded_visible_history_and_migration_on_restart() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join("compact.automerge");
-        let mut store = OwnerHistoryStore::open_path(path.clone());
-        let mut host = ui::ActionHost::new();
-        assert!(store.dispatch(&mut host, &OwnerHistoryAction::LegacyMigrationComplete));
-        for watched_at_ms in 0..55_u64 {
+    fn history_store_files_are_owner_only_and_never_clobber_unsafe_paths() {
+        // Case `in_memory_store_is_a_separate_document`.
+        {
+            let mut store = OwnerHistoryStore::memory();
+            let mut host = ui::ActionHost::new();
             assert!(store.dispatch(
                 &mut host,
                 &OwnerHistoryAction::SetEntry {
-                    video_id: format!("video-{watched_at_ms}"),
-                    watched_at_ms,
+                    video_id: "not-in-shared-doc".into(),
+                    watched_at_ms: 1,
                     present: true,
-                    mutation_id: format!("watch-{watched_at_ms}"),
+                    mutation_id: "watch:1".into(),
                 }
             ));
+            let shared = AutoCommit::new();
+            assert!(shared.get(&ROOT, HISTORY_ROOT).unwrap().is_none());
+            assert!(store.document().get(&ROOT, HISTORY_ROOT).unwrap().is_some());
         }
-        store.force_compact_for_test().unwrap();
-        store.persist().unwrap();
-        let reopened = OwnerHistoryStore::open_path(path);
-        assert!(reopened.has_legacy_migration_marker());
-        let (_, history) = reopened
-            .document()
-            .get(&ROOT, HISTORY_ROOT)
-            .unwrap()
-            .unwrap();
-        let (_, entries) = reopened
-            .document()
-            .get(&history, "entries")
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            reopened.document().keys(&entries).count(),
-            MAX_HISTORY_ENTRIES
-        );
-        assert!(
-            reopened
+        // Case `persisted_store_reopens_with_owner_only_permissions`.
+        {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join("alice.automerge");
+            let mut store = OwnerHistoryStore::open_path(&path);
+            let mut host = ui::ActionHost::new();
+            assert!(store.dispatch(
+                &mut host,
+                &OwnerHistoryAction::SetEntry {
+                    video_id: "restart-video".into(),
+                    watched_at_ms: 1,
+                    present: true,
+                    mutation_id: "watch:1".into(),
+                }
+            ));
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            let reopened = OwnerHistoryStore::open_path(&path);
+            assert!(
+                reopened
+                    .document()
+                    .get(&ROOT, HISTORY_ROOT)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        // Case `unsafe_existing_file_or_symlink_is_not_overwritten`.
+        {
+            let temp = TempDir::new().unwrap();
+            let unsafe_path = temp.path().join("unsafe.automerge");
+            fs::write(&unsafe_path, b"not an automerge document").unwrap();
+            fs::set_permissions(&unsafe_path, fs::Permissions::from_mode(0o600)).unwrap();
+            let mut unsafe_store = OwnerHistoryStore::open_path(&unsafe_path);
+            let mut host = ui::ActionHost::new();
+            assert!(unsafe_store.recovery_disabled());
+            assert!(!unsafe_store.dispatch(
+                &mut host,
+                &OwnerHistoryAction::SetEntry {
+                    video_id: "must-not-overwrite".into(),
+                    watched_at_ms: 1,
+                    present: true,
+                    mutation_id: "x".into(),
+                }
+            ));
+            assert_eq!(
+                fs::read(&unsafe_path).unwrap(),
+                b"not an automerge document"
+            );
+
+            let target = temp.path().join("target.automerge");
+            fs::write(&target, b"keep-the-target").unwrap();
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+            let link = temp.path().join("link.automerge");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            let mut linked_store = OwnerHistoryStore::open_path(&link);
+            assert!(linked_store.recovery_disabled());
+            assert!(!linked_store.dispatch(
+                &mut host,
+                &OwnerHistoryAction::SetEntry {
+                    video_id: "must-not-follow".into(),
+                    watched_at_ms: 1,
+                    present: true,
+                    mutation_id: "y".into(),
+                }
+            ));
+            assert_eq!(fs::read(&target).unwrap(), b"keep-the-target");
+        }
+        // Case `owned_broad_permissions_are_safely_tightened_before_loading`.
+        {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join("broad.automerge");
+            fs::write(&path, AutoCommit::new().save()).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+            let store = OwnerHistoryStore::open_path(&path);
+            assert!(!store.recovery_disabled());
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn history_store_names_owners_and_compacts_safely() {
+        // Case `owner_names_do_not_alias_for_distinct_or_adversarial_ids`.
+        {
+            assert_ne!(owner_file_id("user:alice"), owner_file_id("user:bob"));
+            assert_ne!(owner_file_id("AaAaAaAa"), owner_file_id("BBBBBBBB"));
+            assert_eq!(owner_file_id("user:alice").len(), 64);
+        }
+        // Case `compaction_keeps_bounded_visible_history_on_restart`.
+        {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join("compact.automerge");
+            let mut store = OwnerHistoryStore::open_path(&path);
+            let mut host = ui::ActionHost::new();
+            for watched_at_ms in 0..55_u64 {
+                assert!(store.dispatch(
+                    &mut host,
+                    &OwnerHistoryAction::SetEntry {
+                        video_id: format!("video-{watched_at_ms}"),
+                        watched_at_ms,
+                        present: true,
+                        mutation_id: format!("watch-{watched_at_ms}"),
+                    }
+                ));
+            }
+            store.force_compact_for_test().unwrap();
+            store.persist().unwrap();
+            let reopened = OwnerHistoryStore::open_path(&path);
+            let (_, history) = reopened
                 .document()
-                .get(&entries, "video-54")
+                .get(&ROOT, HISTORY_ROOT)
                 .unwrap()
-                .is_some()
-        );
-        assert!(
-            reopened
+                .unwrap();
+            let (_, entries) = reopened
                 .document()
-                .get(&entries, "video-0")
+                .get(&history, "entries")
                 .unwrap()
-                .is_none()
-        );
+                .unwrap();
+            assert_eq!(
+                reopened.document().keys(&entries).count(),
+                MAX_HISTORY_ENTRIES
+            );
+            assert!(
+                reopened
+                    .document()
+                    .get(&entries, "video-54")
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                reopened
+                    .document()
+                    .get(&entries, "video-0")
+                    .unwrap()
+                    .is_none()
+            );
+        }
     }
 }

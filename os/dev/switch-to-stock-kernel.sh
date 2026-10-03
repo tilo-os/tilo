@@ -14,7 +14,7 @@
 #
 #   2. `dnf swap tilo-kernel-core kernel-core` — swaps the metapackage back.
 #      The Fedora kernel-core rpm is available from the frozen repo
-#      (os/rpms-snapshot.env) — the swap resolves against it.  --nogpgcheck
+#      (fingerprint-resolved RPMS_REF) — the swap resolves against it.  --nogpgcheck
 #      because neither our RPMs nor the frozen-repo mirror carry the fedora
 #      RPM signature; the image is signed as a whole via cosign upstream.
 #

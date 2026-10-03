@@ -1,0 +1,16 @@
+[package]
+name = "tilo-copy-lint"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Source scan that keeps English copy literals out of UI builders, for tests"
+
+# Test support only: depend on this from [dev-dependencies], never from a
+# production dependency table.
+
+[dependencies]
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

@@ -26,12 +26,17 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 
-use shell::compositor::foreign::{self, store};
+use shell::compositor::foreign::{self, ForeignSurfaceWidget, store};
 use shell::compositor::frame::FrameBuilder;
 use shell::compositor::tab_binding;
 use shell::shell::state::WorkspaceTree;
 use ui::offscreen::OffscreenRenderer;
+use ui::widget::Widget;
 use vello::peniko::Color;
 
 const W: u32 = 1600;
@@ -96,32 +101,280 @@ fn frame(fb: &mut FrameBuilder) -> vello::Scene {
 }
 
 #[test]
-fn output_presentation_buffer_reaches_a_nonblack_output_frame() {
-    let surface_id = 0x70_0000_0003;
-    store().forget(surface_id);
-    let pixels = solid(4, 4, (0x19, 0xC8, 0x5A));
-    // This is the same decoded frame store that `State::commit` populates;
-    // direct output paint must not depend on a WorkspaceTree widget.
-    store().publish_rgba(surface_id, &pixels, 4, 4);
-    assert_eq!(
-        store().snapshot(surface_id).expect("captured frame").rgba,
-        pixels
-    );
-    let mut scene = vello::Scene::new();
-    foreign::paint_output_presentation_surface(
-        &mut scene,
-        surface_id,
-        vello::kurbo::Rect::new(0.0, 0.0, 80.0, 80.0),
-        &ui::Theme::dark(),
-    );
-    let mut renderer = OffscreenRenderer::new(80, 80);
-    let rgba = renderer.render(&scene, Color::BLACK);
-    let pixel = OffscreenRenderer::sample(&rgba, 80, 40, 40);
-    assert!(
-        pixel.0.abs_diff(0x19) <= 4 && pixel.1.abs_diff(0xC8) <= 4 && pixel.2.abs_diff(0x5A) <= 4,
-        "direct audience output must paint the committed client frame, got {pixel:?}"
-    );
-    store().forget(surface_id);
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "chrome's only use is producing rendered via tree_mut(); the write-guard's \
+lifetime is tied to chrome's borrow, so it can't be dropped before rendered's \
+last use, and the block already ends right there"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn foreign_buffers_are_composited_once_into_visible_tabs_only() {
+    // Phase `output_presentation_buffer_reaches_a_nonblack_output_frame`.
+    {
+        let surface_id = 0x70_0000_0003;
+        store().forget(surface_id);
+        let pixels = solid(4, 4, (0x19, 0xC8, 0x5A));
+        // This is the same decoded frame store that `State::commit` populates;
+        // direct output paint must not depend on a WorkspaceTree widget.
+        store().publish_rgba(surface_id, &pixels, 4, 4);
+        assert_eq!(
+            store().snapshot(surface_id).expect("captured frame").rgba,
+            pixels
+        );
+        let mut scene = vello::Scene::new();
+        foreign::paint_output_presentation_surface(
+            &mut scene,
+            surface_id,
+            vello::kurbo::Rect::new(0.0, 0.0, 80.0, 80.0),
+            &ui::Theme::dark(),
+        );
+        let mut renderer = OffscreenRenderer::new(80, 80);
+        let rgba = renderer.render(&scene, Color::BLACK);
+        let pixel = OffscreenRenderer::sample(&rgba, 80, 40, 40);
+        assert!(
+            pixel.0.abs_diff(0x19) <= 4
+                && pixel.1.abs_diff(0xC8) <= 4
+                && pixel.2.abs_diff(0x5A) <= 4,
+            "direct audience output must paint the committed client frame, got {pixel:?}"
+        );
+        store().forget(surface_id);
+    }
+
+    // Phase `client_buffer_pixels_are_composited_into_the_tab_rect`.
+    // The load-bearing test: a client's buffer bytes become pixels inside the
+    // tab's rectangle in the scene the compositor actually submits.
+    {
+        let surface_id = 0x5EED_0001;
+        store().forget(surface_id);
+
+        let (mut fb, _protocol) = adopt_into_frame_builder(surface_id, "org.example.client");
+        // Splice, pan and spawn fade must all finish before the published tab
+        // rect is the one the client will be configured to.
+        settle(&mut fb);
+        let scene = frame(&mut fb);
+        let mut renderer = OffscreenRenderer::new(W, H);
+        let before = shot("foreign-before-first-frame", &mut renderer, &scene);
+
+        let rect = tile_rect(&mut fb, surface_id);
+        assert!(
+            rect.width() > 100.0 && rect.height() > 100.0,
+            "the foreign tile must occupy real area; got {rect:?}"
+        );
+        let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
+
+        let viewport = store()
+            .viewport(surface_id)
+            .expect("apply_layout must publish the tab rect into the frame store");
+        assert_eq!(
+            viewport,
+            (as_u32(rect.width().round()), as_u32(rect.height().round())),
+            "the published viewport is the tab's on-screen extent"
+        );
+
+        // No frame yet: whatever is on screen, it is NOT the client's colour.
+        let pre = OffscreenRenderer::sample(&before, W, cx, cy);
+        assert_ne!(
+            (pre.0, pre.1, pre.2),
+            (0xE0, 0x18, 0xA0),
+            "test fixture: the placeholder must not already be the client colour"
+        );
+
+        // `publish_rgba` is the same entry point the dmabuf import path uses
+        // after decoding.
+        let (bw, bh) = viewport;
+        let rgba = solid(bw, bh, (0xE0, 0x18, 0xA0));
+        store().publish_rgba(surface_id, &rgba, bw, bh);
+
+        // A new buffer is edge-triggered via needs_redraw (one shot). Treating
+        // a pending sequence as animation cadence pinned idle off-screen tiles
+        // at the refresh rate; the native loop also wakes on frame_seq.
+        let mut probe = ForeignSurfaceWidget::new(surface_id, "org.example.client".into());
+        probe.place_floating(rect);
+        Widget::mark_drawn(&mut probe);
+        assert!(
+            Widget::needs_redraw(&probe),
+            "a freshly committed client frame must request a repaint"
+        );
+        assert!(
+            !Widget::needs_animation_frame(&probe),
+            "a fitting buffer must not pin animation cadence after presentation settles"
+        );
+
+        // The dissolve is 180 ms, so the very next frame is still mostly card.
+        quiesce(&mut fb, surface_id);
+        let scene = frame(&mut fb);
+        let after = shot("foreign-with-client-frame", &mut renderer, &scene);
+        // The focused foreign group can still finish its strip pan while its
+        // opening card is up. Sample the rect painted by this frame, not the
+        // pre-commit position captured above.
+        let rect = tile_rect(&mut fb, surface_id);
+        let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
+        let px = OffscreenRenderer::sample(&after, W, cx, cy);
+        // The compositor may paint transient collaboration/chrome ink at the
+        // exact centre. Prove that the client owns the tile as an area, rather
+        // than treating one overlaid pixel as the whole compositing contract.
+        let after_pixels = &after;
+        let samples: Vec<_> = [0.25, 0.5, 0.75]
+            .into_iter()
+            .flat_map(|fx| {
+                [0.25, 0.5, 0.75].into_iter().map(move |fy| {
+                    OffscreenRenderer::sample(
+                        after_pixels,
+                        W,
+                        as_u32(rect.x0 + rect.width() * fx),
+                        as_u32(rect.y0 + rect.height() * fy),
+                    )
+                })
+            })
+            .collect();
+        let client_pixels = samples
+            .iter()
+            .filter(|sample| {
+                sample.0.abs_diff(0xE0) <= 4
+                    && sample.1.abs_diff(0x18) <= 4
+                    && sample.2.abs_diff(0xA0) <= 4
+            })
+            .count();
+        assert!(
+            client_pixels >= 5,
+            "the client's pixels must fill the tab; only {client_pixels}/9 interior samples matched \
+             (centre rgba{px:?} at ({cx}, {cy}), samples {samples:?}, rect {rect:?})"
+        );
+
+        // A point well outside the tile keeps the shell's own chrome.
+        let outside_y = as_u32(rect.y0).saturating_sub(30).max(1);
+        let out = OffscreenRenderer::sample(&after, W, cx, outside_y);
+        assert!(
+            !(out.0.abs_diff(0xE0) <= 4 && out.1.abs_diff(0x18) <= 4 && out.2.abs_diff(0xA0) <= 4),
+            "client pixels must be clipped to the tab; leaked to ({cx}, {outside_y}): rgba{out:?}"
+        );
+
+        store().forget(surface_id);
+    }
+
+    // Phase `painting_does_not_reimport_the_clients_buffer`.
+    // Painting is free: turning a client's buffer into RGBA is the expensive
+    // part and must happen once per *commit*, never once per *paint*. A
+    // dmabuf import is a GPU readback, and the compositor paints far more
+    // often than a client commits, so an import hung off the paint loop
+    // would turn one idle GPU client into permanent load.
+    {
+        let surface_id = 0x5EED_0007;
+        store().forget(surface_id);
+
+        let (mut fb, _protocol) = adopt_into_frame_builder(surface_id, "org.example.steady");
+        settle(&mut fb);
+        let (bw, bh) = store().viewport(surface_id).expect("tab laid out");
+
+        // `publish_rgba` is the publish both import routes end in.
+        let before = store().import_count();
+        store().publish_rgba(surface_id, &solid(bw, bh, (0x30, 0x90, 0xD0)), bw, bh);
+
+        // That dissolve is a legitimate 180 ms animation, so "the client is idle"
+        // is only answerable once it has finished.
+        quiesce(&mut fb, surface_id);
+
+        // Paint repeatedly with no further commits, as the loop does while the
+        // client sits idle.
+        for _ in 0..30 {
+            let _ = frame(&mut fb);
+        }
+
+        assert_eq!(
+            store().import_count(),
+            before,
+            "painting re-imported the client buffer; import must be driven by \
+             the commit hook, not by the paint loop"
+        );
+        assert!(
+            !fb.needs_animation_frame(),
+            "an idle client kept asking for animation frames after its frame was drawn"
+        );
+
+        store().forget(surface_id);
+    }
+
+    // Phase `a_background_foreign_tab_neither_paints_nor_wakes_the_paint_loop`.
+    // A tab that is not the active one in its group must not paint its
+    // client's pixels — and, because `WindowGroup` only consults the active
+    // host, must not keep the compositor's paint loop awake either.
+    {
+        let front = 0x5EED_0005;
+        let back = 0x5EED_0006;
+        store().forget(front);
+        store().forget(back);
+
+        let mut fb = FrameBuilder::new((W, H));
+        // Two clients as two tabs of ONE group, `front` active. The second names
+        // the group the first landed in (how a document opened from another app
+        // is placed); adopting twice with default placement would give each its
+        // own group, leaving nothing in the background.
+        {
+            let chrome = fb.chrome();
+            let mut rendered = chrome.tree_mut();
+            tab_binding::adopt_toplevel(&mut rendered, back, Some("org.example.back".into()));
+            let group = rendered
+                .desktop
+                .active_strip
+                .get(&rendered.desktop.active)
+                .copied()
+                .and_then(|strip| rendered.desktop.active_group_for(strip))
+                .expect("the first adoption focuses the group it landed in");
+            tab_binding::adopt_toplevel_at(
+                &mut rendered,
+                front,
+                Some("org.example.front".into()),
+                tab_binding::Placement::TabIn(group),
+            );
+            assert!(
+                foreign::is_visible_tab(&rendered, front),
+                "the tab adopted last is the group's active one"
+            );
+            assert!(
+                !foreign::is_visible_tab(&rendered, back),
+                "the tab it was adopted beside is now in the background"
+            );
+        }
+        create_fixture_tab_records(&fb);
+        fb.with_chrome(shell::shell::chrome_state::ChromeState::bump);
+        settle(&mut fb);
+
+        let rect = tile_rect(&mut fb, front);
+        let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
+
+        let (bw, bh) = store()
+            .viewport(front)
+            .expect("the visible tab publishes its rect");
+
+        // Settle the *visible* tab first: otherwise the front tab is still a
+        // placeholder painting a spinner, which correctly keeps the compositor
+        // repainting for reasons unrelated to the background tab.
+        store().publish_rgba(front, &solid(bw, bh, (0x40, 0x40, 0x40)), bw, bh);
+        quiesce(&mut fb, front);
+
+        let rgba = solid(bw, bh, (0x11, 0x9E, 0xE0));
+        store().publish_rgba(back, &rgba, bw, bh);
+
+        assert!(
+            !fb.needs_animation_frame(),
+            "a background tab's frame must not force the compositor to repaint"
+        );
+
+        let mut renderer = OffscreenRenderer::new(W, H);
+        let scene = frame(&mut fb);
+        let pixels = shot("foreign-background-tab", &mut renderer, &scene);
+        let px = OffscreenRenderer::sample(&pixels, W, cx, cy);
+        assert!(
+            !(px.0.abs_diff(0x11) <= 4 && px.1.abs_diff(0x9E) <= 4 && px.2.abs_diff(0xE0) <= 4),
+            "a background client's frame leaked into the active tab; got rgba{px:?}"
+        );
+
+        store().forget(front);
+        store().forget(back);
+    }
 }
 
 /// Paint until the widget tree reaches a steady state.
@@ -140,9 +393,7 @@ fn settle(fb: &mut FrameBuilder) {
     let minimum = started
         .checked_add(std::time::Duration::from_millis(500))
         .unwrap_or(started);
-    let deadline = started
-        .checked_add(std::time::Duration::from_secs(3))
-        .unwrap_or(started);
+    let deadline = tilo_test_env::hang_deadline();
     let settled = |fb: &mut FrameBuilder| !fb.needs_animation_frame() || fb.any_tile_opening();
     while (std::time::Instant::now() < minimum || !settled(fb))
         && std::time::Instant::now() < deadline
@@ -152,7 +403,7 @@ fn settle(fb: &mut FrameBuilder) {
     }
     assert!(
         settled(fb),
-        "the widget tree never settled; an animation is stuck in flight"
+        "the widget tree never settled within the hang bound; an animation is stuck in flight"
     );
 }
 
@@ -162,9 +413,7 @@ fn settle(fb: &mut FrameBuilder) {
 /// so the frame right after a commit is mostly still the card — sampling
 /// there measures the dissolve, not the client's pixels.
 fn quiesce(fb: &mut FrameBuilder, surface_id: u64) {
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(3))
-        .unwrap_or_else(std::time::Instant::now);
+    let deadline = tilo_test_env::hang_deadline();
     // First wait for this exact client to latch as presented. A configure or
     // strip-layout change can delay that edge; measuring the dissolve from
     // publication would then spend the entire allowance on the opening card.
@@ -198,6 +447,36 @@ fn solid(width: u32, height: u32, rgb: (u8, u8, u8)) -> Vec<u8> {
         out.extend_from_slice(&[rgb.0, rgb.1, rgb.2, 0xFF]);
     }
     out
+}
+
+/// These tests mint the rendered tabs directly, so they also own creating
+/// their documents. Presentation only opens existing records; it must never
+/// infer permission to create one from an absent document.
+fn create_fixture_tab_records(fb: &FrameBuilder) {
+    let (records, tabs) = {
+        let chrome = fb.chrome();
+        let rendered = chrome.tree();
+        let tabs = rendered
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.id)
+            .collect::<Vec<_>>();
+        (chrome.records().clone(), tabs)
+    };
+    for tab in tabs {
+        let checkout = shell::shell::tab_documents::scratch_tab_record(tab);
+        shell::shell::tab_documents::create_scratch_tab_record(&records, tab)
+            .expect("the fixture must create each rendered tab's document");
+        assert_eq!(
+            records.read(&checkout.id, ui::record::identity),
+            Some(Some(checkout)),
+            "the rendered tab must have its own existing document before painting"
+        );
+    }
 }
 
 /// A `FrameBuilder` whose rendered tree carries the foreign tab, reached
@@ -243,6 +522,7 @@ fn adopt_into_frame_builder(surface_id: u64, app_id: &str) -> (FrameBuilder, Wor
             focus.expect("the mirrored tree must hold the adopted client's group");
         rendered.desktop.set_active_group(strip_id, group_id);
     }
+    create_fixture_tab_records(&fb);
     fb.with_chrome(shell::shell::chrome_state::ChromeState::bump);
     (fb, protocol_tree)
 }
@@ -262,359 +542,137 @@ fn tile_rect(fb: &mut FrameBuilder, surface_id: u64) -> vello::kurbo::Rect {
     rect
 }
 
-/// The load-bearing test: a client's buffer bytes become pixels inside the
-/// tab's rectangle in the scene the compositor actually submits.
-#[test]
-fn client_buffer_pixels_are_composited_into_the_tab_rect() {
-    let surface_id = 0x5EED_0001;
-    store().forget(surface_id);
-
-    let (mut fb, _protocol) = adopt_into_frame_builder(surface_id, "org.example.client");
-    // Splice, pan and spawn fade must all finish before the published tab
-    // rect is the one the client will be configured to.
-    settle(&mut fb);
-    let scene = frame(&mut fb);
-    let mut renderer = OffscreenRenderer::new(W, H);
-    let before = shot("foreign-before-first-frame", &mut renderer, &scene);
-
-    let rect = tile_rect(&mut fb, surface_id);
-    assert!(
-        rect.width() > 100.0 && rect.height() > 100.0,
-        "the foreign tile must occupy real area; got {rect:?}"
-    );
-    let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
-
-    let viewport = store()
-        .viewport(surface_id)
-        .expect("apply_layout must publish the tab rect into the frame store");
-    assert_eq!(
-        viewport,
-        (as_u32(rect.width().round()), as_u32(rect.height().round())),
-        "the published viewport is the tab's on-screen extent"
-    );
-
-    // No frame yet: whatever is on screen, it is NOT the client's colour.
-    let pre = OffscreenRenderer::sample(&before, W, cx, cy);
-    assert_ne!(
-        (pre.0, pre.1, pre.2),
-        (0xE0, 0x18, 0xA0),
-        "test fixture: the placeholder must not already be the client colour"
-    );
-
-    // `publish_rgba` is the same entry point the dmabuf import path uses
-    // after decoding.
-    let (bw, bh) = viewport;
-    let rgba = solid(bw, bh, (0xE0, 0x18, 0xA0));
-    store().publish_rgba(surface_id, &rgba, bw, bh);
-
-    // The signal that wakes the compositor's paint loop for a client frame.
-    assert!(
-        fb.needs_animation_frame(),
-        "a freshly committed client frame must request a repaint"
-    );
-
-    // The dissolve is 180 ms, so the very next frame is still mostly card.
-    quiesce(&mut fb, surface_id);
-    let scene = frame(&mut fb);
-    let after = shot("foreign-with-client-frame", &mut renderer, &scene);
-    // The focused foreign group can still finish its strip pan while its
-    // opening card is up. Sample the rect painted by this frame, not the
-    // pre-commit position captured above.
-    let rect = tile_rect(&mut fb, surface_id);
-    let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
-    let px = OffscreenRenderer::sample(&after, W, cx, cy);
-    // The compositor may paint transient collaboration/chrome ink at the
-    // exact centre. Prove that the client owns the tile as an area, rather
-    // than treating one overlaid pixel as the whole compositing contract.
-    let after_pixels = &after;
-    let samples: Vec<_> = [0.25, 0.5, 0.75]
-        .into_iter()
-        .flat_map(|fx| {
-            [0.25, 0.5, 0.75].into_iter().map(move |fy| {
-                OffscreenRenderer::sample(
-                    after_pixels,
-                    W,
-                    as_u32(rect.x0 + rect.width() * fx),
-                    as_u32(rect.y0 + rect.height() * fy),
-                )
-            })
-        })
-        .collect();
-    let client_pixels = samples
-        .iter()
-        .filter(|sample| {
-            sample.0.abs_diff(0xE0) <= 4
-                && sample.1.abs_diff(0x18) <= 4
-                && sample.2.abs_diff(0xA0) <= 4
-        })
-        .count();
-    assert!(
-        client_pixels >= 5,
-        "the client's pixels must fill the tab; only {client_pixels}/9 interior samples matched \
-         (centre rgba{px:?} at ({cx}, {cy}), samples {samples:?}, rect {rect:?})"
-    );
-
-    // A point well outside the tile keeps the shell's own chrome.
-    let outside_y = as_u32(rect.y0).saturating_sub(30).max(1);
-    let out = OffscreenRenderer::sample(&after, W, cx, outside_y);
-    assert!(
-        !(out.0.abs_diff(0xE0) <= 4 && out.1.abs_diff(0x18) <= 4 && out.2.abs_diff(0xA0) <= 4),
-        "client pixels must be clipped to the tab; leaked to ({cx}, {outside_y}): rgba{out:?}"
-    );
-
-    store().forget(surface_id);
-}
-
-/// The compositor sizes the client to the tab and re-sizes on an output
-/// resize — once per change, never once per frame.
-#[test]
-fn tab_layout_drives_the_client_configure_size() {
-    let surface_id = 0x5EED_0002;
-    store().forget(surface_id);
-
-    let (mut fb, _protocol) = adopt_into_frame_builder(surface_id, "org.example.sized");
-    let _ = frame(&mut fb);
-
-    let first = store()
-        .take_pending_configure(surface_id)
-        .expect("the first layout must produce a configure");
-    let rect = tile_rect(&mut fb, surface_id);
-    assert_eq!(
-        first,
-        (as_i32(rect.width().round()), as_i32(rect.height().round())),
-        "the configure carries the tab's laid-out size"
-    );
-    assert_eq!(
-        store().take_pending_configure(surface_id),
-        None,
-        "an unchanged layout must not re-configure the client every frame"
-    );
-
-    // Shrinking the output shrinks the tab, so the client is re-configured.
-    fb.set_viewport((900, 600));
-    let _ = frame(&mut fb);
-    let resized = store()
-        .take_pending_configure(surface_id)
-        .expect("a resized tab must re-configure the client");
-    let rect_after = tile_rect(&mut fb, surface_id);
-    assert_eq!(
-        resized,
-        (
-            as_i32(rect_after.width().round()),
-            as_i32(rect_after.height().round())
-        ),
-        "the re-configure carries the tab's new laid-out size"
-    );
-    assert!(
-        resized.1 < first.1,
-        "a shorter output must ask the client for a shorter surface; \
-         {first:?} -> {resized:?}"
-    );
-
-    store().forget(surface_id);
-}
-
-/// Unmap stops painting the last frame; destroy releases the cached
-/// framebuffer.
-#[test]
-fn unmap_stops_painting_and_destroy_releases_the_frame() {
-    let surface_id = 0x5EED_0003;
-    store().forget(surface_id);
-
-    let (mut fb, _protocol) = adopt_into_frame_builder(surface_id, "org.example.lifecycle");
-    settle(&mut fb);
-    let (bw, bh) = store().viewport(surface_id).expect("tab laid out");
-    let rgba = solid(bw, bh, (0x22, 0xC0, 0x40));
-    store().publish_rgba(surface_id, &rgba, bw, bh);
-    assert!(store().snapshot(surface_id).is_some());
-
-    // Sample after the 180 ms dissolve, or the fixture is still mostly card.
-    quiesce(&mut fb, surface_id);
-    let mut renderer = OffscreenRenderer::new(W, H);
-    let scene = frame(&mut fb);
-    let mapped = shot("foreign-lifecycle-mapped", &mut renderer, &scene);
-    let rect = tile_rect(&mut fb, surface_id);
-    let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
-    let px = OffscreenRenderer::sample(&mapped, W, cx, cy);
-    assert!(
-        px.0.abs_diff(0x22) <= 4 && px.1.abs_diff(0xC0) <= 4 && px.2.abs_diff(0x40) <= 4,
-        "fixture: the mapped client frame is on screen; got rgba{px:?}"
-    );
-
-    // `wl_surface.attach(NULL)` clears the frame; the tab stays, since the
-    // toplevel is still alive.
-    store().clear_frame(surface_id);
-    assert!(
-        store().snapshot(surface_id).is_none(),
-        "an unmapped surface must not keep painting its stale frame"
-    );
-    let scene = frame(&mut fb);
-    let unmapped = shot("foreign-lifecycle-unmapped", &mut renderer, &scene);
-    let px = OffscreenRenderer::sample(&unmapped, W, cx, cy);
-    assert!(
-        !(px.0.abs_diff(0x22) <= 4 && px.1.abs_diff(0xC0) <= 4 && px.2.abs_diff(0x40) <= 4),
-        "the stale frame is still on screen after unmap; got rgba{px:?}"
-    );
-
-    store().forget(surface_id);
-    assert_eq!(store().frame_seq(surface_id), 0);
-    assert_eq!(store().viewport(surface_id), None);
-}
-
-#[test]
-fn destroying_the_toplevel_removes_the_tab_from_the_rendered_tree() {
-    let surface_id = 0x5EED_0004;
-    store().forget(surface_id);
-
-    let (mut fb, mut protocol) = adopt_into_frame_builder(surface_id, "org.example.transient");
-    let _ = frame(&mut fb);
-    assert!(
-        fb.foreign_surface_rect(surface_id).is_some(),
-        "the adopted client has a live tile"
-    );
-
-    assert!(tab_binding::close_tab_for_destroyed_surface(
-        &mut protocol,
-        surface_id
-    ));
-    let mirrored = {
-        let chrome = fb.chrome();
-        let mut rendered = chrome.tree_mut();
-        foreign::reconcile_foreign_tabs(&protocol, &mut rendered)
-    };
-    assert!(mirrored, "the teardown must mirror across");
-    fb.with_chrome(shell::shell::chrome_state::ChromeState::bump);
-    let _ = frame(&mut fb);
-
-    assert!(
-        fb.foreign_surface_rect(surface_id).is_none(),
-        "a destroyed toplevel must not leave its tile behind"
-    );
-    store().forget(surface_id);
-}
-
-/// Painting is free: turning a client's buffer into RGBA is the expensive
-/// part and must happen once per *commit*, never once per *paint*. A
-/// dmabuf import is a GPU readback, and the compositor paints far more
-/// often than a client commits, so an import hung off the paint loop
-/// would turn one idle GPU client into permanent load.
-#[test]
-fn painting_does_not_reimport_the_clients_buffer() {
-    let surface_id = 0x5EED_0007;
-    store().forget(surface_id);
-
-    let (mut fb, _protocol) = adopt_into_frame_builder(surface_id, "org.example.steady");
-    settle(&mut fb);
-    let (bw, bh) = store().viewport(surface_id).expect("tab laid out");
-
-    // `publish_rgba` is the publish both import routes end in.
-    let before = store().import_count();
-    store().publish_rgba(surface_id, &solid(bw, bh, (0x30, 0x90, 0xD0)), bw, bh);
-
-    // That dissolve is a legitimate 180 ms animation, so "the client is idle"
-    // is only answerable once it has finished.
-    quiesce(&mut fb, surface_id);
-
-    // Paint repeatedly with no further commits, as the loop does while the
-    // client sits idle.
-    for _ in 0..30 {
-        let _ = frame(&mut fb);
-    }
-
-    assert_eq!(
-        store().import_count(),
-        before,
-        "painting re-imported the client buffer; import must be driven by \
-         the commit hook, not by the paint loop"
-    );
-    assert!(
-        !fb.needs_animation_frame(),
-        "an idle client kept asking for animation frames after its frame was drawn"
-    );
-
-    store().forget(surface_id);
-}
-
-/// A tab that is not the active one in its group must not paint its
-/// client's pixels — and, because `WindowGroup` only consults the active
-/// host, must not keep the compositor's paint loop awake either.
 #[test]
 #[allow(
-    clippy::significant_drop_tightening,
-    reason = "chrome's only use is producing rendered via tree_mut(); the write-guard's \
-              lifetime is tied to chrome's borrow, so it can't be dropped before rendered's \
-              last use, and the block already ends right there"
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
-fn a_background_foreign_tab_neither_paints_nor_wakes_the_paint_loop() {
-    let front = 0x5EED_0005;
-    let back = 0x5EED_0006;
-    store().forget(front);
-    store().forget(back);
-
-    let mut fb = FrameBuilder::new((W, H));
-    // Two clients as two tabs of ONE group, `front` active. The second names
-    // the group the first landed in (how a document opened from another app
-    // is placed); adopting twice with default placement would give each its
-    // own group, leaving nothing in the background.
+fn foreign_toplevel_lifecycle_drives_configure_unmap_and_tab_removal() {
+    // Phase `tab_layout_drives_the_client_configure_size`.
+    // The compositor sizes the client to the tab and re-sizes on an output
+    // resize — once per change, never once per frame.
     {
-        let chrome = fb.chrome();
-        let mut rendered = chrome.tree_mut();
-        tab_binding::adopt_toplevel(&mut rendered, back, Some("org.example.back".into()));
-        let group = rendered
-            .desktop
-            .active_strip
-            .get(&rendered.desktop.active)
-            .copied()
-            .and_then(|strip| rendered.desktop.active_group_for(strip))
-            .expect("the first adoption focuses the group it landed in");
-        tab_binding::adopt_toplevel_at(
-            &mut rendered,
-            front,
-            Some("org.example.front".into()),
-            tab_binding::Placement::TabIn(group),
+        let surface_id = 0x5EED_0002;
+        store().forget(surface_id);
+
+        let (mut fb, _protocol) = adopt_into_frame_builder(surface_id, "org.example.sized");
+        let _ = frame(&mut fb);
+
+        let first = store()
+            .take_pending_configure(surface_id)
+            .expect("the first layout must produce a configure");
+        let rect = tile_rect(&mut fb, surface_id);
+        assert_eq!(
+            first,
+            (as_i32(rect.width().round()), as_i32(rect.height().round())),
+            "the configure carries the tab's laid-out size"
+        );
+        assert_eq!(
+            store().take_pending_configure(surface_id),
+            None,
+            "an unchanged layout must not re-configure the client every frame"
+        );
+
+        // Shrinking the output shrinks the tab, so the client is re-configured.
+        fb.set_viewport((900, 600));
+        let _ = frame(&mut fb);
+        let resized = store()
+            .take_pending_configure(surface_id)
+            .expect("a resized tab must re-configure the client");
+        let rect_after = tile_rect(&mut fb, surface_id);
+        assert_eq!(
+            resized,
+            (
+                as_i32(rect_after.width().round()),
+                as_i32(rect_after.height().round())
+            ),
+            "the re-configure carries the tab's new laid-out size"
         );
         assert!(
-            foreign::is_visible_tab(&rendered, front),
-            "the tab adopted last is the group's active one"
+            resized.1 < first.1,
+            "a shorter output must ask the client for a shorter surface; \
+             {first:?} -> {resized:?}"
         );
-        assert!(
-            !foreign::is_visible_tab(&rendered, back),
-            "the tab it was adopted beside is now in the background"
-        );
+
+        store().forget(surface_id);
     }
-    fb.with_chrome(shell::shell::chrome_state::ChromeState::bump);
-    settle(&mut fb);
 
-    let rect = tile_rect(&mut fb, front);
-    let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
+    // Phase `unmap_stops_painting_and_destroy_releases_the_frame`.
+    // Unmap stops painting the last frame; destroy releases the cached
+    // framebuffer.
+    {
+        let surface_id = 0x5EED_0003;
+        store().forget(surface_id);
 
-    let (bw, bh) = store()
-        .viewport(front)
-        .expect("the visible tab publishes its rect");
+        let (mut fb, _protocol) = adopt_into_frame_builder(surface_id, "org.example.lifecycle");
+        settle(&mut fb);
+        let (bw, bh) = store().viewport(surface_id).expect("tab laid out");
+        let rgba = solid(bw, bh, (0x22, 0xC0, 0x40));
+        store().publish_rgba(surface_id, &rgba, bw, bh);
+        assert!(store().snapshot(surface_id).is_some());
 
-    // Settle the *visible* tab first: otherwise the front tab is still a
-    // placeholder painting a spinner, which correctly keeps the compositor
-    // repainting for reasons unrelated to the background tab.
-    store().publish_rgba(front, &solid(bw, bh, (0x40, 0x40, 0x40)), bw, bh);
-    quiesce(&mut fb, front);
+        // Sample after the 180 ms dissolve, or the fixture is still mostly card.
+        quiesce(&mut fb, surface_id);
+        let mut renderer = OffscreenRenderer::new(W, H);
+        let scene = frame(&mut fb);
+        let mapped = shot("foreign-lifecycle-mapped", &mut renderer, &scene);
+        let rect = tile_rect(&mut fb, surface_id);
+        let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
+        let px = OffscreenRenderer::sample(&mapped, W, cx, cy);
+        assert!(
+            px.0.abs_diff(0x22) <= 4 && px.1.abs_diff(0xC0) <= 4 && px.2.abs_diff(0x40) <= 4,
+            "fixture: the mapped client frame is on screen; got rgba{px:?}"
+        );
 
-    let rgba = solid(bw, bh, (0x11, 0x9E, 0xE0));
-    store().publish_rgba(back, &rgba, bw, bh);
+        // `wl_surface.attach(NULL)` clears the frame; the tab stays, since the
+        // toplevel is still alive.
+        store().clear_frame(surface_id);
+        assert!(
+            store().snapshot(surface_id).is_none(),
+            "an unmapped surface must not keep painting its stale frame"
+        );
+        let scene = frame(&mut fb);
+        let unmapped = shot("foreign-lifecycle-unmapped", &mut renderer, &scene);
+        let px = OffscreenRenderer::sample(&unmapped, W, cx, cy);
+        assert!(
+            !(px.0.abs_diff(0x22) <= 4 && px.1.abs_diff(0xC0) <= 4 && px.2.abs_diff(0x40) <= 4),
+            "the stale frame is still on screen after unmap; got rgba{px:?}"
+        );
 
-    assert!(
-        !fb.needs_animation_frame(),
-        "a background tab's frame must not force the compositor to repaint"
-    );
+        store().forget(surface_id);
+        assert_eq!(store().frame_seq(surface_id), 0);
+        assert_eq!(store().viewport(surface_id), None);
+    }
 
-    let mut renderer = OffscreenRenderer::new(W, H);
-    let scene = frame(&mut fb);
-    let pixels = shot("foreign-background-tab", &mut renderer, &scene);
-    let px = OffscreenRenderer::sample(&pixels, W, cx, cy);
-    assert!(
-        !(px.0.abs_diff(0x11) <= 4 && px.1.abs_diff(0x9E) <= 4 && px.2.abs_diff(0xE0) <= 4),
-        "a background client's frame leaked into the active tab; got rgba{px:?}"
-    );
+    // Phase `destroying_the_toplevel_removes_the_tab_from_the_rendered_tree`.
+    {
+        let surface_id = 0x5EED_0004;
+        store().forget(surface_id);
 
-    store().forget(front);
-    store().forget(back);
+        let (mut fb, mut protocol) = adopt_into_frame_builder(surface_id, "org.example.transient");
+        let _ = frame(&mut fb);
+        assert!(
+            fb.foreign_surface_rect(surface_id).is_some(),
+            "the adopted client has a live tile"
+        );
+
+        assert!(tab_binding::close_tab_for_destroyed_surface(
+            &mut protocol,
+            surface_id
+        ));
+        let mirrored = {
+            let chrome = fb.chrome();
+            let mut rendered = chrome.tree_mut();
+            foreign::reconcile_foreign_tabs(&protocol, &mut rendered)
+        };
+        assert!(mirrored, "the teardown must mirror across");
+        fb.with_chrome(shell::shell::chrome_state::ChromeState::bump);
+        let _ = frame(&mut fb);
+
+        assert!(
+            fb.foreign_surface_rect(surface_id).is_none(),
+            "a destroyed toplevel must not leave its tile behind"
+        );
+        store().forget(surface_id);
+    }
 }

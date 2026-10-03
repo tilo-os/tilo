@@ -6,23 +6,17 @@
 use std::path::Path;
 
 use collab_types::{
-    Ed25519PublicKey, FilePermission, FileRecordId, NamedGrantMetadataV1, ShareControlOperationV1,
-};
-#[cfg(unix)]
-use collab_types::{
-    SHARE_CONTROL_FRAMING, SHARE_CONTROL_VERSION, ShareControlRequestV1, ShareControlResponseV1,
+    Ed25519PublicKey, FilePermission, FileRecordId, NamedGrantMetadataV1, SHARE_CONTROL_FRAMING,
+    SHARE_CONTROL_VERSION, ShareControlOperationV1, ShareControlRequestV1, ShareControlResponseV1,
     ShareControlResultV1,
 };
+use runtime_portal::local_socket;
 use tilo_clock::unix_now_ms;
-#[cfg(unix)]
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
-#[cfg(unix)]
 use wire_frame::FrameError;
 
-use crate::i18n::t;
-#[cfg(unix)]
-use crate::i18n::{arg, t_args};
+use crate::i18n::{arg, t, t_args};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ShareActionResult {
@@ -205,19 +199,19 @@ pub async fn revoke_grant(socket: &Path, grant_id: Uuid) -> Result<ShareActionRe
 
 /// One request/response exchange with the share service. Must be polled
 /// in a tokio runtime context (the app runtime), which drives the socket.
-#[cfg(unix)]
 async fn transact(
     socket: &Path,
     operation: ShareControlOperationV1,
 ) -> Result<ShareActionResult, String> {
-    let mut stream = tokio::net::UnixStream::connect(socket)
-        .await
-        .map_err(|error| {
-            t_args(
-                "files-share-unavailable-error",
-                &[arg("error", error.to_string())],
-            )
-        })?;
+    if !local_socket::SUPPORTED {
+        return Err(t("files-share-not-available"));
+    }
+    let mut stream = local_socket::connect(socket).await.map_err(|error| {
+        t_args(
+            "files-share-unavailable-error",
+            &[arg("error", error.to_string())],
+        )
+    })?;
     let request = ShareControlRequestV1 {
         protocol_version: SHARE_CONTROL_VERSION,
         operation,
@@ -298,197 +292,196 @@ mod tests {
 
     use super::*;
 
+    /// The composer preserves permission, expiry and bounded link use, and rejects unbounded links or link controls on named grants.
     #[test]
-    fn composer_preserves_permission_expiry_and_bounded_link_use_on_wire() {
-        let record_id = FileRecordId(Uuid::from_u128(39));
-        let operation = ShareComposerRequest {
-            subject: ShareSubjectChoice::Link,
-            permission: FilePermission::Edit,
-            expiry: ShareExpiryChoice::Week,
-            link_uses: Some(LinkUseChoice::Bounded(10)),
-            recipient_devices: Vec::new(),
-        }
-        .operation_at(record_id, 1_000)
-        .unwrap();
-        assert_eq!(
-            operation,
-            ShareControlOperationV1::CreateBearerV2 {
-                record_id,
-                permission: FilePermission::Edit,
-                expires_at_ms: 1_000 + 7 * 24 * 60 * 60 * 1_000,
-                max_uses: Some(10),
-            }
-        );
-    }
-
-    #[test]
-    fn composer_rejects_unbounded_links_and_link_controls_on_named_grants() {
-        let record_id = FileRecordId(Uuid::from_u128(40));
-        assert!(
-            ShareComposerRequest {
+    fn share_composer_bounds_links_and_grants_on_the_wire() {
+        // --- phase: composer_preserves_permission_expiry_and_bounded_link_use_on_wire ---
+        {
+            let record_id = FileRecordId(Uuid::from_u128(39));
+            let operation = ShareComposerRequest {
                 subject: ShareSubjectChoice::Link,
-                permission: FilePermission::View,
-                expiry: ShareExpiryChoice::Never,
-                link_uses: Some(LinkUseChoice::OneUse),
+                permission: FilePermission::Edit,
+                expiry: ShareExpiryChoice::Week,
+                link_uses: Some(LinkUseChoice::Bounded(10)),
                 recipient_devices: Vec::new(),
             }
             .operation_at(record_id, 1_000)
-            .is_err()
-        );
-        assert!(
-            ShareComposerRequest {
-                subject: ShareSubjectChoice::Named(Ed25519PublicKey::from_bytes([3; 32])),
-                permission: FilePermission::View,
-                expiry: ShareExpiryChoice::Month,
-                link_uses: Some(LinkUseChoice::OneUse),
-                recipient_devices: vec![Ed25519PublicKey::from_bytes([4; 32])],
-            }
-            .operation_at(record_id, 1_000)
-            .is_err()
-        );
-        assert!(
-            ShareComposerRequest {
-                subject: ShareSubjectChoice::Named(Ed25519PublicKey::from_bytes([5; 32])),
-                permission: FilePermission::View,
-                expiry: ShareExpiryChoice::Month,
-                link_uses: None,
-                recipient_devices: Vec::new(),
-            }
-            .operation_at(record_id, 1_000)
-            .is_err()
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn named_share_sends_the_human_root_and_no_display_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("share.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
-        let record_id = FileRecordId(Uuid::from_u128(41));
-        let person = Ed25519PublicKey::from_bytes(
-            ed25519_dalek::SigningKey::from_bytes(&[42; 32])
-                .verifying_key()
-                .to_bytes(),
-        );
-        let recipient_device = Ed25519PublicKey::from_bytes(
-            ed25519_dalek::SigningKey::from_bytes(&[43; 32])
-                .verifying_key()
-                .to_bytes(),
-        );
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut length = [0_u8; 4];
-            stream.read_exact(&mut length).unwrap();
-            let mut request = vec![0_u8; u32::from_be_bytes(length) as usize];
-            stream.read_exact(&mut request).unwrap();
-            let request: ShareControlRequestV1 =
-                collab_types::canonical::from_canonical_bytes(&request).unwrap();
+            .unwrap();
             assert_eq!(
-                request.operation,
-                ShareControlOperationV1::CreateNamed {
+                operation,
+                ShareControlOperationV1::CreateBearerV2 {
                     record_id,
-                    person,
-                    recipient_devices: vec![recipient_device],
-                    permission: FilePermission::View,
-                    expires_at_ms: None,
+                    permission: FilePermission::Edit,
+                    expires_at_ms: 1_000 + 7 * 24 * 60 * 60 * 1_000,
+                    max_uses: Some(10),
                 }
             );
-            let response = ShareControlResponseV1 {
-                protocol_version: SHARE_CONTROL_VERSION,
-                result: ShareControlResultV1::NamedCreated(NamedGrantMetadataV1 {
-                    grant_id: Uuid::from_u128(43),
-                    workspace_id: Uuid::from_u128(44),
-                    record_id,
-                    person,
+        }
+
+        // --- phase: composer_rejects_unbounded_links_and_link_controls_on_named_grants ---
+        {
+            let record_id = FileRecordId(Uuid::from_u128(40));
+            assert!(
+                ShareComposerRequest {
+                    subject: ShareSubjectChoice::Link,
                     permission: FilePermission::View,
-                    expires_at_ms: None,
-                    issuer: Ed25519PublicKey::from_bytes([5; 32]),
-                    delivery: collab_types::NamedShareDeliveryStateV1::Pending,
-                }),
-            };
-            let bytes = collab_types::canonical_bytes(&response).unwrap();
-            stream
-                .write_all(&(bytes.len() as u32).to_be_bytes())
-                .unwrap();
-            stream.write_all(&bytes).unwrap();
-        });
-        let metadata = ui::rt::app()
-            .block_on(create_named_share(
-                &socket,
-                record_id,
-                person,
-                vec![recipient_device],
-                FilePermission::View,
-                None,
-            ))
-            .unwrap()
-            .unwrap();
-        assert_eq!(metadata.person, person);
-        server.join().unwrap();
+                    expiry: ShareExpiryChoice::Never,
+                    link_uses: Some(LinkUseChoice::OneUse),
+                    recipient_devices: Vec::new(),
+                }
+                .operation_at(record_id, 1_000)
+                .is_err()
+            );
+            assert!(
+                ShareComposerRequest {
+                    subject: ShareSubjectChoice::Named(Ed25519PublicKey::from_bytes([3; 32])),
+                    permission: FilePermission::View,
+                    expiry: ShareExpiryChoice::Month,
+                    link_uses: Some(LinkUseChoice::OneUse),
+                    recipient_devices: vec![Ed25519PublicKey::from_bytes([4; 32])],
+                }
+                .operation_at(record_id, 1_000)
+                .is_err()
+            );
+            assert!(
+                ShareComposerRequest {
+                    subject: ShareSubjectChoice::Named(Ed25519PublicKey::from_bytes([5; 32])),
+                    permission: FilePermission::View,
+                    expiry: ShareExpiryChoice::Month,
+                    link_uses: None,
+                    recipient_devices: Vec::new(),
+                }
+                .operation_at(record_id, 1_000)
+                .is_err()
+            );
+        }
     }
 
+    /// Named shares send the human root without a display name and one-time links request exactly one redemption.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
     #[cfg(unix)]
-    fn one_time_link_explicitly_requests_exactly_one_redemption() {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("share.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
-        let record_id = FileRecordId(Uuid::from_u128(51));
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut length = [0_u8; 4];
-            stream.read_exact(&mut length).unwrap();
-            let mut request = vec![0_u8; u32::from_be_bytes(length) as usize];
-            stream.read_exact(&mut request).unwrap();
-            let request: ShareControlRequestV1 =
-                collab_types::canonical::from_canonical_bytes(&request).unwrap();
-            match request.operation {
-                ShareControlOperationV1::CreateBearerV2 {
-                    record_id: requested,
-                    permission,
-                    expires_at_ms,
-                    max_uses,
-                } => {
-                    assert_eq!(requested, record_id);
-                    assert_eq!(permission, FilePermission::View);
-                    assert!(expires_at_ms > unix_now_ms());
-                    assert_eq!(max_uses, Some(1));
-                }
-                other => panic!("unexpected one-time-link request: {other:?}"),
-            }
-            let response = ShareControlResponseV1 {
-                protocol_version: SHARE_CONTROL_VERSION,
-                result: ShareControlResultV1::BearerCreatedV2 {
-                    uri: "tilo-file://one-use".into(),
-                },
-            };
-            let bytes = collab_types::canonical_bytes(&response).unwrap();
-            stream
-                .write_all(&(bytes.len() as u32).to_be_bytes())
-                .unwrap();
-            stream.write_all(&bytes).unwrap();
-        });
-
-        assert_eq!(
-            ui::rt::app()
-                .block_on(create_one_use_view_link(&socket, record_id))
+    fn share_requests_send_exact_roots_and_redemptions() {
+        // --- phase: named_share_sends_the_human_root_and_no_display_name ---
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("share.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let record_id = FileRecordId(Uuid::from_u128(41));
+            let person = Ed25519PublicKey::from_bytes(
+                ed25519_dalek::SigningKey::from_bytes(&[42; 32])
+                    .verifying_key()
+                    .to_bytes(),
+            );
+            let recipient_device = Ed25519PublicKey::from_bytes(
+                ed25519_dalek::SigningKey::from_bytes(&[43; 32])
+                    .verifying_key()
+                    .to_bytes(),
+            );
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut length = [0_u8; 4];
+                stream.read_exact(&mut length).unwrap();
+                let mut request = vec![0_u8; u32::from_be_bytes(length) as usize];
+                stream.read_exact(&mut request).unwrap();
+                let request: ShareControlRequestV1 =
+                    collab_types::canonical::from_canonical_bytes(&request).unwrap();
+                assert_eq!(
+                    request.operation,
+                    ShareControlOperationV1::CreateNamed {
+                        record_id,
+                        person,
+                        recipient_devices: vec![recipient_device],
+                        permission: FilePermission::View,
+                        expires_at_ms: None,
+                    }
+                );
+                let response = ShareControlResponseV1 {
+                    protocol_version: SHARE_CONTROL_VERSION,
+                    result: ShareControlResultV1::NamedCreated(NamedGrantMetadataV1 {
+                        grant_id: Uuid::from_u128(43),
+                        workspace_id: Uuid::from_u128(44),
+                        record_id,
+                        person,
+                        permission: FilePermission::View,
+                        expires_at_ms: None,
+                        issuer: Ed25519PublicKey::from_bytes([5; 32]),
+                        delivery: collab_types::NamedShareDeliveryStateV1::Pending,
+                    }),
+                };
+                let bytes = collab_types::canonical_bytes(&response).unwrap();
+                stream
+                    .write_all(&(bytes.len() as u32).to_be_bytes())
+                    .unwrap();
+                stream.write_all(&bytes).unwrap();
+            });
+            let metadata = ui::rt::app()
+                .block_on(create_named_share(
+                    &socket,
+                    record_id,
+                    person,
+                    vec![recipient_device],
+                    FilePermission::View,
+                    None,
+                ))
                 .unwrap()
-                .unwrap(),
-            "tilo-file://one-use"
-        );
-        server.join().unwrap();
-    }
-}
+                .unwrap();
+            assert_eq!(metadata.person, person);
+            server.join().unwrap();
+        }
 
-#[cfg(not(unix))]
-#[allow(
-    clippy::unused_async,
-    reason = "matches the unix transport's signature"
-)]
-async fn transact(
-    _socket: &Path,
-    _operation: ShareControlOperationV1,
-) -> Result<ShareActionResult, String> {
-    Err(t("files-share-not-available"))
+        // --- phase: one_time_link_explicitly_requests_exactly_one_redemption ---
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("share.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let record_id = FileRecordId(Uuid::from_u128(51));
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut length = [0_u8; 4];
+                stream.read_exact(&mut length).unwrap();
+                let mut request = vec![0_u8; u32::from_be_bytes(length) as usize];
+                stream.read_exact(&mut request).unwrap();
+                let request: ShareControlRequestV1 =
+                    collab_types::canonical::from_canonical_bytes(&request).unwrap();
+                match request.operation {
+                    ShareControlOperationV1::CreateBearerV2 {
+                        record_id: requested,
+                        permission,
+                        expires_at_ms,
+                        max_uses,
+                    } => {
+                        assert_eq!(requested, record_id);
+                        assert_eq!(permission, FilePermission::View);
+                        assert!(expires_at_ms > unix_now_ms());
+                        assert_eq!(max_uses, Some(1));
+                    }
+                    other => panic!("unexpected one-time-link request: {other:?}"),
+                }
+                let response = ShareControlResponseV1 {
+                    protocol_version: SHARE_CONTROL_VERSION,
+                    result: ShareControlResultV1::BearerCreatedV2 {
+                        uri: "tilo-file://one-use".into(),
+                    },
+                };
+                let bytes = collab_types::canonical_bytes(&response).unwrap();
+                stream
+                    .write_all(&(bytes.len() as u32).to_be_bytes())
+                    .unwrap();
+                stream.write_all(&bytes).unwrap();
+            });
+
+            assert_eq!(
+                ui::rt::app()
+                    .block_on(create_one_use_view_link(&socket, record_id))
+                    .unwrap()
+                    .unwrap(),
+                "tilo-file://one-use"
+            );
+            server.join().unwrap();
+        }
+    }
 }

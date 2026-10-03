@@ -258,7 +258,7 @@ impl AccountSyncStatusStore {
         }
         let json = serde_json::to_vec_pretty(self)
             .map_err(|error| std::io::Error::other(error.to_string()))?;
-        atomic_file::write(&path, &json)
+        tilo_files::native::atomic::write(&path, &json)
     }
 }
 
@@ -286,74 +286,77 @@ mod tests {
     use super::*;
 
     #[test]
-    fn status_round_trips_and_messages_are_bounded_one_line() {
-        let root =
-            std::env::temp_dir().join(format!("tilo-account-status-{}", uuid::Uuid::new_v4()));
-        let id = AccountId::from("mail@example.test");
-        let mut store = AccountSyncStatusStore::default();
-        store.report(
-            &id,
-            AccountSyncStatus::sanitized(
-                AccountSyncHealth::Error,
-                Some(20),
-                Some(10),
-                Some(&format!("login failed\n{}", "x".repeat(400))),
-            ),
-        );
-        store.save_in(&root).unwrap();
-        let loaded = AccountSyncStatusStore::load_in(&root);
-        let message = loaded.get(&id).unwrap().message.as_deref().unwrap();
-        assert!(!message.contains('\n'));
-        assert!(message.len() <= 240);
-        std::fs::remove_dir_all(root).ok();
-    }
+    fn sync_status_persists_bounded_messages_last_success_and_concurrent_reports() {
+        // Phase `status_round_trips_and_messages_are_bounded_one_line`.
+        {
+            let root =
+                std::env::temp_dir().join(format!("tilo-account-status-{}", uuid::Uuid::new_v4()));
+            let id = AccountId::from("mail@example.test");
+            let mut store = AccountSyncStatusStore::default();
+            store.report(
+                &id,
+                AccountSyncStatus::sanitized(
+                    AccountSyncHealth::Error,
+                    Some(20),
+                    Some(10),
+                    Some(&format!("login failed\n{}", "x".repeat(400))),
+                ),
+            );
+            store.save_in(&root).unwrap();
+            let loaded = AccountSyncStatusStore::load_in(&root);
+            let message = loaded.get(&id).unwrap().message.as_deref().unwrap();
+            assert!(!message.contains('\n'));
+            assert!(message.len() <= 240);
+            std::fs::remove_dir_all(root).ok();
+        }
 
-    #[test]
-    fn reporter_preserves_last_success_across_auth_failure() {
-        let root =
-            std::env::temp_dir().join(format!("tilo-account-reporter-{}", uuid::Uuid::new_v4()));
-        let id = AccountId::from("calendar@example.test");
-        let reporter = AccountSyncReporter::in_root(id.clone(), &root);
-        reporter.started().unwrap();
-        reporter.succeeded().unwrap();
-        let successful = AccountSyncStatusStore::load_in(&root)
-            .get(&id)
-            .unwrap()
-            .clone();
-        reporter.needs_authentication().unwrap();
-        let auth = AccountSyncStatusStore::load_in(&root)
-            .get(&id)
-            .unwrap()
-            .clone();
-        assert_eq!(auth.health, AccountSyncHealth::NeedsAuthentication);
-        assert_eq!(auth.last_success_unix, successful.last_success_unix);
-        assert_eq!(auth.message.as_deref(), Some("Sign-in required"));
-        std::fs::remove_dir_all(root).ok();
-    }
+        // Phase `reporter_preserves_last_success_across_auth_failure`.
+        {
+            let root = std::env::temp_dir()
+                .join(format!("tilo-account-reporter-{}", uuid::Uuid::new_v4()));
+            let id = AccountId::from("calendar@example.test");
+            let reporter = AccountSyncReporter::in_root(id.clone(), &root);
+            reporter.started().unwrap();
+            reporter.succeeded().unwrap();
+            let successful = AccountSyncStatusStore::load_in(&root)
+                .get(&id)
+                .unwrap()
+                .clone();
+            reporter.needs_authentication().unwrap();
+            let auth = AccountSyncStatusStore::load_in(&root)
+                .get(&id)
+                .unwrap()
+                .clone();
+            assert_eq!(auth.health, AccountSyncHealth::NeedsAuthentication);
+            assert_eq!(auth.last_success_unix, successful.last_success_unix);
+            assert_eq!(auth.message.as_deref(), Some("Sign-in required"));
+            std::fs::remove_dir_all(root).ok();
+        }
 
-    #[test]
-    fn reporters_serialize_cross_thread_updates() {
-        let root = std::env::temp_dir().join(format!(
-            "tilo-account-reporter-lock-{}",
-            uuid::Uuid::new_v4()
-        ));
-        let first = AccountId::from("first");
-        let second = AccountId::from("second");
-        let a = AccountSyncReporter::in_root(first.clone(), &root);
-        let b = AccountSyncReporter::in_root(second.clone(), &root);
-        let one = std::thread::spawn(move || a.succeeded());
-        let two = std::thread::spawn(move || b.needs_authentication());
-        one.join().unwrap().unwrap();
-        two.join().unwrap().unwrap();
-        let statuses = AccountSyncStatusStore::load_in(&root);
-        assert_eq!(
-            statuses.get(&first).unwrap().health,
-            AccountSyncHealth::Healthy
-        );
-        assert_eq!(
-            statuses.get(&second).unwrap().health,
-            AccountSyncHealth::NeedsAuthentication
-        );
-        std::fs::remove_dir_all(root).ok();
+        // Phase `reporters_serialize_cross_thread_updates`.
+        {
+            let root = std::env::temp_dir().join(format!(
+                "tilo-account-reporter-lock-{}",
+                uuid::Uuid::new_v4()
+            ));
+            let first = AccountId::from("first");
+            let second = AccountId::from("second");
+            let a = AccountSyncReporter::in_root(first.clone(), &root);
+            let b = AccountSyncReporter::in_root(second.clone(), &root);
+            let one = std::thread::spawn(move || a.succeeded());
+            let two = std::thread::spawn(move || b.needs_authentication());
+            one.join().unwrap().unwrap();
+            two.join().unwrap().unwrap();
+            let statuses = AccountSyncStatusStore::load_in(&root);
+            assert_eq!(
+                statuses.get(&first).unwrap().health,
+                AccountSyncHealth::Healthy
+            );
+            assert_eq!(
+                statuses.get(&second).unwrap().health,
+                AccountSyncHealth::NeedsAuthentication
+            );
+            std::fs::remove_dir_all(root).ok();
+        }
     }
 }

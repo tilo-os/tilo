@@ -31,11 +31,11 @@ pub mod breadcrumb_bar;
 pub mod breadcrumbs;
 pub mod command;
 pub mod config;
+mod doc;
 pub mod external_drag;
 pub mod favorites;
 pub mod fileops;
 pub mod files_app;
-pub mod filesystem_metadata;
 pub mod framework_history;
 pub mod history_control;
 mod history_panel;
@@ -45,13 +45,16 @@ mod metadata_refresh;
 pub mod model;
 pub mod native_fixture;
 pub mod nearby_send;
+pub mod open_with;
 pub mod path_bar;
 pub mod places_sidebar;
 pub mod received_shares;
+pub mod recent;
 pub mod remote_accounts;
-pub mod remote_dav;
+pub mod resource;
 pub mod search_provider;
 pub mod sharing;
+pub mod shortcut_menu;
 pub mod sidebar;
 pub mod templates;
 pub mod text_layout;
@@ -60,3 +63,7 @@ pub mod views;
 
 pub use command::{CommandSink, FileCommand};
 pub use files_app::{FileExplorerWidget, StartupInputs};
+
+#[cfg(all(test, windows))]
+mod unavailable_projection_tests;
+pub use resource::{FileExplorer, FileExplorerShell, launch_spec as framework_launch_spec};

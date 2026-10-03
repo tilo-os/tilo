@@ -60,29 +60,34 @@ echo "== collaborative Files shipped-image contract ($mode) =="
 
 # Executables and the host FUSE prerequisite must be in the immutable image.
 for path in /usr/bin/fs /usr/bin/file-explorer /usr/bin/tilo-launcher \
+            /usr/bin/tilo-runtime-mcp \
             /usr/bin/tilo-install /usr/bin/tilo-runtime-bundle \
             /usr/bin/fusermount3 /usr/bin/cage /usr/libexec/tilo/files-atspi-smoke.sh \
             /usr/libexec/tilo/native-atspi-smoke.sh \
             /usr/libexec/tilo/atspi-external-client.py /usr/libexec/tilo/installed-atspi-apps.sh \
-            /usr/libexec/tilo-session \
+            /usr/libexec/tilo-session /usr/libexec/tilo-account-credential \
+            /usr/libexec/tilo-flight-recorder /usr/libexec/tilo-session-report \
             /usr/bin/dbus-update-activation-environment; do
   require_exec "$path"
 done
 require_file /etc/fuse.conf
-require_file /etc/systemd/sleep.conf.d/20-tilo-freeze-user-sessions.conf
+for sleep_unit in systemd-suspend systemd-hibernate systemd-hybrid-sleep \
+                  systemd-suspend-then-hibernate; do
+  require_line "/etc/systemd/system/$sleep_unit.service.d/20-tilo-freeze-user-sessions.conf" \
+    "Environment=SYSTEMD_SLEEP_FREEZE_USER_SESSIONS=1"
+done
 require_file /usr/lib/systemd/system/fs.service
 require_file /usr/lib/systemd/system/tilo-fs-start.timer
 require_file /usr/lib/systemd/system/fs-identity.path
 require_file /usr/lib/systemd/user/tilo-fs-recipient.service
 require_file /usr/lib/systemd/user/tilo-fs-recipient.socket
-require_file /usr/lib/systemd/user/tilo-identity.service
+require_file /usr/lib/systemd/user/tilo-fs-cloud.service
 require_file /usr/lib/systemd/user/tilo-graphical-session.target
 require_file /usr/share/tilo/selinux/tilo-base.cil
 require_file /usr/share/wayland-sessions/shell.desktop
 require_file /usr/share/wayland-sessions/shell-peer-sync.desktop
 require_file /usr/lib/tmpfiles.d/tilo.conf
 require_file /usr/share/tilo/fs-capabilities.json
-require_line /etc/systemd/sleep.conf.d/20-tilo-freeze-user-sessions.conf "FreezeUserSessions=yes"
 
 # AccessKit's provider requests org.a11y.Bus from the session bus. Keep the
 # daemon package explicit: a tree-only smoke must never pass merely because a
@@ -98,7 +103,7 @@ require_link /etc/systemd/system/timers.target.wants/tilo-fs-start.timer
 require_link /etc/systemd/system/timers.target.wants/tilo-growfs-sysroot.timer
 require_link /etc/systemd/system/multi-user.target.wants/fs-identity.path
 require_link /etc/systemd/user/graphical-session.target.wants/tilo-fs-recipient.socket
-require_link /etc/systemd/user/graphical-session-pre.target.wants/tilo-identity.service
+require_link /etc/systemd/user/graphical-session.target.wants/tilo-fs-cloud.service
 require_file /usr/lib/systemd/system/tilo-growfs-sysroot.service
 require_file /usr/lib/systemd/system/tilo-growfs-sysroot.timer
 require_file /usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf
@@ -107,7 +112,7 @@ if [ -L "$(at /etc/systemd/system/systemd-growfs-root.service)" ] \
   die "systemd-growfs-root.service is masked; its composefs layout drop-in cannot apply"
 fi
 require_line /usr/lib/systemd/system/tilo-growfs-sysroot.service "ConditionPathIsMountPoint=/sysroot"
-require_line /usr/lib/systemd/system/tilo-growfs-sysroot.service "ExecStart=/usr/lib/systemd/systemd-growfs /sysroot"
+require_line /usr/lib/systemd/system/tilo-growfs-sysroot.service "ExecStart=/usr/bin/sh -c 'mount -o remount,rw /sysroot && exec /usr/lib/systemd/systemd-growfs /sysroot'"
 require_line /usr/lib/systemd/system/tilo-growfs-sysroot.timer "Unit=tilo-growfs-sysroot.service"
 require_line /usr/lib/systemd/system/tilo-growfs-sysroot.timer "OnBootSec=5s"
 require_line /usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf "ConditionPathIsMountPoint=!/sysroot"
@@ -119,6 +124,12 @@ require_text /usr/lib/systemd/system/fs.service "--acl /var/lib/tilo/fs-capabili
 require_line /usr/lib/systemd/system/fs.service "ConditionPathExists=/dev/fuse"
 require_line /usr/lib/systemd/system/fs.service "ConditionPathExists=/var/lib/tilo/device/cert.bin"
 require_line /usr/lib/systemd/system/fs.service "ExecStop=/usr/bin/fusermount3 -u -z /var/workspace"
+# The FUSE mount (or Tier 1 bind) must reach the host: no directive that
+# gives the service its own mount namespace, in the unit or a drop-in.
+if cat "$root/usr/lib/systemd/system/fs.service" "$root"/usr/lib/systemd/system/fs.service.d/*.conf 2>/dev/null \
+    | grep -Eq '^(PrivateIPC|PrivateTmp|PrivateDevices|PrivateMounts|PrivateUsers|ProtectSystem|ProtectHome|ProtectKernelTunables|ProtectKernelModules|ProtectKernelLogs|ProtectControlGroups|ProtectProc|ReadOnlyPaths|ReadWritePaths|InaccessiblePaths|TemporaryFileSystem|BindPaths|BindReadOnlyPaths|MountFlags)='; then
+  die "fs.service gets a private mount namespace, so /var/workspace would never reach the host"
+fi
 # The room store volume: prepared before the daemon, which serves FUSE unless
 # the preparation announced a mounted store.
 require_exec /usr/libexec/tilo-store-volume
@@ -138,16 +149,16 @@ require_line /usr/lib/systemd/system/fs-identity.path "PathChanged=/var/lib/tilo
 require_line /usr/lib/systemd/system/fs-identity.path "Unit=fs.service"
 require_text /usr/lib/systemd/user/tilo-fs-recipient.service "/usr/bin/fs recipient-service --socket %t/tilo/services/tilo-fs.sock"
 require_text /usr/lib/systemd/user/tilo-fs-recipient.service "--mounts-root %h/Shared --cache-root %h/.cache/tilo/received-files"
-require_line /usr/lib/systemd/user/tilo-fs-recipient.service "Requires=tilo-identity.service"
+require_line /usr/lib/systemd/user/tilo-fs-cloud.service "Environment=TILO_ACCOUNT_CREDENTIAL_HELPER=/usr/libexec/tilo-account-credential"
 require_line /usr/lib/systemd/user/tilo-fs-recipient.service "PartOf=graphical-session.target"
 require_line /usr/lib/systemd/user/tilo-fs-recipient.socket "ListenStream=%t/tilo/services/tilo-fs.sock"
 require_line /usr/lib/systemd/user/tilo-fs-recipient.socket "Service=tilo-fs-recipient.service"
 require_line /usr/lib/systemd/user/tilo-fs-recipient.socket "SocketMode=0600"
-require_line /usr/lib/systemd/user/tilo-identity.service "ExecStart=/usr/bin/shell --provision-identity"
 require_text /usr/lib/systemd/user/tilo-graphical-session.target "Requires=graphical-session-pre.target graphical-session.target"
 require_text /usr/lib/systemd/user/tilo-graphical-session.target "PropagatesStopTo=graphical-session.target graphical-session-pre.target"
 require_text /usr/share/tilo/selinux/tilo-base.cil "tilo_session_unit_file_t"
 require_text /usr/share/tilo/selinux/tilo-base.cil "(allow xdm_t tilo_session_unit_file_t (service (start stop status)))"
+require_text /usr/share/tilo/selinux/tilo-base.cil "(allow init_t tilo_fs_t (process2 (nnp_transition nosuid_transition)))"
 require_line /usr/share/wayland-sessions/shell.desktop "Exec=/usr/libexec/tilo-session --backend drm"
 require_line /usr/share/wayland-sessions/shell-peer-sync.desktop "Exec=/usr/libexec/tilo-session --backend drm --enable-peer-sync"
 require_text /usr/libexec/tilo-session '"$SYSTEMCTL" --user start "$SESSION_TARGET"'
@@ -204,6 +215,9 @@ require_exec "$payload/bin/file-explorer"
 require_toml_string "$manifest" package.id "so.tilo.file-explorer"
 require_toml_string "$manifest" sandbox.services.tilo-fs "optional@1"
 require_toml_string "$manifest" package.runtime "tilo-runtime/2026.07"
+# A thin app links the runtime bundle's shared libraries, which the launcher
+# puts on its loader path.
+require_file /usr/lib/tilo-runtime/2026.07/lib/libruntime_dylib.so
 # These are deliberately allowed to be distinct signed build artifacts.  The
 # loose binary is the privileged recovery surface built with the OS, while the
 # launcher resolves the checksum-pinned app-collection payload.  Requiring
@@ -274,7 +288,6 @@ if [ "$mode" = runtime ]; then
   # graphical login has started its systemd --user manager.
   user_runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   export XDG_RUNTIME_DIR="$user_runtime"
-  systemctl --user is-enabled --quiet tilo-identity.service || die "identity user unit is not enabled"
   systemctl --user is-enabled --quiet tilo-fs-recipient.socket || die "recipient socket is not enabled"
 
   # SSH is normally ready before greetd has finished the graphical login.
@@ -288,7 +301,6 @@ if [ "$mode" = runtime ]; then
     done
     die "$unit is not active after 60 seconds"
   }
-  await_user_active tilo-identity.service
   await_user_active tilo-fs-recipient.socket
   systemctl --user is-active --quiet tilo-graphical-session.target \
     || die "Tilo graphical-session lifecycle target is not active"
@@ -347,9 +359,10 @@ if [ "$mode" = runtime ]; then
   [ -S "$user_runtime/$WAYLAND_DISPLAY" ] \
     || die "published Tilo Wayland socket is absent"
 
-  # Exercise the verified immutable package payload, which is the artifact the
-  # installed registry and launcher resolve.
-  TILO_FILES_BINARY="$payload/bin/file-explorer" \
+  # Exercise the installed package the way a user opens it: the session's
+  # app palette, driven over AT-SPI, launches it through the launcher, in its
+  # sandbox, attached to the session's runtime host.
+  TILO_FILES_SESSION_OPENER=/usr/libexec/tilo/atspi-external-client.py \
     /usr/libexec/tilo/files-atspi-smoke.sh \
     || die "installed Files AT-SPI smoke failed"
 fi

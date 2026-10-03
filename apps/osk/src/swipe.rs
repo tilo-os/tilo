@@ -1,7 +1,8 @@
 //! Swipe-to-type decoder (W9a).
 //!
 //! Given a gesture path traced across the keyboard, return ranked candidate
-//! English words. This is the classic **SHARK²/gesture-typing** approach:
+//! words in the keyboard's language. This is the classic
+//! **SHARK²/gesture-typing** approach:
 //!
 //! 1. Map each letter to the centre of its key (from the live
 //!    [`crate::layout::key_rects`] geometry — one source of truth with what
@@ -29,7 +30,7 @@ use std::collections::HashMap;
 
 use vello::kurbo::{Point, Rect};
 
-use crate::dict::Dictionary;
+use crate::dict::{Dictionary, Language, fold_char};
 use crate::layout::{KeyAction, KeyId, KeyboardLayout};
 
 /// Number of points each path (user + ideal) is resampled to before scoring.
@@ -58,24 +59,41 @@ pub trait SwipeModel {
         layout: &KeyboardLayout,
         top_n: usize,
     ) -> Vec<Candidate>;
+
+    /// The user switched to a layout that types `language`. Decoders with
+    /// per-language vocabularies follow it; the default keeps decoding as
+    /// before.
+    fn set_language(&mut self, _language: Language) {}
 }
 
 /// SHARK²-style geometric + dictionary swipe decoder (the shipping path).
 pub struct GeometricSwipeModel {
     dict: Dictionary,
+    /// The embedded language `dict` holds; `None` for a custom dictionary,
+    /// which a language switch leaves alone.
+    language: Option<Language>,
 }
 
 impl GeometricSwipeModel {
+    /// Build a decoder over the embedded dictionary of `language`.
+    pub fn for_language(language: Language) -> Self {
+        Self {
+            dict: Dictionary::for_language(language),
+            language: Some(language),
+        }
+    }
+
     /// Build a decoder over the embedded English dictionary.
     pub fn english() -> Self {
-        Self {
-            dict: Dictionary::english(),
-        }
+        Self::for_language(Language::English)
     }
 
     /// Build a decoder over a custom dictionary (tests / other locales).
     pub fn with_dictionary(dict: Dictionary) -> Self {
-        Self { dict }
+        Self {
+            dict,
+            language: None,
+        }
     }
 
     pub fn dictionary(&self) -> &Dictionary {
@@ -95,6 +113,12 @@ impl GeometricSwipeModel {
 }
 
 impl SwipeModel for GeometricSwipeModel {
+    fn set_language(&mut self, language: Language) {
+        if self.language.is_some_and(|current| current != language) {
+            *self = Self::for_language(language);
+        }
+    }
+
     fn decode(
         &self,
         path: &[Point],
@@ -135,7 +159,8 @@ impl SwipeModel for GeometricSwipeModel {
         let mut scored: Vec<Candidate> = Vec::new();
         for entry in self.dict.words() {
             let word = &entry.word;
-            let chars: Vec<char> = word.chars().collect();
+            // Accented letters are swiped through their base key (é on e).
+            let chars: Vec<char> = word.chars().map(fold_char).collect();
             // length window: a swipe through k keys traces ~k segments.
             let len = chars.len() as i32;
             if len < 1 {
@@ -436,74 +461,93 @@ mod tests {
     }
 
     #[test]
-    fn decodes_quick() {
-        let (layout, geom) = qwerty_geom();
-        let model = GeometricSwipeModel::english();
-        let path = path_through("quick", &geom, &layout);
-        let cands = model.decode_top(&path, &geom, &layout, 8);
-        assert!(!cands.is_empty(), "swipe produced candidates");
-        let words: Vec<&str> = cands.iter().map(|c| c.word.as_str()).collect();
-        assert!(
-            words.contains(&"quick"),
-            "expected 'quick' in top-8, got {words:?}"
-        );
+    fn swipe_decoder_recovers_common_words() {
+        eprintln!("phase decodes_quick");
+        {
+            let (layout, geom) = qwerty_geom();
+            let model = GeometricSwipeModel::english();
+            let path = path_through("quick", &geom, &layout);
+            let cands = model.decode_top(&path, &geom, &layout, 8);
+            assert!(!cands.is_empty(), "swipe produced candidates");
+            let words: Vec<&str> = cands.iter().map(|c| c.word.as_str()).collect();
+            assert!(
+                words.contains(&"quick"),
+                "expected 'quick' in top-8, got {words:?}"
+            );
+        }
+
+        eprintln!("phase decodes_hello");
+        {
+            let (layout, geom) = qwerty_geom();
+            let model = GeometricSwipeModel::english();
+            let path = path_through("hello", &geom, &layout);
+            let cands = model.decode_top(&path, &geom, &layout, 8);
+            let words: Vec<&str> = cands.iter().map(|c| c.word.as_str()).collect();
+            assert!(
+                words.contains(&"hello"),
+                "expected 'hello' in top-8, got {words:?}"
+            );
+        }
+
+        eprintln!("phase decodes_the");
+        {
+            let (layout, geom) = qwerty_geom();
+            let model = GeometricSwipeModel::english();
+            let path = path_through("the", &geom, &layout);
+            let cands = model.decode_top(&path, &geom, &layout, 8);
+            let words: Vec<&str> = cands.iter().map(|c| c.word.as_str()).collect();
+            // "the" is by far the most common word; it should rank at the very top
+            // for a path through t-h-e.
+            assert_eq!(cands[0].word, "the", "got {words:?}");
+        }
     }
 
     #[test]
-    fn decodes_hello() {
-        let (layout, geom) = qwerty_geom();
-        let model = GeometricSwipeModel::english();
-        let path = path_through("hello", &geom, &layout);
-        let cands = model.decode_top(&path, &geom, &layout, 8);
-        let words: Vec<&str> = cands.iter().map(|c| c.word.as_str()).collect();
-        assert!(
-            words.contains(&"hello"),
-            "expected 'hello' in top-8, got {words:?}"
-        );
-    }
+    fn swipe_paths_resample_and_distinguish_taps_from_drags() {
+        eprintln!("phase empty_or_trivial_path_yields_nothing");
+        {
+            let (layout, geom) = qwerty_geom();
+            let model = GeometricSwipeModel::english();
+            assert!(model.decode_top(&[], &geom, &layout, 8).is_empty());
+            assert!(
+                model
+                    .decode_top(&[Point::new(1.0, 1.0)], &geom, &layout, 8)
+                    .is_empty()
+            );
+        }
 
-    #[test]
-    fn decodes_the() {
-        let (layout, geom) = qwerty_geom();
-        let model = GeometricSwipeModel::english();
-        let path = path_through("the", &geom, &layout);
-        let cands = model.decode_top(&path, &geom, &layout, 8);
-        let words: Vec<&str> = cands.iter().map(|c| c.word.as_str()).collect();
-        // "the" is by far the most common word; it should rank at the very top
-        // for a path through t-h-e.
-        assert_eq!(cands[0].word, "the", "got {words:?}");
-    }
+        eprintln!("phase is_swipe_distinguishes_tap_from_drag");
+        {
+            let (_layout, geom) = qwerty_geom();
+            let scale = avg_key_size(&geom);
+            // A tap: a few samples all in the same spot.
+            let tap = vec![
+                Point::new(100.0, 100.0),
+                Point::new(101.0, 100.5),
+                Point::new(100.5, 101.0),
+            ];
+            assert!(!is_swipe(&tap, scale), "tiny jitter is not a swipe");
+            // A drag across several keys.
+            let drag = vec![
+                Point::new(0.0, 100.0),
+                Point::new(200.0, 100.0),
+                Point::new(400.0, 100.0),
+            ];
+            assert!(is_swipe(&drag, scale), "long drag is a swipe");
+        }
 
-    #[test]
-    fn empty_or_trivial_path_yields_nothing() {
-        let (layout, geom) = qwerty_geom();
-        let model = GeometricSwipeModel::english();
-        assert!(model.decode_top(&[], &geom, &layout, 8).is_empty());
-        assert!(
-            model
-                .decode_top(&[Point::new(1.0, 1.0)], &geom, &layout, 8)
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn is_swipe_distinguishes_tap_from_drag() {
-        let (_layout, geom) = qwerty_geom();
-        let scale = avg_key_size(&geom);
-        // A tap: a few samples all in the same spot.
-        let tap = vec![
-            Point::new(100.0, 100.0),
-            Point::new(101.0, 100.5),
-            Point::new(100.5, 101.0),
-        ];
-        assert!(!is_swipe(&tap, scale), "tiny jitter is not a swipe");
-        // A drag across several keys.
-        let drag = vec![
-            Point::new(0.0, 100.0),
-            Point::new(200.0, 100.0),
-            Point::new(400.0, 100.0),
-        ];
-        assert!(is_swipe(&drag, scale), "long drag is a swipe");
+        eprintln!("phase resample_produces_exact_count_and_endpoints");
+        {
+            let path = vec![
+                Point::new(0.0, 0.0),
+                Point::new(10.0, 0.0),
+                Point::new(10.0, 10.0),
+            ];
+            let rs = resample(&path, 16);
+            assert_eq!(rs.len(), 16);
+            assert_eq!(rs[0], Point::new(0.0, 0.0));
+            assert_eq!(*rs.last().unwrap(), Point::new(10.0, 10.0));
+        }
     }
 
     #[test]
@@ -521,22 +565,9 @@ mod tests {
         let (layout, geom) = qwerty_geom();
         let model = GeometricSwipeModel::english();
         let path = path_through("keyboard", &geom, &layout);
-        let t0 = std::time::Instant::now();
+        let t0 = ui::time::now();
         let _ = model.decode_top(&path, &geom, &layout, 8);
         let dt = t0.elapsed();
         assert!(dt.as_millis() < 200, "decode took {dt:?} (budget headroom)");
-    }
-
-    #[test]
-    fn resample_produces_exact_count_and_endpoints() {
-        let path = vec![
-            Point::new(0.0, 0.0),
-            Point::new(10.0, 0.0),
-            Point::new(10.0, 10.0),
-        ];
-        let rs = resample(&path, 16);
-        assert_eq!(rs.len(), 16);
-        assert_eq!(rs[0], Point::new(0.0, 0.0));
-        assert_eq!(*rs.last().unwrap(), Point::new(10.0, 10.0));
     }
 }

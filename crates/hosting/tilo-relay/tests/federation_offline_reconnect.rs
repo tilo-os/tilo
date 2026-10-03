@@ -23,6 +23,10 @@
               here is a synthetic per-delta timestamp counter bounded by a \
               3-item literal array, not real user data"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -73,6 +77,8 @@ async fn start_relay_at(
             pin: true,
             replication: tilo_relay::ReplicationIntent::FullWorkspace,
             admitted_users: Vec::new(),
+            shell_authority: None,
+            checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
         });
     }
     let identity = RelayIdentity {
@@ -95,10 +101,6 @@ async fn start_relay_at(
 /// `PeerRelayHello`, then close it (rather than drop, so relay1 doesn't
 /// have to wait out the QUIC idle timeout before noticing the
 /// subscription drop — far longer than any outage this test can sit through).
-#[expect(
-    clippy::too_many_arguments,
-    reason = "test fixture passes the second relay's identity and scope explicitly"
-)]
 async fn prime_then_close_relay2(
     user: &TestUser,
     relay1: &Relay,
@@ -110,12 +112,20 @@ async fn prime_then_close_relay2(
     members: &[[u8; 32]],
 ) {
     let r2_pubkey = r2_cert.device_public_key;
-    let r2_first = start_relay_at(user, r2_sk, r2_cert, r2_state_root, workspaces, members).await;
+    let r2_first = Box::pin(start_relay_at(
+        user,
+        r2_sk,
+        r2_cert,
+        r2_state_root,
+        workspaces,
+        members,
+    ))
+    .await;
     // Peer-relay r1 ← r2 dial primes relay1's `known_peer_relays`.
     r2_first.add_peer_relay_at(relay1_addr, "r1".into(), 0);
     // Wait for the actual subscription rather than guessing how long the
     // handshake takes on the runner.
-    tokio::time::timeout(Duration::from_secs(15), async {
+    tilo_test_env::within("relay2 subscribed to relay1", async {
         loop {
             if relay1.is_subscribed(workspaces[0], &r2_pubkey).await {
                 break;
@@ -123,13 +133,12 @@ async fn prime_then_close_relay2(
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await
-    .expect("relay2 subscribed to relay1");
+    .await;
     r2_first.shutdown().await;
     // Wait until relay1 has removed the closed subscription before publishing
     // the outage deltas. Otherwise a loaded runner can accidentally classify
     // the dead QUIC stream as live and lose store-and-forward coverage.
-    tokio::time::timeout(Duration::from_secs(15), async {
+    tilo_test_env::within("relay1 observed relay2 shutdown", async {
         loop {
             if !relay1.is_subscribed(workspaces[0], &r2_pubkey).await {
                 break;
@@ -137,8 +146,7 @@ async fn prime_then_close_relay2(
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await
-    .expect("relay1 observed relay2 shutdown");
+    .await;
 }
 
 /// p1 publishes three tagged deltas via relay1 while relay2 is down, and
@@ -161,9 +169,7 @@ async fn publish_three_while_peer_is_down(
     .await
     .unwrap();
     c1.send(Envelope::Subscribe { workspace_id: 11 }).unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(3), c1.recv())
-        .await
-        .expect("p1 Ready");
+    let _ = tilo_test_env::within("p1 Ready", c1.recv()).await;
 
     for (i, tag) in ["one", "two", "three"].iter().enumerate() {
         c1.send(Envelope::Delta {
@@ -177,7 +183,8 @@ async fn publish_three_while_peer_is_down(
     }
 
     let mut queued = 0;
-    for _ in 0..50 {
+    // Polls for up to 30 s; only a hang uses the whole budget.
+    for _ in 0..600 {
         queued = if pending_dir.exists() {
             std::fs::read_dir(pending_dir)
                 .unwrap()
@@ -217,7 +224,7 @@ async fn drain_three_deltas(
 
     let mut got: Vec<Vec<u8>> = Vec::new();
     for _ in 0..15 {
-        let env = tokio::time::timeout(Duration::from_secs(4), c2.recv()).await;
+        let env = tokio::time::timeout(tilo_test_env::hang_bound(), c2.recv()).await;
         match env {
             Ok(Some(Envelope::Delta {
                 delta,
@@ -241,12 +248,12 @@ async fn deltas_queued_during_outage_arrive_in_order_after_reconnect() {
     let p2 = user.enrol("phone", DeviceCapabilities::member());
     let members = vec![p1.device_pubkey(), p2.device_pubkey()];
 
-    let relay1 = spawn_relay(
+    let relay1 = Box::pin(spawn_relay(
         &user,
         user.enrol("r1", DeviceCapabilities::host()),
         &[11],
         &members,
-    )
+    ))
     .await;
 
     // Stable identity + state root for relay2 across the outage.
@@ -257,7 +264,7 @@ async fn deltas_queued_during_outage_arrive_in_order_after_reconnect() {
 
     // Round 1: relay2 up briefly so relay1 learns its device pubkey
     // via PeerRelayHello.
-    prime_then_close_relay2(
+    Box::pin(prime_then_close_relay2(
         &user,
         &relay1.relay,
         relay1.relay.node_addr(),
@@ -266,7 +273,7 @@ async fn deltas_queued_during_outage_arrive_in_order_after_reconnect() {
         r2_state_root.clone(),
         &[11],
         &members,
-    )
+    ))
     .await;
 
     // Round 2: p1 publishes three deltas via relay1 while relay2 is
@@ -286,14 +293,14 @@ async fn deltas_queued_during_outage_arrive_in_order_after_reconnect() {
     // SAME state root → same device pubkey, same iroh secret →
     // same iroh node id (load_or_create_iroh_secret persists the
     // file). Its subscribe drains the queue.
-    let r2_restart = start_relay_at(
+    let r2_restart = Box::pin(start_relay_at(
         &user,
         r2_sk,
         r2_cert,
         r2_state_root.clone(),
         &[11],
         &members,
-    )
+    ))
     .await;
     r2_restart.add_peer_relay_at(relay1.relay.node_addr(), "r1".into(), 0);
 

@@ -2,259 +2,195 @@ use crate::component_support::*;
 use notes::{actions, doc::NotesDoc, markdown};
 use ui::widget::{BlockEditor, BlockKind};
 
-#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "geometry regression test compares wrapping, marks, carets, and measurement in one fixture"
 )]
-fn wrapped_marks_share_shaped_geometry_with_carets_and_measurement() {
-    use taffy::{AvailableSpace, Size};
-    use ui::widget::{
-        RichTextLine,
-        marks::{Mark, MarkSpan},
-    };
-    use ui::{
-        Widget,
-        richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign},
-    };
-    let text = "Böld and italic with code";
-    for width in [400.0_f32, 130.0] {
-        let theme = ui::Theme::dark();
-        let mut renderer = renderer();
-        let mut line = RichTextLine::new().with_text(text);
-        // Settle the input's initial text/font measurement before checking
-        // whether a formatting-only update schedules another measurement.
-        line.measure(
-            Size {
-                width: Some(width),
-                height: None,
-            },
-            Size {
-                width: AvailableSpace::Definite(width),
-                height: AvailableSpace::MaxContent,
-            },
-            &mut renderer,
-        );
-        line.apply_layout_external(vello::kurbo::Rect::new(
-            40.0,
-            60.0,
-            40.0 + f64::from(width),
-            100.0,
-        ));
-        line.set_marks(vec![
-            MarkSpan::new(0..5, Mark::Bold),
-            MarkSpan::new(10..16, Mark::Italic),
-            MarkSpan::new(22..26, Mark::Code),
-        ]);
-        assert!(
-            !line.layout_needs_measure(),
-            "fixed-height text must not keep requesting measurement for marks"
-        );
-        line.set_wrap(true);
-        line.build_layout(
-            &mut taffy::TaffyTree::new(),
-            &theme,
-            &mut std::collections::HashMap::new(),
-        );
-        let size = line.measure(
-            Size {
-                width: Some(width),
-                height: None,
-            },
-            Size {
-                width: AvailableSpace::Definite(width),
-                height: AvailableSpace::MaxContent,
-            },
-            &mut renderer,
-        );
-        assert!(
-            !line.layout_needs_measure(),
-            "measurement must settle the attributed layout"
-        );
-        line.apply_layout_external(vello::kurbo::Rect::new(
-            40.0,
-            60.0,
-            40.0 + f64::from(width),
-            60.0 + f64::from(size.height),
-        ));
-        line.draw(
-            &mut vello::Scene::new(),
-            vello::kurbo::Affine::IDENTITY,
-            &mut renderer,
-            &theme,
-            &ui::presence::PresenceCtx::empty(),
-        );
-        let expected = RichTextLayout::shape_styled(
-            &mut renderer.font_system,
-            &[
-                RichSpan::new("Böld").bold(true),
-                RichSpan::new(" and "),
-                RichSpan::new("italic").italic(true),
-                RichSpan::new(" with "),
-                RichSpan {
-                    family: Some(FontFamily::Mono),
-                    ..RichSpan::new("code")
+#[test]
+fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
+    eprintln!("phase wrapped_marks_share_shaped_geometry_with_carets_and_measurement");
+    {
+        use taffy::{AvailableSpace, Size};
+        use ui::widget::{
+            RichTextLine,
+            marks::{Mark, MarkSpan},
+        };
+        use ui::{
+            Widget,
+            richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign},
+        };
+        let text = "Böld and italic with code";
+        for width in [400.0_f32, 130.0] {
+            let theme = ui::Theme::dark();
+            let mut renderer = renderer();
+            let mut line = RichTextLine::new().with_text(text);
+            // Settle the input's initial text/font measurement before checking
+            // whether a formatting-only update schedules another measurement.
+            line.measure(
+                Size {
+                    width: Some(width),
+                    height: None,
                 },
-            ],
-            &ui::text_render::TextStyle::new(16.0).with_line_height(1.25),
-            Some(width - 20.0),
-            TextAlign::Left,
-            Vec::new(),
-            Vec::new(),
-        );
-        assert!(
-            (size.height - (expected.height() + 16.0)).abs() < 0.1,
-            "marked text must determine wrapping and height"
-        );
-        for byte in [0, 5, 10, 16, 22, 26] {
-            let (x, y, _) = expected.caret_geometry(byte);
-            let caret = line.caret_rect(&theme, byte);
+                Size {
+                    width: AvailableSpace::Definite(width),
+                    height: AvailableSpace::MaxContent,
+                },
+                &mut renderer,
+            );
+            line.apply_layout_external(vello::kurbo::Rect::new(
+                40.0,
+                60.0,
+                40.0 + f64::from(width),
+                100.0,
+            ));
+            line.set_marks(vec![
+                MarkSpan::new(0..5, Mark::Bold),
+                MarkSpan::new(10..16, Mark::Italic),
+                MarkSpan::new(22..26, Mark::Code),
+            ]);
             assert!(
-                (caret.x0 - (50.0 + f64::from(x))).abs() < 0.1,
-                "marked caret x at {byte}, width {width}: {caret:?} vs {x}"
+                !line.layout_needs_measure(),
+                "fixed-height text must not keep requesting measurement for marks"
+            );
+            line.set_wrap(true);
+            line.build_layout(
+                &mut taffy::TaffyTree::new(),
+                &theme,
+                &mut std::collections::HashMap::new(),
+            );
+            let size = line.measure(
+                Size {
+                    width: Some(width),
+                    height: None,
+                },
+                Size {
+                    width: AvailableSpace::Definite(width),
+                    height: AvailableSpace::MaxContent,
+                },
+                &mut renderer,
             );
             assert!(
-                (caret.y0 - (68.0 + f64::from(y))).abs() < 0.1,
-                "marked caret row at {byte}, width {width}"
+                !line.layout_needs_measure(),
+                "measurement must settle the attributed layout"
             );
-            assert_eq!(
-                line.inner()
-                    .byte_at_point(vello::kurbo::Point::new(caret.x0 + 0.1, caret.center().y)),
-                byte,
-                "pointer placement must use the same styled layout"
+            line.apply_layout_external(vello::kurbo::Rect::new(
+                40.0,
+                60.0,
+                40.0 + f64::from(width),
+                60.0 + f64::from(size.height),
+            ));
+            line.draw(
+                &mut vello::Scene::new(),
+                vello::kurbo::Affine::IDENTITY,
+                &mut renderer,
+                &theme,
+                &ui::presence::PresenceCtx::empty(),
             );
+            let expected = RichTextLayout::shape_styled(
+                &mut renderer.font_system,
+                &[
+                    RichSpan::new("Böld").bold(true),
+                    RichSpan::new(" and "),
+                    RichSpan::new("italic").italic(true),
+                    RichSpan::new(" with "),
+                    RichSpan {
+                        family: Some(FontFamily::Mono),
+                        ..RichSpan::new("code")
+                    },
+                ],
+                &ui::text_render::TextStyle::new(16.0).with_line_height(1.25),
+                Some(width - 20.0),
+                TextAlign::Left,
+                Vec::new(),
+                Vec::new(),
+            );
+            assert!(
+                (size.height - (expected.height() + 16.0)).abs() < 0.1,
+                "marked text must determine wrapping and height"
+            );
+            for byte in [0, 5, 10, 16, 22, 26] {
+                let (x, y, _) = expected.caret_geometry(byte);
+                let caret = line.caret_rect(&theme, byte);
+                assert!(
+                    (caret.x0 - (50.0 + f64::from(x))).abs() < 0.1,
+                    "marked caret x at {byte}, width {width}: {caret:?} vs {x}"
+                );
+                assert!(
+                    (caret.y0 - (68.0 + f64::from(y))).abs() < 0.1,
+                    "marked caret row at {byte}, width {width}"
+                );
+                assert_eq!(
+                    line.inner()
+                        .byte_at_point(vello::kurbo::Point::new(caret.x0 + 0.1, caret.center().y)),
+                    byte,
+                    "pointer placement must use the same styled layout"
+                );
+            }
         }
     }
-}
 
-#[test]
-fn changing_rich_block_kinds_preserves_marks_cursor_and_nesting() {
-    let mut editor = BlockEditor::new();
-    editor.set_blocks(markdown::specs_to_blocks(&markdown::parse(
-        "- Parent\n\n  **Böld** and *italic* with [site](https://example.com)\n",
-    )));
-    let marks = editor.blocks()[1].line.marks().to_vec();
-    assert_eq!(marks.len(), 3);
-    editor.focus_block(1, ui::widget::CursorPlacement::Byte(6));
-    for kind in [
-        BlockKind::Heading(2),
-        BlockKind::Bullet { indent: 0 },
-        BlockKind::Numbered { indent: 0 },
-        BlockKind::Quote,
-        BlockKind::CodeBlock {
-            lang: Some("python".into()),
-        },
-        BlockKind::Paragraph,
-    ] {
-        assert!(editor.try_convert_to(1, kind));
-        let block = &editor.blocks()[1];
+    eprintln!("phase changing_rich_block_kinds_preserves_marks_cursor_and_nesting");
+    {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(markdown::specs_to_blocks(&markdown::parse(
+            "- Parent\n\n  **Böld** and *italic* with [site](https://example.com)\n",
+        )));
+        let marks = editor.blocks()[1].line.marks().to_vec();
+        assert_eq!(marks.len(), 3);
+        editor.focus_block(1, ui::widget::CursorPlacement::Byte(6));
+        for kind in [
+            BlockKind::Heading(2),
+            BlockKind::Bullet { indent: 0 },
+            BlockKind::Numbered { indent: 0 },
+            BlockKind::Quote,
+            BlockKind::CodeBlock {
+                lang: Some("python".into()),
+            },
+            BlockKind::Paragraph,
+        ] {
+            assert!(editor.try_convert_to(1, kind));
+            let block = &editor.blocks()[1];
+            assert_eq!(
+                block.line.marks(),
+                marks,
+                "changing kind must retain authored formatting"
+            );
+            assert_eq!(
+                block.line.cursor_pos(),
+                6,
+                "changing presentation must not move the caret"
+            );
+            assert_eq!(block.indent(), 1);
+        }
         assert_eq!(
-            block.line.marks(),
-            marks,
-            "changing kind must retain authored formatting"
-        );
-        assert_eq!(
-            block.line.cursor_pos(),
-            6,
-            "changing presentation must not move the caret"
-        );
-        assert_eq!(block.indent(), 1);
-    }
-    assert_eq!(
-        markdown::blocks_to_specs(editor.blocks()),
-        markdown::parse("- Parent\n\n  **Böld** and *italic* with [site](https://example.com)\n",)
-    );
-}
-
-#[test]
-fn slash_conversion_preserves_native_marks_text_identity_undo_and_reopen() {
-    let f = LegacyFixture::rich();
-    f.write_page(
-        f.child,
-        "- Parent\n\n  **Böld** and *italic* with [site](https://example.com)\n".as_bytes(),
-    );
-    let checkout = imported(&f);
-    let (id, original_marks, original_text) = f
-        .records
-        .read(&checkout.id, |doc| {
-            let list = NotesDoc::page_blocks_list(doc, f.child).unwrap();
-            (
-                NotesDoc::page_block_snapshots(doc, f.child)[1].0.clone(),
-                NotesDoc::page_block_marks(doc, f.child),
-                NotesDoc::block_text_obj(doc, &list, 1).unwrap(),
+            markdown::blocks_to_specs(editor.blocks()),
+            markdown::parse(
+                "- Parent\n\n  **Böld** and *italic* with [site](https://example.com)\n",
             )
-        })
-        .unwrap();
-    let mut live = driver(&f, 95, &checkout);
-    invoke(
-        &mut live,
-        95,
-        actions::block_resource_id(f.child, &id),
-        "open",
-        None,
-    );
-    let rect = semantic_rect(&live, &format!("notes.block:{id}"));
-    live.click_at(rect.x0 + 8.0, rect.center().y);
-    live.key("Home");
-    live.type_text("/number");
-    let before_commit = revision(&f, &checkout);
-    live.key("Enter");
-    assert_eq!(revision(&f, &checkout), before_commit + 1);
-    let page = f.child;
-    let verify = |doc: &automerge::AutoCommit| {
-        notes::notebook::validate(doc).unwrap();
-        let list = NotesDoc::page_blocks_list(doc, page).unwrap();
-        assert_eq!(NotesDoc::block_kind(doc, &list, 1), "numbered:1");
-        assert_eq!(
-            NotesDoc::page_block_snapshots(doc, page)[1].1,
-            "Böld and italic with site"
         );
-        assert_eq!(NotesDoc::page_block_marks(doc, page), original_marks);
-        assert_eq!(
-            NotesDoc::block_text_obj(doc, &list, 1).unwrap(),
-            original_text
-        );
-    };
-    f.records.read(&checkout.id, verify).unwrap();
-    live.set_modifiers(&["ctrl".into()]);
-    live.key("z");
-    live.set_modifiers(&["ctrl".into(), "shift".into()]);
-    live.key("z");
-    live.set_modifiers(&[]);
-    f.records.read(&checkout.id, verify).unwrap();
-    close_driver(&mut live);
-    drop(live);
-    f.records.try_flush().unwrap();
-    let reopened_fixture = f.reopen();
-    let mut reopened = driver(&reopened_fixture, 96, &checkout);
-    reopened_fixture.records.read(&checkout.id, verify).unwrap();
-    close_driver(&mut reopened);
-}
+    }
 
-#[test]
-fn typed_block_prefixes_preserve_existing_formatted_contents() {
-    for (prefix, expected_kind) in [("## ", "heading2"), ("> ", "quote"), ("- ", "bullet:0")] {
+    eprintln!("phase slash_conversion_preserves_native_marks_text_identity_undo_and_reopen");
+    {
         let f = LegacyFixture::rich();
         f.write_page(
             f.child,
-            "**Böld** and *italic* with [site](https://example.com)\n".as_bytes(),
+            "- Parent\n\n  **Böld** and *italic* with [site](https://example.com)\n".as_bytes(),
         );
         let checkout = imported(&f);
-        let (id, marks, text_object) = f
+        let (id, original_marks) = f
             .records
             .read(&checkout.id, |doc| {
-                let list = NotesDoc::page_blocks_list(doc, f.child).unwrap();
                 (
-                    NotesDoc::page_block_snapshots(doc, f.child)[0].0.clone(),
+                    NotesDoc::page_block_snapshots(doc, f.child)[1].0.clone(),
                     NotesDoc::page_block_marks(doc, f.child),
-                    NotesDoc::block_text_obj(doc, &list, 0).unwrap(),
                 )
             })
             .unwrap();
-        let mut live = driver(&f, 97, &checkout);
+        let mut live = driver(&f, 95, &checkout);
         invoke(
             &mut live,
-            97,
+            95,
             actions::block_resource_id(f.child, &id),
             "open",
             None,
@@ -262,60 +198,124 @@ fn typed_block_prefixes_preserve_existing_formatted_contents() {
         let rect = semantic_rect(&live, &format!("notes.block:{id}"));
         live.click_at(rect.x0 + 8.0, rect.center().y);
         live.key("Home");
-        live.type_text(prefix);
-        f.records
-            .read(&checkout.id, |doc| {
-                notes::notebook::validate(doc).unwrap();
-                let list = NotesDoc::page_blocks_list(doc, f.child).unwrap();
-                assert_eq!(
-                    NotesDoc::block_kind(doc, &list, 0),
-                    expected_kind,
-                    "{prefix}"
-                );
-                assert_eq!(
-                    NotesDoc::page_block_snapshots(doc, f.child)[0].1,
-                    "Böld and italic with site"
-                );
-                assert_eq!(NotesDoc::page_block_marks(doc, f.child), marks, "{prefix}");
-                assert_eq!(
-                    NotesDoc::block_text_obj(doc, &list, 0).unwrap(),
-                    text_object
-                );
-            })
-            .unwrap();
-        let image = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/notes-review")
-            .join(format!("formatted-{}.png", expected_kind.replace(':', "-")));
-        live.render_window_png(&image);
-        assert!(
-            std::fs::read(&image)
-                .unwrap()
-                .starts_with(b"\x89PNG\r\n\x1a\n")
+        live.type_text("/number");
+        let before_commit = revision(&f, &checkout);
+        live.key("Enter");
+        assert_eq!(
+            revision(&f, &checkout),
+            before_commit + 2,
+            "the typed command closes, then the conversion"
         );
+        let page = f.child;
+        let verify = |doc: &automerge::AutoCommit| {
+            notes::notebook::validate(doc).unwrap();
+            assert_eq!(
+                NotesDoc::page_blocks(doc, page)[1].kind.stored(),
+                "numbered:1"
+            );
+            assert_eq!(
+                NotesDoc::page_block_snapshots(doc, page)[1],
+                (id.clone(), "Böld and italic with site".into()),
+                "the block keeps its identity"
+            );
+            assert_eq!(NotesDoc::page_block_marks(doc, page), original_marks);
+        };
+        f.records.read(&checkout.id, verify).unwrap();
+        live.set_modifiers(&["ctrl".into()]);
+        live.key("z");
+        live.set_modifiers(&["ctrl".into(), "shift".into()]);
+        live.key("z");
+        live.set_modifiers(&[]);
+        f.records.read(&checkout.id, verify).unwrap();
         close_driver(&mut live);
+        drop(live);
+        f.records.try_flush().unwrap();
+        let reopened_fixture = f.reopen();
+        let mut reopened = driver(&reopened_fixture, 96, &checkout);
+        reopened_fixture.records.read(&checkout.id, verify).unwrap();
+        close_driver(&mut reopened);
     }
-}
 
-#[test]
-fn unknown_dates_use_one_honest_status_and_known_dates_remain_visible() {
-    use notes::metadata::NoteDates;
-    notes::metadata::register_messages();
-    assert_eq!(NoteDates::default().labels().len(), 1);
-    let edited_only = NoteDates {
-        created: None,
-        edited: Some(1_700_003_600),
-    };
-    assert_eq!(edited_only.labels().len(), 1);
-    assert!(edited_only.labels()[0].contains("2023"));
-    let both = NoteDates {
-        created: Some(1_700_000_000),
-        edited: edited_only.edited,
-    };
-    assert_eq!(both.labels().len(), 2);
-    assert!(both.labels().iter().all(|label| label.contains("UTC")));
-    assert!(
-        both.display_labels(true)
-            .iter()
-            .all(|label| label.contains("2023-11-14"))
-    );
+    eprintln!("phase typed_block_prefixes_preserve_existing_formatted_contents");
+    {
+        for (prefix, expected_kind) in [("## ", "heading2"), ("> ", "quote"), ("- ", "bullet:0")] {
+            let f = LegacyFixture::rich();
+            f.write_page(
+                f.child,
+                "**Böld** and *italic* with [site](https://example.com)\n".as_bytes(),
+            );
+            let checkout = imported(&f);
+            let (id, marks) = f
+                .records
+                .read(&checkout.id, |doc| {
+                    (
+                        NotesDoc::page_block_snapshots(doc, f.child)[0].0.clone(),
+                        NotesDoc::page_block_marks(doc, f.child),
+                    )
+                })
+                .unwrap();
+            let mut live = driver(&f, 97, &checkout);
+            invoke(
+                &mut live,
+                97,
+                actions::block_resource_id(f.child, &id),
+                "open",
+                None,
+            );
+            let rect = semantic_rect(&live, &format!("notes.block:{id}"));
+            live.click_at(rect.x0 + 8.0, rect.center().y);
+            live.key("Home");
+            live.type_text(prefix);
+            f.records
+                .read(&checkout.id, |doc| {
+                    notes::notebook::validate(doc).unwrap();
+                    assert_eq!(
+                        NotesDoc::page_blocks(doc, f.child)[0].kind.stored(),
+                        expected_kind,
+                        "{prefix}"
+                    );
+                    assert_eq!(
+                        NotesDoc::page_block_snapshots(doc, f.child)[0],
+                        (id.clone(), "Böld and italic with site".into()),
+                        "{prefix}"
+                    );
+                    assert_eq!(NotesDoc::page_block_marks(doc, f.child), marks, "{prefix}");
+                })
+                .unwrap();
+            let image = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/notes-review")
+                .join(format!("formatted-{}.png", expected_kind.replace(':', "-")));
+            live.render_window_png(&image);
+            assert!(
+                std::fs::read(&image)
+                    .unwrap()
+                    .starts_with(b"\x89PNG\r\n\x1a\n")
+            );
+            close_driver(&mut live);
+        }
+    }
+
+    eprintln!("phase unknown_dates_use_one_honest_status_and_known_dates_remain_visible");
+    {
+        use notes::metadata::NoteDates;
+        notes::metadata::register_messages();
+        assert_eq!(NoteDates::default().labels().len(), 1);
+        let edited_only = NoteDates {
+            created: None,
+            edited: Some(1_700_003_600),
+        };
+        assert_eq!(edited_only.labels().len(), 1);
+        assert!(edited_only.labels()[0].contains("2023"));
+        let both = NoteDates {
+            created: Some(1_700_000_000),
+            edited: edited_only.edited,
+        };
+        assert_eq!(both.labels().len(), 2);
+        assert!(both.labels().iter().all(|label| label.contains("UTC")));
+        assert!(
+            both.display_labels(true)
+                .iter()
+                .all(|label| label.contains("2023-11-14"))
+        );
+    }
 }

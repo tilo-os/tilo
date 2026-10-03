@@ -28,8 +28,12 @@ use vello::kurbo::{Point, Rect};
 use crate::layout::KeyId;
 
 /// Standard deviation of the touch distribution around a key centre, as a
-/// fraction of the key's width (x) and height (y).
-pub const SIGMA_FRACTION: f64 = 0.45;
+/// fraction of the key's width (x) and height (y). Tuned with the simulated
+/// typing benchmark (`touch_bench`): a tighter spread lets the language model
+/// decide only genuinely ambiguous taps, which cut wrong letters by a third to
+/// three quarters (depending on how sloppily the benchmark types) while
+/// keeping taps stolen from inside the meant key below one in a hundred.
+pub const SIGMA_FRACTION: f64 = 0.25;
 
 /// Fraction of a key's width and height (centred) inside which a tap always
 /// selects that key, regardless of context.
@@ -37,7 +41,33 @@ pub const CORE_FRACTION: f64 = 0.6;
 
 /// Share of uniform probability mixed into the context distribution so an
 /// unlikely letter stays reachable outside its core zone.
-const UNIFORM_SMOOTHING: f64 = 0.15;
+pub const UNIFORM_SMOOTHING: f64 = 0.25;
+
+/// The tunable shape of [`resolve`]. [`ResolveParams::DEFAULT`] is what the
+/// keyboard ships; other values exist for the typing benchmark.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResolveParams {
+    /// See [`SIGMA_FRACTION`].
+    pub sigma: f64,
+    /// See [`CORE_FRACTION`].
+    pub core: f64,
+    /// See [`UNIFORM_SMOOTHING`].
+    pub smoothing: f64,
+}
+
+impl ResolveParams {
+    pub const DEFAULT: Self = Self {
+        sigma: SIGMA_FRACTION,
+        core: CORE_FRACTION,
+        smoothing: UNIFORM_SMOOTHING,
+    };
+}
+
+impl Default for ResolveParams {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
 
 /// Learned offsets are stored in key-size units and clamped to this magnitude
 /// so a run of sloppy taps can never move a key's centre past its own edge.
@@ -182,23 +212,23 @@ impl TouchModel {
     }
 
     /// Log-likelihood (up to a shared constant) of `touch` given key `k`.
-    fn log_touch_likelihood(&self, touch: Point, k: &TouchKey) -> f64 {
+    fn log_touch_likelihood(&self, touch: Point, k: &TouchKey, sigma: f64) -> f64 {
         let w = k.rect.width();
         let h = k.rect.height();
         let off = self.offset(k.ch).unwrap_or_default();
         let c = k.rect.center();
         let cx = c.x + f64::from(off.dx) * w;
         let cy = c.y + f64::from(off.dy) * h;
-        let zx = (touch.x - cx) / (SIGMA_FRACTION * w);
-        let zy = (touch.y - cy) / (SIGMA_FRACTION * h);
+        let zx = (touch.x - cx) / (sigma * w);
+        let zy = (touch.y - cy) / (sigma * h);
         -0.5 * (zx * zx + zy * zy)
     }
 }
 
-/// The inner [`CORE_FRACTION`] of `rect`.
-fn core_zone(rect: Rect) -> Rect {
-    let mx = rect.width() * (1.0 - CORE_FRACTION) * 0.5;
-    let my = rect.height() * (1.0 - CORE_FRACTION) * 0.5;
+/// The inner `fraction` of `rect`.
+pub fn core_zone(rect: Rect, fraction: f64) -> Rect {
+    let mx = rect.width() * (1.0 - fraction) * 0.5;
+    let my = rect.height() * (1.0 - fraction) * 0.5;
     Rect::new(rect.x0 + mx, rect.y0 + my, rect.x1 - mx, rect.y1 - my)
 }
 
@@ -210,11 +240,22 @@ pub fn resolve(
     p_next: &NextKeyDistribution,
     model: &TouchModel,
 ) -> Option<KeyId> {
+    resolve_with(touch, keys, p_next, model, ResolveParams::DEFAULT)
+}
+
+/// [`resolve`] with explicit [`ResolveParams`].
+pub fn resolve_with(
+    touch: Point,
+    keys: &[TouchKey],
+    p_next: &NextKeyDistribution,
+    model: &TouchModel,
+    params: ResolveParams,
+) -> Option<KeyId> {
     let sized = || {
         keys.iter()
             .filter(|k| k.rect.width() > 0.0 && k.rect.height() > 0.0)
     };
-    if let Some(k) = sized().find(|k| core_zone(k.rect).contains(touch)) {
+    if let Some(k) = sized().find(|k| core_zone(k.rect, params.core).contains(touch)) {
         return Some(k.id);
     }
     let uniform = if keys.is_empty() {
@@ -226,16 +267,61 @@ pub fn resolve(
         if p_next.is_uniform() {
             uniform
         } else {
-            (1.0 - UNIFORM_SMOOTHING) * p_next.prob(ch) + UNIFORM_SMOOTHING * uniform
+            (1.0 - params.smoothing) * p_next.prob(ch) + params.smoothing * uniform
         }
     };
     sized()
         .map(|k| {
-            let score = model.log_touch_likelihood(touch, k) + prior(k.ch).ln();
+            let score = model.log_touch_likelihood(touch, k, params.sigma) + prior(k.ch).ln();
             (k.id, score)
         })
         .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(id, _)| id)
+}
+
+/// One sampled cell of the effective hit map.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HitCell {
+    pub rect: Rect,
+    /// The key a tap at the cell's centre resolves to.
+    pub key: KeyId,
+    /// The letter key whose drawn rectangle holds the cell's centre.
+    pub drawn: KeyId,
+}
+
+/// Sample the effective hit areas over `area` on a `step`-sized grid: what a
+/// tap at each cell's centre resolves to in this context. Drives the debug
+/// overlay that shows how context grows and shrinks the invisible targets.
+pub fn hit_map(
+    area: Rect,
+    step: f64,
+    keys: &[TouchKey],
+    p_next: &NextKeyDistribution,
+    model: &TouchModel,
+    params: ResolveParams,
+) -> Vec<HitCell> {
+    let mut cells = Vec::new();
+    if step <= 0.0 || area.width() <= 0.0 || area.height() <= 0.0 {
+        return cells;
+    }
+    let columns = (area.width() / step).ceil() as usize;
+    let rows = (area.height() / step).ceil() as usize;
+    for row in 0..rows {
+        let y = area.y0 + row as f64 * step;
+        for column in 0..columns {
+            let x = area.x0 + column as f64 * step;
+            let rect = Rect::new(x, y, (x + step).min(area.x1), (y + step).min(area.y1));
+            let c = rect.center();
+            // Resolution only ever runs for a tap that landed on a letter.
+            let drawn = keys.iter().find(|k| k.rect.contains(c)).map(|k| k.id);
+            if let Some(drawn) = drawn
+                && let Some(key) = resolve_with(c, keys, p_next, model, params)
+            {
+                cells.push(HitCell { rect, key, drawn });
+            }
+        }
+    }
+    cells
 }
 
 /// Remembers the [`NextKeyDistribution`] for one typing context so it is
@@ -358,12 +444,36 @@ mod tests {
         let r = key(&keys, 'r');
         // Context says only 'e' can follow, but the tap is well inside 'r'.
         let only_e = NextKeyDistribution::from_weights([('e', 1.0)]);
-        let core = core_zone(r.rect);
+        let core = core_zone(r.rect, CORE_FRACTION);
         let touch = Point::new(core.x0 + 0.5, core.center().y);
         assert_eq!(
             resolved_char(&keys, touch, &only_e, &TouchModel::new()),
             'r'
         );
+    }
+
+    #[test]
+    fn core_zone_wins_for_every_key_against_every_other_letter() {
+        let keys = qwerty_keys();
+        let m = TouchModel::new();
+        for k in &keys {
+            let core = core_zone(k.rect, CORE_FRACTION);
+            for other in keys.iter().filter(|o| o.id != k.id) {
+                // The context insists on a different letter.
+                let p = NextKeyDistribution::from_weights([(other.ch, 1.0)]);
+                for (fx, fy) in [
+                    (0.01, 0.5),
+                    (0.99, 0.5),
+                    (0.5, 0.01),
+                    (0.5, 0.99),
+                    (0.01, 0.01),
+                ] {
+                    let touch =
+                        Point::new(core.x0 + core.width() * fx, core.y0 + core.height() * fy);
+                    assert_eq!(resolved_char(&keys, touch, &p, &m), k.ch);
+                }
+            }
+        }
     }
 
     #[test]
@@ -421,3 +531,7 @@ mod tests {
         assert_eq!(calls, 2);
     }
 }
+
+#[cfg(test)]
+#[path = "touch_bench.rs"]
+mod touch_bench;

@@ -1,0 +1,7 @@
+[
+  {"perform": {"target": "section-tree", "semantic_target": "node:4", "action": "activate"}},
+  {"expect": {"target": "section-tree", "semantic_target": "node:4", "role": "tree_item", "selected": true}},
+  {"expect": {"target": "tree-selected-item", "role": "heading", "name": "Meetings"}},
+  {"perform": {"target": "tree-title-input", "action": "set_value", "value": "Weekly sync"}},
+  {"expect": {"target": "tree-title-preview", "role": "heading", "name": "Weekly sync"}}
+]

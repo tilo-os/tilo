@@ -94,16 +94,14 @@ impl Default for FlatpakShareConfig {
 /// Preferred video encoder, as a preference for the media stack's element
 /// selection (see `collab::encoder::EncoderChoice::policy`).
 ///
-/// Settings files written before the media stack took over keep working:
-/// `"openh264"` reads as [`Self::Software`], and `"vaapi"` / `"nvenc"`
-/// prefer that hardware family, falling back to software.
+/// `"vaapi"` / `"nvenc"` prefer that hardware family, falling back to
+/// software.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum EncoderChoice {
     /// Hardware first, then royalty-free software, then Cisco's openh264.
     Auto,
     /// Software encoders only.
-    #[serde(alias = "openh264")]
     Software,
     /// Prefer VA-API; other hardware only after software.
     Vaapi,

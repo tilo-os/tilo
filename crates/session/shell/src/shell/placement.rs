@@ -1,201 +1,53 @@
-//! Where a new window lands in the strip, which has unlimited space to
-//! the right, so "wherever the tree walk reached first" isn't an answer:
+//! The shell's side of window placement. The rule itself — beside the
+//! selection, into a tabbed group, else at the seam in view — is
+//! [`tilo_desktop_model::commands::open_app_placement`], shared with every
+//! other desktop host. This turns its answer into the splice [`Placement`]
+//! and leaves it as a note for the launch: a launch and the toplevel it
+//! eventually maps are two events on two processes, so the decision is made
+//! once, against the layout the person was looking at, and the adoption
+//! reads it back ([`crate::shell::launcher::placement_for_toplevel`]).
 //!
-//! 1. **Right of the window you're in** — next to what opened it, not
-//!    at the end of the strip.
-//! 2. **Into the group you're in, when it's tabbed** — a tab of several
-//!    means the person is working *inside* that group.
-//! 3. **At a seam, when nothing is selected** — the visible border
-//!    between two groups, else the next one rightwards.
-//!
-//! Rules 1–2 read the tree alone; rule 3 needs [`StripViewport`], the
-//! layout fact the shell publishes on
-//! [`crate::shell::chrome_state::ChromeState`] every frame.
-//!
-//! [`placement_for_new_window`] is the whole decision, made once.
-//! Callers record its answer for the launch
-//! ([`note_placement_for_launch`]); the toplevel adoption reads the
-//! note back and splices the window in.
+//! The viewport is the [`StripViewport`] the shell publishes on
+//! [`crate::shell::chrome_state::ChromeState`] every frame; `None` (a caller
+//! with no layout, e.g. an adoption straight off the Wayland protocol)
+//! degrades the seam rule to the strip's trailing edge.
+
+use tilo_desktop_model::commands::{
+    OpenContext, OpenIntent, StripViewport, TabPlacement, open_app_placement,
+};
 
 use crate::shell::chrome_state::OpenTarget;
-use crate::shell::state::{GroupId, StripId, WorkspaceTree};
+use crate::shell::state::{GroupId, WorkspaceTree};
 use crate::shell::tab_binding::Placement;
 
-/// In the strip's **unscrolled canvas space** — the same space
-/// [`ui::widget::GroupRow::usable_at`] resolves widths in, so a seam's
-/// position doesn't move when the user pans the strip.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GroupSpan {
-    pub id: GroupId,
-    pub x0: f64,
-    pub x1: f64,
-}
-
-/// A border between windows. The seam *after* the last group counts —
-/// the strip is unbounded to the right, so the trailing edge is a
-/// border against open space, which is where "rightwards" terminates.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Seam {
-    /// The group whose right edge this seam is.
-    pub after: GroupId,
-    pub x: f64,
-}
-
-/// What the person can currently see of one strip. Built by the shell
-/// from the live [`ui::widget::GroupRow`] and published on the chrome
-/// so a launch can consult it without reaching into the widget tree.
-#[derive(Clone, Debug, PartialEq)]
-pub struct StripViewport {
-    pub strip: StripId,
-    /// Every group, in strip order.
-    pub groups: Vec<GroupSpan>,
-    /// Canvas-x of the visible edges.
-    pub visible_x0: f64,
-    pub visible_x1: f64,
-}
-
-impl StripViewport {
-    /// Left to right, including the one after the last group.
-    pub fn seams(&self) -> Vec<Seam> {
-        self.groups
-            .iter()
-            .map(|g| Seam {
-                after: g.id,
-                x: g.x1,
-            })
-            .collect()
-    }
-
-    /// The leftmost border **between two windows** actually visible.
-    /// Excludes a seam sitting exactly on the screen edge (falls
-    /// through to [`Self::next_seam_rightwards`]) and the one after the
-    /// *last* window, a border against open space.
-    pub fn visible_seam(&self) -> Option<Seam> {
-        let seams = self.seams();
-        let between_windows = seams.len().saturating_sub(1);
-        seams
-            .into_iter()
-            .take(between_windows)
-            .find(|s| s.x > self.visible_x0 && s.x < self.visible_x1)
-    }
-
-    /// The rightmost place on the screen where a new group can be
-    /// inserted. Unlike [`Self::visible_seam`], this includes the
-    /// trailing edge of the last window: when there is visible canvas
-    /// after it, that is the most natural place for a searched app.
-    pub fn rightmost_visible_seam(&self) -> Option<Seam> {
-        self.seams()
-            .into_iter()
-            .rev()
-            .find(|s| s.x > self.visible_x0 && s.x < self.visible_x1)
-    }
-
-    /// Falls back to the rightmost seam when every seam is behind the
-    /// viewport — the end of the strip is still a seam.
-    pub fn next_seam_rightwards(&self) -> Option<Seam> {
-        let seams = self.seams();
-        seams
-            .iter()
-            .copied()
-            .find(|s| s.x >= self.visible_x1)
-            .or_else(|| seams.last().copied())
-    }
-}
-
-/// `viewport` is only consulted for rule 3 — with a selection the
-/// answer is a property of the tree alone. `None` (a caller with no
-/// layout, e.g. an adoption straight off the Wayland protocol) degrades
-/// rule 3 to the strip's trailing seam.
-pub fn placement_for_new_window(
+/// Where a window opened with `intent` lands in the active workspace.
+pub fn placement_for(
     tree: &WorkspaceTree,
+    intent: OpenIntent,
     viewport: Option<&StripViewport>,
 ) -> Placement {
-    let Some(ws) = tree.desktop.active_workspace() else {
+    let Some(workspace) = tree.desktop.active_workspace() else {
         return Placement::NewGroup;
     };
-    // The same resolution `adopt_toplevel_at` performs when splicing the
-    // window in, so the two cannot disagree about which strip this was about.
-    let strip = match tree
-        .desktop
-        .active_strip
-        .get(&ws.id)
-        .and_then(|id| ws.strips.iter().find(|s| s.id == *id))
-    {
-        Some(s) => s,
-        None => match ws.strips.first() {
-            Some(s) => s,
-            None => return Placement::NewGroup,
-        },
-    };
-
-    // Rules 1 and 2: there is a selection.
-    if let Some(selected) = tree
-        .desktop
-        .active_group_for(strip.id)
-        .and_then(|id| strip.window_groups.iter().find(|g| g.id == id))
-    {
-        if selected.tabs.len() > 1 {
-            return Placement::TabIn(selected.id);
+    let at = OpenContext::focused(&tree.desktop, intent, viewport);
+    match open_app_placement(workspace, &at, |_| true) {
+        Ok(TabPlacement::InGroup { group, .. }) => Placement::TabIn(group),
+        Ok(TabPlacement::NewGroup {
+            after: Some(group), ..
+        }) => Placement::RightOf(group),
+        Ok(TabPlacement::NewGroup { after: None, .. } | TabPlacement::EmptyWorkspace) | Err(_) => {
+            Placement::NewGroup
         }
-        return Placement::RightOf(selected.id);
     }
-
-    // Rule 3: nothing is selected.
-    if let Some(view) = viewport.filter(|v| v.strip == strip.id)
-        && let Some(seam) = view.visible_seam().or_else(|| view.next_seam_rightwards())
-    {
-        return Placement::RightOf(seam.after);
-    }
-    Placement::NewGroup
 }
 
-/// Placement for an app explicitly chosen from search.
-///
-/// Search is spatially predictable rather than focus-relative: take the
-/// rightmost insertion point currently visible, or, when the screen is
-/// full, the first insertion point immediately to its right. This also
-/// means selecting a result never silently turns it into another tab just
-/// because the currently focused group happens to contain several tabs.
-pub fn placement_for_search_result(
-    tree: &WorkspaceTree,
-    viewport: Option<&StripViewport>,
-) -> Placement {
-    let Some(ws) = tree.desktop.active_workspace() else {
-        return Placement::NewGroup;
-    };
-    let Some(strip) = tree
-        .desktop
-        .active_strip
-        .get(&ws.id)
-        .and_then(|id| ws.strips.iter().find(|s| s.id == *id))
-        .or_else(|| ws.strips.first())
-    else {
-        return Placement::NewGroup;
-    };
-
-    if let Some(view) = viewport.filter(|v| v.strip == strip.id)
-        && let Some(seam) = view
-            .rightmost_visible_seam()
-            .or_else(|| view.next_seam_rightwards())
-    {
-        return Placement::RightOf(seam.after);
-    }
-
-    strip
-        .window_groups
-        .last()
-        .map_or(Placement::NewGroup, |group| Placement::RightOf(group.id))
-}
-
-/// A launch and the toplevel it eventually maps are two events on two
-/// processes; this leaves the decision as a note the adoption reads,
-/// applied once against the layout the user was looking at.
+/// Record the launch rule's answer for `package_id`'s window.
 pub fn note_placement_for_launch(
     package_id: &str,
     tree: &WorkspaceTree,
     viewport: Option<&StripViewport>,
 ) {
-    let placement = placement_for_new_window(tree, viewport);
+    let placement = placement_for(tree, OpenIntent::Launch, viewport);
     crate::shell::launcher::set_pending_placement(package_id, placement);
 }
 
@@ -209,7 +61,7 @@ pub fn note_placement_for_launch_identities(
     tree: &WorkspaceTree,
     viewport: Option<&StripViewport>,
 ) -> Placement {
-    let placement = placement_for_search_result(tree, viewport);
+    let placement = placement_for(tree, OpenIntent::Search, viewport);
     crate::shell::launcher::set_pending_placement_for_identities(key, identities, placement);
     placement
 }
@@ -226,7 +78,7 @@ pub fn note_placement_for_launch_targeted(
 ) {
     let placement = match target {
         OpenTarget::Here(group) if group_exists(tree, group) => Placement::TabIn(group),
-        _ => placement_for_search_result(tree, viewport),
+        _ => placement_for(tree, OpenIntent::Search, viewport),
     };
     crate::shell::launcher::set_pending_placement(package_id, placement);
 }
@@ -242,7 +94,10 @@ fn group_exists(tree: &WorkspaceTree, group: GroupId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree, next_id};
+    use crate::shell::state::{
+        StripId, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree, next_id,
+    };
+    use tilo_desktop_model::commands::GroupSpan;
 
     /// A strip of `tab_counts.len()` groups, the i-th holding
     /// `tab_counts[i]` stub tabs. Returns the group ids in strip order.
@@ -297,178 +152,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_single_window_selection_opens_beside_it() {
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let ids = strip_of(&mut tree, &[1, 1, 1]);
-        let strip_id = tree.desktop.workspaces[0].strips[0].id;
-        tree.desktop
-            .active_strip
-            .insert(tree.desktop.active, strip_id);
-        tree.desktop.set_active_group(strip_id, ids[1]);
-        assert_eq!(
-            placement_for_new_window(&tree, None),
-            Placement::RightOf(ids[1]),
-        );
-    }
-
-    #[test]
-    fn a_tab_selection_inside_a_tabbed_group_opens_in_that_group() {
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let ids = strip_of(&mut tree, &[1, 3, 1]);
-        let strip_id = tree.desktop.workspaces[0].strips[0].id;
-        tree.desktop
-            .active_strip
-            .insert(tree.desktop.active, strip_id);
-        tree.desktop.set_active_group(strip_id, ids[1]);
-        assert_eq!(
-            placement_for_new_window(&tree, None),
-            Placement::TabIn(ids[1]),
-        );
-    }
-
-    #[test]
-    fn no_selection_lands_at_the_visible_seam() {
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let ids = strip_of(&mut tree, &[1, 1, 1]);
-        let strip_id = tree.desktop.workspaces[0].strips[0].id;
-        tree.desktop
-            .active_strip
-            .insert(tree.desktop.active, strip_id);
-        tree.desktop.active_group.remove(&strip_id);
-        // Screen shows canvas 150..280: the seam at 200 (after group 1)
-        // is on it; the one at 100 is behind the left edge.
-        let view = viewport(strip_id, &ids, (150.0, 280.0));
-        assert_eq!(
-            placement_for_new_window(&tree, Some(&view)),
-            Placement::RightOf(ids[1]),
-        );
-    }
-
-    #[test]
-    fn no_selection_and_no_visible_seam_takes_the_next_seam_rightwards() {
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let ids = strip_of(&mut tree, &[1, 1, 1]);
-        let strip_id = tree.desktop.workspaces[0].strips[0].id;
-        tree.desktop
-            .active_strip
-            .insert(tree.desktop.active, strip_id);
-        tree.desktop.active_group.remove(&strip_id);
-        // Inside group 1: no border between windows anywhere on screen.
-        let view = viewport(strip_id, &ids, (120.0, 190.0));
-        assert_eq!(
-            placement_for_new_window(&tree, Some(&view)),
-            Placement::RightOf(ids[1]),
-        );
-    }
-
-    #[test]
-    fn a_lone_full_width_window_puts_the_next_one_after_it() {
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let ids = strip_of(&mut tree, &[1]);
-        let strip_id = tree.desktop.workspaces[0].strips[0].id;
-        tree.desktop
-            .active_strip
-            .insert(tree.desktop.active, strip_id);
-        tree.desktop.active_group.remove(&strip_id);
-        // One group filling the display: the only seam is its own
-        // trailing edge, and it is the one the window goes to.
-        let view = viewport(strip_id, &ids, (0.5, 99.5));
-        assert_eq!(
-            placement_for_new_window(&tree, Some(&view)),
-            Placement::RightOf(ids[0]),
-        );
-    }
-
-    /// The resting state of a strip of full-width windows: the border
-    /// lands exactly on the screen's right edge, so the window goes
-    /// after the one filling it — not two windows along.
-    #[test]
-    fn a_border_exactly_on_the_screen_edge_is_not_a_space_you_can_see() {
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let ids = strip_of(&mut tree, &[1, 1, 1]);
-        let strip_id = tree.desktop.workspaces[0].strips[0].id;
-        tree.desktop
-            .active_strip
-            .insert(tree.desktop.active, strip_id);
-        tree.desktop.active_group.remove(&strip_id);
-        let view = viewport(strip_id, &ids, (0.0, 100.0));
-        assert_eq!(view.visible_seam(), None, "nothing of the gap is on screen");
-        assert_eq!(
-            placement_for_new_window(&tree, Some(&view)),
-            Placement::RightOf(ids[0]),
-        );
-    }
-
-    #[test]
-    fn panning_past_the_last_window_still_lands_at_the_end() {
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let ids = strip_of(&mut tree, &[1, 1]);
-        let strip_id = tree.desktop.workspaces[0].strips[0].id;
-        tree.desktop
-            .active_strip
-            .insert(tree.desktop.active, strip_id);
-        tree.desktop.active_group.remove(&strip_id);
-        // Panned into empty space: every seam is behind the viewport.
-        let view = viewport(strip_id, &ids, (400.0, 800.0));
-        assert_eq!(
-            placement_for_new_window(&tree, Some(&view)),
-            Placement::RightOf(ids[1]),
-        );
-    }
-
-    #[test]
-    fn search_uses_the_rightmost_visible_seam_despite_focus() {
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let ids = strip_of(&mut tree, &[3, 1, 1, 1]);
-        let strip_id = tree.desktop.workspaces[0].strips[0].id;
-        tree.desktop
-            .active_strip
-            .insert(tree.desktop.active, strip_id);
-        tree.desktop.set_active_group(strip_id, ids[0]);
-        // Three insertion points are visible. Focus would normally turn a
-        // launch into a tab in group 0; search instead takes the furthest
-        // visible point, after group 2.
-        let view = viewport(strip_id, &ids, (0.0, 350.0));
-        assert_eq!(
-            placement_for_search_result(&tree, Some(&view)),
-            Placement::RightOf(ids[2]),
-        );
-    }
-
-    #[test]
-    fn search_uses_visible_space_after_the_last_window() {
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let ids = strip_of(&mut tree, &[1, 1]);
-        let strip_id = tree.desktop.workspaces[0].strips[0].id;
-        tree.desktop
-            .active_strip
-            .insert(tree.desktop.active, strip_id);
-        let view = viewport(strip_id, &ids, (0.0, 350.0));
-        assert_eq!(
-            placement_for_search_result(&tree, Some(&view)),
-            Placement::RightOf(ids[1]),
-            "the trailing seam is the rightmost available on-screen spot",
-        );
-    }
-
-    #[test]
-    fn search_falls_to_the_first_seam_right_of_a_full_viewport() {
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let ids = strip_of(&mut tree, &[1, 1, 1]);
-        let strip_id = tree.desktop.workspaces[0].strips[0].id;
-        tree.desktop
-            .active_strip
-            .insert(tree.desktop.active, strip_id);
-        // The viewport is wholly inside group 0, so its trailing edge at
-        // 100 is the first available insertion point to the right.
-        let view = viewport(strip_id, &ids, (20.0, 90.0));
-        assert_eq!(
-            placement_for_search_result(&tree, Some(&view)),
-            Placement::RightOf(ids[0]),
-        );
-    }
-
     // End to end: the note a launch leaves, read back by the adoption
     // that splices the window in. `PENDING_PLACEMENT` is process-global,
     // so these are serialised against the launcher's own tests.
@@ -509,191 +192,177 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn a_launch_with_no_selection_lands_at_the_seam_the_user_can_see() {
-        crate::shell::launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let ids = strip_of(&mut tree, &[1, 1, 1]);
-        let strip_id = tree.desktop.workspaces[0].strips[0].id;
-        tree.desktop
-            .active_strip
-            .insert(tree.desktop.active, strip_id);
-        tree.desktop.active_group.remove(&strip_id);
-        // The screen shows canvas 150..280 — the border after group 1 is
-        // on it, the one after group 0 is off the left edge.
-        let view = viewport(strip_id, &ids, (150.0, 280.0));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn launches_land_where_placement_says_until_they_map() {
+        fn a_launch_with_no_selection_lands_at_the_seam_the_user_can_see() {
+            crate::shell::launcher::clear_pending_placements();
+            let mut tree = WorkspaceTree::bootstrap_demo();
+            let ids = strip_of(&mut tree, &[1, 1, 1]);
+            let strip_id = tree.desktop.workspaces[0].strips[0].id;
+            tree.desktop
+                .active_strip
+                .insert(tree.desktop.active, strip_id);
+            tree.desktop.active_group.remove(&strip_id);
+            // The screen shows canvas 150..280 — the border after group 1 is
+            // on it, the one after group 0 is off the left edge.
+            let view = viewport(strip_id, &ids, (150.0, 280.0));
 
-        let (order, landed) = launch_and_adopt(
-            &mut tree,
-            "so.tilo.seamfixture",
-            "seamfixture",
-            9101,
-            Some(&view),
-        );
+            let (order, landed) = launch_and_adopt(
+                &mut tree,
+                "so.tilo.seamfixture",
+                "seamfixture",
+                9101,
+                Some(&view),
+            );
 
-        assert_eq!(
-            order,
-            vec![ids[0], ids[1], landed, ids[2]],
-            "the window goes into the space at the visible border, \
-             between the groups that border separates"
-        );
-        crate::shell::launcher::clear_pending_placements();
-    }
+            assert_eq!(
+                order,
+                vec![ids[0], ids[1], landed, ids[2]],
+                "the window goes into the space at the visible border, \
+                 between the groups that border separates"
+            );
+            crate::shell::launcher::clear_pending_placements();
+        }
 
-    #[test]
-    #[serial_test::serial]
-    fn a_launch_with_no_visible_seam_lands_at_the_next_one_rightwards() {
-        crate::shell::launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let ids = strip_of(&mut tree, &[1, 1, 1]);
-        let strip_id = tree.desktop.workspaces[0].strips[0].id;
-        tree.desktop
-            .active_strip
-            .insert(tree.desktop.active, strip_id);
-        tree.desktop.active_group.remove(&strip_id);
-        let view = viewport(strip_id, &ids, (120.0, 190.0));
+        fn a_launch_with_no_visible_seam_lands_at_the_next_one_rightwards() {
+            crate::shell::launcher::clear_pending_placements();
+            let mut tree = WorkspaceTree::bootstrap_demo();
+            let ids = strip_of(&mut tree, &[1, 1, 1]);
+            let strip_id = tree.desktop.workspaces[0].strips[0].id;
+            tree.desktop
+                .active_strip
+                .insert(tree.desktop.active, strip_id);
+            tree.desktop.active_group.remove(&strip_id);
+            let view = viewport(strip_id, &ids, (120.0, 190.0));
 
-        let (order, landed) = launch_and_adopt(
-            &mut tree,
-            "so.tilo.nextseamfixture",
-            "nextseamfixture",
-            9102,
-            Some(&view),
-        );
+            let (order, landed) = launch_and_adopt(
+                &mut tree,
+                "so.tilo.nextseamfixture",
+                "nextseamfixture",
+                9102,
+                Some(&view),
+            );
 
-        assert_eq!(
-            order,
-            vec![ids[0], ids[1], landed, ids[2]],
-            "with no border on screen the window takes the next one \
-             rightwards — after group 1, not before group 1"
-        );
-        crate::shell::launcher::clear_pending_placements();
-    }
+            assert_eq!(
+                order,
+                vec![ids[0], ids[1], landed, ids[2]],
+                "with no border on screen the window takes the next one \
+                 rightwards — after group 1, not before group 1"
+            );
+            crate::shell::launcher::clear_pending_placements();
+        }
 
-    #[test]
-    #[serial_test::serial]
-    fn a_launch_beside_a_lone_selected_window_lands_right_of_it() {
-        crate::shell::launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let ids = strip_of(&mut tree, &[1, 1, 1]);
-        let strip_id = tree.desktop.workspaces[0].strips[0].id;
-        tree.desktop
-            .active_strip
-            .insert(tree.desktop.active, strip_id);
-        tree.desktop.set_active_group(strip_id, ids[0]);
-        // A viewport that would send an unselected launch elsewhere, so
-        // the selection is demonstrably what decided this.
-        let view = viewport(strip_id, &ids, (150.0, 280.0));
+        fn a_launch_beside_a_lone_selected_window_lands_right_of_it() {
+            crate::shell::launcher::clear_pending_placements();
+            let mut tree = WorkspaceTree::bootstrap_demo();
+            let ids = strip_of(&mut tree, &[1, 1, 1]);
+            let strip_id = tree.desktop.workspaces[0].strips[0].id;
+            tree.desktop
+                .active_strip
+                .insert(tree.desktop.active, strip_id);
+            tree.desktop.set_active_group(strip_id, ids[0]);
+            // A viewport that would send an unselected launch elsewhere, so
+            // the selection is demonstrably what decided this.
+            let view = viewport(strip_id, &ids, (150.0, 280.0));
 
-        let (order, landed) = launch_and_adopt(
-            &mut tree,
-            "so.tilo.besidefixture",
-            "besidefixture",
-            9103,
-            Some(&view),
-        );
+            let (order, landed) = launch_and_adopt(
+                &mut tree,
+                "so.tilo.besidefixture",
+                "besidefixture",
+                9103,
+                Some(&view),
+            );
 
-        assert_eq!(
-            order,
-            vec![ids[0], landed, ids[1], ids[2]],
-            "a selection outranks the seam: the window opens beside what \
-             the user is in"
-        );
-        crate::shell::launcher::clear_pending_placements();
-    }
+            assert_eq!(
+                order,
+                vec![ids[0], landed, ids[1], ids[2]],
+                "a selection outranks the seam: the window opens beside what \
+                 the user is in"
+            );
+            crate::shell::launcher::clear_pending_placements();
+        }
 
-    #[test]
-    #[serial_test::serial]
-    fn a_launch_from_inside_a_tabbed_group_joins_it_rather_than_the_seam() {
-        crate::shell::launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let ids = strip_of(&mut tree, &[1, 3, 1]);
-        let strip_id = tree.desktop.workspaces[0].strips[0].id;
-        tree.desktop
-            .active_strip
-            .insert(tree.desktop.active, strip_id);
-        tree.desktop.set_active_group(strip_id, ids[1]);
-        let view = viewport(strip_id, &ids, (150.0, 280.0));
+        fn a_launch_from_inside_a_tabbed_group_joins_it_rather_than_the_seam() {
+            crate::shell::launcher::clear_pending_placements();
+            let mut tree = WorkspaceTree::bootstrap_demo();
+            let ids = strip_of(&mut tree, &[1, 3, 1]);
+            let strip_id = tree.desktop.workspaces[0].strips[0].id;
+            tree.desktop
+                .active_strip
+                .insert(tree.desktop.active, strip_id);
+            tree.desktop.set_active_group(strip_id, ids[1]);
+            let view = viewport(strip_id, &ids, (150.0, 280.0));
 
-        let (order, landed) = launch_and_adopt(
-            &mut tree,
-            "so.tilo.tabbedfixture",
-            "tabbedfixture",
-            9104,
-            Some(&view),
-        );
+            let (order, landed) = launch_and_adopt(
+                &mut tree,
+                "so.tilo.tabbedfixture",
+                "tabbedfixture",
+                9104,
+                Some(&view),
+            );
 
-        assert_eq!(landed, ids[1], "the window joined the selected group");
-        assert_eq!(order, ids, "and the strip did not grow a column to hold it");
-        crate::shell::launcher::clear_pending_placements();
-    }
+            assert_eq!(landed, ids[1], "the window joined the selected group");
+            assert_eq!(order, ids, "and the strip did not grow a column to hold it");
+            crate::shell::launcher::clear_pending_placements();
+        }
 
-    #[test]
-    #[serial_test::serial]
-    fn a_searched_app_keeps_its_rightmost_target_until_it_maps() {
-        crate::shell::launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let ids = strip_of(&mut tree, &[3, 1, 1, 1]);
-        let strip_id = tree.desktop.workspaces[0].strips[0].id;
-        tree.desktop
-            .active_strip
-            .insert(tree.desktop.active, strip_id);
-        tree.desktop.set_active_group(strip_id, ids[0]);
-        let view = viewport(strip_id, &ids, (0.0, 350.0));
+        fn a_searched_app_keeps_its_rightmost_target_until_it_maps() {
+            crate::shell::launcher::clear_pending_placements();
+            let mut tree = WorkspaceTree::bootstrap_demo();
+            let ids = strip_of(&mut tree, &[3, 1, 1, 1]);
+            let strip_id = tree.desktop.workspaces[0].strips[0].id;
+            tree.desktop
+                .active_strip
+                .insert(tree.desktop.active, strip_id);
+            tree.desktop.set_active_group(strip_id, ids[0]);
+            let view = viewport(strip_id, &ids, (0.0, 350.0));
 
-        note_placement_for_launch_targeted(
-            "dev.tilo.searchfixture",
-            &tree,
-            Some(&view),
-            OpenTarget::Beside,
-        );
-        // Mapping is asynchronous. A later focus change must not move the
-        // result away from the target captured when Enter was pressed.
-        tree.desktop.set_active_group(strip_id, ids[3]);
-        crate::shell::tab_binding::adopt_toplevel(
-            &mut tree,
-            9_105,
-            Some("searchfixture".to_string()),
-        );
+            note_placement_for_launch_targeted(
+                "dev.tilo.searchfixture",
+                &tree,
+                Some(&view),
+                OpenTarget::Beside,
+            );
+            // Mapping is asynchronous. A later focus change must not move the
+            // result away from the target captured when Enter was pressed.
+            tree.desktop.set_active_group(strip_id, ids[3]);
+            crate::shell::tab_binding::adopt_toplevel(
+                &mut tree,
+                9_105,
+                Some("searchfixture".to_string()),
+            );
 
-        let groups = &tree.desktop.workspaces[0].strips[0].window_groups;
-        let landed = groups
-            .iter()
-            .find(|group| {
-                group.tabs.iter().any(|tab| {
-                    matches!(
-                        &tab.tile,
-                        TileContent::Foreign {
-                            surface_id: 9_105,
-                            ..
-                        }
-                    )
+            let groups = &tree.desktop.workspaces[0].strips[0].window_groups;
+            let landed = groups
+                .iter()
+                .find(|group| {
+                    group.tabs.iter().any(|tab| {
+                        matches!(
+                            &tab.tile,
+                            TileContent::Foreign {
+                                surface_id: 9_105,
+                                ..
+                            }
+                        )
+                    })
                 })
-            })
-            .expect("searched app maps into a group")
-            .id;
-        assert_eq!(
-            groups.iter().map(|group| group.id).collect::<Vec<_>>(),
-            vec![ids[0], ids[1], ids[2], landed, ids[3]],
-            "the mapped app must retain the rightmost on-screen target captured by search",
-        );
-        crate::shell::launcher::clear_pending_placements();
-    }
+                .expect("searched app maps into a group")
+                .id;
+            assert_eq!(
+                groups.iter().map(|group| group.id).collect::<Vec<_>>(),
+                vec![ids[0], ids[1], ids[2], landed, ids[3]],
+                "the mapped app must retain the rightmost on-screen target captured by search",
+            );
+            crate::shell::launcher::clear_pending_placements();
+        }
 
-    #[test]
-    fn a_viewport_for_another_strip_is_ignored() {
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let ids = strip_of(&mut tree, &[1, 1, 1]);
-        let strip_id = tree.desktop.workspaces[0].strips[0].id;
-        tree.desktop
-            .active_strip
-            .insert(tree.desktop.active, strip_id);
-        tree.desktop.active_group.remove(&strip_id);
-        let mut view = viewport(strip_id, &ids, (150.0, 280.0));
-        view.strip = StripId::from(next_id());
-        assert_eq!(
-            placement_for_new_window(&tree, Some(&view)),
-            Placement::NewGroup,
-            "a snapshot of a different strip must not decide this one",
-        );
+        a_launch_with_no_selection_lands_at_the_seam_the_user_can_see();
+        a_launch_with_no_visible_seam_lands_at_the_next_one_rightwards();
+        a_launch_beside_a_lone_selected_window_lands_right_of_it();
+        a_launch_from_inside_a_tabbed_group_joins_it_rather_than_the_seam();
+        a_searched_app_keeps_its_rightmost_target_until_it_maps();
     }
 }

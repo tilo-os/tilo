@@ -63,6 +63,7 @@ pub struct PortalNotificationAction {
 pub struct NotificationPortalHandle {
     state: Arc<Mutex<NotificationState>>,
     pending_actions: Arc<Mutex<VecDeque<(u32, String)>>>,
+    wake: crate::idle_wake::IdleWake,
 }
 
 impl NotificationPortalHandle {
@@ -84,6 +85,7 @@ impl NotificationPortalHandle {
                 actions.pop_front();
             }
             actions.push_back((numeric_id, action.into()));
+            self.wake.poke();
         }
     }
 
@@ -210,10 +212,13 @@ pub fn spawn_action_emitter(
         let Ok(context) = SignalEmitter::new(&connection, super::OBJECT_PATH) else {
             return;
         };
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(120));
         loop {
-            interval.tick().await;
-            for action in portal.drain_actions() {
+            let actions = portal.drain_actions();
+            if actions.is_empty() {
+                portal.wake.wait().await;
+                continue;
+            }
+            for action in actions {
                 let _ = NotificationBackend::action_invoked(
                     &context,
                     &action.app_id,
@@ -252,6 +257,21 @@ impl NotificationBackend {
             .get(key)
             .and_then(|value| value.try_clone().ok())
             .and_then(|value| String::try_from(value).ok())
+    }
+
+    /// The portal's `sound` is `"default"`, `"silent"` or a sound the app
+    /// supplies; the shell plays its own theme cue for anything but silence,
+    /// chosen by the notification's `category`.
+    fn sound(
+        notification: &HashMap<String, OwnedValue>,
+    ) -> Option<settings_store::system_sounds::SystemSoundEvent> {
+        let silent = Self::string_field(notification, "sound").as_deref() == Some("silent");
+        let category = Self::string_field(notification, "category");
+        (!silent).then(|| {
+            settings_store::system_sounds::SystemSoundEvent::for_notification_category(
+                category.as_deref(),
+            )
+        })
     }
 
     fn urgency(notification: &HashMap<String, OwnedValue>) -> u8 {
@@ -298,7 +318,7 @@ impl NotificationBackend {
         {
             let target = clone_field(notification, "default-action-target");
             specs.insert(action.clone(), ActionSpec { target });
-            rendered.push((action, "Open".to_string()));
+            rendered.push((action, crate::shell::i18n::t("portal-notification-open")));
         }
 
         let buttons = notification
@@ -371,6 +391,7 @@ impl NotificationBackend {
             caller: Some(auth.caller),
             badge_count: None,
             contact_endpoint: None,
+            sound: Self::sound(&notification),
         });
     }
 
@@ -475,7 +496,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn priority_maps_to_shell_urgency_and_bad_values_fail_safe() {
+    fn notifications_map_priority_reduce_markup_and_bound_the_reverse_map() {
+        // Phase `priority_maps_to_shell_urgency_and_bad_values_fail_safe`.
         for (priority, expected) in [("low", 0), ("normal", 1), ("high", 2), ("urgent", 2)] {
             let mut values = HashMap::new();
             values.insert(
@@ -485,32 +507,28 @@ mod tests {
             assert_eq!(NotificationBackend::urgency(&values), expected);
         }
         assert_eq!(NotificationBackend::urgency(&HashMap::new()), 1);
-    }
-
-    #[test]
-    fn markup_is_reduced_to_safe_text() {
+        // Phase `markup_is_reduced_to_safe_text`.
         assert_eq!(
             markup_to_plain_text("Hello <b>world</b> &amp; <a href='x'>friends</a>"),
             "Hello world & friends"
         );
-    }
-
-    #[test]
-    fn reverse_map_is_bounded_and_cleans_up() {
-        let handle = NotificationPortalHandle::default();
-        for index in 0..=MAX_ACTIVE_PORTAL_NOTIFICATIONS {
-            handle.upsert(
-                ("org.example.App".into(), index.to_string()),
-                || u32::try_from(index + 1).unwrap(),
-                HashMap::new(),
+        // Phase `reverse_map_is_bounded_and_cleans_up`.
+        {
+            let handle = NotificationPortalHandle::default();
+            for index in 0..=MAX_ACTIVE_PORTAL_NOTIFICATIONS {
+                handle.upsert(
+                    ("org.example.App".into(), index.to_string()),
+                    || u32::try_from(index + 1).unwrap(),
+                    HashMap::new(),
+                );
+            }
+            assert_eq!(handle.active_keys().len(), MAX_ACTIVE_PORTAL_NOTIFICATIONS);
+            assert!(!handle.active_keys().iter().any(|(_, id)| id == "0"));
+            handle.close_numeric(2);
+            assert_eq!(
+                handle.active_keys().len(),
+                MAX_ACTIVE_PORTAL_NOTIFICATIONS - 1
             );
         }
-        assert_eq!(handle.active_keys().len(), MAX_ACTIVE_PORTAL_NOTIFICATIONS);
-        assert!(!handle.active_keys().iter().any(|(_, id)| id == "0"));
-        handle.close_numeric(2);
-        assert_eq!(
-            handle.active_keys().len(),
-            MAX_ACTIVE_PORTAL_NOTIFICATIONS - 1
-        );
     }
 }

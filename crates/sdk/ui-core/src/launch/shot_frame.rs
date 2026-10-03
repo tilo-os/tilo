@@ -9,6 +9,7 @@
 //! cycle as `ui::App`. [`render_widget_png`] runs that cycle unchanged.
 
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
 use taffy::prelude::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
@@ -17,6 +18,7 @@ use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
 use crate::bound_dispatch::BoundNodeMap;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::offscreen::OffscreenRenderer;
 use crate::permissions::PermissionContext;
 use crate::presence::PresenceCtx;
@@ -274,6 +276,7 @@ impl ShotFrame {
     ///
     /// Panics when the offscreen renderer cannot publish the file, as
     /// [`OffscreenRenderer::render_png`] does.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn write_png(&self, scene: &Scene, out: &Path) {
         if let Some(parent) = out.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -290,6 +293,7 @@ impl ShotFrame {
 /// # Errors
 ///
 /// As [`ShotFrame::layout`].
+#[cfg(not(target_arch = "wasm32"))]
 pub fn render_widget_png(
     widget: &mut dyn Widget,
     viewport: (u32, u32),
@@ -310,31 +314,33 @@ mod tests {
     use crate::widget::Spacer;
 
     #[test]
-    fn text_scale_follows_the_theme_unless_asked_not_to() {
-        let theme = Theme::dark().with_text_scale(2.0);
-        let frame = ShotFrame::new((100, 100), theme.clone());
-        assert!((frame.text.text_scale() - 2.0).abs() < f32::EPSILON);
-        let frame = ShotFrame::new((100, 100), theme).with_unscaled_text();
-        assert!((frame.text.text_scale() - 1.0).abs() < f32::EPSILON);
-    }
+    fn shot_frames_follow_the_theme_scale_and_lay_out_inside_the_viewport() {
+        // phase: text_scale_follows_the_theme_unless_asked_not_to
+        {
+            let theme = Theme::dark().with_text_scale(2.0);
+            let frame = ShotFrame::new((100, 100), theme.clone());
+            assert!((frame.text.text_scale() - 2.0).abs() < f32::EPSILON);
+            let frame = ShotFrame::new((100, 100), theme).with_unscaled_text();
+            assert!((frame.text.text_scale() - 1.0).abs() < f32::EPSILON);
+        }
+        // phase: both_solvers_lay_the_widget_out_inside_the_viewport
+        {
+            for mode in [ShotLayout::Settled, ShotLayout::Measured] {
+                let mut widget = Spacer::new();
+                let mut frame = ShotFrame::new((320, 200), Theme::dark()).with_layout(mode);
+                assert!(frame.layout_parts().is_none(), "{mode:?}: no layout yet");
+                frame.sync(&mut widget);
+                frame.layout(&mut widget).unwrap();
+                let rect = widget.get_rect();
+                assert_eq!((rect.x0, rect.y0), (0.0, 0.0), "{mode:?}");
+                assert!(rect.x1 <= 320.0 && rect.y1 <= 200.0, "{mode:?}: {rect:?}");
+                let (_, taffy, child) = frame.layout_parts().expect("laid out");
+                assert!(taffy.layout(child).is_ok(), "{mode:?}");
 
-    #[test]
-    fn both_solvers_lay_the_widget_out_inside_the_viewport() {
-        for mode in [ShotLayout::Settled, ShotLayout::Measured] {
-            let mut widget = Spacer::new();
-            let mut frame = ShotFrame::new((320, 200), Theme::dark()).with_layout(mode);
-            assert!(frame.layout_parts().is_none(), "{mode:?}: no layout yet");
-            frame.sync(&mut widget);
-            frame.layout(&mut widget).unwrap();
-            let rect = widget.get_rect();
-            assert_eq!((rect.x0, rect.y0), (0.0, 0.0), "{mode:?}");
-            assert!(rect.x1 <= 320.0 && rect.y1 <= 200.0, "{mode:?}: {rect:?}");
-            let (_, taffy, child) = frame.layout_parts().expect("laid out");
-            assert!(taffy.layout(child).is_ok(), "{mode:?}");
-
-            frame.layout_at(&mut widget, (100, 50)).unwrap();
-            let rect = widget.get_rect();
-            assert!(rect.x1 <= 100.0 && rect.y1 <= 50.0, "{mode:?}: {rect:?}");
+                frame.layout_at(&mut widget, (100, 50)).unwrap();
+                let rect = widget.get_rect();
+                assert!(rect.x1 <= 100.0 && rect.y1 <= 50.0, "{mode:?}: {rect:?}");
+            }
         }
     }
 }

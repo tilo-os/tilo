@@ -36,8 +36,8 @@
 // cosmic-text, automerge, taffy and fluent -- so with `-C
 // prefer-dynamic` rustc serves `ui` and libstd from the dylib instead
 // of baking ~18 MB of `.text` into this binary. The thin-app wrapper also
-// size-optimizes, merges, and folds repeated app-local code so the tapp meets its
-// 5 MiB wire contract without slowing the shared runtime. Naming the crate here
+// size-optimizes, merges, and folds repeated app-local code so the qpkg meets its
+// wire size limit without slowing the shared runtime. Naming the crate here
 // is what keeps rustc from eliminating it as unused. Compiled out in
 // normal (static) builds.
 #![cfg_attr(
@@ -114,6 +114,29 @@ fn named_actor(prefix: &str) -> Option<String> {
 }
 
 fn main() {
+    // The live editor runs on the app framework: the document is a hosted
+    // record with history, per-author undo and permissions. Opening a file
+    // by path and the scenario captures (which stage view state directly on
+    // a standalone editor) keep the standalone path.
+    let mut args = std::env::args().skip(1);
+    let mut standalone = false;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            // The framework's own option and its value.
+            "--data-dir" => {
+                args.next();
+            }
+            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => {
+                standalone = true;
+            }
+            file if !file.starts_with('-') => standalone = true,
+            _ => {}
+        }
+    }
+    if !standalone {
+        ui::framework::run::<word_processor::framework::WordProcessorApp>();
+        return;
+    }
     ui::launch::run_or_exit(
         &LaunchSpec::new_with_args("so.tilo.word-processor", live_root)
             .max_positionals(1)
@@ -231,8 +254,8 @@ fn seed_selected_image(
     wp.model_mut().insert_image_bytes(&mut state.doc, SHOT_PNG);
     wp.sync(&mut state.doc, &state.root);
 
-    let c = qdoc::model::open(&state.doc, &state.root)?;
-    let image = qdoc::model::materialize(&state.doc, &c)
+    let c = tilo_doc::model::open(&state.doc, &state.root)?;
+    let image = tilo_doc::model::materialize(&state.doc, &c)
         .blocks
         .into_iter()
         .find(|block| block.kind == "image")
@@ -256,11 +279,11 @@ fn seed_review(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(), Bo
     // at the start of that draw. Otherwise the review scenario attempts to read
     // an uninitialised root record and cannot seed a representative comment.
     wp.sync(&mut state.doc, &state.root);
-    let containers = qdoc::model::open(&state.doc, &state.root)?;
-    let has_reviewable_text = qdoc::model::blocks_in_order(&state.doc, &containers)
+    let containers = tilo_doc::model::open(&state.doc, &state.root)?;
+    let has_reviewable_text = tilo_doc::model::blocks_in_order(&state.doc, &containers)
         .into_iter()
         .any(|id| {
-            qdoc::model::block_text(&state.doc, &containers, &id)
+            tilo_doc::model::block_text(&state.doc, &containers, &id)
                 .is_some_and(|text| !text.is_empty())
         });
     if !has_reviewable_text {
@@ -271,33 +294,37 @@ fn seed_review(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(), Bo
             .insert_str(&mut state.doc, "Quarterly planning summary");
         wp.sync(&mut state.doc, &state.root);
     }
-    let containers = qdoc::model::open(&state.doc, &state.root)?;
-    let Some(block) = qdoc::model::blocks_in_order(&state.doc, &containers)
+    let containers = tilo_doc::model::open(&state.doc, &state.root)?;
+    let Some(block) = tilo_doc::model::blocks_in_order(&state.doc, &containers)
         .into_iter()
         .find(|id| {
-            qdoc::model::block_text(&state.doc, &containers, id).is_some_and(|t| !t.is_empty())
+            tilo_doc::model::block_text(&state.doc, &containers, id).is_some_and(|t| !t.is_empty())
         })
     else {
         return Ok(());
     };
-    let len = qdoc::model::block_text(&state.doc, &containers, &block)
+    let len = tilo_doc::model::block_text(&state.doc, &containers, &block)
         .unwrap_or_default()
         .chars()
         .count();
-    let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
-    let mut doc = qdoc::DocMut {
-        doc: &mut state.doc,
-        c: &containers,
-        ids: &mut ids,
-    };
-    doc.add_comment(
+    let end = len.min(12);
+    word_processor::actions::add_comment_action(
         &block,
         0,
-        len.min(12),
+        end,
         "Maya Chen",
+        "",
         "Could we make this opening more specific?",
-    );
-    doc.track_insert(&block, len, " — reviewed", "Jonas Weber", "2026-09-05");
+    )
+    .apply(&mut state.doc)?;
+    word_processor::actions::RichTextAction::TrackInsert {
+        block,
+        at: len,
+        text: " — reviewed".into(),
+        author: "Jonas Weber".into(),
+        date: "2026-09-05".into(),
+    }
+    .apply(&mut state.doc)?;
     wp.sync(&mut state.doc, &state.root);
     Ok(())
 }
@@ -309,8 +336,8 @@ fn seed_comment_thread(
     state: &mut State,
     wp: &mut WordProcessorWidget,
 ) -> Result<(), Box<dyn Error>> {
-    let containers = qdoc::model::open(&state.doc, &state.root)?;
-    let comment = qdoc::model::materialize(&state.doc, &containers)
+    let containers = tilo_doc::model::open(&state.doc, &state.root)?;
+    let comment = tilo_doc::model::materialize(&state.doc, &containers)
         .comments
         .into_iter()
         .next()
@@ -331,7 +358,7 @@ fn seed_comment_thread(
     )
     .apply(&mut state.doc)?;
     state.doc.commit();
-    let thread = qdoc::model::materialize(&state.doc, &containers)
+    let thread = tilo_doc::model::materialize(&state.doc, &containers)
         .comments
         .into_iter()
         .find(|item| item.id == comment)
@@ -348,47 +375,42 @@ fn prepare_launch(args: &LaunchArgs) -> Result<ui::launch::LegacyLaunchInputs, L
 fn prepare_launch_inputs(
     args: &LaunchArgs,
 ) -> Result<ui::launch::LegacyLaunchInputs, Box<dyn Error>> {
-    let (mut state, widget) = build(file_arg(args))?;
-    {
-        // Give this instance a distinct CRDT actor so two editors are
-        // distinguishable authors. Nothing else is wired here: the `App`
-        // owns a `CollaborationManager`, announces itself in the workspace
-        // it was launched into, pumps remote ops into `State`, broadcasts
-        // local deltas and caret/selection presence, and feeds the
-        // resulting `PresenceCtx` into the widget's draw — all of it
-        // without an app saying so. `QUICK_APP_ID`/`TILO_USER_ID` name a
-        // known replica; a sandboxed launch has neither, so the fallback has
-        // to be sound on its own — see [`distinct_actor`].
-        let app_id =
-            named_actor("wp").unwrap_or_else(|| distinct_actor("wp", state.doc.get_actor()));
-        ui::diag!("word-processor: automerge actor {app_id}");
-        state
-            .doc
-            .set_actor(automerge::ActorId::from(app_id.as_bytes()));
-
-        // The document is a record identified by its path; installing the
-        // record set routes its deltas onto that record's own channel instead
-        // of one shared by every word-processor window in the room (which
-        // would merge unrelated documents together).
-        //
-        // The set is in-memory: this app's durable form is the file on disk,
-        // not a per-record automerge store. What the set gives it is
-        // identity, routing, and the room's index of which documents it holds.
-        let room_id = std::env::var("TILO_WORKSPACE_ID")
-            .or_else(|_| std::env::var("QUICK_CLUSTER_ID"))
-            .unwrap_or_else(|_| "00000000-0000-0000-0000-000000000000".into());
-        let (room, room_autosave) = ui::persist::open_room("so.tilo.word-processor", &room_id);
-        let records = ui::RecordSet::in_memory().with_home(room_id);
-        let mut registry = tilo_actions::ActionRegistry::new();
-        // Register the word processor's action decoder so the Ctrl+K palette and
-        // remote replay can reconstruct every document-mutating operation.
-        word_processor::actions::register(&mut registry);
-        Ok(
-            ui::launch::LegacyLaunchInputs::new(state, widget, room_autosave)
-                .with_records(records, room.doc)
-                .with_registry(registry),
-        )
-    }
+    let room_id = std::env::var("TILO_WORKSPACE_ID")
+        .or_else(|_| std::env::var("QUICK_CLUSTER_ID"))
+        .unwrap_or_else(|_| "00000000-0000-0000-0000-000000000000".into());
+    // Resolve the actual room and retained file scope before file import or
+    // untitled defaults. The index and file keep their original distinct writers.
+    let (room, room_autosave) = ui::persist::open_room("so.tilo.word-processor", &room_id);
+    let records = ui::RecordSet::for_local_files("so.tilo.word-processor")?.with_home(room_id);
+    let (mut state, widget): (State, Box<dyn Widget>) = if let Some(path) = file_arg(args) {
+        let (state, widget, _) = word_processor::open_document_with_records(
+            path,
+            &records,
+            tilo_content::ContentStore::for_app(),
+        )?;
+        (state, Box::new(widget))
+    } else {
+        let reader = records.file_history_reader()?;
+        reader.require_local_creation()?;
+        let mut widget = WordProcessorWidget::new();
+        widget
+            .model_mut()
+            .set_content_store(tilo_content::ContentStore::for_app());
+        widget.retain_file_history(reader);
+        (State::new(), Box::new(widget))
+    };
+    let app_id = named_actor("wp").unwrap_or_else(|| distinct_actor("wp", state.doc.get_actor()));
+    ui::diag!("word-processor: automerge actor {app_id}");
+    state
+        .doc
+        .set_actor(automerge::ActorId::from(app_id.as_bytes()));
+    let mut registry = tilo_actions::ActionRegistry::new();
+    word_processor::actions::register(&mut registry);
+    Ok(
+        ui::launch::LegacyLaunchInputs::new(state, widget, room_autosave)
+            .with_records(records, room.doc)
+            .with_registry(registry),
+    )
 }
 
 /// Give `widget`'s document a real authored history, so `--shots --history` has
@@ -424,8 +446,8 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
         .insert_str(&mut state.doc, "Revenue held steady through the quarter.");
     state.commit_action(None, None);
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let now = ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
     let base = now - 5 * 3600;
 
@@ -433,7 +455,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
     for i in 0..5 {
         wp.model_mut()
             .insert_str(&mut state.doc, " Margins improved slightly.");
-        qdoc::history::commit_stamped_at(&mut state.doc, base + i * 30);
+        ui::tilo_resource::history::commit_stamped_at(&mut state.doc, base + i * 30);
     }
 
     // Session two, an hour later, by a collaborator.
@@ -441,20 +463,21 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
     peer.set_actor(automerge::ActorId::from("Bob Chen".as_bytes()));
     let mut peer_first = None;
     for i in 0..4 {
-        let c = qdoc::model::open(&peer, &state.root)?;
-        let blocks = qdoc::model::materialize(&peer, &c).blocks;
+        let c = tilo_doc::model::open(&peer, &state.root)?;
+        let blocks = tilo_doc::model::materialize(&peer, &c).blocks;
         let last = blocks
             .last()
             .ok_or("seed_revisions: no paragraph to append to")?;
         let at = last.text.chars().count();
-        let mut ids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut {
-            doc: &mut peer,
-            c: &c,
-            ids: &mut ids,
-        };
-        dm.splice_text(&last.id, at, 0, " Costs fell by four percent.");
-        let hash = qdoc::history::commit_stamped_at(&mut peer, base + 3600 + i * 30);
+        word_processor::actions::RichTextAction::SpliceText {
+            region: word_processor::actions::RegionKind::Body,
+            block: last.id.clone(),
+            at,
+            del: 0,
+            ins: " Costs fell by four percent.".into(),
+        }
+        .apply(&mut peer)?;
+        let hash = ui::tilo_resource::history::commit_stamped_at(&mut peer, base + 3600 + i * 30);
         if i == 0 {
             peer_first = hash;
         }
@@ -465,7 +488,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
         let start = ui::history_source::entry_id_from_hash(&first.to_string());
         let end = ui::history_source::entry_id_from_hash(&last.to_string());
         ui::history_groups::name_range(&mut peer, &start, Some(&end), "Costs section");
-        qdoc::history::commit_stamped_at(&mut peer, base + 3600 + 150);
+        ui::tilo_resource::history::commit_stamped_at(&mut peer, base + 3600 + 150);
     }
     state.doc.merge_incoming(&mut peer)?;
 
@@ -475,7 +498,8 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
     for i in 0..6 {
         wp.model_mut()
             .insert_str(&mut state.doc, " Headcount is unchanged.");
-        let hash = qdoc::history::commit_stamped_at(&mut state.doc, base + 4 * 3600 + i * 25);
+        let hash =
+            ui::tilo_resource::history::commit_stamped_at(&mut state.doc, base + 4 * 3600 + i * 25);
         if i == 0 {
             session_three_start = hash;
         }
@@ -486,7 +510,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
         let start = ui::history_source::entry_id_from_hash(&first.to_string());
         let end = ui::history_source::entry_id_from_hash(&last.to_string());
         ui::history_groups::name_range(&mut state.doc, &start, Some(&end), "Headcount pass");
-        qdoc::history::commit_stamped_at(&mut state.doc, now - 120);
+        ui::tilo_resource::history::commit_stamped_at(&mut state.doc, now - 120);
     }
 
     wp.toggle_history(&mut state.doc);
@@ -579,8 +603,10 @@ fn render_shot(
     // transient surfaces are painted.
     widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
+    if let Some(parent) = out.parent()
+        && let Ok(dir) = tilo_files::Dir::open(tilo_files::Location::Native(parent.to_path_buf()))
+    {
+        let _ = tilo_files::blocking::create_dir_all(&dir, &tilo_files::VPath::root());
     }
     OffscreenRenderer::new(w, h).render_png(&scene, Color::TRANSPARENT, out);
     println!("word-processor: wrote shot to {}", out.display());
@@ -591,26 +617,30 @@ fn render_shot(
 mod actor_tests {
     use super::distinct_actor;
 
-    /// Two ids minted inside one process must differ, even though anything
-    /// derived from the process alone (a pid, which is 2 in every sandbox here)
-    /// produces the same string twice — which is exactly what made Automerge
-    /// refuse a second replica's frames as duplicate sequence numbers.
+    /// Two replicas in one process do not share an actor, and the actor still names the application.
     #[test]
-    fn two_replicas_in_one_process_do_not_share_an_actor() {
-        let a = automerge::AutoCommit::new();
-        let b = automerge::AutoCommit::new();
-        assert_ne!(
-            distinct_actor("wp", a.get_actor()),
-            distinct_actor("wp", b.get_actor()),
-            "two replicas were given the same actor id, which is the failure \
-             that silently drops one of them's changes",
-        );
-    }
+    fn each_replica_gets_its_own_actor_that_names_the_application() {
+        // Phase: two_replicas_in_one_process_do_not_share_an_actor.
+        // Two ids minted inside one process must differ, even though anything
+        // derived from the process alone (a pid, which is 2 in every sandbox here)
+        // produces the same string twice — which is exactly what made Automerge
+        // refuse a second replica's frames as duplicate sequence numbers.
+        {
+            let a = automerge::AutoCommit::new();
+            let b = automerge::AutoCommit::new();
+            assert_ne!(
+                distinct_actor("wp", a.get_actor()),
+                distinct_actor("wp", b.get_actor()),
+                "two replicas were given the same actor id, which is the failure \
+                 that silently drops one of them's changes",
+            );
+        }
 
-    /// And it still says what it is, so a history can be read.
-    #[test]
-    fn the_actor_still_names_the_application() {
-        let doc = automerge::AutoCommit::new();
-        assert!(distinct_actor("wp", doc.get_actor()).starts_with("wp-"));
+        // Phase: the_actor_still_names_the_application.
+        // And it still says what it is, so a history can be read.
+        {
+            let doc = automerge::AutoCommit::new();
+            assert!(distinct_actor("wp", doc.get_actor()).starts_with("wp-"));
+        }
     }
 }

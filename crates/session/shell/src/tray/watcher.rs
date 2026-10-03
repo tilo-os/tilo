@@ -109,21 +109,26 @@ impl WatcherHandle {
     }
 }
 
-/// Serve the watcher for `tray` on `connection` and, on a message bus,
-/// claim its well-known name. Requests to items are sent from the
-/// calling runtime.
+/// Build the connection with the watcher for `tray` served on it and, on a
+/// message bus, claim its well-known name. Requests to items are sent from
+/// the calling runtime.
+///
+/// The watcher is served while the connection is built, so it answers the
+/// first message that arrives. Added to a running connection, it would only
+/// start listening in a task of its own, and a registration that raced it
+/// would get no reply.
 ///
 /// # Errors
 ///
-/// When the object cannot be served, or another watcher owns the name.
+/// When the connection cannot be built, or another watcher owns the name.
 pub async fn serve(
-    connection: zbus::Connection,
+    builder: zbus::connection::Builder<'_>,
     tray: Arc<Tray>,
 ) -> Result<WatcherHandle, zbus::Error> {
     tray.attach_runtime(tokio::runtime::Handle::current());
-    connection
-        .object_server()
-        .at(WATCHER_PATH, Watcher::new(tray))
+    let connection = builder
+        .serve_at(WATCHER_PATH, Watcher::new(tray))?
+        .build()
         .await?;
     if connection.is_bus() {
         connection.request_name(WATCHER_BUS_NAME).await?;

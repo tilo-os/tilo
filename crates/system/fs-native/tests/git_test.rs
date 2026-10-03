@@ -216,7 +216,10 @@ fn check_epoch(
         if path != Path::new("repo/.git/refs/heads/main") {
             continue;
         }
-        let Some(bytes) = node.manifest.as_ref().and_then(|m| m.inline.clone()) else {
+        if node.manifest.is_none() {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(snap.join(path)) else {
             continue;
         };
         let hex = String::from_utf8_lossy(&bytes).trim().to_owned();

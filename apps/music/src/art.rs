@@ -14,12 +14,9 @@ use ui::text_render::{TextRenderer, TextWeight};
 
 /// FNV-1a hash of a string — small, fast, deterministic.
 pub fn hash_str(s: &str) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in s.bytes() {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x100_0000_01b3);
-    }
-    h
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, s.as_bytes());
+    std::hash::Hasher::finish(&hasher)
 }
 
 /// Convert HSL (`h` in degrees, `s`/`l` in `0..=1`) to an sRGB color.

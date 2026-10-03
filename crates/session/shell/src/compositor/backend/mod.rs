@@ -62,6 +62,14 @@ pub struct Output {
     pub identity: OutputIdentity,
 }
 
+/// An output driven in HDR: the sink's EDID description and where SDR white
+/// sits, cd/m².
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutputHdr {
+    pub display: crate::wayland::edid::HdrDisplayInfo,
+    pub sdr_white_nits: f32,
+}
+
 /// A presentation interval as the millihertz a `wl_output` mode carries.
 /// `None` for a zero interval, which has no rate.
 pub fn interval_to_mhz(interval: std::time::Duration) -> Option<u32> {
@@ -84,7 +92,8 @@ pub fn interval_to_mhz(interval: std::time::Duration) -> Option<u32> {
 /// data leave it empty and the advertiser falls back to generic values.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OutputIdentity {
-    /// Connector name, e.g. `DP-2`; also the `wl_output` name.
+    /// Connector key, e.g. `DP-2` — qualified by card when two GPUs share
+    /// a connector name; also the `wl_output` name and the head name.
     pub connector: String,
     pub make: String,
     pub model: String,
@@ -94,6 +103,17 @@ pub struct OutputIdentity {
 }
 
 impl OutputIdentity {
+    /// The device's own panel rather than a plugged-in display.
+    pub fn is_builtin(&self) -> bool {
+        ui::fullscreen::connector_is_builtin(&self.connector)
+    }
+
+    /// Physical size, `None` when the display reported none.
+    pub fn known_physical_mm(&self) -> Option<(u32, u32)> {
+        let (width, height) = self.physical_mm;
+        (width > 0 && height > 0).then_some(self.physical_mm)
+    }
+
     /// Identity from a connector and its EDID. EDID size wins over the
     /// connector-reported one, which some adapters leave at zero.
     pub fn from_monitor(
@@ -205,6 +225,39 @@ pub fn logical_geometry(outputs: &[Output]) -> (u32, u32) {
     (w, h)
 }
 
+/// The monitor behind each output, in order: the identity token a saved
+/// display layout is matched by ([`settings_store::hardware::DisplaySet`]).
+/// That is the EDID make, model and serial, with the connector appended
+/// only to tell identical monitors apart, or the connector alone for a sink
+/// without a readable EDID — so it survives the output being renumbered by
+/// a restart or moved to another port.
+fn monitor_keys(outputs: &[Output]) -> Vec<String> {
+    let connectors: Vec<String> = outputs
+        .iter()
+        .map(|o| crate::compositor::output_heads::advertised_name(o, outputs))
+        .collect();
+    let monitors: Vec<settings_store::hardware::MonitorIdentity> = outputs
+        .iter()
+        .map(|o| settings_store::hardware::MonitorIdentity {
+            make: o.identity.make.clone(),
+            model: o.identity.model.clone(),
+            serial: o.identity.serial.clone(),
+            physical_size_mm: None,
+        })
+        .collect();
+    let set = settings_store::hardware::DisplaySet::of(connectors.iter().zip(&monitors).map(
+        |(connector, monitor)| settings_store::hardware::AttachedOutput {
+            connector,
+            connector_label: connector,
+            monitor: Some(monitor),
+        },
+    ));
+    connectors
+        .iter()
+        .map(|connector| set.members.get(connector).cloned().unwrap_or_default())
+        .collect()
+}
+
 /// Translate the backend's output list into the geometry the shell lays out
 /// and paints across: each display's logical rectangle, its scale, and
 /// where its pixels go in the scene.
@@ -212,15 +265,19 @@ pub fn logical_geometry(outputs: &[Output]) -> (u32, u32) {
 /// Outputs with a zero dimension are dropped: a connector mid-modeset
 /// reports 0×0, which would hand a strip a display it can't place a window on.
 pub fn output_geometry(outputs: &[Output]) -> Vec<crate::shell::overlay_host::OutputGeometry> {
+    let monitors = monitor_keys(outputs);
     outputs
         .iter()
-        .filter(|o| {
+        .zip(monitors)
+        .filter(|(o, _)| {
             let (lw, lh) = o.logical_size();
             o.size.0 > 0 && o.size.1 > 0 && lw > 0 && lh > 0
         })
-        .map(|o| {
+        .map(|(o, monitor)| {
             let logical = o.logical_rect();
             crate::shell::overlay_host::OutputGeometry {
+                id: o.id.0,
+                monitor,
                 x: logical.x0,
                 y: logical.y0,
                 width: logical.width(),
@@ -303,9 +360,31 @@ pub enum BackendEvent {
     /// Raw relative mouse motion, emitted by the direct backend alongside the
     /// clamped absolute cursor event. Spatial device control needs the delta
     /// after the local cursor reaches a display edge.
+    /// The same delta before pointer acceleration and the event time in
+    /// microseconds are what `zwp_relative_pointer_v1` hands to games.
     RelativePointerMotion {
         dx: f64,
         dy: f64,
+        dx_unaccel: f64,
+        dy_unaccel: f64,
+        time_usec: u64,
+    },
+    /// A pen, eraser or other tablet tool, already mapped to global
+    /// coordinates on the output the pen is tied to.
+    Tablet(TabletInput),
+    /// A tablet pad appeared, with the buttons, rings and strips it has.
+    TabletPadAdded(PadDescription),
+    /// The tablet pad with this device identity went away.
+    TabletPadRemoved(String),
+    /// A pad button, ring, strip or mode switch.
+    TabletPad(PadEvent),
+    /// A pad's mode button, or the button its settings pick for the map,
+    /// went down (`shown`, with the pad's saved settings) or came up.
+    TabletPadMap {
+        pad: String,
+        shown: Option<Box<settings_store::hardware::TabletConfig>>,
+        /// Milliseconds, the input device's clock.
+        time_msec: u32,
     },
     /// Modifier-state changed. Tracked separately because
     /// `WindowEvent::ModifiersChanged` carries a `Modifiers` struct
@@ -333,8 +412,227 @@ pub enum BackendEvent {
         x: f64,
         y: f64,
     },
+    /// An accessibility filter rejected input (a bounce-keys press) and the
+    /// user asked to see it: flash the shell's visual alert.
+    VisualAlert,
+    /// A physical input device appeared, with the capabilities it really
+    /// has. `id` is stable for the device's lifetime and names it again in
+    /// [`Self::InputDeviceRemoved`].
+    InputDeviceAdded {
+        id: String,
+        capabilities: ui::InputAvailability,
+    },
+    /// The device announced under `id` went away.
+    InputDeviceRemoved {
+        id: String,
+    },
+    /// The class of physical input changed: the person typed, moved a
+    /// pointer, touched the screen or used a controller after using
+    /// something else. Reported by the source of the event, so emulated
+    /// pointer input from a tap still counts as touch.
+    InputUsed(ui::InputModality),
+    /// A convertible's tablet-mode switch changed: `true` when the keyboard
+    /// is folded away and the touchscreen is the primary input.
+    TabletMode(bool),
     Redraw,
     Focus(bool),
+}
+
+/// The physical tablet a tool is used on.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TabletDevice {
+    pub name: String,
+    pub usb_id: Option<(u32, u32)>,
+    pub syspath: Option<std::path::PathBuf>,
+}
+
+/// What kind of tool touches the tablet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TabletToolKind {
+    Pen,
+    Eraser,
+    Brush,
+    Pencil,
+    Airbrush,
+    Mouse,
+    Lens,
+    Totem,
+    Unknown,
+}
+
+/// One physical tool, identified by its serial so a second pen is a second
+/// tool, and the axes it reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent hardware capability flags, as the tablet protocol lists them"
+)]
+pub struct TabletTool {
+    pub kind: TabletToolKind,
+    pub serial: u64,
+    pub wacom_id: u64,
+    pub pressure: bool,
+    pub distance: bool,
+    pub tilt: bool,
+    pub rotation: bool,
+    pub slider: bool,
+    pub wheel: bool,
+}
+
+/// What happened to the tool.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TabletPhase {
+    /// The tool came into range.
+    ProximityIn,
+    /// The tool left range.
+    ProximityOut,
+    /// Position or axes changed.
+    Motion,
+    /// The tip touched the surface.
+    TipDown,
+    /// The tip lifted.
+    TipUp,
+    /// A tool button (evdev code) changed.
+    Button { button: u32, pressed: bool },
+}
+
+/// One tablet tool event with every axis the tool reports.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TabletInput {
+    pub device: TabletDevice,
+    pub tool: TabletTool,
+    pub phase: TabletPhase,
+    /// Global compositor coordinates.
+    pub position: (f64, f64),
+    /// `0.0..=1.0`.
+    pub pressure: f64,
+    /// `0.0..=1.0`.
+    pub distance: f64,
+    /// Degrees from vertical along each axis.
+    pub tilt: (f64, f64),
+    /// Degrees.
+    pub rotation: f64,
+    /// `-1.0..=1.0`.
+    pub slider: f64,
+    /// Degrees and discrete clicks.
+    pub wheel: (f64, i32),
+    /// Milliseconds, the input device's clock.
+    pub time_msec: u32,
+}
+
+/// A tablet pad: its identity and the controls it reports.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PadDescription {
+    /// The pad's `settings_store::hardware::input_device_key`, which its
+    /// events and saved settings name it by.
+    pub key: String,
+    pub device: TabletDevice,
+    pub buttons: u32,
+    pub groups: Vec<PadGroup>,
+    /// Where the controls sit on the pad, when libwacom knows the model.
+    pub layout: Option<crate::compositor::pad_layout::PadLayout>,
+}
+
+/// One mode group of a pad: the controls that switch mode together.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PadGroup {
+    pub buttons: Vec<u32>,
+    /// The buttons that switch this group's mode.
+    pub mode_buttons: Vec<u32>,
+    pub rings: Vec<u32>,
+    pub strips: Vec<u32>,
+    pub modes: u32,
+}
+
+/// What happened on a pad.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PadAction {
+    Button {
+        button: u32,
+        pressed: bool,
+    },
+    /// Degrees clockwise from the top; `None` when the finger lifted.
+    Ring {
+        ring: u32,
+        angle: Option<f64>,
+        finger: bool,
+    },
+    /// `0.0` at the top or left to `1.0`; `None` when the finger lifted.
+    Strip {
+        strip: u32,
+        position: Option<f64>,
+        finger: bool,
+    },
+    /// A mode button moved `group` to `mode` (of `modes`).
+    ModeSwitch {
+        group: u32,
+        mode: u32,
+        modes: u32,
+    },
+}
+
+/// One pad event. A tablet-aware app with keyboard focus gets it over
+/// `zwp_tablet_pad_v2`; anywhere else `fallback` stands in for it: what the
+/// pad's settings map the control to, as ordinary input.
+#[derive(Debug)]
+pub struct PadEvent {
+    /// The pad's device identity, as in [`PadDescription::key`].
+    pub pad: String,
+    pub action: PadAction,
+    /// Milliseconds, the input device's clock.
+    pub time_msec: u32,
+    pub fallback: Vec<BackendEvent>,
+}
+
+/// Map a tool's position, normalised to `0.0..=1.0` across the tablet, onto
+/// `target` (`x, y, width, height`, global): the output the pen is tied to,
+/// or the whole desktop when it is tied to none.
+pub fn map_tablet_position(normalised: (f64, f64), target: (f64, f64, f64, f64)) -> (f64, f64) {
+    let (x, y, width, height) = target;
+    (
+        x + normalised.0.clamp(0.0, 1.0) * width,
+        y + normalised.1.clamp(0.0, 1.0) * height,
+    )
+}
+
+/// Where local pointer motion may take the pointer, in global coordinates.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum PointerConstraintRegion {
+    #[default]
+    Free,
+    /// The pointer stays where it is; only relative motion is reported.
+    Locked,
+    /// The pointer stays inside the union of these `(x0, y0, x1, y1)` rects.
+    Confined(Vec<(f64, f64, f64, f64)>),
+}
+
+impl PointerConstraintRegion {
+    /// Where motion from `current` towards `requested` ends up, or `None`
+    /// when the pointer must not move at all.
+    pub fn constrain(&self, current: (f64, f64), requested: (f64, f64)) -> Option<(f64, f64)> {
+        match self {
+            Self::Free => Some(requested),
+            Self::Locked => None,
+            Self::Confined(rects) => {
+                let inside = |(x, y): (f64, f64), &(x0, y0, x1, y1): &(f64, f64, f64, f64)| {
+                    x >= x0 && x < x1 && y >= y0 && y < y1
+                };
+                if rects.iter().any(|rect| inside(requested, rect)) {
+                    return Some(requested);
+                }
+                // Slide along the edge of the rect the pointer is in (or the
+                // first one, if a relayout left it outside all of them).
+                let &(x0, y0, x1, y1) = rects
+                    .iter()
+                    .find(|rect| inside(current, rect))
+                    .or_else(|| rects.first())?;
+                Some((
+                    requested.0.clamp(x0, (x1 - 1.0).max(x0)),
+                    requested.1.clamp(y0, (y1 - 1.0).max(y0)),
+                ))
+            }
+        }
+    }
 }
 
 pub trait Backend {
@@ -367,6 +665,30 @@ pub trait Backend {
     /// repeat ticks are compositor-owned timers rather than kernel events.
     fn next_service_deadline(&self) -> Option<std::time::Instant> {
         None
+    }
+
+    /// Whether [`Self::poll_events`] can have news that neither
+    /// [`Self::event_fd`] nor [`Self::next_service_deadline`] announces, so an
+    /// idle compositor must keep polling it. [`HeadlessBackend`] has no input
+    /// and no display: polling it would only wake an idle desktop 20 times a
+    /// second to run the whole pre-paint pump for nothing.
+    fn needs_idle_poll(&self) -> bool {
+        true
+    }
+
+    /// Tell a display-less backend whether anyone is looking at its pixels.
+    /// Returns `true` when that attaches a viewer to a backend that has
+    /// been skipping frames, so the caller must paint a fresh one.
+    ///
+    /// Default: a backend with a display is always watched.
+    fn set_watched(&mut self, _watched: bool) -> bool {
+        false
+    }
+
+    /// Whether anyone may be looking at this backend's pixels, and so whether
+    /// shared legacy windows are worth encoding.
+    fn watched(&self) -> bool {
+        true
     }
 
     fn outputs(&self) -> &[Output];
@@ -421,6 +743,43 @@ pub trait Backend {
     /// Idempotent: redundant calls are harmless.
     fn set_dpms(&mut self, _on: bool) {}
 
+    /// Every connector this backend knows, enabled or not, as advertised to
+    /// output-management clients. The default treats each live output as a
+    /// virtual connector whose only mode is the one it runs.
+    fn output_heads(&self) -> Vec<crate::compositor::output_heads::OutputHead> {
+        crate::compositor::output_heads::heads_from_outputs(self.outputs())
+    }
+
+    /// Power one output's panel on or off for an output-power client,
+    /// independently of idle blanking ([`Self::set_dpms`]). Default no-op
+    /// for backends with no physical panel.
+    fn set_output_power(&mut self, _output: OutputId, _on: bool) {}
+
+    /// The output a fullscreen client is shown on, or `None`. Backends that
+    /// drive adaptive sync engage it there.
+    fn set_fullscreen_output(&mut self, _output: Option<OutputId>) {}
+
+    /// Adaptive sync is engaged on some output: pace frames by content
+    /// readiness rather than a fixed refresh deadline.
+    fn adaptive_sync_active(&self) -> bool {
+        false
+    }
+
+    /// The HDR signal an output is being driven with, or `None` for SDR.
+    /// Clients learn it through `wp_color_management_output_v1`.
+    fn output_hdr(&self, _output: OutputId) -> Option<OutputHdr> {
+        None
+    }
+
+    /// Turn the built-in panel to `rotation` because the device was turned
+    /// (`None` restores its configured transform). External monitors never
+    /// follow. Default no-op for backends without a built-in panel.
+    fn set_device_rotation(
+        &mut self,
+        _rotation: Option<settings_store::hardware::OutputTransform>,
+    ) {
+    }
+
     /// Re-establish the display after the system came back from suspend.
     ///
     /// Default no-op: a hosted backend's display is the host's problem,
@@ -443,6 +802,20 @@ pub trait Backend {
     /// pointer belongs to the host and a headless one has none.
     fn set_pointer_image(&mut self, _image: crate::compositor::cursor::PointerImage) {}
 
+    /// Hold the pointer still (a game locked it) or keep it inside a region
+    /// (a game confined it). Relative motion keeps being reported either
+    /// way. Default no-op for backends that own no pointer.
+    fn set_pointer_constraint(&mut self, _constraint: PointerConstraintRegion) {}
+
+    /// Move the pointer to global `(x, y)` without a physical motion, as a
+    /// released pointer lock asks with its cursor position hint.
+    fn warp_pointer(&mut self, _x: f64, _y: f64) {}
+
+    /// Switch the physical keyboard to input source `index` without
+    /// waiting for the settings poll. Default no-op: only the DRM backend
+    /// translates raw keycodes itself.
+    fn set_keyboard_source(&mut self, _index: usize) {}
+
     /// Cancel raw direct-touch contacts at a compositor ownership boundary.
     /// Display-only and hosted backends have no such source to retire.
     fn cancel_touch(&mut self) {}
@@ -462,14 +835,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn combined_geometry_single_output_equals_its_size() {
-        let outs = [Output::new(OutputId(0), (1920, 1080), 1.0)];
-        assert_eq!(combined_geometry(&outs), (1920, 1080));
-    }
+    fn combined_geometry_spans_every_output_and_is_zero_for_none() {
+        let single = [Output::new(OutputId(0), (1920, 1080), 1.0)];
+        assert_eq!(
+            combined_geometry(&single),
+            (1920, 1080),
+            "single output equals its size"
+        );
 
-    #[test]
-    fn combined_geometry_side_by_side_sums_width_takes_max_height() {
-        let outs = [
+        let side_by_side = [
             Output {
                 id: OutputId(0),
                 position: (0, 0),
@@ -494,12 +868,60 @@ mod tests {
             },
         ];
         // Combined width = 1920 + 1280 = 3200; height = max(1080, 1024).
-        assert_eq!(combined_geometry(&outs), (3200, 1080));
+        assert_eq!(
+            combined_geometry(&side_by_side),
+            (3200, 1080),
+            "side by side"
+        );
+
+        assert_eq!(combined_geometry(&[]), (0, 0), "empty");
     }
 
     #[test]
-    fn combined_geometry_empty_is_zero() {
-        assert_eq!(combined_geometry(&[]), (0, 0));
+    fn tablet_positions_follow_the_tied_output() {
+        // Tied to a 1920x1080 output right of a 2560-wide one.
+        let output = (2560.0, 0.0, 1920.0, 1080.0);
+        assert_eq!(map_tablet_position((0.0, 0.0), output), (2560.0, 0.0));
+        assert_eq!(map_tablet_position((0.5, 0.5), output), (3520.0, 540.0));
+        assert_eq!(map_tablet_position((1.0, 1.0), output), (4480.0, 1080.0));
+        // Out-of-range samples from the tablet edge stay on that output.
+        assert_eq!(map_tablet_position((1.2, -0.1), output), (4480.0, 0.0));
+    }
+
+    #[test]
+    fn pointer_constraints_hold_or_bound_motion() {
+        assert_eq!(
+            PointerConstraintRegion::Free.constrain((1.0, 1.0), (5.0, 6.0)),
+            Some((5.0, 6.0))
+        );
+        assert_eq!(
+            PointerConstraintRegion::Locked.constrain((1.0, 1.0), (5.0, 6.0)),
+            None
+        );
+        let confined = PointerConstraintRegion::Confined(vec![
+            (0.0, 0.0, 100.0, 50.0),
+            (200.0, 0.0, 300.0, 50.0),
+        ]);
+        assert_eq!(
+            confined.constrain((10.0, 10.0), (20.0, 30.0)),
+            Some((20.0, 30.0))
+        );
+        assert_eq!(
+            confined.constrain((10.0, 10.0), (150.0, 80.0)),
+            Some((99.0, 49.0))
+        );
+        assert_eq!(
+            confined.constrain((250.0, 10.0), (-5.0, 10.0)),
+            Some((200.0, 10.0))
+        );
+        assert_eq!(
+            confined.constrain((10.0, 10.0), (210.0, 10.0)),
+            Some((210.0, 10.0))
+        );
+        assert_eq!(
+            PointerConstraintRegion::Confined(Vec::new()).constrain((1.0, 1.0), (2.0, 2.0)),
+            None
+        );
     }
 }
 

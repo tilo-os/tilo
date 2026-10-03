@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "ush"
 version = "0.1.0"
 edition = "2024"
@@ -15,17 +16,18 @@ name = "tilo-ush"
 path = "src/main.rs"
 
 [dependencies]
-tilo-clock = { path = "../../system/tilo-clock" }
+fnv.workspace = true
+tilo-clock = { path = "../../platform/tilo-clock" }
 runtime-portal = { path = "../runtime-portal" }
 collab-types = { path = "../../collab/collab-types" }
 bounded-command = { path = "../../system/bounded-command" }
 # Landlock ruleset installation and seccomp deny-list compilation, shared
 # with the application launcher.
-sandbox-core = { path = "../../system/sandbox-core" }
-atomic-file = { path = "../../system/atomic-file" }
+tilo-sandbox-core = { path = "../../system/sandbox-core" }
+tilo-files = { path = "../../platform/tilo-files" }
 
 anyhow.workspace = true
-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
 landlock.workspace = true
 libc.workspace = true
 seccompiler.workspace = true
@@ -37,11 +39,16 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 walkdir.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 serde_json.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

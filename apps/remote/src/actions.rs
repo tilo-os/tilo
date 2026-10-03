@@ -39,8 +39,7 @@ use automerge::AutoCommit;
 use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
     ConfirmationPolicy, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind,
-    ParamType, PermissionRequirement, Resource, ResourceProvider, ResultSpec, RetryPolicy,
-    RiskLevel,
+    ParamType, PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::RemoteDoc;
@@ -464,14 +463,11 @@ fn immediate_spec(id: &str, label: &str, action: &RemoteAction) -> ActionSpec {
     ActionSpec::immediate(id, label, REMOTE_ACTION_TYPE, action).expect("encode remote action")
 }
 
-/// The connection-list root and every saved child, exported to Ctrl+K with
-/// view, network-effect, and document actions. Level-triggered: recomputed from `doc` each
-/// frame, so the labels and the favourite target always track the live state
-/// (favourite flips to the opposite of the stored value, exactly as the
-/// on-screen star does).
-pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
-    let connections = RemoteDoc::list(doc)
-        .into_iter()
+/// Saved connections as children of the published list. Labels and the
+/// favourite target track the live record.
+pub(crate) fn connection_resources(connections: &[crate::model::Connection]) -> Vec<Resource> {
+    connections
+        .iter()
         .map(|c| {
             let id = c.id;
             let label = if c.name.trim().is_empty() {
@@ -490,7 +486,7 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
                 OperationKind::View,
                 &RemoteOperation::EditConnection { connection_id: id },
             ))
-            .with_action(connect_spec(&c))
+            .with_action(connect_spec(c))
             .with_action(
                 ActionSpec::prompted(
                     "rename",
@@ -520,31 +516,51 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
                     .reversible(),
             )
         })
-        .collect::<Vec<_>>();
-    let workspace = Resource::new(
-        "remote.connections",
-        "remote.connection-list",
-        "Remote connections",
-    )
-    .with_action(operation_spec(
-        "open",
-        "Show connections",
-        OperationKind::View,
-        &RemoteOperation::ShowConnections,
-    ))
-    .with_action(operation_spec(
-        "new",
-        "New connection",
-        OperationKind::View,
-        &RemoteOperation::NewConnectionForm,
-    ))
-    .with_children(connections);
-    vec![workspace]
+        .collect()
 }
 
-impl ResourceProvider for crate::app::RemoteApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(doc)
+/// List-level Views on the published connection list.
+pub(crate) fn list_view_specs() -> Vec<ActionSpec> {
+    vec![
+        operation_spec(
+            "open",
+            "Show connections",
+            OperationKind::View,
+            &RemoteOperation::ShowConnections,
+        ),
+        operation_spec(
+            "new",
+            "New connection",
+            OperationKind::View,
+            &RemoteOperation::NewConnectionForm,
+        ),
+    ]
+}
+
+/// The published connection list and every saved child.
+pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
+    let connections = RemoteDoc::list(doc);
+    vec![ui::tilo_resource::publish::<crate::resource::Remote>(
+        "remote.connections",
+        "Remote connections",
+        &connections,
+    )]
+}
+
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::RemoteApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        let state =
+            <crate::resource::Remote as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+        let mut root = ui::tilo_resource::publish::<crate::resource::Remote>(
+            "remote.connections",
+            "Remote connections",
+            &state,
+        );
+        if let Some(session) = self.live_session_resources().pop() {
+            root.children.push(session);
+        }
+        vec![root]
     }
 }
 
@@ -594,7 +610,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: seeded_connections(),
         registry: registry(),
-        resources: |doc| provide_resources(doc),
+        resources: |doc| crate::app::RemoteApp::new().publish_resources(doc),
         palette: [
             "Rename connection",
             "Open connection settings",
@@ -647,338 +663,356 @@ mod tests {
     }
 
     #[test]
-    fn upsert_action_writes_a_connection() {
-        let mut doc = AutoCommit::new();
-        let id = Uuid::new_v4();
-        dispatch(&mut doc, &upsert_action(&sample(id, "Build Box")));
-        let back = RemoteDoc::list(&doc);
-        assert_eq!(back.len(), 1);
-        assert_eq!(back[0].id, id);
-        assert_eq!(back[0].name, "Build Box");
-        assert_eq!(back[0].host, "10.0.0.9");
-        assert_eq!(
-            back[0].last_used, "Never",
-            "a fresh connection seeds last-used"
-        );
-    }
-
-    #[test]
-    fn upsert_edit_preserves_favourite_and_presence() {
-        let mut doc = AutoCommit::new();
-        let id = Uuid::new_v4();
-        let mut c = sample(id, "Box");
-        c.favorite = true;
-        c.presence = Presence::Online;
-        c.last_used = "5m ago".into();
-        RemoteDoc::upsert(&mut doc, &c);
-
-        // The form edits only the editable fields; favourite/presence/last_used
-        // are collaboratively owned and must survive the edit.
-        let mut edited = c.clone();
-        edited.name = "Box (renamed)".into();
-        edited.host = "10.0.0.10".into();
-        dispatch(&mut doc, &upsert_action(&edited));
-
-        let back = &RemoteDoc::list(&doc)[0];
-        assert_eq!(back.name, "Box (renamed)");
-        assert_eq!(back.host, "10.0.0.10");
-        assert!(back.favorite, "edit preserved the favourite flag");
-        assert_eq!(back.presence, Presence::Online, "edit preserved presence");
-        assert_eq!(back.last_used, "5m ago", "edit preserved last-used");
-    }
-
-    #[test]
-    fn rename_action_changes_only_the_name() {
-        let mut doc = AutoCommit::new();
-        let id = Uuid::new_v4();
-        let c = sample(id, "Before");
-        RemoteDoc::upsert(&mut doc, &c);
-        dispatch(&mut doc, &rename_action(id, "After"));
-        let back = &RemoteDoc::list(&doc)[0];
-        assert_eq!(back.name, "After");
-        assert_eq!(back.host, c.host, "rename leaves the address intact");
-    }
-
-    #[test]
-    fn favourite_action_sets_the_absolute_value() {
-        let mut doc = AutoCommit::new();
-        let id = Uuid::new_v4();
-        RemoteDoc::upsert(&mut doc, &sample(id, "Box"));
-        dispatch(&mut doc, &set_favorite_action(id, true));
-        assert!(RemoteDoc::list(&doc)[0].favorite);
-        dispatch(&mut doc, &set_favorite_action(id, false));
-        assert!(!RemoteDoc::list(&doc)[0].favorite);
-    }
-
-    #[test]
-    fn delete_action_removes_the_connection() {
-        let mut doc = AutoCommit::new();
-        let id = Uuid::new_v4();
-        RemoteDoc::upsert(&mut doc, &sample(id, "Box"));
-        dispatch(&mut doc, &delete_action(id));
-        assert!(RemoteDoc::list(&doc).is_empty());
-    }
-
-    /// A stray action against a connection that isn't in the document is a
-    /// no-op, not an error — a bad replay can't wedge a peer, touch a real
-    /// record, or conjure a phantom machine. Each action is dispatched once
-    /// against a store that holds a real connection but targets a *different*,
-    /// absent id — the production shape (one action per user event).
-    #[test]
-    fn actions_against_a_missing_connection_are_noops() {
-        let ghost = Uuid::new_v4();
-        for action in [
-            rename_action(ghost, "Ghost"),
-            set_favorite_action(ghost, false),
-            delete_action(ghost),
-        ] {
+    fn upsert_and_rename_actions_write_only_their_fields() {
+        eprintln!("phase upsert_action_writes_a_connection");
+        {
             let mut doc = AutoCommit::new();
-            let real = Uuid::new_v4();
-            let mut c = sample(real, "Real Box");
+            let id = Uuid::new_v4();
+            dispatch(&mut doc, &upsert_action(&sample(id, "Build Box")));
+            let back = RemoteDoc::list(&doc);
+            assert_eq!(back.len(), 1);
+            assert_eq!(back[0].id, id);
+            assert_eq!(back[0].name, "Build Box");
+            assert_eq!(back[0].host, "10.0.0.9");
+            assert_eq!(
+                back[0].last_used, "Never",
+                "a fresh connection seeds last-used"
+            );
+        }
+
+        eprintln!("phase upsert_edit_preserves_favourite_and_presence");
+        {
+            let mut doc = AutoCommit::new();
+            let id = Uuid::new_v4();
+            let mut c = sample(id, "Box");
+            c.favorite = true;
+            c.presence = Presence::Online;
+            c.last_used = "5m ago".into();
+            RemoteDoc::upsert(&mut doc, &c);
+
+            // The form edits only the editable fields; favourite/presence/last_used
+            // are collaboratively owned and must survive the edit.
+            let mut edited = c.clone();
+            edited.name = "Box (renamed)".into();
+            edited.host = "10.0.0.10".into();
+            dispatch(&mut doc, &upsert_action(&edited));
+
+            let back = &RemoteDoc::list(&doc)[0];
+            assert_eq!(back.name, "Box (renamed)");
+            assert_eq!(back.host, "10.0.0.10");
+            assert!(back.favorite, "edit preserved the favourite flag");
+            assert_eq!(back.presence, Presence::Online, "edit preserved presence");
+            assert_eq!(back.last_used, "5m ago", "edit preserved last-used");
+        }
+
+        eprintln!("phase rename_action_changes_only_the_name");
+        {
+            let mut doc = AutoCommit::new();
+            let id = Uuid::new_v4();
+            let c = sample(id, "Before");
+            RemoteDoc::upsert(&mut doc, &c);
+            dispatch(&mut doc, &rename_action(id, "After"));
+            let back = &RemoteDoc::list(&doc)[0];
+            assert_eq!(back.name, "After");
+            assert_eq!(back.host, c.host, "rename leaves the address intact");
+        }
+    }
+
+    #[test]
+    fn favourite_and_delete_actions_are_absolute_and_ignore_missing_connections() {
+        eprintln!("phase favourite_action_sets_the_absolute_value");
+        {
+            let mut doc = AutoCommit::new();
+            let id = Uuid::new_v4();
+            RemoteDoc::upsert(&mut doc, &sample(id, "Box"));
+            dispatch(&mut doc, &set_favorite_action(id, true));
+            assert!(RemoteDoc::list(&doc)[0].favorite);
+            dispatch(&mut doc, &set_favorite_action(id, false));
+            assert!(!RemoteDoc::list(&doc)[0].favorite);
+        }
+
+        eprintln!("phase delete_action_removes_the_connection");
+        {
+            let mut doc = AutoCommit::new();
+            let id = Uuid::new_v4();
+            RemoteDoc::upsert(&mut doc, &sample(id, "Box"));
+            dispatch(&mut doc, &delete_action(id));
+            assert!(RemoteDoc::list(&doc).is_empty());
+        }
+
+        // A stray action against a connection that isn't in the document is a
+        // no-op, not an error — a bad replay can't wedge a peer, touch a real
+        // record, or conjure a phantom machine. Each action is dispatched once
+        // against a store that holds a real connection but targets a *different*,
+        // absent id — the production shape (one action per user event).
+        eprintln!("phase actions_against_a_missing_connection_are_noops");
+        {
+            let ghost = Uuid::new_v4();
+            for action in [
+                rename_action(ghost, "Ghost"),
+                set_favorite_action(ghost, false),
+                delete_action(ghost),
+            ] {
+                let mut doc = AutoCommit::new();
+                let real = Uuid::new_v4();
+                let mut c = sample(real, "Real Box");
+                c.favorite = true;
+                RemoteDoc::upsert(&mut doc, &c);
+
+                dispatch(&mut doc, &action);
+
+                let back = RemoteDoc::list(&doc);
+                assert_eq!(back.len(), 1, "{action:?} must not add a connection");
+                assert_eq!(back[0].id, real);
+                assert_eq!(
+                    back[0].name, "Real Box",
+                    "{action:?} left the real record intact"
+                );
+                assert!(
+                    back[0].favorite,
+                    "{action:?} left the real favourite flag intact"
+                );
+            }
+        }
+
+        // The palette's favourite action tracks the live document: with a favourited
+        // connection seeded, the exported action targets the opposite (unfavourite).
+        eprintln!("phase palette_favourite_targets_the_opposite_of_current");
+        {
+            let mut doc = AutoCommit::new();
+            let id = Uuid::new_v4();
+            let mut c = sample(id, "Box");
             c.favorite = true;
             RemoteDoc::upsert(&mut doc, &c);
 
-            dispatch(&mut doc, &action);
-
-            let back = RemoteDoc::list(&doc);
-            assert_eq!(back.len(), 1, "{action:?} must not add a connection");
-            assert_eq!(back[0].id, real);
+            let resources = provide_resources(&doc);
+            let spec = resources[0].children[0]
+                .actions
+                .iter()
+                .find(|a| a.id == "favorite")
+                .unwrap();
+            assert_eq!(spec.label, "Remove from favourites");
             assert_eq!(
-                back[0].name, "Real Box",
-                "{action:?} left the real record intact"
-            );
-            assert!(
-                back[0].favorite,
-                "{action:?} left the real favourite flag intact"
+                ui::testing::action_contract::spec_encoding(spec, None),
+                encode(&set_favorite_action(id, false)),
+                "favourited → the row flips it back off",
             );
         }
     }
 
-    /// Ctrl+K publishes one resource per saved connection, each exporting the
-    /// connect / rename / favourite / delete operations, and the one palette lists them.
-    /// Drives the real resource-builder and the real [`ui::ActionPalette`].
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn ctrl_k_publishes_a_resource_per_connection() {
-        let mut doc = AutoCommit::new();
-        let id = Uuid::new_v4();
-        RemoteDoc::upsert(&mut doc, &sample(id, "Build Box"));
+    fn palette_resources_offer_only_connectable_profiles() {
+        // Ctrl+K publishes one resource per saved connection, each exporting the
+        // connect / rename / favourite / delete operations, and the one palette lists them.
+        // Drives the real resource-builder and the real [`ui::ActionPalette`].
+        eprintln!("phase ctrl_k_publishes_a_resource_per_connection");
+        {
+            let mut doc = AutoCommit::new();
+            let id = Uuid::new_v4();
+            RemoteDoc::upsert(&mut doc, &sample(id, "Build Box"));
 
-        let resources = provide_resources(&doc);
-        assert_eq!(resources.len(), 1, "one connection-list root");
-        assert_eq!(resources[0].id.as_str(), "remote.connections");
-        assert_eq!(
-            resources[0]
+            let resources = provide_resources(&doc);
+            assert_eq!(resources.len(), 1, "one connection-list root");
+            assert_eq!(resources[0].id.as_str(), "remote.connections");
+            let actions: Vec<_> = resources[0]
                 .actions
                 .iter()
                 .map(|action| (action.id.as_str(), action.kind))
-                .collect::<Vec<_>>(),
-            vec![("open", OperationKind::View), ("new", OperationKind::View)],
-        );
-        assert_eq!(resources[0].children.len(), 1, "one saved connection child");
-        let r = &resources[0].children[0];
-        assert_eq!(r.kind, "remote.connection");
-        assert_eq!(r.label, "Build Box");
-        assert_eq!(r.id.as_str(), &format!("remote.connection:{id}"));
-        let ids: Vec<&str> = r.actions.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, vec!["open", "connect", "rename", "favorite", "delete"]);
-        let connect = r
-            .actions
-            .iter()
-            .find(|action| action.id == "connect")
-            .unwrap();
-        assert_eq!(connect.kind, OperationKind::Effect);
-        assert_eq!(
-            connect.contract.execution,
-            tilo_actions::ExecutionMode::Background { cancellable: false }
-        );
-        assert_eq!(connect.contract.result, tilo_actions::ResultSpec::Job);
-        assert_ne!(
-            r.actions
+                .collect();
+            assert!(
+                actions.contains(&("open", OperationKind::View)),
+                "{actions:?}"
+            );
+            assert!(
+                actions.contains(&("new", OperationKind::View)),
+                "{actions:?}"
+            );
+            assert_eq!(resources[0].children.len(), 1, "one saved connection child");
+            let r = &resources[0].children[0];
+            assert_eq!(r.kind, "remote.connection");
+            assert_eq!(r.label, "Build Box");
+            assert_eq!(r.id.as_str(), &format!("remote.connection:{id}"));
+            let ids: Vec<&str> = r.actions.iter().map(|a| a.id.as_str()).collect();
+            assert_eq!(ids, vec!["open", "connect", "rename", "favorite", "delete"]);
+            let connect = r
+                .actions
                 .iter()
-                .find(|a| a.id == "delete")
-                .unwrap()
-                .contract
-                .confirmation,
-            tilo_actions::ConfirmationPolicy::None
-        );
-        let encoded = ui::testing::action_contract::spec_encoding(connect, None);
-        assert_eq!(encoded.type_id, REMOTE_OPERATION_TYPE);
-        assert_eq!(
-            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(RemoteOperation::Connect { connection_id: id })
-        );
+                .find(|action| action.id == "connect")
+                .unwrap();
+            assert_eq!(connect.kind, OperationKind::Effect);
+            assert_eq!(
+                connect.contract.execution,
+                tilo_actions::ExecutionMode::Background { cancellable: false }
+            );
+            assert_eq!(connect.contract.result, tilo_actions::ResultSpec::Job);
+            assert_ne!(
+                r.actions
+                    .iter()
+                    .find(|a| a.id == "delete")
+                    .unwrap()
+                    .contract
+                    .confirmation,
+                tilo_actions::ConfirmationPolicy::None
+            );
+            let encoded = ui::testing::action_contract::spec_encoding(connect, None);
+            assert_eq!(encoded.type_id, REMOTE_OPERATION_TYPE);
+            assert_eq!(
+                decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+                Some(RemoteOperation::Connect { connection_id: id })
+            );
 
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(
-            !labels.iter().any(|l| l.ends_with(" — Connect")),
-            "a gated transport must not appear invokable: {labels:?}"
-        );
-    }
+            let mut palette = ui::ActionPalette::new();
+            palette.load_open_resources(&resources);
+            palette.open();
+            let labels = palette.result_labels();
+            assert!(
+                !labels.iter().any(|l| l.ends_with(" — Connect")),
+                "a gated transport must not appear invokable: {labels:?}"
+            );
+        }
 
-    #[test]
-    fn tilo_connect_action_is_available_without_the_ssh_vnc_dev_gate() {
-        let id = Uuid::new_v4();
-        let mut connection = sample(id, "Tilo device");
-        connection.kind = ConnectionKind::Tilo;
-        connection.auth = AuthMethod::DeviceIdentity;
-        connection.host = iroh_base::SecretKey::generate().public().to_string();
-        connection.presence = Presence::Online;
-        assert!(
-            connect_spec(&connection)
-                .contract
-                .availability
-                .is_available()
-        );
-    }
+        eprintln!("phase tilo_connect_action_is_available_without_the_ssh_vnc_dev_gate");
+        {
+            let id = Uuid::new_v4();
+            let mut connection = sample(id, "Tilo device");
+            connection.kind = ConnectionKind::Tilo;
+            connection.auth = AuthMethod::DeviceIdentity;
+            connection.host = iroh_base::SecretKey::generate().public().to_string();
+            connection.presence = Presence::Online;
+            assert!(
+                connect_spec(&connection)
+                    .contract
+                    .availability
+                    .is_available()
+            );
+        }
 
-    #[test]
-    fn malformed_q_os_profile_is_not_offered_as_a_connectable_resource() {
-        let id = Uuid::new_v4();
-        let mut connection = sample(id, "Tilo device");
-        connection.kind = ConnectionKind::Tilo;
-        connection.auth = AuthMethod::DeviceIdentity;
-        connection.host = "friendly-name".into();
-        let spec = connect_spec(&connection);
-        assert!(matches!(
-            &spec.contract.availability,
-            tilo_actions::Availability::Unavailable { code, reason }
-                if code == "invalid_connection_profile"
-                    && reason.contains("exact certified endpoint")
-        ));
-    }
+        eprintln!("phase malformed_q_os_profile_is_not_offered_as_a_connectable_resource");
+        {
+            let id = Uuid::new_v4();
+            let mut connection = sample(id, "Tilo device");
+            connection.kind = ConnectionKind::Tilo;
+            connection.auth = AuthMethod::DeviceIdentity;
+            connection.host = "friendly-name".into();
+            let spec = connect_spec(&connection);
+            assert!(matches!(
+                &spec.contract.availability,
+                tilo_actions::Availability::Unavailable { code, reason }
+                    if code == "invalid_connection_profile"
+                        && reason.contains("exact certified endpoint")
+            ));
+        }
 
-    #[test]
-    fn remote_effects_declare_confirmation_permissions_and_non_repeatability() {
-        let id = Uuid::new_v4();
-        let mut connection = sample(id, "Tilo device");
-        connection.kind = ConnectionKind::Tilo;
-        connection.auth = AuthMethod::DeviceIdentity;
-        connection.host = iroh_base::SecretKey::generate().public().to_string();
-        let connect = connect_spec(&connection);
-        assert_eq!(connect.contract.permission, PermissionRequirement::Read);
-        assert_eq!(connect.contract.risk, RiskLevel::Privileged);
-        assert_eq!(connect.contract.confirmation, ConfirmationPolicy::Confirm);
-        assert_eq!(connect.contract.retry, RetryPolicy::AtMostOnce);
-        assert_eq!(connect.contract.result, ResultSpec::Job);
-
-        let input = session_resource(&connection, true, None)
-            .actions
-            .into_iter()
-            .find(|action| action.id == "send-text")
-            .expect("typed input action");
-        assert_eq!(input.contract.permission, PermissionRequirement::Write);
-        assert_eq!(input.contract.risk, RiskLevel::Privileged);
-        assert_eq!(input.contract.confirmation, ConfirmationPolicy::Confirm);
-        assert_eq!(input.contract.retry, RetryPolicy::AtMostOnce);
-        assert_eq!(input.contract.result, ResultSpec::Job);
-    }
-
-    #[test]
-    fn legacy_rdp_resource_names_the_missing_backend_instead_of_a_generic_gate() {
-        let id = Uuid::new_v4();
-        let mut connection = sample(id, "Old Windows host");
-        connection.kind = ConnectionKind::Rdp;
-        let resources = {
-            let mut doc = AutoCommit::new();
-            RemoteDoc::upsert(&mut doc, &connection);
-            provide_resources(&doc)
-        };
-        let resource = &resources[0].children[0];
-        let connect = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "connect")
-            .expect("RDP profile stays manageable");
-        assert!(matches!(
-            &connect.contract.availability,
-            tilo_actions::Availability::Unavailable { code, reason }
-                if code == "transport_backend_unavailable"
-                    && reason.contains("no RDP client backend")
-        ));
-        assert!(
-            connect
-                .description
-                .as_deref()
-                .is_some_and(|description| description.contains("no RDP client backend")),
-            "search and agents receive the actionable reason"
-        );
-    }
-
-    #[test]
-    fn active_session_exports_lifecycle_and_typed_input() {
-        let id = Uuid::new_v4();
-        let session = session_resource(&sample(id, "Build Box"), false, None);
-        assert_eq!(session.id.as_str(), format!("remote.session:{id}"));
-        let disconnect = session
-            .actions
-            .iter()
-            .find(|a| a.id == "disconnect")
-            .unwrap();
-        assert_eq!(disconnect.contract.retry, RetryPolicy::Idempotent);
-        let input = session
-            .actions
-            .iter()
-            .find(|a| a.id == "send-text")
-            .unwrap();
-        assert_eq!(input.params()[0].ty, ParamType::Text);
-        assert!(!input.contract.availability.is_available());
-    }
-
-    #[test]
-    fn first_contact_exports_an_explicit_device_private_trust_action() {
-        let id = Uuid::new_v4();
-        let issue = crate::ssh::HostKeyIssue::FirstContact {
-            observed: crate::ssh::HostKeyIdentity {
-                algorithm: "ssh-ed25519".into(),
-                fingerprint: "SHA256:example".into(),
-            },
-        };
-        let trust = session_resource(&sample(id, "Build Box"), false, Some(&issue))
-            .actions
-            .into_iter()
-            .find(|action| action.id == "trust-host-key")
-            .expect("first contact publishes a trust action");
-        assert_eq!(trust.contract.confirmation, ConfirmationPolicy::Confirm);
-        assert_eq!(trust.contract.risk, RiskLevel::Privileged);
-        assert!(
-            trust
-                .contract
-                .tags
+        eprintln!("phase legacy_rdp_resource_names_the_missing_backend_instead_of_a_generic_gate");
+        {
+            let id = Uuid::new_v4();
+            let mut connection = sample(id, "Old Windows host");
+            connection.kind = ConnectionKind::Rdp;
+            let resources = {
+                let mut doc = AutoCommit::new();
+                RemoteDoc::upsert(&mut doc, &connection);
+                provide_resources(&doc)
+            };
+            let resource = &resources[0].children[0];
+            let connect = resource
+                .actions
                 .iter()
-                .any(|tag| tag == "device-private")
-        );
-        assert!(
-            trust
-                .description
-                .as_deref()
-                .is_some_and(|description| description.contains("SHA256:example"))
-        );
+                .find(|action| action.id == "connect")
+                .expect("RDP profile stays manageable");
+            assert!(matches!(
+                &connect.contract.availability,
+                tilo_actions::Availability::Unavailable { code, reason }
+                    if code == "transport_backend_unavailable"
+                        && reason.contains("no RDP client backend")
+            ));
+            assert!(
+                connect
+                    .description
+                    .as_deref()
+                    .is_some_and(|description| description.contains("no RDP client backend")),
+                "search and agents receive the actionable reason"
+            );
+        }
     }
 
-    /// The palette's favourite action tracks the live document: with a favourited
-    /// connection seeded, the exported action targets the opposite (unfavourite).
     #[test]
-    fn palette_favourite_targets_the_opposite_of_current() {
-        let mut doc = AutoCommit::new();
-        let id = Uuid::new_v4();
-        let mut c = sample(id, "Box");
-        c.favorite = true;
-        RemoteDoc::upsert(&mut doc, &c);
+    fn session_effects_declare_permissions_lifecycle_and_trust() {
+        eprintln!("phase remote_effects_declare_confirmation_permissions_and_non_repeatability");
+        {
+            let id = Uuid::new_v4();
+            let mut connection = sample(id, "Tilo device");
+            connection.kind = ConnectionKind::Tilo;
+            connection.auth = AuthMethod::DeviceIdentity;
+            connection.host = iroh_base::SecretKey::generate().public().to_string();
+            let connect = connect_spec(&connection);
+            assert_eq!(connect.contract.permission, PermissionRequirement::Read);
+            assert_eq!(connect.contract.risk, RiskLevel::Privileged);
+            assert_eq!(connect.contract.confirmation, ConfirmationPolicy::Confirm);
+            assert_eq!(connect.contract.retry, RetryPolicy::AtMostOnce);
+            assert_eq!(connect.contract.result, ResultSpec::Job);
 
-        let resources = provide_resources(&doc);
-        let spec = resources[0].children[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "favorite")
-            .unwrap();
-        assert_eq!(spec.label, "Remove from favourites");
-        assert_eq!(
-            ui::testing::action_contract::spec_encoding(spec, None),
-            encode(&set_favorite_action(id, false)),
-            "favourited → the row flips it back off",
-        );
+            let input = session_resource(&connection, true, None)
+                .actions
+                .into_iter()
+                .find(|action| action.id == "send-text")
+                .expect("typed input action");
+            assert_eq!(input.contract.permission, PermissionRequirement::Write);
+            assert_eq!(input.contract.risk, RiskLevel::Privileged);
+            assert_eq!(input.contract.confirmation, ConfirmationPolicy::Confirm);
+            assert_eq!(input.contract.retry, RetryPolicy::AtMostOnce);
+            assert_eq!(input.contract.result, ResultSpec::Job);
+        }
+
+        eprintln!("phase active_session_exports_lifecycle_and_typed_input");
+        {
+            let id = Uuid::new_v4();
+            let session = session_resource(&sample(id, "Build Box"), false, None);
+            assert_eq!(session.id.as_str(), format!("remote.session:{id}"));
+            let disconnect = session
+                .actions
+                .iter()
+                .find(|a| a.id == "disconnect")
+                .unwrap();
+            assert_eq!(disconnect.contract.retry, RetryPolicy::Idempotent);
+            let input = session
+                .actions
+                .iter()
+                .find(|a| a.id == "send-text")
+                .unwrap();
+            assert_eq!(input.params()[0].ty, ParamType::Text);
+            assert!(!input.contract.availability.is_available());
+        }
+
+        eprintln!("phase first_contact_exports_an_explicit_device_private_trust_action");
+        {
+            let id = Uuid::new_v4();
+            let issue = crate::ssh::HostKeyIssue::FirstContact {
+                observed: crate::ssh::HostKeyIdentity {
+                    algorithm: "ssh-ed25519".into(),
+                    fingerprint: "SHA256:example".into(),
+                },
+            };
+            let trust = session_resource(&sample(id, "Build Box"), false, Some(&issue))
+                .actions
+                .into_iter()
+                .find(|action| action.id == "trust-host-key")
+                .expect("first contact publishes a trust action");
+            assert_eq!(trust.contract.confirmation, ConfirmationPolicy::Confirm);
+            assert_eq!(trust.contract.risk, RiskLevel::Privileged);
+            assert!(
+                trust
+                    .contract
+                    .tags
+                    .iter()
+                    .any(|tag| tag == "device-private")
+            );
+            assert!(
+                trust
+                    .description
+                    .as_deref()
+                    .is_some_and(|description| description.contains("SHA256:example"))
+            );
+        }
     }
 }

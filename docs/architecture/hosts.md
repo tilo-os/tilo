@@ -20,6 +20,8 @@ target-specific `cfg`. A host that cannot use the native implementations builds
 | Platform services | `ui::host::HostServices` | `ui::native::services` | `HostServices::null()`, `HostServices::recording()` |
 | Process inputs | `ui::host::HostEnvironment` | `ui::native::process_environment()` | built by the host |
 | Document storage | `durable_store::DurableStore` | `app_state::FsStore` | `MemoryStore::new()`, `MemoryStore::queued()` |
+| Desktop settings | `settings_store::SettingsSource` (`install_source`, `load`, `stamp`) | `settings.json` (nothing installed) | `settings_store::HostDocument` (the browser page) |
+| Local person's identity | `ui::local_identity::LocalIdentitySource` | `RuntimeIdentity` (feature `local-daemons`) | `NoLocalIdentity` |
 | Collaboration transport | `ui::collaboration::CollabTransport` | `BrokerTransport` (feature `broker-transport`) | `LoopbackTransport` |
 | Action invocation | `tilo_actions::remote::ActionHost` | the shell's broker host | any host serving the same vocabulary |
 | Peer wire format | `neighbour-wire` | — | — |
@@ -91,9 +93,20 @@ enforces that. Document ownership, admission and authority stay with the host.
 - `neighbour-wire` pins its encoding with golden postcard fixtures.
 - The dependency and host-input contracts above run in the policy suite.
 
-## Still native-only
+## Targets without sockets
 
-`tilo-ui` without default features still depends on `runtime-identity`,
-`runtime-portal` (through `app-state` and directly) and tokio with networking
-enabled. These are clients of the local Tilo daemons, so the portable build
-does not yet compile for targets without sockets.
+`cargo check -p tilo-ui --no-default-features --lib --target
+wasm32-unknown-unknown` compiles warning-free. The portable build takes tokio
+with tasks and channels only; `native` and `broker-transport` add its socket,
+file and thread features. Platform capabilities that a far dependent could
+otherwise unify back on — tokio's wasm-refused features, JavaScript entropy,
+wgpu's single-threaded `Send` — are selected per target in the crates that
+need them, next to their existing `cfg(unix)`/`cfg(windows)` arms.
+
+Compiling is not running: threads and files are still reached at run time.
+The local daemon clients — `runtime-portal`, `runtime-identity`, the broker
+transport and `settings.json` — sit behind the `local-daemons` feature, which
+`native` includes; without it the host installs a `SettingsSource` and a
+`LocalIdentitySource` and passes a `CollabTransport`. `app-state` still links
+`FsStore` and its file-lock helpers. See
+[`browser-runtime.md`](browser-runtime.md).

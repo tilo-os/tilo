@@ -29,13 +29,16 @@ impl RemoteApplyError {
     }
 }
 
+/// Apply a mutation the host has already committed. Bytes from peers reach an
+/// app only after the host admitted them through `tilo_automerge_isolate`, so
+/// this applies in the app's own process.
 pub(crate) fn merge_committed(
     doc: &mut AutoCommit,
     mutation: &DocumentMutation,
 ) -> Result<bool, RemoteApplyError> {
     if doc.pending_ops() != 0 {
         return Err(RemoteApplyError::Unavailable(
-            "Finish the current edit before receiving remote changes".into(),
+            crate::i18n::I18nManager::lookup_plain("history-sync-finish-edit"),
         ));
     }
     // Decode into a clone first so malformed incremental data cannot partly
@@ -44,10 +47,10 @@ pub(crate) fn merge_committed(
         DocumentMutation::Snapshot(bytes) => AutoCommit::load(bytes)
             .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?,
         DocumentMutation::Incremental(bytes) => {
-            // Automerge's incremental loader intentionally accepts a valid
-            // prefix on partial parse errors. Strict standalone loading checks
-            // the entire stream first. MissingDeps is emitted only after a
-            // complete parse and is expected for deltas needing receiver history.
+            // Automerge's incremental loader accepts a valid prefix on partial
+            // parse errors, so the whole stream is first loaded strictly on its
+            // own. MissingDeps comes only after a complete parse and is
+            // expected for deltas that need the receiver's history.
             match AutoCommit::load(bytes) {
                 Ok(_) | Err(automerge::AutomergeError::MissingDeps) => {}
                 Err(error) => return Err(RemoteApplyError::InvalidMutation(error.to_string())),
@@ -106,7 +109,9 @@ impl PendingRemote {
             // may clear this new loss obligation when the queue drains.
             self.invalid_mutation_pending = false;
             self.recovery_snapshot_pending = false;
-            self.failure = Some("Remote document queue is full. Synchronization needs a fresh snapshot after the current edit finishes.".into());
+            self.failure = Some(crate::i18n::I18nManager::lookup_plain(
+                "history-sync-queue-full",
+            ));
             return false;
         }
         self.bytes = self.bytes.saturating_add(size);
@@ -218,7 +223,9 @@ impl OwnerDocumentRoutes {
         if self.witness != witness || self.primary_generation != generation {
             if !self.primary.is_empty() || self.owners.iter().any(|route| !route.pending.is_empty())
             {
-                self.status = Some("Document connection or owner changed while remote updates were pending. Reconnect and synchronize before continuing.".into());
+                self.status = Some(crate::i18n::I18nManager::lookup_plain(
+                    "history-sync-owner-changed",
+                ));
             }
             self.owners.clear();
             self.retired.clear();
@@ -232,12 +239,18 @@ impl OwnerDocumentRoutes {
         let mut current = vec![];
         collect(root, &mut current);
         // Hidden live subtrees retain their admitted collaboration owners.
-        root.visit_framework_history(&mut |_, live| collect(live, &mut current));
+        crate::history_mode::capability::visit_framework_history(root, &mut |_, live| {
+            collect(live, &mut current)
+        });
         self.owners.retain_mut(|entry| {
-            entry.owners.retain(|owner| current.iter().any(|actual| actual.same_owner(owner)) && owner.validate().is_ok());
+            entry.owners.retain(|owner| {
+                current.iter().any(|actual| actual.same_owner(owner)) && owner.validate().is_ok()
+            });
             if entry.owners.is_empty() {
                 self.retired.insert(entry.route.clone());
-                self.status = Some("Document owner closed or changed. Reconnect before synchronizing its replacement.".into());
+                self.status = Some(crate::i18n::I18nManager::lookup_plain(
+                    "history-sync-owner-closed",
+                ));
             }
             !entry.owners.is_empty()
         });

@@ -87,40 +87,40 @@ mod tests {
     }
 
     #[test]
-    fn interleave_is_round_robin_across_channels() {
-        let a = vec![vid("a1", "A"), vid("a2", "A"), vid("a3", "A")];
-        let b = vec![vid("b1", "B")];
-        let out = interleave_newest_first(vec![a, b]);
-        // First two come from different channels (round-robin), not A,A.
-        assert_eq!(out[0].channel_id, "A");
-        assert_eq!(out[1].channel_id, "B");
-        assert_eq!(out[2].channel_id, "A");
-        assert_eq!(out.len(), 4);
-    }
-
-    #[test]
-    fn empty_subscriptions_yield_empty_feed() {
-        let b = OfflineBackend::new();
-        let BackendResult::Videos(v) = fan_out_subscription_feed(&b, &[]).unwrap() else {
-            panic!("Videos")
-        };
-        assert!(v.is_empty());
-    }
-
-    #[test]
-    fn fan_out_pulls_only_subscribed_channels() {
-        let b = OfflineBackend::new();
-        let ids = vec!["ch_lowlevel".to_string()];
-        let BackendResult::Videos(v) = fan_out_subscription_feed(&b, &ids).unwrap() else {
-            panic!("Videos")
-        };
-        assert!(!v.is_empty());
-        assert!(v.iter().all(|v| v.channel_id == "ch_lowlevel"));
-    }
-
-    #[test]
-    fn page_caps_length() {
-        let many: Vec<Video> = (0..10).map(|i| vid(&format!("v{i}"), "A")).collect();
-        assert_eq!(page(many, 3).len(), 3);
+    fn subscription_feed_interleaves_subscribed_channels_and_pages() {
+        // Case `interleave_is_round_robin_across_channels`.
+        {
+            let a = vec![vid("a1", "A"), vid("a2", "A"), vid("a3", "A")];
+            let b = vec![vid("b1", "B")];
+            let out = interleave_newest_first(vec![a, b]);
+            // First two come from different channels (round-robin), not A,A.
+            assert_eq!(out[0].channel_id, "A");
+            assert_eq!(out[1].channel_id, "B");
+            assert_eq!(out[2].channel_id, "A");
+            assert_eq!(out.len(), 4);
+        }
+        // Case `empty_subscriptions_yield_empty_feed`.
+        {
+            let b = OfflineBackend::new();
+            let BackendResult::Videos(v) = fan_out_subscription_feed(&b, &[]).unwrap() else {
+                panic!("Videos")
+            };
+            assert!(v.is_empty());
+        }
+        // Case `fan_out_pulls_only_subscribed_channels`.
+        {
+            let b = OfflineBackend::new();
+            let ids = vec!["ch_lowlevel".to_string()];
+            let BackendResult::Videos(v) = fan_out_subscription_feed(&b, &ids).unwrap() else {
+                panic!("Videos")
+            };
+            assert!(!v.is_empty());
+            assert!(v.iter().all(|v| v.channel_id == "ch_lowlevel"));
+        }
+        // Case `page_caps_length`.
+        {
+            let many: Vec<Video> = (0..10).map(|i| vid(&format!("v{i}"), "A")).collect();
+            assert_eq!(page(many, 3).len(), 3);
+        }
     }
 }

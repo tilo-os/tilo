@@ -164,18 +164,74 @@ impl FakeMenu {
     }
 }
 
-async fn eventually(what: &str, mut check: impl FnMut() -> bool) {
-    for _ in 0..200 {
-        if check() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    panic!("timed out waiting for {what}");
+/// How long the whole transcript, runtime teardown included, may take. It
+/// catches a step blocked outside the runtime, where no step timer can fire.
+fn transcript_cap() -> Duration {
+    tilo_test_env::hang_bound().saturating_mul(2)
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_registered_item_is_reported_published_as_actions_and_reachable() {
+/// What the transcript is waiting for, for the failure that names it.
+static PENDING: Mutex<&str> = Mutex::new("starting the runtime");
+
+fn pending(what: &'static str) {
+    *PENDING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = what;
+}
+
+async fn step<T>(what: &'static str, future: impl std::future::Future<Output = T>) -> T {
+    // A D-Bus call has no reply timeout of its own, so without this bound a
+    // lost reply hangs the test until the harness kills it, naming nothing.
+    pending(what);
+    tilo_test_env::within(what, future).await
+}
+
+async fn eventually(what: &'static str, mut check: impl FnMut() -> bool) {
+    step(what, async {
+        while !check() {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await;
+}
+
+#[test]
+fn a_registered_item_is_reported_published_as_actions_and_reachable() {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runtime.block_on(transcript());
+        }));
+        pending("the runtime to shut down");
+        runtime.shutdown_timeout(tilo_test_env::hang_bound());
+        let _ = done.send(outcome);
+    });
+    match finished.recv_timeout(transcript_cap()) {
+        Ok(Ok(())) => {}
+        Ok(Err(panic)) => std::panic::resume_unwind(panic),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("the tray transcript's thread ended without an outcome")
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!(
+            "the tray transcript is stuck after {} s, still waiting for {}",
+            transcript_cap().as_secs(),
+            PENDING
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        ),
+    }
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "the transcript runs on its own runtime's block_on and is never sent"
+)]
+async fn transcript() {
     let tray = Tray::new();
     let calls: Calls = Arc::default();
     let (shell_socket, app_socket) = UnixStream::pair().expect("socket pair");
@@ -199,26 +255,34 @@ async fn a_registered_item_is_reported_published_as_actions_and_reachable() {
             },
         )
         .expect("serve menu");
-    let (shell_conn, app_conn) =
-        futures_util::try_join!(shell_side.build(), app_side.build()).expect("p2p pair");
-    let _watcher = watcher::serve(shell_conn, Arc::clone(&tray))
-        .await
-        .expect("watcher served");
+    let (_watcher, app_conn) = step("the p2p handshake", async {
+        futures_util::try_join!(
+            watcher::serve(shell_side, Arc::clone(&tray)),
+            app_side.build()
+        )
+    })
+    .await
+    .expect("p2p pair with the watcher served");
 
-    let watcher_proxy = zbus::proxy::Builder::<zbus::Proxy<'_>>::new(&app_conn)
-        .destination(WATCHER_BUS_NAME)
-        .expect("destination")
-        .path(WATCHER_PATH)
-        .expect("path")
-        .interface("org.kde.StatusNotifierWatcher")
-        .expect("interface")
-        .build()
-        .await
-        .expect("watcher proxy");
-    watcher_proxy
-        .call::<_, _, ()>("RegisterStatusNotifierItem", &("/StatusNotifierItem",))
-        .await
-        .expect("registration answered");
+    let watcher_proxy = step(
+        "the watcher proxy",
+        zbus::proxy::Builder::<zbus::Proxy<'_>>::new(&app_conn)
+            .destination(WATCHER_BUS_NAME)
+            .expect("destination")
+            .path(WATCHER_PATH)
+            .expect("path")
+            .interface("org.kde.StatusNotifierWatcher")
+            .expect("interface")
+            .build(),
+    )
+    .await
+    .expect("watcher proxy");
+    step(
+        "the registration reply",
+        watcher_proxy.call::<_, _, ()>("RegisterStatusNotifierItem", &("/StatusNotifierItem",)),
+    )
+    .await
+    .expect("registration answered");
 
     let key = "/StatusNotifierItem";
     eventually("the item to be read", || tray.item(key).is_some()).await;
@@ -242,14 +306,21 @@ async fn a_registered_item_is_reported_published_as_actions_and_reachable() {
         vec!["Lock database", "Settings › Minimise to tray", "Sync now"],
         "separators go, submenus flatten, mnemonics are stripped"
     );
-    let registered: Vec<String> = watcher_proxy
-        .get_property("RegisteredStatusNotifierItems")
-        .await
-        .expect("items property");
+    let registered: Vec<String> = step(
+        "the registered items property",
+        watcher_proxy.get_property("RegisteredStatusNotifierItems"),
+    )
+    .await
+    .expect("items property");
     assert_eq!(registered, vec![key.to_string()]);
 
-    // What `actions list` carries.
-    let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
+    // What `actions list` carries. Fixture chrome inputs: production ones
+    // would query the session's audio, settings and identity.
+    pending("the action catalogue");
+    let chrome = ChromeState::new_with_fixture_handle(
+        crate::shell::state::WorkspaceTree::bootstrap_default().shared(),
+        crate::shell::hosted_inputs::HostedTileInputs::default(),
+    );
     let mut registry = SearchRegistry::new();
     registry.register(Rc::new(TrayItemsProvider::new(Arc::clone(&tray))));
     let ids: Vec<String> = {
@@ -281,13 +352,13 @@ async fn a_registered_item_is_reported_published_as_actions_and_reachable() {
     );
 
     // Invoking a menu action reaches the application.
+    pending("the menu action to be invoked");
     let lock = tray_items::menu_id(key, 1);
     {
         let state = chrome.borrow();
         let catalog = ActionCatalog::build_exact(
             &registry,
-            tray_items::PROVIDER_ID,
-            &lock,
+            &ResourceRef::new(tray_items::PROVIDER_ID, &lock),
             SearchScope::All,
             None,
             &state,

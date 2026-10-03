@@ -66,29 +66,49 @@ pub fn parse_form_query(query: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// A string that names an absolute local path the same way before and after
+/// the file exists, for keys derived from document paths.
+///
+/// On Windows, canonicalizing an existing file adds a verbatim `\\?\` prefix;
+/// the file URL folds both spellings together. Elsewhere the path itself is
+/// already stable.
+#[must_use]
+pub fn stable_path_key(absolute: &std::path::Path) -> String {
+    #[cfg(windows)]
+    {
+        url::Url::from_file_path(absolute).map_or_else(
+            |()| absolute.to_string_lossy().into_owned(),
+            |url| url.to_string(),
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        absolute.to_string_lossy().into_owned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn encode_component_keeps_only_the_unreserved_set() {
-        assert_eq!(
-            encode_component("AZaz09-._~"),
-            "AZaz09-._~",
-            "unreserved characters pass through"
-        );
-        assert_eq!(
-            encode_component("a b+c/d?e=f&g%h:i@j#k"),
-            "a%20b%2Bc%2Fd%3Fe%3Df%26g%25h%3Ai%40j%23k"
-        );
-        assert_eq!(encode_component("*!'(),;$"), "%2A%21%27%28%29%2C%3B%24");
-        assert_eq!(encode_component("café ☕"), "caf%C3%A9%20%E2%98%95");
-        assert_eq!(encode_component("\u{0}\u{7f}"), "%00%7F");
-        assert_eq!(encode_component(""), "");
-    }
+    fn encode_component_keeps_only_the_unreserved_set_and_round_trips() {
+        for (raw, want) in [
+            // Unreserved characters pass through.
+            ("AZaz09-._~", "AZaz09-._~"),
+            (
+                "a b+c/d?e=f&g%h:i@j#k",
+                "a%20b%2Bc%2Fd%3Fe%3Df%26g%25h%3Ai%40j%23k",
+            ),
+            ("*!'(),;$", "%2A%21%27%28%29%2C%3B%24"),
+            ("café ☕", "caf%C3%A9%20%E2%98%95"),
+            ("\u{0}\u{7f}", "%00%7F"),
+            ("", ""),
+        ] {
+            assert_eq!(encode_component(raw), want, "encode {raw:?}");
+        }
 
-    #[test]
-    fn encoded_components_round_trip_through_both_decoders() {
+        // Encoded components round-trip through both decoders.
         let raw = "C++ & friends: 100% café/π?";
         let encoded = encode_component(raw);
         assert_eq!(decode(&encoded), raw);
@@ -96,73 +116,58 @@ mod tests {
     }
 
     #[test]
-    fn rfc3986_decode_keeps_plus_literal() {
-        // A `+` in a path or a non-form query is a literal plus; treating it
-        // as a space corrupts real names.
-        assert_eq!(decode("my+song.mp3"), "my+song.mp3");
-        assert_eq!(decode("Google+"), "Google+");
-        assert_eq!(decode("C++"), "C++");
-        assert_eq!(decode("%2B1%20555"), "+1 555");
+    fn rfc3986_decode_keeps_plus_literal_and_malformed_escapes() {
+        for (input, want) in [
+            // A `+` in a path or a non-form query is a literal plus; treating
+            // it as a space corrupts real names.
+            ("my+song.mp3", "my+song.mp3"),
+            ("Google+", "Google+"),
+            ("C++", "C++"),
+            ("%2B1%20555", "+1 555"),
+            // Escapes decode.
+            ("audio%2Fmp4", "audio/mp4"),
+            ("Acme%20Corp", "Acme Corp"),
+            ("AT%26T", "AT&T"),
+            ("caf%C3%A9", "café"),
+            ("plain", "plain"),
+            // A truncated or non-hex escape must not eat the rest of the string.
+            ("a%2", "a%2"),
+            ("a%zz", "a%zz"),
+            ("100%", "100%"),
+        ] {
+            assert_eq!(decode(input), want, "decode {input:?}");
+        }
     }
 
     #[test]
-    fn rfc3986_decode_handles_escapes() {
-        assert_eq!(decode("audio%2Fmp4"), "audio/mp4");
-        assert_eq!(decode("Acme%20Corp"), "Acme Corp");
-        assert_eq!(decode("AT%26T"), "AT&T");
-        assert_eq!(decode("caf%C3%A9"), "café");
-        assert_eq!(decode("plain"), "plain");
-    }
+    fn form_query_decodes_plus_as_space_unlike_rfc3986() {
+        let pairs = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect()
+        };
+        for (query, want) in [
+            // A browser encodes a submitted space as `+`, so an OAuth `state`
+            // really does mean a space here.
+            (
+                "code=abc+def&state=x+y",
+                pairs(&[("code", "abc def"), ("state", "x y")]),
+            ),
+            (
+                "error=access_denied&desc=User%20said%20no&empty=",
+                pairs(&[
+                    ("error", "access_denied"),
+                    ("desc", "User said no"),
+                    ("empty", ""),
+                ]),
+            ),
+            // `%2B` is a real plus even in form data; only a bare `+` is a space.
+            ("a=1%2B1&b=1+1", pairs(&[("a", "1+1"), ("b", "1 1")])),
+            ("", Vec::new()),
+        ] {
+            assert_eq!(parse_form_query(query), want, "form query {query:?}");
+        }
 
-    #[test]
-    fn rfc3986_decode_passes_malformed_escapes_through() {
-        // A truncated or non-hex escape must not eat the rest of the string.
-        assert_eq!(decode("a%2"), "a%2");
-        assert_eq!(decode("a%zz"), "a%zz");
-        assert_eq!(decode("100%"), "100%");
-    }
-
-    #[test]
-    fn form_query_decodes_plus_as_space() {
-        // The other half of the answer: a browser encodes a submitted space as
-        // `+`, so an OAuth `state` really does mean a space here.
-        assert_eq!(
-            parse_form_query("code=abc+def&state=x+y"),
-            vec![
-                ("code".into(), "abc def".into()),
-                ("state".into(), "x y".into())
-            ]
-        );
-    }
-
-    #[test]
-    fn form_query_decodes_escapes_and_keeps_empty_values() {
-        assert_eq!(
-            parse_form_query("error=access_denied&desc=User%20said%20no&empty="),
-            vec![
-                ("error".into(), "access_denied".into()),
-                ("desc".into(), "User said no".into()),
-                ("empty".into(), String::new()),
-            ]
-        );
-    }
-
-    #[test]
-    fn form_query_handles_an_encoded_plus_distinctly_from_a_bare_one() {
-        // `%2B` is a real plus even in form data; only a bare `+` is a space.
-        assert_eq!(
-            parse_form_query("a=1%2B1&b=1+1"),
-            vec![("a".into(), "1+1".into()), ("b".into(), "1 1".into())]
-        );
-    }
-
-    #[test]
-    fn form_query_on_empty_input_is_empty() {
-        assert!(parse_form_query("").is_empty());
-    }
-
-    #[test]
-    fn the_two_rules_disagree_exactly_where_they_should() {
         // The whole point: same bytes, two answers, chosen by provenance.
         assert_eq!(decode("my+song.mp3"), "my+song.mp3");
         assert_eq!(

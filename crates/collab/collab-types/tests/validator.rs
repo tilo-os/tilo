@@ -23,7 +23,7 @@ use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Claim,
     Clearance, Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp,
     ValidationError, generate_keypair, sign_event, sign_op, validate_admitted_inbound_op,
-    validate_inbound_op,
+    validate_inbound_op, validate_replayed_inbound_op,
 };
 use ed25519_dalek::SigningKey;
 
@@ -35,7 +35,6 @@ fn t(secs: u64) -> SystemTime {
 
 /// Build + sign a role attestation. The trust root (`issuer`) signs
 /// over the attestation's `signing_bytes()` view.
-#[allow(clippy::too_many_arguments)]
 fn make_role_attestation(
     issuer_sk: &SigningKey,
     issuer_pub: Ed25519PublicKey,
@@ -67,7 +66,7 @@ fn make_role_attestation(
 
 /// Fixture: an owner, an author, an Editor attestation, one Note,
 /// no clearance gate, sig-on-op already applied.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "not every merged case reads every fixture field")]
 struct Fixture {
     owner_sk: SigningKey,
     owner_pub: Ed25519PublicKey,
@@ -80,6 +79,12 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
+    fixture_with(Role::Editor, t(0), t(100_000))
+}
+
+/// The standard fixture, with the author's role attestation issued for
+/// `role` over `valid_from..valid_until`.
+fn fixture_with(role: Role, valid_from: SystemTime, valid_until: SystemTime) -> Fixture {
     let (owner_sk, owner_pub) = generate_keypair();
     let (author_sk, author_pub) = generate_keypair();
     let channel = ChannelId::new();
@@ -90,9 +95,9 @@ fn fixture() -> Fixture {
         owner_pub,
         author_pub,
         channel,
-        Role::Editor,
-        t(0),
-        t(100_000),
+        role,
+        valid_from,
+        valid_until,
         vec![],
     );
     let attestation_id = ra.attestation.id;
@@ -128,28 +133,116 @@ fn build_op(f: &Fixture, op_class: OpClass, timestamp: SystemTime, seq: u64) -> 
     op
 }
 
-// ---------- happy path ----------
+/// A splice op with payload `x`, seq 1, signed by `sk`.
+fn build_x_op(
+    artifact: ArtifactId,
+    author: Ed25519PublicKey,
+    attestation: AttestationId,
+    timestamp: SystemTime,
+    sk: &SigningKey,
+) -> SignedOp {
+    let mut op = SignedOp::new_unsigned(
+        b"x".to_vec(),
+        artifact,
+        author,
+        attestation,
+        OpClass::Splice,
+        timestamp,
+        1,
+    );
+    sign_op(&mut op, sk).unwrap();
+    op
+}
 
+/// Gives the fixture's author a `ClearedAt(level)` identity attestation
+/// signed by a fresh key; the key is accepted as a trust root when `trusted`.
+/// Returns the issuer.
+fn grant_clearance(f: &mut Fixture, level: Clearance, trusted: bool) -> Ed25519PublicKey {
+    let (issuer_sk, issuer_pub) = generate_keypair();
+    if trusted {
+        f.state.accepted_trust_roots.push(issuer_pub);
+    }
+    let mut a = Attestation {
+        id: AttestationId::new(),
+        issued_by: issuer_pub,
+        subject: f.author_pub,
+        claims: vec![Claim::ClearedAt(level)],
+        valid_from: t(0),
+        valid_until: t(100_000),
+        signature: Signature::from_bytes([0u8; 64]),
+    };
+    let sb = a.signing_bytes().unwrap();
+    a.signature = sign_event(&sb, &issuer_sk).unwrap();
+    f.state
+        .identity_attestations
+        .entry(f.author_pub)
+        .or_default()
+        .push(a);
+    issuer_pub
+}
+
+fn rejection(case: &str, result: Result<(), ValidationError>) -> ValidationError {
+    match result {
+        Err(e) => e,
+        Ok(()) => panic!("case {case}: expected a rejection, got Ok"),
+    }
+}
+
+// ---------- happy path and replay-slot bookkeeping ----------
+
+/// A valid op passes all eight steps — with and without a clearance gate —
+/// and the author's replay slot bumps on success only.
 #[test]
-fn happy_path_all_eight_pass() {
+fn a_valid_op_passes_all_eight_steps_and_only_success_bumps_the_replay_slot() {
+    // Case: happy path, all eight pass; the seq map is updated.
     let mut f = fixture();
     let op = build_op(&f, OpClass::Splice, t(10), 1);
     let r = validate_inbound_op(&op, &mut f.state);
     assert!(r.is_ok(), "expected Ok, got {r:?}");
-    // Seq map updated.
     assert_eq!(
         f.state.last_seq_per_author.get(&f.author_pub).copied(),
         Some(1)
     );
+
+    // Case: happy path with a clearance gate. A ClearedAt(Confidential)
+    // identity attestation issued by a trust root the channel accepts, on an
+    // artifact classified Internal (lower than the author's clearance).
+    let mut f = fixture();
+    grant_clearance(&mut f, Clearance::CONFIDENTIAL, true);
+    f.state
+        .artifact_classifications
+        .insert(f.artifact, Clearance::INTERNAL);
+    let op = build_op(&f, OpClass::Splice, t(10), 1);
+    assert!(validate_inbound_op(&op, &mut f.state).is_ok());
+
+    // Case: the replay slot bumps on success.
+    let mut f = fixture();
+    let op = build_op(&f, OpClass::Splice, t(10), 42);
+    assert!(validate_inbound_op(&op, &mut f.state).is_ok());
+    assert_eq!(
+        f.state.last_seq_per_author.get(&f.author_pub).copied(),
+        Some(42)
+    );
+
+    // Case: the replay slot does not bump on failure (a tampered op that
+    // fails step 3).
+    let mut f = fixture();
+    let mut op = build_op(&f, OpClass::Splice, t(10), 5);
+    op.signature = Signature::from_bytes([0xff; 64]);
+    let r = validate_inbound_op(&op, &mut f.state);
+    assert!(r.is_err());
+    assert!(!f.state.last_seq_per_author.contains_key(&f.author_pub));
 }
 
+/// Certified-roster admission reuses the policy without a role attestation,
+/// yet still rejects forgery, a forbidding role, a stale clock and replay.
 #[test]
-fn certified_roster_admission_reuses_policy_without_role_attestation() {
+fn certified_roster_admission_reuses_the_policy_without_a_role_attestation() {
+    // Case: admission with no attestations or signers at all.
     let mut f = fixture();
     f.state.attestations.clear();
     f.state.authorised_signers.clear();
     let op = build_op(&f, OpClass::Splice, t(10), 1);
-
     assert!(
         validate_admitted_inbound_op(
             &op,
@@ -164,65 +257,31 @@ fn certified_roster_admission_reuses_policy_without_role_attestation() {
         f.state.last_seq_per_author.get(&f.author_pub).copied(),
         Some(1)
     );
-}
 
-#[test]
-fn certified_roster_admission_still_rejects_forgery_role_time_and_replay() {
+    // Case: still rejects forgery, role, time and replay.
     let f = fixture();
     let valid = build_op(&f, OpClass::Splice, t(10), 7);
+    let skew = Duration::from_secs(5);
 
     let mut forged = valid.clone();
     forged.payload.push(0xff);
     assert!(matches!(
-        validate_admitted_inbound_op(
-            &forged,
-            Role::Editor,
-            &mut f.state.clone(),
-            t(10),
-            Duration::from_secs(5),
-        ),
+        validate_admitted_inbound_op(&forged, Role::Editor, &mut f.state.clone(), t(10), skew),
         Err(ValidationError::BadOpSignature(_))
     ));
     assert_eq!(
-        validate_admitted_inbound_op(
-            &valid,
-            Role::Viewer,
-            &mut f.state.clone(),
-            t(10),
-            Duration::from_secs(5),
-        ),
+        validate_admitted_inbound_op(&valid, Role::Viewer, &mut f.state.clone(), t(10), skew),
         Err(ValidationError::RoleForbidsOpClass)
     );
     assert_eq!(
-        validate_admitted_inbound_op(
-            &valid,
-            Role::Editor,
-            &mut f.state.clone(),
-            t(20),
-            Duration::from_secs(5),
-        ),
+        validate_admitted_inbound_op(&valid, Role::Editor, &mut f.state.clone(), t(20), skew),
         Err(ValidationError::OutsideValidityWindow)
     );
 
     let mut state = f.state;
-    assert!(
-        validate_admitted_inbound_op(
-            &valid,
-            Role::Editor,
-            &mut state,
-            t(10),
-            Duration::from_secs(5),
-        )
-        .is_ok()
-    );
+    assert!(validate_admitted_inbound_op(&valid, Role::Editor, &mut state, t(10), skew).is_ok());
     assert!(matches!(
-        validate_admitted_inbound_op(
-            &valid,
-            Role::Editor,
-            &mut state,
-            t(10),
-            Duration::from_secs(5),
-        ),
+        validate_admitted_inbound_op(&valid, Role::Editor, &mut state, t(10), skew),
         Err(ValidationError::ReplaySeq {
             seen: 7,
             incoming: 7
@@ -230,453 +289,289 @@ fn certified_roster_admission_still_rejects_forgery_role_time_and_replay() {
     ));
 }
 
-#[test]
-fn happy_path_with_clearance_gate() {
-    let mut f = fixture();
-    // Stamp a ClearedAt(Confidential) identity attestation issued by a
-    // trust root the channel accepts.
-    let (org_sk, org_pub) = generate_keypair();
-    f.state.accepted_trust_roots.push(org_pub);
-    let cleared = {
-        let mut a = Attestation {
-            id: AttestationId::new(),
-            issued_by: org_pub,
-            subject: f.author_pub,
-            claims: vec![Claim::ClearedAt(Clearance::CONFIDENTIAL)],
-            valid_from: t(0),
-            valid_until: t(100_000),
-            signature: Signature::from_bytes([0u8; 64]),
-        };
-        let sb = a.signing_bytes().unwrap();
-        a.signature = sign_event(&sb, &org_sk).unwrap();
-        a
-    };
-    f.state
-        .identity_attestations
-        .entry(f.author_pub)
-        .or_default()
-        .push(cleared);
-    // Set the artifact's classification to Internal (lower than the
-    // author's Confidential clearance).
-    f.state
-        .artifact_classifications
-        .insert(f.artifact, Clearance::INTERNAL);
+// ---------- steps 1-4: attestation and signature ----------
 
-    let op = build_op(&f, OpClass::Splice, t(10), 1);
-    assert!(validate_inbound_op(&op, &mut f.state).is_ok());
+/// Steps 1-4 each reject their input: an unknown attestation, an issuer no
+/// longer authorised, a corrupted attestation signature, a corrupted or
+/// tampered op signature, and an author who is not the attestation subject.
+#[test]
+fn host_replayed_history_is_admitted_however_old_but_never_twice_or_from_the_future() {
+    let mut f = fixture();
+    let old = build_op(&f, OpClass::Splice, t(10), 3);
+    let skew = Duration::from_secs(300);
+    let an_hour_later = t(10 + 3600);
+    assert_eq!(
+        validate_admitted_inbound_op(
+            &old,
+            Role::Editor,
+            &mut f.state.clone(),
+            an_hour_later,
+            skew
+        ),
+        Err(ValidationError::OutsideValidityWindow),
+        "a live op an hour old is stale",
+    );
+    let mut state = f.state.clone();
+    assert!(
+        validate_replayed_inbound_op(&old, Role::Editor, &mut state, an_hour_later, skew).is_ok()
+    );
+    assert!(matches!(
+        validate_replayed_inbound_op(&old, Role::Editor, &mut state, an_hour_later, skew),
+        Err(ValidationError::ReplaySeq { .. })
+    ));
+    assert_eq!(
+        validate_replayed_inbound_op(&old, Role::Editor, &mut f.state.clone(), t(0), skew),
+        Ok(()),
+        "within the skew ahead",
+    );
+    let future = build_op(&f, OpClass::Splice, t(10 + 3600), 4);
+    assert_eq!(
+        validate_replayed_inbound_op(&future, Role::Editor, &mut f.state.clone(), t(10), skew),
+        Err(ValidationError::OutsideValidityWindow),
+    );
+    let mut forged = old.clone();
+    forged.payload.push(0xff);
+    assert!(matches!(
+        validate_replayed_inbound_op(&forged, Role::Editor, &mut f.state, t(10), skew),
+        Err(ValidationError::BadOpSignature(_))
+    ));
 }
 
-// ---------- step 1: unknown attestation ----------
-
 #[test]
-fn step1_unknown_attestation_id() {
+fn steps_1_to_4_reject_unknown_unauthorised_or_forged_ops() {
+    // Step 1: unknown attestation id.
     let mut f = fixture();
-    let mut op = SignedOp::new_unsigned(
-        b"x".to_vec(),
+    let op = build_x_op(
         f.artifact,
         f.author_pub,
         AttestationId::new(), // unknown to the validator
-        OpClass::Splice,
         t(10),
-        1,
+        &f.author_sk,
     );
-    sign_op(&mut op, &f.author_sk).unwrap();
-    match validate_inbound_op(&op, &mut f.state) {
-        Err(ValidationError::UnknownAttestation(_)) => {}
-        other => panic!("expected UnknownAttestation, got {other:?}"),
-    }
-}
+    let e = rejection("step1", validate_inbound_op(&op, &mut f.state));
+    assert!(
+        matches!(e, ValidationError::UnknownAttestation(_)),
+        "expected UnknownAttestation, got {e:?}"
+    );
 
-// ---------- step 2: attestation issuer not authorised ----------
-
-#[test]
-fn step2_attestation_issuer_not_in_authorised_signers() {
+    // Step 2: attestation issuer not in authorised signers. Wipe the
+    // channel's authorised signers — the stored attestation was issued by
+    // `owner_pub`, which no longer qualifies.
     let mut f = fixture();
-    // Wipe the channel's authorised signers — the stored attestation was
-    // issued by `owner_pub`, which no longer qualifies.
     f.state.authorised_signers.clear();
     let op = build_op(&f, OpClass::Splice, t(10), 1);
-    match validate_inbound_op(&op, &mut f.state) {
-        Err(ValidationError::UnauthorisedAttestation(k)) => {
-            assert_eq!(k, f.owner_pub);
-        }
-        other => panic!("expected UnauthorisedAttestation, got {other:?}"),
-    }
-}
+    assert_eq!(
+        rejection("step2 issuer", validate_inbound_op(&op, &mut f.state)),
+        ValidationError::UnauthorisedAttestation(f.owner_pub)
+    );
 
-#[test]
-fn step2_attestation_signature_corrupted() {
+    // Step 2: attestation signature corrupted, so the inner `verify_event`
+    // check fails.
     let mut f = fixture();
-    // Mutate the stored attestation's signature so the inner
-    // `verify_event` check fails.
     let ra = f.state.attestations.get_mut(&f.attestation_id).unwrap();
     ra.attestation.signature = Signature::from_bytes([0xff; 64]);
-
     let op = build_op(&f, OpClass::Splice, t(10), 1);
-    match validate_inbound_op(&op, &mut f.state) {
-        Err(ValidationError::BadAttestationSignature(_)) => {}
-        other => panic!("expected BadAttestationSignature, got {other:?}"),
+    let e = rejection("step2 signature", validate_inbound_op(&op, &mut f.state));
+    assert!(
+        matches!(e, ValidationError::BadAttestationSignature(_)),
+        "expected BadAttestationSignature, got {e:?}"
+    );
+
+    // Step 3: op signature corrupted, or payload tampered after signing.
+    let corrupt_signature: fn(&mut SignedOp) =
+        |op| op.signature = Signature::from_bytes([0xff; 64]);
+    let tamper_payload: fn(&mut SignedOp) = |op| op.payload[0] ^= 0xff;
+    for (case, tamper) in [
+        ("step3 signature", corrupt_signature),
+        ("step3 payload", tamper_payload),
+    ] {
+        let mut f = fixture();
+        let mut op = build_op(&f, OpClass::Splice, t(10), 1);
+        tamper(&mut op);
+        let e = rejection(case, validate_inbound_op(&op, &mut f.state));
+        assert!(
+            matches!(e, ValidationError::BadOpSignature(_)),
+            "case {case}: expected BadOpSignature, got {e:?}"
+        );
     }
-}
 
-// ---------- step 3: bad op signature ----------
-
-#[test]
-fn step3_op_signature_corrupted() {
+    // Step 4: author does not match subject. Forge an op whose author is
+    // *not* the attestation's subject; sign with a matching key to get past
+    // the step-3 signature check.
     let mut f = fixture();
-    let mut op = build_op(&f, OpClass::Splice, t(10), 1);
-    op.signature = Signature::from_bytes([0xff; 64]);
-    match validate_inbound_op(&op, &mut f.state) {
-        Err(ValidationError::BadOpSignature(_)) => {}
-        other => panic!("expected BadOpSignature, got {other:?}"),
-    }
-}
-
-#[test]
-fn step3_op_payload_tampered_post_signing() {
-    let mut f = fixture();
-    let mut op = build_op(&f, OpClass::Splice, t(10), 1);
-    op.payload[0] ^= 0xff; // tamper after signing
-    match validate_inbound_op(&op, &mut f.state) {
-        Err(ValidationError::BadOpSignature(_)) => {}
-        other => panic!("expected BadOpSignature, got {other:?}"),
-    }
-}
-
-// ---------- step 4: author != attestation.subject ----------
-
-#[test]
-fn step4_author_does_not_match_subject() {
-    let mut f = fixture();
-    // Forge an op whose author is *not* the attestation's subject; sign
-    // with a matching key to get past the step-3 signature check.
     let (forger_sk, forger_pub) = generate_keypair();
-    let mut op = SignedOp::new_unsigned(
-        b"x".to_vec(),
+    let op = build_x_op(f.artifact, forger_pub, f.attestation_id, t(10), &forger_sk);
+    assert_eq!(
+        rejection("step4", validate_inbound_op(&op, &mut f.state)),
+        ValidationError::AuthorMismatch
+    );
+}
+
+// ---------- steps 5-7: role, artifact, window, replay ----------
+
+/// Steps 5-7 reject an op class the role forbids, an unknown artifact, an op
+/// outside the attestation's window on either side, and a replayed or older
+/// sequence number.
+#[test]
+fn steps_5_to_7_reject_forbidden_unknown_out_of_window_or_replayed_ops() {
+    // Step 5: a Commenter cannot splice.
+    let mut f = fixture_with(Role::Commenter, t(0), t(100_000));
+    let op = build_x_op(
         f.artifact,
-        forger_pub,
-        f.attestation_id,
-        OpClass::Splice,
-        t(10),
-        1,
-    );
-    sign_op(&mut op, &forger_sk).unwrap();
-    match validate_inbound_op(&op, &mut f.state) {
-        Err(ValidationError::AuthorMismatch) => {}
-        other => panic!("expected AuthorMismatch, got {other:?}"),
-    }
-}
-
-// ---------- step 5: role does not permit op class ----------
-
-#[test]
-fn step5_commenter_cannot_splice() {
-    // Re-issue the attestation as Commenter, then try to splice.
-    let (owner_sk, owner_pub) = generate_keypair();
-    let (author_sk, author_pub) = generate_keypair();
-    let channel = ChannelId::new();
-    let artifact = ArtifactId::new();
-
-    let ra = make_role_attestation(
-        &owner_sk,
-        owner_pub,
-        author_pub,
-        channel,
-        Role::Commenter,
-        t(0),
-        t(100_000),
-        vec![],
-    );
-    let attestation_id = ra.attestation.id;
-    let mut state = ChannelState::default();
-    state.authorised_signers.push(owner_pub);
-    state.artifacts.insert(artifact, ArtifactKind::Note);
-    state.register_attestation(ra);
-
-    let mut op = SignedOp::new_unsigned(
-        b"x".to_vec(),
-        artifact,
-        author_pub,
-        attestation_id,
-        OpClass::Splice, // commenter can't splice
-        t(10),
-        1,
-    );
-    sign_op(&mut op, &author_sk).unwrap();
-    match validate_inbound_op(&op, &mut state) {
-        Err(ValidationError::RoleForbidsOpClass) => {}
-        other => panic!("expected RoleForbidsOpClass, got {other:?}"),
-    }
-}
-
-#[test]
-fn step5_unknown_artifact() {
-    let mut f = fixture();
-    let mut op = SignedOp::new_unsigned(
-        b"x".to_vec(),
-        ArtifactId::new(), // not registered with the channel
         f.author_pub,
         f.attestation_id,
-        OpClass::Splice,
         t(10),
-        1,
+        &f.author_sk,
     );
-    sign_op(&mut op, &f.author_sk).unwrap();
-    match validate_inbound_op(&op, &mut f.state) {
-        Err(ValidationError::UnknownArtifact(_)) => {}
-        other => panic!("expected UnknownArtifact, got {other:?}"),
-    }
-}
+    assert_eq!(
+        rejection("step5 commenter", validate_inbound_op(&op, &mut f.state)),
+        ValidationError::RoleForbidsOpClass
+    );
 
-// ---------- step 6: outside validity window ----------
-
-#[test]
-fn step6_op_after_valid_until() {
+    // Step 5: unknown artifact (not registered with the channel).
     let mut f = fixture();
-    // Attestation valid until t(100_000); op at t(100_001).
+    let op = build_x_op(
+        ArtifactId::new(),
+        f.author_pub,
+        f.attestation_id,
+        t(10),
+        &f.author_sk,
+    );
+    let e = rejection("step5 artifact", validate_inbound_op(&op, &mut f.state));
+    assert!(
+        matches!(e, ValidationError::UnknownArtifact(_)),
+        "expected UnknownArtifact, got {e:?}"
+    );
+
+    // Step 6: op after valid_until (attestation valid until t(100_000); op
+    // at t(100_001)).
+    let mut f = fixture();
     let op = build_op(&f, OpClass::Splice, t(100_001), 1);
-    match validate_inbound_op(&op, &mut f.state) {
-        Err(ValidationError::OutsideValidityWindow) => {}
-        other => panic!("expected OutsideValidityWindow (after), got {other:?}"),
-    }
-}
-
-#[test]
-fn step6_op_before_valid_from() {
-    // Use a fresh fixture and bump valid_from to a non-zero value.
-    let (owner_sk, owner_pub) = generate_keypair();
-    let (author_sk, author_pub) = generate_keypair();
-    let channel = ChannelId::new();
-    let artifact = ArtifactId::new();
-
-    let ra = make_role_attestation(
-        &owner_sk,
-        owner_pub,
-        author_pub,
-        channel,
-        Role::Editor,
-        t(100),
-        t(200),
-        vec![],
+    assert_eq!(
+        rejection("step6 after", validate_inbound_op(&op, &mut f.state)),
+        ValidationError::OutsideValidityWindow
     );
-    let attestation_id = ra.attestation.id;
-    let mut state = ChannelState::default();
-    state.authorised_signers.push(owner_pub);
-    state.artifacts.insert(artifact, ArtifactKind::Note);
-    state.register_attestation(ra);
 
-    let mut op = SignedOp::new_unsigned(
-        b"x".to_vec(),
-        artifact,
-        author_pub,
-        attestation_id,
-        OpClass::Splice,
+    // Step 6: op before valid_from (valid_from bumped to a non-zero value).
+    let mut f = fixture_with(Role::Editor, t(100), t(200));
+    let op = build_x_op(
+        f.artifact,
+        f.author_pub,
+        f.attestation_id,
         t(50), // before valid_from
-        1,
+        &f.author_sk,
     );
-    sign_op(&mut op, &author_sk).unwrap();
-    match validate_inbound_op(&op, &mut state) {
-        Err(ValidationError::OutsideValidityWindow) => {}
-        other => panic!("expected OutsideValidityWindow (before), got {other:?}"),
-    }
-}
+    assert_eq!(
+        rejection("step6 before", validate_inbound_op(&op, &mut f.state)),
+        ValidationError::OutsideValidityWindow
+    );
 
-// ---------- step 7: replay seq ----------
-
-#[test]
-fn step7_replay_same_seq_rejected() {
+    // Step 7: the same seq replayed is rejected.
     let mut f = fixture();
     let op1 = build_op(&f, OpClass::Splice, t(10), 1);
     let op2 = build_op(&f, OpClass::Splice, t(11), 1); // same seq as op1
     assert!(validate_inbound_op(&op1, &mut f.state).is_ok());
-    match validate_inbound_op(&op2, &mut f.state) {
-        Err(ValidationError::ReplaySeq { seen, incoming }) => {
-            assert_eq!(seen, 1);
-            assert_eq!(incoming, 1);
+    assert_eq!(
+        rejection("step7 same seq", validate_inbound_op(&op2, &mut f.state)),
+        ValidationError::ReplaySeq {
+            seen: 1,
+            incoming: 1
         }
-        other => panic!("expected ReplaySeq, got {other:?}"),
-    }
-}
+    );
 
-#[test]
-fn step7_smaller_seq_rejected() {
+    // Step 7: a smaller seq is rejected.
     let mut f = fixture();
     let op1 = build_op(&f, OpClass::Splice, t(10), 10);
     let op2 = build_op(&f, OpClass::Splice, t(11), 5);
     assert!(validate_inbound_op(&op1, &mut f.state).is_ok());
-    match validate_inbound_op(&op2, &mut f.state) {
-        Err(ValidationError::ReplaySeq { .. }) => {}
-        other => panic!("expected ReplaySeq, got {other:?}"),
-    }
+    let e = rejection("step7 smaller seq", validate_inbound_op(&op2, &mut f.state));
+    assert!(
+        matches!(e, ValidationError::ReplaySeq { .. }),
+        "expected ReplaySeq, got {e:?}"
+    );
 }
 
 // ---------- step 8: clearance ----------
 
+/// Step 8 enforces the effective clearance (the max of channel floor and
+/// artifact classification) against a clearance from a trusted issuer.
 #[test]
-fn step8_insufficient_clearance_no_claim_at_all() {
+fn step_8_enforces_the_effective_clearance_from_trusted_issuers() {
+    // Case: no clearance claim at all against a Confidential artifact.
     let mut f = fixture();
-    // Set artifact classification to Confidential without giving the
-    // author any clearance.
     f.state
         .artifact_classifications
         .insert(f.artifact, Clearance::CONFIDENTIAL);
     let op = build_op(&f, OpClass::Splice, t(10), 1);
-    match validate_inbound_op(&op, &mut f.state) {
-        Err(ValidationError::InsufficientClearance { required, found }) => {
-            assert_eq!(required, Clearance::CONFIDENTIAL);
-            assert_eq!(found, None);
+    assert_eq!(
+        rejection("no claim", validate_inbound_op(&op, &mut f.state)),
+        ValidationError::InsufficientClearance {
+            required: Clearance::CONFIDENTIAL,
+            found: None
         }
-        other => panic!("expected InsufficientClearance(None), got {other:?}"),
-    }
-}
+    );
 
-#[test]
-fn step8_insufficient_clearance_too_low() {
+    // Case: clearance too low — Internal held, Confidential required.
     let mut f = fixture();
-    // Give the author Internal but require Confidential.
-    let (org_sk, org_pub) = generate_keypair();
-    f.state.accepted_trust_roots.push(org_pub);
-    let mut a = Attestation {
-        id: AttestationId::new(),
-        issued_by: org_pub,
-        subject: f.author_pub,
-        claims: vec![Claim::ClearedAt(Clearance::INTERNAL)],
-        valid_from: t(0),
-        valid_until: t(100_000),
-        signature: Signature::from_bytes([0u8; 64]),
-    };
-    let sb = a.signing_bytes().unwrap();
-    a.signature = sign_event(&sb, &org_sk).unwrap();
-    f.state
-        .identity_attestations
-        .entry(f.author_pub)
-        .or_default()
-        .push(a);
-
+    grant_clearance(&mut f, Clearance::INTERNAL, true);
     f.state
         .artifact_classifications
         .insert(f.artifact, Clearance::CONFIDENTIAL);
-
     let op = build_op(&f, OpClass::Splice, t(10), 1);
-    match validate_inbound_op(&op, &mut f.state) {
-        Err(ValidationError::InsufficientClearance { required, found }) => {
-            assert_eq!(required, Clearance::CONFIDENTIAL);
-            assert_eq!(found, Some(Clearance::INTERNAL));
+    assert_eq!(
+        rejection("too low", validate_inbound_op(&op, &mut f.state)),
+        ValidationError::InsufficientClearance {
+            required: Clearance::CONFIDENTIAL,
+            found: Some(Clearance::INTERNAL)
         }
-        other => panic!("expected InsufficientClearance(too-low), got {other:?}"),
-    }
-}
+    );
 
-#[test]
-fn step8_untrusted_clearance_issuer() {
+    // Case: untrusted clearance issuer — a Confidential clearance issued by
+    // a key the channel does NOT accept as a trust root
+    // (accepted_trust_roots is empty).
     let mut f = fixture();
-    // Give the author a Confidential clearance issued by a key the
-    // channel does NOT accept as a trust root.
-    let (rogue_sk, rogue_pub) = generate_keypair();
-    let mut a = Attestation {
-        id: AttestationId::new(),
-        issued_by: rogue_pub,
-        subject: f.author_pub,
-        claims: vec![Claim::ClearedAt(Clearance::CONFIDENTIAL)],
-        valid_from: t(0),
-        valid_until: t(100_000),
-        signature: Signature::from_bytes([0u8; 64]),
-    };
-    let sb = a.signing_bytes().unwrap();
-    a.signature = sign_event(&sb, &rogue_sk).unwrap();
-    f.state
-        .identity_attestations
-        .entry(f.author_pub)
-        .or_default()
-        .push(a);
+    let rogue_pub = grant_clearance(&mut f, Clearance::CONFIDENTIAL, false);
     f.state
         .artifact_classifications
         .insert(f.artifact, Clearance::CONFIDENTIAL);
-    // accepted_trust_roots is empty.
-
     let op = build_op(&f, OpClass::Splice, t(10), 1);
-    match validate_inbound_op(&op, &mut f.state) {
-        Err(ValidationError::UntrustedClearanceIssuer { issuer }) => {
-            assert_eq!(issuer, rogue_pub);
-        }
-        other => panic!("expected UntrustedClearanceIssuer, got {other:?}"),
-    }
-}
+    assert_eq!(
+        rejection("untrusted issuer", validate_inbound_op(&op, &mut f.state)),
+        ValidationError::UntrustedClearanceIssuer { issuer: rogue_pub }
+    );
 
-#[test]
-fn step8_channel_min_clearance_floor() {
+    // Case: channel min-clearance floor. Channel-level min_clearance
+    // Restricted; artifact-level classification unset — the validator must
+    // still enforce.
     let mut f = fixture();
-    // Set channel-level min_clearance to Restricted; artifact-level
-    // classification unset — the validator must still enforce.
     f.state.channel_min_clearance = Some(Clearance::RESTRICTED);
     let op = build_op(&f, OpClass::Splice, t(10), 1);
-    match validate_inbound_op(&op, &mut f.state) {
-        Err(ValidationError::InsufficientClearance { required, found: _ }) => {
-            assert_eq!(required, Clearance::RESTRICTED);
-        }
-        other => panic!("expected InsufficientClearance, got {other:?}"),
-    }
-}
+    let e = rejection("channel floor", validate_inbound_op(&op, &mut f.state));
+    assert!(
+        matches!(
+            e,
+            ValidationError::InsufficientClearance {
+                required: Clearance::RESTRICTED,
+                found: _
+            }
+        ),
+        "expected InsufficientClearance, got {e:?}"
+    );
 
-#[test]
-fn step8_effective_clearance_takes_max() {
-    // Channel = Internal, artifact = Restricted, author has Confidential
-    // — fails (Confidential < Restricted).
+    // Case: effective clearance takes the max. Channel = Internal, artifact =
+    // Restricted, author has Confidential — fails (Confidential < Restricted).
     let mut f = fixture();
     f.state.channel_min_clearance = Some(Clearance::INTERNAL);
     f.state
         .artifact_classifications
         .insert(f.artifact, Clearance::RESTRICTED);
-
-    let (org_sk, org_pub) = generate_keypair();
-    f.state.accepted_trust_roots.push(org_pub);
-    let mut a = Attestation {
-        id: AttestationId::new(),
-        issued_by: org_pub,
-        subject: f.author_pub,
-        claims: vec![Claim::ClearedAt(Clearance::CONFIDENTIAL)],
-        valid_from: t(0),
-        valid_until: t(100_000),
-        signature: Signature::from_bytes([0u8; 64]),
-    };
-    let sb = a.signing_bytes().unwrap();
-    a.signature = sign_event(&sb, &org_sk).unwrap();
-    f.state
-        .identity_attestations
-        .entry(f.author_pub)
-        .or_default()
-        .push(a);
-
+    grant_clearance(&mut f, Clearance::CONFIDENTIAL, true);
     let op = build_op(&f, OpClass::Splice, t(10), 1);
-    match validate_inbound_op(&op, &mut f.state) {
-        Err(ValidationError::InsufficientClearance { required, found }) => {
-            assert_eq!(required, Clearance::RESTRICTED);
-            assert_eq!(found, Some(Clearance::CONFIDENTIAL));
-        }
-        other => panic!("expected InsufficientClearance, got {other:?}"),
-    }
-}
-
-// ---------- state mutation: replay slot only bumps on success ----------
-
-#[test]
-fn replay_slot_does_not_bump_on_failure() {
-    let mut f = fixture();
-    // Inject a tampered op that fails step 3.
-    let mut op = build_op(&f, OpClass::Splice, t(10), 5);
-    op.signature = Signature::from_bytes([0xff; 64]);
-    let r = validate_inbound_op(&op, &mut f.state);
-    assert!(r.is_err());
-    assert!(!f.state.last_seq_per_author.contains_key(&f.author_pub));
-}
-
-#[test]
-fn replay_slot_bumps_on_success() {
-    let mut f = fixture();
-    let op = build_op(&f, OpClass::Splice, t(10), 42);
-    assert!(validate_inbound_op(&op, &mut f.state).is_ok());
     assert_eq!(
-        f.state.last_seq_per_author.get(&f.author_pub).copied(),
-        Some(42)
+        rejection("effective max", validate_inbound_op(&op, &mut f.state)),
+        ValidationError::InsufficientClearance {
+            required: Clearance::RESTRICTED,
+            found: Some(Clearance::CONFIDENTIAL)
+        }
     );
 }

@@ -39,6 +39,7 @@ python3 "$repo_root/dist/session/tests/session-report.py"
 "$repo_root/dist/rpm/test-signing-contract.sh"
 "$repo_root/dist/rpm/test-app-store-stage.sh"
 "$repo_root/dist/rpm/test-build-target-dir.sh"
+"$repo_root/dist/rpm/test-host-update.sh"
 
 # A production import entry must name an installed native executable. This
 # fails before the import payload is added, and must remain in every builder.
@@ -74,7 +75,7 @@ if grep -Fq -- "-name 'tilo-session*.rpm'" "$overlay_helper"; then
 fi
 
 fhs=$work/fhs
-mkdir -p "$fhs"/{usr/bin,usr/libexec,usr/lib/systemd/user,etc/pam.d,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/licenses/tilo-session}
+mkdir -p "$fhs"/{usr/bin,usr/libexec,usr/lib/systemd/user,etc/pam.d,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/pipewire,usr/share/licenses/tilo-session}
 for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
               "$fhs/usr/libexec/tilo-unlock-helper"; do
     install -m755 "$true_bin" "$target"
@@ -92,6 +93,8 @@ install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/portals/tilo.portal" \
     "$fhs/usr/share/xdg-desktop-portal/portals/tilo.portal"
 install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/tilo-portals.conf" \
     "$fhs/usr/share/xdg-desktop-portal/tilo-portals.conf"
+install -m644 "$repo_root/os/usr/share/pipewire/tilo-echo-cancel.conf" \
+    "$fhs/usr/share/pipewire/tilo-echo-cancel.conf"
 install -m644 "$repo_root/os/usr/lib/systemd/user/tilo-graphical-session.target" \
     "$fhs/usr/lib/systemd/user/tilo-graphical-session.target"
 install -m644 "$repo_root/LICENSE" "$fhs/usr/share/licenses/tilo-session/LICENSE"
@@ -219,7 +222,7 @@ if "$repo_root/dist/verify-devel-payload.sh" "$fhs" >/dev/null 2>&1; then
 fi
 
 nix=$work/nix-result
-mkdir -p "$nix"/{bin,libexec,etc/pam.d,share/systemd/user,share/wayland-sessions,share/applications,share/xdg-desktop-portal/portals,share/licenses/tilo-session}
+mkdir -p "$nix"/{bin,libexec,etc/pam.d,share/systemd/user,share/wayland-sessions,share/applications,share/xdg-desktop-portal/portals,share/pipewire,share/licenses/tilo-session}
 for target in "$nix/bin/tilo-shell" "$nix/bin/tilo-launcher" "$nix/bin/tilo-import-folders" \
               "$nix/libexec/tilo-unlock-helper"; do
     install -m755 "$true_bin" "$target"
@@ -235,6 +238,8 @@ install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/portals/tilo.portal" \
     "$nix/share/xdg-desktop-portal/portals/tilo.portal"
 install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/tilo-portals.conf" \
     "$nix/share/xdg-desktop-portal/tilo-portals.conf"
+install -m644 "$repo_root/os/usr/share/pipewire/tilo-echo-cancel.conf" \
+    "$nix/share/pipewire/tilo-echo-cancel.conf"
 install -m644 "$repo_root/os/usr/lib/systemd/user/tilo-graphical-session.target" \
     "$nix/share/systemd/user/tilo-graphical-session.target"
 install -m644 "$repo_root/LICENSE" "$nix/share/licenses/tilo-session/LICENSE"
@@ -258,11 +263,11 @@ if "$repo_root/dist/ci/verify-nix-result.sh" "$nix" "$other_arch" >/dev/null 2>&
     exit 1
 fi
 
-# The OS hand-off is deterministic and contains only the three native binaries
-# already install-tested by the distro package lane.
+# The OS hand-off is deterministic and contains only the native desktop binaries
+# produced by the distro package lane.
 payload_bin=$work/payload-bin
 mkdir -p "$payload_bin" "$work/payload-a" "$work/payload-b"
-for binary in shell tilo-launcher tilo-unlock-helper; do
+for binary in shell tilo-launcher tilo-runtime-mcp tilo-unlock-helper; do
     install -m755 "$true_bin" "$payload_bin/$binary"
 done
 SOURCE_DATE_EPOCH=123 GITHUB_SHA="$(printf 'a%.0s' {1..40})" \

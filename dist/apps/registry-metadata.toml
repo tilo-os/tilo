@@ -20,6 +20,9 @@ tagline = "Make time visible"
 [apps.camera]
 description = "Capture photos and video from your connected cameras."
 tagline = "Ready when the moment is"
+[apps.canvas]
+description = "Draw and paint with vector marks and real wet media that stay editable as objects."
+tagline = "Art agents can see and revise"
 [apps.chat]
 description = "A focused space for conversations, calls, and shared work."
 tagline = "Talk together, naturally"
@@ -65,6 +68,9 @@ tagline = "Version control you can see"
 [apps.hex-editor]
 description = "Inspect and edit binary files with precision."
 tagline = "See every byte"
+[apps.hot-reload-demo]
+description = "A small document you can keep editing while its code reloads in the same windows."
+tagline = "Change the app without closing it"
 [apps.image-editor]
 description = "Make focused edits to images without leaving your desktop."
 tagline = "Images, made yours"
@@ -104,6 +110,9 @@ tagline = "Your memories, in view"
 [apps.print-centre]
 description = "Set up printers and keep print jobs moving."
 tagline = "Printing, made straightforward"
+[apps.publisher]
+description = "Create the key that signs your Tilo apps and prove the namespaces they publish under."
+tagline = "Ship your apps under your own name"
 [apps.remote]
 description = "Connect to another desktop when you need to be there."
 tagline = "Close the distance"
@@ -119,6 +128,9 @@ tagline = "Numbers, connected"
 [apps.slides]
 description = "Create presentations that stay easy to revise and share."
 tagline = "Tell the story clearly"
+[apps.shortcuts]
+description = "Chain the actions your apps offer into shortcuts you can run anywhere."
+tagline = "Do more in one step"
 [apps.snippets]
 description = "Collect useful pieces of text and code for reuse."
 tagline = "Keep the good bits handy"

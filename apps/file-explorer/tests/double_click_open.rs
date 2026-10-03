@@ -29,7 +29,15 @@ fn dir_with_folder() -> (tempfile::TempDir, std::path::PathBuf) {
     (d, folder)
 }
 
+/// Single click, a still double-click across a rebuild, and a fast
+/// double-click without one — each phase on its own fresh fixture and harness.
 #[test]
+fn clicks_select_and_double_clicks_open_the_folder_across_rebuilds() {
+    single_click_selects_row_zero_but_does_not_open();
+    double_click_across_a_rebuild_opens_the_folder();
+    fast_double_click_without_a_rebuild_also_opens();
+}
+
 fn single_click_selects_row_zero_but_does_not_open() {
     let (dir, _folder) = dir_with_folder();
     let p = row_center(dir.path(), 0);
@@ -46,7 +54,6 @@ fn single_click_selects_row_zero_but_does_not_open() {
     assert_eq!(h.w.current_path(), start, "a single click never navigates");
 }
 
-#[test]
 fn double_click_across_a_rebuild_opens_the_folder() {
     // The exact flaky path: the first click triggers a structural rebuild, and
     // the second press arrives with NO CursorMoved after it. A view not seeded
@@ -75,7 +82,6 @@ fn double_click_across_a_rebuild_opens_the_folder() {
     );
 }
 
-#[test]
 fn fast_double_click_without_a_rebuild_also_opens() {
     // The normal path (no rebuild between the two clicks) must keep working.
     let (dir, folder) = dir_with_folder();

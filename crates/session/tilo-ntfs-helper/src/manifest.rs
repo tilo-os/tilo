@@ -1,12 +1,12 @@
 //! Native report schema-2 positive completion verifier. Native facts are untrusted, bounded data.
 use crate::protocol::{Report, identity};
-use tilo_ntfs_protocol::{CopyTimes, CopyTimesUnavailableReason, Entry, Issue, NativePath};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
+use tilo_ntfs_protocol::{CopyTimes, CopyTimesUnavailableReason, Entry, Issue, NativePath};
 pub struct Manifest {
     pub entries: Vec<Entry>,
     pub issues: Vec<Issue>,
@@ -25,16 +25,7 @@ fn kind(v: &Value) -> io::Result<&str> {
     text(v, "kind")
 }
 fn unhex(s: &str) -> io::Result<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
-        return Err(bad());
-    }
-    s.as_bytes()
-        .chunks_exact(2)
-        .map(|p| {
-            u8::from_str_radix(std::str::from_utf8(p).map_err(io::Error::other)?, 16)
-                .map_err(io::Error::other)
-        })
-        .collect()
+    hex::decode(s).map_err(|_| bad())
 }
 fn units(s: &str) -> io::Result<Vec<u16>> {
     let b = unhex(s)?;

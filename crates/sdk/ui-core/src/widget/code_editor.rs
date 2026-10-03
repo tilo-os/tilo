@@ -16,6 +16,7 @@
 //! editor.set_text("fn main() {\n    println!(\"hi\");\n}\n");
 //! ```
 
+use crate::widget::{AppModel, ModelPath};
 use std::ops::Range;
 
 use automerge::{AutoCommit, ObjId};
@@ -400,11 +401,16 @@ impl CodeEditor {
 }
 
 impl Widget for CodeEditor {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    crate::provides!(
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::undo::UndoPoints
+    );
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.inner.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.inner.update(state, path)
     }
 
@@ -491,33 +497,8 @@ impl Widget for CodeEditor {
             .draw_overlay(scene, transform, text_renderer, theme, presence);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the Widget event signature is forwarded intact to the inner text editor with CRDT, focus and layout context"
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.inner.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.inner.handle_event(event, ctx);
     }
 
     fn name(&self) -> &'static str {
@@ -571,8 +552,8 @@ impl Widget for CodeEditor {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.inner.perform_action(action, state, path)
     }
@@ -581,26 +562,27 @@ impl Widget for CodeEditor {
         self.inner.wants_pointer_capture()
     }
 
-    fn needs_commit(&self) -> bool {
-        self.inner.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.inner.on_commit();
-    }
-
-    fn get_state(&self) -> Option<String> {
-        self.inner.get_state()
-    }
-
-    fn set_state(&mut self, state: &str) {
-        self.inner.set_state(state);
-    }
-
     fn text_review(&self) -> Option<(usize, String)> {
         self.inner.text_review()
     }
+}
 
+impl crate::undo::UndoPoints for CodeEditor {
+    fn needs_commit(&self) -> bool {
+        self.inner.needs_commit()
+    }
+    fn on_commit(&mut self) {
+        self.inner.on_commit();
+    }
+    fn get_state(&self) -> Option<String> {
+        self.inner.get_state()
+    }
+    fn set_state(&mut self, state: &str) {
+        self.inner.set_state(state);
+    }
+}
+
+impl crate::presence::capability::PublishesPresence for CodeEditor {
     fn presence_key(&self) -> Option<PresenceKey> {
         self.inner.presence_key()
     }
@@ -769,45 +751,76 @@ mod tests {
     use vello::peniko::Color;
 
     #[test]
-    fn typst_heading_and_function() {
-        let hl = TypstHighlighter;
-        assert_eq!(hl.spans("= Title", 0).spans[0].kind, TokenKind::Heading);
-        let ls = hl.spans(r#"#set text("hi")"#, 0);
-        let kinds: Vec<_> = ls.spans.iter().map(|s| s.kind).collect();
-        assert!(kinds.contains(&TokenKind::Function));
-        assert!(kinds.contains(&TokenKind::StringLit));
-    }
+    fn highlighting_maps_languages_and_theme_colours() {
+        fn typst_heading_and_function() {
+            let hl = TypstHighlighter;
+            assert_eq!(hl.spans("= Title", 0).spans[0].kind, TokenKind::Heading);
+            let ls = hl.spans(r#"#set text("hi")"#, 0);
+            let kinds: Vec<_> = ls.spans.iter().map(|s| s.kind).collect();
+            assert!(kinds.contains(&TokenKind::Function));
+            assert!(kinds.contains(&TokenKind::StringLit));
+        }
 
-    #[test]
-    fn typst_fenced_block_carries() {
-        let hl = TypstHighlighter;
-        let open = hl.spans("```rust", 0);
-        assert_eq!(open.carry & IN_FENCE, IN_FENCE);
-        let mid = hl.spans("let x = 1;", open.carry);
-        assert!(mid.spans.iter().all(|s| s.kind == TokenKind::Raw));
-        let close = hl.spans("```", mid.carry);
-        assert_eq!(close.carry & IN_FENCE, 0);
-    }
+        fn typst_fenced_block_carries() {
+            let hl = TypstHighlighter;
+            let open = hl.spans("```rust", 0);
+            assert_eq!(open.carry & IN_FENCE, IN_FENCE);
+            let mid = hl.spans("let x = 1;", open.carry);
+            assert!(mid.spans.iter().all(|s| s.kind == TokenKind::Raw));
+            let close = hl.spans("```", mid.carry);
+            assert_eq!(close.carry & IN_FENCE, 0);
+        }
 
-    #[test]
-    fn token_color_changes_with_theme() {
-        use crate::color_compat::ColorCompat;
-        let dark = Theme::dark().tokens.syntax.color(TokenKind::Keyword);
-        let light = Theme::light().tokens.syntax.color(TokenKind::Keyword);
-        let rgb = |c: Color| [c.r(), c.g(), c.b()];
-        assert_ne!(rgb(dark), rgb(light), "keyword colour must track the theme");
-        assert_eq!(
-            rgb(Theme::dark().tokens.syntax.color(TokenKind::Comment)),
-            rgb(Theme::dark().text_dim),
-        );
-    }
+        fn token_color_changes_with_theme() {
+            use crate::color_compat::ColorCompat;
+            let dark = Theme::dark().tokens.syntax.color(TokenKind::Keyword);
+            let light = Theme::light().tokens.syntax.color(TokenKind::Keyword);
+            let rgb = |c: Color| [c.r(), c.g(), c.b()];
+            assert_ne!(rgb(dark), rgb(light), "keyword colour must track the theme");
+            assert_eq!(
+                rgb(Theme::dark().tokens.syntax.color(TokenKind::Comment)),
+                rgb(Theme::dark().text_dim),
+            );
+        }
 
-    #[test]
-    fn language_maps_to_a_highlighter() {
-        assert!(Language::Rust.highlighter().is_some());
-        assert!(Language::Sql.highlighter().is_some());
-        assert!(Language::Typst.highlighter().is_some());
-        assert!(Language::PlainText.highlighter().is_none());
+        fn language_maps_to_a_highlighter() {
+            assert!(Language::Rust.highlighter().is_some());
+            assert!(Language::Sql.highlighter().is_some());
+            assert!(Language::Typst.highlighter().is_some());
+            assert!(Language::PlainText.highlighter().is_none());
+        }
+
+        fn highlighter_colours_segments_from_the_theme() {
+            use crate::color_compat::ColorCompat;
+            let theme = Theme::dark();
+            let mut ed = CodeEditor::local().with_language(Language::Rust);
+            ed.set_text("let x = 1");
+            ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+            // Draw builds the visual lines + highlight cache and runs the
+            // real colouring path (`row_segments` → the theme's syntax palette).
+            draw_once(&mut ed, &theme);
+            let segs = ed.inner().code_row_colors(&theme);
+            let rgb = |c: Color| [c.r(), c.g(), c.b()];
+            let kw = segs
+                .iter()
+                .find(|(t, _)| t == "let")
+                .expect("`let` is a drawn segment");
+            assert_eq!(
+                rgb(kw.1),
+                rgb(theme.tokens.syntax.color(TokenKind::Keyword)),
+                "the `let` keyword is drawn in the themed keyword colour",
+            );
+            assert!(
+                segs.iter().any(|(_, c)| rgb(*c) == rgb(theme.text_primary)),
+                "uncoloured runs fall back to the theme text colour",
+            );
+        }
+
+        typst_heading_and_function();
+        typst_fenced_block_carries();
+        token_color_changes_with_theme();
+        language_maps_to_a_highlighter();
+        highlighter_colours_segments_from_the_theme();
     }
 
     use automerge::AutoCommit;
@@ -870,14 +883,16 @@ mod tests {
         let node = taffy.leaf_node(Style::default());
         ed.handle_event(
             ev,
-            1.0,
-            &m,
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -925,349 +940,335 @@ mod tests {
     use crate::text_render::TextRenderer;
 
     #[test]
-    fn typing_inserts_on_the_real_key_path() {
-        let mut ed = CodeEditor::local();
-        ed.set_focused(true);
-        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
-        let mut doc = AutoCommit::new();
-        for ch in ["f", "n", " ", "x"] {
+    fn code_editor_typing_newlines_and_indentation_use_the_real_key_path() {
+        fn typing_inserts_on_the_real_key_path() {
+            let mut ed = CodeEditor::local();
+            ed.set_focused(true);
+            ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+            let mut doc = AutoCommit::new();
+            for ch in ["f", "n", " ", "x"] {
+                assert!(drive(
+                    &mut ed,
+                    &mut doc,
+                    &char_event(ch),
+                    mods(false, false)
+                ));
+            }
+            assert_eq!(ed.value(), "fn x");
+            assert_eq!(ed.cursor_pos(), 4);
+        }
+
+        fn wrapper_forwards_the_shaped_ime_candidate_rect() {
+            let mut ed = CodeEditor::local()
+                .with_language(Language::Rust)
+                .with_initial_value("let value = 1;");
+            ed.set_focused(true);
+            ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+            let mut doc = AutoCommit::new();
             assert!(drive(
                 &mut ed,
                 &mut doc,
-                &char_event(ch),
+                &WindowEvent::Ime(winit::event::Ime::Preedit(
+                    "漢".into(),
+                    Some(("漢".len(), "漢".len())),
+                )),
+                mods(false, false),
+            ));
+            draw_once(&mut ed, &Theme::dark());
+
+            let wrapper_rect =
+                Widget::ime_cursor_rect(&ed).expect("wrapper publishes IME geometry");
+            let inner_rect = Widget::ime_cursor_rect(ed.inner()).expect("inner input has a caret");
+            assert_eq!(wrapper_rect, inner_rect);
+            assert!(wrapper_rect.x0 > ed.gutter_width());
+        }
+
+        fn enter_inserts_a_real_newline_and_gutter_counts_lines() {
+            let mut ed = CodeEditor::local();
+            ed.set_focused(true);
+            ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+            let mut doc = AutoCommit::new();
+            {
+                let ch = "a";
+                drive(&mut ed, &mut doc, &char_event(ch), mods(false, false));
+            }
+            drive(
+                &mut ed,
+                &mut doc,
+                &named_event(NamedKey::Enter),
+                mods(false, false),
+            );
+            drive(&mut ed, &mut doc, &char_event("b"), mods(false, false));
+            assert_eq!(ed.value(), "a\nb");
+            assert_eq!(
+                ed.line_count(),
+                2,
+                "gutter line count reflects the two logical lines"
+            );
+        }
+
+        fn tab_inserts_soft_spaces_and_shift_tab_outdents() {
+            let mut ed = CodeEditor::local().with_tab_width(4);
+            ed.set_focused(true);
+            ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+            let mut doc = AutoCommit::new();
+            assert!(drive(
+                &mut ed,
+                &mut doc,
+                &named_event(NamedKey::Tab),
                 mods(false, false)
             ));
+            drive(&mut ed, &mut doc, &char_event("x"), mods(false, false));
+            assert_eq!(ed.value(), "    x", "Tab inserts four spaces");
+            // Shift+Tab removes one indent level.
+            assert!(drive(
+                &mut ed,
+                &mut doc,
+                &named_event(NamedKey::Tab),
+                mods(false, true)
+            ));
+            assert_eq!(
+                ed.value(),
+                "x",
+                "Shift+Tab outdents the leading four spaces"
+            );
         }
-        assert_eq!(ed.value(), "fn x");
-        assert_eq!(ed.cursor_pos(), 4);
+
+        typing_inserts_on_the_real_key_path();
+        wrapper_forwards_the_shaped_ime_candidate_rect();
+        enter_inserts_a_real_newline_and_gutter_counts_lines();
+        tab_inserts_soft_spaces_and_shift_tab_outdents();
     }
 
     #[test]
-    fn wrapper_forwards_the_shaped_ime_candidate_rect() {
-        let mut ed = CodeEditor::local()
-            .with_language(Language::Rust)
-            .with_initial_value("let value = 1;");
-        ed.set_focused(true);
-        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
-        let mut doc = AutoCommit::new();
-        assert!(drive(
-            &mut ed,
-            &mut doc,
-            &WindowEvent::Ime(winit::event::Ime::Preedit(
-                "漢".into(),
-                Some(("漢".len(), "漢".len())),
-            )),
-            mods(false, false),
-        ));
-        draw_once(&mut ed, &Theme::dark());
-
-        let wrapper_rect = Widget::ime_cursor_rect(&ed).expect("wrapper publishes IME geometry");
-        let inner_rect = Widget::ime_cursor_rect(ed.inner()).expect("inner input has a caret");
-        assert_eq!(wrapper_rect, inner_rect);
-        assert!(wrapper_rect.x0 > ed.gutter_width());
-    }
-
-    #[test]
-    fn enter_inserts_a_real_newline_and_gutter_counts_lines() {
-        let mut ed = CodeEditor::local();
-        ed.set_focused(true);
-        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
-        let mut doc = AutoCommit::new();
-        {
-            let ch = "a";
-            drive(&mut ed, &mut doc, &char_event(ch), mods(false, false));
+    fn code_editor_selection_cut_and_goto_line() {
+        fn selection_and_cut_run_through_the_real_path() {
+            let mut ed = CodeEditor::local().with_initial_value("abc");
+            ed.set_focused(true);
+            ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+            let mut doc = AutoCommit::new();
+            assert!(drive(
+                &mut ed,
+                &mut doc,
+                &char_event("a"),
+                mods(true, false)
+            ));
+            assert_eq!(
+                ed.inner().selection_range_public(),
+                Some((0, 3)),
+                "Ctrl+A selects the whole buffer on the real path",
+            );
+            assert!(drive(
+                &mut ed,
+                &mut doc,
+                &char_event("x"),
+                mods(true, false)
+            ));
+            assert_eq!(
+                ed.value(),
+                "",
+                "Ctrl+X cuts the selection through the shared core"
+            );
         }
-        drive(
-            &mut ed,
-            &mut doc,
-            &named_event(NamedKey::Enter),
-            mods(false, false),
-        );
-        drive(&mut ed, &mut doc, &char_event("b"), mods(false, false));
-        assert_eq!(ed.value(), "a\nb");
-        assert_eq!(
-            ed.line_count(),
-            2,
-            "gutter line count reflects the two logical lines"
-        );
+
+        fn shift_arrow_extends_selection_word_wise() {
+            let mut ed = CodeEditor::local().with_initial_value("hello world");
+            ed.set_focused(true);
+            ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+            let mut doc = AutoCommit::new();
+            drive(
+                &mut ed,
+                &mut doc,
+                &named_event(NamedKey::Home),
+                mods(false, false),
+            );
+            drive(
+                &mut ed,
+                &mut doc,
+                &named_event(NamedKey::ArrowRight),
+                mods(true, true),
+            );
+            let sel = ed
+                .inner()
+                .selection_range_public()
+                .expect("a selection exists");
+            assert_eq!(sel.0, 0);
+            assert!(
+                sel.1 >= 5,
+                "word-wise extend covers at least `hello`: {sel:?}"
+            );
+        }
+
+        fn goto_line_moves_the_caret_to_the_line_start() {
+            let mut ed = CodeEditor::local().with_initial_value("one\ntwo\nthree");
+            ed.goto_line(2);
+            assert_eq!(
+                ed.cursor_pos(),
+                4,
+                "line 2 starts just after the first newline"
+            );
+            let start = ed.cursor_pos();
+            let end = start.saturating_add(3);
+            assert_eq!(
+                ed.value().get(start..end).expect("byte range is in bounds"),
+                "two"
+            );
+        }
+
+        fn accessibility_reports_a_multiline_text_input() {
+            use crate::a11y::Role;
+            let ed = CodeEditor::local().with_initial_value("fn main() {}");
+            let node = ed
+                .accessibility()
+                .expect("code editor exposes an a11y node");
+            assert_eq!(node.role, Role::MultilineTextInput);
+            assert!(
+                node.state.multiline,
+                "code editor reports a multiline text field"
+            );
+            assert_eq!(node.value.as_deref(), Some("fn main() {}"));
+        }
+
+        selection_and_cut_run_through_the_real_path();
+        shift_arrow_extends_selection_word_wise();
+        goto_line_moves_the_caret_to_the_line_start();
+        accessibility_reports_a_multiline_text_input();
     }
 
     #[test]
-    fn tab_inserts_soft_spaces_and_shift_tab_outdents() {
-        let mut ed = CodeEditor::local().with_tab_width(4);
-        ed.set_focused(true);
-        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
-        let mut doc = AutoCommit::new();
-        assert!(drive(
-            &mut ed,
-            &mut doc,
-            &named_event(NamedKey::Tab),
-            mods(false, false)
-        ));
-        drive(&mut ed, &mut doc, &char_event("x"), mods(false, false));
-        assert_eq!(ed.value(), "    x", "Tab inserts four spaces");
-        // Shift+Tab removes one indent level.
-        assert!(drive(
-            &mut ed,
-            &mut doc,
-            &named_event(NamedKey::Tab),
-            mods(false, true)
-        ));
-        assert_eq!(
-            ed.value(),
-            "x",
-            "Shift+Tab outdents the leading four spaces"
-        );
-    }
+    fn code_editor_gutter_and_wrapper_geometry_follow_the_theme_scale() {
+        fn no_gutter_offset_when_gutter_disabled() {
+            // Proves the gutter participates in the shared caret geometry:
+            // turning it off collapses the offset it pushes the caret by.
+            let theme = Theme::dark();
+            let mut with_g = CodeEditor::local().with_initial_value("x");
+            with_g.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+            draw_once(&mut with_g, &theme);
+            let caret_with = with_g.inner().caret_rect(&theme, 0).x0;
 
-    #[test]
-    fn selection_and_cut_run_through_the_real_path() {
-        let mut ed = CodeEditor::local().with_initial_value("abc");
-        ed.set_focused(true);
-        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
-        let mut doc = AutoCommit::new();
-        assert!(drive(
-            &mut ed,
-            &mut doc,
-            &char_event("a"),
-            mods(true, false)
-        ));
-        assert_eq!(
-            ed.inner().selection_range_public(),
-            Some((0, 3)),
-            "Ctrl+A selects the whole buffer on the real path",
-        );
-        assert!(drive(
-            &mut ed,
-            &mut doc,
-            &char_event("x"),
-            mods(true, false)
-        ));
-        assert_eq!(
-            ed.value(),
-            "",
-            "Ctrl+X cuts the selection through the shared core"
-        );
-    }
+            let mut without_g = CodeEditor::local()
+                .with_gutter(false)
+                .with_initial_value("x");
+            without_g.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+            draw_once(&mut without_g, &theme);
+            let caret_without = without_g.inner().caret_rect(&theme, 0).x0;
 
-    #[test]
-    fn shift_arrow_extends_selection_word_wise() {
-        let mut ed = CodeEditor::local().with_initial_value("hello world");
-        ed.set_focused(true);
-        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
-        let mut doc = AutoCommit::new();
-        drive(
-            &mut ed,
-            &mut doc,
-            &named_event(NamedKey::Home),
-            mods(false, false),
-        );
-        drive(
-            &mut ed,
-            &mut doc,
-            &named_event(NamedKey::ArrowRight),
-            mods(true, true),
-        );
-        let sel = ed
-            .inner()
-            .selection_range_public()
-            .expect("a selection exists");
-        assert_eq!(sel.0, 0);
-        assert!(
-            sel.1 >= 5,
-            "word-wise extend covers at least `hello`: {sel:?}"
-        );
-    }
+            assert!(
+                caret_with > caret_without + 10.0,
+                "the gutter shifts the caret right ({caret_with} vs {caret_without})",
+            );
+        }
 
-    #[test]
-    fn goto_line_moves_the_caret_to_the_line_start() {
-        let mut ed = CodeEditor::local().with_initial_value("one\ntwo\nthree");
-        ed.goto_line(2);
-        assert_eq!(
-            ed.cursor_pos(),
-            4,
-            "line 2 starts just after the first newline"
-        );
-        let start = ed.cursor_pos();
-        let end = start.saturating_add(3);
-        assert_eq!(
-            ed.value().get(start..end).expect("byte range is in bounds"),
-            "two"
-        );
-    }
+        fn scaled_gutter_and_wrapped_rows_share_the_shaped_editor_geometry() {
+            let text = "first logical line wraps across several visual rows because the editor is narrow\nsecond";
+            let mut normal = CodeEditor::local().with_initial_value(text);
+            normal.set_rect(Rect::new(0.0, 0.0, 190.0, 420.0));
+            draw_once(&mut normal, &Theme::dark());
+            let normal_gutter = normal.gutter_width();
+            let normal_line_height = normal.line_height();
 
-    #[test]
-    fn accessibility_reports_a_multiline_text_input() {
-        use crate::a11y::Role;
-        let ed = CodeEditor::local().with_initial_value("fn main() {}");
-        let node = ed
-            .accessibility()
-            .expect("code editor exposes an a11y node");
-        assert_eq!(node.role, Role::MultilineTextInput);
-        assert!(
-            node.state.multiline,
-            "code editor reports a multiline text field"
-        );
-        assert_eq!(node.value.as_deref(), Some("fn main() {}"));
-    }
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut large = CodeEditor::local().with_initial_value(text);
+            large.set_rect(Rect::new(0.0, 0.0, 190.0, 900.0));
+            draw_once(&mut large, &theme);
+            assert!(
+                large.gutter_width() >= normal_gutter * 1.8,
+                "measured gutter grows with its line-number glyphs ({} vs {})",
+                large.gutter_width(),
+                normal_gutter,
+            );
+            assert!(
+                large.line_height() >= normal_line_height * 1.9,
+                "wrapper reports the shaped 2× row height"
+            );
 
-    #[test]
-    fn highlighter_colours_segments_from_the_theme() {
-        use crate::color_compat::ColorCompat;
-        let theme = Theme::dark();
-        let mut ed = CodeEditor::local().with_language(Language::Rust);
-        ed.set_text("let x = 1");
-        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
-        // Draw builds the visual lines + highlight cache and runs the
-        // real colouring path (`row_segments` → the theme's syntax palette).
-        draw_once(&mut ed, &theme);
-        let segs = ed.inner().code_row_colors(&theme);
-        let rgb = |c: Color| [c.r(), c.g(), c.b()];
-        let kw = segs
-            .iter()
-            .find(|(t, _)| t == "let")
-            .expect("`let` is a drawn segment");
-        assert_eq!(
-            rgb(kw.1),
-            rgb(theme.tokens.syntax.color(TokenKind::Keyword)),
-            "the `let` keyword is drawn in the themed keyword colour",
-        );
-        assert!(
-            segs.iter().any(|(_, c)| rgb(*c) == rgb(theme.text_primary)),
-            "uncoloured runs fall back to the theme text colour",
-        );
-    }
+            let first_end = text.find('\n').expect("hard line break");
+            let wrapped = large.selection_rects(&theme, 0, first_end);
+            assert!(wrapped.len() >= 2, "first logical line wraps visually");
+            assert!(wrapped.iter().all(|rect| {
+                (rect.height() - large.line_height()).abs() < 0.1
+                    && rect.x0 >= large.rect().x0 + large.gutter_width()
+            }));
+            let second_start = first_end + 1;
+            let caret = large.caret_rect(&theme, second_start);
+            assert!(caret.x0 >= large.rect().x0 + large.gutter_width());
+            let point = Point::new(caret.x0 + 1.0, caret.y0 + caret.height() / 2.0);
+            assert_eq!(large.byte_at_point(point), second_start);
+            let mut doc = AutoCommit::new();
+            drive(
+                &mut large,
+                &mut doc,
+                &WindowEvent::CursorMoved {
+                    device_id: unsafe { std::mem::zeroed() },
+                    position: winit::dpi::PhysicalPosition::new(point.x, point.y),
+                },
+                mods(false, false),
+            );
+            assert!(drive(
+                &mut large,
+                &mut doc,
+                &WindowEvent::MouseInput {
+                    device_id: unsafe { std::mem::zeroed() },
+                    state: ElementState::Pressed,
+                    button: winit::event::MouseButton::Left,
+                },
+                mods(false, false),
+            ));
+            assert_eq!(
+                large.cursor_pos(),
+                second_start,
+                "pointer event places the caret on the logical second line through wrapped rows"
+            );
+        }
 
-    #[test]
-    fn no_gutter_offset_when_gutter_disabled() {
-        // Proves the gutter participates in the shared caret geometry:
-        // turning it off collapses the offset it pushes the caret by.
-        let theme = Theme::dark();
-        let mut with_g = CodeEditor::local().with_initial_value("x");
-        with_g.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
-        draw_once(&mut with_g, &theme);
-        let caret_with = with_g.inner().caret_rect(&theme, 0).x0;
+        fn wrapper_layout_uses_theme_scale_with_a_stale_renderer_and_reverses_to_normal() {
+            let text = "a long source line wraps over several visual rows while the wrapper owns the themed layout lifecycle";
+            let mut editor = CodeEditor::local().with_initial_value(text);
+            let mut renderer = TextRenderer::new();
+            assert_eq!(renderer.text_scale(), 1.0, "stale renderer precondition");
 
-        let mut without_g = CodeEditor::local()
-            .with_gutter(false)
-            .with_initial_value("x");
-        without_g.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
-        draw_once(&mut without_g, &theme);
-        let caret_without = without_g.inner().caret_rect(&theme, 0).x0;
+            let large_theme = Theme::dark().with_text_scale(2.0);
+            let large_height = lay_out_and_draw(&mut editor, &large_theme, &mut renderer, 190.0);
+            let large_gutter = editor.gutter_width();
+            let large_font = editor
+                .inner()
+                .shaped_font_size_for_test()
+                .expect("large shaped font");
+            assert!(
+                (f64::from(large_height) - editor.inner().content_height()).abs() < 0.1,
+                "wrapper measure and draw must share the 2x paragraph height"
+            );
 
-        assert!(
-            caret_with > caret_without + 10.0,
-            "the gutter shifts the caret right ({caret_with} vs {caret_without})",
-        );
-    }
+            let normal_theme = Theme::dark();
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map = std::collections::HashMap::new();
+            let _ = Widget::build_layout(&mut editor, &mut taffy, &normal_theme, &mut node_map);
+            assert!(
+                Widget::layout_needs_measure(&editor),
+                "the same wrapper becomes measure-dirty when theme scale returns to 1x"
+            );
+            let normal_height = lay_out_and_draw(&mut editor, &normal_theme, &mut renderer, 190.0);
+            let normal_gutter = editor.gutter_width();
+            let normal_font = editor
+                .inner()
+                .shaped_font_size_for_test()
+                .expect("normal shaped font");
+            assert!(
+                (f64::from(normal_height) - editor.inner().content_height()).abs() < 0.1,
+                "wrapper measure and draw must share the restored 1x paragraph height"
+            );
+            assert!(large_height > normal_height * 1.8);
+            assert!(large_gutter >= normal_gutter * 1.8);
+            assert!(large_font >= normal_font * 1.9);
+            assert_eq!(
+                renderer.text_scale(),
+                1.0,
+                "renderer stayed stale throughout"
+            );
+        }
 
-    #[test]
-    fn scaled_gutter_and_wrapped_rows_share_the_shaped_editor_geometry() {
-        let text = "first logical line wraps across several visual rows because the editor is narrow\nsecond";
-        let mut normal = CodeEditor::local().with_initial_value(text);
-        normal.set_rect(Rect::new(0.0, 0.0, 190.0, 420.0));
-        draw_once(&mut normal, &Theme::dark());
-        let normal_gutter = normal.gutter_width();
-        let normal_line_height = normal.line_height();
-
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut large = CodeEditor::local().with_initial_value(text);
-        large.set_rect(Rect::new(0.0, 0.0, 190.0, 900.0));
-        draw_once(&mut large, &theme);
-        assert!(
-            large.gutter_width() >= normal_gutter * 1.8,
-            "measured gutter grows with its line-number glyphs ({} vs {})",
-            large.gutter_width(),
-            normal_gutter,
-        );
-        assert!(
-            large.line_height() >= normal_line_height * 1.9,
-            "wrapper reports the shaped 2× row height"
-        );
-
-        let first_end = text.find('\n').expect("hard line break");
-        let wrapped = large.selection_rects(&theme, 0, first_end);
-        assert!(wrapped.len() >= 2, "first logical line wraps visually");
-        assert!(wrapped.iter().all(|rect| {
-            (rect.height() - large.line_height()).abs() < 0.1
-                && rect.x0 >= large.rect().x0 + large.gutter_width()
-        }));
-        let second_start = first_end + 1;
-        let caret = large.caret_rect(&theme, second_start);
-        assert!(caret.x0 >= large.rect().x0 + large.gutter_width());
-        let point = Point::new(caret.x0 + 1.0, caret.y0 + caret.height() / 2.0);
-        assert_eq!(large.byte_at_point(point), second_start);
-        let mut doc = AutoCommit::new();
-        drive(
-            &mut large,
-            &mut doc,
-            &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-            },
-            mods(false, false),
-        );
-        assert!(drive(
-            &mut large,
-            &mut doc,
-            &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state: ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-            },
-            mods(false, false),
-        ));
-        assert_eq!(
-            large.cursor_pos(),
-            second_start,
-            "pointer event places the caret on the logical second line through wrapped rows"
-        );
-    }
-
-    #[test]
-    fn wrapper_layout_uses_theme_scale_with_a_stale_renderer_and_reverses_to_normal() {
-        let text = "a long source line wraps over several visual rows while the wrapper owns the themed layout lifecycle";
-        let mut editor = CodeEditor::local().with_initial_value(text);
-        let mut renderer = TextRenderer::new();
-        assert_eq!(renderer.text_scale(), 1.0, "stale renderer precondition");
-
-        let large_theme = Theme::dark().with_text_scale(2.0);
-        let large_height = lay_out_and_draw(&mut editor, &large_theme, &mut renderer, 190.0);
-        let large_gutter = editor.gutter_width();
-        let large_font = editor
-            .inner()
-            .shaped_font_size_for_test()
-            .expect("large shaped font");
-        assert!(
-            (f64::from(large_height) - editor.inner().content_height()).abs() < 0.1,
-            "wrapper measure and draw must share the 2x paragraph height"
-        );
-
-        let normal_theme = Theme::dark();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map = std::collections::HashMap::new();
-        let _ = Widget::build_layout(&mut editor, &mut taffy, &normal_theme, &mut node_map);
-        assert!(
-            Widget::layout_needs_measure(&editor),
-            "the same wrapper becomes measure-dirty when theme scale returns to 1x"
-        );
-        let normal_height = lay_out_and_draw(&mut editor, &normal_theme, &mut renderer, 190.0);
-        let normal_gutter = editor.gutter_width();
-        let normal_font = editor
-            .inner()
-            .shaped_font_size_for_test()
-            .expect("normal shaped font");
-        assert!(
-            (f64::from(normal_height) - editor.inner().content_height()).abs() < 0.1,
-            "wrapper measure and draw must share the restored 1x paragraph height"
-        );
-        assert!(large_height > normal_height * 1.8);
-        assert!(large_gutter >= normal_gutter * 1.8);
-        assert!(large_font >= normal_font * 1.9);
-        assert_eq!(
-            renderer.text_scale(),
-            1.0,
-            "renderer stayed stale throughout"
-        );
+        no_gutter_offset_when_gutter_disabled();
+        scaled_gutter_and_wrapped_rows_share_the_shaped_editor_geometry();
+        wrapper_layout_uses_theme_scale_with_a_stale_renderer_and_reverses_to_normal();
     }
 }

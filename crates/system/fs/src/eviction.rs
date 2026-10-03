@@ -15,13 +15,13 @@ use futures_util::stream::{self, StreamExt, TryStreamExt};
 use iroh_blobs::Hash;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tilo_clock::unix_now_ms;
 use uuid::Uuid;
 
 use crate::availability::{
     AvailabilityPolicy, AvailabilityRegistry, EvictionBlocker, EvictionDecision,
     EvictionRequirements, RecordAvailability, RecordKind, Residency,
 };
+use crate::clock::unix_now_ms;
 use crate::{FileHistoryStore, Hydrator};
 
 /// Bound catalog I/O so opening Settings does not serialize one backend
@@ -133,7 +133,7 @@ impl EvictionCoordinator {
         expected_hash: Option<Hash>,
     ) -> anyhow::Result<(EvictionRequestId, EvictionPlan)> {
         let store = Arc::clone(&self.hydrator.store);
-        let runtime = self.hydrator.runtime_handle.clone();
+        let runtime = self.handoff_runtime();
         self.prepare_with_handoff(
             record_id,
             mode,
@@ -158,6 +158,18 @@ impl EvictionCoordinator {
         .await
     }
 
+    /// The runtime a handoff waits on the store through. The handoff holds
+    /// the availability lock, which the daemon's workers take too; a worker
+    /// blocked on it can leave the daemon's timers undriven, and the backend
+    /// sweep waits on timers. The store's own runtime never takes that lock.
+    #[must_use]
+    pub fn handoff_runtime(&self) -> tokio::runtime::Handle {
+        self.hydrator
+            .store
+            .runtime()
+            .unwrap_or_else(|| self.hydrator.runtime_handle.clone())
+    }
+
     /// As [`Self::prepare`], but makes the actual backend-GC handoff an
     /// explicit caller-supplied critical section. Storage uses this to retain
     /// its live namespace and dirty guards from validation through durable
@@ -166,8 +178,8 @@ impl EvictionCoordinator {
     /// The handoff deliberately runs while the availability and queue locks
     /// are held. It is not a preview-time hint. Those are synchronous guards,
     /// so the whole critical section runs on a blocking thread, where the
-    /// handoff may wait on async store work with the runtime handle's
-    /// `block_on` — once, never nested.
+    /// handoff may wait on async store work with
+    /// [`Self::handoff_runtime`]'s `block_on` — once, never nested.
     ///
     /// # Errors
     ///
@@ -909,7 +921,7 @@ impl EvictionQueue {
             requests: self.requests.values().cloned().collect(),
         };
         let bytes = serde_json::to_vec_pretty(&document)?;
-        atomic_file::write_creating_parent(&self.path, &bytes)?;
+        tilo_files::native::atomic::write_creating_parent(&self.path, &bytes)?;
         Ok(())
     }
 }
@@ -1483,283 +1495,387 @@ mod tests {
     }
 
     #[test]
-    fn empty_current_version_has_a_complete_zero_blob_plan() {
-        let temp = TempDir::new().unwrap();
-        let mut registry =
-            AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-        let now = unix_now_ms();
-        let record = FileRecordId::new();
-        let version = FileVersionId::new();
-        registry.put(resident_file(record, version, now)).unwrap();
-        let catalog = EvictionCatalog::with_empty_versions([], [(record, version)]).unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn eviction_plans_protect_shared_and_retained_blobs_and_fail_closed() {
+        // Phase `empty_current_version_has_a_complete_zero_blob_plan`.
+        {
+            let temp = TempDir::new().unwrap();
+            let mut registry =
+                AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
+            let now = unix_now_ms();
+            let record = FileRecordId::new();
+            let version = FileVersionId::new();
+            registry.put(resident_file(record, version, now)).unwrap();
+            let catalog = EvictionCatalog::with_empty_versions([], [(record, version)]).unwrap();
 
-        let plan = plan_safe_eviction(
-            &registry,
-            &catalog,
-            record,
-            now,
-            EvictionRequirements::default(),
-        )
-        .unwrap();
-        assert!(plan.reclaimable.is_empty());
-        assert!(plan.shared_and_protected.is_empty());
-        assert!(plan.already_absent.is_empty());
-        assert_eq!(plan.reclaimable_bytes, 0);
-    }
-
-    #[test]
-    fn an_empty_protected_version_protects_no_unrelated_blobs() {
-        let temp = TempDir::new().unwrap();
-        let mut registry =
-            AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-        let now = 1_000;
-        let target = FileRecordId::new();
-        let target_version = FileVersionId::new();
-        let other = FileRecordId::new();
-        let other_version = FileVersionId::new();
-        registry
-            .put(resident_file(target, target_version, now))
+            let plan = plan_safe_eviction(
+                &registry,
+                &catalog,
+                record,
+                now,
+                EvictionRequirements::default(),
+            )
             .unwrap();
-        registry
-            .put(resident_file(other, other_version, now))
+            assert!(plan.reclaimable.is_empty());
+            assert!(plan.shared_and_protected.is_empty());
+            assert!(plan.already_absent.is_empty());
+            assert_eq!(plan.reclaimable_bytes, 0);
+        }
+        // Phase `an_empty_protected_version_protects_no_unrelated_blobs`.
+        {
+            let temp = TempDir::new().unwrap();
+            let mut registry =
+                AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
+            let now = 1_000;
+            let target = FileRecordId::new();
+            let target_version = FileVersionId::new();
+            let other = FileRecordId::new();
+            let other_version = FileVersionId::new();
+            registry
+                .put(resident_file(target, target_version, now))
+                .unwrap();
+            registry
+                .put(resident_file(other, other_version, now))
+                .unwrap();
+            let catalog = EvictionCatalog::with_empty_versions(
+                [payload(target, target_version, (1, Some(4)), &[])],
+                [(other, other_version)],
+            )
             .unwrap();
-        let catalog = EvictionCatalog::with_empty_versions(
-            [payload(target, target_version, (1, Some(4)), &[])],
-            [(other, other_version)],
-        )
-        .unwrap();
 
-        let plan = plan_safe_eviction(
-            &registry,
-            &catalog,
-            target,
-            now,
-            EvictionRequirements::default(),
-        )
-        .unwrap();
-        assert_eq!(plan.reclaimable.len(), 1);
-        assert!(plan.shared_and_protected.is_empty());
-    }
-
-    #[test]
-    fn shared_chunks_and_manifests_are_never_reclaimed() {
-        let temp = TempDir::new().unwrap();
-        let mut registry =
-            AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-        let now = 1_000;
-        let target_id = FileRecordId::new();
-        let target_version = FileVersionId::new();
-        let other_id = FileRecordId::new();
-        let other_version = FileVersionId::new();
-        registry
-            .put(resident_file(target_id, target_version, now))
+            let plan = plan_safe_eviction(
+                &registry,
+                &catalog,
+                target,
+                now,
+                EvictionRequirements::default(),
+            )
             .unwrap();
-        registry
-            .put(resident_file(other_id, other_version, now))
+            assert_eq!(plan.reclaimable.len(), 1);
+            assert!(plan.shared_and_protected.is_empty());
+        }
+        // Phase `shared_chunks_and_manifests_are_never_reclaimed`.
+        {
+            let temp = TempDir::new().unwrap();
+            let mut registry =
+                AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
+            let now = 1_000;
+            let target_id = FileRecordId::new();
+            let target_version = FileVersionId::new();
+            let other_id = FileRecordId::new();
+            let other_version = FileVersionId::new();
+            registry
+                .put(resident_file(target_id, target_version, now))
+                .unwrap();
+            registry
+                .put(resident_file(other_id, other_version, now))
+                .unwrap();
+            let catalog = EvictionCatalog::new([
+                payload(
+                    target_id,
+                    target_version,
+                    (1, Some(4)),
+                    &[(2, Some(10)), (3, Some(20))],
+                ),
+                payload(
+                    other_id,
+                    other_version,
+                    (1, Some(4)),
+                    &[(2, Some(10)), (4, Some(7))],
+                ),
+            ])
             .unwrap();
-        let catalog = EvictionCatalog::new([
-            payload(
-                target_id,
-                target_version,
-                (1, Some(4)),
-                &[(2, Some(10)), (3, Some(20))],
-            ),
-            payload(
-                other_id,
-                other_version,
-                (1, Some(4)),
-                &[(2, Some(10)), (4, Some(7))],
-            ),
-        ])
-        .unwrap();
 
-        let plan = plan_safe_eviction(
-            &registry,
-            &catalog,
-            target_id,
-            now,
-            EvictionRequirements::default(),
-        )
-        .unwrap();
-        assert_eq!(
-            plan.reclaimable,
-            vec![BlobExtent {
-                hash: hash(3),
-                locally_present: true,
-                resident_bytes: Some(20)
-            }]
-        );
-        assert_eq!(plan.reclaimable_bytes, 20);
-        assert_eq!(plan.protected_shared_bytes, 14);
-        assert_eq!(plan.shared_and_protected.len(), 2);
-    }
-
-    #[test]
-    fn missing_protected_version_fails_closed() {
-        let temp = TempDir::new().unwrap();
-        let mut registry =
-            AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-        let now = 1_000;
-        let target_id = FileRecordId::new();
-        let target_version = FileVersionId::new();
-        let other_id = FileRecordId::new();
-        let other_version = FileVersionId::new();
-        registry
-            .put(resident_file(target_id, target_version, now))
-            .unwrap();
-        registry
-            .put(resident_file(other_id, other_version, now))
-            .unwrap();
-        let catalog = EvictionCatalog::new([payload(
-            target_id,
-            target_version,
-            (1, Some(4)),
-            &[(2, Some(10))],
-        )])
-        .unwrap();
-
-        assert_eq!(
-            plan_safe_eviction(
+            let plan = plan_safe_eviction(
                 &registry,
                 &catalog,
                 target_id,
                 now,
                 EvictionRequirements::default(),
-            ),
-            Err(PlanError::ProtectedPayloadMissing {
-                record_id: other_id,
-                version_id: other_version,
-            })
-        );
+            )
+            .unwrap();
+            assert_eq!(
+                plan.reclaimable,
+                vec![BlobExtent {
+                    hash: hash(3),
+                    locally_present: true,
+                    resident_bytes: Some(20)
+                }]
+            );
+            assert_eq!(plan.reclaimable_bytes, 20);
+            assert_eq!(plan.protected_shared_bytes, 14);
+            assert_eq!(plan.shared_and_protected.len(), 2);
+        }
+        // Phase `missing_protected_version_fails_closed`.
+        {
+            let temp = TempDir::new().unwrap();
+            let mut registry =
+                AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
+            let now = 1_000;
+            let target_id = FileRecordId::new();
+            let target_version = FileVersionId::new();
+            let other_id = FileRecordId::new();
+            let other_version = FileVersionId::new();
+            registry
+                .put(resident_file(target_id, target_version, now))
+                .unwrap();
+            registry
+                .put(resident_file(other_id, other_version, now))
+                .unwrap();
+            let catalog = EvictionCatalog::new([payload(
+                target_id,
+                target_version,
+                (1, Some(4)),
+                &[(2, Some(10))],
+            )])
+            .unwrap();
+
+            assert_eq!(
+                plan_safe_eviction(
+                    &registry,
+                    &catalog,
+                    target_id,
+                    now,
+                    EvictionRequirements::default(),
+                ),
+                Err(PlanError::ProtectedPayloadMissing {
+                    record_id: other_id,
+                    version_id: other_version,
+                })
+            );
+        }
+        // Phase `captured_policy_roots_fail_closed_for_missing_or_cyclic_ancestry`.
+        {
+            let child_id = FileRecordId::new();
+            let missing = FileRecordId::new();
+            let mut child = RecordAvailability::new(child_id, RecordKind::File);
+            child.parent = Some(missing);
+            assert!(captured_effective_pinned(&[child.clone()], child_id));
+
+            child.parent = Some(child_id);
+            assert!(captured_effective_pinned(&[child], child_id));
+        }
+        // Phase `batch_safe_plans_match_single_plans_for_shared_and_partial_payloads`.
+        {
+            let temp = TempDir::new().unwrap();
+            let mut registry =
+                AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
+            let now = unix_now_ms();
+            let first = FileRecordId::new();
+            let first_version = FileVersionId::new();
+            let second = FileRecordId::new();
+            let second_version = FileVersionId::new();
+            registry
+                .put(resident_file(first, first_version, now))
+                .unwrap();
+            registry
+                .put(resident_file(second, second_version, now))
+                .unwrap();
+            let catalog = EvictionCatalog::new([
+                payload(
+                    first,
+                    first_version,
+                    (1, Some(4)),
+                    &[(7, Some(9)), (8, None)],
+                ),
+                payload(
+                    second,
+                    second_version,
+                    (2, Some(4)),
+                    &[(7, Some(9)), (9, None)],
+                ),
+            ])
+            .unwrap();
+            let batch = batch_plan_safe(&registry, &catalog, &[first, second], now);
+            for record in [first, second] {
+                assert_eq!(
+                    batch.get(&record).and_then(Option::as_ref),
+                    Some(
+                        &plan_safe_eviction(
+                            &registry,
+                            &catalog,
+                            record,
+                            now,
+                            EvictionRequirements::default()
+                        )
+                        .unwrap()
+                    )
+                );
+            }
+        }
     }
 
     #[test]
-    fn every_availability_refusal_is_preserved_in_dry_run() {
-        let temp = TempDir::new().unwrap();
-        let mut registry =
-            AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-        let id = FileRecordId::new();
-        let version = FileVersionId::new();
-        let mut record = resident_file(id, version, 1_000);
-        record.policy = AvailabilityPolicy::Pinned;
-        registry.put(record).unwrap();
-        let catalog = EvictionCatalog::new([payload(id, version, (1, Some(4)), &[])]).unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn dry_runs_and_the_destructive_api_account_every_refusal_and_size() {
+        // Phase `every_availability_refusal_is_preserved_in_dry_run`.
+        {
+            let temp = TempDir::new().unwrap();
+            let mut registry =
+                AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
+            let id = FileRecordId::new();
+            let version = FileVersionId::new();
+            let mut record = resident_file(id, version, 1_000);
+            record.policy = AvailabilityPolicy::Pinned;
+            registry.put(record).unwrap();
+            let catalog = EvictionCatalog::new([payload(id, version, (1, Some(4)), &[])]).unwrap();
 
-        assert_eq!(
-            plan_safe_eviction(
+            assert_eq!(
+                plan_safe_eviction(
+                    &registry,
+                    &catalog,
+                    id,
+                    1_000,
+                    EvictionRequirements::default(),
+                ),
+                Err(PlanError::Denied(EvictionBlocker::Pinned))
+            );
+        }
+        // Phase `destructive_api_is_separate_but_still_protects_retained_history`.
+        {
+            let temp = TempDir::new().unwrap();
+            let mut registry =
+                AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
+            let id = FileRecordId::new();
+            let current = FileVersionId::new();
+            let retained = FileVersionId::new();
+            let mut record = resident_file(id, current, 1_000);
+            record.policy = AvailabilityPolicy::Pinned;
+            record.retained_versions.push(retained);
+            registry.put(record).unwrap();
+            let catalog = EvictionCatalog::new([
+                payload(id, current, (1, Some(4)), &[(2, Some(10)), (3, Some(20))]),
+                payload(id, retained, (4, Some(4)), &[(2, Some(10))]),
+            ])
+            .unwrap();
+
+            let plan = plan_destructive_eviction(
                 &registry,
                 &catalog,
                 id,
                 1_000,
                 EvictionRequirements::default(),
-            ),
-            Err(PlanError::Denied(EvictionBlocker::Pinned))
-        );
-    }
+            )
+            .unwrap();
+            assert_eq!(plan.mode, EvictionMode::DestructiveOverride);
+            assert_eq!(
+                plan.shared_and_protected,
+                vec![BlobExtent {
+                    hash: hash(2),
+                    locally_present: true,
+                    resident_bytes: Some(10)
+                }]
+            );
+            assert_eq!(plan.reclaimable_bytes, 24);
+        }
+        // Phase `dry_run_accounts_absent_and_duplicate_chunks_once`.
+        {
+            let temp = TempDir::new().unwrap();
+            let mut registry =
+                AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
+            let id = FileRecordId::new();
+            let version = FileVersionId::new();
+            registry.put(resident_file(id, version, 1_000)).unwrap();
+            let catalog = EvictionCatalog::new([payload(
+                id,
+                version,
+                (1, Some(4)),
+                &[(2, None), (3, Some(20)), (3, Some(20))],
+            )])
+            .unwrap();
 
-    #[test]
-    fn destructive_api_is_separate_but_still_protects_retained_history() {
-        let temp = TempDir::new().unwrap();
-        let mut registry =
-            AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-        let id = FileRecordId::new();
-        let current = FileVersionId::new();
-        let retained = FileVersionId::new();
-        let mut record = resident_file(id, current, 1_000);
-        record.policy = AvailabilityPolicy::Pinned;
-        record.retained_versions.push(retained);
-        registry.put(record).unwrap();
-        let catalog = EvictionCatalog::new([
-            payload(id, current, (1, Some(4)), &[(2, Some(10)), (3, Some(20))]),
-            payload(id, retained, (4, Some(4)), &[(2, Some(10))]),
-        ])
-        .unwrap();
+            let plan = plan_safe_eviction(
+                &registry,
+                &catalog,
+                id,
+                1_000,
+                EvictionRequirements::default(),
+            )
+            .unwrap();
+            assert_eq!(plan.reclaimable_bytes, 24);
+            assert_eq!(plan.reclaimable.len(), 2);
+            assert_eq!(plan.already_absent, vec![hash(2)]);
+        }
+        // Phase `unknown_partial_size_is_present_but_reported_as_unaccounted`.
+        {
+            let temp = TempDir::new().unwrap();
+            let mut registry =
+                AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
+            let id = FileRecordId::new();
+            let version = FileVersionId::new();
+            registry.put(resident_file(id, version, 1_000)).unwrap();
+            let catalog = EvictionCatalog::new([VersionPayload {
+                record_id: id,
+                version_id: version,
+                manifest: BlobExtent {
+                    hash: hash(1),
+                    locally_present: true,
+                    resident_bytes: Some(4),
+                },
+                chunks: vec![BlobExtent {
+                    hash: hash(2),
+                    locally_present: true,
+                    resident_bytes: None,
+                }],
+            }])
+            .unwrap();
 
-        let plan = plan_destructive_eviction(
-            &registry,
-            &catalog,
-            id,
-            1_000,
-            EvictionRequirements::default(),
-        )
-        .unwrap();
-        assert_eq!(plan.mode, EvictionMode::DestructiveOverride);
-        assert_eq!(
-            plan.shared_and_protected,
-            vec![BlobExtent {
-                hash: hash(2),
-                locally_present: true,
-                resident_bytes: Some(10)
-            }]
-        );
-        assert_eq!(plan.reclaimable_bytes, 24);
-    }
+            let plan = plan_safe_eviction(
+                &registry,
+                &catalog,
+                id,
+                1_000,
+                EvictionRequirements::default(),
+            )
+            .unwrap();
+            assert!(plan.already_absent.is_empty());
+            assert_eq!(plan.reclaimable.len(), 2);
+            assert_eq!(plan.reclaimable_bytes, 4);
+            assert_eq!(plan.unaccounted_reclaimable_blobs, 1);
+        }
+        // Phase `partial_and_unknown_sizes_never_look_complete`.
+        {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join("evictions.json");
+            let plan = queued_plan(FileRecordId::new(), FileVersionId::new());
+            let mut queue = EvictionQueue::open(&path).unwrap();
+            let id = queue.enqueue(&plan, 100).unwrap().id;
 
-    #[test]
-    fn dry_run_accounts_absent_and_duplicate_chunks_once() {
-        let temp = TempDir::new().unwrap();
-        let mut registry =
-            AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-        let id = FileRecordId::new();
-        let version = FileVersionId::new();
-        registry.put(resident_file(id, version, 1_000)).unwrap();
-        let catalog = EvictionCatalog::new([payload(
-            id,
-            version,
-            (1, Some(4)),
-            &[(2, None), (3, Some(20)), (3, Some(20))],
-        )])
-        .unwrap();
-
-        let plan = plan_safe_eviction(
-            &registry,
-            &catalog,
-            id,
-            1_000,
-            EvictionRequirements::default(),
-        )
-        .unwrap();
-        assert_eq!(plan.reclaimable_bytes, 24);
-        assert_eq!(plan.reclaimable.len(), 2);
-        assert_eq!(plan.already_absent, vec![hash(2)]);
-    }
-
-    #[test]
-    fn unknown_partial_size_is_present_but_reported_as_unaccounted() {
-        let temp = TempDir::new().unwrap();
-        let mut registry =
-            AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-        let id = FileRecordId::new();
-        let version = FileVersionId::new();
-        registry.put(resident_file(id, version, 1_000)).unwrap();
-        let catalog = EvictionCatalog::new([VersionPayload {
-            record_id: id,
-            version_id: version,
-            manifest: BlobExtent {
-                hash: hash(1),
-                locally_present: true,
-                resident_bytes: Some(4),
-            },
-            chunks: vec![BlobExtent {
-                hash: hash(2),
-                locally_present: true,
-                resident_bytes: None,
-            }],
-        }])
-        .unwrap();
-
-        let plan = plan_safe_eviction(
-            &registry,
-            &catalog,
-            id,
-            1_000,
-            EvictionRequirements::default(),
-        )
-        .unwrap();
-        assert!(plan.already_absent.is_empty());
-        assert_eq!(plan.reclaimable.len(), 2);
-        assert_eq!(plan.reclaimable_bytes, 4);
-        assert_eq!(plan.unaccounted_reclaimable_blobs, 1);
+            let observation = queue
+                .record_observation(
+                    id,
+                    vec![
+                        (
+                            hash(7),
+                            ObservedBlobState::Present {
+                                resident_bytes: None,
+                            },
+                        ),
+                        (
+                            hash(8),
+                            ObservedBlobState::Present {
+                                resident_bytes: Some(12),
+                            },
+                        ),
+                    ],
+                    200,
+                )
+                .unwrap();
+            assert_eq!(observation.state, EvictionRequestState::AwaitingBackendGc);
+            assert_eq!(observation.remaining_hashes, vec![hash(7), hash(8)]);
+            assert_eq!(observation.observed_remaining_bytes, 12);
+            assert_eq!(observation.unaccounted_remaining_blobs, 1);
+            assert_eq!(
+                EvictionQueue::open(&path).unwrap().get(id).unwrap().state,
+                EvictionRequestState::AwaitingBackendGc
+            );
+        }
     }
 
     fn queued_plan(record_id: FileRecordId, version_id: FileVersionId) -> EvictionPlan {
@@ -1789,343 +1905,246 @@ mod tests {
     }
 
     #[test]
-    fn queue_survives_restart_and_enqueue_is_idempotent() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join("cache/evictions.json");
-        let record_id = FileRecordId::new();
-        let version_id = FileVersionId::new();
-        let plan = queued_plan(record_id, version_id);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn eviction_queue_is_durable_bounded_and_hands_off_only_fresh_exact_plans() {
+        // Phase `queue_survives_restart_and_enqueue_is_idempotent`.
+        {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join("cache/evictions.json");
+            let record_id = FileRecordId::new();
+            let version_id = FileVersionId::new();
+            let plan = queued_plan(record_id, version_id);
 
-        let first = {
+            let first = {
+                let mut queue = EvictionQueue::open(&path).unwrap();
+                queue.enqueue(&plan, 100).unwrap()
+            };
+            assert!(first.inserted);
+
+            let mut reopened = EvictionQueue::open(&path).unwrap();
+            let second = reopened.enqueue(&plan, 999).unwrap();
+            assert_eq!(second.id, first.id);
+            assert!(!second.inserted);
+            assert_eq!(reopened.requests().count(), 1);
+            let request = reopened.get(first.id).unwrap();
+            assert_eq!(request.requested_at_ms, 100);
+            assert_eq!(request.requested_hashes, vec![hash(7), hash(8)]);
+            assert_eq!(request.state, EvictionRequestState::AwaitingBackendGc);
+        }
+        // Phase `rehydrated_payload_can_rearm_its_completed_exact_eviction_request`.
+        {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join("evictions.json");
+            let plan = queued_plan(FileRecordId::new(), FileVersionId::new());
             let mut queue = EvictionQueue::open(&path).unwrap();
-            queue.enqueue(&plan, 100).unwrap()
-        };
-        assert!(first.inserted);
+            let first = queue.enqueue(&plan, 100).unwrap();
+            let absent = plan_requested_hashes(&plan)
+                .into_iter()
+                .map(|hash| (hash, ObservedBlobState::Absent))
+                .collect();
+            queue.record_observation(first.id, absent, 101).unwrap();
 
-        let mut reopened = EvictionQueue::open(&path).unwrap();
-        let second = reopened.enqueue(&plan, 999).unwrap();
-        assert_eq!(second.id, first.id);
-        assert!(!second.inserted);
-        assert_eq!(reopened.requests().count(), 1);
-        let request = reopened.get(first.id).unwrap();
-        assert_eq!(request.requested_at_ms, 100);
-        assert_eq!(request.requested_hashes, vec![hash(7), hash(8)]);
-        assert_eq!(request.state, EvictionRequestState::AwaitingBackendGc);
-    }
+            let second = queue.enqueue(&plan, 200).unwrap();
+            assert_eq!(second.id, first.id);
+            assert!(!second.inserted);
+            let request = queue.get(first.id).unwrap();
+            assert_eq!(request.requested_at_ms, 200);
+            assert_eq!(request.state, EvictionRequestState::AwaitingBackendGc);
 
-    #[test]
-    fn rehydrated_payload_can_rearm_its_completed_exact_eviction_request() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join("evictions.json");
-        let plan = queued_plan(FileRecordId::new(), FileVersionId::new());
-        let mut queue = EvictionQueue::open(&path).unwrap();
-        let first = queue.enqueue(&plan, 100).unwrap();
-        let absent = plan_requested_hashes(&plan)
-            .into_iter()
-            .map(|hash| (hash, ObservedBlobState::Absent))
-            .collect();
-        queue.record_observation(first.id, absent, 101).unwrap();
-
-        let second = queue.enqueue(&plan, 200).unwrap();
-        assert_eq!(second.id, first.id);
-        assert!(!second.inserted);
-        let request = queue.get(first.id).unwrap();
-        assert_eq!(request.requested_at_ms, 200);
-        assert_eq!(request.state, EvictionRequestState::AwaitingBackendGc);
-
-        drop(queue);
-        let reopened = EvictionQueue::open(path).unwrap();
-        assert_eq!(
-            reopened.get(first.id).unwrap().state,
-            EvictionRequestState::AwaitingBackendGc
-        );
-    }
-
-    #[test]
-    fn queue_is_bounded_and_only_prunes_a_completed_request() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join("evictions.json");
-        let mut queue = EvictionQueue::open(&path).unwrap();
-        for value in 1..=MAX_EVICTION_REQUESTS as u128 {
-            let id = EvictionRequestId(Uuid::from_u128(value));
-            queue.requests.insert(
-                id,
-                EvictionRequest {
-                    id,
-                    record_id: FileRecordId::new(),
-                    version_id: FileVersionId::new(),
-                    mode: EvictionMode::Safe,
-                    requested_hashes: Vec::new(),
-                    requested_at_ms: u64::try_from(value).unwrap(),
-                    state: EvictionRequestState::AwaitingBackendGc,
-                },
+            drop(queue);
+            let reopened = EvictionQueue::open(path).unwrap();
+            assert_eq!(
+                reopened.get(first.id).unwrap().state,
+                EvictionRequestState::AwaitingBackendGc
             );
         }
-        let plan = queued_plan(FileRecordId::new(), FileVersionId::new());
-        assert!(matches!(
-            queue.enqueue(&plan, 10_000),
-            Err(EvictionQueueError::TooManyRequests)
-        ));
-        let oldest = EvictionRequestId(Uuid::from_u128(1));
-        queue.requests.get_mut(&oldest).unwrap().state =
-            EvictionRequestState::Completed { observed_at_ms: 2 };
-        let inserted = queue.enqueue(&plan, 10_000).unwrap();
-        assert!(inserted.inserted);
-        assert_eq!(queue.requests.len(), MAX_EVICTION_REQUESTS);
-        assert!(!queue.requests.contains_key(&oldest));
-    }
+        // Phase `queue_is_bounded_and_only_prunes_a_completed_request`.
+        {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join("evictions.json");
+            let mut queue = EvictionQueue::open(&path).unwrap();
+            for value in 1..=MAX_EVICTION_REQUESTS as u128 {
+                let id = EvictionRequestId(Uuid::from_u128(value));
+                queue.requests.insert(
+                    id,
+                    EvictionRequest {
+                        id,
+                        record_id: FileRecordId::new(),
+                        version_id: FileVersionId::new(),
+                        mode: EvictionMode::Safe,
+                        requested_hashes: Vec::new(),
+                        requested_at_ms: u64::try_from(value).unwrap(),
+                        state: EvictionRequestState::AwaitingBackendGc,
+                    },
+                );
+            }
+            let plan = queued_plan(FileRecordId::new(), FileVersionId::new());
+            assert!(matches!(
+                queue.enqueue(&plan, 10_000),
+                Err(EvictionQueueError::TooManyRequests)
+            ));
+            let oldest = EvictionRequestId(Uuid::from_u128(1));
+            queue.requests.get_mut(&oldest).unwrap().state =
+                EvictionRequestState::Completed { observed_at_ms: 2 };
+            let inserted = queue.enqueue(&plan, 10_000).unwrap();
+            assert!(inserted.inserted);
+            assert_eq!(queue.requests.len(), MAX_EVICTION_REQUESTS);
+            assert!(!queue.requests.contains_key(&oldest));
+        }
+        // Phase `backend_handoff_requires_a_fresh_exact_plan`.
+        {
+            let temp = TempDir::new().unwrap();
+            let record_id = FileRecordId::new();
+            let version_id = FileVersionId::new();
+            let plan = queued_plan(record_id, version_id);
+            let mut queue = EvictionQueue::open(temp.path().join("evictions.json")).unwrap();
+            let id = queue.enqueue(&plan, 100).unwrap().id;
 
-    #[test]
-    fn backend_handoff_requires_a_fresh_exact_plan() {
-        let temp = TempDir::new().unwrap();
-        let record_id = FileRecordId::new();
-        let version_id = FileVersionId::new();
-        let plan = queued_plan(record_id, version_id);
-        let mut queue = EvictionQueue::open(temp.path().join("evictions.json")).unwrap();
-        let id = queue.enqueue(&plan, 100).unwrap().id;
+            assert_eq!(
+                queue.revalidate_for_backend_gc(id, &plan).unwrap(),
+                vec![hash(7), hash(8)]
+            );
 
-        assert_eq!(
-            queue.revalidate_for_backend_gc(id, &plan).unwrap(),
-            vec![hash(7), hash(8)]
-        );
+            let mut newly_shared = plan.clone();
+            let protected = newly_shared.reclaimable.remove(0);
+            newly_shared.shared_and_protected.push(protected);
+            assert!(matches!(
+                queue.revalidate_for_backend_gc(id, &newly_shared),
+                Err(EvictionQueueError::FreshPlanMismatch(found)) if found == id
+            ));
 
-        let mut newly_shared = plan.clone();
-        let protected = newly_shared.reclaimable.remove(0);
-        newly_shared.shared_and_protected.push(protected);
-        assert!(matches!(
-            queue.revalidate_for_backend_gc(id, &newly_shared),
-            Err(EvictionQueueError::FreshPlanMismatch(found)) if found == id
-        ));
+            let changed_version = queued_plan(record_id, FileVersionId::new());
+            assert!(matches!(
+                queue.revalidate_for_backend_gc(id, &changed_version),
+                Err(EvictionQueueError::FreshPlanMismatch(found)) if found == id
+            ));
 
-        let changed_version = queued_plan(record_id, FileVersionId::new());
-        assert!(matches!(
-            queue.revalidate_for_backend_gc(id, &changed_version),
-            Err(EvictionQueueError::FreshPlanMismatch(found)) if found == id
-        ));
-
-        let mut changed_mode = plan.clone();
-        changed_mode.mode = EvictionMode::DestructiveOverride;
-        assert!(matches!(
-            queue.revalidate_for_backend_gc(id, &changed_mode),
-            Err(EvictionQueueError::FreshPlanMismatch(found)) if found == id
-        ));
-    }
-
-    #[test]
-    fn backend_authorization_replans_and_refuses_a_new_shared_root() {
-        let temp = TempDir::new().unwrap();
-        let now = 1_000;
-        let target_id = FileRecordId::new();
-        let target_version = FileVersionId::new();
-        let other_id = FileRecordId::new();
-        let other_version = FileVersionId::new();
-        let mut registry =
-            AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-        registry
-            .put(resident_file(target_id, target_version, now))
+            let mut changed_mode = plan.clone();
+            changed_mode.mode = EvictionMode::DestructiveOverride;
+            assert!(matches!(
+                queue.revalidate_for_backend_gc(id, &changed_mode),
+                Err(EvictionQueueError::FreshPlanMismatch(found)) if found == id
+            ));
+        }
+        // Phase `backend_authorization_replans_and_refuses_a_new_shared_root`.
+        {
+            let temp = TempDir::new().unwrap();
+            let now = 1_000;
+            let target_id = FileRecordId::new();
+            let target_version = FileVersionId::new();
+            let other_id = FileRecordId::new();
+            let other_version = FileVersionId::new();
+            let mut registry =
+                AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
+            registry
+                .put(resident_file(target_id, target_version, now))
+                .unwrap();
+            let mut other = resident_file(other_id, other_version, now);
+            other.residency = Residency::NotResident;
+            registry.put(other.clone()).unwrap();
+            let catalog = EvictionCatalog::new([
+                payload(target_id, target_version, (1, Some(4)), &[(2, Some(10))]),
+                payload(other_id, other_version, (3, Some(4)), &[(2, Some(10))]),
+            ])
             .unwrap();
-        let mut other = resident_file(other_id, other_version, now);
-        other.residency = Residency::NotResident;
-        registry.put(other.clone()).unwrap();
-        let catalog = EvictionCatalog::new([
-            payload(target_id, target_version, (1, Some(4)), &[(2, Some(10))]),
-            payload(other_id, other_version, (3, Some(4)), &[(2, Some(10))]),
-        ])
-        .unwrap();
-        let plan = plan_safe_eviction(
-            &registry,
-            &catalog,
-            target_id,
-            now,
-            EvictionRequirements::default(),
-        )
-        .unwrap();
-        let mut queue = EvictionQueue::open(temp.path().join("evictions.json")).unwrap();
-        let id = queue.enqueue(&plan, now).unwrap().id;
+            let plan = plan_safe_eviction(
+                &registry,
+                &catalog,
+                target_id,
+                now,
+                EvictionRequirements::default(),
+            )
+            .unwrap();
+            let mut queue = EvictionQueue::open(temp.path().join("evictions.json")).unwrap();
+            let id = queue.enqueue(&plan, now).unwrap().id;
 
-        assert_eq!(
-            queue
-                .authorize_backend_gc(
+            assert_eq!(
+                queue
+                    .authorize_backend_gc(
+                        id,
+                        &registry,
+                        &catalog,
+                        now,
+                        EvictionRequirements::default(),
+                    )
+                    .unwrap(),
+                vec![hash(1), hash(2)]
+            );
+
+            other.residency = Residency::Resident { bytes: 14 };
+            registry.put(other).unwrap();
+            assert!(matches!(
+                queue.authorize_backend_gc(
                     id,
                     &registry,
                     &catalog,
                     now,
                     EvictionRequirements::default(),
-                )
-                .unwrap(),
-            vec![hash(1), hash(2)]
-        );
+                ),
+                Err(BackendGcAuthorizationError::Queue(
+                    EvictionQueueError::FreshPlanMismatch(found)
+                )) if found == id
+            ));
+        }
+        // Phase `completion_requires_one_exact_all_absent_sample_and_is_durable`.
+        {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join("evictions.json");
+            let plan = queued_plan(FileRecordId::new(), FileVersionId::new());
+            let mut queue = EvictionQueue::open(&path).unwrap();
+            let id = queue.enqueue(&plan, 100).unwrap().id;
 
-        other.residency = Residency::Resident { bytes: 14 };
-        registry.put(other).unwrap();
-        assert!(matches!(
-            queue.authorize_backend_gc(
-                id,
-                &registry,
-                &catalog,
-                now,
-                EvictionRequirements::default(),
-            ),
-            Err(BackendGcAuthorizationError::Queue(
-                EvictionQueueError::FreshPlanMismatch(found)
-            )) if found == id
-        ));
-    }
-
-    #[test]
-    fn partial_and_unknown_sizes_never_look_complete() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join("evictions.json");
-        let plan = queued_plan(FileRecordId::new(), FileVersionId::new());
-        let mut queue = EvictionQueue::open(&path).unwrap();
-        let id = queue.enqueue(&plan, 100).unwrap().id;
-
-        let observation = queue
-            .record_observation(
-                id,
-                vec![
-                    (
-                        hash(7),
-                        ObservedBlobState::Present {
-                            resident_bytes: None,
-                        },
-                    ),
-                    (
-                        hash(8),
-                        ObservedBlobState::Present {
-                            resident_bytes: Some(12),
-                        },
-                    ),
-                ],
-                200,
-            )
-            .unwrap();
-        assert_eq!(observation.state, EvictionRequestState::AwaitingBackendGc);
-        assert_eq!(observation.remaining_hashes, vec![hash(7), hash(8)]);
-        assert_eq!(observation.observed_remaining_bytes, 12);
-        assert_eq!(observation.unaccounted_remaining_blobs, 1);
-        assert_eq!(
-            EvictionQueue::open(&path).unwrap().get(id).unwrap().state,
-            EvictionRequestState::AwaitingBackendGc
-        );
-    }
-
-    #[test]
-    fn completion_requires_one_exact_all_absent_sample_and_is_durable() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join("evictions.json");
-        let plan = queued_plan(FileRecordId::new(), FileVersionId::new());
-        let mut queue = EvictionQueue::open(&path).unwrap();
-        let id = queue.enqueue(&plan, 100).unwrap().id;
-
-        assert!(matches!(
-            queue.record_observation(
-                id,
-                vec![(hash(7), ObservedBlobState::Absent)],
-                200
-            ),
-            Err(EvictionQueueError::IncompleteObservation(found)) if found == id
-        ));
-        assert_eq!(
-            queue.get(id).unwrap().state,
-            EvictionRequestState::AwaitingBackendGc
-        );
-
-        let completed = queue
-            .record_observation(
-                id,
-                vec![
-                    (hash(7), ObservedBlobState::Absent),
-                    (hash(8), ObservedBlobState::Absent),
-                ],
-                300,
-            )
-            .unwrap();
-        assert_eq!(
-            completed.state,
-            EvictionRequestState::Completed {
-                observed_at_ms: 300
-            }
-        );
-        let mut reopened = EvictionQueue::open(&path).unwrap();
-        assert_eq!(reopened.get(id).unwrap().state, completed.state);
-
-        // Completion is a historical fact and never gets a later timestamp.
-        let repeated = reopened
-            .record_observation(
-                id,
-                vec![
-                    (hash(7), ObservedBlobState::Absent),
-                    (hash(8), ObservedBlobState::Absent),
-                ],
-                999,
-            )
-            .unwrap();
-        assert_eq!(repeated.state, completed.state);
-        assert!(matches!(
-            reopened.revalidate_for_backend_gc(id, &plan),
-            Err(EvictionQueueError::RequestNotPending(found)) if found == id
-        ));
-    }
-
-    #[test]
-    fn captured_policy_roots_fail_closed_for_missing_or_cyclic_ancestry() {
-        let child_id = FileRecordId::new();
-        let missing = FileRecordId::new();
-        let mut child = RecordAvailability::new(child_id, RecordKind::File);
-        child.parent = Some(missing);
-        assert!(captured_effective_pinned(&[child.clone()], child_id));
-
-        child.parent = Some(child_id);
-        assert!(captured_effective_pinned(&[child], child_id));
-    }
-
-    #[test]
-    fn batch_safe_plans_match_single_plans_for_shared_and_partial_payloads() {
-        let temp = TempDir::new().unwrap();
-        let mut registry =
-            AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-        let now = unix_now_ms();
-        let first = FileRecordId::new();
-        let first_version = FileVersionId::new();
-        let second = FileRecordId::new();
-        let second_version = FileVersionId::new();
-        registry
-            .put(resident_file(first, first_version, now))
-            .unwrap();
-        registry
-            .put(resident_file(second, second_version, now))
-            .unwrap();
-        let catalog = EvictionCatalog::new([
-            payload(
-                first,
-                first_version,
-                (1, Some(4)),
-                &[(7, Some(9)), (8, None)],
-            ),
-            payload(
-                second,
-                second_version,
-                (2, Some(4)),
-                &[(7, Some(9)), (9, None)],
-            ),
-        ])
-        .unwrap();
-        let batch = batch_plan_safe(&registry, &catalog, &[first, second], now);
-        for record in [first, second] {
+            assert!(matches!(
+                queue.record_observation(
+                    id,
+                    vec![(hash(7), ObservedBlobState::Absent)],
+                    200
+                ),
+                Err(EvictionQueueError::IncompleteObservation(found)) if found == id
+            ));
             assert_eq!(
-                batch.get(&record).and_then(Option::as_ref),
-                Some(
-                    &plan_safe_eviction(
-                        &registry,
-                        &catalog,
-                        record,
-                        now,
-                        EvictionRequirements::default()
-                    )
-                    .unwrap()
-                )
+                queue.get(id).unwrap().state,
+                EvictionRequestState::AwaitingBackendGc
             );
+
+            let completed = queue
+                .record_observation(
+                    id,
+                    vec![
+                        (hash(7), ObservedBlobState::Absent),
+                        (hash(8), ObservedBlobState::Absent),
+                    ],
+                    300,
+                )
+                .unwrap();
+            assert_eq!(
+                completed.state,
+                EvictionRequestState::Completed {
+                    observed_at_ms: 300
+                }
+            );
+            let mut reopened = EvictionQueue::open(&path).unwrap();
+            assert_eq!(reopened.get(id).unwrap().state, completed.state);
+
+            // Completion is a historical fact and never gets a later timestamp.
+            let repeated = reopened
+                .record_observation(
+                    id,
+                    vec![
+                        (hash(7), ObservedBlobState::Absent),
+                        (hash(8), ObservedBlobState::Absent),
+                    ],
+                    999,
+                )
+                .unwrap();
+            assert_eq!(repeated.state, completed.state);
+            assert!(matches!(
+                reopened.revalidate_for_backend_gc(id, &plan),
+                Err(EvictionQueueError::RequestNotPending(found)) if found == id
+            ));
         }
     }
 }

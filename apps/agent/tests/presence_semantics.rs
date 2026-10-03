@@ -7,12 +7,10 @@
     reason = "integration-test setup and assertions"
 )]
 
-use std::time::{Duration, Instant};
-
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use ui::presence::PresenceKey;
 
-mod typed_peer;
+use crate::typed_peer;
 use typed_peer::TypedPeer;
 
 fn hello(handle: &str) -> CollabRequest {
@@ -20,6 +18,7 @@ fn hello(handle: &str) -> CollabRequest {
         app_id: "so.tilo.word-processor".into(),
         cluster_id: typed_peer::room(),
         record: None,
+        record_kind: None,
         handle: Some(handle.into()),
     }
 }
@@ -30,10 +29,8 @@ fn send_until_presence(
     request: &CollabRequest,
     expected: &(PresenceKey, PresencePayload),
 ) -> (PresenceKey, PresencePayload) {
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(3))
-        .expect("short test deadline fits in Instant");
-    while Instant::now() < deadline {
+    let deadline = tilo_test_env::hang_deadline();
+    while ui::time::now() < deadline {
         sender.send(request).expect("publish typed presence");
         if let Some(CollabEvent::RemotePresenceUpdate { key, payload, .. }) = receiver
             .recv()

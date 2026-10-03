@@ -2,8 +2,8 @@
 //!
 //! [`VideoEncoder`] takes RGBA frames (the format vello/wgpu reads back into,
 //! and what `GStreamer`'s `videoconvert` hands a `pipewiresrc` `ScreenCast`
-//! capture) and returns one compressed access unit per frame, ready to ship
-//! as a [`crate::stream::SurfaceFrame`] payload. It is a thin shell over
+//! capture) and returns compressed access units, ready to ship as
+//! [`crate::stream::SurfaceFrame`] payloads. It is a thin shell over
 //! [`media::RealtimeEncoder`], which picks the element: hardware first, then
 //! royalty-free software (VP9, AV1), then Cisco's `openh264` binary loaded by
 //! the system for H.264.
@@ -14,6 +14,7 @@
 
 use std::time::Duration;
 
+use media::EncodedUnit;
 use media::realtime::{EncoderConfig, InputFormat, InputFrame, RealtimeEncoder, StreamCodec};
 
 /// Default target bitrate, in bits per second.
@@ -145,15 +146,18 @@ impl VideoEncoder {
     }
 
     /// Encodes one RGBA frame (row-major, no padding, `width * height * 4`
-    /// bytes) and returns its access unit with parameter sets on keyframes.
-    /// An empty vector means the encoder produced nothing for this frame.
+    /// bytes) and returns every access unit the encoder has finished, in
+    /// order, with parameter sets on keyframes. Usually that is this frame's
+    /// unit; a frame the encoder is still working on comes back with the
+    /// next call (or [`Self::finish`]). Keep every unit: later ones
+    /// reference it.
     ///
     /// # Errors
     ///
     /// Returns [`EncodeError::BufferSize`] if `rgba` isn't exactly `width *
     /// height * 4` bytes, or [`EncodeError::Backend`] if the encoder fails.
     #[tracing::instrument(level = "trace", skip(self, rgba), fields(width = self.width, height = self.height))]
-    pub fn encode(&mut self, rgba: &[u8]) -> Result<Vec<u8>, EncodeError> {
+    pub fn encode(&mut self, rgba: &[u8]) -> Result<Vec<EncodedUnit>, EncodeError> {
         let ts_ms = self
             .frame_idx
             .saturating_mul(1000)
@@ -168,23 +172,11 @@ impl VideoEncoder {
     /// # Errors
     ///
     /// As [`Self::encode`].
-    pub fn encode_at_ms(&mut self, rgba: &[u8], ts_ms: u64) -> Result<Vec<u8>, EncodeError> {
-        Ok(self
-            .encode_unit(rgba, ts_ms)?
-            .map(|u| u.data)
-            .unwrap_or_default())
-    }
-
-    /// Encodes one RGBA frame and returns the unit with its keyframe flag.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::encode`].
-    pub fn encode_unit(
+    pub fn encode_at_ms(
         &mut self,
         rgba: &[u8],
         ts_ms: u64,
-    ) -> Result<Option<media::EncodedUnit>, EncodeError> {
+    ) -> Result<Vec<EncodedUnit>, EncodeError> {
         let expected = (self.width as usize)
             .saturating_mul(self.height as usize)
             .saturating_mul(4);
@@ -194,12 +186,18 @@ impl VideoEncoder {
                 got: rgba.len(),
             });
         }
-        let mut units = self
+        Ok(self
             .inner
-            .encode(InputFrame::Packed(rgba), Duration::from_millis(ts_ms))?;
-        // One frame in yields one unit; should an element ever hand back
-        // late output with the current frame, the newest wins.
-        Ok(units.pop())
+            .encode(InputFrame::Packed(rgba), Duration::from_millis(ts_ms))?)
+    }
+
+    /// Ends the stream and returns the units of frames still in flight.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EncodeError::Backend`] if the encoder fails to drain.
+    pub fn finish(self) -> Result<Vec<EncodedUnit>, EncodeError> {
+        Ok(self.inner.finish()?)
     }
 }
 
@@ -265,16 +263,29 @@ pub(crate) mod tests {
         }
     }
 
+    /// A gradient round-trips at >= 35 dB PSNR, a mis-sized buffer is caught, and the configured
+    /// keyframe interval emits periodic keyframes.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn the_encoder_keeps_quality_checks_buffer_size_and_paces_keyframes() {
+        gradient_round_trip_psnr_at_least_35_db();
+        buffer_size_mismatch_is_caught();
+        configured_keyframe_interval_emits_periodic_keyframes();
+    }
+
     fn gradient_round_trip_psnr_at_least_35_db() {
         const W: u32 = 128;
         const H: u32 = 96;
         let original = gradient_frame(W, H);
         let mut enc = software_encoder(StreamCodec::Vp9, W, H, 0);
-        let unit = enc.encode(&original).expect("encode");
-        assert!(!unit.is_empty(), "encoder produced empty bitstream");
+        let mut units = enc.encode(&original).expect("encode");
+        units.extend(enc.finish().expect("finish"));
+        let [unit] = units.as_slice() else {
+            panic!("one frame in, one unit out: {}", units.len());
+        };
+        assert!(!unit.data.is_empty(), "encoder produced empty bitstream");
         let mut dec = VideoDecoder::new(StreamCodec::Vp9);
-        let frame = dec.decode(&unit).expect("decoder yields a frame");
+        let frame = dec.decode(&unit.data).expect("decoder yields a frame");
         assert_eq!((frame.width, frame.height), (W, H));
         let strip_alpha = |buf: &[u8]| -> Vec<u8> {
             buf.chunks_exact(4)
@@ -288,7 +299,6 @@ pub(crate) mod tests {
         );
     }
 
-    #[test]
     fn buffer_size_mismatch_is_caught() {
         let mut enc = software_encoder(StreamCodec::Vp9, 32, 32, 0);
         let too_small = vec![0u8; 32 * 32 * 3]; // RGB, not RGBA
@@ -296,25 +306,33 @@ pub(crate) mod tests {
         assert!(matches!(err, EncodeError::BufferSize { .. }));
     }
 
-    #[test]
     fn configured_keyframe_interval_emits_periodic_keyframes() {
         const W: u32 = 64;
         const H: u32 = 64;
         const INTERVAL: u32 = 4;
+        const FRAMES: u32 = INTERVAL * 2 + 1;
         let mut frame = gradient_frame(W, H);
         let mut enc = software_encoder(StreamCodec::Vp9, W, H, INTERVAL);
-        let mut keyframes = Vec::new();
-        for frame_index in 0..=INTERVAL * 2 {
+        let mut units = Vec::new();
+        for frame_index in 0..FRAMES {
             // Change the picture so the encoder cannot skip it.
             frame[0] = u8::try_from(frame_index).unwrap();
-            let unit = enc
-                .encode_unit(&frame, u64::from(frame_index) * 33)
-                .expect("encode")
-                .expect("one unit per frame");
-            if unit.keyframe {
-                keyframes.push(frame_index);
-            }
+            units.extend(
+                enc.encode_at_ms(&frame, u64::from(frame_index) * 33)
+                    .expect("encode"),
+            );
         }
+        units.extend(enc.finish().expect("finish"));
+        assert_eq!(
+            units.len(),
+            usize::try_from(FRAMES).unwrap(),
+            "one unit per frame"
+        );
+        let keyframes: Vec<u32> = (0..)
+            .zip(&units)
+            .filter(|(_, unit)| unit.keyframe)
+            .map(|(index, _)| index)
+            .collect();
         assert_eq!(keyframes, [0, INTERVAL, INTERVAL * 2]);
     }
 }

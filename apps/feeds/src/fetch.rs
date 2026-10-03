@@ -4,9 +4,11 @@
 //! task on the shared app runtime, and posts its [`FetchResult`] back over a
 //! channel the moment it completes, so one slow feed never holds up the
 //! others. The widget drains results during its `sync` pass and folds them
-//! into the store + CRDT. HTTP feeds go through reqwest + feed-rs; `gemini://`
-//! feeds go through a raw TLS socket (TOFU) and the gemtext parser. Parsing
-//! runs on the CPU pool, not on the runtime thread.
+//! into the store + CRDT. HTTP feeds go through `tilo_net` + feed-rs;
+//! `gemini://` feeds go through a raw TLS socket (TOFU, desktop only) and the
+//! gemtext parser. Parsing runs on the CPU pool, not on the runtime thread.
+//! In a page, feeds whose sites do not allow cross-origin reads go through
+//! the host's fetch proxy when it offers one.
 //!
 //! None of this is touched by `--shots` — the worker is created lazily on the
 //! first real fetch, so the offline screenshot stays hermetic.
@@ -152,20 +154,21 @@ impl FetchWorker {
 }
 
 /// The shared HTTP client, built on first use by the first fetch task.
-fn http_client() -> Option<&'static reqwest::Client> {
-    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
+fn http_client() -> Option<&'static tilo_net::Client> {
+    static CLIENT: OnceLock<Option<tilo_net::Client>> = OnceLock::new();
     CLIENT
         .get_or_init(|| {
-            tilo_net::http::client()
+            tilo_net::Client::builder()
                 .user_agent("Tilo-Feeds/0.1 (+https://tilo.so)")
                 .timeout(Duration::from_secs(20))
+                .fetch_proxy(tilo_net::proxy::ProxyUse::CrossOrigin)
                 .build()
                 .ok()
         })
         .as_ref()
 }
 
-async fn handle(client: Option<&reqwest::Client>, req: FetchRequest) -> FetchResult {
+async fn handle(client: Option<&tilo_net::Client>, req: FetchRequest) -> FetchResult {
     match req {
         FetchRequest::Refresh { feed_id, url, kind } => {
             match fetch_feed(client, &url, kind).await {
@@ -228,7 +231,7 @@ async fn handle(client: Option<&reqwest::Client>, req: FetchRequest) -> FetchRes
 
 /// Fetch + parse a feed, returning (title, articles).
 async fn fetch_feed(
-    client: Option<&reqwest::Client>,
+    client: Option<&tilo_net::Client>,
     url: &str,
     kind: FeedKind,
 ) -> Result<(Option<String>, Vec<Article>), String> {
@@ -244,11 +247,17 @@ async fn fetch_feed(
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status().as_u16()));
     }
-    let bytes = resp.bytes().await.map_err(|e| format!("body: {e}"))?;
+    let bytes = resp
+        .bytes_limited(MAX_FEED_BYTES)
+        .await
+        .map_err(|e| format!("body: {e}"))?;
     ui::rt::cpu(move || parse_http_feed(&bytes))
         .await
         .map_err(|e| format!("parse: {e}"))?
 }
+
+/// The largest feed or gemini page read; bigger answers are refused.
+const MAX_FEED_BYTES: usize = 16 * 1024 * 1024;
 
 /// Parse RSS/Atom/JSON-feed bytes into our model via feed-rs.
 fn parse_http_feed(bytes: &[u8]) -> Result<(Option<String>, Vec<Article>), String> {
@@ -368,9 +377,7 @@ async fn fetch_gemini(url: &str) -> Result<(Option<String>, Vec<Article>), Strin
 }
 
 async fn gemini_request(url: &str) -> Result<String, String> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpStream;
-    use tokio_rustls::TlsConnector;
+    use tilo_net::sockets::{TlsStream, Trust};
 
     let rest = url.strip_prefix("gemini://").unwrap_or(url);
     let host_port_end = rest.find('/').unwrap_or(rest.len());
@@ -380,26 +387,21 @@ async fn gemini_request(url: &str) -> Result<String, String> {
         None => (host.to_string(), 1965u16),
     };
 
-    let config = gemini_tls_config()?;
-    let connector = TlsConnector::from(std::sync::Arc::new(config));
-    let server_name = tokio_rustls::rustls::pki_types::ServerName::try_from(host_only.clone())
-        .map_err(|_| "bad host".to_string())?;
-
-    let tcp = TcpStream::connect((host_only.as_str(), port))
+    // Gemini servers overwhelmingly use self-signed certificates, so the
+    // protocol relies on trust on first use rather than a CA chain. Any
+    // certificate is accepted; a production reader would pin
+    // `peer_certificate()` on first contact.
+    let mut tls = TlsStream::connect(&host_only, port, Trust::AnyCertificate)
         .await
         .map_err(|e| format!("connect: {e}"))?;
-    let mut tls = connector
-        .connect(server_name, tcp)
-        .await
-        .map_err(|e| format!("tls: {e}"))?;
 
     let request = format!("{url}\r\n");
     tls.write_all(request.as_bytes())
         .await
         .map_err(|e| format!("write: {e}"))?;
 
-    let mut raw = Vec::new();
-    tls.read_to_end(&mut raw)
+    let raw = tls
+        .read_to_end(MAX_FEED_BYTES)
         .await
         .map_err(|e| format!("read: {e}"))?;
 
@@ -418,158 +420,86 @@ async fn gemini_request(url: &str) -> Result<String, String> {
     Ok(text.get(nl + 2..).unwrap_or_default().to_string())
 }
 
-fn gemini_tls_config() -> Result<tokio_rustls::rustls::ClientConfig, String> {
-    use tokio_rustls::rustls::ClientConfig;
-
-    // Pin the `ring` provider explicitly rather than depending on a
-    // process-wide default being installed (reqwest may register a
-    // different backend; relying on the global default would be a panic
-    // risk). `ring` is enabled via this crate's tokio-rustls feature.
-    let provider = std::sync::Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
-    let config = ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .map_err(|e| format!("tls config: {e}"))?
-        .dangerous()
-        .with_custom_certificate_verifier(std::sync::Arc::new(TofuVerifier))
-        .with_no_client_auth();
-    Ok(config)
-}
-
-/// Trust-on-first-use cert verifier. Gemini servers overwhelmingly use
-/// self-signed certificates, so the protocol relies on TOFU rather than a
-/// CA chain. We accept any presented certificate; a production reader
-/// would pin the fingerprint on first contact.
-#[derive(Debug)]
-struct TofuVerifier;
-
-impl tokio_rustls::rustls::client::danger::ServerCertVerifier for TofuVerifier {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[tokio_rustls::rustls::pki_types::CertificateDer<'_>],
-        _server_name: &tokio_rustls::rustls::pki_types::ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: tokio_rustls::rustls::pki_types::UnixTime,
-    ) -> Result<tokio_rustls::rustls::client::danger::ServerCertVerified, tokio_rustls::rustls::Error>
-    {
-        Ok(tokio_rustls::rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
-        _dss: &tokio_rustls::rustls::DigitallySignedStruct,
-    ) -> Result<
-        tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
-        tokio_rustls::rustls::Error,
-    > {
-        Ok(tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
-        _dss: &tokio_rustls::rustls::DigitallySignedStruct,
-    ) -> Result<
-        tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
-        tokio_rustls::rustls::Error,
-    > {
-        Ok(tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<tokio_rustls::rustls::SignatureScheme> {
-        use tokio_rustls::rustls::SignatureScheme as S;
-        vec![
-            S::RSA_PKCS1_SHA256,
-            S::RSA_PKCS1_SHA384,
-            S::RSA_PKCS1_SHA512,
-            S::ECDSA_NISTP256_SHA256,
-            S::ECDSA_NISTP384_SHA384,
-            S::RSA_PSS_SHA256,
-            S::RSA_PSS_SHA384,
-            S::RSA_PSS_SHA512,
-            S::ED25519,
-        ]
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Fetching derives site URLs, parses RSS bytes and polls the worker without blocking.
     #[test]
-    fn derive_site_url_drops_path() {
-        assert_eq!(
-            derive_site_url("https://blog.rust-lang.org/feed.xml"),
-            "https://blog.rust-lang.org"
-        );
-        assert_eq!(
-            derive_site_url("gemini://example.org/foo/bar"),
-            "gemini://example.org"
-        );
-    }
-
-    #[test]
-    fn worker_send_is_nonblocking_and_poll_drains() {
-        use std::time::Instant;
-
-        // A worker with no fetch thread. Enqueuing must be instant (no I/O).
-        let (mut w, res_tx) = FetchWorker::for_test();
-        let start = Instant::now();
-        for _ in 0..50 {
-            w.send(FetchRequest::Refresh {
-                feed_id: Uuid::new_v4(),
-                url: "https://example.invalid/feed.xml".into(),
-                kind: FeedKind::Rss,
-            });
+    fn fetch_parses_feeds_and_polls_the_worker_without_blocking() {
+        // --- phase: derive_site_url_drops_path ---
+        {
+            assert_eq!(
+                derive_site_url("https://blog.rust-lang.org/feed.xml"),
+                "https://blog.rust-lang.org"
+            );
+            assert_eq!(
+                derive_site_url("gemini://example.org/foo/bar"),
+                "gemini://example.org"
+            );
         }
-        // 50 enqueues with bogus URLs return in well under a frame budget,
-        // proving `send` never fetches.
-        assert!(start.elapsed().as_millis() < 50, "enqueue must not block");
-        assert_eq!(w.pending(), 50);
 
-        // Nothing drained yet.
-        assert!(w.poll().is_empty());
+        // --- phase: worker_send_is_nonblocking_and_poll_drains ---
+        {
+            fn worker_send_is_nonblocking_and_poll_drains() {
+                // A worker with no fetch thread. Enqueuing must be instant (no I/O).
+                let (mut w, res_tx) = FetchWorker::for_test();
+                let start = ui::time::now();
+                for _ in 0..50 {
+                    w.send(FetchRequest::Refresh {
+                        feed_id: Uuid::new_v4(),
+                        url: "https://example.invalid/feed.xml".into(),
+                        kind: FeedKind::Rss,
+                    });
+                }
+                // 50 enqueues with bogus URLs return in well under a frame budget,
+                // proving `send` never fetches.
+                assert!(start.elapsed().as_millis() < 50, "enqueue must not block");
+                assert_eq!(w.pending(), 50);
 
-        // A "worker thread" posts a result; the UI drains it non-blockingly.
-        let fid = Uuid::new_v4();
-        res_tx
-            .send(FetchResult::Articles {
-                feed_id: fid,
-                title: Some("T".into()),
-                articles: vec![],
-            })
-            .unwrap();
-        let drained = w.poll();
-        assert_eq!(drained.len(), 1);
-        assert_eq!(w.pending(), 49, "poll decrements the in-flight counter");
-        match &drained[0] {
-            FetchResult::Articles { feed_id, .. } => assert_eq!(*feed_id, fid),
-            _ => panic!("wrong result variant"),
+                // Nothing drained yet.
+                assert!(w.poll().is_empty());
+
+                // A "worker thread" posts a result; the UI drains it non-blockingly.
+                let fid = Uuid::new_v4();
+                res_tx
+                    .send(FetchResult::Articles {
+                        feed_id: fid,
+                        title: Some("T".into()),
+                        articles: vec![],
+                    })
+                    .unwrap();
+                let drained = w.poll();
+                assert_eq!(drained.len(), 1);
+                assert_eq!(w.pending(), 49, "poll decrements the in-flight counter");
+                match &drained[0] {
+                    FetchResult::Articles { feed_id, .. } => assert_eq!(*feed_id, fid),
+                    _ => panic!("wrong result variant"),
+                }
+            }
+            worker_send_is_nonblocking_and_poll_drains();
         }
-    }
 
-    #[test]
-    fn parse_rss_bytes() {
-        let rss = r#"<?xml version="1.0"?>
+        // --- phase: parse_rss_bytes ---
+        {
+            let rss = r#"<?xml version="1.0"?>
         <rss version="2.0"><channel>
           <title>Test Feed</title>
           <item><title>First</title><link>https://x.com/1</link>
             <description>&lt;p&gt;Hello world&lt;/p&gt;</description>
             <pubDate>Mon, 30 Jun 2025 12:00:00 GMT</pubDate></item>
         </channel></rss>"#;
-        let (title, articles) = parse_http_feed(rss.as_bytes()).unwrap();
-        assert_eq!(title.as_deref(), Some("Test Feed"));
-        assert_eq!(articles.len(), 1);
-        assert_eq!(articles[0].title, "First");
-        assert_eq!(articles[0].url, "https://x.com/1");
-        assert!(
-            articles[0]
-                .blocks
-                .iter()
-                .any(|b| b.text.contains("Hello world"))
-        );
+            let (title, articles) = parse_http_feed(rss.as_bytes()).unwrap();
+            assert_eq!(title.as_deref(), Some("Test Feed"));
+            assert_eq!(articles.len(), 1);
+            assert_eq!(articles[0].title, "First");
+            assert_eq!(articles[0].url, "https://x.com/1");
+            assert!(
+                articles[0]
+                    .blocks
+                    .iter()
+                    .any(|b| b.text.contains("Hello world"))
+            );
+        }
     }
 }

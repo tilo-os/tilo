@@ -4,7 +4,6 @@
 //! primitive is unit-testable without a winit event loop or a wall clock.
 
 use crate::time::{Duration, Instant};
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -257,8 +256,6 @@ const TOOLTIP_WIDTH: f64 = 220.0;
 const TOOLTIP_HEIGHT: f64 = 28.0;
 
 impl Widget for Tooltip {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -330,18 +327,7 @@ impl Widget for Tooltip {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Without an anchor the widget stays driven by the explicit
         // on_hover_*/tick API.
         if self.anchor == Rect::ZERO {
@@ -349,7 +335,7 @@ impl Widget for Tooltip {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let inside = self.anchor.contains(p);
                 if inside && self.hover_since.is_none() {
                     self.on_hover_enter(Duration::ZERO);
@@ -491,6 +477,22 @@ impl TooltipHost {
         }
     }
 
+    /// What the region under a shown tooltip says now: a new label for the
+    /// same region replaces the shown one without restarting the dwell; the
+    /// region gone or moved hides it.
+    pub fn refresh(&mut self, target: Option<(Rect, String)>) {
+        let Some(current) = &mut self.target else {
+            return;
+        };
+        match target {
+            Some((anchor, label)) if anchor == current.anchor => current.label = label,
+            _ => {
+                self.target = None;
+                self.visible = false;
+            }
+        }
+    }
+
     /// Returns whether anything was showing/pending, so the caller can
     /// request a redraw to clear the chip.
     pub fn dismiss(&mut self) -> bool {
@@ -531,79 +533,94 @@ mod host_tests {
     }
 
     #[test]
-    fn hovering_past_dwell_reveals_then_leaving_hides() {
-        let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
-        let t0 = crate::time::now();
-        assert!(
-            h.on_pointer(Some(tip("Search")), t0),
-            "new target changes state"
-        );
-        assert!(h.visible().is_none(), "not shown before the dwell elapses");
-        assert!(h.needs_frame(), "a pending reveal pumps frames");
-
-        // A tick short of the dwell keeps it hidden.
-        h.tick(t0 + Duration::from_millis(300));
-        assert!(h.visible().is_none());
-
-        // Past the dwell it reveals — with the region's label + anchor.
-        assert!(h.tick(t0 + Duration::from_millis(600)), "becomes visible");
-        let (label, anchor) = h.visible().expect("revealed after dwell");
-        assert_eq!(label, "Search");
-        assert_eq!(anchor, Rect::new(0.0, 0.0, 40.0, 40.0));
-        assert!(!h.needs_frame(), "no frame pump once shown");
-
-        // Leaving the region (pointer over nothing) hides it immediately.
-        assert!(h.on_pointer(None, t0 + Duration::from_millis(650)));
-        assert!(h.visible().is_none(), "hides on leave");
+    fn a_shown_tooltip_reads_its_region_again() {
+        let mut host = TooltipHost::new().with_dwell(Duration::ZERO);
+        let now = crate::time::now();
+        host.on_pointer(Some(tip("Hide layer")), now);
+        host.tick(now);
+        host.refresh(Some(tip("Show layer")));
+        assert_eq!(host.visible().map(|(label, _)| label), Some("Show layer"));
+        host.refresh(None);
+        assert!(host.visible().is_none(), "the region is gone");
     }
 
     #[test]
-    fn click_scroll_or_key_dismisses_a_shown_tooltip() {
-        let mut h = TooltipHost::new().with_dwell(Duration::ZERO);
-        let t0 = crate::time::now();
-        h.on_pointer(Some(tip("Zoom in")), t0);
-        assert!(h.visible().is_some(), "zero-dwell shows on hover");
-        assert!(h.dismiss(), "dismiss reports it was showing");
-        assert!(h.visible().is_none(), "click/scroll/key hides it");
-        // Staying on the same region after a dismiss does not re-show until a
-        // fresh pointer move re-targets it.
-        assert!(h.visible().is_none());
-    }
+    fn tooltip_host_dwell_reveals_restarts_and_dismisses() {
+        // Case `hovering_past_dwell_reveals_then_leaving_hides`.
+        {
+            let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
+            let t0 = crate::time::now();
+            assert!(
+                h.on_pointer(Some(tip("Search")), t0),
+                "new target changes state"
+            );
+            assert!(h.visible().is_none(), "not shown before the dwell elapses");
+            assert!(h.needs_frame(), "a pending reveal pumps frames");
 
-    #[test]
-    fn moving_between_regions_restarts_the_dwell() {
-        let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
-        let t0 = crate::time::now();
-        h.on_pointer(Some(tip("Back")), t0);
-        // Almost revealed on the first region…
-        h.tick(t0 + Duration::from_millis(450));
-        assert!(h.visible().is_none());
-        // …then the pointer crosses to a different region: the dwell restarts,
-        // so a tick that *would* have revealed the first one does not reveal
-        // the second.
-        let other = Some((Rect::new(50.0, 0.0, 90.0, 40.0), "Forward".to_string()));
-        assert!(h.on_pointer(other, t0 + Duration::from_millis(460)));
-        h.tick(t0 + Duration::from_millis(600));
-        assert!(h.visible().is_none(), "dwell restarted on the new region");
-        // Only after a full fresh dwell on the second region does it show.
-        h.tick(t0 + Duration::from_millis(960));
-        assert_eq!(h.visible().map(|(l, _)| l), Some("Forward"));
-    }
+            // A tick short of the dwell keeps it hidden.
+            h.tick(t0 + Duration::from_millis(300));
+            assert!(h.visible().is_none());
 
-    #[test]
-    fn jitter_within_one_region_keeps_the_dwell() {
-        let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
-        let t0 = crate::time::now();
-        h.on_pointer(Some(tip("Search")), t0);
-        // The pointer keeps reporting the same region (a stable rect+label)
-        // as it jitters — the accumulated dwell must not reset.
-        h.on_pointer(Some(tip("Search")), t0 + Duration::from_millis(200));
-        h.on_pointer(Some(tip("Search")), t0 + Duration::from_millis(400));
-        assert!(
-            h.on_pointer(Some(tip("Search")), t0 + Duration::from_millis(550)),
-            "crossing the threshold on a jitter move flips to visible"
-        );
-        assert_eq!(h.visible().map(|(l, _)| l), Some("Search"));
+            // Past the dwell it reveals — with the region's label + anchor.
+            assert!(h.tick(t0 + Duration::from_millis(600)), "becomes visible");
+            let (label, anchor) = h.visible().expect("revealed after dwell");
+            assert_eq!(label, "Search");
+            assert_eq!(anchor, Rect::new(0.0, 0.0, 40.0, 40.0));
+            assert!(!h.needs_frame(), "no frame pump once shown");
+
+            // Leaving the region (pointer over nothing) hides it immediately.
+            assert!(h.on_pointer(None, t0 + Duration::from_millis(650)));
+            assert!(h.visible().is_none(), "hides on leave");
+        }
+
+        // Case `click_scroll_or_key_dismisses_a_shown_tooltip`.
+        {
+            let mut h = TooltipHost::new().with_dwell(Duration::ZERO);
+            let t0 = crate::time::now();
+            h.on_pointer(Some(tip("Zoom in")), t0);
+            assert!(h.visible().is_some(), "zero-dwell shows on hover");
+            assert!(h.dismiss(), "dismiss reports it was showing");
+            assert!(h.visible().is_none(), "click/scroll/key hides it");
+            // Staying on the same region after a dismiss does not re-show until a
+            // fresh pointer move re-targets it.
+            assert!(h.visible().is_none());
+        }
+
+        // Case `moving_between_regions_restarts_the_dwell`.
+        {
+            let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
+            let t0 = crate::time::now();
+            h.on_pointer(Some(tip("Back")), t0);
+            // Almost revealed on the first region…
+            h.tick(t0 + Duration::from_millis(450));
+            assert!(h.visible().is_none());
+            // …then the pointer crosses to a different region: the dwell restarts,
+            // so a tick that *would* have revealed the first one does not reveal
+            // the second.
+            let other = Some((Rect::new(50.0, 0.0, 90.0, 40.0), "Forward".to_string()));
+            assert!(h.on_pointer(other, t0 + Duration::from_millis(460)));
+            h.tick(t0 + Duration::from_millis(600));
+            assert!(h.visible().is_none(), "dwell restarted on the new region");
+            // Only after a full fresh dwell on the second region does it show.
+            h.tick(t0 + Duration::from_millis(960));
+            assert_eq!(h.visible().map(|(l, _)| l), Some("Forward"));
+        }
+
+        // Case `jitter_within_one_region_keeps_the_dwell`.
+        {
+            let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
+            let t0 = crate::time::now();
+            h.on_pointer(Some(tip("Search")), t0);
+            // The pointer keeps reporting the same region (a stable rect+label)
+            // as it jitters — the accumulated dwell must not reset.
+            h.on_pointer(Some(tip("Search")), t0 + Duration::from_millis(200));
+            h.on_pointer(Some(tip("Search")), t0 + Duration::from_millis(400));
+            assert!(
+                h.on_pointer(Some(tip("Search")), t0 + Duration::from_millis(550)),
+                "crossing the threshold on a jitter move flips to visible"
+            );
+            assert_eq!(h.visible().map(|(l, _)| l), Some("Search"));
+        }
     }
 
     #[test]
@@ -651,6 +668,7 @@ mod host_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
 
     fn feed(t: &mut Tooltip, p: Point) {
         let mut tree = TaffyTree::<()>::new();
@@ -665,70 +683,75 @@ mod tests {
         };
         t.handle_event(
             &ev,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 
     #[test]
-    fn hovering_anchor_enters_and_leaving_dismisses() {
-        // Zero delay → reveal is immediate on enter (on_hover_enter flips it).
-        let mut t = Tooltip::new("Save")
-            .with_delay(Duration::ZERO)
-            .with_anchor(Rect::new(0.0, 0.0, 100.0, 30.0));
-        assert!(!t.is_visible());
-        feed(&mut t, Point::new(50.0, 15.0)); // inside anchor
-        assert!(t.is_visible(), "zero-delay tooltip shows on hover-enter");
-        feed(&mut t, Point::new(500.0, 500.0)); // outside
-        assert!(!t.is_visible(), "hides on hover-leave");
-    }
+    fn anchored_tooltip_reveals_after_delay_and_is_inert_without_an_anchor() {
+        // Case `hovering_anchor_enters_and_leaving_dismisses`.
+        {
+            // Zero delay → reveal is immediate on enter (on_hover_enter flips it).
+            let mut t = Tooltip::new("Save")
+                .with_delay(Duration::ZERO)
+                .with_anchor(Rect::new(0.0, 0.0, 100.0, 30.0));
+            assert!(!t.is_visible());
+            feed(&mut t, Point::new(50.0, 15.0)); // inside anchor
+            assert!(t.is_visible(), "zero-delay tooltip shows on hover-enter");
+            feed(&mut t, Point::new(500.0, 500.0)); // outside
+            assert!(!t.is_visible(), "hides on hover-leave");
+        }
 
-    #[test]
-    fn delayed_tooltip_requests_frames_while_pending() {
-        let mut t = Tooltip::new("Later")
-            .with_delay(Duration::from_millis(600))
-            .with_anchor(Rect::new(0.0, 0.0, 80.0, 24.0));
-        assert!(!t.needs_animation_frame());
-        feed(&mut t, Point::new(10.0, 10.0)); // enter
-        // Pending (not yet visible) → host must keep pumping frames.
-        assert!(t.needs_animation_frame());
-        assert!(!t.is_visible());
-    }
+        // Case `delayed_tooltip_requests_frames_while_pending`.
+        {
+            let mut t = Tooltip::new("Later")
+                .with_delay(Duration::from_millis(600))
+                .with_anchor(Rect::new(0.0, 0.0, 80.0, 24.0));
+            assert!(!t.needs_animation_frame());
+            feed(&mut t, Point::new(10.0, 10.0)); // enter
+            // Pending (not yet visible) → host must keep pumping frames.
+            assert!(t.needs_animation_frame());
+            assert!(!t.is_visible());
+        }
 
-    #[test]
-    fn accessibility_reports_tooltip_role_label_and_hidden() {
-        use crate::a11y::Role;
-        // A freshly-built tooltip is not yet visible → hidden from the tree.
-        let mut t = Tooltip::new("Save").with_delay(Duration::ZERO);
-        let node = Widget::accessibility(&t).expect("tooltip is not presentational");
-        assert_eq!(node.role, Role::Tooltip);
-        assert_eq!(node.name.as_deref(), Some("Save"));
-        assert!(node.state.hidden, "an unrevealed tooltip is hidden");
+        // Case `accessibility_reports_tooltip_role_label_and_hidden`.
+        {
+            use crate::a11y::Role;
+            // A freshly-built tooltip is not yet visible → hidden from the tree.
+            let mut t = Tooltip::new("Save").with_delay(Duration::ZERO);
+            let node = Widget::accessibility(&t).expect("tooltip is not presentational");
+            assert_eq!(node.role, Role::Tooltip);
+            assert_eq!(node.name.as_deref(), Some("Save"));
+            assert!(node.state.hidden, "an unrevealed tooltip is hidden");
 
-        // Once revealed it is no longer hidden.
-        t.on_hover_enter(Duration::ZERO);
-        assert!(t.is_visible());
-        let node = Widget::accessibility(&t).unwrap();
-        assert!(
-            !node.state.hidden,
-            "a revealed tooltip is visible to the AT"
-        );
-    }
+            // Once revealed it is no longer hidden.
+            t.on_hover_enter(Duration::ZERO);
+            assert!(t.is_visible());
+            let node = Widget::accessibility(&t).unwrap();
+            assert!(
+                !node.state.hidden,
+                "a revealed tooltip is visible to the AT"
+            );
+        }
 
-    #[test]
-    fn without_anchor_handle_event_is_inert() {
-        // Back-compat: no anchor → explicit API still drives it.
-        let mut t = Tooltip::new("x");
-        feed(&mut t, Point::new(5.0, 5.0));
-        assert!(!t.is_visible());
-        t.on_hover_enter(Duration::ZERO);
-        t.tick(Duration::from_millis(700));
-        assert!(t.is_visible());
+        // Case `without_anchor_handle_event_is_inert`.
+        {
+            // Back-compat: no anchor → explicit API still drives it.
+            let mut t = Tooltip::new("x");
+            feed(&mut t, Point::new(5.0, 5.0));
+            assert!(!t.is_visible());
+            t.on_hover_enter(Duration::ZERO);
+            t.tick(Duration::from_millis(700));
+            assert!(t.is_visible());
+        }
     }
 }

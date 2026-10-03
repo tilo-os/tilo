@@ -7,50 +7,22 @@
 //! colour comes from a [`Theme`] token, never a literal, so the app
 //! tracks the OS theme like every other system app.
 
-use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
+use vello::kurbo::{Line, Point, Rect, Stroke};
 use vello::peniko::Color;
 
-use ui::ColorCompat;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::paint::PaintCtx;
+use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Avatar, Button, ButtonFace};
 
 use crate::model::ChangeKind;
-pub use ui::paint::{fill_rect, fill_round};
-
-/// The mutable resources shared by one immediate-mode paint pass.
-///
-/// Views previously threaded these three values through every entry point and
-/// helper independently. Keeping them together makes it impossible to pair a
-/// scene with the wrong text renderer or transform while a view is split into
-/// smaller drawing responsibilities.
-pub struct PaintCtx<'a> {
-    pub scene: &'a mut Scene,
-    pub text: &'a mut TextRenderer,
-    pub transform: Affine,
-}
-
-impl<'a> PaintCtx<'a> {
-    pub fn new(scene: &'a mut Scene, text: &'a mut TextRenderer, transform: Affine) -> Self {
-        Self {
-            scene,
-            text,
-            transform,
-        }
-    }
-
-    pub fn parts(&mut self) -> (&mut Scene, &mut TextRenderer, Affine) {
-        (self.scene, self.text, self.transform)
-    }
-}
 
 /// A card, row or control face with its derived rest edge (HIG §9.5): the
 /// fill plus a crisp 1 px inset hairline measured against that fill, so the
 /// edge registers on the dark preset where a declared `border_standard`
 /// stroke on a raised surface vanished.
-pub fn card(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, fill: Color) {
-    ui::surface::card(scene, t, rect, radius, fill);
+pub fn card(ctx: &mut PaintCtx<'_>, rect: Rect, radius: f64, fill: Color) {
+    ui::surface::card(ctx.scene, ctx.transform, rect, radius, fill);
 }
 
 /// The derived hairline for a surface painted in `fill` — what a divider
@@ -63,107 +35,38 @@ pub fn edge(fill: Color) -> Color {
 /// Paint a button through the shared face so rest, hover, disabled and
 /// primary/danger looks come from one painter. The caller keeps its own hit
 /// rect; this only paints.
-pub fn button(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
-    theme: &Theme,
-    face: &ButtonFace<'_>,
-) {
-    Button::paint(scene, t, tr, theme, face);
+pub fn button(ctx: &mut PaintCtx<'_>, face: &ButtonFace<'_>) {
+    Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, face);
 }
 
 /// Draw a horizontal hairline separator.
-pub fn hline(scene: &mut Scene, t: Affine, y: f64, x0: f64, x1: f64, color: Color) {
+pub fn hline(ctx: &mut PaintCtx<'_>, y: f64, x0: f64, x1: f64, color: Color) {
     let line = Line::new(Point::new(x0, y), Point::new(x1, y));
-    scene.stroke(&Stroke::new(1.0), t, color, None, &line);
+    ctx.scene
+        .stroke(&Stroke::new(1.0), ctx.transform, color, None, &line);
 }
 
 /// Draw a vertical hairline separator.
-pub fn vline(scene: &mut Scene, t: Affine, x: f64, y0: f64, y1: f64, color: Color) {
+pub fn vline(ctx: &mut PaintCtx<'_>, x: f64, y0: f64, y1: f64, color: Color) {
     let line = Line::new(Point::new(x, y0), Point::new(x, y1));
-    scene.stroke(&Stroke::new(1.0), t, color, None, &line);
+    ctx.scene
+        .stroke(&Stroke::new(1.0), ctx.transform, color, None, &line);
 }
 
-/// Left-aligned text at a baseline-ish position. `y` is the top of the line.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "a thin pass-through over TextRenderer::draw_text's own geometry + style params, matching the sibling draw helpers below"
-)]
-pub fn text(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
-    s: &str,
-    size: f32,
-    color: Color,
-    x: f64,
-    y: f64,
-    max_w: Option<f32>,
-) {
-    tr.draw_text(scene, s, size, color, t * Affine::translate((x, y)), max_w);
+/// The monospace style code, hashes and diff bodies are shaped in.
+#[must_use]
+pub fn mono_style(size: f32) -> TextStyle {
+    TextStyle::new(size).with_family(FontChoice::Monospace)
 }
 
-/// Weighted text variant.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "a thin pass-through over TextRenderer::draw_text_weighted's geometry and text-style parameters"
-)]
-pub fn text_weighted(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
-    s: &str,
-    size: f32,
-    color: Color,
-    x: f64,
-    y: f64,
-    max_w: Option<f32>,
-    weight: TextWeight,
-) {
-    tr.draw_text_weighted(
-        scene,
-        s,
-        size,
-        color,
-        t * Affine::translate((x, y)),
-        max_w,
-        weight,
-    );
-}
-
-/// Monospace styled text (for code, hashes, diff bodies).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "a low-level text primitive whose arguments directly select content, geometry, and colour"
-)]
-pub fn mono(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
-    s: &str,
-    size: f32,
-    color: Color,
-    x: f64,
-    y: f64,
-) {
-    tr.draw_text_styled(
-        scene,
-        s,
-        size,
-        color,
-        t * Affine::translate((x, y)),
-        None,
-        TextWeight::Regular,
-        false,
-        true,
-    );
+/// Monospace text (for code, hashes, diff bodies) with its top-left at `origin`.
+pub fn mono(ctx: &mut PaintCtx<'_>, s: &str, size: f32, color: Color, origin: Point) {
+    ctx.text(s, &mono_style(size), color, origin, None);
 }
 
 /// Measure a monospace string's advance width.
 pub fn mono_width(tr: &mut TextRenderer, s: &str, size: f32) -> f32 {
-    tr.measure_styled(s, size, None, TextWeight::Regular, false, true)
-        .0
+    tr.measure_style(s, None, &mono_style(size)).0
 }
 
 /// Top-of-line `y` that vertically centres `s` (drawn at `size`/`weight`)
@@ -187,7 +90,7 @@ pub fn centered_top(
 /// Monospace counterpart of [`centered_top`], measured with the same styled
 /// path [`mono`] paints with.
 pub fn mono_centered_top(tr: &mut TextRenderer, s: &str, size: f32, y0: f64, h: f64) -> f64 {
-    let (_, th) = tr.measure_styled(s, size, None, TextWeight::Regular, false, true);
+    let (_, th) = tr.measure_style(s, None, &mono_style(size));
     y0 + (h - f64::from(th)) / 2.0
 }
 
@@ -230,62 +133,46 @@ pub enum PillEdge {
     Bare,
 }
 
+/// How a [`pill`] is painted: its label size, label and fill colours, and edge.
+#[derive(Clone, Copy, Debug)]
+pub struct PillStyle {
+    pub size: f32,
+    pub fg: Color,
+    pub bg: Color,
+    pub edge: PillEdge,
+}
+
 /// A small rounded "pill" with a label — used for ref decorations, badges,
-/// ahead/behind counts. The label is painted at `size`; the pill is
-/// [`pill_height`] tall. Returns the advance width consumed (pill + gap).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Git decoration pills expose position, text size and label, foreground/background colors, and edge style beside render context."
-)]
-pub fn pill(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
-    x: f64,
-    y: f64,
-    size: f32,
-    label: &str,
-    fg: Color,
-    bg: Color,
-    edge: PillEdge,
-) -> f64 {
+/// ahead/behind counts. The label is painted at `style.size`; the pill is
+/// [`pill_height`] tall with its top-left at `origin`. Returns the advance
+/// width consumed (pill + gap).
+pub fn pill(ctx: &mut PaintCtx<'_>, origin: Point, label: &str, style: &PillStyle) -> f64 {
     let pad = pill_pad();
-    let height = pill_height(tr, size);
+    let height = pill_height(ctx.text, style.size);
     // Measure once with the exact style painted below: the width sizes the
     // pill and the line height centres the label in it. Centring on the
     // measured line (not the font size) removes the old `- 1.0` nudge.
-    let (tw, th) = tr.measure_weighted(label, size, None, TextWeight::Medium);
+    let label_style = TextStyle::new(style.size).with_weight(TextWeight::Medium);
+    let (tw, th) = ctx.text.measure_style(label, None, &label_style);
     let w = f64::from(tw) + pad * 2.0;
-    let rect = Rect::new(x, y, x + w, y + height);
-    match edge {
-        PillEdge::Derived => card(scene, t, rect, height / 2.0, bg),
-        PillEdge::Bare => fill_round(scene, t, rect, height / 2.0, bg),
+    let rect = Rect::from_origin_size(origin, (w, height));
+    match style.edge {
+        PillEdge::Derived => card(ctx, rect, height / 2.0, style.bg),
+        PillEdge::Bare => ctx.fill_round(rect, height / 2.0, style.bg),
     }
-    text_weighted(
-        scene,
-        tr,
-        t,
-        label,
-        size,
-        fg,
-        x + pad,
-        y + (height - f64::from(th)) / 2.0,
-        None,
-        TextWeight::Medium,
-    );
+    let label_origin = Point::new(origin.x + pad, origin.y + (height - f64::from(th)) / 2.0);
+    ctx.text(label, &label_style, style.fg, label_origin, None);
     w + 6.0
 }
 
 /// Theme colour for a diff addition row tint (translucent emerald).
 pub fn add_tint(theme: &Theme) -> Color {
-    let c = theme.tokens.colors.semantic.success;
-    Color::from_rgba8(c.r(), c.g(), c.b(), 28)
+    ui::paint::with_alpha(theme.tokens.colors.semantic.success, 28)
 }
 
 /// Theme colour for a diff deletion row tint (translucent red).
 pub fn del_tint(theme: &Theme) -> Color {
-    let c = theme.tokens.colors.semantic.danger;
-    Color::from_rgba8(c.r(), c.g(), c.b(), 28)
+    ui::paint::with_alpha(theme.tokens.colors.semantic.danger, 28)
 }
 
 /// Strong addition foreground (the +/glyph and gutter).
@@ -362,23 +249,23 @@ pub fn lane_color(theme: &Theme, lane: usize) -> Color {
 /// per-email hue (see [`author_color`]); the disc + centred monogram are
 /// painted by the shared toolkit avatar so shape/placement match every other
 /// app. Returns the disc diameter.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "a thin pass-through over the scene + geometry + style params every draw helper in this module takes"
-)]
 pub fn avatar(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
-    theme: &Theme,
-    x: f64,
-    y: f64,
+    ctx: &mut PaintCtx<'_>,
+    origin: Point,
     diameter: f64,
     name: &str,
     color: Color,
 ) -> f64 {
-    let rect = Rect::new(x, y, x + diameter, y + diameter);
+    let rect = Rect::from_origin_size(origin, (diameter, diameter));
     let initials = Avatar::initials_for_name(name);
-    Avatar::draw_at(scene, t, rect, &initials, color, theme, tr);
+    Avatar::draw_at(
+        ctx.scene,
+        ctx.transform,
+        rect,
+        &initials,
+        color,
+        ctx.theme,
+        ctx.text,
+    );
     diameter
 }

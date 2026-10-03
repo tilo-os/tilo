@@ -386,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn from_glyphs_builds_aligned_text_and_offsets() {
+    fn glyph_layer_builds_aligned_text_and_hit_tests_words_rows_and_bands() {
         let pt = sample_layer();
         assert_eq!(pt.text, "PDF text layer");
         assert_eq!(pt.chars.len(), pt.text.chars().count());
@@ -394,11 +394,92 @@ mod tests {
         for c in &pt.chars {
             assert_eq!(pt.text[c.byte_start..].chars().next(), Some(c.ch));
         }
+
+        // Centre of the first 'P' at (10,10)+(4,6).
+        let i = pt.char_at(14.0, 16.0).expect("a glyph under the point");
+        assert_eq!(pt.chars[i].ch, 'P');
+        // A point on row 2 near its start resolves to a row-2 glyph.
+        let j = pt.char_at(12.0, 36.0).expect("row-2 glyph");
+        assert!((pt.chars[j].rect.y - 30.0).abs() < 0.01);
+
+        // Selecting the whole layer yields two bands, one per row.
+        let bands = pt.bands_for_range(0, pt.chars.len());
+        assert_eq!(bands.len(), 2);
+        assert!(bands[0].y < bands[1].y);
+
+        // text "PDF text layer": glyphs 0..3="PDF", 3=' ', 4..8="text",
+        // 8=' ', 9..14="layer". Double-clicking inside a word selects it.
+        // (glyph index, expected word range or None when only the text is checked, word)
+        for (glyph, range, word) in [
+            (5, Some((4, 8)), "text"),
+            (1, Some((0, 3)), "PDF"),
+            (10, None, "layer"),
+        ] {
+            let (s, e) = pt.word_range(glyph);
+            if let Some(range) = range {
+                assert_eq!((s, e), range, "word range at glyph {glyph}");
+            }
+            assert_eq!(pt.text_for_range(s, e), word, "word at glyph {glyph}");
+        }
+
+        // Row 1 is "PDF text" + the trailing space (glyphs 0..=8); row 2 is
+        // "layer". A triple-click on row 1 selects the whole first line across
+        // the inter-word space, not just one word.
+        let (s, e) = pt.row_range(1); // inside "PDF" on row 1
+        assert_eq!(s, 0, "row starts at the first glyph");
+        // Row 1 covers "PDF text " — the eight letters + the space glyph.
+        assert_eq!(pt.text_for_range(s, e).trim_end(), "PDF text");
+        // A triple-click on row 2 stays on row 2.
+        let (s2, _) = pt.row_range(10);
+        assert!(s2 >= 9, "row 2 does not bleed into row 1: {s2}");
     }
 
     #[test]
-    fn search_finds_word_and_maps_to_real_glyph_rects() {
+    fn layer_search_honours_options_and_maps_hits_to_glyph_bands() {
         let pt = sample_layer();
+        let cs = SearchOptions {
+            case_sensitive: true,
+            ..Default::default()
+        };
+        let ww = SearchOptions {
+            whole_word: true,
+            ..Default::default()
+        };
+        // (case, query, options, expected hit count)
+        for (case, query, options, count) in [
+            (
+                "default is case-insensitive (exact case)",
+                "PDF",
+                SearchOptions::default(),
+                1,
+            ),
+            (
+                "default is case-insensitive (lowercase)",
+                "pdf",
+                SearchOptions::default(),
+                1,
+            ),
+            ("case-sensitive misses lowercase", "pdf", cs, 0),
+            ("case-sensitive finds exact case", "PDF", cs, 1),
+            // "layer" contains "aye"; whole-word must reject it, substring accept.
+            (
+                "substring accepts a word fragment",
+                "aye",
+                SearchOptions::default(),
+                1,
+            ),
+            ("whole-word rejects a word fragment", "aye", ww, 0),
+            ("the full word still matches", "layer", ww, 1),
+            (
+                "blank query finds nothing",
+                "   ",
+                SearchOptions::default(),
+                0,
+            ),
+        ] {
+            assert_eq!(pt.search(1, query, options).len(), count, "case {case}");
+        }
+
         let hits = pt.search(1, "text", SearchOptions::default());
         assert_eq!(hits.len(), 1);
         let m = hits[0];
@@ -415,23 +496,12 @@ mod tests {
             "band spans four 8pt glyphs"
         );
         assert!((bands[0].y - 10.0).abs() < 0.01, "band sits on row 1");
-    }
 
-    #[test]
-    fn search_is_case_insensitive_by_default_and_case_sensitive_on_request() {
-        let pt = sample_layer();
-        assert_eq!(pt.search(1, "PDF", SearchOptions::default()).len(), 1);
-        assert_eq!(pt.search(1, "pdf", SearchOptions::default()).len(), 1);
-        let cs = SearchOptions {
-            case_sensitive: true,
-            ..Default::default()
-        };
-        assert_eq!(
-            pt.search(1, "pdf", cs).len(),
-            0,
-            "case-sensitive misses lowercase"
-        );
-        assert_eq!(pt.search(1, "PDF", cs).len(), 1);
+        let pages = vec![PageText::default(), pt.clone()];
+        let hits = search_pages(&pages, "layer", SearchOptions::default());
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].page, 2, "second page is page 2, not index 1");
+        assert!(search_pages(&[pt], "", SearchOptions::default()).is_empty());
     }
 
     #[test]
@@ -439,7 +509,7 @@ mod tests {
         clippy::float_cmp,
         reason = "one monospace glyph advance is exactly representable"
     )]
-    fn unicode_search_maps_expanded_spelling_to_original_glyphs() {
+    fn unicode_and_bounded_layer_search_map_to_source_glyphs() {
         let text = "İ test \u{212a} TEST";
         let page = PageText::from_glyphs(
             text.chars()
@@ -447,37 +517,33 @@ mod tests {
                 .map(|(index, ch)| (ch, PtRect::new(index as f64 * 8.0, 0.0, 8.0, 12.0))),
         );
         let hits = page.search(2, "test", SearchOptions::default());
-        assert_eq!(hits.len(), 2);
         assert_eq!(
-            hits[0],
-            TextMatch {
-                page: 2,
-                char_start: 2,
-                char_len: 4
-            }
-        );
-        assert_eq!(
-            hits[1],
-            TextMatch {
-                page: 2,
-                char_start: 9,
-                char_len: 4
-            }
+            hits,
+            vec![
+                TextMatch {
+                    page: 2,
+                    char_start: 2,
+                    char_len: 4
+                },
+                TextMatch {
+                    page: 2,
+                    char_start: 9,
+                    char_len: 4
+                }
+            ]
         );
         for (query, expected, start) in [("i\u{307}", "İ", 0), ("k", "\u{212a}", 7)] {
             let hits = page.search(2, query, SearchOptions::default());
-            assert_eq!(hits.len(), 1);
-            assert_eq!(hits[0].char_start, start);
-            assert_eq!(hits[0].char_len, 1);
+            assert_eq!(hits.len(), 1, "query {query:?}");
+            assert_eq!(hits[0].char_start, start, "query {query:?}");
+            assert_eq!(hits[0].char_len, 1, "query {query:?}");
             assert_eq!(page.text_for_range(start, start + 1), expected);
             let bands = page.bands_for_range(start, start + 1);
-            assert_eq!(bands.len(), 1);
+            assert_eq!(bands.len(), 1, "query {query:?}");
             assert_eq!(bands[0].w, 8.0, "highlight covers exactly the source glyph");
         }
-    }
 
-    #[test]
-    fn unicode_whole_word_search_rejects_accented_word_fragments() {
+        // Whole-word search rejects accented word fragments.
         let page = PageText::from_glyphs(
             "étest testé e\u{301}test test\u{301} test"
                 .chars()
@@ -494,10 +560,8 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].char_start, page.chars.len() - 4);
         assert_eq!(hits[0].char_len, 4);
-    }
 
-    #[test]
-    fn search_materialization_is_bounded() {
+        // Materialisation is bounded per page and across pages.
         let text = "a".repeat(crate::model::MAX_SEARCH_RESULTS * 4);
         let page =
             PageText::from_glyphs(text.chars().map(|ch| (ch, PtRect::new(0.0, 0.0, 1.0, 1.0))));
@@ -508,88 +572,5 @@ mod tests {
         let hits = search_pages(&pages, "a", SearchOptions::default());
         assert_eq!(hits.len(), crate::model::MAX_SEARCH_RESULTS);
         assert!(hits.iter().all(|hit| hit.page == 1));
-    }
-
-    #[test]
-    fn whole_word_rejects_substrings() {
-        // "layer" contains "aye"; whole-word must reject it, substring accept.
-        let pt = sample_layer();
-        assert_eq!(pt.search(1, "aye", SearchOptions::default()).len(), 1);
-        let ww = SearchOptions {
-            whole_word: true,
-            ..Default::default()
-        };
-        assert_eq!(pt.search(1, "aye", ww).len(), 0);
-        assert_eq!(
-            pt.search(1, "layer", ww).len(),
-            1,
-            "the full word still matches"
-        );
-    }
-
-    #[test]
-    fn char_at_hits_the_glyph_under_the_point() {
-        let pt = sample_layer();
-        // Centre of the first 'P' at (10,10)+(4,6).
-        let i = pt.char_at(14.0, 16.0).expect("a glyph under the point");
-        assert_eq!(pt.chars[i].ch, 'P');
-        // A point on row 2 near its start resolves to a row-2 glyph.
-        let j = pt.char_at(12.0, 36.0).expect("row-2 glyph");
-        assert!((pt.chars[j].rect.y - 30.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn bands_split_across_rows() {
-        // Selecting the whole layer yields two bands, one per row.
-        let pt = sample_layer();
-        let bands = pt.bands_for_range(0, pt.chars.len());
-        assert_eq!(bands.len(), 2);
-        assert!(bands[0].y < bands[1].y);
-    }
-
-    #[test]
-    fn search_pages_reports_one_based_page_numbers() {
-        let pages = vec![PageText::default(), sample_layer()];
-        let hits = search_pages(&pages, "layer", SearchOptions::default());
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].page, 2, "second page is page 2, not index 1");
-    }
-
-    #[test]
-    fn empty_query_finds_nothing() {
-        let pt = sample_layer();
-        assert!(pt.search(1, "   ", SearchOptions::default()).is_empty());
-        assert!(search_pages(&[pt], "", SearchOptions::default()).is_empty());
-    }
-
-    #[test]
-    fn word_range_snaps_to_the_word_under_the_glyph() {
-        // text "PDF text layer": glyphs 0..3="PDF", 3=' ', 4..8="text",
-        // 8=' ', 9..14="layer". Double-clicking inside "text" selects it.
-        let pt = sample_layer();
-        // A glyph inside "text" (index 5 = 'e') snaps to the whole word 4..8.
-        assert_eq!(pt.word_range(5), (4, 8));
-        assert_eq!(pt.text_for_range(4, 8), "text");
-        // Inside "PDF" (index 1).
-        assert_eq!(pt.word_range(1), (0, 3));
-        assert_eq!(pt.text_for_range(0, 3), "PDF");
-        // Inside "layer" on row 2 (index 10).
-        let (s, e) = pt.word_range(10);
-        assert_eq!(pt.text_for_range(s, e), "layer");
-    }
-
-    #[test]
-    fn row_range_selects_the_whole_visual_line() {
-        // Row 1 is "PDF text" + the trailing space (glyphs 0..=8); row 2 is
-        // "layer" (glyphs 8..13, 0-based 8..13). A triple-click on row 1 selects
-        // the whole first line across the inter-word space, not just one word.
-        let pt = sample_layer();
-        let (s, e) = pt.row_range(1); // inside "PDF" on row 1
-        assert_eq!(s, 0, "row starts at the first glyph");
-        // Row 1 covers "PDF text " — the eight letters + the space glyph.
-        assert_eq!(pt.text_for_range(s, e).trim_end(), "PDF text");
-        // A triple-click on row 2 stays on row 2.
-        let (s2, _) = pt.row_range(10);
-        assert!(s2 >= 9, "row 2 does not bleed into row 1: {s2}");
     }
 }

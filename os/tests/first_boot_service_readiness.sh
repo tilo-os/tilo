@@ -44,9 +44,10 @@ if exactly_once "$growfs_unit" 'ReadWritePaths=/sysroot' \
    && exactly_once "$growfs_unit" 'PrivateNetwork=yes' \
    && exactly_once "$growfs_unit" 'PrivateMounts=yes' \
    && exactly_once "$growfs_unit" 'MountFlags=slave' \
-   && exactly_once "$growfs_unit" 'ExecStartPre=/usr/bin/mount -o remount,rw /sysroot' \
+   && exactly_once "$growfs_unit" "ExecStart=/usr/bin/sh -c 'mount -o remount,rw /sysroot && exec /usr/lib/systemd/systemd-growfs /sysroot'" \
+   && ! grep -q '^ExecStartPre=' "$growfs_unit" \
    && exactly_once "$growfs_unit" 'RestrictNamespaces=yes' \
-   && exactly_once "$growfs_unit" 'CapabilityBoundingSet=CAP_SYS_ADMIN' \
+   && exactly_once "$growfs_unit" 'CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_RESOURCE' \
    && exactly_once "$growfs_unit" 'AmbientCapabilities='; then
   ok 'background root growth remounts sysroot only in its slave namespace before resizing'
 else
@@ -58,8 +59,7 @@ fi
 # non-writable group-readable directory; public certificates remain separate.
 if grep -Eq '^d[[:space:]]+/var/lib/tilo/device-private[[:space:]]+2750[[:space:]]+root[[:space:]]+tilo-identity' "$tmpfiles" \
    && exactly_once "$device_key_unit" 'Before=shell-firstboot.service greetd.service fs.service' \
-   && exactly_once "$device_key_unit" 'ConditionPathExists=|!/var/lib/tilo/device-private/keypair.bin' \
-   && exactly_once "$device_key_unit" 'ConditionPathExists=|/var/lib/tilo/device/keypair.bin' \
+   && exactly_once "$device_key_unit" 'ConditionPathExists=!/var/lib/tilo/device-private/keypair.bin' \
    && exactly_once "$device_key_unit" 'ReadWritePaths=/var/lib/tilo/device-private' \
    && exactly_once "$device_key_unit" 'PrivateNetwork=yes' \
    && exactly_once "$device_key_unit" 'ProtectProc=invisible' \

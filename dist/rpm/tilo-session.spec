@@ -19,6 +19,10 @@
 
 %global tilo_summary Tilo compositor as a Wayland session
 %{!?tilo_version:%global tilo_version 0.1.12}
+# Release builds keep 1; a developer build names its commit here (e.g.
+# 0.202609271530.git5764267571) so `rpm -q tilo-session` on a host says which
+# tree is layered. See dist/rpm/host-update.sh.
+%{!?tilo_release:%global tilo_release 1}
 
 # The payload is already built and stripped; there is no source to extract
 # debug symbols from, and an empty -debuginfo subpackage would fail the
@@ -40,7 +44,7 @@
 
 Name:           tilo-session
 Version:        %{tilo_version}
-Release:        1%{?dist}
+Release:        %{tilo_release}%{?dist}
 Summary:        %{tilo_summary}
 License:        AGPL-3.0-only
 URL:            https://code.tilo.so/tilo/tilo
@@ -205,6 +209,9 @@ install -Dpm 0644 portal/tilo-portals.conf \
                   %{buildroot}%{_datadir}/xdg-desktop-portal/tilo-portals.conf
 install -Dpm 0644 systemd-user/tilo-graphical-session.target \
                   %{buildroot}%{_userunitdir}/tilo-graphical-session.target
+# Settings offers "Reduce echo in calls" only where `pipewire -c` finds this.
+install -Dpm 0644 pipewire/tilo-echo-cancel.conf \
+                  %{buildroot}%{_datadir}/pipewire/tilo-echo-cancel.conf
 install -Dpm 0644 license/LICENSE \
                   %{buildroot}%{_datadir}/licenses/%{name}/LICENSE
 
@@ -229,7 +236,7 @@ for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
         %{buildroot}%{_userunitdir}/$unit.socket
 done
 install -Dpm 0644 apps/user-tmpfiles/tilo-model-manager.conf \
-                  %{buildroot}%{_prefix}/lib/user-tmpfiles.d/tilo-model-manager.conf
+                  %{buildroot}%{_datadir}/user-tmpfiles.d/tilo-model-manager.conf
 install -Dpm 0644 apps/profile.d/tilo-apps.sh \
                   %{buildroot}%{_sysconfdir}/profile.d/tilo-apps.sh
 install -Dpm 0644 apps/license/LICENSE \
@@ -267,6 +274,7 @@ grep -q -- '--host-desktop-session' %{buildroot}%{_libexecdir}/tilo-session-runn
 grep -q '^UseIn=tilo$' %{buildroot}%{_datadir}/xdg-desktop-portal/portals/tilo.portal
 grep -q '^default=tilo$' %{buildroot}%{_datadir}/xdg-desktop-portal/tilo-portals.conf
 grep -q '^DesktopNames=tilo$' %{buildroot}%{_datadir}/wayland-sessions/tilo.desktop
+grep -q 'libpipewire-module-echo-cancel' %{buildroot}%{_datadir}/pipewire/tilo-echo-cancel.conf
 grep -q '^Requires=graphical-session-pre.target graphical-session.target$' \
     %{buildroot}%{_userunitdir}/tilo-graphical-session.target
 grep -q '^Wants=tilo-ush.service$' \
@@ -281,8 +289,8 @@ test ! -e %{buildroot}%{_userunitdir}/tilo-portal.service
 test -s %{buildroot}%{_datadir}/tilo-apps/registry.toml
 grep -q '^id = "so.tilo.settings"$' %{buildroot}%{_datadir}/tilo-apps/registry.toml
 grep -q '^payload_root = "/usr/lib/tilo-apps/' %{buildroot}%{_datadir}/tilo-apps/registry.toml
-test -d %{buildroot}%{_prefix}/lib/tilo-apps/payloads
-test ! -e %{buildroot}%{_datadir}/tilo-apps/payloads
+test -d %{buildroot}%{_prefix}/lib/tilo-apps/pkgs
+test ! -e %{buildroot}%{_datadir}/tilo-apps/pkgs
 test -f %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07/bundle.toml
 test "$(stat -c %%a %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07/bundle.toml)" = 644
 grep -q '/usr/lib/tilo-apps/bin' %{buildroot}%{_sysconfdir}/profile.d/tilo-apps.sh
@@ -307,6 +315,7 @@ done
 %{_datadir}/wayland-sessions/tilo.desktop
 %{_datadir}/xdg-desktop-portal/portals/tilo.portal
 %{_datadir}/xdg-desktop-portal/tilo-portals.conf
+%{_datadir}/pipewire/tilo-echo-cancel.conf
 %{_userunitdir}/tilo-graphical-session.target
 %license %{_datadir}/licenses/%{name}/LICENSE
 
@@ -327,7 +336,7 @@ done
 %{_userunitdir}/tilo-model-gateway.socket
 %{_userunitdir}/tilo-ush.service
 %{_userunitdir}/tilo-ush.socket
-%{_prefix}/lib/user-tmpfiles.d/tilo-model-manager.conf
+%{_datadir}/user-tmpfiles.d/tilo-model-manager.conf
 %config %{_sysconfdir}/profile.d/tilo-apps.sh
 %{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
 %{_datadir}/tilo-apps

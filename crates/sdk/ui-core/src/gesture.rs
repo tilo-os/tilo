@@ -24,6 +24,23 @@ pub enum NavDirection {
     Forward,
 }
 
+/// Which [`NavDirection`]s a widget subtree would consume right now.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct NavAvailability {
+    pub back: bool,
+    pub forward: bool,
+}
+
+impl NavAvailability {
+    #[must_use]
+    pub fn or(self, other: Self) -> Self {
+        Self {
+            back: self.back || other.back,
+            forward: self.forward || other.forward,
+        }
+    }
+}
+
 /// Phase of a continuous gesture, mapped from the windowing layer's
 /// touch/scroll phases so this module stays winit-free and unit-testable.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -136,7 +153,8 @@ pub struct TouchGestureArena {
 }
 
 impl TouchGestureArena {
-    const TAP_SLOP: f64 = 14.0;
+    /// Travel a finger may make and still be a tap.
+    pub const TAP_SLOP: f64 = 14.0;
     const SWIPE_DISTANCE: f64 = 56.0;
     const AXIS_DOMINANCE: f64 = 1.4;
     const PINCH_SLOP: f64 = 0.04;
@@ -258,7 +276,13 @@ impl TouchGestureArena {
         u8::try_from(self.contacts.len()).unwrap_or(u8::MAX)
     }
 
-    fn center(&self) -> Option<Point> {
+    /// Contacts currently down.
+    pub fn contact_count(&self) -> usize {
+        self.contacts.len()
+    }
+
+    /// Centroid of the contacts currently down.
+    pub fn center(&self) -> Option<Point> {
         if self.contacts.is_empty() {
             return None;
         }
@@ -546,20 +570,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn click_count_escalates_to_word_then_line() {
+    fn drag_select_escalates_clicks_extends_with_shift_and_tracks_the_drag() {
+        // Click count escalates to word then line; a far-away press resets.
         let mut g = DragSelect::new();
         assert_eq!(g.press(Point::ZERO, false).granularity, Granularity::Char);
         assert_eq!(g.press(Point::ZERO, false).granularity, Granularity::Word);
         assert_eq!(g.press(Point::ZERO, false).granularity, Granularity::Line);
-        // a far-away press resets to single
         assert_eq!(
             g.press(Point::new(500.0, 500.0), false).granularity,
             Granularity::Char
         );
-    }
 
-    #[test]
-    fn shift_press_extends_and_is_never_a_multi_click() {
+        // A shift press extends and is never a multi-click.
         let mut g = DragSelect::new();
         g.press(Point::ZERO, false);
         let p = g.press(Point::ZERO, true);
@@ -569,10 +591,8 @@ mod tests {
             Granularity::Char,
             "shift press is not a double-click"
         );
-    }
 
-    #[test]
-    fn drag_reflects_press_and_release() {
+        // The drag reflects press and release.
         let mut g = DragSelect::new();
         assert!(g.drag().is_none());
         g.press(Point::ZERO, false);
@@ -583,7 +603,8 @@ mod tests {
     }
 
     #[test]
-    fn direct_touch_tap_is_delayed_until_contact_ends() {
+    fn touch_arena_arbitrates_taps_pinches_swipes_and_shell_streams() {
+        // A direct-touch tap is delayed until contact ends.
         let mut arena = TouchGestureArena::new();
         assert!(
             arena
@@ -596,10 +617,8 @@ mod tests {
                 position: Point::new(21.0, 30.0)
             }]
         );
-    }
 
-    #[test]
-    fn direct_touch_arbitrates_two_finger_motion_as_pinch() {
+        // Two-finger spreading motion is a pinch.
         let mut arena = TouchGestureArena::new();
         arena.on_touch(1, Point::new(40.0, 50.0), GesturePhase::Begin);
         arena.on_touch(2, Point::new(60.0, 50.0), GesturePhase::Begin);
@@ -608,10 +627,8 @@ mod tests {
             events.as_slice(),
             [TouchGestureEvent::Pinch { scale, .. }] if *scale > 1.5
         ));
-    }
 
-    #[test]
-    fn direct_touch_reports_multi_finger_swipe_once_at_release() {
+        // A multi-finger swipe is reported once, at the last release.
         let mut arena = TouchGestureArena::new();
         arena.on_touch(1, Point::new(100.0, 80.0), GesturePhase::Begin);
         arena.on_touch(2, Point::new(100.0, 120.0), GesturePhase::Begin);
@@ -629,25 +646,23 @@ mod tests {
                 direction: TouchSwipeDirection::Left
             }]
         );
-    }
 
-    #[test]
-    fn three_finger_stream_stays_shell_owned_while_contacts_lift() {
+        // A three-finger stream stays shell-owned while contacts lift.
         let mut arena = TouchGestureArena::new();
         for (id, x) in [(1, 20.0), (2, 40.0), (3, 60.0)] {
             arena.on_touch(id, Point::new(x, 20.0), GesturePhase::Begin);
         }
         assert!(arena.shell_owns_current());
-        arena.on_touch(1, Point::new(20.0, 20.0), GesturePhase::End);
-        assert!(arena.shell_owns_current());
-        arena.on_touch(2, Point::new(40.0, 20.0), GesturePhase::End);
-        assert!(arena.shell_owns_current());
-        arena.on_touch(3, Point::new(60.0, 20.0), GesturePhase::End);
-        assert!(!arena.shell_owns_current());
-    }
+        for (id, x, still_owned) in [(1, 20.0, true), (2, 40.0, true), (3, 60.0, false)] {
+            arena.on_touch(id, Point::new(x, 20.0), GesturePhase::End);
+            assert_eq!(
+                arena.shell_owns_current(),
+                still_owned,
+                "after lifting {id}"
+            );
+        }
 
-    #[test]
-    fn cancelling_a_three_finger_stream_never_emits_a_terminal_shell_swipe() {
+        // Cancelling a three-finger stream never emits a terminal shell swipe.
         let mut arena = TouchGestureArena::new();
         for (id, x) in [(1, 100.0), (2, 140.0), (3, 180.0)] {
             arena.on_touch(id, Point::new(x, 80.0), GesturePhase::Begin);
@@ -698,44 +713,43 @@ mod tests {
     }
 
     #[test]
-    fn two_finger_swipe_navigates_by_direction() {
-        let mut g = NavGestureRecognizer::new();
-        assert_eq!(swipe(&mut g, 200.0, 5.0), Some(NavDirection::Back));
-        let mut g2 = NavGestureRecognizer::new();
-        assert_eq!(swipe(&mut g2, -200.0, 5.0), Some(NavDirection::Forward));
-    }
+    fn trackpad_swipe_navigates_by_direction_once_above_threshold() {
+        for (case, dx, dy, want) in [
+            (
+                "rightward swipe goes back",
+                200.0,
+                5.0,
+                Some(NavDirection::Back),
+            ),
+            (
+                "leftward swipe goes forward",
+                -200.0,
+                5.0,
+                Some(NavDirection::Forward),
+            ),
+            ("mostly vertical scroll never navigates", 200.0, 400.0, None),
+            ("small swipe below threshold does not fire", 40.0, 2.0, None),
+        ] {
+            let mut g = NavGestureRecognizer::new();
+            assert_eq!(swipe(&mut g, dx, dy), want, "case {case}");
+        }
 
-    #[test]
-    fn mostly_vertical_scroll_never_navigates() {
-        let mut g = NavGestureRecognizer::new();
-        assert_eq!(swipe(&mut g, 200.0, 400.0), None);
-    }
-
-    #[test]
-    fn small_swipe_below_threshold_does_not_fire() {
-        let mut g = NavGestureRecognizer::new();
-        assert_eq!(swipe(&mut g, 40.0, 2.0), None);
-    }
-
-    #[test]
-    fn swipe_fires_once_per_gesture() {
+        // A swipe fires once per gesture: continued travel must not re-fire.
         let mut g = NavGestureRecognizer::new();
         assert_eq!(
             g.on_scroll(120.0, 0.0, GesturePhase::Begin, true),
             Some(NavDirection::Back)
         );
-        // Continued travel in the same gesture must not re-fire.
         assert_eq!(g.on_scroll(120.0, 0.0, GesturePhase::Update, true), None);
-    }
 
-    #[test]
-    fn notched_wheel_is_ignored() {
+        // A notched wheel is ignored.
         let mut g = NavGestureRecognizer::new();
         assert_eq!(g.on_scroll(500.0, 0.0, GesturePhase::Update, false), None);
     }
 
     #[test]
-    fn left_edge_pull_goes_back_right_edge_goes_forward() {
+    fn edge_pull_navigates_once_and_only_from_a_screen_edge() {
+        // Left edge pull goes back, right edge pull goes forward.
         let w = 1000.0;
         let mut g = NavGestureRecognizer::new();
         assert_eq!(g.on_touch(1, 10.0, 300.0, GesturePhase::Begin, w), None);
@@ -744,27 +758,21 @@ mod tests {
             Some(NavDirection::Back)
         );
         assert_eq!(g.on_touch(1, 900.0, 305.0, GesturePhase::End, w), None);
-
         assert_eq!(g.on_touch(2, 995.0, 300.0, GesturePhase::Begin, w), None);
         assert_eq!(
             g.on_touch(2, 900.0, 305.0, GesturePhase::Update, w),
             Some(NavDirection::Forward)
         );
-    }
 
-    #[test]
-    fn touch_starting_mid_screen_never_navigates() {
+        // A touch starting mid-screen never navigates.
         let mut g = NavGestureRecognizer::new();
         g.on_touch(1, 500.0, 300.0, GesturePhase::Begin, 1000.0);
         assert_eq!(
             g.on_touch(1, 800.0, 300.0, GesturePhase::Update, 1000.0),
             None
         );
-    }
 
-    #[test]
-    fn edge_pull_fires_once() {
-        let w = 1000.0;
+        // An edge pull fires once.
         let mut g = NavGestureRecognizer::new();
         g.on_touch(1, 8.0, 300.0, GesturePhase::Begin, w);
         assert_eq!(

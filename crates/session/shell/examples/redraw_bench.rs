@@ -1755,6 +1755,10 @@ fn print_geometry_reuse_profile(telemetry: &GeometryReuseTelemetry) {
     clippy::too_many_lines,
     reason = "the benchmark keeps setup, all required samples, and final gate reporting in one auditable linear execution path"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
+)]
 fn run() -> Result<(), String> {
     let diagnostic = profiling_requested();
     let profile_output_path = profile_output_path(diagnostic)?;
@@ -2507,447 +2511,483 @@ mod tests {
     }
 
     #[test]
-    fn geometry_reuse_a_b_a_promotes_rank_two_without_copying() {
-        let mut telemetry = GeometryReuseTelemetry::default();
-        telemetry.observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
-        telemetry.observe(Ok(geometry_input(b"bbbb")), Ok(SceneReuseRenderMode::Full));
-        let a_pointer = telemetry.snapshots[0].spans[0].as_ptr();
-        telemetry.observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
-        telemetry.observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
-        assert_eq!(telemetry.hits, 2);
-        assert_eq!(telemetry.rank_hits[0], 1);
-        assert_eq!(telemetry.rank_hits[1], 1);
-        assert_eq!(telemetry.copied_bytes, 8);
-        assert_eq!(telemetry.snapshots[1].spans[0].as_ptr(), a_pointer);
-        assert_eq!(telemetry.snapshots[0].spans[0].as_ref(), b"b");
-        assert_eq!(telemetry.snapshots[1].spans[0].as_ref(), b"a");
-        assert_geometry_observation_accounting(&telemetry);
-    }
-
-    #[test]
-    fn geometry_reuse_lru_rank_and_eviction_sequence() {
-        let mut telemetry = GeometryReuseTelemetry::default();
-        for bytes in [
-            b"aaaa", b"bbbb", b"cccc", b"dddd", b"aaaa", b"eeee", b"bbbb", b"aaaa",
-        ] {
-            telemetry.observe(Ok(geometry_input(bytes)), Ok(SceneReuseRenderMode::Full));
-        }
-        assert_eq!(telemetry.accepted, 8);
-        assert_eq!(telemetry.hits, 2);
-        assert_eq!(telemetry.rank_hits[3], 1);
-        assert_eq!(telemetry.rank_hits[2], 1);
-        assert_eq!(telemetry.snapshots.len(), 4);
-        assert_eq!(telemetry.copied_bytes, 24);
-        assert_eq!(telemetry.retained_bytes, 16);
-        assert_eq!(telemetry.peak_retained_bytes, 16);
-        assert_eq!(telemetry.snapshots[0].spans[0].as_ref(), b"d");
-        assert_eq!(telemetry.snapshots[1].spans[0].as_ref(), b"e");
-        assert_eq!(telemetry.snapshots[2].spans[0].as_ref(), b"b");
-        assert_eq!(telemetry.snapshots[3].spans[0].as_ref(), b"a");
-    }
-
-    #[test]
-    fn geometry_reuse_requires_exact_span_boundaries_and_bytes() {
-        let bytes = b"abcdefgh";
-        let base = [&bytes[..2], &bytes[2..4], &bytes[4..6], &bytes[6..]];
-        let mut boundaries = GeometryReuseTelemetry::default();
-        boundaries.observe(
-            Ok(geometry_input_with_descriptor(geometry_descriptor(), base)),
-            Ok(SceneReuseRenderMode::Full),
-        );
-        boundaries.observe(
-            Ok(geometry_input_with_descriptor(
-                geometry_descriptor(),
-                [&bytes[..1], &bytes[1..3], &bytes[3..5], &bytes[5..]],
-            )),
-            Ok(SceneReuseRenderMode::Full),
-        );
-        assert_eq!(boundaries.hits, 0);
-        for index in [0, 2, 4, 6] {
-            let mut changed = *bytes;
-            changed[index] ^= 1;
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn geometry_reuse_cache_hits_ranks_and_evicts_only_exact_spans() {
+        // Phase `geometry_reuse_a_b_a_promotes_rank_two_without_copying`.
+        {
             let mut telemetry = GeometryReuseTelemetry::default();
-            telemetry.observe(
+            telemetry.observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
+            telemetry.observe(Ok(geometry_input(b"bbbb")), Ok(SceneReuseRenderMode::Full));
+            let a_pointer = telemetry.snapshots[0].spans[0].as_ptr();
+            telemetry.observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
+            telemetry.observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
+            assert_eq!(telemetry.hits, 2);
+            assert_eq!(telemetry.rank_hits[0], 1);
+            assert_eq!(telemetry.rank_hits[1], 1);
+            assert_eq!(telemetry.copied_bytes, 8);
+            assert_eq!(telemetry.snapshots[1].spans[0].as_ptr(), a_pointer);
+            assert_eq!(telemetry.snapshots[0].spans[0].as_ref(), b"b");
+            assert_eq!(telemetry.snapshots[1].spans[0].as_ref(), b"a");
+            assert_geometry_observation_accounting(&telemetry);
+        }
+        // Phase `geometry_reuse_lru_rank_and_eviction_sequence`.
+        {
+            let mut telemetry = GeometryReuseTelemetry::default();
+            for bytes in [
+                b"aaaa", b"bbbb", b"cccc", b"dddd", b"aaaa", b"eeee", b"bbbb", b"aaaa",
+            ] {
+                telemetry.observe(Ok(geometry_input(bytes)), Ok(SceneReuseRenderMode::Full));
+            }
+            assert_eq!(telemetry.accepted, 8);
+            assert_eq!(telemetry.hits, 2);
+            assert_eq!(telemetry.rank_hits[3], 1);
+            assert_eq!(telemetry.rank_hits[2], 1);
+            assert_eq!(telemetry.snapshots.len(), 4);
+            assert_eq!(telemetry.copied_bytes, 24);
+            assert_eq!(telemetry.retained_bytes, 16);
+            assert_eq!(telemetry.peak_retained_bytes, 16);
+            assert_eq!(telemetry.snapshots[0].spans[0].as_ref(), b"d");
+            assert_eq!(telemetry.snapshots[1].spans[0].as_ref(), b"e");
+            assert_eq!(telemetry.snapshots[2].spans[0].as_ref(), b"b");
+            assert_eq!(telemetry.snapshots[3].spans[0].as_ref(), b"a");
+        }
+        // Phase `geometry_reuse_requires_exact_span_boundaries_and_bytes`.
+        {
+            let bytes = b"abcdefgh";
+            let base = [&bytes[..2], &bytes[2..4], &bytes[4..6], &bytes[6..]];
+            let mut boundaries = GeometryReuseTelemetry::default();
+            boundaries.observe(
                 Ok(geometry_input_with_descriptor(geometry_descriptor(), base)),
                 Ok(SceneReuseRenderMode::Full),
             );
-            telemetry.observe(
+            boundaries.observe(
                 Ok(geometry_input_with_descriptor(
                     geometry_descriptor(),
-                    [&changed[..2], &changed[2..4], &changed[4..6], &changed[6..]],
+                    [&bytes[..1], &bytes[1..3], &bytes[3..5], &bytes[5..]],
                 )),
                 Ok(SceneReuseRenderMode::Full),
             );
-            assert_eq!(telemetry.hits, 0);
-            assert_eq!(telemetry.accepted, 2);
-            assert_eq!(telemetry.copied_bytes, 16);
-        }
-        let longer = b"abcdefghi";
-        let mut different_length = GeometryReuseTelemetry::default();
-        different_length.observe(
-            Ok(geometry_input_with_descriptor(geometry_descriptor(), base)),
-            Ok(SceneReuseRenderMode::Full),
-        );
-        different_length.observe(
-            Ok(geometry_input_with_descriptor(
-                geometry_descriptor(),
-                [&longer[..2], &longer[2..4], &longer[4..6], &longer[6..]],
-            )),
-            Ok(SceneReuseRenderMode::Full),
-        );
-        assert_eq!(different_length.hits, 0);
-        assert_eq!(different_length.accepted, 2);
-        assert_eq!(different_length.copied_bytes, 17);
-    }
-
-    #[test]
-    fn geometry_reuse_payload_caps_evict_before_copying_and_reject_oversized() {
-        let payloads = (0_u8..5)
-            .map(|value| vec![value; MAX_SCENE_REUSE_PAYLOAD_BYTES])
-            .collect::<Vec<_>>();
-        let mut telemetry = GeometryReuseTelemetry::default();
-        for payload in &payloads {
-            telemetry.observe(
-                Ok(geometry_input_one_span(payload)),
+            assert_eq!(boundaries.hits, 0);
+            for index in [0, 2, 4, 6] {
+                let mut changed = *bytes;
+                changed[index] ^= 1;
+                let mut telemetry = GeometryReuseTelemetry::default();
+                telemetry.observe(
+                    Ok(geometry_input_with_descriptor(geometry_descriptor(), base)),
+                    Ok(SceneReuseRenderMode::Full),
+                );
+                telemetry.observe(
+                    Ok(geometry_input_with_descriptor(
+                        geometry_descriptor(),
+                        [&changed[..2], &changed[2..4], &changed[4..6], &changed[6..]],
+                    )),
+                    Ok(SceneReuseRenderMode::Full),
+                );
+                assert_eq!(telemetry.hits, 0);
+                assert_eq!(telemetry.accepted, 2);
+                assert_eq!(telemetry.copied_bytes, 16);
+            }
+            let longer = b"abcdefghi";
+            let mut different_length = GeometryReuseTelemetry::default();
+            different_length.observe(
+                Ok(geometry_input_with_descriptor(geometry_descriptor(), base)),
                 Ok(SceneReuseRenderMode::Full),
             );
+            different_length.observe(
+                Ok(geometry_input_with_descriptor(
+                    geometry_descriptor(),
+                    [&longer[..2], &longer[2..4], &longer[4..6], &longer[6..]],
+                )),
+                Ok(SceneReuseRenderMode::Full),
+            );
+            assert_eq!(different_length.hits, 0);
+            assert_eq!(different_length.accepted, 2);
+            assert_eq!(different_length.copied_bytes, 17);
         }
-        assert_eq!(telemetry.snapshots.len(), MAX_SCENE_REUSE_SNAPSHOTS);
-        assert_eq!(telemetry.retained_bytes, MAX_SCENE_REUSE_RETAINED_BYTES);
-        assert_eq!(
-            telemetry.peak_retained_bytes,
-            MAX_SCENE_REUSE_RETAINED_BYTES
-        );
-        assert_eq!(
-            telemetry.copied_bytes,
-            u128::try_from(MAX_SCENE_REUSE_PAYLOAD_BYTES * 5).unwrap()
-        );
-        let oversized = vec![0_u8; MAX_SCENE_REUSE_PAYLOAD_BYTES + 1];
-        telemetry.observe(
-            Ok(geometry_input_one_span(&oversized)),
-            Ok(SceneReuseRenderMode::Full),
-        );
-        assert!(telemetry.snapshots.is_empty());
-        assert_eq!(telemetry.retained_bytes, 0);
-        assert_eq!(telemetry.oversized, 1);
-        assert_eq!(
-            telemetry.peak_retained_bytes,
-            MAX_SCENE_REUSE_RETAINED_BYTES
-        );
-        assert_eq!(
-            telemetry.copied_bytes,
-            u128::try_from(MAX_SCENE_REUSE_PAYLOAD_BYTES * 5).unwrap()
-        );
-        assert_geometry_observation_accounting(&telemetry);
+        // Phase `geometry_reuse_payload_caps_evict_before_copying_and_reject_oversized`.
+        {
+            let payloads = (0_u8..5)
+                .map(|value| vec![value; MAX_SCENE_REUSE_PAYLOAD_BYTES])
+                .collect::<Vec<_>>();
+            let mut telemetry = GeometryReuseTelemetry::default();
+            for payload in &payloads {
+                telemetry.observe(
+                    Ok(geometry_input_one_span(payload)),
+                    Ok(SceneReuseRenderMode::Full),
+                );
+            }
+            assert_eq!(telemetry.snapshots.len(), MAX_SCENE_REUSE_SNAPSHOTS);
+            assert_eq!(telemetry.retained_bytes, MAX_SCENE_REUSE_RETAINED_BYTES);
+            assert_eq!(
+                telemetry.peak_retained_bytes,
+                MAX_SCENE_REUSE_RETAINED_BYTES
+            );
+            assert_eq!(
+                telemetry.copied_bytes,
+                u128::try_from(MAX_SCENE_REUSE_PAYLOAD_BYTES * 5).unwrap()
+            );
+            let oversized = vec![0_u8; MAX_SCENE_REUSE_PAYLOAD_BYTES + 1];
+            telemetry.observe(
+                Ok(geometry_input_one_span(&oversized)),
+                Ok(SceneReuseRenderMode::Full),
+            );
+            assert!(telemetry.snapshots.is_empty());
+            assert_eq!(telemetry.retained_bytes, 0);
+            assert_eq!(telemetry.oversized, 1);
+            assert_eq!(
+                telemetry.peak_retained_bytes,
+                MAX_SCENE_REUSE_RETAINED_BYTES
+            );
+            assert_eq!(
+                telemetry.copied_bytes,
+                u128::try_from(MAX_SCENE_REUSE_PAYLOAD_BYTES * 5).unwrap()
+            );
+            assert_geometry_observation_accounting(&telemetry);
+        }
+        // Phase `geometry_reuse_refreshes_every_descriptor_category`.
+        {
+            for field in 0..21 {
+                let (changed, category) = geometry_descriptor_change(field);
+                let mut telemetry = GeometryReuseTelemetry::default();
+                telemetry.observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
+                telemetry.observe(
+                    Ok(geometry_input_with_descriptor(
+                        changed,
+                        [b"a", b"a", b"a", b"a"],
+                    )),
+                    Ok(SceneReuseRenderMode::Full),
+                );
+                telemetry.observe(
+                    Ok(geometry_input_with_descriptor(
+                        changed,
+                        [b"a", b"a", b"a", b"a"],
+                    )),
+                    Ok(SceneReuseRenderMode::Full),
+                );
+                assert_eq!(telemetry.hits, 2);
+                assert_eq!(telemetry.descriptor_equal, 1);
+                assert_eq!(telemetry.copied_bytes, 4);
+                let differences = [
+                    telemetry.descriptor_layout_differences,
+                    telemetry.descriptor_viewport_differences,
+                    telemetry.descriptor_capacity_differences,
+                ];
+                assert_eq!(differences[category], 1);
+                assert_eq!(differences.iter().copied().sum::<u64>(), 1);
+            }
+        }
     }
 
     #[test]
-    fn geometry_reuse_refreshes_every_descriptor_category() {
-        for field in 0..21 {
-            let (changed, category) = geometry_descriptor_change(field);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn geometry_reuse_accounts_changes_errors_and_admission() {
+        // Phase `geometry_reuse_counts_mode_changes_without_copying`.
+        {
             let mut telemetry = GeometryReuseTelemetry::default();
             telemetry.observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
             telemetry.observe(
-                Ok(geometry_input_with_descriptor(
-                    changed,
-                    [b"a", b"a", b"a", b"a"],
-                )),
-                Ok(SceneReuseRenderMode::Full),
+                Ok(geometry_input(b"aaaa")),
+                Ok(SceneReuseRenderMode::SparseActiveCoarse),
             );
             telemetry.observe(
-                Ok(geometry_input_with_descriptor(
-                    changed,
-                    [b"a", b"a", b"a", b"a"],
-                )),
-                Ok(SceneReuseRenderMode::Full),
+                Ok(geometry_input(b"aaaa")),
+                Ok(SceneReuseRenderMode::SparseNonActiveCoarse),
             );
             assert_eq!(telemetry.hits, 2);
-            assert_eq!(telemetry.descriptor_equal, 1);
+            assert_eq!(telemetry.descriptor_equal, 2);
+            assert_eq!(telemetry.mode_differences, 2);
             assert_eq!(telemetry.copied_bytes, 4);
-            let differences = [
-                telemetry.descriptor_layout_differences,
-                telemetry.descriptor_viewport_differences,
-                telemetry.descriptor_capacity_differences,
-            ];
-            assert_eq!(differences[category], 1);
-            assert_eq!(differences.iter().copied().sum::<u64>(), 1);
         }
-    }
-
-    #[test]
-    fn geometry_reuse_counts_mode_changes_without_copying() {
-        let mut telemetry = GeometryReuseTelemetry::default();
-        telemetry.observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
-        telemetry.observe(
-            Ok(geometry_input(b"aaaa")),
-            Ok(SceneReuseRenderMode::SparseActiveCoarse),
-        );
-        telemetry.observe(
-            Ok(geometry_input(b"aaaa")),
-            Ok(SceneReuseRenderMode::SparseNonActiveCoarse),
-        );
-        assert_eq!(telemetry.hits, 2);
-        assert_eq!(telemetry.descriptor_equal, 2);
-        assert_eq!(telemetry.mode_differences, 2);
-        assert_eq!(telemetry.copied_bytes, 4);
-    }
-
-    #[test]
-    fn geometry_reuse_counts_combined_descriptor_differences() {
-        let mut changed = geometry_descriptor();
-        changed.n_clips = 1;
-        changed.target_width = 17;
-        changed.ptcl_size = 2;
-        let mut telemetry = GeometryReuseTelemetry::default();
-        telemetry.observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
-        telemetry.observe(
-            Ok(geometry_input_with_descriptor(
-                changed,
-                [b"a", b"a", b"a", b"a"],
-            )),
-            Ok(SceneReuseRenderMode::Full),
-        );
-        assert_eq!(telemetry.descriptor_layout_differences, 1);
-        assert_eq!(telemetry.descriptor_viewport_differences, 1);
-        assert_eq!(telemetry.descriptor_capacity_differences, 1);
-        assert_eq!(telemetry.descriptor_equal, 0);
-    }
-
-    #[test]
-    fn geometry_reuse_extraction_errors_clear_history_without_bytes() {
-        let errors = [
-            vello::GeometryInputError::MissingOrAmbiguousUpload,
-            vello::GeometryInputError::MalformedConfig,
-            vello::GeometryInputError::MalformedSpans,
-            vello::GeometryInputError::EmptyGeometry,
-            vello::GeometryInputError::CpuRoute,
-        ];
-        for error in errors {
+        // Phase `geometry_reuse_counts_combined_descriptor_differences`.
+        {
+            let mut changed = geometry_descriptor();
+            changed.n_clips = 1;
+            changed.target_width = 17;
+            changed.ptcl_size = 2;
             let mut telemetry = GeometryReuseTelemetry::default();
             telemetry.observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
             telemetry.observe(
-                Err::<vello::GeometryInput<'static>, _>(error),
+                Ok(geometry_input_with_descriptor(
+                    changed,
+                    [b"a", b"a", b"a", b"a"],
+                )),
                 Ok(SceneReuseRenderMode::Full),
             );
-            assert!(telemetry.snapshots.is_empty());
-            assert_eq!(telemetry.retained_bytes, 0);
-            assert_eq!(telemetry.copied_bytes, 4);
-            assert_eq!(telemetry.geometry_bytes, 4);
-            assert_eq!(telemetry.accepted, 1);
-            assert_eq!(geometry_rejection_total(&telemetry), 1);
-            match error {
-                vello::GeometryInputError::EmptyGeometry => assert_eq!(telemetry.empty, 1),
-                vello::GeometryInputError::CpuRoute => assert_eq!(telemetry.cpu_route, 1),
-                _ => assert_eq!(telemetry.missing_or_malformed, 1),
-            }
-            assert_geometry_observation_accounting(&telemetry);
+            assert_eq!(telemetry.descriptor_layout_differences, 1);
+            assert_eq!(telemetry.descriptor_viewport_differences, 1);
+            assert_eq!(telemetry.descriptor_capacity_differences, 1);
+            assert_eq!(telemetry.descriptor_equal, 0);
         }
-    }
-
-    #[test]
-    fn geometry_reuse_admission_rejections_account_bytes_and_precedence() {
-        let empty = geometry_input_with_descriptor(geometry_descriptor(), [&[], &[], &[], &[]]);
-        let mut empty_telemetry = GeometryReuseTelemetry::default();
-        empty_telemetry.observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
-        empty_telemetry.observe(Ok(empty), Ok(SceneReuseRenderMode::Full));
-        assert_eq!(empty_telemetry.empty, 1);
-        assert_eq!(empty_telemetry.geometry_bytes, 4);
-        assert_eq!(empty_telemetry.geometry_min_bytes, Some(0));
-
-        let mut pending_descriptor = geometry_descriptor();
-        pending_descriptor.bump_readback_pending = true;
-        let mut pending_telemetry = GeometryReuseTelemetry::default();
-        pending_telemetry.observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
-        pending_telemetry.observe(
-            Ok(geometry_input_with_descriptor(
-                pending_descriptor,
-                [b"b", b"b", b"b", b"b"],
-            )),
-            Err(GeometryReuseRejection::RecoveryOrInvalidRoute),
-        );
-        assert_eq!(pending_telemetry.pending_bump_readback, 1);
-        assert_eq!(pending_telemetry.recovery_or_invalid_route, 0);
-        assert_eq!(pending_telemetry.geometry_bytes, 8);
-
-        let mut cpu_descriptor = geometry_descriptor();
-        cpu_descriptor.cpu_route = true;
-        let mut cpu_telemetry = GeometryReuseTelemetry::default();
-        cpu_telemetry.observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
-        cpu_telemetry.observe(
-            Ok(geometry_input_with_descriptor(
-                cpu_descriptor,
-                [b"b", b"b", b"b", b"b"],
-            )),
-            Ok(SceneReuseRenderMode::Full),
-        );
-        assert_eq!(cpu_telemetry.cpu_route, 1);
-        assert_eq!(cpu_telemetry.geometry_bytes, 8);
-
-        let oversized = vec![0_u8; MAX_SCENE_REUSE_PAYLOAD_BYTES + 1];
-        let mut oversized_telemetry = GeometryReuseTelemetry::default();
-        oversized_telemetry.observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
-        oversized_telemetry.observe(
-            Ok(geometry_input_one_span(&oversized)),
-            Ok(SceneReuseRenderMode::Full),
-        );
-        assert_eq!(oversized_telemetry.oversized, 1);
-        assert_eq!(
-            oversized_telemetry.geometry_bytes,
-            u128::try_from(MAX_SCENE_REUSE_PAYLOAD_BYTES + 5).unwrap()
-        );
-
-        let mut recovery_telemetry = GeometryReuseTelemetry::default();
-        recovery_telemetry.observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
-        recovery_telemetry.observe(
-            Ok(geometry_input(b"bbbb")),
-            Err(GeometryReuseRejection::RecoveryOrInvalidRoute),
-        );
-        assert_eq!(recovery_telemetry.recovery_or_invalid_route, 1);
-        for telemetry in [
-            empty_telemetry,
-            pending_telemetry,
-            cpu_telemetry,
-            oversized_telemetry,
-            recovery_telemetry,
-        ] {
-            assert!(telemetry.snapshots.is_empty());
-            assert_eq!(telemetry.retained_bytes, 0);
-            assert_eq!(telemetry.copied_bytes, 4);
-            assert_eq!(geometry_rejection_total(&telemetry), 1);
-            assert_geometry_observation_accounting(&telemetry);
-        }
-    }
-
-    #[test]
-    fn geometry_reuse_option_requires_profile_and_exact_one() {
-        for (value, expected) in [
-            (None, false),
-            (Some(""), false),
-            (Some("0"), false),
-            (Some("true"), false),
-            (Some("01"), false),
-            (Some("1"), true),
-        ] {
-            assert_eq!(geometry_reuse_requested_from_value(value), expected);
-        }
-        for diagnostic in [false, true] {
-            for requested in [false, true] {
-                assert_eq!(
-                    geometry_reuse_configuration_is_valid(diagnostic, requested),
-                    diagnostic || !requested
+        // Phase `geometry_reuse_extraction_errors_clear_history_without_bytes`.
+        {
+            let errors = [
+                vello::GeometryInputError::MissingOrAmbiguousUpload,
+                vello::GeometryInputError::MalformedConfig,
+                vello::GeometryInputError::MalformedSpans,
+                vello::GeometryInputError::EmptyGeometry,
+                vello::GeometryInputError::CpuRoute,
+            ];
+            for error in errors {
+                let mut telemetry = GeometryReuseTelemetry::default();
+                telemetry.observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
+                telemetry.observe(
+                    Err::<vello::GeometryInput<'static>, _>(error),
+                    Ok(SceneReuseRenderMode::Full),
                 );
-                assert_eq!(
-                    geometry_reuse_telemetry_enabled(diagnostic, requested),
-                    diagnostic && requested
-                );
+                assert!(telemetry.snapshots.is_empty());
+                assert_eq!(telemetry.retained_bytes, 0);
+                assert_eq!(telemetry.copied_bytes, 4);
+                assert_eq!(telemetry.geometry_bytes, 4);
+                assert_eq!(telemetry.accepted, 1);
+                assert_eq!(geometry_rejection_total(&telemetry), 1);
+                match error {
+                    vello::GeometryInputError::EmptyGeometry => assert_eq!(telemetry.empty, 1),
+                    vello::GeometryInputError::CpuRoute => assert_eq!(telemetry.cpu_route, 1),
+                    _ => assert_eq!(telemetry.missing_or_malformed, 1),
+                }
+                assert_geometry_observation_accounting(&telemetry);
             }
         }
+        // Phase `geometry_reuse_admission_rejections_account_bytes_and_precedence`.
+        {
+            let empty = geometry_input_with_descriptor(geometry_descriptor(), [&[], &[], &[], &[]]);
+            let mut empty_telemetry = GeometryReuseTelemetry::default();
+            empty_telemetry.observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
+            empty_telemetry.observe(Ok(empty), Ok(SceneReuseRenderMode::Full));
+            assert_eq!(empty_telemetry.empty, 1);
+            assert_eq!(empty_telemetry.geometry_bytes, 4);
+            assert_eq!(empty_telemetry.geometry_min_bytes, Some(0));
+
+            let mut pending_descriptor = geometry_descriptor();
+            pending_descriptor.bump_readback_pending = true;
+            let mut pending_telemetry = GeometryReuseTelemetry::default();
+            pending_telemetry.observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
+            pending_telemetry.observe(
+                Ok(geometry_input_with_descriptor(
+                    pending_descriptor,
+                    [b"b", b"b", b"b", b"b"],
+                )),
+                Err(GeometryReuseRejection::RecoveryOrInvalidRoute),
+            );
+            assert_eq!(pending_telemetry.pending_bump_readback, 1);
+            assert_eq!(pending_telemetry.recovery_or_invalid_route, 0);
+            assert_eq!(pending_telemetry.geometry_bytes, 8);
+
+            let mut cpu_descriptor = geometry_descriptor();
+            cpu_descriptor.cpu_route = true;
+            let mut cpu_telemetry = GeometryReuseTelemetry::default();
+            cpu_telemetry.observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
+            cpu_telemetry.observe(
+                Ok(geometry_input_with_descriptor(
+                    cpu_descriptor,
+                    [b"b", b"b", b"b", b"b"],
+                )),
+                Ok(SceneReuseRenderMode::Full),
+            );
+            assert_eq!(cpu_telemetry.cpu_route, 1);
+            assert_eq!(cpu_telemetry.geometry_bytes, 8);
+
+            let oversized = vec![0_u8; MAX_SCENE_REUSE_PAYLOAD_BYTES + 1];
+            let mut oversized_telemetry = GeometryReuseTelemetry::default();
+            oversized_telemetry
+                .observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
+            oversized_telemetry.observe(
+                Ok(geometry_input_one_span(&oversized)),
+                Ok(SceneReuseRenderMode::Full),
+            );
+            assert_eq!(oversized_telemetry.oversized, 1);
+            assert_eq!(
+                oversized_telemetry.geometry_bytes,
+                u128::try_from(MAX_SCENE_REUSE_PAYLOAD_BYTES + 5).unwrap()
+            );
+
+            let mut recovery_telemetry = GeometryReuseTelemetry::default();
+            recovery_telemetry.observe(Ok(geometry_input(b"aaaa")), Ok(SceneReuseRenderMode::Full));
+            recovery_telemetry.observe(
+                Ok(geometry_input(b"bbbb")),
+                Err(GeometryReuseRejection::RecoveryOrInvalidRoute),
+            );
+            assert_eq!(recovery_telemetry.recovery_or_invalid_route, 1);
+            for telemetry in [
+                empty_telemetry,
+                pending_telemetry,
+                cpu_telemetry,
+                oversized_telemetry,
+                recovery_telemetry,
+            ] {
+                assert!(telemetry.snapshots.is_empty());
+                assert_eq!(telemetry.retained_bytes, 0);
+                assert_eq!(telemetry.copied_bytes, 4);
+                assert_eq!(geometry_rejection_total(&telemetry), 1);
+                assert_geometry_observation_accounting(&telemetry);
+            }
+        }
+        // Phase `geometry_reuse_option_requires_profile_and_exact_one`.
+        {
+            for (value, expected) in [
+                (None, false),
+                (Some(""), false),
+                (Some("0"), false),
+                (Some("true"), false),
+                (Some("01"), false),
+                (Some("1"), true),
+            ] {
+                assert_eq!(geometry_reuse_requested_from_value(value), expected);
+            }
+            for diagnostic in [false, true] {
+                for requested in [false, true] {
+                    assert_eq!(
+                        geometry_reuse_configuration_is_valid(diagnostic, requested),
+                        diagnostic || !requested
+                    );
+                    assert_eq!(
+                        geometry_reuse_telemetry_enabled(diagnostic, requested),
+                        diagnostic && requested
+                    );
+                }
+            }
+        }
     }
 
     #[test]
-    fn aggregation_uses_all_samples_and_nearest_rank_p99() {
-        let mut samples = vec![Some(1_000); 989];
-        samples.push(Some(50_000));
-        samples.extend(std::iter::repeat_n(Some(80_000), 10));
+    fn acceptance_gates_aggregate_every_sample_at_exact_boundaries() {
+        // Phase `aggregation_uses_all_samples_and_nearest_rank_p99`.
+        {
+            let mut samples = vec![Some(1_000); 989];
+            samples.push(Some(50_000));
+            samples.extend(std::iter::repeat_n(Some(80_000), 10));
 
-        let summary = summarize_samples(&samples).expect("valid samples");
-        assert_eq!(summary.count, 1_000);
-        assert_eq!(summary.total_us, 1_839_000);
-        assert_eq!(summary.mean_us, 1_839);
-        assert_eq!(summary.p99_us, 50_000);
-        assert_eq!(summary.min_us, 1_000);
-        assert_eq!(summary.max_us, 80_000);
+            let summary = summarize_samples(&samples).expect("valid samples");
+            assert_eq!(summary.count, 1_000);
+            assert_eq!(summary.total_us, 1_839_000);
+            assert_eq!(summary.mean_us, 1_839);
+            assert_eq!(summary.p99_us, 50_000);
+            assert_eq!(summary.min_us, 1_000);
+            assert_eq!(summary.max_us, 80_000);
+        }
+        // Phase `empty_zero_and_missing_samples_are_rejected`.
+        {
+            assert_eq!(summarize_samples(&[]), Err(SampleError::Empty));
+            assert_eq!(
+                summarize_samples(&[Some(1), Some(0)]),
+                Err(SampleError::Zero { index: 1 })
+            );
+            assert_eq!(
+                summarize_samples(&[Some(1), None]),
+                Err(SampleError::Missing { index: 1 })
+            );
+        }
+        // Phase `gates_check_exact_mean_and_p99_boundaries`.
+        {
+            let mut passing = vec![Some(24_721); 989];
+            passing.extend(std::iter::repeat_n(Some(P99_LIMIT_US), 11));
+            let passing = summarize_samples(&passing).expect("valid samples");
+            let count = u128::try_from(passing.count).expect("usize must fit u128");
+            assert!(passing.total_us <= MEAN_LIMIT_US * count);
+            assert_eq!(passing.p99_us, P99_LIMIT_US);
+            assert!(meets_gates(passing));
+
+            let mut mean_fail = vec![Some(24_722); 989];
+            mean_fail.extend(std::iter::repeat_n(Some(P99_LIMIT_US), 11));
+            assert!(!meets_gates(
+                summarize_samples(&mean_fail).expect("valid samples")
+            ));
+
+            let mut p99_fail = vec![Some(24_721); 989];
+            p99_fail.extend(std::iter::repeat_n(Some(P99_LIMIT_US + 1), 11));
+            assert!(!meets_gates(
+                summarize_samples(&p99_fail).expect("valid samples")
+            ));
+        }
+        // Phase `diagnostic_runs_cannot_pass_acceptance`.
+        {
+            let summary = summarize_samples(&vec![Some(1_000); 1_000]).expect("valid samples");
+            assert!(meets_gates(summary));
+            assert_eq!(gate_outcome(summary, false), GateOutcome::Pass);
+            assert_eq!(
+                gate_outcome(summary, true),
+                GateOutcome::DisabledDiagnostic,
+                "diagnostic timestamps perturb timing and must never qualify a release gate"
+            );
+        }
     }
 
     #[test]
-    fn empty_zero_and_missing_samples_are_rejected() {
-        assert_eq!(summarize_samples(&[]), Err(SampleError::Empty));
-        assert_eq!(
-            summarize_samples(&[Some(1), Some(0)]),
-            Err(SampleError::Zero { index: 1 })
-        );
-        assert_eq!(
-            summarize_samples(&[Some(1), None]),
-            Err(SampleError::Missing { index: 1 })
-        );
-    }
-
-    #[test]
-    fn gates_check_exact_mean_and_p99_boundaries() {
-        let mut passing = vec![Some(24_721); 989];
-        passing.extend(std::iter::repeat_n(Some(P99_LIMIT_US), 11));
-        let passing = summarize_samples(&passing).expect("valid samples");
-        let count = u128::try_from(passing.count).expect("usize must fit u128");
-        assert!(passing.total_us <= MEAN_LIMIT_US * count);
-        assert_eq!(passing.p99_us, P99_LIMIT_US);
-        assert!(meets_gates(passing));
-
-        let mut mean_fail = vec![Some(24_722); 989];
-        mean_fail.extend(std::iter::repeat_n(Some(P99_LIMIT_US), 11));
-        assert!(!meets_gates(
-            summarize_samples(&mean_fail).expect("valid samples")
-        ));
-
-        let mut p99_fail = vec![Some(24_721); 989];
-        p99_fail.extend(std::iter::repeat_n(Some(P99_LIMIT_US + 1), 11));
-        assert!(!meets_gates(
-            summarize_samples(&p99_fail).expect("valid samples")
-        ));
-    }
-
-    #[test]
-    fn diagnostic_runs_cannot_pass_acceptance() {
-        let summary = summarize_samples(&vec![Some(1_000); 1_000]).expect("valid samples");
-        assert!(meets_gates(summary));
-        assert_eq!(gate_outcome(summary, false), GateOutcome::Pass);
-        assert_eq!(
-            gate_outcome(summary, true),
-            GateOutcome::DisabledDiagnostic,
-            "diagnostic timestamps perturb timing and must never qualify a release gate"
-        );
-    }
-
-    #[test]
-    fn timestamp_flags_require_explicit_diagnostic_mode() {
-        assert!(timestamp_profile_configuration_is_valid(
-            false, false, false
-        ));
-        assert!(timestamp_profile_configuration_is_valid(true, false, false));
-        assert!(!timestamp_profile_configuration_is_valid(
-            false, true, false
-        ));
-        assert!(!timestamp_profile_configuration_is_valid(
-            false, false, true
-        ));
-        assert!(!timestamp_profile_configuration_is_valid(false, true, true));
-        assert!(timestamp_profile_configuration_is_valid(true, true, true));
-    }
-
-    #[test]
-    fn direct_path_workgroup_override_requires_explicit_diagnostic_mode() {
-        assert!(direct_path_workgroup_configuration_is_valid(false, 128));
-        assert!(!direct_path_workgroup_configuration_is_valid(false, 1));
-        assert!(!direct_path_workgroup_configuration_is_valid(false, 8));
-        assert!(direct_path_workgroup_configuration_is_valid(true, 1));
-    }
-
-    #[test]
-    fn xrgb_damage_flag_is_exact_opt_in() {
-        assert!(!xrgb_damage_requested_from_value(None));
-        assert!(!xrgb_damage_requested_from_value(Some("0")));
-        assert!(xrgb_damage_requested_from_value(Some("1")));
-    }
-
-    #[test]
-    fn xrgb_write_accounting_reports_actual_modes_and_bytes() {
-        let mut totals = CpuXrgbWriteTotals::default();
-        totals.record_full(128).expect("small test byte count");
-        totals.record_history_write(XrgbCpuWriteMode::Partial, 16);
-        totals.record_history_write(XrgbCpuWriteMode::Full, 32);
-        assert_eq!(totals.full, 2);
-        assert_eq!(totals.partial, 1);
-        assert_eq!(totals.total(), 3);
-        assert_eq!(totals.bytes, 176);
+    fn diagnostic_flags_are_exact_opt_in_and_xrgb_writes_are_accounted() {
+        // Phase `timestamp_flags_require_explicit_diagnostic_mode`.
+        {
+            assert!(timestamp_profile_configuration_is_valid(
+                false, false, false
+            ));
+            assert!(timestamp_profile_configuration_is_valid(true, false, false));
+            assert!(!timestamp_profile_configuration_is_valid(
+                false, true, false
+            ));
+            assert!(!timestamp_profile_configuration_is_valid(
+                false, false, true
+            ));
+            assert!(!timestamp_profile_configuration_is_valid(false, true, true));
+            assert!(timestamp_profile_configuration_is_valid(true, true, true));
+        }
+        // Phase `direct_path_workgroup_override_requires_explicit_diagnostic_mode`.
+        {
+            assert!(direct_path_workgroup_configuration_is_valid(false, 128));
+            assert!(!direct_path_workgroup_configuration_is_valid(false, 1));
+            assert!(!direct_path_workgroup_configuration_is_valid(false, 8));
+            assert!(direct_path_workgroup_configuration_is_valid(true, 1));
+        }
+        // Phase `xrgb_damage_flag_is_exact_opt_in`.
+        {
+            assert!(!xrgb_damage_requested_from_value(None));
+            assert!(!xrgb_damage_requested_from_value(Some("0")));
+            assert!(xrgb_damage_requested_from_value(Some("1")));
+        }
+        // Phase `xrgb_write_accounting_reports_actual_modes_and_bytes`.
+        {
+            let mut totals = CpuXrgbWriteTotals::default();
+            totals.record_full(128).expect("small test byte count");
+            totals.record_history_write(XrgbCpuWriteMode::Partial, 16);
+            totals.record_history_write(XrgbCpuWriteMode::Full, 32);
+            assert_eq!(totals.full, 2);
+            assert_eq!(totals.partial, 1);
+            assert_eq!(totals.total(), 3);
+            assert_eq!(totals.bytes, 176);
+        }
+        // Phase `scene_reuse_requires_profile_and_defaults_to_no_telemetry`.
+        {
+            assert!(!scene_reuse_requested_from_value(None));
+            assert!(!scene_reuse_requested_from_value(Some("0")));
+            assert!(!scene_reuse_requested_from_value(Some("true")));
+            assert!(scene_reuse_requested_from_value(Some("1")));
+            assert!(scene_reuse_configuration_is_valid(false, false));
+            assert!(!scene_reuse_configuration_is_valid(false, true));
+            assert!(scene_reuse_configuration_is_valid(true, true));
+            assert!(!scene_reuse_telemetry_enabled(false, false));
+            assert!(!scene_reuse_telemetry_enabled(true, false));
+            assert!(scene_reuse_telemetry_enabled(true, true));
+        }
+        // Phase `profile_output_path_is_latched_only_for_diagnostic_mode`.
+        {
+            let requested = Some(OsString::from("correlation.txt"));
+            assert_eq!(
+                profile_output_path_from_value(false, requested.clone())
+                    .expect("ordinary mode ignores the diagnostic output path"),
+                None
+            );
+            assert_eq!(
+                profile_output_path_from_value(true, requested)
+                    .expect("diagnostic output path is accepted")
+                    .as_deref(),
+                Some(std::path::Path::new("correlation.txt"))
+            );
+            assert!(profile_output_path_from_value(true, Some(OsString::new())).is_err());
+        }
     }
 
     fn full_scene_reuse_observation(
@@ -2978,347 +3018,417 @@ mod tests {
     }
 
     #[test]
-    fn scene_reuse_requires_profile_and_defaults_to_no_telemetry() {
-        assert!(!scene_reuse_requested_from_value(None));
-        assert!(!scene_reuse_requested_from_value(Some("0")));
-        assert!(!scene_reuse_requested_from_value(Some("true")));
-        assert!(scene_reuse_requested_from_value(Some("1")));
-        assert!(scene_reuse_configuration_is_valid(false, false));
-        assert!(!scene_reuse_configuration_is_valid(false, true));
-        assert!(scene_reuse_configuration_is_valid(true, true));
-        assert!(!scene_reuse_telemetry_enabled(false, false));
-        assert!(!scene_reuse_telemetry_enabled(true, false));
-        assert!(scene_reuse_telemetry_enabled(true, true));
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn scene_reuse_cache_hits_only_exact_snapshots_and_stays_bounded() {
+        // Phase `scene_reuse_exact_a_b_a_is_a_rank_two_hit_without_a_payload_copy`.
+        {
+            let mut telemetry = SceneReuseTelemetry::default();
+            telemetry.observe(b"A", full_scene_reuse_observation(None));
+            telemetry.observe(b"B", full_scene_reuse_observation(None));
+            telemetry.observe(b"A", full_scene_reuse_observation(None));
 
-    #[test]
-    fn scene_reuse_exact_a_b_a_is_a_rank_two_hit_without_a_payload_copy() {
-        let mut telemetry = SceneReuseTelemetry::default();
-        telemetry.observe(b"A", full_scene_reuse_observation(None));
-        telemetry.observe(b"B", full_scene_reuse_observation(None));
-        telemetry.observe(b"A", full_scene_reuse_observation(None));
-
-        assert_eq!(telemetry.observations, 3);
-        assert_eq!(telemetry.admitted, 3);
-        assert_eq!(telemetry.misses(), 2);
-        assert_eq!(telemetry.hits, 1);
-        assert_eq!(telemetry.rank_hits, [0, 1, 0, 0]);
-        assert_eq!(telemetry.hypothetical_hits(1), 0);
-        assert_eq!(telemetry.hypothetical_hits(2), 1);
-        assert_eq!(telemetry.hypothetical_hits(4), 1);
-        assert_eq!(telemetry.snapshot_copy_bytes, 2);
-        assert_eq!(telemetry.observed_payload_bytes, 3);
-        assert_eq!(telemetry.observed_payload_min_bytes, Some(1));
-        assert_eq!(telemetry.observed_payload_max_bytes, 1);
-        assert_eq!(telemetry.admitted_payload_bytes, 3);
-        assert_eq!(telemetry.admitted_payload_min_bytes, Some(1));
-        assert_eq!(telemetry.admitted_payload_max_bytes, 1);
-        assert_eq!(telemetry.reuse_gap_total, 2);
-        assert_eq!(telemetry.reuse_gap_max, 2);
-    }
-
-    #[test]
-    fn scene_reuse_retains_four_snapshots_and_evicts_the_fifth() {
-        let mut telemetry = SceneReuseTelemetry::default();
-        for payload in [b"A".as_slice(), b"B", b"C", b"D", b"E"] {
-            telemetry.observe(payload, full_scene_reuse_observation(None));
+            assert_eq!(telemetry.observations, 3);
+            assert_eq!(telemetry.admitted, 3);
+            assert_eq!(telemetry.misses(), 2);
+            assert_eq!(telemetry.hits, 1);
+            assert_eq!(telemetry.rank_hits, [0, 1, 0, 0]);
+            assert_eq!(telemetry.hypothetical_hits(1), 0);
+            assert_eq!(telemetry.hypothetical_hits(2), 1);
+            assert_eq!(telemetry.hypothetical_hits(4), 1);
+            assert_eq!(telemetry.snapshot_copy_bytes, 2);
+            assert_eq!(telemetry.observed_payload_bytes, 3);
+            assert_eq!(telemetry.observed_payload_min_bytes, Some(1));
+            assert_eq!(telemetry.observed_payload_max_bytes, 1);
+            assert_eq!(telemetry.admitted_payload_bytes, 3);
+            assert_eq!(telemetry.admitted_payload_min_bytes, Some(1));
+            assert_eq!(telemetry.admitted_payload_max_bytes, 1);
+            assert_eq!(telemetry.reuse_gap_total, 2);
+            assert_eq!(telemetry.reuse_gap_max, 2);
         }
+        // Phase `scene_reuse_retains_four_snapshots_and_evicts_the_fifth`.
+        {
+            let mut telemetry = SceneReuseTelemetry::default();
+            for payload in [b"A".as_slice(), b"B", b"C", b"D", b"E"] {
+                telemetry.observe(payload, full_scene_reuse_observation(None));
+            }
 
-        assert_eq!(telemetry.snapshots.len(), MAX_SCENE_REUSE_SNAPSHOTS);
-        assert!(
-            telemetry
-                .snapshots
-                .iter()
-                .all(|snapshot| snapshot.payload.as_ref() != b"A".as_slice())
-        );
-        telemetry.observe(b"A", full_scene_reuse_observation(None));
-        assert_eq!(telemetry.hits, 0);
-        assert_eq!(telemetry.misses(), 6);
-        assert_eq!(telemetry.snapshots.len(), MAX_SCENE_REUSE_SNAPSHOTS);
-    }
-
-    #[test]
-    fn scene_reuse_requires_exact_bytes_even_at_equal_length() {
-        let mut telemetry = SceneReuseTelemetry::default();
-        telemetry.observe(&[7, 8, 9], full_scene_reuse_observation(None));
-        telemetry.observe(&[7, 8, 10], full_scene_reuse_observation(None));
-
-        assert_eq!(telemetry.hits, 0);
-        assert_eq!(telemetry.misses(), 2);
-        assert_eq!(telemetry.snapshot_copy_bytes, 6);
-    }
-
-    #[test]
-    fn scene_reuse_hit_promotes_recency_before_future_eviction() {
-        let mut telemetry = SceneReuseTelemetry::default();
-        for payload in [b"A".as_slice(), b"B", b"C"] {
-            telemetry.observe(payload, full_scene_reuse_observation(None));
+            assert_eq!(telemetry.snapshots.len(), MAX_SCENE_REUSE_SNAPSHOTS);
+            assert!(
+                telemetry
+                    .snapshots
+                    .iter()
+                    .all(|snapshot| snapshot.payload.as_ref() != b"A".as_slice())
+            );
+            telemetry.observe(b"A", full_scene_reuse_observation(None));
+            assert_eq!(telemetry.hits, 0);
+            assert_eq!(telemetry.misses(), 6);
+            assert_eq!(telemetry.snapshots.len(), MAX_SCENE_REUSE_SNAPSHOTS);
         }
-        telemetry.observe(b"A", full_scene_reuse_observation(None));
-        telemetry.observe(b"D", full_scene_reuse_observation(None));
-        telemetry.observe(b"E", full_scene_reuse_observation(None));
-        telemetry.observe(b"A", full_scene_reuse_observation(None));
+        // Phase `scene_reuse_requires_exact_bytes_even_at_equal_length`.
+        {
+            let mut telemetry = SceneReuseTelemetry::default();
+            telemetry.observe(&[7, 8, 9], full_scene_reuse_observation(None));
+            telemetry.observe(&[7, 8, 10], full_scene_reuse_observation(None));
 
-        assert_eq!(telemetry.hits, 2);
-        assert_eq!(telemetry.rank_hits, [0, 0, 2, 0]);
-        assert!(
-            telemetry
-                .snapshots
-                .iter()
-                .any(|snapshot| snapshot.payload.as_ref() == b"A".as_slice())
-        );
-        assert!(
-            telemetry
-                .snapshots
-                .iter()
-                .all(|snapshot| snapshot.payload.as_ref() != b"B".as_slice())
-        );
-    }
+            assert_eq!(telemetry.hits, 0);
+            assert_eq!(telemetry.misses(), 2);
+            assert_eq!(telemetry.snapshot_copy_bytes, 6);
+        }
+        // Phase `scene_reuse_hit_promotes_recency_before_future_eviction`.
+        {
+            let mut telemetry = SceneReuseTelemetry::default();
+            for payload in [b"A".as_slice(), b"B", b"C"] {
+                telemetry.observe(payload, full_scene_reuse_observation(None));
+            }
+            telemetry.observe(b"A", full_scene_reuse_observation(None));
+            telemetry.observe(b"D", full_scene_reuse_observation(None));
+            telemetry.observe(b"E", full_scene_reuse_observation(None));
+            telemetry.observe(b"A", full_scene_reuse_observation(None));
 
-    #[test]
-    fn scene_reuse_metadata_changes_count_only_for_matching_payloads() {
-        let damage = [vello::FineDamageRect {
-            x: 24,
-            y: 48,
-            width: 80,
-            height: 96,
-        }];
-        let mut telemetry = SceneReuseTelemetry::default();
-        telemetry.observe(b"same", full_scene_reuse_observation(None));
-        telemetry.observe(
-            b"same",
-            sparse_scene_reuse_observation(&damage, true, true, 30),
-        );
-        telemetry.observe(
-            b"different",
-            sparse_scene_reuse_observation(&damage, false, false, 0),
-        );
+            assert_eq!(telemetry.hits, 2);
+            assert_eq!(telemetry.rank_hits, [0, 0, 2, 0]);
+            assert!(
+                telemetry
+                    .snapshots
+                    .iter()
+                    .any(|snapshot| snapshot.payload.as_ref() == b"A".as_slice())
+            );
+            assert!(
+                telemetry
+                    .snapshots
+                    .iter()
+                    .all(|snapshot| snapshot.payload.as_ref() != b"B".as_slice())
+            );
+        }
+        // Phase `scene_reuse_metadata_changes_count_only_for_matching_payloads`.
+        {
+            let damage = [vello::FineDamageRect {
+                x: 24,
+                y: 48,
+                width: 80,
+                height: 96,
+            }];
+            let mut telemetry = SceneReuseTelemetry::default();
+            telemetry.observe(b"same", full_scene_reuse_observation(None));
+            telemetry.observe(
+                b"same",
+                sparse_scene_reuse_observation(&damage, true, true, 30),
+            );
+            telemetry.observe(
+                b"different",
+                sparse_scene_reuse_observation(&damage, false, false, 0),
+            );
 
-        assert_eq!(telemetry.hits, 1);
-        assert_eq!(telemetry.hit_any_metadata_changed, 1);
-        assert_eq!(telemetry.hit_damage_changed, 1);
-        assert_eq!(telemetry.hit_mode_changed, 1);
-        assert_eq!(telemetry.hit_bounds_changed, 1);
-    }
+            assert_eq!(telemetry.hits, 1);
+            assert_eq!(telemetry.hit_any_metadata_changed, 1);
+            assert_eq!(telemetry.hit_damage_changed, 1);
+            assert_eq!(telemetry.hit_mode_changed, 1);
+            assert_eq!(telemetry.hit_bounds_changed, 1);
+        }
+        // Phase `scene_reuse_empty_oversized_invalid_and_recovery_observations_clear_history`.
+        {
+            let mut telemetry = SceneReuseTelemetry::default();
+            telemetry.observe(b"seed", full_scene_reuse_observation(None));
+            telemetry.observe(b"", full_scene_reuse_observation(None));
+            assert_eq!(telemetry.empty_observations, 1);
+            assert!(telemetry.snapshots.is_empty());
 
-    #[test]
-    fn scene_reuse_empty_oversized_invalid_and_recovery_observations_clear_history() {
-        let mut telemetry = SceneReuseTelemetry::default();
-        telemetry.observe(b"seed", full_scene_reuse_observation(None));
-        telemetry.observe(b"", full_scene_reuse_observation(None));
-        assert_eq!(telemetry.empty_observations, 1);
-        assert!(telemetry.snapshots.is_empty());
+            telemetry.observe(b"seed", full_scene_reuse_observation(None));
+            let oversized_payload = vec![0_u8; MAX_SCENE_REUSE_PAYLOAD_BYTES + 1];
+            telemetry.observe(&oversized_payload, full_scene_reuse_observation(None));
+            assert_eq!(telemetry.oversized_observations, 1);
+            assert!(telemetry.snapshots.is_empty());
 
-        telemetry.observe(b"seed", full_scene_reuse_observation(None));
-        let oversized_payload = vec![0_u8; MAX_SCENE_REUSE_PAYLOAD_BYTES + 1];
-        telemetry.observe(&oversized_payload, full_scene_reuse_observation(None));
-        assert_eq!(telemetry.oversized_observations, 1);
-        assert!(telemetry.snapshots.is_empty());
+            telemetry.observe(b"seed", full_scene_reuse_observation(None));
+            let oversized_damage = vec![
+                vello::FineDamageRect {
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                };
+                super::MAX_SCENE_REUSE_DAMAGE_RECTS + 1
+            ];
+            telemetry.observe(
+                b"oversized-metadata",
+                full_scene_reuse_observation(Some(&oversized_damage)),
+            );
+            assert_eq!(telemetry.oversized_observations, 2);
+            assert!(telemetry.snapshots.is_empty());
 
-        telemetry.observe(b"seed", full_scene_reuse_observation(None));
-        let oversized_damage = vec![
-            vello::FineDamageRect {
+            telemetry.observe(b"seed", full_scene_reuse_observation(None));
+            let invalid_damage = [vello::FineDamageRect {
                 x: 0,
                 y: 0,
-                width: 1,
+                width: 0,
                 height: 1,
-            };
-            super::MAX_SCENE_REUSE_DAMAGE_RECTS + 1
-        ];
-        telemetry.observe(
-            b"oversized-metadata",
-            full_scene_reuse_observation(Some(&oversized_damage)),
-        );
-        assert_eq!(telemetry.oversized_observations, 2);
-        assert!(telemetry.snapshots.is_empty());
+            }];
+            telemetry.observe(
+                b"invalid",
+                full_scene_reuse_observation(Some(&invalid_damage)),
+            );
+            assert_eq!(telemetry.invalid_metadata_observations, 1);
+            assert!(telemetry.snapshots.is_empty());
 
-        telemetry.observe(b"seed", full_scene_reuse_observation(None));
-        let invalid_damage = [vello::FineDamageRect {
-            x: 0,
-            y: 0,
-            width: 0,
-            height: 1,
-        }];
-        telemetry.observe(
-            b"invalid",
-            full_scene_reuse_observation(Some(&invalid_damage)),
-        );
-        assert_eq!(telemetry.invalid_metadata_observations, 1);
-        assert!(telemetry.snapshots.is_empty());
-
-        telemetry.observe(b"seed", full_scene_reuse_observation(None));
-        telemetry.observe(
-            b"recovery",
-            SceneReuseObservation::from_paint(
-                None,
-                2,
-                1,
-                1,
-                Some(vello::SparseRenderStats::default()),
-            ),
-        );
-        assert_eq!(telemetry.recovery_observations, 1);
-        assert!(telemetry.snapshots.is_empty());
-    }
-
-    #[test]
-    fn scene_reuse_payload_and_entry_caps_are_bounded_before_snapshot_copy() {
-        let mut telemetry = SceneReuseTelemetry::default();
-        for value in 0_u8..5 {
-            let payload = vec![value; MAX_SCENE_REUSE_PAYLOAD_BYTES];
-            telemetry.observe(&payload, full_scene_reuse_observation(None));
-            assert!(telemetry.snapshots.len() <= MAX_SCENE_REUSE_SNAPSHOTS);
-            assert!(telemetry.retained_payload_bytes <= MAX_SCENE_REUSE_RETAINED_BYTES);
+            telemetry.observe(b"seed", full_scene_reuse_observation(None));
+            telemetry.observe(
+                b"recovery",
+                SceneReuseObservation::from_paint(
+                    None,
+                    2,
+                    1,
+                    1,
+                    Some(vello::SparseRenderStats::default()),
+                ),
+            );
+            assert_eq!(telemetry.recovery_observations, 1);
+            assert!(telemetry.snapshots.is_empty());
         }
+        // Phase `scene_reuse_payload_and_entry_caps_are_bounded_before_snapshot_copy`.
+        {
+            let mut telemetry = SceneReuseTelemetry::default();
+            for value in 0_u8..5 {
+                let payload = vec![value; MAX_SCENE_REUSE_PAYLOAD_BYTES];
+                telemetry.observe(&payload, full_scene_reuse_observation(None));
+                assert!(telemetry.snapshots.len() <= MAX_SCENE_REUSE_SNAPSHOTS);
+                assert!(telemetry.retained_payload_bytes <= MAX_SCENE_REUSE_RETAINED_BYTES);
+            }
 
-        assert_eq!(telemetry.snapshots.len(), MAX_SCENE_REUSE_SNAPSHOTS);
-        assert_eq!(
-            telemetry.retained_payload_bytes,
-            MAX_SCENE_REUSE_RETAINED_BYTES
-        );
-        assert_eq!(telemetry.peak_payload_bytes, MAX_SCENE_REUSE_RETAINED_BYTES);
-        assert_eq!(
-            telemetry.snapshot_copy_bytes,
-            u128::try_from(MAX_SCENE_REUSE_PAYLOAD_BYTES)
-                .expect("payload cap fits u128")
-                .saturating_mul(5)
-        );
+            assert_eq!(telemetry.snapshots.len(), MAX_SCENE_REUSE_SNAPSHOTS);
+            assert_eq!(
+                telemetry.retained_payload_bytes,
+                MAX_SCENE_REUSE_RETAINED_BYTES
+            );
+            assert_eq!(telemetry.peak_payload_bytes, MAX_SCENE_REUSE_RETAINED_BYTES);
+            assert_eq!(
+                telemetry.snapshot_copy_bytes,
+                u128::try_from(MAX_SCENE_REUSE_PAYLOAD_BYTES)
+                    .expect("payload cap fits u128")
+                    .saturating_mul(5)
+            );
+        }
     }
 
     #[test]
-    fn diagnostic_phase_aggregation_keeps_every_phase_and_byte() {
-        let mut totals = BenchmarkPhaseTotals::default();
-        totals.add_sample(BenchmarkPhaseTiming {
-            input_us: 1,
-            registry_us: 2,
-            layout_us: 3,
-            scene_us: 4,
-            bridge: BridgePhaseTiming {
-                submit_us: 5,
-                completed_readback_map_us: 6,
-                settle_us: 7,
-                cpu_copy_swizzle_us: 8,
-                readback_bytes: 9,
-                cpu_output_bytes: 10,
-            },
-        });
-        totals.add_sample(BenchmarkPhaseTiming {
-            input_us: 10,
-            registry_us: 20,
-            layout_us: 30,
-            scene_us: 40,
-            bridge: BridgePhaseTiming {
-                submit_us: 50,
-                completed_readback_map_us: 60,
-                settle_us: 70,
-                cpu_copy_swizzle_us: 80,
-                readback_bytes: 90,
-                cpu_output_bytes: 100,
-            },
-        });
-        assert_eq!(totals.input_us, 11);
-        assert_eq!(totals.registry_us, 22);
-        assert_eq!(totals.layout_us, 33);
-        assert_eq!(totals.scene_us, 44);
-        assert_eq!(totals.submit_us, 55);
-        assert_eq!(totals.completed_readback_map_us, 66);
-        assert_eq!(totals.settle_us, 77);
-        assert_eq!(totals.cpu_copy_swizzle_us, 88);
-        assert_eq!(totals.readback_bytes, 99);
-        assert_eq!(totals.cpu_output_bytes, 110);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn diagnostic_aggregation_keeps_every_phase_and_exact_timestamps() {
+        // Phase `diagnostic_phase_aggregation_keeps_every_phase_and_byte`.
+        {
+            let mut totals = BenchmarkPhaseTotals::default();
+            totals.add_sample(BenchmarkPhaseTiming {
+                input_us: 1,
+                registry_us: 2,
+                layout_us: 3,
+                scene_us: 4,
+                bridge: BridgePhaseTiming {
+                    submit_us: 5,
+                    completed_readback_map_us: 6,
+                    settle_us: 7,
+                    cpu_copy_swizzle_us: 8,
+                    readback_bytes: 9,
+                    cpu_output_bytes: 10,
+                },
+            });
+            totals.add_sample(BenchmarkPhaseTiming {
+                input_us: 10,
+                registry_us: 20,
+                layout_us: 30,
+                scene_us: 40,
+                bridge: BridgePhaseTiming {
+                    submit_us: 50,
+                    completed_readback_map_us: 60,
+                    settle_us: 70,
+                    cpu_copy_swizzle_us: 80,
+                    readback_bytes: 90,
+                    cpu_output_bytes: 100,
+                },
+            });
+            assert_eq!(totals.input_us, 11);
+            assert_eq!(totals.registry_us, 22);
+            assert_eq!(totals.layout_us, 33);
+            assert_eq!(totals.scene_us, 44);
+            assert_eq!(totals.submit_us, 55);
+            assert_eq!(totals.completed_readback_map_us, 66);
+            assert_eq!(totals.settle_us, 77);
+            assert_eq!(totals.cpu_copy_swizzle_us, 88);
+            assert_eq!(totals.readback_bytes, 99);
+            assert_eq!(totals.cpu_output_bytes, 110);
+        }
+        // Phase `sparse_coarse_aggregation_uses_returned_submission_stats`.
+        {
+            let mut totals = RenderAttemptTotals {
+                full: 1,
+                recovery: 1,
+                ..RenderAttemptTotals::default()
+            };
+            assert_eq!(totals.canonical_segment_order_selected_full, 0);
+            assert_eq!(totals.canonical_segment_order_selected_sparse, 0);
+            assert_eq!(totals.area_ppt8_selected_full, 0);
+            assert_eq!(totals.area_ppt8_selected_sparse, 0);
+            assert_eq!(totals.clip_single_group_selected_full, 0);
+            assert_eq!(totals.clip_single_group_selected_sparse, 0);
+            totals.record_canonical_segment_order_attempts(2, 1);
+            totals.record_area_ppt8_attempts(3, 2);
+            totals.record_clip_single_group_attempts(4, 3);
+            assert_eq!(totals.solid_fuse_selected_sparse, 0);
+            assert_eq!(totals.segment_row_mask_selected_sparse, 0);
+            totals.record_sparse_stats(vello::SparseRenderStats {
+                coarse_adaptive: true,
+                coarse_active_bins: true,
+                coarse_native_bins: 64,
+                coarse_selected_native_bins: 12,
+                path_tile_bounds_applied: true,
+                path_tile_bounds_tiles: 36,
+                coarse_opaque_prune_selected: true,
+                solid_fuse_selected: true,
+                segment_row_mask_selected: true,
+                canonical_segment_order_shader_selected: false,
+                fine_quad_skip_applied: true,
+                fine_quad_total_quads: 64,
+                fine_quad_active_quads: 20,
+                ..vello::SparseRenderStats::default()
+            });
+            totals.record_sparse_stats(vello::SparseRenderStats {
+                coarse_adaptive: true,
+                coarse_active_bins: false,
+                coarse_native_bins: 64,
+                coarse_selected_native_bins: 40,
+                path_tile_bounds_applied: false,
+                path_tile_bounds_tiles: 99,
+                coarse_opaque_prune_selected: false,
+                solid_fuse_selected: false,
+                segment_row_mask_selected: false,
+                canonical_segment_order_shader_selected: false,
+                fine_quad_skip_applied: false,
+                fine_quad_total_quads: 64,
+                fine_quad_active_quads: 1,
+                ..vello::SparseRenderStats::default()
+            });
+            // A forced legacy active-bin submission remains actual active work, but it is not an
+            // AUTO adaptive decision.
+            totals.record_sparse_stats(vello::SparseRenderStats {
+                coarse_adaptive: false,
+                coarse_active_bins: true,
+                coarse_native_bins: 64,
+                coarse_selected_native_bins: 64,
+                path_tile_bounds_applied: true,
+                path_tile_bounds_tiles: 12,
+                coarse_opaque_prune_selected: true,
+                solid_fuse_selected: false,
+                segment_row_mask_selected: false,
+                canonical_segment_order_shader_selected: false,
+                fine_quad_skip_applied: true,
+                fine_quad_total_quads: 64,
+                fine_quad_active_quads: 64,
+                ..vello::SparseRenderStats::default()
+            });
 
-    #[test]
-    fn sparse_coarse_aggregation_uses_returned_submission_stats() {
-        let mut totals = RenderAttemptTotals {
-            full: 1,
-            recovery: 1,
-            ..RenderAttemptTotals::default()
-        };
-        assert_eq!(totals.canonical_segment_order_selected_full, 0);
-        assert_eq!(totals.canonical_segment_order_selected_sparse, 0);
-        assert_eq!(totals.area_ppt8_selected_full, 0);
-        assert_eq!(totals.area_ppt8_selected_sparse, 0);
-        assert_eq!(totals.clip_single_group_selected_full, 0);
-        assert_eq!(totals.clip_single_group_selected_sparse, 0);
-        totals.record_canonical_segment_order_attempts(2, 1);
-        totals.record_area_ppt8_attempts(3, 2);
-        totals.record_clip_single_group_attempts(4, 3);
-        assert_eq!(totals.solid_fuse_selected_sparse, 0);
-        assert_eq!(totals.segment_row_mask_selected_sparse, 0);
-        totals.record_sparse_stats(vello::SparseRenderStats {
-            coarse_adaptive: true,
-            coarse_active_bins: true,
-            coarse_native_bins: 64,
-            coarse_selected_native_bins: 12,
-            path_tile_bounds_applied: true,
-            path_tile_bounds_tiles: 36,
-            coarse_opaque_prune_selected: true,
-            solid_fuse_selected: true,
-            segment_row_mask_selected: true,
-            canonical_segment_order_shader_selected: false,
-            fine_quad_skip_applied: true,
-            fine_quad_total_quads: 64,
-            fine_quad_active_quads: 20,
-            ..vello::SparseRenderStats::default()
-        });
-        totals.record_sparse_stats(vello::SparseRenderStats {
-            coarse_adaptive: true,
-            coarse_active_bins: false,
-            coarse_native_bins: 64,
-            coarse_selected_native_bins: 40,
-            path_tile_bounds_applied: false,
-            path_tile_bounds_tiles: 99,
-            coarse_opaque_prune_selected: false,
-            solid_fuse_selected: false,
-            segment_row_mask_selected: false,
-            canonical_segment_order_shader_selected: false,
-            fine_quad_skip_applied: false,
-            fine_quad_total_quads: 64,
-            fine_quad_active_quads: 1,
-            ..vello::SparseRenderStats::default()
-        });
-        // A forced legacy active-bin submission remains actual active work, but it is not an
-        // AUTO adaptive decision.
-        totals.record_sparse_stats(vello::SparseRenderStats {
-            coarse_adaptive: false,
-            coarse_active_bins: true,
-            coarse_native_bins: 64,
-            coarse_selected_native_bins: 64,
-            path_tile_bounds_applied: true,
-            path_tile_bounds_tiles: 12,
-            coarse_opaque_prune_selected: true,
-            solid_fuse_selected: false,
-            segment_row_mask_selected: false,
-            canonical_segment_order_shader_selected: false,
-            fine_quad_skip_applied: true,
-            fine_quad_total_quads: 64,
-            fine_quad_active_quads: 64,
-            ..vello::SparseRenderStats::default()
-        });
+            assert_eq!(totals.adaptive_sparse, 2);
+            assert_eq!(totals.active_sparse, 2);
+            assert_eq!(totals.dense_fallback_sparse, 1);
+            assert_eq!(totals.coarse_native_bins, 192);
+            assert_eq!(totals.coarse_selected_native_bins, 116);
+            assert_eq!(totals.path_tile_bounds_sparse, 2);
+            assert_eq!(totals.path_tile_bounds_tiles, 48);
+            assert_eq!(totals.area_ppt8_selected_full, 3);
+            assert_eq!(totals.area_ppt8_selected_sparse, 2);
+            assert_eq!(totals.clip_single_group_selected_full, 4);
+            assert_eq!(totals.clip_single_group_selected_sparse, 3);
+            assert_eq!(totals.coarse_opaque_prune_selected_sparse, 2);
+            assert_eq!(totals.solid_fuse_selected_sparse, 1);
+            assert_eq!(totals.segment_row_mask_selected_sparse, 1);
+            assert_eq!(totals.fine_quad_skip_sparse, 2);
+            assert_eq!(totals.fine_quad_total, 128);
+            assert_eq!(totals.fine_quad_active, 84);
+            assert_eq!(totals.fine_quad_skipped, 44);
+            assert_eq!(totals.full, 1);
+            assert_eq!(totals.recovery, 1);
+            assert_eq!(totals.canonical_segment_order_selected_full, 2);
+            assert_eq!(totals.canonical_segment_order_selected_sparse, 1);
+        }
+        // Phase `dispatch_timestamp_aggregation_requires_exact_submission_match`.
+        {
+            let mut totals = GpuDispatchTimingTotals::default();
+            let sample = dispatch_sample(41, &[(7, 3, 10), (20, 1, 30)]);
+            let status = dispatch_timestamp_status_after_take(Some(&sample), || {
+                panic!("a decoded sample must not be pre-classified as pending")
+            });
+            totals.record_completed_paint(Some(41), status, Some(&sample), 0);
 
-        assert_eq!(totals.adaptive_sparse, 2);
-        assert_eq!(totals.active_sparse, 2);
-        assert_eq!(totals.dense_fallback_sparse, 1);
-        assert_eq!(totals.coarse_native_bins, 192);
-        assert_eq!(totals.coarse_selected_native_bins, 116);
-        assert_eq!(totals.path_tile_bounds_sparse, 2);
-        assert_eq!(totals.path_tile_bounds_tiles, 48);
-        assert_eq!(totals.area_ppt8_selected_full, 3);
-        assert_eq!(totals.area_ppt8_selected_sparse, 2);
-        assert_eq!(totals.clip_single_group_selected_full, 4);
-        assert_eq!(totals.clip_single_group_selected_sparse, 3);
-        assert_eq!(totals.coarse_opaque_prune_selected_sparse, 2);
-        assert_eq!(totals.solid_fuse_selected_sparse, 1);
-        assert_eq!(totals.segment_row_mask_selected_sparse, 1);
-        assert_eq!(totals.fine_quad_skip_sparse, 2);
-        assert_eq!(totals.fine_quad_total, 128);
-        assert_eq!(totals.fine_quad_active, 84);
-        assert_eq!(totals.fine_quad_skipped, 44);
-        assert_eq!(totals.full, 1);
-        assert_eq!(totals.recovery, 1);
-        assert_eq!(totals.canonical_segment_order_selected_full, 2);
-        assert_eq!(totals.canonical_segment_order_selected_sparse, 1);
+            assert_eq!(totals.expected_submissions, 1);
+            assert_eq!(totals.matched_submissions, 1);
+            assert_eq!(totals.missing_submissions, 0);
+            assert_eq!(totals.stale_submissions, 0);
+            assert_eq!(totals.pending_submissions, 0);
+            let flatten = totals.stages.get(6).expect("flatten stage is in range");
+            let fine = totals.stages.get(19).expect("fine stage is in range");
+            assert_eq!(flatten.duration_ns, vec![10]);
+            assert_eq!(fine.dispatches, vec![1]);
+            let mut fine_durations = fine.duration_ns.clone();
+            let summary = summarize_diagnostic_values(&mut fine_durations)
+                .expect("matched GPU stage has a duration");
+            assert_eq!(summary.mean, 30);
+            assert_eq!(summary.p99, 30);
+        }
+        // Phase `dispatch_timestamp_mismatch_and_unavailable_states_are_never_zero_time`.
+        {
+            let mut totals = GpuDispatchTimingTotals::default();
+            let mismatched = dispatch_sample(8, &[(7, 1, 100)]);
+            totals.record_completed_paint(
+                Some(9),
+                vello::GpuDispatchTimestampStatus::Ready {
+                    submission_id: 9,
+                    stage_count: 1,
+                },
+                Some(&mismatched),
+                2,
+            );
+            totals.record_completed_paint(
+                None,
+                vello::GpuDispatchTimestampStatus::Unsupported,
+                None,
+                0,
+            );
+
+            assert_eq!(totals.expected_submissions, 1);
+            assert_eq!(totals.matched_submissions, 0);
+            assert_eq!(totals.missing_submissions, 1);
+            assert_eq!(totals.stale_submissions, 1);
+            assert_eq!(totals.unsupported_submissions, 1);
+            assert_eq!(totals.recovery_submissions, 2);
+            assert!(
+                totals
+                    .stages
+                    .iter()
+                    .all(|stage| stage.duration_ns.is_empty())
+            );
+        }
+        // Phase `dispatch_timestamp_missing_sample_reads_post_take_invalid_status`.
+        {
+            let mut totals = GpuDispatchTimingTotals::default();
+            let status = dispatch_timestamp_status_after_take(None, || {
+                vello::GpuDispatchTimestampStatus::Invalid { submission_id: 12 }
+            });
+            totals.record_completed_paint(Some(12), status, None, 0);
+
+            assert_eq!(totals.expected_submissions, 1);
+            assert_eq!(totals.matched_submissions, 0);
+            assert_eq!(totals.missing_submissions, 1);
+            assert_eq!(totals.invalid_submissions, 1);
+            assert_eq!(totals.pending_submissions, 0);
+            assert!(
+                totals
+                    .stages
+                    .iter()
+                    .all(|stage| stage.duration_ns.is_empty())
+            );
+        }
     }
 
     fn dispatch_sample(
@@ -3341,86 +3451,6 @@ mod tests {
             stage_count: u32::try_from(stages.len()).expect("test stage count fits u32"),
             stages: sample_stages,
         }
-    }
-
-    #[test]
-    fn dispatch_timestamp_aggregation_requires_exact_submission_match() {
-        let mut totals = GpuDispatchTimingTotals::default();
-        let sample = dispatch_sample(41, &[(7, 3, 10), (20, 1, 30)]);
-        let status = dispatch_timestamp_status_after_take(Some(&sample), || {
-            panic!("a decoded sample must not be pre-classified as pending")
-        });
-        totals.record_completed_paint(Some(41), status, Some(&sample), 0);
-
-        assert_eq!(totals.expected_submissions, 1);
-        assert_eq!(totals.matched_submissions, 1);
-        assert_eq!(totals.missing_submissions, 0);
-        assert_eq!(totals.stale_submissions, 0);
-        assert_eq!(totals.pending_submissions, 0);
-        let flatten = totals.stages.get(6).expect("flatten stage is in range");
-        let fine = totals.stages.get(19).expect("fine stage is in range");
-        assert_eq!(flatten.duration_ns, vec![10]);
-        assert_eq!(fine.dispatches, vec![1]);
-        let mut fine_durations = fine.duration_ns.clone();
-        let summary = summarize_diagnostic_values(&mut fine_durations)
-            .expect("matched GPU stage has a duration");
-        assert_eq!(summary.mean, 30);
-        assert_eq!(summary.p99, 30);
-    }
-
-    #[test]
-    fn dispatch_timestamp_mismatch_and_unavailable_states_are_never_zero_time() {
-        let mut totals = GpuDispatchTimingTotals::default();
-        let mismatched = dispatch_sample(8, &[(7, 1, 100)]);
-        totals.record_completed_paint(
-            Some(9),
-            vello::GpuDispatchTimestampStatus::Ready {
-                submission_id: 9,
-                stage_count: 1,
-            },
-            Some(&mismatched),
-            2,
-        );
-        totals.record_completed_paint(
-            None,
-            vello::GpuDispatchTimestampStatus::Unsupported,
-            None,
-            0,
-        );
-
-        assert_eq!(totals.expected_submissions, 1);
-        assert_eq!(totals.matched_submissions, 0);
-        assert_eq!(totals.missing_submissions, 1);
-        assert_eq!(totals.stale_submissions, 1);
-        assert_eq!(totals.unsupported_submissions, 1);
-        assert_eq!(totals.recovery_submissions, 2);
-        assert!(
-            totals
-                .stages
-                .iter()
-                .all(|stage| stage.duration_ns.is_empty())
-        );
-    }
-
-    #[test]
-    fn dispatch_timestamp_missing_sample_reads_post_take_invalid_status() {
-        let mut totals = GpuDispatchTimingTotals::default();
-        let status = dispatch_timestamp_status_after_take(None, || {
-            vello::GpuDispatchTimestampStatus::Invalid { submission_id: 12 }
-        });
-        totals.record_completed_paint(Some(12), status, None, 0);
-
-        assert_eq!(totals.expected_submissions, 1);
-        assert_eq!(totals.matched_submissions, 0);
-        assert_eq!(totals.missing_submissions, 1);
-        assert_eq!(totals.invalid_submissions, 1);
-        assert_eq!(totals.pending_submissions, 0);
-        assert!(
-            totals
-                .stages
-                .iter()
-                .all(|stage| stage.duration_ns.is_empty())
-        );
     }
 
     fn correlation_record(
@@ -3462,357 +3492,345 @@ mod tests {
     }
 
     #[test]
-    fn action_correlation_joins_wall_phase_and_exact_gpu_sample() {
-        let sample = dispatch_sample(
-            41,
-            &[
-                (17, 3, 10),
-                (20, 4, 30),
-                (7, 1, 5),
-                (0, 2, 7),
-                (u16::MAX, 1, 11),
-            ],
-        );
-        let status = dispatch_timestamp_status_after_take(Some(&sample), || {
-            panic!("decoded timestamp sample must be authoritative")
-        });
-        let timestamp = ActionGpuTimestampObservation::from_sample(Some(41), status, Some(&sample));
-        let mut profile = ActionCorrelationProfile::new();
-        let record = correlation_record(7, &timestamp);
-        profile.record(&record).expect("one bounded profile record");
-
-        let record = profile.records.first().expect("stored joined record");
-        assert_eq!(record.index, 7);
-        assert_eq!(record.target, ACTION_TARGETS[0]);
-        assert_eq!(record.wall_us, 77);
-        assert_eq!(record.phase.bridge.completed_readback_map_us, 6);
-        assert_eq!(record.sparse_stats.map(|stats| stats.fine_tiles), Some(11));
-        assert!(record.timestamp.exact_match);
-        assert!(!record.timestamp.sample_missing);
-        assert!(!record.timestamp.stale_sample);
-        assert_eq!(record.timestamp.expected_submission_id, Some(41));
-        assert_eq!(record.timestamp.observed_submission_id, Some(41));
-        assert_eq!(record.timestamp.coarse_ns, Some(10));
-        assert_eq!(record.timestamp.fine_ns, Some(30));
-        assert_eq!(record.timestamp.total_timed_stage_ns, Some(63));
-        assert_eq!(record.timestamp.other_stage_ns, Some(5));
-        assert_eq!(record.timestamp.unknown_stage_ns, Some(18));
-        assert_eq!(record.timestamp.coarse_dispatches, Some(3));
-        assert_eq!(record.timestamp.fine_dispatches, Some(4));
-        let breakdown = dispatch_stage_breakdown(&sample);
-        assert_eq!(
-            breakdown.total_timed_stage_ns, 63,
-            "the exact matched sample retains coarse, fine, other, zero-id unknown, and out-of-catalog unknown stage time"
-        );
-        assert_eq!(
-            breakdown.total_timed_stage_ns,
-            breakdown
-                .coarse_ns
-                .saturating_add(breakdown.fine_ns)
-                .saturating_add(breakdown.other_stage_ns)
-                .saturating_add(breakdown.unknown_stage_ns),
-            "the unknown class is a subset of the total, not an omitted duration"
-        );
-    }
-
-    #[test]
-    fn action_correlation_marks_stale_missing_and_recovery_without_backfill() {
-        let stale_sample = dispatch_sample(8, &[(17, 1, 100), (20, 1, 200)]);
-        let stale = ActionGpuTimestampObservation::from_sample(
-            Some(9),
-            vello::GpuDispatchTimestampStatus::Ready {
-                submission_id: 9,
-                stage_count: 2,
-            },
-            Some(&stale_sample),
-        );
-        assert!(!stale.exact_match);
-        assert!(stale.stale_sample);
-        assert!(!stale.sample_missing);
-        assert_eq!(stale.coarse_ns, None);
-        assert_eq!(stale.fine_ns, None);
-        assert_eq!(stale.total_timed_stage_ns, None);
-        assert_eq!(stale.other_stage_ns, None);
-        assert_eq!(stale.unknown_stage_ns, None);
-        assert_eq!(stale.coarse_dispatches, None);
-        assert_eq!(stale.fine_dispatches, None);
-
-        let missing = ActionGpuTimestampObservation::from_sample(
-            Some(12),
-            vello::GpuDispatchTimestampStatus::Pending { submission_id: 12 },
-            None,
-        );
-        assert!(!missing.exact_match);
-        assert!(missing.sample_missing);
-        assert!(!missing.stale_sample);
-        assert_eq!(
-            gpu_dispatch_timestamp_status_name(missing.status),
-            "pending",
-            "a pending final slot remains explicit rather than becoming a zero-time GPU result"
-        );
-
-        let mut recovered = correlation_record(8, &stale);
-        recovered.attempts = 2;
-        recovered.sparse_attempts = 1;
-        recovered.full_attempts = 1;
-        recovered.recovery_attempts = 1;
-        let mut profile = ActionCorrelationProfile::new();
-        profile.record(&recovered).expect("recovery action record");
-        let record = profile.records.first().expect("stored recovery record");
-        assert_eq!(record.recovery_attempts, 1);
-        assert_eq!(record.timestamp.coarse_ns, None);
-        assert_eq!(record.timestamp.fine_ns, None);
-        assert_eq!(record.timestamp.total_timed_stage_ns, None);
-    }
-
-    #[test]
-    fn action_correlation_keeps_disabled_unsupported_invalid_and_idle_states_explicit() {
-        let disabled = ActionGpuTimestampObservation::from_sample(
-            None,
-            vello::GpuDispatchTimestampStatus::Disabled,
-            None,
-        );
-        let unsupported = ActionGpuTimestampObservation::from_sample(
-            None,
-            vello::GpuDispatchTimestampStatus::Unsupported,
-            None,
-        );
-        let invalid = ActionGpuTimestampObservation::from_sample(
-            Some(12),
-            vello::GpuDispatchTimestampStatus::Invalid { submission_id: 12 },
-            None,
-        );
-        let no_expected_id = ActionGpuTimestampObservation::from_sample(
-            None,
-            vello::GpuDispatchTimestampStatus::Idle,
-            None,
-        );
-
-        for observation in [disabled, unsupported, invalid, no_expected_id] {
-            assert!(!observation.exact_match);
-            assert_eq!(observation.coarse_ns, None);
-            assert_eq!(observation.fine_ns, None);
-            assert_eq!(observation.total_timed_stage_ns, None);
-            assert_eq!(observation.other_stage_ns, None);
-            assert_eq!(observation.unknown_stage_ns, None);
-            assert_eq!(observation.coarse_dispatches, None);
-            assert_eq!(observation.fine_dispatches, None);
-        }
-        assert!(!disabled.sample_missing);
-        assert!(!unsupported.sample_missing);
-        assert!(invalid.sample_missing);
-        assert!(!no_expected_id.sample_missing);
-        assert_eq!(
-            gpu_dispatch_timestamp_status_name(invalid.status),
-            "invalid"
-        );
-        assert_eq!(
-            gpu_dispatch_timestamp_status_name(no_expected_id.status),
-            "idle"
-        );
-    }
-
-    #[test]
-    fn action_correlation_is_profile_gated_and_bounded() {
-        assert!(!action_correlation_enabled(false));
-        assert!(action_correlation_enabled(true));
-
-        let timestamp = ActionGpuTimestampObservation::from_sample(
-            None,
-            vello::GpuDispatchTimestampStatus::Disabled,
-            None,
-        );
-        let mut profile = ActionCorrelationProfile::new();
-        for index in 0..MAX_ACTION_CORRELATION_RECORDS {
-            let record = correlation_record(index, &timestamp);
-            profile
-                .record(&record)
-                .expect("fixed all-action correlation capacity");
-        }
-        assert_eq!(profile.records.len(), MAX_ACTION_CORRELATION_RECORDS);
-        let beyond_capacity = correlation_record(MAX_ACTION_CORRELATION_RECORDS, &timestamp);
-        assert!(
-            profile.record(&beyond_capacity).is_err(),
-            "the diagnostic must not retain more than one record per configured action"
-        );
-    }
-
-    #[test]
-    fn profile_output_path_is_latched_only_for_diagnostic_mode() {
-        let requested = Some(OsString::from("correlation.txt"));
-        assert_eq!(
-            profile_output_path_from_value(false, requested.clone())
-                .expect("ordinary mode ignores the diagnostic output path"),
-            None
-        );
-        assert_eq!(
-            profile_output_path_from_value(true, requested)
-                .expect("diagnostic output path is accepted")
-                .as_deref(),
-            Some(std::path::Path::new("correlation.txt"))
-        );
-        assert!(profile_output_path_from_value(true, Some(OsString::new())).is_err());
-    }
-
-    #[test]
-    fn action_correlation_writer_reports_complete_records_and_propagates_errors() {
-        let timestamp = ActionGpuTimestampObservation::from_sample(
-            None,
-            vello::GpuDispatchTimestampStatus::Disabled,
-            None,
-        );
-        let mut profile = ActionCorrelationProfile::new();
-        let record = correlation_record(3, &timestamp);
-        profile.record(&record).expect("bounded report record");
-        let mut output = Vec::new();
-        write_action_correlation_profile(&mut output, &profile)
-            .expect("in-memory diagnostic report write");
-        let output = String::from_utf8(output).expect("report is UTF-8 diagnostics");
-        assert!(output.contains("records=1"));
-        assert!(output.contains("action-correlation index=3"));
-        assert!(output.contains("gpu_total_timed_stage_ns=None"));
-        assert!(output.contains("gpu_unknown_stage_ns=None"));
-
-        struct FailingWriter;
-
-        impl Write for FailingWriter {
-            fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
-                Err(io::Error::other("injected report write failure"))
-            }
-
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-
-        assert!(write_action_correlation_profile(&mut FailingWriter, &profile).is_err());
-    }
-
-    #[test]
-    fn profile_output_file_is_created_new_and_never_overwritten() {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("the test clock is after the Unix epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "tilo-redraw-bench-profile-output-{}-{stamp}",
-            std::process::id()
-        ));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn action_correlation_joins_exact_samples_and_writes_complete_records() {
+        // Phase `action_correlation_joins_wall_phase_and_exact_gpu_sample`.
         {
-            let mut writer = open_profile_output(&path).expect("first output path creation");
-            writer
-                .write_all(b"existing report")
-                .expect("write first output contents");
-            writer.flush().expect("flush first output contents");
-        }
-        let second = open_profile_output(&path);
-        assert!(
-            second.is_err_and(|error| error.kind() == io::ErrorKind::AlreadyExists),
-            "diagnostic output must refuse to overwrite an existing artifact"
-        );
-        std::fs::remove_file(&path).expect("remove test-only diagnostic artifact");
-    }
-
-    #[test]
-    fn benchmark_actions_alternate_quick_settings_open_and_outside_dismissal() {
-        let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())
-            .expect("explicit populated shell fixture");
-        let _initial_scene = frame.paint();
-        let mut document = AutoCommit::new();
-        let modifiers = Modifiers::default();
-        let mut focus: Option<NodeId> = None;
-
-        // This mirrors the benchmark action path exactly but deliberately stops before the GPU
-        // bridge: it establishes which shell state each sampled redraw actually represents.
-        for sample_index in 0..12 {
-            let target = *ACTION_TARGETS
-                .get(sample_index % ACTION_TARGETS.len())
-                .expect("benchmark action target list is non-empty");
-            let rect = frame
-                .widget_registry()
-                .get(target)
-                .copied()
-                .filter(|rect| rect.area() > 0.0)
-                .expect("benchmark target must be painted");
-            dispatch_click(
-                &mut frame,
-                target,
-                rect.center(),
-                modifiers,
-                &mut document,
-                &mut focus,
-            )
-            .expect("benchmark click must be handled");
-            frame.relayout();
-            let _scene = frame.paint();
-
-            let overlays = frame.chrome().overlays;
-            eprintln!(
-                "redraw_bench action {sample_index} target={target}: quick_settings={} overview={}",
-                overlays.quick_settings, overlays.overview
+            let sample = dispatch_sample(
+                41,
+                &[
+                    (17, 3, 10),
+                    (20, 4, 30),
+                    (7, 1, 5),
+                    (0, 2, 7),
+                    (u16::MAX, 1, 11),
+                ],
             );
-            assert_eq!(overlays.quick_settings, sample_index.is_multiple_of(2));
+            let status = dispatch_timestamp_status_after_take(Some(&sample), || {
+                panic!("decoded timestamp sample must be authoritative")
+            });
+            let timestamp =
+                ActionGpuTimestampObservation::from_sample(Some(41), status, Some(&sample));
+            let mut profile = ActionCorrelationProfile::new();
+            let record = correlation_record(7, &timestamp);
+            profile.record(&record).expect("one bounded profile record");
+
+            let record = profile.records.first().expect("stored joined record");
+            assert_eq!(record.index, 7);
+            assert_eq!(record.target, ACTION_TARGETS[0]);
+            assert_eq!(record.wall_us, 77);
+            assert_eq!(record.phase.bridge.completed_readback_map_us, 6);
+            assert_eq!(record.sparse_stats.map(|stats| stats.fine_tiles), Some(11));
+            assert!(record.timestamp.exact_match);
+            assert!(!record.timestamp.sample_missing);
+            assert!(!record.timestamp.stale_sample);
+            assert_eq!(record.timestamp.expected_submission_id, Some(41));
+            assert_eq!(record.timestamp.observed_submission_id, Some(41));
+            assert_eq!(record.timestamp.coarse_ns, Some(10));
+            assert_eq!(record.timestamp.fine_ns, Some(30));
+            assert_eq!(record.timestamp.total_timed_stage_ns, Some(63));
+            assert_eq!(record.timestamp.other_stage_ns, Some(5));
+            assert_eq!(record.timestamp.unknown_stage_ns, Some(18));
+            assert_eq!(record.timestamp.coarse_dispatches, Some(3));
+            assert_eq!(record.timestamp.fine_dispatches, Some(4));
+            let breakdown = dispatch_stage_breakdown(&sample);
+            assert_eq!(
+                breakdown.total_timed_stage_ns, 63,
+                "the exact matched sample retains coarse, fine, other, zero-id unknown, and out-of-catalog unknown stage time"
+            );
+            assert_eq!(
+                breakdown.total_timed_stage_ns,
+                breakdown
+                    .coarse_ns
+                    .saturating_add(breakdown.fine_ns)
+                    .saturating_add(breakdown.other_stage_ns)
+                    .saturating_add(breakdown.unknown_stage_ns),
+                "the unknown class is a subset of the total, not an omitted duration"
+            );
+        }
+        // Phase `action_correlation_marks_stale_missing_and_recovery_without_backfill`.
+        {
+            let stale_sample = dispatch_sample(8, &[(17, 1, 100), (20, 1, 200)]);
+            let stale = ActionGpuTimestampObservation::from_sample(
+                Some(9),
+                vello::GpuDispatchTimestampStatus::Ready {
+                    submission_id: 9,
+                    stage_count: 2,
+                },
+                Some(&stale_sample),
+            );
+            assert!(!stale.exact_match);
+            assert!(stale.stale_sample);
+            assert!(!stale.sample_missing);
+            assert_eq!(stale.coarse_ns, None);
+            assert_eq!(stale.fine_ns, None);
+            assert_eq!(stale.total_timed_stage_ns, None);
+            assert_eq!(stale.other_stage_ns, None);
+            assert_eq!(stale.unknown_stage_ns, None);
+            assert_eq!(stale.coarse_dispatches, None);
+            assert_eq!(stale.fine_dispatches, None);
+
+            let missing = ActionGpuTimestampObservation::from_sample(
+                Some(12),
+                vello::GpuDispatchTimestampStatus::Pending { submission_id: 12 },
+                None,
+            );
+            assert!(!missing.exact_match);
+            assert!(missing.sample_missing);
+            assert!(!missing.stale_sample);
+            assert_eq!(
+                gpu_dispatch_timestamp_status_name(missing.status),
+                "pending",
+                "a pending final slot remains explicit rather than becoming a zero-time GPU result"
+            );
+
+            let mut recovered = correlation_record(8, &stale);
+            recovered.attempts = 2;
+            recovered.sparse_attempts = 1;
+            recovered.full_attempts = 1;
+            recovered.recovery_attempts = 1;
+            let mut profile = ActionCorrelationProfile::new();
+            profile.record(&recovered).expect("recovery action record");
+            let record = profile.records.first().expect("stored recovery record");
+            assert_eq!(record.recovery_attempts, 1);
+            assert_eq!(record.timestamp.coarse_ns, None);
+            assert_eq!(record.timestamp.fine_ns, None);
+            assert_eq!(record.timestamp.total_timed_stage_ns, None);
+        }
+        // Phase `action_correlation_keeps_disabled_unsupported_invalid_and_idle_states_explicit`.
+        {
+            let disabled = ActionGpuTimestampObservation::from_sample(
+                None,
+                vello::GpuDispatchTimestampStatus::Disabled,
+                None,
+            );
+            let unsupported = ActionGpuTimestampObservation::from_sample(
+                None,
+                vello::GpuDispatchTimestampStatus::Unsupported,
+                None,
+            );
+            let invalid = ActionGpuTimestampObservation::from_sample(
+                Some(12),
+                vello::GpuDispatchTimestampStatus::Invalid { submission_id: 12 },
+                None,
+            );
+            let no_expected_id = ActionGpuTimestampObservation::from_sample(
+                None,
+                vello::GpuDispatchTimestampStatus::Idle,
+                None,
+            );
+
+            for observation in [disabled, unsupported, invalid, no_expected_id] {
+                assert!(!observation.exact_match);
+                assert_eq!(observation.coarse_ns, None);
+                assert_eq!(observation.fine_ns, None);
+                assert_eq!(observation.total_timed_stage_ns, None);
+                assert_eq!(observation.other_stage_ns, None);
+                assert_eq!(observation.unknown_stage_ns, None);
+                assert_eq!(observation.coarse_dispatches, None);
+                assert_eq!(observation.fine_dispatches, None);
+            }
+            assert!(!disabled.sample_missing);
+            assert!(!unsupported.sample_missing);
+            assert!(invalid.sample_missing);
+            assert!(!no_expected_id.sample_missing);
+            assert_eq!(
+                gpu_dispatch_timestamp_status_name(invalid.status),
+                "invalid"
+            );
+            assert_eq!(
+                gpu_dispatch_timestamp_status_name(no_expected_id.status),
+                "idle"
+            );
+        }
+        // Phase `action_correlation_is_profile_gated_and_bounded`.
+        {
+            assert!(!action_correlation_enabled(false));
+            assert!(action_correlation_enabled(true));
+
+            let timestamp = ActionGpuTimestampObservation::from_sample(
+                None,
+                vello::GpuDispatchTimestampStatus::Disabled,
+                None,
+            );
+            let mut profile = ActionCorrelationProfile::new();
+            for index in 0..MAX_ACTION_CORRELATION_RECORDS {
+                let record = correlation_record(index, &timestamp);
+                profile
+                    .record(&record)
+                    .expect("fixed all-action correlation capacity");
+            }
+            assert_eq!(profile.records.len(), MAX_ACTION_CORRELATION_RECORDS);
+            let beyond_capacity = correlation_record(MAX_ACTION_CORRELATION_RECORDS, &timestamp);
             assert!(
-                !overlays.overview,
-                "the overview target dismisses open quick settings before TopBarChrome receives it"
+                profile.record(&beyond_capacity).is_err(),
+                "the diagnostic must not retain more than one record per configured action"
             );
         }
-    }
+        // Phase `action_correlation_writer_reports_complete_records_and_propagates_errors`.
+        {
+            let timestamp = ActionGpuTimestampObservation::from_sample(
+                None,
+                vello::GpuDispatchTimestampStatus::Disabled,
+                None,
+            );
+            let mut profile = ActionCorrelationProfile::new();
+            let record = correlation_record(3, &timestamp);
+            profile.record(&record).expect("bounded report record");
+            let mut output = Vec::new();
+            write_action_correlation_profile(&mut output, &profile)
+                .expect("in-memory diagnostic report write");
+            let output = String::from_utf8(output).expect("report is UTF-8 diagnostics");
+            assert!(output.contains("records=1"));
+            assert!(output.contains("action-correlation index=3"));
+            assert!(output.contains("gpu_total_timed_stage_ns=None"));
+            assert!(output.contains("gpu_unknown_stage_ns=None"));
 
-    #[test]
-    fn benchmark_actions_produce_bounded_damage() {
-        let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())
-            .expect("explicit populated shell fixture");
-        let _initial = frame.paint_with_damage();
-        let mut document = AutoCommit::new();
-        let modifiers = Modifiers::default();
-        let mut focus: Option<NodeId> = None;
-        let mut sparse_frames = 0_usize;
-        let mut covered_pixels = 0_u128;
-        let full_pixels = u128::from(WIDTH) * u128::from(HEIGHT);
+            struct FailingWriter;
 
-        for sample_index in 0..12 {
-            let target = ACTION_TARGETS[sample_index % ACTION_TARGETS.len()];
-            let rect = frame
-                .widget_registry()
-                .get(target)
-                .copied()
-                .filter(|rect| rect.area() > 0.0)
-                .expect("benchmark target must be painted");
-            dispatch_click(
-                &mut frame,
-                target,
-                rect.center(),
-                modifiers,
-                &mut document,
-                &mut focus,
-            )
-            .expect("benchmark click must be handled");
-            frame.relayout();
-            let painted = frame.paint_with_damage();
-            if let Some(regions) = painted.damage_regions.as_deref() {
-                sparse_frames = sparse_frames.saturating_add(1);
-                for region in regions {
-                    covered_pixels = covered_pixels.saturating_add(
-                        u128::from(region.width).saturating_mul(u128::from(region.height)),
-                    );
+            impl Write for FailingWriter {
+                fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+                    Err(io::Error::other("injected report write failure"))
+                }
+
+                fn flush(&mut self) -> io::Result<()> {
+                    Ok(())
                 }
             }
+
+            assert!(write_action_correlation_profile(&mut FailingWriter, &profile).is_err());
         }
-        eprintln!(
-            "redraw_bench retained classification: sparse_frames={sparse_frames}/12 covered_pixels={covered_pixels} full_pixels/frame={full_pixels}"
-        );
-        assert!(
-            sparse_frames > 0,
-            "the production root should expose bounded changes"
-        );
-        assert!(
-            covered_pixels
-                < full_pixels.saturating_mul(
-                    u128::try_from(sparse_frames).expect("twelve frame count fits u128"),
-                ),
-            "each classified sparse frame must cover less than the native output"
-        );
+        // Phase `profile_output_file_is_created_new_and_never_overwritten`.
+        {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("the test clock is after the Unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "tilo-redraw-bench-profile-output-{}-{stamp}",
+                std::process::id()
+            ));
+            {
+                let mut writer = open_profile_output(&path).expect("first output path creation");
+                writer
+                    .write_all(b"existing report")
+                    .expect("write first output contents");
+                writer.flush().expect("flush first output contents");
+            }
+            let second = open_profile_output(&path);
+            assert!(
+                second.is_err_and(|error| error.kind() == io::ErrorKind::AlreadyExists),
+                "diagnostic output must refuse to overwrite an existing artifact"
+            );
+            std::fs::remove_file(&path).expect("remove test-only diagnostic artifact");
+        }
+    }
+
+    #[test]
+    fn benchmark_actions_alternate_quick_settings_and_produce_bounded_damage() {
+        // Phase `benchmark_actions_alternate_quick_settings_open_and_outside_dismissal`.
+        {
+            let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())
+                .expect("explicit populated shell fixture");
+            let _initial_scene = frame.paint();
+            let mut document = AutoCommit::new();
+            let modifiers = Modifiers::default();
+            let mut focus: Option<NodeId> = None;
+
+            // This mirrors the benchmark action path exactly but deliberately stops before the GPU
+            // bridge: it establishes which shell state each sampled redraw actually represents.
+            for sample_index in 0..12 {
+                let target = *ACTION_TARGETS
+                    .get(sample_index % ACTION_TARGETS.len())
+                    .expect("benchmark action target list is non-empty");
+                let rect = frame
+                    .widget_registry()
+                    .get(target)
+                    .copied()
+                    .filter(|rect| rect.area() > 0.0)
+                    .expect("benchmark target must be painted");
+                dispatch_click(
+                    &mut frame,
+                    target,
+                    rect.center(),
+                    modifiers,
+                    &mut document,
+                    &mut focus,
+                )
+                .expect("benchmark click must be handled");
+                frame.relayout();
+                let _scene = frame.paint();
+
+                let overlays = frame.chrome().overlays;
+                eprintln!(
+                    "redraw_bench action {sample_index} target={target}: quick_settings={} overview={}",
+                    overlays.quick_settings, overlays.overview
+                );
+                assert_eq!(overlays.quick_settings, sample_index.is_multiple_of(2));
+                assert!(
+                    !overlays.overview,
+                    "the overview target dismisses open quick settings before TopBarChrome receives it"
+                );
+            }
+        }
+        // Phase `benchmark_actions_produce_bounded_damage`.
+        {
+            let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())
+                .expect("explicit populated shell fixture");
+            let _initial = frame.paint_with_damage();
+            let mut document = AutoCommit::new();
+            let modifiers = Modifiers::default();
+            let mut focus: Option<NodeId> = None;
+            let mut sparse_frames = 0_usize;
+            let mut covered_pixels = 0_u128;
+            let full_pixels = u128::from(WIDTH) * u128::from(HEIGHT);
+
+            for sample_index in 0..12 {
+                let target = ACTION_TARGETS[sample_index % ACTION_TARGETS.len()];
+                let rect = frame
+                    .widget_registry()
+                    .get(target)
+                    .copied()
+                    .filter(|rect| rect.area() > 0.0)
+                    .expect("benchmark target must be painted");
+                dispatch_click(
+                    &mut frame,
+                    target,
+                    rect.center(),
+                    modifiers,
+                    &mut document,
+                    &mut focus,
+                )
+                .expect("benchmark click must be handled");
+                frame.relayout();
+                let painted = frame.paint_with_damage();
+                if let Some(regions) = painted.damage_regions.as_deref() {
+                    sparse_frames = sparse_frames.saturating_add(1);
+                    for region in regions {
+                        covered_pixels = covered_pixels.saturating_add(
+                            u128::from(region.width).saturating_mul(u128::from(region.height)),
+                        );
+                    }
+                }
+            }
+            eprintln!(
+                "redraw_bench retained classification: sparse_frames={sparse_frames}/12 covered_pixels={covered_pixels} full_pixels/frame={full_pixels}"
+            );
+            assert!(
+                sparse_frames > 0,
+                "the production root should expose bounded changes"
+            );
+            assert!(
+                covered_pixels
+                    < full_pixels.saturating_mul(
+                        u128::try_from(sparse_frames).expect("twelve frame count fits u128"),
+                    ),
+                "each classified sparse frame must cover less than the native output"
+            );
+        }
     }
 
     #[test]
@@ -3825,6 +3843,16 @@ mod tests {
         let len = pitch.checked_mul(height).expect("native output fits usize");
         let mut retained = VelloDrmBridge::new(WIDTH, HEIGHT).expect("retained bridge");
         let mut dense = VelloDrmBridge::new(WIDTH, HEIGHT).expect("dense oracle bridge");
+        // An exact comparison needs a repeatable oracle. Unordered, a tile's
+        // segments sum in GPU scheduling order, so two renders of one scene can
+        // differ by one level on a multi-threaded device
+        // (`native_4k_fixed_quick_settings_pose_225_segment_order_is_causal`).
+        for bridge in [&mut retained, &mut dense] {
+            bridge
+                .enable_canonical_segment_order()
+                .expect("canonical segment order");
+            assert!(bridge.canonical_segment_order_available());
+        }
         retained.set_phase_timing_enabled(true);
         let mut retained_pixels = vec![0_u8; len];
         let mut dense_pixels = vec![0_u8; len];
@@ -4039,16 +4067,12 @@ mod tests {
                 "row mask must not be reported without an available renderer opt-in"
             );
         }
-        if !canonical_segment_order_requested || !canonical_segment_order_available {
-            assert_eq!(
-                canonical_segment_order_selected_full_attempts, 0,
-                "canonical segment order must not be reported without an available renderer opt-in"
-            );
-            assert_eq!(
-                canonical_segment_order_selected_sparse_attempts, 0,
-                "canonical segment order must not be reported without an available renderer opt-in"
-            );
-        }
+        assert!(
+            canonical_segment_order_requested
+                && canonical_segment_order_available
+                && canonical_segment_order_selected_full_attempts > 0,
+            "the dense oracle must render in canonical segment order"
+        );
         if area_ppt8_requested && area_ppt8_available && !area_ppt8_preempted {
             assert!(
                 area_ppt8_selected_full_attempts.saturating_add(area_ppt8_selected_sparse_attempts)
@@ -4681,516 +4705,528 @@ mod tests {
     }
 
     #[test]
-    fn native_ptcl_parser_uses_shader_word_widths_and_excludes_segment_padding() {
-        let config = native_words_to_bytes(&[240, 135, 3840, 2160]);
-        let mut ptcl = vec![0_u32; PTCL_INITIAL_WORDS];
-        ptcl[1..6].copy_from_slice(&[1, 2, 0, 7, 0]);
-        let mut segments = native_words_to_bytes(&[10, 11, 12, 13, 14, 0xfeed_beef]);
-        let parsed = parse_native_fine_tile(&config, &native_words_to_bytes(&ptcl), &segments, 0)
-            .expect("valid native PTCL");
-        assert_eq!(
-            parsed.commands,
-            vec![ParsedFineCommand::Fill {
-                size_and_rule: 2,
-                backdrop: 7,
-                segments: vec![[10, 11, 12, 13, 14]],
-            }]
-        );
-        segments[20..24].copy_from_slice(&0x1234_5678_u32.to_le_bytes());
-        assert_eq!(
-            parse_native_fine_tile(&config, &native_words_to_bytes(&ptcl), &segments, 0)
-                .expect("padding remains ignored"),
-            parsed
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn ptcl_parsing_and_fine_tile_union_follow_the_shader_layout() {
+        // Phase `native_ptcl_parser_uses_shader_word_widths_and_excludes_segment_padding`.
+        {
+            let config = native_words_to_bytes(&[240, 135, 3840, 2160]);
+            let mut ptcl = vec![0_u32; PTCL_INITIAL_WORDS];
+            ptcl[1..6].copy_from_slice(&[1, 2, 0, 7, 0]);
+            let mut segments = native_words_to_bytes(&[10, 11, 12, 13, 14, 0xfeed_beef]);
+            let parsed =
+                parse_native_fine_tile(&config, &native_words_to_bytes(&ptcl), &segments, 0)
+                    .expect("valid native PTCL");
+            assert_eq!(
+                parsed.commands,
+                vec![ParsedFineCommand::Fill {
+                    size_and_rule: 2,
+                    backdrop: 7,
+                    segments: vec![[10, 11, 12, 13, 14]],
+                }]
+            );
+            segments[20..24].copy_from_slice(&0x1234_5678_u32.to_le_bytes());
+            assert_eq!(
+                parse_native_fine_tile(&config, &native_words_to_bytes(&ptcl), &segments, 0)
+                    .expect("padding remains ignored"),
+                parsed
+            );
+        }
+        // Phase `native_ptcl_parser_rejects_jump_cycles_bounds_and_truncated_segments`.
+        {
+            let config = native_words_to_bytes(&[240, 135, 3840, 2160]);
+            let mut cycle = vec![0_u32; PTCL_CONTINUATION_WORDS + 1];
+            cycle[1..3].copy_from_slice(&[12, 1]);
+            assert!(
+                parse_native_fine_tile(&config, &native_words_to_bytes(&cycle), &[], 0)
+                    .expect_err("cycle must be explicit")
+                    .contains("cycle")
+            );
 
-    #[test]
-    fn native_ptcl_parser_rejects_jump_cycles_bounds_and_truncated_segments() {
-        let config = native_words_to_bytes(&[240, 135, 3840, 2160]);
-        let mut cycle = vec![0_u32; PTCL_CONTINUATION_WORDS + 1];
-        cycle[1..3].copy_from_slice(&[12, 1]);
-        assert!(
-            parse_native_fine_tile(&config, &native_words_to_bytes(&cycle), &[], 0)
-                .expect_err("cycle must be explicit")
-                .contains("cycle")
-        );
+            let mut out_of_range = vec![0_u32; PTCL_INITIAL_WORDS];
+            out_of_range[1..3].copy_from_slice(&[12, 64]);
+            assert!(
+                parse_native_fine_tile(&config, &native_words_to_bytes(&out_of_range), &[], 0,)
+                    .expect_err("jump bound must be explicit")
+                    .contains("invalid block")
+            );
 
-        let mut out_of_range = vec![0_u32; PTCL_INITIAL_WORDS];
-        out_of_range[1..3].copy_from_slice(&[12, 64]);
-        assert!(
-            parse_native_fine_tile(&config, &native_words_to_bytes(&out_of_range), &[], 0,)
-                .expect_err("jump bound must be explicit")
-                .contains("invalid block")
-        );
+            let mut truncated = vec![0_u32; PTCL_INITIAL_WORDS];
+            truncated[1..6].copy_from_slice(&[1, 4, 0, 0, 0]);
+            assert!(
+                parse_native_fine_tile(
+                    &config,
+                    &native_words_to_bytes(&truncated),
+                    &native_words_to_bytes(&[1, 2, 3, 4, 5, 0]),
+                    0,
+                )
+                .expect_err("segment range must be explicit")
+                .contains("exceeds")
+            );
+            assert!(
+                parse_native_fine_tile(&config, &[0, 0, 0], &[], 0)
+                    .expect_err("PTCL alignment must be explicit")
+                    .contains("aligned")
+            );
+            let mut adjacent_end = vec![0_u32; PTCL_INITIAL_WORDS * 2];
+            adjacent_end[1..PTCL_INITIAL_WORDS].fill(3);
+            assert!(
+                parse_native_fine_tile(&config, &native_words_to_bytes(&adjacent_end), &[], 0)
+                    .expect_err("initial PTCL block must not fall through")
+                    .contains("crosses its allocation")
+            );
+        }
+        // Phase `native_fine_tile_union_clips_boundaries_and_deduplicates_damage`.
+        {
+            let full = native_fine_tile_union(None, 32, 32);
+            assert_eq!(full.mode, FineDiagnosticDamageMode::Full);
+            assert_eq!(full.tiles, vec![0, 1, 2, 3]);
 
-        let mut truncated = vec![0_u32; PTCL_INITIAL_WORDS];
-        truncated[1..6].copy_from_slice(&[1, 4, 0, 0, 0]);
-        assert!(
-            parse_native_fine_tile(
-                &config,
-                &native_words_to_bytes(&truncated),
-                &native_words_to_bytes(&[1, 2, 3, 4, 5, 0]),
-                0,
-            )
-            .expect_err("segment range must be explicit")
-            .contains("exceeds")
-        );
-        assert!(
-            parse_native_fine_tile(&config, &[0, 0, 0], &[], 0)
-                .expect_err("PTCL alignment must be explicit")
-                .contains("aligned")
-        );
-        let mut adjacent_end = vec![0_u32; PTCL_INITIAL_WORDS * 2];
-        adjacent_end[1..PTCL_INITIAL_WORDS].fill(3);
-        assert!(
-            parse_native_fine_tile(&config, &native_words_to_bytes(&adjacent_end), &[], 0)
-                .expect_err("initial PTCL block must not fall through")
-                .contains("crosses its allocation")
-        );
-    }
+            let explicitly_empty = native_fine_tile_union(Some(&[]), 32, 32);
+            assert_eq!(explicitly_empty.mode, FineDiagnosticDamageMode::Provided);
+            assert!(explicitly_empty.tiles.is_empty());
 
-    #[test]
-    fn native_fine_tile_union_clips_boundaries_and_deduplicates_damage() {
-        let full = native_fine_tile_union(None, 32, 32);
-        assert_eq!(full.mode, FineDiagnosticDamageMode::Full);
-        assert_eq!(full.tiles, vec![0, 1, 2, 3]);
-
-        let explicitly_empty = native_fine_tile_union(Some(&[]), 32, 32);
-        assert_eq!(explicitly_empty.mode, FineDiagnosticDamageMode::Provided);
-        assert!(explicitly_empty.tiles.is_empty());
-
-        let exact_tile_edge = native_fine_tile_union(
-            Some(&[vello::FineDamageRect {
-                x: 0,
-                y: 0,
-                width: 16,
-                height: 16,
-            }]),
-            32,
-            32,
-        );
-        assert_eq!(exact_tile_edge.tiles, vec![0]);
-
-        let boundary = native_fine_tile_union(
-            Some(&[vello::FineDamageRect {
-                x: 15,
-                y: 15,
-                width: 2,
-                height: 2,
-            }]),
-            32,
-            32,
-        );
-        assert_eq!(boundary.mode, FineDiagnosticDamageMode::Provided);
-        assert_eq!(boundary.tiles, vec![0, 1, 2, 3]);
-
-        let final_partial_tile = native_fine_tile_union(
-            Some(&[vello::FineDamageRect {
-                x: 16,
-                y: 16,
-                width: 1,
-                height: 1,
-            }]),
-            17,
-            17,
-        );
-        assert_eq!(final_partial_tile.tiles, vec![3]);
-
-        let overlap = native_fine_tile_union(
-            Some(&[
-                vello::FineDamageRect {
+            let exact_tile_edge = native_fine_tile_union(
+                Some(&[vello::FineDamageRect {
                     x: 0,
                     y: 0,
                     width: 16,
                     height: 16,
-                },
-                vello::FineDamageRect {
-                    x: 8,
-                    y: 8,
-                    width: 16,
-                    height: 16,
-                },
-            ]),
-            32,
-            32,
-        );
-        assert_eq!(overlap.tiles, vec![0, 1, 2, 3]);
+                }]),
+                32,
+                32,
+            );
+            assert_eq!(exact_tile_edge.tiles, vec![0]);
 
-        let empty = native_fine_tile_union(
-            Some(&[
-                vello::FineDamageRect {
+            let boundary = native_fine_tile_union(
+                Some(&[vello::FineDamageRect {
+                    x: 15,
+                    y: 15,
+                    width: 2,
+                    height: 2,
+                }]),
+                32,
+                32,
+            );
+            assert_eq!(boundary.mode, FineDiagnosticDamageMode::Provided);
+            assert_eq!(boundary.tiles, vec![0, 1, 2, 3]);
+
+            let final_partial_tile = native_fine_tile_union(
+                Some(&[vello::FineDamageRect {
                     x: 16,
-                    y: 0,
-                    width: 0,
-                    height: 8,
-                },
-                vello::FineDamageRect {
-                    x: 33,
-                    y: 32,
-                    width: 8,
-                    height: 8,
-                },
-            ]),
-            32,
-            32,
-        );
-        assert_eq!(empty.mode, FineDiagnosticDamageMode::Provided);
-        assert!(empty.tiles.is_empty());
+                    y: 16,
+                    width: 1,
+                    height: 1,
+                }]),
+                17,
+                17,
+            );
+            assert_eq!(final_partial_tile.tiles, vec![3]);
 
-        let saturated = native_fine_tile_union(
-            Some(&[vello::FineDamageRect {
-                x: 31,
-                y: 31,
-                width: u32::MAX,
-                height: u32::MAX,
-            }]),
-            32,
-            32,
-        );
-        assert_eq!(saturated.tiles, vec![3]);
-    }
+            let overlap = native_fine_tile_union(
+                Some(&[
+                    vello::FineDamageRect {
+                        x: 0,
+                        y: 0,
+                        width: 16,
+                        height: 16,
+                    },
+                    vello::FineDamageRect {
+                        x: 8,
+                        y: 8,
+                        width: 16,
+                        height: 16,
+                    },
+                ]),
+                32,
+                32,
+            );
+            assert_eq!(overlap.tiles, vec![0, 1, 2, 3]);
 
-    #[test]
-    fn fine_command_distribution_counts_blur_fixture_with_shader_widths() {
-        let config = native_words_to_bytes(&[240, 135, 3840, 2160]);
-        let mut ptcl = vec![0_u32; PTCL_INITIAL_WORDS];
-        ptcl[1..5].copy_from_slice(&[CMD_FILL, 4, 0, 7]);
-        ptcl[5..8].copy_from_slice(&[CMD_BLUR_RECT, 77, 11]);
-        ptcl[8..10].copy_from_slice(&[5, 9]);
-        ptcl[10..12].copy_from_slice(&[9, 123]);
-        let segments = native_words_to_bytes(&[1, 2, 3, 4, 5, 0, 6, 7, 8, 9, 10, 0]);
-        let parsed = parse_native_fine_tile(&config, &native_words_to_bytes(&ptcl), &segments, 0)
-            .expect("valid blur fixture");
-        let mut distribution = FineCommandDistribution::default();
-        distribution.record_tile(&parsed);
+            let empty = native_fine_tile_union(
+                Some(&[
+                    vello::FineDamageRect {
+                        x: 16,
+                        y: 0,
+                        width: 0,
+                        height: 8,
+                    },
+                    vello::FineDamageRect {
+                        x: 33,
+                        y: 32,
+                        width: 8,
+                        height: 8,
+                    },
+                ]),
+                32,
+                32,
+            );
+            assert_eq!(empty.mode, FineDiagnosticDamageMode::Provided);
+            assert!(empty.tiles.is_empty());
 
-        let mut jumped_ptcl = vec![0_u32; PTCL_INITIAL_WORDS + PTCL_CONTINUATION_WORDS];
-        let continuation_start =
-            u32::try_from(PTCL_INITIAL_WORDS).expect("continuation offset fits u32");
-        jumped_ptcl[1..3].copy_from_slice(&[12, continuation_start]);
-        jumped_ptcl[PTCL_INITIAL_WORDS..PTCL_INITIAL_WORDS + 3].copy_from_slice(&[
-            CMD_BLUR_RECT,
-            77,
-            12,
-        ]);
-        jumped_ptcl[PTCL_INITIAL_WORDS + 3..PTCL_INITIAL_WORDS + 6].copy_from_slice(&[
-            CMD_BLUR_RECT,
-            99,
-            13,
-        ]);
-        let jumped = parse_native_fine_tile(&config, &native_words_to_bytes(&jumped_ptcl), &[], 0)
-            .expect("valid jump continuation fixture");
-        assert_eq!(
-            opaque_prune_prediction(&jumped.commands, true),
-            OpaquePrunePrediction {
-                retained_commands: 2,
-                removed_commands: 0,
-                useful_prunes: 0,
-            },
-            "the dynamic JUMP is parsed before dry-run command analysis"
-        );
-        distribution.record_tile(&jumped);
+            let saturated = native_fine_tile_union(
+                Some(&[vello::FineDamageRect {
+                    x: 31,
+                    y: 31,
+                    width: u32::MAX,
+                    height: u32::MAX,
+                }]),
+                32,
+                32,
+            );
+            assert_eq!(saturated.tiles, vec![3]);
+        }
+        // Phase `fine_command_distribution_counts_blur_fixture_with_shader_widths`.
+        {
+            let config = native_words_to_bytes(&[240, 135, 3840, 2160]);
+            let mut ptcl = vec![0_u32; PTCL_INITIAL_WORDS];
+            ptcl[1..5].copy_from_slice(&[CMD_FILL, 4, 0, 7]);
+            ptcl[5..8].copy_from_slice(&[CMD_BLUR_RECT, 77, 11]);
+            ptcl[8..10].copy_from_slice(&[5, 9]);
+            ptcl[10..12].copy_from_slice(&[9, 123]);
+            let segments = native_words_to_bytes(&[1, 2, 3, 4, 5, 0, 6, 7, 8, 9, 10, 0]);
+            let parsed =
+                parse_native_fine_tile(&config, &native_words_to_bytes(&ptcl), &segments, 0)
+                    .expect("valid blur fixture");
+            let mut distribution = FineCommandDistribution::default();
+            distribution.record_tile(&parsed);
 
-        assert_eq!(distribution.total_commands, 6);
-        assert_eq!(distribution.fill_commands, 1);
-        assert_eq!(distribution.fill_segments, 2);
-        assert_eq!(distribution.blur_commands, 3);
-        assert_eq!(distribution.tiles_with_blur, 2);
-        assert_eq!(distribution.max_blur_per_tile, 2);
-        assert_eq!(
-            distribution.blur_info_offsets,
-            std::collections::BTreeSet::from([77, 99])
-        );
-        assert_eq!(distribution.executed_tag_histogram.get(&CMD_FILL), Some(&1));
-        assert_eq!(
-            distribution.executed_tag_histogram.get(&CMD_BLUR_RECT),
-            Some(&3)
-        );
-        assert_eq!(distribution.executed_tag_histogram.get(&5), Some(&1));
-        assert_eq!(distribution.executed_tag_histogram.get(&9), Some(&1));
-        assert!(!distribution.executed_tag_histogram.contains_key(&0));
-        assert!(!distribution.executed_tag_histogram.contains_key(&12));
-    }
-
-    #[test]
-    fn clip_telemetry_tracks_nested_depth_empty_groups_and_end_clip_bits() {
-        let commands = vec![
-            other_command(CMD_BEGIN_CLIP, &[]),
-            other_command(CMD_BEGIN_CLIP, &[]),
-            other_command(CMD_END_CLIP, &[8, 1.0_f32.to_bits()]),
-            other_command(CMD_SOLID, &[]),
-            other_command(CMD_COLOR, &[u32::MAX]),
-            other_command(CMD_END_CLIP, &[0, 0.5_f32.to_bits()]),
-        ];
-        let telemetry = clip_tile_telemetry(&commands);
-        assert_eq!(telemetry.max_depth, 2);
-        assert_eq!(telemetry.empty_groups, 1);
-        assert_eq!(
-            telemetry
-                .end_clip_mode_alpha_bits
-                .get(&(8, 1.0_f32.to_bits())),
-            Some(&1)
-        );
-        assert_eq!(
-            telemetry
-                .end_clip_mode_alpha_bits
-                .get(&(0, 0.5_f32.to_bits())),
-            Some(&1)
-        );
-    }
-
-    #[test]
-    fn opaque_prune_prediction_respects_clip_anchors_alpha_and_depth() {
-        let nested = vec![
-            other_command(CMD_SOLID, &[]),
-            other_command(CMD_COLOR, &[u32::MAX]),
-            other_command(CMD_BEGIN_CLIP, &[]),
-            fill_command(0, 0, &[]),
-            other_command(CMD_SOLID, &[]),
-            other_command(CMD_COLOR, &[u32::MAX]),
-            // A later destination-out composition must retain the active clip anchor/history.
-            other_command(CMD_END_CLIP, &[8, 1.0_f32.to_bits()]),
-            other_command(CMD_SOLID, &[]),
-            other_command(CMD_COLOR, &[0xfeff_ffff]),
-        ];
-        let root = opaque_prune_prediction(&nested, false);
-        let clip_local = opaque_prune_prediction(&nested, true);
-        assert_eq!(root.removed_commands, 0);
-        assert_eq!(root.useful_prunes, 0);
-        assert_eq!(root.retained_commands, 9);
-        assert_eq!(clip_local.removed_commands, 1);
-        assert_eq!(clip_local.useful_prunes, 1);
-        assert_eq!(clip_local.retained_commands, 8);
-
-        let fill_before_color = vec![
-            other_command(CMD_SOLID, &[]),
-            fill_command(0, 0, &[]),
-            other_command(CMD_COLOR, &[u32::MAX]),
-        ];
-        assert_eq!(
-            opaque_prune_prediction(&fill_before_color, true),
-            OpaquePrunePrediction {
-                retained_commands: 3,
-                removed_commands: 0,
-                useful_prunes: 0,
-            }
-        );
-
-        let mut too_deep = vec![other_command(CMD_BEGIN_CLIP, &[]); 9];
-        too_deep.push(other_command(CMD_SOLID, &[]));
-        too_deep.push(other_command(CMD_COLOR, &[u32::MAX]));
-        too_deep.extend(
-            std::iter::repeat_with(|| other_command(CMD_END_CLIP, &[8, 1.0_f32.to_bits()])).take(9),
-        );
-        assert_eq!(opaque_prune_prediction(&too_deep, true).useful_prunes, 0);
-    }
-
-    #[test]
-    fn solid_successor_telemetry_distinguishes_fusable_tags() {
-        let tile = parsed_tile(vec![
-            other_command(CMD_SOLID, &[]),
-            other_command(CMD_COLOR, &[u32::MAX]),
-            other_command(CMD_SOLID, &[]),
-            other_command(6, &[1, 2]),
-            other_command(CMD_SOLID, &[]),
-            fill_command(0, 0, &[]),
-            other_command(CMD_SOLID, &[]),
-            other_command(CMD_END_CLIP, &[8, 1.0_f32.to_bits()]),
-            other_command(CMD_SOLID, &[]),
-            other_command(CMD_BLUR_RECT, &[77, 0]),
-            other_command(CMD_SOLID, &[]),
-        ]);
-        let mut distribution = FineCommandDistribution::default();
-        distribution.record_tile(&tile);
-        assert_eq!(distribution.solid_successor_tags.get(&CMD_COLOR), Some(&1));
-        assert_eq!(distribution.solid_successor_tags.get(&6), Some(&1));
-        assert_eq!(
-            distribution.solid_successor_tags.get(&CMD_END_CLIP),
-            Some(&1)
-        );
-        assert_eq!(
-            distribution.solid_successor_tags.get(&CMD_BLUR_RECT),
-            Some(&1)
-        );
-        assert_eq!(distribution.solid_noneligible_successors, 2);
-    }
-
-    #[test]
-    fn segment_row_mask_cpu_model_covers_boundaries_and_conservative_fallbacks() {
-        let sentinel = Y_EDGE_SENTINEL.to_bits();
-        assert_eq!(
-            segment_row_mask_potential([
-                0.0_f32.to_bits(),
-                0.0_f32.to_bits(),
-                16.0_f32.to_bits(),
-                16.0_f32.to_bits(),
-                sentinel,
-            ]),
-            u16::MAX
-        );
-        assert_eq!(
-            segment_row_mask_potential([
-                0.0_f32.to_bits(),
-                8.0_f32.to_bits(),
-                16.0_f32.to_bits(),
-                8.0_f32.to_bits(),
-                sentinel,
-            ]),
-            1_u16 << 7
-        );
-        assert_eq!(
-            segment_row_mask_potential([
-                (-0.0_f32).to_bits(),
-                8.0_f32.to_bits(),
-                0.0_f32.to_bits(),
-                8.0_f32.to_bits(),
-                0.0_f32.to_bits(),
-            ]),
-            1_u16 << 7,
-            "signed zero must not create a y-edge tail when dx is exactly zero"
-        );
-        assert!(
-            !cpu_f32_row_dy_contribution(8.0, 8.0, 7)
-                && !cpu_f32_y_edge_contribution(-0.0, 0.0, 0.0, 7),
-            "horizontal and signed-zero segments must have zero independent CPU contributions"
-        );
-        assert!(cpu_f32_y_edge_contribution(0.0, 1.0, 8.0, 8));
-        assert_eq!(
-            segment_row_mask_potential([
-                f32::NAN.to_bits(),
-                1.0_f32.to_bits(),
-                2.0_f32.to_bits(),
-                3.0_f32.to_bits(),
-                sentinel,
-            ]),
-            u16::MAX
-        );
-        assert_eq!(
-            segment_row_mask_potential([
-                17.0_f32.to_bits(),
-                1.0_f32.to_bits(),
-                2.0_f32.to_bits(),
-                3.0_f32.to_bits(),
-                sentinel,
-            ]),
-            u16::MAX
-        );
-
-        let mut state = 0x1a2b_3c4d_u32;
-        for _ in 0..64 {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let x0 = f32::from(u16::try_from(state >> 16).expect("upper word fits u16"))
-                / f32::from(u16::MAX)
-                * 16.0;
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let y0 = f32::from(u16::try_from(state >> 16).expect("upper word fits u16"))
-                / f32::from(u16::MAX)
-                * 16.0;
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let x1 = f32::from(u16::try_from(state >> 16).expect("upper word fits u16"))
-                / f32::from(u16::MAX)
-                * 16.0;
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let y1 = f32::from(u16::try_from(state >> 16).expect("upper word fits u16"))
-                / f32::from(u16::MAX)
-                * 16.0;
-            let mask = segment_row_mask_potential([
-                x0.to_bits(),
-                y0.to_bits(),
-                x1.to_bits(),
-                y1.to_bits(),
-                sentinel,
+            let mut jumped_ptcl = vec![0_u32; PTCL_INITIAL_WORDS + PTCL_CONTINUATION_WORDS];
+            let continuation_start =
+                u32::try_from(PTCL_INITIAL_WORDS).expect("continuation offset fits u32");
+            jumped_ptcl[1..3].copy_from_slice(&[12, continuation_start]);
+            jumped_ptcl[PTCL_INITIAL_WORDS..PTCL_INITIAL_WORDS + 3].copy_from_slice(&[
+                CMD_BLUR_RECT,
+                77,
+                12,
             ]);
-            assert_ne!(mask, 0, "finite deterministic fixture must retain a row");
+            jumped_ptcl[PTCL_INITIAL_WORDS + 3..PTCL_INITIAL_WORDS + 6].copy_from_slice(&[
+                CMD_BLUR_RECT,
+                99,
+                13,
+            ]);
+            let jumped =
+                parse_native_fine_tile(&config, &native_words_to_bytes(&jumped_ptcl), &[], 0)
+                    .expect("valid jump continuation fixture");
+            assert_eq!(
+                opaque_prune_prediction(&jumped.commands, true),
+                OpaquePrunePrediction {
+                    retained_commands: 2,
+                    removed_commands: 0,
+                    useful_prunes: 0,
+                },
+                "the dynamic JUMP is parsed before dry-run command analysis"
+            );
+            distribution.record_tile(&jumped);
+
+            assert_eq!(distribution.total_commands, 6);
+            assert_eq!(distribution.fill_commands, 1);
+            assert_eq!(distribution.fill_segments, 2);
+            assert_eq!(distribution.blur_commands, 3);
+            assert_eq!(distribution.tiles_with_blur, 2);
+            assert_eq!(distribution.max_blur_per_tile, 2);
+            assert_eq!(
+                distribution.blur_info_offsets,
+                std::collections::BTreeSet::from([77, 99])
+            );
+            assert_eq!(distribution.executed_tag_histogram.get(&CMD_FILL), Some(&1));
+            assert_eq!(
+                distribution.executed_tag_histogram.get(&CMD_BLUR_RECT),
+                Some(&3)
+            );
+            assert_eq!(distribution.executed_tag_histogram.get(&5), Some(&1));
+            assert_eq!(distribution.executed_tag_histogram.get(&9), Some(&1));
+            assert!(!distribution.executed_tag_histogram.contains_key(&0));
+            assert!(!distribution.executed_tag_histogram.contains_key(&12));
         }
     }
 
     #[test]
-    fn parsed_fine_tile_comparison_reports_order_only_fill_changes() {
-        let left = parsed_tile(vec![fill_command(
-            4,
-            7,
-            &[[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]],
-        )]);
-        let right = parsed_tile(vec![fill_command(
-            4,
-            7,
-            &[[6, 7, 8, 9, 10], [1, 2, 3, 4, 5]],
-        )]);
-        assert_eq!(
-            compare_parsed_fine_tiles(&left, &right),
-            TileGeometryComparison {
-                all_command_metadata_equal: true,
-                all_fill_multisets_equal: true,
-                any_order_changed: true,
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn ptcl_telemetry_models_clips_prunes_successors_and_row_masks() {
+        // Phase `clip_telemetry_tracks_nested_depth_empty_groups_and_end_clip_bits`.
+        {
+            let commands = vec![
+                other_command(CMD_BEGIN_CLIP, &[]),
+                other_command(CMD_BEGIN_CLIP, &[]),
+                other_command(CMD_END_CLIP, &[8, 1.0_f32.to_bits()]),
+                other_command(CMD_SOLID, &[]),
+                other_command(CMD_COLOR, &[u32::MAX]),
+                other_command(CMD_END_CLIP, &[0, 0.5_f32.to_bits()]),
+            ];
+            let telemetry = clip_tile_telemetry(&commands);
+            assert_eq!(telemetry.max_depth, 2);
+            assert_eq!(telemetry.empty_groups, 1);
+            assert_eq!(
+                telemetry
+                    .end_clip_mode_alpha_bits
+                    .get(&(8, 1.0_f32.to_bits())),
+                Some(&1)
+            );
+            assert_eq!(
+                telemetry
+                    .end_clip_mode_alpha_bits
+                    .get(&(0, 0.5_f32.to_bits())),
+                Some(&1)
+            );
+        }
+        // Phase `opaque_prune_prediction_respects_clip_anchors_alpha_and_depth`.
+        {
+            let nested = vec![
+                other_command(CMD_SOLID, &[]),
+                other_command(CMD_COLOR, &[u32::MAX]),
+                other_command(CMD_BEGIN_CLIP, &[]),
+                fill_command(0, 0, &[]),
+                other_command(CMD_SOLID, &[]),
+                other_command(CMD_COLOR, &[u32::MAX]),
+                // A later destination-out composition must retain the active clip anchor/history.
+                other_command(CMD_END_CLIP, &[8, 1.0_f32.to_bits()]),
+                other_command(CMD_SOLID, &[]),
+                other_command(CMD_COLOR, &[0xfeff_ffff]),
+            ];
+            let root = opaque_prune_prediction(&nested, false);
+            let clip_local = opaque_prune_prediction(&nested, true);
+            assert_eq!(root.removed_commands, 0);
+            assert_eq!(root.useful_prunes, 0);
+            assert_eq!(root.retained_commands, 9);
+            assert_eq!(clip_local.removed_commands, 1);
+            assert_eq!(clip_local.useful_prunes, 1);
+            assert_eq!(clip_local.retained_commands, 8);
+
+            let fill_before_color = vec![
+                other_command(CMD_SOLID, &[]),
+                fill_command(0, 0, &[]),
+                other_command(CMD_COLOR, &[u32::MAX]),
+            ];
+            assert_eq!(
+                opaque_prune_prediction(&fill_before_color, true),
+                OpaquePrunePrediction {
+                    retained_commands: 3,
+                    removed_commands: 0,
+                    useful_prunes: 0,
+                }
+            );
+
+            let mut too_deep = vec![other_command(CMD_BEGIN_CLIP, &[]); 9];
+            too_deep.push(other_command(CMD_SOLID, &[]));
+            too_deep.push(other_command(CMD_COLOR, &[u32::MAX]));
+            too_deep.extend(
+                std::iter::repeat_with(|| other_command(CMD_END_CLIP, &[8, 1.0_f32.to_bits()]))
+                    .take(9),
+            );
+            assert_eq!(opaque_prune_prediction(&too_deep, true).useful_prunes, 0);
+        }
+        // Phase `solid_successor_telemetry_distinguishes_fusable_tags`.
+        {
+            let tile = parsed_tile(vec![
+                other_command(CMD_SOLID, &[]),
+                other_command(CMD_COLOR, &[u32::MAX]),
+                other_command(CMD_SOLID, &[]),
+                other_command(6, &[1, 2]),
+                other_command(CMD_SOLID, &[]),
+                fill_command(0, 0, &[]),
+                other_command(CMD_SOLID, &[]),
+                other_command(CMD_END_CLIP, &[8, 1.0_f32.to_bits()]),
+                other_command(CMD_SOLID, &[]),
+                other_command(CMD_BLUR_RECT, &[77, 0]),
+                other_command(CMD_SOLID, &[]),
+            ]);
+            let mut distribution = FineCommandDistribution::default();
+            distribution.record_tile(&tile);
+            assert_eq!(distribution.solid_successor_tags.get(&CMD_COLOR), Some(&1));
+            assert_eq!(distribution.solid_successor_tags.get(&6), Some(&1));
+            assert_eq!(
+                distribution.solid_successor_tags.get(&CMD_END_CLIP),
+                Some(&1)
+            );
+            assert_eq!(
+                distribution.solid_successor_tags.get(&CMD_BLUR_RECT),
+                Some(&1)
+            );
+            assert_eq!(distribution.solid_noneligible_successors, 2);
+        }
+        // Phase `segment_row_mask_cpu_model_covers_boundaries_and_conservative_fallbacks`.
+        {
+            let sentinel = Y_EDGE_SENTINEL.to_bits();
+            assert_eq!(
+                segment_row_mask_potential([
+                    0.0_f32.to_bits(),
+                    0.0_f32.to_bits(),
+                    16.0_f32.to_bits(),
+                    16.0_f32.to_bits(),
+                    sentinel,
+                ]),
+                u16::MAX
+            );
+            assert_eq!(
+                segment_row_mask_potential([
+                    0.0_f32.to_bits(),
+                    8.0_f32.to_bits(),
+                    16.0_f32.to_bits(),
+                    8.0_f32.to_bits(),
+                    sentinel,
+                ]),
+                1_u16 << 7
+            );
+            assert_eq!(
+                segment_row_mask_potential([
+                    (-0.0_f32).to_bits(),
+                    8.0_f32.to_bits(),
+                    0.0_f32.to_bits(),
+                    8.0_f32.to_bits(),
+                    0.0_f32.to_bits(),
+                ]),
+                1_u16 << 7,
+                "signed zero must not create a y-edge tail when dx is exactly zero"
+            );
+            assert!(
+                !cpu_f32_row_dy_contribution(8.0, 8.0, 7)
+                    && !cpu_f32_y_edge_contribution(-0.0, 0.0, 0.0, 7),
+                "horizontal and signed-zero segments must have zero independent CPU contributions"
+            );
+            assert!(cpu_f32_y_edge_contribution(0.0, 1.0, 8.0, 8));
+            assert_eq!(
+                segment_row_mask_potential([
+                    f32::NAN.to_bits(),
+                    1.0_f32.to_bits(),
+                    2.0_f32.to_bits(),
+                    3.0_f32.to_bits(),
+                    sentinel,
+                ]),
+                u16::MAX
+            );
+            assert_eq!(
+                segment_row_mask_potential([
+                    17.0_f32.to_bits(),
+                    1.0_f32.to_bits(),
+                    2.0_f32.to_bits(),
+                    3.0_f32.to_bits(),
+                    sentinel,
+                ]),
+                u16::MAX
+            );
+
+            let mut state = 0x1a2b_3c4d_u32;
+            for _ in 0..64 {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let x0 = f32::from(u16::try_from(state >> 16).expect("upper word fits u16"))
+                    / f32::from(u16::MAX)
+                    * 16.0;
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let y0 = f32::from(u16::try_from(state >> 16).expect("upper word fits u16"))
+                    / f32::from(u16::MAX)
+                    * 16.0;
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let x1 = f32::from(u16::try_from(state >> 16).expect("upper word fits u16"))
+                    / f32::from(u16::MAX)
+                    * 16.0;
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let y1 = f32::from(u16::try_from(state >> 16).expect("upper word fits u16"))
+                    / f32::from(u16::MAX)
+                    * 16.0;
+                let mask = segment_row_mask_potential([
+                    x0.to_bits(),
+                    y0.to_bits(),
+                    x1.to_bits(),
+                    y1.to_bits(),
+                    sentinel,
+                ]);
+                assert_ne!(mask, 0, "finite deterministic fixture must retain a row");
             }
-        );
+        }
     }
 
     #[test]
-    fn parsed_fine_tile_comparison_detects_changed_meaningful_segment() {
-        let left = parsed_tile(vec![fill_command(2, 7, &[[1, 2, 3, 4, 5]])]);
-        let right = parsed_tile(vec![fill_command(2, 7, &[[1, 2, 3, 4, 6]])]);
-        let comparison = compare_parsed_fine_tiles(&left, &right);
-        assert!(comparison.all_command_metadata_equal);
-        assert!(!comparison.all_fill_multisets_equal);
-        assert!(!comparison.any_order_changed);
-    }
-
-    #[test]
-    fn parsed_fine_tile_comparison_detects_fill_metadata_and_other_args() {
-        let base = parsed_tile(vec![
-            fill_command(2, 7, &[[1, 2, 3, 4, 5]]),
-            ParsedFineCommand::Other {
-                tag: 5,
-                args: vec![9],
-            },
-        ]);
-        for changed in [
-            parsed_tile(vec![
-                fill_command(3, 7, &[[1, 2, 3, 4, 5]]),
-                ParsedFineCommand::Other {
-                    tag: 5,
-                    args: vec![9],
-                },
-            ]),
-            parsed_tile(vec![
-                fill_command(2, 8, &[[1, 2, 3, 4, 5]]),
-                ParsedFineCommand::Other {
-                    tag: 5,
-                    args: vec![9],
-                },
-            ]),
-            parsed_tile(vec![
+    fn parsed_fine_tile_comparison_reports_every_kind_of_difference() {
+        // Phase `parsed_fine_tile_comparison_reports_order_only_fill_changes`.
+        {
+            let left = parsed_tile(vec![fill_command(
+                4,
+                7,
+                &[[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]],
+            )]);
+            let right = parsed_tile(vec![fill_command(
+                4,
+                7,
+                &[[6, 7, 8, 9, 10], [1, 2, 3, 4, 5]],
+            )]);
+            assert_eq!(
+                compare_parsed_fine_tiles(&left, &right),
+                TileGeometryComparison {
+                    all_command_metadata_equal: true,
+                    all_fill_multisets_equal: true,
+                    any_order_changed: true,
+                }
+            );
+        }
+        // Phase `parsed_fine_tile_comparison_detects_changed_meaningful_segment`.
+        {
+            let left = parsed_tile(vec![fill_command(2, 7, &[[1, 2, 3, 4, 5]])]);
+            let right = parsed_tile(vec![fill_command(2, 7, &[[1, 2, 3, 4, 6]])]);
+            let comparison = compare_parsed_fine_tiles(&left, &right);
+            assert!(comparison.all_command_metadata_equal);
+            assert!(!comparison.all_fill_multisets_equal);
+            assert!(!comparison.any_order_changed);
+        }
+        // Phase `parsed_fine_tile_comparison_detects_fill_metadata_and_other_args`.
+        {
+            let base = parsed_tile(vec![
                 fill_command(2, 7, &[[1, 2, 3, 4, 5]]),
                 ParsedFineCommand::Other {
                     tag: 5,
-                    args: vec![10],
+                    args: vec![9],
                 },
-            ]),
-        ] {
-            let comparison = compare_parsed_fine_tiles(&base, &changed);
-            assert!(!comparison.all_command_metadata_equal);
-            assert!(comparison.all_fill_multisets_equal);
-            assert!(!comparison.any_order_changed);
+            ]);
+            for changed in [
+                parsed_tile(vec![
+                    fill_command(3, 7, &[[1, 2, 3, 4, 5]]),
+                    ParsedFineCommand::Other {
+                        tag: 5,
+                        args: vec![9],
+                    },
+                ]),
+                parsed_tile(vec![
+                    fill_command(2, 8, &[[1, 2, 3, 4, 5]]),
+                    ParsedFineCommand::Other {
+                        tag: 5,
+                        args: vec![9],
+                    },
+                ]),
+                parsed_tile(vec![
+                    fill_command(2, 7, &[[1, 2, 3, 4, 5]]),
+                    ParsedFineCommand::Other {
+                        tag: 5,
+                        args: vec![10],
+                    },
+                ]),
+            ] {
+                let comparison = compare_parsed_fine_tiles(&base, &changed);
+                assert!(!comparison.all_command_metadata_equal);
+                assert!(comparison.all_fill_multisets_equal);
+                assert!(!comparison.any_order_changed);
+            }
         }
-    }
-
-    #[test]
-    fn parsed_fine_tile_comparison_detects_command_count_and_type_mismatches() {
-        let fill = fill_command(2, 7, &[[1, 2, 3, 4, 5]]);
-        let base = parsed_tile(vec![fill.clone()]);
-        for changed in [
-            parsed_tile(vec![]),
-            parsed_tile(vec![ParsedFineCommand::Other {
-                tag: 5,
-                args: vec![9],
-            }]),
-        ] {
-            let comparison = compare_parsed_fine_tiles(&base, &changed);
-            assert!(!comparison.all_command_metadata_equal);
-            assert!(!comparison.all_fill_multisets_equal);
-            assert!(!comparison.any_order_changed);
+        // Phase `parsed_fine_tile_comparison_detects_command_count_and_type_mismatches`.
+        {
+            let fill = fill_command(2, 7, &[[1, 2, 3, 4, 5]]);
+            let base = parsed_tile(vec![fill.clone()]);
+            for changed in [
+                parsed_tile(vec![]),
+                parsed_tile(vec![ParsedFineCommand::Other {
+                    tag: 5,
+                    args: vec![9],
+                }]),
+            ] {
+                let comparison = compare_parsed_fine_tiles(&base, &changed);
+                assert!(!comparison.all_command_metadata_equal);
+                assert!(!comparison.all_fill_multisets_equal);
+                assert!(!comparison.any_order_changed);
+            }
         }
     }
 

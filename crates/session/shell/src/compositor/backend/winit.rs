@@ -106,6 +106,8 @@ struct Inner {
     /// unfocused. Window events already obey that boundary; `DeviceEvent`
     /// deliberately does not, so we gate it explicitly.
     focused: bool,
+    /// Clock for relative-motion timestamps; raw device events carry none.
+    started: std::time::Instant,
 }
 
 struct RenderState {
@@ -135,6 +137,7 @@ impl WinitBackend {
                 base_color: FALLBACK_BG,
                 closed: false,
                 focused: false,
+                started: std::time::Instant::now(),
             },
         };
         me.pump_until_resumed();
@@ -310,6 +313,27 @@ impl Backend for WinitBackend {
 
     /// The host draws the pointer, so pass it the name of the shape; a
     /// client-drawn cursor shows as the host's arrow.
+    /// Ask the host to hold or confine its pointer to this window, so a
+    /// locked game keeps receiving motion. Best effort: a host may refuse.
+    fn set_pointer_constraint(
+        &mut self,
+        constraint: crate::compositor::backend::PointerConstraintRegion,
+    ) {
+        use crate::compositor::backend::PointerConstraintRegion;
+        use winit::window::CursorGrabMode;
+        let Some(window) = self.inner.window.as_ref() else {
+            return;
+        };
+        let mode = match constraint {
+            PointerConstraintRegion::Free => CursorGrabMode::None,
+            PointerConstraintRegion::Locked => CursorGrabMode::Locked,
+            PointerConstraintRegion::Confined(_) => CursorGrabMode::Confined,
+        };
+        if let Err(error) = window.set_cursor_grab(mode) {
+            tracing::debug!(%error, "host refused the pointer constraint");
+        }
+    }
+
     fn set_pointer_image(&mut self, image: crate::compositor::cursor::PointerImage) {
         use crate::compositor::cursor::{CursorShape, PointerImage};
         let Some(window) = self.inner.window.as_ref() else {
@@ -570,6 +594,12 @@ impl ApplicationHandler for Inner {
             | WindowEvent::MouseInput { .. }
             | WindowEvent::KeyboardInput { .. }
             | WindowEvent::MouseWheel { .. }) => {
+                // A nested window sees one host keyboard and pointer, so
+                // the event class is all it can report about the devices.
+                self.event_buffer.push(BackendEvent::InputUsed(match ev {
+                    WindowEvent::KeyboardInput { .. } => ui::InputModality::Keyboard,
+                    _ => ui::InputModality::Pointer,
+                }));
                 // Carried whole so `compositor::native::run` can dispatch
                 // via `FrameBuilder::dispatch_event` — same wire scripted
                 // input uses.
@@ -593,8 +623,14 @@ impl ApplicationHandler for Inner {
             // Unlike `CursorMoved`, raw motion keeps arriving after the host
             // cursor reaches a window edge. This gives the nested/dev backend
             // the same four-edge cross-device control contract as DRM.
-            self.event_buffer
-                .push(BackendEvent::RelativePointerMotion { dx, dy });
+            // Raw device motion is already unaccelerated.
+            self.event_buffer.push(BackendEvent::RelativePointerMotion {
+                dx,
+                dy,
+                dx_unaccel: dx,
+                dy_unaccel: dy,
+                time_usec: u64::try_from(self.started.elapsed().as_micros()).unwrap_or(u64::MAX),
+            });
         }
     }
 
@@ -613,30 +649,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scale_factor_change_updates_output_without_a_pixel_resize() {
-        let mut output = Output::new(OutputId(7), (1920, 1080), 1.0);
+    fn scale_factor_change_reaches_the_output_once_and_rejects_invalid_values() {
+        // Phase `scale_factor_change_updates_output_without_a_pixel_resize`.
+        {
+            let mut output = Output::new(OutputId(7), (1920, 1080), 1.0);
 
-        let event = apply_scale_factor_changed(&mut output, 1.5)
-            .expect("a real DPI change must reach the compositor");
+            let event = apply_scale_factor_changed(&mut output, 1.5)
+                .expect("a real DPI change must reach the compositor");
 
-        assert_eq!(output.scale, 1.5);
-        assert!(matches!(
-            event,
-            BackendEvent::OutputResized {
-                id: OutputId(7),
-                size: (1920, 1080),
-                scale: 1.5,
-            }
-        ));
-    }
-
-    #[test]
-    fn duplicate_or_invalid_scale_changes_are_ignored() {
-        let mut output = Output::new(OutputId(0), (1280, 720), 1.25);
-        assert!(apply_scale_factor_changed(&mut output, 1.25).is_none());
-        assert!(apply_scale_factor_changed(&mut output, 0.0).is_none());
-        assert!(apply_scale_factor_changed(&mut output, f64::NAN).is_none());
-        assert_eq!(output.scale, 1.25);
+            assert_eq!(output.scale, 1.5);
+            assert!(matches!(
+                event,
+                BackendEvent::OutputResized {
+                    id: OutputId(7),
+                    size: (1920, 1080),
+                    scale: 1.5,
+                }
+            ));
+        }
+        // Phase `duplicate_or_invalid_scale_changes_are_ignored`.
+        {
+            let mut output = Output::new(OutputId(0), (1280, 720), 1.25);
+            assert!(apply_scale_factor_changed(&mut output, 1.25).is_none());
+            assert!(apply_scale_factor_changed(&mut output, 0.0).is_none());
+            assert!(apply_scale_factor_changed(&mut output, f64::NAN).is_none());
+            assert_eq!(output.scale, 1.25);
+        }
     }
 
     #[test]

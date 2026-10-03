@@ -22,6 +22,8 @@ pub struct DirBackend {
     /// layout kept it.
     also_read: Vec<PathBuf>,
     limits: ContentLimits,
+    /// Whether an item is flushed to disk before it is published under its address.
+    durable: bool,
     state: Mutex<Index>,
 }
 
@@ -47,6 +49,7 @@ impl DirBackend {
             root: root.into(),
             also_read: Vec::new(),
             limits,
+            durable: true,
             state: Mutex::new(Index::default()),
         }
     }
@@ -55,6 +58,16 @@ impl DirBackend {
     #[must_use]
     pub fn reading_also(mut self, dir: impl Into<PathBuf>) -> Self {
         self.also_read.push(dir.into());
+        self
+    }
+
+    /// Hold content its owner can recreate, such as a cache: writes are not flushed to disk, so
+    /// a write never waits for the filesystem to flush every other dirty page first. After a
+    /// crash an item may be missing or torn; reads verify it against its address, so a torn item
+    /// reads as absent.
+    #[must_use]
+    pub fn regenerable(mut self) -> Self {
+        self.durable = false;
         self
     }
 
@@ -185,7 +198,9 @@ impl DirBackend {
                 hasher.update(chunk);
                 file.write_all(chunk)?;
             }
-            file.sync_all()?;
+            if self.durable {
+                file.sync_all()?;
+            }
             Ok((hasher.finalize().to_hex().to_string(), len))
         })();
         match result {

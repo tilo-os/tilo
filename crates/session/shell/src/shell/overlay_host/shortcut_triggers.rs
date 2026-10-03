@@ -1,8 +1,11 @@
-//! Chords and schedules that start published actions.
+//! Chords, schedules and session events that start published actions.
 //!
-//! The host keeps the session's [`TriggerHost`] and shows it the two events
-//! it can see: a pressed chord nothing else in the shell took, and the
-//! passing of time on each frame. Every firing starts through the action
+//! The host keeps the session's [`TriggerHost`] and shows it what it can
+//! see: a pressed chord nothing else in the shell took, and on each tick the
+//! passing of time, the applications publishing live actions to the broker,
+//! the workspaces this device is in, whether Do Not Disturb and the focus
+//! schedule are on, and the files changed in the folders file-changed
+//! triggers watch. Every firing starts through the action
 //! broker as the person this device acts for in the shortcut's room, so a
 //! run from the keyboard or a schedule meets the same checks as one from
 //! the palette, an agent or a peer.
@@ -13,7 +16,10 @@
 //! one table and a chord is never offered to an app it would then be taken
 //! from.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
+
+use chrono::{Datelike as _, Timelike as _};
 
 use settings_store::hardware::{ActionChord, KeyChord};
 use tilo_actions::remote::{
@@ -25,8 +31,11 @@ use winit::keyboard::Key;
 
 use super::ShellOverlayHost;
 use super::shortcuts::shortcut_chord_from_event;
+use crate::shell::automation_folders::FolderWatch;
 use crate::shell::automation_host::{is_shortcut_target, replace_trigger_chords, trigger_chords};
-use crate::shell::automation_triggers::{Firing, TriggerEvent, TriggerHost, armed};
+use crate::shell::automation_triggers::{
+    Clock, DeviceDirectory, Firing, FocusState, TriggerEvent, TriggerHost, armed, watched_folders,
+};
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::remote_actions::BrokerActionHost;
 
@@ -37,6 +46,9 @@ pub(super) struct ShortcutTriggerState {
     triggers: TriggerHost,
     broker: Option<AppActionBroker>,
     last_tick: Option<Instant>,
+    /// The broker's published-surface generation last read for live apps.
+    apps_generation: Option<u64>,
+    folders: FolderWatch,
 }
 
 impl ShortcutTriggerState {
@@ -45,11 +57,53 @@ impl ShortcutTriggerState {
             triggers,
             broker: None,
             last_tick: None,
+            apps_generation: None,
+            folders: FolderWatch::default(),
         }
     }
 
     pub(super) fn attach(&mut self, broker: AppActionBroker) {
         self.broker = Some(broker);
+        self.apps_generation = None;
+    }
+
+    pub(super) fn broker(&self) -> Option<AppActionBroker> {
+        self.broker.clone()
+    }
+
+    /// The applications publishing live actions, when that changed since
+    /// the last look.
+    fn live_apps(&mut self) -> Option<BTreeSet<String>> {
+        let broker = self.broker.as_ref()?;
+        let generation = broker.surfaces_generation();
+        if self.apps_generation.replace(generation) == Some(generation) {
+            return None;
+        }
+        Some(
+            broker
+                .surfaces()
+                .into_iter()
+                .filter(|surface| surface.live)
+                .map(|surface| surface.app_id)
+                .collect(),
+        )
+    }
+}
+
+/// Which focus modes are on at the clock's local time.
+fn focus_state(state: &crate::shell::chrome_state::ChromeState, clock: &dyn Clock) -> FocusState {
+    let now = clock.now();
+    let local = now.with_timezone(&clock.offset_at(now));
+    let minute = local
+        .hour()
+        .checked_mul(60)
+        .and_then(|minutes| minutes.checked_add(local.minute()))
+        .and_then(|minute| u16::try_from(minute).ok())
+        .unwrap_or(0);
+    let weekday = u8::try_from(local.weekday().num_days_from_monday()).unwrap_or(0);
+    FocusState {
+        do_not_disturb: state.dnd(),
+        focus: state.focus_schedule_on(minute, weekday),
     }
 }
 
@@ -59,6 +113,13 @@ impl ShellOverlayHost {
     pub fn set_shortcut_triggers(&mut self, triggers: TriggerHost) {
         self.shortcut_triggers.triggers = triggers;
         self.shortcut_triggers.last_tick = None;
+        self.shortcut_triggers.apps_generation = None;
+    }
+
+    /// Read the person's devices from `devices`, so each of their
+    /// schedules runs on one of them.
+    pub fn set_personal_devices(&mut self, devices: std::sync::Arc<dyn DeviceDirectory>) {
+        self.shortcut_triggers.triggers.set_devices(devices);
     }
 
     /// Show the passing time to the trigger sources, start whatever fired,
@@ -94,6 +155,12 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
+        let ticking = matches!(event, TriggerEvent::Tick);
+        let apps = if ticking {
+            self.shortcut_triggers.live_apps()
+        } else {
+            None
+        };
         let (firings, chords) = {
             let state = chrome.borrow();
             let tree = state.tree();
@@ -101,7 +168,44 @@ impl ShellOverlayHost {
                 state.local_user_for_room(&workspace.room)
             });
             let chords = trigger_chords(&armed);
-            let firings = self.shortcut_triggers.triggers.observe(event, &armed);
+            let mut firings = self.shortcut_triggers.triggers.observe(event, &armed);
+            if ticking {
+                if let Some(apps) = &apps {
+                    firings.extend(
+                        self.shortcut_triggers
+                            .triggers
+                            .observe(TriggerEvent::Apps(apps), &armed),
+                    );
+                }
+                let workspaces: BTreeMap<String, String> = tree
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .map(|workspace| (workspace.room.to_string(), workspace.name.clone()))
+                    .collect();
+                firings.extend(
+                    self.shortcut_triggers
+                        .triggers
+                        .observe(TriggerEvent::Workspaces(&workspaces), &armed),
+                );
+                let focus = focus_state(&state, self.shortcut_triggers.triggers.clock());
+                firings.extend(
+                    self.shortcut_triggers
+                        .triggers
+                        .observe(TriggerEvent::Focus(focus), &armed),
+                );
+                self.shortcut_triggers
+                    .folders
+                    .watch(watched_folders(&tree.desktop.workspaces, &armed));
+                let changes = self.shortcut_triggers.folders.changes();
+                if !changes.is_empty() {
+                    firings.extend(
+                        self.shortcut_triggers
+                            .triggers
+                            .observe(TriggerEvent::Files(&changes), &armed),
+                    );
+                }
+            }
             drop(tree);
             (firings, chords)
         };
@@ -147,6 +251,13 @@ impl ShellOverlayHost {
             let Some(person) = person else {
                 continue;
             };
+            // Taken before the run starts, so the person's other devices
+            // leave this fire time even if the run is slow to finish.
+            if let Some(claim) = &firing.claim
+                && let Some(room) = crate::shell::state::RoomId::parse(&firing.room)
+            {
+                chrome.borrow().tree_mut().claim_schedule(room, claim);
+            }
             let caller = Caller::local_person(person).in_room(firing.room.clone());
             match broker.start_triggered_shortcut_run(
                 &caller,
@@ -154,6 +265,7 @@ impl ShellOverlayHost {
                 &firing.shortcut,
                 &firing.trigger,
                 firing.run,
+                firing.inputs.clone(),
             ) {
                 Ok(_) => started = true,
                 Err(error) => {
@@ -168,7 +280,7 @@ impl ShellOverlayHost {
                         tilo_automation::TriggerSpec::Keyboard { .. }
                     ) {
                         chrome.borrow_mut().push_warning_notification(
-                            "The shortcut didn't run",
+                            crate::shell::i18n::t("shortcut-trigger-failed"),
                             error.to_string(),
                         );
                     }
@@ -292,10 +404,10 @@ impl ShellOverlayHost {
             confirmation: None,
             revision: None,
         };
-        let refusal = match BrokerActionHost::new(broker)
+        let outcome = BrokerActionHost::new(broker)
             .invoke_job(&caller, request)
-            .poll_ready()
-        {
+            .poll_ready();
+        let refusal = match outcome {
             PendingPoll::Ready(Ok(_)) => None,
             PendingPoll::Ready(Err(error)) => Some(error.to_string()),
             PendingPoll::Waiting | PendingPoll::Abandoned => {

@@ -15,7 +15,7 @@
 use anyhow::{Context, Result};
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit};
-use tilo_actions::door::{self, ActionAddress, DoorError};
+use tilo_actions::door::{self, ActionAddress, DoorError, InvocationProvenance};
 use tilo_actions::{ActionRegistry, LocalTransport, Resource};
 use tilo_automerge::ApplyIncoming;
 
@@ -35,6 +35,9 @@ pub struct Editor {
     history_context: Option<tilo_actions::ActionContext>,
     /// Which app authored this document.
     contract: &'static AppContract,
+    /// Exact authenticated route that supplied this replica. It can differ
+    /// from the application definition `contract` comes from.
+    route_app_id: String,
 }
 
 /// Every block's text, keyed by block id, flattened across nesting.
@@ -44,10 +47,10 @@ pub struct Editor {
 /// action rather than only ones whose arguments happen to name a range.
 fn block_texts(doc: &AutoCommit) -> std::collections::BTreeMap<String, String> {
     let mut out = std::collections::BTreeMap::new();
-    let Ok(c) = qdoc::model::open(doc, &automerge::ROOT) else {
+    let Ok(c) = tilo_doc::model::open(doc, &automerge::ROOT) else {
         return out;
     };
-    let snap = qdoc::model::materialize(doc, &c);
+    let snap = tilo_doc::model::materialize(doc, &c);
     walk_block_texts(&snap.blocks, &mut out);
     out
 }
@@ -56,7 +59,7 @@ fn block_texts(doc: &AutoCommit) -> std::collections::BTreeMap<String, String> {
 /// function rather than nested so the item does not follow statements in
 /// its caller's scope.
 fn walk_block_texts(
-    blocks: &[qdoc::BlockView],
+    blocks: &[tilo_doc::BlockView],
     out: &mut std::collections::BTreeMap<String, String>,
 ) {
     for b in blocks {
@@ -114,7 +117,7 @@ pub fn looks_like_a_document(bytes: &[u8]) -> bool {
 }
 
 fn has_document_schema(doc: &AutoCommit) -> bool {
-    qdoc::model::open(doc, &automerge::ROOT).is_ok()
+    tilo_doc::model::open(doc, &automerge::ROOT).is_ok()
 }
 
 impl Editor {
@@ -135,12 +138,18 @@ impl Editor {
             author: actor_handle.to_string(),
             history_context: None,
             contract,
+            route_app_id: contract.app_id.to_string(),
         }
     }
 
     /// Which app authored the document this holds.
     pub fn contract(&self) -> &'static AppContract {
         self.contract
+    }
+
+    /// Exact app route that supplied this replica.
+    pub fn route_app_id(&self) -> &str {
+        &self.route_app_id
     }
 
     /// Set task context for subsequent commits. The session clears it after
@@ -156,11 +165,11 @@ impl Editor {
 
     /// Newest non-genesis revision, suitable as one end of a run step.
     pub fn latest_entry_id(&mut self) -> Option<ui::HistoryEntryId> {
-        qdoc::history::versions(&mut self.doc)
+        tilo_resource::history::versions(&mut self.doc)
             .into_iter()
             .rev()
-            .find(|version| !qdoc::history::is_schema_genesis(version))
-            .map(|version| ui::history_source::entry_id_from_hash(&version.change_hash))
+            .find(|version| !tilo_doc::model::is_schema_genesis(version))
+            .map(|version| ui::history_source::entry_id_from_hash(&version.hash.to_string()))
     }
 
     /// The tree the app publishes for this document, seen from `view`.
@@ -209,8 +218,25 @@ impl Editor {
         bytes: &[u8],
         actor_handle: &str,
     ) -> Result<Self> {
+        Self::peer_from_snapshot_on_route(contract, contract.app_id, bytes, actor_handle)
+    }
+
+    /// Build a peer replica while retaining the exact authenticated route
+    /// that delivered it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `bytes` is not a loadable snapshot of the
+    /// contract's document.
+    pub fn peer_from_snapshot_on_route(
+        contract: &'static AppContract,
+        route_app_id: &str,
+        bytes: &[u8],
+        actor_handle: &str,
+    ) -> Result<Self> {
         Self::from_snapshot_as(
             contract,
+            route_app_id,
             bytes,
             actor_handle,
             &format!("{actor_handle}#{}", contract.namespace),
@@ -227,7 +253,7 @@ impl Editor {
         bytes: &[u8],
         actor_handle: &str,
     ) -> Result<Self> {
-        Self::from_snapshot_as(contract, bytes, actor_handle, actor_handle)
+        Self::from_snapshot_as(contract, contract.app_id, bytes, actor_handle, actor_handle)
     }
 
     /// The two above, with the replica's actor spelled out. `author` is who
@@ -235,6 +261,7 @@ impl Editor {
     /// replica is writing, and is per-document.
     fn from_snapshot_as(
         contract: &'static AppContract,
+        route_app_id: &str,
         bytes: &[u8],
         actor_handle: &str,
         actor_id: &str,
@@ -248,6 +275,7 @@ impl Editor {
             author: actor_handle.to_string(),
             history_context: None,
             contract,
+            route_app_id: route_app_id.to_string(),
         };
         this.drain();
         Ok(this)
@@ -336,10 +364,10 @@ impl Editor {
         let Ok(doc) = AutoCommit::load(bytes) else {
             return false;
         };
-        let Ok(c) = qdoc::model::open(&doc, &automerge::ROOT) else {
+        let Ok(c) = tilo_doc::model::open(&doc, &automerge::ROOT) else {
             return false;
         };
-        let snapshot = qdoc::model::materialize(&doc, &c);
+        let snapshot = tilo_doc::model::materialize(&doc, &c);
         let blocks = crate::plan::blocks(&snapshot);
         crate::plan::find_addressed(&blocks, name).is_some()
     }
@@ -449,7 +477,7 @@ impl Editor {
         // transaction is the app's call, not this one's, so it is said out
         // loud rather than left to look like a rendering fault elsewhere.
         if self.doc.pending_ops() > 0 {
-            qdoc::history::commit_stamped_with_message(
+            tilo_resource::history::commit_stamped_with_message(
                 &mut self.doc,
                 self.history_context
                     .as_ref()
@@ -498,7 +526,9 @@ impl Editor {
         Ok((!delta.is_empty()).then_some(delta))
     }
 
-    /// Perform the operation `address` names, attributed to the agent.
+    /// Perform the operation `address` names, attributed to the agent and
+    /// recorded within the task context set by
+    /// [`set_history_context`](Self::set_history_context).
     ///
     /// Resolved against a tree built from the document **as it stands right
     /// now**, not the survey it was chosen from: a section that has been
@@ -522,23 +552,11 @@ impl Editor {
         argument: Option<&str>,
         registry: &ActionRegistry,
     ) -> Result<Option<Vec<u8>>, DoorError> {
-        let resources = self.resources(view);
-        let mut transport = LocalTransport::new();
-        self.doc.set_actor(self.actor.clone());
-        let text_before = block_texts(&self.doc);
-        door::invoke(
-            &mut self.doc,
-            &resources,
-            address,
-            argument,
-            self.actor.to_bytes(),
-            registry,
-            &mut transport,
-        )?;
-        self.stamp_authorship(&text_before);
-        self.commit_task_context();
-        let delta = self.doc.save_incremental();
-        Ok((!delta.is_empty()).then_some(delta))
+        self.through_door(view, |doc, resources, provenance, transport| {
+            door::invoke(
+                doc, resources, address, argument, provenance, registry, transport,
+            )
+        })
     }
 
     /// Typed counterpart to [`invoke`](Self::invoke). This is the canonical
@@ -557,23 +575,11 @@ impl Editor {
         arguments: &serde_json::Map<String, serde_json::Value>,
         registry: &ActionRegistry,
     ) -> Result<Option<Vec<u8>>, DoorError> {
-        let resources = self.resources(view);
-        let mut transport = LocalTransport::new();
-        self.doc.set_actor(self.actor.clone());
-        let text_before = block_texts(&self.doc);
-        door::invoke_json(
-            &mut self.doc,
-            &resources,
-            address,
-            arguments,
-            self.actor.to_bytes(),
-            registry,
-            &mut transport,
-        )?;
-        self.stamp_authorship(&text_before);
-        self.commit_task_context();
-        let delta = self.doc.save_incremental();
-        Ok((!delta.is_empty()).then_some(delta))
+        self.through_door(view, |doc, resources, provenance, transport| {
+            door::invoke_json(
+                doc, resources, address, arguments, provenance, registry, transport,
+            )
+        })
     }
 
     /// Invoke typed arguments after the caller has verified the live
@@ -592,19 +598,35 @@ impl Editor {
         arguments: &serde_json::Map<String, serde_json::Value>,
         registry: &ActionRegistry,
     ) -> Result<Option<Vec<u8>>, DoorError> {
+        self.through_door(view, |doc, resources, provenance, transport| {
+            door::invoke_json_confirmed(
+                doc, resources, address, arguments, provenance, registry, transport,
+            )
+        })
+    }
+
+    /// Run one door call against a tree built from `view` now, as the agent
+    /// and within the current task context, then stamp authorship and return
+    /// the delta it produced.
+    fn through_door(
+        &mut self,
+        view: &View,
+        call: impl FnOnce(
+            &mut AutoCommit,
+            &[Resource],
+            InvocationProvenance<'_>,
+            &mut LocalTransport,
+        ) -> Result<tilo_actions::Dispatched, DoorError>,
+    ) -> Result<Option<Vec<u8>>, DoorError> {
         let resources = self.resources(view);
         let mut transport = LocalTransport::new();
         self.doc.set_actor(self.actor.clone());
         let text_before = block_texts(&self.doc);
-        door::invoke_json_confirmed(
-            &mut self.doc,
-            &resources,
-            address,
-            arguments,
-            self.actor.to_bytes(),
-            registry,
-            &mut transport,
-        )?;
+        let provenance = InvocationProvenance {
+            actor: self.actor.to_bytes(),
+            ambient: self.history_context.as_ref(),
+        };
+        call(&mut self.doc, &resources, provenance, &mut transport)?;
         self.stamp_authorship(&text_before);
         self.commit_task_context();
         let delta = self.doc.save_incremental();
@@ -615,7 +637,7 @@ impl Editor {
         if self.doc.pending_ops() == 0 {
             return;
         }
-        qdoc::history::commit_stamped_with_message(
+        tilo_resource::history::commit_stamped_with_message(
             &mut self.doc,
             self.history_context
                 .as_ref()
@@ -625,7 +647,7 @@ impl Editor {
 
     /// Mark whatever text this replica just added with the durable
     /// `author` mark, so the document itself records who wrote it. Read
-    /// back by [`qdoc::author_runs`]. A mark rather than a block field
+    /// back by [`tilo_doc::author_runs`]. A mark rather than a block field
     /// because authorship follows the characters: splitting a paragraph,
     /// merging two, typing into somebody else's sentence all leave each
     /// run attributed to whoever actually wrote it.
@@ -648,24 +670,17 @@ impl Editor {
         if spans.is_empty() {
             return;
         }
-        let Ok(c) = qdoc::model::open(&self.doc, &automerge::ROOT) else {
-            return;
+        let action = word_processor::actions::RichTextAction::SetMark {
+            region: word_processor::actions::RegionKind::Body,
+            spans: spans
+                .into_iter()
+                .map(|(block, start, end)| word_processor::actions::Span { block, start, end })
+                .collect(),
+            name: tilo_doc::schema::MARK_AUTHOR.to_string(),
+            value: Some(word_processor::actions::MarkVal::Str(self.author.clone())),
+            also_clear: Vec::new(),
         };
-        let mut ids = qdoc::IdGen::new(self.doc.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut {
-            doc: &mut self.doc,
-            c: &c,
-            ids: &mut ids,
-        };
-        for (id, start, end) in spans {
-            dm.add_mark(
-                &id,
-                start,
-                end,
-                qdoc::schema::MARK_AUTHOR,
-                self.author.as_str(),
-            );
-        }
+        let _ = action.apply_under(&mut self.doc, &automerge::ROOT);
     }
 
     /// How many ancestor changes this replica is waiting for.
@@ -693,10 +708,10 @@ impl Editor {
     /// When the document held has no qdoc schema — one this editor was not
     /// seeded from a peer's snapshot for, or one from an app that does not
     /// use it.
-    pub fn snapshot(&self) -> Result<qdoc::DocSnapshot> {
-        let c = qdoc::model::open(&self.doc, &automerge::ROOT)
+    pub fn snapshot(&self) -> Result<tilo_doc::DocSnapshot> {
+        let c = tilo_doc::model::open(&self.doc, &automerge::ROOT)
             .map_err(|e| anyhow::anyhow!("the document has no qdoc schema: {e:?}"))?;
-        Ok(qdoc::model::materialize(&self.doc, &c))
+        Ok(tilo_doc::model::materialize(&self.doc, &c))
     }
 }
 
@@ -757,152 +772,161 @@ mod tests {
         foreign.save_incremental()
     }
 
-    /// A delta belonging to another app's document is refused, and leaves
-    /// nothing behind. The agent joins with an empty app id, so the broker
-    /// hands it every application's frames and this delta is tried against
-    /// the page as a matter of course.
+    /// Whether `apply` and `merge_incremental` say a change happened is the
+    /// broadcast decision, so each must be honest in both directions.
     #[test]
-    fn a_delta_from_another_document_is_refused_and_leaves_nothing_queued() {
-        let delta = a_delta_from_another_apps_document();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each case keeps its original fixture and assertions"
+    )]
+    fn the_editor_reports_a_change_to_send_exactly_when_the_document_changed() {
+        // Case `a_delta_from_another_document_is_refused_and_leaves_nothing_queued`.
+        // A delta belonging to another app's document is refused, and leaves
+        // nothing behind. The agent joins with an empty app id, so the broker
+        // hands it every application's frames and this delta is tried against
+        // the page as a matter of course.
+        {
+            let delta = a_delta_from_another_apps_document();
 
+            {
+                let mut probe = AutoCommit::new();
+                assert!(
+                    probe.load_incoming(&delta).is_ok(),
+                    "automerge must accept this delta, or the trap this guards \
+                     against does not exist"
+                );
+                assert!(
+                    !probe.get_missing_deps(&[]).is_empty(),
+                    "the delta must be one whose ancestor is missing, or this \
+                     exercises nothing"
+                );
+            }
+
+            let mut ed = Editor::empty("Scribe");
+            let before = ed.missing_ancestors();
+            assert!(
+                !ed.merge_incremental(&delta).expect("merge"),
+                "a delta belonging to another document is not this one's, and \
+                 saying it applied reports an edit that did not happen"
+            );
+            assert_eq!(
+                ed.missing_ancestors(),
+                before,
+                "refusing a foreign delta must leave nothing queued behind it"
+            );
+        }
+
+        // Case `an_edit_the_agent_makes_carries_the_time_it_was_made`.
+        // An edit the agent makes carries the time it was made — a version has
+        // a wall clock only because [`Editor::apply`] routes the commit
+        // through `commit_stamped`.
+        {
+            #[derive(Debug)]
+            struct JustWrites;
+            impl Action for JustWrites {
+                fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+                    doc.put(&ROOT, "note", ScalarValue::Str("typed".into()))?;
+                    Ok(())
+                }
+                fn locus(&self) -> ExecutionLocus {
+                    ExecutionLocus::ClientLocal
+                }
+            }
+
+            let mut ed = Editor::empty("Scribe");
+            ed.apply(&JustWrites)
+                .expect("apply")
+                .expect("a plain write is a change to send");
+
+            let versions = tilo_resource::history::versions(&mut ed.doc);
+            assert!(!versions.is_empty(), "the edit produced no version to date");
+            assert!(
+                versions.iter().all(|v| v.time_ms > 0),
+                "every change the agent writes must carry the time it was \
+                 made: {versions:?}"
+            );
+        }
+
+        // Case `a_change_is_sent_even_when_the_action_read_after_writing`.
+        // A change whose action read after writing is still broadcast. The
+        // probe is checked first, so this proves the condition it claims to
+        // exercise rather than passing against any guard at all.
         {
             let mut probe = AutoCommit::new();
-            assert!(
-                probe.load_incoming(&delta).is_ok(),
-                "automerge must accept this delta, or the trap this guards \
-                 against does not exist"
+            ReadsAfterWriting
+                .apply(&mut probe)
+                .expect("the probe applies");
+            assert_eq!(
+                probe.pending_ops(),
+                0,
+                "the probe must leave nothing pending, or this test is not \
+                 exercising the condition it is about"
             );
-            assert!(
-                !probe.get_missing_deps(&[]).is_empty(),
-                "the delta must be one whose ancestor is missing, or this \
-                 exercises nothing"
+
+            let mut ed = Editor::empty("Scribe");
+            let delta = ed
+                .apply(&ReadsAfterWriting)
+                .expect("apply")
+                .expect("the document changed, so there is a change to send");
+
+            let mut peer = AutoCommit::new();
+            peer.load_incoming(&delta).expect("the delta applies");
+            assert_eq!(
+                peer.get(&ROOT, "note")
+                    .unwrap()
+                    .and_then(|(v, _)| v.as_str().map(str::to_string)),
+                Some("written".to_string()),
+                "the peer never received the change the agent made"
             );
         }
 
-        let mut ed = Editor::empty("Scribe");
-        let before = ed.missing_ancestors();
-        assert!(
-            !ed.merge_incremental(&delta).expect("merge"),
-            "a delta belonging to another document is not this one's, and \
-             saying it applied reports an edit that did not happen"
-        );
-        assert_eq!(
-            ed.missing_ancestors(),
-            before,
-            "refusing a foreign delta must leave nothing queued behind it"
-        );
-    }
-
-    /// An edit the agent makes carries the time it was made — a version has
-    /// a wall clock only because [`Editor::apply`] routes the commit
-    /// through `commit_stamped`.
-    #[test]
-    fn an_edit_the_agent_makes_carries_the_time_it_was_made() {
-        #[derive(Debug)]
-        struct JustWrites;
-        impl Action for JustWrites {
-            fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-                doc.put(&ROOT, "note", ScalarValue::Str("typed".into()))?;
-                Ok(())
-            }
-            fn locus(&self) -> ExecutionLocus {
-                ExecutionLocus::ClientLocal
-            }
+        // Case `an_action_that_changes_nothing_sends_nothing`.
+        // And the silence is still honest: an action that changes nothing
+        // broadcasts nothing.
+        {
+            let mut ed = Editor::empty("Scribe");
+            assert_eq!(ed.apply(&Nothing).expect("apply"), None);
         }
 
-        let mut ed = Editor::empty("Scribe");
-        ed.apply(&JustWrites)
-            .expect("apply")
-            .expect("a plain write is a change to send");
-
-        let versions = qdoc::history::versions(&mut ed.doc);
-        assert!(!versions.is_empty(), "the edit produced no version to date");
-        assert!(
-            versions.iter().all(|v| v.time_ms > 0),
-            "every change the agent writes must carry the time it was \
-             made: {versions:?}"
-        );
-    }
-
-    /// A change whose action read after writing is still broadcast. The
-    /// probe is checked first, so this proves the condition it claims to
-    /// exercise rather than passing against any guard at all.
-    #[test]
-    fn a_change_is_sent_even_when_the_action_read_after_writing() {
-        let mut probe = AutoCommit::new();
-        ReadsAfterWriting
-            .apply(&mut probe)
-            .expect("the probe applies");
-        assert_eq!(
-            probe.pending_ops(),
-            0,
-            "the probe must leave nothing pending, or this test is not \
-             exercising the condition it is about"
-        );
-
-        let mut ed = Editor::empty("Scribe");
-        let delta = ed
-            .apply(&ReadsAfterWriting)
-            .expect("apply")
-            .expect("the document changed, so there is a change to send");
-
-        let mut peer = AutoCommit::new();
-        peer.load_incoming(&delta).expect("the delta applies");
-        assert_eq!(
-            peer.get(&ROOT, "note")
-                .unwrap()
-                .and_then(|(v, _)| v.as_str().map(str::to_string)),
-            Some("written".to_string()),
-            "the peer never received the change the agent made"
-        );
-    }
-
-    /// And the silence is still honest: an action that changes nothing
-    /// broadcasts nothing.
-    #[test]
-    fn an_action_that_changes_nothing_sends_nothing() {
-        let mut ed = Editor::empty("Scribe");
-        assert_eq!(ed.apply(&Nothing).expect("apply"), None);
-    }
-
-    /// The ordinary path is unchanged: an action that leaves its ops
-    /// pending is committed, stamped, and sent.
-    #[test]
-    fn an_ordinary_write_is_still_committed_and_sent() {
-        #[derive(Debug)]
-        struct JustWrites;
-        impl Action for JustWrites {
-            fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-                use automerge::transaction::Transactable;
-                doc.put(&ROOT, "note", ScalarValue::Str("typed".into()))?;
-                Ok(())
+        // Case `an_ordinary_write_is_still_committed_and_sent`.
+        // The ordinary path is unchanged: an action that leaves its ops
+        // pending is committed, stamped, and sent.
+        {
+            #[derive(Debug)]
+            struct JustWrites;
+            impl Action for JustWrites {
+                fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+                    use automerge::transaction::Transactable;
+                    doc.put(&ROOT, "note", ScalarValue::Str("typed".into()))?;
+                    Ok(())
+                }
+                fn locus(&self) -> ExecutionLocus {
+                    ExecutionLocus::ClientLocal
+                }
             }
-            fn locus(&self) -> ExecutionLocus {
-                ExecutionLocus::ClientLocal
-            }
+            let mut ed = Editor::empty("Scribe");
+            let delta = ed
+                .apply(&JustWrites)
+                .expect("apply")
+                .expect("a plain write is a change to send");
+            let mut peer = AutoCommit::new();
+            peer.load_incoming(&delta).expect("the delta applies");
+            assert_eq!(
+                peer.get(&ROOT, "note")
+                    .unwrap()
+                    .and_then(|(v, _)| v.as_str().map(str::to_string)),
+                Some("typed".to_string())
+            );
         }
-        let mut ed = Editor::empty("Scribe");
-        let delta = ed
-            .apply(&JustWrites)
-            .expect("apply")
-            .expect("a plain write is a change to send");
-        let mut peer = AutoCommit::new();
-        peer.load_incoming(&delta).expect("the delta applies");
-        assert_eq!(
-            peer.get(&ROOT, "note")
-                .unwrap()
-                .and_then(|(v, _)| v.as_str().map(str::to_string)),
-            Some("typed".to_string())
-        );
     }
 
     #[test]
     fn comment_actions_are_discovered_and_applied_from_the_live_resource_tree() {
         let mut document = AutoCommit::new();
-        let containers = qdoc::model::init(&mut document, &ROOT);
-        let mut ids = qdoc::model::seeded_id_gen(&document, &containers);
+        let containers = tilo_doc::model::init(&mut document, &ROOT);
+        let mut ids = tilo_doc::model::seeded_id_gen(&document, &containers);
         let block = {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut document,
                 c: &containers,
                 ids: &mut ids,
@@ -973,5 +997,86 @@ mod tests {
         assert_eq!(snap.comments[0].replies.len(), 1);
         assert_eq!(snap.comments[0].replies[0].author, "Scribe");
         assert_eq!(snap.comments[0].replies[0].blocks[0].text, "Clarified.");
+    }
+
+    /// A destructive operation the agent performs after its policy gate
+    /// confirmed it lands in history within the run that asked for it, not
+    /// only under the resource it touched.
+    #[test]
+    fn a_confirmed_destructive_invocation_is_recorded_within_the_run() {
+        let mut document = AutoCommit::new();
+        let containers = tilo_doc::model::init(&mut document, &ROOT);
+        let mut ids = tilo_doc::model::seeded_id_gen(&document, &containers);
+        let (paragraph, image) = {
+            let mut dm = tilo_doc::DocMut {
+                doc: &mut document,
+                c: &containers,
+                ids: &mut ids,
+            };
+            let paragraph = dm.insert_block(None, "paragraph");
+            dm.splice_text(&paragraph, 0, 0, "Draft figure below.");
+            let image = dm.insert_block(Some(&paragraph), "image");
+            (paragraph, image)
+        };
+        document.commit();
+
+        let mut editor = Editor::from_snapshot(&document.save(), "Scribe")
+            .expect("the seeded document is a word processor document");
+        editor.set_history_context(Some(
+            tilo_actions::ActionContext::for_resource(
+                "Agent task",
+                "active document",
+                "document",
+                "active document",
+            )
+            .with_app("org.tilo.Agent", "Agent")
+            .with_purpose("Remove the draft figure")
+            .with_group("agent-run:ins-1", "Remove the draft figure", "agent-run"),
+        ));
+        let view = View {
+            focus_block: Some(paragraph),
+            ..View::default()
+        };
+        let registry = crate::surface::registry();
+        let delete = ActionAddress::new(format!("word-processor.image:{image}"), "delete");
+        let arguments = serde_json::Map::new();
+
+        assert_eq!(
+            editor
+                .invoke_json(&view, &delete, &arguments, &registry)
+                .unwrap_err(),
+            DoorError::ConfirmationRequired,
+            "deleting an image is destructive"
+        );
+        assert!(
+            editor
+                .invoke_json_confirmed(&view, &delete, &arguments, &registry)
+                .expect("the confirmed deletion runs")
+                .is_some(),
+            "the deletion changes the shared document"
+        );
+
+        let heads = editor.doc.get_heads();
+        let change = editor
+            .doc
+            .get_change_by_hash(&heads[0])
+            .expect("the deletion was committed");
+        assert_eq!(change.actor_id(), &editor.actor);
+        let context = change
+            .message()
+            .and_then(tilo_actions::ActionContext::from_change_message)
+            .expect("the deletion carries its provenance");
+        assert_eq!(context.action_label, "Delete image");
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.id.clone()),
+            Some(format!("word-processor.image:{image}"))
+        );
+        let group = context.group.expect("the run's group is recorded");
+        assert_eq!(group.id, "agent-run:ins-1");
+        assert_eq!(group.kind, "agent-run");
+        assert_eq!(context.purpose.as_deref(), Some("Remove the draft figure"));
     }
 }

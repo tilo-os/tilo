@@ -4,7 +4,7 @@
 //! [`crate::engine_pg::PostgresEngine`] so the session can hold any engine
 //! behind one enum.
 
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use mysql::consts::ColumnType;
 use mysql::prelude::Queryable;
@@ -221,7 +221,7 @@ impl MySqlEngine {
         if trimmed.is_empty() {
             return Ok(QueryResult::default());
         }
-        let start = Instant::now();
+        let start = ui::time::now();
 
         let mut result = self.conn.query_iter(trimmed).map_err(|e| e.to_string())?;
         // Capture the column names + server types. The text protocol returns
@@ -383,95 +383,99 @@ mod tests {
     use super::*;
     use crate::model::{ConnectionProfile, Engine};
 
+    /// Options carry profile fields and the default port; values map across scalar families, text protocol bytes coerce, and hostile cells are bounded.
     #[test]
-    fn opts_carry_profile_fields() {
-        let mut p = ConnectionProfile::new("shop", Engine::MySql);
-        p.host = "mysql.example".into();
-        p.port = 3307;
-        p.database = "shop".into();
-        p.user = "app".into();
-        p.password = "secret".into();
-        let opts: Opts = mysql_opts(&p).into();
-        assert_eq!(opts.get_ip_or_hostname().as_ref(), "mysql.example");
-        assert_eq!(opts.get_tcp_port(), 3307);
-        assert_eq!(opts.get_user(), Some("app"));
-        assert_eq!(opts.get_db_name(), Some("shop"));
-    }
+    fn mysql_options_and_value_mapping_are_faithful_and_bounded() {
+        // --- phase: opts_carry_profile_fields ---
+        {
+            let mut p = ConnectionProfile::new("shop", Engine::MySql);
+            p.host = "mysql.example".into();
+            p.port = 3307;
+            p.database = "shop".into();
+            p.user = "app".into();
+            p.password = "secret".into();
+            let opts: Opts = mysql_opts(&p).into();
+            assert_eq!(opts.get_ip_or_hostname().as_ref(), "mysql.example");
+            assert_eq!(opts.get_tcp_port(), 3307);
+            assert_eq!(opts.get_user(), Some("app"));
+            assert_eq!(opts.get_db_name(), Some("shop"));
+        }
 
-    #[test]
-    fn opts_default_port_when_zero() {
-        let mut p = ConnectionProfile::new("x", Engine::MySql);
-        p.port = 0;
-        let opts: Opts = mysql_opts(&p).into();
-        assert_eq!(opts.get_tcp_port(), 3306);
-    }
+        // --- phase: opts_default_port_when_zero ---
+        {
+            let mut p = ConnectionProfile::new("x", Engine::MySql);
+            p.port = 0;
+            let opts: Opts = mysql_opts(&p).into();
+            assert_eq!(opts.get_tcp_port(), 3306);
+        }
 
-    #[test]
-    fn value_mapping_covers_scalar_families() {
-        assert_eq!(mysql_value_to_cell(Value::NULL), Cell::Null);
-        assert_eq!(mysql_value_to_cell(Value::Int(-7)), Cell::Integer(-7));
-        assert_eq!(mysql_value_to_cell(Value::UInt(9)), Cell::Integer(9));
-        assert_eq!(mysql_value_to_cell(Value::Double(1.5)), Cell::Real(1.5));
-        assert_eq!(
-            mysql_value_to_cell(Value::Bytes(b"hi".to_vec())),
-            Cell::Text("hi".into())
-        );
-        assert_eq!(
-            mysql_value_to_cell(Value::Date(2026, 7, 28, 0, 0, 0, 0)),
-            Cell::Text("2026-07-28".into())
-        );
-        assert_eq!(
-            mysql_value_to_cell(Value::Date(2026, 7, 28, 9, 30, 0, 0)),
-            Cell::Text("2026-07-28 09:30:00".into())
-        );
-    }
+        // --- phase: value_mapping_covers_scalar_families ---
+        {
+            assert_eq!(mysql_value_to_cell(Value::NULL), Cell::Null);
+            assert_eq!(mysql_value_to_cell(Value::Int(-7)), Cell::Integer(-7));
+            assert_eq!(mysql_value_to_cell(Value::UInt(9)), Cell::Integer(9));
+            assert_eq!(mysql_value_to_cell(Value::Double(1.5)), Cell::Real(1.5));
+            assert_eq!(
+                mysql_value_to_cell(Value::Bytes(b"hi".to_vec())),
+                Cell::Text("hi".into())
+            );
+            assert_eq!(
+                mysql_value_to_cell(Value::Date(2026, 7, 28, 0, 0, 0, 0)),
+                Cell::Text("2026-07-28".into())
+            );
+            assert_eq!(
+                mysql_value_to_cell(Value::Date(2026, 7, 28, 9, 30, 0, 0)),
+                Cell::Text("2026-07-28 09:30:00".into())
+            );
+        }
 
-    #[test]
-    fn text_protocol_bytes_coerce_to_typed_numerics() {
-        // The text protocol hands back integer/float columns as raw bytes; the
-        // column type recovers a typed numeric cell so the grid right-aligns.
-        assert_eq!(
-            cell_from_value(
-                Value::Bytes(b"42".to_vec()),
-                Some(ColumnType::MYSQL_TYPE_LONG)
-            ),
-            Cell::Integer(42)
-        );
-        assert_eq!(
-            cell_from_value(
-                Value::Bytes(b"1.5".to_vec()),
-                Some(ColumnType::MYSQL_TYPE_DOUBLE)
-            ),
-            Cell::Real(1.5)
-        );
-        // A text column stays text even when the bytes look numeric.
-        assert_eq!(
-            cell_from_value(
-                Value::Bytes(b"42".to_vec()),
-                Some(ColumnType::MYSQL_TYPE_VAR_STRING)
-            ),
-            Cell::Text("42".into())
-        );
-        // NULL and already-typed binary-protocol values pass straight through.
-        assert_eq!(
-            cell_from_value(Value::NULL, Some(ColumnType::MYSQL_TYPE_LONG)),
-            Cell::Null
-        );
-        assert_eq!(
-            cell_from_value(Value::Int(7), Some(ColumnType::MYSQL_TYPE_LONG)),
-            Cell::Integer(7)
-        );
-    }
+        // --- phase: text_protocol_bytes_coerce_to_typed_numerics ---
+        {
+            // The text protocol hands back integer/float columns as raw bytes; the
+            // column type recovers a typed numeric cell so the grid right-aligns.
+            assert_eq!(
+                cell_from_value(
+                    Value::Bytes(b"42".to_vec()),
+                    Some(ColumnType::MYSQL_TYPE_LONG)
+                ),
+                Cell::Integer(42)
+            );
+            assert_eq!(
+                cell_from_value(
+                    Value::Bytes(b"1.5".to_vec()),
+                    Some(ColumnType::MYSQL_TYPE_DOUBLE)
+                ),
+                Cell::Real(1.5)
+            );
+            // A text column stays text even when the bytes look numeric.
+            assert_eq!(
+                cell_from_value(
+                    Value::Bytes(b"42".to_vec()),
+                    Some(ColumnType::MYSQL_TYPE_VAR_STRING)
+                ),
+                Cell::Text("42".into())
+            );
+            // NULL and already-typed binary-protocol values pass straight through.
+            assert_eq!(
+                cell_from_value(Value::NULL, Some(ColumnType::MYSQL_TYPE_LONG)),
+                Cell::Null
+            );
+            assert_eq!(
+                cell_from_value(Value::Int(7), Some(ColumnType::MYSQL_TYPE_LONG)),
+                Cell::Integer(7)
+            );
+        }
 
-    #[test]
-    fn hostile_text_protocol_cell_is_retained_at_a_bounded_size() {
-        let Cell::Text(value) = cell_from_value(
-            Value::Bytes(vec![b'x'; Cell::MAX_RETAINED_TEXT_BYTES + 99]),
-            Some(ColumnType::MYSQL_TYPE_VAR_STRING),
-        ) else {
-            panic!("text cell expected")
-        };
-        assert!(value.len() <= Cell::MAX_RETAINED_TEXT_BYTES + 32);
-        assert!(value.ends_with("… [truncated]"));
+        // --- phase: hostile_text_protocol_cell_is_retained_at_a_bounded_size ---
+        {
+            let Cell::Text(value) = cell_from_value(
+                Value::Bytes(vec![b'x'; Cell::MAX_RETAINED_TEXT_BYTES + 99]),
+                Some(ColumnType::MYSQL_TYPE_VAR_STRING),
+            ) else {
+                panic!("text cell expected")
+            };
+            assert!(value.len() <= Cell::MAX_RETAINED_TEXT_BYTES + 32);
+            assert!(value.ends_with("… [truncated]"));
+        }
     }
 }

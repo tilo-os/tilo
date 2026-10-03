@@ -553,65 +553,122 @@ mod tests {
         );
     }
 
+    /// Linux, 4Kn and Windows stages and requirements.
     #[test]
-    fn full_linux_stage() {
-        let mut p = linux_platform();
-        let w = world(&p);
-        run(&mut p, &w, Action::Stage).unwrap();
-        assert_staged(&p, &w);
-        // Idempotent: re-running a completed stage re-verifies and changes nothing.
-        let before = p.mutations;
-        run(&mut p, &w, Action::Stage).unwrap();
-        assert_staged(&p, &w);
-        assert!(
-            p.mutations - before <= 2,
-            "only the ESP record copy is refreshed"
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn full_stages_write_exact_sectors_and_follow_bundle_minimums() {
+        // Phase `full_linux_stage`.
+        {
+            let mut p = linux_platform();
+            let w = world(&p);
+            run(&mut p, &w, Action::Stage).unwrap();
+            assert_staged(&p, &w);
+            // Idempotent: re-running a completed stage re-verifies and changes nothing.
+            let before = p.mutations;
+            run(&mut p, &w, Action::Stage).unwrap();
+            assert_staged(&p, &w);
+            assert!(
+                p.mutations - before <= 2,
+                "only the ESP record copy is refreshed"
+            );
+        }
+
+        // Phase `full_4kn_stage_writes_partial_tail_sectors_exactly`.
+        {
+            let mut p = linux_4kn_platform();
+            let w = world(&p);
+            run(&mut p, &w, Action::Stage).unwrap();
+            assert_staged(&p, &w);
+            let (_, root) = staged_guids(&p, &w.request.plan);
+            let tail = p.partition_bytes(&root, 4096);
+            assert!(
+                tail[w.root.len()..].iter().all(|b| *b == 0),
+                "zeroed, not garbage"
+            );
+        }
+
+        // Phase `small_fat_sectors_on_a_4kn_disk_are_refused_before_mutation`.
+        // Catches staging a 512-byte-sector ESP onto a 4Kn disk, which would
+        // shrink and partition the disk for an installer that can never mount it.
+        {
+            let mut p = linux_4kn_platform();
+            let before = p.clone();
+            let w = world_with_esp(&p, fat::tests::staging_esp_image(false, 8192));
+            let err = run(&mut p, &w, Action::Stage).unwrap_err();
+            assert_eq!(err.code, codes::SECTOR_SIZE);
+            assert_eq!(p.system_disk().unwrap(), before.system_disk().unwrap());
+            assert_eq!(p.vars, before.vars);
+        }
+
+        // Phase `full_windows_stage_shrinks_and_records_read_back_guids`.
+        {
+            let mut p = windows_platform();
+            let w = world(&p);
+            assert!(w.request.plan.shrink.is_some());
+            assert!(w.request.plan.staging_esp.partition_guid.is_none());
+            run(&mut p, &w, Action::Stage).unwrap();
+            assert_staged(&p, &w);
+            let shrink = w.request.plan.shrink.as_ref().unwrap();
+            assert_eq!(p.volume.as_ref().unwrap().size_bytes, shrink.to_bytes);
+            let record = w.store.load(&w.request.operation_id).unwrap().unwrap();
+            let (esp, _) = staged_guids(&p, &w.request.plan);
+            assert_eq!(
+                record.detail_str(Step::CreateEsp, "partition_guid"),
+                Some(esp.as_str())
+            );
+        }
+
+        // Phase `requirements_follow_bundle_minimums`.
+        {
+            let p = linux_platform();
+            let w = world(&p);
+            let r: Requirements = w.authority.0.requirements(40 * GIB);
+            assert_eq!(r.staging_esp_bytes, 2 * MIB);
+            assert_eq!(r.target_bytes, 40 * GIB);
+        }
     }
 
-    #[test]
-    fn full_4kn_stage_writes_partial_tail_sectors_exactly() {
-        let mut p = linux_4kn_platform();
-        let w = world(&p);
-        run(&mut p, &w, Action::Stage).unwrap();
-        assert_staged(&p, &w);
-        let (_, root) = staged_guids(&p, &w.request.plan);
-        let tail = p.partition_bytes(&root, 4096);
-        assert!(
-            tail[w.root.len()..].iter().all(|b| *b == 0),
-            "zeroed, not garbage"
-        );
-    }
-
-    // Catches staging a 512-byte-sector ESP onto a 4Kn disk, which would
-    // shrink and partition the disk for an installer that can never mount it.
-    #[test]
-    fn small_fat_sectors_on_a_4kn_disk_are_refused_before_mutation() {
-        let mut p = linux_4kn_platform();
-        let before = p.clone();
-        let w = world_with_esp(&p, fat::tests::staging_esp_image(false, 8192));
-        let err = run(&mut p, &w, Action::Stage).unwrap_err();
-        assert_eq!(err.code, codes::SECTOR_SIZE);
-        assert_eq!(p.system_disk().unwrap(), before.system_disk().unwrap());
-        assert_eq!(p.vars, before.vars);
-    }
-
-    #[test]
-    fn full_windows_stage_shrinks_and_records_read_back_guids() {
-        let mut p = windows_platform();
-        let w = world(&p);
-        assert!(w.request.plan.shrink.is_some());
-        assert!(w.request.plan.staging_esp.partition_guid.is_none());
-        run(&mut p, &w, Action::Stage).unwrap();
-        assert_staged(&p, &w);
-        let shrink = w.request.plan.shrink.as_ref().unwrap();
-        assert_eq!(p.volume.as_ref().unwrap().size_bytes, shrink.to_bytes);
-        let record = w.store.load(&w.request.operation_id).unwrap().unwrap();
-        let (esp, _) = staged_guids(&p, &w.request.plan);
-        assert_eq!(
-            record.detail_str(Step::CreateEsp, "partition_guid"),
-            Some(esp.as_str())
-        );
+    /// Runs `check(k)` for every crash point `k` in `1..=total`, each on a
+    /// fresh platform and world, spread over a few threads. Every point still
+    /// runs (a failing point does not stop the others), and the first failure
+    /// is re-raised with its own message. The points are independent, and
+    /// each one is bound by the record store's `fsync`s rather than the CPU,
+    /// so overlapping them shortens the test without dropping any point.
+    fn each_crash_point(total: usize, check: impl Fn(usize) + Sync) {
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let next = AtomicUsize::new(1);
+        let checked = AtomicUsize::new(0);
+        let first_failure = Mutex::new(None);
+        let workers = std::thread::available_parallelism()
+            .map_or(4, std::num::NonZero::get)
+            .clamp(2, 8)
+            .min(total);
+        std::thread::scope(|s| {
+            for _ in 0..workers {
+                s.spawn(|| {
+                    loop {
+                        let k = next.fetch_add(1, Ordering::Relaxed);
+                        if k > total {
+                            break;
+                        }
+                        let outcome =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check(k)));
+                        checked.fetch_add(1, Ordering::Relaxed);
+                        if let Err(payload) = outcome {
+                            first_failure.lock().unwrap().get_or_insert(payload);
+                        }
+                    }
+                });
+            }
+        });
+        if let Some(payload) = first_failure.into_inner().unwrap() {
+            std::panic::resume_unwind(payload);
+        }
+        assert_eq!(checked.into_inner(), total, "every crash point ran");
     }
 
     fn crash_resume_everywhere(make: fn() -> FakePlatform) {
@@ -620,7 +677,7 @@ mod tests {
         run(&mut reference, &w, Action::Stage).unwrap();
         let total = reference.mutations;
         assert!(total > 8, "{total}");
-        for k in 1..=total {
+        each_crash_point(total, |k| {
             let mut p = make();
             let w = world(&p);
             p.faults.crash_after = Some(k);
@@ -637,7 +694,7 @@ mod tests {
             run(&mut p, &w, Action::Stage)
                 .unwrap_or_else(|r| panic!("resume after crash {k}: {r}"));
             assert_staged(&p, &w);
-        }
+        });
     }
 
     #[test]
@@ -663,113 +720,255 @@ mod tests {
         assert_staged(&p, &w);
     }
 
+    /// Digest, host, request, boot-next, plan and ESP refusals.
     #[test]
-    fn digest_mismatch_is_refused_before_any_mutation() {
-        let mut p = linux_platform();
-        let w = world(&p);
-        let mut bad = w.root.clone();
-        bad[0] ^= 1;
-        std::fs::write(&w.root_path, &bad).unwrap();
-        let err = run(&mut p, &w, Action::Stage).unwrap_err();
-        assert_eq!(err.code, codes::DIGEST_MISMATCH);
-        assert_eq!(p.mutations, 0);
-        assert!(w.store.load(&w.request.operation_id).unwrap().is_none());
-        std::fs::write(&w.root_path, [&w.root[..], b"x"].concat()).unwrap();
-        assert_eq!(
-            run(&mut p, &w, Action::Stage).unwrap_err().code,
-            codes::DIGEST_MISMATCH
-        );
-        assert_eq!(p.mutations, 0);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn stale_or_tampered_inputs_are_refused_before_any_mutation() {
+        // Phase `digest_mismatch_is_refused_before_any_mutation`.
+        {
+            let mut p = linux_platform();
+            let w = world(&p);
+            let mut bad = w.root.clone();
+            bad[0] ^= 1;
+            std::fs::write(&w.root_path, &bad).unwrap();
+            let err = run(&mut p, &w, Action::Stage).unwrap_err();
+            assert_eq!(err.code, codes::DIGEST_MISMATCH);
+            assert_eq!(p.mutations, 0);
+            assert!(w.store.load(&w.request.operation_id).unwrap().is_none());
+            std::fs::write(&w.root_path, [&w.root[..], b"x"].concat()).unwrap();
+            assert_eq!(
+                run(&mut p, &w, Action::Stage).unwrap_err().code,
+                codes::DIGEST_MISMATCH
+            );
+            assert_eq!(p.mutations, 0);
+        }
+
+        // Phase `a_changed_host_is_plan_stale_before_any_mutation`.
+        {
+            let mut p = linux_platform();
+            let w = world(&p);
+            let mut changed = p.clone();
+            changed.disk.partitions.push(plan::tests::part(
+                2,
+                "a0000000-0000-4000-8000-000000000002",
+                40 * GIB / 512,
+                41 * GIB / 512,
+            ));
+            assert_eq!(
+                run(&mut changed, &w, Action::Stage).unwrap_err().code,
+                codes::PLAN_STALE
+            );
+            assert_eq!(changed.mutations, 0);
+            p.vars.insert("BootOrder".into(), vec![0, 0, 1, 0]);
+            assert_eq!(
+                run(&mut p, &w, Action::Stage).unwrap_err().code,
+                codes::PLAN_STALE
+            );
+            assert_eq!(p.mutations, 0);
+        }
+
+        // Phase `tampered_request_or_manifest_is_refused`.
+        {
+            let mut p = linux_platform();
+            let mut w = world(&p);
+            w.request.plan.target_extent.last_lba -= 1;
+            assert_eq!(
+                run(&mut p, &w, Action::Stage).unwrap_err().code,
+                codes::REQUEST_INVALID
+            );
+            let mut w = world(&p);
+            std::fs::write(&w.request.manifest_path, b"{}").unwrap();
+            assert_eq!(
+                run(&mut p, &w, Action::Stage).unwrap_err().code,
+                codes::MANIFEST_MISMATCH
+            );
+            w = world(&p);
+            w.request.release.release_id = "other".into();
+            assert_eq!(
+                run(&mut p, &w, Action::Stage).unwrap_err().code,
+                codes::RELEASE_UNKNOWN
+            );
+            let mut w = world(&p);
+            w.request
+                .profile
+                .insert("encryption_passphrase".into(), "x".into());
+            assert_eq!(
+                run(&mut p, &w, Action::Stage).unwrap_err().code,
+                codes::REQUEST_INVALID
+            );
+            assert_eq!(p.mutations, 0);
+        }
+
+        // Phase `foreign_boot_next_is_refused_before_any_mutation`.
+        {
+            let mut p = linux_platform();
+            p.vars.insert("BootNext".into(), vec![0, 0]);
+            let w = world(&p);
+            let err = run(&mut p, &w, Action::Stage).unwrap_err();
+            assert_eq!(err.code, codes::BOOT_NEXT_BUSY);
+            assert_eq!(p.mutations, 0);
+        }
+
+        // Phase `a_plan_the_planner_would_not_produce_is_refused_before_mutation`.
+        // Catches the helper trusting the unprivileged caller's geometry: a plan
+        // that shrinks C: further (or moves the target) than the planner would
+        // is refused before anything is touched, even with a matching digest.
+        {
+            for tamper in 0..2 {
+                let mut p = windows_platform();
+                let mut w = world(&p);
+                let plan = &mut w.request.plan;
+                if tamper == 0 {
+                    let shrink = plan.shrink.as_mut().expect("windows plan shrinks C:");
+                    shrink.to_bytes -= 4 << 30;
+                } else {
+                    plan.target_extent.first_lba -= 2048;
+                }
+                w.request.plan_sha256 = w.request.plan.digest();
+                let err = run(&mut p, &w, Action::Stage).unwrap_err();
+                assert_eq!(err.code, codes::REQUEST_INVALID, "{err}");
+                assert_eq!(p.mutations, 0);
+            }
+        }
+
+        // Phase `staging_esp_without_placeholders_is_refused_before_mutation`.
+        {
+            let mut p = linux_platform();
+            let mut w = world(&p);
+            let mut b = fat::tests::Builder::new(false);
+            b.mkdir(None, None, b"EFI        ");
+            let image = b.image.clone();
+            std::fs::write(&w.request.component_paths.staging_esp, &image).unwrap();
+            let mut facts = w.authority.0.clone();
+            facts.esp.byte_size = image.len() as u64;
+            facts.esp.sha256 = sha(&image);
+            w.authority = TestAuthority(facts);
+            assert_eq!(
+                run(&mut p, &w, Action::Stage).unwrap_err().code,
+                codes::ESP_PLACEHOLDER
+            );
+            assert_eq!(p.mutations, 0);
+        }
     }
 
+    /// Boot-next races, pending operations and arming.
     #[test]
-    fn a_changed_host_is_plan_stale_before_any_mutation() {
-        let mut p = linux_platform();
-        let w = world(&p);
-        let mut changed = p.clone();
-        changed.disk.partitions.push(plan::tests::part(
-            2,
-            "a0000000-0000-4000-8000-000000000002",
-            40 * GIB / 512,
-            41 * GIB / 512,
-        ));
-        assert_eq!(
-            run(&mut changed, &w, Action::Stage).unwrap_err().code,
-            codes::PLAN_STALE
-        );
-        assert_eq!(changed.mutations, 0);
-        p.vars.insert("BootOrder".into(), vec![0, 0, 1, 0]);
-        assert_eq!(
-            run(&mut p, &w, Action::Stage).unwrap_err().code,
-            codes::PLAN_STALE
-        );
-        assert_eq!(p.mutations, 0);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn pending_stages_block_and_arming_reverifies_ownership() {
+        // Phase `boot_next_taken_mid_operation_is_refused_at_arming`.
+        {
+            let mut p = linux_platform();
+            let w = world(&p);
+            // Crash right after the boot entry is written, then let someone
+            // else claim BootNext before the resume.
+            let mut reference = linux_platform();
+            let same_plan = w_clone(&w, &reference);
+            run(&mut reference, &same_plan, Action::Stage).unwrap();
+            let before_boot_next = reference
+                .log
+                .iter()
+                .position(|l| l == "set BootNext")
+                .unwrap();
+            p.faults.crash_after = Some(before_boot_next);
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run(&mut p, &w, Action::Stage)
+            }));
+            p.vars.insert("BootNext".into(), vec![0, 0]);
+            let err = run(&mut p, &w, Action::Stage).unwrap_err();
+            assert_eq!(err.code, codes::BOOT_NEXT_BUSY);
+            assert_eq!(p.vars["BootNext"], vec![0, 0], "never overwritten");
+        }
 
-    #[test]
-    fn tampered_request_or_manifest_is_refused() {
-        let mut p = linux_platform();
-        let mut w = world(&p);
-        w.request.plan.target_extent.last_lba -= 1;
-        assert_eq!(
-            run(&mut p, &w, Action::Stage).unwrap_err().code,
-            codes::REQUEST_INVALID
-        );
-        let mut w = world(&p);
-        std::fs::write(&w.request.manifest_path, b"{}").unwrap();
-        assert_eq!(
-            run(&mut p, &w, Action::Stage).unwrap_err().code,
-            codes::MANIFEST_MISMATCH
-        );
-        w = world(&p);
-        w.request.release.release_id = "other".into();
-        assert_eq!(
-            run(&mut p, &w, Action::Stage).unwrap_err().code,
-            codes::RELEASE_UNKNOWN
-        );
-        let mut w = world(&p);
-        w.request
-            .profile
-            .insert("encryption_passphrase".into(), "x".into());
-        assert_eq!(
-            run(&mut p, &w, Action::Stage).unwrap_err().code,
-            codes::REQUEST_INVALID
-        );
-        assert_eq!(p.mutations, 0);
-    }
+        // Phase `pending_operation_on_the_same_disk_blocks_a_new_stage`.
+        {
+            let mut p = linux_platform();
+            let w = world(&p);
+            p.faults.crash_after = Some(2);
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run(&mut p, &w, Action::Stage)
+            }));
+            let mut other = w.request.clone();
+            other.operation_id = "0a0b0c0d-0000-4000-8000-000000000002".into();
+            let err =
+                helper::execute(&mut p, &w.store, &w.authority, &other, &mut |_| {}).unwrap_err();
+            assert!(matches!(err.code, codes::PENDING_OPERATION), "{err}");
+        }
 
-    #[test]
-    fn foreign_boot_next_is_refused_before_any_mutation() {
-        let mut p = linux_platform();
-        p.vars.insert("BootNext".into(), vec![0, 0]);
-        let w = world(&p);
-        let err = run(&mut p, &w, Action::Stage).unwrap_err();
-        assert_eq!(err.code, codes::BOOT_NEXT_BUSY);
-        assert_eq!(p.mutations, 0);
-    }
+        // Phase `a_fully_staged_operation_still_blocks_a_new_stage`.
+        // Catches a second operation orphaning a completed staging pair and its
+        // boot entry: only removal ends an operation.
+        {
+            let mut p = linux_platform();
+            let w = world(&p);
+            run(&mut p, &w, Action::Stage).unwrap();
+            let before = p.clone();
+            let mut other = w.request.clone();
+            other.operation_id = "0a0b0c0d-0000-4000-8000-000000000003".into();
+            let err =
+                helper::execute(&mut p, &w.store, &w.authority, &other, &mut |_| {}).unwrap_err();
+            assert_eq!(err.code, codes::PENDING_OPERATION, "{err}");
+            assert_eq!(p.system_disk().unwrap(), before.system_disk().unwrap());
+            run(&mut p, &w, Action::Remove).unwrap();
+            helper::execute(&mut p, &w.store, &w.authority, &other, &mut |_| {}).unwrap();
+        }
 
-    #[test]
-    fn boot_next_taken_mid_operation_is_refused_at_arming() {
-        let mut p = linux_platform();
-        let w = world(&p);
-        // Crash right after the boot entry is written, then let someone
-        // else claim BootNext before the resume.
-        let mut reference = linux_platform();
-        let same_plan = w_clone(&w, &reference);
-        run(&mut reference, &same_plan, Action::Stage).unwrap();
-        let before_boot_next = reference
-            .log
-            .iter()
-            .position(|l| l == "set BootNext")
-            .unwrap();
-        p.faults.crash_after = Some(before_boot_next);
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run(&mut p, &w, Action::Stage)
-        }));
-        p.vars.insert("BootNext".into(), vec![0, 0]);
-        let err = run(&mut p, &w, Action::Stage).unwrap_err();
-        assert_eq!(err.code, codes::BOOT_NEXT_BUSY);
-        assert_eq!(p.vars["BootNext"], vec![0, 0], "never overwritten");
+        // Phase `arm_rearms_a_consumed_boot_next_and_reverifies_bytes`.
+        {
+            let mut p = linux_platform();
+            let w = world(&p);
+            assert_eq!(
+                run(&mut p, &w, Action::Arm).unwrap_err().code,
+                codes::NOT_STAGED
+            );
+            run(&mut p, &w, Action::Stage).unwrap();
+            // The download may be gone: arm needs only the record.
+            std::fs::remove_file(&w.root_path).unwrap();
+            std::fs::remove_file(&w.request.component_paths.staging_esp).unwrap();
+            std::fs::remove_file(&w.request.manifest_path).unwrap();
+            p.vars.remove("BootNext"); // firmware consumed it; installer cancelled
+            run(&mut p, &w, Action::Arm).unwrap();
+            assert_eq!(p.vars["BootNext"], vec![0x00, 0x01]);
+            p.vars.remove("BootNext");
+            let (_, root) = staged_guids(&p, &w.request.plan);
+            p.tamper(&root, 0, b"corrupt");
+            let err = run(&mut p, &w, Action::Arm).unwrap_err();
+            assert_eq!(err.code, codes::DIGEST_MISMATCH);
+            assert!(!p.vars.contains_key("BootNext"), "not armed onto bad bytes");
+        }
+
+        // Phase `arm_accepts_a_booted_root_by_its_bound_fsid_only`.
+        // Catches the recovery path the spec promises: after the staged installer
+        // booted once (growing its Btrfs root), arm must still re-arm by the
+        // root's bound fsid, and must not accept a root whose identity is gone.
+        {
+            let mut p = linux_platform();
+            let w = world(&p);
+            run(&mut p, &w, Action::Stage).unwrap();
+            p.vars.remove("BootNext");
+            let (_, root) = staged_guids(&p, &w.request.plan);
+            // The installer's first boot rewrote the filesystem: the download
+            // digest no longer matches, but the superblock names our fsid.
+            p.tamper(&root, 0, b"grown by the live installer");
+            let mut sb = vec![0_u8; 0x48];
+            sb[0x20..0x30].copy_from_slice(&FIXTURE_ROOT_FSID_BYTES);
+            sb[0x40..0x48].copy_from_slice(b"_BHRfS_M");
+            p.tamper(&root, 0x1_0000, &sb);
+            run(&mut p, &w, Action::Arm).unwrap();
+            assert_eq!(p.vars["BootNext"], vec![0x00, 0x01]);
+            p.vars.remove("BootNext");
+            // A different filesystem in the same partition is not ours.
+            sb[0x20] ^= 0xff;
+            p.tamper(&root, 0x1_0000, &sb);
+            let err = run(&mut p, &w, Action::Arm).unwrap_err();
+            assert_eq!(err.code, codes::DIGEST_MISMATCH);
+            assert!(!p.vars.contains_key("BootNext"));
+        }
     }
 
     fn w_clone(w: &World, p: &FakePlatform) -> World {
@@ -779,131 +978,69 @@ mod tests {
         other
     }
 
+    /// Removal, crash-safe removal and ownership checks.
     #[test]
-    fn pending_operation_on_the_same_disk_blocks_a_new_stage() {
-        let mut p = linux_platform();
-        let w = world(&p);
-        p.faults.crash_after = Some(2);
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run(&mut p, &w, Action::Stage)
-        }));
-        let mut other = w.request.clone();
-        other.operation_id = "0a0b0c0d-0000-4000-8000-000000000002".into();
-        let err = helper::execute(&mut p, &w.store, &w.authority, &other, &mut |_| {}).unwrap_err();
-        assert!(matches!(err.code, codes::PENDING_OPERATION), "{err}");
-    }
-
-    // Catches a second operation orphaning a completed staging pair and its
-    // boot entry: only removal ends an operation.
-    #[test]
-    fn a_fully_staged_operation_still_blocks_a_new_stage() {
-        let mut p = linux_platform();
-        let w = world(&p);
-        run(&mut p, &w, Action::Stage).unwrap();
-        let before = p.clone();
-        let mut other = w.request.clone();
-        other.operation_id = "0a0b0c0d-0000-4000-8000-000000000003".into();
-        let err = helper::execute(&mut p, &w.store, &w.authority, &other, &mut |_| {}).unwrap_err();
-        assert_eq!(err.code, codes::PENDING_OPERATION, "{err}");
-        assert_eq!(p.system_disk().unwrap(), before.system_disk().unwrap());
-        run(&mut p, &w, Action::Remove).unwrap();
-        helper::execute(&mut p, &w.store, &w.authority, &other, &mut |_| {}).unwrap();
-    }
-
-    // Catches the helper trusting the unprivileged caller's geometry: a plan
-    // that shrinks C: further (or moves the target) than the planner would
-    // is refused before anything is touched, even with a matching digest.
-    #[test]
-    fn a_plan_the_planner_would_not_produce_is_refused_before_mutation() {
-        for tamper in 0..2 {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn remove_restores_owned_state_and_never_touches_changed_objects() {
+        // Phase `remove_restores_firmware_partitions_and_the_shrink`.
+        {
             let mut p = windows_platform();
-            let mut w = world(&p);
-            let plan = &mut w.request.plan;
-            if tamper == 0 {
-                let shrink = plan.shrink.as_mut().expect("windows plan shrinks C:");
-                shrink.to_bytes -= 4 << 30;
-            } else {
-                plan.target_extent.first_lba -= 2048;
-            }
-            w.request.plan_sha256 = w.request.plan.digest();
-            let err = run(&mut p, &w, Action::Stage).unwrap_err();
-            assert_eq!(err.code, codes::REQUEST_INVALID, "{err}");
-            assert_eq!(p.mutations, 0);
+            let original = p.clone();
+            let w = world(&p);
+            run(&mut p, &w, Action::Stage).unwrap();
+            run(&mut p, &w, Action::Remove).unwrap();
+            assert_eq!(p.system_disk().unwrap(), original.system_disk().unwrap());
+            assert_eq!(p.volume, original.volume);
+            assert_eq!(p.vars, original.vars, "firmware exactly as before");
+            let record = w.store.load(&w.request.operation_id).unwrap().unwrap();
+            assert_eq!(record.status(), RecordStatus::Removed);
+            assert!(
+                super::super::record::pending_in(w.store.public_dir.as_ref().unwrap()).is_empty()
+            );
+            // Idempotent.
+            run(&mut p, &w, Action::Remove).unwrap();
+            // A removed operation cannot be staged again under the same ID.
+            assert_eq!(
+                run(&mut p, &w, Action::Stage).unwrap_err().code,
+                codes::REQUEST_INVALID
+            );
         }
-    }
 
-    #[test]
-    fn arm_rearms_a_consumed_boot_next_and_reverifies_bytes() {
-        let mut p = linux_platform();
-        let w = world(&p);
-        assert_eq!(
-            run(&mut p, &w, Action::Arm).unwrap_err().code,
-            codes::NOT_STAGED
-        );
-        run(&mut p, &w, Action::Stage).unwrap();
-        // The download may be gone: arm needs only the record.
-        std::fs::remove_file(&w.root_path).unwrap();
-        std::fs::remove_file(&w.request.component_paths.staging_esp).unwrap();
-        std::fs::remove_file(&w.request.manifest_path).unwrap();
-        p.vars.remove("BootNext"); // firmware consumed it; installer cancelled
-        run(&mut p, &w, Action::Arm).unwrap();
-        assert_eq!(p.vars["BootNext"], vec![0x00, 0x01]);
-        p.vars.remove("BootNext");
-        let (_, root) = staged_guids(&p, &w.request.plan);
-        p.tamper(&root, 0, b"corrupt");
-        let err = run(&mut p, &w, Action::Arm).unwrap_err();
-        assert_eq!(err.code, codes::DIGEST_MISMATCH);
-        assert!(!p.vars.contains_key("BootNext"), "not armed onto bad bytes");
-    }
+        // Phase `remove_refuses_an_owned_entry_modified_by_someone_else`.
+        {
+            let mut p = linux_platform();
+            let w = world(&p);
+            run(&mut p, &w, Action::Stage).unwrap();
+            p.vars
+                .insert("Boot0100".into(), b"someone else's entry".to_vec());
+            let err = run(&mut p, &w, Action::Remove).unwrap_err();
+            assert_eq!(err.code, codes::BOOT_ENTRY_MODIFIED);
+            assert_eq!(p.vars["Boot0100"], b"someone else's entry");
+            let (esp, root) = staged_guids(&p, &w.request.plan);
+            assert!(
+                p.partition(&esp).is_ok() && p.partition(&root).is_ok(),
+                "stopped before partitions"
+            );
+        }
 
-    // Catches the recovery path the spec promises: after the staged installer
-    // booted once (growing its Btrfs root), arm must still re-arm by the
-    // root's bound fsid, and must not accept a root whose identity is gone.
-    #[test]
-    fn arm_accepts_a_booted_root_by_its_bound_fsid_only() {
-        let mut p = linux_platform();
-        let w = world(&p);
-        run(&mut p, &w, Action::Stage).unwrap();
-        p.vars.remove("BootNext");
-        let (_, root) = staged_guids(&p, &w.request.plan);
-        // The installer's first boot rewrote the filesystem: the download
-        // digest no longer matches, but the superblock names our fsid.
-        p.tamper(&root, 0, b"grown by the live installer");
-        let mut sb = vec![0_u8; 0x48];
-        sb[0x20..0x30].copy_from_slice(&FIXTURE_ROOT_FSID_BYTES);
-        sb[0x40..0x48].copy_from_slice(b"_BHRfS_M");
-        p.tamper(&root, 0x1_0000, &sb);
-        run(&mut p, &w, Action::Arm).unwrap();
-        assert_eq!(p.vars["BootNext"], vec![0x00, 0x01]);
-        p.vars.remove("BootNext");
-        // A different filesystem in the same partition is not ours.
-        sb[0x20] ^= 0xff;
-        p.tamper(&root, 0x1_0000, &sb);
-        let err = run(&mut p, &w, Action::Arm).unwrap_err();
-        assert_eq!(err.code, codes::DIGEST_MISMATCH);
-        assert!(!p.vars.contains_key("BootNext"));
-    }
-
-    #[test]
-    fn remove_restores_firmware_partitions_and_the_shrink() {
-        let mut p = windows_platform();
-        let original = p.clone();
-        let w = world(&p);
-        run(&mut p, &w, Action::Stage).unwrap();
-        run(&mut p, &w, Action::Remove).unwrap();
-        assert_eq!(p.system_disk().unwrap(), original.system_disk().unwrap());
-        assert_eq!(p.volume, original.volume);
-        assert_eq!(p.vars, original.vars, "firmware exactly as before");
-        let record = w.store.load(&w.request.operation_id).unwrap().unwrap();
-        assert_eq!(record.status(), RecordStatus::Removed);
-        assert!(super::super::record::pending_in(w.store.public_dir.as_ref().unwrap()).is_empty());
-        // Idempotent.
-        run(&mut p, &w, Action::Remove).unwrap();
-        // A removed operation cannot be staged again under the same ID.
-        assert_eq!(
-            run(&mut p, &w, Action::Stage).unwrap_err().code,
-            codes::REQUEST_INVALID
-        );
+        // Phase `remove_never_deletes_a_partition_that_changed_identity`.
+        {
+            let mut p = linux_platform();
+            let w = world(&p);
+            run(&mut p, &w, Action::Stage).unwrap();
+            let (_, root) = staged_guids(&p, &w.request.plan);
+            for part in &mut p.disk.partitions {
+                if part.guid == root {
+                    part.type_guid = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7".into();
+                }
+            }
+            let err = run(&mut p, &w, Action::Remove).unwrap_err();
+            assert_eq!(err.code, codes::STAGING_CHANGED);
+            assert!(p.partition(&root).is_ok());
+        }
     }
 
     #[test]
@@ -911,7 +1048,7 @@ mod tests {
         let mut reference = windows_platform();
         let w = world(&reference);
         run(&mut reference, &w, Action::Stage).unwrap();
-        for k in 1..=reference.mutations {
+        each_crash_point(reference.mutations, |k| {
             let mut p = windows_platform();
             let original = p.clone();
             let w = world(&p);
@@ -928,67 +1065,6 @@ mod tests {
             );
             assert_eq!(p.vars, original.vars, "crash {k}");
             assert_eq!(p.volume, original.volume, "crash {k}");
-        }
-    }
-
-    #[test]
-    fn remove_refuses_an_owned_entry_modified_by_someone_else() {
-        let mut p = linux_platform();
-        let w = world(&p);
-        run(&mut p, &w, Action::Stage).unwrap();
-        p.vars
-            .insert("Boot0100".into(), b"someone else's entry".to_vec());
-        let err = run(&mut p, &w, Action::Remove).unwrap_err();
-        assert_eq!(err.code, codes::BOOT_ENTRY_MODIFIED);
-        assert_eq!(p.vars["Boot0100"], b"someone else's entry");
-        let (esp, root) = staged_guids(&p, &w.request.plan);
-        assert!(
-            p.partition(&esp).is_ok() && p.partition(&root).is_ok(),
-            "stopped before partitions"
-        );
-    }
-
-    #[test]
-    fn remove_never_deletes_a_partition_that_changed_identity() {
-        let mut p = linux_platform();
-        let w = world(&p);
-        run(&mut p, &w, Action::Stage).unwrap();
-        let (_, root) = staged_guids(&p, &w.request.plan);
-        for part in &mut p.disk.partitions {
-            if part.guid == root {
-                part.type_guid = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7".into();
-            }
-        }
-        let err = run(&mut p, &w, Action::Remove).unwrap_err();
-        assert_eq!(err.code, codes::STAGING_CHANGED);
-        assert!(p.partition(&root).is_ok());
-    }
-
-    #[test]
-    fn staging_esp_without_placeholders_is_refused_before_mutation() {
-        let mut p = linux_platform();
-        let mut w = world(&p);
-        let mut b = fat::tests::Builder::new(false);
-        b.mkdir(None, None, b"EFI        ");
-        let image = b.image.clone();
-        std::fs::write(&w.request.component_paths.staging_esp, &image).unwrap();
-        let mut facts = w.authority.0.clone();
-        facts.esp.byte_size = image.len() as u64;
-        facts.esp.sha256 = sha(&image);
-        w.authority = TestAuthority(facts);
-        assert_eq!(
-            run(&mut p, &w, Action::Stage).unwrap_err().code,
-            codes::ESP_PLACEHOLDER
-        );
-        assert_eq!(p.mutations, 0);
-    }
-
-    #[test]
-    fn requirements_follow_bundle_minimums() {
-        let p = linux_platform();
-        let w = world(&p);
-        let r: Requirements = w.authority.0.requirements(40 * GIB);
-        assert_eq!(r.staging_esp_bytes, 2 * MIB);
-        assert_eq!(r.target_bytes, 40 * GIB);
+        });
     }
 }

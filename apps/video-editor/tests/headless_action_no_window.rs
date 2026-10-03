@@ -22,23 +22,19 @@ const APP_ID: &str = "so.tilo.video-editor";
 /// Restores the previous value on drop, so a test that fails does not leave
 /// the variable pointing at a deleted temp directory for whatever runs next.
 struct DataHome {
-    dir: std::path::PathBuf,
+    _dir: tempfile::TempDir,
     _env: tilo_test_env::ScopedEnv,
 }
 
 impl DataHome {
     fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!("tilo-ve-headless-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("create the private data home");
+        let dir = tempfile::tempdir().expect("create the private data home");
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_DATA_HOME", &dir);
-        Self { dir, _env: env }
-    }
-}
-
-impl Drop for DataHome {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.dir).ok();
+        env.set("XDG_DATA_HOME", dir.path());
+        Self {
+            _dir: dir,
+            _env: env,
+        }
     }
 }
 
@@ -112,10 +108,17 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
             "the resource tree published no actions at all without a window — \
              building it must not depend on layout",
         );
+        // Split is a playhead-relative door (`video.playhead-clip:…`), not a
+        // static clip property — the seeded playhead sits mid-clip so the
+        // catalogue must offer it there for a windowless agent to find.
         let address = catalogue
             .iter()
             .map(|d| d.address.clone())
-            .find(|a| a.resource == format!("video.clip:{clip_id}") && a.action == "split")
+            .find(|a| {
+                (a.resource == format!("video.clip:{clip_id}")
+                    || a.resource == format!("video.playhead-clip:{clip_id}"))
+                    && a.action == "split"
+            })
             .unwrap_or_else(|| {
                 panic!(
                     "no `split` action offered on the seeded clip; the tree offered: {:?}",
@@ -135,7 +138,7 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
             &resources,
             &address,
             None,
-            b"headless-driver",
+            door::InvocationProvenance::caller(b"headless-driver"),
             &registry,
             &mut LocalTransport::new(),
         )
@@ -162,7 +165,7 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
                     &resources,
                     &bogus,
                     None,
-                    b"headless-driver",
+                    door::InvocationProvenance::caller(b"headless-driver"),
                     &registry,
                     &mut LocalTransport::new(),
                 ),

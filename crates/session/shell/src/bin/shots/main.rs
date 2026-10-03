@@ -550,6 +550,7 @@ fn run_capture_one(args: &Args, viewport: (u32, u32), out: &std::path::Path) -> 
                 args.fps,
                 args.step_duration,
             )?;
+            drop(driver);
             if summary.first_unit.is_none() {
                 return Err(format!("recording {} contains no frames", out.display()));
             }
@@ -672,28 +673,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sweep_flag_parses_multiple_resolutions() {
-        let res = parse_sweep_list("720x480,1366x768").expect("parse ok");
-        assert_eq!(res, vec![(720, 480), (1366, 768)]);
-        // Case-insensitive separator + whitespace tolerance.
-        let res = parse_sweep_list(" 800X600 , 1280x720 ").expect("parse ok");
-        assert_eq!(res, vec![(800, 600), (1280, 720)]);
-    }
-
-    #[test]
-    fn sweep_flag_rejects_bad_entries() {
-        assert!(parse_sweep_list("garbage").is_err());
-        assert!(parse_sweep_list("").is_err());
-        assert!(parse_sweep_list("0x600").is_err());
-        assert!(parse_sweep_list("800x0").is_err());
-        assert!(parse_sweep_list("800,600").is_err());
-    }
-
-    #[test]
-    fn default_sweep_covers_expected_resolutions() {
-        // Pinned so a future edit that drops 800x600 (the worst-case
-        // narrow viewport regression catcher) is caught by CI.
-        assert!(DEFAULT_SWEEP.contains(&(800, 600)));
-        assert!(DEFAULT_SWEEP.contains(&(1920, 1080)));
+    fn resolution_sweep_flag_parses_rejects_and_defaults() {
+        // Phase `sweep_flag_parses_multiple_resolutions`.
+        {
+            let res = parse_sweep_list("720x480,1366x768").expect("parse ok");
+            assert_eq!(res, vec![(720, 480), (1366, 768)]);
+            // Case-insensitive separator + whitespace tolerance.
+            let res = parse_sweep_list(" 800X600 , 1280x720 ").expect("parse ok");
+            assert_eq!(res, vec![(800, 600), (1280, 720)]);
+        }
+        // Phase `sweep_flag_rejects_bad_entries`.
+        {
+            assert!(parse_sweep_list("garbage").is_err());
+            assert!(parse_sweep_list("").is_err());
+            assert!(parse_sweep_list("0x600").is_err());
+            assert!(parse_sweep_list("800x0").is_err());
+            assert!(parse_sweep_list("800,600").is_err());
+        }
+        // Phase `default_sweep_covers_expected_resolutions`.
+        {
+            // Pinned so a future edit that drops 800x600 (the worst-case
+            // narrow viewport regression catcher) is caught by CI.
+            assert!(DEFAULT_SWEEP.contains(&(800, 600)));
+            assert!(DEFAULT_SWEEP.contains(&(1920, 1080)));
+        }
     }
 }

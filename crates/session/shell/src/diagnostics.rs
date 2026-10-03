@@ -345,162 +345,165 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fresh_metrics_snapshot_is_zero() {
-        let m = PeerSurfaceMetrics::new();
-        let s = m.snapshot();
-        assert_eq!(s, PeerSurfaceSnapshot::default());
-    }
-
-    #[test]
-    fn record_received_increments_and_stores_latency() {
-        let m = PeerSurfaceMetrics::with_capacity(4);
-        m.record_received(10_000_000);
-        m.record_received(20_000_000);
-        let s = m.snapshot();
-        assert_eq!(s.frames_received, 2);
-        assert_eq!(s.frames_dropped, 0);
-        assert_eq!(s.latency_samples, 2);
-        assert_eq!(s.latency_ns_mean, 15_000_000);
-        assert_eq!(s.latency_ns_max, 20_000_000);
-    }
-
-    #[test]
-    fn record_dropped_does_not_touch_latency() {
-        let m = PeerSurfaceMetrics::new();
-        m.record_received(1_000);
-        m.record_dropped();
-        m.record_dropped();
-        let s = m.snapshot();
-        assert_eq!(s.frames_received, 1);
-        assert_eq!(s.frames_dropped, 2);
-        assert_eq!(s.latency_samples, 1);
-        assert_eq!(s.latency_ns_mean, 1_000);
-    }
-
-    #[test]
-    fn latency_ring_wraps_at_capacity() {
-        // Capacity 3 with 5 pushes: samples 3, 4, 5 remain (drop 1 + 2).
-        let m = PeerSurfaceMetrics::with_capacity(3);
-        for i in 1..=5u64 {
-            m.record_received(i * 1_000_000);
+    fn metrics_record_arrivals_drops_and_a_wrapping_latency_ring() {
+        // Phase `fresh_metrics_snapshot_is_zero`.
+        {
+            let m = PeerSurfaceMetrics::new();
+            let s = m.snapshot();
+            assert_eq!(s, PeerSurfaceSnapshot::default());
         }
-        let s = m.snapshot();
-        assert_eq!(s.frames_received, 5);
-        assert_eq!(s.latency_samples, 3);
-        // (3 + 4 + 5) / 3 = 4 → 4_000_000 ns.
-        assert_eq!(s.latency_ns_mean, 4_000_000);
-        assert_eq!(s.latency_ns_max, 5_000_000);
-    }
-
-    #[test]
-    fn clone_shares_inner_state() {
-        let m1 = PeerSurfaceMetrics::new();
-        let m2 = m1.clone();
-        m1.record_received(500);
-        m2.record_dropped();
-        let s = m1.snapshot();
-        assert_eq!(s.frames_received, 1);
-        assert_eq!(s.frames_dropped, 1);
-        // m2's view sees the same values.
-        assert_eq!(m2.snapshot(), s);
-    }
-
-    #[test]
-    fn encode_wallclock_p50_p99_populate() {
-        let m = PeerSurfaceMetrics::new();
-        // 10 samples: 1ms .. 10ms.
-        for i in 1..=10u64 {
-            m.record_encode_wallclock(i * 1_000_000);
+        // Phase `record_received_increments_and_stores_latency`.
+        {
+            let m = PeerSurfaceMetrics::with_capacity(4);
+            m.record_received(10_000_000);
+            m.record_received(20_000_000);
+            let s = m.snapshot();
+            assert_eq!(s.frames_received, 2);
+            assert_eq!(s.frames_dropped, 0);
+            assert_eq!(s.latency_samples, 2);
+            assert_eq!(s.latency_ns_mean, 15_000_000);
+            assert_eq!(s.latency_ns_max, 20_000_000);
         }
-        let s = m.snapshot();
-        // Median of 10 sorted [1..10]ms: p50 index 5 (0-indexed) → 6ms.
-        // p99 = ceil(0.99 * 10) = 9 → 10ms.
-        assert_eq!(s.encode_wallclock_ms_p50, 6);
-        assert_eq!(s.encode_wallclock_ms_p99, 10);
+        // Phase `record_dropped_does_not_touch_latency`.
+        {
+            let m = PeerSurfaceMetrics::new();
+            m.record_received(1_000);
+            m.record_dropped();
+            m.record_dropped();
+            let s = m.snapshot();
+            assert_eq!(s.frames_received, 1);
+            assert_eq!(s.frames_dropped, 2);
+            assert_eq!(s.latency_samples, 1);
+            assert_eq!(s.latency_ns_mean, 1_000);
+        }
+        // Phase `latency_ring_wraps_at_capacity`.
+        {
+            // Capacity 3 with 5 pushes: samples 3, 4, 5 remain (drop 1 + 2).
+            let m = PeerSurfaceMetrics::with_capacity(3);
+            for i in 1..=5u64 {
+                m.record_received(i * 1_000_000);
+            }
+            let s = m.snapshot();
+            assert_eq!(s.frames_received, 5);
+            assert_eq!(s.latency_samples, 3);
+            // (3 + 4 + 5) / 3 = 4 → 4_000_000 ns.
+            assert_eq!(s.latency_ns_mean, 4_000_000);
+            assert_eq!(s.latency_ns_max, 5_000_000);
+        }
+        // Phase `clone_shares_inner_state`.
+        {
+            let m1 = PeerSurfaceMetrics::new();
+            let m2 = m1.clone();
+            m1.record_received(500);
+            m2.record_dropped();
+            let s = m1.snapshot();
+            assert_eq!(s.frames_received, 1);
+            assert_eq!(s.frames_dropped, 1);
+            // m2's view sees the same values.
+            assert_eq!(m2.snapshot(), s);
+        }
+        // Phase `keyframe_counter_increments`.
+        {
+            let m = PeerSurfaceMetrics::new();
+            m.record_keyframe();
+            m.record_keyframe();
+            m.record_keyframe();
+            let s = m.snapshot();
+            assert_eq!(s.keyframes, 3);
+        }
+        // Phase `chosen_encoder_and_capture_path_round_trip`.
+        {
+            let m = PeerSurfaceMetrics::new();
+            m.set_chosen_encoder(EncoderKind::VaApi);
+            m.set_capture_path(CapturePath::DmabufDirect);
+            let s = m.snapshot();
+            assert_eq!(s.chosen_encoder, EncoderKind::VaApi);
+            assert_eq!(s.capture_path, CapturePath::DmabufDirect);
+        }
     }
 
     #[test]
-    fn chosen_encoder_and_capture_path_round_trip() {
-        let m = PeerSurfaceMetrics::new();
-        m.set_chosen_encoder(EncoderKind::VaApi);
-        m.set_capture_path(CapturePath::DmabufDirect);
-        let s = m.snapshot();
-        assert_eq!(s.chosen_encoder, EncoderKind::VaApi);
-        assert_eq!(s.capture_path, CapturePath::DmabufDirect);
+    fn encode_and_bitrate_statistics_are_smoothed_percentiles() {
+        // Phase `encode_wallclock_p50_p99_populate`.
+        {
+            let m = PeerSurfaceMetrics::new();
+            // 10 samples: 1ms .. 10ms.
+            for i in 1..=10u64 {
+                m.record_encode_wallclock(i * 1_000_000);
+            }
+            let s = m.snapshot();
+            // Median of 10 sorted [1..10]ms: p50 index 5 (0-indexed) → 6ms.
+            // p99 = ceil(0.99 * 10) = 9 → 10ms.
+            assert_eq!(s.encode_wallclock_ms_p50, 6);
+            assert_eq!(s.encode_wallclock_ms_p99, 10);
+        }
+        // Phase `bitrate_ewma_smooths_samples`.
+        {
+            let m = PeerSurfaceMetrics::new();
+            m.record_bitrate(1_000_000);
+            m.record_bitrate(1_000_000);
+            m.record_bitrate(1_000_000);
+            let s = m.snapshot();
+            // alpha=0.2 EWMA reaches ~488_000 after 3 samples of 1M (200k → 360k → 488k).
+            assert!(
+                s.bitrate_bytes_per_sec_ewma > 400_000 && s.bitrate_bytes_per_sec_ewma < 600_000,
+                "EWMA converged to unexpected value: {}",
+                s.bitrate_bytes_per_sec_ewma
+            );
+        }
+        // Phase `percentile_helper_handles_edge_cases`.
+        {
+            assert_eq!(percentile_50_99(&[]), (0, 0));
+            assert_eq!(percentile_50_99(&[42]), (42, 42));
+            assert_eq!(percentile_50_99(&[1, 2, 3, 4, 5]), (3, 5));
+        }
     }
 
     #[test]
-    fn keyframe_counter_increments() {
-        let m = PeerSurfaceMetrics::new();
-        m.record_keyframe();
-        m.record_keyframe();
-        m.record_keyframe();
-        let s = m.snapshot();
-        assert_eq!(s.keyframes, 3);
-    }
-
-    #[test]
-    fn bitrate_ewma_smooths_samples() {
-        let m = PeerSurfaceMetrics::new();
-        m.record_bitrate(1_000_000);
-        m.record_bitrate(1_000_000);
-        m.record_bitrate(1_000_000);
-        let s = m.snapshot();
-        // alpha=0.2 EWMA reaches ~488_000 after 3 samples of 1M (200k → 360k → 488k).
-        assert!(
-            s.bitrate_bytes_per_sec_ewma > 400_000 && s.bitrate_bytes_per_sec_ewma < 600_000,
-            "EWMA converged to unexpected value: {}",
-            s.bitrate_bytes_per_sec_ewma
-        );
-    }
-
-    #[test]
-    fn percentile_helper_handles_edge_cases() {
-        assert_eq!(percentile_50_99(&[]), (0, 0));
-        assert_eq!(percentile_50_99(&[42]), (42, 42));
-        assert_eq!(percentile_50_99(&[1, 2, 3, 4, 5]), (3, 5));
-    }
-
-    #[test]
-    fn no_clock_offset_returns_none_for_latency() {
-        let m = PeerSurfaceMetrics::new();
-        assert_eq!(m.end_to_end_latency_ns(1_000, 5_000), None);
-        assert_eq!(m.end_to_end_latency_ms(1_000, 5_000), None);
-        assert_eq!(m.clock_offset_ns(), None);
-    }
-
-    #[test]
-    fn clock_offset_zero_ts_clears() {
-        let m = PeerSurfaceMetrics::new();
-        // First, learn a real offset.
-        m.set_clock_offset(1_000, 5_000);
-        assert_eq!(m.clock_offset_ns(), Some(4_000));
-        // Then a "no field on the wire" event — offset is cleared.
-        m.set_clock_offset(0, 5_000);
-        assert_eq!(m.clock_offset_ns(), None);
-    }
-
-    #[test]
-    fn end_to_end_latency_uses_learned_offset() {
-        let m = PeerSurfaceMetrics::new();
-        // Sender 1_000_000 ns ahead of receiver at handshake (sender clock 100_000_000, receiver 101_000_000 → offset = +1_000_000).
-        m.set_clock_offset(100_000_000, 101_000_000);
-        // wire ts=200_000_000, receiver now=201_500_000 → capture_on_receiver =
-        // 200_000_000 + 1_000_000 = 201_000_000; latency = 500_000 ns.
-        assert_eq!(
-            m.end_to_end_latency_ns(200_000_000, 201_500_000),
-            Some(500_000)
-        );
-        // Rounded to ms: 500 000 ns rounds to 1 ms via the +500 000 offset.
-        assert_eq!(m.end_to_end_latency_ms(200_000_000, 201_500_000), Some(1));
-    }
-
-    #[test]
-    fn end_to_end_latency_none_when_negative() {
-        let m = PeerSurfaceMetrics::new();
-        m.set_clock_offset(1_000_000, 500_000);
-        // Frame whose "capture on receiver clock" is in the future (would-be
-        // negative latency) — return None instead of a wrong number.
-        assert_eq!(m.end_to_end_latency_ns(2_000_000, 500_000), None);
+    #[allow(
+        clippy::items_after_statements,
+        reason = "a phase with an early return keeps its original body as a nested fn"
+    )]
+    fn end_to_end_latency_uses_only_a_learned_nonnegative_offset() {
+        // Phase `no_clock_offset_returns_none_for_latency`.
+        {
+            let m = PeerSurfaceMetrics::new();
+            assert_eq!(m.end_to_end_latency_ns(1_000, 5_000), None);
+            assert_eq!(m.end_to_end_latency_ms(1_000, 5_000), None);
+            assert_eq!(m.clock_offset_ns(), None);
+        }
+        // Phase `clock_offset_zero_ts_clears`.
+        {
+            let m = PeerSurfaceMetrics::new();
+            // First, learn a real offset.
+            m.set_clock_offset(1_000, 5_000);
+            assert_eq!(m.clock_offset_ns(), Some(4_000));
+            // Then a "no field on the wire" event — offset is cleared.
+            m.set_clock_offset(0, 5_000);
+            assert_eq!(m.clock_offset_ns(), None);
+        }
+        // Phase `end_to_end_latency_uses_learned_offset`.
+        {
+            let m = PeerSurfaceMetrics::new();
+            // Sender 1_000_000 ns ahead of receiver at handshake (sender clock 100_000_000, receiver 101_000_000 → offset = +1_000_000).
+            m.set_clock_offset(100_000_000, 101_000_000);
+            // wire ts=200_000_000, receiver now=201_500_000 → capture_on_receiver =
+            // 200_000_000 + 1_000_000 = 201_000_000; latency = 500_000 ns.
+            assert_eq!(
+                m.end_to_end_latency_ns(200_000_000, 201_500_000),
+                Some(500_000)
+            );
+            // Rounded to ms: 500 000 ns rounds to 1 ms via the +500 000 offset.
+            assert_eq!(m.end_to_end_latency_ms(200_000_000, 201_500_000), Some(1));
+        }
+        // Phase `end_to_end_latency_none_when_negative`.
+        fn end_to_end_latency_none_when_negative() {
+            let m = PeerSurfaceMetrics::new();
+            m.set_clock_offset(1_000_000, 500_000);
+            // Frame whose "capture on receiver clock" is in the future (would-be
+            // negative latency) — return None instead of a wrong number.
+            assert_eq!(m.end_to_end_latency_ns(2_000_000, 500_000), None);
+        }
+        end_to_end_latency_none_when_negative();
     }
 }

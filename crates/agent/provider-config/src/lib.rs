@@ -183,7 +183,72 @@ pub struct ProviderProfile {
     /// by `None`, so callers prompt instead of silently choosing a model.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
+    /// How an OpenAI-compatible request names its output-token limit. The
+    /// model gateway owns the outbound request and renames whichever limit the
+    /// caller sent to this one. `None` sends the caller's name unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_limit_param: Option<TokenLimitParam>,
+    /// The reasoning setting the gateway sends with every OpenAI-compatible
+    /// request of this profile, whatever the caller asked for. `None` sends
+    /// nothing (the provider's default).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningSetting>,
+    /// Top-level request fields this provider rejects, removed by the gateway
+    /// after it has shaped the request (e.g. `stream_options`,
+    /// `parallel_tool_calls`). Each is a plain JSON key; `model`,
+    /// `messages`, `tools` and `tool_choice` cannot be listed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub omit_params: Vec<String>,
 }
+
+/// Request fields a profile may not strip: without them there is no request.
+pub const REQUIRED_PARAMS: &[&str] = &["model", "messages", "tools", "tool_choice"];
+
+/// The output-token-limit field of an OpenAI-compatible provider.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TokenLimitParam {
+    #[serde(rename = "max_tokens")]
+    MaxTokens,
+    #[serde(rename = "max_completion_tokens")]
+    MaxCompletionTokens,
+}
+
+impl TokenLimitParam {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::MaxTokens => "max_tokens",
+            Self::MaxCompletionTokens => "max_completion_tokens",
+        }
+    }
+}
+
+/// Where a provider takes its reasoning effort.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReasoningParam {
+    /// `OpenAI` Chat Completions: top-level `"reasoning_effort": "<effort>"`.
+    #[serde(rename = "reasoning_effort")]
+    ReasoningEffort,
+    /// `OpenRouter`'s unified object: `"reasoning": {"effort": "<effort>"}`.
+    #[serde(rename = "reasoning.effort")]
+    ReasoningObject,
+    /// Send no reasoning field at all, and strip any the caller sent.
+    #[serde(rename = "none")]
+    Omit,
+}
+
+/// A profile's reasoning setting, applied by the gateway.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReasoningSetting {
+    pub param: ReasoningParam,
+    /// One of [`REASONING_EFFORTS`]; unused when `param` is `none`. Not every
+    /// model accepts every value (GPT-5.4 rejects `minimal`, gpt-oss cannot
+    /// disable reasoning so its lowest is `low`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub effort: String,
+}
+
+/// The reasoning efforts a profile may name.
+pub const REASONING_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh"];
 
 impl Default for ProviderProfile {
     fn default() -> Self {
@@ -197,6 +262,9 @@ impl Default for ProviderProfile {
             enabled: true,
             models: Vec::new(),
             default_model: None,
+            token_limit_param: None,
+            reasoning: None,
+            omit_params: Vec::new(),
         }
     }
 }
@@ -225,6 +293,9 @@ impl ProviderProfile {
             enabled: true,
             models: Vec::new(),
             default_model,
+            token_limit_param: None,
+            reasoning: None,
+            omit_params: Vec::new(),
         }
     }
 
@@ -244,6 +315,9 @@ impl ProviderProfile {
             enabled: true,
             models: Vec::new(),
             default_model: None,
+            token_limit_param: None,
+            reasoning: None,
+            omit_params: Vec::new(),
         }
     }
 
@@ -369,6 +443,28 @@ impl ProviderConfig {
                     "Every model needs a unique id.",
                 ));
             }
+            if profile.reasoning.as_ref().is_some_and(|reasoning| {
+                reasoning.param != ReasoningParam::Omit
+                    && !REASONING_EFFORTS.contains(&reasoning.effort.as_str())
+            }) {
+                issues.push(ProfileIssue::new(
+                    &profile.id,
+                    "Reasoning effort must be a supported value.",
+                ));
+            }
+            if profile.omit_params.iter().any(|param| {
+                param.is_empty()
+                    || param.len() > 64
+                    || !param.bytes().all(|byte| {
+                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'
+                    })
+                    || REQUIRED_PARAMS.contains(&param.as_str())
+            }) {
+                issues.push(ProfileIssue::new(
+                    &profile.id,
+                    "Omitted request fields must be plain optional field names.",
+                ));
+            }
             if profile
                 .default_model
                 .as_ref()
@@ -473,39 +569,136 @@ mod tests {
     use super::*;
 
     #[test]
-    fn local_vllm_is_openai_compatible_and_plainly_local() {
-        let profile = ProviderProfile::local_vllm();
-        assert_eq!(profile.protocol, ProviderProtocol::OpenAiCompatible);
-        assert_eq!(profile.location, EndpointLocation::ThisDevice);
-        assert!(profile.endpoint.starts_with("http://127.0.0.1"));
-        assert!(profile.is_local_vllm_candidate());
-        assert!(profile.credential.is_none());
-    }
-
-    #[test]
-    fn hosted_profiles_hold_only_a_vault_reference() {
-        let profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
-        let json = serde_json::to_string(&profile).unwrap();
-        assert!(json.contains("tilo.secret-service"));
-        assert!(json.contains("agent-provider/"));
-        assert!(!json.contains("sk-ant-"));
-        assert!(!json.contains("api_key\":\""));
-    }
-
-    #[test]
-    fn hosted_http_endpoint_is_rejected_but_loopback_http_is_not() {
-        let mut profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
-        profile.endpoint = "http://api.example.test".into();
+    fn request_shape_is_profile_configuration_not_host_inference() {
+        let mut profile = ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
+        profile.label = "OpenRouter".into();
+        profile.endpoint = "https://openrouter.ai/api/v1".into();
+        profile.models = vec![ModelDescriptor::new("openai/gpt-oss-safeguard-20b")];
+        profile.token_limit_param = Some(TokenLimitParam::MaxTokens);
+        profile.reasoning = Some(ReasoningSetting {
+            param: ReasoningParam::ReasoningObject,
+            effort: "low".into(),
+        });
         let config = ProviderConfig {
-            profiles: vec![profile],
-            ..ProviderConfig::default()
+            profiles: vec![profile.clone()],
+            default_profile: None,
+        };
+        assert!(config.validation_errors().is_empty());
+        let encoded = serde_json::to_value(&config).unwrap();
+        assert_eq!(encoded["profiles"][0]["token_limit_param"], "max_tokens");
+        assert_eq!(
+            encoded["profiles"][0]["reasoning"],
+            serde_json::json!({"param": "reasoning.effort", "effort": "low"})
+        );
+        let decoded: ProviderConfig = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, config);
+
+        let mut invalid = profile.clone();
+        invalid.reasoning = Some(ReasoningSetting {
+            param: ReasoningParam::ReasoningEffort,
+            effort: "maximal".into(),
+        });
+        let config = ProviderConfig {
+            profiles: vec![invalid],
+            default_profile: None,
+        };
+        assert_eq!(config.validation_errors().len(), 1);
+        let mut omitted = profile.clone();
+        omitted.reasoning = Some(ReasoningSetting {
+            param: ReasoningParam::Omit,
+            effort: String::new(),
+        });
+        let config = ProviderConfig {
+            profiles: vec![omitted],
+            default_profile: None,
+        };
+        assert!(config.validation_errors().is_empty());
+
+        for bad in ["messages", "Stream", ""] {
+            let mut invalid = profile.clone();
+            invalid.omit_params = vec![bad.into()];
+            let config = ProviderConfig {
+                profiles: vec![invalid],
+                default_profile: None,
+            };
+            assert_eq!(config.validation_errors().len(), 1, "{bad:?}");
+        }
+        let mut cerebras = profile.clone();
+        cerebras.omit_params = vec!["stream_options".into(), "parallel_tool_calls".into()];
+        let config = ProviderConfig {
+            profiles: vec![cerebras],
+            default_profile: None,
+        };
+        assert!(config.validation_errors().is_empty());
+
+        // Hosted endpoints still require TLS, whatever the host.
+        let mut plain = profile;
+        plain.endpoint = "http://openrouter.ai/api/v1".into();
+        let config = ProviderConfig {
+            profiles: vec![plain],
+            default_profile: None,
         };
         assert!(!config.validation_errors().is_empty());
-        let local = ProviderConfig {
-            profiles: vec![ProviderProfile::local_vllm()],
-            ..ProviderConfig::default()
-        };
-        assert!(local.validation_errors().is_empty());
+        // Absent fields keep older settings documents byte-compatible.
+        let minimal = serde_json::to_value(ProviderProfile::local_vllm()).unwrap();
+        assert!(minimal.get("reasoning").is_none() && minimal.get("token_limit_param").is_none());
+    }
+
+    /// Local vLLM is OpenAI-compatible and plainly local, hosted profiles hold only a vault
+    /// reference, a hosted HTTP endpoint is rejected but loopback HTTP is not, and a bad default is
+    /// not active.
+    #[test]
+    fn provider_profiles_are_plainly_local_or_vault_backed_https() {
+        // Phase: local_vllm_is_openai_compatible_and_plainly_local.
+        {
+            let profile = ProviderProfile::local_vllm();
+            assert_eq!(profile.protocol, ProviderProtocol::OpenAiCompatible);
+            assert_eq!(profile.location, EndpointLocation::ThisDevice);
+            assert!(profile.endpoint.starts_with("http://127.0.0.1"));
+            assert!(profile.is_local_vllm_candidate());
+            assert!(profile.credential.is_none());
+        }
+
+        // Phase: hosted_profiles_hold_only_a_vault_reference.
+        {
+            let profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+            let json = serde_json::to_string(&profile).unwrap();
+            assert!(json.contains("tilo.secret-service"));
+            assert!(json.contains("agent-provider/"));
+            assert!(!json.contains("sk-ant-"));
+            assert!(!json.contains("api_key\":\""));
+        }
+
+        // Phase: hosted_http_endpoint_is_rejected_but_loopback_http_is_not.
+        {
+            let mut profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+            profile.endpoint = "http://api.example.test".into();
+            let config = ProviderConfig {
+                profiles: vec![profile],
+                ..ProviderConfig::default()
+            };
+            assert!(!config.validation_errors().is_empty());
+            let local = ProviderConfig {
+                profiles: vec![ProviderProfile::local_vllm()],
+                ..ProviderConfig::default()
+            };
+            assert!(local.validation_errors().is_empty());
+        }
+
+        // Phase: bad_default_is_not_active.
+        {
+            let config = ProviderConfig {
+                default_profile: Some("gone".into()),
+                profiles: vec![ProviderProfile::local_vllm()],
+            };
+            assert!(config.active_profile().is_none());
+            assert!(
+                config
+                    .validation_errors()
+                    .iter()
+                    .any(|issue| issue.profile_id == "default")
+            );
+        }
     }
 
     #[test]
@@ -535,20 +728,5 @@ mod tests {
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(body.contains("appearance"));
         assert!(!body.contains("sk-live-secret"));
-    }
-
-    #[test]
-    fn bad_default_is_not_active() {
-        let config = ProviderConfig {
-            default_profile: Some("gone".into()),
-            profiles: vec![ProviderProfile::local_vllm()],
-        };
-        assert!(config.active_profile().is_none());
-        assert!(
-            config
-                .validation_errors()
-                .iter()
-                .any(|issue| issue.profile_id == "default")
-        );
     }
 }

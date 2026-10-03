@@ -86,6 +86,17 @@ pub struct VmEntry {
     /// Windows WHPX: omit the display and USB devices for SSH-only VMs.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub headless: bool,
+    /// libvirt: virtio-gpu outputs (default one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heads: Option<u8>,
+    /// libvirt: virgl 3D acceleration, rendered on the host GPU through an
+    /// `egl-headless` display beside the SPICE console.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gl: bool,
+    /// libvirt: the first output's preferred mode, `WIDTHxHEIGHT`; the others
+    /// offer the standard modes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<String>,
     /// Host port forwarded to the guest's SSH port (libvirt, qemu).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh_port: Option<u16>,
@@ -165,14 +176,22 @@ impl Registry {
             path: path.display().to_string(),
             detail: e.to_string(),
         })?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(CliError::io(format!("create {}", parent.display())))?;
+        let context = format!("write {}", path.display());
+        #[cfg(windows)]
+        {
+            // This host's NTFS rejects the native POSIX rename with ERROR_INVALID_PARAMETER.
+            // The VM registry is recoverable development state; a sibling-file
+            // rename still avoids exposing a partially written TOML document.
+            std::fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))
+                .map_err(CliError::io(context.clone()))?;
+            tilo_files::native::atomic::write_regenerable(path, text.as_bytes())
+                .map_err(CliError::io(context))
         }
-        let temporary = path.with_extension("toml.tmp");
-        std::fs::write(&temporary, text)
-            .map_err(CliError::io(format!("write {}", temporary.display())))?;
-        std::fs::rename(&temporary, path).map_err(CliError::io(format!("write {}", path.display())))
+        #[cfg(not(windows))]
+        {
+            tilo_files::native::atomic::write_creating_parent(path, text.as_bytes())
+                .map_err(CliError::io(context))
+        }
     }
 
     pub fn min_free_bytes(&self) -> u64 {
@@ -286,65 +305,70 @@ mod tests {
         .unwrap()
     }
 
+    /// Env beats the worktree file beats the default; the worktree file accepts TOML or a bare name and can
+    /// name the default slot, which vm use keeps; the registry round-trips and has defaults.
     #[test]
-    fn env_beats_worktree_beats_default() {
-        let reg = registry();
-        let path = Path::new("/cfg/vms.toml");
-        let wt = Some((Path::new("/wt/.tilo-vm"), "vm = \"mine\"\n"));
-        assert_eq!(
-            resolve(Some("env-vm"), wt, &reg, path).unwrap(),
-            ("env-vm".into(), Source::Env)
-        );
-        let (name, source) = resolve(None, wt, &reg, path).unwrap();
-        assert_eq!(name, "mine");
-        assert!(source.describe().contains("/wt/.tilo-vm"));
-        let (name, source) = resolve(Some("  "), None, &reg, path).unwrap();
-        assert_eq!(name, "shared");
-        assert_eq!(
-            source,
-            Source::RegistryDefault {
-                file: "/cfg/vms.toml".into()
-            }
-        );
-        assert!(resolve(None, None, &Registry::default(), path).is_none());
-    }
+    fn configuration_layers_env_worktree_file_and_registry() {
+        // Phase: env_beats_worktree_beats_default.
+        {
+            let reg = registry();
+            let path = Path::new("/cfg/vms.toml");
+            let wt = Some((Path::new("/wt/.tilo-vm"), "vm = \"mine\"\n"));
+            assert_eq!(
+                resolve(Some("env-vm"), wt, &reg, path).unwrap(),
+                ("env-vm".into(), Source::Env)
+            );
+            let (name, source) = resolve(None, wt, &reg, path).unwrap();
+            assert_eq!(name, "mine");
+            assert!(source.describe().contains("/wt/.tilo-vm"));
+            let (name, source) = resolve(Some("  "), None, &reg, path).unwrap();
+            assert_eq!(name, "shared");
+            assert_eq!(
+                source,
+                Source::RegistryDefault {
+                    file: "/cfg/vms.toml".into()
+                }
+            );
+            assert!(resolve(None, None, &Registry::default(), path).is_none());
+        }
 
-    #[test]
-    fn worktree_file_accepts_toml_or_a_bare_name() {
-        assert_eq!(parse_worktree_file("vm = \"dev\"").as_deref(), Some("dev"));
-        assert_eq!(parse_worktree_file("dev\n").as_deref(), Some("dev"));
-        assert_eq!(parse_worktree_file("").as_deref(), None);
-        assert_eq!(parse_worktree_file("other = 1").as_deref(), None);
-    }
+        // Phase: worktree_file_accepts_toml_or_a_bare_name.
+        {
+            assert_eq!(parse_worktree_file("vm = \"dev\"").as_deref(), Some("dev"));
+            assert_eq!(parse_worktree_file("dev\n").as_deref(), Some("dev"));
+            assert_eq!(parse_worktree_file("").as_deref(), None);
+            assert_eq!(parse_worktree_file("other = 1").as_deref(), None);
+        }
 
-    #[test]
-    fn worktree_file_can_name_the_default_slot_and_vm_use_keeps_it() {
-        let text = "vm = \"dev\"\nslot = \"ux1\"\n";
-        assert_eq!(parse_worktree_slot(text).as_deref(), Some("ux1"));
-        assert_eq!(parse_worktree_slot("vm = \"dev\"").as_deref(), None);
-        assert_eq!(parse_worktree_slot("dev").as_deref(), None);
-        let rewritten = with_worktree_vm(text, "shared");
-        assert_eq!(parse_worktree_file(&rewritten).as_deref(), Some("shared"));
-        assert_eq!(parse_worktree_slot(&rewritten).as_deref(), Some("ux1"));
-        // A bare name is replaced by the table form.
-        let bare = with_worktree_vm("dev\n", "shared");
-        assert_eq!(parse_worktree_file(&bare).as_deref(), Some("shared"));
-    }
+        // Phase: worktree_file_can_name_the_default_slot_and_vm_use_keeps_it.
+        {
+            let text = "vm = \"dev\"\nslot = \"ux1\"\n";
+            assert_eq!(parse_worktree_slot(text).as_deref(), Some("ux1"));
+            assert_eq!(parse_worktree_slot("vm = \"dev\"").as_deref(), None);
+            assert_eq!(parse_worktree_slot("dev").as_deref(), None);
+            let rewritten = with_worktree_vm(text, "shared");
+            assert_eq!(parse_worktree_file(&rewritten).as_deref(), Some("shared"));
+            assert_eq!(parse_worktree_slot(&rewritten).as_deref(), Some("ux1"));
+            // A bare name is replaced by the table form.
+            let bare = with_worktree_vm("dev\n", "shared");
+            assert_eq!(parse_worktree_file(&bare).as_deref(), Some("shared"));
+        }
 
-    #[test]
-    fn registry_round_trips_and_has_defaults() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("sub/vms.toml");
-        assert_eq!(Registry::load(&path).unwrap(), Registry::default());
-        let reg = registry();
-        reg.save(&path).unwrap();
-        assert_eq!(Registry::load(&path).unwrap(), reg);
-        assert_eq!(reg.keep_generations(), DEFAULT_KEEP_GENERATIONS);
-        assert_eq!(reg.min_free_bytes(), 5 << 30);
-        std::fs::write(&path, "vms = 3").unwrap();
-        assert!(matches!(
-            Registry::load(&path),
-            Err(CliError::Config { .. })
-        ));
+        // Phase: registry_round_trips_and_has_defaults.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("sub/vms.toml");
+            assert_eq!(Registry::load(&path).unwrap(), Registry::default());
+            let reg = registry();
+            reg.save(&path).unwrap();
+            assert_eq!(Registry::load(&path).unwrap(), reg);
+            assert_eq!(reg.keep_generations(), DEFAULT_KEEP_GENERATIONS);
+            assert_eq!(reg.min_free_bytes(), 5 << 30);
+            std::fs::write(&path, "vms = 3").unwrap();
+            assert!(matches!(
+                Registry::load(&path),
+                Err(CliError::Config { .. })
+            ));
+        }
     }
 }

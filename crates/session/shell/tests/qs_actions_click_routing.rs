@@ -224,14 +224,16 @@ fn click_at(
     };
     host.handle_event(
         &moved,
-        1.0,
-        &winit::event::Modifiers::default(),
-        &mut state,
-        &root_id,
-        &mut handled,
-        &mut focus_target,
-        host_node,
-        taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &winit::event::Modifiers::default(),
+            state: &mut state,
+            path: &root_id,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: host_node,
+            taffy,
+        },
     );
 
     for button_state in [ElementState::Pressed, ElementState::Released] {
@@ -244,14 +246,16 @@ fn click_at(
         };
         host.handle_event(
             &ev,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state,
-            &root_id,
-            &mut handled,
-            &mut focus_target,
-            host_node,
-            taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut state,
+                path: &root_id,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: host_node,
+                taffy,
+            },
         );
     }
 }
@@ -286,14 +290,16 @@ fn press_key(
     let mut focus_target = None;
     host.handle_event(
         &event,
-        1.0,
-        &Modifiers::from(modifiers),
-        &mut state,
-        &root_id,
-        &mut handled,
-        &mut focus_target,
-        host_node,
-        taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::from(modifiers),
+            state: &mut state,
+            path: &root_id,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: host_node,
+            taffy,
+        },
     );
     handled
 }
@@ -305,6 +311,7 @@ fn open_quick_settings(
     {
         let mut state = chrome.borrow_mut();
         state.overlays.quick_settings = true;
+        state.quick_settings.brightness_available = true;
         state.quick_settings.radios.wifi_available = true;
         state.quick_settings.bluetooth_available = true;
         state.bump();
@@ -314,542 +321,571 @@ fn open_quick_settings(
 }
 
 #[test]
-fn brightness_slider_click_routes_to_set_brightness() {
-    let tree = minimal_tree();
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-    let recorder = SharedRecorder::default();
-    host = host.with_qs_actions(Box::new(recorder.clone()));
-
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn quick_settings_sliders_route_clicks_and_arrows_through_the_host() {
+    // Phase `brightness_slider_click_routes_to_set_brightness`.
     {
-        let mut st = chrome.borrow_mut();
-        st.overlays.quick_settings = true;
-        st.bump();
-    }
-    host.force_quick_settings_settled();
-    let (taffy, host_node) = layout_host(&mut host);
-    let bar = host.quick_settings_slider_geometry(0).0;
-    let click_x = bar.x0 + bar.width() / 3.0;
-    let click_y = f64::midpoint(bar.y0, bar.y1);
-    click_at(&mut host, &taffy, host_node, click_x, click_y);
+        let tree = minimal_tree();
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        let recorder = SharedRecorder::default();
+        host = host.with_qs_actions(Box::new(recorder.clone()));
 
-    let calls = recorder.0.calls();
-    assert!(
-        calls.iter().any(|c| c.starts_with("set_brightness(")),
-        "expected a set_brightness call; got {calls:?}"
-    );
-}
+        {
+            let mut st = chrome.borrow_mut();
+            st.overlays.quick_settings = true;
+            st.quick_settings.brightness_available = true;
+            st.bump();
+        }
+        host.force_quick_settings_settled();
+        let (taffy, host_node) = layout_host(&mut host);
+        let bar = host.quick_settings_slider_geometry(0).0;
+        let click_x = bar.x0 + bar.width() / 3.0;
+        let click_y = f64::midpoint(bar.y0, bar.y1);
+        click_at(&mut host, &taffy, host_node, click_x, click_y);
 
-#[test]
-fn volume_slider_click_routes_to_set_volume() {
-    let tree = minimal_tree();
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-    let recorder = SharedRecorder::default();
-    host = host.with_qs_actions(Box::new(recorder.clone()));
-
-    {
-        let mut st = chrome.borrow_mut();
-        st.overlays.quick_settings = true;
-        st.bump();
-    }
-    host.force_quick_settings_settled();
-    let (taffy, host_node) = layout_host(&mut host);
-    let bar = host.quick_settings_slider_geometry(1).0;
-    let click_x = bar.x0 + bar.width() / 2.0;
-    let click_y = f64::midpoint(bar.y0, bar.y1);
-    click_at(&mut host, &taffy, host_node, click_x, click_y);
-
-    let calls = recorder.0.calls();
-    assert!(
-        calls.iter().any(|c| c.starts_with("set_volume(")),
-        "expected a set_volume call; got {calls:?}"
-    );
-}
-
-/// The root owns keyboard input before ordinary desktop shortcuts. Exercise
-/// that complete host path rather than calling `QuickSettingsRoot` directly:
-/// Tab establishes paint-order focus, arrows commit the matching live slider,
-/// and no app/input child is allowed to consume the key first.
-#[test]
-fn keyboard_slider_arrows_route_through_the_host() {
-    let tree = minimal_tree();
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-    let recorder = SharedRecorder::default();
-    host = host
-        .with_qs_actions(Box::new(recorder.clone()))
-        .with_quick_settings_config(QuickSettingsConfig::default());
-    let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
-
-    // Controls come first: the first Tab reaches brightness immediately.
-    assert!(press_key(
-        &mut host,
-        &taffy,
-        host_node,
-        Key::Named(NamedKey::Tab),
-        ModifiersState::empty(),
-    ));
-    assert!(press_key(
-        &mut host,
-        &taffy,
-        host_node,
-        Key::Named(NamedKey::ArrowRight),
-        ModifiersState::empty(),
-    ));
-    // One more Tab moves brightness → volume.
-    assert!(press_key(
-        &mut host,
-        &taffy,
-        host_node,
-        Key::Named(NamedKey::Tab),
-        ModifiersState::empty(),
-    ));
-    assert!(press_key(
-        &mut host,
-        &taffy,
-        host_node,
-        Key::Named(NamedKey::ArrowLeft),
-        ModifiersState::empty(),
-    ));
-
-    let calls = recorder.0.calls();
-    assert!(
-        calls.iter().any(|call| call.starts_with("set_brightness(")),
-        "Right Arrow on the focused brightness slider did not reach QsActions: {calls:?}"
-    );
-    assert!(
-        calls.iter().any(|call| call.starts_with("set_volume(")),
-        "Left Arrow on the focused volume slider did not reach QsActions: {calls:?}"
-    );
-    let osd = chrome
-        .borrow()
-        .osd
-        .expect("a successful slider interaction raises the shared HUD");
-    assert!(matches!(
-        osd.kind,
-        shell::shell::osd::OsdKind::Volume { muted: false }
-    ));
-    assert_eq!(osd.caption(), "Volume 35%");
-}
-
-/// Enter, Space and reverse-Tab all use the same root actions exposed to
-/// pointer users. This guards the route through `ShellOverlayHost`, where
-/// overlay ordering and modifier state have historically swallowed keys.
-#[test]
-fn keyboard_actions_and_reverse_tab_route_through_the_host() {
-    // Sliders, live controls, Devices, Clipboard, power profile and Edit
-    // precede Settings.
-    // Enter on Settings dismisses the popover. The launcher itself is covered by the
-    // serial `quick_settings_settings_action_launches_personal_settings_app`
-    // test; this route test also guards against reopening the unrelated
-    // workspace-sharing settings surface.
-    let tree = minimal_tree();
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-    let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
-    for _ in 0..10 {
-        assert!(press_key(
-            &mut host,
-            &taffy,
-            host_node,
-            Key::Named(NamedKey::Tab),
-            ModifiersState::empty(),
-        ));
-    }
-    assert!(press_key(
-        &mut host,
-        &taffy,
-        host_node,
-        Key::Named(NamedKey::Enter),
-        ModifiersState::empty(),
-    ));
-    assert!(!chrome.borrow().overlays.quick_settings);
-    assert!(
-        !chrome.borrow().overlays.ws_settings,
-        "Personal Settings must not be conflated with workspace sharing settings"
-    );
-
-    // A fresh host: Space on Edit enters edit mode without dismissing.
-    let tree = minimal_tree();
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-    let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
-    for _ in 0..9 {
-        assert!(press_key(
-            &mut host,
-            &taffy,
-            host_node,
-            Key::Named(NamedKey::Tab),
-            ModifiersState::empty(),
-        ));
-    }
-    assert!(press_key(
-        &mut host,
-        &taffy,
-        host_node,
-        Key::Named(NamedKey::Space),
-        ModifiersState::empty(),
-    ));
-    assert!(chrome.borrow().overlays.quick_settings);
-
-    // Shift+Tab from no focus wraps to the final visible utility: Power.
-    // Activating it dismisses Quick Settings and must not accidentally cycle
-    // the power-profile row immediately above the utility rail.
-    let tree = minimal_tree();
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-    let recorder = SharedRecorder::default();
-    host = host.with_qs_actions(Box::new(recorder.clone()));
-    let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
-    assert!(press_key(
-        &mut host,
-        &taffy,
-        host_node,
-        Key::Named(NamedKey::Tab),
-        ModifiersState::SHIFT,
-    ));
-    assert!(press_key(
-        &mut host,
-        &taffy,
-        host_node,
-        Key::Named(NamedKey::Space),
-        ModifiersState::empty(),
-    ));
-    assert!(
-        !chrome.borrow().overlays.quick_settings,
-        "Shift+Tab did not wrap to the final Power utility"
-    );
-    assert!(
-        !recorder
-            .0
-            .calls()
-            .iter()
-            .any(|call| call.starts_with("set_power_profile(")),
-        "the Power utility must not be conflated with Power profile"
-    );
-}
-
-/// Ctrl+Arrow reorders a focused edit row through the production keyboard
-/// dispatcher. The injected config is deliberately non-persisting, proving
-/// tests/embedders cannot alter a user's real Quick Settings file.
-#[test]
-fn keyboard_edit_reorder_routes_through_the_host_and_updates_semantics() {
-    let tree = minimal_tree();
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-    host = host.with_quick_settings_config(QuickSettingsConfig {
-        controls: vec![
-            settings_store::hardware::QuickSettingsControl::Wifi,
-            settings_store::hardware::QuickSettingsControl::Bluetooth,
-            settings_store::hardware::QuickSettingsControl::NightLight,
-        ],
-    });
-    let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
-
-    // The control-first root puts Edit after two sliders, three live
-    // controls, Devices, Clipboard and Power profile. Space enters edit mode
-    // with no hidden selection. Two Tabs then select Bluetooth. Move it below
-    // Night Light with Ctrl+Down.
-    for _ in 0..9 {
-        assert!(press_key(
-            &mut host,
-            &taffy,
-            host_node,
-            Key::Named(NamedKey::Tab),
-            ModifiersState::empty(),
-        ));
-    }
-    assert!(press_key(
-        &mut host,
-        &taffy,
-        host_node,
-        Key::Named(NamedKey::Space),
-        ModifiersState::empty(),
-    ));
-    for _ in 0..2 {
-        assert!(press_key(
-            &mut host,
-            &taffy,
-            host_node,
-            Key::Named(NamedKey::Tab),
-            ModifiersState::empty(),
-        ));
-    }
-    assert!(press_key(
-        &mut host,
-        &taffy,
-        host_node,
-        Key::Named(NamedKey::ArrowDown),
-        ModifiersState::CONTROL,
-    ));
-
-    let semantic_root = host.accessibility().expect("shell semantics");
-    let quick_settings = semantic_root
-        .children
-        .iter()
-        .find(|node| node.name.as_deref() == Some("Quick Settings"))
-        .expect("Quick Settings must remain published while editing");
-    let names = quick_settings
-        .children
-        .iter()
-        .filter_map(|node| node.name.as_deref())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        names[..3],
-        ["Wi-Fi", "Night Light", "Bluetooth"],
-        "Ctrl+Down must reorder the semantic and visual row order"
-    );
-
-    assert!(press_key(
-        &mut host,
-        &taffy,
-        host_node,
-        Key::Named(NamedKey::ArrowUp),
-        ModifiersState::CONTROL,
-    ));
-    let semantic_root = host.accessibility().expect("shell semantics");
-    let quick_settings = semantic_root
-        .children
-        .iter()
-        .find(|node| node.name.as_deref() == Some("Quick Settings"))
-        .expect("Quick Settings must remain published while editing");
-    let names = quick_settings
-        .children
-        .iter()
-        .filter_map(|node| node.name.as_deref())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        names[..3],
-        ["Wi-Fi", "Bluetooth", "Night Light"],
-        "Ctrl+Up must reverse a keyboard reorder"
-    );
-}
-
-#[test]
-fn wifi_toggle_click_routes_to_set_wifi() {
-    let tree = minimal_tree();
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-    let recorder = SharedRecorder::default();
-    host = host
-        .with_qs_actions(Box::new(recorder.clone()))
-        .with_quick_settings_config(QuickSettingsConfig::default());
-
-    {
-        let mut st = chrome.borrow_mut();
-        st.overlays.quick_settings = true;
-        st.quick_settings.radios.wifi_available = true;
-        st.bump();
-    }
-    host.force_quick_settings_settled();
-    let (taffy, host_node) = layout_host(&mut host);
-    let card = host.quick_settings_toggle_geometry(0);
-    // Slightly off the chevron (which would drill in to the wifi list); the
-    // card's bottom-left maps to the toggle hit.
-    let click_x = card.x0 + 24.0;
-    let click_y = card.y1 - 16.0;
-    click_at(&mut host, &taffy, host_node, click_x, click_y);
-
-    let calls = recorder.0.calls();
-    assert!(
-        calls.iter().any(|c| c.starts_with("set_wifi(")),
-        "expected a set_wifi call; got {calls:?}"
-    );
-}
-
-#[test]
-fn bluetooth_toggle_click_routes_to_set_bluetooth() {
-    let tree = minimal_tree();
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-    let recorder = SharedRecorder::default();
-    host = host
-        .with_qs_actions(Box::new(recorder.clone()))
-        .with_quick_settings_config(QuickSettingsConfig::default());
-
-    {
-        let mut st = chrome.borrow_mut();
-        st.overlays.quick_settings = true;
-        st.quick_settings.radios.wifi_available = true;
-        st.quick_settings.bluetooth_available = true;
-        st.bump();
-    }
-    host.force_quick_settings_settled();
-    let (taffy, host_node) = layout_host(&mut host);
-    let card = host.quick_settings_toggle_geometry(1);
-    let click_x = card.x0 + 24.0;
-    let click_y = card.y1 - 16.0;
-    click_at(&mut host, &taffy, host_node, click_x, click_y);
-
-    let calls = recorder.0.calls();
-    assert!(
-        calls.iter().any(|c| c.starts_with("set_bluetooth(")),
-        "expected a set_bluetooth call; got {calls:?}"
-    );
-}
-
-#[test]
-fn power_profile_chip_click_routes_to_set_power_profile() {
-    let tree = minimal_tree();
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-    let recorder = SharedRecorder::default();
-    host = host.with_qs_actions(Box::new(recorder.clone()));
-
-    {
-        let mut st = chrome.borrow_mut();
-        st.overlays.quick_settings = true;
-        st.bump();
-    }
-    host.force_quick_settings_settled();
-    let (taffy, host_node) = layout_host(&mut host);
-    let pp = host.quick_settings_power_profile_geometry();
-    let click_x = pp.x0 + pp.width() / 2.0;
-    let click_y = f64::midpoint(pp.y0, pp.y1);
-    click_at(&mut host, &taffy, host_node, click_x, click_y);
-
-    let calls = recorder.0.calls();
-    assert!(
-        calls.iter().any(|c| c.starts_with("set_power_profile(")),
-        "expected a set_power_profile call; got {calls:?}"
-    );
-}
-
-#[test]
-fn wifi_drill_in_row_click_prompts_or_marks_an_async_join() {
-    let tree = minimal_tree();
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-    let recorder = SharedRecorder::default();
-    host = host.with_qs_actions(Box::new(recorder.clone()));
-
-    // A secured network not yet joined and one already connected take
-    // different click branches.
-    let scanned = vec![
-        WifiNetwork {
-            ssid: "hallway-2g".into(),
-            signal: 71,
-            secure: true,
-            connected: false,
-        },
-        WifiNetwork {
-            ssid: "studio-5g".into(),
-            signal: 92,
-            secure: true,
-            connected: true,
-        },
-    ];
-    {
-        let mut st = chrome.borrow_mut();
-        st.overlays.quick_settings = true;
-        st.quick_settings
-            .push_level(shell::shell::quick_settings::QsLevel::Wifi);
-        st.quick_settings.wifi_networks = scanned.clone();
-        st.bump();
-    }
-    host.force_quick_settings_settled();
-    let (taffy, host_node) = layout_host(&mut host);
-    let rect = host.quick_settings_rect_for_tests();
-    let click_x = rect.x0 + rect.width() / 2.0;
-    // Read the discovery list's rhythm from the host rather than restating
-    // it: the click lands mid-row wherever the header, hotspot affordance
-    // and row pitch put each row.
-    let secured_row_y = host.quick_settings_wifi_row_rect_for_tests(0).center().y;
-    let connected_row_y = host.quick_settings_wifi_row_rect_for_tests(1).center().y;
-
-    // Row 0 — secured, not joined: must prompt for a passphrase rather than
-    // firing a connect that would fail silently.
-    click_at(&mut host, &taffy, host_node, click_x, secured_row_y);
-    {
-        let st = chrome.borrow();
-        let prompt = st
-            .quick_settings
-            .wifi_password
-            .as_ref()
-            .expect("clicking a secured network must open the passphrase prompt");
-        assert_eq!(
-            prompt.ssid, scanned[0].ssid,
-            "the prompt must name the network that was clicked"
+        let calls = recorder.0.calls();
+        assert!(
+            calls.iter().any(|c| c.starts_with("set_brightness(")),
+            "expected a set_brightness call; got {calls:?}"
         );
     }
-    assert!(
-        recorder.0.calls().is_empty(),
-        "no connect may be attempted before the passphrase is entered; got {:?}",
-        recorder.0.calls()
-    );
 
-    // Row 1 is already connected, so it is truthful status rather than a
-    // second join action.
+    // Phase `volume_slider_click_routes_to_set_volume`.
     {
-        let mut st = chrome.borrow_mut();
-        st.quick_settings.wifi_password = None;
-        st.bump();
+        let tree = minimal_tree();
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        let recorder = SharedRecorder::default();
+        host = host.with_qs_actions(Box::new(recorder.clone()));
+
+        {
+            let mut st = chrome.borrow_mut();
+            st.overlays.quick_settings = true;
+            st.quick_settings.brightness_available = true;
+            st.bump();
+        }
+        host.force_quick_settings_settled();
+        let (taffy, host_node) = layout_host(&mut host);
+        let bar = host.quick_settings_slider_geometry(1).0;
+        let click_x = bar.x0 + bar.width() / 2.0;
+        let click_y = f64::midpoint(bar.y0, bar.y1);
+        click_at(&mut host, &taffy, host_node, click_x, click_y);
+
+        let calls = recorder.0.calls();
+        assert!(
+            calls.iter().any(|c| c.starts_with("set_volume(")),
+            "expected a set_volume call; got {calls:?}"
+        );
     }
-    click_at(&mut host, &taffy, host_node, click_x, connected_row_y);
-    let calls = recorder.0.calls();
-    assert!(
-        calls.is_empty(),
-        "the compositor must not block in the injected dispatcher; got {calls:?}"
-    );
-    assert_eq!(
-        chrome.borrow().quick_settings.wifi_joining.as_deref(),
-        None,
-        "an already-connected network must not enter another join lifecycle"
-    );
+
+    // Phase `keyboard_slider_arrows_route_through_the_host`.
+    // The root owns keyboard input before ordinary desktop shortcuts. Exercise
+    // that complete host path rather than calling `QuickSettingsRoot` directly:
+    // Tab establishes paint-order focus, arrows commit the matching live slider,
+    // and no app/input child is allowed to consume the key first.
+    {
+        let tree = minimal_tree();
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        let recorder = SharedRecorder::default();
+        host = host
+            .with_qs_actions(Box::new(recorder.clone()))
+            .with_quick_settings_config(QuickSettingsConfig::default());
+        let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
+
+        // Controls come first: the first Tab reaches brightness immediately.
+        assert!(press_key(
+            &mut host,
+            &taffy,
+            host_node,
+            Key::Named(NamedKey::Tab),
+            ModifiersState::empty(),
+        ));
+        assert!(press_key(
+            &mut host,
+            &taffy,
+            host_node,
+            Key::Named(NamedKey::ArrowRight),
+            ModifiersState::empty(),
+        ));
+        // One more Tab moves brightness → volume.
+        assert!(press_key(
+            &mut host,
+            &taffy,
+            host_node,
+            Key::Named(NamedKey::Tab),
+            ModifiersState::empty(),
+        ));
+        assert!(press_key(
+            &mut host,
+            &taffy,
+            host_node,
+            Key::Named(NamedKey::ArrowLeft),
+            ModifiersState::empty(),
+        ));
+
+        let calls = recorder.0.calls();
+        assert!(
+            calls.iter().any(|call| call.starts_with("set_brightness(")),
+            "Right Arrow on the focused brightness slider did not reach QsActions: {calls:?}"
+        );
+        assert!(
+            calls.iter().any(|call| call.starts_with("set_volume(")),
+            "Left Arrow on the focused volume slider did not reach QsActions: {calls:?}"
+        );
+        let osd = chrome
+            .borrow()
+            .osd
+            .expect("a successful slider interaction raises the shared HUD");
+        assert!(matches!(
+            osd.kind,
+            shell::shell::osd::OsdKind::Volume { muted: false }
+        ));
+        assert_eq!(osd.caption(), "Volume 35%");
+    }
 }
 
 #[test]
-fn workspace_settings_invite_button_opens_the_signed_composer() {
-    use shell::shell::chrome_state::WsTab;
-
-    let mut tree = minimal_tree();
-    tree.adopt_ownerless_workspaces_with(shell::shell::state::local_user_id_for_room);
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-    host.set_peer_sync_enabled(true);
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn quick_settings_keyboard_actions_and_edit_reorder_route_through_the_host() {
+    // Phase `keyboard_actions_and_reverse_tab_route_through_the_host`.
+    // Enter, Space and reverse-Tab all use the same root actions exposed to
+    // pointer users. This guards the route through `ShellOverlayHost`, where
+    // overlay ordering and modifier state have historically swallowed keys.
     {
-        let mut st = chrome.borrow_mut();
-        st.overlays.ws_settings = true;
-        st.ws_settings_tab = WsTab::General;
-        st.bump();
+        // Sliders, live controls, Devices, Clipboard, power profile and Edit
+        // precede Settings.
+        // Enter on Settings dismisses the popover. The launcher itself is covered by the
+        // serial `quick_settings_settings_action_launches_personal_settings_app`
+        // test; this route test also guards against reopening the unrelated
+        // workspace-sharing settings surface.
+        let tree = minimal_tree();
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
+        for _ in 0..10 {
+            assert!(press_key(
+                &mut host,
+                &taffy,
+                host_node,
+                Key::Named(NamedKey::Tab),
+                ModifiersState::empty(),
+            ));
+        }
+        assert!(press_key(
+            &mut host,
+            &taffy,
+            host_node,
+            Key::Named(NamedKey::Enter),
+            ModifiersState::empty(),
+        ));
+        assert!(!chrome.borrow().overlays.quick_settings);
+        assert!(
+            !chrome.borrow().overlays.ws_settings,
+            "Personal Settings must not be conflated with workspace sharing settings"
+        );
+
+        // A fresh host: Space on Edit enters edit mode without dismissing.
+        let tree = minimal_tree();
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
+        for _ in 0..9 {
+            assert!(press_key(
+                &mut host,
+                &taffy,
+                host_node,
+                Key::Named(NamedKey::Tab),
+                ModifiersState::empty(),
+            ));
+        }
+        assert!(press_key(
+            &mut host,
+            &taffy,
+            host_node,
+            Key::Named(NamedKey::Space),
+            ModifiersState::empty(),
+        ));
+        assert!(chrome.borrow().overlays.quick_settings);
+
+        // Shift+Tab from no focus wraps to the final visible utility: Power.
+        // Activating it dismisses Quick Settings and must not accidentally cycle
+        // the power-profile row immediately above the utility rail.
+        let tree = minimal_tree();
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        let recorder = SharedRecorder::default();
+        host = host.with_qs_actions(Box::new(recorder.clone()));
+        let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
+        assert!(press_key(
+            &mut host,
+            &taffy,
+            host_node,
+            Key::Named(NamedKey::Tab),
+            ModifiersState::SHIFT,
+        ));
+        assert!(press_key(
+            &mut host,
+            &taffy,
+            host_node,
+            Key::Named(NamedKey::Space),
+            ModifiersState::empty(),
+        ));
+        assert!(
+            !chrome.borrow().overlays.quick_settings,
+            "Shift+Tab did not wrap to the final Power utility"
+        );
+        assert!(
+            !recorder
+                .0
+                .calls()
+                .iter()
+                .any(|call| call.starts_with("set_power_profile(")),
+            "the Power utility must not be conflated with Power profile"
+        );
     }
-    let (taffy, host_node) = layout_host(&mut host);
-    host.force_ws_settings_settled();
-    // Paint once so the modal's geometry is populated the way it is in a
-    // real frame before any click arrives.
-    let _ = &taffy;
 
-    let btn = host.ws_settings_invite_rect_for_tests();
-    assert!(
-        btn.area() > 0.0,
-        "the Create button has no geometry to click"
-    );
-    assert!(!host.peer_sync_card_visible());
+    // Phase `keyboard_edit_reorder_routes_through_the_host_and_updates_semantics`.
+    // Ctrl+Arrow reorders a focused edit row through the production keyboard
+    // dispatcher. The injected config is deliberately non-persisting, proving
+    // tests/embedders cannot alter a user's real Quick Settings file.
+    {
+        let tree = minimal_tree();
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        host = host.with_quick_settings_config(QuickSettingsConfig {
+            controls: vec![
+                settings_store::hardware::QuickSettingsControl::Wifi,
+                settings_store::hardware::QuickSettingsControl::Bluetooth,
+                settings_store::hardware::QuickSettingsControl::NightLight,
+            ],
+        });
+        let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
 
-    let c = btn.center();
-    click_at(&mut host, &taffy, host_node, c.x, c.y);
+        // The control-first root puts Edit after two sliders, three live
+        // controls, Devices, Clipboard and Power profile. Space enters edit mode
+        // with no hidden selection. Two Tabs then select Bluetooth. Move it below
+        // Night Light with Ctrl+Down.
+        for _ in 0..9 {
+            assert!(press_key(
+                &mut host,
+                &taffy,
+                host_node,
+                Key::Named(NamedKey::Tab),
+                ModifiersState::empty(),
+            ));
+        }
+        assert!(press_key(
+            &mut host,
+            &taffy,
+            host_node,
+            Key::Named(NamedKey::Space),
+            ModifiersState::empty(),
+        ));
+        for _ in 0..2 {
+            assert!(press_key(
+                &mut host,
+                &taffy,
+                host_node,
+                Key::Named(NamedKey::Tab),
+                ModifiersState::empty(),
+            ));
+        }
+        assert!(press_key(
+            &mut host,
+            &taffy,
+            host_node,
+            Key::Named(NamedKey::ArrowDown),
+            ModifiersState::CONTROL,
+        ));
 
-    assert!(
-        host.peer_sync_card_visible(),
-        "clicking Create did not open the signed invite composer"
-    );
-    assert!(!chrome.borrow().overlays.ws_settings);
+        let semantic_root = host.accessibility().expect("shell semantics");
+        let quick_settings = semantic_root
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Quick Settings"))
+            .expect("Quick Settings must remain published while editing");
+        let names = quick_settings
+            .children
+            .iter()
+            .filter_map(|node| node.name.as_deref())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names[..3],
+            ["Wi-Fi", "Night Light", "Bluetooth"],
+            "Ctrl+Down must reorder the semantic and visual row order"
+        );
+
+        assert!(press_key(
+            &mut host,
+            &taffy,
+            host_node,
+            Key::Named(NamedKey::ArrowUp),
+            ModifiersState::CONTROL,
+        ));
+        let semantic_root = host.accessibility().expect("shell semantics");
+        let quick_settings = semantic_root
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Quick Settings"))
+            .expect("Quick Settings must remain published while editing");
+        let names = quick_settings
+            .children
+            .iter()
+            .filter_map(|node| node.name.as_deref())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names[..3],
+            ["Wi-Fi", "Bluetooth", "Night Light"],
+            "Ctrl+Up must reverse a keyboard reorder"
+        );
+    }
 }
 
-/// Guards against a hit rect widened until it swallows the rest of the tab.
 #[test]
-fn a_click_beside_the_invite_button_does_not_open_the_composer() {
-    use shell::shell::chrome_state::WsTab;
-
-    let tree = minimal_tree();
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn quick_settings_toggles_chips_and_wifi_rows_route_to_their_actions() {
+    // Phase `wifi_toggle_click_routes_to_set_wifi`.
     {
-        let mut st = chrome.borrow_mut();
-        st.overlays.ws_settings = true;
-        st.ws_settings_tab = WsTab::General;
-        st.bump();
+        let tree = minimal_tree();
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        let recorder = SharedRecorder::default();
+        host = host
+            .with_qs_actions(Box::new(recorder.clone()))
+            .with_quick_settings_config(QuickSettingsConfig::default());
+
+        {
+            let mut st = chrome.borrow_mut();
+            st.overlays.quick_settings = true;
+            st.quick_settings.brightness_available = true;
+            st.quick_settings.radios.wifi_available = true;
+            st.bump();
+        }
+        host.force_quick_settings_settled();
+        let (taffy, host_node) = layout_host(&mut host);
+        let card = host.quick_settings_toggle_geometry(0);
+        // Slightly off the chevron (which would drill in to the wifi list); the
+        // card's bottom-left maps to the toggle hit.
+        let click_x = card.x0 + 24.0;
+        let click_y = card.y1 - 16.0;
+        click_at(&mut host, &taffy, host_node, click_x, click_y);
+
+        let calls = recorder.0.calls();
+        assert!(
+            calls.iter().any(|c| c.starts_with("set_wifi(")),
+            "expected a set_wifi call; got {calls:?}"
+        );
     }
-    let (taffy, host_node) = layout_host(&mut host);
-    host.force_ws_settings_settled();
 
-    let btn = host.ws_settings_invite_rect_for_tests();
-    // Well left of the button, still inside the modal body.
-    let p = Point::new(btn.x0 - 160.0, btn.center().y);
-    click_at(&mut host, &taffy, host_node, p.x, p.y);
+    // Phase `bluetooth_toggle_click_routes_to_set_bluetooth`.
+    {
+        let tree = minimal_tree();
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        let recorder = SharedRecorder::default();
+        host = host
+            .with_qs_actions(Box::new(recorder.clone()))
+            .with_quick_settings_config(QuickSettingsConfig::default());
 
-    assert!(
-        !host.peer_sync_card_visible(),
-        "a click beside the Create button opened the composer anyway"
-    );
+        {
+            let mut st = chrome.borrow_mut();
+            st.overlays.quick_settings = true;
+            st.quick_settings.brightness_available = true;
+            st.quick_settings.radios.wifi_available = true;
+            st.quick_settings.bluetooth_available = true;
+            st.bump();
+        }
+        host.force_quick_settings_settled();
+        let (taffy, host_node) = layout_host(&mut host);
+        let card = host.quick_settings_toggle_geometry(1);
+        let click_x = card.x0 + 24.0;
+        let click_y = card.y1 - 16.0;
+        click_at(&mut host, &taffy, host_node, click_x, click_y);
+
+        let calls = recorder.0.calls();
+        assert!(
+            calls.iter().any(|c| c.starts_with("set_bluetooth(")),
+            "expected a set_bluetooth call; got {calls:?}"
+        );
+    }
+
+    // Phase `power_profile_chip_click_routes_to_set_power_profile`.
+    {
+        let tree = minimal_tree();
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        let recorder = SharedRecorder::default();
+        host = host.with_qs_actions(Box::new(recorder.clone()));
+
+        {
+            let mut st = chrome.borrow_mut();
+            st.overlays.quick_settings = true;
+            st.quick_settings.brightness_available = true;
+            st.bump();
+        }
+        host.force_quick_settings_settled();
+        let (taffy, host_node) = layout_host(&mut host);
+        let pp = host.quick_settings_power_profile_geometry();
+        let click_x = pp.x0 + pp.width() / 2.0;
+        let click_y = f64::midpoint(pp.y0, pp.y1);
+        click_at(&mut host, &taffy, host_node, click_x, click_y);
+
+        let calls = recorder.0.calls();
+        assert!(
+            calls.iter().any(|c| c.starts_with("set_power_profile(")),
+            "expected a set_power_profile call; got {calls:?}"
+        );
+    }
+
+    // Phase `wifi_drill_in_row_click_prompts_or_marks_an_async_join`.
+    {
+        let tree = minimal_tree();
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        let recorder = SharedRecorder::default();
+        host = host.with_qs_actions(Box::new(recorder.clone()));
+
+        // A secured network not yet joined and one already connected take
+        // different click branches.
+        let scanned = vec![
+            WifiNetwork {
+                ssid: "hallway-2g".into(),
+                signal: 71,
+                secure: true,
+                connected: false,
+            },
+            WifiNetwork {
+                ssid: "studio-5g".into(),
+                signal: 92,
+                secure: true,
+                connected: true,
+            },
+        ];
+        {
+            let mut st = chrome.borrow_mut();
+            st.overlays.quick_settings = true;
+            st.quick_settings
+                .push_level(shell::shell::quick_settings::QsLevel::Wifi);
+            st.quick_settings.wifi_networks = scanned.clone();
+            st.bump();
+        }
+        host.force_quick_settings_settled();
+        let (taffy, host_node) = layout_host(&mut host);
+        let rect = host.quick_settings_rect_for_tests();
+        let click_x = rect.x0 + rect.width() / 2.0;
+        // Read the discovery list's rhythm from the host rather than restating
+        // it: the click lands mid-row wherever the header, hotspot affordance
+        // and row pitch put each row.
+        let secured_row_y = host.quick_settings_wifi_row_rect_for_tests(0).center().y;
+        let connected_row_y = host.quick_settings_wifi_row_rect_for_tests(1).center().y;
+
+        // Row 0 — secured, not joined: must prompt for a passphrase rather than
+        // firing a connect that would fail silently.
+        click_at(&mut host, &taffy, host_node, click_x, secured_row_y);
+        {
+            let st = chrome.borrow();
+            let prompt = st
+                .quick_settings
+                .wifi_password
+                .as_ref()
+                .expect("clicking a secured network must open the passphrase prompt");
+            assert_eq!(
+                prompt.ssid, scanned[0].ssid,
+                "the prompt must name the network that was clicked"
+            );
+        }
+        assert!(
+            recorder.0.calls().is_empty(),
+            "no connect may be attempted before the passphrase is entered; got {:?}",
+            recorder.0.calls()
+        );
+
+        // Row 1 is already connected, so it is truthful status rather than a
+        // second join action.
+        {
+            let mut st = chrome.borrow_mut();
+            st.quick_settings.wifi_password = None;
+            st.bump();
+        }
+        click_at(&mut host, &taffy, host_node, click_x, connected_row_y);
+        let calls = recorder.0.calls();
+        assert!(
+            calls.is_empty(),
+            "the compositor must not block in the injected dispatcher; got {calls:?}"
+        );
+        assert_eq!(
+            chrome.borrow().quick_settings.wifi_joining.as_deref(),
+            None,
+            "an already-connected network must not enter another join lifecycle"
+        );
+    }
+}
+
+#[test]
+fn only_the_invite_button_opens_the_signed_composer() {
+    // Phase `workspace_settings_invite_button_opens_the_signed_composer`.
+    {
+        use shell::shell::chrome_state::WsTab;
+
+        let mut tree = minimal_tree();
+        tree.adopt_ownerless_workspaces_with(shell::shell::state::local_user_id_for_room);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        host.set_peer_sync_enabled(true);
+        {
+            let mut st = chrome.borrow_mut();
+            st.overlays.ws_settings = true;
+            st.ws_settings_tab = WsTab::General;
+            st.bump();
+        }
+        let (taffy, host_node) = layout_host(&mut host);
+        host.force_ws_settings_settled();
+        // Paint once so the modal's geometry is populated the way it is in a
+        // real frame before any click arrives.
+        let _ = &taffy;
+
+        let btn = host.ws_settings_invite_rect_for_tests();
+        assert!(
+            btn.area() > 0.0,
+            "the Create button has no geometry to click"
+        );
+        assert!(!host.peer_sync_card_visible());
+
+        let c = btn.center();
+        click_at(&mut host, &taffy, host_node, c.x, c.y);
+
+        assert!(
+            host.peer_sync_card_visible(),
+            "clicking Create did not open the signed invite composer"
+        );
+        assert!(!chrome.borrow().overlays.ws_settings);
+    }
+
+    // Phase `a_click_beside_the_invite_button_does_not_open_the_composer`.
+    // Guards against a hit rect widened until it swallows the rest of the tab.
+    {
+        use shell::shell::chrome_state::WsTab;
+
+        let tree = minimal_tree();
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        {
+            let mut st = chrome.borrow_mut();
+            st.overlays.ws_settings = true;
+            st.ws_settings_tab = WsTab::General;
+            st.bump();
+        }
+        let (taffy, host_node) = layout_host(&mut host);
+        host.force_ws_settings_settled();
+
+        let btn = host.ws_settings_invite_rect_for_tests();
+        // Well left of the button, still inside the modal body.
+        let p = Point::new(btn.x0 - 160.0, btn.center().y);
+        click_at(&mut host, &taffy, host_node, p.x, p.y);
+
+        assert!(
+            !host.peer_sync_card_visible(),
+            "a click beside the Create button opened the composer anyway"
+        );
+    }
 }
 
 /// The ribbon's own geometry is unit-tested in `ui`, but geometry that

@@ -199,7 +199,7 @@ fn prepare_fixture_owned(
     let records = host.records_for(crate::definition())?;
     let prepared = crate::hosting::prepare_default(&mut host, INSTANCE, Some(&source), inputs)?;
     if matches!(scenario, Some("image" | "image_edit")) {
-        let bytes = std::fs::read(source.join(crate::storage::PAGES_DIR).join("image.png"))
+        let bytes = crate::files::read(&source.join(crate::storage::PAGES_DIR).join("image.png"))
             .map_err(|error| LaunchError::Operation(error.to_string()))?;
         records
             .with(&crate::hosting::default_notebook().id, |doc| {
@@ -219,11 +219,12 @@ fn prepare_fixture_owned(
                 let action = crate::actions::add_image_asset_action(
                     page,
                     bytes,
-                    ui::widget::BlockEditOp::TextSplice {
-                        block_id,
-                        start: 0,
-                        end: text.len(),
-                        text: replacement,
+                    tilo_document::RichTextAction::SpliceText {
+                        region: tilo_document::action::RegionKind::Body,
+                        block: block_id,
+                        at: 0,
+                        del: text.chars().count(),
+                        ins: replacement,
                     },
                 );
                 tilo_actions::apply_local(doc, &action, crate::actions::encode(&action))
@@ -248,45 +249,16 @@ fn prepare_fixture_owned(
         )
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
         let document = record_dir.join(app_state::DOCUMENT_FILE);
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::OpenOptionsExt;
-            let lock = std::fs::OpenOptions::new()
-                .read(true)
-                .share_mode(0)
-                .open(&document)
-                .map_err(|error| LaunchError::Operation(format!("lock capture store: {error}")))?;
-            let (signal, wait) = std::sync::mpsc::channel();
-            let release = std::thread::spawn(move || {
-                let _ = wait.recv_timeout(std::time::Duration::from_secs(30));
-                drop(lock);
-            });
-            SAVE_FAULT_RELEASE.with_borrow_mut(|slot| *slot = Some(signal.clone()));
-            *directory.failed_save_signal.borrow_mut() = Some(signal);
-            *directory.failed_save_release.borrow_mut() = Some(release);
-        }
-        #[cfg(unix)]
-        {
-            // CI runs as root, so removing write permission does not reliably
-            // make the atomic replacement fail. A directory at the document
-            // path does, regardless of privileges.
-            let backup = document.with_extension("capture-save-fault");
-            std::fs::rename(&document, &backup)
-                .map_err(|error| LaunchError::Operation(error.to_string()))?;
-            if let Err(error) = std::fs::create_dir(&document) {
-                let _ = std::fs::rename(&backup, &document);
-                return Err(LaunchError::Operation(error.to_string()));
-            }
-            let (signal, wait) = std::sync::mpsc::channel();
-            let release = std::thread::spawn(move || {
-                let _ = wait.recv_timeout(std::time::Duration::from_secs(30));
-                let _ = std::fs::remove_dir(&document);
-                let _ = std::fs::rename(&backup, &document);
-            });
-            SAVE_FAULT_RELEASE.with_borrow_mut(|slot| *slot = Some(signal.clone()));
-            *directory.failed_save_signal.borrow_mut() = Some(signal);
-            *directory.failed_save_release.borrow_mut() = Some(release);
-        }
+        let (signal, wait) = std::sync::mpsc::channel();
+        let release = tilo_files::native::atomic::block_replacement(
+            &document,
+            wait,
+            std::time::Duration::from_secs(30),
+        )
+        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        SAVE_FAULT_RELEASE.with_borrow_mut(|slot| *slot = Some(signal.clone()));
+        *directory.failed_save_signal.borrow_mut() = Some(signal);
+        *directory.failed_save_release.borrow_mut() = Some(release);
     }
     Ok((prepared, records))
 }
@@ -370,6 +342,38 @@ fn chord(driver: &mut FrameHarness, modifiers: &[&str], key: &str) {
     );
     driver.key(key);
     driver.set_modifiers(&[]);
+}
+
+/// Stable block ids of the rendered blocks, top to bottom (presence keys
+/// name blocks by id).
+fn visible_block_ids(driver: &FrameHarness) -> Vec<String> {
+    fn access(node: &ui::a11y::AccessNode, out: &mut Vec<(f64, String)>) {
+        if let Some(id) = node
+            .semantic_key
+            .as_deref()
+            .and_then(|key| key.strip_prefix("notes.block:"))
+            .filter(|suffix| !suffix.contains(':'))
+            && let Some(bounds) = node.bounds
+        {
+            out.push((bounds.to_rect().y0, id.to_owned()));
+        }
+        for child in &node.children {
+            access(child, out);
+        }
+    }
+    fn retained(node: &ui::headless::InspectionNode, out: &mut Vec<(f64, String)>) {
+        if let Some(semantics) = &node.semantics {
+            access(semantics, out);
+        }
+        for child in &node.children {
+            retained(child, out);
+        }
+    }
+    let mut rows = Vec::new();
+    retained(&driver.inspection().root, &mut rows);
+    rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+    rows.dedup_by(|a, b| a.1 == b.1);
+    rows.into_iter().map(|(_, id)| id).collect()
 }
 
 fn visible_block_rects(driver: &FrameHarness) -> Vec<vello::kurbo::Rect> {
@@ -618,8 +622,7 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
             }
             let rect = semantic_name_rect(driver, "Launch checklist")
                 .ok_or_else(|| LaunchError::Operation("rename row missing".into()))?;
-            driver.click_at(rect.center().x, rect.center().y);
-            driver.click_at(rect.center().x, rect.center().y);
+            driver.double_click_at(rect.center().x, rect.center().y);
             if scenario == Some("rename_commit") {
                 driver.type_text(" v2");
                 driver.click_at(900.0, 400.0);
@@ -736,7 +739,7 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
             driver.type_text(" Chen");
         }
         Some("image" | "image_edit") => {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let deadline = ui::time::now() + std::time::Duration::from_secs(2);
             let target = loop {
                 driver.relayout();
                 if let Some(target) =
@@ -744,12 +747,12 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
                 {
                     break target;
                 }
-                if std::time::Instant::now() >= deadline {
+                if ui::time::now() >= deadline {
                     return Err(LaunchError::Operation(
                         "image preview did not become ready within two seconds".into(),
                     ));
                 }
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(5));
             };
             if scenario == Some("image_edit") {
                 driver
@@ -847,24 +850,25 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
         }
         Some("presence") => {
             use ui::permissions::UserId;
-            use ui::presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange};
+            use ui::presence::{PresenceCtx, PresenceKey, SelectionRange};
             let mut presence = PresenceCtx::empty();
             let alice = UserId("alice".into());
             let bob = UserId("bob".into());
             presence.set_display_name(alice.clone(), "Alice");
             presence.set_display_name(bob, "Bob");
-            let block = PresenceKey::Widget {
-                path: vec![
-                    PathSegment::Field("notes_block".into()),
-                    PathSegment::Index(4),
-                ],
-            };
+            let fifth = visible_block_ids(driver)
+                .into_iter()
+                .nth(4)
+                .ok_or_else(|| {
+                    LaunchError::Operation("presence capture needs five blocks".into())
+                })?;
+            let block = ui::widget::block_editor::block_presence_key(&fifth);
             presence.set_caret(&block, alice.clone(), 18);
             presence.record_peer_typing(
                 alice,
                 block,
                 SelectionRange { start: 0, end: 18 },
-                std::time::Instant::now(),
+                ui::time::now(),
             );
             presence.upsert_remote_cursor("alice".into(), [560.0, 300.0], Some("Alice"));
             if let Some(other) = driver
@@ -906,14 +910,14 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
                 }
                 // Let the temporary filesystem fault clear. The writer keeps
                 // its real sticky error visible until close retries it.
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(50));
                 for _ in 0..100 {
                     driver.relayout();
                     if semantic_observed(driver, |node| node.name.as_deref() == Some("Save failed"))
                     {
                         break;
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(10));
                 }
             }
         }
@@ -1070,13 +1074,7 @@ fn validate_capture(
                 .find(|page| page.title == title)
                 .ok_or("capture note missing")?;
             let mut panel = crate::MainPanel::new();
-            panel.bind_canonical_page(
-                doc,
-                page.id,
-                title,
-                &crate::doc::NotesDoc::page_blocks_list(doc, page.id)
-                    .ok_or("capture blocks missing")?,
-            )?;
+            panel.bind_canonical_page(doc, page.id, title)?;
             Ok(Some(panel))
         })
         .ok_or_else(|| LaunchError::Operation("capture record missing".into()))?

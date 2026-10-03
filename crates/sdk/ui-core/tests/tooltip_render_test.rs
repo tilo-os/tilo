@@ -4,7 +4,7 @@
 //! opaque surface where it is anchored (not just that *something* painted).
 //!
 //! Skips gracefully when no wgpu adapter is available, matching the other
-//! offscreen tests. Set `QUICK_UI_SCREENSHOT_DIR=<path>` to dump the PNGs
+//! offscreen tests. Set `TILO_UI_SCREENSHOT_DIR=<path>` to dump the PNGs
 //! (`tooltip_over_icon_button_dark.png` / `_light.png`) for visual review.
 
 #![allow(
@@ -106,7 +106,7 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
         "expected painted content ({name}), got {non_bg} px"
     );
 
-    if let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") {
+    if let Ok(dir) = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR") {
         let _ = std::fs::create_dir_all(&dir);
         let path = format!("{dir}/tooltip_over_icon_button_{name}.png");
         tilo_ui::png::write_rgba8(&path, canvas_w, canvas_h, &rgba).unwrap();
@@ -115,11 +115,14 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
 }
 
 #[test]
-fn tooltip_renders_over_icon_button_dark() {
-    render_case(&Theme::dark(), Color::from_rgb8(0x0f, 0x17, 0x2a), "dark");
-}
+fn tooltip_renders_over_icon_button_in_both_themes() {
+    // Case `tooltip_renders_over_icon_button_dark`.
+    {
+        render_case(&Theme::dark(), Color::from_rgb8(0x0f, 0x17, 0x2a), "dark");
+    }
 
-#[test]
-fn tooltip_renders_over_icon_button_light() {
-    render_case(&Theme::light(), Color::from_rgb8(0xf5, 0xf6, 0xf8), "light");
+    // Case `tooltip_renders_over_icon_button_light`.
+    {
+        render_case(&Theme::light(), Color::from_rgb8(0xf5, 0xf6, 0xf8), "light");
+    }
 }

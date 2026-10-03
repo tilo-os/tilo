@@ -16,9 +16,18 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use ui::widget::{Button, Widget};
+use ui::widget::{Button, Row, Spacer, Widget};
 
+use crate::i18n::t;
 use crate::widgets::{caption, card, hero, rows, value_row};
+
+fn fact(value: &str) -> String {
+    if value == "unknown" {
+        t("settings-about-unknown")
+    } else {
+        value.to_string()
+    }
+}
 
 pub const PORTABLE_BACKUP_BUTTON: &str = "about.identity-backup.button";
 
@@ -146,53 +155,59 @@ pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
     // A device-identity hero: the machine's name in the accent, the OS beneath.
     let hero_block = hero(ui::icons::Icon::Monitor, &info.hostname, &info.pretty_name);
 
+    let person = info
+        .identity_name
+        .as_deref()
+        .map_or_else(|| t("settings-about-not-connected"), str::to_string);
+    let pretty = fact(&info.pretty_name);
+    let kernel = fact(&info.kernel);
+    let arch = fact(&info.arch);
+    let uptime = fact(&info.uptime);
+    let cpu = fact(&info.cpu);
+    let memory = fact(&info.memory);
+    let backup_label = t("settings-about-backup-button");
     let identity = card(
-        "Workspace identity",
+        &t("settings-about-identity-card"),
         rows(vec![
-            value_row(
-                "Person",
-                info.identity_name.as_deref().unwrap_or("Not connected"),
-            ),
-            value_row("Identity", &info.fingerprint()),
-            caption(
-                "This is the identity selected for the current workspace. \
-                 Apps receive its public profile; private signing material stays outside the sandbox.",
-            ),
+            value_row(&t("settings-about-person"), &person),
+            value_row(&t("settings-about-identity"), &info.fingerprint()),
+            caption(&t("settings-about-identity-caption")),
         ]),
     );
 
     let backup = card(
-        "Identity backup",
+        &t("settings-about-backup-card"),
         rows(vec![
-            caption(
-                "Create an encrypted portable copy of your identity. Tilo asks for a passphrase, \
-                 lets you choose where to save it, and verifies the copy before confirming success.",
-            ),
+            caption(&t("settings-about-backup-caption")),
             Box::new(
-                Button::new(PORTABLE_BACKUP_BUTTON, "Create encrypted backup…", None)
-                    .with_size(236.0, 40.0)
-                    .on_effect(|| {
-                        let _ = os_actions::open_tool(portable_identity_backup_intent());
-                    }),
+                Row::new()
+                    .push(Box::new(
+                        Button::new(PORTABLE_BACKUP_BUTTON, &backup_label, None)
+                            .content_sized()
+                            .on_effect(|| {
+                                let _ = os_actions::open_tool(portable_identity_backup_intent());
+                            }),
+                    ))
+                    .push(Box::new(Spacer::new())),
             ),
         ]),
     );
 
     let system = card(
-        "System",
+        &t("settings-about-system-card"),
         rows(vec![
-            value_row("OS", &info.pretty_name),
-            value_row("Kernel", &info.kernel),
-            value_row("Architecture", &info.arch),
-            value_row("Uptime", &info.uptime),
+            value_row(&t("settings-about-os"), &pretty),
+            value_row(&t("settings-about-kernel"), &kernel),
+            value_row(&t("settings-about-architecture"), &arch),
+            value_row(&t("settings-about-uptime"), &uptime),
         ]),
     );
 
     let hardware = card(
-        "Hardware",
+        &t("settings-about-hardware-card"),
         rows(vec![
-            value_row("Processor", &info.cpu),
-            value_row("Memory", &info.memory),
+            value_row(&t("settings-about-processor"), &cpu),
+            value_row(&t("settings-about-memory"), &memory),
         ]),
     );
 
@@ -272,52 +287,53 @@ pub(crate) fn format_uptime(seconds: f64) -> String {
 mod tests {
     use super::*;
 
+    /// The /etc/os-release, /proc/uptime, /proc/cpuinfo and /proc/meminfo
+    /// parsers and their display formats.
     #[test]
-    fn parses_pretty_name_with_double_quotes() {
-        let s = "NAME=Fedora\nPRETTY_NAME=\"Fedora Linux 42\"\nID=fedora\n";
-        assert_eq!(
-            parse_os_release_pretty_name(s).as_deref(),
-            Some("Fedora Linux 42")
-        );
-    }
+    fn system_facts_parse_and_format() {
+        for (input, want) in [
+            (
+                "NAME=Fedora\nPRETTY_NAME=\"Fedora Linux 42\"\nID=fedora\n",
+                Some("Fedora Linux 42"),
+            ),
+            ("PRETTY_NAME=Fedora42\n", Some("Fedora42")),
+            ("NAME=Foo\n", None),
+        ] {
+            assert_eq!(
+                parse_os_release_pretty_name(input).as_deref(),
+                want,
+                "{input:?}"
+            );
+        }
 
-    #[test]
-    fn parses_pretty_name_without_quotes() {
-        assert_eq!(
-            parse_os_release_pretty_name("PRETTY_NAME=Fedora42\n").as_deref(),
-            Some("Fedora42")
-        );
-    }
-
-    #[test]
-    fn missing_pretty_name_returns_none() {
-        assert!(parse_os_release_pretty_name("NAME=Foo\n").is_none());
-    }
-
-    #[test]
-    fn uptime_parses_first_field_only() {
+        // Only the first field is the uptime.
         assert_eq!(parse_uptime_seconds("12345.67 6789.01\n"), Some(12345.67));
+        for (seconds, want) in [(93_780.0, "1d 2h 3m"), (7_380.0, "2h 3m"), (420.0, "7m")] {
+            assert_eq!(format_uptime(seconds), want, "{seconds}s");
+        }
+
+        // The first model name wins.
+        let s = "processor\t: 0\nvendor_id\t: AuthenticAMD\nmodel name\t: AMD Ryzen 7 7840U\nprocessor\t: 1\nmodel name\t: AMD Ryzen 7 7840U\n";
+        assert_eq!(parse_cpu_model(s).as_deref(), Some("AMD Ryzen 7 7840U"));
+        assert!(parse_cpu_model("no model here\n").is_none());
+
+        // 16 GiB in kB.
+        assert_eq!(
+            parse_mem_total_kb("MemTotal:       16330124 kB\n"),
+            Some(16_330_124)
+        );
+        assert!(parse_mem_total_kb("SwapTotal: 0 kB\n").is_none());
+        assert_eq!(format_memory(16_330_124), "15.6 GiB");
+        assert_eq!(format_memory(512 * 1024), "512.0 MiB");
     }
 
+    /// Missing system files fall back to honest placeholders; the device
+    /// fingerprint is deterministic and, with a workspace identity, derives
+    /// from its public key; the backup action is a shell-owned typed intent.
     #[test]
-    fn uptime_format_includes_days_when_present() {
-        assert_eq!(format_uptime(93_780.0), "1d 2h 3m");
-    }
-
-    #[test]
-    fn uptime_format_drops_days_under_24h() {
-        assert_eq!(format_uptime(7_380.0), "2h 3m");
-    }
-
-    #[test]
-    fn uptime_format_drops_hours_under_1h() {
-        assert_eq!(format_uptime(420.0), "7m");
-    }
-
-    #[test]
-    fn from_paths_uses_fallbacks_for_missing_files() {
+    fn about_info_falls_back_and_fingerprints_the_identity() {
         let missing = Path::new("/nonexistent/tilo/settings/test/path");
-        let info = AboutInfo::from_paths(missing, missing, missing, missing, missing, missing);
+        let mut info = AboutInfo::from_paths(missing, missing, missing, missing, missing, missing);
         assert_eq!(info.pretty_name, "unknown");
         assert_eq!(info.kernel, "unknown");
         assert_eq!(info.uptime, "unknown");
@@ -326,29 +342,9 @@ mod tests {
         assert_eq!(info.memory, "unknown");
         // Architecture is a compile-time fact, always present.
         assert!(!info.arch.is_empty());
-    }
+        info.identity_public_key = Some([0xab; 32]);
+        assert_eq!(info.fingerprint(), "abab·abab·abab·abab");
 
-    #[test]
-    fn parses_cpu_model_first_match() {
-        let s = "processor\t: 0\nvendor_id\t: AuthenticAMD\nmodel name\t: AMD Ryzen 7 7840U\nprocessor\t: 1\nmodel name\t: AMD Ryzen 7 7840U\n";
-        assert_eq!(parse_cpu_model(s).as_deref(), Some("AMD Ryzen 7 7840U"));
-        assert!(parse_cpu_model("no model here\n").is_none());
-    }
-
-    #[test]
-    fn parses_and_formats_memory() {
-        // 16 GiB in kB.
-        assert_eq!(
-            parse_mem_total_kb("MemTotal:       16330124 kB\n"),
-            Some(16_330_124)
-        );
-        assert_eq!(format_memory(16_330_124), "15.6 GiB");
-        assert_eq!(format_memory(512 * 1024), "512.0 MiB");
-        assert!(parse_mem_total_kb("SwapTotal: 0 kB\n").is_none());
-    }
-
-    #[test]
-    fn fingerprint_is_stable_and_formatted() {
         let info = AboutInfo {
             pretty_name: "x".into(),
             kernel: "x".into(),
@@ -364,24 +360,7 @@ mod tests {
         // 4 groups of 4 hex chars separated by middots.
         assert_eq!(fp.matches('\u{00B7}').count(), 3);
         assert_eq!(info.fingerprint(), fp, "deterministic");
-    }
 
-    #[test]
-    fn workspace_identity_fingerprint_comes_from_public_key() {
-        let mut info = AboutInfo::from_paths(
-            Path::new("/missing"),
-            Path::new("/missing"),
-            Path::new("/missing"),
-            Path::new("/missing"),
-            Path::new("/missing"),
-            Path::new("/missing"),
-        );
-        info.identity_public_key = Some([0xab; 32]);
-        assert_eq!(info.fingerprint(), "abab·abab·abab·abab");
-    }
-
-    #[test]
-    fn portable_backup_action_uses_a_shell_owned_typed_intent() {
         let intent = portable_identity_backup_intent();
         assert_eq!(intent, os_actions::ToolIntent::IdentityBackup);
         assert_eq!(intent.package_id(), None);

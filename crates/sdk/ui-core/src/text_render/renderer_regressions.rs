@@ -71,102 +71,103 @@ fn assert_source_owner(renderer: &TextRenderer, id: ID, font: &Font) {
 }
 
 #[test]
-fn collection_indices_and_shared_owners_reach_the_real_scene() {
-    let mut renderer = renderer();
-    let mut fonts = Vec::new();
-    for (family, index) in [
-        ("Noto Sans CJK JP", 0),
-        ("Noto Sans CJK KR", 1),
-        ("Noto Sans CJK SC", 2),
-        ("Noto Sans CJK TC", 3),
-        ("Noto Sans CJK HK", 4),
-    ] {
-        let id = face_id(&renderer, family);
-        assert_eq!(renderer.font_system.db().face(id).unwrap().index, index);
-        let style = named_style(family);
-        let scene = draw(&mut renderer, "漢", &style);
-        let font = one_run(&scene).font.clone();
-        assert_eq!(font.index, index, "{family}");
-        assert_source_owner(&renderer, id, &font);
-        let repeat = draw(&mut renderer, "漢", &style);
-        assert_eq!(one_run(&repeat).font.data.id(), font.data.id());
-        fonts.push(font);
+fn font_sources_and_collection_indices_are_shared_with_emitted_runs() {
+    // phase: collection_indices_and_shared_owners_reach_the_real_scene
+    {
+        let mut renderer = renderer();
+        let mut fonts = Vec::new();
+        for (family, index) in [
+            ("Noto Sans CJK JP", 0),
+            ("Noto Sans CJK KR", 1),
+            ("Noto Sans CJK SC", 2),
+            ("Noto Sans CJK TC", 3),
+            ("Noto Sans CJK HK", 4),
+        ] {
+            let id = face_id(&renderer, family);
+            assert_eq!(renderer.font_system.db().face(id).unwrap().index, index);
+            let style = named_style(family);
+            let scene = draw(&mut renderer, "漢", &style);
+            let font = one_run(&scene).font.clone();
+            assert_eq!(font.index, index, "{family}");
+            assert_source_owner(&renderer, id, &font);
+            let repeat = draw(&mut renderer, "漢", &style);
+            assert_eq!(one_run(&repeat).font.data.id(), font.data.id());
+            fonts.push(font);
+        }
+        let (owner, _) = fonts[0].data.clone().into_raw_parts();
+        for font in &fonts[1..] {
+            let (other, _) = font.data.clone().into_raw_parts();
+            assert!(
+                Arc::ptr_eq(&owner, &other),
+                "TTC faces share one byte owner"
+            );
+        }
     }
-    let (owner, _) = fonts[0].data.clone().into_raw_parts();
-    for font in &fonts[1..] {
-        let (other, _) = font.data.clone().into_raw_parts();
-        assert!(
-            Arc::ptr_eq(&owner, &other),
-            "TTC faces share one byte owner"
-        );
-    }
-}
-
-#[test]
-fn binary_font_source_is_shared_with_emitted_runs() {
-    let mut renderer = renderer();
-    // Keep the explicit fixture database, replacing only this known TTC's
-    // representation to cover Binary as well as the loader's File source.
-    let ids: Vec<_> = renderer
-        .font_system
-        .db()
-        .faces()
-        .filter(|face| {
-            face.families
-                .iter()
-                .any(|(name, _)| name.starts_with("Noto Sans CJK "))
-        })
-        .map(|face| face.id)
-        .collect();
-    assert_eq!(ids.len(), 5);
-    for id in ids {
-        renderer.font_system.db_mut().remove_face(id);
-    }
-    let bytes = std::fs::read(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/fonts/NotoSansCJK-VF.ttc"),
-    )
-    .unwrap();
-    let owner: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new(bytes);
-    assert_eq!(
-        renderer
+    // phase: binary_font_source_is_shared_with_emitted_runs
+    {
+        let mut renderer = renderer();
+        // Keep the explicit fixture database, replacing only this known TTC's
+        // representation to cover Binary as well as the loader's File source.
+        let ids: Vec<_> = renderer
             .font_system
-            .db_mut()
-            .load_font_source(Source::Binary(owner.clone()))
-            .len(),
-        5
-    );
-    renderer.bump_generation();
-    let style = named_style("Noto Sans CJK SC");
-    let scene = draw(&mut renderer, "漢", &style);
-    let font = &one_run(&scene).font;
-    assert_eq!(font.index, 2);
-    let (emitted_owner, _) = font.data.clone().into_raw_parts();
-    assert!(Arc::ptr_eq(&owner, &emitted_owner));
-}
-
-#[test]
-fn different_shaped_weights_reuse_bytes_and_system_replacement_refreshes_handles() {
-    let mut renderer = renderer();
-    let style = named_style("Noto Sans");
-    let regular = draw(&mut renderer, "A", &style);
-    let bold = draw(
-        &mut renderer,
-        "A",
-        &style.clone().with_weight(TextWeight::Bold),
-    );
-    let (regular_owner, _) = one_run(&regular).font.data.clone().into_raw_parts();
-    let (bold_owner, _) = one_run(&bold).font.data.clone().into_raw_parts();
-    assert!(Arc::ptr_eq(&regular_owner, &bold_owner));
-    renderer.font_system = configured_font_system_with_catalog(&catalog()).unwrap();
-    renderer.bump_generation();
-    let replacement = draw(&mut renderer, "A", &style);
-    let new_font = &one_run(&replacement).font;
-    assert_source_owner(&renderer, face_id(&renderer, "Noto Sans"), new_font);
-    let (new_owner, _) = new_font.data.clone().into_raw_parts();
-    assert!(!Arc::ptr_eq(&regular_owner, &new_owner));
-    assert_ne!(one_run(&regular).font.data.id(), new_font.data.id());
-    // The old scene remains readable while its own handle keeps bytes alive.
-    assert_eq!(one_run(&regular).font.data.len(), new_font.data.len());
+            .db()
+            .faces()
+            .filter(|face| {
+                face.families
+                    .iter()
+                    .any(|(name, _)| name.starts_with("Noto Sans CJK "))
+            })
+            .map(|face| face.id)
+            .collect();
+        assert_eq!(ids.len(), 5);
+        for id in ids {
+            renderer.font_system.db_mut().remove_face(id);
+        }
+        let bytes = std::fs::read(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/fonts/NotoSansCJK-VF.ttc"),
+        )
+        .unwrap();
+        let owner: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new(bytes);
+        assert_eq!(
+            renderer
+                .font_system
+                .db_mut()
+                .load_font_source(Source::Binary(owner.clone()))
+                .len(),
+            5
+        );
+        renderer.bump_generation();
+        let style = named_style("Noto Sans CJK SC");
+        let scene = draw(&mut renderer, "漢", &style);
+        let font = &one_run(&scene).font;
+        assert_eq!(font.index, 2);
+        let (emitted_owner, _) = font.data.clone().into_raw_parts();
+        assert!(Arc::ptr_eq(&owner, &emitted_owner));
+    }
+    // phase: different_shaped_weights_reuse_bytes_and_system_replacement_refreshes_handles
+    {
+        let mut renderer = renderer();
+        let style = named_style("Noto Sans");
+        let regular = draw(&mut renderer, "A", &style);
+        let bold = draw(
+            &mut renderer,
+            "A",
+            &style.clone().with_weight(TextWeight::Bold),
+        );
+        let (regular_owner, _) = one_run(&regular).font.data.clone().into_raw_parts();
+        let (bold_owner, _) = one_run(&bold).font.data.clone().into_raw_parts();
+        assert!(Arc::ptr_eq(&regular_owner, &bold_owner));
+        renderer.font_system = configured_font_system_with_catalog(&catalog()).unwrap();
+        renderer.bump_generation();
+        let replacement = draw(&mut renderer, "A", &style);
+        let new_font = &one_run(&replacement).font;
+        assert_source_owner(&renderer, face_id(&renderer, "Noto Sans"), new_font);
+        let (new_owner, _) = new_font.data.clone().into_raw_parts();
+        assert!(!Arc::ptr_eq(&regular_owner, &new_owner));
+        assert_ne!(one_run(&regular).font.data.id(), new_font.data.id());
+        // The old scene remains readable while its own handle keeps bytes alive.
+        assert_eq!(one_run(&regular).font.data.len(), new_font.data.len());
+    }
 }
 
 fn emitted_coords(scene: &Scene, run: &vello_encoding::GlyphRun) -> Vec<i16> {
@@ -190,6 +191,7 @@ fn expected_coords(font: &Font, weight: u16, optical: Option<f32>) -> Vec<i16> {
 fn assert_plain_weight(renderer: &mut TextRenderer, style: &TextStyle, expected: u16) {
     let buffer = renderer.shape_buffer("Hamburgefon", None, style);
     let shaped: Vec<_> = buffer
+        .buffer
         .layout_runs()
         .flat_map(|run| run.glyphs.iter())
         .map(|glyph| (glyph.font_id, glyph.font_weight))
@@ -213,268 +215,368 @@ fn assert_plain_weight(renderer: &mut TextRenderer, style: &TextStyle, expected:
 }
 
 #[test]
-fn plain_paint_uses_named_and_rounded_explicit_shaped_weights() {
-    let mut renderer = renderer();
-    // Adwaita has a 100..900 weight range. Noto Sans also covers its narrower
-    // 400..700 range, so requests below/above a face's range are exercised.
-    // CJK SC also exercises weight coordinates on collection index 2.
-    for family in ["Adwaita Sans", "Noto Sans", "Noto Sans CJK SC"] {
-        let base = named_style(family);
-        for (weight, expected) in [
-            (TextWeight::Regular, 400),
-            (TextWeight::Medium, 500),
-            (TextWeight::Semibold, 600),
-            (TextWeight::Bold, 700),
-        ] {
-            assert_plain_weight(&mut renderer, &base.clone().with_weight(weight), expected);
-        }
-        for (value, expected) in [
-            (675.4, 675),
-            (675.5, 676),
-            (400.49, 400),
-            (-20.0, 1),
-            (1200.0, 1000),
-        ] {
-            let style = base
-                .clone()
-                .with_weight(TextWeight::Bold)
-                .with_font_variation(OpenTypeTag::WEIGHT, value);
-            assert_plain_weight(&mut renderer, &style, expected);
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
+fn runs_paint_with_their_shaped_weight_and_axis_order() {
+    // phase: plain_paint_uses_named_and_rounded_explicit_shaped_weights
+    {
+        let mut renderer = renderer();
+        // Adwaita has a 100..900 weight range. Noto Sans also covers its narrower
+        // 400..700 range, so requests below/above a face's range are exercised.
+        // CJK SC also exercises weight coordinates on collection index 2.
+        for family in ["Adwaita Sans", "Noto Sans", "Noto Sans CJK SC"] {
+            let base = named_style(family);
+            for (weight, expected) in [
+                (TextWeight::Regular, 400),
+                (TextWeight::Medium, 500),
+                (TextWeight::Semibold, 600),
+                (TextWeight::Bold, 700),
+            ] {
+                assert_plain_weight(&mut renderer, &base.clone().with_weight(weight), expected);
+            }
+            for (value, expected) in [
+                (675.4, 675),
+                (675.5, 676),
+                (400.49, 400),
+                (-20.0, 1),
+                (1200.0, 1000),
+            ] {
+                let style = base
+                    .clone()
+                    .with_weight(TextWeight::Bold)
+                    .with_font_variation(OpenTypeTag::WEIGHT, value);
+                assert_plain_weight(&mut renderer, &style, expected);
+            }
         }
     }
-}
-
-#[test]
-fn weight_fix_preserves_optical_axis_order_in_actual_runs() {
-    let mut renderer = renderer();
-    let style = named_style("Adwaita Sans")
-        .with_weight(TextWeight::Bold)
-        .with_optical_sizing(OpticalSizing::Value(32.0));
-    let scene = draw(&mut renderer, "A", &style);
-    let run = one_run(&scene);
-    assert_eq!(
-        emitted_coords(&scene, run),
-        expected_coords(&run.font, 700, Some(32.0))
-    );
-    let font = FontRef::from_index(run.font.data.as_ref(), run.font.index).unwrap();
-    assert_eq!(
-        font.axes()
-            .iter()
-            .map(|axis| axis.tag())
-            .collect::<Vec<_>>(),
-        [Tag::new(b"opsz"), Tag::new(b"wght")]
-    );
-    assert_eq!(emitted_coords(&scene, run)[0], 16384);
-}
-
-#[test]
-fn rich_same_face_runs_split_at_shaped_weight_and_retain_span_bold() {
-    let mut renderer = renderer();
-    let style = named_style("Noto Sans").with_font_variation(OpenTypeTag::WEIGHT, 675.4);
-    let layout = RichTextLayout::shape_styled(
-        &mut renderer.font_system,
-        &[
-            RichSpan::new("A"),
-            RichSpan::new("B").bold(true),
-            RichSpan::new("C"),
-        ],
-        &style,
-        None,
-        TextAlign::Left,
-        vec![],
-        vec![],
-    );
-    let glyphs: Vec<_> = layout
-        .buffer
-        .layout_runs()
-        .flat_map(|run| run.glyphs.iter().cloned())
-        .collect();
-    assert_eq!(glyphs.len(), 3);
-    assert_eq!(
-        glyphs.iter().map(|g| g.font_weight.0).collect::<Vec<_>>(),
-        [675, 700, 675]
-    );
-    assert!(glyphs.iter().all(|g| g.font_id == glyphs[0].font_id));
-    let mut scene = Scene::new();
-    renderer.draw_rich(&mut scene, &layout, Affine::IDENTITY, Color::WHITE);
-    let resources = &scene.encoding().resources;
-    assert_eq!(resources.glyph_runs.len(), 3);
-    for (run, glyph) in resources.glyph_runs.iter().zip(&glyphs) {
-        assert_eq!(run.glyphs.len(), 1);
-        assert_eq!(
-            resources.glyphs[run.glyphs.start].id,
-            u32::from(glyph.glyph_id)
-        );
+    // phase: weight_fix_preserves_optical_axis_order_in_actual_runs
+    {
+        let mut renderer = renderer();
+        let style = named_style("Adwaita Sans")
+            .with_weight(TextWeight::Bold)
+            .with_optical_sizing(OpticalSizing::Value(32.0));
+        let scene = draw(&mut renderer, "A", &style);
+        let run = one_run(&scene);
         assert_eq!(
             emitted_coords(&scene, run),
-            expected_coords(&run.font, glyph.font_weight.0, None)
+            expected_coords(&run.font, 700, Some(32.0))
         );
-        assert_source_owner(&renderer, glyph.font_id, &run.font);
+        let font = FontRef::from_index(run.font.data.as_ref(), run.font.index).unwrap();
+        assert_eq!(
+            font.axes()
+                .iter()
+                .map(|axis| axis.tag())
+                .collect::<Vec<_>>(),
+            [Tag::new(b"opsz"), Tag::new(b"wght")]
+        );
+        assert_eq!(emitted_coords(&scene, run)[0], 16384);
+    }
+    // phase: rich_same_face_runs_split_at_shaped_weight_and_retain_span_bold
+    {
+        let mut renderer = renderer();
+        let style = named_style("Noto Sans").with_font_variation(OpenTypeTag::WEIGHT, 675.4);
+        let layout = RichTextLayout::shape_styled(
+            &mut renderer.font_system,
+            &[
+                RichSpan::new("A"),
+                RichSpan::new("B").bold(true),
+                RichSpan::new("C"),
+            ],
+            &style,
+            None,
+            TextAlign::Left,
+            vec![],
+            vec![],
+        );
+        let glyphs: Vec<_> = layout
+            .buffer
+            .layout_runs()
+            .flat_map(|run| run.glyphs.iter().cloned())
+            .collect();
+        assert_eq!(glyphs.len(), 3);
+        assert_eq!(
+            glyphs.iter().map(|g| g.font_weight.0).collect::<Vec<_>>(),
+            [675, 700, 675]
+        );
+        assert!(glyphs.iter().all(|g| g.font_id == glyphs[0].font_id));
+        let mut scene = Scene::new();
+        renderer.draw_rich(&mut scene, &layout, Affine::IDENTITY, Color::WHITE);
+        let resources = &scene.encoding().resources;
+        assert_eq!(resources.glyph_runs.len(), 3);
+        for (run, glyph) in resources.glyph_runs.iter().zip(&glyphs) {
+            assert_eq!(run.glyphs.len(), 1);
+            assert_eq!(
+                resources.glyphs[run.glyphs.start].id,
+                u32::from(glyph.glyph_id)
+            );
+            assert_eq!(
+                emitted_coords(&scene, run),
+                expected_coords(&run.font, glyph.font_weight.0, None)
+            );
+            assert_source_owner(&renderer, glyph.font_id, &run.font);
+        }
+    }
+    // phase: rich_equal_weight_adjacent_spans_stay_batched
+    {
+        let mut renderer = renderer();
+        let style = named_style("Noto Sans").with_weight(TextWeight::Bold);
+        let layout = RichTextLayout::shape_styled(
+            &mut renderer.font_system,
+            &[
+                RichSpan::new("A"),
+                RichSpan::new("B").bold(true),
+                RichSpan::new("C"),
+            ],
+            &style,
+            None,
+            TextAlign::Left,
+            vec![],
+            vec![],
+        );
+        let mut scene = Scene::new();
+        renderer.draw_rich(&mut scene, &layout, Affine::IDENTITY, Color::WHITE);
+        let run = one_run(&scene);
+        assert_eq!(run.glyphs.len(), 3);
+        assert_eq!(
+            emitted_coords(&scene, run),
+            expected_coords(&run.font, 700, None)
+        );
+    }
+    // phase: rich_visible_discretionary_hyphen_uses_its_bold_marker_weight
+    {
+        let mut renderer = renderer();
+        let style = named_style("Noto Sans").with_font_variation(OpenTypeTag::WEIGHT, 675.4);
+        let bold = named_style("Noto Sans").with_weight(TextWeight::Bold);
+        let width = renderer.measure_style("ab-", None, &bold).0 + 0.5;
+        let spans = [RichSpan::new("ab\u{ad}cd").bold(true)];
+        let layout = RichTextLayout::shape_styled(
+            &mut renderer.font_system,
+            &spans,
+            &style,
+            Some(width),
+            TextAlign::Left,
+            vec![],
+            vec![],
+        );
+        let marker = layout
+            .buffer
+            .layout_runs()
+            .find_map(|run| {
+                run.glyphs
+                    .last()
+                    .filter(|g| run.text.get(g.start..g.end) == Some("\u{ad}"))
+                    .map(|g| (g.clone(), run.line_y))
+            })
+            .expect("the controlled narrow layout exercises the discretionary break");
+        assert_eq!(marker.0.font_weight, Weight(700));
+        // Resolve the expected visible glyph from the selected face's charmap,
+        // independent of the renderer's visible_discretionary_hyphen helper.
+        let font = renderer
+            .font_system
+            .get_font(marker.0.font_id, marker.0.font_weight)
+            .unwrap();
+        let charmap = font.as_swash().charmap();
+        let unicode_hyphen = charmap.map('\u{2010}');
+        let expected_id = if unicode_hyphen == 0 {
+            charmap.map('-')
+        } else {
+            unicode_hyphen
+        };
+        assert_ne!(expected_id, 0);
+        let mut scene = Scene::new();
+        renderer.draw_rich(&mut scene, &layout, Affine::IDENTITY, Color::WHITE);
+        let resources = &scene.encoding().resources;
+        let hyphen_runs: Vec<_> = resources
+            .glyph_runs
+            .iter()
+            .filter(|run| {
+                let glyphs = &resources.glyphs[run.glyphs.clone()];
+                glyphs.len() == 1
+                    && glyphs[0].id == u32::from(expected_id)
+                    && (glyphs[0].x - marker.0.x).abs() < 0.001
+                    && (glyphs[0].y - (marker.1 + marker.0.y)).abs() < 0.001
+            })
+            .collect();
+        assert_eq!(hyphen_runs.len(), 1);
+        let run = hyphen_runs[0];
+        assert_eq!(
+            emitted_coords(&scene, run),
+            expected_coords(&run.font, 700, None)
+        );
+        assert_source_owner(&renderer, marker.0.font_id, &run.font);
+        let wide = RichTextLayout::shape_styled(
+            &mut renderer.font_system,
+            &spans,
+            &style,
+            Some(10_000.0),
+            TextAlign::Left,
+            vec![],
+            vec![],
+        );
+        let mut wide_scene = Scene::new();
+        renderer.draw_rich(&mut wide_scene, &wide, Affine::IDENTITY, Color::WHITE);
+        assert_eq!(wide_scene.encoding().resources.glyphs.len(), 4);
     }
 }
 
 #[test]
-fn rich_equal_weight_adjacent_spans_stay_batched() {
-    let mut renderer = renderer();
-    let style = named_style("Noto Sans").with_weight(TextWeight::Bold);
-    let layout = RichTextLayout::shape_styled(
-        &mut renderer.font_system,
-        &[
-            RichSpan::new("A"),
-            RichSpan::new("B").bold(true),
-            RichSpan::new("C"),
-        ],
-        &style,
-        None,
-        TextAlign::Left,
-        vec![],
-        vec![],
-    );
-    let mut scene = Scene::new();
-    renderer.draw_rich(&mut scene, &layout, Affine::IDENTITY, Color::WHITE);
-    let run = one_run(&scene);
-    assert_eq!(run.glyphs.len(), 3);
-    assert_eq!(
-        emitted_coords(&scene, run),
-        expected_coords(&run.font, 700, None)
-    );
-}
-
-#[test]
-fn rich_visible_discretionary_hyphen_uses_its_bold_marker_weight() {
-    let mut renderer = renderer();
-    let style = named_style("Noto Sans").with_font_variation(OpenTypeTag::WEIGHT, 675.4);
-    let bold = named_style("Noto Sans").with_weight(TextWeight::Bold);
-    let width = renderer.measure_style("ab-", None, &bold).0 + 0.5;
-    let spans = [RichSpan::new("ab\u{ad}cd").bold(true)];
-    let layout = RichTextLayout::shape_styled(
-        &mut renderer.font_system,
-        &spans,
-        &style,
-        Some(width),
-        TextAlign::Left,
-        vec![],
-        vec![],
-    );
-    let marker = layout
-        .buffer
-        .layout_runs()
-        .find_map(|run| {
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
+fn clipped_rich_text_preserves_pixels_and_culls_only_invisible_glyphs() {
+    // phase: clipped_rich_text_reduces_encoded_glyphs_and_preserves_exact_pixels
+    {
+        let mut renderer = renderer();
+        let text = "Italic e\u{301} Αλφα fallback. ".repeat(120);
+        let layout = RichTextLayout::shape_styled(
+            &mut renderer.font_system,
+            &[RichSpan::new(&text)],
+            &named_style("Noto Sans"),
+            Some(180.0),
+            TextAlign::Left,
+            vec![(0, 24)],
+            vec![(30, 50)],
+        );
+        let clip = Rect::new(10.25, 12.75, 198.5, 135.25);
+        let mut reference = Scene::new();
+        reference.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &clip);
+        renderer.draw_rich(
+            &mut reference,
+            &layout,
+            Affine::translate((12.0, -65.5)),
+            Color::WHITE,
+        );
+        reference.pop_layer();
+        let mut candidate = Scene::new();
+        candidate.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &clip);
+        renderer.draw_rich_in_clip(
+            &mut candidate,
+            &layout,
+            Affine::translate((12.0, -65.5)),
+            Color::WHITE,
+            clip,
+        );
+        candidate.pop_layer();
+        assert!(
+            candidate.encoding().resources.glyphs.len() * 4
+                < reference.encoding().resources.glyphs.len()
+        );
+        // Exact byte equality requires deterministic path preprocessing. The
+        // production GPU path can vary a few antialiasing bytes as atomic segment
+        // allocation changes summation order; the matrix test below measures that
+        // mode separately against the reference's own observed range.
+        let mut gpu =
+            crate::offscreen::OffscreenRenderer::try_new_for_pixel_test(220, 160, true).unwrap();
+        let expected = gpu.render(&reference, Color::BLACK);
+        let actual = gpu.render(&candidate, Color::BLACK);
+        assert_eq!(
+            actual, expected,
+            "clipping optimization must preserve exact RGBA"
+        );
+    }
+    // phase: clipped_rich_text_preserves_transformed_styled_ink_and_invalid_clip_fallback
+    {
+        clipped_styled_pixel_matrix(true);
+    }
+    // phase: clipped_rich_text_gpu_pixels_stay_within_summation_noise
+    {
+        clipped_styled_pixel_matrix(false);
+    }
+    // phase: clipped_rich_text_preserves_exercised_discretionary_hyphen
+    {
+        let mut renderer = renderer();
+        let style = named_style("Noto Sans").with_weight(TextWeight::Bold);
+        let width = renderer.measure_style("ab-", None, &style).0 + 0.5;
+        let layout = RichTextLayout::shape_styled(
+            &mut renderer.font_system,
+            &[RichSpan::new("ab\u{ad}cd").bold(true)],
+            &style,
+            Some(width),
+            TextAlign::Left,
+            vec![],
+            vec![],
+        );
+        assert!(layout.buffer.layout_runs().any(|run| {
             run.glyphs
                 .last()
-                .filter(|g| run.text.get(g.start..g.end) == Some("\u{ad}"))
-                .map(|g| (g.clone(), run.line_y))
-        })
-        .expect("the controlled narrow layout exercises the discretionary break");
-    assert_eq!(marker.0.font_weight, Weight(700));
-    // Resolve the expected visible glyph from the selected face's charmap,
-    // independent of the renderer's visible_discretionary_hyphen helper.
-    let font = renderer
-        .font_system
-        .get_font(marker.0.font_id, marker.0.font_weight)
-        .unwrap();
-    let charmap = font.as_swash().charmap();
-    let unicode_hyphen = charmap.map('\u{2010}');
-    let expected_id = if unicode_hyphen == 0 {
-        charmap.map('-')
-    } else {
-        unicode_hyphen
-    };
-    assert_ne!(expected_id, 0);
-    let mut scene = Scene::new();
-    renderer.draw_rich(&mut scene, &layout, Affine::IDENTITY, Color::WHITE);
-    let resources = &scene.encoding().resources;
-    let hyphen_runs: Vec<_> = resources
-        .glyph_runs
-        .iter()
-        .filter(|run| {
-            let glyphs = &resources.glyphs[run.glyphs.clone()];
-            glyphs.len() == 1
-                && glyphs[0].id == u32::from(expected_id)
-                && (glyphs[0].x - marker.0.x).abs() < 0.001
-                && (glyphs[0].y - (marker.1 + marker.0.y)).abs() < 0.001
-        })
-        .collect();
-    assert_eq!(hyphen_runs.len(), 1);
-    let run = hyphen_runs[0];
-    assert_eq!(
-        emitted_coords(&scene, run),
-        expected_coords(&run.font, 700, None)
-    );
-    assert_source_owner(&renderer, marker.0.font_id, &run.font);
-    let wide = RichTextLayout::shape_styled(
-        &mut renderer.font_system,
-        &spans,
-        &style,
-        Some(10_000.0),
-        TextAlign::Left,
-        vec![],
-        vec![],
-    );
-    let mut wide_scene = Scene::new();
-    renderer.draw_rich(&mut wide_scene, &wide, Affine::IDENTITY, Color::WHITE);
-    assert_eq!(wide_scene.encoding().resources.glyphs.len(), 4);
-}
-
-#[test]
-fn clipped_rich_text_reduces_encoded_glyphs_and_preserves_exact_pixels() {
-    let mut renderer = renderer();
-    let text = "Italic e\u{301} Αλφα fallback. ".repeat(120);
-    let layout = RichTextLayout::shape_styled(
-        &mut renderer.font_system,
-        &[RichSpan::new(&text)],
-        &named_style("Noto Sans"),
-        Some(180.0),
-        TextAlign::Left,
-        vec![(0, 24)],
-        vec![(30, 50)],
-    );
-    let clip = Rect::new(10.25, 12.75, 198.5, 135.25);
-    let mut reference = Scene::new();
-    reference.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &clip);
-    renderer.draw_rich(
-        &mut reference,
-        &layout,
-        Affine::translate((12.0, -65.5)),
-        Color::WHITE,
-    );
-    reference.pop_layer();
-    let mut candidate = Scene::new();
-    candidate.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &clip);
-    renderer.draw_rich_in_clip(
-        &mut candidate,
-        &layout,
-        Affine::translate((12.0, -65.5)),
-        Color::WHITE,
-        clip,
-    );
-    candidate.pop_layer();
-    assert!(
-        candidate.encoding().resources.glyphs.len() * 4
-            < reference.encoding().resources.glyphs.len()
-    );
-    // Exact byte equality requires deterministic path preprocessing. The
-    // production GPU path can vary a few antialiasing bytes as atomic segment
-    // allocation changes summation order; the matrix test below measures that
-    // mode separately against the reference's own observed range.
-    let mut gpu =
-        crate::offscreen::OffscreenRenderer::try_new_for_pixel_test(220, 160, true).unwrap();
-    let expected = gpu.render(&reference, Color::BLACK);
-    let actual = gpu.render(&candidate, Color::BLACK);
-    assert_eq!(
-        actual, expected,
-        "clipping optimization must preserve exact RGBA"
-    );
-}
-
-#[test]
-fn clipped_rich_text_preserves_transformed_styled_ink_and_invalid_clip_fallback() {
-    clipped_styled_pixel_matrix(true);
-}
-
-#[test]
-fn clipped_rich_text_gpu_pixels_stay_within_summation_noise() {
-    clipped_styled_pixel_matrix(false);
+                .is_some_and(|glyph| run.text.get(glyph.start..glyph.end) == Some("\u{ad}"))
+        }));
+        let mut gpu = crate::offscreen::OffscreenRenderer::new(100, 100);
+        for clip in [
+            Rect::new(0.25, 1.75, 70.5, 30.125),
+            Rect::new(25.25, 5.5, 40.75, 28.5),
+        ] {
+            let mut reference = Scene::new();
+            reference.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &clip);
+            renderer.draw_rich(&mut reference, &layout, Affine::IDENTITY, Color::WHITE);
+            reference.pop_layer();
+            let mut candidate = Scene::new();
+            candidate.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &clip);
+            renderer.draw_rich_in_clip(
+                &mut candidate,
+                &layout,
+                Affine::IDENTITY,
+                Color::WHITE,
+                clip,
+            );
+            candidate.pop_layer();
+            assert!(gpu.render(&reference, Color::BLACK) == gpu.render(&candidate, Color::BLACK));
+        }
+    }
+    // phase: clipped_rich_text_does_not_cull_color_or_invalid_font_outlines
+    {
+        let mut renderer = renderer();
+        for family in ["Noto Color Emoji", "Noto Sans"] {
+            let layout = RichTextLayout::shape_styled(
+                &mut renderer.font_system,
+                &[RichSpan::new(if family == "Noto Sans" {
+                    "A"
+                } else {
+                    "😀"
+                })],
+                &named_style(family),
+                None,
+                TextAlign::Left,
+                vec![],
+                vec![],
+            );
+            let run = layout.buffer.layout_runs().next().unwrap();
+            let first = &run.glyphs[0];
+            let mut font = renderer
+                .vello_font(first.font_id, first.font_weight)
+                .unwrap();
+            if family == "Noto Color Emoji" {
+                assert!(
+                    FontRef::from_index(font.data.as_ref(), font.index)
+                        .unwrap()
+                        .table_data(Tag::new(b"COLR"))
+                        .is_some()
+                );
+            } else {
+                font.index = u32::MAX;
+            }
+            assert!(
+                !renderer.glyph_batch_outside(
+                    &font,
+                    &GlyphBatch {
+                        face_id: first.font_id,
+                        glyphs: run.glyphs,
+                        size: first.font_size,
+                        color: Color::WHITE,
+                        line_y: run.line_y,
+                        variations: &[],
+                    },
+                    &[],
+                    Affine::translate((10_000.0, 10_000.0)),
+                    Rect::new(0.0, 0.0, 10.0, 10.0),
+                ),
+                "uncertain or non-outline ink must keep drawing"
+            );
+        }
+    }
 }
 
 /// Largest per-channel difference the production GPU path may show between
@@ -613,253 +715,243 @@ fn clipped_styled_pixel_matrix(stable_preprocessing: bool) {
 }
 
 #[test]
-fn clipped_rich_text_preserves_exercised_discretionary_hyphen() {
-    let mut renderer = renderer();
-    let style = named_style("Noto Sans").with_weight(TextWeight::Bold);
-    let width = renderer.measure_style("ab-", None, &style).0 + 0.5;
-    let layout = RichTextLayout::shape_styled(
-        &mut renderer.font_system,
-        &[RichSpan::new("ab\u{ad}cd").bold(true)],
-        &style,
-        Some(width),
-        TextAlign::Left,
-        vec![],
-        vec![],
-    );
-    assert!(layout.buffer.layout_runs().any(|run| {
-        run.glyphs
-            .last()
-            .is_some_and(|glyph| run.text.get(glyph.start..glyph.end) == Some("\u{ad}"))
-    }));
-    let mut gpu = crate::offscreen::OffscreenRenderer::new(100, 100);
-    for clip in [
-        Rect::new(0.25, 1.75, 70.5, 30.125),
-        Rect::new(25.25, 5.5, 40.75, 28.5),
-    ] {
-        let mut reference = Scene::new();
-        reference.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &clip);
-        renderer.draw_rich(&mut reference, &layout, Affine::IDENTITY, Color::WHITE);
-        reference.pop_layer();
-        let mut candidate = Scene::new();
-        candidate.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &clip);
+fn the_clipped_ink_cache_groups_by_font_instance_and_stays_bounded() {
+    // phase: clipped_ink_cache_groups_glyphs_by_font_instance
+    {
+        let mut renderer = renderer();
+        let layout = RichTextLayout::shape_styled(
+            &mut renderer.font_system,
+            &[RichSpan::new("abcdefghijklmno")],
+            &named_style("Noto Sans"),
+            Some(400.0),
+            TextAlign::Left,
+            vec![],
+            vec![],
+        );
+        // Horizontally outside but vertically overlapping the line, so the line
+        // is not culled whole (`rich_run_outside_clip`) and reaches the glyph
+        // batch cull, which looks up ink once per font instance.
         renderer.draw_rich_in_clip(
-            &mut candidate,
+            &mut Scene::new(),
             &layout,
             Affine::IDENTITY,
             Color::WHITE,
-            clip,
+            Rect::new(1000.0, 0.0, 1100.0, 100.0),
         );
-        candidate.pop_layer();
-        assert!(gpu.render(&reference, Color::BLACK) == gpu.render(&candidate, Color::BLACK));
+        assert_eq!(
+            renderer.ink_bounds.len(),
+            1,
+            "one font-instance lookup per batch"
+        );
     }
-}
-
-#[test]
-fn clipped_rich_text_does_not_cull_color_or_invalid_font_outlines() {
-    let mut renderer = renderer();
-    for family in ["Noto Color Emoji", "Noto Sans"] {
+    // phase: clipped_ink_cache_remains_bounded_across_font_instances_and_reuses_after_eviction
+    {
+        let mut renderer = renderer();
         let layout = RichTextLayout::shape_styled(
             &mut renderer.font_system,
-            &[RichSpan::new(if family == "Noto Sans" {
-                "A"
-            } else {
-                "😀"
-            })],
-            &named_style(family),
-            None,
-            TextAlign::Left,
-            vec![],
-            vec![],
-        );
-        let run = layout.buffer.layout_runs().next().unwrap();
-        let first = &run.glyphs[0];
-        let mut font = renderer
-            .vello_font(first.font_id, first.font_weight)
-            .unwrap();
-        if family == "Noto Color Emoji" {
-            assert!(
-                FontRef::from_index(font.data.as_ref(), font.index)
-                    .unwrap()
-                    .table_data(Tag::new(b"COLR"))
-                    .is_some()
-            );
-        } else {
-            font.index = u32::MAX;
-        }
-        assert!(
-            !renderer.glyph_batch_outside(
-                &font,
-                first.font_id,
-                run.glyphs,
-                first.font_size,
-                run.line_y,
-                &[],
-                Affine::translate((10_000.0, 10_000.0)),
-                Rect::new(0.0, 0.0, 10.0, 10.0)
-            ),
-            "uncertain or non-outline ink must keep drawing"
-        );
-    }
-}
-
-#[test]
-fn clipped_ink_cache_groups_glyphs_by_font_instance() {
-    let mut renderer = renderer();
-    let layout = RichTextLayout::shape_styled(
-        &mut renderer.font_system,
-        &[RichSpan::new("abcdefghijklmno")],
-        &named_style("Noto Sans"),
-        Some(400.0),
-        TextAlign::Left,
-        vec![],
-        vec![],
-    );
-    renderer.draw_rich_in_clip(
-        &mut Scene::new(),
-        &layout,
-        Affine::IDENTITY,
-        Color::WHITE,
-        Rect::new(0.0, 1000.0, 400.0, 1100.0),
-    );
-    assert_eq!(
-        renderer.ink_bounds.len(),
-        1,
-        "one font-instance lookup per batch"
-    );
-}
-
-#[test]
-fn clipped_ink_cache_remains_bounded_across_font_instances_and_reuses_after_eviction() {
-    let mut renderer = renderer();
-    let layout = RichTextLayout::shape_styled(
-        &mut renderer.font_system,
-        &[RichSpan::new("a")],
-        &named_style("Noto Sans"),
-        Some(400.0),
-        TextAlign::Left,
-        vec![],
-        vec![],
-    );
-    let glyph = layout.buffer.layout_runs().next().unwrap().glyphs[0].clone();
-    let font = renderer
-        .vello_font(glyph.font_id, glyph.font_weight)
-        .unwrap();
-    let mut evicted = false;
-    for index in 0..SHAPE_CACHE_LIMIT + 8 {
-        let before = renderer.ink_bounds_entries;
-        let size = 10.0 + index as f32 / 128.0;
-        let outside = renderer.glyph_batch_outside(
-            &font,
-            glyph.font_id,
-            std::slice::from_ref(&glyph),
-            size,
-            0.0,
-            &[],
-            Affine::IDENTITY,
-            Rect::new(0.0, 1000.0, 400.0, 1100.0),
-        );
-        assert!(outside, "eviction must not change conservative clipping");
-        let count = renderer.ink_bounds_entries;
-        evicted |= count < before;
-        assert!(count <= SHAPE_CACHE_LIMIT);
-        assert!(renderer.ink_bounds.len() <= count);
-        assert!(renderer.glyph_batch_outside(
-            &font,
-            glyph.font_id,
-            std::slice::from_ref(&glyph),
-            size,
-            0.0,
-            &[],
-            Affine::IDENTITY,
-            Rect::new(0.0, 1000.0, 400.0, 1100.0),
-        ));
-        // A full cache may be cleared before the next batch; otherwise the
-        // repeated glyph must be a hit, including immediately after eviction.
-        if count < SHAPE_CACHE_LIMIT {
-            assert_eq!(renderer.ink_bounds_entries, count);
-        } else {
-            evicted |= renderer.ink_bounds_entries < count;
-        }
-    }
-    assert!(evicted, "the workload must exercise the capacity boundary");
-}
-
-#[test]
-fn uniform_rich_runs_borrow_glyphs_with_exact_reference_output() {
-    use crate::richtext::BaselineShift;
-    let mut renderer = renderer();
-    let mut gpu =
-        crate::offscreen::OffscreenRenderer::try_new_for_pixel_test(220, 160, true).unwrap();
-    let mut borrowed = 0;
-    let mut copied = 0;
-    for spans in [
-        vec![RichSpan::new("ordinary wrapped text ".repeat(8))],
-        vec![RichSpan::new("uniform bold").bold(true)],
-        vec![RichSpan::new("raised text").baseline(BaselineShift::Super)],
-        vec![RichSpan::new("normal "), RichSpan::new("bold").bold(true)],
-        vec![RichSpan::new("soft\u{ad}hyphen")],
-    ] {
-        let layout = RichTextLayout::shape_styled(
-            &mut renderer.font_system,
-            &spans,
+            &[RichSpan::new("a")],
             &named_style("Noto Sans"),
-            Some(180.0),
+            Some(400.0),
             TextAlign::Left,
             vec![],
             vec![],
         );
-        for clip in [None, Some(Rect::new(10.0, 10.0, 190.0, 100.0))] {
-            let transform = Affine::translate((12.25, -4.75));
-            let mut reference = Scene::new();
-            let mut candidate = Scene::new();
-            for run in layout.buffer.layout_runs() {
-                renderer.draw_rich_run_copied(
-                    &mut reference,
-                    &run,
-                    &layout,
-                    transform,
-                    Color::WHITE,
-                    clip,
-                );
-                if renderer.draw_uniform_rich_run(
-                    &mut candidate,
-                    &run,
-                    &layout,
-                    transform,
-                    Color::WHITE,
-                    clip,
-                ) {
-                    borrowed += 1;
-                } else {
-                    copied += 1;
+        let glyph = layout.buffer.layout_runs().next().unwrap().glyphs[0].clone();
+        let font = renderer
+            .vello_font(glyph.font_id, glyph.font_weight)
+            .unwrap();
+        let mut evicted = false;
+        for index in 0..SHAPE_CACHE_LIMIT + 8 {
+            let before = renderer.ink_bounds_entries;
+            let size = 10.0 + index as f32 / 128.0;
+            let outside = renderer.glyph_batch_outside(
+                &font,
+                &GlyphBatch {
+                    face_id: glyph.font_id,
+                    glyphs: std::slice::from_ref(&glyph),
+                    size,
+                    color: Color::WHITE,
+                    line_y: 0.0,
+                    variations: &[],
+                },
+                &[],
+                Affine::IDENTITY,
+                Rect::new(0.0, 1000.0, 400.0, 1100.0),
+            );
+            assert!(outside, "eviction must not change conservative clipping");
+            let count = renderer.ink_bounds_entries;
+            evicted |= count < before;
+            assert!(count <= SHAPE_CACHE_LIMIT);
+            assert!(renderer.ink_bounds.len() <= count);
+            assert!(renderer.glyph_batch_outside(
+                &font,
+                &GlyphBatch {
+                    face_id: glyph.font_id,
+                    glyphs: std::slice::from_ref(&glyph),
+                    size,
+                    color: Color::WHITE,
+                    line_y: 0.0,
+                    variations: &[],
+                },
+                &[],
+                Affine::IDENTITY,
+                Rect::new(0.0, 1000.0, 400.0, 1100.0),
+            ));
+            // A full cache may be cleared before the next batch; otherwise the
+            // repeated glyph must be a hit, including immediately after eviction.
+            if count < SHAPE_CACHE_LIMIT {
+                assert_eq!(renderer.ink_bounds_entries, count);
+            } else {
+                evicted |= renderer.ink_bounds_entries < count;
+            }
+        }
+        assert!(evicted, "the workload must exercise the capacity boundary");
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
+fn painted_glyphs_match_the_reference_output_and_shaped_offsets() {
+    // phase: uniform_rich_runs_borrow_glyphs_with_exact_reference_output
+    {
+        use crate::richtext::BaselineShift;
+        let mut renderer = renderer();
+        let mut gpu =
+            crate::offscreen::OffscreenRenderer::try_new_for_pixel_test(220, 160, true).unwrap();
+        let mut borrowed = 0;
+        let mut copied = 0;
+        for spans in [
+            vec![RichSpan::new("ordinary wrapped text ".repeat(8))],
+            vec![RichSpan::new("uniform bold").bold(true)],
+            vec![RichSpan::new("raised text").baseline(BaselineShift::Super)],
+            vec![RichSpan::new("normal "), RichSpan::new("bold").bold(true)],
+            vec![RichSpan::new("soft\u{ad}hyphen")],
+        ] {
+            let layout = RichTextLayout::shape_styled(
+                &mut renderer.font_system,
+                &spans,
+                &named_style("Noto Sans"),
+                Some(180.0),
+                TextAlign::Left,
+                vec![],
+                vec![],
+            );
+            for clip in [None, Some(Rect::new(10.0, 10.0, 190.0, 100.0))] {
+                let transform = Affine::translate((12.25, -4.75));
+                let mut reference = Scene::new();
+                let mut candidate = Scene::new();
+                for run in layout.buffer.layout_runs() {
                     renderer.draw_rich_run_copied(
-                        &mut candidate,
+                        &mut reference,
                         &run,
                         &layout,
                         transform,
                         Color::WHITE,
                         clip,
                     );
+                    if renderer.draw_uniform_rich_run(
+                        &mut candidate,
+                        &run,
+                        &layout,
+                        transform,
+                        Color::WHITE,
+                        clip,
+                    ) {
+                        borrowed += 1;
+                    } else {
+                        copied += 1;
+                        renderer.draw_rich_run_copied(
+                            &mut candidate,
+                            &run,
+                            &layout,
+                            transform,
+                            Color::WHITE,
+                            clip,
+                        );
+                    }
                 }
+                let glyphs = |scene: &Scene| {
+                    scene
+                        .encoding()
+                        .resources
+                        .glyphs
+                        .iter()
+                        .map(|g| (g.id, g.x.to_bits(), g.y.to_bits()))
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(glyphs(&candidate), glyphs(&reference));
+                assert_eq!(
+                    gpu.render(&candidate, Color::BLACK),
+                    gpu.render(&reference, Color::BLACK)
+                );
             }
-            let glyphs = |scene: &Scene| {
-                scene
-                    .encoding()
-                    .resources
-                    .glyphs
-                    .iter()
-                    .map(|g| (g.id, g.x.to_bits(), g.y.to_bits()))
-                    .collect::<Vec<_>>()
-            };
-            assert_eq!(glyphs(&candidate), glyphs(&reference));
-            assert_eq!(
-                gpu.render(&candidate, Color::BLACK),
-                gpu.render(&reference, Color::BLACK)
-            );
+        }
+        assert!(borrowed > 0);
+        assert!(copied > 0, "fixture must cover conservative fallback");
+    }
+    // phase: painted_glyphs_keep_shaped_mark_offsets_for_bengali_conjuncts
+    // Bengali conjuncts are assembled from several glyphs that the shaper
+    // positions relative to each other with GPOS offsets (the below-base forms
+    // and vowel signs of নমস্কার and বিশ্ব). Painting only the pen positions
+    // leaves those pieces where the base glyph's advance put them and the
+    // conjuncts read as broken, so every paint path must place glyphs where the
+    // shaper put them.
+    {
+        let mut renderer = renderer();
+        let style = named_style("Noto Sans Bengali");
+        let text = "নমস্কার বিশ্ব";
+
+        let buffer = renderer.shape_buffer(text, None, &style);
+        assert!(
+            buffer
+                .buffer
+                .layout_runs()
+                .flat_map(|run| run.glyphs.iter())
+                .any(|g| g.x_offset != 0.0 || g.y_offset != 0.0),
+            "fixture must exercise GPOS mark offsets"
+        );
+        let shaped = shaped_origins(&buffer.buffer);
+        let scene = draw(&mut renderer, text, &style);
+        assert_same_origins(&painted_origins(&scene), &shaped, "plain text");
+
+        let layout = RichTextLayout::shape_styled(
+            &mut renderer.font_system,
+            &[RichSpan::new(text)],
+            &style,
+            None,
+            TextAlign::Left,
+            vec![],
+            vec![],
+        );
+        let shaped = shaped_origins(&layout.buffer);
+        for clip in [None, Some(Rect::new(-100.0, -100.0, 1000.0, 1000.0))] {
+            let mut uniform = Scene::new();
+            let mut copied = Scene::new();
+            for run in layout.buffer.layout_runs() {
+                assert!(renderer.draw_uniform_rich_run(
+                    &mut uniform,
+                    &run,
+                    &layout,
+                    Affine::IDENTITY,
+                    Color::WHITE,
+                    clip,
+                ));
+                renderer.draw_rich_run_copied(
+                    &mut copied,
+                    &run,
+                    &layout,
+                    Affine::IDENTITY,
+                    Color::WHITE,
+                    clip,
+                );
+            }
+            assert_same_origins(&painted_origins(&uniform), &shaped, "uniform rich run");
+            assert_same_origins(&painted_origins(&copied), &shaped, "copied rich run");
         }
     }
-    assert!(borrowed > 0);
-    assert!(copied > 0, "fixture must cover conservative fallback");
 }
 
 /// Where the shaper placed each glyph: its pen position plus the GPOS
@@ -903,65 +995,5 @@ fn assert_same_origins(painted: &[(u32, f32, f32)], shaped: &[(u32, f32, f32)], 
             shaped.1,
             shaped.2
         );
-    }
-}
-
-/// Bengali conjuncts are assembled from several glyphs that the shaper
-/// positions relative to each other with GPOS offsets (the below-base forms
-/// and vowel signs of নমস্কার and বিশ্ব). Painting only the pen positions
-/// leaves those pieces where the base glyph's advance put them and the
-/// conjuncts read as broken, so every paint path must place glyphs where the
-/// shaper put them.
-#[test]
-fn painted_glyphs_keep_shaped_mark_offsets_for_bengali_conjuncts() {
-    let mut renderer = renderer();
-    let style = named_style("Noto Sans Bengali");
-    let text = "নমস্কার বিশ্ব";
-
-    let buffer = renderer.shape_buffer(text, None, &style);
-    assert!(
-        buffer
-            .layout_runs()
-            .flat_map(|run| run.glyphs.iter())
-            .any(|g| g.x_offset != 0.0 || g.y_offset != 0.0),
-        "fixture must exercise GPOS mark offsets"
-    );
-    let shaped = shaped_origins(&buffer);
-    let scene = draw(&mut renderer, text, &style);
-    assert_same_origins(&painted_origins(&scene), &shaped, "plain text");
-
-    let layout = RichTextLayout::shape_styled(
-        &mut renderer.font_system,
-        &[RichSpan::new(text)],
-        &style,
-        None,
-        TextAlign::Left,
-        vec![],
-        vec![],
-    );
-    let shaped = shaped_origins(&layout.buffer);
-    for clip in [None, Some(Rect::new(-100.0, -100.0, 1000.0, 1000.0))] {
-        let mut uniform = Scene::new();
-        let mut copied = Scene::new();
-        for run in layout.buffer.layout_runs() {
-            assert!(renderer.draw_uniform_rich_run(
-                &mut uniform,
-                &run,
-                &layout,
-                Affine::IDENTITY,
-                Color::WHITE,
-                clip,
-            ));
-            renderer.draw_rich_run_copied(
-                &mut copied,
-                &run,
-                &layout,
-                Affine::IDENTITY,
-                Color::WHITE,
-                clip,
-            );
-        }
-        assert_same_origins(&painted_origins(&uniform), &shaped, "uniform rich run");
-        assert_same_origins(&painted_origins(&copied), &shaped, "copied rich run");
     }
 }

@@ -87,36 +87,41 @@ pub fn main() {
         unsafe { std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1") };
     }
 
-    ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("so.tilo.browser", browser_root)
-            .runtime_attachment(|args| !launch_browsing_mode(args).is_private())
-            .shot_handler(render_shot)
-            .open_state_with_args(open_browser_state)
-            .allowed_live_options(&[
-                "--shots-live",
-                "--shots-suggestions",
-                "--shots-overlay",
-                "--shots-pip-empty",
-                "--shots-settings",
-                "--shots-history-paused",
-                "--shots-loading",
-                "--shots-error",
-                "--shots-library",
-                "--shots-tabs",
-                "--library-section",
-                "--library-filter",
-                "--download-state",
-                "--audit-state",
-                "--url",
-                "--size",
-                "--app-root",
-            ])
-            .allowed_flags(&["--probe-pip", "--pip-active"])
-            .allowed_live_flags(&["--private"])
-            .max_positionals(1)
-            .command_handler(command)
-            .live_handler(run_live),
-    );
+    // The live handler installs the WebKit frame waker, and the dmabuf
+    // compositor when that path is on. The framework shell never wakes the
+    // window, so a page would sit until some other event.
+    ui::launch::run_or_exit(&launch_spec());
+}
+
+fn launch_spec() -> LaunchSpec {
+    LaunchSpec::new_with_args("so.tilo.browser", browser_root)
+        .runtime_attachment(|args| !launch_browsing_mode(args).is_private())
+        .shot_handler(render_shot)
+        .open_state_with_args(open_browser_state)
+        .allowed_live_options(&[
+            "--shots-live",
+            "--shots-suggestions",
+            "--shots-overlay",
+            "--shots-pip-empty",
+            "--shots-settings",
+            "--shots-history-paused",
+            "--shots-loading",
+            "--shots-error",
+            "--shots-library",
+            "--shots-tabs",
+            "--library-section",
+            "--library-filter",
+            "--download-state",
+            "--audit-state",
+            "--url",
+            "--size",
+            "--app-root",
+        ])
+        .allowed_flags(&["--probe-pip", "--pip-active"])
+        .allowed_live_flags(&["--private"])
+        .max_positionals(1)
+        .command_handler(command)
+        .live_handler(run_live)
 }
 
 #[allow(
@@ -291,33 +296,42 @@ fn browser_widget(args: &LaunchArgs, mode: BrowsingMode) -> BrowserWidget {
     reason = "signature is fixed by LaunchSpec::live_handler"
 )]
 fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
-    let wake_scope = ui::wake::WakeScope::new();
-    let _wake_entry = wake_scope.enter();
-    let widget = browser_workspace(args)?;
-    let engine = widget.engine_handle();
-
-    // Zero-copy GPU compositing: when the WebView engine exports dmabuf
-    // frames (TILO_WEBVIEW_DMABUF=1), install a render-thread hook that
-    // blits the imported texture over the content rect. A no-op otherwise.
-    #[cfg(feature = "wpe")]
-    if std::env::var_os("TILO_WEBVIEW_DMABUF").is_some() {
-        ui::render_thread::set_frame_post_processor(Box::new(
-            browser::compositor::WebViewCompositor::new(
-                engine.clone(),
-                widget.content_rect_handle(),
-            ),
-        ));
-    }
-
-    let (state, autosave) = open_browser_state("so.tilo.browser", args);
     let mode = prepare_launch(args).map_err(LaunchError::Operation)?.mode;
+    let mut engine = None;
+    let mut make_root = || -> Result<Box<dyn Widget>, LaunchError> {
+        let widget = browser_workspace(args)?;
+        let actual_engine = widget.engine_handle();
+        // Zero-copy GPU compositing: when the WebView engine exports dmabuf
+        // frames (TILO_WEBVIEW_DMABUF=1), install a render-thread hook that
+        // blits the imported texture over the content rect. A no-op otherwise.
+        #[cfg(feature = "wpe")]
+        if std::env::var_os("TILO_WEBVIEW_DMABUF").is_some() {
+            ui::render_thread::set_frame_post_processor(Box::new(
+                browser::compositor::WebViewCompositor::new(
+                    actual_engine.clone(),
+                    widget.content_rect_handle(),
+                ),
+            ));
+        }
+        engine = Some(actual_engine);
+        Ok(Box::new(widget))
+    };
     let mut app = if mode.is_private() {
-        ui::App::from_scoped_parts_local(wake_scope, state, Box::new(widget))
+        // Private browsing keeps its explicit local-only construction path.
+        let wake_scope = ui::wake::WakeScope::new();
+        let _entry = wake_scope.enter();
+        let root = make_root()?;
+        let (state, autosave) = open_browser_state("so.tilo.browser", args);
+        ui::App::from_scoped_parts_local(wake_scope, state, root).with_autosave(autosave)
     } else {
-        ui::App::from_scoped_parts(wake_scope, state, Box::new(widget))
-    }
-    .with_autosave(autosave);
+        launch_spec()
+            .prepare_native(args)?
+            .build_root(&mut make_root)?
+    };
     browser::actions::register(app.action_registry_mut());
+    let engine = engine.ok_or_else(|| {
+        LaunchError::Operation("browser factory did not retain its engine".into())
+    })?;
     // Wake the (otherwise event-driven) winit loop whenever the engine
     // publishes a frame or a navigation event, so pages animate and
     // finish loading without waiting for user input.
@@ -601,7 +615,7 @@ fn render_live_shot_to_png(
     probe_pip: bool,
     args: &LaunchArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::{Duration, Instant};
+    use ui::time::{Duration, Instant};
     use ui::webview::{SharedEngine, WebViewCommand};
 
     let real_engine: SharedEngine = ui::webview::chromium::ChromiumEngine::new()
@@ -631,7 +645,7 @@ fn render_live_shot_to_png(
     // web view's laid-out (physical) size — the first layout pass sends
     // the Resize, subsequent frames arrive at the right dimensions.
     // Then let the page settle briefly so late-loading content paints.
-    let deadline = Instant::now() + Duration::from_secs(45);
+    let deadline = ui::time::now() + Duration::from_secs(45);
     let mut sized_frame_seen_at: Option<Instant> = None;
     let mut pip_probe_started = false;
     let mut pip_request = None;
@@ -723,7 +737,7 @@ fn render_live_shot_to_png(
                 }
             }
         }
-        if Instant::now() > deadline {
+        if ui::time::now() > deadline {
             return Err(format!("no sized painted frame from {url} within 45s").into());
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -812,40 +826,44 @@ mod resource_claim_tests {
     use super::{launch_target, requested_browsing_mode};
     use browser::browsing_mode::BrowsingMode;
 
+    /// Startup resource claims.
     #[test]
-    fn explicit_private_flag_wins_and_environment_one_is_bundle_fallback() {
-        assert_eq!(
-            requested_browsing_mode(true, Some(std::ffi::OsStr::new("0"))),
-            BrowsingMode::Private
-        );
-        assert_eq!(
-            requested_browsing_mode(false, Some(std::ffi::OsStr::new("1"))),
-            BrowsingMode::Private
-        );
-        for fallback in [
-            None,
-            Some(std::ffi::OsStr::new("0")),
-            Some(std::ffi::OsStr::new("true")),
-        ] {
+    fn startup_claims_private_flag_and_one_web_scheme_value() {
+        // Phase `explicit_private_flag_wins_and_environment_one_is_bundle_fallback`.
+        {
             assert_eq!(
-                requested_browsing_mode(false, fallback),
-                BrowsingMode::Normal
+                requested_browsing_mode(true, Some(std::ffi::OsStr::new("0"))),
+                BrowsingMode::Private
             );
+            assert_eq!(
+                requested_browsing_mode(false, Some(std::ffi::OsStr::new("1"))),
+                BrowsingMode::Private
+            );
+            for fallback in [
+                None,
+                Some(std::ffi::OsStr::new("0")),
+                Some(std::ffi::OsStr::new("true")),
+            ] {
+                assert_eq!(
+                    requested_browsing_mode(false, fallback),
+                    BrowsingMode::Normal
+                );
+            }
         }
-    }
 
-    #[test]
-    fn startup_accepts_only_declared_web_schemes_as_one_value() {
-        let uri = "HTTPS://example.test/a --still-data";
-        assert_eq!(launch_target(&[uri.into()]).as_deref(), Some(uri));
-        for value in [
-            "javascript:alert(1)",
-            "data:text/plain,x",
-            "mailto:a@b",
-            "file:///tmp/portal-bypass.html",
-            "/tmp/portal-bypass.html",
-        ] {
-            assert_eq!(launch_target(&[value.into()]), None);
+        // Phase `startup_accepts_only_declared_web_schemes_as_one_value`.
+        {
+            let uri = "HTTPS://example.test/a --still-data";
+            assert_eq!(launch_target(&[uri.into()]).as_deref(), Some(uri));
+            for value in [
+                "javascript:alert(1)",
+                "data:text/plain,x",
+                "mailto:a@b",
+                "file:///tmp/portal-bypass.html",
+                "/tmp/portal-bypass.html",
+            ] {
+                assert_eq!(launch_target(&[value.into()]), None);
+            }
         }
     }
 }

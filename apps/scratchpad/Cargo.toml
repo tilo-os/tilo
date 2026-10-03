@@ -11,14 +11,20 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-anyhow.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 # The native diagnostic reports the note's BLAKE3 hash, never its text.
 blake3.workspace = true
 
 [dev-dependencies]
+# The native fixture (tests/support) seeds a profile through the headless app.
+anyhow.workspace = true
+serde.workspace = true
+tilo-files = { path = "../../crates/platform/tilo-files" }
 tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

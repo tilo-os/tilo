@@ -1,13 +1,9 @@
-//! Rendering for the math field: paints the laid-out boxes, the structure
-//! decorations (fraction bars, radical signs, stretched parens), the caret
-//! bar at the active gap, and the selection highlight band — all into the
-//! Vello scene, reading colours from the theme.
+//! Rendering for the math field's editing state: the caret bar at the active
+//! gap and the selection highlight band, reading colours from the theme. The
+//! laid-out boxes themselves are painted by `ui::math::draw_layout`.
 
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Color, Fill};
+use ui::paint::PaintCtx;
+use vello::kurbo::{Point, Rect};
 
 use crate::draw;
 
@@ -15,63 +11,47 @@ use super::edit::Sel;
 use super::layout::{Gap, Layout};
 use super::model::Slot;
 
-/// Paint the field's content. `origin` is the top-left of the content area in
-/// scene coords; layout is in content-local coords.
-#[allow(clippy::too_many_arguments)]
-pub fn draw_field(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    layout: &Layout,
+/// Paint the selection band behind the glyphs. `origin` is the top-left of
+/// the content area in scene coords; gaps are in content-local coords.
+pub fn draw_selection(
+    ctx: &mut PaintCtx<'_>,
     origin: Point,
-    caret: Option<&Gap>,
-    selection: Option<&Sel>,
-    sel_gaps: &[(usize, &Gap)],
-    text_color: Color,
-    show_caret: bool,
+    selection: &Sel,
+    row_gaps: &[(usize, &Gap)],
 ) {
-    let c = &theme.tokens.colors;
-    let ox = origin.x;
-    let oy = origin.y;
-
-    // selection band first (behind glyphs)
-    if let (Some(sel), false) = (selection, sel_gaps.is_empty())
-        && !sel.is_empty()
-    {
-        let lo = sel.lo();
-        let hi = sel.hi();
-        let mut x0 = None;
-        let mut x1 = None;
-        let mut top = f64::INFINITY;
-        let mut bot = f64::NEG_INFINITY;
-        for (idx, g) in sel_gaps {
-            if *idx == lo {
-                x0 = Some(g.x);
-            }
-            if *idx == hi {
-                x1 = Some(g.x);
-            }
-            if *idx >= lo && *idx <= hi {
-                top = top.min(g.top);
-                bot = bot.max(g.bottom);
-            }
+    if row_gaps.is_empty() || selection.is_empty() {
+        return;
+    }
+    let lo = selection.lo();
+    let hi = selection.hi();
+    let mut x0 = None;
+    let mut x1 = None;
+    let mut top = f64::INFINITY;
+    let mut bot = f64::NEG_INFINITY;
+    for (idx, g) in row_gaps {
+        if *idx == lo {
+            x0 = Some(g.x);
         }
-        if let (Some(a), Some(b)) = (x0, x1) {
-            let band = Rect::new(ox + a, oy + top, ox + b, oy + bot);
-            let col = draw::with_alpha(c.accent[5], 90);
-            scene.fill(Fill::NonZero, t, col, None, &band);
+        if *idx == hi {
+            x1 = Some(g.x);
+        }
+        if *idx >= lo && *idx <= hi {
+            top = top.min(g.top);
+            bot = bot.max(g.bottom);
         }
     }
-
-    ui::math::draw_layout(scene, t, tr, layout, origin, text_color);
-
-    // caret bar
-    if show_caret && let Some(g) = caret {
-        let x = ox + g.x;
-        let bar = Rect::new(x - 1.0, oy + g.top, x + 1.0, oy + g.bottom);
-        scene.fill(Fill::NonZero, t, c.accent[5], None, &bar);
+    if let (Some(a), Some(b)) = (x0, x1) {
+        let band = Rect::new(origin.x + a, origin.y + top, origin.x + b, origin.y + bot);
+        let col = draw::with_alpha(ctx.theme.tokens.colors.accent[5], 90);
+        ctx.fill_rect(band, col);
     }
+}
+
+/// Paint the caret bar at `gap`, relative to the content `origin`.
+pub fn draw_caret(ctx: &mut PaintCtx<'_>, origin: Point, gap: &Gap) {
+    let x = origin.x + gap.x;
+    let bar = Rect::new(x - 1.0, origin.y + gap.top, x + 1.0, origin.y + gap.bottom);
+    ctx.fill_rect(bar, ctx.theme.tokens.colors.accent[5]);
 }
 
 /// Build the `(index, gap)` list for the caret's current row so the renderer

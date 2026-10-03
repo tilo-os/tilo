@@ -279,26 +279,31 @@ impl BlobFetcher for ProviderBlobs {
 mod tests {
     use super::*;
 
-    /// Real two-node transfer, entirely in-process: node A serves a
-    /// blob, node B fetches it by ticket and verifies the hash.
+    /// Real two-node transfer, entirely in-process: node A serves blobs, node
+    /// B fetches them by ticket or hash and verifies each hash.
     #[tokio::test]
-    async fn two_node_fetch_roundtrip() {
+    async fn blobs_transfer_between_nodes_verified_by_hash() {
+        let node = BlobNode::memory().await.unwrap();
+        let client = client_endpoint().await.unwrap();
+
+        // Fetch by ticket round-trips.
         let payload = Bytes::from_static(b"a tapp's worth of bytes");
         let expected = *blake3::hash(&payload).as_bytes();
-
-        let node = BlobNode::memory().await.unwrap();
         let (hash, ticket) = node.add_and_ticket(payload.clone()).await.unwrap();
         assert_eq!(hash.as_bytes(), &expected);
         assert!(node.has(hash).await);
-
-        let client = client_endpoint().await.unwrap();
         let got = fetch_blob(&client, &ticket, expected).await.unwrap();
         assert_eq!(got, payload);
-    }
 
-    #[tokio::test]
-    async fn a_provider_serves_payload_blobs_by_hash() {
-        let node = BlobNode::memory().await.unwrap();
+        // Asking for a different hash than the ticket carries is refused.
+        let (_hash, ticket) = node
+            .add_and_ticket(Bytes::from_static(b"real"))
+            .await
+            .unwrap();
+        let bogus = [0xabu8; 32];
+        assert!(fetch_blob(&client, &ticket, bogus).await.is_err());
+
+        // A provider serves payload blobs by hash, in the order asked.
         node.add(Bytes::from_static(b"payload a")).await.unwrap();
         node.add(Bytes::from_static(b"payload b")).await.unwrap();
         let provider = ProviderBlobs::new(node.addr());
@@ -319,18 +324,5 @@ mod tests {
                 .await
                 .is_err()
         );
-    }
-
-    #[tokio::test]
-    async fn fetch_rejects_hash_mismatch() {
-        let node = BlobNode::memory().await.unwrap();
-        let (_hash, ticket) = node
-            .add_and_ticket(Bytes::from_static(b"real"))
-            .await
-            .unwrap();
-        let client = client_endpoint().await.unwrap();
-        // Ask for a different hash than the ticket carries.
-        let bogus = [0xabu8; 32];
-        assert!(fetch_blob(&client, &ticket, bogus).await.is_err());
     }
 }

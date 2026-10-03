@@ -59,65 +59,15 @@ impl SavedInstanceView {
     }
 }
 
-// Postcard is positional: preserve the exact original eight-field schema.
-#[derive(serde::Deserialize)]
-struct SavedInstanceViewV1 {
-    version: u32,
-    app_id: String,
-    device_id: String,
-    workspace_id: String,
-    instance_id: u64,
-    record_id: String,
-    record_kind: String,
-    view: View,
-}
-impl SavedInstanceViewV1 {
-    fn upgrade(self) -> Result<SavedInstanceView, ThawError> {
-        if self.version != 1 {
-            return Err(ThawError::UnsupportedVersion {
-                found: self.version,
-                supported: 1,
-            });
-        }
-        for identity in [
-            &self.app_id,
-            &self.device_id,
-            &self.workspace_id,
-            &self.record_id,
-            &self.record_kind,
-        ] {
-            validate_identity(identity)?;
-        }
-        self.view.validate()?;
-        Ok(SavedInstanceView {
-            version: 2,
-            app_id: self.app_id,
-            device_id: self.device_id,
-            workspace_id: self.workspace_id,
-            instance_id: self.instance_id,
-            record_id: self.record_id,
-            record_kind: self.record_kind,
-            view: self.view,
-            application: None,
-        })
-    }
-}
 fn decode_envelope(bytes: &[u8]) -> Result<SavedInstanceView, ThawError> {
     let (version, _): (u32, _) = postcard::take_from_bytes(bytes).map_err(ThawError::Envelope)?;
-    let (instance, remainder) = match version {
-        1 => {
-            let (old, remainder): (SavedInstanceViewV1, _) =
-                postcard::take_from_bytes(bytes).map_err(ThawError::Envelope)?;
-            (old.upgrade()?, remainder)
-        }
-        2 => postcard::take_from_bytes(bytes).map_err(ThawError::Envelope)?,
-        found => {
-            return Err(ThawError::UnsupportedVersion {
-                found,
-                supported: 2,
-            });
-        }
-    };
+    if version != 2 {
+        return Err(ThawError::UnsupportedVersion {
+            found: version,
+            supported: 2,
+        });
+    }
+    let (instance, remainder) = postcard::take_from_bytes(bytes).map_err(ThawError::Envelope)?;
     if !remainder.is_empty() {
         return Err(ThawError::InvalidView("trailing envelope bytes".into()));
     }
@@ -127,6 +77,8 @@ fn decode_envelope(bytes: &[u8]) -> Result<SavedInstanceView, ThawError> {
 /// Exact explicit namespace retained across construction, close and save retry.
 pub struct InstanceViewStore {
     store: Rc<dyn DurableStore>,
+    /// The same explicit profile/device browser cache the record owner uses.
+    portable: Option<crate::portable_storage::PortableStorage>,
     device_id: String,
     workspace_id: String,
     #[allow(
@@ -179,10 +131,44 @@ impl InstanceViewStore {
         validate_identity(workspace_id)?;
         Ok(Self {
             store,
+            portable: None,
             device_id: device_id.into(),
             workspace_id: workspace_id.into(),
             profile_lifetime: None,
         })
+    }
+    /// Use the same explicit profile/device cache as the record owner.
+    pub fn portable(
+        cache: crate::portable_storage::PortableStorage,
+        workspace: &str,
+    ) -> Result<Self, ThawError> {
+        validate_identity(workspace)?;
+        let crate::portable_storage::ProfileNamespace::Portable { device, .. } = cache.namespace()
+        else {
+            return Err(ThawError::BindingMismatch);
+        };
+        Ok(Self {
+            // Views over a portable cache never open this store.
+            store: Rc::new(durable_store::MemoryStore::new()),
+            device_id: device.clone(),
+            workspace_id: workspace.into(),
+            portable: Some(cache),
+            profile_lifetime: None,
+        })
+    }
+    /// The explicit profile namespace these views are bound to; equal to the
+    /// record owner's canonical namespace for the same profile.
+    fn namespace(&self) -> String {
+        match &self.portable {
+            Some(cache) => crate::record::portable_namespace(cache),
+            None => self.store.namespace().to_owned(),
+        }
+    }
+    fn cache_key(&self, instance: u64) -> crate::portable_storage::StorageKey {
+        crate::portable_storage::StorageKey::View {
+            workspace: self.workspace_id.clone(),
+            instance,
+        }
     }
     pub(crate) fn with_profile_lifetime(
         mut self,
@@ -192,9 +178,7 @@ impl InstanceViewStore {
         self
     }
     pub(crate) fn matches_namespace(&self, namespace: &str, device: &str, workspace: &str) -> bool {
-        self.store.namespace() == namespace
-            && self.device_id == device
-            && self.workspace_id == workspace
+        self.namespace() == namespace && self.device_id == device && self.workspace_id == workspace
     }
     pub(crate) fn workspace_id(&self) -> &str {
         &self.workspace_id
@@ -216,14 +200,21 @@ impl InstanceViewStore {
     /// Reports I/O, malformed/versioned envelopes, invalid geometry and foreign bindings.
     /// Invalid source bytes are never repaired or replaced.
     pub fn load(&self, instance_id: u64) -> Result<Option<SavedInstanceView>, ThawError> {
-        let Some(stored) = self
-            .store
-            .read(&self.key(instance_id))
-            .map_err(storage_error)?
-        else {
-            return Ok(None);
+        let bytes = if let Some(cache) = &self.portable {
+            let Some(value) = cache.get(&self.cache_key(instance_id)) else {
+                return Ok(None);
+            };
+            value.bytes
+        } else {
+            let Some(stored) = self
+                .store
+                .read(&self.key(instance_id))
+                .map_err(storage_error)?
+            else {
+                return Ok(None);
+            };
+            stored.bytes
         };
-        let bytes = stored.bytes;
         let instance = decode_envelope(&bytes)?;
         self.validate(&instance, instance_id)?;
         Ok(Some(instance))
@@ -235,6 +226,13 @@ impl InstanceViewStore {
     pub fn save(&self, instance: &SavedInstanceView) -> Result<(), ThawError> {
         self.validate(instance, instance.instance_id)?;
         let bytes = postcard::to_stdvec(instance).map_err(ThawError::Envelope)?;
+        if let Some(cache) = &self.portable {
+            let key = self.cache_key(instance.instance_id);
+            return cache
+                .put(key.clone(), bytes, None)
+                .and_then(|()| cache.flush(&key))
+                .map_err(|e| ThawError::Io(std::io::Error::other(e)));
+        }
         let key = self.key(instance.instance_id);
         self.store
             .write(&key, WriteOp::Replace(bytes), None)

@@ -16,8 +16,13 @@ Outputs (see src/data.rs for the reader):
   data/emoji.txt   locale-independent structure: groups, subgroups, the
                    fully-qualified emoji in Unicode order, which accept a skin
                    tone, uniform-tone overrides and gender variant triples.
-  data/en.txt      English names, keywords and group labels. Another locale is
-                   another <locale>.txt in the same format.
+  data/en.txt      English names, keywords and group labels.
+  data/<l>.txt     the same for each other locale in LOCALE_SOURCES, from its
+                   CLDR annotations and characterLabels. An emoji or group CLDR
+                   leaves untranslated is omitted, and the reader keeps its
+                   English name. build.rs deflates these files into the crate.
+
+Adding a locale is one LOCALE_SOURCES entry and a rerun.
 """
 
 from __future__ import annotations
@@ -33,20 +38,84 @@ import xml.etree.ElementTree as ET
 EMOJI_VERSION = "16.0"
 CLDR_RELEASE = "release-46"
 
+CLDR = f"https://raw.githubusercontent.com/unicode-org/cldr/{CLDR_RELEASE}/common"
+
+# Per locale: SHA-256 of CLDR's annotations/<l>.xml, annotationsDerived/<l>.xml
+# and, for translated group labels, main/<l>.xml. English group labels come
+# from emoji-test.txt, so English needs no main file.
+LOCALE_SOURCES = {
+    "en": (
+        "7d491f1782480d50ee953d3943e8a65eacaa4394b41af9e9f89c9be418256ade",
+        "461d1578079c5ebc947e506df6b5a55c93f006160e8dff3f05dcf917ce081604",
+        None,
+    ),
+    "de": (
+        "4cf875e5487f8d542d1c8634edd3a83d3020f15fa7c9d64d98c7b0e265edbb67",
+        "1476a74a3d3cfc8880d92b96ac086863a4e37f0a64f695c862a582fa5dbaef2f",
+        "9187264ac8c99b8654802b418081098918940183a246d02e53d4fbb5cef3d6f5",
+    ),
+    "es": (
+        "baeb76f846321d3838a93bf63126ea52a35240987f555c6cd87651a01f734955",
+        "1779e3aa00cbc56533dc218b735643acf27967c9f4ab6ee58d0a349d9745019c",
+        "05e5b29fc098457a59b49eb2edc8c010b5b7cfacc549bb50405ae18973b045e5",
+    ),
+    "fr": (
+        "03a8f16c52ef592eb77d56bf9407bb166837cf3ba9d87e53f59e0a963e00bbd9",
+        "42af059617558844564c232116f9c06a7878028259dc171233e4a167d021f7cf",
+        "8f8a56993bc40ec9a32e8bf9bf2a585b16c42719e0c73f56614535152ddc58ea",
+    ),
+    "it": (
+        "08c7220fb41c122ac7ea6583012e53a1538a1acb545dfcbe6d2b4f83493f3c81",
+        "1f4e7808261c372524aef50d6ebe6174d869d82ec8afccaf8dae91f9f3e49458",
+        "49410d81008aeb0eaa52513a86487405322512ac3884d23a0995cc3f3514e1c3",
+    ),
+    "ja": (
+        "ba0fc62bf90b7ab33b47593825aee3745cfabdcee3d6d322cef89100c409ca1e",
+        "7349579fd7bd3f09a2a62d06ba2a270b88df78d58f834cc87e9fd373f89c4ae1",
+        "3e5ff4a7cf05cbef79cc338553bcfcb8347c73fbfcc707068b87ecb4132bd222",
+    ),
+    "zh": (
+        "487e16c5e64b6ac1cb38a91b5f2dc25349ded224bcd78ec1f14a92bba3ef3147",
+        "01d48d98a8612f779c17707db51f2ba2c55292d6c690f8a0828dd748c042206a",
+        "bc40d32d5f602bae6b5e4ab58f4983a533f3a28c14c4642afca57b095d067862",
+    ),
+    "zh_Hant": (
+        "2d7ee90b147b127b1e42214784892cc98cdd4a7a294ebb1f37bdf00489c4ba6b",
+        "406b93a2b61d4161fc356931a1321f3301fcc07aecda9ad4221cb4137ffb2caa",
+        "e846d2247b1fb0d5aaa86e3633f2cf2784fe3266a176ab7eb0b61884c1d12e0d",
+    ),
+}
+
 SOURCES = {
     "emoji-test.txt": (
         f"https://www.unicode.org/Public/emoji/{EMOJI_VERSION}/emoji-test.txt",
         "24f0c534e86cf142e2496953e8f0e46a3e702392911eddcd29c6cced85139697",
     ),
-    "annotations-en.xml": (
-        f"https://raw.githubusercontent.com/unicode-org/cldr/{CLDR_RELEASE}/common/annotations/en.xml",
-        "7d491f1782480d50ee953d3943e8a65eacaa4394b41af9e9f89c9be418256ade",
-    ),
-    "annotations-derived-en.xml": (
-        f"https://raw.githubusercontent.com/unicode-org/cldr/{CLDR_RELEASE}/common/annotationsDerived/en.xml",
-        "461d1578079c5ebc947e506df6b5a55c93f006160e8dff3f05dcf917ce081604",
-    ),
 }
+for _loc, (_ann, _derived, _main) in LOCALE_SOURCES.items():
+    SOURCES[f"annotations-{_loc}.xml"] = (f"{CLDR}/annotations/{_loc}.xml", _ann)
+    SOURCES[f"annotations-derived-{_loc}.xml"] = (
+        f"{CLDR}/annotationsDerived/{_loc}.xml",
+        _derived,
+    )
+    if _main:
+        SOURCES[f"main-{_loc}.xml"] = (f"{CLDR}/main/{_loc}.xml", _main)
+
+# CLDR's characterLabel for each Unicode group, for translated tab labels.
+GROUP_LABELS = {
+    "smileys-emotion": "smiley",
+    "people-body": "person",
+    "animals-nature": "animals_nature",
+    "food-drink": "food_drink",
+    "travel-places": "travel_places",
+    "activities": "activities",
+    "objects": "objects",
+    "symbols": "symbols",
+    "flags": "flags",
+}
+
+# CLDR's marker for "inherit this value from the parent locale".
+INHERIT = "↑↑↑"
 
 TONES = [chr(c) for c in range(0x1F3FB, 0x1F400)]
 ZWJ = "‍"
@@ -129,6 +198,8 @@ def parse_annotations(*blobs: bytes) -> tuple[dict[str, str], dict[str, list[str
         for node in root.iter("annotation"):
             cp = node.get("cp", "").replace(VS16, "")
             text = (node.text or "").strip()
+            if not text or text == INHERIT:
+                continue
             if node.get("type") == "tts":
                 tts[cp] = text
             else:
@@ -138,6 +209,49 @@ def parse_annotations(*blobs: bytes) -> tuple[dict[str, str], dict[str, list[str
 
 def clean(field: str) -> str:
     return field.replace("\t", " ").replace("\n", " ").replace("|", "/")
+
+
+def group_labels(main: bytes) -> dict[str, str]:
+    """Group id -> CLDR's translated characterLabel, first letter raised."""
+    labels = {}
+    wanted = {cldr: gid for gid, cldr in GROUP_LABELS.items()}
+    for node in ET.fromstring(main).iter("characterLabel"):
+        gid = wanted.get(node.get("type", ""))
+        text = (node.text or "").strip()
+        if gid and text and text != INHERIT:
+            labels[gid] = text[:1].upper() + text[1:]
+    return labels
+
+
+def locale_lines(
+    header: str,
+    groups,
+    base_list: list[str],
+    labels: dict[str, str],
+    names: dict[str, str],
+    tts: dict[str, str],
+    keywords: dict[str, list[str]],
+) -> list[str]:
+    """One names file. An emoji or group without a name here is left out, and
+    the reader falls back to English for it."""
+    loc = [header.rstrip("\n")]
+    loc.append("# G <group id> <label> / E <emoji> <name> <keyword|keyword|...>")
+    for label, _ in groups:
+        gid = slug(label)
+        if gid in labels:
+            loc.append(f"G\t{gid}\t{clean(labels[gid])}")
+    for e in base_list:
+        key = e.replace(VS16, "")
+        name = tts.get(key) or names.get(e)
+        if not name:
+            continue
+        kws = []
+        for k in keywords.get(key, []):
+            k = clean(k)
+            if k != name and k not in kws:
+                kws.append(k)
+        loc.append(f"E\t{e}\t{clean(name)}\t{'|'.join(kws)}")
+    return loc
 
 
 def main() -> None:
@@ -203,10 +317,6 @@ def main() -> None:
         if man or woman:
             genders.append((e, man or "", woman or ""))
 
-    tts, keywords = parse_annotations(
-        src["annotations-en.xml"], src["annotations-derived-en.xml"]
-    )
-
     header = (
         f"# Generated by tools/regenerate.py from Unicode Emoji {EMOJI_VERSION} "
         f"emoji-test.txt and CLDR {CLDR_RELEASE}.\n"
@@ -233,19 +343,21 @@ def main() -> None:
         lines.append(f"V\t{n}\t{m}\t{w}")
     (DATA / "emoji.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    loc = [header.rstrip("\n")]
-    loc.append("# G <group id> <label> / E <emoji> <name> <keyword|keyword|...>")
-    for label, _ in groups:
-        loc.append(f"G\t{slug(label)}\t{label}")
-    for e in base_list:
-        key = e.replace(VS16, "")
-        name = tts.get(key) or test_names[e]
-        kws = []
-        for k in keywords.get(key, []):
-            if k != name and k not in kws:
-                kws.append(clean(k))
-        loc.append(f"E\t{e}\t{clean(name)}\t{'|'.join(kws)}")
-    (DATA / "en.txt").write_text("\n".join(loc) + "\n", encoding="utf-8")
+    for locale, (_, _, main_sha) in LOCALE_SOURCES.items():
+        tts, keywords = parse_annotations(
+            src[f"annotations-{locale}.xml"], src[f"annotations-derived-{locale}.xml"]
+        )
+        if main_sha:
+            labels, names = group_labels(src[f"main-{locale}.xml"]), {}
+        else:
+            # English is complete: every group and emoji has a name, taken
+            # from emoji-test.txt where CLDR has none.
+            labels = {slug(label): label for label, _ in groups}
+            names = test_names
+        loc = locale_lines(header, groups, base_list, labels, names, tts, keywords)
+        (DATA / f"{locale}.txt").write_text("\n".join(loc) + "\n", encoding="utf-8")
+        named = sum(1 for line in loc if line.startswith("E\t"))
+        print(f"{locale}: {named} of {len(base_list)} emoji named")
 
     print(
         f"{len(base_list)} emoji, {len(toneable)} toneable "

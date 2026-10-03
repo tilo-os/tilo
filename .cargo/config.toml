@@ -8,6 +8,9 @@ jobs = 4
 # IBT is disabled because stable Rust does not emit the required landing pads.
 
 [target.'cfg(all(target_arch = "x86_64", target_os = "linux"))']
+# Tests never see the caller's desktop session: every test binary runs inside
+# tools/with-test-environment.sh (see tools/cargo-runner.sh).
+runner = "tools/cargo-runner.sh"
 rustflags = [
     "-C", "target-cpu=x86-64-v3",
     "-C", "force-frame-pointers=yes",
@@ -20,6 +23,9 @@ rustflags = [
 ]
 
 [target.'cfg(all(target_arch = "aarch64", target_os = "linux"))']
+# Tests never see the caller's desktop session: every test binary runs inside
+# tools/with-test-environment.sh (see tools/cargo-runner.sh).
+runner = "tools/cargo-runner.sh"
 rustflags = [
     "-C", "target-cpu=generic",
     "-C", "force-frame-pointers=yes",
@@ -37,6 +43,11 @@ rustflags = [
     "--remap-path-prefix=/build=.",
 ]
 
+# macOS test binaries run in the same environment as on Linux; there it also
+# keeps them away from the login Keychain.
+[target.'cfg(target_os = "macos")']
+runner = "tools/cargo-runner.sh"
+
 [target.'cfg(all(target_arch = "aarch64", not(target_os = "linux")))']
 # Preserve each platform's ABI CPU baseline (Apple ARM requires AES/SHA2).
 rustflags = [
@@ -49,6 +60,19 @@ rustflags = [
 # cc-rs combines generic and target-specific flags. Keep platform flags scoped
 # to their target, and avoid incompatible native LTO in distribution overrides.
 [env]
+# Tokio's test harness workers use this process default rather than an
+# application runtime builder. Leave caller overrides intact.
+RUST_MIN_STACK = { value = "16777216", force = false }
+# sccache (the CI runners' RUSTC_WRAPPER, which cc-rs reuses for C) must not
+# use its preprocessor direct mode: it dropped declarations from libspa-sys's
+# generated wrappers under Fedora 44's GCC 16. Its rustup probe (`rustc
+# +stable`) must not auto-install `stable`; the images carry only the pinned
+# toolchain.
+SCCACHE_DIRECT = { value = "false", force = false }
+RUSTUP_AUTO_INSTALL = { value = "0", force = false }
+# sccache's server exits after 600 s without a new request, even with one
+# long compile in flight; the client then compiles it again locally.
+SCCACHE_IDLE_TIMEOUT = { value = "0", force = false }
 # Scope GNU C/assembler options to Linux targets, too. Global CFLAGS would
 # send -Wa,--noexecstack to MSVC/Apple clang while building the host Imager.
 CFLAGS_aarch64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
@@ -67,39 +91,11 @@ CXXFLAGS_aarch64_apple_darwin = { value = "-fstack-protector-strong", force = tr
 CFLAGS_x86_64_apple_darwin = { value = "-fstack-protector-strong", force = true }
 CXXFLAGS_x86_64_apple_darwin = { value = "-fstack-protector-strong", force = true }
 
-# Keep incremental compilation off so sccache can serve these profiles.
+# Native edits reuse unchanged work inside a crate. The Cargo shim and CI cache
+# setup disable incremental compilation only when selecting sccache, which
+# cannot cache incremental rustc invocations (ported from 52324d37b).
 [profile.dev]
-incremental = false
+incremental = true
 
 [profile.release]
 incremental = false
-
-# The `[patch.crates-io]` forks live in private repositories on
-# code.tilo.so, which CI jobs, image builds and remote builders cannot
-# fetch. Cargo reads the pinned revisions from `vendor/git` instead, while
-# Cargo.toml and Cargo.lock keep naming the fork and revision. After changing
-# a fork revision, add the new revision here and refresh `vendor/git` with
-# `tools/vendor-git-forks.sh`. If a fork's URL changes, Cargo can only
-# re-resolve its lock entries with the matching `[source]` entry removed, so
-# run the `cargo update` first and restore the entry afterwards.
-[source.fork-accesskit]
-git = "ssh://git@code.tilo.so/tilo/accesskit.git"
-rev = "a76088c4c36c03de8109ded02bd42a305fb1d569"
-replace-with = "git-forks"
-
-[source.fork-atspi]
-git = "ssh://git@code.tilo.so/tilo/atspi.git"
-rev = "9183f58d2e18e7c7cd76a1436f7fedc3ada015c2"
-replace-with = "git-forks"
-
-[source.fork-rustypipe]
-git = "ssh://git@code.tilo.so/tilo/rustypipe.git"
-rev = "aeb292fb23856c335ee3423745ed98ae0e683760"
-replace-with = "git-forks"
-
-[source.git-forks]
-directory = "vendor/git"
-
-# Fetching a new fork revision goes through the git CLI, so SSH keys apply.
-[net]
-git-fetch-with-cli = true

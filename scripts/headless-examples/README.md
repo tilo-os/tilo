@@ -7,7 +7,9 @@ invoke the chosen `(provider, id)`. The [search selection guide](../../docs/head
 explains how to distinguish same-named native and host apps and verify execution
 without opening the palette. Use the input examples below when testing input or
 rendering itself. `action-api-demo.py` and `app-launch-proof.py` start their own
-isolated sessions and exercise semantic invocation.
+isolated sessions and exercise semantic invocation. `agent-seats-proof.py`
+starts an `agent-control` session and drives it from two MCP sessions at once:
+each agent's strip, screenshots and held keys stay its own.
 
 For examples that connect to an existing compositor, start it once with:
 
@@ -15,7 +17,9 @@ For examples that connect to an existing compositor, start it once with:
 ./scripts/headless-examples/spawn-headless.sh
 ```
 
-The socket defaults to `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`; pass a path to use another (keep it in a directory only you can write, never `/tmp`). The script spawns `shell --backend headless`, waits for the socket, prints `READY <socket>` to stdout when usable. Tear down with `kill` (or use `Ctrl+C` if you ran it in the foreground).
+The socket defaults to `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`; pass a path to use another (keep it in a directory only you can write, never `/tmp`). The script refuses a socket a live compositor still answers on. It spawns `shell --backend headless` against a scratch profile — its own HOME, XDG homes, device identity and filesystem-daemon handoff directories, so your real identity and workspaces are never touched — waits for the socket, and prints `READY <socket>` to stdout when usable. Tear down with `kill` (or use `Ctrl+C` if you ran it in the foreground); the scratch profile goes with it.
+
+`TILO_HEADLESS_TIMEOUT` sets how long to wait for the socket, in seconds (default 60). `TILO_HEADLESS_PROFILE=DIR` keeps a scratch profile in `DIR` across runs instead of a fresh one each time.
 
 For background lifetime management:
 

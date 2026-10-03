@@ -226,6 +226,17 @@ pub const RECOVERY_KEY_MARKER: &str = "::tilo-recovery-key::";
 ///
 /// An I/O error walking or rewriting the directory.
 pub fn scrub(dir: &Path, secrets: &[&str]) -> std::io::Result<Vec<PathBuf>> {
+    scrub_with(dir, secrets, |_| true)
+}
+
+/// Keep large disk payloads outside the log walk. A log that exceeds the scan
+/// bound is withheld rather than loaded into memory or retained unchecked.
+pub(crate) fn scrub_with(
+    dir: &Path,
+    secrets: &[&str],
+    enter_directory: impl Fn(&Path) -> bool,
+) -> std::io::Result<Vec<PathBuf>> {
+    const MAX_LOG_BYTES: u64 = 64 * 1024 * 1024;
     let mut withheld = Vec::new();
     let mut pending = vec![dir.to_path_buf()];
     while let Some(path) = pending.pop() {
@@ -233,10 +244,17 @@ pub fn scrub(dir: &Path, secrets: &[&str]) -> std::io::Result<Vec<PathBuf>> {
             let entry = entry?;
             let kind = entry.file_type()?;
             if kind.is_dir() {
-                pending.push(entry.path());
+                if enter_directory(&entry.path()) {
+                    pending.push(entry.path());
+                }
                 continue;
             }
             if !kind.is_file() {
+                continue;
+            }
+            if entry.metadata()?.len() > MAX_LOG_BYTES {
+                std::fs::write(entry.path(), b"")?;
+                withheld.push(entry.path());
                 continue;
             }
             let mut bytes = Vec::new();
@@ -289,109 +307,130 @@ fn contains_sensitive_text(bytes: &[u8], secrets: &[&str]) -> bool {
 mod tests {
     use super::*;
 
+    /// Recovery key shapes are recognised and UUIDs are not; the scrubber withholds secret-bearing files
+    /// and keeps the rest, checks both retained install secrets, and withholds UTF-16 runtime log secrets.
     #[test]
-    fn recovery_key_shapes_are_recognised_and_uuids_are_not() {
-        assert!(has_recovery_key_shape(
-            "key bbbbbbbb-cccccccc-dddddddd-ffffffff-gggggggg-hhhhhhhh-jjjjjjjj-kkkkkkkk."
-        ));
-        assert!(!has_recovery_key_shape(
-            "00000000-0000-4000-8000-000000000003"
-        ));
-        assert!(!has_recovery_key_shape(
-            "installer: Copying verified Tilo system files…"
-        ));
-    }
-
-    #[test]
-    fn the_scrubber_withholds_secret_bearing_files_and_keeps_the_rest() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("nested")).unwrap();
-        let clean = dir.path().join("state.json");
-        let leaked = dir.path().join("nested/serial.log");
-        let marker = dir.path().join("marker.txt");
-        let key = dir.path().join("key.txt");
-        std::fs::write(
-            &clean,
-            r#"{"step":"install","recovery_key":{"available":true}}"#,
-        )
-        .unwrap();
-        std::fs::write(&leaked, "typed scenario-passphrase-2026 at the prompt").unwrap();
-        std::fs::write(&marker, "::tilo-recovery-key::artifact-canary").unwrap();
-        std::fs::write(
-            &key,
-            "bbbbbbbb-cccccccc-dddddddd-ffffffff-gggggggg-hhhhhhhh-jjjjjjjj-kkkkkkkk",
-        )
-        .unwrap();
-        let withheld = scrub(dir.path(), &["scenario-passphrase-2026"]).unwrap();
-        assert_eq!(withheld.len(), 3, "{withheld:?}");
-        for path in [&leaked, &marker, &key] {
-            assert!(
-                std::fs::read(path).unwrap().is_empty(),
-                "{}",
-                path.display()
-            );
+    fn the_scrubber_withholds_every_secret_shape_it_retains() {
+        // Phase: recovery_key_shapes_are_recognised_and_uuids_are_not.
+        {
+            assert!(has_recovery_key_shape(
+                "key bbbbbbbb-cccccccc-dddddddd-ffffffff-gggggggg-hhhhhhhh-jjjjjjjj-kkkkkkkk."
+            ));
+            assert!(!has_recovery_key_shape(
+                "00000000-0000-4000-8000-000000000003"
+            ));
+            assert!(!has_recovery_key_shape(
+                "installer: Copying verified Tilo system files…"
+            ));
         }
-        assert!(!std::fs::read(&clean).unwrap().is_empty());
-    }
 
-    #[test]
-    fn credentials_from_stdin_are_distinct_bounded_and_never_echoed() {
-        let account = "accountrandom2026";
-        let disk = "diskrandomunlock2026";
-        let input = serde_json::json!({"account_password": account, "disk_passphrase": disk});
-        let credentials = parse_credentials(input.to_string().as_bytes()).unwrap();
-        assert_eq!(credentials.account.expose(), account);
-        assert_eq!(credentials.unlock_secret().expose(), disk);
-        assert_eq!(format!("{:?}", credentials.account), "Secret([redacted])");
-        for bad in [
-            serde_json::json!({"account_password": account, "disk_passphrase": account}),
-            serde_json::json!({"account_password": "", "disk_passphrase": disk}),
-            serde_json::json!({"account_password": account, "disk_passphrase": "line\nother"}),
-            serde_json::json!({"account_password": account, "disk_passphrase": "Uppercase"}),
-            serde_json::json!({"account_password": "quoted\"account", "disk_passphrase": disk}),
-            serde_json::json!({"account_password": account, "disk_passphrase": disk, "extra": true}),
-        ] {
-            let error = parse_credentials(bad.to_string().as_bytes()).err().unwrap();
-            assert!(!error.contains(account) && !error.contains(disk));
+        // Phase: the_scrubber_withholds_secret_bearing_files_and_keeps_the_rest.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir(dir.path().join("nested")).unwrap();
+            let clean = dir.path().join("state.json");
+            let leaked = dir.path().join("nested/serial.log");
+            let marker = dir.path().join("marker.txt");
+            let key = dir.path().join("key.txt");
+            std::fs::write(
+                &clean,
+                r#"{"step":"install","recovery_key":{"available":true}}"#,
+            )
+            .unwrap();
+            std::fs::write(&leaked, "typed scenario-passphrase-2026 at the prompt").unwrap();
+            std::fs::write(&marker, "::tilo-recovery-key::artifact-canary").unwrap();
+            std::fs::write(
+                &key,
+                "bbbbbbbb-cccccccc-dddddddd-ffffffff-gggggggg-hhhhhhhh-jjjjjjjj-kkkkkkkk",
+            )
+            .unwrap();
+            let withheld = scrub(dir.path(), &["scenario-passphrase-2026"]).unwrap();
+            assert_eq!(withheld.len(), 3, "{withheld:?}");
+            for path in [&leaked, &marker, &key] {
+                assert!(
+                    std::fs::read(path).unwrap().is_empty(),
+                    "{}",
+                    path.display()
+                );
+            }
+            assert!(!std::fs::read(&clean).unwrap().is_empty());
+        }
+
+        // Phase: scrubber_checks_both_retained_install_secrets.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let account = dir.path().join("account.txt");
+            let disk = dir.path().join("disk.txt");
+            std::fs::write(&account, "account-random-2026").unwrap();
+            std::fs::write(&disk, "disk-random-unlock-2026").unwrap();
+            let withheld = scrub(
+                dir.path(),
+                &["account-random-2026", "disk-random-unlock-2026"],
+            )
+            .unwrap();
+            assert_eq!(withheld.len(), 2);
+            assert!(std::fs::read(account).unwrap().is_empty());
+            assert!(std::fs::read(disk).unwrap().is_empty());
+        }
+
+        // Phase: scrubber_withholds_utf16_runtime_log_secrets.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("uart.log");
+            let utf16 = "typed disksecret456"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>();
+            std::fs::write(&path, utf16).unwrap();
+            let withheld = scrub(dir.path(), &["disksecret456"]).unwrap();
+            assert_eq!(withheld, std::slice::from_ref(&path));
+            assert!(std::fs::read(path).unwrap().is_empty());
+        }
+
+        // Phase: oversized_logs_are_withheld_without_loading_them_into_memory.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("serial.log");
+            std::fs::File::create(&path)
+                .unwrap()
+                .set_len(64 * 1024 * 1024 + 1)
+                .unwrap();
+            assert_eq!(scrub(dir.path(), &[]).unwrap(), std::slice::from_ref(&path));
+            assert_eq!(std::fs::metadata(path).unwrap().len(), 0);
         }
     }
 
+    /// Credentials from stdin are distinct, bounded and never echoed, and secrets never debug-print.
     #[test]
-    fn scrubber_checks_both_retained_install_secrets() {
-        let dir = tempfile::tempdir().unwrap();
-        let account = dir.path().join("account.txt");
-        let disk = dir.path().join("disk.txt");
-        std::fs::write(&account, "account-random-2026").unwrap();
-        std::fs::write(&disk, "disk-random-unlock-2026").unwrap();
-        let withheld = scrub(
-            dir.path(),
-            &["account-random-2026", "disk-random-unlock-2026"],
-        )
-        .unwrap();
-        assert_eq!(withheld.len(), 2);
-        assert!(std::fs::read(account).unwrap().is_empty());
-        assert!(std::fs::read(disk).unwrap().is_empty());
-    }
+    fn install_credentials_are_bounded_distinct_and_never_printed() {
+        // Phase: credentials_from_stdin_are_distinct_bounded_and_never_echoed.
+        {
+            let account = "accountrandom2026";
+            let disk = "diskrandomunlock2026";
+            let input = serde_json::json!({"account_password": account, "disk_passphrase": disk});
+            let credentials = parse_credentials(input.to_string().as_bytes()).unwrap();
+            assert_eq!(credentials.account.expose(), account);
+            assert_eq!(credentials.unlock_secret().expose(), disk);
+            assert_eq!(format!("{:?}", credentials.account), "Secret([redacted])");
+            for bad in [
+                serde_json::json!({"account_password": account, "disk_passphrase": account}),
+                serde_json::json!({"account_password": "", "disk_passphrase": disk}),
+                serde_json::json!({"account_password": account, "disk_passphrase": "line\nother"}),
+                serde_json::json!({"account_password": account, "disk_passphrase": "Uppercase"}),
+                serde_json::json!({"account_password": "quoted\"account", "disk_passphrase": disk}),
+                serde_json::json!({"account_password": account, "disk_passphrase": disk, "extra": true}),
+            ] {
+                let error = parse_credentials(bad.to_string().as_bytes()).err().unwrap();
+                assert!(!error.contains(account) && !error.contains(disk));
+            }
+        }
 
-    #[test]
-    fn scrubber_withholds_utf16_runtime_log_secrets() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("uart.log");
-        let utf16 = "typed disksecret456"
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect::<Vec<_>>();
-        std::fs::write(&path, utf16).unwrap();
-        let withheld = scrub(dir.path(), &["disksecret456"]).unwrap();
-        assert_eq!(withheld, std::slice::from_ref(&path));
-        assert!(std::fs::read(path).unwrap().is_empty());
-    }
-
-    #[test]
-    fn secrets_never_debug_print() {
-        let secret = Unlock::Passphrase.scenario_secret();
-        assert_eq!(format!("{secret:?}"), "Secret([redacted])");
-        assert_eq!(Layout::GuidedAlongside.method(), "alongside");
-        assert_eq!(Graphics::Software.flag(), "--2d");
+        // Phase: secrets_never_debug_print.
+        {
+            let secret = Unlock::Passphrase.scenario_secret();
+            assert_eq!(format!("{secret:?}"), "Secret([redacted])");
+            assert_eq!(Layout::GuidedAlongside.method(), "alongside");
+            assert_eq!(Graphics::Software.flag(), "--2d");
+        }
     }
 }

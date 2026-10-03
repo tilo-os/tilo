@@ -31,8 +31,12 @@ interface CollabService {
   # because the identity format is collab-types' domain and we
   # don't want this schema to drift every time that crate adds a
   # field.
+  #
+  # `recordKind` names the resource kind of the record the channel carries,
+  # empty when the app names none. A host that creates a missing record on
+  # the app's first write creates it in this kind, if the app declares it.
   joinChannel @0 (channelId :Text, identity :Data, participantHandle :Text,
-                  participantKind :Text) -> (handle :ChannelHandle);
+                  participantKind :Text, recordKind :Text) -> (handle :ChannelHandle);
 }
 
 interface ChannelHandle {
@@ -162,7 +166,9 @@ interface ChannelHandle {
   # The session performs its capability check before anything reaches
   # this stream, which is also why an app must not treat arrival as
   # authority for anything beyond the operation named.
-  subscribeInvocations @14 () -> (stream :InvocationStream);
+  # Opt in only when the app carries invocationUuid through dispatch and
+  # typed lifecycle updates. Old callers retain the numeric-only path.
+  subscribeInvocations @14 (stableInvocationIds :Bool = false) -> (stream :InvocationStream);
 
   # Report what became of an invocation. `id` echoes
   # `InvocationStream.read`'s.
@@ -180,15 +186,24 @@ interface ChannelHandle {
   # Cooperative cancellation flag polled by background application jobs.
   invocationCancellation @18 (id :UInt64) -> (cancelled :Bool);
 
-  # Retired: listing, invoking, observing and cancelling published actions
-  # and launching applications are remoteAction (@42) requests. The
-  # ordinals stay reserved.
-  retiredActionCatalogue @19 () -> ();
-  retiredSubscribeActionCatalogue @20 () -> ();
-  retiredInvokePublishedAction @21 () -> ();
-  retiredPublishedInvocationStatus @22 () -> ();
-  retiredCancelPublishedInvocation @23 () -> ();
-  retiredLaunchPublishedApplication @24 () -> ();
+  # The direct published-action methods below stay live beside
+  # remoteAction (@42) for brokers and callers that still use them.
+  # Authenticated, session-wide resource/action directory. The broker
+  # derives the caller from this joined channel; no actor string crosses
+  # the wire. JSON preserves the evolving ActionDescriptor vocabulary.
+  actionCatalogue @19 () -> (catalogueJson :Text);
+  subscribeActionCatalogue @20 () -> (stream :ActionCatalogueStream);
+  invokePublishedAction @21 (peerId :UInt64, resource :Text, action :Text,
+                             argument :Text, hasArgument :Bool,
+                             confirmationJson :Text)
+      -> (id :UInt64, updateJson :Text);
+  publishedInvocationStatus @22 (id :UInt64)
+      -> (found :Bool, updateJson :Text);
+  cancelPublishedInvocation @23 (id :UInt64) -> (updateJson :Text);
+  # Optional content-addressed object to stage read-only for the launched app.
+  # Empty keeps the ordinary app-launch behavior.
+  launchPublishedApplication @24 (appId :Text, contentHash :Text)
+      -> (id :UInt64, updateJson :Text);
 
   # Ask this session to open the "say something about this" surface.
   #
@@ -219,6 +234,12 @@ interface ChannelHandle {
   # private metadata is not retained after serialization or policy changes.
   clearContinuation @26 (appId :Text) -> ();
 
+  # The application's answer to a `ChannelContext.handoff` request, or its
+  # report that the document it shows arrived retired. Bound to this
+  # certified primary route like reportContinuation, and never relayed to
+  # peers. The JSON vocabulary is `ui::collaboration::handoff`.
+  handoff @53 (appId :Text, message :Data) -> ();
+
   # Open a session-local bridge to the shell's existing authenticated surface
   # stream and input firewall. The target is the exact 32-byte certified Iroh
   # endpoint identity. Opening never grants control; the returned stream stays
@@ -236,11 +257,15 @@ interface ChannelHandle {
   # attribution/context crosses this method. `invocation` is the caller's
   # tilo_actions::InvocationId: a retry with the same id reports the
   # original invocation, which remoteAction (@42) observes and cancels.
+  # `stepIndex` (when `hasStep`) names the task's durable parent step: the
+  # host maps it to exactly one child before execution and returns that
+  # child again on retry. `continuation` is the parent's committed next-step
+  # continuation, present only once the step's exact result is committed.
   invokeTaskAction @30 (runId :UInt64, lease :Text, peerId :UInt64,
                         resource :Text, action :Text, argument :Text,
                         hasArgument :Bool, confirmationJson :Text,
-                        invocation :Text)
-      -> (id :UInt64, updateJson :Text);
+                        invocation :Text, stepIndex :UInt32, hasStep :Bool)
+      -> (id :UInt64, updateJson :Text, continuation :Data);
   # Cooperative cancellation for a leased task. The broker reflects a Task
   # Center cancellation; it never lets an agent cancel a task by itself.
   taskRunCancelled @31 (runId :UInt64, lease :Text) -> (cancelled :Bool);
@@ -259,10 +284,20 @@ interface ChannelHandle {
   # remains available to old applications and small/static surfaces.
   publishActionDirectory @33 (appId :Text, directory :ActionDirectory) -> ();
 
-  # Retired: callers reach published actions through remoteAction (@42).
-  # The ordinals stay reserved.
-  retiredQueryActionDirectory @34 () -> ();
-  retiredResolvePublishedAction @35 () -> ();
+  # Query the authenticated, broker-filtered session directory. `cursor` is
+  # opaque and bound to the source revision and caller-visible query. A stale
+  # cursor produces `staleCursor`; callers restart from an empty cursor. The
+  # broker clamps every budget before forwarding it to an app.
+  queryActionDirectory @34 (query :ActionDirectoryQuery) -> (page :ActionDirectoryPage);
+
+  # Resolve exactly one row immediately before invocation. The broker applies
+  # current membership policy and asks the live owner to re-materialize the
+  # descriptor at `revision`; an unavailable, changed, or disconnected owner
+  # returns a non-ok status and is never invoked from cached catalogue data.
+  resolvePublishedAction @35 (peerId :UInt64, revision :Text,
+                              resource :Text, action :Text)
+      -> (resolution :ActionDirectoryResolution,
+          invocationBinding :PublishedInvocationBinding);
 
   # Level-triggered private media handoff descriptors. The broker binds appId,
   # workspace and process instance to this channel and keeps source locators
@@ -304,6 +339,69 @@ interface ChannelHandle {
   # derives the caller from this admitted channel and confines it to the
   # channel's room; nothing in the frame names the caller.
   remoteAction @42 (frame :Data) -> (frame :Data);
+
+  # Private enrolled tasks; old peers without these methods are unavailable.
+  subscribeEnrolledTasks @43 () -> (stream :EnrolledTaskStream);
+  # Exact recipient acceptance; successful RPC reply precedes all task work.
+  acceptEnrolledTask @44 (acceptanceJson :Text) -> ();
+  reportEnrolledTask @45 (acceptanceJson :Text, sequence :UInt64, updateJson :Text) -> ();
+
+  # Local governed call controls. The broker retains genuine kernel/launcher
+  # process evidence and derives the exact app/workspace/record from this
+  # channel. Closed versioned runtime-collab JSON is bounded to 8 KiB.
+  nativeMediaCommand @46 (commandJson :Data) -> (replyJson :Data);
+
+  # Disposable committed history read; exact caller and route come from channel.
+  committedDocument @47 (request :Data) -> (reply :Data);
+
+  # Invoke one exact lazy row at its required, nonempty directory revision.
+  # A separate ordinal makes older brokers reject before any effect. Clients
+  # must never fall back to invokePublishedAction when this is unavailable.
+  invokeResolvedPublishedAction @48 (
+      peerId :UInt64, revision :Text, resource :Text, action :Text,
+      argument :Text, hasArgument :Bool, confirmationJson :Text)
+      -> (id :UInt64, updateJson :Text);
+
+  # Caller-owned UUID and immutable original target. Unsupported methods must
+  # never fall back to @48 or @21. A binding is inert, never caller authority.
+  invokeResolvedPublishedActionDurable @49 (
+      invocation :Data, binding :PublishedInvocationBinding,
+      revision :Text, resource :Text, action :Text,
+      argument :Text, hasArgument :Bool, confirmationJson :Text)
+      -> (observation :PublishedInvocationObservation);
+  publishedInvocationObservation @50 (host :Data, invocation :Data)
+      -> (observation :PublishedInvocationObservation);
+  cancelDurablePublishedInvocation @51 (host :Data, invocation :Data)
+      -> (observation :PublishedInvocationObservation);
+
+  # Settings-only, launcher-authenticated access to the shell's speaker
+  # groups: create, edit, identify, calibrate. Devices and outputs travel as
+  # the opaque ids the shell publishes; PipeWire identities are not
+  # representable.
+  speakerCommand @52 (appId :Text, commandJson :Data) -> (replyJson :Data);
+
+}
+
+# Optional result on @35, minted from the same captured directory and worker.
+# An absent pointer means reliable invocation is unavailable on this result.
+struct PublishedInvocationBinding {
+  host @0 :Data;
+  peerId @1 :UInt64;
+  appId @2 :Text;
+  recordId @3 :Text;
+  root @4 :Data;
+  device @5 :Data;
+  targetBinding @6 :Data;
+}
+
+struct PublishedInvocationObservation {
+  host @0 :Data;
+  invocation @1 :Data;
+  found @2 :Bool;
+  id @3 :UInt64;
+  updateJson @4 :Text;
+  uncertain @5 :Bool;
+  cancellationRequested @6 :Bool;
 }
 
 # Application-owned, broker-pulled resource/action directory. A capability is
@@ -383,6 +481,12 @@ interface WorkspaceControlHandle {
   # target's stream-start consent edge and after any close/revocation edge.
   sendInput @1 (event :Data) -> ();
   close @2 () -> ();
+}
+
+interface ActionCatalogueStream {
+  # Level-triggered: the first read returns the current complete directory,
+  # then each publication/disconnect returns a fresh complete replacement.
+  read @0 () -> (catalogueJson :Text);
 }
 
 interface RealtimeStream {
@@ -479,9 +583,11 @@ interface InvocationStream {
   # attributed in the document's history exactly like one somebody
   # typed. An attribution, not an authority — the session has already
   # decided this invocation may happen.
+  # invocationUuid is the complete 16-byte logical identity. id remains the
+  # local completion/cancellation handle.
   read @0 () -> (id :UInt64, resource :Text, action :Text,
                  argument :Text, hasArgument :Bool, actor :Text,
-                 contextJson :Text);
+                 contextJson :Text, invocationUuid :Data);
 }
 
 # Agent-only task work sent by the broker after live-session admission.
@@ -694,6 +800,12 @@ struct ChannelContext {
   # Directed control frame for one selected document holder. Ordinary context
   # snapshots and follow controls leave this false.
   snapshotRequested @4 :Bool;
+  # Session-local handoff control for exactly one application instance,
+  # addressed by its primary route: the shell asking it to make its document
+  # durable, or to record that its window moved to another workspace. The
+  # JSON vocabulary is `ui::collaboration::handoff`. Empty on every other
+  # frame; never relayed to peers.
+  handoff @5 :Data;
 }
 
 # A single collaborator in a `ChannelContext`. `color` is packed as
@@ -735,4 +847,9 @@ struct ScrollbackBatch {
   earliestSeq @1 :UInt64;
   latestSeq   @2 :UInt64;
   done        @3 :Bool;
+}
+
+# Independently versioned enrolled envelope; legacy TaskRunStream is unchanged.
+interface EnrolledTaskStream {
+  read @0 () -> (taskJson :Text);
 }

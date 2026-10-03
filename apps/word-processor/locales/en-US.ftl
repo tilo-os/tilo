@@ -203,6 +203,7 @@ toast-style-duplicated = Style duplicated
 toast-saved = Document saved
 toast-save-failed = Could not save the document
 toast-open-failed = Could not open the document. Your current document is unchanged.
+toast-view-only = This document is open to view only.
 unsaved-title = Save changes?
 unsaved-body = Save this document before replacing it.
 unsaved-save = Save
@@ -261,3 +262,9 @@ color-orange = orange
 a11y-more-tools = More formatting and document tools
 a11y-version-history = Version history
 panel-close = Close
+
+# A selected file differs from the current admitted workspace document.
+file-choice-title = Choose the document to open
+file-choice-body = This file differs from the workspace document. Keep the workspace version, or import the selected file into its history.
+file-choice-keep = Keep workspace version
+file-choice-use = Use selected file

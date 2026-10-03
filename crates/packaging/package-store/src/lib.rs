@@ -37,16 +37,12 @@ pub mod registry;
 #[cfg(feature = "store")]
 mod content;
 #[cfg(feature = "store")]
-mod migrate;
-#[cfg(feature = "store")]
 mod store;
 
 pub use catalog::{
     Catalog, CatalogError, SystemStore, display_name_for_package_id, find_installed, list_installed,
 };
 pub use layout::Layout;
-#[cfg(feature = "store")]
-pub use migrate::Migration;
 pub use registry::{InstalledPackage, Pinning, Registry, RegistryError};
 #[cfg(feature = "store")]
 pub use store::{Admission, DiskUsage, Installed, PackageStore, Removed};
@@ -63,6 +59,8 @@ pub enum StoreError {
     Registry(#[from] RegistryError),
     #[error("package refused: {0}")]
     Refused(String),
+    #[error("image app-store build requires a valid SOURCE_DATE_EPOCH")]
+    InvalidImageBuildEpoch,
     #[error("package archive: {0}")]
     Tapp(String),
     #[error("{} payload blob(s) are neither in the archive, in the store, nor fetchable", .0.len())]

@@ -23,19 +23,11 @@ pub(super) fn no_holders(path: &Path, whole_disk: bool) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::no_holders;
-    use std::{fs, path::PathBuf};
-    struct Fixture(PathBuf);
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            fs::remove_dir_all(&self.0).unwrap();
-        }
-    }
+    use std::fs;
     #[test]
     fn physical_partition_has_holders_but_parent_also_requires_slaves() {
-        let root = std::env::temp_dir().join(format!("tilo-ntfs-topology-{}", std::process::id()));
-        fs::create_dir(&root).unwrap();
-        let fixture = Fixture(root);
-        let parent = fixture.0.join("disk");
+        let fixture = tempfile::tempdir().unwrap();
+        let parent = fixture.path().join("disk");
         let partition = parent.join("partition");
         fs::create_dir_all(parent.join("holders")).unwrap();
         fs::create_dir_all(parent.join("slaves")).unwrap();

@@ -28,12 +28,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::capture::{ScreenCaptureChannel, ScreenCaptureOutcome, ScreenCaptureRequest};
 use crate::clipboard::{ClipboardBackend, InProcessClipboard};
-use crate::location::{LocationChannel, LocationOutcome};
 use crate::mpris::{MprisCommand, MprisConfig, PlayerSnapshot};
-use crate::portal::{
-    LaunchChannel, LaunchOutcome, LaunchRequest, MultiChannel, MultiOutcome, OpenFileChannel,
-    OpenFileOutcome, PickRequest, PortalChannel, PortalOutcome,
-};
 
 pub mod environment;
 /// The native desktop implementation; see [`crate::native::services`].
@@ -47,32 +42,7 @@ pub use environment::{
 };
 pub use recording::HostRecorder;
 
-/// Host-provided file choosing and opening.
-///
-/// Every method returns a channel the UI thread drains once per frame, so an
-/// implementation may answer immediately, from a worker thread, or from a
-/// later host callback — it must never block the caller.
-pub trait FilePicker: Send + Sync {
-    /// A single-file Open, Save or folder chooser.
-    fn pick(&self, request: PickRequest) -> PortalChannel;
-    /// A multi-select Open chooser.
-    fn pick_multiple(&self, request: PickRequest) -> MultiChannel;
-    /// A single-file Open chooser that delivers the already-open descriptor.
-    fn open_file(&self, request: PickRequest) -> OpenFileChannel;
-    /// Open a local path with its default handler, or reveal its folder.
-    fn launch(&self, request: LaunchRequest) -> LaunchChannel;
-}
-
-/// Hands a URI to whatever the host registers as its handler.
-pub trait UriOpener: Send + Sync {
-    /// Open `uri` without waiting for the handler to finish. May block until
-    /// the handler is launched or the request is refused, so the toolkit
-    /// calls it off the UI thread.
-    ///
-    /// # Errors
-    /// The host refused or cannot open URIs at all.
-    fn open(&self, uri: &str) -> std::io::Result<()>;
-}
+pub use tilo_dialogs::{FilePicker, UriOpener};
 
 /// Creates the speech output the built-in screen reader narrates through.
 pub trait SpeechFactory: Send + Sync {
@@ -81,54 +51,42 @@ pub trait SpeechFactory: Send + Sync {
     fn make(&self) -> Box<dyn tts::Speaker>;
 }
 
-/// One user-visible notification.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Notification {
-    /// A stable tag: showing the same tag again replaces the earlier one.
-    pub tag: String,
-    pub title: String,
-    pub body: String,
+pub use tilo_notify::{Notification, Notifier, NotifyError};
+
+pub use tilo_location::LocationProvider;
+
+pub use tilo_secrets::{SecretBackend, SecretStore};
+
+/// Opens an app's secret store: the system's, or a host's own.
+pub trait SecretsProvider: Send + Sync {
+    /// The secrets of the app `app_id`, and no other app's.
+    fn store(&self, app_id: &str) -> SecretStore;
 }
 
-/// Why a notification could not be shown or withdrawn.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NotifyError {
-    /// This host has no notification service.
-    Unavailable,
-    /// The service rejected the request.
-    Failed(String),
-}
+/// Each app's secrets in this target's secret store (the Secret Service,
+/// the Keychain, or the browser's wrapped store).
+struct SystemSecrets;
 
-impl std::fmt::Display for NotifyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unavailable => f.write_str("notifications are unavailable in this host"),
-            Self::Failed(reason) => f.write_str(reason),
-        }
+impl SecretsProvider for SystemSecrets {
+    fn store(&self, app_id: &str) -> SecretStore {
+        SecretStore::for_app(app_id)
     }
 }
 
-impl std::error::Error for NotifyError {}
+/// Secrets in one map that lives as long as the provider, for hosts that
+/// keep nothing outside the process.
+pub struct InProcessSecrets(Arc<dyn SecretBackend>);
 
-/// Host-owned user notifications.
-pub trait Notifier: Send + Sync {
-    /// Show `notification`, replacing any earlier one with the same tag.
-    ///
-    /// # Errors
-    /// The host has no notification service, or refused this one.
-    fn show(&self, notification: &Notification) -> Result<(), NotifyError>;
-
-    /// Withdraw the notification shown under `tag`, if any.
-    ///
-    /// # Errors
-    /// The host has no notification service, or refused the request.
-    fn withdraw(&self, tag: &str) -> Result<(), NotifyError>;
+impl Default for InProcessSecrets {
+    fn default() -> Self {
+        Self(tilo_secrets::memory_backend())
+    }
 }
 
-/// Host-provided device location.
-pub trait LocationProvider: Send + Sync {
-    /// Request one fix. Answers over the channel, never blocking the caller.
-    fn locate(&self) -> LocationChannel;
+impl SecretsProvider for InProcessSecrets {
+    fn store(&self, app_id: &str) -> SecretStore {
+        SecretStore::with_backend(app_id, self.0.clone())
+    }
 }
 
 /// Host-provided screen capture.
@@ -172,23 +130,46 @@ pub struct HostServices {
     pub media_session: Arc<dyn MediaSessionFactory>,
     pub location: Arc<dyn LocationProvider>,
     pub screen_capture: Arc<dyn ScreenCaptureProvider>,
+    pub secrets: Arc<dyn SecretsProvider>,
 }
 
 impl HostServices {
     /// Services that never leave the process: an in-process clipboard, file
     /// choosers that fail, no URI handler, silent speech, no notifications,
-    /// no media controls, no location and no screen capture.
+    /// no media controls, no location, no screen capture, and secrets kept
+    /// in the process.
     pub fn null() -> Self {
         Self {
             clipboard: Arc::new(InProcessClipboard::default()),
-            files: Arc::new(UnavailableFilePicker),
-            opener: Arc::new(UnavailableOpener),
+            files: tilo_dialogs::unavailable_picker(),
+            opener: tilo_dialogs::unavailable_opener(),
             speech: Arc::new(SilentSpeech),
-            notifications: Arc::new(UnavailableNotifier),
+            notifications: tilo_notify::unavailable(),
             media_session: Arc::new(NoMediaSession),
-            location: Arc::new(NoLocation),
+            location: tilo_location::unavailable(),
             screen_capture: Arc::new(NoScreenCapture),
+            secrets: Arc::new(InProcessSecrets::default()),
         }
+    }
+
+    /// This target's services for the app `app_id`: each platform crate's
+    /// system backend (clipboard, file choosers and URI opening,
+    /// notifications, location, secrets) and, with the `native` feature, speech, media
+    /// controls and screen capture. Without an app id notifications are
+    /// unavailable.
+    pub fn system(app_id: Option<&str>) -> Self {
+        let services = Self {
+            clipboard: tilo_clipboard::system(),
+            files: tilo_dialogs::system_picker(),
+            opener: tilo_dialogs::system_opener(),
+            notifications: tilo_notify::system(app_id),
+            location: tilo_location::system(),
+            secrets: Arc::new(SystemSecrets),
+            ..Self::null()
+        };
+        #[cfg(all(feature = "native", not(target_os = "android")))]
+        let services = crate::native::services::with_native_backends(services);
+        services
     }
 
     /// Replace the clipboard, keeping every other service.
@@ -214,43 +195,10 @@ impl std::fmt::Debug for HostServices {
     }
 }
 
-const UNAVAILABLE: &str = "file choosing is unavailable in this host";
-
-struct UnavailableFilePicker;
-
 fn answered<T>(outcome: T) -> Receiver<T> {
     let (tx, rx) = std::sync::mpsc::channel();
     let _ = tx.send(outcome);
     rx
-}
-
-impl FilePicker for UnavailableFilePicker {
-    fn pick(&self, _request: PickRequest) -> PortalChannel {
-        answered(PortalOutcome::Failed(UNAVAILABLE.to_string()))
-    }
-
-    fn pick_multiple(&self, _request: PickRequest) -> MultiChannel {
-        answered(MultiOutcome::Failed(UNAVAILABLE.to_string()))
-    }
-
-    fn open_file(&self, _request: PickRequest) -> OpenFileChannel {
-        answered(OpenFileOutcome::Failed(UNAVAILABLE.to_string()))
-    }
-
-    fn launch(&self, _request: LaunchRequest) -> LaunchChannel {
-        answered(LaunchOutcome::Failed(UNAVAILABLE.to_string()))
-    }
-}
-
-struct UnavailableOpener;
-
-impl UriOpener for UnavailableOpener {
-    fn open(&self, _uri: &str) -> std::io::Result<()> {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "opening URIs is unavailable in this host",
-        ))
-    }
 }
 
 struct SilentSpeech;
@@ -261,33 +209,11 @@ impl SpeechFactory for SilentSpeech {
     }
 }
 
-pub(crate) struct UnavailableNotifier;
-
-impl Notifier for UnavailableNotifier {
-    fn show(&self, _notification: &Notification) -> Result<(), NotifyError> {
-        Err(NotifyError::Unavailable)
-    }
-
-    fn withdraw(&self, _tag: &str) -> Result<(), NotifyError> {
-        Err(NotifyError::Unavailable)
-    }
-}
-
 struct NoMediaSession;
 
 impl MediaSessionFactory for NoMediaSession {
     fn start(&self, _config: MprisConfig, _initial: PlayerSnapshot) -> Option<MediaSession> {
         None
-    }
-}
-
-struct NoLocation;
-
-impl LocationProvider for NoLocation {
-    fn locate(&self) -> LocationChannel {
-        answered(LocationOutcome::Unavailable(
-            "location is unavailable in this host".to_string(),
-        ))
     }
 }
 
@@ -311,6 +237,7 @@ thread_local! {
 ///
 /// A runner calls this once before constructing its app.
 pub fn install_default(services: HostServices) {
+    install_resolvers();
     if let Ok(mut slot) = DEFAULT.write() {
         tracing::debug!(
             target: "tilo_ui::host",
@@ -324,6 +251,7 @@ pub fn install_default(services: HostServices) {
 /// Install `make()` as the default unless one is already installed. Returns
 /// whether it installed.
 pub fn install_default_if_unset(make: impl FnOnce() -> HostServices) -> bool {
+    install_resolvers();
     let Ok(mut slot) = DEFAULT.write() else {
         return false;
     };
@@ -355,6 +283,7 @@ pub fn scoped<R>(services: &HostServices, f: impl FnOnce() -> R) -> R {
 /// order of creation, which Rust's scoping gives for free.
 #[must_use = "the services are current only while the guard lives"]
 pub fn enter(services: &HostServices) -> HostScope {
+    install_resolvers();
     SCOPES.with(|scopes| scopes.borrow_mut().push(services.clone()));
     HostScope {
         _not_send: std::marker::PhantomData,
@@ -376,6 +305,17 @@ impl Drop for HostScope {
     }
 }
 
+/// Let the platform crates' free functions (`portal::PickRequest::send`,
+/// `portal::open_uri`, …) reach [`current`]. Runs before any services other
+/// than [`HostServices::null`] can be current.
+fn install_resolvers() {
+    tilo_dialogs::install_resolver(tilo_dialogs::Resolver {
+        picker: || current().files,
+        opener: || current().opener,
+    });
+    tilo_location::install_resolver(|| current().location);
+}
+
 /// The services effects on this thread should reach right now; see the
 /// module docs for the resolution order.
 pub fn current() -> HostServices {
@@ -393,72 +333,108 @@ pub fn current() -> HostServices {
 mod tests {
     use super::*;
     use crate::clipboard::ClipboardTarget;
+    use crate::portal::{
+        LaunchOutcome, LaunchRequest, MultiOutcome, OpenFileOutcome, PickRequest, PortalOutcome,
+    };
 
+    /// A request reaches whatever host is current: a recording host answers
+    /// immediately, so a test never opens a chooser on the user's screen.
     #[test]
-    fn null_services_perform_nothing_outside_the_process() {
-        let null = HostServices::null();
-        assert!(null.clipboard.set_text(ClipboardTarget::Clipboard, "local"));
-        assert_eq!(
-            null.clipboard.text(ClipboardTarget::Clipboard).as_deref(),
-            Some("local")
-        );
-        assert!(
-            !null
-                .clipboard
-                .set_shared_text(ClipboardTarget::Clipboard, "secret"),
-            "an in-process buffer must not claim a shared copy"
-        );
-        assert_eq!(
-            null.opener
-                .open("https://example.invalid")
-                .unwrap_err()
-                .kind(),
-            std::io::ErrorKind::Unsupported
-        );
-        assert!(matches!(
-            null.files.pick(PickRequest::open("Open", "Open")).recv(),
-            Ok(PortalOutcome::Failed(_))
-        ));
-        assert!(matches!(
-            null.files.launch(LaunchRequest::open("/tmp/x")).recv(),
-            Ok(LaunchOutcome::Failed(_))
-        ));
-        assert_eq!(
-            null.notifications.withdraw("tag"),
-            Err(NotifyError::Unavailable)
-        );
-        assert!(
-            null.media_session
-                .start(MprisConfig::new("app", "App"), PlayerSnapshot::default())
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn scopes_nest_and_restore() {
-        let (outer, outer_record) = HostServices::recording();
-        let (inner, inner_record) = HostServices::recording();
-        scoped(&outer, || {
-            let _ = current().opener.open("outer://1");
-            scoped(&inner, || {
-                let _ = current().opener.open("inner://1");
-            });
-            let _ = current().opener.open("outer://2");
+    fn requests_reach_the_current_host() {
+        let (services, recorder) = HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened("/tmp/a.qvp".into()));
+        scoped(&services, || {
+            let single = PickRequest::open("Open", "Open").send();
+            assert_eq!(
+                single.try_recv(),
+                Ok(PortalOutcome::Opened("/tmp/a.qvp".into()))
+            );
+            let save = PickRequest::save("Save", "Save", "x.qvp").send();
+            assert_eq!(save.try_recv(), Ok(PortalOutcome::Cancelled));
+            let many = PickRequest::open_multiple("Import", "Import").send_multiple();
+            assert_eq!(many.try_recv(), Ok(MultiOutcome::Cancelled));
+            let descriptor = PickRequest::open("Open", "Open").send_open_file();
+            assert!(matches!(
+                descriptor.try_recv(),
+                Ok(OpenFileOutcome::Cancelled)
+            ));
+            let launch = LaunchRequest::reveal("/tmp/a.qvp").send();
+            assert_eq!(launch.try_recv(), Ok(LaunchOutcome::Opened));
+            assert!(crate::portal::open_uri("tilo://recorded").is_ok());
         });
-        assert_eq!(outer_record.opened_uris(), ["outer://1", "outer://2"]);
-        assert_eq!(inner_record.opened_uris(), ["inner://1"]);
+        assert_eq!(recorder.pick_requests().len(), 4);
+        assert_eq!(recorder.launch_requests().len(), 1);
+        assert_eq!(recorder.opened_uris(), ["tilo://recorded"]);
     }
 
     #[test]
-    fn scope_is_restored_after_a_panic() {
-        let (services, record) = HostServices::recording();
-        let depth = || SCOPES.with(|scopes| scopes.borrow().len());
-        let before = depth();
-        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            scoped(&services, || panic!("dispatch failed"));
-        }));
-        assert!(unwound.is_err());
-        assert_eq!(depth(), before);
-        assert!(record.opened_uris().is_empty());
+    fn host_services_are_inert_and_scopes_nest_and_restore_even_on_panic() {
+        // Case `null_services_perform_nothing_outside_the_process`.
+        {
+            let null = HostServices::null();
+            assert!(null.clipboard.set_text(ClipboardTarget::Clipboard, "local"));
+            assert_eq!(
+                null.clipboard.text(ClipboardTarget::Clipboard).as_deref(),
+                Some("local")
+            );
+            assert!(
+                !null
+                    .clipboard
+                    .set_shared_text(ClipboardTarget::Clipboard, "secret"),
+                "an in-process buffer must not claim a shared copy"
+            );
+            assert_eq!(
+                null.opener
+                    .open("https://example.invalid")
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::Unsupported
+            );
+            assert!(matches!(
+                null.files.pick(PickRequest::open("Open", "Open")).recv(),
+                Ok(PortalOutcome::Failed(_))
+            ));
+            assert!(matches!(
+                null.files.launch(LaunchRequest::open("/tmp/x")).recv(),
+                Ok(LaunchOutcome::Failed(_))
+            ));
+            assert_eq!(
+                null.notifications.withdraw("tag"),
+                Err(NotifyError::Unavailable)
+            );
+            assert!(
+                null.media_session
+                    .start(MprisConfig::new("app", "App"), PlayerSnapshot::default())
+                    .is_none()
+            );
+        }
+
+        // Case `scopes_nest_and_restore`.
+        {
+            let (outer, outer_record) = HostServices::recording();
+            let (inner, inner_record) = HostServices::recording();
+            scoped(&outer, || {
+                let _ = current().opener.open("outer://1");
+                scoped(&inner, || {
+                    let _ = current().opener.open("inner://1");
+                });
+                let _ = current().opener.open("outer://2");
+            });
+            assert_eq!(outer_record.opened_uris(), ["outer://1", "outer://2"]);
+            assert_eq!(inner_record.opened_uris(), ["inner://1"]);
+        }
+
+        // Case `scope_is_restored_after_a_panic`.
+        {
+            let (services, record) = HostServices::recording();
+            let depth = || SCOPES.with(|scopes| scopes.borrow().len());
+            let before = depth();
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                scoped(&services, || panic!("dispatch failed"));
+            }));
+            assert!(unwound.is_err());
+            assert_eq!(depth(), before);
+            assert!(record.opened_uris().is_empty());
+        }
     }
 }

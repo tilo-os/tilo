@@ -486,129 +486,135 @@ mod tests {
     }
 
     #[test]
-    fn divergent_replicas_converge_and_tombstones_prevent_resurrection() {
-        let mut base = seed();
-        let mut left = Doc::load(&base.save()).unwrap();
-        let mut right = Doc::load(&base.save()).unwrap();
-        SharedAction::CreatePlaylist {
-            id: "p-left".into(),
-            name: "Left".into(),
-        }
-        .apply(&mut left)
-        .unwrap();
-        SharedAction::CreateAnnotation {
-            id: "a-deleted".into(),
-            media_ref: "media-1".into(),
-            time_ms: 42,
-            text: "note".into(),
-        }
-        .apply(&mut left)
-        .unwrap();
-        left.commit();
-        SharedAction::CreatePlaylist {
-            id: "p-right".into(),
-            name: "Right".into(),
-        }
-        .apply(&mut right)
-        .unwrap();
-        SharedAction::DeleteAnnotation {
-            id: "a-deleted".into(),
-        }
-        .apply(&mut right)
-        .unwrap();
-        right.commit();
-        let mut lr = Doc::load(&left.save()).unwrap();
-        let mut rl = Doc::load(&right.save()).unwrap();
-        lr.merge_incoming(&mut right).unwrap();
-        rl.merge_incoming(&mut left).unwrap();
-        assert_eq!(read(&lr), read(&rl));
-        assert_eq!(read(&lr).playlists.len(), 2);
-        assert!(
-            read(&lr).annotations.is_empty(),
-            "delete tombstone wins over an offline create"
-        );
-        assert!(
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn shared_playlists_and_annotations_converge_with_absolute_edits() {
+        // Case `divergent_replicas_converge_and_tombstones_prevent_resurrection`.
+        {
+            let mut base = seed();
+            let mut left = Doc::load(&base.save()).unwrap();
+            let mut right = Doc::load(&base.save()).unwrap();
+            SharedAction::CreatePlaylist {
+                id: "p-left".into(),
+                name: "Left".into(),
+            }
+            .apply(&mut left)
+            .unwrap();
             SharedAction::CreateAnnotation {
                 id: "a-deleted".into(),
                 media_ref: "media-1".into(),
-                time_ms: 7,
-                text: String::new()
+                time_ms: 42,
+                text: "note".into(),
             }
-            .apply(&mut lr)
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn playlist_membership_order_and_annotation_edits_are_absolute() {
-        let mut doc = seed();
-        SharedAction::CreatePlaylist {
-            id: "p".into(),
-            name: "Watch later".into(),
+            .apply(&mut left)
+            .unwrap();
+            left.commit();
+            SharedAction::CreatePlaylist {
+                id: "p-right".into(),
+                name: "Right".into(),
+            }
+            .apply(&mut right)
+            .unwrap();
+            SharedAction::DeleteAnnotation {
+                id: "a-deleted".into(),
+            }
+            .apply(&mut right)
+            .unwrap();
+            right.commit();
+            let mut lr = Doc::load(&left.save()).unwrap();
+            let mut rl = Doc::load(&right.save()).unwrap();
+            lr.merge_incoming(&mut right).unwrap();
+            rl.merge_incoming(&mut left).unwrap();
+            assert_eq!(read(&lr), read(&rl));
+            assert_eq!(read(&lr).playlists.len(), 2);
+            assert!(
+                read(&lr).annotations.is_empty(),
+                "delete tombstone wins over an offline create"
+            );
+            assert!(
+                SharedAction::CreateAnnotation {
+                    id: "a-deleted".into(),
+                    media_ref: "media-1".into(),
+                    time_ms: 7,
+                    text: String::new()
+                }
+                .apply(&mut lr)
+                .is_err()
+            );
         }
-        .apply(&mut doc)
-        .unwrap();
-        SharedAction::AddPlaylistItem {
-            id: "i".into(),
-            playlist_id: "p".into(),
-            media_ref: "media".into(),
-            title: "Clip".into(),
-            position: 10,
-        }
-        .apply(&mut doc)
-        .unwrap();
-        SharedAction::MovePlaylistItem {
-            id: "i".into(),
-            before: 10,
-            after: 20,
-        }
-        .apply(&mut doc)
-        .unwrap();
-        SharedAction::CreateAnnotation {
-            id: "a".into(),
-            media_ref: "media".into(),
-            time_ms: 1000,
-            text: "Old".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        SharedAction::EditAnnotation {
-            id: "a".into(),
-            before: "Old".into(),
-            after: "New".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        SharedAction::MoveAnnotation {
-            id: "a".into(),
-            before_ms: 1000,
-            after_ms: 1250,
-        }
-        .apply(&mut doc)
-        .unwrap();
-        let state = read(&doc);
-        assert_eq!(state.items[0].position, 20);
-        assert_eq!(state.annotations[0].text, "New");
-        assert_eq!(state.annotations[0].time_ms, 1250);
-        SharedAction::DeletePlaylist {
-            id: "p".into(),
-            observed_item_ids: vec!["i".into()],
-        }
-        .apply(&mut doc)
-        .unwrap();
-        let deleted = read(&doc);
-        assert!(deleted.playlists.is_empty());
-        assert!(deleted.items.is_empty());
-        assert!(
+        // Case `playlist_membership_order_and_annotation_edits_are_absolute`.
+        {
+            let mut doc = seed();
+            SharedAction::CreatePlaylist {
+                id: "p".into(),
+                name: "Watch later".into(),
+            }
+            .apply(&mut doc)
+            .unwrap();
             SharedAction::AddPlaylistItem {
                 id: "i".into(),
                 playlist_id: "p".into(),
                 media_ref: "media".into(),
-                title: "Resurrected".into(),
-                position: 30,
+                title: "Clip".into(),
+                position: 10,
             }
             .apply(&mut doc)
-            .is_err()
-        );
+            .unwrap();
+            SharedAction::MovePlaylistItem {
+                id: "i".into(),
+                before: 10,
+                after: 20,
+            }
+            .apply(&mut doc)
+            .unwrap();
+            SharedAction::CreateAnnotation {
+                id: "a".into(),
+                media_ref: "media".into(),
+                time_ms: 1000,
+                text: "Old".into(),
+            }
+            .apply(&mut doc)
+            .unwrap();
+            SharedAction::EditAnnotation {
+                id: "a".into(),
+                before: "Old".into(),
+                after: "New".into(),
+            }
+            .apply(&mut doc)
+            .unwrap();
+            SharedAction::MoveAnnotation {
+                id: "a".into(),
+                before_ms: 1000,
+                after_ms: 1250,
+            }
+            .apply(&mut doc)
+            .unwrap();
+            let state = read(&doc);
+            assert_eq!(state.items[0].position, 20);
+            assert_eq!(state.annotations[0].text, "New");
+            assert_eq!(state.annotations[0].time_ms, 1250);
+            SharedAction::DeletePlaylist {
+                id: "p".into(),
+                observed_item_ids: vec!["i".into()],
+            }
+            .apply(&mut doc)
+            .unwrap();
+            let deleted = read(&doc);
+            assert!(deleted.playlists.is_empty());
+            assert!(deleted.items.is_empty());
+            assert!(
+                SharedAction::AddPlaylistItem {
+                    id: "i".into(),
+                    playlist_id: "p".into(),
+                    media_ref: "media".into(),
+                    title: "Resurrected".into(),
+                    position: 30,
+                }
+                .apply(&mut doc)
+                .is_err()
+            );
+        }
     }
 }

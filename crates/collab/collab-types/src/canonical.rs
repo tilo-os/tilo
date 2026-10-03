@@ -93,8 +93,11 @@ mod tests {
         c: Vec<u8>,
     }
 
+    /// Canonical bytes round-trip, are deterministic, and a truncated
+    /// encoding fails to decode.
     #[test]
-    fn round_trip_simple() {
+    fn canonical_bytes_round_trip_deterministically_and_reject_truncation() {
+        // Case: simple round trip.
         let s = Sample {
             a: 42,
             b: "hello".into(),
@@ -103,10 +106,8 @@ mod tests {
         let bytes = canonical_bytes(&s).unwrap();
         let back: Sample = from_canonical_bytes(&bytes).unwrap();
         assert_eq!(s, back);
-    }
 
-    #[test]
-    fn truncated_bytes_fail() {
+        // Case: truncated bytes fail.
         let s = Sample {
             a: 1,
             b: "x".into(),
@@ -115,11 +116,9 @@ mod tests {
         let bytes = canonical_bytes(&s).unwrap();
         let truncated = &bytes[..bytes.len().saturating_sub(1)];
         assert!(from_canonical_bytes::<Sample>(truncated).is_err());
-    }
 
-    #[test]
-    fn determinism_same_value_same_bytes() {
-        // The whole point of canonical-bytes: two encoders must agree.
+        // Case: determinism — the whole point of canonical bytes: two
+        // encoders must agree.
         let s = Sample {
             a: 7,
             b: "abc".into(),

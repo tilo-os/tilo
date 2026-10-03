@@ -17,6 +17,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
 
+pub use crate::target::TILO_OS_PLATFORM;
+
 /// Domain-separation prefix for a registry-entry publisher signature.
 pub const ENTRY_DOMAIN: &[u8] = b"tilo-registry-entry-v1\0";
 
@@ -24,7 +26,9 @@ pub const ENTRY_DOMAIN: &[u8] = b"tilo-registry-entry-v1\0";
 /// used in this crate but exposed for federation clients snapshotting registry state.
 pub const INDEX_DOMAIN: &[u8] = b"tilo-registry-index-v1\0";
 
-pub const TILO_OS_PLATFORM: &str = "tilo-os";
+/// Most versions one entry lists. Publishers keep the newest; an older
+/// version leaves the entry once a newer one for its target supersedes it.
+pub const MAX_ENTRY_VERSIONS: usize = 128;
 
 /// Localized text whose signed representation is a canonical, ordered map.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,7 +115,7 @@ impl LocalizedImages {
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum EntryValidationError {
-    #[error("package id must use the so.tilo reverse-DNS namespace")]
+    #[error("package id must be lowercase reverse DNS with at least three labels")]
     InvalidPackageId,
     #[error("{field} must contain an English fallback")]
     MissingEnglishFallback { field: &'static str },
@@ -123,7 +127,10 @@ pub enum EntryValidationError {
     InvalidSupportedLanguages,
     #[error("images contain invalid metadata")]
     InvalidImages,
-    #[error("versions must contain complete Tilo OS x86_64 or aarch64 artifact bindings")]
+    #[error(
+        "versions must contain complete artifact bindings for a Tilo OS x86_64/aarch64 or \
+         web wasm32 target"
+    )]
     InvalidVersionTarget,
 }
 
@@ -151,17 +158,19 @@ pub struct RegistryVersion {
     pub target: RegistryTarget,
 }
 
-/// The machine/runtime contract for one package artifact.
+/// The machine/runtime contract for one package artifact. Accepted
+/// spellings are defined in [`crate::target`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistryTarget {
-    /// Extensible platform-family wire name. Only `tilo-os` is accepted by
-    /// this channel today.
+    /// Extensible platform-family wire name: `tilo-os` or `web`.
     pub platform: String,
     /// Architecture wire name.
     pub architecture: String,
-    /// Minimum ISA level, e.g. `x86_64-baseline` or `x86_64-v3`.
+    /// Minimum ISA level, e.g. `x86_64-v3`, or a web feature set such as
+    /// `wasm32-mvp+bulk-memory+sign-ext`.
     pub isa: String,
-    /// Runtime ABI required by the package, if any.
+    /// Runtime ABI required by the package: optional for `tilo-os`,
+    /// `tilo-runtime/<version>+wasm.<32 hex>` for `web`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<String>,
 }
@@ -246,7 +255,7 @@ impl RegistryEntry {
     /// Returns an [`EntryValidationError`] identifying the first invalid field
     /// or collection encountered.
     pub fn validate(&self) -> Result<(), EntryValidationError> {
-        if !self.package_id.starts_with("so.tilo.") || self.package_id.len() > 255 {
+        if !crate::namespace::valid_package_id(&self.package_id) {
             return Err(EntryValidationError::InvalidPackageId);
         }
         validate_localized_text("name", &self.name, 256)?;
@@ -268,7 +277,7 @@ impl RegistryEntry {
             return Err(EntryValidationError::InvalidSupportedLanguages);
         }
         if self.versions.is_empty()
-            || self.versions.len() > 128
+            || self.versions.len() > MAX_ENTRY_VERSIONS
             || self.versions.iter().any(|v| {
                 v.tapp_url.is_empty()
                     || v.tapp_url.len() > 4_096
@@ -278,9 +287,7 @@ impl RegistryEntry {
                     || v.tapp_blake3_hex.len() != 64
                     || !v.tapp_blake3_hex.bytes().all(|b| b.is_ascii_hexdigit())
                     || v.tapp_size_bytes == 0
-                    || v.target.platform != TILO_OS_PLATFORM
-                    || !matches!(v.target.architecture.as_str(), "x86_64" | "aarch64")
-                    || v.target.isa.is_empty()
+                    || v.target.validate().is_err()
             })
         {
             return Err(EntryValidationError::InvalidVersionTarget);
@@ -455,6 +462,7 @@ pub fn sign_entry(entry: &mut RegistryEntry, signing_key: &SigningKey) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::target::{WASM32_ARCHITECTURE, WEB_PLATFORM};
     use ed25519_dalek::SigningKey;
     use getrandom::{SysRng, rand_core::UnwrapErr};
 
@@ -497,140 +505,167 @@ mod tests {
     }
 
     #[test]
-    fn entry_json_roundtrip() {
-        let e = sample_entry();
-        let s = serde_json::to_string(&e).expect("encode");
-        let back: RegistryEntry = serde_json::from_str(&s).expect("decode");
-        assert_eq!(back, e);
+    fn entry_signing_message_covers_every_signed_field() {
+        // phase: entry_json_roundtrip
+        {
+            let e = sample_entry();
+            let s = serde_json::to_string(&e).expect("encode");
+            let back: RegistryEntry = serde_json::from_str(&s).expect("decode");
+            assert_eq!(back, e);
+        }
+        // phase: signing_message_is_independent_of_signature_field
+        {
+            let mut e = sample_entry();
+            let m1 = e.signing_message();
+            e.signature_hex = "deadbeef".into();
+            let m2 = e.signing_message();
+            assert_eq!(m1, m2, "signature_hex must not affect signing digest");
+        }
+        // phase: signing_message_changes_when_any_signed_field_changes
+        {
+            let base = sample_entry();
+            let base_msg = base.signing_message();
+
+            {
+                let mut alt = sample_entry();
+                alt.package_id = "so.tilo.other".into();
+                assert_ne!(alt.signing_message(), base_msg);
+            }
+            {
+                let mut alt = sample_entry();
+                alt.versions[0].tapp_root_hash_hex = "ff".repeat(32);
+                assert_ne!(alt.signing_message(), base_msg);
+            }
+            {
+                let mut bound = sample_entry();
+                bound.versions[0].tapp_blake3_hex = "ee".repeat(32);
+                bound.versions[0].target = RegistryTarget {
+                    platform: TILO_OS_PLATFORM.into(),
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: Some("tilo-runtime/2026.07".into()),
+                };
+                let bound_msg = bound.signing_message();
+                assert_ne!(bound_msg, base_msg);
+                bound.versions[0].tapp_blake3_hex = "fe".repeat(32);
+                assert_ne!(bound.signing_message(), bound_msg);
+            }
+            {
+                let mut alt = sample_entry();
+                alt.updated_at_unix += 1;
+                assert_ne!(alt.signing_message(), base_msg);
+            }
+            {
+                let mut alt = sample_entry();
+                alt.categories.push("Extra".into());
+                assert_ne!(alt.signing_message(), base_msg);
+            }
+        }
+        // phase: sign_entry_fills_signature_field
+        {
+            let mut e = sample_entry();
+            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+            sign_entry(&mut e, &key);
+            assert_eq!(e.signature_hex.len(), 128, "64-byte hex-encoded sig");
+            // Idempotent under re-sign with the same key + same payload.
+            let sig1 = e.signature_hex.clone();
+            sign_entry(&mut e, &key);
+            assert_eq!(e.signature_hex, sig1);
+        }
+        // phase: index_signing_message_is_domain_separated
+        {
+            let entry = sample_entry();
+            let entry_msg = entry_signing_message(&entry);
+            // Feeding the same postcard body through the *index*
+            // domain must yield a different digest.
+            let index_msg = index_signing_message(&entry);
+            assert_ne!(entry_msg, index_msg);
+        }
     }
 
     #[test]
-    fn signing_message_is_independent_of_signature_field() {
-        let mut e = sample_entry();
-        let m1 = e.signing_message();
-        e.signature_hex = "deadbeef".into();
-        let m2 = e.signing_message();
-        assert_eq!(m1, m2, "signature_hex must not affect signing digest");
+    fn entry_validation_rejects_bad_locales_platforms_and_architectures() {
+        // phase: localized_metadata_requires_canonical_tags_and_english_fallback
+        {
+            let mut entry = sample_entry();
+            assert_eq!(entry.validate(), Ok(()));
+
+            entry.tagline.0 = BTreeMap::from([("de".into(), "Gemeinsam bearbeiten".into())]);
+            assert!(matches!(
+                entry.validate(),
+                Err(EntryValidationError::MissingEnglishFallback { field: "tagline" })
+            ));
+
+            entry = sample_entry();
+            entry
+                .description
+                .0
+                .insert("en_US".into(), "Invalid tag".into());
+            assert!(matches!(
+                entry.validate(),
+                Err(EntryValidationError::InvalidLanguageTag {
+                    field: "description",
+                    ..
+                })
+            ));
+
+            entry = sample_entry();
+            entry.name.0.insert("de".into(), String::new());
+            assert!(matches!(
+                entry.validate(),
+                Err(EntryValidationError::InvalidLocalizedValue { field: "name" })
+            ));
+
+            entry = sample_entry();
+            entry.images = LocalizedImages::english_icon(
+                "https://cdn.example.invalid/icon.svg",
+                "Third-party icon",
+            );
+            entry.source_url = Some("https://example.invalid/tilo".into());
+            entry.homepage = Some("https://another.example.invalid/product".into());
+            assert_eq!(entry.validate(), Ok(()));
+
+            entry = sample_entry();
+            entry.images = LocalizedImages::default();
+            assert_eq!(entry.validate(), Ok(()));
+        }
+        // phase: registry_rejects_non_tilo_platforms_and_unsupported_architectures
+        {
+            let mut entry = sample_entry();
+            entry.versions[0].target.platform = "freebsd".into();
+            assert_eq!(
+                entry.validate(),
+                Err(EntryValidationError::InvalidVersionTarget)
+            );
+            entry.versions[0].target.platform = TILO_OS_PLATFORM.into();
+            entry.versions[0].target.architecture = "riscv64".into();
+            assert_eq!(
+                entry.validate(),
+                Err(EntryValidationError::InvalidVersionTarget)
+            );
+        }
     }
 
     #[test]
-    fn signing_message_changes_when_any_signed_field_changes() {
-        let base = sample_entry();
-        let base_msg = base.signing_message();
-
-        {
-            let mut alt = sample_entry();
-            alt.package_id = "so.tilo.other".into();
-            assert_ne!(alt.signing_message(), base_msg);
-        }
-        {
-            let mut alt = sample_entry();
-            alt.versions[0].tapp_root_hash_hex = "ff".repeat(32);
-            assert_ne!(alt.signing_message(), base_msg);
-        }
-        {
-            let mut bound = sample_entry();
-            bound.versions[0].tapp_blake3_hex = "ee".repeat(32);
-            bound.versions[0].target = RegistryTarget {
-                platform: TILO_OS_PLATFORM.into(),
-                architecture: "x86_64".into(),
-                isa: "x86_64-v3".into(),
-                runtime: Some("tilo-runtime/2026.07".into()),
-            };
-            let bound_msg = bound.signing_message();
-            assert_ne!(bound_msg, base_msg);
-            bound.versions[0].tapp_blake3_hex = "fe".repeat(32);
-            assert_ne!(bound.signing_message(), bound_msg);
-        }
-        {
-            let mut alt = sample_entry();
-            alt.updated_at_unix += 1;
-            assert_ne!(alt.signing_message(), base_msg);
-        }
-        {
-            let mut alt = sample_entry();
-            alt.categories.push("Extra".into());
-            assert_ne!(alt.signing_message(), base_msg);
-        }
-    }
-
-    #[test]
-    fn sign_entry_fills_signature_field() {
-        let mut e = sample_entry();
-        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-        sign_entry(&mut e, &key);
-        assert_eq!(e.signature_hex.len(), 128, "64-byte hex-encoded sig");
-        // Idempotent under re-sign with the same key + same payload.
-        let sig1 = e.signature_hex.clone();
-        sign_entry(&mut e, &key);
-        assert_eq!(e.signature_hex, sig1);
-    }
-
-    #[test]
-    fn index_signing_message_is_domain_separated() {
-        let entry = sample_entry();
-        let entry_msg = entry_signing_message(&entry);
-        // Feeding the same postcard body through the *index*
-        // domain must yield a different digest.
-        let index_msg = index_signing_message(&entry);
-        assert_ne!(entry_msg, index_msg);
-    }
-
-    #[test]
-    fn localized_metadata_requires_canonical_tags_and_english_fallback() {
+    fn web_versions_sit_beside_native_versions_of_one_entry() {
         let mut entry = sample_entry();
+        let mut web = entry.versions[0].clone();
+        web.tapp_url = "https://apps.tilo.so/editor/2026.06-web.tapp".into();
+        web.target = RegistryTarget {
+            platform: WEB_PLATFORM.into(),
+            architecture: WASM32_ARCHITECTURE.into(),
+            isa: "wasm32-mvp+bulk-memory+sign-ext".into(),
+            runtime: Some("tilo-runtime/2026.07+wasm.00112233445566778899aabbccddeeff".into()),
+        };
+        entry.versions.push(web);
         assert_eq!(entry.validate(), Ok(()));
 
-        entry.tagline.0 = BTreeMap::from([("de".into(), "Gemeinsam bearbeiten".into())]);
-        assert!(matches!(
-            entry.validate(),
-            Err(EntryValidationError::MissingEnglishFallback { field: "tagline" })
-        ));
-
-        entry = sample_entry();
-        entry
-            .description
-            .0
-            .insert("en_US".into(), "Invalid tag".into());
-        assert!(matches!(
-            entry.validate(),
-            Err(EntryValidationError::InvalidLanguageTag {
-                field: "description",
-                ..
-            })
-        ));
-
-        entry = sample_entry();
-        entry.name.0.insert("de".into(), String::new());
-        assert!(matches!(
-            entry.validate(),
-            Err(EntryValidationError::InvalidLocalizedValue { field: "name" })
-        ));
-
-        entry = sample_entry();
-        entry.images = LocalizedImages::english_icon(
-            "https://cdn.example.invalid/icon.svg",
-            "Third-party icon",
-        );
-        entry.source_url = Some("https://example.invalid/tilo".into());
-        entry.homepage = Some("https://another.example.invalid/product".into());
-        assert_eq!(entry.validate(), Ok(()));
-
-        entry = sample_entry();
-        entry.images = LocalizedImages::default();
-        assert_eq!(entry.validate(), Ok(()));
-    }
-
-    #[test]
-    fn registry_rejects_non_tilo_platforms_and_unsupported_architectures() {
-        let mut entry = sample_entry();
-        entry.versions[0].target.platform = "linux".into();
+        entry.versions[1].target.runtime = Some("tilo-runtime/2026.07".into());
         assert_eq!(
             entry.validate(),
             Err(EntryValidationError::InvalidVersionTarget)
         );
-        entry.versions[0].target.platform = TILO_OS_PLATFORM.into();
-        entry.versions[0].target.architecture = "riscv64".into();
+        entry.versions[1].target.runtime = None;
         assert_eq!(
             entry.validate(),
             Err(EntryValidationError::InvalidVersionTarget)

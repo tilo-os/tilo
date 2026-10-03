@@ -19,7 +19,9 @@ import json
 import os
 from pathlib import Path
 import platform
+import subprocess
 import sys
+import tempfile
 
 MIB = 1024**2
 GIB = 1024**3
@@ -187,7 +189,14 @@ def classify(request, snapshot):
         return "pre-shrink", []
     existing = {r["partuuid"]: r for r in rows}
     require(len(existing) == len(rows), "physical partition IDs are not unique")
-    require(all(existing.get(r["partuuid"]) == r for r in preserve),
+    require(len({r["number"] for r in rows}) == len(rows),
+            "physical partition numbers are not unique")
+    # Windows numbers partitions by offset. Inserting Tilo before WinRE can
+    # move WinRE from number 4 to 7 without changing its GPT identity/extent.
+    preserved_keys = ("partuuid", "type_guid", "offset_bytes", "size_bytes")
+    require(all(existing.get(r["partuuid"]) is not None and
+                all(existing[r["partuuid"]][key] == r[key] for key in preserved_keys)
+                for r in preserve),
             "preserved Windows partition differs from reviewed post-shrink map")
     additions = [r for r in rows if r["partuuid"] not in {p["partuuid"] for p in preserve}]
     additions.sort(key=lambda r: r["offset_bytes"])
@@ -237,8 +246,69 @@ def check_supported_shrink(request):
     state = stage.ps_json(rf'''$ErrorActionPreference='Stop'
 $s=Get-PartitionSupportedSize -DiskNumber {disk} -PartitionNumber {part} -ErrorAction Stop
 [pscustomobject]@{{min=[long]$s.SizeMin;max=[long]$s.SizeMax}}|ConvertTo-Json -Compress''')
-    require(type(state) is dict and state.get("min") <= size <= state.get("max"),
-            "Windows currently does not support the reviewed C: shrink")
+    require(type(state) is dict and type(state.get("min")) is int
+            and type(state.get("max")) is int and state["min"] <= state["max"],
+            "Windows returned an invalid supported C: size range")
+    require(size <= state["max"], "Windows reports C: smaller than the reviewed target")
+    return state["min"] <= size
+
+
+def c_ntfs_size():
+    volume = stage.ps_json(r'''$ErrorActionPreference='Stop'
+$v=Get-Volume -DriveLetter C -ErrorAction Stop
+[pscustomobject]@{filesystem=[string]$v.FileSystem;size_bytes=[long]$v.Size}|ConvertTo-Json -Compress''')
+    require(type(volume) is dict and str(volume.get("filesystem", "")).upper() == "NTFS"
+            and type(volume.get("size_bytes")) is int and volume["size_bytes"] > 0,
+            "C: is not a readable NTFS volume")
+    return volume["size_bytes"]
+
+
+def run_diskpart(commands):
+    """One fresh DiskPart process per script; caller validates all resulting geometry."""
+    descriptor, name = tempfile.mkstemp(prefix="tilo-exact-shrink-", suffix=".txt")
+    try:
+        with os.fdopen(descriptor, "w", encoding="ascii", newline="\r\n") as script:
+            script.write("select volume C\n" + commands + "\nexit\n")
+        result = subprocess.run(["diskpart.exe", "/s", name], capture_output=True,
+                                text=True, timeout=1800)
+        require(result.returncode == 0,
+                f"DiskPart exited with {result.returncode}: {(result.stderr or result.stdout).strip()}")
+        return result.stdout
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+def exact_diskpart_shrink(request):
+    """Fallback for a stale Get-PartitionSupportedSize range, with exact checks."""
+    disk = request["windows_disk"]["number"]
+    shrink = request["target_free_extent"]["size_bytes"]
+    require(shrink > 0 and shrink % MIB == 0, "DiskPart shrink is not whole MiB")
+    amount_mib = shrink // MIB
+    run_diskpart("shrink querymax")
+    # QueryMax is advisory. Recheck the exact target immediately before the
+    # modifying command; DiskPart's localized text is not a safety check.
+    current = stage.snapshot(disk)
+    state, _ = classify(request, current)
+    require(state == "pre-shrink", "C: changed during DiskPart shrink preflight")
+    check_gpt(current)
+    c = windows_c_and_recovery()
+    check_c_state(request, c)
+    check_free_space(request, c, state)
+    stage.windows_install_gate()
+    before_ntfs = c_ntfs_size()
+    require(before_ntfs <= request["planned_windows_shrink"]["original_size_bytes"],
+            "C: NTFS size exceeds reviewed partition")
+    run_diskpart(f"shrink desired={amount_mib} minimum={amount_mib}")
+    current = stage.snapshot(disk)
+    state, _ = classify(request, current)
+    require(state == "post-shrink", "DiskPart did not produce the exact reviewed partition map")
+    check_gpt(current)
+    c = windows_c_and_recovery()
+    check_c_state(request, c)
+    after_ntfs = c_ntfs_size()
+    require(before_ntfs - after_ntfs == shrink
+            and after_ntfs <= request["planned_windows_shrink"]["new_size_bytes"],
+            "DiskPart did not produce the exact reviewed NTFS size change")
 
 
 def create_partition(request, index):
@@ -266,6 +336,29 @@ def complete_plan(request, additions):
             "target_partitions": final}
 
 
+def request_from_allocated_snapshot(snapshot, c_volume, root_gib):
+    """Recover the reviewed request from an exact completed allocation.
+
+    This reconstructs the four-partition pre-shrink map only in memory. The
+    resulting request must reproduce all seven live extents and GPT types
+    through the same derivation and classifier used by `execute`.
+    """
+    rows = normalized(snapshot.get("partitions"))
+    require(len(rows) == 7 and [r["type_guid"] for r in rows] == [
+        stage.ESP_GUID, MSR_GUID, direct.WINDOWS_DATA_GUID,
+        stage.ESP_GUID, stage.LINUX_GUID, stage.TILO_ROOT_GUID, WINRE_GUID,
+    ], "expected the exact Windows plus three Tilo partition layout")
+    require(root_gib in (32, 45), "root size must be 32 or 45 GiB")
+    before = [dict(row) for row in (*rows[:3], rows[6])]
+    before[2]["size_bytes"] += (root_gib + 3) * GIB
+    before[3]["number"] = 4
+    original = {**snapshot, "partitions": before}
+    request = request_from_snapshot(original, c_volume, root_gib)
+    state, additions = classify(request, snapshot)
+    require(state == "complete", "live allocation differs from reconstructed request")
+    return request, complete_plan(request, additions)
+
+
 def prepare(args):
     c = windows_c_and_recovery()
     snapshot = stage.snapshot(c["disk"])
@@ -273,6 +366,20 @@ def prepare(args):
     check_gpt(snapshot)
     stage.atomic_json(args.output, request)
     print(f"read-only allocation request: {args.output}")
+
+
+def recover(args):
+    """Read-only recovery when allocation completed but its request was lost."""
+    require(args.request_output != args.plan_output, "request and plan paths must differ")
+    c = windows_c_and_recovery()
+    snapshot = stage.snapshot(c["disk"])
+    request, plan = request_from_allocated_snapshot(snapshot, c, args.root_gib)
+    check_gpt(snapshot)
+    check_c_state(request, c)
+    check_free_space(request, c, "complete")
+    stage.atomic_json(args.request_output, request)
+    stage.atomic_json(args.plan_output, plan)
+    print(f"read-only recovered allocation: {args.request_output} {args.plan_output}")
 
 
 def inspect(args):
@@ -316,11 +423,13 @@ def execute(args):
     check_free_space(request, c, state)
     stage.windows_install_gate()
     if state == "pre-shrink":
-        check_supported_shrink(request)
-        shrink = request["planned_windows_shrink"]
-        stage.ps_json(rf'''$ErrorActionPreference='Stop'
+        if check_supported_shrink(request):
+            shrink = request["planned_windows_shrink"]
+            stage.ps_json(rf'''$ErrorActionPreference='Stop'
 Resize-Partition -DiskNumber {disk} -PartitionNumber {shrink['partition_number']} -Size {shrink['new_size_bytes']} -ErrorAction Stop|Out-Null
 [pscustomobject]@{{resized=$true}}|ConvertTo-Json -Compress''')
+        else:
+            exact_diskpart_shrink(request)
         current = stage.snapshot(disk)
         state, additions = classify(request, current)
         require(state == "post-shrink", "Windows shrink did not produce exact reviewed map")
@@ -347,6 +456,11 @@ def main(argv=None):
     prepare_command.add_argument("--root-gib", type=int, choices=(32, 45), required=True)
     prepare_command.add_argument("--output", type=Path, required=True)
     prepare_command.set_defaults(handler=prepare)
+    recover_command = commands.add_parser("recover", help="read-only exact request and plan from completed allocation")
+    recover_command.add_argument("--root-gib", type=int, choices=(32, 45), required=True)
+    recover_command.add_argument("--request-output", type=Path, required=True)
+    recover_command.add_argument("--plan-output", type=Path, required=True)
+    recover_command.set_defaults(handler=recover)
     verify_command = commands.add_parser("verify", help="read-only GPT and partition-state check")
     verify_command.add_argument("--request", type=Path, required=True)
     verify_command.add_argument("--output", type=Path, help="write realized plan only when allocation is complete")

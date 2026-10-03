@@ -192,30 +192,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn identity_contains_only_fixed_capsule_paths_and_effective_ids() {
-        for (uid, gid) in [(0, 0), (1000, 2000), (u32::MAX, u32::MAX)] {
-            let files = identity_files(uid, gid);
-            assert_eq!(
-                files[0].1,
-                format!(
-                    "tilo:x:{uid}:{gid}:Tilo capsule:/run/tilo/capsule/home:/usr/bin/nologin\n"
-                )
-            );
-            assert_eq!(files[1].1, format!("tilo:x:{gid}:\n"));
-            assert_eq!(files[0].2, PASSWD_CHILD_FD);
-            assert_eq!(files[1].2, GROUP_CHILD_FD);
+    fn execution_identity_is_fixed_and_fails_closed_when_changed() {
+        // Phase `identity_contains_only_fixed_capsule_paths_and_effective_ids`.
+        {
+            for (uid, gid) in [(0, 0), (1000, 2000), (u32::MAX, u32::MAX)] {
+                let files = identity_files(uid, gid);
+                assert_eq!(
+                    files[0].1,
+                    format!(
+                        "tilo:x:{uid}:{gid}:Tilo capsule:/run/tilo/capsule/home:/usr/bin/nologin\n"
+                    )
+                );
+                assert_eq!(files[1].1, format!("tilo:x:{gid}:\n"));
+                assert_eq!(files[0].2, PASSWD_CHILD_FD);
+                assert_eq!(files[1].2, GROUP_CHILD_FD);
+            }
         }
-    }
-
-    #[test]
-    fn changed_execution_identity_fails_closed() {
-        assert!(validate_identity_uid(1000, 1000).is_ok());
-        assert!(matches!(
-            validate_identity_uid(1000, 0),
-            Err(ExecutionError::IdentityMismatch {
-                planned: 1000,
-                effective: 0
-            })
-        ));
+        // Phase `changed_execution_identity_fails_closed`.
+        {
+            assert!(validate_identity_uid(1000, 1000).is_ok());
+            assert!(matches!(
+                validate_identity_uid(1000, 0),
+                Err(ExecutionError::IdentityMismatch {
+                    planned: 1000,
+                    effective: 0
+                })
+            ));
+        }
     }
 }

@@ -481,62 +481,127 @@ async fn discover_via_mx(client: &reqwest::Client, domain: &str) -> Option<Known
 mod tests {
     use super::*;
 
-    #[cfg(feature = "live")]
     #[test]
-    fn cancelling_discovery_closes_a_stalled_http_request() {
-        use std::io::Read;
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-            mpsc,
-        };
-        use std::time::{Duration, Instant};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let url = format!("http://{}/config.xml", listener.local_addr().unwrap());
-        let cancellation = Arc::new(AtomicBool::new(false));
-        let worker_cancellation = Arc::clone(&cancellation);
-        let (sender, receiver) = mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            sender
-                .send(discover_with_urls(
-                    "fixture@custom.invalid",
-                    &worker_cancellation,
-                    vec![url],
-                ))
-                .unwrap();
-        });
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(Instant::now() < deadline, "discovery never connected");
-                    std::thread::sleep(Duration::from_millis(10));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn mx_discovery_identifies_hosts_by_preference_and_cancels_cleanly() {
+        // Phase `mx_records_identify_hosted_google_and_microsoft`.
+        {
+            // A vanity domain hosted on Google Workspace.
+            let google = vec![
+                (5, "alt1.aspmx.l.google.com".to_string()),
+                (1, "aspmx.l.google.com".to_string()),
+            ];
+            assert_eq!(
+                provider_from_mx_records(google),
+                Some(KnownProvider::Google)
+            );
+
+            // Microsoft 365 tenant.
+            let ms = vec![(0, "example-com.mail.protection.outlook.com".to_string())];
+            assert_eq!(provider_from_mx_records(ms), Some(KnownProvider::Microsoft));
+
+            // Self-hosted / unknown MX → no guess (caller prompts for manual).
+            let unknown = vec![(10, "mail.self-hosted.example".to_string())];
+            assert_eq!(provider_from_mx_records(unknown), None);
+        }
+
+        // Phase `mx_guess_respects_preference_order`.
+        {
+            // The lowest-preference (highest-priority) recognised host wins even
+            // when a higher-preference record is unknown.
+            let records = vec![
+                (20, "backup.self-hosted.example".to_string()),
+                (10, "aspmx.l.google.com".to_string()),
+            ];
+            assert_eq!(
+                provider_from_mx_records(records),
+                Some(KnownProvider::Google)
+            );
+        }
+
+        // Phase `parse_doh_mx_reads_google_dns_json`.
+        {
+            // The exact shape dns.google returns for an MX query.
+            let json = r#"{
+              "Status": 0,
+              "Answer": [
+                {"name":"example.com.","type":15,"TTL":300,"data":"10 aspmx.l.google.com."},
+                {"name":"example.com.","type":15,"TTL":300,"data":"20 alt1.aspmx.l.google.com."},
+                {"name":"example.com.","type":46,"TTL":300,"data":"mx 8 2 300 ..."}
+              ]
+            }"#;
+            let mx = parse_doh_mx(json);
+            assert_eq!(mx.len(), 2, "only MX (type 15) records are kept");
+            assert_eq!(mx[0], (10, "aspmx.l.google.com.".to_string()));
+            assert_eq!(provider_from_mx_records(mx), Some(KnownProvider::Google));
+        }
+
+        // Phase `parse_doh_mx_tolerates_missing_answer`.
+        {
+            assert!(parse_doh_mx(r#"{"Status":3}"#).is_empty());
+            assert!(parse_doh_mx("not json").is_empty());
+        }
+
+        // Phase `cancelling_discovery_closes_a_stalled_http_request`.
+        #[cfg(feature = "live")]
+        {
+            use std::io::Read;
+            use std::sync::{
+                Arc,
+                atomic::{AtomicBool, Ordering},
+                mpsc,
+            };
+            use ui::time::Duration;
+            /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+            const HANG_BOUND: Duration = Duration::from_secs(30);
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let url = format!("http://{}/config.xml", listener.local_addr().unwrap());
+            let cancellation = Arc::new(AtomicBool::new(false));
+            let worker_cancellation = Arc::clone(&cancellation);
+            let (sender, receiver) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                sender
+                    .send(discover_with_urls(
+                        "fixture@custom.invalid",
+                        &worker_cancellation,
+                        vec![url],
+                    ))
+                    .unwrap();
+            });
+            let deadline = tilo_test_env::hang_deadline();
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(ui::time::now() < deadline, "discovery never connected");
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("local listener: {error}"),
                 }
-                Err(error) => panic!("local listener: {error}"),
-            }
-        };
-        stream.set_nonblocking(false).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut request = [0; 4096];
-        assert!(
-            stream.read(&mut request).unwrap() > 0,
-            "real HTTP request began"
-        );
-        cancellation.store(true, Ordering::Relaxed);
-        assert!(
-            receiver
-                .recv_timeout(Duration::from_secs(5))
-                .unwrap()
-                .is_none()
-        );
-        stream
-            .read_to_end(&mut Vec::new())
-            .expect("cancellation closes the request socket");
-        worker.join().unwrap();
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream.set_read_timeout(Some(HANG_BOUND)).unwrap();
+            let mut request = [0; 4096];
+            assert!(
+                stream.read(&mut request).unwrap() > 0,
+                "real HTTP request began"
+            );
+            cancellation.store(true, Ordering::Relaxed);
+            assert!(
+                receiver
+                    .recv_timeout(tilo_test_env::hang_bound())
+                    .unwrap()
+                    .is_none()
+            );
+            stream
+                .read_to_end(&mut Vec::new())
+                .expect("cancellation closes the request socket");
+            worker.join().unwrap();
+        }
     }
 
     const SAMPLE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -562,89 +627,210 @@ mod tests {
 </clientConfig>"#;
 
     #[test]
-    fn parses_hosts_ports_and_security() {
-        let cfg = parse_autoconfig(SAMPLE).expect("valid autoconfig");
-        assert_eq!(cfg.imap_host, "imap.example.com");
-        assert_eq!(cfg.imap_port, 993);
-        assert!(cfg.imap_tls);
-        assert_eq!(cfg.smtp_host, "smtp.example.com");
-        assert_eq!(cfg.smtp_port, 587);
-        assert!(cfg.smtp_tls, "STARTTLS is still an encrypted socket");
-        assert!(!cfg.oauth, "password-cleartext auth is not OAuth");
-        assert_eq!(cfg.display_name.as_deref(), Some("Example Mail"));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn autoconfig_documents_parse_to_imap_smtp_and_oauth_settings() {
+        // Phase `parses_hosts_ports_and_security`.
+        {
+            let cfg = parse_autoconfig(SAMPLE).expect("valid autoconfig");
+            assert_eq!(cfg.imap_host, "imap.example.com");
+            assert_eq!(cfg.imap_port, 993);
+            assert!(cfg.imap_tls);
+            assert_eq!(cfg.smtp_host, "smtp.example.com");
+            assert_eq!(cfg.smtp_port, 587);
+            assert!(cfg.smtp_tls, "STARTTLS is still an encrypted socket");
+            assert!(!cfg.oauth, "password-cleartext auth is not OAuth");
+            assert_eq!(cfg.display_name.as_deref(), Some("Example Mail"));
+        }
+
+        // Phase `apply_to_fills_connection_fields_only`.
+        {
+            let cfg = parse_autoconfig(SAMPLE).unwrap();
+            let mut acct = AccountConfig {
+                email: "me@example.com".into(),
+                username: "me@example.com".into(),
+                ..Default::default()
+            };
+            cfg.apply_to(&mut acct);
+            assert_eq!(acct.imap_host, "imap.example.com");
+            assert_eq!(acct.smtp_port, 587);
+            assert_eq!(acct.username, "me@example.com", "identity fields untouched");
+            assert_eq!(acct.auth, AuthMethod::Password);
+            // The empty display name is filled from the provider's displayName.
+            assert_eq!(acct.display_name, "Example Mail");
+        }
+
+        // Phase `detects_oauth_authentication`.
+        {
+            let xml = SAMPLE.replace("password-cleartext", "OAuth2");
+            let cfg = parse_autoconfig(&xml).expect("valid autoconfig");
+            assert!(cfg.oauth, "OAuth2 authentication must set the oauth flag");
+            let mut acct = AccountConfig::default();
+            cfg.apply_to(&mut acct);
+            assert_eq!(acct.auth, AuthMethod::OAuth);
+        }
+
+        // Phase `rejects_document_missing_a_server`.
+        {
+            // Only an incoming server — not enough to configure sending.
+            let xml = r#"<clientConfig><emailProvider id="x">
+                <incomingServer type="imap"><hostname>imap.x</hostname><port>993</port>
+                <socketType>SSL</socketType></incomingServer>
+                </emailProvider></clientConfig>"#;
+            assert!(parse_autoconfig(xml).is_none());
+        }
+
+        // Phase `ignores_pop3_incoming_and_requires_imap`.
+        {
+            // A POP3-only provider block must not be mistaken for IMAP.
+            let xml = r#"<clientConfig><emailProvider id="x">
+                <incomingServer type="pop3"><hostname>pop.x</hostname><port>995</port>
+                <socketType>SSL</socketType></incomingServer>
+                <outgoingServer type="smtp"><hostname>smtp.x</hostname><port>465</port>
+                <socketType>SSL</socketType></outgoingServer>
+                </emailProvider></clientConfig>"#;
+            assert!(
+                parse_autoconfig(xml).is_none(),
+                "no IMAP server → no config"
+            );
+        }
+
+        // Phase `microsoft_ispdb_parses_to_oauth_office365`.
+        {
+            let cfg = parse_autoconfig(MICROSOFT_ISPDB).expect("valid microsoft autoconfig");
+            assert_eq!(cfg.imap_host, "outlook.office365.com");
+            assert_eq!(cfg.smtp_host, "smtp.office365.com");
+            assert_eq!(cfg.smtp_port, 587);
+            assert!(cfg.imap_tls && cfg.smtp_tls);
+            assert!(cfg.oauth, "Microsoft consumer mail requires OAuth");
+            // Applying it to an @outlook.de account presets OAuth.
+            let mut acct = AccountConfig {
+                email: "person@outlook.de".into(),
+                ..Default::default()
+            };
+            cfg.apply_to(&mut acct);
+            assert_eq!(acct.auth, AuthMethod::OAuth);
+            assert_eq!(acct.imap_host, "outlook.office365.com");
+        }
     }
 
     #[test]
-    fn apply_to_fills_connection_fields_only() {
-        let cfg = parse_autoconfig(SAMPLE).unwrap();
-        let mut acct = AccountConfig {
-            email: "me@example.com".into(),
-            username: "me@example.com".into(),
-            ..Default::default()
-        };
-        cfg.apply_to(&mut acct);
-        assert_eq!(acct.imap_host, "imap.example.com");
-        assert_eq!(acct.smtp_port, 587);
-        assert_eq!(acct.username, "me@example.com", "identity fields untouched");
-        assert_eq!(acct.auth, AuthMethod::Password);
-        // The empty display name is filled from the provider's displayName.
-        assert_eq!(acct.display_name, "Example Mail");
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn provider_tables_cover_discovery_urls_and_known_domains() {
+        // Phase `discovery_urls_cover_wellknown_and_ispdb`.
+        {
+            let urls = discovery_urls("example.com", "me@example.com");
+            assert!(
+                urls.iter()
+                    .any(|u| u.contains("autoconfig.example.com/mail/config-v1.1.xml"))
+            );
+            assert!(
+                urls.iter()
+                    .any(|u| u.contains("example.com/.well-known/autoconfig"))
+            );
+            assert!(
+                urls.iter()
+                    .any(|u| u.contains("autoconfig.thunderbird.net/v1.1/example.com"))
+            );
+            assert!(
+                urls.iter()
+                    .all(|u| u.contains("me%40example.com") || u.ends_with("example.com"))
+            );
+        }
 
-    #[test]
-    fn detects_oauth_authentication() {
-        let xml = SAMPLE.replace("password-cleartext", "OAuth2");
-        let cfg = parse_autoconfig(&xml).expect("valid autoconfig");
-        assert!(cfg.oauth, "OAuth2 authentication must set the oauth flag");
-        let mut acct = AccountConfig::default();
-        cfg.apply_to(&mut acct);
-        assert_eq!(acct.auth, AuthMethod::OAuth);
-    }
+        // Phase `builtin_table_fills_common_providers_offline`.
+        {
+            // The offline, network-free fill the form applies as the address is
+            // typed. Gmail → OAuth Gmail servers.
+            let g = builtin_autoconfig("gmail.com").expect("gmail is built in");
+            assert_eq!(g.imap_host, "imap.gmail.com");
+            assert_eq!(g.imap_port, 993);
+            assert_eq!(g.smtp_host, "smtp.gmail.com");
+            assert!(g.oauth, "Gmail presets to OAuth");
+            // Outlook across TLDs → office365.
+            let o = builtin_autoconfig("outlook.de").expect("outlook is built in");
+            assert_eq!(o.imap_host, "outlook.office365.com");
+            assert_eq!(o.smtp_host, "smtp.office365.com");
+            // The large free webmail hosts the ISPDB may miss offline.
+            assert_eq!(
+                builtin_autoconfig("gmx.net").unwrap().imap_host,
+                "imap.gmx.net"
+            );
+            assert_eq!(
+                builtin_autoconfig("web.de").unwrap().smtp_host,
+                "smtp.web.de"
+            );
+            assert_eq!(
+                builtin_autoconfig("fastmail.com").unwrap().imap_host,
+                "imap.fastmail.com"
+            );
+            assert_eq!(
+                builtin_autoconfig("yahoo.co.uk").unwrap().imap_host,
+                "imap.mail.yahoo.com"
+            );
+            assert_eq!(
+                builtin_autoconfig("icloud.com").unwrap().imap_host,
+                "imap.mail.me.com"
+            );
+            assert_eq!(
+                builtin_autoconfig("zoho.com").unwrap().smtp_host,
+                "smtp.zoho.com"
+            );
+            // Encryption is on for every built-in provider.
+            for d in [
+                "gmail.com",
+                "outlook.com",
+                "gmx.net",
+                "web.de",
+                "zoho.com",
+                "aol.com",
+            ] {
+                let ac = builtin_autoconfig(d).unwrap();
+                assert!(ac.imap_tls && ac.smtp_tls, "{d} must use TLS");
+            }
+            // An unknown vanity domain falls through to real discovery.
+            assert!(builtin_autoconfig("some-company.example").is_none());
+        }
 
-    #[test]
-    fn rejects_document_missing_a_server() {
-        // Only an incoming server — not enough to configure sending.
-        let xml = r#"<clientConfig><emailProvider id="x">
-            <incomingServer type="imap"><hostname>imap.x</hostname><port>993</port>
-            <socketType>SSL</socketType></incomingServer>
-            </emailProvider></clientConfig>"#;
-        assert!(parse_autoconfig(xml).is_none());
-    }
+        // Phase `known_provider_covers_microsoft_consumer_domains_across_tlds`.
+        {
+            // The whole point: pick by domain family, not the .com TLD.
+            assert_eq!(
+                known_provider_for_domain("outlook.de"),
+                Some(KnownProvider::Microsoft)
+            );
+            assert_eq!(
+                known_provider_for_domain("hotmail.co.uk"),
+                Some(KnownProvider::Microsoft)
+            );
+            assert_eq!(
+                known_provider_for_domain("live.fr"),
+                Some(KnownProvider::Microsoft)
+            );
+            assert_eq!(
+                known_provider_for_domain("Gmail.com"),
+                Some(KnownProvider::Google)
+            );
+            assert_eq!(
+                known_provider_for_domain("yahoo.co.jp"),
+                Some(KnownProvider::Yahoo)
+            );
+            // An unknown vanity domain must fall through to network discovery.
+            assert_eq!(known_provider_for_domain("some-company.de"), None);
+        }
 
-    #[test]
-    fn ignores_pop3_incoming_and_requires_imap() {
-        // A POP3-only provider block must not be mistaken for IMAP.
-        let xml = r#"<clientConfig><emailProvider id="x">
-            <incomingServer type="pop3"><hostname>pop.x</hostname><port>995</port>
-            <socketType>SSL</socketType></incomingServer>
-            <outgoingServer type="smtp"><hostname>smtp.x</hostname><port>465</port>
-            <socketType>SSL</socketType></outgoingServer>
-            </emailProvider></clientConfig>"#;
-        assert!(
-            parse_autoconfig(xml).is_none(),
-            "no IMAP server → no config"
-        );
-    }
-
-    #[test]
-    fn discovery_urls_cover_wellknown_and_ispdb() {
-        let urls = discovery_urls("example.com", "me@example.com");
-        assert!(
-            urls.iter()
-                .any(|u| u.contains("autoconfig.example.com/mail/config-v1.1.xml"))
-        );
-        assert!(
-            urls.iter()
-                .any(|u| u.contains("example.com/.well-known/autoconfig"))
-        );
-        assert!(
-            urls.iter()
-                .any(|u| u.contains("autoconfig.thunderbird.net/v1.1/example.com"))
-        );
-        assert!(
-            urls.iter()
-                .all(|u| u.contains("me%40example.com") || u.ends_with("example.com"))
-        );
+        // Phase `microsoft_known_provider_config_is_oauth`.
+        {
+            let cfg = KnownProvider::Microsoft.autoconfig();
+            assert_eq!(cfg.imap_host, "outlook.office365.com");
+            assert_eq!(cfg.smtp_host, "smtp.office365.com");
+            assert!(cfg.oauth, "Microsoft preset must require OAuth");
+        }
     }
 
     // The real ISPDB document for outlook.com — an `@outlook.de` address must
@@ -672,169 +858,4 @@ mod tests {
     </outgoingServer>
   </emailProvider>
 </clientConfig>"#;
-
-    #[test]
-    fn microsoft_ispdb_parses_to_oauth_office365() {
-        let cfg = parse_autoconfig(MICROSOFT_ISPDB).expect("valid microsoft autoconfig");
-        assert_eq!(cfg.imap_host, "outlook.office365.com");
-        assert_eq!(cfg.smtp_host, "smtp.office365.com");
-        assert_eq!(cfg.smtp_port, 587);
-        assert!(cfg.imap_tls && cfg.smtp_tls);
-        assert!(cfg.oauth, "Microsoft consumer mail requires OAuth");
-        // Applying it to an @outlook.de account presets OAuth.
-        let mut acct = AccountConfig {
-            email: "person@outlook.de".into(),
-            ..Default::default()
-        };
-        cfg.apply_to(&mut acct);
-        assert_eq!(acct.auth, AuthMethod::OAuth);
-        assert_eq!(acct.imap_host, "outlook.office365.com");
-    }
-
-    #[test]
-    fn builtin_table_fills_common_providers_offline() {
-        // The offline, network-free fill the form applies as the address is
-        // typed. Gmail → OAuth Gmail servers.
-        let g = builtin_autoconfig("gmail.com").expect("gmail is built in");
-        assert_eq!(g.imap_host, "imap.gmail.com");
-        assert_eq!(g.imap_port, 993);
-        assert_eq!(g.smtp_host, "smtp.gmail.com");
-        assert!(g.oauth, "Gmail presets to OAuth");
-        // Outlook across TLDs → office365.
-        let o = builtin_autoconfig("outlook.de").expect("outlook is built in");
-        assert_eq!(o.imap_host, "outlook.office365.com");
-        assert_eq!(o.smtp_host, "smtp.office365.com");
-        // The large free webmail hosts the ISPDB may miss offline.
-        assert_eq!(
-            builtin_autoconfig("gmx.net").unwrap().imap_host,
-            "imap.gmx.net"
-        );
-        assert_eq!(
-            builtin_autoconfig("web.de").unwrap().smtp_host,
-            "smtp.web.de"
-        );
-        assert_eq!(
-            builtin_autoconfig("fastmail.com").unwrap().imap_host,
-            "imap.fastmail.com"
-        );
-        assert_eq!(
-            builtin_autoconfig("yahoo.co.uk").unwrap().imap_host,
-            "imap.mail.yahoo.com"
-        );
-        assert_eq!(
-            builtin_autoconfig("icloud.com").unwrap().imap_host,
-            "imap.mail.me.com"
-        );
-        assert_eq!(
-            builtin_autoconfig("zoho.com").unwrap().smtp_host,
-            "smtp.zoho.com"
-        );
-        // Encryption is on for every built-in provider.
-        for d in [
-            "gmail.com",
-            "outlook.com",
-            "gmx.net",
-            "web.de",
-            "zoho.com",
-            "aol.com",
-        ] {
-            let ac = builtin_autoconfig(d).unwrap();
-            assert!(ac.imap_tls && ac.smtp_tls, "{d} must use TLS");
-        }
-        // An unknown vanity domain falls through to real discovery.
-        assert!(builtin_autoconfig("some-company.example").is_none());
-    }
-
-    #[test]
-    fn known_provider_covers_microsoft_consumer_domains_across_tlds() {
-        // The whole point: pick by domain family, not the .com TLD.
-        assert_eq!(
-            known_provider_for_domain("outlook.de"),
-            Some(KnownProvider::Microsoft)
-        );
-        assert_eq!(
-            known_provider_for_domain("hotmail.co.uk"),
-            Some(KnownProvider::Microsoft)
-        );
-        assert_eq!(
-            known_provider_for_domain("live.fr"),
-            Some(KnownProvider::Microsoft)
-        );
-        assert_eq!(
-            known_provider_for_domain("Gmail.com"),
-            Some(KnownProvider::Google)
-        );
-        assert_eq!(
-            known_provider_for_domain("yahoo.co.jp"),
-            Some(KnownProvider::Yahoo)
-        );
-        // An unknown vanity domain must fall through to network discovery.
-        assert_eq!(known_provider_for_domain("some-company.de"), None);
-    }
-
-    #[test]
-    fn microsoft_known_provider_config_is_oauth() {
-        let cfg = KnownProvider::Microsoft.autoconfig();
-        assert_eq!(cfg.imap_host, "outlook.office365.com");
-        assert_eq!(cfg.smtp_host, "smtp.office365.com");
-        assert!(cfg.oauth, "Microsoft preset must require OAuth");
-    }
-
-    #[test]
-    fn mx_records_identify_hosted_google_and_microsoft() {
-        // A vanity domain hosted on Google Workspace.
-        let google = vec![
-            (5, "alt1.aspmx.l.google.com".to_string()),
-            (1, "aspmx.l.google.com".to_string()),
-        ];
-        assert_eq!(
-            provider_from_mx_records(google),
-            Some(KnownProvider::Google)
-        );
-
-        // Microsoft 365 tenant.
-        let ms = vec![(0, "example-com.mail.protection.outlook.com".to_string())];
-        assert_eq!(provider_from_mx_records(ms), Some(KnownProvider::Microsoft));
-
-        // Self-hosted / unknown MX → no guess (caller prompts for manual).
-        let unknown = vec![(10, "mail.self-hosted.example".to_string())];
-        assert_eq!(provider_from_mx_records(unknown), None);
-    }
-
-    #[test]
-    fn mx_guess_respects_preference_order() {
-        // The lowest-preference (highest-priority) recognised host wins even
-        // when a higher-preference record is unknown.
-        let records = vec![
-            (20, "backup.self-hosted.example".to_string()),
-            (10, "aspmx.l.google.com".to_string()),
-        ];
-        assert_eq!(
-            provider_from_mx_records(records),
-            Some(KnownProvider::Google)
-        );
-    }
-
-    #[test]
-    fn parse_doh_mx_reads_google_dns_json() {
-        // The exact shape dns.google returns for an MX query.
-        let json = r#"{
-          "Status": 0,
-          "Answer": [
-            {"name":"example.com.","type":15,"TTL":300,"data":"10 aspmx.l.google.com."},
-            {"name":"example.com.","type":15,"TTL":300,"data":"20 alt1.aspmx.l.google.com."},
-            {"name":"example.com.","type":46,"TTL":300,"data":"mx 8 2 300 ..."}
-          ]
-        }"#;
-        let mx = parse_doh_mx(json);
-        assert_eq!(mx.len(), 2, "only MX (type 15) records are kept");
-        assert_eq!(mx[0], (10, "aspmx.l.google.com.".to_string()));
-        assert_eq!(provider_from_mx_records(mx), Some(KnownProvider::Google));
-    }
-
-    #[test]
-    fn parse_doh_mx_tolerates_missing_answer() {
-        assert!(parse_doh_mx(r#"{"Status":3}"#).is_empty());
-        assert!(parse_doh_mx("not json").is_empty());
-    }
 }

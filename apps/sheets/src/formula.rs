@@ -29,7 +29,7 @@ use std::fmt::Write as _;
 use std::hash::BuildHasher;
 
 use crate::model::{
-    Addr, CellFormat, CellValue, FormatCategory, FormulaError, a1_to_addr, addr_to_a1,
+    Addr, CellFormat, CellValue, FormatCategory, FormulaError, GridEdit, a1_to_addr, addr_to_a1,
 };
 
 // ---------------------------------------------------------------------------
@@ -357,13 +357,16 @@ pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
 /// Unlike [`offset_refs`], this is not a copy/fill operation: `$` anchors
 /// affect copying, but inserting or deleting a row/column moves *all*
 /// references, including absolute ones. A target that was deleted becomes the
-/// canonical `#REF!` token. String literals, function names, and numeric
-/// exponents use the same scanner as copy/fill and are left verbatim.
+/// canonical `#REF!` token. A range `A1:B3` moves as a unit through
+/// [`GridEdit::map_range`], so deleting its first or last line shrinks it and
+/// only deleting all of it yields `#REF!`. String literals, function names,
+/// and numeric exponents use the same scanner as copy/fill and are left
+/// verbatim.
 ///
 /// Keeping this beside [`offset_refs`] is important: row/column actions must
 /// preserve formula relationships in the same replayable action that moves the
 /// cells, rather than leaving stale coordinates for a later UI-only repair.
-pub fn remap_refs(raw: &str, map: impl Fn(Addr) -> Option<Addr>) -> String {
+pub fn remap_refs(raw: &str, edit: GridEdit) -> String {
     let Some(body) = raw.strip_prefix('=') else {
         return raw.to_string();
     };
@@ -394,14 +397,33 @@ pub fn remap_refs(raw: &str, map: impl Fn(Addr) -> Option<Addr>) -> String {
         let mut ahead = scan;
         ahead.skip_while(char::is_whitespace);
         let is_call = ahead.peek() == Some('(');
-        if !prev_numish
-            && !is_call
-            && let Some(mapped) = remap_ref_token(&token, &map)
-        {
-            out.push_str(&mapped);
+        let Some(first) = RefToken::parse(&token).filter(|_| !prev_numish && !is_call) else {
+            out.push_str(&token);
             continue;
+        };
+        if ahead.peek() == Some(':') {
+            ahead.bump();
+            ahead.skip_while(char::is_whitespace);
+            let sep = ahead.text_from(scan.pos());
+            let end_start = ahead.pos();
+            ahead.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
+            if let Some(second) = RefToken::parse(&ahead.text_from(end_start)) {
+                scan = ahead;
+                match edit.map_range(first.addr, second.addr) {
+                    Some((a, b)) => {
+                        out.push_str(&first.render(a));
+                        out.push_str(&sep);
+                        out.push_str(&second.render(b));
+                    }
+                    None => out.push_str("#REF!"),
+                }
+                continue;
+            }
         }
-        out.push_str(&token);
+        match edit.map_addr(first.addr) {
+            Some(addr) => out.push_str(&first.render(addr)),
+            None => out.push_str("#REF!"),
+        }
     }
     out
 }
@@ -460,52 +482,67 @@ fn offset_ref_token(tok: &str, dcol: i64, drow: i64) -> Option<String> {
     Some(s)
 }
 
-/// Map one A1 token through a structural change while retaining its `$`
-/// spelling. `None` is a valid mapping result and deliberately renders as
-/// `#REF!`; an outer `Option` distinguishes that from a non-reference token.
-fn remap_ref_token(tok: &str, map: &impl Fn(Addr) -> Option<Addr>) -> Option<String> {
-    let bytes = tok.as_bytes();
-    let mut at = 0usize;
-    let col_abs = bytes.first() == Some(&b'$');
-    if col_abs {
-        at = 1;
+/// One `A1`/`$A$1`-shaped token, remembering its `$` spelling so a
+/// structural remap can write the moved address back the same way.
+#[derive(Clone, Copy)]
+struct RefToken {
+    addr: Addr,
+    col_abs: bool,
+    row_abs: bool,
+}
+
+impl RefToken {
+    /// `None` when the token is not a well-formed reference.
+    fn parse(tok: &str) -> Option<Self> {
+        let bytes = tok.as_bytes();
+        let mut at = 0usize;
+        let col_abs = bytes.first() == Some(&b'$');
+        if col_abs {
+            at = 1;
+        }
+        let letters_start = at;
+        while bytes.get(at).is_some_and(u8::is_ascii_alphabetic) {
+            at = at.saturating_add(1);
+        }
+        let letters = tok.get(letters_start..at).filter(|s| !s.is_empty())?;
+        let row_abs = bytes.get(at) == Some(&b'$');
+        if row_abs {
+            at = at.saturating_add(1);
+        }
+        let digits_start = at;
+        while bytes.get(at).is_some_and(u8::is_ascii_digit) {
+            at = at.saturating_add(1);
+        }
+        if at != bytes.len() {
+            return None;
+        }
+        let addr = (
+            crate::model::letters_to_col(letters)?,
+            tok.get(digits_start..at)?
+                .parse::<u32>()
+                .ok()?
+                .checked_sub(1)?,
+        );
+        Some(Self {
+            addr,
+            col_abs,
+            row_abs,
+        })
     }
-    let letters_start = at;
-    while bytes.get(at).is_some_and(u8::is_ascii_alphabetic) {
-        at = at.saturating_add(1);
+
+    /// `addr` spelled with this token's `$` anchors.
+    fn render(self, (col, row): Addr) -> String {
+        let mut result = String::new();
+        if self.col_abs {
+            result.push('$');
+        }
+        result.push_str(&crate::model::col_to_letters(col));
+        if self.row_abs {
+            result.push('$');
+        }
+        result.push_str(&row.saturating_add(1).to_string());
+        result
     }
-    let letters = tok.get(letters_start..at).filter(|s| !s.is_empty())?;
-    let row_abs = bytes.get(at) == Some(&b'$');
-    if row_abs {
-        at = at.saturating_add(1);
-    }
-    let digits_start = at;
-    while bytes.get(at).is_some_and(u8::is_ascii_digit) {
-        at = at.saturating_add(1);
-    }
-    if at != bytes.len() {
-        return None;
-    }
-    let old = (
-        crate::model::letters_to_col(letters)?,
-        tok.get(digits_start..at)?
-            .parse::<u32>()
-            .ok()?
-            .checked_sub(1)?,
-    );
-    let Some((col, row)) = map(old) else {
-        return Some("#REF!".into());
-    };
-    let mut result = String::new();
-    if col_abs {
-        result.push('$');
-    }
-    result.push_str(&crate::model::col_to_letters(col));
-    if row_abs {
-        result.push('$');
-    }
-    result.push_str(&row.saturating_add(1).to_string());
-    Some(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -2632,275 +2669,294 @@ mod tests {
             .unwrap_or(CellValue::Empty)
     }
 
+    /// Precedence, references/SUM, IF/comparisons, div-zero/cycles and Excel error codes.
     #[test]
-    fn arithmetic_and_precedence() {
-        let m = run(&[("A1", "=2+3*4"), ("A2", "=(2+3)*4"), ("A3", "=2^3^2")]);
-        assert_eq!(val(&m, "A1"), CellValue::Number(14.0));
-        assert_eq!(val(&m, "A2"), CellValue::Number(20.0));
-        // right-assoc power: 2^(3^2) = 512
-        assert_eq!(val(&m, "A3"), CellValue::Number(512.0));
-    }
+    fn arithmetic_references_conditionals_and_errors() {
+        // Case `arithmetic_and_precedence`.
+        {
+            let m = run(&[("A1", "=2+3*4"), ("A2", "=(2+3)*4"), ("A3", "=2^3^2")]);
+            assert_eq!(val(&m, "A1"), CellValue::Number(14.0));
+            assert_eq!(val(&m, "A2"), CellValue::Number(20.0));
+            // right-assoc power: 2^(3^2) = 512
+            assert_eq!(val(&m, "A3"), CellValue::Number(512.0));
+        }
 
-    #[test]
-    fn cell_refs_and_sum_range() {
-        let m = run(&[
-            ("A1", "10"),
-            ("A2", "20"),
-            ("A3", "30"),
-            ("B1", "=SUM(A1:A3)"),
-            ("B2", "=AVERAGE(A1:A3)"),
-            ("B3", "=A1+A2"),
-        ]);
-        assert_eq!(val(&m, "B1"), CellValue::Number(60.0));
-        assert_eq!(val(&m, "B2"), CellValue::Number(20.0));
-        assert_eq!(val(&m, "B3"), CellValue::Number(30.0));
-    }
+        // Case `cell_refs_and_sum_range`.
+        {
+            let m = run(&[
+                ("A1", "10"),
+                ("A2", "20"),
+                ("A3", "30"),
+                ("B1", "=SUM(A1:A3)"),
+                ("B2", "=AVERAGE(A1:A3)"),
+                ("B3", "=A1+A2"),
+            ]);
+            assert_eq!(val(&m, "B1"), CellValue::Number(60.0));
+            assert_eq!(val(&m, "B2"), CellValue::Number(20.0));
+            assert_eq!(val(&m, "B3"), CellValue::Number(30.0));
+        }
 
-    #[test]
-    fn if_and_comparisons() {
-        let m = run(&[
-            ("A1", "5"),
-            ("B1", "=IF(A1>3,\"big\",\"small\")"),
-            ("C1", "=IF(A1>10,1,0)"),
-        ]);
-        assert_eq!(val(&m, "B1"), CellValue::Text("big".into()));
-        assert_eq!(val(&m, "C1"), CellValue::Number(0.0));
-    }
+        // Case `if_and_comparisons`.
+        {
+            let m = run(&[
+                ("A1", "5"),
+                ("B1", "=IF(A1>3,\"big\",\"small\")"),
+                ("C1", "=IF(A1>10,1,0)"),
+            ]);
+            assert_eq!(val(&m, "B1"), CellValue::Text("big".into()));
+            assert_eq!(val(&m, "C1"), CellValue::Number(0.0));
+        }
 
-    #[test]
-    fn div_zero_and_cycle() {
-        let m = run(&[("A1", "=1/0"), ("B1", "=B2"), ("B2", "=B1")]);
-        assert_eq!(val(&m, "A1"), CellValue::Error(FormulaError::Div0));
-        assert!(val(&m, "B1").is_error());
-    }
+        // Case `div_zero_and_cycle`.
+        {
+            let m = run(&[("A1", "=1/0"), ("B1", "=B2"), ("B2", "=B1")]);
+            assert_eq!(val(&m, "A1"), CellValue::Error(FormulaError::Div0));
+            assert!(val(&m, "B1").is_error());
+        }
 
-    #[test]
-    fn specific_excel_error_codes() {
-        use crate::model::{CellFormat, format_value};
-        // Each formula triggers one specific cause. Assert both the typed
-        // error kind *and* the exact canonical string the grid renders
-        // (through the real `recalculate` + `format_value` path).
-        let m = run(&[
-            ("A1", "=1/0"),                // division by zero        → #DIV/0!
-            ("A2", "=FOOBAR()"),           // unknown function        → #NAME?
-            ("A3", "=NOTACELL"),           // unrecognized bare name  → #NAME?
-            ("A4", "=VLOOKUP(1,B1:B3,5)"), // column outside table    → #REF!
-            ("A5", "=\"a\"+1"),            // text where number wanted → #VALUE!
-            ("A6", "=MATCH(999,B1:B3,0)"), // lookup with no match    → #N/A
-            ("B1", "10"),
-            ("B2", "20"),
-            ("B3", "30"),
-        ]);
-        let cases = [
-            ("A1", FormulaError::Div0, "#DIV/0!"),
-            ("A2", FormulaError::Name, "#NAME?"),
-            ("A3", FormulaError::Name, "#NAME?"),
-            ("A4", FormulaError::Ref, "#REF!"),
-            ("A5", FormulaError::Value, "#VALUE!"),
-            ("A6", FormulaError::Na, "#N/A"),
-        ];
-        for (cell, kind, text) in cases {
-            let v = val(&m, cell);
-            assert_eq!(v, CellValue::Error(kind), "{cell} error kind");
-            assert_eq!(
-                format_value(&v, CellFormat::General),
-                text,
-                "{cell} rendered as canonical Excel code",
-            );
+        // Case `specific_excel_error_codes`.
+        {
+            use crate::model::{CellFormat, format_value};
+            // Each formula triggers one specific cause. Assert both the typed
+            // error kind *and* the exact canonical string the grid renders
+            // (through the real `recalculate` + `format_value` path).
+            let m = run(&[
+                ("A1", "=1/0"),                // division by zero        → #DIV/0!
+                ("A2", "=FOOBAR()"),           // unknown function        → #NAME?
+                ("A3", "=NOTACELL"),           // unrecognized bare name  → #NAME?
+                ("A4", "=VLOOKUP(1,B1:B3,5)"), // column outside table    → #REF!
+                ("A5", "=\"a\"+1"),            // text where number wanted → #VALUE!
+                ("A6", "=MATCH(999,B1:B3,0)"), // lookup with no match    → #N/A
+                ("B1", "10"),
+                ("B2", "20"),
+                ("B3", "30"),
+            ]);
+            let cases = [
+                ("A1", FormulaError::Div0, "#DIV/0!"),
+                ("A2", FormulaError::Name, "#NAME?"),
+                ("A3", FormulaError::Name, "#NAME?"),
+                ("A4", FormulaError::Ref, "#REF!"),
+                ("A5", FormulaError::Value, "#VALUE!"),
+                ("A6", FormulaError::Na, "#N/A"),
+            ];
+            for (cell, kind, text) in cases {
+                let v = val(&m, cell);
+                assert_eq!(v, CellValue::Error(kind), "{cell} error kind");
+                assert_eq!(
+                    format_value(&v, CellFormat::General),
+                    text,
+                    "{cell} rendered as canonical Excel code",
+                );
+            }
         }
     }
 
+    /// Text functions, extended text functions and TEXT format codes.
     #[test]
-    fn text_functions() {
-        let m = run(&[
-            ("A1", "=UPPER(\"hi\")"),
-            ("A2", "=LEFT(\"hello\",2)"),
-            ("A3", "=CONCAT(\"a\",\"b\",\"c\")"),
-            ("A4", "=LEN(\"abcd\")"),
-        ]);
-        assert_eq!(val(&m, "A1"), CellValue::Text("HI".into()));
-        assert_eq!(val(&m, "A2"), CellValue::Text("he".into()));
-        assert_eq!(val(&m, "A3"), CellValue::Text("abc".into()));
-        assert_eq!(val(&m, "A4"), CellValue::Number(4.0));
-    }
+    fn text_functions_and_format_codes() {
+        // Case `text_functions`.
+        {
+            let m = run(&[
+                ("A1", "=UPPER(\"hi\")"),
+                ("A2", "=LEFT(\"hello\",2)"),
+                ("A3", "=CONCAT(\"a\",\"b\",\"c\")"),
+                ("A4", "=LEN(\"abcd\")"),
+            ]);
+            assert_eq!(val(&m, "A1"), CellValue::Text("HI".into()));
+            assert_eq!(val(&m, "A2"), CellValue::Text("he".into()));
+            assert_eq!(val(&m, "A3"), CellValue::Text("abc".into()));
+            assert_eq!(val(&m, "A4"), CellValue::Number(4.0));
+        }
 
-    #[test]
-    fn countif_sumif() {
-        let m = run(&[
-            ("A1", "5"),
-            ("A2", "15"),
-            ("A3", "25"),
-            ("B1", "=COUNTIF(A1:A3,\">10\")"),
-            ("B2", "=SUMIF(A1:A3,\">=15\")"),
-        ]);
-        assert_eq!(val(&m, "B1"), CellValue::Number(2.0));
-        assert_eq!(val(&m, "B2"), CellValue::Number(40.0));
-    }
+        // Case `extended_text_functions`.
+        {
+            let m = run(&[
+                ("A1", "=SUBSTITUTE(\"a-b-c\",\"-\",\"+\")"),
+                ("A2", "=PROPER(\"hello world\")"),
+                ("A3", "=FIND(\"b\",\"abc\")"),
+                ("A4", "=SEARCH(\"B\",\"abc\")"),
+                ("A5", "=REPT(\"ab\",3)"),
+                ("A6", "=TEXTJOIN(\",\",TRUE,\"x\",\"y\",\"z\")"),
+                ("A7", "=REPLACE(\"abcdef\",2,3,\"XY\")"),
+                ("A8", "=VALUE(\"1,234\")"),
+                ("A9", "=EXACT(\"Ab\",\"ab\")"),
+            ]);
+            assert_eq!(val(&m, "A1"), CellValue::Text("a+b+c".into()));
+            assert_eq!(val(&m, "A2"), CellValue::Text("Hello World".into()));
+            assert_eq!(val(&m, "A3"), CellValue::Number(2.0));
+            assert_eq!(val(&m, "A4"), CellValue::Number(2.0));
+            assert_eq!(val(&m, "A5"), CellValue::Text("ababab".into()));
+            assert_eq!(val(&m, "A6"), CellValue::Text("x,y,z".into()));
+            assert_eq!(val(&m, "A7"), CellValue::Text("aXYef".into()));
+            assert_eq!(val(&m, "A8"), CellValue::Number(1234.0));
+            assert_eq!(val(&m, "A9"), CellValue::Bool(false));
+        }
 
-    #[test]
-    // ROUND(PI(),2) is expected to be 3.14; that is the assertion, not an
-    // approximation of the constant.
-    #[allow(clippy::approx_constant)]
-    fn math_functions() {
-        let m = run(&[
-            ("A1", "=POWER(2,10)"),
-            ("A2", "=MOD(17,5)"),
-            ("A3", "=SQRT(144)"),
-            ("A4", "=ROUND(3.14159,2)"),
-            ("A5", "=ABS(-8)"),
-            ("A6", "=INT(7.9)"),
-            ("A7", "=PRODUCT(2,3,4)"),
-            ("A8", "=TRUNC(9.99)"),
-            ("A9", "=LOG(1000)"),
-        ]);
-        assert_eq!(val(&m, "A1"), CellValue::Number(1024.0));
-        assert_eq!(val(&m, "A2"), CellValue::Number(2.0));
-        assert_eq!(val(&m, "A3"), CellValue::Number(12.0));
-        assert_eq!(val(&m, "A4"), CellValue::Number(3.14));
-        assert_eq!(val(&m, "A5"), CellValue::Number(8.0));
-        assert_eq!(val(&m, "A6"), CellValue::Number(7.0));
-        assert_eq!(val(&m, "A7"), CellValue::Number(24.0));
-        assert_eq!(val(&m, "A8"), CellValue::Number(9.0));
-        // LOG(1000) is 3 up to floating-point rounding.
-        match val(&m, "A9") {
-            CellValue::Number(n) => assert!((n - 3.0).abs() < 1e-9, "LOG(1000)={n}"),
-            other => panic!("expected a number, got {other:?}"),
+        // Case `text_format_codes`.
+        {
+            assert_eq!(apply_text_code(1234.5, "#,##0.00"), "1,234.50");
+            assert_eq!(apply_text_code(0.1234, "0.0%"), "12.3%");
+            let serial = crate::model::date_to_serial(2023, 3, 5);
+            assert_eq!(apply_text_code(serial, "yyyy-mm-dd"), "2023-03-05");
+            assert_eq!(apply_text_code(serial, "d mmm yyyy"), "5 Mar 2023");
         }
     }
 
+    /// COUNTIF/SUMIF, math, conditional statistics and logical functions.
     #[test]
-    fn stats_conditional_functions() {
-        let m = run(&[
-            ("A1", "10"),
-            ("A2", "20"),
-            ("A3", "30"),
-            ("A4", "40"),
-            ("B1", "x"),
-            ("B2", "y"),
-            ("B3", "x"),
-            ("B4", "y"),
-            ("C1", "=AVERAGEIF(A1:A4,\">15\")"),
-            ("C2", "=SUMIFS(A1:A4,B1:B4,\"x\")"),
-            ("C3", "=COUNTIFS(A1:A4,\">=20\",B1:B4,\"y\")"),
-            ("C4", "=AVERAGEIFS(A1:A4,B1:B4,\"y\")"),
-        ]);
-        // Average of 20,30,40 = 30.
-        assert_eq!(val(&m, "C1"), CellValue::Number(30.0));
-        // Sum of A where B="x": 10 + 30 = 40.
-        assert_eq!(val(&m, "C2"), CellValue::Number(40.0));
-        // A>=20 AND B="y": A2(20,y) and A4(40,y) → 2.
-        assert_eq!(val(&m, "C3"), CellValue::Number(2.0));
-        // Average of A where B="y": (20+40)/2 = 30.
-        assert_eq!(val(&m, "C4"), CellValue::Number(30.0));
-    }
-
-    #[test]
-    fn logical_functions() {
-        let m = run(&[
-            ("A1", "=IFERROR(1/0,\"safe\")"),
-            ("A2", "=IFS(FALSE,1,TRUE,2)"),
-            ("A3", "=XOR(TRUE,TRUE,TRUE)"),
-            ("A4", "=SWITCH(3,1,\"a\",3,\"c\",\"z\")"),
-            ("A5", "=IF(AND(1>0,2>1),\"yes\",\"no\")"),
-        ]);
-        assert_eq!(val(&m, "A1"), CellValue::Text("safe".into()));
-        assert_eq!(val(&m, "A2"), CellValue::Number(2.0));
-        assert_eq!(val(&m, "A3"), CellValue::Bool(true));
-        assert_eq!(val(&m, "A4"), CellValue::Text("c".into()));
-        assert_eq!(val(&m, "A5"), CellValue::Text("yes".into()));
-    }
-
-    #[test]
-    fn extended_text_functions() {
-        let m = run(&[
-            ("A1", "=SUBSTITUTE(\"a-b-c\",\"-\",\"+\")"),
-            ("A2", "=PROPER(\"hello world\")"),
-            ("A3", "=FIND(\"b\",\"abc\")"),
-            ("A4", "=SEARCH(\"B\",\"abc\")"),
-            ("A5", "=REPT(\"ab\",3)"),
-            ("A6", "=TEXTJOIN(\",\",TRUE,\"x\",\"y\",\"z\")"),
-            ("A7", "=REPLACE(\"abcdef\",2,3,\"XY\")"),
-            ("A8", "=VALUE(\"1,234\")"),
-            ("A9", "=EXACT(\"Ab\",\"ab\")"),
-        ]);
-        assert_eq!(val(&m, "A1"), CellValue::Text("a+b+c".into()));
-        assert_eq!(val(&m, "A2"), CellValue::Text("Hello World".into()));
-        assert_eq!(val(&m, "A3"), CellValue::Number(2.0));
-        assert_eq!(val(&m, "A4"), CellValue::Number(2.0));
-        assert_eq!(val(&m, "A5"), CellValue::Text("ababab".into()));
-        assert_eq!(val(&m, "A6"), CellValue::Text("x,y,z".into()));
-        assert_eq!(val(&m, "A7"), CellValue::Text("aXYef".into()));
-        assert_eq!(val(&m, "A8"), CellValue::Number(1234.0));
-        assert_eq!(val(&m, "A9"), CellValue::Bool(false));
-    }
-
-    #[test]
-    fn lookup_functions() {
-        // A small table: A=key, B=payload.
-        let m = run(&[
-            ("A1", "1"),
-            ("B1", "one"),
-            ("A2", "2"),
-            ("B2", "two"),
-            ("A3", "3"),
-            ("B3", "three"),
-            ("D1", "=VLOOKUP(2,A1:B3,2,FALSE)"),
-            ("D2", "=INDEX(B1:B3,3)"),
-            ("D3", "=MATCH(3,A1:A3,0)"),
-            ("D4", "=HLOOKUP(2,A1:C1,1,FALSE)"),
-            ("C1", "hit"),
-            ("D5", "=CHOOSE(2,\"a\",\"b\",\"c\")"),
-        ]);
-        assert_eq!(val(&m, "D1"), CellValue::Text("two".into()));
-        assert_eq!(val(&m, "D2"), CellValue::Text("three".into()));
-        assert_eq!(val(&m, "D3"), CellValue::Number(3.0));
-        assert_eq!(val(&m, "D5"), CellValue::Text("b".into()));
-    }
-
-    #[test]
-    fn date_time_functions() {
-        let m = run(&[
-            ("A1", "=DATE(2023,3,15)"),
-            ("A2", "=YEAR(A1)"),
-            ("A3", "=MONTH(A1)"),
-            ("A4", "=DAY(A1)"),
-            ("A5", "=WEEKDAY(A1)"),
-            ("A6", "=HOUR(TIME(14,5,0))"),
-            ("A7", "=MINUTE(TIME(14,5,0))"),
-        ]);
-        // The serial must round-trip through the model helpers.
-        let serial = crate::model::date_to_serial(2023, 3, 15);
-        assert_eq!(val(&m, "A1"), CellValue::Number(serial));
-        assert_eq!(val(&m, "A2"), CellValue::Number(2023.0));
-        assert_eq!(val(&m, "A3"), CellValue::Number(3.0));
-        assert_eq!(val(&m, "A4"), CellValue::Number(15.0));
-        // 2023-03-15 is a Wednesday → 4 in Excel's Sunday-first numbering.
-        assert_eq!(val(&m, "A5"), CellValue::Number(4.0));
-        assert_eq!(val(&m, "A6"), CellValue::Number(14.0));
-        assert_eq!(val(&m, "A7"), CellValue::Number(5.0));
-    }
-
-    #[test]
-    fn today_returns_a_plausible_recent_serial() {
-        let m = run(&[("A1", "=TODAY()"), ("A2", "=NOW()")]);
-        // A serial well past 2020-01-01 (43831) and before 2100.
-        match val(&m, "A1") {
-            CellValue::Number(n) => assert!(n > 43831.0 && n < 73415.0, "today serial {n}"),
-            other => panic!("TODAY must be a number, got {other:?}"),
+    #[allow(
+        clippy::approx_constant,
+        reason = "the literals are spreadsheet inputs and expected outputs, not uses of pi or e"
+    )]
+    fn math_statistics_and_logical_functions() {
+        // Case `countif_sumif`.
+        {
+            let m = run(&[
+                ("A1", "5"),
+                ("A2", "15"),
+                ("A3", "25"),
+                ("B1", "=COUNTIF(A1:A3,\">10\")"),
+                ("B2", "=SUMIF(A1:A3,\">=15\")"),
+            ]);
+            assert_eq!(val(&m, "B1"), CellValue::Number(2.0));
+            assert_eq!(val(&m, "B2"), CellValue::Number(40.0));
         }
-        match val(&m, "A2") {
-            CellValue::Number(n) => assert!(n > 43831.0, "now serial {n}"),
-            other => panic!("NOW must be a number, got {other:?}"),
+
+        // Case `math_functions`.
+        // ROUND(PI(),2) is expected to be 3.14; that is the assertion, not an
+        // approximation of the constant.
+        {
+            let m = run(&[
+                ("A1", "=POWER(2,10)"),
+                ("A2", "=MOD(17,5)"),
+                ("A3", "=SQRT(144)"),
+                ("A4", "=ROUND(3.14159,2)"),
+                ("A5", "=ABS(-8)"),
+                ("A6", "=INT(7.9)"),
+                ("A7", "=PRODUCT(2,3,4)"),
+                ("A8", "=TRUNC(9.99)"),
+                ("A9", "=LOG(1000)"),
+            ]);
+            assert_eq!(val(&m, "A1"), CellValue::Number(1024.0));
+            assert_eq!(val(&m, "A2"), CellValue::Number(2.0));
+            assert_eq!(val(&m, "A3"), CellValue::Number(12.0));
+            assert_eq!(val(&m, "A4"), CellValue::Number(3.14));
+            assert_eq!(val(&m, "A5"), CellValue::Number(8.0));
+            assert_eq!(val(&m, "A6"), CellValue::Number(7.0));
+            assert_eq!(val(&m, "A7"), CellValue::Number(24.0));
+            assert_eq!(val(&m, "A8"), CellValue::Number(9.0));
+            // LOG(1000) is 3 up to floating-point rounding.
+            match val(&m, "A9") {
+                CellValue::Number(n) => assert!((n - 3.0).abs() < 1e-9, "LOG(1000)={n}"),
+                other => panic!("expected a number, got {other:?}"),
+            }
+        }
+
+        // Case `stats_conditional_functions`.
+        {
+            let m = run(&[
+                ("A1", "10"),
+                ("A2", "20"),
+                ("A3", "30"),
+                ("A4", "40"),
+                ("B1", "x"),
+                ("B2", "y"),
+                ("B3", "x"),
+                ("B4", "y"),
+                ("C1", "=AVERAGEIF(A1:A4,\">15\")"),
+                ("C2", "=SUMIFS(A1:A4,B1:B4,\"x\")"),
+                ("C3", "=COUNTIFS(A1:A4,\">=20\",B1:B4,\"y\")"),
+                ("C4", "=AVERAGEIFS(A1:A4,B1:B4,\"y\")"),
+            ]);
+            // Average of 20,30,40 = 30.
+            assert_eq!(val(&m, "C1"), CellValue::Number(30.0));
+            // Sum of A where B="x": 10 + 30 = 40.
+            assert_eq!(val(&m, "C2"), CellValue::Number(40.0));
+            // A>=20 AND B="y": A2(20,y) and A4(40,y) → 2.
+            assert_eq!(val(&m, "C3"), CellValue::Number(2.0));
+            // Average of A where B="y": (20+40)/2 = 30.
+            assert_eq!(val(&m, "C4"), CellValue::Number(30.0));
+        }
+
+        // Case `logical_functions`.
+        {
+            let m = run(&[
+                ("A1", "=IFERROR(1/0,\"safe\")"),
+                ("A2", "=IFS(FALSE,1,TRUE,2)"),
+                ("A3", "=XOR(TRUE,TRUE,TRUE)"),
+                ("A4", "=SWITCH(3,1,\"a\",3,\"c\",\"z\")"),
+                ("A5", "=IF(AND(1>0,2>1),\"yes\",\"no\")"),
+            ]);
+            assert_eq!(val(&m, "A1"), CellValue::Text("safe".into()));
+            assert_eq!(val(&m, "A2"), CellValue::Number(2.0));
+            assert_eq!(val(&m, "A3"), CellValue::Bool(true));
+            assert_eq!(val(&m, "A4"), CellValue::Text("c".into()));
+            assert_eq!(val(&m, "A5"), CellValue::Text("yes".into()));
         }
     }
 
+    /// Lookup functions, date/time functions and TODAY.
     #[test]
-    fn text_format_codes() {
-        assert_eq!(apply_text_code(1234.5, "#,##0.00"), "1,234.50");
-        assert_eq!(apply_text_code(0.1234, "0.0%"), "12.3%");
-        let serial = crate::model::date_to_serial(2023, 3, 5);
-        assert_eq!(apply_text_code(serial, "yyyy-mm-dd"), "2023-03-05");
-        assert_eq!(apply_text_code(serial, "d mmm yyyy"), "5 Mar 2023");
+    fn lookup_and_date_time_functions() {
+        // Case `lookup_functions`.
+        {
+            // A small table: A=key, B=payload.
+            let m = run(&[
+                ("A1", "1"),
+                ("B1", "one"),
+                ("A2", "2"),
+                ("B2", "two"),
+                ("A3", "3"),
+                ("B3", "three"),
+                ("D1", "=VLOOKUP(2,A1:B3,2,FALSE)"),
+                ("D2", "=INDEX(B1:B3,3)"),
+                ("D3", "=MATCH(3,A1:A3,0)"),
+                ("D4", "=HLOOKUP(2,A1:C1,1,FALSE)"),
+                ("C1", "hit"),
+                ("D5", "=CHOOSE(2,\"a\",\"b\",\"c\")"),
+            ]);
+            assert_eq!(val(&m, "D1"), CellValue::Text("two".into()));
+            assert_eq!(val(&m, "D2"), CellValue::Text("three".into()));
+            assert_eq!(val(&m, "D3"), CellValue::Number(3.0));
+            assert_eq!(val(&m, "D5"), CellValue::Text("b".into()));
+        }
+
+        // Case `date_time_functions`.
+        {
+            let m = run(&[
+                ("A1", "=DATE(2023,3,15)"),
+                ("A2", "=YEAR(A1)"),
+                ("A3", "=MONTH(A1)"),
+                ("A4", "=DAY(A1)"),
+                ("A5", "=WEEKDAY(A1)"),
+                ("A6", "=HOUR(TIME(14,5,0))"),
+                ("A7", "=MINUTE(TIME(14,5,0))"),
+            ]);
+            // The serial must round-trip through the model helpers.
+            let serial = crate::model::date_to_serial(2023, 3, 15);
+            assert_eq!(val(&m, "A1"), CellValue::Number(serial));
+            assert_eq!(val(&m, "A2"), CellValue::Number(2023.0));
+            assert_eq!(val(&m, "A3"), CellValue::Number(3.0));
+            assert_eq!(val(&m, "A4"), CellValue::Number(15.0));
+            // 2023-03-15 is a Wednesday → 4 in Excel's Sunday-first numbering.
+            assert_eq!(val(&m, "A5"), CellValue::Number(4.0));
+            assert_eq!(val(&m, "A6"), CellValue::Number(14.0));
+            assert_eq!(val(&m, "A7"), CellValue::Number(5.0));
+        }
+
+        // Case `today_returns_a_plausible_recent_serial`.
+        {
+            let m = run(&[("A1", "=TODAY()"), ("A2", "=NOW()")]);
+            // A serial well past 2020-01-01 (43831) and before 2100.
+            match val(&m, "A1") {
+                CellValue::Number(n) => assert!(n > 43831.0 && n < 73415.0, "today serial {n}"),
+                other => panic!("TODAY must be a number, got {other:?}"),
+            }
+            match val(&m, "A2") {
+                CellValue::Number(n) => assert!(n > 43831.0, "now serial {n}"),
+                other => panic!("NOW must be a number, got {other:?}"),
+            }
+        }
     }
 
     // --- format propagation -------------------------------------------------
@@ -2914,208 +2970,255 @@ mod tests {
             .collect()
     }
 
+    /// Currency, percent, duration and unitless result formats.
     #[test]
-    fn scalar_times_currency_is_currency() {
-        // =5*B2 where B2 is $100 must render as currency.
-        let f = fmts(&[("B2", CellFormat::Currency(Currency::USD))]);
-        assert_eq!(
-            infer_result_format("5*B2", &f),
-            Some(CellFormat::Currency(Currency::USD))
-        );
-        // order doesn't matter
-        assert_eq!(
-            infer_result_format("B2*5", &f),
-            Some(CellFormat::Currency(Currency::USD))
-        );
-        // division by a scalar keeps the currency
-        assert_eq!(
-            infer_result_format("B2/2", &f),
-            Some(CellFormat::Currency(Currency::USD))
-        );
-    }
+    fn result_formats_propagate_through_arithmetic() {
+        // Case `scalar_times_currency_is_currency`.
+        {
+            // =5*B2 where B2 is $100 must render as currency.
+            let f = fmts(&[("B2", CellFormat::Currency(Currency::USD))]);
+            assert_eq!(
+                infer_result_format("5*B2", &f),
+                Some(CellFormat::Currency(Currency::USD))
+            );
+            // order doesn't matter
+            assert_eq!(
+                infer_result_format("B2*5", &f),
+                Some(CellFormat::Currency(Currency::USD))
+            );
+            // division by a scalar keeps the currency
+            assert_eq!(
+                infer_result_format("B2/2", &f),
+                Some(CellFormat::Currency(Currency::USD))
+            );
+        }
 
-    #[test]
-    fn currency_plus_same_currency_propagates() {
-        let f = fmts(&[
-            ("A1", CellFormat::Currency(Currency::EUR)),
-            ("A2", CellFormat::Currency(Currency::EUR)),
-        ]);
-        assert_eq!(
-            infer_result_format("A1+A2", &f),
-            Some(CellFormat::Currency(Currency::EUR))
-        );
-    }
+        // Case `currency_plus_same_currency_propagates`.
+        {
+            let f = fmts(&[
+                ("A1", CellFormat::Currency(Currency::EUR)),
+                ("A2", CellFormat::Currency(Currency::EUR)),
+            ]);
+            assert_eq!(
+                infer_result_format("A1+A2", &f),
+                Some(CellFormat::Currency(Currency::EUR))
+            );
+        }
 
-    #[test]
-    fn mixed_currencies_fall_back_to_plain() {
-        let f = fmts(&[
-            ("A1", CellFormat::Currency(Currency::USD)),
-            ("A2", CellFormat::Currency(Currency::EUR)),
-        ]);
-        // USD + EUR is unclear → plain number (None).
-        assert_eq!(infer_result_format("A1+A2", &f), None);
-        // USD * EUR is also unclear.
-        assert_eq!(infer_result_format("A1*A2", &f), None);
-    }
+        // Case `mixed_currencies_fall_back_to_plain`.
+        {
+            let f = fmts(&[
+                ("A1", CellFormat::Currency(Currency::USD)),
+                ("A2", CellFormat::Currency(Currency::EUR)),
+            ]);
+            // USD + EUR is unclear → plain number (None).
+            assert_eq!(infer_result_format("A1+A2", &f), None);
+            // USD * EUR is also unclear.
+            assert_eq!(infer_result_format("A1*A2", &f), None);
+        }
 
-    #[test]
-    fn percent_arithmetic_propagates() {
-        let f = fmts(&[("A1", CellFormat::Percent), ("A2", CellFormat::Percent)]);
-        assert_eq!(infer_result_format("A1+A2", &f), Some(CellFormat::Percent));
-        assert_eq!(infer_result_format("A1*2", &f), Some(CellFormat::Percent));
-    }
+        // Case `percent_arithmetic_propagates`.
+        {
+            let f = fmts(&[("A1", CellFormat::Percent), ("A2", CellFormat::Percent)]);
+            assert_eq!(infer_result_format("A1+A2", &f), Some(CellFormat::Percent));
+            assert_eq!(infer_result_format("A1*2", &f), Some(CellFormat::Percent));
+        }
 
-    #[test]
-    fn sum_over_currency_range_inherits_currency() {
-        let f = fmts(&[
-            ("B2", CellFormat::Currency(Currency::GBP)),
-            ("B3", CellFormat::Currency(Currency::GBP)),
-            ("B4", CellFormat::Currency(Currency::GBP)),
-        ]);
-        assert_eq!(
-            infer_result_format("SUM(B2:B4)", &f),
-            Some(CellFormat::Currency(Currency::GBP))
-        );
-        assert_eq!(
-            infer_result_format("AVERAGE(B2:B4)", &f),
-            Some(CellFormat::Currency(Currency::GBP))
-        );
-    }
+        // Case `sum_over_currency_range_inherits_currency`.
+        {
+            let f = fmts(&[
+                ("B2", CellFormat::Currency(Currency::GBP)),
+                ("B3", CellFormat::Currency(Currency::GBP)),
+                ("B4", CellFormat::Currency(Currency::GBP)),
+            ]);
+            assert_eq!(
+                infer_result_format("SUM(B2:B4)", &f),
+                Some(CellFormat::Currency(Currency::GBP))
+            );
+            assert_eq!(
+                infer_result_format("AVERAGE(B2:B4)", &f),
+                Some(CellFormat::Currency(Currency::GBP))
+            );
+        }
 
-    #[test]
-    fn date_minus_date_is_a_duration_not_a_date() {
-        let f = fmts(&[
-            ("A1", CellFormat::Date(DateStyle::Iso)),
-            ("A2", CellFormat::Date(DateStyle::Iso)),
-        ]);
-        // Difference of two dates is a number of days → plain (None).
-        assert_eq!(infer_result_format("A1-A2", &f), None);
-        // A date plus a scalar stays a date.
-        assert_eq!(
-            infer_result_format("A1+7", &f),
-            Some(CellFormat::Date(DateStyle::Iso))
-        );
-    }
+        // Case `date_minus_date_is_a_duration_not_a_date`.
+        {
+            let f = fmts(&[
+                ("A1", CellFormat::Date(DateStyle::Iso)),
+                ("A2", CellFormat::Date(DateStyle::Iso)),
+            ]);
+            // Difference of two dates is a number of days → plain (None).
+            assert_eq!(infer_result_format("A1-A2", &f), None);
+            // A date plus a scalar stays a date.
+            assert_eq!(
+                infer_result_format("A1+7", &f),
+                Some(CellFormat::Date(DateStyle::Iso))
+            );
+        }
 
-    #[test]
-    fn plain_arithmetic_has_no_format() {
-        let f = fmts(&[]);
-        assert_eq!(infer_result_format("2+3*4", &f), None);
-    }
+        // Case `plain_arithmetic_has_no_format`.
+        {
+            let f = fmts(&[]);
+            assert_eq!(infer_result_format("2+3*4", &f), None);
+        }
 
-    #[test]
-    fn comparison_and_text_are_unitless() {
-        let f = fmts(&[("A1", CellFormat::Currency(Currency::USD))]);
-        assert_eq!(infer_result_format("A1>100", &f), None);
-        assert_eq!(infer_result_format("A1&\"x\"", &f), None);
+        // Case `comparison_and_text_are_unitless`.
+        {
+            let f = fmts(&[("A1", CellFormat::Currency(Currency::USD))]);
+            assert_eq!(infer_result_format("A1>100", &f), None);
+            assert_eq!(infer_result_format("A1&\"x\"", &f), None);
+        }
+
+        // Case `growth_ratio_is_plain_even_with_currency_operands`.
+        {
+            // (E2-B2)/B2 where E2,B2 are currency → a ratio, which is unitless.
+            let f = fmts(&[
+                ("E2", CellFormat::Currency(Currency::USD)),
+                ("B2", CellFormat::Currency(Currency::USD)),
+            ]);
+            // (currency - currency) = currency; currency / currency = Mixed→None.
+            assert_eq!(infer_result_format("(E2-B2)/B2", &f), None);
+        }
     }
 
     // --- reference extraction -----------------------------------------------
 
+    /// Reference spans, range expansion/colour sharing and skipping strings/functions.
     #[test]
-    fn references_single_cells_get_spans_and_targets() {
-        // Body of `=B9-B7`: two single-cell refs, distinct colour slots.
-        let spans = references("B9-B7");
-        assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].tl, a1_to_addr("B9").unwrap());
-        assert_eq!(spans[0].br, a1_to_addr("B9").unwrap());
-        assert_eq!(spans[1].tl, a1_to_addr("B7").unwrap());
-        // The spans point at the actual characters `B9` and `B7`.
-        assert_eq!(&"B9-B7"[spans[0].start..spans[0].end], "B9");
-        assert_eq!(&"B9-B7"[spans[1].start..spans[1].end], "B7");
-        let slots = ref_color_slots(&spans);
-        assert_eq!(slots, vec![0, 1], "two different refs → two colours");
-    }
+    fn references_report_spans_targets_and_colours() {
+        // Case `references_single_cells_get_spans_and_targets`.
+        {
+            // Body of `=B9-B7`: two single-cell refs, distinct colour slots.
+            let spans = references("B9-B7");
+            assert_eq!(spans.len(), 2);
+            assert_eq!(spans[0].tl, a1_to_addr("B9").unwrap());
+            assert_eq!(spans[0].br, a1_to_addr("B9").unwrap());
+            assert_eq!(spans[1].tl, a1_to_addr("B7").unwrap());
+            // The spans point at the actual characters `B9` and `B7`.
+            assert_eq!(&"B9-B7"[spans[0].start..spans[0].end], "B9");
+            assert_eq!(&"B9-B7"[spans[1].start..spans[1].end], "B7");
+            let slots = ref_color_slots(&spans);
+            assert_eq!(slots, vec![0, 1], "two different refs → two colours");
+        }
 
-    #[test]
-    fn references_expand_ranges_and_share_colour_for_duplicates() {
-        // `SUM(B2:D2)+B2`: the range B2:D2 and the single B2 are different
-        // keys; a repeated B2 would reuse a slot.
-        let spans = references("SUM(B2:D2)+B2");
-        assert_eq!(spans.len(), 2, "SUM is a call, not a ref");
-        assert_eq!(spans[0].key, "B2:D2");
-        assert_eq!(spans[0].tl, a1_to_addr("B2").unwrap());
-        assert_eq!(spans[0].br, a1_to_addr("D2").unwrap());
-        assert_eq!(spans[1].key, "B2");
+        // Case `references_expand_ranges_and_share_colour_for_duplicates`.
+        {
+            // `SUM(B2:D2)+B2`: the range B2:D2 and the single B2 are different
+            // keys; a repeated B2 would reuse a slot.
+            let spans = references("SUM(B2:D2)+B2");
+            assert_eq!(spans.len(), 2, "SUM is a call, not a ref");
+            assert_eq!(spans[0].key, "B2:D2");
+            assert_eq!(spans[0].tl, a1_to_addr("B2").unwrap());
+            assert_eq!(spans[0].br, a1_to_addr("D2").unwrap());
+            assert_eq!(spans[1].key, "B2");
 
-        // A ref repeated twice keeps one colour slot.
-        let dup = references("A1+A1");
-        let slots = ref_color_slots(&dup);
-        assert_eq!(slots, vec![0, 0]);
-    }
+            // A ref repeated twice keeps one colour slot.
+            let dup = references("A1+A1");
+            let slots = ref_color_slots(&dup);
+            assert_eq!(slots, vec![0, 0]);
+        }
 
-    #[test]
-    fn references_skip_strings_and_functions() {
-        // `IF(B7>B9,"A1","B2")`: refs are B7 and B9 only; the quoted A1/B2 are
-        // string literals and IF is a function name.
-        let spans = references("IF(B7>B9,\"A1\",\"B2\")");
-        let keys: Vec<&str> = spans.iter().map(|s| s.key.as_str()).collect();
-        assert_eq!(keys, vec!["B7", "B9"]);
+        // Case `references_skip_strings_and_functions`.
+        {
+            // `IF(B7>B9,"A1","B2")`: refs are B7 and B9 only; the quoted A1/B2 are
+            // string literals and IF is a function name.
+            let spans = references("IF(B7>B9,\"A1\",\"B2\")");
+            let keys: Vec<&str> = spans.iter().map(|s| s.key.as_str()).collect();
+            assert_eq!(keys, vec!["B7", "B9"]);
+        }
     }
 
     // --- reference adjustment (copy/paste + fill) ---------------------------
 
+    /// Relative/absolute offsets and structural remapping.
     #[test]
-    fn offset_refs_shifts_relative_preserves_absolute() {
-        // A bare reference shifts on the pasted-to axis. Copying `=A1` from B2
-        // and pasting into B3 (Δrow +1) yields `=A2`; into C2 (Δcol +1) → `=B1`.
-        assert_eq!(offset_refs("=A1", 0, 1), "=A2");
-        assert_eq!(offset_refs("=A1", 1, 0), "=B1");
-        assert_eq!(offset_refs("=A1", 1, 1), "=B2");
+    fn reference_offsets_and_structural_remaps() {
+        // Case `offset_refs_shifts_relative_preserves_absolute`.
+        {
+            // A bare reference shifts on the pasted-to axis. Copying `=A1` from B2
+            // and pasting into B3 (Δrow +1) yields `=A2`; into C2 (Δcol +1) → `=B1`.
+            assert_eq!(offset_refs("=A1", 0, 1), "=A2");
+            assert_eq!(offset_refs("=A1", 1, 0), "=B1");
+            assert_eq!(offset_refs("=A1", 1, 1), "=B2");
 
-        // `$A$1` is fully anchored and never moves anywhere.
-        assert_eq!(offset_refs("=$A$1", 3, 4), "=$A$1");
-        // `$A1` locks the column: only the row shifts.
-        assert_eq!(offset_refs("=$A1", 5, 2), "=$A3");
-        // `A$1` locks the row: only the column shifts.
-        assert_eq!(offset_refs("=A$1", 2, 5), "=C$1");
+            // `$A$1` is fully anchored and never moves anywhere.
+            assert_eq!(offset_refs("=$A$1", 3, 4), "=$A$1");
+            // `$A1` locks the column: only the row shifts.
+            assert_eq!(offset_refs("=$A1", 5, 2), "=$A3");
+            // `A$1` locks the row: only the column shifts.
+            assert_eq!(offset_refs("=A$1", 2, 5), "=C$1");
 
-        // Ranges shift each endpoint independently.
-        assert_eq!(offset_refs("=SUM(A1:B3)", 1, 1), "=SUM(B2:C4)");
-        // A range mixing anchored and relative endpoints shifts only the free one.
-        assert_eq!(offset_refs("=$A$1:B2", 1, 1), "=$A$1:C3");
-    }
+            // Ranges shift each endpoint independently.
+            assert_eq!(offset_refs("=SUM(A1:B3)", 1, 1), "=SUM(B2:C4)");
+            // A range mixing anchored and relative endpoints shifts only the free one.
+            assert_eq!(offset_refs("=$A$1:B2", 1, 1), "=$A$1:C3");
+        }
 
-    #[test]
-    fn offset_refs_leaves_functions_strings_and_numbers_alone() {
-        // Function names and quoted string literals are never references.
-        assert_eq!(
-            offset_refs("=IF(A1>0,\"A1\",B2)", 0, 1),
-            "=IF(A2>0,\"A1\",B3)"
-        );
-        // Scientific-notation literals (`1e3`) are numbers, not references.
-        assert_eq!(offset_refs("=1e3+A1", 0, 1), "=1e3+A2");
-        // A plain literal (not a formula) is returned unchanged.
-        assert_eq!(offset_refs("1200", 3, 3), "1200");
-        // A zero offset is an identity, formula or not.
-        assert_eq!(offset_refs("=A1+B2", 0, 0), "=A1+B2");
-        // A relative component never underflows past the grid origin.
-        assert_eq!(offset_refs("=A1", -5, -5), "=A1");
-    }
+        // Case `offset_refs_leaves_functions_strings_and_numbers_alone`.
+        {
+            // Function names and quoted string literals are never references.
+            assert_eq!(
+                offset_refs("=IF(A1>0,\"A1\",B2)", 0, 1),
+                "=IF(A2>0,\"A1\",B3)"
+            );
+            // Scientific-notation literals (`1e3`) are numbers, not references.
+            assert_eq!(offset_refs("=1e3+A1", 0, 1), "=1e3+A2");
+            // A plain literal (not a formula) is returned unchanged.
+            assert_eq!(offset_refs("1200", 3, 3), "1200");
+            // A zero offset is an identity, formula or not.
+            assert_eq!(offset_refs("=A1+B2", 0, 0), "=A1+B2");
+            // A relative component never underflows past the grid origin.
+            assert_eq!(offset_refs("=A1", -5, -5), "=A1");
+        }
 
-    #[test]
-    fn remap_refs_tracks_structural_moves_including_absolute_references() {
-        let moved = remap_refs("=SUM($A$1:B2)+\"A1\"+1e3", |(col, row)| {
-            Some((col, row.saturating_add(1)))
-        });
-        assert_eq!(moved, "=SUM($A$2:B3)+\"A1\"+1e3");
+        // Case `remap_refs_tracks_structural_moves_including_absolute_references`.
+        {
+            let moved = remap_refs("=SUM($A$1:B2)+\"A1\"+1e3", GridEdit::InsertRow(0));
+            assert_eq!(moved, "=SUM($A$2:B3)+\"A1\"+1e3");
 
-        let deleted = remap_refs("=SUM(A1:A3)+B2", |(col, row)| match row {
-            1 => None,
-            row if row > 1 => Some((col, row - 1)),
-            _ => Some((col, row)),
-        });
-        assert_eq!(deleted, "=SUM(A1:A2)+#REF!");
-    }
+            let deleted = remap_refs("=SUM(A1:A3)+B2", GridEdit::DeleteRow(1));
+            assert_eq!(deleted, "=SUM(A1:A2)+#REF!");
+        }
 
-    #[test]
-    fn growth_ratio_is_plain_even_with_currency_operands() {
-        // (E2-B2)/B2 where E2,B2 are currency → a ratio, which is unitless.
-        let f = fmts(&[
-            ("E2", CellFormat::Currency(Currency::USD)),
-            ("B2", CellFormat::Currency(Currency::USD)),
-        ]);
-        // (currency - currency) = currency; currency / currency = Mixed→None.
-        assert_eq!(infer_result_format("(E2-B2)/B2", &f), None);
+        // Case `remap_refs_shrinks_a_range_whose_edge_line_is_deleted`.
+        {
+            // Rows (zero-based `DeleteRow(1)` is row 2): first, last, middle,
+            // outside, and the whole range.
+            let row = |raw| remap_refs(raw, GridEdit::DeleteRow(1));
+            assert_eq!(row("=SUM(B2:B3)"), "=SUM(B2:B2)");
+            assert_eq!(row("=SUM(B1:B2)"), "=SUM(B1:B1)");
+            assert_eq!(row("=SUM(B1:B3)"), "=SUM(B1:B2)");
+            assert_eq!(row("=SUM(B3:B4)"), "=SUM(B2:B3)");
+            assert_eq!(row("=SUM(B1:C1)"), "=SUM(B1:C1)");
+            assert_eq!(row("=SUM(B2:D2)"), "=SUM(#REF!)");
+            // `$` anchors are spelled back as written; reversed corners keep
+            // their roles.
+            assert_eq!(row("=SUM($B$2:$B$3)"), "=SUM($B$2:$B$2)");
+            assert_eq!(row("=SUM(B$2:$B3)"), "=SUM(B$2:$B2)");
+            assert_eq!(row("=SUM(B3:B2)"), "=SUM(B2:B2)");
+            assert_eq!(row("=SUM(B4 : B2)"), "=SUM(B3 : B2)");
+            // A lone reference to the deleted row still breaks.
+            assert_eq!(row("=B2+SUM(B2:B3)"), "=#REF!+SUM(B2:B2)");
+
+            // Columns (`DeleteColumn(1)` is column B).
+            let col = |raw| remap_refs(raw, GridEdit::DeleteColumn(1));
+            assert_eq!(col("=SUM(B1:C1)"), "=SUM(B1:B1)");
+            assert_eq!(col("=SUM(A1:B1)"), "=SUM(A1:A1)");
+            assert_eq!(col("=SUM($A$1:$C$9)"), "=SUM($A$1:$B$9)");
+            assert_eq!(col("=SUM(C1:D1)"), "=SUM(B1:C1)");
+            assert_eq!(col("=SUM(B1:B9)"), "=SUM(#REF!)");
+            assert_eq!(col("=SUM(C1:B1)"), "=SUM(B1:B1)");
+        }
+
+        // Case `remap_refs_grows_a_range_around_an_inserted_line`.
+        {
+            let row = |raw| remap_refs(raw, GridEdit::InsertRow(2));
+            assert_eq!(row("=SUM(B2:B3)"), "=SUM(B2:B4)");
+            assert_eq!(row("=SUM(B3:B4)"), "=SUM(B4:B5)");
+            assert_eq!(row("=SUM(B1:B2)"), "=SUM(B1:B2)");
+            let col = |raw| remap_refs(raw, GridEdit::InsertColumn(1));
+            assert_eq!(col("=SUM(A1:B1)"), "=SUM(A1:C1)");
+            assert_eq!(col("=SUM($A$1:$A$3)"), "=SUM($A$1:$A$3)");
+        }
     }
 }

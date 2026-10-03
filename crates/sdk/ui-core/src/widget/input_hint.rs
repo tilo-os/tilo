@@ -6,19 +6,18 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
-use winit::event::WindowEvent;
 
 use crate::input::{ControllerBinding, InputBinding, KeyboardBinding};
 use crate::interaction::{ControllerFamily, InteractionEnvironment, KeyboardFamily};
+use crate::paint::PaintCtx;
 use crate::platform::PlatformConventions;
 use crate::presence::PresenceCtx;
 use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::widget::{TaffyTreeExt, Widget};
 
@@ -38,6 +37,27 @@ enum HintShape {
     Keycap,
     RoundButton,
     Gesture,
+}
+
+/// The platform and device families that decide how a binding is labelled:
+/// `⌘` vs `Ctrl`, `A` vs `✕`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LegendConventions {
+    pub platform: PlatformConventions,
+    pub keyboard: KeyboardFamily,
+    pub controller: ControllerFamily,
+}
+
+impl LegendConventions {
+    /// Label for `environment`'s keyboard and controller, falling back to a
+    /// generic controller when none is connected.
+    pub fn new(platform: PlatformConventions, environment: &InteractionEnvironment) -> Self {
+        Self {
+            platform,
+            keyboard: environment.keyboard_family,
+            controller: environment.controller.unwrap_or(ControllerFamily::Generic),
+        }
+    }
 }
 
 pub struct InputHint {
@@ -205,19 +225,12 @@ impl InputHint {
         Self::new(InputBinding::Keyboard(binding))
     }
 
-    fn controller_family(&self) -> ControllerFamily {
-        self.environment
-            .controller
-            .unwrap_or(ControllerFamily::Generic)
+    fn conventions(&self) -> LegendConventions {
+        LegendConventions::new(self.platform, &self.environment)
     }
 
     fn tokens(&self) -> Vec<(String, HintShape)> {
-        tokens_for(
-            &self.binding,
-            self.platform,
-            self.environment.keyboard_family,
-            self.controller_family(),
-        )
+        tokens_for(&self.binding, self.conventions())
     }
 
     pub fn accessible_label(&self) -> String {
@@ -232,14 +245,12 @@ impl InputHint {
     /// hosts that need to align the hint to a trailing edge.
     pub fn measure_width(
         binding: &InputBinding,
-        platform: PlatformConventions,
-        keyboard_family: KeyboardFamily,
-        family: ControllerFamily,
+        conventions: LegendConventions,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) -> f64 {
         token_rects(
-            &tokens_for(binding, platform, keyboard_family, family),
+            &tokens_for(binding, conventions),
             Point::ZERO,
             text_renderer,
             theme,
@@ -249,25 +260,16 @@ impl InputHint {
     }
 
     /// Paint the same component used by the retained widget at `origin`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the painter keeps scene, geometry, device conventions, renderer, and theme explicit"
-    )]
     pub fn paint_at(
-        scene: &mut Scene,
-        transform: Affine,
+        ctx: &mut PaintCtx<'_>,
         origin: Point,
         binding: &InputBinding,
-        platform: PlatformConventions,
-        keyboard_family: KeyboardFamily,
-        family: ControllerFamily,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        conventions: LegendConventions,
     ) -> f64 {
-        let tokens = tokens_for(binding, platform, keyboard_family, family);
-        let rects = token_rects(&tokens, origin, text_renderer, theme);
+        let tokens = tokens_for(binding, conventions);
+        let rects = token_rects(&tokens, origin, ctx.text, ctx.theme);
         for ((label, shape), (_, rect)) in tokens.iter().zip(&rects) {
-            paint_token(scene, transform, *rect, label, *shape, text_renderer, theme);
+            paint_token(ctx, *rect, label, *shape);
         }
         rects.last().map_or(0.0, |(_, rect)| rect.x1 - origin.x)
     }
@@ -301,8 +303,9 @@ impl InputHint {
             .map(|label| (label, HintShape::Keycap))
             .collect();
         let rects = token_rects(&tokens, origin, text_renderer, theme);
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         for ((label, shape), (_, rect)) in tokens.iter().zip(&rects) {
-            paint_token(scene, transform, *rect, label, *shape, text_renderer, theme);
+            paint_token(&mut ctx, *rect, label, *shape);
         }
         rects.last().map_or(0.0, |(_, rect)| rect.x1 - origin.x)
     }
@@ -310,23 +313,19 @@ impl InputHint {
     /// Paint two alternative keyboard chords without repeating their shared
     /// modifiers. Separators are text rather than extra caps, so a pair reads
     /// as `Super + Left or Right`, not as one long row of unrelated keys.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the painter keeps scene, geometry, both choices, device conventions, renderer, and theme explicit"
-    )]
     pub fn paint_keyboard_choice_at(
-        scene: &mut Scene,
-        transform: Affine,
+        ctx: &mut PaintCtx<'_>,
         origin: Point,
         first: &KeyboardBinding,
         second: &KeyboardBinding,
-        platform: PlatformConventions,
-        keyboard_family: KeyboardFamily,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        conventions: LegendConventions,
     ) -> [Rect; 2] {
-        let first_labels = first.keycap_labels_for(platform, keyboard_family);
-        let second_labels = second.keycap_labels_for(platform, keyboard_family);
+        let LegendConventions {
+            platform, keyboard, ..
+        } = conventions;
+        let theme = ctx.theme;
+        let first_labels = first.keycap_labels_for(platform, keyboard);
+        let second_labels = second.keycap_labels_for(platform, keyboard);
         let share_modifiers = first.modifiers == second.modifiers;
         let mut x = origin.x;
 
@@ -339,76 +338,55 @@ impl InputHint {
                 .min(second_labels.len().saturating_sub(1));
             if modifier_count > 0 {
                 x += Self::paint_keycap_labels_at(
-                    scene,
-                    transform,
+                    ctx.scene,
+                    ctx.transform,
                     Point::new(x, origin.y),
                     first_labels.get(..modifier_count).unwrap_or_default(),
-                    text_renderer,
+                    ctx.text,
                     theme,
                 );
-                x += paint_separator(
-                    scene,
-                    transform,
-                    Point::new(x + 7.0, origin.y),
-                    "+",
-                    text_renderer,
-                    theme,
-                ) + 14.0;
+                x += paint_separator(ctx, Point::new(x + 7.0, origin.y), "+") + 14.0;
             }
             let first_x = x;
             x += Self::paint_keycap_labels_at(
-                scene,
-                transform,
+                ctx.scene,
+                ctx.transform,
                 Point::new(x, origin.y),
                 first_labels.get(modifier_count..).unwrap_or_default(),
-                text_renderer,
+                ctx.text,
                 theme,
             );
             first_rect = Rect::new(first_x, origin.y, x, origin.y + token_height(theme));
-            x += paint_separator(
-                scene,
-                transform,
-                Point::new(x + 10.0, origin.y),
-                "or",
-                text_renderer,
-                theme,
-            ) + 20.0;
+            x += paint_separator(ctx, Point::new(x + 10.0, origin.y), "or") + 20.0;
             let second_x = x;
             x += Self::paint_keycap_labels_at(
-                scene,
-                transform,
+                ctx.scene,
+                ctx.transform,
                 Point::new(x, origin.y),
                 second_labels.get(modifier_count..).unwrap_or_default(),
-                text_renderer,
+                ctx.text,
                 theme,
             );
             second_rect = Rect::new(second_x, origin.y, x, origin.y + token_height(theme));
         } else {
             let first_x = x;
             x += Self::paint_keycap_labels_at(
-                scene,
-                transform,
+                ctx.scene,
+                ctx.transform,
                 Point::new(x, origin.y),
                 &first_labels,
-                text_renderer,
+                ctx.text,
                 theme,
             );
             first_rect = Rect::new(first_x, origin.y, x, origin.y + token_height(theme));
-            x += paint_separator(
-                scene,
-                transform,
-                Point::new(x + 10.0, origin.y),
-                "or",
-                text_renderer,
-                theme,
-            ) + 20.0;
+            x += paint_separator(ctx, Point::new(x + 10.0, origin.y), "or") + 20.0;
             let second_x = x;
             x += Self::paint_keycap_labels_at(
-                scene,
-                transform,
+                ctx.scene,
+                ctx.transform,
                 Point::new(x, origin.y),
                 &second_labels,
-                text_renderer,
+                ctx.text,
                 theme,
             );
             second_rect = Rect::new(second_x, origin.y, x, origin.y + token_height(theme));
@@ -418,33 +396,19 @@ impl InputHint {
 
     /// Controller counterpart to [`Self::paint_keyboard_choice_at`]. Shared
     /// hold buttons such as Guide/Home are shown once before the alternatives.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the painter keeps scene, geometry, both choices, device conventions, renderer, and theme explicit"
-    )]
     pub fn paint_controller_choice_at(
-        scene: &mut Scene,
-        transform: Affine,
+        ctx: &mut PaintCtx<'_>,
         origin: Point,
         first: &ControllerBinding,
         second: &ControllerBinding,
-        platform: PlatformConventions,
-        keyboard_family: KeyboardFamily,
-        family: ControllerFamily,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        conventions: LegendConventions,
     ) -> f64 {
         if first == second {
             return Self::paint_at(
-                scene,
-                transform,
+                ctx,
                 origin,
                 &InputBinding::Controller(first.clone()),
-                platform,
-                keyboard_family,
-                family,
-                text_renderer,
-                theme,
+                conventions,
             );
         }
 
@@ -470,77 +434,40 @@ impl InputHint {
 
         if !shared.is_empty() {
             x += Self::paint_at(
-                scene,
-                transform,
+                ctx,
                 Point::new(x, origin.y),
                 &InputBinding::Controller(ControllerBinding::new(shared)),
-                platform,
-                keyboard_family,
-                family,
-                text_renderer,
-                theme,
+                conventions,
             );
-            x += paint_separator(
-                scene,
-                transform,
-                Point::new(x + 7.0, origin.y),
-                "+",
-                text_renderer,
-                theme,
-            ) + 14.0;
+            x += paint_separator(ctx, Point::new(x + 7.0, origin.y), "+") + 14.0;
         }
 
         x += Self::paint_at(
-            scene,
-            transform,
+            ctx,
             Point::new(x, origin.y),
             &InputBinding::Controller(ControllerBinding::new(first_only)),
-            platform,
-            keyboard_family,
-            family,
-            text_renderer,
-            theme,
+            conventions,
         );
-        x += paint_separator(
-            scene,
-            transform,
-            Point::new(x + 10.0, origin.y),
-            "or",
-            text_renderer,
-            theme,
-        ) + 20.0;
+        x += paint_separator(ctx, Point::new(x + 10.0, origin.y), "or") + 20.0;
         x += Self::paint_at(
-            scene,
-            transform,
+            ctx,
             Point::new(x, origin.y),
             &InputBinding::Controller(ControllerBinding::new(second_only)),
-            platform,
-            keyboard_family,
-            family,
-            text_renderer,
-            theme,
+            conventions,
         );
         x - origin.x
     }
 }
 
-fn paint_separator(
-    scene: &mut Scene,
-    transform: Affine,
-    origin: Point,
-    label: &str,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) -> f64 {
+fn paint_separator(ctx: &mut PaintCtx<'_>, origin: Point, label: &str) -> f64 {
+    let (text_renderer, theme) = (&mut *ctx.text, ctx.theme);
     let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
     let (width, height) = text_renderer.measure(label, size, None);
-    text_renderer.draw_text(
-        scene,
+    ctx.text(
         label,
-        size,
+        &TextStyle::new(size),
         theme.tokens.colors.text_dim,
-        translated(
-            transform,
+        Point::new(
             origin.x,
             origin.y + (token_height(theme) - f64::from(height)) / 2.0,
         ),
@@ -549,12 +476,12 @@ fn paint_separator(
     f64::from(width)
 }
 
-fn tokens_for(
-    binding: &InputBinding,
-    platform: PlatformConventions,
-    keyboard_family: KeyboardFamily,
-    family: ControllerFamily,
-) -> Vec<(String, HintShape)> {
+fn tokens_for(binding: &InputBinding, conventions: LegendConventions) -> Vec<(String, HintShape)> {
+    let LegendConventions {
+        platform,
+        keyboard: keyboard_family,
+        controller: family,
+    } = conventions;
     match binding {
         InputBinding::Keyboard(binding) => binding
             .keycap_labels_for(platform, keyboard_family)
@@ -603,15 +530,8 @@ fn token_rects(
         .collect()
 }
 
-fn paint_token(
-    scene: &mut Scene,
-    transform: Affine,
-    rect: Rect,
-    label: &str,
-    shape: HintShape,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
+fn paint_token(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, shape: HintShape) {
+    let theme = ctx.theme;
     let colors = &theme.tokens.colors;
     let radius = match shape {
         HintShape::RoundButton => rect.height() / 2.0,
@@ -620,21 +540,18 @@ fn paint_token(
     };
     // Keycap body is a lift off the ground with an edge derived from it
     // (HIG §9.2, §9.5) — ramp slots were one fixed grey per theme.
-    crate::surface::card(scene, transform, rect, radius, colors.lift(1.0));
-    let size = token_text_size(label, theme, text_renderer);
-    let (tw, th) = text_renderer.measure(label, size, None);
-    text_renderer.draw_text_weighted(
-        scene,
+    crate::surface::card(ctx.scene, ctx.transform, rect, radius, colors.lift(1.0));
+    let size = token_text_size(label, theme, ctx.text);
+    let (tw, th) = ctx.text.measure(label, size, None);
+    ctx.text(
         label,
-        size,
+        &TextStyle::new(size).with_weight(TextWeight::Semibold),
         colors.text_primary,
-        translated(
-            transform,
+        Point::new(
             rect.center().x - f64::from(tw) / 2.0,
             rect.center().y - f64::from(th) / 2.0,
         ),
         None,
-        TextWeight::Semibold,
     );
 }
 
@@ -647,14 +564,6 @@ fn token_text_size(label: &str, theme: &Theme, text_renderer: &TextRenderer) -> 
             theme.tokens.typography.scale.xs
         },
     )
-}
-
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine composition is bounded f64 UI geometry"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
 }
 
 impl Widget for InputHint {
@@ -671,8 +580,6 @@ impl Widget for InputHint {
     fn set_interaction_environment(&mut self, environment: InteractionEnvironment) {
         self.environment = environment;
     }
-
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
     fn build_layout(
         &mut self,
@@ -720,9 +627,7 @@ impl Widget for InputHint {
         Size {
             width: crate::num::f32_of_f64(Self::measure_width(
                 &self.binding,
-                self.platform,
-                self.environment.keyboard_family,
-                self.controller_family(),
+                self.conventions(),
                 text_renderer,
                 &self.layout_theme,
             )),
@@ -749,33 +654,14 @@ impl Widget for InputHint {
         _presence: &PresenceCtx,
     ) {
         Self::paint_at(
-            scene,
-            transform,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             Point::new(
                 self.rect.x0,
                 self.rect.center().y - token_height(theme) / 2.0,
             ),
             &self.binding,
-            self.platform,
-            self.environment.keyboard_family,
-            self.controller_family(),
-            text_renderer,
-            theme,
+            self.conventions(),
         );
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {
@@ -802,40 +688,45 @@ mod tests {
     use taffy::prelude::TaffyMaxContent;
 
     #[test]
-    fn retained_layout_grows_with_large_text() {
-        let mut hint = InputHint::keyboard(KeyboardBinding::new([], KeyLegend::Enter));
-        let mut taffy = TaffyTree::new();
-        let mut map = HashMap::new();
-        let theme = Theme::dark().with_text_scale(2.0);
-        hint.build_layout(&mut taffy, &theme, &mut map);
-        let mut text = TextRenderer::new();
-        let measured = hint.measure(
-            Size {
-                width: None,
-                height: None,
-            },
-            Size::MAX_CONTENT,
-            &mut text,
-        );
-        assert!(measured.height > crate::num::f32_of_f64(HEIGHT));
-        assert_eq!(hint.layout_theme.text_scale, 2.0);
-    }
+    fn input_hint_scales_layout_and_names_platform_legends() {
+        fn retained_layout_grows_with_large_text() {
+            let mut hint = InputHint::keyboard(KeyboardBinding::new([], KeyLegend::Enter));
+            let mut taffy = TaffyTree::new();
+            let mut map = HashMap::new();
+            let theme = Theme::dark().with_text_scale(2.0);
+            hint.build_layout(&mut taffy, &theme, &mut map);
+            let mut text = TextRenderer::new();
+            let measured = hint.measure(
+                Size {
+                    width: None,
+                    height: None,
+                },
+                Size::MAX_CONTENT,
+                &mut text,
+            );
+            assert!(measured.height > crate::num::f32_of_f64(HEIGHT));
+            assert_eq!(hint.layout_theme.text_scale, 2.0);
+        }
 
-    #[test]
-    fn hint_accessibility_uses_platform_and_controller_legends() {
-        let mut keyboard = InputHint::keyboard(KeyboardBinding::new(
-            [KeyboardModifier::Command, KeyboardModifier::Shift],
-            KeyLegend::Enter,
-        ));
-        keyboard.set_platform_conventions(PlatformConventions::new(Platform::MacOs));
-        assert_eq!(keyboard.accessible_label(), "⌘ + ⇧ + ↩");
+        fn hint_accessibility_uses_platform_and_controller_legends() {
+            let mut keyboard = InputHint::keyboard(KeyboardBinding::new(
+                [KeyboardModifier::Command, KeyboardModifier::Shift],
+                KeyLegend::Enter,
+            ));
+            keyboard.set_platform_conventions(PlatformConventions::new(Platform::MacOs));
+            assert_eq!(keyboard.accessible_label(), "⌘ + ⇧ + ↩");
 
-        let mut controller = InputHint::new(InputBinding::Controller(ControllerBinding::new([
-            ControllerButton::South,
-        ])));
-        controller.set_interaction_environment(
-            InteractionEnvironment::POINTER.with_controller(ControllerFamily::Nintendo),
-        );
-        assert_eq!(controller.accessible_label(), "B");
+            let mut controller =
+                InputHint::new(InputBinding::Controller(ControllerBinding::new([
+                    ControllerButton::South,
+                ])));
+            controller.set_interaction_environment(
+                InteractionEnvironment::POINTER.with_controller(ControllerFamily::Nintendo),
+            );
+            assert_eq!(controller.accessible_label(), "B");
+        }
+
+        retained_layout_grows_with_large_text();
+        hint_accessibility_uses_platform_and_controller_legends();
     }
 }

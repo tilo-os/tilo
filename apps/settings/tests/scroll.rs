@@ -17,22 +17,16 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::collections::HashMap;
-
 use settings::categories::Category;
 use settings::settings_app::SettingsApp;
-use taffy::prelude::*;
-use ui::text_render::TextRenderer;
+use ui::headless::Framed;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Point;
 use winit::event::{Modifiers, MouseScrollDelta, TouchPhase, WindowEvent};
 
 struct Harness {
-    app: SettingsApp,
-    taffy: TaffyTree<()>,
-    self_node: NodeId,
-    state: ui::State,
+    app: Framed<SettingsApp>,
     /// Dropped after the app whose account stores it holds.
     _config: crate::support::ScratchConfig,
 }
@@ -40,75 +34,24 @@ struct Harness {
 impl Harness {
     fn new(category: Category, w: f32, h: f32) -> Self {
         let config = crate::support::ScratchConfig::new();
-        let mut app = config.app().with_category(category).with_width_hint(w);
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let mut tr = TextRenderer::new();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-
-        let self_node = app.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(w),
-                        height: Dimension::length(h),
-                    },
-                    ..Default::default()
-                },
-                &[self_node],
-            )
-            .unwrap();
-        let measure_map = node_map.clone();
-        let trm = &mut tr;
-        taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(w),
-                    height: AvailableSpace::Definite(h),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, trm) }
-                    } else {
-                        Size::ZERO
-                    }
-                },
-            )
-            .unwrap();
-        app.apply_layout(&taffy, self_node, Point::ORIGIN);
+        let app = config.app().with_category(category).with_width_hint(w);
         Self {
-            app,
-            taffy,
-            self_node,
-            state,
+            app: Framed::new(
+                ui::State::new(),
+                app,
+                ui::headless::viewport((w, h)),
+                Theme::dark(),
+            ),
             _config: config,
         }
     }
 
     fn relayout(&mut self) {
-        self.app
-            .apply_layout(&self.taffy, self.self_node, Point::ORIGIN);
+        Framed::harness_mut(&mut self.app).relayout();
     }
 
     fn dispatch(&mut self, event: &WindowEvent) -> bool {
-        let mut handled = false;
-        let mut focus_target = None;
-        self.app.handle_event(
-            event,
-            1.0,
-            &Modifiers::default(),
-            &mut self.state.doc,
-            &self.state.root,
-            &mut handled,
-            &mut focus_target,
-            self.self_node,
-            &self.taffy,
-        );
-        handled
+        Framed::harness_mut(&mut self.app).dispatch_to_root_with(event, &Modifiers::default())
     }
 
     fn wheel(&mut self, notches_down: f32) {

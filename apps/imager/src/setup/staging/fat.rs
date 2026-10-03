@@ -582,96 +582,106 @@ pub(crate) mod tests {
         }
     }
 
+    /// FAT12/FAT32 placeholders, corrupt structures and masking.
     #[test]
-    fn finds_fragmented_long_named_placeholders_on_fat12() {
-        let image = staging_esp_image(false, 1500);
-        let ranges = file_ranges(
-            &mut reader(&image),
-            image.len() as u64,
-            "/EFI/tilo-staging/handoff.json",
-        )
-        .unwrap();
-        assert_eq!(ranges_len(&ranges), 1500);
-        assert_eq!(
-            ranges.len(),
-            2,
-            "one hole after the first cluster: {ranges:?}"
-        );
-        for r in &ranges {
-            assert!(
-                image[r.offset as usize..(r.offset + r.len) as usize]
-                    .iter()
-                    .all(|b| *b == b' ')
-            );
-        }
-        let record = file_ranges(
-            &mut reader(&image),
-            image.len() as u64,
-            "/efi/TILO-STAGING/Record.JSON",
-        )
-        .unwrap();
-        assert_eq!(record.len(), 1);
-        assert_eq!(ranges_len(&record), 1500);
-        let loader = file_ranges(
-            &mut reader(&image),
-            image.len() as u64,
-            "/EFI/BOOT/BOOTX64.EFI",
-        )
-        .unwrap();
-        assert_eq!(ranges_len(&loader), 700);
-    }
-
-    #[test]
-    fn finds_placeholders_on_fat32() {
-        let image = staging_esp_image(true, 4096);
-        let ranges = file_ranges(
-            &mut reader(&image),
-            image.len() as u64,
-            "/EFI/tilo-staging/handoff.json",
-        )
-        .unwrap();
-        assert_eq!(ranges_len(&ranges), 4096);
-    }
-
-    #[test]
-    fn missing_or_corrupt_structures_are_errors() {
-        let image = staging_esp_image(false, 1024);
-        let len = image.len() as u64;
-        assert!(file_ranges(&mut reader(&image), len, "/EFI/tilo-staging/other.json").is_err());
-        assert!(file_ranges(&mut reader(&image), len, "/EFI/nothing/handoff.json").is_err());
-        let mut no_sig = image.clone();
-        no_sig[510] = 0;
-        assert!(file_ranges(&mut reader(&no_sig), len, "/EFI/tilo-staging/handoff.json").is_err());
-        assert!(
-            file_ranges(
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn fat_placeholders_are_found_and_masked_precisely() {
+        // Phase `finds_fragmented_long_named_placeholders_on_fat12`.
+        {
+            let image = staging_esp_image(false, 1500);
+            let ranges = file_ranges(
                 &mut reader(&image),
-                len / 2,
-                "/EFI/tilo-staging/handoff.json"
+                image.len() as u64,
+                "/EFI/tilo-staging/handoff.json",
             )
-            .is_err()
-        );
-        // A FAT chain that loops back on itself.
-        let mut looped = Builder::new(false);
-        let chain = looped.file(None, None, b"LOOP    BIN", &[b' '; 2048], false);
-        looped.set_fat(chain[3], chain[0]);
-        let l = looped.image.len() as u64;
-        assert!(file_ranges(&mut reader(&looped.image), l, "/LOOP.BIN").is_err());
-    }
+            .unwrap();
+            assert_eq!(ranges_len(&ranges), 1500);
+            assert_eq!(
+                ranges.len(),
+                2,
+                "one hole after the first cluster: {ranges:?}"
+            );
+            for r in &ranges {
+                assert!(
+                    image[r.offset as usize..(r.offset + r.len) as usize]
+                        .iter()
+                        .all(|b| *b == b' ')
+                );
+            }
+            let record = file_ranges(
+                &mut reader(&image),
+                image.len() as u64,
+                "/efi/TILO-STAGING/Record.JSON",
+            )
+            .unwrap();
+            assert_eq!(record.len(), 1);
+            assert_eq!(ranges_len(&record), 1500);
+            let loader = file_ranges(
+                &mut reader(&image),
+                image.len() as u64,
+                "/EFI/BOOT/BOOTX64.EFI",
+            )
+            .unwrap();
+            assert_eq!(ranges_len(&loader), 700);
+        }
 
-    #[test]
-    fn masking_restores_spaces_only_inside_ranges() {
-        let ranges = [
-            Range { offset: 10, len: 5 },
-            Range {
-                offset: 30,
-                len: 100,
-            },
-        ];
-        let mut chunk = vec![b'x'; 20];
-        mask(&mut chunk, 8, &ranges);
-        assert_eq!(&chunk, b"xx     xxxxxxxxxxxxx");
-        let mut tail = vec![b'x'; 4];
-        mask(&mut tail, 28, &ranges);
-        assert_eq!(&tail, b"xx  ");
+        // Phase `finds_placeholders_on_fat32`.
+        {
+            let image = staging_esp_image(true, 4096);
+            let ranges = file_ranges(
+                &mut reader(&image),
+                image.len() as u64,
+                "/EFI/tilo-staging/handoff.json",
+            )
+            .unwrap();
+            assert_eq!(ranges_len(&ranges), 4096);
+        }
+
+        // Phase `missing_or_corrupt_structures_are_errors`.
+        {
+            let image = staging_esp_image(false, 1024);
+            let len = image.len() as u64;
+            assert!(file_ranges(&mut reader(&image), len, "/EFI/tilo-staging/other.json").is_err());
+            assert!(file_ranges(&mut reader(&image), len, "/EFI/nothing/handoff.json").is_err());
+            let mut no_sig = image.clone();
+            no_sig[510] = 0;
+            assert!(
+                file_ranges(&mut reader(&no_sig), len, "/EFI/tilo-staging/handoff.json").is_err()
+            );
+            assert!(
+                file_ranges(
+                    &mut reader(&image),
+                    len / 2,
+                    "/EFI/tilo-staging/handoff.json"
+                )
+                .is_err()
+            );
+            // A FAT chain that loops back on itself.
+            let mut looped = Builder::new(false);
+            let chain = looped.file(None, None, b"LOOP    BIN", &[b' '; 2048], false);
+            looped.set_fat(chain[3], chain[0]);
+            let l = looped.image.len() as u64;
+            assert!(file_ranges(&mut reader(&looped.image), l, "/LOOP.BIN").is_err());
+        }
+
+        // Phase `masking_restores_spaces_only_inside_ranges`.
+        {
+            let ranges = [
+                Range { offset: 10, len: 5 },
+                Range {
+                    offset: 30,
+                    len: 100,
+                },
+            ];
+            let mut chunk = vec![b'x'; 20];
+            mask(&mut chunk, 8, &ranges);
+            assert_eq!(&chunk, b"xx     xxxxxxxxxxxxx");
+            let mut tail = vec![b'x'; 4];
+            mask(&mut tail, 28, &ranges);
+            assert_eq!(&tail, b"xx  ");
+        }
     }
 }

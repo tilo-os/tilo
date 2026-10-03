@@ -28,7 +28,52 @@ NAMES = (
 TARGET_REF = "code.tilo.so/tilo/tilo:board-fixture"
 
 
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
+
+
 class HardwareProfileTest(unittest.TestCase):
+    def test_current_dev_origin_requires_target_flavour_and_policy(self):
+        from hardware_profile import install_update_origin, validate_target_imgref
+        ref = "registry.tilo.so/tilo/tilo-vm:fixture-lenovo-83ed-ci"
+        flavour = self.root / "usr/lib/tilo/image-flavour"
+        flavour.parent.mkdir(parents=True, exist_ok=True)
+        policy = self.root / "etc/containers/policy.json"
+        policy.parent.mkdir(parents=True)
+        policy.write_text(json.dumps({"transports": {"docker": {
+            "registry.tilo.so/tilo/tilo-vm": [{"type": "insecureAcceptAnything"}],
+        }}}))
+        flavour.write_text("production\n")
+        with self.assertRaisesRegex(ValueError, "immutable dev flavour"):
+            validate_target_imgref(ref, root=self.root)
+        flavour.write_text("dev\n")
+        policy.write_text(json.dumps({"transports": {"docker": {
+            "registry.tilo.so/tilo/tilo-vm": [{"type": "reject"}],
+        }}}))
+        with self.assertRaisesRegex(ValueError, "development repository policy"):
+            validate_target_imgref(ref, root=self.root)
+        policy.write_text(json.dumps({"transports": {"docker": {
+            "registry.tilo.so/tilo/tilo-vm": [{"type": "insecureAcceptAnything"}],
+        }}}))
+        prepare.prepare_profile("lenovo-83ed", self.root, self.kver, self.firmware,
+                                target_update_ref=ref)
+        self.assertEqual(install_update_origin(self.root), ref)
+        with self.assertRaisesRegex(ValueError, "conflicts"):
+            install_update_origin(self.root, TARGET_REF)
+        with self.assertRaisesRegex(ValueError, "signature-required"):
+            validate_target_imgref(ref)
+        flavour.chmod(0o666)
+        with self.assertRaisesRegex(ValueError, "not group/world writable"):
+            install_update_origin(self.root)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -89,70 +134,141 @@ class HardwareProfileTest(unittest.TestCase):
         self.assertEqual(before, self.snapshot())
         self.ownership.assert_not_called()
 
-    def test_profile_firmware_and_dracut_payload(self):
-        self.run_preparer()
-        profile_path = self.root / "usr/lib/tilo/hardware-profile.json"
-        self.assertEqual(json.loads(profile_path.read_text()), {
-            "schema_version": 1,
-            "id": "lenovo-83ed",
-            "architecture": "aarch64",
-            "devicetree": f"/usr/lib/modules/{self.kver}/dtb/qcom/x1e80100-lenovo-yoga-slim7x.dtb",
-            "devicetree_sha256": hashlib.sha256(self.dtb.read_bytes()).hexdigest(),
-            "target_update_ref": TARGET_REF,
-        })
-        installed = self.root / "usr/lib/firmware/qcom/x1e80100/LENOVO/83ED"
-        self.assertEqual({path.name for path in installed.iterdir()}, set(NAMES))
-        for name in NAMES:
-            self.assertEqual((installed / name).read_bytes(), (self.firmware / name).read_bytes())
-        dracut = self.root / "etc/dracut.conf.d/41-tilo-hardware.conf"
-        install_line = dracut.read_text().splitlines()[1]
-        self.assertEqual(install_line, 'install_items+=" ' + " ".join(
-            f"/usr/lib/firmware/qcom/x1e80100/LENOVO/83ED/{name}" for name in NAMES
-        ) + ' /usr/lib/firmware/qcom/a740_sqe.fw.xz "')
-        parser = self.root / prepare.PARSER_PATH
-        self.assertIn(b"FIELDS_V2", parser.read_bytes())
-        self.assertNotIn(b"\r", parser.read_bytes())
-        installed_spec = importlib.util.spec_from_file_location("installed_hardware_profile", parser)
-        installed_parser = importlib.util.module_from_spec(installed_spec)
-        installed_spec.loader.exec_module(installed_parser)
-        definition = json.loads((self.root / prepare.DEFINITION_PATH).read_text())
-        self.assertEqual(installed_parser.validate_definition(definition)["id"], "lenovo-83ed")
-        outputs = [profile_path, self.root / prepare.DEFINITION_PATH, parser, dracut,
-                   *(installed / name for name in NAMES)]
-        self.assertEqual(self.ownership.call_count, len(outputs))
-        for output in outputs:
-            self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o644)
-            self.ownership.assert_any_call(output, 0, 0)
+    def test_profile_installs_board_payloads(self):
+        with self.subTest(phase="profile_firmware_and_dracut_payload"):
+            self.run_preparer()
+            profile_path = self.root / "usr/lib/tilo/hardware-profile.json"
+            self.assertEqual(json.loads(profile_path.read_text()), {
+                "schema_version": 1,
+                "id": "lenovo-83ed",
+                "architecture": "aarch64",
+                "devicetree": f"/usr/lib/modules/{self.kver}/dtb/qcom/x1e80100-lenovo-yoga-slim7x.dtb",
+                "devicetree_sha256": hashlib.sha256(self.dtb.read_bytes()).hexdigest(),
+                "target_update_ref": TARGET_REF,
+            })
+            installed = self.root / "usr/lib/firmware/qcom/x1e80100/LENOVO/83ED"
+            self.assertEqual({path.name for path in installed.iterdir()}, set(NAMES))
+            for name in NAMES:
+                self.assertEqual((installed / name).read_bytes(), (self.firmware / name).read_bytes())
+            dracut = self.root / "etc/dracut.conf.d/41-tilo-hardware.conf"
+            install_line = dracut.read_text().splitlines()[1]
+            self.assertEqual(install_line, 'install_items+=" ' + " ".join(
+                f"/usr/lib/firmware/qcom/x1e80100/LENOVO/83ED/{name}" for name in NAMES
+            ) + ' /usr/lib/firmware/qcom/a740_sqe.fw.xz "')
+            parser = self.root / prepare.PARSER_PATH
+            self.assertIn(b"FIELDS_V2", parser.read_bytes())
+            self.assertNotIn(b"\r", parser.read_bytes())
+            installed_spec = importlib.util.spec_from_file_location("installed_hardware_profile", parser)
+            installed_parser = importlib.util.module_from_spec(installed_spec)
+            installed_spec.loader.exec_module(installed_parser)
+            definition = json.loads((self.root / prepare.DEFINITION_PATH).read_text())
+            self.assertEqual(installed_parser.validate_definition(definition)["id"], "lenovo-83ed")
+            outputs = [profile_path, self.root / prepare.DEFINITION_PATH, parser, dracut,
+                       *(installed / name for name in NAMES)]
+            self.assertEqual(self.ownership.call_count, len(outputs))
+            for output in outputs:
+                self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o644)
+                self.ownership.assert_any_call(output, 0, 0)
+        restart_fixture(self)
+        with self.subTest(phase="generic_cli_is_a_noop"):
+            root = self.work / "absent-root"
+            result = subprocess.run([
+                sys.executable, str(SCRIPT), "--profile", "generic", "--root", str(root),
+                "--kernel-version", "unused", "--firmware-dir", str(self.work / "absent-firmware"),
+            ], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(root.exists())
+        restart_fixture(self)
+        with self.subTest(phase="another_board_uses_its_own_device_tree_and_firmware_mapping"):
+            definitions, data = self.definition(
+                devicetree="vendor/other-board.dtb", firmware={"radio.bin": "vendor/radio/calibration.bin"})
+            tree = self.kernel / "dtb/vendor/other-board.dtb"
+            tree.parent.mkdir()
+            tree.write_bytes(self.dtb.read_bytes())
+            payload = b"other board calibration"
+            (self.firmware / "radio.bin").write_bytes(payload)
+            self.manifest = {"schema_version": 1, "profile": "other-board",
+                             "files": {"radio.bin": hashlib.sha256(payload).hexdigest()}}
+            self.write_manifest()
+            prepare.prepare_profile("other-board", self.root, self.kver, self.firmware, definitions,
+                                    target_update_ref=TARGET_REF)
+            self.assertEqual((self.root / "usr/lib/firmware/vendor/radio/calibration.bin").read_bytes(), payload)
+            emitted = json.loads((self.root / "usr/lib/tilo/hardware-profile.json").read_text())
+            self.assertEqual(emitted["devicetree"], "/" + tree.relative_to(self.root).as_posix())
+            self.assertEqual(json.loads((self.root / prepare.DEFINITION_PATH).read_text()), data)
+        restart_fixture(self)
+        with self.subTest(phase="firmware_provided_boot_profiles_work_on_both_architectures"):
+            for architecture, config in (("aarch64", "CONFIG_ARM64=y"), ("x86_64", "CONFIG_X86_64=y")):
+                with self.subTest(architecture=architecture):
+                    definitions, _ = self.definition(architecture=architecture)
+                    self.native.return_value = architecture
+                    (self.kernel / "config").write_text(config + "\n")
+                    prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent", definitions,
+                                            target_update_ref=TARGET_REF)
+                    emitted = json.loads((self.root / "usr/lib/tilo/hardware-profile.json").read_text())
+                    self.assertEqual(emitted["architecture"], architecture)
+                    self.assertIsNone(emitted["devicetree"])
+                    self.assertIsNone(emitted["devicetree_sha256"])
 
-    def test_generic_cli_is_a_noop(self):
-        root = self.work / "absent-root"
-        result = subprocess.run([
-            sys.executable, str(SCRIPT), "--profile", "generic", "--root", str(root),
-            "--kernel-version", "unused", "--firmware-dir", str(self.work / "absent-firmware"),
-        ], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(root.exists())
-
-    def test_unknown_profile(self):
-        before = self.snapshot()
-        with self.assertRaisesRegex(ValueError, "unsupported hardware profile"):
-            prepare.prepare_profile("unknown", self.root, self.kver, self.firmware)
-        self.assertEqual(before, self.snapshot())
-
-    def test_missing_or_untrusted_update_reference_fails_before_writes(self):
-        for value in (None, "", "registry.invalid/tilo:fixture", "registry.tilo.so/tilo/tilo:",
-                      "registry.tilo.so/tilo/tilo@sha256:bad", TARGET_REF + "\n"):
-            with self.subTest(value=value):
-                before = self.snapshot()
-                with self.assertRaisesRegex(ValueError, "TILO_TARGET_IMGREF"):
-                    prepare.prepare_profile("lenovo-83ed", self.root, self.kver, self.firmware,
-                                            target_update_ref=value)
-                self.assertEqual(before, self.snapshot())
-        self.ownership.assert_not_called()
-
-    def test_wrong_native_architecture(self):
-        self.native.return_value = "x86_64"
-        self.rejected_without_writes("native aarch64")
+    def test_rejects_invalid_profile_or_builder_before_writes(self):
+        with self.subTest(phase="unknown_profile"):
+            before = self.snapshot()
+            with self.assertRaisesRegex(ValueError, "unsupported hardware profile"):
+                prepare.prepare_profile("unknown", self.root, self.kver, self.firmware)
+            self.assertEqual(before, self.snapshot())
+        restart_fixture(self)
+        with self.subTest(phase="missing_or_untrusted_update_reference_fails_before_writes"):
+            for value in (None, "", "registry.invalid/tilo:fixture", "registry.tilo.so/tilo/tilo:",
+                          "registry.tilo.so/tilo/tilo@sha256:bad", TARGET_REF + "\n"):
+                with self.subTest(value=value):
+                    before = self.snapshot()
+                    with self.assertRaisesRegex(ValueError, "TILO_TARGET_IMGREF"):
+                        prepare.prepare_profile("lenovo-83ed", self.root, self.kver, self.firmware,
+                                                target_update_ref=value)
+                    self.assertEqual(before, self.snapshot())
+            self.ownership.assert_not_called()
+        restart_fixture(self)
+        with self.subTest(phase="wrong_native_architecture"):
+            self.native.return_value = "x86_64"
+            self.rejected_without_writes("native aarch64")
+        restart_fixture(self)
+        with self.subTest(phase="invalid_definitions_are_rejected_before_writes"):
+            mutations = (
+                {"architecture": "riscv64"}, {"architecture": []}, {"id": "different"},
+                {"devicetree": "../outside.dtb"}, {"devicetree": "/boot/outside.dtb"},
+                {"firmware": {"a.bin": "../../outside"}},
+                {"firmware": {"../a.bin": "vendor/a.bin"}},
+                {"firmware": {"a.bin": "vendor/a.bin", "b.bin": "vendor/a.bin"}},
+                {"firmware": {"a.bin": "vendor/tree", "b.bin": "vendor/tree/b.bin"}},
+                {"firmware": {"a.bin": "vendor/with space.bin"}}, {"unknown": True},
+            )
+            for mutation in mutations:
+                with self.subTest(mutation=mutation):
+                    definitions, data = self.definition()
+                    (definitions / "other-board.json").write_text(json.dumps(data | mutation))
+                    before = self.snapshot()
+                    with self.assertRaises(ValueError):
+                        prepare.prepare_profile("other-board", self.root, self.kver, self.firmware, definitions)
+                    self.assertEqual(self.snapshot(), before)
+                    self.ownership.assert_not_called()
+        restart_fixture(self)
+        with self.subTest(phase="version_two_system_firmware_schema_rejects_unsafe_paths"):
+            definitions, data = self.definition()
+            data["schema_version"] = 2
+            for value in ("qcom/../outside", "/qcom/a740_sqe.fw", "qcom/with space.fw"):
+                with self.subTest(value=value):
+                    (definitions / "other-board.json").write_text(json.dumps(data | {"system_firmware": [value]}))
+                    with self.assertRaisesRegex(ValueError, "safe relative path"):
+                        prepare.load_definition("other-board", definitions)
+            for value in (["qcom/a.fw", "qcom/a.fw"], ["qcom", "qcom/a.fw"]):
+                with self.subTest(value=value):
+                    (definitions / "other-board.json").write_text(json.dumps(data | {"system_firmware": value}))
+                    with self.assertRaisesRegex(ValueError, "unique and must not overlap"):
+                        prepare.load_definition("other-board", definitions)
+        restart_fixture(self)
+        with self.subTest(phase="requires_privileged_image_builder"):
+            self.privileged.return_value = 1000
+            self.rejected_without_writes("as root")
 
     def definition(self, architecture="aarch64", devicetree=None, firmware=None):
         directory = self.work / "definitions"
@@ -162,162 +278,191 @@ class HardwareProfileTest(unittest.TestCase):
         (directory / "other-board.json").write_text(json.dumps(data))
         return directory, data
 
-    def test_another_board_uses_its_own_device_tree_and_firmware_mapping(self):
-        definitions, data = self.definition(
-            devicetree="vendor/other-board.dtb", firmware={"radio.bin": "vendor/radio/calibration.bin"})
-        tree = self.kernel / "dtb/vendor/other-board.dtb"
-        tree.parent.mkdir()
-        tree.write_bytes(self.dtb.read_bytes())
-        payload = b"other board calibration"
-        (self.firmware / "radio.bin").write_bytes(payload)
-        self.manifest = {"schema_version": 1, "profile": "other-board",
-                         "files": {"radio.bin": hashlib.sha256(payload).hexdigest()}}
-        self.write_manifest()
-        prepare.prepare_profile("other-board", self.root, self.kver, self.firmware, definitions,
-                                target_update_ref=TARGET_REF)
-        self.assertEqual((self.root / "usr/lib/firmware/vendor/radio/calibration.bin").read_bytes(), payload)
-        emitted = json.loads((self.root / "usr/lib/tilo/hardware-profile.json").read_text())
-        self.assertEqual(emitted["devicetree"], "/" + tree.relative_to(self.root).as_posix())
-        self.assertEqual(json.loads((self.root / prepare.DEFINITION_PATH).read_text()), data)
+    def test_rejects_bad_kernel_or_dtb(self):
+        with self.subTest(phase="invalid_kernel_version"):
+            self.kver = "../../outside"
+            self.rejected_without_writes("invalid kernel version")
+        restart_fixture(self)
+        with self.subTest(phase="wrong_kernel_configuration"):
+            (self.kernel / "config").write_text("CONFIG_X86_64=y\n", encoding="utf-8")
+            self.rejected_without_writes("aarch64 kernel configuration")
+        restart_fixture(self)
+        with self.subTest(phase="missing_dtb"):
+            self.dtb.unlink()
+            self.rejected_without_writes("input is missing")
+        restart_fixture(self)
+        with self.subTest(phase="invalid_dtb_header"):
+            self.dtb.write_bytes(b"not a flattened device tree")
+            self.rejected_without_writes("invalid flattened-device-tree header")
+        restart_fixture(self)
+        with self.subTest(phase="dtb_symlink"):
+            self.dtb.rename(self.work / "outside.dtb")
+            self.dtb.symlink_to(self.work / "outside.dtb")
+            self.rejected_without_writes("symlink")
 
-    def test_firmware_provided_boot_profiles_work_on_both_architectures(self):
-        for architecture, config in (("aarch64", "CONFIG_ARM64=y"), ("x86_64", "CONFIG_X86_64=y")):
-            with self.subTest(architecture=architecture):
-                definitions, _ = self.definition(architecture=architecture)
-                self.native.return_value = architecture
-                (self.kernel / "config").write_text(config + "\n")
-                prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent", definitions,
-                                        target_update_ref=TARGET_REF)
-                emitted = json.loads((self.root / "usr/lib/tilo/hardware-profile.json").read_text())
-                self.assertEqual(emitted["architecture"], architecture)
-                self.assertIsNone(emitted["devicetree"])
-                self.assertIsNone(emitted["devicetree_sha256"])
+    def test_rejects_bad_firmware_without_partial_install(self):
+        with self.subTest(phase="hash_mismatch_on_last_firmware_leaves_no_partial_install"):
+            (self.firmware / NAMES[-1]).write_bytes(b"changed after manifest")
+            self.rejected_without_writes("pinned SHA-256")
+        restart_fixture(self)
+        with self.subTest(phase="missing_firmware"):
+            (self.firmware / NAMES[-1]).unlink()
+            self.rejected_without_writes("input is missing")
+        restart_fixture(self)
+        with self.subTest(phase="missing_distro_firmware_fails_before_writes"):
+            self.system_firmware.unlink()
+            self.rejected_without_writes("required system firmware is missing")
+        restart_fixture(self)
+        with self.subTest(phase="empty_distro_firmware_fails_before_writes"):
+            self.system_firmware.write_bytes(b"")
+            self.rejected_without_writes("required system firmware is empty")
+        restart_fixture(self)
+        with self.subTest(phase="ambiguous_distro_firmware_fails_before_writes"):
+            self.system_firmware.with_suffix("").write_bytes(b"uncompressed duplicate")
+            self.rejected_without_writes("ambiguous installed representations")
+        restart_fixture(self)
+        with self.subTest(phase="firmware_symlink"):
+            firmware = self.firmware / NAMES[-1]
+            firmware.rename(self.work / "outside.firmware")
+            firmware.symlink_to(self.work / "outside.firmware")
+            self.rejected_without_writes("symlink")
+        restart_fixture(self)
+        with self.subTest(phase="firmware_directory_symlink"):
+            self.firmware.rename(self.work / "outside-firmware")
+            self.firmware.symlink_to(self.work / "outside-firmware", target_is_directory=True)
+            self.rejected_without_writes("symlink")
 
-    def test_invalid_definitions_are_rejected_before_writes(self):
-        mutations = (
-            {"architecture": "riscv64"}, {"architecture": []}, {"id": "different"},
-            {"devicetree": "../outside.dtb"}, {"devicetree": "/boot/outside.dtb"},
-            {"firmware": {"a.bin": "../../outside"}},
-            {"firmware": {"../a.bin": "vendor/a.bin"}},
-            {"firmware": {"a.bin": "vendor/a.bin", "b.bin": "vendor/a.bin"}},
-            {"firmware": {"a.bin": "vendor/tree", "b.bin": "vendor/tree/b.bin"}},
-            {"firmware": {"a.bin": "vendor/with space.bin"}}, {"unknown": True},
-        )
-        for mutation in mutations:
-            with self.subTest(mutation=mutation):
-                definitions, data = self.definition()
-                (definitions / "other-board.json").write_text(json.dumps(data | mutation))
-                before = self.snapshot()
-                with self.assertRaises(ValueError):
-                    prepare.prepare_profile("other-board", self.root, self.kver, self.firmware, definitions)
-                self.assertEqual(self.snapshot(), before)
-                self.ownership.assert_not_called()
+    def test_manifest_validation(self):
+        with self.subTest(phase="manifest_schema"):
+            self.manifest["schema_version"] = True
+            self.write_manifest()
+            self.rejected_without_writes("unsupported firmware manifest schema")
+        restart_fixture(self)
+        with self.subTest(phase="manifest_wrong_profile"):
+            self.manifest["profile"] = "another-laptop"
+            self.write_manifest()
+            self.rejected_without_writes("another hardware profile")
+        restart_fixture(self)
+        with self.subTest(phase="manifest_extra_path"):
+            self.manifest["files"]["../extra.mbn"] = "0" * 64
+            self.write_manifest()
+            self.rejected_without_writes("exactly the hardware definition")
+        restart_fixture(self)
+        with self.subTest(phase="manifest_invalid_digest"):
+            self.manifest["files"][NAMES[-1]] = "unverified"
+            self.write_manifest()
+            self.rejected_without_writes("valid SHA-256")
 
-    def test_version_two_system_firmware_schema_rejects_unsafe_paths(self):
+    def test_destination_symlinks_rejected(self):
+        with self.subTest(phase="destination_directory_symlink"):
+            outside = self.work / "outside-output"
+            outside.mkdir()
+            shutil.rmtree(self.root / "usr/lib/firmware")
+            (self.root / "usr/lib/firmware").symlink_to(outside, target_is_directory=True)
+            self.rejected_without_writes("symlink")
+            self.assertEqual(list(outside.iterdir()), [])
+        restart_fixture(self)
+        with self.subTest(phase="destination_file_dangling_symlink"):
+            profile = self.root / "usr/lib/tilo/hardware-profile.json"
+            profile.parent.mkdir()
+            outside = self.work / "outside-profile.json"
+            profile.symlink_to(outside)
+            self.rejected_without_writes("symlink")
+            self.assertFalse(outside.exists())
+
+
+    def test_boot_modules_match_the_installed_kernel(self):
         definitions, data = self.definition()
         data["schema_version"] = 2
-        for value in ("qcom/../outside", "/qcom/a740_sqe.fw", "qcom/with space.fw"):
-            with self.subTest(value=value):
-                (definitions / "other-board.json").write_text(json.dumps(data | {"system_firmware": [value]}))
-                with self.assertRaisesRegex(ValueError, "safe relative path"):
-                    prepare.load_definition("other-board", definitions)
-        for value in (["qcom/a.fw", "qcom/a.fw"], ["qcom", "qcom/a.fw"]):
-            with self.subTest(value=value):
-                (definitions / "other-board.json").write_text(json.dumps(data | {"system_firmware": value}))
-                with self.assertRaisesRegex(ValueError, "unique and must not overlap"):
-                    prepare.load_definition("other-board", definitions)
+        data["system_firmware"] = []
+        data["boot_modules"] = ["sdhci-of-dwcmshc", "rk808"]
+        tree = self.kernel / "dtb/rockchip/rk3566-orangepi-3b-v2.1.dtb"
+        tree.parent.mkdir(parents=True)
+        tree.write_bytes(self.dtb.read_bytes())
+        data["devicetree"] = "rockchip/rk3566-orangepi-3b-v2.1.dtb"
+        (definitions / "other-board.json").write_text(json.dumps(data))
+        module = self.kernel / "kernel/drivers/mmc/host/sdhci-of-dwcmshc.ko.xz"
+        module.parent.mkdir(parents=True)
+        module.write_bytes(b"modular sd host")
+        (self.kernel / "modules.builtin").write_text("kernel/drivers/mfd/rk808.ko\n", encoding="utf-8")
+        prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent", definitions,
+                                target_update_ref=TARGET_REF)
+        dracut = (self.root / "etc/dracut.conf.d/41-tilo-hardware.conf").read_text().splitlines()
+        self.assertEqual(dracut, [
+            "# Hardware-profile firmware and boot modules needed before the root is mounted.",
+            'add_drivers+=" sdhci-of-dwcmshc "',
+        ])
+        module.unlink()
+        with self.assertRaisesRegex(ValueError, "not built in or installed"):
+            prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent", definitions,
+                                    target_update_ref=TARGET_REF)
 
-    def test_requires_privileged_image_builder(self):
-        self.privileged.return_value = 1000
-        self.rejected_without_writes("as root")
 
-    def test_invalid_kernel_version(self):
-        self.kver = "../../outside"
-        self.rejected_without_writes("invalid kernel version")
+class OrangePiWifiFirmwareTest(unittest.TestCase):
+    """The Orange Pi profile carries its Wi-Fi driver and NVRAM into the
+    initramfs, under the board-specific names brcmfmac asks for first, and
+    installs that NVRAM without Broadcom's shared sample MAC."""
 
-    def test_wrong_kernel_configuration(self):
-        (self.kernel / "config").write_text("CONFIG_X86_64=y\n", encoding="utf-8")
-        self.rejected_without_writes("aarch64 kernel configuration")
+    PROFILE = "orangepi-3b-v2-1"
+    BOARD = "xunlong,orangepi-3b-v2.1"
 
-    def test_missing_dtb(self):
-        self.dtb.unlink()
-        self.rejected_without_writes("input is missing")
+    def test_wifi_firmware_reaches_the_initramfs_without_the_sample_mac(self):
+        profiles = Path(__file__).resolve().parents[1] / "hardware/profiles"
+        definition = json.loads((profiles / f"{self.PROFILE}.json").read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as temp:
+            work = Path(temp)
+            root, firmware = work / "root", work / "firmware"
+            firmware.mkdir()
+            kver = "6.17.1-tilo.aarch64"
+            kernel = root / f"usr/lib/modules/{kver}"
+            (kernel / "dtb/rockchip").mkdir(parents=True)
+            (kernel / "dtb" / definition["devicetree"]).write_bytes(
+                struct.pack(">II", 0xD00DFEED, 40) + bytes(32))
+            (kernel / "config").write_text("CONFIG_ARM64=y\n", encoding="utf-8")
+            for module in definition["boot_modules"]:
+                (kernel / "kernel").mkdir(exist_ok=True)
+                (kernel / "kernel" / f"{module}.ko.zst").write_bytes(b"module")
+            nvram = b"#AP6256_NVRAM\nboardtype=0x6e4\nmacaddr=00:90:4c:c5:12:38\r\nccode=XZ\n"
+            for name in definition["firmware"]:
+                payload = nvram if name.endswith(".txt") else f"blob {name}".encode()
+                (firmware / name).write_bytes(payload)
+            (firmware / "manifest.json").write_text(json.dumps({
+                "schema_version": 1,
+                "profile": self.PROFILE,
+                "files": {name: hashlib.sha256((firmware / name).read_bytes()).hexdigest()
+                          for name in definition["firmware"]},
+            }), encoding="utf-8")
+            with patch.object(prepare.platform, "machine", return_value="aarch64"), \
+                    patch.object(prepare.os, "geteuid", return_value=0), \
+                    patch.object(prepare.os, "chown"):
+                prepare.prepare_profile(self.PROFILE, root, kver, firmware, profiles,
+                                        target_update_ref=TARGET_REF)
+            dracut = (root / "etc/dracut.conf.d/41-tilo-hardware.conf").read_text(encoding="utf-8")
+            installed = root / "usr/lib/firmware/brcm"
+            for suffix in ("bin", "clm_blob", "txt"):
+                for name in (f"brcmfmac43456-sdio.{suffix}", f"brcmfmac43456-sdio.{self.BOARD}.{suffix}"):
+                    self.assertEqual(definition["firmware"][name], f"brcm/{name}")
+                    self.assertIn(f"/usr/lib/firmware/brcm/{name}", dracut)
+                    expected = (firmware / name).read_bytes()
+                    if suffix == "txt":
+                        expected = b"#AP6256_NVRAM\nboardtype=0x6e4\nccode=XZ\n"
+                    self.assertEqual((installed / name).read_bytes(), expected)
+        drivers = next(line for line in dracut.splitlines() if line.startswith("add_drivers"))
+        for module in ("mmc_core", "cfg80211", "brcmutil", "brcmfmac", "rockchipdrm", "dw-hdmi"):
+            self.assertIn(f" {module} ", drivers)
 
-    def test_invalid_dtb_header(self):
-        self.dtb.write_bytes(b"not a flattened device tree")
-        self.rejected_without_writes("invalid flattened-device-tree header")
-
-    def test_dtb_symlink(self):
-        self.dtb.rename(self.work / "outside.dtb")
-        self.dtb.symlink_to(self.work / "outside.dtb")
-        self.rejected_without_writes("symlink")
-
-    def test_hash_mismatch_on_last_firmware_leaves_no_partial_install(self):
-        (self.firmware / NAMES[-1]).write_bytes(b"changed after manifest")
-        self.rejected_without_writes("pinned SHA-256")
-
-    def test_missing_firmware(self):
-        (self.firmware / NAMES[-1]).unlink()
-        self.rejected_without_writes("input is missing")
-
-    def test_missing_distro_firmware_fails_before_writes(self):
-        self.system_firmware.unlink()
-        self.rejected_without_writes("required system firmware is missing")
-
-    def test_empty_distro_firmware_fails_before_writes(self):
-        self.system_firmware.write_bytes(b"")
-        self.rejected_without_writes("required system firmware is empty")
-
-    def test_ambiguous_distro_firmware_fails_before_writes(self):
-        self.system_firmware.with_suffix("").write_bytes(b"uncompressed duplicate")
-        self.rejected_without_writes("ambiguous installed representations")
-
-    def test_firmware_symlink(self):
-        firmware = self.firmware / NAMES[-1]
-        firmware.rename(self.work / "outside.firmware")
-        firmware.symlink_to(self.work / "outside.firmware")
-        self.rejected_without_writes("symlink")
-
-    def test_firmware_directory_symlink(self):
-        self.firmware.rename(self.work / "outside-firmware")
-        self.firmware.symlink_to(self.work / "outside-firmware", target_is_directory=True)
-        self.rejected_without_writes("symlink")
-
-    def test_manifest_schema(self):
-        self.manifest["schema_version"] = True
-        self.write_manifest()
-        self.rejected_without_writes("unsupported firmware manifest schema")
-
-    def test_manifest_wrong_profile(self):
-        self.manifest["profile"] = "another-laptop"
-        self.write_manifest()
-        self.rejected_without_writes("another hardware profile")
-
-    def test_manifest_extra_path(self):
-        self.manifest["files"]["../extra.mbn"] = "0" * 64
-        self.write_manifest()
-        self.rejected_without_writes("exactly the hardware definition")
-
-    def test_manifest_invalid_digest(self):
-        self.manifest["files"][NAMES[-1]] = "unverified"
-        self.write_manifest()
-        self.rejected_without_writes("valid SHA-256")
-
-    def test_destination_directory_symlink(self):
-        outside = self.work / "outside-output"
-        outside.mkdir()
-        shutil.rmtree(self.root / "usr/lib/firmware")
-        (self.root / "usr/lib/firmware").symlink_to(outside, target_is_directory=True)
-        self.rejected_without_writes("symlink")
-        self.assertEqual(list(outside.iterdir()), [])
-
-    def test_destination_file_dangling_symlink(self):
-        profile = self.root / "usr/lib/tilo/hardware-profile.json"
-        profile.parent.mkdir()
-        outside = self.work / "outside-profile.json"
-        profile.symlink_to(outside)
-        self.rejected_without_writes("symlink")
-        self.assertFalse(outside.exists())
+    def test_fetch_script_stages_every_profile_firmware_name(self):
+        definition = json.loads((Path(__file__).resolve().parents[1]
+                                 / f"hardware/profiles/{self.PROFILE}.json").read_text(encoding="utf-8"))
+        fetch = (Path(__file__).resolve().parents[1] / "dev/fetch-orangepi-wifi-firmware.sh").read_text(
+            encoding="utf-8")
+        assets = (Path(__file__).resolve().parents[1] / "external-assets/github-assets.tsv").read_text(
+            encoding="utf-8")
+        self.assertIn(f"board={self.BOARD}", fetch)
+        for name in definition["firmware"]:
+            if self.BOARD not in name:
+                generic_asset = fetch.split(f"[{name}]=", 1)[1].split()[0]
+                self.assertIn(f"\t{generic_asset}\t", assets)
 
 
 if __name__ == "__main__":

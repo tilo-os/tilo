@@ -23,7 +23,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
-use std::time::{Duration, Instant};
+use ui::time::Duration;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
@@ -37,16 +38,17 @@ use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role
 use ui::animation::{Animated, Curve, Transition};
 use ui::chrome::fill_scrim;
 use ui::icons::{Icon, draw_icon};
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::surface;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::Spacing;
 use ui::widget::{
     Button, ButtonFace, ButtonStyle, DateIndexIntent, DateIndexMarker, DateIndexMarkerKind,
-    DateIndexedScrollbar, EmptyState, ImageViewer, ModalAction, ModalFrame, ModalHit, ModalLayout,
-    ModalSpec, ProgressBar, ScrollMetrics, SearchField, SegmentedFace, TextInput, TextInputKind,
-    ToggleGroup, Widget,
+    DateIndexedScrollbar, EmptyState, EmptyStateContent, ImageViewer, ModalAction, ModalFrame,
+    ModalHit, ModalLayout, ModalSpec, ProgressBar, ScrollMetrics, SearchField, SegmentedFace,
+    TextInput, TextInputKind, ToggleGroup, Widget,
 };
 use winit::keyboard::{Key, NamedKey};
 
@@ -515,38 +517,20 @@ impl PeopleScanProgress {
         self.last_error = Some(error);
     }
     fn load() -> Self {
-        let Some(path) = Self::path() else {
-            return Self::default();
-        };
-        std::fs::read(path)
-            .ok()
+        Self::file()
+            .and_then(|file| file.read())
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default()
     }
 
     fn save(&self) {
-        let Some(path) = Self::path() else {
-            return;
-        };
-        let Some(parent) = path.parent() else {
-            return;
-        };
-        if std::fs::create_dir_all(parent).is_ok()
-            && let Ok(bytes) = serde_json::to_vec(self)
-        {
-            let _ = atomic_file::write(&path, &bytes);
+        if let (Some(file), Ok(bytes)) = (Self::file(), serde_json::to_vec(self)) {
+            let _ = file.write(&bytes);
         }
     }
 
-    fn path() -> Option<std::path::PathBuf> {
-        let base = std::env::var_os("XDG_STATE_HOME")
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(std::path::PathBuf::from)
-                    .map(|home| home.join(".local/state"))
-            })?;
-        Some(base.join("tilo/photos/people-scan.json"))
+    fn file() -> Option<crate::files::StateFile> {
+        crate::files::StateFile::in_state("photos/people-scan.json")
     }
 }
 
@@ -1165,7 +1149,7 @@ fn viewer_copy(value: &str, max_chars: usize) -> String {
 )]
 pub struct PhotosApp {
     /// Canonical dispatcher shared by toolbar edits and exported document actions.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     /// Where imported originals are kept and photographs are read from. The
     /// document names content by hash; this handle resolves it.
     content: ContentStore,
@@ -1211,6 +1195,9 @@ pub struct PhotosApp {
     compact_more_hits: Vec<(Hit, Rect)>,
     /// Portal channel while a file chooser is open.
     picker: Option<ui::portal::PortalChannel>,
+    /// The chooser that delivers chosen files' contents, where files have no
+    /// path (a browser page).
+    contents_picker: Option<ui::portal::ContentsChannel>,
     directory_picker: Option<ui::portal::PortalChannel>,
     directory_picker_retain_exif_location: bool,
     directory_import: Option<DirectoryImport>,
@@ -1777,7 +1764,7 @@ impl PhotosApp {
                         crate::actions::PHOTOS_ACTION_TYPE,
                         &action,
                         tilo_actions::ActionContext::for_action(
-                            "org.tilo.Photos",
+                            "so.tilo.photos",
                             "Photos",
                             &action,
                         ),
@@ -1912,7 +1899,7 @@ impl PhotosApp {
                             crate::actions::PHOTOS_ACTION_TYPE,
                             &action,
                             tilo_actions::ActionContext::for_action(
-                                "org.tilo.Photos",
+                                "so.tilo.photos",
                                 "Photos",
                                 &action,
                             ),
@@ -2029,14 +2016,12 @@ impl PhotosApp {
         let (analysis_job_tx, analysis_job_rx) =
             std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
         let (analysis_result_tx, analysis_rx) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
-        let analysis_tx = std::thread::Builder::new()
-            .name("photos-local-analysis".to_owned())
-            .spawn({
-                let content = content.clone();
-                move || analysis_worker(&analysis_job_rx, &analysis_result_tx, &content)
-            })
-            .ok()
-            .map(|_| analysis_job_tx);
+        let analysis_tx = ui::rt::spawn_thread("photos-local-analysis", {
+            let content = content.clone();
+            move || analysis_worker(&analysis_job_rx, &analysis_result_tx, &content)
+        })
+        .ok()
+        .map(|_| analysis_job_tx);
         // In memory until `new_persistent` swaps in the per-user preview cache:
         // tests and offscreen shots must not write the user's cache.
         let thumbnail_service = with_thumbnail_wake(thumbnail::ThumbnailService::ephemeral(1));
@@ -2058,7 +2043,7 @@ impl PhotosApp {
         }
         let initial_analysis_capability = Self::discover_library_analysis_capability().ok();
         Self {
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             content,
             #[cfg(test)]
             last_library_action: None,
@@ -2086,6 +2071,7 @@ impl PhotosApp {
             compact_more_focus: 0,
             compact_more_hits: Vec::new(),
             picker: None,
+            contents_picker: None,
             directory_picker: None,
             directory_picker_retain_exif_location: true,
             directory_import: None,
@@ -2320,15 +2306,25 @@ impl PhotosApp {
     /// path remains only in this process; the action writes portable metadata
     /// and the staged content hash into the shared document.
     pub fn open_path(&mut self, doc: &mut AutoCommit, path: &str) {
-        let bytes = bounded_file_bytes(path);
-        match bytes.as_deref().and_then(pixels::decode) {
+        self.open_bytes(doc, path, bounded_file_bytes(path).as_deref());
+    }
+
+    /// Import a photograph chosen by its contents, where it has no path: its
+    /// name labels it and its bytes live in the content store.
+    pub fn open_contents(&mut self, doc: &mut AutoCommit, name: &str, bytes: &[u8]) {
+        let bytes = (bytes.len() <= pixels::MAX_ENCODED_BYTES).then_some(bytes);
+        self.open_bytes(doc, name, bytes);
+    }
+
+    fn open_bytes(&mut self, doc: &mut AutoCommit, path: &str, bytes: Option<&[u8]>) {
+        match bytes.and_then(pixels::decode) {
             Some(img) => {
                 // Put the bytes in the content store before naming them, so
                 // the hash this document is about to carry is one this machine
                 // can already answer for — and one the room can be handed.
                 // Otherwise the document would name a picture only the path
                 // could find, and the path is true on one machine.
-                let content = match self.content.put(bytes.as_deref().unwrap_or_default()) {
+                let content = match self.content.put(bytes.unwrap_or_default()) {
                     Ok(content) => content,
                     Err(error) => {
                         tracing::warn!(%error, "photos: could not store an opened original");
@@ -2854,7 +2850,7 @@ impl PhotosApp {
                 let payload =
                     serde_json::to_vec(&crate::actions::PhotosOperation::AnalyzePeopleLibrary)
                         .unwrap_or_default();
-                if let Err(error) = self.start_resource_operation_with_document(
+                if let Err(error) = self.admit_resource_operation_with_document(
                     invocation,
                     tilo_actions::OperationKind::Effect,
                     crate::actions::PHOTOS_OPERATION_TYPE,
@@ -3388,8 +3384,8 @@ impl PhotosApp {
         let Some(feedback) = self.places_camera_feedback else {
             return 0.0;
         };
-        let value = feedback.current(Instant::now());
-        if feedback.done(Instant::now()) {
+        let value = feedback.current(ui::time::now());
+        if feedback.done(ui::time::now()) {
             self.places_camera_feedback = None;
             0.0
         } else {
@@ -3569,14 +3565,16 @@ impl PhotosApp {
                 device_id,
                 position: center,
             },
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         v.handle_event(
             &winit::event::WindowEvent::MouseWheel {
@@ -3584,14 +3582,16 @@ impl PhotosApp {
                 delta: winit::event::MouseScrollDelta::LineDelta(0.0, scroll_y),
                 phase: winit::event::TouchPhase::Moved,
             },
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 
@@ -3638,7 +3638,9 @@ impl PhotosApp {
             self.notice = Some(tr("photos-save-failed"));
             return false;
         };
-        if let Ok(()) = atomic_file::write(std::path::Path::new(path), &bytes) {
+        let saved = tilo_files::file_at(std::path::Path::new(path))
+            .and_then(|(dir, name)| tilo_files::blocking::save_document(&dir, &name, &bytes));
+        if saved.is_ok() {
             self.notice = Some(format!("{} {path}", tr("photos-saved")));
             true
         } else {
@@ -3672,12 +3674,33 @@ impl PhotosApp {
             crate::actions::PHOTOS_ACTION_TYPE,
             &crate::actions::PhotosAction::set(&next),
             tilo_actions::ActionContext::for_action(
-                "org.tilo.Photos",
+                "so.tilo.photos",
                 "Photos",
                 &crate::actions::PhotosAction::set(&next),
             ),
         );
         self.notice = None;
+    }
+
+    /// Show the library, open image, and edits the framework resource already holds.
+    /// An empty projection does not wipe a library that has not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::PhotosState) {
+        if state.open.is_none() && state.library.photos.is_empty() {
+            return;
+        }
+        self.observed_content = Some(LiveContent {
+            image: state.open.clone(),
+            edits: state.edits,
+            library: state.library.clone(),
+        });
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Photos>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     /// Every card interaction routes through the same typed, replayable
@@ -3698,7 +3721,7 @@ impl PhotosApp {
             doc,
             crate::actions::PHOTOS_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Photos", "Photos", &action),
+            tilo_actions::ActionContext::for_action("so.tilo.photos", "Photos", &action),
         );
     }
 
@@ -4367,20 +4390,13 @@ impl PhotosApp {
     }
 
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "embedded TextInput uses the Widget event contract; keyboard and pointer handling stay beside the album-sheet controls"
     )]
     fn handle_album_editor_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         if !self.album_editor {
             return false;
@@ -4389,14 +4405,10 @@ impl PhotosApp {
             let mut sink = None;
             button.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                doc,
-                path,
-                handled,
-                &mut sink,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    focus_target: &mut sink,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
             );
         }
         if let Some(hit) = self.album_page_pending.take() {
@@ -4405,20 +4417,16 @@ impl PhotosApp {
                 AlbumEditorHit::NextPage => self.page_library(true),
                 _ => {}
             }
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         let mut sink = None;
         self.album_name_input.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            doc,
-            path,
-            handled,
-            &mut sink,
-            node_id,
-            taffy,
+            &mut ui::widget::EventCtx {
+                focus_target: &mut sink,
+                ..ctx.reborrow(ctx.path, ctx.node_id)
+            },
         );
         if let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == winit::event::ElementState::Pressed
@@ -4426,47 +4434,49 @@ impl PhotosApp {
             match &key.logical_key {
                 Key::Named(NamedKey::PageDown) => {
                     self.page_library(true);
-                    *handled = true;
+                    *ctx.handled = true;
                     return true;
                 }
                 Key::Named(NamedKey::PageUp) => {
                     self.page_library(false);
-                    *handled = true;
+                    *ctx.handled = true;
                     return true;
                 }
                 Key::Named(NamedKey::Tab) => {
                     let steps = if self.album_editor_creating { 3 } else { 4 };
-                    self.album_editor_focus = if modifiers.state().shift_key() {
+                    self.album_editor_focus = if ctx.modifiers.state().shift_key() {
                         (self.album_editor_focus + steps - 1) % steps
                     } else {
                         (self.album_editor_focus + 1) % steps
                     };
                     self.album_name_input
                         .set_focus(self.album_editor_focus == 0);
-                    *handled = true;
+                    *ctx.handled = true;
                     return true;
                 }
                 Key::Named(NamedKey::Escape) => {
                     self.cancel_album_editor();
-                    *handled = true;
+                    *ctx.handled = true;
                     return true;
                 }
                 Key::Named(NamedKey::Enter)
-                    if modifiers.state().control_key() || modifiers.state().super_key() =>
+                    if ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key() =>
                 {
-                    self.save_album_editor(doc);
-                    *handled = true;
+                    self.save_album_editor(ctx.state);
+                    *ctx.handled = true;
                     return true;
                 }
                 Key::Named(NamedKey::Enter) => {
                     match (self.album_editor_creating, self.album_editor_focus) {
                         (_, 1) => self.cancel_album_editor(),
-                        (false, 2) if self.album_delete_confirm => self.delete_active_album(doc),
+                        (false, 2) if self.album_delete_confirm => {
+                            self.delete_active_album(ctx.state);
+                        }
                         (false, 2) => self.album_delete_confirm = true,
-                        (true, 2) | (false, 3) => self.save_album_editor(doc),
+                        (true, 2) | (false, 3) => self.save_album_editor(ctx.state),
                         _ => {}
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return true;
                 }
                 _ => {}
@@ -4489,7 +4499,7 @@ impl PhotosApp {
         ) && self.metadata_editor_section == MetadataEditorSection::TimeAndPlace
             && self.set_metadata_location_from_map_point(self.pointer)
         {
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         if matches!(
@@ -4507,16 +4517,16 @@ impl PhotosApp {
                 .copied()
             {
                 match hit {
-                    AlbumEditorHit::Save => self.save_album_editor(doc),
+                    AlbumEditorHit::Save => self.save_album_editor(ctx.state),
                     AlbumEditorHit::Cancel => self.cancel_album_editor(),
                     AlbumEditorHit::Delete => {
                         self.album_delete_confirm = true;
                         self.notice = Some("Press Delete album? again to keep photographs and delete only the album".to_owned());
                     }
-                    AlbumEditorHit::ConfirmDelete => self.delete_active_album(doc),
+                    AlbumEditorHit::ConfirmDelete => self.delete_active_album(ctx.state),
                     _ => {}
                 }
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
             if let Some((id, _, _)) = self
@@ -4529,27 +4539,17 @@ impl PhotosApp {
                     self.album_editor_members.remove(&id);
                 }
                 self.album_delete_confirm = false;
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
         }
         true
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the toolkit event contract to retained collection paging controls"
-    )]
     fn handle_collection_page_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         if !self.library_mode || self.collection_page_hits.is_empty() {
             return false;
@@ -4563,29 +4563,21 @@ impl PhotosApp {
                 let mut sink = None;
                 button.handle_event(
                     event,
-                    scale_factor,
-                    &modifiers,
-                    doc,
-                    path,
-                    handled,
-                    &mut sink,
-                    node_id,
-                    taffy,
+                    &mut ui::widget::EventCtx {
+                        focus_target: &mut sink,
+                        ..ctx.reborrow(ctx.path, ctx.node_id)
+                    },
                 );
             }
         }
         if let Some(hit) = self.collection_page_pending.take() {
             self.page_collection(hit);
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         false
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the metadata sheet embeds four shared TextInputs under the Widget event contract"
-    )]
     #[expect(
         clippy::too_many_lines,
         reason = "keyboard, pointer and embedded TextInput routing for the metadata sheet stay together under the Widget event contract"
@@ -4593,13 +4585,7 @@ impl PhotosApp {
     fn handle_metadata_editor_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         if !self.metadata_editor {
             return false;
@@ -4626,19 +4612,15 @@ impl PhotosApp {
             let mut sink = None;
             button.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                doc,
-                path,
-                handled,
-                &mut sink,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    focus_target: &mut sink,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
             );
         }
         if let Some(hit) = self.metadata_editor_pending.take() {
-            self.activate_metadata_editor_hit(hit, doc);
-            *handled = true;
+            self.activate_metadata_editor_hit(hit, ctx.state);
+            *ctx.handled = true;
             return true;
         }
         if let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
@@ -4651,34 +4633,34 @@ impl PhotosApp {
             };
             match &key.logical_key {
                 Key::Named(NamedKey::Tab) => {
-                    self.set_metadata_editor_focus(if modifiers.state().shift_key() {
+                    self.set_metadata_editor_focus(if ctx.modifiers.state().shift_key() {
                         (self.metadata_editor_focus + focus_count - 1) % focus_count
                     } else {
                         (self.metadata_editor_focus + 1) % focus_count
                     });
-                    *handled = true;
+                    *ctx.handled = true;
                     return true;
                 }
                 Key::Named(NamedKey::Escape) => {
                     self.cancel_metadata_editor();
-                    *handled = true;
+                    *ctx.handled = true;
                     return true;
                 }
                 Key::Named(NamedKey::Enter)
-                    if modifiers.state().control_key() || modifiers.state().super_key() =>
+                    if ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key() =>
                 {
-                    self.save_metadata_editor(doc);
-                    *handled = true;
+                    self.save_metadata_editor(ctx.state);
+                    *ctx.handled = true;
                     return true;
                 }
                 Key::Named(NamedKey::Enter) if self.metadata_editor_focus == focus_count - 2 => {
                     self.cancel_metadata_editor();
-                    *handled = true;
+                    *ctx.handled = true;
                     return true;
                 }
                 Key::Named(NamedKey::Enter) if self.metadata_editor_focus == focus_count - 1 => {
-                    self.save_metadata_editor(doc);
-                    *handled = true;
+                    self.save_metadata_editor(ctx.state);
+                    *ctx.handled = true;
                     return true;
                 }
                 _ => {}
@@ -4694,10 +4676,12 @@ impl PhotosApp {
                 // Physical pixels, like every pointer position this app
                 // converts; without the division a 2× display scrolls twice
                 // the trackpad distance.
-                winit::event::MouseScrollDelta::PixelDelta(position) => position.y / scale_factor,
+                winit::event::MouseScrollDelta::PixelDelta(position) => {
+                    position.y / ctx.scale_factor
+                }
             };
             self.metadata_editor_scroll = (self.metadata_editor_scroll - dy).max(0.0);
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         // A press outside the field list's visible region belongs to the
@@ -4724,14 +4708,10 @@ impl PhotosApp {
             let mut sink = None;
             input.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                doc,
-                path,
-                handled,
-                &mut sink,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    focus_target: &mut sink,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
             );
         }
         if matches!(
@@ -4747,8 +4727,8 @@ impl PhotosApp {
             .find(|(_, rect)| rect.contains(self.pointer))
             .copied()
         {
-            self.activate_metadata_editor_hit(hit, doc);
-            *handled = true;
+            self.activate_metadata_editor_hit(hit, ctx.state);
+            *ctx.handled = true;
         }
         true
     }
@@ -4770,18 +4750,28 @@ impl PhotosApp {
             crate::actions::PhotosOperation::Open { path: None } => {
                 self.import_content = Some(LiveContent::read(doc));
                 self.picker_stale = false;
-                self.picker = Some(
-                    ui::portal::PickRequest::open(&tr("photos-open-title"), &tr("photos-open"))
-                        .thread_name("photos-portal-open")
-                        .filter(
-                            ui::portal::FileFilter::new(&tr("photos-filter-images"))
-                                .mimetype("image/png")
-                                .mimetype("image/jpeg")
-                                .mimetype("image/webp"),
+                let filter = ui::portal::FileFilter::new(&tr("photos-filter-images"))
+                    .mimetype("image/png")
+                    .mimetype("image/jpeg")
+                    .mimetype("image/webp");
+                if crate::files::native_paths() {
+                    self.picker = Some(
+                        ui::portal::PickRequest::open(&tr("photos-open-title"), &tr("photos-open"))
+                            .thread_name("photos-portal-open")
+                            .filter(filter)
+                            .all_files()
+                            .send(),
+                    );
+                } else {
+                    self.contents_picker = Some(
+                        ui::portal::PickRequest::open_multiple(
+                            &tr("photos-open-title"),
+                            &tr("photos-open"),
                         )
-                        .all_files()
-                        .send(),
-                );
+                        .filter(filter)
+                        .send_contents(),
+                    );
+                }
             }
             crate::actions::PhotosOperation::ImportDirectory {
                 path: None,
@@ -6965,23 +6955,21 @@ impl PhotosApp {
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
         let content = self.content.clone();
-        let spawn = std::thread::Builder::new()
-            .name("photos-directory-import".into())
-            .spawn(move || {
-                let result = crate::import::index_directory(
-                    &path,
-                    &content,
-                    crate::import::ImportOptions {
-                        retain_exif_location,
-                        ..crate::import::ImportOptions::default()
-                    },
-                    &worker_cancel,
-                    |progress| {
-                        let _ = sender.send(DirectoryImportEvent::Progress(progress));
-                    },
-                );
-                let _ = sender.send(DirectoryImportEvent::Finished(result));
-            });
+        let spawn = ui::rt::spawn_thread("photos-directory-import", move || {
+            let result = crate::import::index_directory(
+                &path,
+                &content,
+                crate::import::ImportOptions {
+                    retain_exif_location,
+                    ..crate::import::ImportOptions::default()
+                },
+                &worker_cancel,
+                |progress| {
+                    let _ = sender.send(DirectoryImportEvent::Progress(progress));
+                },
+            );
+            let _ = sender.send(DirectoryImportEvent::Finished(result));
+        });
         if spawn.is_err() {
             self.notice = Some("Photos could not start the folder indexing job".into());
             if let Some(invocation) = invocation {
@@ -7252,7 +7240,7 @@ impl PhotosApp {
                 doc,
                 crate::actions::PHOTOS_ACTION_TYPE,
                 &action,
-                tilo_actions::ActionContext::for_action("org.tilo.Photos", "Photos", &action),
+                tilo_actions::ActionContext::for_action("so.tilo.photos", "Photos", &action),
             ) {
                 Ok(()) => {
                     if let Some(job) = self.directory_import.as_mut() {
@@ -7373,6 +7361,7 @@ impl PhotosApp {
         reason = "drains every portal picker channel with its outcome handling side by side"
     )]
     fn drain_picker(&mut self, doc: &mut AutoCommit) {
+        self.drain_contents_picker(doc);
         if let Some(rx) = self.directory_picker.as_ref() {
             match rx.try_recv() {
                 Ok(ui::portal::PortalOutcome::Opened(path)) => {
@@ -7824,15 +7813,14 @@ impl PhotosApp {
     ) {
         if theme.text_scale <= 1.25 || self.canvas_rect.width() >= 620.0 {
             EmptyState::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 self.canvas_rect,
-                Some(Icon::Image),
-                title,
-                Some(body),
-                None,
+                &EmptyStateContent {
+                    icon: Some(Icon::Image),
+                    title,
+                    message: Some(body),
+                    action_label: None,
+                },
                 Point::ZERO,
             );
             return;
@@ -7882,32 +7870,24 @@ impl PhotosApp {
         let mut y = top + icon_r * 2.0 + 26.0;
         for line in title_lines {
             draw_centered_text(
-                scene,
-                transform,
-                text_renderer,
-                theme.text_primary,
-                bounds.center().x,
-                y,
-                content_w,
-                title_size,
-                TextWeight::Medium,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 &line,
+                &TextStyle::new(title_size).with_weight(TextWeight::Medium),
+                theme.text_primary,
+                Point::new(bounds.center().x, y),
+                content_w,
             );
             y += title_step;
         }
         y += 12.0;
         for line in body_lines {
             draw_centered_text(
-                scene,
-                transform,
-                text_renderer,
-                theme.text_dim,
-                bounds.center().x,
-                y,
-                content_w,
-                body_size,
-                TextWeight::Regular,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 &line,
+                &TextStyle::new(body_size),
+                theme.text_dim,
+                Point::new(bounds.center().x, y),
+                content_w,
             );
             y += body_step;
         }
@@ -8402,22 +8382,16 @@ impl PhotosApp {
             .unwrap()
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "paint helper takes the shared scene/text/theme context plus the pager's own page state and hit routes"
-    )]
     fn draw_collection_pager(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         bounds: Rect,
         page: usize,
         total: usize,
         previous: CollectionPageHit,
         next: CollectionPageHit,
     ) {
+        let theme = ctx.theme;
         self.collection_page_hits.clear();
         let page_size = if matches!(previous, CollectionPageHit::AlbumsPrevious)
             && self.library_destination == LibraryDestination::Albums
@@ -8449,16 +8423,17 @@ impl PhotosApp {
             {
                 button.set_enabled(enabled);
                 button.apply_layout_external(rect);
-                button.draw(scene, transform, text_renderer, theme, &presence);
+                button.draw(ctx.scene, ctx.transform, ctx.text, theme, &presence);
             }
             self.collection_page_hits.push((hit, rect, enabled));
         }
-        text_renderer.draw_text_weighted(
-            scene,
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             &format!("Page {} of {pages}", page + 1),
             12.0,
             theme.text_dim,
-            transform * Affine::translate((bounds.center().x - label_w * 0.5, bounds.y0 + 12.0)),
+            ctx.transform
+                * Affine::translate((bounds.center().x - label_w * 0.5, bounds.y0 + 12.0)),
             Some(label_w as f32),
             TextWeight::Regular,
         );
@@ -9216,10 +9191,7 @@ impl PhotosApp {
             self.album_cards.push((Some(id.clone()), card));
         }
         self.draw_collection_pager(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             Rect::new(content.x1 - 292.0, actions_y, content.x1, actions_y + 44.0),
             self.albums_page,
             self.library_albums.len(),
@@ -9316,16 +9288,9 @@ impl PhotosApp {
         scene.pop_layer();
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "paint helper takes the shared scene/text/theme context plus the card's own content and presentation flags"
-    )]
     fn draw_people_card(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         card: Rect,
         title: &str,
         subtitle: &str,
@@ -9334,11 +9299,12 @@ impl PhotosApp {
         compact: bool,
     ) {
         use vello::peniko::Fill;
+        let theme = ctx.theme;
 
         let hovered = card.contains(self.pointer);
-        scene.fill(
+        ctx.scene.fill(
             Fill::NonZero,
-            transform,
+            ctx.transform,
             if hovered {
                 theme.bg_hover
             } else {
@@ -9347,9 +9313,9 @@ impl PhotosApp {
             None,
             &RoundedRect::from_rect(card, 12.0),
         );
-        scene.stroke(
+        ctx.scene.stroke(
             &Stroke::new(1.0),
-            transform,
+            ctx.transform,
             theme.border_standard,
             None,
             &RoundedRect::from_rect(card, 12.0),
@@ -9376,22 +9342,22 @@ impl PhotosApp {
                 card.width() - 28.0,
             )
         };
-        self.draw_people_mosaic(scene, transform, theme, mosaic, photo_ids);
-        text_renderer.draw_text_weighted(
-            scene,
+        self.draw_people_mosaic(ctx.scene, ctx.transform, theme, mosaic, photo_ids);
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             title,
             if compact { 15.0 } else { 16.0 },
             theme.text_primary,
-            transform * Affine::translate((copy_x, title_y)),
+            ctx.transform * Affine::translate((copy_x, title_y)),
             Some(copy_w as f32),
             TextWeight::Semibold,
         );
-        text_renderer.draw_text_weighted(
-            scene,
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             subtitle,
             12.0,
             theme.text_dim,
-            transform * Affine::translate((copy_x, subtitle_y)),
+            ctx.transform * Affine::translate((copy_x, subtitle_y)),
             Some(copy_w as f32),
             TextWeight::Regular,
         );
@@ -9403,19 +9369,19 @@ impl PhotosApp {
                 card.y0 + 180.0
             };
             draw_icon(
-                scene,
-                transform,
+                ctx.scene,
+                ctx.transform,
                 Rect::new(private_x, private_y, private_x + 14.0, private_y + 14.0),
                 Icon::Shield,
                 theme.text_dim,
                 1.2,
             );
-            text_renderer.draw_text_weighted(
-                scene,
+            ctx.text.draw_text_weighted(
+                ctx.scene,
                 "Private on this device",
                 11.0,
                 theme.text_dim,
-                transform * Affine::translate((private_x + 19.0, private_y - 1.0)),
+                ctx.transform * Affine::translate((private_x + 19.0, private_y - 1.0)),
                 Some((card.x1 - private_x - 28.0) as f32),
                 TextWeight::Medium,
             );
@@ -9538,7 +9504,7 @@ impl PhotosApp {
             let reveal = if theme.reduce_motion {
                 1.0_f32
             } else {
-                self.people_detail_transition.value(Instant::now())
+                self.people_detail_transition.value(ui::time::now())
             };
             scene.push_layer(
                 Fill::NonZero,
@@ -9828,10 +9794,7 @@ impl PhotosApp {
                 )
             };
             self.draw_people_card(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 card,
                 name,
                 &format!(
@@ -9903,10 +9866,7 @@ impl PhotosApp {
                 )
             };
             self.draw_people_card(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 card,
                 cluster
                     .display_name
@@ -10637,10 +10597,7 @@ impl PhotosApp {
                 x += width + LIB_CHIP_GAP;
             }
             self.draw_collection_pager(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 Rect::new(
                     bounds.x1 - f64::from(PAD) - 292.0,
                     y - 7.0,
@@ -10925,15 +10882,13 @@ impl PhotosApp {
             0.0
         };
         let selection_y = pager_y + pager_h;
+        let selection_band =
+            Rect::new(bounds.x0, selection_y, bounds.x1, selection_y + selection_h);
         self.draw_selection_controls(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             bounds,
             masthead,
-            selection_y,
-            selection_h,
+            selection_band,
             desktop_library,
             compact_header.controls,
             presence,
@@ -12029,10 +11984,7 @@ impl PhotosApp {
             .cloned()
             .collect();
         self.draw_collection_pager(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             Rect::new(map.x0 + 12.0, map.y0 + 8.0, map.x1 - 124.0, map.y0 + 48.0),
             self.places_page,
             items.len(),
@@ -12095,31 +12047,26 @@ impl PhotosApp {
     }
 
     #[allow(
-        clippy::too_many_arguments,
-        reason = "the selection shelf keeps its responsive geometry and semantic hit boxes in one audited renderer"
-    )]
-    #[allow(
         clippy::too_many_lines,
         reason = "the responsive selection task bar keeps its painted controls and exact pointer hit geometry in one audited component"
     )]
     fn draw_selection_controls(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         bounds: Rect,
         masthead: Rect,
-        selection_y: f64,
-        selection_h: f64,
+        selection_band: Rect,
         desktop_library: bool,
         compact_selection_rect: Rect,
         presence: &PresenceCtx,
     ) {
         use vello::peniko::Fill;
+        let theme = ctx.theme;
+        let (selection_y, selection_h) = (selection_band.y0, selection_band.height());
 
         self.selection_hits.clear();
         self.selection_destination_hits.clear();
+        let transform = ctx.transform;
         let draw_button = |scene: &mut Scene,
                            text_renderer: &mut TextRenderer,
                            hit: SelectionHit,
@@ -12180,7 +12127,7 @@ impl PhotosApp {
             };
             self.library_select_button.apply_layout_external(rect);
             self.library_select_button
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw(ctx.scene, ctx.transform, ctx.text, theme, presence);
             self.selection_hits.push((SelectionHit::Start, rect));
             return;
         }
@@ -12202,28 +12149,28 @@ impl PhotosApp {
         let wide = desktop_library && selection_h <= 52.0;
         let x = bounds.x0 + f64::from(PAD);
         let max_x = bounds.x1 - f64::from(PAD);
-        scene.fill(
+        ctx.scene.fill(
             Fill::NonZero,
-            transform,
+            ctx.transform,
             theme.tokens.colors.surfaces.raised,
             None,
             &Rect::new(x, selection_y, max_x, selection_y + selection_h - 4.0),
         );
-        scene.stroke(
+        ctx.scene.stroke(
             &Stroke::new(1.0),
-            transform,
+            ctx.transform,
             theme.border_standard,
             None,
             &Rect::new(x, selection_y, max_x, selection_y + selection_h - 4.0),
         );
         let label = format!("{selected} selected");
         if wide {
-            text_renderer.draw_text_weighted(
-                scene,
+            ctx.text.draw_text_weighted(
+                ctx.scene,
                 &label,
                 13.0,
                 theme.text_primary,
-                transform * Affine::translate((x + 12.0, selection_y + 15.0)),
+                ctx.transform * Affine::translate((x + 12.0, selection_y + 15.0)),
                 Some(112.0),
                 TextWeight::Medium,
             );
@@ -12271,8 +12218,8 @@ impl PhotosApp {
                     selection_y + 44.0,
                 );
                 draw_button(
-                    scene,
-                    text_renderer,
+                    ctx.scene,
+                    ctx.text,
                     hit,
                     rect,
                     label,
@@ -12282,12 +12229,12 @@ impl PhotosApp {
                 button_x += width + 6.0;
             }
         } else {
-            text_renderer.draw_text_weighted(
-                scene,
+            ctx.text.draw_text_weighted(
+                ctx.scene,
                 &label,
                 12.0,
                 theme.text_primary,
-                transform * Affine::translate((x + 10.0, selection_y + 15.0)),
+                ctx.transform * Affine::translate((x + 10.0, selection_y + 15.0)),
                 Some(92.0),
                 TextWeight::Medium,
             );
@@ -12319,8 +12266,8 @@ impl PhotosApp {
                 ),
             ] {
                 draw_button(
-                    scene,
-                    text_renderer,
+                    ctx.scene,
+                    ctx.text,
                     hit,
                     rect,
                     label,
@@ -13582,33 +13529,18 @@ fn metadata_filter_id(folder: Option<&str>, person: Option<&str>, tag: Option<&s
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the helper keeps one centered text paint call explicit at each compact empty-state line"
-)]
 fn draw_centered_text(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    color: vello::peniko::Color,
-    center_x: f64,
-    y: f64,
-    max_width: f64,
-    size: f32,
-    weight: TextWeight,
+    ctx: &mut PaintCtx<'_>,
     text: &str,
+    style: &TextStyle,
+    color: vello::peniko::Color,
+    top_center: Point,
+    max_width: f64,
 ) {
-    let (measured, _) = text_renderer.measure_weighted(text, size, None, weight);
+    let (measured, _) = ctx.text.measure_style(text, None, style);
     let width = f64::from(measured).min(max_width);
-    text_renderer.draw_text_weighted(
-        scene,
-        text,
-        size,
-        color,
-        transform * Affine::translate((center_x - width * 0.5, y)),
-        Some(max_width as f32),
-        weight,
-    );
+    let origin = Point::new(top_center.x - width * 0.5, top_center.y);
+    ctx.text(text, style, color, origin, Some(max_width as f32));
 }
 
 /// The region of a `w`×`h` image `viewer` currently frames, in normalized
@@ -14063,8 +13995,78 @@ fn capture_day(captured_at: &str) -> String {
 /// Read at most the encoded-image budget plus one sentinel byte. A hostile
 /// file can otherwise exhaust memory before the decoder gets a chance to
 /// enforce its decoded-pixel limit.
+impl PhotosApp {
+    /// Import the photographs a contents chooser delivered.
+    fn drain_contents_picker(&mut self, doc: &mut AutoCommit) {
+        let Some(rx) = self.contents_picker.as_ref() else {
+            return;
+        };
+        let outcome = match rx.try_recv() {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                ui::portal::ContentsOutcome::Failed("the file chooser stopped responding".into())
+            }
+        };
+        self.contents_picker = None;
+        let stale = std::mem::take(&mut self.picker_stale);
+        self.import_content = None;
+        let invocation = self.resource_invocation.take();
+        let result = match outcome {
+            ui::portal::ContentsOutcome::Picked(files) if stale => {
+                let message = format!(
+                    "Selected {} photos; import was invalidated by changed document content",
+                    files.len()
+                );
+                self.notice = Some(message.clone());
+                Err(("photos.stale_selection", message))
+            }
+            ui::portal::ContentsOutcome::Picked(files) => {
+                for file in files {
+                    self.open_contents(doc, &file.name, &file.bytes);
+                }
+                if self.notice.is_none() {
+                    Ok(())
+                } else {
+                    Err(("photos.open_failed", tr("photos-open-failed")))
+                }
+            }
+            ui::portal::ContentsOutcome::Cancelled => {
+                if let Some(invocation) = invocation {
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
+                        invocation,
+                        message: Some("photo selection was cancelled".into()),
+                    });
+                }
+                return;
+            }
+            ui::portal::ContentsOutcome::Failed(message) => {
+                self.notice = Some(format!("{}: {message}", tr("photos-open-failed")));
+                Err(("photos.portal_failed", message))
+            }
+        };
+        if let Some(invocation) = invocation {
+            self.resource_result = Some(match result {
+                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                },
+                Err((code, message)) => tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: code.into(),
+                        message,
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            });
+        }
+    }
+}
+
 fn bounded_file_bytes(path: &str) -> Option<Vec<u8>> {
-    pixels::read_bounded(std::fs::File::open(path).ok()?, pixels::MAX_ENCODED_BYTES)
+    crate::files::read_native(std::path::Path::new(path), pixels::MAX_ENCODED_BYTES as u64)
 }
 
 impl PhotosApp {
@@ -14385,9 +14387,14 @@ impl PhotosApp {
 }
 
 impl Widget for PhotosApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
+
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.places_motion_reduced = reduced;
         if reduced {
@@ -14401,8 +14408,8 @@ impl Widget for PhotosApp {
         !self.places_motion_reduced
             && (self
                 .places_camera_feedback
-                .is_some_and(|feedback| !feedback.done(Instant::now()))
-                || self.people_detail_transition.is_animating(Instant::now()))
+                .is_some_and(|feedback| !feedback.done(ui::time::now()))
+                || self.people_detail_transition.is_animating(ui::time::now()))
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -14412,333 +14419,37 @@ impl Widget for PhotosApp {
         ]
     }
 
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match operation {
-            crate::actions::PhotosOperation::View => {
-                self.library_mode = false;
-                self.album_editor = false;
-                self.metadata_editor = false;
-            }
-            crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
-            crate::actions::PhotosOperation::ViewAlbums => self.show_albums(),
-            crate::actions::PhotosOperation::ViewTimeline { anchor } => {
-                self.view_timeline(doc, anchor.as_ref())?;
-            }
-            crate::actions::PhotosOperation::ViewPeople => {
-                self.show_library();
-                self.people_mode = true;
-                self.library_destination = LibraryDestination::People;
-                self.notice = Some(
-                    "People recognition is local and opt-in; install a verified face model to begin"
-                        .to_owned(),
-                );
-            }
-            crate::actions::PhotosOperation::ViewLibraryAnalysis => {
-                self.show_library_analysis();
-                self.notice = Some(
-                    "Local analysis makes descriptions, objects, pets, and text searchable"
-                        .to_owned(),
-                );
-            }
-            crate::actions::PhotosOperation::ManagePeopleRecognition => {
-                self.notice = Some(
-                    "Open Settings › Models to install and start a signed local face-recognition model"
-                        .to_owned(),
-                );
-            }
-            crate::actions::PhotosOperation::ViewFavorites => self.view_favorites(doc)?,
-            crate::actions::PhotosOperation::ViewPlaces => {
-                self.show_library();
-                self.library_destination = LibraryDestination::Places;
-                self.places_open_key = None;
-                self.notice = Some("Showing offline Places".to_owned());
-            }
-            crate::actions::PhotosOperation::ViewPlace { place_key } => {
-                self.open_place_collection(doc, &place_key)?;
-            }
-            crate::actions::PhotosOperation::ViewAlbum { album_id } => {
-                self.view_album(doc, &album_id)?;
-            }
-            crate::actions::PhotosOperation::ViewFolder { folder } => {
-                self.view_metadata_filter(doc, Some(folder), None, None)?;
-            }
-            crate::actions::PhotosOperation::ViewPerson { person } => {
-                self.view_metadata_filter(doc, None, Some(person), None)?;
-            }
-            crate::actions::PhotosOperation::ViewTag { tag } => {
-                self.view_metadata_filter(doc, None, None, Some(tag))?;
-            }
-            crate::actions::PhotosOperation::ViewObject { object } => {
-                self.view_analysis_filter(doc, object, false)?;
-            }
-            crate::actions::PhotosOperation::ViewPet { pet } => {
-                self.view_analysis_filter(doc, pet, true)?;
-            }
-            crate::actions::PhotosOperation::Open { path: Some(_) } => {
-                return Err("direct open requires lifecycle dispatch".into());
-            }
-            crate::actions::PhotosOperation::Save { path } => {
-                let open =
-                    PhotosDoc::image(doc).ok_or_else(|| "no photograph is open".to_string())?;
-                let destination = path.unwrap_or_else(|| Self::suggested_save_path(&open));
-                if !self.save_to(&destination) {
-                    return Err(tr("photos-save-failed"));
-                }
-            }
-            other => self.perform_effect(other, doc)?,
-        }
-        Ok(true)
-    }
-
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        if type_id == RETAINED_CONTROL_OPERATION_TYPE {
-            for button in self.retained_buttons_mut() {
-                if let Some(output) =
-                    button.invoke_resource_operation_v2(kind, type_id, payload, doc, path)?
-                {
-                    return Ok(Some(output));
-                }
-            }
-        }
-        self.invoke_resource_operation(kind, type_id, payload, doc, path)
-            .map(|handled| handled.then(tilo_actions::ActionOutput::default))
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if type_id == RETAINED_CONTROL_OPERATION_TYPE {
-            for button in self.retained_buttons_mut() {
-                if let Some(started) = button
-                    .start_resource_operation(invocation, kind, type_id, payload, doc, path)?
-                {
-                    return Ok(Some(started));
-                }
-            }
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
-        };
-        if let crate::actions::PhotosOperation::ExportEditedContent {
-            resource_id,
-            source_content,
-            edits,
-        } = &operation
-        {
-            let output = crate::actions::export_edited_content(
-                resource_id,
-                source_content,
-                *edits,
-                doc,
-                &self.content,
-            )?;
-            return Ok(Some(ui::widget::ResourceOperationStart::Completed(output)));
-        }
-        if let crate::actions::PhotosOperation::Open { path: Some(file) } = operation {
-            self.import_content = Some(LiveContent::read(doc));
-            self.pending_resource_open = Some((invocation, file));
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
-        }
-        if self.picker.is_some()
-            || self.directory_picker.is_some()
-            || self.directory_import.is_some()
-        {
-            self.resource_invocation = Some(invocation);
-            if let Some(import) = self.directory_import.as_mut() {
-                import.invocation = Some(invocation);
-            }
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        } else {
-            Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )))
-        }
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one dispatcher routes every retained-control and Photos operation type with shared validation"
-    )]
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
+        op: &ui::widget::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if type_id == RETAINED_CONTROL_OPERATION_TYPE {
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = self.admit_resource_operation_with_document(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        if request.type_id == RETAINED_CONTROL_OPERATION_TYPE {
             for button in self.retained_buttons_mut() {
-                if let Some(started) = button.start_resource_operation_with_document(
-                    invocation, kind, type_id, payload, doc, path,
-                )? {
+                if let Some(started) = button.start_operation(op, doc, path)? {
                     return Ok(Some(started));
                 }
             }
         }
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(None);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
-        };
-        match &operation {
-            crate::actions::PhotosOperation::AnalyzeLibrary => {
-                self.begin_library_analysis(invocation, doc, false)?;
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            crate::actions::PhotosOperation::ResumeLibraryAnalysis => {
-                self.resume_library_analysis(invocation, doc)?;
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            crate::actions::PhotosOperation::RetryLibraryAnalysisFailures => {
-                self.begin_library_analysis(invocation, doc, true)?;
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            crate::actions::PhotosOperation::PauseLibraryAnalysis => {
-                if !self.pause_library_analysis() {
-                    return Err("Photo analysis is not running".to_owned());
-                }
-                return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput {
-                        value: Some(serde_json::json!({
-                            "completed": self.library_analysis.completed,
-                            "remaining": self.library_analysis.remaining(),
-                        })),
-                        resources: vec!["photos.library-analysis".to_owned()],
-                    },
-                )));
-            }
-            _ => {}
-        }
-        if let crate::actions::PhotosOperation::AnalyzeText {
-            resource_id,
-            language,
-        } = operation
-        {
-            let photo = PhotosDoc::photo(doc, &resource_id)
-                .ok_or_else(|| "that photograph is no longer in the library".to_owned())?;
-            if photo.image.content.is_none() {
-                return Err("This legacy photograph needs a verified content identity before text recognition can be shared".to_owned());
-            }
-            let sender = self
-                .analysis_tx
-                .as_ref()
-                .ok_or_else(|| "local text recognition is unavailable on this device".to_owned())?;
-            sender
-                .try_send(AnalysisJob {
-                    invocation,
-                    photo_id: resource_id,
-                    content: photo.image.content.clone(),
-                    image: photo.image,
-                    kind: AnalysisJobKind::Ocr { language },
-                })
-                .map_err(|_| {
-                    "text recognition is busy; wait for the current photos to finish".to_owned()
-                })?;
-            self.active_analysis.insert(invocation);
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        if let crate::actions::PhotosOperation::AnalyzeImage { resource_id } = operation {
-            let photo = PhotosDoc::photo(doc, &resource_id)
-                .ok_or_else(|| "that photograph is no longer in the library".to_owned())?;
-            if photo.image.content.is_none() {
-                return Err("This legacy photograph needs a verified content identity before image analysis can be shared".to_owned());
-            }
-            let capability = tilo_vision::discover_local_capability(
-                &agent_provider_config::ProviderConfig::load(),
-            )
-            .ok_or_else(|| {
-                "No verified local image-analysis model is ready. Install and start one in Settings."
-                    .to_owned()
-            })?;
-            let sender = self
-                .analysis_tx
-                .as_ref()
-                .ok_or_else(|| "local image analysis is unavailable on this device".to_owned())?;
-            sender
-                .try_send(AnalysisJob {
-                    invocation,
-                    photo_id: resource_id,
-                    content: photo.image.content.clone(),
-                    image: photo.image,
-                    kind: AnalysisJobKind::Vision { capability },
-                })
-                .map_err(|_| {
-                    "local image analysis is busy; wait for the current photos to finish".to_owned()
-                })?;
-            self.active_analysis.insert(invocation);
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        if matches!(
-            operation,
-            crate::actions::PhotosOperation::AnalyzePeopleLibrary
-        ) {
-            self.schedule_people_scan_batch(invocation, doc)?;
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-
-        let crate::actions::PhotosOperation::ImportCameraMedia { media_id, name } = operation
-        else {
-            return self.start_resource_operation(invocation, kind, type_id, payload, doc, path);
-        };
-
-        // This is deliberately a compound admission boundary: verify the
-        // portable Camera identity and bytes before committing the one
-        // idempotent Photos library/selection update.  A missing local blob
-        // remains a refusal instead of becoming a path-only phantom entry.
-        let photo = crate::camera_import_photo(&media_id, &name, &self.content)?;
-        let id = photo.id.clone();
-        let action = crate::actions::PhotosAction::ImportPhoto { photo };
-        self.actions
-            .try_dispatch_with_context(
-                doc,
-                crate::actions::PHOTOS_ACTION_TYPE,
-                &action,
-                tilo_actions::ActionContext::for_action("org.tilo.Photos", "Photos", &action),
-            )
-            .map_err(|error| error.to_string())?;
-        self.notice = Some("Imported Camera photo".to_owned());
-        Ok(Some(ui::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput {
-                value: Some(serde_json::Value::String(id.clone())),
-                resources: vec![id],
-            },
-        )))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+            }))
     }
 
     fn poll_resource_operation(
@@ -14816,7 +14527,8 @@ impl Widget for PhotosApp {
         clippy::too_many_lines,
         reason = "synchronization derives the bounded library, filters, search, and thumbnail work from one document snapshot"
     )]
-    fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, path) = ui::doc::document(doc, path);
         self.reconcile_content(doc);
         self.drain_action_control_pending(doc);
         self.drain_analysis_results(doc);
@@ -15487,18 +15199,11 @@ impl Widget for PhotosApp {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        self.reconcile_content(doc);
+        self.reconcile_content(ctx.state);
         if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
-            let next = Point::new(position.x / scale_factor, position.y / scale_factor);
+            let next = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             if self.library_mode
                 && self.library_destination == LibraryDestination::Places
                 && let Some(previous) = self.places_drag_origin.replace(next)
@@ -15528,7 +15233,7 @@ impl Widget for PhotosApp {
                     }
                     _ => return,
                 }
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if matches!(
@@ -15553,13 +15258,13 @@ impl Widget for PhotosApp {
                         Some(ModalHit::Card | ModalHit::Action(_)) | None => {}
                     }
                 }
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             // A modal swallows pointer/keyboard input that it does not use;
             // cursor motion still reaches it so hover feedback remains live.
             if !matches!(event, winit::event::WindowEvent::CursorMoved { .. }) {
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
@@ -15567,14 +15272,10 @@ impl Widget for PhotosApp {
             let mut sink = None;
             button.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                doc,
-                path,
-                handled,
-                &mut sink,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    focus_target: &mut sink,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
             );
         }
         if self.directory_import_pending.get().is_none()
@@ -15595,11 +15296,11 @@ impl Widget for PhotosApp {
         }
         if let Some(hit) = self.directory_import_pending.take() {
             if self.activate_directory_status(hit) {
-                *handled = true;
+                *ctx.handled = true;
             }
             return;
         }
-        if *handled {
+        if *ctx.handled {
             return;
         }
         let people_surface = self.library_mode
@@ -15609,28 +15310,19 @@ impl Widget for PhotosApp {
                 && key.state == winit::event::ElementState::Pressed
                 && matches!(key.logical_key, Key::Named(NamedKey::Escape))
             {
-                self.handle_people_intent(PeopleIntent::Back, doc);
-                *handled = true;
+                self.handle_people_intent(PeopleIntent::Back, ctx.state);
+                *ctx.handled = true;
                 return;
             }
-            let root_children = taffy.children(node_id).unwrap_or_default();
+            let root_children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
             if let Some(&canvas) = root_children.get(2) {
-                let canvas_children = taffy.children(canvas).unwrap_or_default();
+                let canvas_children = ctx.taffy.children(canvas).unwrap_or_default();
                 let show_name = self.people_selection.is_some() && !self.people_merge_mode;
                 let mut index = 0usize;
                 if show_name {
                     if let Some(&field) = canvas_children.get(index) {
-                        self.people_name_input.handle_event(
-                            event,
-                            scale_factor,
-                            modifiers,
-                            doc,
-                            path,
-                            handled,
-                            focus_target,
-                            field,
-                            taffy,
-                        );
+                        self.people_name_input
+                            .handle_event(event, &mut ctx.reborrow(ctx.path, field));
                     }
                     index += 1;
                     if self.people_name_input.take_submit() {
@@ -15639,35 +15331,27 @@ impl Widget for PhotosApp {
                             Some(PeopleSelection::Suggestion(_)) => PeopleIntent::ApproveSuggestion,
                             None => PeopleIntent::Back,
                         };
-                        self.handle_people_intent(intent, doc);
-                        *handled = true;
+                        self.handle_people_intent(intent, ctx.state);
+                        *ctx.handled = true;
                         return;
                     }
                 }
                 for control in &mut self.people_controls {
                     if let Some(&button) = canvas_children.get(index) {
-                        control.button.handle_event(
-                            event,
-                            scale_factor,
-                            modifiers,
-                            doc,
-                            path,
-                            handled,
-                            focus_target,
-                            button,
-                            taffy,
-                        );
+                        control
+                            .button
+                            .handle_event(event, &mut ctx.reborrow(ctx.path, button));
                     }
                     index += 1;
                 }
             }
             let pending = self.people_pending.borrow_mut().take();
             if let Some(intent) = pending {
-                self.handle_people_intent(intent, doc);
-                *handled = true;
+                self.handle_people_intent(intent, ctx.state);
+                *ctx.handled = true;
                 return;
             }
-            if *handled {
+            if *ctx.handled {
                 return;
             }
         }
@@ -15688,7 +15372,7 @@ impl Widget for PhotosApp {
                 .any(|(_, rect)| rect.contains(self.pointer))
         {
             self.places_drag_origin = Some(self.pointer);
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if matches!(
@@ -15706,22 +15390,18 @@ impl Widget for PhotosApp {
                 let mut sink = None;
                 button.handle_event(
                     event,
-                    scale_factor,
-                    modifiers,
-                    doc,
-                    path,
-                    handled,
-                    &mut sink,
-                    node_id,
-                    taffy,
+                    &mut ui::widget::EventCtx {
+                        focus_target: &mut sink,
+                        ..ctx.reborrow(ctx.path, ctx.node_id)
+                    },
                 );
                 if sink.is_some() {
-                    *focus_target = sink;
+                    *ctx.focus_target = sink;
                 }
             }
             if let Some(hit) = self.library_analysis_pending.take() {
-                self.activate_library_analysis(hit, doc);
-                *handled = true;
+                self.activate_library_analysis(hit, ctx.state);
+                *ctx.handled = true;
                 return;
             }
             if matches!(
@@ -15738,11 +15418,11 @@ impl Widget for PhotosApp {
                 .cloned()
             {
                 self.commit_library_action(
-                    doc,
+                    ctx.state,
                     &crate::actions::PhotosAction::SelectPhoto { photo_id },
                 );
                 self.library_mode = false;
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
@@ -15755,14 +15435,14 @@ impl Widget for PhotosApp {
                 winit::event::MouseScrollDelta::PixelDelta(point) => point.y / 80.0,
             };
             self.zoom_places_by(amount * 0.25);
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if self.library_mode
             && let Some(hit) = self.timeline_density_pending.take()
         {
             self.adjust_timeline_density(matches!(hit, TimelineHit::ZoomIn));
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
 
@@ -15803,17 +15483,17 @@ impl Widget for PhotosApp {
                 PlacesHit::ZoomIn => self.zoom_places_by(1.0),
                 PlacesHit::ZoomOut => self.zoom_places_by(-1.0),
                 PlacesHit::Place(key) => {
-                    let _ = self.open_place_collection(doc, &key);
+                    let _ = self.open_place_collection(ctx.state, &key);
                 }
                 PlacesHit::Photo(id) => {
                     self.commit_library_action(
-                        doc,
+                        ctx.state,
                         &crate::actions::PhotosAction::SelectPhoto { photo_id: id },
                     );
                     self.library_mode = false;
                 }
             }
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if self.library_mode
@@ -15861,7 +15541,7 @@ impl Widget for PhotosApp {
                 }
                 _ => return,
             }
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
 
@@ -15884,7 +15564,7 @@ impl Widget for PhotosApp {
                     {
                         self.pending.set(Some(hit));
                         self.compact_more_open = false;
-                        self.drain_pending(doc);
+                        self.drain_pending(ctx.state);
                     }
                 }
                 Key::Character(text) if text == " " => {
@@ -15893,12 +15573,12 @@ impl Widget for PhotosApp {
                     {
                         self.pending.set(Some(hit));
                         self.compact_more_open = false;
-                        self.drain_pending(doc);
+                        self.drain_pending(ctx.state);
                     }
                 }
                 _ => return,
             }
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
 
@@ -15922,8 +15602,8 @@ impl Widget for PhotosApp {
         {
             self.pending.set(Some(hit));
             self.compact_more_open = false;
-            self.drain_pending(doc);
-            *handled = true;
+            self.drain_pending(ctx.state);
+            *ctx.handled = true;
             return;
         }
 
@@ -15931,21 +15611,12 @@ impl Widget for PhotosApp {
         // beneath the toolbar so OCR/descriptions and people/object facets
         // have one obvious entry point instead of another filter-chip row.
         if self.library_mode
-            && let Some(&search_wrap) = taffy.children(node_id).unwrap_or_default().get(1)
-            && let Some(&search) = taffy.children(search_wrap).unwrap_or_default().first()
+            && let Some(&search_wrap) = ctx.taffy.children(ctx.node_id).unwrap_or_default().get(1)
+            && let Some(&search) = ctx.taffy.children(search_wrap).unwrap_or_default().first()
         {
-            self.library_search.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                doc,
-                path,
-                handled,
-                focus_target,
-                search,
-                taffy,
-            );
-            if *handled {
+            self.library_search
+                .handle_event(event, &mut ctx.reborrow(ctx.path, search));
+            if *ctx.handled {
                 return;
             }
         }
@@ -15974,16 +15645,16 @@ impl Widget for PhotosApp {
                 let was_dragging = self.timeline_index.is_dragging();
                 if let Some(intent) = self.timeline_index.handle_event(
                     event,
-                    scale_factor,
+                    ctx.scale_factor,
                     self.timeline_index_metrics,
                     &self.timeline_index_markers,
                 ) {
                     let _ = self.apply_timeline_index_intent(&intent);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 if was_dragging || self.timeline_index.is_dragging() {
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
             }
@@ -16002,7 +15673,7 @@ impl Widget for PhotosApp {
             } else if direction > 0.0 {
                 self.page_library(false);
             }
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
 
@@ -16013,7 +15684,7 @@ impl Widget for PhotosApp {
             && self.library_destination == LibraryDestination::Timeline
             && !self.album_editor
             && !self.metadata_editor
-            && modifiers.state().control_key()
+            && ctx.modifiers.state().control_key()
             && let winit::event::WindowEvent::MouseWheel { delta, .. } = event
         {
             let amount = match delta {
@@ -16023,7 +15694,7 @@ impl Widget for PhotosApp {
             if amount != 0.0 {
                 // Natural scroll semantics: up means see more at once.
                 self.adjust_timeline_density(amount < 0.0);
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
@@ -16040,50 +15711,19 @@ impl Widget for PhotosApp {
             && *delta != 0.0
         {
             self.adjust_timeline_density(*delta > 0.0);
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
 
-        if self.library_mode
-            && self.handle_metadata_editor_event(
-                event,
-                scale_factor,
-                *modifiers,
-                doc,
-                path,
-                handled,
-                node_id,
-                taffy,
-            )
-        {
+        if self.library_mode && self.handle_metadata_editor_event(event, ctx) {
             return;
         }
 
-        if self.library_mode
-            && self.handle_album_editor_event(
-                event,
-                scale_factor,
-                *modifiers,
-                doc,
-                path,
-                handled,
-                node_id,
-                taffy,
-            )
-        {
+        if self.library_mode && self.handle_album_editor_event(event, ctx) {
             return;
         }
 
-        if self.handle_collection_page_event(
-            event,
-            scale_factor,
-            *modifiers,
-            doc,
-            path,
-            handled,
-            node_id,
-            taffy,
-        ) {
+        if self.handle_collection_page_event(event, ctx) {
             return;
         }
 
@@ -16093,15 +15733,15 @@ impl Widget for PhotosApp {
             && let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == winit::event::ElementState::Pressed
         {
-            if (modifiers.state().control_key() || modifiers.state().super_key())
+            if (ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key())
                 && matches!(&key.logical_key, Key::Character(value) if value.eq_ignore_ascii_case("a"))
                 && self.selection_mode
             {
                 self.select_all_visible();
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
-            if (modifiers.state().control_key() || modifiers.state().super_key())
+            if (ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key())
                 && matches!(&key.logical_key, Key::Character(value) if value == " ")
             {
                 if self.selection_mode {
@@ -16109,12 +15749,12 @@ impl Widget for PhotosApp {
                 } else {
                     self.begin_selection();
                 }
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if self.selection_mode && matches!(&key.logical_key, Key::Named(NamedKey::Escape)) {
                 self.finish_selection();
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             let forward = match &key.logical_key {
@@ -16128,7 +15768,7 @@ impl Widget for PhotosApp {
                 } else {
                     self.scroll_timeline_rows(if forward { 3.0 } else { -3.0 });
                 }
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
@@ -16149,7 +15789,7 @@ impl Widget for PhotosApp {
                 .copied()
         {
             self.adjust_timeline_density(matches!(hit, TimelineHit::ZoomIn));
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
 
@@ -16169,8 +15809,8 @@ impl Widget for PhotosApp {
                 .cloned()
         {
             self.active_album = Some(album_id);
-            self.begin_edit_album(doc);
-            *handled = true;
+            self.begin_edit_album(ctx.state);
+            *ctx.handled = true;
             return;
         }
 
@@ -16191,7 +15831,7 @@ impl Widget for PhotosApp {
             && enabled
         {
             self.page_library(forward);
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
 
@@ -16214,7 +15854,7 @@ impl Widget for PhotosApp {
             self.selection_destination_album = Some(album_id);
             self.notice =
                 Some("Destination album selected; choose Use album to continue".to_owned());
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
 
@@ -16233,8 +15873,8 @@ impl Widget for PhotosApp {
                 .find(|(_, rect)| rect.contains(self.pointer))
                 .copied()
         {
-            self.handle_selection_hit(hit, doc);
-            *handled = true;
+            self.handle_selection_hit(hit, ctx.state);
+            *ctx.handled = true;
             return;
         }
 
@@ -16249,7 +15889,7 @@ impl Widget for PhotosApp {
                 }
             )
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
 
@@ -16269,11 +15909,11 @@ impl Widget for PhotosApp {
                 .copied()
         {
             match hit {
-                AlbumEditorHit::New => self.begin_new_album(doc),
-                AlbumEditorHit::Edit => self.begin_edit_album(doc),
+                AlbumEditorHit::New => self.begin_new_album(ctx.state),
+                AlbumEditorHit::Edit => self.begin_edit_album(ctx.state),
                 _ => {}
             }
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
 
@@ -16299,7 +15939,7 @@ impl Widget for PhotosApp {
             self.active_tag = None;
             self.active_favorites = false;
             self.library_offset = 0;
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if self.library_mode
@@ -16318,7 +15958,7 @@ impl Widget for PhotosApp {
                 .cloned()
         {
             if card.favorites {
-                let _ = self.view_favorites(doc);
+                let _ = self.view_favorites(ctx.state);
             } else {
                 self.active_album = None;
                 self.active_folder = card.folder;
@@ -16329,7 +15969,7 @@ impl Widget for PhotosApp {
                 self.timeline_scroll_y = 0.0;
                 self.notice = None;
             }
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if self.library_mode
@@ -16347,8 +15987,8 @@ impl Widget for PhotosApp {
                 .find(|(_, rect)| rect.contains(self.pointer))
                 .cloned()
         {
-            self.begin_metadata_editor(doc, &id);
-            *handled = true;
+            self.begin_metadata_editor(ctx.state, &id);
+            *ctx.handled = true;
             return;
         }
         if self.library_mode
@@ -16360,7 +16000,7 @@ impl Widget for PhotosApp {
                 winit::event::MouseScrollDelta::PixelDelta(position) => -position.y,
             };
             self.scroll_timeline_pixels(pixels);
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
 
@@ -16384,7 +16024,7 @@ impl Widget for PhotosApp {
                 .cloned()
         {
             if self.selection_mode {
-                self.toggle_library_selection(&photo_id, modifiers.state().shift_key());
+                self.toggle_library_selection(&photo_id, ctx.modifiers.state().shift_key());
             } else if !self.album_editor
                 && !self.large_text_toolbar
                 && self.canvas_rect.width() >= 720.0
@@ -16395,7 +16035,7 @@ impl Widget for PhotosApp {
                 if actions.favorite.contains(self.pointer) {
                     self.library_remove_confirm = None;
                     self.commit_library_action(
-                        doc,
+                        ctx.state,
                         &crate::actions::PhotosAction::SetFavorite {
                             photo_id,
                             favorite: !favorite,
@@ -16403,7 +16043,7 @@ impl Widget for PhotosApp {
                     );
                 } else if self.library_remove_confirm.as_deref() == Some(&photo_id) {
                     self.commit_library_action(
-                        doc,
+                        ctx.state,
                         &crate::actions::PhotosAction::RemovePhoto { photo_id },
                     );
                     self.library_remove_confirm = None;
@@ -16417,49 +16057,29 @@ impl Widget for PhotosApp {
             } else {
                 self.library_remove_confirm = None;
                 self.commit_library_action(
-                    doc,
+                    ctx.state,
                     &crate::actions::PhotosAction::SelectPhoto { photo_id },
                 );
                 self.library_mode = false;
             }
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
-        let children = taffy.children(node_id).unwrap_or_default();
+        let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         if let Some(&bar) = children.first() {
-            let bar_children = taffy.children(bar).unwrap_or_default();
+            let bar_children = ctx.taffy.children(bar).unwrap_or_default();
             for (slot, &bn) in self.toolbar_slots().iter().zip(bar_children.iter()) {
                 let Slot::Item(n) = *slot else { continue };
                 let Some((_, button)) = self.buttons.get_mut(n) else {
                     continue;
                 };
-                button.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    doc,
-                    path,
-                    handled,
-                    focus_target,
-                    bn,
-                    taffy,
-                );
+                button.handle_event(event, &mut ctx.reborrow(ctx.path, bn));
             }
         }
         if let (Some(v), Some(&canvas)) = (self.viewer.as_mut(), children.get(2)) {
-            v.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                doc,
-                path,
-                handled,
-                focus_target,
-                canvas,
-                taffy,
-            );
+            v.handle_event(event, &mut ctx.reborrow(ctx.path, canvas));
         }
-        self.drain_pending(doc);
+        self.drain_pending(ctx.state);
     }
 
     fn name(&self) -> &'static str {
@@ -16485,9 +16105,10 @@ impl Widget for PhotosApp {
         &mut self,
         target: &str,
         action: &AccessAction,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         self.reconcile_content(state);
         self.perform_toolbar_semantic_action(target, action, state)
             || self.perform_directory_semantic_action(target, action)
@@ -16506,6 +16127,21 @@ impl Widget for PhotosApp {
         }
     }
 
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+impl ui::search::capability::SearchSource for PhotosApp {
+    /// Keep the palette projection derived from the same fresh document
+    /// resource tree as agents and assistive technology. The provider's
+    /// catalog gives Ctrl+K Unicode-safe, cursor-paged bounded queries.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
+    }
+}
+
+impl ui::resources::PublishesResources for PhotosApp {
     /// The open photograph and the edits it supports, published to whatever is
     /// hosting this widget.
     ///
@@ -16515,8 +16151,14 @@ impl Widget for PhotosApp {
     /// addresses. Without this the tree existed but only a caller already
     /// inside this process could reach it.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        use tilo_actions::ResourceProvider;
-        let mut resources = crate::actions::PhotosResources.resources(doc);
+        // The framework root publishes the library, including the open
+        // photograph as a child. Live button and search-status extras stay
+        // on the widget.
+        let mut resources = if self.actions.is_hosted() {
+            Vec::new()
+        } else {
+            crate::actions::PhotosResources.publish_resources(doc)
+        };
         resources.extend(
             self.retained_buttons()
                 .into_iter()
@@ -16527,14 +16169,15 @@ impl Widget for PhotosApp {
         }
         resources
     }
-
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        use tilo_actions::ResourceProvider;
         if id == "photos.search-status" {
             return self
                 .search_refresh_error
                 .as_deref()
                 .map(crate::actions::search_status_resource);
+        }
+        if self.actions.is_hosted() && id == "photos.library" {
+            return None;
         }
         self.search_provider
             .resource(id)
@@ -16544,15 +16187,16 @@ impl Widget for PhotosApp {
                     .flat_map(|button| button.resources(doc))
                     .find(|resource| resource.id.as_str() == id)
             })
-            .or_else(|| crate::actions::PhotosResources.resource(doc, id))
+            .or_else(|| crate::actions::PhotosResources.publish_resource(doc, id))
     }
+}
 
+impl ui::widget::controls::ActionControls for PhotosApp {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.retained_buttons_mut()
             .into_iter()
-            .find_map(Widget::take_control_invocation)
+            .find_map(|button| ui::widget::controls::take_control_invocation(button))
     }
-
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         // Photos projects its custom media surfaces and retained buttons into
         // one complete semantic tree above. Inventory that visible tree once:
@@ -16563,7 +16207,6 @@ impl Widget for PhotosApp {
         // and are dispatched through the same retained widgets.
         ui::widget::semantic_action_bindings(self.accessibility())
     }
-
     fn refresh_control_action_availability(
         &mut self,
         allowed: &HashSet<tilo_actions::ActionAddress>,
@@ -16572,16 +16215,313 @@ impl Widget for PhotosApp {
             button.refresh_control_action_availability(allowed);
         }
     }
+}
 
-    /// Keep the palette projection derived from the same fresh document
-    /// resource tree as agents and assistive technology. The provider's
-    /// catalog gives Ctrl+K Unicode-safe, cursor-paged bounded queries.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
+impl ui::history_mode::capability::DocumentHistory for PhotosApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+}
+
+impl ui::undo::CommittedActions for PhotosApp {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl PhotosApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match operation {
+            crate::actions::PhotosOperation::View => {
+                self.library_mode = false;
+                self.album_editor = false;
+                self.metadata_editor = false;
+            }
+            crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
+            crate::actions::PhotosOperation::ViewAlbums => self.show_albums(),
+            crate::actions::PhotosOperation::ViewTimeline { anchor } => {
+                self.view_timeline(doc, anchor.as_ref())?;
+            }
+            crate::actions::PhotosOperation::ViewPeople => {
+                self.show_library();
+                self.people_mode = true;
+                self.library_destination = LibraryDestination::People;
+                self.notice = Some(
+                    "People recognition is local and opt-in; install a verified face model to begin"
+                        .to_owned(),
+                );
+            }
+            crate::actions::PhotosOperation::ViewLibraryAnalysis => {
+                self.show_library_analysis();
+                self.notice = Some(
+                    "Local analysis makes descriptions, objects, pets, and text searchable"
+                        .to_owned(),
+                );
+            }
+            crate::actions::PhotosOperation::ManagePeopleRecognition => {
+                self.notice = Some(
+                    "Open Settings › Models to install and start a signed local face-recognition model"
+                        .to_owned(),
+                );
+            }
+            crate::actions::PhotosOperation::ViewFavorites => self.view_favorites(doc)?,
+            crate::actions::PhotosOperation::ViewPlaces => {
+                self.show_library();
+                self.library_destination = LibraryDestination::Places;
+                self.places_open_key = None;
+                self.notice = Some("Showing offline Places".to_owned());
+            }
+            crate::actions::PhotosOperation::ViewPlace { place_key } => {
+                self.open_place_collection(doc, &place_key)?;
+            }
+            crate::actions::PhotosOperation::ViewAlbum { album_id } => {
+                self.view_album(doc, &album_id)?;
+            }
+            crate::actions::PhotosOperation::ViewFolder { folder } => {
+                self.view_metadata_filter(doc, Some(folder), None, None)?;
+            }
+            crate::actions::PhotosOperation::ViewPerson { person } => {
+                self.view_metadata_filter(doc, None, Some(person), None)?;
+            }
+            crate::actions::PhotosOperation::ViewTag { tag } => {
+                self.view_metadata_filter(doc, None, None, Some(tag))?;
+            }
+            crate::actions::PhotosOperation::ViewObject { object } => {
+                self.view_analysis_filter(doc, object, false)?;
+            }
+            crate::actions::PhotosOperation::ViewPet { pet } => {
+                self.view_analysis_filter(doc, pet, true)?;
+            }
+            crate::actions::PhotosOperation::Open { path: Some(_) } => {
+                return Err("direct open requires lifecycle dispatch".into());
+            }
+            crate::actions::PhotosOperation::Save { path } => {
+                let open =
+                    PhotosDoc::image(doc).ok_or_else(|| "no photograph is open".to_string())?;
+                let destination = path.unwrap_or_else(|| Self::suggested_save_path(&open));
+                if !self.save_to(&destination) {
+                    return Err(tr("photos-save-failed"));
+                }
+            }
+            other => self.perform_effect(other, doc)?,
+        }
+        Ok(true)
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        if let crate::actions::PhotosOperation::ExportEditedContent {
+            resource_id,
+            source_content,
+            edits,
+        } = &operation
+        {
+            let output = crate::actions::export_edited_content(
+                resource_id,
+                source_content,
+                *edits,
+                doc,
+                &self.content,
+            )?;
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(output)));
+        }
+        if let crate::actions::PhotosOperation::Open { path: Some(file) } = operation {
+            self.import_content = Some(LiveContent::read(doc));
+            self.pending_resource_open = Some((invocation, file));
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        if self.picker.is_some()
+            || self.directory_picker.is_some()
+            || self.directory_import.is_some()
+        {
+            self.resource_invocation = Some(invocation);
+            if let Some(import) = self.directory_import.as_mut() {
+                import.invocation = Some(invocation);
+            }
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else {
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )))
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one dispatcher routes every retained-control and Photos operation type with shared validation"
+    )]
+    fn admit_resource_operation_with_document(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if type_id == RETAINED_CONTROL_OPERATION_TYPE {
+            let op = ui::widget::ResourceOperation::local(invocation, kind, type_id, payload);
+            for button in self.retained_buttons_mut() {
+                if let Some(started) = button.start_operation(&op, doc, path)? {
+                    return Ok(Some(started));
+                }
+            }
+        }
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(None);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        match &operation {
+            crate::actions::PhotosOperation::AnalyzeLibrary => {
+                self.begin_library_analysis(invocation, doc, false)?;
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            crate::actions::PhotosOperation::ResumeLibraryAnalysis => {
+                self.resume_library_analysis(invocation, doc)?;
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            crate::actions::PhotosOperation::RetryLibraryAnalysisFailures => {
+                self.begin_library_analysis(invocation, doc, true)?;
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            crate::actions::PhotosOperation::PauseLibraryAnalysis => {
+                if !self.pause_library_analysis() {
+                    return Err("Photo analysis is not running".to_owned());
+                }
+                return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput {
+                        value: Some(serde_json::json!({
+                            "completed": self.library_analysis.completed,
+                            "remaining": self.library_analysis.remaining(),
+                        })),
+                        resources: vec!["photos.library-analysis".to_owned()],
+                    },
+                )));
+            }
+            _ => {}
+        }
+        if let crate::actions::PhotosOperation::AnalyzeText {
+            resource_id,
+            language,
+        } = operation
+        {
+            let photo = PhotosDoc::photo(doc, &resource_id)
+                .ok_or_else(|| "that photograph is no longer in the library".to_owned())?;
+            if photo.image.content.is_none() {
+                return Err("This legacy photograph needs a verified content identity before text recognition can be shared".to_owned());
+            }
+            let sender = self
+                .analysis_tx
+                .as_ref()
+                .ok_or_else(|| "local text recognition is unavailable on this device".to_owned())?;
+            sender
+                .try_send(AnalysisJob {
+                    invocation,
+                    photo_id: resource_id,
+                    content: photo.image.content.clone(),
+                    image: photo.image,
+                    kind: AnalysisJobKind::Ocr { language },
+                })
+                .map_err(|_| {
+                    "text recognition is busy; wait for the current photos to finish".to_owned()
+                })?;
+            self.active_analysis.insert(invocation);
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if let crate::actions::PhotosOperation::AnalyzeImage { resource_id } = operation {
+            let photo = PhotosDoc::photo(doc, &resource_id)
+                .ok_or_else(|| "that photograph is no longer in the library".to_owned())?;
+            if photo.image.content.is_none() {
+                return Err("This legacy photograph needs a verified content identity before image analysis can be shared".to_owned());
+            }
+            let capability = tilo_vision::discover_local_capability(
+                &agent_provider_config::ProviderConfig::load(),
+            )
+            .ok_or_else(|| {
+                "No verified local image-analysis model is ready. Install and start one in Settings."
+                    .to_owned()
+            })?;
+            let sender = self
+                .analysis_tx
+                .as_ref()
+                .ok_or_else(|| "local image analysis is unavailable on this device".to_owned())?;
+            sender
+                .try_send(AnalysisJob {
+                    invocation,
+                    photo_id: resource_id,
+                    content: photo.image.content.clone(),
+                    image: photo.image,
+                    kind: AnalysisJobKind::Vision { capability },
+                })
+                .map_err(|_| {
+                    "local image analysis is busy; wait for the current photos to finish".to_owned()
+                })?;
+            self.active_analysis.insert(invocation);
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if matches!(
+            operation,
+            crate::actions::PhotosOperation::AnalyzePeopleLibrary
+        ) {
+            self.schedule_people_scan_batch(invocation, doc)?;
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+
+        let crate::actions::PhotosOperation::ImportCameraMedia { media_id, name } = operation
+        else {
+            return self.admit_resource_operation(invocation, kind, type_id, payload, doc, path);
+        };
+
+        // This is deliberately a compound admission boundary: verify the
+        // portable Camera identity and bytes before committing the one
+        // idempotent Photos library/selection update.  A missing local blob
+        // remains a refusal instead of becoming a path-only phantom entry.
+        let photo = crate::camera_import_photo(&media_id, &name, &self.content)?;
+        let id = photo.id.clone();
+        let action = crate::actions::PhotosAction::ImportPhoto { photo };
+        self.actions
+            .try_dispatch_with_context(
+                doc,
+                crate::actions::PHOTOS_ACTION_TYPE,
+                &action,
+                tilo_actions::ActionContext::for_action("so.tilo.photos", "Photos", &action),
+            )
+            .map_err(|error| error.to_string())?;
+        self.notice = Some("Imported Camera photo".to_owned());
+        Ok(Some(ui::widget::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput {
+                value: Some(serde_json::Value::String(id.clone())),
+                resources: vec![id],
+            },
+        )))
     }
 }
 
@@ -16874,374 +16814,519 @@ mod history_reconcile_tests {
         app.sync(&mut doc, &ROOT);
         (app, doc, id)
     }
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn history_accepts_current_and_legacy_labels_and_rejects_all_malformed_conflicts() {
-        use automerge::{ObjType, ReadDoc, transaction::Transactable};
-        let (_, mut doc, id) = setup();
-        let mut library = PhotosDoc::library(&doc);
-        library.photos[0].people = vec!["Alice".into()];
-        library.photos[0].tags = vec!["Portrait".into()];
-        PhotosDoc::set_library(&mut doc, &library);
-        crate::framework_history::validate(&doc).unwrap();
-        let root = doc.get(ROOT, "photos_library").unwrap().unwrap().1;
-        for key in ["photo_people", "photo_tags"] {
-            let column = doc.get(&root, key).unwrap().unwrap().1;
-            let row = doc.get(&column, id.as_str()).unwrap().unwrap().1;
-            doc.put(&row, "Removed", false).unwrap();
+    fn history_accepts_label_and_album_formats_and_rejects_malformed_conflicts() {
+        eprintln!(
+            "phase history_accepts_membership_map_labels_and_rejects_all_malformed_conflicts"
+        );
+        {
+            use automerge::{ObjType, ReadDoc, transaction::Transactable};
+            let (_, mut doc, id) = setup();
+            let mut library = PhotosDoc::library(&doc);
+            library.photos[0].people = vec!["Alice".into()];
+            library.photos[0].tags = vec!["Portrait".into()];
+            PhotosDoc::set_library(&mut doc, &library);
             crate::framework_history::validate(&doc).unwrap();
-            let mut legacy = doc.clone();
-            legacy
-                .put(&column, id.as_str(), "[\"Legacy label\"]")
-                .unwrap();
-            crate::framework_history::validate(&legacy).unwrap();
+            let root = doc.get(ROOT, "photos_library").unwrap().unwrap().1;
+            for key in ["photo_people", "photo_tags"] {
+                let column = doc.get(&root, key).unwrap().unwrap().1;
+                let row = doc.get(&column, id.as_str()).unwrap().unwrap().1;
+                doc.put(&row, "Removed", false).unwrap();
+                crate::framework_history::validate(&doc).unwrap();
+                let mut array = doc.clone();
+                array
+                    .put(&column, id.as_str(), "[\"Array label\"]")
+                    .unwrap();
+                assert!(crate::framework_history::validate(&array).is_err());
 
-            // Two replicas can create different maps while migrating one JSON array.
-            let mut left = legacy.fork();
-            let mut right = legacy.fork();
-            let left_row = left.put_object(&column, id.as_str(), ObjType::Map).unwrap();
-            let right_row = right
-                .put_object(&column, id.as_str(), ObjType::Map)
-                .unwrap();
-            left.put(&left_row, "Valid", true).unwrap();
-            right.put(&right_row, "Invalid", "not a boolean").unwrap();
-            left.merge_incoming(&mut right).unwrap();
-            assert_eq!(left.get_all(&column, id.as_str()).unwrap().len(), 2);
-            assert!(crate::framework_history::validate(&left).is_err());
+                // Two replicas can create different membership maps for one photo.
+                let mut left = doc.fork();
+                let mut right = doc.fork();
+                let left_row = left.put_object(&column, id.as_str(), ObjType::Map).unwrap();
+                let right_row = right
+                    .put_object(&column, id.as_str(), ObjType::Map)
+                    .unwrap();
+                left.put(&left_row, "Valid", true).unwrap();
+                right.put(&right_row, "Invalid", "not a boolean").unwrap();
+                left.merge_incoming(&mut right).unwrap();
+                assert_eq!(left.get_all(&column, id.as_str()).unwrap().len(), 2);
+                assert!(crate::framework_history::validate(&left).is_err());
 
-            // A valid winning/losing membership does not excuse an invalid sibling value.
-            let mut left = doc.fork();
-            let mut right = doc.fork();
-            left.put(&row, "Conflict", true).unwrap();
-            right.put(&row, "Conflict", "not a boolean").unwrap();
-            left.merge_incoming(&mut right).unwrap();
-            assert_eq!(left.get_all(&row, "Conflict").unwrap().len(), 2);
-            assert!(crate::framework_history::validate(&left).is_err());
+                // A valid winning/losing membership does not excuse an invalid sibling value.
+                let mut left = doc.fork();
+                let mut right = doc.fork();
+                left.put(&row, "Conflict", true).unwrap();
+                right.put(&row, "Conflict", "not a boolean").unwrap();
+                left.merge_incoming(&mut right).unwrap();
+                assert_eq!(left.get_all(&row, "Conflict").unwrap().len(), 2);
+                assert!(crate::framework_history::validate(&left).is_err());
 
-            for invalid_label in [String::new(), "x".repeat(65_537)] {
+                for invalid_label in [String::new(), "x".repeat(65_537)] {
+                    let mut invalid = doc.clone();
+                    invalid.put(&row, invalid_label.as_str(), true).unwrap();
+                    assert!(crate::framework_history::validate(&invalid).is_err());
+                }
+            }
+        }
+
+        eprintln!("phase history_accepts_album_membership_formats_and_rejects_malformed_conflicts");
+        {
+            use automerge::{ObjType, ReadDoc, transaction::Transactable};
+            let (_, mut doc, ids) = album_membership_fixture();
+            seed_membership_album(&mut doc, &ids);
+            // The production writer emits the current absolute JSON membership.
+            crate::framework_history::validate(&doc).unwrap();
+            let root = doc.get(ROOT, "photos_library").unwrap().unwrap().1;
+            let albums = doc.get(&root, "albums").unwrap().unwrap().1;
+            let row = doc
+                .get(&albums, "photos.album:membership")
+                .unwrap()
+                .unwrap()
+                .1;
+            let mut list = doc.clone();
+            let members = list.put_object(&row, "photo_ids", ObjType::List).unwrap();
+            list.insert(&members, 0, ids[0].as_str()).unwrap();
+            assert!(crate::framework_history::validate(&list).is_err());
+
+            // Concurrent replacements retain both values; a malformed one may
+            // not hide behind a valid sibling.
+            for invalid_json in [false, true] {
+                let mut left = doc.fork();
+                let mut right = doc.fork();
+                left.set_actor(automerge::ActorId::from([2; 16].as_slice()));
+                right.set_actor(automerge::ActorId::from([3; 16].as_slice()));
+                left.put(&row, "photo_ids", if invalid_json { "[7]" } else { "[]" })
+                    .unwrap();
+                right
+                    .put(
+                        &row,
+                        "photo_ids",
+                        serde_json::to_string(&[ids[0].as_str()]).unwrap(),
+                    )
+                    .unwrap();
+                left.merge_incoming(&mut right).unwrap();
+                assert_eq!(left.get_all(&row, "photo_ids").unwrap().len(), 2);
+                assert_eq!(
+                    crate::framework_history::validate(&left).is_err(),
+                    invalid_json
+                );
+            }
+
+            for invalid_members in [vec!["x".repeat(65_537)], vec![ids[0].clone(); 10_001]] {
                 let mut invalid = doc.clone();
-                invalid.put(&row, invalid_label.as_str(), true).unwrap();
+                invalid
+                    .put(
+                        &row,
+                        "photo_ids",
+                        serde_json::to_string(&invalid_members).unwrap(),
+                    )
+                    .unwrap();
                 assert!(crate::framework_history::validate(&invalid).is_err());
             }
         }
     }
 
     #[test]
-    fn history_accepts_album_membership_formats_and_rejects_malformed_conflicts() {
-        use automerge::{ObjType, ReadDoc, transaction::Transactable};
-        let (_, mut doc, ids) = album_membership_fixture();
-        seed_membership_album(&mut doc, &ids);
-        // The production writer emits the current absolute JSON membership.
-        crate::framework_history::validate(&doc).unwrap();
-        let root = doc.get(ROOT, "photos_library").unwrap().unwrap().1;
-        let albums = doc.get(&root, "albums").unwrap().unwrap().1;
-        let row = doc
-            .get(&albums, "photos.album:membership")
-            .unwrap()
-            .unwrap()
-            .1;
-        let mut legacy = doc.clone();
-        let members = legacy.put_object(&row, "photo_ids", ObjType::List).unwrap();
-        legacy.insert(&members, 0, ids[0].as_str()).unwrap();
-        crate::framework_history::validate(&legacy).unwrap();
-        assert_eq!(
-            PhotosDoc::library(&legacy).albums[0].photo_ids,
-            vec![ids[0].clone()]
+    fn thumbnails_follow_photo_identity_and_visibility() {
+        eprintln!(
+            "phase newly_visible_timeline_photo_uses_immutable_thumbnail_outside_queued_window"
         );
-
-        // Concurrent migration can retain both legacy and current values.
-        // Neither malformed representation may hide behind a valid sibling.
-        for (invalid_json, invalid_list) in [(false, false), (true, false), (false, true)] {
-            let mut left = legacy.fork();
-            let mut right = legacy.fork();
-            left.set_actor(automerge::ActorId::from([2; 16].as_slice()));
-            right.set_actor(automerge::ActorId::from([3; 16].as_slice()));
-            left.put(&row, "photo_ids", if invalid_json { "[7]" } else { "[]" })
-                .unwrap();
-            let conflicting = right.put_object(&row, "photo_ids", ObjType::List).unwrap();
-            if invalid_list {
-                right.insert(&conflicting, 0, 7).unwrap();
-            } else {
-                right.insert(&conflicting, 0, ids[0].as_str()).unwrap();
+        {
+            let mut doc = AutoCommit::new();
+            let mut library = crate::model::PhotoLibrary::default();
+            for index in 0..80 {
+                let mut photo = crate::model::LibraryPhoto::from_image(
+                    OpenImage::from_path(&format!("missing-timeline-{index}.png"), 30, 20)
+                        .with_content(format!("{index:064x}")),
+                );
+                photo.captured_at =
+                    Some(format!("2026-{:02}-{:02}", 1 + index / 28, 1 + index % 28));
+                library.photos.push(photo);
             }
-            left.merge_incoming(&mut right).unwrap();
-            assert_eq!(left.get_all(&row, "photo_ids").unwrap().len(), 2);
-            assert_eq!(
-                crate::framework_history::validate(&left).is_err(),
-                invalid_json || invalid_list
-            );
-        }
-
-        let mut left = legacy.fork();
-        let mut right = legacy.fork();
-        left.put(&members, 0, ids[3].as_str()).unwrap();
-        right.put(&members, 0, false).unwrap();
-        left.merge_incoming(&mut right).unwrap();
-        assert_eq!(left.get_all(&members, 0).unwrap().len(), 2);
-        assert!(crate::framework_history::validate(&left).is_err());
-
-        for invalid_members in [vec!["x".repeat(65_537)], vec![ids[0].clone(); 10_001]] {
-            let mut invalid = doc.clone();
-            invalid
-                .put(
-                    &row,
-                    "photo_ids",
-                    serde_json::to_string(&invalid_members).unwrap(),
-                )
-                .unwrap();
-            assert!(crate::framework_history::validate(&invalid).is_err());
-        }
-    }
-
-    #[test]
-    fn newly_visible_timeline_photo_uses_immutable_thumbnail_outside_queued_window() {
-        let mut doc = AutoCommit::new();
-        let mut library = crate::model::PhotoLibrary::default();
-        for index in 0..80 {
-            let mut photo = crate::model::LibraryPhoto::from_image(
-                OpenImage::from_path(&format!("missing-timeline-{index}.png"), 30, 20)
-                    .with_content(format!("{index:064x}")),
-            );
-            photo.captured_at = Some(format!("2026-{:02}-{:02}", 1 + index / 28, 1 + index % 28));
-            library.photos.push(photo);
-        }
-        let target = library.photos[2].clone();
-        PhotosDoc::set_library(&mut doc, &library);
-        let mut app = PhotosApp::new();
-        app.show_library();
-        app.canvas_rect = Rect::new(0.0, 0.0, 1_440.0, 900.0);
-        app.sync(&mut doc, &ROOT);
-        assert!(!app.thumbnail_resource_keys.contains_key(&target.id));
-        app.view_timeline(
-            &doc,
-            Some(&crate::actions::TimelineAnchor::Day {
-                day: target.captured_at.clone().unwrap(),
-            }),
-        )
-        .unwrap();
-        let mut text = TextRenderer::new();
-        let mut missing = Scene::new();
-        app.draw_library(
-            &mut missing,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
-        assert!(app.library_cards.iter().any(|(id, _, _)| id == &target.id));
-        assert!(!app.thumbnail_resource_keys.contains_key(&target.id));
-        app.library_thumbnails.insert(
-            thumbnail_key(&target.image),
-            to_peniko(&crate::shots_pattern(30, 20)),
-        );
-        let mut hydrated = Scene::new();
-        app.draw_library(
-            &mut hydrated,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
-        assert!(app.library_cards.iter().any(|(id, _, _)| id == &target.id));
-        assert_eq!(
-            hydrated.encoding().resources.patches.len(),
-            missing.encoding().resources.patches.len() + 1,
-            "the production painter records the cached immutable image even before it enters the queued thumbnail window"
-        );
-    }
-
-    #[test]
-    fn changed_target_invalidates_metadata_draft_before_input_but_unrelated_change_preserves_it() {
-        let (mut app, mut doc, id) = setup();
-        let mut lib = PhotosDoc::library(&doc);
-        lib.photos[0].tags = vec!["restored".into()];
-        PhotosDoc::set_library(&mut doc, &lib);
-        let selected = doc.get_heads();
-        lib.photos[0].tags = vec!["live".into()];
-        PhotosDoc::set_library(&mut doc, &lib);
-        app.sync(&mut doc, &ROOT);
-        app.begin_metadata_editor(&doc, &id);
-        app.metadata_tags_input.set_text("unsaved draft");
-        PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
-        app.sync(&mut doc, &ROOT);
-        assert!(app.metadata_editor);
-        assert_eq!(app.metadata_tags_input.value(), "unsaved draft");
-        restore(&mut doc, &selected);
-        app.perform_semantic_action("nonexistent", &AccessAction::Activate, &mut doc, &ROOT);
-        assert!(
-            !app.metadata_editor,
-            "stale draft must detach before any new input"
-        );
-        app.save_metadata_editor(&mut doc);
-        assert_eq!(PhotosDoc::library(&doc).photos[0].tags, vec!["restored"]);
-        app.begin_metadata_editor(&doc, &id);
-        app.metadata_tags_input.set_text("next edit");
-        app.save_metadata_editor(&mut doc);
-        assert_eq!(PhotosDoc::library(&doc).photos[0].tags, vec!["next edit"]);
-    }
-    #[test]
-    fn changed_second_batch_photo_invalidates_the_whole_metadata_draft() {
-        let (mut app, mut doc, first) = setup();
-        let second = crate::model::LibraryPhoto::from_image(OpenImage::from_path(
-            "second-missing.png",
-            4,
-            3,
-        ));
-        let second_id = second.id.clone();
-        let mut library = PhotosDoc::library(&doc);
-        library.photos.push(second);
-        PhotosDoc::set_library(&mut doc, &library);
-        app.sync(&mut doc, &ROOT);
-        app.begin_metadata_editor_for_ids(&doc, vec![first, second_id.clone()]);
-        app.metadata_tags_input.set_text("unsaved batch draft");
-        library.photos[1].tags = vec!["remote edit".into()];
-        PhotosDoc::set_library(&mut doc, &library);
-        app.perform_semantic_action("nonexistent", &AccessAction::Activate, &mut doc, &ROOT);
-        assert!(
-            !app.metadata_editor,
-            "a changed non-first batch target invalidates the draft before input"
-        );
-        app.save_metadata_editor(&mut doc);
-        assert_eq!(
-            PhotosDoc::library(&doc).photo(&second_id).unwrap().tags,
-            vec!["remote edit"]
-        );
-    }
-
-    #[test]
-    fn changed_photo_identity_invalidates_cached_thumbnail_and_late_old_result() {
-        let (mut app, mut doc, id) = setup();
-        let old = app.thumbnail_generation.unwrap();
-        app.library_thumbnails
-            .insert(id.clone(), to_peniko(&crate::shots_pattern(4, 3)));
-        let mut lib = PhotosDoc::library(&doc);
-        lib.photos[0].image.content = Some("a".repeat(64));
-        PhotosDoc::set_library(&mut doc, &lib);
-        app.sync(&mut doc, &ROOT);
-        assert!(!app.library_thumbnails.contains_key(&id));
-        app.accept_thumbnail_result(ThumbnailResult {
-            generation: old,
-            id: id.clone(),
-            preview: Some(crate::shots_pattern(4, 3)),
-        });
-        assert!(!app.library_thumbnails.contains_key(&id));
-    }
-    #[test]
-    fn pending_resource_open_cannot_overwrite_changed_content_and_settles_once() {
-        let (mut app, mut doc, _) = setup();
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("import.png");
-        std::fs::write(
-            &path,
-            pixels::encode_png(&crate::shots_pattern(4, 3)).unwrap(),
-        )
-        .unwrap();
-        let invocation = tilo_actions::InvocationId::new();
-        let payload = serde_json::to_vec(&crate::actions::PhotosOperation::Open {
-            path: Some(path.to_string_lossy().into()),
-        })
-        .unwrap();
-        app.start_resource_operation(
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::PHOTOS_OPERATION_TYPE,
-            &payload,
-            &doc,
-            &ROOT,
-        )
-        .unwrap();
-        PhotosDoc::set_image(&mut doc, None);
-        let heads = doc.get_heads();
-        app.sync(&mut doc, &ROOT);
-        assert!(PhotosDoc::image(&doc).is_none());
-        assert_eq!(doc.get_heads(), heads);
-        assert!(
-            matches!(app.poll_resource_operation(invocation,false,&doc,&ROOT),Some(tilo_actions::InvocationUpdate::Cancelled{invocation:id,..}) if id==invocation)
-        );
-        assert!(
-            app.poll_resource_operation(invocation, false, &doc, &ROOT)
-                .is_none()
-        );
-    }
-    #[test]
-    fn already_dispatched_picker_reports_actual_outcome_without_importing_stale_selection() {
-        for outcome in [0, 1, 2] {
-            let (mut app, mut doc, _) = setup();
-            let invocation = tilo_actions::InvocationId::new();
-            let (tx, rx) = std::sync::mpsc::channel();
-            app.picker = Some(rx);
-            app.resource_invocation = Some(invocation);
-            app.import_content = Some(LiveContent::read(&doc));
-            PhotosDoc::set_image(&mut doc, None);
+            let target = library.photos[2].clone();
+            PhotosDoc::set_library(&mut doc, &library);
+            let mut app = PhotosApp::new();
+            app.show_library();
+            app.canvas_rect = Rect::new(0.0, 0.0, 1_440.0, 900.0);
             app.sync(&mut doc, &ROOT);
-            tx.send(match outcome {
-                0 => ui::portal::PortalOutcome::Opened(std::path::PathBuf::from("chosen.png")),
-                1 => ui::portal::PortalOutcome::Cancelled,
-                _ => ui::portal::PortalOutcome::Failed("actual picker failure".into()),
+            assert!(!app.thumbnail_resource_keys.contains_key(&target.id));
+            app.view_timeline(
+                &doc,
+                Some(&crate::actions::TimelineAnchor::Day {
+                    day: target.captured_at.clone().unwrap(),
+                }),
+            )
+            .unwrap();
+            let mut text = TextRenderer::new();
+            let mut missing = Scene::new();
+            app.draw_library(
+                &mut missing,
+                Affine::IDENTITY,
+                &mut text,
+                &Theme::dark(),
+                &PresenceCtx::empty(),
+            );
+            assert!(app.library_cards.iter().any(|(id, _, _)| id == &target.id));
+            assert!(!app.thumbnail_resource_keys.contains_key(&target.id));
+            app.library_thumbnails.insert(
+                thumbnail_key(&target.image),
+                to_peniko(&crate::shots_pattern(30, 20)),
+            );
+            let mut hydrated = Scene::new();
+            app.draw_library(
+                &mut hydrated,
+                Affine::IDENTITY,
+                &mut text,
+                &Theme::dark(),
+                &PresenceCtx::empty(),
+            );
+            assert!(app.library_cards.iter().any(|(id, _, _)| id == &target.id));
+            assert_eq!(
+                hydrated.encoding().resources.patches.len(),
+                missing.encoding().resources.patches.len() + 1,
+                "the production painter records the cached immutable image even before it enters the queued thumbnail window"
+            );
+        }
+
+        eprintln!("phase changed_photo_identity_invalidates_cached_thumbnail_and_late_old_result");
+        {
+            let (mut app, mut doc, id) = setup();
+            let old = app.thumbnail_generation.unwrap();
+            app.library_thumbnails
+                .insert(id.clone(), to_peniko(&crate::shots_pattern(4, 3)));
+            let mut lib = PhotosDoc::library(&doc);
+            lib.photos[0].image.content = Some("a".repeat(64));
+            PhotosDoc::set_library(&mut doc, &lib);
+            app.sync(&mut doc, &ROOT);
+            assert!(!app.library_thumbnails.contains_key(&id));
+            app.accept_thumbnail_result(ThumbnailResult {
+                generation: old,
+                id: id.clone(),
+                preview: Some(crate::shots_pattern(4, 3)),
+            });
+            assert!(!app.library_thumbnails.contains_key(&id));
+        }
+    }
+
+    #[test]
+    fn changed_targets_invalidate_metadata_and_album_drafts() {
+        eprintln!(
+            "phase changed_target_invalidates_metadata_draft_before_input_but_unrelated_change_preserves_it"
+        );
+        {
+            let (mut app, mut doc, id) = setup();
+            let mut lib = PhotosDoc::library(&doc);
+            lib.photos[0].tags = vec!["restored".into()];
+            PhotosDoc::set_library(&mut doc, &lib);
+            let selected = doc.get_heads();
+            lib.photos[0].tags = vec!["live".into()];
+            PhotosDoc::set_library(&mut doc, &lib);
+            app.sync(&mut doc, &ROOT);
+            app.begin_metadata_editor(&doc, &id);
+            app.metadata_tags_input.set_text("unsaved draft");
+            PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
+            app.sync(&mut doc, &ROOT);
+            assert!(app.metadata_editor);
+            assert_eq!(app.metadata_tags_input.value(), "unsaved draft");
+            restore(&mut doc, &selected);
+            app.perform_semantic_action("nonexistent", &AccessAction::Activate, &mut doc, &ROOT);
+            assert!(
+                !app.metadata_editor,
+                "stale draft must detach before any new input"
+            );
+            app.save_metadata_editor(&mut doc);
+            assert_eq!(PhotosDoc::library(&doc).photos[0].tags, vec!["restored"]);
+            app.begin_metadata_editor(&doc, &id);
+            app.metadata_tags_input.set_text("next edit");
+            app.save_metadata_editor(&mut doc);
+            assert_eq!(PhotosDoc::library(&doc).photos[0].tags, vec!["next edit"]);
+        }
+
+        eprintln!("phase changed_second_batch_photo_invalidates_the_whole_metadata_draft");
+        {
+            let (mut app, mut doc, first) = setup();
+            let second = crate::model::LibraryPhoto::from_image(OpenImage::from_path(
+                "second-missing.png",
+                4,
+                3,
+            ));
+            let second_id = second.id.clone();
+            let mut library = PhotosDoc::library(&doc);
+            library.photos.push(second);
+            PhotosDoc::set_library(&mut doc, &library);
+            app.sync(&mut doc, &ROOT);
+            app.begin_metadata_editor_for_ids(&doc, vec![first, second_id.clone()]);
+            app.metadata_tags_input.set_text("unsaved batch draft");
+            library.photos[1].tags = vec!["remote edit".into()];
+            PhotosDoc::set_library(&mut doc, &library);
+            app.perform_semantic_action("nonexistent", &AccessAction::Activate, &mut doc, &ROOT);
+            assert!(
+                !app.metadata_editor,
+                "a changed non-first batch target invalidates the draft before input"
+            );
+            app.save_metadata_editor(&mut doc);
+            assert_eq!(
+                PhotosDoc::library(&doc).photo(&second_id).unwrap().tags,
+                vec!["remote edit"]
+            );
+        }
+
+        eprintln!("phase changed_album_or_deleted_member_detaches_draft_and_cannot_resurrect_it");
+        {
+            let (mut app, mut doc, id) = setup();
+            let selected = doc.get_heads();
+            let mut lib = PhotosDoc::library(&doc);
+            lib.albums.push(crate::model::Album {
+                id: "photos.album:membership".into(),
+                name: "Original".into(),
+                photo_ids: vec![id],
+            });
+            PhotosDoc::set_library(&mut doc, &lib);
+            app.sync(&mut doc, &ROOT);
+            app.active_album = Some("photos.album:membership".into());
+            app.begin_edit_album(&doc);
+            app.album_name_input.set_text("stale draft");
+            restore(&mut doc, &selected);
+            app.sync(&mut doc, &ROOT);
+            assert!(!app.album_editor);
+            app.save_album_editor(&mut doc);
+            assert!(PhotosDoc::library(&doc).albums.is_empty());
+            app.begin_new_album(&doc);
+            app.album_name_input.set_text("Next album");
+            app.save_album_editor(&mut doc);
+            assert_eq!(PhotosDoc::library(&doc).albums[0].name, "Next album");
+        }
+    }
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[test]
+    fn late_opens_imports_and_restores_settle_against_current_content() {
+        eprintln!("phase pending_resource_open_cannot_overwrite_changed_content_and_settles_once");
+        {
+            let (mut app, mut doc, _) = setup();
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("import.png");
+            std::fs::write(
+                &path,
+                pixels::encode_png(&crate::shots_pattern(4, 3)).unwrap(),
+            )
+            .unwrap();
+            let invocation = tilo_actions::InvocationId::new();
+            let payload = serde_json::to_vec(&crate::actions::PhotosOperation::Open {
+                path: Some(path.to_string_lossy().into()),
             })
             .unwrap();
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::PHOTOS_OPERATION_TYPE,
+                    &payload,
+                ),
+                &mut doc,
+                &ROOT,
+            )
+            .unwrap();
+            PhotosDoc::set_image(&mut doc, None);
             let heads = doc.get_heads();
             app.sync(&mut doc, &ROOT);
-            assert_eq!(doc.get_heads(), heads);
             assert!(PhotosDoc::image(&doc).is_none());
-            match app
-                .poll_resource_operation(invocation, false, &doc, &ROOT)
-                .unwrap()
-            {
-                tilo_actions::InvocationUpdate::Failed {
-                    invocation: id,
-                    error,
-                } => {
-                    assert_eq!(id, invocation);
-                    assert_eq!(
-                        error.code,
-                        if outcome == 0 {
-                            "photos.stale_selection"
-                        } else {
-                            "photos.portal_failed"
-                        }
-                    );
-                    if outcome == 0 {
-                        assert!(error.message.contains("chosen.png"));
-                    } else {
-                        assert_eq!(error.message, "actual picker failure");
-                    }
-                }
-                tilo_actions::InvocationUpdate::Cancelled { invocation: id, .. } => {
-                    assert_eq!(id, invocation);
-                    assert_eq!(outcome, 1);
-                }
-                other => panic!("unexpected settlement {other:?}"),
-            }
+            assert_eq!(doc.get_heads(), heads);
+            assert!(
+                matches!(app.poll_resource_operation(invocation,false,&doc,&ROOT),Some(tilo_actions::InvocationUpdate::Cancelled{invocation:id,..}) if id==invocation)
+            );
             assert!(
                 app.poll_resource_operation(invocation, false, &doc, &ROOT)
                     .is_none()
             );
         }
-    }
-    #[test]
-    fn changed_album_or_deleted_member_detaches_draft_and_cannot_resurrect_it() {
-        let (mut app, mut doc, id) = setup();
-        let selected = doc.get_heads();
-        let mut lib = PhotosDoc::library(&doc);
-        lib.albums.push(crate::model::Album {
-            id: "photos.album:membership".into(),
-            name: "Original".into(),
-            photo_ids: vec![id],
-        });
-        PhotosDoc::set_library(&mut doc, &lib);
-        app.sync(&mut doc, &ROOT);
-        app.active_album = Some("photos.album:membership".into());
-        app.begin_edit_album(&doc);
-        app.album_name_input.set_text("stale draft");
-        restore(&mut doc, &selected);
-        app.sync(&mut doc, &ROOT);
-        assert!(!app.album_editor);
-        app.save_album_editor(&mut doc);
-        assert!(PhotosDoc::library(&doc).albums.is_empty());
-        app.begin_new_album(&doc);
-        app.album_name_input.set_text("Next album");
-        app.save_album_editor(&mut doc);
-        assert_eq!(PhotosDoc::library(&doc).albums[0].name, "Next album");
+
+        eprintln!(
+            "phase already_dispatched_picker_reports_actual_outcome_without_importing_stale_selection"
+        );
+        {
+            for outcome in [0, 1, 2] {
+                let (mut app, mut doc, _) = setup();
+                let invocation = tilo_actions::InvocationId::new();
+                let (tx, rx) = std::sync::mpsc::channel();
+                app.picker = Some(rx);
+                app.resource_invocation = Some(invocation);
+                app.import_content = Some(LiveContent::read(&doc));
+                PhotosDoc::set_image(&mut doc, None);
+                app.sync(&mut doc, &ROOT);
+                tx.send(match outcome {
+                    0 => ui::portal::PortalOutcome::Opened(std::path::PathBuf::from("chosen.png")),
+                    1 => ui::portal::PortalOutcome::Cancelled,
+                    _ => ui::portal::PortalOutcome::Failed("actual picker failure".into()),
+                })
+                .unwrap();
+                let heads = doc.get_heads();
+                app.sync(&mut doc, &ROOT);
+                assert_eq!(doc.get_heads(), heads);
+                assert!(PhotosDoc::image(&doc).is_none());
+                match app
+                    .poll_resource_operation(invocation, false, &doc, &ROOT)
+                    .unwrap()
+                {
+                    tilo_actions::InvocationUpdate::Failed {
+                        invocation: id,
+                        error,
+                    } => {
+                        assert_eq!(id, invocation);
+                        assert_eq!(
+                            error.code,
+                            if outcome == 0 {
+                                "photos.stale_selection"
+                            } else {
+                                "photos.portal_failed"
+                            }
+                        );
+                        if outcome == 0 {
+                            assert!(error.message.contains("chosen.png"));
+                        } else {
+                            assert_eq!(error.message, "actual picker failure");
+                        }
+                    }
+                    tilo_actions::InvocationUpdate::Cancelled { invocation: id, .. } => {
+                        assert_eq!(id, invocation);
+                        assert_eq!(outcome, 1);
+                    }
+                    other => panic!("unexpected settlement {other:?}"),
+                }
+                assert!(
+                    app.poll_resource_operation(invocation, false, &doc, &ROOT)
+                        .is_none()
+                );
+            }
+        }
+
+        eprintln!("phase failed_import_reports_failure_even_when_previous_photo_is_still_decoded");
+        {
+            let mut doc = AutoCommit::new();
+            let store = ContentStore::memory();
+            let bytes = pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
+            let open =
+                OpenImage::from_path("existing.png", 6, 4).with_content(store.put(&bytes).unwrap());
+            PhotosDoc::set_image(&mut doc, Some(&open));
+            let mut app = PhotosApp::with_content(store);
+            app.sync(&mut doc, &ROOT);
+            assert!(app.open_image_path().is_some());
+            let invocation = tilo_actions::InvocationId::new();
+            let tmp = tempfile::tempdir().unwrap();
+            let payload = serde_json::to_vec(&crate::actions::PhotosOperation::Open {
+                path: Some(tmp.path().join("absent.png").to_string_lossy().into()),
+            })
+            .unwrap();
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::PHOTOS_OPERATION_TYPE,
+                    &payload,
+                ),
+                &mut doc,
+                &ROOT,
+            )
+            .unwrap();
+            app.sync(&mut doc, &ROOT);
+            assert!(
+                matches!(app.poll_resource_operation(invocation,false,&doc,&ROOT),Some(tilo_actions::InvocationUpdate::Failed{invocation:id,..}) if id==invocation)
+            );
+            assert_eq!(PhotosDoc::image(&doc), Some(open));
+        }
+
+        eprintln!("phase content_restore_drops_active_viewer_drag_before_next_pointer_move");
+        {
+            let mut doc = AutoCommit::new();
+            let store = ContentStore::memory();
+            let bytes = pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
+            let open =
+                OpenImage::from_path("same.png", 6, 4).with_content(store.put(&bytes).unwrap());
+            PhotosDoc::set_image(&mut doc, Some(&open));
+            PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
+            let selected = doc.get_heads();
+            PhotosDoc::set_edits(&mut doc, &Edits::default());
+            let mut app = PhotosApp::with_content(store);
+            app.sync(&mut doc, &ROOT);
+            let mut taffy = TaffyTree::new();
+            let mut nodes = HashMap::new();
+            let theme = Theme::dark();
+            let node = app.build_layout(&mut taffy, &theme, &mut nodes);
+            taffy
+                .set_style(
+                    node,
+                    Style {
+                        size: Size {
+                            width: Dimension::length(800.),
+                            height: Dimension::length(600.),
+                        },
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            taffy
+                .compute_layout(
+                    node,
+                    Size {
+                        width: AvailableSpace::Definite(800.),
+                        height: AvailableSpace::Definite(600.),
+                    },
+                )
+                .unwrap();
+            app.apply_layout(&taffy, node, Point::ZERO);
+            let center = app.viewer.as_ref().unwrap().get_rect().center();
+            let device_id = unsafe { std::mem::zeroed() };
+            let mut handled = false;
+            let mut focus = None;
+            for event in [
+                winit::event::WindowEvent::CursorMoved {
+                    device_id,
+                    position: winit::dpi::PhysicalPosition::new(center.x, center.y),
+                },
+                winit::event::WindowEvent::MouseInput {
+                    device_id,
+                    state: winit::event::ElementState::Pressed,
+                    button: winit::event::MouseButton::Left,
+                },
+            ] {
+                app.viewer.as_mut().unwrap().handle_event(
+                    &event,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: &mut doc,
+                        path: &ROOT,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
+                );
+            }
+            restore(&mut doc, &selected);
+            app.handle_event(
+                &winit::event::WindowEvent::CursorMoved {
+                    device_id,
+                    position: winit::dpi::PhysicalPosition::new(center.x + 40., center.y + 20.),
+                },
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut doc,
+                    path: &ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+            assert_eq!(app.viewer.as_ref().unwrap().pan(), vello::kurbo::Vec2::ZERO);
+            assert!((app.viewer.as_ref().unwrap().zoom() - 1.).abs() < f32::EPSILON);
+            let next = PhotosDoc::edits(&doc).rotated_right();
+            app.commit_edits(&mut doc, next);
+            app.sync(&mut doc, &ROOT);
+            assert_eq!(PhotosDoc::edits(&doc).rotate_quarters, 2);
+        }
     }
 
     fn album_membership_fixture() -> (PhotosApp, AutoCommit, [String; 4]) {
@@ -17286,212 +17371,94 @@ mod history_reconcile_tests {
     }
 
     #[test]
-    fn album_membership_create_saves_selected_ids_in_browse_order() {
-        let (mut app, mut doc, ids) = album_membership_fixture();
-        activate_album_control(&mut app, &mut doc, "photos:album-editor:new");
-        app.album_name_input.set_text("Selected photographs");
-        // Select in reverse browse order; toggle a third photograph off again.
-        for i in [3, 1, 0, 1] {
+    fn album_membership_edits_save_selected_ids_in_browse_order() {
+        eprintln!("phase album_membership_create_saves_selected_ids_in_browse_order");
+        {
+            let (mut app, mut doc, ids) = album_membership_fixture();
+            activate_album_control(&mut app, &mut doc, "photos:album-editor:new");
+            app.album_name_input.set_text("Selected photographs");
+            // Select in reverse browse order; toggle a third photograph off again.
+            for i in [3, 1, 0, 1] {
+                activate_album_control(
+                    &mut app,
+                    &mut doc,
+                    &format!("photos:library-photo:{}", ids[i]),
+                );
+            }
+            activate_album_control(&mut app, &mut doc, "photos:album-editor:save");
+            let library = PhotosDoc::library(&doc);
+            assert_eq!(library.albums.len(), 1);
+            assert_eq!(library.albums[0].name, "Selected photographs");
+            assert_eq!(
+                library.albums[0].photo_ids,
+                vec![ids[0].clone(), ids[3].clone()]
+            );
+            assert!(!app.album_editor);
+        }
+
+        eprintln!("phase album_membership_rename_preserves_selected_ids_and_order");
+        {
+            let (mut app, mut doc, ids) = album_membership_fixture();
+            seed_membership_album(&mut doc, &ids);
+            app.sync(&mut doc, &ROOT);
             activate_album_control(
                 &mut app,
                 &mut doc,
-                &format!("photos:library-photo:{}", ids[i]),
+                "photos:library-album:photos.album:membership",
             );
+            activate_album_control(&mut app, &mut doc, "photos:album-editor:edit");
+            app.album_name_input.set_text("Renamed album");
+            activate_album_control(&mut app, &mut doc, "photos:album-editor:save");
+            let library = PhotosDoc::library(&doc);
+            assert_eq!(library.albums.len(), 1);
+            let album = library.album("photos.album:membership").unwrap();
+            assert_eq!(album.name, "Renamed album");
+            assert_eq!(album.photo_ids, vec![ids[0].clone(), ids[3].clone()]);
+            assert!(!app.album_editor);
         }
-        activate_album_control(&mut app, &mut doc, "photos:album-editor:save");
-        let library = PhotosDoc::library(&doc);
-        assert_eq!(library.albums.len(), 1);
-        assert_eq!(library.albums[0].name, "Selected photographs");
-        assert_eq!(
-            library.albums[0].photo_ids,
-            vec![ids[0].clone(), ids[3].clone()]
-        );
-        assert!(!app.album_editor);
-    }
 
-    #[test]
-    fn album_membership_rename_preserves_selected_ids_and_order() {
-        let (mut app, mut doc, ids) = album_membership_fixture();
-        seed_membership_album(&mut doc, &ids);
-        app.sync(&mut doc, &ROOT);
-        activate_album_control(
-            &mut app,
-            &mut doc,
-            "photos:library-album:photos.album:membership",
-        );
-        activate_album_control(&mut app, &mut doc, "photos:album-editor:edit");
-        app.album_name_input.set_text("Renamed album");
-        activate_album_control(&mut app, &mut doc, "photos:album-editor:save");
-        let library = PhotosDoc::library(&doc);
-        assert_eq!(library.albums.len(), 1);
-        let album = library.album("photos.album:membership").unwrap();
-        assert_eq!(album.name, "Renamed album");
-        assert_eq!(album.photo_ids, vec![ids[0].clone(), ids[3].clone()]);
-        assert!(!app.album_editor);
-    }
-
-    #[test]
-    fn album_membership_after_restore_supports_normal_edit_and_browse_order() {
-        let (mut app, mut doc, ids) = album_membership_fixture();
-        seed_membership_album(&mut doc, &ids);
-        let selected = doc.get_heads();
-        let mut library = PhotosDoc::library(&doc);
-        library.albums[0].name = "Later album".into();
-        library.albums[0].photo_ids = vec![ids[1].clone(), ids[2].clone()];
-        PhotosDoc::set_library(&mut doc, &library);
-        app.sync(&mut doc, &ROOT);
-        activate_album_control(
-            &mut app,
-            &mut doc,
-            "photos:library-album:photos.album:membership",
-        );
-        activate_album_control(&mut app, &mut doc, "photos:album-editor:edit");
-        app.album_name_input.set_text("Unsaved later draft");
-        restore(&mut doc, &selected);
-        app.sync(&mut doc, &ROOT);
-        assert!(!app.album_editor, "restore must detach the obsolete draft");
-        let restored = PhotosDoc::library(&doc);
-        let album = restored.album("photos.album:membership").unwrap();
-        assert_eq!(album.name, "Original");
-        assert_eq!(album.photo_ids, vec![ids[0].clone(), ids[3].clone()]);
-
-        activate_album_control(&mut app, &mut doc, "photos:album-editor:edit");
-        app.album_name_input.set_text("Edited after restore");
-        activate_album_control(&mut app, &mut doc, "photos:library-album:all");
-        for i in [3, 2] {
+        eprintln!("phase album_membership_after_restore_supports_normal_edit_and_browse_order");
+        {
+            let (mut app, mut doc, ids) = album_membership_fixture();
+            seed_membership_album(&mut doc, &ids);
+            let selected = doc.get_heads();
+            let mut library = PhotosDoc::library(&doc);
+            library.albums[0].name = "Later album".into();
+            library.albums[0].photo_ids = vec![ids[1].clone(), ids[2].clone()];
+            PhotosDoc::set_library(&mut doc, &library);
+            app.sync(&mut doc, &ROOT);
             activate_album_control(
                 &mut app,
                 &mut doc,
-                &format!("photos:library-photo:{}", ids[i]),
+                "photos:library-album:photos.album:membership",
             );
-        }
-        activate_album_control(&mut app, &mut doc, "photos:album-editor:save");
-        let library = PhotosDoc::library(&doc);
-        let album = library.album("photos.album:membership").unwrap();
-        assert_eq!(album.name, "Edited after restore");
-        assert_eq!(album.photo_ids, vec![ids[0].clone(), ids[2].clone()]);
-        assert_eq!(library.photos.len(), 4);
-        assert!(!app.album_editor);
-    }
+            activate_album_control(&mut app, &mut doc, "photos:album-editor:edit");
+            app.album_name_input.set_text("Unsaved later draft");
+            restore(&mut doc, &selected);
+            app.sync(&mut doc, &ROOT);
+            assert!(!app.album_editor, "restore must detach the obsolete draft");
+            let restored = PhotosDoc::library(&doc);
+            let album = restored.album("photos.album:membership").unwrap();
+            assert_eq!(album.name, "Original");
+            assert_eq!(album.photo_ids, vec![ids[0].clone(), ids[3].clone()]);
 
-    #[test]
-    fn content_restore_drops_active_viewer_drag_before_next_pointer_move() {
-        let mut doc = AutoCommit::new();
-        let store = ContentStore::memory();
-        let bytes = pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
-        let open = OpenImage::from_path("same.png", 6, 4).with_content(store.put(&bytes).unwrap());
-        PhotosDoc::set_image(&mut doc, Some(&open));
-        PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
-        let selected = doc.get_heads();
-        PhotosDoc::set_edits(&mut doc, &Edits::default());
-        let mut app = PhotosApp::with_content(store);
-        app.sync(&mut doc, &ROOT);
-        let mut taffy = TaffyTree::new();
-        let mut nodes = HashMap::new();
-        let theme = Theme::dark();
-        let node = app.build_layout(&mut taffy, &theme, &mut nodes);
-        taffy
-            .set_style(
-                node,
-                Style {
-                    size: Size {
-                        width: Dimension::length(800.),
-                        height: Dimension::length(600.),
-                    },
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        taffy
-            .compute_layout(
-                node,
-                Size {
-                    width: AvailableSpace::Definite(800.),
-                    height: AvailableSpace::Definite(600.),
-                },
-            )
-            .unwrap();
-        app.apply_layout(&taffy, node, Point::ZERO);
-        let center = app.viewer.as_ref().unwrap().get_rect().center();
-        let device_id = unsafe { std::mem::zeroed() };
-        let mut handled = false;
-        let mut focus = None;
-        for event in [
-            winit::event::WindowEvent::CursorMoved {
-                device_id,
-                position: winit::dpi::PhysicalPosition::new(center.x, center.y),
-            },
-            winit::event::WindowEvent::MouseInput {
-                device_id,
-                state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-            },
-        ] {
-            app.viewer.as_mut().unwrap().handle_event(
-                &event,
-                1.,
-                &winit::event::Modifiers::default(),
-                &mut doc,
-                &ROOT,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
-            );
+            activate_album_control(&mut app, &mut doc, "photos:album-editor:edit");
+            app.album_name_input.set_text("Edited after restore");
+            activate_album_control(&mut app, &mut doc, "photos:library-album:all");
+            for i in [3, 2] {
+                activate_album_control(
+                    &mut app,
+                    &mut doc,
+                    &format!("photos:library-photo:{}", ids[i]),
+                );
+            }
+            activate_album_control(&mut app, &mut doc, "photos:album-editor:save");
+            let library = PhotosDoc::library(&doc);
+            let album = library.album("photos.album:membership").unwrap();
+            assert_eq!(album.name, "Edited after restore");
+            assert_eq!(album.photo_ids, vec![ids[0].clone(), ids[2].clone()]);
+            assert_eq!(library.photos.len(), 4);
+            assert!(!app.album_editor);
         }
-        restore(&mut doc, &selected);
-        app.handle_event(
-            &winit::event::WindowEvent::CursorMoved {
-                device_id,
-                position: winit::dpi::PhysicalPosition::new(center.x + 40., center.y + 20.),
-            },
-            1.,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-        assert_eq!(app.viewer.as_ref().unwrap().pan(), vello::kurbo::Vec2::ZERO);
-        assert!((app.viewer.as_ref().unwrap().zoom() - 1.).abs() < f32::EPSILON);
-        let next = PhotosDoc::edits(&doc).rotated_right();
-        app.commit_edits(&mut doc, next);
-        app.sync(&mut doc, &ROOT);
-        assert_eq!(PhotosDoc::edits(&doc).rotate_quarters, 2);
-    }
-
-    #[test]
-    fn failed_import_reports_failure_even_when_previous_photo_is_still_decoded() {
-        let mut doc = AutoCommit::new();
-        let store = ContentStore::memory();
-        let bytes = pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
-        let open =
-            OpenImage::from_path("existing.png", 6, 4).with_content(store.put(&bytes).unwrap());
-        PhotosDoc::set_image(&mut doc, Some(&open));
-        let mut app = PhotosApp::with_content(store);
-        app.sync(&mut doc, &ROOT);
-        assert!(app.open_image_path().is_some());
-        let invocation = tilo_actions::InvocationId::new();
-        let tmp = tempfile::tempdir().unwrap();
-        let payload = serde_json::to_vec(&crate::actions::PhotosOperation::Open {
-            path: Some(tmp.path().join("absent.png").to_string_lossy().into()),
-        })
-        .unwrap();
-        app.start_resource_operation(
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::PHOTOS_OPERATION_TYPE,
-            &payload,
-            &doc,
-            &ROOT,
-        )
-        .unwrap();
-        app.sync(&mut doc, &ROOT);
-        assert!(
-            matches!(app.poll_resource_operation(invocation,false,&doc,&ROOT),Some(tilo_actions::InvocationUpdate::Failed{invocation:id,..}) if id==invocation)
-        );
-        assert_eq!(PhotosDoc::image(&doc), Some(open));
     }
 }

@@ -128,33 +128,34 @@ mod tests {
     }
 
     #[test]
-    fn encode_then_decode_round_trips() {
-        let payload = "https://example.test/welcome";
-        let m = encode(payload).expect("encode");
-        let (buf, dim) = rasterize(&m, 6, 4);
-        let decoded = decode_greyscale(&buf, dim, dim);
-        assert_eq!(decoded.len(), 1, "exactly one code detected");
-        assert_eq!(decoded[0].text, payload);
-        // Corners are inside the rasterized image.
-        for (x, y) in decoded[0].corners {
-            assert!(x >= 0.0 && x <= dim as f32);
-            assert!(y >= 0.0 && y <= dim as f32);
+    fn qr_decoding_round_trips_classifies_and_ignores_blank_buffers() {
+        // Phase `encode_then_decode_round_trips`.
+        {
+            let payload = "https://example.test/welcome";
+            let m = encode(payload).expect("encode");
+            let (buf, dim) = rasterize(&m, 6, 4);
+            let decoded = decode_greyscale(&buf, dim, dim);
+            assert_eq!(decoded.len(), 1, "exactly one code detected");
+            assert_eq!(decoded[0].text, payload);
+            // Corners are inside the rasterized image.
+            for (x, y) in decoded[0].corners {
+                assert!(x >= 0.0 && x <= dim as f32);
+                assert!(y >= 0.0 && y <= dim as f32);
+            }
         }
-    }
-
-    #[test]
-    fn decode_wifi_classifies() {
-        let payload = "WIFI:T:WPA2;S:Tilo Guest;P:hunter2;H:false;;";
-        let m = encode(payload).unwrap();
-        let (buf, dim) = rasterize(&m, 6, 4);
-        let scanned = decode_and_classify(&buf, dim, dim, |p| p).expect("decode");
-        assert!(matches!(scanned.kind, CodeKind::Wifi { .. }));
-        assert_eq!(scanned.symbology, "QR Code");
-    }
-
-    #[test]
-    fn empty_buffer_decodes_nothing() {
-        let buf = vec![255u8; 64 * 64];
-        assert!(decode_greyscale(&buf, 64, 64).is_empty());
+        // Phase `decode_wifi_classifies`.
+        {
+            let payload = "WIFI:T:WPA2;S:Tilo Guest;P:hunter2;H:false;;";
+            let m = encode(payload).unwrap();
+            let (buf, dim) = rasterize(&m, 6, 4);
+            let scanned = decode_and_classify(&buf, dim, dim, |p| p).expect("decode");
+            assert!(matches!(scanned.kind, CodeKind::Wifi { .. }));
+            assert_eq!(scanned.symbology, "QR Code");
+        }
+        // Phase `empty_buffer_decodes_nothing`.
+        {
+            let buf = vec![255u8; 64 * 64];
+            assert!(decode_greyscale(&buf, 64, 64).is_empty());
+        }
     }
 }

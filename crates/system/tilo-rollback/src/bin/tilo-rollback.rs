@@ -16,7 +16,7 @@
 //! stdin or from a file passed by path.
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use tilo_rollback::{
@@ -137,32 +137,7 @@ enum Cmd {
         no_proof_file: bool,
     },
     /// Confirm a generation, then raise the floor.
-    Confirm {
-        #[arg(long)]
-        device: PathBuf,
-        #[arg(long)]
-        generation: Option<u64>,
-        /// Recovery key, for an operator-driven confirmation.
-        #[arg(long)]
-        recovery_key_file: Option<PathBuf>,
-        /// Unattended: instead of verifying the recovery key, require that the keyslots recorded as
-        /// independent unlock paths at enrollment are still present. Weaker, and the only option
-        /// after an unattended boot.
-        #[arg(long)]
-        unattended: bool,
-        /// Secret that already opens the device — what `unlock` left in /run.
-        #[arg(long, default_value = PROOF_FILE)]
-        proof_file: PathBuf,
-        #[arg(long)]
-        pin_file: Option<PathBuf>,
-        /// Raise the floor to at least this generation, so a security update can jump past a
-        /// vulnerable one instead of leaving it inside the window.
-        #[arg(long)]
-        floor_at_least: Option<u64>,
-        /// Report what would happen and change nothing.
-        #[arg(long)]
-        dry_run: bool,
-    },
+    Confirm(ConfirmArgs),
     /// Floor, retained generations, and whether each still unseals.
     Status {
         #[arg(long)]
@@ -221,6 +196,45 @@ enum Cmd {
         #[arg(long, default_value = "")]
         label: String,
     },
+}
+
+#[derive(Args)]
+struct ConfirmArgs {
+    #[arg(long)]
+    device: PathBuf,
+    #[arg(long)]
+    generation: Option<u64>,
+    /// Recovery key, for an operator-driven confirmation.
+    #[arg(long)]
+    recovery_key_file: Option<PathBuf>,
+    /// Unattended: instead of verifying the recovery key, require that the keyslots recorded as
+    /// independent unlock paths at enrollment are still present. Weaker, and the only option
+    /// after an unattended boot.
+    #[arg(long)]
+    unattended: bool,
+    /// Secret that already opens the device — what `unlock` left in /run.
+    #[arg(long, default_value = PROOF_FILE)]
+    proof_file: PathBuf,
+    #[arg(long)]
+    pin_file: Option<PathBuf>,
+    /// Raise the floor to at least this generation, so a security update can jump past a
+    /// vulnerable one instead of leaving it inside the window.
+    #[arg(long)]
+    floor_at_least: Option<u64>,
+    /// Report what would happen and change nothing.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+/// What every subcommand runs against: the TPM tool runner, the scratch workspace, the
+/// resolved configuration and the paths derived from it.
+struct Env<'a> {
+    runner: &'a exec::Real,
+    ws: &'a policy::Workspace,
+    cfg: &'a Config,
+    state_path: &'a Path,
+    pred_dir: &'a Path,
+    scratch: &'a Path,
 }
 
 fn read_secret(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
@@ -322,44 +336,31 @@ fn run() -> Result<()> {
     // authority-side); the split exists only to stay under the line-count lint, it carries
     // no behavioural significance, and this outer match stays exhaustive over `Cmd` so a new
     // subcommand fails to compile until it's routed somewhere.
+    let env = Env {
+        runner: &runner,
+        ws: &ws,
+        cfg: &cfg,
+        state_path: &state_path,
+        pred_dir: &pred_dir,
+        scratch: scratch.path(),
+    };
     match &cli.cmd {
-        Cmd::TpmStatus { .. } | Cmd::Harden { .. } | Cmd::Enroll { .. } => dispatch_provisioning(
-            &cli,
-            &runner,
-            &ws,
-            &cfg,
-            &state_path,
-            &pred_dir,
-            scratch.path(),
-        ),
-        Cmd::Unlock { .. } | Cmd::Confirm { .. } | Cmd::Status { .. } | Cmd::Certify { .. } => {
-            dispatch_runtime(
-                &cli,
-                &runner,
-                &ws,
-                &cfg,
-                &state_path,
-                &pred_dir,
-                scratch.path(),
-            )
+        Cmd::TpmStatus { .. } | Cmd::Harden { .. } | Cmd::Enroll { .. } => {
+            dispatch_provisioning(&cli, &env)
+        }
+        Cmd::Unlock { .. } | Cmd::Confirm(_) | Cmd::Status { .. } | Cmd::Certify { .. } => {
+            dispatch_runtime(&cli, &env)
         }
         Cmd::FloorRequest { .. } | Cmd::ApproveFloor { .. } | Cmd::SignPrediction { .. } => {
-            dispatch_authority(&cli, &runner, &ws, &cfg, &state_path, scratch.path())
+            dispatch_authority(&cli, &env)
         }
     }
 }
 
 /// Provisioning-time commands: check the TPM's lockout posture, harden it, enroll a
 /// generation's keyslot.
-fn dispatch_provisioning(
-    cli: &Cli,
-    runner: &exec::Real,
-    ws: &policy::Workspace,
-    cfg: &Config,
-    state_path: &Path,
-    pred_dir: &Path,
-    scratch_path: &Path,
-) -> Result<()> {
+fn dispatch_provisioning(cli: &Cli, env: &Env<'_>) -> Result<()> {
+    let runner = env.runner;
     match &cli.cmd {
         Cmd::TpmStatus { json } => cmd_tpm_status(runner, *json),
         Cmd::Harden {
@@ -384,12 +385,7 @@ fn dispatch_provisioning(
             recovery_key_file,
             pin_file,
         } => cmd_enroll(
-            runner,
-            ws,
-            cfg,
-            state_path,
-            pred_dir,
-            scratch_path,
+            env,
             device,
             *gen_num,
             recovery_key_file,
@@ -401,15 +397,15 @@ fn dispatch_provisioning(
 }
 
 /// Boot/runtime commands: unseal a generation, confirm it, report status, certify the floor.
-fn dispatch_runtime(
-    cli: &Cli,
-    runner: &exec::Real,
-    ws: &policy::Workspace,
-    cfg: &Config,
-    state_path: &Path,
-    pred_dir: &Path,
-    scratch_path: &Path,
-) -> Result<()> {
+fn dispatch_runtime(cli: &Cli, env: &Env<'_>) -> Result<()> {
+    let Env {
+        runner,
+        ws,
+        cfg,
+        state_path,
+        scratch,
+        ..
+    } = *env;
     match &cli.cmd {
         Cmd::Unlock {
             device,
@@ -430,41 +426,12 @@ fn dispatch_runtime(
                 Some(proof_file)
             },
         ),
-        Cmd::Confirm {
-            device,
-            generation: gen_num,
-            recovery_key_file,
-            unattended,
-            proof_file,
-            pin_file,
-            floor_at_least,
-            dry_run,
-        } => cmd_confirm(
-            runner,
-            ws,
-            cfg,
-            state_path,
-            pred_dir,
-            scratch_path,
-            device,
-            *gen_num,
-            recovery_key_file.as_deref(),
-            *unattended,
-            proof_file,
-            pin_file.as_deref(),
-            *floor_at_least,
-            *dry_run,
-        ),
-        Cmd::Status { device, json } => cmd_status(
-            runner,
-            cfg,
-            state_path,
-            scratch_path,
-            device.as_deref(),
-            *json,
-        ),
+        Cmd::Confirm(args) => cmd_confirm(env, args),
+        Cmd::Status { device, json } => {
+            cmd_status(runner, cfg, state_path, scratch, device.as_deref(), *json)
+        }
         Cmd::Certify { nonce, out_dir } => {
-            cmd_certify(runner, ws, cfg, state_path, scratch_path, nonce, out_dir)
+            cmd_certify(runner, ws, cfg, state_path, scratch, nonce, out_dir)
         }
         // Unreachable: `run` only calls this for Unlock/Confirm/Status/Certify.
         _ => bail!("internal error: dispatch_runtime called for a non-runtime command"),
@@ -473,24 +440,19 @@ fn dispatch_runtime(
 
 /// Authority-side commands: build a floor-approval request, issue approvals, sign a PCR
 /// prediction. None of these touch a live device's keyslots.
-fn dispatch_authority(
-    cli: &Cli,
-    runner: &exec::Real,
-    ws: &policy::Workspace,
-    cfg: &Config,
-    state_path: &Path,
-    scratch_path: &Path,
-) -> Result<()> {
+fn dispatch_authority(cli: &Cli, env: &Env<'_>) -> Result<()> {
+    let Env {
+        runner,
+        ws,
+        cfg,
+        state_path,
+        scratch,
+        ..
+    } = *env;
     match &cli.cmd {
-        Cmd::FloorRequest { device, out } => cmd_floor_request(
-            runner,
-            ws,
-            cfg,
-            state_path,
-            scratch_path,
-            device,
-            out.as_deref(),
-        ),
+        Cmd::FloorRequest { device, out } => {
+            cmd_floor_request(runner, ws, cfg, state_path, scratch, device, out.as_deref())
+        }
         Cmd::ApproveFloor {
             private_key,
             request,
@@ -621,12 +583,14 @@ fn cmd_harden(
         if let Some(d) = auth_file.parent() {
             std::fs::create_dir_all(d).with_context(|| format!("creating {}", d.display()))?;
         }
-        atomic_file::write_with_mode(auth_file, &auth, 0o600).with_context(|| {
-            format!(
-                "atomically recording the reset authorisation in {}",
-                auth_file.display()
-            )
-        })?;
+        tilo_files::native::atomic::write_with_mode(auth_file, &auth, 0o600).with_context(
+            || {
+                format!(
+                    "atomically recording the reset authorisation in {}",
+                    auth_file.display()
+                )
+            },
+        )?;
         lockout::set_reset_auth(runner, &auth, None)?;
         println!(
             "reset authorisation set; recorded in {}",
@@ -658,19 +622,21 @@ fn cmd_harden(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn cmd_enroll(
-    runner: &dyn exec::Runner,
-    ws: &policy::Workspace,
-    cfg: &Config,
-    state_path: &Path,
-    pred_dir: &Path,
-    scratch: &Path,
+    env: &Env<'_>,
     device: &Path,
     gen_num: Option<u64>,
     recovery_key_file: &Path,
     pin_file: Option<&Path>,
 ) -> Result<()> {
+    let Env {
+        runner,
+        ws,
+        cfg,
+        state_path,
+        pred_dir,
+        ..
+    } = *env;
     let gen_num = match gen_num {
         Some(g) => g,
         None => generation::running()?,
@@ -702,18 +668,20 @@ fn cmd_enroll(
         predictions.len()
     );
 
-    let floor = establish_floor(runner, ws, cfg, device, state_path, scratch, gen_num)?;
+    let floor = establish_floor(env, device, gen_num)?;
 
     let (slot, token_id) = keyslots::enroll_generation(
         runner,
         ws,
         device,
         cfg,
-        gen_num,
-        floor,
-        &predictions,
+        &keyslots::Enrollment {
+            generation: gen_num,
+            floor,
+            predictions: &predictions,
+            pin: pin_bytes,
+        },
         &recovery,
-        pin_bytes,
     )?;
     println!("generation {gen_num}: keyslot {slot}, token {token_id}");
 
@@ -753,15 +721,15 @@ fn cmd_enroll(
 /// Define the NV counter (idempotent) and work out the floor this enrollment should record —
 /// the existing floor if the counter has already been incremented, or the bottom of the
 /// retention window if this is the very first enrollment.
-fn establish_floor(
-    runner: &dyn exec::Runner,
-    ws: &policy::Workspace,
-    cfg: &Config,
-    device: &Path,
-    state_path: &Path,
-    scratch: &Path,
-    gen_num: u64,
-) -> Result<counter::FloorState> {
+fn establish_floor(env: &Env<'_>, device: &Path, gen_num: u64) -> Result<counter::FloorState> {
+    let Env {
+        runner,
+        ws,
+        cfg,
+        state_path,
+        scratch,
+        ..
+    } = *env;
     let (authority_name, nv_auth_policy) = floor_authority(runner, ws, cfg)?;
     counter::define(runner, cfg.nv_index, &nv_auth_policy, ws)?;
     let existing = keyslots::list_tokens(runner, device)?;
@@ -853,12 +821,11 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
             let _ = std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700));
         }
     }
-    atomic_file::write_with_mode(path, bytes, 0o600)
+    tilo_files::native::atomic::write_with_mode(path, bytes, 0o600)
         .with_context(|| format!("atomically writing {}", path.display()))?;
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn cmd_unlock(
     runner: &dyn exec::Runner,
     ws: &policy::Workspace,
@@ -923,29 +890,32 @@ fn cmd_unlock(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-fn cmd_confirm(
-    runner: &dyn exec::Runner,
-    ws: &policy::Workspace,
-    cfg: &Config,
-    state_path: &Path,
-    pred_dir: &Path,
-    scratch: &Path,
-    device: &Path,
-    gen_num: Option<u64>,
-    recovery_key_file: Option<&Path>,
-    unattended: bool,
-    proof_file: &Path,
-    pin_file: Option<&Path>,
-    floor_at_least: Option<u64>,
-    dry_run: bool,
-) -> Result<()> {
+fn cmd_confirm(env: &Env<'_>, args: &ConfirmArgs) -> Result<()> {
+    let Env {
+        runner,
+        ws,
+        cfg,
+        state_path,
+        pred_dir,
+        scratch,
+    } = *env;
+    let ConfirmArgs {
+        device,
+        generation: gen_num,
+        recovery_key_file,
+        unattended,
+        proof_file,
+        pin_file,
+        floor_at_least,
+        dry_run,
+    } = args;
+    let (unattended, floor_at_least, dry_run) = (*unattended, *floor_at_least, *dry_run);
     let gen_num = match gen_num {
-        Some(g) => g,
+        Some(g) => *g,
         None => generation::running()?,
     };
-    let recovery = recovery_key_file.map(read_secret).transpose()?;
-    let pin = pin_file.map(read_secret).transpose()?;
+    let recovery = recovery_key_file.as_deref().map(read_secret).transpose()?;
+    let pin = pin_file.as_deref().map(read_secret).transpose()?;
     let proof = match read_secret(proof_file) {
         Ok(p) => Some(p),
         Err(_) if recovery.is_some() || pin.is_some() => None,
@@ -1132,7 +1102,6 @@ fn cmd_certify(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn cmd_sign_prediction(
     runner: &dyn exec::Runner,
     ws: &policy::Workspace,

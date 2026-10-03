@@ -3,6 +3,9 @@ allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-indexing-slicing-in-tests = true
 
+# Clippy rejects a function with more parameters than this.
+too-many-arguments-threshold = 8
+
 # reqwest is built without a bundled crypto provider; these constructors panic
 # unless one is installed. `tilo_net::http` installs it and returns builders.
 disallowed-methods = [

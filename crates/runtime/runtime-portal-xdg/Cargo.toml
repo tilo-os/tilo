@@ -24,6 +24,7 @@ ashpd = { workspace = true, features = ["notification", "screencast", "secret"] 
 # use the `*_async` variants directly.
 tilo-rt.workspace = true
 thiserror.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -111,14 +111,6 @@ impl Default for Staged {
 }
 
 impl Widget for Staged {
-    fn sync(
-        &mut self,
-        doc: &mut tilo_app::automerge::AutoCommit,
-        path: &tilo_app::automerge::ObjId,
-    ) {
-        self.inner.sync(doc, path);
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -181,40 +173,47 @@ fn shown(app: &mut TestApp<PlaylistApp>) -> String {
 }
 
 #[test]
-fn a_scenario_stages_the_resource_and_then_the_views() {
-    let mut app = TestApp::<PlaylistApp>::new().unwrap();
-    assert!(shown(&mut app).contains("Details closed"));
-    app.stage(Some("details")).unwrap();
-    let frame = shown(&mut app);
-    assert!(frame.contains("2 songs"), "{frame}");
-    assert!(frame.contains("Selected: Blue in Green"), "{frame}");
-    assert!(frame.contains("Details open"), "{frame}");
-    // The surface staged after it was presented the scenario's actions.
-    assert!(frame.contains("Surface staged with 2 songs"), "{frame}");
-    assert_eq!(
-        STAGED.with(|staged| staged.borrow().clone()),
-        [Some("details".to_owned())]
-    );
-    // View state is not resource state: only the actions were written.
-    assert_eq!(app.state().songs.len(), 2);
-}
-
-#[test]
-fn a_plain_capture_stages_with_no_scenario() {
-    let mut app = TestApp::<PlaylistApp>::new().unwrap();
-    app.stage(None).unwrap();
-    assert!(shown(&mut app).contains("0 songs"));
-    assert!(shown(&mut app).contains("Details closed"));
-    assert_eq!(STAGED.with(|staged| staged.borrow().clone()), [None]);
-}
-
-#[test]
-fn a_scenario_composes_the_same_scene_every_time() {
-    let print = || {
+fn scenarios_stage_the_resource_then_the_views_deterministically() {
+    // phase: a_scenario_stages_the_resource_and_then_the_views
+    {
+        // Each case starts from an empty staging record, as its own test thread did.
+        STAGED.with(|staged| staged.borrow_mut().clear());
         let mut app = TestApp::<PlaylistApp>::new().unwrap();
+        assert!(shown(&mut app).contains("Details closed"));
         app.stage(Some("details")).unwrap();
-        let encoding = app.harness().scene().encoding().clone();
-        (encoding.path_data, encoding.draw_data, encoding.n_paths)
-    };
-    assert_eq!(print(), print());
+        let frame = shown(&mut app);
+        assert!(frame.contains("2 songs"), "{frame}");
+        assert!(frame.contains("Selected: Blue in Green"), "{frame}");
+        assert!(frame.contains("Details open"), "{frame}");
+        // The surface staged after it was presented the scenario's actions.
+        assert!(frame.contains("Surface staged with 2 songs"), "{frame}");
+        assert_eq!(
+            STAGED.with(|staged| staged.borrow().clone()),
+            [Some("details".to_owned())]
+        );
+        // View state is not resource state: only the actions were written.
+        assert_eq!(app.state().songs.len(), 2);
+    }
+    // phase: a_plain_capture_stages_with_no_scenario
+    {
+        // Each case starts from an empty staging record, as its own test thread did.
+        STAGED.with(|staged| staged.borrow_mut().clear());
+        let mut app = TestApp::<PlaylistApp>::new().unwrap();
+        app.stage(None).unwrap();
+        assert!(shown(&mut app).contains("0 songs"));
+        assert!(shown(&mut app).contains("Details closed"));
+        assert_eq!(STAGED.with(|staged| staged.borrow().clone()), [None]);
+    }
+    // phase: a_scenario_composes_the_same_scene_every_time
+    {
+        // Each case starts from an empty staging record, as its own test thread did.
+        STAGED.with(|staged| staged.borrow_mut().clear());
+        let print = || {
+            let mut app = TestApp::<PlaylistApp>::new().unwrap();
+            app.stage(Some("details")).unwrap();
+            let encoding = app.harness().scene().encoding().clone();
+            (encoding.path_data, encoding.draw_data, encoding.n_paths)
+        };
+        assert_eq!(print(), print());
+    }
 }

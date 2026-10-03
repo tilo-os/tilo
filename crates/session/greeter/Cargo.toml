@@ -24,14 +24,13 @@ winit.workspace = true
 taffy.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 zeroize.workspace = true
 bounded-command = { path = "../../system/bounded-command" }
-# greetd's wire protocol. `sync-codec` pulls in the blocking
-# `SyncCodec` (`Request::write_to` / `Response::read_from` over
-# `std::io::{Read,Write}`) — no async runtime needed for a login box.
-greetd_ipc = { version = "0.10", features = ["sync-codec"] }
+greetd-client = { path = "../greetd-client" }
 console-control = { path = "../console-control" }
 serde_json.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 

@@ -10,6 +10,7 @@
 
 pub mod app;
 pub mod doc;
+pub mod resource;
 pub mod scan;
 
 use ui::widget::Widget;
@@ -26,3 +27,4 @@ pub fn shot_root_scenario(scenario: &str) -> Box<dyn Widget> {
         Box::new(app::DiskUsageApp::sample())
     }
 }
+pub use resource::{DiskUsage, DiskUsageShell};

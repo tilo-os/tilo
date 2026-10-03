@@ -138,14 +138,27 @@ mod tests {
     use super::*;
     use automerge::{ROOT, ReadDoc};
 
+    /// The durable retention policy: defaults before and after seeding, seeding
+    /// only durable fields and only once, and clamped round-tripping writes; each
+    /// case uses a fresh document.
     #[test]
+    fn retention_policy_reads_defaults_seeds_once_and_clamps_writes() {
+        seed_then_read_defaults();
+        seed_only_creates_durable_policy_fields();
+        empty_doc_reads_default_without_seed();
+        set_retention_clamps_and_round_trips();
+        retention_reads_default_before_seed();
+        seed_is_idempotent();
+    }
+
+    /// Case of `retention_policy_reads_defaults_seeds_once_and_clamps_writes`.
     fn seed_then_read_defaults() {
         let mut doc = AutoCommit::new();
         BackupsDoc::seed(&mut doc, &ROOT);
         assert_eq!(BackupsDoc::policy(&doc, &ROOT), RetentionPolicy::default());
     }
 
-    #[test]
+    /// Case of `retention_policy_reads_defaults_seeds_once_and_clamps_writes`.
     fn seed_only_creates_durable_policy_fields() {
         let mut doc = AutoCommit::new();
         BackupsDoc::seed(&mut doc, &ROOT);
@@ -160,7 +173,7 @@ mod tests {
         }
     }
 
-    #[test]
+    /// Case of `retention_policy_reads_defaults_seeds_once_and_clamps_writes`.
     fn empty_doc_reads_default_without_seed() {
         // The --shots path syncs against a fresh doc; readers must not panic
         // and must fall back to defaults before seed runs.
@@ -168,7 +181,7 @@ mod tests {
         assert_eq!(BackupsDoc::policy(&doc, &ROOT), RetentionPolicy::default());
     }
 
-    #[test]
+    /// Case of `retention_policy_reads_defaults_seeds_once_and_clamps_writes`.
     fn set_retention_clamps_and_round_trips() {
         let mut doc = AutoCommit::new();
         BackupsDoc::seed(&mut doc, &ROOT);
@@ -181,7 +194,7 @@ mod tests {
         assert_eq!(BackupsDoc::retention(&doc, &ROOT, PolicyField::Daily), 5);
     }
 
-    #[test]
+    /// Case of `retention_policy_reads_defaults_seeds_once_and_clamps_writes`.
     fn retention_reads_default_before_seed() {
         // The action's change-guard reads a field's current value even against a
         // fresh doc; it must fall back to the class default, not 0.
@@ -190,7 +203,7 @@ mod tests {
         assert_eq!(BackupsDoc::retention(&doc, &ROOT, PolicyField::Hourly), 24);
     }
 
-    #[test]
+    /// Case of `retention_policy_reads_defaults_seeds_once_and_clamps_writes`.
     fn seed_is_idempotent() {
         let mut doc = AutoCommit::new();
         BackupsDoc::seed(&mut doc, &ROOT);

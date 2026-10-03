@@ -14,20 +14,11 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::collections::HashMap;
-
 use notes::{NotesApp, WELCOME_BODY};
-use taffy::prelude::*;
 use tempfile::TempDir;
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::headless::Framed;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
 /// Sanity-assert the editor laid out multiple non-degenerate blocks for
 /// the kitchen-sink Welcome body. Pinned so a future regression in
@@ -111,65 +102,19 @@ fn hello() {}
     // the bar; in tests we drive it explicitly.
     app.tick_for_test();
 
-    let theme = Theme::dark();
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let mut state = ui::State::new();
-
-    app.sync(&mut state.doc, &state.root);
-    let child = app.build_layout(&mut taffy, &theme, &mut node_map);
     let (w, h) = (1024u16, 768u16);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(f32::from(w)),
-                    height: Dimension::length(f32::from(h)),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy
-            .compute_layout_with_measure(
-                root,
-                taffy::Size {
-                    width: AvailableSpace::Definite(f32::from(w)),
-                    height: AvailableSpace::Definite(f32::from(h)),
-                },
-                |known, avail, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, avail, tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .unwrap();
-    }
-    app.apply_layout(&taffy, child, Point::ORIGIN);
+    let mut app = Framed::new(
+        ui::State::new(),
+        app,
+        (u32::from(w), u32::from(h)),
+        Theme::dark(),
+    );
 
     assert_blocks_non_degenerate(&mut app);
 
-    let mut scene = Scene::new();
-    app.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
     // We don't compare pixels here — just confirm a non-degenerate
-    // rect and that the draw call returned. If anything panics
-    // upstream we'd never reach this line.
+    // rect and that the frame, draw included, returned. If anything
+    // panics upstream we'd never reach this line.
     assert!(app.get_rect().width() > 0.0);
     assert!(app.get_rect().height() > 0.0);
 
@@ -177,8 +122,7 @@ fn hello() {}
     // result. Skipped in CI to avoid the wgpu device init cost on
     // every run.
     if let Ok(path) = std::env::var("NOTES_SNAPSHOT") {
-        let mut renderer = OffscreenRenderer::new(u32::from(w), u32::from(h));
-        renderer.render_png(&scene, Color::TRANSPARENT, std::path::Path::new(&path));
+        Framed::harness(&app).render_png(std::path::Path::new(&path));
         eprintln!("notes: snapshot written to {path}");
     }
 }

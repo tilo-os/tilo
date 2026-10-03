@@ -10,7 +10,6 @@
 //! the PDF engine; [`sample_document`] is the bundled demonstration used by the
 //! screenshot harness and tests, laid out from its blocks.
 
-use ui::search::SearchTokenizer as _;
 use uuid::Uuid;
 
 /// US-Letter page geometry, in PDF points.
@@ -479,7 +478,10 @@ pub struct Reply {
     /// in their parent comment's list.
     pub id: String,
     pub author: String,
+    /// The reply's plain text: what export, search and labels read.
     pub body: String,
+    /// The reply as written, as the editor shows it.
+    pub blocks: Vec<ui::widget::BlockContent>,
 }
 
 impl Reply {
@@ -495,11 +497,14 @@ pub struct Comment {
     pub anno_id: Option<String>,
     pub page: usize,
     pub author: String,
+    /// The comment's plain text: what export, search and labels read.
     pub body: String,
     /// Monotonic ordinal for stable sort (seed time / creation order).
     pub created: i64,
     pub resolved: bool,
     pub replies: Vec<Reply>,
+    /// The comment as written, as the editor shows it.
+    pub blocks: Vec<ui::widget::BlockContent>,
 }
 
 impl Comment {
@@ -835,7 +840,7 @@ pub(crate) fn search_text(
         let mut pairs = vec![(0, 0)];
         let mut normalized_end = 0;
         for (source_start, scalar) in text.char_indices() {
-            ui::search::UnicodeTokenizer.fold_char(scalar, &mut |folded| {
+            ui::search::fold_char(scalar, &mut |folded| {
                 normalized_end += folded.len_utf8();
             });
             pairs.push((normalized_end, source_start + scalar.len_utf8()));
@@ -1256,8 +1261,15 @@ mod tests {
         (a.0 - b.0).abs() < 1e-3 && (a.1 - b.1).abs() < 1e-3
     }
 
+    fn one_page(text: &str) -> Document {
+        let mut doc = Document::blank_pages("", "", 1, PAGE_W, PAGE_H);
+        doc.pages[0].blocks = vec![Block::Body(text.into())];
+        doc
+    }
+
     #[test]
-    fn a_rotated_page_fits_its_card_and_maps_every_space_consistently() {
+    fn page_map_fits_rotated_pages_and_round_trips_every_space() {
+        // A 600x800 page shown rotated by 90 degrees.
         let own = tilo_pdf::PageGeometry {
             user_box: tilo_pdf::Rect::from_xywh(0.0, 0.0, 600.0, 800.0),
             rotation: tilo_pdf::Rotation::None,
@@ -1278,10 +1290,9 @@ mod tests {
         assert!(close(via_layer, map.user_to_card(p)));
         // An unrotated page the size of its card maps exactly.
         assert!(PageMap::new(own, 0, 600.0, 800.0).is_identity());
-    }
 
-    #[test]
-    fn annotations_round_trip_between_card_and_user_space() {
+        // Annotations round-trip between card and user space on a page whose
+        // own rotation and the view rotation differ.
         let own = tilo_pdf::PageGeometry {
             user_box: tilo_pdf::Rect::from_xywh(0.0, 0.0, 612.0, 792.0),
             rotation: tilo_pdf::Rotation::Cw90,
@@ -1309,7 +1320,28 @@ mod tests {
     }
 
     #[test]
-    fn sample_has_pages_and_outline() {
+    fn rects_normalise_and_swatches_round_trip() {
+        let r = PtRect::from_corners(100.0, 80.0, 40.0, 200.0);
+        assert!((r.x - 40.0).abs() < f64::EPSILON);
+        assert!((r.y - 80.0).abs() < f64::EPSILON);
+        assert!((r.w - 60.0).abs() < f64::EPSILON);
+        assert!((r.h - 120.0).abs() < f64::EPSILON);
+        assert!(r.contains(50.0, 100.0));
+        assert!(!r.contains(10.0, 10.0));
+
+        for s in Swatch::ALL {
+            assert_eq!(Swatch::parse(&s.key()), s);
+        }
+        assert_eq!(Swatch::parse("nonsense"), Swatch::Yellow);
+        let custom = Swatch::from_rgb(12, 200, 99);
+        assert_eq!(custom, Swatch::Custom(0x0c_c8_63));
+        assert_eq!(Swatch::parse(&custom.key()), custom);
+        assert_eq!(custom.rgb(), (12, 200, 99));
+        assert_eq!(Swatch::from_rgb(250, 204, 21), Swatch::Yellow);
+    }
+
+    #[test]
+    fn sample_document_has_real_outline_and_searchable_text() {
         let d = sample_document();
         assert_eq!(d.page_count(), 6);
         assert!(d.page(1).is_some());
@@ -1323,11 +1355,7 @@ mod tests {
                 item.page
             );
         }
-    }
 
-    #[test]
-    fn search_finds_known_term_case_insensitively() {
-        let d = sample_document();
         let hits = search(&d, "sandbox", SearchOptions::default());
         assert!(!hits.is_empty(), "expected to find 'sandbox'");
         // Page 2 discusses sandboxing.
@@ -1337,203 +1365,151 @@ mod tests {
         let page = d.page(m.page).unwrap();
         let text = page.blocks[m.block].search_text().unwrap();
         assert_eq!(text[m.start..m.start + m.len].to_lowercase(), "sandbox");
-    }
 
-    #[test]
-    fn search_empty_query_returns_nothing() {
-        let d = sample_document();
+        // A blank or whitespace-only query finds nothing.
         assert!(search(&d, "   ", SearchOptions::default()).is_empty());
         assert!(search(&d, "", SearchOptions::default()).is_empty());
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn unicode_search_preserves_source_byte_spans_after_case_expansion_and_contraction() {
-        let text = "İ test \u{212a} TEST";
-        let mut doc = Document::blank_pages("", "", 1, PAGE_W, PAGE_H);
-        doc.pages[0].blocks = vec![Block::Body(text.into())];
-        let hits = search(&doc, "test", SearchOptions::default());
-        assert_eq!(hits.len(), 2);
-        assert_eq!(hits[0].start, text.find("test").unwrap());
-        assert_eq!(hits[1].start, text.find("TEST").unwrap());
-        assert_eq!(&text[hits[0].start..hits[0].start + hits[0].len], "test");
-        assert_eq!(&text[hits[1].start..hits[1].start + hits[1].len], "TEST");
-
-        let kelvin = search(&doc, "k", SearchOptions::default());
-        assert_eq!(kelvin.len(), 1);
-        assert_eq!(kelvin[0].start, text.find('\u{212a}').unwrap());
-        assert_eq!(kelvin[0].len, '\u{212a}'.len_utf8());
-        let dotted = search(&doc, "i\u{307}", SearchOptions::default());
-        assert_eq!(dotted.len(), 1);
-        assert_eq!((dotted[0].start, dotted[0].len), (0, 'İ'.len_utf8()));
-        assert!(
-            search(
-                &doc,
-                "k",
-                SearchOptions {
-                    case_sensitive: true,
-                    whole_word: false
-                }
-            )
-            .is_empty()
-        );
-    }
-
-    #[test]
-    fn unicode_whole_word_search_uses_complete_source_words() {
-        let text = "étest testé e\u{301}test test\u{301} test test_2 (test) İ";
-        let mut doc = Document::blank_pages("", "", 1, PAGE_W, PAGE_H);
-        doc.pages[0].blocks = vec![Block::Body(text.into())];
-        let options = SearchOptions {
-            whole_word: true,
+    fn search_options_match_exact_source_byte_spans() {
+        const ANY: SearchOptions = SearchOptions {
             case_sensitive: false,
+            whole_word: false,
         };
-        let hits = search(&doc, "test", options);
-        assert_eq!(
-            hits.len(),
-            2,
-            "accents, combining marks and underscores belong to words"
-        );
-        assert_eq!(hits[0].start, text.find(" test test_2").unwrap() + 1);
-        assert_eq!(hits[1].start, text.find("(test)").unwrap() + 1);
-        // The precomposed and the combining spelling are the same word.
-        assert_eq!(search(&doc, "étest", options).len(), 2);
-        // İ folds to a dotless base like every other accented letter, so a
-        // plain "i" names the whole word.
-        assert_eq!(search(&doc, "i", options).len(), 1);
-        let dotted = search(&doc, "i\u{307}", options);
-        assert_eq!(dotted.len(), 1);
-        assert_eq!(dotted[0].start, text.find('İ').unwrap());
-        assert_eq!(dotted[0].len, 'İ'.len_utf8());
-    }
+        const CASE: SearchOptions = SearchOptions {
+            case_sensitive: true,
+            whole_word: false,
+        };
+        const WORD: SearchOptions = SearchOptions {
+            case_sensitive: false,
+            whole_word: true,
+        };
+        let unicode = "İ test \u{212a} TEST";
+        let words = "étest testé e\u{301}test test\u{301} test test_2 (test) İ";
+        // (case, text, query, options, expected hits as (byte start, matched source text))
+        #[allow(
+            clippy::type_complexity,
+            reason = "one row per search case: name, text, query, options, expected hits"
+        )]
+        let cases: &[(&str, &str, &str, SearchOptions, Vec<(usize, &str)>)] = &[
+            // Guard against an infinite loop when a match could re-find at the
+            // same spot: "aaaa" matches at 0 and 2 (non-overlapping stepping).
+            (
+                "overlapping progresses",
+                "aaaa",
+                "aa",
+                ANY,
+                vec![(0, "aa"), (2, "aa")],
+            ),
+            (
+                "case-insensitive matches both 'The' and 'the'",
+                "The Tilo shell. the OS.",
+                "the",
+                ANY,
+                vec![(0, "The"), (16, "the")],
+            ),
+            (
+                "case-sensitive matches only lowercase 'the'",
+                "The Tilo shell. the OS.",
+                "the",
+                CASE,
+                vec![(16, "the")],
+            ),
+            (
+                "substring search finds 'ink' three times",
+                "ink is thinking and ink.",
+                "ink",
+                ANY,
+                vec![(0, "ink"), (9, "ink"), (20, "ink")],
+            ),
+            (
+                "whole-word skips the 'ink' inside 'thinking'",
+                "ink is thinking and ink.",
+                "ink",
+                WORD,
+                vec![(0, "ink"), (20, "ink")],
+            ),
+            // Case expansion and contraction keep source byte spans.
+            (
+                "unicode case folding keeps source spans",
+                unicode,
+                "test",
+                ANY,
+                vec![
+                    (unicode.find("test").unwrap(), "test"),
+                    (unicode.find("TEST").unwrap(), "TEST"),
+                ],
+            ),
+            (
+                "kelvin sign folds to k",
+                unicode,
+                "k",
+                ANY,
+                vec![(unicode.find('\u{212a}').unwrap(), "\u{212a}")],
+            ),
+            (
+                "dotted capital I expands",
+                unicode,
+                "i\u{307}",
+                ANY,
+                vec![(0, "İ")],
+            ),
+            ("case-sensitive kelvin misses", unicode, "k", CASE, vec![]),
+            // Accents, combining marks and underscores belong to words.
+            (
+                "whole words use complete source words",
+                words,
+                "test",
+                WORD,
+                vec![
+                    (words.find(" test test_2").unwrap() + 1, "test"),
+                    (words.find("(test)").unwrap() + 1, "test"),
+                ],
+            ),
+            // The precomposed and the combining spelling are the same word.
+            (
+                "accented whole word matches both spellings",
+                words,
+                "étest",
+                WORD,
+                vec![
+                    (0, "étest"),
+                    (words.find("e\u{301}test").unwrap(), "e\u{301}test"),
+                ],
+            ),
+            // İ folds to a dotless base like every other accented letter, so a
+            // plain "i" names the whole word.
+            (
+                "plain i names the dotted capital as a whole word",
+                words,
+                "i",
+                WORD,
+                vec![(words.find('İ').unwrap(), "İ")],
+            ),
+            (
+                "full dotted expansion is a whole word",
+                words,
+                "i\u{307}",
+                WORD,
+                vec![(words.find('İ').unwrap(), "İ")],
+            ),
+        ];
+        for (case, text, query, options, expected) in cases {
+            let hits = search(&one_page(text), query, *options);
+            let got: Vec<(usize, &str)> = hits
+                .iter()
+                .map(|m| (m.start, &text[m.start..m.start + m.len]))
+                .collect();
+            assert_eq!(&got, expected, "case {case}");
+        }
 
-    #[test]
-    fn search_materialization_is_bounded() {
-        let mut d = Document::blank_pages("", "", 1, PAGE_W, PAGE_H);
-        d.pages[0].blocks = vec![Block::Body("a ".repeat(MAX_SEARCH_RESULTS + 100))];
+        // Materialisation is bounded.
+        let d = one_page(&"a ".repeat(MAX_SEARCH_RESULTS + 100));
         assert_eq!(
             search(&d, "a", SearchOptions::default()).len(),
             MAX_SEARCH_RESULTS
         );
-    }
-
-    #[test]
-    fn search_overlapping_progresses() {
-        // Guard against an infinite loop when a match has length that
-        // could re-find at the same spot.
-        let d = Document {
-            title: "t".into(),
-            author: "a".into(),
-            subject: "s".into(),
-            pages: vec![Page {
-                number: 1,
-                blocks: vec![Block::Body("aaaa".into())],
-            }],
-            outline: vec![],
-            page_w: PAGE_W,
-            page_h: PAGE_H,
-        };
-        let hits = search(&d, "aa", SearchOptions::default());
-        // "aaaa" -> matches at 0 and 2 (non-overlapping stepping).
-        assert_eq!(hits.len(), 2);
-        assert_eq!(hits[0].start, 0);
-        assert_eq!(hits[1].start, 2);
-    }
-
-    #[test]
-    fn search_case_sensitive_distinguishes_case() {
-        let d = Document {
-            title: "t".into(),
-            author: "a".into(),
-            subject: "s".into(),
-            pages: vec![Page {
-                number: 1,
-                blocks: vec![Block::Body("The Tilo shell. the OS.".into())],
-            }],
-            outline: vec![],
-            page_w: PAGE_W,
-            page_h: PAGE_H,
-        };
-        let insensitive = search(
-            &d,
-            "the",
-            SearchOptions {
-                case_sensitive: false,
-                ..Default::default()
-            },
-        );
-        assert_eq!(
-            insensitive.len(),
-            2,
-            "case-insensitive matches both 'The' and 'the'"
-        );
-        let sensitive = search(
-            &d,
-            "the",
-            SearchOptions {
-                case_sensitive: true,
-                ..Default::default()
-            },
-        );
-        assert_eq!(
-            sensitive.len(),
-            1,
-            "case-sensitive matches only lowercase 'the'"
-        );
-        assert_eq!(sensitive[0].start, 16);
-    }
-
-    #[test]
-    fn search_whole_word_rejects_substrings() {
-        let d = Document {
-            title: "t".into(),
-            author: "a".into(),
-            subject: "s".into(),
-            pages: vec![Page {
-                number: 1,
-                blocks: vec![Block::Body("ink is thinking and ink.".into())],
-            }],
-            outline: vec![],
-            page_w: PAGE_W,
-            page_h: PAGE_H,
-        };
-        let any = search(&d, "ink", SearchOptions::default());
-        assert_eq!(any.len(), 3, "substring search finds 'ink' three times");
-        let words = search(
-            &d,
-            "ink",
-            SearchOptions {
-                whole_word: true,
-                ..Default::default()
-            },
-        );
-        assert_eq!(
-            words.len(),
-            2,
-            "whole-word skips the 'ink' inside 'thinking'"
-        );
-    }
-
-    #[test]
-    fn ptrect_from_corners_normalises() {
-        let r = PtRect::from_corners(100.0, 80.0, 40.0, 200.0);
-        assert!((r.x - 40.0).abs() < f64::EPSILON);
-        assert!((r.y - 80.0).abs() < f64::EPSILON);
-        assert!((r.w - 60.0).abs() < f64::EPSILON);
-        assert!((r.h - 120.0).abs() < f64::EPSILON);
-        assert!(r.contains(50.0, 100.0));
-        assert!(!r.contains(10.0, 10.0));
-    }
-
-    #[test]
-    fn swatch_round_trips() {
-        for s in Swatch::ALL {
-            assert_eq!(Swatch::parse(&s.key()), s);
-        }
-        assert_eq!(Swatch::parse("nonsense"), Swatch::Yellow);
-        let custom = Swatch::from_rgb(12, 200, 99);
-        assert_eq!(custom, Swatch::Custom(0x0c_c8_63));
-        assert_eq!(Swatch::parse(&custom.key()), custom);
-        assert_eq!(custom.rgb(), (12, 200, 99));
-        assert_eq!(Swatch::from_rgb(250, 204, 21), Swatch::Yellow);
     }
 }

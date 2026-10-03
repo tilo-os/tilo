@@ -10,8 +10,9 @@ pub const MAX_METADATA_SCAN_BYTES: usize = 16 * 1024 * 1024;
 #[allow(
     clippy::arithmetic_side_effects,
     clippy::cast_lossless,
-    clippy::indexing_slicing
-)] // Header offsets are fixed and guarded by format-specific length checks.
+    clippy::indexing_slicing,
+    reason = "header offsets are fixed and guarded by format-specific length checks"
+)]
 pub fn extract(name: &str, bytes: &[u8]) -> Option<FilePropertiesV1> {
     let bytes = &bytes[..bytes.len().min(MAX_METADATA_SCAN_BYTES)];
     let ext = name
@@ -81,8 +82,9 @@ pub fn extract(name: &str, bytes: &[u8]) -> Option<FilePropertiesV1> {
 #[allow(
     clippy::arithmetic_side_effects,
     clippy::cast_lossless,
-    clippy::indexing_slicing
-)] // The bounded scanner validates each segment before accessing its fields.
+    clippy::indexing_slicing,
+    reason = "the bounded scanner validates each segment before accessing its fields"
+)]
 fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     if !bytes.starts_with(&[0xff, 0xd8]) {
         return None;
@@ -115,8 +117,9 @@ fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 #[allow(
     clippy::arithmetic_side_effects,
     clippy::cast_lossless,
-    clippy::indexing_slicing
-)] // RIFF chunk bounds are checked before fixed-width header reads.
+    clippy::indexing_slicing,
+    reason = "RIFF chunk bounds are checked before fixed-width header reads"
+)]
 fn wav_properties(bytes: &[u8]) -> Option<(u64, &'static str)> {
     if bytes.len() < 12 || !bytes.starts_with(b"RIFF") || &bytes[8..12] != b"WAVE" {
         return None;
@@ -156,30 +159,33 @@ fn wav_properties(bytes: &[u8]) -> Option<(u64, &'static str)> {
 mod tests {
     use super::*;
     #[test]
-    fn extracts_png_dimensions() {
-        let mut png = vec![0; 24];
-        png[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
-        png[16..20].copy_from_slice(&640u32.to_be_bytes());
-        png[20..24].copy_from_slice(&480u32.to_be_bytes());
-        let p = extract("photo.png", &png).unwrap();
-        assert_eq!((p.image_width, p.image_height), (Some(640), Some(480)));
-    }
-    #[test]
-    fn extracts_pdf_page_count_without_unbounded_input() {
-        let p = extract("a.pdf", b"%PDF-1.7 /Type /Pages /Type /Page /Type /Page\n").unwrap();
-        assert_eq!(p.page_count, Some(2));
-    }
-    #[test]
-    fn extracts_wav_duration_and_codec() {
-        let mut wav = Vec::from(&b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x40\x1f\x00\x00\x40\x1f\x00\x00\x01\x00\x08\x00data\x40\x1f\x00\x00"[..]);
-        wav.resize(wav.len() + 8_000, 0);
-        let p = extract("tone.wav", &wav).unwrap();
-        assert_eq!(p.duration_ms, Some(1_000));
-        assert_eq!(p.codec.as_deref(), Some("pcm"));
-        assert_eq!(p.container.as_deref(), Some("wav"));
-    }
-    #[test]
-    fn rejects_spoofed_extension() {
-        assert!(extract("photo.png", b"not a png").is_none());
+    fn rich_metadata_extracts_only_from_matching_content() {
+        // Phase `extracts_png_dimensions`.
+        {
+            let mut png = vec![0; 24];
+            png[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+            png[16..20].copy_from_slice(&640u32.to_be_bytes());
+            png[20..24].copy_from_slice(&480u32.to_be_bytes());
+            let p = extract("photo.png", &png).unwrap();
+            assert_eq!((p.image_width, p.image_height), (Some(640), Some(480)));
+        }
+        // Phase `extracts_pdf_page_count_without_unbounded_input`.
+        {
+            let p = extract("a.pdf", b"%PDF-1.7 /Type /Pages /Type /Page /Type /Page\n").unwrap();
+            assert_eq!(p.page_count, Some(2));
+        }
+        // Phase `extracts_wav_duration_and_codec`.
+        {
+            let mut wav = Vec::from(&b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x40\x1f\x00\x00\x40\x1f\x00\x00\x01\x00\x08\x00data\x40\x1f\x00\x00"[..]);
+            wav.resize(wav.len() + 8_000, 0);
+            let p = extract("tone.wav", &wav).unwrap();
+            assert_eq!(p.duration_ms, Some(1_000));
+            assert_eq!(p.codec.as_deref(), Some("pcm"));
+            assert_eq!(p.container.as_deref(), Some("wav"));
+        }
+        // Phase `rejects_spoofed_extension`.
+        {
+            assert!(extract("photo.png", b"not a png").is_none());
+        }
     }
 }

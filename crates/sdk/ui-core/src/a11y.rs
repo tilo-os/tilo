@@ -490,34 +490,9 @@ impl AccessNode {
 /// and across processes — unlike [`std::collections::hash_map::RandomState`],
 /// which would hand an assistive technology a different id every launch.
 pub fn hash_key(value: &impl std::hash::Hash) -> u64 {
-    let mut h = FnvHasher::new();
+    let mut h = fnv::FnvHasher::default();
     std::hash::Hash::hash(value, &mut h);
     std::hash::Hasher::finish(&h)
-}
-
-/// FNV-1a, 64-bit. Small, dependency-free and — the part that matters here —
-/// **fixed-seed**, so an id derived from it is reproducible.
-#[derive(Clone, Copy)]
-pub(crate) struct FnvHasher(u64);
-
-impl FnvHasher {
-    pub(crate) const fn new() -> Self {
-        // FNV offset basis.
-        Self(0xcbf2_9ce4_8422_2325)
-    }
-}
-
-impl std::hash::Hasher for FnvHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-    fn write(&mut self, bytes: &[u8]) {
-        for b in bytes {
-            self.0 ^= u64::from(*b);
-            // FNV prime.
-            self.0 = self.0.wrapping_mul(0x100_0000_01b3);
-        }
-    }
 }
 
 /// Serializable absolute logical-pixel geometry for a synthetic
@@ -583,22 +558,23 @@ mod tests {
     use vello::peniko::Color;
 
     #[test]
-    fn access_state_default_is_all_clear() {
+    fn access_state_and_settings_default_clear_and_builders_set_only_their_field() {
         let s = AccessState::default();
-        assert!(!s.focused);
-        assert!(!s.focusable);
-        assert!(!s.selected);
+        for (field, set) in [
+            ("focused", s.focused),
+            ("focusable", s.focusable),
+            ("selected", s.selected),
+            ("disabled", s.disabled),
+            ("read_only", s.read_only),
+            ("protected", s.protected),
+            ("multiline", s.multiline),
+        ] {
+            assert!(!set, "default {field} is clear");
+        }
         assert_eq!(s.checked, None);
         assert_eq!(s.expanded, None);
-        assert!(!s.disabled);
-        assert!(!s.read_only);
-        assert!(!s.protected);
-        assert!(!s.multiline);
         assert_eq!(s, AccessState::new());
-    }
 
-    #[test]
-    fn access_state_builders_set_the_right_fields() {
         let s = AccessState::new()
             .focusable(true)
             .focused(true)
@@ -611,88 +587,18 @@ mod tests {
         // Builders are independent — untouched fields stay default.
         assert_eq!(s.expanded, None);
         assert!(!s.read_only);
-
-        let unchecked = AccessState::new().checked(false);
         assert_eq!(
-            unchecked.checked,
+            AccessState::new().checked(false).checked,
             Some(false),
             "checked(false) is Some(false), not None"
         );
+        assert_eq!(AccessState::new().expanded(false).expanded, Some(false));
 
-        let collapsed = AccessState::new().expanded(false);
-        assert_eq!(collapsed.expanded, Some(false));
-    }
-
-    #[test]
-    fn access_node_new_has_no_text_and_default_state() {
-        let n = AccessNode::new(Role::Button);
-        assert_eq!(n.role, Role::Button);
-        assert_eq!(n.name, None);
-        assert_eq!(n.description, None);
-        assert_eq!(n.value, None);
-        assert_eq!(n.state, AccessState::default());
-    }
-
-    #[test]
-    fn access_node_builders_compose() {
-        let n = AccessNode::new(Role::Slider)
-            .with_name("Volume")
-            .with_description("Output volume")
-            .with_value("50%")
-            .with_state(AccessState::new().focusable(true).focused(true));
-        assert_eq!(n.role, Role::Slider);
-        assert_eq!(n.name.as_deref(), Some("Volume"));
-        assert_eq!(n.description.as_deref(), Some("Output volume"));
-        assert_eq!(n.value.as_deref(), Some("50%"));
-        assert!(n.state.focusable && n.state.focused);
-    }
-
-    #[test]
-    fn access_node_live_and_position_builders() {
-        let bare = AccessNode::new(Role::Group);
-        assert_eq!(bare.live, None);
-        assert_eq!(bare.set_size, None);
-        assert_eq!(bare.pos_in_set, None);
-        assert_eq!(bare.level, None);
-
-        let live = AccessNode::new(Role::Group).with_live(Politeness::Assertive);
-        assert_eq!(live.live, Some(Politeness::Assertive));
-
-        let item = AccessNode::new(Role::Tab).with_position(2, 4);
-        assert_eq!(item.pos_in_set, Some(2));
-        assert_eq!(item.set_size, Some(4));
-
-        let row = AccessNode::new(Role::TreeItem).with_level(3);
-        assert_eq!(row.level, Some(3));
-    }
-
-    #[test]
-    fn access_node_optional_helpers() {
-        let named = AccessNode::new(Role::StaticText).with_optional_name(Some("Hi".into()));
-        assert_eq!(named.name.as_deref(), Some("Hi"));
-        let anon = AccessNode::new(Role::Image).with_optional_name(None);
-        assert_eq!(anon.name, None);
-        let masked = AccessNode::new(Role::TextInput).with_optional_value(None);
-        assert_eq!(masked.value, None);
-    }
-
-    #[test]
-    fn heading_role_carries_level() {
-        let h2 = Role::Heading { level: 2 };
-        assert_eq!(h2, Role::Heading { level: 2 });
-        assert_ne!(h2, Role::Heading { level: 3 });
-    }
-
-    #[test]
-    fn a11y_settings_default_is_all_off() {
+        // Settings default to all off and round-trip through JSON.
         let s = A11ySettings::default();
         assert!(!s.high_contrast);
         assert!(!s.reduce_motion);
         assert!(!s.screen_reader);
-    }
-
-    #[test]
-    fn a11y_settings_roundtrips_through_json() {
         let s = A11ySettings {
             high_contrast: true,
             reduce_motion: false,
@@ -704,7 +610,54 @@ mod tests {
     }
 
     #[test]
-    fn contrast_ratio_extremes() {
+    fn access_node_builders_compose_text_live_position_and_level() {
+        let n = AccessNode::new(Role::Button);
+        assert_eq!(n.role, Role::Button);
+        assert_eq!(n.name, None);
+        assert_eq!(n.description, None);
+        assert_eq!(n.value, None);
+        assert_eq!(n.state, AccessState::default());
+
+        let n = AccessNode::new(Role::Slider)
+            .with_name("Volume")
+            .with_description("Output volume")
+            .with_value("50%")
+            .with_state(AccessState::new().focusable(true).focused(true));
+        assert_eq!(n.role, Role::Slider);
+        assert_eq!(n.name.as_deref(), Some("Volume"));
+        assert_eq!(n.description.as_deref(), Some("Output volume"));
+        assert_eq!(n.value.as_deref(), Some("50%"));
+        assert!(n.state.focusable && n.state.focused);
+
+        let bare = AccessNode::new(Role::Group);
+        assert_eq!(bare.live, None);
+        assert_eq!(bare.set_size, None);
+        assert_eq!(bare.pos_in_set, None);
+        assert_eq!(bare.level, None);
+        let live = AccessNode::new(Role::Group).with_live(Politeness::Assertive);
+        assert_eq!(live.live, Some(Politeness::Assertive));
+        let item = AccessNode::new(Role::Tab).with_position(2, 4);
+        assert_eq!(item.pos_in_set, Some(2));
+        assert_eq!(item.set_size, Some(4));
+        let row = AccessNode::new(Role::TreeItem).with_level(3);
+        assert_eq!(row.level, Some(3));
+
+        // Optional helpers.
+        let named = AccessNode::new(Role::StaticText).with_optional_name(Some("Hi".into()));
+        assert_eq!(named.name.as_deref(), Some("Hi"));
+        let anon = AccessNode::new(Role::Image).with_optional_name(None);
+        assert_eq!(anon.name, None);
+        let masked = AccessNode::new(Role::TextInput).with_optional_value(None);
+        assert_eq!(masked.value, None);
+
+        // The heading role carries its level.
+        let h2 = Role::Heading { level: 2 };
+        assert_eq!(h2, Role::Heading { level: 2 });
+        assert_ne!(h2, Role::Heading { level: 3 });
+    }
+
+    #[test]
+    fn contrast_ratio_and_relative_luminance_follow_wcag() {
         let white = Color::from_rgb8(255, 255, 255);
         let black = Color::from_rgb8(0, 0, 0);
         // Black-on-white is the WCAG maximum, 21:1.
@@ -715,14 +668,9 @@ mod tests {
         );
         assert!((contrast_ratio(black, white) - r).abs() < 1e-9);
         assert!((contrast_ratio(white, white) - 1.0).abs() < 1e-9);
-    }
 
-    #[test]
-    fn relative_luminance_bounds() {
-        let white = relative_luminance(Color::from_rgb8(255, 255, 255));
-        let black = relative_luminance(Color::from_rgb8(0, 0, 0));
-        assert!((white - 1.0).abs() < 1e-6);
-        assert!(black.abs() < 1e-6);
+        assert!((relative_luminance(white) - 1.0).abs() < 1e-6);
+        assert!(relative_luminance(black).abs() < 1e-6);
         // Green contributes more luminance than red or blue (WCAG weights).
         let red = relative_luminance(Color::from_rgb8(255, 0, 0));
         let green = relative_luminance(Color::from_rgb8(0, 255, 0));

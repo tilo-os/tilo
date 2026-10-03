@@ -76,7 +76,9 @@ pub use backup::{
     PortableBackupInfo, export_portable_backup, import_portable_backup,
     import_portable_backup_matching, import_portable_backup_with_provider, verify_portable_backup,
 };
-pub use secure_store::{BrokerFileProvider, SecretProvider};
+pub use secure_store::{
+    BrokerFileProvider, FILE_SECRETS_ENV, SecretProvider, file_secrets_requested,
+};
 
 use crate::{
     BrokerSigningIdentity, IDENTITY_SERVICE, NotAvailable, collaboration_join_signing_bytes,
@@ -89,8 +91,8 @@ use crate::{
 
 /// True when a secured identity's Secret Service item could not be obtained.
 /// The storage provider marks this condition with `ENOKEY`; keeping the
-/// classification typed avoids making startup policy depend on localized
-/// `secret-tool` diagnostics.
+/// classification typed avoids making startup policy depend on a store's
+/// localized diagnostics.
 pub fn is_secret_service_unavailable(error: &NotAvailable) -> bool {
     matches!(
         error,
@@ -110,7 +112,7 @@ pub fn is_secret_service_unavailable_io(error: &io::Error) -> bool {
     {
         error
             .get_ref()
-            .is_some_and(|source| source.is::<SecretServiceUnavailable>())
+            .is_some_and(<dyn std::error::Error + Send + Sync>::is::<SecretServiceUnavailable>)
     }
 }
 
@@ -126,6 +128,7 @@ impl std::fmt::Display for SecretServiceUnavailable {
 #[cfg(not(target_os = "linux"))]
 impl std::error::Error for SecretServiceUnavailable {}
 
+/// Construct the portable marker for an unavailable Secret Service identity item.
 pub fn secret_service_unavailable_error() -> io::Error {
     #[cfg(target_os = "linux")]
     {
@@ -204,18 +207,13 @@ pub struct IdentityMetadata {
 const ACTIVE_FILE: &str = "active";
 const LOCK_FILE: &str = ".identity.lock";
 const MAX_RECORD_BYTES: u64 = 1024 * 1024;
-/// Durable owner-only replacement through atomic-file, with the staging file
-/// opened exclusively and without following links, so a planted symlink can
-/// never redirect identity bytes.
+
+/// Publish privately through the framework's retained parent and preserve its
+/// failure phase. Lifecycle callers admit the identity namespace and hold its
+/// lock; provisioning that parent durably is a separate responsibility.
 fn write_private_atomic(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
-    atomic_file::write_with_temp_opener(path, bytes, |temp| {
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(temp)
-    })
+    tilo_files::native::atomic::replace(path, bytes, tilo_files::native::atomic::Privacy::OwnerOnly)
+        .map_err(tilo_files::native::atomic::PublicationError::into_io_error)
 }
 
 /// Resolve the per-login-user identity directory using XDG rules.
@@ -225,17 +223,8 @@ fn write_private_atomic(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> 
 /// Returns an error if neither `XDG_CONFIG_HOME` nor `HOME` is set to an
 /// absolute path.
 pub fn identity_dir_from_env() -> io::Result<PathBuf> {
-    if let Some(xdg) = env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
-        let xdg = PathBuf::from(xdg);
-        if xdg.is_absolute() {
-            return Ok(xdg.join("tilo").join("identity"));
-        }
-    }
-    if let Some(home) = env::var_os("HOME").filter(|v| !v.is_empty()) {
-        let home = PathBuf::from(home);
-        if home.is_absolute() {
-            return Ok(home.join(".config").join("tilo").join("identity"));
-        }
+    if let Some(config) = xdg_paths::xdg::config_home().filter(|dir| dir.is_absolute()) {
+        return Ok(config.join("tilo").join("identity"));
     }
     Err(io::Error::new(
         io::ErrorKind::NotFound,
@@ -487,7 +476,16 @@ fn import_identity_unlocked(
         None => secure_record_unlocked(dir, &path),
     };
     if let Err(error) = secured {
-        let _ = fs::remove_file(&path);
+        // Both securing paths preserve every metadata-writer failure phase,
+        // including across preferred-provider fallback. Their unclassified
+        // errors arise only before metadata publication (read, validation,
+        // provider access or serialization), so the staged v1 may be removed.
+        if matches!(
+            tilo_files::native::atomic::publication_state(&error),
+            None | Some(tilo_files::native::atomic::PublicationState::NotPublished)
+        ) {
+            let _ = fs::remove_file(&path);
+        }
         return Err(error);
     }
     Ok(path)
@@ -529,6 +527,10 @@ fn secure_record_unlocked(
     path: &std::path::Path,
 ) -> io::Result<KeyProtection> {
     let record = read_record(path)?;
+    #[cfg(not(test))]
+    let preferred = secure_store::preferred_provider(dir);
+    #[cfg(test)]
+    let preferred = tests::preferred_provider(dir);
     if record.schema_version == 2 {
         let reference = record.secret_ref.as_ref().ok_or_else(|| {
             io::Error::new(
@@ -537,16 +539,31 @@ fn secure_record_unlocked(
             )
         })?;
         let provider = secure_store::provider_for(dir, reference)?;
+        if !secure_store::FILE_FALLBACK
+            && provider.protection() == KeyProtection::BrokerFile
+            && preferred.protection() == KeyProtection::SecretService
+        {
+            return move_secret_unlocked(dir, path, provider.as_ref(), preferred.as_ref());
+        }
         let secret = provider.load(&reference.locator)?;
         identity_from_record(record, Some(secret.as_slice()))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
         return Ok(provider.protection());
     }
 
-    let preferred = secure_store::preferred_provider(dir);
     match secure_record_with_provider_unlocked(dir, path, preferred.as_ref()) {
         Ok(protection) => Ok(protection),
-        Err(preferred_error) if preferred.protection() == KeyProtection::SecretService => {
+        Err(preferred_error)
+            if secure_store::FILE_FALLBACK
+                && preferred.protection() == KeyProtection::SecretService
+                && matches!(
+                    tilo_files::native::atomic::publication_state(&preferred_error),
+                    None | Some(tilo_files::native::atomic::PublicationState::NotPublished)
+                ) =>
+        {
+            // Errors without a publication phase occur before this attempt's
+            // metadata write. Once it may have published, preserve its error:
+            // a fallback could hide that phase or replace a referenced key.
             tracing_warning_for_secret_service(&preferred_error);
             let fallback = secure_store::fallback_provider(dir);
             secure_record_with_provider_unlocked(dir, path, &fallback)
@@ -621,12 +638,57 @@ fn secure_record_with_provider_unlocked(
     let metadata = serde_json::to_vec_pretty(&record)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     if let Err(error) = write_private_atomic(path, &metadata) {
-        if let Some(reference) = record.secret_ref.as_ref() {
+        if tilo_files::native::atomic::publication_state(&error)
+            == Some(tilo_files::native::atomic::PublicationState::NotPublished)
+            && let Some(reference) = record.secret_ref.as_ref()
+        {
             let _ = provider.remove(&reference.locator);
         }
         return Err(error);
     }
     Ok(provider.protection())
+}
+
+/// Move a secured record's secret from `from` into `to`, once: stored there
+/// and read back, the record republished to reference it, and only then
+/// removed from `from`, unless another record still references it there.
+/// Any failure leaves the record on `from`, and is returned.
+fn move_secret_unlocked(
+    dir: &std::path::Path,
+    path: &std::path::Path,
+    from: &dyn SecretProvider,
+    to: &dyn SecretProvider,
+) -> io::Result<KeyProtection> {
+    let mut record = read_record(path)?;
+    let old = record.secret_ref.clone().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "secured identity has no secret reference",
+        )
+    })?;
+    let secret = from.load(&old.locator)?;
+    identity_from_record(read_record(path)?, Some(secret.as_slice()))
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    to.store(&old.locator, secret.as_slice())?;
+    record.secret_ref = Some(SecretReference {
+        backend: to.backend_id().to_string(),
+        locator: old.locator.clone(),
+    });
+    let metadata = serde_json::to_vec_pretty(&record)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    write_private_atomic(path, &metadata)?;
+    let shared = list_identities_unlocked(dir)?.iter().any(|other| {
+        identity_path(dir, &other.id)
+            .ok()
+            .filter(|other_path| other_path != path)
+            .and_then(|other_path| read_record(&other_path).ok())
+            .and_then(|other_record| other_record.secret_ref)
+            .is_some_and(|other_ref| other_ref == old)
+    });
+    if !shared {
+        from.remove(&old.locator)?;
+    }
+    Ok(to.protection())
 }
 
 /// Select which identity the launcher brokers into newly started apps.
@@ -1676,78 +1738,209 @@ mod tests {
     use super::*;
     use getrandom::{SysRng, rand_core::UnwrapErr};
 
-    #[test]
-    fn secret_service_unavailability_has_a_typed_classification() {
-        let unavailable =
-            NotAvailable::ConnectionFailed(io::Error::from_raw_os_error(libc::ENOKEY));
-        assert!(is_secret_service_unavailable(&unavailable));
-        let other = NotAvailable::ConnectionFailed(io::Error::from_raw_os_error(libc::EACCES));
-        assert!(!is_secret_service_unavailable(&other));
+    // Only the external keyring transport is emulated. Both its provider
+    // storage and all identity metadata publication use real files.
+    struct SecretServiceFixture {
+        storage: BrokerFileProvider,
+        reject_store: bool,
+    }
+
+    impl SecretServiceFixture {
+        fn new(dir: &std::path::Path, reject_store: bool) -> Self {
+            Self {
+                storage: BrokerFileProvider::new(&dir.join("test-keyring")),
+                reject_store,
+            }
+        }
+    }
+
+    impl SecretProvider for SecretServiceFixture {
+        fn protection(&self) -> KeyProtection {
+            KeyProtection::SecretService
+        }
+        fn backend_id(&self) -> &'static str {
+            "secret-service-v1"
+        }
+        fn store(&self, locator: &str, secret: &[u8]) -> io::Result<()> {
+            if self.reject_store {
+                return Err(io::Error::other("test keyring refused storage"));
+            }
+            self.storage.store(locator, secret)
+        }
+        fn load(&self, locator: &str) -> io::Result<Zeroizing<Vec<u8>>> {
+            self.storage.load(locator)
+        }
+        fn remove(&self, locator: &str) -> io::Result<()> {
+            self.storage.remove(locator)
+        }
+    }
+
+    thread_local! {
+        static PREFERRED_SECRET_SERVICE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    }
+
+    pub(super) fn preferred_provider(dir: &std::path::Path) -> Box<dyn SecretProvider + '_> {
+        match PREFERRED_SECRET_SERVICE.get() {
+            Some(reject_store) => Box::new(SecretServiceFixture::new(dir, reject_store)),
+            None => secure_store::preferred_provider(dir),
+        }
+    }
+
+    fn with_preferred_secret_service<T>(reject_store: bool, operation: impl FnOnce() -> T) -> T {
+        struct Restore(Option<bool>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                PREFERRED_SECRET_SERVICE.set(self.0);
+            }
+        }
+        let _restore = Restore(PREFERRED_SECRET_SERVICE.replace(Some(reject_store)));
+        operation()
     }
 
     #[test]
-    fn public_metadata_does_not_unlock_the_secret_provider() {
-        let dir = tempfile::tempdir().expect("identity directory");
-        let path = dir.path().join("secured.json");
-        fs::write(
-            &path,
-            serde_json::json!({
-                "display_name": "Ada",
-                "avatar_color": [12, 34, 56],
-                "threshold_identity": {
-                    "single_device": true,
-                    "group_public_key": vec![7u8; 32],
-                    "threshold": 1,
-                    "total_shares": 1,
-                    "share_index": 0
-                },
-                "created_at": "proof",
-                "schema_version": 2,
-                "secret_ref": {
-                    "backend": "secret-service-v1",
-                    "locator": "00".repeat(32)
-                }
-            })
-            .to_string(),
-        )
-        .expect("identity record");
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("private mode");
+    fn the_secret_provider_is_classified_and_unlocked_only_to_sign() {
+        // phase: secret_service_unavailability_has_a_typed_classification
+        {
+            let unavailable = NotAvailable::ConnectionFailed(secret_service_unavailable_error());
+            assert!(is_secret_service_unavailable(&unavailable));
+            let other = NotAvailable::ConnectionFailed(io::Error::from_raw_os_error(libc::EACCES));
+            assert!(!is_secret_service_unavailable(&other));
+        }
+        // phase: public_metadata_does_not_unlock_the_secret_provider
+        {
+            let dir = tempfile::tempdir().expect("identity directory");
+            let path = dir.path().join("secured.json");
+            fs::write(
+                &path,
+                serde_json::json!({
+                    "display_name": "Ada",
+                    "avatar_color": [12, 34, 56],
+                    "threshold_identity": {
+                        "single_device": true,
+                        "group_public_key": vec![7u8; 32],
+                        "threshold": 1,
+                        "total_shares": 1,
+                        "share_index": 0
+                    },
+                    "created_at": "proof",
+                    "schema_version": 2,
+                    "secret_ref": {
+                        "backend": "secret-service-v1",
+                        "locator": "00".repeat(32)
+                    }
+                })
+                .to_string(),
+            )
+            .expect("identity record");
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("private mode");
 
-        let metadata = load_metadata_from_path(&path).expect("public metadata");
-        assert_eq!(metadata.display_name, "Ada");
-        assert_eq!(metadata.avatar_color, [12, 34, 56]);
-        assert_eq!(metadata.group_public_key, [7; 32]);
-        assert_eq!(
-            (
-                metadata.threshold,
-                metadata.total_shares,
-                metadata.share_index
-            ),
-            (1, 1, 0)
-        );
+            let metadata = load_metadata_from_path(&path).expect("public metadata");
+            assert_eq!(metadata.display_name, "Ada");
+            assert_eq!(metadata.avatar_color, [12, 34, 56]);
+            assert_eq!(metadata.group_public_key, [7; 32]);
+            assert_eq!(
+                (
+                    metadata.threshold,
+                    metadata.total_shares,
+                    metadata.share_index
+                ),
+                (1, 1, 0)
+            );
+        }
     }
 
     #[cfg(unix)]
     #[test]
-    fn legacy_group_writable_lifecycle_lock_is_tightened() {
-        let dir = tempfile::tempdir().expect("identity directory");
-        let lock = dir.path().join(LOCK_FILE);
-        fs::write(&lock, []).expect("legacy lock");
-        fs::set_permissions(&lock, fs::Permissions::from_mode(0o660)).expect("legacy mode");
+    fn identity_files_stay_owner_only() {
+        // phase: legacy_group_writable_lifecycle_lock_is_tightened
+        {
+            let dir = tempfile::tempdir().expect("identity directory");
+            let lock = dir.path().join(LOCK_FILE);
+            fs::write(&lock, []).expect("legacy lock");
+            fs::set_permissions(&lock, fs::Permissions::from_mode(0o660)).expect("legacy mode");
 
-        assert!(
-            list_identities(dir.path())
-                .expect("upgrade lock")
-                .is_empty()
-        );
-        assert_eq!(
-            fs::metadata(lock)
-                .expect("lock metadata")
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
+            assert!(
+                list_identities(dir.path())
+                    .expect("upgrade lock")
+                    .is_empty()
+            );
+            assert_eq!(
+                fs::metadata(lock)
+                    .expect("lock metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        // phase: imported_secrets_and_selector_are_private
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = import_identity(dir.path(), "personal", &record_bytes("Ada", 26)).unwrap();
+            set_active_identity(dir.path(), "personal").unwrap();
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::metadata(dir.path().join(ACTIVE_FILE))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            let metadata = fs::read_to_string(&path).unwrap();
+            assert!(metadata.contains("\"schema_version\": 2"));
+            assert!(metadata.contains("\"secret_ref\""));
+            assert!(
+                !metadata.contains("secret_bytes"),
+                "private signing material remained in mounted-style JSON"
+            );
+        }
+        // phase: broker_file_revalidates_key_permissions_before_load_or_remove
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let provider = BrokerFileProvider::new(dir.path());
+            let locator = "ab".repeat(32);
+            provider.store(&locator, &[30; 32]).unwrap();
+            let key_path = dir.path().join("secrets").join(format!("{locator}.key"));
+            fs::set_permissions(&key_path, fs::Permissions::from_mode(0o644)).unwrap();
+
+            assert_eq!(
+                provider.load(&locator).unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            assert_eq!(
+                provider.remove(&locator).unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+        }
+        // phase: record_open_rejects_symlinks_and_wide_permissions
+        {
+            use std::os::unix::fs::symlink;
+
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("target.json");
+            fs::write(&target, record_bytes("Ada", 29)).unwrap();
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+            let link = dir.path().join("link.json");
+            symlink(&target, &link).unwrap();
+            assert!(load_from_path(link).is_err());
+
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+            let error = load_from_path(target).unwrap_err();
+            match error {
+                NotAvailable::ConnectionFailed(error) => {
+                    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+                }
+                other => panic!("unexpected error: {other:?}"),
+            }
+        }
     }
 
     #[test]
@@ -1786,65 +1979,64 @@ mod tests {
 
     #[test]
     #[serial_test::serial(identity_env)]
-    fn load_without_env_returns_service_fd_missing() {
-        let _env = clear_env();
-        match load() {
-            Err(NotAvailable::ServiceFdMissing) => {}
-            other => panic!("expected ServiceFdMissing, got {other:?}"),
-        }
-    }
-
-    #[test]
-    #[serial_test::serial(identity_env)]
-    fn load_with_empty_env_returns_service_fd_missing() {
-        let mut env = clear_env();
-        env.set(IDENTITY_ENV_VAR, "");
-        let out = load();
-        drop(env);
-        match out {
-            Err(NotAvailable::ServiceFdMissing) => {}
-            other => panic!("expected ServiceFdMissing, got {other:?}"),
-        }
-    }
-
-    #[test]
-    #[serial_test::serial(identity_env)]
-    fn relative_xdg_config_home_never_relocates_identity_by_cwd() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_CONFIG_HOME", "relative/config")
-            .set("HOME", "/home/ada");
-        assert_eq!(
-            identity_dir_from_env().unwrap(),
-            PathBuf::from("/home/ada/.config/tilo/identity")
-        );
-    }
-
-    #[test]
-    fn load_missing_file_surfaces_connection_failed() {
-        let err = load_from_path(PathBuf::from("/nonexistent/tilo-identity.json"))
-            .expect_err("should fail");
-        match err {
-            NotAvailable::ConnectionFailed(io) => {
-                assert_eq!(io.kind(), io::ErrorKind::NotFound);
+    fn the_environment_never_relocates_or_fakes_an_identity() {
+        // phase: load_without_env_returns_service_fd_missing
+        {
+            let _env = clear_env();
+            match load() {
+                Err(NotAvailable::ServiceFdMissing) => {}
+                other => panic!("expected ServiceFdMissing, got {other:?}"),
             }
-            other => panic!("expected ConnectionFailed(NotFound), got {other:?}"),
         }
-    }
-
-    #[test]
-    fn load_bad_json_surfaces_invalid_data() {
-        let err = load_from_bytes(b"not json at all").expect_err("should fail");
-        match err {
-            NotAvailable::ConnectionFailed(io) => {
-                assert_eq!(io.kind(), io::ErrorKind::InvalidData);
+        // phase: load_with_empty_env_returns_service_fd_missing
+        {
+            let mut env = clear_env();
+            env.set(IDENTITY_ENV_VAR, "");
+            let out = load();
+            drop(env);
+            match out {
+                Err(NotAvailable::ServiceFdMissing) => {}
+                other => panic!("expected ServiceFdMissing, got {other:?}"),
             }
-            other => panic!("expected ConnectionFailed(InvalidData), got {other:?}"),
+        }
+        // phase: relative_xdg_config_home_never_relocates_identity_by_cwd
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", "relative/config")
+                .set("HOME", "/home/ada");
+            assert_eq!(
+                identity_dir_from_env().unwrap(),
+                PathBuf::from("/home/ada/.config/tilo/identity")
+            );
         }
     }
 
     #[test]
-    fn load_unknown_schema_version_rejected() {
-        let json = r#"{
+    fn loading_an_identity_file_validates_its_shape() {
+        // phase: load_missing_file_surfaces_connection_failed
+        {
+            let err = load_from_path(PathBuf::from("/nonexistent/tilo-identity.json"))
+                .expect_err("should fail");
+            match err {
+                NotAvailable::ConnectionFailed(io) => {
+                    assert_eq!(io.kind(), io::ErrorKind::NotFound);
+                }
+                other => panic!("expected ConnectionFailed(NotFound), got {other:?}"),
+            }
+        }
+        // phase: load_bad_json_surfaces_invalid_data
+        {
+            let err = load_from_bytes(b"not json at all").expect_err("should fail");
+            match err {
+                NotAvailable::ConnectionFailed(io) => {
+                    assert_eq!(io.kind(), io::ErrorKind::InvalidData);
+                }
+                other => panic!("expected ConnectionFailed(InvalidData), got {other:?}"),
+            }
+        }
+        // phase: load_unknown_schema_version_rejected
+        {
+            let json = r#"{
             "display_name": "Alice",
             "avatar_color": [255, 0, 0],
             "threshold_identity": {
@@ -1858,287 +2050,293 @@ mod tests {
             "created_at": "1970-01-01T00:00:00Z",
             "schema_version": 42
         }"#;
-        let err = load_from_bytes(json.as_bytes()).expect_err("should fail");
-        match err {
-            NotAvailable::ConnectionFailed(io) => {
-                assert!(io.to_string().contains("42"), "wrong error text: {io}");
+            let err = load_from_bytes(json.as_bytes()).expect_err("should fail");
+            match err {
+                NotAvailable::ConnectionFailed(io) => {
+                    assert!(io.to_string().contains("42"), "wrong error text: {io}");
+                }
+                other => panic!("unexpected: {other:?}"),
             }
-            other => panic!("unexpected: {other:?}"),
+        }
+        // phase: extra_fields_in_json_are_tolerated
+        {
+            // Forward-compat: a newer launcher may write extra fields;
+            // an older SDK must NOT hard-fail. This test asserts that.
+            let secret = [3u8; 32];
+            let sk = SigningKey::from_bytes(&secret);
+            let vk = sk.verifying_key();
+            let record = serde_json::json!({
+                "display_name": "Alice",
+                "avatar_color": [0, 0, 0],
+                "threshold_identity": {
+                    "single_device": true,
+                    "group_public_key": vk.to_bytes(),
+                    "threshold": 1_u16,
+                    "total_shares": 1_u16,
+                    "share_index": 1_u16,
+                    "secret_bytes": secret.to_vec(),
+                    "some_new_field_from_the_future": "should be ignored",
+                },
+                "created_at": "2026-07-02T00:00:00Z",
+                "schema_version": 1,
+                "some_top_level_new_field": 99,
+            });
+            let bytes = serde_json::to_vec(&record).unwrap();
+            load_from_bytes(&bytes).expect("must tolerate unknown fields");
+        }
+        // phase: load_from_path_reads_disk_file
+        {
+            use std::io::Write;
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("primary.json");
+
+            let secret = [11u8; 32];
+            let sk = SigningKey::from_bytes(&secret);
+            let vk = sk.verifying_key();
+            let record = serde_json::json!({
+                "display_name": "Bob",
+                "avatar_color": [1, 2, 3],
+                "threshold_identity": {
+                    "single_device": true,
+                    "group_public_key": vk.to_bytes(),
+                    "threshold": 1_u16,
+                    "total_shares": 1_u16,
+                    "share_index": 1_u16,
+                    "secret_bytes": secret.to_vec(),
+                },
+                "created_at": "2026-07-02T00:00:00Z",
+                "schema_version": 1,
+            });
+            let mut f = fs::File::create(&path).unwrap();
+            f.set_permissions(fs::Permissions::from_mode(0o600))
+                .unwrap();
+            f.write_all(&serde_json::to_vec(&record).unwrap()).unwrap();
+            drop(f);
+
+            let ident = load_from_path(path).expect("load_from_path");
+            assert_eq!(ident.display_name(), "Bob");
         }
     }
 
     #[test]
-    fn single_device_load_then_sign_and_verify() {
-        // The end-to-end happy path apps will hit.
-        use ed25519_dalek::{Verifier, VerifyingKey};
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn a_local_secret_must_derive_the_recorded_key_to_sign() {
+        // phase: single_device_load_then_sign_and_verify
+        {
+            // The end-to-end happy path apps will hit.
+            use ed25519_dalek::{Verifier, VerifyingKey};
 
-        let secret = [7u8; 32];
-        let sk = SigningKey::from_bytes(&secret);
-        let vk = sk.verifying_key();
-        let record = serde_json::json!({
-            "display_name": "Alice",
-            "avatar_color": [200, 100, 50],
-            "threshold_identity": {
-                "single_device": true,
-                "group_public_key": vk.to_bytes(),
-                "threshold": 1_u16,
-                "total_shares": 1_u16,
-                "share_index": 1_u16,
-                "secret_bytes": secret.to_vec(),
-            },
-            "created_at": "2026-07-02T00:00:00Z",
-            "schema_version": 1,
-        });
-        let bytes = serde_json::to_vec(&record).unwrap();
-        let ident = load_from_bytes(&bytes).expect("load");
+            let secret = [7u8; 32];
+            let sk = SigningKey::from_bytes(&secret);
+            let vk = sk.verifying_key();
+            let record = serde_json::json!({
+                "display_name": "Alice",
+                "avatar_color": [200, 100, 50],
+                "threshold_identity": {
+                    "single_device": true,
+                    "group_public_key": vk.to_bytes(),
+                    "threshold": 1_u16,
+                    "total_shares": 1_u16,
+                    "share_index": 1_u16,
+                    "secret_bytes": secret.to_vec(),
+                },
+                "created_at": "2026-07-02T00:00:00Z",
+                "schema_version": 1,
+            });
+            let bytes = serde_json::to_vec(&record).unwrap();
+            let ident = load_from_bytes(&bytes).expect("load");
 
-        assert_eq!(ident.display_name(), "Alice");
-        assert_eq!(ident.avatar_color(), [200, 100, 50]);
-        assert_eq!(ident.group_public_key(), vk.to_bytes());
-        assert_eq!(ident.signing_public_key(), vk.to_bytes());
-        assert!(ident.device_certificate().is_none());
-        assert_eq!(ident.threshold(), 1);
-        assert_eq!(ident.total_shares(), 1);
-        assert_eq!(ident.share_index(), 1);
-        assert!(ident.is_single_device());
+            assert_eq!(ident.display_name(), "Alice");
+            assert_eq!(ident.avatar_color(), [200, 100, 50]);
+            assert_eq!(ident.group_public_key(), vk.to_bytes());
+            assert_eq!(ident.signing_public_key(), vk.to_bytes());
+            assert!(ident.device_certificate().is_none());
+            assert_eq!(ident.threshold(), 1);
+            assert_eq!(ident.total_shares(), 1);
+            assert_eq!(ident.share_index(), 1);
+            assert!(ident.is_single_device());
 
-        let msg = b"the quick brown fox";
-        let sig_bytes = ident.sign(msg).expect("sign");
-        let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
-        let verifier = VerifyingKey::from_bytes(&vk.to_bytes()).unwrap();
-        verifier
-            .verify(msg, &sig)
-            .expect("verification should succeed");
-    }
+            let msg = b"the quick brown fox";
+            let sig_bytes = ident.sign(msg).expect("sign");
+            let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+            let verifier = VerifyingKey::from_bytes(&vk.to_bytes()).unwrap();
+            verifier
+                .verify(msg, &sig)
+                .expect("verification should succeed");
+        }
+        // phase: public_projection_loads_metadata_but_cannot_sign
+        {
+            let bytes = serde_json::to_vec(&serde_json::json!({
+                "display_name": "Alice",
+                "avatar_color": [2, 4, 6],
+                "threshold_identity": {
+                    "single_device": true,
+                    "group_public_key": vec![8_u8; 32],
+                    "threshold": 1_u16,
+                    "total_shares": 1_u16,
+                    "share_index": 1_u16,
+                    "secret_bytes": Vec::<u8>::new(),
+                },
+                "schema_version": 1,
+            }))
+            .expect("encode");
+            let identity = load_from_bytes(&bytes).expect("metadata loads");
+            assert_eq!(identity.display_name(), "Alice");
+            assert_eq!(identity.group_public_key(), [8; 32]);
+            assert_eq!(identity.signing_public_key(), [8; 32]);
+            assert!(identity.device_certificate().is_none());
+            assert!(!identity.is_single_device());
+            assert!(identity.sign(b"forbidden").is_err());
+        }
+        // phase: secret_that_does_not_derive_the_recorded_pubkey_is_refused
+        // A record whose secret does not derive its recorded public key must not
+        // load — silently accepting it would hand apps an identity that can never
+        // sign successfully.
+        {
+            // The exact shape the old identity ceremony wrote: a digest
+            // over the public key standing in for the secret.
+            use sha2::{Digest, Sha512};
+            let real = SigningKey::from_bytes(&[9u8; 32]);
+            let vk = real.verifying_key();
+            let mut hasher = Sha512::new();
+            hasher.update(b"tilo-identity-flow-v1-placeholder-key");
+            hasher.update(vk.to_bytes());
+            let bogus_secret = hasher.finalize()[..32].to_vec();
 
-    #[test]
-    fn public_projection_loads_metadata_but_cannot_sign() {
-        let bytes = serde_json::to_vec(&serde_json::json!({
-            "display_name": "Alice",
-            "avatar_color": [2, 4, 6],
-            "threshold_identity": {
-                "single_device": true,
-                "group_public_key": vec![8_u8; 32],
-                "threshold": 1_u16,
-                "total_shares": 1_u16,
-                "share_index": 1_u16,
-                "secret_bytes": Vec::<u8>::new(),
-            },
-            "schema_version": 1,
-        }))
-        .expect("encode");
-        let identity = load_from_bytes(&bytes).expect("metadata loads");
-        assert_eq!(identity.display_name(), "Alice");
-        assert_eq!(identity.group_public_key(), [8; 32]);
-        assert_eq!(identity.signing_public_key(), [8; 32]);
-        assert!(identity.device_certificate().is_none());
-        assert!(!identity.is_single_device());
-        assert!(identity.sign(b"forbidden").is_err());
-    }
-
-    /// A record whose secret does not derive its recorded public key must not
-    /// load — silently accepting it would hand apps an identity that can never
-    /// sign successfully.
-    #[test]
-    fn secret_that_does_not_derive_the_recorded_pubkey_is_refused() {
-        // The exact shape the old identity ceremony wrote: a digest
-        // over the public key standing in for the secret.
-        use sha2::{Digest, Sha512};
-        let real = SigningKey::from_bytes(&[9u8; 32]);
-        let vk = real.verifying_key();
-        let mut hasher = Sha512::new();
-        hasher.update(b"tilo-identity-flow-v1-placeholder-key");
-        hasher.update(vk.to_bytes());
-        let bogus_secret = hasher.finalize()[..32].to_vec();
-
-        let record = serde_json::json!({
-            "display_name": "Alice",
-            "avatar_color": [0, 0, 0],
-            "threshold_identity": {
-                "single_device": true,
-                "group_public_key": vk.to_bytes(),
-                "threshold": 1_u16,
-                "total_shares": 1_u16,
-                "share_index": 1_u16,
-                "secret_bytes": bogus_secret,
-            },
-            "created_at": "2026-07-30T00:00:00Z",
-            "schema_version": 1,
-        });
-        let bytes = serde_json::to_vec(&record).unwrap();
-        let err = load_from_bytes(&bytes).expect_err("a self-inconsistent record must not load");
-        match err {
-            NotAvailable::ConnectionFailed(io) => {
-                assert_eq!(io.kind(), io::ErrorKind::InvalidData);
-                assert!(
-                    io.to_string().contains("cannot sign for itself"),
-                    "unexpected error text: {io}"
-                );
+            let record = serde_json::json!({
+                "display_name": "Alice",
+                "avatar_color": [0, 0, 0],
+                "threshold_identity": {
+                    "single_device": true,
+                    "group_public_key": vk.to_bytes(),
+                    "threshold": 1_u16,
+                    "total_shares": 1_u16,
+                    "share_index": 1_u16,
+                    "secret_bytes": bogus_secret,
+                },
+                "created_at": "2026-07-30T00:00:00Z",
+                "schema_version": 1,
+            });
+            let bytes = serde_json::to_vec(&record).unwrap();
+            let err =
+                load_from_bytes(&bytes).expect_err("a self-inconsistent record must not load");
+            match err {
+                NotAvailable::ConnectionFailed(io) => {
+                    assert_eq!(io.kind(), io::ErrorKind::InvalidData);
+                    assert!(
+                        io.to_string().contains("cannot sign for itself"),
+                        "unexpected error text: {io}"
+                    );
+                }
+                other => panic!("expected ConnectionFailed(InvalidData), got {other:?}"),
             }
-            other => panic!("expected ConnectionFailed(InvalidData), got {other:?}"),
+        }
+        // phase: the_pubkey_mismatch_check_is_not_gated_on_debug_assertions
+        // The refusal is a property of the build, not of
+        // `debug_assertions`. Nothing here may be compiled out.
+        {
+            let real = SigningKey::from_bytes(&[4u8; 32]);
+            let other = SigningKey::from_bytes(&[5u8; 32]);
+            let record = serde_json::json!({
+                "display_name": "",
+                "avatar_color": [0, 0, 0],
+                "threshold_identity": {
+                    "single_device": true,
+                    "group_public_key": other.verifying_key().to_bytes(),
+                    "threshold": 1_u16,
+                    "total_shares": 1_u16,
+                    "share_index": 1_u16,
+                    "secret_bytes": real.to_bytes().to_vec(),
+                },
+                "created_at": "2026-07-30T00:00:00Z",
+                "schema_version": 1,
+            });
+            let bytes = serde_json::to_vec(&record).unwrap();
+            assert!(
+                load_from_bytes(&bytes).is_err(),
+                "mismatched key material must be refused in every build profile"
+            );
         }
     }
 
-    /// The refusal is a property of the build, not of
-    /// `debug_assertions`. Nothing here may be compiled out.
     #[test]
-    fn the_pubkey_mismatch_check_is_not_gated_on_debug_assertions() {
-        let real = SigningKey::from_bytes(&[4u8; 32]);
-        let other = SigningKey::from_bytes(&[5u8; 32]);
-        let record = serde_json::json!({
-            "display_name": "",
-            "avatar_color": [0, 0, 0],
-            "threshold_identity": {
-                "single_device": true,
-                "group_public_key": other.verifying_key().to_bytes(),
-                "threshold": 1_u16,
-                "total_shares": 1_u16,
-                "share_index": 1_u16,
-                "secret_bytes": real.to_bytes().to_vec(),
-            },
-            "created_at": "2026-07-30T00:00:00Z",
-            "schema_version": 1,
-        });
-        let bytes = serde_json::to_vec(&record).unwrap();
-        assert!(
-            load_from_bytes(&bytes).is_err(),
-            "mismatched key material must be refused in every build profile"
-        );
-    }
+    fn threshold_shares_must_be_real_to_participate() {
+        // phase: synthetic_threshold_bytes_are_rejected
+        {
+            let zero32: Vec<u8> = vec![0; 32];
+            let record = serde_json::json!({
+                "display_name": "Alice",
+                "avatar_color": [0, 0, 0],
+                "threshold_identity": {
+                    "single_device": false,
+                    "group_public_key": zero32,
+                    "threshold": 2_u16,
+                    "total_shares": 3_u16,
+                    "share_index": 1_u16,
+                    "secret_bytes": zero32,
+                },
+                "created_at": "2026-07-02T00:00:00Z",
+                "schema_version": 1,
+            });
+            let bytes = serde_json::to_vec(&record).unwrap();
+            assert!(load_from_bytes(&bytes).is_err());
+        }
+        // phase: real_threshold_share_restores_and_participates_in_broker_rounds
+        {
+            let mut rng = UnwrapErr(SysRng);
+            let mut a = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+            let mut b = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+            let (mut session_a, round1_a) = a.begin_enrolment(1, 2, 2, &mut rng).unwrap();
+            let (mut session_b, round1_b) = b.begin_enrolment(2, 2, 2, &mut rng).unwrap();
+            let out_a = session_a.receive_round1(&[round1_b]).unwrap();
+            let out_b = session_b.receive_round1(&[round1_a]).unwrap();
+            session_a.receive_round2(&[out_b[&1].clone()]).unwrap();
+            session_b.receive_round2(&[out_a[&2].clone()]).unwrap();
+            a.adopt_dkg_outcome(session_a).unwrap();
+            b.adopt_dkg_outcome(session_b).unwrap();
 
-    #[test]
-    fn synthetic_threshold_bytes_are_rejected() {
-        let zero32: Vec<u8> = vec![0; 32];
-        let record = serde_json::json!({
-            "display_name": "Alice",
-            "avatar_color": [0, 0, 0],
-            "threshold_identity": {
-                "single_device": false,
-                "group_public_key": zero32,
-                "threshold": 2_u16,
-                "total_shares": 3_u16,
-                "share_index": 1_u16,
-                "secret_bytes": zero32,
-            },
-            "created_at": "2026-07-02T00:00:00Z",
-            "schema_version": 1,
-        });
-        let bytes = serde_json::to_vec(&record).unwrap();
-        assert!(load_from_bytes(&bytes).is_err());
-    }
+            let secret = a.export_device_secret().unwrap();
+            let record = serde_json::json!({
+                "display_name": "Alice",
+                "avatar_color": [12, 34, 56],
+                "threshold_identity": {
+                    "single_device": false,
+                    "group_public_key": a.group_public_key().as_bytes(),
+                    "threshold": 2_u16,
+                    "total_shares": 2_u16,
+                    "share_index": 1_u16,
+                    "secret_bytes": secret.as_slice(),
+                },
+                "created_at": "2026-07-02T00:00:00Z",
+                "schema_version": 1,
+            });
+            let identity = load_from_bytes(&serde_json::to_vec(&record).unwrap()).unwrap();
+            assert!(!identity.is_single_device());
 
-    #[test]
-    fn real_threshold_share_restores_and_participates_in_broker_rounds() {
-        let mut rng = UnwrapErr(SysRng);
-        let mut a = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        let mut b = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        let (mut session_a, round1_a) = a.begin_enrolment(1, 2, 2, &mut rng).unwrap();
-        let (mut session_b, round1_b) = b.begin_enrolment(2, 2, 2, &mut rng).unwrap();
-        let out_a = session_a.receive_round1(&[round1_b]).unwrap();
-        let out_b = session_b.receive_round1(&[round1_a]).unwrap();
-        session_a.receive_round2(&[out_b[&1].clone()]).unwrap();
-        session_b.receive_round2(&[out_a[&2].clone()]).unwrap();
-        a.adopt_dkg_outcome(session_a).unwrap();
-        b.adopt_dkg_outcome(session_b).unwrap();
-
-        let secret = a.export_device_secret().unwrap();
-        let record = serde_json::json!({
-            "display_name": "Alice",
-            "avatar_color": [12, 34, 56],
-            "threshold_identity": {
-                "single_device": false,
-                "group_public_key": a.group_public_key().as_bytes(),
-                "threshold": 2_u16,
-                "total_shares": 2_u16,
-                "share_index": 1_u16,
-                "secret_bytes": secret.as_slice(),
-            },
-            "created_at": "2026-07-02T00:00:00Z",
-            "schema_version": 1,
-        });
-        let identity = load_from_bytes(&serde_json::to_vec(&record).unwrap()).unwrap();
-        assert!(!identity.is_single_device());
-
-        let message = b"confirmed operation";
-        let signing_round_a = identity.threshold_sign_round1(&mut rng).unwrap();
-        let signing_round_b = b.sign_round1(&mut rng).unwrap();
-        let commitments = vec![
-            signing_round_a.commitment.clone(),
-            signing_round_b.commitment.clone(),
-        ];
-        let partial_a = identity
-            .threshold_sign_round2(signing_round_a.nonces, message, &commitments)
-            .unwrap();
-        let partial_b = b
-            .sign_round2_raw(signing_round_b.nonces, message, &commitments)
-            .unwrap();
-        let signature = identity
-            .aggregate_threshold_signature(&[partial_a, partial_b])
-            .unwrap();
-        ed25519_dalek::VerifyingKey::from_bytes(a.group_public_key().as_bytes())
-            .unwrap()
-            .verify_strict(message, &ed25519_dalek::Signature::from_bytes(&signature))
-            .unwrap();
-    }
-
-    #[test]
-    fn load_from_path_reads_disk_file() {
-        use std::io::Write;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("primary.json");
-
-        let secret = [11u8; 32];
-        let sk = SigningKey::from_bytes(&secret);
-        let vk = sk.verifying_key();
-        let record = serde_json::json!({
-            "display_name": "Bob",
-            "avatar_color": [1, 2, 3],
-            "threshold_identity": {
-                "single_device": true,
-                "group_public_key": vk.to_bytes(),
-                "threshold": 1_u16,
-                "total_shares": 1_u16,
-                "share_index": 1_u16,
-                "secret_bytes": secret.to_vec(),
-            },
-            "created_at": "2026-07-02T00:00:00Z",
-            "schema_version": 1,
-        });
-        let mut f = fs::File::create(&path).unwrap();
-        f.set_permissions(fs::Permissions::from_mode(0o600))
-            .unwrap();
-        f.write_all(&serde_json::to_vec(&record).unwrap()).unwrap();
-        drop(f);
-
-        let ident = load_from_path(path).expect("load_from_path");
-        assert_eq!(ident.display_name(), "Bob");
-    }
-
-    #[test]
-    fn extra_fields_in_json_are_tolerated() {
-        // Forward-compat: a newer launcher may write extra fields;
-        // an older SDK must NOT hard-fail. This test asserts that.
-        let secret = [3u8; 32];
-        let sk = SigningKey::from_bytes(&secret);
-        let vk = sk.verifying_key();
-        let record = serde_json::json!({
-            "display_name": "Alice",
-            "avatar_color": [0, 0, 0],
-            "threshold_identity": {
-                "single_device": true,
-                "group_public_key": vk.to_bytes(),
-                "threshold": 1_u16,
-                "total_shares": 1_u16,
-                "share_index": 1_u16,
-                "secret_bytes": secret.to_vec(),
-                "some_new_field_from_the_future": "should be ignored",
-            },
-            "created_at": "2026-07-02T00:00:00Z",
-            "schema_version": 1,
-            "some_top_level_new_field": 99,
-        });
-        let bytes = serde_json::to_vec(&record).unwrap();
-        load_from_bytes(&bytes).expect("must tolerate unknown fields");
+            let message = b"confirmed operation";
+            let signing_round_a = identity.threshold_sign_round1(&mut rng).unwrap();
+            let signing_round_b = b.sign_round1(&mut rng).unwrap();
+            let commitments = vec![
+                signing_round_a.commitment.clone(),
+                signing_round_b.commitment.clone(),
+            ];
+            let partial_a = identity
+                .threshold_sign_round2(signing_round_a.nonces, message, &commitments)
+                .unwrap();
+            let partial_b = b
+                .sign_round2_raw(signing_round_b.nonces, message, &commitments)
+                .unwrap();
+            let signature = identity
+                .aggregate_threshold_signature(&[partial_a, partial_b])
+                .unwrap();
+            ed25519_dalek::VerifyingKey::from_bytes(a.group_public_key().as_bytes())
+                .unwrap()
+                .verify_strict(message, &ed25519_dalek::Signature::from_bytes(&signature))
+                .unwrap();
+        }
     }
 
     fn record_bytes(name: &str, seed: u8) -> Vec<u8> {
@@ -2161,165 +2359,441 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn multi_identity_store_has_explicit_active_record() {
-        let dir = tempfile::tempdir().unwrap();
-        import_identity(dir.path(), "personal", &record_bytes("Ada", 21)).unwrap();
-        import_identity(dir.path(), "work", &record_bytes("Ada at Work", 22)).unwrap();
-        set_active_identity(dir.path(), "work").unwrap();
-        let listed = list_identities(dir.path()).unwrap();
-        assert_eq!(listed.len(), 2);
-        assert_eq!(listed[0].id, "work");
-        assert!(listed[0].active);
-        assert_eq!(listed[1].display_name, "Ada");
-        let active = resolve_active_identity(dir.path()).unwrap();
-        assert_eq!(active.file_name().unwrap(), "work.json");
+    fn assert_published_identity_keeps_secret(
+        path: &std::path::Path,
+        provider: &dyn SecretProvider,
+        seed: u8,
+    ) {
+        let record = read_record(path).expect("published metadata must survive");
+        assert_eq!(record.schema_version, 2);
+        assert!(record.threshold_identity.secret_bytes.is_empty());
+        let reference = record.secret_ref.as_ref().expect("published reference");
+        assert_eq!(reference.backend, provider.backend_id());
+        assert_eq!(
+            reference.locator,
+            hex::encode(
+                SigningKey::from_bytes(&[seed; 32])
+                    .verifying_key()
+                    .to_bytes()
+            )
+        );
+        let secret = provider
+            .load(&reference.locator)
+            .expect("published metadata must still resolve its provider secret");
+        assert_eq!(secret.as_slice(), [seed; 32]);
+        let identity = identity_from_record(record, Some(secret.as_slice())).unwrap();
+        let message = b"publication failure must preserve the signing identity";
+        let signature = identity.sign(message).unwrap();
+        SigningKey::from_bytes(&[seed; 32])
+            .verifying_key()
+            .verify_strict(
+                message,
+                &ed25519_dalek::Signature::from_slice(&signature).unwrap(),
+            )
+            .unwrap();
     }
 
     #[test]
-    fn identity_store_refuses_traversal_symlinks_and_active_removal() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(import_identity(dir.path(), "../escape", &record_bytes("No", 23)).is_err());
-        import_identity(dir.path(), "personal", &record_bytes("Ada", 24)).unwrap();
-        import_identity(dir.path(), "work", &record_bytes("Work", 25)).unwrap();
-        set_active_identity(dir.path(), "personal").unwrap();
-        assert!(remove_identity(dir.path(), "personal").is_err());
-        remove_identity(dir.path(), "work").unwrap();
-        assert_eq!(list_identities(dir.path()).unwrap().len(), 1);
+    fn secure_record_publication_cleanup_preserves_published_secret() {
+        use tilo_files::native::atomic::PublicationState;
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
+
+        for (checkpoint, expected) in [
+            (
+                Checkpoint::AfterPublish,
+                PublicationState::PublicationUnknown,
+            ),
+            (
+                Checkpoint::BeforeCommit,
+                PublicationState::PublishedDurabilityUnknown,
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("personal.json");
+            let provider = BrokerFileProvider::new(dir.path());
+            write_private_atomic(&path, &record_bytes("Ada", 71)).unwrap();
+            let error = with_failure(checkpoint, || {
+                secure_identity_with_provider(dir.path(), "personal", &provider)
+            })
+            .expect_err("the real metadata writer must report the injected failure");
+            assert_eq!(
+                tilo_files::native::atomic::publication_state(&error),
+                Some(expected)
+            );
+            assert_published_identity_keeps_secret(&path, &provider, 71);
+        }
     }
 
-    #[cfg(unix)]
     #[test]
-    fn imported_secrets_and_selector_are_private() {
+    fn a_broker_file_secret_moves_into_the_system_store_once_or_not_at_all() {
         let dir = tempfile::tempdir().unwrap();
-        let path = import_identity(dir.path(), "personal", &record_bytes("Ada", 26)).unwrap();
-        set_active_identity(dir.path(), "personal").unwrap();
+        let path = dir.path().join("personal.json");
+        let file = BrokerFileProvider::new(dir.path());
+        write_private_atomic(&path, &record_bytes("Ada", 74)).unwrap();
+        secure_identity_with_provider(dir.path(), "personal", &file).unwrap();
+        let locator = hex::encode(SigningKey::from_bytes(&[74; 32]).verifying_key().to_bytes());
+
+        let refusing = SecretServiceFixture::new(dir.path(), true);
+        assert!(move_secret_unlocked(dir.path(), &path, &file, &refusing).is_err());
+        assert_published_identity_keeps_secret(&path, &file, 74);
+
+        let keyring = SecretServiceFixture::new(dir.path(), false);
         assert_eq!(
-            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
+            move_secret_unlocked(dir.path(), &path, &file, &keyring).unwrap(),
+            KeyProtection::SecretService
         );
+        assert_published_identity_keeps_secret(&path, &keyring, 74);
         assert_eq!(
-            fs::metadata(dir.path().join(ACTIVE_FILE))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
-        assert_eq!(
-            fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
-        let metadata = fs::read_to_string(&path).unwrap();
-        assert!(metadata.contains("\"schema_version\": 2"));
-        assert!(metadata.contains("\"secret_ref\""));
-        assert!(
-            !metadata.contains("secret_bytes"),
-            "private signing material remained in mounted-style JSON"
+            file.load(&locator).unwrap_err().kind(),
+            io::ErrorKind::NotFound,
+            "the broker file stayed behind"
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     #[test]
-    fn broker_file_revalidates_key_permissions_before_load_or_remove() {
+    fn macos_moves_broker_file_identities_into_the_keychain_when_secured() {
         let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("personal.json");
+        let file = BrokerFileProvider::new(dir.path());
+        write_private_atomic(&path, &record_bytes("Ada", 75)).unwrap();
+        secure_identity_with_provider(dir.path(), "personal", &file).unwrap();
+        assert_eq!(
+            with_preferred_secret_service(false, || secure_identity(dir.path(), "personal"))
+                .unwrap(),
+            KeyProtection::SecretService
+        );
+        assert_published_identity_keeps_secret(
+            &path,
+            &SecretServiceFixture::new(dir.path(), false),
+            75,
+        );
+    }
+
+    #[test]
+    fn secure_record_publication_cleanup_before_publish_removes_new_secret() {
+        use tilo_files::native::atomic::PublicationState;
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("personal.json");
         let provider = BrokerFileProvider::new(dir.path());
-        let locator = "ab".repeat(32);
-        provider.store(&locator, &[30; 32]).unwrap();
-        let key_path = dir.path().join("secrets").join(format!("{locator}.key"));
-        fs::set_permissions(&key_path, fs::Permissions::from_mode(0o644)).unwrap();
-
+        let original = record_bytes("Ada", 72);
+        write_private_atomic(&path, &original).unwrap();
+        let error = with_failure(Checkpoint::BeforePublish, || {
+            secure_identity_with_provider(dir.path(), "personal", &provider)
+        })
+        .expect_err("the real metadata writer must report the injected failure");
+        assert_eq!(
+            tilo_files::native::atomic::publication_state(&error),
+            Some(PublicationState::NotPublished)
+        );
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let locator = hex::encode(SigningKey::from_bytes(&[72; 32]).verifying_key().to_bytes());
         assert_eq!(
             provider.load(&locator).unwrap_err().kind(),
-            io::ErrorKind::PermissionDenied
+            io::ErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn import_publication_cleanup_preserves_second_write_and_secret() {
+        use tilo_files::native::atomic::PublicationState;
+        use tilo_files::native::atomic::test_support::{
+            Checkpoint, with_failure_on_nth, with_observer,
+        };
+        for (checkpoint, expected) in [
+            (
+                Checkpoint::AfterPublish,
+                PublicationState::PublicationUnknown,
+            ),
+            (
+                Checkpoint::BeforeCommit,
+                PublicationState::PublishedDurabilityUnknown,
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let provider = BrokerFileProvider::new(dir.path());
+            let completed = std::rc::Rc::new(std::cell::Cell::new(0));
+            let observed = completed.clone();
+            let error = with_observer(
+                move |event| {
+                    if event.checkpoint == Checkpoint::Committed {
+                        observed.set(observed.get() + 1);
+                    }
+                },
+                || {
+                    with_failure_on_nth(checkpoint, 2, || {
+                        import_identity_with_provider(
+                            dir.path(),
+                            "personal",
+                            &record_bytes("Ada", 73),
+                            &provider,
+                        )
+                    })
+                },
+            )
+            .expect_err("v2 publication must report the injected failure");
+            assert_eq!(completed.get(), 1, "v1 must commit before v2 fails");
+            assert_eq!(
+                tilo_files::native::atomic::publication_state(&error),
+                Some(expected)
+            );
+            assert_published_identity_keeps_secret(
+                &dir.path().join("personal.json"),
+                &provider,
+                73,
+            );
+        }
+    }
+
+    #[test]
+    fn import_publication_cleanup_before_second_publish_removes_record_and_secret() {
+        use tilo_files::native::atomic::PublicationState;
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
+        let dir = tempfile::tempdir().unwrap();
+        let provider = BrokerFileProvider::new(dir.path());
+        let error = with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
+            import_identity_with_provider(
+                dir.path(),
+                "personal",
+                &record_bytes("Ada", 74),
+                &provider,
+            )
+        })
+        .unwrap_err();
+        assert_eq!(
+            tilo_files::native::atomic::publication_state(&error),
+            Some(PublicationState::NotPublished)
+        );
+        assert!(!dir.path().join("personal.json").exists());
+        let locator = hex::encode(SigningKey::from_bytes(&[74; 32]).verifying_key().to_bytes());
+        assert_eq!(
+            provider.load(&locator).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn import_publication_cleanup_unknown_before_rename_preserves_record_and_secret() {
+        use tilo_files::native::atomic::PublicationState;
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
+        let dir = tempfile::tempdir().unwrap();
+        let provider = BrokerFileProvider::new(dir.path());
+        let original = record_bytes("Ada", 75);
+        let error = with_failure_on_nth(Checkpoint::PublishSubmitted, 2, || {
+            import_identity_with_provider(dir.path(), "personal", &original, &provider)
+        })
+        .unwrap_err();
+        assert_eq!(
+            tilo_files::native::atomic::publication_state(&error),
+            Some(PublicationState::PublicationUnknown)
         );
         assert_eq!(
-            provider.remove(&locator).unwrap_err().kind(),
-            io::ErrorKind::PermissionDenied
+            fs::read(dir.path().join("personal.json")).unwrap(),
+            original
+        );
+        let locator = hex::encode(SigningKey::from_bytes(&[75; 32]).verifying_key().to_bytes());
+        assert_eq!(provider.load(&locator).unwrap().as_slice(), [75; 32]);
+    }
+
+    #[test]
+    fn import_publication_cleanup_preferred_provider_does_not_fallback_after_publication() {
+        use tilo_files::native::atomic::PublicationState;
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
+        for (checkpoint, expected) in [
+            (
+                Checkpoint::AfterPublish,
+                PublicationState::PublicationUnknown,
+            ),
+            (
+                Checkpoint::BeforeCommit,
+                PublicationState::PublishedDurabilityUnknown,
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let error = with_preferred_secret_service(false, || {
+                with_failure_on_nth(checkpoint, 2, || {
+                    import_identity(dir.path(), "personal", &record_bytes("Ada", 76))
+                })
+            })
+            .expect_err("fallback must not hide an uncertain metadata publication");
+            assert_eq!(
+                tilo_files::native::atomic::publication_state(&error),
+                Some(expected)
+            );
+            assert_published_identity_keeps_secret(
+                &dir.path().join("personal.json"),
+                &SecretServiceFixture::new(dir.path(), false),
+                76,
+            );
+            assert!(
+                !dir.path().join("secrets").exists(),
+                "fallback provider must not be used"
+            );
+        }
+    }
+
+    /// Where the platform has no file fallback (macOS), a system store that
+    /// fails fails the import, and leaves neither a record nor a file secret.
+    fn assert_import_failed_closed(dir: &std::path::Path, imported: &io::Result<PathBuf>) {
+        assert!(imported.is_err(), "{imported:?}");
+        assert!(!dir.join("personal.json").exists());
+        assert!(!dir.join("secrets").exists(), "a file fallback was written");
+    }
+
+    #[test]
+    fn import_publication_cleanup_preferred_provider_may_fallback_before_publication() {
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
+        let dir = tempfile::tempdir().unwrap();
+        let imported = with_preferred_secret_service(false, || {
+            with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
+                import_identity(dir.path(), "personal", &record_bytes("Ada", 77))
+            })
+        });
+        if !secure_store::FILE_FALLBACK {
+            assert_import_failed_closed(dir.path(), &imported);
+            return;
+        }
+        let path = imported.unwrap();
+        assert_published_identity_keeps_secret(&path, &BrokerFileProvider::new(dir.path()), 77);
+        let locator = hex::encode(SigningKey::from_bytes(&[77; 32]).verifying_key().to_bytes());
+        assert_eq!(
+            SecretServiceFixture::new(dir.path(), false)
+                .load(&locator)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
         );
     }
 
     #[test]
-    fn duplicate_public_identity_is_rejected_on_import() {
+    fn import_publication_cleanup_provider_store_failure_is_prepublication() {
         let dir = tempfile::tempdir().unwrap();
-        let bytes = record_bytes("Ada", 27);
-        import_identity(dir.path(), "personal", &bytes).unwrap();
-        let error = import_identity(dir.path(), "duplicate", &bytes).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
-    }
+        let error = import_identity_with_provider(
+            dir.path(),
+            "personal",
+            &record_bytes("Ada", 78),
+            &SecretServiceFixture::new(dir.path(), true),
+        )
+        .unwrap_err();
+        assert!(tilo_files::native::atomic::publication_state(&error).is_none());
+        assert!(!dir.path().join("personal.json").exists());
 
-    #[test]
-    fn schema_two_public_member_projection_loads_without_becoming_a_signer() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut record: ondisk::IdentityRecord =
-            serde_json::from_slice(&public_member_record("Member", [1, 2, 3], [9; 32]).unwrap())
-                .unwrap();
-        record.schema_version = 2;
-        let path = dir.path().join("member.json");
-        write_private_atomic(&path, &serde_json::to_vec(&record).unwrap()).unwrap();
-
-        let identity = load_from_path(path).unwrap();
-        assert_eq!(identity.group_public_key(), [9; 32]);
-        assert!(identity.sign(b"must stay public-only").is_err());
-    }
-
-    #[test]
-    fn schema_two_missing_reference_rejects_private_or_malformed_shapes() {
-        let dir = tempfile::tempdir().unwrap();
-        let template = public_member_record("Member", [1, 2, 3], [9; 32]).unwrap();
-        let mut single: ondisk::IdentityRecord = serde_json::from_slice(&template).unwrap();
-        single.schema_version = 2;
-        single.threshold_identity.single_device = true;
-        let single_path = dir.path().join("single.json");
-        write_private_atomic(&single_path, &serde_json::to_vec(&single).unwrap()).unwrap();
-        assert!(load_from_path(single_path).is_err());
-
-        let mut malformed: ondisk::IdentityRecord = serde_json::from_slice(&template).unwrap();
-        malformed.schema_version = 2;
-        malformed.threshold_identity.threshold = 2;
-        malformed.threshold_identity.total_shares = 2;
-        let malformed_path = dir.path().join("malformed.json");
-        write_private_atomic(&malformed_path, &serde_json::to_vec(&malformed).unwrap()).unwrap();
-        assert!(load_from_path(malformed_path).is_err());
-    }
-
-    #[test]
-    fn removing_one_legacy_duplicate_keeps_the_shared_provider_secret() {
-        let dir = tempfile::tempdir().unwrap();
-        ensure_private_dir(dir.path()).unwrap();
-        let bytes = record_bytes("Ada", 28);
-        write_private_atomic(&dir.path().join("personal.json"), &bytes).unwrap();
-        write_private_atomic(&dir.path().join("copy.json"), &bytes).unwrap();
-        let provider = secure_store::fallback_provider(dir.path());
-        secure_identity_with_provider(dir.path(), "personal", &provider).unwrap();
-        secure_identity_with_provider(dir.path(), "copy", &provider).unwrap();
-
-        remove_identity(dir.path(), "copy").unwrap();
-        let remaining = load_from_path(dir.path().join("personal.json")).unwrap();
-        let signature = remaining.sign(b"still usable").unwrap();
-        assert_eq!(signature.len(), 64);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn record_open_rejects_symlinks_and_wide_permissions() {
-        use std::os::unix::fs::symlink;
-
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("target.json");
-        fs::write(&target, record_bytes("Ada", 29)).unwrap();
-        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
-        let link = dir.path().join("link.json");
-        symlink(&target, &link).unwrap();
-        assert!(load_from_path(link).is_err());
-
-        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
-        let error = load_from_path(target).unwrap_err();
-        match error {
-            NotAvailable::ConnectionFailed(error) => {
-                assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-            }
-            other => panic!("unexpected error: {other:?}"),
+        let imported = with_preferred_secret_service(true, || {
+            import_identity(dir.path(), "personal", &record_bytes("Ada", 78))
+        });
+        if !secure_store::FILE_FALLBACK {
+            assert_import_failed_closed(dir.path(), &imported);
+            return;
         }
+        let path = imported.unwrap();
+        assert_published_identity_keeps_secret(&path, &BrokerFileProvider::new(dir.path()), 78);
+    }
+
+    #[test]
+    fn the_identity_store_keeps_explicit_safe_records() {
+        // phase: multi_identity_store_has_explicit_active_record
+        {
+            let dir = tempfile::tempdir().unwrap();
+            import_identity(dir.path(), "personal", &record_bytes("Ada", 21)).unwrap();
+            import_identity(dir.path(), "work", &record_bytes("Ada at Work", 22)).unwrap();
+            set_active_identity(dir.path(), "work").unwrap();
+            let listed = list_identities(dir.path()).unwrap();
+            assert_eq!(listed.len(), 2);
+            assert_eq!(listed[0].id, "work");
+            assert!(listed[0].active);
+            assert_eq!(listed[1].display_name, "Ada");
+            let active = resolve_active_identity(dir.path()).unwrap();
+            assert_eq!(active.file_name().unwrap(), "work.json");
+        }
+        // phase: identity_store_refuses_traversal_symlinks_and_active_removal
+        {
+            let dir = tempfile::tempdir().unwrap();
+            assert!(import_identity(dir.path(), "../escape", &record_bytes("No", 23)).is_err());
+            import_identity(dir.path(), "personal", &record_bytes("Ada", 24)).unwrap();
+            import_identity(dir.path(), "work", &record_bytes("Work", 25)).unwrap();
+            set_active_identity(dir.path(), "personal").unwrap();
+            assert!(remove_identity(dir.path(), "personal").is_err());
+            remove_identity(dir.path(), "work").unwrap();
+            assert_eq!(list_identities(dir.path()).unwrap().len(), 1);
+        }
+        // phase: duplicate_public_identity_is_rejected_on_import
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let bytes = record_bytes("Ada", 27);
+            import_identity(dir.path(), "personal", &bytes).unwrap();
+            let error = import_identity(dir.path(), "duplicate", &bytes).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        }
+        // phase: schema_two_public_member_projection_loads_without_becoming_a_signer
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut record: ondisk::IdentityRecord = serde_json::from_slice(
+                &public_member_record("Member", [1, 2, 3], [9; 32]).unwrap(),
+            )
+            .unwrap();
+            record.schema_version = 2;
+            let path = dir.path().join("member.json");
+            write_private_atomic(&path, &serde_json::to_vec(&record).unwrap()).unwrap();
+
+            let identity = load_from_path(path).unwrap();
+            assert_eq!(identity.group_public_key(), [9; 32]);
+            assert!(identity.sign(b"must stay public-only").is_err());
+        }
+        // phase: schema_two_missing_reference_rejects_private_or_malformed_shapes
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let template = public_member_record("Member", [1, 2, 3], [9; 32]).unwrap();
+            let mut single: ondisk::IdentityRecord = serde_json::from_slice(&template).unwrap();
+            single.schema_version = 2;
+            single.threshold_identity.single_device = true;
+            let single_path = dir.path().join("single.json");
+            write_private_atomic(&single_path, &serde_json::to_vec(&single).unwrap()).unwrap();
+            assert!(load_from_path(single_path).is_err());
+
+            let mut malformed: ondisk::IdentityRecord = serde_json::from_slice(&template).unwrap();
+            malformed.schema_version = 2;
+            malformed.threshold_identity.threshold = 2;
+            malformed.threshold_identity.total_shares = 2;
+            let malformed_path = dir.path().join("malformed.json");
+            write_private_atomic(&malformed_path, &serde_json::to_vec(&malformed).unwrap())
+                .unwrap();
+            assert!(load_from_path(malformed_path).is_err());
+        }
+        // phase: removing_one_legacy_duplicate_keeps_the_shared_provider_secret
+        {
+            let dir = tempfile::tempdir().unwrap();
+            ensure_private_dir(dir.path()).unwrap();
+            let bytes = record_bytes("Ada", 28);
+            write_private_atomic(&dir.path().join("personal.json"), &bytes).unwrap();
+            write_private_atomic(&dir.path().join("copy.json"), &bytes).unwrap();
+            let provider = secure_store::fallback_provider(dir.path());
+            secure_identity_with_provider(dir.path(), "personal", &provider).unwrap();
+            secure_identity_with_provider(dir.path(), "copy", &provider).unwrap();
+
+            remove_identity(dir.path(), "copy").unwrap();
+            let remaining = load_from_path(dir.path().join("personal.json")).unwrap();
+            let signature = remaining.sign(b"still usable").unwrap();
+            assert_eq!(signature.len(), 64);
+        }
+    }
+}
+
+#[cfg(test)]
+mod secret_service_error_bridge_tests {
+    #[test]
+    fn only_the_secret_provider_marker_is_classified_as_unavailable() {
+        let error = super::secret_service_unavailable_error();
+        assert!(super::is_secret_service_unavailable_io(&error));
+        assert!(super::is_secret_service_unavailable(
+            &super::NotAvailable::ConnectionFailed(error)
+        ));
+        assert!(!super::is_secret_service_unavailable_io(
+            &std::io::Error::other("unrelated failure")
+        ));
+        assert!(!super::is_secret_service_unavailable_io(
+            &std::io::Error::from(std::io::ErrorKind::NotFound)
+        ));
     }
 }

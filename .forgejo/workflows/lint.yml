@@ -9,28 +9,51 @@ on:
   push:
     branches: ["main"]
   pull_request:
-    branches: ["main"]
+    # Stacked PRs (a PR whose base is another PR's pr/sdk-* branch) get the
+    # same gate; affected-package selection diffs against that base, so each
+    # layer tests its own change.
+    branches: ["main", "pr/sdk-*"]
   workflow_dispatch:
 
 concurrency:
-  # Push and pull-request checks are distinct required evidence. Include both
-  # event and commit so neither can replace another result.
-  group: lint-${{ github.event_name }}-${{ github.sha }}
-  cancel-in-progress: false
+  # A newer commit on a pull request replaces its older run: the lander only
+  # reads the current head. Pushes keep one run per commit.
+  group: lint-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   quality:
     runs-on: runner-quality
     timeout-minutes: 30
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: registry.tilo.so/tilo/ci-fast@sha256:281af08d34010af96f97630aa5fde224b6ca02b130aff553ceb3d297d44fca7d
+    env:
+      # The policy suite's Cargo metadata and cargo deny resolve every locked
+      # crate; read them from the shared download cache, not crates.io.
+      CARGO_HOME: /cargo-home
+      # The app lints build ~950 crates on the 20 GiB quality store.
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
+      - name: Disable automatic Git maintenance in the disposable job container
+        # Git 2.54 maintenance can rewrite shallow history between fetches.
+        # Checkout copies this global config before its first fetch.
+        run: git config --global maintenance.auto false
+
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 2
           fetch-tags: false
+
+      # Pull requests are checked merged onto main's current tip.
+      - name: Merge onto main
+        id: merge
+        uses: ./.forgejo/actions/merge-main
+
+      - name: Restore Cargo downloads
+        uses: ./.forgejo/actions/restore-cargo-downloads
 
       - name: Verify native fast-quality toolchain
         run: |
@@ -40,28 +63,50 @@ jobs:
           rustfmt --version
           cargo deny --version
           cargo machete --version
+          cargo hakari --version
+          # ci-fast ships gcc as /usr/bin/cc (os/Containerfile.ci-fast); the
+          # Tilo app lints below compile tilo-app-cli and need that linker.
+          command -v cc
 
       - name: Check formatting of changed Rust files
         shell: bash
         run: >-
           bash tools/ci/check-changed-rustfmt.sh
-          '${{ github.event.pull_request.base.sha }}'
+          '${{ steps.merge.outputs.main }}'
           '${{ github.event.before }}'
 
       - name: Require reasons for Rust lint exceptions in changed files
         run: >-
           python3 tools/ci/check_changed_rust_allows.py
-          '${{ github.event.pull_request.base.sha }}'
+          '${{ steps.merge.outputs.main }}'
           '${{ github.event.before }}'
 
       - name: Repository policy suite
         run: bash tools/policy/run.sh
 
+      # The lint app developers run locally: an app that adds platform code
+      # without moving it into a platform crate or declaring itself native
+      # fails here. ci-fast already provides /usr/bin/cc (pinned digest).
+      - name: Tilo app lints
+        run: cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- check --lint --all
+
       - name: cargo deny
         run: cargo deny --workspace check --hide-inclusion-graph
+
+      # crates/workspace-hack unifies third-party features across members; a
+      # dependency change that is not regenerated splits the shared builds again.
+      - name: Workspace-hack matches the dependency graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! { cargo hakari generate --diff && cargo hakari manage-deps --dry-run; }; then
+            echo "crates/workspace-hack is stale: run 'cargo hakari generate' and 'cargo hakari manage-deps', then commit the result (DEVELOPMENT.md, Dependency features)." >&2
+            exit 1
+          fi
+          cargo hakari verify
 
       - name: cargo machete
         run: >-
           bash tools/ci/check-unused-dependencies.sh --changed
-          '${{ github.event.pull_request.base.sha }}'
+          '${{ steps.merge.outputs.main }}'
           '${{ github.event.before }}'

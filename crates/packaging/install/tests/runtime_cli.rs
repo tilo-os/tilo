@@ -45,152 +45,157 @@ fn fake_host(root: &Path) {
 }
 
 #[test]
-fn runtime_install_list_verify_remove_roundtrip() {
-    let xdg = tempfile::tempdir().unwrap();
-    let host = tempfile::tempdir().unwrap();
-    fake_host(host.path());
+#[allow(
+    clippy::too_many_lines,
+    reason = "each phase keeps one former test's body verbatim"
+)]
+fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
+    // Phase `runtime_install_refuses_overwrite_without_force`.
+    {
+        let xdg = tempfile::tempdir().unwrap();
+        let host = tempfile::tempdir().unwrap();
+        fake_host(host.path());
 
-    // install
-    let out = Command::new(install_bin())
-        .args(["runtime", "install", "--version", "test-1.0.0", "--from"])
-        .arg(host.path())
-        .env("XDG_DATA_HOME", xdg.path())
-        .env("HOME", xdg.path())
-        .output()
-        .expect("run tilo-install");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "runtime install failed: {stderr}\nstdout: {stdout}"
-    );
-    assert!(stdout.contains("test-1.0.0"));
-    assert!(stdout.contains("root-hash: blake3:"));
-    assert!(
-        xdg.path()
-            .join("tilo-runtime/test-1.0.0/bundle.toml")
-            .exists()
-    );
+        // First install: succeeds.
+        let out = Command::new(install_bin())
+            .args(["runtime", "install", "--version", "v", "--from"])
+            .arg(host.path())
+            .env("XDG_DATA_HOME", xdg.path())
+            .env("HOME", xdg.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success());
 
-    // list
-    let out = Command::new(install_bin())
-        .args(["runtime", "list"])
-        .env("XDG_DATA_HOME", xdg.path())
-        .env("HOME", xdg.path())
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("test-1.0.0"), "list output: {stdout}");
+        // Second install without --force: fails.
+        let out = Command::new(install_bin())
+            .args(["runtime", "install", "--version", "v", "--from"])
+            .arg(host.path())
+            .env("XDG_DATA_HOME", xdg.path())
+            .env("HOME", xdg.path())
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("already installed"), "stderr: {stderr}");
 
-    // verify
-    let out = Command::new(install_bin())
-        .args(["runtime", "verify", "test-1.0.0"])
-        .env("XDG_DATA_HOME", xdg.path())
-        .env("HOME", xdg.path())
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "verify failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+        // With --force: succeeds.
+        let out = Command::new(install_bin())
+            .args(["runtime", "install", "--version", "v", "--force", "--from"])
+            .arg(host.path())
+            .env("XDG_DATA_HOME", xdg.path())
+            .env("HOME", xdg.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    }
+    // Phase `runtime_install_list_verify_remove_roundtrip`.
+    {
+        let xdg = tempfile::tempdir().unwrap();
+        let host = tempfile::tempdir().unwrap();
+        fake_host(host.path());
 
-    // path
-    let out = Command::new(install_bin())
-        .args(["runtime", "path", "--version", "test-1.0.0"])
-        .env("XDG_DATA_HOME", xdg.path())
-        .env("HOME", xdg.path())
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.trim().ends_with("tilo-runtime/test-1.0.0"));
+        // install
+        let out = Command::new(install_bin())
+            .args(["runtime", "install", "--version", "test-1.0.0", "--from"])
+            .arg(host.path())
+            .env("XDG_DATA_HOME", xdg.path())
+            .env("HOME", xdg.path())
+            .output()
+            .expect("run tilo-install");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "runtime install failed: {stderr}\nstdout: {stdout}"
+        );
+        assert!(stdout.contains("test-1.0.0"));
+        assert!(stdout.contains("root-hash: blake3:"));
+        assert!(
+            xdg.path()
+                .join("tilo-runtime/test-1.0.0/bundle.toml")
+                .exists()
+        );
 
-    // remove
-    let out = Command::new(install_bin())
-        .args(["runtime", "remove", "test-1.0.0"])
-        .env("XDG_DATA_HOME", xdg.path())
-        .env("HOME", xdg.path())
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    assert!(
-        !xdg.path()
-            .join("tilo-runtime/test-1.0.0/bundle.toml")
-            .exists()
-    );
-}
+        // list
+        let out = Command::new(install_bin())
+            .args(["runtime", "list"])
+            .env("XDG_DATA_HOME", xdg.path())
+            .env("HOME", xdg.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("test-1.0.0"), "list output: {stdout}");
 
-#[test]
-fn runtime_install_refuses_overwrite_without_force() {
-    let xdg = tempfile::tempdir().unwrap();
-    let host = tempfile::tempdir().unwrap();
-    fake_host(host.path());
+        // verify
+        let out = Command::new(install_bin())
+            .args(["runtime", "verify", "test-1.0.0"])
+            .env("XDG_DATA_HOME", xdg.path())
+            .env("HOME", xdg.path())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "verify failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
-    // First install: succeeds.
-    let out = Command::new(install_bin())
-        .args(["runtime", "install", "--version", "v", "--from"])
-        .arg(host.path())
-        .env("XDG_DATA_HOME", xdg.path())
-        .env("HOME", xdg.path())
-        .output()
-        .unwrap();
-    assert!(out.status.success());
+        // path
+        let out = Command::new(install_bin())
+            .args(["runtime", "path", "--version", "test-1.0.0"])
+            .env("XDG_DATA_HOME", xdg.path())
+            .env("HOME", xdg.path())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.trim().ends_with("tilo-runtime/test-1.0.0"));
 
-    // Second install without --force: fails.
-    let out = Command::new(install_bin())
-        .args(["runtime", "install", "--version", "v", "--from"])
-        .arg(host.path())
-        .env("XDG_DATA_HOME", xdg.path())
-        .env("HOME", xdg.path())
-        .output()
-        .unwrap();
-    assert!(!out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("already installed"), "stderr: {stderr}");
+        // remove
+        let out = Command::new(install_bin())
+            .args(["runtime", "remove", "test-1.0.0"])
+            .env("XDG_DATA_HOME", xdg.path())
+            .env("HOME", xdg.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert!(
+            !xdg.path()
+                .join("tilo-runtime/test-1.0.0/bundle.toml")
+                .exists()
+        );
+    }
+    // Phase `runtime_verify_detects_tampering`.
+    {
+        let xdg = tempfile::tempdir().unwrap();
+        let host = tempfile::tempdir().unwrap();
+        fake_host(host.path());
 
-    // With --force: succeeds.
-    let out = Command::new(install_bin())
-        .args(["runtime", "install", "--version", "v", "--force", "--from"])
-        .arg(host.path())
-        .env("XDG_DATA_HOME", xdg.path())
-        .env("HOME", xdg.path())
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-}
+        let out = Command::new(install_bin())
+            .args(["runtime", "install", "--version", "vv", "--from"])
+            .arg(host.path())
+            .env("XDG_DATA_HOME", xdg.path())
+            .env("HOME", xdg.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success());
 
-#[test]
-fn runtime_verify_detects_tampering() {
-    let xdg = tempfile::tempdir().unwrap();
-    let host = tempfile::tempdir().unwrap();
-    fake_host(host.path());
+        // Flip a byte in the installed libc stub.
+        let libc = xdg.path().join("tilo-runtime/vv/lib/lib64/libc.so.6");
+        let mut bytes = fs::read(&libc).unwrap();
+        bytes[0] ^= 0x5a;
+        fs::write(&libc, bytes).unwrap();
 
-    let out = Command::new(install_bin())
-        .args(["runtime", "install", "--version", "vv", "--from"])
-        .arg(host.path())
-        .env("XDG_DATA_HOME", xdg.path())
-        .env("HOME", xdg.path())
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-
-    // Flip a byte in the installed libc stub.
-    let libc = xdg.path().join("tilo-runtime/vv/lib/lib64/libc.so.6");
-    let mut bytes = fs::read(&libc).unwrap();
-    bytes[0] ^= 0x5a;
-    fs::write(&libc, bytes).unwrap();
-
-    let out = Command::new(install_bin())
-        .args(["runtime", "verify", "vv"])
-        .env("XDG_DATA_HOME", xdg.path())
-        .env("HOME", xdg.path())
-        .output()
-        .unwrap();
-    assert!(!out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("hash mismatch") || stderr.contains("mismatch"),
-        "stderr: {stderr}"
-    );
+        let out = Command::new(install_bin())
+            .args(["runtime", "verify", "vv"])
+            .env("XDG_DATA_HOME", xdg.path())
+            .env("HOME", xdg.path())
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("hash mismatch") || stderr.contains("mismatch"),
+            "stderr: {stderr}"
+        );
+    }
 }

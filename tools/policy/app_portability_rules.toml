@@ -1,0 +1,246 @@
+# App portability rules: apps contain no platform code.
+#
+# One table, two front ends:
+#   * tools/policy/check_app_portability.py (the CI gate, run by
+#     tools/policy/run.sh) counts findings per app and rule against the
+#     shrink-only baseline tools/policy/app_portability_baseline.toml;
+#   * `tilo-app check --lint` (crates/dev/tilo-app-cli/src/portability.rs,
+#     which embeds this file) reports each site to the app developer.
+#
+# Both read only production code: tests/, benches/, examples/, build.rs,
+# `#[test]` and `#[cfg(test)]` items are exempt.
+#
+# Pattern vocabulary shared by both engines:
+#   paths        "a::b" matches the identifiers `a`, `::`, `b` anywhere in a
+#                path (so `thread::spawn` also matches `std::thread::spawn`).
+#   std-modules  `std::<name>`, or `<name>` at the top level of a
+#                `std::{...}` group.
+#   applies      "always"; "not-tilo-os" skips apps whose platforms include
+#                tilo-os; "web" applies only when web is in the platforms.
+#   severity     how `tilo-app check --lint` treats a finding in an app that
+#                runs on every default platform: "error" fails the lint,
+#                "warn" is reported only. The CI gate counts both.
+
+schema = 1
+
+[scope]
+# Every package directly under apps/ with a tilo-app.toml, plus app model
+# crates, which get only `model-rules`.
+model-crates = "apps/*-model"
+model-rules = ["R1", "R2", "R3", "D1", "D2"]
+exempt-dirs = ["tests", "benches", "examples"]
+
+# Apps that declare every one of these platforms may contain none of these
+# findings: the gate fails on the first one, with no baseline allowance. Other
+# apps count them against the shrink-only baseline.
+[strict]
+platforms = ["linux", "macos", "web"]
+rules = ["R1", "R2", "R3", "R4", "W1", "W2", "W3"]
+
+# The only places where code may select a target. Everything else compiles
+# unchanged for every target.
+[target-cfg]
+allowed = [
+    "crates/platform/*",
+    "crates/sdk/runner-native",
+    "crates/sdk/runner-web",
+    # `tilo-app` selects exactly one runner per target.
+    "crates/sdk/tilo-app/Cargo.toml",
+    "crates/sdk/tilo-app/src/runner.rs",
+]
+
+# The SDK's own portable crates: the same run-time traps are banned there.
+# Counts are baselined per crate; each absorption into a platform crate
+# lowers them.
+[sdk]
+rules = ["R1", "W1", "W2", "W3"]
+crates = [
+    "crates/sdk/ui-core",
+    "crates/sdk/tilo-host",
+    "crates/sdk/tilo-app",
+    "crates/system/settings-store",
+    "crates/system/app-state",
+]
+
+[rules.R1]
+summary = "selects code by target"
+help = "choose per-target implementations inside a platform crate (crates/platform/*); app code compiles unchanged for every target"
+applies = "always"
+severity = "error"
+# Identifiers in a `cfg`, `cfg!` or `cfg_attr` predicate that select a target.
+predicates = [
+    "target_os",
+    "target_family",
+    "target_vendor",
+    "target_env",
+    "target_arch",
+    "unix",
+    "windows",
+]
+# `cfg_attr` arguments that are linker settings on a binary root and select
+# no implementation.
+exempt-cfg-attr = ["windows_subsystem"]
+# `[target.'cfg(...)']` and `[target.<triple>]` sections in Cargo.toml.
+cargo-target-sections = true
+# A target section naming only these is build plumbing, not platform code:
+# the workspace-hack's native feature set does not build for wasm32.
+build-only-target-dependencies = ["workspace-hack"]
+
+[rules.R2]
+summary = "uses an OS-specific interface"
+help = "call a platform crate instead; if none offers the operation, add it there with an implementation for each target"
+applies = "always"
+severity = "error"
+std-modules = ["os"]
+extern-blocks = true
+# Paths into these native binding crates, when the package depends on them.
+native-crates = [
+    "libc",
+    "nix",
+    "rustix",
+    "windows",
+    "windows-sys",
+    "objc2",
+    "core-foundation",
+    "ashpd",
+    "zbus",
+    "xattr",
+]
+
+[rules.R3]
+summary = "names a platform path or environment variable"
+help = "ask `tilo_paths::AppPaths` (or the host) for the directory; apps do not know where a platform keeps things"
+applies = "not-tilo-os"
+severity = "error"
+# String literals that name a platform location.
+literal-prefixes = ["/proc/", "/sys/", "/dev/", "/run/", "/etc/", "/var/"]
+literal-contains = ["/usr/share/", "Library/", ".local/", ".config/"]
+# Web addresses are not local paths (`https://demo.local/clip.mp4`).
+exempt-literal-prefixes = ["http://", "https://"]
+# `env::var("NAME")` / `env::var_os("NAME")` for these names.
+env-functions = ["env::var", "env::var_os"]
+env-names = [
+    "HOME",
+    "USER",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "DBUS_SESSION_BUS_ADDRESS",
+]
+env-prefixes = ["XDG_"]
+
+[rules.R4]
+summary = "runs an OS tool"
+help = "use `tilo_process` (desktop-only) or a capability that does the job on every target"
+applies = "not-tilo-os"
+severity = "error"
+# Constructors whose first argument is a string literal naming the program.
+constructors = ["Command::new", "CommandSpec::new"]
+
+[rules.D1]
+summary = "depends on a platform or SDK-internal crate"
+help = "depend on the platform crate (crates/platform/*) that wraps it, or reach it through `ui`"
+applies = "always"
+# The repository's apps still hold baselined dependencies of both kinds; the
+# gate's baseline shrinks them, so the lint reports them without failing.
+severity = "warn"
+# A trailing `*` matches any suffix.
+crates = [
+    "libc",
+    "nix",
+    "rustix",
+    "windows*",
+    "objc2*",
+    "core-foundation",
+    "wayland-*",
+    "smithay*",
+    "zbus",
+    "ashpd",
+    "pipewire",
+    "fuser",
+    "xattr",
+    "portable-pty",
+    "sysinfo",
+    "tilo-bluez",
+    "block-devices",
+    "tilo-sandbox-core",
+    "runtime-portal*",
+    "runtime-identity",
+    "runtime-collab",
+    "tilo-content",
+    "settings-store",
+    # Absorbed into platform crates; their shims count down.
+    "tilo-xdg-paths",
+    "private-fs",
+    "tilo-advisory-lock",
+    "bounded-command",
+    "host-fs",
+    "host-info",
+]
+
+[rules.D2]
+summary = "depends on a Tilo crate outside the app SDK and the platform crates"
+help = "use `ui` or a platform crate (crates/platform/*); other Tilo crates are SDK internals"
+applies = "always"
+severity = "warn"
+# Direct path dependencies (or workspace dependencies with a path) count
+# unless the package or its directory is listed here.
+# `runtime-dylib` is the optional backend of the app-level `thin` feature
+# that `tilo-app dev` reloads through; no web or release build links it.
+allowed-packages = ["tilo-app", "runtime-dylib"]
+# `vendor/*` holds forks of third-party crates (winit, vello, …), which stand
+# in for the upstream crate an app would otherwise depend on.
+allowed-paths = ["crates/platform/*", "apps/*-model", "vendor/*"]
+
+[rules.F1]
+summary = "selects an SDK backend feature"
+help = "let the SDK select the backend for each target through a semantic feature or capability"
+applies = "always"
+severity = "error"
+# The `ui` dependency.
+sdk-packages = ["tilo-app", "tilo-ui"]
+features = [
+    "portal",
+    "mpris",
+    "notifications",
+    "webview-wpe",
+    "dmabuf-import",
+    "gpu-video",
+    "presentation-feedback",
+]
+
+# The semantic feature to enable instead, where one exists.
+[rules.F1.replacements]
+webview-wpe = "webview"
+mpris = "media-session"
+
+[rules.W1]
+summary = "uses an OS thread, which panics on web"
+help = "use `tilo_rt::app().spawn` / `ui::background` and `tilo_rt::sleep` (async); `tilo_rt::spawn_thread` / `tilo_rt::sleep_thread` where a real thread is required (desktop-only)"
+applies = "web"
+# Warn until `tilo-rt` offers the replacements to every app.
+severity = "warn"
+paths = ["thread::spawn", "thread::Builder", "thread::sleep"]
+
+[rules.W2]
+summary = "reads the std clock, which panics on web"
+help = "use `tilo_clock::now()` / `wall()` / `unix_now_ms()`"
+applies = "web"
+# Warn until `tilo-clock` absorbs `ui::time`.
+severity = "warn"
+paths = ["Instant::now", "SystemTime::now"]
+
+[rules.W3]
+summary = "uses the std filesystem or sockets, which fail on web"
+help = "use `tilo_files::Dir` / `tilo_net`, and `tilo_paths::AppPaths` for a directory; their `blocking` variants for desktop-only code"
+applies = "web"
+severity = "error"
+std-modules = ["fs", "net"]
+# `env::temp_dir` panics on web rather than failing, even as a fallback
+# (`.unwrap_or_else(std::env::temp_dir)`).
+paths = ["File::open", "File::create", "OpenOptions::new", "env::temp_dir"]

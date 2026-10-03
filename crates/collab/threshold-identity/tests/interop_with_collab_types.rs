@@ -66,7 +66,16 @@ fn threshold_sign(a: &ThresholdIdentity, b: &ThresholdIdentity, canon: &[u8]) ->
     a.aggregate_signature(&[p_a, p_b]).unwrap()
 }
 
+/// A threshold signature verifies on raw bytes, over a channel genesis event, and through the
+/// full inbound `SignedOp` validator.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn threshold_signatures_pass_every_collab_types_verification_path() {
+    threshold_sig_verifies_via_tilo_collab_types_verify_event_on_bytes();
+    threshold_sig_verifies_over_channel_event_genesis();
+    threshold_signed_op_passes_inbound_validator();
+}
+
 fn threshold_sig_verifies_via_tilo_collab_types_verify_event_on_bytes() {
     let (a, b) = dkg_two();
     let value: Vec<u8> = b"hello threshold".to_vec();
@@ -76,7 +85,6 @@ fn threshold_sig_verifies_via_tilo_collab_types_verify_event_on_bytes() {
         .expect("HEADLINE: threshold sig must verify via verify_event");
 }
 
-#[test]
 fn threshold_sig_verifies_over_channel_event_genesis() {
     // A more realistic test: sign a `ChannelEvent::Genesis` with the
     // threshold identity and verify through the broker's own path, via
@@ -121,7 +129,10 @@ fn threshold_sig_verifies_over_channel_event_genesis() {
     clippy::similar_names,
     reason = "the _sk/_pk keypair naming convention is deliberate and used throughout this crate's tests"
 )]
-#[test]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "a phase of a test: clock offsets are fixed small durations"
+)]
 fn threshold_signed_op_passes_inbound_validator() {
     // The grand-finale test: build a SignedOp signed via threshold, run
     // it through the full eight-step validator, and confirm it passes —

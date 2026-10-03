@@ -513,143 +513,152 @@ mod tests {
     }
 
     #[test]
-    fn address_formats_user_host_port() {
-        let mut c = sample("s", ConnectionKind::Ssh);
-        c.host = "10.0.0.1".into();
-        c.user = "root".into();
-        c.port = 2222;
-        assert_eq!(c.address(), "root@10.0.0.1:2222");
+    fn addresses_format_per_transport() {
+        eprintln!("phase address_formats_user_host_port");
+        {
+            let mut c = sample("s", ConnectionKind::Ssh);
+            c.host = "10.0.0.1".into();
+            c.user = "root".into();
+            c.port = 2222;
+            assert_eq!(c.address(), "root@10.0.0.1:2222");
+        }
+
+        eprintln!("phase tilo_address_drops_port");
+        {
+            let mut c = sample("q", ConnectionKind::Tilo);
+            c.host = "studio-node".into();
+            c.user = String::new();
+            c.port = 0;
+            assert_eq!(c.address(), "Tilo device studio-node");
+        }
+
+        eprintln!("phase tilo_address_compacts_a_long_endpoint_without_string_slicing");
+        {
+            let mut c = sample("q", ConnectionKind::Tilo);
+            c.host = "abcdefghijklmnopqrstuvwxyz".into();
+            assert_eq!(c.address(), "Tilo device abcdefghijkl…");
+        }
     }
 
     #[test]
-    fn tilo_address_drops_port() {
-        let mut c = sample("q", ConnectionKind::Tilo);
-        c.host = "studio-node".into();
-        c.user = String::new();
-        c.port = 0;
-        assert_eq!(c.address(), "Tilo device studio-node");
+    fn drafts_validate_only_backed_transports_and_live_auth_paths() {
+        eprintln!("phase only_backed_transports_are_available_to_create");
+        {
+            assert_eq!(
+                ConnectionKind::available_to_create(),
+                [
+                    ConnectionKind::Ssh,
+                    ConnectionKind::Vnc,
+                    ConnectionKind::Tilo
+                ]
+            );
+            assert!(ConnectionKind::Ssh.is_supported());
+            assert!(ConnectionKind::Vnc.is_supported());
+            assert!(!ConnectionKind::Rdp.is_supported());
+            assert!(ConnectionKind::Tilo.is_supported());
+            assert!(ConnectionKind::Tilo.can_attempt());
+            assert!(ConnectionKind::Tilo.streams_framebuffer());
+            assert_eq!(ConnectionKind::Tilo.label(), "Tilo device");
+            assert!(!ConnectionKind::Rdp.can_attempt());
+        }
+
+        eprintln!("phase draft_validation_catches_empty_and_bad_port");
+        {
+            let mut d = ConnectionDraft::default();
+            assert!(!d.problems().is_empty());
+            d.name = "x".into();
+            d.host = "h".into();
+            d.port = "0".into();
+            assert!(d.problems().iter().any(|p| p.contains("Port")));
+            d.port = "22".into();
+            assert!(d.problems().is_empty());
+        }
+
+        eprintln!("phase tilo_draft_ignores_port");
+        {
+            let d = ConnectionDraft {
+                kind: ConnectionKind::Tilo,
+                name: "node".into(),
+                host: SecretKey::from_bytes(&[7; 32]).public().to_string(),
+                port: String::new(),
+                auth: AuthMethod::DeviceIdentity,
+                ..Default::default()
+            };
+            assert!(d.problems().is_empty());
+            let built = d.build(Uuid::new_v4());
+            assert_eq!(built.port, 0);
+        }
+
+        eprintln!("phase q_os_profiles_require_an_exact_device_identity_and_endpoint");
+        {
+            let mut connection = sample("q", ConnectionKind::Tilo);
+            connection.host = "friendly-name".into();
+            connection.auth = AuthMethod::Password;
+            assert_eq!(
+                connection.profile_issue(),
+                Some("Tilo device profiles must use Tilo device identity.")
+            );
+
+            connection.auth = AuthMethod::DeviceIdentity;
+            assert_eq!(
+                connection.profile_issue(),
+                Some("Tilo device node must be an exact certified endpoint id.")
+            );
+
+            connection.host = SecretKey::generate().public().to_string();
+            assert_eq!(connection.profile_issue(), None);
+        }
+
+        eprintln!("phase protocol_specific_authentication_choices_never_offer_dead_paths");
+        {
+            assert_eq!(
+                AuthMethod::available_for(ConnectionKind::Ssh),
+                &[AuthMethod::Password, AuthMethod::PublicKey]
+            );
+            assert_eq!(
+                AuthMethod::available_for(ConnectionKind::Vnc),
+                &[AuthMethod::Password]
+            );
+            assert_eq!(
+                AuthMethod::available_for(ConnectionKind::Tilo),
+                &[AuthMethod::DeviceIdentity]
+            );
+        }
     }
 
     #[test]
-    fn tilo_address_compacts_a_long_endpoint_without_string_slicing() {
-        let mut c = sample("q", ConnectionKind::Tilo);
-        c.host = "abcdefghijklmnopqrstuvwxyz".into();
-        assert_eq!(c.address(), "Tilo device abcdefghijkl…");
-    }
+    fn roster_upserts_and_filters_favorites_first() {
+        eprintln!("phase upsert_replaces_same_id");
+        {
+            let mut w = Workspace::new();
+            let mut c = sample("a", ConnectionKind::Ssh);
+            let id = w.upsert(c.clone());
+            c.name = "renamed".into();
+            w.upsert(c);
+            assert_eq!(w.connections().len(), 1);
+            assert_eq!(w.get(id).unwrap().name, "renamed");
+        }
 
-    #[test]
-    fn only_backed_transports_are_available_to_create() {
-        assert_eq!(
-            ConnectionKind::available_to_create(),
-            [
-                ConnectionKind::Ssh,
-                ConnectionKind::Vnc,
-                ConnectionKind::Tilo
-            ]
-        );
-        assert!(ConnectionKind::Ssh.is_supported());
-        assert!(ConnectionKind::Vnc.is_supported());
-        assert!(!ConnectionKind::Rdp.is_supported());
-        assert!(ConnectionKind::Tilo.is_supported());
-        assert!(ConnectionKind::Tilo.can_attempt());
-        assert!(ConnectionKind::Tilo.streams_framebuffer());
-        assert_eq!(ConnectionKind::Tilo.label(), "Tilo device");
-        assert!(!ConnectionKind::Rdp.can_attempt());
-    }
+        eprintln!("phase filtered_orders_favorites_first");
+        {
+            let mut w = Workspace::new();
+            let mut a = sample("alpha", ConnectionKind::Ssh);
+            let mut b = sample("zeta", ConnectionKind::Vnc);
+            b.favorite = true;
+            w.upsert(a.clone());
+            w.upsert(b);
+            a.favorite = false;
+            let order: Vec<_> = w.filtered("").iter().map(|c| c.name.clone()).collect();
+            assert_eq!(order, vec!["zeta", "alpha"]);
+        }
 
-    #[test]
-    fn upsert_replaces_same_id() {
-        let mut w = Workspace::new();
-        let mut c = sample("a", ConnectionKind::Ssh);
-        let id = w.upsert(c.clone());
-        c.name = "renamed".into();
-        w.upsert(c);
-        assert_eq!(w.connections().len(), 1);
-        assert_eq!(w.get(id).unwrap().name, "renamed");
-    }
-
-    #[test]
-    fn filtered_orders_favorites_first() {
-        let mut w = Workspace::new();
-        let mut a = sample("alpha", ConnectionKind::Ssh);
-        let mut b = sample("zeta", ConnectionKind::Vnc);
-        b.favorite = true;
-        w.upsert(a.clone());
-        w.upsert(b);
-        a.favorite = false;
-        let order: Vec<_> = w.filtered("").iter().map(|c| c.name.clone()).collect();
-        assert_eq!(order, vec!["zeta", "alpha"]);
-    }
-
-    #[test]
-    fn filtered_matches_query() {
-        let mut w = Workspace::new();
-        w.upsert(sample("Build Box", ConnectionKind::Ssh));
-        w.upsert(sample("Office NAS", ConnectionKind::Vnc));
-        let hits: Vec<_> = w.filtered("build").iter().map(|c| c.name.clone()).collect();
-        assert_eq!(hits, vec!["Build Box"]);
-    }
-
-    #[test]
-    fn draft_validation_catches_empty_and_bad_port() {
-        let mut d = ConnectionDraft::default();
-        assert!(!d.problems().is_empty());
-        d.name = "x".into();
-        d.host = "h".into();
-        d.port = "0".into();
-        assert!(d.problems().iter().any(|p| p.contains("Port")));
-        d.port = "22".into();
-        assert!(d.problems().is_empty());
-    }
-
-    #[test]
-    fn tilo_draft_ignores_port() {
-        let d = ConnectionDraft {
-            kind: ConnectionKind::Tilo,
-            name: "node".into(),
-            host: SecretKey::from_bytes(&[7; 32]).public().to_string(),
-            port: String::new(),
-            auth: AuthMethod::DeviceIdentity,
-            ..Default::default()
-        };
-        assert!(d.problems().is_empty());
-        let built = d.build(Uuid::new_v4());
-        assert_eq!(built.port, 0);
-    }
-
-    #[test]
-    fn q_os_profiles_require_an_exact_device_identity_and_endpoint() {
-        let mut connection = sample("q", ConnectionKind::Tilo);
-        connection.host = "friendly-name".into();
-        connection.auth = AuthMethod::Password;
-        assert_eq!(
-            connection.profile_issue(),
-            Some("Tilo device profiles must use Tilo device identity.")
-        );
-
-        connection.auth = AuthMethod::DeviceIdentity;
-        assert_eq!(
-            connection.profile_issue(),
-            Some("Tilo device node must be an exact certified endpoint id.")
-        );
-
-        connection.host = SecretKey::generate().public().to_string();
-        assert_eq!(connection.profile_issue(), None);
-    }
-
-    #[test]
-    fn protocol_specific_authentication_choices_never_offer_dead_paths() {
-        assert_eq!(
-            AuthMethod::available_for(ConnectionKind::Ssh),
-            &[AuthMethod::Password, AuthMethod::PublicKey]
-        );
-        assert_eq!(
-            AuthMethod::available_for(ConnectionKind::Vnc),
-            &[AuthMethod::Password]
-        );
-        assert_eq!(
-            AuthMethod::available_for(ConnectionKind::Tilo),
-            &[AuthMethod::DeviceIdentity]
-        );
+        eprintln!("phase filtered_matches_query");
+        {
+            let mut w = Workspace::new();
+            w.upsert(sample("Build Box", ConnectionKind::Ssh));
+            w.upsert(sample("Office NAS", ConnectionKind::Vnc));
+            let hits: Vec<_> = w.filtered("build").iter().map(|c| c.name.clone()).collect();
+            assert_eq!(hits, vec!["Build Box"]);
+        }
     }
 }

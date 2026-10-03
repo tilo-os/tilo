@@ -3,7 +3,6 @@
     clippy::redundant_clone,
     clippy::similar_names,
     clippy::single_match_else,
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "migration stack lint debt is scoped to this target"
 )]
@@ -54,10 +53,12 @@ pub mod framework_history;
 mod help_overlay;
 pub mod model;
 pub mod odp;
+pub mod outline;
 mod overview_grid;
 pub mod pptx;
 mod presentation;
 pub mod render;
+pub mod resource;
 pub mod search_provider;
 pub mod strings;
 mod toolbar_tools;
@@ -73,6 +74,14 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(SlidesApp::new())
 }
 
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.slides", app_root)
+        .history(&framework_history::HISTORY)
+        .component_actions(actions::register)
+        .as_definition("Slides")
+}
+
 /// Root pre-loaded with the hermetic sample deck, optionally jumped to a named
 /// screen (`overview` / `present` / `presenter` / `help` / `narrow` / …). Used
 /// only by the `--shots` capture path so a live launch never shows fabricated
@@ -81,5 +90,10 @@ pub fn app_root_demo(scenario: Option<&str>) -> Box<dyn Widget> {
     Box::new(SlidesApp::demo(scenario))
 }
 
+pub use actions::SlidesDeck;
+pub use resource::SlidesShell;
+
+#[cfg(test)]
+mod deck_operations_tests;
 #[cfg(test)]
 mod framework_history_tests;

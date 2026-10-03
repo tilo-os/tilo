@@ -1,0 +1,52 @@
+[package]
+name = "tilo-secrets"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+description = "App-scoped secret storage on Linux, macOS and the web: the Secret Service, the Keychain, and WebCrypto-wrapped IndexedDB."
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "tilo_secrets"
+path = "src/lib.rs"
+
+[dependencies]
+# Desktop backends block on IPC; the async API runs them on the app runtime's
+# blocking pool.
+tilo-rt = { version = "0.1.0", path = "../tilo-rt" }
+# Secret bytes are wiped from memory when dropped.
+zeroize.workspace = true
+
+# A machine without a keychain keeps its secrets in sealed owner-only files.
+[target.'cfg(unix)'.dependencies]
+tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
+sha2.workspace = true
+libc.workspace = true
+
+# The freedesktop Secret Service, spoken directly: no `secret-tool` process.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { workspace = true, features = ["tokio", "blocking-api"] }
+
+# The login Keychain's generic passwords.
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
+# A non-extractable AES-GCM key and the ciphertext, both in IndexedDB.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+wasm-bindgen = "=0.2.108"
+wasm-bindgen-futures = "=0.4.58"
+js-sys = "=0.3.85"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

@@ -38,6 +38,7 @@ pub fn select_speaker() -> (Box<dyn Speaker>, &'static str) {
     }
 
     // 2. espeak-ng subprocess.
+    #[cfg(not(target_arch = "wasm32"))]
     match crate::espeak::EspeakSpeaker::new() {
         Ok(s) => {
             tracing::info!("tilo-tts: using espeak-ng subprocess backend");
@@ -56,22 +57,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn factory_always_returns_a_speaker() {
-        // Must not panic regardless of whether a daemon / espeak-ng is present.
-        let mut s = default_speaker();
-        // The returned speaker is usable: speaking must not panic either.
-        s.speak("startup", true);
-        s.stop();
-        // backend_name is one of the known three.
-        assert!(matches!(
-            s.backend_name(),
-            "speech-dispatcher" | "espeak-ng" | "null"
-        ));
-    }
-
-    #[test]
-    fn select_reports_a_known_backend_name() {
-        let (_s, name) = select_speaker();
-        assert!(matches!(name, "speech-dispatcher" | "espeak-ng" | "null"));
+    fn the_factory_always_returns_a_named_speaker() {
+        // Phase `factory_always_returns_a_speaker`.
+        {
+            // Must not panic regardless of whether a daemon / espeak-ng is present.
+            let mut s = default_speaker();
+            // The returned speaker is usable: speaking must not panic either.
+            s.speak("startup", true);
+            s.stop();
+            // backend_name is one of the known three.
+            assert!(matches!(
+                s.backend_name(),
+                "speech-dispatcher" | "espeak-ng" | "null"
+            ));
+        }
+        // Phase `select_reports_a_known_backend_name`.
+        {
+            let (_s, name) = select_speaker();
+            assert!(matches!(name, "speech-dispatcher" | "espeak-ng" | "null"));
+        }
     }
 }

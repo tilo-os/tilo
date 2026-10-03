@@ -17,11 +17,6 @@ pub const WIDTH_MAX_PERMILLE: u16 = 1000;
 /// this (and back down to the strip width if that's narrower still).
 pub const WIDTH_FLOOR_PX: f64 = 240.0;
 
-/// Reference width the legacy pixel model was scaled against, so a
-/// migrated `Custom(600)` preserves the *proportion* the user saw rather
-/// than snapping to whichever tier is now "Normal".
-const LEGACY_PIXEL_REFERENCE_WIDTH: u32 = 1200;
-
 /// Narrowest a group may resolve to on a strip of `strip_usable_px`.
 pub fn min_group_px(strip_usable_px: f64) -> f64 {
     let usable = strip_usable_px.max(1.0);
@@ -100,20 +95,10 @@ impl WindowWidth {
     pub fn from_px(px: f64, strip_usable_px: f64) -> Self {
         WindowWidth::Fraction(permille_for_px(px, strip_usable_px))
     }
-
-    /// Migrate a width persisted by the pixel model — see
-    /// `LEGACY_PIXEL_REFERENCE_WIDTH`.
-    pub fn from_legacy_pixels(px: u32) -> Self {
-        WindowWidth::Fraction(permille_for_px(
-            f64::from(px),
-            f64::from(LEGACY_PIXEL_REFERENCE_WIDTH),
-        ))
-    }
 }
 
 impl<'de> Deserialize<'de> for WindowWidth {
-    /// Accepts both the current shape and the legacy pixel shape, so an
-    /// existing persisted workspace still loads.
+    /// Clamps a persisted fraction into the supported range.
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
         enum Raw {
@@ -121,8 +106,6 @@ impl<'de> Deserialize<'de> for WindowWidth {
             Normal,
             Wide,
             Fraction(u16),
-            /// Legacy: an absolute pixel count.
-            Custom(u32),
         }
         Ok(match Raw::deserialize(d)? {
             Raw::Narrow => WindowWidth::Narrow,
@@ -131,7 +114,6 @@ impl<'de> Deserialize<'de> for WindowWidth {
             Raw::Fraction(p) => {
                 WindowWidth::Fraction(p.clamp(WIDTH_MIN_PERMILLE, WIDTH_MAX_PERMILLE))
             }
-            Raw::Custom(px) => WindowWidth::from_legacy_pixels(px),
         })
     }
 }
@@ -141,27 +123,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_pixels_keep_their_proportion() {
-        assert_eq!(WindowWidth::from_legacy_pixels(400).permille(), 333);
-        assert_eq!(WindowWidth::from_legacy_pixels(600).permille(), 500);
-        assert_eq!(WindowWidth::from_legacy_pixels(1200).permille(), 1000);
-    }
-
-    #[test]
-    fn legacy_custom_shape_deserializes_as_fraction() {
-        let width: WindowWidth = serde_json::from_str(r#"{"Custom":600}"#).unwrap();
-        assert_eq!(width, WindowWidth::Fraction(500));
-    }
-
-    #[test]
-    fn out_of_range_fraction_is_clamped_on_load() {
-        let width: WindowWidth = serde_json::from_str(r#"{"Fraction":5}"#).unwrap();
-        assert_eq!(width, WindowWidth::Fraction(WIDTH_MIN_PERMILLE));
-    }
-
-    #[test]
-    fn resolve_respects_the_pixel_floor() {
-        assert!((WindowWidth::Fraction(150).resolve(800.0) - WIDTH_FLOOR_PX).abs() < f64::EPSILON);
-        assert!((WindowWidth::Wide.resolve(1000.0) - 1000.0).abs() < f64::EPSILON);
+    fn widths_load_as_clamped_fractions_with_a_pixel_floor() {
+        // Phase `pixel_widths_are_refused`.
+        {
+            assert!(serde_json::from_str::<WindowWidth>(r#"{"Custom":600}"#).is_err());
+        }
+        // Phase `out_of_range_fraction_is_clamped_on_load`.
+        {
+            let width: WindowWidth = serde_json::from_str(r#"{"Fraction":5}"#).unwrap();
+            assert_eq!(width, WindowWidth::Fraction(WIDTH_MIN_PERMILLE));
+        }
+        // Phase `resolve_respects_the_pixel_floor`.
+        {
+            assert!(
+                (WindowWidth::Fraction(150).resolve(800.0) - WIDTH_FLOOR_PX).abs() < f64::EPSILON
+            );
+            assert!((WindowWidth::Wide.resolve(1000.0) - 1000.0).abs() < f64::EPSILON);
+        }
     }
 }

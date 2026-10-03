@@ -213,9 +213,9 @@ impl ScanSession {
     pub fn capture_from_sane(
         &mut self,
         device: &str,
-        settings: os_actions::printing::ScanSettings,
+        settings: tilo_capture::scanner::ScanSettings,
     ) -> Result<(), String> {
-        let bytes = os_actions::printing::scan_page(device, settings)?;
+        let bytes = tilo_capture::scanner::scan_page(device, settings)?;
         let image = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
             .map_err(|error| format!("scanner returned an invalid PNG: {error}"))?;
         self.add_page(image);
@@ -258,7 +258,7 @@ impl ScanSession {
             .iter()
             .map(|page| {
                 let image = page.rendered().to_rgb8();
-                qdoc_pdf::ScannedPdfPage {
+                tilo_doc_pdf::ScannedPdfPage {
                     width: image.width(),
                     height: image.height(),
                     rgb: image.into_raw(),
@@ -269,7 +269,7 @@ impl ScanSession {
                 }
             })
             .collect::<Vec<_>>();
-        qdoc_pdf::render_scanned_pdf(&pages)
+        tilo_doc_pdf::render_scanned_pdf(&pages)
     }
 }
 
@@ -279,141 +279,149 @@ mod tests {
 
     #[test]
     fn capture_errors_become_actionable_without_leaking_backend_output() {
-        assert_eq!(
-            capture_error_message("scanimage: open of device failed: Device busy"),
-            "This scanner is busy. Wait for its current task to finish, then try again."
-        );
-        assert_eq!(
-            capture_error_message("sane_start: Document feeder out of documents"),
-            "Add a page to the scanner feeder, then try again."
-        );
-        let raw = "scanner failed: vendor-secret 0x9af2 internal transport panic";
-        let message = capture_error_message(raw);
-        assert_eq!(
-            message,
-            "The page could not be scanned. Check the scanner and try again."
-        );
-        assert!(!message.contains("vendor-secret"));
-        assert!(!message.contains("0x9af2"));
-    }
-    #[test]
-    fn editing_a_page_invalidates_only_its_ocr() {
-        let mut page = Page::new(DynamicImage::new_rgb8(100, 80));
-        page.ocr = Some(Document {
-            words: Vec::new(),
-            language: "eng".into(),
-        });
-        page.set_crop(Crop {
-            x: 5,
-            y: 5,
-            width: 90,
-            height: 70,
-        })
-        .unwrap();
-        assert!(page.ocr.is_none());
-    }
-    #[test]
-    fn pages_can_be_reordered_after_capture() {
-        let mut scan = ScanSession::default();
-        scan.add_page(DynamicImage::new_rgb8(10, 20));
-        scan.add_page(DynamicImage::new_rgb8(30, 40));
-        assert!(scan.move_page(1, 0));
-        assert_eq!(scan.pages[0].rendered().width(), 30);
-    }
-
-    #[test]
-    fn rotation_is_reversible_and_invalidates_stale_ocr() {
-        let mut page = Page::new(DynamicImage::new_rgb8(100, 80));
-        page.ocr = Some(Document {
-            words: Vec::new(),
-            language: "eng".into(),
-        });
-        page.rotate_clockwise();
-        assert_eq!(page.rotation, Rotation::Clockwise);
-        assert_eq!(
-            (page.rendered().width(), page.rendered().height()),
-            (80, 100)
-        );
-        assert!(page.ocr.is_none());
-        for _ in 0..3 {
-            page.rotate_clockwise();
+        // Phase `capture_errors_become_actionable_without_leaking_backend_output`.
+        {
+            assert_eq!(
+                capture_error_message("scanimage: open of device failed: Device busy"),
+                "This scanner is busy. Wait for its current task to finish, then try again."
+            );
+            assert_eq!(
+                capture_error_message("sane_start: Document feeder out of documents"),
+                "Add a page to the scanner feeder, then try again."
+            );
+            let raw = "scanner failed: vendor-secret 0x9af2 internal transport panic";
+            let message = capture_error_message(raw);
+            assert_eq!(
+                message,
+                "The page could not be scanned. Check the scanner and try again."
+            );
+            assert!(!message.contains("vendor-secret"));
+            assert!(!message.contains("0x9af2"));
         }
-        assert_eq!(page.rotation, Rotation::None);
     }
 
     #[test]
-    fn searchable_pdf_preserves_page_order_and_recognized_text() {
-        let mut scan = ScanSession::default();
-        scan.add_page(DynamicImage::new_rgb8(2, 1));
-        scan.add_page(DynamicImage::new_rgb8(1, 2));
-        scan.pages[0].ocr = Some(Document {
-            words: vec![tilo_ocr::Word {
-                text: "First receipt".into(),
-                confidence: 98.0,
-                bounds: tilo_ocr::Bounds {
-                    x: 0,
-                    y: 0,
-                    width: 2,
-                    height: 1,
-                },
-                page: 1,
-                block: 1,
-                paragraph: 1,
-                line: 1,
-                position: 1,
-            }],
-            language: "eng".into(),
-        });
-        scan.pages[1].ocr = Some(Document {
-            words: vec![tilo_ocr::Word {
-                text: "Second receipt".into(),
-                confidence: 97.0,
-                bounds: tilo_ocr::Bounds {
-                    x: 0,
-                    y: 0,
-                    width: 1,
-                    height: 2,
-                },
-                page: 1,
-                block: 1,
-                paragraph: 1,
-                line: 1,
-                position: 1,
-            }],
-            language: "eng".into(),
-        });
-
-        let pdf = scan.searchable_pdf();
-        let text = String::from_utf8_lossy(&pdf);
-        assert!(text.starts_with("%PDF-1.7"));
-        assert!(text.contains("/Count 2"));
-        assert!(text.contains("First receipt"));
-        assert!(text.contains("Second receipt"));
-        assert!(text.contains("3 Tr"), "OCR layer must be invisible");
-    }
-
-    #[test]
-    fn normalized_crop_round_trips_through_shared_editor_coordinates() {
-        let mut page = Page::new(DynamicImage::new_rgb8(200, 100));
-        page.set_normalized_crop(CropSelection {
-            left: 0.1,
-            top: 0.2,
-            right: 0.9,
-            bottom: 0.8,
-        })
-        .unwrap();
-        assert_eq!(
-            page.crop,
-            Crop {
-                x: 20,
-                y: 20,
-                width: 160,
-                height: 60,
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn page_edits_invalidate_stale_ocr_and_export_a_searchable_pdf() {
+        // Phase `editing_a_page_invalidates_only_its_ocr`.
+        {
+            let mut page = Page::new(DynamicImage::new_rgb8(100, 80));
+            page.ocr = Some(Document {
+                words: Vec::new(),
+                language: "eng".into(),
+            });
+            page.set_crop(Crop {
+                x: 5,
+                y: 5,
+                width: 90,
+                height: 70,
+            })
+            .unwrap();
+            assert!(page.ocr.is_none());
+        }
+        // Phase `rotation_is_reversible_and_invalidates_stale_ocr`.
+        {
+            let mut page = Page::new(DynamicImage::new_rgb8(100, 80));
+            page.ocr = Some(Document {
+                words: Vec::new(),
+                language: "eng".into(),
+            });
+            page.rotate_clockwise();
+            assert_eq!(page.rotation, Rotation::Clockwise);
+            assert_eq!(
+                (page.rendered().width(), page.rendered().height()),
+                (80, 100)
+            );
+            assert!(page.ocr.is_none());
+            for _ in 0..3 {
+                page.rotate_clockwise();
             }
-        );
-        let (_, width, height, selection) = page.crop_editor_source();
-        assert_eq!((width, height), (200, 100));
-        assert!((selection.left - 0.1).abs() < f64::EPSILON);
-        assert!((selection.bottom - 0.8).abs() < f64::EPSILON);
+            assert_eq!(page.rotation, Rotation::None);
+        }
+        // Phase `normalized_crop_round_trips_through_shared_editor_coordinates`.
+        {
+            let mut page = Page::new(DynamicImage::new_rgb8(200, 100));
+            page.set_normalized_crop(CropSelection {
+                left: 0.1,
+                top: 0.2,
+                right: 0.9,
+                bottom: 0.8,
+            })
+            .unwrap();
+            assert_eq!(
+                page.crop,
+                Crop {
+                    x: 20,
+                    y: 20,
+                    width: 160,
+                    height: 60,
+                }
+            );
+            let (_, width, height, selection) = page.crop_editor_source();
+            assert_eq!((width, height), (200, 100));
+            assert!((selection.left - 0.1).abs() < f64::EPSILON);
+            assert!((selection.bottom - 0.8).abs() < f64::EPSILON);
+        }
+        // Phase `pages_can_be_reordered_after_capture`.
+        {
+            let mut scan = ScanSession::default();
+            scan.add_page(DynamicImage::new_rgb8(10, 20));
+            scan.add_page(DynamicImage::new_rgb8(30, 40));
+            assert!(scan.move_page(1, 0));
+            assert_eq!(scan.pages[0].rendered().width(), 30);
+        }
+        // Phase `searchable_pdf_preserves_page_order_and_recognized_text`.
+        {
+            let mut scan = ScanSession::default();
+            scan.add_page(DynamicImage::new_rgb8(2, 1));
+            scan.add_page(DynamicImage::new_rgb8(1, 2));
+            scan.pages[0].ocr = Some(Document {
+                words: vec![tilo_ocr::Word {
+                    text: "First receipt".into(),
+                    confidence: 98.0,
+                    bounds: tilo_ocr::Bounds {
+                        x: 0,
+                        y: 0,
+                        width: 2,
+                        height: 1,
+                    },
+                    page: 1,
+                    block: 1,
+                    paragraph: 1,
+                    line: 1,
+                    position: 1,
+                }],
+                language: "eng".into(),
+            });
+            scan.pages[1].ocr = Some(Document {
+                words: vec![tilo_ocr::Word {
+                    text: "Second receipt".into(),
+                    confidence: 97.0,
+                    bounds: tilo_ocr::Bounds {
+                        x: 0,
+                        y: 0,
+                        width: 1,
+                        height: 2,
+                    },
+                    page: 1,
+                    block: 1,
+                    paragraph: 1,
+                    line: 1,
+                    position: 1,
+                }],
+                language: "eng".into(),
+            });
+
+            let pdf = scan.searchable_pdf();
+            let text = String::from_utf8_lossy(&pdf);
+            assert!(text.starts_with("%PDF-1.7"));
+            assert!(text.contains("/Count 2"));
+            assert!(text.contains("First receipt"));
+            assert!(text.contains("Second receipt"));
+            assert!(text.contains("3 Tr"), "OCR layer must be invisible");
+        }
     }
 }

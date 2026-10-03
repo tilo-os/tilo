@@ -147,8 +147,10 @@ struct SecretServiceRegistry {
     latest_snapshot: BTreeMap<[u8; 16], MlsSnapshotReceipt>,
 }
 
-/// Production provider backed by the session's freedesktop Secret Service.
-/// Only opaque registry identifiers and ciphertext are written to disk.
+/// Production provider backed by the system secret store (the freedesktop
+/// Secret Service on Linux, the Keychain on macOS, or the sealed file store
+/// a headless machine names with `TILO_SECRETS_DIR`). Only opaque registry
+/// identifiers and ciphertext are written to disk.
 pub struct SecretServiceMlsVault {
     root: PathBuf,
     master_key: Zeroizing<[u8; 32]>,
@@ -163,12 +165,12 @@ impl SecretServiceMlsVault {
     ///
     /// Returns an error when session state or vault material cannot be opened.
     pub fn open_for_session() -> Result<Self, MlsAuthorityError> {
-        let state = std::env::var_os("XDG_STATE_HOME").ok_or_else(|| {
+        let state = xdg_paths::env_dir("XDG_STATE_HOME").ok_or_else(|| {
             MlsAuthorityError::VaultUnavailable(
                 "launcher did not provide XDG_STATE_HOME for MLS state".into(),
             )
         })?;
-        Self::open(PathBuf::from(state).join("tilo/collaboration/mls"))
+        Self::open(state.join("tilo/collaboration/mls"))
     }
 
     /// Broker-owned WAL location paired with this provider. It is derived
@@ -190,16 +192,16 @@ impl SecretServiceMlsVault {
     pub(crate) fn channel_state_key(&self) -> VaultKey {
         let mut hash = Sha256::new();
         hash.update(b"tilo.channel-state-key.v1");
-        hash.update(self.master_key.as_ref());
+        hash.update(self.master_key.as_slice());
         VaultKey::new(hash.finalize().into())
     }
 
-    /// Open the provider, creating its master key in Secret Service if this is
+    /// Open the provider, creating its master key in the secret store if this is
     /// the first use. There is intentionally no file-key fallback.
     ///
     /// # Errors
     ///
-    /// Returns unavailable if Secret Service is absent/locked, or persistence
+    /// Returns unavailable if the secret store is absent/locked, or persistence
     /// errors for an invalid registry.
     pub fn open(root: PathBuf) -> Result<Self, MlsAuthorityError> {
         fs::create_dir_all(&root).map_err(io_error)?;
@@ -221,9 +223,9 @@ impl SecretServiceMlsVault {
                 rand_core::Rng::fill_bytes(&mut UnwrapErr(SysRng), bytes.as_mut());
                 secret_service_store(&locator, bytes.as_ref())?;
                 let verified = secret_service_load(&locator)?;
-                if verified.as_ref() != bytes.as_ref() {
+                if verified.as_slice() != bytes.as_slice() {
                     return Err(MlsAuthorityError::VaultUnavailable(
-                        "Secret Service did not return the newly stored MLS key".into(),
+                        "the secret store did not return the newly stored MLS key".into(),
                     ));
                 }
                 verified
@@ -396,8 +398,8 @@ impl MlsVaultProvider for SecretServiceMlsVault {
             MlsAuthorityError::VaultUnavailable("unregistered vault capability".into())
         })?;
         let signer_bytes = secret_service_load(&record.signer_locator)?;
-        let signer_array: [u8; 32] = signer_bytes.as_ref().try_into().map_err(|_| {
-            MlsAuthorityError::VaultUnavailable("Secret Service signer has invalid length".into())
+        let signer_array: [u8; 32] = signer_bytes.as_slice().try_into().map_err(|_| {
+            MlsAuthorityError::VaultUnavailable("stored MLS signer has invalid length".into())
         })?;
         let group = ChannelGroup::load_sealed(
             &self.root.join(&record.state_file),
@@ -497,49 +499,59 @@ fn random_capability() -> [u8; 32] {
     bytes
 }
 
+/// The secret-store namespace holding the MLS master and signer keys.
+const MLS_SECRETS_APP: &str = "so.tilo.collaboration.mls";
+
+/// The system secret store: the Secret Service on Linux, the login Keychain
+/// on macOS.
+fn mls_secrets() -> tilo_secrets::SecretStore {
+    tilo_secrets::SecretStore::for_app(MLS_SECRETS_APP)
+}
+
 fn secret_service_store(locator: &str, secret: &[u8]) -> Result<(), MlsAuthorityError> {
-    let encoded = Zeroizing::new(hex::encode(secret));
-    let output = bounded_command::run(
-        "secret-tool",
-        &[
-            "store",
-            "--label=Tilo MLS key",
-            "tilo-purpose",
-            "mls",
-            "tilo-mls-key",
-            locator,
-        ],
-        Some(encoded.as_bytes()),
-        64 * 1024,
-        Duration::from_secs(10),
-    )
-    .map_err(|_| {
-        MlsAuthorityError::VaultUnavailable("Secret Service MLS storage unavailable".into())
-    })?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(MlsAuthorityError::VaultUnavailable(
-            "Secret Service refused MLS key storage".into(),
-        ))
-    }
+    let options = tilo_secrets::PutOptions {
+        label: Some("Tilo MLS key".into()),
+    };
+    mls_secrets()
+        .put_blocking(locator, secret, options)
+        .map_err(|error| {
+            MlsAuthorityError::VaultUnavailable(format!("MLS key storage refused: {error}"))
+        })
 }
 
 fn secret_service_load(locator: &str) -> Result<Zeroizing<[u8; 32]>, MlsAuthorityError> {
-    let output = bounded_command::run(
+    let stored = mls_secrets().get_blocking(locator).map_err(|error| {
+        MlsAuthorityError::VaultUnavailable(format!("MLS key lookup unavailable: {error}"))
+    })?;
+    let bytes = if let Some(secret) = stored {
+        Zeroizing::new(secret.expose().to_vec())
+    } else {
+        let legacy = legacy_secret_tool_load(locator)?
+            .ok_or_else(|| MlsAuthorityError::VaultUnavailable("MLS key unavailable".into()))?;
+        secret_service_store(locator, &legacy)?;
+        legacy
+    };
+    let key: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+        MlsAuthorityError::VaultUnavailable("stored MLS key has invalid length".into())
+    })?;
+    Ok(Zeroizing::new(key))
+}
+
+/// A key stored by earlier builds through `secret-tool` under their own
+/// attributes; `None` when there is none (or no `secret-tool`). The caller
+/// moves it into the system store.
+fn legacy_secret_tool_load(locator: &str) -> Result<Option<Zeroizing<Vec<u8>>>, MlsAuthorityError> {
+    let Ok(output) = bounded_command::run(
         "secret-tool",
         &["lookup", "tilo-purpose", "mls", "tilo-mls-key", locator],
         None,
         64 * 1024,
         Duration::from_secs(10),
-    )
-    .map_err(|_| {
-        MlsAuthorityError::VaultUnavailable("Secret Service MLS lookup unavailable".into())
-    })?;
+    ) else {
+        return Ok(None);
+    };
     if !output.status.success() {
-        return Err(MlsAuthorityError::VaultUnavailable(
-            "Secret Service MLS key unavailable".into(),
-        ));
+        return Ok(None);
     }
     let stdout = Zeroizing::new(output.stdout);
     let decoded = Zeroizing::new(
@@ -547,10 +559,7 @@ fn secret_service_load(locator: &str) -> Result<Zeroizing<[u8; 32]>, MlsAuthorit
             MlsAuthorityError::VaultUnavailable("Secret Service returned malformed MLS key".into())
         })?,
     );
-    let bytes: [u8; 32] = decoded.as_slice().try_into().map_err(|_| {
-        MlsAuthorityError::VaultUnavailable("Secret Service MLS key has invalid length".into())
-    })?;
-    Ok(Zeroizing::new(bytes))
+    Ok(Some(decoded))
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -1054,7 +1063,25 @@ fn io_error(error: std::io::Error) -> MlsAuthorityError {
     MlsAuthorityError::Persistence(error.to_string())
 }
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), MlsAuthorityError> {
-    atomic_file::write_with_mode(path, bytes, 0o600).map_err(io_error)
+    tilo_files::native::atomic::write_with_mode(path, bytes, 0o600).map_err(io_error)
+}
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;
+
+impl tilo_action_broker::collab_core::SnapshotReceiptVault for SecretServiceMlsVault {
+    fn mint_snapshot_receipt(
+        &self,
+        channel: ChannelId,
+        envelope: &collab_types::SignedOp,
+    ) -> Result<(), String> {
+        SecretServiceMlsVault::mint_snapshot_receipt(self, channel, envelope)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -1280,101 +1307,105 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_provider_rejects_arbitrary_handles() {
-        let error = UnavailableMlsVault
-            .checkout(MlsVaultHandle::from_issued_bytes([99; 32]))
-            .err()
-            .unwrap();
-        assert!(matches!(error, MlsAuthorityError::VaultUnavailable(_)));
-    }
-
-    #[test]
-    fn production_receipt_store_is_durable_route_bound_and_tamper_evident() {
-        let dir = tempfile::tempdir().unwrap();
-        let provider = SecretServiceMlsVault {
-            root: dir.path().to_path_buf(),
-            master_key: Zeroizing::new([6; 32]),
-            registry: Mutex::new(SecretServiceRegistry::default()),
-        };
-        let joining_member = MemberKey::generate(b"joining-device").unwrap();
-        let package = joining_member.fresh_key_package().unwrap();
-        let expected_package = channel_crypto::encode_key_package(&package).unwrap();
-        let package_handle = provider.register_key_package(package).unwrap();
-        let restarted_registry: SecretServiceRegistry =
-            postcard::from_bytes(&std::fs::read(dir.path().join("registry.postcard")).unwrap())
+    fn mls_receipts_are_durable_route_bound_and_unknown_handles_rejected() {
+        fn unavailable_provider_rejects_arbitrary_handles() {
+            let error = UnavailableMlsVault
+                .checkout(MlsVaultHandle::from_issued_bytes([99; 32]))
+                .err()
                 .unwrap();
-        let restarted_provider = SecretServiceMlsVault {
-            root: dir.path().to_path_buf(),
-            master_key: Zeroizing::new([6; 32]),
-            registry: Mutex::new(restarted_registry),
-        };
-        assert_eq!(
-            channel_crypto::encode_key_package(
-                &restarted_provider.key_package(package_handle).unwrap()
-            )
-            .unwrap(),
-            expected_package
-        );
-        let channel = ChannelId::new();
-        let (snapshot_signer, snapshot_author) = generate_keypair();
-        let mut encrypted = collab_types::SignedOp::new_unsigned_with_encryption(
-            vec![1, 2, 3],
-            collab_types::ArtifactId::new(),
-            snapshot_author,
-            collab_types::AttestationId::default(),
-            collab_types::OpClass::Compaction,
-            std::time::SystemTime::UNIX_EPOCH,
-            1,
-            collab_types::EncryptionMetadata::mls_application(0, channel),
-        );
-        assert!(provider.mint_snapshot_receipt(channel, &encrypted).is_err());
-        collab_types::sign_op(&mut encrypted, &snapshot_signer).unwrap();
-        assert!(
-            provider
-                .mint_snapshot_receipt(ChannelId::new(), &encrypted)
-                .is_err()
-        );
-        let receipt = provider.mint_snapshot_receipt(channel, &encrypted).unwrap();
-        let digest = provider.snapshot_digest(receipt, channel).unwrap();
-        assert_eq!(provider.latest_snapshot_receipt(channel), Some(receipt));
-        assert!(provider.snapshot_digest(receipt, ChannelId::new()).is_err());
+            assert!(matches!(error, MlsAuthorityError::VaultUnavailable(_)));
+        }
 
-        let plaintext = collab_types::SignedOp::new_unsigned(
-            vec![1],
-            encrypted.artifact,
-            encrypted.author,
-            encrypted.attestation_id,
-            collab_types::OpClass::Compaction,
-            std::time::SystemTime::UNIX_EPOCH,
-            2,
-        );
-        assert!(provider.mint_snapshot_receipt(channel, &plaintext).is_err());
+        fn production_receipt_store_is_durable_route_bound_and_tamper_evident() {
+            let dir = tempfile::tempdir().unwrap();
+            let provider = SecretServiceMlsVault {
+                root: dir.path().to_path_buf(),
+                master_key: Zeroizing::new([6; 32]),
+                registry: Mutex::new(SecretServiceRegistry::default()),
+            };
+            let joining_member = MemberKey::generate(b"joining-device").unwrap();
+            let package = joining_member.fresh_key_package().unwrap();
+            let expected_package = channel_crypto::encode_key_package(&package).unwrap();
+            let package_handle = provider.register_key_package(package).unwrap();
+            let restarted_registry: SecretServiceRegistry =
+                postcard::from_bytes(&std::fs::read(dir.path().join("registry.postcard")).unwrap())
+                    .unwrap();
+            let restarted_provider = SecretServiceMlsVault {
+                root: dir.path().to_path_buf(),
+                master_key: Zeroizing::new([6; 32]),
+                registry: Mutex::new(restarted_registry),
+            };
+            assert_eq!(
+                channel_crypto::encode_key_package(
+                    &restarted_provider.key_package(package_handle).unwrap()
+                )
+                .unwrap(),
+                expected_package
+            );
+            let channel = ChannelId::new();
+            let (snapshot_signer, snapshot_author) = generate_keypair();
+            let mut encrypted = collab_types::SignedOp::new_unsigned_with_encryption(
+                vec![1, 2, 3],
+                collab_types::ArtifactId::new(),
+                snapshot_author,
+                collab_types::AttestationId::default(),
+                collab_types::OpClass::Compaction,
+                std::time::SystemTime::UNIX_EPOCH,
+                1,
+                collab_types::EncryptionMetadata::mls_application(0, channel),
+            );
+            assert!(provider.mint_snapshot_receipt(channel, &encrypted).is_err());
+            collab_types::sign_op(&mut encrypted, &snapshot_signer).unwrap();
+            assert!(
+                provider
+                    .mint_snapshot_receipt(ChannelId::new(), &encrypted)
+                    .is_err()
+            );
+            let receipt = provider.mint_snapshot_receipt(channel, &encrypted).unwrap();
+            let digest = provider.snapshot_digest(receipt, channel).unwrap();
+            assert_eq!(provider.latest_snapshot_receipt(channel), Some(receipt));
+            assert!(provider.snapshot_digest(receipt, ChannelId::new()).is_err());
 
-        let mut wrong_class = collab_types::SignedOp::new_unsigned_with_encryption(
-            vec![1],
-            encrypted.artifact,
-            encrypted.author,
-            encrypted.attestation_id,
-            collab_types::OpClass::EditMeta,
-            std::time::SystemTime::UNIX_EPOCH,
-            3,
-            collab_types::EncryptionMetadata::mls_application(0, channel),
-        );
-        collab_types::sign_op(&mut wrong_class, &snapshot_signer).unwrap();
-        assert!(
-            provider
-                .mint_snapshot_receipt(channel, &wrong_class)
-                .is_err()
-        );
+            let plaintext = collab_types::SignedOp::new_unsigned(
+                vec![1],
+                encrypted.artifact,
+                encrypted.author,
+                encrypted.attestation_id,
+                collab_types::OpClass::Compaction,
+                std::time::SystemTime::UNIX_EPOCH,
+                2,
+            );
+            assert!(provider.mint_snapshot_receipt(channel, &plaintext).is_err());
 
-        let snapshot_path = {
-            let registry = provider.registry.lock().unwrap();
-            dir.path().join(&registry.snapshots[&receipt].envelope_file)
-        };
-        let mut bytes = std::fs::read(&snapshot_path).unwrap();
-        bytes.push(0);
-        std::fs::write(snapshot_path, bytes).unwrap();
-        assert!(provider.snapshot_digest(receipt, channel).is_err());
-        assert_ne!(digest, [0; 32]);
+            let mut wrong_class = collab_types::SignedOp::new_unsigned_with_encryption(
+                vec![1],
+                encrypted.artifact,
+                encrypted.author,
+                encrypted.attestation_id,
+                collab_types::OpClass::EditMeta,
+                std::time::SystemTime::UNIX_EPOCH,
+                3,
+                collab_types::EncryptionMetadata::mls_application(0, channel),
+            );
+            collab_types::sign_op(&mut wrong_class, &snapshot_signer).unwrap();
+            assert!(
+                provider
+                    .mint_snapshot_receipt(channel, &wrong_class)
+                    .is_err()
+            );
+
+            let snapshot_path = {
+                let registry = provider.registry.lock().unwrap();
+                dir.path().join(&registry.snapshots[&receipt].envelope_file)
+            };
+            let mut bytes = std::fs::read(&snapshot_path).unwrap();
+            bytes.push(0);
+            std::fs::write(snapshot_path, bytes).unwrap();
+            assert!(provider.snapshot_digest(receipt, channel).is_err());
+            assert_ne!(digest, [0; 32]);
+        }
+
+        unavailable_provider_rejects_arbitrary_handles();
+        production_receipt_store_is_durable_route_bound_and_tamper_evident();
     }
 }

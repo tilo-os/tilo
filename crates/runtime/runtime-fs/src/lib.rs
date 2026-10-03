@@ -37,7 +37,7 @@
 
 use std::rc::Rc;
 
-use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
+use runtime_portal::NotAvailable;
 
 // Generated schema. `include!` at the crate root under the exact
 // module name the capnp compiler emits (`fs_capnp` for schema/fs.capnp).
@@ -59,7 +59,7 @@ use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
     reason = "generated schema modules expose more than each consumer uses"
 )]
 pub mod fs_capnp {
-    include!(concat!(env!("OUT_DIR"), "/fs_capnp.rs"));
+    include!("generated/fs_capnp.rs");
 }
 
 #[allow(
@@ -81,10 +81,8 @@ pub mod fs_capnp {
     reason = "generated schema modules expose more than each consumer uses"
 )]
 pub mod blobs_capnp {
-    include!(concat!(env!("OUT_DIR"), "/blobs_capnp.rs"));
+    include!("generated/blobs_capnp.rs");
 }
-
-use capnp_rpc::rpc_twoparty_capnp;
 
 #[cfg(unix)]
 pub mod grants;
@@ -108,6 +106,9 @@ pub mod storage;
 #[cfg(unix)]
 pub mod blobs;
 
+#[cfg(unix)]
+pub mod workspace_server;
+
 pub use fs_capnp::workspace_fs::Client as WorkspaceFsClient;
 
 /// Byte cap the server-side `FileHandle` applies to a single `read`; larger
@@ -125,8 +126,25 @@ pub const MAX_READ_CHUNK: u32 = 1 << 20;
 /// service fd, or [`NotAvailable::ConnectionFailed`] if the fd can't be
 /// lifted to an RPC connection.
 pub fn try_connect() -> Result<FsClient, NotAvailable> {
-    let fd = service_fd("fs").ok_or(NotAvailable::ServiceFdMissing)?;
-    let unix = UnixCapnpClient::from_connected_fd(fd, rpc_twoparty_capnp::Side::Client)?;
+    let client: WorkspaceFsClient = runtime_portal::connect_service("fs")?.bootstrap();
+    Ok(FsClient::from_raw(client))
+}
+
+/// Dial a workspace a host serves at `socket`
+/// ([`workspace_server::serve_workspace`]). Call from a
+/// `tokio::task::LocalSet`, as [`try_connect`].
+///
+/// # Errors
+///
+/// Returns [`NotAvailable::ConnectionFailed`] when nothing serves `socket`.
+#[cfg(unix)]
+pub fn connect(socket: &std::path::Path) -> Result<FsClient, NotAvailable> {
+    use std::os::fd::IntoRawFd as _;
+    let stream = std::os::unix::net::UnixStream::connect(socket)?;
+    let unix = runtime_portal::UnixCapnpClient::from_connected_fd(
+        stream.into_raw_fd(),
+        capnp_rpc::rpc_twoparty_capnp::Side::Client,
+    )?;
     let client: WorkspaceFsClient = unix.bootstrap();
     Ok(FsClient::from_raw(client))
 }

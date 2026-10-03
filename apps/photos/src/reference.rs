@@ -74,7 +74,6 @@ mod tests {
     use super::*;
     use crate::actions::PhotosResources;
     use crate::model::OpenImage;
-    use tilo_actions::ResourceProvider;
 
     const PATH: &str = "/var/workspace/photos/harbour.png";
 
@@ -88,7 +87,7 @@ mod tests {
     /// The headline property, in the third app and in the same shape as the
     /// first two: what is open produces an address, asserted on the id.
     #[test]
-    fn the_open_photograph_resolves_to_its_own_address() {
+    fn the_open_photograph_has_one_whole_published_address_that_edits_keep() {
         let doc = doc_with_image(PATH);
         let r = image_reference(&doc).expect("an open photograph is referenceable");
         assert_eq!(
@@ -96,17 +95,14 @@ mod tests {
             "photos.image:/var/workspace/photos/harbour.png"
         );
         assert_eq!(r.kind, IMAGE_KIND);
-    }
 
-    /// The address a remark carries is the one the action door publishes, so a
-    /// reader can go from the reference to what can be *done* to it — which in
-    /// this app is the crop the whole gesture exists to ask for.
-    #[test]
-    fn the_address_matches_the_id_the_app_publishes() {
+        // The address a remark carries is the one the action door publishes, so a
+        // reader can go from the reference to what can be *done* to it — which in
+        // this app is the crop the whole gesture exists to ask for.
         let doc = doc_with_image(PATH);
         let r = image_reference(&doc).unwrap();
 
-        let published = PhotosResources.resources(&doc);
+        let published = PhotosResources.publish_resources(&doc);
         let ids: Vec<String> = published
             .iter()
             .map(|res| res.id.as_str().to_string())
@@ -126,32 +122,29 @@ mod tests {
             published[0].actions.iter().any(|a| a.id == "crop"),
             "the referenced resource must carry the crop action"
         );
-    }
 
-    /// A photograph is referenced whole. The absence of a span is meaningful:
-    /// it is how a reader knows the remark is about the picture and not about
-    /// some rectangle inside it.
-    #[test]
-    fn a_photograph_is_referenced_whole() {
+        // A photograph is referenced whole. The absence of a span is meaningful:
+        // it is how a reader knows the remark is about the picture and not about
+        // some rectangle inside it.
         let doc = doc_with_image(PATH);
         let r = image_reference(&doc).unwrap();
         assert_eq!(r.span, None);
         assert!(!r.is_partial());
-    }
 
-    /// Nothing open, nothing to talk about — the gesture is not offered rather
-    /// than a reference to nothing being minted.
-    #[test]
-    fn an_empty_app_is_not_referenceable() {
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        assert!(image_reference(&doc).is_none());
+        // Editing the photograph does not move its address. The crop in force is
+        // a property of the document at that address, so a remark written before
+        // an edit still names the same picture after it.
+        let mut doc = doc_with_image(PATH);
+        let before = image_reference(&doc).unwrap();
+        PhotosDoc::set_edits(&mut doc, &crate::model::Edits::default().rotated_right());
+        let after = image_reference(&doc).unwrap();
+        assert_eq!(before.resource_id(), after.resource_id());
     }
 
     /// The name is the label and the picture is the address: two photographs
     /// that share a filename must not share an identity.
     #[test]
-    fn the_name_is_the_label_and_the_picture_is_the_address() {
+    fn labels_name_the_file_addresses_name_the_picture_and_empty_apps_have_none() {
         let a = image_reference(&doc_with_image("/var/workspace/a/harbour.png")).unwrap();
         let b = image_reference(&doc_with_image("/var/workspace/b/harbour.png")).unwrap();
         assert_eq!(a.label, "harbour.png");
@@ -166,17 +159,11 @@ mod tests {
             "the label is for a person, not the path: {:?}",
             a.label
         );
-    }
 
-    /// Editing the photograph does not move its address. The crop in force is
-    /// a property of the document at that address, so a remark written before
-    /// an edit still names the same picture after it.
-    #[test]
-    fn an_edit_does_not_move_the_address() {
-        let mut doc = doc_with_image(PATH);
-        let before = image_reference(&doc).unwrap();
-        PhotosDoc::set_edits(&mut doc, &crate::model::Edits::default().rotated_right());
-        let after = image_reference(&doc).unwrap();
-        assert_eq!(before.resource_id(), after.resource_id());
+        // Nothing open, nothing to talk about — the gesture is not offered rather
+        // than a reference to nothing being minted.
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        assert!(image_reference(&doc).is_none());
     }
 }

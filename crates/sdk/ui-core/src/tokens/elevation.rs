@@ -154,129 +154,133 @@ mod tests {
         s.color.to_rgba8().a
     }
 
-    /// A drop shadow is black either way, so the ladder cannot be one shared
-    /// set of alphas: what a dark ground swallows lands hard on a pale one.
     #[test]
-    fn light_themes_get_a_softer_ladder_than_dark_ones() {
-        let d = Elevation::dark();
-        let l = Elevation::light();
-        for (tier, dark, light) in [
-            ("e1", &d.e1, &l.e1),
-            ("e2", &d.e2, &l.e2),
-            ("e3", &d.e3, &l.e3),
-            ("e4", &d.e4, &l.e4),
-        ] {
-            assert!(alpha(light) < alpha(dark), "{tier}: light must be softer");
-            // Geometry is shared — only the weight differs.
-            assert_eq!(light.blur, dark.blur, "{tier}: same blur");
-            assert_eq!(light.offset_y, dark.offset_y, "{tier}: same offset");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn elevation_ladders_are_monotonic_soft_and_proportioned() {
+        // phase: light_themes_get_a_softer_ladder_than_dark_ones
+        // A drop shadow is black either way, so the ladder cannot be one shared
+        // set of alphas: what a dark ground swallows lands hard on a pale one.
+        {
+            let d = Elevation::dark();
+            let l = Elevation::light();
+            for (tier, dark, light) in [
+                ("e1", &d.e1, &l.e1),
+                ("e2", &d.e2, &l.e2),
+                ("e3", &d.e3, &l.e3),
+                ("e4", &d.e4, &l.e4),
+            ] {
+                assert!(alpha(light) < alpha(dark), "{tier}: light must be softer");
+                // Geometry is shared — only the weight differs.
+                assert_eq!(light.blur, dark.blur, "{tier}: same blur");
+                assert_eq!(light.offset_y, dark.offset_y, "{tier}: same offset");
+            }
+            assert_eq!(l.shadow_scale, LIGHT_SHADOW_SCALE);
+            assert_eq!(d.shadow_scale, 1.0);
         }
-        assert_eq!(l.shadow_scale, LIGHT_SHADOW_SCALE);
-        assert_eq!(d.shadow_scale, 1.0);
-    }
-
-    /// The ladder must stay a ladder in both polarities: each tier heavier
-    /// than the one below it.
-    #[test]
-    fn every_ladder_is_monotonic() {
-        for (name, e) in [("dark", Elevation::dark()), ("light", Elevation::light())] {
-            let steps = [
-                alpha(&e.e0),
-                alpha(&e.e1),
-                alpha(&e.e2),
-                alpha(&e.e3),
-                alpha(&e.e4),
-            ];
-            for w in steps.windows(2) {
-                assert!(w[1] > w[0], "{name}: the ladder must climb, got {steps:?}");
+        // phase: every_ladder_is_monotonic
+        // The ladder must stay a ladder in both polarities: each tier heavier
+        // than the one below it.
+        {
+            for (name, e) in [("dark", Elevation::dark()), ("light", Elevation::light())] {
+                let steps = [
+                    alpha(&e.e0),
+                    alpha(&e.e1),
+                    alpha(&e.e2),
+                    alpha(&e.e3),
+                    alpha(&e.e4),
+                ];
+                for w in steps.windows(2) {
+                    assert!(w[1] > w[0], "{name}: the ladder must climb, got {steps:?}");
+                }
             }
         }
-    }
+        // phase: a_stacked_ring_shadow_stays_soft_on_every_light_theme
+        // The defect the split exists to prevent, pinned at the shape that
+        // actually broke.
+        //
+        // A widget that approximates a soft shadow with a stack of concentric rings
+        // composites every ring where they overlap, so the weight compounds. With
+        // the dark ladder's alphas on a white card that stack landed on `#A6A6A6`
+        // — a 2.12:1 band, heavier than the card border and heavy enough that a
+        // tab strip read as a solid grey slab. Scaled, the same stack lands near
+        // `#D3D3D3`.
+        {
+            // The ring alphas `tabs.rs` composes, before the per-theme scale.
+            const RINGS: [f32; 4] = [51.0, 30.0, 15.0, 5.0];
 
-    /// The defect the split exists to prevent, pinned at the shape that
-    /// actually broke.
-    ///
-    /// A widget that approximates a soft shadow with a stack of concentric rings
-    /// composites every ring where they overlap, so the weight compounds. With
-    /// the dark ladder's alphas on a white card that stack landed on `#A6A6A6`
-    /// — a 2.12:1 band, heavier than the card border and heavy enough that a
-    /// tab strip read as a solid grey slab. Scaled, the same stack lands near
-    /// `#D3D3D3`.
-    #[test]
-    fn a_stacked_ring_shadow_stays_soft_on_every_light_theme() {
-        // The ring alphas `tabs.rs` composes, before the per-theme scale.
-        const RINGS: [f32; 4] = [51.0, 30.0, 15.0, 5.0];
-
-        for name in Theme::ALL {
-            let theme = Theme::named(name).unwrap();
-            let scale = theme.tokens.elevation.shadow_scale;
-            if scale >= 1.0 {
-                continue; // dark ladder: black on a dark ground is already soft
-            }
-            let ground = theme.tokens.colors.surfaces.raised;
-            let ground_channels = ground.to_rgba8();
-            let (mut red, mut green, mut blue) = (
-                f32::from(ground_channels.r),
-                f32::from(ground_channels.g),
-                f32::from(ground_channels.b),
-            );
-            for ring in RINGS {
-                let alpha = (ring * scale).round() / 255.0;
-                red *= 1.0 - alpha;
-                green *= 1.0 - alpha;
-                blue *= 1.0 - alpha;
-            }
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "multiplying u8-derived channels by 0.0..=1.0 alphas keeps each rounded channel within 0..=255"
-            )]
-            let seen = Color::from_rgb8(red.round() as u8, green.round() as u8, blue.round() as u8);
-            let weight = contrast_ratio(seen, ground);
-            assert!(
-                weight < 1.60,
-                "{name}: a stacked ring shadow composites to {weight:.2}:1 on the card \
+            for name in Theme::ALL {
+                let theme = Theme::named(name).unwrap();
+                let scale = theme.tokens.elevation.shadow_scale;
+                if scale >= 1.0 {
+                    continue; // dark ladder: black on a dark ground is already soft
+                }
+                let ground = theme.tokens.colors.surfaces.raised;
+                let ground_channels = ground.to_rgba8();
+                let (mut red, mut green, mut blue) = (
+                    f32::from(ground_channels.r),
+                    f32::from(ground_channels.g),
+                    f32::from(ground_channels.b),
+                );
+                for ring in RINGS {
+                    let alpha = (ring * scale).round() / 255.0;
+                    red *= 1.0 - alpha;
+                    green *= 1.0 - alpha;
+                    blue *= 1.0 - alpha;
+                }
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "multiplying u8-derived channels by 0.0..=1.0 alphas keeps each rounded channel within 0..=255"
+                )]
+                let seen =
+                    Color::from_rgb8(red.round() as u8, green.round() as u8, blue.round() as u8);
+                let weight = contrast_ratio(seen, ground);
+                assert!(
+                    weight < 1.60,
+                    "{name}: a stacked ring shadow composites to {weight:.2}:1 on the card \
                  — at the unscaled alphas this was 2.12:1 and read as a solid band",
-            );
+                );
+            }
         }
-    }
-
-    /// Pinned so a future retune has to move `offset_y` and `blur` together.
-    #[test]
-    fn offset_stays_a_quarter_of_blur() {
-        let e = Elevation::default();
-        for (name, s) in [("e1", &e.e1), ("e2", &e.e2), ("e3", &e.e3), ("e4", &e.e4)] {
-            assert_eq!(
-                s.offset_y * 4.0,
-                s.blur,
-                "{name}: offset_y must stay blur/4 so the falloff does not \
+        // phase: offset_stays_a_quarter_of_blur
+        // Pinned so a future retune has to move `offset_y` and `blur` together.
+        {
+            let e = Elevation::default();
+            for (name, s) in [("e1", &e.e1), ("e2", &e.e2), ("e3", &e.e3), ("e4", &e.e4)] {
+                assert_eq!(
+                    s.offset_y * 4.0,
+                    s.blur,
+                    "{name}: offset_y must stay blur/4 so the falloff does not \
                  collapse onto the bottom edge (offset {} blur {})",
-                s.offset_y,
-                s.blur
-            );
+                    s.offset_y,
+                    s.blur
+                );
+            }
         }
-    }
-
-    /// The ramp rises monotonically in blur and opacity, staying subtle at
-    /// the top — `e4`'s alpha above ~0.25 is the regression this guards
-    /// against: a painter discarding the alpha field entirely composites at 1.0.
-    #[test]
-    fn ramp_rises_and_stays_subtle() {
-        let e = Elevation::default();
-        let steps = [&e.e1, &e.e2, &e.e3, &e.e4];
-        for w in steps.windows(2) {
-            assert!(w[1].blur > w[0].blur, "blur must rise up the ramp");
+        // phase: ramp_rises_and_stays_subtle
+        // The ramp rises monotonically in blur and opacity, staying subtle at
+        // the top — `e4`'s alpha above ~0.25 is the regression this guards
+        // against: a painter discarding the alpha field entirely composites at 1.0.
+        {
+            let e = Elevation::default();
+            let steps = [&e.e1, &e.e2, &e.e3, &e.e4];
+            for w in steps.windows(2) {
+                assert!(w[1].blur > w[0].blur, "blur must rise up the ramp");
+                assert!(
+                    w[1].color.components[3] > w[0].color.components[3],
+                    "opacity must rise up the ramp"
+                );
+            }
             assert!(
-                w[1].color.components[3] > w[0].color.components[3],
-                "opacity must rise up the ramp"
-            );
-        }
-        assert!(
-            e.e4.color.components[3] <= 0.25,
-            "e4 is a panel's elevation and must stay subtle; a heavier \
+                e.e4.color.components[3] <= 0.25,
+                "e4 is a panel's elevation and must stay subtle; a heavier \
              shadow is elevation compensating for a surface that does not \
              separate on its own (got {})",
-            e.e4.color.components[3]
-        );
+                e.e4.color.components[3]
+            );
+        }
     }
 }

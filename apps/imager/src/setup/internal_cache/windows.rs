@@ -112,7 +112,7 @@ pub(in crate::setup) use native::*;
 mod native {
     use super::super::{
         MAX_COLLISIONS, MAX_RECORD, MAX_SCAN, Ownership, PreparationComplete, Provider,
-        checkpoint::Record,
+        checkpoint::Record, working_leaf,
     };
     use super::{allowed_ace, require, windows_cache_path, windows_directory_leaf_supported};
     use crate::setup::internal_download::SelectedManifest;
@@ -847,7 +847,7 @@ mod native {
     }
     /// The per-user cache directory that holds `tilo-internal-install`.
     pub(in crate::setup) fn cache_base() -> Result<std::path::PathBuf> {
-        xdg_paths::cache_dir().ok_or_else(|| "Current-user LocalAppData cache unavailable".into())
+        tilo_paths::cache_dir().ok_or_else(|| "Current-user LocalAppData cache unavailable".into())
     }
     pub(in crate::setup) struct CacheRoot {
         lease: Arc<LockedRoot>,
@@ -1135,8 +1135,8 @@ mod native {
     }
     fn generated() -> Result<String> {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let ticks = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let ticks = ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
             .map_err(|e| e.to_string())?
             .as_nanos();
         let mut h = Sha256::new();
@@ -1145,10 +1145,9 @@ mod native {
         h.update(COUNTER.fetch_add(1, Ordering::Relaxed).to_le_bytes());
         let digest = h.finalize();
         // Uniqueness only. Exclusive FILE_CREATE supplies the no-adoption boundary.
-        Ok(format!(
-            ".tilo-part-{:032x}",
-            u128::from_le_bytes(digest[..16].try_into().unwrap())
-        ))
+        Ok(working_leaf(u128::from_le_bytes(
+            digest[..16].try_into().unwrap(),
+        )))
     }
     impl CacheRoot {
         pub(in crate::setup) fn bootstrap<'a>(

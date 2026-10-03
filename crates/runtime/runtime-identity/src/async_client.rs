@@ -386,177 +386,189 @@ mod tests {
         broker.await.unwrap();
     }
 
-    /// The async client speaks the same bytes as the blocking one: a
-    /// little-endian `u32` length, then postcard.
     #[tokio::test]
-    async fn async_wire_bytes_are_pinned() {
-        const REQUEST: [u8; 7] = [3, 0, 0, 0, 2, 1, b'w'];
-        let (mut identity, mut server) = connected(Duration::from_secs(5)).await;
-        let broker = tokio::spawn(async move {
-            let mut request = [0_u8; REQUEST.len()];
-            server.read_exact(&mut request).await.unwrap();
-            let mut response = vec![66, 0, 0, 0, 1, 64];
-            response.extend_from_slice(&[7; 64]);
-            server.write_all(&response).await.unwrap();
-            request
-        });
-        assert_eq!(
-            identity.sign_collaboration_join("w").await.unwrap(),
-            [7; 64]
-        );
-        assert_eq!(broker.await.unwrap(), REQUEST);
-    }
-
-    #[tokio::test]
-    async fn unrepresentable_timeout_waits_without_deadline() {
-        let (mut identity, mut server) = connected(Duration::MAX).await;
-        let broker = tokio::spawn(async move {
-            assert!(matches!(
-                read_request(&mut server).await,
-                wire::Request::CollaborationJoin { .. }
-            ));
-            write_response(&mut server, wire::Response::Signature(vec![9; 64])).await;
-        });
-        assert_eq!(
-            identity.sign_collaboration_join("workspace").await.unwrap(),
-            [9; 64]
-        );
-        assert!(identity.is_usable());
-        broker.await.unwrap();
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn stalled_metadata_obeys_one_absolute_deadline() {
-        let (client, mut server) = tokio::io::duplex(64);
-        tokio::spawn(async move {
-            assert!(matches!(
-                read_request(&mut server).await,
-                wire::Request::Metadata
-            ));
-            std::future::pending::<()>().await;
-        });
-        assert_eq!(
-            error_kind(
-                AsyncBrokerSigningIdentity::from_connected_io(client, Duration::from_millis(20))
-                    .await
-            ),
-            io::ErrorKind::TimedOut
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn stalled_join_poison_drops_late_reply_before_next_exchange() {
-        let (mut identity, mut server) = connected(Duration::from_millis(20)).await;
-        let late = tokio::spawn(async move {
-            assert!(matches!(
-                read_request(&mut server).await,
-                wire::Request::CollaborationJoin { .. }
-            ));
-            tokio::time::sleep(Duration::from_millis(40)).await;
-            wire::FRAMING
-                .write_value_async(&mut server, &wire::Response::Signature(vec![7; 64]))
-                .await
-                .map_err(std::io::Error::from)
-        });
-        assert_eq!(
-            error_kind(identity.sign_collaboration_join("workspace").await),
-            io::ErrorKind::TimedOut
-        );
-        assert!(!identity.is_usable());
-        assert_eq!(
-            error_kind(
+    async fn the_async_client_speaks_the_blocking_wire_and_keeps_alignment() {
+        // phase: async_wire_bytes_are_pinned
+        // The async client speaks the same bytes as the blocking one: a
+        // little-endian `u32` length, then postcard.
+        {
+            const REQUEST: [u8; 7] = [3, 0, 0, 0, 2, 1, b'w'];
+            let (mut identity, mut server) = connected(Duration::from_secs(5)).await;
+            let broker = tokio::spawn(async move {
+                let mut request = [0_u8; REQUEST.len()];
+                server.read_exact(&mut request).await.unwrap();
+                let mut response = vec![66, 0, 0, 0, 1, 64];
+                response.extend_from_slice(&[7; 64]);
+                server.write_all(&response).await.unwrap();
+                request
+            });
+            assert_eq!(
+                identity.sign_collaboration_join("w").await.unwrap(),
+                [7; 64]
+            );
+            assert_eq!(broker.await.unwrap(), REQUEST);
+        }
+        // phase: unrepresentable_timeout_waits_without_deadline
+        {
+            let (mut identity, mut server) = connected(Duration::MAX).await;
+            let broker = tokio::spawn(async move {
+                assert!(matches!(
+                    read_request(&mut server).await,
+                    wire::Request::CollaborationJoin { .. }
+                ));
+                write_response(&mut server, wire::Response::Signature(vec![9; 64])).await;
+            });
+            assert_eq!(
+                identity.sign_collaboration_join("workspace").await.unwrap(),
+                [9; 64]
+            );
+            assert!(identity.is_usable());
+            broker.await.unwrap();
+        }
+        // phase: complete_denial_preserves_alignment_for_next_request
+        {
+            let (mut identity, mut server) = connected(Duration::from_secs(1)).await;
+            let broker = tokio::spawn(async move {
+                assert!(matches!(
+                    read_request(&mut server).await,
+                    wire::Request::CollaborationJoin { .. }
+                ));
+                write_response(&mut server, wire::Response::Denied("revoked".into())).await;
+                assert!(matches!(
+                    read_request(&mut server).await,
+                    wire::Request::CollaborationOp { .. }
+                ));
+                write_response(&mut server, wire::Response::Signature(vec![9; 64])).await;
+            });
+            assert_eq!(
+                error_kind(identity.sign_collaboration_join("workspace").await),
+                io::ErrorKind::PermissionDenied
+            );
+            assert!(identity.is_usable());
+            assert_eq!(
                 identity
                     .sign_collaboration_op("workspace", "app", "record", b"op")
                     .await
-            ),
-            io::ErrorKind::BrokenPipe
-        );
-        assert!(
-            late.await.unwrap().is_err(),
-            "timed-out stream must be closed"
-        );
+                    .unwrap(),
+                [9; 64]
+            );
+            broker.await.unwrap();
+        }
     }
 
     #[tokio::test(start_paused = true)]
-    async fn stalled_operation_keeps_localset_work_responsive() {
-        let (mut identity, mut server) = connected(Duration::from_millis(20)).await;
-        let (request_seen, seen) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            assert!(matches!(
-                read_request(&mut server).await,
-                wire::Request::CollaborationOp { .. }
-            ));
-            let _ = request_seen.send(());
-            std::future::pending::<()>().await;
-        });
-        let (responsive, response) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            seen.await.unwrap();
-            tokio::task::yield_now().await;
-            let _ = responsive.send(());
-        });
-        let operation = identity.sign_collaboration_op("workspace", "app", "record", b"op");
-        tokio::pin!(operation);
-        tokio::select! {
-            result = &mut operation => {
-                assert_eq!(error_kind(result), io::ErrorKind::TimedOut);
-            }
-            result = response => {
-                result.unwrap();
-                assert_eq!(
-                    error_kind(operation.await),
-                    io::ErrorKind::TimedOut
-                );
+    async fn stalled_exchanges_time_out_poison_and_never_block_other_work() {
+        // phase: stalled_metadata_obeys_one_absolute_deadline
+        {
+            let (client, mut server) = tokio::io::duplex(64);
+            tokio::spawn(async move {
+                assert!(matches!(
+                    read_request(&mut server).await,
+                    wire::Request::Metadata
+                ));
+                std::future::pending::<()>().await;
+            });
+            assert_eq!(
+                error_kind(
+                    AsyncBrokerSigningIdentity::from_connected_io(
+                        client,
+                        Duration::from_millis(20)
+                    )
+                    .await
+                ),
+                io::ErrorKind::TimedOut
+            );
+        }
+        // phase: stalled_join_poison_drops_late_reply_before_next_exchange
+        {
+            let (mut identity, mut server) = connected(Duration::from_millis(20)).await;
+            let late = tokio::spawn(async move {
+                assert!(matches!(
+                    read_request(&mut server).await,
+                    wire::Request::CollaborationJoin { .. }
+                ));
+                tokio::time::sleep(Duration::from_millis(40)).await;
+                wire::FRAMING
+                    .write_value_async(&mut server, &wire::Response::Signature(vec![7; 64]))
+                    .await
+                    .map_err(std::io::Error::from)
+            });
+            assert_eq!(
+                error_kind(identity.sign_collaboration_join("workspace").await),
+                io::ErrorKind::TimedOut
+            );
+            assert!(!identity.is_usable());
+            assert_eq!(
+                error_kind(
+                    identity
+                        .sign_collaboration_op("workspace", "app", "record", b"op")
+                        .await
+                ),
+                io::ErrorKind::BrokenPipe
+            );
+            assert!(
+                late.await.unwrap().is_err(),
+                "timed-out stream must be closed"
+            );
+        }
+        // phase: stalled_operation_keeps_localset_work_responsive
+        {
+            let (mut identity, mut server) = connected(Duration::from_millis(20)).await;
+            let (request_seen, seen) = tokio::sync::oneshot::channel();
+            tokio::spawn(async move {
+                assert!(matches!(
+                    read_request(&mut server).await,
+                    wire::Request::CollaborationOp { .. }
+                ));
+                let _ = request_seen.send(());
+                std::future::pending::<()>().await;
+            });
+            let (responsive, response) = tokio::sync::oneshot::channel();
+            tokio::spawn(async move {
+                seen.await.unwrap();
+                tokio::task::yield_now().await;
+                let _ = responsive.send(());
+            });
+            let operation = identity.sign_collaboration_op("workspace", "app", "record", b"op");
+            tokio::pin!(operation);
+            tokio::select! {
+                result = &mut operation => {
+                    assert_eq!(error_kind(result), io::ErrorKind::TimedOut);
+                }
+                result = response => {
+                    result.unwrap();
+                    assert_eq!(
+                        error_kind(operation.await),
+                        io::ErrorKind::TimedOut
+                    );
+                }
             }
         }
     }
 
     #[tokio::test]
-    async fn complete_denial_preserves_alignment_for_next_request() {
-        let (mut identity, mut server) = connected(Duration::from_secs(1)).await;
-        let broker = tokio::spawn(async move {
-            assert!(matches!(
-                read_request(&mut server).await,
-                wire::Request::CollaborationJoin { .. }
-            ));
-            write_response(&mut server, wire::Response::Denied("revoked".into())).await;
-            assert!(matches!(
-                read_request(&mut server).await,
-                wire::Request::CollaborationOp { .. }
-            ));
-            write_response(&mut server, wire::Response::Signature(vec![9; 64])).await;
-        });
-        assert_eq!(
-            error_kind(identity.sign_collaboration_join("workspace").await),
-            io::ErrorKind::PermissionDenied
-        );
-        assert!(identity.is_usable());
-        assert_eq!(
-            identity
-                .sign_collaboration_op("workspace", "app", "record", b"op")
-                .await
-                .unwrap(),
-            [9; 64]
-        );
-        broker.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn oversized_response_poison_prevents_reuse() {
+    async fn a_bad_raw_response_poisons_the_client_against_reuse() {
         let oversized = u32::try_from(wire::FRAMING.max_len() + 1)
             .unwrap()
             .to_le_bytes();
-        assert_raw_response_poisoned(oversized.to_vec(), io::ErrorKind::InvalidData).await;
-    }
-
-    #[tokio::test]
-    async fn partial_header_and_body_poison_prevent_reuse() {
-        assert_raw_response_poisoned(vec![1, 0], io::ErrorKind::UnexpectedEof).await;
-        assert_raw_response_poisoned(vec![2, 0, 0, 0, 1], io::ErrorKind::UnexpectedEof).await;
-    }
-
-    #[tokio::test]
-    async fn malformed_postcard_response_poison_prevents_reuse() {
-        assert_raw_response_poisoned(vec![1, 0, 0, 0, 255], io::ErrorKind::InvalidData).await;
+        // (case, raw response bytes, error kind)
+        let cases = [
+            ("oversized", oversized.to_vec(), io::ErrorKind::InvalidData),
+            ("partial header", vec![1, 0], io::ErrorKind::UnexpectedEof),
+            (
+                "partial body",
+                vec![2, 0, 0, 0, 1],
+                io::ErrorKind::UnexpectedEof,
+            ),
+            (
+                "malformed postcard",
+                vec![1, 0, 0, 0, 255],
+                io::ErrorKind::InvalidData,
+            ),
+        ];
+        for (case, bytes, kind) in cases {
+            eprintln!("case: {case}");
+            assert_raw_response_poisoned(bytes, kind).await;
+        }
     }
 }

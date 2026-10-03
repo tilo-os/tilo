@@ -15,7 +15,8 @@ RECORDER = Path(__file__).resolve().parents[1] / "tilo-flight-recorder.py"
 
 
 def wait_for(path: Path, expected: bytes) -> None:
-    deadline = time.monotonic() + 2
+    # Bounds only a hang: a loaded runner can take seconds to start Python and fsync.
+    deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if path.exists() and path.read_bytes() == expected:
             return

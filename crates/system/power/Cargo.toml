@@ -2,8 +2,11 @@
 name = "tilo-power-mgmt"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Tilo power management: suspend on idle, lid and power-key handling."
 
 [lib]
 name = "tilo_power_mgmt"
@@ -12,7 +15,7 @@ path = "src/lib.rs"
 [features]
 default = ["service"]
 service = [
-    "dep:atomic-file",
+    "dep:tilo-files",
     "dep:bounded-command",
     "dep:futures-util",
     "dep:serde",
@@ -21,7 +24,7 @@ service = [
     "dep:tokio",
     "dep:tracing",
     "dep:zbus",
-    "dep:xdg-paths",
+    "dep:tilo-xdg-paths",
 ]
 
 # Power management for the compositor: suspend-on-idle, lid / power-key
@@ -31,15 +34,16 @@ service = [
 # only the on-disk JSON contract, not a code dependency.
 
 [dependencies]
-xdg-paths = { path = "../xdg-paths", optional = true }
-bounded-command = { path = "../../../crates/system/bounded-command", optional = true }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+tilo-xdg-paths = { version = "0.1.0", path = "../xdg-paths", optional = true }
+bounded-command = { version = "0.1.0", path = "../../../crates/system/bounded-command", optional = true }
 tracing = { version = "0.1", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 # One owner for ~/.config/tilo/settings.json — path resolution, forgiving reads
 # and non-destructive writes, shared with every other reader of that file.
-settings-store = { path = "../../../crates/system/settings-store", optional = true }
-atomic-file = { path = "../../../crates/system/atomic-file", optional = true }
+settings-store = { version = "0.1.0", path = "../../../crates/system/settings-store", optional = true }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
 # Match `shell`'s zbus pin (4, tokio, no async-io default) so the workspace
 # lock collapses to one copy.
 zbus = { workspace = true, features = ["tokio"], optional = true }
@@ -54,3 +58,7 @@ tempfile = { workspace = true }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

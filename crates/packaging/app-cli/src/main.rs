@@ -41,10 +41,22 @@ enum Cmd {
     Search { query: String },
     /// Install an app by name, slug, or package id.
     #[command(visible_aliases = ["i", "add"])]
-    Install { app: String },
+    Install {
+        app: String,
+        /// Install this version instead of the newest.
+        #[arg(long)]
+        version: Option<String>,
+    },
     /// Update one app, or every installed app when no name is given.
     #[command(visible_aliases = ["u", "upgrade"])]
     Update { app: Option<String> },
+    /// Go back to an older version of an installed app, keeping its saved state.
+    Rollback {
+        app: String,
+        /// The version to go back to (default: the newest older one).
+        #[arg(long)]
+        to: Option<String>,
+    },
     /// Remove an installed app while keeping its saved state.
     #[command(visible_aliases = ["rm", "uninstall"])]
     Remove { app: String },
@@ -99,7 +111,12 @@ fn main() -> ExitCode {
         }
         Cmd::List { json } => list(json),
         Cmd::Search { query } => search(&query),
-        Cmd::Install { app } => change_one(&app, false),
+        Cmd::Install { app, version: None } => change_one(&app, false),
+        Cmd::Install {
+            app,
+            version: Some(version),
+        } => install_version(&app, &version),
+        Cmd::Rollback { app, to } => rollback(&app, to.as_deref()),
         Cmd::Update { app } => update(app.as_deref()),
         Cmd::Remove { app } => remove(&app),
         Cmd::Repo { cmd } => repo(cmd),
@@ -400,6 +417,110 @@ fn change_app(app: &CatalogueApp, update: bool, installed: Option<&str>) -> Exit
     }
 }
 
+/// The offer for `query` and every version its registry has for this machine.
+fn offered_versions(query: &str) -> Result<(CatalogueApp, Vec<CatalogueApp>), String> {
+    let listing = app_cli::all_offers();
+    report_unreachable(&listing.unreachable);
+    let app = app_cli::resolve_offer(&listing.apps, query)?.clone();
+    let versions = app_cli::version_offers(&app.package_id, &app.registry)?;
+    Ok((app, versions))
+}
+
+fn install_version(query: &str, version: &str) -> ExitCode {
+    announce("Finding the app in the Tilo Store…");
+    let (app, versions) = match offered_versions(query) {
+        Ok(found) => found,
+        Err(error) => {
+            eprintln!("app: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(offer) = versions.iter().find(|offer| offer.version == version) else {
+        eprintln!(
+            "app: '{}' has no version {version} for this machine",
+            app.display_name
+        );
+        return ExitCode::FAILURE;
+    };
+    match app_cli::installed_version(&app.package_id) {
+        Ok(None) => change_app(offer, false, None),
+        Ok(Some(installed)) => {
+            eprintln!(
+                "app: '{}' {installed} is already installed; use 'app rollback {} --to {version}' or 'app update {}'",
+                app.display_name, app.package_id, app.package_id
+            );
+            ExitCode::FAILURE
+        }
+        Err(error) => {
+            eprintln!("app: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn rollback(query: &str, to: Option<&str>) -> ExitCode {
+    announce("Finding older versions in the Tilo Store…");
+    let (app, versions) = match offered_versions(query) {
+        Ok(found) => found,
+        Err(error) => {
+            eprintln!("app: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let installed = match app_cli::installed_version(&app.package_id) {
+        Ok(Some(installed)) => installed,
+        Ok(None) => {
+            eprintln!("app: '{}' is not installed", app.display_name);
+            return ExitCode::FAILURE;
+        }
+        Err(error) => {
+            eprintln!("app: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // Newest first, so the first older one is the previous release.
+    let older = |offer: &&CatalogueApp| {
+        tilo_app_package::version::compare(&offer.version, &installed).is_lt()
+    };
+    let target = match to {
+        Some(version) => versions
+            .iter()
+            .filter(older)
+            .find(|offer| offer.version == version),
+        None => versions.iter().find(older),
+    };
+    let Some(target) = target else {
+        eprintln!(
+            "app: '{}' has no {} older than {installed} for this machine",
+            app.display_name,
+            to.map_or_else(
+                || "version".to_owned(),
+                |version| format!("version {version}")
+            )
+        );
+        return ExitCode::FAILURE;
+    };
+    let mut progress = progress_reporter();
+    let result = app_cli::install::rollback_app_reporting(target, &mut progress);
+    if std::io::stdout().is_terminal() {
+        print!("\r\x1b[2K");
+        let _ = std::io::stdout().flush();
+    }
+    match result {
+        Ok(()) => {
+            println!(
+                "rolled back {} {installed} -> {}",
+                target.package_id, target.version
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("app: {}", error.user_message());
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn resolve_installed(query: &str) -> Result<String, String> {
     let ids = app_cli::installed_ids();
     if let Some(id) = ids.iter().find(|id| id.eq_ignore_ascii_case(query)) {
@@ -608,97 +729,97 @@ mod tests {
     use clap::CommandFactory;
 
     #[test]
-    fn command_tree_is_valid() {
-        Cli::command().debug_assert();
+    fn the_cli_surface_parses_and_names_both_public_commands() {
+        // Phase `command_tree_is_valid`.
+        {
+            Cli::command().debug_assert();
+        }
+        // Phase `store_alias_help_names_the_command_the_user_typed`.
+        {
+            let help = Cli::command().bin_name("store").render_help().to_string();
+            assert!(help.contains("Usage: store"), "{help}");
+            let help = Cli::command()
+                .bin_name("tilo app")
+                .render_help()
+                .to_string();
+            assert!(help.contains("Usage: tilo app"), "{help}");
+        }
+        // Phase `completion_scripts_cover_both_public_names`.
+        {
+            let mut output = Vec::new();
+            clap_complete::generate(Shell::Bash, &mut Cli::command(), "app", &mut output);
+            clap_complete::generate(Shell::Bash, &mut Cli::command(), "store", &mut output);
+            let script = String::from_utf8(output).expect("completion is UTF-8");
+            assert!(script.contains("_app()"), "{script}");
+            assert!(script.contains("default app"), "{script}");
+            assert!(script.contains("_store()"), "{script}");
+            assert!(script.contains("default store"), "{script}");
+        }
+        // Phase `concise_update_parses`.
+        {
+            let cli = Cli::try_parse_from(["app", "u", "browser"]).expect("short update parses");
+            assert!(matches!(cli.cmd, Cmd::Update { app: Some(ref app) } if app == "browser"));
+        }
     }
 
     #[test]
-    fn store_alias_help_names_the_command_the_user_typed() {
-        let help = Cli::command().bin_name("store").render_help().to_string();
-        assert!(help.contains("Usage: store"), "{help}");
-        let help = Cli::command()
-            .bin_name("tilo app")
-            .render_help()
-            .to_string();
-        assert!(help.contains("Usage: tilo app"), "{help}");
-    }
-
-    #[test]
-    fn completion_scripts_cover_both_public_names() {
-        let mut output = Vec::new();
-        clap_complete::generate(Shell::Bash, &mut Cli::command(), "app", &mut output);
-        clap_complete::generate(Shell::Bash, &mut Cli::command(), "store", &mut output);
-        let script = String::from_utf8(output).expect("completion is UTF-8");
-        assert!(script.contains("_app()"), "{script}");
-        assert!(script.contains("default app"), "{script}");
-        assert!(script.contains("_store()"), "{script}");
-        assert!(script.contains("default store"), "{script}");
-    }
-
-    #[test]
-    fn progress_units_are_readable() {
-        assert_eq!(human_bytes(999), "999 B");
-        assert_eq!(human_bytes(1536), "1.5 KiB");
-        assert_eq!(human_duration(Duration::from_secs(65)), "1m 05s");
-    }
-
-    #[test]
-    fn concise_update_parses() {
-        let cli = Cli::try_parse_from(["app", "u", "browser"]).expect("short update parses");
-        assert!(matches!(cli.cmd, Cmd::Update { app: Some(ref app) } if app == "browser"));
-    }
-
-    #[test]
-    fn bulk_update_always_reports_what_it_checked() {
-        assert_eq!(bulk_update_summary(0, 0), "no apps are installed yet");
-        assert_eq!(
-            bulk_update_summary(1, 0),
-            "could not find update metadata for 1 installed app"
-        );
-        assert_eq!(
-            bulk_update_summary(3, 0),
-            "could not find update metadata for 3 installed apps"
-        );
-        assert_eq!(bulk_update_summary(2, 2), "checked 2 of 2 installed apps");
-    }
-
-    #[test]
-    fn bulk_update_fails_when_a_configured_repository_is_unreachable() {
-        let listing = app_cli::CatalogueListing {
-            apps: Vec::new(),
-            unreachable: vec![app_cli::UnreachableRegistry {
-                name: "main".into(),
-                detail: "connection refused".into(),
-            }],
-        };
-        assert_eq!(
-            update_from_listing(&listing, &std::collections::HashMap::new()),
-            ExitCode::FAILURE
-        );
-    }
-
-    #[test]
-    fn install_refuses_an_already_installed_offer() {
-        let offer = CatalogueApp {
-            package_id: "so.tilo.browser".into(),
-            display_name: "Browser".into(),
-            description: String::new(),
-            tagline: String::new(),
-            images: Vec::new(),
-            supported_languages: vec!["en".into()],
-            category: None,
-            version: "1.0.0".into(),
-            registry: "main".into(),
-            download_url: "https://apps.tilo.so/browser.tapp".into(),
-            tapp_root_hash_hex: "ab".repeat(32),
-            tapp_size_bytes: 1,
-            tapp_blake3_hex: "cd".repeat(32),
-            architecture: std::env::consts::ARCH.into(),
-            isa: std::env::consts::ARCH.into(),
-            runtime: None,
-            publisher_pubkey_hex: "ef".repeat(32),
-            trust: "verified".into(),
-        };
-        assert_eq!(change_app(&offer, false, Some("2.0.0")), ExitCode::FAILURE);
+    fn updates_and_installs_report_what_they_checked_or_refused() {
+        // Phase `progress_units_are_readable`.
+        {
+            assert_eq!(human_bytes(999), "999 B");
+            assert_eq!(human_bytes(1536), "1.5 KiB");
+            assert_eq!(human_duration(Duration::from_secs(65)), "1m 05s");
+        }
+        // Phase `bulk_update_always_reports_what_it_checked`.
+        {
+            assert_eq!(bulk_update_summary(0, 0), "no apps are installed yet");
+            assert_eq!(
+                bulk_update_summary(1, 0),
+                "could not find update metadata for 1 installed app"
+            );
+            assert_eq!(
+                bulk_update_summary(3, 0),
+                "could not find update metadata for 3 installed apps"
+            );
+            assert_eq!(bulk_update_summary(2, 2), "checked 2 of 2 installed apps");
+        }
+        // Phase `bulk_update_fails_when_a_configured_repository_is_unreachable`.
+        {
+            let listing = app_cli::CatalogueListing {
+                apps: Vec::new(),
+                unreachable: vec![app_cli::UnreachableRegistry {
+                    name: "main".into(),
+                    detail: "connection refused".into(),
+                }],
+            };
+            assert_eq!(
+                update_from_listing(&listing, &std::collections::HashMap::new()),
+                ExitCode::FAILURE
+            );
+        }
+        // Phase `install_refuses_an_already_installed_offer`.
+        {
+            let offer = CatalogueApp {
+                package_id: "so.tilo.browser".into(),
+                display_name: "Browser".into(),
+                description: String::new(),
+                tagline: String::new(),
+                images: Vec::new(),
+                supported_languages: vec!["en".into()],
+                category: None,
+                version: "1.0.0".into(),
+                registry: "main".into(),
+                download_url: "https://apps.tilo.so/browser.tapp".into(),
+                tapp_root_hash_hex: "ab".repeat(32),
+                tapp_size_bytes: 1,
+                tapp_blake3_hex: "cd".repeat(32),
+                architecture: std::env::consts::ARCH.into(),
+                isa: std::env::consts::ARCH.into(),
+                runtime: None,
+                publisher_pubkey_hex: "ef".repeat(32),
+                trust: "verified".into(),
+            };
+            assert_eq!(change_app(&offer, false, Some("2.0.0")), ExitCode::FAILURE);
+        }
     }
 }

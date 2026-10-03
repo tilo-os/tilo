@@ -1,9 +1,10 @@
 //! Input for headful slots: what `tilo-vm input` asks for, and how key
-//! names and text map to Linux evdev key codes (US layout).
+//! names, text and gamepad buttons map to Linux evdev codes (US layout).
 //!
-//! The codes are the kernel's `input-event-codes.h`. They travel through a
-//! per-seat uinput device, so the compositor sees them through the real
-//! libinput path, exactly like a keyboard and a pointer plugged into that seat.
+//! The codes are the kernel's `input-event-codes.h`. They travel through
+//! per-seat uinput devices (keyboard, pointer, touchscreen, pen, gamepad),
+//! so the compositor sees them through the real kernel path (libinput, or
+//! evdev for game controllers), exactly like hardware plugged into that seat.
 
 use serde::{Deserialize, Serialize};
 
@@ -23,7 +24,160 @@ pub enum InputAction {
         #[serde(default)]
         at: Option<(u32, u32)>,
     },
+    /// One finger down and up at touchscreen pixel `x`, `y`.
+    TouchTap { x: u32, y: u32 },
+    /// One finger down, held for `duration_ms`, then up (long-press).
+    TouchHold { x: u32, y: u32, duration_ms: u32 },
+    /// One finger down at `from`, moved to `to` over `duration_ms`, up.
+    TouchDrag {
+        from: (u32, u32),
+        to: (u32, u32),
+        duration_ms: u32,
+    },
+    /// Two fingers on a horizontal line through `center`, their distance
+    /// going from `from_distance` to `to_distance` pixels (growing zooms in).
+    TouchPinch {
+        center: (u32, u32),
+        from_distance: u32,
+        to_distance: u32,
+        duration_ms: u32,
+    },
+    /// Pen touches down at `x`, `y` with `pressure` percent and lifts.
+    PenTap { x: u32, y: u32, pressure: u8 },
+    /// Pen touches down at `from`, moves to `to` over `duration_ms`, lifts.
+    PenDrag {
+        from: (u32, u32),
+        to: (u32, u32),
+        duration_ms: u32,
+        pressure: u8,
+    },
+    /// Press and release each gamepad combo in order, e.g. `a`, `guide+lb`,
+    /// `up`.
+    GamepadPress { combos: Vec<String> },
+    /// Deflect a stick to `x`, `y` percent (-100..=100, +y is down), hold
+    /// it for `duration_ms`, and let it spring back to the centre.
+    GamepadStick {
+        stick: Stick,
+        x: i8,
+        y: i8,
+        duration_ms: u32,
+    },
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Stick {
+    Left,
+    Right,
+}
+
+impl Stick {
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.to_ascii_lowercase().as_str() {
+            "left" | "l" => Some(Self::Left),
+            "right" | "r" => Some(Self::Right),
+            _ => None,
+        }
+    }
+
+    /// The (x, y) absolute axes of this stick.
+    pub fn axes(self) -> (u16, u16) {
+        match self {
+            Self::Left => (ABS_X, ABS_Y),
+            Self::Right => (ABS_RX, ABS_RY),
+        }
+    }
+}
+
+pub const ABS_X: u16 = 0x00;
+pub const ABS_Y: u16 = 0x01;
+pub const ABS_Z: u16 = 0x02;
+pub const ABS_RX: u16 = 0x03;
+pub const ABS_RY: u16 = 0x04;
+pub const ABS_RZ: u16 = 0x05;
+pub const ABS_HAT0X: u16 = 0x10;
+pub const ABS_HAT0Y: u16 = 0x11;
+
+/// One control of a gamepad combo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GamepadInput {
+    /// A button (`BTN_SOUTH` ...).
+    Button(u16),
+    /// An analogue trigger axis, pulled fully.
+    Trigger(u16),
+    /// A d-pad direction: hat axis and -1 or 1.
+    Hat(u16, i32),
+}
+
+/// Gamepad controls by their Xbox-style printed legend (what the desktop's
+/// controller bindings name), with the evdev positional names as aliases.
+pub const GAMEPAD: &[(&str, GamepadInput)] = &[
+    ("a", GamepadInput::Button(0x130)),
+    ("south", GamepadInput::Button(0x130)),
+    ("b", GamepadInput::Button(0x131)),
+    ("east", GamepadInput::Button(0x131)),
+    ("x", GamepadInput::Button(0x134)),
+    ("west", GamepadInput::Button(0x134)),
+    ("y", GamepadInput::Button(0x133)),
+    ("north", GamepadInput::Button(0x133)),
+    ("lb", GamepadInput::Button(0x136)),
+    ("rb", GamepadInput::Button(0x137)),
+    ("lt", GamepadInput::Trigger(ABS_Z)),
+    ("rt", GamepadInput::Trigger(ABS_RZ)),
+    ("select", GamepadInput::Button(0x13a)),
+    ("back", GamepadInput::Button(0x13a)),
+    ("start", GamepadInput::Button(0x13b)),
+    ("guide", GamepadInput::Button(0x13c)),
+    ("home", GamepadInput::Button(0x13c)),
+    ("l3", GamepadInput::Button(0x13d)),
+    ("r3", GamepadInput::Button(0x13e)),
+    ("up", GamepadInput::Hat(ABS_HAT0Y, -1)),
+    ("down", GamepadInput::Hat(ABS_HAT0Y, 1)),
+    ("left", GamepadInput::Hat(ABS_HAT0X, -1)),
+    ("right", GamepadInput::Hat(ABS_HAT0X, 1)),
+];
+
+/// The gamepad buttons the virtual controller advertises.
+pub fn gamepad_buttons() -> impl Iterator<Item = u16> {
+    GAMEPAD.iter().filter_map(|(_, input)| match input {
+        GamepadInput::Button(code) => Some(*code),
+        _ => None,
+    })
+}
+
+/// The controls of a gamepad combo such as `a`, `guide+lb` or `up`:
+/// pressed in order, released in reverse.
+///
+/// # Errors
+/// A part that names no control.
+pub fn gamepad_combo(combo: &str) -> Result<Vec<GamepadInput>, String> {
+    if combo.is_empty() {
+        return Err(combo.to_owned());
+    }
+    combo
+        .split('+')
+        .map(|part| {
+            let lower = part.to_ascii_lowercase();
+            GAMEPAD
+                .iter()
+                .find(|(name, _)| *name == lower)
+                .map(|(_, input)| *input)
+                .ok_or_else(|| part.to_owned())
+        })
+        .collect()
+}
+
+/// The names `gamepad_combo` accepts, for error messages.
+pub fn gamepad_names() -> String {
+    GAMEPAD
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The longest gesture or hold one action may ask for.
+pub const MAX_DURATION_MS: u32 = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -283,10 +437,74 @@ pub fn validate(actions: &[InputAction]) -> Result<(), String> {
                 text_strokes(text)
                     .map_err(|c| format!("'{c}' cannot be typed on a US keyboard layout"))?;
             }
-            InputAction::Move { .. } | InputAction::Click { .. } => {}
+            InputAction::Move { .. } | InputAction::Click { .. } | InputAction::TouchTap { .. } => {
+            }
+            InputAction::TouchHold { duration_ms, .. }
+            | InputAction::TouchDrag { duration_ms, .. } => duration(*duration_ms)?,
+            InputAction::TouchPinch {
+                from_distance,
+                to_distance,
+                duration_ms,
+                ..
+            } => {
+                duration(*duration_ms)?;
+                if *from_distance == 0 || *to_distance == 0 {
+                    return Err("a pinch needs the two fingers apart: distances above 0".into());
+                }
+            }
+            InputAction::PenTap { pressure, .. } => self::pressure(*pressure)?,
+            InputAction::PenDrag {
+                pressure,
+                duration_ms,
+                ..
+            } => {
+                self::pressure(*pressure)?;
+                duration(*duration_ms)?;
+            }
+            InputAction::GamepadPress { combos } => {
+                if combos.is_empty() {
+                    return Err("no gamepad button given".into());
+                }
+                for combo in combos {
+                    gamepad_combo(combo).map_err(|part| {
+                        format!(
+                            "'{part}' in '{combo}' names no gamepad control ({})",
+                            gamepad_names()
+                        )
+                    })?;
+                }
+            }
+            InputAction::GamepadStick {
+                x, y, duration_ms, ..
+            } => {
+                duration(*duration_ms)?;
+                if !(-100..=100).contains(x) || !(-100..=100).contains(y) {
+                    return Err(format!(
+                        "stick position {x},{y} is outside -100..100 percent"
+                    ));
+                }
+            }
         }
     }
     Ok(())
+}
+
+fn duration(ms: u32) -> Result<(), String> {
+    if ms > MAX_DURATION_MS {
+        Err(format!(
+            "{ms} ms is longer than the {MAX_DURATION_MS} ms one action may take"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn pressure(percent: u8) -> Result<(), String> {
+    if (1..=100).contains(&percent) {
+        Ok(())
+    } else {
+        Err(format!("pen pressure {percent} is outside 1..100 percent"))
+    }
 }
 
 #[cfg(test)]
@@ -294,77 +512,182 @@ mod tests {
     use super::*;
 
     #[test]
-    fn combos_map_to_evdev_codes() {
-        assert_eq!(combo_codes("ctrl+alt+t").unwrap(), [29, 56, 20]);
-        assert_eq!(combo_codes("Return").unwrap(), [28]);
-        assert_eq!(combo_codes("super").unwrap(), [125]);
-        assert_eq!(combo_codes("ctrl+T").unwrap(), [29, 20]);
-        assert_eq!(combo_codes("shift+/").unwrap(), [42, 53]);
-        assert_eq!(combo_codes("?").unwrap(), [42, 53]);
-        assert_eq!(combo_codes("ctrl++").unwrap(), [29, 42, 13]);
-        assert_eq!(combo_codes("F12").unwrap(), [88]);
-        assert_eq!(combo_codes("ctrl+nokey"), Err("nokey".into()));
-        assert!(combo_codes("").is_err());
-    }
-
-    #[test]
-    fn text_types_on_a_us_layout() {
-        let strokes = text_strokes("Hi!\n").unwrap();
+    fn gamepad_combos_use_printed_legends() {
+        assert_eq!(gamepad_combo("a").unwrap(), [GamepadInput::Button(0x130)]);
         assert_eq!(
-            strokes,
-            [
-                Stroke {
-                    code: 35,
-                    shift: true
-                },
-                Stroke {
-                    code: 23,
-                    shift: false
-                },
-                Stroke {
-                    code: 2,
-                    shift: true
-                },
-                Stroke {
-                    code: 28,
-                    shift: false
-                },
-            ]
+            gamepad_combo("Guide+LB").unwrap(),
+            [GamepadInput::Button(0x13c), GamepadInput::Button(0x136)]
         );
-        assert_eq!(text_strokes("zé"), Err('é'));
-        for c in ('a'..='z')
-            .chain('A'..='Z')
-            .chain("0123456789 -=[];'`\\,./!@#$%^&*()_+{}:\"~|<>?".chars())
-        {
-            let stroke = char_stroke(c).unwrap();
-            assert!(stroke.code > 0 && stroke.code <= KEY_MAX_USED, "{c}");
-        }
+        assert_eq!(
+            gamepad_combo("up").unwrap(),
+            [GamepadInput::Hat(ABS_HAT0Y, -1)]
+        );
+        assert_eq!(
+            gamepad_combo("rt").unwrap(),
+            [GamepadInput::Trigger(ABS_RZ)]
+        );
+        assert_eq!(gamepad_combo("a+nope"), Err("nope".into()));
+        let mut buttons: Vec<u16> = gamepad_buttons().collect();
+        buttons.sort_unstable();
+        buttons.dedup();
+        assert_eq!(buttons.len(), 11);
     }
 
     #[test]
-    fn validation_names_the_problem() {
-        assert!(
-            validate(&[InputAction::Key {
-                combos: vec!["ctrl+c".into()]
-            }])
-            .is_ok()
-        );
-        let error = validate(&[InputAction::Type {
-            text: "naïve".into(),
+    fn gesture_validation_names_the_problem() {
+        let long = validate(&[InputAction::TouchHold {
+            x: 1,
+            y: 1,
+            duration_ms: 60_000,
         }])
         .unwrap_err();
-        assert!(error.contains('ï'), "{error}");
-        assert!(validate(&[InputAction::Key { combos: vec![] }]).is_err());
+        assert!(long.contains("10000 ms"), "{long}");
+        let pinch = validate(&[InputAction::TouchPinch {
+            center: (5, 5),
+            from_distance: 0,
+            to_distance: 100,
+            duration_ms: 300,
+        }])
+        .unwrap_err();
+        assert!(pinch.contains("apart"), "{pinch}");
+        let stick = validate(&[InputAction::GamepadStick {
+            stick: Stick::Left,
+            x: 101,
+            y: 0,
+            duration_ms: 100,
+        }])
+        .unwrap_err();
+        assert!(stick.contains("-100..100"), "{stick}");
+        let button = validate(&[InputAction::GamepadPress {
+            combos: vec!["guide+zz".into()],
+        }])
+        .unwrap_err();
+        assert!(
+            button.contains("'zz'") && button.contains("start"),
+            "{button}"
+        );
+        assert!(
+            validate(&[InputAction::PenTap {
+                x: 0,
+                y: 0,
+                pressure: 0
+            }])
+            .is_err()
+        );
     }
 
     #[test]
-    fn actions_round_trip_as_tagged_json() {
-        let action = InputAction::Click {
-            button: Button::Right,
-            at: Some((10, 20)),
-        };
-        let text = serde_json::to_string(&action).unwrap();
-        assert_eq!(text, r#"{"kind":"click","button":"right","at":[10,20]}"#);
-        assert_eq!(serde_json::from_str::<InputAction>(&text).unwrap(), action);
+    fn new_actions_round_trip_as_tagged_json() {
+        let actions = [
+            InputAction::TouchPinch {
+                center: (400, 300),
+                from_distance: 100,
+                to_distance: 300,
+                duration_ms: 400,
+            },
+            InputAction::PenDrag {
+                from: (1, 2),
+                to: (3, 4),
+                duration_ms: 200,
+                pressure: 60,
+            },
+            InputAction::GamepadStick {
+                stick: Stick::Right,
+                x: -100,
+                y: 50,
+                duration_ms: 250,
+            },
+            InputAction::GamepadPress {
+                combos: vec!["guide+lb".into()],
+            },
+        ];
+        for action in actions {
+            let text = serde_json::to_string(&action).unwrap();
+            assert_eq!(serde_json::from_str::<InputAction>(&text).unwrap(), action);
+        }
+        assert_eq!(
+            serde_json::to_string(&InputAction::TouchTap { x: 1, y: 2 }).unwrap(),
+            r#"{"kind":"touch_tap","x":1,"y":2}"#
+        );
+    }
+
+    /// Combos map to evdev codes, text types on a US layout, validation names the problem, and actions
+    /// round-trip as tagged JSON.
+    #[test]
+    fn input_actions_map_validate_and_round_trip() {
+        // Phase: combos_map_to_evdev_codes.
+        {
+            assert_eq!(combo_codes("ctrl+alt+t").unwrap(), [29, 56, 20]);
+            assert_eq!(combo_codes("Return").unwrap(), [28]);
+            assert_eq!(combo_codes("super").unwrap(), [125]);
+            assert_eq!(combo_codes("ctrl+T").unwrap(), [29, 20]);
+            assert_eq!(combo_codes("shift+/").unwrap(), [42, 53]);
+            assert_eq!(combo_codes("?").unwrap(), [42, 53]);
+            assert_eq!(combo_codes("ctrl++").unwrap(), [29, 42, 13]);
+            assert_eq!(combo_codes("F12").unwrap(), [88]);
+            assert_eq!(combo_codes("ctrl+nokey"), Err("nokey".into()));
+            assert!(combo_codes("").is_err());
+        }
+
+        // Phase: text_types_on_a_us_layout.
+        {
+            let strokes = text_strokes("Hi!\n").unwrap();
+            assert_eq!(
+                strokes,
+                [
+                    Stroke {
+                        code: 35,
+                        shift: true
+                    },
+                    Stroke {
+                        code: 23,
+                        shift: false
+                    },
+                    Stroke {
+                        code: 2,
+                        shift: true
+                    },
+                    Stroke {
+                        code: 28,
+                        shift: false
+                    },
+                ]
+            );
+            assert_eq!(text_strokes("zé"), Err('é'));
+            for c in ('a'..='z')
+                .chain('A'..='Z')
+                .chain("0123456789 -=[];'`\\,./!@#$%^&*()_+{}:\"~|<>?".chars())
+            {
+                let stroke = char_stroke(c).unwrap();
+                assert!(stroke.code > 0 && stroke.code <= KEY_MAX_USED, "{c}");
+            }
+        }
+
+        // Phase: validation_names_the_problem.
+        {
+            assert!(
+                validate(&[InputAction::Key {
+                    combos: vec!["ctrl+c".into()]
+                }])
+                .is_ok()
+            );
+            let error = validate(&[InputAction::Type {
+                text: "naïve".into(),
+            }])
+            .unwrap_err();
+            assert!(error.contains('ï'), "{error}");
+            assert!(validate(&[InputAction::Key { combos: vec![] }]).is_err());
+        }
+
+        // Phase: actions_round_trip_as_tagged_json.
+        {
+            let action = InputAction::Click {
+                button: Button::Right,
+                at: Some((10, 20)),
+            };
+            let text = serde_json::to_string(&action).unwrap();
+            assert_eq!(text, r#"{"kind":"click","button":"right","at":[10,20]}"#);
+            assert_eq!(serde_json::from_str::<InputAction>(&text).unwrap(), action);
+        }
     }
 }

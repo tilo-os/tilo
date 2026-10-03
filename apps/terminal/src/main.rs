@@ -61,24 +61,37 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
 extern crate runtime_dylib;
 
 pub fn main() {
-    ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("so.tilo.terminal", live_root)
-            .live_handler(run_live)
-            .shot_handler(run_shot)
-            .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
-            .allowed_options(&["--size"])
-            .scenarios(&[
-                "shell",
-                "shell-select",
-                "colors",
-                "tui",
-                "scrollback",
-                "find",
-                "empty",
-                "empty-menu",
-                "ended",
-            ]),
-    );
+    // The live handler spawns the login shell and wakes the window when the
+    // PTY writes. The ResourceApp shell has no such waker, so output would
+    // sit until some other event.
+    ui::launch::run_or_exit(&launch_spec());
+}
+
+fn launch_spec_with_root(
+    root: fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>,
+) -> LaunchSpec {
+    LaunchSpec::new_with_args("so.tilo.terminal", root)
+        .history(&terminal::framework_history::HISTORY)
+        .configure_app(|app| terminal::actions::register(app.action_registry_mut()))
+        .live_handler(run_live)
+        .shot_handler(run_shot)
+        .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
+        .allowed_options(&["--size"])
+        .scenarios(&[
+            "shell",
+            "shell-select",
+            "colors",
+            "tui",
+            "scrollback",
+            "find",
+            "empty",
+            "empty-menu",
+            "ended",
+        ])
+}
+
+fn launch_spec() -> LaunchSpec {
+    launch_spec_with_root(live_root)
 }
 
 fn live_root(_args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
@@ -87,18 +100,35 @@ fn live_root(_args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
-fn run_live(_args: &LaunchArgs) -> Result<(), LaunchError> {
-    let wake_scope = ui::wake::WakeScope::new();
-    let _wake_entry = wake_scope.enter();
-    let widget = TerminalWidget::spawn_default()
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
-    // Arm the PTY-reader waker so the event loop idles between output instead of
-    // polling at ~60 Hz: grab the handle before moving the widget into the App,
-    // then store the loop's proxy once it exists.
-    let waker = widget.waker_handle();
-    let (state, autosave) = ui::persist::open("so.tilo.terminal");
-    let app =
-        ui::App::from_scoped_parts(wake_scope, state, Box::new(widget)).with_autosave(autosave);
+#[cfg(test)]
+fn build_prepared_terminal_app(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+    wake_scope: ui::WakeScope,
+    root: Box<dyn Widget>,
+    build: impl FnOnce(
+        &LaunchSpec,
+        &LaunchArgs,
+        ui::WakeScope,
+        Box<dyn Widget>,
+    ) -> Result<ui::App, LaunchError>,
+) -> Result<ui::App, LaunchError> {
+    build(spec, args, wake_scope, root)
+}
+
+fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let spec = launch_spec();
+    let prepared = spec.prepare_native(args)?;
+    let mut waker = None;
+    let app = prepared.build_root(|| {
+        let widget = TerminalWidget::spawn_default()
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        waker = Some(widget.waker_handle());
+        Ok(Box::new(widget))
+    })?;
+    let waker = waker.ok_or_else(|| {
+        LaunchError::Operation("terminal factory did not retain its PTY waker".into())
+    })?;
     app.run_with_setup(move |proxy| {
         if let Ok(mut g) = waker.lock() {
             *g = Some(proxy);
@@ -299,7 +329,7 @@ fn run_scenario(
                           the sample code's own println! syntax, not a format template here"
             )]
             let lines = [
-                "fn main() {",
+                "fn start() {",
                 "    // alternate-screen redraw via CSI ?1049h",
                 "    let greeting = \"hello, Tilo\";",
                 "    for i in 0..3 {",
@@ -357,5 +387,152 @@ fn run_scenario(
         // this is deliberately distinct from a content-filled menu shot.
         "empty-menu" => widget.open_context_menu_at(Point::new(24.0, 24.0)),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+    use portable_pty::{MasterPty, PtySize};
+    use std::cell::RefCell;
+    use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    thread_local! {
+        static CONTROLLED_ARGS: RefCell<Option<LaunchArgs>> = const { RefCell::new(None) };
+    }
+    static OPEN_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "matches the launch spec's fallible root-factory signature"
+    )]
+    fn capture_args(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+        CONTROLLED_ARGS.with(|captured| *captured.borrow_mut() = Some(args.clone()));
+        Ok(Box::new(ui::widget::Text::new("argument capture")))
+    }
+
+    fn controlled_open(_: &'static str) -> (ui::State, ui::persist::DocWriter) {
+        OPEN_COUNT.fetch_add(1, Ordering::SeqCst);
+        (
+            ui::State::new(),
+            ui::persist::DocWriter::disabled("Terminal controlled launch"),
+        )
+    }
+
+    fn forbidden_root(_: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+        Err(LaunchError::Operation(
+            "prepared Terminal construction invoked the spec root factory".into(),
+        ))
+    }
+
+    fn controlled_args() -> LaunchArgs {
+        CONTROLLED_ARGS.with(|captured| *captured.borrow_mut() = None);
+        let app = LaunchSpec::new_with_args("dev.tilo.terminal-args", capture_args)
+            .open_state(controlled_open)
+            .build_controlled_app_for_test()
+            .unwrap();
+        drop(app);
+        CONTROLLED_ARGS.with(|captured| {
+            captured
+                .borrow_mut()
+                .take()
+                .expect("controlled builder supplies parsed launch arguments")
+        })
+    }
+
+    struct MockMaster;
+    impl MasterPty for MockMaster {
+        fn get_size(&self) -> Result<PtySize, anyhow::Error> {
+            Ok(PtySize::default())
+        }
+        fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+        fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
+            Ok(Box::new(std::io::sink()))
+        }
+        fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
+            Ok(Box::new(std::io::empty()))
+        }
+        fn process_group_leader(&self) -> Option<i32> {
+            None
+        }
+        fn as_raw_fd(&self) -> Option<i32> {
+            None
+        }
+        fn tty_name(&self) -> Option<std::path::PathBuf> {
+            None
+        }
+    }
+
+    struct ChanWriter(std::sync::mpsc::Sender<Vec<u8>>);
+    impl Write for ChanWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let _ = self.0.send(bytes.to_vec());
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn actual_custom_helper_installs_canonical_history_on_the_supplied_terminal() {
+        OPEN_COUNT.store(0, Ordering::SeqCst);
+        let args = controlled_args();
+        OPEN_COUNT.store(0, Ordering::SeqCst);
+        let (write_tx, writes) = std::sync::mpsc::channel();
+        let (output, output_rx) = std::sync::mpsc::channel();
+        let widget = TerminalWidget::new(
+            Arc::new(Mutex::new(Box::new(ChanWriter(write_tx)))),
+            Arc::new(Mutex::new(Box::new(MockMaster))),
+            output_rx,
+            tilo_content::ContentStore::memory(),
+        );
+        let waker = widget.waker_handle();
+        let wake_scope = ui::WakeScope::new();
+        let _entry = wake_scope.enter();
+        let spec = launch_spec_with_root(forbidden_root).open_app_global_state(controlled_open);
+        spec.validate_history_declaration().unwrap();
+        let app = build_prepared_terminal_app(
+            &spec,
+            &args,
+            wake_scope,
+            Box::new(widget),
+            |spec, args, wake_scope, root| {
+                spec.build_controlled_prepared_root_for_test(args, wake_scope, root)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), 1);
+        let (installed, root) = app.controlled_history_definitions_for_test();
+        assert!(installed.is_some_and(|definition| {
+            std::ptr::eq(
+                definition,
+                std::ptr::from_ref(&terminal::framework_history::HISTORY),
+            )
+        }));
+        assert!(root.is_some_and(|definition| {
+            std::ptr::eq(
+                definition,
+                std::ptr::from_ref(&terminal::framework_history::HISTORY),
+            )
+        }));
+        assert_eq!(Arc::strong_count(&waker), 2);
+        assert!(matches!(
+            writes.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        output.send(b"retained output\r\n".to_vec()).unwrap();
+        drop(app);
+        assert_eq!(Arc::strong_count(&waker), 1);
+        assert!(output.send(b"after drop".to_vec()).is_err());
+        assert!(matches!(
+            writes.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ));
     }
 }

@@ -15,8 +15,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -131,6 +131,8 @@ pub struct PlacesSidebar {
     favs: FavStore,
     active: PathBuf,
     system: Vec<(Icon, String, PathBuf)>,
+    /// Status badges of system places (a remote account's health).
+    badges: HashMap<PathBuf, String>,
     sink: CommandSink,
     rect: Rect,
     text_scale: f64,
@@ -143,11 +145,19 @@ impl PlacesSidebar {
     pub fn new(favs: FavStore, active: PathBuf, sink: CommandSink) -> Self {
         // System places: the filesystem root, then the Trash (when the platform
         // exposes one). Deleting moves files here; clicking it opens the trash.
-        let mut system = vec![(
-            Icon::HardDrive,
-            t("files-place-root"),
-            crate::breadcrumbs::filesystem_root(&active),
-        )];
+        // Recent leads the fixed places: what you used last, from any folder.
+        let mut system = vec![
+            (
+                Icon::History,
+                t("files-place-recent"),
+                crate::recent::location(),
+            ),
+            (
+                Icon::HardDrive,
+                t("files-place-root"),
+                crate::breadcrumbs::filesystem_root(&active),
+            ),
+        ];
         if let Some(trash) = crate::fileops::trash_dir() {
             system.push((Icon::Trash2, t("files-place-trash"), trash));
         }
@@ -155,6 +165,7 @@ impl PlacesSidebar {
             favs,
             active,
             system,
+            badges: HashMap::new(),
             sink,
             rect: Rect::ZERO,
             text_scale: 1.0,
@@ -192,6 +203,35 @@ impl PlacesSidebar {
         // follow.
         entries.append(&mut self.system);
         self.system = entries;
+        self
+    }
+
+    /// Surface mounted cloud accounts (`~/Remote/<label>`) as System places
+    /// after the workspaces, each with its health badge when not up to date.
+    #[must_use]
+    pub fn with_remote_accounts(
+        mut self,
+        accounts: Vec<(String, PathBuf, Option<String>)>,
+    ) -> Self {
+        let at = self
+            .system
+            .iter()
+            .take_while(|(icon, _, _)| *icon == Icon::CloudDownload)
+            .count();
+        for (offset, (label, path, badge)) in accounts.into_iter().enumerate() {
+            if let Some(badge) = badge {
+                self.badges.insert(path.clone(), badge);
+            }
+            let icon = if self.badges.get(&path).is_some_and(|b| b == "Offline") {
+                Icon::WifiOff
+            } else {
+                Icon::CloudDownload
+            };
+            self.system.insert(
+                at.saturating_add(offset).min(self.system.len()),
+                (icon, label, path),
+            );
+        }
         self
     }
 
@@ -471,8 +511,6 @@ impl PlacesSidebar {
 }
 
 impl Widget for PlacesSidebar {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn is_layout_dirty(&self) -> bool {
         // This leaf fills its assigned pane on both axes. Favorite and hover
         // changes affect painted rows, never the pane's intrinsic size.
@@ -547,18 +585,7 @@ impl Widget for PlacesSidebar {
         clippy::too_many_lines,
         reason = "one event dispatcher keeps keyboard focus, pointer capture and favourite drag transitions in order"
     )] // Central event dispatcher keeps gesture state transitions ordered.
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed && self.favs.borrow().focused =>
@@ -569,38 +596,38 @@ impl Widget for PlacesSidebar {
                 match &event.logical_key {
                     Key::Named(NamedKey::ArrowUp) => {
                         self.set_keyboard_index(current.saturating_sub(1));
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::ArrowDown) => {
                         self.set_keyboard_index((current + 1).min(count.saturating_sub(1)));
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::Home) => {
                         self.set_keyboard_index(0);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::End) => {
                         if count > 0 {
                             self.set_keyboard_index(count - 1);
                         }
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::Enter) => {
-                        *handled = self.activate_keyboard_place();
+                        *ctx.handled = self.activate_keyboard_place();
                     }
                     Key::Named(NamedKey::ContextMenu) => {
                         if current < self.fav_count()
                             && let Some((_, path)) = self.place_at_index(current)
                         {
                             push(&self.sink, FileCommand::OpenFavoriteMenu(path));
-                            *handled = true;
+                            *ctx.handled = true;
                         }
                     }
                     _ => {}
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = pt;
                 self.hover_fav = self.favorite_at(pt);
                 self.hover_sys = self.system_at(pt);
@@ -608,7 +635,7 @@ impl Widget for PlacesSidebar {
                 let mut favs = self.favs.borrow_mut();
                 if favs.drag.is_pending() {
                     favs.drag.pointer_moved(pt, &metrics);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -620,21 +647,21 @@ impl Widget for PlacesSidebar {
                 if let Some(i) = self.favorite_at(pt) {
                     self.set_keyboard_index(i);
                     self.favs.borrow_mut().focused = true;
-                    *focus_target = Some(node_id);
+                    *ctx.focus_target = Some(ctx.node_id);
                     let metrics = self.metrics();
                     let grab = pt.y - metrics.slot_lead(i);
                     let mut favs = self.favs.borrow_mut();
                     favs.drag.begin(i, i, grab, pt);
                     favs.pressed = Some(i);
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if let Some(i) = self.system_at(pt)
                     && let Some((_, _, path)) = self.system.get(i)
                 {
                     self.set_keyboard_index(self.fav_count() + i);
                     self.favs.borrow_mut().focused = true;
-                    *focus_target = Some(node_id);
+                    *ctx.focus_target = Some(ctx.node_id);
                     push(&self.sink, FileCommand::Navigate(path.clone()));
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -649,7 +676,7 @@ impl Widget for PlacesSidebar {
                     let path = self.favs.borrow().favorites.get(i).map(|f| f.path.clone());
                     if let Some(p) = path {
                         push(&self.sink, FileCommand::OpenFavoriteMenu(p));
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
             }
@@ -668,7 +695,7 @@ impl Widget for PlacesSidebar {
                 drop(favs);
                 if let Some((from, to)) = commit {
                     push(&self.sink, FileCommand::ReorderFavorite { from, to });
-                    *handled = true;
+                    *ctx.handled = true;
                 } else {
                     if !was_active && let Some(i) = pressed {
                         let path = self.favs.borrow().favorites.get(i).map(|f| f.path.clone());
@@ -676,7 +703,7 @@ impl Widget for PlacesSidebar {
                             push(&self.sink, FileCommand::Navigate(p));
                         }
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -773,8 +800,8 @@ impl Widget for PlacesSidebar {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         match action {
             ui::a11y::Action::Activate => self.activate_keyboard_place(),
@@ -912,7 +939,36 @@ impl PlacesSidebar {
                     ghost: false,
                 },
             );
+            if let Some(badge) = self.badges.get(path) {
+                Self::draw_badge(scene, transform, tr, theme, rect, badge);
+            }
         }
+    }
+
+    /// A status badge at the trailing edge of a row, in the dim ink the
+    /// section captions use.
+    fn draw_badge(
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        badge: &str,
+    ) {
+        let size = theme.tokens.typography.scale.xs / tr.text_scale();
+        let (width, height) = tr.measure(badge, size, None);
+        tr.draw_text(
+            scene,
+            badge,
+            size,
+            theme.tokens.colors.text_dim,
+            transform
+                * Affine::translate((
+                    rect.x1 - ROW_CONTENT_INSET - f64::from(width),
+                    rect.y0 + (rect.height() - f64::from(height)) / 2.0,
+                )),
+            None,
+        );
     }
 
     /// Floating ghost of the dragged favourite, if a drag is active. Reads
@@ -979,6 +1035,7 @@ mod tests {
     use super::*;
     use crate::command::new_sink;
     use crate::favorites;
+    use automerge::AutoCommit;
     use std::path::Path;
 
     fn lay_out(sb: &mut PlacesSidebar) -> (TaffyTree<()>, NodeId) {
@@ -1025,14 +1082,16 @@ mod tests {
         let mods = winit::event::Modifiers::default();
         sb.handle_event(
             ev,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            tree,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: tree,
+            },
         );
         handled
     }
@@ -1042,355 +1101,402 @@ mod tests {
     }
 
     #[test]
-    fn large_text_places_header_and_rows_fit_their_painted_glyphs() {
-        let sink = new_sink();
-        let mut sidebar = PlacesSidebar::new(new_store(vec![]), PathBuf::from("/"), sink);
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut tree = TaffyTree::new();
-        sidebar.build_layout(&mut tree, &theme, &mut HashMap::new());
-        sidebar.rect = Rect::new(0.0, 0.0, 240.0, 600.0);
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let (_, header_h) = tr.measure("SYSTEM", theme.tokens.typography.scale.xs / 2.0, None);
-        let (_, row_h) = tr.measure("Root", theme.tokens.typography.scale.base / 2.0, None);
-        assert!(sidebar.sys_first_y() - sidebar.sys_header_y() >= f64::from(header_h));
-        assert!(sidebar.sys_row_rect(0).height() >= f64::from(row_h));
-        let mut scene = Scene::new();
-        sidebar.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::default(),
-        );
-        let runs = &scene.encoding().resources.glyph_runs;
-        assert!(
-            runs.iter()
-                .all(|run| run.font_size <= theme.tokens.typography.scale.base)
-        );
-        assert!(
-            runs.iter()
-                .any(|run| (run.font_size - theme.tokens.typography.scale.base).abs() < 0.01)
-        );
-    }
-
-    #[test]
-    fn dragging_a_favourite_down_pushes_a_reorder_command() {
-        let sink = new_sink();
-        let store = new_store(favorites::defaults(
-            Path::new("/home/u"),
-            &favorites::UserDirs::default(),
-        ));
-        let mut sb = PlacesSidebar::new(store.clone(), PathBuf::from("/home/u"), sink.clone());
-        let (tree, node) = lay_out(&mut sb);
-
-        // Grab favourite 1 (Documents) and drag it down two rows.
-        let band = store.borrow().band.unwrap();
-        let start_y = band.row_center_y(1);
-        let end_y = band.row_center_y(3);
-        let x = band.center_x();
-        dispatch(
-            &mut sb,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: device(),
-                position: (x, start_y).into(),
-            },
-        );
-        dispatch(
-            &mut sb,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: device(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-        );
-        dispatch(
-            &mut sb,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: device(),
-                position: (x, end_y).into(),
-            },
-        );
-        assert!(
-            store.borrow().drag.is_active(),
-            "the pointer travel promoted a drag"
-        );
-        dispatch(
-            &mut sb,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: device(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
-        );
-
-        let cmds = sink.borrow();
-        assert_eq!(cmds.len(), 1, "exactly one command emitted");
-        match &cmds[0] {
-            FileCommand::ReorderFavorite { from, to } => {
-                assert_eq!(*from, 1, "dragged favourite 1");
-                assert_eq!(*to, 3, "dropped at row 3");
-            }
-            other => panic!("expected a reorder, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn a_plain_click_navigates_instead_of_reordering() {
-        let sink = new_sink();
-        let store = new_store(favorites::defaults(
-            Path::new("/home/u"),
-            &favorites::UserDirs::default(),
-        ));
-        let mut sb = PlacesSidebar::new(store.clone(), PathBuf::from("/home/u"), sink.clone());
-        let (tree, node) = lay_out(&mut sb);
-        let band = store.borrow().band.unwrap();
-        let y = band.row_center_y(2); // Downloads
-        let x = band.center_x();
-        // Press + release with no travel between → a click, not a drag.
-        dispatch(
-            &mut sb,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: device(),
-                position: (x, y).into(),
-            },
-        );
-        dispatch(
-            &mut sb,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: device(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-        );
-        dispatch(
-            &mut sb,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: device(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
-        );
-        let cmds = sink.borrow();
-        assert_eq!(cmds.len(), 1);
-        assert!(
-            matches!(&cmds[0], FileCommand::Navigate(p) if p.ends_with("Downloads")),
-            "click navigates: {:?}",
-            cmds[0]
-        );
-    }
-
-    #[test]
-    fn right_pressing_a_favourite_requests_its_menu() {
-        let sink = new_sink();
-        let store = new_store(favorites::defaults(
-            Path::new("/home/u"),
-            &favorites::UserDirs::default(),
-        ));
-        let mut sb = PlacesSidebar::new(store.clone(), PathBuf::from("/home/u"), sink.clone());
-        let (tree, node) = lay_out(&mut sb);
-        let band = store.borrow().band.unwrap();
-        // Right-press over favourite row 1 (Documents).
-        let y = band.row_center_y(1);
-        let x = band.center_x();
-        dispatch(
-            &mut sb,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: device(),
-                position: (x, y).into(),
-            },
-        );
-        let handled = dispatch(
-            &mut sb,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: device(),
-                state: ElementState::Pressed,
-                button: MouseButton::Right,
-            },
-        );
-        assert!(handled, "a right-press over a favourite is consumed");
-        let cmds = sink.borrow();
-        assert_eq!(cmds.len(), 1);
-        assert!(
-            matches!(&cmds[0], FileCommand::OpenFavoriteMenu(p) if p.ends_with("Documents")),
-            "right-press asks for the favourite's menu: {:?}",
-            cmds[0],
-        );
-    }
-
-    #[test]
-    fn trash_is_a_system_place_pointing_at_the_home_trash() {
-        // Deleting moves files to the Trash; the sidebar must offer a way back to
-        // it. It sits in the System section (near Root) and points at the XDG
-        // home-trash files dir.
-        let sink = new_sink();
-        let store = new_store(favorites::defaults(
-            Path::new("/home/u"),
-            &favorites::UserDirs::default(),
-        ));
-        let sb = PlacesSidebar::new(store, PathBuf::from("/home/u"), sink);
-        if let Some(trash) = crate::fileops::trash_dir() {
-            let entry = sb.system.iter().find(|(_, label, _)| label == "Trash");
-            let (icon, _, path) = entry.expect("a Trash system place");
-            assert_eq!(*icon, Icon::Trash2, "the trash uses a trash-can glyph");
-            assert_eq!(*path, trash, "and points at the home-trash files dir");
-        }
-    }
-
-    #[test]
-    fn workspace_roots_are_clickable_system_places() {
-        let sink = new_sink();
-        let store = new_store(favorites::defaults(
-            Path::new("/home/u"),
-            &favorites::UserDirs::default(),
-        ));
-        let ws = PathBuf::from("/var/workspace");
-        let mut sb = PlacesSidebar::new(store, PathBuf::from("/home/u"), sink.clone())
-            .with_workspaces(vec![ws.clone()]);
-        // The workspace leads the System section with a cloud emblem.
+    fn mounted_cloud_accounts_are_system_places_with_badges() {
+        let sb = PlacesSidebar::new(new_store(Vec::new()), PathBuf::from("/"), new_sink())
+            .with_workspaces(vec![PathBuf::from("/var/workspace")])
+            .with_remote_accounts(vec![
+                ("Cloud".into(), PathBuf::from("/home/a/Remote/Cloud"), None),
+                (
+                    "Work".into(),
+                    PathBuf::from("/home/a/Remote/Work"),
+                    Some("Offline".into()),
+                ),
+            ]);
+        let labels: Vec<&str> = sb
+            .system
+            .iter()
+            .map(|(_, label, _)| label.as_str())
+            .collect();
+        assert_eq!(&labels[..3], ["workspace", "Cloud", "Work"]);
+        assert_eq!(sb.system[2].0, Icon::WifiOff);
         assert_eq!(
-            sb.system[0].1, "workspace",
-            "labelled by the mount's folder name"
+            sb.badges
+                .get(&PathBuf::from("/home/a/Remote/Work"))
+                .map(String::as_str),
+            Some("Offline")
         );
-        assert_eq!(sb.system[0].2, ws);
         assert!(
-            sb.system.iter().any(|(_, label, _)| label == "Root"),
-            "Root still present, after the workspace",
-        );
-
-        let (tree, node) = lay_out(&mut sb);
-        // Click the first System row (the workspace) and expect a navigation.
-        let y = sb.sys_first_y() + ROW_H / 2.0;
-        let x = f64::midpoint(sb.row_x0(), sb.row_x1());
-        dispatch(
-            &mut sb,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: device(),
-                position: (x, y).into(),
-            },
-        );
-        dispatch(
-            &mut sb,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: device(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-        );
-        let cmds = sink.borrow();
-        assert!(
-            matches!(&cmds[0], FileCommand::Navigate(p) if *p == ws),
-            "clicking the workspace navigates into it: {cmds:?}",
+            !sb.badges
+                .contains_key(&PathBuf::from("/home/a/Remote/Cloud"))
         );
     }
 
-    #[test]
-    fn debug_begin_drag_activates_a_reflow() {
-        let sink = new_sink();
-        let store = new_store(favorites::defaults(
-            Path::new("/home/u"),
-            &favorites::UserDirs::default(),
-        ));
-        let mut sb = PlacesSidebar::new(store.clone(), PathBuf::from("/home/u"), sink);
-        let _ = lay_out(&mut sb);
-        assert!(
-            debug_begin_drag(&store, 4, 1),
-            "band was laid out → drag begins"
-        );
-        assert!(store.borrow().drag.is_active());
-        assert_eq!(
-            store.borrow().drag.insertion(),
-            Some(1),
-            "gap sits at the drop row"
-        );
-    }
-
-    #[test]
-    fn accessibility_exposes_places_selection_keyboard_cursor_and_activation() {
-        use ui::a11y::{Action, Role};
-
-        let sink = new_sink();
-        let store = new_store(favorites::defaults(
-            Path::new("/home/u"),
-            &favorites::UserDirs::default(),
-        ));
-        let mut sidebar = PlacesSidebar::new(store, PathBuf::from("/home/u"), sink.clone());
-        sidebar.set_focus(true);
-        sidebar.set_keyboard_index(1);
-
-        let node = sidebar.accessibility().expect("places has semantics");
-        assert_eq!(node.role, Role::List);
-        assert_eq!(node.name.as_deref(), Some("Places"));
-        assert!(node.state.focusable && node.state.focused);
-        assert_eq!(node.children.len(), sidebar.place_count());
-        assert!(node.children[0].state.selected, "Home is the active place");
-        assert!(
-            node.children[1].state.focused,
-            "keyboard cursor is independent"
-        );
-        assert_eq!(node.children[1].pos_in_set, Some(2));
-        assert_eq!(node.children[1].set_size, Some(sidebar.place_count()));
-
-        let mut doc = AutoCommit::new();
-        assert!(sidebar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
-        assert!(matches!(
-            sink.borrow().last(),
-            Some(FileCommand::Navigate(path)) if path.ends_with("Documents")
-        ));
-    }
-
-    /// HIG §7b, one rhythm for the sidebar: adjacent row pills keep an `s1`
-    /// gap, a section is an `s3` from the previous one, and every inset is a
-    /// token step — so no two neighbours touch at 1×.
-    #[test]
+    /// Large-text header and rows fit their glyphs and rows and sections keep token gaps.
     #[expect(
         clippy::float_cmp,
         reason = "the insets are defined as the exact spacing token"
     )]
-    fn rows_and_sections_keep_token_gaps() {
-        let sink = new_sink();
-        let store = new_store(favorites::defaults(
-            Path::new("/home/u"),
-            &favorites::UserDirs::default(),
-        ));
-        let mut sb = PlacesSidebar::new(store, PathBuf::from("/home/u"), sink);
-        let _ = lay_out(&mut sb);
-        let s1 = f64::from(Spacing::BASE.s1);
-        let s3 = f64::from(Spacing::BASE.s3);
-        let favs = sb.fav_count();
-        assert!(favs >= 2, "defaults seed several favourites");
-        for i in 0..favs - 1 {
-            let a = sb.fav_row_rect(i);
-            let b = sb.fav_row_rect(i + 1);
-            let gap = (b.y0 + PILL_INSET_Y) - (a.y1 - PILL_INSET_Y);
-            assert!((gap - s1).abs() < 0.01, "pills {i}/{} gap {gap}", i + 1);
+    #[test]
+    fn places_metrics_fit_glyphs_and_token_gaps() {
+        // --- phase: large_text_places_header_and_rows_fit_their_painted_glyphs ---
+        {
+            let sink = new_sink();
+            let mut sidebar = PlacesSidebar::new(new_store(vec![]), PathBuf::from("/"), sink);
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut tree = TaffyTree::new();
+            sidebar.build_layout(&mut tree, &theme, &mut HashMap::new());
+            sidebar.rect = Rect::new(0.0, 0.0, 240.0, 600.0);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(2.0);
+            let (_, header_h) = tr.measure("SYSTEM", theme.tokens.typography.scale.xs / 2.0, None);
+            let (_, row_h) = tr.measure("Root", theme.tokens.typography.scale.base / 2.0, None);
+            assert!(sidebar.sys_first_y() - sidebar.sys_header_y() >= f64::from(header_h));
+            assert!(sidebar.sys_row_rect(0).height() >= f64::from(row_h));
+            let mut scene = Scene::new();
+            sidebar.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::default(),
+            );
+            let runs = &scene.encoding().resources.glyph_runs;
+            assert!(
+                runs.iter()
+                    .all(|run| run.font_size <= theme.tokens.typography.scale.base)
+            );
+            assert!(
+                runs.iter()
+                    .any(|run| (run.font_size - theme.tokens.typography.scale.base).abs() < 0.01)
+            );
         }
-        let last = sb.fav_row_rect(favs - 1);
-        assert!((sb.sys_header_y() - last.y1 - s3).abs() < 0.01);
-        assert_eq!(PAD, s3);
-        assert_eq!(ROW_CONTENT_INSET, s3);
-        assert!(sb.row_x0() > sb.rect.x0 && sb.row_x1() < sb.rect.x1);
+
+        // --- phase: rows_and_sections_keep_token_gaps ---
+        // HIG §7b, one rhythm for the sidebar: adjacent row pills keep an `s1`
+        // gap, a section is an `s3` from the previous one, and every inset is a
+        // token step — so no two neighbours touch at 1×.
+        {
+            let sink = new_sink();
+            let store = new_store(favorites::defaults(
+                Path::new("/home/u"),
+                &favorites::UserDirs::default(),
+            ));
+            let mut sb = PlacesSidebar::new(store, PathBuf::from("/home/u"), sink);
+            let _ = lay_out(&mut sb);
+            let s1 = f64::from(Spacing::BASE.s1);
+            let s3 = f64::from(Spacing::BASE.s3);
+            let favs = sb.fav_count();
+            assert!(favs >= 2, "defaults seed several favourites");
+            for i in 0..favs - 1 {
+                let a = sb.fav_row_rect(i);
+                let b = sb.fav_row_rect(i + 1);
+                let gap = (b.y0 + PILL_INSET_Y) - (a.y1 - PILL_INSET_Y);
+                assert!((gap - s1).abs() < 0.01, "pills {i}/{} gap {gap}", i + 1);
+            }
+            let last = sb.fav_row_rect(favs - 1);
+            assert!((sb.sys_header_y() - last.y1 - s3).abs() < 0.01);
+            assert_eq!(PAD, s3);
+            assert_eq!(ROW_CONTENT_INSET, s3);
+            assert!(sb.row_x0() > sb.rect.x0 && sb.row_x1() < sb.rect.x1);
+        }
+    }
+
+    /// Dragging a favourite reorders, a plain click navigates, right press opens its menu and a debug drag reflows.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
+    #[test]
+    fn pointer_on_places_reorders_navigates_and_opens_menus() {
+        // --- phase: dragging_a_favourite_down_pushes_a_reorder_command ---
+        {
+            let sink = new_sink();
+            let store = new_store(favorites::defaults(
+                Path::new("/home/u"),
+                &favorites::UserDirs::default(),
+            ));
+            let mut sb = PlacesSidebar::new(store.clone(), PathBuf::from("/home/u"), sink.clone());
+            let (tree, node) = lay_out(&mut sb);
+
+            // Grab favourite 1 (Documents) and drag it down two rows.
+            let band = store.borrow().band.unwrap();
+            let start_y = band.row_center_y(1);
+            let end_y = band.row_center_y(3);
+            let x = band.center_x();
+            dispatch(
+                &mut sb,
+                &tree,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: device(),
+                    position: (x, start_y).into(),
+                },
+            );
+            dispatch(
+                &mut sb,
+                &tree,
+                node,
+                &WindowEvent::MouseInput {
+                    device_id: device(),
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+            );
+            dispatch(
+                &mut sb,
+                &tree,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: device(),
+                    position: (x, end_y).into(),
+                },
+            );
+            assert!(
+                store.borrow().drag.is_active(),
+                "the pointer travel promoted a drag"
+            );
+            dispatch(
+                &mut sb,
+                &tree,
+                node,
+                &WindowEvent::MouseInput {
+                    device_id: device(),
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                },
+            );
+
+            let cmds = sink.borrow();
+            assert_eq!(cmds.len(), 1, "exactly one command emitted");
+            match &cmds[0] {
+                FileCommand::ReorderFavorite { from, to } => {
+                    assert_eq!(*from, 1, "dragged favourite 1");
+                    assert_eq!(*to, 3, "dropped at row 3");
+                }
+                other => panic!("expected a reorder, got {other:?}"),
+            }
+        }
+
+        // --- phase: a_plain_click_navigates_instead_of_reordering ---
+        {
+            let sink = new_sink();
+            let store = new_store(favorites::defaults(
+                Path::new("/home/u"),
+                &favorites::UserDirs::default(),
+            ));
+            let mut sb = PlacesSidebar::new(store.clone(), PathBuf::from("/home/u"), sink.clone());
+            let (tree, node) = lay_out(&mut sb);
+            let band = store.borrow().band.unwrap();
+            let y = band.row_center_y(2); // Downloads
+            let x = band.center_x();
+            // Press + release with no travel between → a click, not a drag.
+            dispatch(
+                &mut sb,
+                &tree,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: device(),
+                    position: (x, y).into(),
+                },
+            );
+            dispatch(
+                &mut sb,
+                &tree,
+                node,
+                &WindowEvent::MouseInput {
+                    device_id: device(),
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+            );
+            dispatch(
+                &mut sb,
+                &tree,
+                node,
+                &WindowEvent::MouseInput {
+                    device_id: device(),
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                },
+            );
+            let cmds = sink.borrow();
+            assert_eq!(cmds.len(), 1);
+            assert!(
+                matches!(&cmds[0], FileCommand::Navigate(p) if p.ends_with("Downloads")),
+                "click navigates: {:?}",
+                cmds[0]
+            );
+        }
+
+        // --- phase: right_pressing_a_favourite_requests_its_menu ---
+        {
+            let sink = new_sink();
+            let store = new_store(favorites::defaults(
+                Path::new("/home/u"),
+                &favorites::UserDirs::default(),
+            ));
+            let mut sb = PlacesSidebar::new(store.clone(), PathBuf::from("/home/u"), sink.clone());
+            let (tree, node) = lay_out(&mut sb);
+            let band = store.borrow().band.unwrap();
+            // Right-press over favourite row 1 (Documents).
+            let y = band.row_center_y(1);
+            let x = band.center_x();
+            dispatch(
+                &mut sb,
+                &tree,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: device(),
+                    position: (x, y).into(),
+                },
+            );
+            let handled = dispatch(
+                &mut sb,
+                &tree,
+                node,
+                &WindowEvent::MouseInput {
+                    device_id: device(),
+                    state: ElementState::Pressed,
+                    button: MouseButton::Right,
+                },
+            );
+            assert!(handled, "a right-press over a favourite is consumed");
+            let cmds = sink.borrow();
+            assert_eq!(cmds.len(), 1);
+            assert!(
+                matches!(&cmds[0], FileCommand::OpenFavoriteMenu(p) if p.ends_with("Documents")),
+                "right-press asks for the favourite's menu: {:?}",
+                cmds[0],
+            );
+        }
+
+        // --- phase: debug_begin_drag_activates_a_reflow ---
+        {
+            let sink = new_sink();
+            let store = new_store(favorites::defaults(
+                Path::new("/home/u"),
+                &favorites::UserDirs::default(),
+            ));
+            let mut sb = PlacesSidebar::new(store.clone(), PathBuf::from("/home/u"), sink);
+            let _ = lay_out(&mut sb);
+            assert!(
+                debug_begin_drag(&store, 4, 1),
+                "band was laid out → drag begins"
+            );
+            assert!(store.borrow().drag.is_active());
+            assert_eq!(
+                store.borrow().drag.insertion(),
+                Some(1),
+                "gap sits at the drop row"
+            );
+        }
+    }
+
+    /// Trash and workspace roots are system places, and accessibility exposes selection, keyboard cursor and activation.
+    #[test]
+    fn system_places_are_clickable_and_accessible() {
+        // --- phase: trash_is_a_system_place_pointing_at_the_home_trash ---
+        {
+            // Deleting moves files to the Trash; the sidebar must offer a way back to
+            // it. It sits in the System section (near Root) and points at the XDG
+            // home-trash files dir.
+            let sink = new_sink();
+            let store = new_store(favorites::defaults(
+                Path::new("/home/u"),
+                &favorites::UserDirs::default(),
+            ));
+            let sb = PlacesSidebar::new(store, PathBuf::from("/home/u"), sink);
+            if let Some(trash) = crate::fileops::trash_dir() {
+                let entry = sb.system.iter().find(|(_, label, _)| label == "Trash");
+                let (icon, _, path) = entry.expect("a Trash system place");
+                assert_eq!(*icon, Icon::Trash2, "the trash uses a trash-can glyph");
+                assert_eq!(*path, trash, "and points at the home-trash files dir");
+            }
+        }
+
+        // --- phase: workspace_roots_are_clickable_system_places ---
+        {
+            let sink = new_sink();
+            let store = new_store(favorites::defaults(
+                Path::new("/home/u"),
+                &favorites::UserDirs::default(),
+            ));
+            let ws = PathBuf::from("/var/workspace");
+            let mut sb = PlacesSidebar::new(store, PathBuf::from("/home/u"), sink.clone())
+                .with_workspaces(vec![ws.clone()]);
+            // The workspace leads the System section with a cloud emblem.
+            assert_eq!(
+                sb.system[0].1, "workspace",
+                "labelled by the mount's folder name"
+            );
+            assert_eq!(sb.system[0].2, ws);
+            assert!(
+                sb.system.iter().any(|(_, label, _)| label == "Root"),
+                "Root still present, after the workspace",
+            );
+
+            let (tree, node) = lay_out(&mut sb);
+            // Click the first System row (the workspace) and expect a navigation.
+            let y = sb.sys_first_y() + ROW_H / 2.0;
+            let x = f64::midpoint(sb.row_x0(), sb.row_x1());
+            dispatch(
+                &mut sb,
+                &tree,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: device(),
+                    position: (x, y).into(),
+                },
+            );
+            dispatch(
+                &mut sb,
+                &tree,
+                node,
+                &WindowEvent::MouseInput {
+                    device_id: device(),
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+            );
+            let cmds = sink.borrow();
+            assert!(
+                matches!(&cmds[0], FileCommand::Navigate(p) if *p == ws),
+                "clicking the workspace navigates into it: {cmds:?}",
+            );
+        }
+
+        // --- phase: accessibility_exposes_places_selection_keyboard_cursor_and_activation ---
+        {
+            use ui::a11y::{Action, Role};
+
+            let sink = new_sink();
+            let store = new_store(favorites::defaults(
+                Path::new("/home/u"),
+                &favorites::UserDirs::default(),
+            ));
+            let mut sidebar = PlacesSidebar::new(store, PathBuf::from("/home/u"), sink.clone());
+            sidebar.set_focus(true);
+            sidebar.set_keyboard_index(1);
+
+            let node = sidebar.accessibility().expect("places has semantics");
+            assert_eq!(node.role, Role::List);
+            assert_eq!(node.name.as_deref(), Some("Places"));
+            assert!(node.state.focusable && node.state.focused);
+            assert_eq!(node.children.len(), sidebar.place_count());
+            assert!(node.children[0].state.selected, "Home is the active place");
+            assert!(
+                node.children[1].state.focused,
+                "keyboard cursor is independent"
+            );
+            assert_eq!(node.children[1].pos_in_set, Some(2));
+            assert_eq!(node.children[1].set_size, Some(sidebar.place_count()));
+
+            let mut doc = AutoCommit::new();
+            assert!(sidebar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
+            assert!(matches!(
+                sink.borrow().last(),
+                Some(FileCommand::Navigate(path)) if path.ends_with("Documents")
+            ));
+        }
     }
 }

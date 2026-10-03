@@ -999,6 +999,13 @@ impl WindowState {
         }
     }
 
+    /// Whether the last configure settled on server-side decorations.
+    pub fn server_side_decorations(&self) -> Option<bool> {
+        self.last_configure
+            .as_ref()
+            .map(|configure| configure.decoration_mode == DecorationMode::Server)
+    }
+
     /// Whether show or hide client side decorations.
     #[inline]
     pub fn set_decorate(&mut self, decorate: bool) {

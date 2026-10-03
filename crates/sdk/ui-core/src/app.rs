@@ -45,6 +45,21 @@ mod action_directory_snapshot;
 mod bound_record_sync;
 mod close_admission;
 mod document_history;
+mod handoff;
+mod history_actions;
+mod host_commands;
+
+/// The broker-facing History door, which host chrome presents as its own.
+#[cfg(any(feature = "native", test))]
+pub(crate) const HISTORY_ACTION_RESOURCE: &str = history_actions::RESOURCE;
+#[cfg(test)]
+mod history_actions_tests;
+mod model_lifecycle;
+mod participants;
+mod published_invocations;
+mod retirement_assembly;
+#[cfg(test)]
+mod retirement_lifecycle_tests;
 pub use document_history::DocumentHistorySnapshot;
 include!("app/floating.rs");
 mod runtime;
@@ -54,11 +69,15 @@ use runtime::{
     WindowRuntime,
 };
 include!("app/continuation.rs");
+include!("app/dev_session.rs");
+include!("app/dev_library.rs");
 include!("app/actions.rs");
 include!("app/accessibility.rs");
 include!("app/collaboration.rs");
 include!("app/persistence.rs");
 include!("app/host.rs");
+#[cfg(all(feature = "native", any(target_os = "android", test)))]
+mod android_text_input;
 #[cfg(feature = "native")]
 mod native_runner;
 #[cfg(all(windows, feature = "native"))]
@@ -159,12 +178,28 @@ pub enum UserEvent {
     /// Delivered to [`crate::widget::Widget::on_external_event`] rather than
     /// translated to a `WindowEvent` (e.g. installer progress).
     External(String),
+    /// A host command chosen in the operating system's own chrome (a menu
+    /// item), entering the same door as the palette.
+    HostCommand(tilo_actions::ControlInvocation),
+    /// Text typed into the host's title-bar search field; search continues
+    /// in the palette.
+    HostSearch(String),
     /// Synchronize and redraw after typed state was changed by a worker.
     /// Created automatically by [`crate::LocalStateWriter`].
     Wake(crate::wake::WakeEvent),
+    /// `tilo-app dev` is replacing this process. Flush the document and write
+    /// the route and caret, then leave the event loop so the next process can
+    /// read them.
+    DevSessionStop,
+    /// `tilo-app dev` rebuilt the app. Swap the contents of the windows this
+    /// process already has. Do not open or close any of them.
+    DevSessionReload,
     /// No `WindowEvent` analogue, so accesskit events get their own variant.
     #[cfg(feature = "native")]
     AccessKit(accesskit_winit::WindowEvent),
+    /// The soft keyboard queued edits for the focused field.
+    #[cfg(all(feature = "native", target_os = "android"))]
+    PlatformTextInput,
 }
 
 #[cfg(feature = "native")]
@@ -176,6 +211,9 @@ impl From<accesskit_winit::Event> for UserEvent {
 use crate::collaboration::{
     ActionDirectoryRequest, CollabEvent, CollabRequest, CollaborationManager, PresencePayload,
 };
+use crate::focus_navigation::Direction;
+#[cfg(feature = "native")]
+use crate::ime::ImeWindowState;
 use crate::permissions::PermissionContext;
 use crate::presence::{PresenceCtx, PresenceKey};
 use crate::state::State;
@@ -187,7 +225,7 @@ use taffy::{NodeId, TaffyTree};
 use vello::kurbo::Rect as KurboRect;
 
 /// Cached [`crate::host::RunnerDiagnostics::perf_log`] check
-/// (`QUICK_UI_PERF=1` natively), so the per-frame read is cheap.
+/// (`TILO_UI_PERF=1` natively), so the per-frame read is cheap.
 #[cfg(feature = "native")]
 fn perf_enabled() -> bool {
     use std::sync::OnceLock;
@@ -195,7 +233,7 @@ fn perf_enabled() -> bool {
     *FLAG.get_or_init(|| crate::host::environment().diagnostics.perf_log)
 }
 
-/// `QUICK_UI_NO_SCROLL_OPT=1` disables the scroll-reposition fast path,
+/// `TILO_UI_NO_SCROLL_OPT=1` disables the scroll-reposition fast path,
 /// forcing a full `compute_layout` on every `layout_dirty` frame — a safety
 /// valve if a subtree ever needs a re-solve without reporting
 /// `layout_needs_measure`.
@@ -224,34 +262,37 @@ mod animation_pump_tests {
     use crate::collaboration::{CollabRequest, ContinuationMetadata};
 
     #[test]
-    fn reduced_motion_does_not_keep_the_idle_loop_awake() {
-        assert!(animation_pump_needed(true, false));
-        assert!(!animation_pump_needed(true, true));
-        assert!(!animation_pump_needed(false, false));
-    }
+    fn animation_pump_sleeps_for_reduced_motion_and_clears_vanished_continuations() {
+        // Case `reduced_motion_does_not_keep_the_idle_loop_awake`.
+        {
+            assert!(animation_pump_needed(true, false));
+            assert!(!animation_pump_needed(true, true));
+            assert!(!animation_pump_needed(false, false));
+        }
 
-    #[test]
-    fn continuation_disappearance_clears_the_durable_projection() {
-        let request = continuation_publication("ebook".into(), None, true);
-        assert!(matches!(
-            request,
-            Some(CollabRequest::ClearContinuation { app_id }) if app_id == "ebook"
-        ));
+        // Case `continuation_disappearance_clears_the_durable_projection`.
+        {
+            let request = continuation_publication("ebook".into(), None, true);
+            assert!(matches!(
+                request,
+                Some(CollabRequest::ClearContinuation { app_id }) if app_id == "ebook"
+            ));
 
-        assert!(continuation_publication("ebook".into(), None, false).is_none());
+            assert!(continuation_publication("ebook".into(), None, false).is_none());
 
-        let metadata = ContinuationMetadata {
-            schema_version: 3,
-            bytes: vec![1, 2, 3],
-        };
-        assert!(matches!(
-            continuation_publication("ebook".into(), Some(&metadata), false),
-            Some(CollabRequest::ReportContinuation {
-                app_id,
+            let metadata = ContinuationMetadata {
                 schema_version: 3,
-                metadata,
-            }) if app_id == "ebook" && metadata == vec![1, 2, 3]
-        ));
+                bytes: vec![1, 2, 3],
+            };
+            assert!(matches!(
+                continuation_publication("ebook".into(), Some(&metadata), false),
+                Some(CollabRequest::ReportContinuation {
+                    app_id,
+                    schema_version: 3,
+                    metadata,
+                }) if app_id == "ebook" && metadata == vec![1, 2, 3]
+            ));
+        }
     }
 }
 
@@ -333,10 +374,11 @@ fn word_at(s: &str, byte: usize) -> Option<String> {
 #[cfg(feature = "native")]
 pub(crate) const POINTER_BROADCAST_MIN_GAP_MS: u64 = 33;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct DirectedInvocation {
     wire_id: u64,
     cancellation_requested: bool,
+    authorization: Option<crate::invocation_scope::ResourceInvocationScope>,
 }
 
 /// Public-in-crate so the throttle decision is unit-testable without a real
@@ -379,14 +421,6 @@ fn find_appearance_intent(w: &dyn Widget) -> Option<crate::theme::AppearanceInte
         }
     });
     found
-}
-
-#[derive(Debug, Clone, Copy)]
-enum Direction {
-    Up,
-    Down,
-    Left,
-    Right,
 }
 
 /// Fans cursor moves out to Iroh peers too, alongside the Unix-socket
@@ -483,8 +517,10 @@ pub struct ActionUiRoute {
     )
 )]
 pub struct App {
+    retirement: Option<crate::semantic_document_read::retirement::RootRetirementPrelude>,
     #[cfg(all(windows, feature = "native"))]
     startup_renderer: Option<native_runner::RendererPreparation>,
+    control_domain: crate::ControlDomain,
     wake_scope: Option<crate::wake::WakeScope>,
     state: State,
     root_widget: Box<dyn Widget>,
@@ -521,13 +557,17 @@ pub struct App {
     pub appearance_reconcile: bool,
     /// Shared settings-file watcher for OS-wide theme changes made by Theme
     /// Studio. Throttled so the render loop does not stat the file per frame.
-    theme_store_stamp: Option<crate::time::SystemTime>,
+    theme_store_stamp: Option<settings_store::SettingsStamp>,
     last_theme_store_check: Instant,
+    /// The schedule an "Automatic" theme follows and whether it was night
+    /// when last applied: sunrise and sunset re-theme without a file change.
+    theme_schedule: Option<(settings_store::day_schedule::Scheduled, bool)>,
     input: InputRuntime,
 
     focus_history: HistoryRuntime,
 
     collaboration: CollaborationRuntime,
+    native_room_route: Option<crate::collaboration::RouteSpec>,
     pub presence_ctx: PresenceCtx,
     pub permission_ctx: PermissionContext,
 
@@ -539,6 +579,10 @@ pub struct App {
     /// frame so a steady desired state issues one `set_fullscreen` call —
     /// see [`fullscreen_request_decision`].
     window: WindowRuntime,
+    committed_documents: Vec<(
+        crate::collaboration::RouteSpec,
+        crate::collaboration::CommittedDocument,
+    )>,
     /// To distinguish app-driven from compositor-driven transitions.
     pub(crate) legacy_persistence: crate::launch::LegacyPersistencePolicy,
     persistence: PersistenceRuntime,
@@ -553,6 +597,8 @@ pub struct App {
     history_viewport_width: f64,
     history_focus_pending: bool,
     continuation: ContinuationRuntime,
+    /// A failed pre-terminal handoff must not re-enter directed effects.
+    action_publication_failure: Option<String>,
     last_published_playback: Option<Vec<media::handoff::PlaybackReport>>,
     last_playback_publish: Option<Instant>,
     profiler: Option<crate::profiling::FrameProfiler>,
@@ -569,12 +615,22 @@ pub struct App {
 enum ConstructionValue<T> {
     Lazy(fn() -> T),
     Ready(T),
+    Taken,
 }
 impl<T> ConstructionValue<T> {
+    fn resolve_in_place(&mut self) -> T {
+        std::mem::replace(self, Self::Taken).resolve()
+    }
+
+    #[expect(
+        clippy::unreachable,
+        reason = "each construction value is resolved exactly once during App assembly"
+    )]
     fn resolve(self) -> T {
         match self {
             Self::Lazy(produce) => produce(),
             Self::Ready(value) => value,
+            Self::Taken => unreachable!("construction value already resolved"),
         }
     }
 }
@@ -589,13 +645,14 @@ enum PaletteSource {
 }
 
 struct AppConstructionInputs {
+    control_domain: Option<crate::ControlDomain>,
     collab_manager: CollaborationManager,
     configured_theme: ConstructionValue<Theme>,
     text_renderer: ConstructionValue<TextRenderer>,
     palette_source: PaletteSource,
     watch_system_settings: bool,
     debug_mode: fn() -> bool,
-    theme_store_stamp: fn() -> Option<crate::time::SystemTime>,
+    theme_store_stamp: fn() -> Option<settings_store::SettingsStamp>,
     local_author: ConstructionValue<crate::permissions::UserId>,
     presence_ctx: ConstructionValue<PresenceCtx>,
     screen_reader: fn() -> Option<crate::screen_reader::ScreenReader>,
@@ -618,7 +675,10 @@ impl AppConstructionInputs {
         Self::component_with_services(
             inputs,
             binding,
-            Self::production(CollaborationManager::for_record(&binding.checkout.id)),
+            Self::production(
+                crate::collaboration::native_initial::take_manager()
+                    .unwrap_or_else(|| CollaborationManager::for_record(&binding.checkout)),
+            ),
         )
     }
 
@@ -646,6 +706,7 @@ impl AppConstructionInputs {
         let mut presence = PresenceCtx::empty();
         presence.set_own_identity([binding.author.0.clone()]);
         Self {
+            control_domain: None,
             collab_manager: CollaborationManager::disabled(),
             configured_theme: ConstructionValue::Ready(inputs.theme),
             text_renderer: ConstructionValue::Ready(inputs.text_renderer),
@@ -677,6 +738,7 @@ impl AppConstructionInputs {
         #[cfg(feature = "native")]
         crate::host::native::install_default_if_unset(None);
         Self {
+            control_domain: None,
             collab_manager,
             configured_theme: ConstructionValue::Lazy(Theme::configured),
             text_renderer: ConstructionValue::Lazy(TextRenderer::new),
@@ -688,10 +750,7 @@ impl AppConstructionInputs {
             debug_mode: || {
                 cfg!(debug_assertions) && crate::host::environment().diagnostics.debug_overlay
             },
-            theme_store_stamp: || {
-                settings_store::settings_path()
-                    .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
-            },
+            theme_store_stamp: settings_store::stamp,
             local_author: ConstructionValue::Lazy(crate::collaboration::local_user_id),
             presence_ctx: ConstructionValue::Lazy(App::initial_presence_context),
             screen_reader: || {
@@ -729,6 +788,7 @@ impl AppConstructionInputs {
     #[cfg(any(test, all(feature = "native", feature = "test-support")))]
     fn controlled() -> Self {
         Self {
+            control_domain: None,
             collab_manager: CollaborationManager::disabled(),
             configured_theme: ConstructionValue::Lazy(Theme::dark),
             text_renderer: ConstructionValue::Lazy(crate::font_catalog::fixture_renderer),
@@ -790,6 +850,21 @@ impl App {
         Self::from_component_using(component, inputs, AppConstructionInputs::component)
     }
 
+    /// Mount a checked component on an explicitly admitted collaboration manager.
+    /// The manager retains the certified SDK route; no ambient identity or service
+    /// lookup is added. Component authority and record custody remain unchanged.
+    pub fn from_component_with_collaboration(
+        component: crate::application::AppComponent,
+        inputs: crate::application::ComponentRunnerInputs,
+        collaboration: CollaborationManager,
+    ) -> Result<Self, crate::launch::LaunchError> {
+        Self::from_component_using(component, inputs, |inputs, binding| {
+            let mut construction = AppConstructionInputs::component(inputs, binding);
+            construction.collab_manager = collaboration;
+            construction
+        })
+    }
+
     /// Mount a standalone native component with the process's existing system
     /// services, including record-scoped collaboration and accessibility.
     /// Presentation, identity, storage and authority still belong to the host.
@@ -805,12 +880,21 @@ impl App {
     fn from_component_using(
         mut component: crate::application::AppComponent,
         inputs: crate::application::ComponentRunnerInputs,
-        construction: fn(
+        construction: impl FnOnce(
             crate::application::ComponentRunnerInputs,
             &crate::bound_dispatch::CallbackBinding,
         ) -> AppConstructionInputs,
     ) -> Result<Self, crate::launch::LaunchError> {
-        let scope = crate::wake::WakeScope::new();
+        let scope =
+            crate::collaboration::native_initial::take_component_scope().unwrap_or_default();
+        let retirement = component.take_root_retirement();
+        let mut assembly = retirement_assembly::ComponentAssemblyCustody {
+            component: None,
+            scope: None,
+            retirement,
+        };
+        let scope = assembly.scope.insert(scope);
+        let component = assembly.component.insert(component);
         let _entry = scope.enter();
         let handle = scope.handle();
         if let Err(error) = component.mount(move |_| handle.wake()) {
@@ -826,7 +910,27 @@ impl App {
             return Err(component.setup_error(crate::launch::LaunchError::BindingMismatch));
         }
         let history = component.history.take();
+        let behaviour = component.behaviour;
+        let Some(component) = assembly.component.take() else {
+            return Err(crate::launch::LaunchError::Operation(
+                "component assembly no longer owns its component".to_owned(),
+            ));
+        };
         let mut root = Box::new(crate::widget::BoundAppWidget { component });
+        let mut root_custody = retirement_assembly::AppAssemblyCustody {
+            retirement: assembly.retirement.take(),
+            root: None,
+            wake: assembly.scope.take(),
+            state: Some(State::new()),
+            control: None,
+            inputs: Some(inputs),
+            configured_theme: None,
+            screen_reader: None,
+            values: Default::default(),
+        };
+        // Validation can call app code; keep a negative guard declared after the
+        // concrete root so unwind retires before that root's destructor.
+        let validation = retirement_assembly::ValidationRetirement(&root_custody.retirement, true);
         if let Some(registration) = &history
             && let Err(error) = registration.validate_root(root.as_ref())
         {
@@ -834,7 +938,11 @@ impl App {
                 .component
                 .setup_error(crate::launch::LaunchError::Operation(error.to_string())));
         }
-        let mut app = Self::from_scoped_parts_with_inputs(scope, State::new(), root, || inputs);
+        validation.disarm();
+        root_custody.root = Some(root);
+        let mut app = retirement_assembly::assemble(root_custody);
+        app.autofocus_on_structure_change = behaviour.autofocus_on_structure_change;
+        app.appearance_reconcile = behaviour.appearance_reconcile;
         if let Some(registration) = history
             && let Err(error) = app.install_history(registration)
         {
@@ -849,6 +957,11 @@ impl App {
             });
         }
         Ok(app)
+    }
+
+    /// Current SDK transport health, including fail-closed publication errors.
+    pub fn collaboration_is_connected(&self) -> bool {
+        self.collaboration.manager.is_connected()
     }
 
     pub(crate) fn native_component_presentation() -> crate::application::ComponentRunnerInputs {
@@ -873,11 +986,16 @@ impl App {
     /// Capture/close embedded components while the host still owns their trees.
     /// Recovery reports stay owned by this host until explicitly transferred.
     pub fn close_components(&mut self) {
+        self.retire_semantic_root();
+        self.control_domain.close();
         self.actions.bound_record_sync = None;
         self.component_close_reports
-            .extend(self.root_widget.close_components());
-        self.component_close_reports
-            .extend(self.root_widget.take_component_close_reports());
+            .extend(crate::component_lifecycle::close_components(
+                self.root_widget.as_mut(),
+            ));
+        self.component_close_reports.extend(
+            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
+        );
         self.bindings.clear();
         self.layout.node_map.clear();
     }
@@ -894,8 +1012,9 @@ impl App {
     pub fn take_component_close_reports(
         &mut self,
     ) -> Vec<crate::application::ComponentCloseReport> {
-        self.component_close_reports
-            .extend(self.root_widget.take_component_close_reports());
+        self.component_close_reports.extend(
+            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
+        );
         std::mem::take(&mut self.component_close_reports)
     }
 
@@ -942,11 +1061,12 @@ impl App {
                 &self.bindings,
                 &self.layout.node_map,
                 node,
-                &mut self.state.doc,
-                &self.state.root,
                 action,
-                &self.permission_ctx,
-                &author,
+                &mut self.state,
+                crate::bound_dispatch::SemanticCaller {
+                    authority: &self.permission_ctx,
+                    author: &author,
+                },
                 callback,
             )
         }
@@ -971,8 +1091,21 @@ impl App {
 
     /// Apply the native host's fallback for an Enter/Space press that the
     /// focused widget did not consume during normal event dispatch.
+    fn initial_live_focus_target(&self) -> Option<taffy::NodeId> {
+        self.focusable_order
+            .iter()
+            .copied()
+            .find(|&id| {
+                self.inspect_node(id, |widget| widget.name() == "Terminal")
+                    .unwrap_or(false)
+            })
+            .or_else(|| self.focusable_order.first().copied())
+    }
+
     fn handle_unconsumed_activation_key(&mut self, event: &WindowEvent, handled: &mut bool) {
         if *handled
+            || self.input.modifiers.state().super_key()
+            || self.input.modifiers.state().shift_key()
             || !matches!(
                 event,
                 WindowEvent::KeyboardInput {
@@ -989,6 +1122,33 @@ impl App {
         {
             return;
         }
+        if self.root_widget.name() == "Terminal"
+            && self
+                .history
+                .as_ref()
+                .is_none_or(|history| !history.captures_input())
+            && let Some(root) = self.layout.root_node
+        {
+            let mut focus = None;
+            self.root_widget.handle_event(
+                event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &self.input.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &self.layout.taffy,
+                },
+            );
+            if *handled {
+                self.needs_sync = true;
+                self.layout.layout_dirty = true;
+                return;
+            }
+        }
         let Some(focused) = self.focused_node else {
             return;
         };
@@ -1002,6 +1162,41 @@ impl App {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
         }
+    }
+
+    /// Let the focused widget see directional input first. Only an unconsumed
+    /// arrow may move host focus, using the same modal/focus-trap fence as Tab.
+    #[cfg(feature = "native")]
+    fn handle_unconsumed_directional_key(
+        &mut self,
+        event: &WindowEvent,
+        modal_rect: Option<KurboRect>,
+        require_alt: bool,
+        handled: &mut bool,
+    ) {
+        if *handled
+            || (require_alt && !self.input.modifiers.state().alt_key())
+            || !self.keyboard_nav_allowed(modal_rect)
+        {
+            return;
+        }
+        let WindowEvent::KeyboardInput {
+            event:
+                winit::event::KeyEvent {
+                    logical_key: winit::keyboard::Key::Named(named),
+                    state: winit::event::ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return;
+        };
+        let Some(direction) = Direction::from_key(*named) else {
+            return;
+        };
+        self.navigate_focus(direction);
+        *handled = true;
     }
 
     fn initial_presence_context() -> PresenceCtx {
@@ -1025,10 +1220,39 @@ impl App {
         state: State,
         root: crate::history_mode::ManagedRoot,
     ) -> Result<Self, crate::history_mode::HistoryRegistrationError> {
+        Self::from_managed_root_with_constructor(state, root, Self::new)
+    }
+
+    /// Explicit fixture inputs, through the same validation and installation
+    /// boundary as the public managed constructor.
+    /// # Errors
+    /// Refuses invalid or mismatched managed owner registrations.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_managed_root_with_controlled_inputs(
+        state: State,
+        root: crate::history_mode::ManagedRoot,
+    ) -> Result<Self, crate::history_mode::HistoryRegistrationError> {
+        Self::from_managed_root_with_constructor(state, root, |state, widget| {
+            let _entry = crate::wake::WakeScope::enter_detached();
+            Self::with_parts(None, state, widget, AppConstructionInputs::controlled())
+        })
+    }
+
+    fn from_managed_root_with_constructor(
+        state: State,
+        root: crate::history_mode::ManagedRoot,
+        construct: impl FnOnce(State, Box<dyn Widget>) -> Self,
+    ) -> Result<Self, crate::history_mode::HistoryRegistrationError> {
+        // Reject custody before evaluating any production or fixture inputs.
         root.history.validate_root(root.widget.as_ref())?;
-        let mut app = Self::new(state, root.widget);
+        let mut app = construct(state, root.widget);
         app.install_history(root.history)?;
         Ok(app)
+    }
+
+    /// Registered producer inventory; legacy private custody remains unqualified.
+    pub fn control_coverage(&self) -> crate::ControlCoverage {
+        self.control_domain.coverage()
     }
 
     pub(crate) fn install_history(
@@ -1044,6 +1268,9 @@ impl App {
             registration,
             &self.state.doc,
         )?));
+        if let Some(history) = &mut self.history {
+            history.set_control_domain(&self.control_domain);
+        }
         #[cfg(any(test, feature = "test-support"))]
         {
             self.controlled_installed_history_definition = Some(controlled_definition);
@@ -1092,8 +1319,13 @@ impl App {
     ) -> Self {
         let scope = crate::wake::WakeScope::new();
         let _entry = scope.enter();
+        let domain = crate::control_custody::ControlDomain::outer();
         let root = factory();
-        Self::from_scoped_parts_with_inputs(scope, state, root, inputs)
+        Self::from_scoped_parts_with_inputs(scope, state, root, || {
+            let mut inputs = inputs();
+            inputs.control_domain = Some(domain);
+            inputs
+        })
     }
 
     #[cfg(test)]
@@ -1116,8 +1348,47 @@ impl App {
     ) -> Result<Self, E> {
         let scope = crate::wake::WakeScope::new();
         let _entry = scope.enter();
+        let domain = crate::control_custody::ControlDomain::outer();
         let root = factory()?;
-        Ok(Self::from_scoped_parts(scope, state, root))
+        Ok(Self::from_scoped_parts_with_custody(
+            scope, state, root, domain,
+        ))
+    }
+
+    /// Construct with an explicit live producer capability before any factory callback.
+    pub fn from_factory_with_control_custody(
+        state: State,
+        factory: impl FnOnce(&crate::ControlDomain) -> Box<dyn Widget>,
+    ) -> Self {
+        let scope = crate::wake::WakeScope::new();
+        let _entry = scope.enter();
+        let domain = crate::control_custody::ControlDomain::outer();
+        let root = factory(&domain);
+        Self::from_scoped_parts_with_custody(scope, state, root, domain)
+    }
+
+    pub(crate) fn from_scoped_parts_with_custody(
+        scope: crate::WakeScope,
+        state: State,
+        root: Box<dyn Widget>,
+        domain: crate::ControlDomain,
+    ) -> Self {
+        let manager = crate::collaboration::native_initial::take_manager().unwrap_or_default();
+        let mut inputs = AppConstructionInputs::production(manager);
+        inputs.control_domain = Some(domain);
+        Self::with_parts(Some(scope), state, root, inputs)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn from_scoped_parts_with_controlled_custody(
+        scope: crate::WakeScope,
+        state: State,
+        root: Box<dyn Widget>,
+        domain: crate::ControlDomain,
+    ) -> Self {
+        let mut inputs = AppConstructionInputs::controlled();
+        inputs.control_domain = Some(domain);
+        Self::with_parts(Some(scope), state, root, inputs)
     }
 
     /// Transfer an existing owner into a live app.
@@ -1170,7 +1441,7 @@ impl App {
         Self::with_parts(Some(wake_scope), state, root_widget, inputs())
     }
 
-    #[cfg(any(test, all(feature = "native", feature = "test-support")))]
+    #[cfg(test)]
     pub(crate) fn from_scoped_parts_with_controlled_inputs(
         wake_scope: crate::wake::WakeScope,
         state: State,
@@ -1202,7 +1473,14 @@ impl App {
         )
     }
 
+    fn retire_semantic_root(&self) {
+        if let Some(retirement) = &self.retirement {
+            retirement.retire();
+        }
+    }
+
     fn close_wake_scope(&mut self) {
+        self.retire_semantic_root();
         if let Some(scope) = self.wake_scope.as_mut() {
             scope.close();
         }
@@ -1231,103 +1509,17 @@ impl App {
         root_widget: Box<dyn Widget>,
         inputs: AppConstructionInputs,
     ) -> Self {
-        let _entry = wake_scope.as_ref().map_or_else(
-            crate::wake::WakeScope::enter_detached,
-            crate::wake::WakeScope::enter,
-        );
-        let configured_theme = inputs.configured_theme.resolve();
-        let mut app = Self {
-            #[cfg(all(windows, feature = "native"))]
-            startup_renderer: None,
-            wake_scope,
-            state,
-            root_widget,
-            history: None,
-            #[cfg(any(test, feature = "test-support"))]
-            controlled_installed_history_definition: None,
-            framework_input: std::rc::Rc::new(Cell::new(false)),
-            history_key_release: false,
-            history_focus: None,
-            text_renderer: inputs.text_renderer.resolve(),
-            palette_source: inputs.palette_source,
-            watch_system_settings: inputs.watch_system_settings,
-            layout: LayoutRuntime::new(),
-            bindings: crate::bound_dispatch::BoundNodeMap::new(),
-            component_close_reports: vec![],
-            close_admission: crate::close_admission::Admission::default(),
-            input: InputRuntime::new(),
-            needs_sync: true,
-            theme: configured_theme.clone(),
-            debug_mode: (inputs.debug_mode)(),
-            focused_node: None,
-            focusable_order: Vec::new(),
-            autofocus_first: false,
-            autofocus_on_structure_change: false,
-            appearance_reconcile: false,
-            theme_store_stamp: (inputs.theme_store_stamp)(),
-            last_theme_store_check: crate::time::now(),
-            focus_history: HistoryRuntime::new(),
-            collaboration: CollaborationRuntime::new(
-                inputs.collab_manager,
-                inputs.local_author.resolve(),
-            ),
-            presence_ctx: inputs.presence_ctx.resolve(),
-            permission_ctx: PermissionContext::permissive(),
-            presence: PresenceRuntime::new(),
-            accessibility: AccessibilityRuntime::new(configured_theme, (inputs.screen_reader)()),
-            window: WindowRuntime::new(),
-            legacy_persistence: crate::launch::LegacyPersistencePolicy::Host,
-            persistence: PersistenceRuntime::new(),
-            autosave_generation: 0,
-            document_routes: crate::history_mode::routes::OwnerDocumentRoutes::default(),
-            actions: ActionRuntime::new(),
-            document_history: Box::new(crate::standalone_history_host::StandaloneHistoryHost::new()),
-            history_chrome_enabled: false,
-            native_document_chrome: true,
-            history_layout: None,
-            history_viewport_width: 1000.0,
-            history_focus_pending: false,
-            continuation: ContinuationRuntime::new((inputs.pending_continuation_restore)()),
-            last_published_playback: None,
-            last_playback_publish: None,
-            profiler: (inputs.profiler)(),
-            native_input_probe: None,
-            floating: FloatingRuntime::new((inputs.floating_surface_client)()),
-        };
-
-        app.accessibility.a11y.high_contrast = (inputs.high_contrast)();
-        app.accessibility.a11y.reduce_motion = match app.palette_source {
-            PaletteSource::Host => app.accessibility.base_theme.reduce_motion,
-            PaletteSource::Owned { .. } => (inputs.reduce_motion)(),
-        };
-        app.accessibility.a11y.screen_reader = app.accessibility.screen_reader.is_some();
-        app.accessibility.text_scale = match app.palette_source {
-            PaletteSource::Host => app.text_renderer.text_scale(),
-            PaletteSource::Owned { .. } => (inputs.text_scale)(),
-        };
-        app.accessibility.ui_scale = match app.palette_source {
-            PaletteSource::Host => app.accessibility.base_theme.ui_scale,
-            PaletteSource::Owned { .. } => (inputs.ui_scale)(),
-        };
-        app.rebuild_theme();
-
-        // The scope is also what sends `Arrived`, so an app that never set
-        // one would never catch up on anything written before it opened.
-        // No room means no scope.
-        if let Some(scope) = (inputs.startup_presence_scope)() {
-            app.set_presence_broadcast_scope(Some(scope));
-        }
-        app.presence_ctx.set_surface_id(inputs.surface_id.resolve());
-        // Apply launcher-provided continuation before the first widget sync or
-        // redraw.  Waiting for an input event left a restored app blank on a
-        // quiet freshly-created window.
-        app.apply_pending_continuation_restore();
-        // The first report is level-triggered.  Sending it here makes a
-        // launched app visible to continuity capture even if it receives no
-        // input events before the next peer asks for a checkpoint.
-        app.publish_continuation_metadata();
-        app.publish_playback_handoff();
-        app
+        retirement_assembly::assemble(retirement_assembly::AppAssemblyCustody {
+            retirement: None,
+            root: Some(root_widget),
+            wake: wake_scope,
+            state: Some(state),
+            control: None,
+            inputs: Some(inputs),
+            configured_theme: None,
+            screen_reader: None,
+            values: Default::default(),
+        })
     }
 
     fn rebuild_theme(&mut self) {
@@ -1527,7 +1719,8 @@ impl App {
             kind: action.kind,
             contract: action.contract.clone(),
             input: match &action.input {
-                tilo_actions::ActionInput::Immediate(_) => tilo_actions::InputSpec::None,
+                tilo_actions::ActionInput::Immediate(_)
+                | tilo_actions::ActionInput::Deferred { .. } => tilo_actions::InputSpec::None,
                 tilo_actions::ActionInput::Prompted {
                     prompt,
                     placeholder,
@@ -1550,9 +1743,9 @@ impl App {
     /// broker. Public cross-device state is derived by the shell and remains
     /// path/URL-free; this report never enters the room document.
     fn publish_playback_handoff(&mut self) {
-        if !self.collaboration.manager.is_connected() {
+        let Some(route) = self.private_continuity_route() else {
             return;
-        }
+        };
         let now = crate::time::now();
         if self
             .last_playback_publish
@@ -1560,10 +1753,14 @@ impl App {
         {
             return;
         }
-        let app_id = crate::collaboration::local_app_id();
-        let workspace_id = crate::collaboration::local_cluster_id().to_string();
+        let app_id = route.app_id;
+        let workspace_id = route.cluster_id.to_string();
         let reports = media::handoff::playback_reports(&app_id, &workspace_id);
         if self.last_published_playback.as_ref() == Some(&reports) {
+            return;
+        }
+        if reports.is_empty() && self.last_published_playback.is_none() {
+            self.last_published_playback = Some(reports);
             return;
         }
         let Ok(reports_json) = serde_json::to_vec(&reports) else {
@@ -1577,6 +1774,54 @@ impl App {
             });
         self.last_published_playback = Some(reports);
         self.last_playback_publish = Some(now);
+    }
+
+    fn private_continuity_route(&mut self) -> Option<crate::collaboration::RouteSpec> {
+        let witness = self.collaboration.manager.primary_route()?.clone();
+        witness
+            .route
+            .record
+            .as_deref()?
+            .strip_prefix("continuation:")?
+            .parse::<u64>()
+            .ok()?;
+        if self.continuation.last_private_route.as_ref() != Some(&witness) {
+            self.continuation.last_published = None;
+            self.last_published_playback = None;
+            self.last_playback_publish = None;
+            self.continuation.last_private_route = Some(witness.clone());
+        }
+        Some(witness.route)
+    }
+}
+
+/// Reduce a winit monitor to what output selection ranks on. Whether a
+/// display is built in comes from its connector name (`eDP-1`), which
+/// Wayland compositors advertise as the `wl_output` name; its physical size
+/// from `wl_output.geometry`. Platforms that expose neither rank on pixels.
+#[cfg(feature = "native")]
+pub(crate) fn monitor_info(
+    index: usize,
+    monitor: &winit::monitor::MonitorHandle,
+    primary: bool,
+) -> crate::fullscreen::MonitorInfo {
+    #[cfg(target_os = "linux")]
+    let physical_mm = {
+        use winit::platform::wayland::MonitorHandleExtWayland;
+        monitor.physical_size_mm()
+    };
+    #[cfg(not(target_os = "linux"))]
+    let physical_mm = None;
+    crate::fullscreen::MonitorInfo {
+        index: u32::try_from(index).unwrap_or(u32::MAX),
+        width: monitor.size().width,
+        height: monitor.size().height,
+        primary,
+        scale: monitor.scale_factor(),
+        builtin: monitor
+            .name()
+            .is_some_and(|name| crate::fullscreen::connector_is_builtin(&name)),
+        physical_mm,
     }
 }
 
@@ -1602,13 +1847,7 @@ impl App {
                 let infos: Vec<crate::fullscreen::MonitorInfo> = monitors
                     .iter()
                     .enumerate()
-                    .map(|(i, m)| crate::fullscreen::MonitorInfo {
-                        index: u32::try_from(i).unwrap_or(u32::MAX),
-                        width: m.size().width,
-                        height: m.size().height,
-                        primary: primary.as_ref() == Some(m),
-                        scale: m.scale_factor(),
-                    })
+                    .map(|(i, m)| monitor_info(i, m, primary.as_ref() == Some(m)))
                     .collect();
                 let chosen = crate::fullscreen::select_output(&infos, params.target)
                     .and_then(|idx| monitors.get(idx as usize).cloned());
@@ -1650,8 +1889,38 @@ impl App {
         let Some(intent) = find_appearance_intent(self.root_widget.as_ref()) else {
             return false;
         };
+        self.apply_appearance_intent(intent)
+    }
+
+    /// What a standalone app read from its host OS, through the same door as
+    /// a settings pane's intent. The caller applies each host change once, so
+    /// a contrast toggle made in the app holds until the host changes again.
+    #[cfg(feature = "native")]
+    pub(crate) fn apply_host_appearance(
+        &mut self,
+        host: crate::host_appearance::HostAppearance,
+    ) -> bool {
+        if crate::host_appearance::session_document_owns_appearance() {
+            return false;
+        }
+        let _entry = self.enter_wake_scope();
+        let mut base_theme = crate::host_appearance::theme(host);
+        base_theme.caret_width = self.accessibility.base_theme.caret_width;
+        self.apply_appearance_intent(crate::theme::AppearanceIntent {
+            base_theme,
+            high_contrast: host.high_contrast,
+            reduce_motion: host.reduce_motion,
+            text_scale: self.accessibility.text_scale,
+            ui_scale: self.accessibility.ui_scale,
+        })
+    }
+
+    #[cfg(feature = "native")]
+    fn apply_appearance_intent(&mut self, intent: crate::theme::AppearanceIntent) -> bool {
         let mut changed = false;
-        if intent.base_theme.name != self.accessibility.base_theme.name {
+        if intent.base_theme.name != self.accessibility.base_theme.name
+            || intent.base_theme.accent_primary != self.accessibility.base_theme.accent_primary
+        {
             self.accessibility.base_theme = intent.base_theme;
             changed = true;
         }
@@ -1681,12 +1950,24 @@ impl App {
 
     #[cfg(feature = "native")]
     fn reconcile_configured_theme(&mut self) -> bool {
+        let now = crate::time::now();
+        if self.watch_system_settings
+            && now.saturating_duration_since(self.last_theme_store_check)
+                >= Duration::from_millis(750)
+            && self.theme_schedule.is_some_and(|(schedule, night)| {
+                schedule.is_night(crate::theme::local_moment()) != night
+            })
+        {
+            self.last_theme_store_check = now;
+            self.apply_configured_theme();
+            self.rebuild_theme();
+            self.layout.layout_dirty = true;
+            self.layout.structure_dirty = true;
+            return true;
+        }
         self.reconcile_configured_theme_with(
             crate::time::now(),
-            || {
-                settings_store::settings_path()
-                    .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
-            },
+            settings_store::stamp,
             Self::apply_configured_theme,
         )
     }
@@ -1695,7 +1976,7 @@ impl App {
     fn reconcile_configured_theme_with(
         &mut self,
         now: Instant,
-        stamp: impl FnOnce() -> Option<crate::time::SystemTime>,
+        stamp: impl FnOnce() -> Option<settings_store::SettingsStamp>,
         apply: impl FnOnce(&mut Self),
     ) -> bool {
         // Only an explicitly native service host watches process settings.
@@ -1721,6 +2002,9 @@ impl App {
     #[cfg(feature = "native")]
     fn apply_configured_theme(&mut self) {
         self.accessibility.base_theme = Theme::configured();
+        self.theme_schedule =
+            Theme::automatic_schedule_from(settings_store::settings_path().as_deref())
+                .map(|schedule| (schedule, schedule.is_night(crate::theme::local_moment())));
         // Screen reader is a device/personal setting, not a per-application
         // opt-in. Every Tilo app watches the same file and changes its real
         // narrator lifecycle when Personal Settings changes it.
@@ -1756,6 +2040,18 @@ impl App {
             }
         }
         best.map(|(_, icon)| icon)
+    }
+
+    /// Whether a laid-out widget claims raw per-finger touch at `point`
+    /// (logical coords); see [`Widget::claims_raw_touch`].
+    #[cfg(feature = "native")]
+    fn claims_raw_touch_at(&self, point: Point) -> bool {
+        self.layout.node_map.keys().any(|&node| {
+            self.inspect_node(node, |widget| {
+                widget.get_rect().contains(point) && widget.claims_raw_touch(point)
+            })
+            .unwrap_or(false)
+        })
     }
 
     /// Mirrors [`Self::resolve_cursor`]: smallest-area widget under `point`
@@ -1928,31 +2224,58 @@ impl App {
     /// Byte-for-byte the same path as a Ctrl+K palette selection
     /// ([`Self::action_palette_handle_key`]).
 
+    /// Replace the framework view inside the windows this process already has.
+    ///
+    /// Returns whether the running root accepted it. A root that is not the
+    /// framework host leaves the current view in place.
+    #[cfg(feature = "native")]
+    pub(crate) fn install_reloaded_view(&mut self, root: DevRoot) -> bool {
+        let Some(bound) = self
+            .root_widget
+            .as_any_mut()
+            .and_then(|widget| widget.downcast_mut::<crate::widget::BoundAppWidget>())
+        else {
+            return false;
+        };
+        bound.component.install_reloaded(root);
+        self.needs_sync = true;
+        true
+    }
+
     /// Lets headless tests stand the App up without spinning a winit loop.
     #[doc(hidden)]
     pub fn init_layout(&mut self) {
+        let dev_view = self.consume_dev_checkpoint();
+        self.init_layout_with_dev_view(dev_view);
+    }
+
+    /// Headless and dev-reload startup. `dev_view` is the presentation captured
+    /// from the previous process; shell continuation still wins when both exist.
+    pub(crate) fn init_layout_with_dev_view(&mut self, dev_view: Option<crate::view::View>) {
         let _entry = self.enter_wake_scope();
         self.refresh_control_action_availability();
-        self.component_close_reports
-            .extend(self.root_widget.take_component_close_reports());
+        self.component_close_reports.extend(
+            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
+        );
         self.bindings.clear();
         self.layout.node_map.clear();
         self.build_history_presentation();
         self.update_focusable_order();
         if let Some(view) = self.continuation.pending_view.take() {
             <Self as crate::view::FreezeThaw>::restore_view(self, &view);
+        } else if let Some(view) = dev_view {
+            <Self as crate::view::FreezeThaw>::restore_view(self, &view);
         }
-        if self.autofocus_first
-            && self.focused_node.is_none()
-            && let Some(&first) = self.focusable_order.first()
-        {
-            self.set_focused_node(Some(first));
+        if self.autofocus_first && self.focused_node.is_none() {
+            if let Some(id) = self.initial_live_focus_target() {
+                self.set_focused_node(Some(id));
+            }
         }
         self.focus_history.stable_focus_idx = self
             .focused_node
             .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
         self.focus_history.stable_metadata = self.focused_node.and_then(|id| {
-            self.inspect_node(id, |widget| widget.get_state())
+            self.inspect_node(id, |widget| crate::undo::get_state(widget))
                 .ok()
                 .flatten()
         });
@@ -1968,6 +2291,17 @@ impl App {
         self.update_focusable_order();
     }
 
+    /// The root's structure flag, and framework History's: it is composed
+    /// as a separate root, so its replaced controls are not the app's.
+    pub(crate) fn take_composition_dirty(&mut self) -> bool {
+        let root = self.root_widget.take_structure_dirty();
+        let history = self
+            .history
+            .as_mut()
+            .is_some_and(|history| history.take_structure_dirty());
+        root || history
+    }
+
     /// When [`Self::autofocus_on_structure_change`] is set, restores the
     /// focused widget's caret/selection only if focus lands back on the SAME
     /// focusable ordinal after rebuild (never onto a different field);
@@ -1978,8 +2312,7 @@ impl App {
     pub fn rebuild_structure(&mut self) {
         let _entry = self.enter_wake_scope();
         // A reported mutation can already have invalidated old widget pointers.
-        let topology_changed =
-            self.layout.structure_dirty || self.root_widget.take_structure_dirty();
+        let topology_changed = self.layout.structure_dirty || self.take_composition_dirty();
         // Node ids below are about to be invalidated.
         let (prev_focus_idx, prev_focus_state, focus_reset) = if self.autofocus_on_structure_change
         {
@@ -1990,7 +2323,7 @@ impl App {
                 None
             } else {
                 self.focused_node.and_then(|id| {
-                    self.inspect_node(id, |widget| widget.get_state())
+                    self.inspect_node(id, |widget| crate::undo::get_state(widget))
                         .ok()
                         .flatten()
                 })
@@ -2005,8 +2338,9 @@ impl App {
         // replacement control at the same id still receives set_focus(true).
         self.focused_node = None;
         self.layout.taffy = TaffyTree::new();
-        self.component_close_reports
-            .extend(self.root_widget.take_component_close_reports());
+        self.component_close_reports.extend(
+            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
+        );
         self.bindings.clear();
         self.layout.node_map.clear();
         self.build_history_presentation();
@@ -2016,7 +2350,11 @@ impl App {
 
         // A focus trap already placed focus inside its subtree in
         // `update_focusable_order`; don't let it escape the modal.
-        if self.autofocus_on_structure_change && !self.accessibility.focus_trap_active {
+        if self.autofocus_on_structure_change
+            && !self.accessibility.focus_trap_active
+            && self.history.is_none()
+            && !crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
+        {
             if focus_reset {
                 if let Some(&first) = self.focusable_order.first() {
                     self.set_focused_node(Some(first));
@@ -2029,7 +2367,8 @@ impl App {
                     if exact.is_some()
                         && let Some(state) = prev_focus_state.as_deref()
                     {
-                        let _ = self.mutate_node(id, |widget| widget.set_state(state));
+                        let _ =
+                            self.mutate_node(id, |widget| crate::undo::set_state(widget, state));
                     }
                 }
             }
@@ -2044,6 +2383,19 @@ impl App {
             self.layout.structure_dirty = true;
             self.bindings.clear();
             self.layout.node_map.clear();
+        } else if self.focused_node.is_none() {
+            // A retained control can keep focus while a modal temporarily owns
+            // input. Rebuilding invalidates its NodeId, not that live focus.
+            // Recover only the unique current focused path inside the current
+            // allowed order; never transfer focus or state to a replacement.
+            // SAFETY: sync retained this exact exclusively owned topology.
+            self.focused_node = unsafe {
+                crate::widget::layout::CompositionFocus::current(
+                    &self.layout.node_map,
+                    &self.bindings,
+                    Some(&self.focusable_order),
+                )
+            };
         }
         self.invalidate_widget_resource_cache();
     }
@@ -2096,7 +2448,7 @@ impl App {
     ) {
         (
             self.controlled_installed_history_definition,
-            self.root_widget.document_history_definition(),
+            crate::history_mode::capability::document_history_definition(self.root_widget.as_ref()),
         )
     }
 
@@ -2128,6 +2480,8 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
+        self.retire_semantic_root();
+        self.control_domain.close();
         self.bindings.clear();
         self.layout.node_map.clear();
         self.close_wake_scope();
@@ -2276,57 +2630,60 @@ mod generic_floating_activity_tests {
     use vello::kurbo::Rect;
 
     #[test]
-    fn primary_surface_pumps_only_until_its_first_presented_frame() {
-        assert!(!primary_startup_pump_needed(0, 0));
-        assert!(primary_startup_pump_needed(1, 0));
-        assert!(primary_startup_pump_needed(3, 0));
-        assert!(!primary_startup_pump_needed(3, 1));
-    }
+    fn floating_activity_pumps_and_proxies_until_the_exact_primary_frame() {
+        // Case `primary_surface_pumps_only_until_its_first_presented_frame`.
+        {
+            assert!(!primary_startup_pump_needed(0, 0));
+            assert!(primary_startup_pump_needed(1, 0));
+            assert!(primary_startup_pump_needed(3, 0));
+            assert!(!primary_startup_pump_needed(3, 1));
+        }
 
-    #[test]
-    fn generic_pip_activity_edge_dismisses_without_touching_native_surfaces() {
-        let previous = HashSet::from([
-            "browser.media-pip".to_string(),
-            "chat-call:huddle".to_string(),
-            "navigation:route".to_string(),
-        ]);
-        let current = HashSet::new();
-        let native = HashMap::from([(
-            "chat-call:huddle".to_string(),
-            FloatingSurfacePresentation {
-                id: "chat-call:huddle".into(),
-                content_rect: Rect::new(40.0, 40.0, 400.0, 260.0),
-                window_rect: Rect::new(32.0, 32.0, 408.0, 268.0),
-                returning_to_app: false,
-            },
-        )]);
-        let suspended = HashSet::from(["navigation:route".to_string()]);
-        assert_eq!(
-            generic_floating_ids_to_dismiss(&previous, &current, &native, &suspended),
-            vec!["browser.media-pip".to_string()]
-        );
-    }
+        // Case `generic_pip_activity_edge_dismisses_without_touching_native_surfaces`.
+        {
+            let previous = HashSet::from([
+                "browser.media-pip".to_string(),
+                "chat-call:huddle".to_string(),
+                "navigation:route".to_string(),
+            ]);
+            let current = HashSet::new();
+            let native = HashMap::from([(
+                "chat-call:huddle".to_string(),
+                FloatingSurfacePresentation {
+                    id: "chat-call:huddle".into(),
+                    content_rect: Rect::new(40.0, 40.0, 400.0, 260.0),
+                    window_rect: Rect::new(32.0, 32.0, 408.0, 268.0),
+                    returning_to_app: false,
+                },
+            )]);
+            let suspended = HashSet::from(["navigation:route".to_string()]);
+            assert_eq!(
+                generic_floating_ids_to_dismiss(&previous, &current, &native, &suspended),
+                vec!["browser.media-pip".to_string()]
+            );
+        }
 
-    #[test]
-    fn native_float_allocation_follows_the_complete_soft_chrome() {
-        let compact = native_floating_logical_size(Rect::new(80.0, 40.0, 456.0, 292.0));
-        let expanded = native_floating_logical_size(Rect::new(80.0, 40.0, 456.0, 352.0));
-        assert_eq!((compact.width, compact.height), (376.0, 252.0));
-        assert_eq!((expanded.width, expanded.height), (376.0, 312.0));
-    }
+        // Case `native_float_allocation_follows_the_complete_soft_chrome`.
+        {
+            let compact = native_floating_logical_size(Rect::new(80.0, 40.0, 456.0, 292.0));
+            let expanded = native_floating_logical_size(Rect::new(80.0, 40.0, 456.0, 352.0));
+            assert_eq!((compact.width, compact.height), (376.0, 252.0));
+            assert_eq!((expanded.width, expanded.height), (376.0, 312.0));
+        }
 
-    #[test]
-    fn ownership_proxy_waits_for_the_exact_primary_frame_to_present() {
-        let gates = HashMap::from([
-            ("waiting".to_string(), None),
-            ("next".to_string(), Some(12)),
-            ("later".to_string(), Some(13)),
-        ]);
-        assert!(completed_primary_frame_gates(&gates, 11).is_empty());
-        assert_eq!(
-            completed_primary_frame_gates(&gates, 12),
-            vec!["next".to_string()]
-        );
+        // Case `ownership_proxy_waits_for_the_exact_primary_frame_to_present`.
+        {
+            let gates = HashMap::from([
+                ("waiting".to_string(), None),
+                ("next".to_string(), Some(12)),
+                ("later".to_string(), Some(13)),
+            ]);
+            assert!(completed_primary_frame_gates(&gates, 11).is_empty());
+            assert_eq!(
+                completed_primary_frame_gates(&gates, 12),
+                vec!["next".to_string()]
+            );
+        }
     }
 }
 
@@ -2434,10 +2791,12 @@ mod number_input_layout_tests;
 
 #[cfg(test)]
 #[path = "app/history_tests.rs"]
-mod framework_history_tests;
+pub(crate) mod framework_history_tests;
 
 #[path = "app/history.rs"]
 mod framework_history;
+
+mod committed_document;
 
 #[path = "app/document_routes.rs"]
 mod document_routes;
@@ -2446,9 +2805,13 @@ mod document_routes;
 #[path = "app/focus_selection_tests.rs"]
 mod focus_selection_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "local-daemons"))]
 #[path = "app/local_privacy_tests.rs"]
 mod local_privacy_tests;
+
+#[cfg(test)]
+#[path = "app/participant_invocation_tests.rs"]
+mod participant_invocation_tests;
 
 #[cfg(test)]
 #[path = "app/large_document_tests.rs"]
@@ -2463,11 +2826,14 @@ pub(crate) fn flush_widget_owned_persistence(
     root: &mut dyn Widget,
     reports: &mut Vec<crate::application::ComponentCloseReport>,
 ) -> Result<(), String> {
-    reports.extend(root.take_component_close_reports());
-    let current = root
-        .try_flush_owned_persistence()
+    reports.extend(crate::component_lifecycle::take_component_close_reports(
+        root,
+    ));
+    let current = crate::component_lifecycle::try_flush_owned_persistence(root)
         .unwrap_or_else(|| Err("widget-owned persistence requires a checked flush hook".into()));
-    reports.extend(root.take_component_close_reports());
+    reports.extend(crate::component_lifecycle::take_component_close_reports(
+        root,
+    ));
     for report in reports.iter_mut() {
         if report.record_error.is_some() && report.record_retry.is_some() {
             // The report retains the actual outgoing owner and exact legacy
@@ -2520,7 +2886,8 @@ mod legacy_owner_routing_tests {
     }
 
     impl Widget for OwnerProbe {
-        fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
+        crate::provides!(dyn crate::component_lifecycle::ComponentLifecycle);
+
         fn build_layout(
             &mut self,
             tree: &mut taffy::TaffyTree<()>,
@@ -2539,19 +2906,6 @@ mod legacy_owner_routing_tests {
             _: &mut TextRenderer,
             _: &Theme,
             _: &PresenceCtx,
-        ) {
-        }
-        fn handle_event(
-            &mut self,
-            _: &WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
-            _: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &taffy::TaffyTree<()>,
         ) {
         }
         fn name(&self) -> &'static str {
@@ -2576,9 +2930,10 @@ mod legacy_owner_routing_tests {
             &mut self,
             target: &str,
             action: &crate::a11y::Action,
-            doc: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
+            doc: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
         ) -> bool {
+            let (doc, _) = crate::doc::document(doc, path);
             if target != "owner:named" {
                 return false;
             }
@@ -2596,9 +2951,10 @@ mod legacy_owner_routing_tests {
             &mut self,
             action: &crate::a11y::Action,
             keys: &[u64],
-            doc: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
+            doc: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
         ) -> bool {
+            let (doc, _) = crate::doc::document(doc, path);
             if keys != [7] || !matches!(action, crate::a11y::Action::Activate) {
                 return false;
             }
@@ -2606,6 +2962,9 @@ mod legacy_owner_routing_tests {
                 .unwrap();
             true
         }
+    }
+
+    impl crate::component_lifecycle::ComponentLifecycle for OwnerProbe {
         fn take_component_close_reports(
             &mut self,
         ) -> Vec<crate::application::ComponentCloseReport> {
@@ -2651,63 +3010,95 @@ mod legacy_owner_routing_tests {
     }
 
     #[test]
-    fn semantic_targets_resolve_current_legacy_aliases_across_disjoint_roots() {
-        let store = crate::record::RecordStore::in_memory();
-        let first = crate::record::RecordCheckout::new(
-            crate::record::RecordId::for_tab(9901),
-            crate::record::RecordKind::new("note"),
-        );
-        let second = crate::record::RecordCheckout::new(
-            crate::record::RecordId::for_tab(9902),
-            crate::record::RecordKind::new("note"),
-        );
-        store.create_record(&first).unwrap();
-        store.create_record(&second).unwrap();
-        let root = crate::widget::Column::new()
-            .push(Box::new(tile(&store, &first, "first")))
-            .push(Box::new(tile(&store, &second, "second")));
-        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
-        app.enable_document_history_chrome();
-        app.init_layout();
-        app.refresh_semantic_tree();
-        let named = app
-            .semantic_tree()
-            .find_by_name("first named")
-            .unwrap()
-            .clone();
-        let keyed = app
-            .semantic_tree()
-            .find_by_name("second keyed")
-            .unwrap()
-            .id
-            .clone();
-        let alias = named.widget_taffy_id.unwrap();
-        assert!(
-            alias >= (1 << 47),
-            "fixture must exercise a legacy lifetime alias"
-        );
-        assert!(!app.layout.node_map.contains_key(&NodeId::from(alias)));
-        assert!(
-            app.invoke_semantic_action(&named.id, "activate", None)
+    fn legacy_owner_routing_resolves_current_aliases_and_rejects_drained_errors() {
+        // Case `semantic_targets_resolve_current_legacy_aliases_across_disjoint_roots`.
+        {
+            let store = crate::record::RecordStore::in_memory();
+            let first = crate::record::RecordCheckout::new(
+                crate::record::RecordId::for_tab(9901),
+                crate::record::RecordKind::new("note"),
+            );
+            let second = crate::record::RecordCheckout::new(
+                crate::record::RecordId::for_tab(9902),
+                crate::record::RecordKind::new("note"),
+            );
+            store.create_record(&first).unwrap();
+            store.create_record(&second).unwrap();
+            let root = crate::widget::Column::new()
+                .push(Box::new(tile(&store, &first, "first")))
+                .push(Box::new(tile(&store, &second, "second")));
+            let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
+            app.enable_document_history_chrome();
+            app.init_layout();
+            app.refresh_semantic_tree();
+            let named = app
+                .semantic_tree()
+                .find_by_name("first named")
                 .unwrap()
-        );
-        assert!(
-            app.invoke_semantic_action(&named.id, "focus", None)
+                .clone();
+            let keyed = app
+                .semantic_tree()
+                .find_by_name("second keyed")
                 .unwrap()
-        );
-        let focused = app
-            .focused_node
-            .expect("focus uses the actual admitted owner");
-        assert!(app.layout.node_map.contains_key(&focused));
-        assert_ne!(u64::from(focused), alias);
-        assert!(
-            app.invoke_semantic_action(&keyed, "activate", None)
-                .unwrap()
-        );
-        for (checkout, expected) in [(&first, "first named"), (&second, "second keyed")] {
+                .id
+                .clone();
+            let alias = named.widget_taffy_id.unwrap();
+            assert!(
+                alias >= (1 << 47),
+                "fixture must exercise a legacy lifetime alias"
+            );
+            assert!(!app.layout.node_map.contains_key(&NodeId::from(alias)));
+            assert!(
+                app.invoke_semantic_action(&named.id, "activate", None)
+                    .unwrap()
+            );
+            assert!(
+                app.invoke_semantic_action(&named.id, "focus", None)
+                    .unwrap()
+            );
+            let focused = app
+                .focused_node
+                .expect("focus uses the actual admitted owner");
+            assert!(app.layout.node_map.contains_key(&focused));
+            assert_ne!(u64::from(focused), alias);
+            assert!(
+                app.invoke_semantic_action(&keyed, "activate", None)
+                    .unwrap()
+            );
+            for (checkout, expected) in [(&first, "first named"), (&second, "second keyed")] {
+                assert_eq!(
+                    store
+                        .read_checked(&checkout.id, |doc| {
+                            doc.get(ROOT, "selected")
+                                .unwrap()
+                                .unwrap()
+                                .0
+                                .as_str()
+                                .unwrap()
+                                .to_owned()
+                        })
+                        .unwrap(),
+                    expected
+                );
+            }
+            assert!(app.state.doc.get(ROOT, "selected").unwrap().is_none());
+
+            // Retain the old semantic tree while replacing the owners. Current
+            // admission must refuse both stale targets instead of retargeting them.
+            app.close_components();
+            app.root_widget = Box::new(tile(&store, &first, "replacement"));
+            app.init_layout();
+            assert!(
+                !app.invoke_semantic_action(&named.id, "activate", None)
+                    .unwrap()
+            );
+            assert!(
+                !app.invoke_semantic_action(&keyed, "activate", None)
+                    .unwrap()
+            );
             assert_eq!(
                 store
-                    .read_checked(&checkout.id, |doc| {
+                    .read_checked(&first.id, |doc| {
                         doc.get(ROOT, "selected")
                             .unwrap()
                             .unwrap()
@@ -2717,66 +3108,1671 @@ mod legacy_owner_routing_tests {
                             .to_owned()
                     })
                     .unwrap(),
-                expected
+                "first named"
             );
         }
-        assert!(app.state.doc.get(ROOT, "selected").unwrap().is_none());
 
-        // Retain the old semantic tree while replacing the owners. Current
-        // admission must refuse both stale targets instead of retargeting them.
-        app.close_components();
-        app.root_widget = Box::new(tile(&store, &first, "replacement"));
-        app.init_layout();
-        assert!(
-            !app.invoke_semantic_action(&named.id, "activate", None)
-                .unwrap()
+        // Case `widget_owned_runner_rejects_outgoing_error_drained_before_final_flush`.
+        {
+            let flushes = Rc::new(Cell::new(0));
+            let probe = OwnerProbe {
+                label: "current owner",
+                flushes: Rc::clone(&flushes),
+                report: Some(crate::application::ComponentCloseReport {
+                    recovery: None,
+                    view_error: None,
+                    view_retry: None,
+                    record_error: Some("outgoing owner could not persist".into()),
+                    record_retry: None,
+                    record_retry_target: None,
+                    teardown_error: None,
+                }),
+            };
+            let inputs = crate::launch::LegacyLaunchInputs::new(
+                State::new(),
+                Box::new(probe),
+                crate::persist::DocWriter::disabled("fixture owns storage"),
+            )
+            .with_widget_owned_persistence();
+            assert_eq!(
+                crate::headless::run_initialized(&crate::headless::Spec::default(), inputs),
+                3
+            );
+            assert_eq!(flushes.get(), 1, "the current owner must still be flushed");
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "app/legacy_resource_tests.rs"]
+mod legacy_resource_tests;
+
+#[cfg(test)]
+mod private_continuity_route_tests {
+    use super::*;
+    use crate::collaboration::{CollabEvent, CollabRequest, PeerTransport, RouteSpec};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    struct AcknowledgingPeer {
+        connected: bool,
+        acknowledged: Option<RouteSpec>,
+        requests: Rc<RefCell<Vec<CollabRequest>>>,
+    }
+
+    impl PeerTransport for AcknowledgingPeer {
+        fn is_connected(&self) -> bool {
+            self.connected
+        }
+
+        fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+            if let CollabRequest::Hello {
+                app_id,
+                cluster_id,
+                record,
+                ..
+            } = &request
+            {
+                self.acknowledged = Some(RouteSpec {
+                    app_id: app_id.clone(),
+                    cluster_id: *cluster_id,
+                    record: record.clone(),
+                });
+            }
+            self.requests.borrow_mut().push(request);
+            Ok(())
+        }
+
+        fn poll(&mut self) -> Vec<CollabEvent> {
+            Vec::new()
+        }
+
+        fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
+            self.acknowledged.take().map(Ok)
+        }
+    }
+
+    fn app_for_acknowledged_route(route: RouteSpec) -> (App, Rc<RefCell<Vec<CollabRequest>>>) {
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let mut manager = CollaborationManager::with_peer_transport(AcknowledgingPeer {
+            connected: true,
+            acknowledged: None,
+            requests: requests.clone(),
+        });
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: route.app_id,
+            cluster_id: route.cluster_id,
+            record: route.record,
+            record_kind: None,
+            handle: None,
+        }));
+        manager.poll();
+        requests.borrow_mut().clear();
+        let app = App::with_collaboration_manager(
+            State::new(),
+            Box::new(crate::widget::Text::new("continuity route fixture")),
+            manager,
         );
-        assert!(
-            !app.invoke_semantic_action(&keyed, "activate", None)
-                .unwrap()
-        );
-        assert_eq!(
-            store
-                .read_checked(&first.id, |doc| {
-                    doc.get(ROOT, "selected")
-                        .unwrap()
-                        .unwrap()
-                        .0
-                        .as_str()
-                        .unwrap()
-                        .to_owned()
+        (app, requests)
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn private_reports_use_each_acknowledged_continuation_route() {
+        let previous_app = std::env::var_os("TILO_PACKAGE_ID");
+        let previous_room = std::env::var_os("TILO_WORKSPACE_ID");
+        let ambient_room = uuid::Uuid::new_v4();
+        // SAFETY: guarded by the process_env serial group and restored below.
+        unsafe {
+            std::env::set_var("TILO_PACKAGE_ID", "ambient.app");
+            std::env::set_var("TILO_WORKSPACE_ID", ambient_room.to_string());
+        }
+        let playback = media::handoff::AppPlaybackHandle::new();
+        playback.publish(media::handoff::AppPlayback {
+            resource_uri: "music://track/route-fixture",
+            title: "Route fixture",
+            position_ms: 7,
+            duration_ms: Some(30),
+            playing: true,
+            has_video: false,
+            audible: true,
+            controller_bus_name: None,
+        });
+
+        let routes = [
+            RouteSpec::record("dev.tilo.notes", uuid::Uuid::new_v4(), "continuation:7"),
+            RouteSpec::record("dev.tilo.browser", uuid::Uuid::new_v4(), "continuation:91"),
+        ];
+        let observed = routes
+            .iter()
+            .cloned()
+            .map(|route| {
+                let (_app, requests) = app_for_acknowledged_route(route);
+                requests.borrow().clone()
+            })
+            .collect::<Vec<_>>();
+        drop(playback);
+
+        // Restore before asserting so a failure does not leak process state.
+        unsafe {
+            match previous_app {
+                Some(value) => std::env::set_var("TILO_PACKAGE_ID", value),
+                None => std::env::remove_var("TILO_PACKAGE_ID"),
+            }
+            match previous_room {
+                Some(value) => std::env::set_var("TILO_WORKSPACE_ID", value),
+                None => std::env::remove_var("TILO_WORKSPACE_ID"),
+            }
+        }
+
+        for (requests, expected) in observed.iter().zip(routes.iter()) {
+            let reported_apps = requests
+                .iter()
+                .filter_map(|request| match request {
+                    CollabRequest::ReportContinuation { app_id, .. }
+                    | CollabRequest::ClearContinuation { app_id } => Some(app_id.as_str()),
+                    _ => None,
                 })
-                .unwrap(),
-            "first named"
+                .collect::<Vec<_>>();
+            assert_eq!(reported_apps, vec![expected.app_id.as_str()]);
+            let playback = requests
+                .iter()
+                .find_map(|request| match request {
+                    CollabRequest::ReportPlayback {
+                        app_id,
+                        reports_json,
+                    } => Some((app_id, reports_json)),
+                    _ => None,
+                })
+                .expect("eligible route reports live playback");
+            assert_eq!(playback.0, &expected.app_id);
+            let reports = serde_json::from_slice::<Vec<media::handoff::PlaybackReport>>(playback.1)
+                .expect("playback report JSON");
+            assert_eq!(reports.len(), 1);
+            assert_eq!(reports[0].session.app_id, expected.app_id);
+            assert_eq!(reports[0].workspace_id, expected.cluster_id.to_string());
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn initial_empty_playback_is_suppressed() {
+        let route = RouteSpec::record("dev.tilo.music", uuid::Uuid::new_v4(), "continuation:8");
+        let (_app, requests) = app_for_acknowledged_route(route);
+        assert!(
+            requests
+                .borrow()
+                .iter()
+                .all(|request| !matches!(request, CollabRequest::ReportPlayback { .. }))
         );
     }
 
     #[test]
-    fn widget_owned_runner_rejects_outgoing_error_drained_before_final_flush() {
-        let flushes = Rc::new(Cell::new(0));
-        let probe = OwnerProbe {
-            label: "current owner",
-            flushes: Rc::clone(&flushes),
-            report: Some(crate::application::ComponentCloseReport {
-                recovery: None,
-                view_error: None,
-                view_retry: None,
-                record_error: Some("outgoing owner could not persist".into()),
-                record_retry: None,
-                record_retry_target: None,
-                teardown_error: None,
-            }),
-        };
-        let inputs = crate::launch::LegacyLaunchInputs::new(
+    #[serial_test::serial(process_env)]
+    fn authenticated_document_route_emits_no_private_continuity_requests() {
+        let route = RouteSpec::record("so.tilo.calculator", uuid::Uuid::new_v4(), "tab:0013");
+        let (_app, requests) = app_for_acknowledged_route(route);
+        assert!(requests.borrow().iter().all(|request| !matches!(
+            request,
+            CollabRequest::ReportContinuation { .. }
+                | CollabRequest::ClearContinuation { .. }
+                | CollabRequest::ReportPlayback { .. }
+        )));
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn route_acknowledgement_does_not_lose_the_first_unchanged_projection() {
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let manager = CollaborationManager::with_peer_transport(AcknowledgingPeer {
+            connected: true,
+            acknowledged: None,
+            requests: requests.clone(),
+        });
+        let mut app = App::with_collaboration_manager(
             State::new(),
-            Box::new(probe),
-            crate::persist::DocWriter::disabled("fixture owns storage"),
-        )
-        .with_widget_owned_persistence();
-        assert_eq!(
-            crate::headless::run_initialized(&crate::headless::Spec::default(), inputs),
-            3
+            Box::new(crate::widget::Text::new("delayed route fixture")),
+            manager,
         );
-        assert_eq!(flushes.get(), 1, "the current owner must still be flushed");
+        assert!(app.continuation.last_published.is_none());
+        assert!(app.last_published_playback.is_none());
+        assert!(app.last_playback_publish.is_none());
+
+        let route = RouteSpec::record("dev.tilo.notes", uuid::Uuid::new_v4(), "continuation:42");
+        assert!(app.collaboration.manager.send(CollabRequest::Hello {
+            app_id: route.app_id.clone(),
+            cluster_id: route.cluster_id,
+            record: route.record.clone(),
+            record_kind: None,
+            handle: None,
+        }));
+        app.collaboration.manager.poll();
+        requests.borrow_mut().clear();
+        app.publish_continuation_metadata();
+        app.publish_playback_handoff();
+
+        assert!(requests.borrow().iter().any(|request| matches!(
+            request,
+            CollabRequest::ReportContinuation { app_id, .. } if app_id == &route.app_id
+        )));
+        assert!(
+            requests
+                .borrow()
+                .iter()
+                .all(|request| !matches!(request, CollabRequest::ReportPlayback { .. }))
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_new_acknowledgement_epoch_republishes_unchanged_continuity() {
+        let route = RouteSpec::record("dev.tilo.notes", uuid::Uuid::new_v4(), "continuation:42");
+        let (mut app, requests) = app_for_acknowledged_route(route.clone());
+        requests.borrow_mut().clear();
+
+        assert!(app.collaboration.manager.send(CollabRequest::Hello {
+            app_id: route.app_id.clone(),
+            cluster_id: route.cluster_id,
+            record: route.record.clone(),
+            record_kind: None,
+            handle: None,
+        }));
+        app.collaboration.manager.poll();
+        requests.borrow_mut().clear();
+        app.publish_continuation_metadata();
+
+        assert!(requests.borrow().iter().any(|request| matches!(
+            request,
+            CollabRequest::ReportContinuation { app_id, .. } if app_id == &route.app_id
+        )));
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn eligible_nonempty_to_empty_playback_publishes_a_clear() {
+        let route = RouteSpec::record("dev.tilo.music", uuid::Uuid::new_v4(), "continuation:8");
+        let (mut app, requests) = app_for_acknowledged_route(route.clone());
+        app.last_published_playback = Some(vec![media::handoff::PlaybackReport {
+            session: media::handoff::PlaybackSession {
+                id: "dev.tilo.music:media".into(),
+                app_id: route.app_id.clone(),
+                title: "Previous".into(),
+                content_id: format!("blake3:{}", "0".repeat(64)),
+                position_ms: 0,
+                duration_ms: None,
+                playing: false,
+                has_video: false,
+            },
+            workspace_id: route.cluster_id.to_string(),
+            source: media::handoff::HandoffSource::AppResource {
+                uri: "music://track/previous".into(),
+            },
+            controller_bus_name: None,
+            accepted_handoff_request: None,
+        }]);
+        app.last_playback_publish = None;
+        requests.borrow_mut().clear();
+
+        app.publish_playback_handoff();
+
+        let clears = requests
+            .borrow()
+            .iter()
+            .filter_map(|request| match request {
+                CollabRequest::ReportPlayback {
+                    app_id,
+                    reports_json,
+                } => Some((app_id.clone(), reports_json.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(clears.len(), 1);
+        assert_eq!(clears[0].0, route.app_id);
+        assert_eq!(
+            serde_json::from_slice::<Vec<media::handoff::PlaybackReport>>(&clears[0].1).unwrap(),
+            Vec::new()
+        );
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod ordinary_confirmation_tests {
+    include!("app/deferred_invocation_tests.rs");
+    use super::*;
+    use crate::history_mode::*;
+    use std::{cell::RefCell, rc::Rc};
+    use winit::keyboard::{Key, NamedKey};
+    pub(crate) struct Fixture {
+        child: Box<dyn Widget>,
+        pub resources: Rc<RefCell<Vec<tilo_actions::Resource>>>,
+        pub ledger: Rc<RefCell<Vec<serde_json::Value>>>,
+        output: Rc<RefCell<Option<crate::ControlOutbox>>>,
+    }
+    impl Widget for Fixture {
+        crate::provides!(
+            dyn crate::widget::controls::ActionControls,
+            dyn crate::resources::PublishesResources
+        );
+
+        crate::testing::delegate_widget_methods!(
+            child: sync,
+            build_layout,
+            apply_layout,
+            draw,
+            handle_event,
+            get_rect
+        );
+        fn name(&self) -> &str {
+            "Ordinary confirmation fixture"
+        }
+        fn children(&self) -> Vec<&dyn crate::widget::Widget> {
+            vec![self.child.as_ref()]
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn crate::widget::Widget + '_)> {
+            vec![self.child.as_mut()]
+        }
+        fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+            let mut handlers = self.child.resource_operation_handlers();
+            handlers.insert("fixture.control".into());
+            handlers
+        }
+        fn start_operation(
+            &mut self,
+            op: &crate::widget::ResourceOperation<'_>,
+            doc: &mut automerge::AutoCommit,
+            path: &automerge::ObjId,
+        ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+            let Some(request) = op
+                .unscoped()
+                .filter(|request| request.type_id == "fixture.control")
+            else {
+                return self.child.start_operation(op, doc, path);
+            };
+            self.ledger
+                .borrow_mut()
+                .push(serde_json::from_slice(request.payload).unwrap());
+            Ok(Some(crate::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )))
+        }
+    }
+
+    impl crate::resources::PublishesResources for Fixture {
+        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+            self.resources.borrow().clone()
+        }
+    }
+
+    impl crate::widget::controls::ActionControls for Fixture {
+        fn install_control_custody(
+            &mut self,
+            domain: &crate::ControlDomain,
+            attachment: crate::control_custody::CustodyAttachment,
+        ) {
+            crate::widget::controls::install_control_custody(
+                self.child.as_mut(),
+                domain,
+                attachment,
+            );
+            if self.output.borrow().is_none() {
+                *self.output.borrow_mut() =
+                    Some(domain.producer(crate::ControlProducerDiscipline::Fifo { limit: 64 }));
+            }
+        }
+    }
+    static HISTORY: HistoryDefinition = HistoryDefinition {
+        app_id: "ordinary-confirmation-fixture",
+        scopes: &[HistoryScopeDefinition {
+            key: "document",
+            title: "Confirmation fixture",
+            presentation: HistoryPresentation::Domain {
+                create: crate::history_mode::test_preview,
+            },
+            content_schema: Some(&crate::state::owned_restore_tests::SCHEMA),
+        }],
+    };
+    fn fixture_widget(
+        policy: tilo_actions::ConfirmationPolicy,
+        source: std::sync::Arc<std::sync::Mutex<serde_json::Map<String, serde_json::Value>>>,
+    ) -> (
+        Fixture,
+        Rc<RefCell<Vec<serde_json::Value>>>,
+        Rc<RefCell<Vec<tilo_actions::Resource>>>,
+    ) {
+        use tilo_actions::*;
+        let mut spec = ActionSpec::typed_operation(
+            "run",
+            "Run fixture",
+            "Payload",
+            OperationKind::Effect,
+            "fixture.control",
+            vec![ActionParam::required("payload", ParamType::Text, "Payload")],
+            |args| EncodedAction::encode_operation("fixture.control", &args.to_json()).unwrap(),
+        );
+        spec.contract.confirmation = policy;
+        let resource = Resource::new("ordinary:fixture", "fixture", "Fixture").with_action(spec);
+        let binding = ActionBinding::new(&resource, &resource.actions[0], move |()| {
+            source.lock().unwrap().clone()
+        })
+        .unwrap();
+        let resources = Rc::new(RefCell::new(vec![resource]));
+        let ledger = Rc::new(RefCell::new(vec![]));
+        let widget = Fixture {
+            child: Box::new(
+                crate::widget::Button::new("ordinary-emitter", "Emit request", None)
+                    .on_action(binding),
+            ),
+            resources: resources.clone(),
+            ledger: ledger.clone(),
+            output: Rc::new(RefCell::new(None)),
+        };
+        (widget, ledger, resources)
+    }
+    fn managed(widget: Box<dyn Widget>) -> ManagedRoot {
+        let registration = HistoryRegistration::new(
+            &HISTORY,
+            vec![HistorySourceRegistration::HostDocument {
+                scope: "document",
+                resource: HistoryResource::new(
+                    "ordinary:fixture",
+                    "lifetime-confirmation",
+                    HISTORY.app_id,
+                    crate::RecordId::for_tab(990),
+                ),
+            }],
+        )
+        .unwrap();
+        ManagedRoot::new(widget, registration)
+    }
+    fn source() -> std::sync::Arc<std::sync::Mutex<serde_json::Map<String, serde_json::Value>>> {
+        std::sync::Arc::new(std::sync::Mutex::new(
+            serde_json::json!({"payload":"original"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        ))
+    }
+    pub(crate) fn fixture(
+        policy: tilo_actions::ConfirmationPolicy,
+    ) -> (
+        ManagedRoot,
+        Rc<RefCell<Vec<serde_json::Value>>>,
+        Rc<RefCell<Vec<tilo_actions::Resource>>>,
+    ) {
+        let (widget, ledger, resources) = fixture_widget(policy, source());
+        (managed(Box::new(widget)), ledger, resources)
+    }
+    crate::testing::test_app_widget!(Fixture, "Confirmation fixture");
+    #[allow(
+        dead_code,
+        reason = "fixture guards retain actual owner stores for each test"
+    )]
+    enum OwnerGuard {
+        Component(
+            crate::bound_dispatch::CallbackBinding,
+            crate::application_test_support::ProbeHost,
+        ),
+        Legacy(crate::history_mode::HistoryOwner, tempfile::TempDir),
+    }
+    impl OwnerGuard {
+        fn close(&self) {
+            match self {
+                Self::Component(binding, _) => binding.closing.set(true),
+                Self::Legacy(owner, _) => {
+                    let crate::history_mode::owner::OwnerKind::Legacy { lifetime, .. } = &owner.0
+                    else {
+                        unreachable!()
+                    };
+                    lifetime.upgrade().unwrap().active.set(false);
+                }
+            }
+        }
+        fn managed(&self, widget: Box<dyn Widget>) -> ManagedRoot {
+            static COMPONENT_HISTORY: HistoryDefinition = HistoryDefinition {
+                app_id: crate::application_test_support::APP,
+                scopes: HISTORY.scopes,
+            };
+            let (definition, owner) = match self {
+                Self::Component(binding, _) => {
+                    (&COMPONENT_HISTORY, HistoryOwner::component(binding.clone()))
+                }
+                Self::Legacy(owner, _) => (&HISTORY, owner.clone()),
+            };
+            ManagedRoot::new(
+                widget,
+                HistoryRegistration::new(
+                    definition,
+                    vec![
+                        HistorySourceRegistration::owned("document", definition.app_id, owner)
+                            .unwrap(),
+                    ],
+                )
+                .unwrap(),
+            )
+        }
+        fn revoke(&self) {
+            if let Self::Component(binding, _) = self {
+                *binding.permissions.borrow_mut() =
+                    crate::permissions::PermissionContext::from_capabilities(
+                        crate::permissions::Actor::person(None, "fixture"),
+                        vec![],
+                    );
+            }
+        }
+    }
+    fn owned(widget: Fixture, component: bool) -> (Box<dyn Widget>, OwnerGuard) {
+        use crate::application_test_support::*;
+        if component {
+            let host = ProbeHost::new();
+            let definition = runner_probe_definition();
+            let target = crate::application::LaunchTarget::New;
+            let mut instance = definition
+                .instantiate(
+                    host.prepare_with_permissions(definition, 991, &target, runner_permissions())
+                        .unwrap(),
+                    target,
+                    crate::application::RestoreInput::None,
+                )
+                .unwrap();
+            instance.root = Some(Box::new(widget));
+            instance.mount(|_| {}).unwrap();
+            let binding = instance.callback_binding();
+            (
+                Box::new(crate::widget::BoundAppWidget {
+                    component: instance,
+                }),
+                OwnerGuard::Component(binding, host),
+            )
+        } else {
+            let directory = tempfile::tempdir().unwrap();
+            let mut owners = crate::record::RecordOwners::new(directory.path().join("records"));
+            let store = owners.open(HISTORY.app_id, "legacy").unwrap();
+            let checkout = crate::RecordCheckout::new(
+                crate::RecordId::for_tab(991),
+                crate::RecordKind::new("note"),
+            );
+            store
+                .reserve_record(&checkout)
+                .unwrap()
+                .initialize(|_| Ok(()))
+                .unwrap();
+            let mut tile =
+                crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(widget)));
+            tile.bind_record(store, checkout);
+            let owner = tile.history_owner().unwrap();
+            (Box::new(tile), OwnerGuard::Legacy(owner, directory))
+        }
+    }
+    pub(crate) fn layout(app: &mut App) {
+        // Match native redraw: capture the pending structural change before
+        // rebuilding clears it; unchanged trees must use the normal fast path.
+        app.layout.structure_dirty |= app.layout.root_node.is_none()
+            || app.layout.node_map.is_empty()
+            || app.root_widget.take_structure_dirty();
+        let structure_rebuilt = app.layout.structure_dirty;
+        if structure_rebuilt {
+            app.rebuild_structure();
+        }
+        let node = app.layout.root_node.unwrap();
+        run_layout_pass(app, node, 900, 650, 1.0, structure_rebuilt, None).unwrap();
+        draw_frame_content(app, &mut Scene::new(), 900, 650, 1.0, None);
+        complete_native_frame_content(app, |_| {});
+    }
+    pub(crate) fn named(app: &mut App, label: &str) -> accesskit::NodeId {
+        app.build_a11y_tree_update(1.0)
+            .nodes
+            .into_iter()
+            .find(|(_, n)| n.label() == Some(label))
+            .map(|(id, _)| id)
+            .unwrap_or_else(|| panic!("missing published {label}"))
+    }
+    enum Host {
+        Native(Box<App>),
+        Driver(Box<crate::headless::Driver>),
+    }
+    impl Host {
+        fn new(native: bool, root: ManagedRoot) -> Self {
+            if native {
+                let mut app =
+                    App::from_managed_root_with_controlled_inputs(State::new(), root).unwrap();
+                layout(&mut app);
+                Self::Native(Box::new(app))
+            } else {
+                Self::Driver(Box::new(
+                    crate::headless::Driver::from_managed_root_with_controlled_inputs(
+                        State::new(),
+                        root,
+                        (900, 650),
+                        Theme::dark(),
+                        crate::font_catalog::fixture_renderer(),
+                        crate::permissions::UserId("fixture".into()),
+                    )
+                    .unwrap(),
+                ))
+            }
+        }
+        fn act(&mut self, label: &str, action: crate::a11y::Action) {
+            match self {
+                Self::Native(app) => {
+                    let target = named(app, label);
+                    app.dispatch_a11y_action(target, &action);
+                    app.controlled_local_idle_for_test();
+                    layout(app);
+                }
+                Self::Driver(driver) => {
+                    if label == "Emit request" {
+                        driver
+                            .perform_semantic_named("ordinary-emitter", None, &action)
+                            .unwrap();
+                    } else if label == "History" {
+                        let id = driver.a11y_node_named(label).unwrap();
+                        driver.perform_a11y_action(id, &action).unwrap();
+                    } else {
+                        let target = Self::published_target(driver, label);
+                        driver
+                            .perform_semantic_named("action-palette", Some(&target), &action)
+                            .unwrap();
+                    }
+                }
+            }
+        }
+        fn published_target(driver: &crate::headless::Driver, label: &str) -> String {
+            fn access(node: &crate::a11y::AccessNode, label: &str) -> Option<String> {
+                if node.name.as_deref() == Some(label) {
+                    return node.action_target.clone();
+                }
+                node.children.iter().find_map(|n| access(n, label))
+            }
+            fn widget(node: &crate::headless::InspectionNode, label: &str) -> Option<String> {
+                node.semantics
+                    .as_ref()
+                    .and_then(|n| access(n, label))
+                    .or_else(|| node.children.iter().find_map(|n| widget(n, label)))
+            }
+            widget(&driver.inspection().root, label)
+                .unwrap_or_else(|| panic!("missing inspection target {label}"))
+        }
+        fn activate(&mut self, label: &str) {
+            self.act(label, crate::a11y::Action::Activate);
+        }
+        fn value(&mut self, value: &str) {
+            self.act("Confirmation", crate::a11y::Action::SetValue(value.into()));
+        }
+        fn frame(&mut self) {
+            match self {
+                Self::Native(app) => {
+                    app.bindings.clear();
+                    app.layout.node_map.clear();
+                    app.focused_node = None;
+                    app.root_widget.sync(&mut app.state.doc, &app.state.root);
+                    layout(app)
+                }
+                Self::Driver(driver) => driver.relayout(),
+            }
+        }
+        fn key(&mut self, key: &str) {
+            let event = crate::synthetic_input::key_event(
+                &Key::Character(key.into()),
+                ElementState::Pressed,
+            );
+            match self {
+                Self::Native(app) => {
+                    assert!(app.action_palette_handle_key(&event));
+                    layout(app)
+                }
+                Self::Driver(driver) => driver.send(&event),
+            }
+        }
+        fn focused_label(&mut self) -> Option<String> {
+            match self {
+                Self::Native(app) => {
+                    let tree = app.build_a11y_tree_update(1.0);
+                    tree.nodes
+                        .iter()
+                        .find(|(id, _)| *id == tree.focus)
+                        .and_then(|(_, node)| node.label().map(str::to_owned))
+                }
+                Self::Driver(driver) => driver
+                    .a11y_focus()
+                    .and_then(|(_, node)| node.label().map(str::to_owned)),
+            }
+        }
+        fn submit_id(&mut self) -> accesskit::NodeId {
+            match self {
+                Self::Native(app) => named(app, "Confirm"),
+                Self::Driver(driver) => driver.a11y_node_named("Confirm").unwrap(),
+            }
+        }
+        fn stale(&mut self, id: accesskit::NodeId) {
+            match self {
+                Self::Native(app) => {
+                    app.dispatch_a11y_action(id, &crate::a11y::Action::Activate);
+                    layout(app);
+                }
+                Self::Driver(driver) => {
+                    assert!(
+                        driver
+                            .perform_a11y_action(id, &crate::a11y::Action::Activate)
+                            .is_err()
+                    );
+                }
+            }
+        }
+        fn revoke(&mut self) {
+            let denied = crate::permissions::PermissionContext::from_capabilities(
+                crate::permissions::Actor::person(None, "fixture"),
+                vec![],
+            );
+            match self {
+                Self::Native(app) => app.set_permission_ctx(denied),
+                Self::Driver(driver) => driver.set_permission_ctx(denied),
+            }
+        }
+    }
+    #[test]
+    fn ordinary_confirmation_native_events_keep_bounded_measured_tree() {
+        let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+        let mut host = Host::new(true, root);
+        let expected_rect = match &host {
+            Host::Native(app) => {
+                assert!(
+                    !app.root_widget.layout_needs_measure(),
+                    "retained Button is clean"
+                );
+                app.root_widget.get_rect()
+            }
+            Host::Driver(_) => unreachable!(),
+        };
+        assert!(expected_rect.width() > 0.0 && expected_rect.height() > 0.0);
+        host.activate("Emit request");
+        let Host::Native(app) = &mut host else {
+            unreachable!()
+        };
+        let baseline_nodes = app.layout.taffy.total_node_count();
+        let mut samples = vec![(baseline_nodes, app.root_widget.get_rect())];
+        for index in 0..12 {
+            let event = WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(300.0 + f64::from(index), 220.0),
+            };
+            assert!(app.action_palette_handle_event(&event, 1.0));
+            layout(app);
+            samples.push((
+                app.layout.taffy.total_node_count(),
+                app.root_widget.get_rect(),
+            ));
+            let field = named(app, "Confirmation");
+            app.dispatch_a11y_action(
+                field,
+                &crate::a11y::Action::SetValue(format!("draft {index}")),
+            );
+            app.controlled_local_idle_for_test();
+            layout(app);
+            samples.push((
+                app.layout.taffy.total_node_count(),
+                app.root_widget.get_rect(),
+            ));
+        }
+        assert!(ledger.borrow().is_empty());
+        let bounded = samples.iter().all(|(nodes, _)| *nodes <= baseline_nodes);
+        let measured = samples.iter().all(|(_, rect)| *rect == expected_rect);
+        assert!(
+            bounded && measured,
+            "unchanged-background events must retain bounded solved geometry: initial nodes={baseline_nodes}, rect={expected_rect:?}, samples={samples:?}"
+        );
+    }
+
+    fn published_confirmation_instruction(host: &mut Host) -> String {
+        match host {
+            Host::Native(app) => app
+                .build_a11y_tree_update(1.0)
+                .nodes
+                .into_iter()
+                .find(|(_, node)| node.label() == Some("Confirmation"))
+                .and_then(|(_, node)| node.description().map(str::to_owned))
+                .expect("native published field describes how to confirm"),
+            Host::Driver(driver) => {
+                fn access(node: &crate::a11y::AccessNode) -> Option<String> {
+                    if node.name.as_deref() == Some("Confirmation") {
+                        return node.description.clone();
+                    }
+                    node.children.iter().find_map(access)
+                }
+                fn widget(node: &crate::headless::InspectionNode) -> Option<String> {
+                    node.semantics
+                        .as_ref()
+                        .and_then(access)
+                        .or_else(|| node.children.iter().find_map(widget))
+                }
+                widget(&driver.inspection().root)
+                    .expect("Driver published field describes how to confirm")
+            }
+        }
+    }
+    fn confirm_using_published_instruction(native: bool) {
+        for policy in [
+            tilo_actions::ConfirmationPolicy::Confirm,
+            tilo_actions::ConfirmationPolicy::Phrase {
+                phrase: "APPLY EXACT".into(),
+            },
+        ] {
+            let (root, ledger, _) = fixture(policy);
+            let mut host = Host::new(native, root);
+            host.activate("Emit request");
+            assert!(ledger.borrow().is_empty());
+            let instruction = published_confirmation_instruction(&mut host);
+            let value = instruction
+                .strip_prefix("Type ")
+                .and_then(|s| s.strip_suffix(" to confirm"))
+                .filter(|s| !s.is_empty())
+                .expect("published instruction contains a discoverable confirmation phrase");
+            let stale = host.submit_id();
+            host.value(value);
+            host.activate("Confirm");
+            assert_eq!(
+                &*ledger.borrow(),
+                &[serde_json::json!({"payload":"original"})]
+            );
+            host.stale(stale);
+            assert_eq!(ledger.borrow().len(), 1);
+        }
+    }
+    #[test]
+    fn ordinary_confirmation_native_instruction_is_independently_operable() {
+        confirm_using_published_instruction(true);
+    }
+    #[test]
+    fn ordinary_confirmation_driver_instruction_is_independently_operable() {
+        confirm_using_published_instruction(false);
+    }
+
+    #[test]
+    fn ordinary_confirmation_no_resolver_confirm_phrase_once_through_published_surface() {
+        for native in [true, false] {
+            for phrase in ["CONFIRM", "APPLY EXACT"] {
+                let policy = if phrase == "CONFIRM" {
+                    tilo_actions::ConfirmationPolicy::Confirm
+                } else {
+                    tilo_actions::ConfirmationPolicy::Phrase {
+                        phrase: phrase.into(),
+                    }
+                };
+                let (root, ledger, _) = fixture(policy);
+                let mut host = Host::new(native, root);
+                host.activate("Emit request");
+                assert!(ledger.borrow().is_empty());
+                let stale = host.submit_id();
+                host.value("wrong");
+                host.activate("Confirm");
+                assert!(ledger.borrow().is_empty());
+                host.value(phrase);
+                host.activate("Confirm");
+                assert_eq!(
+                    &*ledger.borrow(),
+                    &[serde_json::json!({"payload":"original"})]
+                );
+                host.stale(stale);
+                assert_eq!(ledger.borrow().len(), 1);
+            }
+        }
+    }
+    #[test]
+    fn ordinary_confirmation_cancel_and_successor_reject_stale_submit() {
+        for native in [true, false] {
+            let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+            let mut host = Host::new(native, root);
+            host.activate("Emit request");
+            let stale = host.submit_id();
+            host.value("CONFIRM");
+            host.activate("Cancel");
+            host.activate("Emit request");
+            host.value("CONFIRM");
+            host.stale(stale);
+            assert!(ledger.borrow().is_empty());
+            host.activate("Confirm");
+            assert_eq!(ledger.borrow().len(), 1);
+        }
+    }
+    #[test]
+    fn ordinary_confirmation_declared_mutations_and_revocation_refuse() {
+        use tilo_actions::*;
+        for native in [true, false] {
+            for mutation in [
+                "encoding",
+                "contract",
+                "policy",
+                "schema",
+                "unavailable",
+                "duplicate-resource",
+                "duplicate-action",
+                "revoked",
+                "label",
+                "kind",
+            ] {
+                let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
+                let mut host = Host::new(native, root);
+                host.activate("Emit request");
+                {
+                    let mut resources = resources.borrow_mut();
+                    let spec = &mut resources[0].actions[0];
+                    match mutation {
+                        "encoding" => {
+                            let old = spec.contract.clone();
+                            *spec = ActionSpec::typed_operation(
+                                "run",
+                                "Run fixture",
+                                "Payload",
+                                OperationKind::Effect,
+                                "fixture.control",
+                                vec![ActionParam::required("payload", ParamType::Text, "Payload")],
+                                |_| {
+                                    EncodedAction::encode_operation(
+                                        "fixture.control",
+                                        &serde_json::json!({"payload":"changed"}),
+                                    )
+                                    .unwrap()
+                                },
+                            )
+                            .with_contract(old);
+                        }
+                        "contract" => spec.contract.risk = RiskLevel::Privileged,
+                        "policy" => {
+                            spec.contract.confirmation = ConfirmationPolicy::Phrase {
+                                phrase: "OTHER".into(),
+                            }
+                        }
+                        "schema" => {
+                            let old = spec.contract.clone();
+                            *spec = ActionSpec::typed_operation(
+                                "run",
+                                "Run fixture",
+                                "Payload",
+                                OperationKind::Effect,
+                                "fixture.control",
+                                vec![ActionParam::required(
+                                    "payload",
+                                    ParamType::Integer,
+                                    "Payload",
+                                )],
+                                |args| {
+                                    EncodedAction::encode_operation(
+                                        "fixture.control",
+                                        &args.to_json(),
+                                    )
+                                    .unwrap()
+                                },
+                            )
+                            .with_contract(old);
+                        }
+                        "unavailable" => {
+                            spec.contract.availability = Availability::Unavailable {
+                                code: "gone".into(),
+                                reason: "Gone".into(),
+                            }
+                        }
+                        "duplicate-resource" => {
+                            let duplicate = resources[0].clone();
+                            resources.push(duplicate);
+                        }
+                        "duplicate-action" => {
+                            let duplicate = resources[0].actions[0].clone();
+                            resources[0].actions.push(duplicate);
+                        }
+                        "label" => spec.label = "Different reviewed meaning".into(),
+                        "kind" => spec.kind = OperationKind::View,
+                        "revoked" => {}
+                        _ => unreachable!(),
+                    }
+                }
+                if mutation == "revoked" {
+                    host.revoke();
+                }
+                host.value("CONFIRM");
+                host.activate("Confirm");
+                assert!(ledger.borrow().is_empty(), "{native}:{mutation}");
+            }
+        }
+    }
+    #[test]
+    fn ordinary_confirmation_optional_exact_evidence_change_or_loss_refuses() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        };
+        use tilo_actions::*;
+        for native in [true, false] {
+            for later in [0, 2] {
+                for handler in [false, true] {
+                    let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
+                    let epoch = Arc::new(AtomicU64::new(1));
+                    let captured = epoch.clone();
+                    let original = resources.borrow()[0].actions[0].clone();
+                    resources.borrow_mut()[0].actions[0] =
+                        original.with_continuation_identity(move |query| {
+                            let epoch = captured.load(Ordering::SeqCst);
+                            if epoch == 0 {
+                                return None;
+                            }
+                            matches!(query, ContinuationQuery::Exact(_)).then(|| {
+                                ContinuationEvidence::Exact {
+                                    target: ContinuationKey::new(
+                                        "alias-target",
+                                        [if handler {
+                                            1u64.to_le_bytes()
+                                        } else {
+                                            epoch.to_le_bytes()
+                                        }],
+                                    ),
+                                    handler: ContinuationKey::new(
+                                        "handler",
+                                        [if handler {
+                                            epoch.to_le_bytes()
+                                        } else {
+                                            1u64.to_le_bytes()
+                                        }],
+                                    ),
+                                }
+                            })
+                        });
+                    let mut host = Host::new(native, root);
+                    host.activate("Emit request");
+                    epoch.store(later, Ordering::SeqCst);
+                    host.value("CONFIRM");
+                    host.activate("Confirm");
+                    assert!(ledger.borrow().is_empty());
+                }
+            }
+        }
+    }
+    #[test]
+    fn ordinary_confirmation_history_clears_old_confirmation_and_fresh_no_resolver_works() {
+        for native in [true, false] {
+            let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+            let mut host = Host::new(native, root);
+            host.activate("Emit request");
+            host.value("CONFIRM");
+            let stale = host.submit_id();
+            host.activate("History");
+            assert!(ledger.borrow().is_empty());
+            host.activate("History");
+            assert!(ledger.borrow().is_empty());
+            host.stale(stale);
+            host.value("CONFIRM");
+            host.activate("Confirm");
+            assert!(ledger.borrow().is_empty());
+            host.activate("Cancel");
+            host.activate("Emit request");
+            host.value("CONFIRM");
+            host.activate("Confirm");
+            assert_eq!(ledger.borrow().len(), 1);
+        }
+    }
+    #[test]
+    fn ordinary_confirmation_copies_emitted_json_and_types_with_fixture_fonts() {
+        for native in [true, false] {
+            let input = source();
+            let (widget, ledger, _) =
+                fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, input.clone());
+            let mut host = Host::new(native, managed(Box::new(widget)));
+            host.activate("Emit request");
+            input
+                .lock()
+                .unwrap()
+                .insert("payload".into(), serde_json::json!("successor-selection"));
+            host.key("CONFIRM");
+            host.activate("Confirm");
+            assert_eq!(
+                &*ledger.borrow(),
+                &[serde_json::json!({"payload":"original"})]
+            );
+        }
+    }
+    #[test]
+    fn ordinary_confirmation_component_legacy_owner_permission_and_duplicate_matrix() {
+        for native in [true, false] {
+            for component in [true, false] {
+                for case in ["positive", "closed", "revoked", "duplicate"] {
+                    let (widget, ledger, resources) =
+                        fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, source());
+                    let (root, guard) = owned(widget, component);
+                    let mut host = Host::new(native, guard.managed(root));
+                    host.activate("Emit request");
+                    match case {
+                        "closed" => guard.close(),
+                        "revoked" => {
+                            if component {
+                                guard.revoke()
+                            } else {
+                                host.revoke()
+                            }
+                        }
+                        "duplicate" => {
+                            let duplicate = resources.borrow()[0].clone();
+                            resources.borrow_mut().push(duplicate);
+                        }
+                        _ => {}
+                    }
+                    host.value("CONFIRM");
+                    host.activate("Confirm");
+                    assert_eq!(
+                        ledger.borrow().len(),
+                        usize::from(case == "positive"),
+                        "{native}:{component}:{case}"
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn ordinary_confirmation_same_address_successor_cannot_receive_original_request() {
+        for native in [true, false] {
+            for component in [true, false] {
+                let (widget, old_ledger, _) =
+                    fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, source());
+                let (old, old_guard) = owned(widget, component);
+                let (widget, new_ledger, _) =
+                    fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, source());
+                let (new, new_guard) = owned(widget, component);
+                let mut values = [Some(old), Some(new)];
+                let changed = Rc::new(std::cell::Cell::new(false));
+                let projection = changed.clone();
+                let mut model = crate::widget::ModelView::from_document(
+                    move |_, _| projection.get(),
+                    move |changed| values[usize::from(*changed)].take().unwrap(),
+                );
+                model.sync(&mut automerge::AutoCommit::new(), &automerge::ROOT);
+                let mut host = Host::new(native, old_guard.managed(Box::new(model)));
+                host.activate("Emit request");
+                host.value("CONFIRM");
+                let stale = host.submit_id();
+                changed.set(true);
+                host.frame();
+                match &mut host {
+                    Host::Native(app) => {
+                        app.dispatch_a11y_action(stale, &crate::a11y::Action::Activate);
+                        layout(app)
+                    }
+                    Host::Driver(driver) => {
+                        let _ = driver.perform_a11y_action(stale, &crate::a11y::Action::Activate);
+                    }
+                }
+                assert!(old_ledger.borrow().is_empty());
+                assert!(new_ledger.borrow().is_empty());
+                drop((old_guard, new_guard));
+            }
+        }
+    }
+    #[test]
+    fn ordinary_confirmation_native_immediate_and_text_use_original_representation() {
+        use tilo_actions::*;
+        for text in [false, true] {
+            let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
+            let mut spec = if text {
+                ActionSpec::prompted_operation(
+                    "run",
+                    "Run fixture",
+                    "Enter original text",
+                    "Original",
+                    OperationKind::Effect,
+                    "fixture.control",
+                    |text| {
+                        EncodedAction::encode_operation(
+                            "fixture.control",
+                            &serde_json::json!({"prompted_argument":text}),
+                        )
+                        .unwrap()
+                    },
+                )
+            } else {
+                ActionSpec::operation(
+                    "run",
+                    "Run fixture",
+                    OperationKind::Effect,
+                    "fixture.control",
+                    &serde_json::json!({"immediate":"original"}),
+                )
+                .unwrap()
+            };
+            spec.contract.confirmation = ConfirmationPolicy::Confirm;
+            resources.borrow_mut()[0].actions[0] = spec;
+            let mut app =
+                App::from_managed_root_with_controlled_inputs(State::new(), root).unwrap();
+            layout(&mut app);
+            app.dispatch_a11y_action(
+                crate::accesskit_bridge::resource_action_node_id("ordinary:fixture", "run"),
+                &crate::a11y::Action::Activate,
+            );
+            layout(&mut app);
+            if text {
+                let named_action_target = named(&mut app, "Search");
+                app.dispatch_a11y_action(
+                    named_action_target,
+                    &crate::a11y::Action::SetValue("not-a-value-field".into()),
+                );
+                layout(&mut app);
+                app.action_palette_handle_key(&crate::synthetic_input::key_event(
+                    &Key::Named(NamedKey::Enter),
+                    ElementState::Pressed,
+                ));
+                layout(&mut app);
+            }
+            assert!(ledger.borrow().is_empty());
+            let named_action_target = named(&mut app, "Confirmation");
+            app.dispatch_a11y_action(
+                named_action_target,
+                &crate::a11y::Action::SetValue("CONFIRM".into()),
+            );
+            layout(&mut app);
+            let named_action_target = named(&mut app, "Confirm");
+            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            assert_eq!(
+                &*ledger.borrow(),
+                &[if text {
+                    serde_json::json!({"prompted_argument":"not-a-value-field"})
+                } else {
+                    serde_json::json!({"immediate":"original"})
+                }]
+            );
+        }
+    }
+    #[test]
+    fn ordinary_confirmation_history_preserves_original_snapshot_and_exact_continuation() {
+        use tilo_actions::*;
+        for native in [true, false] {
+            for changed in [false, true] {
+                let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
+                let original = resources.borrow()[0].actions[0].clone();
+                resources.borrow_mut()[0].actions[0] = original.with_continuation_identity(|q| {
+                    matches!(q, ContinuationQuery::Exact(_)).then(|| ContinuationEvidence::Exact {
+                        target: ContinuationKey::new("target", [b"original"]),
+                        handler: ContinuationKey::new("handler", [b"v1"]),
+                    })
+                });
+                let mut host = Host::new(native, root);
+                host.activate("Emit request");
+                host.value("CONFIRM");
+                host.activate("History");
+                if changed {
+                    resources.borrow_mut()[0].actions[0].label = "Changed during History".into();
+                }
+                host.activate("History");
+                assert!(ledger.borrow().is_empty());
+                host.value("CONFIRM");
+                host.activate("Confirm");
+                assert_eq!(
+                    ledger.borrow().len(),
+                    usize::from(!changed),
+                    "{native}:{changed}"
+                );
+            }
+        }
+    }
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct FixtureEdit;
+    impl tilo_actions::Action for FixtureEdit {
+        fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+            use automerge::transaction::Transactable;
+            doc.put(automerge::ROOT, "confirmed-document", true)?;
+            Ok(())
+        }
+    }
+    #[test]
+    fn ordinary_confirmation_document_uses_authored_undo_completion() {
+        use tilo_actions::*;
+        for native in [true, false] {
+            let (root, _, resources) = fixture(ConfirmationPolicy::Confirm);
+            let mut spec = ActionSpec::typed(
+                "run",
+                "Run fixture",
+                "Payload",
+                ExecutionLocus::ClientLocal,
+                vec![ActionParam::required("payload", ParamType::Text, "Payload")],
+                |_| EncodedAction::encode("fixture.edit", &FixtureEdit).unwrap(),
+            );
+            spec.contract.confirmation = ConfirmationPolicy::Confirm;
+            resources.borrow_mut()[0].actions[0] = spec;
+            let mut host = Host::new(native, root);
+            match &mut host {
+                Host::Native(app) => app
+                    .action_registry_mut()
+                    .register::<FixtureEdit>("fixture.edit"),
+                Host::Driver(driver) => driver
+                    .action_registry_mut()
+                    .register::<FixtureEdit>("fixture.edit"),
+            }
+            fn state(host: &mut Host) -> &mut State {
+                match host {
+                    Host::Native(app) => &mut app.state,
+                    Host::Driver(driver) => driver.state_mut(),
+                }
+            }
+            use automerge::ReadDoc;
+            assert!(state(&mut host).peek_last_undo().is_none());
+            let before = state(&mut host).doc.get_heads();
+            host.activate("Emit request");
+            host.value("CONFIRM");
+            host.activate("Confirm");
+            let author = match &host {
+                Host::Native(app) => app.collaboration.local_author.clone(),
+                Host::Driver(_) => crate::permissions::UserId("fixture".into()),
+            };
+            let state = state(&mut host);
+            assert_eq!(
+                state
+                    .doc
+                    .get(automerge::ROOT, "confirmed-document")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .as_bool(),
+                Some(true)
+            );
+            let entry = state.peek_last_undo().unwrap();
+            assert_eq!(entry.before, before);
+            assert_ne!(entry.after, entry.before);
+            assert_eq!(entry.author.as_ref(), Some(&author));
+            let committed = state.doc.get_heads();
+            assert!(state.undo_for_author(&author, None, None).is_some());
+            assert!(
+                state
+                    .doc
+                    .get(automerge::ROOT, "confirmed-document")
+                    .unwrap()
+                    .is_none()
+            );
+            assert_ne!(state.doc.get_heads(), committed);
+            assert!(
+                state.peek_last_undo().is_none(),
+                "exactly one authored undo boundary"
+            );
+        }
+    }
+    #[test]
+    fn ordinary_confirmation_modal_focus_tracks_actual_field() {
+        for native in [true, false] {
+            let (root, _, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+            let mut host = Host::new(native, root);
+            host.activate("Emit request");
+            assert_eq!(host.focused_label().as_deref(), Some("Confirmation"));
+        }
+    }
+    #[test]
+    fn ordinary_confirmation_pointer_and_keyboard_controls_use_shared_transition() {
+        for native in [true, false] {
+            for cancel in [false, true] {
+                let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+                let mut host = Host::new(native, root);
+                host.activate("Emit request");
+                host.value("CONFIRM");
+                let label = if cancel { "Cancel" } else { "Confirm" };
+                let nodes = match &mut host {
+                    Host::Native(app) => app.build_a11y_tree_update(1.0).nodes,
+                    Host::Driver(driver) => driver.a11y_nodes(),
+                };
+                let bounds = nodes
+                    .iter()
+                    .find(|(_, node)| node.label() == Some(label))
+                    .unwrap()
+                    .1
+                    .bounds()
+                    .unwrap();
+                assert!(bounds.width() > 0.0 && bounds.height() > 0.0);
+                let scale = if native { 2.0 } else { 1.0 };
+                let event = WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(
+                        (bounds.x0 + bounds.x1) * 0.5 * scale,
+                        (bounds.y0 + bounds.y1) * 0.5 * scale,
+                    ),
+                };
+                let mut send = |event: &WindowEvent| match &mut host {
+                    Host::Native(app) => {
+                        assert!(app.action_palette_handle_event(event, scale));
+                        layout(app)
+                    }
+                    Host::Driver(driver) => driver.send(event),
+                };
+                send(&event);
+                for state in [ElementState::Pressed, ElementState::Released] {
+                    send(&WindowEvent::MouseInput {
+                        device_id: winit::event::DeviceId::dummy(),
+                        state,
+                        button: winit::event::MouseButton::Left,
+                    });
+                }
+                assert_eq!(ledger.borrow().len(), usize::from(!cancel));
+            }
+        }
+        for native in [true, false] {
+            let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+            let mut host = Host::new(native, root);
+            host.activate("Emit request");
+            host.value("CONFIRM");
+            for key in [NamedKey::Tab, NamedKey::Tab] {
+                let event =
+                    crate::synthetic_input::key_event(&Key::Named(key), ElementState::Pressed);
+                match &mut host {
+                    Host::Native(app) => {
+                        assert!(app.action_palette_handle_event(&event, 1.0));
+                        layout(app)
+                    }
+                    Host::Driver(driver) => driver.send(&event),
+                }
+            }
+            assert_eq!(host.focused_label().as_deref(), Some("Cancel"));
+            let event = crate::synthetic_input::key_event(
+                &Key::Named(NamedKey::Enter),
+                ElementState::Pressed,
+            );
+            match &mut host {
+                Host::Native(app) => {
+                    assert!(app.action_palette_handle_event(&event, 1.0));
+                    layout(app)
+                }
+                Host::Driver(driver) => driver.send(&event),
+            }
+            assert!(ledger.borrow().is_empty());
+        }
+    }
+    #[test]
+    fn ordinary_confirmation_history_preserves_e_suppresses_h_and_fresh_f_is_ordinary() {
+        use tilo_actions::*;
+        for native in [true, false] {
+            for owner in [0, 1, 2] {
+                let input = source();
+                let (widget, ledger, resources) =
+                    fixture_widget(ConfirmationPolicy::Confirm, input.clone());
+                let output = widget.output.clone();
+                let spec = resources.borrow()[0].actions[0].clone();
+                resources.borrow_mut()[0].actions[0] = spec.with_continuation_identity(|query| {
+                    matches!(query, ContinuationQuery::Exact(_)).then(|| {
+                        ContinuationEvidence::Exact {
+                            target: ContinuationKey::new("target", [b"original"]),
+                            handler: ContinuationKey::new("handler", [b"original"]),
+                        }
+                    })
+                });
+                let (root, guard) = if owner == 0 {
+                    (managed(Box::new(widget)), None)
+                } else {
+                    let (root, guard) = owned(widget, owner == 1);
+                    (guard.managed(root), Some(guard))
+                };
+                let mut host = Host::new(native, root);
+                host.activate("Emit request");
+                host.value("CONFIRM");
+                let stale = host.submit_id();
+                host.activate("History");
+                assert_eq!(
+                    output.borrow().as_ref().unwrap().emit(ControlInvocation {
+                        address: ActionAddress::new("ordinary:fixture", "run"),
+                        arguments: serde_json::json!({"payload":"H"})
+                            .as_object()
+                            .unwrap()
+                            .clone()
+                    }),
+                    Ok(crate::control_custody::LocalEmission::Suppressed)
+                );
+                input
+                    .lock()
+                    .unwrap()
+                    .insert("payload".into(), serde_json::json!("F"));
+                host.activate("History");
+                assert!(ledger.borrow().is_empty());
+                host.stale(stale);
+                host.activate("Confirm");
+                assert!(ledger.borrow().is_empty(), "old typed evidence was cleared");
+                host.value("CONFIRM");
+                host.activate("Confirm");
+                assert_eq!(
+                    &*ledger.borrow(),
+                    &[serde_json::json!({"payload":"original"})]
+                );
+                // Fresh action deliberately has no History resolver.
+                let mut fresh = resources.borrow()[0].actions[0].clone();
+                fresh = fresh.with_continuation_identity(|_| None);
+                resources.borrow_mut()[0].actions[0] = fresh;
+                host.activate("Emit request");
+                host.value("CONFIRM");
+                host.activate("Confirm");
+                assert_eq!(
+                    &*ledger.borrow(),
+                    &[
+                        serde_json::json!({"payload":"original"}),
+                        serde_json::json!({"payload":"F"})
+                    ]
+                );
+                drop(guard);
+            }
+        }
+    }
+    #[test]
+    fn ordinary_confirmation_none_and_later_optional_evidence_remain_compatible() {
+        use tilo_actions::*;
+        for native in [true, false] {
+            let (root, ledger, _) = fixture(ConfirmationPolicy::None);
+            let mut host = Host::new(native, root);
+            host.activate("Emit request");
+            assert_eq!(ledger.borrow().len(), 1);
+            let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
+            let mut host = Host::new(native, root);
+            host.activate("Emit request");
+            let spec = resources.borrow()[0].actions[0].clone();
+            resources.borrow_mut()[0].actions[0] = spec.with_continuation_identity(|_| {
+                Some(ContinuationEvidence::Exact {
+                    target: ContinuationKey::new("later", [b"target"]),
+                    handler: ContinuationKey::new("later", [b"handler"]),
+                })
+            });
+            host.value("CONFIRM");
+            host.activate("Confirm");
+            assert_eq!(ledger.borrow().len(), 1);
+        }
+    }
+    #[test]
+    fn ordinary_confirmation_cancel_restores_retained_background_focus() {
+        for native in [true, false] {
+            let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+            let mut host = Host::new(native, root);
+            host.act("Emit request", crate::a11y::Action::Focus);
+            assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
+            host.activate("Emit request");
+            assert_eq!(host.focused_label().as_deref(), Some("Confirmation"));
+            host.activate("Cancel");
+            assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
+            assert!(ledger.borrow().is_empty());
+        }
+    }
+    #[test]
+    fn ordinary_confirmation_native_closed_or_replaced_outer_domain_refuses() {
+        for replacement in [false, true] {
+            let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+            let mut host = Host::new(true, root);
+            host.activate("Emit request");
+            host.value("CONFIRM");
+            let Host::Native(app) = &mut host else {
+                unreachable!()
+            };
+            let old = app.control_domain.clone();
+            if replacement {
+                app.control_domain = crate::ControlDomain::new();
+            } else {
+                old.close();
+            }
+            host.activate("Confirm");
+            assert!(ledger.borrow().is_empty());
+        }
+    }
+    #[test]
+    fn ordinary_confirmation_native_publishes_actual_prompt() {
+        let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+        let mut app = App::from_managed_root_with_controlled_inputs(State::new(), root).unwrap();
+        layout(&mut app);
+        let named_action_target = named(&mut app, "Emit request");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        app.controlled_local_idle_for_test();
+        layout(&mut app);
+        assert!(ledger.borrow().is_empty());
+        named(&mut app, "Confirmation");
+        named(&mut app, "Confirm");
+        named(&mut app, "Cancel");
+    }
+    #[test]
+    fn ordinary_confirmation_driver_publishes_actual_prompt() {
+        let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+        let mut driver = crate::headless::Driver::from_managed_root_with_controlled_inputs(
+            State::new(),
+            root,
+            (900, 650),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture".into()),
+        )
+        .unwrap();
+        driver
+            .perform_semantic_named("ordinary-emitter", None, &crate::a11y::Action::Activate)
+            .unwrap();
+        assert!(ledger.borrow().is_empty());
+        assert!(
+            driver.a11y_node_named("Confirmation").is_some(),
+            "actual palette field must be published"
+        );
+        assert!(driver.a11y_node_named("Confirm").is_some());
+        assert!(driver.a11y_node_named("Cancel").is_some());
+    }
+}
+
+#[cfg(test)]
+mod legacy_control_feedback_tests {
+    use super::*;
+    #[test]
+    fn native_queued_finalizer_feedback_stays_with_originating_legacy_owner() {
+        use crate::headless::legacy_control_feedback_tests::{owner, register};
+        for fail in [false, true] {
+            let (_nested_owner, nested, nested_seen) = owner(99051, false, None);
+            let (_owner, tile, seen) = owner(99050, fail, Some(nested));
+            let (_sibling_owner, sibling, sibling_seen) = owner(99052, false, None);
+            let root = crate::widget::Column::new()
+                .push(Box::new(tile))
+                .push(Box::new(sibling));
+            let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
+            register(app.action_registry_mut());
+            seen.begin();
+            app.controlled_local_idle_for_test();
+            app.controlled_local_idle_for_test();
+            assert_eq!(
+                *seen.results.borrow(),
+                vec![("begin".into(), true), ("finalize".into(), !fail)]
+            );
+            assert!(
+                nested_seen.results.borrow().is_empty(),
+                "nested owner cannot inherit callback"
+            );
+            assert!(
+                sibling_seen.results.borrow().is_empty(),
+                "same-address sibling cannot inherit callback"
+            );
+        }
     }
 }

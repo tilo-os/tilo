@@ -19,6 +19,7 @@
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::widget::{AppModel, ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -35,7 +36,8 @@ use ui::tilo_actions::{
 use ui::tokens::TextRole;
 use ui::webview::test_engine::TestEngine;
 use ui::webview::{
-    MediaElementInfo, NavigationDirection, SharedEngine, WebViewCommand, WebViewEvent,
+    MediaElementInfo, NavigationDirection, PageFailure, PageKey, PageReply, PageRequest,
+    SharedEngine, WebViewCommand, WebViewEvent,
 };
 use ui::widget::toast::{ToastCard, ToastKind, paint_card};
 use ui::widget::{
@@ -77,6 +79,33 @@ const NAVIGATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4
 /// Media discovery is asynchronous.  Keep a resource invocation pending only
 /// until the engine gives its positive/negative answer, never indefinitely.
 const PIP_OPERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// A page action on a loading page waits this long for it to settle, then
+/// acts on the page as it stands.
+const PAGE_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+/// The engine's answer to one page request never stays pending longer.
+const PAGE_OPERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+/// A page action that started a navigation waits this long for it to load.
+const PAGE_NAVIGATION_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A page action admitted through the resource surface.
+struct PageOperation {
+    invocation: ui::tilo_actions::InvocationId,
+    request_id: u32,
+    phase: PagePhase,
+    deadline: std::time::Instant,
+}
+
+enum PagePhase {
+    /// The page is loading; the request goes to the engine once it settles.
+    Queued {
+        request: PageRequest,
+        until: std::time::Instant,
+    },
+    /// Sent to the engine, which answers once.
+    Sent,
+    /// The action started a navigation; it completes when that settles.
+    Navigating { reply: PageReply },
+}
 /// One shared desktop measure keeps the Library title, section switcher, and
 /// rows visually related instead of leaving the actions in a disconnected
 /// expanse of empty canvas. Compact chrome deliberately remains fluid.
@@ -173,7 +202,7 @@ enum PipFeedbackKind {
 
 struct PipFeedback {
     kind: PipFeedbackKind,
-    started: std::time::Instant,
+    started: ui::time::Instant,
     /// Screenshot/debug guidance is deliberately steady: headless rendering
     /// can be queued behind a busy renderer, and must not race the ordinary
     /// short-lived live toast away before it is inspected.
@@ -184,7 +213,7 @@ impl PipFeedback {
     fn transient(kind: PipFeedbackKind) -> Self {
         Self {
             kind,
-            started: std::time::Instant::now(),
+            started: ui::time::now(),
             persistent: false,
         }
     }
@@ -192,9 +221,9 @@ impl PipFeedback {
     fn persistent(kind: PipFeedbackKind) -> Self {
         Self {
             kind,
-            started: std::time::Instant::now()
+            started: ui::time::now()
                 .checked_sub(PIP_FEEDBACK_FADE)
-                .unwrap_or_else(std::time::Instant::now),
+                .unwrap_or_else(ui::time::Instant::now),
             persistent: true,
         }
     }
@@ -272,6 +301,84 @@ enum BrowserOperation {
     RetryDownload { id: String },
     OpenDownload { id: String },
     RevealDownload { id: String },
+    Page(PageRequest),
+}
+
+fn page_operation_payload(request: &PageRequest) -> serde_json::Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert("operation".into(), "page".into());
+    payload.insert("action".into(), request.action().into());
+    if let Some(element) = request.element() {
+        payload.insert("element".into(), element.into());
+    }
+    let argument = match request {
+        PageRequest::Fill { text, .. } => Some(("text", text.as_str().into())),
+        PageRequest::Select { values, .. } => Some(("values", values.clone().into())),
+        PageRequest::Press { key, .. } => Some(("key", key.chord().into())),
+        PageRequest::Outline | PageRequest::Click { .. } | PageRequest::Submit { .. } => None,
+    };
+    if let Some((name, value)) = argument {
+        payload.insert(name.into(), value);
+    }
+    payload.into()
+}
+
+fn decode_page_operation(value: &serde_json::Value) -> Result<PageRequest, String> {
+    let element = || required_string(value, "element");
+    let request = match value.get("action").and_then(serde_json::Value::as_str) {
+        Some("outline") => PageRequest::Outline,
+        Some("click") => PageRequest::Click {
+            element: element()?,
+        },
+        Some("fill") => PageRequest::Fill {
+            element: element()?,
+            text: value
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("page fill is missing `text`")?
+                .to_string(),
+        },
+        Some("select") => PageRequest::Select {
+            element: element()?,
+            values: value
+                .get("values")
+                .and_then(serde_json::Value::as_array)
+                .ok_or("page select is missing `values`")?
+                .iter()
+                .map(|value| value.as_str().map(str::to_string))
+                .collect::<Option<_>>()
+                .ok_or("page select `values` must be strings")?,
+        },
+        Some("press") => PageRequest::Press {
+            element: value
+                .get("element")
+                .and_then(serde_json::Value::as_str)
+                .filter(|element| !element.is_empty())
+                .map(str::to_string),
+            key: required_string(value, "key").and_then(|chord| {
+                PageKey::parse(&chord).ok_or_else(|| {
+                    format!(
+                        "`{chord}` is not a key such as Enter, Tab, Escape, ArrowDown or Control+a"
+                    )
+                })
+            })?,
+        },
+        Some("submit") => PageRequest::Submit {
+            element: element()?,
+        },
+        _ => return Err("unknown page action".into()),
+    };
+    if let Some(element) = request.element()
+        && !ui::webview::page::is_element_ref(element)
+    {
+        return Err(format!(
+            "`{element}` is not an element ref; read the page and use a ref such as d1e5"
+        ));
+    }
+    if !request.valid() {
+        return Err("page request exceeds its limits".into());
+    }
+    Ok(request)
 }
 
 fn browser_operation_payload(operation: &BrowserOperation) -> serde_json::Value {
@@ -325,6 +432,7 @@ fn browser_operation_payload(operation: &BrowserOperation) -> serde_json::Value 
         BrowserOperation::RevealDownload { id } => {
             serde_json::json!({ "operation": "reveal-download", "id": id })
         }
+        BrowserOperation::Page(request) => page_operation_payload(request),
     }
 }
 
@@ -386,6 +494,7 @@ fn decode_browser_operation(payload: &[u8]) -> Result<BrowserOperation, String> 
         Some("reveal-download") => {
             required_string(&value, "id").map(|id| BrowserOperation::RevealDownload { id })
         }
+        Some("page") => decode_page_operation(&value).map(BrowserOperation::Page),
         _ => Err("unknown browser operation".to_string()),
     }
 }
@@ -411,6 +520,58 @@ fn navigation_contract() -> ActionContract {
     }
 }
 
+/// Window-level navigation Views/Effects for [`crate::resource::Browser::local_operations`].
+///
+/// Hosted surfaces empty [`PublishesResources::resources`] so these must ride
+/// `tilo_resource::publish` — otherwise the palette loses back / forward /
+/// reload / stop / open-address when the widget tree is no longer the door.
+pub(crate) fn window_navigation_operations() -> Vec<ActionSpec> {
+    let mut ops = Vec::with_capacity(5);
+    for (id, label, operation) in [
+        ("back", "Go back", BrowserOperation::Back),
+        ("forward", "Go forward", BrowserOperation::Forward),
+        ("reload", "Reload", BrowserOperation::Reload),
+        ("stop", "Stop loading", BrowserOperation::Stop),
+    ] {
+        let payload = browser_operation_payload(&operation);
+        let Ok(spec) = ActionSpec::operation(
+            id,
+            label,
+            OperationKind::View,
+            BROWSER_OPERATION_TYPE,
+            &payload,
+        ) else {
+            continue;
+        };
+        ops.push(if id == "stop" {
+            spec
+        } else {
+            spec.with_contract(navigation_contract())
+        });
+    }
+    ops.push(
+        ActionSpec::typed_operation(
+            "navigate",
+            "Open address",
+            "https://…",
+            OperationKind::Effect,
+            BROWSER_OPERATION_TYPE,
+            vec![ActionParam::required_owned(
+                "url",
+                ParamType::Text,
+                "Absolute URL or search terms",
+            )],
+            |args: &ActionArgs| {
+                encode_browser_operation(&BrowserOperation::Navigate {
+                    url: args.text("url").unwrap_or("").to_string(),
+                })
+            },
+        )
+        .with_contract(navigation_contract()),
+    );
+    ops
+}
+
 /// An explicit contract for sensitive work that happens only in this running
 /// browser profile.  These effects are intentionally not CRDT mutations: a
 /// peer must not clear this machine's cookies, history, media surface, or
@@ -427,11 +588,184 @@ fn local_effect_contract(tags: &[&str]) -> ActionContract {
     }
 }
 
+/// Open the bookmarks library. Published on the bookmarks child so the
+/// palette and a hosted browser share one view action.
+pub(crate) fn bookmark_library_show() -> Option<ActionSpec> {
+    ActionSpec::operation(
+        "show",
+        "Show bookmarks",
+        OperationKind::View,
+        BROWSER_OPERATION_TYPE,
+        &browser_operation_payload(&BrowserOperation::ShowLibrary {
+            section: LibrarySection::Bookmarks,
+        }),
+    )
+    .ok()
+}
+
+/// Settings door published with the browser document. Homepage, search
+/// engine, ad blocking, and clear-on-exit are document actions; show and
+/// site-data clear stay effects on the same resource.
+pub(crate) fn settings_resource() -> Resource {
+    let mut settings = Resource::new("browser.settings", "browser.settings", "Settings");
+    if let Ok(spec) = ActionSpec::operation(
+        "show",
+        "Show browser settings",
+        OperationKind::View,
+        BROWSER_OPERATION_TYPE,
+        &browser_operation_payload(&BrowserOperation::ShowSettings),
+    ) {
+        settings.actions.push(spec);
+    }
+    if let Ok(spec) = ActionSpec::operation(
+        "request-site-data-clear",
+        "Request local site-data clear",
+        OperationKind::Effect,
+        BROWSER_OPERATION_TYPE,
+        &browser_operation_payload(&BrowserOperation::RequestWebsiteDataClear),
+    ) {
+        settings.actions.push(
+            spec.with_contract(local_effect_contract(&[
+                "device-local",
+                "site-data",
+                "sensitive-data",
+            ]))
+            .destructive(),
+        );
+    }
+    for (id, label, adblock) in [
+        ("set-adblock", "Set ad and tracker blocking", true),
+        ("set-clear-on-exit", "Set clear data on exit", false),
+    ] {
+        settings.actions.push(
+            ActionSpec::typed(
+                id,
+                label,
+                "enabled",
+                ui::tilo_actions::ExecutionLocus::ClientLocal,
+                vec![ActionParam::required_owned(
+                    "enabled",
+                    ParamType::Boolean,
+                    "Whether the setting is enabled",
+                )],
+                move |args: &ActionArgs| {
+                    let action = if adblock {
+                        BrowserAction::SetAdblock {
+                            enabled: args.boolean("enabled").unwrap_or(false),
+                        }
+                    } else {
+                        BrowserAction::SetClearOnExit {
+                            enabled: args.boolean("enabled").unwrap_or(false),
+                        }
+                    };
+                    EncodedAction::encode(BROWSER_ACTION_TYPE, &action).unwrap_or_else(|_| {
+                        EncodedAction {
+                            type_id: BROWSER_ACTION_TYPE.into(),
+                            payload: Vec::new(),
+                        }
+                    })
+                },
+            )
+            .reversible(),
+        );
+    }
+    for (id, label, parameter, homepage) in [
+        ("set-homepage", "Set homepage", "url", true),
+        (
+            "set-search-engine",
+            "Set search engine template",
+            "template",
+            false,
+        ),
+    ] {
+        settings.actions.push(
+            ActionSpec::typed(
+                id,
+                label,
+                parameter,
+                ui::tilo_actions::ExecutionLocus::ClientLocal,
+                vec![ActionParam::required_owned(
+                    parameter,
+                    ParamType::Text,
+                    parameter,
+                )],
+                move |args: &ActionArgs| {
+                    let action = if homepage {
+                        BrowserAction::SetHomepage {
+                            url: args.text(parameter).unwrap_or_default().into(),
+                        }
+                    } else {
+                        BrowserAction::SetSearchEngine {
+                            template: args.text(parameter).unwrap_or_default().into(),
+                        }
+                    };
+                    EncodedAction::encode(BROWSER_ACTION_TYPE, &action).unwrap_or_else(|_| {
+                        EncodedAction {
+                            type_id: BROWSER_ACTION_TYPE.into(),
+                            payload: Vec::new(),
+                        }
+                    })
+                },
+            )
+            .reversible(),
+        );
+    }
+    settings
+}
+
 fn local_background_contract(tags: &[&str]) -> ActionContract {
     ActionContract {
         execution: ui::tilo_actions::ExecutionMode::Background { cancellable: false },
         ..local_effect_contract(tags)
     }
+}
+
+/// Page content belongs to this profile's signed-in sessions, so reading it
+/// takes the same authority as operating it, and neither is offered to a
+/// person picking from the palette: people use the page itself.
+fn page_contract(read: bool) -> ActionContract {
+    ActionContract {
+        permission: ui::tilo_actions::PermissionRequirement::Write,
+        risk: if read {
+            ui::tilo_actions::RiskLevel::None
+        } else {
+            ui::tilo_actions::RiskLevel::Low
+        },
+        retry: if read {
+            RetryPolicy::Idempotent
+        } else {
+            RetryPolicy::AtMostOnce
+        },
+        execution: ui::tilo_actions::ExecutionMode::Background { cancellable: false },
+        result: ResultSpec::Json {
+            schema: serde_json::json!({
+                "type": "object",
+                "required": ["url", "title", "message", "navigated"],
+                "properties": {
+                    "url": { "type": "string" },
+                    "title": { "type": "string" },
+                    "message": { "type": "string" },
+                    "navigated": { "type": "boolean" },
+                    "outline": { "type": "string" },
+                },
+            }),
+        },
+        tags: vec![
+            "device-local".into(),
+            "page-content".into(),
+            "sensitive-data".into(),
+            ui::tilo_actions::PROGRAMMATIC_TAG.into(),
+        ],
+        ..ActionContract::default()
+    }
+}
+
+fn element_param() -> ActionParam {
+    ActionParam::required_owned(
+        "element",
+        ParamType::Text,
+        "Element ref from browser.page/read, such as d1e5",
+    )
 }
 
 fn local_output(message: impl Into<String>) -> ui::tilo_actions::ActionOutput {
@@ -496,6 +830,11 @@ pub struct BrowserWidget {
     bootstrap_done: bool,
     /// `--shots` mode: no network, no filter loader, deterministic page.
     headless: bool,
+    /// Framework dispatcher when hosted; local action host otherwise.
+    /// Bookmarks and preferences are [`BrowserAction`]s on this sink.
+    actions: crate::resource::ActionSink,
+    /// Hosted bookmark and preference edits, applied on the next sync.
+    pending_library_edits: ui::LocalState<Vec<BrowserAction>>,
     initial_url: String,
     session_url: String,
     session_first_commit: bool,
@@ -563,7 +902,7 @@ pub struct BrowserWidget {
     downloads: Downloads,
     download_picker: Option<(String, ui::portal::PortalChannel)>,
     download_picker_queue: std::collections::VecDeque<(String, String)>,
-    download_save_due: Option<std::time::Instant>,
+    download_save_due: Option<ui::time::Instant>,
     /// Retained full-corpus index. Provider handles are cheap and unchanged
     /// frames compare only the durable corpus revision tokens.
     search_index: crate::search_provider::BrowserSearchIndex,
@@ -600,11 +939,14 @@ pub struct BrowserWidget {
     content_rect: std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>>,
     resource_navigation_invocation: Option<ui::tilo_actions::InvocationId>,
     resource_navigation_result: Option<ui::tilo_actions::InvocationUpdate>,
-    resource_navigation_deadline: Option<std::time::Instant>,
+    resource_navigation_deadline: Option<ui::time::Instant>,
     resource_pip_invocation: Option<ui::tilo_actions::InvocationId>,
     resource_pip_request: Option<u64>,
     resource_pip_result: Option<ui::tilo_actions::InvocationUpdate>,
-    resource_pip_deadline: Option<std::time::Instant>,
+    resource_pip_deadline: Option<ui::time::Instant>,
+    page_operation: Option<PageOperation>,
+    page_operation_result: Option<ui::tilo_actions::InvocationUpdate>,
+    page_request_seq: u32,
     pending_pip: Option<ui::floating_surface::FloatingSurfaceRequest>,
     pending_pip_region_update: Option<Rect>,
     published_pip_region: Option<Rect>,
@@ -622,7 +964,7 @@ pub struct BrowserWidget {
     pip_request_seq: u64,
     active_pip_probe: Option<u64>,
     active_pip_refresh_probe: Option<u64>,
-    next_pip_refresh_at: Option<std::time::Instant>,
+    next_pip_refresh_at: Option<ui::time::Instant>,
     pip_feedback: Option<PipFeedback>,
     pip_feedback_rect: Rect,
     pip_float_page_rect: Rect,
@@ -650,6 +992,18 @@ pub struct BrowserWidget {
     fact_label_w: Option<f32>,
     motion_reduced: bool,
     pending_controls: std::collections::VecDeque<ControlInvocation>,
+}
+
+/// A library remove queued before the document is in hand still tombstones
+/// the tags the document actually holds.
+fn bookmark_remove_with_observed_tags(doc: &AutoCommit, action: BrowserAction) -> BrowserAction {
+    match action {
+        BrowserAction::RemoveBookmark { url, observed_tags } if observed_tags.is_empty() => {
+            let observed_tags = crate::actions::observed_bookmark_tags(doc, &url);
+            BrowserAction::RemoveBookmark { url, observed_tags }
+        }
+        other => other,
+    }
 }
 
 impl BrowserWidget {
@@ -809,7 +1163,7 @@ impl BrowserWidget {
                 if widget.test_id() == Some(URL_INPUT_ID)
                     && let Some((_, text)) = widget.text_review()
                 {
-                    widget.set_state(&text.len().to_string());
+                    ui::undo::set_state(widget, &text.len().to_string());
                 }
                 for child in widget.children_mut() {
                     caret(child);
@@ -923,6 +1277,8 @@ impl BrowserWidget {
             composed: None,
             bootstrap_done: false,
             headless,
+            actions: crate::resource::ActionSink::default(),
+            pending_library_edits: ui::LocalState::new(Vec::new()),
             address: ui::LocalState::new(initial_url.clone()),
             address_navigation_value: None,
             daily: crate::daily_controls::DailyControls::default(),
@@ -1000,6 +1356,9 @@ impl BrowserWidget {
             resource_pip_request: None,
             resource_pip_result: None,
             resource_pip_deadline: None,
+            page_operation: None,
+            page_operation_result: None,
+            page_request_seq: 0,
             pending_pip: None,
             pending_pip_region_update: None,
             published_pip_region: None,
@@ -1027,6 +1386,106 @@ impl BrowserWidget {
             motion_reduced: false,
             pending_controls: std::collections::VecDeque::new(),
         }
+    }
+
+    /// Mark this browser as a framework-hosted surface so
+    /// [`Widget::resources`] defers the document root to `tilo_resource::publish`.
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
+        self.actions.set_hosted(hosted);
+    }
+
+    /// Attach the framework dispatcher. Hosted bookmark and preference edits
+    /// then go through [`Dispatcher::apply_now_with`](ui::framework::Dispatcher::apply_now_with).
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Browser>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    #[allow(
+        dead_code,
+        reason = "called from this crate's tests; dependents compile the library without cfg(test)"
+    )]
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Submit one bookmark or preference edit. Hosted surfaces with a
+    /// dispatcher use `apply_now_with`; standalone uses the local action host.
+    pub(crate) fn submit_library_action(&mut self, doc: &mut AutoCommit, action: &BrowserAction) {
+        self.actions.dispatch_with_context(
+            doc,
+            BROWSER_ACTION_TYPE,
+            action,
+            crate::actions::history_context(action),
+        );
+    }
+
+    #[allow(
+        dead_code,
+        reason = "called from this crate's tests; dependents compile the library without cfg(test)"
+    )]
+    pub(crate) fn last_library_action(&self) -> Option<&EncodedAction> {
+        self.actions.last_dispatched()
+    }
+
+    fn enqueue_library_action(&self, action: BrowserAction) {
+        self.pending_library_edits
+            .update(|queue| queue.push(action));
+    }
+
+    fn flush_library_edits(&mut self, doc: &mut AutoCommit) {
+        let waiting = self.pending_library_edits.with(|queue| !queue.is_empty());
+        if !waiting {
+            return;
+        }
+        let mut pending = Vec::new();
+        let taken = self
+            .pending_library_edits
+            .try_update(|queue| pending.append(queue));
+        if !taken {
+            return;
+        }
+        for action in pending {
+            let action = bookmark_remove_with_observed_tags(doc, action);
+            self.submit_library_action(doc, &action);
+        }
+    }
+
+    /// Add the current page, unless it is already bookmarked. Removal stays
+    /// on the library row; the toolbar action is the add.
+    fn page_bookmark_action(&self) -> Option<BrowserAction> {
+        if self.current_uri.trim().is_empty() || self.bookmarks.contains(&self.current_uri) {
+            return None;
+        }
+        Some(BrowserAction::AddBookmark {
+            url: self.current_uri.clone(),
+            title: self.title.clone(),
+            tag: format!("bookmark:{}", uuid::Uuid::new_v4().simple()),
+        })
+    }
+
+    /// Standalone keeps the published binding. Hosted document edits queue a
+    /// [`BrowserAction`] for the action sink instead of a second resource tree.
+    fn route_document_button(
+        &self,
+        button: ui::widget::Button,
+        resource: &str,
+        action_id: &str,
+        hosted_action: Option<BrowserAction>,
+    ) -> ui::widget::Button {
+        if !self.is_framework_hosted() {
+            return self.bind_button(button, resource, action_id);
+        }
+        let Some(action) = hosted_action else {
+            return button;
+        };
+        let edits = self.pending_library_edits.clone();
+        button.on_effect(move || {
+            edits.update(|queue| queue.push(action.clone()));
+        })
     }
 
     /// Test hook: pin a suggestion list into view (bypasses focus/query)
@@ -1377,8 +1836,299 @@ impl BrowserWidget {
                     .thread_name("browser-reveal-download")
                     .send();
             }
+            BrowserOperation::Page(_) => {
+                return Err("page actions report their result; start them as an invocation".into());
+            }
         }
         Ok(())
+    }
+
+    fn page_loading(&self) -> bool {
+        self.progress < 1.0 && !self.loading_stopped
+    }
+
+    /// Read and operate the page's content without its pixels: an outline
+    /// whose interactive elements carry refs, and actions on those refs.
+    fn page_content_actions(&self) -> Vec<ActionSpec> {
+        fn page_action(
+            id: &str,
+            label: &str,
+            placeholder: &str,
+            params: Vec<ActionParam>,
+            build: impl Fn(&ActionArgs) -> PageRequest + Send + Sync + 'static,
+        ) -> ActionSpec {
+            ActionSpec::typed_operation(
+                id,
+                label,
+                placeholder,
+                if id == "read" {
+                    OperationKind::View
+                } else {
+                    OperationKind::Effect
+                },
+                BROWSER_OPERATION_TYPE,
+                params,
+                move |args: &ActionArgs| {
+                    encode_browser_operation(&BrowserOperation::Page(build(args)))
+                },
+            )
+            .with_contract(page_contract(id == "read"))
+        }
+        let element = |args: &ActionArgs| args.text("element").unwrap_or_default().to_string();
+        let specs = vec![
+            page_action("read", "Read page content", "", Vec::new(), |_| {
+                PageRequest::Outline
+            }),
+            page_action(
+                "click",
+                "Click page element",
+                "d1e5",
+                vec![element_param()],
+                move |args| PageRequest::Click {
+                    element: element(args),
+                },
+            ),
+            page_action(
+                "fill",
+                "Fill page field",
+                "text",
+                vec![
+                    element_param(),
+                    ActionParam::required_owned(
+                        "text",
+                        ParamType::Text,
+                        "Text that replaces the field's contents",
+                    ),
+                ],
+                move |args| PageRequest::Fill {
+                    element: element(args),
+                    text: args.text("text").unwrap_or_default().to_string(),
+                },
+            ),
+            page_action(
+                "select",
+                "Choose page options",
+                "option",
+                vec![
+                    element_param(),
+                    ActionParam::required_owned(
+                        "values",
+                        ParamType::Array,
+                        "Option values or visible labels to choose",
+                    )
+                    .with_schema(serde_json::json!({
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "minItems": 1,
+                        "maxItems": ui::webview::page::MAX_SELECT_VALUES,
+                    })),
+                ],
+                move |args| PageRequest::Select {
+                    element: element(args),
+                    values: args
+                        .array("values")
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|value| value.as_str().map(str::to_string))
+                        .collect(),
+                },
+            ),
+            page_action(
+                "press",
+                "Press key on page",
+                "Enter",
+                vec![
+                    ActionParam::required_owned(
+                        "key",
+                        ParamType::Text,
+                        "Key or chord such as Enter, Tab, Escape, ArrowDown or Control+a",
+                    ),
+                    ActionParam::optional_owned(
+                        "element",
+                        ParamType::Text,
+                        "Element ref to focus first; otherwise the focused element",
+                    ),
+                ],
+                |args| PageRequest::Press {
+                    element: args
+                        .text("element")
+                        .filter(|element| !element.is_empty())
+                        .map(str::to_string),
+                    key: {
+                        let chord = args.text("key").unwrap_or_default();
+                        PageKey::parse(chord).unwrap_or_else(|| PageKey {
+                            key: chord.to_string(),
+                            modifiers: ui::webview::KeyModifiers::default(),
+                        })
+                    },
+                },
+            ),
+            page_action(
+                "submit",
+                "Submit page form",
+                "d1e5",
+                vec![element_param()],
+                move |args| PageRequest::Submit {
+                    element: element(args),
+                },
+            ),
+        ];
+        if is_supported_web_url(&self.current_uri) {
+            specs
+        } else {
+            specs
+                .into_iter()
+                .map(|spec| spec.unavailable("no_web_page", "Open a web page first"))
+                .collect()
+        }
+    }
+
+    fn start_page_operation(
+        &mut self,
+        invocation: ui::tilo_actions::InvocationId,
+        request: PageRequest,
+    ) -> Result<(), String> {
+        if self.page_operation.is_some() || self.page_operation_result.is_some() {
+            return Err("another page action is already running in this tab".into());
+        }
+        self.page_request_seq = self.page_request_seq % i32::MAX.unsigned_abs() + 1;
+        let now = std::time::Instant::now();
+        self.page_operation = Some(PageOperation {
+            invocation,
+            request_id: self.page_request_seq,
+            phase: PagePhase::Queued {
+                request,
+                until: now + PAGE_LOAD_WAIT,
+            },
+            deadline: now + PAGE_OPERATION_TIMEOUT,
+        });
+        self.drive_page_operation();
+        Ok(())
+    }
+
+    /// Send a request once its page has settled, and bound every phase.
+    fn drive_page_operation(&mut self) {
+        let now = std::time::Instant::now();
+        let loading = self.page_loading();
+        let Some(operation) = self.page_operation.as_mut() else {
+            return;
+        };
+        if let PagePhase::Queued { until, .. } = &operation.phase
+            && (!loading || now >= *until)
+            && let PagePhase::Queued { request, .. } =
+                std::mem::replace(&mut operation.phase, PagePhase::Sent)
+        {
+            self.engine.send(WebViewCommand::Page {
+                request_id: operation.request_id,
+                request,
+            });
+            return;
+        }
+        if now < operation.deadline {
+            return;
+        }
+        let Some(operation) = self.page_operation.take() else {
+            return;
+        };
+        self.page_operation_result = Some(match operation.phase {
+            PagePhase::Navigating { reply } => self.page_success(
+                operation.invocation,
+                &reply,
+                Some("the page it opened is still loading"),
+            ),
+            PagePhase::Queued { .. } | PagePhase::Sent => {
+                ui::tilo_actions::InvocationUpdate::Failed {
+                    invocation: operation.invocation,
+                    error: ui::tilo_actions::ActionFailure {
+                        code: "browser.page.timeout".into(),
+                        message: "The page did not answer in time.".into(),
+                        details: Some(serde_json::json!({
+                            "timeout_seconds": PAGE_OPERATION_TIMEOUT.as_secs(),
+                        })),
+                        retryable: true,
+                    },
+                }
+            }
+        });
+    }
+
+    fn accept_page_result(&mut self, request_id: u32, result: Result<PageReply, PageFailure>) {
+        let Some(operation) = self.page_operation.take_if(|operation| {
+            operation.request_id == request_id && matches!(operation.phase, PagePhase::Sent)
+        }) else {
+            return;
+        };
+        self.page_operation_result = Some(match result {
+            Ok(reply) if reply.loading => {
+                self.page_operation = Some(PageOperation {
+                    phase: PagePhase::Navigating { reply },
+                    deadline: std::time::Instant::now() + PAGE_NAVIGATION_WAIT,
+                    ..operation
+                });
+                return;
+            }
+            Ok(reply) => self.page_success(operation.invocation, &reply, None),
+            Err(failure) => ui::tilo_actions::InvocationUpdate::Failed {
+                invocation: operation.invocation,
+                error: ui::tilo_actions::ActionFailure {
+                    retryable: matches!(failure.code.as_str(), "busy" | "timeout"),
+                    code: format!("browser.page.{}", failure.code),
+                    message: failure.message,
+                    details: None,
+                },
+            },
+        });
+    }
+
+    /// A page action that started a navigation completes once it settles, so
+    /// the caller's next read sees the page the action opened.
+    fn page_navigation_settled(&mut self, error: Option<&str>) {
+        let Some(operation) = self
+            .page_operation
+            .take_if(|operation| matches!(operation.phase, PagePhase::Navigating { .. }))
+        else {
+            return;
+        };
+        let PagePhase::Navigating { reply } = operation.phase else {
+            return;
+        };
+        let note = error.map(|error| format!("the page it opened failed to load: {error}"));
+        self.page_operation_result =
+            Some(self.page_success(operation.invocation, &reply, note.as_deref()));
+    }
+
+    fn page_success(
+        &self,
+        invocation: ui::tilo_actions::InvocationId,
+        reply: &PageReply,
+        note: Option<&str>,
+    ) -> ui::tilo_actions::InvocationUpdate {
+        // After a navigation the tab's committed address is newer than the
+        // engine's answer, which was taken as the navigation began.
+        let url = if reply.loading && !self.current_uri.is_empty() {
+            self.current_uri.clone()
+        } else {
+            reply.url.clone()
+        };
+        let message = note.map_or_else(
+            || reply.message.clone(),
+            |note| format!("{}; {note}", reply.message),
+        );
+        let mut value = serde_json::Map::new();
+        value.insert("url".into(), url.into());
+        value.insert("title".into(), self.title.as_str().into());
+        value.insert("message".into(), message.into());
+        value.insert("navigated".into(), reply.navigated.into());
+        if let Some(outline) = &reply.outline {
+            value.insert("outline".into(), outline.as_str().into());
+        }
+        ui::tilo_actions::InvocationUpdate::Succeeded {
+            invocation,
+            output: ui::tilo_actions::ActionOutput {
+                value: Some(value.into()),
+                resources: Vec::new(),
+            },
+        }
     }
 
     fn completed_download_path(&self, id: &str) -> Result<std::path::PathBuf, String> {
@@ -1430,7 +2180,7 @@ impl BrowserWidget {
                     .or_else(|| walk(&resource.children, wanted))
             })
         }
-        walk(&self.resources(&AutoCommit::new()), wanted)
+        walk(&ui::resources::resources(self, &AutoCommit::new()), wanted)
     }
 
     fn unit_binding(&self, resource: &str, action: &str) -> Option<ActionBinding<()>> {
@@ -1479,6 +2229,7 @@ impl BrowserWidget {
             clear_history: self.unit_binding("browser.history", "clear"),
             clear_site_data: self.unit_binding("browser.settings", "request-site-data-clear"),
             close: self.unit_binding("browser", "show-page"),
+            document_edits: Some(self.pending_library_edits.clone()),
         }
     }
 
@@ -1643,7 +2394,7 @@ impl BrowserWidget {
             }
             self.active_pip_element = Some(element);
             self.refresh_active_pip_region();
-            self.next_pip_refresh_at = Some(std::time::Instant::now() + PIP_ELEMENT_REFRESH);
+            self.next_pip_refresh_at = Some(ui::time::now() + PIP_ELEMENT_REFRESH);
             return;
         }
         if self.active_pip_probe != Some(request_id) {
@@ -1691,7 +2442,7 @@ impl BrowserWidget {
         self.pip_page_fallback = false;
         self.published_pip_region = Some(region);
         self.active_pip = true;
-        self.next_pip_refresh_at = Some(std::time::Instant::now() + PIP_ELEMENT_REFRESH);
+        self.next_pip_refresh_at = Some(ui::time::now() + PIP_ELEMENT_REFRESH);
         self.structure_dirty = true;
         self.finish_pip_operation_success(request_id, "Picture in Picture opened.");
     }
@@ -1702,7 +2453,7 @@ impl BrowserWidget {
         }
         let due = self
             .next_pip_refresh_at
-            .is_some_and(|deadline| std::time::Instant::now() >= deadline);
+            .is_some_and(|deadline| ui::time::now() >= deadline);
         if !due {
             return;
         }
@@ -1715,7 +2466,7 @@ impl BrowserWidget {
         };
         self.pip_request_seq = self.pip_request_seq.saturating_add(1);
         self.active_pip_refresh_probe = Some(self.pip_request_seq);
-        self.next_pip_refresh_at = Some(std::time::Instant::now() + PIP_ELEMENT_REFRESH);
+        self.next_pip_refresh_at = Some(ui::time::now() + PIP_ELEMENT_REFRESH);
         self.engine.send(WebViewCommand::RequestMediaElementById {
             request_id: self.pip_request_seq,
             element_id,
@@ -2083,7 +2834,12 @@ impl BrowserWidget {
         } else {
             "Bookmark this page"
         };
-        let bookmark_btn = self.bind_button(
+        let hosted_bookmark = if self.is_framework_hosted() {
+            self.page_bookmark_action()
+        } else {
+            None
+        };
+        let bookmark_btn = self.route_document_button(
             Button::new("browser.bookmark", "", None)
                 .with_icon(Icon::Star)
                 .with_accessible_name(bookmark_label)
@@ -2092,6 +2848,7 @@ impl BrowserWidget {
                 .with_size(nav_btn.0, nav_btn.1),
             "browser.page",
             "bookmark",
+            hosted_bookmark,
         );
         let (library_resource, library_action) = if self.show_library {
             ("browser", "show-page")
@@ -2609,13 +3366,18 @@ impl BrowserWidget {
                         &resource_id,
                         "open",
                     );
-                    let remove = self.bind_button(
+                    let remove = self.route_document_button(
                         Button::new(&remove_control_id, "Remove", None)
                             .with_accessible_name(&format!("Remove bookmark {}", entry.title))
                             .tooltip("Remove bookmark")
                             .with_size(if large_text { 150.0 } else { 96.0 }, action_height),
                         &resource_id,
                         "remove",
+                        self.is_framework_hosted()
+                            .then(|| BrowserAction::RemoveBookmark {
+                                url: entry.url.clone(),
+                                observed_tags: entry.tags.clone(),
+                            }),
                     );
                     let row_content: Box<dyn Widget> = if self.compact_chrome && large_text {
                         Box::new(
@@ -3180,7 +3942,7 @@ impl BrowserWidget {
     fn apply_engine_events(&mut self) {
         if self
             .download_save_due
-            .is_some_and(|due| std::time::Instant::now() >= due)
+            .is_some_and(|due| ui::time::now() >= due)
         {
             self.persist_downloads_now();
             self.download_save_due = None;
@@ -3412,6 +4174,7 @@ impl BrowserWidget {
                                 },
                             });
                     }
+                    self.page_navigation_settled(None);
                 }
                 WebViewEvent::LoadFailed { uri, error } => {
                     self.address_navigation_value = None;
@@ -3420,6 +4183,7 @@ impl BrowserWidget {
                     self.title = format!("Failed to load {uri}");
                     self.load_error = Some(error.chars().take(240).collect());
                     self.structure_dirty = true;
+                    self.page_navigation_settled(Some(&error));
                     if let Some(invocation) = self.resource_navigation_invocation.take() {
                         self.resource_navigation_deadline = None;
                         self.resource_navigation_result =
@@ -3447,6 +4211,9 @@ impl BrowserWidget {
                 } => self.accept_media_element(request_id, element),
                 WebViewEvent::MediaElementUnavailable { request_id } => {
                     self.reject_media_element(request_id);
+                }
+                WebViewEvent::PageResult { request_id, result } => {
+                    self.accept_page_result(request_id, result);
                 }
                 event @ (WebViewEvent::DownloadRequested { .. }
                 | WebViewEvent::DownloadProgress { .. }
@@ -3487,7 +4254,7 @@ impl BrowserWidget {
                     .progress(&id, received_bytes, total_bytes, progress);
                 if self.download_save_due.is_none() {
                     self.download_save_due =
-                        Some(std::time::Instant::now() + std::time::Duration::from_secs(1));
+                        Some(ui::time::now() + std::time::Duration::from_secs(1));
                 }
                 self.structure_dirty = true;
             }
@@ -3774,7 +4541,7 @@ impl BrowserWidget {
         self.menu_direction = None;
     }
 
-    fn tick_back_hold(&mut self, now: std::time::Instant) {
+    fn tick_back_hold(&mut self, now: ui::time::Instant) {
         if let Some(direction) = self.navigation_hold.tick(now) {
             self.request_navigation_history(direction);
         }
@@ -3798,11 +4565,8 @@ impl BrowserWidget {
             return false;
         }
         let modifiers = modifiers.state();
-        let platform = if cfg!(target_os = "macos") {
-            modifiers.super_key()
-        } else {
-            modifiers.control_key()
-        };
+        let platform =
+            ui::platform::PlatformConventions::default().command_modifier_down(modifiers);
         if platform && !modifiers.alt_key() {
             use crate::daily_controls::Action;
             if matches!(&key.logical_key, WKey::Character(c) if c == "[" || c == "]") {
@@ -3825,7 +4589,13 @@ impl BrowserWidget {
                 WKey::Character(c) if c == "-" => Some(Action::Zoom(-1)),
                 WKey::Character(c) if c == "0" => Some(Action::Zoom(0)),
                 WKey::Character(c) if c.eq_ignore_ascii_case("d") => {
-                    self.queue_unit_operation("browser.page", "bookmark");
+                    if self.is_framework_hosted() {
+                        if let Some(action) = self.page_bookmark_action() {
+                            self.enqueue_library_action(action);
+                        }
+                    } else {
+                        self.queue_unit_operation("browser.page", "bookmark");
+                    }
                     return true;
                 }
                 _ => None,
@@ -3900,9 +4670,9 @@ impl BrowserWidget {
                 widget.set_focus(true);
                 if let Some((_, text)) = widget.text_review() {
                     if text.is_empty() {
-                        widget.set_state("0");
+                        ui::undo::set_state(widget, "0");
                     } else {
-                        widget.set_state(&format!("{}:b:0", text.len()));
+                        ui::undo::set_state(widget, &format!("{}:b:0", text.len()));
                     }
                 }
                 return true;
@@ -3923,14 +4693,14 @@ impl BrowserWidget {
     fn focus_control_preserving_selection(&mut self, id: &str) {
         fn state(widget: &dyn Widget, id: &str) -> Option<String> {
             if widget.test_id() == Some(id) {
-                return widget.get_state();
+                return ui::undo::get_state(widget);
             }
             widget.children().iter().find_map(|child| state(*child, id))
         }
 
         fn restore(widget: &mut dyn Widget, id: &str, value: &str) {
             if widget.test_id() == Some(id) {
-                widget.set_state(value);
+                ui::undo::set_state(widget, value);
             }
             for child in widget.children_mut() {
                 restore(child, id, value);
@@ -4078,8 +4848,7 @@ fn address_state(widget: &dyn Widget) -> Option<(String, String)> {
         Some(URL_INPUT_ID | crate::daily_controls::FIND_INPUT)
     ) && widget.is_focused()
     {
-        return widget
-            .get_state()
+        return ui::undo::get_state(widget)
             .map(|state| (widget.test_id().unwrap_or(URL_INPUT_ID).to_owned(), state));
     }
     widget
@@ -4090,7 +4859,7 @@ fn address_state(widget: &dyn Widget) -> Option<(String, String)> {
 fn restore_address(widget: &mut dyn Widget, id: &str, state: &str) {
     if widget.test_id() == Some(id) {
         widget.set_focus(true);
-        widget.set_state(state);
+        ui::undo::set_state(widget, state);
         return;
     }
     for child in widget.children_mut() {
@@ -4205,754 +4974,45 @@ impl FloatingSurfaceProvider for BrowserWidget {
 }
 
 impl Widget for BrowserWidget {
-    fn continuable(&self) -> Option<&dyn Continuable> {
-        Some(self)
-    }
-
-    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
-        Some(self)
-    }
-
-    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
-
-    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
+    ui::provides!(
+        dyn ui::widget::Continuable,
+        dyn ui::widget::FloatingSurfaceProvider,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[BROWSER_OPERATION_TYPE]
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "Resource definitions stay together so their action contracts remain discoverable."
-    )]
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        const MATERIALIZED_LIMIT: usize = 100;
-        let operation =
-            |id: &str, label: &str, kind: OperationKind, operation: BrowserOperation| {
-                ActionSpec::operation(
-                    id,
-                    label,
-                    kind,
-                    BROWSER_OPERATION_TYPE,
-                    &browser_operation_payload(&operation),
-                )
-                .ok()
-            };
-        let mut page = Resource::new(
-            "browser.page",
-            "browser.page",
-            if self.title.is_empty() {
-                "Web page"
-            } else {
-                &self.title
-            },
-        );
-        for (id, label, operation, available, reason) in [
-            (
-                "back",
-                "Go back",
-                BrowserOperation::Back,
-                self.can_go_back,
-                "No previous page",
-            ),
-            (
-                "forward",
-                "Go forward",
-                BrowserOperation::Forward,
-                self.can_go_forward,
-                "No next page",
-            ),
-            ("reload", "Reload", BrowserOperation::Reload, true, ""),
-            (
-                "stop",
-                "Stop loading",
-                BrowserOperation::Stop,
-                self.progress < 1.0,
-                "Page is idle",
-            ),
-        ] {
-            let payload = browser_operation_payload(&operation);
-            if let Ok(spec) = ActionSpec::operation(
-                id,
-                label,
-                OperationKind::View,
-                BROWSER_OPERATION_TYPE,
-                &payload,
-            ) {
-                let spec = if id == "stop" {
-                    spec
-                } else {
-                    spec.with_contract(navigation_contract())
-                };
-                page.actions.push(if available {
-                    spec
-                } else {
-                    spec.unavailable("history_boundary", reason)
-                });
-            }
-        }
-        page.actions.push(
-            ActionSpec::typed_operation(
-                "navigate",
-                "Open address",
-                "https://…",
-                OperationKind::Effect,
-                BROWSER_OPERATION_TYPE,
-                vec![ActionParam::required_owned(
-                    "url",
-                    ParamType::Text,
-                    "Absolute URL or search terms",
-                )],
-                |args: &ActionArgs| {
-                    encode_browser_operation(&BrowserOperation::Navigate {
-                        url: args.text("url").unwrap_or("").to_string(),
-                    })
-                },
-            )
-            .with_contract(navigation_contract()),
-        );
-        if let Ok(spec) = ActionSpec::immediate(
-            "bookmark",
-            "Bookmark this page",
-            BROWSER_ACTION_TYPE,
-            &BrowserAction::AddBookmark {
-                url: self.current_uri.clone(),
-                title: self.title.clone(),
-                tag: format!("bookmark:{}", uuid::Uuid::new_v4().simple()),
-            },
-        ) {
-            page.actions.push(if self.current_uri.trim().is_empty() {
-                spec.unavailable("no_page", "Open a page before bookmarking it")
-            } else if self.bookmarks.contains(&self.current_uri) {
-                spec.unavailable("already_bookmarked", "This page is already bookmarked")
-            } else {
-                spec.reversible()
-            });
-        }
-        if let Some(spec) = operation(
-            "picture-in-picture",
-            if self.active_pip {
-                "Close Picture in Picture"
-            } else {
-                "Open Picture in Picture"
-            },
-            OperationKind::View,
-            BrowserOperation::TogglePictureInPicture,
-        ) {
-            page.actions
-                .push(spec.with_contract(local_background_contract(&[
-                    "device-local",
-                    "session",
-                    "media",
-                ])));
-        }
-
-        let mut session = Resource::new(
-            "browser.session",
-            "browser.history-pause",
-            if self.history_paused() {
-                "History paused"
-            } else {
-                "History recording"
-            },
-        );
-        if let Some(spec) = operation(
-            "toggle-history-pause",
-            if self.history_paused() {
-                "Resume history in this window"
-            } else {
-                "Pause history in this window"
-            },
-            OperationKind::Effect,
-            BrowserOperation::ToggleHistoryPause,
-        ) {
-            session
-                .actions
-                .push(spec.with_contract(local_effect_contract(&[
-                    "device-local",
-                    "session",
-                    "history-paused",
-                    "sensitive-data",
-                ])));
-        }
-
-        let mut history = Resource::new("browser.history", "browser.history", "History");
-        if let Some(spec) = operation(
-            "show",
-            "Show history",
-            OperationKind::View,
-            BrowserOperation::ShowLibrary {
-                section: LibrarySection::History,
-            },
-        ) {
-            history.actions.push(spec);
-        }
-        if let Some(spec) = operation(
-            "clear",
-            "Clear browsing history",
-            OperationKind::Effect,
-            BrowserOperation::ClearHistory,
-        ) {
-            history.actions.push(if self.history.is_empty() {
-                spec.with_contract(local_effect_contract(&[
-                    "device-local",
-                    "history",
-                    "sensitive-data",
-                ]))
-                .unavailable("already_empty", "Browsing history is already empty")
-            } else {
-                spec.with_contract(local_effect_contract(&[
-                    "device-local",
-                    "history",
-                    "sensitive-data",
-                ]))
-                .destructive()
-            });
-        }
-        for entry in self.history.entries().iter().rev().take(MATERIALIZED_LIMIT) {
-            let title = if entry.title.trim().is_empty() {
-                entry.url.as_str()
-            } else {
-                entry.title.as_str()
-            };
-            let mut child = Resource::new(
-                history_resource_id(&entry.url),
-                "browser.history-entry",
-                title,
-            );
-            if let Some(spec) = operation(
-                "open",
-                "Open page",
-                OperationKind::Effect,
-                BrowserOperation::Navigate {
-                    url: entry.url.clone(),
-                },
-            ) {
-                child
-                    .actions
-                    .push(spec.with_contract(navigation_contract()));
-            }
-            history.children.push(child);
-        }
-
-        let mut bookmarks = Resource::new("browser.bookmarks", "browser.bookmarks", "Bookmarks");
-        if let Some(spec) = operation(
-            "show",
-            "Show bookmarks",
-            OperationKind::View,
-            BrowserOperation::ShowLibrary {
-                section: LibrarySection::Bookmarks,
-            },
-        ) {
-            bookmarks.actions.push(spec);
-        }
-        for entry in self.bookmarks.entries().iter().take(MATERIALIZED_LIMIT) {
-            let mut child = Resource::new(
-                bookmark_resource_id(&entry.url),
-                "browser.bookmark",
-                entry.title.clone(),
-            );
-            if let Some(spec) = operation(
-                "open",
-                "Open bookmark",
-                OperationKind::Effect,
-                BrowserOperation::Navigate {
-                    url: entry.url.clone(),
-                },
-            ) {
-                child
-                    .actions
-                    .push(spec.with_contract(navigation_contract()));
-            }
-            if let Ok(spec) = ActionSpec::immediate(
-                "remove",
-                "Remove bookmark",
-                BROWSER_ACTION_TYPE,
-                &BrowserAction::RemoveBookmark {
-                    url: entry.url.clone(),
-                    observed_tags: crate::actions::observed_bookmark_tags(doc, &entry.url),
-                },
-            ) {
-                // Removing one bookmark is a reversible document edit.
-                child.actions.push(spec);
-            }
-            bookmarks.children.push(child);
-        }
-
-        let mut downloads = Resource::new("browser.downloads", "browser.downloads", "Downloads");
-        if let Some(spec) = operation(
-            "show",
-            "Show downloads",
-            OperationKind::View,
-            BrowserOperation::ShowLibrary {
-                section: LibrarySection::Downloads,
-            },
-        ) {
-            downloads.actions.push(spec);
-        }
-        downloads.actions.push(
-            ActionSpec::typed_operation(
-                "start",
-                "Download address",
-                "https://…",
-                OperationKind::Effect,
-                BROWSER_OPERATION_TYPE,
-                vec![ActionParam::required_owned(
-                    "url",
-                    ParamType::Text,
-                    "Absolute HTTP or HTTPS URL",
-                )],
-                |args: &ActionArgs| {
-                    encode_browser_operation(&BrowserOperation::StartDownload {
-                        url: args.text("url").unwrap_or_default().to_string(),
-                    })
-                },
-            )
-            .with_contract(local_background_contract(&[
-                "device-local",
-                "network",
-                "filesystem",
-                "download",
-            ])),
-        );
-        for entry in self
-            .downloads
-            .entries()
-            .iter()
-            .rev()
-            .take(MATERIALIZED_LIMIT)
-        {
-            let mut child = Resource::new(
-                entry.resource_id(),
-                "browser.download",
-                entry.display_name(),
-            );
-            if let Some(spec) = operation(
-                "show",
-                "Show download",
-                OperationKind::View,
-                BrowserOperation::ShowLibrary {
-                    section: LibrarySection::Downloads,
-                },
-            ) {
-                child.actions.push(spec);
-            }
-            match entry.status {
-                DownloadStatus::AwaitingDestination | DownloadStatus::Downloading => {
-                    if let Some(spec) = operation(
-                        "cancel",
-                        "Cancel download",
-                        OperationKind::Effect,
-                        BrowserOperation::CancelDownload {
-                            id: entry.id.clone(),
-                        },
-                    ) {
-                        child.actions.push(
-                            spec.with_contract(local_effect_contract(&[
-                                "device-local",
-                                "network",
-                                "download",
-                            ]))
-                            .destructive(),
-                        );
-                    }
-                }
-                DownloadStatus::Failed | DownloadStatus::Cancelled => {
-                    if let Some(spec) = operation(
-                        "retry",
-                        "Retry download",
-                        OperationKind::Effect,
-                        BrowserOperation::RetryDownload {
-                            id: entry.id.clone(),
-                        },
-                    ) {
-                        child
-                            .actions
-                            .push(spec.with_contract(local_background_contract(&[
-                                "device-local",
-                                "network",
-                                "filesystem",
-                                "download",
-                            ])));
-                    }
-                }
-                DownloadStatus::Completed => {
-                    for (id, label, browser_operation) in [
-                        (
-                            "open",
-                            "Open downloaded file",
-                            BrowserOperation::OpenDownload {
-                                id: entry.id.clone(),
-                            },
-                        ),
-                        (
-                            "reveal",
-                            "Show downloaded file in Files",
-                            BrowserOperation::RevealDownload {
-                                id: entry.id.clone(),
-                            },
-                        ),
-                    ] {
-                        if let Some(spec) =
-                            operation(id, label, OperationKind::Effect, browser_operation)
-                        {
-                            child
-                                .actions
-                                .push(spec.with_contract(local_background_contract(&[
-                                    "device-local",
-                                    "filesystem",
-                                    "portal",
-                                ])));
-                        }
-                    }
-                }
-            }
-            downloads.children.push(child);
-        }
-        let mut extensions =
-            Resource::new("browser.extensions", "browser.extensions", "Extensions");
-        if let Some(spec) = operation(
-            "show",
-            "Show extensions",
-            OperationKind::View,
-            BrowserOperation::ShowLibrary {
-                section: LibrarySection::Extensions,
-            },
-        ) {
-            extensions.actions.push(spec);
-        }
-        // Installed add-ons are durable local profile entities even while the
-        // WebKit activation API is unavailable. Publish each bounded,
-        // address-safe inventory item so the action directory, invocation
-        // history and agents use the same identity as the extension manager.
-        for extension in crate::extensions::list_installed() {
-            let mut child = Resource::new(
-                crate::extensions::resource_id(&extension.id),
-                "browser.extension",
-                extension.name,
-            );
-            if let Some(spec) = operation(
-                "show",
-                "Show extension details",
-                OperationKind::View,
-                BrowserOperation::ShowLibrary {
-                    section: LibrarySection::Extensions,
-                },
-            ) {
-                child.actions.push(spec);
-            }
-            extensions.children.push(child);
-        }
-        // Library is a first-class presentation resource rather than an
-        // unaddressable collection of tabs.  This lets keyboard users,
-        // assistive technology, global action search, and agents all use the
-        // same section and filter operations as the visible surface.
-        let mut library = Resource::new("browser.library", "browser.library", "Library");
-        for (id, label, section) in [
-            ("show-history", "Show history", LibrarySection::History),
-            (
-                "show-bookmarks",
-                "Show bookmarks",
-                LibrarySection::Bookmarks,
-            ),
-            (
-                "show-downloads",
-                "Show downloads",
-                LibrarySection::Downloads,
-            ),
-            (
-                "show-extensions",
-                "Show extensions",
-                LibrarySection::Extensions,
-            ),
-        ] {
-            if let Some(spec) = operation(
-                id,
-                label,
-                OperationKind::View,
-                BrowserOperation::ShowLibrary { section },
-            ) {
-                library.actions.push(spec);
-            }
-        }
-        library.actions.push(
-            ActionSpec::typed_operation(
-                "set-filter",
-                "Filter library",
-                "keyword",
-                OperationKind::View,
-                BROWSER_OPERATION_TYPE,
-                vec![ActionParam::required_owned(
-                    "query",
-                    ParamType::Text,
-                    "Words to match in the current library section",
-                )],
-                |args: &ActionArgs| {
-                    encode_browser_operation(&BrowserOperation::SetLibraryFilter {
-                        query: args.text("query").unwrap_or_default().to_string(),
-                    })
-                },
-            )
-            .with_contract(local_effect_contract(&[
-                "device-local",
-                "presentation",
-                "library",
-            ])),
-        );
-        if let Some(spec) = operation(
-            "clear-filter",
-            "Clear library filter",
-            OperationKind::View,
-            BrowserOperation::ClearLibraryFilter,
-        ) {
-            library
-                .actions
-                .push(if self.library_filter.get().trim().is_empty() {
-                    spec.unavailable("already_clear", "Library filter is already clear")
-                } else {
-                    spec
-                });
-        }
-        let mut settings = Resource::new("browser.settings", "browser.settings", "Settings");
-        if let Some(spec) = operation(
-            "show",
-            "Show browser settings",
-            OperationKind::View,
-            BrowserOperation::ShowSettings,
-        ) {
-            settings.actions.push(spec);
-        }
-        if let Some(spec) = operation(
-            "request-site-data-clear",
-            "Request local site-data clear",
-            OperationKind::Effect,
-            BrowserOperation::RequestWebsiteDataClear,
-        ) {
-            settings.actions.push(
-                spec.with_contract(local_effect_contract(&[
-                    "device-local",
-                    "site-data",
-                    "sensitive-data",
-                ]))
-                .destructive(),
-            );
-        }
-        for (id, label, operation) in [
-            ("set-adblock", "Set ad and tracker blocking", "set-adblock"),
-            (
-                "set-clear-on-exit",
-                "Set clear data on exit",
-                "set-clear-on-exit",
-            ),
-        ] {
-            settings.actions.push(
-                ActionSpec::typed(
-                    id,
-                    label,
-                    "enabled",
-                    ui::tilo_actions::ExecutionLocus::ClientLocal,
-                    vec![ActionParam::required_owned(
-                        "enabled",
-                        ParamType::Boolean,
-                        "Whether the setting is enabled",
-                    )],
-                    move |args: &ActionArgs| {
-                        let action = if operation == "set-adblock" {
-                            BrowserAction::SetAdblock {
-                                enabled: args.boolean("enabled").unwrap_or(false),
-                            }
-                        } else {
-                            BrowserAction::SetClearOnExit {
-                                enabled: args.boolean("enabled").unwrap_or(false),
-                            }
-                        };
-                        EncodedAction::encode(BROWSER_ACTION_TYPE, &action).unwrap_or_else(|_| {
-                            EncodedAction {
-                                type_id: BROWSER_ACTION_TYPE.into(),
-                                payload: Vec::new(),
-                            }
-                        })
-                    },
-                )
-                .reversible(),
-            );
-        }
-        for (id, label, parameter, operation) in [
-            ("set-homepage", "Set homepage", "url", "homepage"),
-            (
-                "set-search-engine",
-                "Set search engine template",
-                "template",
-                "search-engine",
-            ),
-        ] {
-            settings.actions.push(
-                ActionSpec::typed(
-                    id,
-                    label,
-                    parameter,
-                    ui::tilo_actions::ExecutionLocus::ClientLocal,
-                    vec![ActionParam::required_owned(
-                        parameter,
-                        ParamType::Text,
-                        parameter,
-                    )],
-                    move |args: &ActionArgs| {
-                        let action = if operation == "homepage" {
-                            BrowserAction::SetHomepage {
-                                url: args.text(parameter).unwrap_or_default().into(),
-                            }
-                        } else {
-                            BrowserAction::SetSearchEngine {
-                                template: args.text(parameter).unwrap_or_default().into(),
-                            }
-                        };
-                        EncodedAction::encode(BROWSER_ACTION_TYPE, &action).unwrap_or_else(|_| {
-                            EncodedAction {
-                                type_id: BROWSER_ACTION_TYPE.into(),
-                                payload: Vec::new(),
-                            }
-                        })
-                    },
-                )
-                .reversible(),
-            );
-        }
-
-        let mut browser = Resource::new("browser", "browser.application", "Browser");
-        if let Some(spec) = operation(
-            "show-page",
-            "Show current page",
-            OperationKind::View,
-            BrowserOperation::ShowPage,
-        ) {
-            browser.actions.push(spec);
-        }
-        browser.children = vec![
-            page, session, history, bookmarks, downloads, extensions, library, settings,
-        ];
-        vec![browser]
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
-    }
-
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == OperationKind::Document || type_id != BROWSER_OPERATION_TYPE {
-            return Ok(false);
-        }
-        let operation = decode_browser_operation(payload)?;
-        self.perform_browser_operation(operation)?;
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: ui::tilo_actions::InvocationId,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind == OperationKind::Document || type_id != BROWSER_OPERATION_TYPE {
-            for child in self.children_mut() {
-                if let Some(result) =
-                    child.start_resource_operation(invocation, kind, type_id, payload, doc, path)?
-                {
-                    return Ok(Some(result));
-                }
-            }
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let operation = decode_browser_operation(payload)?;
-        let is_navigation = matches!(
-            &operation,
-            BrowserOperation::Back
-                | BrowserOperation::Forward
-                | BrowserOperation::Reload
-                | BrowserOperation::Navigate { .. }
-        );
-        if matches!(&operation, BrowserOperation::TogglePictureInPicture) {
-            if self.resource_pip_invocation.is_some() || self.resource_pip_result.is_some() {
-                return Err("another Picture in Picture operation is already running".into());
-            }
-            if self.active_pip {
-                self.begin_pip_probe();
-                return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    local_output("Picture in Picture closed."),
-                )));
-            }
-            self.begin_pip_probe();
-            let request_id = self
-                .active_pip_probe
-                .ok_or_else(|| "Picture in Picture probe did not start".to_string())?;
-            self.resource_pip_invocation = Some(invocation);
-            self.resource_pip_request = Some(request_id);
-            self.resource_pip_deadline = Some(std::time::Instant::now() + PIP_OPERATION_TIMEOUT);
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+        )? {
+            return Ok(Some(started));
         }
-        if !is_navigation {
-            let is_history_pause_toggle =
-                matches!(&operation, BrowserOperation::ToggleHistoryPause);
-            let output = match &operation {
-                BrowserOperation::ClearHistory => local_output("Browsing history cleared."),
-                // WebKit exposes no completion event for this command. The
-                // result deliberately says only what the executor can prove:
-                // the request was accepted by the local engine.
-                BrowserOperation::RequestWebsiteDataClear => {
-                    local_output("Website-data clear request sent to the local browser engine.")
-                }
-                BrowserOperation::StartDownload { .. } => {
-                    local_output("Download request sent to the local browser engine.")
-                }
-                BrowserOperation::CancelDownload { .. } => {
-                    local_output("Download cancellation sent to the local browser engine.")
-                }
-                BrowserOperation::RetryDownload { .. } => {
-                    local_output("Download retry sent to the local browser engine.")
-                }
-                BrowserOperation::OpenDownload { .. } => {
-                    local_output("Downloaded file was handed to the desktop open portal.")
-                }
-                BrowserOperation::RevealDownload { .. } => {
-                    local_output("Downloaded file location was handed to the desktop portal.")
-                }
-                _ => ui::tilo_actions::ActionOutput::default(),
-            };
-            self.perform_browser_operation(operation)?;
-            let output = if is_history_pause_toggle {
-                local_output(if self.history_paused() {
-                    "History paused in this window."
-                } else {
-                    "History resumed in this window."
-                })
-            } else {
-                output
-            };
-            return Ok(Some(ui::widget::ResourceOperationStart::Completed(output)));
-        }
-        if self.resource_navigation_invocation.is_some()
-            || self.resource_navigation_result.is_some()
-        {
-            return Err("another browser navigation is already running".into());
-        }
-        self.perform_browser_operation(operation)?;
-        self.resource_navigation_invocation = Some(invocation);
-        self.resource_navigation_deadline = Some(std::time::Instant::now() + NAVIGATION_TIMEOUT);
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -4962,6 +5022,14 @@ impl Widget for BrowserWidget {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Option<ui::tilo_actions::InvocationUpdate> {
+        self.drive_page_operation();
+        if self
+            .page_operation_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            return self.page_operation_result.take();
+        }
         if self
             .resource_navigation_result
             .as_ref()
@@ -4979,7 +5047,7 @@ impl Widget for BrowserWidget {
         if self.resource_pip_invocation == Some(invocation)
             && self
                 .resource_pip_deadline
-                .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+                .is_some_and(|deadline| ui::time::now() >= deadline)
         {
             self.resource_pip_invocation = None;
             self.resource_pip_request = None;
@@ -4999,7 +5067,7 @@ impl Widget for BrowserWidget {
         if self.resource_navigation_invocation == Some(invocation)
             && self
                 .resource_navigation_deadline
-                .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+                .is_some_and(|deadline| ui::time::now() >= deadline)
         {
             self.resource_navigation_invocation = None;
             self.resource_navigation_deadline = None;
@@ -5022,7 +5090,8 @@ impl Widget for BrowserWidget {
         clippy::too_many_lines,
         reason = "Browser's frame-level input routing remains ordered in one place."
     )]
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         if self.private_window_request.get() {
             self.private_window_request.set(false);
             self.private_window_notice = crate::private_window::launch().err();
@@ -5077,9 +5146,11 @@ impl Widget for BrowserWidget {
         if self.credentials.open {
             self.site.close();
         }
-        self.tick_back_hold(std::time::Instant::now());
+        self.tick_back_hold(ui::time::now());
         self.apply_engine_events();
+        self.drive_page_operation();
         self.structure_dirty |= self.capabilities.downloads_changed();
+        self.flush_library_edits(state);
         let heads = state.get_heads();
         if self.projected_heads.as_ref() != Some(&heads) {
             self.sync_settings_from_document(state, path);
@@ -5408,25 +5479,14 @@ impl Widget for BrowserWidget {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.window_scale = scale_factor as f32;
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.window_scale = ctx.scale_factor as f32;
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         if let Some((node, id)) = self.pending_chrome_focus.take() {
             self.focus_control_preserving_selection(id);
-            *focus_target = Some(node);
+            *ctx.focus_target = Some(node);
         }
         if self.site.open || self.credentials.open {
             let dismiss = matches!(event,WindowEvent::KeyboardInput {event:key,..} if key.state==ElementState::Pressed && key.logical_key==WKey::Named(WNamedKey::Escape))
@@ -5435,40 +5495,20 @@ impl Widget for BrowserWidget {
                 self.site.close();
                 self.deactivate_credentials();
                 self.structure_dirty = true;
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if let Some(panel) = &mut self.site_panel
-                && let Ok(children) = taffy.children(node_id)
+                && let Ok(children) = ctx.taffy.children(ctx.node_id)
                 && let Some(&panel_node) = children.get(1)
             {
-                panel.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    panel_node,
-                    taffy,
-                );
+                panel.handle_event(event, &mut ctx.reborrow(ctx.path, panel_node));
             }
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if self.page_menu.menu.is_open() {
-            self.page_menu.menu.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.page_menu.menu.handle_event(event, ctx);
             if let Some(index) = self.page_menu.menu.take_selection() {
                 self.page_menu.choose(index, &self.engine);
             } else if !self.page_menu.menu.is_open() {
@@ -5480,7 +5520,7 @@ impl Widget for BrowserWidget {
                     | WindowEvent::MouseInput { .. }
                     | WindowEvent::MouseWheel { .. }
             ) {
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
@@ -5501,7 +5541,7 @@ impl Widget for BrowserWidget {
             && key.state == ElementState::Pressed
             && (key.logical_key == WKey::Named(WNamedKey::ContextMenu)
                 || (key.logical_key == WKey::Named(WNamedKey::F10)
-                    && modifiers.state().shift_key()))
+                    && ctx.modifiers.state().shift_key()))
             && let Some(direction) = [
                 (NavigationDirection::Back, self.can_go_back, "browser.back"),
                 (
@@ -5516,7 +5556,7 @@ impl Widget for BrowserWidget {
             })
         {
             self.request_navigation_history(direction);
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         match event {
@@ -5548,7 +5588,7 @@ impl Widget for BrowserWidget {
                 if let Some(direction) = navigation_hit {
                     self.request_navigation_history(direction);
                 }
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             WindowEvent::MouseInput {
@@ -5560,8 +5600,7 @@ impl Widget for BrowserWidget {
                     return;
                 };
                 self.navigation_pointer_down = Some(direction);
-                self.navigation_hold
-                    .press(std::time::Instant::now(), direction);
+                self.navigation_hold.press(ui::time::now(), direction);
                 if self.motion_reduced {
                     // Reduced motion disables the host's animation pump; this
                     // one-shot wake still recognizes a stationary long press.
@@ -5573,7 +5612,7 @@ impl Widget for BrowserWidget {
                             wake.wake();
                         });
                 }
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             WindowEvent::MouseInput {
@@ -5581,7 +5620,7 @@ impl Widget for BrowserWidget {
                 button: MouseButton::Left,
                 ..
             } if self.navigation_pointer_down.is_some() => {
-                self.tick_back_hold(std::time::Instant::now());
+                self.tick_back_hold(ui::time::now());
                 self.navigation_pointer_down = None;
                 if let Some(direction) = self.navigation_hold.release()
                     && navigation_hit == Some(direction)
@@ -5594,23 +5633,13 @@ impl Widget for BrowserWidget {
                         },
                     );
                 }
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             _ => {}
         }
         if self.back_menu.is_open() {
-            self.back_menu.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.back_menu.handle_event(event, ctx);
             if let Some(index) = self.back_menu.take_selection() {
                 self.choose_navigation_entry(index);
             }
@@ -5621,7 +5650,7 @@ impl Widget for BrowserWidget {
                     | WindowEvent::MouseInput { .. }
                     | WindowEvent::MouseWheel { .. }
             ) {
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
@@ -5643,26 +5672,26 @@ impl Widget for BrowserWidget {
                 self.pip_feedback_rect = Rect::ZERO;
                 self.pip_float_page_rect = Rect::ZERO;
                 self.pip_select_area_rect = Rect::ZERO;
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if self.pip_float_page_rect.contains(self.cursor) {
                 self.float_current_page();
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
 
-        if self.handle_address_shortcut(event, *modifiers) {
-            *handled = true;
+        if self.handle_address_shortcut(event, *ctx.modifiers) {
+            *ctx.handled = true;
             return;
         }
 
         // Ctrl/Cmd+F is scoped to Library; normal page find remains the
         // website's concern. The visible filter has a canonical resource
         // operation too, so this is only a convenient focus path.
-        if self.handle_library_shortcut(event, *modifiers) {
-            *handled = true;
+        if self.handle_library_shortcut(event, *ctx.modifiers) {
+            *ctx.handled = true;
             return;
         }
 
@@ -5671,8 +5700,8 @@ impl Widget for BrowserWidget {
         // steal the browser's own history controls. The queued invocation is
         // the same canonical action the toolbar exposes to history, agents,
         // and collaboration.
-        if self.handle_browser_shortcut(event, *modifiers) {
-            *handled = true;
+        if self.handle_browser_shortcut(event, *ctx.modifiers) {
+            *ctx.handled = true;
             return;
         }
 
@@ -5681,16 +5710,16 @@ impl Widget for BrowserWidget {
         if self.daily.focus_pending == Some(crate::daily_controls::FIND_INPUT)
             && let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ElementState::Pressed
-            && !modifiers.state().super_key()
-            && !modifiers.state().control_key()
+            && !ctx.modifiers.state().super_key()
+            && !ctx.modifiers.state().control_key()
         {
             if key.logical_key == WKey::Named(WNamedKey::Enter) {
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if let WKey::Character(text) = &key.logical_key {
                 self.daily.buffer_text(text);
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
@@ -5702,45 +5731,31 @@ impl Widget for BrowserWidget {
             let mut ov_handled = false;
             self.suggestions.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                &mut ov_handled,
-                focus_target,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    handled: &mut ov_handled,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
             );
             if let Some(entry) = self.suggestions.take_chosen() {
                 self.suggestions.clear();
                 self.last_query = None;
                 self.address.set(entry.url.clone());
                 self.queue_navigate(entry.url);
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if ov_handled {
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
 
         let filter_before = self.library_filter.get();
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&child_node) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
         }
         let filter_after = self.library_filter.get();
         if self.show_library && filter_after != filter_before {
@@ -5763,7 +5778,7 @@ impl Widget for BrowserWidget {
             self.navigate_to_input();
             self.suggestions.clear();
             self.last_query = None;
-            *handled = true;
+            *ctx.handled = true;
         }
     }
 
@@ -5820,8 +5835,8 @@ impl Widget for BrowserWidget {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if self
             .suggestions
@@ -5872,7 +5887,7 @@ impl Widget for BrowserWidget {
         true
     }
 
-    fn next_wake_deadline(&self) -> Option<std::time::Instant> {
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         self.site
             .deadline()
             .into_iter()
@@ -5918,14 +5933,6 @@ impl Widget for BrowserWidget {
             .collect()
     }
 
-    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.pending_controls.pop_front().or_else(|| {
-            self.children_mut()
-                .into_iter()
-                .find_map(Widget::take_control_invocation)
-        })
-    }
-
     fn name(&self) -> &'static str {
         "BrowserWidget"
     }
@@ -5946,6 +5953,721 @@ impl Widget for BrowserWidget {
             && (self.pip_float_page_rect.contains(point)
                 || self.pip_select_area_rect.contains(point)))
         .then_some(winit::window::CursorIcon::Pointer)
+    }
+}
+
+impl ui::search::capability::SearchSource for BrowserWidget {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_index.provider())]
+    }
+}
+
+impl ui::resources::PublishesResources for BrowserWidget {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Resource definitions stay together so their action contracts remain discoverable."
+    )]
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        const MATERIALIZED_LIMIT: usize = 100;
+        // Hosted: ResourceRoot already published bookmarks + window navigation
+        // via tilo_resource::publish. Live extras (find-in-page session, load
+        // progress) are not resource actions today, so there is nothing left
+        // to add beside that door.
+        if self.is_framework_hosted() {
+            return Vec::new();
+        }
+        let operation =
+            |id: &str, label: &str, kind: OperationKind, operation: BrowserOperation| {
+                ActionSpec::operation(
+                    id,
+                    label,
+                    kind,
+                    BROWSER_OPERATION_TYPE,
+                    &browser_operation_payload(&operation),
+                )
+                .ok()
+            };
+        let mut page = Resource::new(
+            "browser.page",
+            "browser.page",
+            if self.title.is_empty() {
+                "Web page"
+            } else {
+                &self.title
+            },
+        );
+        for (id, label, operation, available, reason) in [
+            (
+                "back",
+                "Go back",
+                BrowserOperation::Back,
+                self.can_go_back,
+                "No previous page",
+            ),
+            (
+                "forward",
+                "Go forward",
+                BrowserOperation::Forward,
+                self.can_go_forward,
+                "No next page",
+            ),
+            ("reload", "Reload", BrowserOperation::Reload, true, ""),
+            (
+                "stop",
+                "Stop loading",
+                BrowserOperation::Stop,
+                self.progress < 1.0,
+                "Page is idle",
+            ),
+        ] {
+            let payload = browser_operation_payload(&operation);
+            if let Ok(spec) = ActionSpec::operation(
+                id,
+                label,
+                OperationKind::View,
+                BROWSER_OPERATION_TYPE,
+                &payload,
+            ) {
+                let spec = if id == "stop" {
+                    spec
+                } else {
+                    spec.with_contract(navigation_contract())
+                };
+                page.actions.push(if available {
+                    spec
+                } else {
+                    spec.unavailable("history_boundary", reason)
+                });
+            }
+        }
+        page.actions.push(
+            ActionSpec::typed_operation(
+                "navigate",
+                "Open address",
+                "https://…",
+                OperationKind::Effect,
+                BROWSER_OPERATION_TYPE,
+                vec![ActionParam::required_owned(
+                    "url",
+                    ParamType::Text,
+                    "Absolute URL or search terms",
+                )],
+                |args: &ActionArgs| {
+                    encode_browser_operation(&BrowserOperation::Navigate {
+                        url: args.text("url").unwrap_or("").to_string(),
+                    })
+                },
+            )
+            .with_contract(navigation_contract()),
+        );
+        if let Ok(spec) = ActionSpec::immediate(
+            "bookmark",
+            "Bookmark this page",
+            BROWSER_ACTION_TYPE,
+            &BrowserAction::AddBookmark {
+                url: self.current_uri.clone(),
+                title: self.title.clone(),
+                tag: format!("bookmark:{}", uuid::Uuid::new_v4().simple()),
+            },
+        ) {
+            page.actions.push(if self.current_uri.trim().is_empty() {
+                spec.unavailable("no_page", "Open a page before bookmarking it")
+            } else if self.bookmarks.contains(&self.current_uri) {
+                spec.unavailable("already_bookmarked", "This page is already bookmarked")
+            } else {
+                spec.reversible()
+            });
+        }
+        if let Some(spec) = operation(
+            "picture-in-picture",
+            if self.active_pip {
+                "Close Picture in Picture"
+            } else {
+                "Open Picture in Picture"
+            },
+            OperationKind::View,
+            BrowserOperation::TogglePictureInPicture,
+        ) {
+            page.actions
+                .push(spec.with_contract(local_background_contract(&[
+                    "device-local",
+                    "session",
+                    "media",
+                ])));
+        }
+        page.actions.extend(self.page_content_actions());
+
+        let mut session = Resource::new(
+            "browser.session",
+            "browser.history-pause",
+            if self.history_paused() {
+                "History paused"
+            } else {
+                "History recording"
+            },
+        );
+        if let Some(spec) = operation(
+            "toggle-history-pause",
+            if self.history_paused() {
+                "Resume history in this window"
+            } else {
+                "Pause history in this window"
+            },
+            OperationKind::Effect,
+            BrowserOperation::ToggleHistoryPause,
+        ) {
+            session
+                .actions
+                .push(spec.with_contract(local_effect_contract(&[
+                    "device-local",
+                    "session",
+                    "history-paused",
+                    "sensitive-data",
+                ])));
+        }
+
+        let mut history = Resource::new("browser.history", "browser.history", "History");
+        if let Some(spec) = operation(
+            "show",
+            "Show history",
+            OperationKind::View,
+            BrowserOperation::ShowLibrary {
+                section: LibrarySection::History,
+            },
+        ) {
+            history.actions.push(spec);
+        }
+        if let Some(spec) = operation(
+            "clear",
+            "Clear browsing history",
+            OperationKind::Effect,
+            BrowserOperation::ClearHistory,
+        ) {
+            history.actions.push(if self.history.is_empty() {
+                spec.with_contract(local_effect_contract(&[
+                    "device-local",
+                    "history",
+                    "sensitive-data",
+                ]))
+                .unavailable("already_empty", "Browsing history is already empty")
+            } else {
+                spec.with_contract(local_effect_contract(&[
+                    "device-local",
+                    "history",
+                    "sensitive-data",
+                ]))
+                .destructive()
+            });
+        }
+        for entry in self.history.entries().iter().rev().take(MATERIALIZED_LIMIT) {
+            let title = if entry.title.trim().is_empty() {
+                entry.url.as_str()
+            } else {
+                entry.title.as_str()
+            };
+            let mut child = Resource::new(
+                history_resource_id(&entry.url),
+                "browser.history-entry",
+                title,
+            );
+            if let Some(spec) = operation(
+                "open",
+                "Open page",
+                OperationKind::Effect,
+                BrowserOperation::Navigate {
+                    url: entry.url.clone(),
+                },
+            ) {
+                child
+                    .actions
+                    .push(spec.with_contract(navigation_contract()));
+            }
+            history.children.push(child);
+        }
+
+        let mut bookmarks = Resource::new("browser.bookmarks", "browser.bookmarks", "Bookmarks");
+        let documented_bookmarks: std::collections::HashSet<String> =
+            crate::actions::bookmarks_from_doc(doc)
+                .map(|book| {
+                    book.entries()
+                        .iter()
+                        .map(|entry| bookmark_resource_id(&entry.url))
+                        .collect()
+                })
+                .unwrap_or_default();
+        for entry in self.bookmarks.entries().iter().take(MATERIALIZED_LIMIT) {
+            let mut child = Resource::new(
+                bookmark_resource_id(&entry.url),
+                "browser.bookmark",
+                entry.title.clone(),
+            );
+            if let Some(spec) = operation(
+                "open",
+                "Open bookmark",
+                OperationKind::Effect,
+                BrowserOperation::Navigate {
+                    url: entry.url.clone(),
+                },
+            ) {
+                child
+                    .actions
+                    .push(spec.with_contract(navigation_contract()));
+            }
+            // Remove is the published document action. A bookmark that exists
+            // only in this window's file cache still needs it here.
+            if !documented_bookmarks.contains(child.id.as_str())
+                && let Ok(spec) = ActionSpec::immediate(
+                    "remove",
+                    "Remove bookmark",
+                    BROWSER_ACTION_TYPE,
+                    &BrowserAction::RemoveBookmark {
+                        url: entry.url.clone(),
+                        observed_tags: crate::actions::observed_bookmark_tags(doc, &entry.url),
+                    },
+                )
+            {
+                child.actions.push(spec);
+            }
+            bookmarks.children.push(child);
+        }
+
+        let mut downloads = Resource::new("browser.downloads", "browser.downloads", "Downloads");
+        if let Some(spec) = operation(
+            "show",
+            "Show downloads",
+            OperationKind::View,
+            BrowserOperation::ShowLibrary {
+                section: LibrarySection::Downloads,
+            },
+        ) {
+            downloads.actions.push(spec);
+        }
+        downloads.actions.push(
+            ActionSpec::typed_operation(
+                "start",
+                "Download address",
+                "https://…",
+                OperationKind::Effect,
+                BROWSER_OPERATION_TYPE,
+                vec![ActionParam::required_owned(
+                    "url",
+                    ParamType::Text,
+                    "Absolute HTTP or HTTPS URL",
+                )],
+                |args: &ActionArgs| {
+                    encode_browser_operation(&BrowserOperation::StartDownload {
+                        url: args.text("url").unwrap_or_default().to_string(),
+                    })
+                },
+            )
+            .with_contract(local_background_contract(&[
+                "device-local",
+                "network",
+                "filesystem",
+                "download",
+            ])),
+        );
+        for entry in self
+            .downloads
+            .entries()
+            .iter()
+            .rev()
+            .take(MATERIALIZED_LIMIT)
+        {
+            let mut child = Resource::new(
+                entry.resource_id(),
+                "browser.download",
+                entry.display_name(),
+            );
+            if let Some(spec) = operation(
+                "show",
+                "Show download",
+                OperationKind::View,
+                BrowserOperation::ShowLibrary {
+                    section: LibrarySection::Downloads,
+                },
+            ) {
+                child.actions.push(spec);
+            }
+            match entry.status {
+                DownloadStatus::AwaitingDestination | DownloadStatus::Downloading => {
+                    if let Some(spec) = operation(
+                        "cancel",
+                        "Cancel download",
+                        OperationKind::Effect,
+                        BrowserOperation::CancelDownload {
+                            id: entry.id.clone(),
+                        },
+                    ) {
+                        child.actions.push(
+                            spec.with_contract(local_effect_contract(&[
+                                "device-local",
+                                "network",
+                                "download",
+                            ]))
+                            .destructive(),
+                        );
+                    }
+                }
+                DownloadStatus::Failed | DownloadStatus::Cancelled => {
+                    if let Some(spec) = operation(
+                        "retry",
+                        "Retry download",
+                        OperationKind::Effect,
+                        BrowserOperation::RetryDownload {
+                            id: entry.id.clone(),
+                        },
+                    ) {
+                        child
+                            .actions
+                            .push(spec.with_contract(local_background_contract(&[
+                                "device-local",
+                                "network",
+                                "filesystem",
+                                "download",
+                            ])));
+                    }
+                }
+                DownloadStatus::Completed => {
+                    for (id, label, browser_operation) in [
+                        (
+                            "open",
+                            "Open downloaded file",
+                            BrowserOperation::OpenDownload {
+                                id: entry.id.clone(),
+                            },
+                        ),
+                        (
+                            "reveal",
+                            "Show downloaded file in Files",
+                            BrowserOperation::RevealDownload {
+                                id: entry.id.clone(),
+                            },
+                        ),
+                    ] {
+                        if let Some(spec) =
+                            operation(id, label, OperationKind::Effect, browser_operation)
+                        {
+                            child
+                                .actions
+                                .push(spec.with_contract(local_background_contract(&[
+                                    "device-local",
+                                    "filesystem",
+                                    "portal",
+                                ])));
+                        }
+                    }
+                }
+            }
+            downloads.children.push(child);
+        }
+        let mut extensions =
+            Resource::new("browser.extensions", "browser.extensions", "Extensions");
+        if let Some(spec) = operation(
+            "show",
+            "Show extensions",
+            OperationKind::View,
+            BrowserOperation::ShowLibrary {
+                section: LibrarySection::Extensions,
+            },
+        ) {
+            extensions.actions.push(spec);
+        }
+        // Installed add-ons are durable local profile entities even while the
+        // WebKit activation API is unavailable. Publish each bounded,
+        // address-safe inventory item so the action directory, invocation
+        // history and agents use the same identity as the extension manager.
+        for extension in crate::extensions::list_installed() {
+            let mut child = Resource::new(
+                crate::extensions::resource_id(&extension.id),
+                "browser.extension",
+                extension.name,
+            );
+            if let Some(spec) = operation(
+                "show",
+                "Show extension details",
+                OperationKind::View,
+                BrowserOperation::ShowLibrary {
+                    section: LibrarySection::Extensions,
+                },
+            ) {
+                child.actions.push(spec);
+            }
+            extensions.children.push(child);
+        }
+        // Library is a first-class presentation resource rather than an
+        // unaddressable collection of tabs.  This lets keyboard users,
+        // assistive technology, global action search, and agents all use the
+        // same section and filter operations as the visible surface.
+        let mut library = Resource::new("browser.library", "browser.library", "Library");
+        for (id, label, section) in [
+            ("show-history", "Show history", LibrarySection::History),
+            (
+                "show-bookmarks",
+                "Show bookmarks",
+                LibrarySection::Bookmarks,
+            ),
+            (
+                "show-downloads",
+                "Show downloads",
+                LibrarySection::Downloads,
+            ),
+            (
+                "show-extensions",
+                "Show extensions",
+                LibrarySection::Extensions,
+            ),
+        ] {
+            if let Some(spec) = operation(
+                id,
+                label,
+                OperationKind::View,
+                BrowserOperation::ShowLibrary { section },
+            ) {
+                library.actions.push(spec);
+            }
+        }
+        library.actions.push(
+            ActionSpec::typed_operation(
+                "set-filter",
+                "Filter library",
+                "keyword",
+                OperationKind::View,
+                BROWSER_OPERATION_TYPE,
+                vec![ActionParam::required_owned(
+                    "query",
+                    ParamType::Text,
+                    "Words to match in the current library section",
+                )],
+                |args: &ActionArgs| {
+                    encode_browser_operation(&BrowserOperation::SetLibraryFilter {
+                        query: args.text("query").unwrap_or_default().to_string(),
+                    })
+                },
+            )
+            .with_contract(local_effect_contract(&[
+                "device-local",
+                "presentation",
+                "library",
+            ])),
+        );
+        if let Some(spec) = operation(
+            "clear-filter",
+            "Clear library filter",
+            OperationKind::View,
+            BrowserOperation::ClearLibraryFilter,
+        ) {
+            library
+                .actions
+                .push(if self.library_filter.get().trim().is_empty() {
+                    spec.unavailable("already_clear", "Library filter is already clear")
+                } else {
+                    spec
+                });
+        }
+        let state = <crate::resource::Browser as ui::tilo_resource::Resource>::read(doc)
+            .unwrap_or_default();
+        let mut browser =
+            ui::tilo_resource::publish::<crate::resource::Browser>("browser", "Browser", &state);
+        if !browser
+            .actions
+            .iter()
+            .any(|action| action.id == "show-page")
+            && let Some(spec) = operation(
+                "show-page",
+                "Show current page",
+                OperationKind::View,
+                BrowserOperation::ShowPage,
+            )
+        {
+            browser.actions.push(spec);
+        }
+        let published = std::mem::take(&mut browser.children);
+        let mut bookmarks = bookmarks;
+        let mut settings = None;
+        let mut extra = Vec::new();
+        for document in published {
+            if document.id.as_str() == "browser.bookmarks" {
+                for action in document.actions {
+                    if !bookmarks.actions.iter().any(|have| have.id == action.id) {
+                        bookmarks.actions.push(action);
+                    }
+                }
+                let hand_children = std::mem::take(&mut bookmarks.children);
+                bookmarks.children = document.children;
+                for hand in hand_children {
+                    if let Some(existing) = bookmarks
+                        .children
+                        .iter_mut()
+                        .find(|child| child.id == hand.id)
+                    {
+                        for action in hand.actions {
+                            if !existing.actions.iter().any(|have| have.id == action.id) {
+                                existing.actions.push(action);
+                            }
+                        }
+                    } else {
+                        bookmarks.children.push(hand);
+                    }
+                }
+            } else if document.id.as_str() == "browser.settings" {
+                settings = Some(document);
+            } else {
+                extra.push(document);
+            }
+        }
+        let settings = settings.unwrap_or_else(settings_resource);
+        browser.children = vec![
+            page, session, history, bookmarks, downloads, extensions, library, settings,
+        ];
+        browser.children.extend(extra);
+        vec![browser]
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        if self.is_framework_hosted() {
+            if id == "browser" {
+                return None;
+            }
+            let state = <crate::resource::Browser as ui::tilo_resource::Resource>::read(doc)
+                .unwrap_or_default();
+            let root = ui::tilo_resource::publish::<crate::resource::Browser>(
+                "browser", "Browser", &state,
+            );
+            return find(&[root], id);
+        }
+        find(&self.resources(doc), id)
+    }
+}
+
+impl ui::widget::controls::ActionControls for BrowserWidget {
+    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
+        self.pending_controls.pop_front().or_else(|| {
+            self.children_mut()
+                .into_iter()
+                .find_map(ui::widget::controls::take_control_invocation)
+        })
+    }
+}
+
+impl BrowserWidget {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == OperationKind::Document || type_id != BROWSER_OPERATION_TYPE {
+            return Ok(false);
+        }
+        let operation = decode_browser_operation(payload)?;
+        self.perform_browser_operation(operation)?;
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: ui::tilo_actions::InvocationId,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind == OperationKind::Document || type_id != BROWSER_OPERATION_TYPE {
+            return Ok(None);
+        }
+        let operation = decode_browser_operation(payload)?;
+        if let BrowserOperation::Page(request) = operation {
+            self.start_page_operation(invocation, request)?;
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        let is_navigation = matches!(
+            &operation,
+            BrowserOperation::Back
+                | BrowserOperation::Forward
+                | BrowserOperation::Reload
+                | BrowserOperation::Navigate { .. }
+        );
+        if matches!(&operation, BrowserOperation::TogglePictureInPicture) {
+            if self.resource_pip_invocation.is_some() || self.resource_pip_result.is_some() {
+                return Err("another Picture in Picture operation is already running".into());
+            }
+            if self.active_pip {
+                self.begin_pip_probe();
+                return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                    local_output("Picture in Picture closed."),
+                )));
+            }
+            self.begin_pip_probe();
+            let request_id = self
+                .active_pip_probe
+                .ok_or_else(|| "Picture in Picture probe did not start".to_string())?;
+            self.resource_pip_invocation = Some(invocation);
+            self.resource_pip_request = Some(request_id);
+            self.resource_pip_deadline = Some(std::time::Instant::now() + PIP_OPERATION_TIMEOUT);
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if !is_navigation {
+            let is_history_pause_toggle =
+                matches!(&operation, BrowserOperation::ToggleHistoryPause);
+            let output = match &operation {
+                BrowserOperation::ClearHistory => local_output("Browsing history cleared."),
+                // WebKit exposes no completion event for this command. The
+                // result deliberately says only what the executor can prove:
+                // the request was accepted by the local engine.
+                BrowserOperation::RequestWebsiteDataClear => {
+                    local_output("Website-data clear request sent to the local browser engine.")
+                }
+                BrowserOperation::StartDownload { .. } => {
+                    local_output("Download request sent to the local browser engine.")
+                }
+                BrowserOperation::CancelDownload { .. } => {
+                    local_output("Download cancellation sent to the local browser engine.")
+                }
+                BrowserOperation::RetryDownload { .. } => {
+                    local_output("Download retry sent to the local browser engine.")
+                }
+                BrowserOperation::OpenDownload { .. } => {
+                    local_output("Downloaded file was handed to the desktop open portal.")
+                }
+                BrowserOperation::RevealDownload { .. } => {
+                    local_output("Downloaded file location was handed to the desktop portal.")
+                }
+                _ => ui::tilo_actions::ActionOutput::default(),
+            };
+            self.perform_browser_operation(operation)?;
+            let output = if is_history_pause_toggle {
+                local_output(if self.history_paused() {
+                    "History paused in this window."
+                } else {
+                    "History resumed in this window."
+                })
+            } else {
+                output
+            };
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(output)));
+        }
+        if self.resource_navigation_invocation.is_some()
+            || self.resource_navigation_result.is_some()
+        {
+            return Err("another browser navigation is already running".into());
+        }
+        self.perform_browser_operation(operation)?;
+        self.resource_navigation_invocation = Some(invocation);
+        self.resource_navigation_deadline = Some(std::time::Instant::now() + NAVIGATION_TIMEOUT);
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -5983,12 +6705,16 @@ mod architecture_tests {
     }
 
     fn assert_no_document_control_paths(widget: &BrowserWidget) {
-        assert!(widget.control_action_bindings().iter().all(|binding| {
-            !matches!(
-                binding.kind,
-                ui::widget::ControlBindingKind::CollaborativeDocument(_)
-            )
-        }));
+        assert!(
+            ui::widget::controls::control_action_bindings(widget)
+                .iter()
+                .all(|binding| {
+                    !matches!(
+                        binding.kind,
+                        ui::widget::ControlBindingKind::CollaborativeDocument(_)
+                    )
+                })
+        );
     }
 
     fn assert_action_binding(
@@ -5998,14 +6724,16 @@ mod architecture_tests {
         action: &str,
     ) {
         assert!(
-            widget.control_action_bindings().iter().any(|binding| {
-                binding.control_id == control_id
-                    && matches!(
-                        &binding.kind,
-                        ui::widget::ControlBindingKind::Action(address)
-                            if address.resource == resource && address.action == action
-                    )
-            }),
+            ui::widget::controls::control_action_bindings(widget)
+                .iter()
+                .any(|binding| {
+                    binding.control_id == control_id
+                        && matches!(
+                            &binding.kind,
+                            ui::widget::ControlBindingKind::Action(address)
+                                if address.resource == resource && address.action == action
+                        )
+                }),
             "{control_id} must retain its canonical {resource}/{action} address"
         );
     }
@@ -6015,8 +6743,6 @@ mod architecture_tests {
     fn bookmark_projection_benchmark() {
         use automerge::transaction::Transactable;
         let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, "browser.bookmarks.v2.migrated", true)
-            .unwrap();
         for i in 0..1000 {
             let row = doc
                 .put_object(
@@ -6032,13 +6758,13 @@ mod architecture_tests {
         let mut widget = BrowserWidget::new_headless();
         widget.sync(&mut doc, &automerge::ROOT);
         assert_eq!(widget.bookmarks.entries().len(), 1000);
-        let started = std::time::Instant::now();
+        let started = ui::time::now();
         for _ in 0..100 {
             widget.sync(&mut doc, &automerge::ROOT);
         }
         let elapsed = started.elapsed();
         eprintln!("100 browser syncs / 1000 bookmarks: {elapsed:?}");
-        let reference = std::time::Instant::now();
+        let reference = ui::time::now();
         for _ in 0..100 {
             std::hint::black_box(crate::actions::bookmarks_from_doc(&doc));
         }
@@ -6056,14 +6782,16 @@ mod architecture_tests {
         let mut handled = false;
         widget.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut None,
-            node,
-            &tree,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut None,
+                node_id: node,
+                taffy: &tree,
+            },
         );
         handled
     }
@@ -6091,941 +6819,1005 @@ mod architecture_tests {
         }
     }
 
+    /// Find-in-page focus handoff, DPI through find reflow and the daily shortcut capture set.
     #[test]
-    fn find_focus_moves_to_search_then_returns_to_page_and_survives_rebuild() {
-        let mut widget = BrowserWidget::new_headless();
-        compose(&mut widget);
-        assert!(widget.focus_control("browser.surface"));
-        compose(&mut widget);
-        assert!(widget.control_focused("browser.surface"));
-        widget
-            .daily
-            .act(crate::daily_controls::Action::Open, &widget.engine);
-        compose(&mut widget);
-        assert!(widget.control_focused(crate::daily_controls::FIND_INPUT));
-        widget
-            .daily
-            .act(crate::daily_controls::Action::Close, &widget.engine);
-        compose(&mut widget);
-        assert!(widget.control_focused("browser.surface"));
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn find_and_daily_shortcuts_route_focus_keys_and_dpi() {
+        // Phase `find_focus_moves_to_search_then_returns_to_page_and_survives_rebuild`.
+        {
+            let mut widget = BrowserWidget::new_headless();
+            compose(&mut widget);
+            assert!(widget.focus_control("browser.surface"));
+            compose(&mut widget);
+            assert!(widget.control_focused("browser.surface"));
+            widget
+                .daily
+                .act(crate::daily_controls::Action::Open, &widget.engine);
+            compose(&mut widget);
+            assert!(widget.control_focused(crate::daily_controls::FIND_INPUT));
+            widget
+                .daily
+                .act(crate::daily_controls::Action::Close, &widget.engine);
+            compose(&mut widget);
+            assert!(widget.control_focused("browser.surface"));
+        }
 
-    #[test]
-    fn rebuilt_web_content_keeps_window_dpi_through_find_reflow() {
-        let engine = TestEngine::new();
-        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-        let mut tree = TaffyTree::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
-        widget.handle_event(
-            &WindowEvent::Focused(true),
-            2.0,
-            &winit::event::Modifiers::default(),
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-            &mut false,
-            &mut None,
-            node,
-            &tree,
-        );
-        super::tests::layout_at(&mut widget, 800.0, 600.0);
-        widget
-            .daily
-            .act(crate::daily_controls::Action::Open, &widget.engine);
-        super::tests::layout_at(&mut widget, 800.0, 600.0);
-        widget
-            .daily
-            .act(crate::daily_controls::Action::Close, &widget.engine);
-        super::tests::layout_at(&mut widget, 800.0, 600.0);
-        let sizes: Vec<_> = engine
-            .commands()
-            .into_iter()
-            .filter_map(|command| match command {
-                WebViewCommand::Resize {
-                    width,
-                    height,
-                    scale_factor,
-                } => Some((width, height, scale_factor)),
-                _ => None,
-            })
-            .collect();
-        assert!(sizes.len() >= 3, "{sizes:?}");
-        assert!(
-            sizes
-                .iter()
-                .all(|&(width, _, scale)| width > 1000 && (scale - 2.0).abs() < f32::EPSILON),
-            "{sizes:?}"
-        );
-        assert!(
-            sizes[1].1 < sizes[0].1,
-            "Find must shrink the page viewport"
-        );
-        assert_eq!(sizes.first(), sizes.last());
-    }
-
-    #[test]
-    fn find_handoff_restores_focus_before_first_character_dispatch() {
-        let capture = TestEngine::new();
-        let mut widget = BrowserWidget::with_engine(capture.clone(), true);
-        compose(&mut widget);
-        widget
-            .daily
-            .act(crate::daily_controls::Action::Open, &widget.engine);
-        let mut tree = TaffyTree::new();
-        let mut nodes = std::collections::HashMap::new();
-        let node = widget.build_layout(&mut tree, &Theme::dark(), &mut nodes);
-        // The host restores its previous focus after rebuilding. The next
-        // event must reapply the pending find focus before dispatching text.
-        widget.focus_control("browser.surface");
-        let mut doc = AutoCommit::new();
-        let mut target = None;
-        for letter in ["N", "e", "e", "d", "l", "e"] {
-            let mut event = key(WNamedKey::Enter);
-            if let WindowEvent::KeyboardInput { event, .. } = &mut event {
-                event.logical_key = WKey::Character(letter.into());
-                event.text = Some(letter.into());
-            }
+        // Phase `rebuilt_web_content_keeps_window_dpi_through_find_reflow`.
+        {
+            let engine = TestEngine::new();
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            let mut tree = TaffyTree::new();
+            let node = tree.new_leaf(Style::default()).unwrap();
             widget.handle_event(
-                &event,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut doc,
-                &automerge::ROOT,
-                &mut false,
-                &mut target,
-                node,
-                &tree,
+                &WindowEvent::Focused(true),
+                &mut ui::widget::EventCtx {
+                    scale_factor: 2.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut AutoCommit::new(),
+                    path: &automerge::ROOT,
+                    handled: &mut false,
+                    focus_target: &mut None,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
-            widget.daily.sync(&widget.engine);
-        }
-        widget.daily.sync(&widget.engine);
-        assert!(widget.control_focused(crate::daily_controls::FIND_INPUT));
-        assert!(
-            capture.commands().iter().any(|command| matches!(command,
-            WebViewCommand::Find { text, .. } if text == "Needle")),
-            "{:?}",
-            capture.commands()
-        );
-    }
-
-    #[test]
-    fn stop_contract_completes_and_queued_progress_cannot_restart_loading() {
-        struct QueuedEngine {
-            events: std::sync::Mutex<Vec<WebViewEvent>>,
-            capture: std::sync::Arc<TestEngine>,
-        }
-        impl WebViewEngine for QueuedEngine {
-            fn send(&self, command: WebViewCommand) {
-                self.capture.send(command);
-            }
-            fn frames(&self) -> ui::webview::FrameSlot {
-                self.capture.frames()
-            }
-            fn drain_events(&self) -> Vec<WebViewEvent> {
-                std::mem::take(&mut *self.events.lock().unwrap())
-            }
-        }
-        let capture = TestEngine::new();
-        let engine = std::sync::Arc::new(QueuedEngine {
-            events: std::sync::Mutex::new(Vec::new()),
-            capture: capture.clone(),
-        });
-        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-        let invocation = ui::tilo_actions::InvocationId::new();
-        widget.resource_navigation_invocation = Some(invocation);
-        widget.set_loading_progress(0.2);
-        let doc = AutoCommit::new();
-        let resources = widget.resources(&doc);
-        let stop = resources[0]
-            .children
-            .iter()
-            .find(|r| r.id.0 == "browser.page")
-            .unwrap()
-            .actions
-            .iter()
-            .find(|a| a.id == "stop")
-            .unwrap();
-        let encoded = stop.build_json(&serde_json::Map::new()).unwrap();
-        let result = widget
-            .start_resource_operation(
-                ui::tilo_actions::InvocationId::new(),
-                stop.kind,
-                &encoded.type_id,
-                &encoded.payload,
-                &doc,
-                &automerge::ROOT,
-            )
-            .unwrap();
-        let Some(ui::widget::ResourceOperationStart::Completed(output)) = result else {
-            panic!("Stop must complete immediately");
-        };
-        assert!(stop.contract.result.validate(&output).is_ok());
-        assert!(matches!(
-            widget.resource_navigation_result,
-            Some(ui::tilo_actions::InvocationUpdate::Failed { .. })
-        ));
-        engine
-            .events
-            .lock()
-            .unwrap()
-            .push(WebViewEvent::LoadProgress(0.4));
-        widget.apply_engine_events();
-        assert!((widget.progress - 1.0).abs() < f64::EPSILON);
-        assert!(capture.commands().contains(&WebViewCommand::StopLoading));
-        widget
-            .perform_browser_operation(BrowserOperation::Reload)
-            .unwrap();
-        engine
-            .events
-            .lock()
-            .unwrap()
-            .push(WebViewEvent::LoadProgress(0.6));
-        widget.apply_engine_events();
-        assert!((widget.progress - 0.6).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn composed_download_save_action_reaches_native_callback() {
-        let capture = TestEngine::new();
-        let mut widget = BrowserWidget::with_engine(capture.clone(), true);
-        widget
-            .capabilities
-            .apply(WebViewEvent::NativeDownloadRequested {
-                id: 1,
-                url: "https://test.example/file".into(),
-                name: "file.txt".into(),
-            });
-        compose(&mut widget);
-        let result = widget
-            .start_resource_operation(
-                ui::tilo_actions::InvocationId::new(),
-                OperationKind::Effect,
-                "tilo.ui.control.invoke",
-                &serde_json::to_vec("browser.decision.false.1.true").unwrap(),
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            )
-            .unwrap();
-        assert!(result.is_some());
-        assert!(
-            capture
+            super::tests::layout_at(&mut widget, 800.0, 600.0);
+            widget
+                .daily
+                .act(crate::daily_controls::Action::Open, &widget.engine);
+            super::tests::layout_at(&mut widget, 800.0, 600.0);
+            widget
+                .daily
+                .act(crate::daily_controls::Action::Close, &widget.engine);
+            super::tests::layout_at(&mut widget, 800.0, 600.0);
+            let sizes: Vec<_> = engine
                 .commands()
-                .contains(&WebViewCommand::DownloadDecision { id: 1, allow: true })
-        );
-    }
-
-    #[test]
-    fn daily_shortcuts_capture_find_zoom_bookmark_but_leave_plain_typing() {
-        let mut widget = BrowserWidget::new_headless();
-        for letter in ["f", "+", "-", "0", "d"] {
-            let mut event = key(WNamedKey::Enter);
-            if let WindowEvent::KeyboardInput { event, .. } = &mut event {
-                event.logical_key = WKey::Character(letter.into());
-            }
-            assert!(!widget.handle_browser_shortcut(&event, winit::event::Modifiers::default()));
+                .into_iter()
+                .filter_map(|command| match command {
+                    WebViewCommand::Resize {
+                        width,
+                        height,
+                        scale_factor,
+                    } => Some((width, height, scale_factor)),
+                    _ => None,
+                })
+                .collect();
+            assert!(sizes.len() >= 3, "{sizes:?}");
             assert!(
-                widget.handle_browser_shortcut(
+                sizes
+                    .iter()
+                    .all(|&(width, _, scale)| width > 1000 && (scale - 2.0).abs() < f32::EPSILON),
+                "{sizes:?}"
+            );
+            assert!(
+                sizes[1].1 < sizes[0].1,
+                "Find must shrink the page viewport"
+            );
+            assert_eq!(sizes.first(), sizes.last());
+        }
+
+        // Phase `find_handoff_restores_focus_before_first_character_dispatch`.
+        {
+            let capture = TestEngine::new();
+            let mut widget = BrowserWidget::with_engine(capture.clone(), true);
+            compose(&mut widget);
+            widget
+                .daily
+                .act(crate::daily_controls::Action::Open, &widget.engine);
+            let mut tree = TaffyTree::new();
+            let mut nodes = std::collections::HashMap::new();
+            let node = widget.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+            // The host restores its previous focus after rebuilding. The next
+            // event must reapply the pending find focus before dispatching text.
+            widget.focus_control("browser.surface");
+            let mut doc = AutoCommit::new();
+            let mut target = None;
+            for letter in ["N", "e", "e", "d", "l", "e"] {
+                let mut event = key(WNamedKey::Enter);
+                if let WindowEvent::KeyboardInput { event, .. } = &mut event {
+                    event.logical_key = WKey::Character(letter.into());
+                    event.text = Some(letter.into());
+                }
+                widget.handle_event(
                     &event,
-                    (if cfg!(target_os = "macos") {
-                        winit::keyboard::ModifiersState::SUPER
-                    } else {
-                        winit::keyboard::ModifiersState::CONTROL
-                    })
-                    .into()
-                ),
-                "{letter}"
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: &mut doc,
+                        path: &automerge::ROOT,
+                        handled: &mut false,
+                        focus_target: &mut target,
+                        node_id: node,
+                        taffy: &tree,
+                    },
+                );
+                widget.daily.sync(&widget.engine);
+            }
+            widget.daily.sync(&widget.engine);
+            assert!(widget.control_focused(crate::daily_controls::FIND_INPUT));
+            assert!(
+                capture.commands().iter().any(|command| matches!(command,
+                WebViewCommand::Find { text, .. } if text == "Needle")),
+                "{:?}",
+                capture.commands()
+            );
+        }
+
+        // Phase `daily_shortcuts_capture_find_zoom_bookmark_but_leave_plain_typing`.
+        {
+            let mut widget = BrowserWidget::new_headless();
+            for letter in ["f", "+", "-", "0", "d"] {
+                let mut event = key(WNamedKey::Enter);
+                if let WindowEvent::KeyboardInput { event, .. } = &mut event {
+                    event.logical_key = WKey::Character(letter.into());
+                }
+                assert!(
+                    !widget.handle_browser_shortcut(&event, winit::event::Modifiers::default())
+                );
+                assert!(
+                    widget.handle_browser_shortcut(
+                        &event,
+                        (if cfg!(target_os = "macos") {
+                            winit::keyboard::ModifiersState::SUPER
+                        } else {
+                            winit::keyboard::ModifiersState::CONTROL
+                        })
+                        .into()
+                    ),
+                    "{letter}"
+                );
+            }
+        }
+    }
+
+    /// Loading state: stop contract, animation scheduling, and when loading starts and ends.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn loading_state_starts_stops_and_animates_only_while_live() {
+        // Phase `stop_contract_completes_and_queued_progress_cannot_restart_loading`.
+        {
+            struct QueuedEngine {
+                events: std::sync::Mutex<Vec<WebViewEvent>>,
+                capture: std::sync::Arc<TestEngine>,
+            }
+            impl WebViewEngine for QueuedEngine {
+                fn send(&self, command: WebViewCommand) {
+                    self.capture.send(command);
+                }
+                fn frames(&self) -> ui::webview::FrameSlot {
+                    self.capture.frames()
+                }
+                fn drain_events(&self) -> Vec<WebViewEvent> {
+                    std::mem::take(&mut *self.events.lock().unwrap())
+                }
+            }
+            let capture = TestEngine::new();
+            let engine = std::sync::Arc::new(QueuedEngine {
+                events: std::sync::Mutex::new(Vec::new()),
+                capture: capture.clone(),
+            });
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            let invocation = ui::tilo_actions::InvocationId::new();
+            widget.resource_navigation_invocation = Some(invocation);
+            widget.set_loading_progress(0.2);
+            let mut doc = AutoCommit::new();
+            let resources = ui::resources::resources(&widget, &doc);
+            let stop = resources[0]
+                .children
+                .iter()
+                .find(|r| r.id.0 == "browser.page")
+                .unwrap()
+                .actions
+                .iter()
+                .find(|a| a.id == "stop")
+                .unwrap();
+            let encoded = stop.build_json(&serde_json::Map::new()).unwrap();
+            let result = widget
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        stop.kind,
+                        &encoded.type_id,
+                        &encoded.payload,
+                    ),
+                    &mut doc,
+                    &automerge::ROOT,
+                )
+                .unwrap();
+            let Some(ui::widget::ResourceOperationStart::Completed(output)) = result else {
+                panic!("Stop must complete immediately");
+            };
+            assert!(stop.contract.result.validate(&output).is_ok());
+            assert!(matches!(
+                widget.resource_navigation_result,
+                Some(ui::tilo_actions::InvocationUpdate::Failed { .. })
+            ));
+            engine
+                .events
+                .lock()
+                .unwrap()
+                .push(WebViewEvent::LoadProgress(0.4));
+            widget.apply_engine_events();
+            assert!((widget.progress - 1.0).abs() < f64::EPSILON);
+            assert!(capture.commands().contains(&WebViewCommand::StopLoading));
+            widget
+                .perform_browser_operation(BrowserOperation::Reload)
+                .unwrap();
+            engine
+                .events
+                .lock()
+                .unwrap()
+                .push(WebViewEvent::LoadProgress(0.6));
+            widget.apply_engine_events();
+            assert!((widget.progress - 0.6).abs() < f64::EPSILON);
+        }
+
+        // Phase `stopped_and_reduced_motion_loading_do_not_schedule_animation`.
+        {
+            let engine = TestEngine::new();
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            widget
+                .perform_browser_operation(BrowserOperation::Navigate {
+                    url: "https://a.test".into(),
+                })
+                .unwrap();
+            let mut composed = widget.build_composition(&Theme::dark());
+            composed.set_motion_reduced(true);
+            let mut theme = Theme::dark();
+            theme.reduce_motion = true;
+            composed.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+                &PresenceCtx::default(),
+            );
+            assert!(!composed.needs_animation_frame());
+            widget
+                .perform_browser_operation(BrowserOperation::Stop)
+                .unwrap();
+            assert!((widget.progress - 1.0).abs() < f64::EPSILON);
+            assert!(engine.commands().contains(&WebViewCommand::StopLoading));
+            assert!(widget.take_structure_dirty());
+        }
+
+        // Phase `navigation_starts_loading_before_engine_callbacks`.
+        {
+            let engine = TestEngine::new();
+            let mut widget = BrowserWidget::with_engine(engine, true);
+            widget
+                .perform_browser_operation(BrowserOperation::Navigate {
+                    url: "https://a.test".into(),
+                })
+                .unwrap();
+            assert!(
+                widget.progress < 1.0,
+                "navigation must paint loading before callbacks"
+            );
+            let composed = widget.build_composition(&Theme::dark());
+            assert!(
+                composed.needs_animation_frame(),
+                "loading indicator animates immediately"
+            );
+            widget.apply_engine_events();
+            assert!((widget.progress - 1.0).abs() < f64::EPSILON);
+            // Paint the new engine frame once before checking idle scheduling.
+            let mut composed = widget.build_composition(&Theme::dark());
+            composed.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &PresenceCtx::default(),
+            );
+            assert!(!composed.needs_animation_frame());
+        }
+
+        // Phase `fresh_live_surface_starts_loading_and_failure_stops_it`.
+        {
+            let engine = ui::webview::chromium::UnavailableEngine::new("offline".into());
+            let mut widget = BrowserWidget::with_engine(engine, false);
+            assert!(
+                widget.progress < 1.0,
+                "new tab is visibly loading before bootstrap"
+            );
+            widget
+                .engine
+                .send(WebViewCommand::Navigate("https://a.test".into()));
+            widget.apply_engine_events();
+            assert!((widget.progress - 1.0).abs() < f64::EPSILON);
+            assert!(
+                !widget
+                    .build_composition(&Theme::dark())
+                    .needs_animation_frame()
             );
         }
     }
 
+    /// Every hosted affordance is a canonical action; presentation stays peer-local.
     #[test]
-    fn hold_back_requests_real_session_history_and_release_does_not_navigate() {
-        let engine = TestEngine::new();
-        for url in ["https://a.test", "https://b.test", "https://c.test"] {
-            engine.send(WebViewCommand::Navigate(url.into()));
-        }
-        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-        super::tests::layout_at(&mut widget, 900.0, 700.0);
-        widget.cursor = widget.find_rect("browser.back").unwrap().center();
-        assert!(dispatch_back_event(
-            &mut widget,
-            &mouse(MouseButton::Left, ElementState::Pressed)
-        ));
-        assert_eq!(engine.current_uri().as_deref(), Some("https://c.test"));
-        widget.tick_back_hold(std::time::Instant::now() + std::time::Duration::from_millis(451));
-        widget.apply_engine_events();
-        assert!(widget.back_menu.is_open());
-        assert_eq!(
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn hosted_browser_affordances_are_canonical_peer_local_actions() {
+        // Phase `composed_download_save_action_reaches_native_callback`.
+        {
+            let capture = TestEngine::new();
+            let mut widget = BrowserWidget::with_engine(capture.clone(), true);
             widget
-                .back_entries
-                .iter()
-                .map(|e| e.url.as_str())
-                .collect::<Vec<_>>(),
-            ["https://b.test", "https://a.test"]
-        );
-        assert!(dispatch_back_event(
-            &mut widget,
-            &mouse(MouseButton::Left, ElementState::Released)
-        ));
-        assert!(widget.pending_controls.is_empty());
-        assert_eq!(engine.current_uri().as_deref(), Some("https://c.test"));
-        let accessible = widget.back_menu.accessibility().unwrap();
-        assert_eq!(accessible.children.len(), 2);
-        assert!(dispatch_back_event(&mut widget, &key(WNamedKey::ArrowDown)));
-        assert!(dispatch_back_event(&mut widget, &key(WNamedKey::ArrowDown)));
-        assert!(dispatch_back_event(&mut widget, &key(WNamedKey::Enter)));
-        assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
-        engine.send(WebViewCommand::GoForward);
-        assert_eq!(engine.current_uri().as_deref(), Some("https://b.test"));
+                .capabilities
+                .apply(WebViewEvent::NativeDownloadRequested {
+                    id: 1,
+                    url: "https://test.example/file".into(),
+                    name: "file.txt".into(),
+                });
+            compose(&mut widget);
+            let result = widget
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        "tilo.ui.control.invoke",
+                        &serde_json::to_vec("browser.decision.false.1.true").unwrap(),
+                    ),
+                    &mut AutoCommit::new(),
+                    &automerge::ROOT,
+                )
+                .unwrap();
+            assert!(result.is_some());
+            assert!(
+                capture
+                    .commands()
+                    .contains(&WebViewCommand::DownloadDecision { id: 1, allow: true })
+            );
+        }
+
+        // Phase `cached_document_projection_observes_new_bookmark_actions`.
+        {
+            use automerge::transaction::Transactable;
+            let mut widget = BrowserWidget::new_headless();
+            let mut doc = AutoCommit::new();
+            widget.sync(&mut doc, &automerge::ROOT);
+            let row = doc
+                .put_object(
+                    automerge::ROOT,
+                    "browser.bookmarks.v2.add:one",
+                    automerge::ObjType::Map,
+                )
+                .unwrap();
+            doc.put(&row, "url", "https://new.test").unwrap();
+            doc.put(&row, "title", "New").unwrap();
+            widget.sync(&mut doc, &automerge::ROOT);
+            assert!(widget.bookmarks.contains("https://new.test"));
+            doc.put(automerge::ROOT, "browser.bookmarks.v2.remove:one", true)
+                .unwrap();
+            widget.sync(&mut doc, &automerge::ROOT);
+            assert!(!widget.bookmarks.contains("https://new.test"));
+        }
+
+        // Phase `presentation_operations_are_peer_local_and_do_not_mutate_the_document`.
+        {
+            let mut left = BrowserWidget::new_headless();
+            let right = BrowserWidget::new_headless();
+            let mut doc = AutoCommit::new();
+            let before = doc.save();
+            left.perform_browser_operation(BrowserOperation::ShowLibrary {
+                section: LibrarySection::Bookmarks,
+            })
+            .unwrap();
+            assert!(left.show_library);
+            assert!(!right.show_library);
+            assert_eq!(
+                doc.save(),
+                before,
+                "showing a local pane is not a shared mutation"
+            );
+        }
+
+        // Phase `every_hosted_browser_affordance_uses_a_canonical_action`.
+        {
+            let mut page = BrowserWidget::new_headless();
+            compose(&mut page);
+            assert_no_document_control_paths(&page);
+            for (control, resource, action) in [
+                ("browser.back", "browser.page", "back"),
+                ("browser.forward", "browser.page", "forward"),
+                ("browser.reload", "browser.page", "reload"),
+                ("browser.bookmark", "browser.page", "bookmark"),
+                (
+                    "browser.history-pause",
+                    "browser.session",
+                    "toggle-history-pause",
+                ),
+                ("browser.library", "browser.history", "show"),
+                ("browser.pip", "browser.page", "picture-in-picture"),
+                ("browser.settings", "browser.settings", "show"),
+            ] {
+                assert_action_binding(&page, control, resource, action);
+            }
+
+            let mut library = BrowserWidget::new_headless();
+            library.debug_show_library("history");
+            compose(&mut library);
+            assert_no_document_control_paths(&library);
+            assert_action_binding(
+                &library,
+                "browser.library.clear-filter",
+                "browser.library",
+                "clear-filter",
+            );
+
+            let mut settings = BrowserWidget::new_headless();
+            settings.show_settings = true;
+            compose(&mut settings);
+            assert_no_document_control_paths(&settings);
+            for (control, resource, action) in [
+                ("browser.settings", "browser", "show-page"),
+                ("settings.close", "browser", "show-page"),
+                ("settings.adblock", "browser.settings", "set-adblock"),
+                (
+                    "settings.clear_on_exit",
+                    "browser.settings",
+                    "set-clear-on-exit",
+                ),
+                ("settings.clear_history", "browser.history", "clear"),
+                (
+                    "settings.clear_cookies",
+                    "browser.settings",
+                    "request-site-data-clear",
+                ),
+            ] {
+                assert_action_binding(&settings, control, resource, action);
+            }
+        }
     }
 
+    /// Back/forward history menus request real session history, split entries and drop stale replies.
     #[test]
-    fn compact_forward_button_exposes_directional_history() {
-        let engine = TestEngine::new();
-        for url in ["https://a.test", "https://b.test"] {
-            engine.send(WebViewCommand::Navigate(url.into()));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn session_history_menus_request_real_entries_and_ignore_stale_replies() {
+        // Phase `hold_back_requests_real_session_history_and_release_does_not_navigate`.
+        {
+            let engine = TestEngine::new();
+            for url in ["https://a.test", "https://b.test", "https://c.test"] {
+                engine.send(WebViewCommand::Navigate(url.into()));
+            }
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            super::tests::layout_at(&mut widget, 900.0, 700.0);
+            widget.cursor = widget.find_rect("browser.back").unwrap().center();
+            assert!(dispatch_back_event(
+                &mut widget,
+                &mouse(MouseButton::Left, ElementState::Pressed)
+            ));
+            assert_eq!(engine.current_uri().as_deref(), Some("https://c.test"));
+            widget.tick_back_hold(ui::time::now() + std::time::Duration::from_millis(451));
+            widget.apply_engine_events();
+            assert!(widget.back_menu.is_open());
+            assert_eq!(
+                widget
+                    .back_entries
+                    .iter()
+                    .map(|e| e.url.as_str())
+                    .collect::<Vec<_>>(),
+                ["https://b.test", "https://a.test"]
+            );
+            assert!(dispatch_back_event(
+                &mut widget,
+                &mouse(MouseButton::Left, ElementState::Released)
+            ));
+            assert!(widget.pending_controls.is_empty());
+            assert_eq!(engine.current_uri().as_deref(), Some("https://c.test"));
+            let accessible = widget.back_menu.accessibility().unwrap();
+            assert_eq!(accessible.children.len(), 2);
+            assert!(dispatch_back_event(&mut widget, &key(WNamedKey::ArrowDown)));
+            assert!(dispatch_back_event(&mut widget, &key(WNamedKey::ArrowDown)));
+            assert!(dispatch_back_event(&mut widget, &key(WNamedKey::Enter)));
+            assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
+            engine.send(WebViewCommand::GoForward);
+            assert_eq!(engine.current_uri().as_deref(), Some("https://b.test"));
         }
-        engine.send(WebViewCommand::GoBack);
-        let mut widget = BrowserWidget::with_engine(engine, true);
-        widget.debug_set_viewport_width(360);
-        super::tests::layout_at(&mut widget, 360.0, 700.0);
-        widget.apply_engine_events();
-        let forward = widget
-            .find_rect("browser.forward")
-            .expect("compact Forward must remain visible");
-        assert!(forward.width() >= 30.0 && forward.x0 >= 0.0 && forward.x1 <= 360.0);
-        widget.cursor = forward.center();
-        assert!(dispatch_back_event(
-            &mut widget,
-            &mouse(MouseButton::Right, ElementState::Pressed)
-        ));
-        widget.apply_engine_events();
-        assert!(widget.back_menu.is_open());
-        assert_eq!(
-            widget
-                .back_entries
-                .iter()
-                .map(|entry| entry.url.as_str())
-                .collect::<Vec<_>>(),
-            ["https://b.test"]
-        );
-    }
 
-    #[test]
-    fn current_entry_splits_nearest_back_and_forward_history_and_forward_hold_opens_once() {
-        let engine = TestEngine::new();
-        for url in ["https://a.test", "https://b.test", "https://c.test"] {
-            engine.send(WebViewCommand::Navigate(url.into()));
+        // Phase `compact_forward_button_exposes_directional_history`.
+        {
+            let engine = TestEngine::new();
+            for url in ["https://a.test", "https://b.test"] {
+                engine.send(WebViewCommand::Navigate(url.into()));
+            }
+            engine.send(WebViewCommand::GoBack);
+            let mut widget = BrowserWidget::with_engine(engine, true);
+            widget.debug_set_viewport_width(360);
+            super::tests::layout_at(&mut widget, 360.0, 700.0);
+            widget.apply_engine_events();
+            let forward = widget
+                .find_rect("browser.forward")
+                .expect("compact Forward must remain visible");
+            assert!(forward.width() >= 30.0 && forward.x0 >= 0.0 && forward.x1 <= 360.0);
+            widget.cursor = forward.center();
+            assert!(dispatch_back_event(
+                &mut widget,
+                &mouse(MouseButton::Right, ElementState::Pressed)
+            ));
+            widget.apply_engine_events();
+            assert!(widget.back_menu.is_open());
+            assert_eq!(
+                widget
+                    .back_entries
+                    .iter()
+                    .map(|entry| entry.url.as_str())
+                    .collect::<Vec<_>>(),
+                ["https://b.test"]
+            );
         }
-        engine.send(WebViewCommand::GoBack);
-        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-        super::tests::layout_at(&mut widget, 900.0, 700.0);
-        widget.apply_engine_events();
-        widget.cursor = widget.find_rect("browser.back").unwrap().center();
-        assert!(dispatch_back_event(
-            &mut widget,
-            &mouse(MouseButton::Right, ElementState::Pressed)
-        ));
-        widget.apply_engine_events();
-        assert_eq!(
-            widget
-                .back_entries
-                .iter()
-                .map(|entry| (entry.id, entry.url.as_str()))
-                .collect::<Vec<_>>(),
-            [(1, "https://a.test")]
-        );
-        assert!(dispatch_back_event(&mut widget, &key(WNamedKey::Escape)));
-        widget.cursor = widget.find_rect("browser.forward").unwrap().center();
 
-        assert!(dispatch_back_event(
-            &mut widget,
-            &mouse(MouseButton::Left, ElementState::Pressed)
-        ));
-        widget.tick_back_hold(std::time::Instant::now() + std::time::Duration::from_millis(451));
-        widget.apply_engine_events();
+        // Phase `current_entry_splits_nearest_back_and_forward_history_and_forward_hold_opens_once`.
+        {
+            let engine = TestEngine::new();
+            for url in ["https://a.test", "https://b.test", "https://c.test"] {
+                engine.send(WebViewCommand::Navigate(url.into()));
+            }
+            engine.send(WebViewCommand::GoBack);
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            super::tests::layout_at(&mut widget, 900.0, 700.0);
+            widget.apply_engine_events();
+            widget.cursor = widget.find_rect("browser.back").unwrap().center();
+            assert!(dispatch_back_event(
+                &mut widget,
+                &mouse(MouseButton::Right, ElementState::Pressed)
+            ));
+            widget.apply_engine_events();
+            assert_eq!(
+                widget
+                    .back_entries
+                    .iter()
+                    .map(|entry| (entry.id, entry.url.as_str()))
+                    .collect::<Vec<_>>(),
+                [(1, "https://a.test")]
+            );
+            assert!(dispatch_back_event(&mut widget, &key(WNamedKey::Escape)));
+            widget.cursor = widget.find_rect("browser.forward").unwrap().center();
 
-        assert!(widget.back_menu.is_open());
-        assert_eq!(
-            widget
-                .back_entries
-                .iter()
-                .map(|entry| (entry.id, entry.url.as_str()))
-                .collect::<Vec<_>>(),
-            [(3, "https://c.test")]
-        );
-        let request_count = engine
-            .commands()
-            .iter()
-            .filter(|command| matches!(command, WebViewCommand::RequestNavigationHistory { .. }))
-            .count();
-        widget.tick_back_hold(std::time::Instant::now() + std::time::Duration::from_millis(900));
-        assert_eq!(
-            engine
+            assert!(dispatch_back_event(
+                &mut widget,
+                &mouse(MouseButton::Left, ElementState::Pressed)
+            ));
+            widget.tick_back_hold(ui::time::now() + std::time::Duration::from_millis(451));
+            widget.apply_engine_events();
+
+            assert!(widget.back_menu.is_open());
+            assert_eq!(
+                widget
+                    .back_entries
+                    .iter()
+                    .map(|entry| (entry.id, entry.url.as_str()))
+                    .collect::<Vec<_>>(),
+                [(3, "https://c.test")]
+            );
+            let request_count = engine
                 .commands()
                 .iter()
-                .filter(|command| matches!(
-                    command,
-                    WebViewCommand::RequestNavigationHistory { .. }
-                ))
-                .count(),
-            request_count
-        );
-        assert!(dispatch_back_event(
-            &mut widget,
-            &mouse(MouseButton::Left, ElementState::Released)
-        ));
-        assert_eq!(engine.current_uri().as_deref(), Some("https://b.test"));
-    }
-
-    #[test]
-    fn stale_history_reply_after_direction_or_page_change_is_ignored() {
-        struct DelayedEngine {
-            events: std::sync::Mutex<Vec<WebViewEvent>>,
-            capture: std::sync::Arc<TestEngine>,
-        }
-        impl WebViewEngine for DelayedEngine {
-            fn send(&self, command: WebViewCommand) {
-                self.capture.send(command);
-            }
-            fn frames(&self) -> ui::webview::FrameSlot {
-                self.capture.frames()
-            }
-            fn drain_events(&self) -> Vec<WebViewEvent> {
-                std::mem::take(&mut *self.events.lock().unwrap())
-            }
+                .filter(|command| {
+                    matches!(command, WebViewCommand::RequestNavigationHistory { .. })
+                })
+                .count();
+            widget.tick_back_hold(ui::time::now() + std::time::Duration::from_millis(900));
+            assert_eq!(
+                engine
+                    .commands()
+                    .iter()
+                    .filter(|command| matches!(
+                        command,
+                        WebViewCommand::RequestNavigationHistory { .. }
+                    ))
+                    .count(),
+                request_count
+            );
+            assert!(dispatch_back_event(
+                &mut widget,
+                &mouse(MouseButton::Left, ElementState::Released)
+            ));
+            assert_eq!(engine.current_uri().as_deref(), Some("https://b.test"));
         }
 
-        let capture = TestEngine::new();
-        let engine = std::sync::Arc::new(DelayedEngine {
-            events: std::sync::Mutex::new(Vec::new()),
-            capture,
-        });
-        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-        super::tests::layout_at(&mut widget, 900.0, 700.0);
-        widget.can_go_back = true;
-        widget.can_go_forward = true;
-        widget.current_uri = "https://b.test".into();
+        // Phase `stale_history_reply_after_direction_or_page_change_is_ignored`.
+        {
+            struct DelayedEngine {
+                events: std::sync::Mutex<Vec<WebViewEvent>>,
+                capture: std::sync::Arc<TestEngine>,
+            }
+            impl WebViewEngine for DelayedEngine {
+                fn send(&self, command: WebViewCommand) {
+                    self.capture.send(command);
+                }
+                fn frames(&self) -> ui::webview::FrameSlot {
+                    self.capture.frames()
+                }
+                fn drain_events(&self) -> Vec<WebViewEvent> {
+                    std::mem::take(&mut *self.events.lock().unwrap())
+                }
+            }
 
-        widget.request_navigation_history(ui::webview::NavigationDirection::Back);
-        widget.request_navigation_history(ui::webview::NavigationDirection::Forward);
-        let stale_direction_request = widget.history_request;
-        engine
-            .events
-            .lock()
-            .unwrap()
-            .push(WebViewEvent::NavigationHistory {
-                request_id: stale_direction_request,
-                direction: ui::webview::NavigationDirection::Back,
-                entries: vec![ui::webview::NavigationEntry {
-                    id: 11,
-                    url: "https://a.test".into(),
-                    title: "A".into(),
-                }],
+            let capture = TestEngine::new();
+            let engine = std::sync::Arc::new(DelayedEngine {
+                events: std::sync::Mutex::new(Vec::new()),
+                capture,
             });
-        widget.apply_engine_events();
-        assert!(!widget.back_menu.is_open());
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            super::tests::layout_at(&mut widget, 900.0, 700.0);
+            widget.can_go_back = true;
+            widget.can_go_forward = true;
+            widget.current_uri = "https://b.test".into();
 
-        let stale_page_request = widget.history_request;
-        engine.events.lock().unwrap().extend([
-            WebViewEvent::UriChanged("https://new.test".into()),
-            WebViewEvent::NavigationHistory {
-                request_id: stale_page_request,
-                direction: ui::webview::NavigationDirection::Forward,
-                entries: vec![ui::webview::NavigationEntry {
-                    id: 33,
-                    url: "https://c.test".into(),
-                    title: "C".into(),
-                }],
-            },
-        ]);
-        widget.apply_engine_events();
-        assert!(!widget.back_menu.is_open());
-    }
-
-    #[test]
-    fn stale_media_event_from_same_url_reload_is_ignored_by_generation() {
-        struct EventEngine {
-            events: std::sync::Mutex<Vec<WebViewEvent>>,
-            capture: std::sync::Arc<TestEngine>,
-        }
-        impl WebViewEngine for EventEngine {
-            fn send(&self, command: WebViewCommand) {
-                self.capture.send(command);
-            }
-            fn frames(&self) -> ui::webview::FrameSlot {
-                self.capture.frames()
-            }
-            fn drain_events(&self) -> Vec<WebViewEvent> {
-                std::mem::take(&mut *self.events.lock().unwrap())
-            }
-        }
-        let engine = std::sync::Arc::new(EventEngine {
-            events: std::sync::Mutex::new(vec![
-                WebViewEvent::UriChanged("https://media.test/".into()),
-                WebViewEvent::MediaPlayingChanged {
-                    page_url: "https://media.test/".into(),
-                    document_generation: 8,
-                    playing: true,
-                },
-                WebViewEvent::MediaPlayingChanged {
-                    page_url: "https://media.test/".into(),
-                    document_generation: 7,
-                    playing: false,
-                },
-            ]),
-            capture: TestEngine::new(),
-        });
-        let mut widget = BrowserWidget::with_engine(engine, true);
-        widget.apply_engine_events();
-        assert!(widget.media_playing);
-        assert_eq!(widget.media_document_generation, Some(8));
-    }
-
-    #[test]
-    fn fullscreen_events_and_renderer_loss_drive_tab_state() {
-        struct FullscreenEngine {
-            events: std::sync::Mutex<Vec<WebViewEvent>>,
-            capture: std::sync::Arc<TestEngine>,
-        }
-        impl WebViewEngine for FullscreenEngine {
-            fn send(&self, command: WebViewCommand) {
-                self.capture.send(command);
-            }
-            fn frames(&self) -> ui::webview::FrameSlot {
-                self.capture.frames()
-            }
-            fn drain_events(&self) -> Vec<WebViewEvent> {
-                std::mem::take(&mut *self.events.lock().unwrap())
-            }
-        }
-        let capture = TestEngine::new();
-        let engine = std::sync::Arc::new(FullscreenEngine {
-            events: std::sync::Mutex::new(vec![WebViewEvent::FullscreenChanged(true)]),
-            capture: capture,
-        });
-        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-
-        widget.apply_engine_events();
-        assert!(widget.content_fullscreen());
-        assert!(widget.take_structure_dirty());
-
-        engine
-            .events
-            .lock()
-            .unwrap()
-            .push(WebViewEvent::RendererTerminated);
-        widget.apply_engine_events();
-        assert!(!widget.content_fullscreen());
-        assert!(widget.take_structure_dirty());
-
-        engine.events.lock().unwrap().extend([
-            WebViewEvent::FullscreenChanged(true),
-            WebViewEvent::FullscreenChanged(false),
-        ]);
-        widget.apply_engine_events();
-        assert!(!widget.content_fullscreen());
-    }
-
-    #[test]
-    fn exiting_content_fullscreen_is_idempotent_and_routes_native_command_once() {
-        let engine = TestEngine::new();
-        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-        widget.content_fullscreen = true;
-
-        assert!(widget.exit_content_fullscreen());
-        assert!(!widget.exit_content_fullscreen());
-        assert!(!widget.content_fullscreen());
-        assert_eq!(
+            widget.request_navigation_history(ui::webview::NavigationDirection::Back);
+            widget.request_navigation_history(ui::webview::NavigationDirection::Forward);
+            let stale_direction_request = widget.history_request;
             engine
-                .commands()
-                .iter()
-                .filter(|command| matches!(command, WebViewCommand::ExitFullscreen))
-                .count(),
-            1
-        );
+                .events
+                .lock()
+                .unwrap()
+                .push(WebViewEvent::NavigationHistory {
+                    request_id: stale_direction_request,
+                    direction: ui::webview::NavigationDirection::Back,
+                    entries: vec![ui::webview::NavigationEntry {
+                        id: 11,
+                        url: "https://a.test".into(),
+                        title: "A".into(),
+                    }],
+                });
+            widget.apply_engine_events();
+            assert!(!widget.back_menu.is_open());
+
+            let stale_page_request = widget.history_request;
+            engine.events.lock().unwrap().extend([
+                WebViewEvent::UriChanged("https://new.test".into()),
+                WebViewEvent::NavigationHistory {
+                    request_id: stale_page_request,
+                    direction: ui::webview::NavigationDirection::Forward,
+                    entries: vec![ui::webview::NavigationEntry {
+                        id: 33,
+                        url: "https://c.test".into(),
+                        title: "C".into(),
+                    }],
+                },
+            ]);
+            widget.apply_engine_events();
+            assert!(!widget.back_menu.is_open());
+        }
     }
 
+    /// Media generation, fullscreen and renderer-loss events.
     #[test]
-    fn back_click_and_cancel_route_without_accidental_navigation() {
-        let engine = TestEngine::new();
-        engine.send(WebViewCommand::Navigate("https://a.test".into()));
-        engine.send(WebViewCommand::Navigate("https://b.test".into()));
-        let mut widget = BrowserWidget::with_engine(engine, true);
-        super::tests::layout_at(&mut widget, 900.0, 700.0);
-        widget.cursor = widget.find_rect("browser.back").unwrap().center();
-        dispatch_back_event(
-            &mut widget,
-            &mouse(MouseButton::Left, ElementState::Pressed),
-        );
-        dispatch_back_event(
-            &mut widget,
-            &mouse(MouseButton::Left, ElementState::Released),
-        );
-        assert_eq!(widget.pending_controls.len(), 1);
-        widget.pending_controls.clear();
-        dispatch_back_event(
-            &mut widget,
-            &mouse(MouseButton::Left, ElementState::Pressed),
-        );
-        dispatch_back_event(&mut widget, &WindowEvent::Focused(false));
-        dispatch_back_event(
-            &mut widget,
-            &mouse(MouseButton::Left, ElementState::Released),
-        );
-        assert!(widget.pending_controls.is_empty());
-        assert!(!widget.navigation_hold.waiting());
-        dispatch_back_event(
-            &mut widget,
-            &mouse(MouseButton::Right, ElementState::Pressed),
-        );
-        widget.apply_engine_events();
-        assert!(widget.back_menu.is_open());
-        assert!(dispatch_back_event(&mut widget, &key(WNamedKey::Escape)));
-        assert!(!widget.back_menu.is_open());
-        dispatch_back_event(
-            &mut widget,
-            &mouse(MouseButton::Right, ElementState::Pressed),
-        );
-        widget.apply_engine_events();
-        assert!(widget.back_menu.is_open());
-        widget.cursor = Point::new(850.0, 650.0);
-        dispatch_back_event(
-            &mut widget,
-            &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(850.0, 650.0),
-            },
-        );
-        assert!(dispatch_back_event(
-            &mut widget,
-            &mouse(MouseButton::Left, ElementState::Pressed)
-        ));
-        assert!(!widget.back_menu.is_open());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn media_fullscreen_and_renderer_events_drive_tab_state() {
+        // Phase `stale_media_event_from_same_url_reload_is_ignored_by_generation`.
+        {
+            struct EventEngine {
+                events: std::sync::Mutex<Vec<WebViewEvent>>,
+                capture: std::sync::Arc<TestEngine>,
+            }
+            impl WebViewEngine for EventEngine {
+                fn send(&self, command: WebViewCommand) {
+                    self.capture.send(command);
+                }
+                fn frames(&self) -> ui::webview::FrameSlot {
+                    self.capture.frames()
+                }
+                fn drain_events(&self) -> Vec<WebViewEvent> {
+                    std::mem::take(&mut *self.events.lock().unwrap())
+                }
+            }
+            let engine = std::sync::Arc::new(EventEngine {
+                events: std::sync::Mutex::new(vec![
+                    WebViewEvent::UriChanged("https://media.test/".into()),
+                    WebViewEvent::MediaPlayingChanged {
+                        page_url: "https://media.test/".into(),
+                        document_generation: 8,
+                        playing: true,
+                    },
+                    WebViewEvent::MediaPlayingChanged {
+                        page_url: "https://media.test/".into(),
+                        document_generation: 7,
+                        playing: false,
+                    },
+                ]),
+                capture: TestEngine::new(),
+            });
+            let mut widget = BrowserWidget::with_engine(engine, true);
+            widget.apply_engine_events();
+            assert!(widget.media_playing);
+            assert_eq!(widget.media_document_generation, Some(8));
+        }
+
+        // Phase `fullscreen_events_and_renderer_loss_drive_tab_state`.
+        {
+            struct FullscreenEngine {
+                events: std::sync::Mutex<Vec<WebViewEvent>>,
+                capture: std::sync::Arc<TestEngine>,
+            }
+            impl WebViewEngine for FullscreenEngine {
+                fn send(&self, command: WebViewCommand) {
+                    self.capture.send(command);
+                }
+                fn frames(&self) -> ui::webview::FrameSlot {
+                    self.capture.frames()
+                }
+                fn drain_events(&self) -> Vec<WebViewEvent> {
+                    std::mem::take(&mut *self.events.lock().unwrap())
+                }
+            }
+            let capture = TestEngine::new();
+            let engine = std::sync::Arc::new(FullscreenEngine {
+                events: std::sync::Mutex::new(vec![WebViewEvent::FullscreenChanged(true)]),
+                capture: capture,
+            });
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+
+            widget.apply_engine_events();
+            assert!(widget.content_fullscreen());
+            assert!(widget.take_structure_dirty());
+
+            engine
+                .events
+                .lock()
+                .unwrap()
+                .push(WebViewEvent::RendererTerminated);
+            widget.apply_engine_events();
+            assert!(!widget.content_fullscreen());
+            assert!(widget.take_structure_dirty());
+
+            engine.events.lock().unwrap().extend([
+                WebViewEvent::FullscreenChanged(true),
+                WebViewEvent::FullscreenChanged(false),
+            ]);
+            widget.apply_engine_events();
+            assert!(!widget.content_fullscreen());
+        }
+
+        // Phase `exiting_content_fullscreen_is_idempotent_and_routes_native_command_once`.
+        {
+            let engine = TestEngine::new();
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            widget.content_fullscreen = true;
+
+            assert!(widget.exit_content_fullscreen());
+            assert!(!widget.exit_content_fullscreen());
+            assert!(!widget.content_fullscreen());
+            assert_eq!(
+                engine
+                    .commands()
+                    .iter()
+                    .filter(|command| matches!(command, WebViewCommand::ExitFullscreen))
+                    .count(),
+                1
+            );
+        }
     }
 
+    /// Back/forward click, cancel, keyboard and accessible activation paths.
     #[test]
-    fn history_keyboard_open_and_accessible_activation_use_session_entry() {
-        fn focus_back(widget: &mut dyn Widget) {
-            widget.set_focus(widget.test_id() == Some("browser.back"));
-            for child in widget.children_mut() {
-                focus_back(child);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn back_forward_controls_open_session_entries_without_accidental_navigation() {
+        // Phase `back_click_and_cancel_route_without_accidental_navigation`.
+        {
+            let engine = TestEngine::new();
+            engine.send(WebViewCommand::Navigate("https://a.test".into()));
+            engine.send(WebViewCommand::Navigate("https://b.test".into()));
+            let mut widget = BrowserWidget::with_engine(engine, true);
+            super::tests::layout_at(&mut widget, 900.0, 700.0);
+            widget.cursor = widget.find_rect("browser.back").unwrap().center();
+            dispatch_back_event(
+                &mut widget,
+                &mouse(MouseButton::Left, ElementState::Pressed),
+            );
+            dispatch_back_event(
+                &mut widget,
+                &mouse(MouseButton::Left, ElementState::Released),
+            );
+            assert_eq!(widget.pending_controls.len(), 1);
+            widget.pending_controls.clear();
+            dispatch_back_event(
+                &mut widget,
+                &mouse(MouseButton::Left, ElementState::Pressed),
+            );
+            dispatch_back_event(&mut widget, &WindowEvent::Focused(false));
+            dispatch_back_event(
+                &mut widget,
+                &mouse(MouseButton::Left, ElementState::Released),
+            );
+            assert!(widget.pending_controls.is_empty());
+            assert!(!widget.navigation_hold.waiting());
+            dispatch_back_event(
+                &mut widget,
+                &mouse(MouseButton::Right, ElementState::Pressed),
+            );
+            widget.apply_engine_events();
+            assert!(widget.back_menu.is_open());
+            assert!(dispatch_back_event(&mut widget, &key(WNamedKey::Escape)));
+            assert!(!widget.back_menu.is_open());
+            dispatch_back_event(
+                &mut widget,
+                &mouse(MouseButton::Right, ElementState::Pressed),
+            );
+            widget.apply_engine_events();
+            assert!(widget.back_menu.is_open());
+            widget.cursor = Point::new(850.0, 650.0);
+            dispatch_back_event(
+                &mut widget,
+                &WindowEvent::CursorMoved {
+                    device_id: unsafe { std::mem::zeroed() },
+                    position: winit::dpi::PhysicalPosition::new(850.0, 650.0),
+                },
+            );
+            assert!(dispatch_back_event(
+                &mut widget,
+                &mouse(MouseButton::Left, ElementState::Pressed)
+            ));
+            assert!(!widget.back_menu.is_open());
+        }
+
+        // Phase `history_keyboard_open_and_accessible_activation_use_session_entry`.
+        {
+            fn focus_back(widget: &mut dyn Widget) {
+                widget.set_focus(widget.test_id() == Some("browser.back"));
+                for child in widget.children_mut() {
+                    focus_back(child);
+                }
+            }
+            let engine = TestEngine::new();
+            engine.send(WebViewCommand::Navigate("https://a.test".into()));
+            engine.send(WebViewCommand::Navigate("https://b.test".into()));
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            super::tests::layout_at(&mut widget, 900.0, 700.0);
+            focus_back(&mut widget);
+            assert!(dispatch_back_event(
+                &mut widget,
+                &key(WNamedKey::ContextMenu)
+            ));
+            widget.apply_engine_events();
+            assert!(widget.back_menu.is_open());
+            let node = widget.accessibility().unwrap();
+            let target = node.children[0].children[0].action_target.clone().unwrap();
+            assert!(widget.perform_semantic_action(
+                &target,
+                &ui::a11y::Action::Activate,
+                &mut AutoCommit::new(),
+                &automerge::ROOT
+            ));
+            assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
+            assert!(!widget.perform_semantic_action(
+                &target,
+                &ui::a11y::Action::Activate,
+                &mut AutoCommit::new(),
+                &automerge::ROOT
+            ));
+        }
+
+        // Phase `forward_history_keyboard_open_and_accessible_activation_use_session_entry`.
+        {
+            fn focus_forward(widget: &mut dyn Widget) {
+                widget.set_focus(widget.test_id() == Some("browser.forward"));
+                for child in widget.children_mut() {
+                    focus_forward(child);
+                }
+            }
+            let engine = TestEngine::new();
+            for url in ["https://a.test", "https://b.test", "https://c.test"] {
+                engine.send(WebViewCommand::Navigate(url.into()));
+            }
+            engine.send(WebViewCommand::GoBack);
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            super::tests::layout_at(&mut widget, 900.0, 700.0);
+            widget.apply_engine_events();
+            focus_forward(&mut widget);
+
+            assert!(dispatch_back_event(
+                &mut widget,
+                &key(WNamedKey::ContextMenu)
+            ));
+            widget.apply_engine_events();
+            let node = widget.accessibility().unwrap();
+            let target = node.children[0].children[0].action_target.clone().unwrap();
+            assert!(target.contains(":forward:"));
+            assert!(widget.perform_semantic_action(
+                &target,
+                &ui::a11y::Action::Activate,
+                &mut AutoCommit::new(),
+                &automerge::ROOT
+            ));
+            assert_eq!(engine.current_uri().as_deref(), Some("https://c.test"));
+        }
+
+        // Phase `missing_release_after_window_exit_does_not_capture_the_next_click`.
+        {
+            let engine = TestEngine::new();
+            engine.send(WebViewCommand::Navigate("https://a.test".into()));
+            engine.send(WebViewCommand::Navigate("https://b.test".into()));
+            let mut widget = BrowserWidget::with_engine(engine, true);
+            super::tests::layout_at(&mut widget, 900.0, 700.0);
+            widget.cursor = widget.find_rect("browser.back").unwrap().center();
+            dispatch_back_event(
+                &mut widget,
+                &mouse(MouseButton::Left, ElementState::Pressed),
+            );
+            dispatch_back_event(&mut widget, &WindowEvent::Focused(false));
+            widget.cursor = Point::new(800.0, 600.0);
+            assert!(!dispatch_back_event(
+                &mut widget,
+                &mouse(MouseButton::Left, ElementState::Released)
+            ));
+        }
+    }
+
+    /// Library open and filter controls.
+    #[test]
+    fn library_controls_are_bound_canonical_actions_with_stable_addresses() {
+        // Phase `library_open_controls_keep_stable_resource_addresses_after_reorder`.
+        {
+            let mut widget = BrowserWidget::new_headless();
+            widget
+                .history
+                .record_at("https://first.example", "First", 1);
+            widget
+                .history
+                .record_at("https://second.example", "Second", 2);
+            widget.show_library = true;
+            compose(&mut widget);
+            let bindings = ui::widget::controls::control_action_bindings(&widget);
+            for url in ["https://first.example", "https://second.example"] {
+                let resource = history_resource_id(url);
+                assert!(bindings.iter().any(|binding| {
+                    binding.control_id == format!("{resource}.open")
+                        && matches!(
+                            &binding.kind,
+                            ui::widget::ControlBindingKind::Action(address)
+                                if address.resource == resource && address.action == "open"
+                        )
+                }));
             }
         }
-        let engine = TestEngine::new();
-        engine.send(WebViewCommand::Navigate("https://a.test".into()));
-        engine.send(WebViewCommand::Navigate("https://b.test".into()));
-        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-        super::tests::layout_at(&mut widget, 900.0, 700.0);
-        focus_back(&mut widget);
-        assert!(dispatch_back_event(
-            &mut widget,
-            &key(WNamedKey::ContextMenu)
-        ));
-        widget.apply_engine_events();
-        assert!(widget.back_menu.is_open());
-        let node = widget.accessibility().unwrap();
-        let target = node.children[0].children[0].action_target.clone().unwrap();
-        assert!(widget.perform_semantic_action(
-            &target,
-            &ui::a11y::Action::Activate,
-            &mut AutoCommit::new(),
-            &automerge::ROOT
-        ));
-        assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
-        assert!(!widget.perform_semantic_action(
-            &target,
-            &ui::a11y::Action::Activate,
-            &mut AutoCommit::new(),
-            &automerge::ROOT
-        ));
-    }
 
-    #[test]
-    fn forward_history_keyboard_open_and_accessible_activation_use_session_entry() {
-        fn focus_forward(widget: &mut dyn Widget) {
-            widget.set_focus(widget.test_id() == Some("browser.forward"));
-            for child in widget.children_mut() {
-                focus_forward(child);
-            }
-        }
-        let engine = TestEngine::new();
-        for url in ["https://a.test", "https://b.test", "https://c.test"] {
-            engine.send(WebViewCommand::Navigate(url.into()));
-        }
-        engine.send(WebViewCommand::GoBack);
-        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-        super::tests::layout_at(&mut widget, 900.0, 700.0);
-        widget.apply_engine_events();
-        focus_forward(&mut widget);
+        // Phase `library_filter_is_a_local_canonical_action_with_a_bound_control`.
+        {
+            let mut widget = BrowserWidget::new_headless();
+            widget.debug_show_library("bookmarks");
+            compose(&mut widget);
+            assert_action_binding(
+                &widget,
+                "browser.library.clear-filter",
+                "browser.library",
+                "clear-filter",
+            );
 
-        assert!(dispatch_back_event(
-            &mut widget,
-            &key(WNamedKey::ContextMenu)
-        ));
-        widget.apply_engine_events();
-        let node = widget.accessibility().unwrap();
-        let target = node.children[0].children[0].action_target.clone().unwrap();
-        assert!(target.contains(":forward:"));
-        assert!(widget.perform_semantic_action(
-            &target,
-            &ui::a11y::Action::Activate,
-            &mut AutoCommit::new(),
-            &automerge::ROOT
-        ));
-        assert_eq!(engine.current_uri().as_deref(), Some("https://c.test"));
-    }
-
-    #[test]
-    fn missing_release_after_window_exit_does_not_capture_the_next_click() {
-        let engine = TestEngine::new();
-        engine.send(WebViewCommand::Navigate("https://a.test".into()));
-        engine.send(WebViewCommand::Navigate("https://b.test".into()));
-        let mut widget = BrowserWidget::with_engine(engine, true);
-        super::tests::layout_at(&mut widget, 900.0, 700.0);
-        widget.cursor = widget.find_rect("browser.back").unwrap().center();
-        dispatch_back_event(
-            &mut widget,
-            &mouse(MouseButton::Left, ElementState::Pressed),
-        );
-        dispatch_back_event(&mut widget, &WindowEvent::Focused(false));
-        widget.cursor = Point::new(800.0, 600.0);
-        assert!(!dispatch_back_event(
-            &mut widget,
-            &mouse(MouseButton::Left, ElementState::Released)
-        ));
-    }
-
-    #[test]
-    fn stopped_and_reduced_motion_loading_do_not_schedule_animation() {
-        let engine = TestEngine::new();
-        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-        widget
-            .perform_browser_operation(BrowserOperation::Navigate {
-                url: "https://a.test".into(),
-            })
-            .unwrap();
-        let mut composed = widget.build_composition(&Theme::dark());
-        composed.set_motion_reduced(true);
-        let mut theme = Theme::dark();
-        theme.reduce_motion = true;
-        composed.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &theme,
-            &PresenceCtx::default(),
-        );
-        assert!(!composed.needs_animation_frame());
-        widget
-            .perform_browser_operation(BrowserOperation::Stop)
-            .unwrap();
-        assert!((widget.progress - 1.0).abs() < f64::EPSILON);
-        assert!(engine.commands().contains(&WebViewCommand::StopLoading));
-        assert!(widget.take_structure_dirty());
-    }
-
-    #[test]
-    fn cached_document_projection_observes_new_bookmark_actions() {
-        use automerge::transaction::Transactable;
-        let mut widget = BrowserWidget::new_headless();
-        let mut doc = AutoCommit::new();
-        widget.sync(&mut doc, &automerge::ROOT);
-        let row = doc
-            .put_object(
-                automerge::ROOT,
-                "browser.bookmarks.v2.add:one",
-                automerge::ObjType::Map,
-            )
-            .unwrap();
-        doc.put(&row, "url", "https://new.test").unwrap();
-        doc.put(&row, "title", "New").unwrap();
-        widget.sync(&mut doc, &automerge::ROOT);
-        assert!(widget.bookmarks.contains("https://new.test"));
-        doc.put(automerge::ROOT, "browser.bookmarks.v2.remove:one", true)
-            .unwrap();
-        widget.sync(&mut doc, &automerge::ROOT);
-        assert!(!widget.bookmarks.contains("https://new.test"));
-    }
-
-    #[test]
-    fn navigation_starts_loading_before_engine_callbacks() {
-        let engine = TestEngine::new();
-        let mut widget = BrowserWidget::with_engine(engine, true);
-        widget
-            .perform_browser_operation(BrowserOperation::Navigate {
-                url: "https://a.test".into(),
-            })
-            .unwrap();
-        assert!(
-            widget.progress < 1.0,
-            "navigation must paint loading before callbacks"
-        );
-        let composed = widget.build_composition(&Theme::dark());
-        assert!(
-            composed.needs_animation_frame(),
-            "loading indicator animates immediately"
-        );
-        widget.apply_engine_events();
-        assert!((widget.progress - 1.0).abs() < f64::EPSILON);
-        // Paint the new engine frame once before checking idle scheduling.
-        let mut composed = widget.build_composition(&Theme::dark());
-        composed.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-            &PresenceCtx::default(),
-        );
-        assert!(!composed.needs_animation_frame());
-    }
-
-    #[test]
-    fn fresh_live_surface_starts_loading_and_failure_stops_it() {
-        let engine = ui::webview::chromium::UnavailableEngine::new("offline".into());
-        let mut widget = BrowserWidget::with_engine(engine, false);
-        assert!(
-            widget.progress < 1.0,
-            "new tab is visibly loading before bootstrap"
-        );
-        widget
-            .engine
-            .send(WebViewCommand::Navigate("https://a.test".into()));
-        widget.apply_engine_events();
-        assert!((widget.progress - 1.0).abs() < f64::EPSILON);
-        assert!(
-            !widget
-                .build_composition(&Theme::dark())
-                .needs_animation_frame()
-        );
-    }
-
-    #[test]
-    fn presentation_operations_are_peer_local_and_do_not_mutate_the_document() {
-        let mut left = BrowserWidget::new_headless();
-        let right = BrowserWidget::new_headless();
-        let mut doc = AutoCommit::new();
-        let before = doc.save();
-        left.perform_browser_operation(BrowserOperation::ShowLibrary {
-            section: LibrarySection::Bookmarks,
-        })
-        .unwrap();
-        assert!(left.show_library);
-        assert!(!right.show_library);
-        assert_eq!(
-            doc.save(),
-            before,
-            "showing a local pane is not a shared mutation"
-        );
-    }
-
-    #[test]
-    fn library_open_controls_keep_stable_resource_addresses_after_reorder() {
-        let mut widget = BrowserWidget::new_headless();
-        widget
-            .history
-            .record_at("https://first.example", "First", 1);
-        widget
-            .history
-            .record_at("https://second.example", "Second", 2);
-        widget.show_library = true;
-        compose(&mut widget);
-        let bindings = widget.control_action_bindings();
-        for url in ["https://first.example", "https://second.example"] {
-            let resource = history_resource_id(url);
-            assert!(bindings.iter().any(|binding| {
-                binding.control_id == format!("{resource}.open")
-                    && matches!(
-                        &binding.kind,
-                        ui::widget::ControlBindingKind::Action(address)
-                            if address.resource == resource && address.action == "open"
-                    )
-            }));
-        }
-    }
-
-    #[test]
-    fn library_filter_is_a_local_canonical_action_with_a_bound_control() {
-        let mut widget = BrowserWidget::new_headless();
-        widget.debug_show_library("bookmarks");
-        compose(&mut widget);
-        assert_action_binding(
-            &widget,
-            "browser.library.clear-filter",
-            "browser.library",
-            "clear-filter",
-        );
-
-        widget
-            .perform_browser_operation(BrowserOperation::SetLibraryFilter {
-                query: "rust learn".into(),
-            })
-            .unwrap();
-        assert_eq!(widget.library_filter.get(), "rust learn");
-        assert!(widget.show_library);
-        assert!(widget.take_structure_dirty());
-        assert!(
             widget
                 .perform_browser_operation(BrowserOperation::SetLibraryFilter {
-                    query: "x".repeat(MAX_LIBRARY_FILTER_BYTES + 1),
+                    query: "rust learn".into(),
                 })
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn every_hosted_browser_affordance_uses_a_canonical_action() {
-        let mut page = BrowserWidget::new_headless();
-        compose(&mut page);
-        assert_no_document_control_paths(&page);
-        for (control, resource, action) in [
-            ("browser.back", "browser.page", "back"),
-            ("browser.forward", "browser.page", "forward"),
-            ("browser.reload", "browser.page", "reload"),
-            ("browser.bookmark", "browser.page", "bookmark"),
-            (
-                "browser.history-pause",
-                "browser.session",
-                "toggle-history-pause",
-            ),
-            ("browser.library", "browser.history", "show"),
-            ("browser.pip", "browser.page", "picture-in-picture"),
-            ("browser.settings", "browser.settings", "show"),
-        ] {
-            assert_action_binding(&page, control, resource, action);
-        }
-
-        let mut library = BrowserWidget::new_headless();
-        library.debug_show_library("history");
-        compose(&mut library);
-        assert_no_document_control_paths(&library);
-        assert_action_binding(
-            &library,
-            "browser.library.clear-filter",
-            "browser.library",
-            "clear-filter",
-        );
-
-        let mut settings = BrowserWidget::new_headless();
-        settings.show_settings = true;
-        compose(&mut settings);
-        assert_no_document_control_paths(&settings);
-        for (control, resource, action) in [
-            ("browser.settings", "browser", "show-page"),
-            ("settings.close", "browser", "show-page"),
-            ("settings.adblock", "browser.settings", "set-adblock"),
-            (
-                "settings.clear_on_exit",
-                "browser.settings",
-                "set-clear-on-exit",
-            ),
-            ("settings.clear_history", "browser.history", "clear"),
-            (
-                "settings.clear_cookies",
-                "browser.settings",
-                "request-site-data-clear",
-            ),
-        ] {
-            assert_action_binding(&settings, control, resource, action);
+                .unwrap();
+            assert_eq!(widget.library_filter.get(), "rust learn");
+            assert!(widget.show_library);
+            assert!(widget.take_structure_dirty());
+            assert!(
+                widget
+                    .perform_browser_operation(BrowserOperation::SetLibraryFilter {
+                        query: "x".repeat(MAX_LIBRARY_FILTER_BYTES + 1),
+                    })
+                    .is_err()
+            );
         }
     }
 }
@@ -7046,6 +7838,294 @@ mod tests {
         let root = automerge::ROOT;
         widget.sync(&mut state, &root);
         (state, root)
+    }
+
+    /// Page actions, as an agent reaches them: published on `browser.page`,
+    /// admitted through the resource operation lane, answered by the engine
+    /// and reported through the invocation's terminal update.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn page_actions_read_and_operate_the_page_through_invocations() {
+        fn page_on(url: &str) -> (Arc<TestEngine>, BrowserWidget, AutoCommit, ObjId) {
+            let engine = TestEngine::new();
+            engine.send(WebViewCommand::Navigate(url.into()));
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            let (doc, root) = synced(&mut widget);
+            (engine, widget, doc, root)
+        }
+        fn page_action(widget: &BrowserWidget, doc: &AutoCommit, id: &str) -> ActionSpec {
+            ui::resources::resources(widget, doc)[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "browser.page")
+                .unwrap()
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap()
+                .clone()
+        }
+        fn start(
+            widget: &mut BrowserWidget,
+            doc: &mut AutoCommit,
+            root: &ObjId,
+            id: &str,
+            args: &serde_json::Value,
+        ) -> Result<ui::tilo_actions::InvocationId, String> {
+            let action = page_action(widget, doc, id);
+            let encoded = action
+                .build_json(args.as_object().ok_or("arguments are an object")?)
+                .map_err(|error| error.to_string())?;
+            let invocation = ui::tilo_actions::InvocationId::new();
+            match widget.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    action.kind,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                doc,
+                root,
+            )? {
+                Some(ui::widget::ResourceOperationStart::Accepted) => Ok(invocation),
+                other => Err(format!("a page action must be accepted, got {other:?}")),
+            }
+        }
+        fn page_requests(engine: &TestEngine) -> Vec<PageRequest> {
+            engine
+                .commands()
+                .into_iter()
+                .filter_map(|command| match command {
+                    WebViewCommand::Page { request, .. } => Some(request),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        // Phase `page_actions_publish_programmatic_write_contracts`.
+        {
+            let (_, widget, doc, _) = page_on("https://shop.test/");
+            for id in ["read", "click", "fill", "select", "press", "submit"] {
+                let action = page_action(&widget, &doc, id);
+                assert!(action.contract.validate_declaration().is_empty(), "{id}");
+                assert!(action.contract.availability.is_available(), "{id}");
+                assert!(action.contract.is_programmatic(), "{id}");
+                assert_eq!(
+                    action.contract.permission,
+                    ui::tilo_actions::PermissionRequirement::Write,
+                    "reading a signed-in page takes the authority to operate it"
+                );
+                assert_eq!(
+                    action.contract.execution,
+                    ui::tilo_actions::ExecutionMode::Background { cancellable: false }
+                );
+            }
+            let (_, blank, doc, _) = page_on("about:blank");
+            assert!(
+                !page_action(&blank, &doc, "read")
+                    .contract
+                    .availability
+                    .is_available()
+            );
+        }
+
+        // Phase `read_returns_the_engine_outline_in_the_declared_shape`.
+        {
+            let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
+            let invocation =
+                start(&mut widget, &mut doc, &root, "read", &serde_json::json!({})).unwrap();
+            assert_eq!(page_requests(&engine), vec![PageRequest::Outline]);
+            widget.sync(&mut doc, &root);
+            let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
+                widget.poll_resource_operation(invocation, false, &doc, &root)
+            else {
+                panic!("an answered read must succeed its invocation");
+            };
+            let read = page_action(&widget, &doc, "read");
+            assert!(read.contract.result.validate(&output).is_ok());
+            let value = output.value.unwrap();
+            assert_eq!(value["url"], "https://shop.test/");
+            assert_eq!(
+                value["outline"],
+                "- document \"https://shop.test/ — test page\""
+            );
+        }
+
+        // Phase `a_read_on_a_loading_page_waits_for_it_to_settle`.
+        {
+            let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
+            widget.set_loading_progress(0.4);
+            let invocation =
+                start(&mut widget, &mut doc, &root, "read", &serde_json::json!({})).unwrap();
+            widget.sync(&mut doc, &root);
+            assert!(
+                page_requests(&engine).is_empty(),
+                "read before the load settled"
+            );
+            assert!(
+                widget
+                    .poll_resource_operation(invocation, false, &doc, &root)
+                    .is_none()
+            );
+            engine.send(WebViewCommand::Reload);
+            widget.sync(&mut doc, &root);
+            assert_eq!(page_requests(&engine), vec![PageRequest::Outline]);
+            widget.sync(&mut doc, &root);
+            assert!(matches!(
+                widget.poll_resource_operation(invocation, false, &doc, &root),
+                Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
+            ));
+        }
+
+        // Phase `typed_arguments_reach_the_engine_and_bad_refs_never_do`.
+        {
+            let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
+            let fill = start(
+                &mut widget,
+                &mut doc,
+                &root,
+                "fill",
+                &serde_json::json!({"element": "d3e7", "text": ""}),
+            )
+            .unwrap();
+            widget.sync(&mut doc, &root);
+            assert!(
+                widget
+                    .poll_resource_operation(fill, false, &doc, &root)
+                    .is_some()
+            );
+            let select = start(
+                &mut widget,
+                &mut doc,
+                &root,
+                "select",
+                &serde_json::json!({"element": "d3e8", "values": ["NL", "Belgium"]}),
+            )
+            .unwrap();
+            widget.sync(&mut doc, &root);
+            assert!(
+                widget
+                    .poll_resource_operation(select, false, &doc, &root)
+                    .is_some()
+            );
+            let press = start(
+                &mut widget,
+                &mut doc,
+                &root,
+                "press",
+                &serde_json::json!({"key": "Shift+Tab"}),
+            )
+            .unwrap();
+            widget.sync(&mut doc, &root);
+            assert!(
+                widget
+                    .poll_resource_operation(press, false, &doc, &root)
+                    .is_some()
+            );
+            assert_eq!(
+                page_requests(&engine),
+                vec![
+                    PageRequest::Fill {
+                        element: "d3e7".into(),
+                        text: String::new(),
+                    },
+                    PageRequest::Select {
+                        element: "d3e8".into(),
+                        values: vec!["NL".into(), "Belgium".into()],
+                    },
+                    PageRequest::Press {
+                        element: None,
+                        key: PageKey::parse("Shift+Tab").unwrap(),
+                    },
+                ]
+            );
+            for (id, args) in [
+                ("click", serde_json::json!({"element": "#checkout"})),
+                ("submit", serde_json::json!({"element": ""})),
+                ("press", serde_json::json!({"key": "Hyper+x"})),
+            ] {
+                let refused = start(&mut widget, &mut doc, &root, id, &args).unwrap_err();
+                assert!(!refused.is_empty(), "{id}");
+            }
+            assert_eq!(
+                page_requests(&engine).len(),
+                3,
+                "refused requests reached the page"
+            );
+        }
+
+        // Phase `an_action_that_navigates_completes_on_the_page_it_opened`.
+        {
+            let (engine, mut widget, mut doc, root) = page_on("https://shop.test/cart");
+            engine.push_page_reply(Ok(PageReply {
+                url: "https://shop.test/cart".into(),
+                message: "Clicked button \"Checkout\"".into(),
+                outline: None,
+                navigated: true,
+                loading: true,
+            }));
+            let click = start(
+                &mut widget,
+                &mut doc,
+                &root,
+                "click",
+                &serde_json::json!({"element": "d1e4"}),
+            )
+            .unwrap();
+            widget.sync(&mut doc, &root);
+            assert!(
+                widget
+                    .poll_resource_operation(click, false, &doc, &root)
+                    .is_none(),
+                "a click that started a navigation waits for it"
+            );
+            assert!(
+                start(&mut widget, &mut doc, &root, "read", &serde_json::json!({})).is_err(),
+                "a second page action is refused while one runs"
+            );
+            engine.send(WebViewCommand::Navigate(
+                "https://shop.test/checkout".into(),
+            ));
+            widget.sync(&mut doc, &root);
+            let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
+                widget.poll_resource_operation(click, false, &doc, &root)
+            else {
+                panic!("the settled navigation must complete the click");
+            };
+            let value = output.value.unwrap();
+            assert_eq!(value["url"], "https://shop.test/checkout");
+            assert_eq!(value["message"], "Clicked button \"Checkout\"");
+            assert_eq!(value["navigated"], true);
+        }
+
+        // Phase `engine_refusals_become_typed_invocation_failures`.
+        {
+            let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
+            engine.push_page_reply(Err(PageFailure::new(
+                "stale_element",
+                "d1e4 belongs to a page this tab has left; read the page again",
+            )));
+            let click = start(
+                &mut widget,
+                &mut doc,
+                &root,
+                "click",
+                &serde_json::json!({"element": "d1e4"}),
+            )
+            .unwrap();
+            widget.sync(&mut doc, &root);
+            let Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) =
+                widget.poll_resource_operation(click, false, &doc, &root)
+            else {
+                panic!("a refused click must fail its invocation");
+            };
+            assert_eq!(error.code, "browser.page.stale_element");
+            assert!(!error.retryable);
+            assert!(start(&mut widget, &mut doc, &root, "read", &serde_json::json!({})).is_ok());
+        }
     }
 
     fn history_save_fails(_: &History) -> std::io::Result<()> {
@@ -7099,39 +8179,98 @@ mod tests {
         widget.apply_layout(&tree, child, Point::ORIGIN);
     }
 
+    /// Engine navigation, gestures and canonical operations update the address bar and history buttons.
     #[test]
-    fn nav_gesture_drives_engine_history() {
-        use ui::gesture::NavDirection;
-        let engine = TestEngine::new();
-        let mut w = BrowserWidget::with_engine(engine.clone(), true);
-        let (mut state, root) = synced(&mut w);
-        // Build the composed tree so the gesture forwards down to the
-        // WebView — this exercises the real trait-forwarding path
-        // (BrowserWidget → Column → WebView), not a shortcut.
-        let mut tree = TaffyTree::<()>::new();
-        let mut node_map = std::collections::HashMap::new();
-        let theme = Theme::dark();
-        w.build_layout(&mut tree, &theme, &mut node_map);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn engine_navigation_drives_address_bar_and_history_controls() {
+        // Phase `nav_gesture_drives_engine_history`.
+        {
+            use ui::gesture::NavDirection;
+            let engine = TestEngine::new();
+            let mut w = BrowserWidget::with_engine(engine.clone(), true);
+            let (mut state, root) = synced(&mut w);
+            // Build the composed tree so the gesture forwards down to the
+            // WebView — this exercises the real trait-forwarding path
+            // (BrowserWidget → Column → WebView), not a shortcut.
+            let mut tree = TaffyTree::<()>::new();
+            let mut node_map = std::collections::HashMap::new();
+            let theme = Theme::dark();
+            w.build_layout(&mut tree, &theme, &mut node_map);
 
-        engine.send(WebViewCommand::Navigate("https://a.test".into()));
-        engine.send(WebViewCommand::Navigate("https://b.test".into()));
+            engine.send(WebViewCommand::Navigate("https://a.test".into()));
+            engine.send(WebViewCommand::Navigate("https://b.test".into()));
 
-        assert!(
-            w.on_nav_gesture(NavDirection::Back, &mut state, &root),
-            "a back gesture is consumed by the embedded WebView",
-        );
-        assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
-        w.on_nav_gesture(NavDirection::Forward, &mut state, &root);
-        assert_eq!(engine.current_uri().as_deref(), Some("https://b.test"));
-    }
+            assert!(
+                w.on_nav_gesture(NavDirection::Back, &mut state, &root),
+                "a back gesture is consumed by the embedded WebView",
+            );
+            assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
+            w.on_nav_gesture(NavDirection::Forward, &mut state, &root);
+            assert_eq!(engine.current_uri().as_deref(), Some("https://b.test"));
+        }
 
-    #[test]
-    fn bootstrap_seeds_address_bar() {
-        let engine = TestEngine::new();
-        // Headless so the test never spawns the network filter loader.
-        let mut w = BrowserWidget::with_engine(engine, true);
-        let (state, root) = synced(&mut w);
-        assert_eq!(w.address.with(Clone::clone), DEFAULT_URL);
+        // Phase `bootstrap_seeds_address_bar`.
+        {
+            let engine = TestEngine::new();
+            // Headless so the test never spawns the network filter loader.
+            let mut w = BrowserWidget::with_engine(engine, true);
+            let (state, root) = synced(&mut w);
+            assert_eq!(w.address.with(Clone::clone), DEFAULT_URL);
+        }
+
+        // Phase `engine_uri_updates_address_bar_text`.
+        {
+            let engine = TestEngine::new();
+            let mut w = BrowserWidget::with_engine(engine.clone(), true);
+            let (mut state, root) = synced(&mut w);
+
+            engine.send(WebViewCommand::Navigate("https://example.test".into()));
+            w.sync(&mut state, &root);
+
+            assert_eq!(w.address.with(Clone::clone), "https://example.test");
+            assert_eq!(w.app_title(), "https://example.test — test page");
+        }
+
+        // Phase `history_events_drive_button_enablement`.
+        {
+            let engine = TestEngine::new();
+            let mut w = BrowserWidget::with_engine(engine.clone(), true);
+            let (mut state, root) = synced(&mut w);
+
+            engine.send(WebViewCommand::Navigate("https://a.test".into()));
+            engine.send(WebViewCommand::Navigate("https://b.test".into()));
+            w.sync(&mut state, &root);
+
+            assert!(w.can_go_back);
+            assert!(!w.can_go_forward);
+        }
+
+        // Phase `canonical_navigation_operations_translate_to_engine_commands`.
+        {
+            let engine = TestEngine::new();
+            let mut w = BrowserWidget::with_engine(engine.clone(), true);
+            let (mut state, root) = synced(&mut w);
+
+            // History so back/forward are meaningful.
+            engine.send(WebViewCommand::Navigate("https://a.test".into()));
+            engine.send(WebViewCommand::Navigate("https://b.test".into()));
+
+            w.perform_browser_operation(BrowserOperation::Back).unwrap();
+            assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
+            w.perform_browser_operation(BrowserOperation::Forward)
+                .unwrap();
+            assert_eq!(engine.current_uri().as_deref(), Some("https://b.test"));
+
+            w.perform_browser_operation(BrowserOperation::Reload)
+                .unwrap();
+            assert!(
+                engine.commands().contains(&WebViewCommand::Reload),
+                "canonical reload reaches the engine",
+            );
+        }
     }
 
     #[test]
@@ -7180,455 +8319,847 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&output.stdout)
         );
+        // libtest exits 0 when `--exact` selects nothing; require the child ran.
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("test result: ok. 1 passed"),
+            "the child ran no test: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
     }
 
+    /// Address input focus, selection and draft preservation.
     #[test]
-    fn focused_address_tracks_committed_navigation_but_preserves_new_drafts() {
-        let setup = || {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn address_focus_selects_tracks_navigation_and_preserves_drafts() {
+        // Phase `focused_address_tracks_committed_navigation_but_preserves_new_drafts`.
+        {
+            let setup = || {
+                let engine = TestEngine::new();
+                for url in ["https://a.test", "https://b.test"] {
+                    engine.send(WebViewCommand::Navigate(url.into()));
+                }
+                let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+                layout_at(&mut widget, 900.0, 700.0);
+                widget.apply_engine_events();
+                assert!(widget.focus_address_input());
+                (engine, widget)
+            };
+            let (_, mut widget) = setup();
+            widget.address.set("unsent draft".into());
+            widget
+                .perform_browser_operation(BrowserOperation::Back)
+                .unwrap();
+            widget.apply_engine_events();
+            assert_eq!(widget.address.with(Clone::clone), "https://a.test");
+            widget
+                .perform_browser_operation(BrowserOperation::Forward)
+                .unwrap();
+            widget.apply_engine_events();
+            assert_eq!(widget.address.with(Clone::clone), "https://b.test");
+
+            let (_, mut widget) = setup();
+            widget
+                .perform_browser_operation(BrowserOperation::Back)
+                .unwrap();
+            widget.address.set("new draft after navigation".into());
+            widget.apply_engine_events();
+            assert_eq!(
+                widget.address.with(Clone::clone),
+                "new draft after navigation"
+            );
+
+            let (engine, mut widget) = setup();
+            widget.address.set("unsent draft".into());
+            engine.send(WebViewCommand::Navigate("https://redirect.test".into()));
+            widget.apply_engine_events();
+            assert_eq!(widget.address.with(Clone::clone), "unsent draft");
+
+            let (engine, mut widget) = setup();
+            widget
+                .perform_browser_operation(BrowserOperation::Navigate {
+                    url: "https://start.test".into(),
+                })
+                .unwrap();
+            engine.send(WebViewCommand::Navigate("https://redirect.test".into()));
+            widget.apply_engine_events();
+            assert_eq!(widget.address.with(Clone::clone), "https://redirect.test");
+        }
+
+        // Phase `focused_address_history_menu_selection_replaces_older_draft`.
+        {
             let engine = TestEngine::new();
             for url in ["https://a.test", "https://b.test"] {
                 engine.send(WebViewCommand::Navigate(url.into()));
             }
-            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            let mut widget = BrowserWidget::with_engine(engine, true);
             layout_at(&mut widget, 900.0, 700.0);
             widget.apply_engine_events();
             assert!(widget.focus_address_input());
-            (engine, widget)
-        };
-        let (_, mut widget) = setup();
-        widget.address.set("unsent draft".into());
-        widget
-            .perform_browser_operation(BrowserOperation::Back)
-            .unwrap();
-        widget.apply_engine_events();
-        assert_eq!(widget.address.with(Clone::clone), "https://a.test");
-        widget
-            .perform_browser_operation(BrowserOperation::Forward)
-            .unwrap();
-        widget.apply_engine_events();
-        assert_eq!(widget.address.with(Clone::clone), "https://b.test");
-
-        let (_, mut widget) = setup();
-        widget
-            .perform_browser_operation(BrowserOperation::Back)
-            .unwrap();
-        widget.address.set("new draft after navigation".into());
-        widget.apply_engine_events();
-        assert_eq!(
-            widget.address.with(Clone::clone),
-            "new draft after navigation"
-        );
-
-        let (engine, mut widget) = setup();
-        widget.address.set("unsent draft".into());
-        engine.send(WebViewCommand::Navigate("https://redirect.test".into()));
-        widget.apply_engine_events();
-        assert_eq!(widget.address.with(Clone::clone), "unsent draft");
-
-        let (engine, mut widget) = setup();
-        widget
-            .perform_browser_operation(BrowserOperation::Navigate {
-                url: "https://start.test".into(),
-            })
-            .unwrap();
-        engine.send(WebViewCommand::Navigate("https://redirect.test".into()));
-        widget.apply_engine_events();
-        assert_eq!(widget.address.with(Clone::clone), "https://redirect.test");
-    }
-
-    #[test]
-    fn focused_address_history_menu_selection_replaces_older_draft() {
-        let engine = TestEngine::new();
-        for url in ["https://a.test", "https://b.test"] {
-            engine.send(WebViewCommand::Navigate(url.into()));
+            widget.address.set("older unsent draft".into());
+            widget.request_navigation_history(NavigationDirection::Back);
+            widget.apply_engine_events();
+            assert_eq!(widget.back_entries.len(), 1);
+            widget.choose_navigation_entry(0);
+            widget.apply_engine_events();
+            assert_eq!(widget.address.with(Clone::clone), "https://a.test");
         }
-        let mut widget = BrowserWidget::with_engine(engine, true);
-        layout_at(&mut widget, 900.0, 700.0);
-        widget.apply_engine_events();
-        assert!(widget.focus_address_input());
-        widget.address.set("older unsent draft".into());
-        widget.request_navigation_history(NavigationDirection::Back);
-        widget.apply_engine_events();
-        assert_eq!(widget.back_entries.len(), 1);
-        widget.choose_navigation_entry(0);
-        widget.apply_engine_events();
-        assert_eq!(widget.address.with(Clone::clone), "https://a.test");
-    }
 
-    #[test]
-    fn address_focus_selects_all_and_survives_chrome_rebuild() {
-        fn state(widget: &dyn Widget) -> Option<String> {
-            if widget.test_id() == Some(URL_INPUT_ID) {
-                assert!(widget.is_focused());
-                return widget.get_state();
+        // Phase `address_focus_selects_all_and_survives_chrome_rebuild`.
+        {
+            fn state(widget: &dyn Widget) -> Option<String> {
+                if widget.test_id() == Some(URL_INPUT_ID) {
+                    assert!(widget.is_focused());
+                    return ui::undo::get_state(widget);
+                }
+                widget.children().iter().find_map(|child| state(*child))
             }
-            widget.children().iter().find_map(|child| state(*child))
+            let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+            let _ = synced(&mut w);
+            let mut tree = TaffyTree::new();
+            w.build_layout(
+                &mut tree,
+                &Theme::dark(),
+                &mut std::collections::HashMap::default(),
+            );
+            assert!(w.focus_address_input());
+
+            let selected = format!("{}:b:0", DEFAULT_URL.len());
+            assert_eq!(state(&w).as_deref(), Some(selected.as_str()));
+            let mut tree = TaffyTree::new();
+            w.build_layout(
+                &mut tree,
+                &Theme::dark(),
+                &mut std::collections::HashMap::default(),
+            );
+            assert_eq!(state(&w).as_deref(), Some(selected.as_str()));
         }
-        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
-        let _ = synced(&mut w);
-        let mut tree = TaffyTree::new();
-        w.build_layout(
-            &mut tree,
-            &Theme::dark(),
-            &mut std::collections::HashMap::default(),
-        );
-        assert!(w.focus_address_input());
 
-        let selected = format!("{}:b:0", DEFAULT_URL.len());
-        assert_eq!(state(&w).as_deref(), Some(selected.as_str()));
-        let mut tree = TaffyTree::new();
-        w.build_layout(
-            &mut tree,
-            &Theme::dark(),
-            &mut std::collections::HashMap::default(),
-        );
-        assert_eq!(state(&w).as_deref(), Some(selected.as_str()));
-    }
+        // Phase `address_shortcut_focuses_the_chrome_input_after_composition`.
+        {
+            let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+            let _ = synced(&mut w);
+            let mut tree = TaffyTree::<()>::new();
+            let mut node_map = std::collections::HashMap::new();
+            w.build_layout(&mut tree, &Theme::dark(), &mut node_map);
 
-    #[test]
-    fn address_shortcut_focuses_the_chrome_input_after_composition() {
-        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
-        let _ = synced(&mut w);
-        let mut tree = TaffyTree::<()>::new();
-        let mut node_map = std::collections::HashMap::new();
-        w.build_layout(&mut tree, &Theme::dark(), &mut node_map);
-
-        assert!(w.focus_address_input());
-        assert!(w.url_input_focused());
-    }
-
-    #[test]
-    fn library_filter_matches_every_word_across_titles_and_addresses() {
-        assert!(library_filter_matches(
-            "rust learn",
-            &["Learn Rust", "https://www.rust-lang.org/learn"],
-        ));
-        assert!(library_filter_matches(
-            "RUST",
-            &["Learn Rust", "https://www.rust-lang.org/learn"],
-        ));
-        assert!(!library_filter_matches(
-            "rust missing",
-            &["Learn Rust", "https://www.rust-lang.org/learn"],
-        ));
-    }
-
-    #[test]
-    fn library_filter_bound_preserves_utf8_boundaries() {
-        let query = format!("rust {}", "🦀".repeat(MAX_LIBRARY_FILTER_BYTES));
-        let bounded = bounded_library_filter(&query);
-        assert!(bounded.len() <= MAX_LIBRARY_FILTER_BYTES);
-        assert!(bounded.is_char_boundary(bounded.len()));
-    }
-
-    #[test]
-    fn library_filter_is_visible_and_keyboard_focusable_at_compact_large_text() {
-        let mut widget = BrowserWidget::new_headless();
-        widget.debug_show_library("bookmarks");
-        let theme = Theme::dark().with_text_scale(2.0);
-        layout_with_theme(&mut widget, 390.0, 780.0, &theme);
-        assert!(widget.find_rect(LIBRARY_FILTER_INPUT_ID).is_some());
-        assert!(widget.focus_control(LIBRARY_FILTER_INPUT_ID));
-    }
-
-    #[test]
-    fn address_validation_never_dispatches_non_web_inputs_and_keeps_a_recoverable_error() {
-        let engine = TestEngine::new();
-        let mut w = BrowserWidget::with_engine(engine.clone(), true);
-        let (_, _) = synced(&mut w);
-        let commands_before = engine.commands().len();
-        let overlong = "x".repeat(8 * 1024 + 1);
-
-        for input in [
-            "",
-            overlong.as_str(),
-            "https://",
-            "https://bad host",
-            "file:///tmp/private.html",
-            "about:blank",
-            "data:text/html,hello",
-            "javascript:alert(1)",
-            "custom:opaque",
-            "https://example.test/\u{0007}",
-        ] {
-            let error = w.navigation_target(input).expect_err(input);
-            assert!(!error.is_empty());
-            assert_eq!(w.load_error.as_deref(), Some(error.as_str()));
-            assert!(w.address_error_active);
-            assert_eq!(engine.commands().len(), commands_before, "{input}");
+            assert!(w.focus_address_input());
+            assert!(w.url_input_focused());
         }
     }
 
+    /// Library filter matching and row measures across widths and text sizes.
     #[test]
-    fn address_validation_accepts_local_web_hosts_but_not_local_files() {
-        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
-        for (input, expected) in [
-            ("localhost:3000", "https://localhost:3000"),
-            ("127.0.0.1:8080", "https://127.0.0.1:8080"),
-            ("[::1]:8443", "https://[::1]:8443"),
-        ] {
-            assert_eq!(w.navigation_target(input).unwrap(), expected);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn library_filter_and_rows_stay_readable_at_every_width() {
+        // Phase `library_filter_matches_every_word_across_titles_and_addresses`.
+        {
+            assert!(library_filter_matches(
+                "rust learn",
+                &["Learn Rust", "https://www.rust-lang.org/learn"],
+            ));
+            assert!(library_filter_matches(
+                "RUST",
+                &["Learn Rust", "https://www.rust-lang.org/learn"],
+            ));
+            assert!(!library_filter_matches(
+                "rust missing",
+                &["Learn Rust", "https://www.rust-lang.org/learn"],
+            ));
         }
-        assert!(w.navigation_target("file:///tmp/index.html").is_err());
-    }
 
-    #[test]
-    fn stale_engine_completion_cannot_clear_a_rejected_address_error() {
-        let engine = TestEngine::new();
-        let mut w = BrowserWidget::with_engine(engine.clone(), true);
-        let (mut state, root) = synced(&mut w);
+        // Phase `library_filter_bound_preserves_utf8_boundaries`.
+        {
+            let query = format!("rust {}", "🦀".repeat(MAX_LIBRARY_FILTER_BYTES));
+            let bounded = bounded_library_filter(&query);
+            assert!(bounded.len() <= MAX_LIBRARY_FILTER_BYTES);
+            assert!(bounded.is_char_boundary(bounded.len()));
+        }
 
-        // Simulate events from an earlier navigation arriving after the user
-        // entered a prohibited address. The error must remain actionable,
-        // rather than disappearing behind that stale successful page.
-        engine.send(WebViewCommand::Navigate("https://earlier.example".into()));
-        assert!(w.navigation_target("file:///tmp/not-allowed.html").is_err());
-        w.apply_engine_events();
-        assert!(w.address_error_active);
-        assert_eq!(
-            w.load_error.as_deref(),
-            Some("Browser can open only http:// or https:// addresses.")
-        );
+        // Phase `library_filter_is_visible_and_keyboard_focusable_at_compact_large_text`.
+        {
+            let mut widget = BrowserWidget::new_headless();
+            widget.debug_show_library("bookmarks");
+            let theme = Theme::dark().with_text_scale(2.0);
+            layout_with_theme(&mut widget, 390.0, 780.0, &theme);
+            assert!(widget.find_rect(LIBRARY_FILTER_INPUT_ID).is_some());
+            assert!(widget.focus_control(LIBRARY_FILTER_INPUT_ID));
+        }
 
-        assert!(
-            w.perform_browser_operation(BrowserOperation::Navigate {
-                url: "https://recovery.example".into(),
-            })
-            .is_ok()
-        );
-        assert!(
-            !w.address_error_active,
-            "an allowed retry recovers the page"
-        );
-    }
+        // Phase `compact_history_library_retains_the_hidden_toolbar_privacy_action`.
+        {
+            let mut widget = BrowserWidget::new_headless();
+            widget.debug_show_library("history");
+            widget.debug_set_viewport_width(390);
+            layout_at(&mut widget, 390.0, 844.0);
+            assert!(
+                ui::widget::controls::control_action_bindings(&widget)
+                    .iter()
+                    .any(|binding| {
+                        binding.control_id == "browser.library.history-pause"
+                            && matches!(
+                                &binding.kind,
+                                ui::widget::ControlBindingKind::Action(address)
+                                    if address.resource == "browser.session"
+                                        && address.action == "toggle-history-pause"
+                            )
+                    })
+            );
+        }
 
-    #[test]
-    fn address_editor_opens_and_requires_opt_in_through_narrow_settings() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("addresses.json");
-        let mut widget = BrowserWidget::new_headless();
-        widget.credentials =
-            crate::credentials::Credentials::with_address_path(false, Some(path.clone()));
-        let (doc, root) = synced(&mut widget);
-        widget.show_settings = true;
-        widget.structure_dirty = true;
-        layout_at(&mut widget, 390.0, 700.0);
-        for id in [
-            "browser.address.open",
-            "browser.address.enable",
-            "browser.address.new",
-            "browser.address.cancel",
-            "browser.credentials.close",
-        ] {
-            let result = widget
-                .start_resource_operation(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    &serde_json::to_vec(id).unwrap(),
-                    &doc,
-                    &root,
-                )
+        // Phase `populated_library_rows_have_a_bounded_compact_measure_at_all_widths`.
+        {
+            let mut wide = BrowserWidget::new_headless();
+            wide.debug_show_library("history");
+            layout_at(&mut wide, 1_200.0, 720.0);
+            let first = wide
+                .find_rect(&format!(
+                    "{}.open",
+                    history_resource_id("https://www.rust-lang.org/learn")
+                ))
+                .unwrap();
+            let second = wide
+                .find_rect(&format!(
+                    "{}.open",
+                    history_resource_id("https://developer.mozilla.org/en-US/docs/Web")
+                ))
+                .unwrap();
+            let history_tab = wide.find_rect("browser.library.history").unwrap();
+            assert!(
+                (120.0..=160.0).contains(&history_tab.x0),
+                "desktop title, tabs, and rows share a centered 920px Library measure"
+            );
+            assert!(
+                first.x1 < 1_080.0,
+                "desktop row actions stay at the trailing edge of the centered Library measure"
+            );
+            assert!(first.height() <= 40.0);
+            assert!(
+                second.y0 - first.y0 < 80.0,
+                "two-line metadata rows must not expand into oversized slabs"
+            );
+
+            let mut narrow = BrowserWidget::new_headless();
+            narrow.debug_show_library("bookmarks");
+            narrow.debug_set_viewport_width(390);
+            layout_at(&mut narrow, 390.0, 844.0);
+            let open = narrow
+                .find_rect(&format!(
+                    "{}.open",
+                    bookmark_resource_id("https://www.rust-lang.org/learn")
+                ))
+                .unwrap();
+            let remove = narrow
+                .find_rect(&format!(
+                    "{}.remove",
+                    bookmark_resource_id("https://www.rust-lang.org/learn")
+                ))
+                .unwrap();
+            assert!(open.width() > 0.0 && remove.width() > 0.0);
+            assert!(
+                remove.x1 <= 390.0,
+                "row actions stay reachable on narrow layouts"
+            );
+            let history_tab = narrow.find_rect("browser.library.history").unwrap();
+            let bookmarks_tab = narrow.find_rect("browser.library.bookmarks").unwrap();
+            let downloads_tab = narrow.find_rect("browser.library.downloads").unwrap();
+            let extensions_tab = narrow.find_rect("browser.library.extensions").unwrap();
+            assert!(
+                history_tab.x1 <= 390.0
+                    && bookmarks_tab.x1 <= 390.0
+                    && downloads_tab.x1 <= 390.0
+                    && extensions_tab.x1 <= 390.0,
+                "every Library destination stays visible instead of overflowing horizontally"
+            );
+            assert!(
+                downloads_tab.y0 > history_tab.y0,
+                "compact Library uses a deliberate two-row section grid"
+            );
+        }
+
+        // Phase `large_text_desktop_library_keeps_a_centered_reading_measure`.
+        {
+            let mut widget = BrowserWidget::new_headless();
+            widget.debug_show_library("history");
+            widget.debug_set_viewport_width(1_200);
+            layout_with_theme(
+                &mut widget,
+                1_200.0,
+                800.0,
+                &Theme::dark().with_text_scale(2.0),
+            );
+
+            let history_tab = widget.find_rect("browser.library.history").unwrap();
+            let open = widget
+                .find_rect(&format!(
+                    "{}.open",
+                    history_resource_id("https://www.rust-lang.org/learn")
+                ))
                 .unwrap();
             assert!(
-                result.is_some(),
-                "address editor control must be reachable: {id}"
+                (120.0..=160.0).contains(&history_tab.x0),
+                "large text retains the desktop Library measure instead of becoming edge-to-edge"
             );
-            assert!(widget.credentials.sync(&widget.engine));
+            assert!(
+                open.x1 < 1_080.0,
+                "large-text row actions stay inside the centered Library measure"
+            );
+        }
+    }
+
+    /// Address validation errors and modal suggestions.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn address_validation_and_suggestions_dispatch_only_web_navigation() {
+        // Phase `address_validation_never_dispatches_non_web_inputs_and_keeps_a_recoverable_error`.
+        {
+            let engine = TestEngine::new();
+            let mut w = BrowserWidget::with_engine(engine.clone(), true);
+            let (_, _) = synced(&mut w);
+            let commands_before = engine.commands().len();
+            let overlong = "x".repeat(8 * 1024 + 1);
+
+            for input in [
+                "",
+                overlong.as_str(),
+                "https://",
+                "https://bad host",
+                "file:///tmp/private.html",
+                "about:blank",
+                "data:text/html,hello",
+                "javascript:alert(1)",
+                "custom:opaque",
+                "https://example.test/\u{0007}",
+            ] {
+                let error = w.navigation_target(input).expect_err(input);
+                assert!(!error.is_empty());
+                assert_eq!(w.load_error.as_deref(), Some(error.as_str()));
+                assert!(w.address_error_active);
+                assert_eq!(engine.commands().len(), commands_before, "{input}");
+            }
+        }
+
+        // Phase `address_validation_accepts_local_web_hosts_but_not_local_files`.
+        {
+            let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+            for (input, expected) in [
+                ("localhost:3000", "https://localhost:3000"),
+                ("127.0.0.1:8080", "https://127.0.0.1:8080"),
+                ("[::1]:8443", "https://[::1]:8443"),
+            ] {
+                assert_eq!(w.navigation_target(input).unwrap(), expected);
+            }
+            assert!(w.navigation_target("file:///tmp/index.html").is_err());
+        }
+
+        // Phase `stale_engine_completion_cannot_clear_a_rejected_address_error`.
+        {
+            let engine = TestEngine::new();
+            let mut w = BrowserWidget::with_engine(engine.clone(), true);
+            let (mut state, root) = synced(&mut w);
+
+            // Simulate events from an earlier navigation arriving after the user
+            // entered a prohibited address. The error must remain actionable,
+            // rather than disappearing behind that stale successful page.
+            engine.send(WebViewCommand::Navigate("https://earlier.example".into()));
+            assert!(w.navigation_target("file:///tmp/not-allowed.html").is_err());
+            w.apply_engine_events();
+            assert!(w.address_error_active);
+            assert_eq!(
+                w.load_error.as_deref(),
+                Some("Browser can open only http:// or https:// addresses.")
+            );
+
+            assert!(
+                w.perform_browser_operation(BrowserOperation::Navigate {
+                    url: "https://recovery.example".into(),
+                })
+                .is_ok()
+            );
+            assert!(
+                !w.address_error_active,
+                "an allowed retry recovers the page"
+            );
+        }
+
+        // Phase `address_suggestions_are_modal_and_a11y_actions_queue_canonical_navigation`.
+        {
+            let mut widget = BrowserWidget::new_headless();
+            widget.debug_force_suggestions(vec![crate::history::HistoryEntry {
+                url: "https://accessible.example/reading".into(),
+                title: "Accessible reading".into(),
+                last_visit: 1,
+                visit_count: 1,
+            }]);
+            layout_at(&mut widget, 390.0, 844.0);
+
+            let mut semantic = ui::a11y_tree::SemanticTree::new();
+            semantic.refresh(&widget, &std::collections::HashMap::new(), None, &[]);
+            let suggestion = semantic
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Accessible reading"))
+                .expect("floating address suggestions must reach the semantic tree");
+            assert!(suggestion.action("activate").is_some());
+            assert!(Widget::modal_capture(&widget).is_some());
+
+            let target = format!(
+                "browser.address-suggestion:{}",
+                blake3::hash(b"https://accessible.example/reading").to_hex()
+            );
+            assert!(Widget::perform_semantic_action(
+                &mut widget,
+                &target,
+                &ui::a11y::Action::Activate,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+            let invocation = ui::widget::controls::take_control_invocation(&mut widget)
+                .expect("accessibility activation must queue Browser's action binding");
+            assert_eq!(invocation.address.resource, "browser.page");
+            assert_eq!(invocation.address.action, "navigate");
+            assert!(Widget::modal_capture(&widget).is_none());
+        }
+    }
+
+    /// Settings, toolbar and page viewport at narrow widths.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn narrow_chrome_keeps_settings_toolbar_and_page_viewport_usable() {
+        // Phase `address_editor_opens_and_requires_opt_in_through_narrow_settings`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("addresses.json");
+            let mut widget = BrowserWidget::new_headless();
+            widget.credentials =
+                crate::credentials::Credentials::with_address_path(false, Some(path.clone()));
+            let (mut doc, root) = synced(&mut widget);
+            widget.show_settings = true;
             widget.structure_dirty = true;
             layout_at(&mut widget, 390.0, 700.0);
-            if id == "browser.address.open" {
-                assert!(!path.exists(), "opening does not opt in or write");
+            for id in [
+                "browser.address.open",
+                "browser.address.enable",
+                "browser.address.new",
+                "browser.address.cancel",
+                "browser.credentials.close",
+            ] {
+                let result = widget
+                    .start_operation(
+                        &ui::widget::ResourceOperation::local(
+                            ui::tilo_actions::InvocationId::new(),
+                            OperationKind::Effect,
+                            "tilo.ui.control.invoke",
+                            &serde_json::to_vec(id).unwrap(),
+                        ),
+                        &mut doc,
+                        &root,
+                    )
+                    .unwrap();
+                assert!(
+                    result.is_some(),
+                    "address editor control must be reachable: {id}"
+                );
+                assert!(widget.credentials.sync(&widget.engine));
+                widget.structure_dirty = true;
+                layout_at(&mut widget, 390.0, 700.0);
+                if id == "browser.address.open" {
+                    assert!(!path.exists(), "opening does not opt in or write");
+                }
+                if id == "browser.address.new" {
+                    let theme = Theme::dark();
+                    let mut text = TextRenderer::new();
+                    let mut scene = Scene::new();
+                    let presence = PresenceCtx::default();
+                    widget.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+                    widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+                    if let Some(directory) = std::env::var_os("TILO_CREDENTIAL_RENDER_EVIDENCE") {
+                        let directory = std::path::PathBuf::from(directory);
+                        std::fs::create_dir_all(&directory).unwrap();
+                        ui::offscreen::OffscreenRenderer::new(390, 700).render_png(
+                            &scene,
+                            theme.bg_app,
+                            directory.join("address-editor-narrow.png"),
+                        );
+                    }
+                }
             }
-            if id == "browser.address.new" {
-                let theme = Theme::dark();
-                let mut text = TextRenderer::new();
+            assert!(!widget.credentials.open);
+            let store = crate::autofill::AutofillStore::open(BrowsingMode::Normal, &path).unwrap();
+            assert!(store.enabled());
+            assert!(
+                store.profiles().is_empty(),
+                "discarded editor must not save a profile"
+            );
+        }
+
+        // Phase `credentials_settings_launcher_and_overlay_actions_work_at_narrow_width`.
+        {
+            let mut widget = BrowserWidget::new_headless();
+            let (mut doc, root) = synced(&mut widget);
+            widget.show_settings = true;
+            widget.structure_dirty = true;
+            layout_at(&mut widget, 390.0, 700.0);
+            for id in ["browser.credentials.open", "browser.credentials.close"] {
+                let result = widget
+                    .start_operation(
+                        &ui::widget::ResourceOperation::local(
+                            ui::tilo_actions::InvocationId::new(),
+                            OperationKind::Effect,
+                            "tilo.ui.control.invoke",
+                            &serde_json::to_vec(id).unwrap(),
+                        ),
+                        &mut doc,
+                        &root,
+                    )
+                    .unwrap();
+                assert!(
+                    result.is_some(),
+                    "credential action must reach its visible control"
+                );
+                assert!(widget.credentials.sync(&widget.engine));
+                widget.structure_dirty = true;
+                layout_at(&mut widget, 390.0, 700.0);
+                if id.ends_with("open") {
+                    assert!(widget.credentials.open);
+                    let panel = widget.site_panel.as_ref().unwrap();
+                    assert!(
+                        panel.traps_focus(),
+                        "modal must enable scoped host Tab navigation"
+                    );
+                    assert!(panel.get_rect().x1 <= widget.rect.x1);
+                    assert!(widget.modal_capture().is_some());
+                }
+            }
+            assert!(!widget.credentials.open);
+            assert!(widget.modal_capture().is_none());
+        }
+
+        // Phase `narrow_chrome_keeps_a_nonzero_page_viewport`.
+        {
+            let mut widget = BrowserWidget::new_headless();
+            widget.debug_set_viewport_width(390);
+            let mut state = AutoCommit::new();
+            let root = automerge::ROOT;
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let mut tree = TaffyTree::<()>::new();
+            let mut nodes = std::collections::HashMap::new();
+            widget.sync(&mut state, &root);
+            let child = widget.build_layout(&mut tree, &theme, &mut nodes);
+            widget.sync(&mut state, &root);
+            let layout_root = tree
+                .new_with_children(
+                    Style {
+                        size: Size {
+                            width: Dimension::length(390.0),
+                            height: Dimension::length(844.0),
+                        },
+                        ..Default::default()
+                    },
+                    &[child],
+                )
+                .unwrap();
+            let measure_nodes = nodes.clone();
+            tree.compute_layout_with_measure(
+                layout_root,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(390.0),
+                    height: taffy::AvailableSpace::Definite(844.0),
+                },
+                |known, available, node, _, _| {
+                    measure_nodes
+                        .get(&node)
+                        .map_or(taffy::Size::ZERO, |ptr| unsafe {
+                            (**ptr).measure(known, available, &mut text)
+                        })
+                },
+            )
+            .unwrap();
+            widget.apply_layout(&tree, child, Point::ORIGIN);
+            let viewport = widget.find_rect("browser.surface").unwrap();
+            let address = widget.find_rect(URL_INPUT_ID).unwrap();
+            assert!(viewport.width() > 0.0 && viewport.height() > 0.0);
+            assert!(viewport.y0 < 100.0, "viewport starts beneath the toolbar");
+            assert!(
+                address.width() >= 140.0,
+                "compact chrome preserves a usable address/search field: {}",
+                address.width()
+            );
+        }
+
+        // Phase `toolbar_surface_controls_advertise_the_action_their_labels_promise`.
+        {
+            fn address_for(
+                widget: &BrowserWidget,
+                control: &str,
+            ) -> ui::tilo_actions::ActionAddress {
+                ui::widget::controls::control_action_bindings(widget)
+                    .into_iter()
+                    .find_map(|binding| match binding.kind {
+                        ui::widget::ControlBindingKind::Action(address)
+                            if binding.control_id == control =>
+                        {
+                            Some(address)
+                        }
+                        _ => None,
+                    })
+                    .unwrap()
+            }
+
+            let mut widget = BrowserWidget::new_headless();
+            let mut doc = AutoCommit::new();
+            widget.sync(&mut doc, &automerge::ROOT);
+            let mut tree = TaffyTree::<()>::new();
+            let mut nodes = std::collections::HashMap::new();
+            widget.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+            assert_eq!(address_for(&widget, "browser.library").action, "show");
+            assert_eq!(address_for(&widget, "browser.settings").action, "show");
+
+            widget.show_library = true;
+            widget.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+            assert_eq!(
+                address_for(&widget, "browser.library").action,
+                "show-page",
+                "a control labelled Close browser library must close it"
+            );
+
+            widget.show_library = false;
+            widget.show_settings = true;
+            widget.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+            assert_eq!(
+                address_for(&widget, "browser.settings").action,
+                "show-page",
+                "a control labelled Close browser settings must close it"
+            );
+            assert_eq!(address_for(&widget, "settings.close").action, "show-page");
+        }
+
+        // Phase `loading_progress_keeps_toolbar_above_the_page_surface`.
+        {
+            let mut widget = BrowserWidget::new_headless();
+            widget.debug_show_loading();
+            let mut state = AutoCommit::new();
+            let root = automerge::ROOT;
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let mut tree = TaffyTree::<()>::new();
+            let mut nodes = std::collections::HashMap::new();
+            widget.sync(&mut state, &root);
+            let child = widget.build_layout(&mut tree, &theme, &mut nodes);
+            widget.sync(&mut state, &root);
+            let layout_root = tree
+                .new_with_children(
+                    Style {
+                        size: Size {
+                            width: Dimension::length(900.0),
+                            height: Dimension::length(620.0),
+                        },
+                        ..Default::default()
+                    },
+                    &[child],
+                )
+                .unwrap();
+            let measure_nodes = nodes.clone();
+            tree.compute_layout_with_measure(
+                layout_root,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(900.0),
+                    height: taffy::AvailableSpace::Definite(620.0),
+                },
+                |known, available, node, _, _| {
+                    measure_nodes
+                        .get(&node)
+                        .map_or(taffy::Size::ZERO, |ptr| unsafe {
+                            (**ptr).measure(known, available, &mut text)
+                        })
+                },
+            )
+            .unwrap();
+            widget.apply_layout(&tree, child, Point::ORIGIN);
+            let toolbar = widget.find_rect("browser.stop").unwrap();
+            let viewport = widget.find_rect("browser.surface").unwrap();
+            assert!(toolbar.height() > 0.0);
+            assert!(
+                viewport.y0 > toolbar.y1,
+                "loading must reserve a strip below the toolbar, not let WebView cover it"
+            );
+        }
+    }
+
+    /// Site panel retention, composition, narrow rendering and resource actions.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn site_panel_stays_retained_composed_and_actionable() {
+        // Phase `site_panel_remains_in_workspace_tree_across_sync`.
+        {
+            let mut widget = BrowserWidget::new_headless();
+            layout_at(&mut widget, 800.0, 588.0);
+            widget.site.open = true;
+            let tabs = crate::browser_tabs::BrowserTabs::new(widget);
+            let mut harness = ui::headless::FrameHarness::new(
+                ui::state::State::new(),
+                Box::new(tabs),
+                (800, 632),
+            );
+            for _ in 0..3 {
+                harness.relayout();
+            }
+            assert!(harness.targets().contains_key("browser.site.connection"));
+            assert!(harness.targets().contains_key("browser.site.close"));
+        }
+
+        // Phase `site_panel_composes_above_page_across_repeated_layouts`.
+        {
+            let mut widget = BrowserWidget::new_headless();
+            layout_at(&mut widget, 800.0, 560.0);
+            widget.site.open = true;
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            for pass in 0..3 {
+                layout_at(&mut widget, 800.0, 560.0);
+                let panel = widget.site_panel.as_ref().unwrap();
+                assert!(panel.get_rect().height() > 100.0);
                 let mut scene = Scene::new();
-                let presence = PresenceCtx::default();
                 widget.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+                let page_tags = scene.encoding().draw_tags.len();
                 widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
-                if let Some(directory) = std::env::var_os("TILO_CREDENTIAL_RENDER_EVIDENCE") {
-                    let directory = std::path::PathBuf::from(directory);
-                    std::fs::create_dir_all(&directory).unwrap();
-                    ui::offscreen::OffscreenRenderer::new(390, 700).render_png(
+                assert!(
+                    scene.encoding().draw_tags.len() > page_tags + 5,
+                    "overlay must emit visible content"
+                );
+                if let Some(directory) = std::env::var_os("TILO_SITE_RENDER_EVIDENCE") {
+                    let path = std::path::PathBuf::from(directory);
+                    std::fs::create_dir_all(&path).unwrap();
+                    let mut renderer = ui::offscreen::OffscreenRenderer::new(800, 560);
+                    renderer.render_png(
                         &scene,
                         theme.bg_app,
-                        directory.join("address-editor-narrow.png"),
+                        path.join(format!("panel-pass-{pass}.png")),
                     );
                 }
             }
         }
-        assert!(!widget.credentials.open);
-        let store = crate::autofill::AutofillStore::open(BrowsingMode::Normal, &path).unwrap();
-        assert!(store.enabled());
-        assert!(
-            store.profiles().is_empty(),
-            "discarded editor must not save a profile"
-        );
-    }
 
-    #[test]
-    fn credentials_settings_launcher_and_overlay_actions_work_at_narrow_width() {
-        let mut widget = BrowserWidget::new_headless();
-        let (doc, root) = synced(&mut widget);
-        widget.show_settings = true;
-        widget.structure_dirty = true;
-        layout_at(&mut widget, 390.0, 700.0);
-        for id in ["browser.credentials.open", "browser.credentials.close"] {
+        // Phase `populated_site_panels_render_at_narrow_width`.
+        {
+            let mut widget = BrowserWidget::new_headless();
+            let (mut doc, root) = synced(&mut widget);
+            widget.site.navigation("https://example.com");
+            widget.site.open = true;
+            widget.site.sync(&widget.engine);
+            assert!(
+                widget
+                    .site
+                    .apply(WebViewEvent::SiteStatus(ui::webview::SiteStatus {
+                        request_id: 1,
+                        origin: "https://example.com".into(),
+                        generation: 2,
+                        blocked: 4,
+                        global_enabled: true,
+                        excepted: false,
+                        effective: true,
+                        security: "secure".into(),
+                        certificate_status: 0,
+                        tls_version: 6,
+                        content_status: 0,
+                        subject: "example.com".into(),
+                        issuer: "Cloudflare TLS Issuing ECC CA 3".into(),
+                        expires: 13_437_613_041_000_000.0,
+                        permissions: ["camera", "microphone", "location", "notifications"]
+                            .into_iter()
+                            .map(|name| (name.into(), "ask".into()))
+                            .collect(),
+                    }))
+            );
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            for information in [false, true] {
+                layout_at(&mut widget, 390.0, 700.0);
+                // Match the retained app layout after its first parent size is known.
+                layout_at(&mut widget, 390.0, 700.0);
+                if information {
+                    assert!(
+                        widget
+                            .start_operation(
+                                &ui::widget::ResourceOperation::local(
+                                    ui::tilo_actions::InvocationId::new(),
+                                    OperationKind::Effect,
+                                    "tilo.ui.control.invoke",
+                                    &serde_json::to_vec("browser.site.connection").unwrap()
+                                ),
+                                &mut doc,
+                                &root
+                            )
+                            .unwrap()
+                            .is_some()
+                    );
+                    widget.site.sync(&widget.engine);
+                    layout_at(&mut widget, 390.0, 700.0);
+                }
+                let rect = widget.site_panel.as_ref().unwrap().get_rect();
+                assert!(
+                    rect.x0 >= 0.0 && rect.x1 <= 390.0 && rect.height() > 100.0,
+                    "{rect:?}"
+                );
+                let mut scene = Scene::new();
+                widget.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+                widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+                if let Some(directory) = std::env::var_os("TILO_SITE_RENDER_EVIDENCE") {
+                    let path = std::path::PathBuf::from(directory);
+                    std::fs::create_dir_all(&path).unwrap();
+                    let mut renderer = ui::offscreen::OffscreenRenderer::new(390, 700);
+                    let name = if information {
+                        "narrow-site-info.png"
+                    } else {
+                        "narrow-protection.png"
+                    };
+                    renderer.render_png(&scene, theme.bg_app, path.join(name));
+                }
+            }
+        }
+
+        // Phase `site_panel_resource_actions_reach_the_retained_panel`.
+        {
+            let mut widget = BrowserWidget::new_headless();
+            let (mut doc, root) = synced(&mut widget);
+            layout_at(&mut widget, 1000.0, 700.0);
+            widget.site.open = true;
+            layout_at(&mut widget, 1000.0, 700.0);
+            assert!(widget.site_panel.is_some());
             let result = widget
-                .start_resource_operation(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    &serde_json::to_vec(id).unwrap(),
-                    &doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        "tilo.ui.control.invoke",
+                        &serde_json::to_vec("browser.site.close").unwrap(),
+                    ),
+                    &mut doc,
                     &root,
                 )
                 .unwrap();
             assert!(
                 result.is_some(),
-                "credential action must reach its visible control"
+                "native button operation must reach overlay child"
             );
-            assert!(widget.credentials.sync(&widget.engine));
-            widget.structure_dirty = true;
-            layout_at(&mut widget, 390.0, 700.0);
-            if id.ends_with("open") {
-                assert!(widget.credentials.open);
-                let panel = widget.site_panel.as_ref().unwrap();
-                assert!(
-                    panel.traps_focus(),
-                    "modal must enable scoped host Tab navigation"
-                );
-                assert!(panel.get_rect().x1 <= widget.rect.x1);
-                assert!(widget.modal_capture().is_some());
-            }
-        }
-        assert!(!widget.credentials.open);
-        assert!(widget.modal_capture().is_none());
-    }
-
-    #[test]
-    fn site_panel_remains_in_workspace_tree_across_sync() {
-        let mut widget = BrowserWidget::new_headless();
-        layout_at(&mut widget, 800.0, 588.0);
-        widget.site.open = true;
-        let tabs = crate::browser_tabs::BrowserTabs::new(widget);
-        let mut harness =
-            ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(tabs), (800, 632));
-        for _ in 0..3 {
-            harness.relayout();
-        }
-        assert!(harness.targets().contains_key("browser.site.connection"));
-        assert!(harness.targets().contains_key("browser.site.close"));
-    }
-
-    #[test]
-    fn site_panel_composes_above_page_across_repeated_layouts() {
-        let mut widget = BrowserWidget::new_headless();
-        layout_at(&mut widget, 800.0, 560.0);
-        widget.site.open = true;
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        for pass in 0..3 {
-            layout_at(&mut widget, 800.0, 560.0);
-            let panel = widget.site_panel.as_ref().unwrap();
-            assert!(panel.get_rect().height() > 100.0);
-            let mut scene = Scene::new();
-            widget.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
-            let page_tags = scene.encoding().draw_tags.len();
-            widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
-            assert!(
-                scene.encoding().draw_tags.len() > page_tags + 5,
-                "overlay must emit visible content"
-            );
-            if let Some(directory) = std::env::var_os("TILO_SITE_RENDER_EVIDENCE") {
-                let path = std::path::PathBuf::from(directory);
-                std::fs::create_dir_all(&path).unwrap();
-                let mut renderer = ui::offscreen::OffscreenRenderer::new(800, 560);
-                renderer.render_png(
-                    &scene,
-                    theme.bg_app,
-                    path.join(format!("panel-pass-{pass}.png")),
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn populated_site_panels_render_at_narrow_width() {
-        let mut widget = BrowserWidget::new_headless();
-        let (doc, root) = synced(&mut widget);
-        widget.site.navigation("https://example.com");
-        widget.site.open = true;
-        widget.site.sync(&widget.engine);
-        assert!(
-            widget
-                .site
-                .apply(WebViewEvent::SiteStatus(ui::webview::SiteStatus {
-                    request_id: 1,
-                    origin: "https://example.com".into(),
-                    generation: 2,
-                    blocked: 4,
-                    global_enabled: true,
-                    excepted: false,
-                    effective: true,
-                    security: "secure".into(),
-                    certificate_status: 0,
-                    tls_version: 6,
-                    content_status: 0,
-                    subject: "example.com".into(),
-                    issuer: "Cloudflare TLS Issuing ECC CA 3".into(),
-                    expires: 13_437_613_041_000_000.0,
-                    permissions: ["camera", "microphone", "location", "notifications"]
-                        .into_iter()
-                        .map(|name| (name.into(), "ask".into()))
-                        .collect(),
-                }))
-        );
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        for information in [false, true] {
-            layout_at(&mut widget, 390.0, 700.0);
-            // Match the retained app layout after its first parent size is known.
-            layout_at(&mut widget, 390.0, 700.0);
-            if information {
-                assert!(
-                    widget
-                        .start_resource_operation(
-                            ui::tilo_actions::InvocationId::new(),
-                            OperationKind::Effect,
-                            "tilo.ui.control.invoke",
-                            &serde_json::to_vec("browser.site.connection").unwrap(),
-                            &doc,
-                            &root,
-                        )
-                        .unwrap()
-                        .is_some()
-                );
-                widget.site.sync(&widget.engine);
-                layout_at(&mut widget, 390.0, 700.0);
-            }
-            let rect = widget.site_panel.as_ref().unwrap().get_rect();
-            assert!(
-                rect.x0 >= 0.0 && rect.x1 <= 390.0 && rect.height() > 100.0,
-                "{rect:?}"
-            );
-            let mut scene = Scene::new();
-            widget.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
-            widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
-            if let Some(directory) = std::env::var_os("TILO_SITE_RENDER_EVIDENCE") {
-                let path = std::path::PathBuf::from(directory);
-                std::fs::create_dir_all(&path).unwrap();
-                let mut renderer = ui::offscreen::OffscreenRenderer::new(390, 700);
-                let name = if information {
-                    "narrow-site-info.png"
-                } else {
-                    "narrow-protection.png"
-                };
-                renderer.render_png(&scene, theme.bg_app, path.join(name));
-            }
+            widget.site.sync(&widget.engine);
+            assert!(!widget.site.open);
         }
     }
 
@@ -7741,13 +9272,15 @@ mod tests {
             assert!(widget.site_panel.is_some());
             assert!(
                 widget
-                    .start_resource_operation(
-                        ui::tilo_actions::InvocationId::new(),
-                        OperationKind::Effect,
-                        "tilo.ui.control.invoke",
-                        &serde_json::to_vec("browser.site.toggle").unwrap(),
-                        &doc,
-                        &root,
+                    .start_operation(
+                        &ui::widget::ResourceOperation::local(
+                            ui::tilo_actions::InvocationId::new(),
+                            OperationKind::Effect,
+                            "tilo.ui.control.invoke",
+                            &serde_json::to_vec("browser.site.toggle").unwrap()
+                        ),
+                        &mut doc,
+                        &root
                     )
                     .unwrap()
                     .is_some(),
@@ -7879,1440 +9412,1200 @@ mod tests {
         }
     }
 
+    /// Picture-in-picture feedback placement and lifetime.
     #[test]
-    fn site_panel_resource_actions_reach_the_retained_panel() {
-        let mut widget = BrowserWidget::new_headless();
-        let (mut doc, root) = synced(&mut widget);
-        layout_at(&mut widget, 1000.0, 700.0);
-        widget.site.open = true;
-        layout_at(&mut widget, 1000.0, 700.0);
-        assert!(widget.site_panel.is_some());
-        let result = widget
-            .start_resource_operation(
-                ui::tilo_actions::InvocationId::new(),
-                OperationKind::Effect,
-                "tilo.ui.control.invoke",
-                &serde_json::to_vec("browser.site.close").unwrap(),
-                &doc,
-                &root,
-            )
-            .unwrap();
-        assert!(
-            result.is_some(),
-            "native button operation must reach overlay child"
-        );
-        widget.site.sync(&widget.engine);
-        assert!(!widget.site.open);
-    }
-
-    #[test]
-    fn narrow_chrome_keeps_a_nonzero_page_viewport() {
-        let mut widget = BrowserWidget::new_headless();
-        widget.debug_set_viewport_width(390);
-        let mut state = AutoCommit::new();
-        let root = automerge::ROOT;
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let mut tree = TaffyTree::<()>::new();
-        let mut nodes = std::collections::HashMap::new();
-        widget.sync(&mut state, &root);
-        let child = widget.build_layout(&mut tree, &theme, &mut nodes);
-        widget.sync(&mut state, &root);
-        let layout_root = tree
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(390.0),
-                        height: Dimension::length(844.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-        let measure_nodes = nodes.clone();
-        tree.compute_layout_with_measure(
-            layout_root,
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(390.0),
-                height: taffy::AvailableSpace::Definite(844.0),
-            },
-            |known, available, node, _, _| {
-                measure_nodes
-                    .get(&node)
-                    .map_or(taffy::Size::ZERO, |ptr| unsafe {
-                        (**ptr).measure(known, available, &mut text)
-                    })
-            },
-        )
-        .unwrap();
-        widget.apply_layout(&tree, child, Point::ORIGIN);
-        let viewport = widget.find_rect("browser.surface").unwrap();
-        let address = widget.find_rect(URL_INPUT_ID).unwrap();
-        assert!(viewport.width() > 0.0 && viewport.height() > 0.0);
-        assert!(viewport.y0 < 100.0, "viewport starts beneath the toolbar");
-        assert!(
-            address.width() >= 140.0,
-            "compact chrome preserves a usable address/search field: {}",
-            address.width()
-        );
-    }
-
-    #[test]
-    fn compact_history_library_retains_the_hidden_toolbar_privacy_action() {
-        let mut widget = BrowserWidget::new_headless();
-        widget.debug_show_library("history");
-        widget.debug_set_viewport_width(390);
-        layout_at(&mut widget, 390.0, 844.0);
-        assert!(widget.control_action_bindings().iter().any(|binding| {
-            binding.control_id == "browser.library.history-pause"
-                && matches!(
-                    &binding.kind,
-                    ui::widget::ControlBindingKind::Action(address)
-                        if address.resource == "browser.session"
-                            && address.action == "toggle-history-pause"
-                )
-        }));
-    }
-
-    #[test]
-    fn address_suggestions_are_modal_and_a11y_actions_queue_canonical_navigation() {
-        let mut widget = BrowserWidget::new_headless();
-        widget.debug_force_suggestions(vec![crate::history::HistoryEntry {
-            url: "https://accessible.example/reading".into(),
-            title: "Accessible reading".into(),
-            last_visit: 1,
-            visit_count: 1,
-        }]);
-        layout_at(&mut widget, 390.0, 844.0);
-
-        let mut semantic = ui::a11y_tree::SemanticTree::new();
-        semantic.refresh(&widget, &std::collections::HashMap::new(), None, &[]);
-        let suggestion = semantic
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Accessible reading"))
-            .expect("floating address suggestions must reach the semantic tree");
-        assert!(suggestion.action("activate").is_some());
-        assert!(Widget::modal_capture(&widget).is_some());
-
-        let target = format!(
-            "browser.address-suggestion:{}",
-            blake3::hash(b"https://accessible.example/reading").to_hex()
-        );
-        assert!(Widget::perform_semantic_action(
-            &mut widget,
-            &target,
-            &ui::a11y::Action::Activate,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-        let invocation = widget
-            .take_control_invocation()
-            .expect("accessibility activation must queue Browser's action binding");
-        assert_eq!(invocation.address.resource, "browser.page");
-        assert_eq!(invocation.address.action, "navigate");
-        assert!(Widget::modal_capture(&widget).is_none());
-    }
-
-    #[test]
-    fn populated_library_rows_have_a_bounded_compact_measure_at_all_widths() {
-        let mut wide = BrowserWidget::new_headless();
-        wide.debug_show_library("history");
-        layout_at(&mut wide, 1_200.0, 720.0);
-        let first = wide
-            .find_rect(&format!(
-                "{}.open",
-                history_resource_id("https://www.rust-lang.org/learn")
-            ))
-            .unwrap();
-        let second = wide
-            .find_rect(&format!(
-                "{}.open",
-                history_resource_id("https://developer.mozilla.org/en-US/docs/Web")
-            ))
-            .unwrap();
-        let history_tab = wide.find_rect("browser.library.history").unwrap();
-        assert!(
-            (120.0..=160.0).contains(&history_tab.x0),
-            "desktop title, tabs, and rows share a centered 920px Library measure"
-        );
-        assert!(
-            first.x1 < 1_080.0,
-            "desktop row actions stay at the trailing edge of the centered Library measure"
-        );
-        assert!(first.height() <= 40.0);
-        assert!(
-            second.y0 - first.y0 < 80.0,
-            "two-line metadata rows must not expand into oversized slabs"
-        );
-
-        let mut narrow = BrowserWidget::new_headless();
-        narrow.debug_show_library("bookmarks");
-        narrow.debug_set_viewport_width(390);
-        layout_at(&mut narrow, 390.0, 844.0);
-        let open = narrow
-            .find_rect(&format!(
-                "{}.open",
-                bookmark_resource_id("https://www.rust-lang.org/learn")
-            ))
-            .unwrap();
-        let remove = narrow
-            .find_rect(&format!(
-                "{}.remove",
-                bookmark_resource_id("https://www.rust-lang.org/learn")
-            ))
-            .unwrap();
-        assert!(open.width() > 0.0 && remove.width() > 0.0);
-        assert!(
-            remove.x1 <= 390.0,
-            "row actions stay reachable on narrow layouts"
-        );
-        let history_tab = narrow.find_rect("browser.library.history").unwrap();
-        let bookmarks_tab = narrow.find_rect("browser.library.bookmarks").unwrap();
-        let downloads_tab = narrow.find_rect("browser.library.downloads").unwrap();
-        let extensions_tab = narrow.find_rect("browser.library.extensions").unwrap();
-        assert!(
-            history_tab.x1 <= 390.0
-                && bookmarks_tab.x1 <= 390.0
-                && downloads_tab.x1 <= 390.0
-                && extensions_tab.x1 <= 390.0,
-            "every Library destination stays visible instead of overflowing horizontally"
-        );
-        assert!(
-            downloads_tab.y0 > history_tab.y0,
-            "compact Library uses a deliberate two-row section grid"
-        );
-    }
-
-    #[test]
-    fn large_text_desktop_library_keeps_a_centered_reading_measure() {
-        let mut widget = BrowserWidget::new_headless();
-        widget.debug_show_library("history");
-        widget.debug_set_viewport_width(1_200);
-        layout_with_theme(
-            &mut widget,
-            1_200.0,
-            800.0,
-            &Theme::dark().with_text_scale(2.0),
-        );
-
-        let history_tab = widget.find_rect("browser.library.history").unwrap();
-        let open = widget
-            .find_rect(&format!(
-                "{}.open",
-                history_resource_id("https://www.rust-lang.org/learn")
-            ))
-            .unwrap();
-        assert!(
-            (120.0..=160.0).contains(&history_tab.x0),
-            "large text retains the desktop Library measure instead of becoming edge-to-edge"
-        );
-        assert!(
-            open.x1 < 1_080.0,
-            "large-text row actions stay inside the centered Library measure"
-        );
-    }
-
-    #[test]
-    fn toolbar_surface_controls_advertise_the_action_their_labels_promise() {
-        fn address_for(widget: &BrowserWidget, control: &str) -> ui::tilo_actions::ActionAddress {
-            widget
-                .control_action_bindings()
-                .into_iter()
-                .find_map(|binding| match binding.kind {
-                    ui::widget::ControlBindingKind::Action(address)
-                        if binding.control_id == control =>
-                    {
-                        Some(address)
-                    }
-                    _ => None,
-                })
-                .unwrap()
-        }
-
-        let mut widget = BrowserWidget::new_headless();
-        let mut doc = AutoCommit::new();
-        widget.sync(&mut doc, &automerge::ROOT);
-        let mut tree = TaffyTree::<()>::new();
-        let mut nodes = std::collections::HashMap::new();
-        widget.build_layout(&mut tree, &Theme::dark(), &mut nodes);
-        assert_eq!(address_for(&widget, "browser.library").action, "show");
-        assert_eq!(address_for(&widget, "browser.settings").action, "show");
-
-        widget.show_library = true;
-        widget.build_layout(&mut tree, &Theme::dark(), &mut nodes);
-        assert_eq!(
-            address_for(&widget, "browser.library").action,
-            "show-page",
-            "a control labelled Close browser library must close it"
-        );
-
-        widget.show_library = false;
-        widget.show_settings = true;
-        widget.build_layout(&mut tree, &Theme::dark(), &mut nodes);
-        assert_eq!(
-            address_for(&widget, "browser.settings").action,
-            "show-page",
-            "a control labelled Close browser settings must close it"
-        );
-        assert_eq!(address_for(&widget, "settings.close").action, "show-page");
-    }
-
-    #[test]
-    fn loading_progress_keeps_toolbar_above_the_page_surface() {
-        let mut widget = BrowserWidget::new_headless();
-        widget.debug_show_loading();
-        let mut state = AutoCommit::new();
-        let root = automerge::ROOT;
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let mut tree = TaffyTree::<()>::new();
-        let mut nodes = std::collections::HashMap::new();
-        widget.sync(&mut state, &root);
-        let child = widget.build_layout(&mut tree, &theme, &mut nodes);
-        widget.sync(&mut state, &root);
-        let layout_root = tree
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(900.0),
-                        height: Dimension::length(620.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-        let measure_nodes = nodes.clone();
-        tree.compute_layout_with_measure(
-            layout_root,
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(900.0),
-                height: taffy::AvailableSpace::Definite(620.0),
-            },
-            |known, available, node, _, _| {
-                measure_nodes
-                    .get(&node)
-                    .map_or(taffy::Size::ZERO, |ptr| unsafe {
-                        (**ptr).measure(known, available, &mut text)
-                    })
-            },
-        )
-        .unwrap();
-        widget.apply_layout(&tree, child, Point::ORIGIN);
-        let toolbar = widget.find_rect("browser.stop").unwrap();
-        let viewport = widget.find_rect("browser.surface").unwrap();
-        assert!(toolbar.height() > 0.0);
-        assert!(
-            viewport.y0 > toolbar.y1,
-            "loading must reserve a strip below the toolbar, not let WebView cover it"
-        );
-    }
-
-    #[test]
-    fn narrow_pip_feedback_is_clamped_inside_viewport_safe_bounds() {
-        let viewport = Rect::new(0.0, 0.0, 390.0, 844.0);
-        // Compact chrome has no dedicated PiP button; its semantic fallback
-        // anchor is close enough to the trailing edge that trailing-only
-        // alignment used to put the left side of this card offscreen.
-        let anchor = Rect::new(278.0, 12.0, 322.0, 52.0);
-        let card = BrowserWidget::pip_feedback_rect_for_anchor(viewport, anchor, true).unwrap();
-        assert!(card.x0 >= viewport.x0 + 12.0);
-        assert!(card.x1 <= viewport.x1 - 12.0);
-        assert!(card.y0 >= viewport.y0 + 12.0);
-        assert!(card.y1 <= viewport.y1 - 12.0);
-        assert!(
-            (card.width() - 354.0).abs() < f64::EPSILON,
-            "the full action card still fits"
-        );
-    }
-
-    #[test]
-    fn compact_pip_feedback_uses_a_visible_toolbar_anchor() {
-        let mut widget = BrowserWidget::new_headless();
-        widget.debug_set_viewport_width(390);
-        widget.debug_show_empty_pip_feedback();
-        layout_at(&mut widget, 390.0, 844.0);
-
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        widget.draw_overlay(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
-
-        assert!(widget.pip_feedback_rect.width() > 0.0);
-        assert!(widget.pip_feedback_rect.x0 >= 12.0);
-        assert!(widget.pip_feedback_rect.x1 <= 378.0);
-        assert!(
-            !scene.encoding().draw_tags.is_empty(),
-            "compact feedback must remain visible even without a PiP toolbar button"
-        );
-    }
-
-    #[test]
-    fn canonical_navigation_operations_translate_to_engine_commands() {
-        let engine = TestEngine::new();
-        let mut w = BrowserWidget::with_engine(engine.clone(), true);
-        let (mut state, root) = synced(&mut w);
-
-        // History so back/forward are meaningful.
-        engine.send(WebViewCommand::Navigate("https://a.test".into()));
-        engine.send(WebViewCommand::Navigate("https://b.test".into()));
-
-        w.perform_browser_operation(BrowserOperation::Back).unwrap();
-        assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
-        w.perform_browser_operation(BrowserOperation::Forward)
-            .unwrap();
-        assert_eq!(engine.current_uri().as_deref(), Some("https://b.test"));
-
-        w.perform_browser_operation(BrowserOperation::Reload)
-            .unwrap();
-        assert!(
-            engine.commands().contains(&WebViewCommand::Reload),
-            "canonical reload reaches the engine",
-        );
-    }
-
-    #[test]
-    fn pip_button_probes_and_floats_only_the_video_rect() {
-        let engine = TestEngine::new();
-        engine.set_media_element(Some(MediaElementInfo {
-            element_id: "media:main".into(),
-            viewport_rect: [0.1, 0.2, 0.5, 0.4],
-            intrinsic_size: [1920, 1080],
-            label: "The active film".into(),
-        }));
-        let mut w = BrowserWidget::with_engine(engine.clone(), true);
-        let (mut state, root) = synced(&mut w);
-        w.rect = Rect::new(100.0, 50.0, 900.0, 650.0);
-        *w.content_rect.lock().unwrap() = Some([0.0, 0.1, 1.0, 1.0]);
-
-        w.begin_pip_probe();
-        w.sync(&mut state, &root); // accepts/sends the asynchronous probe
-        assert!(
-            engine
-                .commands()
-                .iter()
-                .any(|command| matches!(command, WebViewCommand::RequestMediaElement { .. }))
-        );
-        let request = w
-            .take_floating_surface_request()
-            .expect("a visible video becomes PiP");
-        assert_eq!(request.title, "The active film");
-        assert_eq!(request.aspect_ratio, Some(16.0 / 9.0));
-        let ui::floating_surface::FloatingSource::AppElement {
-            element_id, region, ..
-        } = request.source
-        else {
-            panic!("browser PiP should preserve its semantic media identity");
-        };
-        assert_eq!(element_id, "media:main");
-        let expected = Rect::new(180.0, 218.0, 580.0, 434.0);
-        assert!((region.x0 - expected.x0).abs() < 0.001);
-        assert!((region.y0 - expected.y0).abs() < 0.001);
-        assert!((region.x1 - expected.x1).abs() < 0.001);
-        assert!((region.y1 - expected.y1).abs() < 0.001);
-        assert_eq!(w.active_floating_surface_ids(), vec![PIP_ID.to_string()]);
-
-        w.on_floating_surface_host_message(
-            &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
-                id: PIP_ID.into(),
-                rect: [0.0, 0.0, 1.0, 1.0],
-            },
-        );
-        w.rect = Rect::new(200.0, 80.0, 1_200.0, 780.0);
-        w.refresh_active_pip_region();
-        let updates = w.take_floating_surface_source_updates();
-        assert_eq!(
-            updates.len(),
-            1,
-            "a resized browser republishes the video box"
-        );
-        assert_ne!(updates[0].1, expected);
-
-        engine.set_media_element(Some(MediaElementInfo {
-            element_id: "media:main".into(),
-            viewport_rect: [0.18, 0.12, 0.46, 0.36],
-            intrinsic_size: [1920, 1080],
-            label: "The active film".into(),
-        }));
-        w.next_pip_refresh_at = Some(
-            std::time::Instant::now()
-                .checked_sub(std::time::Duration::from_millis(1))
-                .unwrap_or_else(std::time::Instant::now),
-        );
-        w.poll_active_pip_element();
-        assert!(engine.commands().iter().any(|command| matches!(
-            command,
-            WebViewCommand::RequestMediaElementById { element_id, .. }
-                if element_id == "media:main"
-        )));
-        w.apply_engine_events();
-        let semantic_updates = w.take_floating_surface_source_updates();
-        assert_eq!(semantic_updates.len(), 1);
-        assert_ne!(semantic_updates[0].1, updates[0].1);
-
-        w.begin_pip_probe();
-        assert!(
-            w.active_floating_surface_ids().is_empty(),
-            "the toolbar button toggles an adopted PiP off instead of probing twice"
-        );
-
-        w.on_floating_surface_host_message(
-            &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id: PIP_ID.into() },
-        );
-        assert!(w.active_pip_element.is_none());
-    }
-
-    #[test]
-    fn pip_without_video_explains_the_shell_selection_fallback() {
-        let engine = TestEngine::new();
-        let mut w = BrowserWidget::with_engine(engine, true);
-        let (mut state, root) = synced(&mut w);
-
-        w.begin_pip_probe();
-        w.sync(&mut state, &root);
-        w.sync(&mut state, &root);
-
-        assert!(w.take_floating_surface_request().is_none());
-        assert_eq!(
-            w.pip_feedback.as_ref().map(|feedback| feedback.kind),
-            Some(PipFeedbackKind::NoVideo)
-        );
-    }
-
-    #[test]
-    fn reduced_motion_settles_pip_feedback_without_requesting_frames() {
-        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
-        w.pip_feedback = Some(PipFeedback {
-            kind: PipFeedbackKind::NoVideo,
-            started: std::time::Instant::now(),
-            persistent: false,
-        });
-
-        assert!(w.needs_animation_frame());
-        w.set_motion_reduced(true);
-        assert!(
-            !w.needs_animation_frame(),
-            "reduced motion keeps the feedback visible but does not animate its fade"
-        );
-    }
-
-    #[test]
-    fn no_video_select_area_requests_the_shared_shell_pip_picker_once() {
-        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
-        let (mut state, root) = synced(&mut w);
-        w.pip_feedback = Some(PipFeedback {
-            kind: PipFeedbackKind::NoVideo,
-            started: std::time::Instant::now(),
-            persistent: false,
-        });
-        w.pip_feedback_rect = Rect::new(100.0, 80.0, 454.0, 192.0);
-        w.pip_float_page_rect = Rect::new(114.0, 154.0, 273.0, 184.0);
-        w.pip_select_area_rect = Rect::new(281.0, 154.0, 440.0, 184.0);
-        w.cursor = w.pip_select_area_rect.center();
-
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).expect("test leaf");
-        let mut handled = false;
-        let mut focus = None;
-        w.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
-        );
-
-        assert!(handled);
-        assert_eq!(
-            w.take_capture_studio_request(),
-            Some(ui::widget::CaptureMode::Pip)
-        );
-        assert!(w.take_capture_studio_request().is_none());
-        assert!(w.take_floating_surface_request().is_none());
-        assert!(w.pip_feedback.is_none());
-    }
-
-    #[test]
-    fn no_video_fallback_floats_and_tracks_the_page_viewport() {
-        let engine = TestEngine::new();
-        let mut w = BrowserWidget::with_engine(engine.clone(), true);
-        w.rect = Rect::new(100.0, 50.0, 900.0, 650.0);
-        *w.content_rect.lock().unwrap() = Some([0.0, 0.1, 1.0, 1.0]);
-        w.title = "Reference board".into();
-
-        w.float_current_page();
-        let request = w
-            .take_floating_surface_request()
-            .expect("the actionable no-video card creates a real live mirror");
-        assert_eq!(request.title, "Reference board");
-        let ui::floating_surface::FloatingSource::AppRegion { region, .. } = request.source else {
-            panic!("page fallback should track the page viewport, not invent a media element");
-        };
-        let expected = Rect::new(100.0, 110.0, 900.0, 650.0);
-        assert!((region.x0 - expected.x0).abs() < 0.001);
-        assert!((region.y0 - expected.y0).abs() < 0.001);
-        assert!((region.x1 - expected.x1).abs() < 0.001);
-        assert!((region.y1 - expected.y1).abs() < 0.001);
-        assert!(w.active_pip && w.pip_page_fallback);
-
-        w.rect = Rect::new(200.0, 80.0, 1_200.0, 780.0);
-        w.refresh_active_pip_region();
-        let updates = w.take_floating_surface_source_updates();
-        assert_eq!(
-            updates.len(),
-            1,
-            "a resized page keeps its live crop current"
-        );
-        assert_ne!(updates[0].1, region);
-
-        w.poll_active_pip_element();
-        assert!(
-            !engine
-                .commands()
-                .iter()
-                .any(|command| matches!(command, WebViewCommand::RequestMediaElementById { .. })),
-            "page fallback must not be closed by semantic-video polling"
-        );
-        w.on_floating_surface_host_message(
-            &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id: PIP_ID.into() },
-        );
-        assert!(!w.active_pip && !w.pip_page_fallback);
-    }
-
-    #[test]
-    fn actionable_pip_feedback_does_not_expire_under_the_pointer() {
-        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
-        w.pip_feedback = Some(PipFeedback {
-            kind: PipFeedbackKind::NoVideo,
-            started: std::time::Instant::now()
-                .checked_sub(PIP_FEEDBACK_LIFETIME + std::time::Duration::from_secs(1))
-                .unwrap_or_else(std::time::Instant::now),
-            persistent: false,
-        });
-        w.pip_feedback_rect = Rect::new(100.0, 80.0, 426.0, 144.0);
-        w.cursor = w.pip_feedback_rect.center();
-        let mut scene = Scene::new();
-        let mut tr = TextRenderer::new();
-        w.draw_overlay(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &Theme::dark(),
-            &PresenceCtx::default(),
-        );
-        assert!(w.pip_feedback.is_some());
-
-        w.cursor = Point::ZERO;
-        w.draw_overlay(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &Theme::dark(),
-            &PresenceCtx::default(),
-        );
-        assert!(w.pip_feedback.is_none());
-    }
-
-    #[test]
-    fn active_pip_closes_when_its_semantic_element_disappears() {
-        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
-        let (mut state, root) = synced(&mut w);
-        w.active_pip = true;
-        w.active_pip_element = Some(MediaElementInfo {
-            element_id: "media:gone".into(),
-            viewport_rect: [0.1, 0.1, 0.8, 0.6],
-            intrinsic_size: [1_280, 720],
-            label: "Temporary video".into(),
-        });
-        w.next_pip_refresh_at = Some(
-            std::time::Instant::now()
-                .checked_sub(std::time::Duration::from_millis(1))
-                .unwrap_or_else(std::time::Instant::now),
-        );
-
-        w.poll_active_pip_element();
-        w.apply_engine_events();
-
-        assert!(!w.active_pip);
-        assert!(w.active_pip_element.is_none());
-        assert!(w.active_floating_surface_ids().is_empty());
-        assert!(w.pip_feedback.is_some());
-    }
-
-    #[test]
-    fn engine_uri_updates_address_bar_text() {
-        let engine = TestEngine::new();
-        let mut w = BrowserWidget::with_engine(engine.clone(), true);
-        let (mut state, root) = synced(&mut w);
-
-        engine.send(WebViewCommand::Navigate("https://example.test".into()));
-        w.sync(&mut state, &root);
-
-        assert_eq!(w.address.with(Clone::clone), "https://example.test");
-        assert_eq!(w.app_title(), "https://example.test — test page");
-    }
-
-    #[test]
-    fn history_events_drive_button_enablement() {
-        let engine = TestEngine::new();
-        let mut w = BrowserWidget::with_engine(engine.clone(), true);
-        let (mut state, root) = synced(&mut w);
-
-        engine.send(WebViewCommand::Navigate("https://a.test".into()));
-        engine.send(WebViewCommand::Navigate("https://b.test".into()));
-        w.sync(&mut state, &root);
-
-        assert!(w.can_go_back);
-        assert!(!w.can_go_forward);
-    }
-
-    #[test]
-    fn headless_engine_has_deterministic_page() {
-        let w = BrowserWidget::new_headless();
-        let slot = w.engine.frames();
-        let frame = slot.lock().unwrap().clone().expect("pre-rendered frame");
-        assert!(frame.width > 0 && frame.height > 0);
-    }
-
-    #[test]
-    fn default_engine_failure_never_becomes_a_simulated_page() {
-        let engine: SharedEngine = engine_or_error(Err("Chromium unavailable".into()));
-        let _clone: SharedEngine = Arc::clone(&engine);
-        engine.send(WebViewCommand::Navigate("https://tilo.so".into()));
-        assert!(engine.frames().lock().unwrap().is_none());
-        assert!(engine.drain_events().iter().any(|event| matches!(event,
-            WebViewEvent::LoadFailed { error, .. } if error == "Chromium unavailable")));
-    }
-
-    #[test]
-    fn resource_surface_binds_typed_navigation_and_reports_history_availability() {
-        let engine = TestEngine::new();
-        let mut w = BrowserWidget::with_engine(engine.clone(), true);
-        let (mut doc, root) = synced(&mut w);
-        let resources = Widget::resources(&w, &doc);
-        assert_eq!(resources[0].id.0, "browser");
-        for expected in [
-            "browser.page",
-            "browser.history",
-            "browser.bookmarks",
-            "browser.downloads",
-            "browser.extensions",
-            "browser.library",
-            "browser.settings",
-        ] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn pip_feedback_is_anchored_clamped_and_settles() {
+        // Phase `narrow_pip_feedback_is_clamped_inside_viewport_safe_bounds`.
+        {
+            let viewport = Rect::new(0.0, 0.0, 390.0, 844.0);
+            // Compact chrome has no dedicated PiP button; its semantic fallback
+            // anchor is close enough to the trailing edge that trailing-only
+            // alignment used to put the left side of this card offscreen.
+            let anchor = Rect::new(278.0, 12.0, 322.0, 52.0);
+            let card = BrowserWidget::pip_feedback_rect_for_anchor(viewport, anchor, true).unwrap();
+            assert!(card.x0 >= viewport.x0 + 12.0);
+            assert!(card.x1 <= viewport.x1 - 12.0);
+            assert!(card.y0 >= viewport.y0 + 12.0);
+            assert!(card.y1 <= viewport.y1 - 12.0);
             assert!(
-                resources[0]
-                    .children
-                    .iter()
-                    .any(|child| child.id.0 == expected)
+                (card.width() - 354.0).abs() < f64::EPSILON,
+                "the full action card still fits"
             );
         }
-        let page = resources[0]
-            .children
-            .iter()
-            .find(|child| child.id.0 == "browser.page")
-            .unwrap();
-        let bookmark = page.actions.iter().find(|a| a.id == "bookmark").unwrap();
-        assert_eq!(bookmark.kind, OperationKind::Document);
-        let back = page.actions.iter().find(|a| a.id == "back").unwrap();
-        assert!(!back.contract.availability.is_available());
-        let navigate = page.actions.iter().find(|a| a.id == "navigate").unwrap();
-        assert_eq!(navigate.params()[0].name.as_ref(), "url");
-        assert_eq!(
-            navigate.contract.execution,
-            ui::tilo_actions::ExecutionMode::Background { cancellable: false }
-        );
-        assert!(navigate.contract.validate_declaration().is_empty());
-        assert!(
-            navigate
-                .contract
-                .result
-                .validate(&ui::tilo_actions::ActionOutput {
-                    value: Some(serde_json::Value::String("https://example.test".into())),
-                    resources: Vec::new(),
-                })
-                .is_ok()
-        );
-        let settings = resources[0]
-            .children
-            .iter()
-            .find(|child| child.id.0 == "browser.settings")
-            .unwrap();
-        let library = resources[0]
-            .children
-            .iter()
-            .find(|child| child.id.0 == "browser.library")
-            .unwrap();
-        let filter = library
-            .actions
-            .iter()
-            .find(|action| action.id == "set-filter")
-            .unwrap();
-        assert_eq!(filter.kind, OperationKind::View);
-        assert_eq!(filter.params()[0].name.as_ref(), "query");
-        assert!(filter.contract.validate_declaration().is_empty());
-        assert_eq!(
-            settings
+
+        // Phase `compact_pip_feedback_uses_a_visible_toolbar_anchor`.
+        {
+            let mut widget = BrowserWidget::new_headless();
+            widget.debug_set_viewport_width(390);
+            widget.debug_show_empty_pip_feedback();
+            layout_at(&mut widget, 390.0, 844.0);
+
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            widget.draw_overlay(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &Theme::dark(),
+                &PresenceCtx::empty(),
+            );
+
+            assert!(widget.pip_feedback_rect.width() > 0.0);
+            assert!(widget.pip_feedback_rect.x0 >= 12.0);
+            assert!(widget.pip_feedback_rect.x1 <= 378.0);
+            assert!(
+                !scene.encoding().draw_tags.is_empty(),
+                "compact feedback must remain visible even without a PiP toolbar button"
+            );
+        }
+
+        // Phase `reduced_motion_settles_pip_feedback_without_requesting_frames`.
+        {
+            let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+            w.pip_feedback = Some(PipFeedback {
+                kind: PipFeedbackKind::NoVideo,
+                started: ui::time::now(),
+                persistent: false,
+            });
+
+            assert!(w.needs_animation_frame());
+            w.set_motion_reduced(true);
+            assert!(
+                !w.needs_animation_frame(),
+                "reduced motion keeps the feedback visible but does not animate its fade"
+            );
+        }
+
+        // Phase `actionable_pip_feedback_does_not_expire_under_the_pointer`.
+        {
+            let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+            w.pip_feedback = Some(PipFeedback {
+                kind: PipFeedbackKind::NoVideo,
+                started: ui::time::now()
+                    .checked_sub(PIP_FEEDBACK_LIFETIME + std::time::Duration::from_secs(1))
+                    .unwrap_or_else(ui::time::Instant::now),
+                persistent: false,
+            });
+            w.pip_feedback_rect = Rect::new(100.0, 80.0, 426.0, 144.0);
+            w.cursor = w.pip_feedback_rect.center();
+            let mut scene = Scene::new();
+            let mut tr = TextRenderer::new();
+            w.draw_overlay(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &Theme::dark(),
+                &PresenceCtx::default(),
+            );
+            assert!(w.pip_feedback.is_some());
+
+            w.cursor = Point::ZERO;
+            w.draw_overlay(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &Theme::dark(),
+                &PresenceCtx::default(),
+            );
+            assert!(w.pip_feedback.is_none());
+        }
+    }
+
+    /// Picture-in-picture video probing, no-video fallback and host path.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn pip_floats_the_video_or_falls_back_to_shell_selection() {
+        // Phase `pip_button_probes_and_floats_only_the_video_rect`.
+        {
+            let engine = TestEngine::new();
+            engine.set_media_element(Some(MediaElementInfo {
+                element_id: "media:main".into(),
+                viewport_rect: [0.1, 0.2, 0.5, 0.4],
+                intrinsic_size: [1920, 1080],
+                label: "The active film".into(),
+            }));
+            let mut w = BrowserWidget::with_engine(engine.clone(), true);
+            let (mut state, root) = synced(&mut w);
+            w.rect = Rect::new(100.0, 50.0, 900.0, 650.0);
+            *w.content_rect.lock().unwrap() = Some([0.0, 0.1, 1.0, 1.0]);
+
+            w.begin_pip_probe();
+            w.sync(&mut state, &root); // accepts/sends the asynchronous probe
+            assert!(
+                engine
+                    .commands()
+                    .iter()
+                    .any(|command| matches!(command, WebViewCommand::RequestMediaElement { .. }))
+            );
+            let request = w
+                .take_floating_surface_request()
+                .expect("a visible video becomes PiP");
+            assert_eq!(request.title, "The active film");
+            assert_eq!(request.aspect_ratio, Some(16.0 / 9.0));
+            let ui::floating_surface::FloatingSource::AppElement {
+                element_id, region, ..
+            } = request.source
+            else {
+                panic!("browser PiP should preserve its semantic media identity");
+            };
+            assert_eq!(element_id, "media:main");
+            let expected = Rect::new(180.0, 218.0, 580.0, 434.0);
+            assert!((region.x0 - expected.x0).abs() < 0.001);
+            assert!((region.y0 - expected.y0).abs() < 0.001);
+            assert!((region.x1 - expected.x1).abs() < 0.001);
+            assert!((region.y1 - expected.y1).abs() < 0.001);
+            assert_eq!(w.active_floating_surface_ids(), vec![PIP_ID.to_string()]);
+
+            w.on_floating_surface_host_message(
+                &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+                    id: PIP_ID.into(),
+                    rect: [0.0, 0.0, 1.0, 1.0],
+                },
+            );
+            w.rect = Rect::new(200.0, 80.0, 1_200.0, 780.0);
+            w.refresh_active_pip_region();
+            let updates = w.take_floating_surface_source_updates();
+            assert_eq!(
+                updates.len(),
+                1,
+                "a resized browser republishes the video box"
+            );
+            assert_ne!(updates[0].1, expected);
+
+            engine.set_media_element(Some(MediaElementInfo {
+                element_id: "media:main".into(),
+                viewport_rect: [0.18, 0.12, 0.46, 0.36],
+                intrinsic_size: [1920, 1080],
+                label: "The active film".into(),
+            }));
+            w.next_pip_refresh_at = Some(
+                ui::time::now()
+                    .checked_sub(std::time::Duration::from_millis(1))
+                    .unwrap_or_else(ui::time::Instant::now),
+            );
+            w.poll_active_pip_element();
+            assert!(engine.commands().iter().any(|command| matches!(
+                command,
+                WebViewCommand::RequestMediaElementById { element_id, .. }
+                    if element_id == "media:main"
+            )));
+            w.apply_engine_events();
+            let semantic_updates = w.take_floating_surface_source_updates();
+            assert_eq!(semantic_updates.len(), 1);
+            assert_ne!(semantic_updates[0].1, updates[0].1);
+
+            w.begin_pip_probe();
+            assert!(
+                w.active_floating_surface_ids().is_empty(),
+                "the toolbar button toggles an adopted PiP off instead of probing twice"
+            );
+
+            w.on_floating_surface_host_message(
+                &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id: PIP_ID.into() },
+            );
+            assert!(w.active_pip_element.is_none());
+        }
+
+        // Phase `pip_without_video_explains_the_shell_selection_fallback`.
+        {
+            let engine = TestEngine::new();
+            let mut w = BrowserWidget::with_engine(engine, true);
+            let (mut state, root) = synced(&mut w);
+
+            w.begin_pip_probe();
+            w.sync(&mut state, &root);
+            w.sync(&mut state, &root);
+
+            assert!(w.take_floating_surface_request().is_none());
+            assert_eq!(
+                w.pip_feedback.as_ref().map(|feedback| feedback.kind),
+                Some(PipFeedbackKind::NoVideo)
+            );
+        }
+
+        // Phase `no_video_select_area_requests_the_shared_shell_pip_picker_once`.
+        {
+            let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+            let (mut state, root) = synced(&mut w);
+            w.pip_feedback = Some(PipFeedback {
+                kind: PipFeedbackKind::NoVideo,
+                started: ui::time::now(),
+                persistent: false,
+            });
+            w.pip_feedback_rect = Rect::new(100.0, 80.0, 454.0, 192.0);
+            w.pip_float_page_rect = Rect::new(114.0, 154.0, 273.0, 184.0);
+            w.pip_select_area_rect = Rect::new(281.0, 154.0, 440.0, 184.0);
+            w.cursor = w.pip_select_area_rect.center();
+
+            let mut tree = TaffyTree::<()>::new();
+            let node = tree.new_leaf(Style::default()).expect("test leaf");
+            let mut handled = false;
+            let mut focus = None;
+            w.handle_event(
+                &WindowEvent::MouseInput {
+                    device_id: winit::event::DeviceId::dummy(),
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                },
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &tree,
+                },
+            );
+
+            assert!(handled);
+            assert_eq!(
+                w.take_capture_studio_request(),
+                Some(ui::widget::CaptureMode::Pip)
+            );
+            assert!(w.take_capture_studio_request().is_none());
+            assert!(w.take_floating_surface_request().is_none());
+            assert!(w.pip_feedback.is_none());
+        }
+
+        // Phase `no_video_fallback_floats_and_tracks_the_page_viewport`.
+        {
+            let engine = TestEngine::new();
+            let mut w = BrowserWidget::with_engine(engine.clone(), true);
+            w.rect = Rect::new(100.0, 50.0, 900.0, 650.0);
+            *w.content_rect.lock().unwrap() = Some([0.0, 0.1, 1.0, 1.0]);
+            w.title = "Reference board".into();
+
+            w.float_current_page();
+            let request = w
+                .take_floating_surface_request()
+                .expect("the actionable no-video card creates a real live mirror");
+            assert_eq!(request.title, "Reference board");
+            let ui::floating_surface::FloatingSource::AppRegion { region, .. } = request.source
+            else {
+                panic!("page fallback should track the page viewport, not invent a media element");
+            };
+            let expected = Rect::new(100.0, 110.0, 900.0, 650.0);
+            assert!((region.x0 - expected.x0).abs() < 0.001);
+            assert!((region.y0 - expected.y0).abs() < 0.001);
+            assert!((region.x1 - expected.x1).abs() < 0.001);
+            assert!((region.y1 - expected.y1).abs() < 0.001);
+            assert!(w.active_pip && w.pip_page_fallback);
+
+            w.rect = Rect::new(200.0, 80.0, 1_200.0, 780.0);
+            w.refresh_active_pip_region();
+            let updates = w.take_floating_surface_source_updates();
+            assert_eq!(
+                updates.len(),
+                1,
+                "a resized page keeps its live crop current"
+            );
+            assert_ne!(updates[0].1, region);
+
+            w.poll_active_pip_element();
+            assert!(
+                !engine.commands().iter().any(|command| matches!(
+                    command,
+                    WebViewCommand::RequestMediaElementById { .. }
+                )),
+                "page fallback must not be closed by semantic-video polling"
+            );
+            w.on_floating_surface_host_message(
+                &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id: PIP_ID.into() },
+            );
+            assert!(!w.active_pip && !w.pip_page_fallback);
+        }
+
+        // Phase `active_pip_closes_when_its_semantic_element_disappears`.
+        {
+            let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+            let (mut state, root) = synced(&mut w);
+            w.active_pip = true;
+            w.active_pip_element = Some(MediaElementInfo {
+                element_id: "media:gone".into(),
+                viewport_rect: [0.1, 0.1, 0.8, 0.6],
+                intrinsic_size: [1_280, 720],
+                label: "Temporary video".into(),
+            });
+            w.next_pip_refresh_at = Some(
+                ui::time::now()
+                    .checked_sub(std::time::Duration::from_millis(1))
+                    .unwrap_or_else(ui::time::Instant::now),
+            );
+
+            w.poll_active_pip_element();
+            w.apply_engine_events();
+
+            assert!(!w.active_pip);
+            assert!(w.active_pip_element.is_none());
+            assert!(w.active_floating_surface_ids().is_empty());
+            assert!(w.pip_feedback.is_some());
+        }
+
+        // Phase `picture_in_picture_host_path_waits_for_engine_success_or_error`.
+        {
+            let engine = TestEngine::new();
+            engine.set_media_element(Some(MediaElementInfo {
+                element_id: "media:host".into(),
+                viewport_rect: [0.1, 0.1, 0.6, 0.5],
+                intrinsic_size: [1280, 720],
+                label: "Host video".into(),
+            }));
+            let mut w = BrowserWidget::with_engine(engine, true);
+            let (mut doc, root) = synced(&mut w);
+            w.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
+            let resources = ui::resources::resources(&w, &doc);
+            let page = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "browser.page")
+                .unwrap();
+            let pip = page
                 .actions
                 .iter()
-                .find(|a| a.id == "set-adblock")
-                .unwrap()
-                .kind,
-            OperationKind::Document
-        );
-        let mut args = serde_json::Map::new();
-        args.insert("url".into(), serde_json::json!("example.test"));
-        let encoded = navigate.build_json(&args).unwrap();
-        let invocation = ui::tilo_actions::InvocationId::new();
-        assert_eq!(
-            w.start_resource_operation(
-                invocation,
-                OperationKind::Effect,
-                &encoded.type_id,
-                &encoded.payload,
-                &doc,
-                &root,
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        );
-        assert_eq!(
-            engine.current_uri().as_deref(),
-            Some("https://example.test")
-        );
-        w.sync(&mut doc, &root);
-        assert!(matches!(
-            w.poll_resource_operation(invocation, false, &doc, &root),
-            Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
-        ));
+                .find(|action| action.id == "picture-in-picture")
+                .unwrap();
+            assert!(matches!(
+                pip.contract.execution,
+                ui::tilo_actions::ExecutionMode::Background { cancellable: false }
+            ));
+            let invocation = ui::tilo_actions::InvocationId::new();
+            assert_eq!(
+                w.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        pip.kind,
+                        pip.operation_type.as_deref().unwrap(),
+                        &browser_operation_payload(&BrowserOperation::TogglePictureInPicture)
+                            .to_string()
+                            .into_bytes()
+                    ),
+                    &mut doc,
+                    &root
+                )
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Accepted)
+            );
+            assert!(
+                w.poll_resource_operation(invocation, false, &doc, &root)
+                    .is_none()
+            );
+            w.sync(&mut doc, &root);
+            let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
+                w.poll_resource_operation(invocation, false, &doc, &root)
+            else {
+                panic!("media acceptance must terminally succeed the admitted invocation");
+            };
+            assert!(pip.contract.result.validate(&output).is_ok());
 
-        let mut filter_args = serde_json::Map::new();
-        filter_args.insert("query".into(), serde_json::json!("tilo example"));
-        let encoded = filter.build_json(&filter_args).unwrap();
-        let started = w
-            .start_resource_operation(
-                ui::tilo_actions::InvocationId::new(),
-                filter.kind,
-                &encoded.type_id,
-                &encoded.payload,
-                &doc,
-                &root,
-            )
-            .unwrap();
-        assert!(matches!(
-            started,
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
-        assert_eq!(w.library_filter.get(), "tilo example");
+            let mut unavailable = BrowserWidget::with_engine(TestEngine::new(), true);
+            let (mut doc, root) = synced(&mut unavailable);
+            let invocation = ui::tilo_actions::InvocationId::new();
+            assert!(matches!(
+                unavailable
+                    .start_operation(
+                        &ui::widget::ResourceOperation::local(
+                            invocation,
+                            pip.kind,
+                            pip.operation_type.as_deref().unwrap(),
+                            &browser_operation_payload(&BrowserOperation::TogglePictureInPicture)
+                                .to_string()
+                                .into_bytes()
+                        ),
+                        &mut doc,
+                        &root
+                    )
+                    .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Accepted)
+            ));
+            unavailable.sync(&mut doc, &root);
+            assert!(matches!(
+                unavailable.poll_resource_operation(invocation, false, &doc, &root),
+                Some(ui::tilo_actions::InvocationUpdate::Failed { .. })
+            ));
+        }
     }
 
+    /// Engine selection, resource surface binding and session restore identity.
     #[test]
-    fn sensitive_local_effects_publish_truthful_contracts_and_completed_results() {
-        let engine = TestEngine::new();
-        let mut w = BrowserWidget::with_engine(engine.clone(), true);
-        let (doc, root) = synced(&mut w);
-        w.history.record_at("https://private.example", "Private", 1);
-        let resources = Widget::resources(&w, &doc);
-        let browser = &resources[0];
-        let history = browser
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "browser.history")
-            .unwrap();
-        let clear_history = history
-            .actions
-            .iter()
-            .find(|action| action.id == "clear")
-            .unwrap();
-        assert_eq!(clear_history.kind, OperationKind::Effect);
-        assert_eq!(
-            clear_history.locus,
-            ui::tilo_actions::ExecutionLocus::ClientLocal
-        );
-        assert!(
-            clear_history
-                .contract
-                .tags
-                .iter()
-                .any(|tag| tag == "device-local")
-        );
-        assert!(
-            clear_history
-                .contract
-                .tags
-                .iter()
-                .any(|tag| tag == "sensitive-data")
-        );
-        assert!(clear_history.contract.validate_declaration().is_empty());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn engine_surface_and_session_restore_keep_truthful_page_identity() {
+        // Phase `headless_engine_has_deterministic_page`.
+        {
+            let w = BrowserWidget::new_headless();
+            let slot = w.engine.frames();
+            let frame = slot.lock().unwrap().clone().expect("pre-rendered frame");
+            assert!(frame.width > 0 && frame.height > 0);
+        }
 
-        let invocation = ui::tilo_actions::InvocationId::new();
-        let started = w
-            .start_resource_operation(
-                invocation,
-                clear_history.kind,
-                clear_history.operation_type.as_deref().unwrap(),
-                &browser_operation_payload(&BrowserOperation::ClearHistory)
-                    .to_string()
-                    .into_bytes(),
-                &doc,
-                &root,
-            )
-            .unwrap();
-        let Some(ui::widget::ResourceOperationStart::Completed(output)) = started else {
-            panic!("clearing in-memory local history is synchronous");
-        };
-        assert!(clear_history.contract.result.validate(&output).is_ok());
-        assert!(w.history.is_empty());
+        // Phase `default_engine_failure_never_becomes_a_simulated_page`.
+        {
+            let engine: SharedEngine = engine_or_error(Err("Chromium unavailable".into()));
+            let _clone: SharedEngine = Arc::clone(&engine);
+            engine.send(WebViewCommand::Navigate("https://tilo.so".into()));
+            assert!(engine.frames().lock().unwrap().is_none());
+            assert!(engine.drain_events().iter().any(|event| matches!(event,
+                WebViewEvent::LoadFailed { error, .. } if error == "Chromium unavailable")));
+        }
 
-        let settings = browser
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "browser.settings")
-            .unwrap();
-        let clear_site_data = settings
-            .actions
-            .iter()
-            .find(|action| action.id == "request-site-data-clear")
-            .unwrap();
-        let started = w
-            .start_resource_operation(
-                ui::tilo_actions::InvocationId::new(),
-                clear_site_data.kind,
-                clear_site_data.operation_type.as_deref().unwrap(),
-                &browser_operation_payload(&BrowserOperation::RequestWebsiteDataClear)
-                    .to_string()
-                    .into_bytes(),
-                &doc,
-                &root,
-            )
-            .unwrap();
-        let Some(ui::widget::ResourceOperationStart::Completed(output)) = started else {
-            panic!("the engine accepted the site-data request synchronously");
-        };
-        assert!(clear_site_data.contract.result.validate(&output).is_ok());
-        assert_eq!(
-            output.value,
-            Some(serde_json::Value::String(
-                "Website-data clear request sent to the local browser engine.".into()
-            )),
-            "the descriptor must not overclaim a backend completion it cannot observe"
-        );
-        assert!(
-            engine
-                .commands()
-                .contains(&WebViewCommand::ClearWebsiteData)
-        );
+        // Phase `resource_surface_binds_typed_navigation_and_reports_history_availability`.
+        {
+            let engine = TestEngine::new();
+            let mut w = BrowserWidget::with_engine(engine.clone(), true);
+            let (mut doc, root) = synced(&mut w);
+            let resources = ui::resources::resources(&w, &doc);
+            assert_eq!(resources[0].id.0, "browser");
+            for expected in [
+                "browser.page",
+                "browser.history",
+                "browser.bookmarks",
+                "browser.downloads",
+                "browser.extensions",
+                "browser.library",
+                "browser.settings",
+            ] {
+                assert!(
+                    resources[0]
+                        .children
+                        .iter()
+                        .any(|child| child.id.0 == expected)
+                );
+            }
+            let page = resources[0]
+                .children
+                .iter()
+                .find(|child| child.id.0 == "browser.page")
+                .unwrap();
+            let bookmark = page.actions.iter().find(|a| a.id == "bookmark").unwrap();
+            assert_eq!(bookmark.kind, OperationKind::Document);
+            let back = page.actions.iter().find(|a| a.id == "back").unwrap();
+            assert!(!back.contract.availability.is_available());
+            let navigate = page.actions.iter().find(|a| a.id == "navigate").unwrap();
+            assert_eq!(navigate.params()[0].name.as_ref(), "url");
+            assert_eq!(
+                navigate.contract.execution,
+                ui::tilo_actions::ExecutionMode::Background { cancellable: false }
+            );
+            assert!(navigate.contract.validate_declaration().is_empty());
+            assert!(
+                navigate
+                    .contract
+                    .result
+                    .validate(&ui::tilo_actions::ActionOutput {
+                        value: Some(serde_json::Value::String("https://example.test".into())),
+                        resources: Vec::new(),
+                    })
+                    .is_ok()
+            );
+            let settings = resources[0]
+                .children
+                .iter()
+                .find(|child| child.id.0 == "browser.settings")
+                .unwrap();
+            let library = resources[0]
+                .children
+                .iter()
+                .find(|child| child.id.0 == "browser.library")
+                .unwrap();
+            let filter = library
+                .actions
+                .iter()
+                .find(|action| action.id == "set-filter")
+                .unwrap();
+            assert_eq!(filter.kind, OperationKind::View);
+            assert_eq!(filter.params()[0].name.as_ref(), "query");
+            assert!(filter.contract.validate_declaration().is_empty());
+            assert_eq!(
+                settings
+                    .actions
+                    .iter()
+                    .find(|a| a.id == "set-adblock")
+                    .unwrap()
+                    .kind,
+                OperationKind::Document
+            );
+            let mut args = serde_json::Map::new();
+            args.insert("url".into(), serde_json::json!("example.test"));
+            let encoded = navigate.build_json(&args).unwrap();
+            let invocation = ui::tilo_actions::InvocationId::new();
+            assert_eq!(
+                w.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        OperationKind::Effect,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
+                    &root
+                )
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Accepted)
+            );
+            assert_eq!(
+                engine.current_uri().as_deref(),
+                Some("https://example.test")
+            );
+            w.sync(&mut doc, &root);
+            assert!(matches!(
+                w.poll_resource_operation(invocation, false, &doc, &root),
+                Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
+            ));
+
+            let mut filter_args = serde_json::Map::new();
+            filter_args.insert("query".into(), serde_json::json!("tilo example"));
+            let encoded = filter.build_json(&filter_args).unwrap();
+            let started = w
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        filter.kind,
+                        &encoded.type_id,
+                        &encoded.payload,
+                    ),
+                    &mut doc,
+                    &root,
+                )
+                .unwrap();
+            assert!(matches!(
+                started,
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
+            assert_eq!(w.library_filter.get(), "tilo example");
+        }
+
+        // Phase `stale_blank_completion_does_not_finish_restored_page`.
+        {
+            struct Events(
+                std::sync::Mutex<Vec<WebViewEvent>>,
+                std::sync::Arc<TestEngine>,
+            );
+            impl WebViewEngine for Events {
+                fn send(&self, command: WebViewCommand) {
+                    self.1.send(command);
+                }
+                fn frames(&self) -> ui::webview::FrameSlot {
+                    self.1.frames()
+                }
+                fn drain_events(&self) -> Vec<WebViewEvent> {
+                    std::mem::take(&mut *self.0.lock().unwrap())
+                }
+            }
+            let engine = std::sync::Arc::new(Events(
+                std::sync::Mutex::new(vec![
+                    WebViewEvent::UriChanged("https://example.test/saved".into()),
+                    WebViewEvent::LoadProgress(0.3),
+                    WebViewEvent::LoadFinishedAt {
+                        uri: "about:blank".into(),
+                    },
+                ]),
+                TestEngine::new(),
+            ));
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            widget.prepare_session_uri("https://example.test/saved".into(), false);
+            widget.title = "about:blank".into();
+            widget.apply_engine_events();
+            assert!(
+                widget.title.is_empty(),
+                "a new document must not inherit the blank page title"
+            );
+            assert!((widget.progress - 0.3).abs() < f64::EPSILON);
+            engine.0.lock().unwrap().push(WebViewEvent::LoadFinishedAt {
+                uri: "https://example.test/saved".into(),
+            });
+            widget.apply_engine_events();
+            assert!((widget.progress - 1.0).abs() < f64::EPSILON);
+        }
+
+        // Phase `deferred_session_tab_keeps_saved_identity_before_activation`.
+        {
+            let mut widget = BrowserWidget::with_engine(TestEngine::new(), true);
+            widget.prepare_session_uri("https://example.test/saved".into(), true);
+            widget.title = "about:blank".into();
+            widget.current_uri = "about:blank".into();
+            assert_eq!(widget.tab_title(), "https://example.test/saved");
+            assert_eq!(widget.persisted_url(), "https://example.test/saved");
+        }
+
+        // Phase `continuation_restore_navigates_the_matching_browser_instance`.
+        {
+            let engine = TestEngine::new();
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            let (mut doc, root) = synced(&mut widget);
+            let metadata = ui::collaboration::ContinuationMetadata {
+                schema_version: 1,
+                bytes: br#"{"url":"https://example.test/reading"}"#.to_vec(),
+            };
+            assert!(widget.restore_continuation_metadata(&metadata, &mut doc, &root));
+            assert_eq!(
+                engine.current_uri().as_deref(),
+                Some("https://example.test/reading")
+            );
+        }
     }
 
+    /// History pause, clear and sensitive local effects.
     #[test]
-    fn history_pause_is_local_and_keeps_existing_history_searchable_and_clearable() {
-        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
-        let (doc, root) = synced(&mut w);
-        w.history
-            .record_at("https://sensitive.example", "Sensitive", 1);
-        let resources = Widget::resources(&w, &doc);
-        let pause = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "browser.session")
-            .unwrap();
-        assert_eq!(pause.kind, "browser.history-pause");
-        let toggle = pause
-            .actions
-            .iter()
-            .find(|action| action.id == "toggle-history-pause")
-            .unwrap();
-        assert_eq!(toggle.kind, OperationKind::Effect);
-        assert_eq!(toggle.locus, ui::tilo_actions::ExecutionLocus::ClientLocal);
-        assert!(
-            toggle
-                .contract
-                .tags
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn history_privacy_effects_are_local_truthful_and_recoverable() {
+        // Phase `sensitive_local_effects_publish_truthful_contracts_and_completed_results`.
+        {
+            let engine = TestEngine::new();
+            let mut w = BrowserWidget::with_engine(engine.clone(), true);
+            let (mut doc, root) = synced(&mut w);
+            w.history.record_at("https://private.example", "Private", 1);
+            let resources = ui::resources::resources(&w, &doc);
+            let browser = &resources[0];
+            let history = browser
+                .children
                 .iter()
-                .any(|tag| tag == "history-paused")
-        );
-        assert!(toggle.contract.tags.iter().any(|tag| tag == "session"));
-        assert!(toggle.contract.validate_declaration().is_empty());
-
-        let started = w
-            .start_resource_operation(
-                ui::tilo_actions::InvocationId::new(),
-                toggle.kind,
-                toggle.operation_type.as_deref().unwrap(),
-                &browser_operation_payload(&BrowserOperation::ToggleHistoryPause)
-                    .to_string()
-                    .into_bytes(),
-                &doc,
-                &root,
-            )
-            .unwrap();
-        let Some(ui::widget::ResourceOperationStart::Completed(output)) = started else {
-            panic!("history pausing changes only this running browser");
-        };
-        assert!(toggle.contract.result.validate(&output).is_ok());
-        let resources = Widget::resources(&w, &doc);
-        let history = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "browser.history")
-            .unwrap();
-        assert_eq!(
-            history.children.len(),
-            1,
-            "pausing only stops new recording"
-        );
-        assert!(
-            history
+                .find(|resource| resource.id.0 == "browser.history")
+                .unwrap();
+            let clear_history = history
                 .actions
                 .iter()
                 .find(|action| action.id == "clear")
-                .is_some_and(|action| action.contract.availability.is_available()),
-            "existing durable history remains clearable while recording is paused"
-        );
-        w.search_index.sync(&w.history, &w.bookmarks);
-        assert!(
-            ui::search::SearchProvider::search(&w.search_index.provider(), "Sensitive")
-                .iter()
-                .any(|result| result.title == "Sensitive")
-        );
-    }
+                .unwrap();
+            assert_eq!(clear_history.kind, OperationKind::Effect);
+            assert_eq!(
+                clear_history.locus,
+                ui::tilo_actions::ExecutionLocus::ClientLocal
+            );
+            assert!(
+                clear_history
+                    .contract
+                    .tags
+                    .iter()
+                    .any(|tag| tag == "device-local")
+            );
+            assert!(
+                clear_history
+                    .contract
+                    .tags
+                    .iter()
+                    .any(|tag| tag == "sensitive-data")
+            );
+            assert!(clear_history.contract.validate_declaration().is_empty());
 
-    #[test]
-    fn ui_history_clear_preserves_entries_and_surfaces_a_persistence_failure() {
-        let mut w = BrowserWidget::with_engine(TestEngine::new(), false);
-        w.history_save = history_save_fails;
-        let (mut doc, root) = synced(&mut w);
-        w.history = History::new();
-        w.history
-            .record_at("https://durable.example", "Durable entry", 1);
-        w.show_settings = true;
-
-        // This is the settings-pane click-flag route, not a direct model
-        // mutation: it must produce the same truthful outcome as the
-        // canonical resource action.
-        assert!(w.clear_history_durably().is_err());
-
-        assert_eq!(w.history.len(), 1, "failed writes restore the old corpus");
-        assert!(w.history_clear_error.as_deref().is_some_and(|message| {
-            message.contains("could not save the change")
-                && message.contains("Previous history was kept")
-        }));
-
-        let resources = Widget::resources(&w, &doc);
-        let history = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "browser.history")
-            .unwrap();
-        let clear = history
-            .actions
-            .iter()
-            .find(|action| action.id == "clear")
-            .unwrap();
-        let error = w
-            .start_resource_operation(
-                ui::tilo_actions::InvocationId::new(),
-                clear.kind,
-                clear.operation_type.as_deref().unwrap(),
-                &browser_operation_payload(&BrowserOperation::ClearHistory)
-                    .to_string()
-                    .into_bytes(),
-                &doc,
-                &root,
-            )
-            .expect_err("resource history clear must not complete without durable storage");
-        assert!(error.contains("Previous history was kept"));
-        assert_eq!(w.history.len(), 1);
-    }
-
-    #[test]
-    fn picture_in_picture_host_path_waits_for_engine_success_or_error() {
-        let engine = TestEngine::new();
-        engine.set_media_element(Some(MediaElementInfo {
-            element_id: "media:host".into(),
-            viewport_rect: [0.1, 0.1, 0.6, 0.5],
-            intrinsic_size: [1280, 720],
-            label: "Host video".into(),
-        }));
-        let mut w = BrowserWidget::with_engine(engine, true);
-        let (mut doc, root) = synced(&mut w);
-        w.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
-        let resources = Widget::resources(&w, &doc);
-        let page = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "browser.page")
-            .unwrap();
-        let pip = page
-            .actions
-            .iter()
-            .find(|action| action.id == "picture-in-picture")
-            .unwrap();
-        assert!(matches!(
-            pip.contract.execution,
-            ui::tilo_actions::ExecutionMode::Background { cancellable: false }
-        ));
-        let invocation = ui::tilo_actions::InvocationId::new();
-        assert_eq!(
-            w.start_resource_operation(
-                invocation,
-                pip.kind,
-                pip.operation_type.as_deref().unwrap(),
-                &browser_operation_payload(&BrowserOperation::TogglePictureInPicture)
-                    .to_string()
-                    .into_bytes(),
-                &doc,
-                &root,
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        );
-        assert!(
-            w.poll_resource_operation(invocation, false, &doc, &root)
-                .is_none()
-        );
-        w.sync(&mut doc, &root);
-        let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
-            w.poll_resource_operation(invocation, false, &doc, &root)
-        else {
-            panic!("media acceptance must terminally succeed the admitted invocation");
-        };
-        assert!(pip.contract.result.validate(&output).is_ok());
-
-        let mut unavailable = BrowserWidget::with_engine(TestEngine::new(), true);
-        let (mut doc, root) = synced(&mut unavailable);
-        let invocation = ui::tilo_actions::InvocationId::new();
-        assert!(matches!(
-            unavailable
-                .start_resource_operation(
-                    invocation,
-                    pip.kind,
-                    pip.operation_type.as_deref().unwrap(),
-                    &browser_operation_payload(&BrowserOperation::TogglePictureInPicture)
-                        .to_string()
-                        .into_bytes(),
-                    &doc,
+            let invocation = ui::tilo_actions::InvocationId::new();
+            let started = w
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        clear_history.kind,
+                        clear_history.operation_type.as_deref().unwrap(),
+                        &browser_operation_payload(&BrowserOperation::ClearHistory)
+                            .to_string()
+                            .into_bytes(),
+                    ),
+                    &mut doc,
                     &root,
                 )
-                .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        ));
-        unavailable.sync(&mut doc, &root);
-        assert!(matches!(
-            unavailable.poll_resource_operation(invocation, false, &doc, &root),
-            Some(ui::tilo_actions::InvocationUpdate::Failed { .. })
-        ));
-    }
+                .unwrap();
+            let Some(ui::widget::ResourceOperationStart::Completed(output)) = started else {
+                panic!("clearing in-memory local history is synchronous");
+            };
+            assert!(clear_history.contract.result.validate(&output).is_ok());
+            assert!(w.history.is_empty());
 
-    #[test]
-    fn removing_one_bookmark_is_an_ordinary_reversible_document_action() {
-        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
-        w.bookmarks.add("https://test.example", "Test bookmark");
-        let (doc, _root) = synced(&mut w);
-        let resources = w.resources(&doc);
-        let bookmarks = resources[0]
-            .children
-            .iter()
-            .find(|r| r.id.0 == "browser.bookmarks")
-            .unwrap();
-        let remove = bookmarks.children[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "remove")
-            .unwrap();
-        assert_eq!(
-            remove.contract.confirmation,
-            ui::tilo_actions::ConfirmationPolicy::None
-        );
-        assert_eq!(remove.kind, OperationKind::Document);
-    }
-
-    #[test]
-    fn bookmark_row_controls_use_unique_normalized_action_identities() {
-        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
-        w.debug_show_library("bookmarks");
-        assert!(w.bookmarks.add("https://legacy.example", "Legacy bookmark"));
-        let (mut doc, root) = synced(&mut w);
-        let mut tree = TaffyTree::<()>::new();
-        let mut node_map = std::collections::HashMap::new();
-        w.build_layout(&mut tree, &Theme::dark(), &mut node_map);
-
-        let expected = [
-            bookmark_resource_id("https://www.rust-lang.org/learn"),
-            bookmark_resource_id("https://developer.mozilla.org/"),
-            bookmark_resource_id("https://legacy.example"),
-        ];
-        let controls = w
-            .control_action_bindings()
-            .into_iter()
-            .filter_map(|binding| match binding.kind {
-                ui::widget::ControlBindingKind::Action(address) if address.action == "remove" => {
-                    Some((binding.control_id, address))
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(controls.len(), expected.len());
-        assert_eq!(
-            controls
+            let settings = browser
+                .children
                 .iter()
-                .map(|(id, _)| id)
-                .collect::<std::collections::HashSet<_>>()
-                .len(),
-            controls.len(),
-            "each row needs a durable, unique semantic key"
-        );
-        for resource_id in expected {
-            assert!(controls.iter().any(|(control_id, address)| {
-                control_id == &format!("{resource_id}.remove") && address.resource == resource_id
-            }));
-        }
-
-        let mut semantic = ui::a11y_tree::SemanticTree::new();
-        semantic.refresh(&w, &node_map, None, &[]);
-        assert!(
-            semantic.duplicate_ids().is_empty(),
-            "bookmark controls must not collapse in the retained a11y tree"
-        );
-
-        // The composed tree is not otherwise synchronized in this layout-only
-        // regression test; keep the document borrow explicitly live.
-        w.sync(&mut doc, &root);
-    }
-
-    #[test]
-    fn stale_blank_completion_does_not_finish_restored_page() {
-        struct Events(
-            std::sync::Mutex<Vec<WebViewEvent>>,
-            std::sync::Arc<TestEngine>,
-        );
-        impl WebViewEngine for Events {
-            fn send(&self, command: WebViewCommand) {
-                self.1.send(command);
-            }
-            fn frames(&self) -> ui::webview::FrameSlot {
-                self.1.frames()
-            }
-            fn drain_events(&self) -> Vec<WebViewEvent> {
-                std::mem::take(&mut *self.0.lock().unwrap())
-            }
-        }
-        let engine = std::sync::Arc::new(Events(
-            std::sync::Mutex::new(vec![
-                WebViewEvent::UriChanged("https://example.test/saved".into()),
-                WebViewEvent::LoadProgress(0.3),
-                WebViewEvent::LoadFinishedAt {
-                    uri: "about:blank".into(),
-                },
-            ]),
-            TestEngine::new(),
-        ));
-        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-        widget.prepare_session_uri("https://example.test/saved".into(), false);
-        widget.title = "about:blank".into();
-        widget.apply_engine_events();
-        assert!(
-            widget.title.is_empty(),
-            "a new document must not inherit the blank page title"
-        );
-        assert!((widget.progress - 0.3).abs() < f64::EPSILON);
-        engine.0.lock().unwrap().push(WebViewEvent::LoadFinishedAt {
-            uri: "https://example.test/saved".into(),
-        });
-        widget.apply_engine_events();
-        assert!((widget.progress - 1.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn deferred_session_tab_keeps_saved_identity_before_activation() {
-        let mut widget = BrowserWidget::with_engine(TestEngine::new(), true);
-        widget.prepare_session_uri("https://example.test/saved".into(), true);
-        widget.title = "about:blank".into();
-        widget.current_uri = "about:blank".into();
-        assert_eq!(widget.tab_title(), "https://example.test/saved");
-        assert_eq!(widget.persisted_url(), "https://example.test/saved");
-    }
-
-    #[test]
-    fn continuation_restore_navigates_the_matching_browser_instance() {
-        let engine = TestEngine::new();
-        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-        let (mut doc, root) = synced(&mut widget);
-        let metadata = ui::collaboration::ContinuationMetadata {
-            schema_version: 1,
-            bytes: br#"{"url":"https://example.test/reading"}"#.to_vec(),
-        };
-        assert!(widget.restore_continuation_metadata(&metadata, &mut doc, &root));
-        assert_eq!(
-            engine.current_uri().as_deref(),
-            Some("https://example.test/reading")
-        );
-    }
-
-    #[test]
-    fn portal_cancel_cancels_the_paused_engine_download() {
-        ui::host::install_default(ui::host::HostServices::recording().0);
-        let engine = TestEngine::new();
-        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-        engine.send(WebViewCommand::StartDownload {
-            uri: "https://example.test/archive.zip".into(),
-        });
-        widget.apply_engine_events();
-        assert!(widget.download_picker.is_some());
-        widget.apply_engine_events();
-        assert_eq!(
-            widget.downloads.entries()[0].status,
-            DownloadStatus::Cancelled
-        );
-        assert!(engine.commands().iter().any(|command| matches!(
-            command,
-            WebViewCommand::CancelDownload { id } if id == "test-download-1"
-        )));
-    }
-
-    #[test]
-    fn portal_worker_failure_cancels_webkit_but_preserves_the_actionable_error() {
-        ui::host::install_default(ui::host::HostServices::recording().0);
-        let engine = TestEngine::new();
-        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-        engine.send(WebViewCommand::StartDownload {
-            uri: "https://example.test/archive.zip".into(),
-        });
-        widget.apply_engine_events();
-        let id = widget.downloads.entries()[0].id.clone();
-        let (sender, disconnected) = std::sync::mpsc::channel();
-        drop(sender);
-        widget.download_picker = Some((id.clone(), disconnected));
-        widget.poll_download_picker();
-        // Fold the engine's cancellation event too: it must not replace the
-        // portal failure with the much less useful generic "Cancelled".
-        widget.apply_engine_events();
-        let entry = widget.downloads.get(&id).unwrap();
-        assert_eq!(entry.status, DownloadStatus::Failed);
-        assert!(
-            entry
-                .error
-                .as_deref()
-                .is_some_and(|error| error.contains("save picker"))
-        );
-        assert!(engine.commands().iter().any(|command| matches!(
-            command,
-            WebViewCommand::CancelDownload { id: cancelled } if cancelled == &id
-        )));
-    }
-
-    #[test]
-    fn duplicate_engine_ids_are_cancelled_without_replacing_history() {
-        let engine = TestEngine::new();
-        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-        assert!(widget.downloads.requested(
-            "test-download-1".into(),
-            "https://persisted.test/old".into(),
-            "old.bin",
-        ));
-        engine.send(WebViewCommand::StartDownload {
-            uri: "https://example.test/new.bin".into(),
-        });
-        widget.apply_engine_events();
-        assert_eq!(
-            widget.downloads.get("test-download-1").unwrap().source_url,
-            "https://persisted.test/old"
-        );
-        assert!(engine.commands().iter().any(|command| matches!(
-            command,
-            WebViewCommand::CancelDownload { id } if id == "test-download-1"
-        )));
-    }
-
-    #[test]
-    fn download_operations_reject_non_web_schemes_and_materialize_stable_actions() {
-        let engine = TestEngine::new();
-        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-        assert!(
-            widget
-                .perform_browser_operation(BrowserOperation::StartDownload {
-                    url: "file:///etc/passwd".into(),
-                })
-                .is_err()
-        );
-        assert!(
-            !engine
-                .commands()
-                .iter()
-                .any(|command| matches!(command, WebViewCommand::StartDownload { .. }))
-        );
-
-        widget.debug_show_downloads("completed");
-        let resource = widget
-            .resource_by_id("browser.download.review-complete")
-            .expect("download resource");
-        assert_eq!(resource.kind, "browser.download");
-        assert_eq!(
-            resource
+                .find(|resource| resource.id.0 == "browser.settings")
+                .unwrap();
+            let clear_site_data = settings
                 .actions
                 .iter()
-                .map(|action| action.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["show", "open", "reveal"]
-        );
-        for action in &resource.actions {
-            assert_eq!(action.locus, ui::tilo_actions::ExecutionLocus::ClientLocal);
+                .find(|action| action.id == "request-site-data-clear")
+                .unwrap();
+            let started = w
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        clear_site_data.kind,
+                        clear_site_data.operation_type.as_deref().unwrap(),
+                        &browser_operation_payload(&BrowserOperation::RequestWebsiteDataClear)
+                            .to_string()
+                            .into_bytes(),
+                    ),
+                    &mut doc,
+                    &root,
+                )
+                .unwrap();
+            let Some(ui::widget::ResourceOperationStart::Completed(output)) = started else {
+                panic!("the engine accepted the site-data request synchronously");
+            };
+            assert!(clear_site_data.contract.result.validate(&output).is_ok());
+            assert_eq!(
+                output.value,
+                Some(serde_json::Value::String(
+                    "Website-data clear request sent to the local browser engine.".into()
+                )),
+                "the descriptor must not overclaim a backend completion it cannot observe"
+            );
+            assert!(
+                engine
+                    .commands()
+                    .contains(&WebViewCommand::ClearWebsiteData)
+            );
+        }
+
+        // Phase `history_pause_is_local_and_keeps_existing_history_searchable_and_clearable`.
+        {
+            let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+            let (mut doc, root) = synced(&mut w);
+            w.history
+                .record_at("https://sensitive.example", "Sensitive", 1);
+            let resources = ui::resources::resources(&w, &doc);
+            let pause = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "browser.session")
+                .unwrap();
+            assert_eq!(pause.kind, "browser.history-pause");
+            let toggle = pause
+                .actions
+                .iter()
+                .find(|action| action.id == "toggle-history-pause")
+                .unwrap();
+            assert_eq!(toggle.kind, OperationKind::Effect);
+            assert_eq!(toggle.locus, ui::tilo_actions::ExecutionLocus::ClientLocal);
+            assert!(
+                toggle
+                    .contract
+                    .tags
+                    .iter()
+                    .any(|tag| tag == "history-paused")
+            );
+            assert!(toggle.contract.tags.iter().any(|tag| tag == "session"));
+            assert!(toggle.contract.validate_declaration().is_empty());
+
+            let started = w
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        toggle.kind,
+                        toggle.operation_type.as_deref().unwrap(),
+                        &browser_operation_payload(&BrowserOperation::ToggleHistoryPause)
+                            .to_string()
+                            .into_bytes(),
+                    ),
+                    &mut doc,
+                    &root,
+                )
+                .unwrap();
+            let Some(ui::widget::ResourceOperationStart::Completed(output)) = started else {
+                panic!("history pausing changes only this running browser");
+            };
+            assert!(toggle.contract.result.validate(&output).is_ok());
+            let resources = ui::resources::resources(&w, &doc);
+            let history = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "browser.history")
+                .unwrap();
+            assert_eq!(
+                history.children.len(),
+                1,
+                "pausing only stops new recording"
+            );
+            assert!(
+                history
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "clear")
+                    .is_some_and(|action| action.contract.availability.is_available()),
+                "existing durable history remains clearable while recording is paused"
+            );
+            w.search_index.sync(&w.history, &w.bookmarks);
+            assert!(
+                ui::search::SearchProvider::search(&w.search_index.provider(), "Sensitive")
+                    .iter()
+                    .any(|result| result.title == "Sensitive")
+            );
+        }
+
+        // Phase `ui_history_clear_preserves_entries_and_surfaces_a_persistence_failure`.
+        {
+            let mut w = BrowserWidget::with_engine(TestEngine::new(), false);
+            w.history_save = history_save_fails;
+            let (mut doc, root) = synced(&mut w);
+            w.history = History::new();
+            w.history
+                .record_at("https://durable.example", "Durable entry", 1);
+            w.show_settings = true;
+
+            // This is the settings-pane click-flag route, not a direct model
+            // mutation: it must produce the same truthful outcome as the
+            // canonical resource action.
+            assert!(w.clear_history_durably().is_err());
+
+            assert_eq!(w.history.len(), 1, "failed writes restore the old corpus");
+            assert!(w.history_clear_error.as_deref().is_some_and(|message| {
+                message.contains("could not save the change")
+                    && message.contains("Previous history was kept")
+            }));
+
+            let resources = ui::resources::resources(&w, &doc);
+            let history = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "browser.history")
+                .unwrap();
+            let clear = history
+                .actions
+                .iter()
+                .find(|action| action.id == "clear")
+                .unwrap();
+            let error = w
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        clear.kind,
+                        clear.operation_type.as_deref().unwrap(),
+                        &browser_operation_payload(&BrowserOperation::ClearHistory)
+                            .to_string()
+                            .into_bytes(),
+                    ),
+                    &mut doc,
+                    &root,
+                )
+                .expect_err("resource history clear must not complete without durable storage");
+            assert!(error.contains("Previous history was kept"));
+            assert_eq!(w.history.len(), 1);
         }
     }
 
+    /// Bookmark removal and row control identities.
     #[test]
-    fn private_mode_has_empty_personal_state_and_no_continuation_channel() {
-        let mut widget = BrowserWidget::with_engine_mode(
-            TestEngine::new(),
-            false,
-            crate::browsing_mode::BrowsingMode::Private,
-        );
-        assert!(widget.history.is_empty());
-        assert!(widget.bookmarks.entries().is_empty());
-        assert_eq!(widget.settings, Settings::default());
-        widget
-            .history
-            .record_at("https://private.test", "Private", 1);
-        widget.clear_history_durably().unwrap();
-        assert!(widget.history.is_empty());
-        let mut document = AutoCommit::new();
-        assert!(
-            widget
-                .continuation_metadata(&document, &automerge::ROOT)
-                .is_none()
-        );
-        let metadata = ui::collaboration::ContinuationMetadata {
-            schema_version: 1,
-            bytes: br#"{"url":"https://normal.test"}"#.to_vec(),
-        };
-        assert!(!widget.restore_continuation_metadata(&metadata, &mut document, &automerge::ROOT,));
+    fn bookmark_rows_are_reversible_uniquely_addressed_actions() {
+        // Phase `removing_one_bookmark_is_an_ordinary_reversible_document_action`.
+        {
+            let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+            w.bookmarks.add("https://test.example", "Test bookmark");
+            let (doc, _root) = synced(&mut w);
+            let resources = ui::resources::resources(&w, &doc);
+            let bookmarks = resources[0]
+                .children
+                .iter()
+                .find(|r| r.id.0 == "browser.bookmarks")
+                .unwrap();
+            let remove = bookmarks.children[0]
+                .actions
+                .iter()
+                .find(|a| a.id == "remove")
+                .unwrap();
+            assert_eq!(
+                remove.contract.confirmation,
+                ui::tilo_actions::ConfirmationPolicy::None
+            );
+            assert_eq!(remove.kind, OperationKind::Document);
+        }
+
+        // Phase `bookmark_row_controls_use_unique_normalized_action_identities`.
+        {
+            let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+            w.debug_show_library("bookmarks");
+            assert!(w.bookmarks.add("https://legacy.example", "Legacy bookmark"));
+            let (mut doc, root) = synced(&mut w);
+            let mut tree = TaffyTree::<()>::new();
+            let mut node_map = std::collections::HashMap::new();
+            w.build_layout(&mut tree, &Theme::dark(), &mut node_map);
+
+            let expected = [
+                bookmark_resource_id("https://www.rust-lang.org/learn"),
+                bookmark_resource_id("https://developer.mozilla.org/"),
+                bookmark_resource_id("https://legacy.example"),
+            ];
+            let controls = ui::widget::controls::control_action_bindings(&w)
+                .into_iter()
+                .filter_map(|binding| match binding.kind {
+                    ui::widget::ControlBindingKind::Action(address)
+                        if address.action == "remove" =>
+                    {
+                        Some((binding.control_id, address))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(controls.len(), expected.len());
+            assert_eq!(
+                controls
+                    .iter()
+                    .map(|(id, _)| id)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len(),
+                controls.len(),
+                "each row needs a durable, unique semantic key"
+            );
+            for resource_id in expected {
+                assert!(controls.iter().any(|(control_id, address)| {
+                    control_id == &format!("{resource_id}.remove")
+                        && address.resource == resource_id
+                }));
+            }
+
+            let mut semantic = ui::a11y_tree::SemanticTree::new();
+            semantic.refresh(&w, &node_map, None, &[]);
+            assert!(
+                semantic.duplicate_ids().is_empty(),
+                "bookmark controls must not collapse in the retained a11y tree"
+            );
+
+            // The composed tree is not otherwise synchronized in this layout-only
+            // regression test; keep the document borrow explicitly live.
+            w.sync(&mut doc, &root);
+        }
     }
 
+    /// Download portal cancellation, worker failure, duplicate ids and scheme rejection.
     #[test]
-    fn private_indicator_action_stays_visible_in_compact_chrome() {
-        let mut widget = BrowserWidget::with_engine_mode(
-            TestEngine::new(),
-            true,
-            crate::browsing_mode::BrowsingMode::Private,
-        );
-        widget.debug_set_viewport_width(390);
-        layout_at(&mut widget, 390.0, 844.0);
-        let indicator = widget.find_rect("browser.private-indicator").unwrap();
-        assert!(indicator.width() > 0.0 && indicator.height() > 0.0);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn downloads_cancel_reject_and_keep_stable_actions() {
+        // Phase `portal_cancel_cancels_the_paused_engine_download`.
+        {
+            ui::host::install_default(ui::host::HostServices::recording().0);
+            let engine = TestEngine::new();
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            engine.send(WebViewCommand::StartDownload {
+                uri: "https://example.test/archive.zip".into(),
+            });
+            widget.apply_engine_events();
+            assert!(widget.download_picker.is_some());
+            widget.apply_engine_events();
+            assert_eq!(
+                widget.downloads.entries()[0].status,
+                DownloadStatus::Cancelled
+            );
+            assert!(engine.commands().iter().any(|command| matches!(
+                command,
+                WebViewCommand::CancelDownload { id } if id == "test-download-1"
+            )));
+        }
+
+        // Phase `portal_worker_failure_cancels_webkit_but_preserves_the_actionable_error`.
+        {
+            ui::host::install_default(ui::host::HostServices::recording().0);
+            let engine = TestEngine::new();
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            engine.send(WebViewCommand::StartDownload {
+                uri: "https://example.test/archive.zip".into(),
+            });
+            widget.apply_engine_events();
+            let id = widget.downloads.entries()[0].id.clone();
+            let (sender, disconnected) = std::sync::mpsc::channel();
+            drop(sender);
+            widget.download_picker = Some((id.clone(), disconnected));
+            widget.poll_download_picker();
+            // Fold the engine's cancellation event too: it must not replace the
+            // portal failure with the much less useful generic "Cancelled".
+            widget.apply_engine_events();
+            let entry = widget.downloads.get(&id).unwrap();
+            assert_eq!(entry.status, DownloadStatus::Failed);
+            assert!(
+                entry
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("save picker"))
+            );
+            assert!(engine.commands().iter().any(|command| matches!(
+                command,
+                WebViewCommand::CancelDownload { id: cancelled } if cancelled == &id
+            )));
+        }
+
+        // Phase `duplicate_engine_ids_are_cancelled_without_replacing_history`.
+        {
+            let engine = TestEngine::new();
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            assert!(widget.downloads.requested(
+                "test-download-1".into(),
+                "https://persisted.test/old".into(),
+                "old.bin",
+            ));
+            engine.send(WebViewCommand::StartDownload {
+                uri: "https://example.test/new.bin".into(),
+            });
+            widget.apply_engine_events();
+            assert_eq!(
+                widget.downloads.get("test-download-1").unwrap().source_url,
+                "https://persisted.test/old"
+            );
+            assert!(engine.commands().iter().any(|command| matches!(
+                command,
+                WebViewCommand::CancelDownload { id } if id == "test-download-1"
+            )));
+        }
+
+        // Phase `download_operations_reject_non_web_schemes_and_materialize_stable_actions`.
+        {
+            let engine = TestEngine::new();
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            assert!(
+                widget
+                    .perform_browser_operation(BrowserOperation::StartDownload {
+                        url: "file:///etc/passwd".into(),
+                    })
+                    .is_err()
+            );
+            assert!(
+                !engine
+                    .commands()
+                    .iter()
+                    .any(|command| matches!(command, WebViewCommand::StartDownload { .. }))
+            );
+
+            widget.debug_show_downloads("completed");
+            let resource = widget
+                .resource_by_id("browser.download.review-complete")
+                .expect("download resource");
+            assert_eq!(resource.kind, "browser.download");
+            assert_eq!(
+                resource
+                    .actions
+                    .iter()
+                    .map(|action| action.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["show", "open", "reveal"]
+            );
+            for action in &resource.actions {
+                assert_eq!(action.locus, ui::tilo_actions::ExecutionLocus::ClientLocal);
+            }
+        }
+    }
+
+    /// Private mode personal state, indicator and discovery-failure cleanup.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn private_mode_is_empty_indicated_and_leaves_no_root() {
+        // Phase `private_mode_has_empty_personal_state_and_no_continuation_channel`.
+        {
+            let mut widget = BrowserWidget::with_engine_mode(
+                TestEngine::new(),
+                false,
+                crate::browsing_mode::BrowsingMode::Private,
+            );
+            assert!(widget.history.is_empty());
+            assert!(widget.bookmarks.entries().is_empty());
+            assert_eq!(widget.settings, Settings::default());
+            widget
+                .history
+                .record_at("https://private.test", "Private", 1);
+            widget.clear_history_durably().unwrap();
+            assert!(widget.history.is_empty());
+            let mut document = AutoCommit::new();
+            assert!(
+                widget
+                    .continuation_metadata(&document, &automerge::ROOT)
+                    .is_none()
+            );
+            let metadata = ui::collaboration::ContinuationMetadata {
+                schema_version: 1,
+                bytes: br#"{"url":"https://normal.test"}"#.to_vec(),
+            };
+            assert!(!widget.restore_continuation_metadata(
+                &metadata,
+                &mut document,
+                &automerge::ROOT,
+            ));
+        }
+
+        // Phase `private_indicator_action_stays_visible_in_compact_chrome`.
+        {
+            let mut widget = BrowserWidget::with_engine_mode(
+                TestEngine::new(),
+                true,
+                crate::browsing_mode::BrowsingMode::Private,
+            );
+            widget.debug_set_viewport_width(390);
+            layout_at(&mut widget, 390.0, 844.0);
+            let indicator = widget.find_rect("browser.private-indicator").unwrap();
+            assert!(indicator.width() > 0.0 && indicator.height() > 0.0);
+        }
+
+        // Phase `private_discovery_failure_filter_worker_keeps_removed_root_absent`.
+        #[cfg(unix)]
+        {
+            use std::io::{Read, Write};
+
+            let fixture = tempfile::tempdir().unwrap();
+            let isolated_executable = fixture.path().join("isolated/bin/browser-test");
+            std::fs::create_dir_all(isolated_executable.parent().unwrap()).unwrap();
+            std::fs::copy(std::env::current_exe().unwrap(), &isolated_executable).unwrap();
+            let done = fixture.path().join("filter-loader.done");
+            let root = crate::storage::allocate_private_root().unwrap();
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/filters", listener.local_addr().unwrap());
+            listener.set_nonblocking(true).unwrap();
+            let server = std::thread::spawn(move || {
+                let deadline = tilo_test_env::hang_deadline();
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(ui::time::now() < deadline, "filter worker did not connect");
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        Err(error) => panic!("filter endpoint failed: {error}"),
+                    }
+                };
+                let mut request = [0; 4096];
+                let _ = stream.read(&mut request);
+                let body = b"||private-discovery.fixture^\n";
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(body).unwrap();
+            });
+            let output = std::process::Command::new(&isolated_executable)
+                .args([
+                    "--exact",
+                    "browser_widget::tests::private_discovery_failure_filter_worker_does_not_recreate_root_child",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env_remove("TILO_CHROMIUM_HOST")
+                .env("TILO_TEST_PRIVATE_ROOT", &root)
+                .env("TILO_TEST_FILTER_LIST_URL", url)
+                .env("TILO_TEST_FILTER_LOADER_DONE", &done)
+                .output()
+                .unwrap();
+            server.join().unwrap();
+            let remained = root.exists();
+            if remained {
+                std::fs::remove_dir_all(&root).unwrap();
+            }
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(!remained, "child left or recreated its private root");
+        }
     }
 
     #[test]
@@ -9333,8 +10626,8 @@ mod tests {
         );
         let mut document = AutoCommit::new();
         widget.sync(&mut document, &automerge::ROOT);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while !done.exists() && std::time::Instant::now() < deadline {
+        let deadline = tilo_test_env::hang_deadline();
+        while !done.exists() && ui::time::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(done.exists(), "legacy filter worker did not finish");
@@ -9343,73 +10636,6 @@ mod tests {
             !root.exists(),
             "completed unavailable-engine filter bootstrap recreated the private root"
         );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn private_discovery_failure_filter_worker_keeps_removed_root_absent() {
-        use std::io::{Read, Write};
-
-        let fixture = tempfile::tempdir().unwrap();
-        let isolated_executable = fixture.path().join("isolated/bin/browser-test");
-        std::fs::create_dir_all(isolated_executable.parent().unwrap()).unwrap();
-        std::fs::copy(std::env::current_exe().unwrap(), &isolated_executable).unwrap();
-        let done = fixture.path().join("filter-loader.done");
-        let root = crate::storage::allocate_private_root().unwrap();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}/filters", listener.local_addr().unwrap());
-        listener.set_nonblocking(true).unwrap();
-        let server = std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(
-                            std::time::Instant::now() < deadline,
-                            "filter worker did not connect"
-                        );
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                    }
-                    Err(error) => panic!("filter endpoint failed: {error}"),
-                }
-            };
-            let mut request = [0; 4096];
-            let _ = stream.read(&mut request);
-            let body = b"||private-discovery.fixture^\n";
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            )
-            .unwrap();
-            stream.write_all(body).unwrap();
-        });
-        let output = std::process::Command::new(&isolated_executable)
-            .args([
-                "--exact",
-                "browser_widget::tests::private_discovery_failure_filter_worker_does_not_recreate_root_child",
-                "--ignored",
-                "--nocapture",
-            ])
-            .env_remove("TILO_CHROMIUM_HOST")
-            .env("TILO_TEST_PRIVATE_ROOT", &root)
-            .env("TILO_TEST_FILTER_LIST_URL", url)
-            .env("TILO_TEST_FILTER_LOADER_DONE", &done)
-            .output()
-            .unwrap();
-        server.join().unwrap();
-        let remained = root.exists();
-        if remained {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
-        assert!(
-            output.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(!remained, "child left or recreated its private root");
     }
 }
 

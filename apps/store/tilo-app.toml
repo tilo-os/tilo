@@ -9,10 +9,17 @@ category = "System"
 version = "0.1.2"
 kind    = "app"
 runtime = "tilo-runtime/2026.07"
+platforms = ["tilo-os"]
+platform-reason = "Installs packages from the tilo-os registry."
 
 [package.isa]
 x86_64 = "v3"
 aarch64 = "aarch64"
+
+# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+[capabilities]
+required = ["network.http"]
+optional = ["clipboard", "files.save", "files.paths", "app-files", "threads", "processes"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

@@ -1813,805 +1813,866 @@ mod tests {
     }
 
     #[test]
-    fn cutover_requires_accept_then_media_ready_and_keeps_source_live_until_ready() {
-        let now = Instant::now();
-        let app = FakeCallingApp::verified("so.tilo.calls", "work");
-        let source = device("laptop");
-        let target = device("tablet");
-        let mut broker = RealtimeSessionBroker::new();
-        let id = broker
-            .register(
-                &app.registration,
-                source.clone(),
-                FakeCallingApp::intent(
-                    RealtimeMediaSet::new([
-                        RealtimeMediaFacet::Microphone,
-                        RealtimeMediaFacet::Camera,
-                        RealtimeMediaFacet::ScreenShare,
-                        RealtimeMediaFacet::ShareAudio,
-                    ])
-                    .unwrap(),
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn cutover_waits_for_accept_and_media_ready_and_rolls_back_safely() {
+        // Phase `cutover_requires_accept_then_media_ready_and_keeps_source_live_until_ready`.
+        {
+            let now = Instant::now();
+            let app = FakeCallingApp::verified("so.tilo.calls", "work");
+            let source = device("laptop");
+            let target = device("tablet");
+            let mut broker = RealtimeSessionBroker::new();
+            let id = broker
+                .register(
+                    &app.registration,
+                    source.clone(),
+                    FakeCallingApp::intent(
+                        RealtimeMediaSet::new([
+                            RealtimeMediaFacet::Microphone,
+                            RealtimeMediaFacet::Camera,
+                            RealtimeMediaFacet::ScreenShare,
+                            RealtimeMediaFacet::ShareAudio,
+                        ])
+                        .unwrap(),
+                    ),
+                    now,
+                )
+                .unwrap();
+            broker
+                .propose_target(&app.registration, id, &source, target.clone(), now)
+                .unwrap();
+            assert!(broker.session(id).unwrap().source_live);
+            assert_eq!(
+                broker.media_ready(
+                    &app.registration,
+                    id,
+                    &source,
+                    &target,
+                    CaptureAuthorizationId {
+                        broker: broker.instance_id(),
+                        nonce: [9; 16],
+                    },
+                    now,
                 ),
-                now,
-            )
-            .unwrap();
-        broker
-            .propose_target(&app.registration, id, &source, target.clone(), now)
-            .unwrap();
-        assert!(broker.session(id).unwrap().source_live);
-        assert_eq!(
-            broker.media_ready(
-                &app.registration,
-                id,
-                &source,
-                &target,
-                CaptureAuthorizationId {
-                    broker: broker.instance_id(),
-                    nonce: [9; 16],
-                },
-                now,
-            ),
-            Err(RealtimeSessionError::InvalidTransition)
-        );
-        let authorization = broker
-            .authorize_target_capture(&app.registration, id, &source, &target, now)
-            .unwrap();
-        broker
-            .accept_target(&app.registration, id, &source, &target, authorization, now)
-            .unwrap();
-        assert!(broker.session(id).unwrap().source_live);
-        let cutover = broker
-            .media_ready(&app.registration, id, &source, &target, authorization, now)
-            .unwrap();
-        assert!(cutover.stop_source);
-        assert!(!broker.session(id).unwrap().source_live);
-    }
-
-    #[test]
-    fn timeout_and_target_loss_roll_back_without_stopping_source() {
-        let now = Instant::now();
-        let app = FakeCallingApp::verified("so.tilo.calls", "work");
-        let source = device("laptop");
-        let target = device("tablet");
-        let mut broker =
-            RealtimeSessionBroker::with_limits(4, Duration::from_secs(60), Duration::from_secs(2));
-        let id = broker
-            .register(
-                &app.registration,
-                source.clone(),
-                FakeCallingApp::intent(FakeCallingApp::audio()),
-                now,
-            )
-            .unwrap();
-        broker
-            .propose_target(&app.registration, id, &source, target.clone(), now)
-            .unwrap();
-        let events = broker.tick(now + Duration::from_secs(3));
-        assert!(matches!(
-            events.as_slice(),
-            [BrokerEvent { kind: BrokerEventKind::RolledBackToSource { target: rolled_back }, .. }]
-                if rolled_back == &target
-        ));
-        assert!(broker.session(id).unwrap().source_live);
-
-        broker
-            .propose_target(
-                &app.registration,
-                id,
-                &source,
-                target.clone(),
-                now + Duration::from_secs(4),
-            )
-            .unwrap();
-        let events = broker.device_lost(&target, now + Duration::from_secs(4));
-        assert!(matches!(
-            events.first().map(|event| &event.kind),
-            Some(BrokerEventKind::RolledBackToSource { .. })
-        ));
-        assert!(broker.session(id).unwrap().source_live);
-
-        let retry_at = now + Duration::from_secs(5);
-        broker
-            .propose_target(&app.registration, id, &source, target.clone(), retry_at)
-            .unwrap();
-        let authorization = broker
-            .authorize_target_capture(&app.registration, id, &source, &target, retry_at)
-            .unwrap();
-        broker
-            .accept_target(
-                &app.registration,
-                id,
-                &source,
-                &target,
-                authorization,
-                retry_at,
-            )
-            .unwrap();
-        assert!(matches!(
+                Err(RealtimeSessionError::InvalidTransition)
+            );
+            let authorization = broker
+                .authorize_target_capture(&app.registration, id, &source, &target, now)
+                .unwrap();
             broker
-                .target_failed(&app.registration, id, &source, &target, retry_at)
-                .unwrap()
-                .kind,
-            BrokerEventKind::RolledBackToSource { .. }
-        ));
-        assert!(broker.session(id).unwrap().source_live);
-    }
+                .accept_target(&app.registration, id, &source, &target, authorization, now)
+                .unwrap();
+            assert!(broker.session(id).unwrap().source_live);
+            let cutover = broker
+                .media_ready(&app.registration, id, &source, &target, authorization, now)
+                .unwrap();
+            assert!(cutover.stop_source);
+            assert!(!broker.session(id).unwrap().source_live);
+        }
 
-    #[test]
-    fn capture_authorization_is_fresh_one_shot_and_exactly_bound() {
-        let now = Instant::now();
-        let app = FakeCallingApp::verified("so.tilo.calls", "work");
-        let impostor = FakeCallingApp::verified("dev.other.calls", "work");
-        let source = device("laptop");
-        let target = device("tablet");
-        let mut broker = RealtimeSessionBroker::new();
-        let id = broker
-            .register(
-                &app.registration,
-                source.clone(),
-                FakeCallingApp::intent(FakeCallingApp::audio_video()),
-                now,
-            )
-            .unwrap();
-        broker
-            .propose_target(&app.registration, id, &source, target.clone(), now)
-            .unwrap();
-        let authorization = broker
-            .authorize_target_capture(&app.registration, id, &source, &target, now)
-            .unwrap();
-        assert_eq!(
-            broker.accept_target(
-                &impostor.registration,
-                id,
-                &source,
-                &target,
-                authorization,
-                now,
-            ),
-            Err(RealtimeSessionError::BindingMismatch)
-        );
-        broker
-            .accept_target(&app.registration, id, &source, &target, authorization, now)
-            .unwrap();
-        assert_eq!(
-            broker.accept_target(&app.registration, id, &source, &target, authorization, now,),
-            Err(RealtimeSessionError::InvalidTransition)
-        );
-    }
-
-    #[test]
-    fn restart_scoped_ids_and_exact_bindings_reject_stale_or_foreign_callers() {
-        let now = Instant::now();
-        let app = FakeCallingApp::verified("so.tilo.calls", "work");
-        let wrong_workspace = FakeCallingApp::verified("so.tilo.calls", "personal");
-        let source = device("laptop");
-        let mut first = RealtimeSessionBroker::new();
-        let id = first
-            .register(
-                &app.registration,
-                source.clone(),
-                FakeCallingApp::intent(FakeCallingApp::audio()),
-                now,
-            )
-            .unwrap();
-        assert_eq!(
-            first.propose_target(
-                &wrong_workspace.registration,
-                id,
-                &source,
-                device("tablet"),
-                now,
-            ),
-            Err(RealtimeSessionError::BindingMismatch)
-        );
-        let mut restarted = RealtimeSessionBroker::new();
-        assert_ne!(first.instance_id(), restarted.instance_id());
-        assert_eq!(
-            restarted.propose_target(&app.registration, id, &source, device("tablet"), now,),
-            Err(RealtimeSessionError::UnknownSession)
-        );
-    }
-
-    #[test]
-    fn registry_is_bounded_and_ttl_forgets_without_stopping_live_source() {
-        let now = Instant::now();
-        let app = FakeCallingApp::verified("so.tilo.calls", "work");
-        let mut broker =
-            RealtimeSessionBroker::with_limits(1, Duration::from_secs(2), Duration::from_secs(1));
-        let id = broker
-            .register(
-                &app.registration,
-                device("laptop"),
-                FakeCallingApp::intent(FakeCallingApp::audio()),
-                now,
-            )
-            .unwrap();
-        assert_eq!(
-            broker.register(
-                &app.registration,
-                device("phone"),
-                FakeCallingApp::intent(FakeCallingApp::audio()),
-                now,
-            ),
-            Err(RealtimeSessionError::RegistryFull)
-        );
-        assert_eq!(
-            broker.tick(now + Duration::from_secs(3)),
-            vec![BrokerEvent {
-                session_id: id,
-                kind: BrokerEventKind::ForgottenLive {
-                    live_device: device("laptop"),
-                },
-            }]
-        );
-        assert!(broker.session(id).is_none());
-    }
-
-    #[test]
-    fn media_actions_follow_mode_and_only_the_live_endpoint() {
-        let now = Instant::now();
-        let app = FakeCallingApp::verified("so.tilo.calls", "work");
-        let source = device("laptop");
-        let mut broker = RealtimeSessionBroker::new();
-        let id = broker
-            .register(
-                &app.registration,
-                source.clone(),
-                FakeCallingApp::intent(FakeCallingApp::audio()),
-                now,
-            )
-            .unwrap();
-        assert_eq!(
-            broker.apply_media_action(
-                &app.registration,
-                id,
-                &source,
-                RealtimeMediaAction::SetCameraMuted(true),
-                now,
-            ),
-            Err(RealtimeSessionError::UnsupportedMediaAction)
-        );
-        assert_eq!(
-            broker.apply_media_action(
-                &app.registration,
-                id,
-                &device("tablet"),
-                RealtimeMediaAction::SetMicrophoneMuted(true),
-                now,
-            ),
-            Err(RealtimeSessionError::BindingMismatch)
-        );
-        assert!(
+        // Phase `timeout_and_target_loss_roll_back_without_stopping_source`.
+        {
+            let now = Instant::now();
+            let app = FakeCallingApp::verified("so.tilo.calls", "work");
+            let source = device("laptop");
+            let target = device("tablet");
+            let mut broker = RealtimeSessionBroker::with_limits(
+                4,
+                Duration::from_secs(60),
+                Duration::from_secs(2),
+            );
+            let id = broker
+                .register(
+                    &app.registration,
+                    source.clone(),
+                    FakeCallingApp::intent(FakeCallingApp::audio()),
+                    now,
+                )
+                .unwrap();
             broker
-                .apply_media_action(
+                .propose_target(&app.registration, id, &source, target.clone(), now)
+                .unwrap();
+            let events = broker.tick(now + Duration::from_secs(3));
+            assert!(matches!(
+                events.as_slice(),
+                [BrokerEvent { kind: BrokerEventKind::RolledBackToSource { target: rolled_back }, .. }]
+                    if rolled_back == &target
+            ));
+            assert!(broker.session(id).unwrap().source_live);
+
+            broker
+                .propose_target(
+                    &app.registration,
+                    id,
+                    &source,
+                    target.clone(),
+                    now + Duration::from_secs(4),
+                )
+                .unwrap();
+            let events = broker.device_lost(&target, now + Duration::from_secs(4));
+            assert!(matches!(
+                events.first().map(|event| &event.kind),
+                Some(BrokerEventKind::RolledBackToSource { .. })
+            ));
+            assert!(broker.session(id).unwrap().source_live);
+
+            let retry_at = now + Duration::from_secs(5);
+            broker
+                .propose_target(&app.registration, id, &source, target.clone(), retry_at)
+                .unwrap();
+            let authorization = broker
+                .authorize_target_capture(&app.registration, id, &source, &target, retry_at)
+                .unwrap();
+            broker
+                .accept_target(
+                    &app.registration,
+                    id,
+                    &source,
+                    &target,
+                    authorization,
+                    retry_at,
+                )
+                .unwrap();
+            assert!(matches!(
+                broker
+                    .target_failed(&app.registration, id, &source, &target, retry_at)
+                    .unwrap()
+                    .kind,
+                BrokerEventKind::RolledBackToSource { .. }
+            ));
+            assert!(broker.session(id).unwrap().source_live);
+        }
+
+        // Phase `lock_hooks_rollback_pending_target_but_end_a_locked_live_endpoint`.
+        {
+            let now = Instant::now();
+            let app = FakeCallingApp::verified("so.tilo.calls", "work");
+            let source = device("laptop");
+            let target = device("tablet");
+            let mut broker = RealtimeSessionBroker::new();
+            let id = broker
+                .register(
+                    &app.registration,
+                    source.clone(),
+                    FakeCallingApp::intent(
+                        RealtimeMediaSet::new([
+                            RealtimeMediaFacet::ScreenShare,
+                            RealtimeMediaFacet::ShareAudio,
+                        ])
+                        .unwrap(),
+                    ),
+                    now,
+                )
+                .unwrap();
+            broker
+                .propose_target(&app.registration, id, &source, target.clone(), now)
+                .unwrap();
+            let target_events = broker.device_locked(&target, now);
+            assert!(matches!(
+                target_events.first().map(|event| &event.kind),
+                Some(BrokerEventKind::RolledBackToSource { .. })
+            ));
+            assert!(broker.session(id).unwrap().source_live);
+            let source_events = broker.device_locked(&source, now);
+            assert!(matches!(
+                source_events.first().map(|event| &event.kind),
+                Some(BrokerEventKind::Ended { .. })
+            ));
+            assert!(broker.session(id).is_none());
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn capture_authority_is_fresh_exactly_bound_and_bounded() {
+        // Phase `capture_authorization_is_fresh_one_shot_and_exactly_bound`.
+        {
+            let now = Instant::now();
+            let app = FakeCallingApp::verified("so.tilo.calls", "work");
+            let impostor = FakeCallingApp::verified("dev.other.calls", "work");
+            let source = device("laptop");
+            let target = device("tablet");
+            let mut broker = RealtimeSessionBroker::new();
+            let id = broker
+                .register(
+                    &app.registration,
+                    source.clone(),
+                    FakeCallingApp::intent(FakeCallingApp::audio_video()),
+                    now,
+                )
+                .unwrap();
+            broker
+                .propose_target(&app.registration, id, &source, target.clone(), now)
+                .unwrap();
+            let authorization = broker
+                .authorize_target_capture(&app.registration, id, &source, &target, now)
+                .unwrap();
+            assert_eq!(
+                broker.accept_target(
+                    &impostor.registration,
+                    id,
+                    &source,
+                    &target,
+                    authorization,
+                    now,
+                ),
+                Err(RealtimeSessionError::BindingMismatch)
+            );
+            broker
+                .accept_target(&app.registration, id, &source, &target, authorization, now)
+                .unwrap();
+            assert_eq!(
+                broker.accept_target(&app.registration, id, &source, &target, authorization, now,),
+                Err(RealtimeSessionError::InvalidTransition)
+            );
+        }
+
+        // Phase `restart_scoped_ids_and_exact_bindings_reject_stale_or_foreign_callers`.
+        {
+            let now = Instant::now();
+            let app = FakeCallingApp::verified("so.tilo.calls", "work");
+            let wrong_workspace = FakeCallingApp::verified("so.tilo.calls", "personal");
+            let source = device("laptop");
+            let mut first = RealtimeSessionBroker::new();
+            let id = first
+                .register(
+                    &app.registration,
+                    source.clone(),
+                    FakeCallingApp::intent(FakeCallingApp::audio()),
+                    now,
+                )
+                .unwrap();
+            assert_eq!(
+                first.propose_target(
+                    &wrong_workspace.registration,
+                    id,
+                    &source,
+                    device("tablet"),
+                    now,
+                ),
+                Err(RealtimeSessionError::BindingMismatch)
+            );
+            let mut restarted = RealtimeSessionBroker::new();
+            assert_ne!(first.instance_id(), restarted.instance_id());
+            assert_eq!(
+                restarted.propose_target(&app.registration, id, &source, device("tablet"), now,),
+                Err(RealtimeSessionError::UnknownSession)
+            );
+        }
+
+        // Phase `registry_is_bounded_and_ttl_forgets_without_stopping_live_source`.
+        {
+            let now = Instant::now();
+            let app = FakeCallingApp::verified("so.tilo.calls", "work");
+            let mut broker = RealtimeSessionBroker::with_limits(
+                1,
+                Duration::from_secs(2),
+                Duration::from_secs(1),
+            );
+            let id = broker
+                .register(
+                    &app.registration,
+                    device("laptop"),
+                    FakeCallingApp::intent(FakeCallingApp::audio()),
+                    now,
+                )
+                .unwrap();
+            assert_eq!(
+                broker.register(
+                    &app.registration,
+                    device("phone"),
+                    FakeCallingApp::intent(FakeCallingApp::audio()),
+                    now,
+                ),
+                Err(RealtimeSessionError::RegistryFull)
+            );
+            assert_eq!(
+                broker.tick(now + Duration::from_secs(3)),
+                vec![BrokerEvent {
+                    session_id: id,
+                    kind: BrokerEventKind::ForgottenLive {
+                        live_device: device("laptop"),
+                    },
+                }]
+            );
+            assert!(broker.session(id).is_none());
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn media_actions_and_facets_follow_the_live_endpoint_and_mode() {
+        // Phase `media_actions_follow_mode_and_only_the_live_endpoint`.
+        {
+            let now = Instant::now();
+            let app = FakeCallingApp::verified("so.tilo.calls", "work");
+            let source = device("laptop");
+            let mut broker = RealtimeSessionBroker::new();
+            let id = broker
+                .register(
+                    &app.registration,
+                    source.clone(),
+                    FakeCallingApp::intent(FakeCallingApp::audio()),
+                    now,
+                )
+                .unwrap();
+            assert_eq!(
+                broker.apply_media_action(
+                    &app.registration,
+                    id,
+                    &source,
+                    RealtimeMediaAction::SetCameraMuted(true),
+                    now,
+                ),
+                Err(RealtimeSessionError::UnsupportedMediaAction)
+            );
+            assert_eq!(
+                broker.apply_media_action(
+                    &app.registration,
+                    id,
+                    &device("tablet"),
+                    RealtimeMediaAction::SetMicrophoneMuted(true),
+                    now,
+                ),
+                Err(RealtimeSessionError::BindingMismatch)
+            );
+            assert!(
+                broker
+                    .apply_media_action(
+                        &app.registration,
+                        id,
+                        &source,
+                        RealtimeMediaAction::SetMicrophoneMuted(true),
+                        now,
+                    )
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        // Phase `media_facets_are_independent_and_share_audio_never_implies_microphone`.
+        {
+            assert_eq!(
+                RealtimeMediaSet::new([]),
+                Err(RealtimeSessionError::InvalidMediaSet)
+            );
+            assert_eq!(
+                RealtimeMediaSet::new([RealtimeMediaFacet::ShareAudio]),
+                Err(RealtimeSessionError::InvalidMediaSet)
+            );
+            let share = RealtimeMediaSet::new([
+                RealtimeMediaFacet::ScreenShare,
+                RealtimeMediaFacet::ShareAudio,
+            ])
+            .unwrap();
+            assert!(!share.microphone());
+            assert!(share.screen_share() && share.share_audio());
+
+            let now = Instant::now();
+            let app = FakeCallingApp::verified("so.tilo.calls", "work");
+            let source = device("laptop");
+            let mut broker = RealtimeSessionBroker::new();
+            let id = broker
+                .register(
+                    &app.registration,
+                    source.clone(),
+                    FakeCallingApp::intent(share),
+                    now,
+                )
+                .unwrap();
+            assert_eq!(
+                broker.apply_media_action(
                     &app.registration,
                     id,
                     &source,
                     RealtimeMediaAction::SetMicrophoneMuted(true),
                     now,
-                )
-                .unwrap()
-                .is_none()
-        );
+                ),
+                Err(RealtimeSessionError::UnsupportedMediaAction)
+            );
+            assert!(
+                broker
+                    .apply_media_action(
+                        &app.registration,
+                        id,
+                        &source,
+                        RealtimeMediaAction::SetShareAudioMuted(true),
+                        now,
+                    )
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        // Phase `semantic_resume_state_rejects_urls_and_bearer_shaped_queries`.
+        {
+            assert_eq!(
+                SemanticRoomLocator::new("meet", "https://meet.invalid/room"),
+                Err(RealtimeSessionError::InvalidRoomLocator)
+            );
+            assert_eq!(
+                SemanticRoomLocator::new("meet", "room?token=secret"),
+                Err(RealtimeSessionError::InvalidRoomLocator)
+            );
+            let intent = RealtimeResumeIntent {
+                room: SemanticRoomLocator::new("meet", "safe-room").unwrap(),
+                semantic_position: Some("https://unsafe.invalid/resume".into()),
+                media: FakeCallingApp::audio(),
+                controls: RealtimeControlState::default(),
+            };
+            assert_eq!(
+                intent.validate(),
+                Err(RealtimeSessionError::InvalidResumeIntent)
+            );
+        }
     }
 
     #[test]
-    fn media_facets_are_independent_and_share_audio_never_implies_microphone() {
-        assert_eq!(
-            RealtimeMediaSet::new([]),
-            Err(RealtimeSessionError::InvalidMediaSet)
-        );
-        assert_eq!(
-            RealtimeMediaSet::new([RealtimeMediaFacet::ShareAudio]),
-            Err(RealtimeSessionError::InvalidMediaSet)
-        );
-        let share = RealtimeMediaSet::new([
-            RealtimeMediaFacet::ScreenShare,
-            RealtimeMediaFacet::ShareAudio,
-        ])
-        .unwrap();
-        assert!(!share.microphone());
-        assert!(share.screen_share() && share.share_audio());
-
-        let now = Instant::now();
-        let app = FakeCallingApp::verified("so.tilo.calls", "work");
-        let source = device("laptop");
-        let mut broker = RealtimeSessionBroker::new();
-        let id = broker
-            .register(
-                &app.registration,
-                source.clone(),
-                FakeCallingApp::intent(share),
-                now,
-            )
-            .unwrap();
-        assert_eq!(
-            broker.apply_media_action(
-                &app.registration,
-                id,
-                &source,
-                RealtimeMediaAction::SetMicrophoneMuted(true),
-                now,
-            ),
-            Err(RealtimeSessionError::UnsupportedMediaAction)
-        );
-        assert!(
-            broker
-                .apply_media_action(
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn fabric_handoff_cuts_over_only_to_the_authenticated_ready_peer() {
+        // Phase `two_peer_fabric_cutover_stops_source_only_after_authenticated_ready`.
+        {
+            let now = Instant::now();
+            let source = device("laptop");
+            let target = device("tablet");
+            let app = FakeCallingApp::verified("so.tilo.calls", "work");
+            let mut origin = RealtimeSessionBroker::new();
+            let id = origin
+                .register(
                     &app.registration,
-                    id,
-                    &source,
-                    RealtimeMediaAction::SetShareAudioMuted(true),
+                    source.clone(),
+                    FakeCallingApp::intent(FakeCallingApp::audio()),
                     now,
                 )
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn lock_hooks_rollback_pending_target_but_end_a_locked_live_endpoint() {
-        let now = Instant::now();
-        let app = FakeCallingApp::verified("so.tilo.calls", "work");
-        let source = device("laptop");
-        let target = device("tablet");
-        let mut broker = RealtimeSessionBroker::new();
-        let id = broker
-            .register(
-                &app.registration,
-                source.clone(),
-                FakeCallingApp::intent(
-                    RealtimeMediaSet::new([
-                        RealtimeMediaFacet::ScreenShare,
-                        RealtimeMediaFacet::ShareAudio,
-                    ])
-                    .unwrap(),
-                ),
-                now,
-            )
-            .unwrap();
-        broker
-            .propose_target(&app.registration, id, &source, target.clone(), now)
-            .unwrap();
-        let target_events = broker.device_locked(&target, now);
-        assert!(matches!(
-            target_events.first().map(|event| &event.kind),
-            Some(BrokerEventKind::RolledBackToSource { .. })
-        ));
-        assert!(broker.session(id).unwrap().source_live);
-        let source_events = broker.device_locked(&source, now);
-        assert!(matches!(
-            source_events.first().map(|event| &event.kind),
-            Some(BrokerEventKind::Ended { .. })
-        ));
-        assert!(broker.session(id).is_none());
-    }
-
-    #[test]
-    fn semantic_resume_state_rejects_urls_and_bearer_shaped_queries() {
-        assert_eq!(
-            SemanticRoomLocator::new("meet", "https://meet.invalid/room"),
-            Err(RealtimeSessionError::InvalidRoomLocator)
-        );
-        assert_eq!(
-            SemanticRoomLocator::new("meet", "room?token=secret"),
-            Err(RealtimeSessionError::InvalidRoomLocator)
-        );
-        let intent = RealtimeResumeIntent {
-            room: SemanticRoomLocator::new("meet", "safe-room").unwrap(),
-            semantic_position: Some("https://unsafe.invalid/resume".into()),
-            media: FakeCallingApp::audio(),
-            controls: RealtimeControlState::default(),
-        };
-        assert_eq!(
-            intent.validate(),
-            Err(RealtimeSessionError::InvalidResumeIntent)
-        );
-    }
-
-    #[test]
-    fn two_peer_fabric_cutover_stops_source_only_after_authenticated_ready() {
-        let now = Instant::now();
-        let source = device("laptop");
-        let target = device("tablet");
-        let app = FakeCallingApp::verified("so.tilo.calls", "work");
-        let mut origin = RealtimeSessionBroker::new();
-        let id = origin
-            .register(
-                &app.registration,
-                source.clone(),
-                FakeCallingApp::intent(FakeCallingApp::audio()),
-                now,
-            )
-            .unwrap();
-        origin
-            .propose_target(&app.registration, id, &source, target.clone(), now)
-            .unwrap();
-        let offer = origin.fabric_offer(id, 20_000).unwrap();
-
-        let mut receiver = RealtimeSessionBroker::new();
-        assert!(
-            receiver
-                .import_fabric_offer(&offer, source.clone(), target.clone(), now, 10_000)
-                .unwrap()
-        );
-        assert!(
-            !receiver
-                .import_fabric_offer(&offer, source.clone(), target.clone(), now, 10_000)
-                .unwrap()
-        );
-        let remote_id = offer.session_id.into_broker_id();
-        let authorization = receiver
-            .authorize_target_capture(&app.registration, remote_id, &source, &target, now)
-            .unwrap();
-        receiver
-            .accept_target(
-                &app.registration,
-                remote_id,
-                &source,
-                &target,
-                authorization,
-                now,
-            )
-            .unwrap();
-        assert!(origin.session(id).unwrap().source_live);
-        assert!(
+                .unwrap();
             origin
-                .remote_target_accepted(offer.session_id, &source, &target, now)
-                .unwrap()
-        );
-        assert!(
-            !origin
-                .remote_target_accepted(offer.session_id, &source, &target, now)
-                .unwrap()
-        );
+                .propose_target(&app.registration, id, &source, target.clone(), now)
+                .unwrap();
+            let offer = origin.fabric_offer(id, 20_000).unwrap();
 
-        let target_ready = receiver
-            .media_ready(
-                &app.registration,
-                remote_id,
-                &source,
-                &target,
-                authorization,
-                now,
-            )
-            .unwrap();
-        assert!(!target_ready.stop_source);
-        assert!(origin.session(id).unwrap().source_live);
-        let stop = origin
-            .remote_media_ready(offer.session_id, &source, &target, now)
-            .unwrap();
-        assert!(stop.stop_source);
-        assert!(!origin.session(id).unwrap().source_live);
-        assert!(
+            let mut receiver = RealtimeSessionBroker::new();
+            assert!(
+                receiver
+                    .import_fabric_offer(&offer, source.clone(), target.clone(), now, 10_000)
+                    .unwrap()
+            );
+            assert!(
+                !receiver
+                    .import_fabric_offer(&offer, source.clone(), target.clone(), now, 10_000)
+                    .unwrap()
+            );
+            let remote_id = offer.session_id.into_broker_id();
+            let authorization = receiver
+                .authorize_target_capture(&app.registration, remote_id, &source, &target, now)
+                .unwrap();
             receiver
-                .confirm_source_stopped(offer.session_id, &source, &target, now)
-                .unwrap()
-        );
-        assert_eq!(
-            receiver.session(remote_id).unwrap().phase,
-            RealtimeSessionPhase::TargetLive
-        );
+                .accept_target(
+                    &app.registration,
+                    remote_id,
+                    &source,
+                    &target,
+                    authorization,
+                    now,
+                )
+                .unwrap();
+            assert!(origin.session(id).unwrap().source_live);
+            assert!(
+                origin
+                    .remote_target_accepted(offer.session_id, &source, &target, now)
+                    .unwrap()
+            );
+            assert!(
+                !origin
+                    .remote_target_accepted(offer.session_id, &source, &target, now)
+                    .unwrap()
+            );
+
+            let target_ready = receiver
+                .media_ready(
+                    &app.registration,
+                    remote_id,
+                    &source,
+                    &target,
+                    authorization,
+                    now,
+                )
+                .unwrap();
+            assert!(!target_ready.stop_source);
+            assert!(origin.session(id).unwrap().source_live);
+            let stop = origin
+                .remote_media_ready(offer.session_id, &source, &target, now)
+                .unwrap();
+            assert!(stop.stop_source);
+            assert!(!origin.session(id).unwrap().source_live);
+            assert!(
+                receiver
+                    .confirm_source_stopped(offer.session_id, &source, &target, now)
+                    .unwrap()
+            );
+            assert_eq!(
+                receiver.session(remote_id).unwrap().phase,
+                RealtimeSessionPhase::TargetLive
+            );
+        }
+
+        // Phase `fabric_handoff_rejects_wrong_peer_reorder_and_offline_pending_offer`.
+        {
+            let now = Instant::now();
+            let source = device("laptop");
+            let target = device("tablet");
+            let attacker = device("attacker");
+            let app = FakeCallingApp::verified("so.tilo.calls", "work");
+            let mut origin = RealtimeSessionBroker::new();
+            let id = origin
+                .register(
+                    &app.registration,
+                    source.clone(),
+                    FakeCallingApp::intent(FakeCallingApp::audio()),
+                    now,
+                )
+                .unwrap();
+            origin
+                .propose_target(&app.registration, id, &source, target.clone(), now)
+                .unwrap();
+            let offer = origin.fabric_offer(id, 20_000).unwrap();
+            assert_eq!(
+                origin.remote_media_ready(offer.session_id, &source, &target, now),
+                Err(RealtimeSessionError::InvalidTransition)
+            );
+            assert_eq!(
+                origin.remote_target_accepted(offer.session_id, &source, &attacker, now),
+                Err(RealtimeSessionError::InvalidTransition)
+            );
+            assert!(origin.session(id).unwrap().source_live);
+
+            let mut receiver = RealtimeSessionBroker::new();
+            receiver
+                .import_fabric_offer(&offer, source.clone(), target, now, 10_000)
+                .unwrap();
+            let events = receiver.device_lost(&source, now);
+            assert_eq!(events.len(), 1);
+            assert!(
+                receiver
+                    .session(offer.session_id.into_broker_id())
+                    .is_none()
+            );
+        }
     }
 
     #[test]
-    fn fabric_handoff_rejects_wrong_peer_reorder_and_offline_pending_offer() {
-        let now = Instant::now();
-        let source = device("laptop");
-        let target = device("tablet");
-        let attacker = device("attacker");
-        let app = FakeCallingApp::verified("so.tilo.calls", "work");
-        let mut origin = RealtimeSessionBroker::new();
-        let id = origin
-            .register(
-                &app.registration,
-                source.clone(),
-                FakeCallingApp::intent(FakeCallingApp::audio()),
-                now,
-            )
-            .unwrap();
-        origin
-            .propose_target(&app.registration, id, &source, target.clone(), now)
-            .unwrap();
-        let offer = origin.fabric_offer(id, 20_000).unwrap();
-        assert_eq!(
-            origin.remote_media_ready(offer.session_id, &source, &target, now),
-            Err(RealtimeSessionError::InvalidTransition)
-        );
-        assert_eq!(
-            origin.remote_target_accepted(offer.session_id, &source, &attacker, now),
-            Err(RealtimeSessionError::InvalidTransition)
-        );
-        assert!(origin.session(id).unwrap().source_live);
-
-        let mut receiver = RealtimeSessionBroker::new();
-        receiver
-            .import_fabric_offer(&offer, source.clone(), target, now, 10_000)
-            .unwrap();
-        let events = receiver.device_lost(&source, now);
-        assert_eq!(events.len(), 1);
-        assert!(
-            receiver
-                .session(offer.session_id.into_broker_id())
-                .is_none()
-        );
-    }
-
-    #[test]
-    #[expect(
+    #[allow(
         clippy::too_many_lines,
-        reason = "an end-to-end test scenario that reads top to bottom"
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn certified_adapter_routes_two_peer_handshake_and_cutover_exactly_once() {
-        let now = Instant::now();
-        let source = device("laptop");
-        let target = device("tablet");
-        let app = FakeCallingApp::verified("so.tilo.calls", "work");
-        let source_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
-        let target_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
-        let source_adapter =
-            BrokerRealtimeFabricAdapter::with_app_verifier(Arc::clone(&source_broker), |_| true);
-        let target_adapter =
-            BrokerRealtimeFabricAdapter::with_app_verifier(Arc::clone(&target_broker), |_| true);
-        let mut intent = FakeCallingApp::intent(FakeCallingApp::audio());
-        intent.controls = RealtimeControlState {
-            microphone_muted: true,
-            camera_muted: false,
-            screen_share_paused: true,
-            share_audio_muted: true,
-        };
-        let id = source_broker
-            .lock()
-            .unwrap()
-            .register(&app.registration, source.clone(), intent, now)
-            .unwrap();
-        source_broker
-            .lock()
-            .unwrap()
-            .propose_target(&app.registration, id, &source, target.clone(), now)
-            .unwrap();
-        source_adapter.offer_to(id, &target, 20_000).unwrap();
-        let offer = source_adapter.drain_egress().pop().unwrap();
-        let RealtimeFabricSignal::Offer(projection) = offer.signal else {
-            panic!("expected offer");
-        };
-        assert_eq!(
-            projection.controls,
-            RealtimeControlState {
+    fn certified_adapter_routes_cancels_and_times_out_exactly() {
+        // Phase `certified_adapter_routes_two_peer_handshake_and_cutover_exactly_once`.
+        {
+            let now = Instant::now();
+            let source = device("laptop");
+            let target = device("tablet");
+            let app = FakeCallingApp::verified("so.tilo.calls", "work");
+            let source_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
+            let target_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
+            let source_adapter =
+                BrokerRealtimeFabricAdapter::with_app_verifier(Arc::clone(&source_broker), |_| {
+                    true
+                });
+            let target_adapter =
+                BrokerRealtimeFabricAdapter::with_app_verifier(Arc::clone(&target_broker), |_| {
+                    true
+                });
+            let mut intent = FakeCallingApp::intent(FakeCallingApp::audio());
+            intent.controls = RealtimeControlState {
                 microphone_muted: true,
                 camera_muted: false,
                 screen_share_paused: true,
                 share_audio_muted: true,
+            };
+            let id = source_broker
+                .lock()
+                .unwrap()
+                .register(&app.registration, source.clone(), intent, now)
+                .unwrap();
+            source_broker
+                .lock()
+                .unwrap()
+                .propose_target(&app.registration, id, &source, target.clone(), now)
+                .unwrap();
+            source_adapter.offer_to(id, &target, 20_000).unwrap();
+            let offer = source_adapter.drain_egress().pop().unwrap();
+            let RealtimeFabricSignal::Offer(projection) = offer.signal else {
+                panic!("expected offer");
+            };
+            assert_eq!(
+                projection.controls,
+                RealtimeControlState {
+                    microphone_muted: true,
+                    camera_muted: false,
+                    screen_share_paused: true,
+                    share_audio_muted: true,
+                }
+            );
+            let wire = serde_json::to_string(&projection).unwrap();
+            for forbidden in ["pipewire", "device_id", "capture", "credential", "/dev/"] {
+                assert!(!wire.to_ascii_lowercase().contains(forbidden));
             }
-        );
-        let wire = serde_json::to_string(&projection).unwrap();
-        for forbidden in ["pipewire", "device_id", "capture", "credential", "/dev/"] {
-            assert!(!wire.to_ascii_lowercase().contains(forbidden));
-        }
-        let fabric_id = projection.session_id;
-        assert!(target_adapter.receive_authenticated(
-            &source,
-            &target,
-            RealtimeFabricSignal::Offer(projection.clone()),
-            now,
-            10_000,
-        ));
-        assert_eq!(
-            target_adapter.drain_imported_offers(),
-            vec![ImportedRealtimeFabricOffer {
-                offer: projection.clone(),
-                source: source.clone(),
-                target: target.clone(),
-            }]
-        );
-        assert!(
-            !target_adapter.receive_authenticated(
+            let fabric_id = projection.session_id;
+            assert!(target_adapter.receive_authenticated(
                 &source,
                 &target,
                 RealtimeFabricSignal::Offer(projection.clone()),
                 now,
                 10_000,
-            ),
-            "a fresh envelope must not revive the same semantic offer"
-        );
-        assert!(target_adapter.drain_imported_offers().is_empty());
-        assert!(!target_adapter.receive_authenticated(
-            &device("attacker"),
-            &target,
-            RealtimeFabricSignal::Offer(projection),
-            now,
-            10_000,
-        ));
-        target_adapter
-            .accept_imported(fabric_id, &source, &target, now)
-            .unwrap();
-        let accepted = target_adapter.drain_egress().pop().unwrap();
-        assert_eq!(accepted.target, source);
-        assert!(source_adapter.receive_authenticated(
-            &target,
-            &source,
-            accepted.signal,
-            now,
-            10_000,
-        ));
-        target_adapter
-            .imported_media_ready(fabric_id, &source, &target, now)
-            .unwrap();
-        let ready = target_adapter.drain_egress().pop().unwrap();
-        assert!(source_adapter.receive_authenticated(&target, &source, ready.signal, now, 10_000,));
-        let stop = source_adapter.drain_egress().pop().unwrap();
-        assert_eq!(stop.target, target);
-        assert_eq!(source_adapter.drain_cutovers().len(), 1);
-        assert!(target_adapter.receive_authenticated(&source, &target, stop.signal, now, 10_000,));
-        assert_eq!(
-            target_broker
+            ));
+            assert_eq!(
+                target_adapter.drain_imported_offers(),
+                vec![ImportedRealtimeFabricOffer {
+                    offer: projection.clone(),
+                    source: source.clone(),
+                    target: target.clone(),
+                }]
+            );
+            assert!(
+                !target_adapter.receive_authenticated(
+                    &source,
+                    &target,
+                    RealtimeFabricSignal::Offer(projection.clone()),
+                    now,
+                    10_000,
+                ),
+                "a fresh envelope must not revive the same semantic offer"
+            );
+            assert!(target_adapter.drain_imported_offers().is_empty());
+            assert!(!target_adapter.receive_authenticated(
+                &device("attacker"),
+                &target,
+                RealtimeFabricSignal::Offer(projection),
+                now,
+                10_000,
+            ));
+            target_adapter
+                .accept_imported(fabric_id, &source, &target, now)
+                .unwrap();
+            let accepted = target_adapter.drain_egress().pop().unwrap();
+            assert_eq!(accepted.target, source);
+            assert!(source_adapter.receive_authenticated(
+                &target,
+                &source,
+                accepted.signal,
+                now,
+                10_000,
+            ));
+            target_adapter
+                .imported_media_ready(fabric_id, &source, &target, now)
+                .unwrap();
+            let ready = target_adapter.drain_egress().pop().unwrap();
+            assert!(source_adapter.receive_authenticated(
+                &target,
+                &source,
+                ready.signal,
+                now,
+                10_000,
+            ));
+            let stop = source_adapter.drain_egress().pop().unwrap();
+            assert_eq!(stop.target, target);
+            assert_eq!(source_adapter.drain_cutovers().len(), 1);
+            assert!(target_adapter.receive_authenticated(
+                &source,
+                &target,
+                stop.signal,
+                now,
+                10_000,
+            ));
+            assert_eq!(
+                target_broker
+                    .lock()
+                    .unwrap()
+                    .session(fabric_id.into_broker_id())
+                    .unwrap()
+                    .phase,
+                RealtimeSessionPhase::TargetLive
+            );
+        }
+
+        // Phase `adapter_cancel_is_exactly_bound_and_prunes_local_authorizations`.
+        {
+            let now = Instant::now();
+            let source = device("laptop");
+            let target = device("tablet");
+            let attacker = device("attacker");
+            let app = FakeCallingApp::verified("so.tilo.calls", "work");
+            let source_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
+            let target_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
+            let source_adapter =
+                BrokerRealtimeFabricAdapter::with_app_verifier(Arc::clone(&source_broker), |_| {
+                    true
+                });
+            let target_adapter =
+                BrokerRealtimeFabricAdapter::with_app_verifier(Arc::clone(&target_broker), |_| {
+                    true
+                });
+            let id = source_broker
                 .lock()
                 .unwrap()
-                .session(fabric_id.into_broker_id())
-                .unwrap()
-                .phase,
-            RealtimeSessionPhase::TargetLive
-        );
-    }
-
-    #[test]
-    fn adapter_cancel_is_exactly_bound_and_prunes_local_authorizations() {
-        let now = Instant::now();
-        let source = device("laptop");
-        let target = device("tablet");
-        let attacker = device("attacker");
-        let app = FakeCallingApp::verified("so.tilo.calls", "work");
-        let source_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
-        let target_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
-        let source_adapter =
-            BrokerRealtimeFabricAdapter::with_app_verifier(Arc::clone(&source_broker), |_| true);
-        let target_adapter =
-            BrokerRealtimeFabricAdapter::with_app_verifier(Arc::clone(&target_broker), |_| true);
-        let id = source_broker
-            .lock()
-            .unwrap()
-            .register(
-                &app.registration,
-                source.clone(),
-                FakeCallingApp::intent(FakeCallingApp::audio()),
-                now,
-            )
-            .unwrap();
-        source_broker
-            .lock()
-            .unwrap()
-            .propose_target(&app.registration, id, &source, target.clone(), now)
-            .unwrap();
-        source_adapter.offer_to(id, &target, 20_000).unwrap();
-        let offer = source_adapter.drain_egress().pop().unwrap();
-        let RealtimeFabricSignal::Offer(projection) = offer.signal else {
-            panic!("expected offer");
-        };
-        let fabric_id = projection.session_id;
-        assert!(target_adapter.receive_authenticated(
-            &source,
-            &target,
-            RealtimeFabricSignal::Offer(projection),
-            now,
-            10_000,
-        ));
-        target_adapter
-            .accept_imported(fabric_id, &source, &target, now)
-            .unwrap();
-
-        assert!(!source_adapter.receive_authenticated(
-            &attacker,
-            &source,
-            RealtimeFabricSignal::Cancel(fabric_id),
-            now,
-            10_000,
-        ));
-        assert!(
+                .register(
+                    &app.registration,
+                    source.clone(),
+                    FakeCallingApp::intent(FakeCallingApp::audio()),
+                    now,
+                )
+                .unwrap();
             source_broker
                 .lock()
                 .unwrap()
-                .session(id)
-                .unwrap()
-                .source_live
-        );
-        assert!(source_adapter.receive_authenticated(
-            &target,
-            &source,
-            RealtimeFabricSignal::Cancel(fabric_id),
-            now,
-            10_000,
-        ));
-        assert_eq!(
-            source_broker.lock().unwrap().session(id).unwrap().phase,
-            RealtimeSessionPhase::SourceLive
-        );
-
-        assert!(target_adapter.receive_authenticated(
-            &source,
-            &target,
-            RealtimeFabricSignal::Cancel(fabric_id),
-            now,
-            10_000,
-        ));
-        let broker = {
-            let state = target_adapter.state.lock().unwrap();
-            assert!(state.authorizations.is_empty());
-            Arc::clone(&state.broker)
-        };
-        assert!(
-            broker
-                .lock()
-                .unwrap()
-                .session(fabric_id.into_broker_id())
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn adapter_timeout_prunes_process_local_authorization_index() {
-        let now = Instant::now();
-        let source = device("laptop");
-        let target = device("tablet");
-        let app = FakeCallingApp::verified("so.tilo.calls", "work");
-        let source_broker = Arc::new(Mutex::new(RealtimeSessionBroker::with_limits(
-            4,
-            Duration::from_secs(60),
-            Duration::from_secs(2),
-        )));
-        let target_broker = Arc::new(Mutex::new(RealtimeSessionBroker::with_limits(
-            4,
-            Duration::from_secs(60),
-            Duration::from_secs(2),
-        )));
-        let source_adapter =
-            BrokerRealtimeFabricAdapter::with_app_verifier(Arc::clone(&source_broker), |_| true);
-        let target_adapter =
-            BrokerRealtimeFabricAdapter::with_app_verifier(Arc::clone(&target_broker), |_| true);
-        let id = source_broker
-            .lock()
-            .unwrap()
-            .register(
-                &app.registration,
-                source.clone(),
-                FakeCallingApp::intent(FakeCallingApp::audio()),
+                .propose_target(&app.registration, id, &source, target.clone(), now)
+                .unwrap();
+            source_adapter.offer_to(id, &target, 20_000).unwrap();
+            let offer = source_adapter.drain_egress().pop().unwrap();
+            let RealtimeFabricSignal::Offer(projection) = offer.signal else {
+                panic!("expected offer");
+            };
+            let fabric_id = projection.session_id;
+            assert!(target_adapter.receive_authenticated(
+                &source,
+                &target,
+                RealtimeFabricSignal::Offer(projection),
                 now,
-            )
-            .unwrap();
-        source_broker
-            .lock()
-            .unwrap()
-            .propose_target(&app.registration, id, &source, target.clone(), now)
-            .unwrap();
-        source_adapter.offer_to(id, &target, 20_000).unwrap();
-        let offer = source_adapter.drain_egress().pop().unwrap();
-        let RealtimeFabricSignal::Offer(projection) = offer.signal else {
-            panic!("expected offer");
-        };
-        let fabric_id = projection.session_id;
-        assert!(target_adapter.receive_authenticated(
-            &source,
-            &target,
-            RealtimeFabricSignal::Offer(projection),
-            now,
-            10_000,
-        ));
-        target_adapter
-            .accept_imported(fabric_id, &source, &target, now)
-            .unwrap();
-        assert_eq!(target_adapter.state.lock().unwrap().authorizations.len(), 1);
+                10_000,
+            ));
+            target_adapter
+                .accept_imported(fabric_id, &source, &target, now)
+                .unwrap();
 
-        target_adapter.tick(now + Duration::from_secs(3));
-        let broker = {
-            let state = target_adapter.state.lock().unwrap();
-            assert!(state.authorizations.is_empty());
-            Arc::clone(&state.broker)
-        };
-        assert!(
-            broker
+            assert!(!source_adapter.receive_authenticated(
+                &attacker,
+                &source,
+                RealtimeFabricSignal::Cancel(fabric_id),
+                now,
+                10_000,
+            ));
+            assert!(
+                source_broker
+                    .lock()
+                    .unwrap()
+                    .session(id)
+                    .unwrap()
+                    .source_live
+            );
+            assert!(source_adapter.receive_authenticated(
+                &target,
+                &source,
+                RealtimeFabricSignal::Cancel(fabric_id),
+                now,
+                10_000,
+            ));
+            assert_eq!(
+                source_broker.lock().unwrap().session(id).unwrap().phase,
+                RealtimeSessionPhase::SourceLive
+            );
+
+            assert!(target_adapter.receive_authenticated(
+                &source,
+                &target,
+                RealtimeFabricSignal::Cancel(fabric_id),
+                now,
+                10_000,
+            ));
+            let broker = {
+                let state = target_adapter.state.lock().unwrap();
+                assert!(state.authorizations.is_empty());
+                Arc::clone(&state.broker)
+            };
+            assert!(
+                broker
+                    .lock()
+                    .unwrap()
+                    .session(fabric_id.into_broker_id())
+                    .is_none()
+            );
+        }
+
+        // Phase `adapter_timeout_prunes_process_local_authorization_index`.
+        {
+            let now = Instant::now();
+            let source = device("laptop");
+            let target = device("tablet");
+            let app = FakeCallingApp::verified("so.tilo.calls", "work");
+            let source_broker = Arc::new(Mutex::new(RealtimeSessionBroker::with_limits(
+                4,
+                Duration::from_secs(60),
+                Duration::from_secs(2),
+            )));
+            let target_broker = Arc::new(Mutex::new(RealtimeSessionBroker::with_limits(
+                4,
+                Duration::from_secs(60),
+                Duration::from_secs(2),
+            )));
+            let source_adapter =
+                BrokerRealtimeFabricAdapter::with_app_verifier(Arc::clone(&source_broker), |_| {
+                    true
+                });
+            let target_adapter =
+                BrokerRealtimeFabricAdapter::with_app_verifier(Arc::clone(&target_broker), |_| {
+                    true
+                });
+            let id = source_broker
                 .lock()
                 .unwrap()
-                .session(fabric_id.into_broker_id())
-                .is_none()
-        );
+                .register(
+                    &app.registration,
+                    source.clone(),
+                    FakeCallingApp::intent(FakeCallingApp::audio()),
+                    now,
+                )
+                .unwrap();
+            source_broker
+                .lock()
+                .unwrap()
+                .propose_target(&app.registration, id, &source, target.clone(), now)
+                .unwrap();
+            source_adapter.offer_to(id, &target, 20_000).unwrap();
+            let offer = source_adapter.drain_egress().pop().unwrap();
+            let RealtimeFabricSignal::Offer(projection) = offer.signal else {
+                panic!("expected offer");
+            };
+            let fabric_id = projection.session_id;
+            assert!(target_adapter.receive_authenticated(
+                &source,
+                &target,
+                RealtimeFabricSignal::Offer(projection),
+                now,
+                10_000,
+            ));
+            target_adapter
+                .accept_imported(fabric_id, &source, &target, now)
+                .unwrap();
+            assert_eq!(target_adapter.state.lock().unwrap().authorizations.len(), 1);
+
+            target_adapter.tick(now + Duration::from_secs(3));
+            let broker = {
+                let state = target_adapter.state.lock().unwrap();
+                assert!(state.authorizations.is_empty());
+                Arc::clone(&state.broker)
+            };
+            assert!(
+                broker
+                    .lock()
+                    .unwrap()
+                    .session(fabric_id.into_broker_id())
+                    .is_none()
+            );
+        }
     }
 }

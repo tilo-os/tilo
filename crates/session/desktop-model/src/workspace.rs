@@ -25,9 +25,6 @@ pub struct Workspace {
     pub id: WorkspaceId,
     /// Durable identity of this workspace as a collaboration room — the
     /// value two hosts must agree on, unlike the local-only [`Self::id`].
-    /// `#[serde(default)]` yields [`RoomId::nil`] for pre-room state
-    /// files until `adopt_roomless_workspaces` mints a real one at boot.
-    #[serde(default)]
     pub room: RoomId,
     pub name: String,
     pub strips: Vec<Strip>,
@@ -40,8 +37,7 @@ pub struct Workspace {
     #[serde(skip_deserializing)]
     pub collaborators: Vec<Collaborator>,
     /// Who owns this room — the one principal whose authority is not
-    /// itself a capability. `None` means a pre-ownership state file,
-    /// adopted by the local user on first load.
+    /// itself a capability. `None` until the local user adopts it on load.
     #[serde(default)]
     pub owner: Option<UserId>,
     /// One exact, owner-signed offer awaiting the named recipient's consent.
@@ -87,6 +83,11 @@ pub struct Workspace {
     /// reaches.
     #[serde(default)]
     pub shortcuts: Vec<tilo_automation::Shortcut>,
+    /// Which of the saver's devices took the latest fire time of each
+    /// scheduled shortcut, so a schedule runs once across them. Projected
+    /// beside the shortcuts, one map key per schedule.
+    #[serde(default)]
+    pub schedule_claims: Vec<tilo_automation::ScheduleClaim>,
     /// Surfaces from this workspace being streamed to peers. Keys are
     /// wayland `wl_surface` ids; values are the target Iroh peers
     /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
@@ -114,10 +115,15 @@ pub enum PermissionProfileMutationError {
 pub const WORKSPACE_GOVERNANCE_APP_ID: &str = "tilo.workspace";
 pub const PROFILE_SAVE_ACTION_ID: &str = "profile.save";
 pub const PROFILE_ASSIGN_ACTION_ID: &str = "profile.assign";
+/// Governance action letting one application use another's action.
+pub const APP_ACTION_GRANT_ACTION_ID: &str = "app-action.grant";
+/// Governance action taking such a grant back.
+pub const APP_ACTION_REVOKE_ACTION_ID: &str = "app-action.revoke";
 
-/// What a role is called on screen. One mapping shared by every surface
-/// that shows a role, so it can't be spelled two different ways.
-pub fn role_label(role: CapRole) -> &'static str {
+/// A role's stable name, as a collaborator row records it
+/// ([`crate::Collaborator::role_id`]). Surfaces translate it for display
+/// through [`role_from_id`]; it is never shown as is.
+pub fn role_id(role: CapRole) -> &'static str {
     match role {
         CapRole::Owner => "owner",
         CapRole::Editor => "editor",
@@ -127,6 +133,20 @@ pub fn role_label(role: CapRole) -> &'static str {
         // directory, and a row that said nothing would read as ordinary.
         CapRole::Denied => "blocked",
     }
+}
+
+/// The role a [`role_id`] names, or `None` for a name this model does not
+/// define.
+pub fn role_from_id(id: &str) -> Option<CapRole> {
+    [
+        CapRole::Owner,
+        CapRole::Editor,
+        CapRole::Commenter,
+        CapRole::Viewer,
+        CapRole::Denied,
+    ]
+    .into_iter()
+    .find(|role| role_id(*role) == id)
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -603,8 +623,11 @@ impl Workspace {
         if self.owner.as_deref() == Some(user.as_str()) {
             return Some(CapRole::Owner);
         }
+        // A person with a signing key is named by its lowercase hex, so a
+        // `Person` principal and the matching `User` key are the same member.
         let subject_is_user = |c: &CapOverride| match &c.subject {
             Subject::Principal(Principal::Person(p)) => p == user,
+            Subject::User(key) => hex::encode(key.as_bytes()) == *user,
             _ => false,
         };
         let live_at = Some(now);
@@ -791,6 +814,7 @@ impl Workspace {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             shortcuts: Vec::new(),
+            schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         }
     }
@@ -832,8 +856,7 @@ impl Workspace {
 
 impl Default for Workspace {
     /// Room is minted, not left at [`RoomId::nil`] — two workspaces
-    /// built this way must not silently become the same room. Nil is
-    /// reachable only via deserializing a pre-rooms state file.
+    /// built this way must not silently become the same room.
     fn default() -> Self {
         Self {
             id: WorkspaceId::default(),
@@ -851,6 +874,7 @@ impl Default for Workspace {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             shortcuts: Vec::new(),
+            schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         }
     }

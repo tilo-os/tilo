@@ -277,6 +277,230 @@ pub enum Envelope {
         /// Human-readable reason (for tracing / logging).
         reason: String,
     },
+
+    /// A [`Envelope::Delta`] whose author wants to know when the host has
+    /// made it durable. The host admits it exactly like a `Delta`, fans it
+    /// out to other subscribers as a plain `Delta`, and answers the author
+    /// with [`Envelope::Committed`] once it is persisted, or
+    /// [`Envelope::CommitRefused`]. Only the author sees either answer, so
+    /// peers that predate these variants never receive them.
+    Commit {
+        /// Workspace id.
+        workspace_id: u64,
+        /// Author-chosen id echoed in the answer. Resending the same commit
+        /// after a reconnect reuses it.
+        op: [u8; 16],
+        /// Must equal the authenticated device.
+        author_device_public_key: [u8; 32],
+        /// Authored-at nanoseconds since epoch (metadata only).
+        authored_at_ns: u64,
+        /// The same body an `Envelope::Delta` carries.
+        #[serde(with = "serde_bytes")]
+        delta: Vec<u8>,
+    },
+
+    /// The host persisted commit `op` of this connection. `seq` is the
+    /// host's order for the workspace: later commits get larger values.
+    Committed {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The commit's id.
+        op: [u8; 16],
+        /// Host order of the commit within the workspace.
+        seq: u64,
+    },
+
+    /// The host did not admit commit `op`. Nothing was persisted or fanned
+    /// out.
+    CommitRefused {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The commit's id.
+        op: [u8; 16],
+        /// Human-readable reason (for tracing / logging).
+        reason: String,
+    },
+
+    /// Join the workspace's live plane. Requires an accepted `Subscribe` on
+    /// the same connection. The host answers with one
+    /// [`Envelope::LiveMember`] per current live member, then relays their
+    /// [`Envelope::Live`] frames.
+    LiveJoin {
+        /// Workspace id.
+        workspace_id: u64,
+    },
+
+    /// Leave the workspace's live plane.
+    LiveLeave {
+        /// Workspace id.
+        workspace_id: u64,
+    },
+
+    /// One ephemeral live frame ([`crate::live::LiveFrame`] bytes). The host
+    /// validates and rate-limits it, stamps `from_device_public_key` from
+    /// the authenticated connection, forwards it to the other live members
+    /// and never stores it.
+    Live {
+        /// Workspace id.
+        workspace_id: u64,
+        /// Publishing device, stamped by the host. Whatever a sender puts
+        /// here is overwritten.
+        from_device_public_key: [u8; 32],
+        /// Canonical [`crate::live::LiveFrame`] encoding.
+        #[serde(with = "serde_bytes")]
+        frame: Vec<u8>,
+    },
+
+    /// A device joined (`active`) or left the workspace's live plane.
+    LiveMember {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The device.
+        device_public_key: [u8; 32],
+        /// Whether it is now a live member.
+        active: bool,
+    },
+
+    /// A `Subscribe` that resumes: the host replays only what this device
+    /// has not received since `position` (a [`Envelope::Position`] it
+    /// issued to this device), or everything when it cannot honour the
+    /// position, and then follows the subscriber's durable deliveries with
+    /// `Position`s. Sent only to a host that advertised resumable sessions.
+    SubscribeFrom {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The last position received for this workspace, if any.
+        position: Option<Vec<u8>>,
+    },
+
+    /// Everything the host delivered to this subscriber so far. Opaque and
+    /// host-authenticated; present it to [`Envelope::SubscribeFrom`] after
+    /// a reconnect. Only subscribers that used `SubscribeFrom` receive it.
+    Position {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The position.
+        position: Vec<u8>,
+    },
+
+    /// This device answers [`Envelope::CompactRequest`]s for
+    /// `workspace_id` while its subscription lasts. Sent only to a host
+    /// that advertised compaction.
+    CompactVolunteer {
+        /// Workspace id.
+        workspace_id: u64,
+    },
+
+    /// The host holds a long sealed tail for one route and asks this member
+    /// for a snapshot of it and a
+    /// [`crate::compaction::CoverageStatement`]. Sent only to volunteers.
+    CompactRequest {
+        /// Workspace id.
+        workspace_id: u64,
+        /// Echoed in the statement.
+        request: [u8; 16],
+        /// The route's application.
+        app_id: String,
+        /// The route's room.
+        cluster_id: String,
+        /// The route's record.
+        record: String,
+    },
+
+    /// A member's answer to [`Envelope::CompactRequest`], sent after the
+    /// snapshot's commits.
+    Compacted {
+        /// Workspace id.
+        workspace_id: u64,
+        /// Encoded [`crate::compaction::CoverageStatement`].
+        #[serde(with = "serde_bytes")]
+        statement: Vec<u8>,
+        /// The member's device signature over
+        /// [`crate::compaction::signing_bytes`] of `statement`.
+        #[serde(with = "crate::sig64")]
+        signature: [u8; 64],
+    },
+
+    /// Start, end or moderate a call of a room the host governs (see
+    /// [`crate::voice`]). Requires an accepted `Subscribe` and the room's
+    /// owner or an administrator. Answered with [`Envelope::VoiceCallResult`].
+    /// Sent only to a host that advertised voice.
+    VoiceCall {
+        /// Workspace id.
+        workspace_id: u64,
+        /// Caller-chosen id echoed in the answer.
+        request: [u8; 16],
+        /// The change.
+        operation: crate::voice::CallOperation,
+    },
+
+    /// The outcome of [`Envelope::VoiceCall`] `request`.
+    VoiceCallResult {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The request's id.
+        request: [u8; 16],
+        /// The call as governance now records it, or why the change was
+        /// refused.
+        result: Result<crate::voice::CallState, String>,
+    },
+
+    /// Join an active call, or with `participation`, repeat an earlier join
+    /// as its heartbeat. Requires an accepted `Subscribe`. Answered with
+    /// [`Envelope::VoiceGranted`] or [`Envelope::VoiceRefused`].
+    VoiceJoin {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The call.
+        call: [u8; 32],
+        /// The participation to continue; `None` joins afresh.
+        participation: Option<[u8; 32]>,
+    },
+
+    /// A participation's current grant: the answer to a join, and sent
+    /// unasked when the call's roster or this participation's directions
+    /// change.
+    VoiceGranted {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The grant.
+        grant: Box<crate::voice::VoiceGrant>,
+    },
+
+    /// The device may not be in the call (any more).
+    VoiceRefused {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The call.
+        call: [u8; 32],
+        /// Human-readable reason.
+        reason: String,
+    },
+
+    /// Leave a call.
+    VoiceLeave {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The call.
+        call: [u8; 32],
+        /// The participation that ends.
+        participation: [u8; 32],
+    },
+
+    /// Ask for the calls of a room the host governs. Requires an accepted
+    /// `Subscribe`. Answered with [`Envelope::VoiceCallList`].
+    VoiceCalls {
+        /// Workspace id.
+        workspace_id: u64,
+    },
+
+    /// A room's calls as its governance records them, with who is in each.
+    VoiceCallList {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The calls, or why the room has none to list.
+        result: Result<Vec<crate::voice::CallSummary>, String>,
+    },
 }
 
 /// Version of the [`Envelope::RemoteAction`] kind this build routes. The
@@ -289,7 +513,119 @@ mod tests {
     use super::*;
 
     #[test]
+    fn frozen_v1_envelope_bytes() {
+        // Literal ABI fixtures: changing an existing discriminant or field
+        // ordering would strand deployed readers and retained state.
+        let cases = [
+            (Envelope::Subscribe { workspace_id: 7 }, vec![0, 7]),
+            (Envelope::Unsubscribe { workspace_id: 7 }, vec![1, 7]),
+            (
+                Envelope::Presence {
+                    workspace_id: 7,
+                    payload: vec![9, 8],
+                },
+                vec![3, 7, 2, 9, 8],
+            ),
+            (
+                Envelope::Ready {
+                    workspace_id: 7,
+                    pending_deltas: 2,
+                },
+                vec![4, 7, 2],
+            ),
+            (
+                Envelope::NotAuthorised {
+                    workspace_id: 7,
+                    reason: "no".into(),
+                },
+                vec![5, 7, 2, 110, 111],
+            ),
+            (Envelope::Ping, vec![6]),
+            (Envelope::Pong, vec![7]),
+            (
+                Envelope::PeerRelayHello {
+                    hosted_workspaces: vec![7, 8],
+                },
+                vec![8, 2, 7, 8],
+            ),
+            (
+                Envelope::SyncRequest {
+                    workspace_id: 7,
+                    have_heads: vec![[9; 32]],
+                },
+                [vec![9, 7, 1], vec![9; 32]].concat(),
+            ),
+            (
+                Envelope::SyncResponse {
+                    workspace_id: 7,
+                    delta_since: vec![9, 8],
+                },
+                vec![10, 7, 2, 9, 8],
+            ),
+            (
+                Envelope::Delta {
+                    workspace_id: 7,
+                    author_device_public_key: [1; 32],
+                    authored_at_ns: 8,
+                    delta: vec![9],
+                    signature: [2; 64],
+                },
+                [vec![2, 7], vec![1; 32], vec![8, 1, 9, 64], vec![2; 64]].concat(),
+            ),
+        ];
+        // The frame codec (length prefix) lives in `tilo-relay-client`; the
+        // payload bytes it carries are these postcard encodings.
+        for (envelope, payload) in cases {
+            assert_eq!(postcard::to_stdvec(&envelope).unwrap(), payload);
+            assert_eq!(
+                postcard::from_bytes::<Envelope>(&payload).unwrap(),
+                envelope
+            );
+        }
+    }
+
+    #[test]
+    fn frozen_voice_envelope_bytes() {
+        // These exact discriminants and fields predate browser call listings.
+        let cases = [
+            (
+                Envelope::VoiceJoin {
+                    workspace_id: 7,
+                    call: [1; 32],
+                    participation: None,
+                },
+                [vec![27, 7], vec![1; 32], vec![0]].concat(),
+            ),
+            (
+                Envelope::VoiceJoin {
+                    workspace_id: 7,
+                    call: [1; 32],
+                    participation: Some([2; 32]),
+                },
+                [vec![27, 7], vec![1; 32], vec![1], vec![2; 32]].concat(),
+            ),
+            (
+                Envelope::VoiceLeave {
+                    workspace_id: 7,
+                    call: [1; 32],
+                    participation: [2; 32],
+                },
+                [vec![30, 7], vec![1; 32], vec![2; 32]].concat(),
+            ),
+        ];
+        for (envelope, payload) in cases {
+            assert_eq!(postcard::to_stdvec(&envelope).unwrap(), payload);
+            assert_eq!(
+                postcard::from_bytes::<Envelope>(&payload).unwrap(),
+                envelope
+            );
+        }
+    }
+
+    #[test]
     fn alpn_is_stable() {
         assert_eq!(ALPN, b"tilo-relay/1");
+        assert_eq!(DISCOVERY_ALPN, b"tilo-relay-discovery/2");
+        assert_eq!(MANAGEMENT_ALPN, b"tilo-home-peer-management/1");
     }
 }

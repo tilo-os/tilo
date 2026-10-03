@@ -5,6 +5,8 @@
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+. "$repo/tools/desktop-isolation.sh"
+tilo_test_isolate "$@"
 wrapper="$repo/os/usr/libexec/tilo-session"
 target="$repo/os/usr/lib/systemd/user/tilo-graphical-session.target"
 selinux_policy="$repo/os/usr/share/tilo/selinux/tilo-base.cil"
@@ -29,35 +31,14 @@ for socket in \
   grep -Fqx 'PartOf=tilo-graphical-session.target' "$socket"
   grep -Fqx 'WantedBy=tilo-graphical-session.target' "$socket"
 done
-grep -Fqx 'Before=graphical-session-pre.target' "$identity_unit"
-grep -Fqx 'WantedBy=graphical-session-pre.target' "$identity_unit"
-grep -Fqx 'ExecStart=/usr/bin/shell --provision-identity' "$identity_unit"
-grep -Fqx 'ConditionPathExists=%E/tilo/identity/primary.json' "$identity_unit"
-grep -Fqx 'ConditionPathExists=!%E/tilo/identity/.chain-v1-repaired' "$identity_unit"
-grep -Fqx 'ExecStartPost=/usr/bin/mkdir -p %E/tilo/identity' "$identity_unit"
-grep -Fqx 'ExecStartPost=/usr/bin/touch %E/tilo/identity/.chain-v1-repaired' "$identity_unit"
-grep -Fqx 'LimitCORE=0' "$identity_unit"
 grep -Fqx 'ulimit -c 0' "$wrapper"
-for policy in \
-  'ProtectSystem=strict' \
-  'ProtectHome=read-only' \
-  'ReadWritePaths=-%E/tilo/identity /var/lib/tilo/user-identity /var/lib/tilo/device' \
-  'PrivateDevices=yes' \
-  'PrivateIPC=yes' \
-  'PrivateNetwork=yes' \
-  'RestrictNamespaces=yes' \
-  'MemoryDenyWriteExecute=yes' \
-  'CapabilityBoundingSet=' \
-  'AmbientCapabilities=' \
-  'KeyringMode=private' \
-  'SystemCallFilter=@system-service' \
-  'SystemCallFilter=~@clock @debug @keyring @module @mount @obsolete @raw-io @reboot @resources @swap'; do
-  grep -Fqx "$policy" "$identity_unit"
-done
 grep -Fq 'tilo_session_unit_file_t' "$selinux_policy"
 grep -Fqx '(allow xdm_t tilo_session_unit_file_t (service (start stop status)))' "$selinux_policy"
-if grep -q '^SuccessExitStatus=' "$identity_unit"; then
-  echo 'identity migration must not turn failure into successful enrollment' >&2
+grep -Fqx '(allow xdm_t home_root_t (dir (read)))' "$selinux_policy"
+# The compositor verifies and repairs an existing identity on every start;
+# there is no separate pre-session identity unit to order anything after.
+if [ -e "$identity_unit" ] || grep -q 'tilo-identity\.service' "$recipient_unit"; then
+  echo 'a pre-session identity unit is back' >&2
   exit 1
 fi
 # Helper entry points must return before long-lived compositor services bind.
@@ -79,7 +60,7 @@ grep -Fqx 'Service=tilo-fs-recipient.service' "$recipient_socket"
 for policy in \
   'ProtectSystem=strict' \
   'ProtectHome=read-only' \
-  'ReadWritePaths=-%h/Shared -%h/.cache/tilo/received-files %t/tilo' \
+  'ReadWritePaths=%h/Shared %h/.cache/tilo %h/.cache/tilo/received-files %t/tilo' \
   'PrivateIPC=yes' \
   'ProtectKernelLogs=yes' \
   'ProtectClock=yes' \
@@ -89,6 +70,40 @@ for policy in \
   'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6'; do
   grep -Fqx "$policy" "$recipient_unit"
 done
+# The production sandbox holds everywhere, dev images included: a tilo-vm
+# slot's user manager runs these units exactly as a login does.
+for unit in tilo-fs-recipient.service tilo-fs-cloud.service tilo-models.service; do
+  prod="$repo/os/usr/lib/systemd/user/$unit"
+  for kept in \
+    'ProtectSystem=strict' \
+    'ProtectHome=read-only' \
+    'ProtectKernelTunables=yes' \
+    'ProtectKernelModules=yes' \
+    'ProtectKernelLogs=yes' \
+    'PrivateTmp=yes' \
+    'ProtectControlGroups=yes' \
+    'ProtectClock=yes' \
+    'ProtectHostname=yes'; do
+    grep -Fqx "$kept" "$prod" || {
+      echo "$unit lost production sandbox directive $kept" >&2
+      exit 1
+    }
+  done
+  if grep -Eq '^PrivateIPC=' "$prod"; then
+    grep -Fqx 'PrivateIPC=yes' "$prod" || {
+      echo "$unit production PrivateIPC is no longer yes" >&2
+      exit 1
+    }
+  fi
+  if ! grep -Eq '^ReadWritePaths=.+' "$prod"; then
+    echo "$unit lost production ReadWritePaths" >&2
+    exit 1
+  fi
+done
+if [ -e "$repo/os/dev-image/usr/lib/systemd/user" ]; then
+  echo 'the dev image ships user-unit drop-ins that change the production sandbox' >&2
+  exit 1
+fi
 grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm' \
   "$repo/os/usr/share/wayland-sessions/shell.desktop"
 grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm --enable-peer-sync' \
@@ -102,7 +117,7 @@ wpe_deps_line=$(grep -n '&& gst-inspect-1.0 aacparse >/dev/null' "$repo/os/Conta
 shell_link_check_line=$(grep -n 'missing="$(ldd /usr/bin/shell' "$repo/os/Containerfile" | tail -1 | cut -d: -f1)
 test "$wpe_copy_line" -lt "$wpe_deps_line"
 test "$wpe_deps_line" -lt "$shell_link_check_line"
-grep -Fq "pgrep -f '^/usr/bin/shell --backend drm( |$)'" "$release_workflow"
+grep -Fq 'busctl --user status org.freedesktop.impl.portal.desktop.tilo' "$release_workflow"
 # First-use actions are now driven through the installed AT-SPI endpoint;
 # keeping stale blind-keyboard assertions here made the FUSE lane reject the
 # stronger accessibility release gate before any filesystem test could run.
@@ -154,6 +169,7 @@ if [ "${1:-}" = --provision-identity ]; then
   exit "${TILO_SESSION_PROVISION_STATUS:-0}"
 fi
 printf 'desktop %s\n' "$*" >>"$TILO_SESSION_TEST_LOG"
+printf 'desktop-output %s trace=%s\n' "$*" "${TILO_FRAME_TRACE:-}"
 if [ "${TILO_SESSION_WRITE_LOGOUT:-0}" = 1 ]; then
   case "${TILO_SESSION_LOGOUT_REQUEST:-}" in
     /*) ;;
@@ -169,28 +185,58 @@ if [ "${TILO_SESSION_HOLD:-0}" = 1 ]; then
   trap 'printf "desktop-term\n" >>"$TILO_SESSION_TEST_LOG"; exit 0' TERM HUP INT
   while :; do sleep 1; done
 fi
+if [ "${TILO_SESSION_HOLD_PIPE:-0}" = 1 ]; then
+  sleep 30 &
+  printf '%s\n' "$!" >"$TILO_SESSION_TEST_LOG.holder"
+  exit 9
+fi
 exit "${TILO_SESSION_DESKTOP_STATUS:-0}"
 SH
 chmod 0755 "$fake_systemctl" "$fake_dbus_update" "$fake_shell"
-sed \
-  -e "s|readonly SYSTEMCTL=/usr/bin/systemctl|readonly SYSTEMCTL=$fake_systemctl|" \
-  -e "s|readonly DBUS_UPDATE=/usr/bin/dbus-update-activation-environment|readonly DBUS_UPDATE=$fake_dbus_update|" \
-  -e "s|readonly SHELL_BIN=/usr/bin/shell|readonly SHELL_BIN=$fake_shell|" \
-  "$wrapper" >"$test_wrapper"
-chmod 0755 "$test_wrapper"
+tilo_stage_script "$wrapper" "$test_wrapper" \
+  SYSTEMCTL="$fake_systemctl" \
+  DBUS_UPDATE="$fake_dbus_update" \
+  SHELL_BIN="$fake_shell" \
+  FLIGHT_RECORDER="$repo/dist/session/tilo-flight-recorder.py"
 grep -Fqx "readonly SYSTEMCTL=$fake_systemctl" "$test_wrapper"
 grep -Fqx "readonly SHELL_BIN=$fake_shell" "$test_wrapper"
-! grep -Fq '/usr/bin/systemctl' "$test_wrapper"
-! grep -Fq '/usr/bin/shell' "$test_wrapper"
 
 # Successful verification starts the desktop, preserves its exit status, and
 # tears down the Tilo target afterward.
+export XDG_STATE_HOME="$tmp/state"
+flight_dir="$XDG_STATE_HOME/tilo/session-logs"
 set +e
 XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" TILO_SESSION_DESKTOP_STATUS=7 \
-  "$test_wrapper" --backend drm
+  "$test_wrapper" --backend drm >"$tmp/stdout"
 status=$?
 set -e
 [ "$status" = 7 ]
+# The compositor's output still reaches the journal (the wrapper's stdout),
+# and the flight record keeps it with a start and an end record.
+grep -Fqx "desktop-output --backend drm trace=$flight_dir/frame-trace.csv" "$tmp/stdout"
+head -n 1 "$flight_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 start=.* pid=[0-9]+ shell='
+grep -Fqx "desktop-output --backend drm trace=$flight_dir/frame-trace.csv" "$flight_dir/latest.log"
+tail -n 1 "$flight_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 end=.* status=7 logout_request=no$'
+[ "$(stat -c %a "$flight_dir")" = 700 ]
+[ "$(stat -c %a "$flight_dir/latest.log")" = 600 ]
+[ "$(stat -c %a "$flight_dir/frame-trace.csv")" = 600 ]
+[ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
+# A process that inherited the compositor's output must not keep the wrapper,
+# and so the session unit, alive after the compositor exits. Its own state
+# directory keeps this from rotating the record the checks below read.
+held_log="$tmp/held-log"
+set +e
+XDG_STATE_HOME="$tmp/held-state" XDG_RUNTIME_DIR="$runtime_dir" \
+  TILO_SESSION_TEST_LOG="$held_log" TILO_SESSION_HOLD_PIPE=1 \
+  timeout 20 "$test_wrapper" --backend headless >/dev/null
+held_status=$?
+set -e
+if [ -s "$held_log.holder" ]; then
+  kill "$(cat "$held_log.holder")" 2>/dev/null || true
+fi
+[ "$held_status" = 9 ]
+tail -n 1 "$tmp/held-state/tilo/session-logs/latest.log" \
+  | grep -Eq '^tilo-flight-record-v1 end=.* status=9 logout_request=no$'
 cat >"$tmp/expected" <<'EOF'
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_SESSION_DESKTOP
 dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
@@ -198,7 +244,7 @@ systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 systemctl --user start tilo-graphical-session.target
 desktop --backend drm
 systemctl --user stop tilo-graphical-session.target
-dbus-update --systemd XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE=
+dbus-update --systemd WAYLAND_DISPLAY= DISPLAY= XAUTHORITY= XDG_CURRENT_DESKTOP= XDG_SESSION_DESKTOP= XDG_SESSION_TYPE=
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
 EOF
 cmp "$tmp/expected" "$log"
@@ -216,10 +262,21 @@ systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 systemctl --user start tilo-graphical-session.target
 desktop --backend drm
 systemctl --user stop tilo-graphical-session.target
-dbus-update --systemd XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE=
+dbus-update --systemd WAYLAND_DISPLAY= DISPLAY= XAUTHORITY= XDG_CURRENT_DESKTOP= XDG_SESSION_DESKTOP= XDG_SESSION_TYPE=
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
 EOF
 cmp "$tmp/expected" "$log"
+# The next login keeps the previous record, which tilo-session-report reads.
+grep -Fq 'status=7' "$flight_dir/previous.log"
+tail -n 1 "$flight_dir/latest.log" | grep -Eq 'status=0 logout_request=yes$'
+python3 "$repo/dist/session/tilo-session-report.py" --root "$flight_dir" --previous >"$tmp/report"
+python3 - "$tmp/report" <<'PY'
+import json, sys
+report = json.load(open(sys.argv[1]))
+assert report["schema"] == "tilo-session-report-v1", report
+assert report["flight"]["available"] is True, report
+assert report["frames"]["available"] is True, report
+PY
 request_path=$(cat "$log.request-path")
 case "$request_path" in
   /*) ;;
@@ -244,7 +301,7 @@ systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 systemctl --user start tilo-graphical-session.target
 desktop --backend drm
 systemctl --user stop tilo-graphical-session.target
-dbus-update --systemd XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE=
+dbus-update --systemd WAYLAND_DISPLAY= DISPLAY= XAUTHORITY= XDG_CURRENT_DESKTOP= XDG_SESSION_DESKTOP= XDG_SESSION_TYPE=
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
 EOF
 cmp "$tmp/expected" "$log"

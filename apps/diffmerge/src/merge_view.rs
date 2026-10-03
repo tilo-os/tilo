@@ -8,8 +8,9 @@
 //! re-composes the merged buffer and writes it into the CRDT.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::AutoCommit;
 use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
@@ -23,10 +24,10 @@ use ui::theme::Theme;
 use ui::widget::{CodeEditor, Language, Widget};
 
 use crate::actions::{self, DiffmergeAction, HunkChoice, MergeResourceCtx};
-use crate::doc::MergeDoc;
+use crate::doc::{MergeDoc, SharedMerge};
 use crate::highlight;
 use crate::model::{MergeHunk, MergeModel, Resolution};
-use ui::paint::with_alpha;
+use ui::paint::{PaintCtx, with_alpha};
 use ui::widget::code_editor::Span;
 
 /// Minimum code-line pitch; the measured line height of `FONT_SIZE` wins
@@ -180,6 +181,8 @@ struct ActionHit {
 /// The three-way merge panel.
 pub struct MergeView {
     model: MergeModel,
+    /// Last three-way inputs loaded locally (projected into the document).
+    shared: Option<SharedMerge>,
     base_label: String,
     ours_label: String,
     theirs_label: String,
@@ -203,6 +206,10 @@ pub struct MergeView {
     /// merged buffer (a projection of the external inputs, not a replayable
     /// action) and clears any stale per-hunk resolutions.
     pending_seed: bool,
+    /// When the framework hosts this view, seed writes are queued here instead
+    /// of being written into the document directly.
+    hosted: bool,
+    seed_request: Option<String>,
     expected_content: Option<crate::doc::AuthoredSnapshot>,
     merged_output: String,
     /// A conflict resolution the user just triggered via a chip, waiting to be
@@ -226,6 +233,7 @@ impl MergeView {
     pub fn new() -> Self {
         Self {
             model: MergeModel::default(),
+            shared: None,
             base_label: String::new(),
             ours_label: String::new(),
             theirs_label: String::new(),
@@ -240,6 +248,8 @@ impl MergeView {
             cursor: Point::ZERO,
             dirty: true,
             pending_seed: false,
+            hosted: false,
+            seed_request: None,
             expected_content: None,
             merged_output: String::new(),
             pending_action: None,
@@ -255,6 +265,23 @@ impl MergeView {
             .as_ref()
             .is_some_and(|expected| *expected == crate::doc::authored_snapshot(doc))
     }
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
+        self.hosted = hosted;
+    }
+
+    /// The provisional buffer a hosted view wants written as [`DiffmergeAction::SeedMerge`].
+    pub(crate) fn take_seed_request(&mut self) -> Option<String> {
+        self.seed_request.take()
+    }
+
+    /// Show the merged buffer the framework resource already holds.
+    pub(crate) fn adopt_merged(&mut self, merged: &str) {
+        if self.merged_output != merged {
+            self.merged_output = merged.to_string();
+        }
+    }
+
     pub(crate) fn acknowledge_content(&mut self, doc: &AutoCommit) {
         self.expected_content = Some(crate::doc::authored_snapshot(doc));
         self.merged_output = MergeDoc::merged_text(doc);
@@ -262,19 +289,74 @@ impl MergeView {
     /// Historical/remote content cannot identify the unsaved original input hunks.
     pub(crate) fn reconcile_content(&mut self, doc: &AutoCommit) {
         if !self.pending_seed && !self.context_matches(doc) {
-            self.model = MergeModel::default();
-            self.base_label.clear();
-            self.ours_label.clear();
-            self.theirs_label.clear();
-            self.source_spans.clear();
-            self.pending_action = None;
-            self.action_hits.clear();
-            self.hunk_spans.clear();
-            self.active_hunk = None;
-            self.expected_content = None;
-            self.dirty = true;
+            let adoptable = SharedMerge::read(doc).filter(|shared| {
+                let mut model = shared.into_model();
+                crate::doc::apply_resolutions(&mut model, doc);
+                model.merged_text() == MergeDoc::merged_text(doc)
+            });
+            if let Some(shared) = adoptable {
+                self.adopt_shared(&shared, doc);
+            } else {
+                // Missing shared projection, or a restored merged buffer that no
+                // longer matches the three-way compose — drop actionable hunks
+                // so a queued ResolveHunk cannot overwrite the restored output.
+                self.model = MergeModel::default();
+                self.shared = None;
+                self.base_label.clear();
+                self.ours_label.clear();
+                self.theirs_label.clear();
+                self.source_spans.clear();
+                self.pending_action = None;
+                self.action_hits.clear();
+                self.hunk_spans.clear();
+                self.active_hunk = None;
+                self.expected_content = None;
+                self.dirty = true;
+            }
         }
         self.merged_output = MergeDoc::merged_text(doc);
+    }
+
+    /// Adopt a shared three-way projection from the document (or present).
+    pub(crate) fn adopt_shared_model(&mut self, title: &str, model: &MergeModel) {
+        let _ = title;
+        if self.model.hunks.is_empty() && !model.hunks.is_empty() {
+            self.model = model.clone();
+            self.source_spans = HunkSpans::for_model(
+                &self.model,
+                [&self.base_label, &self.ours_label, &self.theirs_label],
+            );
+            self.recompute_spans();
+            self.active_hunk = self
+                .first_conflict()
+                .or_else(|| self.model.change_indices().first().copied());
+            self.dirty = true;
+        }
+    }
+
+    fn adopt_shared(&mut self, shared: &SharedMerge, doc: &AutoCommit) {
+        self.base_label.clone_from(&shared.base_label);
+        self.ours_label.clone_from(&shared.ours_label);
+        self.theirs_label.clone_from(&shared.theirs_label);
+        self.shared = Some(shared.clone());
+        self.model = shared.into_model();
+        crate::doc::apply_resolutions(&mut self.model, doc);
+        self.source_spans = HunkSpans::for_model(
+            &self.model,
+            [&self.base_label, &self.ours_label, &self.theirs_label],
+        );
+        self.recompute_spans();
+        self.active_hunk = self
+            .first_conflict()
+            .or_else(|| self.model.change_indices().first().copied());
+        self.expected_content = Some(crate::doc::authored_snapshot(doc));
+        self.pending_action = None;
+        self.action_hits.clear();
+        self.dirty = true;
+    }
+
+    pub(crate) fn shared_merge(&self) -> Option<&SharedMerge> {
+        self.shared.as_ref()
     }
 
     /// Place the panel at `rect` directly (the parent app owns the toolbar
@@ -313,6 +395,14 @@ impl MergeView {
         theirs_label: &str,
         theirs: &str,
     ) {
+        self.shared = Some(SharedMerge {
+            base: base.to_string(),
+            ours: ours.to_string(),
+            theirs: theirs.to_string(),
+            base_label: base_label.to_string(),
+            ours_label: ours_label.to_string(),
+            theirs_label: theirs_label.to_string(),
+        });
         self.model = MergeModel::compute(base, ours, theirs);
         self.base_label = base_label.to_string();
         self.ours_label = ours_label.to_string();
@@ -649,22 +739,15 @@ impl MergeView {
     /// chips. Populates `self.action_hits` for the next click hit-test.
     /// Hunk tint per side plus the active-hunk highlight ring (part of
     /// [`Self::draw_hunks`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
-    )]
     fn draw_hunk_tint(
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        r: Rect,
-        col_w: f64,
+        ctx: &mut PaintCtx<'_>,
+        block: Rect,
         compact_source: Option<SourcePane>,
-        y: f64,
-        block_h: f64,
         h: &MergeHunk,
         is_active: bool,
     ) {
+        let col_w = block.width() / 3.0;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         // Hunk tint per side.
         let (ours_tint, theirs_tint) = match h.resolution {
@@ -692,61 +775,87 @@ impl MergeView {
                 SourcePane::Theirs => theirs_tint,
             };
             if let Some(t) = tint {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    t,
-                    None,
-                    &Rect::new(r.x0, y, r.x1, y + block_h),
-                );
+                ctx.fill_rect(block, t);
             }
         } else {
             if let Some(t) = ours_tint {
-                let rect = Rect::new(r.x0 + col_w, y, r.x0 + 2.0 * col_w, y + block_h);
-                scene.fill(Fill::NonZero, transform, t, None, &rect);
+                let rect = Rect::new(block.x0 + col_w, block.y0, block.x0 + 2.0 * col_w, block.y1);
+                ctx.fill_rect(rect, t);
             }
             if let Some(t) = theirs_tint {
-                let rect = Rect::new(r.x0 + 2.0 * col_w, y, r.x1, y + block_h);
-                scene.fill(Fill::NonZero, transform, t, None, &rect);
+                let rect = Rect::new(block.x0 + 2.0 * col_w, block.y0, block.x1, block.y1);
+                ctx.fill_rect(rect, t);
             }
         }
 
         // Active hunk highlight ring.
         if is_active && h.is_change {
-            let ring = RoundedRect::new(r.x0 + 1.0, y - 1.0, r.x1 - 1.0, y + block_h + 1.0, 3.0);
-            scene.stroke(&Stroke::new(1.5), transform, c.accent[5], None, &ring);
+            let ring = Rect::new(
+                block.x0 + 1.0,
+                block.y0 - 1.0,
+                block.x1 - 1.0,
+                block.y1 + 1.0,
+            );
+            ctx.stroke_round(ring, 3.0, c.accent[5], 1.5);
         }
     }
 
-    /// The resolution status label + take-ours/theirs/both chips for a
-    /// change hunk (part of [`Self::draw_hunks`]). `action_hits` is passed
-    /// explicitly (rather than through `&mut self`) so the caller can keep
-    /// its own `&self.model.hunks` borrow alive across the call.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
-    )]
-    #[expect(
-        clippy::many_single_char_names,
-        reason = "c/m/y/r/h follow this file's graphics convention (colour tokens, metrics, position, rect, hunk)"
-    )]
-    fn draw_hunk_action_chips(
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        r: Rect,
-        col_w: f64,
-        y: f64,
-        block_h: f64,
-        hi: usize,
+    /// The resolution status label + take-ours/theirs/both chips painted
+    /// under hunk `hi`'s `block` (part of [`Self::draw_hunks`]). Returns the
+    /// chips' hit targets.
+    /// Hunk `h`'s resolution status label, under `block` on the left. On a
+    /// phone, keep this semantically distinct from the source switcher and the
+    /// mutation chips: it says whether the hunk still needs a resolution, while
+    /// every chip says what it will do. Returns the label's right edge.
+    fn draw_hunk_status(
+        ctx: &mut PaintCtx<'_>,
+        block: Rect,
         h: &MergeHunk,
-        action_hits: &mut Vec<ActionHit>,
         compact: bool,
         m: Metrics,
-    ) {
+    ) -> f64 {
+        let ay = block.y1 + 2.0;
+        let status = resolution_label(h.resolution);
+        let status_label = if compact {
+            compact_status_label(h.resolution)
+        } else {
+            status.0
+        };
+        let status_x = if compact {
+            block.x0 + PAD_X
+        } else {
+            block.x0 + block.width() / 3.0 + PAD_X
+        };
+        let (status_w, status_h) = ctx.text.measure(status_label, CHIP_FONT_SIZE, None);
+        ctx.text.draw_text(
+            ctx.scene,
+            status_label,
+            CHIP_FONT_SIZE,
+            status.1.color(&ctx.theme.tokens.colors),
+            ctx.transform
+                * Affine::translate((status_x, ay + (m.chip_h - f64::from(status_h)) / 2.0)),
+            None,
+        );
+        status_x + f64::from(status_w)
+    }
+
+    fn draw_hunk_action_chips(
+        ctx: &mut PaintCtx<'_>,
+        block: Rect,
+        (hi, h): (usize, &MergeHunk),
+        compact: bool,
+        m: Metrics,
+    ) -> Vec<ActionHit> {
+        let PaintCtx {
+            scene,
+            transform,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
+        let (r, col_w) = (block, block.width() / 3.0);
+        let mut action_hits = Vec::with_capacity(3);
         let c = &theme.tokens.colors;
-        let ay = y + block_h + 2.0;
+        let ay = block.y1 + 2.0;
         // Chip hues track the theme so a palette / high-contrast swap
         // keeps the resolution controls coherent: ours = success (green),
         // theirs = info (blue), both = the neutral dim tone — mirroring
@@ -763,28 +872,12 @@ impl MergeView {
             (CHIP_PAD_X, f64::from(sp.s2))
         };
 
-        // Status label on the left. On a phone, keep this semantically distinct
-        // from the source switcher and the mutation chips: it says whether the
-        // hunk still needs a resolution, while every chip says what it will do.
-        let status = resolution_label(h.resolution);
-        let status_label = if compact {
-            compact_status_label(h.resolution)
-        } else {
-            status.0
-        };
-        let status_x = if compact {
-            r.x0 + PAD_X
-        } else {
-            r.x0 + col_w + PAD_X
-        };
-        let (status_w, status_h) = tr.measure(status_label, CHIP_FONT_SIZE, None);
-        tr.draw_text(
-            scene,
-            status_label,
-            CHIP_FONT_SIZE,
-            status.1.color(c),
-            transform * Affine::translate((status_x, ay + (m.chip_h - f64::from(status_h)) / 2.0)),
-            None,
+        let status_x1 = Self::draw_hunk_status(
+            &mut PaintCtx::new(scene, transform, tr, theme),
+            block,
+            h,
+            compact,
+            m,
         );
 
         // Chips live in the theirs column (wide) or after the status label
@@ -792,7 +885,7 @@ impl MergeView {
         // in; when the explicit verb form cannot fit the pane the short form is
         // used, so no chip ever paints past the pane edge.
         let chips_x0 = if compact {
-            (r.x0 + COMPACT_CHIPS_X).max(status_x + f64::from(status_w) + PAD_X)
+            (r.x0 + COMPACT_CHIPS_X).max(status_x1 + PAD_X)
         } else {
             r.x0 + 2.0 * col_w + PAD_X
         };
@@ -859,6 +952,7 @@ impl MergeView {
             });
             cx += w + gap;
         }
+        action_hits
     }
 
     fn draw_hunks(
@@ -875,6 +969,7 @@ impl MergeView {
         let band_top = r.y0 + m.header_h;
         let band_bot = band_top + self.source_band_height();
 
+        let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         for (hi, h) in self.model.hunks.iter().enumerate() {
             // `hunk_spans` is rebuilt one-for-one with `model.hunks` in
             // `recompute_spans`; skip drawing rather than panic if that ever
@@ -891,15 +986,11 @@ impl MergeView {
                 continue;
             }
 
+            let block = Rect::new(r.x0, y, r.x1, y + block_h);
             Self::draw_hunk_tint(
-                scene,
-                transform,
-                theme,
-                r,
-                col_w,
+                &mut ctx,
+                block,
                 compact_source,
-                y,
-                block_h,
                 h,
                 Some(hi) == self.active_hunk,
             );
@@ -915,33 +1006,20 @@ impl MergeView {
             );
             match compact_source {
                 Some(SourcePane::Base) => {
-                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, base, m);
+                    draw_lines(&mut ctx, Point::new(r.x0 + PAD_X, y), base, m);
                 }
                 Some(SourcePane::Ours) => {
-                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, ours, m);
+                    draw_lines(&mut ctx, Point::new(r.x0 + PAD_X, y), ours, m);
                 }
                 Some(SourcePane::Theirs) => {
-                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, theirs, m);
+                    draw_lines(&mut ctx, Point::new(r.x0 + PAD_X, y), theirs, m);
                 }
                 None => {
-                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, base, m);
+                    draw_lines(&mut ctx, Point::new(r.x0 + PAD_X, y), base, m);
+                    draw_lines(&mut ctx, Point::new(r.x0 + col_w + PAD_X, y), ours, m);
                     draw_lines(
-                        scene,
-                        transform,
-                        tr,
-                        theme,
-                        r.x0 + col_w + PAD_X,
-                        y,
-                        ours,
-                        m,
-                    );
-                    draw_lines(
-                        scene,
-                        transform,
-                        tr,
-                        theme,
-                        r.x0 + 2.0 * col_w + PAD_X,
-                        y,
+                        &mut ctx,
+                        Point::new(r.x0 + 2.0 * col_w + PAD_X, y),
                         theirs,
                         m,
                     );
@@ -950,21 +1028,14 @@ impl MergeView {
 
             // Action chips for change hunks.
             if h.is_change {
-                Self::draw_hunk_action_chips(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    r,
-                    col_w,
-                    y,
-                    block_h,
-                    hi,
-                    h,
-                    &mut self.action_hits,
+                let hits = Self::draw_hunk_action_chips(
+                    &mut ctx,
+                    block,
+                    (hi, h),
                     compact_source.is_some(),
                     m,
                 );
+                self.action_hits.extend(hits);
             }
         }
     }
@@ -1034,11 +1105,22 @@ impl MergeView {
 }
 
 impl Widget for MergeView {
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
-        if self.pending_seed {
-            // Fresh inputs: seed the provisional merged output (a projection of
-            // the external inputs, not a replayable action) and drop any stale
-            // per-hunk resolutions whose indices no longer correspond.
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
+        if self.hosted {
+            if self.pending_seed {
+                self.seed_request = Some(self.model.merged_text());
+                self.pending_seed = false;
+            } else {
+                self.reconcile_content(state);
+                if !MergeDoc::has_merged(state) {
+                    self.seed_request = Some(self.model.merged_text());
+                }
+            }
+        } else if self.pending_seed {
+            // Fresh inputs: seed the provisional merged output and drop any
+            // stale per-hunk resolutions whose indices no longer correspond.
+            // The hosted path queues this as `SeedMerge` instead.
             MergeDoc::clear_resolutions(state);
             MergeDoc::set_merged(state, &self.model.merged_text());
             self.pending_seed = false;
@@ -1046,8 +1128,7 @@ impl Widget for MergeView {
         } else {
             self.reconcile_content(state);
         }
-        // Seed once for a late joiner that has no buffer yet.
-        if !MergeDoc::has_merged(state) {
+        if !self.hosted && !MergeDoc::has_merged(state) {
             MergeDoc::set_merged(state, &self.model.merged_text());
         }
         let merged = MergeDoc::merged_text_obj(state);
@@ -1169,37 +1250,17 @@ impl Widget for MergeView {
         self.dirty = false;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        m: &winit::event::Modifiers,
-        s: &mut AutoCommit,
-        p: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.merged_editor.is_focused() || self.merged_editor.rect().contains(self.cursor) {
-            self.merged_editor.handle_event(
-                event,
-                scale_factor,
-                m,
-                s,
-                p,
-                handled,
-                focus,
-                node,
-                taffy,
-            );
-            if *handled {
+            self.merged_editor.handle_event(event, ctx);
+            if *ctx.handled {
                 return;
             }
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 // Only scroll the source band when the cursor is above the
@@ -1209,7 +1270,7 @@ impl Widget for MergeView {
                     MouseScrollDelta::PixelDelta(pp) => -pp.y,
                 };
                 self.scroll_by(dy);
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1223,7 +1284,7 @@ impl Widget for MergeView {
                     .map(|hit| hit.source)
                 {
                     self.select_source(source);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 let hit = self
@@ -1233,7 +1294,7 @@ impl Widget for MergeView {
                     .copied();
                 if let Some(a) = hit {
                     self.resolve(a.hunk, a.choice);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -1255,7 +1316,7 @@ impl Widget for MergeView {
                 };
                 if let Some(source) = source {
                     self.select_source(source);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -1367,8 +1428,8 @@ impl Widget for MergeView {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         use ui::a11y::hash_key;
         if !self.is_compact()
@@ -1537,27 +1598,17 @@ impl HunkSpans {
     }
 }
 
-/// Draw a list of code lines starting at `(x0, y)`, highlighted, one per
+/// Draw a list of code lines starting at `origin`, highlighted, one per
 /// measured row pitch. `source` pairs the lines with their syntax spans.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "code-line painting combines paint context, column origin, source lines and measured row pitch"
-)]
 fn draw_lines(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    x0: f64,
-    y0: f64,
+    ctx: &mut PaintCtx<'_>,
+    origin: Point,
     (lines, spans): (&Vec<String>, &[Vec<Span>]),
     m: Metrics,
 ) {
     for (i, line) in lines.iter().enumerate() {
-        let y = y0 + i as f64 * m.row_h + m.text_dy;
+        let y = origin.y + i as f64 * m.row_h + m.text_dy;
         let line_spans = spans.get(i).map_or(&[][..], Vec::as_slice);
-        highlight::draw_line(
-            scene, transform, tr, theme, x0, y, line, line_spans, FONT_SIZE,
-        );
+        highlight::draw_line(ctx, Point::new(origin.x, y), line, line_spans, FONT_SIZE);
     }
 }

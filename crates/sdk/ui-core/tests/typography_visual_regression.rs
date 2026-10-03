@@ -5,7 +5,7 @@
 //! The baselines are Mesa llvmpipe renders; other adapters rasterise
 //! antialiasing differently, so the comparison refuses to run on them.
 //! Regenerate intentional changes with the "Render visual baseline
-//! candidates" workflow (`refresh-visual-baselines.yml`), which pins the
+//! candidates" workflow (`dev-visual-baselines.yml`), which pins the
 //! builder image and llvmpipe, and review its candidates before committing.
 //! Locally, inside that image:
 //! `UPDATE_TYPOGRAPHY_BASELINES=1 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
@@ -39,7 +39,7 @@ use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::Widget;
 
-#[path = "../examples/common/gallery_scene.rs"]
+#[path = "../../../dev/ui-examples/examples/common/gallery_scene.rs"]
 mod gallery_scene;
 
 const LOGICAL_WIDTH: u32 = 1160;

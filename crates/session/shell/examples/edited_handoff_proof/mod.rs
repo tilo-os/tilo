@@ -185,8 +185,9 @@ fn succeeded(value: &serde_json::Value) -> Result<tilo_actions::ActionOutput> {
 }
 
 #[allow(
+    clippy::significant_drop_tightening,
     clippy::too_many_lines,
-    reason = "a scripted proof run whose steps depend on each other in order"
+    reason = "a scripted proof run whose steps depend on each other in order; the shell fixture owns long-lived permits by design and lives for the whole run"
 )]
 pub(super) fn run(root: &Path, photos: PathBuf, writer: PathBuf) -> Result<()> {
     // The isolated fixture grants only Read to a delegated, certified agent.
@@ -471,8 +472,8 @@ pub(super) fn run(root: &Path, photos: PathBuf, writer: PathBuf) -> Result<()> {
                 _ => return Err("unexpected encrypted proof document".into()),
             }
         }
-        if let Ok(model) = qdoc::model::open(&doc, &automerge::ROOT) {
-            let images: Vec<_> = qdoc::model::materialize(&doc, &model)
+        if let Ok(model) = tilo_doc::model::open(&doc, &automerge::ROOT) {
+            let images: Vec<_> = tilo_doc::model::materialize(&doc, &model)
                 .blocks
                 .into_iter()
                 .filter(|block| block.kind == "image")
@@ -480,13 +481,13 @@ pub(super) fn run(root: &Path, photos: PathBuf, writer: PathBuf) -> Result<()> {
             if images.len() > 1 {
                 return Err("unexpected extra Writer image blocks".into());
             }
-            if let Some(block) = images
-                .first()
-                .filter(|block| block.attrs.get("blob") == Some(&qdoc::AttrVal::Str(hash.into())))
-            {
-                if block.attrs.get("width") != Some(&qdoc::AttrVal::Int(i64::from(edited.width())))
+            if let Some(block) = images.first().filter(|block| {
+                block.attrs.get("blob") == Some(&tilo_doc::AttrVal::Str(hash.into()))
+            }) {
+                if block.attrs.get("width")
+                    != Some(&tilo_doc::AttrVal::Int(i64::from(edited.width())))
                     || block.attrs.get("height")
-                        != Some(&qdoc::AttrVal::Int(i64::from(edited.height())))
+                        != Some(&tilo_doc::AttrVal::Int(i64::from(edited.height())))
                 {
                     return Err("Writer dimensions mismatch".into());
                 }

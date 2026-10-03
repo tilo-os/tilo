@@ -626,164 +626,185 @@ mod tests {
         }
     }
     #[test]
-    fn cycles_are_refused_without_mutating_the_graph() {
-        let mut g = Graph::default();
-        for n in ["a", "b", "c"] {
-            g.insert(node(n));
+    fn connections_refuse_cycles_and_invalid_targets_and_commit_requested_inputs() {
+        // Case `cycles_are_refused_without_mutating_the_graph`.
+        {
+            let mut g = Graph::default();
+            for n in ["a", "b", "c"] {
+                g.insert(node(n));
+            }
+            g.connect(edge("a", "b")).unwrap();
+            g.connect(edge("b", "c")).unwrap();
+            assert_eq!(g.connect(edge("c", "a")), Err(ConnectError::Cycle));
+            assert_eq!(g.edges.len(), 2);
         }
-        g.connect(edge("a", "b")).unwrap();
-        g.connect(edge("b", "c")).unwrap();
-        assert_eq!(g.connect(edge("c", "a")), Err(ConnectError::Cycle));
-        assert_eq!(g.edges.len(), 2);
-    }
 
-    #[test]
-    fn node_drag_tracks_pointer_in_graph_space_at_any_zoom() {
-        let mut graph = Graph::default();
-        graph.insert(node("grade"));
-        graph.nodes.get_mut("grade").unwrap().position = GraphPoint { x: 40.0, y: 60.0 };
-        let mut editor = GraphEditor {
-            zoom: 2.0,
-            ..GraphEditor::default()
-        };
+        // Case `invalid_reconnection_restores_the_previous_edge`.
+        {
+            let mut graph = Graph::default();
+            for id in ["source", "grade", "output"] {
+                graph.insert(node(id));
+            }
+            graph.connect(edge("source", "grade")).unwrap();
+            graph.connect(edge("grade", "output")).unwrap();
+            let before = graph.edges.clone();
 
-        assert!(editor.begin_node_drag(&graph, "grade", GraphPoint { x: 100.0, y: 120.0 }));
-        assert!(editor.update_node_drag(&mut graph, GraphPoint { x: 140.0, y: 100.0 }));
-        assert_eq!(
-            graph.nodes["grade"].position,
-            GraphPoint { x: 60.0, y: 50.0 }
-        );
-        assert_eq!(editor.end_node_drag().as_deref(), Some("grade"));
-        assert!(!editor.is_dragging_node());
-    }
-
-    #[test]
-    fn viewport_pan_is_exclusive_and_tracks_screen_delta() {
-        let mut graph = Graph::default();
-        graph.insert(node("grade"));
-        let mut editor = GraphEditor::default();
-        assert!(editor.begin_pan(GraphPoint { x: 40.0, y: 60.0 }));
-        assert!(!editor.begin_node_drag(&graph, "grade", GraphPoint { x: 40.0, y: 60.0 }));
-        assert!(editor.update_pan(GraphPoint { x: 75.0, y: 42.0 }));
-        assert_eq!(editor.pan, GraphPoint { x: 35.0, y: -18.0 });
-        assert!(editor.end_pan());
-        assert!(!editor.is_panning());
-    }
-
-    #[test]
-    fn invalid_reconnection_restores_the_previous_edge() {
-        let mut graph = Graph::default();
-        for id in ["source", "grade", "output"] {
-            graph.insert(node(id));
+            assert_eq!(
+                graph.reconnect_input(edge("output", "grade")),
+                Err(ConnectError::Cycle)
+            );
+            assert_eq!(graph.edges, before);
         }
-        graph.connect(edge("source", "grade")).unwrap();
-        graph.connect(edge("grade", "output")).unwrap();
-        let before = graph.edges.clone();
 
-        assert_eq!(
-            graph.reconnect_input(edge("output", "grade")),
-            Err(ConnectError::Cycle)
-        );
-        assert_eq!(graph.edges, before);
+        // Case `connection_drag_commits_to_the_requested_input`.
+        {
+            let mut graph = Graph::default();
+            graph.insert(node("source"));
+            graph.insert(node("output"));
+            let mut editor = GraphEditor::default();
+            assert!(editor.begin_connection(
+                &graph,
+                "source",
+                "out",
+                GraphPoint { x: 20.0, y: 30.0 }
+            ));
+            assert!(editor.update_connection(GraphPoint { x: 80.0, y: 50.0 }));
+            assert_eq!(
+                editor.connection_preview(),
+                Some(("source", "out", GraphPoint { x: 80.0, y: 50.0 }))
+            );
+            assert_eq!(
+                editor.finish_connection(&mut graph, "output", "in"),
+                Ok(None)
+            );
+            assert!(graph.edges.contains(&edge("source", "output")));
+            assert!(!editor.is_connecting());
+        }
+
+        // Case `keyboard_connection_targets_are_stable_compatible_and_wrap`.
+        {
+            let mut graph = Graph::default();
+            for id in ["source", "first", "second"] {
+                graph.insert(node(id));
+            }
+            graph.nodes.get_mut("second").unwrap().inputs.push(Port {
+                id: "mask".into(),
+                data_type: "mask".into(),
+                label: "Mask".into(),
+            });
+
+            let targets = GraphEditor::connection_targets(&graph, "source", "out");
+            assert_eq!(
+                targets,
+                vec![
+                    ConnectionTarget {
+                        node: "first".into(),
+                        port: "in".into()
+                    },
+                    ConnectionTarget {
+                        node: "second".into(),
+                        port: "in".into()
+                    },
+                ]
+            );
+            let first =
+                GraphEditor::next_connection_target(&graph, "source", "out", None, false).unwrap();
+            let second =
+                GraphEditor::next_connection_target(&graph, "source", "out", Some(&first), false)
+                    .unwrap();
+            assert_eq!(second.node, "second");
+            assert_eq!(
+                GraphEditor::next_connection_target(&graph, "source", "out", Some(&second), false,),
+                Some(first)
+            );
+        }
     }
 
     #[test]
-    fn connection_drag_commits_to_the_requested_input() {
-        let mut graph = Graph::default();
-        graph.insert(node("source"));
-        graph.insert(node("output"));
-        let mut editor = GraphEditor::default();
-        assert!(editor.begin_connection(&graph, "source", "out", GraphPoint { x: 20.0, y: 30.0 }));
-        assert!(editor.update_connection(GraphPoint { x: 80.0, y: 50.0 }));
-        assert_eq!(
-            editor.connection_preview(),
-            Some(("source", "out", GraphPoint { x: 80.0, y: 50.0 }))
-        );
-        assert_eq!(
-            editor.finish_connection(&mut graph, "output", "in"),
-            Ok(None)
-        );
-        assert!(graph.edges.contains(&edge("source", "output")));
-        assert!(!editor.is_connecting());
-    }
-    #[test]
-    fn keyboard_connection_targets_are_stable_compatible_and_wrap() {
-        let mut graph = Graph::default();
-        for id in ["source", "first", "second"] {
-            graph.insert(node(id));
-        }
-        graph.nodes.get_mut("second").unwrap().inputs.push(Port {
-            id: "mask".into(),
-            data_type: "mask".into(),
-            label: "Mask".into(),
-        });
+    fn pointer_drags_pan_and_zoom_track_graph_and_screen_space() {
+        // Case `node_drag_tracks_pointer_in_graph_space_at_any_zoom`.
+        {
+            let mut graph = Graph::default();
+            graph.insert(node("grade"));
+            graph.nodes.get_mut("grade").unwrap().position = GraphPoint { x: 40.0, y: 60.0 };
+            let mut editor = GraphEditor {
+                zoom: 2.0,
+                ..GraphEditor::default()
+            };
 
-        let targets = GraphEditor::connection_targets(&graph, "source", "out");
-        assert_eq!(
-            targets,
-            vec![
-                ConnectionTarget {
-                    node: "first".into(),
-                    port: "in".into()
-                },
-                ConnectionTarget {
-                    node: "second".into(),
-                    port: "in".into()
-                },
-            ]
-        );
-        let first =
-            GraphEditor::next_connection_target(&graph, "source", "out", None, false).unwrap();
-        let second =
-            GraphEditor::next_connection_target(&graph, "source", "out", Some(&first), false)
-                .unwrap();
-        assert_eq!(second.node, "second");
-        assert_eq!(
-            GraphEditor::next_connection_target(&graph, "source", "out", Some(&second), false,),
-            Some(first)
-        );
-    }
-    #[test]
-    fn order_follows_dependencies_not_visual_position() {
-        let mut g = Graph::default();
-        for n in ["output", "source", "grade"] {
-            g.insert(node(n));
+            assert!(editor.begin_node_drag(&graph, "grade", GraphPoint { x: 100.0, y: 120.0 }));
+            assert!(editor.update_node_drag(&mut graph, GraphPoint { x: 140.0, y: 100.0 }));
+            assert_eq!(
+                graph.nodes["grade"].position,
+                GraphPoint { x: 60.0, y: 50.0 }
+            );
+            assert_eq!(editor.end_node_drag().as_deref(), Some("grade"));
+            assert!(!editor.is_dragging_node());
         }
-        g.connect(edge("source", "grade")).unwrap();
-        g.connect(edge("grade", "output")).unwrap();
-        assert_eq!(g.evaluation_order().unwrap(), ["source", "grade", "output"]);
-    }
-    #[test]
-    fn contributing_nodes_exclude_disconnected_side_branches() {
-        let mut graph = Graph::default();
-        for id in ["source", "grade", "unused", "output"] {
-            graph.insert(node(id));
+
+        // Case `viewport_pan_is_exclusive_and_tracks_screen_delta`.
+        {
+            let mut graph = Graph::default();
+            graph.insert(node("grade"));
+            let mut editor = GraphEditor::default();
+            assert!(editor.begin_pan(GraphPoint { x: 40.0, y: 60.0 }));
+            assert!(!editor.begin_node_drag(&graph, "grade", GraphPoint { x: 40.0, y: 60.0 }));
+            assert!(editor.update_pan(GraphPoint { x: 75.0, y: 42.0 }));
+            assert_eq!(editor.pan, GraphPoint { x: 35.0, y: -18.0 });
+            assert!(editor.end_pan());
+            assert!(!editor.is_panning());
         }
-        graph.connect(edge("source", "grade")).unwrap();
-        graph.connect(edge("grade", "output")).unwrap();
-        graph.connect(edge("source", "unused")).unwrap();
-        assert_eq!(
-            graph.contributing_nodes("output"),
-            BTreeSet::from(["source".into(), "grade".into(), "output".into()])
-        );
+
+        // Case `zoom_keeps_the_point_under_the_pointer`.
+        {
+            let mut e = GraphEditor::default();
+            let p = GraphPoint { x: 240.0, y: 120.0 };
+            let before = e.screen_position(p);
+            e.zoom_about(before, 2.0);
+            assert_eq!(e.screen_position(p), before);
+        }
+
+        // Case `adaptive_canvas_and_stack_never_overlap`.
+        {
+            for (w, h) in [(1280.0, 800.0), (760.0, 700.0), (390.0, 640.0)] {
+                let l = AdaptiveEditorLayout::resolve(w, h);
+                assert!(l.has_no_overlap());
+                assert!(
+                    l.stack.x0 >= 0.0 && l.stack.y0 >= 92.0 && l.stack.x1 <= w && l.stack.y1 <= h
+                );
+                assert!(
+                    l.stack.y1 <= h - 48.0 || h < 140.0,
+                    "editor content preserves the shared status region"
+                );
+            }
+        }
     }
+
     #[test]
-    fn zoom_keeps_the_point_under_the_pointer() {
-        let mut e = GraphEditor::default();
-        let p = GraphPoint { x: 240.0, y: 120.0 };
-        let before = e.screen_position(p);
-        e.zoom_about(before, 2.0);
-        assert_eq!(e.screen_position(p), before);
-    }
-    #[test]
-    fn adaptive_canvas_and_stack_never_overlap() {
-        for (w, h) in [(1280.0, 800.0), (760.0, 700.0), (390.0, 640.0)] {
-            let l = AdaptiveEditorLayout::resolve(w, h);
-            assert!(l.has_no_overlap());
-            assert!(l.stack.x0 >= 0.0 && l.stack.y0 >= 92.0 && l.stack.x1 <= w && l.stack.y1 <= h);
-            assert!(
-                l.stack.y1 <= h - 48.0 || h < 140.0,
-                "editor content preserves the shared status region"
+    fn evaluation_order_follows_dependencies_and_contributing_nodes() {
+        // Case `order_follows_dependencies_not_visual_position`.
+        {
+            let mut g = Graph::default();
+            for n in ["output", "source", "grade"] {
+                g.insert(node(n));
+            }
+            g.connect(edge("source", "grade")).unwrap();
+            g.connect(edge("grade", "output")).unwrap();
+            assert_eq!(g.evaluation_order().unwrap(), ["source", "grade", "output"]);
+        }
+
+        // Case `contributing_nodes_exclude_disconnected_side_branches`.
+        {
+            let mut graph = Graph::default();
+            for id in ["source", "grade", "unused", "output"] {
+                graph.insert(node(id));
+            }
+            graph.connect(edge("source", "grade")).unwrap();
+            graph.connect(edge("grade", "output")).unwrap();
+            graph.connect(edge("source", "unused")).unwrap();
+            assert_eq!(
+                graph.contributing_nodes("output"),
+                BTreeSet::from(["source".into(), "grade".into(), "output".into()])
             );
         }
     }

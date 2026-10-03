@@ -14,7 +14,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -79,8 +78,6 @@ impl SeekBar {
 }
 
 impl Widget for SeekBar {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -214,21 +211,10 @@ impl Widget for SeekBar {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let hov = self.rect.inflate(0.0, 6.0).contains(p);
                 if hov != self.hovered {
                     self.hovered = hov;
@@ -238,7 +224,7 @@ impl Widget for SeekBar {
                     let f = self.fraction_at(p.x);
                     action::push(&self.bus, Action::Seek(f));
                     self.playhead = f * self.duration;
-                    *handled = true;
+                    *ctx.handled = true;
                     self.dirty = true;
                 }
             }
@@ -249,7 +235,7 @@ impl Widget for SeekBar {
             } => {
                 if self.hovered {
                     self.dragging = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -258,7 +244,7 @@ impl Widget for SeekBar {
                 ..
             } => {
                 if self.dragging {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 self.dragging = false;
                 self.dirty = true;

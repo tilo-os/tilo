@@ -90,19 +90,12 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
-fn open_state(app_id: &'static str) -> (ui::State, ui::persist::DocWriter) {
-    // Contacts kept its own address-book file before the shared store
-    // existed; import it once so an existing user's book comes across.
-    match contacts::storage::default_path() {
-        Some(legacy) => ui::persist::open_migrating(app_id, &legacy),
-        None => ui::persist::open(app_id),
-    }
-}
-
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
 pub fn main() {
+    // The opener imports a legacy address-book file once. The ResourceApp
+    // shell does not, so an existing book would open empty.
     ui::launch::run_or_exit(&launch_spec());
 }
 
@@ -144,95 +137,11 @@ fn launch_spec() -> LaunchSpec {
             "import-conflict",
             "empty",
         ])
-        .open_app_global_state(open_state)
         .configure_app(|app| contacts::actions::register(app.action_registry_mut()))
 }
 
+/// The production launch declares its history.
 #[test]
 fn production_launch_registers_history() {
     launch_spec().validate_history_declaration().unwrap();
-}
-
-#[test]
-fn actual_migrating_opener_keeps_saved_graph() {
-    use automerge::{ReadDoc, transaction::Transactable};
-    const APP: &str = "so.tilo.contacts";
-    if let Ok(stage) = std::env::var("TILO_CONTACTS_HISTORY_STARTUP") {
-        let legacy = contacts::storage::default_path().unwrap();
-        if stage == "write" {
-            let mut doc = automerge::AutoCommit::new();
-            let mut contact = contacts::model::sample_contacts().remove(0);
-            contact.first = "Historical imported contact".into();
-            contacts::doc::ContactsDoc::upsert_contact(&mut doc, &contact);
-            let historical = doc.get_heads()[0];
-            contact.first = "Current imported contact".into();
-            contacts::doc::ContactsDoc::upsert_contact(&mut doc, &contact);
-            let bytes = doc.save();
-            std::fs::write(&legacy, &bytes).unwrap();
-            let (mut state, mut saver) = open_state(APP);
-            assert!(saver.is_enabled());
-            assert!(state.doc.get_change_by_hash(&historical).is_some());
-            assert_eq!(
-                contacts::doc::ContactsDoc::list_contacts(&state.doc)[0].first,
-                "Current imported contact"
-            );
-            let current = state.doc.get_heads();
-            let prepared = ui::history_mode::restore::prepare_content_restore(
-                &state.doc,
-                &contacts::framework_history::SCHEMA,
-                &current,
-                &[historical],
-            )
-            .unwrap();
-            ui::history_mode::restore::apply_prepared_content_restore(&mut state.doc, &prepared)
-                .unwrap();
-            state.commit_action(None, None);
-            saver.request(&mut state.doc);
-            saver.try_flush().unwrap();
-            assert_eq!(std::fs::read(&legacy).unwrap(), bytes);
-            std::fs::write(legacy.with_extension("heads"), historical.to_string()).unwrap();
-        } else {
-            let (state, saver) = open_state(APP);
-            assert!(saver.is_enabled());
-            assert_eq!(
-                contacts::doc::ContactsDoc::list_contacts(&state.doc)[0].first,
-                "Historical imported contact"
-            );
-            let historical = std::fs::read_to_string(legacy.with_extension("heads"))
-                .unwrap()
-                .parse()
-                .unwrap();
-            assert!(state.doc.get_change_by_hash(&historical).is_some());
-            assert_eq!(state.doc.pending_ops(), 0);
-            assert!(
-                state
-                    .doc
-                    .get(automerge::ROOT, "contacts")
-                    .unwrap()
-                    .is_some()
-            );
-        }
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    for stage in ["write", "read"] {
-        let result = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "actual_migrating_opener_keeps_saved_graph",
-                "--nocapture",
-            ])
-            .env("TILO_CONTACTS_HISTORY_STARTUP", stage)
-            .env("XDG_DATA_HOME", dir.path())
-            .env("TILO_PACKAGE_ID", APP)
-            .env("TILO_CONTACTS_DATA", dir.path().join("legacy.automerge"))
-            .output()
-            .unwrap();
-        assert!(
-            result.status.success(),
-            "{stage}: {} {}",
-            String::from_utf8_lossy(&result.stdout),
-            String::from_utf8_lossy(&result.stderr)
-        );
-    }
 }

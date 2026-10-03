@@ -25,6 +25,10 @@ fn boundaries(root: &Path) -> Result<serde_json::Value> {
     Ok(result.into())
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
+)]
 pub(super) fn run(
     session: &Session,
     children: &mut Children,

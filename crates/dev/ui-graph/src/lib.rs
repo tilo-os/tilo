@@ -1,5 +1,9 @@
 //! Pure, versioned schema and structural editor for Tilo serialized UI graphs.
 
+mod edit;
+
+pub use edit::{UiGraphEdit, parse_ui_graph_edits};
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -737,6 +741,22 @@ pub enum UiGraphError {
     Poisoned,
     #[error("the UI graph changed while this edit was being prepared; retry against the new graph")]
     ConcurrentEdit,
+    #[error("UI graph I/O error: {0}")]
+    Io(String),
+    #[error("UI graph edit batch must contain at least one edit")]
+    EmptyEditBatch,
+    #[error("UI graph edit {index} failed: {message}")]
+    EditFailed { index: usize, message: String },
+    #[error("UI node {id:?} has invalid property path {property:?}")]
+    InvalidPropertyPath { id: String, property: String },
+    #[error("UI node {id:?} has no property {property:?}")]
+    UnknownProperty { id: String, property: String },
+    #[error("property {property:?} is not valid for UI node {id:?}: {message}")]
+    InvalidPropertyValue {
+        id: String,
+        property: String,
+        message: String,
+    },
 }
 
 #[cfg(test)]
@@ -770,189 +790,192 @@ mod tests {
     }
 
     #[test]
-    fn structural_edits_round_trip_through_the_wire_format() {
-        let mut document = sample();
-        document
-            .insert_child(
-                "actions",
-                0,
-                UiNode::Button {
-                    id: "create".into(),
-                    label: "Create".into(),
-                    accessible_name: None,
-                    tooltip: None,
-                    on_click_path: Some("create-requested".into()),
-                    click_value: None,
-                    navigate: None,
-                    enabled: true,
-                    style: UiButtonStyle::Primary,
-                },
+    fn structural_edits_and_components_round_trip_or_leave_the_document_intact() {
+        // Phase `structural_edits_round_trip_through_the_wire_format`.
+        {
+            let mut document = sample();
+            document
+                .insert_child(
+                    "actions",
+                    0,
+                    UiNode::Button {
+                        id: "create".into(),
+                        label: "Create".into(),
+                        accessible_name: None,
+                        tooltip: None,
+                        on_click_path: Some("create-requested".into()),
+                        click_value: None,
+                        navigate: None,
+                        enabled: true,
+                        style: UiButtonStyle::Primary,
+                    },
+                )
+                .unwrap();
+            document.move_node("create", "root", 1).unwrap();
+            let json = document.to_json_pretty().unwrap();
+            let reopened = UiDocument::from_json(&json).unwrap();
+            assert_eq!(reopened, document);
+            assert_eq!(
+                reopened
+                    .nodes()
+                    .iter()
+                    .map(|node| node.id())
+                    .collect::<Vec<_>>(),
+                ["root", "title", "create", "actions"]
+            );
+        }
+        // Phase `app_component_nodes_round_trip_props_and_validate_factory_names`.
+        {
+            let document = UiDocument::from_json(
+                r#"{"version":1,"root":{"type":"component","id":"profile","name":"profile-card","props":{"account_id":42,"compact":true}}}"#,
             )
-            .unwrap();
-        document.move_node("create", "root", 1).unwrap();
-        let json = document.to_json_pretty().unwrap();
-        let reopened = UiDocument::from_json(&json).unwrap();
-        assert_eq!(reopened, document);
-        assert_eq!(
-            reopened
-                .nodes()
-                .iter()
-                .map(|node| node.id())
-                .collect::<Vec<_>>(),
-            ["root", "title", "create", "actions"]
-        );
+            .expect("valid app component");
+            assert!(matches!(
+                document.node("profile"),
+                Some(UiNode::Component { name, props, .. })
+                    if name == "profile-card"
+                        && props.get("account_id") == Some(&serde_json::json!(42))
+                        && props.get("compact") == Some(&serde_json::json!(true))
+            ));
+            assert_eq!(
+                UiDocument::from_json(&document.to_json_pretty().unwrap()).unwrap(),
+                document
+            );
+
+            for name in [
+                "",
+                "ProfileCard",
+                "profile_card",
+                "-profile",
+                "profile--card",
+            ] {
+                let source = format!(
+                    r#"{{"version":1,"root":{{"type":"component","id":"profile","name":{name:?}}}}}"#
+                );
+                assert!(matches!(
+                    UiDocument::from_json(&source),
+                    Err(UiGraphError::InvalidComponentName { .. })
+                ));
+            }
+        }
+        // Phase `every_failed_structural_edit_preserves_the_document`.
+        {
+            let mut document = sample();
+            let original = document.clone();
+            assert!(
+                document
+                    .insert_child("root", 0, UiNode::Spacer { id: "title".into() })
+                    .is_err()
+            );
+            assert_eq!(document, original);
+            assert!(document.move_node("root", "actions", 0).is_err());
+            assert_eq!(document, original);
+            assert!(document.remove_node("root").is_err());
+            assert_eq!(document, original);
+        }
     }
 
     #[test]
-    fn app_component_nodes_round_trip_props_and_validate_factory_names() {
-        let document = UiDocument::from_json(
-            r#"{"version":1,"root":{"type":"component","id":"profile","name":"profile-card","props":{"account_id":42,"compact":true}}}"#,
-        )
-        .expect("valid app component");
-        assert!(matches!(
-            document.node("profile"),
-            Some(UiNode::Component { name, props, .. })
-                if name == "profile-card"
-                    && props.get("account_id") == Some(&serde_json::json!(42))
-                    && props.get("compact") == Some(&serde_json::json!(true))
-        ));
-        assert_eq!(
-            UiDocument::from_json(&document.to_json_pretty().unwrap()).unwrap(),
+    fn navigation_and_form_labels_validate_their_targets_and_sources() {
+        // Phase `navigation_round_trips_and_rejects_blank_destinations`.
+        {
+            let mut document = sample();
             document
-        );
+                .insert_child(
+                    "actions",
+                    0,
+                    UiNode::Button {
+                        id: "settings".into(),
+                        label: "Settings".into(),
+                        accessible_name: None,
+                        tooltip: None,
+                        on_click_path: None,
+                        click_value: None,
+                        navigate: Some(UiNavigation::Push {
+                            route: "settings".into(),
+                        }),
+                        enabled: true,
+                        style: UiButtonStyle::Neutral,
+                    },
+                )
+                .unwrap();
+            let reopened = UiDocument::from_json(&document.to_json_pretty().unwrap()).unwrap();
+            assert_eq!(reopened, document);
 
-        for name in [
-            "",
-            "ProfileCard",
-            "profile_card",
-            "-profile",
-            "profile--card",
-        ] {
-            let source = format!(
-                r#"{{"version":1,"root":{{"type":"component","id":"profile","name":{name:?}}}}}"#
-            );
+            if let Some(UiNode::Button { navigate, .. }) = document.node_mut("settings") {
+                *navigate = Some(UiNavigation::Replace { route: "  ".into() });
+            }
             assert!(matches!(
-                UiDocument::from_json(&source),
-                Err(UiGraphError::InvalidComponentName { .. })
+                document.validate(),
+                Err(UiGraphError::InvalidBinding { .. })
             ));
         }
-    }
-
-    #[test]
-    fn every_failed_structural_edit_preserves_the_document() {
-        let mut document = sample();
-        let original = document.clone();
-        assert!(
+        // Phase `form_labels_are_single_visible_and_accessible_sources`.
+        {
+            let mut document = sample();
             document
-                .insert_child("root", 0, UiNode::Spacer { id: "title".into() })
-                .is_err()
-        );
-        assert_eq!(document, original);
-        assert!(document.move_node("root", "actions", 0).is_err());
-        assert_eq!(document, original);
-        assert!(document.remove_node("root").is_err());
-        assert_eq!(document, original);
-    }
+                .insert_child(
+                    "root",
+                    1,
+                    UiNode::TextInput {
+                        id: "name".into(),
+                        label: Some("profile-name-label".into()),
+                        accessible_name: String::new(),
+                        placeholder: String::new(),
+                        value_path: None,
+                        initial_value: String::new(),
+                        multiline: false,
+                        disabled: false,
+                    },
+                )
+                .unwrap();
+            document
+                .insert_child(
+                    "root",
+                    2,
+                    UiNode::Checkbox {
+                        id: "remember".into(),
+                        label: Some("profile-remember-label".into()),
+                        accessible_name: String::new(),
+                        value_path: "remember".into(),
+                        enabled: true,
+                    },
+                )
+                .unwrap();
 
-    #[test]
-    fn navigation_round_trips_and_rejects_blank_destinations() {
-        let mut document = sample();
-        document
-            .insert_child(
-                "actions",
-                0,
-                UiNode::Button {
-                    id: "settings".into(),
-                    label: "Settings".into(),
-                    accessible_name: None,
-                    tooltip: None,
-                    on_click_path: None,
-                    click_value: None,
-                    navigate: Some(UiNavigation::Push {
-                        route: "settings".into(),
-                    }),
-                    enabled: true,
-                    style: UiButtonStyle::Neutral,
-                },
-            )
-            .unwrap();
-        let reopened = UiDocument::from_json(&document.to_json_pretty().unwrap()).unwrap();
-        assert_eq!(reopened, document);
+            let json = document.to_json_pretty().unwrap();
+            assert!(json.contains(r#""label": "profile-name-label""#));
+            assert!(json.contains(r#""label": "profile-remember-label""#));
+            assert!(!json.contains("accessible_name"));
+            assert_eq!(UiDocument::from_json(&json).unwrap(), document);
 
-        if let Some(UiNode::Button { navigate, .. }) = document.node_mut("settings") {
-            *navigate = Some(UiNavigation::Replace { route: "  ".into() });
+            if let Some(UiNode::TextInput {
+                accessible_name, ..
+            }) = document.node_mut("name")
+            {
+                *accessible_name = "duplicate-name".into();
+            }
+            assert!(matches!(
+                document.validate(),
+                Err(UiGraphError::ConflictingLabels(id)) if id == "name"
+            ));
+
+            if let Some(UiNode::TextInput {
+                accessible_name, ..
+            }) = document.node_mut("name")
+            {
+                accessible_name.clear();
+            }
+            if let Some(UiNode::Checkbox {
+                accessible_name, ..
+            }) = document.node_mut("remember")
+            {
+                *accessible_name = "duplicate-check-name".into();
+            }
+            assert!(matches!(
+                document.validate(),
+                Err(UiGraphError::ConflictingLabels(id)) if id == "remember"
+            ));
         }
-        assert!(matches!(
-            document.validate(),
-            Err(UiGraphError::InvalidBinding { .. })
-        ));
-    }
-
-    #[test]
-    fn form_labels_are_single_visible_and_accessible_sources() {
-        let mut document = sample();
-        document
-            .insert_child(
-                "root",
-                1,
-                UiNode::TextInput {
-                    id: "name".into(),
-                    label: Some("profile-name-label".into()),
-                    accessible_name: String::new(),
-                    placeholder: String::new(),
-                    value_path: None,
-                    initial_value: String::new(),
-                    multiline: false,
-                    disabled: false,
-                },
-            )
-            .unwrap();
-        document
-            .insert_child(
-                "root",
-                2,
-                UiNode::Checkbox {
-                    id: "remember".into(),
-                    label: Some("profile-remember-label".into()),
-                    accessible_name: String::new(),
-                    value_path: "remember".into(),
-                    enabled: true,
-                },
-            )
-            .unwrap();
-
-        let json = document.to_json_pretty().unwrap();
-        assert!(json.contains(r#""label": "profile-name-label""#));
-        assert!(json.contains(r#""label": "profile-remember-label""#));
-        assert!(!json.contains("accessible_name"));
-        assert_eq!(UiDocument::from_json(&json).unwrap(), document);
-
-        if let Some(UiNode::TextInput {
-            accessible_name, ..
-        }) = document.node_mut("name")
-        {
-            *accessible_name = "duplicate-name".into();
-        }
-        assert!(matches!(
-            document.validate(),
-            Err(UiGraphError::ConflictingLabels(id)) if id == "name"
-        ));
-
-        if let Some(UiNode::TextInput {
-            accessible_name, ..
-        }) = document.node_mut("name")
-        {
-            accessible_name.clear();
-        }
-        if let Some(UiNode::Checkbox {
-            accessible_name, ..
-        }) = document.node_mut("remember")
-        {
-            *accessible_name = "duplicate-check-name".into();
-        }
-        assert!(matches!(
-            document.validate(),
-            Err(UiGraphError::ConflictingLabels(id)) if id == "remember"
-        ));
     }
 }

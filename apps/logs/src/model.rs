@@ -252,38 +252,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn priority_round_trips_through_level() {
+    fn priority_round_trips_through_level_and_clamps_out_of_range() {
         for p in Priority::ALL {
-            assert_eq!(Priority::from_level(p.level()), p);
+            assert_eq!(Priority::from_level(p.level()), p, "case {p:?}");
+        }
+        // Out-of-range levels clamp to Debug.
+        for level in [42, -1] {
+            assert_eq!(
+                Priority::from_level(level),
+                Priority::Debug,
+                "case level {level}"
+            );
         }
     }
 
     #[test]
-    fn out_of_range_priority_clamps_to_debug() {
-        assert_eq!(Priority::from_level(42), Priority::Debug);
-        assert_eq!(Priority::from_level(-1), Priority::Debug);
-    }
-
-    #[test]
-    fn civil_decodes_a_known_instant() {
-        // 2021-01-01 00:00:00.000 UTC = 1609459200 s.
-        let us = 1_609_459_200_000_000;
-        let (y, mo, d, hh, mm, ss, ms) = civil(us);
-        assert_eq!((y, mo, d, hh, mm, ss, ms), (2021, 1, 1, 0, 0, 0, 0));
-    }
-
-    #[test]
-    fn civil_decodes_subsecond_and_time() {
+    fn civil_decodes_known_instants_with_subseconds() {
         // 2021-06-30 14:23:01.123 UTC.
         // days to 2021-06-30 = 18808; +51781 s; +123 ms.
         let secs = 18_808i64 * 86_400 + 14 * 3_600 + 23 * 60 + 1;
-        let us = secs as u64 * 1_000_000 + 123_000;
-        let (y, mo, d, hh, mm, ss, ms) = civil(us);
-        assert_eq!((y, mo, d, hh, mm, ss, ms), (2021, 6, 30, 14, 23, 1, 123));
+        let cases = [
+            // 2021-01-01 00:00:00.000 UTC = 1609459200 s.
+            (
+                "new year 2021",
+                1_609_459_200_000_000,
+                (2021, 1, 1, 0, 0, 0, 0),
+            ),
+            (
+                "mid-2021 with millis",
+                secs as u64 * 1_000_000 + 123_000,
+                (2021, 6, 30, 14, 23, 1, 123),
+            ),
+        ];
+        for (name, us, want) in cases {
+            assert_eq!(civil(us), want, "case {name}");
+        }
     }
 
     #[test]
-    fn filter_threshold_excludes_more_verbose() {
+    fn entry_filters_and_unit_labels() {
+        // The priority threshold excludes more verbose entries.
         let mut e = sample();
         e.priority = Priority::Info; // level 6
         let f = Filter {
@@ -296,31 +304,27 @@ mod tests {
         );
         e.priority = Priority::Err; // level 3
         assert!(f.passes(&e));
-    }
 
-    #[test]
-    fn filter_search_is_case_insensitive_over_message_and_unit() {
+        // Search is case-insensitive over message and unit.
         let mut e = sample();
         e.message = "Mount FAILED for /var/workspace".into();
-        let f = Filter {
-            search: "failed".into(),
-            ..Default::default()
-        };
-        assert!(f.passes(&e));
-        let f2 = Filter {
-            search: "absent".into(),
-            ..Default::default()
-        };
-        assert!(!f2.passes(&e));
-    }
+        for (search, passes) in [("failed", true), ("absent", false)] {
+            let f = Filter {
+                search: search.into(),
+                ..Default::default()
+            };
+            assert_eq!(f.passes(&e), passes, "case search {search:?}");
+        }
 
-    #[test]
-    fn unit_short_strips_service_suffix_only() {
+        // unit_short strips the .service suffix only.
         let mut e = sample();
-        e.unit = "quick-fs.service".into();
-        assert_eq!(e.unit_short(), "quick-fs");
-        e.unit = "dbus.socket".into();
-        assert_eq!(e.unit_short(), "dbus.socket");
+        for (unit, short) in [
+            ("quick-fs.service", "quick-fs"),
+            ("dbus.socket", "dbus.socket"),
+        ] {
+            e.unit = unit.into();
+            assert_eq!(e.unit_short(), short, "case unit {unit}");
+        }
     }
 
     fn sample() -> LogEntry {

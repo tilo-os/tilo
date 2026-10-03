@@ -1,16 +1,11 @@
-//! Local journal-view operations and the searchable Logs resource surface.
+//! Local journal Effects and the live entry catalogue.
 //!
-//! The journal is an observation of this machine. Querying, selecting, and
-//! following it are therefore local view operations, not collaborative
-//! document mutations. Resources still expose every navigable entry and every
-//! supported operation through deterministic addresses for palettes and
-//! agents; their payloads contain only small local view values or stable entry
-//! identities, never journal content.
+//! Shared filter/selection preferences are document actions on
+//! [`crate::resource::Logs`]. Refresh, live-tail, and export are Effects with
+//! no document delta. Entry rows expose a select View for agents; the widget
+//! also commits that selection into the shared document.
 
-use tilo_actions::{
-    ActionArgs, ActionParam, ActionRegistry, ActionSpec, EncodedAction, OperationKind, ParamType,
-    Resource,
-};
+use tilo_actions::{ActionRegistry, ActionSpec, OperationKind, Resource};
 
 use crate::model::{Filter, LogEntry};
 
@@ -19,21 +14,11 @@ pub const JOURNAL_RESOURCE_ID: &str = "logs.journal";
 const ENTRY_LIMIT: usize = 200;
 
 /// Operations handled by the local Logs widget after resource admission.
+///
+/// Filter mutations are [`crate::resource::LogsAction`] document actions.
+/// This enum covers Effects and the per-entry select View.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum LogsOperation {
-    SetPriority {
-        value: i64,
-    },
-    SetUnit {
-        value: String,
-    },
-    SetBoot {
-        value: String,
-    },
-    SetSearch {
-        value: String,
-    },
-    ClearFilters,
     SelectEntry {
         entry_id: String,
     },
@@ -61,8 +46,7 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<LogsOper
         .map_err(|error| error.to_string())
 }
 
-/// Logs has no durable document actions. Retained for the launch hook shared
-/// by Tilo apps, so upgraded clients can open old Logs documents safely.
+/// Logs document actions register through [`crate::resource::Logs`].
 pub fn register(_registry: &mut ActionRegistry) {}
 
 #[allow(
@@ -74,94 +58,59 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: &LogsOperation) 
         .expect("Logs operation serializes")
 }
 
-#[allow(
-    clippy::expect_used,
-    reason = "LogsOperation contains only serde-serializable primitives"
-)]
-fn typed_operation(
-    id: &str,
-    label: &str,
-    description: &str,
-    params: Vec<ActionParam>,
-    build: impl Fn(&ActionArgs) -> LogsOperation + Send + Sync + 'static,
-) -> ActionSpec {
-    ActionSpec::typed_operation(
-        id,
-        label,
-        description,
-        OperationKind::View,
-        LOGS_OPERATION_TYPE,
-        params,
-        move |args| {
-            EncodedAction::encode_operation(LOGS_OPERATION_TYPE, &build(args))
-                .expect("Logs operation serializes")
+/// Effect specs published on the journal resource (no document delta).
+pub fn journal_effect_specs(live_tail: bool, allow_live: bool) -> Vec<ActionSpec> {
+    let refresh = operation(
+        "refresh",
+        "Refresh journal",
+        OperationKind::Effect,
+        &LogsOperation::Refresh,
+    )
+    .retry_policy(tilo_actions::RetryPolicy::Idempotent);
+    let refresh = if allow_live {
+        refresh.requiring(tilo_actions::PermissionRequirement::Read)
+    } else {
+        refresh.unavailable("journal_access_disabled", "Live journal access is disabled")
+    };
+
+    let live = operation(
+        "set-live-tail",
+        if live_tail {
+            "Stop live tail"
+        } else {
+            "Start live tail"
+        },
+        OperationKind::Effect,
+        &LogsOperation::SetLiveTail {
+            enabled: !live_tail,
         },
     )
-}
+    .retry_policy(tilo_actions::RetryPolicy::Idempotent);
+    let live = if allow_live {
+        live
+    } else {
+        live.unavailable("journal_access_disabled", "Live journal access is disabled")
+    };
 
-fn filter_resource() -> Resource {
-    Resource::new("logs.filters", "logs.filters", "Local journal filters")
-        .with_action(typed_operation(
-            "set-search",
-            "Search journal",
-            "text to find in messages, units, or identifiers",
-            vec![ActionParam::required(
-                "query",
-                ParamType::Text,
-                "Search query",
-            )],
-            |args| LogsOperation::SetSearch {
-                value: args.text("query").unwrap_or_default().to_owned(),
-            },
-        ))
-        .with_action(typed_operation(
-            "set-severity",
-            "Set severity threshold",
-            "0 through 7 (0 emergency only; 7 all entries)",
-            vec![
-                ActionParam::required(
-                    "priority",
-                    ParamType::Integer,
-                    "Severity threshold from 0 to 7",
-                )
-                .with_schema(serde_json::json!({ "minimum": 0, "maximum": 7 })),
-            ],
-            |args| LogsOperation::SetPriority {
-                value: args.integer("priority").unwrap_or(7),
-            },
-        ))
-        .with_action(typed_operation(
-            "set-unit",
-            "Filter by unit",
-            "exact value; leave empty to show all",
-            vec![ActionParam::optional(
-                "unit",
-                ParamType::Text,
-                "Filter value",
-            )],
-            |args| LogsOperation::SetUnit {
-                value: args.text("unit").unwrap_or_default().to_owned(),
-            },
-        ))
-        .with_action(typed_operation(
-            "set-boot",
-            "Filter by boot",
-            "exact value; leave empty to show all",
-            vec![ActionParam::optional(
-                "boot",
-                ParamType::Text,
-                "Filter value",
-            )],
-            |args| LogsOperation::SetBoot {
-                value: args.text("boot").unwrap_or_default().to_owned(),
-            },
-        ))
-        .with_action(operation(
-            "clear-filters",
-            "Clear filters",
-            OperationKind::View,
-            &LogsOperation::ClearFilters,
-        ))
+    // Export availability for filtered rows is enforced at perform time; the
+    // static Resource door always offers the Effect when live access is on.
+    let export = operation(
+        "export-filtered-jsonl",
+        "Export filtered logs",
+        OperationKind::Effect,
+        &LogsOperation::ExportFiltered,
+    )
+    .requiring(tilo_actions::PermissionRequirement::Write);
+    let export = if allow_live {
+        export
+    } else {
+        export.unavailable(
+            "journal_access_disabled",
+            "Live journal export is disabled in this session",
+        )
+    };
+
+    vec![refresh, live, export]
 }
 
 /// Stable across ordering and cache refreshes. It uses journal fields rather
@@ -181,73 +130,14 @@ pub fn entry_resource_id(entry: &LogEntry) -> String {
     format!("logs.entry.{}", hasher.finalize().to_hex())
 }
 
-/// Build the resource tree used by widgets, search, and remote agents.
-/// Materialization is capped so a large local journal never floods discovery.
-pub fn resources(
-    entries: &[LogEntry],
-    filter: &Filter,
-    live_tail: bool,
-    allow_live: bool,
-) -> Vec<Resource> {
-    let mut root = Resource::new(JOURNAL_RESOURCE_ID, "logs.journal", "System journal");
-    let refresh = operation(
-        "refresh",
-        "Refresh journal",
-        OperationKind::Effect,
-        &LogsOperation::Refresh,
-    )
-    .retry_policy(tilo_actions::RetryPolicy::Idempotent);
-    root = root.with_action(if allow_live {
-        refresh.requiring(tilo_actions::PermissionRequirement::Read)
-    } else {
-        refresh.unavailable("journal_access_disabled", "Live journal access is disabled")
-    });
-    let live = operation(
-        "set-live-tail",
-        if live_tail {
-            "Stop live tail"
-        } else {
-            "Start live tail"
-        },
-        OperationKind::Effect,
-        &LogsOperation::SetLiveTail {
-            enabled: !live_tail,
-        },
-    )
-    .retry_policy(tilo_actions::RetryPolicy::Idempotent);
-    root = root.with_action(if allow_live {
-        live
-    } else {
-        live.unavailable("journal_access_disabled", "Live journal access is disabled")
-    });
-    let export = operation(
-        "export-filtered-jsonl",
-        "Export filtered logs",
-        OperationKind::Effect,
-        &LogsOperation::ExportFiltered,
-    )
-    .requiring(tilo_actions::PermissionRequirement::Write);
-    root = root.with_action(if !allow_live {
-        export.unavailable(
-            "journal_access_disabled",
-            "Live journal export is disabled in this session",
-        )
-    } else if entries.iter().any(|entry| filter.passes(entry)) {
-        export
-    } else {
-        export.unavailable(
-            "no_matching_entries",
-            "There are no filtered entries to export",
-        )
-    });
-    root = root.with_child(filter_resource());
-    for entry in entries
+/// Live journal entry rows (no `logs.journal` root).
+pub fn live_entry_resources(entries: &[LogEntry], filter: &Filter) -> Vec<Resource> {
+    entries
         .iter()
         .filter(|entry| filter.passes(entry))
         .take(ENTRY_LIMIT)
-    {
-        let id = entry_resource_id(entry);
-        root = root.with_child(
+        .map(|entry| {
+            let id = entry_resource_id(entry);
             Resource::new(
                 id.clone(),
                 "logs.entry",
@@ -263,9 +153,56 @@ pub fn resources(
                 "Show entry details",
                 OperationKind::View,
                 &LogsOperation::SelectEntry { entry_id: id },
-            )),
+            ))
+        })
+        .collect()
+}
+
+/// Standalone / `--shots` overlay: [`tilo_resource::publish`] root plus live
+/// entry children, with effect labels reflecting the current live-tail state.
+pub fn standalone_resources(
+    entries: &[LogEntry],
+    filter: &Filter,
+    live_tail: bool,
+    allow_live: bool,
+    state: &crate::resource::LogsState,
+) -> Vec<Resource> {
+    let mut root = ui::tilo_resource::publish::<crate::resource::Logs>(
+        JOURNAL_RESOURCE_ID,
+        "System journal",
+        state,
+    );
+    // Replace static effect specs with ones that reflect live-tail / allow_live.
+    root.actions.retain(|spec| {
+        !matches!(
+            spec.id.as_str(),
+            "refresh" | "set-live-tail" | "export-filtered-jsonl"
+        )
+    });
+    for spec in journal_effect_specs(live_tail, allow_live) {
+        root = root.with_action(spec);
+    }
+    // Dynamic export unavailable when the filtered set is empty.
+    if allow_live
+        && !entries.iter().any(|entry| filter.passes(entry))
+        && let Some(export) = root
+            .actions
+            .iter_mut()
+            .find(|action| action.id == "export-filtered-jsonl")
+    {
+        *export = operation(
+            "export-filtered-jsonl",
+            "Export filtered logs",
+            OperationKind::Effect,
+            &LogsOperation::ExportFiltered,
+        )
+        .requiring(tilo_actions::PermissionRequirement::Write)
+        .unavailable(
+            "no_matching_entries",
+            "There are no filtered entries to export",
         );
     }
+    root.children = live_entry_resources(entries, filter);
     vec![root]
 }
 
@@ -273,13 +210,40 @@ pub fn resources(
 mod tests {
     use super::*;
     use crate::journal::sample_entries;
+    use crate::resource::{Logs, LogsAction, LogsState};
+    use tilo_actions::Action;
+    use ui::tilo_resource::Resource as _;
 
+    /// Entries publish a stable select View; shared filters live on the
+    /// framework resource via [`tilo_resource::publish`].
     #[test]
-    fn entries_have_stable_local_navigation_resources() {
+    fn publish_owns_filters_and_entries_carry_select_views() {
+        let mut doc = automerge::AutoCommit::new();
+        LogsAction::SetSearch {
+            value: "iroh".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        doc.commit();
+        let state = Logs::read(&doc).unwrap();
+        let published =
+            ui::tilo_resource::publish::<Logs>(JOURNAL_RESOURCE_ID, "System journal", &state);
+        assert!(
+            published
+                .actions
+                .iter()
+                .any(|action| action.id == "set-search"),
+            "search declaration must be on the framework resource"
+        );
+        assert!(
+            published.actions.iter().all(|action| action.id != "select"),
+            "per-entry select stays on live entry children"
+        );
+
         let entries = sample_entries();
+        let entry_rows = live_entry_resources(&entries, &Filter::default());
         let id = entry_resource_id(&entries[0]);
-        let root = resources(&entries, &Filter::default(), false, false).remove(0);
-        let entry = root.children.iter().find(|child| child.id.0 == id).unwrap();
+        let entry = entry_rows.iter().find(|child| child.id.0 == id).unwrap();
         let select = entry
             .actions
             .iter()
@@ -293,35 +257,40 @@ mod tests {
         );
     }
 
-    #[test]
-    fn filters_are_local_view_operations_not_document_actions() {
-        let root = resources(&sample_entries(), &Filter::default(), false, false).remove(0);
-        let filters = root
-            .children
-            .iter()
-            .find(|child| child.id.0 == "logs.filters")
-            .unwrap();
-        assert!(
-            filters
-                .actions
-                .iter()
-                .all(|action| action.kind == OperationKind::View)
-        );
-        assert!(
-            filters
-                .actions
-                .iter()
-                .any(|action| action.id == "set-search")
-        );
-    }
-
-    // The journal is a local observation: Logs publishes only view and effect
-    // operations, never a document action, so the registry is empty and the
-    // sweep checks the surface and its protocol.
+    // Shared filter declarations plus Effects form the palette door; entry
+    // select Views ride the standalone overlay's live children.
     ui::action_contract_tests! {
         seed: automerge::AutoCommit::new(),
-        registry: ActionRegistry::new(),
-        resources: |_| resources(&sample_entries(), &Filter::default(), false, true),
+        registry: {
+            let mut registry = ActionRegistry::new();
+            Logs::register(&mut registry);
+            registry
+        },
+        resources: |doc| {
+            let state = Logs::read(doc).unwrap_or_default();
+            standalone_resources(
+                &sample_entries(),
+                &state.filter,
+                false,
+                true,
+                &state,
+            )
+        },
         palette: ["Refresh journal", "Search journal", "Clear filters", "Show entry details"],
+    }
+
+    #[test]
+    fn typed_search_declaration_builds_document_action() {
+        let state = LogsState::default();
+        let door = crate::resource::provide_resources(&state);
+        let search = door[0]
+            .actions
+            .iter()
+            .find(|action| action.id == "set-search")
+            .unwrap();
+        let mut args = serde_json::Map::new();
+        args.insert("query".into(), serde_json::json!("privacy"));
+        let encoded = search.build_json(&args).unwrap();
+        assert_eq!(encoded.type_id, Logs::ACTION_TYPE);
     }
 }

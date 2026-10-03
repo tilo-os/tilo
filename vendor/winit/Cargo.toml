@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 rust-version = "1.70.0"
-name = "winit"
+name = "tilo-winit"
 version = "0.30.13"
 authors = [
     "The winit contributors",
@@ -29,15 +29,16 @@ include = [
     "!/src/platform_impl/web/script",
     "/src/platform_impl/web/script/**/*.min.js",
     "/tests",
+    "/TILO-FORK.md",
 ]
 autolib = false
 autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Cross-platform window creation library."
+description = "winit 0.30.13 (https://github.com/rust-windowing/winit) with the additions the Tilo SDK uses: synthetic key events, Wayland drag sources and swipe gestures, a macOS quit request. Tilo's fork; see TILO-FORK.md."
 documentation = "https://docs.rs/winit"
-readme = "README.md"
+readme = "TILO-FORK.md"
 keywords = ["windowing"]
 categories = ["gui"]
 license = "Apache-2.0"
@@ -173,6 +174,14 @@ path = "tests/serde_objects.rs"
 [[test]]
 name = "sync_object"
 path = "tests/sync_object.rs"
+
+[[test]]
+name = "web_animation_frame"
+path = "tests/web_animation_frame.rs"
+
+[[test]]
+name = "web_resize_size"
+path = "tests/web_resize_size.rs"
 
 [dependencies.bitflags]
 version = "2"

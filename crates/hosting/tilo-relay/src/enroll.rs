@@ -21,14 +21,19 @@ use tilo_user_identity::{
     verify_device_cert_at, verify_enrollment_token, verify_revocation_entry,
 };
 
-const PORT: u16 = 45_831;
+/// Well-known UDP port every nearby-pairing listener binds and every
+/// soliciting device broadcasts to. Broadcast discovery has no channel to
+/// advertise a port before the first datagram, so the rendezvous must be
+/// fixed. It stays below Linux's ephemeral range (32768-60999) so an outgoing
+/// socket can never be auto-assigned it and block a listener, and inside the
+/// 1025-65535 range the desktop firewall zone accepts. IANA leaves it
+/// unassigned and no common service uses it.
+const NEARBY_PORT: u16 = 23_831;
 const MAX_PACKET: usize = 60 * 1024;
 const RESPONSE_DOMAIN: &[u8] = b"tilo-host-enrollment-response-v1\0";
 const PAIR_DOMAIN: &[u8] = b"tilo-nearby-home-peer-offer-v1\0";
-/// Solicitation magic of devices that only read v1 pair offers.
-const PAIR_MAGIC_V1: [u8; 8] = *b"TLOPAIR1";
-/// Solicitation magic of devices that read v2 (HPKE) pair offers.
-const PAIR_MAGIC_V2: [u8; 8] = *b"TLOPAIR2";
+/// Solicitation magic: the device reads HPKE pair offers.
+const PAIR_MAGIC: [u8; 8] = *b"TLOPAIR2";
 
 #[derive(Parser)]
 #[command(name = "tilo-enroll")]
@@ -86,12 +91,16 @@ enum Command {
         /// Optional world-readable progress file for the first-run UI.
         #[arg(long)]
         status_file: Option<PathBuf>,
+        /// Agent hosts and other headless boxes: pair without a compositor
+        /// first-use requester lease. Desktop first-use must omit this flag.
+        #[arg(long, default_value_t = false)]
+        headless: bool,
         /// PID of the compositor that initiated this first-use operation.
         #[arg(long)]
-        requester_pid: u32,
+        requester_pid: Option<u32>,
         /// `/proc/<pid>/stat` start-time tick, preventing PID-reuse bypass.
         #[arg(long)]
-        requester_start_time: u64,
+        requester_start_time: Option<u64>,
     },
     /// Approve one nearby host token issued by this device.
     Approve {
@@ -124,6 +133,47 @@ enum Command {
         #[arg(long)]
         expected_service: Option<String>,
     },
+    #[command(flatten)]
+    OutOfBand(OutOfBand),
+}
+
+/// Certification delivered outside a pairing session.
+#[derive(Subcommand)]
+enum OutOfBand {
+    /// Create this device's key if it has none and print, as one JSON line,
+    /// its public key and the endpoint id of a relay it runs.
+    DeviceKey {
+        #[arg(long, default_value = "/var/lib/tilo")]
+        identity_root: PathBuf,
+    },
+    /// Certify a device's key with a root key kept in a file, for delivery
+    /// out of band. Writes the canonical certificate to OUT.
+    Certify {
+        /// The user root signing key (32 bytes, owner-only).
+        #[arg(long)]
+        root_key: PathBuf,
+        /// The device's public key, hex.
+        #[arg(long)]
+        device: String,
+        #[arg(long, default_value = "Tilo device")]
+        label: String,
+        /// own, admit, host or read-all; repeatable.
+        #[arg(long = "capability", value_name = "CAPABILITY")]
+        capabilities: Vec<String>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Join the identity that certified this device's key without a pairing
+    /// session: install a root-signed certificate delivered out of band.
+    InstallCert {
+        #[arg(long, default_value = "/var/lib/tilo")]
+        identity_root: PathBuf,
+        #[arg(long)]
+        identity_dir: PathBuf,
+        /// The certificate, canonically encoded.
+        #[arg(long)]
+        cert: PathBuf,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,14 +191,6 @@ struct Request {
     kind: EnrollmentKind,
 }
 
-/// The v1 envelope framing shared by the pair offer, request and response.
-#[derive(Serialize, Deserialize)]
-struct LegacyEnvelope {
-    ephemeral_public_key: [u8; 32],
-    nonce: [u8; 12],
-    ciphertext: Vec<u8>,
-}
-
 /// Plaintext of a v2 request: the request plus the key its response is
 /// sealed to (only the requester holds the matching secret).
 #[derive(Serialize)]
@@ -163,22 +205,11 @@ struct RequestV2Owned {
     response_public_key: [u8; 32],
 }
 
-/// Wire version a peer spoke, which the answer mirrors.
+/// Where an enrollment response is sealed to: the response key inside the
+/// requester's sealed request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WireVersion {
-    V1,
-    V2,
-}
-
-/// Where an enrollment response is sealed to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ResponseRoute {
-    /// A v1 requester: its ephemeral X25519 key from the request envelope.
-    V1 {
-        requester_ephemeral_public_key: [u8; 32],
-    },
-    /// A v2 requester: the response key inside its sealed request.
-    V2 { response_public_key: [u8; 32] },
+struct ResponseRoute {
+    response_public_key: [u8; 32],
 }
 
 #[derive(Serialize, Deserialize)]
@@ -405,7 +436,7 @@ fn commit_personal_device(
             .or_else(|_| std::fs::metadata(identity_dir))
             .map(|metadata| (metadata.uid(), metadata.gid()))?
     };
-    atomic_file::write_creating_parent(&path, fleet)?;
+    tilo_files::native::atomic::write_creating_parent(&path, fleet)?;
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt as _;
@@ -429,7 +460,7 @@ fn bounded_home_peer_registry(
             let entries: Vec<HomePeerRegistration> = serde_json::from_slice(&bytes)?;
             if entries.len() > 128
                 || entries.iter().any(|entry| {
-                    entry.schema_version > HomePeerRegistration::CURRENT_SCHEMA
+                    entry.schema_version != HomePeerRegistration::CURRENT_SCHEMA
                         || !valid_relay_endpoint_hint(entry)
                         || entry.device_cert.as_ref().is_none_or(|cert| {
                             verify_device_cert(cert).is_err()
@@ -528,7 +559,7 @@ fn validate_public_identity(bytes: &[u8], user: [u8; 32]) -> anyhow::Result<()> 
 }
 
 fn valid_home_peer_registration(entry: &HomePeerRegistration) -> bool {
-    entry.schema_version <= HomePeerRegistration::CURRENT_SCHEMA
+    entry.schema_version == HomePeerRegistration::CURRENT_SCHEMA
         && entry.relay_workspace_ids.len() <= 4096
         && tilo_relay::valid_home_peer_label(&entry.label)
         && hex::decode(&entry.device_node_id)
@@ -685,28 +716,28 @@ fn stage_personal_enrollment(
     let stage_dir = enrollment_stage_dir(identity_root).join(&stage_name);
     std::fs::create_dir_all(&stage_dir)?;
     let cert = tilo_user_identity::canonical::canonical_bytes(&payload.cert)?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &staged(&stage_dir, "record.json"),
         &projection.identity,
         0o600,
     )?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &staged(&stage_dir, "registry.json"),
         &projection.registry,
         0o600,
     )?;
-    atomic_file::write(&staged(&stage_dir, "fleet.json"), &projection.fleet)?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write(&staged(&stage_dir, "fleet.json"), &projection.fleet)?;
+    tilo_files::native::atomic::write_with_mode(
         &staged(&stage_dir, "home-peers.json"),
         &projection.peers,
         0o644,
     )?;
-    atomic_file::write(
+    tilo_files::native::atomic::write(
         &staged(&stage_dir, "user-pubkey.bin"),
         &payload.cert.user_public_key,
     )?;
-    atomic_file::write(&staged(&stage_dir, "per-user-cert.bin"), &cert)?;
-    atomic_file::write(&staged(&stage_dir, "default-cert.bin"), &cert)?;
+    tilo_files::native::atomic::write(&staged(&stage_dir, "per-user-cert.bin"), &cert)?;
+    tilo_files::native::atomic::write(&staged(&stage_dir, "default-cert.bin"), &cert)?;
     let marker = PersonalEnrollmentMarker {
         schema_version: PERSONAL_ENROLLMENT_SCHEMA,
         identity_dir: identity_dir.to_path_buf(),
@@ -718,7 +749,11 @@ fn stage_personal_enrollment(
     };
     let marker_path = personal_marker_path(identity_root, payload.nonce);
     std::fs::create_dir_all(enrollment_commit_dir(identity_root))?;
-    atomic_file::write_with_mode(&marker_path, &serde_json::to_vec_pretty(&marker)?, 0o600)?;
+    tilo_files::native::atomic::write_with_mode(
+        &marker_path,
+        &serde_json::to_vec_pretty(&marker)?,
+        0o600,
+    )?;
     let _ = paths; // binds staging to the active device layout at the call site.
     Ok((marker_path, marker))
 }
@@ -734,7 +769,11 @@ fn authorize_personal_commit(
     validate_requester(requester_lease)?;
     let mut marker = marker.clone();
     marker.commit_ready = true;
-    atomic_file::write_with_mode(marker_path, &serde_json::to_vec_pretty(&marker)?, 0o600)?;
+    tilo_files::native::atomic::write_with_mode(
+        marker_path,
+        &serde_json::to_vec_pretty(&marker)?,
+        0o600,
+    )?;
     Ok(marker)
 }
 
@@ -778,35 +817,38 @@ fn commit_staged_personal_enrollment(
     std::fs::create_dir_all(&marker.identity_dir)?;
     let record = identity_record_path(&marker.identity_dir, marker.user_public_key);
     let fleet = fleet_path(&marker.identity_dir, marker.user_public_key);
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &record,
         &std::fs::read(staged(&stage_dir, "record.json"))?,
         0o600,
     )?;
     checkpoint(PersonalCommitCheckpoint::Fleet)?;
-    atomic_file::write_creating_parent(&fleet, &std::fs::read(staged(&stage_dir, "fleet.json"))?)?;
+    tilo_files::native::atomic::write_creating_parent(
+        &fleet,
+        &std::fs::read(staged(&stage_dir, "fleet.json"))?,
+    )?;
     checkpoint(PersonalCommitCheckpoint::HomePeers)?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &identity_root.join("home-peers.json"),
         &std::fs::read(staged(&stage_dir, "home-peers.json"))?,
         0o644,
     )?;
     checkpoint(PersonalCommitCheckpoint::Registry)?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &marker.identity_dir.join("registry.json"),
         &std::fs::read(staged(&stage_dir, "registry.json"))?,
         0o600,
     )?;
     checkpoint(PersonalCommitCheckpoint::UserPublicKey)?;
-    atomic_file::write(&paths.user_pubkey, &marker.user_public_key)?;
+    tilo_files::native::atomic::write(&paths.user_pubkey, &marker.user_public_key)?;
     checkpoint(PersonalCommitCheckpoint::PerUserCert)?;
-    atomic_file::write_creating_parent(
+    tilo_files::native::atomic::write_creating_parent(
         &paths.device_cert_for_user(&marker.user_public_key),
         &std::fs::read(staged(&stage_dir, "per-user-cert.bin"))?,
     )?;
     // Publish this last: every projection file has been durably installed.
     checkpoint(PersonalCommitCheckpoint::DefaultCert)?;
-    atomic_file::write(&paths.device_cert, &cert_bytes)?;
+    tilo_files::native::atomic::write(&paths.device_cert, &cert_bytes)?;
     // A polkit-launched enrollment may have written these as root. Restore
     // the identity owner's uid/gid before the marker is cleared, so recovery
     // repeats this step if it is interrupted.
@@ -869,7 +911,6 @@ fn recover_personal_enrollments(
     Ok(())
 }
 
-#[cfg(test)]
 fn install_personal_projection(
     identity_root: &std::path::Path,
     identity_dir: &std::path::Path,
@@ -964,7 +1005,11 @@ fn register_home_peer(
         bail!("home-peer registry is full");
     }
     registrations.sort_by(|left, right| left.device_node_id.cmp(&right.device_node_id));
-    atomic_file::write_with_mode(&path, &serde_json::to_vec_pretty(&registrations)?, 0o644)?;
+    tilo_files::native::atomic::write_with_mode(
+        &path,
+        &serde_json::to_vec_pretty(&registrations)?,
+        0o644,
+    )?;
     Ok(())
 }
 
@@ -1006,38 +1051,29 @@ fn pairing_code(device_public_key: [u8; 32], relay_service_node_id: [u8; 32]) ->
     format!("{:06}", number % 1_000_000)
 }
 
-/// The pair-offer version a solicitation asks for.
-fn solicitation_version(solicitation: &PairSolicitation) -> Option<WireVersion> {
-    match solicitation.magic {
-        PAIR_MAGIC_V1 => Some(WireVersion::V1),
-        PAIR_MAGIC_V2 => Some(WireVersion::V2),
-        _ => None,
-    }
-}
-
 fn valid_solicitation(solicitation: &PairSolicitation) -> bool {
-    solicitation_version(solicitation).is_some()
+    solicitation.magic == PAIR_MAGIC
         && VerifyingKey::from_bytes(&solicitation.device_public_key).is_ok()
         && solicitation.relay_service_node_id != [0; 32]
         && tilo_relay::valid_home_peer_label(&solicitation.label)
 }
 
-/// Bind the well-known LAN-discovery port without making an already-running
+/// Bind a LAN-discovery listener on `port` without making an already-running
 /// discovery view or approval sheet prevent another Tilo surface from joining
 /// the same nearby-device flow.  UDP broadcast is deliberately delivered to
 /// every reuse-port listener; each recipient still has to authenticate the
 /// encrypted offer or enrollment request before it can act on it.
-fn bind_pair_listener() -> anyhow::Result<UdpSocket> {
+fn bind_pair_listener(port: u16) -> anyhow::Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
     #[cfg(unix)]
     socket.set_reuse_port(true)?;
-    socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, PORT).into())?;
+    socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port).into())?;
     Ok(socket.into())
 }
 
 fn discover(timeout: u64, kind: EnrollmentKind) -> anyhow::Result<()> {
-    let socket = bind_pair_listener()?;
+    let socket = bind_pair_listener(NEARBY_PORT)?;
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
     let deadline = deadline_after(socket_timeout(timeout))?;
     let mut packet = vec![0_u8; MAX_PACKET];
@@ -1078,37 +1114,20 @@ fn discover(timeout: u64, kind: EnrollmentKind) -> anyhow::Result<()> {
     bail!("no matching unprovisioned Tilo device was found nearby")
 }
 
-// Wire versions of the three sealed envelopes (pair offer, request, response).
-//
-// v1 (legacy): `postcard({ ephemeral_public_key: [u8; 32], nonce: [u8; 12],
-// ciphertext })` = `epk(32) || nonce(12) || varint(len) || ciphertext+tag`,
-// an ad-hoc X25519 agreement hashed with BLAKE3 into a ChaCha20-Poly1305
-// key. Readers still accept it, and a responder answers a v1 peer in v1
-// during the transition.
-//
-// v2: `"TLOENRL" || 0x02 || tilo-seal HPKE sealed box` (RFC 9180 base mode,
+// The three sealed envelopes (pair offer, request, response) are
+// `"TLOENRL" || 0x02 || tilo-seal HPKE sealed box` (RFC 9180 base mode,
 // X25519-HKDF-SHA256 / ChaCha20-Poly1305), with one tilo-seal label per
-// step so an envelope for one step never opens as another.
-//
-// Discrimination: a v2 envelope always starts with the 8-byte prefix
-// `TLOENRL\x02`; a v1 envelope starts with its sender's random ephemeral
-// X25519 public key. Bytes with the v2 prefix are parsed only as v2, all
-// other bytes only as v1, so no envelope is ever tried under both parsers.
-// This build's v1 writer re-draws any ephemeral key whose encoding would
-// begin with the prefix, so nothing it writes is ambiguous; an old peer's
-// random key starts with it with probability 2^-64, and that envelope then
-// merely fails to open.
+// step so an envelope for one step never opens as another. Bytes without
+// that prefix are refused.
 const ENVELOPE_MAGIC: &[u8; 7] = b"TLOENRL";
 const ENVELOPE_V2: u8 = 2;
-const REQUEST_KEY_DOMAIN_V1: &[u8] = b"tilo-host-enrollment-request-key-v1\0";
-const RESPONSE_KEY_DOMAIN_V1: &[u8] = b"tilo-host-enrollment-key-v1\0";
 
 fn v2_header() -> [u8; 8] {
     let [m0, m1, m2, m3, m4, m5, m6] = *ENVELOPE_MAGIC;
     [m0, m1, m2, m3, m4, m5, m6, ENVELOPE_V2]
 }
 
-/// The v2 sealed box inside `bytes`, or `None` when `bytes` is not v2.
+/// The sealed box inside `bytes`, or `None` without the envelope prefix.
 fn v2_body(bytes: &[u8]) -> Option<&[u8]> {
     bytes.strip_prefix(&v2_header()[..])
 }
@@ -1133,96 +1152,18 @@ fn device_sealing_public(device_public_key: [u8; 32]) -> anyhow::Result<tilo_sea
     ))
 }
 
-/// A fresh ephemeral key for a v1 envelope whose encoding cannot be
-/// mistaken for the v2 prefix.
-fn v1_ephemeral() -> anyhow::Result<(tilo_seal::SecretKey, [u8; 32])> {
-    for _ in 0..8 {
-        let secret = tilo_seal::SecretKey::generate()?;
-        let public = secret.public_key()?.to_bytes();
-        if !public.starts_with(ENVELOPE_MAGIC) {
-            return Ok((secret, public));
-        }
-    }
-    bail!("could not draw an unambiguous ephemeral key")
-}
-
-/// Open the v1 framing shared by all three legacy envelopes. `context`
-/// lists the key-derivation inputs after the shared secret, given the
-/// sender's ephemeral public key.
-fn open_v1(
-    bytes: &[u8],
-    secret: &tilo_seal::SecretKey,
-    domain: &[u8],
-    context: impl FnOnce(&[u8; 32]) -> Vec<Vec<u8>>,
-    aad: impl FnOnce(&[u8; 32]) -> Vec<u8>,
-) -> anyhow::Result<(zeroize::Zeroizing<Vec<u8>>, [u8; 32])> {
-    let envelope: LegacyEnvelope = postcard::from_bytes(bytes)?;
-    let context = context(&envelope.ephemeral_public_key);
-    let parts: Vec<&[u8]> = context.iter().map(Vec::as_slice).collect();
-    let key = tilo_seal::legacy::blake3_x25519_key(
-        secret,
-        &tilo_seal::PublicKey::from_bytes(envelope.ephemeral_public_key),
-        domain,
-        &parts,
-    )?;
-    let plaintext = tilo_seal::legacy::open_chacha20poly1305(
-        &key,
-        &envelope.nonce,
-        &aad(&envelope.ephemeral_public_key),
-        &envelope.ciphertext,
-    )?;
-    Ok((plaintext, envelope.ephemeral_public_key))
-}
-
-/// Seal in the v1 framing, only to answer a peer that spoke v1.
-fn seal_v1_for_transition(
-    peer: &tilo_seal::PublicKey,
-    domain: &[u8],
-    context: impl FnOnce(&[u8; 32]) -> Vec<Vec<u8>>,
-    aad: &[u8],
-    plaintext: &[u8],
-) -> anyhow::Result<Vec<u8>> {
-    let (ephemeral, ephemeral_public_key) = v1_ephemeral()?;
-    let context = context(&ephemeral_public_key);
-    let parts: Vec<&[u8]> = context.iter().map(Vec::as_slice).collect();
-    let key = tilo_seal::legacy::blake3_x25519_key(&ephemeral, peer, domain, &parts)?;
-    let (nonce, ciphertext) =
-        tilo_seal::legacy::seal_chacha20poly1305_for_transition(&key, aad, plaintext)?;
-    Ok(postcard::to_stdvec(&LegacyEnvelope {
-        ephemeral_public_key,
-        nonce,
-        ciphertext,
-    })?)
-}
-
 fn pair_offer_aad(recipient: [u8; 32]) -> Vec<u8> {
     [PAIR_DOMAIN, &recipient].concat()
 }
 
-/// Seal an enrollment token to the soliciting device, in the offer version
-/// its solicitation asked for.
-fn encrypt_pair_offer(
-    token: &str,
-    recipient: [u8; 32],
-    version: WireVersion,
-) -> anyhow::Result<Vec<u8>> {
-    let recipient_public = device_sealing_public(recipient)?;
-    let aad = pair_offer_aad(recipient);
-    match version {
-        WireVersion::V2 => Ok(wrap_v2(&tilo_seal::hpke::seal(
-            &recipient_public,
-            tilo_seal::Label::RelayEnrollOffer,
-            &aad,
-            token.as_bytes(),
-        )?)),
-        WireVersion::V1 => seal_v1_for_transition(
-            &recipient_public,
-            PAIR_DOMAIN,
-            |ephemeral| vec![recipient.to_vec(), ephemeral.to_vec()],
-            &aad,
-            token.as_bytes(),
-        ),
-    }
+/// Seal an enrollment token to the soliciting device.
+fn encrypt_pair_offer(token: &str, recipient: [u8; 32]) -> anyhow::Result<Vec<u8>> {
+    Ok(wrap_v2(&tilo_seal::hpke::seal(
+        &device_sealing_public(recipient)?,
+        tilo_seal::Label::RelayEnrollOffer,
+        &pair_offer_aad(recipient),
+        token.as_bytes(),
+    )?))
 }
 
 fn decrypt_pair_offer(
@@ -1232,21 +1173,12 @@ fn decrypt_pair_offer(
     let recipient_public = recipient.verifying_key().to_bytes();
     let secret = device_sealing_secret(recipient);
     let aad = pair_offer_aad(recipient_public);
-    let plaintext = match v2_body(bytes) {
-        Some(body) => {
+    let plaintext = v2_body(bytes)
+        .and_then(|body| {
             tilo_seal::hpke::open_bytes(&secret, tilo_seal::Label::RelayEnrollOffer, &aad, body)
-                .map_err(anyhow::Error::from)
-        }
-        None => open_v1(
-            bytes,
-            &secret,
-            PAIR_DOMAIN,
-            |ephemeral| vec![recipient_public.to_vec(), ephemeral.to_vec()],
-            |_| aad.clone(),
-        )
-        .map(|(plaintext, _)| plaintext),
-    }
-    .map_err(|_| anyhow::anyhow!("nearby pairing offer was not encrypted for this server"))?;
+                .ok()
+        })
+        .ok_or_else(|| anyhow::anyhow!("nearby pairing offer was not encrypted for this server"))?;
     String::from_utf8(plaintext.to_vec()).context("nearby pairing offer is not text")
 }
 
@@ -1257,7 +1189,7 @@ fn response_aad(token_nonce: [u8; 16], recipient: [u8; 32]) -> Vec<u8> {
     aad
 }
 
-/// Seal an enrollment request to the issuing device (always v2). Returns
+/// Seal an enrollment request to the issuing device. Returns
 /// the envelope and the secret its response will be sealed to.
 fn encrypt_request(
     request: &Request,
@@ -1277,47 +1209,32 @@ fn encrypt_request(
     Ok((wrap_v2(&sealed), response_secret))
 }
 
-/// Open an enrollment request of either wire version, returning where its
-/// response must be sealed to (which also fixes the response's version).
+/// Open an enrollment request, returning where its response must be sealed
+/// to.
 fn decrypt_request(
     bytes: &[u8],
     issuer_device: &ed25519_dalek::SigningKey,
 ) -> anyhow::Result<(Request, ResponseRoute)> {
     let secret = device_sealing_secret(issuer_device);
     let not_for_us = || anyhow::anyhow!("enrollment request was not encrypted for this issuer");
-    if let Some(body) = v2_body(bytes) {
-        let plaintext = tilo_seal::hpke::open_bytes(
-            &secret,
-            tilo_seal::Label::RelayEnrollRequest,
-            &v2_header(),
-            body,
-        )
-        .map_err(|_| not_for_us())?;
-        let decoded: RequestV2Owned = postcard::from_bytes(&plaintext)?;
-        return Ok((
-            decoded.request,
-            ResponseRoute::V2 {
-                response_public_key: decoded.response_public_key,
-            },
-        ));
-    }
-    let (plaintext, ephemeral_public_key) = open_v1(
-        bytes,
+    let body = v2_body(bytes).ok_or_else(not_for_us)?;
+    let plaintext = tilo_seal::hpke::open_bytes(
         &secret,
-        REQUEST_KEY_DOMAIN_V1,
-        |ephemeral| vec![ephemeral.to_vec()],
-        |ephemeral| ephemeral.to_vec(),
+        tilo_seal::Label::RelayEnrollRequest,
+        &v2_header(),
+        body,
     )
     .map_err(|_| not_for_us())?;
+    let decoded: RequestV2Owned = postcard::from_bytes(&plaintext)?;
     Ok((
-        postcard::from_bytes(&plaintext)?,
-        ResponseRoute::V1 {
-            requester_ephemeral_public_key: ephemeral_public_key,
+        decoded.request,
+        ResponseRoute {
+            response_public_key: decoded.response_public_key,
         },
     ))
 }
 
-/// Seal the signed response to the requester, mirroring its wire version.
+/// Seal the signed response to the requester.
 fn encrypt_response(
     response: &Response,
     token_nonce: [u8; 16],
@@ -1326,25 +1243,12 @@ fn encrypt_response(
 ) -> anyhow::Result<Vec<u8>> {
     let plaintext = zeroize::Zeroizing::new(postcard::to_stdvec(response)?);
     let aad = response_aad(token_nonce, recipient);
-    match route {
-        ResponseRoute::V2 {
-            response_public_key,
-        } => Ok(wrap_v2(&tilo_seal::hpke::seal(
-            &tilo_seal::PublicKey::from_bytes(response_public_key),
-            tilo_seal::Label::RelayEnrollResponse,
-            &aad,
-            &plaintext,
-        )?)),
-        ResponseRoute::V1 {
-            requester_ephemeral_public_key,
-        } => seal_v1_for_transition(
-            &tilo_seal::PublicKey::from_bytes(requester_ephemeral_public_key),
-            RESPONSE_KEY_DOMAIN_V1,
-            |_| vec![token_nonce.to_vec(), recipient.to_vec()],
-            &aad,
-            &plaintext,
-        ),
-    }
+    Ok(wrap_v2(&tilo_seal::hpke::seal(
+        &tilo_seal::PublicKey::from_bytes(route.response_public_key),
+        tilo_seal::Label::RelayEnrollResponse,
+        &aad,
+        &plaintext,
+    )?))
 }
 
 fn decrypt_response(
@@ -1354,24 +1258,17 @@ fn decrypt_response(
     response_secret: &tilo_seal::SecretKey,
 ) -> anyhow::Result<Response> {
     let aad = response_aad(token_nonce, recipient);
-    let plaintext = match v2_body(bytes) {
-        Some(body) => tilo_seal::hpke::open_bytes(
-            response_secret,
-            tilo_seal::Label::RelayEnrollResponse,
-            &aad,
-            body,
-        )
-        .map_err(anyhow::Error::from),
-        None => open_v1(
-            bytes,
-            response_secret,
-            RESPONSE_KEY_DOMAIN_V1,
-            |_| vec![token_nonce.to_vec(), recipient.to_vec()],
-            |_| aad.clone(),
-        )
-        .map(|(plaintext, _)| plaintext),
-    }
-    .map_err(|_| anyhow::anyhow!("enrollment response was not encrypted for this device"))?;
+    let plaintext = v2_body(bytes)
+        .and_then(|body| {
+            tilo_seal::hpke::open_bytes(
+                response_secret,
+                tilo_seal::Label::RelayEnrollResponse,
+                &aad,
+                body,
+            )
+            .ok()
+        })
+        .ok_or_else(|| anyhow::anyhow!("enrollment response was not encrypted for this device"))?;
     postcard::from_bytes(&plaintext).map_err(Into::into)
 }
 
@@ -1530,31 +1427,34 @@ fn join(
         .with_context(|| format!("read {}", token_file.display()))?;
     join_with_token(
         token_text.trim(),
-        identity_root,
-        label,
-        timeout,
-        EnrollmentKind::HomePeer,
-        Some(home_peer_output),
-        None,
-        None,
+        JoinOptions {
+            identity_root,
+            label,
+            timeout,
+            kind: EnrollmentKind::HomePeer,
+            home_peer_output: Some(home_peer_output),
+            identity_dir: None,
+            requester_lease: None,
+            port: NEARBY_PORT,
+        },
     )
 }
 
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "the join state machine keeps all authenticated inputs visible at its single protocol boundary"
+    reason = "one ordered join exchange; each step relies on the token and identity checks before it"
 )]
-fn join_with_token(
-    token_text: &str,
-    identity_root: &std::path::Path,
-    label: &str,
-    timeout: u64,
-    kind: EnrollmentKind,
-    home_peer_output: Option<&std::path::Path>,
-    identity_dir: Option<&std::path::Path>,
-    requester_lease: Option<tilo_relay::ProcessLease>,
-) -> anyhow::Result<()> {
+fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result<()> {
+    let JoinOptions {
+        identity_root,
+        label,
+        timeout,
+        kind,
+        home_peer_output,
+        identity_dir,
+        requester_lease,
+        port,
+    } = options;
     validate_requester(requester_lease)?;
     let token = decode_enrollment_token(token_text).context("decode enrollment token")?;
     verify_enrollment_token(&token, now_ns()?).context("verify enrollment token")?;
@@ -1591,7 +1491,7 @@ fn join_with_token(
     socket.set_broadcast(true)?;
     socket.set_read_timeout(Some(Duration::from_secs(2)))?;
     let deadline = deadline_after(socket_timeout(timeout))?;
-    let destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, PORT);
+    let destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, port);
     let mut reply = vec![0_u8; MAX_PACKET];
     while std::time::Instant::now() < deadline {
         validate_requester(requester_lease)?;
@@ -1630,7 +1530,7 @@ fn join_with_token(
                         .context("approving device omitted home-peer configuration")?;
                     let _: fs::full_replica::HomePeerSet = toml::from_str(home_peer_toml)
                         .context("approving device returned an invalid home-peer configuration")?;
-                    atomic_file::write(
+                    tilo_files::native::atomic::write(
                         home_peer_output.context("home-peer output is required")?,
                         home_peer_toml.as_bytes(),
                     )?;
@@ -1695,7 +1595,7 @@ fn join_with_token(
                                         // projection, but still waits for
                                         // Finalized before changing its active
                                         // identity binding.
-                                        atomic_file::write(
+                                        tilo_files::native::atomic::write(
                                             &paths.user_pubkey,
                                             &response.payload.cert.user_public_key,
                                         )?;
@@ -1785,23 +1685,22 @@ fn join_with_token(
 }
 
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "the pairing state machine keeps its UI outputs and authenticated requester lease at one boundary"
+    reason = "one ordered pairing exchange; the requester lease is revalidated at every step of it"
 )]
-fn pair(
-    identity_root: &std::path::Path,
-    label: &str,
-    timeout: u64,
-    kind: EnrollmentKind,
-    home_peer_output: Option<&std::path::Path>,
-    identity_dir: Option<&std::path::Path>,
-    status_file: Option<&std::path::Path>,
-    requester_lease: Option<tilo_relay::ProcessLease>,
-) -> anyhow::Result<()> {
-    if kind == EnrollmentKind::PersonalDevice && requester_lease.is_none() {
-        bail!("personal-device pairing requires a live first-use requester");
-    }
+fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyhow::Result<()> {
+    let JoinOptions {
+        identity_root,
+        label,
+        timeout,
+        kind,
+        requester_lease,
+        port,
+        ..
+    } = options;
+    // Desktop first-use always supplies a compositor lease. Agent hosts pass
+    // `--headless` so the lease is absent on purpose; validate_requester is a
+    // no-op for None.
     validate_requester(requester_lease)?;
     let paths = IdentityPaths::under(identity_root);
     paths.ensure_directories()?;
@@ -1812,7 +1711,7 @@ fn pair(
         bail!("home-server label must be a printable single-line name");
     }
     let solicitation = postcard::to_stdvec(&PairSolicitation {
-        magic: PAIR_MAGIC_V2,
+        magic: PAIR_MAGIC,
         device_public_key: device.verifying_key().to_bytes(),
         relay_service_node_id,
         label: label.clone(),
@@ -1820,7 +1719,7 @@ fn pair(
     })?;
     let code = pairing_code(device.verifying_key().to_bytes(), relay_service_node_id);
     if let Some(path) = status_file {
-        atomic_file::write_with_mode(
+        tilo_files::native::atomic::write_with_mode(
             path,
             &serde_json::to_vec(&serde_json::json!({
                 "state": "waiting_for_approval",
@@ -1837,7 +1736,7 @@ fn pair(
     let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))?;
     socket.set_broadcast(true)?;
     socket.set_read_timeout(Some(Duration::from_secs(2)))?;
-    let destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, PORT);
+    let destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, port);
     let deadline = deadline_after(socket_timeout(timeout))?;
     let mut reply = vec![0_u8; MAX_PACKET];
     while std::time::Instant::now() < deadline {
@@ -1865,16 +1764,13 @@ fn pair(
                 println!("Nearby Tilo device approved code {code}");
                 join_with_token(
                     token_text.trim(),
-                    identity_root,
-                    &label,
-                    timeout,
-                    kind,
-                    home_peer_output,
-                    identity_dir,
-                    requester_lease,
+                    JoinOptions {
+                        label: &label,
+                        ..options
+                    },
                 )?;
                 if let Some(path) = status_file {
-                    atomic_file::write_with_mode(
+                    tilo_files::native::atomic::write_with_mode(
                         path,
                         &serde_json::to_vec(&serde_json::json!({
                             "state": "complete",
@@ -1899,6 +1795,22 @@ fn pair(
     bail!("no trusted Tilo device approved nearby pairing before the window closed")
 }
 
+/// How one requester-side enrollment runs: where its identity lives, the
+/// label it asks for, the window, the device role, where a home peer's
+/// descriptor goes, the requester lease that must stay live and the
+/// nearby port.
+#[derive(Clone, Copy)]
+struct JoinOptions<'a> {
+    identity_root: &'a std::path::Path,
+    label: &'a str,
+    timeout: u64,
+    kind: EnrollmentKind,
+    home_peer_output: Option<&'a std::path::Path>,
+    identity_dir: Option<&'a std::path::Path>,
+    requester_lease: Option<tilo_relay::ProcessLease>,
+    port: u16,
+}
+
 struct ApprovalOptions<'a> {
     identity_root: &'a std::path::Path,
     identity_dir: Option<&'a std::path::Path>,
@@ -1909,7 +1821,10 @@ struct ApprovalOptions<'a> {
     expected_device: Option<&'a str>,
     expected_service: Option<&'a str>,
     kind: EnrollmentKind,
-    ready: Option<&'a std::sync::mpsc::Sender<()>>,
+    /// Port the listener binds; 0 lets the OS choose one.
+    port: u16,
+    /// Receives the bound listener port once the approver is listening.
+    ready: Option<&'a std::sync::mpsc::Sender<u16>>,
 }
 
 struct ApprovalIdentity {
@@ -2051,12 +1966,12 @@ fn handle_solicitation(
             token_text,
         });
     }
-    if let (Some(selection), Some(version)) = (selected, solicitation_version(solicitation)) {
-        // Each solicitation is answered in the offer version it asked for.
+    if let Some(selection) = selected
+        && valid_solicitation(solicitation)
+    {
         let offer = encrypt_pair_offer(
             &selection.token_text,
             selection.solicitation.device_public_key,
-            version,
         )?;
         socket.send_to(&offer, sender)?;
     }
@@ -2341,10 +2256,10 @@ fn commit_approval(
 
 fn approve(options: &ApprovalOptions<'_>) -> anyhow::Result<()> {
     let identity = load_approval_identity(options)?;
-    let socket = bind_pair_listener()?;
+    let socket = bind_pair_listener(options.port)?;
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
     if let Some(ready) = options.ready {
-        let _ = ready.send(());
+        let _ = ready.send(socket.local_addr()?.port());
     }
     let mut packet = vec![0_u8; MAX_PACKET];
     let pending = receive_approval_request(&socket, &mut packet, options, &identity)?;
@@ -2368,7 +2283,191 @@ fn approve(options: &ApprovalOptions<'_>) -> anyhow::Result<()> {
     commit_approval(&session, options, &identity, &pending, &prepared)
 }
 
-fn main() -> anyhow::Result<()> {
+fn device_key(identity_root: &std::path::Path) -> anyhow::Result<()> {
+    let paths = IdentityPaths::under(identity_root);
+    let (device, _) = tilo_user_identity::persist::load_or_create_device_key(&paths)?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "device_public_key": hex::encode(device.verifying_key().to_bytes()),
+            "relay_service_node_id": hex::encode(tilo_relay::daemon::relay_service_node_id(&device)),
+        })
+    );
+    Ok(())
+}
+
+/// The personal projection a certificate alone implies: the public identity
+/// of its root, and a fleet of this device.
+fn out_of_band_payload(
+    cert: DeviceCert,
+    device: &ed25519_dalek::SigningKey,
+) -> anyhow::Result<ResponsePayload> {
+    let user = cert.user_public_key;
+    let fleet = FleetProjection {
+        schema_version: 1,
+        identity_id: hex::encode(user),
+        certificates: vec![cert.clone()],
+        revocations: Vec::new(),
+    };
+    let digest = blake3::hash(&tilo_user_identity::canonical::canonical_bytes(&cert)?);
+    let mut nonce = [0; 16];
+    nonce.copy_from_slice(&digest.as_bytes()[..16]);
+    Ok(ResponsePayload {
+        nonce,
+        recipient_device_public_key: cert.device_public_key,
+        relay_service_node_id: tilo_relay::daemon::relay_service_node_id(device),
+        home_peer_toml: None,
+        public_identity_json: Some(public_identity_record(user, "My Tilo identity")?),
+        fleet_json: Some(serde_json::to_vec_pretty(&fleet)?),
+        home_peers_json: Some(b"[]".to_vec()),
+        cert,
+    })
+}
+
+fn certify(
+    root_key: &std::path::Path,
+    device: &str,
+    label: &str,
+    capabilities: &[String],
+    out: &std::path::Path,
+) -> anyhow::Result<()> {
+    let root = tilo_user_identity::persist::read_owned_signing_key(root_key)
+        .with_context(|| format!("read {}", root_key.display()))?;
+    let device_public_key: [u8; 32] = hex::decode(device.trim())
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .context("--device must be a 32-byte hex public key")?;
+    let mut granted = DeviceCapabilities {
+        can_own_workspaces: false,
+        can_admit_devices: false,
+        can_act_as_host: false,
+        can_read_all_workspaces: false,
+        foreign: false,
+    };
+    for capability in capabilities {
+        match capability.as_str() {
+            "own" => granted.can_own_workspaces = true,
+            "admit" => granted.can_admit_devices = true,
+            "host" => granted.can_act_as_host = true,
+            "read-all" => granted.can_read_all_workspaces = true,
+            other => bail!("unknown capability {other}: expected own, admit, host or read-all"),
+        }
+    }
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key,
+        device_label: label.into(),
+        capabilities: granted,
+        issued_at_ns: now_ns()?,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut cert, &root)?;
+    tilo_user_identity::persist::write_device_cert(out, &cert)?;
+    Ok(())
+}
+
+fn install_cert(
+    identity_root: &std::path::Path,
+    identity_dir: &std::path::Path,
+    cert_path: &std::path::Path,
+) -> anyhow::Result<()> {
+    let cert = tilo_user_identity::persist::read_device_cert(cert_path)
+        .with_context(|| format!("read {}", cert_path.display()))?;
+    verify_device_cert_at(&cert, now_ns()?).context("the certificate does not verify")?;
+    let paths = IdentityPaths::under(identity_root);
+    let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+        .context("this device has no key; run device-key first")?;
+    if device.verifying_key().to_bytes() != cert.device_public_key {
+        bail!("the certificate names another device");
+    }
+    if let Ok(user) = tilo_user_identity::persist::read_public_key(&paths.user_pubkey)
+        && user != cert.user_public_key
+    {
+        bail!("this device already belongs to another identity");
+    }
+    let record = install_personal_projection(
+        identity_root,
+        identity_dir,
+        &out_of_band_payload(cert, &device)?,
+    )?;
+    println!("installed {}", record.display());
+    Ok(())
+}
+
+fn out_of_band(command: OutOfBand) -> anyhow::Result<()> {
+    match command {
+        OutOfBand::DeviceKey { identity_root } => device_key(&identity_root),
+        OutOfBand::Certify {
+            root_key,
+            device,
+            label,
+            capabilities,
+            out,
+        } => certify(&root_key, &device, &label, &capabilities, &out),
+        OutOfBand::InstallCert {
+            identity_root,
+            identity_dir,
+            cert,
+        } => install_cert(&identity_root, &identity_dir, &cert),
+    }
+}
+
+fn main() -> anyhow::Result<std::process::ExitCode> {
+    // Automerge isolation workers re-enter this binary; serve them first.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        return Ok(std::process::ExitCode::from(code));
+    }
+    run().map(|()| std::process::ExitCode::SUCCESS)
+}
+
+fn personal_device_requester_lease(
+    headless: bool,
+    requester_pid: Option<u32>,
+    requester_start_time: Option<u64>,
+) -> anyhow::Result<Option<tilo_relay::ProcessLease>> {
+    match (headless, requester_pid, requester_start_time) {
+        (true, None, None) => Ok(None),
+        (true, _, _) => {
+            bail!("--headless cannot be combined with --requester-pid or --requester-start-time")
+        }
+        (false, Some(pid), Some(start_time)) => {
+            Ok(Some(tilo_relay::ProcessLease::from_parts(pid, start_time)))
+        }
+        (false, _, _) => bail!(
+            "personal-device pairing requires --requester-pid and --requester-start-time unless --headless"
+        ),
+    }
+}
+
+fn pair_device_cli(
+    identity_root: &std::path::Path,
+    identity_dir: &std::path::Path,
+    label: &str,
+    timeout: u64,
+    status_file: Option<&std::path::Path>,
+    headless: bool,
+    requester_pid: Option<u32>,
+    requester_start_time: Option<u64>,
+) -> anyhow::Result<()> {
+    let requester_lease =
+        personal_device_requester_lease(headless, requester_pid, requester_start_time)?;
+    pair(
+        JoinOptions {
+            identity_root,
+            label,
+            timeout,
+            kind: EnrollmentKind::PersonalDevice,
+            home_peer_output: None,
+            identity_dir: Some(identity_dir),
+            requester_lease,
+            port: NEARBY_PORT,
+        },
+        status_file,
+    )
+}
+
+fn run() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Discover { timeout } => discover(timeout, EnrollmentKind::HomePeer),
         Command::DiscoverDevice { timeout } => discover(timeout, EnrollmentKind::PersonalDevice),
@@ -2391,13 +2490,16 @@ fn main() -> anyhow::Result<()> {
             timeout,
             home_peer_output,
         } => pair(
-            &identity_root,
-            &label,
-            timeout,
-            EnrollmentKind::HomePeer,
-            Some(&home_peer_output),
-            None,
-            None,
+            JoinOptions {
+                identity_root: &identity_root,
+                label: &label,
+                timeout,
+                kind: EnrollmentKind::HomePeer,
+                home_peer_output: Some(&home_peer_output),
+                identity_dir: None,
+                requester_lease: None,
+                port: NEARBY_PORT,
+            },
             None,
         ),
         Command::PairDevice {
@@ -2406,20 +2508,18 @@ fn main() -> anyhow::Result<()> {
             label,
             timeout,
             status_file,
+            headless,
             requester_pid,
             requester_start_time,
-        } => pair(
+        } => pair_device_cli(
             &identity_root,
+            &identity_dir,
             &label,
             timeout,
-            EnrollmentKind::PersonalDevice,
-            None,
-            Some(&identity_dir),
             status_file.as_deref(),
-            Some(tilo_relay::ProcessLease::from_parts(
-                requester_pid,
-                requester_start_time,
-            )),
+            headless,
+            requester_pid,
+            requester_start_time,
         ),
         Command::Approve {
             identity_root,
@@ -2439,6 +2539,7 @@ fn main() -> anyhow::Result<()> {
             expected_device: expected_device.as_deref(),
             expected_service: expected_service.as_deref(),
             kind: EnrollmentKind::HomePeer,
+            port: NEARBY_PORT,
             ready: None,
         }),
         Command::ApproveDevice {
@@ -2457,8 +2558,10 @@ fn main() -> anyhow::Result<()> {
             expected_device: expected_device.as_deref(),
             expected_service: expected_service.as_deref(),
             kind: EnrollmentKind::PersonalDevice,
+            port: NEARBY_PORT,
             ready: None,
         }),
+        Command::OutOfBand(command) => out_of_band(command),
     }
 }
 
@@ -2468,6 +2571,77 @@ mod tests {
     use tilo_user_identity::{
         DeviceCapabilities, RevocationEntry, RevocationReason, sign_revocation_entry,
     };
+
+    #[test]
+    fn an_out_of_band_certificate_joins_its_identity() {
+        let identity_root = tempfile::tempdir().unwrap();
+        let identity_dir = tempfile::tempdir().unwrap();
+        device_key(identity_root.path()).unwrap();
+        let paths = IdentityPaths::under(identity_root.path());
+        let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey).unwrap();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+        let user = root.verifying_key().to_bytes();
+        let issue = |device_public_key: [u8; 32], root: &ed25519_dalek::SigningKey| {
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key,
+                device_label: "Node".into(),
+                capabilities: DeviceCapabilities::host(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut cert, root).unwrap();
+            let path = identity_dir
+                .path()
+                .join(format!("{}.cert", hex::encode(&cert.signature[..8])));
+            tilo_user_identity::persist::write_device_cert(&path, &cert).unwrap();
+            path
+        };
+
+        let other_device = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+        let foreign = issue(other_device.verifying_key().to_bytes(), &root);
+        assert!(install_cert(identity_root.path(), identity_dir.path(), &foreign).is_err());
+        assert!(!paths.device_cert.exists());
+
+        let root_key = identity_dir.path().join("root.key");
+        tilo_user_identity::persist::write_signing_key(&root_key, &root).unwrap();
+        let own = identity_dir.path().join("own.cert");
+        let capabilities = ["own", "host", "read-all"].map(String::from);
+        certify(
+            &root_key,
+            &hex::encode(device.verifying_key().to_bytes()),
+            "Node",
+            &capabilities,
+            &own,
+        )
+        .unwrap();
+        install_cert(identity_root.path(), identity_dir.path(), &own).unwrap();
+        // Delivered again (a restart before the launcher noticed): unchanged.
+        install_cert(identity_root.path(), identity_dir.path(), &own).unwrap();
+        let installed = tilo_user_identity::persist::read_device_cert(&paths.device_cert).unwrap();
+        assert_eq!(installed.user_public_key, user);
+        assert!(
+            installed.capabilities.can_act_as_host && !installed.capabilities.can_admit_devices
+        );
+        assert_eq!(
+            tilo_user_identity::persist::read_public_key(&paths.user_pubkey).unwrap(),
+            user
+        );
+        let record =
+            runtime_identity::load_from_path(identity_record_path(identity_dir.path(), user))
+                .unwrap();
+        assert_eq!(record.group_public_key(), user);
+        assert!(record.sign(b"root-only operation").is_err());
+
+        let stranger = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
+        let takeover = issue(device.verifying_key().to_bytes(), &stranger);
+        assert!(install_cert(identity_root.path(), identity_dir.path(), &takeover).is_err());
+        assert_eq!(
+            tilo_user_identity::persist::read_public_key(&paths.user_pubkey).unwrap(),
+            user
+        );
+    }
 
     fn personal_payload(
         root: &ed25519_dalek::SigningKey,
@@ -2528,497 +2702,507 @@ mod tests {
     }
 
     #[test]
-    fn expired_device_certificate_is_not_projected_into_personal_state() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[73; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[74; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "Expired laptop".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: Some(2),
-            signature: [0; 64],
-        };
-        sign_device_cert(&mut cert, &root).unwrap();
-        let identity = tempfile::tempdir().unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn enrollment_responses_are_signed_encrypted_and_certificate_bound() {
+        // Phase `expired_device_certificate_is_not_projected_into_personal_state`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[73; 32]);
+            let device = ed25519_dalek::SigningKey::from_bytes(&[74; 32]);
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: "Expired laptop".into(),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 1,
+                expires_at_ns: Some(2),
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut cert, &root).unwrap();
+            let identity = tempfile::tempdir().unwrap();
 
-        let error = project_personal_device(identity.path(), &cert).unwrap_err();
+            let error = project_personal_device(identity.path(), &cert).unwrap_err();
 
-        assert!(error.to_string().contains("certificate validity"));
-        assert!(!fleet_path(identity.path(), cert.user_public_key).exists());
-    }
+            assert!(error.to_string().contains("certificate validity"));
+            assert!(!fleet_path(identity.path(), cert.user_public_key).exists());
+        }
+        // Phase `revoked_device_cannot_use_approval_capability`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[75; 32]);
+            let device = ed25519_dalek::SigningKey::from_bytes(&[76; 32]);
+            let user = root.verifying_key().to_bytes();
+            let device_public_key = device.verifying_key().to_bytes();
+            let mut revocation = RevocationEntry {
+                user_public_key: user,
+                revoked_device_public_key: device_public_key,
+                revoked_at_ns: 10,
+                reason: RevocationReason::Compromised,
+                signature: [0; 64],
+            };
+            sign_revocation_entry(&mut revocation, &root).unwrap();
+            let identity = tempfile::tempdir().unwrap();
+            tilo_files::native::atomic::write_creating_parent(
+                &fleet_path(identity.path(), user),
+                &serde_json::to_vec(&FleetProjection {
+                    schema_version: 1,
+                    identity_id: hex::encode(user),
+                    certificates: Vec::new(),
+                    revocations: vec![revocation],
+                })
+                .unwrap(),
+            )
+            .unwrap();
 
-    #[test]
-    fn revoked_device_cannot_use_approval_capability() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[75; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[76; 32]);
-        let user = root.verifying_key().to_bytes();
-        let device_public_key = device.verifying_key().to_bytes();
-        let mut revocation = RevocationEntry {
-            user_public_key: user,
-            revoked_device_public_key: device_public_key,
-            revoked_at_ns: 10,
-            reason: RevocationReason::Compromised,
-            signature: [0; 64],
-        };
-        sign_revocation_entry(&mut revocation, &root).unwrap();
-        let identity = tempfile::tempdir().unwrap();
-        atomic_file::write_creating_parent(
-            &fleet_path(identity.path(), user),
-            &serde_json::to_vec(&FleetProjection {
-                schema_version: 1,
-                identity_id: hex::encode(user),
-                certificates: Vec::new(),
-                revocations: vec![revocation],
-            })
-            .unwrap(),
-        )
-        .unwrap();
+            assert!(fleet_revokes_device(identity.path(), user, device_public_key).unwrap());
+        }
+        // Phase `signed_response_rejects_bundle_tampering`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            let mut response = sign_response(payload(&root), &root).unwrap();
+            verify_response(&response, root.verifying_key().to_bytes()).unwrap();
+            response
+                .payload
+                .home_peer_toml
+                .as_mut()
+                .unwrap()
+                .push_str("\n# changed");
+            assert!(verify_response(&response, root.verifying_key().to_bytes()).is_err());
+        }
+        // Phase `approval_target_requires_a_complete_pair_of_bounded_ids`.
+        {
+            let mut options = ApprovalOptions {
+                identity_root: std::path::Path::new(""),
+                identity_dir: None,
+                timeout: 1,
+                workspace_cache: std::path::Path::new(""),
+                acl: std::path::Path::new(""),
+                relay_workspace_ids: &[],
+                expected_device: None,
+                expected_service: None,
+                kind: EnrollmentKind::HomePeer,
+                port: 0,
+                ready: None,
+            };
+            assert_eq!(expected_pair(&options).unwrap(), None);
 
-        assert!(fleet_revokes_device(identity.path(), user, device_public_key).unwrap());
-    }
+            options.expected_device = Some("00");
+            assert!(expected_pair(&options).is_err());
 
-    #[test]
-    fn signed_response_rejects_bundle_tampering() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let mut response = sign_response(payload(&root), &root).unwrap();
-        verify_response(&response, root.verifying_key().to_bytes()).unwrap();
-        response
-            .payload
-            .home_peer_toml
-            .as_mut()
-            .unwrap()
-            .push_str("\n# changed");
-        assert!(verify_response(&response, root.verifying_key().to_bytes()).is_err());
-    }
-
-    #[test]
-    fn approval_target_requires_a_complete_pair_of_bounded_ids() {
-        let mut options = ApprovalOptions {
-            identity_root: std::path::Path::new(""),
-            identity_dir: None,
-            timeout: 1,
-            workspace_cache: std::path::Path::new(""),
-            acl: std::path::Path::new(""),
-            relay_workspace_ids: &[],
-            expected_device: None,
-            expected_service: None,
-            kind: EnrollmentKind::HomePeer,
-            ready: None,
-        };
-        assert_eq!(expected_pair(&options).unwrap(), None);
-
-        options.expected_device = Some("00");
-        assert!(expected_pair(&options).is_err());
-
-        let device = hex::encode([7; 32]);
-        let service = hex::encode([8; 32]);
-        options.expected_device = Some(&device);
-        options.expected_service = Some(&service);
-        assert_eq!(expected_pair(&options).unwrap(), Some(([7; 32], [8; 32])));
-    }
-
-    #[test]
-    fn provisioning_bundle_is_encrypted_for_the_recipient_device() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let mut request_seed = [0_u8; 32];
-        request_seed[0] = 11;
-        let request_ephemeral = tilo_seal::SecretKey::from_bytes(request_seed);
-        let request_public = request_ephemeral.public_key().unwrap().to_bytes();
-        let mut payload = payload(&root);
-        payload.home_peer_toml = Some("ticket = 'secret-ticket-material'".into());
-        let signed = sign_response(payload, &root).unwrap();
-        let encrypted = encrypt_response(
-            &signed,
-            [3; 16],
-            device.verifying_key().to_bytes(),
-            ResponseRoute::V2 {
-                response_public_key: request_public,
-            },
-        )
-        .unwrap();
-        assert!(v2_body(&encrypted).is_some());
-        assert!(
-            !encrypted
-                .windows(b"secret-ticket-material".len())
-                .any(|window| window == b"secret-ticket-material")
-        );
-        let decrypted = decrypt_response(
-            &encrypted,
-            [3; 16],
-            device.verifying_key().to_bytes(),
-            &request_ephemeral,
-        )
-        .unwrap();
-        verify_response(&decrypted, root.verifying_key().to_bytes()).unwrap();
-        let wrong = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
-        assert!(
-            decrypt_response(
+            let device = hex::encode([7; 32]);
+            let service = hex::encode([8; 32]);
+            options.expected_device = Some(&device);
+            options.expected_service = Some(&service);
+            assert_eq!(expected_pair(&options).unwrap(), Some(([7; 32], [8; 32])));
+        }
+        // Phase `provisioning_bundle_is_encrypted_for_the_recipient_device`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+            let mut request_seed = [0_u8; 32];
+            request_seed[0] = 11;
+            let request_ephemeral = tilo_seal::SecretKey::from_bytes(request_seed);
+            let request_public = request_ephemeral.public_key().unwrap().to_bytes();
+            let mut payload = payload(&root);
+            payload.home_peer_toml = Some("ticket = 'secret-ticket-material'".into());
+            let signed = sign_response(payload, &root).unwrap();
+            let encrypted = encrypt_response(
+                &signed,
+                [3; 16],
+                device.verifying_key().to_bytes(),
+                ResponseRoute {
+                    response_public_key: request_public,
+                },
+            )
+            .unwrap();
+            assert!(v2_body(&encrypted).is_some());
+            assert!(
+                !encrypted
+                    .windows(b"secret-ticket-material".len())
+                    .any(|window| window == b"secret-ticket-material")
+            );
+            let decrypted = decrypt_response(
                 &encrypted,
                 [3; 16],
-                wrong.verifying_key().to_bytes(),
+                device.verifying_key().to_bytes(),
                 &request_ephemeral,
             )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn bearer_token_is_encrypted_for_the_issuing_device() {
-        let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
-        let request = Request {
-            token: "reusable-secret-token".into(),
-            device_public_key: [7; 32],
-            relay_service_node_id: [8; 32],
-            label: "NAS".into(),
-            kind: EnrollmentKind::HomePeer,
-        };
-        let (encrypted, _) = encrypt_request(&request, issuer.verifying_key().to_bytes()).unwrap();
-        assert!(
-            !encrypted
-                .windows(b"reusable-secret-token".len())
-                .any(|window| window == b"reusable-secret-token")
-        );
-        let (decrypted, _) = decrypt_request(&encrypted, &issuer).unwrap();
-        assert_eq!(decrypted.token, request.token);
-        let wrong = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
-        assert!(decrypt_request(&encrypted, &wrong).is_err());
-    }
-
-    #[test]
-    fn personal_projection_loads_without_root_signing_material() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[19; 32]);
-        let user = root.verifying_key().to_bytes();
-        let device = ed25519_dalek::SigningKey::from_bytes(&[23; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: user,
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "New laptop".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-        };
-        sign_device_cert(&mut cert, &root).unwrap();
-        let fleet = FleetProjection {
-            schema_version: 1,
-            identity_id: hex::encode(user),
-            certificates: vec![cert.clone()],
-            revocations: Vec::new(),
-        };
-        let payload = ResponsePayload {
-            nonce: [1; 16],
-            recipient_device_public_key: cert.device_public_key,
-            relay_service_node_id: [8; 32],
-            cert,
-            home_peer_toml: None,
-            public_identity_json: Some(public_identity_record(user, "My Tilo identity").unwrap()),
-            fleet_json: Some(serde_json::to_vec_pretty(&fleet).unwrap()),
-            home_peers_json: Some(b"[]".to_vec()),
-        };
-        let identity_root = tempfile::tempdir().unwrap();
-        let identity_dir = tempfile::tempdir().unwrap();
-        let record =
-            install_personal_projection(identity_root.path(), identity_dir.path(), &payload)
-                .unwrap();
-        let loaded = runtime_identity::load_from_path(record).unwrap();
-        assert_eq!(loaded.group_public_key(), user);
-        assert!(!loaded.is_single_device());
-        assert!(loaded.sign(b"root-only operation").is_err());
-        assert_eq!(
-            std::fs::read(identity_root.path().join("home-peers.json")).unwrap(),
-            b"[]"
-        );
-        let registry: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(identity_dir.path().join("registry.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(registry["default_identity"], hex::encode(user));
-        #[cfg(unix)]
+            .unwrap();
+            verify_response(&decrypted, root.verifying_key().to_bytes()).unwrap();
+            let wrong = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+            assert!(
+                decrypt_response(
+                    &encrypted,
+                    [3; 16],
+                    wrong.verifying_key().to_bytes(),
+                    &request_ephemeral,
+                )
+                .is_err()
+            );
+        }
+        // Phase `bearer_token_is_encrypted_for_the_issuing_device`.
         {
-            use std::os::unix::fs::MetadataExt as _;
-            let uid = unsafe { libc::geteuid() };
-            assert_eq!(
-                std::fs::metadata(identity_dir.path().join("registry.json"))
-                    .unwrap()
-                    .uid(),
-                uid
+            let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+            let request = Request {
+                token: "reusable-secret-token".into(),
+                device_public_key: [7; 32],
+                relay_service_node_id: [8; 32],
+                label: "NAS".into(),
+                kind: EnrollmentKind::HomePeer,
+            };
+            let (encrypted, _) =
+                encrypt_request(&request, issuer.verifying_key().to_bytes()).unwrap();
+            assert!(
+                !encrypted
+                    .windows(b"reusable-secret-token".len())
+                    .any(|window| window == b"reusable-secret-token")
             );
-            assert_eq!(
-                std::fs::metadata(fleet_path(identity_dir.path(), user))
-                    .unwrap()
-                    .uid(),
-                uid
-            );
+            let (decrypted, _) = decrypt_request(&encrypted, &issuer).unwrap();
+            assert_eq!(decrypted.token, request.token);
+            let wrong = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+            assert!(decrypt_request(&encrypted, &wrong).is_err());
         }
     }
 
     #[test]
-    fn personal_enrollment_staging_keeps_an_existing_device_unchanged() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
-        let member = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
-        let old_root = ed25519_dalek::SigningKey::from_bytes(&[53; 32]);
-        let old_device = ed25519_dalek::SigningKey::from_bytes(&[54; 32]);
-        let identity_root = tempfile::tempdir().unwrap();
-        let identity_dir = tempfile::tempdir().unwrap();
-        let paths = IdentityPaths::under(identity_root.path());
-        paths.ensure_directories().unwrap();
-        tilo_user_identity::persist::write_public_key(
-            &paths.user_pubkey,
-            &old_root.verifying_key().to_bytes(),
-        )
-        .unwrap();
-        let mut old_cert = DeviceCert {
-            user_public_key: old_root.verifying_key().to_bytes(),
-            device_public_key: old_device.verifying_key().to_bytes(),
-            device_label: "Existing device".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-        };
-        sign_device_cert(&mut old_cert, &old_root).unwrap();
-        tilo_user_identity::persist::write_device_cert(&paths.device_cert, &old_cert).unwrap();
-        let before_key = std::fs::read(&paths.user_pubkey).unwrap();
-        let before_cert = std::fs::read(&paths.device_cert).unwrap();
-
-        let mut requester = std::process::Command::new("/bin/sh")
-            .args(["-c", "while :; do sleep 1; done"])
-            .spawn()
-            .unwrap();
-        let lease = tilo_relay::ProcessLease::capture(requester.id()).unwrap();
-        let payload = personal_payload(&root, &member, [9; 16]);
-        let (marker_path, marker) = stage_personal_enrollment(
-            identity_root.path(),
-            identity_dir.path(),
-            &paths,
-            &payload,
-            Some(lease),
-        )
-        .unwrap();
-        // This models an approval timeout: the recipient has a durable,
-        // retryable staging marker but no active identity mutation.
-        assert_eq!(std::fs::read(&paths.user_pubkey).unwrap(), before_key);
-        assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
-        assert!(marker_path.exists());
-        // A timeout/restart must not turn a merely prepared response into an
-        // active enrollment.
-        recover_personal_enrollments(
-            identity_root.path(),
-            identity_dir.path(),
-            &paths,
-            |_| Ok(()),
-        )
-        .unwrap();
-        assert_eq!(std::fs::read(&paths.user_pubkey).unwrap(), before_key);
-        assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
-
-        let marker = authorize_personal_commit(&marker_path, &marker, Some(lease)).unwrap();
-        assert!(
-            commit_staged_personal_enrollment(
-                identity_root.path(),
-                &paths,
-                &marker_path,
-                &marker,
-                |checkpoint| {
-                    lease.validate()?;
-                    if checkpoint == PersonalCommitCheckpoint::DefaultCert {
-                        bail!("simulated crash before default certificate")
-                    }
-                    Ok(())
-                },
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn personal_projection_publishes_only_live_valid_identity_state() {
+        // Phase `personal_enrollment_staging_keeps_an_existing_device_unchanged`.
+        fn personal_enrollment_staging_keeps_an_existing_device_unchanged() {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
+            let member = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
+            let old_root = ed25519_dalek::SigningKey::from_bytes(&[53; 32]);
+            let old_device = ed25519_dalek::SigningKey::from_bytes(&[54; 32]);
+            let identity_root = tempfile::tempdir().unwrap();
+            let identity_dir = tempfile::tempdir().unwrap();
+            let paths = IdentityPaths::under(identity_root.path());
+            paths.ensure_directories().unwrap();
+            tilo_user_identity::persist::write_public_key(
+                &paths.user_pubkey,
+                &old_root.verifying_key().to_bytes(),
             )
-            .is_err()
-        );
-        assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
-        requester.kill().unwrap();
-        requester.wait().unwrap();
-        assert!(lease.validate().is_err());
-        // `commit_ready` is the durable boundary: Finalized and the original
-        // live lease were authenticated before it was written. A subsequent
-        // explicit retry may complete that exact transaction under its own
-        // live lease rather than leaving mixed durable state.
-        let retry_lease = tilo_relay::ProcessLease::capture(std::process::id()).unwrap();
-        recover_personal_enrollments(identity_root.path(), identity_dir.path(), &paths, |_| {
-            retry_lease.validate().map_err(Into::into)
-        })
-        .unwrap();
-        assert_eq!(
-            std::fs::read(&paths.user_pubkey).unwrap(),
-            root.verifying_key().to_bytes()
-        );
-        assert_eq!(
-            tilo_user_identity::persist::read_device_cert(&paths.device_cert)
-                .unwrap()
-                .device_public_key,
-            member.verifying_key().to_bytes()
-        );
-    }
-
-    #[test]
-    fn expired_requester_lease_blocks_personal_identity_publication() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
-        let member = ed25519_dalek::SigningKey::from_bytes(&[72; 32]);
-        let identity_root = tempfile::tempdir().unwrap();
-        let identity_parent = tempfile::tempdir().unwrap();
-        let identity_dir = identity_parent.path().join("identities");
-        let paths = IdentityPaths::under(identity_root.path());
-        paths.ensure_directories().unwrap();
-        let mut requester = std::process::Command::new("/bin/sh")
-            .args(["-c", "while :; do sleep 1; done"])
-            .spawn()
             .unwrap();
-        let lease = tilo_relay::ProcessLease::capture(requester.id()).unwrap();
-        let payload = personal_payload(&root, &member, [12; 16]);
-        let (marker_path, marker) = stage_personal_enrollment(
-            identity_root.path(),
-            &identity_dir,
-            &paths,
-            &payload,
-            Some(lease),
-        )
-        .unwrap();
-        let unrelated = tilo_relay::ProcessLease::capture(std::process::id()).unwrap();
-        assert!(
-            authorize_personal_commit(&marker_path, &marker, Some(unrelated)).is_err(),
-            "another live requester cannot adopt a prepared enrollment"
-        );
-        requester.kill().unwrap();
-        requester.wait().unwrap();
+            let mut old_cert = DeviceCert {
+                user_public_key: old_root.verifying_key().to_bytes(),
+                device_public_key: old_device.verifying_key().to_bytes(),
+                device_label: "Existing device".into(),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut old_cert, &old_root).unwrap();
+            tilo_user_identity::persist::write_device_cert(&paths.device_cert, &old_cert).unwrap();
+            let before_key = std::fs::read(&paths.user_pubkey).unwrap();
+            let before_cert = std::fs::read(&paths.device_cert).unwrap();
 
-        assert!(
-            authorize_personal_commit(&marker_path, &marker, Some(lease)).is_err(),
-            "a dead compositor cannot cross the durable commit point"
-        );
-        let mut simulated_ready = marker;
-        simulated_ready.commit_ready = true;
-        assert!(
-            commit_staged_personal_enrollment(
+            let mut requester = std::process::Command::new("/bin/sh")
+                .args(["-c", "while :; do sleep 1; done"])
+                .spawn()
+                .unwrap();
+            let lease = tilo_relay::ProcessLease::capture(requester.id()).unwrap();
+            let payload = personal_payload(&root, &member, [9; 16]);
+            let (marker_path, marker) = stage_personal_enrollment(
                 identity_root.path(),
+                identity_dir.path(),
                 &paths,
-                &marker_path,
-                &simulated_ready,
-                |_| lease.validate().map_err(Into::into),
-            )
-            .is_err()
-        );
-        assert!(!identity_dir.exists());
-        assert!(!paths.user_pubkey.exists());
-        assert!(!paths.device_cert.exists());
-        assert!(marker_path.exists(), "staging remains retryable");
-    }
-
-    #[test]
-    fn pair_device_rejects_an_expired_requester_before_creating_identity_state() {
-        let mut requester = std::process::Command::new("/bin/sh")
-            .args(["-c", "while :; do sleep 1; done"])
-            .spawn()
-            .unwrap();
-        let lease = tilo_relay::ProcessLease::capture(requester.id()).unwrap();
-        requester.kill().unwrap();
-        requester.wait().unwrap();
-
-        let identity_root = tempfile::tempdir().unwrap();
-        let identity_dir = tempfile::tempdir().unwrap();
-        assert!(
-            pair(
-                identity_root.path(),
-                "New laptop",
-                1,
-                EnrollmentKind::PersonalDevice,
-                None,
-                Some(identity_dir.path()),
-                None,
+                &payload,
                 Some(lease),
             )
-            .is_err()
-        );
-        let paths = IdentityPaths::under(identity_root.path());
-        assert!(!paths.device_privkey.exists());
-        assert!(!paths.user_pubkey.exists());
-        assert!(!paths.device_cert.exists());
-    }
+            .unwrap();
+            // This models an approval timeout: the recipient has a durable,
+            // retryable staging marker but no active identity mutation.
+            assert_eq!(std::fs::read(&paths.user_pubkey).unwrap(), before_key);
+            assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
+            assert!(marker_path.exists());
+            // A timeout/restart must not turn a merely prepared response into an
+            // active enrollment.
+            recover_personal_enrollments(identity_root.path(), identity_dir.path(), &paths, |_| {
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(std::fs::read(&paths.user_pubkey).unwrap(), before_key);
+            assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
 
-    #[test]
-    fn personal_projection_merges_and_preserves_unrelated_home_peers() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
-        let member = ed25519_dalek::SigningKey::from_bytes(&[62; 32]);
-        let other_root = ed25519_dalek::SigningKey::from_bytes(&[63; 32]);
-        let other_device = ed25519_dalek::SigningKey::from_bytes(&[64; 32]);
-        let identity_root = tempfile::tempdir().unwrap();
-        let identity_dir = tempfile::tempdir().unwrap();
-        let mut other_cert = DeviceCert {
-            user_public_key: other_root.verifying_key().to_bytes(),
-            device_public_key: other_device.verifying_key().to_bytes(),
-            device_label: "Other identity home".into(),
-            capabilities: DeviceCapabilities::host(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-        };
-        sign_device_cert(&mut other_cert, &other_root).unwrap();
-        let other = HomePeerRegistration {
-            schema_version: HomePeerRegistration::CURRENT_SCHEMA,
-            device_node_id: hex::encode(other_cert.device_public_key),
-            relay_service_node_id: hex::encode([65; 32]),
-            relay_endpoint: None,
-            label: other_cert.device_label.clone(),
-            user_public_key: hex::encode(other_cert.user_public_key),
-            device_cert: Some(other_cert),
-            relay_workspace_ids: vec![7],
-        };
-        atomic_file::write(
-            &identity_root.path().join("home-peers.json"),
-            &serde_json::to_vec_pretty(&vec![other.clone()]).unwrap(),
-        )
-        .unwrap();
-        install_personal_projection(
-            identity_root.path(),
-            identity_dir.path(),
-            &personal_payload(&root, &member, [10; 16]),
-        )
-        .unwrap();
-        let peers: Vec<HomePeerRegistration> = serde_json::from_slice(
-            &std::fs::read(identity_root.path().join("home-peers.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(peers, vec![other]);
-    }
+            let marker = authorize_personal_commit(&marker_path, &marker, Some(lease)).unwrap();
+            assert!(
+                commit_staged_personal_enrollment(
+                    identity_root.path(),
+                    &paths,
+                    &marker_path,
+                    &marker,
+                    |checkpoint| {
+                        lease.validate()?;
+                        if checkpoint == PersonalCommitCheckpoint::DefaultCert {
+                            bail!("simulated crash before default certificate")
+                        }
+                        Ok(())
+                    },
+                )
+                .is_err()
+            );
+            assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
+            requester.kill().unwrap();
+            requester.wait().unwrap();
+            assert!(lease.validate().is_err());
+            // `commit_ready` is the durable boundary: Finalized and the original
+            // live lease were authenticated before it was written. A subsequent
+            // explicit retry may complete that exact transaction under its own
+            // live lease rather than leaving mixed durable state.
+            let retry_lease = tilo_relay::ProcessLease::capture(std::process::id()).unwrap();
+            recover_personal_enrollments(identity_root.path(), identity_dir.path(), &paths, |_| {
+                retry_lease.validate().map_err(Into::into)
+            })
+            .unwrap();
+            assert_eq!(
+                std::fs::read(&paths.user_pubkey).unwrap(),
+                root.verifying_key().to_bytes()
+            );
+            assert_eq!(
+                tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+                    .unwrap()
+                    .device_public_key,
+                member.verifying_key().to_bytes()
+            );
+        }
+        // Phase `personal_projection_loads_without_root_signing_material`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[19; 32]);
+            let user = root.verifying_key().to_bytes();
+            let device = ed25519_dalek::SigningKey::from_bytes(&[23; 32]);
+            let mut cert = DeviceCert {
+                user_public_key: user,
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: "New laptop".into(),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut cert, &root).unwrap();
+            let fleet = FleetProjection {
+                schema_version: 1,
+                identity_id: hex::encode(user),
+                certificates: vec![cert.clone()],
+                revocations: Vec::new(),
+            };
+            let payload = ResponsePayload {
+                nonce: [1; 16],
+                recipient_device_public_key: cert.device_public_key,
+                relay_service_node_id: [8; 32],
+                cert,
+                home_peer_toml: None,
+                public_identity_json: Some(
+                    public_identity_record(user, "My Tilo identity").unwrap(),
+                ),
+                fleet_json: Some(serde_json::to_vec_pretty(&fleet).unwrap()),
+                home_peers_json: Some(b"[]".to_vec()),
+            };
+            let identity_root = tempfile::tempdir().unwrap();
+            let identity_dir = tempfile::tempdir().unwrap();
+            let record =
+                install_personal_projection(identity_root.path(), identity_dir.path(), &payload)
+                    .unwrap();
+            let loaded = runtime_identity::load_from_path(record).unwrap();
+            assert_eq!(loaded.group_public_key(), user);
+            assert!(!loaded.is_single_device());
+            assert!(loaded.sign(b"root-only operation").is_err());
+            assert_eq!(
+                std::fs::read(identity_root.path().join("home-peers.json")).unwrap(),
+                b"[]"
+            );
+            let registry: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(identity_dir.path().join("registry.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(registry["default_identity"], hex::encode(user));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt as _;
+                let uid = unsafe { libc::geteuid() };
+                assert_eq!(
+                    std::fs::metadata(identity_dir.path().join("registry.json"))
+                        .unwrap()
+                        .uid(),
+                    uid
+                );
+                assert_eq!(
+                    std::fs::metadata(fleet_path(identity_dir.path(), user))
+                        .unwrap()
+                        .uid(),
+                    uid
+                );
+            }
+        }
+        // Phase `personal_projection_merges_and_preserves_unrelated_home_peers`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
+            let member = ed25519_dalek::SigningKey::from_bytes(&[62; 32]);
+            let other_root = ed25519_dalek::SigningKey::from_bytes(&[63; 32]);
+            let other_device = ed25519_dalek::SigningKey::from_bytes(&[64; 32]);
+            let identity_root = tempfile::tempdir().unwrap();
+            let identity_dir = tempfile::tempdir().unwrap();
+            let mut other_cert = DeviceCert {
+                user_public_key: other_root.verifying_key().to_bytes(),
+                device_public_key: other_device.verifying_key().to_bytes(),
+                device_label: "Other identity home".into(),
+                capabilities: DeviceCapabilities::host(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut other_cert, &other_root).unwrap();
+            let other = HomePeerRegistration {
+                schema_version: HomePeerRegistration::CURRENT_SCHEMA,
+                device_node_id: hex::encode(other_cert.device_public_key),
+                relay_service_node_id: hex::encode([65; 32]),
+                relay_endpoint: None,
+                label: other_cert.device_label.clone(),
+                user_public_key: hex::encode(other_cert.user_public_key),
+                device_cert: Some(other_cert),
+                relay_workspace_ids: vec![7],
+            };
+            tilo_files::native::atomic::write(
+                &identity_root.path().join("home-peers.json"),
+                &serde_json::to_vec_pretty(&vec![other.clone()]).unwrap(),
+            )
+            .unwrap();
+            install_personal_projection(
+                identity_root.path(),
+                identity_dir.path(),
+                &personal_payload(&root, &member, [10; 16]),
+            )
+            .unwrap();
+            let peers: Vec<HomePeerRegistration> = serde_json::from_slice(
+                &std::fs::read(identity_root.path().join("home-peers.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(peers, vec![other]);
+        }
+        // Phase `home_peer_projection_rejects_future_schemas_and_forged_device_ids`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
+            let device = ed25519_dalek::SigningKey::from_bytes(&[82; 32]);
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: "Verified home peer".into(),
+                capabilities: DeviceCapabilities::host(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut cert, &root).unwrap();
+            let mut registration = HomePeerRegistration {
+                schema_version: HomePeerRegistration::CURRENT_SCHEMA,
+                device_node_id: hex::encode(cert.device_public_key),
+                relay_service_node_id: hex::encode([83; 32]),
+                relay_endpoint: None,
+                label: cert.device_label.clone(),
+                user_public_key: hex::encode(cert.user_public_key),
+                device_cert: Some(cert),
+                relay_workspace_ids: vec![7],
+            };
+            assert!(valid_home_peer_registration(&registration));
 
-    #[test]
-    fn home_peer_projection_rejects_future_schemas_and_forged_device_ids() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[82; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "Verified home peer".into(),
-            capabilities: DeviceCapabilities::host(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-        };
-        sign_device_cert(&mut cert, &root).unwrap();
-        let mut registration = HomePeerRegistration {
-            schema_version: HomePeerRegistration::CURRENT_SCHEMA,
-            device_node_id: hex::encode(cert.device_public_key),
-            relay_service_node_id: hex::encode([83; 32]),
-            relay_endpoint: None,
-            label: cert.device_label.clone(),
-            user_public_key: hex::encode(cert.user_public_key),
-            device_cert: Some(cert),
-            relay_workspace_ids: vec![7],
-        };
-        assert!(valid_home_peer_registration(&registration));
+            registration.schema_version = HomePeerRegistration::CURRENT_SCHEMA.saturating_add(1);
+            assert!(!valid_home_peer_registration(&registration));
 
-        registration.schema_version = HomePeerRegistration::CURRENT_SCHEMA.saturating_add(1);
-        assert!(!valid_home_peer_registration(&registration));
+            registration.schema_version = HomePeerRegistration::CURRENT_SCHEMA;
+            registration.device_node_id = hex::encode([84; 32]);
+            assert!(!valid_home_peer_registration(&registration));
+        }
+        // Phase `personal_enrollment_staging_keeps_an_existing_device_unchanged` (defined above).
+        personal_enrollment_staging_keeps_an_existing_device_unchanged();
+        // Phase `expired_requester_lease_blocks_personal_identity_publication`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
+            let member = ed25519_dalek::SigningKey::from_bytes(&[72; 32]);
+            let identity_root = tempfile::tempdir().unwrap();
+            let identity_parent = tempfile::tempdir().unwrap();
+            let identity_dir = identity_parent.path().join("identities");
+            let paths = IdentityPaths::under(identity_root.path());
+            paths.ensure_directories().unwrap();
+            let mut requester = std::process::Command::new("/bin/sh")
+                .args(["-c", "while :; do sleep 1; done"])
+                .spawn()
+                .unwrap();
+            let lease = tilo_relay::ProcessLease::capture(requester.id()).unwrap();
+            let payload = personal_payload(&root, &member, [12; 16]);
+            let (marker_path, marker) = stage_personal_enrollment(
+                identity_root.path(),
+                &identity_dir,
+                &paths,
+                &payload,
+                Some(lease),
+            )
+            .unwrap();
+            let unrelated = tilo_relay::ProcessLease::capture(std::process::id()).unwrap();
+            assert!(
+                authorize_personal_commit(&marker_path, &marker, Some(unrelated)).is_err(),
+                "another live requester cannot adopt a prepared enrollment"
+            );
+            requester.kill().unwrap();
+            requester.wait().unwrap();
 
-        registration.schema_version = HomePeerRegistration::CURRENT_SCHEMA;
-        registration.device_node_id = hex::encode([84; 32]);
-        assert!(!valid_home_peer_registration(&registration));
+            assert!(
+                authorize_personal_commit(&marker_path, &marker, Some(lease)).is_err(),
+                "a dead compositor cannot cross the durable commit point"
+            );
+            let mut simulated_ready = marker;
+            simulated_ready.commit_ready = true;
+            assert!(
+                commit_staged_personal_enrollment(
+                    identity_root.path(),
+                    &paths,
+                    &marker_path,
+                    &simulated_ready,
+                    |_| lease.validate().map_err(Into::into),
+                )
+                .is_err()
+            );
+            assert!(!identity_dir.exists());
+            assert!(!paths.user_pubkey.exists());
+            assert!(!paths.device_cert.exists());
+            assert!(marker_path.exists(), "staging remains retryable");
+        }
+        // Phase `pair_device_rejects_an_expired_requester_before_creating_identity_state`.
+        {
+            let mut requester = std::process::Command::new("/bin/sh")
+                .args(["-c", "while :; do sleep 1; done"])
+                .spawn()
+                .unwrap();
+            let lease = tilo_relay::ProcessLease::capture(requester.id()).unwrap();
+            requester.kill().unwrap();
+            requester.wait().unwrap();
+
+            let identity_root = tempfile::tempdir().unwrap();
+            let identity_dir = tempfile::tempdir().unwrap();
+            assert!(
+                pair(
+                    JoinOptions {
+                        identity_root: identity_root.path(),
+                        label: "New laptop",
+                        timeout: 1,
+                        kind: EnrollmentKind::PersonalDevice,
+                        home_peer_output: None,
+                        identity_dir: Some(identity_dir.path()),
+                        requester_lease: Some(lease),
+                        port: 0,
+                    },
+                    None,
+                )
+                .is_err()
+            );
+            let paths = IdentityPaths::under(identity_root.path());
+            assert!(!paths.device_privkey.exists());
+            assert!(!paths.user_pubkey.exists());
+            assert!(!paths.device_cert.exists());
+        }
     }
 
     #[test]
@@ -3056,7 +3240,7 @@ mod tests {
             &issuer_cert,
         )
         .unwrap();
-        atomic_file::write_creating_parent(
+        tilo_files::native::atomic::write_creating_parent(
             &fleet_path(approver_identities.path(), root.verifying_key().to_bytes()),
             &serde_json::to_vec_pretty(&FleetProjection {
                 schema_version: 1,
@@ -3089,8 +3273,7 @@ mod tests {
         .unwrap();
 
         // Seed the new device's key so the approval pins exactly this device:
-        // every nearby pairing on the host shares one broadcast port, and an
-        // unpinned approver answers whichever device solicits first.
+        // an unpinned approver answers whichever device solicits first.
         let new_root = tempfile::tempdir().unwrap();
         let new_identities = tempfile::tempdir().unwrap();
         let new_device = ed25519_dalek::SigningKey::from_bytes(&[44; 32]);
@@ -3115,28 +3298,42 @@ mod tests {
                 expected_device: Some(&expected_device),
                 expected_service: Some(&expected_service),
                 kind: EnrollmentKind::PersonalDevice,
+                // An OS-assigned port keeps concurrent tests off each other's
+                // listeners and off the well-known port.
+                port: 0,
                 ready: Some(&ready_tx),
             })
         });
-        ready_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("approval listener became ready");
+        let port = match ready_rx.recv_timeout(tilo_test_env::hang_bound()) {
+            Ok(port) => port,
+            // An approver that ended before listening dropped the sender; its
+            // own error names why.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("the approver ended before listening: {:?}", approval.join())
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                panic!("the approval listener did not become ready within the hang bound")
+            }
+        };
         // Other nearby-pairing surfaces on this host (an open discovery
-        // view, another approval sheet) share the well-known port. Which of
+        // view, another approval sheet) share the approver's port. Which of
         // them the kernel hands a unicast datagram must not decide whether
         // the enrollment completes.
         let _other_surfaces: Vec<UdpSocket> =
-            (0..3).map(|_| bind_pair_listener().unwrap()).collect();
+            (0..3).map(|_| bind_pair_listener(port).unwrap()).collect();
         let requester = tilo_relay::ProcessLease::capture(std::process::id()).unwrap();
         pair(
-            new_root.path(),
-            "New laptop",
-            60,
-            EnrollmentKind::PersonalDevice,
+            JoinOptions {
+                identity_root: new_root.path(),
+                label: "New laptop",
+                timeout: 60,
+                kind: EnrollmentKind::PersonalDevice,
+                home_peer_output: None,
+                identity_dir: Some(new_identities.path()),
+                requester_lease: Some(requester),
+                port,
+            },
             None,
-            Some(new_identities.path()),
-            None,
-            Some(requester),
         )
         .unwrap();
         approval.join().unwrap().unwrap();
@@ -3166,161 +3363,138 @@ mod tests {
     }
 
     #[test]
-    fn automatic_pair_offer_is_private_to_the_soliciting_server() {
-        let server = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let token = "signed-host-enrollment-token";
-        let encrypted =
-            encrypt_pair_offer(token, server.verifying_key().to_bytes(), WireVersion::V2).unwrap();
-        assert!(v2_body(&encrypted).is_some());
-        assert!(
-            !encrypted
-                .windows(token.len())
-                .any(|window| window == token.as_bytes())
-        );
-        assert_eq!(decrypt_pair_offer(&encrypted, &server).unwrap(), token);
-        let other = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
-        assert!(decrypt_pair_offer(&encrypted, &other).is_err());
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn pairing_exchange_is_private_single_use_and_resumable() {
+        // Phase `automatic_pair_offer_is_private_to_the_soliciting_server`.
+        {
+            let server = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+            let token = "signed-host-enrollment-token";
+            let encrypted = encrypt_pair_offer(token, server.verifying_key().to_bytes()).unwrap();
+            assert!(v2_body(&encrypted).is_some());
+            assert!(
+                !encrypted
+                    .windows(token.len())
+                    .any(|window| window == token.as_bytes())
+            );
+            assert_eq!(decrypt_pair_offer(&encrypted, &server).unwrap(), token);
+            let other = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+            assert!(decrypt_pair_offer(&encrypted, &other).is_err());
+        }
+        // Phase `nearby_pairing_code_is_stable_and_six_digits`.
+        {
+            let code = pairing_code([7; 32], [8; 32]);
+            assert_eq!(code, pairing_code([7; 32], [8; 32]));
+            assert_eq!(code.len(), 6);
+            assert!(code.bytes().all(|byte| byte.is_ascii_digit()));
+            assert_ne!(code, pairing_code([7; 32], [9; 32]));
+        }
+        // Phase `unrelated_lan_datagram_is_not_a_pairing_message`.
+        {
+            let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+            assert!(decrypt_request(b"ambient discovery traffic", &issuer).is_err());
+            let mut request_seed = [0_u8; 32];
+            request_seed[0] = 11;
+            let request_ephemeral = tilo_seal::SecretKey::from_bytes(request_seed);
+            assert!(
+                decrypt_response(
+                    b"not an enrollment response",
+                    [3; 16],
+                    [7; 32],
+                    &request_ephemeral,
+                )
+                .is_err()
+            );
+        }
+        // Phase `enrollment_nonce_is_consumed_once`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            consume_nonce(dir.path(), &[4; 16], [7; 32]).unwrap();
+            consume_nonce(dir.path(), &[4; 16], [7; 32]).unwrap();
+            assert!(consume_nonce(dir.path(), &[4; 16], [8; 32]).is_err());
+        }
+        // Phase `approved_home_peer_registration_exposes_distinct_stable_node_ids`.
+        {
+            use std::os::unix::fs::PermissionsExt as _;
 
-    #[test]
-    fn nearby_pairing_code_is_stable_and_six_digits() {
-        let code = pairing_code([7; 32], [8; 32]);
-        assert_eq!(code, pairing_code([7; 32], [8; 32]));
-        assert_eq!(code.len(), 6);
-        assert!(code.bytes().all(|byte| byte.is_ascii_digit()));
-        assert_ne!(code, pairing_code([7; 32], [9; 32]));
-    }
+            let dir = tempfile::tempdir().unwrap();
+            let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            let cert = payload(&root).cert;
+            register_home_peer(dir.path(), &cert, [8; 32], &[2, 9]).unwrap();
+            let json: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(dir.path().join("home-peers.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                json[0]["device_node_id"],
+                hex::encode(cert.device_public_key)
+            );
+            assert_eq!(json[0]["relay_service_node_id"], hex::encode([8; 32]));
+            assert_eq!(json[0]["relay_workspace_ids"], serde_json::json!([2, 9]));
+            assert_eq!(
+                std::fs::metadata(dir.path().join("home-peers.json"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o644
+            );
+        }
+        // Phase `invalid_existing_home_peer_registry_is_never_overwritten`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("home-peers.json");
+            tilo_files::native::atomic::write(&path, b"not json").unwrap();
+            let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            assert!(register_home_peer(dir.path(), &payload(&root).cert, [8; 32], &[2]).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), b"not json");
+        }
+        // Phase `dropped_response_can_be_retried_with_the_same_authenticated_ack`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+            let response =
+                postcard::to_stdvec(&sign_response(payload(&root), &root).unwrap()).unwrap();
+            // The first datagram is modeled as dropped. Retransmission uses the
+            // exact same signed bytes, and the recipient ACK binds their key,
+            // nonce, and that response digest.
+            let retransmitted = response.clone();
+            assert_eq!(response, retransmitted);
+            let ack = make_ack(&retransmitted, [3; 16], &device).unwrap();
+            verify_ack(&ack, &response, [3; 16], device.verifying_key().to_bytes()).unwrap();
+        }
+        // Phase `dropped_all_acks_can_resume_after_process_restart`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+            let response =
+                postcard::to_stdvec(&sign_response(payload(&root), &root).unwrap()).unwrap();
 
-    #[test]
-    fn unrelated_lan_datagram_is_not_a_pairing_message() {
-        let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
-        assert!(decrypt_request(b"ambient discovery traffic", &issuer).is_err());
-        let mut request_seed = [0_u8; 32];
-        request_seed[0] = 11;
-        let request_ephemeral = tilo_seal::SecretKey::from_bytes(request_seed);
-        assert!(
-            decrypt_response(
-                b"not an enrollment response",
+            // No ACK reached the first approver, so it did not consume the
+            // admission nonce. A restarted join/approve exchange may authenticate
+            // the same device and finish registration idempotently.
+            assert!(!dir.path().join("enrollment-nonces").exists());
+            let ack = make_ack(&response, [3; 16], &device).unwrap();
+            verify_ack(&ack, &response, [3; 16], device.verifying_key().to_bytes()).unwrap();
+            consume_nonce(dir.path(), &[3; 16], device.verifying_key().to_bytes()).unwrap();
+            let finalized =
+                make_finalized(&response, [3; 16], device.verifying_key().to_bytes(), &root)
+                    .unwrap();
+            verify_finalized(
+                &finalized,
+                &response,
                 [3; 16],
-                [7; 32],
-                &request_ephemeral,
+                device.verifying_key().to_bytes(),
+                root.verifying_key().to_bytes(),
             )
-            .is_err()
-        );
+            .unwrap();
+            consume_nonce(dir.path(), &[3; 16], device.verifying_key().to_bytes()).unwrap();
+            assert!(consume_nonce(dir.path(), &[3; 16], [6; 32]).is_err());
+        }
     }
 
-    #[test]
-    fn enrollment_nonce_is_consumed_once() {
-        let dir = tempfile::tempdir().unwrap();
-        consume_nonce(dir.path(), &[4; 16], [7; 32]).unwrap();
-        consume_nonce(dir.path(), &[4; 16], [7; 32]).unwrap();
-        assert!(consume_nonce(dir.path(), &[4; 16], [8; 32]).is_err());
-    }
-
-    #[test]
-    fn approved_home_peer_registration_exposes_distinct_stable_node_ids() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let dir = tempfile::tempdir().unwrap();
-        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let cert = payload(&root).cert;
-        register_home_peer(dir.path(), &cert, [8; 32], &[2, 9]).unwrap();
-        let json: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(dir.path().join("home-peers.json")).unwrap())
-                .unwrap();
-        assert_eq!(
-            json[0]["device_node_id"],
-            hex::encode(cert.device_public_key)
-        );
-        assert_eq!(json[0]["relay_service_node_id"], hex::encode([8; 32]));
-        assert_eq!(json[0]["relay_workspace_ids"], serde_json::json!([2, 9]));
-        assert_eq!(
-            std::fs::metadata(dir.path().join("home-peers.json"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o644
-        );
-    }
-
-    #[test]
-    fn invalid_existing_home_peer_registry_is_never_overwritten() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("home-peers.json");
-        atomic_file::write(&path, b"not json").unwrap();
-        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        assert!(register_home_peer(dir.path(), &payload(&root).cert, [8; 32], &[2]).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), b"not json");
-    }
-
-    #[test]
-    fn dropped_response_can_be_retried_with_the_same_authenticated_ack() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let response = postcard::to_stdvec(&sign_response(payload(&root), &root).unwrap()).unwrap();
-        // The first datagram is modeled as dropped. Retransmission uses the
-        // exact same signed bytes, and the recipient ACK binds their key,
-        // nonce, and that response digest.
-        let retransmitted = response.clone();
-        assert_eq!(response, retransmitted);
-        let ack = make_ack(&retransmitted, [3; 16], &device).unwrap();
-        verify_ack(&ack, &response, [3; 16], device.verifying_key().to_bytes()).unwrap();
-    }
-
-    #[test]
-    fn dropped_all_acks_can_resume_after_process_restart() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let response = postcard::to_stdvec(&sign_response(payload(&root), &root).unwrap()).unwrap();
-
-        // No ACK reached the first approver, so it did not consume the
-        // admission nonce. A restarted join/approve exchange may authenticate
-        // the same device and finish registration idempotently.
-        assert!(!dir.path().join("enrollment-nonces").exists());
-        let ack = make_ack(&response, [3; 16], &device).unwrap();
-        verify_ack(&ack, &response, [3; 16], device.verifying_key().to_bytes()).unwrap();
-        consume_nonce(dir.path(), &[3; 16], device.verifying_key().to_bytes()).unwrap();
-        let finalized =
-            make_finalized(&response, [3; 16], device.verifying_key().to_bytes(), &root).unwrap();
-        verify_finalized(
-            &finalized,
-            &response,
-            [3; 16],
-            device.verifying_key().to_bytes(),
-            root.verifying_key().to_bytes(),
-        )
-        .unwrap();
-        consume_nonce(dir.path(), &[3; 16], device.verifying_key().to_bytes()).unwrap();
-        assert!(consume_nonce(dir.path(), &[3; 16], [6; 32]).is_err());
-    }
-
-    // Byte fixtures produced by the enrollment code before a crypto-stack
-    // upgrade. Enrollment blobs cross devices running different builds, so
-    // decrypting them proves Ed25519-to-X25519 conversion, X25519 agreement,
-    // ChaCha20-Poly1305 and the postcard framing all stayed byte-compatible.
-    const KAT_PAIR_OFFER: &str = "d0e014c51b6faaf168eb9a629804a5cf9eabbb666318369dccaec9eb3a8dbc0d\
-        07189ed4428bc2d1c596e9782167343cec81004105d1275f7105e70365bedcfe\
-        fc511381c19fef25960fd9444a62";
-    const KAT_REQUEST: &str = "49681ddb0d310c132f72f076bbaac37b9be5edbe98ee074e216b42299532274d\
-        1465fd79f168e36085d553de66f27e784ca62d250acb45d8040a55346ccd5dd3\
-        4f78c085e59326b7fd8374279b404d0f3ef67bcf405fda1a8d83f706d3420904\
-        26aaf976690c8a63213d242e47765f3640906728c76823bc3e189762bf3eae40\
-        c6883b3a5176c6d99d12fff3f424405981e733";
-    const KAT_RESPONSE: &str = "7a7009cf2b5bedfe755de254721eca30a874669a6694d7014baece97b5448510\
-        b6817a3cf12ffce507ab4b2ce7022762eb9d9dfc5fc8ce997f151429a3b17c46\
-        8bc8b61e724e5064d8918ec4e5450388294a24e29b8626145fd6d5cb782a3f27\
-        c18725e4f9664fe265ee832db061bf70d49082a4f8946133bc784aa36ec8565a\
-        90ca8fb99ff752c06f3b6677b7a95d4409d4eb1985fdebd10044f1e7b72e0347\
-        3beeea80a610ba90b6d027b81211ecf818304d6fbba3bab98908e8e2ebaf584d\
-        6b511b9f4c017c7476d2a144b5e519c73a6de2a1ed8e36415e5081553b6b6b37\
-        27603b281f6e9ead1c690fafbaa1286d39a3eb685e9fb154a87800aa1e580015\
-        8061468aec871810f870d33413b8fb61d48c8760ce1bf1f94075a9a48441beb7\
-        aebe3cf154d76054060ee25110c7e78481abbd493f8d47ec8c7215c48d086f5a\
-        d42343e8923340ae8e1461dd874130c8907631761c1169f9cd89afca1c316025\
-        3b8ab6ba3b0eef0eff1abaf1f1c45a2028801ecdbdfcd5c8f2589f12aeaad3ea\
-        fb16e4d76d3037caef5a0f242c4f5547bf575f6450";
     const KAT_RESPONSE_SIGNATURE: &str = "a645d9aa10752fbf8b19d1ccca48b9cf5405d6ec88eb69fea45df36466edda10\
         e8b1bf1f0d85e9f224b21f75a7251771b1482ce6ceed2ce018d43895124e6f0c";
     const KAT_ACK: &str = "0404040404040404040404040404040417cb79fb2b4120f2b1ec65e4198d6e08\
@@ -3330,131 +3504,44 @@ mod tests {
         423888209b7aab3703f999ab61869f950d";
 
     #[test]
-    fn known_answer_x25519_agreement_and_ed25519_conversion() {
-        let a = tilo_seal::SecretKey::from_bytes([0x11; 32]);
-        let b = tilo_seal::SecretKey::from_bytes([0x22; 32]);
-        assert_eq!(
-            hex::encode(a.public_key().unwrap().to_bytes()),
-            "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13"
-        );
-        // The legacy KDF is BLAKE3(domain || shared || context); with an
-        // empty domain and context it is BLAKE3 of the raw agreement, which
-        // pins the X25519 output an earlier build computed.
-        let shared =
-            hex::decode("9e004098efc091d4ec2663b4e9f5cfd4d7064571690b4bea97ab146ab9f35056")
-                .unwrap();
-        assert_eq!(
-            tilo_seal::legacy::blake3_x25519_key(&a, &b.public_key().unwrap(), b"", &[])
-                .unwrap()
-                .expose_secret(),
-            blake3::hash(&shared).as_bytes()
-        );
-        let recipient = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
-        assert_eq!(
-            hex::encode(recipient.to_scalar_bytes()),
-            "c25a999cf27ed91865db781f67e404f9d541d12e3e761786c409131fe595096d"
-        );
-        assert_eq!(
-            hex::encode(recipient.verifying_key().to_montgomery().to_bytes()),
-            "931aad030ad93d3ff8042699324fdb230585be4daf500266eaa4b8f747543f50"
-        );
-    }
-
-    #[test]
-    fn known_answer_pair_offer_opens() {
-        let recipient = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
-        let offer = hex::decode(KAT_PAIR_OFFER).unwrap();
-        assert_eq!(
-            decrypt_pair_offer(&offer, &recipient).unwrap(),
-            "kat-pairing-token"
-        );
-        let wrong = ed25519_dalek::SigningKey::from_bytes(&[0x22; 32]);
-        assert!(decrypt_pair_offer(&offer, &wrong).is_err());
-    }
-
-    #[test]
-    fn known_answer_request_opens() {
-        let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
-        let bytes = hex::decode(KAT_REQUEST).unwrap();
-        let (request, route) = decrypt_request(&bytes, &issuer).unwrap();
-        assert_eq!(request.token, "kat-bearer-token");
-        assert_eq!(request.device_public_key, [7; 32]);
-        assert_eq!(request.relay_service_node_id, [8; 32]);
-        assert_eq!(request.label, "NAS");
-        assert!(matches!(request.kind, EnrollmentKind::HomePeer));
-        assert_eq!(
-            route,
-            ResponseRoute::V1 {
-                requester_ephemeral_public_key: bytes[..32].try_into().unwrap()
-            }
-        );
-    }
-
-    #[test]
-    fn known_answer_response_opens_and_verifies() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let signed = sign_response(payload(&root), &root).unwrap();
-        assert_eq!(hex::encode(&signed.signature), KAT_RESPONSE_SIGNATURE);
-        let request_ephemeral = tilo_seal::SecretKey::from_bytes([0x5a; 32]);
-        let decrypted = decrypt_response(
-            &hex::decode(KAT_RESPONSE).unwrap(),
-            [3; 16],
-            device.verifying_key().to_bytes(),
-            &request_ephemeral,
-        )
-        .unwrap();
-        assert_eq!(hex::encode(&decrypted.signature), KAT_RESPONSE_SIGNATURE);
-        assert_eq!(
-            postcard::to_stdvec(&decrypted.payload).unwrap(),
-            postcard::to_stdvec(&signed.payload).unwrap()
-        );
-        verify_response(&decrypted, root.verifying_key().to_bytes()).unwrap();
-    }
-
-    #[test]
-    fn known_answer_ack_signature() {
-        let device = ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]);
-        let ack = make_ack(b"kat-response", [4; 16], &device).unwrap();
-        assert_eq!(hex::encode(&ack), KAT_ACK);
-        verify_ack(
-            &ack,
-            b"kat-response",
-            [4; 16],
-            device.verifying_key().to_bytes(),
-        )
-        .unwrap();
-    }
-
-    /// A request in the v1 wire format, as a device running an earlier
-    /// build still sends it. Returns the envelope and the requester's
-    /// ephemeral secret that a v1 response is sealed to.
-    fn legacy_v1_request(
-        request: &Request,
-        issuer_device_public_key: [u8; 32],
-    ) -> (Vec<u8>, tilo_seal::SecretKey) {
-        let (ephemeral, ephemeral_public_key) = v1_ephemeral().unwrap();
-        let issuer = device_sealing_public(issuer_device_public_key).unwrap();
-        let key = tilo_seal::legacy::blake3_x25519_key(
-            &ephemeral,
-            &issuer,
-            REQUEST_KEY_DOMAIN_V1,
-            &[&ephemeral_public_key],
-        )
-        .unwrap();
-        let (nonce, ciphertext) = tilo_seal::legacy::seal_chacha20poly1305_for_transition(
-            &key,
-            &ephemeral_public_key,
-            &postcard::to_stdvec(request).unwrap(),
-        )
-        .unwrap();
-        let bytes = postcard::to_stdvec(&LegacyEnvelope {
-            ephemeral_public_key,
-            nonce,
-            ciphertext,
-        })
-        .unwrap();
-        (bytes, ephemeral)
+    fn pairing_crypto_matches_known_answers() {
+        // Phase `known_answer_x25519_and_ed25519_conversion`.
+        {
+            let a = tilo_seal::SecretKey::from_bytes([0x11; 32]);
+            assert_eq!(
+                hex::encode(a.public_key().unwrap().to_bytes()),
+                "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13"
+            );
+            let recipient = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
+            assert_eq!(
+                hex::encode(recipient.to_scalar_bytes()),
+                "c25a999cf27ed91865db781f67e404f9d541d12e3e761786c409131fe595096d"
+            );
+            assert_eq!(
+                hex::encode(recipient.verifying_key().to_montgomery().to_bytes()),
+                "931aad030ad93d3ff8042699324fdb230585be4daf500266eaa4b8f747543f50"
+            );
+        }
+        // Phase `known_answer_response_signature_verifies`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            let signed = sign_response(payload(&root), &root).unwrap();
+            assert_eq!(hex::encode(&signed.signature), KAT_RESPONSE_SIGNATURE);
+            verify_response(&signed, root.verifying_key().to_bytes()).unwrap();
+        }
+        // Phase `known_answer_ack_signature`.
+        {
+            let device = ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]);
+            let ack = make_ack(b"kat-response", [4; 16], &device).unwrap();
+            assert_eq!(hex::encode(&ack), KAT_ACK);
+            verify_ack(
+                &ack,
+                b"kat-response",
+                [4; 16],
+                device.verifying_key().to_bytes(),
+            )
+            .unwrap();
+        }
     }
 
     fn sample_request() -> Request {
@@ -3470,145 +3557,99 @@ mod tests {
     }
 
     #[test]
-    fn v2_request_gets_a_v2_response_only_the_requester_opens() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let (bytes, response_secret) =
-            encrypt_request(&sample_request(), issuer.verifying_key().to_bytes()).unwrap();
-        assert_eq!(&bytes[..8], b"TLOENRL\x02");
-        let (request, route) = decrypt_request(&bytes, &issuer).unwrap();
-        assert_eq!(request.token, "bearer");
-        assert!(matches!(route, ResponseRoute::V2 { .. }));
-        let signed = sign_response(payload(&root), &root).unwrap();
-        let response =
-            encrypt_response(&signed, [3; 16], device.verifying_key().to_bytes(), route).unwrap();
-        assert!(v2_body(&response).is_some());
-        let opened = decrypt_response(
-            &response,
-            [3; 16],
-            device.verifying_key().to_bytes(),
-            &response_secret,
-        )
-        .unwrap();
-        verify_response(&opened, root.verifying_key().to_bytes()).unwrap();
-        // Another key, another token nonce or another recipient device fail.
-        let other = tilo_seal::SecretKey::generate().unwrap();
-        assert!(
-            decrypt_response(
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn pairing_envelopes_are_step_bound() {
+        // Phase `v2_request_gets_a_v2_response_only_the_requester_opens`.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+            let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+            let (bytes, response_secret) =
+                encrypt_request(&sample_request(), issuer.verifying_key().to_bytes()).unwrap();
+            assert_eq!(&bytes[..8], b"TLOENRL\x02");
+            let (request, route) = decrypt_request(&bytes, &issuer).unwrap();
+            assert_eq!(request.token, "bearer");
+            let signed = sign_response(payload(&root), &root).unwrap();
+            let response =
+                encrypt_response(&signed, [3; 16], device.verifying_key().to_bytes(), route)
+                    .unwrap();
+            assert!(v2_body(&response).is_some());
+            let opened = decrypt_response(
                 &response,
                 [3; 16],
                 device.verifying_key().to_bytes(),
-                &other
+                &response_secret,
             )
-            .is_err()
-        );
-        assert!(
-            decrypt_response(
-                &response,
-                [4; 16],
-                device.verifying_key().to_bytes(),
-                &response_secret
-            )
-            .is_err()
-        );
-        assert!(decrypt_response(&response, [3; 16], [1; 32], &response_secret).is_err());
-    }
-
-    #[test]
-    fn v1_request_is_still_accepted_and_answered_in_v1() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let (bytes, requester_ephemeral) =
-            legacy_v1_request(&sample_request(), issuer.verifying_key().to_bytes());
-        assert!(v2_body(&bytes).is_none());
-        let (request, route) = decrypt_request(&bytes, &issuer).unwrap();
-        assert_eq!(request.token, "bearer");
-        assert_eq!(
-            route,
-            ResponseRoute::V1 {
-                requester_ephemeral_public_key: requester_ephemeral
-                    .public_key()
-                    .unwrap()
-                    .to_bytes()
-            }
-        );
-        let signed = sign_response(payload(&root), &root).unwrap();
-        let response =
-            encrypt_response(&signed, [3; 16], device.verifying_key().to_bytes(), route).unwrap();
-        // An earlier build parses exactly the v1 framing.
-        assert!(v2_body(&response).is_none());
-        let envelope: LegacyEnvelope = postcard::from_bytes(&response).unwrap();
-        assert_eq!(postcard::to_stdvec(&envelope).unwrap(), response);
-        let opened = decrypt_response(
-            &response,
-            [3; 16],
-            device.verifying_key().to_bytes(),
-            &requester_ephemeral,
-        )
-        .unwrap();
-        verify_response(&opened, root.verifying_key().to_bytes()).unwrap();
-    }
-
-    #[test]
-    fn pair_offers_mirror_the_solicitation_version() {
-        let server = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let mut solicitation = PairSolicitation {
-            magic: PAIR_MAGIC_V1,
-            device_public_key: server.verifying_key().to_bytes(),
-            relay_service_node_id: [8; 32],
-            label: "NAS".into(),
-            kind: EnrollmentKind::HomePeer,
-        };
-        assert_eq!(solicitation_version(&solicitation), Some(WireVersion::V1));
-        let v1 =
-            encrypt_pair_offer("token", solicitation.device_public_key, WireVersion::V1).unwrap();
-        assert!(v2_body(&v1).is_none());
-        assert!(postcard::from_bytes::<LegacyEnvelope>(&v1).is_ok());
-        assert_eq!(decrypt_pair_offer(&v1, &server).unwrap(), "token");
-
-        solicitation.magic = PAIR_MAGIC_V2;
-        assert_eq!(solicitation_version(&solicitation), Some(WireVersion::V2));
-        let v2 =
-            encrypt_pair_offer("token", solicitation.device_public_key, WireVersion::V2).unwrap();
-        assert!(v2_body(&v2).is_some());
-        assert_eq!(decrypt_pair_offer(&v2, &server).unwrap(), "token");
-
-        solicitation.magic = *b"TLOPAIR9";
-        assert!(!valid_solicitation(&solicitation));
-    }
-
-    #[test]
-    fn version_prefix_decides_the_parser_and_tampering_fails() {
-        let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
-        let (bytes, _) =
-            encrypt_request(&sample_request(), issuer.verifying_key().to_bytes()).unwrap();
-        // Every byte of a v2 envelope is covered: flipping the version or any
-        // sealed byte fails, and a stripped prefix is not read as v1.
-        for index in 0..bytes.len() {
-            let mut tampered = bytes.clone();
-            tampered[index] ^= 1;
-            assert!(decrypt_request(&tampered, &issuer).is_err(), "byte {index}");
-        }
-        assert!(decrypt_request(&bytes[8..], &issuer).is_err());
-        let wrong = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
-        assert!(decrypt_request(&bytes, &wrong).is_err());
-        // A v1 envelope never begins with the v2 prefix.
-        for _ in 0..32 {
-            let (legacy, _) =
-                legacy_v1_request(&sample_request(), issuer.verifying_key().to_bytes());
-            assert!(v2_body(&legacy).is_none());
-        }
-    }
-
-    #[test]
-    fn v2_envelopes_do_not_open_as_another_step() {
-        let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let offer = encrypt_pair_offer("token", device.verifying_key().to_bytes(), WireVersion::V2)
             .unwrap();
-        // Same recipient key, different step label: the request reader
-        // must refuse the pairing offer.
-        assert!(decrypt_request(&offer, &device).is_err());
+            verify_response(&opened, root.verifying_key().to_bytes()).unwrap();
+            // Another key, another token nonce or another recipient device fail.
+            let other = tilo_seal::SecretKey::generate().unwrap();
+            assert!(
+                decrypt_response(
+                    &response,
+                    [3; 16],
+                    device.verifying_key().to_bytes(),
+                    &other
+                )
+                .is_err()
+            );
+            assert!(
+                decrypt_response(
+                    &response,
+                    [4; 16],
+                    device.verifying_key().to_bytes(),
+                    &response_secret
+                )
+                .is_err()
+            );
+            assert!(decrypt_response(&response, [3; 16], [1; 32], &response_secret).is_err());
+        }
+        // Phase `pair_offers_answer_only_the_current_solicitation_magic`.
+        {
+            let server = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+            let mut solicitation = PairSolicitation {
+                magic: PAIR_MAGIC,
+                device_public_key: server.verifying_key().to_bytes(),
+                relay_service_node_id: [8; 32],
+                label: "NAS".into(),
+                kind: EnrollmentKind::HomePeer,
+            };
+            assert!(valid_solicitation(&solicitation));
+            let offer = encrypt_pair_offer("token", solicitation.device_public_key).unwrap();
+            assert!(v2_body(&offer).is_some());
+            assert_eq!(decrypt_pair_offer(&offer, &server).unwrap(), "token");
+
+            for magic in [*b"TLOPAIR1", *b"TLOPAIR9"] {
+                solicitation.magic = magic;
+                assert!(!valid_solicitation(&solicitation));
+            }
+        }
+        // Phase `version_prefix_decides_the_parser_and_tampering_fails`.
+        {
+            let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+            let (bytes, _) =
+                encrypt_request(&sample_request(), issuer.verifying_key().to_bytes()).unwrap();
+            // Every byte of an envelope is covered: flipping the version or any
+            // sealed byte fails, and a stripped prefix is refused.
+            for index in 0..bytes.len() {
+                let mut tampered = bytes.clone();
+                tampered[index] ^= 1;
+                assert!(decrypt_request(&tampered, &issuer).is_err(), "byte {index}");
+            }
+            assert!(decrypt_request(&bytes[8..], &issuer).is_err());
+            let wrong = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+            assert!(decrypt_request(&bytes, &wrong).is_err());
+        }
+        // Phase `v2_envelopes_do_not_open_as_another_step`.
+        {
+            let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+            let offer = encrypt_pair_offer("token", device.verifying_key().to_bytes()).unwrap();
+            // Same recipient key, different step label: the request reader
+            // must refuse the pairing offer.
+            assert!(decrypt_request(&offer, &device).is_err());
+        }
     }
 }

@@ -6,8 +6,8 @@
 /// system clock as UTC. Good enough to seed the calendar's default
 /// month; the app never claims timezone precision.
 pub fn today() -> (i32, u32, u32) {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let secs = ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
     let days = secs.div_euclid(86_400);
     civil_from_days(days)
@@ -81,38 +81,42 @@ fn civil_from_days(z: i64) -> (i32, u32, u32) {
 mod tests {
     use super::*;
 
+    /// Weekdays, leap-year month lengths, month wrapping and parse/pretty formatting.
     #[test]
-    fn weekday_known_dates() {
-        // 1970-01-01 was a Thursday (=4).
-        assert_eq!(weekday(1970, 1, 1), 4);
-        // 2000-01-01 was a Saturday (=6).
-        assert_eq!(weekday(2000, 1, 1), 6);
-        // 1815-12-10 (Ada Lovelace's birthday) was a Sunday (=0).
-        assert_eq!(weekday(1815, 12, 10), 0);
-    }
+    fn calendar_arithmetic_and_formatting() {
+        // --- phase: weekday_known_dates ---
+        {
+            // 1970-01-01 was a Thursday (=4).
+            assert_eq!(weekday(1970, 1, 1), 4);
+            // 2000-01-01 was a Saturday (=6).
+            assert_eq!(weekday(2000, 1, 1), 6);
+            // 1815-12-10 (Ada Lovelace's birthday) was a Sunday (=0).
+            assert_eq!(weekday(1815, 12, 10), 0);
+        }
 
-    #[test]
-    fn days_in_month_leap_years() {
-        assert_eq!(days_in_month(2000, 2), 29);
-        assert_eq!(days_in_month(1900, 2), 28);
-        assert_eq!(days_in_month(2024, 2), 29);
-        assert_eq!(days_in_month(2023, 2), 28);
-        assert_eq!(days_in_month(2024, 4), 30);
-        assert_eq!(days_in_month(2024, 12), 31);
-    }
+        // --- phase: days_in_month_leap_years ---
+        {
+            assert_eq!(days_in_month(2000, 2), 29);
+            assert_eq!(days_in_month(1900, 2), 28);
+            assert_eq!(days_in_month(2024, 2), 29);
+            assert_eq!(days_in_month(2023, 2), 28);
+            assert_eq!(days_in_month(2024, 4), 30);
+            assert_eq!(days_in_month(2024, 12), 31);
+        }
 
-    #[test]
-    fn month_wrapping() {
-        assert_eq!(prev_month(2024, 1), (2023, 12));
-        assert_eq!(next_month(2024, 12), (2025, 1));
-        assert_eq!(prev_month(2024, 5), (2024, 4));
-    }
+        // --- phase: month_wrapping ---
+        {
+            assert_eq!(prev_month(2024, 1), (2023, 12));
+            assert_eq!(next_month(2024, 12), (2025, 1));
+            assert_eq!(prev_month(2024, 5), (2024, 4));
+        }
 
-    #[test]
-    fn parse_and_pretty() {
-        assert_eq!(parse_ymd("1815-12-10"), Some((1815, 12, 10)));
-        assert_eq!(parse_ymd("not-a-date"), None);
-        assert_eq!(pretty("1815-12-10"), "December 10, 1815");
-        assert_eq!(pretty(""), "");
+        // --- phase: parse_and_pretty ---
+        {
+            assert_eq!(parse_ymd("1815-12-10"), Some((1815, 12, 10)));
+            assert_eq!(parse_ymd("not-a-date"), None);
+            assert_eq!(pretty("1815-12-10"), "December 10, 1815");
+            assert_eq!(pretty(""), "");
+        }
     }
 }

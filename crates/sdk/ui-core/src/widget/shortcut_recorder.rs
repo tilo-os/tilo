@@ -4,9 +4,10 @@
 //! Enter/Space, then type the replacement chord. Escape cancels. A reset
 //! affordance is present only while the value differs from its default.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use crate::widget::binding::{BoxedBinding, Pulled};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -22,14 +23,17 @@ use crate::presence::PresenceCtx;
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
-use crate::widget::{InputHint, TaffyTreeExt, Widget};
+use crate::widget::{InputHint, LegendConventions, TaffyTreeExt, Widget};
 
 const HEIGHT: f64 = 34.0;
 const RESET_SIZE: f64 = 26.0;
 
 pub struct ShortcutRecorder {
     id: String,
-    path: String,
+    /// The chord text, as a document key.
+    stored: BoxedBinding<String>,
+    /// Whether the model rejected the chord (`<key>.error`).
+    rejected: BoxedBinding<bool>,
     default: String,
     value: String,
     invalid: bool,
@@ -45,7 +49,8 @@ impl ShortcutRecorder {
     pub fn new(id: &str, path: &str, value: &str, default: &str) -> Self {
         Self {
             id: id.into(),
-            path: path.into(),
+            stored: crate::doc_binding::str_key(path),
+            rejected: crate::doc_binding::bool_key(&format!("{path}.error")),
             default: default.into(),
             value: value.into(),
             invalid: false,
@@ -78,8 +83,8 @@ impl ShortcutRecorder {
         binding_from_text(&self.value)
     }
 
-    fn write(&mut self, state: &mut AutoCommit, root: &ObjId, value: String) {
-        let _ = state.put(root, self.path.as_str(), value.clone());
+    fn write(&mut self, state: &mut AppModel, root: &ModelPath, value: String) {
+        self.stored.push(state, root, &value);
         self.value = value;
         self.capturing = false;
     }
@@ -100,18 +105,11 @@ impl Widget for ShortcutRecorder {
         self.interaction = environment;
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Ok(Some((Value::Scalar(value), _))) = state.get(root, self.path.as_str())
-            && let automerge::ScalarValue::Str(value) = value.as_ref()
-        {
-            self.value = value.to_string();
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        if let Pulled::Value(value) = self.stored.pull(state, root) {
+            self.value = value;
         }
-        let error_path = format!("{}.error", self.path);
-        self.invalid = matches!(
-            state.get(root, error_path.as_str()),
-            Ok(Some((Value::Scalar(value), _)))
-                if matches!(value.as_ref(), automerge::ScalarValue::Boolean(true))
-        );
+        self.invalid = matches!(self.rejected.pull(state, root), Pulled::Value(true));
     }
 
     fn build_layout(
@@ -190,20 +188,13 @@ impl Widget for ShortcutRecorder {
             );
         } else {
             InputHint::paint_at(
-                scene,
-                transform,
+                &mut crate::paint::PaintCtx::new(scene, transform, text, theme),
                 Point::new(
                     chord.x0 + 5.0,
                     chord.center().y - crate::widget::input_hint::HEIGHT / 2.0,
                 ),
                 &InputBinding::Keyboard(self.binding()),
-                self.platform,
-                self.interaction.keyboard_family,
-                self.interaction
-                    .controller
-                    .unwrap_or(crate::interaction::ControllerFamily::Generic),
-                text,
-                theme,
+                LegendConventions::new(self.platform, &self.interaction),
             );
             if self.invalid {
                 text.draw_text_weighted(
@@ -250,21 +241,13 @@ impl Widget for ShortcutRecorder {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer = Some(Point::new(position.x / scale, position.y / scale));
+                self.pointer = Some(Point::new(
+                    position.x / ctx.scale_factor,
+                    position.y / ctx.scale_factor,
+                ));
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -274,13 +257,13 @@ impl Widget for ShortcutRecorder {
                 let Some(point) = self.pointer else { return };
                 if let Some(reset) = self.reset_rect().filter(|r| r.contains(point)) {
                     let _ = reset;
-                    self.write(state, root, self.default.clone());
-                    *focus = Some(node);
-                    *handled = true;
+                    self.write(ctx.state, ctx.path, self.default.clone());
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 } else if self.chord_rect().contains(point) {
                     self.capturing = true;
-                    *focus = Some(node);
-                    *handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
@@ -289,16 +272,17 @@ impl Widget for ShortcutRecorder {
                 if self.capturing {
                     if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
                         self.capturing = false;
-                    } else if let Some(value) = chord_from_event(&event.logical_key, *modifiers) {
-                        self.write(state, root, value);
+                    } else if let Some(value) = chord_from_event(&event.logical_key, *ctx.modifiers)
+                    {
+                        self.write(ctx.state, ctx.path, value);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if matches!(
                     event.logical_key,
                     Key::Named(NamedKey::Enter | NamedKey::Space)
                 ) {
                     self.capturing = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -351,8 +335,8 @@ impl Widget for ShortcutRecorder {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
+        _state: &mut AppModel,
+        _root: &ModelPath,
     ) -> bool {
         if matches!(action, crate::a11y::Action::Activate) {
             self.capturing = true;
@@ -438,27 +422,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reset_exists_only_for_a_changed_binding() {
-        let unchanged = ShortcutRecorder::new("x", "x", "Super+Left", "Super+Left");
-        assert!(unchanged.reset_rect().is_none());
-        let changed = ShortcutRecorder::new("x", "x", "Super+H", "Super+Left");
-        assert!(changed.reset_rect().is_some());
-    }
+    fn binding_display_names_keys_and_offers_reset_only_when_changed() {
+        // Case `reset_exists_only_for_a_changed_binding`.
+        {
+            let unchanged = ShortcutRecorder::new("x", "x", "Super+Left", "Super+Left");
+            assert!(unchanged.reset_rect().is_none());
+            let changed = ShortcutRecorder::new("x", "x", "Super+H", "Super+Left");
+            assert!(changed.reset_rect().is_some());
+        }
 
-    #[test]
-    fn visual_binding_uses_readable_named_keys() {
-        let recorder = ShortcutRecorder::new("x", "x", "Super+Down", "Super+Left");
-        assert_eq!(
-            recorder
-                .binding()
-                .keycap_labels(PlatformConventions::new(crate::platform::Platform::Linux)),
-            ["Super", "Down"]
-        );
-        assert_eq!(
-            recorder
-                .binding()
-                .keycap_labels(PlatformConventions::new(crate::platform::Platform::MacOs)),
-            ["⌘", "Down"]
-        );
+        // Case `visual_binding_uses_readable_named_keys`.
+        {
+            let recorder = ShortcutRecorder::new("x", "x", "Super+Down", "Super+Left");
+            assert_eq!(
+                recorder
+                    .binding()
+                    .keycap_labels(PlatformConventions::new(crate::platform::Platform::Linux)),
+                ["Super", "Down"]
+            );
+            assert_eq!(
+                recorder
+                    .binding()
+                    .keycap_labels(PlatformConventions::new(crate::platform::Platform::MacOs)),
+                ["⌘", "↓"]
+            );
+        }
     }
 }

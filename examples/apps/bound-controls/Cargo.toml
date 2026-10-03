@@ -1,0 +1,28 @@
+[package]
+name = "example-bound-controls"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+
+[lib]
+name = "example_bound_controls"
+path = "src/lib.rs"
+
+[[bin]]
+name = "example-bound-controls"
+path = "src/main.rs"
+
+[features]
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+runtime-dylib = { path = "../../../crates/runtime/runtime-dylib", optional = true }
+ui = { package = "tilo-app", path = "../../../crates/sdk/tilo-app" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

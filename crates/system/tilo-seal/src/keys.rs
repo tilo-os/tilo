@@ -197,21 +197,6 @@ impl SecretKey {
             .map_err(|_| Error::InvalidKey)?;
         PublicKey::from_slice(&public)
     }
-
-    /// Raw X25519 Diffie-Hellman, available only to the readers of formats
-    /// sealed before this crate existed. Rejects low-order peers.
-    pub(crate) fn diffie_hellman(&self, peer: &PublicKey) -> Result<Zeroizing<[u8; KEY_LEN]>> {
-        let shared = Zeroizing::new(
-            HpkeRustCrypto::dh(KemAlgorithm::DhKem25519, peer.as_bytes(), self.0.as_ref())
-                .map_err(|_| Error::InvalidKey)?,
-        );
-        let mut out = Zeroizing::new([0_u8; KEY_LEN]);
-        if shared.len() != KEY_LEN {
-            return Err(Error::InvalidKey);
-        }
-        out.copy_from_slice(&shared);
-        Ok(out)
-    }
 }
 
 impl PartialEq for SecretKey {
@@ -236,27 +221,29 @@ mod tests {
     use super::{SecretKey, SymmetricKey};
 
     #[test]
-    fn debug_output_never_contains_secret_bytes() {
-        let key = SymmetricKey::from_bytes([0xab; 32]);
-        let rendered = format!("{key:?}");
-        assert!(!rendered.contains("abab"), "{rendered}");
-        let secret = SecretKey::from_bytes([0xcd; 32]);
-        let rendered = format!("{secret:?}");
-        assert!(!rendered.contains("cdcd"), "{rendered}");
-    }
-
-    #[test]
-    fn x25519_public_key_matches_rfc7748_vector() {
-        // RFC 7748 section 6.1, Alice.
-        let sk: [u8; 32] =
-            hex::decode("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a")
-                .unwrap()
-                .try_into()
-                .unwrap();
-        let pk = SecretKey::from_bytes(sk).public_key().unwrap();
-        assert_eq!(
-            hex::encode(pk.to_bytes()),
-            "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a"
-        );
+    fn keys_match_rfc7748_and_never_debug_secret_bytes() {
+        // Phase `debug_output_never_contains_secret_bytes`.
+        {
+            let key = SymmetricKey::from_bytes([0xab; 32]);
+            let rendered = format!("{key:?}");
+            assert!(!rendered.contains("abab"), "{rendered}");
+            let secret = SecretKey::from_bytes([0xcd; 32]);
+            let rendered = format!("{secret:?}");
+            assert!(!rendered.contains("cdcd"), "{rendered}");
+        }
+        // Phase `x25519_public_key_matches_rfc7748_vector`.
+        {
+            // RFC 7748 section 6.1, Alice.
+            let sk: [u8; 32] =
+                hex::decode("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a")
+                    .unwrap()
+                    .try_into()
+                    .unwrap();
+            let pk = SecretKey::from_bytes(sk).public_key().unwrap();
+            assert_eq!(
+                hex::encode(pk.to_bytes()),
+                "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a"
+            );
+        }
     }
 }

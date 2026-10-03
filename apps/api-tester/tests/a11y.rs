@@ -33,10 +33,21 @@ fn driver() -> Driver {
     )
 }
 
+/// Every surface (full demo, empty and error responses, the narrow overlay
+/// rail, contextual forms) exposes its controls as named accessibility nodes;
+/// each case mounts its own Driver.
+#[test]
+fn every_surface_exposes_named_accessible_controls() {
+    every_control_is_a_focusable_accessible_node();
+    empty_and_error_response_surfaces_expose_recovery_actions();
+    narrow_workspace_menu_is_keyboard_accessible();
+    contextual_forms_expose_only_their_named_fields();
+}
+
 /// Every interactive control is a real focusable widget with an accessibility
 /// node carrying the correct role, name, and value — the thing a single
 /// painted canvas could never provide.
-#[test]
+/// Case of `every_surface_exposes_named_accessible_controls`.
 fn every_control_is_a_focusable_accessible_node() {
     let d = driver();
     let nodes = d.focus_access_nodes();
@@ -136,7 +147,7 @@ fn every_control_is_a_focusable_accessible_node() {
     );
 }
 
-#[test]
+/// Case of `every_surface_exposes_named_accessible_controls`.
 fn empty_and_error_response_surfaces_expose_recovery_actions() {
     let empty = Driver::new(State::new(), Box::new(ApiTesterApp::new()), (1280, 800));
     assert!(
@@ -165,7 +176,7 @@ fn empty_and_error_response_surfaces_expose_recovery_actions() {
     );
 }
 
-#[test]
+/// Case of `every_surface_exposes_named_accessible_controls`.
 fn narrow_workspace_menu_is_keyboard_accessible() {
     let d = Driver::new(State::new(), Box::new(ApiTesterApp::new()), (390, 844));
     assert!(
@@ -176,7 +187,7 @@ fn narrow_workspace_menu_is_keyboard_accessible() {
     );
 }
 
-#[test]
+/// Case of `every_surface_exposes_named_accessible_controls`.
 fn contextual_forms_expose_only_their_named_fields() {
     let mut variable = ApiTesterApp::new_demo();
     variable.shot_form("new-variable");
@@ -208,10 +219,20 @@ fn contextual_forms_expose_only_their_named_fields() {
     );
 }
 
+/// Tab order, Enter activation, Escape dismissal and focus return drive the
+/// real widget handlers; each case mounts its own Driver.
+#[test]
+fn keyboard_focus_traverses_activates_and_returns_through_real_handlers() {
+    tab_traverses_every_control_in_order();
+    enter_activates_a_focused_row_through_the_real_handler();
+    composition_disclosure_hides_maintenance_and_returns_focus();
+    composition_narrow_escape_paging_and_open_resize_are_reachable();
+}
+
 /// Tab / Shift+Tab move keyboard focus between the real controls in tree
 /// order — the traversal the compositor's `App` performs, exercised here
 /// through the same focus walk.
-#[test]
+/// Case of `keyboard_focus_traverses_activates_and_returns_through_real_handlers`.
 fn tab_traverses_every_control_in_order() {
     let mut d = driver();
     let stops = d.tab_through();
@@ -269,7 +290,7 @@ fn tab_traverses_every_control_in_order() {
 /// Enter on a focused row activates it through the widget's real handler —
 /// the same path a screen reader's "activate" takes — and the effect lands in
 /// the app (the collection collapses, hiding its request rows).
-#[test]
+/// Case of `keyboard_focus_traverses_activates_and_returns_through_real_handlers`.
 fn enter_activates_a_focused_row_through_the_real_handler() {
     let mut d = driver();
     let target = "Users API, collection, 4 requests";
@@ -316,7 +337,7 @@ fn enter_activates_a_focused_row_through_the_real_handler() {
     );
 }
 
-#[test]
+/// Case of `keyboard_focus_traverses_activates_and_returns_through_real_handlers`.
 fn composition_disclosure_hides_maintenance_and_returns_focus() {
     let mut d = driver();
     assert!(
@@ -340,7 +361,17 @@ fn composition_disclosure_hides_maintenance_and_returns_focus() {
     );
 }
 
+/// The request divider responds to keyboard and pointer, its manual
+/// preference survives resizes and tab changes, and 2x text keeps every
+/// control on screen; each case mounts its own Driver.
 #[test]
+fn request_divider_and_controls_survive_resize_and_text_scale() {
+    composition_params_fit_rows_and_divider_adjusts_with_keyboard();
+    composition_pointer_drag_body_auth_and_preference_survive_resize();
+    composition_real_two_x_retains_all_controls_and_response_space();
+}
+
+/// Case of `request_divider_and_controls_survive_resize_and_text_scale`.
 fn composition_params_fit_rows_and_divider_adjusts_with_keyboard() {
     let mut d = driver();
     let before = d.targets()["api.request-divider"];
@@ -422,7 +453,7 @@ fn assert_sidebar_targets(d: &Driver, height: f64) {
     }
 }
 
-#[test]
+/// Case of `request_divider_and_controls_survive_resize_and_text_scale`.
 #[expect(
     clippy::float_cmp,
     reason = "the divider moves by exactly the dragged whole-pixel distance"
@@ -467,7 +498,15 @@ fn composition_pointer_drag_body_auth_and_preference_survive_resize() {
     assert_eq!(d.targets()["api.request-divider"], manual);
 }
 
+/// Real management buttons and Send (pointer and keyboard) drive the same
+/// mutations and requests as the live app; each case mounts its own Driver.
 #[test]
+fn real_buttons_perform_canonical_mutations_and_live_sends() {
+    composition_management_real_buttons_keep_canonical_mutations();
+    composition_pointer_and_keyboard_send_use_the_live_request();
+}
+
+/// Case of `real_buttons_perform_canonical_mutations_and_live_sends`.
 fn composition_management_real_buttons_keep_canonical_mutations() {
     let mut d = driver();
     d.perform_named("api.collection-actions", &ui::a11y::Action::Focus)
@@ -501,7 +540,7 @@ fn composition_management_real_buttons_keep_canonical_mutations() {
     );
 }
 
-#[test]
+/// Case of `keyboard_focus_traverses_activates_and_returns_through_real_handlers`.
 fn composition_narrow_escape_paging_and_open_resize_are_reachable() {
     let mut d = driver();
     d.resize((480, 900)).unwrap();
@@ -553,7 +592,7 @@ fn composition_narrow_escape_paging_and_open_resize_are_reachable() {
     );
 }
 
-#[test]
+/// Case of `request_divider_and_controls_survive_resize_and_text_scale`.
 fn composition_real_two_x_retains_all_controls_and_response_space() {
     let mut app = ApiTesterApp::new_demo();
     app.snap_rail(true);
@@ -571,7 +610,7 @@ fn composition_real_two_x_retains_all_controls_and_response_space() {
     assert!(targets["api.request-tabs"].x1 <= 800.0);
 }
 
-#[test]
+/// Case of `real_buttons_perform_canonical_mutations_and_live_sends`.
 fn composition_pointer_and_keyboard_send_use_the_live_request() {
     use std::io::{Read, Write};
     for keyboard in [false, true] {
@@ -579,7 +618,7 @@ fn composition_pointer_and_keyboard_send_use_the_live_request() {
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = tilo_test_env::hang_deadline();
             loop {
                 if let Ok((mut stream, _)) = listener.accept() {
                     stream
@@ -591,7 +630,7 @@ fn composition_pointer_and_keyboard_send_use_the_live_request() {
                     return String::from_utf8_lossy(&bytes[..count]).to_string();
                 }
                 assert!(
-                    std::time::Instant::now() < deadline,
+                    ui::time::now() < deadline,
                     "Send never reached the HTTP server"
                 );
                 std::thread::sleep(std::time::Duration::from_millis(10));

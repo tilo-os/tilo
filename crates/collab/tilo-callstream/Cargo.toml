@@ -13,9 +13,10 @@ path = "src/lib.rs"
 [dependencies]
 # Encode and decode through the shared GStreamer media stack, which picks
 # hardware first, then royalty-free software, then Cisco's openh264 binary.
-media = { path = "../../media/core", features = ["realtime"] }
+media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["realtime"] }
 thiserror.workspace = true
 tracing = "0.1"
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

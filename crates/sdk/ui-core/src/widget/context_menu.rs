@@ -6,7 +6,7 @@
 //! Callers push `MenuItem::action(label, fn)` and optional
 //! `MenuItem::separator()` entries, then call `open_at` on right-click.
 
-use automerge::{AutoCommit, ObjId};
+use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -705,8 +705,6 @@ fn label_inset(theme: &Theme) -> f64 {
 }
 
 impl Widget for ContextMenu {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -935,24 +933,14 @@ impl Widget for ContextMenu {
         self.draw_scroll_affordance(scene, transform, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.open {
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.hovered = self
                     .item_at([self.last_cursor.x, self.last_cursor.y])
                     .filter(|index| self.items[*index].is_enabled());
@@ -964,13 +952,13 @@ impl Widget for ContextMenu {
             {
                 let amount = match delta {
                     MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * self.row_height(),
-                    MouseScrollDelta::PixelDelta(position) => -position.y / scale_factor,
+                    MouseScrollDelta::PixelDelta(position) => -position.y / ctx.scale_factor,
                 };
                 self.scroll_by(amount);
                 self.hovered = self
                     .item_at([self.last_cursor.x, self.last_cursor.y])
                     .filter(|index| self.items[*index].is_enabled());
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -983,32 +971,32 @@ impl Widget for ContextMenu {
             } => match key {
                 Key::Named(NamedKey::Escape) => {
                     self.close();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 Key::Named(NamedKey::ArrowDown) => {
                     self.move_hover(1);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 Key::Named(NamedKey::ArrowUp) => {
                     self.move_hover(-1);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 Key::Named(NamedKey::Enter) => {
                     if let Some(idx) = self.hovered {
                         self.click_item(idx);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 _ => {}
             },
             WindowEvent::MouseWheel { delta, .. } if self.bounds.is_some() => {
                 let delta = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * self.row_height,
-                    MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
+                    MouseScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor,
                 };
                 self.scroll_offset = (self.scroll_offset - delta).clamp(0.0, self.max_scroll());
                 self.hovered = self.item_at([self.last_cursor.x, self.last_cursor.y]);
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1017,18 +1005,18 @@ impl Widget for ContextMenu {
             } => {
                 if let Some(idx) = self.item_at([self.last_cursor.x, self.last_cursor.y]) {
                     self.click_item(idx);
-                    *handled = true;
+                    *ctx.handled = true;
                 } else {
                     // An open menu is modal-ish: swallow the dismiss click
                     // so it doesn't also activate whatever sits underneath.
                     self.close();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::Touch(touch) => {
                 let point = Point::new(
-                    touch.location.x / scale_factor,
-                    touch.location.y / scale_factor,
+                    touch.location.x / ctx.scale_factor,
+                    touch.location.y / ctx.scale_factor,
                 );
                 match touch.phase {
                     winit::event::TouchPhase::Started if self.active_touch.is_none() => {
@@ -1037,14 +1025,14 @@ impl Widget for ContextMenu {
                         self.hovered = self
                             .item_at([point.x, point.y])
                             .filter(|index| self.items[*index].is_enabled());
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     winit::event::TouchPhase::Moved if self.active_touch == Some(touch.id) => {
                         self.last_cursor = point;
                         self.hovered = self
                             .item_at([point.x, point.y])
                             .filter(|index| self.items[*index].is_enabled());
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     winit::event::TouchPhase::Ended if self.active_touch == Some(touch.id) => {
                         self.active_touch = None;
@@ -1053,12 +1041,12 @@ impl Widget for ContextMenu {
                         } else {
                             self.close();
                         }
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     winit::event::TouchPhase::Cancelled if self.active_touch == Some(touch.id) => {
                         self.active_touch = None;
                         self.close();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     _ => {}
                 }
@@ -1143,8 +1131,8 @@ impl Widget for ContextMenu {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !self.open || !matches!(action, crate::a11y::Action::Activate) {
             return false;
@@ -1169,74 +1157,79 @@ mod a11y_tests {
     use crate::widget::Widget;
 
     #[test]
-    fn accessibility_reports_menu_role_and_collapsed_when_closed() {
-        use crate::a11y::Role;
-        let mut menu = ContextMenu::new();
-        menu.push(MenuItem::action("Open", || {}));
-        let node = Widget::accessibility(&menu).expect("menu is not presentational");
-        assert_eq!(node.role, Role::Menu);
-        assert_eq!(
-            node.state.expanded,
-            Some(false),
-            "closed menu is not expanded"
-        );
-        assert!(node.state.hidden, "closed menu is hidden from the tree");
-    }
+    fn menu_accessibility_reports_state_rows_and_checks() {
+        fn accessibility_reports_menu_role_and_collapsed_when_closed() {
+            use crate::a11y::Role;
+            let mut menu = ContextMenu::new();
+            menu.push(MenuItem::action("Open", || {}));
+            let node = Widget::accessibility(&menu).expect("menu is not presentational");
+            assert_eq!(node.role, Role::Menu);
+            assert_eq!(
+                node.state.expanded,
+                Some(false),
+                "closed menu is not expanded"
+            );
+            assert!(node.state.hidden, "closed menu is hidden from the tree");
+        }
 
-    #[test]
-    fn accessibility_open_menu_is_expanded_and_visible() {
-        let mut menu = ContextMenu::new();
-        menu.push(MenuItem::action("Open", || {}));
-        menu.open_at([10.0, 20.0]);
-        let node = Widget::accessibility(&menu).unwrap();
-        assert_eq!(node.state.expanded, Some(true), "open menu is expanded");
-        assert!(!node.state.hidden, "open menu is visible");
-    }
+        fn accessibility_open_menu_is_expanded_and_visible() {
+            let mut menu = ContextMenu::new();
+            menu.push(MenuItem::action("Open", || {}));
+            menu.open_at([10.0, 20.0]);
+            let node = Widget::accessibility(&menu).unwrap();
+            assert_eq!(node.state.expanded, Some(true), "open menu is expanded");
+            assert!(!node.state.hidden, "open menu is visible");
+        }
 
-    #[test]
-    fn accessibility_exposes_named_action_rows_and_skips_separators() {
-        let mut menu = ContextMenu::new();
-        menu.push(MenuItem::action("Keep Offline", || {}));
-        menu.push(MenuItem::separator());
-        menu.push(MenuItem::action("Sharing & Access…", || {}));
-        menu.open_at([10.0, 20.0]);
+        fn accessibility_exposes_named_action_rows_and_skips_separators() {
+            let mut menu = ContextMenu::new();
+            menu.push(MenuItem::action("Keep Offline", || {}));
+            menu.push(MenuItem::separator());
+            menu.push(MenuItem::action("Sharing & Access…", || {}));
+            menu.open_at([10.0, 20.0]);
 
-        let node = Widget::accessibility(&menu).unwrap();
-        assert_eq!(node.children.len(), 2);
-        assert_eq!(node.children[0].role, crate::a11y::Role::MenuItem);
-        assert_eq!(node.children[0].name.as_deref(), Some("Keep Offline"));
-        assert_eq!(
-            node.children[0].action_target.as_deref(),
-            Some("context-menu:item:0")
-        );
-        assert_eq!(node.children[0].pos_in_set, Some(1));
-        assert_eq!(node.children[0].set_size, Some(2));
-        assert_eq!(node.children[1].name.as_deref(), Some("Sharing & Access…"));
-        assert_eq!(
-            node.children[1].action_target.as_deref(),
-            Some("context-menu:item:2")
-        );
-        assert!(node.children.iter().all(|child| child.state.focusable));
-    }
+            let node = Widget::accessibility(&menu).unwrap();
+            assert_eq!(node.children.len(), 2);
+            assert_eq!(node.children[0].role, crate::a11y::Role::MenuItem);
+            assert_eq!(node.children[0].name.as_deref(), Some("Keep Offline"));
+            assert_eq!(
+                node.children[0].action_target.as_deref(),
+                Some("context-menu:item:0")
+            );
+            assert_eq!(node.children[0].pos_in_set, Some(1));
+            assert_eq!(node.children[0].set_size, Some(2));
+            assert_eq!(node.children[1].name.as_deref(), Some("Sharing & Access…"));
+            assert_eq!(
+                node.children[1].action_target.as_deref(),
+                Some("context-menu:item:2")
+            );
+            assert!(node.children.iter().all(|child| child.state.focusable));
+        }
 
-    #[test]
-    fn accessibility_exposes_checked_state_without_polluting_the_label() {
-        let mut menu = ContextMenu::new();
-        menu.push(MenuItem::checked_action("List", true, || {}));
-        menu.push(MenuItem::checked_action("Grid", false, || {}));
-        menu.open_at([10.0, 20.0]);
+        fn accessibility_exposes_checked_state_without_polluting_the_label() {
+            let mut menu = ContextMenu::new();
+            menu.push(MenuItem::checked_action("List", true, || {}));
+            menu.push(MenuItem::checked_action("Grid", false, || {}));
+            menu.open_at([10.0, 20.0]);
 
-        let node = Widget::accessibility(&menu).unwrap();
-        assert_eq!(node.children[0].name.as_deref(), Some("List"));
-        assert_eq!(node.children[0].state.checked, Some(true));
-        assert_eq!(node.children[1].name.as_deref(), Some("Grid"));
-        assert_eq!(node.children[1].state.checked, Some(false));
+            let node = Widget::accessibility(&menu).unwrap();
+            assert_eq!(node.children[0].name.as_deref(), Some("List"));
+            assert_eq!(node.children[0].state.checked, Some(true));
+            assert_eq!(node.children[1].name.as_deref(), Some("Grid"));
+            assert_eq!(node.children[1].state.checked, Some(false));
+        }
+
+        accessibility_reports_menu_role_and_collapsed_when_closed();
+        accessibility_open_menu_is_expanded_and_visible();
+        accessibility_exposes_named_action_rows_and_skips_separators();
+        accessibility_exposes_checked_state_without_polluting_the_label();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -1335,397 +1328,415 @@ mod tests {
         let root = automerge::ROOT;
         m.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
 
     #[test]
-    fn click_on_row_fires_action_and_records_selection() {
-        let (mut m, fired) = open_menu();
-        // First action row centre: y0 + PADDING + ROW_HEIGHT/2.
-        let r = m.get_rect();
-        let row0_y = r.y0 + PADDING + ROW_HEIGHT / 2.0;
-        let p = Point::new(r.x0 + 20.0, row0_y);
-        dispatch(&mut m, &cursor_at(p));
-        let handled = dispatch(&mut m, &left_press());
-        assert!(handled, "a row click is consumed");
-        assert_eq!(
-            fired.load(Ordering::SeqCst),
-            1,
-            "the first action's callback fired"
-        );
-        assert_eq!(m.take_selection(), Some(0), "selection index is exposed");
-        assert!(!m.is_open(), "the menu closes after a selection");
-        assert_eq!(m.take_selection(), None, "selection drains exactly once");
-    }
-
-    #[test]
-    fn click_outside_dismisses_and_is_swallowed() {
-        let (mut m, fired) = open_menu();
-        let r = m.get_rect();
-        let p = Point::new(r.x1 + 50.0, r.y1 + 50.0);
-        dispatch(&mut m, &cursor_at(p));
-        let handled = dispatch(&mut m, &left_press());
-        assert!(handled, "outside click is swallowed (not passed through)");
-        assert!(!m.is_open(), "outside click dismisses the menu");
-        assert_eq!(
-            fired.load(Ordering::SeqCst),
-            0,
-            "no action fires on an outside click"
-        );
-    }
-
-    #[test]
-    fn esc_dismisses() {
-        let (mut m, _f) = open_menu();
-        let handled = dispatch(&mut m, &key(NamedKey::Escape));
-        assert!(handled);
-        assert!(!m.is_open(), "Esc closes the menu");
-    }
-
-    #[test]
-    fn keyboard_nav_skips_separator_and_enter_selects() {
-        let (mut m, fired) = open_menu();
-        // Down → first action (idx 0).
-        dispatch(&mut m, &key(NamedKey::ArrowDown));
-        assert_eq!(m.hovered(), Some(0));
-        // Down again → must skip the separator (idx 1) and land on idx 2.
-        dispatch(&mut m, &key(NamedKey::ArrowDown));
-        assert_eq!(m.hovered(), Some(2), "ArrowDown skips the separator");
-        // Enter selects the hovered row.
-        dispatch(&mut m, &key(NamedKey::Enter));
-        assert_eq!(
-            fired.load(Ordering::SeqCst),
-            100,
-            "Enter fired the second action"
-        );
-        assert_eq!(m.take_selection(), Some(2));
-    }
-
-    #[test]
-    fn disabled_rows_reject_pointer_activation() {
-        let (mut menu, fired) = open_menu();
-        menu.set_item_enabled(0, false);
-        let rect = menu.item_rect(0).expect("first action row");
-        let point = rect.center();
-
-        dispatch(&mut menu, &cursor_at(point));
-        assert_eq!(menu.hovered(), None, "disabled rows are not hover targets");
-        assert!(dispatch(&mut menu, &left_press()));
-        assert_eq!(fired.load(Ordering::SeqCst), 0);
-        assert_eq!(menu.take_selection(), None);
-        assert!(menu.is_open(), "a rejected activation keeps the menu open");
-    }
-
-    #[test]
-    fn keyboard_navigation_skips_disabled_rows() {
-        let (mut menu, fired) = open_menu();
-        menu.set_item_enabled(0, false);
-
-        dispatch(&mut menu, &key(NamedKey::ArrowDown));
-        assert_eq!(menu.hovered(), Some(2));
-        dispatch(&mut menu, &key(NamedKey::Enter));
-
-        assert_eq!(fired.load(Ordering::SeqCst), 100);
-        assert_eq!(menu.take_selection(), Some(2));
-    }
-
-    #[test]
-    fn destructive_first_row_is_not_the_implicit_keyboard_target() {
-        let mut menu = ContextMenu::new();
-        menu.push(MenuItem::destructive_selection("Delete"));
-        menu.push(MenuItem::selection("Archive"));
-        menu.open_at([10.0, 20.0]);
-
-        assert_eq!(menu.hovered(), Some(1));
-    }
-
-    #[test]
-    fn item_builders_preserve_icon_and_destructive_intent() {
-        let item = MenuItem::destructive_selection("Delete").with_icon(Icon::Trash);
-        let MenuItem::Action {
-            icon, destructive, ..
-        } = item
-        else {
-            panic!("selection builder must produce an action");
-        };
-
-        assert_eq!(icon, Some(Icon::Trash));
-        assert!(destructive);
-    }
-
-    #[test]
-    fn semantic_activation_uses_the_same_selection_channel() {
-        let (mut menu, fired) = open_menu();
-        let mut doc = AutoCommit::new();
-
-        assert!(Widget::perform_semantic_action(
-            &mut menu,
-            "context-menu:item:2",
-            &crate::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(fired.load(Ordering::SeqCst), 100);
-        assert_eq!(menu.take_selection(), Some(2));
-        assert!(!menu.is_open());
-    }
-
-    #[test]
-    fn semantic_activation_rejects_disabled_rows() {
-        let (mut menu, fired) = open_menu();
-        menu.set_item_enabled(2, false);
-        let mut doc = AutoCommit::new();
-
-        assert!(!Widget::perform_semantic_action(
-            &mut menu,
-            "context-menu:item:2",
-            &crate::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(fired.load(Ordering::SeqCst), 0);
-        assert_eq!(menu.take_selection(), None);
-        assert!(menu.is_open());
-    }
-
-    #[test]
-    fn hover_tracks_cursor_row() {
-        let (mut m, _f) = open_menu();
-        let r = m.get_rect();
-        let row0_y = r.y0 + PADDING + ROW_HEIGHT / 2.0;
-        dispatch(&mut m, &cursor_at(Point::new(r.x0 + 10.0, row0_y)));
-        assert_eq!(m.hovered(), Some(0), "cursor over row 0 highlights it");
-        // Move onto the separator → no hover.
-        let sep_y = r.y0 + PADDING + ROW_HEIGHT + SEPARATOR_HEIGHT / 2.0;
-        dispatch(&mut m, &cursor_at(Point::new(r.x0 + 10.0, sep_y)));
-        assert_eq!(m.hovered(), None, "cursor over a separator clears hover");
-    }
-
-    #[test]
-    fn bounded_wheel_hit_testing_and_keyboard_activation_share_scroll_offset() {
-        let mut menu = ContextMenu::new();
-        for index in 0..20 {
-            menu.push(MenuItem::action(format!("Command {index}"), || {}));
+    fn pointer_activation_fires_actions_and_dismisses() {
+        fn click_on_row_fires_action_and_records_selection() {
+            let (mut m, fired) = open_menu();
+            // First action row centre: y0 + PADDING + ROW_HEIGHT/2.
+            let r = m.get_rect();
+            let row0_y = r.y0 + PADDING + ROW_HEIGHT / 2.0;
+            let p = Point::new(r.x0 + 20.0, row0_y);
+            dispatch(&mut m, &cursor_at(p));
+            let handled = dispatch(&mut m, &left_press());
+            assert!(handled, "a row click is consumed");
+            assert_eq!(
+                fired.load(Ordering::SeqCst),
+                1,
+                "the first action's callback fired"
+            );
+            assert_eq!(m.take_selection(), Some(0), "selection index is exposed");
+            assert!(!m.is_open(), "the menu closes after a selection");
+            assert_eq!(m.take_selection(), None, "selection drains exactly once");
         }
-        menu.open_anchored(
-            Rect::new(10.0, 10.0, 30.0, 30.0),
-            Rect::new(0.0, 0.0, 180.0, 100.0),
-        );
-        menu.layout_within(&mut TextRenderer::new(), &Theme::dark());
-        let point = menu.get_rect().center();
-        dispatch(&mut menu, &cursor_at(point));
-        let wheel = |y| WindowEvent::MouseWheel {
-            device_id: synth_device(),
-            delta: MouseScrollDelta::LineDelta(0.0, y),
-            phase: winit::event::TouchPhase::Moved,
-        };
-        assert!(dispatch(&mut menu, &wheel(-100.0)));
-        assert_eq!(menu.scroll_offset, menu.max_scroll());
-        let last = menu.item_rect(19).unwrap().center();
-        assert_eq!(menu.item_at([last.x, last.y]), Some(19));
-        dispatch(&mut menu, &cursor_at(last));
-        dispatch(&mut menu, &left_press());
-        assert_eq!(menu.take_selection(), Some(19));
-        assert_eq!(menu.take_selection(), None);
-        menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 180.0, 100.0));
-        menu.focus_first_action();
-        for _ in 0..19 {
+
+        fn click_outside_dismisses_and_is_swallowed() {
+            let (mut m, fired) = open_menu();
+            let r = m.get_rect();
+            let p = Point::new(r.x1 + 50.0, r.y1 + 50.0);
+            dispatch(&mut m, &cursor_at(p));
+            let handled = dispatch(&mut m, &left_press());
+            assert!(handled, "outside click is swallowed (not passed through)");
+            assert!(!m.is_open(), "outside click dismisses the menu");
+            assert_eq!(
+                fired.load(Ordering::SeqCst),
+                0,
+                "no action fires on an outside click"
+            );
+        }
+
+        fn esc_dismisses() {
+            let (mut m, _f) = open_menu();
+            let handled = dispatch(&mut m, &key(NamedKey::Escape));
+            assert!(handled);
+            assert!(!m.is_open(), "Esc closes the menu");
+        }
+
+        fn hover_tracks_cursor_row() {
+            let (mut m, _f) = open_menu();
+            let r = m.get_rect();
+            let row0_y = r.y0 + PADDING + ROW_HEIGHT / 2.0;
+            dispatch(&mut m, &cursor_at(Point::new(r.x0 + 10.0, row0_y)));
+            assert_eq!(m.hovered(), Some(0), "cursor over row 0 highlights it");
+            // Move onto the separator → no hover.
+            let sep_y = r.y0 + PADDING + ROW_HEIGHT + SEPARATOR_HEIGHT / 2.0;
+            dispatch(&mut m, &cursor_at(Point::new(r.x0 + 10.0, sep_y)));
+            assert_eq!(m.hovered(), None, "cursor over a separator clears hover");
+        }
+
+        fn touch_release_activates_once_and_keeps_the_capture() {
+            let (mut menu, fired) = open_menu();
+            let rect = menu.get_rect();
+            let point = Point::new(rect.x0 + 20.0, rect.y0 + PADDING + ROW_HEIGHT / 2.0);
+
+            assert!(dispatch(&mut menu, &touch(TouchPhase::Started, 7, point)));
+            assert!(dispatch(&mut menu, &touch(TouchPhase::Ended, 7, point)));
+            assert_eq!(fired.load(Ordering::SeqCst), 1);
+            assert_eq!(menu.take_selection(), Some(0));
+            assert!(!menu.is_open());
+        }
+
+        fn modal_capture_when_open() {
+            let (m, _f) = open_menu();
+            assert!(Widget::traps_focus(&m), "open menu traps keyboard focus");
+            assert!(
+                Widget::modal_capture(&m).is_some(),
+                "open menu reports capture"
+            );
+            let closed = ContextMenu::new();
+            assert!(!Widget::traps_focus(&closed));
+            assert!(Widget::modal_capture(&closed).is_none());
+        }
+
+        click_on_row_fires_action_and_records_selection();
+        click_outside_dismisses_and_is_swallowed();
+        esc_dismisses();
+        hover_tracks_cursor_row();
+        touch_release_activates_once_and_keeps_the_capture();
+        modal_capture_when_open();
+    }
+
+    #[test]
+    fn disabled_and_destructive_rows_are_not_implicit_targets() {
+        fn keyboard_nav_skips_separator_and_enter_selects() {
+            let (mut m, fired) = open_menu();
+            // Down → first action (idx 0).
+            dispatch(&mut m, &key(NamedKey::ArrowDown));
+            assert_eq!(m.hovered(), Some(0));
+            // Down again → must skip the separator (idx 1) and land on idx 2.
+            dispatch(&mut m, &key(NamedKey::ArrowDown));
+            assert_eq!(m.hovered(), Some(2), "ArrowDown skips the separator");
+            // Enter selects the hovered row.
+            dispatch(&mut m, &key(NamedKey::Enter));
+            assert_eq!(
+                fired.load(Ordering::SeqCst),
+                100,
+                "Enter fired the second action"
+            );
+            assert_eq!(m.take_selection(), Some(2));
+        }
+
+        fn disabled_rows_reject_pointer_activation() {
+            let (mut menu, fired) = open_menu();
+            menu.set_item_enabled(0, false);
+            let rect = menu.item_rect(0).expect("first action row");
+            let point = rect.center();
+
+            dispatch(&mut menu, &cursor_at(point));
+            assert_eq!(menu.hovered(), None, "disabled rows are not hover targets");
+            assert!(dispatch(&mut menu, &left_press()));
+            assert_eq!(fired.load(Ordering::SeqCst), 0);
+            assert_eq!(menu.take_selection(), None);
+            assert!(menu.is_open(), "a rejected activation keeps the menu open");
+        }
+
+        fn keyboard_navigation_skips_disabled_rows() {
+            let (mut menu, fired) = open_menu();
+            menu.set_item_enabled(0, false);
+
             dispatch(&mut menu, &key(NamedKey::ArrowDown));
+            assert_eq!(menu.hovered(), Some(2));
+            dispatch(&mut menu, &key(NamedKey::Enter));
+
+            assert_eq!(fired.load(Ordering::SeqCst), 100);
+            assert_eq!(menu.take_selection(), Some(2));
         }
-        assert_eq!(menu.hovered(), Some(19));
-        assert!(menu.item_rect(19).is_some());
-        dispatch(&mut menu, &key(NamedKey::Enter));
-        assert_eq!(menu.take_selection(), Some(19));
-        menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 180.0, 100.0));
-        dispatch(&mut menu, &wheel(100.0));
-        assert_eq!(menu.scroll_offset, 0.0);
-    }
 
-    #[test]
-    fn touch_release_activates_once_and_keeps_the_capture() {
-        let (mut menu, fired) = open_menu();
-        let rect = menu.get_rect();
-        let point = Point::new(rect.x0 + 20.0, rect.y0 + PADDING + ROW_HEIGHT / 2.0);
+        fn destructive_first_row_is_not_the_implicit_keyboard_target() {
+            let mut menu = ContextMenu::new();
+            menu.push(MenuItem::destructive_selection("Delete"));
+            menu.push(MenuItem::selection("Archive"));
+            menu.open_at([10.0, 20.0]);
 
-        assert!(dispatch(&mut menu, &touch(TouchPhase::Started, 7, point)));
-        assert!(dispatch(&mut menu, &touch(TouchPhase::Ended, 7, point)));
-        assert_eq!(fired.load(Ordering::SeqCst), 1);
-        assert_eq!(menu.take_selection(), Some(0));
-        assert!(!menu.is_open());
-    }
-
-    #[test]
-    fn text_scale_updates_layout_and_hit_testing_together() {
-        let (mut m, _fired) = open_menu();
-        let before = m.get_rect();
-        m.set_text_scale(2.0);
-        let after = m.get_rect();
-        assert_eq!(after.width(), before.width() * 2.0);
-        assert_eq!(
-            after.height(),
-            PADDING * 2.0 + ROW_HEIGHT * 4.0 + SEPARATOR_HEIGHT
-        );
-
-        let second_action = m.item_rect(2).expect("second action row");
-        let p = Point::new(
-            f64::midpoint(second_action.x0, second_action.x1),
-            second_action.y0 + 1.0,
-        );
-        assert_eq!(m.item_at([p.x, p.y]), Some(2));
-    }
-
-    #[test]
-    fn viewport_bounds_menu_and_keeps_keyboard_target_reachable() {
-        let mut menu = ContextMenu::new();
-        for label in ["First", "Second", "Third", "Fourth"] {
-            menu.push(MenuItem::action(label, || {}));
+            assert_eq!(menu.hovered(), Some(1));
         }
-        menu.set_text_scale(2.0);
-        // Two rows fit in this viewport. A bottom-right invocation flips the
-        // popup upward, so the remaining rows stay reachable via scrolling.
-        let viewport = Rect::new(
-            0.0,
-            0.0,
-            menu.menu_width(),
-            menu.padding() * 2.0 + menu.row_height() * 2.0,
-        );
-        menu.set_viewport(Some(viewport));
-        menu.open_at([390.0, 160.0]);
-        assert!(
-            menu.has_overflow(),
-            "clipped rows expose a scroll affordance"
-        );
-        assert_eq!(menu.get_rect().x1, viewport.x1);
-        assert_eq!(menu.get_rect().y0, viewport.y0);
-        assert_eq!(menu.get_rect().y1, viewport.y1);
-        for _ in 0..4 {
-            menu.move_hover(1);
+
+        fn item_builders_preserve_icon_and_destructive_intent() {
+            let item = MenuItem::destructive_selection("Delete").with_icon(Icon::Trash);
+            let MenuItem::Action {
+                icon, destructive, ..
+            } = item
+            else {
+                panic!("selection builder must produce an action");
+            };
+
+            assert_eq!(icon, Some(Icon::Trash));
+            assert!(destructive);
         }
-        assert_eq!(menu.hovered(), Some(3));
-        let last = menu.item_rect(3).expect("last action is laid out");
-        assert!(last.y0 >= menu.rect.y0 + menu.padding());
-        assert!(last.y1 <= menu.rect.y1 - menu.padding());
-    }
 
-    #[test]
-    fn wheel_scrolls_rows_inside_a_bounded_menu() {
-        let mut menu = ContextMenu::new();
-        for label in ["First", "Second", "Third", "Fourth"] {
-            menu.push(MenuItem::action(label, || {}));
+        fn semantic_activation_uses_the_same_selection_channel() {
+            let (mut menu, fired) = open_menu();
+            let mut doc = AutoCommit::new();
+
+            assert!(Widget::perform_semantic_action(
+                &mut menu,
+                "context-menu:item:2",
+                &crate::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(fired.load(Ordering::SeqCst), 100);
+            assert_eq!(menu.take_selection(), Some(2));
+            assert!(!menu.is_open());
         }
-        let viewport = Rect::new(0.0, 0.0, menu.menu_width(), 68.0);
-        menu.set_viewport(Some(viewport));
-        menu.open_at([0.0, 0.0]);
-        let pointer = Point::new(
-            16.0,
-            menu.rect.y0 + menu.padding() + menu.row_height() / 2.0,
-        );
-        dispatch(&mut menu, &cursor_at(pointer));
-        assert!(dispatch(&mut menu, &wheel_lines(-2.0)));
-        assert_eq!(menu.item_at([pointer.x, pointer.y]), Some(2));
+
+        fn semantic_activation_rejects_disabled_rows() {
+            let (mut menu, fired) = open_menu();
+            menu.set_item_enabled(2, false);
+            let mut doc = AutoCommit::new();
+
+            assert!(!Widget::perform_semantic_action(
+                &mut menu,
+                "context-menu:item:2",
+                &crate::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(fired.load(Ordering::SeqCst), 0);
+            assert_eq!(menu.take_selection(), None);
+            assert!(menu.is_open());
+        }
+
+        keyboard_nav_skips_separator_and_enter_selects();
+        disabled_rows_reject_pointer_activation();
+        keyboard_navigation_skips_disabled_rows();
+        destructive_first_row_is_not_the_implicit_keyboard_target();
+        item_builders_preserve_icon_and_destructive_intent();
+        semantic_activation_uses_the_same_selection_channel();
+        semantic_activation_rejects_disabled_rows();
     }
 
     #[test]
-    fn modal_capture_when_open() {
-        let (m, _f) = open_menu();
-        assert!(Widget::traps_focus(&m), "open menu traps keyboard focus");
-        assert!(
-            Widget::modal_capture(&m).is_some(),
-            "open menu reports capture"
-        );
-        let closed = ContextMenu::new();
-        assert!(!Widget::traps_focus(&closed));
-        assert!(Widget::modal_capture(&closed).is_none());
-    }
-
-    /// At 1× a point-placed menu paints exactly where `open_at` put it, at
-    /// the reference width and row height: measuring the labels changes
-    /// nothing a reference-scale menu already had.
-    #[test]
-    fn legacy_open_at_geometry_is_unchanged_at_1x_after_paint() {
-        let (mut m, _f) = open_menu();
-        let before = m.get_rect();
-        let mut scene = Scene::new();
-        m.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-            &PresenceCtx::default(),
-        );
-        assert_eq!(m.get_rect(), before);
-        assert_eq!(m.row_height, ROW_HEIGHT);
-    }
-
-    /// A point-placed (`open_at`) menu keeps its origin and never shrinks
-    /// below the reference width, but its rows follow the text. At a 200 %
-    /// text setting the labels used to be painted at 4× — the theme's
-    /// already-scaled size sent through the renderer's own multiplier —
-    /// into fixed 28 px rows (file-explorer `context-menu` at
-    /// `--text-scale 2`); now every glyph line lands inside its own row.
-    #[test]
-    fn legacy_open_at_rows_grow_with_the_text_scale_and_glyphs_stay_in_their_rows() {
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let mut m = ContextMenu::new();
-        m.push(MenuItem::action("Neuer Ordner", || {}));
-        m.push(MenuItem::separator());
-        m.push(MenuItem::action("Verborgene Dateien anzeigen", || {}));
-        m.push(MenuItem::action("Nach Name sortieren", || {}));
-        m.open_at([100.0, 100.0]);
-        let before = m.get_rect();
-        let mut scene = Scene::new();
-        m.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::default(),
-        );
-        let after = m.get_rect();
-        assert_eq!((after.x0, after.y0), (before.x0, before.y0), "origin kept");
-        assert!(
-            after.width() >= MENU_WIDTH,
-            "never narrower than the reference"
-        );
-        assert!(
-            m.row_height > ROW_HEIGHT,
-            "rows grew to the text: {}",
-            m.row_height
-        );
-
-        let rows: Vec<Rect> = [0, 2, 3].iter().filter_map(|&i| m.item_rect(i)).collect();
-        assert_eq!(rows.len(), 3, "every action row is painted");
-        let runs = &scene.encoding().resources.glyph_runs;
-        assert!(!runs.is_empty(), "labels were painted");
-        // Measure the painted size with an unscaled renderer: `font_size`
-        // is the final glyph size, and it must be the theme's 2× — not 4×.
-        let mut probe = TextRenderer::new();
-        for run in runs {
-            assert!(
-                (run.font_size - theme.tokens.typography.scale.sm).abs() < 0.01,
-                "glyphs painted at {} px; the theme's scaled size is {}",
-                run.font_size,
-                theme.tokens.typography.scale.sm,
+    fn bounded_menu_scrolls_and_keeps_targets_reachable() {
+        fn bounded_wheel_hit_testing_and_keyboard_activation_share_scroll_offset() {
+            let mut menu = ContextMenu::new();
+            for index in 0..20 {
+                menu.push(MenuItem::action(format!("Command {index}"), || {}));
+            }
+            menu.open_anchored(
+                Rect::new(10.0, 10.0, 30.0, 30.0),
+                Rect::new(0.0, 0.0, 180.0, 100.0),
             );
-            let top = f64::from(run.transform.translation[1]);
-            let (_, h) = probe.measure("Ag", run.font_size, None);
-            assert!(
-                rows.iter()
-                    .any(|r| top >= r.y0 - 0.01 && top + f64::from(h) <= r.y1 + 0.01),
-                "a glyph line at y={top} (h={h}) escapes every row: {rows:?}",
-            );
+            menu.layout_within(&mut TextRenderer::new(), &Theme::dark());
+            let point = menu.get_rect().center();
+            dispatch(&mut menu, &cursor_at(point));
+            let wheel = |y| WindowEvent::MouseWheel {
+                device_id: synth_device(),
+                delta: MouseScrollDelta::LineDelta(0.0, y),
+                phase: winit::event::TouchPhase::Moved,
+            };
+            assert!(dispatch(&mut menu, &wheel(-100.0)));
+            assert_eq!(menu.scroll_offset, menu.max_scroll());
+            let last = menu.item_rect(19).unwrap().center();
+            assert_eq!(menu.item_at([last.x, last.y]), Some(19));
+            dispatch(&mut menu, &cursor_at(last));
+            dispatch(&mut menu, &left_press());
+            assert_eq!(menu.take_selection(), Some(19));
+            assert_eq!(menu.take_selection(), None);
+            menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 180.0, 100.0));
+            menu.focus_first_action();
+            for _ in 0..19 {
+                dispatch(&mut menu, &key(NamedKey::ArrowDown));
+            }
+            assert_eq!(menu.hovered(), Some(19));
+            assert!(menu.item_rect(19).is_some());
+            dispatch(&mut menu, &key(NamedKey::Enter));
+            assert_eq!(menu.take_selection(), Some(19));
+            menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 180.0, 100.0));
+            dispatch(&mut menu, &wheel(100.0));
+            assert_eq!(menu.scroll_offset, 0.0);
         }
+
+        fn viewport_bounds_menu_and_keeps_keyboard_target_reachable() {
+            let mut menu = ContextMenu::new();
+            for label in ["First", "Second", "Third", "Fourth"] {
+                menu.push(MenuItem::action(label, || {}));
+            }
+            menu.set_text_scale(2.0);
+            // Two rows fit in this viewport. A bottom-right invocation flips the
+            // popup upward, so the remaining rows stay reachable via scrolling.
+            let viewport = Rect::new(
+                0.0,
+                0.0,
+                menu.menu_width(),
+                menu.padding() * 2.0 + menu.row_height() * 2.0,
+            );
+            menu.set_viewport(Some(viewport));
+            menu.open_at([390.0, 160.0]);
+            assert!(
+                menu.has_overflow(),
+                "clipped rows expose a scroll affordance"
+            );
+            assert_eq!(menu.get_rect().x1, viewport.x1);
+            assert_eq!(menu.get_rect().y0, viewport.y0);
+            assert_eq!(menu.get_rect().y1, viewport.y1);
+            for _ in 0..4 {
+                menu.move_hover(1);
+            }
+            assert_eq!(menu.hovered(), Some(3));
+            let last = menu.item_rect(3).expect("last action is laid out");
+            assert!(last.y0 >= menu.rect.y0 + menu.padding());
+            assert!(last.y1 <= menu.rect.y1 - menu.padding());
+        }
+
+        fn wheel_scrolls_rows_inside_a_bounded_menu() {
+            let mut menu = ContextMenu::new();
+            for label in ["First", "Second", "Third", "Fourth"] {
+                menu.push(MenuItem::action(label, || {}));
+            }
+            let viewport = Rect::new(0.0, 0.0, menu.menu_width(), 68.0);
+            menu.set_viewport(Some(viewport));
+            menu.open_at([0.0, 0.0]);
+            let pointer = Point::new(
+                16.0,
+                menu.rect.y0 + menu.padding() + menu.row_height() / 2.0,
+            );
+            dispatch(&mut menu, &cursor_at(pointer));
+            assert!(dispatch(&mut menu, &wheel_lines(-2.0)));
+            assert_eq!(menu.item_at([pointer.x, pointer.y]), Some(2));
+        }
+
+        fn text_scale_updates_layout_and_hit_testing_together() {
+            let (mut m, _fired) = open_menu();
+            let before = m.get_rect();
+            m.set_text_scale(2.0);
+            let after = m.get_rect();
+            assert_eq!(after.width(), before.width() * 2.0);
+            assert_eq!(
+                after.height(),
+                PADDING * 2.0 + ROW_HEIGHT * 4.0 + SEPARATOR_HEIGHT
+            );
+
+            let second_action = m.item_rect(2).expect("second action row");
+            let p = Point::new(
+                f64::midpoint(second_action.x0, second_action.x1),
+                second_action.y0 + 1.0,
+            );
+            assert_eq!(m.item_at([p.x, p.y]), Some(2));
+        }
+
+        bounded_wheel_hit_testing_and_keyboard_activation_share_scroll_offset();
+        viewport_bounds_menu_and_keeps_keyboard_target_reachable();
+        wheel_scrolls_rows_inside_a_bounded_menu();
+        text_scale_updates_layout_and_hit_testing_together();
+    }
+
+    #[test]
+    fn legacy_open_at_geometry_scales_with_text() {
+        /// At 1× a point-placed menu paints exactly where `open_at` put it, at
+        /// the reference width and row height: measuring the labels changes
+        /// nothing a reference-scale menu already had.
+        fn legacy_open_at_geometry_is_unchanged_at_1x_after_paint() {
+            let (mut m, _f) = open_menu();
+            let before = m.get_rect();
+            let mut scene = Scene::new();
+            m.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &PresenceCtx::default(),
+            );
+            assert_eq!(m.get_rect(), before);
+            assert_eq!(m.row_height, ROW_HEIGHT);
+        }
+
+        /// A point-placed (`open_at`) menu keeps its origin and never shrinks
+        /// below the reference width, but its rows follow the text. At a 200 %
+        /// text setting the labels used to be painted at 4× — the theme's
+        /// already-scaled size sent through the renderer's own multiplier —
+        /// into fixed 28 px rows (file-explorer `context-menu` at
+        /// `--text-scale 2`); now every glyph line lands inside its own row.
+        fn legacy_open_at_rows_grow_with_the_text_scale_and_glyphs_stay_in_their_rows() {
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(2.0);
+            let mut m = ContextMenu::new();
+            m.push(MenuItem::action("Neuer Ordner", || {}));
+            m.push(MenuItem::separator());
+            m.push(MenuItem::action("Verborgene Dateien anzeigen", || {}));
+            m.push(MenuItem::action("Nach Name sortieren", || {}));
+            m.open_at([100.0, 100.0]);
+            let before = m.get_rect();
+            let mut scene = Scene::new();
+            m.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::default(),
+            );
+            let after = m.get_rect();
+            assert_eq!((after.x0, after.y0), (before.x0, before.y0), "origin kept");
+            assert!(
+                after.width() >= MENU_WIDTH,
+                "never narrower than the reference"
+            );
+            assert!(
+                m.row_height > ROW_HEIGHT,
+                "rows grew to the text: {}",
+                m.row_height
+            );
+
+            let rows: Vec<Rect> = [0, 2, 3].iter().filter_map(|&i| m.item_rect(i)).collect();
+            assert_eq!(rows.len(), 3, "every action row is painted");
+            let runs = &scene.encoding().resources.glyph_runs;
+            assert!(!runs.is_empty(), "labels were painted");
+            // Measure the painted size with an unscaled renderer: `font_size`
+            // is the final glyph size, and it must be the theme's 2× — not 4×.
+            let mut probe = TextRenderer::new();
+            for run in runs {
+                assert!(
+                    (run.font_size - theme.tokens.typography.scale.sm).abs() < 0.01,
+                    "glyphs painted at {} px; the theme's scaled size is {}",
+                    run.font_size,
+                    theme.tokens.typography.scale.sm,
+                );
+                let top = f64::from(run.transform.translation[1]);
+                let (_, h) = probe.measure("Ag", run.font_size, None);
+                assert!(
+                    rows.iter()
+                        .any(|r| top >= r.y0 - 0.01 && top + f64::from(h) <= r.y1 + 0.01),
+                    "a glyph line at y={top} (h={h}) escapes every row: {rows:?}",
+                );
+            }
+        }
+
+        legacy_open_at_geometry_is_unchanged_at_1x_after_paint();
+        legacy_open_at_rows_grow_with_the_text_scale_and_glyphs_stay_in_their_rows();
     }
 }
 
@@ -1734,73 +1745,79 @@ mod bounded_tests {
     use super::*;
 
     #[test]
-    fn bounded_menu_measures_scales_and_clamps_at_all_edges() {
-        let viewport = Rect::new(10.0, 20.0, 110.0, 95.0);
-        for anchor in [
-            Rect::new(10.0, 20.0, 30.0, 40.0),
-            Rect::new(90.0, 20.0, 110.0, 40.0),
-            Rect::new(10.0, 75.0, 30.0, 95.0),
-            Rect::new(90.0, 75.0, 110.0, 95.0),
-        ] {
-            let mut menu = ContextMenu::new();
-            for _ in 0..8 {
-                menu.push(MenuItem::action(
-                    "Sehr lange übersetzte Aktion 共有 العربية",
-                    || {},
-                ));
+    fn bounded_menu_measures_and_clamps_in_every_viewport() {
+        fn bounded_menu_measures_scales_and_clamps_at_all_edges() {
+            let viewport = Rect::new(10.0, 20.0, 110.0, 95.0);
+            for anchor in [
+                Rect::new(10.0, 20.0, 30.0, 40.0),
+                Rect::new(90.0, 20.0, 110.0, 40.0),
+                Rect::new(10.0, 75.0, 30.0, 95.0),
+                Rect::new(90.0, 75.0, 110.0, 95.0),
+            ] {
+                let mut menu = ContextMenu::new();
+                for _ in 0..8 {
+                    menu.push(MenuItem::action(
+                        "Sehr lange übersetzte Aktion 共有 العربية",
+                        || {},
+                    ));
+                }
+                menu.open_anchored(anchor, viewport);
+                let mut text = TextRenderer::new();
+                text.set_text_scale(2.0);
+                menu.layout_within(&mut text, &Theme::dark().with_text_scale(2.0));
+                assert_eq!(menu.get_rect().intersect(viewport), menu.get_rect());
+                assert!(menu.row_height > ROW_HEIGHT);
+                menu.focus_item(7);
+                assert!(menu.scroll_offset > 0.0);
+                let last = menu.item_rect(7).unwrap();
+                assert_eq!(menu.item_at([last.center().x, last.center().y]), Some(7));
+                assert!(menu.item_rect(0).is_none());
+                menu.move_hover(1);
+                assert_eq!(menu.hovered(), Some(0));
+                assert_eq!(menu.scroll_offset, 0.0);
             }
-            menu.open_anchored(anchor, viewport);
+        }
+
+        fn width_uses_shaping_and_legacy_open_resets_bounded_geometry() {
+            let mut narrow = ContextMenu::new();
+            narrow.push(MenuItem::action("iii", || {}));
+            let mut wide = ContextMenu::new();
+            wide.push(MenuItem::action("WWW", || {}));
             let mut text = TextRenderer::new();
-            text.set_text_scale(2.0);
-            menu.layout_within(&mut text, &Theme::dark().with_text_scale(2.0));
-            assert_eq!(menu.get_rect().intersect(viewport), menu.get_rect());
-            assert!(menu.row_height > ROW_HEIGHT);
-            menu.focus_item(7);
-            assert!(menu.scroll_offset > 0.0);
-            let last = menu.item_rect(7).unwrap();
-            assert_eq!(menu.item_at([last.center().x, last.center().y]), Some(7));
-            assert!(menu.item_rect(0).is_none());
-            menu.move_hover(1);
-            assert_eq!(menu.hovered(), Some(0));
-            assert_eq!(menu.scroll_offset, 0.0);
+            for menu in [&mut narrow, &mut wide] {
+                menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 1000.0, 1000.0));
+                menu.layout_within(&mut text, &Theme::dark());
+            }
+            assert!(wide.get_rect().width() > narrow.get_rect().width());
+            wide.open_at([900.0, 950.0]);
+            assert_eq!(
+                wide.get_rect(),
+                Rect::new(
+                    900.0,
+                    950.0,
+                    900.0 + MENU_WIDTH,
+                    950.0 + ROW_HEIGHT + 2.0 * PADDING
+                )
+            );
+            assert_eq!(wide.scroll_offset, 0.0);
         }
-    }
-    #[test]
-    fn width_uses_shaping_and_legacy_open_resets_bounded_geometry() {
-        let mut narrow = ContextMenu::new();
-        narrow.push(MenuItem::action("iii", || {}));
-        let mut wide = ContextMenu::new();
-        wide.push(MenuItem::action("WWW", || {}));
-        let mut text = TextRenderer::new();
-        for menu in [&mut narrow, &mut wide] {
-            menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 1000.0, 1000.0));
-            menu.layout_within(&mut text, &Theme::dark());
+
+        fn tiny_viewport_keeps_focused_rows_reachable() {
+            let mut menu = ContextMenu::new();
+            menu.push(MenuItem::action("First", || {}));
+            menu.push(MenuItem::separator());
+            menu.push(MenuItem::action("Last", || {}));
+            let viewport = Rect::new(0.0, 0.0, 4.0, 4.0);
+            menu.open_anchored(viewport, viewport);
+            menu.layout_within(&mut TextRenderer::new(), &Theme::dark());
+            menu.focus_item(2);
+            assert_eq!(menu.get_rect(), viewport);
+            let last = menu.item_rect(2).unwrap();
+            assert_eq!(menu.item_at([last.center().x, last.center().y]), Some(2));
         }
-        assert!(wide.get_rect().width() > narrow.get_rect().width());
-        wide.open_at([900.0, 950.0]);
-        assert_eq!(
-            wide.get_rect(),
-            Rect::new(
-                900.0,
-                950.0,
-                900.0 + MENU_WIDTH,
-                950.0 + ROW_HEIGHT + 2.0 * PADDING
-            )
-        );
-        assert_eq!(wide.scroll_offset, 0.0);
-    }
-    #[test]
-    fn tiny_viewport_keeps_focused_rows_reachable() {
-        let mut menu = ContextMenu::new();
-        menu.push(MenuItem::action("First", || {}));
-        menu.push(MenuItem::separator());
-        menu.push(MenuItem::action("Last", || {}));
-        let viewport = Rect::new(0.0, 0.0, 4.0, 4.0);
-        menu.open_anchored(viewport, viewport);
-        menu.layout_within(&mut TextRenderer::new(), &Theme::dark());
-        menu.focus_item(2);
-        assert_eq!(menu.get_rect(), viewport);
-        let last = menu.item_rect(2).unwrap();
-        assert_eq!(menu.item_at([last.center().x, last.center().y]), Some(2));
+
+        bounded_menu_measures_scales_and_clamps_at_all_edges();
+        width_uses_shaping_and_legacy_open_resets_bounded_geometry();
+        tiny_viewport_keeps_focused_rows_reachable();
     }
 }

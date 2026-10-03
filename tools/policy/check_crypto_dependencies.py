@@ -7,6 +7,10 @@ other workspace crate seals through its typed API. This check fails when a
 workspace manifest names one of the raw primitive crates directly, in any
 dependency table (normal, dev, build, or target-specific), including through
 ``package = "..."`` renames and ``workspace = true`` inheritance.
+
+The cargo-hakari package (``hakari-package`` in ``.config/hakari.toml``) names
+dependencies only to unify their features, and a crate can use only its own
+direct dependencies, so it is exempt while its sources contain no code.
 """
 
 from __future__ import annotations
@@ -59,6 +63,10 @@ FORBIDDEN = frozenset(
 # justified: every entry is a crate whose job is the construction itself.
 ALLOWED = {
     "tilo-seal": FORBIDDEN,
+    # Apple's iCloud sign-in is SRP-6a over a PBKDF2 of the password, fixed
+    # by the protocol; the provider's client implements that exchange and
+    # seals nothing with it.
+    "cloud-source-icloud": frozenset({"pbkdf2"}),
 }
 
 DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
@@ -121,8 +129,30 @@ def named_packages(table: dict, renames: dict[str, str]) -> list[tuple[str, str]
     return out
 
 
+def hakari_package(root: Path) -> str | None:
+    config = root / ".config/hakari.toml"
+    if not config.is_file():
+        return None
+    name = load_manifest(config).get("hakari-package")
+    return name if isinstance(name, str) else None
+
+
+def code_free(crate: Path) -> bool:
+    """True when every Rust source is comments, blank lines or an empty build script."""
+    for source in crate.rglob("*.rs"):
+        code = [
+            line.strip()
+            for line in source.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("//")
+        ]
+        if code not in ([], ["fn main() {}"]):
+            return False
+    return True
+
+
 def violations(root: Path = ROOT) -> list[str]:
     renames = workspace_renames(root)
+    feature_crate = hakari_package(root)
     errors: list[str] = []
     for member in workspace_members(root):
         manifest_path = root / member / "Cargo.toml"
@@ -131,6 +161,8 @@ def violations(root: Path = ROOT) -> list[str]:
         manifest = load_manifest(manifest_path)
         package = manifest.get("package", {}).get("name", member)
         allowed = ALLOWED.get(package, frozenset())
+        if package == feature_crate and code_free(root / member):
+            allowed = FORBIDDEN
         for table_name, table in dependency_tables(manifest):
             for key, dependency in named_packages(table, renames):
                 if dependency in FORBIDDEN and dependency not in allowed:

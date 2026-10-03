@@ -118,32 +118,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_process_lease_round_trips_and_rejects_wrong_start_time() {
-        use std::os::unix::fs::MetadataExt as _;
+    fn process_leases_bind_start_time_and_expire_with_the_process() {
+        // Phase `current_process_lease_round_trips_and_rejects_wrong_start_time`.
+        {
+            use std::os::unix::fs::MetadataExt as _;
 
-        let lease = ProcessLease::capture(std::process::id()).unwrap();
-        lease.validate().unwrap();
-        let uid = std::fs::metadata("/proc/self").unwrap().uid();
-        lease.validate_owner(uid).unwrap();
-        assert!(lease.validate_owner(uid.wrapping_add(1)).is_err());
-        assert_eq!(lease.pid(), std::process::id());
-        assert!(
-            ProcessLease::from_parts(lease.pid(), lease.start_time().wrapping_add(1))
-                .validate()
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn lease_expires_when_process_exits() {
-        let mut child = Command::new("/bin/sh")
-            .args(["-c", "while :; do sleep 1; done"])
-            .spawn()
-            .unwrap();
-        let lease = ProcessLease::capture(child.id()).unwrap();
-        lease.validate().unwrap();
-        child.kill().unwrap();
-        child.wait().unwrap();
-        assert!(lease.validate().is_err());
+            let lease = ProcessLease::capture(std::process::id()).unwrap();
+            lease.validate().unwrap();
+            let uid = std::fs::metadata("/proc/self").unwrap().uid();
+            lease.validate_owner(uid).unwrap();
+            assert!(lease.validate_owner(uid.wrapping_add(1)).is_err());
+            assert_eq!(lease.pid(), std::process::id());
+            assert!(
+                ProcessLease::from_parts(lease.pid(), lease.start_time().wrapping_add(1))
+                    .validate()
+                    .is_err()
+            );
+        }
+        // Phase `lease_expires_when_process_exits`.
+        {
+            let mut child = Command::new("/bin/sh")
+                .args(["-c", "while :; do sleep 1; done"])
+                .spawn()
+                .unwrap();
+            let lease = ProcessLease::capture(child.id()).unwrap();
+            lease.validate().unwrap();
+            child.kill().unwrap();
+            child.wait().unwrap();
+            assert!(lease.validate().is_err());
+        }
     }
 }

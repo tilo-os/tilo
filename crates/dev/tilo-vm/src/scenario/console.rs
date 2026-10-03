@@ -203,86 +203,91 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::net::UnixListener;
 
-    #[cfg(unix)]
+    /// Stale replies are skipped and the matching one returned; the TCP console matches the request
+    /// sequence; a missing socket is unreachable and a refusal keeps its code.
     #[test]
-    fn stale_replies_are_skipped_and_the_matching_one_returned() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("console.sock");
-        let listener = UnixListener::bind(&path).unwrap();
-        let server = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            let request: Value = serde_json::from_str(&line).unwrap();
-            let mut writer = stream;
-            // An answer left over from an earlier, abandoned request first.
-            writeln!(
-                writer,
-                "{}",
-                json!({"state": {"app": "stale"}, "seq": "old"})
-            )
-            .unwrap();
-            writeln!(
-                writer,
-                "{}",
-                json!({"state": {"app": "installer"}, "seq": request["seq"]})
-            )
-            .unwrap();
-        });
-        let mut console = SocketConsole::new(&path);
-        let state = console.state().unwrap();
-        assert_eq!(state["app"], "installer");
-        server.join().unwrap();
-    }
+    fn the_console_matches_replies_to_requests_and_reports_reachability() {
+        // Phase: stale_replies_are_skipped_and_the_matching_one_returned.
+        #[cfg(unix)]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("console.sock");
+            let listener = UnixListener::bind(&path).unwrap();
+            let server = std::thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let mut writer = stream;
+                // An answer left over from an earlier, abandoned request first.
+                writeln!(
+                    writer,
+                    "{}",
+                    json!({"state": {"app": "stale"}, "seq": "old"})
+                )
+                .unwrap();
+                writeln!(
+                    writer,
+                    "{}",
+                    json!({"state": {"app": "installer"}, "seq": request["seq"]})
+                )
+                .unwrap();
+            });
+            let mut console = SocketConsole::new(&path);
+            let state = console.state().unwrap();
+            assert_eq!(state["app"], "installer");
+            server.join().unwrap();
+        }
 
-    #[cfg(windows)]
-    #[test]
-    fn tcp_console_matches_the_request_sequence() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            let request: Value = serde_json::from_str(&line).unwrap();
-            let mut writer = stream;
-            writeln!(writer, "{}", json!({"state":{"app":"stale"},"seq":"old"})).unwrap();
-            writeln!(
-                writer,
-                "{}",
-                json!({"state":{"app":"installer"},"seq":request["seq"]})
-            )
-            .unwrap();
-        });
-        let path = PathBuf::from(format!("tcp://{address}"));
-        let mut console = SocketConsole::new(&path);
-        assert_eq!(console.state().unwrap()["app"], "installer");
-        server.join().unwrap();
-    }
-
-    #[test]
-    fn a_missing_socket_is_unreachable_and_a_refusal_keeps_its_code() {
-        #[cfg(not(windows))]
-        let mut console = SocketConsole::new(Path::new("/nonexistent/console.sock"));
+        // Phase: tcp_console_matches_the_request_sequence.
         #[cfg(windows)]
-        let mut console = {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let address = listener.local_addr().unwrap();
-            drop(listener);
-            SocketConsole::new(&PathBuf::from(format!("tcp://{address}")))
-        };
-        assert!(matches!(console.state(), Err(ConsoleError::Unreachable(_))));
-        let refusal = refusal_or_protocol(
-            &json!({"err": {"code": "action_unavailable", "message": "other_step: …"}}),
-        );
-        assert_eq!(
-            refusal,
-            ConsoleError::Refused {
-                code: "action_unavailable".into(),
-                message: "other_step: …".into()
-            }
-        );
+            let server = std::thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let mut writer = stream;
+                writeln!(writer, "{}", json!({"state":{"app":"stale"},"seq":"old"})).unwrap();
+                writeln!(
+                    writer,
+                    "{}",
+                    json!({"state":{"app":"installer"},"seq":request["seq"]})
+                )
+                .unwrap();
+            });
+            let path = PathBuf::from(format!("tcp://{address}"));
+            let mut console = SocketConsole::new(&path);
+            assert_eq!(console.state().unwrap()["app"], "installer");
+            server.join().unwrap();
+        }
+
+        // Phase: a_missing_socket_is_unreachable_and_a_refusal_keeps_its_code.
+        {
+            #[cfg(not(windows))]
+            let mut console = SocketConsole::new(Path::new("/nonexistent/console.sock"));
+            #[cfg(windows)]
+            let mut console = {
+                let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                let address = listener.local_addr().unwrap();
+                drop(listener);
+                SocketConsole::new(&PathBuf::from(format!("tcp://{address}")))
+            };
+            assert!(matches!(console.state(), Err(ConsoleError::Unreachable(_))));
+            let refusal = refusal_or_protocol(
+                &json!({"err": {"code": "action_unavailable", "message": "other_step: …"}}),
+            );
+            assert_eq!(
+                refusal,
+                ConsoleError::Refused {
+                    code: "action_unavailable".into(),
+                    message: "other_step: …".into()
+                }
+            );
+        }
     }
 }

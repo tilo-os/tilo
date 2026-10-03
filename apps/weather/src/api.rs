@@ -1,7 +1,7 @@
 //! Open-Meteo request construction + response parsing.
 //!
 //! This module is **pure**: it builds URLs and turns JSON strings into
-//! model types. The actual HTTP (reqwest + tokio) lives in `net.rs` so
+//! model types. The actual HTTP (`tilo_net`) lives in `net.rs` so
 //! the parsing can be unit-tested without a network. The `--shots`
 //! offscreen path never calls into here at all — it renders bundled
 //! sample data (`sample.rs`).
@@ -327,131 +327,136 @@ mod tests {
     use uuid::Uuid;
 
     #[test]
-    fn forecast_url_has_required_params() {
-        let u = forecast_url(52.52, 13.41, Units::IMPERIAL);
-        assert!(u.contains("latitude=52.5200"));
-        assert!(u.contains("current=temperature_2m"));
-        assert!(u.contains("daily=weather_code"));
-        assert!(u.contains("temperature_unit=fahrenheit"));
-        assert!(u.contains("wind_speed_unit=mph"));
-        assert!(u.contains("timezone=auto"));
-    }
-
-    #[test]
-    fn geocode_url_encodes_spaces() {
-        let u = geocode_url("New York");
-        assert!(u.contains("name=New%20York"), "{u}");
-    }
-
-    #[test]
-    fn parse_forecast_slices_24_hours_from_current() {
-        // 26-hour hourly array; current time is hour index 2.
-        let mut times = Vec::new();
-        for h in 0..26 {
-            times.push(format!("2026-06-30T{h:02}:00"));
+    fn open_meteo_urls_carry_params_and_encoding() {
+        // Case `forecast_url_has_required_params`.
+        {
+            let u = forecast_url(52.52, 13.41, Units::IMPERIAL);
+            assert!(u.contains("latitude=52.5200"));
+            assert!(u.contains("current=temperature_2m"));
+            assert!(u.contains("daily=weather_code"));
+            assert!(u.contains("temperature_unit=fahrenheit"));
+            assert!(u.contains("wind_speed_unit=mph"));
+            assert!(u.contains("timezone=auto"));
         }
-        let temps: Vec<f64> = (0..26).map(f64::from).collect();
-        let codes: Vec<i64> = vec![0; 26];
-        let isday: Vec<i64> = vec![1; 26];
-        let body = serde_json::json!({
-            "current": {
-                "time": "2026-06-30T02:00",
-                "temperature_2m": 2.0,
-                "apparent_temperature": 1.0,
-                "relative_humidity_2m": 50.0,
-                "precipitation": 0.0,
-                "weather_code": 0,
-                "wind_speed_10m": 5.0,
-                "wind_direction_10m": 180.0,
-                "pressure_msl": 1012.0,
-                "is_day": 1
-            },
-            "hourly": {
-                "time": times,
-                "temperature_2m": temps,
-                "precipitation_probability": vec![10.0; 26],
-                "weather_code": codes,
-                "is_day": isday
-            },
-            "daily": {
-                "time": ["2026-06-30"],
-                "weather_code": [3],
-                "temperature_2m_max": [10.0],
-                "temperature_2m_min": [2.0],
-                "precipitation_probability_max": [40.0],
-                "sunrise": ["2026-06-30T05:00"],
-                "sunset": ["2026-06-30T21:00"],
-                "wind_speed_10m_max": [20.0],
-                "uv_index_max": [5.0]
+        // Case `geocode_url_encodes_spaces`.
+        {
+            let u = geocode_url("New York");
+            assert!(u.contains("name=New%20York"), "{u}");
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn open_meteo_responses_parse_forecast_air_quality_and_geocode() {
+        // Case `parse_forecast_slices_24_hours_from_current`.
+        {
+            // 26-hour hourly array; current time is hour index 2.
+            let mut times = Vec::new();
+            for h in 0..26 {
+                times.push(format!("2026-06-30T{h:02}:00"));
             }
-        })
-        .to_string();
-        let snap = parse_forecast(&body, Uuid::new_v4(), Units::METRIC, 0).unwrap();
-        assert_eq!(snap.hourly.len(), 24);
-        assert_eq!(snap.hourly[0].time, "2026-06-30T02:00");
-        assert_eq!(
-            snap.current.uv_index, 5.0,
-            "current uv comes from today's max"
-        );
-        assert_eq!(snap.daily.len(), 1);
-    }
-
-    #[test]
-    fn parse_air_quality_maps_fields_and_nulls() {
-        let body = serde_json::json!({
-            "current": {
-                "time": "2026-06-30T14:00",
-                "european_aqi": 32.0,
-                "us_aqi": 45.0,
-                "pm2_5": 8.4,
-                "pm10": 14.2,
-                "nitrogen_dioxide": 18.0,
-                "ozone": null
-            }
-        })
-        .to_string();
-        let aq = parse_air_quality(&body, Uuid::new_v4(), 1234).unwrap();
-        assert_eq!(aq.european_aqi, Some(32.0));
-        assert_eq!(aq.pm2_5, Some(8.4));
-        assert_eq!(aq.ozone, None, "a null pollutant stays honestly absent");
-        assert!(aq.has_any());
-        assert_eq!(aq.fetched_at, 1234);
-    }
-
-    #[test]
-    fn european_aqi_bands_cover_the_scale() {
-        assert_eq!(european_aqi_band(10.0), "Good");
-        assert_eq!(european_aqi_band(30.0), "Fair");
-        assert_eq!(european_aqi_band(50.0), "Moderate");
-        assert_eq!(european_aqi_band(70.0), "Poor");
-        assert_eq!(european_aqi_band(90.0), "Very poor");
-        assert_eq!(european_aqi_band(140.0), "Extremely poor");
-    }
-
-    #[test]
-    fn parse_geocode_maps_fields() {
-        let body = serde_json::json!({
-            "results": [{
-                "name": "Berlin",
-                "latitude": 52.52,
-                "longitude": 13.41,
-                "country": "Germany",
-                "country_code": "DE",
-                "admin1": "Berlin",
-                "timezone": "Europe/Berlin"
-            }]
-        })
-        .to_string();
-        let locs = parse_geocode(&body).unwrap();
-        assert_eq!(locs.len(), 1);
-        assert_eq!(locs[0].name, "Berlin");
-        assert_eq!(locs[0].timezone, "Europe/Berlin");
-    }
-
-    #[test]
-    fn parse_geocode_empty_results_ok() {
-        let body = serde_json::json!({}).to_string();
-        let locs = parse_geocode(&body).unwrap();
-        assert!(locs.is_empty());
+            let temps: Vec<f64> = (0..26).map(f64::from).collect();
+            let codes: Vec<i64> = vec![0; 26];
+            let isday: Vec<i64> = vec![1; 26];
+            let body = serde_json::json!({
+                "current": {
+                    "time": "2026-06-30T02:00",
+                    "temperature_2m": 2.0,
+                    "apparent_temperature": 1.0,
+                    "relative_humidity_2m": 50.0,
+                    "precipitation": 0.0,
+                    "weather_code": 0,
+                    "wind_speed_10m": 5.0,
+                    "wind_direction_10m": 180.0,
+                    "pressure_msl": 1012.0,
+                    "is_day": 1
+                },
+                "hourly": {
+                    "time": times,
+                    "temperature_2m": temps,
+                    "precipitation_probability": vec![10.0; 26],
+                    "weather_code": codes,
+                    "is_day": isday
+                },
+                "daily": {
+                    "time": ["2026-06-30"],
+                    "weather_code": [3],
+                    "temperature_2m_max": [10.0],
+                    "temperature_2m_min": [2.0],
+                    "precipitation_probability_max": [40.0],
+                    "sunrise": ["2026-06-30T05:00"],
+                    "sunset": ["2026-06-30T21:00"],
+                    "wind_speed_10m_max": [20.0],
+                    "uv_index_max": [5.0]
+                }
+            })
+            .to_string();
+            let snap = parse_forecast(&body, Uuid::new_v4(), Units::METRIC, 0).unwrap();
+            assert_eq!(snap.hourly.len(), 24);
+            assert_eq!(snap.hourly[0].time, "2026-06-30T02:00");
+            assert_eq!(
+                snap.current.uv_index, 5.0,
+                "current uv comes from today's max"
+            );
+            assert_eq!(snap.daily.len(), 1);
+        }
+        // Case `parse_air_quality_maps_fields_and_nulls`.
+        {
+            let body = serde_json::json!({
+                "current": {
+                    "time": "2026-06-30T14:00",
+                    "european_aqi": 32.0,
+                    "us_aqi": 45.0,
+                    "pm2_5": 8.4,
+                    "pm10": 14.2,
+                    "nitrogen_dioxide": 18.0,
+                    "ozone": null
+                }
+            })
+            .to_string();
+            let aq = parse_air_quality(&body, Uuid::new_v4(), 1234).unwrap();
+            assert_eq!(aq.european_aqi, Some(32.0));
+            assert_eq!(aq.pm2_5, Some(8.4));
+            assert_eq!(aq.ozone, None, "a null pollutant stays honestly absent");
+            assert!(aq.has_any());
+            assert_eq!(aq.fetched_at, 1234);
+        }
+        // Case `european_aqi_bands_cover_the_scale`.
+        {
+            assert_eq!(european_aqi_band(10.0), "Good");
+            assert_eq!(european_aqi_band(30.0), "Fair");
+            assert_eq!(european_aqi_band(50.0), "Moderate");
+            assert_eq!(european_aqi_band(70.0), "Poor");
+            assert_eq!(european_aqi_band(90.0), "Very poor");
+            assert_eq!(european_aqi_band(140.0), "Extremely poor");
+        }
+        // Case `parse_geocode_maps_fields`.
+        {
+            let body = serde_json::json!({
+                "results": [{
+                    "name": "Berlin",
+                    "latitude": 52.52,
+                    "longitude": 13.41,
+                    "country": "Germany",
+                    "country_code": "DE",
+                    "admin1": "Berlin",
+                    "timezone": "Europe/Berlin"
+                }]
+            })
+            .to_string();
+            let locs = parse_geocode(&body).unwrap();
+            assert_eq!(locs.len(), 1);
+            assert_eq!(locs[0].name, "Berlin");
+            assert_eq!(locs[0].timezone, "Europe/Berlin");
+        }
+        // Case `parse_geocode_empty_results_ok`.
+        {
+            let body = serde_json::json!({}).to_string();
+            let locs = parse_geocode(&body).unwrap();
+            assert!(locs.is_empty());
+        }
     }
 }

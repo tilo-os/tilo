@@ -20,5 +20,16 @@ mod e2e_odt;
 #[path = "two_sessions_one_document.rs"]
 mod two_sessions_one_document;
 
+mod canonical_component;
+#[path = "concurrent_paragraph_edits.rs"]
+mod concurrent_paragraph_edits;
 #[path = "headless_launch.rs"]
 mod headless_launch;
+
+#[path = "framework_host.rs"]
+mod framework_host;
+#[path = "framework_read.rs"]
+mod framework_read;
+
+#[path = "framework_undo.rs"]
+mod framework_undo;

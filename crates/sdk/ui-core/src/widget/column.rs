@@ -4,6 +4,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -20,6 +21,9 @@ pub struct Column {
     /// Retained Taffy identities for `children`. Rebuilt only with the layout
     /// tree; hot event/layout traversal must not allocate `taffy.children()`.
     child_nodes: Vec<NodeId>,
+    /// Stable graph / test identity when this column was built from a
+    /// serialized UI node.
+    id: Option<String>,
     rect: vello::kurbo::Rect,
     /// Overflow extent used for culling independently of an exact allocation.
     paint_rect: vello::kurbo::Rect,
@@ -62,6 +66,7 @@ impl Column {
         Self {
             children: Vec::new(),
             child_nodes: Vec::new(),
+            id: None,
             rect: vello::kurbo::Rect::ZERO,
             paint_rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
@@ -105,6 +110,44 @@ impl Column {
     pub fn push(mut self, child: Box<dyn Widget>) -> Self {
         self.children.push(child);
         self
+    }
+
+    /// Address this column by a stable id in inspection and graph reconcile.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    /// Take ownership of the child list for identity-preserving reconcile.
+    pub fn take_children(&mut self) -> Vec<Box<dyn Widget>> {
+        self.child_nodes.clear();
+        self.cache_present = false;
+        std::mem::take(&mut self.children)
+    }
+
+    /// Replace the child list after a graph reconcile pass.
+    pub fn set_children(&mut self, children: Vec<Box<dyn Widget>>) {
+        self.children = children;
+        self.child_nodes.clear();
+        self.cache_present = false;
+    }
+
+    /// Apply layout flags from a serialized column node without rebuilding.
+    pub fn apply_graph_props(
+        &mut self,
+        id: &str,
+        gap: Option<f32>,
+        no_padding: bool,
+        intrinsic_height: bool,
+        fill_remaining_height: bool,
+    ) {
+        self.id = Some(id.to_owned());
+        self.gap_override = gap;
+        self.no_padding = no_padding;
+        self.intrinsic_height = intrinsic_height;
+        self.fill_remaining_height = fill_remaining_height;
+        self.cache_present = false;
     }
 
     /// Extra padding on the left, on top of the default
@@ -202,47 +245,34 @@ impl Column {
 }
 
 impl Widget for Column {
-    fn has_action_control_bindings(&self) -> bool {
-        let mut found = false;
-        self.for_each_child(&mut |child| {
-            if !found {
-                found = child.has_action_control_bindings();
-            }
-        });
-        found
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::undo::UndoPoints
+    );
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
-    fn start_resource_operation_with_document(
+    fn start_operation(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
+        op: &crate::widget::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        // This container owns no operation handler. Preserve mutable admission
-        // down the retained tree without a second read-only fallback traversal.
-        for child in self.children_mut() {
-            if let Some(started) = child.start_resource_operation_with_document(
-                invocation, kind, type_id, payload, doc, path,
-            )? {
-                return Ok(Some(started));
-            }
-        }
-        Ok(None)
-    }
-
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        for child in &mut self.children {
-            child.sync(state, path);
-        }
+        // This container owns no operation handler: offer each child once.
+        crate::widget::start_in_children(self, op, doc, path)
     }
 
     /// Forward the per-frame update pass; every child runs, and a
     /// change in any of them is a change here. Not short-circuited —
     /// a child that skipped its pass would miss a frame of state.
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
         for child in &mut self.children {
             changed |= child.update(state, path);
@@ -284,6 +314,17 @@ impl Widget for Column {
                 // the start so surplus block space does not inflate the
                 // requested gap between them.
                 align_content: self.intrinsic_height.then_some(taffy::AlignContent::Start),
+                // The one column is the Column's own width, never wider: an
+                // `auto` track grows to its widest child's content and pushes
+                // a padded child past the Column's edge.
+                grid_template_columns: if self.intrinsic_height {
+                    vec![taffy::style_helpers::minmax(
+                        length(0.0_f32),
+                        taffy::style_helpers::fr(1.0_f32),
+                    )]
+                } else {
+                    Vec::new()
+                },
                 flex_shrink: 0.0, // Prevent vertical squashing
                 gap: taffy::Size {
                     width: length(0.0_f32),
@@ -376,18 +417,7 @@ impl Widget for Column {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // A child with a latched drag (e.g. a slider's knob) gets ALL
         // events exclusively for the frame, so the drag survives the
         // cursor crossing a peer widget's rect — otherwise the peer's
@@ -399,32 +429,12 @@ impl Widget for Column {
             let Some(child) = self.children.get_mut(idx) else {
                 return;
             };
-            child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cnode,
-                taffy,
-            );
+            child.handle_event(event, &mut ctx.reborrow(ctx.path, cnode));
             return;
         }
         for (child_widget, &child_node) in self.children.iter_mut().zip(&self.child_nodes) {
-            child_widget.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
-            if *handled {
+            child_widget.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
+            if *ctx.handled {
                 break;
             }
         }
@@ -489,16 +499,12 @@ impl Widget for Column {
         "Column"
     }
 
+    fn test_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
     fn is_focused(&self) -> bool {
         false
-    }
-    fn needs_commit(&self) -> bool {
-        self.children().iter().any(|c| c.needs_commit())
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            child.on_commit();
-        }
     }
 
     // `.any` would short-circuit and skip `take_structure_dirty()` on later
@@ -515,20 +521,6 @@ impl Widget for Column {
             .iter_mut()
             .map(|c| c.take_structure_dirty())
             .fold(false, |acc, d| acc || d)
-    }
-
-    fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
-    }
-
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
     }
 
     fn draw_with_presence(
@@ -608,7 +600,7 @@ impl Widget for Column {
             }
         }
 
-        if let Some(scope) = self.permission_scope()
+        if let Some(scope) = crate::permissions::capability::permission_scope(self)
             && !permissions.check(&scope)
         {
             let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
@@ -621,7 +613,7 @@ impl Widget for Column {
             );
         }
 
-        if let Some(key) = self.presence_key()
+        if let Some(key) = crate::presence::capability::presence_key(self)
             && let Some(peers) = presence.here.get(&key)
             && let Some(user) = peers.first()
         {
@@ -636,6 +628,49 @@ impl Widget for Column {
         for child in &mut self.children {
             child.release_scene_cache();
         }
+    }
+}
+
+impl crate::undo::UndoPoints for Column {
+    fn needs_commit(&self) -> bool {
+        self.children()
+            .iter()
+            .any(|c| crate::undo::needs_commit(*c))
+    }
+    fn on_commit(&mut self) {
+        for child in self.children_mut() {
+            crate::undo::on_commit(child);
+        }
+    }
+}
+
+impl crate::presence::capability::PublishesPresence for Column {
+    fn presence_key(&self) -> Option<PresenceKey> {
+        if self.presence_path.is_empty() {
+            None
+        } else {
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
+        }
+    }
+}
+
+impl crate::permissions::capability::PermissionGated for Column {
+    fn permission_scope(&self) -> Option<PermissionScope> {
+        self.permission_scope.clone()
+    }
+}
+
+impl crate::widget::controls::ActionControls for Column {
+    fn has_action_control_bindings(&self) -> bool {
+        let mut found = false;
+        self.for_each_child(&mut |child| {
+            if !found {
+                found = crate::widget::controls::has_action_control_bindings(child);
+            }
+        });
+        found
     }
 }
 
@@ -701,529 +736,547 @@ mod tests {
             .count()
     }
 
-    /// The default inset is the `s6` token — 24 on the stock scale and still
-    /// exactly twice `padding_standard` once `ui_scale` or a custom theme's
-    /// `spacing_px` has rescaled the whole spacing scale.
     #[test]
-    fn default_inset_is_the_s6_token_on_every_scale() {
-        for theme in [
-            Theme::dark(),
-            Theme::dark().with_ui_scale(1.5),
-            Theme::from_custom_spec(&crate::theme::CustomThemeSpec {
-                schema_version: crate::theme::CUSTOM_THEME_SCHEMA_VERSION,
-                id: "dense".into(),
-                name: "Dense".into(),
-                dark_base: true,
-                accent: [12, 120, 220],
-                accent_hover: [8, 96, 190],
-                surface_base: [9, 18, 30],
-                surface_raised: [18, 32, 48],
-                text_primary: [238, 244, 250],
-                text_dim: [170, 184, 199],
-                border: [48, 68, 88],
-                success: [50, 190, 110],
-                warning: [230, 170, 50],
-                danger: [225, 75, 80],
-                info: [70, 165, 230],
-                radius_px: 6.0,
-                spacing_px: 9.0,
-                font: "Inter".into(),
-            })
-            .unwrap(),
-        ] {
+    fn intrinsic_column_gap_applies_between_children_and_to_content_height() {
+        /// The default inset is the `s6` token — 24 on the stock scale and still
+        /// exactly twice `padding_standard` once `ui_scale` or a custom theme's
+        /// `spacing_px` has rescaled the whole spacing scale.
+        fn default_inset_is_the_s6_token_on_every_scale() {
+            for theme in [
+                Theme::dark(),
+                Theme::dark().with_ui_scale(1.5),
+                Theme::from_custom_spec(&crate::theme::CustomThemeSpec {
+                    schema_version: crate::theme::CUSTOM_THEME_SCHEMA_VERSION,
+                    id: "dense".into(),
+                    name: "Dense".into(),
+                    dark_base: true,
+                    accent: [12, 120, 220],
+                    accent_hover: [8, 96, 190],
+                    surface_base: [9, 18, 30],
+                    surface_raised: [18, 32, 48],
+                    text_primary: [238, 244, 250],
+                    text_dim: [170, 184, 199],
+                    border: [48, 68, 88],
+                    success: [50, 190, 110],
+                    warning: [230, 170, 50],
+                    danger: [225, 75, 80],
+                    info: [70, 165, 230],
+                    radius_px: 6.0,
+                    spacing_px: 9.0,
+                    font: "Inter".into(),
+                    motion_scale: 1.0,
+                    material_scale: 1.0,
+                    icon_scale: 1.0,
+                    chrome_weight: 1.0,
+                    motion_character: 1.0,
+                    material_tint: 0.0,
+                })
+                .unwrap(),
+            ] {
+                let mut taffy = TaffyTree::<()>::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let mut column = Column::new().push(Box::new(Text::new("body")));
+                let node = column.build_layout(&mut taffy, &theme, &mut node_map);
+                let padding = taffy.style(node).unwrap().padding;
+                let expected = taffy::style_helpers::length(theme.tokens.spacing.s6);
+                assert_eq!(padding.left, expected, "{}", theme.name);
+                assert_eq!(padding.top, expected, "{}", theme.name);
+                assert_eq!(
+                    padding.left,
+                    taffy::style_helpers::length(theme.padding_standard * 2.0),
+                    "{}: s6 is twice padding_standard",
+                    theme.name
+                );
+            }
+        }
+
+        fn intrinsic_column_applies_requested_gap_to_geometry_and_content_height() {
+            let mut col = Column::new()
+                .with_intrinsic_height()
+                .with_no_padding()
+                .with_gap(20.0)
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(10.0),
+                ))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(10.0),
+                ));
+
+            let _ = lay_out(&mut col);
+
+            assert_eq!(col.children[0].get_rect().y0, 0.0);
+            assert_eq!(col.children[1].get_rect().y0, 30.0);
+            assert_eq!(col.get_rect().height(), 40.0);
+        }
+
+        fn intrinsic_column_keeps_requested_gap_when_parent_stretches_height() {
+            let theme = Theme::dark();
+            let mut col = Column::new()
+                .with_intrinsic_height()
+                .with_no_padding()
+                .with_gap(20.0)
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(10.0),
+                ))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(10.0),
+                ));
             let mut taffy = TaffyTree::<()>::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let mut column = Column::new().push(Box::new(Text::new("body")));
-            let node = column.build_layout(&mut taffy, &theme, &mut node_map);
-            let padding = taffy.style(node).unwrap().padding;
-            let expected = taffy::style_helpers::length(theme.tokens.spacing.s6);
-            assert_eq!(padding.left, expected, "{}", theme.name);
-            assert_eq!(padding.top, expected, "{}", theme.name);
+            let mut tr = TextRenderer::new();
+            let column_node = col.build_layout(&mut taffy, &theme, &mut node_map);
+            let host_node = taffy.parent_node(
+                Style {
+                    size: taffy::Size {
+                        width: length(400.0_f32),
+                        height: length(300.0_f32),
+                    },
+                    ..Default::default()
+                },
+                &[column_node],
+            );
+
+            taffy
+                .compute_layout_with_measure(
+                    host_node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(400.0),
+                        height: taffy::AvailableSpace::Definite(300.0),
+                    },
+                    |known, available, node_id, _, _| {
+                        if let Some(&ptr) = node_map.get(&node_id) {
+                            unsafe { (*ptr).measure(known, available, &mut tr) }
+                        } else {
+                            taffy::Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+            col.apply_layout(&taffy, column_node, Point::ZERO);
+
+            assert_eq!(taffy.layout(column_node).unwrap().size.height, 300.0);
+            assert_eq!(col.get_rect().height(), 300.0);
+            assert_eq!(col.children[0].get_rect().y0, 0.0);
+            assert_eq!(col.children[1].get_rect().y0, 30.0);
             assert_eq!(
-                padding.left,
-                taffy::style_helpers::length(theme.padding_standard * 2.0),
-                "{}: s6 is twice padding_standard",
-                theme.name
+                col.children[1].get_rect().y0 - col.children[0].get_rect().y1,
+                20.0
             );
         }
+
+        fn intrinsic_column_zero_gap_keeps_children_tightly_stacked() {
+            let mut col = Column::new()
+                .with_intrinsic_height()
+                .with_no_padding()
+                .with_gap(0.0)
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(10.0),
+                ))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(10.0),
+                ));
+
+            let _ = lay_out(&mut col);
+
+            assert_eq!(col.children[0].get_rect().y0, 0.0);
+            assert_eq!(col.children[1].get_rect().y0, 10.0);
+            assert_eq!(col.get_rect().height(), 20.0);
+        }
+
+        fn intrinsic_column_uses_default_theme_gap() {
+            let mut col = Column::new()
+                .with_intrinsic_height()
+                .with_no_padding()
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(10.0),
+                ))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(10.0),
+                ));
+
+            let _ = lay_out(&mut col);
+
+            // The dark theme's default gap is 12 px.
+            assert_eq!(col.children[1].get_rect().y0, 22.0);
+            assert_eq!(col.get_rect().height(), 32.0);
+        }
+
+        fn intrinsic_column_inserts_one_gap_between_each_of_three_children() {
+            let mut col = Column::new()
+                .with_intrinsic_height()
+                .with_no_padding()
+                .with_gap(7.0)
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(10.0),
+                ))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(10.0),
+                ))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(10.0),
+                ));
+
+            let _ = lay_out(&mut col);
+
+            assert_eq!(col.children[0].get_rect().y0, 0.0);
+            assert_eq!(col.children[1].get_rect().y0, 17.0);
+            assert_eq!(col.children[2].get_rect().y0, 34.0);
+            assert_eq!(col.get_rect().height(), 44.0);
+        }
+
+        default_inset_is_the_s6_token_on_every_scale();
+        intrinsic_column_applies_requested_gap_to_geometry_and_content_height();
+        intrinsic_column_keeps_requested_gap_when_parent_stretches_height();
+        intrinsic_column_zero_gap_keeps_children_tightly_stacked();
+        intrinsic_column_uses_default_theme_gap();
+        intrinsic_column_inserts_one_gap_between_each_of_three_children();
     }
 
     #[test]
-    fn intrinsic_column_applies_requested_gap_to_geometry_and_content_height() {
-        let mut col = Column::new()
-            .with_intrinsic_height()
-            .with_no_padding()
-            .with_gap(20.0)
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(10.0),
-            ))
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(10.0),
-            ));
+    fn intrinsic_column_gap_composes_with_padding_margins_nesting_and_scroll() {
+        fn intrinsic_column_gap_is_additive_with_explicit_padding() {
+            let mut col = Column::new()
+                .with_intrinsic_height()
+                .with_vertical_padding(5.0)
+                .with_horizontal_padding(7.0, 11.0)
+                .with_extra_top_padding(3.0)
+                .with_extra_bottom_padding(4.0)
+                .with_gap(20.0)
+                .push(Box::new(
+                    Container::new().with_no_padding().with_size(10.0, 10.0),
+                ))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_size(10.0, 10.0),
+                ));
 
-        let _ = lay_out(&mut col);
+            let _ = lay_out(&mut col);
 
-        assert_eq!(col.children[0].get_rect().y0, 0.0);
-        assert_eq!(col.children[1].get_rect().y0, 30.0);
-        assert_eq!(col.get_rect().height(), 40.0);
+            assert_eq!(col.children[0].get_rect().x0, 7.0);
+            assert_eq!(col.children[0].get_rect().y0, 8.0);
+            assert_eq!(col.children[1].get_rect().y0, 38.0);
+            assert_eq!(col.get_rect().height(), 57.0);
+        }
+
+        fn intrinsic_column_gap_is_additive_with_child_margins() {
+            let theme = Theme::dark();
+            let mut col = Column::new()
+                .with_intrinsic_height()
+                .with_no_padding()
+                .with_gap(20.0)
+                .push(Box::new(
+                    Container::new().with_no_padding().with_size(10.0, 10.0),
+                ))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_size(10.0, 10.0),
+                ));
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let mut tr = TextRenderer::new();
+            let node = col.build_layout(&mut taffy, &theme, &mut node_map);
+
+            let mut first_style = taffy.style(col.child_nodes[0]).unwrap().clone();
+            first_style.margin.top = length(2.0_f32);
+            first_style.margin.bottom = length(3.0_f32);
+            taffy.set_style(col.child_nodes[0], first_style).unwrap();
+            let mut second_style = taffy.style(col.child_nodes[1]).unwrap().clone();
+            second_style.margin.top = length(4.0_f32);
+            second_style.margin.bottom = length(6.0_f32);
+            taffy.set_style(col.child_nodes[1], second_style).unwrap();
+
+            taffy
+                .compute_layout_with_measure(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(800.0),
+                        height: taffy::AvailableSpace::Definite(600.0),
+                    },
+                    |known, available, node_id, _, _| {
+                        if let Some(&ptr) = node_map.get(&node_id) {
+                            unsafe { (*ptr).measure(known, available, &mut tr) }
+                        } else {
+                            taffy::Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+            col.apply_layout(&taffy, node, Point::ZERO);
+
+            assert_eq!(col.children[0].get_rect().y0, 2.0);
+            assert_eq!(col.children[1].get_rect().y0, 39.0);
+            assert_eq!(col.get_rect().height(), 55.0);
+        }
+
+        fn nested_intrinsic_column_keeps_taffy_and_widget_sibling_geometry_aligned() {
+            let inner = Column::new()
+                .with_intrinsic_height()
+                .with_no_padding()
+                .with_gap(20.0)
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(30.0),
+                ))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(30.0),
+                ))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(30.0),
+                ));
+            let mut outer = Column::new()
+                .with_intrinsic_height()
+                .with_no_padding()
+                .with_gap(0.0)
+                .push(Box::new(inner))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(10.0),
+                ));
+
+            let (mut taffy, node) = lay_out(&mut outer);
+
+            assert_eq!(taffy.children(node).unwrap(), outer.child_nodes);
+            assert_eq!(
+                taffy.layout(outer.child_nodes[0]).unwrap().size.width,
+                800.0
+            );
+            assert_eq!(
+                taffy.layout(outer.child_nodes[0]).unwrap().size.height,
+                130.0
+            );
+            assert_eq!(outer.children[0].get_rect().width(), 800.0);
+            assert_eq!(outer.children[0].get_rect().height(), 130.0);
+            assert_eq!(
+                taffy.layout(outer.child_nodes[1]).unwrap().location.y,
+                130.0
+            );
+            assert_eq!(outer.children[1].get_rect().y0, 130.0);
+            assert_eq!(outer.get_rect().height(), 140.0);
+
+            taffy
+                .compute_layout(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(800.0),
+                        height: taffy::AvailableSpace::Definite(600.0),
+                    },
+                )
+                .unwrap();
+            outer.apply_layout(&taffy, node, Point::ZERO);
+            assert_eq!(
+                taffy.layout(outer.child_nodes[0]).unwrap().size.height,
+                130.0
+            );
+            assert_eq!(outer.children[0].get_rect().height(), 130.0);
+            assert_eq!(outer.children[1].get_rect().y0, 130.0);
+        }
+
+        fn intrinsic_column_in_row_respects_parent_center_alignment() {
+            let short_column = Column::new()
+                .with_intrinsic_height()
+                .with_no_padding()
+                .with_gap(0.0)
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(10.0),
+                ));
+            let mut row = Row::new()
+                .no_wrap()
+                .push(Box::new(short_column))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(30.0),
+                ));
+
+            let _ = lay_out(&mut row);
+
+            assert_eq!(row.get_rect().height(), 30.0);
+            assert_eq!(row.children()[0].get_rect().height(), 10.0);
+            assert_eq!(row.children()[0].get_rect().y0, 10.0);
+            assert_eq!(row.children()[1].get_rect().y0, 0.0);
+        }
+
+        fn intrinsic_column_gap_contributes_to_scrollable_content_height() {
+            use crate::widget::{ScrollAxis, Scrollable};
+
+            let inner = Column::new()
+                .with_intrinsic_height()
+                .with_no_padding()
+                .with_gap(20.0)
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(30.0),
+                ))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(30.0),
+                ))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(30.0),
+                ));
+            let mut scroll = Scrollable::new(ScrollAxis::Vertical)
+                .with_height(50.0)
+                .with_child(Box::new(inner));
+
+            let (taffy, scroll_node) = lay_out(&mut scroll);
+
+            let inner = scroll.children()[0];
+            let inner_node = taffy.children(scroll_node).unwrap()[0];
+            assert_eq!(scroll.get_rect().height(), 50.0);
+            assert_eq!(taffy.layout(inner_node).unwrap().size.height, 130.0);
+            assert_eq!(inner.get_rect().height(), 130.0);
+            assert_eq!(inner.children()[2].get_rect().y0, 100.0);
+            assert_eq!(scroll.max_offset_y(), 80.0);
+        }
+
+        fn horizontal_scrollable_keeps_cross_axis_stretch() {
+            use crate::widget::{ScrollAxis, Scrollable};
+
+            let mut scroll = Scrollable::new(ScrollAxis::Horizontal)
+                .with_height(50.0)
+                .with_child(Box::new(
+                    Container::new().with_no_padding().with_width(1_200.0),
+                ));
+
+            let _ = lay_out(&mut scroll);
+
+            assert_eq!(scroll.get_rect().height(), 50.0);
+            assert_eq!(scroll.children()[0].get_rect().height(), 50.0);
+        }
+
+        intrinsic_column_gap_is_additive_with_explicit_padding();
+        intrinsic_column_gap_is_additive_with_child_margins();
+        nested_intrinsic_column_keeps_taffy_and_widget_sibling_geometry_aligned();
+        intrinsic_column_in_row_respects_parent_center_alignment();
+        intrinsic_column_gap_contributes_to_scrollable_content_height();
+        horizontal_scrollable_keeps_cross_axis_stretch();
     }
 
     #[test]
-    fn intrinsic_column_keeps_requested_gap_when_parent_stretches_height() {
-        let theme = Theme::dark();
-        let mut col = Column::new()
-            .with_intrinsic_height()
-            .with_no_padding()
-            .with_gap(20.0)
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(10.0),
-            ))
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(10.0),
-            ));
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let mut tr = TextRenderer::new();
-        let column_node = col.build_layout(&mut taffy, &theme, &mut node_map);
-        let host_node = taffy.parent_node(
-            Style {
-                size: taffy::Size {
-                    width: length(400.0_f32),
-                    height: length(300.0_f32),
-                },
-                ..Default::default()
-            },
-            &[column_node],
-        );
+    fn leading_text_in_columns_is_drawn_and_survives_redraw() {
+        /// Regression: a bare leading `Row[Text]` at the head of an
+        /// intrinsic-height `Column` followed by a `Container` sibling must
+        /// still emit the Text. Previously the column's cached-draw rebuild
+        /// dropped the leading child while the Container painted.
+        fn leading_text_in_intrinsic_column_is_drawn() {
+            let mut col = Column::new()
+                .with_intrinsic_height()
+                .push(Box::new(Row::new().push(Box::new(Text::new("Heading")))))
+                .push(Box::new(
+                    Container::new()
+                        .with_background()
+                        .with_child(Box::new(Text::new("Body"))),
+                ));
+            let _ = lay_out(&mut col);
 
-        taffy
-            .compute_layout_with_measure(
-                host_node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(400.0),
-                    height: taffy::AvailableSpace::Definite(300.0),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = node_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .unwrap();
-        col.apply_layout(&taffy, column_node, Point::ZERO);
+            // The leading Row's resolved rect must be non-degenerate — if it
+            // collapsed to zero the text could never paint.
+            let row_rect = col.children[0].get_rect();
+            assert!(
+                row_rect.width() > 1.0 && row_rect.height() > 1.0,
+                "leading Row collapsed to a degenerate rect: {row_rect:?}"
+            );
 
-        assert_eq!(taffy.layout(column_node).unwrap().size.height, 300.0);
-        assert_eq!(col.get_rect().height(), 300.0);
-        assert_eq!(col.children[0].get_rect().y0, 0.0);
-        assert_eq!(col.children[1].get_rect().y0, 30.0);
-        assert_eq!(
-            col.children[1].get_rect().y0 - col.children[0].get_rect().y1,
-            20.0
-        );
-    }
+            // And the leading Text inside the Row must have a real rect too.
+            let text_rect = col.children[0].children()[0].get_rect();
+            assert!(
+                text_rect.width() > 1.0 && text_rect.height() > 1.0,
+                "leading Text collapsed to a degenerate rect: {text_rect:?}"
+            );
 
-    #[test]
-    fn intrinsic_column_zero_gap_keeps_children_tightly_stacked() {
-        let mut col = Column::new()
-            .with_intrinsic_height()
-            .with_no_padding()
-            .with_gap(0.0)
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(10.0),
-            ))
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(10.0),
-            ));
-
-        let _ = lay_out(&mut col);
-
-        assert_eq!(col.children[0].get_rect().y0, 0.0);
-        assert_eq!(col.children[1].get_rect().y0, 10.0);
-        assert_eq!(col.get_rect().height(), 20.0);
-    }
-
-    #[test]
-    fn intrinsic_column_uses_default_theme_gap() {
-        let mut col = Column::new()
-            .with_intrinsic_height()
-            .with_no_padding()
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(10.0),
-            ))
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(10.0),
-            ));
-
-        let _ = lay_out(&mut col);
-
-        // The dark theme's default gap is 12 px.
-        assert_eq!(col.children[1].get_rect().y0, 22.0);
-        assert_eq!(col.get_rect().height(), 32.0);
-    }
-
-    #[test]
-    fn intrinsic_column_inserts_one_gap_between_each_of_three_children() {
-        let mut col = Column::new()
-            .with_intrinsic_height()
-            .with_no_padding()
-            .with_gap(7.0)
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(10.0),
-            ))
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(10.0),
-            ))
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(10.0),
-            ));
-
-        let _ = lay_out(&mut col);
-
-        assert_eq!(col.children[0].get_rect().y0, 0.0);
-        assert_eq!(col.children[1].get_rect().y0, 17.0);
-        assert_eq!(col.children[2].get_rect().y0, 34.0);
-        assert_eq!(col.get_rect().height(), 44.0);
-    }
-
-    #[test]
-    fn intrinsic_column_gap_is_additive_with_explicit_padding() {
-        let mut col = Column::new()
-            .with_intrinsic_height()
-            .with_vertical_padding(5.0)
-            .with_horizontal_padding(7.0, 11.0)
-            .with_extra_top_padding(3.0)
-            .with_extra_bottom_padding(4.0)
-            .with_gap(20.0)
-            .push(Box::new(
-                Container::new().with_no_padding().with_size(10.0, 10.0),
-            ))
-            .push(Box::new(
-                Container::new().with_no_padding().with_size(10.0, 10.0),
-            ));
-
-        let _ = lay_out(&mut col);
-
-        assert_eq!(col.children[0].get_rect().x0, 7.0);
-        assert_eq!(col.children[0].get_rect().y0, 8.0);
-        assert_eq!(col.children[1].get_rect().y0, 38.0);
-        assert_eq!(col.get_rect().height(), 57.0);
-    }
-
-    #[test]
-    fn intrinsic_column_gap_is_additive_with_child_margins() {
-        let theme = Theme::dark();
-        let mut col = Column::new()
-            .with_intrinsic_height()
-            .with_no_padding()
-            .with_gap(20.0)
-            .push(Box::new(
-                Container::new().with_no_padding().with_size(10.0, 10.0),
-            ))
-            .push(Box::new(
-                Container::new().with_no_padding().with_size(10.0, 10.0),
-            ));
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let mut tr = TextRenderer::new();
-        let node = col.build_layout(&mut taffy, &theme, &mut node_map);
-
-        let mut first_style = taffy.style(col.child_nodes[0]).unwrap().clone();
-        first_style.margin.top = length(2.0_f32);
-        first_style.margin.bottom = length(3.0_f32);
-        taffy.set_style(col.child_nodes[0], first_style).unwrap();
-        let mut second_style = taffy.style(col.child_nodes[1]).unwrap().clone();
-        second_style.margin.top = length(4.0_f32);
-        second_style.margin.bottom = length(6.0_f32);
-        taffy.set_style(col.child_nodes[1], second_style).unwrap();
-
-        taffy
-            .compute_layout_with_measure(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(800.0),
-                    height: taffy::AvailableSpace::Definite(600.0),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = node_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .unwrap();
-        col.apply_layout(&taffy, node, Point::ZERO);
-
-        assert_eq!(col.children[0].get_rect().y0, 2.0);
-        assert_eq!(col.children[1].get_rect().y0, 39.0);
-        assert_eq!(col.get_rect().height(), 55.0);
-    }
-
-    #[test]
-    fn nested_intrinsic_column_keeps_taffy_and_widget_sibling_geometry_aligned() {
-        let inner = Column::new()
-            .with_intrinsic_height()
-            .with_no_padding()
-            .with_gap(20.0)
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(30.0),
-            ))
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(30.0),
-            ))
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(30.0),
-            ));
-        let mut outer = Column::new()
-            .with_intrinsic_height()
-            .with_no_padding()
-            .with_gap(0.0)
-            .push(Box::new(inner))
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(10.0),
-            ));
-
-        let (mut taffy, node) = lay_out(&mut outer);
-
-        assert_eq!(taffy.children(node).unwrap(), outer.child_nodes);
-        assert_eq!(
-            taffy.layout(outer.child_nodes[0]).unwrap().size.width,
-            800.0
-        );
-        assert_eq!(
-            taffy.layout(outer.child_nodes[0]).unwrap().size.height,
-            130.0
-        );
-        assert_eq!(outer.children[0].get_rect().width(), 800.0);
-        assert_eq!(outer.children[0].get_rect().height(), 130.0);
-        assert_eq!(
-            taffy.layout(outer.child_nodes[1]).unwrap().location.y,
-            130.0
-        );
-        assert_eq!(outer.children[1].get_rect().y0, 130.0);
-        assert_eq!(outer.get_rect().height(), 140.0);
-
-        taffy
-            .compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(800.0),
-                    height: taffy::AvailableSpace::Definite(600.0),
-                },
-            )
-            .unwrap();
-        outer.apply_layout(&taffy, node, Point::ZERO);
-        assert_eq!(
-            taffy.layout(outer.child_nodes[0]).unwrap().size.height,
-            130.0
-        );
-        assert_eq!(outer.children[0].get_rect().height(), 130.0);
-        assert_eq!(outer.children[1].get_rect().y0, 130.0);
-    }
-
-    #[test]
-    fn intrinsic_column_in_row_respects_parent_center_alignment() {
-        let short_column = Column::new()
-            .with_intrinsic_height()
-            .with_no_padding()
-            .with_gap(0.0)
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(10.0),
-            ));
-        let mut row = Row::new()
-            .no_wrap()
-            .push(Box::new(short_column))
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(30.0),
-            ));
-
-        let _ = lay_out(&mut row);
-
-        assert_eq!(row.get_rect().height(), 30.0);
-        assert_eq!(row.children()[0].get_rect().height(), 10.0);
-        assert_eq!(row.children()[0].get_rect().y0, 10.0);
-        assert_eq!(row.children()[1].get_rect().y0, 0.0);
-    }
-
-    #[test]
-    fn intrinsic_column_gap_contributes_to_scrollable_content_height() {
-        use crate::widget::{ScrollAxis, Scrollable};
-
-        let inner = Column::new()
-            .with_intrinsic_height()
-            .with_no_padding()
-            .with_gap(20.0)
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(30.0),
-            ))
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(30.0),
-            ))
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(30.0),
-            ));
-        let mut scroll = Scrollable::new(ScrollAxis::Vertical)
-            .with_height(50.0)
-            .with_child(Box::new(inner));
-
-        let (taffy, scroll_node) = lay_out(&mut scroll);
-
-        let inner = scroll.children()[0];
-        let inner_node = taffy.children(scroll_node).unwrap()[0];
-        assert_eq!(scroll.get_rect().height(), 50.0);
-        assert_eq!(taffy.layout(inner_node).unwrap().size.height, 130.0);
-        assert_eq!(inner.get_rect().height(), 130.0);
-        assert_eq!(inner.children()[2].get_rect().y0, 100.0);
-        assert_eq!(scroll.max_offset_y(), 80.0);
-    }
-
-    #[test]
-    fn horizontal_scrollable_keeps_cross_axis_stretch() {
-        use crate::widget::{ScrollAxis, Scrollable};
-
-        let mut scroll = Scrollable::new(ScrollAxis::Horizontal)
-            .with_height(50.0)
-            .with_child(Box::new(
-                Container::new().with_no_padding().with_width(1_200.0),
-            ));
-
-        let _ = lay_out(&mut scroll);
-
-        assert_eq!(scroll.get_rect().height(), 50.0);
-        assert_eq!(scroll.children()[0].get_rect().height(), 50.0);
-    }
-
-    /// Regression: a bare leading `Row[Text]` at the head of an
-    /// intrinsic-height `Column` followed by a `Container` sibling must
-    /// still emit the Text. Previously the column's cached-draw rebuild
-    /// dropped the leading child while the Container painted.
-    #[test]
-    fn leading_text_in_intrinsic_column_is_drawn() {
-        let mut col = Column::new()
-            .with_intrinsic_height()
-            .push(Box::new(Row::new().push(Box::new(Text::new("Heading")))))
-            .push(Box::new(
-                Container::new()
-                    .with_background()
-                    .with_child(Box::new(Text::new("Body"))),
-            ));
-        let _ = lay_out(&mut col);
-
-        // The leading Row's resolved rect must be non-degenerate — if it
-        // collapsed to zero the text could never paint.
-        let row_rect = col.children[0].get_rect();
-        assert!(
-            row_rect.width() > 1.0 && row_rect.height() > 1.0,
-            "leading Row collapsed to a degenerate rect: {row_rect:?}"
-        );
-
-        // And the leading Text inside the Row must have a real rect too.
-        let text_rect = col.children[0].children()[0].get_rect();
-        assert!(
-            text_rect.width() > 1.0 && text_rect.height() > 1.0,
-            "leading Text collapsed to a degenerate rect: {text_rect:?}"
-        );
-
-        // Drawing must emit content for BOTH children (a fill count > the
-        // Container's lone background fill proves the leading text painted).
-        let fills = glyph_count(&mut col);
-        assert!(
-            fills >= 2,
-            "expected the leading Text + the Container body to both paint; \
+            // Drawing must emit content for BOTH children (a fill count > the
+            // Container's lone background fill proves the leading text painted).
+            let fills = glyph_count(&mut col);
+            assert!(
+                fills >= 2,
+                "expected the leading Text + the Container body to both paint; \
              got {fills} fills (regression: leading child dropped)"
-        );
-    }
+            );
+        }
 
-    /// Reproduce the *cached*-path drop: draw once (warms every cache),
-    /// `mark_drawn`, then re-draw on a frame where the Column itself
-    /// rebuilds (its rect changed) but the leading Row is cache-clean.
-    /// The leading Text must still appear in the recomposed scene.
-    #[test]
-    fn leading_text_survives_cached_redraw() {
-        let mut col = Column::new()
-            .with_intrinsic_height()
-            .push(Box::new(Row::new().push(Box::new(Text::new("Heading")))))
-            .push(Box::new(
-                Container::new()
-                    .with_background()
-                    .with_child(Box::new(Text::new("Body"))),
-            ));
-        let _ = lay_out(&mut col);
+        /// Reproduce the *cached*-path drop: draw once (warms every cache),
+        /// `mark_drawn`, then re-draw on a frame where the Column itself
+        /// rebuilds (its rect changed) but the leading Row is cache-clean.
+        /// The leading Text must still appear in the recomposed scene.
+        fn leading_text_survives_cached_redraw() {
+            let mut col = Column::new()
+                .with_intrinsic_height()
+                .push(Box::new(Row::new().push(Box::new(Text::new("Heading")))))
+                .push(Box::new(
+                    Container::new()
+                        .with_background()
+                        .with_child(Box::new(Text::new("Body"))),
+                ));
+            let _ = lay_out(&mut col);
 
-        // Frame 1 — warm caches, then clear dirty flags as the App does.
-        let f1 = glyph_count(&mut col);
-        col.mark_drawn();
+            // Frame 1 — warm caches, then clear dirty flags as the App does.
+            let f1 = glyph_count(&mut col);
+            col.mark_drawn();
 
-        // Frame 2 — same content, caches clean. The cache-hit path must
-        // replay the full subtree (leading Text included).
-        let f2 = glyph_count(&mut col);
-        assert!(
-            f2 >= f1 && f2 >= 2,
-            "cached re-draw dropped content: frame1={f1} frame2={f2}"
-        );
-    }
+            // Frame 2 — same content, caches clean. The cache-hit path must
+            // replay the full subtree (leading Text included).
+            let f2 = glyph_count(&mut col);
+            assert!(
+                f2 >= f1 && f2 >= 2,
+                "cached re-draw dropped content: frame1={f1} frame2={f2}"
+            );
+        }
 
-    /// The settings scenario: a bare leading `Text` (NOT wrapped in a
-    /// Row or Container) at the head of an intrinsic-height Column hosted
-    /// inside a `Scrollable`. This is the exact shape Settings worked
-    /// around by wrapping every heading in a background Container. The
-    /// leading Text must resolve a non-degenerate rect through the measure
-    /// pass.
-    #[test]
-    fn bare_leading_text_in_scrolled_intrinsic_column() {
-        use crate::widget::{ScrollAxis, Scrollable};
-        // The Scrollable hosts the intrinsic column; this is what drives
-        // the constrained measure pass that previously zeroed the leading
-        // child.
-        let inner = Column::new()
-            .with_intrinsic_height()
-            .push(Box::new(Text::new("Section Heading")))
-            .push(Box::new(
-                Container::new()
-                    .with_background()
-                    .with_child(Box::new(Text::new("Row one"))),
-            ))
-            .push(Box::new(Text::new("Another Heading")))
-            .push(Box::new(
-                Container::new()
-                    .with_background()
-                    .with_child(Box::new(Text::new("Row two"))),
-            ));
-        let mut scroll = Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(inner));
-        let _ = lay_out(&mut scroll);
+        /// The settings scenario: a bare leading `Text` (NOT wrapped in a
+        /// Row or Container) at the head of an intrinsic-height Column hosted
+        /// inside a `Scrollable`. This is the exact shape Settings worked
+        /// around by wrapping every heading in a background Container. The
+        /// leading Text must resolve a non-degenerate rect through the measure
+        /// pass.
+        fn bare_leading_text_in_scrolled_intrinsic_column() {
+            use crate::widget::{ScrollAxis, Scrollable};
+            // The Scrollable hosts the intrinsic column; this is what drives
+            // the constrained measure pass that previously zeroed the leading
+            // child.
+            let inner = Column::new()
+                .with_intrinsic_height()
+                .push(Box::new(Text::new("Section Heading")))
+                .push(Box::new(
+                    Container::new()
+                        .with_background()
+                        .with_child(Box::new(Text::new("Row one"))),
+                ))
+                .push(Box::new(Text::new("Another Heading")))
+                .push(Box::new(
+                    Container::new()
+                        .with_background()
+                        .with_child(Box::new(Text::new("Row two"))),
+                ));
+            let mut scroll = Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(inner));
+            let _ = lay_out(&mut scroll);
 
-        // Reach the inner column's first child (the bare leading Text).
-        let inner_col = &scroll.children()[0];
-        let lead = inner_col.children()[0];
-        let r = lead.get_rect();
-        assert!(
-            r.width() > 1.0 && r.height() > 1.0,
-            "bare leading Text in a scrolled intrinsic Column collapsed: {r:?}"
-        );
+            // Reach the inner column's first child (the bare leading Text).
+            let inner_col = &scroll.children()[0];
+            let lead = inner_col.children()[0];
+            let r = lead.get_rect();
+            assert!(
+                r.width() > 1.0 && r.height() > 1.0,
+                "bare leading Text in a scrolled intrinsic Column collapsed: {r:?}"
+            );
 
-        // And it must actually paint.
-        let fills = glyph_count(&mut scroll);
-        assert!(fills >= 3, "expected headings + rows to paint; got {fills}");
-    }
+            // And it must actually paint.
+            let fills = glyph_count(&mut scroll);
+            assert!(fills >= 3, "expected headings + rows to paint; got {fills}");
+        }
 
-    /// The same content as a plain (fill-height) column must also draw the
-    /// leading text — guards the non-intrinsic path.
-    #[test]
-    fn leading_text_in_plain_column_is_drawn() {
-        let mut col = Column::new()
-            .push(Box::new(Text::new("Heading")))
-            .push(Box::new(
-                Container::new()
-                    .with_background()
-                    .with_child(Box::new(Text::new("Body"))),
-            ));
-        let _ = lay_out(&mut col);
-        let text_rect = col.children[0].get_rect();
-        assert!(
-            text_rect.width() > 1.0 && text_rect.height() > 1.0,
-            "leading Text collapsed: {text_rect:?}"
-        );
+        /// The same content as a plain (fill-height) column must also draw the
+        /// leading text — guards the non-intrinsic path.
+        fn leading_text_in_plain_column_is_drawn() {
+            let mut col = Column::new()
+                .push(Box::new(Text::new("Heading")))
+                .push(Box::new(
+                    Container::new()
+                        .with_background()
+                        .with_child(Box::new(Text::new("Body"))),
+                ));
+            let _ = lay_out(&mut col);
+            let text_rect = col.children[0].get_rect();
+            assert!(
+                text_rect.width() > 1.0 && text_rect.height() > 1.0,
+                "leading Text collapsed: {text_rect:?}"
+            );
+        }
+
+        leading_text_in_intrinsic_column_is_drawn();
+        leading_text_survives_cached_redraw();
+        bare_leading_text_in_scrolled_intrinsic_column();
+        leading_text_in_plain_column_is_drawn();
     }
 }

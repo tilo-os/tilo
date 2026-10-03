@@ -329,188 +329,190 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
-    fn scanning_an_absent_path_says_so_rather_than_guessing() {
-        let dir = tempfile::tempdir().unwrap();
-        let report = scan(&dir.path().join("nothing"), &[]);
-        assert!(!report.exists);
-        assert!(report.notes.iter().any(|n| n.contains("not present")));
-    }
-
-    /// Every report carries a note describing unchecked conditions.
-    #[test]
-    fn every_report_states_that_nothing_was_checked_against_a_database() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("thing");
-        std::fs::write(&file, b"data").unwrap();
-        for path in [file, dir.path().join("absent")] {
-            let report = scan(&path, &[]);
-            assert!(
-                report
-                    .notes
-                    .iter()
-                    .any(|n| n.contains("no signature or reputation check")),
-                "a scan must not read as a clean bill of health: {report:?}"
-            );
+    fn scan_reports_what_it_saw_and_what_it_did_not_check() {
+        // phase: scanning_an_absent_path_says_so_rather_than_guessing
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let report = scan(&dir.path().join("nothing"), &[]);
+            assert!(!report.exists);
+            assert!(report.notes.iter().any(|n| n.contains("not present")));
         }
-    }
-
-    #[test]
-    fn scan_reports_the_bits_that_matter() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("tool");
-        std::fs::write(&file, b"#!/bin/sh\n").unwrap();
-        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o4755)).unwrap();
-
-        let report = scan(&file, &[dir.path().to_path_buf()]);
-        assert!(report.exists && report.executable && report.setuid);
-        assert!(report.in_trusted_dir);
-        assert!(report.notes.iter().any(|n| n.contains("setuid")));
-        assert!(report.notes.iter().any(|n| n.contains("reaches the host")));
-    }
-
-    #[test]
-    fn a_path_outside_every_trusted_directory_is_not_reported_as_inside_one() {
-        let dir = tempfile::tempdir().unwrap();
-        let trusted = dir.path().join("src");
-        let other = dir.path().join("srcextra");
-        std::fs::create_dir_all(&trusted).unwrap();
-        std::fs::create_dir_all(&other).unwrap();
-        let file = other.join("f");
-        std::fs::write(&file, b"x").unwrap();
-        assert!(!scan(&file, &[trusted]).in_trusted_dir);
-    }
-
-    #[test]
-    fn quarantine_moves_the_file_and_clears_its_executable_bits() {
-        let dir = tempfile::tempdir().unwrap();
-        let q = dir.path().join("quarantine");
-        let file = dir.path().join("suspicious");
-        std::fs::write(&file, b"#!/bin/sh\nrm -rf /\n").unwrap();
-        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o4755)).unwrap();
-
-        let stored = quarantine_add(&file, &q).unwrap();
-        assert!(
-            !file.exists(),
-            "the original must stop resolving, or nothing has been quarantined"
-        );
-        let mode = std::fs::metadata(&stored).unwrap().permissions().mode();
-        assert_eq!(
-            mode & 0o7111,
-            0,
-            "quarantined file is still runnable: {mode:o}"
-        );
-
-        let listed = quarantine_list(&q);
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].original, file);
-
-        quarantine_restore(&listed[0]).unwrap();
-        assert!(file.exists());
-        assert!(quarantine_list(&q).is_empty());
-    }
-
-    #[test]
-    fn listing_an_empty_or_absent_quarantine_is_not_an_error() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(quarantine_list(&dir.path().join("absent")).is_empty());
-        std::fs::create_dir_all(dir.path().join("q")).unwrap();
-        assert!(quarantine_list(&dir.path().join("q")).is_empty());
-    }
-
-    #[test]
-    fn the_quarantine_lives_inside_the_layer() {
-        assert!(
-            QUARANTINE_DIR.starts_with("/usr/"),
-            "quarantining must land in the layer, not on the host"
-        );
-    }
-
-    /// The probe's answer must follow from what `/` actually allows, and leave
-    /// nothing behind either way. Which arm it takes is a property of the
-    /// machine, not the code — asserted here rather than assumed, since running
-    /// as root (every container) makes `/` writable and `NotEnforced` the true
-    /// answer; failing on that would assert the machine is a workstation, not
-    /// that the probe is right.
-    #[test]
-    fn the_landlock_probe_answers_for_what_root_actually_allows() {
-        // Ask `/` the same question the probe will, under a different name,
-        // so the two cannot collide.
-        let canary =
-            std::path::Path::new("/").join(format!(".ush-landlock-canary-{}", std::process::id()));
-        let root_is_writable = match std::fs::create_dir(&canary) {
-            Ok(()) => {
-                let _ = std::fs::remove_dir(&canary);
-                true
+        // phase: every_report_states_that_nothing_was_checked_against_a_database
+        // Every report carries a note describing unchecked conditions.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("thing");
+            std::fs::write(&file, b"data").unwrap();
+            for path in [file, dir.path().join("absent")] {
+                let report = scan(&path, &[]);
+                assert!(
+                    report
+                        .notes
+                        .iter()
+                        .any(|n| n.contains("no signature or reputation check")),
+                    "a scan must not read as a clean bill of health: {report:?}"
+                );
             }
-            Err(_) => false,
-        };
+        }
+        // phase: scan_reports_the_bits_that_matter
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("tool");
+            std::fs::write(&file, b"#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o4755)).unwrap();
 
-        let outcome = landlock_probe();
-        if root_is_writable {
-            // Nothing stopped the write, so nothing is enforcing. Claiming
-            // otherwise on an unconfined process is the failure this guards.
-            assert_eq!(
-                outcome,
-                LandlockOutcome::NotEnforced,
-                "`/` accepted a new directory, so the probe must not claim \
-                 anything is enforcing: {outcome:?}"
-            );
-        } else {
-            // The write was refused. Whatever refused it, the probe must not
-            // read the refusal as "unconfined".
+            let report = scan(&file, &[dir.path().to_path_buf()]);
+            assert!(report.exists && report.executable && report.setuid);
+            assert!(report.in_trusted_dir);
+            assert!(report.notes.iter().any(|n| n.contains("setuid")));
+            assert!(report.notes.iter().any(|n| n.contains("reaches the host")));
+        }
+        // phase: a_path_outside_every_trusted_directory_is_not_reported_as_inside_one
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let trusted = dir.path().join("src");
+            let other = dir.path().join("srcextra");
+            std::fs::create_dir_all(&trusted).unwrap();
+            std::fs::create_dir_all(&other).unwrap();
+            let file = other.join("f");
+            std::fs::write(&file, b"x").unwrap();
+            assert!(!scan(&file, &[trusted]).in_trusted_dir);
+        }
+    }
+
+    #[test]
+    fn quarantine_moves_files_into_the_layer_and_restores_them() {
+        // phase: quarantine_moves_the_file_and_clears_its_executable_bits
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let q = dir.path().join("quarantine");
+            let file = dir.path().join("suspicious");
+            std::fs::write(&file, b"#!/bin/sh\nrm -rf /\n").unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o4755)).unwrap();
+
+            let stored = quarantine_add(&file, &q).unwrap();
             assert!(
-                matches!(
-                    outcome,
-                    LandlockOutcome::FullyEnforced | LandlockOutcome::Errored
-                ),
-                "`/` refused a new directory, so the probe must not report \
-                 NotEnforced: {outcome:?}"
+                !file.exists(),
+                "the original must stop resolving, or nothing has been quarantined"
+            );
+            let mode = std::fs::metadata(&stored).unwrap().permissions().mode();
+            assert_eq!(
+                mode & 0o7111,
+                0,
+                "quarantined file is still runnable: {mode:o}"
+            );
+
+            let listed = quarantine_list(&q);
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].original, file);
+
+            quarantine_restore(&listed[0]).unwrap();
+            assert!(file.exists());
+            assert!(quarantine_list(&q).is_empty());
+        }
+        // phase: listing_an_empty_or_absent_quarantine_is_not_an_error
+        {
+            let dir = tempfile::tempdir().unwrap();
+            assert!(quarantine_list(&dir.path().join("absent")).is_empty());
+            std::fs::create_dir_all(dir.path().join("q")).unwrap();
+            assert!(quarantine_list(&dir.path().join("q")).is_empty());
+        }
+        // phase: the_quarantine_lives_inside_the_layer
+        {
+            assert!(
+                QUARANTINE_DIR.starts_with("/usr/"),
+                "quarantining must land in the layer, not on the host"
             );
         }
-
-        assert!(
-            !std::path::Path::new("/")
-                .join(format!(".ush-landlock-probe-{}", std::process::id()))
-                .exists(),
-            "the probe left something behind at /"
-        );
-        assert!(!canary.exists(), "the canary was left behind at /");
-    }
-
-    /// The guest ruleset, pinned as raw bits (see
-    /// `sandbox_core::landlock` tests for the bit names): best-effort, every
-    /// ABI-4 filesystem right handled, TCP not handled, `rw` before `ro`,
-    /// and no file-right trimming.
-    #[test]
-    fn the_guest_ruleset_is_pinned() {
-        let spec = ruleset_spec(
-            &[PathBuf::from("/home/me"), PathBuf::from("/tmp")],
-            &[PathBuf::from("/")],
-        );
-        assert_eq!(spec.compat, CompatLevel::BestEffort);
-        assert_eq!(spec.handled_fs.bits(), 0x7fff);
-        assert!(spec.handled_net.is_empty());
-        assert!(spec.connect_ports.is_empty());
-        assert!(!spec.trim_file_rights);
-        let rules: Vec<(PathBuf, u64)> = spec
-            .rules
-            .iter()
-            .map(|rule| (rule.path.clone(), rule.access.bits()))
-            .collect();
-        assert_eq!(
-            rules,
-            vec![
-                (PathBuf::from("/home/me"), 0x7fff),
-                (PathBuf::from("/tmp"), 0x7fff),
-                (PathBuf::from("/"), 0b1101),
-            ]
-        );
     }
 
     #[test]
-    fn the_landlock_outcomes_describe_themselves_honestly() {
-        assert!(describe(LandlockOutcome::NotEnforced).contains("NOT"));
-        assert!(describe(LandlockOutcome::Errored).contains("NOT"));
-        assert!(describe(LandlockOutcome::PartiallyEnforced).contains("partially"));
+    fn the_landlock_probe_ruleset_and_outcomes_are_honest() {
+        // phase: the_landlock_probe_answers_for_what_root_actually_allows
+        // The probe's answer must follow from what `/` actually allows, and leave
+        // nothing behind either way. Which arm it takes is a property of the
+        // machine, not the code — asserted here rather than assumed, since running
+        // as root (every container) makes `/` writable and `NotEnforced` the true
+        // answer; failing on that would assert the machine is a workstation, not
+        // that the probe is right.
+        {
+            // Ask `/` the same question the probe will, under a different name,
+            // so the two cannot collide.
+            let canary = std::path::Path::new("/")
+                .join(format!(".ush-landlock-canary-{}", std::process::id()));
+            let root_is_writable = match std::fs::create_dir(&canary) {
+                Ok(()) => {
+                    let _ = std::fs::remove_dir(&canary);
+                    true
+                }
+                Err(_) => false,
+            };
+
+            let outcome = landlock_probe();
+            if root_is_writable {
+                // Nothing stopped the write, so nothing is enforcing. Claiming
+                // otherwise on an unconfined process is the failure this guards.
+                assert_eq!(
+                    outcome,
+                    LandlockOutcome::NotEnforced,
+                    "`/` accepted a new directory, so the probe must not claim \
+                 anything is enforcing: {outcome:?}"
+                );
+            } else {
+                // The write was refused. Whatever refused it, the probe must not
+                // read the refusal as "unconfined".
+                assert!(
+                    matches!(
+                        outcome,
+                        LandlockOutcome::FullyEnforced | LandlockOutcome::Errored
+                    ),
+                    "`/` refused a new directory, so the probe must not report \
+                 NotEnforced: {outcome:?}"
+                );
+            }
+
+            assert!(
+                !std::path::Path::new("/")
+                    .join(format!(".ush-landlock-probe-{}", std::process::id()))
+                    .exists(),
+                "the probe left something behind at /"
+            );
+            assert!(!canary.exists(), "the canary was left behind at /");
+        }
+        // phase: the_guest_ruleset_is_pinned
+        // The guest ruleset, pinned as raw bits (see
+        // `sandbox_core::landlock` tests for the bit names): best-effort, every
+        // ABI-4 filesystem right handled, TCP not handled, `rw` before `ro`,
+        // and no file-right trimming.
+        {
+            let spec = ruleset_spec(
+                &[PathBuf::from("/home/me"), PathBuf::from("/tmp")],
+                &[PathBuf::from("/")],
+            );
+            assert_eq!(spec.compat, CompatLevel::BestEffort);
+            assert_eq!(spec.handled_fs.bits(), 0x7fff);
+            assert!(spec.handled_net.is_empty());
+            assert!(spec.connect_ports.is_empty());
+            assert!(!spec.trim_file_rights);
+            let rules: Vec<(PathBuf, u64)> = spec
+                .rules
+                .iter()
+                .map(|rule| (rule.path.clone(), rule.access.bits()))
+                .collect();
+            assert_eq!(
+                rules,
+                vec![
+                    (PathBuf::from("/home/me"), 0x7fff),
+                    (PathBuf::from("/tmp"), 0x7fff),
+                    (PathBuf::from("/"), 0b1101),
+                ]
+            );
+        }
+        // phase: the_landlock_outcomes_describe_themselves_honestly
+        {
+            assert!(describe(LandlockOutcome::NotEnforced).contains("NOT"));
+            assert!(describe(LandlockOutcome::Errored).contains("NOT"));
+            assert!(describe(LandlockOutcome::PartiallyEnforced).contains("partially"));
+        }
     }
 }

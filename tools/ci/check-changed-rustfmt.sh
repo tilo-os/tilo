@@ -11,18 +11,28 @@ cd "$repo"
 range=$(python3 "$script_dir/check_changed_rust_allows.py" \
     --root "$repo" --comparison-range "${1:-}" "${2:-}")
 
-# Imported dependencies and checked-in Cap'n Proto bindings retain generator
-# formatting; their native tests and dependency/security checks still run.
-# Process substitution hides git diff's exit status from mapfile/set -e.
+# Same rule as .githooks/pre-commit: a vendored crate under vendor/ is
+# upstream's code, carried as it ships, and a generated source says so with an
+# `@generated` marker in its first five lines (capnpc-rust bindings, tilo-app
+# registries); both keep their own formatting. Their native tests and
+# dependency/security checks still run.
 changed_paths=$(mktemp)
 trap 'rm -f -- "$changed_paths"' EXIT
 git diff --name-only -z --diff-filter=ACMRTUXB "$range" -- \
     '*.rs' \
-    ':(top,exclude)vendor/**' \
-    ':(top,exclude)**/src/generated/*_capnp.rs' >"$changed_paths"
-mapfile -d '' rust_files <"$changed_paths"
+    ':(top,exclude)vendor/**' >"$changed_paths"
+mapfile -d '' changed_rs <"$changed_paths"
+rust_files=()
+for f in "${changed_rs[@]}"; do
+    [ -f "$f" ] || continue
+    # Match against the head text, not a pipe into grep -q: under pipefail a
+    # first-line match would leave head writing into a closed pipe.
+    head5=$(head -n 5 -- "$f" || true)
+    case "$head5" in *@generated*) continue ;; esac
+    rust_files+=("$f")
+done
 if [ "${#rust_files[@]}" -eq 0 ]; then
-    echo "changed Rust formatting OK (no Rust files in $range)"
+    echo "changed Rust formatting OK (no hand-written Rust files in $range)"
     exit 0
 fi
 

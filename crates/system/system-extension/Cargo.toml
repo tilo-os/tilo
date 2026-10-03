@@ -15,18 +15,20 @@ name = "tilo-system-extension-manager"
 path = "src/bin/tilo-system-extension-manager.rs"
 
 [dependencies]
-atomic-file = { path = "../atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
+bounded-command = { path = "../bounded-command" }
 ed25519-dalek.workspace = true
 hex.workspace = true
-libc.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

@@ -28,7 +28,7 @@ session test. Preserve separate distro support evidence in the setup catalog.
 
 `apps/imager/src/release.rs` authenticates the media catalog by embedding it in
 the signed application; its decompression path is specific to disk images.
-`.forgejo/workflows/package-desktop.yml` produces target-specific packages and
+`.forgejo/workflows/release-desktop.yml` produces target-specific packages and
 release checksums. A checksum fetched beside a package is not an independent
 trust anchor. Embed reviewed release metadata at build time; never activate a
 route from an unverified network manifest.

@@ -616,38 +616,16 @@ pub fn sample_entries() -> Vec<LogEntry> {
     // A handful of records from the previous boot, so the boot filter has
     // two distinct boots to switch between.
     let prev_base = base - 9_000_000_000; // ~2.5h earlier
-    for (off, unit, ident, prio, pid, transport, msg, extra) in prev {
-        entries.push(build(
-            prev_base + off * 1000,
-            unit,
-            ident,
-            *prio,
-            *pid,
-            transport,
-            msg,
-            host,
-            boot_b,
-            extra,
-        ));
+    for row in prev {
+        entries.push(build(row, prev_base, host, boot_b));
     }
 
     // Rows are split across three consts purely to stay under the
     // per-function line-count limit; the boot sequence still reads as one
     // continuous timeline (offsets are relative to the same `base`).
     let rows = ROWS_BOOT.iter().chain(ROWS_SERVICES).chain(ROWS_SESSION);
-    for (off, unit, ident, prio, pid, transport, msg, extra) in rows {
-        entries.push(build(
-            base + off * 1000,
-            unit,
-            ident,
-            *prio,
-            *pid,
-            transport,
-            msg,
-            host,
-            boot_a,
-            extra,
-        ));
+    for row in rows {
+        entries.push(build(row, base, host, boot_a));
     }
 
     entries.sort_by_key(|e| e.realtime_us);
@@ -659,21 +637,12 @@ const fn very(n: u32) -> u32 {
     n
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build(
-    realtime_us: u64,
-    unit: &str,
-    identifier: &str,
-    priority: Priority,
-    pid: Option<u32>,
-    transport: &str,
-    message: &str,
-    hostname: &str,
-    boot_id: &str,
-    extra: &[(&str, &str)],
-) -> LogEntry {
+/// The entry a sample `row` describes, logged on `hostname` during `boot_id`
+/// at its offset from `base_us`.
+fn build(row: &Row, base_us: u64, hostname: &str, boot_id: &str) -> LogEntry {
+    let &(offset_ms, unit, identifier, priority, pid, transport, message, extra) = row;
     LogEntry {
-        realtime_us,
+        realtime_us: base_us + offset_ms * 1000,
         unit: unit.to_string(),
         identifier: identifier.to_string(),
         priority,
@@ -707,7 +676,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_json_stream_reads_journalctl_shape() {
+    fn parse_json_stream_reads_journalctl_shape_byte_messages_and_skips_malformed() {
+        // Reads the journalctl JSON shape.
         let line = r#"{"__REALTIME_TIMESTAMP":"1609459200000000","_SYSTEMD_UNIT":"x.service","PRIORITY":"3","MESSAGE":"boom","_PID":"42","_HOSTNAME":"h","_BOOT_ID":"b","_TRANSPORT":"stdout","CUSTOM":"keep"}"#;
         let parsed = parse_json_stream(line);
         assert_eq!(parsed.len(), 1);
@@ -717,18 +687,13 @@ mod tests {
         assert_eq!(e.message, "boom");
         assert_eq!(e.pid, Some(42));
         assert!(e.extra.iter().any(|(k, v)| k == "CUSTOM" && v == "keep"));
-    }
 
-    #[test]
-    fn message_byte_array_is_decoded() {
         // journald encodes non-UTF8 MESSAGE as a byte array.
         let line = r#"{"__REALTIME_TIMESTAMP":"1","MESSAGE":[104,105],"PRIORITY":"6"}"#;
         let parsed = parse_json_stream(line);
         assert_eq!(parsed[0].message, "hi");
-    }
 
-    #[test]
-    fn malformed_lines_are_skipped() {
+        // Malformed lines are skipped.
         let stream = "not json\n{\"MESSAGE\":\"ok\",\"__REALTIME_TIMESTAMP\":\"5\"}\n";
         let parsed = parse_json_stream(stream);
         assert_eq!(parsed.len(), 1);
@@ -736,17 +701,16 @@ mod tests {
     }
 
     #[test]
-    fn export_requires_an_absolute_portal_target() {
+    fn export_writes_json_lines_only_to_absolute_portal_targets() {
         let entries = sample_entries();
+
+        // Export requires an absolute portal target.
         assert_eq!(
             export_json_lines(&[&entries[0]], Path::new("logs.jsonl")).unwrap_err(),
             "export path must be absolute"
         );
-    }
 
-    #[test]
-    fn export_writes_json_lines_to_the_selected_target() {
-        let entries = sample_entries();
+        // Export writes JSON lines to the selected target, replacing it.
         let path = std::env::temp_dir().join(format!(
             "tilo-logs-export-{}-{}.jsonl",
             std::process::id(),
@@ -760,20 +724,19 @@ mod tests {
         export_json_lines(&[&entries[0]], &path).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 1);
         std::fs::remove_file(path).unwrap();
-    }
 
-    #[cfg(unix)]
-    #[test]
-    fn export_preserves_a_non_utf8_portal_path() {
-        use std::os::unix::ffi::OsStringExt;
+        // Export preserves a non-UTF-8 portal path.
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
 
-        let entries = sample_entries();
-        let path = std::env::temp_dir().join(std::ffi::OsString::from_vec(vec![
-            b'q', b'o', b's', b'-', 0xff, b'.', b'j', b's', b'o', b'n', b'l',
-        ]));
-        let _ = std::fs::remove_file(&path);
-        export_json_lines(&[&entries[0]], &path).unwrap();
-        assert!(path.is_file());
-        std::fs::remove_file(path).unwrap();
+            let path = std::env::temp_dir().join(std::ffi::OsString::from_vec(vec![
+                b'q', b'o', b's', b'-', 0xff, b'.', b'j', b's', b'o', b'n', b'l',
+            ]));
+            let _ = std::fs::remove_file(&path);
+            export_json_lines(&[&entries[0]], &path).unwrap();
+            assert!(path.is_file());
+            std::fs::remove_file(path).unwrap();
+        }
     }
 }

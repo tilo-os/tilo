@@ -89,16 +89,16 @@ run_dmabuf() {
     echo "=== DMABUF capture-path routing ==="
     cargo_in_distrobox \
         "cargo test -p shell \
-            --test dmabuf_direct_capture_path \
-            --release -- --include-ignored"
+            --test it --release --locked dmabuf_direct_capture_path:: \
+            -- --include-ignored"
 }
 
 run_substream() {
     echo "=== QUIC substream substrate ==="
     cargo_in_distrobox \
         "cargo test -p shell \
-            --test surface_substream_e2e \
-            --release -- --include-ignored"
+            --test it --release --locked surface_substream_e2e:: \
+            -- --include-ignored"
 }
 
 run_e2e() {

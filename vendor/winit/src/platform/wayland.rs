@@ -99,6 +99,11 @@ pub trait WindowExtWayland {
     /// pointer is on the seat, when the compositor has no
     /// `wl_data_device_manager`, or when `offers` is empty.
     fn start_drag(&self, offers: Vec<(String, Vec<u8>)>) -> bool;
+
+    /// Whether the compositor draws this window's decorations, as settled by
+    /// `xdg-decoration` in the last configure. `None` before the first
+    /// configure. An X11 window manager always decorates.
+    fn server_side_decorations(&self) -> Option<bool>;
 }
 
 impl WindowExtWayland for Window {
@@ -121,6 +126,17 @@ impl WindowExtWayland for Window {
             crate::platform_impl::Window::X(_) => false,
             #[cfg(wayland_platform)]
             crate::platform_impl::Window::Wayland(window) => window.start_drag(offers),
+        }
+    }
+
+    #[inline]
+    fn server_side_decorations(&self) -> Option<bool> {
+        #[allow(clippy::single_match)]
+        match &self.window {
+            #[cfg(x11_platform)]
+            crate::platform_impl::Window::X(_) => Some(true),
+            #[cfg(wayland_platform)]
+            crate::platform_impl::Window::Wayland(window) => window.server_side_decorations(),
         }
     }
 }
@@ -150,11 +166,21 @@ impl WindowAttributesExtWayland for WindowAttributes {
 pub trait MonitorHandleExtWayland {
     /// Returns the inner identifier of the monitor.
     fn native_id(&self) -> u32;
+
+    /// The display's physical size in millimetres, when the compositor
+    /// reports one. Lets a client tell a 14" panel from a 65" television
+    /// that happen to share a resolution.
+    fn physical_size_mm(&self) -> Option<(u32, u32)>;
 }
 
 impl MonitorHandleExtWayland for MonitorHandle {
     #[inline]
     fn native_id(&self) -> u32 {
         self.inner.native_identifier()
+    }
+
+    #[inline]
+    fn physical_size_mm(&self) -> Option<(u32, u32)> {
+        self.inner.physical_size_mm()
     }
 }

@@ -34,6 +34,7 @@ class AppArtifactHandoffTests(unittest.TestCase):
             "tools/ci/__init__.py", "tools/ci/workspace_graph.py",
             "tools/apps/assemble_app_collection.py",
             "apps/calculator/Cargo.toml", "apps/calculator/tilo-app.toml",
+            "crates/packaging/tilo-app-package/max-app-bytes",
             "tools/apps/dev_app_versions.py", "dist/apps/app-collections.toml", ".cargo/config.toml", "tools/apps/app_package_isa.py",
         ):
             self.write(relative, (ROOT / relative).read_text())
@@ -119,9 +120,12 @@ else:
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
 
-    def test_pack_failure_preserves_status_and_names_the_app(self):
-        self.env["FIXTURE_ARCH"] = "x86_64"
-        self.write("target/release/tilo-app-package", """#!/bin/sh
+    def test_build_inputs_are_checked_before_pack_and_failures_name_the_app(self):
+        with self.subTest(phase='pack failure preserves status and names the app'):
+            self.doCleanups()
+            self.setUp()
+            self.env["FIXTURE_ARCH"] = "x86_64"
+            self.write("target/release/tilo-app-package", """#!/bin/sh
 if [ "$1" = pack ]; then
     echo 'application tapp is too large' >&2
     exit 37
@@ -129,135 +133,143 @@ fi
 echo 'verify must not run' >&2
 exit 99
 """)
-        result = subprocess.run(["bash", "dist/apps/package-apps.sh"],
-                                cwd=self.root, env=self.env, text=True,
-                                capture_output=True, timeout=60)
-        self.assertEqual(result.returncode, 37, result.stdout + result.stderr)
-        self.assertIn("packing app=calculator binary=", result.stdout)
-        self.assertIn("application tapp is too large", result.stderr)
-        self.assertIn("pack failed: app=calculator output=", result.stderr)
-        self.assertIn("calculator-0.1.0-x86_64.tapp", result.stderr)
-        self.assertIn("exit_status=37 binary_bytes=64 limit=5242880", result.stderr)
-        self.assertNotIn("verify must not run", result.stderr)
-        self.assertNotIn("packed app=", result.stdout)
-
-    def test_missing_source_isa_is_staged_before_pack_on_both_architectures(self):
-        manifest = self.root / "apps/calculator/tilo-app.toml"
-        manifest.write_text(re.sub(r'\[package\.isa\]\s*x86_64 = "v3"\s*',
-                                   '', manifest.read_text()))
-        for architecture in ("x86_64", "aarch64"):
-            self.env["FIXTURE_ARCH"] = architecture
-            self.command("bash", "dist/apps/package-apps.sh")
-
-    def test_wrong_arch_payload_is_rejected_before_pack(self):
-        self.env["FIXTURE_ARCH"] = "aarch64"
-        self.write("os/scripts/build-thin-apps.sh",
-                   (self.root / "os/scripts/build-thin-apps.sh").read_text().replace(
-                       "62 if os.environ['FIXTURE_ARCH'] == 'x86_64' else 183", "62"))
-        result = subprocess.run(["bash", "dist/apps/package-apps.sh"], cwd=self.root,
-                                env=self.env, text=True, capture_output=True, timeout=60)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("expected a 64-bit little-endian aarch64 ELF", result.stderr)
-        self.assertFalse(list((self.root / "dist/app-release/tapp").glob("*.tapp")))
-
-    def test_unrecorded_compiler_override_fails_before_build(self):
-        for key, value in (("RUSTFLAGS", "-C target-cpu=native"),
-                           ("CARGO_ENCODED_RUSTFLAGS", "-C\x1ftarget-cpu=native"),
-                           ("CARGO_BUILD_TARGET", "aarch64-unknown-linux-gnu")):
-            with self.subTest(key=key):
-                env = dict(self.env, FIXTURE_ARCH="x86_64", **{key: value})
-                result = subprocess.run(["bash", "dist/apps/package-apps.sh"], cwd=self.root,
-                                        env=env, text=True, capture_output=True, timeout=60)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(f"{key} overrides", result.stderr)
-                self.assertFalse((self.root / "cargo.log").exists())
-
-    def test_edited_cpu_and_feature_policy_is_rejected_by_actual_helper(self):
-        config = self.root / ".cargo/config.toml"
-        original = config.read_text()
-        for arch, cpu in (("x86_64", "x86-64-v3"), ("aarch64", "generic")):
-            for replacement in ('"-C", "target-cpu=native",',
-                                f'"-C", "target-cpu={cpu}", "-C", "target-feature=+aes",'):
-                with self.subTest(arch=arch, replacement=replacement):
-                    config.write_text(original.replace(f'"-C", "target-cpu={cpu}",', replacement))
-                    result = subprocess.run([
-                        "python3", "tools/apps/app_package_isa.py", "flags", "--root", str(self.root),
-                        "--arch", arch], cwd=self.root, env=self.env,
-                        text=True, capture_output=True, timeout=10)
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn("unaudited", result.stderr)
-                    self.assertEqual(result.stdout, "")
-
-    def test_encoded_output_retains_every_audited_target_flag(self):
-        config = tomllib.loads((self.root / ".cargo/config.toml").read_text())
-        for arch in ("x86_64", "aarch64"):
-            with self.subTest(arch=arch):
-                result = self.command("python3", "tools/apps/app_package_isa.py", "flags",
-                                      "--root", str(self.root), "--arch", arch)
-                flags = result.stdout.removesuffix("\n").split("\x1f")
-                key = f'cfg(all(target_arch = "{arch}", target_os = "linux"))'
-                self.assertEqual(flags, config["target"][key]["rustflags"])
-                for required in ("force-frame-pointers=yes", "relro-level=full",
-                                 "link-arg=-Wl,-z,noexecstack", "--remap-path-prefix=/build=."):
-                    self.assertIn(required, flags)
-
-    def test_native_outputs_survive_actual_upload_selection_and_collection_assembly(self):
-        for architecture in ("x86_64", "aarch64"):
-            with self.subTest(architecture=architecture):
+            result = subprocess.run(["bash", "dist/apps/package-apps.sh"],
+                                    cwd=self.root, env=self.env, text=True,
+                                    capture_output=True, timeout=60)
+            self.assertEqual(result.returncode, 37, result.stdout + result.stderr)
+            self.assertIn("packing app=calculator binary=", result.stdout)
+            self.assertIn("application tapp is too large", result.stderr)
+            self.assertIn("pack failed: app=calculator output=", result.stderr)
+            self.assertIn("calculator-0.1.0-x86_64.tapp", result.stderr)
+            self.assertIn("exit_status=37 binary_bytes=64 limit=8388608", result.stderr)
+            self.assertNotIn("verify must not run", result.stderr)
+            self.assertNotIn("packed app=", result.stdout)
+        with self.subTest(phase='missing source isa is staged before pack on both architectures'):
+            self.doCleanups()
+            self.setUp()
+            manifest = self.root / "apps/calculator/tilo-app.toml"
+            manifest.write_text(re.sub(r'\[package\.isa\]\s*x86_64 = "v3"\s*',
+                                       '', manifest.read_text()))
+            for architecture in ("x86_64", "aarch64"):
                 self.env["FIXTURE_ARCH"] = architecture
-                result = self.command("bash", "dist/apps/package-apps.sh")
-                self.assertIn("packing app=calculator binary=", result.stdout)
-                self.assertIn("binary_bytes=64", result.stdout)
-                self.assertIn("packed app=calculator output=", result.stdout)
-                self.assertIn("tapp_bytes=64 limit=5242880", result.stdout)
-                calls = [json.loads(line) for line in (self.root / "cargo.log").read_text().splitlines()]
-                self.assertTrue(any("--release" in call["args"] for call in calls))
-                self.assertTrue(any("thin-app" in call["args"] for call in calls))
-                out = self.root / "dist/app-release"
-                artifact = self.root / "download" / architecture
-                artifact.mkdir(parents=True)
-                # Read the actual upload patterns, including the common directory
-                # prefix which upload-artifact strips from the transported paths.
-                patterns = re.findall(r"^\s+dist/app-release/(\S+)\s*$",
-                                      (ROOT / ".forgejo/workflows/release-apps.yml").read_text(), re.M)
-                self.assertTrue(patterns, "workflow upload selection is missing")
-                for pattern in patterns:
-                    for name in glob.glob(str(out / pattern), recursive=True):
-                        source = Path(name)
-                        if source.is_file():
-                            target = artifact / source.relative_to(out)
-                            target.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copyfile(source, target)
-                self.assertTrue((artifact / "runtime/tilo-runtime/2026.07/bundle.toml").is_file(),
-                                "workflow did not transport the produced runtime")
-                self.assertEqual((artifact / "runtime/runtime-bundle-publisher.hex").read_text().strip(), "ab" * 32)
-                sums = self.command("bash", "-c", 'cd "$1" && sha256sum --check --strict SHA256SUMS',
-                                    "verify-download", str(artifact))
-                self.assertIn("runtime-bundle-publisher.hex: OK", sums.stdout)
-                for file in artifact.rglob("*"):
-                    if file.is_file():
-                        self.assertNotIn(b"PRIVATE_TEST_IDENTITY", file.read_bytes())
-                collection = self.root / "dist" / f"collection-{architecture}"
-                env = dict(self.env, TILO_APP_COLLECTION_PLAN=str(out / "plan.json"),
-                           TILO_APP_ARCH=architecture, TILO_APP_TAPP_DIR=str(artifact / "tapp"),
-                           TILO_APP_RUNTIME_DIR=str(artifact / "runtime"),
-                           TILO_APP_COLLECTION_OUT=str(collection))
-                calls_before = (self.root / "cargo.log").read_text()
-                self.command("bash", "dist/apps/assemble-collection.sh", env=env)
-                self.assertEqual((self.root / "cargo.log").read_text(), calls_before,
-                                 "collection assembly invoked Cargo")
-                manifest = json.loads((collection / "index.json").read_text())
-                self.assertEqual(manifest["runtime"]["publisher"], "ab" * 32)
-                self.assertEqual(manifest["architecture"], architecture)
-                self.command("bash", "-c", 'cd "$1" && sha256sum --check --strict SHA256SUMS',
-                             "verify-collection", str(collection))
-                archive = collection / f"tilo-apps-{architecture}.tar.gz"
-                first = hashlib.sha256(archive.read_bytes()).hexdigest()
-                self.command("bash", "dist/apps/assemble-collection.sh", env=env)
-                self.assertEqual(hashlib.sha256(archive.read_bytes()).hexdigest(), first)
-                with tarfile.open(out / f"tilo-apps-{architecture}.tar.gz") as bundle:
-                    self.assertIn("runtime/runtime-bundle-publisher.hex", bundle.getnames())
-                    self.assertNotIn("work", bundle.getnames())
+                self.command("bash", "dist/apps/package-apps.sh")
+        with self.subTest(phase='wrong arch payload is rejected before pack'):
+            self.doCleanups()
+            self.setUp()
+            self.env["FIXTURE_ARCH"] = "aarch64"
+            self.write("os/scripts/build-thin-apps.sh",
+                       (self.root / "os/scripts/build-thin-apps.sh").read_text().replace(
+                           "62 if os.environ['FIXTURE_ARCH'] == 'x86_64' else 183", "62"))
+            result = subprocess.run(["bash", "dist/apps/package-apps.sh"], cwd=self.root,
+                                    env=self.env, text=True, capture_output=True, timeout=60)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("expected a 64-bit little-endian aarch64 ELF", result.stderr)
+            self.assertFalse(list((self.root / "dist/app-release/tapp").glob("*.tapp")))
+        with self.subTest(phase='unrecorded compiler override fails before build'):
+            self.doCleanups()
+            self.setUp()
+            for key, value in (("RUSTFLAGS", "-C target-cpu=native"),
+                               ("CARGO_ENCODED_RUSTFLAGS", "-C\x1ftarget-cpu=native"),
+                               ("CARGO_BUILD_TARGET", "aarch64-unknown-linux-gnu")):
+                with self.subTest(key=key):
+                    env = dict(self.env, FIXTURE_ARCH="x86_64", **{key: value})
+                    result = subprocess.run(["bash", "dist/apps/package-apps.sh"], cwd=self.root,
+                                            env=env, text=True, capture_output=True, timeout=60)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(f"{key} overrides", result.stderr)
+                    self.assertFalse((self.root / "cargo.log").exists())
+        with self.subTest(phase='edited cpu and feature policy is rejected by actual helper'):
+            self.doCleanups()
+            self.setUp()
+            config = self.root / ".cargo/config.toml"
+            original = config.read_text()
+            for arch, cpu in (("x86_64", "x86-64-v3"), ("aarch64", "generic")):
+                for replacement in ('"-C", "target-cpu=native",',
+                                    f'"-C", "target-cpu={cpu}", "-C", "target-feature=+aes",'):
+                    with self.subTest(arch=arch, replacement=replacement):
+                        config.write_text(original.replace(f'"-C", "target-cpu={cpu}",', replacement))
+                        result = subprocess.run([
+                            "python3", "tools/apps/app_package_isa.py", "flags", "--root", str(self.root),
+                            "--arch", arch], cwd=self.root, env=self.env,
+                            text=True, capture_output=True, timeout=10)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("unaudited", result.stderr)
+                        self.assertEqual(result.stdout, "")
+
+    def test_native_outputs_keep_audited_flags_through_upload_and_assembly(self):
+        with self.subTest(phase='encoded output retains every audited target flag'):
+            self.doCleanups()
+            self.setUp()
+            config = tomllib.loads((self.root / ".cargo/config.toml").read_text())
+            for arch in ("x86_64", "aarch64"):
+                with self.subTest(arch=arch):
+                    result = self.command("python3", "tools/apps/app_package_isa.py", "flags",
+                                          "--root", str(self.root), "--arch", arch)
+                    flags = result.stdout.removesuffix("\n").split("\x1f")
+                    key = f'cfg(all(target_arch = "{arch}", target_os = "linux"))'
+                    self.assertEqual(flags, config["target"][key]["rustflags"])
+                    for required in ("force-frame-pointers=yes", "relro-level=full",
+                                     "link-arg=-Wl,-z,noexecstack", "--remap-path-prefix=/build=."):
+                        self.assertIn(required, flags)
+        with self.subTest(phase='native outputs survive actual upload selection and collection assembly'):
+            self.doCleanups()
+            self.setUp()
+            for architecture in ("x86_64", "aarch64"):
+                with self.subTest(architecture=architecture):
+                    self.env["FIXTURE_ARCH"] = architecture
+                    result = self.command("bash", "dist/apps/package-apps.sh")
+                    self.assertIn("packing app=calculator binary=", result.stdout)
+                    self.assertIn("binary_bytes=64", result.stdout)
+                    self.assertIn("packed app=calculator output=", result.stdout)
+                    self.assertIn("tapp_bytes=64 limit=8388608", result.stdout)
+                    calls = [json.loads(line) for line in (self.root / "cargo.log").read_text().splitlines()]
+                    self.assertTrue(any("--release" in call["args"] for call in calls))
+                    self.assertTrue(any("thin-app" in call["args"] for call in calls))
+                    out = self.root / "dist/app-release"
+                    artifact = self.root / "download" / architecture
+                    artifact.mkdir(parents=True)
+                    # Read the actual upload patterns, including the common directory
+                    # prefix which upload-artifact strips from the transported paths.
+                    patterns = re.findall(r"^\s+dist/app-release/(\S+)\s*$",
+                                          (ROOT / ".forgejo/workflows/release-apps.yml").read_text(), re.M)
+                    self.assertTrue(patterns, "workflow upload selection is missing")
+                    for pattern in patterns:
+                        for name in glob.glob(str(out / pattern), recursive=True):
+                            source = Path(name)
+                            if source.is_file():
+                                target = artifact / source.relative_to(out)
+                                target.parent.mkdir(parents=True, exist_ok=True)
+                                shutil.copyfile(source, target)
+                    self.assertTrue((artifact / "runtime/tilo-runtime/2026.07/bundle.toml").is_file(),
+                                    "workflow did not transport the produced runtime")
+                    self.assertEqual((artifact / "runtime/runtime-bundle-publisher.hex").read_text().strip(), "ab" * 32)
+                    sums = self.command("bash", "-c", 'cd "$1" && sha256sum --check --strict SHA256SUMS',
+                                        "verify-download", str(artifact))
+                    self.assertIn("runtime-bundle-publisher.hex: OK", sums.stdout)
+                    for file in artifact.rglob("*"):
+                        if file.is_file():
+                            self.assertNotIn(b"PRIVATE_TEST_IDENTITY", file.read_bytes())
+                    collection = self.root / "dist" / f"collection-{architecture}"
+                    env = dict(self.env, TILO_APP_COLLECTION_PLAN=str(out / "plan.json"),
+                               TILO_APP_ARCH=architecture, TILO_APP_TAPP_DIR=str(artifact / "tapp"),
+                               TILO_APP_RUNTIME_DIR=str(artifact / "runtime"),
+                               TILO_APP_COLLECTION_OUT=str(collection))
+                    calls_before = (self.root / "cargo.log").read_text()
+                    self.command("bash", "dist/apps/assemble-collection.sh", env=env)
+                    self.assertEqual((self.root / "cargo.log").read_text(), calls_before,
+                                     "collection assembly invoked Cargo")
+                    manifest = json.loads((collection / "index.json").read_text())
+                    self.assertEqual(manifest["runtime"]["publisher"], "ab" * 32)
+                    self.assertEqual(manifest["architecture"], architecture)
+                    self.command("bash", "-c", 'cd "$1" && sha256sum --check --strict SHA256SUMS',
+                                 "verify-collection", str(collection))
+                    archive = collection / f"tilo-apps-{architecture}.tar.gz"
+                    first = hashlib.sha256(archive.read_bytes()).hexdigest()
+                    self.command("bash", "dist/apps/assemble-collection.sh", env=env)
+                    self.assertEqual(hashlib.sha256(archive.read_bytes()).hexdigest(), first)
+                    with tarfile.open(out / f"tilo-apps-{architecture}.tar.gz") as bundle:
+                        self.assertIn("runtime/runtime-bundle-publisher.hex", bundle.getnames())
+                        self.assertNotIn("work", bundle.getnames())
 
 
 if __name__ == "__main__":

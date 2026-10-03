@@ -15,7 +15,8 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Instant;
+use ui::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -28,6 +29,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::portal::{
     FileFilter, LaunchChannel, LaunchOutcome, PickRequest, PortalChannel, PortalOutcome,
@@ -512,7 +514,7 @@ pub struct FeedsApp {
     /// [`FeedsAction`] through here so it brackets exactly one undo boundary,
     /// encodes under [`FEEDS_ACTION_TYPE`](crate::actions::FEEDS_ACTION_TYPE),
     /// and replays byte-identically on peers — the same path Ctrl+K takes.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     /// The document heads the mirrored [`Store`] was last reconciled against.
     /// When the document moves out-of-band (a Ctrl+K palette action mutates it
     /// directly, not through this widget's methods) and the fetch backlog is
@@ -607,10 +609,10 @@ impl FeedsApp {
             hamburger_rect: Rect::ZERO,
             scrim_rect: Rect::ZERO,
             back_rect: Rect::ZERO,
-            last_frame: Instant::now(),
+            last_frame: ui::time::now(),
             worker: None,
             synced: false,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             store_heads: Vec::new(),
             demo,
             text_scale: 1.0,
@@ -780,7 +782,7 @@ impl FeedsApp {
     }
 
     fn set_toast(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), Instant::now()));
+        self.toast = Some((msg.into(), ui::time::now()));
     }
 
     fn worker(&mut self) -> &mut FetchWorker {
@@ -1016,13 +1018,13 @@ impl FeedsApp {
     /// (a pinned actor + committed change, so it replays byte-identically on
     /// peers), exactly as the palette does. The document heads captured just
     /// before the first action of the event are stashed so the host records
-    /// **one** undo boundary bracketing it ([`Widget::take_committed_action`]).
+    /// **one** undo boundary bracketing it ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)).
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &FeedsAction) {
         self.actions.dispatch_with_context(
             doc,
             actions::FEEDS_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Feeds", "Feeds", action),
+            tilo_actions::ActionContext::for_action("so.tilo.feeds", "Feeds", action),
         );
         // The action just mutated the document; keep the reload watermark ahead
         // of it so `sync`'s out-of-band reload doesn't redundantly rebuild the
@@ -1112,69 +1114,14 @@ impl FeedsApp {
         article_limit: usize,
         tag_limit: usize,
     ) -> FeedsResourceCtx {
-        let folders = self
-            .store
-            .folders_sorted()
-            .iter()
-            .take(folder_limit)
-            .map(|f| actions::FolderRef {
-                id: f.id,
-                name: f.name.clone(),
-                collapsed: f.collapsed,
-            })
-            .collect();
-        let mut sorted_feeds = self.store.feeds.iter().take(feed_limit).collect::<Vec<_>>();
-        sorted_feeds.sort_by_key(|feed| feed.title.to_lowercase());
-        let mut remaining_articles = article_limit;
-        let feeds: Vec<actions::FeedRef> = sorted_feeds
-            .into_iter()
-            .take(feed_limit)
-            .map(|f| {
-                let articles = self
-                    .store
-                    .articles
-                    .iter()
-                    .filter(|article| article.feed_id == f.id)
-                    .take(remaining_articles)
-                    .map(|article| actions::ArticleRef {
-                        id: article.id,
-                        title: article.title.clone(),
-                        read: article.read,
-                        starred: article.starred,
-                        tags: article.tags.clone(),
-                    })
-                    .collect::<Vec<_>>();
-                remaining_articles = remaining_articles.saturating_sub(articles.len());
-                actions::FeedRef {
-                    id: f.id,
-                    title: f.title.clone(),
-                    folder: f.folder,
-                    unread: self.store.unread_ids_for(Filter::Feed(f.id)),
-                    articles,
-                }
-            })
-            .collect();
-        let next_folder_order = self
-            .store
-            .folders
-            .iter()
-            .map(|f| f.order)
-            .max()
-            .map_or(0, |m| m + 1);
-        FeedsResourceCtx {
-            folders,
-            feeds,
-            tags: self
-                .store
-                .tags_limited(tag_limit)
-                .into_iter()
-                .map(|name| actions::TagRef { name })
-                .collect(),
-            unread: self.store.unread_ids_for(Filter::All),
-            next_feed_order: self.store.next_feed_order(None),
-            next_folder_order,
-            settings: self.settings,
-        }
+        actions::resource_ctx_from_library_with_limits(
+            &self.store,
+            self.settings,
+            folder_limit,
+            feed_limit,
+            article_limit,
+            tag_limit,
+        )
     }
 
     fn toggle_folder(&mut self, id: Id, doc: &mut AutoCommit) {
@@ -1370,10 +1317,14 @@ impl FeedsApp {
             return;
         };
         match outcome {
-            PortalOutcome::Opened(path) => match std::fs::write(&path, xml) {
-                Ok(()) => self.set_toast(format!("Exported OPML → {}", path.display())),
-                Err(error) => self.set_toast(format!("Export failed: {error}")),
-            },
+            PortalOutcome::Opened(path) => {
+                match tilo_files::file_at(&path).and_then(|(dir, name)| {
+                    tilo_files::blocking::save_document(&dir, &name, xml.as_bytes())
+                }) {
+                    Ok(()) => self.set_toast(format!("Exported OPML → {}", path.display())),
+                    Err(error) => self.set_toast(format!("Export failed: {error}")),
+                }
+            }
             PortalOutcome::Cancelled => self.set_toast("Export cancelled"),
             PortalOutcome::Failed(reason) => self.set_toast(format!("Export failed: {reason}")),
         }
@@ -1411,7 +1362,12 @@ impl FeedsApp {
         };
         self.import_rx = None;
         match outcome {
-            PortalOutcome::Opened(path) => match std::fs::read_to_string(&path) {
+            PortalOutcome::Opened(path) => match tilo_files::file_at(&path)
+                .and_then(|(dir, name)| tilo_files::blocking::read(&dir, &name))
+                .and_then(|bytes| {
+                    String::from_utf8(bytes)
+                        .map_err(|_| tilo_files::FsError::Io("the file is not UTF-8 text".into()))
+                }) {
                 Ok(text) => {
                     let new_ids = self.apply_opml_import(&text, doc);
                     if new_ids.is_empty() {
@@ -1792,7 +1748,7 @@ impl FeedsApp {
             && self.refresh.done >= self.refresh.total
             && self.refresh.finished_at.is_none()
         {
-            self.refresh.finished_at = Some(Instant::now());
+            self.refresh.finished_at = Some(ui::time::now());
             if let Some(invocation) = self.resource_refresh_invocation.take() {
                 self.resource_refresh_result = Some(if self.refresh.failed_feeds > 0 {
                     tilo_actions::InvocationUpdate::Failed {
@@ -1832,18 +1788,53 @@ impl FeedsApp {
             return;
         }
         let n = self.pending_doc_writes.len().min(FLUSH_BUDGET);
-        for w in self.pending_doc_writes.drain(..n) {
-            match w {
-                DocWrite::Article(a) => FeedsDoc::upsert_article(doc, &a),
-                DocWrite::Feed(f) => FeedsDoc::upsert_feed(doc, &f),
+        let mut articles = Vec::new();
+        let mut feeds = Vec::new();
+        for write in self.pending_doc_writes.drain(..n) {
+            match write {
+                DocWrite::Article(article) => articles.push(article),
+                DocWrite::Feed(feed) => feeds.push(feed),
             }
         }
-        // Commit this batch so the pending-op buffer doesn't accumulate across
-        // frames. An `AutoCommit` that never commits makes each successive `put`
-        // re-scan the growing uncommitted transaction — O(n²) over a big
-        // refresh, which is what turned a large batch into a multi-second stall.
-        // Committing per flush keeps each write O(1)-ish.
-        doc.commit();
+        // One document action for this frame's budget. The dispatcher commits
+        // it, so a large refresh still persists in bounded steps.
+        self.perform_action(doc, &FeedsAction::UpsertFetched { articles, feeds });
+    }
+
+    /// Show the library the framework resource already holds.
+    /// An empty projection does not wipe feeds that have not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::FeedsState) {
+        if state.store.is_empty() {
+            return;
+        }
+        self.store.clone_from(&state.store);
+        self.settings = state.settings;
+        self.ensure_selection();
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Feeds>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    pub(crate) fn published_reader(&self) -> Vec<tilo_actions::Resource> {
+        crate::resource::provide_resources(&crate::resource::FeedsState {
+            store: self.store.clone(),
+            settings: self.settings,
+        })
+    }
+
+    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
     }
 
     // --- geometry --------------------------------------------------------
@@ -2324,7 +2315,7 @@ impl FeedsApp {
 
         // Advance the sidebar flap transition with real elapsed time, then
         // recompute the eased geometry so the slide is reflected this frame.
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = (now - self.last_frame).as_secs_f64().min(0.1);
         self.last_frame = now;
         let nav_layout = self.nav_layout();
@@ -2373,7 +2364,7 @@ impl FeedsApp {
         };
         let list_title = self.filter_title();
         draw_list(
-            PaintContext {
+            PaintCtx {
                 scene,
                 transform: t,
                 text: tr,
@@ -2413,7 +2404,7 @@ impl FeedsApp {
         let article = self.selected.and_then(|id| self.store.article(id));
         let feed = article.and_then(|article| self.store.feed(article.feed_id));
         let (links, tags, open_rect, content_h) = draw_reader(
-            PaintContext {
+            PaintCtx {
                 scene,
                 transform: t,
                 text: tr,
@@ -2483,9 +2474,13 @@ impl FeedsApp {
             // Pure-black dimming scrim faded by the eased reveal (matches the
             // shared NavSplit flap), so the content clearly recedes behind the
             // floating sidebar.
-            let scrim = Color::from_rgba8(0, 0, 0, 255)
-                .with_alpha_factor((self.sidebar.reveal() * 0.5) as f32);
-            scene.fill(Fill::NonZero, t, scrim, None, &self.scrim_rect);
+            ui::chrome::fill_scrim(
+                scene,
+                t,
+                self.scrim_rect,
+                (self.sidebar.reveal() * 0.5) as f32,
+                theme,
+            );
         }
         if self.sidebar_rect.area() > 0.0 {
             scene.fill(Fill::NonZero, t, sidebar_bg, None, &self.sidebar_rect);
@@ -2705,7 +2700,7 @@ impl FeedsApp {
             y + bsz,
         );
         self.step_button(
-            PaintContext {
+            PaintCtx {
                 scene,
                 transform: t,
                 text: tr,
@@ -2724,7 +2719,7 @@ impl FeedsApp {
             None,
         );
         self.step_button(
-            PaintContext {
+            PaintCtx {
                 scene,
                 transform: t,
                 text: tr,
@@ -2757,10 +2752,12 @@ impl FeedsApp {
             .position(|f| *f == self.settings.font)
             .unwrap_or(0);
         self.seg_row(
-            scene,
-            t,
-            tr,
-            theme,
+            PaintCtx {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             Rect::new(seg_x0, y, seg_x0 + seg_w, y + bsz),
             &font_labels,
             font_selected,
@@ -2787,10 +2784,12 @@ impl FeedsApp {
             .position(|th| *th == self.settings.theme)
             .unwrap_or(0);
         self.seg_row(
-            scene,
-            t,
-            tr,
-            theme,
+            PaintCtx {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             Rect::new(seg_x0, y, seg_x0 + seg_w, y + bsz),
             &theme_labels,
             theme_selected,
@@ -2802,21 +2801,20 @@ impl FeedsApp {
     /// `ToggleGroup` face (HIG §8: never hand-roll a control) over rects this
     /// popover owns: equal-width segments an `s2` apart across `band`, each
     /// registered as a settings hit.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The settings segment painter combines render context and band geometry with labels, selection, and hit actions."
-    )]
     fn seg_row(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintCtx<'_>,
         band: Rect,
         labels: &[&str],
         selected: usize,
         actions: &[SettingsAction],
     ) {
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = paint;
         let n = labels.len().max(1) as f64;
         let gap = f64::from(theme.tokens.spacing.s2);
         let cellw = ((band.width() - (n - 1.0) * gap) / n).max(0.0);
@@ -2845,12 +2843,12 @@ impl FeedsApp {
     /// A small square stepper button ("−"/"+") for the settings popover.
     fn step_button(
         &mut self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         rect: &Rect,
         glyph: &str,
         action: SettingsAction,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: t,
             text: tr,
@@ -3054,7 +3052,7 @@ impl FeedsApp {
     }
 
     fn open_url(&mut self, url: &str) {
-        let Some(url) = reqwest::Url::parse(url.trim())
+        let Some(url) = tilo_net::Url::parse(url.trim())
             .ok()
             .filter(|url| match url.scheme() {
                 "http" | "https" | "gemini" => url.host_str().is_some(),
@@ -3090,17 +3088,6 @@ impl FeedsApp {
 // ---------------------------------------------------------------------
 // Drawing free functions (explicit borrows keep the borrow checker happy)
 // ---------------------------------------------------------------------
-
-/// Shared renderer state passed through the custom-painted Feeds views.
-///
-/// Keeping these four values together makes view helpers describe the data
-/// they render instead of repeating backend plumbing in every signature.
-struct PaintContext<'a> {
-    scene: &'a mut Scene,
-    transform: Affine,
-    text: &'a mut TextRenderer,
-    theme: &'a Theme,
-}
 
 #[derive(Clone, Copy)]
 struct ListView<'a> {
@@ -3167,8 +3154,8 @@ fn hline(scene: &mut Scene, t: Affine, x0: f64, x1: f64, y: f64, color: Color) {
 }
 
 /// Draw a pill badge with a number; returns its width.
-fn badge(paint: PaintContext<'_>, right_x: f64, cy: f64, n: usize, bg: Color, fg: Color) -> f64 {
-    let PaintContext {
+fn badge(paint: PaintCtx<'_>, right_x: f64, cy: f64, n: usize, bg: Color, fg: Color) -> f64 {
+    let PaintCtx {
         scene,
         transform: t,
         text: tr,
@@ -3389,12 +3376,12 @@ fn draw_sidebar(
         // Badge (right-aligned), then label clipped to the remaining width.
         let badge_w = if row.badge > 0 {
             let (bg, fg) = if row.selected {
-                (c.accent[5], Color::WHITE)
+                (c.accent[5], theme.on_surface(c.accent[5]).ink)
             } else {
                 (alpha(c.neutral[3], 180), c.text_dim)
             };
             badge(
-                PaintContext {
+                PaintCtx {
                     scene,
                     transform: t,
                     text: tr,
@@ -3517,8 +3504,8 @@ fn draw_centered_onboarding(
     reason = "a single linear draw pass over this panel's fixed regions; splitting it would \
               only relocate the line count, not the amount a reader must hold in mind"
 )]
-fn draw_list(paint: PaintContext<'_>, view: &ListView<'_>) {
-    let PaintContext {
+fn draw_list(paint: PaintCtx<'_>, view: &ListView<'_>) {
+    let PaintCtx {
         scene,
         transform: t,
         text: tr,
@@ -3912,8 +3899,8 @@ fn draw_refresh_strip(
     reason = "a single linear draw pass over this panel's fixed regions; splitting it would \
               only relocate the line count, not the amount a reader must hold in mind"
 )]
-fn draw_reader(paint: PaintContext<'_>, view: &ReaderView<'_>) -> ReaderPaint {
-    let PaintContext {
+fn draw_reader(paint: PaintCtx<'_>, view: &ReaderView<'_>) -> ReaderPaint {
+    let PaintCtx {
         scene,
         transform: t,
         text: tr,
@@ -4004,17 +3991,14 @@ fn draw_reader(paint: PaintContext<'_>, view: &ReaderView<'_>) -> ReaderPaint {
 
     // Title — sized relative to the reading font scale, in the chosen family.
     let title_size = settings.heading_size(1) + 6.0;
-    let title_layout = RichTextLayout::shape(
+    let title_layout = RichTextLayout::shape_styled(
         &mut tr.font_system,
         &[RichSpan::new(a.title.clone()).bold(true)],
-        true,
-        title_size,
-        content_w,
+        &RichTextLayout::block_style(true, title_size, family, 1.0),
+        Some(content_w),
         TextAlign::Left,
-        family,
         vec![],
         vec![],
-        1.0,
     );
     let th = title_layout.height();
     tr.draw_rich(
@@ -4169,17 +4153,14 @@ fn draw_block(
     // Lay out `text` in `fam` at `size` within width `width`, returning height.
     let lay =
         |tr: &mut TextRenderer, text: &str, size: f32, width: f32, fam: FontFamily, bold: bool| {
-            RichTextLayout::shape(
+            RichTextLayout::shape_styled(
                 &mut tr.font_system,
                 &[RichSpan::new(text.to_string()).bold(bold)],
-                bold,
-                size,
-                width,
+                &RichTextLayout::block_style(bold, size, fam, 1.0),
+                Some(width),
                 TextAlign::Left,
-                fam,
                 vec![],
                 vec![],
-                1.0,
             )
         };
 
@@ -4223,17 +4204,14 @@ fn draw_block(
         BlockKind::Quote => {
             let tw = w - 24.0;
             // Quotes are italic — render via the styled (italic) span.
-            let layout = RichTextLayout::shape(
+            let layout = RichTextLayout::shape_styled(
                 &mut tr.font_system,
                 &[RichSpan::new(block.text.clone()).italic(true)],
-                false,
-                body_size,
-                tw,
+                &RichTextLayout::block_style(false, body_size, family, 1.0),
+                Some(tw),
                 TextAlign::Left,
-                family,
                 vec![],
                 vec![],
-                1.0,
             );
             let h = layout.height();
             let bar = Rect::new(x, y, x + 3.0, y + f64::from(h) + 4.0);
@@ -4504,15 +4482,19 @@ fn chrono_date(published: i64, now: i64) -> String {
 // ---------------------------------------------------------------------
 
 impl Widget for FeedsApp {
-    fn handle_local_undo_request(&mut self, _request: ui::undo::UndoRequest) -> bool {
-        self.feed_menu.is_open()
-    }
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::undo::LocalUndo,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::FEEDS_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         self.background_poll_deadline.set(None);
         self.now = chrono::Utc::now().timestamp();
         if !self.synced {
@@ -4534,7 +4516,12 @@ impl Widget for FeedsApp {
             if FeedsDoc::has_settings(state) {
                 self.settings = FeedsDoc::read_settings(state);
             } else {
-                FeedsDoc::write_settings(state, &self.settings);
+                self.perform_action(
+                    state,
+                    &FeedsAction::SetReadSettings {
+                        settings: self.settings,
+                    },
+                );
             }
             self.synced = true;
             self.store_heads = state.get_heads();
@@ -4574,110 +4561,35 @@ impl Widget for FeedsApp {
         }
     }
 
-    /// Publish the reader + its folders and subscriptions so the host's Ctrl+K
-    /// action palette scopes to them. Delegates to the `ResourceProvider`
-    /// (`tilo_actions::ResourceProvider`) impl in [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
-    }
-
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match (kind, operation) {
-            (tilo_actions::OperationKind::View, crate::actions::FeedsOperation::ImportOpml) => {
-                self.request_import();
-            }
-            (tilo_actions::OperationKind::View, crate::actions::FeedsOperation::ExportOpml) => {
-                self.export_opml();
-            }
-            (tilo_actions::OperationKind::Effect, crate::actions::FeedsOperation::RefreshAll) => {
-                if self.store.feeds.is_empty() {
-                    return Err("there are no subscriptions to refresh".into());
-                }
-                self.refresh_all();
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::FeedsOperation::RevealFeed { id },
-            ) => {
-                let id = id.parse::<Id>().map_err(|_| "invalid feed id")?;
-                if self.store.feed(id).is_none() {
-                    return Err("feed no longer exists".into());
-                }
-                self.set_filter(Filter::Feed(id));
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::FeedsOperation::RevealArticle { id },
-            ) => {
-                let id = id.parse::<Id>().map_err(|_| "invalid article id")?;
-                let Some(feed_id) = self.store.article(id).map(|article| article.feed_id) else {
-                    return Err("article no longer exists".into());
-                };
-                self.set_filter(Filter::Feed(feed_id));
-                self.selected = Some(id);
-                self.reader_scroll = 0.0;
-                if self.store.mark_read(id, true) {
-                    self.pending_resource_actions
-                        .push(actions::mark_read_action(id, true));
-                }
-                if self.single_pane() {
-                    self.detail_pushed = true;
-                }
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::FeedsOperation::RevealTag { tag },
-            ) => {
-                let tag = actions::normalize_tags([tag.as_str()])
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| "invalid empty tag".to_string())?;
-                if !self.store.has_tag(&tag) {
-                    return Err("tag no longer exists".into());
-                }
-                self.set_filter(Filter::Tag(crate::model::tag_key(&tag)));
-            }
-            _ => return Ok(false),
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect
-            || type_id != crate::actions::FEEDS_OPERATION_TYPE
-        {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if self.resource_refresh_invocation.is_some() || self.refresh.in_progress() {
-            return Err("a feed refresh is already running".into());
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
-        }
-        self.resource_refresh_invocation = Some(invocation);
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -4697,24 +4609,6 @@ impl Widget for FeedsApp {
         } else {
             None
         }
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
-    /// Fold the reader's articles and subscriptions into the unified Ctrl+K
-    /// palette: a snapshot
-    /// [`FeedsSearchProvider`](crate::search_provider::FeedsSearchProvider)
-    /// makes both findable there without touching the network, alongside the
-    /// actions the app exports.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::FeedsSearchProvider::new(
-            &self.store,
-        ))]
     }
 
     #[allow(
@@ -4804,28 +4698,25 @@ impl Widget for FeedsApp {
         self.paint(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Persist anything the live drain queued since the last doc-holding
         // pass (keeps the CRDT current without waiting for `sync`).
-        self.flush_doc_writes(state);
+        self.flush_doc_writes(ctx.state);
         // Track the pointer everywhere so it's current when a modal closes.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_mouse =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         // An open dialog captures all input while it's up.
         if self.modal.is_some() {
-            self.handle_modal_event(event, scale_factor, *modifiers, state, path, handled);
+            self.handle_modal_event(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.handled,
+            );
             return;
         }
         // The popover owns input while open. Right-click still reaches the
@@ -4842,25 +4733,15 @@ impl Widget for FeedsApp {
         {
             if matches!(event, WindowEvent::Focused(false)) {
                 self.close_feed_menu();
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
-            self.feed_menu.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.feed_menu.handle_event(event, ctx);
             if let Some(selection) = self.feed_menu.take_selection()
                 && let Some(action) = self.feed_menu_actions.get(selection).copied()
                 && let Some(feed_id) = self.feed_menu_target
             {
-                self.apply_feed_menu_action(action, feed_id, state);
+                self.apply_feed_menu_action(action, feed_id, ctx.state);
             }
             if !self.feed_menu.is_open() {
                 self.feed_menu_target = None;
@@ -4872,13 +4753,14 @@ impl Widget for FeedsApp {
                     | WindowEvent::MouseWheel { .. }
                     | WindowEvent::CursorMoved { .. }
             ) {
-                *handled = true;
+                *ctx.handled = true;
             }
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_mouse =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -4886,8 +4768,8 @@ impl Widget for FeedsApp {
                 ..
             } => {
                 let p = self.last_mouse;
-                if self.click(p, state) {
-                    *handled = true;
+                if self.click(p, ctx.state) {
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -4900,24 +4782,24 @@ impl Widget for FeedsApp {
                 let p = self.last_mouse;
                 if let Some(id) = self.feed_at(p) {
                     self.open_feed_menu(id, p);
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if self.feed_menu.is_open() {
                     self.close_feed_menu();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
-                    MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
+                    MouseScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor,
                 };
                 self.scroll_pane_under_pointer(dy);
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                self.handle_key(key_event, *modifiers, state, handled);
+                self.handle_key(key_event, *ctx.modifiers, ctx.state, ctx.handled);
             }
             _ => {}
         }
@@ -5291,9 +5173,10 @@ impl Widget for FeedsApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if matches!(action, A11yAction::Focus | A11yAction::ScrollIntoView) {
             return true;
         }
@@ -5465,9 +5348,9 @@ impl Widget for FeedsApp {
             return None;
         }
         let deadline = self.background_poll_deadline.get().unwrap_or_else(|| {
-            Instant::now()
+            ui::time::now()
                 .checked_add(std::time::Duration::from_millis(16))
-                .unwrap_or_else(Instant::now)
+                .unwrap_or_else(ui::time::now)
         });
         self.background_poll_deadline.set(Some(deadline));
         Some(deadline)
@@ -5491,6 +5374,150 @@ impl Widget for FeedsApp {
                 .toast
                 .as_ref()
                 .is_some_and(|(_, since)| since.elapsed().as_secs_f32() < 4.0)
+    }
+}
+
+impl ui::search::capability::SearchSource for FeedsApp {
+    /// Fold the reader's articles and subscriptions into the unified Ctrl+K
+    /// palette: a snapshot
+    /// [`FeedsSearchProvider`](crate::search_provider::FeedsSearchProvider)
+    /// makes both findable there without touching the network, alongside the
+    /// actions the app exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::FeedsSearchProvider::new(
+            &self.store,
+        ))]
+    }
+}
+
+impl ui::resources::PublishesResources for FeedsApp {
+    /// Publish the reader + its folders and subscriptions so the host's Ctrl+K
+    /// action palette scopes to them. When the framework hosts the surface,
+    /// [`tilo_resource::publish`] already owns the reader door; hosted returns
+    /// nothing rather than a second hand-built tree.
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.is_hosted() {
+            return Vec::new();
+        }
+        self.publish_resources(doc)
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.is_hosted() && id == crate::resource::READER_RESOURCE_ID {
+            return None;
+        }
+        self.publish_resource(doc, id)
+    }
+}
+
+impl ui::undo::LocalUndo for FeedsApp {
+    fn handle_local_undo_request(&mut self, _request: ui::undo::UndoRequest) -> bool {
+        self.feed_menu.is_open()
+    }
+}
+
+impl ui::undo::CommittedActions for FeedsApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records one undo boundary for it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl FeedsApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match (kind, operation) {
+            (tilo_actions::OperationKind::View, crate::actions::FeedsOperation::ImportOpml) => {
+                self.request_import();
+            }
+            (tilo_actions::OperationKind::View, crate::actions::FeedsOperation::ExportOpml) => {
+                self.export_opml();
+            }
+            (tilo_actions::OperationKind::Effect, crate::actions::FeedsOperation::RefreshAll) => {
+                if self.store.feeds.is_empty() {
+                    return Err("there are no subscriptions to refresh".into());
+                }
+                self.refresh_all();
+            }
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::FeedsOperation::RevealFeed { id },
+            ) => {
+                let id = id.parse::<Id>().map_err(|_| "invalid feed id")?;
+                if self.store.feed(id).is_none() {
+                    return Err("feed no longer exists".into());
+                }
+                self.set_filter(Filter::Feed(id));
+            }
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::FeedsOperation::RevealArticle { id },
+            ) => {
+                let id = id.parse::<Id>().map_err(|_| "invalid article id")?;
+                let Some(feed_id) = self.store.article(id).map(|article| article.feed_id) else {
+                    return Err("article no longer exists".into());
+                };
+                self.set_filter(Filter::Feed(feed_id));
+                self.selected = Some(id);
+                self.reader_scroll = 0.0;
+                if self.store.mark_read(id, true) {
+                    self.pending_resource_actions
+                        .push(actions::mark_read_action(id, true));
+                }
+                if self.single_pane() {
+                    self.detail_pushed = true;
+                }
+            }
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::FeedsOperation::RevealTag { tag },
+            ) => {
+                let tag = actions::normalize_tags([tag.as_str()])
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| "invalid empty tag".to_string())?;
+                if !self.store.has_tag(&tag) {
+                    return Err("tag no longer exists".into());
+                }
+                self.set_filter(Filter::Tag(crate::model::tag_key(&tag)));
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != tilo_actions::OperationKind::Effect
+            || type_id != crate::actions::FEEDS_OPERATION_TYPE
+        {
+            return Ok(None);
+        }
+        if self.resource_refresh_invocation.is_some() || self.refresh.in_progress() {
+            return Err("a feed refresh is already running".into());
+        }
+        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        self.resource_refresh_invocation = Some(invocation);
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -5621,6 +5648,7 @@ impl FeedsApp {
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
+    use ui::headless::Framed;
     use uuid::Uuid;
 
     /// Tests that exercise refresh/render over real subscriptions use the
@@ -5652,915 +5680,1290 @@ mod tests {
         assert_eq!(picks[0].title(), "Import OPML");
     }
 
+    /// A live app starts empty with onboarding; only the demo build seeds and selects sample content.
     #[test]
-    fn live_new_starts_empty_and_offers_onboarding() {
-        // The live constructor must not fabricate any subscriptions or articles.
-        let app = FeedsApp::new();
-        assert!(
-            app.store.feeds.is_empty(),
-            "no fabricated feeds on the live path"
-        );
-        assert!(
-            app.store.folders.is_empty(),
-            "no fabricated folders on the live path"
-        );
-        assert!(
-            app.store.articles.is_empty(),
-            "no fabricated articles on the live path"
-        );
-        assert!(app.selected.is_none(), "nothing selected on an empty store");
-        let (title, hint) = app
-            .empty_onboarding_prompt()
-            .expect("an empty store surfaces the first-run onboarding prompt");
-        assert_eq!(title, EMPTY_ONBOARDING_TITLE);
-        assert!(
-            !hint.trim().is_empty(),
-            "the hint guides the user to add a feed"
-        );
+    fn startup_is_empty_live_and_populated_only_in_demo() {
+        // --- phase: live_new_starts_empty_and_offers_onboarding ---
+        {
+            // The live constructor must not fabricate any subscriptions or articles.
+            let app = FeedsApp::new();
+            assert!(
+                app.store.feeds.is_empty(),
+                "no fabricated feeds on the live path"
+            );
+            assert!(
+                app.store.folders.is_empty(),
+                "no fabricated folders on the live path"
+            );
+            assert!(
+                app.store.articles.is_empty(),
+                "no fabricated articles on the live path"
+            );
+            assert!(app.selected.is_none(), "nothing selected on an empty store");
+            let (title, hint) = app
+                .empty_onboarding_prompt()
+                .expect("an empty store surfaces the first-run onboarding prompt");
+            assert_eq!(title, EMPTY_ONBOARDING_TITLE);
+            assert!(
+                !hint.trim().is_empty(),
+                "the hint guides the user to add a feed"
+            );
+        }
+
+        // --- phase: live_sync_over_fresh_doc_stays_empty ---
+        {
+            // Syncing the live app against a fresh (empty) document must NOT seed
+            // sample content — only the demo build seeds.
+            let mut app = FeedsApp::new();
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &automerge::ROOT);
+            assert!(
+                app.store.feeds.is_empty(),
+                "live sync must not fabricate feeds"
+            );
+            assert!(
+                app.empty_onboarding_prompt().is_some(),
+                "the empty store still shows onboarding after a live sync",
+            );
+            assert!(FeedsDoc::has_settings(&doc));
+            let recorded = app
+                .actions
+                .last_dispatched()
+                .expect("reading settings are an action");
+            assert!(String::from_utf8_lossy(&recorded.payload).contains("SetReadSettings"));
+        }
+
+        // --- phase: demo_build_is_populated_and_hides_onboarding ---
+        {
+            // The demo builder is the sole source of sample subscriptions.
+            let app = FeedsApp::new_demo();
+            assert!(!app.store.feeds.is_empty(), "demo build seeds sample feeds");
+            assert!(
+                app.empty_onboarding_prompt().is_none(),
+                "a populated store hides the onboarding prompt",
+            );
+        }
+
+        // --- phase: new_selects_a_featured_article ---
+        {
+            let a = app();
+            assert!(a.selected.is_some());
+            let sel = a.selected.unwrap();
+            let art = a.store.article(sel).unwrap();
+            assert!(!art.blocks.is_empty());
+        }
+
+        // --- phase: seed_populates_doc_on_first_sync ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            assert!(FeedsDoc::is_empty(&doc));
+            a.sync(&mut doc, &automerge::ROOT);
+            assert!(!FeedsDoc::is_empty(&doc));
+            let loaded = FeedsDoc::load(&doc);
+            assert_eq!(loaded.feeds.len(), a.store.feeds.len());
+        }
     }
 
-    #[test]
-    fn live_sync_over_fresh_doc_stays_empty() {
-        // Syncing the live app against a fresh (empty) document must NOT seed
-        // sample content — only the demo build seeds.
-        let mut app = FeedsApp::new();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        assert!(
-            app.store.feeds.is_empty(),
-            "live sync must not fabricate feeds"
-        );
-        assert!(
-            app.empty_onboarding_prompt().is_some(),
-            "the empty store still shows onboarding after a live sync",
-        );
+    /// Mount `app` over an empty document in the production frame host at
+    /// 1280x800 and run its first frame, with per-pass timing on.
+    fn framed(app: FeedsApp) -> Framed<FeedsApp> {
+        let mut app = Framed::new(ui::State::new(), app, (1280, 800), ui::theme::Theme::dark());
+        Framed::harness_mut(&mut app).begin_profiling();
+        app
     }
 
-    #[test]
-    fn demo_build_is_populated_and_hides_onboarding() {
-        // The demo builder is the sole source of sample subscriptions.
-        let app = FeedsApp::new_demo();
-        assert!(!app.store.feeds.is_empty(), "demo build seeds sample feeds");
-        assert!(
-            app.empty_onboarding_prompt().is_none(),
-            "a populated store hides the onboarding prompt",
-        );
-    }
-
-    /// Run one full headless frame (sync → `build_layout` → compute → apply →
-    /// draw), mirroring `ui::App`'s per-frame cycle, and return how long the
+    /// Run one full headless frame (update → sync → layout → draw), the
+    /// harness's copy of `ui::App`'s per-frame cycle, and return how long the
     /// **draw** pass took. No GPU — `TextRenderer`/`Scene` are CPU-side, so this
     /// exercises exactly the main-thread work a real frame does.
-    fn headless_frame(
-        app: &mut FeedsApp,
-        doc: &mut AutoCommit,
-        tr: &mut TextRenderer,
-    ) -> std::time::Duration {
-        use taffy::prelude::*;
-        use vello::kurbo::Point;
-        let theme = ui::theme::Theme::dark();
-        let presence = ui::presence::PresenceCtx::empty();
-        let permission = ui::permissions::PermissionContext::permissive();
-
-        app.sync(doc, &automerge::ROOT);
-
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
-            std::collections::HashMap::new();
-        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(1280.0),
-                        height: Dimension::length(800.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-        {
-            let measure_map = node_map.clone();
-            let trm = &mut *tr;
-            taffy
-                .compute_layout_with_measure(
-                    root,
-                    taffy::Size {
-                        width: AvailableSpace::Definite(1280.0),
-                        height: AvailableSpace::Definite(800.0),
-                    },
-                    |known, available, node_id, _, _| {
-                        if let Some(&ptr) = measure_map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, available, trm) }
-                        } else {
-                            taffy::Size::ZERO
-                        }
-                    },
-                )
-                .unwrap();
-        }
-        app.apply_layout(&taffy, child, Point::ORIGIN);
-
-        let mut scene = vello::Scene::new();
-        let t0 = std::time::Instant::now();
-        app.draw_with_presence(
-            &mut scene,
-            vello::kurbo::Affine::IDENTITY,
-            tr,
-            &theme,
-            &presence,
-            &permission,
-        );
-        t0.elapsed()
+    fn headless_frame(app: &mut Framed<FeedsApp>) -> std::time::Duration {
+        let harness = Framed::harness_mut(app);
+        harness.take_profile_samples();
+        harness.relayout();
+        let frame = harness
+            .take_profile_samples()
+            .pop()
+            .expect("the frame was profiled");
+        std::time::Duration::from_micros(frame.draw_us)
     }
 
-    /// A real refresh worker must not block the UI thread.
+    /// Feed refresh runs on a worker, drains without blocking the frame, reports completion and renders fetched articles through the store.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn real_worker_refresh_keeps_main_thread_responsive() {
-        use std::time::{Duration, Instant};
+    fn refresh_runs_off_thread_and_renders_through_the_store() {
+        // --- phase: real_worker_refresh_keeps_main_thread_responsive ---
+        // A real refresh worker must not block the UI thread.
+        {
+            use ui::time::Duration;
 
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        let mut tr = TextRenderer::new();
-        // Compare active-refresh work with warmed idle frames to avoid tying
-        // the assertion to a machine-specific rendering budget.
-        let synth_event = || WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(200.0, 200.0),
-        };
-        let dispatch = |a: &mut FeedsApp, doc: &mut AutoCommit| {
-            let mut handled = false;
-            let mut focus: Option<NodeId> = None;
-            let node = a.node.unwrap();
-            let t = Instant::now();
-            a.handle_event(
-                &synth_event(),
-                1.0,
-                &winit::event::Modifiers::default(),
-                doc,
-                &automerge::ROOT,
-                &mut handled,
-                &mut focus,
-                node,
-                &TaffyTree::new(),
+            let mut a = framed(app());
+            // Compare active-refresh work with warmed idle frames to avoid tying
+            // the assertion to a machine-specific rendering budget.
+            let synth_event = || WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(200.0, 200.0),
+            };
+            let dispatch = |a: &mut Framed<FeedsApp>| {
+                let event = synth_event();
+                let harness = Framed::harness_mut(a);
+                let t = Instant::now();
+                harness.dispatch_to_root(&event);
+                t.elapsed()
+            };
+            for _ in 0..3 {
+                let _ = headless_frame(&mut a);
+            }
+            let mut base_draw = Duration::from_secs(9999);
+            let mut base_event = Duration::from_secs(9999);
+            for _ in 0..5 {
+                base_draw = base_draw.min(headless_frame(&mut a));
+                base_event = base_event.min(dispatch(&mut a));
+            }
+
+            // Point every feed at an unreachable host so the worker's fetches hang
+            // on connect/timeout — the worst case for "does the UI block?".
+            for f in &mut a.store.feeds {
+                f.url = "https://10.255.255.1/feed.xml".to_string();
+                f.kind = FeedKind::Rss;
+            }
+
+            // `refresh_all` only queues: it returns while every fetch is still
+            // hanging on the unreachable host, so none has reported back.
+            a.refresh_all();
+            assert!(a.worker.is_some(), "worker really spawned");
+            assert!(a.refresh.in_progress());
+            assert_eq!(a.refresh.done, 0, "refresh_all waited for a fetch");
+
+            // Pump frames while requests remain outstanding.
+            let deadline = ui::time::now() + Duration::from_millis(500);
+            let mut frames = 0u32;
+            let mut best_draw = Duration::from_secs(9999);
+            let mut best_event = Duration::from_secs(9999);
+            while Instant::now() < deadline {
+                best_draw = best_draw.min(headless_frame(&mut a));
+                best_event = best_event.min(dispatch(&mut a));
+                frames += 1;
+            }
+
+            assert!(
+                frames > 5,
+                "the loop kept pumping frames while refreshing (got {frames})"
             );
-            t.elapsed()
-        };
-        for _ in 0..3 {
-            let _ = headless_frame(&mut a, &mut doc, &mut tr);
-        }
-        let mut base_draw = Duration::from_secs(9999);
-        let mut base_event = Duration::from_secs(9999);
-        for _ in 0..5 {
-            base_draw = base_draw.min(headless_frame(&mut a, &mut doc, &mut tr));
-            base_event = base_event.min(dispatch(&mut a, &mut doc));
-        }
-
-        // Point every feed at an unreachable host so the worker's fetches hang
-        // on connect/timeout — the worst case for "does the UI block?".
-        for f in &mut a.store.feeds {
-            f.url = "https://10.255.255.1/feed.xml".to_string();
-            f.kind = FeedKind::Rss;
-        }
-
-        // Worker and runtime startup must stay off the UI thread.
-        let t_refresh = Instant::now();
-        a.refresh_all();
-        let refresh_cost = t_refresh.elapsed();
-        assert!(
-            refresh_cost < Duration::from_millis(16),
-            "refresh_all (incl. cold worker/runtime spawn) must not block the UI thread; took {refresh_cost:?}"
-        );
-        assert!(a.worker.is_some(), "worker really spawned");
-        assert!(a.refresh.in_progress());
-
-        // Pump frames while requests remain outstanding.
-        let deadline = Instant::now() + Duration::from_millis(500);
-        let mut frames = 0u32;
-        let mut best_draw = Duration::from_secs(9999);
-        let mut best_event = Duration::from_secs(9999);
-        while Instant::now() < deadline {
-            best_draw = best_draw.min(headless_frame(&mut a, &mut doc, &mut tr));
-            best_event = best_event.min(dispatch(&mut a, &mut doc));
-            frames += 1;
+            // Allow scheduler jitter while rejecting main-thread I/O or blocking
+            // receives.
+            let draw_bound = base_draw * 4 + Duration::from_millis(2);
+            let event_bound = base_event * 4 + Duration::from_millis(2);
+            assert!(
+                best_draw <= draw_bound,
+                "draw blocked during refresh: {best_draw:?} vs idle baseline {base_draw:?} (bound {draw_bound:?})"
+            );
+            assert!(
+                best_event <= event_bound,
+                "handle_event blocked during refresh: {best_event:?} vs idle baseline {base_event:?} (bound {event_bound:?})"
+            );
+            // And an event dispatch is genuinely cheap in absolute terms — a cursor
+            // move can never touch the network, so this is a hard ceiling.
+            assert!(
+                best_event < Duration::from_millis(16),
+                "a cursor move must be instant even during refresh; took {best_event:?}"
+            );
+            // While fetches are still outstanding, the widget keeps asking for
+            // frames so the drain runs to completion without user input.
+            assert!(
+                a.needs_animation_frame(),
+                "needs_animation_frame stays true while the refresh is in flight"
+            );
         }
 
-        assert!(
-            frames > 5,
-            "the loop kept pumping frames while refreshing (got {frames})"
-        );
-        // Allow scheduler jitter while rejecting main-thread I/O or blocking
-        // receives.
-        let draw_bound = base_draw * 4 + Duration::from_millis(2);
-        let event_bound = base_event * 4 + Duration::from_millis(2);
-        assert!(
-            best_draw <= draw_bound,
-            "draw blocked during refresh: {best_draw:?} vs idle baseline {base_draw:?} (bound {draw_bound:?})"
-        );
-        assert!(
-            best_event <= event_bound,
-            "handle_event blocked during refresh: {best_event:?} vs idle baseline {base_event:?} (bound {event_bound:?})"
-        );
-        // And an event dispatch is genuinely cheap in absolute terms — a cursor
-        // move can never touch the network, so this is a hard ceiling.
-        assert!(
-            best_event < Duration::from_millis(16),
-            "a cursor move must be instant even during refresh; took {best_event:?}"
-        );
-        // While fetches are still outstanding, the widget keeps asking for
-        // frames so the drain runs to completion without user input.
-        assert!(
-            a.needs_animation_frame(),
-            "needs_animation_frame stays true while the refresh is in flight"
-        );
+        // --- phase: refresh_is_async_and_drains_without_blocking ---
+        // Proves the refresh path is fully async: `refresh_all` only enqueues (no
+        // network, returns instantly); results arrive via the worker's channel;
+        // the draw-time drain (`drain_fetches_live`) applies them to the store +
+        // progress WITHOUT a document handle and WITHOUT calling the blocking
+        // fetch; and the queued CRDT writes are flushed by a doc-holding pass. The
+        // UI passes that run every frame (`draw`/`handle_event` → drain) never
+        // touch the network.
+        {
+            fn refresh_is_async_and_drains_without_blocking() {
+                let mut a = app();
+                let mut doc = AutoCommit::new();
+                a.sync(&mut doc, &automerge::ROOT);
+
+                // Swap in a thread-less worker so we control results deterministically
+                // and never hit the network.
+                let tx = a.install_test_worker();
+
+                // Kick off a refresh. This must return immediately — it only enqueues.
+                let start = ui::time::now();
+                a.refresh_all();
+                assert!(
+                    start.elapsed().as_millis() < 50,
+                    "refresh_all must not block on the network"
+                );
+                assert!(a.refresh.in_progress(), "a refresh is now in progress");
+                assert!(a.refresh.total > 0);
+                // Nothing has been drained yet — no input, no draw has run.
+                assert_eq!(a.refresh.done, 0);
+
+                // A worker "completes" one feed: post a result onto the channel exactly
+                // as the real background thread would.
+                let feed_id = a.store.feeds[0].id;
+                let new_article = Article {
+                    id: Uuid::new_v4(),
+                    feed_id,
+                    title: "Fresh from the worker".into(),
+                    author: String::new(),
+                    url: "https://example.com/brand-new".into(),
+                    published: a.now,
+                    summary: String::new(),
+                    blocks: vec![],
+                    read: false,
+                    starred: false,
+                    tags: Vec::new(),
+                };
+                let before = a.store.articles.len();
+                tx.send(FetchResult::Articles {
+                    feed_id,
+                    title: None,
+                    articles: vec![new_article.clone()],
+                })
+                .unwrap();
+
+                // The *draw-time* drain (no document handle) applies the result live.
+                let changed = a.drain_fetches_live();
+                assert!(changed, "live drain reports a change");
+                assert_eq!(
+                    a.store.articles.len(),
+                    before + 1,
+                    "new article folded into the store"
+                );
+                assert_eq!(a.refresh.done, 1, "progress advanced");
+                assert_eq!(a.refresh.new_items, 1, "new-item count tracked");
+                assert_eq!(a.refresh.updated_feeds, 1, "feed counted as updated");
+                // The CRDT write was queued (deferred), not yet persisted.
+                assert!(
+                    !a.pending_doc_writes.is_empty(),
+                    "doc write queued for the next doc pass"
+                );
+
+                // A doc-holding pass flushes the queue into the Automerge document.
+                a.flush_doc_writes(&mut doc);
+                assert!(a.pending_doc_writes.is_empty(), "queue drained after flush");
+                let persisted = FeedsDoc::load(&doc)
+                    .articles
+                    .iter()
+                    .any(|x| x.id == new_article.id);
+                assert!(persisted, "the new article is now persisted in the CRDT");
+
+                // A failure for another feed advances progress + failure count.
+                tx.send(FetchResult::Failed {
+                    feed_id: Some(a.store.feeds[1].id),
+                    message: "boom".into(),
+                })
+                .unwrap();
+                a.drain_fetches_live();
+                assert_eq!(a.refresh.done, 2);
+                assert_eq!(a.refresh.failed_feeds, 1);
+
+                // While the batch is incomplete, the widget keeps requesting frames so
+                // the drain keeps running without user input — this is what makes the
+                // refresh land while idle instead of appearing to "block".
+                assert!(
+                    a.needs_animation_frame(),
+                    "frames keep flowing until the batch finishes"
+                );
+            }
+            refresh_is_async_and_drains_without_blocking();
+        }
+
+        // --- phase: large_result_batch_does_not_block_the_frame ---
+        // A refresh that returns a LARGE volume of articles (the realistic case
+        // the unreachable-host test can't hit) must still keep the main thread
+        // responsive: the live drain + the per-frame CRDT flush must not blow the
+        // frame budget even when hundreds of articles land at once. Proves the
+        // flush is bounded per frame rather than persisting everything in one go.
+        {
+            let mut mounted = framed(app());
+            let (a, st) = Framed::split(&mut mounted);
+            let doc = &mut st.doc;
+
+            let tx = a.install_test_worker();
+            a.refresh_all();
+
+            // Each feed returns a big batch — ~100 articles each, several feeds.
+            let feed_ids: Vec<Id> = a.store.feeds.iter().map(|f| f.id).collect();
+            let mut total_new = 0usize;
+            for fid in &feed_ids {
+                let mut arts = Vec::new();
+                for i in 0..100 {
+                    arts.push(Article {
+                        id: Uuid::new_v4(),
+                        feed_id: *fid,
+                        title: format!("Article {i} for feed"),
+                        author: "a".into(),
+                        url: format!("https://example.com/{fid}/{i}"),
+                        published: a.now - i64::from(i) * 60,
+                        summary: "summary text".into(),
+                        blocks: vec![
+                            crate::model::ContentBlock::new(
+                                crate::model::BlockKind::Paragraph,
+                                "Body paragraph one.",
+                            ),
+                            crate::model::ContentBlock::new(
+                                crate::model::BlockKind::Paragraph,
+                                "Body paragraph two.",
+                            ),
+                        ],
+                        read: false,
+                        starred: false,
+                        tags: Vec::new(),
+                    });
+                    total_new += 1;
+                }
+                tx.send(FetchResult::Articles {
+                    feed_id: *fid,
+                    title: None,
+                    articles: arts,
+                })
+                .unwrap();
+            }
+
+            // The live drain folds everything into the store in one pass. It is
+            // pure in-memory work: it persists nothing to the CRDT, which is what
+            // keeps it cheap on the draw thread even for a big batch. (A wall-clock
+            // bound here measures the shared test host, not the drain.)
+            let heads_before = doc.get_heads();
+            a.drain_fetches_live();
+            assert_eq!(
+                doc.get_heads(),
+                heads_before,
+                "the live drain must not persist the batch in the frame"
+            );
+            // The whole batch is now visible in the store immediately...
+            assert!(a.store.articles.len() >= total_new);
+            // ...but the CRDT writes are queued, NOT persisted in one blocking pass.
+            assert!(a.pending_doc_writes.len() >= total_new - 8);
+
+            // The key invariant: each flush call persists at most FLUSH_BUDGET
+            // writes, so the per-frame main-thread cost of persistence is BOUNDED
+            // and independent of how big the refresh was. (Automerge write cost is
+            // ~constant per op in release; the fix is that we never do the whole
+            // backlog in a single frame — that was the multi-second hang.)
+            let before = a.pending_doc_writes.len();
+            a.flush_doc_writes(doc);
+            let persisted_this_frame = before - a.pending_doc_writes.len();
+            assert!(
+                persisted_this_frame <= FLUSH_BUDGET,
+                "one flush must persist at most FLUSH_BUDGET ({FLUSH_BUDGET}) writes, did {persisted_this_frame}"
+            );
+
+            // Drain the rest across frames; the backlog empties in bounded steps.
+            let mut frames = 1;
+            while !a.pending_doc_writes.is_empty() && frames < 5000 {
+                a.flush_doc_writes(doc);
+                frames += 1;
+            }
+            assert!(a.pending_doc_writes.is_empty(), "backlog fully drained");
+            // Everything eventually persisted to the CRDT.
+            let persisted = FeedsDoc::load(doc).articles.len();
+            assert!(
+                persisted >= total_new,
+                "all {total_new} articles persisted (got {persisted})"
+            );
+        }
+
+        // --- phase: refresh_progress_finishes_when_all_feeds_report ---
+        // `refresh_all` enqueues exactly one request per feed and finishes only
+        // once every feed has reported back (success or failure).
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            let tx = a.install_test_worker();
+            a.refresh_all();
+            let total = a.refresh.total;
+            assert_eq!(total, a.store.feeds.len());
+            let deadline = a
+                .next_wake_deadline()
+                .expect("network results must wake without animation");
+            assert_eq!(a.next_wake_deadline(), Some(deadline));
+
+            // Every feed reports back (alternating success / failure).
+            for (i, f) in a.store.feeds.clone().iter().enumerate() {
+                if i % 2 == 0 {
+                    tx.send(FetchResult::Articles {
+                        feed_id: f.id,
+                        title: None,
+                        articles: vec![],
+                    })
+                    .unwrap();
+                } else {
+                    tx.send(FetchResult::Failed {
+                        feed_id: Some(f.id),
+                        message: "x".into(),
+                    })
+                    .unwrap();
+                }
+            }
+            a.drain_fetches_live();
+            assert_eq!(a.refresh.done, total);
+            assert!(!a.refresh.in_progress(), "batch finished");
+            assert!(a.refresh.finished_at.is_some(), "completion timestamped");
+            // The completion summary lingers briefly, then frames can stop.
+            assert!(a.refresh.visible());
+            a.sync(&mut doc, &automerge::ROOT);
+            assert!(
+                a.next_wake_deadline().is_none(),
+                "completed work stops polling"
+            );
+        }
+
+        // --- phase: fetched_articles_render_through_the_store ---
+        {
+            // A real fetch result (as the worker posts it) folds into the store and
+            // renders — the article carries laid-out content blocks.
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            let tx = a.install_test_worker();
+
+            let feed_id = a.store.feeds[0].id;
+            let before = a.store.articles_for(Filter::Feed(feed_id)).len();
+            let art = Article {
+                id: Uuid::new_v4(),
+                feed_id,
+                title: "Fresh headline".into(),
+                author: "Reporter".into(),
+                url: "https://example.com/fresh".into(),
+                published: a.now,
+                summary: "A summary".into(),
+                blocks: vec![crate::model::ContentBlock::new(
+                    BlockKind::Paragraph,
+                    "The body text renders as a block.",
+                )],
+                read: false,
+                starred: false,
+                tags: Vec::new(),
+            };
+            tx.send(FetchResult::Articles {
+                feed_id,
+                title: None,
+                articles: vec![art.clone()],
+            })
+            .unwrap();
+
+            // The live (doc-less) drain folds it into the store immediately.
+            assert!(
+                a.drain_fetches_live(),
+                "the fetched article drains into the store"
+            );
+            a.flush_doc_writes(&mut doc);
+
+            let after = a.store.articles_for(Filter::Feed(feed_id));
+            assert_eq!(after.len(), before + 1, "the article joins the feed's list");
+            let fresh = a
+                .store
+                .article(art.id)
+                .expect("the article is in the store");
+            assert!(
+                !fresh.blocks.is_empty(),
+                "the article body renders as blocks"
+            );
+            // Persisted to the document with its content.
+            assert!(
+                FeedsDoc::load(&doc)
+                    .articles
+                    .iter()
+                    .any(|x| x.id == art.id && !x.blocks.is_empty())
+            );
+        }
     }
 
     // --- async refresh (non-blocking) ------------------------------------
 
-    /// Proves the refresh path is fully async: `refresh_all` only enqueues (no
-    /// network, returns instantly); results arrive via the worker's channel;
-    /// the draw-time drain (`drain_fetches_live`) applies them to the store +
-    /// progress WITHOUT a document handle and WITHOUT calling the blocking
-    /// fetch; and the queued CRDT writes are flushed by a doc-holding pass. The
-    /// UI passes that run every frame (`draw`/`handle_event` → drain) never
-    /// touch the network.
+    /// Reading settings, read/star state, filters and folder collapse persist through the document.
     #[test]
-    fn refresh_is_async_and_drains_without_blocking() {
-        use std::time::Instant;
+    fn reader_state_edits_persist_through_the_document() {
+        // --- phase: reading_settings_apply_and_persist ---
+        // Changing a reading setting applies it (and persists), proving the
+        // settings affect the reader. Drives the production action path.
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
 
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
+            // Default is Sans; switch to Serif via the production action.
+            assert_eq!(a.settings.font, ReadFont::Sans);
+            a.apply_settings_action(SettingsAction::SetFont(ReadFont::Serif), &mut doc);
+            assert_eq!(a.settings.font, ReadFont::Serif);
+            assert_eq!(
+                a.reader_family(),
+                FontFamily::Serif,
+                "reader renders in serif"
+            );
 
-        // Swap in a thread-less worker so we control results deterministically
-        // and never hit the network.
-        let tx = a.install_test_worker();
+            // Theme switch.
+            a.apply_settings_action(SettingsAction::SetTheme(ReadTheme::Sepia), &mut doc);
+            assert_eq!(a.settings.theme, ReadTheme::Sepia);
 
-        // Kick off a refresh. This must return immediately — it only enqueues.
-        let start = Instant::now();
-        a.refresh_all();
-        assert!(
-            start.elapsed().as_millis() < 50,
-            "refresh_all must not block on the network"
-        );
-        assert!(a.refresh.in_progress(), "a refresh is now in progress");
-        assert!(a.refresh.total > 0);
-        // Nothing has been drained yet — no input, no draw has run.
-        assert_eq!(a.refresh.done, 0);
+            // Font size step changes the body size and clamps.
+            let base = a.settings.body_size();
+            a.apply_settings_action(SettingsAction::FontInc, &mut doc);
+            assert!(a.settings.body_size() > base, "text size increased");
 
-        // A worker "completes" one feed: post a result onto the channel exactly
-        // as the real background thread would.
-        let feed_id = a.store.feeds[0].id;
-        let new_article = Article {
-            id: Uuid::new_v4(),
-            feed_id,
-            title: "Fresh from the worker".into(),
-            author: String::new(),
-            url: "https://example.com/brand-new".into(),
-            published: a.now,
-            summary: String::new(),
-            blocks: vec![],
-            read: false,
-            starred: false,
-            tags: Vec::new(),
-        };
-        let before = a.store.articles.len();
-        tx.send(FetchResult::Articles {
-            feed_id,
-            title: None,
-            articles: vec![new_article.clone()],
-        })
-        .unwrap();
-
-        // The *draw-time* drain (no document handle) applies the result live.
-        let changed = a.drain_fetches_live();
-        assert!(changed, "live drain reports a change");
-        assert_eq!(
-            a.store.articles.len(),
-            before + 1,
-            "new article folded into the store"
-        );
-        assert_eq!(a.refresh.done, 1, "progress advanced");
-        assert_eq!(a.refresh.new_items, 1, "new-item count tracked");
-        assert_eq!(a.refresh.updated_feeds, 1, "feed counted as updated");
-        // The CRDT write was queued (deferred), not yet persisted.
-        assert!(
-            !a.pending_doc_writes.is_empty(),
-            "doc write queued for the next doc pass"
-        );
-
-        // A doc-holding pass flushes the queue into the Automerge document.
-        a.flush_doc_writes(&mut doc);
-        assert!(a.pending_doc_writes.is_empty(), "queue drained after flush");
-        let persisted = FeedsDoc::load(&doc)
-            .articles
-            .iter()
-            .any(|x| x.id == new_article.id);
-        assert!(persisted, "the new article is now persisted in the CRDT");
-
-        // A failure for another feed advances progress + failure count.
-        tx.send(FetchResult::Failed {
-            feed_id: Some(a.store.feeds[1].id),
-            message: "boom".into(),
-        })
-        .unwrap();
-        a.drain_fetches_live();
-        assert_eq!(a.refresh.done, 2);
-        assert_eq!(a.refresh.failed_feeds, 1);
-
-        // While the batch is incomplete, the widget keeps requesting frames so
-        // the drain keeps running without user input — this is what makes the
-        // refresh land while idle instead of appearing to "block".
-        assert!(
-            a.needs_animation_frame(),
-            "frames keep flowing until the batch finishes"
-        );
-    }
-
-    /// A refresh that returns a LARGE volume of articles (the realistic case
-    /// the unreachable-host test can't hit) must still keep the main thread
-    /// responsive: the live drain + the per-frame CRDT flush must not blow the
-    /// frame budget even when hundreds of articles land at once. Proves the
-    /// flush is bounded per frame rather than persisting everything in one go.
-    #[test]
-    fn large_result_batch_does_not_block_the_frame() {
-        use std::time::{Duration, Instant};
-
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        let mut tr = TextRenderer::new();
-        let _ = headless_frame(&mut a, &mut doc, &mut tr);
-
-        let tx = a.install_test_worker();
-        a.refresh_all();
-
-        // Each feed returns a big batch — ~100 articles each, several feeds.
-        let feed_ids: Vec<Id> = a.store.feeds.iter().map(|f| f.id).collect();
-        let mut total_new = 0usize;
-        for fid in &feed_ids {
-            let mut arts = Vec::new();
-            for i in 0..100 {
-                arts.push(Article {
-                    id: Uuid::new_v4(),
-                    feed_id: *fid,
-                    title: format!("Article {i} for feed"),
-                    author: "a".into(),
-                    url: format!("https://example.com/{fid}/{i}"),
-                    published: a.now - i64::from(i) * 60,
-                    summary: "summary text".into(),
-                    blocks: vec![
-                        crate::model::ContentBlock::new(
-                            crate::model::BlockKind::Paragraph,
-                            "Body paragraph one.",
-                        ),
-                        crate::model::ContentBlock::new(
-                            crate::model::BlockKind::Paragraph,
-                            "Body paragraph two.",
-                        ),
-                    ],
-                    read: false,
-                    starred: false,
-                    tags: Vec::new(),
-                });
-                total_new += 1;
-            }
-            tx.send(FetchResult::Articles {
-                feed_id: *fid,
-                title: None,
-                articles: arts,
-            })
-            .unwrap();
+            // All of it persisted to the CRDT.
+            let loaded = FeedsDoc::read_settings(&doc);
+            assert_eq!(loaded.font, ReadFont::Serif);
+            assert_eq!(loaded.theme, ReadTheme::Sepia);
+            assert!(loaded.font_scale > 1.0);
         }
 
-        // The live drain folds everything into the store in one pass. This is
-        // pure in-memory work (no CRDT, no network) and must be cheap even for
-        // a big batch — it's what runs on the draw thread every frame.
-        let t_drain = Instant::now();
-        a.drain_fetches_live();
-        let drain_cost = t_drain.elapsed();
-        assert!(
-            drain_cost < Duration::from_millis(16),
-            "live in-memory drain blocked the frame with a big batch: {drain_cost:?}"
-        );
-        // The whole batch is now visible in the store immediately...
-        assert!(a.store.articles.len() >= total_new);
-        // ...but the CRDT writes are queued, NOT persisted in one blocking pass.
-        assert!(a.pending_doc_writes.len() >= total_new - 8);
-
-        // The key invariant: each flush call persists at most FLUSH_BUDGET
-        // writes, so the per-frame main-thread cost of persistence is BOUNDED
-        // and independent of how big the refresh was. (Automerge write cost is
-        // ~constant per op in release; the fix is that we never do the whole
-        // backlog in a single frame — that was the multi-second hang.)
-        let before = a.pending_doc_writes.len();
-        a.flush_doc_writes(&mut doc);
-        let persisted_this_frame = before - a.pending_doc_writes.len();
-        assert!(
-            persisted_this_frame <= FLUSH_BUDGET,
-            "one flush must persist at most FLUSH_BUDGET ({FLUSH_BUDGET}) writes, did {persisted_this_frame}"
-        );
-
-        // Drain the rest across frames; the backlog empties in bounded steps.
-        let mut frames = 1;
-        while !a.pending_doc_writes.is_empty() && frames < 5000 {
-            a.flush_doc_writes(&mut doc);
-            frames += 1;
-        }
-        assert!(a.pending_doc_writes.is_empty(), "backlog fully drained");
-        // Everything eventually persisted to the CRDT.
-        let persisted = FeedsDoc::load(&doc).articles.len();
-        assert!(
-            persisted >= total_new,
-            "all {total_new} articles persisted (got {persisted})"
-        );
-    }
-
-    /// `refresh_all` enqueues exactly one request per feed and finishes only
-    /// once every feed has reported back (success or failure).
-    #[test]
-    fn refresh_progress_finishes_when_all_feeds_report() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        let tx = a.install_test_worker();
-        a.refresh_all();
-        let total = a.refresh.total;
-        assert_eq!(total, a.store.feeds.len());
-        let deadline = a
-            .next_wake_deadline()
-            .expect("network results must wake without animation");
-        assert_eq!(a.next_wake_deadline(), Some(deadline));
-
-        // Every feed reports back (alternating success / failure).
-        for (i, f) in a.store.feeds.clone().iter().enumerate() {
-            if i % 2 == 0 {
-                tx.send(FetchResult::Articles {
-                    feed_id: f.id,
-                    title: None,
-                    articles: vec![],
-                })
+        // --- phase: selecting_marks_read_in_store_and_doc ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            // Pick an unread article in the All list.
+            let unread = a
+                .store
+                .articles_for(Filter::All)
+                .into_iter()
+                .find(|x| !x.read)
+                .map(|x| x.id)
                 .unwrap();
-            } else {
-                tx.send(FetchResult::Failed {
-                    feed_id: Some(f.id),
-                    message: "x".into(),
-                })
-                .unwrap();
-            }
+            a.select_article(unread, &mut doc);
+            assert!(a.store.article(unread).unwrap().read);
+            assert!(
+                FeedsDoc::load(&doc)
+                    .articles
+                    .iter()
+                    .find(|x| x.id == unread)
+                    .unwrap()
+                    .read
+            );
         }
-        a.drain_fetches_live();
-        assert_eq!(a.refresh.done, total);
-        assert!(!a.refresh.in_progress(), "batch finished");
-        assert!(a.refresh.finished_at.is_some(), "completion timestamped");
-        // The completion summary lingers briefly, then frames can stop.
-        assert!(a.refresh.visible());
-        a.sync(&mut doc, &automerge::ROOT);
-        assert!(
-            a.next_wake_deadline().is_none(),
-            "completed work stops polling"
-        );
-    }
 
-    /// Changing a reading setting applies it (and persists), proving the
-    /// settings affect the reader. Drives the production action path.
-    #[test]
-    fn reading_settings_apply_and_persist() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-
-        // Default is Sans; switch to Serif via the production action.
-        assert_eq!(a.settings.font, ReadFont::Sans);
-        a.apply_settings_action(SettingsAction::SetFont(ReadFont::Serif), &mut doc);
-        assert_eq!(a.settings.font, ReadFont::Serif);
-        assert_eq!(
-            a.reader_family(),
-            FontFamily::Serif,
-            "reader renders in serif"
-        );
-
-        // Theme switch.
-        a.apply_settings_action(SettingsAction::SetTheme(ReadTheme::Sepia), &mut doc);
-        assert_eq!(a.settings.theme, ReadTheme::Sepia);
-
-        // Font size step changes the body size and clamps.
-        let base = a.settings.body_size();
-        a.apply_settings_action(SettingsAction::FontInc, &mut doc);
-        assert!(a.settings.body_size() > base, "text size increased");
-
-        // All of it persisted to the CRDT.
-        let loaded = FeedsDoc::read_settings(&doc);
-        assert_eq!(loaded.font, ReadFont::Serif);
-        assert_eq!(loaded.theme, ReadTheme::Sepia);
-        assert!(loaded.font_scale > 1.0);
-    }
-
-    #[test]
-    fn new_selects_a_featured_article() {
-        let a = app();
-        assert!(a.selected.is_some());
-        let sel = a.selected.unwrap();
-        let art = a.store.article(sel).unwrap();
-        assert!(!art.blocks.is_empty());
-    }
-
-    #[test]
-    fn seed_populates_doc_on_first_sync() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        assert!(FeedsDoc::is_empty(&doc));
-        a.sync(&mut doc, &automerge::ROOT);
-        assert!(!FeedsDoc::is_empty(&doc));
-        let loaded = FeedsDoc::load(&doc);
-        assert_eq!(loaded.feeds.len(), a.store.feeds.len());
-    }
-
-    #[test]
-    fn selecting_marks_read_in_store_and_doc() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        // Pick an unread article in the All list.
-        let unread = a
-            .store
-            .articles_for(Filter::All)
-            .into_iter()
-            .find(|x| !x.read)
-            .map(|x| x.id)
-            .unwrap();
-        a.select_article(unread, &mut doc);
-        assert!(a.store.article(unread).unwrap().read);
-        assert!(
-            FeedsDoc::load(&doc)
+        // --- phase: star_toggles_through_doc ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            let id = a.store.articles[0].id;
+            let before = a.store.article(id).unwrap().starred;
+            a.toggle_star(id, &mut doc);
+            assert_ne!(a.store.article(id).unwrap().starred, before);
+            let doc_star = FeedsDoc::load(&doc)
                 .articles
                 .iter()
-                .find(|x| x.id == unread)
+                .find(|x| x.id == id)
                 .unwrap()
-                .read
-        );
-    }
-
-    #[test]
-    fn star_toggles_through_doc() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        let id = a.store.articles[0].id;
-        let before = a.store.article(id).unwrap().starred;
-        a.toggle_star(id, &mut doc);
-        assert_ne!(a.store.article(id).unwrap().starred, before);
-        let doc_star = FeedsDoc::load(&doc)
-            .articles
-            .iter()
-            .find(|x| x.id == id)
-            .unwrap()
-            .starred;
-        assert_eq!(doc_star, !before);
-    }
-
-    #[test]
-    fn filter_changes_list_and_selection() {
-        let mut a = app();
-        a.set_filter(Filter::Starred);
-        let starred = a.store.articles_for(Filter::Starred);
-        assert!(!starred.is_empty());
-        // Selection must be within the starred set.
-        assert!(starred.iter().any(|x| Some(x.id) == a.selected));
-    }
-
-    #[test]
-    fn mark_all_read_clears_unread_filter() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        a.set_filter(Filter::All);
-        a.mark_all_read(&mut doc);
-        assert_eq!(a.store.total_unread(), 0);
-    }
-
-    #[test]
-    fn folder_toggle_collapses() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        let fid = a.store.folders[0].id;
-        let before = a.store.folder(fid).unwrap().collapsed;
-        a.toggle_folder(fid, &mut doc);
-        assert_ne!(a.store.folder(fid).unwrap().collapsed, before);
-    }
-
-    #[test]
-    fn accessibility_exposes_article_and_star_through_existing_actions() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        let mut text = TextRenderer::new();
-        let _ = headless_frame(&mut a, &mut doc, &mut text);
-        let id = a.list_rows[0].id;
-        let before = a.store.article(id).expect("sample article").starred;
-        let tree = a.accessibility().expect("feeds exports a semantic window");
-        assert_eq!(tree.role, Role::Window);
-        assert!(tree.children.iter().any(|node| node.role == Role::Toolbar));
-        assert!(a.perform_semantic_action(
-            &format!("feeds.star:{id}"),
-            &A11yAction::ToggleCheck,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_ne!(a.store.article(id).expect("sample article").starred, before);
-        assert!(a.perform_semantic_action(
-            &format!("feeds.article:{id}"),
-            &A11yAction::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(a.selected_article(), Some(id));
-    }
-
-    #[test]
-    fn accessibility_mirrors_navigation_reader_and_reading_controls() {
-        fn has_target(node: &AccessNode, target: &str) -> bool {
-            node.action_target.as_deref() == Some(target)
-                || node.children.iter().any(|child| has_target(child, target))
+                .starred;
+            assert_eq!(doc_star, !before);
         }
 
-        let mut a = app();
-        a.force_reader_settings_open();
-        let mut doc = AutoCommit::new();
-        let mut text = TextRenderer::new();
-        let _ = headless_frame(&mut a, &mut doc, &mut text);
-        let tree = a.accessibility().expect("feeds exports a semantic window");
-        assert!(tree.children.iter().any(|node| node.role == Role::Tree));
-        assert!(
-            tree.children.iter().any(|node| node.role == Role::Document),
-            "the custom-painted article body is exposed as a document"
-        );
-        assert!(has_target(&tree, "feeds.filter:unread"));
-        assert!(has_target(&tree, "feeds.reader-settings"));
-        assert!(
-            tree.children
+        // --- phase: filter_changes_list_and_selection ---
+        {
+            let mut a = app();
+            a.set_filter(Filter::Starred);
+            let starred = a.store.articles_for(Filter::Starred);
+            assert!(!starred.is_empty());
+            // Selection must be within the starred set.
+            assert!(starred.iter().any(|x| Some(x.id) == a.selected));
+        }
+
+        // --- phase: mark_all_read_clears_unread_filter ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            a.set_filter(Filter::All);
+            a.mark_all_read(&mut doc);
+            assert_eq!(a.store.total_unread(), 0);
+        }
+
+        // --- phase: folder_toggle_collapses ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            let fid = a.store.folders[0].id;
+            let before = a.store.folder(fid).unwrap().collapsed;
+            a.toggle_folder(fid, &mut doc);
+            assert_ne!(a.store.folder(fid).unwrap().collapsed, before);
+        }
+    }
+
+    /// Accessibility mirrors navigation, reader, controls and modal fields, and operating them dispatches the existing actions.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
+    #[test]
+    fn accessibility_mirrors_and_operates_the_reader() {
+        // --- phase: accessibility_exposes_article_and_star_through_existing_actions ---
+        {
+            let mut mounted = framed(app());
+            let (a, st) = Framed::split(&mut mounted);
+            let id = a.list_rows[0].id;
+            let before = a.store.article(id).expect("sample article").starred;
+            let tree = a.accessibility().expect("feeds exports a semantic window");
+            assert_eq!(tree.role, Role::Window);
+            assert!(tree.children.iter().any(|node| node.role == Role::Toolbar));
+            assert!(a.perform_semantic_action(
+                &format!("feeds.star:{id}"),
+                &A11yAction::ToggleCheck,
+                &mut st.doc,
+                &st.root,
+            ));
+            assert_ne!(a.store.article(id).expect("sample article").starred, before);
+            assert!(a.perform_semantic_action(
+                &format!("feeds.article:{id}"),
+                &A11yAction::Activate,
+                &mut st.doc,
+                &st.root,
+            ));
+            assert_eq!(a.selected_article(), Some(id));
+        }
+
+        // --- phase: accessibility_mirrors_navigation_reader_and_reading_controls ---
+        {
+            fn has_target(node: &AccessNode, target: &str) -> bool {
+                node.action_target.as_deref() == Some(target)
+                    || node.children.iter().any(|child| has_target(child, target))
+            }
+
+            let mut a = app();
+            a.force_reader_settings_open();
+            let a = framed(a);
+            let tree = a.accessibility().expect("feeds exports a semantic window");
+            assert!(tree.children.iter().any(|node| node.role == Role::Tree));
+            assert!(
+                tree.children.iter().any(|node| node.role == Role::Document),
+                "the custom-painted article body is exposed as a document"
+            );
+            assert!(has_target(&tree, "feeds.filter:unread"));
+            assert!(has_target(&tree, "feeds.reader-settings"));
+            assert!(
+                tree.children
+                    .iter()
+                    .flat_map(|node| &node.children)
+                    .any(|node| node
+                        .action_target
+                        .as_deref()
+                        .is_some_and(|target| { target.starts_with("feeds.setting:") })),
+                "the open settings popover exposes its real controls"
+            );
+        }
+
+        // --- phase: icon_only_controls_publish_teaching_tooltips ---
+        {
+            let mut a = framed(app());
+            let refresh = a
+                .toolbar_buttons
                 .iter()
-                .flat_map(|node| &node.children)
-                .any(|node| node
-                    .action_target
-                    .as_deref()
-                    .is_some_and(|target| { target.starts_with("feeds.setting:") })),
-            "the open settings popover exposes its real controls"
-        );
+                .find(|button| button.action == ToolbarAction::Refresh)
+                .expect("refresh button")
+                .rect;
+            a.last_mouse = refresh.center();
+            a.refresh_hover_tooltip();
+            assert_eq!(Widget::tooltip(&*a), Some("Refresh all (R)"));
+            assert_eq!(
+                Widget::cursor_shape(&*a, refresh.center()),
+                Some(winit::window::CursorIcon::Pointer)
+            );
+        }
+
+        // --- phase: native_accessibility_dispatch_edits_the_modal_field ---
+        {
+            let mut reader = FeedsApp::new();
+            reader.open_add_subscription();
+            lay_out(&mut reader, 800.0, 600.0);
+            let mut app = ui::App::new(ui::State::new(), Box::new(reader));
+            app.init_layout();
+            let field = app
+                .build_a11y_tree_update(1.0)
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("Feed URL"))
+                .map(|(id, _)| *id)
+                .expect("native field must be exported");
+            assert!(
+                field.0 < (1_u64 << 48),
+                "field has no retained layout id: {field:?}"
+            );
+            app.dispatch_a11y_action(
+                field,
+                &A11yAction::SetValue("https://example.invalid/rss.xml".into()),
+            );
+            let after = app.build_a11y_tree_update(1.0);
+            let field = after
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("Feed URL"))
+                .unwrap();
+            assert_eq!(field.1.value(), Some("https://example.invalid/rss.xml"));
+        }
+
+        // --- phase: accessibility_modal_field_and_footer_submit_a_real_subscription ---
+        {
+            let mut reader = FeedsApp::new();
+            let mut doc = AutoCommit::new();
+            reader.sync(&mut doc, &automerge::ROOT);
+            let _sender = reader.install_test_worker();
+            reader.open_add_subscription();
+            assert!(
+                reader.take_structure_dirty(),
+                "opening must rebuild the native input tree"
+            );
+            assert!(
+                !reader.take_structure_dirty(),
+                "the unchanged tree must remain stable"
+            );
+            lay_out(&mut reader, 800.0, 600.0);
+            let url = "https://example.invalid/feeds.xml";
+            {
+                let mut dialogs = reader.children_mut();
+                let dialog = dialogs
+                    .first_mut()
+                    .expect("open dialog must be in the widget tree");
+                {
+                    let mut bodies = dialog.children_mut();
+                    let body = bodies.first_mut().unwrap();
+                    let mut fields = body.children_mut();
+                    let field = fields
+                        .first_mut()
+                        .expect("real TextInput must be reachable");
+                    assert_eq!(
+                        field.accessibility().unwrap().name.as_deref(),
+                        Some("Feed URL")
+                    );
+                    assert!(field.perform_action(
+                        &A11yAction::SetValue(url.into()),
+                        &mut doc,
+                        &automerge::ROOT
+                    ));
+                }
+                assert!(dialog.perform_semantic_action(
+                    "modal.primary",
+                    &A11yAction::Activate,
+                    &mut doc,
+                    &automerge::ROOT
+                ));
+            }
+            reader.sync(&mut doc, &automerge::ROOT);
+            assert!(reader.modal.is_none());
+            assert!(
+                reader.take_structure_dirty(),
+                "closing must remove stale input targets"
+            );
+            assert!(
+                FeedsDoc::load(&doc)
+                    .feeds
+                    .iter()
+                    .any(|feed| feed.url == url)
+            );
+        }
     }
 
+    /// Tag editing, new folders, tag chips, toolbar navigation and lazy context all route through the canonical actions.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn icon_only_controls_publish_teaching_tooltips() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        let mut text = TextRenderer::new();
-        let _ = headless_frame(&mut a, &mut doc, &mut text);
-        let refresh = a
-            .toolbar_buttons
-            .iter()
-            .find(|button| button.action == ToolbarAction::Refresh)
-            .expect("refresh button")
-            .rect;
-        a.last_mouse = refresh.center();
-        a.refresh_hover_tooltip();
-        assert_eq!(Widget::tooltip(&a), Some("Refresh all (R)"));
-        assert_eq!(
-            Widget::cursor_shape(&a, refresh.center()),
-            Some(winit::window::CursorIcon::Pointer)
-        );
-    }
+    fn ui_edits_route_through_canonical_actions() {
+        // --- phase: article_tag_editor_uses_the_canonical_action_and_allows_clearing ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            let id = a.selected.expect("demo selects an article");
 
-    #[test]
-    fn article_tag_editor_uses_the_canonical_action_and_allows_clearing() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        let id = a.selected.expect("demo selects an article");
+            a.open_tag_editor();
+            assert_eq!(
+                a.modal.as_ref().map(|modal| modal.intent),
+                Some(ModalIntent::EditArticleTags { article_id: id })
+            );
+            if let Some(modal) = a.modal.as_mut() {
+                modal
+                    .dialog
+                    .content_mut()
+                    .set_value("Design, Later, design");
+            }
+            a.submit_modal(&mut doc);
+            assert_eq!(
+                a.store.article(id).expect("article").tags,
+                ["design", "later"]
+            );
+            assert_eq!(
+                FeedsDoc::load(&doc)
+                    .article(id)
+                    .expect("persisted article")
+                    .tags,
+                ["design", "later"]
+            );
 
-        a.open_tag_editor();
-        assert_eq!(
-            a.modal.as_ref().map(|modal| modal.intent),
-            Some(ModalIntent::EditArticleTags { article_id: id })
-        );
-        if let Some(modal) = a.modal.as_mut() {
-            modal
+            a.open_tag_editor();
+            if let Some(modal) = a.modal.as_mut() {
+                modal.dialog.content_mut().set_value("");
+            }
+            a.submit_modal(&mut doc);
+            assert!(a.store.article(id).expect("article").tags.is_empty());
+            assert!(
+                FeedsDoc::load(&doc)
+                    .article(id)
+                    .expect("persisted article")
+                    .tags
+                    .is_empty()
+            );
+        }
+
+        // --- phase: sidebar_new_folder_uses_the_canonical_action_and_persists ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            lay_out(&mut a, 1280.0, 800.0);
+
+            assert!(
+                a.new_folder_rect.area() > 0.0,
+                "wide sidebar exposes folder creation"
+            );
+            assert!(a.click(a.new_folder_rect.center(), &mut doc));
+            assert_eq!(
+                a.modal.as_ref().map(|modal| modal.intent),
+                Some(ModalIntent::AddFolder),
+                "the sidebar affordance opens the shared real-input dialog"
+            );
+            a.modal
+                .as_mut()
+                .unwrap()
                 .dialog
                 .content_mut()
-                .set_value("Design, Later, design");
-        }
-        a.submit_modal(&mut doc);
-        assert_eq!(
-            a.store.article(id).expect("article").tags,
-            ["design", "later"]
-        );
-        assert_eq!(
-            FeedsDoc::load(&doc)
-                .article(id)
-                .expect("persisted article")
-                .tags,
-            ["design", "later"]
-        );
+                .set_value("Later");
+            a.submit_modal(&mut doc);
 
-        a.open_tag_editor();
-        if let Some(modal) = a.modal.as_mut() {
-            modal.dialog.content_mut().set_value("");
-        }
-        a.submit_modal(&mut doc);
-        assert!(a.store.article(id).expect("article").tags.is_empty());
-        assert!(
-            FeedsDoc::load(&doc)
-                .article(id)
-                .expect("persisted article")
-                .tags
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn compact_navigation_is_grouped_with_keyed_toolbar_actions() {
-        let mut a = app();
-        lay_out(&mut a, 390.0, 844.0);
-        let tree = a.accessibility().expect("feeds exports a semantic window");
-        assert!(
-            tree.children.iter().all(|node| node.semantic_key.is_none()),
-            "root regions remain position-addressed"
-        );
-        let toolbar = tree
-            .children
-            .iter()
-            .find(|node| node.role == Role::Toolbar)
-            .expect("feed actions toolbar");
-        assert!(
-            toolbar
-                .children
-                .iter()
-                .all(|node| node.semantic_key.is_some()),
-            "all compact toolbar actions have stable identities"
-        );
-        assert!(
-            toolbar
-                .children
-                .iter()
-                .any(|node| { node.action_target.as_deref() == Some("feeds.sidebar") })
-        );
-    }
-
-    #[test]
-    fn exact_lazy_context_contains_only_the_addressed_archive_item() {
-        let mut a = app();
-        let feed_template = a.store.feeds[0].clone();
-        let article_template = a.store.articles[0].clone();
-        let mut target = article_template.id;
-        for index in 0..200_u128 {
-            let mut feed = feed_template.clone();
-            feed.id = Uuid::from_u128(50_000 + index);
-            feed.title = format!("Archive feed {index}");
-            let mut article = article_template.clone();
-            article.id = Uuid::from_u128(60_000 + index);
-            article.feed_id = feed.id;
-            article.tags = vec![format!("archive-{index}")];
-            target = article.id;
-            a.store.feeds.push(feed);
-            a.store.articles.push(article);
-        }
-
-        let article_ctx = a
-            .feeds_resource_ctx_for(&actions::article_resource_id(target))
-            .expect("late article resolves");
-        assert_eq!(article_ctx.feeds.len(), 1);
-        assert_eq!(article_ctx.feeds[0].articles.len(), 1);
-        assert_eq!(article_ctx.feeds[0].articles[0].id, target);
-        assert!(article_ctx.folders.is_empty());
-        assert!(article_ctx.tags.is_empty());
-        assert!(article_ctx.unread.is_empty());
-
-        let tag_id = actions::tag_resource_id("archive-199");
-        let tag_ctx = a
-            .feeds_resource_ctx_for(&tag_id)
-            .expect("late tag resolves");
-        assert_eq!(tag_ctx.tags.len(), 1);
-        assert!(tag_ctx.feeds.is_empty());
-        assert!(tag_ctx.folders.is_empty());
-        assert!(
-            a.feeds_resource_ctx_for(&format!("feeds.tag:{}", "aa".repeat(193)))
-                .is_none(),
-            "oversized hostile ids are rejected before materialization"
-        );
-    }
-
-    #[test]
-    fn reduced_motion_settles_the_sidebar_in_one_frame() {
-        let mut a = app();
-        lay_out(&mut a, 390.0, 844.0);
-        a.sidebar.snap(false);
-        a.sidebar.toggle(SplitLayout::Overlay);
-        assert!(a.sidebar.is_animating(SplitLayout::Overlay));
-
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        a.paint(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark().with_reduce_motion(true),
-        );
-        assert!(!a.sidebar.is_animating(SplitLayout::Overlay));
-        assert!(a.sidebar.is_open(SplitLayout::Overlay));
-    }
-
-    #[test]
-    fn sidebar_new_folder_uses_the_canonical_action_and_persists() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        lay_out(&mut a, 1280.0, 800.0);
-
-        assert!(
-            a.new_folder_rect.area() > 0.0,
-            "wide sidebar exposes folder creation"
-        );
-        assert!(a.click(a.new_folder_rect.center(), &mut doc));
-        assert_eq!(
-            a.modal.as_ref().map(|modal| modal.intent),
-            Some(ModalIntent::AddFolder),
-            "the sidebar affordance opens the shared real-input dialog"
-        );
-        a.modal
-            .as_mut()
-            .unwrap()
-            .dialog
-            .content_mut()
-            .set_value("Later");
-        a.submit_modal(&mut doc);
-
-        let folder_id = a
-            .store
-            .folders
-            .iter()
-            .find(|folder| folder.name == "Later")
-            .expect("created folder joins the local store")
-            .id;
-        assert_eq!(a.active_filter(), Filter::Folder(folder_id));
-        assert!(
-            FeedsDoc::load(&doc)
+            let folder_id = a
+                .store
                 .folders
                 .iter()
-                .any(|persisted| persisted.id == folder_id && persisted.name == "Later"),
-            "the exact folder is persisted through FeedsAction::AddFolder"
-        );
-        assert!(
-            a.take_committed_action().is_some(),
-            "folder creation creates one undo boundary"
-        );
+                .find(|folder| folder.name == "Later")
+                .expect("created folder joins the local store")
+                .id;
+            assert_eq!(a.active_filter(), Filter::Folder(folder_id));
+            assert!(
+                FeedsDoc::load(&doc)
+                    .folders
+                    .iter()
+                    .any(|persisted| persisted.id == folder_id && persisted.name == "Later"),
+                "the exact folder is persisted through FeedsAction::AddFolder"
+            );
+            assert!(
+                ui::undo::take_committed_action(&mut a).is_some(),
+                "folder creation creates one undo boundary"
+            );
+        }
+
+        // --- phase: reader_tag_chips_filter_articles_and_are_semantically_actionable ---
+        {
+            let mut mounted = framed(app());
+
+            let (a, st) = Framed::split(&mut mounted);
+            let (chip, key) = a
+                .reader_tags
+                .first()
+                .copied()
+                .expect("featured fixture article exposes a visible tag chip");
+            assert!(a.click(chip.center(), &mut st.doc));
+            assert_eq!(a.active_filter(), Filter::Tag(key));
+
+            // Re-render after the filter transition and drive the same tagged
+            // discovery affordance through the semantic tree's stable target.
+            a.select_featured();
+            headless_frame(&mut mounted);
+            let (a, st) = Framed::split(&mut mounted);
+            assert!(a.perform_semantic_action(
+                &format!("feeds.reader-tag:{key}"),
+                &A11yAction::Activate,
+                &mut st.doc,
+                &st.root,
+            ));
+            assert_eq!(a.active_filter(), Filter::Tag(key));
+        }
+
+        // --- phase: compact_navigation_is_grouped_with_keyed_toolbar_actions ---
+        {
+            let mut a = app();
+            lay_out(&mut a, 390.0, 844.0);
+            let tree = a.accessibility().expect("feeds exports a semantic window");
+            assert!(
+                tree.children.iter().all(|node| node.semantic_key.is_none()),
+                "root regions remain position-addressed"
+            );
+            let toolbar = tree
+                .children
+                .iter()
+                .find(|node| node.role == Role::Toolbar)
+                .expect("feed actions toolbar");
+            assert!(
+                toolbar
+                    .children
+                    .iter()
+                    .all(|node| node.semantic_key.is_some()),
+                "all compact toolbar actions have stable identities"
+            );
+            assert!(
+                toolbar
+                    .children
+                    .iter()
+                    .any(|node| { node.action_target.as_deref() == Some("feeds.sidebar") })
+            );
+        }
+
+        // --- phase: exact_lazy_context_contains_only_the_addressed_archive_item ---
+        {
+            let mut a = app();
+            let feed_template = a.store.feeds[0].clone();
+            let article_template = a.store.articles[0].clone();
+            let mut target = article_template.id;
+            for index in 0..200_u128 {
+                let mut feed = feed_template.clone();
+                feed.id = Uuid::from_u128(50_000 + index);
+                feed.title = format!("Archive feed {index}");
+                let mut article = article_template.clone();
+                article.id = Uuid::from_u128(60_000 + index);
+                article.feed_id = feed.id;
+                article.tags = vec![format!("archive-{index}")];
+                target = article.id;
+                a.store.feeds.push(feed);
+                a.store.articles.push(article);
+            }
+
+            let article_ctx = a
+                .feeds_resource_ctx_for(&actions::article_resource_id(target))
+                .expect("late article resolves");
+            assert_eq!(article_ctx.feeds.len(), 1);
+            assert_eq!(article_ctx.feeds[0].articles.len(), 1);
+            assert_eq!(article_ctx.feeds[0].articles[0].id, target);
+            assert!(article_ctx.folders.is_empty());
+            assert!(article_ctx.tags.is_empty());
+            assert!(article_ctx.unread.is_empty());
+
+            let tag_id = actions::tag_resource_id("archive-199");
+            let tag_ctx = a
+                .feeds_resource_ctx_for(&tag_id)
+                .expect("late tag resolves");
+            assert_eq!(tag_ctx.tags.len(), 1);
+            assert!(tag_ctx.feeds.is_empty());
+            assert!(tag_ctx.folders.is_empty());
+            assert!(
+                a.feeds_resource_ctx_for(&format!("feeds.tag:{}", "aa".repeat(193)))
+                    .is_none(),
+                "oversized hostile ids are rejected before materialization"
+            );
+        }
     }
 
+    /// The sidebar docks when wide and becomes a hamburger/scrim overlay when narrow, per the resolved width tier and reduced motion.
     #[test]
-    fn reader_tag_chips_filter_articles_and_are_semantically_actionable() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        let mut text = TextRenderer::new();
-        headless_frame(&mut a, &mut doc, &mut text);
+    fn sidebar_overlay_follows_the_width_tier() {
+        // --- phase: reduced_motion_settles_the_sidebar_in_one_frame ---
+        {
+            let mut a = app();
+            lay_out(&mut a, 390.0, 844.0);
+            a.sidebar.snap(false);
+            a.sidebar.toggle(SplitLayout::Overlay);
+            assert!(a.sidebar.is_animating(SplitLayout::Overlay));
 
-        let (chip, key) = a
-            .reader_tags
-            .first()
-            .copied()
-            .expect("featured fixture article exposes a visible tag chip");
-        assert!(a.click(chip.center(), &mut doc));
-        assert_eq!(a.active_filter(), Filter::Tag(key));
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            a.paint(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &Theme::dark().with_reduce_motion(true),
+            );
+            assert!(!a.sidebar.is_animating(SplitLayout::Overlay));
+            assert!(a.sidebar.is_open(SplitLayout::Overlay));
+        }
 
-        // Re-render after the filter transition and drive the same tagged
-        // discovery affordance through the semantic tree's stable target.
-        a.select_featured();
-        headless_frame(&mut a, &mut doc, &mut text);
-        assert!(a.perform_semantic_action(
-            &format!("feeds.reader-tag:{key}"),
-            &A11yAction::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(a.active_filter(), Filter::Tag(key));
+        // --- phase: wide_keeps_three_panes_docked ---
+        {
+            let mut a = app();
+            lay_out(&mut a, 1280.0, 800.0);
+            assert_eq!(a.nav_layout(), SplitLayout::Docked);
+            // Sidebar is docked open beside the content (full reveal).
+            assert!((a.sidebar_rect.width() - SIDEBAR_W).abs() < 0.5);
+            // All three panes are present and ordered left→right.
+            assert!(a.sidebar_rect.x1 <= a.list_rect.x0 + 0.5);
+            assert!(a.list_rect.x1 <= a.reader_rect.x0 + 0.5);
+            assert!(
+                a.reader_rect.width() > 1.0,
+                "reader pane has room when wide"
+            );
+            // No overlay chrome when docked-open.
+            assert_eq!(a.scrim_rect.area(), 0.0);
+            assert_eq!(a.hamburger_rect.area(), 0.0);
+        }
+
+        // --- phase: narrow_collapses_sidebar_to_closed_overlay ---
+        {
+            let mut a = app();
+            lay_out(&mut a, 560.0, 800.0);
+            assert_eq!(a.nav_layout(), SplitLayout::Overlay);
+            // Sidebar starts closed (slid off the left edge) — a fresh narrow
+            // window opens straight to the list.
+            assert!(!a.sidebar.is_open(SplitLayout::Overlay));
+            assert!(
+                a.sidebar_rect.x1 <= a.rect.x0 + 0.5,
+                "closed flap is off-screen left"
+            );
+            // The hamburger is offered to summon it; no scrim while closed.
+            assert!(a.hamburger_rect.area() > 0.0);
+            assert_eq!(a.scrim_rect.area(), 0.0);
+            // Master (list) fills the full content width.
+            assert!((a.list_rect.width() - a.rect.width()).abs() < 0.5);
+        }
+
+        // --- phase: hamburger_click_opens_overlay_sidebar_with_scrim ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            lay_out(&mut a, 560.0, 800.0);
+            let p = a.hamburger_rect.center();
+            assert!(a.click(p, &mut doc), "hamburger click is consumed");
+            assert!(a.sidebar.is_open(SplitLayout::Overlay), "sidebar opens");
+            a.snap_sidebar_open(true);
+            lay_out_keep(&mut a, 560.0, 800.0);
+            assert!(
+                a.scrim_rect.area() > 0.0,
+                "open overlay flap dims the content"
+            );
+            assert!(
+                (a.sidebar_rect.x0 - a.rect.x0).abs() < 0.5,
+                "flap slid flush to the left"
+            );
+        }
+
+        // --- phase: scrim_click_dismisses_overlay_sidebar ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            lay_out(&mut a, 560.0, 800.0);
+            a.snap_sidebar_open(true);
+            lay_out_keep(&mut a, 560.0, 800.0);
+            // Click on the dimmed content to the right of the floating sidebar.
+            let p = Point::new(a.rect.x1 - 20.0, 400.0);
+            assert!(a.click(p, &mut doc), "scrim click is consumed");
+            assert!(
+                !a.sidebar.is_open(SplitLayout::Overlay),
+                "scrim click closes the flap"
+            );
+        }
+
+        // --- phase: tier_resolves_from_width ---
+        // Crossing the tier boundaries flips the sidebar between docked (wide +
+        // middle) and an overlay drawer (narrow) — proven off the width alone.
+        {
+            assert_eq!(Tier::from_width(1280.0), Tier::Wide);
+            assert_eq!(
+                Tier::from_width(WIDE_BREAKPOINT),
+                Tier::Wide,
+                "wide boundary is inclusive"
+            );
+            assert_eq!(
+                Tier::from_width(1024.0),
+                Tier::Middle,
+                "a high-contrast 1024px reader must not squeeze three panes"
+            );
+            assert_eq!(Tier::from_width(WIDE_BREAKPOINT - 1.0), Tier::Middle);
+            assert_eq!(
+                Tier::from_width(640.0),
+                Tier::Middle,
+                "middle boundary is inclusive"
+            );
+            assert_eq!(Tier::from_width(639.0), Tier::Narrow);
+            assert_eq!(Tier::from_width(400.0), Tier::Narrow);
+        }
     }
 
+    /// Selecting an article pushes the detail only when narrow; middle and large-text layouts show one content pane with back navigation.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn large_text_reflows_to_a_single_pane_with_generous_vertical_metrics() {
-        let mut a = app();
-        a.text_scale = 2.0;
-        lay_out(&mut a, 1600.0, 900.0);
+    fn detail_navigation_adapts_to_width_and_text_size() {
+        // --- phase: large_text_reflows_to_a_single_pane_with_generous_vertical_metrics ---
+        {
+            let mut a = app();
+            a.text_scale = 2.0;
+            lay_out(&mut a, 1600.0, 900.0);
 
-        assert_eq!(
-            a.tier(),
-            Tier::Middle,
-            "200% text reduces usable column density"
-        );
-        assert!(a.single_pane());
-        assert!((a.sidebar_rect.width() - SIDEBAR_W * 2.0).abs() < 0.5);
-        assert!((a.header_h() - HEADER_H * 2.0).abs() < f64::EPSILON);
-        assert!((a.list_row_h() - LIST_ROW_H * 2.0).abs() < f64::EPSILON);
-        assert!(
-            a.new_folder_rect.height() >= 70.0,
-            "the sidebar-header folder control retains a spacious touch target"
-        );
+            assert_eq!(
+                a.tier(),
+                Tier::Middle,
+                "200% text reduces usable column density"
+            );
+            assert!(a.single_pane());
+            assert!((a.sidebar_rect.width() - SIDEBAR_W * 2.0).abs() < 0.5);
+            assert!((a.header_h() - HEADER_H * 2.0).abs() < f64::EPSILON);
+            assert!((a.list_row_h() - LIST_ROW_H * 2.0).abs() < f64::EPSILON);
+            assert!(
+                a.new_folder_rect.height() >= 70.0,
+                "the sidebar-header folder control retains a spacious touch target"
+            );
+        }
+
+        // --- phase: selecting_an_article_pushes_detail_when_narrow ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            lay_out(&mut a, 560.0, 800.0);
+            assert!(!a.detail_pushed, "narrow window opens on the master list");
+            let id = a.store.articles_for(Filter::All)[0].id;
+            a.select_article(id, &mut doc);
+            assert!(a.detail_pushed, "selecting pushes the reader (detail) in");
+            // Recompute: the reader now fills the pane and a Back affordance shows.
+            lay_out_keep(&mut a, 560.0, 800.0);
+            assert!((a.reader_rect.width() - a.rect.width()).abs() < 0.5);
+            assert!(
+                a.back_rect.area() > 0.0,
+                "detail pane offers a Back affordance"
+            );
+            // Hamburger is suppressed in detail (Back owns the corner).
+            assert_eq!(a.hamburger_rect.area(), 0.0);
+            // Back returns to the master list.
+            let p = a.back_rect.center();
+            assert!(a.click(p, &mut doc), "Back click is consumed");
+            assert!(!a.detail_pushed, "Back returns to the master list");
+        }
+
+        // --- phase: selecting_an_article_does_not_push_when_wide ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            lay_out(&mut a, 1280.0, 800.0);
+            let id = a.store.articles_for(Filter::All)[0].id;
+            a.select_article(id, &mut doc);
+            assert!(!a.detail_pushed, "wide layout shows list + reader together");
+            assert_eq!(
+                a.back_rect.area(),
+                0.0,
+                "no Back affordance in the docked layout"
+            );
+        }
+
+        // --- phase: middle_docks_sidebar_and_shows_a_single_content_pane ---
+        // The middle tier: the sidebar stays docked + fixed while exactly ONE
+        // content pane (the list here, since nothing is pushed) shares the rest of
+        // the width. No overlay chrome, no collapse toggle — the sidebar is fixed.
+        {
+            let mut a = app();
+            lay_out(&mut a, 820.0, 800.0);
+            assert_eq!(a.tier(), Tier::Middle);
+            assert_eq!(
+                a.nav_layout(),
+                SplitLayout::Docked,
+                "the sidebar is docked, not an overlay"
+            );
+            // Sidebar docked at full width, fixed (no collapse toggle, no scrim).
+            assert!(
+                (a.sidebar_rect.width() - SIDEBAR_W).abs() < 0.5,
+                "sidebar docked at full width"
+            );
+            assert_eq!(
+                a.hamburger_rect.area(),
+                0.0,
+                "the middle-tier sidebar is fixed (no toggle)"
+            );
+            assert_eq!(a.scrim_rect.area(), 0.0, "a docked sidebar shows no scrim");
+            // A single content pane fills the width right of the sidebar; with
+            // nothing pushed it is the article list, and the reader is parked off.
+            assert!(!a.detail_pushed, "the middle tier opens on the list");
+            assert!(
+                (a.list_rect.x0 - a.sidebar_rect.x1).abs() < 0.5,
+                "list starts at the sidebar edge"
+            );
+            assert!(
+                (a.list_rect.x1 - a.rect.x1).abs() < 0.5,
+                "list fills to the right edge"
+            );
+            assert!(
+                a.reader_rect.x0 >= a.rect.x1 - 0.5,
+                "the reader is parked off-pane to the right"
+            );
+            assert_eq!(
+                a.back_rect.area(),
+                0.0,
+                "no Back affordance while the list is showing"
+            );
+        }
+
+        // --- phase: middle_back_button_navigates_detail_to_list ---
+        // The middle tier's master→detail: selecting pushes the reader into the
+        // single content pane with a top-left Back button; Back returns to the
+        // list. Driven entirely through the real selection + click paths + state.
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            lay_out(&mut a, 820.0, 800.0);
+            assert_eq!(a.tier(), Tier::Middle);
+            assert!(!a.detail_pushed, "opens on the list");
+
+            // Select an article: the reader is pushed into the single content pane.
+            let id = a.store.articles_for(Filter::All)[0].id;
+            a.select_article(id, &mut doc);
+            assert!(
+                a.detail_pushed,
+                "selecting pushes the reader in at the middle tier"
+            );
+            lay_out_keep(&mut a, 820.0, 800.0);
+            // Reader now fills the content pane; the list is parked off to the left.
+            assert!(
+                (a.reader_rect.x0 - a.sidebar_rect.x1).abs() < 0.5,
+                "reader fills the content pane"
+            );
+            assert!((a.reader_rect.x1 - a.rect.x1).abs() < 0.5);
+            assert!(
+                a.list_rect.x1 <= a.sidebar_rect.x1 + 0.5,
+                "the list is parked off-pane to the left"
+            );
+            // A top-left Back affordance is offered inside the reader pane.
+            assert!(
+                a.back_rect.area() > 0.0,
+                "the pushed reader offers a Back button"
+            );
+            assert!(
+                a.back_rect.x0 >= a.sidebar_rect.x1 - 0.5,
+                "Back sits at the content pane's top-left"
+            );
+
+            // Clicking Back returns to the list on real state.
+            let p = a.back_rect.center();
+            assert!(a.click(p, &mut doc), "Back click is consumed");
+            assert!(!a.detail_pushed, "Back returns the single pane to the list");
+            lay_out_keep(&mut a, 820.0, 800.0);
+            assert!(
+                (a.list_rect.x1 - a.rect.x1).abs() < 0.5,
+                "the list fills the content pane again"
+            );
+            assert_eq!(
+                a.back_rect.area(),
+                0.0,
+                "no Back affordance once back on the list"
+            );
+            // The sidebar stayed docked + fixed throughout.
+            assert!((a.sidebar_rect.width() - SIDEBAR_W).abs() < 0.5);
+            assert_eq!(a.scrim_rect.area(), 0.0);
+        }
     }
 
     // --- responsive layout ------------------------------------------------
@@ -6576,251 +6979,6 @@ mod tests {
             app.settled_once = true;
         }
         app.recompute_geometry();
-    }
-
-    #[test]
-    fn wide_keeps_three_panes_docked() {
-        let mut a = app();
-        lay_out(&mut a, 1280.0, 800.0);
-        assert_eq!(a.nav_layout(), SplitLayout::Docked);
-        // Sidebar is docked open beside the content (full reveal).
-        assert!((a.sidebar_rect.width() - SIDEBAR_W).abs() < 0.5);
-        // All three panes are present and ordered left→right.
-        assert!(a.sidebar_rect.x1 <= a.list_rect.x0 + 0.5);
-        assert!(a.list_rect.x1 <= a.reader_rect.x0 + 0.5);
-        assert!(
-            a.reader_rect.width() > 1.0,
-            "reader pane has room when wide"
-        );
-        // No overlay chrome when docked-open.
-        assert_eq!(a.scrim_rect.area(), 0.0);
-        assert_eq!(a.hamburger_rect.area(), 0.0);
-    }
-
-    #[test]
-    fn narrow_collapses_sidebar_to_closed_overlay() {
-        let mut a = app();
-        lay_out(&mut a, 560.0, 800.0);
-        assert_eq!(a.nav_layout(), SplitLayout::Overlay);
-        // Sidebar starts closed (slid off the left edge) — a fresh narrow
-        // window opens straight to the list.
-        assert!(!a.sidebar.is_open(SplitLayout::Overlay));
-        assert!(
-            a.sidebar_rect.x1 <= a.rect.x0 + 0.5,
-            "closed flap is off-screen left"
-        );
-        // The hamburger is offered to summon it; no scrim while closed.
-        assert!(a.hamburger_rect.area() > 0.0);
-        assert_eq!(a.scrim_rect.area(), 0.0);
-        // Master (list) fills the full content width.
-        assert!((a.list_rect.width() - a.rect.width()).abs() < 0.5);
-    }
-
-    #[test]
-    fn hamburger_click_opens_overlay_sidebar_with_scrim() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        lay_out(&mut a, 560.0, 800.0);
-        let p = a.hamburger_rect.center();
-        assert!(a.click(p, &mut doc), "hamburger click is consumed");
-        assert!(a.sidebar.is_open(SplitLayout::Overlay), "sidebar opens");
-        a.snap_sidebar_open(true);
-        lay_out_keep(&mut a, 560.0, 800.0);
-        assert!(
-            a.scrim_rect.area() > 0.0,
-            "open overlay flap dims the content"
-        );
-        assert!(
-            (a.sidebar_rect.x0 - a.rect.x0).abs() < 0.5,
-            "flap slid flush to the left"
-        );
-    }
-
-    #[test]
-    fn scrim_click_dismisses_overlay_sidebar() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        lay_out(&mut a, 560.0, 800.0);
-        a.snap_sidebar_open(true);
-        lay_out_keep(&mut a, 560.0, 800.0);
-        // Click on the dimmed content to the right of the floating sidebar.
-        let p = Point::new(a.rect.x1 - 20.0, 400.0);
-        assert!(a.click(p, &mut doc), "scrim click is consumed");
-        assert!(
-            !a.sidebar.is_open(SplitLayout::Overlay),
-            "scrim click closes the flap"
-        );
-    }
-
-    #[test]
-    fn selecting_an_article_pushes_detail_when_narrow() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        lay_out(&mut a, 560.0, 800.0);
-        assert!(!a.detail_pushed, "narrow window opens on the master list");
-        let id = a.store.articles_for(Filter::All)[0].id;
-        a.select_article(id, &mut doc);
-        assert!(a.detail_pushed, "selecting pushes the reader (detail) in");
-        // Recompute: the reader now fills the pane and a Back affordance shows.
-        lay_out_keep(&mut a, 560.0, 800.0);
-        assert!((a.reader_rect.width() - a.rect.width()).abs() < 0.5);
-        assert!(
-            a.back_rect.area() > 0.0,
-            "detail pane offers a Back affordance"
-        );
-        // Hamburger is suppressed in detail (Back owns the corner).
-        assert_eq!(a.hamburger_rect.area(), 0.0);
-        // Back returns to the master list.
-        let p = a.back_rect.center();
-        assert!(a.click(p, &mut doc), "Back click is consumed");
-        assert!(!a.detail_pushed, "Back returns to the master list");
-    }
-
-    #[test]
-    fn selecting_an_article_does_not_push_when_wide() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        lay_out(&mut a, 1280.0, 800.0);
-        let id = a.store.articles_for(Filter::All)[0].id;
-        a.select_article(id, &mut doc);
-        assert!(!a.detail_pushed, "wide layout shows list + reader together");
-        assert_eq!(
-            a.back_rect.area(),
-            0.0,
-            "no Back affordance in the docked layout"
-        );
-    }
-
-    /// The middle tier: the sidebar stays docked + fixed while exactly ONE
-    /// content pane (the list here, since nothing is pushed) shares the rest of
-    /// the width. No overlay chrome, no collapse toggle — the sidebar is fixed.
-    #[test]
-    fn middle_docks_sidebar_and_shows_a_single_content_pane() {
-        let mut a = app();
-        lay_out(&mut a, 820.0, 800.0);
-        assert_eq!(a.tier(), Tier::Middle);
-        assert_eq!(
-            a.nav_layout(),
-            SplitLayout::Docked,
-            "the sidebar is docked, not an overlay"
-        );
-        // Sidebar docked at full width, fixed (no collapse toggle, no scrim).
-        assert!(
-            (a.sidebar_rect.width() - SIDEBAR_W).abs() < 0.5,
-            "sidebar docked at full width"
-        );
-        assert_eq!(
-            a.hamburger_rect.area(),
-            0.0,
-            "the middle-tier sidebar is fixed (no toggle)"
-        );
-        assert_eq!(a.scrim_rect.area(), 0.0, "a docked sidebar shows no scrim");
-        // A single content pane fills the width right of the sidebar; with
-        // nothing pushed it is the article list, and the reader is parked off.
-        assert!(!a.detail_pushed, "the middle tier opens on the list");
-        assert!(
-            (a.list_rect.x0 - a.sidebar_rect.x1).abs() < 0.5,
-            "list starts at the sidebar edge"
-        );
-        assert!(
-            (a.list_rect.x1 - a.rect.x1).abs() < 0.5,
-            "list fills to the right edge"
-        );
-        assert!(
-            a.reader_rect.x0 >= a.rect.x1 - 0.5,
-            "the reader is parked off-pane to the right"
-        );
-        assert_eq!(
-            a.back_rect.area(),
-            0.0,
-            "no Back affordance while the list is showing"
-        );
-    }
-
-    /// The middle tier's master→detail: selecting pushes the reader into the
-    /// single content pane with a top-left Back button; Back returns to the
-    /// list. Driven entirely through the real selection + click paths + state.
-    #[test]
-    fn middle_back_button_navigates_detail_to_list() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        lay_out(&mut a, 820.0, 800.0);
-        assert_eq!(a.tier(), Tier::Middle);
-        assert!(!a.detail_pushed, "opens on the list");
-
-        // Select an article: the reader is pushed into the single content pane.
-        let id = a.store.articles_for(Filter::All)[0].id;
-        a.select_article(id, &mut doc);
-        assert!(
-            a.detail_pushed,
-            "selecting pushes the reader in at the middle tier"
-        );
-        lay_out_keep(&mut a, 820.0, 800.0);
-        // Reader now fills the content pane; the list is parked off to the left.
-        assert!(
-            (a.reader_rect.x0 - a.sidebar_rect.x1).abs() < 0.5,
-            "reader fills the content pane"
-        );
-        assert!((a.reader_rect.x1 - a.rect.x1).abs() < 0.5);
-        assert!(
-            a.list_rect.x1 <= a.sidebar_rect.x1 + 0.5,
-            "the list is parked off-pane to the left"
-        );
-        // A top-left Back affordance is offered inside the reader pane.
-        assert!(
-            a.back_rect.area() > 0.0,
-            "the pushed reader offers a Back button"
-        );
-        assert!(
-            a.back_rect.x0 >= a.sidebar_rect.x1 - 0.5,
-            "Back sits at the content pane's top-left"
-        );
-
-        // Clicking Back returns to the list on real state.
-        let p = a.back_rect.center();
-        assert!(a.click(p, &mut doc), "Back click is consumed");
-        assert!(!a.detail_pushed, "Back returns the single pane to the list");
-        lay_out_keep(&mut a, 820.0, 800.0);
-        assert!(
-            (a.list_rect.x1 - a.rect.x1).abs() < 0.5,
-            "the list fills the content pane again"
-        );
-        assert_eq!(
-            a.back_rect.area(),
-            0.0,
-            "no Back affordance once back on the list"
-        );
-        // The sidebar stayed docked + fixed throughout.
-        assert!((a.sidebar_rect.width() - SIDEBAR_W).abs() < 0.5);
-        assert_eq!(a.scrim_rect.area(), 0.0);
-    }
-
-    /// Crossing the tier boundaries flips the sidebar between docked (wide +
-    /// middle) and an overlay drawer (narrow) — proven off the width alone.
-    #[test]
-    fn tier_resolves_from_width() {
-        assert_eq!(Tier::from_width(1280.0), Tier::Wide);
-        assert_eq!(
-            Tier::from_width(WIDE_BREAKPOINT),
-            Tier::Wide,
-            "wide boundary is inclusive"
-        );
-        assert_eq!(
-            Tier::from_width(1024.0),
-            Tier::Middle,
-            "a high-contrast 1024px reader must not squeeze three panes"
-        );
-        assert_eq!(Tier::from_width(WIDE_BREAKPOINT - 1.0), Tier::Middle);
-        assert_eq!(
-            Tier::from_width(640.0),
-            Tier::Middle,
-            "middle boundary is inclusive"
-        );
-        assert_eq!(Tier::from_width(639.0), Tier::Narrow);
-        assert_eq!(Tier::from_width(400.0), Tier::Narrow);
     }
 
     /// Re-run geometry without re-settling the flap (so an explicit
@@ -6904,14 +7062,16 @@ mod tests {
         let mut focus_target = None;
         a.handle_event(
             event,
-            1.0,
-            &mods,
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -6924,14 +7084,16 @@ mod tests {
         let mut focus_target = None;
         a.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -6982,861 +7144,749 @@ mod tests {
         panic!("no point maps to menu item {idx}");
     }
 
+    /// OPML import and portal export/import persist their results and never report success on cancel or failure.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn opml_import_adds_all_feeds_and_persists() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-
-        let feeds_before = a.store.feeds.len();
-        let new_ids = a.apply_opml_import(opml::sample_opml(), &mut doc);
-
-        // All three OPML feeds are new subscriptions (none deduped away).
-        assert_eq!(new_ids.len(), 3, "every OPML feed was subscribed");
-        assert_eq!(a.store.feeds.len(), feeds_before + 3);
-        for url in [
-            "https://lwn.net/headlines/rss",
-            "https://simonwillison.net/atom/everything/",
-            "https://jvns.ca/atom.xml",
-        ] {
-            assert!(
-                a.store.feeds.iter().any(|f| f.url == url),
-                "store gained a subscription for {url}"
-            );
-        }
-        // The OPML folder was created.
-        assert!(a.store.folders.iter().any(|f| f.name == "Reading"));
-
-        // Persisted to the document (the real convergence path).
-        let loaded = FeedsDoc::load(&doc);
-        for url in [
-            "https://lwn.net/headlines/rss",
-            "https://simonwillison.net/atom/everything/",
-            "https://jvns.ca/atom.xml",
-        ] {
-            assert!(
-                loaded.feeds.iter().any(|f| f.url == url),
-                "document persisted the subscription for {url}"
-            );
-        }
-        assert!(loaded.folders.iter().any(|f| f.name == "Reading"));
-
-        // Re-importing the same OPML is a no-op (dedup by URL).
-        let again = a.apply_opml_import(opml::sample_opml(), &mut doc);
-        assert!(again.is_empty(), "re-import adds nothing");
-    }
-
-    #[test]
-    fn portal_export_writes_the_snapshot_to_the_selected_unicode_path() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        let directory = std::env::temp_dir().join(format!("feeds-export-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("Subscriptions Grün 🌍.opml");
-        let xml = opml::export(&a.store);
-        export_with(&mut a, PortalOutcome::Opened(path.clone()));
-        let deadline = a
-            .next_wake_deadline()
-            .expect("export must wake without animation");
-        assert_eq!(a.next_wake_deadline(), Some(deadline));
-        assert!(!path.exists());
-        a.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), xml);
-        assert_eq!(opml::parse(&xml).len(), a.store.feeds.len());
-        assert!(a.export_rx.is_none());
-        assert!(a.next_wake_deadline().is_none());
-        assert!(a.toast.as_ref().unwrap().0.starts_with("Exported OPML"));
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn portal_export_cancel_and_failure_never_report_success() {
-        for outcome in [
-            PortalOutcome::Cancelled,
-            PortalOutcome::Failed("test denial".into()),
-        ] {
+    fn opml_portal_import_and_export_report_honestly() {
+        // --- phase: opml_import_adds_all_feeds_and_persists ---
+        {
             let mut a = app();
             let mut doc = AutoCommit::new();
             a.sync(&mut doc, &automerge::ROOT);
-            export_with(&mut a, outcome.clone());
+
+            let feeds_before = a.store.feeds.len();
+            let new_ids = a.apply_opml_import(opml::sample_opml(), &mut doc);
+
+            // All three OPML feeds are new subscriptions (none deduped away).
+            assert_eq!(new_ids.len(), 3, "every OPML feed was subscribed");
+            assert_eq!(a.store.feeds.len(), feeds_before + 3);
+            for url in [
+                "https://lwn.net/headlines/rss",
+                "https://simonwillison.net/atom/everything/",
+                "https://jvns.ca/atom.xml",
+            ] {
+                assert!(
+                    a.store.feeds.iter().any(|f| f.url == url),
+                    "store gained a subscription for {url}"
+                );
+            }
+            // The OPML folder was created.
+            assert!(a.store.folders.iter().any(|f| f.name == "Reading"));
+
+            // Persisted to the document (the real convergence path).
+            let loaded = FeedsDoc::load(&doc);
+            for url in [
+                "https://lwn.net/headlines/rss",
+                "https://simonwillison.net/atom/everything/",
+                "https://jvns.ca/atom.xml",
+            ] {
+                assert!(
+                    loaded.feeds.iter().any(|f| f.url == url),
+                    "document persisted the subscription for {url}"
+                );
+            }
+            assert!(loaded.folders.iter().any(|f| f.name == "Reading"));
+
+            // Re-importing the same OPML is a no-op (dedup by URL).
+            let again = a.apply_opml_import(opml::sample_opml(), &mut doc);
+            assert!(again.is_empty(), "re-import adds nothing");
+        }
+
+        // --- phase: portal_export_writes_the_snapshot_to_the_selected_unicode_path ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
             a.sync(&mut doc, &automerge::ROOT);
+            let directory = std::env::temp_dir().join(format!("feeds-export-{}", Uuid::new_v4()));
+            std::fs::create_dir_all(&directory).unwrap();
+            let path = directory.join("Subscriptions Grün 🌍.opml");
+            let xml = opml::export(&a.store);
+            export_with(&mut a, PortalOutcome::Opened(path.clone()));
+            let deadline = a
+                .next_wake_deadline()
+                .expect("export must wake without animation");
+            assert_eq!(a.next_wake_deadline(), Some(deadline));
+            assert!(!path.exists());
+            a.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), xml);
+            assert_eq!(opml::parse(&xml).len(), a.store.feeds.len());
             assert!(a.export_rx.is_none());
-            let message = &a.toast.as_ref().unwrap().0;
-            assert!(
-                a.accessibility().unwrap().children.iter().any(|node| {
-                    node.name.as_deref() == Some(message.as_str())
-                        && node.live == Some(Politeness::Polite)
-                }),
-                "native accessibility must expose the transfer outcome"
-            );
-            match outcome {
-                PortalOutcome::Cancelled => assert_eq!(message, "Export cancelled"),
-                PortalOutcome::Failed(reason) => {
-                    assert_eq!(message, &format!("Export failed: {reason}"));
+            assert!(a.next_wake_deadline().is_none());
+            assert!(a.toast.as_ref().unwrap().0.starts_with("Exported OPML"));
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+
+        // --- phase: portal_export_cancel_and_failure_never_report_success ---
+        {
+            for outcome in [
+                PortalOutcome::Cancelled,
+                PortalOutcome::Failed("test denial".into()),
+            ] {
+                let mut a = app();
+                let mut doc = AutoCommit::new();
+                a.sync(&mut doc, &automerge::ROOT);
+                export_with(&mut a, outcome.clone());
+                a.sync(&mut doc, &automerge::ROOT);
+                assert!(a.export_rx.is_none());
+                let message = &a.toast.as_ref().unwrap().0;
+                assert!(
+                    a.accessibility().unwrap().children.iter().any(|node| {
+                        node.name.as_deref() == Some(message.as_str())
+                            && node.live == Some(Politeness::Polite)
+                    }),
+                    "native accessibility must expose the transfer outcome"
+                );
+                match outcome {
+                    PortalOutcome::Cancelled => assert_eq!(message, "Export cancelled"),
+                    PortalOutcome::Failed(reason) => {
+                        assert_eq!(message, &format!("Export failed: {reason}"));
+                    }
+                    PortalOutcome::Opened(_) => unreachable!(),
                 }
-                PortalOutcome::Opened(_) => unreachable!(),
             }
         }
-    }
 
-    #[test]
-    fn portal_export_write_failure_is_visible() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        // A directory cannot be replaced by the export's file write on either host.
-        export_with(&mut a, PortalOutcome::Opened(std::env::temp_dir()));
-        a.sync(&mut doc, &automerge::ROOT);
-        assert!(a.export_rx.is_none());
-        assert!(a.toast.as_ref().unwrap().0.starts_with("Export failed:"));
-    }
-
-    #[test]
-    fn portal_import_completion_has_a_fixed_non_animation_deadline() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        assert!(a.next_wake_deadline().is_none());
-        import_with(&mut a, PortalOutcome::Cancelled);
-        let deadline = a
-            .next_wake_deadline()
-            .expect("file completion must wake even with reduced motion");
-        assert_eq!(a.next_wake_deadline(), Some(deadline));
-        a.sync(&mut doc, &automerge::ROOT);
-        assert!(a.import_rx.is_none());
-        assert!(a.next_wake_deadline().is_none());
-    }
-
-    #[test]
-    fn portal_import_drain_reads_file_and_subscribes() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        // A no-thread worker so the post-import background refresh only records
-        // pending requests (no network, no spawned thread).
-        let _tx = a.install_test_worker();
-
-        // Write a real OPML file to a scratch path, have the recording host's
-        // chooser pick it, then run one `sync` — the exact per-frame drain the
-        // live portal feeds.
-        let dir = std::env::temp_dir().join(format!("feeds-opml-test-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("subs.opml");
-        std::fs::write(&path, opml::sample_opml()).unwrap();
-
-        let feeds_before = a.store.feeds.len();
-        import_with(&mut a, PortalOutcome::Opened(path));
-        assert!(
-            a.import_rx.is_some(),
-            "a request is in flight until drained"
-        );
-
-        a.sync(&mut doc, &automerge::ROOT);
-
-        assert!(
-            a.import_rx.is_none(),
-            "draining the outcome clears the request"
-        );
-        assert_eq!(
-            a.store.feeds.len(),
-            feeds_before + 3,
-            "all OPML feeds subscribed"
-        );
-        assert!(
-            a.store
-                .feeds
-                .iter()
-                .any(|f| f.url == "https://jvns.ca/atom.xml")
-        );
-        // Persisted on the real path.
-        assert!(
-            FeedsDoc::load(&doc)
-                .feeds
-                .iter()
-                .any(|f| f.url == "https://lwn.net/headlines/rss")
-        );
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn cancelled_import_leaves_store_untouched() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        let before = a.store.feeds.len();
-        import_with(&mut a, PortalOutcome::Cancelled);
-        a.sync(&mut doc, &automerge::ROOT);
-        assert!(a.import_rx.is_none(), "cancel clears the request");
-        assert_eq!(a.store.feeds.len(), before, "cancel adds no feeds");
-    }
-
-    #[test]
-    fn right_click_feed_opens_context_menu_with_actions() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        lay_out(&mut a, 1280.0, 800.0);
-
-        let id = open_first_feed_menu(&mut a, &mut doc);
-        assert_eq!(a.feed_menu_target, Some(id));
-        // Three actions: mark-all-read, rename, unsubscribe.
-        assert_eq!(
-            a.feed_menu_actions,
-            vec![
-                FeedMenuAction::MarkAllRead,
-                FeedMenuAction::Rename,
-                FeedMenuAction::Unsubscribe
-            ]
-        );
-
-        // A right-click on empty (non-feed) space dismisses the menu.
-        let off = a.reader_rect.center();
-        dispatch(&mut a, &mut doc, &cursor_at(off));
-        assert!(dispatch(&mut a, &mut doc, &right_press()));
-        assert!(
-            !a.feed_menu.is_open(),
-            "right-click off a feed closes the menu"
-        );
-    }
-
-    #[test]
-    fn feed_menu_keyboard_selects_actions_without_changing_articles() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        lay_out(&mut a, 1280.0, 800.0);
-        let id = open_first_feed_menu(&mut a, &mut doc);
-        let selected = a.selected;
-        assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::ArrowDown)));
-        assert_eq!(
-            a.selected, selected,
-            "menu navigation must not select articles"
-        );
-        assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::ArrowDown)));
-        assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::Enter)));
-        assert!(!a.feed_menu.is_open());
-        assert_eq!(a.feed_menu_target, None);
-        assert_eq!(
-            a.modal.as_ref().unwrap().intent,
-            ModalIntent::RenameFeed { feed_id: id }
-        );
-    }
-
-    #[test]
-    fn feed_menu_hover_focuses_action_and_captures_article_shortcuts() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        lay_out(&mut a, 1280.0, 800.0);
-        open_first_feed_menu(&mut a, &mut doc);
-        let p = menu_point_for(&a, 1);
-        assert!(
-            dispatch(&mut a, &mut doc, &cursor_at(p)),
-            "menu hover must reach the host redraw path"
-        );
-        assert!(a.needs_redraw(), "menu hover must repaint");
-        assert!(
-            a.feed_menu.accessibility().unwrap().children[1]
-                .state
-                .focused
-        );
-        let before: Vec<_> = a
-            .store
-            .articles
-            .iter()
-            .map(|a| (a.id, a.read, a.starred))
-            .collect();
-        for key in ["m", "s", "j", "k", "a"] {
-            assert!(dispatch(&mut a, &mut doc, &char_key(key)));
+        // --- phase: portal_export_write_failure_is_visible ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            // A directory cannot be replaced by the export's file write on either host.
+            export_with(&mut a, PortalOutcome::Opened(std::env::temp_dir()));
+            a.sync(&mut doc, &automerge::ROOT);
+            assert!(a.export_rx.is_none());
+            assert!(a.toast.as_ref().unwrap().0.starts_with("Export failed:"));
         }
-        let after: Vec<_> = a
-            .store
-            .articles
-            .iter()
-            .map(|a| (a.id, a.read, a.starred))
-            .collect();
-        assert_eq!(before, after, "menu captures article mutations");
-        assert!(a.modal.is_none(), "shortcuts cannot open other overlays");
-        assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::Escape)));
-        assert!(!a.feed_menu.is_open());
-        assert_eq!(a.feed_menu_target, None);
+
+        // --- phase: portal_import_completion_has_a_fixed_non_animation_deadline ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            assert!(a.next_wake_deadline().is_none());
+            import_with(&mut a, PortalOutcome::Cancelled);
+            let deadline = a
+                .next_wake_deadline()
+                .expect("file completion must wake even with reduced motion");
+            assert_eq!(a.next_wake_deadline(), Some(deadline));
+            a.sync(&mut doc, &automerge::ROOT);
+            assert!(a.import_rx.is_none());
+            assert!(a.next_wake_deadline().is_none());
+        }
+
+        // --- phase: portal_import_drain_reads_file_and_subscribes ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            // A no-thread worker so the post-import background refresh only records
+            // pending requests (no network, no spawned thread).
+            let _tx = a.install_test_worker();
+
+            // Write a real OPML file to a scratch path, have the recording host's
+            // chooser pick it, then run one `sync` — the exact per-frame drain the
+            // live portal feeds.
+            let dir = std::env::temp_dir().join(format!("feeds-opml-test-{}", Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("subs.opml");
+            std::fs::write(&path, opml::sample_opml()).unwrap();
+
+            let feeds_before = a.store.feeds.len();
+            import_with(&mut a, PortalOutcome::Opened(path));
+            assert!(
+                a.import_rx.is_some(),
+                "a request is in flight until drained"
+            );
+
+            a.sync(&mut doc, &automerge::ROOT);
+
+            assert!(
+                a.import_rx.is_none(),
+                "draining the outcome clears the request"
+            );
+            assert_eq!(
+                a.store.feeds.len(),
+                feeds_before + 3,
+                "all OPML feeds subscribed"
+            );
+            assert!(
+                a.store
+                    .feeds
+                    .iter()
+                    .any(|f| f.url == "https://jvns.ca/atom.xml")
+            );
+            // Persisted on the real path.
+            assert!(
+                FeedsDoc::load(&doc)
+                    .feeds
+                    .iter()
+                    .any(|f| f.url == "https://lwn.net/headlines/rss")
+            );
+
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        // --- phase: cancelled_import_leaves_store_untouched ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            let before = a.store.feeds.len();
+            import_with(&mut a, PortalOutcome::Cancelled);
+            a.sync(&mut doc, &automerge::ROOT);
+            assert!(a.import_rx.is_none(), "cancel clears the request");
+            assert_eq!(a.store.feeds.len(), before, "cancel adds no feeds");
+        }
     }
 
+    /// The feed context menu opens on right click, owns keyboard/hover/wheel input, captures host undo and stays inside the viewport.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn feed_menu_wheel_does_not_scroll_panes_and_focus_loss_dismisses() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        lay_out(&mut a, 1280.0, 800.0);
-        open_first_feed_menu(&mut a, &mut doc);
-        let p = a.list_rect.center();
-        dispatch(&mut a, &mut doc, &cursor_at(p));
-        a.list_content_h = 3000.0;
-        let wheel = WindowEvent::MouseWheel {
-            device_id: synth_device(),
-            delta: MouseScrollDelta::LineDelta(0.0, -2.0),
-            phase: winit::event::TouchPhase::Moved,
-        };
-        assert!(dispatch(&mut a, &mut doc, &wheel));
-        assert_eq!(a.list_scroll, 0.0);
-        assert!(
-            dispatch(&mut a, &mut doc, &WindowEvent::Focused(false)),
-            "dismissal must reach the host redraw path"
-        );
-        assert!(!a.feed_menu.is_open());
-        assert_eq!(a.feed_menu_target, None);
-    }
+    fn feed_context_menu_input_and_geometry() {
+        // --- phase: right_click_feed_opens_context_menu_with_actions ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            lay_out(&mut a, 1280.0, 800.0);
 
-    #[test]
-    fn feed_menu_repositions_after_viewport_shrinks() {
-        let mut a = app();
-        lay_out(&mut a, 1280.0, 800.0);
-        a.open_feed_menu(a.store.feeds[0].id, Point::new(1100.0, 750.0));
-        lay_out_keep(&mut a, 320.0, 240.0);
-        let r = a.feed_menu.get_rect();
-        assert!(
-            r.x1 <= 320.0 && r.y1 <= 240.0,
-            "resized menu {r:?} is offscreen"
-        );
-    }
+            let id = open_first_feed_menu(&mut a, &mut doc);
+            assert_eq!(a.feed_menu_target, Some(id));
+            // Three actions: mark-all-read, rename, unsubscribe.
+            assert_eq!(
+                a.feed_menu_actions,
+                vec![
+                    FeedMenuAction::MarkAllRead,
+                    FeedMenuAction::Rename,
+                    FeedMenuAction::Unsubscribe
+                ]
+            );
 
-    #[test]
-    fn sidebar_wheel_reaches_subscriptions_below_the_viewport() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        lay_out(&mut a, 640.0, 480.0);
-        let before = a.sidebar_rows.last().unwrap().rect.y1;
-        dispatch(&mut a, &mut doc, &cursor_at(Point::new(100.0, 300.0)));
-        dispatch(
-            &mut a,
-            &mut doc,
-            &WindowEvent::MouseWheel {
-                device_id: synth_device(),
-                delta: MouseScrollDelta::LineDelta(0.0, -100.0),
-                phase: winit::event::TouchPhase::Moved,
-            },
-        );
-        a.recompute_geometry();
-        let after = a.sidebar_rows.last().unwrap().rect.y1;
-        assert!(
-            after < before && after <= 480.0,
-            "last sidebar row remains inaccessible at {after}"
-        );
-    }
+            // A right-click on empty (non-feed) space dismisses the menu.
+            let off = a.reader_rect.center();
+            dispatch(&mut a, &mut doc, &cursor_at(off));
+            assert!(dispatch(&mut a, &mut doc, &right_press()));
+            assert!(
+                !a.feed_menu.is_open(),
+                "right-click off a feed closes the menu"
+            );
+        }
 
-    #[test]
-    fn smaller_text_keeps_scrolled_article_rows_visible() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        lay_out(&mut a, 640.0, 480.0);
-        let mut text = TextRenderer::new();
-        text.set_text_scale(2.0);
-        a.paint(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark().with_text_scale(2.0),
-        );
-        let p = a.list_rect.center();
-        dispatch(&mut a, &mut doc, &cursor_at(p));
-        dispatch(
-            &mut a,
-            &mut doc,
-            &WindowEvent::MouseWheel {
-                device_id: synth_device(),
-                delta: MouseScrollDelta::LineDelta(0.0, -1000.0),
-                phase: winit::event::TouchPhase::Moved,
-            },
-        );
-        text.set_text_scale(1.0);
-        a.paint(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-        );
-        assert!(
-            a.list_rows
+        // --- phase: feed_menu_keyboard_selects_actions_without_changing_articles ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            lay_out(&mut a, 1280.0, 800.0);
+            let id = open_first_feed_menu(&mut a, &mut doc);
+            let selected = a.selected;
+            assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::ArrowDown)));
+            assert_eq!(
+                a.selected, selected,
+                "menu navigation must not select articles"
+            );
+            assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::ArrowDown)));
+            assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::Enter)));
+            assert!(!a.feed_menu.is_open());
+            assert_eq!(a.feed_menu_target, None);
+            assert_eq!(
+                a.modal.as_ref().unwrap().intent,
+                ModalIntent::RenameFeed { feed_id: id }
+            );
+        }
+
+        // --- phase: feed_menu_hover_focuses_action_and_captures_article_shortcuts ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            lay_out(&mut a, 1280.0, 800.0);
+            open_first_feed_menu(&mut a, &mut doc);
+            let p = menu_point_for(&a, 1);
+            assert!(
+                dispatch(&mut a, &mut doc, &cursor_at(p)),
+                "menu hover must reach the host redraw path"
+            );
+            assert!(a.needs_redraw(), "menu hover must repaint");
+            assert!(
+                a.feed_menu.accessibility().unwrap().children[1]
+                    .state
+                    .focused
+            );
+            let before: Vec<_> = a
+                .store
+                .articles
                 .iter()
-                .any(|row| row.rect.y1 > a.list_rect.y0 + HEADER_H && row.rect.y0 < a.list_rect.y1),
-            "reducing text scale must not leave the article pane blank"
-        );
-        let view_h = (a.list_rect.height() - a.header_h() - a.refresh_strip_h()).max(0.0);
-        let max_scroll = (a.list_content_h - view_h).max(0.0);
-        assert!(
-            a.list_scroll <= max_scroll + 0.01,
-            "scroll offset must remain inside the resized content"
-        );
+                .map(|a| (a.id, a.read, a.starred))
+                .collect();
+            for key in ["m", "s", "j", "k", "a"] {
+                assert!(dispatch(&mut a, &mut doc, &char_key(key)));
+            }
+            let after: Vec<_> = a
+                .store
+                .articles
+                .iter()
+                .map(|a| (a.id, a.read, a.starred))
+                .collect();
+            assert_eq!(before, after, "menu captures article mutations");
+            assert!(a.modal.is_none(), "shortcuts cannot open other overlays");
+            assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::Escape)));
+            assert!(!a.feed_menu.is_open());
+            assert_eq!(a.feed_menu_target, None);
+        }
+
+        // --- phase: feed_menu_wheel_does_not_scroll_panes_and_focus_loss_dismisses ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            lay_out(&mut a, 1280.0, 800.0);
+            open_first_feed_menu(&mut a, &mut doc);
+            let p = a.list_rect.center();
+            dispatch(&mut a, &mut doc, &cursor_at(p));
+            a.list_content_h = 3000.0;
+            let wheel = WindowEvent::MouseWheel {
+                device_id: synth_device(),
+                delta: MouseScrollDelta::LineDelta(0.0, -2.0),
+                phase: winit::event::TouchPhase::Moved,
+            };
+            assert!(dispatch(&mut a, &mut doc, &wheel));
+            assert_eq!(a.list_scroll, 0.0);
+            assert!(
+                dispatch(&mut a, &mut doc, &WindowEvent::Focused(false)),
+                "dismissal must reach the host redraw path"
+            );
+            assert!(!a.feed_menu.is_open());
+            assert_eq!(a.feed_menu_target, None);
+        }
+
+        // --- phase: feed_menu_repositions_after_viewport_shrinks ---
+        {
+            let mut a = app();
+            lay_out(&mut a, 1280.0, 800.0);
+            a.open_feed_menu(a.store.feeds[0].id, Point::new(1100.0, 750.0));
+            lay_out_keep(&mut a, 320.0, 240.0);
+            let r = a.feed_menu.get_rect();
+            assert!(
+                r.x1 <= 320.0 && r.y1 <= 240.0,
+                "resized menu {r:?} is offscreen"
+            );
+        }
+
+        // --- phase: feed_menu_captures_host_undo_before_document_history_changes ---
+        {
+            let mut a = app();
+            lay_out(&mut a, 640.0, 480.0);
+            a.open_feed_menu(a.store.feeds[0].id, Point::new(100.0, 200.0));
+            assert!(ui::undo::handle_local_undo_request(
+                &mut a,
+                ui::undo::UndoRequest::Undo
+            ));
+            assert!(ui::undo::handle_local_undo_request(
+                &mut a,
+                ui::undo::UndoRequest::Redo
+            ));
+        }
+
+        // --- phase: feed_menu_stays_within_tiny_viewport ---
+        {
+            let mut a = app();
+            lay_out(&mut a, 160.0, 80.0);
+            a.open_feed_menu(a.store.feeds[0].id, Point::new(150.0, 75.0));
+            let r = a.feed_menu.get_rect();
+            assert!(r.x0 >= a.rect.x0 && r.y0 >= a.rect.y0);
+            assert!(
+                r.x1 <= a.rect.x1 && r.y1 <= a.rect.y1,
+                "{r:?} exceeds {:?}",
+                a.rect
+            );
+        }
     }
 
+    /// Sidebar and article lists scroll to their content and rows contain their measured, scaled text.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn large_text_rows_contain_their_measured_content() {
-        let mut a = app();
-        lay_out(&mut a, 640.0, 480.0);
-        let mut text = TextRenderer::new();
-        text.set_text_scale(2.0);
-        a.paint(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark().with_text_scale(2.0),
-        );
-        let sidebar_line = f64::from(
-            text.measure_weighted("Ag", 14.0, None, TextWeight::Semibold)
-                .1,
-        );
-        for row in &a.sidebar_rows {
-            if !matches!(row.role, RowRole::Section) {
+    fn list_scrolling_and_text_scaling_keep_rows_visible() {
+        // --- phase: sidebar_wheel_reaches_subscriptions_below_the_viewport ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            lay_out(&mut a, 640.0, 480.0);
+            let before = a.sidebar_rows.last().unwrap().rect.y1;
+            dispatch(&mut a, &mut doc, &cursor_at(Point::new(100.0, 300.0)));
+            dispatch(
+                &mut a,
+                &mut doc,
+                &WindowEvent::MouseWheel {
+                    device_id: synth_device(),
+                    delta: MouseScrollDelta::LineDelta(0.0, -100.0),
+                    phase: winit::event::TouchPhase::Moved,
+                },
+            );
+            a.recompute_geometry();
+            let after = a.sidebar_rows.last().unwrap().rect.y1;
+            assert!(
+                after < before && after <= 480.0,
+                "last sidebar row remains inaccessible at {after}"
+            );
+        }
+
+        // --- phase: smaller_text_keeps_scrolled_article_rows_visible ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            lay_out(&mut a, 640.0, 480.0);
+            let mut text = TextRenderer::new();
+            text.set_text_scale(2.0);
+            a.paint(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &Theme::dark().with_text_scale(2.0),
+            );
+            let p = a.list_rect.center();
+            dispatch(&mut a, &mut doc, &cursor_at(p));
+            dispatch(
+                &mut a,
+                &mut doc,
+                &WindowEvent::MouseWheel {
+                    device_id: synth_device(),
+                    delta: MouseScrollDelta::LineDelta(0.0, -1000.0),
+                    phase: winit::event::TouchPhase::Moved,
+                },
+            );
+            text.set_text_scale(1.0);
+            a.paint(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &Theme::dark(),
+            );
+            assert!(
+                a.list_rows
+                    .iter()
+                    .any(|row| row.rect.y1 > a.list_rect.y0 + HEADER_H
+                        && row.rect.y0 < a.list_rect.y1),
+                "reducing text scale must not leave the article pane blank"
+            );
+            let view_h = (a.list_rect.height() - a.header_h() - a.refresh_strip_h()).max(0.0);
+            let max_scroll = (a.list_content_h - view_h).max(0.0);
+            assert!(
+                a.list_scroll <= max_scroll + 0.01,
+                "scroll offset must remain inside the resized content"
+            );
+        }
+
+        // --- phase: large_text_rows_contain_their_measured_content ---
+        {
+            let mut a = app();
+            lay_out(&mut a, 640.0, 480.0);
+            let mut text = TextRenderer::new();
+            text.set_text_scale(2.0);
+            a.paint(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &Theme::dark().with_text_scale(2.0),
+            );
+            let sidebar_line = f64::from(
+                text.measure_weighted("Ag", 14.0, None, TextWeight::Semibold)
+                    .1,
+            );
+            for row in &a.sidebar_rows {
+                if !matches!(row.role, RowRole::Section) {
+                    assert!(
+                        row.rect.height() >= sidebar_line + 8.0,
+                        "sidebar row {:?} clips scaled text height {sidebar_line}",
+                        row.rect
+                    );
+                }
+            }
+            let title_line = f64::from(
+                text.measure_weighted("Ag", 15.0, None, TextWeight::Semibold)
+                    .1,
+            );
+            let meta_line = f64::from(text.measure("Ag", 12.5, None).1);
+            for row in &a.list_rows {
                 assert!(
-                    row.rect.height() >= sidebar_line + 8.0,
-                    "sidebar row {:?} clips scaled text height {sidebar_line}",
+                    row.rect.height() >= 12.0 + title_line * 2.0 + 8.0 + meta_line + 10.0,
+                    "article row {:?} overlaps title and metadata",
                     row.rect
                 );
             }
         }
-        let title_line = f64::from(
-            text.measure_weighted("Ag", 15.0, None, TextWeight::Semibold)
-                .1,
-        );
-        let meta_line = f64::from(text.measure("Ag", 12.5, None).1);
-        for row in &a.list_rows {
+
+        // --- phase: article_title_elision_uses_both_scaled_lines ---
+        {
+            let mut text = TextRenderer::new();
+            text.set_text_scale(2.0);
+            let title = "The quick brown fox jumps over the lazy dog";
+            let rendered = two_line_elide(&mut text, title, 15.0, 200.0, TextWeight::Semibold);
             assert!(
-                row.rect.height() >= 12.0 + title_line * 2.0 + 8.0 + meta_line + 10.0,
-                "article row {:?} overlaps title and metadata",
-                row.rect
+                rendered.contains("brown"),
+                "scaled two-line title was shortened to {rendered:?}"
+            );
+            let line_height = text
+                .measure_weighted("Ag", 15.0, None, TextWeight::Semibold)
+                .1;
+            let height = text
+                .measure_weighted(&rendered, 15.0, Some(200.0), TextWeight::Semibold)
+                .1;
+            assert!(
+                height <= line_height * 2.0 + 1.0,
+                "title uses {height}px, exceeding two lines"
             );
         }
     }
 
+    /// Unsubscribe, mark-all-read and rename from the feed context menu persist.
     #[test]
-    fn article_title_elision_uses_both_scaled_lines() {
-        let mut text = TextRenderer::new();
-        text.set_text_scale(2.0);
-        let title = "The quick brown fox jumps over the lazy dog";
-        let rendered = two_line_elide(&mut text, title, 15.0, 200.0, TextWeight::Semibold);
-        assert!(
-            rendered.contains("brown"),
-            "scaled two-line title was shortened to {rendered:?}"
-        );
-        let line_height = text
-            .measure_weighted("Ag", 15.0, None, TextWeight::Semibold)
-            .1;
-        let height = text
-            .measure_weighted(&rendered, 15.0, Some(200.0), TextWeight::Semibold)
-            .1;
-        assert!(
-            height <= line_height * 2.0 + 1.0,
-            "title uses {height}px, exceeding two lines"
-        );
-    }
-
-    #[test]
-    fn feed_menu_captures_host_undo_before_document_history_changes() {
-        let mut a = app();
-        lay_out(&mut a, 640.0, 480.0);
-        a.open_feed_menu(a.store.feeds[0].id, Point::new(100.0, 200.0));
-        assert!(a.handle_local_undo_request(ui::undo::UndoRequest::Undo));
-        assert!(a.handle_local_undo_request(ui::undo::UndoRequest::Redo));
-    }
-
-    #[test]
-    fn feed_menu_stays_within_tiny_viewport() {
-        let mut a = app();
-        lay_out(&mut a, 160.0, 80.0);
-        a.open_feed_menu(a.store.feeds[0].id, Point::new(150.0, 75.0));
-        let r = a.feed_menu.get_rect();
-        assert!(r.x0 >= a.rect.x0 && r.y0 >= a.rect.y0);
-        assert!(
-            r.x1 <= a.rect.x1 && r.y1 <= a.rect.y1,
-            "{r:?} exceeds {:?}",
-            a.rect
-        );
-    }
-
-    #[test]
-    fn context_menu_unsubscribe_removes_feed_and_persists() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        lay_out(&mut a, 1280.0, 800.0);
-
-        let id = open_first_feed_menu(&mut a, &mut doc);
-        assert!(a.store.feed(id).is_some());
-        let had_articles = a.store.unread_for_feed(id)
-            + a.store.articles.iter().filter(|x| x.feed_id == id).count();
-        assert!(had_articles > 0, "the target feed has articles to remove");
-
-        // Click the Unsubscribe row (index 2) via the real click path — this
-        // now opens a confirmation dialog rather than removing on the spot.
-        let p = menu_point_for(&a, 2);
-        assert!(a.click(p, &mut doc), "unsubscribe click is consumed");
-        assert!(!a.feed_menu.is_open(), "the menu closes after the action");
-
-        let m = a
-            .modal
-            .as_ref()
-            .expect("unsubscribe opens a confirmation dialog");
-        assert_eq!(m.intent, ModalIntent::Unsubscribe { feed_id: id });
-        assert!(
-            a.store.feed(id).is_some(),
-            "the feed is NOT removed until the confirmation is accepted"
-        );
-
-        // Confirm via the dialog's real primary ("Unsubscribe") button.
-        lay_out(&mut a, 1280.0, 800.0);
-        a.layout_modal();
-        let primary = a.modal.as_ref().unwrap().dialog.primary_rect().center();
-        assert!(dispatch(&mut a, &mut doc, &cursor_at(primary)));
-        assert!(
-            dispatch(&mut a, &mut doc, &left_press()),
-            "confirm click is consumed"
-        );
-
-        assert!(a.modal.is_none(), "confirming closes the dialog");
-        assert!(
-            a.store.feed(id).is_none(),
-            "the feed is removed from the store"
-        );
-        assert!(
-            !a.store.articles.iter().any(|x| x.feed_id == id),
-            "the feed's articles are removed too"
-        );
-        // Persisted: the document no longer carries the feed or its articles.
-        let loaded = FeedsDoc::load(&doc);
-        assert!(!loaded.feeds.iter().any(|f| f.id == id));
-        assert!(!loaded.articles.iter().any(|x| x.feed_id == id));
-    }
-
-    #[test]
-    fn context_menu_mark_all_read_marks_the_feed_read() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        lay_out(&mut a, 1280.0, 800.0);
-
-        let id = open_first_feed_menu(&mut a, &mut doc);
-        assert!(
-            a.store.unread_for_feed(id) > 0,
-            "the feed starts with unread items"
-        );
-
-        // Click the Mark-all-read row (index 0).
-        let p = menu_point_for(&a, 0);
-        assert!(a.click(p, &mut doc));
-
-        assert_eq!(
-            a.store.unread_for_feed(id),
-            0,
-            "every article in the feed is read"
-        );
-        // Persisted: the document's articles for this feed are all read.
-        let loaded = FeedsDoc::load(&doc);
-        assert!(
-            loaded
-                .articles
-                .iter()
-                .filter(|x| x.feed_id == id)
-                .all(|x| x.read),
-            "the read flags persisted to the document"
-        );
-    }
-
-    #[test]
-    fn context_menu_rename_opens_prefilled_modal_and_persists() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        lay_out(&mut a, 1280.0, 800.0);
-
-        let id = open_first_feed_menu(&mut a, &mut doc);
-        let old_title = a.store.feed(id).unwrap().title.clone();
-
-        // Click the Rename row (index 1) — opens the rename modal prefilled with
-        // the current title in a real TextInput.
-        let p = menu_point_for(&a, 1);
-        assert!(a.click(p, &mut doc));
-        let m = a.modal.as_ref().expect("rename opens the rename modal");
-        assert_eq!(m.intent, ModalIntent::RenameFeed { feed_id: id });
-        assert_eq!(
-            m.dialog.content().value(),
-            old_title,
-            "the field is prefilled with the current title"
-        );
-
-        // Commit a new name through the production mutation and assert it lands
-        // in both the store and the document.
-        a.rename_feed(id, "My Renamed Feed", &mut doc);
-        assert_eq!(a.store.feed(id).unwrap().title, "My Renamed Feed");
-        let loaded = FeedsDoc::load(&doc);
-        assert_eq!(
-            loaded.feeds.iter().find(|f| f.id == id).unwrap().title,
-            "My Renamed Feed",
-            "the rename persisted to the document"
-        );
-    }
-
-    #[test]
-    fn fetched_articles_render_through_the_store() {
-        // A real fetch result (as the worker posts it) folds into the store and
-        // renders — the article carries laid-out content blocks.
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        let tx = a.install_test_worker();
-
-        let feed_id = a.store.feeds[0].id;
-        let before = a.store.articles_for(Filter::Feed(feed_id)).len();
-        let art = Article {
-            id: Uuid::new_v4(),
-            feed_id,
-            title: "Fresh headline".into(),
-            author: "Reporter".into(),
-            url: "https://example.com/fresh".into(),
-            published: a.now,
-            summary: "A summary".into(),
-            blocks: vec![crate::model::ContentBlock::new(
-                BlockKind::Paragraph,
-                "The body text renders as a block.",
-            )],
-            read: false,
-            starred: false,
-            tags: Vec::new(),
-        };
-        tx.send(FetchResult::Articles {
-            feed_id,
-            title: None,
-            articles: vec![art.clone()],
-        })
-        .unwrap();
-
-        // The live (doc-less) drain folds it into the store immediately.
-        assert!(
-            a.drain_fetches_live(),
-            "the fetched article drains into the store"
-        );
-        a.flush_doc_writes(&mut doc);
-
-        let after = a.store.articles_for(Filter::Feed(feed_id));
-        assert_eq!(after.len(), before + 1, "the article joins the feed's list");
-        let fresh = a
-            .store
-            .article(art.id)
-            .expect("the article is in the store");
-        assert!(
-            !fresh.blocks.is_empty(),
-            "the article body renders as blocks"
-        );
-        // Persisted to the document with its content.
-        assert!(
-            FeedsDoc::load(&doc)
-                .articles
-                .iter()
-                .any(|x| x.id == art.id && !x.blocks.is_empty())
-        );
-    }
-
-    #[test]
-    fn native_accessibility_dispatch_edits_the_modal_field() {
-        let mut reader = FeedsApp::new();
-        reader.open_add_subscription();
-        lay_out(&mut reader, 800.0, 600.0);
-        let mut app = ui::App::new(ui::State::new(), Box::new(reader));
-        app.init_layout();
-        let field = app
-            .build_a11y_tree_update(1.0)
-            .nodes
-            .iter()
-            .find(|(_, node)| node.label() == Some("Feed URL"))
-            .map(|(id, _)| *id)
-            .expect("native field must be exported");
-        assert!(
-            field.0 < (1_u64 << 48),
-            "field has no retained layout id: {field:?}"
-        );
-        app.dispatch_a11y_action(
-            field,
-            &A11yAction::SetValue("https://example.invalid/rss.xml".into()),
-        );
-        let after = app.build_a11y_tree_update(1.0);
-        let field = after
-            .nodes
-            .iter()
-            .find(|(_, node)| node.label() == Some("Feed URL"))
-            .unwrap();
-        assert_eq!(field.1.value(), Some("https://example.invalid/rss.xml"));
-    }
-
-    #[test]
-    fn accessibility_modal_field_and_footer_submit_a_real_subscription() {
-        let mut reader = FeedsApp::new();
-        let mut doc = AutoCommit::new();
-        reader.sync(&mut doc, &automerge::ROOT);
-        let _sender = reader.install_test_worker();
-        reader.open_add_subscription();
-        assert!(
-            reader.take_structure_dirty(),
-            "opening must rebuild the native input tree"
-        );
-        assert!(
-            !reader.take_structure_dirty(),
-            "the unchanged tree must remain stable"
-        );
-        lay_out(&mut reader, 800.0, 600.0);
-        let url = "https://example.invalid/feeds.xml";
+    fn feed_context_menu_actions_persist() {
+        // --- phase: context_menu_unsubscribe_removes_feed_and_persists ---
         {
-            let mut dialogs = reader.children_mut();
-            let dialog = dialogs
-                .first_mut()
-                .expect("open dialog must be in the widget tree");
-            {
-                let mut bodies = dialog.children_mut();
-                let body = bodies.first_mut().unwrap();
-                let mut fields = body.children_mut();
-                let field = fields
-                    .first_mut()
-                    .expect("real TextInput must be reachable");
-                assert_eq!(
-                    field.accessibility().unwrap().name.as_deref(),
-                    Some("Feed URL")
-                );
-                assert!(field.perform_action(
-                    &A11yAction::SetValue(url.into()),
-                    &mut doc,
-                    &automerge::ROOT
-                ));
-            }
-            assert!(dialog.perform_semantic_action(
-                "modal.primary",
-                &A11yAction::Activate,
-                &mut doc,
-                &automerge::ROOT
-            ));
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            lay_out(&mut a, 1280.0, 800.0);
+
+            let id = open_first_feed_menu(&mut a, &mut doc);
+            assert!(a.store.feed(id).is_some());
+            let had_articles = a.store.unread_for_feed(id)
+                + a.store.articles.iter().filter(|x| x.feed_id == id).count();
+            assert!(had_articles > 0, "the target feed has articles to remove");
+
+            // Click the Unsubscribe row (index 2) via the real click path — this
+            // now opens a confirmation dialog rather than removing on the spot.
+            let p = menu_point_for(&a, 2);
+            assert!(a.click(p, &mut doc), "unsubscribe click is consumed");
+            assert!(!a.feed_menu.is_open(), "the menu closes after the action");
+
+            let m = a
+                .modal
+                .as_ref()
+                .expect("unsubscribe opens a confirmation dialog");
+            assert_eq!(m.intent, ModalIntent::Unsubscribe { feed_id: id });
+            assert!(
+                a.store.feed(id).is_some(),
+                "the feed is NOT removed until the confirmation is accepted"
+            );
+
+            // Confirm via the dialog's real primary ("Unsubscribe") button.
+            lay_out(&mut a, 1280.0, 800.0);
+            a.layout_modal();
+            let primary = a.modal.as_ref().unwrap().dialog.primary_rect().center();
+            assert!(dispatch(&mut a, &mut doc, &cursor_at(primary)));
+            assert!(
+                dispatch(&mut a, &mut doc, &left_press()),
+                "confirm click is consumed"
+            );
+
+            assert!(a.modal.is_none(), "confirming closes the dialog");
+            assert!(
+                a.store.feed(id).is_none(),
+                "the feed is removed from the store"
+            );
+            assert!(
+                !a.store.articles.iter().any(|x| x.feed_id == id),
+                "the feed's articles are removed too"
+            );
+            // Persisted: the document no longer carries the feed or its articles.
+            let loaded = FeedsDoc::load(&doc);
+            assert!(!loaded.feeds.iter().any(|f| f.id == id));
+            assert!(!loaded.articles.iter().any(|x| x.feed_id == id));
         }
-        reader.sync(&mut doc, &automerge::ROOT);
-        assert!(reader.modal.is_none());
-        assert!(
-            reader.take_structure_dirty(),
-            "closing must remove stale input targets"
-        );
-        assert!(
-            FeedsDoc::load(&doc)
-                .feeds
-                .iter()
-                .any(|feed| feed.url == url)
-        );
+
+        // --- phase: context_menu_mark_all_read_marks_the_feed_read ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            lay_out(&mut a, 1280.0, 800.0);
+
+            let id = open_first_feed_menu(&mut a, &mut doc);
+            assert!(
+                a.store.unread_for_feed(id) > 0,
+                "the feed starts with unread items"
+            );
+
+            // Click the Mark-all-read row (index 0).
+            let p = menu_point_for(&a, 0);
+            assert!(a.click(p, &mut doc));
+
+            assert_eq!(
+                a.store.unread_for_feed(id),
+                0,
+                "every article in the feed is read"
+            );
+            // Persisted: the document's articles for this feed are all read.
+            let loaded = FeedsDoc::load(&doc);
+            assert!(
+                loaded
+                    .articles
+                    .iter()
+                    .filter(|x| x.feed_id == id)
+                    .all(|x| x.read),
+                "the read flags persisted to the document"
+            );
+        }
+
+        // --- phase: context_menu_rename_opens_prefilled_modal_and_persists ---
+        {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            lay_out(&mut a, 1280.0, 800.0);
+
+            let id = open_first_feed_menu(&mut a, &mut doc);
+            let old_title = a.store.feed(id).unwrap().title.clone();
+
+            // Click the Rename row (index 1) — opens the rename modal prefilled with
+            // the current title in a real TextInput.
+            let p = menu_point_for(&a, 1);
+            assert!(a.click(p, &mut doc));
+            let m = a.modal.as_ref().expect("rename opens the rename modal");
+            assert_eq!(m.intent, ModalIntent::RenameFeed { feed_id: id });
+            assert_eq!(
+                m.dialog.content().value(),
+                old_title,
+                "the field is prefilled with the current title"
+            );
+
+            // Commit a new name through the production mutation and assert it lands
+            // in both the store and the document.
+            a.rename_feed(id, "My Renamed Feed", &mut doc);
+            assert_eq!(a.store.feed(id).unwrap().title, "My Renamed Feed");
+            let loaded = FeedsDoc::load(&doc);
+            assert_eq!(
+                loaded.feeds.iter().find(|f| f.id == id).unwrap().title,
+                "My Renamed Feed",
+                "the rename persisted to the document"
+            );
+        }
     }
 
+    /// The add-subscription modal pastes, edits and cancels correctly, and external article links reject local files.
     #[test]
-    fn external_article_links_reject_local_files() {
-        let mut reader = FeedsApp::new();
-        reader.open_url("file:///does-not-exist-tilo-link-proof");
-        assert_eq!(
-            reader.toast.as_ref().map(|(text, _)| text.as_str()),
-            Some(ui::i18n!("feeds-open-link-invalid").as_str())
-        );
+    fn subscription_modal_and_links_accept_only_safe_input() {
+        // --- phase: external_article_links_reject_local_files ---
+        {
+            let mut reader = FeedsApp::new();
+            reader.open_url("file:///does-not-exist-tilo-link-proof");
+            assert_eq!(
+                reader.toast.as_ref().map(|(text, _)| text.as_str()),
+                Some(ui::i18n!("feeds-open-link-invalid").as_str())
+            );
+        }
+
+        // --- phase: add_subscription_modal_pastes_url_and_subscribes ---
+        // Verifies Ctrl+V reaches the add-subscription field and submission uses
+        // the normal `subscribe` path.
+        {
+            use winit::event::Modifiers;
+            use winit::keyboard::ModifiersState;
+
+            // Exercise the host clipboard boundary and the real TextInput paste
+            // handler without touching the user's clipboard or requiring a desktop
+            // clipboard grant. Successful OS transport requires separate native verification.
+            let (services, _recorder) = ui::host::HostServices::recording();
+            let _host = ui::host::enter(&services);
+
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            // A thread-less worker so `subscribe` enqueues without any network.
+            let _tx = a.install_test_worker();
+
+            // Open the dialog through the real toolbar action path, then lay it out.
+            lay_out(&mut a, 1280.0, 800.0);
+            a.open_add_subscription();
+            a.layout_modal();
+            assert_eq!(
+                a.modal.as_ref().map(|m| m.intent),
+                Some(ModalIntent::AddSubscription),
+                "the Add-subscription dialog is open"
+            );
+            assert!(
+                a.modal
+                    .as_ref()
+                    .unwrap()
+                    .dialog
+                    .content()
+                    .value()
+                    .is_empty(),
+                "the URL field starts empty"
+            );
+
+            // Seed the clipboard, then paste with Ctrl+V through `handle_event`.
+            let url = "https://blog.rust-lang.org/feed.xml";
+            ui::text_selection::clipboard_copy(url);
+            let ctrl = Modifiers::from(ModifiersState::CONTROL);
+            assert!(
+                dispatch_mods(&mut a, &mut doc, &char_key("v"), ctrl),
+                "Ctrl+V is consumed by the dialog"
+            );
+            assert_eq!(
+                a.modal.as_ref().unwrap().dialog.content().value(),
+                url,
+                "Ctrl+V pasted the clipboard URL into the real TextInput"
+            );
+
+            // Enter submits: the real `subscribe` runs and the dialog closes.
+            assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::Enter)));
+            assert!(a.modal.is_none(), "submitting closes the dialog");
+            let toast = a.toast.as_ref().map(|(m, _)| m.clone()).unwrap_or_default();
+            assert!(
+                toast.contains(url),
+                "submit ran the real subscribe path for the pasted URL (toast: {toast:?})"
+            );
+        }
+
+        // --- phase: add_subscription_modal_esc_cancels_and_typing_edits ---
+        // Esc cancels the dialog without subscribing, and typing then Ctrl+A +
+        // typing edits the field — exercising the shared caret/selection core
+        // rather than a per-app buffer.
+        {
+            use winit::event::Modifiers;
+            use winit::keyboard::ModifiersState;
+
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            let _tx = a.install_test_worker();
+            lay_out(&mut a, 1280.0, 800.0);
+
+            a.open_add_subscription();
+            a.layout_modal();
+            // Type two characters into the real field.
+            let none = Modifiers::from(ModifiersState::empty());
+            dispatch_mods(&mut a, &mut doc, &char_key("h"), none);
+            dispatch_mods(&mut a, &mut doc, &char_key("i"), none);
+            assert_eq!(a.modal.as_ref().unwrap().dialog.content().value(), "hi");
+            // Select-all + replace, proving the selection core is live.
+            let ctrl = Modifiers::from(ModifiersState::CONTROL);
+            dispatch_mods(&mut a, &mut doc, &char_key("a"), ctrl);
+            dispatch_mods(&mut a, &mut doc, &char_key("x"), none);
+            assert_eq!(
+                a.modal.as_ref().unwrap().dialog.content().value(),
+                "x",
+                "Ctrl+A then a keystroke replaces the whole selection"
+            );
+
+            // Esc cancels — no dialog, no subscription toast.
+            assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::Escape)));
+            assert!(a.modal.is_none(), "Esc closes the dialog");
+            assert!(a.toast.is_none(), "cancelling must not run subscribe");
+        }
     }
 
     // --- add-subscription dialog (real ModalDialog + real TextInput) -------
-
-    /// Verifies Ctrl+V reaches the add-subscription field and submission uses
-    /// the normal `subscribe` path.
-    #[test]
-    fn add_subscription_modal_pastes_url_and_subscribes() {
-        use winit::event::Modifiers;
-        use winit::keyboard::ModifiersState;
-
-        // Exercise the host clipboard boundary and the real TextInput paste
-        // handler without touching the user's clipboard or requiring a desktop
-        // clipboard grant. Successful OS transport requires separate native verification.
-        let (services, _recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
-
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        // A thread-less worker so `subscribe` enqueues without any network.
-        let _tx = a.install_test_worker();
-
-        // Open the dialog through the real toolbar action path, then lay it out.
-        lay_out(&mut a, 1280.0, 800.0);
-        a.open_add_subscription();
-        a.layout_modal();
-        assert_eq!(
-            a.modal.as_ref().map(|m| m.intent),
-            Some(ModalIntent::AddSubscription),
-            "the Add-subscription dialog is open"
-        );
-        assert!(
-            a.modal
-                .as_ref()
-                .unwrap()
-                .dialog
-                .content()
-                .value()
-                .is_empty(),
-            "the URL field starts empty"
-        );
-
-        // Seed the clipboard, then paste with Ctrl+V through `handle_event`.
-        let url = "https://blog.rust-lang.org/feed.xml";
-        ui::text_selection::clipboard_copy(url);
-        let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        assert!(
-            dispatch_mods(&mut a, &mut doc, &char_key("v"), ctrl),
-            "Ctrl+V is consumed by the dialog"
-        );
-        assert_eq!(
-            a.modal.as_ref().unwrap().dialog.content().value(),
-            url,
-            "Ctrl+V pasted the clipboard URL into the real TextInput"
-        );
-
-        // Enter submits: the real `subscribe` runs and the dialog closes.
-        assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::Enter)));
-        assert!(a.modal.is_none(), "submitting closes the dialog");
-        let toast = a.toast.as_ref().map(|(m, _)| m.clone()).unwrap_or_default();
-        assert!(
-            toast.contains(url),
-            "submit ran the real subscribe path for the pasted URL (toast: {toast:?})"
-        );
-    }
-
-    /// Esc cancels the dialog without subscribing, and typing then Ctrl+A +
-    /// typing edits the field — exercising the shared caret/selection core
-    /// rather than a per-app buffer.
-    #[test]
-    fn add_subscription_modal_esc_cancels_and_typing_edits() {
-        use winit::event::Modifiers;
-        use winit::keyboard::ModifiersState;
-
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        let _tx = a.install_test_worker();
-        lay_out(&mut a, 1280.0, 800.0);
-
-        a.open_add_subscription();
-        a.layout_modal();
-        // Type two characters into the real field.
-        let none = Modifiers::from(ModifiersState::empty());
-        dispatch_mods(&mut a, &mut doc, &char_key("h"), none);
-        dispatch_mods(&mut a, &mut doc, &char_key("i"), none);
-        assert_eq!(a.modal.as_ref().unwrap().dialog.content().value(), "hi");
-        // Select-all + replace, proving the selection core is live.
-        let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        dispatch_mods(&mut a, &mut doc, &char_key("a"), ctrl);
-        dispatch_mods(&mut a, &mut doc, &char_key("x"), none);
-        assert_eq!(
-            a.modal.as_ref().unwrap().dialog.content().value(),
-            "x",
-            "Ctrl+A then a keystroke replaces the whole selection"
-        );
-
-        // Esc cancels — no dialog, no subscription toast.
-        assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::Escape)));
-        assert!(a.modal.is_none(), "Esc closes the dialog");
-        assert!(a.toast.is_none(), "cancelling must not run subscribe");
-    }
 }

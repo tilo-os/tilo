@@ -137,44 +137,49 @@ pub enum RecipientControlErrorCode {
 mod tests {
     use super::*;
 
-    /// The recipient-control socket frames: a big-endian `u32` length, at most
-    /// 128 KiB, never empty. Files, the launcher and the filesystem daemon
-    /// are built separately and must agree.
+    /// The recipient-control socket framing is pinned and an admission's Debug redacts its only
+    /// secret-bearing field.
     #[test]
-    fn recipient_control_framing_is_pinned() {
-        assert_eq!(
-            RECIPIENT_CONTROL_FRAMING.encode(b"ab").unwrap(),
-            [0, 0, 0, 2, b'a', b'b']
-        );
-        assert!(RECIPIENT_CONTROL_FRAMING.encode(&[]).is_err());
-        assert!(
-            RECIPIENT_CONTROL_FRAMING
-                .encode(&vec![0; 128 * 1024])
-                .is_ok()
-        );
-        assert!(
-            RECIPIENT_CONTROL_FRAMING
-                .encode(&vec![0; 128 * 1024 + 1])
-                .is_err()
-        );
-        assert!(
-            RECIPIENT_CONTROL_FRAMING
-                .read(&mut &[0_u8, 0, 0, 0][..])
-                .is_err()
-        );
-    }
+    fn recipient_control_frames_are_pinned_and_admissions_redact_secrets() {
+        // Phase: recipient_control_framing_is_pinned.
+        // The recipient-control socket frames: a big-endian `u32` length, at most
+        // 128 KiB, never empty. Files, the launcher and the filesystem daemon
+        // are built separately and must agree.
+        {
+            assert_eq!(
+                RECIPIENT_CONTROL_FRAMING.encode(b"ab").unwrap(),
+                [0, 0, 0, 2, b'a', b'b']
+            );
+            assert!(RECIPIENT_CONTROL_FRAMING.encode(&[]).is_err());
+            assert!(
+                RECIPIENT_CONTROL_FRAMING
+                    .encode(&vec![0; 128 * 1024])
+                    .is_ok()
+            );
+            assert!(
+                RECIPIENT_CONTROL_FRAMING
+                    .encode(&vec![0; 128 * 1024 + 1])
+                    .is_err()
+            );
+            assert!(
+                RECIPIENT_CONTROL_FRAMING
+                    .read(&mut &[0_u8, 0, 0, 0][..])
+                    .is_err()
+            );
+        }
 
-    #[test]
-    fn admission_debug_redacts_the_only_secret_bearing_field() {
-        let secret = "tilo-file://v2/payload#0123456789abcdef";
-        let request = RecipientControlRequestV1 {
-            protocol_version: RECIPIENT_CONTROL_VERSION,
-            operation: RecipientControlOperationV1::AdmitV2 { uri: secret.into() },
-        };
-        assert!(!format!("{request:?}").contains(secret));
-        let bytes = crate::canonical_bytes(&request).unwrap();
-        let decoded: RecipientControlRequestV1 =
-            crate::canonical::from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(decoded, request);
+        // Phase: admission_debug_redacts_the_only_secret_bearing_field.
+        {
+            let secret = "tilo-file://v2/payload#0123456789abcdef";
+            let request = RecipientControlRequestV1 {
+                protocol_version: RECIPIENT_CONTROL_VERSION,
+                operation: RecipientControlOperationV1::AdmitV2 { uri: secret.into() },
+            };
+            assert!(!format!("{request:?}").contains(secret));
+            let bytes = crate::canonical_bytes(&request).unwrap();
+            let decoded: RecipientControlRequestV1 =
+                crate::canonical::from_canonical_bytes(&bytes).unwrap();
+            assert_eq!(decoded, request);
+        }
     }
 }

@@ -25,7 +25,7 @@ use std::process::{Child, Command, Stdio};
 use tilo_rollback::{
     Config, Pbkdf, approval, confirm, counter, exec, keyslots, lockout, policy,
     policy::{Prediction, Workspace},
-    token::RollbackToken,
+    token::{RollbackToken, SealedObject, SignedPrediction},
     tpm_policy,
 };
 
@@ -150,7 +150,8 @@ impl Tpm {
             child,
         };
         let mut last = String::new();
-        for _ in 0..60 {
+        // Readiness usually takes a few probes; 300 x 100 ms only bounds a hang.
+        for _ in 0..300 {
             std::thread::sleep(std::time::Duration::from_millis(100));
             // Already-exited swtpm means the port pair was taken; retry with a new one.
             if let Ok(Some(status)) = tpm.child.try_wait() {
@@ -338,11 +339,12 @@ impl Fixture {
             self.dir(),
             floor,
             target,
-            counter::MAX_INCREMENTS_PER_ADVANCE,
-            Path::new(&self.cfg.pcr_public_key),
-            &self.authority_name,
-            &approvals,
-            Some(&self.approval_dir()),
+            &counter::FloorApprovals {
+                authority_public_key: Path::new(&self.cfg.pcr_public_key),
+                authority_key_name: &self.authority_name,
+                approvals: &approvals,
+                dir: Some(&self.approval_dir()),
+            },
         )
         .expect("advance the floor");
         assert!(
@@ -393,35 +395,29 @@ impl Fixture {
         pin: Option<&[u8]>,
     ) -> RollbackToken {
         let ws = self.ws();
-        let operand = floor.operand_for(generation).expect("operand");
-        let digest = policy::seal_policy(
-            &self.runner,
-            &ws,
-            &self.key_name,
-            &policy::pcr_selection(&self.cfg.pcr_bank, &self.cfg.platform_pcrs),
+        let sealed_policy = policy::GenerationPolicy {
             generation,
-            policy::NvConstraint {
+            key_name: &self.key_name,
+            pcr_bank: &self.cfg.pcr_bank,
+            pcrs: &self.cfg.pcrs,
+            platform_pcrs: &self.cfg.platform_pcrs,
+            nv: policy::NvConstraint {
                 index: self.cfg.nv_index,
-                operand,
+                operand: floor.operand_for(generation).expect("operand"),
             },
-            pin.is_some(),
-        )
-        .expect("seal policy");
+            pin: pin.is_some(),
+        };
+        let digest = policy::seal_policy(&self.runner, &ws, &sealed_policy).expect("seal policy");
         let (pu, pr) = keyslots::seal(&self.runner, &ws, secret, &digest, pin).expect("seal");
         RollbackToken::new(
             0,
-            generation,
-            self.cfg.nv_index,
-            operand,
+            &sealed_policy,
             floor.base,
-            &self.cfg.pcr_bank,
-            &self.cfg.pcrs,
-            &self.cfg.platform_pcrs,
-            pin.is_some(),
-            &pu,
-            &pr,
-            &self.key_name,
-            &digest,
+            &SealedObject {
+                public: &pu,
+                private: &pr,
+                policy_digest: &digest,
+            },
             preds,
         )
     }
@@ -458,6 +454,20 @@ fn gen_rsa(priv_path: &Path, pub_path: &Path) {
     let generated = tilo_crypto::generate_tpm_authority_key().expect("generate TPM authority key");
     std::fs::write(priv_path, generated.private_key_pem().as_bytes()).expect("write private key");
     std::fs::write(pub_path, generated.public_key_pem().as_bytes()).expect("write public key");
+}
+
+/// A generation enrolled without a PIN.
+fn unpinned(
+    generation: u64,
+    floor: counter::FloorState,
+    predictions: &[Prediction],
+) -> keyslots::Enrollment<'_> {
+    keyslots::Enrollment {
+        generation,
+        floor,
+        predictions,
+        pin: None,
+    }
 }
 
 /// A LUKS2 image on a plain file, slot 0 holding `recovery`.
@@ -626,23 +636,7 @@ fn a_new_signed_prediction_restores_unlock_after_the_measurements_change() {
     // the difference between prompting for a passphrase on every firmware update and not.
     let after = f.predict(7, &f.sign_priv, "post-update");
     let mut updated = token.clone();
-    updated.predictions = RollbackToken::new(
-        0,
-        7,
-        f.cfg.nv_index,
-        token.nv_operand,
-        token.nv_base,
-        &f.cfg.pcr_bank,
-        &f.cfg.pcrs,
-        &f.cfg.platform_pcrs,
-        false,
-        b"x",
-        b"y",
-        &f.key_name,
-        b"z",
-        &[before, after],
-    )
-    .predictions;
+    updated.predictions = [before, after].iter().map(SignedPrediction::from).collect();
     assert_eq!(
         updated.sealed_private, token.sealed_private,
         "the sealed blob must not have been re-created"
@@ -676,23 +670,10 @@ fn a_release_prediction_cannot_authorize_a_changed_device_platform_pcr() {
     // because PCR7 is applied after PolicyAuthorize resets the digest.
     let new_release_prediction = f.predict(7, &f.sign_priv, "same-target-uki");
     let mut changed = token;
-    changed.predictions = RollbackToken::new(
-        0,
-        7,
-        f.cfg.nv_index,
-        changed.nv_operand,
-        changed.nv_base,
-        &f.cfg.pcr_bank,
-        &f.cfg.pcrs,
-        &f.cfg.platform_pcrs,
-        false,
-        b"x",
-        b"y",
-        &f.key_name,
-        b"z",
-        &[new_release_prediction],
-    )
-    .predictions;
+    changed.predictions = [new_release_prediction]
+        .iter()
+        .map(SignedPrediction::from)
+        .collect();
     assert!(
         f.try_unseal(&changed, None).is_err(),
         "changed device PCR7 must remain bound after release authorization"
@@ -866,7 +847,12 @@ fn a_generation_keyslot_round_trips_and_the_recovery_key_survives() {
 
     let preds = vec![f.predict(7, &f.sign_priv, "g7")];
     let (slot, token_id) = keyslots::enroll_generation(
-        &f.runner, &ws, &img, &f.cfg, 7, floor, &preds, recovery, None,
+        &f.runner,
+        &ws,
+        &img,
+        &f.cfg,
+        &unpinned(7, floor, &preds),
+        recovery,
     )
     .expect("enroll generation 7");
     assert_ne!(slot, 0, "the recovery key's slot must not be reused");
@@ -900,12 +886,24 @@ fn a_slot_is_never_removed_without_a_proven_alternative() {
 
     let p6 = vec![f.predict(6, &f.sign_priv, "g6")];
     let p7 = vec![f.predict(7, &f.sign_priv, "g7")];
-    let (slot6, tok6) =
-        keyslots::enroll_generation(&f.runner, &ws, &img, &f.cfg, 6, floor, &p6, recovery, None)
-            .expect("enroll 6");
-    let (_slot7, _tok7) =
-        keyslots::enroll_generation(&f.runner, &ws, &img, &f.cfg, 7, floor, &p7, recovery, None)
-            .expect("enroll 7");
+    let (slot6, tok6) = keyslots::enroll_generation(
+        &f.runner,
+        &ws,
+        &img,
+        &f.cfg,
+        &unpinned(6, floor, &p6),
+        recovery,
+    )
+    .expect("enroll 6");
+    let (_slot7, _tok7) = keyslots::enroll_generation(
+        &f.runner,
+        &ws,
+        &img,
+        &f.cfg,
+        &unpinned(7, floor, &p7),
+        recovery,
+    )
+    .expect("enroll 7");
 
     let tokens = keyslots::list_tokens(&f.runner, &img).expect("list");
     let t7 = &tokens
@@ -969,9 +967,15 @@ fn a_restored_header_resurrects_the_token_but_the_floor_still_refuses_it() {
 
     // Generation 5 is enrolled while it is inside the window.
     let p5 = vec![f.predict(5, &f.sign_priv, "g5")];
-    let (slot5, tok5) =
-        keyslots::enroll_generation(&f.runner, &ws, &img, &f.cfg, 5, floor, &p5, recovery, None)
-            .expect("enroll 5");
+    let (slot5, tok5) = keyslots::enroll_generation(
+        &f.runner,
+        &ws,
+        &img,
+        &f.cfg,
+        &unpinned(5, floor, &p5),
+        recovery,
+    )
+    .expect("enroll 5");
     let t5 = keyslots::list_tokens(&f.runner, &img)
         .expect("list")
         .into_iter()
@@ -998,9 +1002,15 @@ fn a_restored_header_resurrects_the_token_but_the_floor_still_refuses_it() {
 
     // Time passes: generation 8 is confirmed, the floor moves past 5, and 5's keyslot is pruned.
     let p8 = vec![f.predict(8, &f.sign_priv, "g8")];
-    let (_slot8, _tok8) =
-        keyslots::enroll_generation(&f.runner, &ws, &img, &f.cfg, 8, floor, &p8, recovery, None)
-            .expect("enroll 8");
+    let (_slot8, _tok8) = keyslots::enroll_generation(
+        &f.runner,
+        &ws,
+        &img,
+        &f.cfg,
+        &unpinned(8, floor, &p8),
+        recovery,
+    )
+    .expect("enroll 8");
     let t8 = keyslots::list_tokens(&f.runner, &img)
         .expect("list")
         .into_iter()
@@ -1090,11 +1100,8 @@ fn confirming_a_generation_enrolls_it_prunes_the_window_and_then_raises_the_floo
         &ws,
         &img,
         &f.cfg,
-        5,
-        floor,
-        &[f.predict(5, &f.sign_priv, "")],
+        &unpinned(5, floor, &[f.predict(5, &f.sign_priv, "")]),
         recovery,
-        None,
     )
     .expect("enroll 5");
     confirm::save_state(
@@ -1200,11 +1207,8 @@ fn a_declared_floor_closes_the_window_on_a_vulnerable_generation() {
         &ws,
         &img,
         &f.cfg,
-        7,
-        floor,
-        &[f.predict(7, &f.sign_priv, "")],
+        &unpinned(7, floor, &[f.predict(7, &f.sign_priv, "")]),
         recovery,
-        None,
     )
     .expect("enroll 7");
     confirm::save_state(
@@ -1276,8 +1280,15 @@ fn a_declared_floor_above_the_running_generation_is_refused_before_anything_move
     let p = f.predict(7, &f.sign_priv, "");
     policy::write_signed_prediction(&preds, 7, &f.cfg.pcr_bank, &f.cfg.pcrs, &p).expect("write");
     let floor = f.floor(5);
-    keyslots::enroll_generation(&f.runner, &ws, &img, &f.cfg, 7, floor, &[p], recovery, None)
-        .expect("enroll 7");
+    keyslots::enroll_generation(
+        &f.runner,
+        &ws,
+        &img,
+        &f.cfg,
+        &unpinned(7, floor, &[p]),
+        recovery,
+    )
+    .expect("enroll 7");
     confirm::save_state(
         &state,
         &confirm::State {
@@ -1394,11 +1405,13 @@ fn an_unattended_confirmation_works_from_the_boot_secret_alone() {
         &ws,
         &img,
         &f.cfg,
-        6,
-        floor,
-        &[f.predict(6, &f.sign_priv, "")],
+        &keyslots::Enrollment {
+            generation: 6,
+            floor,
+            predictions: &[f.predict(6, &f.sign_priv, "")],
+            pin: Some(pin),
+        },
         recovery,
-        Some(pin),
     )
     .expect("enroll 6 with a PIN");
     keyslots::enroll_generation(
@@ -1406,11 +1419,13 @@ fn an_unattended_confirmation_works_from_the_boot_secret_alone() {
         &ws,
         &img,
         &f.cfg,
-        7,
-        floor,
-        &[f.predict(7, &f.sign_priv, "")],
+        &keyslots::Enrollment {
+            generation: 7,
+            floor,
+            predictions: &[f.predict(7, &f.sign_priv, "")],
+            pin: Some(pin),
+        },
         recovery,
-        Some(pin),
     )
     .expect("enroll 7 with a PIN");
     let foreign = keyslots::foreign_keyslots(&f.runner, &img).expect("foreign slots");
@@ -1488,11 +1503,8 @@ fn an_unattended_confirmation_refuses_a_proof_that_is_not_that_generations_secre
             &ws,
             &img,
             &f.cfg,
-            g,
-            floor,
-            &[f.predict(g, &f.sign_priv, "")],
+            &unpinned(g, floor, &[f.predict(g, &f.sign_priv, "")]),
             recovery,
-            None,
         )
         .expect("enroll");
     }
@@ -1559,11 +1571,8 @@ fn a_confirmation_refuses_to_proceed_when_the_recovery_keyslot_has_vanished() {
         &ws,
         &img,
         &f.cfg,
-        7,
-        floor,
-        &[p7],
+        &unpinned(7, floor, &[p7]),
         recovery,
-        None,
     )
     .expect("enroll 7");
     let foreign = keyslots::foreign_keyslots(&f.runner, &img).expect("foreign");
@@ -1657,11 +1666,8 @@ fn confirming_the_running_generation_keeps_the_staged_generations_keyslot() {
         &ws,
         &img,
         &f.cfg,
-        5,
-        floor,
-        &[f.predict(5, &f.sign_priv, "")],
+        &unpinned(5, floor, &[f.predict(5, &f.sign_priv, "")]),
         recovery,
-        None,
     )
     .expect("enroll 5");
     let (slot6, _) = keyslots::enroll_generation(
@@ -1669,11 +1675,8 @@ fn confirming_the_running_generation_keeps_the_staged_generations_keyslot() {
         &ws,
         &img,
         &f.cfg,
-        6,
-        floor,
-        &[f.predict(6, &f.sign_priv, "")],
+        &unpinned(6, floor, &[f.predict(6, &f.sign_priv, "")]),
         recovery,
-        None,
     )
     .expect("stage 6");
     confirm::save_state(
@@ -2181,11 +2184,8 @@ fn setup_generations_5_to_8(
             &ws,
             &img,
             &f.cfg,
-            g,
-            floor,
-            &[f.predict(g, &f.sign_priv, "")],
+            &unpinned(g, floor, &[f.predict(g, &f.sign_priv, "")]),
             recovery,
-            None,
         )
         .expect("enroll");
     }

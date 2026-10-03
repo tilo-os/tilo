@@ -34,10 +34,12 @@
 //! the product's display name:
 //!
 //! - [`DEVCERT_PREIMAGE_TAG`] — `tilo-devcert-v1\0`
+//! - [`DEVCERT_V2_PREIMAGE_TAG`] — `tilo-devcert-v2\0` (foreign devices)
 //! - [`REVOCATION_PREIMAGE_TAG`] — `tilo-revocation-v1\0`
 //! - [`ENROLLMENT_PREIMAGE_TAG`] — `tilo-enrollment-v2\0`
 //! - [`APPROVAL_REQUEST_TAG`] — `tilo-device-approval-request-v1\0`
 //! - [`APPROVAL_RESPONSE_TAG`] — `tilo-device-approval-response-v1\0`
+//! - [`CERTIFICATION_REQUEST_TAG`] — `tilo-device-certification-request-v1\0`
 //!
 //! The tag terminator (`\0`) plus a version marker (`v1`) inside the
 //! literal ensure two things: (a) prefix ambiguity is impossible
@@ -77,12 +79,23 @@
 pub mod approval;
 pub mod canonical;
 pub mod cert;
+pub mod certification;
+pub mod cloud_enrollment;
 pub mod directory;
 pub mod enrollment;
 pub mod image;
+#[cfg(target_os = "macos")]
+mod keychain;
+pub mod machine_mesh;
+#[cfg(target_os = "linux")]
+pub mod nofollow;
+// Identity files need an owner-checked filesystem; the browser keeps its
+// device key in host custody instead.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod persist;
 pub mod projection;
 pub mod revocation;
+pub mod root_envelope;
 
 pub use approval::{
     APPROVAL_REQUEST_TAG, APPROVAL_RESPONSE_TAG, APPROVAL_SCHEMA_VERSION, ApprovalError,
@@ -90,8 +103,13 @@ pub use approval::{
 };
 pub use canonical::CanonicalError;
 pub use cert::{
-    DEVCERT_PREIMAGE_TAG, DeviceCapabilities, DeviceCert, DeviceCertError,
+    DEVCERT_PREIMAGE_TAG, DEVCERT_V2_PREIMAGE_TAG, DeviceCapabilities, DeviceCert, DeviceCertError,
     device_cert_signing_digest, sign_device_cert, verify_device_cert, verify_device_cert_at,
+};
+pub use certification::{
+    CERTIFICATION_REQUEST_TAG, CERTIFICATION_SCHEMA_VERSION, CertificationError,
+    CertificationPolicy, CertificationRequest, MAX_CERTIFICATION_REQUEST_LIFETIME_NS,
+    issue_device_cert, prepare_device_cert, verify_issued_cert,
 };
 pub use directory::{
     DirectoryError, DirectoryUpdate, WorkspaceDirectory, WorkspaceId, WorkspaceMeta,
@@ -109,8 +127,10 @@ pub use image::{
     sign_image_signing_authorization, verify_image_endorsement_at,
     verify_image_endorsement_with_revocations_at, verify_image_signing_authorization_at,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use persist::{
-    DeviceKeyOutcome, IdentityPaths, PersistError, adopt_device_key, load_or_create_device_key,
+    DeviceKeyOutcome, IdentityPaths, PersistError, adopt_device_key, install_device_cert,
+    joined_device_is_ready, load_or_create_device_key, provision_joined_device,
 };
 pub use projection::{
     GovernedDeviceIdentityV2, GovernedHumanIdentityV1, GovernedHumanIdentityV2,
@@ -236,55 +256,61 @@ impl DeviceIdentity {
 mod tests {
     use super::*;
 
-    /// The signing-preimage byte constants are wire ABI. If any of
-    /// these byte sequences change, previously-issued
-    /// certificates and revocations stop verifying — that would
-    /// silently disconnect every device in the field. Freeze them.
+    /// The signing preimage is a frozen ABI, and user and device identities round-trip after
+    /// generation.
     #[test]
-    fn signing_preimage_is_frozen_abi() {
-        assert_eq!(cert::DEVCERT_PREIMAGE_TAG, b"tilo-devcert-v1\0");
-        assert_eq!(cert::DEVCERT_PREIMAGE_TAG.len(), 16);
+    fn identities_generate_round_trip_under_a_frozen_signing_preimage() {
+        // Phase: signing_preimage_is_frozen_abi.
+        // The signing-preimage byte constants are wire ABI. If any of
+        // these byte sequences change, previously-issued
+        // certificates and revocations stop verifying — that would
+        // silently disconnect every device in the field. Freeze them.
+        {
+            assert_eq!(cert::DEVCERT_PREIMAGE_TAG, b"tilo-devcert-v1\0");
+            assert_eq!(cert::DEVCERT_PREIMAGE_TAG.len(), 16);
+            assert_eq!(cert::DEVCERT_V2_PREIMAGE_TAG, b"tilo-devcert-v2\0");
 
-        assert_eq!(revocation::REVOCATION_PREIMAGE_TAG, b"tilo-revocation-v1\0");
-        assert_eq!(revocation::REVOCATION_PREIMAGE_TAG.len(), 19);
+            assert_eq!(revocation::REVOCATION_PREIMAGE_TAG, b"tilo-revocation-v1\0");
+            assert_eq!(revocation::REVOCATION_PREIMAGE_TAG.len(), 19);
 
-        assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG, b"tilo-enrollment-v2\0");
-        assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG.len(), 19);
+            assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG, b"tilo-enrollment-v2\0");
+            assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG.len(), 19);
 
-        assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG, b"tilo-dir-delta-v1\0");
-        assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG.len(), 18);
+            assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG, b"tilo-dir-delta-v1\0");
+            assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG.len(), 18);
 
-        assert_eq!(
-            approval::APPROVAL_REQUEST_TAG,
-            b"tilo-device-approval-request-v1\0"
-        );
-        assert_eq!(approval::APPROVAL_REQUEST_TAG.len(), 32);
-        assert_eq!(
-            approval::APPROVAL_RESPONSE_TAG,
-            b"tilo-device-approval-response-v1\0"
-        );
-        assert_eq!(approval::APPROVAL_RESPONSE_TAG.len(), 33);
-    }
+            assert_eq!(
+                approval::APPROVAL_REQUEST_TAG,
+                b"tilo-device-approval-request-v1\0"
+            );
+            assert_eq!(approval::APPROVAL_REQUEST_TAG.len(), 32);
+            assert_eq!(
+                approval::APPROVAL_RESPONSE_TAG,
+                b"tilo-device-approval-response-v1\0"
+            );
+            assert_eq!(approval::APPROVAL_RESPONSE_TAG.len(), 33);
+        }
 
-    #[test]
-    fn user_identity_generate_round_trip() {
-        let (_sk, user) = UserIdentity::generate("Alice", 1_720_000_000_000_000_000);
-        assert_eq!(user.label, "Alice");
-        assert_eq!(user.created_at_ns, 1_720_000_000_000_000_000);
-        assert_eq!(user.public_key.len(), 32);
+        // Phase: user_identity_generate_round_trip.
+        {
+            let (_sk, user) = UserIdentity::generate("Alice", 1_720_000_000_000_000_000);
+            assert_eq!(user.label, "Alice");
+            assert_eq!(user.created_at_ns, 1_720_000_000_000_000_000);
+            assert_eq!(user.public_key.len(), 32);
 
-        // Bytes round-trip through canonical postcard encoding.
-        let bytes = canonical::canonical_bytes(&user).unwrap();
-        let back: UserIdentity = canonical::from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(user, back);
-    }
+            // Bytes round-trip through canonical postcard encoding.
+            let bytes = canonical::canonical_bytes(&user).unwrap();
+            let back: UserIdentity = canonical::from_canonical_bytes(&bytes).unwrap();
+            assert_eq!(user, back);
+        }
 
-    #[test]
-    fn device_identity_generate_round_trip() {
-        let (_sk, dev) = DeviceIdentity::generate("Framework 16", 1_720_000_000_000_000_000);
-        assert_eq!(dev.label, "Framework 16");
-        let bytes = canonical::canonical_bytes(&dev).unwrap();
-        let back: DeviceIdentity = canonical::from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(dev, back);
+        // Phase: device_identity_generate_round_trip.
+        {
+            let (_sk, dev) = DeviceIdentity::generate("Framework 16", 1_720_000_000_000_000_000);
+            assert_eq!(dev.label, "Framework 16");
+            let bytes = canonical::canonical_bytes(&dev).unwrap();
+            let back: DeviceIdentity = canonical::from_canonical_bytes(&bytes).unwrap();
+            assert_eq!(dev, back);
+        }
     }
 }

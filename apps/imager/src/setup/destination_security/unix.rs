@@ -230,61 +230,65 @@ mod tests {
         assert!(error.to_string().contains(message), "{error}");
     }
 
+    /// Ancestor ownership, type and sticky-bit rules.
     #[test]
-    fn ancestors_owned_by_self_or_root_are_trusted() {
-        check_ownership(dir(ME, 0o755), None, false, ME).unwrap();
-        check_ownership(dir(0, 0o755), Some(ME), false, ME).unwrap();
-        check_ownership(dir(0, 0o755), Some(0), false, 0).unwrap();
-    }
+    fn ancestor_trust_requires_trusted_owner_directory_and_sticky_protection() {
+        // Phase `ancestors_owned_by_self_or_root_are_trusted`.
+        {
+            check_ownership(dir(ME, 0o755), None, false, ME).unwrap();
+            check_ownership(dir(0, 0o755), Some(ME), false, ME).unwrap();
+            check_ownership(dir(0, 0o755), Some(0), false, 0).unwrap();
+        }
 
-    #[test]
-    fn ancestor_owned_by_another_account_is_refused() {
-        for owner in [OTHER, OVERFLOW] {
+        // Phase `ancestor_owned_by_another_account_is_refused`.
+        {
+            for owner in [OTHER, OVERFLOW] {
+                refused(
+                    check_ownership(dir(owner, 0o755), None, false, ME),
+                    "untrusted owner",
+                );
+            }
+            // Root does not trust an ordinary account's directory either.
             refused(
-                check_ownership(dir(owner, 0o755), None, false, ME),
+                check_ownership(dir(ME, 0o700), None, false, 0),
                 "untrusted owner",
             );
         }
-        // Root does not trust an ordinary account's directory either.
-        refused(
-            check_ownership(dir(ME, 0o700), None, false, 0),
-            "untrusted owner",
-        );
-    }
 
-    #[test]
-    fn non_directory_ancestor_is_refused() {
-        let file = Observed {
-            is_dir: false,
-            uid: ME,
-            mode: 0o100_700,
-        };
-        refused(check_ownership(file, None, false, ME), "untrusted owner");
-    }
-
-    #[test]
-    fn writable_ancestor_needs_the_sticky_bit() {
-        refused(
-            check_ownership(dir(0, 0o777), Some(ME), false, ME),
-            "without sticky protection",
-        );
-        refused(
-            check_ownership(dir(ME, 0o775), None, false, ME),
-            "without sticky protection",
-        );
-        check_ownership(dir(0, 0o1777), Some(ME), false, ME).unwrap();
-        check_ownership(dir(0, 0o1777), None, false, ME).unwrap();
-    }
-
-    #[test]
-    fn sticky_ancestor_does_not_protect_a_foreign_child() {
-        for child in [OTHER, OVERFLOW] {
-            refused(
-                check_ownership(dir(0, 0o1777), Some(child), false, ME),
-                "does not protect the selected child",
-            );
+        // Phase `non_directory_ancestor_is_refused`.
+        {
+            let file = Observed {
+                is_dir: false,
+                uid: ME,
+                mode: 0o100_700,
+            };
+            refused(check_ownership(file, None, false, ME), "untrusted owner");
         }
-        check_ownership(dir(0, 0o1777), Some(0), false, ME).unwrap();
+
+        // Phase `writable_ancestor_needs_the_sticky_bit`.
+        {
+            refused(
+                check_ownership(dir(0, 0o777), Some(ME), false, ME),
+                "without sticky protection",
+            );
+            refused(
+                check_ownership(dir(ME, 0o775), None, false, ME),
+                "without sticky protection",
+            );
+            check_ownership(dir(0, 0o1777), Some(ME), false, ME).unwrap();
+            check_ownership(dir(0, 0o1777), None, false, ME).unwrap();
+        }
+
+        // Phase `sticky_ancestor_does_not_protect_a_foreign_child`.
+        {
+            for child in [OTHER, OVERFLOW] {
+                refused(
+                    check_ownership(dir(0, 0o1777), Some(child), false, ME),
+                    "does not protect the selected child",
+                );
+            }
+            check_ownership(dir(0, 0o1777), Some(0), false, ME).unwrap();
+        }
     }
 
     #[test]

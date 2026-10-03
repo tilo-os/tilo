@@ -1,0 +1,2143 @@
+//! Collaborator roster popover.
+//!
+//! This component owns the popover's layout, painting and hit targets. The
+//! host supplies a policy-filtered model and applies the semantic action
+//! returned by [`CollaboratorsOverlay::hit_test`].
+
+use std::collections::HashMap;
+
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::peniko::{Color, Fill};
+
+use ui::text_render::{TextRenderer, TextWeight};
+use ui::theme::Theme;
+use ui::widget::{Button, ButtonFace};
+use winit::keyboard::{Key, NamedKey};
+
+use tilo_desktop_model::{Collaborator, DesktopTree};
+
+const FOOTER_H: f64 = 40.0;
+const WARNING_H: f64 = 24.0;
+const ACTIONS_H: f64 = 40.0;
+/// Minimum pointer target (HIG §9.6): every button in this popover —
+/// Follow/Stop, Invite, Join — is at least this tall.
+const MIN_TARGET: f64 = 32.0;
+const INVITED_ROW_ALPHA: f32 = 0.55;
+const ROW_H: f64 = 64.0;
+const MY_STATUS_H: f64 = 92.0;
+const EXPOSURE_H: f64 = 44.0;
+const ROSTER_PAGE_SIZE: usize = 3;
+const ROSTER_PAGER_H: f64 = 36.0;
+
+/// A compact arrow with an explicit head. Used where a relationship must
+/// remain directional without turning a presence treatment into a label.
+fn draw_direction_arrow(
+    scene: &mut Scene,
+    transform: Affine,
+    from: Point,
+    to: Point,
+    color: Color,
+) {
+    let dx = to.x - from.x;
+    let dy = to.y - from.y;
+    let length = dx.hypot(dy);
+    if length <= f64::EPSILON {
+        return;
+    }
+    let ux = dx / length;
+    let uy = dy / length;
+    let head = 3.5;
+    let wing = 2.3;
+    let base = Point::new(to.x - ux * head, to.y - uy * head);
+    let left = Point::new(base.x - uy * wing, base.y + ux * wing);
+    let right = Point::new(base.x + uy * wing, base.y - ux * wing);
+    let stroke = vello::kurbo::Stroke::new(1.2);
+    scene.stroke(
+        &stroke,
+        transform,
+        color,
+        None,
+        &vello::kurbo::Line::new(from, to),
+    );
+    scene.stroke(
+        &stroke,
+        transform,
+        color,
+        None,
+        &vello::kurbo::Line::new(left, to),
+    );
+    scene.stroke(
+        &stroke,
+        transform,
+        color,
+        None,
+        &vello::kurbo::Line::new(right, to),
+    );
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "a popover can never contain enough rows to exceed f64 integer precision"
+)]
+fn row_count_as_f64(count: usize) -> f64 {
+    count as f64
+}
+
+/// What a pointer press on the open popover means to the shell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CollaboratorsHit {
+    Invite,
+    Join,
+    RoomActivity,
+    EditStatus,
+    SetStatusSharing(ui::StatusSharing),
+    /// Toggle follow for the row at this index.
+    ToggleFollow(usize),
+    PreviousPeople,
+    NextPeople,
+    /// Inside the card, but not on an action.
+    Absorb,
+    /// Outside the card; the host should close it.
+    Dismiss,
+}
+
+/// One row of the collaborators dropdown. People and agents are listed
+/// together, but tagged apart so an agent is never reported as a person.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RosterRow {
+    pub id: String,
+    pub label: String,
+    pub initial: char,
+    pub color: Color,
+    pub is_agent: bool,
+    pub role: Option<String>,
+    pub invited: bool,
+    /// Ephemeral current location, never a history summary.
+    pub activity: Option<String>,
+    /// Short participant intention. `automatic` is rendered with a sparkle so
+    /// model-suggested words cannot be mistaken for a direct quote.
+    pub status: Option<RosterStatus>,
+    pub followable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RosterStatus {
+    pub text: String,
+    pub automatic: bool,
+}
+
+/// Immutable data and policy decisions needed to paint one frame.
+pub struct CollaboratorsModel<'a> {
+    pub host: Rect,
+    pub rows: &'a [RosterRow],
+    pub own_initial: char,
+    pub own_color: Color,
+    pub unavailable: Option<&'a str>,
+    pub may_invite: bool,
+    pub followed_id: Option<&'a str>,
+    /// Ephemeral room-local attachments, expressed using roster ids.  The
+    /// People surface can therefore show them when cursors are off-screen.
+    pub following_pairs: &'a [(String, String)],
+    pub own_status: Option<&'a str>,
+    /// Local participant's ephemeral semantic action, shown separately from
+    /// their longer-lived intent/status so the two cannot be conflated.
+    pub own_activity: Option<&'a str>,
+    pub own_status_automatic: bool,
+    pub status_sharing: ui::StatusSharing,
+    pub status_editing: bool,
+    /// Compositor-authoritative disclosure of exactly who can currently see
+    /// or control which shared surface. Presence alone never implies this.
+    pub screen_exposure: Option<&'a str>,
+}
+
+/// Direction of a transient attachment relative to one roster row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RosterFollowRelationship {
+    Follows(String),
+    FollowedBy(String),
+}
+
+impl CollaboratorsModel<'_> {
+    #[must_use]
+    pub fn relationship_for(&self, row_id: &str) -> Option<RosterFollowRelationship> {
+        self.following_pairs.iter().find_map(|(follower, target)| {
+            (follower == row_id)
+                .then(|| RosterFollowRelationship::Follows(target.clone()))
+                .or_else(|| {
+                    (target == row_id)
+                        .then(|| RosterFollowRelationship::FollowedBy(follower.clone()))
+                })
+        })
+    }
+}
+
+struct RowFrame<'a> {
+    row: &'a RosterRow,
+    y: f64,
+    followed: bool,
+    relationship: Option<RosterFollowRelationship>,
+    relationship_partner: Option<&'a RosterRow>,
+    cursor: Option<Point>,
+}
+
+/// The complete interactive surface of the collaborator popover.
+#[derive(Debug, Default)]
+pub struct CollaboratorsOverlay {
+    panel: Rect,
+    invite: Rect,
+    join: Rect,
+    activity: Rect,
+    row_actions: Vec<Rect>,
+    status: Rect,
+    status_modes: Vec<(ui::StatusSharing, Rect)>,
+    row_rects: Vec<Rect>,
+    roster_offset: usize,
+    roster_range: std::ops::Range<usize>,
+    previous_people: Rect,
+    next_people: Rect,
+    keyboard_focus: Option<CollaboratorsHit>,
+    accessibility_rows: Vec<RosterRow>,
+    accessibility_status: Option<String>,
+    accessibility_own_activity: Option<String>,
+    accessibility_status_automatic: bool,
+    accessibility_sharing: ui::StatusSharing,
+    accessibility_editing: bool,
+    accessibility_screen_exposure: Option<String>,
+}
+
+impl CollaboratorsOverlay {
+    pub fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        model: &CollaboratorsModel<'_>,
+        cursor: Option<Point>,
+    ) {
+        // Theme type tokens already carry the user's text scale, and this
+        // popover lays out and paints with those resolved sizes; the
+        // renderer must not scale them a second time (HIG §7a), so it is
+        // reset for the pass exactly as the lens pass resets it, and
+        // restored for the ordinary child widgets that follow.
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
+        self.draw_at_theme_scale(scene, transform, text_renderer, theme, model, cursor);
+        text_renderer.set_text_scale(renderer_scale);
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
+    )]
+    fn draw_at_theme_scale(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        model: &CollaboratorsModel<'_>,
+        cursor: Option<Point>,
+    ) {
+        self.layout(
+            model.host,
+            model.rows.len(),
+            model.unavailable.is_some(),
+            model.may_invite,
+            model.screen_exposure.is_some(),
+        );
+        self.accessibility_rows.clear();
+        self.accessibility_rows.extend_from_slice(model.rows);
+        self.accessibility_status = model.own_status.map(str::to_string);
+        self.accessibility_own_activity = model.own_activity.map(str::to_string);
+        self.accessibility_status_automatic = model.own_status_automatic;
+        self.accessibility_sharing = model.status_sharing;
+        self.accessibility_editing = model.status_editing;
+        self.accessibility_screen_exposure = model.screen_exposure.map(str::to_string);
+        for (target, row) in self.row_actions.iter_mut().zip(model.rows) {
+            if !row.followable || target.y1 > self.activity.y0 - 4.0 {
+                *target = Rect::ZERO;
+            }
+        }
+        let rect = self.panel;
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        // Panel role (HIG §9.1/§9.5): the popover's corner is the Panel
+        // radius and its edge is derived against the ground, not declared.
+        let card = RoundedRect::from_rect(
+            rect,
+            ui::chrome::ChromeRole::Panel.radius(theme, rect.height()),
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            ui::chrome::shell::panel_ground(theme),
+            None,
+            &card,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            ui::chrome::shell::panel_border(theme),
+            None,
+            &card,
+        );
+        text_renderer.draw_text(
+            scene,
+            &crate::i18n::t("a11y-shell-people"),
+            tokens.typography.scale.lg,
+            colors.text_primary,
+            transform.pre_translate((rect.x0 + 16.0, rect.y0 + 16.0).into()),
+            None,
+        );
+        let live_rows = model
+            .rows
+            .iter()
+            .filter(|row| !row.invited)
+            .collect::<Vec<_>>();
+        let here_count = live_rows.len().saturating_add(1);
+        let here = crate::i18n::t_args("people-panel-here-now", &[("count", here_count.into())]);
+        let (here_width, _) = text_renderer.measure(&here, tokens.typography.scale.xs, None);
+        let here_x = rect.x1 - 14.0 - f64::from(here_width);
+        text_renderer.draw_text(
+            scene,
+            &here,
+            tokens.typography.scale.xs,
+            colors.text_dim,
+            transform.pre_translate((here_x, rect.y0 + 20.0).into()),
+            None,
+        );
+        let dot_colors = std::iter::once(model.own_color)
+            .chain(live_rows.iter().map(|row| row.color))
+            .take(4)
+            .collect::<Vec<_>>();
+        let dots_x = here_x - 8.0 - row_count_as_f64(dot_colors.len()) * 7.0;
+        for (index, color) in dot_colors.into_iter().enumerate() {
+            let x = dots_x + row_count_as_f64(index) * 7.0;
+            let dot = vello::kurbo::Circle::new(Point::new(x + 3.0, rect.y0 + 25.0), 3.0);
+            scene.fill(Fill::NonZero, transform, color, None, &dot);
+        }
+        self.draw_own_status(scene, transform, text_renderer, theme, model, cursor);
+        if let Some(exposure) = model.screen_exposure {
+            let banner = Rect::new(
+                rect.x0 + 12.0,
+                rect.y0 + 48.0 + MY_STATUS_H,
+                rect.x1 - 12.0,
+                rect.y0 + 48.0 + MY_STATUS_H + EXPOSURE_H - 4.0,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.accent[5].multiply_alpha(0.12),
+                None,
+                &RoundedRect::from_rect(banner, f64::from(tokens.radii.sm)),
+            );
+            text_renderer.draw_text(
+                scene,
+                &crate::i18n::t("people-panel-screen-visible"),
+                tokens.typography.scale.xs,
+                colors.accent[5],
+                transform.pre_translate((banner.x0 + 8.0, banner.y0 + 5.0).into()),
+                None,
+            );
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a non-negative on-screen width in logical pixels; f32 holds it with sub-pixel precision"
+            )]
+            let detail = text_renderer.elide_to_width(
+                exposure,
+                tokens.typography.scale.xs,
+                (banner.width() - 16.0).max(0.0) as f32,
+            );
+            text_renderer.draw_text(
+                scene,
+                &detail,
+                tokens.typography.scale.xs,
+                colors.text_primary,
+                transform.pre_translate((banner.x0 + 8.0, banner.y0 + 21.0).into()),
+                None,
+            );
+        }
+
+        if let Some(reason) = model.unavailable {
+            text_renderer.draw_text(
+                scene,
+                reason,
+                tokens.typography.scale.sm,
+                colors.semantic.danger,
+                transform.pre_translate((rect.x0 + 16.0, rect.y0 + 56.0).into()),
+                None,
+            );
+        }
+        if model.rows.is_empty() && model.unavailable.is_none() {
+            text_renderer.draw_text(
+                scene,
+                &crate::i18n::t("people-panel-only-you"),
+                tokens.typography.scale.sm,
+                colors.text_dim,
+                transform.pre_translate((rect.x0 + 16.0, rect.y0 + 56.0).into()),
+                None,
+            );
+        }
+
+        let list_top = rect.y0
+            + 48.0
+            + MY_STATUS_H
+            + if model.screen_exposure.is_some() {
+                EXPOSURE_H
+            } else {
+                0.0
+            }
+            + if model.unavailable.is_some() {
+                WARNING_H
+            } else {
+                0.0
+            };
+        for (visible_index, index) in self.roster_range.clone().enumerate() {
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "layout() above clamps roster_range to model.rows.len()"
+            )]
+            let row = &model.rows[index];
+            let relationship = model.relationship_for(&row.id);
+            let relationship_partner = relationship.as_ref().and_then(|relationship| {
+                let partner_id = match relationship {
+                    RosterFollowRelationship::Follows(id)
+                    | RosterFollowRelationship::FollowedBy(id) => id,
+                };
+                model
+                    .rows
+                    .iter()
+                    .find(|candidate| candidate.id == partner_id.as_str())
+            });
+            self.draw_row(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &RowFrame {
+                    row,
+                    y: list_top + row_count_as_f64(visible_index) * ROW_H,
+                    followed: model.followed_id == Some(row.id.as_str()),
+                    relationship,
+                    relationship_partner,
+                    cursor,
+                },
+            );
+        }
+        self.draw_roster_pager(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            model.rows.len(),
+            cursor,
+        );
+        self.draw_footer(scene, transform, text_renderer, theme, cursor);
+        if let Some(rect) = self.focused_rect() {
+            scene.stroke(
+                &vello::kurbo::Stroke::new(2.0),
+                transform,
+                theme.tokens.colors.accent[4],
+                None,
+                &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm)),
+            );
+        }
+    }
+
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn panel_rect(&self) -> Rect {
+        self.panel
+    }
+
+    pub fn action_rects(&self) -> (Rect, Rect) {
+        (self.invite, self.join)
+    }
+
+    pub fn activity_rect(&self) -> Rect {
+        self.activity
+    }
+
+    #[cfg(test)]
+    pub fn row_action_rects(&self) -> &[Rect] {
+        &self.row_actions
+    }
+
+    pub fn contains(&self, point: Point) -> bool {
+        self.panel.area() > 0.0 && self.panel.contains(point)
+    }
+
+    pub fn hit_test(&self, point: Point) -> CollaboratorsHit {
+        if self.invite.area() > 0.0 && self.invite.contains(point) {
+            CollaboratorsHit::Invite
+        } else if self.join.area() > 0.0 && self.join.contains(point) {
+            CollaboratorsHit::Join
+        } else if self.activity.area() > 0.0 && self.activity.contains(point) {
+            CollaboratorsHit::RoomActivity
+        } else if self.status.area() > 0.0 && self.status.contains(point) {
+            CollaboratorsHit::EditStatus
+        } else if let Some((mode, _)) = self
+            .status_modes
+            .iter()
+            .find(|(_, rect)| rect.contains(point))
+        {
+            CollaboratorsHit::SetStatusSharing(*mode)
+        } else if let Some(index) = self
+            .row_actions
+            .iter()
+            .position(|rect| rect.area() > 0.0 && rect.contains(point))
+        {
+            CollaboratorsHit::ToggleFollow(index)
+        } else if self.previous_people.area() > 0.0 && self.previous_people.contains(point) {
+            CollaboratorsHit::PreviousPeople
+        } else if self.next_people.area() > 0.0 && self.next_people.contains(point) {
+            CollaboratorsHit::NextPeople
+        } else if self.contains(point) {
+            CollaboratorsHit::Absorb
+        } else {
+            CollaboratorsHit::Dismiss
+        }
+    }
+
+    /// The Follow/Stop button of the row whose top edge is `y`: one pointer
+    /// target tall, centred in the row. Paint and hit-testing both read
+    /// this, so they cannot drift apart.
+    fn row_action_rect(panel: Rect, y: f64) -> Rect {
+        let top = y + (ROW_H - MIN_TARGET) / 2.0;
+        Rect::new(panel.x1 - 88.0, top, panel.x1 - 12.0, top + MIN_TARGET)
+    }
+
+    fn focus_order(&self) -> Vec<CollaboratorsHit> {
+        let mut order = Vec::new();
+        if self.status.area() > 0.0 {
+            order.push(CollaboratorsHit::EditStatus);
+        }
+        order.extend(
+            self.status_modes
+                .iter()
+                .map(|(mode, _)| CollaboratorsHit::SetStatusSharing(*mode)),
+        );
+        order.extend(
+            self.row_actions
+                .iter()
+                .enumerate()
+                .filter(|(_, rect)| rect.area() > 0.0)
+                .map(|(index, _)| CollaboratorsHit::ToggleFollow(index)),
+        );
+        if self.previous_people.area() > 0.0 {
+            order.push(CollaboratorsHit::PreviousPeople);
+        }
+        if self.next_people.area() > 0.0 {
+            order.push(CollaboratorsHit::NextPeople);
+        }
+        if self.invite.area() > 0.0 {
+            order.extend([CollaboratorsHit::Invite, CollaboratorsHit::Join]);
+        }
+        if self.activity.area() > 0.0 {
+            order.push(CollaboratorsHit::RoomActivity);
+        }
+        order
+    }
+
+    fn rect_for_hit(&self, hit: CollaboratorsHit) -> Option<Rect> {
+        match hit {
+            CollaboratorsHit::Invite => Some(self.invite),
+            CollaboratorsHit::Join => Some(self.join),
+            CollaboratorsHit::RoomActivity => Some(self.activity),
+            CollaboratorsHit::EditStatus => Some(self.status),
+            CollaboratorsHit::SetStatusSharing(mode) => self
+                .status_modes
+                .iter()
+                .find_map(|(candidate, rect)| (*candidate == mode).then_some(*rect)),
+            CollaboratorsHit::ToggleFollow(index) => self.row_actions.get(index).copied(),
+            CollaboratorsHit::PreviousPeople => Some(self.previous_people),
+            CollaboratorsHit::NextPeople => Some(self.next_people),
+            CollaboratorsHit::Absorb | CollaboratorsHit::Dismiss => None,
+        }
+        .filter(|rect| rect.area() > 0.0)
+    }
+
+    fn focused_rect(&self) -> Option<Rect> {
+        self.keyboard_focus
+            .and_then(|focus| self.rect_for_hit(focus))
+    }
+
+    pub fn key(&mut self, key: &Key, backwards: bool) -> Option<CollaboratorsHit> {
+        if matches!(key, Key::Named(NamedKey::Escape)) {
+            self.keyboard_focus = None;
+            return Some(CollaboratorsHit::Dismiss);
+        }
+        if matches!(key, Key::Named(NamedKey::Enter | NamedKey::Space)) {
+            return self.keyboard_focus;
+        }
+        let reverse = matches!(key, Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp))
+            || (backwards && matches!(key, Key::Named(NamedKey::Tab)));
+        if !matches!(
+            key,
+            Key::Named(
+                NamedKey::Tab
+                    | NamedKey::ArrowLeft
+                    | NamedKey::ArrowRight
+                    | NamedKey::ArrowUp
+                    | NamedKey::ArrowDown
+                    | NamedKey::Home
+                    | NamedKey::End
+            )
+        ) {
+            return None;
+        }
+        let order = self.focus_order();
+        if order.is_empty() {
+            return None;
+        }
+        let current = self
+            .keyboard_focus
+            .and_then(|focus| order.iter().position(|candidate| *candidate == focus));
+        let last = order.len().saturating_sub(1);
+        let next = if matches!(key, Key::Named(NamedKey::Home)) {
+            0
+        } else if matches!(key, Key::Named(NamedKey::End)) {
+            last
+        } else if reverse {
+            current
+                .and_then(|index| index.checked_sub(1))
+                .unwrap_or(last)
+        } else {
+            current
+                .and_then(|index| index.checked_add(1))
+                .filter(|index| *index < order.len())
+                .unwrap_or(0)
+        };
+        self.keyboard_focus = order.get(next).copied();
+        None
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a declarative accessibility tree for every panel control"
+    )]
+    pub fn accessibility_snapshot(&self) -> ui::a11y::AccessNode {
+        use crate::i18n::{t, t_args};
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let people = self
+            .accessibility_rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let mut details = Vec::new();
+                if row.is_agent {
+                    details.push(t("a11y-shell-people-agent"));
+                }
+                if row.invited {
+                    details.push(t("a11y-shell-people-invited"));
+                } else {
+                    details.push(t("a11y-shell-people-present"));
+                }
+                if let Some(activity) = &row.activity {
+                    details.push(t_args(
+                        "a11y-shell-people-now",
+                        &[("activity", activity.into())],
+                    ));
+                }
+                if let Some(status) = &row.status {
+                    details.push(if status.automatic {
+                        t_args(
+                            "a11y-shell-people-intent-inferred",
+                            &[("status", (&status.text).into())],
+                        )
+                    } else {
+                        t_args(
+                            "a11y-shell-people-intent",
+                            &[("status", (&status.text).into())],
+                        )
+                    });
+                }
+                AccessNode::new(Role::ListItem)
+                    .with_name(row.label.clone())
+                    .with_description(details.join("; "))
+                    .with_position(index.saturating_add(1), self.accessibility_rows.len())
+            })
+            .collect();
+        let mut children = vec![
+            AccessNode::new(Role::List)
+                .with_name(t("a11y-shell-people-here-now"))
+                .with_children(people),
+        ];
+        for hit in self.focus_order() {
+            let focused = self.keyboard_focus == Some(hit);
+            let (role, name, description, checked) = match hit {
+                CollaboratorsHit::EditStatus => {
+                    let mut description = if self.accessibility_status_automatic {
+                        t("a11y-shell-status-inferred")
+                    } else {
+                        t("a11y-shell-status-set")
+                    };
+                    if let Some(activity) = &self.accessibility_own_activity {
+                        description.push_str("; ");
+                        description.push_str(&t_args(
+                            "a11y-shell-people-now",
+                            &[("activity", activity.into())],
+                        ));
+                    }
+                    (
+                        if self.accessibility_editing {
+                            Role::TextInput
+                        } else {
+                            Role::Button
+                        },
+                        t("a11y-shell-status-name"),
+                        description,
+                        None,
+                    )
+                }
+                CollaboratorsHit::SetStatusSharing(mode) => (
+                    Role::RadioButton,
+                    match mode {
+                        ui::StatusSharing::Automatic => t("a11y-shell-status-automatic"),
+                        ui::StatusSharing::ManualOnly => t("a11y-shell-status-manual"),
+                        ui::StatusSharing::Off => t("a11y-shell-status-off"),
+                    },
+                    match mode {
+                        ui::StatusSharing::Automatic => {
+                            t("a11y-shell-status-automatic-description")
+                        }
+                        ui::StatusSharing::ManualOnly => t("a11y-shell-status-manual-description"),
+                        ui::StatusSharing::Off => t("a11y-shell-status-off-description"),
+                    },
+                    Some(self.accessibility_sharing == mode),
+                ),
+                CollaboratorsHit::ToggleFollow(index) => {
+                    let row = self.accessibility_rows.get(index);
+                    (
+                        Role::Button,
+                        row.map_or_else(
+                            || t("a11y-shell-follow-collaborator"),
+                            |row| t_args("a11y-shell-follow", &[("name", (&row.label).into())]),
+                        ),
+                        t("a11y-shell-follow-description"),
+                        None,
+                    )
+                }
+                CollaboratorsHit::PreviousPeople => (
+                    Role::Button,
+                    t("a11y-shell-people-previous"),
+                    t("a11y-shell-people-previous-description"),
+                    None,
+                ),
+                CollaboratorsHit::NextPeople => (
+                    Role::Button,
+                    t("a11y-shell-people-next"),
+                    t("a11y-shell-people-next-description"),
+                    None,
+                ),
+                CollaboratorsHit::Invite => (
+                    Role::Button,
+                    t("a11y-shell-invite"),
+                    t("a11y-shell-invite-description"),
+                    None,
+                ),
+                CollaboratorsHit::Join => (
+                    Role::Button,
+                    t("a11y-shell-join"),
+                    t("a11y-shell-join-description"),
+                    None,
+                ),
+                CollaboratorsHit::RoomActivity => (
+                    Role::Button,
+                    t("a11y-shell-workspace-activity"),
+                    t("a11y-shell-workspace-activity-description"),
+                    None,
+                ),
+                CollaboratorsHit::Absorb | CollaboratorsHit::Dismiss => continue,
+            };
+            let mut state = AccessState::new().focusable(true).focused(focused);
+            if let Some(checked) = checked {
+                state = state.checked(checked);
+            }
+            let mut node = AccessNode::new(role)
+                .with_name(name)
+                .with_description(description)
+                .with_state(state);
+            if hit == CollaboratorsHit::EditStatus
+                && let Some(value) = self.accessibility_status.as_ref()
+            {
+                node = node.with_value(value.clone());
+            }
+            children.push(node);
+        }
+        let mut description = t("a11y-shell-people-description");
+        if let Some(exposure) = &self.accessibility_screen_exposure {
+            description.push_str("; ");
+            description.push_str(&t_args(
+                "a11y-shell-people-screen-visible",
+                &[("exposure", exposure.into())],
+            ));
+        }
+        AccessNode::new(Role::Dialog)
+            .with_name(t("a11y-shell-people"))
+            .with_description(description)
+            .with_children(children)
+    }
+
+    pub fn accessibility_rect_for_path(&self, path: &[usize]) -> Option<Rect> {
+        match path {
+            [] | [0] => Some(self.panel),
+            [0, row] => self.row_rects.get(*row).copied(),
+            [control] if *control > 0 => self
+                .focus_order()
+                .get(control.saturating_sub(1))
+                .and_then(|hit| self.rect_for_hit(*hit)),
+            _ => None,
+        }
+    }
+
+    pub fn focus_accessibility_path(&mut self, path: &[usize]) -> bool {
+        let [control] = path else {
+            return false;
+        };
+        if *control == 0 {
+            return false;
+        }
+        let Some(hit) = self.focus_order().get(control.saturating_sub(1)).copied() else {
+            return false;
+        };
+        self.keyboard_focus = Some(hit);
+        true
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one layout pass derives every panel rect from the same running offsets"
+    )]
+    fn layout(
+        &mut self,
+        host: Rect,
+        member_count: usize,
+        unavailable: bool,
+        may_invite: bool,
+        has_exposure: bool,
+    ) {
+        if self.roster_offset >= member_count {
+            self.roster_offset = 0;
+        }
+        let paged = member_count > ROSTER_PAGE_SIZE;
+        let end = self
+            .roster_offset
+            .saturating_add(ROSTER_PAGE_SIZE)
+            .min(member_count);
+        self.roster_range = self.roster_offset..end;
+        let rows = row_count_as_f64(self.roster_range.len().max(1));
+        let warning_h = if unavailable && member_count > 0 {
+            WARNING_H
+        } else {
+            0.0
+        };
+        let actions_h = if may_invite { ACTIONS_H } else { 0.0 };
+        let pager_h = if paged { ROSTER_PAGER_H } else { 0.0 };
+        let exposure_h = if has_exposure { EXPOSURE_H } else { 0.0 };
+        let height = 48.0
+            + MY_STATUS_H
+            + exposure_h
+            + warning_h
+            + rows * ROW_H
+            + pager_h
+            + 16.0
+            + actions_h
+            + FOOTER_H;
+        let x1 = host.x1 - 16.0;
+        let y0 = host.y0 + 48.0;
+        self.panel = Rect::new(x1 - 320.0, y0, x1, y0 + height);
+        self.activity = Rect::new(
+            self.panel.x0 + 8.0,
+            self.panel.y1 - FOOTER_H + 4.0,
+            self.panel.x1 - 8.0,
+            self.panel.y1 - 8.0,
+        );
+        self.row_actions = (0..member_count)
+            .map(|index| {
+                let Some(visible_index) = index.checked_sub(self.roster_offset) else {
+                    return Rect::ZERO;
+                };
+                if visible_index >= self.roster_range.len() {
+                    return Rect::ZERO;
+                }
+                let y = self.panel.y0
+                    + 48.0
+                    + MY_STATUS_H
+                    + exposure_h
+                    + warning_h
+                    + row_count_as_f64(visible_index) * ROW_H;
+                Self::row_action_rect(self.panel, y)
+            })
+            .collect();
+        self.row_rects = (0..member_count)
+            .map(|index| {
+                let Some(visible_index) = index.checked_sub(self.roster_offset) else {
+                    return Rect::ZERO;
+                };
+                if visible_index >= self.roster_range.len() {
+                    return Rect::ZERO;
+                }
+                let y = self.panel.y0
+                    + 48.0
+                    + MY_STATUS_H
+                    + exposure_h
+                    + warning_h
+                    + row_count_as_f64(visible_index) * ROW_H;
+                Rect::new(self.panel.x0 + 8.0, y, self.panel.x1 - 8.0, y + ROW_H)
+            })
+            .collect();
+        if paged {
+            let pager_y =
+                self.panel.y0 + 48.0 + MY_STATUS_H + exposure_h + warning_h + rows * ROW_H;
+            let center = self.panel.x0 + self.panel.width() / 2.0;
+            self.previous_people = if self.roster_offset > 0 {
+                Rect::new(
+                    self.panel.x0 + 12.0,
+                    pager_y + 4.0,
+                    center - 38.0,
+                    pager_y + 32.0,
+                )
+            } else {
+                Rect::ZERO
+            };
+            self.next_people = if end < member_count {
+                Rect::new(
+                    center + 38.0,
+                    pager_y + 4.0,
+                    self.panel.x1 - 12.0,
+                    pager_y + 32.0,
+                )
+            } else {
+                Rect::ZERO
+            };
+        } else {
+            self.previous_people = Rect::ZERO;
+            self.next_people = Rect::ZERO;
+        }
+        if may_invite {
+            // Buttons are one pointer target tall (HIG §9.6: 32 minimum),
+            // centred in the 40 px action band.
+            let y0 = self.panel.y1 - FOOTER_H - ACTIONS_H + (ACTIONS_H - MIN_TARGET) / 2.0;
+            let gap = 8.0;
+            let half = (self.panel.width() - 16.0 - gap) / 2.0;
+            self.invite = Rect::new(
+                self.panel.x0 + 8.0,
+                y0,
+                self.panel.x0 + 8.0 + half,
+                y0 + MIN_TARGET,
+            );
+            self.join = Rect::new(
+                self.invite.x1 + gap,
+                y0,
+                self.panel.x1 - 8.0,
+                y0 + MIN_TARGET,
+            );
+        } else {
+            self.invite = Rect::ZERO;
+            self.join = Rect::ZERO;
+        }
+        self.status = Rect::new(
+            self.panel.x0 + 44.0,
+            self.panel.y0 + 50.0,
+            self.panel.x1 - 12.0,
+            self.panel.y0 + 78.0,
+        );
+        let mode_top = self.panel.y0 + 82.0;
+        let mode_width = (self.panel.width() - 32.0) / 3.0;
+        self.status_modes = [
+            ui::StatusSharing::Automatic,
+            ui::StatusSharing::ManualOnly,
+            ui::StatusSharing::Off,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, mode)| {
+            let index = row_count_as_f64(index);
+            (
+                mode,
+                Rect::new(
+                    self.panel.x0 + 12.0 + index * mode_width,
+                    mode_top,
+                    self.panel.x0 + 8.0 + (index + 1.0) * mode_width,
+                    mode_top + 24.0,
+                ),
+            )
+        })
+        .collect();
+    }
+
+    pub fn change_people_page(&mut self, forward: bool, member_count: usize) {
+        if forward {
+            if self.roster_offset.saturating_add(ROSTER_PAGE_SIZE) < member_count {
+                self.roster_offset = self.roster_offset.saturating_add(ROSTER_PAGE_SIZE);
+            }
+        } else {
+            self.roster_offset = self.roster_offset.saturating_sub(ROSTER_PAGE_SIZE);
+        }
+        self.keyboard_focus = None;
+    }
+
+    fn draw_roster_pager(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        member_count: usize,
+        cursor: Option<Point>,
+    ) {
+        if member_count <= ROSTER_PAGE_SIZE {
+            return;
+        }
+        let label = format!(
+            "{}–{} of {member_count}",
+            self.roster_range.start.saturating_add(1),
+            self.roster_range.end
+        );
+        let (width, _) = text_renderer.measure(&label, theme.tokens.typography.scale.xs, None);
+        let y = self.previous_people.y0.max(self.next_people.y0);
+        text_renderer.draw_text(
+            scene,
+            &label,
+            theme.tokens.typography.scale.xs,
+            theme.tokens.colors.text_dim,
+            transform.pre_translate(
+                (
+                    self.panel.x0 + self.panel.width() / 2.0 - f64::from(width) / 2.0,
+                    y + 7.0,
+                )
+                    .into(),
+            ),
+            None,
+        );
+        for (rect, glyph) in [(self.previous_people, "‹"), (self.next_people, "›")] {
+            if rect.area() <= 0.0 {
+                continue;
+            }
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(rect, glyph)
+                    .radius(f64::from(theme.tokens.radii.sm))
+                    .hovered(cursor.is_some_and(|point| rect.contains(point))),
+            );
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
+    )]
+    fn draw_own_status(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        model: &CollaboratorsModel<'_>,
+        cursor: Option<Point>,
+    ) {
+        let colors = &theme.tokens.colors;
+        let label = if model.status_editing {
+            model
+                .own_status
+                .filter(|status| !status.is_empty())
+                .map_or_else(
+                    || crate::i18n::t("people-panel-status-typing"),
+                    str::to_string,
+                )
+        } else {
+            model.own_status.map_or_else(
+                || crate::i18n::t("people-panel-status-empty"),
+                str::to_string,
+            )
+        };
+        let avatar = Rect::new(
+            self.panel.x0 + 12.0,
+            self.status.y0 + 1.0,
+            self.panel.x0 + 38.0,
+            self.status.y0 + 27.0,
+        );
+        ui::widget::Avatar::draw_at(
+            scene,
+            transform,
+            avatar,
+            &model.own_initial.to_string(),
+            model.own_color,
+            theme,
+            text_renderer,
+        );
+        let spark = vello::kurbo::Circle::new(Point::new(avatar.x1 - 2.0, avatar.y1 - 2.0), 3.5);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(2.0),
+            transform,
+            ui::chrome::shell::panel_ground(theme),
+            None,
+            &spark,
+        );
+        scene.fill(Fill::NonZero, transform, model.own_color, None, &spark);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            if cursor.is_some_and(|point| self.status.contains(point)) || model.status_editing {
+                colors.lift(0.72)
+            } else {
+                colors.lift(0.35)
+            },
+            None,
+            &RoundedRect::from_rect(self.status, f64::from(theme.tokens.radii.sm)),
+        );
+        if model.status_editing {
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.5),
+                transform,
+                colors.accent[4],
+                None,
+                &RoundedRect::from_rect(self.status, f64::from(theme.tokens.radii.sm)),
+            );
+        }
+        let label = crate::i18n::t_args("people-panel-own-status", &[("status", label.into())]);
+        let trailing_room = if model.status_editing { 48.0 } else { 28.0 };
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a non-negative on-screen width in logical pixels; f32 holds it with sub-pixel precision"
+        )]
+        let shown = text_renderer.elide_to_width(
+            &label,
+            theme.tokens.typography.scale.xs,
+            (self.status.width() - trailing_room).max(0.0) as f32,
+        );
+        text_renderer.draw_text(
+            scene,
+            &shown,
+            theme.tokens.typography.scale.xs,
+            if model.own_status.is_some() {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            },
+            transform.pre_translate((self.status.x0 + 24.0, self.status.y0 + 6.0).into()),
+            None,
+        );
+        if model.status_editing {
+            let (shown_width, _) =
+                text_renderer.measure(&shown, theme.tokens.typography.scale.xs, None);
+            let caret_x =
+                (self.status.x0 + 25.0 + f64::from(shown_width)).min(self.status.x1 - 28.0);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.25),
+                transform,
+                colors.accent[4],
+                None,
+                &vello::kurbo::Line::new(
+                    (caret_x, self.status.y0 + 6.0),
+                    (caret_x, self.status.y0 + 19.0),
+                ),
+            );
+            text_renderer.draw_text(
+                scene,
+                "↵",
+                theme.tokens.typography.scale.xs,
+                colors.accent[4],
+                transform.pre_translate((self.status.x1 - 20.0, self.status.y0 + 5.0).into()),
+                None,
+            );
+        }
+        text_renderer.draw_text(
+            scene,
+            if model.own_status_automatic {
+                "✦"
+            } else {
+                "○"
+            },
+            theme.tokens.typography.scale.xs,
+            colors.accent[5],
+            transform.pre_translate((self.status.x0 + 8.0, self.status.y0 + 6.0).into()),
+            None,
+        );
+        for (mode, rect) in &self.status_modes {
+            let active = *mode == model.status_sharing;
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                if active {
+                    colors.accent[5]
+                } else {
+                    colors.lift(0.35)
+                },
+                None,
+                &RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.sm)),
+            );
+            let text = crate::i18n::t(match mode {
+                ui::StatusSharing::Automatic => "people-panel-sharing-auto",
+                ui::StatusSharing::ManualOnly => "people-panel-sharing-manual",
+                ui::StatusSharing::Off => "people-panel-sharing-hidden",
+            });
+            text_renderer.draw_text(
+                scene,
+                &text,
+                theme.tokens.typography.scale.xs,
+                if active {
+                    colors.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
+                } else {
+                    colors.text_dim
+                },
+                transform.pre_translate((rect.x0 + 8.0, rect.y0 + 5.0).into()),
+                None,
+            );
+        }
+        if let Some(activity) = model.own_activity {
+            let dot = vello::kurbo::Circle::new(
+                Point::new(self.status.x0 + 8.0, self.panel.y0 + 118.0),
+                3.0,
+            );
+            scene.fill(Fill::NonZero, transform, model.own_color, None, &dot);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a non-negative on-screen width in logical pixels; f32 holds it with sub-pixel precision"
+            )]
+            let activity = text_renderer.elide_to_width(
+                activity,
+                theme.tokens.typography.scale.xs,
+                (self.status.width() - 20.0).max(0.0) as f32,
+            );
+            text_renderer.draw_text(
+                scene,
+                &activity,
+                theme.tokens.typography.scale.xs,
+                colors.text_dim,
+                transform.pre_translate((self.status.x0 + 16.0, self.panel.y0 + 112.0).into()),
+                None,
+            );
+        }
+    }
+
+    fn draw_row(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        frame: &RowFrame<'_>,
+    ) {
+        let tokens = &theme.tokens;
+        if frame.followed {
+            let active = RoundedRect::new(
+                self.panel.x0 + 8.0,
+                frame.y + 3.0,
+                self.panel.x1 - 8.0,
+                frame.y + ROW_H - 3.0,
+                f64::from(tokens.radii.md),
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                frame.row.color.multiply_alpha(0.12),
+                None,
+                &active,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                frame.row.color,
+                None,
+                &RoundedRect::new(
+                    self.panel.x0 + 8.0,
+                    frame.y + 11.0,
+                    self.panel.x0 + 11.0,
+                    frame.y + ROW_H - 11.0,
+                    1.5,
+                ),
+            );
+        }
+
+        self.draw_row_identity(scene, transform, text_renderer, theme, frame);
+        self.draw_row_text(scene, transform, text_renderer, theme, frame);
+    }
+
+    fn draw_row_identity(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        frame: &RowFrame<'_>,
+    ) {
+        let row = frame.row;
+        let colors = &theme.tokens.colors;
+        let center = Point::new(self.panel.x0 + 28.0, frame.y + 29.0);
+        let avatar_rect = Rect::new(
+            center.x - 11.0,
+            center.y - 11.0,
+            center.x + 11.0,
+            center.y + 11.0,
+        );
+        if row.invited {
+            let seat = vello::kurbo::Circle::new(center, 11.0);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
+                transform,
+                row.color.multiply_alpha(INVITED_ROW_ALPHA),
+                None,
+                &seat,
+            );
+            let initial = row.initial.to_string();
+            let size = 22.0_f32 * 0.4;
+            let (width, height) =
+                text_renderer.measure_weighted(&initial, size, None, TextWeight::Semibold);
+            text_renderer.draw_text_weighted(
+                scene,
+                &initial,
+                size,
+                colors.text_dim,
+                transform.pre_translate(
+                    (
+                        center.x - f64::from(width) / 2.0,
+                        center.y - f64::from(height) / 2.0,
+                    )
+                        .into(),
+                ),
+                None,
+                TextWeight::Semibold,
+            );
+        } else {
+            ui::widget::Avatar::draw_at(
+                scene,
+                transform,
+                avatar_rect,
+                &row.initial.to_string(),
+                row.color,
+                theme,
+                text_renderer,
+            );
+            // A live spark belongs on the identity itself: it reads as
+            // "here now" without turning the row into a status report.
+            let spark = vello::kurbo::Circle::new(Point::new(center.x + 8.0, center.y + 8.0), 3.5);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(2.0),
+                transform,
+                ui::chrome::shell::panel_ground(theme),
+                None,
+                &spark,
+            );
+            scene.fill(Fill::NonZero, transform, row.color, None, &spark);
+            if let (Some(relationship), Some(partner)) =
+                (frame.relationship.as_ref(), frame.relationship_partner)
+            {
+                // Two small, physically paired avatars make the relationship
+                // legible even without a cursor. The arrowhead always lands
+                // on the followed person, so direction is not inferred from
+                // text or row order.
+                let (from, to) = match relationship {
+                    RosterFollowRelationship::Follows(_) => (
+                        Point::new(center.x + 8.0, center.y - 7.0),
+                        Point::new(center.x + 17.0, center.y - 12.0),
+                    ),
+                    RosterFollowRelationship::FollowedBy(_) => (
+                        Point::new(center.x - 17.0, center.y + 12.0),
+                        Point::new(center.x - 8.0, center.y + 7.0),
+                    ),
+                };
+                let partner_center = match relationship {
+                    RosterFollowRelationship::Follows(_) => to,
+                    RosterFollowRelationship::FollowedBy(_) => from,
+                };
+                let partner_rect = Rect::new(
+                    partner_center.x - 6.0,
+                    partner_center.y - 6.0,
+                    partner_center.x + 6.0,
+                    partner_center.y + 6.0,
+                );
+                ui::widget::Avatar::draw_at(
+                    scene,
+                    transform,
+                    partner_rect,
+                    &partner.initial.to_string(),
+                    partner.color,
+                    theme,
+                    text_renderer,
+                );
+                draw_direction_arrow(scene, transform, from, to, row.color.multiply_alpha(0.9));
+            }
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
+    )]
+    fn draw_row_text(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        frame: &RowFrame<'_>,
+    ) {
+        let row = frame.row;
+        let row_y = frame.y;
+        let followed = frame.followed;
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let text_x = self.panel.x0 + 44.0;
+        let label_x1 = if row.is_agent {
+            self.panel.x1 - 142.0
+        } else if row.followable {
+            self.panel.x1 - 96.0
+        } else {
+            self.panel.x1 - 12.0
+        };
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "the collaborator popover is only a few hundred logical pixels wide"
+        )]
+        let shown_label = text_renderer.elide_to_width(
+            &row.label,
+            tokens.typography.scale.sm,
+            (label_x1 - text_x).max(0.0) as f32,
+        );
+        let has_activity = row.invited || followed || row.activity.is_some() || row.role.is_some();
+        let label_y = if has_activity || row.status.is_some() {
+            row_y + 8.0
+        } else {
+            row_y + 22.0
+        };
+        text_renderer.draw_text(
+            scene,
+            &shown_label,
+            tokens.typography.scale.sm,
+            if row.invited {
+                colors.text_dim
+            } else {
+                colors.text_primary
+            },
+            transform.pre_translate((text_x, label_y).into()),
+            None,
+        );
+        let agent_tag = crate::i18n::t("people-panel-agent-tag");
+        if row.is_agent && !row.label.eq_ignore_ascii_case(&agent_tag) {
+            text_renderer.draw_text(
+                scene,
+                &agent_tag,
+                tokens.typography.scale.xs,
+                colors.text_dim,
+                transform.pre_translate((self.panel.x1 - 136.0, row_y + 9.0).into()),
+                None,
+            );
+        }
+        let subtitle = if row.invited {
+            Some(crate::i18n::t("people-panel-invited-tag"))
+        } else if followed {
+            row.activity.as_ref().map_or_else(
+                || Some(crate::i18n::t("people-panel-following")),
+                |activity| {
+                    Some(crate::i18n::t_args(
+                        "people-panel-following-activity",
+                        &[("activity", activity.as_str().into())],
+                    ))
+                },
+            )
+        } else if let Some(activity) = &row.activity {
+            Some(activity.clone())
+        } else {
+            row.role.clone()
+        };
+        if let Some(subtitle) = subtitle {
+            let subtitle_x1 = if row.followable {
+                self.panel.x1 - 96.0
+            } else {
+                self.panel.x1 - 12.0
+            };
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "the collaborator popover is only a few hundred logical pixels wide"
+            )]
+            let subtitle = text_renderer.elide_to_width(
+                &subtitle,
+                tokens.typography.scale.xs,
+                (subtitle_x1 - text_x).max(0.0) as f32,
+            );
+            text_renderer.draw_text(
+                scene,
+                &subtitle,
+                tokens.typography.scale.xs,
+                colors.text_dim,
+                transform.pre_translate((text_x, row_y + 27.0).into()),
+                None,
+            );
+        }
+        if let Some(status) = &row.status {
+            let status_x1 = if row.followable {
+                self.panel.x1 - 96.0
+            } else {
+                self.panel.x1 - 12.0
+            };
+            let prefix = if status.automatic { "✦  " } else { "↳  " };
+            let line = format!("{prefix}{}", status.text);
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "the collaborator popover is only a few hundred logical pixels wide"
+            )]
+            let shown = text_renderer.elide_to_width(
+                &line,
+                tokens.typography.scale.xs,
+                (status_x1 - text_x).max(0.0) as f32,
+            );
+            text_renderer.draw_text(
+                scene,
+                &shown,
+                tokens.typography.scale.xs,
+                colors.accent[5],
+                transform
+                    .pre_translate((text_x, row_y + if has_activity { 45.0 } else { 29.0 }).into()),
+                None,
+            );
+        }
+        if row.followable {
+            let action = Self::row_action_rect(self.panel, row_y);
+            // Control role (HIG §9.1): a pressable body takes `radii.lg`;
+            // `radii.sm` is for details drawn inside a control.
+            // The pass paints with the renderer reset to 1× (see `draw`), so
+            // the face is handed the theme-scaled label size explicitly.
+            let label = crate::i18n::t(if followed {
+                "people-panel-stop-following"
+            } else {
+                "people-panel-follow"
+            });
+            let face = ButtonFace::new(action, &label)
+                .radius(ui::chrome::ChromeRole::Control.radius(theme, action.height()))
+                .text_size(tokens.typography.scale.base)
+                .hovered(frame.cursor.is_some_and(|point| action.contains(point)));
+            Button::paint(scene, transform, text_renderer, theme, &face);
+        }
+    }
+
+    fn draw_footer(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        cursor: Option<Point>,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        if self.invite.area() > 0.0 {
+            // Control role (HIG §9.1): pressable bodies take `radii.lg`.
+            let radius = ui::chrome::ChromeRole::Control.radius(theme, self.invite.height());
+            // The pass paints with the renderer reset to 1× (see `draw`), so
+            // each face is handed the theme-scaled label size explicitly.
+            let label_size = tokens.typography.scale.base;
+            let invite_label = crate::i18n::t("people-panel-invite");
+            let join_label = crate::i18n::t("people-panel-join");
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(self.invite, &invite_label)
+                    .primary()
+                    .radius(radius)
+                    .text_size(label_size)
+                    .hovered(cursor.is_some_and(|point| self.invite.contains(point))),
+            );
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(self.join, &join_label)
+                    .radius(radius)
+                    .text_size(label_size)
+                    .hovered(cursor.is_some_and(|point| self.join.contains(point))),
+            );
+        }
+
+        // Separator inside a Panel (HIG §9.5): derived against the panel
+        // ground and inset `s3` from both panel edges, never full-bleed into
+        // the corner radius — it was a declared `border_standard` line that
+        // vanished on the dark preset.
+        ui::surface::separator(
+            scene,
+            transform,
+            self.panel.x0,
+            self.panel.x1,
+            self.activity.y0 - 4.0,
+            f64::from(tokens.spacing.s3),
+            ui::chrome::shell::panel_ground(theme),
+        );
+        // Control role (HIG §9.1): the activity row takes the Control radius
+        // (`radii.sm` is for details inside a control) and rests on the lift
+        // floor with an edge derived from that floor.
+        ui::surface::card(
+            scene,
+            transform,
+            self.activity,
+            ui::chrome::ChromeRole::Control.radius(theme, self.activity.height()),
+            colors.lift(0.35),
+        );
+        let size = tokens.typography.scale.sm;
+        let title = crate::i18n::t("a11y-shell-workspace-activity");
+        let (_, height) = text_renderer.measure(&title, size, None);
+        text_renderer.draw_text(
+            scene,
+            &title,
+            size,
+            colors.text_primary,
+            transform.pre_translate(
+                (
+                    self.activity.x0 + 12.0,
+                    self.activity.center().y - f64::from(height) / 2.0,
+                )
+                    .into(),
+            ),
+            None,
+        );
+        let (width, height) = text_renderer.measure("\u{203a}", size, None);
+        text_renderer.draw_text(
+            scene,
+            "\u{203a}",
+            size,
+            colors.text_dim,
+            transform.pre_translate(
+                (
+                    self.activity.x1 - 12.0 - f64::from(width),
+                    self.activity.center().y - f64::from(height) / 2.0,
+                )
+                    .into(),
+            ),
+            None,
+        );
+    }
+}
+
+/// Rows the dropdown and the presence publisher agree are in the room, with
+/// `local_user` the principal this device speaks as.
+pub fn collaborator_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<RosterRow> {
+    // Presence publication updates the active workspace and the legacy
+    // tree-wide mirror together, but readers can observe one side of that
+    // handoff before the other (and old control clients still update only
+    // the mirror). Merge by stable participant id, preferring the room row's
+    // richer activity fields, so nobody temporarily disappears from People.
+    let mut roster = desktop
+        .active_workspace()
+        .map(|workspace| workspace.collaborators.clone())
+        .unwrap_or_default();
+    for participant in &desktop.collaborators {
+        if !roster.iter().any(|row| row.id == participant.id) {
+            roster.push(participant.clone());
+        }
+    }
+    let colors = roster_colors_with_local_user(&roster, local_user);
+    let agent_members = desktop.active_workspace().map_or_else(
+        Vec::new,
+        crate::authority::WorkspaceAuthority::agent_members,
+    );
+    let rows: Vec<RosterRow> = roster
+        .iter()
+        .map(|participant| {
+            let agent_role = agent_members
+                .iter()
+                .find(|(agent, _)| {
+                    agent.eq_ignore_ascii_case(&participant.id)
+                        || agent.eq_ignore_ascii_case(&participant.name)
+                })
+                .map(|(_, role)| *role);
+            let is_agent = agent_role.is_some();
+            let (red, green, blue) = colors
+                .get(&participant.id)
+                .copied()
+                .unwrap_or_else(|| ui::presence::user_color(&participant.id));
+            let has_view = participant.active_tab.is_some();
+            RosterRow {
+                id: participant.id.clone(),
+                initial: roster_initial(&participant.name),
+                label: participant.name.clone(),
+                color: Color::from_rgb8(red, green, blue),
+                is_agent,
+                role: agent_role
+                    .map(crate::workspace_settings::role_label)
+                    .or_else(|| participant.role_id.as_deref().map(display_role_id)),
+                invited: participant.invited,
+                activity: participant
+                    .active_tab
+                    .and_then(|tab| active_tab_title(desktop, tab))
+                    .map(|title| {
+                        crate::i18n::t_args("people-panel-viewing", &[("title", title.into())])
+                    }),
+                status: None,
+                // A headless agent has no pointer/viewport to follow merely
+                // because its session is connected. Follow becomes available
+                // only when it has published a real view; semantic action
+                // targets remain visible through interaction presence.
+                followable: !participant.invited && (!is_agent || has_view),
+            }
+        })
+        .collect();
+    // The collaborators popover is immediate presence, not membership
+    // administration. An agent granted access but not connected belongs in
+    // Members; once its live session arrives in `roster`, the identity match
+    // above tags it as an agent and exposes the same cursor/follow affordance
+    // through truthful semantic activity rather than a fabricated cursor.
+    rows
+}
+
+/// A recorded role id as people read it; an id this model does not define
+/// shows as recorded.
+fn display_role_id(id: &str) -> String {
+    tilo_desktop_model::role_from_id(id)
+        .map_or_else(|| id.to_string(), crate::workspace_settings::role_label)
+}
+
+/// What colour each person on `roster` is drawn in, with `local` the
+/// principal this device speaks as. One function so cursor and avatar cannot
+/// disagree and read as two participants: both go through
+/// [`ui::presence::assign_peer_colors`], which settles the whole room at
+/// once. An explicit [`Collaborator::cursor_color`] outranks anything
+/// computed and is held back from the assignment; the local user is
+/// included in the settled set (never the avatar stack) so every host
+/// computes the same one.
+pub fn roster_colors_with_local_user(
+    roster: &[Collaborator],
+    local: &str,
+) -> HashMap<String, (u8, u8, u8)> {
+    let mut explicit: HashMap<String, (u8, u8, u8)> = HashMap::new();
+    for c in roster {
+        if let Some(rgb) = c
+            .cursor_color
+            .as_deref()
+            .and_then(ui::presence::parse_hex_color)
+        {
+            explicit.insert(c.id.clone(), rgb);
+        }
+    }
+    let mut ids: Vec<&str> = roster
+        .iter()
+        .filter(|c| !explicit.contains_key(&c.id))
+        .map(|c| c.id.as_str())
+        .collect();
+    if !explicit.contains_key(local) {
+        ids.push(local);
+    }
+    let reserved: Vec<(u8, u8, u8)> = explicit.values().copied().collect();
+    let mut assigned = ui::presence::assign_peer_colors(&ids, &reserved);
+    assigned.extend(explicit);
+    assigned
+}
+
+fn roster_initial(name: &str) -> char {
+    name.chars()
+        .next()
+        .map_or('\u{2022}', |character| character.to_ascii_uppercase())
+}
+
+fn active_tab_title(desktop: &DesktopTree, tab_id: u64) -> Option<String> {
+    desktop
+        .active_workspace()?
+        .strips
+        .iter()
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .find(|tab| tab.id == tab_id)
+        .map(|tab| tab.title.trim())
+        .filter(|title| !title.is_empty())
+        .map(ToString::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::authority::WorkspaceAuthority as _;
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn collaborators_footer_and_buttons_keep_token_geometry_on_every_palette() {
+        /// HIG §9.5: the footer separator (derived against the Panel ground) and
+        /// the activity row's edge (derived against its lift floor) must both
+        /// register on every shipped palette.
+        fn footer_separator_and_row_edge_register_on_every_palette() {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let ground = ui::chrome::shell::panel_ground(&theme);
+                let floor = theme.tokens.colors.lift(0.35);
+                for (what, fill) in [("separator", ground), ("activity row", floor)] {
+                    let delta = ui::surface::edge_delta(ui::surface::edge_on(fill), fill);
+                    assert!(
+                        delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                        "{}: the {what} must separate from its ground (Δ luminance {delta:.4})",
+                        theme.name
+                    );
+                }
+            }
+        }
+
+        /// Nothing in the footer touches (HIG §7): the separator clears the
+        /// action band, the row clears the separator and the panel's edge, and
+        /// the row keeps its inset from the panel sides.
+        fn footer_keeps_a_token_gap_around_the_activity_row() {
+            let s1 = f64::from(ui::tokens::Spacing::BASE.s1);
+            let mut overlay = CollaboratorsOverlay::default();
+            overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0), 2, false, true, false);
+            let panel = overlay.panel_rect();
+            let activity = overlay.activity_rect();
+            let (invite, _join) = overlay.action_rects();
+            let separator_y = activity.y0 - 4.0;
+            assert!(
+                separator_y - invite.y1 >= s1,
+                "separator clears the action band"
+            );
+            assert!(activity.y0 - separator_y >= s1, "row clears the separator");
+            assert!(panel.y1 - activity.y1 >= s1, "row clears the panel edge");
+            assert!(activity.x0 - panel.x0 >= s1 && panel.x1 - activity.x1 >= s1);
+        }
+
+        fn every_button_is_at_least_one_pointer_target_and_centred_in_its_band() {
+            let mut overlay = CollaboratorsOverlay::default();
+            overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 3, false, true, false);
+            let (invite, join) = overlay.action_rects();
+            for rect in [invite, join]
+                .into_iter()
+                .chain(overlay.row_action_rects().iter().copied())
+            {
+                assert!(
+                    rect.height() >= MIN_TARGET && rect.width() >= MIN_TARGET,
+                    "{rect:?} is at least 32 x 32"
+                );
+            }
+            for (index, rect) in overlay.row_action_rects().iter().enumerate() {
+                let row = overlay.row_rects[index];
+                assert!(
+                    (rect.center().y - row.center().y).abs() < f64::EPSILON,
+                    "row {index}'s button is centred in its row"
+                );
+                assert!(rect.y0 >= row.y0 && rect.y1 <= row.y1);
+            }
+            let band_top = overlay.panel_rect().y1 - FOOTER_H - ACTIONS_H;
+            assert!(invite.y0 >= band_top && invite.y1 <= band_top + ACTIONS_H);
+            assert!(
+                (invite.center().y - (band_top + ACTIONS_H / 2.0)).abs() < f64::EPSILON,
+                "footer buttons are centred in the action band"
+            );
+            assert_eq!(invite.y0, join.y0);
+            assert_eq!(invite.y1, join.y1);
+        }
+
+        fn crowded_rosters_page_without_putting_rows_under_the_footer() {
+            let mut overlay = CollaboratorsOverlay::default();
+            let host = Rect::new(0.0, 0.0, 1200.0, 800.0);
+            overlay.layout(host, 8, false, true, false);
+
+            assert_eq!(
+                overlay
+                    .row_action_rects()
+                    .iter()
+                    .filter(|rect| rect.area() > 0.0)
+                    .count(),
+                ROSTER_PAGE_SIZE
+            );
+            assert!(overlay.next_people.area() > 0.0);
+            assert_eq!(
+                overlay.hit_test(overlay.next_people.center()),
+                CollaboratorsHit::NextPeople
+            );
+            assert!(
+                overlay
+                    .row_rects
+                    .iter()
+                    .filter(|rect| rect.area() > 0.0)
+                    .all(|rect| rect.y1 < overlay.activity.y0)
+            );
+
+            overlay.change_people_page(true, 8);
+            overlay.layout(host, 8, false, true, false);
+            assert_eq!(overlay.roster_range, 3..6);
+            assert!(overlay.previous_people.area() > 0.0);
+            assert_eq!(
+                overlay.hit_test(overlay.row_action_rects()[3].center()),
+                CollaboratorsHit::ToggleFollow(3)
+            );
+
+            overlay.change_people_page(true, 8);
+            overlay.layout(host, 8, false, true, false);
+            assert_eq!(overlay.roster_range, 6..8);
+            assert_eq!(
+                overlay
+                    .row_action_rects()
+                    .iter()
+                    .filter(|rect| rect.area() > 0.0)
+                    .count(),
+                2
+            );
+            assert_eq!(overlay.next_people, Rect::ZERO);
+        }
+
+        footer_separator_and_row_edge_register_on_every_palette();
+        footer_keeps_a_token_gap_around_the_activity_row();
+        every_button_is_at_least_one_pointer_target_and_centred_in_its_band();
+        crowded_rosters_page_without_putting_rows_under_the_footer();
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn collaborators_accessibility_and_roster_separate_identity_action_and_intent() {
+        fn agent_classification_uses_stable_identity_not_display_label() {
+            use collab_types::caps::{CapOverride, Subject, Verb};
+            use tilo_desktop_model::{Workspace, WorkspaceId};
+
+            let mut workspace = Workspace::new(WorkspaceId(71), "Shared");
+            workspace.owner = Some("owner".into());
+            workspace
+                .grant_as(
+                    &"owner".to_string(),
+                    CapOverride::membership(
+                        Subject::agent("scribe"),
+                        workspace.id.raw().to_string(),
+                        Verb::Write,
+                    ),
+                )
+                .expect("owner admits agent");
+            workspace
+                .collaborators
+                .push(Collaborator::new("scribe", "Release Notes Agent"));
+            let desktop = DesktopTree {
+                active: workspace.id,
+                workspaces: vec![workspace],
+                ..DesktopTree::default()
+            };
+
+            let rows = collaborator_roster_rows(&desktop, "local");
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].label, "Release Notes Agent");
+            assert!(
+                rows[0].is_agent,
+                "a renamed agent must never appear as a person"
+            );
+            assert_eq!(rows[0].role.as_deref(), Some("Editor"));
+        }
+
+        fn accessibility_distinguishes_live_action_from_inferred_intent() {
+            let mut overlay = CollaboratorsOverlay::default();
+            overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 1, false, false, false);
+            overlay.accessibility_rows = vec![RosterRow {
+                id: "ada".into(),
+                label: "Ada".into(),
+                initial: 'A',
+                color: Color::from_rgb8(1, 2, 3),
+                is_agent: false,
+                role: None,
+                invited: false,
+                activity: Some("Editing · Q2 finance report".into()),
+                status: Some(RosterStatus {
+                    text: "Preparing the board review".into(),
+                    automatic: true,
+                }),
+                followable: true,
+            }];
+            let snapshot = overlay.accessibility_snapshot();
+            let person = snapshot
+                .children
+                .first()
+                .and_then(|list| list.children.first())
+                .expect("the live roster is exposed as a list");
+            let description = person.description.as_deref().unwrap_or_default();
+            assert!(description.contains("Now: Editing · Q2 finance report"));
+            assert!(description.contains("Intent, inferred: Preparing the board review"));
+        }
+
+        fn accessibility_keeps_own_live_action_separate_from_own_intent() {
+            let mut overlay = CollaboratorsOverlay::default();
+            overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 0, false, false, false);
+            overlay.accessibility_status = Some("Closing the Q3 forecast".into());
+            overlay.accessibility_own_activity = Some("Reconciling · Q3 forecast".into());
+            let snapshot = overlay.accessibility_snapshot();
+            let status = snapshot
+                .children
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Your collaboration status"))
+                .expect("the self status control is exposed");
+            assert!(
+                status.description.as_deref().is_some_and(
+                    |description| description.contains("Now: Reconciling · Q3 forecast")
+                )
+            );
+        }
+
+        fn screen_exposure_is_persistent_layout_and_accessibility_content() {
+            let host = Rect::new(0.0, 0.0, 1200.0, 800.0);
+            let mut ordinary = CollaboratorsOverlay::default();
+            ordinary.layout(host, 0, false, false, false);
+            let ordinary_height = ordinary.panel.height();
+
+            let mut exposed = CollaboratorsOverlay::default();
+            exposed.layout(host, 0, false, false, true);
+            exposed.accessibility_screen_exposure =
+                Some("Ada (person) views Draft; Scribe (agent) controls Terminal".into());
+
+            assert_eq!(exposed.panel.height(), ordinary_height + EXPOSURE_H);
+            let description = exposed
+                .accessibility_snapshot()
+                .description
+                .expect("People dialog has a privacy description");
+            assert!(description.contains("Screen visible now"));
+            assert!(description.contains("Ada (person) views Draft"));
+            assert!(description.contains("Scribe (agent) controls Terminal"));
+        }
+
+        fn roster_model_keeps_follow_direction_when_cursors_are_not_visible() {
+            let rows = vec![
+                RosterRow {
+                    id: "ada".into(),
+                    label: "Ada".into(),
+                    initial: 'A',
+                    color: Color::from_rgb8(1, 2, 3),
+                    is_agent: false,
+                    role: None,
+                    invited: false,
+                    activity: None,
+                    status: None,
+                    followable: true,
+                },
+                RosterRow {
+                    id: "bob".into(),
+                    label: "Bob".into(),
+                    initial: 'B',
+                    color: Color::from_rgb8(4, 5, 6),
+                    is_agent: false,
+                    role: None,
+                    invited: false,
+                    activity: None,
+                    status: None,
+                    followable: true,
+                },
+            ];
+            let pairs = vec![("ada".to_string(), "bob".to_string())];
+            let model = CollaboratorsModel {
+                host: Rect::ZERO,
+                rows: &rows,
+                own_initial: 'Q',
+                own_color: Color::from_rgb8(7, 8, 9),
+                unavailable: None,
+                may_invite: false,
+                followed_id: None,
+                following_pairs: &pairs,
+                own_status: None,
+                own_activity: None,
+                own_status_automatic: false,
+                status_sharing: ui::StatusSharing::Automatic,
+                status_editing: false,
+                screen_exposure: None,
+            };
+            assert_eq!(
+                model.relationship_for("ada"),
+                Some(RosterFollowRelationship::Follows("bob".into()))
+            );
+            assert_eq!(
+                model.relationship_for("bob"),
+                Some(RosterFollowRelationship::FollowedBy("ada".into()))
+            );
+        }
+
+        agent_classification_uses_stable_identity_not_display_label();
+        accessibility_distinguishes_live_action_from_inferred_intent();
+        accessibility_keeps_own_live_action_separate_from_own_intent();
+        screen_exposure_is_persistent_layout_and_accessibility_content();
+        roster_model_keeps_follow_direction_when_cursors_are_not_visible();
+    }
+
+    #[test]
+    fn collaborators_hit_targets_follow_painted_geometry_and_policy() {
+        fn hit_testing_uses_the_same_cached_geometry_as_paint() {
+            let mut overlay = CollaboratorsOverlay::default();
+            overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 2, false, true, false);
+            let (invite, join) = overlay.action_rects();
+            assert_eq!(overlay.hit_test(invite.center()), CollaboratorsHit::Invite);
+            assert_eq!(overlay.hit_test(join.center()), CollaboratorsHit::Join);
+            assert_eq!(
+                overlay.hit_test(overlay.row_action_rects()[0].center()),
+                CollaboratorsHit::ToggleFollow(0),
+            );
+            assert_eq!(
+                overlay.hit_test(overlay.activity_rect().center()),
+                CollaboratorsHit::RoomActivity
+            );
+            assert_eq!(
+                overlay.hit_test(overlay.panel_rect().center()),
+                CollaboratorsHit::Absorb
+            );
+            assert_eq!(overlay.hit_test(Point::ZERO), CollaboratorsHit::Dismiss);
+        }
+
+        fn policy_removes_invite_geometry_instead_of_only_hiding_it() {
+            let mut overlay = CollaboratorsOverlay::default();
+            let host = Rect::new(0.0, 0.0, 1200.0, 800.0);
+            overlay.layout(host, 1, false, true, false);
+            assert!(overlay.action_rects().0.area() > 0.0);
+            overlay.layout(host, 1, false, false, false);
+            assert_eq!(overlay.action_rects(), (Rect::ZERO, Rect::ZERO));
+        }
+
+        fn clearing_drops_every_invisible_hit_target() {
+            let mut overlay = CollaboratorsOverlay::default();
+            overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 1, false, true, false);
+            overlay.clear();
+            assert_eq!(overlay.panel_rect(), Rect::ZERO);
+            assert_eq!(overlay.action_rects(), (Rect::ZERO, Rect::ZERO));
+            assert_eq!(overlay.activity_rect(), Rect::ZERO);
+            assert!(overlay.row_action_rects().is_empty());
+        }
+
+        fn own_status_and_privacy_modes_are_first_class_hit_targets() {
+            let mut overlay = CollaboratorsOverlay::default();
+            overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 2, false, true, false);
+            assert_eq!(
+                overlay.hit_test(overlay.status.center()),
+                CollaboratorsHit::EditStatus
+            );
+            for (mode, rect) in &overlay.status_modes {
+                assert_eq!(
+                    overlay.hit_test(rect.center()),
+                    CollaboratorsHit::SetStatusSharing(*mode)
+                );
+            }
+        }
+
+        fn keyboard_reaches_status_privacy_follow_and_activity_without_pointer_input() {
+            let mut overlay = CollaboratorsOverlay::default();
+            overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 1, false, true, false);
+
+            assert_eq!(overlay.key(&Key::Named(NamedKey::Home), false), None);
+            assert_eq!(
+                overlay.key(&Key::Named(NamedKey::Enter), false),
+                Some(CollaboratorsHit::EditStatus)
+            );
+            assert_eq!(overlay.key(&Key::Named(NamedKey::End), false), None);
+            assert_eq!(
+                overlay.key(&Key::Named(NamedKey::Space), false),
+                Some(CollaboratorsHit::RoomActivity)
+            );
+            assert_eq!(
+                overlay.key(&Key::Named(NamedKey::Escape), false),
+                Some(CollaboratorsHit::Dismiss)
+            );
+        }
+
+        hit_testing_uses_the_same_cached_geometry_as_paint();
+        policy_removes_invite_geometry_instead_of_only_hiding_it();
+        clearing_drops_every_invisible_hit_target();
+        own_status_and_privacy_modes_are_first_class_hit_targets();
+        keyboard_reaches_status_privacy_follow_and_activity_without_pointer_input();
+    }
+}

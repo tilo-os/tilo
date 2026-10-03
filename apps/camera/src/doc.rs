@@ -193,9 +193,9 @@ pub fn read_scans(doc: &AutoCommit, root: &ObjId) -> Vec<ScanEntry> {
     let Some(list) = list_at(doc, root, "scans") else {
         return Vec::new();
     };
-    // A legacy or hostile document must not turn opening the Scanner into an
+    // A hostile document must not turn opening the Scanner into an
     // unbounded UI-thread traversal. The durable writer below keeps normal
-    // documents at this cap; excess legacy rows are deliberately ignored.
+    // documents at this cap; excess rows are deliberately ignored.
     let n = doc.length(&list).min(MAX_SCANS);
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
@@ -219,7 +219,7 @@ pub fn read_scans(doc: &AutoCommit, root: &ObjId) -> Vec<ScanEntry> {
 ///
 /// # Errors
 ///
-/// Returns an explicit refusal for invalid payloads, hostile legacy lists, or
+/// Returns an explicit refusal for invalid payloads, oversized lists, or
 /// an Automerge write that could not be completed.
 pub fn record_scan(doc: &mut AutoCommit, root: &ObjId, raw: &str, ts: i64) -> Result<(), String> {
     if raw.is_empty() || raw.len() > 16 * 1024 {
@@ -370,85 +370,54 @@ mod tests {
     use automerge::ROOT;
 
     #[test]
-    fn settings_round_trip() {
-        let mut doc = AutoCommit::new();
-        let root = ROOT;
-        let s = Settings {
-            grid: false,
-            timer: Timer::S10,
-            resolution: Resolution::R4K,
-            hdr: false,
-            ..Settings::default()
-        };
-        write_settings(&mut doc, &root, &s);
-        let got = read_settings(&doc, &root);
-        assert_eq!(got, s);
-    }
-
-    #[test]
-    fn scans_are_newest_first_deduped_and_capped() {
-        let mut doc = AutoCommit::new();
-        let root = ROOT;
-        record_scan(&mut doc, &root, "https://a", 100).unwrap();
-        record_scan(&mut doc, &root, "https://b", 200).unwrap();
-        // Re-scanning "a" moves it to the front, not a duplicate.
-        record_scan(&mut doc, &root, "https://a", 300).unwrap();
-        let scans = read_scans(&doc, &root);
-        assert_eq!(scans.len(), 2);
-        assert_eq!(scans[0].raw, "https://a");
-        assert_eq!(scans[0].ts, 300);
-        assert_eq!(scans[1].raw, "https://b");
-        // Cap is enforced.
-        for i in 0..(MAX_SCANS + 10) {
-            record_scan(&mut doc, &root, &format!("code-{i}"), i as i64).unwrap();
+    fn camera_doc_round_trips_preferences_and_bounds_history_without_seeding() {
+        // Phase `settings_round_trip`.
+        {
+            let mut doc = AutoCommit::new();
+            let root = ROOT;
+            let s = Settings {
+                grid: false,
+                timer: Timer::S10,
+                resolution: Resolution::R4K,
+                hdr: false,
+                ..Settings::default()
+            };
+            write_settings(&mut doc, &root, &s);
+            let got = read_settings(&doc, &root);
+            assert_eq!(got, s);
         }
-        assert!(read_scans(&doc, &root).len() <= MAX_SCANS);
-    }
-
-    #[test]
-    fn legacy_capture_list_cannot_affect_constant_time_recent_handoff() {
-        let mut doc = AutoCommit::new();
-        let root = ROOT;
-        let list = doc
-            .put_object(&root, "captures", ObjType::List)
-            .expect("capture list");
-        // A representative legacy collection is enough here because neither
-        // recent-handoff operation reads or enumerates this object. The
-        // search/materialization adversarial test separately supplies 100,001
-        // inputs and proves the externally reachable path stays bounded.
-        for index in 0..1_024 {
-            doc.insert(&list, index, "legacy row")
-                .expect("legacy list row");
+        // Phase `init_defaults_is_idempotent_and_seeds_no_content`.
+        {
+            let mut doc = AutoCommit::new();
+            let root = ROOT;
+            assert!(!is_seeded(&doc, &root));
+            init_defaults(&mut doc, &root, Screen::Scanner);
+            assert!(is_seeded(&doc, &root));
+            // No fabricated media content.
+            assert!(read_recent_capture(&doc, &root).is_none());
+            assert!(read_scans(&doc, &root).is_empty());
+            // Second init leaves durable preferences untouched; screens are local.
+            init_defaults(&mut doc, &root, Screen::Camera);
+            assert_eq!(read_mode(&doc, &root), CaptureMode::Photo);
         }
-        let capture = SharedCapture {
-            id: "IMG_new.jpg".into(),
-            media_id: format!("{}{}", crate::media::MEDIA_PREFIX, "a".repeat(64)),
-            kind: CaptureKind::Photo,
-            ts: 1,
-            w: 64,
-            h: 48,
-            dur_ms: 0,
-            label: "New capture".into(),
-            facing: Facing::Back,
-        };
-
-        register_recent_capture(&mut doc, &root, &capture).unwrap();
-        assert_eq!(read_recent_capture(&doc, &root), Some(capture));
-        assert_eq!(doc.length(&list), 1_024);
-    }
-
-    #[test]
-    fn init_defaults_is_idempotent_and_seeds_no_content() {
-        let mut doc = AutoCommit::new();
-        let root = ROOT;
-        assert!(!is_seeded(&doc, &root));
-        init_defaults(&mut doc, &root, Screen::Scanner);
-        assert!(is_seeded(&doc, &root));
-        // No fabricated media content.
-        assert!(read_recent_capture(&doc, &root).is_none());
-        assert!(read_scans(&doc, &root).is_empty());
-        // Second init leaves durable preferences untouched; screens are local.
-        init_defaults(&mut doc, &root, Screen::Camera);
-        assert_eq!(read_mode(&doc, &root), CaptureMode::Photo);
+        // Phase `scans_are_newest_first_deduped_and_capped`.
+        {
+            let mut doc = AutoCommit::new();
+            let root = ROOT;
+            record_scan(&mut doc, &root, "https://a", 100).unwrap();
+            record_scan(&mut doc, &root, "https://b", 200).unwrap();
+            // Re-scanning "a" moves it to the front, not a duplicate.
+            record_scan(&mut doc, &root, "https://a", 300).unwrap();
+            let scans = read_scans(&doc, &root);
+            assert_eq!(scans.len(), 2);
+            assert_eq!(scans[0].raw, "https://a");
+            assert_eq!(scans[0].ts, 300);
+            assert_eq!(scans[1].raw, "https://b");
+            // Cap is enforced.
+            for i in 0..(MAX_SCANS + 10) {
+                record_scan(&mut doc, &root, &format!("code-{i}"), i as i64).unwrap();
+            }
+            assert!(read_scans(&doc, &root).len() <= MAX_SCANS);
+        }
     }
 }

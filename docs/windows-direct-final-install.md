@@ -15,6 +15,12 @@ scenario still need to call them as one resumable workflow.
   C: pagefile, an exact GPT readback, and sufficient C: headroom. It shrinks
   only the reviewed C: partition and creates exactly a 2 GiB ESP, 1 GiB boot,
   and 32 or 45 GiB root. A resumed run accepts only exact intermediate maps.
+  When `Get-PartitionSupportedSize` rejects the reviewed target, `execute`
+  queries DiskPart and requests the same whole-MiB shrink as both `desired`
+  and `minimum`. It rechecks disk identity, GPT, BitLocker, C: identity and
+  free space before that command, then requires the exact GPT map and NTFS
+  size change before creating any Tilo partition. A failed or partial shrink
+  stops the workflow for inspection.
 - `prepare-windows-direct-source.py template` creates a **sparse VM file**
   with only synthetic Windows GPT entries and the exact free target extent.
   Its synthetic Windows partition contents are empty and must never be
@@ -80,6 +86,19 @@ python os/dev/prepare-windows-direct-source.py finalize --plan realized-plan.jso
 python os/dev/prepare-windows-direct-source.py receipt --plan realized-plan.json --source-raw source.raw --ci-image registry.tilo.so/tilo/tilo@sha256:<digest> --ci-index-manifest ci-arm64-manifest.json --ci-child-manifest ci-arm64-manifest.json --vm-proof-checked vm-install-proof-checked.json --verify-key keys/cosign.pub --cosign-command-json cosign-runner.json --cosign-key-arg /mnt/c/path/to/keys/cosign.pub --output source-receipt.json
 python os/dev/copy-windows-direct-final-install.py execute --plan realized-plan.json --source-raw source.raw --source-receipt source-receipt.json --confirm-disk-id <disk-id> --ci-image registry.tilo.so/tilo/tilo@sha256:<digest> --ci-index-manifest ci-arm64-manifest.json --ci-child-manifest ci-arm64-manifest.json --vm-proof-checked vm-install-proof-checked.json --verify-key keys/cosign.pub --cosign-command-json cosign-runner.json --cosign-key-arg /mnt/c/path/to/keys/cosign.pub --output final-readback.json
 ```
+
+If all three Tilo partitions were allocated in an earlier session but the
+reviewed request or realized plan was lost, recover them read-only from the
+live seven-partition GPT before starting the VM scenario:
+
+```text
+python os/dev/allocate-windows-direct-final-install.py recover --root-gib 45 --request-output recovered-request.json --plan-output realized-plan.json
+```
+
+`recover` independently reads the physical GPT, reconstructs the original
+Windows-only geometry in memory, and requires it to reproduce the exact live
+ESP, boot, and root extents through the normal allocation validator. It never
+shrinks, creates, or formats a partition.
 
 The Lenovo `receipt` and `execute` commands additionally require the same
 eight arguments: `--board-medium-identity`, `--board-ci-guest-proof`,

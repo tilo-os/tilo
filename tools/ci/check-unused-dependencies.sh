@@ -22,6 +22,22 @@ git ls-files -z --cached --others --exclude-standard -- \
 mapfile -d '' manifests <"$paths"
 (( ${#manifests[@]} > 0 )) || { echo 'no first-party Cargo manifests found' >&2; exit 1; }
 
+# The crate `cargo hakari` generates names dependencies only to unify their
+# features, so every one of them is unused by design; never scan it.
+declare -A generated=()
+for manifest in "${manifests[@]}"; do
+    if [[ -f $manifest ]] && grep -qx '### BEGIN HAKARI SECTION' "$manifest"; then
+        generated[${manifest%/Cargo.toml}]=1
+    fi
+done
+holds_generated() {
+    local dir
+    for dir in "${!generated[@]}"; do
+        [[ $dir == "$1"/* ]] && return 0
+    done
+    return 1
+}
+
 scan=()
 if [[ ${1:-} == --changed ]]; then
     range=$(python3 "$script_dir/check_changed_rust_allows.py" \
@@ -43,7 +59,7 @@ if [[ ${1:-} == --changed ]]; then
         while [[ $dir == */* ]]; do
             dir=${dir%/*}
             if [[ -n ${crate_dirs[$dir]:-} ]]; then
-                selected[$dir]=1
+                [[ -n ${generated[$dir]:-} ]] || selected[$dir]=1
                 break
             fi
         done
@@ -61,9 +77,16 @@ fi
 if (( ${#scan[@]} == 0 )); then
     # Scan each first-party subtree once so machete can analyze its crates in parallel.
     # Passing each manifest separately would serialize cargo metadata across the fleet.
+    # A subtree holding the generated crate is scanned as its other subtrees.
     declare -A seen=()
     for manifest in "${manifests[@]}"; do
+        dir=${manifest%/Cargo.toml}
+        [[ -z ${generated[$dir]:-} ]] || continue
         root=${manifest%%/*}
+        while [[ $root != "$dir" ]] && holds_generated "$root"; do
+            rest=${manifest#"$root"/}
+            root=$root/${rest%%/*}
+        done
         if [[ -z ${seen[$root]:-} ]]; then
             scan+=("$root")
             seen[$root]=1

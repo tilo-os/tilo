@@ -89,44 +89,48 @@ mod tests {
     // interleave.
     static SERIAL: Mutex<()> = Mutex::new(());
 
+    /// A drag stays unclaimed until the host takes it and a new drag forgets the previous hand-off.
     #[test]
-    fn a_drag_is_unclaimed_until_the_host_takes_it() {
-        let _g = SERIAL
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        end();
-        assert_eq!(unclaimed(), None);
-        begin(vec![PathBuf::from("/w/photo.png")]);
-        assert_eq!(
-            unclaimed(),
-            Some(ExternalDrag {
-                paths: vec![PathBuf::from("/w/photo.png")]
-            })
-        );
-        assert!(!is_handed_off());
-        let taken = hand_off().expect("the host can claim it once");
-        assert_eq!(taken.paths, vec![PathBuf::from("/w/photo.png")]);
-        assert!(is_handed_off());
-        assert_eq!(unclaimed(), None, "a claimed drag is not offered again");
-        assert_eq!(hand_off(), None, "nor claimed twice");
-        end();
-        assert!(!is_handed_off());
-        assert_eq!(hand_off(), None);
-    }
+    fn external_drag_hand_off_is_claimed_once() {
+        // --- phase: a_drag_is_unclaimed_until_the_host_takes_it ---
+        {
+            let _g = SERIAL
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            end();
+            assert_eq!(unclaimed(), None);
+            begin(vec![PathBuf::from("/w/photo.png")]);
+            assert_eq!(
+                unclaimed(),
+                Some(ExternalDrag {
+                    paths: vec![PathBuf::from("/w/photo.png")]
+                })
+            );
+            assert!(!is_handed_off());
+            let taken = hand_off().expect("the host can claim it once");
+            assert_eq!(taken.paths, vec![PathBuf::from("/w/photo.png")]);
+            assert!(is_handed_off());
+            assert_eq!(unclaimed(), None, "a claimed drag is not offered again");
+            assert_eq!(hand_off(), None, "nor claimed twice");
+            end();
+            assert!(!is_handed_off());
+            assert_eq!(hand_off(), None);
+        }
 
-    #[test]
-    fn a_new_drag_forgets_the_previous_hand_off() {
-        let _g = SERIAL
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        begin(vec![PathBuf::from("/a")]);
-        let _ = hand_off();
-        begin(vec![PathBuf::from("/b")]);
-        assert!(!is_handed_off());
-        assert_eq!(
-            unclaimed().map(|d| d.paths),
-            Some(vec![PathBuf::from("/b")])
-        );
-        end();
+        // --- phase: a_new_drag_forgets_the_previous_hand_off ---
+        {
+            let _g = SERIAL
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            begin(vec![PathBuf::from("/a")]);
+            let _ = hand_off();
+            begin(vec![PathBuf::from("/b")]);
+            assert!(!is_handed_off());
+            assert_eq!(
+                unclaimed().map(|d| d.paths),
+                Some(vec![PathBuf::from("/b")])
+            );
+            end();
+        }
     }
 }

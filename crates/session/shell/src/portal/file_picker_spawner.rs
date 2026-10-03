@@ -108,18 +108,23 @@ pub struct FilePickerRequest {
     pub current_name: Option<String>,
     /// File-type filters the app offered. Empty means "any file".
     pub filters: Vec<PickerFilter>,
+    /// Where the dialog starts and how far it may roam, when the compositor
+    /// decided it ahead of time (the shell's own chooser service keeps it to
+    /// the caller's grants). `None` is the user's own directories.
+    pub scope: Option<super::PickerScope>,
     /// One-shot reply channel; the spawner fulfils this with the user's selection.
     pub reply: oneshot::Sender<Option<Vec<PathBuf>>>,
 }
 
 impl FilePickerRequest {
     /// The label the confirm button should carry.
-    pub fn confirm_label(&self) -> &str {
+    pub fn confirm_label(&self) -> String {
+        use crate::shell::i18n::t;
         match self.accept_label.as_deref() {
-            Some(l) if !l.trim().is_empty() => l,
-            _ if self.save => "Save",
-            _ if self.directory => "Choose folder",
-            _ => "Open",
+            Some(l) if !l.trim().is_empty() => l.to_string(),
+            _ if self.save => t("portal-file-save"),
+            _ if self.directory => t("portal-file-choose-folder"),
+            _ => t("portal-file-open"),
         }
     }
 }
@@ -168,6 +173,7 @@ impl FilePickerSpawnerHandle {
             accept_label: opts.accept_label,
             current_name: opts.current_name,
             filters: opts.filters,
+            scope: None,
             reply: tx,
         };
         self.inner.spawn(req);
@@ -315,158 +321,159 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn null_spawner_resolves_to_none() {
-        let h = FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel()));
-        let caller = PortalCaller::new(WorkspaceId(1), "app");
-        let rx = h.request(caller, "Open", false);
-        let out = rx.await.expect("oneshot");
-        assert!(out.is_none(), "null spawner must always cancel");
-    }
+    async fn picker_spawners_resolve_record_and_cancel_requests() {
+        // Phase `null_spawner_resolves_to_none`.
+        {
+            let h = FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel()));
+            let caller = PortalCaller::new(WorkspaceId(1), "app");
+            let rx = h.request(caller, "Open", false);
+            let out = rx.await.expect("oneshot");
+            assert!(out.is_none(), "null spawner must always cancel");
+        }
+        // Phase `mock_spawner_returns_baked_paths`.
+        {
+            let h = FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::returning(vec![
+                PathBuf::from("/tmp/a.txt"),
+            ])));
+            let caller = PortalCaller::new(WorkspaceId(2), "app");
+            let rx = h.request(caller, "Open", false);
+            let out = rx.await.expect("oneshot");
+            assert_eq!(out, Some(vec![PathBuf::from("/tmp/a.txt")]));
+        }
+        // Phase `mock_spawner_records_requests`.
+        {
+            let mock = Arc::new(MockFilePickerSpawner::returning(vec![PathBuf::from("/x")]));
+            let h = FilePickerSpawnerHandle::new(mock.clone());
+            let caller = PortalCaller::new(WorkspaceId(3), "org.example");
+            let _ = h.request(caller.clone(), "Open file", false).await;
+            let _ = h.request(caller.clone(), "Save as", true).await;
+            let seen = mock.requests();
+            assert_eq!(seen.len(), 2);
+            assert_eq!(seen[0].1, "Open file");
+            assert!(!seen[0].2);
+            assert_eq!(seen[1].1, "Save as");
+            assert!(seen[1].2);
+        }
+        // Phase `request_with_propagates_directory_multiple_and_label`.
+        {
+            let capture = Arc::new(CapturingSpawner::default());
+            let h = FilePickerSpawnerHandle::new(capture.clone());
+            let caller = PortalCaller::new(WorkspaceId(5), "org.example");
+            let out = h
+                .request_with(
+                    FilePickerOptions::new(caller, "Choose", false)
+                        .directory(true)
+                        .multiple(true)
+                        .accept_label(Some("Attach folder".into())),
+                )
+                .await
+                .expect("oneshot");
 
-    #[tokio::test]
-    async fn mock_spawner_returns_baked_paths() {
-        let h = FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::returning(vec![
-            PathBuf::from("/tmp/a.txt"),
-        ])));
-        let caller = PortalCaller::new(WorkspaceId(2), "app");
-        let rx = h.request(caller, "Open", false);
-        let out = rx.await.expect("oneshot");
-        assert_eq!(out, Some(vec![PathBuf::from("/tmp/a.txt")]));
-    }
-
-    #[tokio::test]
-    async fn mock_spawner_records_requests() {
-        let mock = Arc::new(MockFilePickerSpawner::returning(vec![PathBuf::from("/x")]));
-        let h = FilePickerSpawnerHandle::new(mock.clone());
-        let caller = PortalCaller::new(WorkspaceId(3), "org.example");
-        let _ = h.request(caller.clone(), "Open file", false).await;
-        let _ = h.request(caller.clone(), "Save as", true).await;
-        let seen = mock.requests();
-        assert_eq!(seen.len(), 2);
-        assert_eq!(seen[0].1, "Open file");
-        assert!(!seen[0].2);
-        assert_eq!(seen[1].1, "Save as");
-        assert!(seen[1].2);
-    }
-
-    #[tokio::test]
-    async fn request_with_propagates_directory_multiple_and_label() {
-        let capture = Arc::new(CapturingSpawner::default());
-        let h = FilePickerSpawnerHandle::new(capture.clone());
-        let caller = PortalCaller::new(WorkspaceId(5), "org.example");
-        let out = h
-            .request_with(
-                FilePickerOptions::new(caller, "Choose", false)
-                    .directory(true)
-                    .multiple(true)
-                    .accept_label(Some("Attach folder".into())),
-            )
-            .await
-            .expect("oneshot");
-
-        assert!(out.is_none());
-        assert_eq!(
-            *capture.seen.lock().unwrap(),
-            Some((true, true, Some("Attach folder".into())))
-        );
-    }
-
-    #[test]
-    fn directory_defaults_false_and_uses_its_own_default_label() {
-        let options = FilePickerOptions::new(
-            PortalCaller::new(WorkspaceId(6), "org.example"),
-            "Open",
-            false,
-        );
-        assert!(!options.directory);
-
-        let (tx, _rx) = oneshot::channel();
-        let req = FilePickerRequest {
-            caller: options.caller,
-            title: options.title,
-            save: false,
-            directory: true,
-            multiple: false,
-            accept_label: None,
-            current_name: None,
-            filters: Vec::new(),
-            reply: tx,
-        };
-        assert_eq!(req.confirm_label(), "Choose folder");
+            assert!(out.is_none());
+            assert_eq!(
+                *capture.seen.lock().unwrap(),
+                Some((true, true, Some("Attach folder".into())))
+            );
+        }
+        // Phase `mock_always_cancel_returns_none`.
+        {
+            let h = FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::always_cancel()));
+            let caller = PortalCaller::new(WorkspaceId(4), "app");
+            let rx = h.request(caller, "Open", false);
+            assert!(rx.await.expect("oneshot").is_none());
+        }
     }
 
     #[test]
-    fn a_glob_filter_becomes_an_extension() {
-        let f = PickerFilter::from_pairs("Images", &[(0, "*.PNG".into()), (0, "*.jpg".into())]);
-        assert_eq!(f.extensions, vec!["png", "jpg"]);
-        assert!(f.mimetypes.is_empty());
-        assert!(!f.is_catch_all());
+    fn picker_labels_prefer_the_app_request_and_fall_back_per_mode() {
+        // Phase `directory_defaults_false_and_uses_its_own_default_label`.
+        {
+            let options = FilePickerOptions::new(
+                PortalCaller::new(WorkspaceId(6), "org.example"),
+                "Open",
+                false,
+            );
+            assert!(!options.directory);
+
+            let (tx, _rx) = oneshot::channel();
+            let req = FilePickerRequest {
+                caller: options.caller,
+                title: options.title,
+                save: false,
+                directory: true,
+                multiple: false,
+                accept_label: None,
+                current_name: None,
+                filters: Vec::new(),
+                scope: None,
+                reply: tx,
+            };
+            assert_eq!(req.confirm_label(), "Choose folder");
+        }
+        // Phase `the_confirm_label_prefers_what_the_app_asked_for`.
+        {
+            let (tx, _rx) = oneshot::channel();
+            let req = FilePickerRequest {
+                caller: PortalCaller::new(WorkspaceId(1), "app"),
+                title: "t".into(),
+                save: false,
+                directory: false,
+                multiple: false,
+                accept_label: Some("Import".into()),
+                current_name: None,
+                filters: Vec::new(),
+                scope: None,
+                reply: tx,
+            };
+            assert_eq!(req.confirm_label(), "Import");
+        }
+        // Phase `a_blank_accept_label_falls_back_to_the_mode_default`.
+        {
+            let (tx, _rx) = oneshot::channel();
+            let req = FilePickerRequest {
+                caller: PortalCaller::new(WorkspaceId(1), "app"),
+                title: "t".into(),
+                save: true,
+                directory: false,
+                multiple: false,
+                accept_label: Some("   ".into()),
+                current_name: None,
+                filters: Vec::new(),
+                scope: None,
+                reply: tx,
+            };
+            assert_eq!(req.confirm_label(), "Save");
+        }
     }
 
     #[test]
-    fn a_mime_filter_is_kept_as_a_mime_type() {
-        let f = PickerFilter::from_pairs("Images", &[(1, "image/PNG".into())]);
-        assert_eq!(f.mimetypes, vec!["image/png"]);
-        assert!(f.extensions.is_empty());
-    }
-
-    #[test]
-    fn an_unreducible_glob_widens_the_filter_instead_of_hiding_everything() {
-        // `*.p?g` cannot be reduced to one extension — matching nothing would
-        // hide files the app would have accepted, so the filter opens up instead.
-        let f = PickerFilter::from_pairs("Odd", &[(0, "*.p?g".into()), (0, "*.png".into())]);
-        assert!(
-            f.is_catch_all(),
-            "a filter with a pattern we cannot honour must not silently \
-             drop the files it was meant to show: {f:?}"
-        );
-    }
-
-    #[test]
-    fn a_bare_star_is_the_all_files_filter() {
+    fn picker_filters_reduce_globs_and_keep_mime_types() {
+        // Phase `a_glob_filter_becomes_an_extension`.
+        {
+            let f = PickerFilter::from_pairs("Images", &[(0, "*.PNG".into()), (0, "*.jpg".into())]);
+            assert_eq!(f.extensions, vec!["png", "jpg"]);
+            assert!(f.mimetypes.is_empty());
+            assert!(!f.is_catch_all());
+        }
+        // Phase `a_mime_filter_is_kept_as_a_mime_type`.
+        {
+            let f = PickerFilter::from_pairs("Images", &[(1, "image/PNG".into())]);
+            assert_eq!(f.mimetypes, vec!["image/png"]);
+            assert!(f.extensions.is_empty());
+        }
+        // Phase `an_unreducible_glob_widens_the_filter_instead_of_hiding_everything`.
+        {
+            // `*.p?g` cannot be reduced to one extension — matching nothing would
+            // hide files the app would have accepted, so the filter opens up instead.
+            let f = PickerFilter::from_pairs("Odd", &[(0, "*.p?g".into()), (0, "*.png".into())]);
+            assert!(
+                f.is_catch_all(),
+                "a filter with a pattern we cannot honour must not silently \
+                 drop the files it was meant to show: {f:?}"
+            );
+        }
+        // Phase `a_bare_star_is_the_all_files_filter`.
         assert!(PickerFilter::from_pairs("All", &[(0, "*".into())]).is_catch_all());
         assert!(PickerFilter::from_pairs("All", &[(0, "*.*".into())]).is_catch_all());
-    }
-
-    #[test]
-    fn the_confirm_label_prefers_what_the_app_asked_for() {
-        let (tx, _rx) = oneshot::channel();
-        let req = FilePickerRequest {
-            caller: PortalCaller::new(WorkspaceId(1), "app"),
-            title: "t".into(),
-            save: false,
-            directory: false,
-            multiple: false,
-            accept_label: Some("Import".into()),
-            current_name: None,
-            filters: Vec::new(),
-            reply: tx,
-        };
-        assert_eq!(req.confirm_label(), "Import");
-    }
-
-    #[test]
-    fn a_blank_accept_label_falls_back_to_the_mode_default() {
-        let (tx, _rx) = oneshot::channel();
-        let req = FilePickerRequest {
-            caller: PortalCaller::new(WorkspaceId(1), "app"),
-            title: "t".into(),
-            save: true,
-            directory: false,
-            multiple: false,
-            accept_label: Some("   ".into()),
-            current_name: None,
-            filters: Vec::new(),
-            reply: tx,
-        };
-        assert_eq!(req.confirm_label(), "Save");
-    }
-
-    #[tokio::test]
-    async fn mock_always_cancel_returns_none() {
-        let h = FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::always_cancel()));
-        let caller = PortalCaller::new(WorkspaceId(4), "app");
-        let rx = h.request(caller, "Open", false);
-        assert!(rx.await.expect("oneshot").is_none());
     }
 }

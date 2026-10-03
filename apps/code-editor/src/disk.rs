@@ -3,7 +3,7 @@
 //!
 //! Two rules shape this module.
 //!
-//! **Writes are atomic.** A save goes through [`atomic_file::write`], which
+//! **Writes are atomic.** A save goes through [`tilo_files::native::atomic::write`], which
 //! writes a sibling temp file, fsyncs it, and renames it over the target. A
 //! crash or a full disk therefore leaves either the old file or the new one,
 //! never a half-written source file. An editor that can truncate your code on a
@@ -18,7 +18,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use ui::time::SystemTime;
 
 /// Files larger than this are not opened as text buffers. The editor holds the
 /// whole body in the CRDT as a character-addressed `Text`, so a hundred-megabyte
@@ -140,7 +140,8 @@ pub fn save(path: &Path, text: &str, expected: Option<&Stamp>) -> Result<Stamp, 
             Err(e) => return Err(SaveError::Io(e)),
         }
     }
-    atomic_file::write_creating_parent(path, text.as_bytes()).map_err(SaveError::Io)?;
+    tilo_files::native::atomic::write_creating_parent(path, text.as_bytes())
+        .map_err(SaveError::Io)?;
     Stamp::of(path).map_err(SaveError::Io)
 }
 
@@ -208,6 +209,13 @@ mod tests {
     }
 
     #[test]
+    fn save_and_load_round_trip_bytes_parents_and_utf8() {
+        // Each phase uses its own tempdir.
+        save_writes_the_bytes_and_load_reads_them_back();
+        save_creates_missing_parent_directories();
+        utf8_survives_a_save_load_round_trip();
+    }
+
     fn save_writes_the_bytes_and_load_reads_them_back() {
         let d = tmpdir();
         let p = d.path().join("a.rs");
@@ -222,7 +230,6 @@ mod tests {
         assert_eq!(loaded.stamp, stamp);
     }
 
-    #[test]
     fn save_creates_missing_parent_directories() {
         let d = tmpdir();
         let p = d.path().join("nested/deeper/new.rs");
@@ -231,6 +238,14 @@ mod tests {
     }
 
     #[test]
+    fn stamped_saves_refuse_to_clobber_external_changes() {
+        // Each phase uses its own tempdir.
+        a_second_save_against_a_current_stamp_succeeds();
+        a_file_changed_underneath_refuses_to_be_clobbered();
+        an_explicit_overwrite_after_a_conflict_wins();
+        a_deleted_file_counts_as_changed();
+    }
+
     fn a_second_save_against_a_current_stamp_succeeds() {
         let d = tmpdir();
         let p = d.path().join("a.rs");
@@ -243,7 +258,6 @@ mod tests {
         assert_ne!(s1, s2, "the stamp advances with the content");
     }
 
-    #[test]
     fn a_file_changed_underneath_refuses_to_be_clobbered() {
         let d = tmpdir();
         let p = d.path().join("a.rs");
@@ -267,7 +281,6 @@ mod tests {
         assert!(changed_on_disk(&p, &stale));
     }
 
-    #[test]
     fn an_explicit_overwrite_after_a_conflict_wins() {
         let d = tmpdir();
         let p = d.path().join("a.rs");
@@ -282,7 +295,6 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "mine");
     }
 
-    #[test]
     fn a_deleted_file_counts_as_changed() {
         let d = tmpdir();
         let p = d.path().join("a.rs");
@@ -294,6 +306,13 @@ mod tests {
     }
 
     #[test]
+    fn load_refuses_binary_and_oversized_files() {
+        // Each phase uses its own tempdir.
+        binary_files_are_refused_rather_than_opened_as_text();
+        oversized_files_are_refused_before_being_read();
+        too_large_message_uses_si_units();
+    }
+
     fn binary_files_are_refused_rather_than_opened_as_text() {
         let d = tmpdir();
         let p = d.path().join("thing.bin");
@@ -301,7 +320,6 @@ mod tests {
         assert!(matches!(load(&p), Err(LoadError::NotText)));
     }
 
-    #[test]
     fn oversized_files_are_refused_before_being_read() {
         let d = tmpdir();
         let p = d.path().join("huge.log");
@@ -313,7 +331,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn utf8_survives_a_save_load_round_trip() {
         let d = tmpdir();
         let p = d.path().join("é.rs");
@@ -331,7 +348,6 @@ mod tests {
         assert!(!is_ignored_dir("targets"));
     }
 
-    #[test]
     fn too_large_message_uses_si_units() {
         let message = LoadError::TooLarge(MAX_TEXT_BYTES + 1).to_string();
         assert!(

@@ -14,7 +14,6 @@
 //! further events and is invisible to the change journal.
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::ops::Range;
@@ -69,6 +68,29 @@ pub trait WritePolicy: Send + Sync + 'static {
 pub trait Fetcher: Send + Sync + 'static {
     /// Returns exactly `len` bytes of `content` starting at `offset`.
     fn fetch(&self, content: &[u8; 32], offset: u64, len: u64) -> io::Result<Vec<u8>>;
+
+    /// Writes bytes `range` of `content` into `dest` at the same offsets.
+    /// `ahead` marks read-ahead for a sequential reader rather than a
+    /// blocked access. The default fetches and writes; a fetcher whose
+    /// content lives in files can clone extents instead.
+    fn fill(
+        &self,
+        content: &[u8; 32],
+        range: Range<u64>,
+        dest: BorrowedFd<'_>,
+        ahead: bool,
+    ) -> io::Result<()> {
+        let _ = ahead;
+        let len = range.end.saturating_sub(range.start);
+        let bytes = self.fetch(content, range.start, len)?;
+        if bytes.len() as u64 != len {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "fetcher returned a short range",
+            ));
+        }
+        write_all_at(dest, &bytes, range.start)
+    }
 }
 
 /// Everything a placeholder needs to be indistinguishable from the real file
@@ -197,13 +219,7 @@ pub struct Hydrator {
 }
 
 fn encode_residency(st: &FileState) -> Vec<u8> {
-    let hex = st
-        .content
-        .iter()
-        .fold(String::with_capacity(64), |mut h, b| {
-            let _ = write!(h, "{b:02x}");
-            h
-        });
+    let hex = hex::encode(st.content);
     let mut resident = RangeSet::full(st.size);
     for r in st.missing.iter() {
         resident.remove(r.clone());
@@ -457,24 +473,12 @@ impl Shared {
         content: &[u8; 32],
         fd: BorrowedFd<'_>,
         claim: &[Range<u64>],
+        ahead: bool,
     ) -> (Vec<Range<u64>>, io::Result<()>) {
         let mut done = Vec::new();
         for c in claim {
             let len = c.end.saturating_sub(c.start);
-            let r = self
-                .fetcher
-                .fetch(content, c.start, len)
-                .and_then(|bytes| {
-                    if bytes.len() as u64 == len {
-                        Ok(bytes)
-                    } else {
-                        Err(io::Error::new(
-                            io::ErrorKind::UnexpectedEof,
-                            "fetcher returned a short range",
-                        ))
-                    }
-                })
-                .and_then(|bytes| write_all_at(fd, &bytes, c.start));
+            let r = self.fetcher.fill(content, c.clone(), fd, ahead);
             match r {
                 Ok(()) => {
                     self.stats.fills.fetch_add(1, Ordering::Relaxed);
@@ -543,7 +547,7 @@ impl Shared {
             }
             let content = st.content;
             drop(files);
-            let (done, result) = self.fetch_claims(&content, fd, &claim);
+            let (done, result) = self.fetch_claims(&content, fd, &claim, !block);
             for d in &done {
                 filled = filled.saturating_add(d.end.saturating_sub(d.start));
             }
@@ -998,22 +1002,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn residency_xattr_round_trips() {
-        let mut missing = RangeSet::full(1000);
-        missing.remove(0..100);
-        missing.remove(500..600);
-        let st = FileState::new([0xAB; 32], 1000, missing.clone());
-        let (content, size, back) = decode_residency(&encode_residency(&st)).unwrap();
-        assert_eq!(content, [0xAB; 32]);
-        assert_eq!(size, 1000);
-        assert_eq!(back, missing);
-    }
-
-    #[test]
-    fn fills_are_rounded_to_the_granule_and_clipped_to_the_file() {
-        assert_eq!(align_range(10..20, 4096, 1 << 20), 0..4096);
-        assert_eq!(align_range(5000..9000, 4096, 1 << 20), 4096..12288);
-        assert_eq!(align_range(5000..9000, 4096, 6000), 4096..6000);
+    fn residency_xattrs_round_trip_and_fills_align_to_granules() {
+        // Phase `residency_xattr_round_trips`.
+        {
+            let mut missing = RangeSet::full(1000);
+            missing.remove(0..100);
+            missing.remove(500..600);
+            let st = FileState::new([0xAB; 32], 1000, missing.clone());
+            let (content, size, back) = decode_residency(&encode_residency(&st)).unwrap();
+            assert_eq!(content, [0xAB; 32]);
+            assert_eq!(size, 1000);
+            assert_eq!(back, missing);
+        }
+        // Phase `fills_are_rounded_to_the_granule_and_clipped_to_the_file`.
+        {
+            assert_eq!(align_range(10..20, 4096, 1 << 20), 0..4096);
+            assert_eq!(align_range(5000..9000, 4096, 1 << 20), 4096..12288);
+            assert_eq!(align_range(5000..9000, 4096, 6000), 4096..6000);
+        }
     }
 }
 

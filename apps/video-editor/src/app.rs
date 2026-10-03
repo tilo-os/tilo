@@ -12,7 +12,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use ui::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -25,6 +26,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
 use ui::a11y::{AccessNode, AccessState, Role};
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
@@ -1064,6 +1066,8 @@ pub struct VideoEditorApp {
     export_status: ExportStatus,
     /// A media-import portal request in flight, drained each `sync`.
     import_rx: Option<ImportChannel>,
+    /// A contents chooser, where files have no path (a browser page).
+    import_contents_rx: Option<ui::portal::ContentsChannel>,
     /// A short, honest status line shown after an import attempt (how many
     /// clips landed, which files were refused and why, or why the portal
     /// round-trip failed). Never a fake success, and it carries its own
@@ -1484,6 +1488,7 @@ impl VideoEditorApp {
             export: ExportSettings::default(),
             export_status: ExportStatus::Idle,
             import_rx: None,
+            import_contents_rx: None,
             import_notice: None,
             pending_imports: Vec::new(),
             undo: ui::UndoAccess::default(),
@@ -1500,7 +1505,7 @@ impl VideoEditorApp {
             mix_meters: std::sync::Arc::new(crate::audio::MixMeters::new()),
             mix: crate::audio::MixSnapshot::default(),
             mix_sig: None,
-            meter_tick: Instant::now(),
+            meter_tick: ui::time::now(),
             doc_heads: Vec::new(),
             compositor: None,
             composited: None,
@@ -1511,14 +1516,14 @@ impl VideoEditorApp {
             hover_media: None,
             last_click_media: None,
             pending_rename: None,
-            last_tick: Instant::now(),
+            last_tick: ui::time::now(),
             rect: Rect::ZERO,
             actions: crate::resource::ActionSink::default(),
             clipboard: Vec::new(),
             shuttle: 0.0,
             bin_flap: FlapState::open_when_docked(),
             inspector_flap: FlapState::open_when_docked(),
-            flap_tick: Instant::now(),
+            flap_tick: ui::time::now(),
             bin_menu: ContextMenu::new(),
             menu_target: None,
             // PROJECT starts folded — the one section that does. A folded
@@ -2448,7 +2453,7 @@ impl VideoEditorApp {
     /// mixer already measured the block, and the whole point is to carry that
     /// number rather than compute a second opinion on the paint path.
     fn pump_mix_meter(&mut self) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = now.duration_since(self.meter_tick).as_secs_f64();
         self.meter_tick = now;
         let sig = crate::audio::mix_signature(&self.project);
@@ -2557,7 +2562,7 @@ impl VideoEditorApp {
 
     // ---- playback --------------------------------------------------------
     fn advance_playback(&mut self) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = now.duration_since(self.last_tick).as_secs_f64();
         self.last_tick = now;
         let dur = self.project.duration();
@@ -2612,7 +2617,7 @@ impl VideoEditorApp {
             self.inspector_flap.snap(inspector_open);
             return;
         }
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = now.duration_since(self.flap_tick).as_secs_f64();
         self.flap_tick = now;
         self.bin_flap.tick(layout, dt);
@@ -2719,12 +2724,12 @@ impl VideoEditorApp {
         // is a state with nothing on screen for it.
         if self.shuttle != 0.0 {
             self.shuttle = 0.0;
-            self.last_tick = Instant::now();
+            self.last_tick = ui::time::now();
             self.playback.chase_playhead = true;
             return;
         }
         self.playback.playing = !self.playback.playing;
-        self.last_tick = Instant::now();
+        self.last_tick = ui::time::now();
         if self.playback.playing && self.playhead >= self.project.duration() {
             self.playhead = 0.0;
         }
@@ -2750,7 +2755,7 @@ impl VideoEditorApp {
             self.shuttle = dir;
         }
         self.playback.playing = false; // shuttle and play are mutually exclusive
-        self.last_tick = Instant::now();
+        self.last_tick = ui::time::now();
     }
 
     // ---- mutations (dispatched as replayable actions) --------------------
@@ -4371,7 +4376,6 @@ impl VideoEditorApp {
             VIDEO_EDITOR_ACTION_TYPE,
             &VideoEditorAction::AddEffect {
                 clip: id.to_string(),
-                expected_stack: Vec::new(),
                 ordinal,
                 effect,
             },
@@ -4991,7 +4995,84 @@ impl VideoEditorApp {
     /// build; the chosen files are drained each frame in [`Self::drain_import`].
     fn trigger_import(&mut self) {
         self.import_notice = Some(Notice::ok("Choose media to import…"));
-        self.import_rx = Some(portal::request_import());
+        if crate::files::native_paths() {
+            self.import_rx = Some(portal::request_import());
+        } else {
+            self.import_contents_rx = Some(portal::request_import_contents());
+        }
+    }
+
+    /// Import the files a contents chooser delivered: probed from their
+    /// bytes, which are kept in the editor's cache location, and named in
+    /// the project by that copy.
+    fn drain_import_contents(&mut self, doc: &mut AutoCommit) {
+        let Some(rx) = self.import_contents_rx.as_ref() else {
+            return;
+        };
+        let outcome = match rx.try_recv() {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                ui::portal::ContentsOutcome::Failed("the file chooser stopped responding".into())
+            }
+        };
+        self.import_contents_rx = None;
+        match outcome {
+            ui::portal::ContentsOutcome::Picked(files) => {
+                let mut report = ImportReport::default();
+                for file in files {
+                    match self.try_import_contents(doc, &file.name, file.bytes) {
+                        Ok(()) => report.added += 1,
+                        Err(reason) => report.refused.push((file.name, reason)),
+                    }
+                }
+                self.import_notice = Some(import_report_notice(&report));
+            }
+            ui::portal::ContentsOutcome::Cancelled => self.import_notice = None,
+            ui::portal::ContentsOutcome::Failed(reason) => {
+                self.import_notice = Some(Notice::failed(reason));
+            }
+        }
+    }
+
+    fn try_import_contents(
+        &mut self,
+        doc: &mut AutoCommit,
+        name: &str,
+        bytes: Vec<u8>,
+    ) -> Result<(), String> {
+        if bytes.len() > crate::files::KEEP_LIMIT {
+            return Err(format!(
+                "is larger than {} MB, the most a browser page imports",
+                crate::files::KEEP_LIMIT / (1024 * 1024)
+            ));
+        }
+        let probed = probe::probe_bytes(&bytes, Path::new(name)).map_err(|e| e.to_string())?;
+        let id = Uuid::new_v4();
+        let token = id.simple().to_string();
+        let palette = (self.project.media.len() as u8) % 7;
+        let item = MediaItem {
+            id,
+            name: name.to_owned(),
+            kind: probed.kind,
+            duration: probed.duration,
+            width: probed.width,
+            height: probed.height,
+            fps: probed.fps,
+            palette,
+            // The kept copy's name in the cache location; no decoder here
+            // reads it yet, so the preview draws the clip from its metadata.
+            path: format!("{}/{token}", crate::media::KEPT_PREFIX),
+            hydration: crate::media::Hydration::Projected,
+            text: None,
+            has_audio: probed.has_audio,
+        };
+        crate::files::keep_imported(token, bytes);
+        self.project.media.push(item.clone());
+        self.actions
+            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&item));
+        self.selected_media = Some(id);
+        Ok(())
     }
 
     #[expect(
@@ -5195,6 +5276,7 @@ impl VideoEditorApp {
     /// Drain any pending imports (queued deterministic files first, then a
     /// portal outcome), bringing each chosen file into the bin as a real clip.
     fn drain_import(&mut self, doc: &mut AutoCommit) {
+        self.drain_import_contents(doc);
         if !self.pending_imports.is_empty() {
             let paths = std::mem::take(&mut self.pending_imports);
             let report = self.import_files(doc, &paths);
@@ -5702,6 +5784,42 @@ impl VideoEditorApp {
             mix: self.mix.clone(),
         }
     }
+
+    /// Mark this editor as framework-hosted so
+    /// [`PublishesResources`](ui::resources::PublishesResources) keeps only
+    /// playhead live extras beside the published project door.
+    #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
+        self.actions.set_hosted_for_test(hosted);
+    }
+
+    /// Whether [`PublishesResources`](ui::resources::PublishesResources) is
+    /// publishing only playhead live extras beside the framework door.
+    #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: plant a local project that has not been published through
+    /// the framework resource yet.
+    #[cfg(test)]
+    pub(crate) fn seed_unpublished_project_for_test(&mut self, project: Project) {
+        self.project = project;
+    }
+
+    /// Test-only: media ids currently held on the local project surface.
+    #[cfg(test)]
+    pub(crate) fn local_media_names_for_test(&self) -> Vec<String> {
+        self.project.media.iter().map(|m| m.name.clone()).collect()
+    }
+
+    /// Test-only: move the playhead so hosted extras bind to a known time.
+    #[cfg(test)]
+    pub(crate) fn set_playhead_for_test(&mut self, playhead: f64) {
+        self.playhead = playhead;
+    }
 }
 
 /// A clip's animatable geometry, sampled at one instant.
@@ -6018,6 +6136,14 @@ impl VideoEditorApp {
 }
 
 impl Widget for VideoEditorApp {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::undo::UndoControl,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource,
+        dyn ui::presence::capability::PublishesPresence
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::VIDEO_EDITOR_OPERATION_TYPE]
     }
@@ -6026,7 +6152,8 @@ impl Widget for VideoEditorApp {
         clippy::too_many_lines,
         reason = "the per-frame sync reads as the ordered list of things a frame reconciles"
     )]
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         if std::mem::take(&mut self.project_sync.save_requested) {
             self.save_project(state);
         }
@@ -6398,18 +6525,7 @@ impl Widget for VideoEditorApp {
         clippy::too_many_lines,
         reason = "the window-event dispatcher: one arm per event kind, in the order they arrive"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Everything one input event edits is one undo step.
         let _gesture = self.actions.gesture();
         let r = self.regions();
@@ -6429,28 +6545,18 @@ impl Widget for VideoEditorApp {
                 if let Some(rect) = name_rect {
                     label.apply_layout_external(rect);
                 }
-                label.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
+                label.handle_event(event, ctx);
                 (*mid, label.take_outcome())
             };
             match outcome {
                 EditOutcome::Committed(name) => {
-                    self.commit_rename(state, mid, &name);
+                    self.commit_rename(ctx.state, mid, &name);
                     self.bin_rename = None;
                 }
                 EditOutcome::Cancelled => self.bin_rename = None,
                 EditOutcome::None => {}
             }
-            if *handled {
+            if *ctx.handled {
                 return;
             }
         }
@@ -6466,14 +6572,16 @@ impl Widget for VideoEditorApp {
                 let root = automerge::ROOT;
                 dd.handle_event(
                     event,
-                    scale_factor,
-                    modifiers,
-                    local,
-                    &root,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: ctx.scale_factor,
+                        modifiers: ctx.modifiers,
+                        state: local,
+                        path: &root,
+                        handled: ctx.handled,
+                        focus_target: ctx.focus_target,
+                        node_id: ctx.node_id,
+                        taffy: ctx.taffy,
+                    },
                 );
             }
             if let Some((mid, family)) = self.take_font_choice() {
@@ -6483,10 +6591,10 @@ impl Widget for VideoEditorApp {
                     .and_then(|m| m.text.as_ref())
                     .is_some_and(|t| t.font == family);
                 if !same {
-                    self.edit_title(state, move |t| t.font = family);
+                    self.edit_title(ctx.state, move |t| t.font = family);
                 }
             }
-            if *handled {
+            if *ctx.handled {
                 return;
             }
         }
@@ -6500,16 +6608,16 @@ impl Widget for VideoEditorApp {
         // typed — losing a title to a stray click would be the worse
         // outcome, and the field says which keys do what under the box.
         if self.title_edit.is_some() {
-            if let Some(done) = title_edit_verdict(event, *modifiers) {
+            if let Some(done) = title_edit_verdict(event, *ctx.modifiers) {
                 let (mid, words) = {
                     let (mid, field) = self.title_edit.as_ref().unwrap();
                     (*mid, field.value().to_string())
                 };
                 if done {
-                    self.commit_title_text(state, mid, &words);
+                    self.commit_title_text(ctx.state, mid, &words);
                 }
                 self.title_edit = None;
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             let l = self.inspector_layout(&r);
@@ -6527,7 +6635,7 @@ impl Widget for VideoEditorApp {
                     let (mid, field) = self.title_edit.as_ref().unwrap();
                     (*mid, field.value().to_string())
                 };
-                self.commit_title_text(state, mid, &words);
+                self.commit_title_text(ctx.state, mid, &words);
                 self.title_edit = None;
                 // Not marked handled: the click still lands on whatever it
                 // was aimed at, which is what makes accepting-on-click-away
@@ -6537,19 +6645,9 @@ impl Widget for VideoEditorApp {
                 if let Some(rect) = l.title_text {
                     field.apply_layout_external(rect.inset(-4.0));
                 }
-                field.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
+                field.handle_event(event, ctx);
             }
-            if *handled {
+            if *ctx.handled {
                 return;
             }
         }
@@ -6566,17 +6664,7 @@ impl Widget for VideoEditorApp {
                 if let Some(rect) = row {
                     label.apply_layout_external(rect);
                 }
-                label.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
+                label.handle_event(event, ctx);
                 (*target, label.take_outcome())
             };
             match outcome {
@@ -6585,7 +6673,7 @@ impl Widget for VideoEditorApp {
                     // regardless put the old name back with nothing said, so
                     // a marker whose name you had just cleared looked as
                     // though it had simply ignored you.
-                    if self.commit_marker_rename(state, target, &name) {
+                    if self.commit_marker_rename(ctx.state, target, &name) {
                         self.marker_rename = None;
                     } else {
                         self.project_notice =
@@ -6595,50 +6683,30 @@ impl Widget for VideoEditorApp {
                 EditOutcome::Cancelled => self.marker_rename = None,
                 EditOutcome::None => {}
             }
-            if *handled {
+            if *ctx.handled {
                 return;
             }
         }
         // An open bin context menu is a transient overlay that owns clicks/keys.
         if self.bin_menu.is_open() {
-            self.bin_menu.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.bin_menu.handle_event(event, ctx);
             if let Some(idx) = self.bin_menu.take_selection() {
-                self.bin_menu_choose(state, idx);
+                self.bin_menu_choose(ctx.state, idx);
             }
-            if *handled {
+            if *ctx.handled {
                 return;
             }
         }
         // Same for the project menu.
         if self.project_menu.is_open() {
-            self.project_menu.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.project_menu.handle_event(event, ctx);
             if let Some(idx) = self.project_menu.take_selection() {
                 if let Some(item) = self.project_menu_intent(idx) {
-                    self.run_project_menu_item(state, item);
+                    self.run_project_menu_item(ctx.state, item);
                 }
                 self.project_menu.close();
             }
-            if *handled {
+            if *ctx.handled {
                 return;
             }
         }
@@ -6655,7 +6723,7 @@ impl Widget for VideoEditorApp {
                 }
             )
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         // Right-click on a bin item or a track header opens its context menu.
@@ -6668,15 +6736,15 @@ impl Widget for VideoEditorApp {
                 || self.open_track_menu_at_cursor(&r)
                 || self.open_clip_menu_at_cursor(&r))
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         match event {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                if self.handle_key(&key_event.logical_key, *modifiers, state, &r) {
-                    *handled = true;
+                if self.handle_key(&key_event.logical_key, *ctx.modifiers, ctx.state, &r) {
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -6694,13 +6762,13 @@ impl Widget for VideoEditorApp {
                 {
                     self.place_cursor_at(&r, self.last_mouse);
                 }
-                self.handle_press(state, &r, modifiers.state().shift_key());
+                self.handle_press(ctx.state, &r, ctx.modifiers.state().shift_key());
                 // Take the keyboard, the way every shared widget in `ui` does
                 // on a press. Without it the editor only ever held focus after
                 // a Tab, so a user who clicked into it and then used the arrow
                 // keys moved a pane cursor that nothing was allowed to paint.
-                *focus_target = Some(node_id);
-                *handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -6710,14 +6778,14 @@ impl Widget for VideoEditorApp {
                 if bin_overlay_open {
                     // Opening the flap cancels active drags. Consume the
                     // matching release so it cannot complete an edit below.
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 if self.bin_drag.is_some() {
                     // A bin→timeline drag drops a clip at the release position;
                     // a bin press that never moved may instead begin a rename.
-                    self.release_bin_drag(state, &r);
-                    *handled = true;
+                    self.release_bin_drag(ctx.state, &r);
+                    *ctx.handled = true;
                 } else if self.drag.is_some() {
                     // A rubber band resolves to a selection; a press that never
                     // travelled falls back to scrubbing where it landed.
@@ -6729,21 +6797,21 @@ impl Widget for VideoEditorApp {
                     }
                     // Commit the drag's final position / trim / grade as one
                     // action (one undo boundary), then end the drag.
-                    self.commit_drag(state);
+                    self.commit_drag(ctx.state);
                     self.drag = None;
                     self.marquee = None;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_mouse = p;
                 self.update_hover(&r);
                 if !bin_overlay_open {
                     self.apply_drag(&r);
                     self.update_bin_drag();
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             // External file drop (an OS drag-and-drop onto the window) imports
             // media, exactly like the portal pick — the whole editor accepts it.
@@ -6752,28 +6820,28 @@ impl Widget for VideoEditorApp {
                 if bin_overlay_open {
                     // Importing through a covered canvas would contradict the
                     // scrim's input boundary. Dismiss first, then drop again.
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 // A drop is a batch of one, and reports like one: a refusal
                 // still names the file and carries the probe's own reason.
-                let report = self.import_files(state, std::slice::from_ref(path));
+                let report = self.import_files(ctx.state, std::slice::from_ref(path));
                 self.import_notice = Some(import_report_notice(&report));
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::HoveredFile(_) => {
                 self.presentation.file_hovering = !bin_overlay_open;
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::HoveredFileCancelled => {
                 self.presentation.file_hovering = false;
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if bin_overlay_open && !r.bin.contains(self.last_mouse) {
                     // Do not pan/zoom a timeline which is visibly unavailable
                     // behind the narrow bin overlay.
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 let (dx, dy) = match delta {
@@ -6791,10 +6859,10 @@ impl Widget for VideoEditorApp {
                     {
                         self.help_scroll = (self.help_scroll - dy * 40.0).clamp(0.0, max);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
-                let shift = modifiers.state().shift_key();
+                let shift = ctx.modifiers.state().shift_key();
                 let over_bin = self.bin_is_visible(&r) && r.bin.contains(self.last_mouse);
                 let over_timeline = r.timeline.contains(self.last_mouse);
                 if self.inspector_is_visible(&r)
@@ -6805,14 +6873,14 @@ impl Widget for VideoEditorApp {
                     if dy.abs() > 0.0 {
                         let max = self.inspector_max_scroll(&r);
                         self.inspector_scroll = (self.inspector_scroll - dy * 28.0).clamp(0.0, max);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 } else if over_bin {
                     // Scroll the media bin list.
                     if dy.abs() > 0.0 {
                         let max = self.bin_max_scroll(&r);
                         self.bin_scroll = (self.bin_scroll - dy * 40.0).clamp(0.0, max);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 } else if !over_timeline {
                     // The preview and transport have nothing to scroll. A wheel
@@ -6826,7 +6894,7 @@ impl Widget for VideoEditorApp {
                     let notches = if dx.abs() > 0.0 { -dx } else { -dy };
                     let step = self.visible_seconds(&r) * 0.15;
                     self.scroll_by(notches * step, &r);
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if dy.abs() > 0.0 {
                     // Plain wheel zooms, anchored on the time under the pointer
                     // so the frame you are looking at stays put.
@@ -6835,7 +6903,7 @@ impl Widget for VideoEditorApp {
                         self.last_mouse.x,
                         &r,
                     );
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -7059,37 +7127,6 @@ impl Widget for VideoEditorApp {
         Some(CursorIcon::Default)
     }
 
-    /// This editor publishes about the timeline it holds.
-    fn presence_key(&self) -> Option<PresenceKey> {
-        Some(crate::presence::timeline_key())
-    }
-
-    /// Where this participant is, for the room to draw.
-    ///
-    /// Two facts -- the playhead and the selected clip -- through a hook that
-    /// carries one at a time, so [`crate::presence::LocalPresence`] hands over
-    /// whichever has moved since it was last sent. Both survive on the
-    /// receiving side because the caret store and the selection store are
-    /// separate; see [`crate::presence`].
-    ///
-    /// None of this is an action and none of it reaches the document. A
-    /// playhead is view state: replaying someone else's is meaningless, and
-    /// putting it on an undo stack would be worse than meaningless.
-    fn presence_payload(&self) -> Option<(PresenceKey, ui::PresencePayload)> {
-        let editing = self
-            .title_edit
-            .as_ref()
-            .map(|(mid, field)| (crate::presence::FIELD_TITLE_WORDS, *mid, field.cursor_pos()));
-        let selected = self
-            .selected()
-            .and_then(|id| self.project.clip(id))
-            .map(|c| (c.id, c.start, c.end()));
-        self.local_presence.next([
-            crate::presence::point_frame(editing, self.playhead),
-            crate::presence::range_frame(selected),
-        ])
-    }
-
     fn name(&self) -> &'static str {
         "VideoEditorApp"
     }
@@ -7097,79 +7134,35 @@ impl Widget for VideoEditorApp {
         Some("video_editor_root")
     }
 
-    /// Publish the open project + its tracks and clips so the host's Ctrl+K
-    /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        let expected = crate::actions::operation_kind(&operation);
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match video editor operation kind {expected:?}"
-            ));
-        }
-        self.perform_resource_operation(operation)?;
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        let expected = crate::actions::operation_kind(&operation);
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match video editor operation kind {expected:?}"
-            ));
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if matches!(
-            operation,
-            crate::actions::VideoEditorOperation::CancelExport
-        ) {
-            self.invoke_resource_operation(kind, type_id, payload, doc, path)?;
-            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )));
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        if matches!(
-            operation,
-            crate::actions::VideoEditorOperation::OpenProject { path: Some(_) }
-                | crate::actions::VideoEditorOperation::SaveProject { path: Some(_) }
-                | crate::actions::VideoEditorOperation::SaveProjectAs { path: Some(_) }
-        ) {
-            self.resource_operation = Some(operation.clone());
-            self.resource_pending_operation = Some((invocation, operation));
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        self.perform_resource_operation(operation)?;
-        self.resource_operation = crate::actions::decode_operation(type_id, payload)?;
-        self.resource_invocation = Some(invocation);
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -7192,36 +7185,6 @@ impl Widget for VideoEditorApp {
         }
     }
 
-    /// Fold the open project into Tilo global search: every marker, title and
-    /// bin source becomes a findable *place*, and choosing one seeks there.
-    ///
-    /// A snapshot rather than a borrow, because the host queries the provider
-    /// off the paint path — see
-    /// [`ProjectSearchProvider`](crate::search_provider::ProjectSearchProvider).
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(
-            crate::search_provider::ProjectSearchProvider::new(&self.project),
-        )]
-    }
-
-    /// Hand the host the document heads captured before an on-screen affordance
-    /// dispatched its timeline action, so it records exactly one undo boundary
-    /// bracketing it (Ctrl+Z reverts it OS-wide). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
-    /// The host's reading of the history, which is what the strip's undo and
-    /// redo buttons are drawn from. Scoped to this author exactly as Ctrl+Z
-    /// is, so the buttons and the shortcut can never disagree about whether
-    /// there is anything to go back to.
-    fn set_undo_status(&mut self, status: &mut dyn FnMut() -> ui::UndoStatus) {
-        self.undo.publish(&status());
-    }
-
-    fn take_undo_request(&mut self) -> Option<ui::UndoRequest> {
-        self.undo.take_request()
-    }
     fn is_focusable(&self) -> bool {
         true
     }
@@ -7370,10 +7333,11 @@ impl Widget for VideoEditorApp {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::{Action, hash_key};
+        let (state, _) = ui::doc::document(state, path);
         // An assistive-technology command is one gesture, like a key press.
         let _gesture = self.actions.gesture();
         let Some(&pane_key) = key_path.first() else {
@@ -7471,6 +7435,185 @@ impl Widget for VideoEditorApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ui::presence::capability::PublishesPresence for VideoEditorApp {
+    /// This editor publishes about the timeline it holds.
+    fn presence_key(&self) -> Option<PresenceKey> {
+        Some(crate::presence::timeline_key())
+    }
+    /// Where this participant is, for the room to draw.
+    ///
+    /// Two facts -- the playhead and the selected clip -- through a hook that
+    /// carries one at a time, so [`crate::presence::LocalPresence`] hands over
+    /// whichever has moved since it was last sent. Both survive on the
+    /// receiving side because the caret store and the selection store are
+    /// separate; see [`crate::presence`].
+    ///
+    /// None of this is an action and none of it reaches the document. A
+    /// playhead is view state: replaying someone else's is meaningless, and
+    /// putting it on an undo stack would be worse than meaningless.
+    fn presence_payload(&self) -> Option<(PresenceKey, ui::PresencePayload)> {
+        let editing = self
+            .title_edit
+            .as_ref()
+            .map(|(mid, field)| (crate::presence::FIELD_TITLE_WORDS, *mid, field.cursor_pos()));
+        let selected = self
+            .selected()
+            .and_then(|id| self.project.clip(id))
+            .map(|c| (c.id, c.start, c.end()));
+        self.local_presence.next([
+            crate::presence::point_frame(editing, self.playhead),
+            crate::presence::range_frame(selected),
+        ])
+    }
+}
+
+impl ui::search::capability::SearchSource for VideoEditorApp {
+    /// Fold the open project into Tilo global search: every marker, title and
+    /// bin source becomes a findable *place*, and choosing one seeks there.
+    ///
+    /// A snapshot rather than a borrow, because the host queries the provider
+    /// off the paint path — see
+    /// [`ProjectSearchProvider`](crate::search_provider::ProjectSearchProvider).
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(
+            crate::search_provider::ProjectSearchProvider::new(&self.project),
+        )]
+    }
+}
+
+impl ui::resources::PublishesResources for VideoEditorApp {
+    /// Publish the open project + its tracks and clips so the host's Ctrl+K
+    /// action palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        // Framework [`tilo_resource::publish`] owns `video_editor.project`,
+        // import/export Effects, and timeline children. Playhead/mix
+        // conveniences are live presentation only — keep that same
+        // standalone slice when hosted, never a second project root.
+        if self.actions.is_hosted() {
+            return crate::actions::live_playhead_resources(&self.video_resource_ctx());
+        }
+        self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.actions.is_hosted() && id == "video.project" {
+            return None;
+        }
+        find_resource(&self.publish_resources(doc), id).or_else(|| {
+            self.actions.is_hosted().then(|| {
+                crate::actions::live_playhead_resources(&self.video_resource_ctx())
+                    .into_iter()
+                    .find(|resource| resource.id.as_str() == id)
+            })?
+        })
+    }
+}
+
+fn find_resource(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+impl ui::undo::UndoControl for VideoEditorApp {
+    /// The host's reading of the history, which is what the strip's undo and
+    /// redo buttons are drawn from. Scoped to this author exactly as Ctrl+Z
+    /// is, so the buttons and the shortcut can never disagree about whether
+    /// there is anything to go back to.
+    fn set_undo_status(&mut self, status: &mut dyn FnMut() -> ui::UndoStatus) {
+        self.undo.publish(&status());
+    }
+    fn take_undo_request(&mut self) -> Option<ui::UndoRequest> {
+        self.undo.take_request()
+    }
+}
+
+impl ui::undo::CommittedActions for VideoEditorApp {
+    /// Hand the host the document heads captured before an on-screen affordance
+    /// dispatched its timeline action, so it records exactly one undo boundary
+    /// bracketing it (Ctrl+Z reverts it OS-wide). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl VideoEditorApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        let expected = crate::actions::operation_kind(&operation);
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match video editor operation kind {expected:?}"
+            ));
+        }
+        self.perform_resource_operation(operation)?;
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        let expected = crate::actions::operation_kind(&operation);
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match video editor operation kind {expected:?}"
+            ));
+        }
+        if matches!(
+            operation,
+            crate::actions::VideoEditorOperation::CancelExport
+        ) {
+            self.answer_resource_operation(kind, type_id, payload, doc, path)?;
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
+        if matches!(
+            operation,
+            crate::actions::VideoEditorOperation::OpenProject { path: Some(_) }
+                | crate::actions::VideoEditorOperation::SaveProject { path: Some(_) }
+                | crate::actions::VideoEditorOperation::SaveProjectAs { path: Some(_) }
+        ) {
+            self.resource_operation = Some(operation.clone());
+            self.resource_pending_operation = Some((invocation, operation));
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        self.perform_resource_operation(operation)?;
+        self.resource_operation = crate::actions::decode_operation(type_id, payload)?;
+        self.resource_invocation = Some(invocation);
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -8338,11 +8481,9 @@ impl VideoEditorApp {
             tr,
             tf,
             hint,
-            15.0,
+            &TextStyle::new(15.0).with_weight(TextWeight::Semibold),
             c.accent[5],
-            plate.x0 + 18.0,
-            baseline,
-            TextWeight::Semibold,
+            Point::new(plate.x0 + 18.0, baseline),
         );
     }
 
@@ -8708,11 +8849,9 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 group,
-                ty.xs,
+                &TextStyle::new(ty.xs).with_weight(TextWeight::Bold),
                 dim,
-                g.heading.x0,
-                g.heading.y0,
-                TextWeight::Bold,
+                Point::new(g.heading.x0, g.heading.y0),
             );
             for ((combo, what), row) in rows.iter().zip(&g.rows) {
                 text_w(
@@ -8720,11 +8859,9 @@ impl VideoEditorApp {
                     tr,
                     tf,
                     combo,
-                    ty.sm,
+                    &TextStyle::new(ty.sm).with_weight(TextWeight::Bold),
                     c.accent[6],
-                    row.x0,
-                    row.y0,
-                    TextWeight::Bold,
+                    Point::new(row.x0, row.y0),
                 );
                 let shown = elide_at(what, (row.width() - l.what_dx) as f32, ty.sm, tr);
                 text(
@@ -8821,11 +8958,9 @@ impl VideoEditorApp {
             tr,
             tf,
             shown,
-            ty.xl,
+            &TextStyle::new(ty.xl).with_weight(TextWeight::Bold),
             col,
-            x,
-            l.entry_top,
-            TextWeight::Bold,
+            Point::new(x, l.entry_top),
         );
         // A caret, so an empty field reads as "type here" rather than as a
         // placeholder someone forgot to remove. Measured at the weight the
@@ -8946,7 +9081,12 @@ impl VideoEditorApp {
                 .position(|(_, _, on)| *on)
                 .unwrap_or(usize::MAX);
             draw_segmented_sized(
-                scene, tf, tr, theme, &rects, &labels, selected, cursor, ty.sm,
+                &mut PaintCtx::new(scene, tf, tr, theme),
+                &rects,
+                &labels,
+                selected,
+                cursor,
+                ty.sm,
             );
         };
         let res: Vec<_> = l
@@ -9251,6 +9391,19 @@ impl ui::framework::ResourceSurface<crate::resource::VideoProject> for VideoEdit
     fn present(&mut self, project: &std::rc::Rc<Project>) {
         if self.drag_is_editing() {
             self.project_sync.reload_pending = true;
+            return;
+        }
+        // An empty projection must not wipe a project that has not been
+        // published through the framework resource yet.
+        let incoming_empty = project.media.is_empty()
+            && project.tracks.is_empty()
+            && project.clips.is_empty()
+            && project.markers.is_empty();
+        let local_has_rows = !self.project.media.is_empty()
+            || !self.project.tracks.is_empty()
+            || !self.project.clips.is_empty()
+            || !self.project.markers.is_empty();
+        if incoming_empty && local_has_rows {
             return;
         }
         self.project = Project::clone(project);

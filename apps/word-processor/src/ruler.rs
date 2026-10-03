@@ -430,55 +430,60 @@ mod tests {
         }
     }
 
+    /// A press prefers the marker drawn in the pointer zone, dragging a tab below the band becomes a remove
+    /// commit, and empty space inside the text span adds a tab.
     #[test]
-    fn press_prefers_the_marker_drawn_in_the_pointer_zone() {
-        let model = model();
-        let mut ruler = Ruler {
-            rect: model.band,
-            ..Ruler::default()
-        };
-        let x = Ruler::markers(&model)
-            .into_iter()
-            .find(|(m, _)| *m == RulerMarker::IndentLeft)
-            .unwrap()
-            .1;
-        ruler.press(Point::new(x, model.band.y1 - 1.0), &model);
-        assert_eq!(ruler.drag_marker(), Some(RulerMarker::IndentLeft));
-    }
+    fn ruler_presses_resolve_to_markers_tabs_or_removals() {
+        // Phase: press_prefers_the_marker_drawn_in_the_pointer_zone.
+        {
+            let model = model();
+            let mut ruler = Ruler {
+                rect: model.band,
+                ..Ruler::default()
+            };
+            let x = Ruler::markers(&model)
+                .into_iter()
+                .find(|(m, _)| *m == RulerMarker::IndentLeft)
+                .unwrap()
+                .1;
+            ruler.press(Point::new(x, model.band.y1 - 1.0), &model);
+            assert_eq!(ruler.drag_marker(), Some(RulerMarker::IndentLeft));
+        }
 
-    #[test]
-    fn dragging_a_tab_below_the_band_becomes_a_remove_commit() {
-        let model = model();
-        let mut ruler = Ruler {
-            rect: model.band,
-            ..Ruler::default()
-        };
-        let x = Ruler::markers(&model)
-            .into_iter()
-            .find(|(m, _)| *m == RulerMarker::Tab(0))
-            .unwrap()
-            .1;
-        ruler.press(Point::new(x, model.band.center().y), &model);
-        assert_eq!(
-            ruler.drag_to(Point::new(x, model.band.y1 + 20.0), &model),
-            None
-        );
-        assert!(ruler.dropping_tab());
-        assert_eq!(
-            ruler.release(),
-            Some(RulerEffect::CommitTabs { remove: Some(0) })
-        );
-    }
+        // Phase: dragging_a_tab_below_the_band_becomes_a_remove_commit.
+        {
+            let model = model();
+            let mut ruler = Ruler {
+                rect: model.band,
+                ..Ruler::default()
+            };
+            let x = Ruler::markers(&model)
+                .into_iter()
+                .find(|(m, _)| *m == RulerMarker::Tab(0))
+                .unwrap()
+                .1;
+            ruler.press(Point::new(x, model.band.center().y), &model);
+            assert_eq!(
+                ruler.drag_to(Point::new(x, model.band.y1 + 20.0), &model),
+                None
+            );
+            assert!(ruler.dropping_tab());
+            assert_eq!(
+                ruler.release(),
+                Some(RulerEffect::CommitTabs { remove: Some(0) })
+            );
+        }
 
-    #[test]
-    fn empty_space_inside_the_text_span_adds_a_tab() {
-        let model = model();
-        let mut ruler = Ruler {
-            rect: model.band,
-            ..Ruler::default()
-        };
-        let point = Point::new(model.left_text_x() + 300.0, model.band.center().y);
-        assert_eq!(ruler.press(point, &model), Some(RulerEffect::AddTab(300.0)));
-        assert!(!ruler.is_dragging());
+        // Phase: empty_space_inside_the_text_span_adds_a_tab.
+        {
+            let model = model();
+            let mut ruler = Ruler {
+                rect: model.band,
+                ..Ruler::default()
+            };
+            let point = Point::new(model.left_text_x() + 300.0, model.band.center().y);
+            assert_eq!(ruler.press(point, &model), Some(RulerEffect::AddTab(300.0)));
+            assert!(!ruler.is_dragging());
+        }
     }
 }

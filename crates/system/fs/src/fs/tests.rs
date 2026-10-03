@@ -2,6 +2,7 @@ use super::*;
 
 mod availability_control_tests {
     use super::*;
+
     use crate::namespace::ROOT_INO;
     use crate::store::ContentStore;
     use iroh::endpoint::{Endpoint, presets};
@@ -12,8 +13,13 @@ mod availability_control_tests {
         record: collab_types::FileRecordId,
         predicate: impl Fn(&RecordAvailability) -> bool + Send + Sync,
     ) {
-        wait_for_availability_with_timeout(registry, record, Duration::from_secs(30), predicate)
-            .await;
+        wait_for_availability_with_timeout(
+            registry,
+            record,
+            tilo_test_env::hang_bound(),
+            predicate,
+        )
+        .await;
     }
 
     async fn wait_for_availability_with_timeout(
@@ -101,117 +107,253 @@ mod availability_control_tests {
     }
 
     #[tokio::test]
-    async fn unrelated_wakes_do_not_cancel_a_delayed_pinned_hydration() {
-        let dir = tempfile::tempdir().unwrap();
-        let namespace = Arc::new(Mutex::new(Namespace::new("wake-test").unwrap()));
-        let registry = Arc::new(Mutex::new(
-            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-        ));
-        let candidate = current_pinned_candidate(&namespace, &registry);
-        assert!(pinned_candidate_is_current(
-            &candidate, &namespace, &registry
-        ));
-        let (wake, mut wakes) = tokio::sync::watch::channel(0_u64);
-        let writer_wake = wake.clone();
-        let noisy_writer = tokio::spawn(async move {
-            for _ in 0..5 {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    async fn delayed_pinned_hydration_is_cancelled_only_by_unpin() {
+        // Phase `unrelated_wakes_do_not_cancel_a_delayed_pinned_hydration`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let namespace = Arc::new(Mutex::new(Namespace::new("wake-test").unwrap()));
+            let registry = Arc::new(Mutex::new(
+                AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+            ));
+            let candidate = current_pinned_candidate(&namespace, &registry);
+            assert!(pinned_candidate_is_current(
+                &candidate, &namespace, &registry
+            ));
+            let (wake, mut wakes) = tokio::sync::watch::channel(0_u64);
+            let writer_wake = wake.clone();
+            let noisy_writer = tokio::spawn(async move {
+                for _ in 0..5 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    writer_wake.send_modify(|generation| *generation = generation.wrapping_add(1));
+                }
+            });
+
+            let completed = await_current_pinned_hydration(
+                tokio::time::sleep(Duration::from_millis(75)),
+                &candidate,
+                &namespace,
+                &registry,
+                &mut wakes,
+            )
+            .await;
+            noisy_writer.await.unwrap();
+            assert!(completed.is_some(), "unrelated wakes must not starve a pin");
+        }
+        // Phase `unpin_wake_cancels_a_delayed_pinned_hydration`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let namespace = Arc::new(Mutex::new(Namespace::new("unpin-wake-test").unwrap()));
+            let registry = Arc::new(Mutex::new(
+                AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+            ));
+            let candidate = current_pinned_candidate(&namespace, &registry);
+            let (wake, mut wakes) = tokio::sync::watch::channel(0_u64);
+            let cancellation_registry = Arc::clone(&registry);
+            let record_id = candidate.record_id;
+            let unpin = tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(10)).await;
-                writer_wake.send_modify(|generation| *generation = generation.wrapping_add(1));
+                let mut registry = cancellation_registry.lock().unwrap();
+                let mut record = registry.get(record_id).unwrap().clone();
+                record.policy = AvailabilityPolicy::Automatic;
+                registry.put(record).unwrap();
+                drop(registry);
+                wake.send_modify(|generation| *generation = generation.wrapping_add(1));
+            });
+
+            // The transfer outlasts any unpin: persisting the unpinned
+            // registry is a durable write, which a loaded disk can hold for
+            // longer than any fixed transfer time.
+            let cancelled = await_current_pinned_hydration(
+                tokio::time::sleep(tilo_test_env::hang_bound()),
+                &candidate,
+                &namespace,
+                &registry,
+                &mut wakes,
+            )
+            .await;
+            unpin.await.unwrap();
+            assert!(cancelled.is_none(), "unpin must cancel an active transfer");
+        }
+        // Phase `pinned_hydration_is_bounded_and_unpin_cancels_queued_retries`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+            let store = Arc::new(ContentStore::memory());
+            let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store));
+            let namespace = Arc::new(Mutex::new(Namespace::new("bounded-pins").unwrap()));
+            let folder = namespace
+                .lock()
+                .unwrap()
+                .create_dir(ROOT_INO, "offline", 1)
+                .unwrap();
+            for index in 0..10_u8 {
+                namespace
+                    .lock()
+                    .unwrap()
+                    .create_file(
+                        folder,
+                        format!("{index}.bin"),
+                        Some(&Hash::from([index.saturating_add(1); 32])),
+                        1,
+                        2,
+                    )
+                    .unwrap();
             }
-        });
+            let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+            let registry = Arc::new(Mutex::new(
+                AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+            ));
+            let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+                .with_availability(Arc::clone(&registry));
+            fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
+                .unwrap();
 
-        let completed = await_current_pinned_hydration(
-            tokio::time::sleep(Duration::from_millis(75)),
-            &candidate,
-            &namespace,
-            &registry,
-            &mut wakes,
-        )
-        .await;
-        noisy_writer.await.unwrap();
-        assert!(completed.is_some(), "unrelated wakes must not starve a pin");
+            let (_wake, wakes) = tokio::sync::watch::channel(0_u64);
+            reconcile_pinned_hydration(
+                &namespace,
+                Arc::clone(&hydrator),
+                Arc::clone(&registry),
+                None,
+                wakes.clone(),
+            )
+            .await;
+            let (attempted, queued) = {
+                let registry = registry.lock().unwrap();
+                let children = registry
+                    .records()
+                    .filter(|record| record.kind == RecordKind::File)
+                    .collect::<Vec<_>>();
+                let attempted = children
+                    .iter()
+                    .filter(|record| record.transfer.retry_count == 1)
+                    .count();
+                let queued = children
+                    .iter()
+                    .filter(|record| {
+                        record.transfer.phase == TransferPhase::Queued
+                            && record.transfer.retry_count == 0
+                    })
+                    .count();
+                drop(registry);
+                (attempted, queued)
+            };
+            assert_eq!(attempted, MAX_PINNED_FETCHES_PER_PASS);
+            assert_eq!(queued, 10 - MAX_PINNED_FETCHES_PER_PASS);
+
+            fs.set_pin_policy(folder, AvailabilityPolicy::Automatic)
+                .unwrap();
+            reconcile_pinned_hydration(
+                &namespace,
+                Arc::clone(&hydrator),
+                Arc::clone(&registry),
+                None,
+                wakes,
+            )
+            .await;
+            assert!(registry.lock().unwrap().records().all(|record| {
+                record.kind == RecordKind::Directory
+                    || (record.transfer.phase == TransferPhase::Idle
+                        && record.transfer.retry_count == 0
+                        && record.transfer.retry_at_ms.is_none())
+            }));
+            endpoint.close().await;
+        }
     }
 
     #[tokio::test]
-    async fn unpin_wake_cancels_a_delayed_pinned_hydration() {
-        let dir = tempfile::tempdir().unwrap();
-        let namespace = Arc::new(Mutex::new(Namespace::new("unpin-wake-test").unwrap()));
-        let registry = Arc::new(Mutex::new(
-            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-        ));
-        let candidate = current_pinned_candidate(&namespace, &registry);
-        let (wake, mut wakes) = tokio::sync::watch::channel(0_u64);
-        let cancellation_registry = Arc::clone(&registry);
-        let record_id = candidate.record_id;
-        let unpin = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            let mut registry = cancellation_registry.lock().unwrap();
-            let mut record = registry.get(record_id).unwrap().clone();
-            record.policy = AvailabilityPolicy::Automatic;
-            registry.put(record).unwrap();
-            drop(registry);
-            wake.send_modify(|generation| *generation = generation.wrapping_add(1));
-        });
+    async fn pin_policy_persists_and_read_only_collaborators_manage_offline_policy() {
+        // Phase `pin_policy_persists_and_a_directory_covers_future_descendants`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let registry_path = dir.path().join("availability.json");
+            let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+            let store = Arc::new(ContentStore::memory());
+            let hydrator = Arc::new(Hydrator::new(endpoint, store));
+            let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
+            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+            let registry = Arc::new(Mutex::new(
+                AvailabilityRegistry::open(&registry_path).unwrap(),
+            ));
+            let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
+                .with_availability(registry.clone());
 
-        let cancelled = await_current_pinned_hydration(
-            tokio::time::sleep(Duration::from_secs(1)),
-            &candidate,
-            &namespace,
-            &registry,
-            &mut wakes,
-        )
-        .await;
-        unpin.await.unwrap();
-        assert!(cancelled.is_none(), "unpin must cancel an active transfer");
-    }
+            let folder = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .create_dir(ROOT_INO, "offline", 1)
+                .unwrap();
+            fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
+                .unwrap();
 
-    #[tokio::test]
-    async fn pin_policy_persists_and_a_directory_covers_future_descendants() {
-        let dir = tempfile::tempdir().unwrap();
-        let registry_path = dir.path().join("availability.json");
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let store = Arc::new(ContentStore::memory());
-        let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let registry = Arc::new(Mutex::new(
-            AvailabilityRegistry::open(&registry_path).unwrap(),
-        ));
-        let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
-            .with_availability(registry.clone());
-
-        let folder = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .create_dir(ROOT_INO, "offline", 1)
+            // Created after the pin: no direct registry row is needed for the
+            // effective projection to inherit the stable directory policy.
+            let child = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .create_file(folder, "later.txt", None, 0, 2)
+                .unwrap();
+            let projected = crate::syncstate::AvailabilityProjectionV1::parse_xattr(
+                &fs.availability_for(child).unwrap(),
+            )
             .unwrap();
-        fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
-            .unwrap();
+            assert_eq!(projected.policy, AvailabilityPolicy::Pinned);
 
-        // Created after the pin: no direct registry row is needed for the
-        // effective projection to inherit the stable directory policy.
-        let child = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .create_file(folder, "later.txt", None, 0, 2)
-            .unwrap();
-        let projected = crate::syncstate::AvailabilityProjectionV1::parse_xattr(
-            &fs.availability_for(child).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(projected.policy, AvailabilityPolicy::Pinned);
+            drop((fs, registry));
+            let reopened = AvailabilityRegistry::open(registry_path).unwrap();
+            let folder_id = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .record_id_for(folder)
+                .unwrap();
+            assert_eq!(
+                reopened.get(folder_id).map(|record| record.policy),
+                Some(AvailabilityPolicy::Pinned)
+            );
+        }
+        // Phase `a_read_only_collaborator_can_manage_device_local_offline_policy`.
+        {
+            const READER: [u8; 32] = [0x51; 32];
+            let dir = tempfile::tempdir().unwrap();
+            let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+            let store = Arc::new(ContentStore::memory());
+            let hydrator = Arc::new(Hydrator::new(endpoint, store));
+            let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
+            let ino = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .create_file(ROOT_INO, "shared.txt", None, 0, 1)
+                .unwrap();
+            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+            let registry = Arc::new(Mutex::new(
+                AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+            ));
+            let mut acl = crate::acl::WorkspaceAcl::new();
+            acl.grant_read(READER, "/shared.txt");
+            let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
+                .with_availability(Arc::clone(&registry))
+                .with_acl(acl, READER);
 
-        drop((fs, registry));
-        let reopened = AvailabilityRegistry::open(registry_path).unwrap();
-        let folder_id = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record_id_for(folder)
-            .unwrap();
-        assert_eq!(
-            reopened.get(folder_id).map(|record| record.policy),
-            Some(AvailabilityPolicy::Pinned)
-        );
+            assert_eq!(fs.check_access(ino, Access::Write), Err(EROFS));
+            fs.set_pin_policy(ino, AvailabilityPolicy::Pinned).unwrap();
+            let record_id = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .record_id_for(ino)
+                .unwrap();
+            assert_eq!(
+                registry
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(record_id)
+                    .unwrap()
+                    .policy,
+                AvailabilityPolicy::Pinned
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -320,216 +462,91 @@ mod availability_control_tests {
     }
 
     #[tokio::test]
-    async fn pinned_hydration_is_bounded_and_unpin_cancels_queued_retries() {
-        let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let store = Arc::new(ContentStore::memory());
-        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store));
-        let namespace = Arc::new(Mutex::new(Namespace::new("bounded-pins").unwrap()));
-        let folder = namespace
-            .lock()
-            .unwrap()
-            .create_dir(ROOT_INO, "offline", 1)
-            .unwrap();
-        for index in 0..10_u8 {
-            namespace
-                .lock()
+    async fn transfer_retries_run_off_thread_and_report_actionable_outcomes() {
+        // Phase `retry_transfer_runs_off_thread_and_persists_completion`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+            let store = Arc::new(ContentStore::memory());
+            let hash = store
+                .write_content(b"available locally")
+                .await
                 .unwrap()
-                .create_file(
-                    folder,
-                    format!("{index}.bin"),
-                    Some(&Hash::from([index.saturating_add(1); 32])),
-                    1,
-                    2,
-                )
                 .unwrap();
-        }
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let registry = Arc::new(Mutex::new(
-            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-        ));
-        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
-            .with_availability(Arc::clone(&registry));
-        fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
-            .unwrap();
-
-        let (_wake, wakes) = tokio::sync::watch::channel(0_u64);
-        reconcile_pinned_hydration(
-            &namespace,
-            Arc::clone(&hydrator),
-            Arc::clone(&registry),
-            None,
-            wakes.clone(),
-        )
-        .await;
-        let (attempted, queued) = {
-            let registry = registry.lock().unwrap();
-            let children = registry
-                .records()
-                .filter(|record| record.kind == RecordKind::File)
-                .collect::<Vec<_>>();
-            let attempted = children
-                .iter()
-                .filter(|record| record.transfer.retry_count == 1)
-                .count();
-            let queued = children
-                .iter()
-                .filter(|record| {
-                    record.transfer.phase == TransferPhase::Queued
-                        && record.transfer.retry_count == 0
-                })
-                .count();
-            drop(registry);
-            (attempted, queued)
-        };
-        assert_eq!(attempted, MAX_PINNED_FETCHES_PER_PASS);
-        assert_eq!(queued, 10 - MAX_PINNED_FETCHES_PER_PASS);
-
-        fs.set_pin_policy(folder, AvailabilityPolicy::Automatic)
-            .unwrap();
-        reconcile_pinned_hydration(
-            &namespace,
-            Arc::clone(&hydrator),
-            Arc::clone(&registry),
-            None,
-            wakes,
-        )
-        .await;
-        assert!(registry.lock().unwrap().records().all(|record| {
-            record.kind == RecordKind::Directory
-                || (record.transfer.phase == TransferPhase::Idle
-                    && record.transfer.retry_count == 0
-                    && record.transfer.retry_at_ms.is_none())
-        }));
-        endpoint.close().await;
-    }
-
-    #[tokio::test]
-    async fn a_read_only_collaborator_can_manage_device_local_offline_policy() {
-        const READER: [u8; 32] = [0x51; 32];
-        let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let store = Arc::new(ContentStore::memory());
-        let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let ino = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .create_file(ROOT_INO, "shared.txt", None, 0, 1)
-            .unwrap();
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let registry = Arc::new(Mutex::new(
-            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-        ));
-        let mut acl = crate::acl::WorkspaceAcl::new();
-        acl.grant_read(READER, "/shared.txt");
-        let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
-            .with_availability(Arc::clone(&registry))
-            .with_acl(acl, READER);
-
-        assert_eq!(fs.check_access(ino, Access::Write), Err(EROFS));
-        fs.set_pin_policy(ino, AvailabilityPolicy::Pinned).unwrap();
-        let record_id = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record_id_for(ino)
-            .unwrap();
-        assert_eq!(
-            registry
+            let hydrator = Arc::new(Hydrator::new(endpoint, store));
+            let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
+            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+            let registry = Arc::new(Mutex::new(
+                AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+            ));
+            let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
+                .with_availability(registry.clone());
+            let ino = namespace
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(record_id)
-                .unwrap()
-                .policy,
-            AvailabilityPolicy::Pinned
-        );
-    }
+                .create_file(ROOT_INO, "retry.txt", Some(&hash), 17, 1)
+                .unwrap();
+            let record = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .record_id_for(ino)
+                .unwrap();
 
-    #[tokio::test]
-    async fn retry_transfer_runs_off_thread_and_persists_completion() {
-        let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let store = Arc::new(ContentStore::memory());
-        let hash = store
-            .write_content(b"available locally")
-            .await
-            .unwrap()
-            .unwrap();
-        let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let registry = Arc::new(Mutex::new(
-            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-        ));
-        let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
-            .with_availability(registry.clone());
-        let ino = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .create_file(ROOT_INO, "retry.txt", Some(&hash), 17, 1)
-            .unwrap();
-        let record = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record_id_for(ino)
-            .unwrap();
+            fs.retry_transfer(ino).unwrap();
+            tilo_test_env::within("the retry completion event", async {
+                loop {
+                    let done = registry
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .get(record)
+                        .is_some_and(|state| {
+                            state.transfer.phase == TransferPhase::Idle
+                                && state.transfer.last_error.is_none()
+                                && state.residency == Residency::Resident { bytes: 17 }
+                        });
+                    if done {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await;
+        }
+        // Phase `retrying_an_empty_file_completes_without_a_blob_fetch`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+            let store = Arc::new(ContentStore::memory());
+            let hydrator = Arc::new(Hydrator::new(endpoint, store));
+            let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
+            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+            let registry = Arc::new(Mutex::new(
+                AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+            ));
+            let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
+                .with_availability(registry.clone());
+            let ino = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .create_file(ROOT_INO, "empty.txt", None, 0, 1)
+                .unwrap();
+            let record = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .record_id_for(ino)
+                .unwrap();
 
-        fs.retry_transfer(ino).unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                let done = registry
+            fs.retry_transfer(ino).unwrap();
+            assert_eq!(
+                registry
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .get(record)
-                    .is_some_and(|state| {
-                        state.transfer.phase == TransferPhase::Idle
-                            && state.transfer.last_error.is_none()
-                            && state.residency == Residency::Resident { bytes: 17 }
-                    });
-                if done {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("retry completion event");
-    }
-
-    #[tokio::test]
-    async fn retrying_an_empty_file_completes_without_a_blob_fetch() {
-        let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let store = Arc::new(ContentStore::memory());
-        let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let registry = Arc::new(Mutex::new(
-            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-        ));
-        let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
-            .with_availability(registry.clone());
-        let ino = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .create_file(ROOT_INO, "empty.txt", None, 0, 1)
-            .unwrap();
-        let record = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record_id_for(ino)
-            .unwrap();
-
-        fs.retry_transfer(ino).unwrap();
-        assert_eq!(
-            registry
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(record)
-                .unwrap()
-                .residency,
-            Residency::Resident { bytes: 0 }
-        );
+                    .unwrap()
+                    .residency,
+                Residency::Resident { bytes: 0 }
+            );
+        }
     }
 
     #[tokio::test]
@@ -558,7 +575,7 @@ mod availability_control_tests {
             .unwrap();
 
         fs.retry_transfer(ino).unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tilo_test_env::within("the retry failure event", async {
             loop {
                 let failure = registry
                     .lock()
@@ -576,8 +593,7 @@ mod availability_control_tests {
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .expect("retry failure event");
+        .await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -776,211 +792,220 @@ mod thumb_tests {
         (namespace, store, fs)
     }
 
-    /// The headline: the host generates a preview from a file's local
-    /// content, serves it as metadata, records its blob hash on the node so
-    /// it projects to peers, and a second request hits the cache.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn host_generates_a_thumbnail_and_records_its_hash() {
-        let dir = tempfile::tempdir().unwrap();
-        let (namespace, store, fs) = fixture(dir.path().join("thumbs")).await;
-
-        // An image file whose content is local to the host.
-        let png = solid_png(600, 400, [40, 130, 220]);
-        let mh = store.write_content(&png).await.unwrap().unwrap();
-        let ino = {
-            let mut ns = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            ns.create_file(ROOT_INO, "photo.png", Some(&mh), png.len() as u64, 1)
-                .unwrap()
-        };
-
-        // No thumbnail recorded yet.
-        assert!(
-            namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .thumb_hash(ino)
-                .is_none()
-        );
-
-        // The metadata path returns a sized PNG preview.
-        let thumb = fs.thumbnail_for(ino).expect("host generates a preview");
-        let decoded = thumbnail::decode_png(&thumb).expect("it is a valid PNG");
-        assert!(decoded.is_valid());
-        assert_eq!(
-            decoded.max_edge(),
-            crate::thumbs::HOST_EDGE,
-            "downscaled to the host preview size"
-        );
-        assert!(
-            decoded.max_edge() < u32::try_from(png.len()).unwrap_or(u32::MAX),
-            "the preview is far smaller than the source"
-        );
-
-        // The thumbnail's blob hash is now on the node (so it gossips), and the
-        // blob is a content blob in the store that peers can hydrate.
-        let tbh = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .thumb_hash(ino)
-            .expect("thumbnail hash recorded on the node → projects to peers");
-        assert!(
-            store.has(tbh).await,
-            "the thumbnail blob is stored for peers"
-        );
-
-        // A second request returns the identical bytes from the cache.
-        let again = fs.thumbnail_for(ino).expect("cached");
-        assert_eq!(
-            again, thumb,
-            "second request is a cache hit, identical bytes"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn signed_mount_publishes_and_installs_verified_thumbnail_metadata() {
-        let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let store = Arc::new(ContentStore::memory());
-        let image = solid_png(320, 240, [35, 90, 180]);
-        let manifest = store.write_content(&image).await.unwrap().unwrap();
-        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let ino = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .create_file(
-                ROOT_INO,
-                "signed.png",
-                Some(&manifest),
-                image.len() as u64,
-                1,
-            )
-            .unwrap();
-        let record_id = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record_id_for(ino)
-            .unwrap();
-        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let device = ed25519_dalek::SigningKey::from_bytes(&[0x72; 32]);
-        let person = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
-        let actor = collab_types::FileActor {
-            person: collab_types::Ed25519PublicKey(person.verifying_key().to_bytes()),
-            device: collab_types::Ed25519PublicKey(device.verifying_key().to_bytes()),
-        };
-        let repository = Arc::new(
-            crate::record_repository::RecordRepository::open(dir.path().join("records")).unwrap(),
-        );
-        let publisher = Arc::new(
-            crate::record_publisher::RecordPublisher::new(
-                repository,
-                Uuid::from_u128(0x7065),
-                actor,
-                device,
-            )
-            .unwrap(),
-        );
-        let history = Arc::new(
-            crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
-        );
-        let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
-            .with_thumbs(ThumbProvider::open(dir.path().join("thumbs")).unwrap())
-            .with_history(history, actor)
-            .unwrap()
-            .with_record_publisher(publisher.clone())
-            .unwrap();
-
-        assert!(fs.thumbnail_for(ino).is_some());
-        let verified = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .thumb_hash(ino)
-            .expect("signed preview is installed in the verified projection");
-        let snapshot = publisher.snapshot(record_id).unwrap().unwrap();
-        assert!(snapshot.metadata.unwrap().previews.iter().any(|preview| {
-            preview.status == collab_types::PreviewStatus::Ready
-                && preview.hash == Some(collab_types::ContentHash(*verified.as_bytes()))
-        }));
-    }
-
-    /// A preview survives a remount: a fresh mount over the same cache
-    /// directory serves the same thumbnail without re-reading the file's content.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn thumbnail_survives_a_remount() {
-        let dir = tempfile::tempdir().unwrap();
-        let png = solid_png(320, 240, [200, 60, 30]);
-
-        let thumb = {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    async fn thumbnails_are_generated_verified_and_published() {
+        // Phase `host_generates_a_thumbnail_and_records_its_hash`.
+        // The headline: the host generates a preview from a file's local
+        // content, serves it as metadata, records its blob hash on the node so
+        // it projects to peers, and a second request hits the cache.
+        {
+            let dir = tempfile::tempdir().unwrap();
             let (namespace, store, fs) = fixture(dir.path().join("thumbs")).await;
+
+            // An image file whose content is local to the host.
+            let png = solid_png(600, 400, [40, 130, 220]);
             let mh = store.write_content(&png).await.unwrap().unwrap();
             let ino = {
                 let mut ns = namespace
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
+                ns.create_file(ROOT_INO, "photo.png", Some(&mh), png.len() as u64, 1)
+                    .unwrap()
+            };
+
+            // No thumbnail recorded yet.
+            assert!(
+                namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .thumb_hash(ino)
+                    .is_none()
+            );
+
+            // The metadata path returns a sized PNG preview.
+            let thumb = fs.thumbnail_for(ino).expect("host generates a preview");
+            let decoded = thumbnail::decode_png(&thumb).expect("it is a valid PNG");
+            assert!(decoded.is_valid());
+            assert_eq!(
+                decoded.max_edge(),
+                crate::thumbs::HOST_EDGE,
+                "downscaled to the host preview size"
+            );
+            assert!(
+                decoded.max_edge() < u32::try_from(png.len()).unwrap_or(u32::MAX),
+                "the preview is far smaller than the source"
+            );
+
+            // The thumbnail's blob hash is now on the node (so it gossips), and the
+            // blob is a content blob in the store that peers can hydrate.
+            let tbh = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .thumb_hash(ino)
+                .expect("thumbnail hash recorded on the node → projects to peers");
+            assert!(
+                store.has(tbh).await,
+                "the thumbnail blob is stored for peers"
+            );
+
+            // A second request returns the identical bytes from the cache.
+            let again = fs.thumbnail_for(ino).expect("cached");
+            assert_eq!(
+                again, thumb,
+                "second request is a cache hit, identical bytes"
+            );
+        }
+        // Phase `signed_mount_publishes_and_installs_verified_thumbnail_metadata`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+            let store = Arc::new(ContentStore::memory());
+            let image = solid_png(320, 240, [35, 90, 180]);
+            let manifest = store.write_content(&image).await.unwrap().unwrap();
+            let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
+            let ino = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .create_file(
+                    ROOT_INO,
+                    "signed.png",
+                    Some(&manifest),
+                    image.len() as u64,
+                    1,
+                )
+                .unwrap();
+            let record_id = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .record_id_for(ino)
+                .unwrap();
+            let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
+            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+            let device = ed25519_dalek::SigningKey::from_bytes(&[0x72; 32]);
+            let person = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
+            let actor = collab_types::FileActor {
+                person: collab_types::Ed25519PublicKey(person.verifying_key().to_bytes()),
+                device: collab_types::Ed25519PublicKey(device.verifying_key().to_bytes()),
+            };
+            let repository = Arc::new(
+                crate::record_repository::RecordRepository::open(dir.path().join("records"))
+                    .unwrap(),
+            );
+            let publisher = Arc::new(
+                crate::record_publisher::RecordPublisher::new(
+                    repository,
+                    Uuid::from_u128(0x7065),
+                    actor,
+                    device,
+                )
+                .unwrap(),
+            );
+            let history = Arc::new(
+                crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
+            );
+            let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
+                .with_thumbs(ThumbProvider::open(dir.path().join("thumbs")).unwrap())
+                .with_history(history, actor)
+                .unwrap()
+                .with_record_publisher(publisher.clone())
+                .unwrap();
+
+            assert!(fs.thumbnail_for(ino).is_some());
+            let verified = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .thumb_hash(ino)
+                .expect("signed preview is installed in the verified projection");
+            let snapshot = publisher.snapshot(record_id).unwrap().unwrap();
+            assert!(snapshot.metadata.unwrap().previews.iter().any(|preview| {
+                preview.status == collab_types::PreviewStatus::Ready
+                    && preview.hash == Some(collab_types::ContentHash(*verified.as_bytes()))
+            }));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn thumbnails_survive_remounts_and_are_absent_without_content() {
+        // Phase `thumbnail_survives_a_remount`.
+        // A preview survives a remount: a fresh mount over the same cache
+        // directory serves the same thumbnail without re-reading the file's content.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let png = solid_png(320, 240, [200, 60, 30]);
+
+            let thumb = {
+                let (namespace, store, fs) = fixture(dir.path().join("thumbs")).await;
+                let mh = store.write_content(&png).await.unwrap().unwrap();
+                let ino = {
+                    let mut ns = namespace
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    ns.create_file(ROOT_INO, "pic.png", Some(&mh), png.len() as u64, 1)
+                        .unwrap()
+                };
+                fs.thumbnail_for(ino).expect("generated")
+            };
+
+            // A brand-new mount (fresh store, content NOT local) over the same
+            // thumb cache still serves the preview, confirming it came from the
+            // persistent cache, not a re-decode.
+            let (namespace2, store2, fs2) = fixture(dir.path().join("thumbs")).await;
+            // Same content hash → same cache key. Register the node without the bytes.
+            let mh = store2.write_content(&png).await.unwrap().unwrap();
+            // Remove the content so it is not local on this mount.
+            let ino2 = {
+                let mut ns = namespace2
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 ns.create_file(ROOT_INO, "pic.png", Some(&mh), png.len() as u64, 1)
                     .unwrap()
             };
-            fs.thumbnail_for(ino).expect("generated")
-        };
+            let served = fs2
+                .thumbnail_for(ino2)
+                .expect("served from the on-disk cache");
+            assert_eq!(
+                served, thumb,
+                "same content → same cached preview after remount"
+            );
+        }
+        // Phase `no_local_content_and_badge_types_yield_no_thumbnail`.
+        // A file whose content is not local yields no thumbnail (the host never
+        // hydrates content just to preview it); a badge-only type never does either.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let (namespace, _store, fs) = fixture(dir.path().join("thumbs")).await;
 
-        // A brand-new mount (fresh store, content NOT local) over the same
-        // thumb cache still serves the preview, confirming it came from the
-        // persistent cache, not a re-decode.
-        let (namespace2, store2, fs2) = fixture(dir.path().join("thumbs")).await;
-        // Same content hash → same cache key. Register the node without the bytes.
-        let mh = store2.write_content(&png).await.unwrap().unwrap();
-        // Remove the content so it is not local on this mount.
-        let ino2 = {
-            let mut ns = namespace2
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            ns.create_file(ROOT_INO, "pic.png", Some(&mh), png.len() as u64, 1)
-                .unwrap()
-        };
-        let served = fs2
-            .thumbnail_for(ino2)
-            .expect("served from the on-disk cache");
-        assert_eq!(
-            served, thumb,
-            "same content → same cached preview after remount"
-        );
-    }
+            // A projected image: a hash the store never ingested (not local).
+            let projected = iroh_blobs::Hash::from([3u8; 32]);
+            let img_ino = {
+                let mut ns = namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                ns.create_file(ROOT_INO, "remote.png", Some(&projected), 4096, 1)
+                    .unwrap()
+            };
+            assert!(
+                fs.thumbnail_for(img_ino).is_none(),
+                "no preview without local content — never hydrate the file to make one"
+            );
 
-    /// A file whose content is not local yields no thumbnail (the host never
-    /// hydrates content just to preview it); a badge-only type never does either.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn no_local_content_and_badge_types_yield_no_thumbnail() {
-        let dir = tempfile::tempdir().unwrap();
-        let (namespace, _store, fs) = fixture(dir.path().join("thumbs")).await;
-
-        // A projected image: a hash the store never ingested (not local).
-        let projected = iroh_blobs::Hash::from([3u8; 32]);
-        let img_ino = {
-            let mut ns = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            ns.create_file(ROOT_INO, "remote.png", Some(&projected), 4096, 1)
-                .unwrap()
-        };
-        assert!(
-            fs.thumbnail_for(img_ino).is_none(),
-            "no preview without local content — never hydrate the file to make one"
-        );
-
-        // A non-previewable type is never a thumbnail regardless of content.
-        let zip_ino = {
-            let mut ns = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            ns.create_file(ROOT_INO, "bundle.zip", Some(&projected), 4096, 1)
-                .unwrap()
-        };
-        assert!(
-            fs.thumbnail_for(zip_ino).is_none(),
-            "a .zip is a badge, not a preview"
-        );
+            // A non-previewable type is never a thumbnail regardless of content.
+            let zip_ino = {
+                let mut ns = namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                ns.create_file(ROOT_INO, "bundle.zip", Some(&projected), 4096, 1)
+                    .unwrap()
+            };
+            assert!(
+                fs.thumbnail_for(zip_ino).is_none(),
+                "a .zip is a badge, not a preview"
+            );
+        }
     }
 
     /// The projected-preview-before-content path: a peer with only gossiped
@@ -1043,473 +1068,481 @@ mod predictive_tests {
         )
     }
 
+    #[tokio::test]
     #[allow(
         clippy::significant_drop_tightening,
-        reason = "the fixture keeps one namespace snapshot while asserting ordered predictive candidates"
+        reason = "each fixture keeps one (ACL-filtered) namespace snapshot while asserting ordered predictive candidates"
     )]
-    #[tokio::test]
-    async fn opening_an_image_selects_the_next_two_images_not_other_types() {
-        let (namespace, fs) = fixture().await;
-        let (first, second_hash, third_hash) = {
-            let mut ns = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let first = ns
-                .create_file(ROOT_INO, "01.png", Some(&Hash::from([1; 32])), 10, 1)
-                .unwrap();
-            ns.create_file(ROOT_INO, "02.txt", Some(&Hash::from([2; 32])), 20, 1)
-                .unwrap();
-            let second_hash = Hash::from([3; 32]);
-            ns.create_file(ROOT_INO, "03.PNG", Some(&second_hash), 30, 1)
-                .unwrap();
-            let third_hash = Hash::from([4; 32]);
-            ns.create_file(ROOT_INO, "04.png", Some(&third_hash), 40, 1)
-                .unwrap();
-            ns.create_file(ROOT_INO, "05.png", Some(&Hash::from([5; 32])), 50, 1)
-                .unwrap();
-            (first, second_hash, third_hash)
-        };
+    async fn prediction_selects_visible_siblings_of_the_same_type() {
+        // Phase `opening_an_image_selects_the_next_two_images_not_other_types`.
+        {
+            let (namespace, fs) = fixture().await;
+            let (first, second_hash, third_hash) = {
+                let mut ns = namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let first = ns
+                    .create_file(ROOT_INO, "01.png", Some(&Hash::from([1; 32])), 10, 1)
+                    .unwrap();
+                ns.create_file(ROOT_INO, "02.txt", Some(&Hash::from([2; 32])), 20, 1)
+                    .unwrap();
+                let second_hash = Hash::from([3; 32]);
+                ns.create_file(ROOT_INO, "03.PNG", Some(&second_hash), 30, 1)
+                    .unwrap();
+                let third_hash = Hash::from([4; 32]);
+                ns.create_file(ROOT_INO, "04.png", Some(&third_hash), 40, 1)
+                    .unwrap();
+                ns.create_file(ROOT_INO, "05.png", Some(&Hash::from([5; 32])), 50, 1)
+                    .unwrap();
+                (first, second_hash, third_hash)
+            };
 
-        assert_eq!(
-            fs.predictive_candidates(first),
-            vec![(second_hash, 30), (third_hash, 40)]
-        );
-    }
+            assert_eq!(
+                fs.predictive_candidates(first),
+                vec![(second_hash, 30), (third_hash, 40)]
+            );
+        }
+        // Phase `prediction_never_includes_a_sibling_hidden_by_the_acl`.
+        {
+            const ME: [u8; 32] = [0xA1; 32];
+            let (namespace, fs) = fixture().await;
+            let (first, visible_hash) = {
+                let mut ns = namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let first = ns
+                    .create_file(ROOT_INO, "01.png", Some(&Hash::from([1; 32])), 10, 1)
+                    .unwrap();
+                ns.create_file(ROOT_INO, "02.png", Some(&Hash::from([2; 32])), 20, 1)
+                    .unwrap();
+                let visible_hash = Hash::from([3; 32]);
+                ns.create_file(ROOT_INO, "03.png", Some(&visible_hash), 30, 1)
+                    .unwrap();
+                (first, visible_hash)
+            };
+            let mut acl = WorkspaceAcl::new();
+            acl.grant_read(ME, "/01.png").grant_read(ME, "/03.png");
+            let fs = fs.with_acl(acl, ME);
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the fixture keeps one ACL-filtered namespace snapshot across the prediction assertion"
-    )]
-    #[tokio::test]
-    async fn prediction_never_includes_a_sibling_hidden_by_the_acl() {
-        const ME: [u8; 32] = [0xA1; 32];
-        let (namespace, fs) = fixture().await;
-        let (first, visible_hash) = {
-            let mut ns = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let first = ns
-                .create_file(ROOT_INO, "01.png", Some(&Hash::from([1; 32])), 10, 1)
-                .unwrap();
-            ns.create_file(ROOT_INO, "02.png", Some(&Hash::from([2; 32])), 20, 1)
-                .unwrap();
-            let visible_hash = Hash::from([3; 32]);
-            ns.create_file(ROOT_INO, "03.png", Some(&visible_hash), 30, 1)
-                .unwrap();
-            (first, visible_hash)
-        };
-        let mut acl = WorkspaceAcl::new();
-        acl.grant_read(ME, "/01.png").grant_read(ME, "/03.png");
-        let fs = fs.with_acl(acl, ME);
-
-        assert_eq!(
-            fs.predictive_candidates(first),
-            vec![(visible_hash, 30)],
-            "the raw namespace's /02.png must not cross the filtered-view boundary"
-        );
+            assert_eq!(
+                fs.predictive_candidates(first),
+                vec![(visible_hash, 30)],
+                "the raw namespace's /02.png must not cross the filtered-view boundary"
+            );
+        }
     }
 
     #[tokio::test]
-    async fn record_catalog_contains_nested_records_but_not_acl_hidden_siblings() {
-        const ME: [u8; 32] = [0xA2; 32];
-        let (namespace, fs) = fixture().await;
-        let (visible_record, hidden_record) = {
-            let mut ns = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let folder = ns.create_dir(ROOT_INO, "folder", 1).unwrap();
-            let visible = ns
-                .create_file(folder, "visible.txt", Some(&Hash::from([1; 32])), 10, 1)
-                .unwrap();
-            let hidden = ns
-                .create_file(ROOT_INO, "hidden.txt", Some(&Hash::from([2; 32])), 20, 1)
-                .unwrap();
-            (
-                ns.record_id_for(visible).unwrap(),
-                ns.record_id_for(hidden).unwrap(),
-            )
-        };
-        let mut acl = WorkspaceAcl::new();
-        acl.grant_read(ME, "/folder/visible.txt");
-        let fs = fs.with_acl(acl, ME);
-
-        let bytes = fs.record_index_projection().expect("root record catalog");
-        let projection: crate::syncstate::RecordIndexProjectionV1 =
-            serde_json::from_slice(&bytes).unwrap();
-        projection.validate().unwrap();
-        assert!(projection.records.iter().any(|entry| {
-            entry.record_id == visible_record && entry.path == "/folder/visible.txt"
-        }));
-        assert!(
-            projection
-                .records
-                .iter()
-                .all(|entry| entry.record_id != hidden_record),
-            "a record outside the mount's ACL-filtered view cannot enter search metadata"
-        );
-    }
-
     #[allow(
         clippy::range_plus_one,
         clippy::needless_borrows_for_generic_args,
         clippy::significant_drop_tightening,
         reason = "the boundary fixture intentionally builds one page plus one and holds a stable namespace snapshot"
     )]
-    #[tokio::test]
-    async fn record_catalog_v2_pages_without_a_giant_xattr_and_refuses_stale_revisions() {
-        let (namespace, fs) = fixture().await;
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    async fn record_catalogs_hide_acl_denied_records_and_refuse_stale_v2_pages() {
+        // Phase `record_catalog_contains_nested_records_but_not_acl_hidden_siblings`.
         {
-            let mut ns = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for index in 0..crate::syncstate::RECORD_INDEX_PAGE_ENTRIES + 1 {
-                let byte = u8::try_from(index).expect("fixture index fits in one byte");
-                ns.create_file(
-                    ROOT_INO,
-                    &format!("late-{index}.txt"),
-                    Some(&Hash::from([byte; 32])),
-                    index as u64,
-                    index as u64,
-                )
-                .unwrap();
-            }
-        }
-        let manifest: crate::syncstate::RecordIndexManifestV2 =
-            serde_json::from_slice(&fs.record_index_manifest_v2().unwrap()).unwrap();
-        manifest.validate().unwrap();
-        assert_eq!(
-            manifest.records,
-            crate::syncstate::RECORD_INDEX_PAGE_ENTRIES + 1
-        );
-        let first: crate::syncstate::RecordIndexPageV2 =
-            serde_json::from_slice(&fs.record_index_page_v2(&manifest.revision, 0).unwrap())
-                .unwrap();
-        let second_offset = first.next_offset.expect("continuation page");
-        let second: crate::syncstate::RecordIndexPageV2 = serde_json::from_slice(
-            &fs.record_index_page_v2(&manifest.revision, second_offset)
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(second.records.len(), 1);
-        assert!(
-            fs.record_index_projection().is_some_and(
-                |legacy| legacy.len() <= crate::syncstate::MAX_RECORD_INDEX_XATTR_BYTES
-            )
-        );
-
-        namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .create_file(ROOT_INO, "new.txt", None, 1, 1)
-            .unwrap();
-        assert!(
-            fs.record_index_page_v2(&manifest.revision, 0).is_none(),
-            "a namespace revision invalidates a page cursor rather than mixing rows"
-        );
-    }
-
-    #[tokio::test]
-    async fn record_catalog_v2_refuses_pages_after_a_live_acl_generation_change() {
-        const ME: [u8; 32] = [0xA3; 32];
-        let (namespace, fs) = fixture().await;
-        namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .create_file(ROOT_INO, "visible.txt", Some(&Hash::from([3; 32])), 3, 1)
-            .unwrap();
-        let mut policy = WorkspaceAcl::new();
-        policy.grant_read(ME, "/visible.txt");
-        let handle = AclHandle::new(policy.clone());
-        let fs = fs.with_acl(handle.clone(), ME);
-        let before: crate::syncstate::RecordIndexManifestV2 =
-            serde_json::from_slice(&fs.record_index_manifest_v2().unwrap()).unwrap();
-
-        handle.replace(policy);
-        let after: crate::syncstate::RecordIndexManifestV2 =
-            serde_json::from_slice(&fs.record_index_manifest_v2().unwrap()).unwrap();
-        assert_ne!(before.revision, after.revision);
-        assert!(
-            fs.record_index_page_v2(&before.revision, 0).is_none(),
-            "a page issued under the old ACL generation cannot be replayed"
-        );
-    }
-
-    #[tokio::test]
-    async fn record_catalog_v3_hides_denied_corpus_and_stably_reaches_visible_rows() {
-        const ME: [u8; 32] = [0xA4; 32];
-        let (namespace, fs) = fixture().await;
-        let visible_record = {
-            let mut ns = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            // A deliberately large denied prefix must not change either the
-            // public manifest shape or the work of the visible page.
-            for index in 0..(crate::syncstate::RECORD_INDEX_PAGE_ENTRIES * 2) {
-                ns.create_file(ROOT_INO, format!("hidden-{index:04}"), None, 0, 1)
+            const ME: [u8; 32] = [0xA2; 32];
+            let (namespace, fs) = fixture().await;
+            let (visible_record, hidden_record) = {
+                let mut ns = namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let folder = ns.create_dir(ROOT_INO, "folder", 1).unwrap();
+                let visible = ns
+                    .create_file(folder, "visible.txt", Some(&Hash::from([1; 32])), 10, 1)
                     .unwrap();
+                let hidden = ns
+                    .create_file(ROOT_INO, "hidden.txt", Some(&Hash::from([2; 32])), 20, 1)
+                    .unwrap();
+                (
+                    ns.record_id_for(visible).unwrap(),
+                    ns.record_id_for(hidden).unwrap(),
+                )
+            };
+            let mut acl = WorkspaceAcl::new();
+            acl.grant_read(ME, "/folder/visible.txt");
+            let fs = fs.with_acl(acl, ME);
+
+            let bytes = fs.record_index_projection().expect("root record catalog");
+            let projection: crate::syncstate::RecordIndexProjectionV1 =
+                serde_json::from_slice(&bytes).unwrap();
+            projection.validate().unwrap();
+            assert!(projection.records.iter().any(|entry| {
+                entry.record_id == visible_record && entry.path == "/folder/visible.txt"
+            }));
+            assert!(
+                projection
+                    .records
+                    .iter()
+                    .all(|entry| entry.record_id != hidden_record),
+                "a record outside the mount's ACL-filtered view cannot enter search metadata"
+            );
+        }
+        // Phase `record_catalog_v2_pages_without_a_giant_xattr_and_refuses_stale_revisions`.
+        {
+            let (namespace, fs) = fixture().await;
+            {
+                let mut ns = namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                for index in 0..crate::syncstate::RECORD_INDEX_PAGE_ENTRIES + 1 {
+                    let byte = u8::try_from(index).expect("fixture index fits in one byte");
+                    ns.create_file(
+                        ROOT_INO,
+                        &format!("late-{index}.txt"),
+                        Some(&Hash::from([byte; 32])),
+                        index as u64,
+                        index as u64,
+                    )
+                    .unwrap();
+                }
             }
-            let ino = ns.create_file(ROOT_INO, "visible.txt", None, 0, 1).unwrap();
-            ns.record_id_for(ino).unwrap()
-        };
-        let mut policy = WorkspaceAcl::new();
-        policy.grant_read(ME, "/visible.txt");
-        let fs = fs.with_acl(AclHandle::new(policy), ME);
-
-        let before = fs.record_index_manifest_v3().unwrap();
-        let manifest: crate::syncstate::RecordIndexManifestV3 =
-            serde_json::from_slice(&before).unwrap();
-        manifest.validate().unwrap();
-        assert_eq!(manifest.initial_cursor.len(), 36);
-        let first: crate::syncstate::RecordIndexPageV3 = serde_json::from_slice(
-            &fs.record_index_page_v3(&manifest.revision, &manifest.initial_cursor)
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(first.records.len(), 1);
-        assert_eq!(first.records[0].record_id, visible_record);
-        assert!(first.next_cursor.is_none());
-        assert!(
-            fs.record_index_page_v3(&manifest.revision, "00000000-0000-0000-0000-000000000000")
-                .is_none()
-        );
-
-        // This would have leaked through a raw count, offset, source
-        // revision, or freshly-issued initial token.  It is indistinguishable
-        // to the restricted authority.
-        namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .create_file(ROOT_INO, "another-hidden.txt", None, 0, 1)
+            let manifest: crate::syncstate::RecordIndexManifestV2 =
+                serde_json::from_slice(&fs.record_index_manifest_v2().unwrap()).unwrap();
+            manifest.validate().unwrap();
+            assert_eq!(
+                manifest.records,
+                crate::syncstate::RECORD_INDEX_PAGE_ENTRIES + 1
+            );
+            let first: crate::syncstate::RecordIndexPageV2 =
+                serde_json::from_slice(&fs.record_index_page_v2(&manifest.revision, 0).unwrap())
+                    .unwrap();
+            let second_offset = first.next_offset.expect("continuation page");
+            let second: crate::syncstate::RecordIndexPageV2 = serde_json::from_slice(
+                &fs.record_index_page_v2(&manifest.revision, second_offset)
+                    .unwrap(),
+            )
             .unwrap();
-        fs.refresh_acl_visible_record_index();
-        assert_eq!(fs.record_index_manifest_v3().unwrap(), before);
-        assert!(
-            fs.record_index_page_v3(&manifest.revision, &manifest.initial_cursor)
-                .is_some()
-        );
+            assert_eq!(second.records.len(), 1);
+            assert!(fs.record_index_projection().is_some_and(
+                |legacy| legacy.len() <= crate::syncstate::MAX_RECORD_INDEX_XATTR_BYTES
+            ));
+
+            namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .create_file(ROOT_INO, "new.txt", None, 1, 1)
+                .unwrap();
+            assert!(
+                fs.record_index_page_v2(&manifest.revision, 0).is_none(),
+                "a namespace revision invalidates a page cursor rather than mixing rows"
+            );
+        }
+        // Phase `record_catalog_v2_refuses_pages_after_a_live_acl_generation_change`.
+        {
+            const ME: [u8; 32] = [0xA3; 32];
+            let (namespace, fs) = fixture().await;
+            namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .create_file(ROOT_INO, "visible.txt", Some(&Hash::from([3; 32])), 3, 1)
+                .unwrap();
+            let mut policy = WorkspaceAcl::new();
+            policy.grant_read(ME, "/visible.txt");
+            let handle = AclHandle::new(policy.clone());
+            let fs = fs.with_acl(handle.clone(), ME);
+            let before: crate::syncstate::RecordIndexManifestV2 =
+                serde_json::from_slice(&fs.record_index_manifest_v2().unwrap()).unwrap();
+
+            handle.replace(policy);
+            let after: crate::syncstate::RecordIndexManifestV2 =
+                serde_json::from_slice(&fs.record_index_manifest_v2().unwrap()).unwrap();
+            assert_ne!(before.revision, after.revision);
+            assert!(
+                fs.record_index_page_v2(&before.revision, 0).is_none(),
+                "a page issued under the old ACL generation cannot be replayed"
+            );
+        }
     }
 
     #[tokio::test]
-    async fn record_catalog_v3_visible_change_resets_and_acl_revoke_fails_closed() {
-        const ME: [u8; 32] = [0xA5; 32];
-        let (namespace, fs) = fixture().await;
-        let first_record = {
-            let mut ns = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let ino = ns.create_file(ROOT_INO, "first.txt", None, 0, 1).unwrap();
-            ns.record_id_for(ino).unwrap()
-        };
-        let mut policy = WorkspaceAcl::new();
-        policy.grant_read(ME, "/");
-        let handle = AclHandle::new(policy.clone());
-        let fs = fs.with_acl(handle.clone(), ME);
-        let before: crate::syncstate::RecordIndexManifestV3 =
-            serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
-        assert!(fs.record_index_by_id_v2(first_record).is_some());
+    async fn v3_record_catalog_hides_denied_rows_and_fails_closed_on_revoke() {
+        // Phase `record_catalog_v3_hides_denied_corpus_and_stably_reaches_visible_rows`.
+        {
+            const ME: [u8; 32] = [0xA4; 32];
+            let (namespace, fs) = fixture().await;
+            let visible_record = {
+                let mut ns = namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                // A deliberately large denied prefix must not change either the
+                // public manifest shape or the work of the visible page.
+                for index in 0..(crate::syncstate::RECORD_INDEX_PAGE_ENTRIES * 2) {
+                    ns.create_file(ROOT_INO, format!("hidden-{index:04}"), None, 0, 1)
+                        .unwrap();
+                }
+                let ino = ns.create_file(ROOT_INO, "visible.txt", None, 0, 1).unwrap();
+                ns.record_id_for(ino).unwrap()
+            };
+            let mut policy = WorkspaceAcl::new();
+            policy.grant_read(ME, "/visible.txt");
+            let fs = fs.with_acl(AclHandle::new(policy), ME);
 
-        namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .create_file(ROOT_INO, "second.txt", None, 0, 1)
+            let before = fs.record_index_manifest_v3().unwrap();
+            let manifest: crate::syncstate::RecordIndexManifestV3 =
+                serde_json::from_slice(&before).unwrap();
+            manifest.validate().unwrap();
+            assert_eq!(manifest.initial_cursor.len(), 36);
+            let first: crate::syncstate::RecordIndexPageV3 = serde_json::from_slice(
+                &fs.record_index_page_v3(&manifest.revision, &manifest.initial_cursor)
+                    .unwrap(),
+            )
             .unwrap();
-        fs.refresh_acl_visible_record_index();
-        let after: crate::syncstate::RecordIndexManifestV3 =
-            serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
-        assert_ne!(before.revision, after.revision);
-        assert!(
-            fs.record_index_page_v3(&before.revision, &before.initial_cursor)
-                .is_none()
-        );
+            assert_eq!(first.records.len(), 1);
+            assert_eq!(first.records[0].record_id, visible_record);
+            assert!(first.next_cursor.is_none());
+            assert!(
+                fs.record_index_page_v3(&manifest.revision, "00000000-0000-0000-0000-000000000000")
+                    .is_none()
+            );
 
-        handle.replace(WorkspaceAcl::new());
-        let mut revoked = None;
-        for _ in 0..64 {
-            revoked = fs.record_index_manifest_v3();
-            if revoked.is_some() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            // This would have leaked through a raw count, offset, source
+            // revision, or freshly-issued initial token.  It is indistinguishable
+            // to the restricted authority.
+            namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .create_file(ROOT_INO, "another-hidden.txt", None, 0, 1)
+                .unwrap();
+            fs.refresh_acl_visible_record_index();
+            assert_eq!(fs.record_index_manifest_v3().unwrap(), before);
+            assert!(
+                fs.record_index_page_v3(&manifest.revision, &manifest.initial_cursor)
+                    .is_some()
+            );
         }
-        let revoked: crate::syncstate::RecordIndexManifestV3 =
-            serde_json::from_slice(&revoked.unwrap()).unwrap();
-        assert_ne!(after.revision, revoked.revision);
-        assert!(
-            fs.record_index_page_v3(&after.revision, &after.initial_cursor)
-                .is_none()
-        );
-        assert!(fs.record_index_by_id_v2(first_record).is_none());
+        // Phase `record_catalog_v3_visible_change_resets_and_acl_revoke_fails_closed`.
+        {
+            const ME: [u8; 32] = [0xA5; 32];
+            let (namespace, fs) = fixture().await;
+            let first_record = {
+                let mut ns = namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let ino = ns.create_file(ROOT_INO, "first.txt", None, 0, 1).unwrap();
+                ns.record_id_for(ino).unwrap()
+            };
+            let mut policy = WorkspaceAcl::new();
+            policy.grant_read(ME, "/");
+            let handle = AclHandle::new(policy.clone());
+            let fs = fs.with_acl(handle.clone(), ME);
+            let before: crate::syncstate::RecordIndexManifestV3 =
+                serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
+            assert!(fs.record_index_by_id_v2(first_record).is_some());
+
+            namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .create_file(ROOT_INO, "second.txt", None, 0, 1)
+                .unwrap();
+            fs.refresh_acl_visible_record_index();
+            let after: crate::syncstate::RecordIndexManifestV3 =
+                serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
+            assert_ne!(before.revision, after.revision);
+            assert!(
+                fs.record_index_page_v3(&before.revision, &before.initial_cursor)
+                    .is_none()
+            );
+
+            handle.replace(WorkspaceAcl::new());
+            let mut revoked = None;
+            for _ in 0..64 {
+                revoked = fs.record_index_manifest_v3();
+                if revoked.is_some() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+            let revoked: crate::syncstate::RecordIndexManifestV3 =
+                serde_json::from_slice(&revoked.unwrap()).unwrap();
+            assert_ne!(after.revision, revoked.revision);
+            assert!(
+                fs.record_index_page_v3(&after.revision, &after.initial_cursor)
+                    .is_none()
+            );
+            assert!(fs.record_index_by_id_v2(first_record).is_none());
+        }
     }
 
+    #[tokio::test]
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the catalogue fixture measures source scans across one stable namespace population"
     )]
-    #[tokio::test]
-    async fn record_catalog_v3_pages_a_large_visible_view_without_source_rescans() {
-        const ME: [u8; 32] = [0xA6; 32];
-        let (namespace, fs) = fixture().await;
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    async fn v3_record_catalog_pages_large_views_off_the_request_path() {
+        // Phase `record_catalog_v3_pages_a_large_visible_view_without_source_rescans`.
         {
-            let mut ns = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for index in 0..=crate::syncstate::RECORD_INDEX_PAGE_ENTRIES {
-                ns.create_projected_file(
-                    ROOT_INO,
-                    format!("visible-{index:04}"),
-                    collab_types::FileRecordId(uuid::Uuid::from_u128((index + 1) as u128)),
-                    None,
-                    0,
-                    1,
-                )
-                .unwrap();
-            }
-        }
-        let mut policy = WorkspaceAcl::new();
-        policy.grant_read(ME, "/");
-        let fs = fs.with_acl(policy, ME);
-        let manifest: crate::syncstate::RecordIndexManifestV3 =
-            serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
-        let rebuilds = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record_index_rebuild_count();
-        let page_reads = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record_index_page_read_count();
-        let first: crate::syncstate::RecordIndexPageV3 = serde_json::from_slice(
-            &fs.record_index_page_v3(&manifest.revision, &manifest.initial_cursor)
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            first.records.len(),
-            crate::syncstate::RECORD_INDEX_PAGE_ENTRIES
-        );
-        let second: crate::syncstate::RecordIndexPageV3 = serde_json::from_slice(
-            &fs.record_index_page_v3(&manifest.revision, first.next_cursor.as_deref().unwrap())
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(second.records.len(), 1);
-        assert!(second.next_cursor.is_none());
-        assert!(
-            fs.record_index_by_id_v2(first.records[0].record_id)
-                .is_some()
-        );
-        assert_eq!(
-            namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .record_index_rebuild_count(),
-            rebuilds,
-            "serving v3 continuations must not rebuild or walk the Automerge corpus"
-        );
-        assert_eq!(
-            namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .record_index_page_read_count(),
-            page_reads,
-            "manifest, page, and exact record requests use the retained snapshot, never Namespace pages"
-        );
-    }
-
-    #[tokio::test]
-    async fn record_catalog_v3_refreshes_coalesced_remote_generations_off_request_path() {
-        const ME: [u8; 32] = [0xA7; 32];
-        let (namespace, fs) = fixture().await;
-        let visible_dir = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .create_dir(ROOT_INO, "visible", 1)
-            .unwrap();
-        namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .create_file(visible_dir, "initial.txt", None, 0, 1)
-            .unwrap();
-        let mut policy = WorkspaceAcl::new();
-        policy.grant_read(ME, "/visible");
-        let sync = crate::sync::SyncHandle::test_handle();
-        let fs = fs.with_sync(sync.clone()).with_acl(policy, ME);
-        let before: crate::syncstate::RecordIndexManifestV3 =
-            serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
-        let page_reads = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record_index_page_read_count();
-
-        // A denied remote mutation rebuilds privately but has no public
-        // generation/token effect. Several notifications coalesce to the
-        // latest watch value, not one traversal per received delta.
-        namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .create_file(ROOT_INO, "hidden-remote.txt", None, 0, 1)
-            .unwrap();
-        for _ in 0..16 {
-            sync.notify_record_index_changed();
-        }
-        let mut hidden = None;
-        for _ in 0..64 {
-            hidden = fs.record_index_manifest_v3();
-            if hidden.is_some() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-        }
-        assert_eq!(hidden.unwrap(), serde_json::to_vec(&before).unwrap());
-        let after_hidden_reads = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record_index_page_read_count();
-        assert!(
-            after_hidden_reads.saturating_sub(page_reads) <= 2,
-            "a burst must coalesce before rebuilding the retained view"
-        );
-
-        namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .create_file(visible_dir, "remote.txt", None, 0, 1)
-            .unwrap();
-        let mut updated = None;
-        sync.notify_record_index_changed();
-        for _ in 0..64 {
-            updated = fs.record_index_manifest_v3();
-            if updated
-                .as_ref()
-                .is_some_and(|bytes| bytes != &serde_json::to_vec(&before).unwrap())
+            const ME: [u8; 32] = [0xA6; 32];
+            let (namespace, fs) = fixture().await;
             {
-                break;
+                let mut ns = namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                for index in 0..=crate::syncstate::RECORD_INDEX_PAGE_ENTRIES {
+                    ns.create_projected_file(
+                        ROOT_INO,
+                        format!("visible-{index:04}"),
+                        collab_types::FileRecordId(uuid::Uuid::from_u128((index + 1) as u128)),
+                        None,
+                        0,
+                        1,
+                    )
+                    .unwrap();
+                }
             }
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            let mut policy = WorkspaceAcl::new();
+            policy.grant_read(ME, "/");
+            let fs = fs.with_acl(policy, ME);
+            let manifest: crate::syncstate::RecordIndexManifestV3 =
+                serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
+            let rebuilds = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .record_index_rebuild_count();
+            let page_reads = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .record_index_page_read_count();
+            let first: crate::syncstate::RecordIndexPageV3 = serde_json::from_slice(
+                &fs.record_index_page_v3(&manifest.revision, &manifest.initial_cursor)
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                first.records.len(),
+                crate::syncstate::RECORD_INDEX_PAGE_ENTRIES
+            );
+            let second: crate::syncstate::RecordIndexPageV3 = serde_json::from_slice(
+                &fs.record_index_page_v3(&manifest.revision, first.next_cursor.as_deref().unwrap())
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(second.records.len(), 1);
+            assert!(second.next_cursor.is_none());
+            assert!(
+                fs.record_index_by_id_v2(first.records[0].record_id)
+                    .is_some()
+            );
+            assert_eq!(
+                namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .record_index_rebuild_count(),
+                rebuilds,
+                "serving v3 continuations must not rebuild or walk the Automerge corpus"
+            );
+            assert_eq!(
+                namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .record_index_page_read_count(),
+                page_reads,
+                "manifest, page, and exact record requests use the retained snapshot, never Namespace pages"
+            );
         }
-        let updated: crate::syncstate::RecordIndexManifestV3 =
-            serde_json::from_slice(&updated.unwrap()).unwrap();
-        assert_ne!(updated.revision, before.revision);
-    }
+        // Phase `record_catalog_v3_refreshes_coalesced_remote_generations_off_request_path`.
+        {
+            const ME: [u8; 32] = [0xA7; 32];
+            let (namespace, fs) = fixture().await;
+            let visible_dir = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .create_dir(ROOT_INO, "visible", 1)
+                .unwrap();
+            namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .create_file(visible_dir, "initial.txt", None, 0, 1)
+                .unwrap();
+            let mut policy = WorkspaceAcl::new();
+            policy.grant_read(ME, "/visible");
+            let sync = crate::sync::SyncHandle::test_handle();
+            let fs = fs.with_sync(sync.clone()).with_acl(policy, ME);
+            let before: crate::syncstate::RecordIndexManifestV3 =
+                serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
+            let page_reads = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .record_index_page_read_count();
 
-    #[tokio::test]
-    async fn record_catalog_v3_sync_worker_does_not_keep_dropped_mount_alive() {
-        const ME: [u8; 32] = [0xA8; 32];
-        let (_namespace, fs) = fixture().await;
-        let sync = crate::sync::SyncHandle::test_handle();
-        let mut policy = WorkspaceAcl::new();
-        policy.grant_read(ME, "/");
-        let fs = fs.with_sync(sync.clone()).with_acl(policy, ME);
-        let weak = Arc::downgrade(&fs.acl_visible_record_index);
-        drop(fs);
-        sync.notify_record_index_changed();
-        for _ in 0..8 {
-            tokio::task::yield_now().await;
+            // A denied remote mutation rebuilds privately but has no public
+            // generation/token effect. Several notifications coalesce to the
+            // latest watch value, not one traversal per received delta.
+            namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .create_file(ROOT_INO, "hidden-remote.txt", None, 0, 1)
+                .unwrap();
+            for _ in 0..16 {
+                sync.notify_record_index_changed();
+            }
+            let mut hidden = None;
+            for _ in 0..64 {
+                hidden = fs.record_index_manifest_v3();
+                if hidden.is_some() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+            assert_eq!(hidden.unwrap(), serde_json::to_vec(&before).unwrap());
+            let after_hidden_reads = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .record_index_page_read_count();
+            assert!(
+                after_hidden_reads.saturating_sub(page_reads) <= 2,
+                "a burst must coalesce before rebuilding the retained view"
+            );
+
+            namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .create_file(visible_dir, "remote.txt", None, 0, 1)
+                .unwrap();
+            let mut updated = None;
+            sync.notify_record_index_changed();
+            for _ in 0..64 {
+                updated = fs.record_index_manifest_v3();
+                if updated
+                    .as_ref()
+                    .is_some_and(|bytes| bytes != &serde_json::to_vec(&before).unwrap())
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+            let updated: crate::syncstate::RecordIndexManifestV3 =
+                serde_json::from_slice(&updated.unwrap()).unwrap();
+            assert_ne!(updated.revision, before.revision);
         }
-        assert!(
-            weak.upgrade().is_none(),
-            "the sync subscriber must use a weak cache reference and exit after unmount"
-        );
+        // Phase `record_catalog_v3_sync_worker_does_not_keep_dropped_mount_alive`.
+        {
+            const ME: [u8; 32] = [0xA8; 32];
+            let (_namespace, fs) = fixture().await;
+            let sync = crate::sync::SyncHandle::test_handle();
+            let mut policy = WorkspaceAcl::new();
+            policy.grant_read(ME, "/");
+            let fs = fs.with_sync(sync.clone()).with_acl(policy, ME);
+            let weak = Arc::downgrade(&fs.acl_visible_record_index);
+            drop(fs);
+            sync.notify_record_index_changed();
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            assert!(
+                weak.upgrade().is_none(),
+                "the sync subscriber must use a weak cache reference and exit after unmount"
+            );
+        }
     }
 }
 
@@ -1650,15 +1683,29 @@ mod history_integration_tests {
         assert_eq!(fs.read_full_blocking(ino).unwrap(), original);
         let snapshot = history.snapshot(record_id).unwrap();
         assert_eq!(snapshot.versions.len(), 3);
+        assert_eq!(snapshot.heads.len(), 1);
+        let restored = snapshot
+            .versions
+            .iter()
+            .find(|version| snapshot.heads.contains(&version.id))
+            .unwrap();
         assert_eq!(
-            snapshot.versions[2].provenance,
+            restored.provenance,
             FileProvenance::Restore {
                 from: original_version
             }
         );
+        // Equal millisecond timestamps are ordered by version id, so array
+        // positions do not identify the original revision or restored head.
+        let baseline = snapshot
+            .versions
+            .iter()
+            .find(|version| version.id == original_version)
+            .unwrap();
+        assert_eq!(baseline.content_hash, restored.content_hash);
         assert_eq!(
-            snapshot.versions[0].content_hash,
-            snapshot.versions[2].content_hash
+            baseline.content_hash,
+            Some(collab_types::ContentHash(*original_hash.as_bytes()))
         );
     }
 }
@@ -1781,7 +1828,7 @@ mod record_publisher_integration_tests {
         let manifest_bytes = store.local(original_manifest).await.unwrap();
         let manifest = crate::content::Manifest::decode(&manifest_bytes).unwrap();
         let mut reconstructed = Vec::new();
-        for chunk in manifest.chunks {
+        for chunk in manifest.chunks().iter().copied() {
             let chunk_hash = Hash::from(chunk.hash);
             let bytes = store.local(chunk_hash).await.unwrap();
             assert_eq!(bytes.len(), chunk.len as usize);
@@ -2910,7 +2957,7 @@ mod record_publisher_integration_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn qdoc_merge_recovers_after_history_crash_and_replays_idempotently() {
-        let mut base = qdoc::Document::new();
+        let mut base = tilo_doc::Document::new();
         let block = base.insert_block(None, "paragraph");
         base.splice_text(&block, 0, 0, "base");
         let base_bytes = base.save();

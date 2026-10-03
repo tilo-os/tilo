@@ -30,6 +30,8 @@ tilo-actions = { path = "../../crates/collab/actions" }
 # FUTO swipe decoder (ExecuTorch over FFI); builds an unavailable stub when
 # the FUTO libraries are not linked.
 swipe = { path = "../../crates/system/swipe" }
+# Emoji catalogue, search, skin tones, recents and word suggestions.
+emoji = { path = "../../crates/text/emoji" }
 # Same render/event crate set the other `ui` apps pull in so the `Widget`
 # impl can build a taffy node, draw into a vello `Scene`, react to winit
 # events, and (for tests/headless) carry an automerge handle.
@@ -47,14 +49,15 @@ wayland-client.workspace = true
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
 # memfd_create for the synthetic XKB keymap fd handed to the compositor.
 libc.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-automerge.workspace = true
 tempfile.workspace = true
 # Compile the synthetic keymap with libxkbcommon so tests validate generated
 # keymaps and symbol resolution.
 xkbcommon = "0.8"
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
-tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [[test]]
 name = "it"

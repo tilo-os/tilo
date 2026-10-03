@@ -22,7 +22,7 @@
 )]
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use media::{MediaEngine, Source};
 use ui::widget::Widget; // brings `sync` (the per-frame Widget method) into scope
@@ -98,8 +98,8 @@ fn write_sample_media(dir: &Path) -> Option<PathBuf> {
 fn scratch_dir() -> PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};
     static SEQ: AtomicU32 = AtomicU32::new(0);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let nanos = ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
     let dir = std::env::temp_dir().join(format!(
         "tilo-vp-real-decode 日本語 #%-{}-{}-{}",
@@ -112,118 +112,120 @@ fn scratch_dir() -> PathBuf {
 }
 
 #[test]
-fn engine_decodes_a_real_file_and_the_pts_advances() {
-    let dir = scratch_dir();
-    let sample = write_sample_media(&dir)
-        .expect("real decode requires gst-launch-1.0 and a working encoder/muxer");
+fn real_file_decodes_and_reaches_the_player_surface() {
+    // Case `engine_decodes_a_real_file_and_the_pts_advances`.
+    {
+        let dir = scratch_dir();
+        let sample = write_sample_media(&dir)
+            .expect("real decode requires gst-launch-1.0 and a working encoder/muxer");
 
-    let mut engine = MediaEngine::with_config(media::EngineConfig::default().silent());
-    assert!(engine.is_real_decode(), "real GStreamer decoder required");
+        let mut engine = MediaEngine::with_config(media::EngineConfig::default().silent());
+        assert!(engine.is_real_decode(), "real GStreamer decoder required");
 
-    engine.open(Source::LocalFile(sample.clone()));
-    engine.play();
+        engine.open(Source::LocalFile(sample.clone()));
+        engine.play();
 
-    // Pump until several distinct frame PTS are observed (or we time out).
-    let mut ptss: Vec<u64> = Vec::new();
-    let mut saw_duration = false;
-    let mut first_frame_dims: Option<(u32, u32)> = None;
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while Instant::now() < deadline {
-        for ev in engine.poll() {
-            if let media::MediaEvent::DurationKnown { .. } = ev {
-                saw_duration = true;
+        // Pump until several distinct frame PTS are observed (or we time out).
+        let mut ptss: Vec<u64> = Vec::new();
+        let mut saw_duration = false;
+        let mut first_frame_dims: Option<(u32, u32)> = None;
+        let deadline = tilo_test_env::hang_deadline();
+        while ui::time::now() < deadline {
+            for ev in engine.poll() {
+                if let media::MediaEvent::DurationKnown { .. } = ev {
+                    saw_duration = true;
+                }
             }
-        }
-        if let Some(frame) = engine.latest_frame() {
-            // Every decoded frame is tightly-packed RGBA of a real size.
-            assert!(
-                frame.width > 0 && frame.height > 0,
-                "decoded frame has real dimensions"
-            );
-            assert_eq!(
-                frame.rgba.len(),
-                frame.width as usize * frame.height as usize * 4,
-                "tightly-packed RGBA8"
-            );
-            first_frame_dims.get_or_insert((frame.width, frame.height));
-            if ptss.last() != Some(&frame.pts_ms) {
-                ptss.push(frame.pts_ms);
+            if let Some(frame) = engine.latest_frame() {
+                // Every decoded frame is tightly-packed RGBA of a real size.
+                assert!(
+                    frame.width > 0 && frame.height > 0,
+                    "decoded frame has real dimensions"
+                );
+                assert_eq!(
+                    frame.rgba.len(),
+                    frame.width as usize * frame.height as usize * 4,
+                    "tightly-packed RGBA8"
+                );
+                first_frame_dims.get_or_insert((frame.width, frame.height));
+                if ptss.last() != Some(&frame.pts_ms) {
+                    ptss.push(frame.pts_ms);
+                }
             }
+            if ptss.len() >= 3 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
         }
-        if ptss.len() >= 3 {
-            break;
+
+        drop(engine);
+        std::fs::remove_dir_all(&dir).expect("release and remove decoded sample");
+
+        assert!(
+            ptss.len() >= 2,
+            "expected multiple decoded frames from {}, saw PTS {ptss:?}",
+            sample.display()
+        );
+        // PTS is monotonic and actually advances across the decoded frames.
+        for pair in ptss.windows(2) {
+            assert!(pair[1] >= pair[0], "PTS must not go backwards: {ptss:?}");
         }
-        std::thread::sleep(Duration::from_millis(25));
+        assert!(
+            ptss.iter().max() > ptss.iter().min(),
+            "the playhead advanced across decoded frames: {ptss:?}"
+        );
+        assert!(
+            saw_duration,
+            "the stream's duration became known during decode"
+        );
+        let (w, h) = first_frame_dims.expect("at least one decoded frame");
+        assert_eq!(
+            (w, h),
+            (160, 120),
+            "decoded the frame at the encoded resolution"
+        );
     }
+    // Case `player_app_pulls_a_real_decoded_frame_onto_its_surface`.
+    {
+        let dir = scratch_dir();
+        let sample = write_sample_media(&dir)
+            .expect("real decode requires gst-launch-1.0 and a working encoder/muxer");
 
-    drop(engine);
-    std::fs::remove_dir_all(&dir).expect("release and remove decoded sample");
+        // Drive the real app entry path: open the file, then pump `sync` (the live
+        // event loop's per-frame call) until a decoded picture lands on the surface.
+        let mut app = PlayerApp::new().with_open_path(&sample);
+        assert!(
+            app.player()
+                .engine()
+                .is_some_and(MediaEngine::is_real_decode),
+            "the app must use the real decoder"
+        );
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
 
-    assert!(
-        ptss.len() >= 2,
-        "expected multiple decoded frames from {}, saw PTS {ptss:?}",
-        sample.display()
-    );
-    // PTS is monotonic and actually advances across the decoded frames.
-    for pair in ptss.windows(2) {
-        assert!(pair[1] >= pair[0], "PTS must not go backwards: {ptss:?}");
-    }
-    assert!(
-        ptss.iter().max() > ptss.iter().min(),
-        "the playhead advanced across decoded frames: {ptss:?}"
-    );
-    assert!(
-        saw_duration,
-        "the stream's duration became known during decode"
-    );
-    let (w, h) = first_frame_dims.expect("at least one decoded frame");
-    assert_eq!(
-        (w, h),
-        (160, 120),
-        "decoded the frame at the encoded resolution"
-    );
-}
-
-#[test]
-fn player_app_pulls_a_real_decoded_frame_onto_its_surface() {
-    let dir = scratch_dir();
-    let sample = write_sample_media(&dir)
-        .expect("real decode requires gst-launch-1.0 and a working encoder/muxer");
-
-    // Drive the real app entry path: open the file, then pump `sync` (the live
-    // event loop's per-frame call) until a decoded picture lands on the surface.
-    let mut app = PlayerApp::new().with_open_path(&sample);
-    assert!(
-        app.player()
-            .engine()
-            .is_some_and(MediaEngine::is_real_decode),
-        "the app must use the real decoder"
-    );
-    let mut doc = automerge::AutoCommit::new();
-    let root = automerge::ROOT;
-
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while Instant::now() < deadline {
-        app.sync(&mut doc, &root);
-        if app.player().latest_frame().is_some() {
-            break;
+        let deadline = tilo_test_env::hang_deadline();
+        while ui::time::now() < deadline {
+            app.sync(&mut doc, &root);
+            if app.player().latest_frame().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
         }
-        std::thread::sleep(Duration::from_millis(25));
-    }
 
-    assert!(
-        app.player().latest_frame().is_some(),
-        "the app decoded {} and put a frame on the video surface",
-        sample.display()
-    );
-    assert!(
-        app.player().is_playing(),
-        "the app autoplays the opened file"
-    );
-    assert!(
-        app.player().duration_ms() > 0,
-        "the app learned the stream duration"
-    );
-    drop(app);
-    std::fs::remove_dir_all(&dir).expect("release and remove decoded sample");
+        assert!(
+            app.player().latest_frame().is_some(),
+            "the app decoded {} and put a frame on the video surface",
+            sample.display()
+        );
+        assert!(
+            app.player().is_playing(),
+            "the app autoplays the opened file"
+        );
+        assert!(
+            app.player().duration_ms() > 0,
+            "the app learned the stream duration"
+        );
+        drop(app);
+        std::fs::remove_dir_all(&dir).expect("release and remove decoded sample");
+    }
 }

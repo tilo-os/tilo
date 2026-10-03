@@ -177,7 +177,7 @@ pub fn fetch_verified_case(
         &events,
         case_id,
         &registry.owner_pubkey_hex,
-        &snapshot.moderation_head_hex,
+        snapshot.moderation_head_hex(),
     )
     .map_err(|error| ModerationClientError::InvalidProof(error.to_string()))
 }
@@ -286,71 +286,75 @@ pub fn report_request_id(package_id: &str, note: &str, now_unix: u64, nonce: &[u
 mod tests {
     use super::*;
 
+    /// Endpoint validation, request identity binding and unforgeable receipts.
     #[test]
-    fn endpoint_rejects_credentials_plaintext_and_redirect_tricks() {
-        for unsafe_url in [
-            "http://registry.test",
-            "https://placeholder:placeholder@registry.test",
-            "file:///tmp/registry",
-        ] {
-            assert!(matches!(
-                endpoint(unsafe_url, "moderation/mutations"),
-                Err(ModerationClientError::UnsafeEndpoint)
-            ));
+    fn moderation_client_endpoints_requests_and_receipts_are_trustworthy() {
+        // Case `endpoint_rejects_credentials_plaintext_and_redirect_tricks`.
+        {
+            for unsafe_url in [
+                "http://registry.test",
+                "https://placeholder:placeholder@registry.test",
+                "file:///tmp/registry",
+            ] {
+                assert!(matches!(
+                    endpoint(unsafe_url, "moderation/mutations"),
+                    Err(ModerationClientError::UnsafeEndpoint)
+                ));
+            }
+            assert_eq!(
+                endpoint("https://registry.test/base/", "moderation/mutations")
+                    .unwrap()
+                    .as_str(),
+                "https://registry.test/base/moderation/mutations"
+            );
         }
-        assert_eq!(
-            endpoint("https://registry.test/base/", "moderation/mutations")
-                .unwrap()
-                .as_str(),
-            "https://registry.test/base/moderation/mutations"
-        );
-    }
 
-    #[test]
-    fn request_id_is_stable_but_body_and_time_bound() {
-        assert_eq!(
-            report_request_id("so.tilo.notes", "evidence", 10, &[1; 16]),
-            report_request_id("so.tilo.notes", "evidence", 10, &[1; 16])
-        );
-        assert_ne!(
-            report_request_id("so.tilo.notes", "evidence", 10, &[1; 16]),
-            report_request_id("so.tilo.notes", "different", 10, &[1; 16])
-        );
-    }
+        // Case `request_id_is_stable_but_body_and_time_bound`.
+        {
+            assert_eq!(
+                report_request_id("so.tilo.notes", "evidence", 10, &[1; 16]),
+                report_request_id("so.tilo.notes", "evidence", 10, &[1; 16])
+            );
+            assert_ne!(
+                report_request_id("so.tilo.notes", "evidence", 10, &[1; 16]),
+                report_request_id("so.tilo.notes", "different", 10, &[1; 16])
+            );
+        }
 
-    #[test]
-    fn submission_receipt_cannot_forge_case_id_package_or_status() {
-        let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
-        let request = registry_types::sign_moderation_mutation(
-            "request-one".into(),
-            10,
-            20,
-            ModerationActorRole::Reporter,
-            ModerationMutation::FileReport {
+        // Case `submission_receipt_cannot_forge_case_id_package_or_status`.
+        {
+            let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+            let request = registry_types::sign_moderation_mutation(
+                "request-one".into(),
+                10,
+                20,
+                ModerationActorRole::Reporter,
+                ModerationMutation::FileReport {
+                    package_id: "so.tilo.notes".into(),
+                    category: "policy".into(),
+                    summary: "misleading listing".into(),
+                    evidence_digest_hex: "aa".repeat(32),
+                },
+                &key,
+            )
+            .unwrap();
+            let short_hash = blake3::hash(b"so.tilo.notes:request-one")
+                .to_hex()
+                .chars()
+                .take(24)
+                .collect::<String>();
+            let mut case = ModerationCase {
+                case_id: format!("case-{short_hash}"),
                 package_id: "so.tilo.notes".into(),
-                category: "policy".into(),
-                summary: "misleading listing".into(),
-                evidence_digest_hex: "aa".repeat(32),
-            },
-            &key,
-        )
-        .unwrap();
-        let short_hash = blake3::hash(b"so.tilo.notes:request-one")
-            .to_hex()
-            .chars()
-            .take(24)
-            .collect::<String>();
-        let mut case = ModerationCase {
-            case_id: format!("case-{short_hash}"),
-            package_id: "so.tilo.notes".into(),
-            publisher_pubkey_hex: "bb".repeat(32),
-            status: registry_types::ModerationCaseStatus::Open,
-            opened_at_unix: 11,
-            updated_at_unix: 11,
-            latest_sequence: 1,
-        };
-        validate_submission_projection(&request, &case).unwrap();
-        case.status = registry_types::ModerationCaseStatus::ClosedNoAction;
-        assert!(validate_submission_projection(&request, &case).is_err());
+                publisher_pubkey_hex: "bb".repeat(32),
+                status: registry_types::ModerationCaseStatus::Open,
+                opened_at_unix: 11,
+                updated_at_unix: 11,
+                latest_sequence: 1,
+            };
+            validate_submission_projection(&request, &case).unwrap();
+            case.status = registry_types::ModerationCaseStatus::ClosedNoAction;
+            assert!(validate_submission_projection(&request, &case).is_err());
+        }
     }
 }

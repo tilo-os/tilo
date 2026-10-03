@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Mutex, PoisonError};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use iroh_base::{EndpointId, SecretKey};
@@ -711,7 +712,7 @@ pub struct RemoteApp {
     /// connection is added, edited, renamed, favourited, or deleted. It brackets
     /// the undo boundary and applies each action through the executor, so the
     /// on-screen affordances and the Ctrl+K palette share one replayable path.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     pending_resource_operation: Option<PendingResourceOperation>,
     /// Canvas-side confirmation mirroring resource-action policy. This is
     /// private view state and never replicated with the connection profile.
@@ -734,7 +735,7 @@ pub struct RemoteApp {
     rail_snap: Option<bool>,
     /// Wall-clock of the last rail animation advance, so the eased slide is
     /// frame-rate independent regardless of how often the host repaints.
-    last_tick: std::time::Instant,
+    last_tick: ui::time::Instant,
     /// System motion preference. The rail keeps the same spatial model, but
     /// snaps between endpoints when motion is reduced.
     motion_reduced: bool,
@@ -995,14 +996,14 @@ impl RemoteApp {
             list_rows_measured_at: None,
             dirty: true,
             seeded: false,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             pending_resource_operation: None,
             pending_confirmation: None,
             notice: None,
             rail: FlapState::open_when_docked(),
             rail_layout: SplitLayout::Docked,
             rail_snap: None,
-            last_tick: std::time::Instant::now(),
+            last_tick: ui::time::now(),
             motion_reduced: false,
             tooltips: TooltipHost::new(),
         }
@@ -1268,7 +1269,7 @@ impl RemoteApp {
             state,
             crate::actions::REMOTE_ACTION_TYPE,
             &action,
-            tilo_actions::ActionContext::for_action("org.tilo.Remote", "Remote", &action),
+            tilo_actions::ActionContext::for_action("so.tilo.remote", "Remote", &action),
         );
     }
 
@@ -1279,7 +1280,7 @@ impl RemoteApp {
             state,
             crate::actions::REMOTE_ACTION_TYPE,
             &action,
-            tilo_actions::ActionContext::for_action("org.tilo.Remote", "Remote", &action),
+            tilo_actions::ActionContext::for_action("so.tilo.remote", "Remote", &action),
         );
         if self.selected == Some(id) {
             self.selected = self.workspace.filtered(&self.search).first().map(|c| c.id);
@@ -1566,7 +1567,7 @@ impl RemoteApp {
                     Err(e) => return LiveSession::Error(e.to_string()),
                 };
                 let user = if c.user.is_empty() {
-                    std::env::var("USER").unwrap_or_else(|_| "root".into())
+                    tilo_paths::session::user_name().unwrap_or_else(|| "root".into())
                 } else {
                     c.user.clone()
                 };
@@ -1840,7 +1841,7 @@ impl RemoteApp {
             state,
             crate::actions::REMOTE_ACTION_TYPE,
             &action,
-            tilo_actions::ActionContext::for_action("org.tilo.Remote", "Remote", &action),
+            tilo_actions::ActionContext::for_action("so.tilo.remote", "Remote", &action),
         );
         self.selected = Some(id);
         self.screen = Screen::List;
@@ -1980,14 +1981,16 @@ impl RemoteApp {
         let (mut handled, mut focus_target) = (false, None);
         input.handle_event(
             event,
-            ctx.scale_factor,
-            &ctx.modifiers,
-            state,
-            ctx.path,
-            &mut handled,
-            &mut focus_target,
-            ctx.node_id,
-            ctx.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: &ctx.modifiers,
+                state,
+                path: ctx.path,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            },
         );
         if self.inputs.get(f).value() != before {
             self.commit_field(f);
@@ -2004,8 +2007,34 @@ impl RemoteApp {
     /// The last action an on-screen affordance dispatched, for the
     /// affordance == [`ActionSpec`](tilo_actions::ActionSpec) covenant test.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
+    }
+
+    /// Show the saved connections the framework resource already holds.
+    pub(crate) fn adopt_resource_state(&mut self, state: &[crate::model::Connection]) {
+        if self.workspace.connections() == state {
+            return;
+        }
+        self.workspace.connections = state.to_vec();
+        if self
+            .selected
+            .and_then(|id| self.workspace.get(id))
+            .is_none()
+        {
+            self.selected = self.workspace.filtered(&self.search).first().map(|c| c.id);
+        }
+        self.seeded = true;
+        self.dirty = true;
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Remote>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 }
 
@@ -2351,251 +2380,45 @@ impl Collaborative for RemoteApp {
 }
 
 impl Widget for RemoteApp {
-    fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
-        Some(self)
-    }
+    ui::provides!(
+        dyn ui::widget::Collaborative,
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::REMOTE_OPERATION_TYPE]
     }
 
-    /// Publish each saved connection as a Ctrl+K resource (rename / favourite /
-    /// delete) so the shell's one action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
-        if let Some(id) = self.session_for
-            && let Some(connection) = self.workspace.get(id)
-        {
-            let can_send_text = matches!(
-                &self.live,
-                Some(LiveSession::Ssh(session))
-                    if session.status() == SessionStatus::Connected
-            );
-            if let Some(workspace) = resources.first_mut() {
-                let host_key_issue = self.ssh_host_key_issue(id);
-                workspace.children.push(crate::actions::session_resource(
-                    connection,
-                    can_send_text,
-                    host_key_issue.as_ref(),
-                ));
-            }
-        }
-        resources
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its Remote action, so it records one undo boundary bracketing it.
-    /// Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        if kind != crate::actions::operation_kind(&operation) {
-            return Err("remote operation kind does not match its declared contract".into());
-        }
-        match operation {
-            crate::actions::RemoteOperation::ShowConnections => {
-                self.apply(Action::GoList, &mut AutoCommit::new());
-            }
-            crate::actions::RemoteOperation::NewConnectionForm => {
-                self.apply(Action::NewConnection, &mut AutoCommit::new());
-            }
-            crate::actions::RemoteOperation::EditConnection { connection_id } => {
-                if self.workspace.get(connection_id).is_none() {
-                    return Err("saved connection no longer exists".into());
-                }
-                self.apply(
-                    Action::EditConnection(connection_id),
-                    &mut AutoCommit::new(),
-                );
-            }
-            crate::actions::RemoteOperation::Connect { connection_id } => {
-                if self.workspace.get(connection_id).is_none() {
-                    return Err("saved connection no longer exists".to_string());
-                }
-                self.open_session(connection_id);
-            }
-            crate::actions::RemoteOperation::Disconnect { connection_id } => {
-                if self.session_for != Some(connection_id) {
-                    return Err("that remote session is no longer active".to_string());
-                }
-                self.disconnect_session();
-            }
-            crate::actions::RemoteOperation::SendText {
-                connection_id,
-                text,
-            } => {
-                if self.session_for != Some(connection_id) {
-                    return Err("that remote session is no longer active".to_string());
-                }
-                match &self.live {
-                    Some(LiveSession::Ssh(session))
-                        if session.status() == SessionStatus::Connected =>
-                    {
-                        session.send_input(text.into_bytes())?;
-                        self.dirty = true;
-                    }
-                    _ => return Err("text input requires a connected SSH terminal".to_string()),
-                }
-            }
-            crate::actions::RemoteOperation::TrustSshHostKey {
-                connection_id,
-                observed,
-            } => {
-                let connection = self
-                    .workspace
-                    .get(connection_id)
-                    .ok_or_else(|| "saved connection no longer exists".to_string())?;
-                if !matches!(self.ssh_host_key_issue(connection_id), Some(crate::ssh::HostKeyIssue::FirstContact { observed: ref current }) if current == &observed)
-                {
-                    return Err(
-                        "the observed SSH host key is stale; reconnect to inspect the current key"
-                            .into(),
-                    );
-                }
-                let path = crate::ssh::default_known_hosts_path().map_err(|error| {
-                    format!("private SSH host-key storage is unavailable: {error}")
-                })?;
-                crate::ssh::trust_host_key(&path, &connection.host, connection.port, &observed)
-                    .map_err(|error| format!("could not save SSH host-key trust: {error}"))?;
-                self.open_session(connection_id);
-            }
-            crate::actions::RemoteOperation::ForgetSshHostKey { connection_id } => {
-                let connection = self
-                    .workspace
-                    .get(connection_id)
-                    .ok_or_else(|| "saved connection no longer exists".to_string())?;
-                if !matches!(
-                    self.ssh_host_key_issue(connection_id),
-                    Some(crate::ssh::HostKeyIssue::Changed { .. })
-                ) {
-                    return Err(
-                        "only the currently observed changed SSH host key can be forgotten".into(),
-                    );
-                }
-                let path = crate::ssh::default_known_hosts_path().map_err(|error| {
-                    format!("private SSH host-key storage is unavailable: {error}")
-                })?;
-                crate::ssh::forget_host_key(&path, &connection.host, connection.port)
-                    .map_err(|error| format!("could not forget SSH host-key trust: {error}"))?;
-                self.disconnect_session();
-            }
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect {
-            return Ok(None);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        if self.pending_resource_operation.is_some() {
-            return Err("another remote operation is still running".into());
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        match operation {
-            crate::actions::RemoteOperation::ShowConnections
-            | crate::actions::RemoteOperation::NewConnectionForm
-            | crate::actions::RemoteOperation::EditConnection { .. } => {
-                Err("view operations do not start background work".into())
-            }
-            crate::actions::RemoteOperation::Connect { connection_id } => {
-                let Some(connection) = self.workspace.get(connection_id) else {
-                    return Err("saved connection no longer exists".into());
-                };
-                let readiness = connection_readiness(connection);
-                if !readiness.can_connect() {
-                    let reason = if readiness == TransportReadiness::InvalidProfile {
-                        connection
-                            .profile_issue()
-                            .unwrap_or_else(|| readiness.detail(connection.kind))
-                    } else {
-                        readiness.detail(connection.kind)
-                    };
-                    return Err(reason.to_string());
-                }
-                self.open_session(connection_id);
-                match self.live.as_ref().map(LiveSession::status) {
-                    Some(SessionStatus::Connecting) => {
-                        self.pending_resource_operation = Some(PendingResourceOperation::Connect {
-                            invocation,
-                            connection_id,
-                            session_generation: self.session_generation,
-                        });
-                        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-                    }
-                    Some(SessionStatus::Connected) => {
-                        Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )))
-                    }
-                    Some(SessionStatus::Failed(message) | SessionStatus::Unavailable(message)) => {
-                        Err(message)
-                    }
-                    Some(SessionStatus::Closed) | None => {
-                        Err("remote transport did not start".into())
-                    }
-                }
-            }
-            crate::actions::RemoteOperation::SendText {
-                connection_id,
-                text,
-            } => {
-                if self.session_for != Some(connection_id) {
-                    return Err("that remote session is no longer active".into());
-                }
-                let acknowledgement = match &self.live {
-                    Some(LiveSession::Ssh(session))
-                        if session.status() == SessionStatus::Connected =>
-                    {
-                        session.send_input_ack(text.into_bytes())?
-                    }
-                    _ => return Err("text input requires a connected SSH terminal".into()),
-                };
-                self.pending_resource_operation = Some(PendingResourceOperation::SshInput {
-                    invocation,
-                    connection_id,
-                    session_generation: self.session_generation,
-                    acknowledgement,
-                });
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            crate::actions::RemoteOperation::Disconnect { .. }
-            | crate::actions::RemoteOperation::TrustSshHostKey { .. }
-            | crate::actions::RemoteOperation::ForgetSshHostKey { .. } => {
-                if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-                    return Ok(None);
-                }
-                Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                )))
-            }
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     #[allow(
@@ -2754,7 +2577,8 @@ impl Widget for RemoteApp {
         Some(update)
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         // Publish our own connection list into the shared document the first
         // time we run, then adopt any remote additions. The live app's list
         // is empty on a fresh machine, so nothing fabricated is ever written
@@ -2784,9 +2608,24 @@ impl Widget for RemoteApp {
             }
         } else {
             if doc_conns.is_empty() {
-                // We're the origin — publish our list (empty when live).
-                for c in self.workspace.connections().to_vec() {
-                    RemoteDoc::upsert(state, &c);
+                // Publish a demo list through the connection action. A live
+                // window starts empty, so this loop writes nothing there.
+                for connection in self.workspace.connections().to_vec() {
+                    if self.actions.is_hosted() {
+                        let action = crate::actions::upsert_action(&connection);
+                        self.actions.dispatch_with_context(
+                            state,
+                            crate::actions::REMOTE_ACTION_TYPE,
+                            &action,
+                            tilo_actions::ActionContext::for_action(
+                                "so.tilo.remote",
+                                "Remote",
+                                &action,
+                            ),
+                        );
+                    } else {
+                        RemoteDoc::upsert(state, &connection);
+                    }
                 }
             } else {
                 // Adopt a peer's list wholesale.
@@ -2870,7 +2709,7 @@ impl Widget for RemoteApp {
         // settling, keep the repaint gate open so the host pumps the next
         // frame; the dt is real elapsed time so the slide is frame-rate
         // independent.
-        let now = std::time::Instant::now();
+        let now = ui::time::now();
         let dt = (now - self.last_tick).as_secs_f64().min(0.1);
         self.last_tick = now;
         if self.motion_reduced {
@@ -2975,7 +2814,11 @@ impl Widget for RemoteApp {
                 // The rail is only 64px wide: retain enough separation to
                 // signal a temporary overlay without reducing the underlying
                 // connection list to disabled-looking contrast.
-                let scrim = Color::from_rgba8(0, 0, 0, 255).at_alpha((reveal * 0.26) as f32);
+                let scrim = tokens
+                    .colors
+                    .surfaces
+                    .scrim
+                    .at_alpha((reveal * 0.26) as f32);
                 scene.fill(Fill::NonZero, transform, scrim, None, &self.rect);
             }
             self.draw_hamburger(scene, transform, text_renderer, theme);
@@ -3010,31 +2853,24 @@ impl Widget for RemoteApp {
         clippy::too_many_lines,
         reason = "the widget trait requires one exhaustive event router so pointer, keyboard, IME, and accessibility routing share one ordering contract"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, event_ctx: &mut ui::widget::EventCtx<'_>) {
+        let state = &mut *event_ctx.state;
         if !matches!(event, WindowEvent::CursorMoved { .. }) && self.tooltips.dismiss() {
             self.dirty = true;
         }
         let ctx = EventRouteCtx {
-            scale_factor,
-            modifiers: *modifiers,
-            path,
-            node_id,
-            taffy,
+            scale_factor: event_ctx.scale_factor,
+            modifiers: *event_ctx.modifiers,
+            path: event_ctx.path,
+            node_id: event_ctx.node_id,
+            taffy: event_ctx.taffy,
         };
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(
+                    position.x / event_ctx.scale_factor,
+                    position.y / event_ctx.scale_factor,
+                );
                 self.handle_cursor_moved_pos(p, event, state, &ctx);
             }
             WindowEvent::MouseWheel { delta, .. }
@@ -3042,14 +2878,14 @@ impl Widget for RemoteApp {
             {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 48.0,
-                    MouseScrollDelta::PixelDelta(position) => -position.y / scale_factor,
+                    MouseScrollDelta::PixelDelta(position) => -position.y / event_ctx.scale_factor,
                 };
                 let next = (self.list_scroll + dy).clamp(0.0, self.list_scroll_max);
                 if (next - self.list_scroll).abs() > f64::EPSILON {
                     self.list_scroll = next;
                     self.dirty = true;
                 }
-                *handled = true;
+                *event_ctx.handled = true;
             }
             WindowEvent::MouseInput { state, button, .. }
                 if self.pending_confirmation.is_none()
@@ -3072,7 +2908,7 @@ impl Widget for RemoteApp {
                         pressed: *state == ElementState::Pressed,
                     });
                 }
-                *handled = true;
+                *event_ctx.handled = true;
             }
             // A press/release over the live VNC canvas is injected into the
             // remote desktop rather than hit-testing the local chrome.
@@ -3081,14 +2917,14 @@ impl Widget for RemoteApp {
                     && self.vnc_pointer_target(self.pointer).is_some() =>
             {
                 self.handle_vnc_mouse_input(*state, *button);
-                *handled = true;
+                *event_ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_press_event(event, state, handled, &ctx);
+                self.handle_left_press_event(event, state, event_ctx.handled, &ctx);
             }
             // Ending a drag has to reach the field that started it, or the
             // selection keeps extending after the button is up.
@@ -3116,7 +2952,7 @@ impl Widget for RemoteApp {
                         pressed: *key_state == ElementState::Pressed,
                         modifiers: 0,
                     });
-                    *handled = true;
+                    *event_ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -3134,7 +2970,7 @@ impl Widget for RemoteApp {
                     logical_key,
                     text.as_ref().map(winit::keyboard::SmolStr::as_str),
                     state,
-                    handled,
+                    event_ctx.handled,
                     &ctx,
                 );
             }
@@ -3633,10 +3469,11 @@ impl Widget for RemoteApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action as A11yAction;
+        let (state, _) = ui::doc::document(state, path);
         if self.pending_confirmation.is_some() {
             let routed = match (target, action) {
                 ("remote.confirmation.cancel", A11yAction::Activate) => Action::CancelPending,
@@ -3767,6 +3604,273 @@ impl Widget for RemoteApp {
     }
 }
 
+impl ui::resources::PublishesResources for RemoteApp {
+    /// Publish each saved connection as a Ctrl+K resource (rename / favourite /
+    /// delete) so the shell's one action palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        // The framework root publishes saved connections. Keep only the live
+        // session resource when hosted — it is not in Resource::children.
+        if self.actions.is_hosted() {
+            return self.live_session_resources();
+        }
+        self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.actions.is_hosted() && id == "remote.connections" {
+            return None;
+        }
+        find_resource(&self.publish_resources(doc), id).or_else(|| {
+            self.actions.is_hosted().then(|| {
+                self.live_session_resources()
+                    .into_iter()
+                    .find(|resource| resource.id.as_str() == id)
+            })?
+        })
+    }
+}
+
+impl ui::undo::CommittedActions for RemoteApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its Remote action, so it records one undo boundary bracketing it.
+    /// Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl RemoteApp {
+    /// Live SSH/RDP session affordances are not in [`crate::resource::Remote`]'s
+    /// children — publish them beside the framework tree when hosted.
+    pub(crate) fn live_session_resources(&self) -> Vec<tilo_actions::Resource> {
+        let Some(id) = self.session_for else {
+            return Vec::new();
+        };
+        let Some(connection) = self.workspace.get(id) else {
+            return Vec::new();
+        };
+        let can_send_text = matches!(
+            &self.live,
+            Some(LiveSession::Ssh(session))
+                if session.status() == SessionStatus::Connected
+        );
+        let host_key_issue = self.ssh_host_key_issue(id);
+        vec![crate::actions::session_resource(
+            connection,
+            can_send_text,
+            host_key_issue.as_ref(),
+        )]
+    }
+
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        if kind != crate::actions::operation_kind(&operation) {
+            return Err("remote operation kind does not match its declared contract".into());
+        }
+        match operation {
+            crate::actions::RemoteOperation::ShowConnections => {
+                self.apply(Action::GoList, &mut AutoCommit::new());
+            }
+            crate::actions::RemoteOperation::NewConnectionForm => {
+                self.apply(Action::NewConnection, &mut AutoCommit::new());
+            }
+            crate::actions::RemoteOperation::EditConnection { connection_id } => {
+                if self.workspace.get(connection_id).is_none() {
+                    return Err("saved connection no longer exists".into());
+                }
+                self.apply(
+                    Action::EditConnection(connection_id),
+                    &mut AutoCommit::new(),
+                );
+            }
+            crate::actions::RemoteOperation::Connect { connection_id } => {
+                if self.workspace.get(connection_id).is_none() {
+                    return Err("saved connection no longer exists".to_string());
+                }
+                self.open_session(connection_id);
+            }
+            crate::actions::RemoteOperation::Disconnect { connection_id } => {
+                if self.session_for != Some(connection_id) {
+                    return Err("that remote session is no longer active".to_string());
+                }
+                self.disconnect_session();
+            }
+            crate::actions::RemoteOperation::SendText {
+                connection_id,
+                text,
+            } => {
+                if self.session_for != Some(connection_id) {
+                    return Err("that remote session is no longer active".to_string());
+                }
+                match &self.live {
+                    Some(LiveSession::Ssh(session))
+                        if session.status() == SessionStatus::Connected =>
+                    {
+                        session.send_input(text.into_bytes())?;
+                        self.dirty = true;
+                    }
+                    _ => return Err("text input requires a connected SSH terminal".to_string()),
+                }
+            }
+            crate::actions::RemoteOperation::TrustSshHostKey {
+                connection_id,
+                observed,
+            } => {
+                let connection = self
+                    .workspace
+                    .get(connection_id)
+                    .ok_or_else(|| "saved connection no longer exists".to_string())?;
+                if !matches!(self.ssh_host_key_issue(connection_id), Some(crate::ssh::HostKeyIssue::FirstContact { observed: ref current }) if current == &observed)
+                {
+                    return Err(
+                        "the observed SSH host key is stale; reconnect to inspect the current key"
+                            .into(),
+                    );
+                }
+                let path = crate::ssh::default_known_hosts_path().map_err(|error| {
+                    format!("private SSH host-key storage is unavailable: {error}")
+                })?;
+                crate::ssh::trust_host_key(&path, &connection.host, connection.port, &observed)
+                    .map_err(|error| format!("could not save SSH host-key trust: {error}"))?;
+                self.open_session(connection_id);
+            }
+            crate::actions::RemoteOperation::ForgetSshHostKey { connection_id } => {
+                let connection = self
+                    .workspace
+                    .get(connection_id)
+                    .ok_or_else(|| "saved connection no longer exists".to_string())?;
+                if !matches!(
+                    self.ssh_host_key_issue(connection_id),
+                    Some(crate::ssh::HostKeyIssue::Changed { .. })
+                ) {
+                    return Err(
+                        "only the currently observed changed SSH host key can be forgotten".into(),
+                    );
+                }
+                let path = crate::ssh::default_known_hosts_path().map_err(|error| {
+                    format!("private SSH host-key storage is unavailable: {error}")
+                })?;
+                crate::ssh::forget_host_key(&path, &connection.host, connection.port)
+                    .map_err(|error| format!("could not forget SSH host-key trust: {error}"))?;
+                self.disconnect_session();
+            }
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != tilo_actions::OperationKind::Effect {
+            return Ok(None);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        if self.pending_resource_operation.is_some() {
+            return Err("another remote operation is still running".into());
+        }
+        match operation {
+            crate::actions::RemoteOperation::ShowConnections
+            | crate::actions::RemoteOperation::NewConnectionForm
+            | crate::actions::RemoteOperation::EditConnection { .. } => {
+                Err("view operations do not start background work".into())
+            }
+            crate::actions::RemoteOperation::Connect { connection_id } => {
+                let Some(connection) = self.workspace.get(connection_id) else {
+                    return Err("saved connection no longer exists".into());
+                };
+                let readiness = connection_readiness(connection);
+                if !readiness.can_connect() {
+                    let reason = if readiness == TransportReadiness::InvalidProfile {
+                        connection
+                            .profile_issue()
+                            .unwrap_or_else(|| readiness.detail(connection.kind))
+                    } else {
+                        readiness.detail(connection.kind)
+                    };
+                    return Err(reason.to_string());
+                }
+                self.open_session(connection_id);
+                match self.live.as_ref().map(LiveSession::status) {
+                    Some(SessionStatus::Connecting) => {
+                        self.pending_resource_operation = Some(PendingResourceOperation::Connect {
+                            invocation,
+                            connection_id,
+                            session_generation: self.session_generation,
+                        });
+                        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+                    }
+                    Some(SessionStatus::Connected) => {
+                        Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                            tilo_actions::ActionOutput::default(),
+                        )))
+                    }
+                    Some(SessionStatus::Failed(message) | SessionStatus::Unavailable(message)) => {
+                        Err(message)
+                    }
+                    Some(SessionStatus::Closed) | None => {
+                        Err("remote transport did not start".into())
+                    }
+                }
+            }
+            crate::actions::RemoteOperation::SendText {
+                connection_id,
+                text,
+            } => {
+                if self.session_for != Some(connection_id) {
+                    return Err("that remote session is no longer active".into());
+                }
+                let acknowledgement = match &self.live {
+                    Some(LiveSession::Ssh(session))
+                        if session.status() == SessionStatus::Connected =>
+                    {
+                        session.send_input_ack(text.into_bytes())?
+                    }
+                    _ => return Err("text input requires a connected SSH terminal".into()),
+                };
+                self.pending_resource_operation = Some(PendingResourceOperation::SshInput {
+                    invocation,
+                    connection_id,
+                    session_generation: self.session_generation,
+                    acknowledgement,
+                });
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            crate::actions::RemoteOperation::Disconnect { .. }
+            | crate::actions::RemoteOperation::TrustSshHostKey { .. }
+            | crate::actions::RemoteOperation::ForgetSshHostKey { .. } => {
+                if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
+                    return Ok(None);
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                )))
+            }
+        }
+    }
+}
+
 impl RemoteApp {
     /// `WindowEvent::CursorMoved`'s share of `handle_event`: track hover,
     /// stream motion to a live remote desktop, and let a focused field's drag
@@ -3822,7 +3926,7 @@ impl RemoteApp {
                 }),
                 _ => None,
             });
-        if self.tooltips.on_pointer(tip, std::time::Instant::now()) {
+        if self.tooltips.on_pointer(tip, ui::time::now()) {
             self.dirty = true;
         }
         // A focused field tracks the pointer so a drag extends its
@@ -5685,10 +5789,6 @@ impl RemoteApp {
     /// Paint one segmented control over rects the caller already pushed as
     /// hits: the shared face owns selection, hover, separators and measured
     /// label centring, so this canvas keeps only its pointer routing.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The segmented-control painter forwards render context, precomputed hit rectangles, labels, and the optional selected index."
-    )]
     fn draw_segments(
         &self,
         scene: &mut Scene,
@@ -6696,9 +6796,22 @@ fn next_field(cur: Option<Field>, kind: ConnectionKind) -> Field {
     }
 }
 
+fn find_resource(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::headless::Framed;
 
     fn doc() -> AutoCommit {
         AutoCommit::new()
@@ -6732,181 +6845,449 @@ mod tests {
         let (mut h, mut ft) = (false, None);
         app.handle_event(
             ev,
-            1.0,
-            &m,
-            state,
-            &automerge::ROOT,
-            &mut h,
-            &mut ft,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state,
+                path: &automerge::ROOT,
+                handled: &mut h,
+                focus_target: &mut ft,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 
-    /// Drive the real layout passes (`build_layout` → taffy → `apply_layout`)
-    /// at a given allocation, exactly as the host does, so responsive tests
-    /// assert on the production path rather than a tautological helper.
-    fn lay_out(app: &mut RemoteApp, w: f64, h: f64) {
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = app.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(w as f32),
-                    height: taffy::AvailableSpace::Definite(h as f32),
-                },
-            )
-            .unwrap();
-        app.apply_layout(&taffy, node, Point::ZERO);
+    fn viewport(w: f64, h: f64) -> (u32, u32) {
+        ui::headless::viewport((w, h))
+    }
+
+    /// Mount `app` in the shared frame harness and run its first frame —
+    /// the production sync, layout and draw passes — at `w`x`h`.
+    fn framed(app: RemoteApp, w: f64, h: f64) -> Framed<RemoteApp> {
+        Framed::new(ui::State::new(), app, viewport(w, h), Theme::dark())
+    }
+
+    /// Run the next frame at a new allocation.
+    fn lay_out(app: &mut Framed<RemoteApp>, w: f64, h: f64) {
+        Framed::harness_mut(app)
+            .relayout_at(viewport(w, h))
+            .expect("layout settles");
     }
 
     #[test]
-    fn seeded_connections_have_unique_identity_and_valid_transport_fields() {
-        let connections = seed_connections();
-        assert_eq!(connections.len(), 8, "the preview roster stays intentional");
+    fn connection_data_is_valid_and_seeded_only_for_shots() {
+        eprintln!("phase seeded_connections_have_unique_identity_and_valid_transport_fields");
+        {
+            let connections = seed_connections();
+            assert_eq!(connections.len(), 8, "the preview roster stays intentional");
 
-        let mut names = std::collections::HashSet::new();
-        for connection in &connections {
-            assert!(
-                names.insert(connection.name.as_str()),
-                "duplicate seed name"
-            );
-            assert!(!connection.name.is_empty());
-            assert!(!connection.host.is_empty());
-            assert!(!connection.group.is_empty());
-            if connection.kind == ConnectionKind::Tilo {
-                assert_eq!(connection.port, 0);
-                assert_eq!(connection.auth, AuthMethod::DeviceIdentity);
-            } else {
-                assert_ne!(connection.port, 0, "network transports need a port");
+            let mut names = std::collections::HashSet::new();
+            for connection in &connections {
+                assert!(
+                    names.insert(connection.name.as_str()),
+                    "duplicate seed name"
+                );
+                assert!(!connection.name.is_empty());
+                assert!(!connection.host.is_empty());
+                assert!(!connection.group.is_empty());
+                if connection.kind == ConnectionKind::Tilo {
+                    assert_eq!(connection.port, 0);
+                    assert_eq!(connection.auth, AuthMethod::DeviceIdentity);
+                } else {
+                    assert_ne!(connection.port, 0, "network transports need a port");
+                }
             }
+        }
+
+        eprintln!("phase live_new_starts_empty_and_writes_nothing");
+        {
+            // The honesty guard: the live constructor fabricates no machines, and
+            // `sync` on a fresh document must not seed a fake fleet into the CRDT.
+            let mut app = RemoteApp::new();
+            assert!(
+                app.workspace.connections().is_empty(),
+                "live app starts empty"
+            );
+            assert!(
+                app.tilo_devices.is_empty(),
+                "no fabricated discovered devices"
+            );
+            assert!(app.selected.is_none());
+            assert_eq!(app.screen, Screen::List);
+            let mut state = AutoCommit::new();
+            app.sync(&mut state, &automerge::ROOT);
+            assert!(
+                RemoteDoc::list(&state).is_empty(),
+                "an empty live app must not write fabricated machines into the document"
+            );
+        }
+
+        eprintln!("phase demo_build_is_populated_for_shots");
+        {
+            // `--shots` still needs a lived-in frame.
+            let app = RemoteApp::new_demo();
+            assert!(app.workspace.connections().len() >= 6);
+            assert_eq!(app.screen, Screen::List);
+            assert!(app.selected.is_some());
         }
     }
 
-    #[test]
     #[expect(
         clippy::float_cmp,
         reason = "segments must meet on the exact same edge, and the card edges are exact layout outputs"
     )]
-    fn protocol_segments_share_one_gapless_form_card_row() {
-        let mut app = RemoteApp::new();
-        lay_out(&mut app, 1280.0, 800.0);
-        app.apply(Action::NewConnection, &mut doc());
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        Widget::draw(
-            &mut app,
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
-
-        let segments: Vec<Rect> = app
-            .hits
-            .iter()
-            .filter_map(|hit| matches!(hit.action, Action::SetKind(_)).then_some(hit.rect))
-            .collect();
-        assert_eq!(segments.len(), ConnectionKind::available_to_create().len());
-        let width = segments[0].width();
-        for pair in segments.windows(2) {
-            assert_eq!(pair[0].x1, pair[1].x0, "protocol segments meet exactly");
-            assert!(
-                (pair[1].width() - width).abs() < 0.001,
-                "the card row divides evenly"
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[test]
+    fn list_and_form_geometry_scale_scroll_and_stay_gapless() {
+        // The keyboard scroller and the painter read one list stride
+        // (`list_stride`): after a frame in a window too short for the roster,
+        // `scroll_connection_into_view` reproduces the painter's scroll range,
+        // so a key press right after a resize neither overshoots nor stops
+        // short of the last row.
+        eprintln!("phase keyboard_scroller_and_painter_share_the_list_stride");
+        {
+            let mut app = framed(RemoteApp::new_demo(), 1280.0, 400.0);
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            app.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &Theme::dark(),
+                &PresenceCtx::empty(),
             );
-            assert_eq!(pair[0].y0, pair[1].y0);
-            assert_eq!(pair[0].y1, pair[1].y1);
+            let mut rows: Vec<Rect> = app
+                .hits
+                .iter()
+                .filter_map(|h| matches!(h.action, Action::SelectRow(_)).then_some(h.rect))
+                .collect();
+            rows.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+            assert!(rows.len() >= 2);
+            assert!(
+                (rows[1].y0 - rows[0].y1 - S2).abs() < 1e-6,
+                "rows are `S2` apart"
+            );
+            let painted_max = app.list_scroll_max;
+            assert!(
+                painted_max > 0.0,
+                "a 400px window cannot show the demo roster"
+            );
+            let count = app.workspace.filtered(&app.search).len();
+            app.scroll_connection_into_view(count - 1, count);
+            assert!(
+                (app.list_scroll_max - painted_max).abs() < 1e-6,
+                "one stride, one range: {} vs {painted_max}",
+                app.list_scroll_max
+            );
+        }
+
+        // Roster rows keep their 72 / 116px bands at 1× and grow with the
+        // measured name + badge lines at 2×; the action buttons stay inside
+        // their row, rows never overlap, and the keyboard scroller reads the
+        // same row height the draw painted.
+        eprintln!("phase roster_rows_follow_the_text_scale_without_overlapping");
+        {
+            let (one, rows) = drawn_rows(1920.0, 1.0);
+            assert!(rows.len() > 3);
+            assert!(!one.list_rows_compact);
+            assert!(rows.iter().all(|r| (r.height() - ROW_H).abs() < 1e-6));
+            // The bands measure to their 1× floors (the compact action line sits
+            // a quarter pixel above the old hand offset; the bands do not move).
+            let (m, floors) = (&one.list_rows, RowMetrics::default());
+            for (got, want) in [
+                (m.row_h, floors.row_h),
+                (m.compact_row_h, floors.compact_row_h),
+                (m.line2_y, floors.line2_y),
+                (m.btn_h, floors.btn_h),
+                (m.connect_w, floors.connect_w),
+                (m.edit_w, floors.edit_w),
+            ] {
+                assert!(
+                    (got - want).abs() < 1e-6,
+                    "1× band {got} measures to its floor {want}"
+                );
+            }
+
+            // 1920px at 2× is still the wide row form (breakpoint scales to 1240).
+            let (two, rows) = drawn_rows(1920.0, 2.0);
+            assert!(!two.list_rows_compact);
+            let m = two.list_rows;
+            assert!(m.row_h > ROW_H && m.line2_y > 38.0 && m.btn_h > 32.0);
+            assert!(rows.iter().all(|r| (r.height() - m.row_h).abs() < 1e-6));
+            for pair in rows.windows(2) {
+                assert!(pair[1].y0 >= pair[0].y1, "2× rows never overlap");
+            }
+            let row = rows[0];
+            let edit = two
+                .hits
+                .iter()
+                .find(|h| {
+                    matches!(h.action, Action::EditConnection(_)) && row.contains(h.rect.center())
+                })
+                .map(|h| h.rect)
+                .expect("the first row paints its Edit button inside itself");
+            assert!(edit.y0 >= row.y0 && edit.y1 <= row.y1);
+            assert!((edit.width() - m.edit_w).abs() < 1e-6);
+
+            // A 736px content column at 2× carries what 368px does at 1×: rows
+            // take the compact two-line form, with the action line under the badge.
+            let (compact, rows) = drawn_rows(800.0, 2.0);
+            assert!(compact.list_rows_compact);
+            let m = compact.list_rows;
+            assert!(
+                rows.iter()
+                    .all(|r| (r.height() - m.compact_row_h).abs() < 1e-6)
+            );
+            let row = rows[0];
+            let edit = compact
+                .hits
+                .iter()
+                .find(|h| {
+                    matches!(h.action, Action::EditConnection(_)) && row.contains(h.rect.center())
+                })
+                .map(|h| h.rect)
+                .unwrap();
+            assert!(
+                edit.y0 >= row.y0 + m.line2_y + m.badge_h,
+                "actions sit under the badge line"
+            );
+            assert!(edit.y1 <= row.y1);
+        }
+
+        eprintln!("phase long_narrow_lists_scroll_and_keep_selection_visible");
+        {
+            let mut app = framed(RemoteApp::new_demo(), 640.0, 500.0);
+            let count = app.workspace.connections().len();
+            app.scroll_connection_into_view(count - 1, count);
+            assert!(app.list_scroll > 0.0);
+            assert!(app.list_scroll <= app.list_scroll_max);
+        }
+
+        eprintln!("phase protocol_segments_share_one_gapless_form_card_row");
+        {
+            let mut app = framed(RemoteApp::new(), 1280.0, 800.0);
+            app.apply(Action::NewConnection, &mut doc());
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            Widget::draw(
+                &mut *app,
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &Theme::dark(),
+                &PresenceCtx::empty(),
+            );
+
+            let segments: Vec<Rect> = app
+                .hits
+                .iter()
+                .filter_map(|hit| matches!(hit.action, Action::SetKind(_)).then_some(hit.rect))
+                .collect();
+            assert_eq!(segments.len(), ConnectionKind::available_to_create().len());
+            let width = segments[0].width();
+            for pair in segments.windows(2) {
+                assert_eq!(pair[0].x1, pair[1].x0, "protocol segments meet exactly");
+                assert!(
+                    (pair[1].width() - width).abs() < 0.001,
+                    "the card row divides evenly"
+                );
+                assert_eq!(pair[0].y0, pair[1].y0);
+                assert_eq!(pair[0].y1, pair[1].y1);
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[test]
+    fn accessibility_routes_every_control_through_validation() {
+        eprintln!("phase accessibility_exposes_and_routes_every_connection_control");
+        {
+            let mut app = framed(RemoteApp::new_demo(), 640.0, 900.0);
+            let id = app
+                .workspace
+                .connections()
+                .iter()
+                .find(|connection| connection_readiness(connection).can_connect())
+                .expect("demo has a production-available Tilo connection")
+                .id;
+            let tree = app.accessibility().expect("Remote window semantics");
+            for target in [
+                "remote.connection.new".to_string(),
+                "remote.field:search".to_string(),
+                format!("remote.connection:{id}:select"),
+                format!("remote.connection:{id}:favorite"),
+                format!("remote.connection:{id}:edit"),
+                format!("remote.connection:{id}:connect"),
+            ] {
+                assert!(
+                    find_semantic_target(&tree, &target).is_some(),
+                    "missing semantic control {target}"
+                );
+            }
+
+            let before = app.workspace.get(id).expect("connection").favorite;
+            assert!(app.perform_semantic_action(
+                &format!("remote.connection:{id}:favorite"),
+                &ui::a11y::Action::ToggleCheck,
+                &mut doc(),
+                &automerge::ROOT,
+            ));
+            assert_eq!(app.workspace.get(id).expect("connection").favorite, !before);
+        }
+
+        eprintln!("phase accessibility_can_edit_form_fields_without_bypassing_validation");
+        {
+            let mut app = RemoteApp::new();
+            app.apply(Action::NewConnection, &mut doc());
+            assert!(app.perform_semantic_action(
+                "remote.field:host",
+                &ui::a11y::Action::SetValue("build.internal".into()),
+                &mut doc(),
+                &automerge::ROOT,
+            ));
+            assert!(app.perform_semantic_action(
+                "remote.field:port",
+                &ui::a11y::Action::SetValue("22ssh".into()),
+                &mut doc(),
+                &automerge::ROOT,
+            ));
+            assert_eq!(app.draft.host, "build.internal");
+            assert_eq!(app.draft.port, "22");
+            assert_eq!(app.focus, Some(Field::Port));
+            let tree = app.accessibility().expect("form semantics");
+            for target in [
+                "remote.kind:SSH",
+                "remote.field:name",
+                "remote.field:host",
+                "remote.field:port",
+                "remote.auth:password",
+                "remote.form.cancel",
+                "remote.form.save",
+            ] {
+                assert!(
+                    find_semantic_target(&tree, target).is_some(),
+                    "missing form control {target}"
+                );
+            }
+        }
+
+        eprintln!("phase accessibility_save_attempt_reveals_validation_and_focuses_first_problem");
+        {
+            let mut app = RemoteApp::new();
+            app.apply(Action::NewConnection, &mut doc());
+            assert!(app.perform_semantic_action(
+                "remote.form.save",
+                &ui::a11y::Action::Activate,
+                &mut doc(),
+                &automerge::ROOT,
+            ));
+            assert!(app.form_validation.submitted);
+            assert_eq!(app.focus, Some(Field::Name));
+            let tree = app.accessibility().expect("validated form semantics");
+            assert!(
+                find_live_region(&tree).is_some(),
+                "validation feedback is announced after the explicit Save attempt"
+            );
+        }
+
+        eprintln!("phase confirmation_is_a_modal_accessibility_surface");
+        {
+            let mut app = framed(RemoteApp::new_demo(), 960.0, 700.0);
+            let id = app.workspace.connections()[0].id;
+            app.apply(Action::RequestDelete(id), &mut doc());
+            let tree = app.accessibility().expect("confirmation semantics");
+            let confirm =
+                find_semantic_target(&tree, "remote.confirmation.confirm").expect("confirm action");
+            assert_eq!(confirm.name.as_deref(), Some("Delete"));
+            assert!(
+                tree.children
+                    .iter()
+                    .any(|node| node.role == Role::Dialog && node.state.modal)
+            );
+        }
+
+        eprintln!("phase failed_status_surface_exposes_retry_and_exit_actions");
+        {
+            let mut app = framed(RemoteApp::new_demo(), 1280.0, 800.0);
+            app.dev_preview_session(
+                ConnectionKind::Ssh,
+                SessionStatus::Failed("Connection refused".into()),
+            );
+            let id = app.session_for.expect("preview connection");
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            Widget::draw(
+                &mut *app,
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &Theme::dark(),
+                &PresenceCtx::empty(),
+            );
+
+            assert!(
+                app.hits
+                    .iter()
+                    .any(|hit| hit.action == Action::RequestConnect(id)),
+                "a genuine failure offers retry"
+            );
+            assert!(
+                app.hits.iter().any(|hit| hit.action == Action::Disconnect),
+                "every status card offers a route back to the list"
+            );
+            assert!(
+                !app.hits
+                    .iter()
+                    .any(|hit| matches!(hit.action, Action::EditConnection(_))),
+                "ordinary transport failures do not masquerade as profile errors"
+            );
         }
     }
 
     #[test]
-    fn failed_status_surface_exposes_retry_and_exit_actions() {
-        let mut app = RemoteApp::new_demo();
-        lay_out(&mut app, 1280.0, 800.0);
-        app.dev_preview_session(
-            ConnectionKind::Ssh,
-            SessionStatus::Failed("Connection refused".into()),
-        );
-        let id = app.session_for.expect("preview connection");
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        Widget::draw(
-            &mut app,
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
+    fn rail_mode_follows_the_inclusive_breakpoint() {
+        eprintln!("phase wide_window_docks_rail_open");
+        {
+            let app = framed(RemoteApp::new(), 1280.0, 800.0);
+            assert_eq!(app.rail_layout, SplitLayout::Docked);
+            assert!(
+                app.rail_open(),
+                "a wide window keeps the rail docked + open"
+            );
+        }
 
-        assert!(
-            app.hits
-                .iter()
-                .any(|hit| hit.action == Action::RequestConnect(id)),
-            "a genuine failure offers retry"
-        );
-        assert!(
-            app.hits.iter().any(|hit| hit.action == Action::Disconnect),
-            "every status card offers a route back to the list"
-        );
-        assert!(
-            !app.hits
-                .iter()
-                .any(|hit| matches!(hit.action, Action::EditConnection(_))),
-            "ordinary transport failures do not masquerade as profile errors"
-        );
-    }
+        eprintln!("phase narrow_window_collapses_rail_to_closed_overlay");
+        {
+            let app = framed(RemoteApp::new(), 640.0, 900.0);
+            assert_eq!(app.rail_layout, SplitLayout::Overlay);
+            assert!(
+                !app.rail_open(),
+                "a narrow window collapses the rail into a closed overlay flap"
+            );
+        }
 
-    #[test]
-    fn wide_window_docks_rail_open() {
-        let mut app = RemoteApp::new();
-        lay_out(&mut app, 1280.0, 800.0);
-        assert_eq!(app.rail_layout, SplitLayout::Docked);
-        assert!(
-            app.rail_open(),
-            "a wide window keeps the rail docked + open"
-        );
-    }
-
-    #[test]
-    fn narrow_window_collapses_rail_to_closed_overlay() {
-        let mut app = RemoteApp::new();
-        lay_out(&mut app, 640.0, 900.0);
-        assert_eq!(app.rail_layout, SplitLayout::Overlay);
-        assert!(
-            !app.rail_open(),
-            "a narrow window collapses the rail into a closed overlay flap"
-        );
-    }
-
-    #[test]
-    fn breakpoint_boundary_is_inclusive_docked() {
-        let mut app = RemoteApp::new();
-        lay_out(&mut app, RAIL_BREAKPOINT, 800.0);
-        assert_eq!(
-            app.rail_layout,
-            SplitLayout::Docked,
-            "at the breakpoint we dock"
-        );
-        let mut app2 = RemoteApp::new();
-        lay_out(&mut app2, RAIL_BREAKPOINT - 1.0, 800.0);
-        assert_eq!(
-            app2.rail_layout,
-            SplitLayout::Overlay,
-            "just below we overlay"
-        );
+        eprintln!("phase breakpoint_boundary_is_inclusive_docked");
+        {
+            let app = framed(RemoteApp::new(), RAIL_BREAKPOINT, 800.0);
+            assert_eq!(
+                app.rail_layout,
+                SplitLayout::Docked,
+                "at the breakpoint we dock"
+            );
+            let app2 = framed(RemoteApp::new(), RAIL_BREAKPOINT - 1.0, 800.0);
+            assert_eq!(
+                app2.rail_layout,
+                SplitLayout::Overlay,
+                "just below we overlay"
+            );
+        }
     }
 
     /// Draw the demo roster once at `width` × 800 and `scale`, exactly as the
     /// host does, and return the row hit rects top to bottom.
-    fn drawn_rows(width: f64, scale: f32) -> (RemoteApp, Vec<Rect>) {
-        let mut app = RemoteApp::new_demo();
-        lay_out(&mut app, width, 800.0);
+    fn drawn_rows(width: f64, scale: f32) -> (Framed<RemoteApp>, Vec<Rect>) {
+        let mut app = framed(RemoteApp::new_demo(), width, 800.0);
         let mut tr = TextRenderer::new();
         tr.set_text_scale(scale);
         let mut scene = Scene::new();
@@ -6926,215 +7307,106 @@ mod tests {
         (app, rows)
     }
 
-    /// The keyboard scroller and the painter read one list stride
-    /// (`list_stride`): after a frame in a window too short for the roster,
-    /// `scroll_connection_into_view` reproduces the painter's scroll range,
-    /// so a key press right after a resize neither overshoots nor stops
-    /// short of the last row.
     #[test]
-    fn keyboard_scroller_and_painter_share_the_list_stride() {
-        let mut app = RemoteApp::new_demo();
-        lay_out(&mut app, 1280.0, 400.0);
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        app.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
-        let mut rows: Vec<Rect> = app
-            .hits
-            .iter()
-            .filter_map(|h| matches!(h.action, Action::SelectRow(_)).then_some(h.rect))
-            .collect();
-        rows.sort_by(|a, b| a.y0.total_cmp(&b.y0));
-        assert!(rows.len() >= 2);
-        assert!(
-            (rows[1].y0 - rows[0].y1 - S2).abs() < 1e-6,
-            "rows are `S2` apart"
-        );
-        let painted_max = app.list_scroll_max;
-        assert!(
-            painted_max > 0.0,
-            "a 400px window cannot show the demo roster"
-        );
-        let count = app.workspace.filtered(&app.search).len();
-        app.scroll_connection_into_view(count - 1, count);
-        assert!(
-            (app.list_scroll_max - painted_max).abs() < 1e-6,
-            "one stride, one range: {} vs {painted_max}",
-            app.list_scroll_max
-        );
-    }
+    fn rail_toggle_dismiss_and_motion_settle_to_mode_default() {
+        eprintln!("phase toggle_opens_overlay_rail_then_esc_dismisses");
+        {
+            let mut app = framed(RemoteApp::new(), 640.0, 900.0);
+            assert!(!app.rail_open());
+            // Hamburger summons the overlay rail.
+            app.apply(Action::ToggleRail, &mut doc());
+            assert!(app.rail_open(), "toggle opens the overlay flap");
+            // Esc dismisses it (production key path).
+            let mut handled = false;
+            app.handle_key(
+                &Key::Named(NamedKey::Escape),
+                None,
+                ModifiersState::empty(),
+                &mut doc(),
+                &mut handled,
+            );
+            assert!(handled, "Esc on an open overlay flap is consumed");
+            assert!(!app.rail_open(), "Esc closes the overlay flap");
+        }
 
-    /// Roster rows keep their 72 / 116px bands at 1× and grow with the
-    /// measured name + badge lines at 2×; the action buttons stay inside
-    /// their row, rows never overlap, and the keyboard scroller reads the
-    /// same row height the draw painted.
-    #[test]
-    fn roster_rows_follow_the_text_scale_without_overlapping() {
-        let (one, rows) = drawn_rows(1920.0, 1.0);
-        assert!(rows.len() > 3);
-        assert!(!one.list_rows_compact);
-        assert!(rows.iter().all(|r| (r.height() - ROW_H).abs() < 1e-6));
-        // The bands measure to their 1× floors (the compact action line sits
-        // a quarter pixel above the old hand offset; the bands do not move).
-        let (m, floors) = (&one.list_rows, RowMetrics::default());
-        for (got, want) in [
-            (m.row_h, floors.row_h),
-            (m.compact_row_h, floors.compact_row_h),
-            (m.line2_y, floors.line2_y),
-            (m.btn_h, floors.btn_h),
-            (m.connect_w, floors.connect_w),
-            (m.edit_w, floors.edit_w),
-        ] {
+        eprintln!("phase crossing_breakpoint_returns_rail_to_mode_default");
+        {
+            // Start docked, user hides the rail.
+            let mut app = framed(RemoteApp::new(), 1280.0, 800.0);
+            app.apply(Action::ToggleRail, &mut doc());
+            assert!(!app.rail_open(), "user hid the docked rail");
+            // Narrow past the breakpoint, then widen again: the stale preference
+            // is dropped and the rail returns to the docked default (open).
+            lay_out(&mut app, 640.0, 900.0);
+            lay_out(&mut app, 1280.0, 800.0);
             assert!(
-                (got - want).abs() < 1e-6,
-                "1× band {got} measures to its floor {want}"
+                app.rail_open(),
+                "crossing the breakpoint clears the stale preference"
             );
         }
 
-        // 1920px at 2× is still the wide row form (breakpoint scales to 1240).
-        let (two, rows) = drawn_rows(1920.0, 2.0);
-        assert!(!two.list_rows_compact);
-        let m = two.list_rows;
-        assert!(m.row_h > ROW_H && m.line2_y > 38.0 && m.btn_h > 32.0);
-        assert!(rows.iter().all(|r| (r.height() - m.row_h).abs() < 1e-6));
-        for pair in rows.windows(2) {
-            assert!(pair[1].y0 >= pair[0].y1, "2× rows never overlap");
+        eprintln!("phase reduced_motion_settles_the_navigation_flap");
+        {
+            let mut app = framed(RemoteApp::new(), 640.0, 900.0);
+            app.apply(Action::ToggleRail, &mut doc());
+            assert!(app.needs_animation_frame());
+            app.set_motion_reduced(true);
+            assert!(!app.needs_animation_frame());
+            assert!((app.rail.reveal() - 1.0).abs() <= f64::EPSILON);
         }
-        let row = rows[0];
-        let edit = two
-            .hits
-            .iter()
-            .find(|h| {
-                matches!(h.action, Action::EditConnection(_)) && row.contains(h.rect.center())
-            })
-            .map(|h| h.rect)
-            .expect("the first row paints its Edit button inside itself");
-        assert!(edit.y0 >= row.y0 && edit.y1 <= row.y1);
-        assert!((edit.width() - m.edit_w).abs() < 1e-6);
-
-        // A 736px content column at 2× carries what 368px does at 1×: rows
-        // take the compact two-line form, with the action line under the badge.
-        let (compact, rows) = drawn_rows(800.0, 2.0);
-        assert!(compact.list_rows_compact);
-        let m = compact.list_rows;
-        assert!(
-            rows.iter()
-                .all(|r| (r.height() - m.compact_row_h).abs() < 1e-6)
-        );
-        let row = rows[0];
-        let edit = compact
-            .hits
-            .iter()
-            .find(|h| {
-                matches!(h.action, Action::EditConnection(_)) && row.contains(h.rect.center())
-            })
-            .map(|h| h.rect)
-            .unwrap();
-        assert!(
-            edit.y0 >= row.y0 + m.line2_y + m.badge_h,
-            "actions sit under the badge line"
-        );
-        assert!(edit.y1 <= row.y1);
     }
 
     #[test]
-    fn toggle_opens_overlay_rail_then_esc_dismisses() {
-        let mut app = RemoteApp::new();
-        lay_out(&mut app, 640.0, 900.0);
-        assert!(!app.rail_open());
-        // Hamburger summons the overlay rail.
-        app.apply(Action::ToggleRail, &mut doc());
-        assert!(app.rail_open(), "toggle opens the overlay flap");
-        // Esc dismisses it (production key path).
-        let mut handled = false;
-        app.handle_key(
-            &Key::Named(NamedKey::Escape),
-            None,
-            ModifiersState::empty(),
-            &mut doc(),
-            &mut handled,
-        );
-        assert!(handled, "Esc on an open overlay flap is consumed");
-        assert!(!app.rail_open(), "Esc closes the overlay flap");
-    }
+    fn collaborator_changes_replace_the_local_projection() {
+        eprintln!("phase collaborator_edits_and_deletes_replace_the_local_projection");
+        {
+            let mut app = RemoteApp::new_demo();
+            let id = app.workspace.connections()[0].id;
+            let mut state = AutoCommit::new();
+            app.sync(&mut state, &automerge::ROOT);
 
-    #[test]
-    fn crossing_breakpoint_returns_rail_to_mode_default() {
-        let mut app = RemoteApp::new();
-        // Start docked, user hides the rail.
-        lay_out(&mut app, 1280.0, 800.0);
-        app.apply(Action::ToggleRail, &mut doc());
-        assert!(!app.rail_open(), "user hid the docked rail");
-        // Narrow past the breakpoint, then widen again: the stale preference
-        // is dropped and the rail returns to the docked default (open).
-        lay_out(&mut app, 640.0, 900.0);
-        lay_out(&mut app, 1280.0, 800.0);
-        assert!(
-            app.rail_open(),
-            "crossing the breakpoint clears the stale preference"
-        );
-    }
+            RemoteDoc::rename(&mut state, id, "Renamed by collaborator");
+            app.sync(&mut state, &automerge::ROOT);
+            assert_eq!(
+                app.workspace
+                    .get(id)
+                    .expect("remote edit remains present")
+                    .name,
+                "Renamed by collaborator"
+            );
 
-    #[test]
-    fn live_new_starts_empty_and_writes_nothing() {
-        // The honesty guard: the live constructor fabricates no machines, and
-        // `sync` on a fresh document must not seed a fake fleet into the CRDT.
-        let mut app = RemoteApp::new();
-        assert!(
-            app.workspace.connections().is_empty(),
-            "live app starts empty"
-        );
-        assert!(
-            app.tilo_devices.is_empty(),
-            "no fabricated discovered devices"
-        );
-        assert!(app.selected.is_none());
-        assert_eq!(app.screen, Screen::List);
-        let mut state = AutoCommit::new();
-        app.sync(&mut state, &automerge::ROOT);
-        assert!(
-            RemoteDoc::list(&state).is_empty(),
-            "an empty live app must not write fabricated machines into the document"
-        );
-    }
+            RemoteDoc::remove(&mut state, id);
+            app.sync(&mut state, &automerge::ROOT);
+            assert!(
+                app.workspace.get(id).is_none(),
+                "a collaborator's deletion cannot leave a local ghost row"
+            );
+        }
 
-    #[test]
-    fn collaborator_edits_and_deletes_replace_the_local_projection() {
-        let mut app = RemoteApp::new_demo();
-        let id = app.workspace.connections()[0].id;
-        let mut state = AutoCommit::new();
-        app.sync(&mut state, &automerge::ROOT);
+        eprintln!("phase sync_seeds_then_pulls_remote");
+        {
+            let mut state = AutoCommit::new();
+            // A peer pre-populates the doc with one extra connection.
+            let extra = Connection {
+                id: Uuid::new_v4(),
+                name: "Peer Box".into(),
+                host: "peer".into(),
+                port: 22,
+                user: "p".into(),
+                kind: ConnectionKind::Ssh,
+                auth: AuthMethod::Password,
+                last_used: "now".into(),
+                presence: Presence::Online,
+                group: String::new(),
+                favorite: false,
+            };
+            RemoteDoc::upsert(&mut state, &extra);
 
-        RemoteDoc::rename(&mut state, id, "Renamed by collaborator");
-        app.sync(&mut state, &automerge::ROOT);
-        assert_eq!(
-            app.workspace
-                .get(id)
-                .expect("remote edit remains present")
-                .name,
-            "Renamed by collaborator"
-        );
-
-        RemoteDoc::remove(&mut state, id);
-        app.sync(&mut state, &automerge::ROOT);
-        assert!(
-            app.workspace.get(id).is_none(),
-            "a collaborator's deletion cannot leave a local ghost row"
-        );
-    }
-
-    #[test]
-    fn demo_build_is_populated_for_shots() {
-        // `--shots` still needs a lived-in frame.
-        let app = RemoteApp::new_demo();
-        assert!(app.workspace.connections().len() >= 6);
-        assert_eq!(app.screen, Screen::List);
-        assert!(app.selected.is_some());
+            let mut app = RemoteApp::new();
+            app.sync(&mut state, &automerge::ROOT);
+            // Adopted the peer's list (non-empty doc path).
+            assert!(app.workspace.get(extra.id).is_some());
+        }
     }
 
     fn find_semantic_target<'a>(node: &'a AccessNode, target: &str) -> Option<&'a AccessNode> {
@@ -7154,839 +7426,720 @@ mod tests {
     }
 
     #[test]
-    fn accessibility_exposes_and_routes_every_connection_control() {
-        let mut app = RemoteApp::new_demo();
-        lay_out(&mut app, 640.0, 900.0);
-        let id = app
-            .workspace
-            .connections()
-            .iter()
-            .find(|connection| connection_readiness(connection).can_connect())
-            .expect("demo has a production-available Tilo connection")
-            .id;
-        let tree = app.accessibility().expect("Remote window semantics");
-        for target in [
-            "remote.connection.new".to_string(),
-            "remote.field:search".to_string(),
-            format!("remote.connection:{id}:select"),
-            format!("remote.connection:{id}:favorite"),
-            format!("remote.connection:{id}:edit"),
-            format!("remote.connection:{id}:connect"),
-        ] {
+    fn screen_routing_opens_the_exact_requested_ui() {
+        eprintln!("phase dev_set_screen_jumps_to_form");
+        {
+            let mut app = RemoteApp::new();
+            app.dev_set_screen("form");
+            assert_eq!(app.screen, Screen::Form { editing: None });
+        }
+
+        eprintln!("phase dev_set_screen_tilo_form_selects_tilo_kind");
+        {
+            let mut app = RemoteApp::new();
+            app.dev_set_screen("form-tilo");
+            assert!(matches!(app.screen, Screen::Form { .. }));
+            assert_eq!(app.draft.kind, ConnectionKind::Tilo);
+        }
+
+        eprintln!("phase dev_set_screen_opens_kind_specific_session");
+        {
+            for (which, kind) in [
+                ("session-ssh", ConnectionKind::Ssh),
+                ("session-vnc", ConnectionKind::Vnc),
+                ("session-rdp", ConnectionKind::Rdp),
+                ("session-tilo", ConnectionKind::Tilo),
+            ] {
+                let mut app = RemoteApp::new_demo();
+                app.dev_set_screen(which);
+                match app.screen {
+                    Screen::Session { id } => {
+                        assert_eq!(app.workspace.get(id).unwrap().kind, kind);
+                    }
+                    other => panic!("{which} did not open a session: {other:?}"),
+                }
+            }
+
+            let mut app = RemoteApp::new_demo();
+            app.dev_set_screen("session-tilo");
+            assert!(matches!(
+                app.live,
+                Some(LiveSession::Preview(SessionStatus::Connecting))
+            ));
+        }
+
+        eprintln!("phase view_resource_operations_open_the_exact_requested_ui");
+        {
+            let mut app = RemoteApp::new_demo();
+            let id = app.workspace.connections()[0].id;
+            let edit = tilo_actions::EncodedAction::encode_operation(
+                crate::actions::REMOTE_OPERATION_TYPE,
+                &crate::actions::RemoteOperation::EditConnection { connection_id: id },
+            )
+            .expect("serializable view operation");
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        &edit.type_id,
+                        &edit.payload
+                    ),
+                    &mut doc(),
+                    &automerge::ROOT
+                )
+                .expect("view routed"),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
+            assert_eq!(app.screen, Screen::Form { editing: Some(id) });
+
             assert!(
-                find_semantic_target(&tree, &target).is_some(),
-                "missing semantic control {target}"
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        &edit.type_id,
+                        &edit.payload
+                    ),
+                    &mut doc(),
+                    &automerge::ROOT
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[serial_test::serial(clipboard)]
+    #[test]
+    fn text_fields_take_pastes_and_search_filters_rows() {
+        // A hostname or a key is exactly the sort of string nobody types by
+        // hand, so the connection form has to take a paste — and, having taken
+        // one, has to let you select what arrived and replace it.
+        eprintln!("phase the_connection_form_takes_a_paste_and_a_selection");
+        {
+            let ctrl = ModifiersState::CONTROL;
+            let mut app = framed(RemoteApp::new(), 1280.0, 800.0);
+            let mut state = doc();
+            app.apply(Action::NewConnection, &mut state);
+            app.apply(Action::FocusField(Field::Host), &mut state);
+
+            ui::text_selection::clipboard_copy("build-07.fleet.internal");
+            feed(&mut app, &mut state, &char_ev("v"), ctrl);
+            assert_eq!(
+                app.draft.host, "build-07.fleet.internal",
+                "Ctrl+V puts the clipboard into the focused field",
+            );
+
+            // Select-all then type replaces what is there — the other half of a
+            // real field, and impossible for a push/pop buffer.
+            feed(&mut app, &mut state, &char_ev("a"), ctrl);
+            feed(&mut app, &mut state, &char_ev("x"), ModifiersState::empty());
+            assert_eq!(app.draft.host, "x", "typing over a selection replaces it");
+        }
+
+        // The port field stays numeric, but numeric is not a reason to lose the
+        // clipboard: a pasted port arrives, and pasted junk is still filtered.
+        eprintln!("phase the_port_field_takes_a_paste_and_stays_numeric");
+        {
+            let ctrl = ModifiersState::CONTROL;
+            let mut app = framed(RemoteApp::new(), 1280.0, 800.0);
+            let mut state = doc();
+            app.apply(Action::NewConnection, &mut state);
+            app.apply(Action::FocusField(Field::Port), &mut state);
+            feed(&mut app, &mut state, &char_ev("a"), ctrl); // replace the default
+            ui::text_selection::clipboard_copy("2222");
+            feed(&mut app, &mut state, &char_ev("v"), ctrl);
+            assert_eq!(app.draft.port, "2222", "a pasted port arrives");
+
+            feed(&mut app, &mut state, &char_ev("a"), ctrl);
+            ui::text_selection::clipboard_copy("22ssh");
+            feed(&mut app, &mut state, &char_ev("v"), ctrl);
+            assert_eq!(app.draft.port, "22", "non-digits are still refused");
+        }
+
+        // The search box is the sixth of these fields and gets the same deal.
+        eprintln!("phase the_search_box_takes_a_paste");
+        {
+            let ctrl = ModifiersState::CONTROL;
+            let mut app = framed(RemoteApp::new_demo(), 1280.0, 800.0);
+            let mut state = doc();
+            app.apply(Action::FocusField(Field::Search), &mut state);
+            ui::text_selection::clipboard_copy("build");
+            feed(&mut app, &mut state, &char_ev("v"), ctrl);
+            assert_eq!(app.search, "build");
+        }
+
+        eprintln!("phase search_filters_rows");
+        {
+            let mut app = RemoteApp::new();
+            app.search = "build".into();
+            let rows = app.workspace.filtered(&app.search);
+            assert!(rows.iter().all(|c| {
+                c.name.to_lowercase().contains("build") || c.host.to_lowercase().contains("build")
+            }));
+        }
+    }
+
+    #[test]
+    fn new_form_validates_quietly_until_touched_or_saved() {
+        eprintln!("phase new_connection_opens_blank_form_focused");
+        {
+            let mut app = RemoteApp::new();
+            app.apply(Action::NewConnection, &mut doc());
+            assert_eq!(app.screen, Screen::Form { editing: None });
+            assert_eq!(app.focus, Some(Field::Name));
+            assert!(app.draft.name.is_empty());
+        }
+
+        eprintln!("phase new_form_stays_quiet_until_a_field_is_touched_or_save_is_attempted");
+        {
+            let mut app = RemoteApp::new();
+            app.apply(Action::NewConnection, &mut doc());
+
+            assert!(app.visible_form_problems().is_empty());
+            let tree = app.accessibility().expect("form semantics");
+            assert!(
+                find_live_region(&tree).is_none(),
+                "a fresh blank draft is guidance, not an accessibility error announcement"
+            );
+
+            app.apply(Action::FocusField(Field::Host), &mut doc());
+            assert_eq!(
+                app.visible_form_problems(),
+                vec!["Name is required"],
+                "blurring a blank field reveals only feedback for that touched field"
             );
         }
 
-        let before = app.workspace.get(id).expect("connection").favorite;
-        assert!(app.perform_semantic_action(
-            &format!("remote.connection:{id}:favorite"),
-            &ui::a11y::Action::ToggleCheck,
-            &mut doc(),
-            &automerge::ROOT,
-        ));
-        assert_eq!(app.workspace.get(id).expect("connection").favorite, !before);
-    }
-
-    #[test]
-    fn accessibility_can_edit_form_fields_without_bypassing_validation() {
-        let mut app = RemoteApp::new();
-        app.apply(Action::NewConnection, &mut doc());
-        assert!(app.perform_semantic_action(
-            "remote.field:host",
-            &ui::a11y::Action::SetValue("build.internal".into()),
-            &mut doc(),
-            &automerge::ROOT,
-        ));
-        assert!(app.perform_semantic_action(
-            "remote.field:port",
-            &ui::a11y::Action::SetValue("22ssh".into()),
-            &mut doc(),
-            &automerge::ROOT,
-        ));
-        assert_eq!(app.draft.host, "build.internal");
-        assert_eq!(app.draft.port, "22");
-        assert_eq!(app.focus, Some(Field::Port));
-        let tree = app.accessibility().expect("form semantics");
-        for target in [
-            "remote.kind:SSH",
-            "remote.field:name",
-            "remote.field:host",
-            "remote.field:port",
-            "remote.auth:password",
-            "remote.form.cancel",
-            "remote.form.save",
-        ] {
-            assert!(
-                find_semantic_target(&tree, target).is_some(),
-                "missing form control {target}"
+        eprintln!("phase save_form_blocked_on_validation");
+        {
+            let mut app = RemoteApp::new();
+            app.apply(Action::NewConnection, &mut doc());
+            // Empty name + host → blocked, stays on the form.
+            app.apply(Action::SaveForm, &mut doc());
+            assert!(matches!(app.screen, Screen::Form { .. }));
+            assert!(app.form_validation.submitted);
+            assert_eq!(app.focus, Some(Field::Name));
+            assert_eq!(
+                app.visible_form_problems(),
+                vec!["Name is required", "Host is required"],
+                "a Save attempt reveals every problem, including the unfocused host"
             );
         }
     }
 
     #[test]
-    fn view_resource_operations_open_the_exact_requested_ui() {
-        let mut app = RemoteApp::new_demo();
-        let id = app.workspace.connections()[0].id;
-        let edit = tilo_actions::EncodedAction::encode_operation(
-            crate::actions::REMOTE_OPERATION_TYPE,
-            &crate::actions::RemoteOperation::EditConnection { connection_id: id },
-        )
-        .expect("serializable view operation");
-        assert!(
-            app.invoke_resource_operation(
-                tilo_actions::OperationKind::View,
-                &edit.type_id,
-                &edit.payload,
-                &doc(),
-                &automerge::ROOT,
-            )
-            .expect("view routed")
-        );
-        assert_eq!(app.screen, Screen::Form { editing: Some(id) });
+    fn saving_editing_and_deleting_connections_updates_the_list() {
+        eprintln!("phase save_form_adds_connection_and_returns_to_list");
+        {
+            let mut app = RemoteApp::new();
+            let before = app.workspace.connections().len();
+            app.apply(Action::NewConnection, &mut doc());
+            app.draft.name = "Test".into();
+            app.draft.host = "1.2.3.4".into();
+            app.draft.port = "22".into();
+            app.apply(Action::SaveForm, &mut doc());
+            assert_eq!(app.screen, Screen::List);
+            assert_eq!(app.workspace.connections().len(), before + 1);
+            assert!(app.workspace.connections().iter().any(|c| c.name == "Test"));
+        }
 
-        assert!(
-            app.invoke_resource_operation(
-                tilo_actions::OperationKind::Effect,
-                &edit.type_id,
-                &edit.payload,
-                &doc(),
-                &automerge::ROOT,
-            )
-            .is_err()
-        );
+        // Loading a connection to edit has to reach the widgets, not just the
+        // draft behind them — otherwise the form shows placeholders over values
+        // that are really there, and saving writes back whatever was on screen.
+        eprintln!("phase editing_a_connection_loads_it_into_the_fields");
+        {
+            let mut app = RemoteApp::new_demo();
+            let c = app.workspace.connections()[0].clone();
+            app.apply(Action::EditConnection(c.id), &mut doc());
+            assert_eq!(app.inputs.get(Field::Name).value(), c.name);
+            assert_eq!(app.inputs.get(Field::Host).value(), c.host);
+            assert_eq!(app.inputs.get(Field::Port).value(), c.port.to_string());
+        }
+
+        eprintln!("phase edit_then_save_updates_in_place");
+        {
+            let mut app = RemoteApp::new_demo();
+            let id = app.workspace.connections()[0].id;
+            let count = app.workspace.connections().len();
+            app.apply(Action::EditConnection(id), &mut doc());
+            app.draft.name = "Renamed Host".into();
+            app.apply(Action::SaveForm, &mut doc());
+            assert_eq!(
+                app.workspace.connections().len(),
+                count,
+                "edit must not add"
+            );
+            assert_eq!(app.workspace.get(id).unwrap().name, "Renamed Host");
+        }
+
+        eprintln!("phase delete_removes_connection");
+        {
+            let mut app = RemoteApp::new_demo();
+            let id = app.workspace.connections()[0].id;
+            let count = app.workspace.connections().len();
+            app.apply(Action::RequestDelete(id), &mut doc());
+            app.apply(Action::ConfirmPending, &mut doc());
+            assert_eq!(app.workspace.connections().len(), count - 1);
+            assert!(app.workspace.get(id).is_none());
+        }
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn reduced_motion_settles_the_navigation_flap() {
-        let mut app = RemoteApp::new();
-        lay_out(&mut app, 640.0, 900.0);
-        app.apply(Action::ToggleRail, &mut doc());
-        assert!(app.needs_animation_frame());
-        app.set_motion_reduced(true);
-        assert!(!app.needs_animation_frame());
-        assert!((app.rail.reveal() - 1.0).abs() <= f64::EPSILON);
-    }
-
-    #[test]
-    fn long_narrow_lists_scroll_and_keep_selection_visible() {
-        let mut app = RemoteApp::new_demo();
-        lay_out(&mut app, 640.0, 500.0);
-        let count = app.workspace.connections().len();
-        app.scroll_connection_into_view(count - 1, count);
-        assert!(app.list_scroll > 0.0);
-        assert!(app.list_scroll <= app.list_scroll_max);
-    }
-
-    /// A hostname or a key is exactly the sort of string nobody types by
-    /// hand, so the connection form has to take a paste — and, having taken
-    /// one, has to let you select what arrived and replace it.
-    #[test]
-    #[serial_test::serial(clipboard)]
-    fn the_connection_form_takes_a_paste_and_a_selection() {
-        let ctrl = ModifiersState::CONTROL;
-        let mut app = RemoteApp::new();
-        lay_out(&mut app, 1280.0, 800.0);
-        let mut state = doc();
-        app.apply(Action::NewConnection, &mut state);
-        app.apply(Action::FocusField(Field::Host), &mut state);
-
-        ui::text_selection::clipboard_copy("build-07.fleet.internal");
-        feed(&mut app, &mut state, &char_ev("v"), ctrl);
-        assert_eq!(
-            app.draft.host, "build-07.fleet.internal",
-            "Ctrl+V puts the clipboard into the focused field",
-        );
-
-        // Select-all then type replaces what is there — the other half of a
-        // real field, and impossible for a push/pop buffer.
-        feed(&mut app, &mut state, &char_ev("a"), ctrl);
-        feed(&mut app, &mut state, &char_ev("x"), ModifiersState::empty());
-        assert_eq!(app.draft.host, "x", "typing over a selection replaces it");
-    }
-
-    /// The port field stays numeric, but numeric is not a reason to lose the
-    /// clipboard: a pasted port arrives, and pasted junk is still filtered.
-    #[test]
-    #[serial_test::serial(clipboard)]
-    fn the_port_field_takes_a_paste_and_stays_numeric() {
-        let ctrl = ModifiersState::CONTROL;
-        let mut app = RemoteApp::new();
-        lay_out(&mut app, 1280.0, 800.0);
-        let mut state = doc();
-        app.apply(Action::NewConnection, &mut state);
-        app.apply(Action::FocusField(Field::Port), &mut state);
-        feed(&mut app, &mut state, &char_ev("a"), ctrl); // replace the default
-        ui::text_selection::clipboard_copy("2222");
-        feed(&mut app, &mut state, &char_ev("v"), ctrl);
-        assert_eq!(app.draft.port, "2222", "a pasted port arrives");
-
-        feed(&mut app, &mut state, &char_ev("a"), ctrl);
-        ui::text_selection::clipboard_copy("22ssh");
-        feed(&mut app, &mut state, &char_ev("v"), ctrl);
-        assert_eq!(app.draft.port, "22", "non-digits are still refused");
-    }
-
-    /// The search box is the sixth of these fields and gets the same deal.
-    #[test]
-    #[serial_test::serial(clipboard)]
-    fn the_search_box_takes_a_paste() {
-        let ctrl = ModifiersState::CONTROL;
-        let mut app = RemoteApp::new_demo();
-        lay_out(&mut app, 1280.0, 800.0);
-        let mut state = doc();
-        app.apply(Action::FocusField(Field::Search), &mut state);
-        ui::text_selection::clipboard_copy("build");
-        feed(&mut app, &mut state, &char_ev("v"), ctrl);
-        assert_eq!(app.search, "build");
-    }
-
-    #[test]
-    fn new_connection_opens_blank_form_focused() {
-        let mut app = RemoteApp::new();
-        app.apply(Action::NewConnection, &mut doc());
-        assert_eq!(app.screen, Screen::Form { editing: None });
-        assert_eq!(app.focus, Some(Field::Name));
-        assert!(app.draft.name.is_empty());
-    }
-
-    #[test]
-    fn save_form_adds_connection_and_returns_to_list() {
-        let mut app = RemoteApp::new();
-        let before = app.workspace.connections().len();
-        app.apply(Action::NewConnection, &mut doc());
-        app.draft.name = "Test".into();
-        app.draft.host = "1.2.3.4".into();
-        app.draft.port = "22".into();
-        app.apply(Action::SaveForm, &mut doc());
-        assert_eq!(app.screen, Screen::List);
-        assert_eq!(app.workspace.connections().len(), before + 1);
-        assert!(app.workspace.connections().iter().any(|c| c.name == "Test"));
-    }
-
-    #[test]
-    fn save_form_blocked_on_validation() {
-        let mut app = RemoteApp::new();
-        app.apply(Action::NewConnection, &mut doc());
-        // Empty name + host → blocked, stays on the form.
-        app.apply(Action::SaveForm, &mut doc());
-        assert!(matches!(app.screen, Screen::Form { .. }));
-        assert!(app.form_validation.submitted);
-        assert_eq!(app.focus, Some(Field::Name));
-        assert_eq!(
-            app.visible_form_problems(),
-            vec!["Name is required", "Host is required"],
-            "a Save attempt reveals every problem, including the unfocused host"
-        );
-    }
-
-    #[test]
-    fn new_form_stays_quiet_until_a_field_is_touched_or_save_is_attempted() {
-        let mut app = RemoteApp::new();
-        app.apply(Action::NewConnection, &mut doc());
-
-        assert!(app.visible_form_problems().is_empty());
-        let tree = app.accessibility().expect("form semantics");
-        assert!(
-            find_live_region(&tree).is_none(),
-            "a fresh blank draft is guidance, not an accessibility error announcement"
-        );
-
-        app.apply(Action::FocusField(Field::Host), &mut doc());
-        assert_eq!(
-            app.visible_form_problems(),
-            vec!["Name is required"],
-            "blurring a blank field reveals only feedback for that touched field"
-        );
-    }
-
-    #[test]
-    fn accessibility_save_attempt_reveals_validation_and_focuses_first_problem() {
-        let mut app = RemoteApp::new();
-        app.apply(Action::NewConnection, &mut doc());
-        assert!(app.perform_semantic_action(
-            "remote.form.save",
-            &ui::a11y::Action::Activate,
-            &mut doc(),
-            &automerge::ROOT,
-        ));
-        assert!(app.form_validation.submitted);
-        assert_eq!(app.focus, Some(Field::Name));
-        let tree = app.accessibility().expect("validated form semantics");
-        assert!(
-            find_live_region(&tree).is_some(),
-            "validation feedback is announced after the explicit Save attempt"
-        );
-    }
-
-    #[test]
-    fn edit_then_save_updates_in_place() {
-        let mut app = RemoteApp::new_demo();
-        let id = app.workspace.connections()[0].id;
-        let count = app.workspace.connections().len();
-        app.apply(Action::EditConnection(id), &mut doc());
-        app.draft.name = "Renamed Host".into();
-        app.apply(Action::SaveForm, &mut doc());
-        assert_eq!(
-            app.workspace.connections().len(),
-            count,
-            "edit must not add"
-        );
-        assert_eq!(app.workspace.get(id).unwrap().name, "Renamed Host");
-    }
-
-    #[test]
-    fn delete_removes_connection() {
-        let mut app = RemoteApp::new_demo();
-        let id = app.workspace.connections()[0].id;
-        let count = app.workspace.connections().len();
-        app.apply(Action::RequestDelete(id), &mut doc());
-        app.apply(Action::ConfirmPending, &mut doc());
-        assert_eq!(app.workspace.connections().len(), count - 1);
-        assert!(app.workspace.get(id).is_none());
-    }
-
-    #[test]
-    fn canvas_connect_requires_confirmation_before_opening_a_broker_route() {
-        let mut app = RemoteApp::new_demo();
-        let id = app
-            .workspace
-            .connections()
-            .iter()
-            .find(|connection| connection.kind == ConnectionKind::Tilo)
-            .expect("demo Tilo connection")
-            .id;
-
-        app.apply(Action::RequestConnect(id), &mut doc());
-
-        assert!(matches!(
-            app.pending_confirmation,
-            Some(PendingConfirmation::Connect { id: pending, .. }) if pending == id
-        ));
-        assert!(app.live.is_none(), "no route is opened before confirmation");
-        assert!(
-            app.collab_outbox.is_empty(),
-            "no control request is queued before confirmation"
-        );
-    }
-
-    #[test]
-    fn confirmation_revalidates_a_collaboratively_changed_target() {
-        let mut app = RemoteApp::new_demo();
-        let id = app
-            .workspace
-            .connections()
-            .iter()
-            .find(|connection| connection.kind == ConnectionKind::Tilo)
-            .expect("demo Tilo connection")
-            .id;
-        app.apply(Action::RequestConnect(id), &mut doc());
-        app.workspace.get_mut(id).expect("profile").host =
-            SecretKey::generate().public().to_string();
-
-        app.apply(Action::ConfirmPending, &mut doc());
-
-        assert!(
-            app.live.is_none(),
-            "changed target must not be used after confirmation"
-        );
-        assert!(
-            app.collab_outbox.is_empty(),
-            "no route is opened for stale confirmation"
-        );
-        assert!(
-            app.notice
-                .as_deref()
-                .is_some_and(|notice| notice.contains("changed"))
-        );
-    }
-
-    #[test]
-    fn confirmation_is_a_modal_accessibility_surface() {
-        let mut app = RemoteApp::new_demo();
-        lay_out(&mut app, 960.0, 700.0);
-        let id = app.workspace.connections()[0].id;
-        app.apply(Action::RequestDelete(id), &mut doc());
-        let tree = app.accessibility().expect("confirmation semantics");
-        let confirm =
-            find_semantic_target(&tree, "remote.confirmation.confirm").expect("confirm action");
-        assert_eq!(confirm.name.as_deref(), Some("Delete"));
-        assert!(
-            tree.children
+    fn connect_confirmation_revalidates_and_session_generations_settle() {
+        eprintln!("phase canvas_connect_requires_confirmation_before_opening_a_broker_route");
+        {
+            let mut app = RemoteApp::new_demo();
+            let id = app
+                .workspace
+                .connections()
                 .iter()
-                .any(|node| node.role == Role::Dialog && node.state.modal)
+                .find(|connection| connection.kind == ConnectionKind::Tilo)
+                .expect("demo Tilo connection")
+                .id;
+
+            app.apply(Action::RequestConnect(id), &mut doc());
+
+            assert!(matches!(
+                app.pending_confirmation,
+                Some(PendingConfirmation::Connect { id: pending, .. }) if pending == id
+            ));
+            assert!(app.live.is_none(), "no route is opened before confirmation");
+            assert!(
+                app.collab_outbox.is_empty(),
+                "no control request is queued before confirmation"
+            );
+        }
+
+        eprintln!("phase confirmation_revalidates_a_collaboratively_changed_target");
+        {
+            let mut app = RemoteApp::new_demo();
+            let id = app
+                .workspace
+                .connections()
+                .iter()
+                .find(|connection| connection.kind == ConnectionKind::Tilo)
+                .expect("demo Tilo connection")
+                .id;
+            app.apply(Action::RequestConnect(id), &mut doc());
+            app.workspace.get_mut(id).expect("profile").host =
+                SecretKey::generate().public().to_string();
+
+            app.apply(Action::ConfirmPending, &mut doc());
+
+            assert!(
+                app.live.is_none(),
+                "changed target must not be used after confirmation"
+            );
+            assert!(
+                app.collab_outbox.is_empty(),
+                "no route is opened for stale confirmation"
+            );
+            assert!(
+                app.notice
+                    .as_deref()
+                    .is_some_and(|notice| notice.contains("changed"))
+            );
+        }
+
+        eprintln!("phase cancelling_connect_settles_only_the_matching_session_generation");
+        {
+            let mut app = RemoteApp::new_demo();
+            let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
+            let invocation = tilo_actions::InvocationId::new();
+            app.session_for = Some(id);
+            app.session_generation = 42;
+            app.live = Some(LiveSession::Preview(SessionStatus::Connecting));
+            app.pending_resource_operation = Some(PendingResourceOperation::Connect {
+                invocation,
+                connection_id: id,
+                session_generation: 42,
+            });
+
+            assert!(matches!(
+                app.poll_resource_operation(invocation, true, &doc(), &automerge::ROOT),
+                Some(tilo_actions::InvocationUpdate::Cancelled { .. })
+            ));
+            assert!(app.live.is_none());
+            assert!(app.pending_resource_operation.is_none());
+
+            // A delayed cancel for an older generation reports terminally but
+            // cannot tear down a replacement session for the same saved profile.
+            let stale = tilo_actions::InvocationId::new();
+            app.session_for = Some(id);
+            app.session_generation = 99;
+            app.live = Some(LiveSession::Preview(SessionStatus::Connecting));
+            app.pending_resource_operation = Some(PendingResourceOperation::Connect {
+                invocation: stale,
+                connection_id: id,
+                session_generation: 98,
+            });
+            assert!(matches!(
+                app.poll_resource_operation(stale, true, &doc(), &automerge::ROOT),
+                Some(tilo_actions::InvocationUpdate::Cancelled { .. })
+            ));
+            assert!(
+                app.live.is_some(),
+                "stale cancellation kept replacement live"
+            );
+        }
+
+        eprintln!("phase exhausted_session_generation_fails_closed_without_reuse");
+        {
+            let mut app = RemoteApp::new_demo();
+            let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
+            app.session_generation = u64::MAX;
+
+            app.open_session(id);
+            assert_eq!(app.session_generation, u64::MAX);
+            assert!(matches!(app.live, Some(LiveSession::Error(_))));
+
+            app.disconnect_session();
+            app.open_session(id);
+            assert_eq!(app.session_generation, u64::MAX);
+            assert!(matches!(app.live, Some(LiveSession::Error(_))));
+        }
+    }
+
+    #[test]
+    fn unavailable_transports_explain_themselves_without_opening_sockets() {
+        eprintln!(
+            "phase connect_ssh_explains_the_missing_live_capability_without_opening_a_socket"
         );
-    }
+        {
+            // Default build has no live transport: Connect opens an explicit
+            // unavailable surface.
+            let mut app = RemoteApp::new_demo();
+            let id = app
+                .workspace
+                .connections()
+                .iter()
+                .find(|c| c.kind == ConnectionKind::Ssh)
+                .unwrap()
+                .id;
+            app.apply(Action::Connect(id), &mut doc());
+            assert_eq!(app.screen, Screen::Session { id });
+            assert!(matches!(
+                app.live,
+                Some(LiveSession::Unavailable {
+                    readiness: TransportReadiness::NeedsLiveSessionCapability,
+                    kind: ConnectionKind::Ssh,
+                })
+            ));
+        }
 
-    #[test]
-    fn connect_ssh_explains_the_missing_live_capability_without_opening_a_socket() {
-        // Default build has no live transport: Connect opens an explicit
-        // unavailable surface.
-        let mut app = RemoteApp::new_demo();
-        let id = app
-            .workspace
-            .connections()
-            .iter()
-            .find(|c| c.kind == ConnectionKind::Ssh)
-            .unwrap()
-            .id;
-        app.apply(Action::Connect(id), &mut doc());
-        assert_eq!(app.screen, Screen::Session { id });
-        assert!(matches!(
-            app.live,
-            Some(LiveSession::Unavailable {
-                readiness: TransportReadiness::NeedsLiveSessionCapability,
-                kind: ConnectionKind::Ssh,
-            })
-        ));
-    }
-
-    #[test]
-    fn connect_vnc_explains_the_missing_live_capability_without_opening_a_socket() {
-        let mut app = RemoteApp::new_demo();
-        let id = app
-            .workspace
-            .connections()
-            .iter()
-            .find(|c| c.kind == ConnectionKind::Vnc)
-            .unwrap()
-            .id;
-        app.apply(Action::Connect(id), &mut doc());
-        assert!(matches!(
-            app.live,
-            Some(LiveSession::Unavailable {
-                readiness: TransportReadiness::NeedsLiveSessionCapability,
-                kind: ConnectionKind::Vnc,
-            })
-        ));
-    }
-
-    #[test]
-    fn connect_tilo_starts_the_production_broker_transport_without_dev_gate() {
-        let mut app = RemoteApp::new_demo();
-        let target = SecretKey::generate().public();
-        let id = app
-            .workspace
-            .connections()
-            .iter()
-            .find(|connection| connection.kind == ConnectionKind::Tilo)
-            .expect("demo Tilo connection")
-            .id;
-        app.workspace.get_mut(id).expect("Tilo connection").host = target.to_string();
-
-        app.apply(Action::Connect(id), &mut doc());
-
-        assert!(matches!(app.live, Some(LiveSession::Tilo(_))));
-        assert!(matches!(
-            app.collab_outbox.as_slice(),
-            [ui::collaboration::CollabRequest::OpenWorkspaceControl { target_device, .. }]
-                if target_device == target.as_bytes()
-        ));
-    }
-
-    #[test]
-    fn tilo_session_setup_uses_authenticated_broker_transport() {
-        let mut app = RemoteApp::new_demo();
-        let mut connection = app
-            .workspace
-            .connections()
-            .iter()
-            .find(|connection| connection.kind == ConnectionKind::Tilo)
-            .expect("demo Tilo connection")
-            .clone();
-        let target = SecretKey::generate().public();
-        connection.host = target.to_string();
-        let session = app.start_live(&connection);
-        assert!(matches!(
-            session,
-            LiveSession::Tilo(TiloSession {
-                status: SessionStatus::Connecting,
-                ..
-            })
-        ));
-        assert!(matches!(
-            app.collab_outbox.as_slice(),
-            [ui::collaboration::CollabRequest::OpenWorkspaceControl { target_device, .. }]
-                if target_device == target.as_bytes()
-        ));
-    }
-
-    #[test]
-    fn tilo_widget_never_queues_input_before_consent_or_after_revocation() {
-        let mut app = RemoteApp::new_demo();
-        let mut connection = app
-            .workspace
-            .connections()
-            .iter()
-            .find(|connection| connection.kind == ConnectionKind::Tilo)
-            .expect("demo Tilo connection")
-            .clone();
-        connection.host = SecretKey::generate().public().to_string();
-        let live = app.start_live(&connection);
-        app.live = Some(live);
-        let session_id = match app.live.as_ref() {
-            Some(LiveSession::Tilo(session)) => session.id,
-            _ => panic!("Tilo session"),
-        };
-        app.collab_outbox.clear();
-        assert!(
-            !app.queue_tilo_input(runtime_collab::WorkspaceControlInput::PointerMotion {
-                x: 1.0,
-                y: 2.0
-            })
+        eprintln!(
+            "phase connect_vnc_explains_the_missing_live_capability_without_opening_a_socket"
         );
-        assert!(app.collab_outbox.is_empty());
+        {
+            let mut app = RemoteApp::new_demo();
+            let id = app
+                .workspace
+                .connections()
+                .iter()
+                .find(|c| c.kind == ConnectionKind::Vnc)
+                .unwrap()
+                .id;
+            app.apply(Action::Connect(id), &mut doc());
+            assert!(matches!(
+                app.live,
+                Some(LiveSession::Unavailable {
+                    readiness: TransportReadiness::NeedsLiveSessionCapability,
+                    kind: ConnectionKind::Vnc,
+                })
+            ));
+        }
 
-        app.handle_collab_event(&ui::collaboration::CollabEvent::WorkspaceControl {
-            session_id,
-            event: runtime_collab::WorkspaceControlEvent::StreamStarted {
-                surface: 4,
-                width: 1280,
-                height: 720,
-            },
-        });
-        assert!(
-            app.queue_tilo_input(runtime_collab::WorkspaceControlInput::PointerMotion {
-                x: 1.0,
-                y: 2.0
-            })
-        );
-        app.collab_outbox.clear();
+        eprintln!("phase unavailable_transport_opens_an_editable_recovery_surface");
+        {
+            let mut app = RemoteApp::new_demo();
+            let mut state = AutoCommit::new();
+            let id = app
+                .first_of_kind(ConnectionKind::Rdp)
+                .expect("demo contains a legacy RDP profile");
 
-        app.handle_collab_event(&ui::collaboration::CollabEvent::WorkspaceControl {
-            session_id,
-            event: runtime_collab::WorkspaceControlEvent::Closed(
-                runtime_collab::WorkspaceControlCloseReason::Revoked,
-            ),
-        });
-        assert!(
-            !app.queue_tilo_input(runtime_collab::WorkspaceControlInput::PointerMotion {
-                x: 1.0,
-                y: 2.0
-            })
-        );
-        assert!(app.collab_outbox.is_empty());
-    }
+            app.apply(Action::Connect(id), &mut state);
 
-    #[test]
-    fn pick_tilo_device_fills_draft() {
-        let mut app = RemoteApp::new_demo();
-        app.apply(Action::NewConnection, &mut doc());
-        app.apply(Action::SetKind(ConnectionKind::Tilo), &mut doc());
-        app.apply(Action::PickTiloDevice(0), &mut doc());
-        assert_eq!(app.draft.kind, ConnectionKind::Tilo);
-        assert!(!app.draft.host.is_empty());
-        assert_eq!(app.draft.auth, AuthMethod::DeviceIdentity);
-    }
+            assert_eq!(app.screen, Screen::Session { id });
+            assert!(matches!(
+                app.live,
+                Some(LiveSession::Unavailable {
+                    readiness: TransportReadiness::BackendUnavailable,
+                    kind: ConnectionKind::Rdp,
+                })
+            ));
+        }
 
-    #[test]
-    fn set_kind_tilo_clears_port_and_sets_device_auth() {
-        let mut app = RemoteApp::new();
-        app.apply(Action::NewConnection, &mut doc());
-        app.apply(Action::SetKind(ConnectionKind::Tilo), &mut doc());
-        assert!(app.draft.port.is_empty());
-        assert_eq!(app.draft.auth, AuthMethod::DeviceIdentity);
-    }
-
-    #[test]
-    fn search_filters_rows() {
-        let mut app = RemoteApp::new();
-        app.search = "build".into();
-        let rows = app.workspace.filtered(&app.search);
-        assert!(rows.iter().all(|c| {
-            c.name.to_lowercase().contains("build") || c.host.to_lowercase().contains("build")
-        }));
-    }
-
-    /// Loading a connection to edit has to reach the widgets, not just the
-    /// draft behind them — otherwise the form shows placeholders over values
-    /// that are really there, and saving writes back whatever was on screen.
-    #[test]
-    fn editing_a_connection_loads_it_into_the_fields() {
-        let mut app = RemoteApp::new_demo();
-        let c = app.workspace.connections()[0].clone();
-        app.apply(Action::EditConnection(c.id), &mut doc());
-        assert_eq!(app.inputs.get(Field::Name).value(), c.name);
-        assert_eq!(app.inputs.get(Field::Host).value(), c.host);
-        assert_eq!(app.inputs.get(Field::Port).value(), c.port.to_string());
-    }
-
-    #[test]
-    fn typing_into_focused_field_appends() {
-        let none = ModifiersState::empty();
-        let mut app = RemoteApp::new();
-        let mut state = doc();
-        app.apply(Action::NewConnection, &mut state);
-        app.apply(Action::FocusField(Field::Name), &mut state);
-        feed(&mut app, &mut state, &char_ev("a"), none);
-        feed(&mut app, &mut state, &char_ev("b"), none);
-        assert_eq!(app.draft.name, "ab");
-    }
-
-    #[test]
-    fn port_field_rejects_non_digits() {
-        let none = ModifiersState::empty();
-        let mut app = RemoteApp::new();
-        let mut state = doc();
-        app.apply(Action::NewConnection, &mut state);
-        app.draft.port.clear();
-        app.reload_inputs();
-        app.apply(Action::FocusField(Field::Port), &mut state);
-        feed(&mut app, &mut state, &char_ev("2"), none);
-        feed(&mut app, &mut state, &char_ev("x"), none);
-        feed(&mut app, &mut state, &char_ev("2"), none);
-        assert_eq!(app.draft.port, "22");
-    }
-
-    #[test]
-    fn toggle_favorite_flips() {
-        let mut app = RemoteApp::new_demo();
-        let id = app.workspace.connections()[0].id;
-        let before = app.workspace.get(id).unwrap().favorite;
-        app.apply(Action::ToggleFavorite(id), &mut doc());
-        assert_ne!(app.workspace.get(id).unwrap().favorite, before);
-    }
-
-    #[test]
-    fn favorite_affordance_dispatches_the_ctrl_k_action() {
-        // Affordance == ActionSpec: the on-screen star dispatches the exact same
-        // SetFavorite envelope the Ctrl+K row builds — one source of truth on the
-        // real dispatch path (through the app's embedded `ActionHost`).
-        let mut app = RemoteApp::new_demo();
-        let mut state = AutoCommit::new();
-        // Publish the demo list into the CRDT so the connection exists there too.
-        app.sync(&mut state, &automerge::ROOT);
-        let id = app.workspace.connections()[0].id;
-        let target = !app.workspace.get(id).unwrap().favorite;
-
-        app.apply(Action::ToggleFavorite(id), &mut state);
-
-        let dispatched = app
-            .last_dispatched()
-            .expect("the star dispatched an action");
-        assert_eq!(
-            dispatched,
-            &crate::actions::encode(&crate::actions::set_favorite_action(id, target)),
-            "the star and the Ctrl+K row build the byte-identical action",
-        );
-        assert!(
-            app.take_committed_action().is_some(),
-            "the dispatch armed exactly one undo boundary for the host to record",
-        );
-    }
-
-    #[test]
-    fn delete_affordance_dispatches_the_delete_action() {
-        let mut app = RemoteApp::new_demo();
-        let mut state = AutoCommit::new();
-        app.sync(&mut state, &automerge::ROOT);
-        let id = app.workspace.connections()[0].id;
-
-        app.apply(Action::RequestDelete(id), &mut state);
-        app.apply(Action::ConfirmPending, &mut state);
-
-        assert!(
-            RemoteDoc::list(&state).iter().all(|c| c.id != id),
-            "removed from the CRDT"
-        );
-        let dispatched = app.last_dispatched().expect("delete dispatched an action");
-        assert_eq!(
-            dispatched,
-            &crate::actions::encode(&crate::actions::delete_action(id)),
-        );
-    }
-
-    #[test]
-    fn save_form_dispatches_upsert_into_the_crdt() {
-        let mut app = RemoteApp::new();
-        let mut state = AutoCommit::new();
-        app.apply(Action::NewConnection, &mut state);
-        app.draft.name = "Test".into();
-        app.draft.host = "1.2.3.4".into();
-        app.draft.port = "22".into();
-        app.apply(Action::SaveForm, &mut state);
-
-        let doc_list = RemoteDoc::list(&state);
-        assert_eq!(
-            doc_list.len(),
-            1,
-            "the saved connection reached the shared document"
-        );
-        assert_eq!(doc_list[0].name, "Test");
-        assert!(
-            app.last_dispatched().is_some(),
-            "save routed through an action"
-        );
-    }
-
-    #[test]
-    fn dev_set_screen_jumps_to_form() {
-        let mut app = RemoteApp::new();
-        app.dev_set_screen("form");
-        assert_eq!(app.screen, Screen::Form { editing: None });
-    }
-
-    #[test]
-    fn dev_set_screen_tilo_form_selects_tilo_kind() {
-        let mut app = RemoteApp::new();
-        app.dev_set_screen("form-tilo");
-        assert!(matches!(app.screen, Screen::Form { .. }));
-        assert_eq!(app.draft.kind, ConnectionKind::Tilo);
-    }
-
-    #[test]
-    fn unavailable_transport_opens_an_editable_recovery_surface() {
-        let mut app = RemoteApp::new_demo();
-        let mut state = AutoCommit::new();
-        let id = app
-            .first_of_kind(ConnectionKind::Rdp)
-            .expect("demo contains a legacy RDP profile");
-
-        app.apply(Action::Connect(id), &mut state);
-
-        assert_eq!(app.screen, Screen::Session { id });
-        assert!(matches!(
-            app.live,
-            Some(LiveSession::Unavailable {
+        eprintln!("phase unavailable_connect_operation_reports_a_distinct_non_retryable_result");
+        {
+            let mut app = RemoteApp::new_demo();
+            let invocation = tilo_actions::InvocationId::new();
+            app.live = Some(LiveSession::Unavailable {
                 readiness: TransportReadiness::BackendUnavailable,
                 kind: ConnectionKind::Rdp,
-            })
-        ));
+            });
+            let id = app.first_of_kind(ConnectionKind::Rdp).unwrap();
+            app.session_for = Some(id);
+            app.pending_resource_operation = Some(PendingResourceOperation::Connect {
+                invocation,
+                connection_id: id,
+                session_generation: app.session_generation,
+            });
+
+            let update = app
+                .poll_resource_operation(invocation, false, &doc(), &automerge::ROOT)
+                .expect("unavailable transport reaches a terminal operation result");
+            assert!(matches!(
+                update,
+                tilo_actions::InvocationUpdate::Failed { error, .. }
+                    if error.code == "remote.transport_unavailable" && !error.retryable
+            ));
+        }
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn unavailable_connect_operation_reports_a_distinct_non_retryable_result() {
-        let mut app = RemoteApp::new_demo();
-        let invocation = tilo_actions::InvocationId::new();
-        app.live = Some(LiveSession::Unavailable {
-            readiness: TransportReadiness::BackendUnavailable,
-            kind: ConnectionKind::Rdp,
-        });
-        let id = app.first_of_kind(ConnectionKind::Rdp).unwrap();
-        app.session_for = Some(id);
-        app.pending_resource_operation = Some(PendingResourceOperation::Connect {
-            invocation,
-            connection_id: id,
-            session_generation: app.session_generation,
-        });
-
-        let update = app
-            .poll_resource_operation(invocation, false, &doc(), &automerge::ROOT)
-            .expect("unavailable transport reaches a terminal operation result");
-        assert!(matches!(
-            update,
-            tilo_actions::InvocationUpdate::Failed { error, .. }
-                if error.code == "remote.transport_unavailable" && !error.retryable
-        ));
-    }
-
-    #[test]
-    fn cancelling_connect_settles_only_the_matching_session_generation() {
-        let mut app = RemoteApp::new_demo();
-        let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
-        let invocation = tilo_actions::InvocationId::new();
-        app.session_for = Some(id);
-        app.session_generation = 42;
-        app.live = Some(LiveSession::Preview(SessionStatus::Connecting));
-        app.pending_resource_operation = Some(PendingResourceOperation::Connect {
-            invocation,
-            connection_id: id,
-            session_generation: 42,
-        });
-
-        assert!(matches!(
-            app.poll_resource_operation(invocation, true, &doc(), &automerge::ROOT),
-            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
-        ));
-        assert!(app.live.is_none());
-        assert!(app.pending_resource_operation.is_none());
-
-        // A delayed cancel for an older generation reports terminally but
-        // cannot tear down a replacement session for the same saved profile.
-        let stale = tilo_actions::InvocationId::new();
-        app.session_for = Some(id);
-        app.session_generation = 99;
-        app.live = Some(LiveSession::Preview(SessionStatus::Connecting));
-        app.pending_resource_operation = Some(PendingResourceOperation::Connect {
-            invocation: stale,
-            connection_id: id,
-            session_generation: 98,
-        });
-        assert!(matches!(
-            app.poll_resource_operation(stale, true, &doc(), &automerge::ROOT),
-            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
-        ));
-        assert!(
-            app.live.is_some(),
-            "stale cancellation kept replacement live"
-        );
-    }
-
-    #[test]
-    fn exhausted_session_generation_fails_closed_without_reuse() {
-        let mut app = RemoteApp::new_demo();
-        let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
-        app.session_generation = u64::MAX;
-
-        app.open_session(id);
-        assert_eq!(app.session_generation, u64::MAX);
-        assert!(matches!(app.live, Some(LiveSession::Error(_))));
-
-        app.disconnect_session();
-        app.open_session(id);
-        assert_eq!(app.session_generation, u64::MAX);
-        assert!(matches!(app.live, Some(LiveSession::Error(_))));
-    }
-
-    #[test]
-    fn dev_set_screen_opens_kind_specific_session() {
-        for (which, kind) in [
-            ("session-ssh", ConnectionKind::Ssh),
-            ("session-vnc", ConnectionKind::Vnc),
-            ("session-rdp", ConnectionKind::Rdp),
-            ("session-tilo", ConnectionKind::Tilo),
-        ] {
+    fn tilo_connections_use_the_authenticated_broker_and_consent() {
+        eprintln!("phase connect_tilo_starts_the_production_broker_transport_without_dev_gate");
+        {
             let mut app = RemoteApp::new_demo();
-            app.dev_set_screen(which);
-            match app.screen {
-                Screen::Session { id } => {
-                    assert_eq!(app.workspace.get(id).unwrap().kind, kind);
-                }
-                other => panic!("{which} did not open a session: {other:?}"),
-            }
+            let target = SecretKey::generate().public();
+            let id = app
+                .workspace
+                .connections()
+                .iter()
+                .find(|connection| connection.kind == ConnectionKind::Tilo)
+                .expect("demo Tilo connection")
+                .id;
+            app.workspace.get_mut(id).expect("Tilo connection").host = target.to_string();
+
+            app.apply(Action::Connect(id), &mut doc());
+
+            assert!(matches!(app.live, Some(LiveSession::Tilo(_))));
+            assert!(matches!(
+                app.collab_outbox.as_slice(),
+                [ui::collaboration::CollabRequest::OpenWorkspaceControl { target_device, .. }]
+                    if target_device == target.as_bytes()
+            ));
         }
 
-        let mut app = RemoteApp::new_demo();
-        app.dev_set_screen("session-tilo");
-        assert!(matches!(
-            app.live,
-            Some(LiveSession::Preview(SessionStatus::Connecting))
-        ));
+        eprintln!("phase tilo_session_setup_uses_authenticated_broker_transport");
+        {
+            let mut app = RemoteApp::new_demo();
+            let mut connection = app
+                .workspace
+                .connections()
+                .iter()
+                .find(|connection| connection.kind == ConnectionKind::Tilo)
+                .expect("demo Tilo connection")
+                .clone();
+            let target = SecretKey::generate().public();
+            connection.host = target.to_string();
+            let session = app.start_live(&connection);
+            assert!(matches!(
+                session,
+                LiveSession::Tilo(TiloSession {
+                    status: SessionStatus::Connecting,
+                    ..
+                })
+            ));
+            assert!(matches!(
+                app.collab_outbox.as_slice(),
+                [ui::collaboration::CollabRequest::OpenWorkspaceControl { target_device, .. }]
+                    if target_device == target.as_bytes()
+            ));
+        }
+
+        eprintln!("phase tilo_widget_never_queues_input_before_consent_or_after_revocation");
+        {
+            let mut app = RemoteApp::new_demo();
+            let mut connection = app
+                .workspace
+                .connections()
+                .iter()
+                .find(|connection| connection.kind == ConnectionKind::Tilo)
+                .expect("demo Tilo connection")
+                .clone();
+            connection.host = SecretKey::generate().public().to_string();
+            let live = app.start_live(&connection);
+            app.live = Some(live);
+            let session_id = match app.live.as_ref() {
+                Some(LiveSession::Tilo(session)) => session.id,
+                _ => panic!("Tilo session"),
+            };
+            app.collab_outbox.clear();
+            assert!(
+                !app.queue_tilo_input(runtime_collab::WorkspaceControlInput::PointerMotion {
+                    x: 1.0,
+                    y: 2.0
+                })
+            );
+            assert!(app.collab_outbox.is_empty());
+
+            app.handle_collab_event(&ui::collaboration::CollabEvent::WorkspaceControl {
+                session_id,
+                event: runtime_collab::WorkspaceControlEvent::StreamStarted {
+                    surface: 4,
+                    width: 1280,
+                    height: 720,
+                },
+            });
+            assert!(
+                app.queue_tilo_input(runtime_collab::WorkspaceControlInput::PointerMotion {
+                    x: 1.0,
+                    y: 2.0
+                })
+            );
+            app.collab_outbox.clear();
+
+            app.handle_collab_event(&ui::collaboration::CollabEvent::WorkspaceControl {
+                session_id,
+                event: runtime_collab::WorkspaceControlEvent::Closed(
+                    runtime_collab::WorkspaceControlCloseReason::Revoked,
+                ),
+            });
+            assert!(
+                !app.queue_tilo_input(runtime_collab::WorkspaceControlInput::PointerMotion {
+                    x: 1.0,
+                    y: 2.0
+                })
+            );
+            assert!(app.collab_outbox.is_empty());
+        }
     }
 
     #[test]
-    fn sync_seeds_then_pulls_remote() {
-        let mut state = AutoCommit::new();
-        // A peer pre-populates the doc with one extra connection.
-        let extra = Connection {
-            id: Uuid::new_v4(),
-            name: "Peer Box".into(),
-            host: "peer".into(),
-            port: 22,
-            user: "p".into(),
-            kind: ConnectionKind::Ssh,
-            auth: AuthMethod::Password,
-            last_used: "now".into(),
-            presence: Presence::Online,
-            group: String::new(),
-            favorite: false,
-        };
-        RemoteDoc::upsert(&mut state, &extra);
+    fn form_fields_accept_typing_devices_and_kind_changes() {
+        eprintln!("phase typing_into_focused_field_appends");
+        {
+            let none = ModifiersState::empty();
+            let mut app = RemoteApp::new();
+            let mut state = doc();
+            app.apply(Action::NewConnection, &mut state);
+            app.apply(Action::FocusField(Field::Name), &mut state);
+            feed(&mut app, &mut state, &char_ev("a"), none);
+            feed(&mut app, &mut state, &char_ev("b"), none);
+            assert_eq!(app.draft.name, "ab");
+        }
 
-        let mut app = RemoteApp::new();
-        app.sync(&mut state, &automerge::ROOT);
-        // Adopted the peer's list (non-empty doc path).
-        assert!(app.workspace.get(extra.id).is_some());
+        eprintln!("phase port_field_rejects_non_digits");
+        {
+            let none = ModifiersState::empty();
+            let mut app = RemoteApp::new();
+            let mut state = doc();
+            app.apply(Action::NewConnection, &mut state);
+            app.draft.port.clear();
+            app.reload_inputs();
+            app.apply(Action::FocusField(Field::Port), &mut state);
+            feed(&mut app, &mut state, &char_ev("2"), none);
+            feed(&mut app, &mut state, &char_ev("x"), none);
+            feed(&mut app, &mut state, &char_ev("2"), none);
+            assert_eq!(app.draft.port, "22");
+        }
+
+        eprintln!("phase pick_tilo_device_fills_draft");
+        {
+            let mut app = RemoteApp::new_demo();
+            app.apply(Action::NewConnection, &mut doc());
+            app.apply(Action::SetKind(ConnectionKind::Tilo), &mut doc());
+            app.apply(Action::PickTiloDevice(0), &mut doc());
+            assert_eq!(app.draft.kind, ConnectionKind::Tilo);
+            assert!(!app.draft.host.is_empty());
+            assert_eq!(app.draft.auth, AuthMethod::DeviceIdentity);
+        }
+
+        eprintln!("phase set_kind_tilo_clears_port_and_sets_device_auth");
+        {
+            let mut app = RemoteApp::new();
+            app.apply(Action::NewConnection, &mut doc());
+            app.apply(Action::SetKind(ConnectionKind::Tilo), &mut doc());
+            assert!(app.draft.port.is_empty());
+            assert_eq!(app.draft.auth, AuthMethod::DeviceIdentity);
+        }
+    }
+
+    #[test]
+    fn list_affordances_dispatch_actions_into_the_crdt() {
+        eprintln!("phase favorite_affordance_dispatches_the_ctrl_k_action");
+        {
+            // Affordance == ActionSpec: the on-screen star dispatches the exact same
+            // SetFavorite envelope the Ctrl+K row builds — one source of truth on the
+            // real dispatch path (through the app's embedded `ActionHost`).
+            let mut app = RemoteApp::new_demo();
+            let mut state = AutoCommit::new();
+            // Publish the demo list into the CRDT so the connection exists there too.
+            app.sync(&mut state, &automerge::ROOT);
+            let id = app.workspace.connections()[0].id;
+            let target = !app.workspace.get(id).unwrap().favorite;
+
+            app.apply(Action::ToggleFavorite(id), &mut state);
+
+            let dispatched = app
+                .last_dispatched()
+                .expect("the star dispatched an action");
+            assert_eq!(
+                dispatched,
+                &crate::actions::encode(&crate::actions::set_favorite_action(id, target)),
+                "the star and the Ctrl+K row build the byte-identical action",
+            );
+            assert!(
+                ui::undo::take_committed_action(&mut app).is_some(),
+                "the dispatch armed exactly one undo boundary for the host to record",
+            );
+        }
+
+        eprintln!("phase delete_affordance_dispatches_the_delete_action");
+        {
+            let mut app = RemoteApp::new_demo();
+            let mut state = AutoCommit::new();
+            app.sync(&mut state, &automerge::ROOT);
+            let id = app.workspace.connections()[0].id;
+
+            app.apply(Action::RequestDelete(id), &mut state);
+            app.apply(Action::ConfirmPending, &mut state);
+
+            assert!(
+                RemoteDoc::list(&state).iter().all(|c| c.id != id),
+                "removed from the CRDT"
+            );
+            let dispatched = app.last_dispatched().expect("delete dispatched an action");
+            assert_eq!(
+                dispatched,
+                &crate::actions::encode(&crate::actions::delete_action(id)),
+            );
+        }
+
+        eprintln!("phase save_form_dispatches_upsert_into_the_crdt");
+        {
+            let mut app = RemoteApp::new();
+            let mut state = AutoCommit::new();
+            app.apply(Action::NewConnection, &mut state);
+            app.draft.name = "Test".into();
+            app.draft.host = "1.2.3.4".into();
+            app.draft.port = "22".into();
+            app.apply(Action::SaveForm, &mut state);
+
+            let doc_list = RemoteDoc::list(&state);
+            assert_eq!(
+                doc_list.len(),
+                1,
+                "the saved connection reached the shared document"
+            );
+            assert_eq!(doc_list[0].name, "Test");
+            assert!(
+                app.last_dispatched().is_some(),
+                "save routed through an action"
+            );
+        }
+
+        eprintln!("phase toggle_favorite_flips");
+        {
+            let mut app = RemoteApp::new_demo();
+            let id = app.workspace.connections()[0].id;
+            let before = app.workspace.get(id).unwrap().favorite;
+            app.apply(Action::ToggleFavorite(id), &mut doc());
+            assert_ne!(app.workspace.get(id).unwrap().favorite, before);
+        }
     }
 }

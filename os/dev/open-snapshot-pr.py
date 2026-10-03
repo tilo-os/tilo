@@ -6,8 +6,8 @@ files to an automation branch named after the files' SHA-256 and call this
 script, which checks that branch, digest and references agree before opening
 (or re-finding) the pull request.
 
-Every pin lands on its own: the kernel builds on its own signed buildroot, so
-the frozen RPM index and the kernels never have to move together.
+Every pin lands on its own. Frozen RPM snapshots resolve by package-set
+fingerprint and are not promoted through this script.
 
 FORGEJO_TOKEN must be able to read and create pull requests on the repository;
 the workflows pass secrets.RELEASE_TOKEN. The token that pushes the branch
@@ -29,11 +29,11 @@ import urllib.request
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 KERNEL_REF = re.compile(r"^registry\.tilo\.so/tilo/tilo-kernel@sha256:([0-9a-f]{64})$")
-RPMS_REF = re.compile(r"^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 WPE_REF = re.compile(r"^registry\.tilo\.so/tilo/tilo-wpe-buildroot@sha256:([0-9a-f]{64})$")
 KERNEL_BUILDROOT_REF = re.compile(
     r"^registry\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:([0-9a-f]{64})$")
+WPE_STAGE_REF = re.compile(r"^registry\.tilo\.so/tilo/tilo-wpe-stage@sha256:([0-9a-f]{64})$")
 # Forgejo reports a repository the token cannot see as 404, not 403.
 ACCESS_DENIED = (401, 403, 404)
 TOKEN_HINT = ("set the workflow's FORGEJO_TOKEN to secrets.RELEASE_TOKEN, a token "
@@ -55,22 +55,12 @@ def kernel_contents(x86_ref: str, arm_ref: str) -> str:
     ))
 
 
-def rpms_contents(rpms_ref: str, source_revision: str) -> str:
-    """Return the canonical os/rpms-snapshot.env for the frozen RPM index."""
-    return "\n".join((
-        "# Digest-pinned frozen RPM repository used by os/Containerfile.",
-        "# Updated by the snapshot-rpms workflow when the package set changes.",
-        f"RPMS_REF={rpms_ref}",
-        f"RPMS_SOURCE_REVISION={source_revision}",
-        "",
-    ))
-
 
 def wpe_contents(x86_ref: str, arm_ref: str) -> str:
     """Return the canonical os/wpe-buildroot-snapshot.env for both buildroots."""
     return "\n".join((
         "# Per-architecture WPE buildroots, signed and pinned by digest.",
-        "# Updated atomically by snapshot-wpe-buildroot.yml after both native builds verify.",
+        "# Updated atomically by build-buildroots.yml after both native builds verify.",
         f"WPE_BUILDROOT_X86_64_REF={x86_ref}",
         f"WPE_BUILDROOT_AARCH64_REF={arm_ref}",
         "",
@@ -81,9 +71,20 @@ def kernel_buildroot_contents(x86_ref: str, arm_ref: str) -> str:
     """Return the canonical os/kernel-buildroot-snapshot.env for both buildroots."""
     return "\n".join((
         "# Per-architecture Tilo kernel buildroots, signed and pinned by digest.",
-        "# Updated atomically by snapshot-kernel-buildroot.yml after both native builds verify.",
+        "# Updated atomically by build-buildroots.yml after both native builds verify.",
         f"KERNEL_BUILDROOT_X86_64_REF={x86_ref}",
         f"KERNEL_BUILDROOT_AARCH64_REF={arm_ref}",
+        "",
+    ))
+
+
+def wpe_stage_contents(x86_ref: str, arm_ref: str) -> str:
+    """Return the canonical os/wpe-stage-snapshot.env for both engines."""
+    return "\n".join((
+        "# Per-architecture WPE WebKit engine stages, signed and pinned by digest.",
+        "# Updated atomically by build-buildroots.yml after both native builds verify.",
+        f"WPE_STAGE_X86_64_REF={x86_ref}",
+        f"WPE_STAGE_AARCH64_REF={arm_ref}",
         "",
     ))
 
@@ -105,21 +106,6 @@ def kernel_snapshot(args, parser) -> tuple[str, dict]:
     }
 
 
-def rpms_snapshot(args, parser) -> tuple[str, dict]:
-    if RPMS_REF.fullmatch(args.rpms_ref) is None:
-        parser.error("--rpms-ref must be an immutable tilo/rpms sha256 reference")
-    if REVISION.fullmatch(args.source_revision or "") is None:
-        parser.error("--source-revision must be the full commit the index was built from")
-    return rpms_contents(args.rpms_ref, args.source_revision), {
-        "label": "RPM",
-        "branch_prefix": "automation/rpm-snapshot-",
-        "title": "build(os): refresh native RPM snapshot index",
-        "summary": ("Automated promotion of the signed, provenance-verified "
-                    "two-architecture frozen RPM index. The kernel builds on "
-                    "its own signed buildroot, so this pin does not invalidate "
-                    "the pinned kernels."),
-    }
-
 
 def wpe_snapshot(args, parser) -> tuple[str, dict]:
     x86 = WPE_REF.fullmatch(args.x86_ref)
@@ -135,6 +121,24 @@ def wpe_snapshot(args, parser) -> tuple[str, dict]:
         "summary": ("Automated atomic promotion of the signed native x86-64 and "
                     "ARM64 WPE buildroots, each audited for its architecture "
                     "marker and the absence of Fedora repositories."),
+    }
+
+
+def wpe_stage_snapshot(args, parser) -> tuple[str, dict]:
+    x86 = WPE_STAGE_REF.fullmatch(args.x86_ref)
+    arm = WPE_STAGE_REF.fullmatch(args.arm_ref)
+    if x86 is None or arm is None:
+        parser.error("WPE stage refs must be immutable tilo-wpe-stage sha256 references")
+    if x86.group(1) == arm.group(1):
+        parser.error("native WPE stage refs must have distinct digests")
+    return wpe_stage_contents(args.x86_ref, args.arm_ref), {
+        "label": "WPE engine",
+        "branch_prefix": "automation/wpe-stage-snapshot-",
+        "title": "build(os): refresh native WPE engine stages",
+        "summary": ("Automated atomic promotion of the signed native x86-64 and "
+                    "ARM64 WPE WebKit engine stages, each compiled from the "
+                    "pinned WPE buildroot and labelled with its inputs. OS image "
+                    "builds take the engine from these instead of compiling it."),
     }
 
 
@@ -196,6 +200,29 @@ def find_open(server: str, repository: str, token: str, branch: str):
         page += 1
 
 
+def add_kinds(parser) -> None:
+    kinds = parser.add_subparsers(dest="kind", required=True)
+    for name, snapshot, help in (
+            ("kernel", kernel_snapshot, "both native kernel RPM repositories"),
+            ("wpe", wpe_snapshot, "both native WPE buildroots"),
+            ("wpe-stage", wpe_stage_snapshot, "both native WPE engine stages"),
+            ("kernel-buildroot", kernel_buildroot_snapshot, "both native kernel buildroots")):
+        kind = kinds.add_parser(name, help=help)
+        kind.add_argument("--x86-ref", required=True)
+        kind.add_argument("--arm-ref", required=True)
+        kind.set_defaults(snapshot=snapshot)
+
+
+def pins(argv: list[str]) -> int:
+    """Print the canonical pin file for verified references."""
+    parser = argparse.ArgumentParser(prog="open-snapshot-pr.py pins")
+    add_kinds(parser)
+    args = parser.parse_args(argv)
+    contents, _ = args.snapshot(args, parser)
+    sys.stdout.write(contents)
+    return 0
+
+
 def promote() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--server", required=True)
@@ -204,24 +231,7 @@ def promote() -> int:
     parser.add_argument("--snapshot-digest", required=True)
     parser.add_argument("--supersede", action="append", default=[], metavar="BRANCH",
                         help="close the open pin pull request from this older automation branch")
-    kinds = parser.add_subparsers(dest="kind", required=True)
-    kernel = kinds.add_parser("kernel", help="both native kernel RPM repositories")
-    kernel.add_argument("--x86-ref", required=True)
-    kernel.add_argument("--arm-ref", required=True)
-    kernel.set_defaults(snapshot=kernel_snapshot)
-    rpms = kinds.add_parser("rpms", help="the two-architecture frozen RPM index")
-    rpms.add_argument("--rpms-ref", required=True)
-    rpms.add_argument("--source-revision", required=True,
-                      help="the commit the index was built from")
-    rpms.set_defaults(snapshot=rpms_snapshot)
-    wpe = kinds.add_parser("wpe", help="both native WPE buildroots")
-    wpe.add_argument("--x86-ref", required=True)
-    wpe.add_argument("--arm-ref", required=True)
-    wpe.set_defaults(snapshot=wpe_snapshot)
-    buildroot = kinds.add_parser("kernel-buildroot", help="both native kernel buildroots")
-    buildroot.add_argument("--x86-ref", required=True)
-    buildroot.add_argument("--arm-ref", required=True)
-    buildroot.set_defaults(snapshot=kernel_buildroot_snapshot)
+    add_kinds(parser)
     args = parser.parse_args()
 
     token = os.environ.get("FORGEJO_TOKEN", "")
@@ -292,6 +302,8 @@ def close_superseded(server: str, repository: str, token: str, branch: str, keep
 
 
 def main() -> int:
+    if sys.argv[1:2] == ["pins"]:
+        return pins(sys.argv[2:])
     try:
         return promote()
     except PromotionError as error:

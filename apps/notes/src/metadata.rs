@@ -142,237 +142,240 @@ mod tests {
         action.apply(doc).unwrap();
         doc.commit_with(automerge::transaction::CommitOptions::default().with_time(timestamp));
     }
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn metadata_dates_follow_real_edits_and_survive_reload() {
-        let mut doc = AutoCommit::new();
-        let a = PageId::new_v4();
-        let b = PageId::new_v4();
-        apply(&mut doc, actions::new_page_action(a, None, 0, "A"), 100);
-        apply(&mut doc, actions::new_page_action(b, None, 1, "B"), 200);
-        let mut index = NoteDateIndex::default();
-        index.sync(&mut doc);
-        assert_eq!(
-            index.get(a),
-            NoteDates {
-                created: Some(100),
-                edited: Some(100)
-            }
-        );
-        apply(
-            &mut doc,
-            actions::apply_block_ops_action(
-                a,
-                vec![ui::widget::BlockEditOp::Insert {
-                    block_id: PageId::new_v4().to_string(),
-                    after: None,
-                    kind: "paragraph".into(),
-                    text: "Hello".into(),
-                }],
-            ),
-            300,
-        );
-        index.sync(&mut doc);
-        assert_eq!(
-            index.get(a),
-            NoteDates {
-                created: Some(100),
-                edited: Some(300)
-            }
-        );
-        assert_eq!(index.get(b).edited, Some(200));
-        let mut restored = AutoCommit::load(&doc.save()).unwrap();
-        let mut restored_index = NoteDateIndex::default();
-        restored_index.sync(&mut restored);
-        assert_eq!(restored_index.get(a), index.get(a));
-        let heads = restored.get_heads();
-        restored_index.sync(&mut restored);
-        assert_eq!(restored.get_heads(), heads, "viewing metadata is read-only");
-    }
-    #[test]
-    fn metadata_legacy_creation_remains_unknown_after_edit() {
-        let mut doc = AutoCommit::new();
-        let page = PageId::new_v4();
-        apply(
-            &mut doc,
-            actions::new_page_action(page, None, 0, "Legacy"),
-            0,
-        );
-        let meta = crate::doc::NotesDoc::list_pages(&doc).remove(0);
-        apply(&mut doc, actions::rename_page_action(&meta, "Renamed"), 500);
-        let mut index = NoteDateIndex::default();
-        index.sync(&mut doc);
-        assert_eq!(
-            index.get(page),
-            NoteDates {
-                created: None,
-                edited: Some(500)
-            }
-        );
-    }
+    fn metadata_dates_follow_real_edits_and_survive_reload_and_legacy_notes() {
+        eprintln!("phase metadata_dates_follow_real_edits_and_survive_reload");
+        {
+            let mut doc = AutoCommit::new();
+            let a = PageId::new_v4();
+            let b = PageId::new_v4();
+            apply(&mut doc, actions::new_page_action(a, None, 0, "A"), 100);
+            apply(&mut doc, actions::new_page_action(b, None, 1, "B"), 200);
+            let mut index = NoteDateIndex::default();
+            index.sync(&mut doc);
+            assert_eq!(
+                index.get(a),
+                NoteDates {
+                    created: Some(100),
+                    edited: Some(100)
+                }
+            );
+            apply(
+                &mut doc,
+                actions::edit_body_action(
+                    a,
+                    tilo_document::RichTextAction::AppendParagraph {
+                        text: "Hello".into(),
+                    },
+                ),
+                300,
+            );
+            index.sync(&mut doc);
+            assert_eq!(
+                index.get(a),
+                NoteDates {
+                    created: Some(100),
+                    edited: Some(300)
+                }
+            );
+            assert_eq!(index.get(b).edited, Some(200));
+            let mut restored = AutoCommit::load(&doc.save()).unwrap();
+            let mut restored_index = NoteDateIndex::default();
+            restored_index.sync(&mut restored);
+            assert_eq!(restored_index.get(a), index.get(a));
+            let heads = restored.get_heads();
+            restored_index.sync(&mut restored);
+            assert_eq!(restored.get_heads(), heads, "viewing metadata is read-only");
+        }
 
-    #[test]
-    fn metadata_production_executor_stamps_and_replays_creation() {
-        let mut origin = AutoCommit::new();
-        let mut peer = AutoCommit::new();
-        let page = PageId::new_v4();
-        let action = actions::new_page_action(page, None, 0, "New note");
-        let envelope =
+        eprintln!("phase metadata_legacy_creation_remains_unknown_after_edit");
+        {
+            let mut doc = AutoCommit::new();
+            let page = PageId::new_v4();
+            apply(
+                &mut doc,
+                actions::new_page_action(page, None, 0, "Legacy"),
+                0,
+            );
+            let meta = crate::doc::NotesDoc::list_pages(&doc).remove(0);
+            apply(&mut doc, actions::rename_page_action(&meta, "Renamed"), 500);
+            let mut index = NoteDateIndex::default();
+            index.sync(&mut doc);
+            assert_eq!(
+                index.get(page),
+                NoteDates {
+                    created: None,
+                    edited: Some(500)
+                }
+            );
+        }
+
+        eprintln!("phase metadata_production_executor_stamps_and_replays_creation");
+        {
+            let mut origin = AutoCommit::new();
+            let mut peer = AutoCommit::new();
+            let page = PageId::new_v4();
+            let action = actions::new_page_action(page, None, 0, "New note");
+            let envelope =
+                tilo_actions::apply_local(&mut origin, &action, actions::encode(&action)).unwrap();
+            assert!(
+                envelope.timestamp > 0,
+                "new notes must have a real persisted time"
+            );
+            let mut index = NoteDateIndex::default();
+            index.sync(&mut origin);
+            assert_eq!(
+                index.get(page),
+                NoteDates {
+                    created: Some(envelope.timestamp),
+                    edited: Some(envelope.timestamp),
+                }
+            );
+            let mut registry = tilo_actions::ActionRegistry::new();
+            actions::register(&mut registry);
+            tilo_actions::replay(&mut peer, &envelope, &registry).unwrap();
+            let mut peer_index = NoteDateIndex::default();
+            peer_index.sync(&mut peer);
+            assert_eq!(peer_index.get(page), index.get(page));
+            assert_eq!(origin.get_heads(), peer.get_heads());
+            let heads = origin.get_heads();
             tilo_actions::apply_local(&mut origin, &action, actions::encode(&action)).unwrap();
-        assert!(
-            envelope.timestamp > 0,
-            "new notes must have a real persisted time"
-        );
-        let mut index = NoteDateIndex::default();
-        index.sync(&mut origin);
-        assert_eq!(
-            index.get(page),
-            NoteDates {
-                created: Some(envelope.timestamp),
-                edited: Some(envelope.timestamp),
-            }
-        );
-        let mut registry = tilo_actions::ActionRegistry::new();
-        actions::register(&mut registry);
-        tilo_actions::replay(&mut peer, &envelope, &registry).unwrap();
-        let mut peer_index = NoteDateIndex::default();
-        peer_index.sync(&mut peer);
-        assert_eq!(peer_index.get(page), index.get(page));
-        assert_eq!(origin.get_heads(), peer.get_heads());
-        let heads = origin.get_heads();
-        tilo_actions::apply_local(&mut origin, &action, actions::encode(&action)).unwrap();
-        index.sync(&mut origin);
-        assert_eq!(
-            origin.get_heads(),
-            heads,
-            "no-op writes must not alter metadata"
-        );
+            index.sync(&mut origin);
+            assert_eq!(
+                origin.get_heads(),
+                heads,
+                "no-op writes must not alter metadata"
+            );
+        }
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn metadata_concurrent_edits_converge_incrementally() {
-        let mut base = AutoCommit::new();
-        let page = PageId::new_v4();
-        apply(
-            &mut base,
-            actions::new_page_action(page, None, 0, "Original"),
-            100,
-        );
-        let meta = crate::doc::NotesDoc::list_pages(&base).remove(0);
-        let mut first = base.fork();
-        let mut second = base.fork();
-        let mut first_index = NoteDateIndex::default();
-        let mut second_index = NoteDateIndex::default();
-        first_index.sync(&mut first);
-        second_index.sync(&mut second);
-        apply(
-            &mut first,
-            actions::rename_page_action(&meta, "Renamed"),
-            200,
-        );
-        apply(
-            &mut second,
-            actions::apply_block_ops_action(
-                page,
-                vec![ui::widget::BlockEditOp::Insert {
-                    block_id: PageId::new_v4().to_string(),
-                    after: None,
-                    kind: "paragraph".into(),
-                    text: "Remote text".into(),
-                }],
-            ),
-            300,
-        );
-        first_index.sync(&mut first);
-        second_index.sync(&mut second);
-        assert_eq!(first_index.get(page).edited, Some(200));
-        assert_eq!(second_index.get(page).edited, Some(300));
-        first.merge_incoming(&mut second).unwrap();
-        second.merge_incoming(&mut first).unwrap();
-        first_index.sync(&mut first);
-        second_index.sync(&mut second);
-        assert_eq!(
-            first_index.get(page),
-            NoteDates {
-                created: Some(100),
-                edited: Some(300)
-            }
-        );
-        assert_eq!(second_index.get(page), first_index.get(page));
-        let mut rebuilt = NoteDateIndex::default();
-        rebuilt.sync(&mut first);
-        assert_eq!(rebuilt.get(page), first_index.get(page));
-    }
+    fn metadata_converges_across_concurrent_edits_undo_and_replaced_history() {
+        eprintln!("phase metadata_concurrent_edits_converge_incrementally");
+        {
+            let mut base = AutoCommit::new();
+            let page = PageId::new_v4();
+            apply(
+                &mut base,
+                actions::new_page_action(page, None, 0, "Original"),
+                100,
+            );
+            let meta = crate::doc::NotesDoc::list_pages(&base).remove(0);
+            let mut first = base.fork();
+            let mut second = base.fork();
+            let mut first_index = NoteDateIndex::default();
+            let mut second_index = NoteDateIndex::default();
+            first_index.sync(&mut first);
+            second_index.sync(&mut second);
+            apply(
+                &mut first,
+                actions::rename_page_action(&meta, "Renamed"),
+                200,
+            );
+            apply(
+                &mut second,
+                actions::edit_body_action(
+                    page,
+                    tilo_document::RichTextAction::AppendParagraph {
+                        text: "Remote text".into(),
+                    },
+                ),
+                300,
+            );
+            first_index.sync(&mut first);
+            second_index.sync(&mut second);
+            assert_eq!(first_index.get(page).edited, Some(200));
+            assert_eq!(second_index.get(page).edited, Some(300));
+            first.merge_incoming(&mut second).unwrap();
+            second.merge_incoming(&mut first).unwrap();
+            first_index.sync(&mut first);
+            second_index.sync(&mut second);
+            assert_eq!(
+                first_index.get(page),
+                NoteDates {
+                    created: Some(100),
+                    edited: Some(300)
+                }
+            );
+            assert_eq!(second_index.get(page), first_index.get(page));
+            let mut rebuilt = NoteDateIndex::default();
+            rebuilt.sync(&mut first);
+            assert_eq!(rebuilt.get(page), first_index.get(page));
+        }
 
-    #[test]
-    fn metadata_shared_undo_and_redo_preserve_creation() {
-        let mut state = ui::State::new();
-        let page = PageId::new_v4();
-        apply(
-            &mut state.doc,
-            actions::new_page_action(page, None, 0, "Original"),
-            100,
-        );
-        let before = state.doc.get_heads();
-        let meta = crate::doc::NotesDoc::list_pages(&state.doc).remove(0);
-        apply(
-            &mut state.doc,
-            actions::rename_page_action(&meta, "Renamed"),
-            200,
-        );
-        state.record_committed_action(before, None, None);
-        let mut index = NoteDateIndex::default();
-        index.sync(&mut state.doc);
-        assert_eq!(index.get(page).edited, Some(200));
-        assert!(state.undo(None, None).is_some());
-        assert_eq!(
-            crate::doc::NotesDoc::list_pages(&state.doc)[0].title,
-            "Original"
-        );
-        index.sync(&mut state.doc);
-        let undo_dates = index.get(page);
-        assert_eq!(undo_dates.created, Some(100));
-        assert!(
-            undo_dates.edited.is_some_and(|time| time > 200),
-            "shared undo commits its own real timestamp"
-        );
-        assert!(state.redo(None, None).is_some());
-        assert_eq!(
-            crate::doc::NotesDoc::list_pages(&state.doc)[0].title,
-            "Renamed"
-        );
-        index.sync(&mut state.doc);
-        assert_eq!(index.get(page).created, Some(100));
-        assert!(index.get(page).edited >= undo_dates.edited);
-    }
+        eprintln!("phase metadata_shared_undo_and_redo_preserve_creation");
+        {
+            let mut state = ui::State::new();
+            let page = PageId::new_v4();
+            apply(
+                &mut state.doc,
+                actions::new_page_action(page, None, 0, "Original"),
+                100,
+            );
+            let before = state.doc.get_heads();
+            let meta = crate::doc::NotesDoc::list_pages(&state.doc).remove(0);
+            apply(
+                &mut state.doc,
+                actions::rename_page_action(&meta, "Renamed"),
+                200,
+            );
+            state.record_committed_action(before, None, None);
+            let mut index = NoteDateIndex::default();
+            index.sync(&mut state.doc);
+            assert_eq!(index.get(page).edited, Some(200));
+            assert!(state.undo(None, None).is_some());
+            assert_eq!(
+                crate::doc::NotesDoc::list_pages(&state.doc)[0].title,
+                "Original"
+            );
+            index.sync(&mut state.doc);
+            let undo_dates = index.get(page);
+            assert_eq!(undo_dates.created, Some(100));
+            assert!(
+                undo_dates.edited.is_some_and(|time| time > 200),
+                "shared undo commits its own real timestamp"
+            );
+            assert!(state.redo(None, None).is_some());
+            assert_eq!(
+                crate::doc::NotesDoc::list_pages(&state.doc)[0].title,
+                "Renamed"
+            );
+            index.sync(&mut state.doc);
+            assert_eq!(index.get(page).created, Some(100));
+            assert!(index.get(page).edited >= undo_dates.edited);
+        }
 
-    #[test]
-    fn metadata_rebuilds_when_document_history_is_replaced() {
-        let mut doc = AutoCommit::new();
-        let page = PageId::new_v4();
-        apply(
-            &mut doc,
-            actions::new_page_action(page, None, 0, "Original"),
-            100,
-        );
-        let before = doc.get_heads();
-        let meta = crate::doc::NotesDoc::list_pages(&doc).remove(0);
-        apply(&mut doc, actions::rename_page_action(&meta, "Renamed"), 200);
-        let mut index = NoteDateIndex::default();
-        index.sync(&mut doc);
-        let mut historical = doc.fork_at(&before).unwrap();
-        index.sync(&mut historical);
-        assert_eq!(
-            index.get(page),
-            NoteDates {
-                created: Some(100),
-                edited: Some(100)
-            }
-        );
-        index.sync(&mut AutoCommit::new());
-        assert_eq!(
-            index.get(page),
-            NoteDates::default(),
-            "another notebook must not inherit these dates"
-        );
+        eprintln!("phase metadata_rebuilds_when_document_history_is_replaced");
+        {
+            let mut doc = AutoCommit::new();
+            let page = PageId::new_v4();
+            apply(
+                &mut doc,
+                actions::new_page_action(page, None, 0, "Original"),
+                100,
+            );
+            let before = doc.get_heads();
+            let meta = crate::doc::NotesDoc::list_pages(&doc).remove(0);
+            apply(&mut doc, actions::rename_page_action(&meta, "Renamed"), 200);
+            let mut index = NoteDateIndex::default();
+            index.sync(&mut doc);
+            let mut historical = doc.fork_at(&before).unwrap();
+            index.sync(&mut historical);
+            assert_eq!(
+                index.get(page),
+                NoteDates {
+                    created: Some(100),
+                    edited: Some(100)
+                }
+            );
+            index.sync(&mut AutoCommit::new());
+            assert_eq!(
+                index.get(page),
+                NoteDates::default(),
+                "another notebook must not inherit these dates"
+            );
+        }
     }
 }

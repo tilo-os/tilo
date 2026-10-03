@@ -5,8 +5,14 @@
 # The script deliberately reads exactly one path — the invoking user's
 # ~/.config/tilo/dev-session, resolved from the passwd database, with no
 # environment variable or argument that can point it elsewhere. That is what
-# makes it worth testing on the real path rather than a temporary one, so this
-# saves any existing config and puts it back on the way out.
+# makes it worth testing on the real path rather than a temporary one, so it
+# only runs in a disposable account: dist/ci/run-dev-session-test.sh gives it
+# one in a container. It still saves any existing config and puts it back on
+# the way out.
+#
+# Every case runs a copy of the wrapper next to a fixture lifecycle runner, so
+# a refusal that regresses starts the fixture rather than the tree's runner
+# with the host's systemctl.
 set -uo pipefail
 
 # The production wrapper deliberately rejects group-writable configuration
@@ -17,6 +23,16 @@ umask 0077
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 wrapper=$here/../tilo-session-dev
+if [[ ! -e /.dockerenv && ! -e /run/.containerenv ]]; then
+    echo "dev-session refusals: refusing to replace this account's ~/.config/tilo/dev-session;" >&2
+    echo "run dist/ci/run-dev-session-test.sh, which gives the test a disposable account" >&2
+    exit 2
+fi
+# The container gets only dist/session; a checkout also has the shared helper.
+if [[ -r $here/../../../tools/desktop-isolation.sh ]]; then
+    . "$here/../../../tools/desktop-isolation.sh"
+    tilo_test_isolate "$@"
+fi
 home=$(getent passwd "$(id -u)" | cut -d: -f6)
 conf=$home/.config/tilo/dev-session
 # Under the home directory, not /tmp: the accepting case needs a target no one
@@ -48,10 +64,39 @@ mkdir -p "$(dirname "$conf")"
 fails=0
 pass=0
 
+wrapper_copy=$scratch/tilo-session-dev
+lifecycle=$scratch/tilo-session-runner
+test_runtime=$scratch/runtime
+cp "$wrapper" "$wrapper_copy"
+mkdir -m 0700 "$test_runtime"
+cat >"$lifecycle" <<'SH'
+#!/bin/sh
+case "${1:-}" in /*) ;; *) exit 73 ;; esac
+test -x "$1" || exit 74
+env | grep '^TILO_TEST_CONTROL=' >"$(dirname -- "$XDG_RUNTIME_DIR")/managed-environment"
+test -n "${TILO_DEV_SESSION_ATTESTATION:-}" || exit 75
+attest_tmp=$TILO_DEV_SESSION_ATTESTATION.$$
+{
+    printf 'runner_pid=%s\n' "$$"
+    printf 'compositor_pid=%s\n' "$$"
+    sed -n '/^path=/p;/^sha256=/p;/^revision=/p;/^source_state=/p' \
+        "$TILO_DEV_SESSION_ATTESTATION"
+} >"$attest_tmp"
+chmod 0600 "$attest_tmp"
+mv -f "$attest_tmp" "$TILO_DEV_SESSION_ATTESTATION"
+printf 'managed %s ::' "$1"
+shift
+if (( $# )); then
+    printf ' %s' "$@"
+fi
+printf '\n'
+SH
+chmod 0755 "$wrapper_copy" "$lifecycle"
+
 # refuse <name> — the wrapper must exit non-zero and print a reason.
 refuse() {
     local name=$1 out rc
-    out=$("$wrapper" 2>&1); rc=$?
+    out=$("$wrapper_copy" 2>&1); rc=$?
     if (( rc == 0 )); then
         echo "FAIL: $name — wrapper accepted it"
         fails=$((fails + 1))
@@ -107,24 +152,6 @@ refuse "target carries no dev-session build marker"
 # binary to the package-owned session lifecycle instead of bypassing it.
 echo "$marked" >"$conf"
 err=$scratch/accept.err
-wrapper_copy=$scratch/tilo-session-dev
-lifecycle=$scratch/tilo-session-runner
-test_runtime=$scratch/runtime
-cp "$wrapper" "$wrapper_copy"
-mkdir -m 0700 "$test_runtime"
-cat >"$lifecycle" <<'SH'
-#!/bin/sh
-case "${1:-}" in /*) ;; *) exit 73 ;; esac
-test -x "$1" || exit 74
-env | grep '^TILO_TEST_CONTROL=' >"$(dirname -- "$XDG_RUNTIME_DIR")/managed-environment"
-printf 'managed %s ::' "$1"
-shift
-if (( $# )); then
-    printf ' %s' "$@"
-fi
-printf '\n'
-SH
-chmod 0755 "$wrapper_copy" "$lifecycle"
 out=$(XDG_RUNTIME_DIR="$test_runtime" "$wrapper_copy" 2>"$err"); rc=$?
 expected="managed $(realpath -e "$marked") ::"
 if (( rc == 0 )) && [[ $out == "$expected" ]]; then
@@ -139,6 +166,9 @@ fi
 attest=$test_runtime/tilo-app-session/active
 if [[ -r $attest ]] \
     && grep -Fqx "path=$(realpath -e "$marked")" "$attest" \
+    && grep -Eq '^runner_pid=[0-9]+$' "$attest" \
+    && grep -Eq '^compositor_pid=[0-9]+$' "$attest" \
+    && ! grep -q '^pid=' "$attest" \
     && grep -Eq '^sha256=[0-9a-f]{64}$' "$attest"; then
     echo "ok: developer launch records a protected binary attestation"
     pass=$((pass + 1))

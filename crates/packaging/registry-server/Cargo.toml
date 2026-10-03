@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "registry-server"
 version = "0.1.0"
 edition = "2024"
@@ -20,16 +21,18 @@ path = "src/main.rs"
 # of scope — deployments put the server behind nginx or Caddy.
 
 [dependencies]
-advisory-lock = { path = "../../system/advisory-lock" }
-tilo-clock = { path = "../../system/tilo-clock" }
-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../../crates/system/atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
 registry-types = { path = "../registry-types" }
 app-registry = { path = "../app-registry" }
 tilo-app-package = { path = "../tilo-app-package" }
 
-tokio = { workspace = true, features = ["macros", "net", "signal", "sync", "fs", "time", "io-util"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "signal", "sync", "fs", "time", "io-util"] }
+# Namespace proofs read DNS TXT records; the resolver iroh already brings.
+hickory-resolver = { version = "0.26", default-features = false, features = ["tokio", "system-config"] }
 tilo-rt.workspace = true
 hyper        = { version = "1", features = ["server", "http1"] }
 hyper-util   = { version = "0.1", features = ["tokio", "server-auto"] }
@@ -52,11 +55,21 @@ zeroize.workspace = true
 # bundle so newly issued public certificates do not depend on the root set
 # compiled into an older pinned application image.
 reqwest = { workspace = true, features = ["blocking", "json"] }
-tilo-net = { path = "../../system/tilo-net", features = ["blocking"] }
+tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+registry-client = { path = "../registry-client" }
+# Compaction tests verify served snapshots with the native and browser clients.
+app-cli = { path = "../app-cli" }
+registry-web = { path = "../registry-web" }
+tilo-test-env = { path = "../../dev/test-env" }
 getrandom.workspace = true
 tempfile.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

@@ -7,7 +7,9 @@
 
 use crate::LocalState;
 use crate::theme::Theme;
+use crate::time::SystemTime;
 use crate::tokens::TextRole;
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{
     Button, ButtonStyle, Checkbox, Column, Container, Element, Row, Scrollable, Spacer, Text,
     TextInput, Toggle, Widget, labeled_check, labeled_field,
@@ -16,6 +18,7 @@ use automerge::{AutoCommit, ObjId};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 use taffy::style_helpers::percent;
@@ -24,9 +27,16 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
+/// Directory of live `*.json` screen graphs. When set, graph apps load and
+/// hot-reload screens from disk instead of the embed baked by `include_str!`.
+pub const LIVE_GRAPH_DIR_ENV: &str = "TILO_UI_GRAPH_DIR";
+
+/// Operation type for live graph mutations published by [`LiveUi`].
+pub const LIVE_GRAPH_OPERATION: &str = "tilo.ui.graph";
+
 pub use tilo_ui_graph::{
-    UI_GRAPH_VERSION, UiButtonStyle, UiDocument, UiGraphError, UiNavigation, UiNode, UiTextRole,
-    UiTextSource,
+    UI_GRAPH_VERSION, UiButtonStyle, UiDocument, UiGraphEdit, UiGraphError, UiNavigation, UiNode,
+    UiTextRole, UiTextSource, parse_ui_graph_edits,
 };
 
 /// Inputs passed to one app-owned serialized-graph component factory.
@@ -159,14 +169,14 @@ impl UiDocumentExt for UiDocument {
 fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGraphError> {
     Ok(match node {
         UiNode::Column {
+            id,
             children,
             gap,
             no_padding,
             intrinsic_height,
             fill_remaining_height,
-            ..
         } => {
-            let mut column = Column::new();
+            let mut column = Column::new().with_id(id);
             if let Some(gap) = gap {
                 column = column.with_gap(*gap);
             }
@@ -185,12 +195,12 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
             Box::new(column)
         }
         UiNode::Row {
+            id,
             children,
             no_wrap,
             fill_remaining_height,
-            ..
         } => {
-            let mut row = Row::new();
+            let mut row = Row::new().with_id(id);
             if *no_wrap {
                 row = row.no_wrap();
             }
@@ -203,15 +213,17 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
             Box::new(row)
         }
         UiNode::Container {
+            id,
             child,
             background,
             no_padding,
             fill_height,
             width,
             height,
-            ..
         } => {
-            let mut container = Container::new().with_child(build_node(child, context)?);
+            let mut container = Container::new()
+                .with_id(id)
+                .with_child(build_node(child, context)?);
             if *background {
                 container = container.with_background();
             }
@@ -281,25 +293,47 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
             }
             if let (Some(navigation), Some(router)) = (navigate, context.router.as_ref()) {
                 let router = router.clone();
+                // A published view action, so the palette, agents and the
+                // native audit reach navigation as they reach any control. A
+                // button that also writes a document path keeps that path.
+                let bind = |button: Button, navigate: Box<dyn Fn() + 'static>| {
+                    if on_click_path.is_some() {
+                        button.on_click(move || navigate())
+                    } else {
+                        button.on_view(move || navigate())
+                    }
+                };
                 button = match navigation {
                     UiNavigation::Push { route } if router.knows(route) => {
                         let route = route.clone();
-                        button.on_click(move || {
-                            let _ = router.push(route.clone());
-                        })
+                        bind(
+                            button,
+                            Box::new(move || {
+                                let _ = router.push(route.clone());
+                            }),
+                        )
                     }
                     UiNavigation::Replace { route } if router.knows(route) => {
                         let route = route.clone();
-                        button.on_click(move || {
-                            let _ = router.replace(route.clone());
-                        })
+                        bind(
+                            button,
+                            Box::new(move || {
+                                let _ = router.replace(route.clone());
+                            }),
+                        )
                     }
-                    UiNavigation::Back => button.on_click(move || {
-                        let _ = router.back();
-                    }),
-                    UiNavigation::Forward => button.on_click(move || {
-                        let _ = router.forward();
-                    }),
+                    UiNavigation::Back => bind(
+                        button,
+                        Box::new(move || {
+                            let _ = router.back();
+                        }),
+                    ),
+                    UiNavigation::Forward => bind(
+                        button,
+                        Box::new(move || {
+                            let _ = router.forward();
+                        }),
+                    ),
                     UiNavigation::Push { .. } | UiNavigation::Replace { .. } => button,
                 };
             }
@@ -390,8 +424,215 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
                 });
             }
         }
-        UiNode::Spacer { .. } => Box::new(Spacer::new()),
+        UiNode::Spacer { id } => Box::new(Spacer::new().with_id(id)),
     })
+}
+
+/// Reconcile a retained tree with a new source graph, reusing widgets whose
+/// source nodes are unchanged and transferring ephemeral state across leaf
+/// rebuilds that keep the same id.
+fn reconcile_node(
+    old: Element,
+    old_node: &UiNode,
+    new_node: &UiNode,
+    context: &UiBuildContext,
+) -> Result<(Element, bool), UiGraphError> {
+    if old_node == new_node {
+        return Ok((old, false));
+    }
+    if std::mem::discriminant(old_node) != std::mem::discriminant(new_node)
+        || old_node.id() != new_node.id()
+    {
+        return Ok((build_node(new_node, context)?, true));
+    }
+    match (old_node, new_node) {
+        (
+            UiNode::Column {
+                children: old_children,
+                ..
+            },
+            UiNode::Column { .. },
+        ) => reconcile_column(old, old_children, new_node, context),
+        (
+            UiNode::Row {
+                children: old_children,
+                ..
+            },
+            UiNode::Row { .. },
+        ) => reconcile_row(old, old_children, new_node, context),
+        (
+            UiNode::Container {
+                child: old_child_node,
+                ..
+            },
+            UiNode::Container { .. },
+        ) => reconcile_container(old, old_child_node, new_node, context),
+        _ => {
+            let snapshot = widget_state_snapshot(old.as_ref());
+            let focused = focused_widget_snapshot(old.as_ref());
+            let mut fresh = build_node(new_node, context)?;
+            restore_widget_states(fresh.as_mut(), &snapshot);
+            if let Some((id, state)) = focused {
+                restore_widget_focus(fresh.as_mut(), &id, state.as_deref());
+            }
+            Ok((fresh, false))
+        }
+    }
+}
+
+/// Rebuilding `new_node` from scratch is the fallback whenever the retained
+/// widget is not the matching kind.
+fn reconcile_column(
+    mut old: Element,
+    old_children: &[UiNode],
+    new_node: &UiNode,
+    context: &UiBuildContext,
+) -> Result<(Element, bool), UiGraphError> {
+    let (
+        UiNode::Column {
+            id,
+            children: new_children,
+            gap,
+            no_padding,
+            intrinsic_height,
+            fill_remaining_height,
+        },
+        Some(column),
+    ) = (
+        new_node,
+        old.as_any_mut()
+            .and_then(|any| any.downcast_mut::<Column>()),
+    )
+    else {
+        return Ok((build_node(new_node, context)?, true));
+    };
+    let previous = column.take_children();
+    let (next, topology) = reconcile_child_list(previous, old_children, new_children, context)?;
+    column.set_children(next);
+    column.apply_graph_props(
+        id,
+        *gap,
+        *no_padding,
+        *intrinsic_height,
+        *fill_remaining_height,
+    );
+    Ok((old, topology))
+}
+
+fn reconcile_row(
+    mut old: Element,
+    old_children: &[UiNode],
+    new_node: &UiNode,
+    context: &UiBuildContext,
+) -> Result<(Element, bool), UiGraphError> {
+    let (
+        UiNode::Row {
+            id,
+            children: new_children,
+            no_wrap,
+            fill_remaining_height,
+        },
+        Some(row),
+    ) = (
+        new_node,
+        old.as_any_mut().and_then(|any| any.downcast_mut::<Row>()),
+    )
+    else {
+        return Ok((build_node(new_node, context)?, true));
+    };
+    let previous = row.take_children();
+    let (next, topology) = reconcile_child_list(previous, old_children, new_children, context)?;
+    row.set_children(next);
+    row.apply_graph_props(id, *no_wrap, *fill_remaining_height);
+    Ok((old, topology))
+}
+
+fn reconcile_container(
+    mut old: Element,
+    old_child_node: &UiNode,
+    new_node: &UiNode,
+    context: &UiBuildContext,
+) -> Result<(Element, bool), UiGraphError> {
+    let (
+        UiNode::Container {
+            id,
+            child: new_child_node,
+            background,
+            no_padding,
+            fill_height,
+            width,
+            height,
+        },
+        Some(container),
+    ) = (
+        new_node,
+        old.as_any_mut()
+            .and_then(|any| any.downcast_mut::<Container>()),
+    )
+    else {
+        return Ok((build_node(new_node, context)?, true));
+    };
+    let previous = container
+        .take_child()
+        .unwrap_or_else(|| Box::new(Spacer::new()));
+    let (child, topology) = reconcile_node(previous, old_child_node, new_child_node, context)?;
+    container.set_child(child);
+    container.apply_graph_props(id, *background, *no_padding, *fill_height, *width, *height);
+    Ok((old, topology))
+}
+
+fn reconcile_child_list(
+    previous: Vec<Element>,
+    old_children: &[UiNode],
+    new_children: &[UiNode],
+    context: &UiBuildContext,
+) -> Result<(Vec<Element>, bool), UiGraphError> {
+    let mut by_id = HashMap::with_capacity(old_children.len());
+    for (node, element) in old_children.iter().cloned().zip(previous) {
+        by_id.insert(node.id().to_owned(), (node, element));
+    }
+    let old_ids: Vec<&str> = old_children.iter().map(UiNode::id).collect();
+    let new_ids: Vec<&str> = new_children.iter().map(UiNode::id).collect();
+    let mut topology = old_ids != new_ids;
+    let mut next = Vec::with_capacity(new_children.len());
+    for child_node in new_children {
+        if let Some((prev_node, prev_element)) = by_id.remove(child_node.id()) {
+            let (element, child_topology) =
+                reconcile_node(prev_element, &prev_node, child_node, context)?;
+            topology |= child_topology;
+            next.push(element);
+        } else {
+            topology = true;
+            next.push(build_node(child_node, context)?);
+        }
+    }
+    if !by_id.is_empty() {
+        topology = true;
+    }
+    Ok((next, topology))
+}
+
+fn widget_state_snapshot(widget: &dyn Widget) -> HashMap<String, Option<String>> {
+    let mut states = HashMap::new();
+    fn walk(widget: &dyn Widget, states: &mut HashMap<String, Option<String>>) {
+        if let Some(id) = widget.test_id() {
+            states.insert(id.to_owned(), crate::undo::get_state(widget));
+        }
+        widget.for_each_child(&mut |child| walk(child, states));
+    }
+    walk(widget, &mut states);
+    states
+}
+
+fn restore_widget_states(widget: &mut dyn Widget, states: &HashMap<String, Option<String>>) {
+    if let Some(id) = widget.test_id().map(str::to_owned)
+        && let Some(Some(state)) = states.get(&id)
+    {
+        crate::undo::set_state(widget, state);
+    }
+    for child in widget.children_mut() {
+        restore_widget_states(child, states);
+    }
 }
 
 #[derive(Clone)]
@@ -406,6 +647,8 @@ struct UiGraphState {
     undo: Vec<UiDocument>,
     redo: Vec<UiDocument>,
     active_edit_group: Option<String>,
+    live_path: Option<PathBuf>,
+    live_mtime: Option<SystemTime>,
 }
 
 const UI_GRAPH_HISTORY_LIMIT: usize = 100;
@@ -425,6 +668,8 @@ impl UiGraphHandle {
                 undo: Vec::new(),
                 redo: Vec::new(),
                 active_edit_group: None,
+                live_path: None,
+                live_mtime: None,
             })),
         })
     }
@@ -436,6 +681,135 @@ impl UiGraphHandle {
     /// Returns a JSON or graph validation error.
     pub fn from_json(source: &str) -> Result<Self, UiGraphError> {
         Self::new(UiDocument::from_json(source)?)
+    }
+
+    /// Load a screen from the host's live graph directory when one is set,
+    /// otherwise from the embedded source. The native runner fills that
+    /// directory from `TILO_UI_GRAPH_DIR`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JSON, I/O, or graph validation error.
+    pub fn from_embedded_or_live(screen: &str, embedded: &str) -> Result<Self, UiGraphError> {
+        if let Some(dir) = crate::host::environment().ui_graph_dir.clone() {
+            let path = dir.join(format!("{screen}.json"));
+            return Self::open_live(path);
+        }
+        Self::from_json(embedded)
+    }
+
+    /// Open a graph file and keep reloading it when its mtime advances.
+    ///
+    /// Successful in-process edits are written back to the same path so the
+    /// builder, `tilo-app ui apply`, and the running app share one document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O, JSON, or graph validation error.
+    pub fn open_live(path: impl Into<PathBuf>) -> Result<Self, UiGraphError> {
+        let path = path.into();
+        let source = std::fs::read_to_string(&path)
+            .map_err(|error| UiGraphError::Io(format!("reading {}: {error}", path.display())))?;
+        let document = UiDocument::from_json(&source)?;
+        let live_mtime = std::fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .map(crate::time::from_file_time);
+        Ok(Self {
+            inner: Arc::new(RwLock::new(UiGraphState {
+                document,
+                revision: 0,
+                undo: Vec::new(),
+                redo: Vec::new(),
+                active_edit_group: None,
+                live_path: Some(path),
+                live_mtime,
+            })),
+        })
+    }
+
+    /// Path of the live on-disk graph, when this handle was opened with
+    /// [`Self::open_live`].
+    #[must_use]
+    pub fn live_path(&self) -> Option<PathBuf> {
+        self.inner
+            .read()
+            .ok()
+            .and_then(|state| state.live_path.clone())
+    }
+
+    /// Whether the on-disk live graph is newer than the last load/persist.
+    #[must_use]
+    pub fn live_source_stale(&self) -> bool {
+        let Ok(state) = self.inner.read() else {
+            return false;
+        };
+        let Some(path) = state.live_path.as_ref() else {
+            return false;
+        };
+        let Ok(mtime) = std::fs::metadata(path).and_then(|metadata| metadata.modified()) else {
+            return false;
+        };
+        state.live_mtime != Some(crate::time::from_file_time(mtime))
+    }
+
+    /// Reload from disk when the live file's mtime is newer than the last load.
+    ///
+    /// External edits become the new history baseline. Returns `true` when the
+    /// in-memory document changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O, JSON, lock, or validation error.
+    pub fn poll_live_source(&self) -> Result<bool, UiGraphError> {
+        let path = {
+            let state = self.inner.read().map_err(|_| UiGraphError::Poisoned)?;
+            let Some(path) = state.live_path.clone() else {
+                return Ok(false);
+            };
+            let Ok(metadata) = std::fs::metadata(&path) else {
+                return Ok(false);
+            };
+            let Ok(mtime) = metadata.modified() else {
+                return Ok(false);
+            };
+            if state.live_mtime == Some(crate::time::from_file_time(mtime)) {
+                return Ok(false);
+            }
+            path
+        };
+        let source = std::fs::read_to_string(&path)
+            .map_err(|error| UiGraphError::Io(format!("reading {}: {error}", path.display())))?;
+        let document = UiDocument::from_json(&source)?;
+        let mtime = std::fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .map(crate::time::from_file_time);
+        let mut state = self.inner.write().map_err(|_| UiGraphError::Poisoned)?;
+        if state.live_mtime == mtime && state.document == document {
+            return Ok(false);
+        }
+        if state.document == document {
+            state.live_mtime = mtime;
+            return Ok(false);
+        }
+        advance_graph_revision(&mut state.revision)?;
+        state.document = document;
+        state.live_mtime = mtime;
+        state.undo.clear();
+        state.redo.clear();
+        state.active_edit_group = None;
+        drop(state);
+        Ok(true)
+    }
+
+    /// Apply a batch of tagged edits and persist when this handle is live.
+    ///
+    /// # Errors
+    ///
+    /// Returns a lock, edit, validation, or I/O error.
+    pub fn apply_edits(&self, edits: Vec<UiGraphEdit>) -> Result<(), UiGraphError> {
+        self.edit(|candidate| candidate.apply_edits(edits))
     }
 
     /// Snapshot the current source document.
@@ -490,7 +864,7 @@ impl UiGraphHandle {
         state.redo.clear();
         state.active_edit_group = None;
         drop(state);
-        Ok(())
+        self.persist_live()
     }
 
     /// Whether the live graph has a successful edit that can be undone.
@@ -530,6 +904,7 @@ impl UiGraphHandle {
         push_graph_history(&mut state.redo, current);
         state.active_edit_group = None;
         drop(state);
+        self.persist_live()?;
         Ok(true)
     }
 
@@ -554,6 +929,7 @@ impl UiGraphHandle {
         push_graph_history(&mut state.undo, current);
         state.active_edit_group = None;
         drop(state);
+        self.persist_live()?;
         Ok(true)
     }
 
@@ -752,12 +1128,37 @@ impl UiGraphHandle {
         state.redo.clear();
         state.active_edit_group = group.map(str::to_owned);
         drop(state);
+        self.persist_live()?;
         Ok(output)
     }
 
     fn revision(&self) -> Option<u64> {
         self.inner.read().ok().map(|state| state.revision)
     }
+
+    fn persist_live(&self) -> Result<(), UiGraphError> {
+        let (path, json) = {
+            let state = self.inner.read().map_err(|_| UiGraphError::Poisoned)?;
+            let Some(path) = state.live_path.clone() else {
+                return Ok(());
+            };
+            (path, state.document.to_json_pretty()?)
+        };
+        write_live_graph_atomic(&path, &json)?;
+        let mtime = std::fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .map(crate::time::from_file_time);
+        let mut state = self.inner.write().map_err(|_| UiGraphError::Poisoned)?;
+        state.live_mtime = mtime;
+        drop(state);
+        Ok(())
+    }
+}
+
+fn write_live_graph_atomic(path: &Path, json: &str) -> Result<(), UiGraphError> {
+    tilo_files::native::atomic::write(path, json.as_bytes())
+        .map_err(|error| UiGraphError::Io(format!("publishing {}: {error}", path.display())))
 }
 
 fn advance_graph_revision(revision: &mut u64) -> Result<(), UiGraphError> {
@@ -774,12 +1175,13 @@ fn push_graph_history(history: &mut Vec<UiDocument>, document: UiDocument) {
     history.push(document);
 }
 
-/// A retained host whose child is rebuilt after a validated graph edit.
+/// A retained host whose child is reconciled after a validated graph edit.
 pub struct LiveUi {
     handle: UiGraphHandle,
     theme: Theme,
     context: UiBuildContext,
     seen_revision: u64,
+    seen_document: UiDocument,
     child: Element,
     rect: Rect,
     structure_dirty: bool,
@@ -798,6 +1200,7 @@ impl LiveUi {
             theme,
             context,
             seen_revision,
+            seen_document: document,
             child,
             rect: Rect::ZERO,
             structure_dirty: false,
@@ -810,30 +1213,188 @@ impl LiveUi {
     }
 
     fn rebuild_if_changed(&mut self) {
+        let _ = self.handle.poll_live_source();
         let Ok((revision, document)) = self.handle.snapshot() else {
             return;
         };
         if revision == self.seen_revision {
             return;
         }
-        // Handle updates validate before publication, so this can only fail
-        // after a toolkit/schema bug. Keep the last known-good tree in that
-        // case instead of replacing the app with an error placeholder.
-        if let Ok(child) = document.build_with(&self.theme, &self.context) {
-            self.child = child;
-            self.seen_revision = revision;
-            self.structure_dirty = true;
+        // Handle updates validate before publication. Reconcile may still fail
+        // after a toolkit/schema bug (and may have already taken children off
+        // containers). Never leave a spacer or a half-built tree on screen.
+        let old_child = std::mem::replace(&mut self.child, Box::new(Spacer::new()));
+        match reconcile_node(
+            old_child,
+            &self.seen_document.root,
+            &document.root,
+            &self.context,
+        ) {
+            Ok((child, _topology_changed)) => {
+                self.child = child;
+                self.seen_revision = revision;
+                self.seen_document = document;
+                // Any published revision may have replaced Element boxes or
+                // cleared container child NodeIds. App composition refreshes
+                // the map; CompositionFocus restores caret by test id.
+                self.structure_dirty = true;
+            }
+            Err(_) => match document.build_with(&self.theme, &self.context) {
+                Ok(child) => {
+                    self.child = child;
+                    self.seen_revision = revision;
+                    self.seen_document = document;
+                    self.structure_dirty = true;
+                }
+                Err(_) => {
+                    // Keep the last known-good tree and revision. A later
+                    // sync will retry if the handle still exposes this
+                    // published document.
+                    if let Ok(good) = self.seen_document.build_with(&self.theme, &self.context) {
+                        self.child = good;
+                    }
+                }
+            },
         }
+    }
+
+    #[expect(
+        clippy::expect_used,
+        reason = "graph action payloads are unit or already-validated JSON maps"
+    )]
+    fn graph_resource(&self) -> crate::tilo_actions::Resource {
+        use crate::tilo_actions::{
+            ActionContract, ActionParam, ActionSpec, DiscoveryScope, EncodedAction, OperationKind,
+            ParamType, Resource, ResultSpec,
+        };
+        let id = self.seen_document.root.id();
+        let mut resource = Resource::new(
+            format!("tilo.ui-graph:{id}"),
+            "tilo.ui-graph",
+            format!("UI graph {id}"),
+        );
+        let dump = ActionSpec::operation(
+            "dump",
+            "Dump UI graph",
+            OperationKind::View,
+            format!("{LIVE_GRAPH_OPERATION}.dump"),
+            &(),
+        )
+        .expect("unit dump payload is serializable");
+        let mut apply = ActionSpec::typed_operation(
+            "apply",
+            "Apply UI graph edits",
+            "JSON array of graph edits",
+            OperationKind::Effect,
+            format!("{LIVE_GRAPH_OPERATION}.apply"),
+            vec![ActionParam::required_owned(
+                "edits",
+                ParamType::Text,
+                "Graph edit batch JSON",
+            )],
+            |args| {
+                EncodedAction::encode_operation(
+                    format!("{LIVE_GRAPH_OPERATION}.apply"),
+                    &args.to_json(),
+                )
+                .expect("apply arguments are serializable")
+            },
+        );
+        apply.contract = ActionContract {
+            discovery: DiscoveryScope::Launchable,
+            result: ResultSpec::None,
+            ..ActionContract::default()
+        };
+        let undo = ActionSpec::operation(
+            "undo",
+            "Undo UI graph edit",
+            OperationKind::View,
+            format!("{LIVE_GRAPH_OPERATION}.undo"),
+            &(),
+        )
+        .expect("unit undo payload is serializable");
+        let redo = ActionSpec::operation(
+            "redo",
+            "Redo UI graph edit",
+            OperationKind::View,
+            format!("{LIVE_GRAPH_OPERATION}.redo"),
+            &(),
+        )
+        .expect("unit redo payload is serializable");
+        resource.actions.extend([dump, apply, undo, redo]);
+        resource
+    }
+
+    fn invoke_graph_operation(
+        &mut self,
+        type_id: &str,
+        payload: &[u8],
+    ) -> Result<crate::tilo_actions::ActionOutput, String> {
+        use crate::tilo_actions::ActionOutput;
+        let dump = format!("{LIVE_GRAPH_OPERATION}.dump");
+        let apply = format!("{LIVE_GRAPH_OPERATION}.apply");
+        let undo = format!("{LIVE_GRAPH_OPERATION}.undo");
+        let redo = format!("{LIVE_GRAPH_OPERATION}.redo");
+        if type_id == dump {
+            let json = self
+                .handle
+                .to_json_pretty()
+                .map_err(|error| error.to_string())?;
+            return Ok(ActionOutput {
+                value: Some(serde_json::Value::String(json)),
+                resources: vec![format!("tilo.ui-graph:{}", self.seen_document.root.id())],
+            });
+        }
+        if type_id == apply {
+            let args: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+            let edits_json = args
+                .get("edits")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("missing edits")?;
+            let edits = parse_ui_graph_edits(edits_json).map_err(|error| error.to_string())?;
+            self.handle
+                .apply_edits(edits)
+                .map_err(|error| error.to_string())?;
+            self.rebuild_if_changed();
+            return Ok(ActionOutput::default());
+        }
+        if type_id == undo {
+            let changed = self.handle.undo().map_err(|error| error.to_string())?;
+            if changed {
+                self.rebuild_if_changed();
+            }
+            return Ok(ActionOutput {
+                value: Some(serde_json::json!({ "changed": changed })),
+                resources: Vec::new(),
+            });
+        }
+        if type_id == redo {
+            let changed = self.handle.redo().map_err(|error| error.to_string())?;
+            if changed {
+                self.rebuild_if_changed();
+            }
+            return Ok(ActionOutput {
+                value: Some(serde_json::json!({ "changed": changed })),
+                resources: Vec::new(),
+            });
+        }
+        Err(format!("unknown UI graph operation {type_id:?}"))
     }
 }
 
 impl Widget for LiveUi {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::undo::UndoPoints
+    );
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
         self.child.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.rebuild_if_changed();
         self.child.update(state, path)
     }
@@ -889,32 +1450,12 @@ impl Widget for LiveUi {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if let Ok(children) = taffy.children(node_id)
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(child) = children.first()
         {
-            self.child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                *child,
-                taffy,
-            );
+            self.child
+                .handle_event(event, &mut ctx.reborrow(ctx.path, *child));
         }
     }
 
@@ -938,24 +1479,47 @@ impl Widget for LiveUi {
         self.rect
     }
 
-    fn needs_commit(&self) -> bool {
-        self.child.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.child.on_commit();
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
         own | self.child.take_structure_dirty()
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.handle
-            .revision()
-            .is_some_and(|revision| revision != self.seen_revision)
+        self.handle.live_source_stale()
+            || self
+                .handle
+                .revision()
+                .is_some_and(|revision| revision != self.seen_revision)
             || self.child.needs_idle_sync()
+    }
+
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[
+            "tilo.ui.graph.dump",
+            "tilo.ui.graph.apply",
+            "tilo.ui.graph.undo",
+            "tilo.ui.graph.redo",
+        ]
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op
+            .unscoped()
+            .filter(|request| request.type_id.starts_with(LIVE_GRAPH_OPERATION))
+            .filter(|request| request.kind != crate::tilo_actions::OperationKind::Document)
+        else {
+            return Ok(None);
+        };
+        self.invoke_graph_operation(request.type_id, request.payload)
+            .map(|output| Some(crate::widget::ResourceOperationStart::Completed(output)))
     }
 
     fn draw_with_presence(
@@ -975,6 +1539,23 @@ impl Widget for LiveUi {
             presence,
             permissions,
         );
+    }
+}
+
+impl crate::undo::UndoPoints for LiveUi {
+    fn needs_commit(&self) -> bool {
+        crate::undo::needs_commit(self.child.as_ref())
+    }
+    fn on_commit(&mut self) {
+        crate::undo::on_commit(self.child.as_mut());
+    }
+}
+
+impl crate::resources::PublishesResources for LiveUi {
+    fn resources(&self, doc: &AutoCommit) -> Vec<crate::tilo_actions::Resource> {
+        let mut resources = crate::resources::resources(self.child.as_ref(), doc);
+        resources.push(self.graph_resource());
+        resources
     }
 }
 
@@ -1082,7 +1663,7 @@ fn focused_widget_snapshot(widget: &dyn Widget) -> Option<(String, Option<String
     if widget.is_focused()
         && let Some(id) = widget.test_id()
     {
-        return Some((id.to_owned(), widget.get_state()));
+        return Some((id.to_owned(), crate::undo::get_state(widget)));
     }
     widget
         .children()
@@ -1094,7 +1675,7 @@ fn restore_widget_focus(widget: &mut dyn Widget, id: &str, state: Option<&str>) 
     if widget.test_id() == Some(id) {
         widget.set_focus(true);
         if let Some(state) = state {
-            widget.set_state(state);
+            crate::undo::set_state(widget, state);
         }
         return true;
     }
@@ -2477,12 +3058,14 @@ fn delete_button(
 }
 
 impl Widget for UiGraphEditor {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    crate::provides!(dyn crate::undo::LocalUndo, dyn crate::undo::UndoPoints);
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
         self.child.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.rebuild_if_changed();
         self.child.update(state, path)
     }
@@ -2538,32 +3121,12 @@ impl Widget for UiGraphEditor {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if let Ok(children) = taffy.children(node_id)
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(child) = children.first()
         {
-            self.child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                *child,
-                taffy,
-            );
+            self.child
+                .handle_event(event, &mut ctx.reborrow(ctx.path, *child));
         }
     }
 
@@ -2591,14 +3154,6 @@ impl Widget for UiGraphEditor {
         self.rect
     }
 
-    fn needs_commit(&self) -> bool {
-        self.child.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.child.on_commit();
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         std::mem::take(&mut self.structure_dirty) | self.child.take_structure_dirty()
     }
@@ -2608,28 +3163,6 @@ impl Widget for UiGraphEditor {
         state.chrome_dirty
             || self.handle.revision() != Some(self.seen_graph_revision)
             || self.child.needs_idle_sync()
-    }
-
-    fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
-        if !widget_tree_has_focus(self.child.as_ref()) {
-            return false;
-        }
-        let status = self.shared.borrow().status.clone();
-        let result = match request {
-            crate::undo::UndoRequest::Undo => self.handle.undo(),
-            crate::undo::UndoRequest::Redo => self.handle.redo(),
-        };
-        match (request, result) {
-            (crate::undo::UndoRequest::Undo, Ok(true)) => {
-                status.set("Undid graph edit".to_owned());
-            }
-            (crate::undo::UndoRequest::Redo, Ok(true)) => {
-                status.set("Redid graph edit".to_owned());
-            }
-            (request, Ok(false)) => status.set(format!("Nothing to {}", request.verb())),
-            (_, Err(error)) => status.set(format!("History action failed: {error}")),
-        }
-        true
     }
 
     fn draw_with_presence(
@@ -2652,12 +3185,61 @@ impl Widget for UiGraphEditor {
     }
 }
 
+impl crate::undo::UndoPoints for UiGraphEditor {
+    fn needs_commit(&self) -> bool {
+        crate::undo::needs_commit(self.child.as_ref())
+    }
+    fn on_commit(&mut self) {
+        crate::undo::on_commit(self.child.as_mut());
+    }
+}
+
+impl crate::undo::LocalUndo for UiGraphEditor {
+    fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
+        if !widget_tree_has_focus(self.child.as_ref()) {
+            return false;
+        }
+        let status = self.shared.borrow().status.clone();
+        let result = match request {
+            crate::undo::UndoRequest::Undo => self.handle.undo(),
+            crate::undo::UndoRequest::Redo => self.handle.redo(),
+        };
+        match (request, result) {
+            (crate::undo::UndoRequest::Undo, Ok(true)) => {
+                status.set("Undid graph edit".to_owned());
+            }
+            (crate::undo::UndoRequest::Redo, Ok(true)) => {
+                status.set("Redid graph edit".to_owned());
+            }
+            (request, Ok(false)) => status.set(format!("Nothing to {}", request.verb())),
+            (_, Err(error)) => status.set(format!("History action failed: {error}")),
+        }
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::a11y::{Action, Role};
     use automerge::transaction::Transactable;
     use automerge::{ObjType, ROOT};
+
+    fn run_operation(
+        live: &mut impl Widget,
+        kind: crate::tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+    ) -> Result<Option<crate::tilo_actions::ActionOutput>, String> {
+        crate::widget::ResourceOperation::local(
+            crate::tilo_actions::InvocationId::new(),
+            kind,
+            type_id,
+            payload,
+        )
+        .start(live, &mut AutoCommit::new(), &ROOT)
+        .map(|started| started.and_then(crate::widget::ResourceOperationStart::completed))
+    }
 
     fn sample() -> UiDocument {
         UiDocument::new(UiNode::Column {
@@ -2916,7 +3498,7 @@ mod tests {
     }
 
     #[test]
-    fn routed_graph_buttons_drive_history_and_back_without_document_mutations() {
+    fn routed_graph_buttons_publish_navigation_and_leave_the_document_alone() {
         fn screen(id: &str, title: &str, button: UiNode) -> UiDocument {
             UiDocument::new(UiNode::Column {
                 id: id.into(),
@@ -3004,6 +3586,20 @@ mod tests {
             .perform_named("back-home", &Action::Activate)
             .unwrap();
         assert_eq!(handle.current(), "home");
+        assert_eq!(driver.dump_json(), document_before);
+
+        let audit = driver.native_app_audit();
+        assert!(audit.is_certified(), "{:?}", audit.issues);
+        driver
+            .invoke_action(
+                &tilo_actions::ActionAddress::new("tilo.control:open-settings", "invoke"),
+                &serde_json::Map::new(),
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(handle.current(), "settings");
+        assert!(driver.native_app_audit().is_certified());
         assert_eq!(driver.dump_json(), document_before);
     }
 
@@ -3122,6 +3718,274 @@ mod tests {
         assert!(matches!(
             reopened.node("save"),
             Some(UiNode::Button { label, .. }) if label == "Publish"
+        ));
+    }
+
+    fn set_named_state(widget: &mut dyn Widget, id: &str, state: &str) -> bool {
+        if widget.test_id() == Some(id) {
+            widget.set_focus(true);
+            crate::undo::set_state(widget, state);
+            return true;
+        }
+        widget
+            .children_mut()
+            .into_iter()
+            .any(|child| set_named_state(child, id, state))
+    }
+
+    fn named_state(widget: &dyn Widget, id: &str) -> Option<String> {
+        if widget.test_id() == Some(id) {
+            return crate::undo::get_state(widget);
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| named_state(child, id))
+    }
+
+    fn named_widget_ptr(widget: &dyn Widget, id: &str) -> Option<usize> {
+        if widget.test_id() == Some(id) {
+            return Some((widget as *const dyn Widget).cast::<()>().addr());
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| named_widget_ptr(child, id))
+    }
+
+    #[test]
+    fn live_reconcile_preserves_text_input_ephemeral_state() {
+        let document = UiDocument::new(UiNode::Column {
+            id: "root".into(),
+            children: vec![
+                UiNode::Text {
+                    id: "title".into(),
+                    text: UiTextSource::Static {
+                        value: "Hello".into(),
+                    },
+                    role: UiTextRole::Title,
+                    size: None,
+                },
+                UiNode::TextInput {
+                    id: "name".into(),
+                    label: None,
+                    accessible_name: "Name".into(),
+                    placeholder: "Type here".into(),
+                    value_path: None,
+                    initial_value: "Ada".into(),
+                    multiline: false,
+                    disabled: false,
+                },
+            ],
+            gap: Some(8.0),
+            no_padding: false,
+            intrinsic_height: false,
+            fill_remaining_height: false,
+        });
+        let handle = UiGraphHandle::new(document).unwrap();
+        let mut live = handle.widget(&Theme::dark()).unwrap();
+        assert!(set_named_state(&mut live, "name", "2"));
+        let before = named_state(&live, "name");
+        assert_eq!(before.as_deref(), Some("2"));
+        let before_ptr = named_widget_ptr(&live, "name").expect("name widget");
+
+        handle
+            .update_node("title", |node| {
+                if let UiNode::Text {
+                    text: UiTextSource::Static { value },
+                    ..
+                } = node
+                {
+                    *value = "Projects".into();
+                }
+            })
+            .unwrap();
+        let mut doc = AutoCommit::new();
+        Widget::sync(&mut live, &mut doc, &automerge::ROOT);
+        assert_eq!(named_state(&live, "name"), before);
+        assert_eq!(
+            named_widget_ptr(&live, "name"),
+            Some(before_ptr),
+            "unchanged TextInput must keep the same widget instance"
+        );
+        assert!(live.take_structure_dirty());
+    }
+
+    #[test]
+    fn live_reconcile_transfers_ephemeral_state_when_leaf_props_change() {
+        let document = UiDocument::new(UiNode::Column {
+            id: "root".into(),
+            children: vec![UiNode::TextInput {
+                id: "name".into(),
+                label: None,
+                accessible_name: "Name".into(),
+                placeholder: "Before".into(),
+                value_path: None,
+                initial_value: "Ada".into(),
+                multiline: false,
+                disabled: false,
+            }],
+            gap: None,
+            no_padding: false,
+            intrinsic_height: false,
+            fill_remaining_height: false,
+        });
+        let handle = UiGraphHandle::new(document).unwrap();
+        let mut live = handle.widget(&Theme::dark()).unwrap();
+        assert!(set_named_state(&mut live, "name", "4"));
+        let before = named_state(&live, "name");
+        assert_eq!(before.as_deref(), Some("4"));
+        let before_ptr = named_widget_ptr(&live, "name").expect("name widget");
+
+        handle
+            .apply_edits(vec![UiGraphEdit::SetProperty {
+                id: "name".into(),
+                property: "placeholder".into(),
+                value: serde_json::json!("After"),
+            }])
+            .unwrap();
+        let mut doc = AutoCommit::new();
+        Widget::sync(&mut live, &mut doc, &automerge::ROOT);
+        assert_eq!(named_state(&live, "name"), before);
+        assert_ne!(
+            named_widget_ptr(&live, "name"),
+            Some(before_ptr),
+            "leaf property changes rebuild the widget"
+        );
+        assert!(matches!(
+            handle.node("name"),
+            Ok(UiNode::TextInput { placeholder, .. }) if placeholder == "After"
+        ));
+    }
+
+    #[test]
+    fn live_graph_reject_bad_apply_keeps_last_good_tree() {
+        let handle = UiGraphHandle::new(sample()).unwrap();
+        let mut live = handle.widget(&Theme::dark()).unwrap();
+        let before = handle.to_json_pretty().unwrap();
+        let edits = r#"[{"op":"set-property","id":"save","property":"label","value":""}]"#;
+        let payload = serde_json::to_vec(&serde_json::json!({ "edits": edits })).unwrap();
+        let error = run_operation(
+            &mut live,
+            crate::tilo_actions::OperationKind::Effect,
+            "tilo.ui.graph.apply",
+            &payload,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("edit") || error.contains("Unknown") || error.contains("missing"),
+            "rejected apply must surface an error, got {error}"
+        );
+        assert_eq!(handle.to_json_pretty().unwrap(), before);
+        let mut doc = AutoCommit::new();
+        Widget::sync(&mut live, &mut doc, &automerge::ROOT);
+        assert!(
+            crate::headless::Driver::new(crate::State::new(), Box::new(live), (640, 360))
+                .inspection_json()
+                .unwrap()
+                .contains("Save"),
+            "last good tree must stay on screen after a rejected apply"
+        );
+    }
+
+    #[test]
+    fn poll_live_source_rejects_invalid_json_without_replacing() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("main.json");
+        std::fs::write(
+            &path,
+            r#"{"version":1,"root":{"type":"text","id":"title","text":{"source":"static","value":"Good"},"role":"title"}}"#,
+        )
+        .unwrap();
+        let handle = UiGraphHandle::open_live(&path).unwrap();
+        let before = handle.to_json_pretty().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&path, "{not-valid-graph").unwrap();
+        assert!(handle.poll_live_source().is_err());
+        assert_eq!(handle.to_json_pretty().unwrap(), before);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(
+            &path,
+            r#"{"version":1,"root":{"type":"button","id":"title","label":"","accessibleName":null}}"#,
+        )
+        .unwrap();
+        assert!(handle.poll_live_source().is_err());
+        assert_eq!(handle.to_json_pretty().unwrap(), before);
+    }
+
+    #[test]
+    fn live_graph_actions_apply_and_dump() {
+        let handle = UiGraphHandle::new(sample()).unwrap();
+        let mut live = handle.widget(&Theme::dark()).unwrap();
+        let resources = crate::resources::resources(&live, &AutoCommit::new());
+        assert!(
+            resources
+                .iter()
+                .any(|resource| resource.kind == "tilo.ui-graph")
+        );
+        let edits = r#"[{"op":"set-property","id":"save","property":"label","value":"Publish"}]"#;
+        let payload = serde_json::to_vec(&serde_json::json!({ "edits": edits })).unwrap();
+        let output = run_operation(
+            &mut live,
+            crate::tilo_actions::OperationKind::Effect,
+            "tilo.ui.graph.apply",
+            &payload,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(output.value.is_none());
+        assert!(matches!(
+            handle.node("save"),
+            Ok(UiNode::Button { label, .. }) if label == "Publish"
+        ));
+        let dumped = run_operation(
+            &mut live,
+            crate::tilo_actions::OperationKind::View,
+            "tilo.ui.graph.dump",
+            b"null",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            dumped
+                .value
+                .as_ref()
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|json| json.contains("Publish"))
+        );
+    }
+
+    #[test]
+    fn open_live_reloads_when_the_file_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("main.json");
+        std::fs::write(
+            &path,
+            r#"{"version":1,"root":{"type":"text","id":"title","text":{"source":"static","value":"Before"},"role":"title"}}"#,
+        )
+        .unwrap();
+        let handle = UiGraphHandle::open_live(&path).unwrap();
+        assert!(matches!(
+            handle.node("title"),
+            Ok(UiNode::Text {
+                text: UiTextSource::Static { value },
+                ..
+            }) if value == "Before"
+        ));
+        // Ensure the filesystem mtime advances on coarse clocks.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(
+            &path,
+            r#"{"version":1,"root":{"type":"text","id":"title","text":{"source":"static","value":"After"},"role":"title"}}"#,
+        )
+        .unwrap();
+        assert!(handle.poll_live_source().unwrap());
+        assert!(matches!(
+            handle.node("title"),
+            Ok(UiNode::Text {
+                text: UiTextSource::Static { value },
+                ..
+            }) if value == "After"
         ));
     }
 

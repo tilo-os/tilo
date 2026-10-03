@@ -5,6 +5,7 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 description = "Developer workflow for creating Tilo applications"
+autotests = false
 
 [lib]
 name = "tilo_app_cli"
@@ -13,23 +14,43 @@ name = "tilo_app_cli"
 name = "tilo-app"
 path = "src/main.rs"
 
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 fluent.workspace = true
 fluent-syntax.workspace = true
+hex.workspace = true
 libc.workspace = true
 notify.workspace = true
 image = { workspace = true, features = ["png"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
-atomic-file = { path = "../../system/atomic-file" }
+tilo-caps = { path = "../../sdk/tilo-caps" }
+sha2.workspace = true
+registry-types = { path = "../../packaging/registry-types" }
+registry-client = { path = "../../packaging/registry-client" }
+tilo-files = { path = "../../platform/tilo-files" }
+# The portability rules table deserializes into typed rules.
 serde.workspace = true
 serde_json.workspace = true
-syn = { version = "2.0", features = ["full"] }
+proc-macro2 = { version = "1.0", features = ["span-locations"] }
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "visit-mut"] }
 tempfile.workspace = true
 toml.workspace = true
 tilo-ui-graph = { path = "../ui-graph" }
 tilo-headless-schema = { path = "../headless-schema" }
+# The registry's web artifact is a zip of the immutable version.
+zip.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+serde_yaml = "0.9"
+tempfile.workspace = true
+tilo-test-env = { path = "../test-env" }
 
 [lints]
 workspace = true

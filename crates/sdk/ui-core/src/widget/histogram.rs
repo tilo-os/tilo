@@ -168,15 +168,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn constant_samples_get_a_nonzero_range() {
-        let histogram = Histogram::new([4.0, 4.0], Color::WHITE);
-        let (min, max) = histogram.resolved_range();
-        assert!(max > min);
-    }
+    fn histogram_builder_handles_empty_and_constant_samples() {
+        fn constant_samples_get_a_nonzero_range() {
+            let histogram = Histogram::new([4.0, 4.0], Color::WHITE);
+            let (min, max) = histogram.resolved_range();
+            assert!(max > min);
+        }
 
-    #[test]
-    fn builder_accepts_empty_samples() {
-        let mut plot = Histogram::new([], Color::WHITE).bins(8).build();
-        assert!(plot.take_activated().is_none());
+        fn builder_accepts_empty_samples() {
+            let mut plot = Histogram::new([], Color::WHITE).bins(8).build();
+            assert!(plot.take_activated().is_none());
+        }
+
+        constant_samples_get_a_nonzero_range();
+        builder_accepts_empty_samples();
     }
 }

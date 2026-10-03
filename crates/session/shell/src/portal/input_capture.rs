@@ -248,9 +248,19 @@ struct CaptureState {
 
 /// Compositor-facing input capture authority.  Hosted sessions use
 /// [`unavailable`](Self::unavailable), which prevents false capability claims.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct InputCaptureCompositorHandle {
     state: Arc<Mutex<CaptureState>>,
+    /// Parked by the portal signal emitter until a signal is queued.
+    wake: crate::idle_wake::IdleWake,
+}
+impl Default for InputCaptureCompositorHandle {
+    fn default() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(CaptureState::default())),
+            wake: crate::idle_wake::IdleWake::default(),
+        }
+    }
 }
 impl InputCaptureCompositorHandle {
     pub fn unavailable() -> Self {
@@ -265,6 +275,7 @@ impl InputCaptureCompositorHandle {
                 sessions: HashMap::new(),
                 signals: vec![],
             })),
+            wake: crate::idle_wake::IdleWake::default(),
         }
     }
     pub fn available(&self) -> bool {
@@ -365,6 +376,7 @@ impl InputCaptureCompositorHandle {
             cursor: (x, y),
             barrier_id: barrier.id,
         });
+        self.wake.poke();
         true
     }
     fn drain_signals(&self) -> Vec<PortalSignal> {
@@ -380,6 +392,7 @@ pub struct InputCaptureBackend {
     ctx: PortalContext,
     lifecycle: PortalLifecycle,
     compositor: InputCaptureCompositorHandle,
+    connection: zbus::Connection,
 }
 
 /// Narrow bridge used by Clipboard; it never exposes input capture state to
@@ -390,23 +403,22 @@ pub struct InputCaptureSessionHandle {
 }
 #[cfg(target_os = "linux")]
 impl InputCaptureBackend {
-    pub fn new(ctx: PortalContext, lifecycle: PortalLifecycle) -> Self {
+    /// `connection` is the bus this backend is served on; its request and
+    /// session objects are registered there.
+    pub fn new(
+        ctx: PortalContext,
+        lifecycle: PortalLifecycle,
+        connection: zbus::Connection,
+    ) -> Self {
         Self {
             compositor: ctx.input_capture.clone(),
             ctx,
             lifecycle,
+            connection,
         }
     }
-    pub fn spawn_signal_emitter(&self, connection: zbus::Connection) {
-        let compositor = self.compositor.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_millis(8)).await;
-                for signal in compositor.drain_signals() {
-                    emit_signal(&connection, signal).await;
-                }
-            }
-        });
+    pub fn spawn_signal_emitter(&self) {
+        spawn_compositor_emitter(self.compositor.clone(), self.connection.clone());
     }
     pub fn session_handle(&self) -> InputCaptureSessionHandle {
         InputCaptureSessionHandle {
@@ -504,7 +516,6 @@ impl InputCaptureBackend {
     async fn create_session(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
-        #[zbus(connection)] connection: &zbus::Connection,
         handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
         app_id: String,
@@ -517,7 +528,6 @@ impl InputCaptureBackend {
         }
         self.create_legacy(
             header,
-            connection,
             handle,
             session_handle,
             app_id,
@@ -529,7 +539,6 @@ impl InputCaptureBackend {
     async fn create_session2(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
-        #[zbus(connection)] connection: &zbus::Connection,
         session_handle: ObjectPath<'_>,
         app_id: String,
         _options: HashMap<String, OwnedValue>,
@@ -564,7 +573,7 @@ impl InputCaptureBackend {
         };
         if !matches!(
             self.lifecycle
-                .register_session(connection, &key, entry, move |_| close_session(
+                .register_session(&self.connection, &key, entry, move |_| close_session(
                     &state,
                     &cleanup_key
                 ))
@@ -581,7 +590,6 @@ impl InputCaptureBackend {
     async fn start(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
-        #[zbus(connection)] connection: &zbus::Connection,
         handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
         app_id: String,
@@ -614,7 +622,7 @@ impl InputCaptureBackend {
         };
         if !matches!(
             self.lifecycle
-                .register_request(connection, &request, entry, |_| {})
+                .register_request(&self.connection, &request, entry, |_| {})
                 .await,
             Ok(true)
         ) {
@@ -631,7 +639,7 @@ impl InputCaptureBackend {
         .await
         .is_allowed();
         self.lifecycle
-            .complete_request_object(connection, &request)
+            .complete_request_object(&self.connection, &request)
             .await;
         if !allowed {
             return (1, HashMap::new());
@@ -675,7 +683,6 @@ impl InputCaptureBackend {
     async fn get_zones(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
-        #[zbus(connection)] connection: &zbus::Connection,
         handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
         app_id: String,
@@ -697,7 +704,7 @@ impl InputCaptureBackend {
         };
         if !matches!(
             self.lifecycle
-                .register_request(connection, &request, entry, |_| {})
+                .register_request(&self.connection, &request, entry, |_| {})
                 .await,
             Ok(true)
         ) {
@@ -710,7 +717,7 @@ impl InputCaptureBackend {
             .map(|state| (state.zones.clone(), state.zone_set))
             .unwrap_or_default();
         self.lifecycle
-            .complete_request_object(connection, &request)
+            .complete_request_object(&self.connection, &request)
             .await;
         let mut results = HashMap::new();
         insert_value(
@@ -729,7 +736,6 @@ impl InputCaptureBackend {
     async fn set_pointer_barriers(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
-        #[zbus(connection)] connection: &zbus::Connection,
         handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
         app_id: String,
@@ -755,7 +761,7 @@ impl InputCaptureBackend {
         };
         if !matches!(
             self.lifecycle
-                .register_request(connection, &request, entry, |_| {})
+                .register_request(&self.connection, &request, entry, |_| {})
                 .await,
             Ok(true)
         ) {
@@ -784,7 +790,7 @@ impl InputCaptureBackend {
             session.zone_set = current_zone_set;
         }
         self.lifecycle
-            .complete_request_object(connection, &request)
+            .complete_request_object(&self.connection, &request)
             .await;
         let mut results = HashMap::new();
         insert_value(&mut results, "failed_barriers", Value::from(failed));
@@ -885,7 +891,6 @@ impl InputCaptureBackend {
     async fn create_legacy(
         &self,
         header: zbus::message::Header<'_>,
-        connection: &zbus::Connection,
         handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
         app_id: String,
@@ -926,10 +931,9 @@ impl InputCaptureBackend {
         };
         if !matches!(
             self.lifecycle
-                .register_session(connection, &key, session_entry, move |_| close_session(
-                    &state,
-                    &cleanup_key
-                ))
+                .register_session(&self.connection, &key, session_entry, move |_| {
+                    close_session(&state, &cleanup_key)
+                })
                 .await,
             Ok(true)
         ) {
@@ -944,14 +948,14 @@ impl InputCaptureBackend {
         };
         if !matches!(
             self.lifecycle
-                .register_request(connection, &request, request_entry, |_| {})
+                .register_request(&self.connection, &request, request_entry, |_| {})
                 .await,
             Ok(true)
         ) {
             return (2, HashMap::new());
         }
         self.lifecycle
-            .complete_request_object(connection, &request)
+            .complete_request_object(&self.connection, &request)
             .await;
         let mut results = HashMap::new();
         insert_value(&mut results, "capabilities", Value::U32(requested));
@@ -1005,6 +1009,7 @@ impl InputCaptureBackend {
                     session: key.clone(),
                 });
             }
+            self.compositor.wake.poke();
             true
         });
         (if changed { 0 } else { 2 }, HashMap::new())
@@ -1044,6 +1049,7 @@ impl InputCaptureBackend {
                 }
             };
             state.signals.push(signal);
+            self.compositor.wake.poke();
             true
         });
         (if changed { 0 } else { 2 }, HashMap::new())
@@ -1102,6 +1108,25 @@ fn insert_value(values: &mut HashMap<String, OwnedValue>, key: &str, value: Valu
     if let Ok(value) = OwnedValue::try_from(value) {
         values.insert(key.into(), value);
     }
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_compositor_emitter(
+    compositor: InputCaptureCompositorHandle,
+    connection: zbus::Connection,
+) {
+    tokio::spawn(async move {
+        loop {
+            let signals = compositor.drain_signals();
+            if signals.is_empty() {
+                compositor.wake.wait().await;
+                continue;
+            }
+            for signal in signals {
+                emit_signal(&connection, signal).await;
+            }
+        }
+    });
 }
 
 #[cfg(target_os = "linux")]
@@ -1379,56 +1404,90 @@ mod tests {
     use super::*;
 
     #[test]
-    fn v2_persistence_options_are_bounded_and_explicitly_declined() {
-        let mut options = HashMap::new();
-        assert_eq!(requested_persist_mode(&options), Ok(0));
-        insert_value(&mut options, "persist_mode", Value::U32(2));
-        assert_eq!(requested_persist_mode(&options), Ok(2));
-        insert_value(&mut options, "persist_mode", Value::U32(3));
-        assert_eq!(requested_persist_mode(&options), Err(()));
+    fn input_capture_persistence_and_clipboard_are_bound_to_active_capture() {
+        // Phase `v2_persistence_options_are_bounded_and_explicitly_declined`.
+        {
+            let mut options = HashMap::new();
+            assert_eq!(requested_persist_mode(&options), Ok(0));
+            insert_value(&mut options, "persist_mode", Value::U32(2));
+            assert_eq!(requested_persist_mode(&options), Ok(2));
+            insert_value(&mut options, "persist_mode", Value::U32(3));
+            assert_eq!(requested_persist_mode(&options), Err(()));
+        }
+        // Phase `clipboard_request_is_bound_to_an_active_capture_only`.
+        {
+            let handle = InputCaptureCompositorHandle::native(Vec::new());
+            let session = "/org/freedesktop/portal/desktop/session/tilo/clipboard".to_string();
+            let owner = ":1.7";
+            handle.state.lock().unwrap().sessions.insert(
+                session.clone(),
+                CaptureSession::new(
+                    owner.into(),
+                    "org.example.Capture".into(),
+                    PortalCaller::new(crate::shell::state::WorkspaceId(1), "org.example.Capture"),
+                ),
+            );
+            let provider = InputCaptureSessionHandle {
+                state: handle.state.clone(),
+            };
+            assert!(provider.request_clipboard(&session, owner));
+            assert!(!provider.clipboard_active(&session, owner));
+            {
+                let mut state = handle.state.lock().unwrap();
+                let capture = state.sessions.get_mut(&session).unwrap();
+                capture.started = true;
+                capture.active = true;
+            }
+            assert!(provider.clipboard_active(&session, owner));
+            assert!(provider.clipboard_live(&session));
+            // v2 only permits the request before Start, so a capture cannot add
+            // clipboard access after the user has already approved it.
+            assert!(!provider.request_clipboard(&session, owner));
+        }
     }
     #[test]
-    fn edge_barrier_activates_once() {
-        let handle = InputCaptureCompositorHandle::native(vec![CaptureZone {
-            width: 100,
-            height: 100,
-            x: 0,
-            y: 0,
-        }]);
-        let mut state = handle.state.lock().unwrap();
-        let mut session = CaptureSession::new(
-            ":1.1".into(),
-            "org.example.App".into(),
-            PortalCaller::new(crate::shell::state::WorkspaceId(1), "org.example.App"),
-        );
-        session.started = true;
-        session.enabled = true;
-        session.cursor = (90., 50.);
-        session.barriers = vec![PointerBarrier {
-            id: 7,
-            x1: 100,
-            y1: 0,
-            x2: 100,
-            y2: 100,
-        }];
-        state.sessions.insert(
-            "/org/freedesktop/portal/desktop/session/tilo/one".into(),
-            session,
-        );
-        drop(state);
-        assert!(handle.observe(CapturedInput::PointerMotion {
-            x: 101.,
-            y: 50.,
-            dx: 11.,
-            dy: 0.
-        }));
-        assert!(matches!(
-            handle.drain_signals().as_slice(),
-            [PortalSignal::Activated { barrier_id: 7, .. }]
-        ));
-    }
-    #[test]
-    fn interior_barrier_is_rejected() {
+    fn only_edge_barriers_activate_capture_once() {
+        // Phase `edge_barrier_activates_once`.
+        {
+            let handle = InputCaptureCompositorHandle::native(vec![CaptureZone {
+                width: 100,
+                height: 100,
+                x: 0,
+                y: 0,
+            }]);
+            let mut state = handle.state.lock().unwrap();
+            let mut session = CaptureSession::new(
+                ":1.1".into(),
+                "org.example.App".into(),
+                PortalCaller::new(crate::shell::state::WorkspaceId(1), "org.example.App"),
+            );
+            session.started = true;
+            session.enabled = true;
+            session.cursor = (90., 50.);
+            session.barriers = vec![PointerBarrier {
+                id: 7,
+                x1: 100,
+                y1: 0,
+                x2: 100,
+                y2: 100,
+            }];
+            state.sessions.insert(
+                "/org/freedesktop/portal/desktop/session/tilo/one".into(),
+                session,
+            );
+            drop(state);
+            assert!(handle.observe(CapturedInput::PointerMotion {
+                x: 101.,
+                y: 50.,
+                dx: 11.,
+                dy: 0.
+            }));
+            assert!(matches!(
+                handle.drain_signals().as_slice(),
+                [PortalSignal::Activated { barrier_id: 7, .. }]
+            ));
+        }
+        // Phase `interior_barrier_is_rejected`.
         assert!(!valid_barrier(
             &PointerBarrier {
                 id: 1,
@@ -1446,34 +1505,70 @@ mod tests {
         ));
     }
 
+    /// The session-runtime emitters used to wake on a timer with nothing to
+    /// send. That CPU is not on the frame loop: the process still accumulates
+    /// it while loop ticks and the main thread's context switches stay at zero.
+    #[cfg(target_os = "linux")]
     #[test]
-    fn clipboard_request_is_bound_to_an_active_capture_only() {
-        let handle = InputCaptureCompositorHandle::native(Vec::new());
-        let session = "/org/freedesktop/portal/desktop/session/tilo/clipboard".to_string();
-        let owner = ":1.7";
-        handle.state.lock().unwrap().sessions.insert(
-            session.clone(),
-            CaptureSession::new(
-                owner.into(),
-                "org.example.Capture".into(),
-                PortalCaller::new(crate::shell::state::WorkspaceId(1), "org.example.Capture"),
-            ),
+    fn idle_emitters_stay_asleep_until_a_signal_is_queued() {
+        use std::time::Duration;
+        use tokio::net::UnixStream;
+        use zbus::connection::Builder;
+
+        const COMM: &str = "tilo-idle-emit";
+        let (runtime, tid) = crate::idle_thread_probe::spawned_thread(COMM, || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .thread_name(COMM)
+                .build()
+                .expect("runtime")
+        });
+        let capture = super::InputCaptureCompositorHandle::unavailable();
+        runtime.block_on(async {
+            let (server_sock, client_sock) = UnixStream::pair().expect("socket pair");
+            let server = Builder::unix_stream(server_sock)
+                .p2p()
+                .server("0123456789abcdef0123456789abcdef")
+                .expect("server")
+                .build();
+            let client = Builder::unix_stream(client_sock).p2p().build();
+            let (connection, _client) = tokio::try_join!(server, client).expect("p2p");
+            super::spawn_compositor_emitter(capture.clone(), connection.clone());
+            crate::portal::clipboard::spawn_signal_emitter(
+                connection.clone(),
+                crate::portal::clipboard::ClipboardBackend::new(),
+            );
+            crate::notifications::spawn_signal_emitter(
+                connection.clone(),
+                crate::notifications::NotificationBridge::new(),
+            );
+            crate::portal::notification::spawn_action_emitter(
+                connection.clone(),
+                crate::portal::notification::NotificationPortalHandle::default(),
+            );
+            crate::portal::inhibit::spawn_state_emitter(
+                connection.clone(),
+                crate::portal::inhibit::InhibitMonitorHandle::default(),
+            );
+            crate::portal::global_shortcuts::spawn_signal_emitter(
+                connection,
+                crate::portal::global_shortcuts::GlobalShortcutsHandle::with_bound_session_for_tests(
+                    "/session",
+                    "so.tilo.notes",
+                    &[],
+                ),
+            );
+        });
+        crate::idle_thread_probe::assert_stays_asleep(&tid, "portal and notification emitters");
+        let parked = crate::idle_thread_probe::context_switches(&tid);
+        capture.wake.poke();
+        std::thread::sleep(Duration::from_millis(50));
+        let woke = crate::idle_thread_probe::context_switches(&tid).saturating_sub(parked);
+        assert!(
+            woke > 0,
+            "a queued input-capture signal must wake the emitter, woke {woke}"
         );
-        let provider = InputCaptureSessionHandle {
-            state: handle.state.clone(),
-        };
-        assert!(provider.request_clipboard(&session, owner));
-        assert!(!provider.clipboard_active(&session, owner));
-        {
-            let mut state = handle.state.lock().unwrap();
-            let capture = state.sessions.get_mut(&session).unwrap();
-            capture.started = true;
-            capture.active = true;
-        }
-        assert!(provider.clipboard_active(&session, owner));
-        assert!(provider.clipboard_live(&session));
-        // v2 only permits the request before Start, so a capture cannot add
-        // clipboard access after the user has already approved it.
-        assert!(!provider.request_clipboard(&session, owner));
+        drop(runtime);
     }
 }

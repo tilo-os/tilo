@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::time::{Duration, SystemTime};
+use web_time::{Duration, SystemTime};
 
 use thiserror::Error;
 
@@ -501,6 +501,34 @@ pub fn validate_admitted_inbound_op(
         return Err(ValidationError::OutsideValidityWindow);
     }
 
+    validate_authorized_op(op, role, channel_state)
+}
+
+/// Validate an admitted op that a workspace host replayed from its retained,
+/// host-ordered history (a late join, a reconnect, a compaction snapshot).
+///
+/// Identical to [`validate_admitted_inbound_op`] except that an op may be
+/// arbitrarily old: history is old by nature, and the host admitted and
+/// ordered it when it was fresh. An op dated more than `max_clock_skew` into
+/// the future is still refused, and replay protection (per-author sequence,
+/// redaction) is unchanged.
+///
+/// # Errors
+///
+/// As [`validate_admitted_inbound_op`], with
+/// [`ValidationError::OutsideValidityWindow`] only for a future-dated op.
+pub fn validate_replayed_inbound_op(
+    op: &SignedOp,
+    role: Role,
+    channel_state: &mut ChannelState,
+    now: SystemTime,
+    max_clock_skew: Duration,
+) -> Result<(), ValidationError> {
+    verify_op(op).map_err(ValidationError::BadOpSignature)?;
+    let latest = now.checked_add(max_clock_skew).unwrap_or(now);
+    if op.timestamp > latest {
+        return Err(ValidationError::OutsideValidityWindow);
+    }
     validate_authorized_op(op, role, channel_state)
 }
 

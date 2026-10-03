@@ -255,19 +255,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validates_account_names_before_privilege_boundary() {
-        assert!(validate_username("ada").is_ok());
-        assert!(validate_username("ada_2").is_ok());
-        assert!(validate_username("Ada").is_err());
-        assert!(validate_username("../root").is_err());
-        assert!(validate_real_name("Ada Lovelace").is_ok());
-        assert!(validate_real_name("Ada\nroot").is_err());
-    }
-
-    #[test]
-    fn password_validation_always_scrubs_the_caller_buffer() {
-        let mut short = b"bad".to_vec();
-        assert!(set_password("ada", &mut short).is_err());
-        assert!(short.iter().all(|b| *b == 0));
+    fn account_input_is_validated_and_scrubbed_before_the_privilege_boundary() {
+        // Phase `validates_account_names_before_privilege_boundary`.
+        {
+            assert!(validate_username("ada").is_ok());
+            assert!(validate_username("ada_2").is_ok());
+            assert!(validate_username("Ada").is_err());
+            assert!(validate_username("../root").is_err());
+            assert!(validate_real_name("Ada Lovelace").is_ok());
+            assert!(validate_real_name("Ada\nroot").is_err());
+        }
+        // Phase `password_validation_always_scrubs_the_caller_buffer`.
+        {
+            let mut short = b"bad".to_vec();
+            assert!(set_password("ada", &mut short).is_err());
+            assert!(short.iter().all(|b| *b == 0));
+        }
     }
 }

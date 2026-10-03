@@ -22,8 +22,9 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId, ROOT};
+use automerge::{AutoCommit, ROOT};
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
@@ -31,7 +32,6 @@ use tilo_ui::theme::Theme;
 use tilo_ui::widget::{Column, Container, Row, Stack, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
 
 /// Counts `update` calls and reports a change on every one, so a
 /// container that forwards must also surface the child's `true`.
@@ -40,9 +40,7 @@ struct Probe {
 }
 
 impl Widget for Probe {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
-    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
         self.updates.set(self.updates.get().saturating_add(1));
         true
     }
@@ -67,24 +65,6 @@ impl Widget for Probe {
         _text_renderer: &mut TextRenderer,
         _theme: &Theme,
         _presence: &PresenceCtx,
-    ) {
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the test widget implements the framework event contract"
-    )]
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
     ) {
     }
 
@@ -119,38 +99,27 @@ fn assert_forwards(label: &str, mut container: Box<dyn Widget>, updates: &Rc<Cel
     );
 }
 
+/// Every container forwards `update` to its child exactly once per pass and
+/// reports the child's change; forwarding also reaches through nesting.
 #[test]
-fn column_forwards_update_to_children() {
-    let (child, updates) = probe();
-    assert_forwards("Column", Box::new(Column::new().push(child)), &updates);
-}
+fn containers_forward_update_to_children() {
+    type Wrap = fn(Box<dyn Widget>) -> Box<dyn Widget>;
+    let cases: [(&str, Wrap); 4] = [
+        ("Column", |child| Box::new(Column::new().push(child))),
+        ("Row", |child| Box::new(Row::new().push(child))),
+        ("Stack", |child| Box::new(Stack::new().push(child))),
+        ("Container", |child| {
+            Box::new(Container::new().with_child(child))
+        }),
+    ];
+    for (label, wrap) in cases {
+        let (child, updates) = probe();
+        assert_forwards(label, wrap(child), &updates);
+    }
 
-#[test]
-fn row_forwards_update_to_children() {
-    let (child, updates) = probe();
-    assert_forwards("Row", Box::new(Row::new().push(child)), &updates);
-}
-
-#[test]
-fn stack_forwards_update_to_children() {
-    let (child, updates) = probe();
-    assert_forwards("Stack", Box::new(Stack::new().push(child)), &updates);
-}
-
-#[test]
-fn container_forwards_update_to_child() {
-    let (child, updates) = probe();
-    assert_forwards(
-        "Container",
-        Box::new(Container::new().with_child(child)),
-        &updates,
-    );
-}
-
-/// Forwarding has to reach through nesting — the shell's top bar is two
-/// containers deep — and a quiet child must not be reported as a change.
-#[test]
-fn update_reaches_through_nested_containers() {
+    // Case `update_reaches_through_nested_containers`.
+    // Forwarding has to reach through nesting — the shell's top bar is two
+    // containers deep — and a quiet child must not be reported as a change.
     let (child, updates) = probe();
     let mut root: Box<dyn Widget> = Box::new(Stack::new().push(Box::new(
         Column::new().push(Box::new(Row::new().push(child))),

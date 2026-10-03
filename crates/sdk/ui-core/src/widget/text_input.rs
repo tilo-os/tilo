@@ -6,11 +6,14 @@
 //! below the caret.
 
 use crate::time::{Duration, Instant};
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashSet;
+use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 use crate::color_compat::ColorCompat;
 use crate::gesture::{DragSelect, Granularity};
+use crate::paint::PaintCtx;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::richtext::{RichSpan, RichTextLayout, TextAlign};
 use crate::text_break::line_break_opportunities;
@@ -226,6 +229,7 @@ pub struct TextInput {
     single_attributes: Option<SingleLineAttributes>,
     single_origin: Point,
     shaped_layout_signature: u64,
+    /// Renderer epoch invalidates cached glyph geometry when canonical fonts change.
     shaped_layout_epoch: Option<Arc<()>>,
     /// Complete authored runs supplied by a shared rich-text widget. They
     /// participate in the same shaping as wrapping, carets and hit-testing.
@@ -255,6 +259,8 @@ pub struct TextInput {
     bound_text: Option<ObjId>,
     /// Stamped on every inserted run so peers can highlight "what they wrote".
     local_author: Option<String>,
+    /// Horizontal alignment of wrapped text within the input's width.
+    align: TextAlign,
     /// `self.text` stays the real value; only the render substitutes bullets.
     secret: bool,
     disabled: bool,
@@ -347,7 +353,27 @@ struct VisualLine {
     y: f64,
 }
 
+/// Soft-wrap state across one `build_lines` pass: the metrics every
+/// paragraph wraps with, and the rows laid out so far.
+struct LineWrap {
+    size: f32,
+    wrap_w: f64,
+    /// Row pitch.
+    lh: f64,
+    /// Top of the next row.
+    y: f64,
+    lines: Vec<VisualLine>,
+}
+
 pub(crate) const AUTHOR_MARK: &str = "author";
+
+/// Which logical line each multiline-body visual row belongs to, which rows
+/// start one, and the logical line holding the caret.
+struct LogicalRows {
+    line_of_row: Vec<usize>,
+    is_line_start: Vec<bool>,
+    caret_line: usize,
+}
 
 /// One drawable multiline-body run: text, line-relative x offset, colour.
 type Seg = (String, f64, vello::peniko::Color);
@@ -423,6 +449,7 @@ impl TextInput {
             plain: false,
             bound_text: None,
             local_author: None,
+            align: TextAlign::Left,
             secret: false,
             disabled: false,
             kind: TextInputKind::Prose,
@@ -469,6 +496,20 @@ impl TextInput {
     }
 
     /// `None` disables authorship stamping.
+    /// Align the text within the input's width (a centred title).
+    pub fn set_align(&mut self, align: TextAlign) {
+        if self.align != align {
+            self.align = align;
+            self.single_layout = None;
+            self.dirty = true;
+        }
+    }
+
+    /// How the text is aligned within the input's width.
+    pub fn align(&self) -> TextAlign {
+        self.align
+    }
+
     pub fn set_local_author(&mut self, author: Option<String>) {
         self.local_author = author;
     }
@@ -478,6 +519,19 @@ impl TextInput {
         self.local_state = None;
         self.bound_text = Some(obj);
         self.crdt_bound = true;
+    }
+
+    /// Detach an explicit nested-Text binding without changing live input state.
+    ///
+    /// A direct binding replaces any earlier local or flat-path mode. Detaching
+    /// therefore leaves the input intentionally unbound until an owner calls
+    /// [`Self::bind_text`] again; it does not revive a discarded fallback.
+    pub fn clear_text_binding(&mut self) {
+        if self.bound_text.take().is_none() {
+            return;
+        }
+        self.crdt_bound = false;
+        self.path_was_present = false;
     }
 
     /// For `BlockEditor` to match local blocks to doc list elements by object identity.
@@ -587,7 +641,7 @@ impl TextInput {
 
     pub fn set_font_size(&mut self, size: f32) {
         if self.font_size_override != Some(size) {
-            self.model_layout_dirty |= self.single_attributes.is_some();
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.font_size_override = Some(size);
         }
     }
@@ -605,7 +659,7 @@ impl TextInput {
 
     pub fn set_mono(&mut self, mono: bool) {
         if self.mono != mono {
-            self.model_layout_dirty |= self.single_attributes.is_some();
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
         }
         self.mono = mono;
         if mono {
@@ -729,7 +783,7 @@ impl TextInput {
 
     pub fn set_font_family(&mut self, family: Option<FontChoice>) {
         if self.family != family {
-            self.model_layout_dirty |= self.single_attributes.is_some();
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.family = family;
         }
     }
@@ -763,6 +817,7 @@ impl TextInput {
         display.hash(&mut hash);
         family.hash(&mut hash);
         size.to_bits().hash(&mut hash);
+        (self.align as u8).hash(&mut hash);
         width.map(f32::to_bits).hash(&mut hash);
         if !self.preedit.is_empty() {
             self.cursor_pos.hash(&mut hash);
@@ -864,6 +919,10 @@ impl TextInput {
             spans.clone_from(authored);
         }
 
+        self.insert_preedit_span(spans)
+    }
+
+    fn insert_preedit_span(&self, spans: Vec<RichSpan>) -> Vec<RichSpan> {
         if self.preedit.is_empty() {
             return spans;
         }
@@ -894,48 +953,6 @@ impl TextInput {
                     // happen since `cursor_pos` is always kept on one, but
                     // fall back to keeping the span intact rather than
                     // panicking on a slice.
-                    display.push(span);
-                    display.push(RichSpan::new(&self.preedit));
-                }
-                inserted = true;
-            } else {
-                display.push(span);
-            }
-            consumed = end;
-        }
-        if !inserted {
-            display.push(RichSpan::new(&self.preedit));
-        }
-        display
-    }
-
-    fn insert_preedit_span(&self, spans: Vec<RichSpan>) -> Vec<RichSpan> {
-        if self.preedit.is_empty() {
-            return spans;
-        }
-        let at = self.cursor_pos.min(self.text.len());
-        let mut display = Vec::with_capacity(spans.len().saturating_add(2));
-        let mut consumed = 0usize;
-        let mut inserted = false;
-        for span in spans {
-            let end = consumed.saturating_add(span.text.len());
-            if !inserted && at <= end {
-                let local = at.saturating_sub(consumed);
-                if let (Some(before_str), Some(after_str)) =
-                    (span.text.get(..local), span.text.get(local..))
-                {
-                    if !before_str.is_empty() {
-                        let mut before = span.clone();
-                        before.text = before_str.to_string();
-                        display.push(before);
-                    }
-                    display.push(RichSpan::new(&self.preedit));
-                    if !after_str.is_empty() {
-                        let mut after = span.clone();
-                        after.text = after_str.to_string();
-                        display.push(after);
-                    }
-                } else {
                     display.push(span);
                     display.push(RichSpan::new(&self.preedit));
                 }
@@ -1020,7 +1037,8 @@ impl TextInput {
     }
 
     /// Explicit host language without discovery or background dictionary warmup.
-    pub(crate) fn local_with_language(language: &str) -> Self {
+    #[doc(hidden)]
+    pub fn local_with_language(language: &str) -> Self {
         Self::with_language(Vec::new(), language.to_owned())
     }
 
@@ -1198,6 +1216,14 @@ impl TextInput {
 
     pub fn selection_range_public(&self) -> Option<(usize, usize)> {
         self.selection_range()
+    }
+
+    /// The live selection endpoints in anchor/focus order for accessibility
+    /// bridges. Unlike [`Self::selection_range_public`], this preserves the
+    /// direction in which the user extended the selection.
+    pub fn selection_anchor_focus_public(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor?;
+        (anchor != self.cursor_pos).then_some((anchor, self.cursor_pos))
     }
 
     /// `len()` is `text.len() + 1`; empty until the first draw lands.
@@ -1660,32 +1686,24 @@ impl TextInput {
     }
 
     fn build_lines(&mut self, tr: &mut TextRenderer, avail_w: f64) {
-        let size = self.effective_font_size();
-        let lh = self.line_height();
-        let wrap_w = if avail_w > 1.0 { avail_w } else { f64::MAX };
-        let mut lines: Vec<VisualLine> = Vec::new();
-        let mut y = 0.0f64;
+        let mut wrap = LineWrap {
+            size: self.effective_font_size(),
+            wrap_w: if avail_w > 1.0 { avail_w } else { f64::MAX },
+            lh: self.line_height(),
+            y: 0.0,
+            lines: Vec::new(),
+        };
         let mut para_start = 0usize;
         while let Some(tail) = self.text.get(para_start..) {
             let rel_nl = tail.find('\n');
             let para_end = rel_nl.map_or(self.text.len(), |i| para_start.saturating_add(i));
-            self.wrap_paragraph(
-                tr,
-                size,
-                para_start,
-                para_end,
-                rel_nl.is_some(),
-                wrap_w,
-                lh,
-                &mut y,
-                &mut lines,
-            );
+            self.wrap_paragraph(tr, &mut wrap, para_start..para_end, rel_nl.is_some());
             match rel_nl {
                 Some(i) => para_start = para_start.saturating_add(i).saturating_add(1),
                 None => break,
             }
         }
-        self.lines = lines;
+        self.lines = wrap.lines;
     }
 
     /// Uses UAX #14 opportunities, matching cosmic-text's shaped layout. It
@@ -1698,22 +1716,16 @@ impl TextInput {
     /// with `a <= b <= nchars`. The `.get`/`unwrap_or` fallbacks below exist
     /// so a future change to this invariant degrades gracefully instead of
     /// panicking; they are not expected to trigger.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "wrapping carries the bounded paragraph range and accumulated layout explicitly"
-    )]
     fn wrap_paragraph(
         &self,
         tr: &mut TextRenderer,
-        size: f32,
-        start: usize,
-        end: usize,
+        wrap: &mut LineWrap,
+        span: Range<usize>,
         hard_break: bool,
-        wrap_w: f64,
-        lh: f64,
-        y: &mut f64,
-        out: &mut Vec<VisualLine>,
     ) {
+        let Range { start, end } = span;
+        let (size, wrap_w, lh) = (wrap.size, wrap.wrap_w, wrap.lh);
+        let (y, out) = (&mut wrap.y, &mut wrap.lines);
         let Some(para) = self.text.get(start..end) else {
             return;
         };
@@ -1804,28 +1816,26 @@ impl TextInput {
         origin: Affine,
     ) {
         if let Some(fam) = &self.family {
-            tr.draw_text_font(
+            tr.draw_style(
                 scene,
                 text,
-                size,
                 color,
                 origin,
                 None,
-                TextWeight::Regular,
-                false,
-                fam,
+                &TextStyle::new(size).with_family(fam.clone()),
             );
         } else {
-            tr.draw_text_styled(
+            tr.draw_style(
                 scene,
                 text,
-                size,
                 color,
                 origin,
                 None,
-                TextWeight::Regular,
-                false,
-                self.mono,
+                &TextStyle::new(size).with_family(if self.mono {
+                    FontChoice::Monospace
+                } else {
+                    FontChoice::SansSerif
+                }),
             );
         }
     }
@@ -1869,16 +1879,17 @@ impl TextInput {
             &spans,
         );
         if self.single_layout.is_none() || self.shaped_layout_signature != signature {
-            let mut layout = RichTextLayout::shape_styled_reusing(
+            let browser_emoji = tr.browser_color_emoji_installed();
+            let mut layout = RichTextLayout::shape_styled_reusing_browser(
                 &mut tr.font_system,
                 &spans,
                 style,
                 Some(available_width),
-                TextAlign::Left,
-                Vec::new(),
-                Vec::new(),
+                self.align,
                 self.single_layout.take(),
+                browser_emoji,
             );
+            tr.note_browser_rich_layout(&layout);
             if !self.preedit.is_empty() {
                 let start = self.cursor_pos.min(self.text.len());
                 layout.add_underline(start..start.saturating_add(self.preedit.len()));
@@ -1952,7 +1963,8 @@ impl TextInput {
         let available = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0);
         let style = self.multiline_style(theme.text_scale);
         #[allow(clippy::cast_possible_truncation, reason = "bounded widget width")]
-        self.ensure_shaped_layout(tr, theme, &style, available as f32);
+        let available_width = available as f32;
+        self.ensure_shaped_layout(tr, theme, &style, available_width);
         let minimum = self.effective_font_size() * theme.text_scale * LINE_HEIGHT_RATIO;
         let height = self
             .single_layout
@@ -2060,7 +2072,6 @@ impl TextInput {
         gutter
     }
 
-    #[allow(clippy::too_many_arguments, reason = "internal draw-pass helper")]
     fn draw_gutter_line_numbers(
         &self,
         scene: &mut Scene,
@@ -2269,7 +2280,7 @@ impl TextInput {
     /// Per-row logical-line index and whether the row starts a new logical
     /// line (a row starts one iff the previous row ended at a hard `\n`),
     /// plus which logical line the caret is on.
-    fn ml_body_row_metadata(&self) -> (Vec<usize>, Vec<bool>, usize) {
+    fn ml_body_row_metadata(&self) -> LogicalRows {
         let mut line_of_row: Vec<usize> = Vec::with_capacity(self.lines.len());
         let mut is_line_start: Vec<bool> = Vec::with_capacity(self.lines.len());
         let mut cur_line = 0usize;
@@ -2288,20 +2299,23 @@ impl TextInput {
             .text
             .get(..caret_idx)
             .map_or(0, |s| s.bytes().filter(|&b| b == b'\n').count());
-        (line_of_row, is_line_start, caret_line)
+        LogicalRows {
+            line_of_row,
+            is_line_start,
+            caret_line,
+        }
     }
 
-    #[allow(clippy::too_many_arguments, reason = "internal draw-pass helper")]
     fn draw_body_current_line_band(
         &self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
-        line_of_row: &[usize],
-        caret_line: usize,
+        rows: &LogicalRows,
         lh: f64,
         gutter_w: f64,
     ) {
+        let (line_of_row, caret_line) = (&rows.line_of_row, rows.caret_line);
         if !(self.highlight_current_line && self.is_focused && !self.shows_placeholder()) {
             return;
         }
@@ -2328,18 +2342,21 @@ impl TextInput {
     }
 
     /// Collected as owned data so all `self` borrows end before the draw calls.
-    #[allow(clippy::too_many_arguments, reason = "internal draw-pass helper")]
     fn collect_ml_body_rows(
         &self,
-        line_of_row: &[usize],
-        is_line_start: &[bool],
-        caret_line: usize,
-        view_h: f64,
+        rows: &LogicalRows,
         lh: f64,
         text_color: vello::peniko::Color,
         theme: &Theme,
-        gutter_w: f64,
     ) -> (RowDraws, GutterNums) {
+        let LogicalRows {
+            line_of_row,
+            is_line_start,
+            caret_line,
+        } = rows;
+        let caret_line = *caret_line;
+        let view_h = self.rect.height() - self.multiline_padding_y() * 2.0;
+        let gutter_w = self.code_gutter_w();
         let mut row_draws: RowDraws = Vec::new();
         let mut gutter_nums: GutterNums = Vec::new();
         for (i, ((line, &li), &starts_new_line)) in self
@@ -2364,7 +2381,6 @@ impl TextInput {
         (row_draws, gutter_nums)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "internal draw-pass helper")]
     fn draw_body_gutter_numbers(
         &self,
         scene: &mut Scene,
@@ -2452,17 +2468,9 @@ impl TextInput {
             shape,
         );
 
-        let (line_of_row, is_line_start, caret_line) = self.ml_body_row_metadata();
+        let rows = self.ml_body_row_metadata();
         self.draw_code_gutter_background(scene, transform, theme, gutter_w);
-        self.draw_body_current_line_band(
-            scene,
-            transform,
-            theme,
-            &line_of_row,
-            caret_line,
-            lh,
-            gutter_w,
-        );
+        self.draw_body_current_line_band(scene, transform, theme, &rows, lh, gutter_w);
 
         if let Some((s, e)) = self.selection_range() {
             let sel_color = theme.accent_primary.with_alpha_factor(0.35);
@@ -2490,17 +2498,7 @@ impl TextInput {
         } else {
             theme.text_primary
         };
-        let view_h = self.rect.height() - self.multiline_padding_y() * 2.0;
-        let (row_draws, gutter_nums) = self.collect_ml_body_rows(
-            &line_of_row,
-            &is_line_start,
-            caret_line,
-            view_h,
-            lh,
-            text_color,
-            theme,
-            gutter_w,
-        );
+        let (row_draws, gutter_nums) = self.collect_ml_body_rows(&rows, lh, text_color, theme);
 
         self.draw_body_gutter_numbers(scene, transform, tr, theme, size, gutter_w, &gutter_nums);
         self.draw_body_rows(scene, transform, tr, size, left, &row_draws);
@@ -2628,8 +2626,19 @@ impl TextInput {
         if self.multiline && self.multiline_shaped {
             self.single_origin = Point::new(
                 self.rect.x0 + self.ml_left(),
-                self.rect.y0 + ML_PAD_Y - self.scroll_y,
+                self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
             );
+        }
+    }
+
+    /// Adopt the paragraph just shaped by [`Self::measure_wrapped_content`]
+    /// for hit-testing and carets, as painting would. A host that skips
+    /// painting an off-screen field keeps its geometry current this way.
+    pub(super) fn adopt_measured_layout(&mut self) {
+        if self.multiline && !self.masked() && self.single_layout.is_some() {
+            self.multiline_shaped = true;
+            self.lines.clear();
+            self.refresh_multiline_origin();
         }
     }
 
@@ -2648,6 +2657,10 @@ impl TextInput {
     pub fn with_id(mut self, id: &str) -> Self {
         self.id = id.to_string();
         self
+    }
+
+    pub(crate) fn set_id(&mut self, id: &str) {
+        self.id = id.to_string();
     }
 
     /// Bind this input to one root-level document string.
@@ -2834,12 +2847,9 @@ impl TextInput {
             return;
         };
         // FNV-1a signature so re-tokenising is skipped when the text hasn't changed.
-        let mut sig: u64 = 0xcbf2_9ce4_8422_2325;
-        for &b in self.text.as_bytes() {
-            sig ^= u64::from(b);
-            sig = sig.wrapping_mul(0x100_0000_01b3);
-        }
-        sig ^= self.text.len() as u64;
+        let mut hasher = fnv::FnvHasher::default();
+        std::hash::Hasher::write(&mut hasher, self.text.as_bytes());
+        let sig = std::hash::Hasher::finish(&hasher) ^ self.text.len() as u64;
         if sig == self.hl_sig && !self.hl_line_starts.is_empty() {
             return;
         }
@@ -3122,9 +3132,13 @@ impl TextInput {
                 let _ = state.splice_text(obj_id, char_idx, 0, s);
             }
             self.cursor_pos = self.cursor_pos.saturating_add(s.len());
+            self.selection_anchor = None;
             self.caret_affinity = TextAffinity::Before;
             insert_char_at = char_idx;
         }
+        // A drag can leave an anchor equal to the old caret. Insertion must
+        // collapse that anchor too, or the newly inserted text becomes selected.
+        self.selection_anchor = None;
         // Latest-wins per position, so a peer typing into another's text splits their run correctly.
         if let (Some(obj_id), Some(author)) = (obj_id, &self.local_author) {
             let nchars = s.chars().count();
@@ -3223,8 +3237,11 @@ impl TextInput {
     fn do_cut(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
         if let Some(s) = self.selected_str() {
             let owned = s.to_string();
-            clipboard_copy(&owned);
-            self.delete_selection(state, obj_id);
+            // Delete only once the text is on a clipboard; a failed copy
+            // must not lose the selection.
+            if crate::text_selection::clipboard_copy_accepted(&owned) {
+                self.delete_selection(state, obj_id);
+            }
         }
     }
 
@@ -3870,6 +3887,12 @@ impl Drop for TextInput {
 }
 
 impl Widget for TextInput {
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::undo::UndoPoints
+    );
+
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
@@ -3878,7 +3901,8 @@ impl Widget for TextInput {
         self.is_hovered &= environment.supports_hover();
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = crate::doc::document(state, root);
         let local_value = self
             .local_state
             .as_mut()
@@ -4031,12 +4055,15 @@ impl Widget for TextInput {
             let signature =
                 self.shaped_signature(&display, &style.family, style.size, Some(available_width));
             if self.single_layout.is_none() || self.shaped_layout_signature != signature {
-                let mut layout = RichTextLayout::shape_plain(
+                let browser_emoji = text_renderer.browser_color_emoji_installed();
+                let mut layout = RichTextLayout::shape_plain_browser(
                     &mut text_renderer.font_system,
                     &display,
                     &style,
                     Some(available_width),
+                    browser_emoji,
                 );
+                text_renderer.note_browser_rich_layout(&layout);
                 if !self.preedit.is_empty() {
                     let start = self.cursor_pos.min(self.text.len());
                     layout.add_underline(start..start.saturating_add(self.preedit.len()));
@@ -4138,21 +4165,9 @@ impl Widget for TextInput {
         self.draw_single_line_decorations(scene, transform, theme, true);
         self.draw_single_line_selection(scene, transform, theme);
 
-        let text_color = if self.effectively_disabled() {
-            theme.text_dim
-        } else {
-            theme.text_primary
-        };
         self.draw_single_line_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             &display,
-            text_size,
-            padding_x,
-            text_y,
-            text_color,
         );
 
         self.draw_single_line_decorations(scene, transform, theme, false);
@@ -4166,18 +4181,7 @@ impl Widget for TextInput {
         self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Single guard that makes both pointer and keyboard input no-ops when disabled.
         if self.effectively_disabled() {
             return;
@@ -4189,17 +4193,17 @@ impl Widget for TextInput {
             WindowEvent::MouseWheel { delta, .. }
                 if self.multiline && self.is_hovered && !self.effectively_disabled() =>
             {
-                self.handle_mouse_wheel(delta, handled);
+                self.handle_mouse_wheel(delta, ctx.handled);
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(*position, scale_factor, handled);
+                self.handle_cursor_moved(*position, ctx.scale_factor, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
             } if self.is_hovered && !self.effectively_disabled() => {
-                self.handle_right_click(focus_target, node_id, handled);
+                self.handle_right_click(ctx.focus_target, ctx.node_id, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: element_state,
@@ -4208,12 +4212,12 @@ impl Widget for TextInput {
             } => {
                 self.handle_left_click(
                     *element_state,
-                    *modifiers,
-                    state,
-                    root,
-                    focus_target,
-                    node_id,
-                    handled,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
+                    ctx.node_id,
+                    ctx.handled,
                 );
             }
             WindowEvent::MouseInput {
@@ -4221,10 +4225,22 @@ impl Widget for TextInput {
                 button: MouseButton::Middle,
                 ..
             } if self.is_hovered && !self.effectively_disabled() => {
-                self.handle_middle_click(state, root, focus_target, node_id, handled);
+                self.handle_middle_click(
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
+                    ctx.node_id,
+                    ctx.handled,
+                );
             }
             WindowEvent::Touch(touch) => {
-                self.handle_touch_event(touch, scale_factor, focus_target, node_id, handled);
+                self.handle_touch_event(
+                    touch,
+                    ctx.scale_factor,
+                    ctx.focus_target,
+                    ctx.node_id,
+                    ctx.handled,
+                );
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -4240,17 +4256,17 @@ impl Widget for TextInput {
                     logical_key,
                     text.as_deref(),
                     *element_state,
-                    *modifiers,
-                    state,
-                    root,
-                    handled,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
                 );
             }
             WindowEvent::Ime(winit::event::Ime::Commit(t)) => {
-                self.handle_ime_commit(t, state, root, handled);
+                self.handle_ime_commit(t, ctx.state, ctx.path, ctx.handled);
             }
             WindowEvent::Ime(winit::event::Ime::Preedit(t, cursor)) => {
-                self.handle_ime_preedit(t, *cursor, handled);
+                self.handle_ime_preedit(t, *cursor, ctx.handled);
             }
             _ => {}
         }
@@ -4259,47 +4275,6 @@ impl Widget for TextInput {
 
     fn name(&self) -> &'static str {
         "TextInput"
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
-    }
-
-    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        let control_id = self.test_id().unwrap_or("text_input");
-        if let Some(action) = &self.action {
-            vec![action.metadata(control_id)]
-        } else if self.crdt_bound || self.bound_text.is_some() {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::CollaborativeDocument(
-                    if self.on_change_path.is_empty() {
-                        "<nested-text>".to_string()
-                    } else {
-                        self.on_change_path.clone()
-                    },
-                ),
-            }]
-        } else if self.on_change.is_some() {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::LegacyCallback,
-            }]
-        } else {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::SemanticAction(control_id.to_string()),
-            }]
-        }
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -4318,6 +4293,15 @@ impl Widget for TextInput {
     /// so it only needs re-measure before its first layout or right after a
     /// user edit — never blocking the scroll fast path while idle.
     fn layout_needs_measure(&self) -> bool {
+        self.rect == Rect::ZERO || self.dirty || self.model_layout_dirty
+    }
+
+    /// Same inputs as [`Self::layout_needs_measure`]: an input's size follows
+    /// its content only through a user edit (`dirty`, drained by the owner's
+    /// `take_dirty`) or a model change that reshapes multiline or attributed
+    /// text (`model_layout_dirty`, cleared by `measure`). Idle inputs would
+    /// otherwise be re-measured on every retained frame.
+    fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO || self.dirty || self.model_layout_dirty
     }
 
@@ -4440,10 +4424,11 @@ impl Widget for TextInput {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        state: &mut AppModel,
+        root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, root) = crate::doc::document(state, root);
 
         if self.effectively_disabled() {
             return false;
@@ -4464,7 +4449,13 @@ impl Widget for TextInput {
                 self.selection_anchor = (!self.text.is_empty()).then_some(0);
                 self.cursor_pos = self.text.len();
                 let obj = self.resolve_text_obj(state, root);
-                self.insert_str(&cleaned, state, obj.as_ref());
+                // SetValue replaces the complete value, including an empty
+                // replacement. insert_str intentionally ignores empty typing.
+                if cleaned.is_empty() {
+                    self.delete_selection(state, obj.as_ref());
+                } else {
+                    self.insert_str(&cleaned, state, obj.as_ref());
+                }
                 if obj.is_none() {
                     self.persist_first_path_edit(&previous_text, state, root);
                 }
@@ -4505,67 +4496,12 @@ impl Widget for TextInput {
             .filter(|deadline| *deadline > crate::time::now())
     }
 
-    fn needs_commit(&self) -> bool {
-        if let Some(t) = self.last_edit_time {
-            t.elapsed() >= Duration::from_secs(1)
-        } else {
-            false
-        }
-    }
-
-    fn on_commit(&mut self) {
-        self.last_edit_time = None;
-    }
-
-    fn get_state(&self) -> Option<String> {
-        if let Some(anchor) = self.selection_anchor {
-            let affinity = if self.caret_affinity == TextAffinity::After {
-                "a"
-            } else {
-                "b"
-            };
-            return Some(format!("{}:{affinity}:{anchor}", self.cursor_pos));
-        }
-        Some(match self.caret_affinity {
-            // Keep the historical state shape for the overwhelmingly common
-            // unambiguous/default caret.
-            TextAffinity::Before => self.cursor_pos.to_string(),
-            TextAffinity::After => format!("{}:a", self.cursor_pos),
-        })
-    }
-
-    fn set_state(&mut self, state: &str) {
-        let mut parts = state.split(':');
-        let byte = parts.next().unwrap_or_default();
-        let affinity = parts.next().unwrap_or("b");
-        let anchor = parts.next().and_then(|anchor| anchor.parse::<usize>().ok());
-        if let Ok(pos) = byte.parse::<usize>() {
-            self.cursor_pos = pos;
-            self.selection_anchor = anchor;
-            self.caret_affinity = if affinity == "a" {
-                TextAffinity::After
-            } else {
-                TextAffinity::Before
-            };
-        }
-    }
-
     fn text_review(&self) -> Option<(usize, String)> {
         // A secret field never surfaces its contents.
         if !self.is_focused || self.secret {
             return None;
         }
         Some((self.cursor_pos, self.text.clone()))
-    }
-
-    fn presence_key(&self) -> Option<PresenceKey> {
-        if self.path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.path.clone(),
-            })
-        }
     }
 
     fn draw_with_presence(
@@ -4582,7 +4518,7 @@ impl Widget for TextInput {
         }
         self.draw(scene, transform, text_renderer, theme, presence);
 
-        if let Some(key) = self.presence_key() {
+        if let Some(key) = crate::presence::capability::presence_key(self) {
             // Peer caret + selection reuse `caret_rect`/`selection_rect`, never a
             // re-derived approximation. `transform` maps the local rect to the scene.
 
@@ -4631,7 +4567,7 @@ impl Widget for TextInput {
             }
         }
 
-        if let Some(scope) = self.permission_scope()
+        if let Some(scope) = crate::permissions::capability::permission_scope(self)
             && !permissions.check(&scope)
         {
             let r = self.rect;
@@ -4665,6 +4601,138 @@ impl Widget for TextInput {
                 theme,
                 presence,
             );
+        }
+    }
+}
+
+impl crate::undo::UndoPoints for TextInput {
+    fn needs_commit(&self) -> bool {
+        if let Some(t) = self.last_edit_time {
+            t.elapsed() >= Duration::from_secs(1)
+        } else {
+            false
+        }
+    }
+    fn on_commit(&mut self) {
+        self.last_edit_time = None;
+    }
+    fn get_state(&self) -> Option<String> {
+        if let Some(anchor) = self.selection_anchor {
+            let affinity = if self.caret_affinity == TextAffinity::After {
+                "a"
+            } else {
+                "b"
+            };
+            return Some(format!("{}:{affinity}:{anchor}", self.cursor_pos));
+        }
+        Some(match self.caret_affinity {
+            // Keep the historical state shape for the overwhelmingly common
+            // unambiguous/default caret.
+            TextAffinity::Before => self.cursor_pos.to_string(),
+            TextAffinity::After => format!("{}:a", self.cursor_pos),
+        })
+    }
+    fn set_state(&mut self, state: &str) {
+        let mut parts = state.split(':');
+        let byte = parts.next().unwrap_or_default();
+        let affinity = parts.next().unwrap_or("b");
+        let anchor = parts.next().and_then(|anchor| anchor.parse::<usize>().ok());
+        if let Ok(pos) = byte.parse::<usize>() {
+            self.cursor_pos = pos;
+            self.selection_anchor = anchor;
+            self.caret_affinity = if affinity == "a" {
+                TextAffinity::After
+            } else {
+                TextAffinity::Before
+            };
+        }
+    }
+}
+
+impl crate::presence::capability::PublishesPresence for TextInput {
+    /// The widget's path, else the document field it edits (an input bound
+    /// with [`TextInput::with_on_change_path`] or
+    /// [`TextInput::from_document_string`] has no structural path), so peers
+    /// editing the same field share carets.
+    fn presence_key(&self) -> Option<PresenceKey> {
+        if !self.path.is_empty() {
+            return Some(PresenceKey::Widget {
+                path: self.path.clone(),
+            });
+        }
+        (!self.on_change_path.is_empty()).then(|| PresenceKey::Widget {
+            path: vec![PathSegment::Field(self.on_change_path.clone())],
+        })
+    }
+
+    /// The caret, or the selection when one is extended, while focused. A
+    /// secret field publishes nothing.
+    fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
+        if !self.is_focused || self.secret {
+            return None;
+        }
+        let key = self.presence_key()?;
+        let payload = match self.selection_anchor {
+            Some(anchor) if anchor != self.cursor_pos => {
+                crate::collaboration::PresencePayload::Selection {
+                    start: anchor.min(self.cursor_pos),
+                    end: anchor.max(self.cursor_pos),
+                }
+            }
+            _ => crate::collaboration::PresencePayload::Caret {
+                pos: self.cursor_pos,
+            },
+        };
+        Some((key, payload))
+    }
+}
+
+impl crate::widget::controls::ActionControls for TextInput {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.action {
+            let _ = action.install_custody(domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.action.as_mut().and_then(ActionEmitter::take)
+    }
+    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        let control_id = self.test_id().unwrap_or("text_input");
+        if let Some(action) = &self.action {
+            vec![action.metadata(control_id)]
+        } else if self.crdt_bound || self.bound_text.is_some() {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::CollaborativeDocument(
+                    if self.on_change_path.is_empty() {
+                        "<nested-text>".to_string()
+                    } else {
+                        self.on_change_path.clone()
+                    },
+                ),
+            }]
+        } else if self.on_change.is_some() {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::LegacyCallback,
+            }]
+        } else {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::SemanticAction(control_id.to_string()),
+            }]
+        }
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
         }
     }
 }
@@ -4767,8 +4835,9 @@ impl TextInput {
                 Self::attributed_signature(base ^ Self::single_attributes_signature(a), &a.spans)
             });
             if self.single_layout.is_none() || self.shaped_layout_signature != signature {
+                let browser_emoji = text_renderer.browser_color_emoji_installed();
                 let mut layout = if let Some(attributes) = attributes {
-                    RichTextLayout::shape_styled(
+                    RichTextLayout::shape_styled_browser(
                         &mut text_renderer.font_system,
                         &self.insert_preedit_span(attributes.spans.clone()),
                         &style,
@@ -4776,15 +4845,18 @@ impl TextInput {
                         TextAlign::Left,
                         self.display_ranges(&attributes.underlines),
                         self.display_ranges(&attributes.strikes),
+                        browser_emoji,
                     )
                 } else {
-                    RichTextLayout::shape_plain(
+                    RichTextLayout::shape_plain_browser(
                         &mut text_renderer.font_system,
                         display,
                         &style,
                         None,
+                        browser_emoji,
                     )
                 };
+                text_renderer.note_browser_rich_layout(&layout);
                 if !self.preedit.is_empty() {
                     let start = self.cursor_pos.min(self.text.len());
                     layout.add_underline(start..start.saturating_add(self.preedit.len()));
@@ -4932,19 +5004,22 @@ impl TextInput {
         }
     }
 
-    #[allow(clippy::too_many_arguments, reason = "internal draw-pass helper")]
-    fn draw_single_line_text(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        display: &str,
-        text_size: f32,
-        padding_x: f64,
-        text_y: f64,
-        text_color: vello::peniko::Color,
-    ) {
+    /// Paint the placeholder and the field's text from `single_origin`, as
+    /// laid out by `draw`; `display` is the masked text of a secret field.
+    fn draw_single_line_text(&self, ctx: &mut PaintCtx<'_>, display: &str) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let text_size = self.effective_font_size();
+        let text_y = self.single_origin.y;
+        let text_color = if self.effectively_disabled() {
+            theme.text_dim
+        } else {
+            theme.text_primary
+        };
         if self.shows_placeholder() {
             let placeholder = crate::i18n!(&self.placeholder);
             // `Affine * Affine` composes two geometric transforms over f64
@@ -4953,8 +5028,7 @@ impl TextInput {
                 clippy::arithmetic_side_effects,
                 reason = "Affine transform composition over f64 screen coordinates"
             )]
-            let placeholder_origin =
-                transform * Affine::translate((self.rect.x0 + padding_x, text_y));
+            let placeholder_origin = transform * Affine::translate((self.single_origin.x, text_y));
             text_renderer.draw_text(
                 scene,
                 &placeholder,
@@ -4969,34 +5043,32 @@ impl TextInput {
             reason = "Affine transform composition over f64 screen coordinates"
         )]
         let text_origin =
-            transform * Affine::translate((self.rect.x0 + padding_x - self.scroll_x, text_y));
+            transform * Affine::translate((self.single_origin.x - self.scroll_x, text_y));
         if !self.masked() {
             if let Some(layout) = &self.single_layout {
                 text_renderer.draw_rich(scene, layout, text_origin, text_color);
             }
         } else if let Some(fam) = &self.family {
-            text_renderer.draw_text_font(
+            text_renderer.draw_style(
                 scene,
                 display,
-                text_size,
                 text_color,
                 text_origin,
                 None,
-                TextWeight::Regular,
-                false,
-                fam,
+                &TextStyle::new(text_size).with_family(fam.clone()),
             );
         } else {
-            text_renderer.draw_text_styled(
+            text_renderer.draw_style(
                 scene,
                 display,
-                text_size,
                 text_color,
                 text_origin,
                 None,
-                TextWeight::Regular,
-                false,
-                self.mono,
+                &TextStyle::new(text_size).with_family(if self.mono {
+                    FontChoice::Monospace
+                } else {
+                    FontChoice::SansSerif
+                }),
             );
         }
     }
@@ -5167,7 +5239,6 @@ impl TextInput {
         *handled = true;
     }
 
-    #[allow(clippy::too_many_arguments, reason = "internal event-dispatch helper")]
     fn handle_left_click(
         &mut self,
         element_state: ElementState,
@@ -5197,6 +5268,10 @@ impl TextInput {
             return;
         }
         match element_state {
+            // The tap the toolkit synthesises when a finger lifts: that
+            // finger's own touch already pressed, and a second press would
+            // count as a double click.
+            ElementState::Pressed if self.active_touch.is_some() => *handled = true,
             ElementState::Pressed if self.is_hovered => {
                 self.handle_left_press(modifiers, focus_target, node_id, handled);
             }
@@ -5555,7 +5630,6 @@ impl TextInput {
         }
     }
 
-    #[allow(clippy::too_many_arguments, reason = "internal event-dispatch helper")]
     fn handle_keyboard_input(
         &mut self,
         logical_key: &Key,
@@ -5694,3229 +5768,5 @@ impl TextInput {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn drag_preview_suppresses_caret_paint_without_blurring_or_clearing_ime() {
-        let mut input = TextInput::local().with_initial_value("editable");
-        input.set_focus(true);
-        input.set_selection(1, 4);
-        input.preedit = "composing".into();
-        let before = (
-            input.cursor_pos(),
-            input.selection_range(),
-            input.preedit.clone(),
-        );
-        let theme = Theme::dark();
-        let mut visible = Scene::new();
-        input.draw_single_line_caret(&mut visible, Affine::IDENTITY, &theme);
-        assert!(!visible.encoding().draw_tags.is_empty());
-        input.suppress_caret_paint(true);
-        let mut hidden = Scene::new();
-        input.draw_single_line_caret(&mut hidden, Affine::IDENTITY, &theme);
-        assert!(
-            hidden.encoding().draw_tags.is_empty(),
-            "drag scenes must contain no local caret"
-        );
-        assert!(input.is_focused());
-        assert_eq!(
-            (
-                input.cursor_pos(),
-                input.selection_range(),
-                input.preedit.clone()
-            ),
-            before
-        );
-        input.suppress_caret_paint(false);
-        let mut restored = Scene::new();
-        input.draw_single_line_caret(&mut restored, Affine::IDENTITY, &theme);
-        assert_eq!(
-            restored.encoding().draw_tags.len(),
-            visible.encoding().draw_tags.len()
-        );
-    }
-
-    #[test]
-    fn programmatic_caret_never_splits_a_grapheme() {
-        let mut combining = TextInput::local().with_initial_value("a\u{301}b");
-        combining.set_cursor_pos(1);
-        assert_eq!(combining.cursor_pos(), 0);
-
-        let mut emoji = TextInput::local().with_initial_value("👩‍👩‍👧‍👦!");
-        emoji.set_cursor_pos(4);
-        assert_eq!(emoji.cursor_pos(), 0);
-        emoji.set_cursor_pos("👩‍👩‍👧‍👦".len());
-        assert_eq!(emoji.cursor_pos(), "👩‍👩‍👧‍👦".len());
-    }
-
-    #[test]
-    fn permission_denied_overlay_alpha_matches_other_widgets() {
-        let expected = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-        assert_eq!(TextInput::PERMISSION_DENIED_OVERLAY, expected);
-    }
-
-    #[test]
-    fn text_input_test_id_default_is_text_input() {
-        let ti = TextInput::new(Vec::new());
-        assert_eq!(Widget::test_id(&ti), Some("text_input"));
-    }
-
-    #[test]
-    fn ime_purpose_does_not_leak_secret_field_contents() {
-        let plain = TextInput::local();
-        let secret = TextInput::local().with_secret(true);
-        assert_eq!(
-            Widget::ime_purpose(&plain),
-            Some(winit::window::ImePurpose::Normal)
-        );
-        assert_eq!(
-            Widget::ime_purpose(&secret),
-            Some(winit::window::ImePurpose::Password)
-        );
-    }
-
-    #[test]
-    fn cursor_shape_is_text_over_rect() {
-        let mut ti = TextInput::local();
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
-        assert_eq!(
-            Widget::cursor_shape(&ti, Point::new(20.0, 20.0)),
-            Some(winit::window::CursorIcon::Text),
-            "pointer over the editable area requests an I-beam",
-        );
-        assert_eq!(
-            Widget::cursor_shape(&ti, Point::new(500.0, 500.0)),
-            None,
-            "pointer outside the input defers (no cursor claim)",
-        );
-
-        let mut off = TextInput::local().disabled(true);
-        off.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
-        assert_eq!(
-            Widget::cursor_shape(&off, Point::new(20.0, 20.0)),
-            None,
-            "disabled input claims no cursor",
-        );
-    }
-
-    /// The peer caret and the local caret are the SAME geometry — full line
-    /// height, advancing via per-char metrics, NOT a fixed 2px×16px bar —
-    /// the contract that makes a remote caret pixel-identical, only recoloured.
-    #[test]
-    fn caret_rect_is_real_caret_geometry() {
-        let mut ti = TextInput::local().with_initial_value("hello world");
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 24.0));
-        let theme = Theme::dark();
-        let presence = crate::presence::PresenceCtx::empty();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        Widget::draw(
-            &mut ti,
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &presence,
-        );
-
-        let r0 = ti.caret_rect(&theme, 0);
-        let r5 = ti.caret_rect(&theme, 5);
-        let (_text_y, line_height) = ti.text_band();
-
-        assert!(
-            (r0.width() - theme.caret_width).abs() < 0.01,
-            "caret uses the configured width"
-        );
-        assert!(
-            (r0.height() - line_height).abs() < 0.01,
-            "caret spans the full line band, not a fixed 16px"
-        );
-        assert!(
-            line_height > 16.0,
-            "body line height is >16 (so the old fixed 16px was wrong)"
-        );
-        assert!(
-            r5.x0 > r0.x0,
-            "caret advances with byte position via real glyph metrics"
-        );
-    }
-
-    #[test]
-    fn single_line_bidi_uses_visual_caret_hit_and_selection_geometry() {
-        let text = "abc אבג xyz";
-        let mut ti = TextInput::local().with_initial_value(text);
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 400.0, 40.0));
-        draw_to_populate(&mut ti);
-        let theme = Theme::dark();
-
-        // Use two unambiguous interior stops. At the LTR/RTL boundaries a
-        // byte position legitimately has two visual affinities.
-        let after_alef = "abc א".len();
-        let after_bet = "abc אב".len();
-        let before = ti.caret_rect(&theme, after_alef);
-        let after = ti.caret_rect(&theme, after_bet);
-        assert!(
-            before.x0 > after.x0,
-            "the Hebrew run advances right-to-left: before={before:?}, after={after:?}"
-        );
-
-        let hit = ti.byte_at_point(Point::new(before.x0 + 1.0, before.center().y));
-        assert_eq!(hit, after_alef);
-
-        let selected_end = "abc א".len();
-        let bands = ti.selection_rects(&theme, 0, selected_end);
-        assert_eq!(bands.len(), 2, "mixed-direction selection stays disjoint");
-    }
-
-    #[test]
-    fn single_line_bidi_caret_retains_affinity_through_arrow_motion() {
-        let mut ti = TextInput::local().with_initial_value("abc אבג xyz");
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 400.0, 40.0));
-        draw_to_populate(&mut ti);
-        ti.set_focus(true);
-        let theme = Theme::dark();
-        let y = ti.rect.center().y;
-        let mut positions = Vec::new();
-        for x in 0..=400 {
-            let position = ti.position_at_point(Point::new(f64::from(x), y));
-            if positions.last() != Some(&position) {
-                positions.push(position);
-            }
-        }
-        let (a, b) = positions
-            .iter()
-            .find_map(|a| {
-                let ax = ti.caret_rect_at(&theme, *a).x0;
-                positions
-                    .iter()
-                    .find(|b| {
-                        a.byte == b.byte
-                            && a.affinity != b.affinity
-                            && (ax - ti.caret_rect_at(&theme, **b).x0).abs() > 1.0
-                    })
-                    .map(|b| (*a, *b))
-            })
-            .expect("the mixed-direction boundary has two visual positions");
-        let (left, right) = if ti.caret_rect_at(&theme, a).x0 < ti.caret_rect_at(&theme, b).x0 {
-            (a, b)
-        } else {
-            (b, a)
-        };
-
-        ti.set_caret_position(left);
-        let mut doc = AutoCommit::new();
-        for _ in 0..16 {
-            if ti.caret_position() == right {
-                break;
-            }
-            drive(
-                &mut ti,
-                &mut doc,
-                &named_key_event(NamedKey::ArrowRight),
-                mods(false, false),
-            );
-        }
-        assert_eq!(ti.caret_position(), right);
-        assert_eq!(left.byte, right.byte);
-        assert_ne!(left.affinity, right.affinity);
-    }
-
-    #[test]
-    fn selection_survives_widget_state_round_trip_and_legacy_state_still_loads() {
-        let mut original = TextInput::local().with_initial_value("hello world");
-        original.cursor_pos = 5;
-        original.selection_anchor = Some(1);
-        let saved = original.get_state().unwrap();
-        let mut rebuilt = TextInput::local().with_initial_value("hello world");
-        rebuilt.set_state(&saved);
-        assert_eq!(rebuilt.selection_range_public(), Some((1, 5)));
-        rebuilt.set_state("3");
-        assert_eq!(rebuilt.cursor_pos(), 3);
-        assert_eq!(rebuilt.selection_range_public(), None);
-        rebuilt.set_state("4:a");
-        assert_eq!(
-            rebuilt.caret_position(),
-            TextPosition::with_affinity(4, TextAffinity::After)
-        );
-    }
-
-    #[test]
-    fn caret_affinity_survives_widget_state_round_trip() {
-        let mut original = TextInput::local().with_initial_value("abc אבג");
-        let position = TextPosition::with_affinity(4, TextAffinity::After);
-        original.set_caret_position(position);
-        let saved = Widget::get_state(&original).unwrap();
-
-        let mut rebuilt = TextInput::local().with_initial_value("abc אבג");
-        Widget::set_state(&mut rebuilt, &saved);
-        assert_eq!(rebuilt.caret_position(), position);
-        assert_eq!(saved, "4:a");
-    }
-
-    #[test]
-    fn highlighted_code_uses_shared_bidi_geometry_through_the_gutter() {
-        let text = "let אבג = 1;\nprintln!(\"ok\");";
-        let mut ti = TextInput::local()
-            .multiline(true)
-            .with_mono()
-            .with_gutter(true)
-            .with_current_line_highlight(true)
-            .with_initial_value(text);
-        ti.set_highlighter(crate::widget::code_editor::Language::Rust.highlighter());
-        ti.set_focus(true);
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 420.0, 140.0));
-        draw_to_populate(&mut ti);
-
-        assert!(ti.multiline_shaped);
-        assert!(
-            ti.lines.is_empty(),
-            "code no longer builds the approximate VisualLine geometry"
-        );
-        let after_alef = "let א".len();
-        let after_bet = "let אב".len();
-        let theme = Theme::dark();
-        let alef = ti.caret_rect(&theme, after_alef);
-        let bet = ti.caret_rect(&theme, after_bet);
-        assert!(
-            alef.x0 > bet.x0,
-            "the highlighted Hebrew identifier advances visually right-to-left"
-        );
-        assert!(alef.x0 > ti.rect.x0 + ti.gutter_width());
-        assert_eq!(
-            ti.byte_at_point(Point::new(alef.x0 + 1.0, alef.center().y)),
-            after_alef
-        );
-    }
-
-    #[test]
-    fn highlighted_code_shapes_visible_preedit_and_recolors_with_theme() {
-        let mut ti = TextInput::local()
-            .multiline(true)
-            .with_mono()
-            .with_gutter(true)
-            .with_initial_value("let value = 1;");
-        ti.set_highlighter(crate::widget::code_editor::Language::Rust.highlighter());
-        ti.set_cursor_pos(4);
-        ti.set_focus(true);
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 420.0, 120.0));
-        let mut doc = AutoCommit::new();
-        assert!(drive(
-            &mut ti,
-            &mut doc,
-            &WindowEvent::Ime(winit::event::Ime::Preedit(
-                "漢".into(),
-                Some(("漢".len(), "漢".len())),
-            )),
-            mods(false, false),
-        ));
-
-        draw_to_populate(&mut ti);
-        assert_eq!(ti.value(), "let value = 1;");
-        assert_eq!(
-            ti.single_layout.as_ref().unwrap().underlines,
-            vec![(4, 4 + "漢".len())],
-            "preedit is part of the attributed display layout"
-        );
-        assert!(Widget::ime_cursor_rect(&ti).is_some());
-
-        ti.preedit.clear();
-        ti.preedit_cursor = None;
-        draw_with_theme(&mut ti, &Theme::dark());
-        let dark_signature = ti.shaped_layout_signature;
-        draw_with_theme(&mut ti, &Theme::light());
-        assert_ne!(
-            ti.shaped_layout_signature, dark_signature,
-            "theme-dependent syntax colours invalidate the attributed layout"
-        );
-    }
-
-    #[test]
-    fn shaped_paragraph_is_reused_until_its_display_inputs_change() {
-        let mut ti = TextInput::local().with_initial_value("office שלום");
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 400.0, 40.0));
-        draw_to_populate(&mut ti);
-        let initial_signature = ti.shaped_layout_signature;
-        let initial_layout = std::ptr::from_ref(ti.single_layout.as_ref().unwrap());
-
-        ti.set_cursor_pos(1);
-        draw_to_populate(&mut ti);
-        assert_eq!(ti.shaped_layout_signature, initial_signature);
-        assert_eq!(
-            std::ptr::from_ref(ti.single_layout.as_ref().unwrap()),
-            initial_layout,
-            "caret-only movement reuses the shaped paragraph"
-        );
-
-        ti.preedit = "漢".into();
-        ti.preedit_cursor = Some(("漢".len(), "漢".len()));
-        draw_to_populate(&mut ti);
-        assert_ne!(
-            ti.shaped_layout_signature, initial_signature,
-            "preedit changes the displayed paragraph and invalidates shaping"
-        );
-    }
-
-    #[test]
-    fn rtl_arrow_keys_follow_visual_not_storage_direction() {
-        let text = "שלום";
-        let mut ti = TextInput::local().with_initial_value(text);
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
-        draw_to_populate(&mut ti);
-        ti.set_focus(true);
-        ti.set_cursor_pos(0); // visual right edge
-        let mut doc = AutoCommit::new();
-
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowLeft),
-            mods(false, false),
-        );
-        assert_eq!(
-            ti.cursor_pos(),
-            text.chars().next().unwrap().len_utf8(),
-            "visual Left advances logically through an RTL run"
-        );
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
-            mods(false, false),
-        );
-        assert_eq!(ti.cursor_pos(), 0, "visual Right returns to the RTL start");
-
-        ti.set_cursor_pos(text.len()); // visual left edge
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
-            mods(false, false),
-        );
-        assert!(ti.cursor_pos() < text.len());
-    }
-
-    #[test]
-    fn ime_preedit_is_shaped_underlined_and_committed_atomically() {
-        let mut ti = TextInput::local().with_initial_value("ab");
-        ti.set_cursor_pos(1);
-        ti.set_focus(true);
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
-        let mut doc = AutoCommit::new();
-
-        assert!(drive(
-            &mut ti,
-            &mut doc,
-            &WindowEvent::Ime(winit::event::Ime::Preedit(
-                "漢".into(),
-                Some(("漢".len(), "漢".len())),
-            )),
-            mods(false, false),
-        ));
-        assert_eq!(ti.value(), "ab", "preedit never mutates the document");
-
-        draw_to_populate(&mut ti);
-        let layout = ti.single_layout.as_ref().expect("preedit was shaped");
-        assert_eq!(layout.underlines, vec![(1, 1 + "漢".len())]);
-        let ime_rect = Widget::ime_cursor_rect(&ti).expect("focused input enables IME");
-        let committed_caret = ti.caret_rect(&Theme::dark(), 1);
-        assert!(
-            ime_rect.x0 > committed_caret.x0,
-            "candidate anchor follows the in-preedit caret"
-        );
-
-        assert!(drive(
-            &mut ti,
-            &mut doc,
-            &WindowEvent::Ime(winit::event::Ime::Commit("漢".into())),
-            mods(false, false),
-        ));
-        assert_eq!(ti.value(), "a漢b");
-        assert!(ti.preedit.is_empty());
-
-        ti.set_focus(false);
-        assert!(Widget::ime_cursor_rect(&ti).is_none());
-    }
-
-    #[test]
-    fn on_change_reports_committed_user_edits_once() {
-        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let captured = std::rc::Rc::clone(&changes);
-        let mut ti = TextInput::local()
-            .with_initial_value("a")
-            .on_change(move |value| captured.borrow_mut().push(value.to_string()));
-        ti.set_focus(true);
-        let mut doc = AutoCommit::new();
-
-        assert!(drive(
-            &mut ti,
-            &mut doc,
-            &char_key_event("b"),
-            mods(false, false),
-        ));
-        assert_eq!(&*changes.borrow(), &["ab"]);
-
-        // A non-edit event must not repeat the prior notification even though
-        // the legacy dirty flag remains set until its owner drains it.
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowLeft),
-            mods(false, false),
-        );
-        assert_eq!(&*changes.borrow(), &["ab"]);
-
-        assert!(drive(
-            &mut ti,
-            &mut doc,
-            &WindowEvent::Ime(winit::event::Ime::Preedit(
-                "漢".into(),
-                Some(("漢".len(), "漢".len())),
-            )),
-            mods(false, false),
-        ));
-        assert_eq!(&*changes.borrow(), &["ab"]);
-
-        assert!(drive(
-            &mut ti,
-            &mut doc,
-            &WindowEvent::Ime(winit::event::Ime::Commit("漢".into())),
-            mods(false, false),
-        ));
-        assert_eq!(&*changes.borrow(), &["ab", "a漢b"]);
-
-        ti.set_text("programmatic");
-        assert_eq!(&*changes.borrow(), &["ab", "a漢b"]);
-        ti.insert_at_cursor(" helper");
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowLeft),
-            mods(false, false),
-        );
-        assert_eq!(&*changes.borrow(), &["ab", "a漢b"]);
-    }
-
-    #[test]
-    fn local_state_binding_is_two_way_across_multiple_inputs() {
-        let state = crate::LocalState::new(String::from("Ada"));
-        let mut first = TextInput::from_state(&state);
-        let mut second = TextInput::from_state(&state);
-        let mut document = AutoCommit::new();
-
-        state.set(String::from("Grace"));
-        Widget::sync(&mut first, &mut document, &automerge::ROOT);
-        Widget::sync(&mut second, &mut document, &automerge::ROOT);
-        assert_eq!(first.value(), "Grace");
-        assert_eq!(second.value(), "Grace");
-        assert_eq!(first.take_dirty(), None, "model updates are not user edits");
-
-        assert!(Widget::perform_action(
-            &mut first,
-            &crate::a11y::Action::SetValue("Lin".into()),
-            &mut document,
-            &automerge::ROOT,
-        ));
-        assert_eq!(state.get(), "Lin", "user edits publish typed state");
-
-        Widget::sync(&mut second, &mut document, &automerge::ROOT);
-        assert_eq!(second.value(), "Lin", "sibling input follows the model");
-        assert_eq!(second.take_dirty(), None);
-
-        first.set_text("programmatic");
-        assert_eq!(state.get(), "programmatic");
-        Widget::sync(&mut second, &mut document, &automerge::ROOT);
-        assert_eq!(second.value(), "programmatic");
-        assert_eq!(first.take_dirty(), None);
-    }
-
-    #[test]
-    fn local_state_binding_coexists_with_an_app_callback() {
-        let state = crate::LocalState::new(String::from("before"));
-        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let captured = std::rc::Rc::clone(&changes);
-        let mut input = TextInput::from_state(&state)
-            .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
-        let mut document = AutoCommit::new();
-
-        assert!(Widget::perform_action(
-            &mut input,
-            &crate::a11y::Action::SetValue("after".into()),
-            &mut document,
-            &automerge::ROOT,
-        ));
-        assert_eq!(state.get(), "after");
-        assert_eq!(&*changes.borrow(), &["after"]);
-    }
-
-    #[test]
-    fn local_state_model_update_invalidates_multiline_measurement_only() {
-        let state = crate::LocalState::new(String::from("short"));
-        let mut input = TextInput::from_state(&state).multiline(true);
-        input.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 80.0));
-        assert!(!Widget::layout_needs_measure(&input));
-
-        state.set(String::from("a much longer line\nwith another row"));
-        let mut document = AutoCommit::new();
-        Widget::sync(&mut input, &mut document, &automerge::ROOT);
-
-        assert!(Widget::layout_needs_measure(&input));
-        assert_eq!(input.take_dirty(), None, "model sync is not a user edit");
-    }
-
-    /// Otherwise caret-following scroll hides the first characters.
-    #[test]
-    fn unfocused_input_renders_from_start_not_caret() {
-        let long = "a very long line that easily exceeds a narrow input width so caret-following scroll would otherwise hide the beginning";
-        let mut ti = TextInput::local().with_initial_value(long);
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 120.0, 24.0)); // narrow
-        ti.set_cursor_pos(long.len()); // caret at the very end
-        let theme = Theme::dark();
-        let presence = crate::presence::PresenceCtx::empty();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        Widget::draw(
-            &mut ti,
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &presence,
-        );
-        assert_eq!(
-            ti.scroll_x(),
-            0.0,
-            "unfocused input must not scroll the start off-screen"
-        );
-
-        ti.set_focus(true);
-        Widget::draw(
-            &mut ti,
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &presence,
-        );
-        assert!(
-            ti.scroll_x() > 0.0,
-            "focused input follows the caret on a long line"
-        );
-    }
-
-    #[test]
-    fn disabled_input_is_not_focusable() {
-        let enabled = TextInput::new(Vec::new());
-        assert!(Widget::is_focusable(&enabled), "default input is focusable");
-
-        let off = TextInput::new(Vec::new()).disabled(true);
-        assert!(
-            !Widget::is_focusable(&off),
-            "disabled input must not be focusable"
-        );
-
-        // The setter path agrees with the builder.
-        let mut later = TextInput::new(Vec::new());
-        later.set_disabled(true);
-        assert!(!Widget::is_focusable(&later));
-        assert!(later.is_disabled());
-    }
-
-    /// `KeyEvent` has a `pub(crate)` platform field so it can't be
-    /// struct-literalled from a test; zero it then overwrite fields.
-    fn char_key_event(s: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(winit::keyboard::SmolStr::new(s));
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-
-    #[test]
-    fn disabled_input_ignores_keyboard_input() {
-        let mut ti = TextInput::local().disabled(true);
-        ti.set_focus(true); // even if somehow focused, the input is inert
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
-
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
-        let event = char_key_event("x");
-        ti.handle_event(
-            &event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
-        );
-        assert!(!handled, "disabled input must not consume the keypress");
-        assert_eq!(ti.value(), "", "disabled input must not insert text");
-        assert!(ti.take_dirty().is_none(), "no edit should be recorded");
-
-        // The SAME event DOES edit an enabled input, proving the bail-out suppressed it.
-        let mut on = TextInput::local();
-        on.set_focus(true);
-        on.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
-        let mut handled = false;
-        on.handle_event(
-            &char_key_event("x"),
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
-        );
-        assert!(handled);
-        assert_eq!(on.value(), "x");
-    }
-
-    #[test]
-    fn disabled_input_ignores_pointer_input() {
-        use winit::dpi::PhysicalPosition;
-        use winit::event::MouseButton;
-
-        let mut ti = TextInput::local().disabled(true);
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
-
-        let moved = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(20.0, 20.0),
-        };
-        ti.handle_event(
-            &moved,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
-        );
-        let press = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
-        ti.handle_event(
-            &press,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
-        );
-
-        assert!(!handled, "disabled input must not consume the click");
-        assert!(
-            focus_target.is_none(),
-            "disabled input must not request focus"
-        );
-    }
-
-    #[test]
-    fn text_input_test_id_can_be_overridden() {
-        let ti = TextInput::new(Vec::new()).with_id("search_box");
-        assert_eq!(Widget::test_id(&ti), Some("search_box"));
-    }
-
-    /// Sends `CursorMoved` first so `last_mouse_pos`/`is_hovered` are set, matching real input order.
-    #[cfg(test)]
-    fn right_click(ti: &mut TextInput, doc: &mut AutoCommit, x: f64, y: f64) -> bool {
-        use winit::dpi::PhysicalPosition;
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
-        let moved = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(x, y),
-        };
-        ti.handle_event(
-            &moved,
-            1.0,
-            &Modifiers::default(),
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
-        );
-        let press = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Right,
-        };
-        ti.handle_event(
-            &press,
-            1.0,
-            &Modifiers::default(),
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
-        );
-        handled
-    }
-
-    #[test]
-    fn right_click_selects_word_and_opens_menu_with_expected_labels() {
-        let mut ti = TextInput::local().with_initial_value("hello world");
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
-        ti.set_focus(true);
-        let mut doc = AutoCommit::new();
-
-        assert!(ti.selection_range().is_none(), "precondition: no selection");
-        assert!(
-            right_click(&mut ti, &mut doc, 20.0, 20.0),
-            "right-click is consumed"
-        );
-
-        // No char_x_positions yet → cursor_from_x resolves to byte 0, selecting "hello".
-        assert_eq!(ti.selected_str(), Some("hello"), "clicked word is selected");
-        assert!(ti.context_menu.is_open(), "menu opened");
-
-        // Empty clipboard in the headless test env omits Paste.
-        let labels = ti.context_menu_labels();
-        assert!(labels.contains(&"Cut".to_string()), "got {labels:?}");
-        assert!(labels.contains(&"Copy".to_string()), "got {labels:?}");
-        assert!(labels.contains(&"Select All".to_string()), "got {labels:?}");
-    }
-
-    #[test]
-    fn spelling_defaults_on_and_can_be_disabled_per_field() {
-        let mut prose = TextInput::local()
-            .with_spell_language("en_US")
-            .with_initial_value("teh");
-        prose.set_focus(true);
-        prose.refresh_spelling();
-        assert!(prose.spellcheck_enabled());
-        assert_eq!(prose.spell_spans, vec![(0, 3)]);
-
-        let mut search_or_identifier = TextInput::local()
-            .with_kind(TextInputKind::Search)
-            .with_spell_language("en_US")
-            .with_initial_value("teh");
-        search_or_identifier.set_focus(true);
-        search_or_identifier.refresh_spelling();
-        assert!(search_or_identifier.spell_spans.is_empty());
-
-        for kind in [
-            TextInputKind::Name,
-            TextInputKind::Search,
-            TextInputKind::Username,
-            TextInputKind::Email,
-            TextInputKind::Url,
-            TextInputKind::Path,
-            TextInputKind::Code,
-            TextInputKind::Number,
-            TextInputKind::Password,
-        ] {
-            let mut structured = TextInput::local()
-                .with_kind(kind)
-                .with_spell_language("en_US")
-                .with_initial_value("teh");
-            structured.set_focus(true);
-            structured.refresh_spelling();
-            assert!(structured.spell_spans.is_empty(), "kind {kind:?}");
-        }
-
-        let mut opted_in = TextInput::local()
-            .with_kind(TextInputKind::Search)
-            .with_spellcheck(true)
-            .with_spell_language("en_US")
-            .with_initial_value("teh");
-        opted_in.set_focus(true);
-        opted_in.refresh_spelling();
-        assert_eq!(opted_in.spell_spans, vec![(0, 3)]);
-
-        let mut secret = TextInput::local()
-            .with_secret(true)
-            .with_spell_language("en_US")
-            .with_initial_value("teh");
-        secret.refresh_spelling();
-        assert!(
-            secret.spell_spans.is_empty(),
-            "secret contents must never reach a checker"
-        );
-    }
-
-    #[test]
-    fn custom_vocabulary_suppresses_a_squiggle() {
-        let mut ti = TextInput::local()
-            .with_spell_language("en_US")
-            .with_initial_value("qwordz");
-        ti.set_focus(true);
-        ti.spell_dictionary = Some(spellcheck::Dictionary::from_words(["qwordz"]));
-        ti.refresh_spelling();
-        assert!(ti.spell_spans.is_empty());
-    }
-
-    #[test]
-    fn spelling_checks_immediately_but_only_hides_the_word_being_typed() {
-        let mut ti = TextInput::local()
-            .with_spell_language("en_US")
-            .with_initial_value("teh wrold");
-        ti.set_focus(true);
-        ti.cursor_pos = ti.text.len();
-        ti.last_edit_time = Some(crate::time::now());
-
-        ti.refresh_spelling();
-        // Dictionary warm-up can dominate this unit test in an unoptimised
-        // build. Model a fresh edit after checking to test presentation timing.
-        ti.last_edit_time = Some(crate::time::now());
-
-        assert_eq!(ti.spell_spans, vec![(0, 3), (4, 9)]);
-        assert!(ti.spelling_span_is_visible(0, 3));
-        assert!(!ti.spelling_span_is_visible(4, 9));
-        assert!(!Widget::needs_animation_frame(&ti));
-        assert!(Widget::next_wake_deadline(&ti).is_some());
-    }
-
-    #[test]
-    fn a_word_becomes_visible_immediately_when_a_boundary_is_typed() {
-        let mut ti = TextInput::local()
-            .with_spell_language("en_US")
-            .with_initial_value("wrold ");
-        ti.set_focus(true);
-        ti.cursor_pos = ti.text.len();
-        ti.last_edit_time = Some(crate::time::now());
-
-        ti.refresh_spelling();
-
-        assert_eq!(ti.spell_spans, vec![(0, 5)]);
-        assert!(ti.actively_edited_word().is_none());
-        assert!(ti.spelling_span_is_visible(0, 5));
-    }
-
-    #[test]
-    fn active_word_is_revealed_after_the_short_settle_period() {
-        let mut ti = TextInput::local()
-            .with_spell_language("en_US")
-            .with_initial_value("wrold");
-        ti.set_focus(true);
-        ti.cursor_pos = ti.text.len();
-        ti.last_edit_time = crate::time::now()
-            .checked_sub(SPELL_EDIT_SETTLE)
-            .and_then(|t| t.checked_sub(Duration::from_millis(1)));
-
-        ti.refresh_spelling();
-
-        assert_eq!(ti.spell_spans, vec![(0, 5)]);
-        assert!(ti.spelling_span_is_visible(0, 5));
-        assert!(!Widget::needs_animation_frame(&ti));
-    }
-
-    #[test]
-    fn external_language_check_coalesces_rapid_prefixes_without_dropping_old_spans() {
-        let mut ti = TextInput::local()
-            .with_spellcheck(true)
-            .with_spell_language("de_DE")
-            .with_initial_value("alt neu");
-        ti.set_focus(true);
-        ti.cursor_pos = ti.text.len();
-        ti.spell_spans = vec![(0, 3)];
-        ti.spell_cache_key = Some(("de_DE".to_string(), "alt".to_string()));
-        ti.last_edit_time = Some(crate::time::now());
-
-        ti.refresh_spelling();
-
-        assert_eq!(ti.spell_spans, vec![(0, 3)]);
-        assert_eq!(
-            ti.spell_cache_key,
-            Some(("de_DE".to_string(), "alt".to_string()))
-        );
-        assert!(!Widget::needs_animation_frame(&ti));
-        assert!(Widget::next_wake_deadline(&ti).is_some());
-    }
-
-    #[test]
-    fn field_language_override_is_independent_of_session_default() {
-        let english = TextInput::local().with_spell_language("en-US");
-        let german = TextInput::local().with_spell_language("de-DE");
-        assert_eq!(english.spell_language(), "en-US");
-        assert_eq!(german.spell_language(), "de-DE");
-    }
-
-    #[test]
-    fn obvious_typo_autocorrects_at_boundary_and_backspace_restores_it() {
-        let mut ti = TextInput::local()
-            .with_spellcheck(true)
-            .with_autocorrect(true)
-            .with_spell_language("en_US")
-            .with_initial_value("teh");
-        ti.cursor_pos = ti.text.len();
-        let mut doc = AutoCommit::new();
-        ti.insert_word_boundary(" ", &mut doc, None);
-        assert_eq!(ti.value(), "the ");
-        assert!(ti.last_autocorrection.is_some());
-
-        let mut handled = false;
-        ti.handle_backspace_key(false, &mut doc, None, &mut handled);
-        assert!(handled);
-        assert_eq!(ti.value(), "teh");
-        assert!(ti.last_autocorrection.is_none());
-    }
-
-    #[test]
-    fn autocorrection_is_previewed_before_the_boundary_applies_it() {
-        let mut ti = TextInput::local()
-            .with_autocorrect(true)
-            .with_spell_language("en_US")
-            .with_initial_value("adress");
-        ti.set_focus(true);
-        ti.cursor_pos = ti.text.len();
-
-        ti.refresh_autocorrection_preview();
-        ti.refresh_spelling();
-
-        let preview = ti
-            .autocorrection_preview
-            .as_ref()
-            .expect("a high-confidence correction is previewed");
-        assert_eq!(preview.original, "adress");
-        assert_eq!(preview.replacement, "address");
-        assert!(!ti.spelling_span_is_visible(0, 6));
-
-        let mut doc = AutoCommit::new();
-        ti.insert_word_boundary(" ", &mut doc, None);
-        assert_eq!(ti.value(), "address ");
-    }
-
-    #[test]
-    fn autocorrect_respects_field_opt_out_and_personal_vocabulary() {
-        let mut off = TextInput::local()
-            .with_autocorrect(false)
-            .with_spell_language("en_US")
-            .with_initial_value("teh");
-        off.cursor_pos = off.text.len();
-        let mut doc = AutoCommit::new();
-        off.insert_word_boundary(" ", &mut doc, None);
-        assert_eq!(off.value(), "teh ");
-
-        let mut known = TextInput::local()
-            .with_autocorrect(true)
-            .with_spell_language("en_US")
-            .with_initial_value("teh");
-        known.cursor_pos = known.text.len();
-        known.spell_dictionary = Some(spellcheck::Dictionary::from_words(["teh"]));
-        known.insert_word_boundary(" ", &mut doc, None);
-        assert_eq!(known.value(), "teh ");
-    }
-
-    #[test]
-    fn untouched_inactive_field_does_no_spellcheck_work() {
-        let mut ti = TextInput::local()
-            .with_spell_language("en_US")
-            .with_initial_value("teh");
-        ti.refresh_spelling();
-        assert!(ti.spell_spans.is_empty());
-        assert!(
-            ti.spell_cache_key.is_none(),
-            "inactive initial values must not populate the checker cache"
-        );
-    }
-
-    #[test]
-    fn misspelling_context_action_replaces_the_selected_word() {
-        let mut ti = TextInput::local()
-            .with_spell_language("en_US")
-            .with_initial_value("teh");
-        ti.selection_anchor = Some(0);
-        ti.cursor_pos = 3;
-        ti.open_context_menu([10.0, 10.0]);
-
-        let item_idx = ti
-            .context_actions
-            .iter()
-            .position(|action| {
-                matches!(
-                    action,
-                    Some(CtxAction::ApplySpelling { replacement, .. })
-                        if replacement == "the"
-                )
-            })
-            .expect("the correction is offered");
-        let mut doc = AutoCommit::new();
-        assert!(ti.dispatch_context_action(item_idx, &mut doc, None));
-        assert_eq!(ti.value(), "the");
-    }
-
-    #[test]
-    fn selected_text_action_is_reported_without_blocking_the_widget() {
-        let mut ti = TextInput::local()
-            .with_spellcheck(false)
-            .with_text_action("translate", "Translate")
-            .with_initial_value("hello world");
-        ti.selection_anchor = Some(0);
-        ti.cursor_pos = 5;
-        ti.open_context_menu([10.0, 10.0]);
-        let item_idx = ti
-            .context_actions
-            .iter()
-            .position(|action| matches!(action, Some(CtxAction::TextAction(0))))
-            .expect("registered action is in the context menu");
-
-        let mut doc = AutoCommit::new();
-        assert!(ti.dispatch_context_action(item_idx, &mut doc, None));
-        assert_eq!(
-            ti.take_text_action_request(),
-            Some(TextActionRequest {
-                id: "translate".to_string(),
-                text: "hello".to_string(),
-                range: (0, 5),
-            })
-        );
-        assert_eq!(ti.value(), "hello world", "dispatch itself is read-only");
-    }
-
-    #[test]
-    fn context_menu_dispatch_maps_index_to_copy() {
-        let mut ti = TextInput::local().with_initial_value("hello world");
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
-        let mut doc = AutoCommit::new();
-        // Pre-select "world" so Cut/Copy are present and the selection survives a copy.
-        ti.selection_anchor = Some(6);
-        ti.cursor_pos = 11;
-
-        ti.open_context_menu([50.0, 18.0]);
-        let labels = ti.context_menu_labels();
-        let copy_idx = labels
-            .iter()
-            .position(|l| l == "Copy")
-            .expect("Copy row present");
-        // Labels skip separators, but Cut/Copy precede any separator so indices align here.
-        let item_idx = ti
-            .context_menu
-            .items()
-            .iter()
-            .position(|i| i.label() == Some("Copy"))
-            .unwrap();
-        assert_eq!(
-            ti.context_actions[item_idx],
-            Some(CtxAction::Copy),
-            "Copy row maps to the Copy action (label idx {copy_idx})"
-        );
-
-        assert!(
-            ti.dispatch_context_action(item_idx, &mut doc, None),
-            "dispatch ran"
-        );
-        assert!(!ti.context_menu.is_open(), "menu closed after dispatch");
-        // Copy preserves the selection (it's a read-only action).
-        assert_eq!(ti.selected_str(), Some("world"));
-    }
-
-    #[test]
-    fn context_menu_dispatch_cut_removes_selection() {
-        let mut ti = TextInput::local().with_initial_value("hello world");
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
-        let mut doc = AutoCommit::new();
-        ti.selection_anchor = Some(0);
-        ti.cursor_pos = 5; // "hello"
-        ti.open_context_menu([10.0, 18.0]);
-        let cut_idx = ti
-            .context_menu
-            .items()
-            .iter()
-            .position(|i| i.label() == Some("Cut"))
-            .expect("Cut row present");
-        assert_eq!(ti.context_actions[cut_idx], Some(CtxAction::Cut));
-        ti.dispatch_context_action(cut_idx, &mut doc, None);
-        assert_eq!(ti.value(), " world", "cut removed the selected word");
-    }
-
-    #[test]
-    fn left_click_outside_open_menu_dismisses_it() {
-        use winit::dpi::PhysicalPosition;
-        let mut ti = TextInput::local().with_initial_value("hello world");
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
-        ti.set_focus(true);
-        let mut doc = AutoCommit::new();
-        ti.open_context_menu([10.0, 18.0]);
-        assert!(ti.context_menu.is_open());
-
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
-        let moved = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(280.0, 38.0),
-        };
-        ti.handle_event(
-            &moved,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
-        );
-        let press = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
-        ti.handle_event(
-            &press,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
-        );
-        assert!(handled, "click consumed while menu open");
-        assert!(
-            !ti.context_menu.is_open(),
-            "menu dismissed by outside click"
-        );
-    }
-
-    #[test]
-    fn placeholder_visible_only_when_empty_and_unfocused() {
-        let mut ti = TextInput::local().with_placeholder("Search…");
-        assert_eq!(ti.placeholder(), "Search…");
-        assert!(
-            ti.shows_placeholder(),
-            "empty unfocused input shows placeholder"
-        );
-
-        ti.set_focus(true);
-        assert!(!ti.shows_placeholder(), "focused input hides placeholder");
-
-        ti.set_focus(false);
-        ti.set_text("hello");
-        assert!(!ti.shows_placeholder(), "non-empty input hides placeholder");
-
-        ti.set_text("");
-        assert!(ti.shows_placeholder());
-
-        let plain = TextInput::local();
-        assert!(
-            !plain.shows_placeholder(),
-            "no placeholder set → never shows"
-        );
-    }
-
-    /// Checks that the dim hint paints.
-    #[test]
-    fn placeholder_emits_glyphs_when_shown() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = crate::presence::PresenceCtx::empty();
-
-        let mut shown = TextInput::local().with_placeholder("Type here");
-        shown.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
-        let mut scene = Scene::new();
-        Widget::draw(
-            &mut shown,
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &presence,
-        );
-        assert!(
-            !scene.encoding().resources.glyph_runs.is_empty(),
-            "placeholder must paint a glyph run when shown",
-        );
-
-        let mut hidden = TextInput::local().with_placeholder("Type here");
-        hidden.set_focus(true);
-        hidden.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
-        let mut scene2 = Scene::new();
-        Widget::draw(
-            &mut hidden,
-            &mut scene2,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &presence,
-        );
-        assert!(
-            scene2.encoding().resources.glyph_runs.is_empty(),
-            "focused input must not paint the placeholder",
-        );
-    }
-
-    #[test]
-    fn prev_word_boundary_walks_word_starts() {
-        let s = "hello world quick ui";
-        //       ^0    ^6    ^12   ^18
-        assert_eq!(prev_word_boundary(s, s.len()), 18);
-        assert_eq!(prev_word_boundary(s, 18), 12);
-        assert_eq!(prev_word_boundary(s, 12), 6);
-        assert_eq!(prev_word_boundary(s, 6), 0);
-        assert_eq!(prev_word_boundary(s, 0), 0);
-    }
-
-    /// `next_word_boundary` lands *past* the trailing space, like "Ctrl + Right".
-    #[test]
-    fn next_word_boundary_walks_word_ends() {
-        let s = "hello world quick ui";
-        assert_eq!(next_word_boundary(s, 0), 6);
-        assert_eq!(next_word_boundary(s, 6), 12);
-        assert_eq!(next_word_boundary(s, 12), 18);
-        assert_eq!(next_word_boundary(s, 18), s.len());
-        assert_eq!(next_word_boundary(s, s.len()), s.len());
-    }
-
-    /// At a space immediately after a word, snaps to the word on the left
-    /// (matches every native editor's double-click-on-trailing-space).
-    #[test]
-    fn word_boundaries_snaps_to_word_bounds() {
-        let s = "hello world";
-        assert_eq!(word_boundaries(s, 2), (0, 5)); // mid-word
-        assert_eq!(word_boundaries(s, 0), (0, 5)); // word start
-        assert_eq!(word_boundaries(s, 5), (0, 5)); // space → snap left
-        assert_eq!(word_boundaries(s, 6), (6, 11)); // start of next word
-        assert_eq!(word_boundaries(s, 11), (6, 11)); // end → snap left
-    }
-
-    #[test]
-    fn delete_selection_removes_range_and_collapses() {
-        let mut ti = TextInput::new(Vec::new()).with_on_change_path("text_1");
-        ti.text = "hello world".to_string();
-        ti.selection_anchor = Some(6);
-        ti.cursor_pos = 11;
-        let mut doc = AutoCommit::new();
-        let obj_id = doc
-            .put_object(&automerge::ROOT, "text_1", ObjType::Text)
-            .unwrap();
-        let _ = doc.splice_text(&obj_id, 0, 0, "hello world");
-        ti.delete_selection(&mut doc, Some(&obj_id));
-        assert_eq!(ti.text, "hello ");
-        assert_eq!(ti.cursor_pos, 6);
-        assert!(!ti.has_selection());
-    }
-
-    #[test]
-    fn insert_at_cursor_splices_and_marks_dirty() {
-        let mut ti = TextInput::local().with_initial_value("hi world");
-        ti.set_cursor_pos(2); // just after "hi"
-        ti.insert_at_cursor(" there");
-        assert_eq!(ti.value(), "hi there world");
-        assert_eq!(
-            ti.cursor_pos(),
-            "hi there".len(),
-            "caret advances past the insert"
-        );
-        assert_eq!(
-            ti.take_dirty().as_deref(),
-            Some("hi there world"),
-            "the edit is observable"
-        );
-    }
-
-    #[test]
-    fn character_filter_applies_before_replacing_the_selection() {
-        let mut ti = TextInput::local()
-            .with_initial_value("A1")
-            .with_char_filter(|ch| !ch.is_whitespace());
-        ti.select_all();
-        ti.insert_at_cursor(" B 2 : D 4 ");
-        assert_eq!(ti.value(), "B2:D4");
-        assert_eq!(ti.cursor_pos(), "B2:D4".len());
-        assert_eq!(ti.take_dirty().as_deref(), Some("B2:D4"));
-    }
-
-    /// The path Ctrl+V uses when pasting over selected text.
-    #[test]
-    fn insert_str_replaces_selection() {
-        let mut ti = TextInput::new(Vec::new()).with_on_change_path("text_1");
-        ti.text = "hello world".to_string();
-        ti.selection_anchor = Some(6);
-        ti.cursor_pos = 11;
-        let mut doc = AutoCommit::new();
-        let obj_id = doc
-            .put_object(&automerge::ROOT, "text_1", ObjType::Text)
-            .unwrap();
-        let _ = doc.splice_text(&obj_id, 0, 0, "hello world");
-        ti.insert_str("there", &mut doc, Some(&obj_id));
-        assert_eq!(ti.text, "hello there");
-        assert_eq!(ti.cursor_pos, "hello there".len());
-        assert!(!ti.has_selection());
-    }
-
-    /// Proven end-to-end through a real Automerge `Text` object.
-    #[test]
-    fn secret_input_masks_glyphs_but_keeps_value() {
-        let mut ti = TextInput::new(Vec::new())
-            .with_on_change_path("password")
-            .with_secret(true);
-
-        let mut doc = AutoCommit::new();
-        let obj_id = doc
-            .put_object(&automerge::ROOT, "password", ObjType::Text)
-            .unwrap();
-        let _ = doc.splice_text(&obj_id, 0, 0, "hunter2");
-
-        ti.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(ti.text, "hunter2", "stored value must be the real secret");
-
-        assert_eq!(ti.display_text(), "•••••••");
-        // The masked prefix tracks character count, not bytes.
-        assert_eq!(ti.display_prefix(3), "•••");
-
-        let mut plain = TextInput::new(Vec::new());
-        plain.text = "hunter2".to_string();
-        assert_eq!(plain.display_text(), "hunter2");
-        assert_eq!(plain.display_prefix(3), "hun");
-    }
-
-    #[test]
-    fn local_secret_mirrors_without_entering_the_document() {
-        let buffer = Arc::new(Mutex::new(String::new()));
-        let mut input = TextInput::local()
-            .with_external_buffer(Arc::clone(&buffer))
-            .with_secret(true);
-        input.text = "correct horse battery staple".into();
-        input.dirty = true;
-        let mut document = AutoCommit::new();
-        input.sync(&mut document, &automerge::ROOT);
-
-        assert_eq!(&*buffer.lock().unwrap(), "correct horse battery staple");
-        assert!(document.keys(&automerge::ROOT).next().is_none());
-    }
-
-    #[test]
-    fn accessibility_reports_text_input_role_and_value() {
-        use crate::a11y::{AccessibleTextSelection, Role};
-        let mut ti = TextInput::new(Vec::new());
-        ti.text = "hello".to_string();
-        ti.selection_anchor = Some(1);
-        ti.cursor_pos = 4;
-        let node = Widget::accessibility(&ti).unwrap();
-        assert_eq!(node.role, Role::TextInput);
-        assert_eq!(node.value.as_deref(), Some("hello"));
-        assert!(node.state.focusable, "enabled input is focusable");
-        assert!(!node.state.disabled);
-        assert!(!node.state.protected);
-        assert_eq!(
-            node.text_selection,
-            Some(AccessibleTextSelection {
-                anchor: 1,
-                focus: 4,
-            })
-        );
-    }
-
-    #[test]
-    fn accessibility_uses_explicit_name_not_placeholder() {
-        let input = TextInput::local()
-            .with_placeholder("name@example.com")
-            .with_accessible_name("Email address");
-        let node = Widget::accessibility(&input).unwrap();
-        assert_eq!(node.name.as_deref(), Some("Email address"));
-        assert_ne!(node.name.as_deref(), Some(input.placeholder()));
-    }
-
-    #[test]
-    fn accessibility_actions_use_extended_grapheme_indices_and_update_crdt() {
-        use crate::a11y::Action;
-
-        let family = "👩‍👩‍👧‍👦";
-        let original = format!("a{family}b");
-        let mut ti = TextInput::new(Vec::new()).with_on_change_path("body");
-        ti.text = original.clone();
-        let mut doc = AutoCommit::new();
-        let obj = doc
-            .put_object(&automerge::ROOT, "body", ObjType::Text)
-            .unwrap();
-        doc.splice_text(&obj, 0, 0, &original).unwrap();
-
-        assert!(Widget::perform_action(
-            &mut ti,
-            &Action::SetSelection {
-                anchor: 1,
-                focus: 2,
-            },
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(
-            ti.selection_range_public(),
-            Some((1, 1 + family.len())),
-            "one AccessKit character selects the whole ZWJ family"
-        );
-
-        assert!(Widget::perform_action(
-            &mut ti,
-            &Action::SetValue("new value".into()),
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(ti.value(), "new value");
-        assert_eq!(doc.text(&obj).unwrap(), "new value");
-    }
-
-    #[test]
-    fn first_path_bound_edit_materialises_shared_text() {
-        use crate::a11y::Action;
-
-        let mut input = TextInput::local().with_on_change_path("title");
-        let mut document = AutoCommit::new();
-
-        assert!(Widget::perform_action(
-            &mut input,
-            &Action::SetValue("Project Atlas".into()),
-            &mut document,
-            &automerge::ROOT,
-        ));
-
-        let Some((Value::Object(ObjType::Text), object)) =
-            document.get(&automerge::ROOT, "title").unwrap()
-        else {
-            panic!("the first effective edit must create a document text object");
-        };
-        assert_eq!(document.text(&object).unwrap(), "Project Atlas");
-    }
-
-    #[test]
-    fn path_bound_selection_does_not_materialise_shared_text() {
-        use crate::a11y::Action;
-
-        let mut input = TextInput::local().with_on_change_path("title");
-        let mut document = AutoCommit::new();
-
-        assert!(Widget::perform_action(
-            &mut input,
-            &Action::SetSelection {
-                anchor: 0,
-                focus: 0,
-            },
-            &mut document,
-            &automerge::ROOT,
-        ));
-        assert!(
-            document.get(&automerge::ROOT, "title").unwrap().is_none(),
-            "selection and navigation must not create document history"
-        );
-    }
-
-    #[test]
-    fn accessibility_secret_input_masks_value_and_sets_protected() {
-        let mut ti = TextInput::new(Vec::new()).with_secret(true);
-        ti.text = "hunter2".to_string();
-        let node = Widget::accessibility(&ti).unwrap();
-        assert_eq!(
-            node.value, None,
-            "a secret value must not leak into the a11y tree"
-        );
-        assert!(node.state.protected, "secret input is marked protected");
-        assert_eq!(
-            node.text_selection, None,
-            "selection offsets must not reveal a secret's length"
-        );
-    }
-
-    #[test]
-    fn accessibility_disabled_input_reports_disabled_and_not_focusable() {
-        let ti = TextInput::new(Vec::new()).disabled(true);
-        let node = Widget::accessibility(&ti).unwrap();
-        assert!(node.state.disabled);
-        assert!(
-            !node.state.focusable,
-            "disabled input is dropped from focus order"
-        );
-    }
-
-    /// Pins the text top against `line_height`, *not* `FONT_SIZE` itself —
-    /// the naive computation shifts glyphs ~2-3 px below the caret in a
-    /// 40 px input.
-    #[test]
-    fn text_baseline_centred_with_caret() {
-        let rect_h = 40.0_f32;
-        let line_height = FONT_SIZE * LINE_HEIGHT_RATIO;
-        let text_y_correct = (rect_h - line_height) / 2.0;
-        let text_y_naive = (rect_h - FONT_SIZE) / 2.0;
-        assert!(text_y_naive > text_y_correct);
-        assert!((text_y_naive - text_y_correct - (line_height - FONT_SIZE) / 2.0).abs() < 0.01);
-    }
-
-    // Driven through `handle_event`, never by poking private fields, so a
-    // regression in event routing is caught too.
-    fn mods(ctrl: bool, shift: bool) -> Modifiers {
-        use winit::keyboard::ModifiersState;
-        let mut s = ModifiersState::empty();
-        if ctrl {
-            s |= ModifiersState::CONTROL;
-        }
-        if shift {
-            s |= ModifiersState::SHIFT;
-        }
-        Modifiers::from(s)
-    }
-
-    fn command_mods() -> Modifiers {
-        use winit::keyboard::ModifiersState;
-        Modifiers::from(ModifiersState::SUPER)
-    }
-
-    fn named_key_event(k: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(k);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-
-    fn mouse_move(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-    fn left_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
-    fn middle_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Middle,
-        }
-    }
-
-    fn test_node() -> (TaffyTree<()>, NodeId) {
-        let mut taffy = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
-        (taffy, node)
-    }
-
-    fn touch(phase: TouchPhase, id: u64, point: Point) -> WindowEvent {
-        WindowEvent::Touch(winit::event::Touch {
-            device_id: unsafe { std::mem::zeroed() },
-            phase,
-            location: winit::dpi::PhysicalPosition::new(point.x, point.y),
-            force: None,
-            id,
-        })
-    }
-
-    /// Uses a throwaway taffy node — the input embeds no children.
-    fn drive(ti: &mut TextInput, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {
-        let mut handled = false;
-        let mut focus_target = None;
-        let (taffy, node) = test_node();
-        ti.handle_event(
-            ev,
-            1.0,
-            &m,
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
-        );
-        handled
-    }
-
-    #[test]
-    fn touch_places_caret_drags_selection_and_releases_ownership() {
-        let mut input = TextInput::local().with_initial_value("abcdef");
-        input.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 44.0));
-        draw_to_populate(&mut input);
-        let mut doc = AutoCommit::new();
-        let start = Point::new(x_for_byte(&input, 1), 22.0);
-        let end = Point::new(x_for_byte(&input, 5), 22.0);
-
-        assert!(drive(
-            &mut input,
-            &mut doc,
-            &touch(TouchPhase::Started, 7, start),
-            Modifiers::default()
-        ));
-        assert_eq!(input.active_touch, Some(7));
-        assert!(drive(
-            &mut input,
-            &mut doc,
-            &touch(TouchPhase::Moved, 7, end),
-            Modifiers::default()
-        ));
-        assert_eq!(input.selection_range(), Some((1, 5)));
-        assert!(drive(
-            &mut input,
-            &mut doc,
-            &touch(TouchPhase::Ended, 7, end),
-            Modifiers::default()
-        ));
-        assert_eq!(input.active_touch, None);
-        assert!(!input.is_dragging);
-    }
-
-    #[test]
-    fn secondary_touch_cannot_steal_text_selection() {
-        let mut input = TextInput::local().with_initial_value("abcdef");
-        input.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 44.0));
-        draw_to_populate(&mut input);
-        let mut doc = AutoCommit::new();
-        let point = Point::new(x_for_byte(&input, 2), 22.0);
-        assert!(drive(
-            &mut input,
-            &mut doc,
-            &touch(TouchPhase::Started, 7, point),
-            Modifiers::default()
-        ));
-        assert!(drive(
-            &mut input,
-            &mut doc,
-            &touch(TouchPhase::Started, 8, point),
-            Modifiers::default()
-        ));
-        assert_eq!(input.active_touch, Some(7));
-        assert!(drive(
-            &mut input,
-            &mut doc,
-            &touch(TouchPhase::Ended, 8, point),
-            Modifiers::default()
-        ));
-        assert_eq!(input.active_touch, Some(7));
-        assert!(drive(
-            &mut input,
-            &mut doc,
-            &touch(TouchPhase::Cancelled, 7, point),
-            Modifiers::default()
-        ));
-        assert_eq!(input.active_touch, None);
-    }
-
-    #[test]
-    fn action_owned_bound_text_edits_optimistically_without_splicing_document() {
-        let mut doc = AutoCommit::new();
-        let text = doc
-            .put_object(&automerge::ROOT, "note", ObjType::Text)
-            .expect("note text");
-        doc.splice_text(&text, 0, 0, "before")
-            .expect("seed note text");
-        let mut input = TextInput::local();
-        input.bind_text(text.clone());
-        input.sync(&mut doc, &automerge::ROOT);
-        input.set_focus(true);
-        input.set_cursor_pos("before".len());
-        input.set_direct_crdt_writes(false);
-
-        assert!(drive(
-            &mut input,
-            &mut doc,
-            &char_key_event("!"),
-            mods(false, false)
-        ));
-        assert_eq!(input.value(), "before!", "optimistic text remains visible");
-        assert_eq!(doc.text(&text).expect("document text"), "before");
-    }
-
-    /// Unfocused, so `scroll_x` stays 0 and click math is simple.
-    fn draw_to_populate(ti: &mut TextInput) {
-        draw_with_theme(ti, &Theme::dark());
-    }
-
-    fn draw_with_theme(ti: &mut TextInput, theme: &Theme) {
-        let presence = crate::presence::PresenceCtx::empty();
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(theme.text_scale);
-        let mut scene = Scene::new();
-        Widget::draw(ti, &mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
-    }
-
-    #[test]
-    fn multiline_reuse_refreshes_unchanged_paragraphs_after_font_generation() {
-        let mut input = TextInput::local()
-            .multiline(true)
-            .with_initial_value("first\nWWW iii unchanged");
-        let mut tr = TextRenderer::new();
-        tr.font_system = crate::font_catalog::fixture_font_system();
-        let theme = Theme::dark();
-        let style = input.multiline_style(theme.text_scale);
-        input.ensure_shaped_layout(&mut tr, &theme, &style, 300.0);
-        let before = input
-            .single_layout
-            .as_ref()
-            .unwrap()
-            .caret_geometry(input.text.len());
-        tr.font_system
-            .db_mut()
-            .set_sans_serif_family(crate::text_render::UI_MONOSPACE_FAMILY);
-        tr.bump_generation();
-        // No edit must also refresh cached geometry when fonts change.
-        input.ensure_shaped_layout(&mut tr, &theme, &style, 300.0);
-        let fresh = RichTextLayout::shape_styled(
-            &mut tr.font_system,
-            &input.highlighted_display_spans(&theme),
-            &style,
-            Some(300.0),
-            TextAlign::Left,
-            vec![],
-            vec![],
-        );
-        let after = input
-            .single_layout
-            .as_ref()
-            .unwrap()
-            .caret_geometry(input.text.len());
-        assert_ne!(
-            before,
-            fresh.caret_geometry(input.text.len()),
-            "fixture fonts must differ"
-        );
-        assert_eq!(after, fresh.caret_geometry(input.text.len()));
-        input.text.insert(0, 'x');
-        input.ensure_shaped_layout(&mut tr, &theme, &style, 300.0);
-        let fresh = RichTextLayout::shape_styled(
-            &mut tr.font_system,
-            &input.highlighted_display_spans(&theme),
-            &style,
-            Some(300.0),
-            TextAlign::Left,
-            vec![],
-            vec![],
-        );
-        assert_eq!(
-            input
-                .single_layout
-                .as_ref()
-                .unwrap()
-                .caret_geometry(input.text.len()),
-            fresh.caret_geometry(input.text.len())
-        );
-    }
-
-    #[test]
-    fn multiline_shaped_editor_scales_font_and_line_metrics_with_theme() {
-        let mut normal = TextInput::local()
-            .multiline(true)
-            .with_font_size(12.0)
-            .with_initial_value("A durable comment body that wraps onto another row.");
-        normal.apply_layout_external(Rect::new(0.0, 0.0, 260.0, 160.0));
-        draw_with_theme(&mut normal, &Theme::dark());
-        let normal_layout = normal.single_layout.as_ref().expect("normal shaped layout");
-        let normal_height = normal_layout.height();
-        let (_, _, normal_line_h) = normal_layout.caret_geometry_at(TextPosition::new(0));
-
-        let mut large = TextInput::local()
-            .multiline(true)
-            .with_font_size(12.0)
-            .with_initial_value("A durable comment body that wraps onto another row.");
-        large.apply_layout_external(Rect::new(0.0, 0.0, 260.0, 160.0));
-        let large_theme = Theme::dark().with_text_scale(2.0);
-        draw_with_theme(&mut large, &large_theme);
-        let large_layout = large.single_layout.as_ref().expect("large shaped layout");
-        let large_height = large_layout.height();
-        let (_, _, large_line_h) = large_layout.caret_geometry_at(TextPosition::new(0));
-
-        assert!(
-            large_line_h >= normal_line_h * 1.9,
-            "editor line metric scales with the theme ({large_line_h} vs {normal_line_h})"
-        );
-        assert!(
-            large_height >= normal_height * 1.9,
-            "editor paragraph geometry scales with the theme ({large_height} vs {normal_height})"
-        );
-    }
-
-    #[test]
-    fn snapshot_scroll_opt_in_preserves_unfocused_shaped_and_body_views() {
-        for shaped in [false, true] {
-            for preserve in [false, true] {
-                let text = "a long source row\n".repeat(80);
-                let mut input = TextInput::local().multiline(true).with_initial_value(&text);
-                input.set_preserve_unfocused_scroll(preserve);
-                input.rect = Rect::new(0., 0., 300., 100.);
-                input.is_focused = false;
-                if !shaped {
-                    input.lines = (0..80)
-                        .map(|i| VisualLine {
-                            start: i * 18,
-                            end: i * 18 + 17,
-                            hard_break: true,
-                            y: i as f64 * 20.,
-                            char_x: vec![],
-                        })
-                        .collect();
-                }
-                input.scroll_y = 60.;
-                if shaped {
-                    input.update_ml_scroll(0., 20., 1600.);
-                } else {
-                    input.update_ml_body_scroll(20.);
-                }
-                assert_eq!(input.scroll_y, if preserve { 60. } else { 0. });
-                input.rect = Rect::new(0., 0., 400., 140.);
-                if shaped {
-                    input.update_ml_scroll(0., 20., 1600.);
-                } else {
-                    input.update_ml_body_scroll(20.);
-                }
-                assert_eq!(input.scroll_y, if preserve { 60. } else { 0. });
-                assert!(!input.is_focused);
-            }
-        }
-    }
-
-    #[test]
-    fn multiline_measure_uses_the_same_scaled_shaped_rows_as_draw() {
-        let text = "A long wrapping line whose measured height must match the caret rows produced by the shaped draw path at large text.";
-        let mut input = TextInput::local()
-            .multiline(true)
-            .with_font_size(14.0)
-            .with_initial_value(text);
-        let mut renderer = TextRenderer::new();
-        renderer.set_text_scale(2.0);
-        let measured = Widget::measure(
-            &mut input,
-            taffy::Size {
-                width: Some(180.0),
-                height: None,
-            },
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(180.0),
-                height: taffy::AvailableSpace::MaxContent,
-            },
-            &mut renderer,
-        );
-
-        input.apply_layout_external(Rect::new(0.0, 0.0, 180.0, f64::from(measured.height)));
-        let theme = Theme::dark().with_text_scale(2.0);
-        draw_with_theme(&mut input, &theme);
-        let layout = input
-            .single_layout
-            .as_ref()
-            .expect("shaped multiline layout");
-        let expected_height = layout.height() + (ML_PAD_Y * 2.0) as f32;
-        assert!(
-            (measured.height - expected_height).abs() < 0.1,
-            "measure {measured:?} must use drawn shaped height {expected_height}"
-        );
-        let last_row = layout.visual_line_index(input.text_to_layout_byte(text.len()));
-        let caret = input.caret_rect(&theme, text.len());
-        assert_eq!(
-            (caret.y0 / caret.height()).floor() as usize,
-            last_row,
-            "caret row and shaped visual row index agree"
-        );
-    }
-
-    #[test]
-    fn multiline_trailing_lf_keeps_measure_draw_hit_and_caret_scroll_in_sync() {
-        let text = "let value = 1;\n";
-        for scale in [1.0, 2.0] {
-            let theme = Theme::dark().with_text_scale(scale);
-            let mut input = TextInput::local()
-                .multiline(true)
-                .with_mono()
-                .with_gutter(true)
-                .with_current_line_highlight(true)
-                .with_initial_value(text);
-            input.set_highlighter(crate::widget::code_editor::Language::Rust.highlighter());
-            input.set_focus(true);
-            input.set_cursor_pos(text.len());
-
-            let mut renderer = TextRenderer::new();
-            renderer.set_text_scale(theme.text_scale);
-            let measured = Widget::measure(
-                &mut input,
-                taffy::Size {
-                    width: Some(240.0),
-                    height: None,
-                },
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(240.0),
-                    height: taffy::AvailableSpace::MaxContent,
-                },
-                &mut renderer,
-            );
-            let viewport_height =
-                f64::from(input.multiline_style(scale).line_height_px()) + ML_PAD_Y * 2.0;
-            input.apply_layout_external(Rect::new(0.0, 0.0, 240.0, viewport_height));
-            draw_with_theme(&mut input, &theme);
-
-            let drawn_height = input.content_height() as f32;
-            assert!(
-                measured.height >= drawn_height && measured.height - drawn_height < 1.0,
-                "pixel-ceiled measure {measured:?} agrees with attributed draw height {drawn_height} at {scale}x"
-            );
-            let layout = input
-                .single_layout
-                .as_ref()
-                .expect("draw retained attributed multiline layout");
-            let (_, eof_top, eof_height) =
-                layout.caret_geometry(input.text_to_layout_byte(text.len()));
-            assert_eq!(
-                layout.visual_line_index(text.len()).saturating_add(1),
-                layout.buffer.layout_runs().count(),
-                "EOF stays on the final visual row even when large text wraps"
-            );
-            assert_eq!(layout.logical_line_origins().len(), 2);
-            assert!(
-                (eof_top + eof_height - layout.height()).abs() < 0.01,
-                "EOF caret reaches the bottom of the final row"
-            );
-
-            let caret = input.caret_rect(&theme, text.len());
-            assert_eq!(
-                input.byte_at_point(Point::new(caret.x0 + 1.0, caret.center().y)),
-                text.len(),
-                "clicking the final empty row returns EOF"
-            );
-            let view_height = input.rect.height() - ML_PAD_Y * 2.0;
-            let expected_scroll = (f64::from(layout.height()) - view_height).max(0.0);
-            assert!(expected_scroll > 0.0);
-            assert!(
-                (input.scroll_y() - expected_scroll).abs() < 0.01,
-                "caret-follow scroll remains at the EOF row"
-            );
-            assert!(input.gutter_width() > 0.0);
-            assert!(
-                input
-                    .code_row_colors(&theme)
-                    .iter()
-                    .any(|(_, color)| *color != theme.text_primary),
-                "syntax attribution survives terminal-row normalization"
-            );
-        }
-    }
-
-    #[test]
-    fn multiline_measure_uses_build_layout_theme_scale_when_renderer_is_stale() {
-        let text = "The layout theme owns accessibility scale even when a retained renderer still carries its previous frame value.";
-        let mut input = TextInput::local().multiline(true).with_initial_value(text);
-        let large = Theme::dark().with_text_scale(2.0);
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map = std::collections::HashMap::new();
-        let _ = Widget::build_layout(&mut input, &mut taffy, &large, &mut node_map);
-
-        let mut renderer = TextRenderer::new();
-        assert_eq!(renderer.text_scale(), 1.0, "stale renderer precondition");
-        let measured_large = Widget::measure(
-            &mut input,
-            taffy::Size {
-                width: Some(180.0),
-                height: None,
-            },
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(180.0),
-                height: taffy::AvailableSpace::MaxContent,
-            },
-            &mut renderer,
-        );
-        input.apply_layout_external(Rect::new(0.0, 0.0, 180.0, f64::from(measured_large.height)));
-        draw_with_theme(&mut input, &large);
-        let drawn_large = input.content_height() as f32;
-        assert!((measured_large.height - drawn_large).abs() < 0.1);
-
-        let normal = Theme::dark();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map = std::collections::HashMap::new();
-        let _ = Widget::build_layout(&mut input, &mut taffy, &normal, &mut node_map);
-        let measured_normal = Widget::measure(
-            &mut input,
-            taffy::Size {
-                width: Some(180.0),
-                height: None,
-            },
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(180.0),
-                height: taffy::AvailableSpace::MaxContent,
-            },
-            &mut renderer,
-        );
-        input.apply_layout_external(Rect::new(
-            0.0,
-            0.0,
-            180.0,
-            f64::from(measured_normal.height),
-        ));
-        draw_with_theme(&mut input, &normal);
-        assert!((measured_normal.height - input.content_height() as f32).abs() < 0.1);
-        assert!(
-            measured_large.height > measured_normal.height * 1.8,
-            "same instance remeasures from large text back to normal"
-        );
-    }
-
-    /// The single-line band is the shipped 40 px at 1× (a 20 px line has
-    /// 10 px of slack a side) and grows to line + `ML_PAD_Y` a side once
-    /// the scaled line no longer fits: at 2× text the 40 px line sat edge
-    /// to edge in a 40 px band.
-    #[test]
-    fn single_line_band_is_40_at_one_x_and_grows_with_the_scaled_line() {
-        fn band_height(theme: &Theme) -> Dimension {
-            let mut ti = TextInput::new(vec![PathSegment::Field("name".into())]);
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
-                std::collections::HashMap::new();
-            let node = ti.build_layout(&mut taffy, theme, &mut node_map);
-            taffy.style(node).unwrap().size.height
-        }
-        assert_eq!(band_height(&Theme::dark()), Dimension::length(40.0));
-        let scaled_line = f64::from(FONT_SIZE * LINE_HEIGHT_RATIO) * 2.0;
-        assert_eq!(
-            scaled_line, 40.0,
-            "2× base line fills the shipped band exactly"
-        );
-        #[allow(clippy::cast_possible_truncation, reason = "small test constant")]
-        let expected = (scaled_line + ML_PAD_Y * 2.0) as f32;
-        assert_eq!(
-            band_height(&Theme::dark().with_text_scale(2.0)),
-            Dimension::length(expected),
-            "2× band = scaled line + 2×ML_PAD_Y"
-        );
-    }
-
-    #[test]
-    fn code_gutter_reserves_space_for_scaled_line_numbers() {
-        let source = (1..=12)
-            .map(|line| format!("line {line}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let mut normal = TextInput::local()
-            .multiline(true)
-            .with_mono()
-            .with_gutter(true)
-            .with_initial_value(&source);
-        normal.apply_layout_external(Rect::new(0.0, 0.0, 420.0, 300.0));
-        draw_with_theme(&mut normal, &Theme::dark());
-        let normal_gutter = normal.gutter_width();
-
-        let mut large = TextInput::local()
-            .multiline(true)
-            .with_mono()
-            .with_gutter(true)
-            .with_initial_value(&source);
-        large.apply_layout_external(Rect::new(0.0, 0.0, 420.0, 300.0));
-        let large_theme = Theme::dark().with_text_scale(2.0);
-        draw_with_theme(&mut large, &large_theme);
-
-        assert!(
-            large.gutter_width() >= normal_gutter * 1.9,
-            "gutter follows line-number text scale ({} vs {normal_gutter})",
-            large.gutter_width()
-        );
-        assert!(
-            large.caret_rect(&large_theme, 0).x0 > large.rect.x0 + large.gutter_width(),
-            "the first code glyph stays to the right of the scaled gutter"
-        );
-    }
-
-    #[test]
-    fn measured_multiline_pointer_geometry_tracks_applied_origin_before_draw() {
-        let text = "first wrapped row continues for a while before the second hard line\nsecond";
-        let mut input = TextInput::local().multiline(true).with_initial_value(text);
-        let mut renderer = TextRenderer::new();
-        renderer.set_text_scale(2.0);
-        let measured = Widget::measure(
-            &mut input,
-            taffy::Size {
-                width: Some(180.0),
-                height: None,
-            },
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(180.0),
-                height: taffy::AvailableSpace::MaxContent,
-            },
-            &mut renderer,
-        );
-        input.apply_layout_external(Rect::new(
-            100.0,
-            50.0,
-            280.0,
-            50.0 + f64::from(measured.height),
-        ));
-        let second = text.find('\n').expect("hard break") + 1;
-        let (x, top, height) = input
-            .single_layout
-            .as_ref()
-            .expect("measurement retained shaped rows")
-            .caret_geometry(input.text_to_layout_byte(second));
-        let point = Point::new(
-            input.rect.x0 + input.ml_left() + f64::from(x) + 1.0,
-            input.rect.y0 + ML_PAD_Y + f64::from(top + height / 2.0),
-        );
-        assert_eq!(
-            input.byte_at_point(point),
-            second,
-            "pointer uses the applied widget origin before the first draw"
-        );
-    }
-
-    #[test]
-    fn crdt_sync_undo_redo_invalidates_multiline_measurement() {
-        let short = "short";
-        let long = "undo and redo replay real CRDT text through the same widget, including a long line that wraps at large text";
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut state = crate::State::new();
-        let text_obj = state
-            .doc
-            .put_object(&state.root, "body", ObjType::Text)
-            .expect("create document text");
-        state
-            .doc
-            .splice_text(&text_obj, 0, 0, short)
-            .expect("seed document text");
-        state.commit_action(None, None);
-
-        let mut input = TextInput::from_document_string("body").multiline(true);
-        Widget::sync(&mut input, &mut state.doc, &state.root);
-        let mut renderer = TextRenderer::new();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map = std::collections::HashMap::new();
-        let _ = Widget::build_layout(&mut input, &mut taffy, &theme, &mut node_map);
-        let measure = |input: &mut TextInput, renderer: &mut TextRenderer| {
-            Widget::measure(
-                input,
-                taffy::Size {
-                    width: Some(180.0),
-                    height: None,
-                },
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(180.0),
-                    height: taffy::AvailableSpace::MaxContent,
-                },
-                renderer,
-            )
-            .height
-        };
-        let short_height = measure(&mut input, &mut renderer);
-        input.apply_layout_external(Rect::new(0.0, 0.0, 180.0, f64::from(short_height)));
-        assert!(!Widget::layout_needs_measure(&input));
-
-        let old_len = state.doc.length(&text_obj);
-        state
-            .doc
-            .splice_text(
-                &text_obj,
-                0,
-                isize::try_from(old_len).expect("test text length fits isize"),
-                long,
-            )
-            .expect("replace with wrapping text");
-        state.commit_action(None, None);
-        Widget::sync(&mut input, &mut state.doc, &state.root);
-        assert_eq!(input.take_dirty(), None, "model sync is not a user edit");
-        assert!(
-            Widget::layout_needs_measure(&input),
-            "CRDT text growth invalidates retained measurement"
-        );
-        let long_height = measure(&mut input, &mut renderer);
-        assert!(long_height > short_height * 1.8, "long text wraps at 2x");
-
-        state.undo(None, None).expect("undo long text");
-        Widget::sync(&mut input, &mut state.doc, &state.root);
-        assert!(Widget::layout_needs_measure(&input));
-        let undo_height = measure(&mut input, &mut renderer);
-        assert!((undo_height - short_height).abs() < 0.1);
-
-        state.redo(None, None).expect("redo long text");
-        Widget::sync(&mut input, &mut state.doc, &state.root);
-        assert!(Widget::layout_needs_measure(&input));
-        let redo_height = measure(&mut input, &mut renderer);
-        assert!((redo_height - long_height).abs() < 0.1);
-    }
-
-    #[test]
-    fn code_gutter_numbers_do_not_apply_accessibility_scale_twice() {
-        let paragraph_style = TextStyle::new(26.0).with_letter_spacing(0.4);
-        let number_style =
-            TextInput::gutter_number_style(&paragraph_style, &Theme::dark().with_text_scale(2.0));
-        assert_eq!(number_style.size, 13.0);
-        assert_eq!(number_style.letter_spacing, 0.2);
-    }
-
-    /// Mirrors the handler's own `padding_x = 10.0`; assumes `scroll_x == 0`.
-    fn x_for_byte(ti: &TextInput, b: usize) -> f64 {
-        ti.rect.x0 + 10.0 + ti.char_x_positions()[b]
-    }
-
-    #[test]
-    fn shift_arrow_extends_selection_by_char() {
-        let mut ti = TextInput::local().with_initial_value("abcdef");
-        ti.set_focus(true);
-        ti.set_cursor_pos(3);
-        let mut doc = AutoCommit::new();
-
-        assert!(drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
-            mods(false, true)
-        ));
-        assert_eq!(
-            ti.selection_range(),
-            Some((3, 4)),
-            "shift+Right extends by one char"
-        );
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
-            mods(false, true),
-        );
-        assert_eq!(ti.selection_range(), Some((3, 5)));
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowLeft),
-            mods(false, true),
-        );
-        assert_eq!(
-            ti.selection_range(),
-            Some((3, 4)),
-            "shift+Left shrinks it back"
-        );
-    }
-
-    #[test]
-    fn ctrl_arrow_moves_caret_by_word() {
-        let mut ti = TextInput::local().with_initial_value("hello world foo");
-        ti.set_focus(true);
-        ti.set_cursor_pos(0);
-        let mut doc = AutoCommit::new();
-
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
-            mods(true, false),
-        );
-        assert_eq!(
-            ti.cursor_pos(),
-            6,
-            "ctrl+Right jumps to start of the next word"
-        );
-        assert_eq!(ti.selection_range(), None, "no shift → no selection");
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
-            mods(true, false),
-        );
-        assert_eq!(ti.cursor_pos(), 12, "ctrl+Right again → start of 'foo'");
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowLeft),
-            mods(true, false),
-        );
-        assert_eq!(ti.cursor_pos(), 6, "ctrl+Left walks back a word");
-    }
-
-    #[test]
-    fn ctrl_arrow_collapses_a_selection_before_moving_by_word() {
-        let mut ti = TextInput::local().with_initial_value("hello world foo");
-        ti.set_focus(true);
-        let mut doc = AutoCommit::new();
-
-        ti.set_selection(3, 12);
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowLeft),
-            mods(true, false),
-        );
-        assert_eq!(
-            ti.cursor_pos(),
-            3,
-            "Ctrl+Left collapses to the selection start"
-        );
-        assert_eq!(ti.selection_range(), None);
-
-        ti.set_selection(3, 12);
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
-            mods(true, false),
-        );
-        assert_eq!(
-            ti.cursor_pos(),
-            12,
-            "Ctrl+Right collapses to the selection end"
-        );
-        assert_eq!(ti.selection_range(), None);
-    }
-
-    #[test]
-    fn repeated_backspace_and_delete_press_events_keep_editing() {
-        let mut doc = AutoCommit::new();
-        let mut backspace = TextInput::local().with_initial_value("abcd");
-        backspace.set_focus(true);
-        let first = named_key_event(NamedKey::Backspace);
-        let mut repeat = named_key_event(NamedKey::Backspace);
-        if let WindowEvent::KeyboardInput { event, .. } = &mut repeat {
-            event.repeat = true;
-        }
-        drive(&mut backspace, &mut doc, &first, mods(false, false));
-        drive(&mut backspace, &mut doc, &repeat, mods(false, false));
-        assert_eq!(
-            backspace.value(),
-            "ab",
-            "held Backspace deletes on repeat events"
-        );
-
-        let mut delete = TextInput::local().with_initial_value("abcd");
-        delete.set_focus(true);
-        delete.set_cursor_pos(0);
-        let first = named_key_event(NamedKey::Delete);
-        let mut repeat = named_key_event(NamedKey::Delete);
-        if let WindowEvent::KeyboardInput { event, .. } = &mut repeat {
-            event.repeat = true;
-        }
-        drive(&mut delete, &mut doc, &first, mods(false, false));
-        drive(&mut delete, &mut doc, &repeat, mods(false, false));
-        assert_eq!(delete.value(), "cd", "held Delete deletes on repeat events");
-    }
-
-    #[test]
-    fn shift_ctrl_arrow_extends_selection_by_word() {
-        let mut ti = TextInput::local().with_initial_value("hello world foo");
-        ti.set_focus(true);
-        ti.set_cursor_pos(0);
-        let mut doc = AutoCommit::new();
-
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
-            mods(true, true),
-        );
-        assert_eq!(
-            ti.selection_range(),
-            Some((0, 6)),
-            "shift+ctrl+Right selects the first word span"
-        );
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
-            mods(true, true),
-        );
-        assert_eq!(
-            ti.selection_range(),
-            Some((0, 12)),
-            "extends by another word"
-        );
-    }
-
-    #[test]
-    fn home_end_move_and_extend() {
-        let mut ti = TextInput::local().with_initial_value("hello world");
-        ti.set_focus(true);
-        ti.set_cursor_pos(5);
-        let mut doc = AutoCommit::new();
-
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::End),
-            mods(false, false),
-        );
-        assert_eq!(ti.cursor_pos(), 11, "End → end of field");
-        assert_eq!(ti.selection_range(), None);
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::Home),
-            mods(false, false),
-        );
-        assert_eq!(ti.cursor_pos(), 0, "Home → start of field");
-
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::End),
-            mods(false, true),
-        );
-        assert_eq!(
-            ti.selection_range(),
-            Some((0, 11)),
-            "shift+End selects to line end"
-        );
-        ti.set_cursor_pos(11);
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::Home),
-            mods(false, true),
-        );
-        assert_eq!(
-            ti.selection_range(),
-            Some((0, 11)),
-            "shift+Home selects to line start"
-        );
-    }
-
-    #[test]
-    fn ctrl_home_end_move_and_extend_across_multiline_document() {
-        let mut ti = ml_input("first\nsecond\nthird", 400.0, 200.0);
-        let mut doc = AutoCommit::new();
-        ti.set_cursor_pos(8); // middle of the second visual line
-
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::Home),
-            mods(true, false),
-        );
-        assert_eq!(ti.cursor_pos(), 0, "Ctrl+Home reaches document start");
-
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::End),
-            mods(true, true),
-        );
-        assert_eq!(
-            ti.selection_range(),
-            Some((0, ti.value().len())),
-            "Ctrl+Shift+End selects through the whole document"
-        );
-
-        ti.set_cursor_pos(8);
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::Home),
-            mods(true, true),
-        );
-        assert_eq!(
-            ti.selection_range(),
-            Some((0, 8)),
-            "Ctrl+Shift+Home selects back to document start"
-        );
-    }
-
-    #[test]
-    fn ctrl_a_selects_all_and_ctrl_x_cuts() {
-        let mut ti = TextInput::local().with_initial_value("hello world");
-        ti.set_focus(true);
-        let mut doc = AutoCommit::new();
-
-        drive(&mut ti, &mut doc, &char_key_event("a"), mods(true, false));
-        assert_eq!(
-            ti.selection_range(),
-            Some((0, 11)),
-            "ctrl+A selects everything"
-        );
-
-        drive(&mut ti, &mut doc, &char_key_event("x"), mods(true, false));
-        assert_eq!(ti.value(), "", "ctrl+X cuts the selection");
-        assert_eq!(ti.selection_range(), None, "selection collapsed after cut");
-    }
-
-    #[test]
-    fn command_a_selects_all_on_platforms_using_super() {
-        let mut ti = TextInput::local().with_initial_value("hello 👋");
-        ti.set_focus(true);
-        let mut doc = AutoCommit::new();
-
-        drive(&mut ti, &mut doc, &char_key_event("a"), command_mods());
-        assert_eq!(ti.selection_range(), Some((0, ti.value().len())));
-    }
-
-    #[test]
-    fn typing_replaces_selection_via_handle_event() {
-        let mut ti = TextInput::local().with_initial_value("hello world");
-        ti.set_focus(true);
-        let mut doc = AutoCommit::new();
-        drive(&mut ti, &mut doc, &char_key_event("a"), mods(true, false)); // select all
-        drive(&mut ti, &mut doc, &char_key_event("Z"), mods(false, false)); // type over it
-        assert_eq!(ti.value(), "Z", "typing over a full selection replaces it");
-    }
-
-    #[test]
-    fn key_text_preserves_shift_and_german_layout_characters() {
-        let mut ti = TextInput::local();
-        ti.set_focus(true);
-        let mut doc = AutoCommit::new();
-
-        // `KeyEvent::text` is the layout/IME-resolved text. The widget must
-        // insert it verbatim rather than reconstructing ASCII from a physical
-        // key, which would lose Shift and German/AltGr punctuation.
-        for text in ["A", "Ä", "@", "?"] {
-            drive(&mut ti, &mut doc, &char_key_event(text), mods(false, false));
-        }
-        assert_eq!(ti.value(), "AÄ@?");
-    }
-
-    #[test]
-    fn double_click_selects_word_via_handle_event() {
-        let mut ti = TextInput::local().with_initial_value("hello world");
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
-        draw_to_populate(&mut ti);
-        let mut doc = AutoCommit::new();
-
-        let bx = x_for_byte(&ti, 8); // inside "world" (bytes 6..11)
-        drive(&mut ti, &mut doc, &mouse_move(bx, 20.0), mods(false, false));
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-        drive(&mut ti, &mut doc, &left_release(), mods(false, false));
-        // Within the multi-click interval → double click.
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-
-        assert_eq!(
-            ti.selection_range(),
-            Some((6, 11)),
-            "double-click selected the word"
-        );
-        assert_eq!(ti.selected_str(), Some("world"));
-    }
-
-    #[test]
-    fn drag_selects_range_via_handle_event() {
-        let mut ti = TextInput::local().with_initial_value("hello world");
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
-        draw_to_populate(&mut ti);
-        let mut doc = AutoCommit::new();
-
-        let x_start = x_for_byte(&ti, 2);
-        let x_end = x_for_byte(&ti, 9);
-        drive(
-            &mut ti,
-            &mut doc,
-            &mouse_move(x_start, 20.0),
-            mods(false, false),
-        );
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-        assert!(ti.is_dragging(), "press starts a drag");
-        drive(
-            &mut ti,
-            &mut doc,
-            &mouse_move(x_end, 20.0),
-            mods(false, false),
-        );
-        assert_eq!(
-            ti.selection_range(),
-            Some((2, 9)),
-            "drag selected the swept range"
-        );
-        drive(&mut ti, &mut doc, &left_release(), mods(false, false));
-        assert!(!ti.is_dragging(), "release ends the drag");
-    }
-
-    #[test]
-    fn mouse_selection_is_eligible_for_primary_publication() {
-        let mut ti = TextInput::local().with_initial_value("hello world");
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
-        draw_to_populate(&mut ti);
-        let mut doc = AutoCommit::new();
-        let start = x_for_byte(&ti, 0);
-        let end = x_for_byte(&ti, 5);
-        drive(
-            &mut ti,
-            &mut doc,
-            &mouse_move(start, 20.0),
-            mods(false, false),
-        );
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-        drive(
-            &mut ti,
-            &mut doc,
-            &mouse_move(end, 20.0),
-            mods(false, false),
-        );
-        drive(&mut ti, &mut doc, &left_release(), mods(false, false));
-
-        assert_eq!(ti.primary_selection_text(), Some("hello"));
-    }
-
-    #[test]
-    fn double_and_triple_click_selections_are_eligible_for_primary_publication() {
-        let mut ti = TextInput::local().with_initial_value("hello world");
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
-        draw_to_populate(&mut ti);
-        let mut doc = AutoCommit::new();
-        let at = x_for_byte(&ti, 8);
-        drive(&mut ti, &mut doc, &mouse_move(at, 20.0), mods(false, false));
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-        drive(&mut ti, &mut doc, &left_release(), mods(false, false));
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-        assert_eq!(ti.primary_selection_text(), Some("world"));
-        drive(&mut ti, &mut doc, &left_release(), mods(false, false));
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-        assert_eq!(ti.primary_selection_text(), Some("hello world"));
-    }
-
-    #[test]
-    fn middle_click_pastes_primary_at_clicked_caret_and_applies_filter() {
-        let mut ti = TextInput::local()
-            .with_initial_value("leftright")
-            .with_char_filter(|ch| !ch.is_whitespace());
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
-        draw_to_populate(&mut ti);
-        ti.set_selection(0, ti.value().len());
-        let mut doc = AutoCommit::new();
-        let at = x_for_byte(&ti, 4);
-        drive(&mut ti, &mut doc, &mouse_move(at, 20.0), mods(false, false));
-        let mut focus_target = None;
-        let mut handled = false;
-        ti.handle_middle_click_with_primary(
-            Some(" P A "),
-            &mut doc,
-            &ObjId::Root,
-            &mut focus_target,
-            test_node().1,
-            &mut handled,
-        );
-        assert!(handled);
-        assert_eq!(ti.value(), "leftPAright");
-        assert_eq!(ti.cursor_pos(), 6);
-        assert_eq!(ti.selection_range(), None);
-    }
-
-    #[test]
-    fn secret_selection_never_publishes_but_middle_paste_is_allowed() {
-        let mut secret = TextInput::local()
-            .with_secret(true)
-            .with_initial_value("secret");
-        secret.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
-        draw_to_populate(&mut secret);
-        let mut doc = AutoCommit::new();
-        let start = x_for_byte(&secret, 0);
-        let end = x_for_byte(&secret, 6);
-        drive(
-            &mut secret,
-            &mut doc,
-            &mouse_move(start, 20.0),
-            mods(false, false),
-        );
-        drive(&mut secret, &mut doc, &left_press(), mods(false, false));
-        drive(
-            &mut secret,
-            &mut doc,
-            &mouse_move(end, 20.0),
-            mods(false, false),
-        );
-        drive(&mut secret, &mut doc, &left_release(), mods(false, false));
-        assert_eq!(secret.primary_selection_text(), None);
-
-        drive(
-            &mut secret,
-            &mut doc,
-            &mouse_move(start, 20.0),
-            mods(false, false),
-        );
-        let mut focus_target = None;
-        let mut handled = false;
-        secret.handle_middle_click_with_primary(
-            Some("public"),
-            &mut doc,
-            &ObjId::Root,
-            &mut focus_target,
-            test_node().1,
-            &mut handled,
-        );
-        assert!(handled);
-        assert_eq!(secret.value(), "publicsecret");
-    }
-
-    #[test]
-    fn disabled_input_ignores_middle_click() {
-        let mut ti = TextInput::local()
-            .with_initial_value("unchanged")
-            .disabled(true);
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
-        let mut doc = AutoCommit::new();
-        assert!(!drive(
-            &mut ti,
-            &mut doc,
-            &middle_press(),
-            mods(false, false)
-        ));
-        assert_eq!(ti.value(), "unchanged");
-    }
-
-    #[test]
-    fn triple_click_selects_all_via_handle_event() {
-        let mut ti = TextInput::local().with_initial_value("hello world");
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
-        draw_to_populate(&mut ti);
-        let mut doc = AutoCommit::new();
-
-        let bx = x_for_byte(&ti, 8);
-        drive(&mut ti, &mut doc, &mouse_move(bx, 20.0), mods(false, false));
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-        assert_eq!(
-            ti.selection_range(),
-            Some((0, 11)),
-            "triple-click selects the whole field"
-        );
-    }
-
-    /// The authoritative input layout resolves its ASCII glyphs from the
-    /// requested named family rather than silently reverting to sans.
-    #[test]
-    fn font_family_override_shapes_in_named_family() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let fam = crate::text_render::UI_SERIF_FAMILY.to_owned();
-        assert!(tr.system_families().contains(&fam));
-
-        let mut ti = TextInput::local()
-            .with_initial_value("Reading")
-            .with_font_family(FontChoice::Named(fam.clone()));
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
-        let theme = Theme::dark();
-        let presence = crate::presence::PresenceCtx::empty();
-        let mut scene = Scene::new();
-        Widget::draw(
-            &mut ti,
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &presence,
-        );
-
-        let layout = ti
-            .single_layout
-            .as_ref()
-            .expect("input retained its layout");
-        let face_ids: Vec<_> = layout
-            .buffer
-            .layout_runs()
-            .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.font_id))
-            .collect();
-        assert!(!face_ids.is_empty());
-        assert!(face_ids.iter().all(|id| {
-            tr.font_system.db().face(*id).is_some_and(|face| {
-                face.families
-                    .iter()
-                    .any(|(family, _language)| family == &fam)
-            })
-        }));
-    }
-
-    fn ml_input(text: &str, w: f64, h: f64) -> TextInput {
-        let mut ti = TextInput::local().multiline(true).with_initial_value(text);
-        ti.set_focus(true);
-        ti.apply_layout_external(Rect::new(0.0, 0.0, w, h));
-        draw_to_populate(&mut ti);
-        ti
-    }
-
-    fn shaped_row(ti: &TextInput, byte: usize) -> usize {
-        ti.single_layout
-            .as_ref()
-            .expect("multiline input retained its shaped paragraph")
-            .visual_line_index(ti.text_to_layout_byte(byte))
-    }
-
-    #[test]
-    fn multiline_enter_inserts_newline() {
-        let mut ti = ml_input("ab", 300.0, 120.0);
-        ti.set_cursor_pos(1); // between 'a' and 'b'
-        let mut doc = AutoCommit::new();
-        assert!(drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::Enter),
-            mods(false, false)
-        ));
-        assert_eq!(ti.value(), "a\nb", "Enter inserted a newline at the caret");
-        assert_eq!(
-            ti.cursor_pos(),
-            2,
-            "caret sits just after the inserted newline"
-        );
-    }
-
-    #[test]
-    fn enter_submits_signals_without_inserting_and_shift_enter_still_splits() {
-        let mut ti = TextInput::local()
-            .with_enter_submits(true)
-            .with_initial_value("hi");
-        ti.set_focus(true);
-        let mut doc = AutoCommit::new();
-        assert!(drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::Enter),
-            mods(false, false)
-        ));
-        assert_eq!(
-            ti.value(),
-            "hi",
-            "Enter must not insert a newline in submit mode"
-        );
-        assert!(ti.take_submit(), "Enter fired the submit signal");
-        assert!(!ti.take_submit(), "submit is one-shot — cleared on read");
-
-        let mut ml = TextInput::local()
-            .multiline(true)
-            .with_enter_submits(true)
-            .with_initial_value("hi");
-        ml.set_focus(true);
-        ml.set_cursor_pos(2);
-        drive(
-            &mut ml,
-            &mut doc,
-            &named_key_event(NamedKey::Enter),
-            mods(false, true),
-        ); // Shift+Enter
-        assert_eq!(
-            ml.value(),
-            "hi\n",
-            "Shift+Enter inserts a newline in multiline submit mode"
-        );
-        assert!(!ml.take_submit(), "Shift+Enter must not submit");
-    }
-
-    #[test]
-    fn multiline_up_down_moves_between_visual_lines() {
-        let mut ti = ml_input("hello\nworld\nfoo", 400.0, 200.0);
-        let mut doc = AutoCommit::new();
-        ti.set_cursor_pos(8); // inside "world" (row 1)
-        assert_eq!(shaped_row(&ti, ti.cursor_pos()), 1, "precondition: row 1");
-
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowUp),
-            mods(false, false),
-        );
-        assert_eq!(shaped_row(&ti, ti.cursor_pos()), 0, "Up moved to row 0");
-
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowDown),
-            mods(false, false),
-        );
-        assert_eq!(
-            shaped_row(&ti, ti.cursor_pos()),
-            1,
-            "Down returned to row 1"
-        );
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowDown),
-            mods(false, false),
-        );
-        assert_eq!(shaped_row(&ti, ti.cursor_pos()), 2, "Down reached row 2");
-    }
-
-    #[test]
-    fn multiline_vertical_motion_preserves_goal_column() {
-        let mut ti = ml_input("abcdefgh\nx\nabcdefgh", 500.0, 200.0);
-        let mut doc = AutoCommit::new();
-        ti.set_cursor_pos(8); // end of the first "abcdefgh" (row 0, high column)
-
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowDown),
-            mods(false, false),
-        );
-        assert_eq!(
-            shaped_row(&ti, ti.cursor_pos()),
-            1,
-            "Down reached short row"
-        );
-
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowDown),
-            mods(false, false),
-        );
-        let row = shaped_row(&ti, ti.cursor_pos());
-        assert_eq!(row, 2, "Down reached the third row");
-        assert!(
-            ti.cursor_pos() >= 17,
-            "goal column preserved across the short line — caret is near row 3's end, got {}",
-            ti.cursor_pos()
-        );
-    }
-
-    #[test]
-    fn multiline_selection_spans_lines_and_copy_includes_newline() {
-        let mut ti = ml_input("hello\nworld", 400.0, 200.0);
-        let mut doc = AutoCommit::new();
-        ti.set_cursor_pos(3); // inside "hello"
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowDown),
-            mods(false, true),
-        ); // Shift+Down
-        let (s, e) = ti
-            .selection_range_public()
-            .expect("a cross-line selection is active");
-        assert!(
-            s <= 5 && e > 6,
-            "selection crosses the newline at byte 5, got ({s},{e})"
-        );
-        let selected = ti.selected_str().expect("selected slice");
-        assert!(
-            selected.contains('\n'),
-            "copy would emit the newline: {selected:?}"
-        );
-    }
-
-    #[test]
-    fn multiline_soft_wraps_at_word_boundaries() {
-        let text = "the quick brown fox jumps over the lazy dog again and again";
-        let mut ti = ml_input(text, 170.0, 220.0); // narrow → must wrap
-        let layout = ti.single_layout.as_ref().expect("paragraph was shaped");
-        let runs: Vec<_> = layout.buffer.layout_runs().collect();
-        assert!(runs.len() > 1, "long paragraph wrapped into visual rows");
-        let first_end = runs[0]
-            .glyphs
-            .iter()
-            .map(|glyph| glyph.end)
-            .max()
-            .unwrap_or(0);
-        assert!(
-            ti.value()
-                .get(first_end..)
-                .is_some_and(|s| s.starts_with(' ')),
-            "wrap happened at a word boundary (the break precedes whitespace): {:?}",
-            ti.value().get(..first_end)
-        );
-
-        let mut doc = AutoCommit::new();
-        ti.set_cursor_pos(0);
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowDown),
-            mods(false, false),
-        );
-        assert_eq!(shaped_row(&ti, ti.cursor_pos()), 1, "Down entered row 1");
-        assert!(
-            ti.cursor_pos() > 0,
-            "caret advanced into the second visual row"
-        );
-    }
-
-    #[test]
-    fn multiline_row_geometry_uses_unicode_cjk_breaks() {
-        let mut ti = TextInput::local()
-            .multiline(true)
-            .with_initial_value("東京京都大阪名古屋");
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 70.0, 220.0));
-        let mut renderer = TextRenderer::new();
-        ti.build_lines(&mut renderer, 50.0);
-        assert!(ti.lines.len() > 1, "narrow CJK input creates visual rows");
-        let opportunities: Vec<_> = line_break_opportunities(ti.value())
-            .map(|(byte, _)| byte)
-            .collect();
-        for row in ti.lines.iter().filter(|row| !row.hard_break) {
-            assert!(
-                opportunities.contains(&row.end),
-                "soft row end {} is a UAX #14 opportunity: {opportunities:?}",
-                row.end
-            );
-        }
-    }
-
-    #[test]
-    fn multiline_home_end_are_per_visual_line() {
-        let mut ti = ml_input("hello\nworld", 400.0, 200.0);
-        let mut doc = AutoCommit::new();
-        ti.set_cursor_pos(8); // "wo|rld" on row 1
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::Home),
-            mods(false, false),
-        );
-        assert_eq!(
-            ti.cursor_pos(),
-            6,
-            "Home went to the start of the second line, not the field"
-        );
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::End),
-            mods(false, false),
-        );
-        assert_eq!(
-            ti.cursor_pos(),
-            11,
-            "End went to the end of the second line"
-        );
-    }
-
-    #[test]
-    fn multiline_sets_accessibility_flag() {
-        let ml = TextInput::local().multiline(true);
-        assert!(
-            Widget::accessibility(&ml).unwrap().state.multiline,
-            "multiline flagged in a11y"
-        );
-        let single = TextInput::local();
-        assert!(!Widget::accessibility(&single).unwrap().state.multiline);
-    }
-
-    /// The newline is just a byte, so the shared delete path handles it.
-    #[test]
-    fn multiline_backspace_at_line_start_merges_lines() {
-        let mut ti = ml_input("hello\nworld", 400.0, 200.0);
-        let mut doc = AutoCommit::new();
-        ti.set_cursor_pos(6); // start of "world", just after the newline
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::Backspace),
-            mods(false, false),
-        );
-        assert_eq!(
-            ti.value(),
-            "helloworld",
-            "Backspace removed the newline, merging the lines"
-        );
-        assert_eq!(ti.cursor_pos(), 5);
-    }
-
-    #[test]
-    fn secret_reveal_toggle_shows_glyphs_but_never_leaks_to_a11y() {
-        let mut ti = TextInput::new(Vec::new()).with_secret(true);
-        ti.text = "hunter2".to_string();
-        assert_eq!(ti.display_text(), "•••••••", "masked by default");
-
-        ti.toggle_reveal();
-        assert!(ti.is_revealed());
-        assert_eq!(
-            ti.display_text(),
-            "hunter2",
-            "revealed shows the real glyphs"
-        );
-        let node = Widget::accessibility(&ti).unwrap();
-        assert_eq!(
-            node.value, None,
-            "revealed value still must not reach the a11y tree"
-        );
-        assert!(
-            node.state.protected,
-            "still marked protected while revealed"
-        );
-
-        ti.toggle_reveal();
-        assert_eq!(ti.display_text(), "•••••••", "toggles back to masked");
-    }
-
-    #[test]
-    fn secret_masks_render_but_clipboard_and_caret_use_the_real_value() {
-        let mut ti = TextInput::local()
-            .with_secret(true)
-            .with_initial_value("s3cr3t");
-        ti.set_focus(true);
-        let mut doc = AutoCommit::new();
-
-        ti.set_cursor_pos(0);
-        drive(
-            &mut ti,
-            &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
-            mods(false, false),
-        );
-        assert_eq!(ti.cursor_pos(), 1, "Right moved one real char boundary");
-
-        drive(&mut ti, &mut doc, &char_key_event("a"), mods(true, false));
-        assert_eq!(
-            ti.selected_str(),
-            Some("s3cr3t"),
-            "copy sends the real value, never the mask"
-        );
-
-        drive(&mut ti, &mut doc, &char_key_event("x"), mods(true, false));
-        assert_eq!(ti.value(), "", "Ctrl+X cut the real selection");
-    }
-
-    #[test]
-    fn action_binding_owns_accessibility_set_value() {
-        let mut input = TextInput::local()
-            .with_on_change_path("legacy")
-            .on_change(|_| panic!("legacy callback must be suppressed"))
-            .on_action(crate::widget::test_string_action_binding());
-        let mut doc = AutoCommit::new();
-        Widget::refresh_control_action_availability(&mut input, &std::collections::HashSet::new());
-        assert!(input.is_disabled());
-        Widget::refresh_control_action_availability(
-            &mut input,
-            &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
-                "test:control",
-                "set",
-            )]),
-        );
-        assert!(!input.is_disabled());
-        assert!(Widget::perform_action(
-            &mut input,
-            &crate::a11y::Action::SetValue("Project Atlas".into()),
-            &mut doc,
-            &automerge::ROOT
-        ));
-        assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
-        assert_eq!(
-            Widget::take_control_invocation(&mut input)
-                .unwrap()
-                .arguments["value"],
-            "Project Atlas"
-        );
-        let object = doc
-            .put_object(&automerge::ROOT, "legacy", ObjType::Text)
-            .unwrap();
-        doc.splice_text(&object, 0, 0, "Remote title").unwrap();
-        Widget::sync(&mut input, &mut doc, &automerge::ROOT);
-        assert_eq!(input.value(), "Remote title");
-    }
-}
+#[path = "text_input_tests.rs"]
+mod tests;

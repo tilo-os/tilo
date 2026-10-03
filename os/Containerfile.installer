@@ -39,6 +39,8 @@ COPY rootfs/ /
 # The installed target is copied from this image. Refuse a release whose
 # manual postboot enlist command or firmware utility was omitted.
 RUN test -x /usr/bin/tilo-installer \
+    && test -x /usr/libexec/tilo-session-select \
+    && test -x /usr/libexec/tilo-cage-session \
     && test -x /usr/libexec/tilo-boot-order \
     && command -v efibootmgr >/dev/null \
     && printf 'kargs = ["tilo.install"]\n' \
@@ -83,7 +85,7 @@ RUN test -x /usr/bin/tilo-installer \
     && /usr/libexec/tilo-uki-cmdline show /boot/tilo-target/tilo-target.efi | grep -qw root=tilo-auto \
     && /usr/libexec/tilo-uki-cmdline show /boot/tilo-target/tilo-target.efi | grep -qw systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec \
     && ! /usr/libexec/tilo-uki-cmdline show /boot/tilo-target/tilo-target.efi | grep -qw tilo.install \
-    && systemctl enable tilo-firstboot-user.service tilo-firstboot-autologin-cleanup.service tilo-installer-setup.service tilo-live-recovery.service \
+    && systemctl enable tilo-installer-code-refresh.service tilo-firstboot-user.service tilo-firstboot-autologin-cleanup.service tilo-installer-setup.service tilo-live-recovery.service \
     # USB-free installation: recognise a staged installer and grow its root on
     # the live side (both conditioned on tilo.install), and reclaim the staging
     # partitions once on the installed system (conditioned on its record).

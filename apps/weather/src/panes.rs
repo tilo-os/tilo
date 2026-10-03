@@ -14,8 +14,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -102,8 +102,6 @@ fn store_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
 }
 
 impl Widget for OverviewPane {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -130,19 +128,8 @@ impl Widget for OverviewPane {
             .draw_overview(self.rect, scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if *handled {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if *ctx.handled {
             return;
         }
         if self
@@ -150,16 +137,16 @@ impl Widget for OverviewPane {
             .borrow_mut()
             .handle_overview_event(OverviewEventCtx {
                 event,
-                scale_factor,
-                modifiers: *modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
+                scale_factor: ctx.scale_factor,
+                modifiers: *ctx.modifiers,
+                state: ctx.state,
+                path: ctx.path,
+                focus_target: ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
             })
         {
-            *handled = true;
+            *ctx.handled = true;
         }
     }
 
@@ -183,9 +170,10 @@ impl Widget for OverviewPane {
         &mut self,
         action: &Action,
         key_path: &[u64],
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = ui::doc::document(state, path);
         let search_key = ui::a11y::hash_key(&"weather.city_search");
         if let Some(index) = key_path.iter().position(|key| *key == search_key) {
             #[expect(
@@ -217,8 +205,6 @@ impl Widget for OverviewPane {
 }
 
 impl Widget for DetailPane {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -245,27 +231,16 @@ impl Widget for DetailPane {
             .draw_detail(self.rect, scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if *handled {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if *ctx.handled {
             return;
         }
         if self
             .core
             .borrow_mut()
-            .handle_detail_event(event, scale_factor)
+            .handle_detail_event(event, ctx.scale_factor)
         {
-            *handled = true;
+            *ctx.handled = true;
         }
     }
 
@@ -293,8 +268,8 @@ impl Widget for DetailPane {
         &mut self,
         action: &Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, Action::Activate) {
             return false;

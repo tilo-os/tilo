@@ -267,7 +267,7 @@ impl ShellGlobalShortcutsService {
             return false;
         }
         let events = self.events.lock().ok().and_then(|slot| slot.clone());
-        let timestamp = now_millis();
+        let timestamp = tilo_clock::unix_now_ms();
         let activated: Vec<_> = hits
             .into_iter()
             .filter(|binding| {
@@ -300,7 +300,7 @@ impl ShellGlobalShortcutsService {
             return false;
         };
         if let Some(events) = self.events.lock().ok().and_then(|slot| slot.clone()) {
-            let timestamp = now_millis();
+            let timestamp = tilo_clock::unix_now_ms();
             for (session, id) in activated {
                 events.deactivate(&session, &id, timestamp);
             }
@@ -394,11 +394,11 @@ impl GlobalShortcutsService for ShellGlobalShortcutsService {
                     .and_then(canonical_accelerator);
                 let status = accelerator.as_deref().and_then(|accelerator| {
                     if self.is_reserved(accelerator) {
-                        Some("Reserved by Tilo. Choose another shortcut.".into())
+                        Some(crate::shell::i18n::t("portal-shortcut-reserved"))
                     } else if let Some(app_id) = installed.get(accelerator) {
-                        Some(format!(
-                            "Already used by {}. Choose another shortcut.",
-                            safe_app_name(app_id)
+                        Some(crate::shell::i18n::t_args(
+                            "portal-shortcut-taken",
+                            &[("app", safe_app_name(app_id).into())],
                         ))
                     } else {
                         None
@@ -524,6 +524,7 @@ pub struct GlobalShortcutsHandle {
     state: Arc<Mutex<ShortcutState>>,
     lifecycle: PortalLifecycle,
     service: GlobalShortcutsServiceHandle,
+    wake: crate::idle_wake::IdleWake,
 }
 
 impl GlobalShortcutsHandle {
@@ -559,6 +560,8 @@ impl GlobalShortcutsHandle {
             timestamp,
             edge,
         });
+        drop(state);
+        self.wake.poke();
         true
     }
 
@@ -601,6 +604,7 @@ impl GlobalShortcutsHandle {
             state: Arc::new(Mutex::new(state)),
             lifecycle: PortalLifecycle::new(),
             service: GlobalShortcutsServiceHandle::new(Arc::new(UnavailableGlobalShortcuts)),
+            wake: crate::idle_wake::IdleWake::default(),
         }
     }
 
@@ -650,6 +654,7 @@ pub struct GlobalShortcutsBackend {
     state: Arc<Mutex<ShortcutState>>,
     service: GlobalShortcutsServiceHandle,
     lifecycle: PortalLifecycle,
+    wake: crate::idle_wake::IdleWake,
 }
 
 #[cfg(target_os = "linux")]
@@ -678,6 +683,7 @@ impl GlobalShortcutsBackend {
             state: Arc::new(Mutex::new(ShortcutState::default())),
             service,
             lifecycle,
+            wake: crate::idle_wake::IdleWake::default(),
         }
     }
 
@@ -686,6 +692,7 @@ impl GlobalShortcutsBackend {
             state: self.state.clone(),
             lifecycle: self.lifecycle.clone(),
             service: self.service.clone(),
+            wake: self.wake.clone(),
         }
     }
 
@@ -789,13 +796,13 @@ impl GlobalShortcutsBackend {
         &self,
         #[zbus(signal_emitter)] sig: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
-        #[zbus(connection)] connection: &zbus::Connection,
         handle: ObjectPath<'_>,
         session: ObjectPath<'_>,
         shortcuts: Vec<ShortcutWire>,
         parent_window: String,
         _options: HashMap<String, OwnedValue>,
     ) -> (u32, HashMap<String, OwnedValue>) {
+        let connection = sig.connection();
         let Some((auth, current)) = self.authenticate_session(hdr, &session).await else {
             return (2, HashMap::new());
         };
@@ -1109,10 +1116,13 @@ pub fn spawn_signal_emitter(
         let Ok(context) = SignalEmitter::new(&connection, super::OBJECT_PATH) else {
             return;
         };
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(32));
         loop {
-            interval.tick().await;
-            for activation in handle.drain_activations() {
+            let activations = handle.drain_activations();
+            if activations.is_empty() {
+                handle.wake.wait().await;
+                continue;
+            }
+            for activation in activations {
                 let Ok(session) = ObjectPath::try_from(activation.session.as_str()) else {
                     continue;
                 };
@@ -1319,11 +1329,10 @@ fn portal_trigger_for_accelerator(accelerator: &str) -> String {
 
 fn safe_app_name(app_id: &str) -> String {
     crate::shell::launcher::display_name_for_app_id(app_id).unwrap_or_else(|| {
-        app_id
-            .rsplit('.')
-            .next()
-            .unwrap_or("another application")
-            .replace(['-', '_'], " ")
+        app_id.rsplit('.').next().map_or_else(
+            || crate::shell::i18n::t("portal-shortcut-another-app"),
+            |name| name.replace(['-', '_'], " "),
+        )
     })
 }
 
@@ -1417,6 +1426,7 @@ fn chord_for_accelerator(
                     (None, "ENTER") => ChordKey::Enter,
                     (None, "ESCAPE") => ChordKey::Escape,
                     (None, "DELETE") => ChordKey::Delete,
+                    (None, "NUMLOCK") => ChordKey::NumLock,
                     (None, "PAGEUP") => ChordKey::PageUp,
                     (None, "PAGEDOWN") => ChordKey::PageDown,
                     (None, "ARROWLEFT") => ChordKey::ArrowLeft,
@@ -1446,6 +1456,7 @@ fn fixed_chord_accelerator(chord: crate::shell::fixed_chords::FixedChord) -> Opt
         ChordKey::Enter => "ENTER".into(),
         ChordKey::Escape => "ESCAPE".into(),
         ChordKey::Delete => "DELETE".into(),
+        ChordKey::NumLock => "NUMLOCK".into(),
         ChordKey::PageUp => "PAGEUP".into(),
         ChordKey::PageDown => "PAGEDOWN".into(),
         ChordKey::ArrowLeft => "ARROWLEFT".into(),
@@ -1512,78 +1523,114 @@ fn physical_code(physical: &PhysicalKey) -> Option<String> {
     }
 }
 
-fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
-        .unwrap_or_default()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use winit::keyboard::{KeyCode, ModifiersState};
 
     #[test]
-    fn shortcut_wire_is_bounded_and_cannot_duplicate_ids() {
-        let good = vec![("toggle".into(), HashMap::new())];
-        assert_eq!(decode_shortcuts(good).unwrap().len(), 1);
-        let duplicate = vec![
-            ("toggle".into(), HashMap::new()),
-            ("toggle".into(), HashMap::new()),
-        ];
-        assert!(decode_shortcuts(duplicate).is_none());
-        assert!(decode_shortcuts(vec![("bad space".into(), HashMap::new())]).is_none());
+    fn shortcut_bindings_are_bounded_and_deliver_only_bound_ids() {
+        // Phase `shortcut_wire_is_bounded_and_cannot_duplicate_ids`.
+        {
+            let good = vec![("toggle".into(), HashMap::new())];
+            assert_eq!(decode_shortcuts(good).unwrap().len(), 1);
+            let duplicate = vec![
+                ("toggle".into(), HashMap::new()),
+                ("toggle".into(), HashMap::new()),
+            ];
+            assert!(decode_shortcuts(duplicate).is_none());
+            assert!(decode_shortcuts(vec![("bad space".into(), HashMap::new())]).is_none());
+        }
+        // Phase `compositor_handle_cannot_activate_unbound_id`.
+        {
+            let handle = test_handle();
+            assert!(!handle.activate("/org/freedesktop/portal/desktop/session/x", "unknown", 1));
+        }
+        // Phase `compositor_event_bridge_only_delivers_bound_ids`.
+        {
+            let handle = test_handle();
+            let session = "/org/freedesktop/portal/desktop/session/x";
+            handle.state.lock().unwrap().sessions.insert(
+                session.into(),
+                Session {
+                    owner: ":1.7".into(),
+                    caller: PortalCaller::new(
+                        crate::shell::state::WorkspaceId(1),
+                        "org.example.App",
+                    ),
+                    shortcuts: vec![GlobalShortcut {
+                        id: "toggle".into(),
+                        description: None,
+                        preferred_trigger: None,
+                    }],
+                    binding: false,
+                },
+            );
+            assert!(handle.activate(session, "toggle", 9));
+            assert!(!handle.activate(session, "other", 10));
+            assert_eq!(
+                handle.drain_activations(),
+                vec![PortalShortcutActivation {
+                    session: session.into(),
+                    shortcut_id: "toggle".into(),
+                    timestamp: 9,
+                    edge: ShortcutEdge::Activated,
+                }]
+            );
+        }
     }
 
     #[test]
-    fn compositor_handle_cannot_activate_unbound_id() {
-        let handle = test_handle();
-        assert!(!handle.activate("/org/freedesktop/portal/desktop/session/x", "unknown", 1));
-    }
-
-    #[test]
-    fn compositor_event_bridge_only_delivers_bound_ids() {
-        let handle = test_handle();
-        let session = "/org/freedesktop/portal/desktop/session/x";
-        handle.state.lock().unwrap().sessions.insert(
-            session.into(),
-            Session {
-                owner: ":1.7".into(),
-                caller: PortalCaller::new(crate::shell::state::WorkspaceId(1), "org.example.App"),
+    fn accelerators_are_canonical_and_reserved_chords_win() {
+        // Phase `canonical_accelerators_are_physical_and_shell_reservations_win`.
+        {
+            assert_eq!(
+                canonical_accelerator("Shift + Ctrl + k").as_deref(),
+                Some("CTRL+SHIFT+KEYK")
+            );
+            assert!(canonical_accelerator("k").is_none());
+            assert!(is_reserved_accelerator("SUPER+KEYK", &defaults()));
+            assert!(!is_reserved_accelerator("CTRL+SHIFT+KEYK", &defaults()));
+            let modifiers = Modifiers::default();
+            assert!(accelerator_for_code("KeyK", modifiers).is_none());
+        }
+        // Phase `registry_rejects_conflicts_and_reserved_chords`.
+        {
+            let service = ShellGlobalShortcutsService::with_dialogs(PortalDialogQueue::default());
+            let request = GlobalShortcutBindingRequest {
+                handle: "/request/a".into(),
+                session: "/session/a".into(),
+                app_id: "org.example.A".into(),
+                parent_window: String::new(),
+                shortcuts: vec![
+                    GlobalShortcut {
+                        id: "shell".into(),
+                        description: None,
+                        preferred_trigger: Some("Super+K".into()),
+                    },
+                    GlobalShortcut {
+                        id: "ok".into(),
+                        description: None,
+                        preferred_trigger: Some("Ctrl+Shift+K".into()),
+                    },
+                ],
+            };
+            assert_eq!(service.install_approved(&request), vec!["ok"]);
+            let competing = GlobalShortcutBindingRequest {
+                handle: "/request/b".into(),
+                session: "/session/b".into(),
+                app_id: "org.example.B".into(),
+                parent_window: String::new(),
                 shortcuts: vec![GlobalShortcut {
-                    id: "toggle".into(),
+                    id: "conflict".into(),
                     description: None,
-                    preferred_trigger: None,
+                    preferred_trigger: Some("Ctrl+Shift+K".into()),
                 }],
-                binding: false,
-            },
-        );
-        assert!(handle.activate(session, "toggle", 9));
-        assert!(!handle.activate(session, "other", 10));
-        assert_eq!(
-            handle.drain_activations(),
-            vec![PortalShortcutActivation {
-                session: session.into(),
-                shortcut_id: "toggle".into(),
-                timestamp: 9,
-                edge: ShortcutEdge::Activated,
-            }]
-        );
-    }
-
-    #[test]
-    fn canonical_accelerators_are_physical_and_shell_reservations_win() {
-        assert_eq!(
-            canonical_accelerator("Shift + Ctrl + k").as_deref(),
-            Some("CTRL+SHIFT+KEYK")
-        );
-        assert!(canonical_accelerator("k").is_none());
-        assert!(is_reserved_accelerator("SUPER+KEYK", &defaults()));
-        assert!(!is_reserved_accelerator("CTRL+SHIFT+KEYK", &defaults()));
-        let modifiers = Modifiers::default();
-        assert!(accelerator_for_code("KeyK", modifiers).is_none());
+            };
+            assert!(service.install_approved(&competing).is_empty());
+            service.release_session("/session/a");
+            assert_eq!(service.install_approved(&competing), vec!["conflict"]);
+        }
     }
 
     fn defaults() -> settings_store::hardware::ShortcutConfig {
@@ -1694,44 +1741,6 @@ mod tests {
         assert!(!is_reserved_accelerator("CTRL+SHIFT+KEYM", &defaults()));
     }
 
-    #[test]
-    fn registry_rejects_conflicts_and_reserved_chords() {
-        let service = ShellGlobalShortcutsService::with_dialogs(PortalDialogQueue::default());
-        let request = GlobalShortcutBindingRequest {
-            handle: "/request/a".into(),
-            session: "/session/a".into(),
-            app_id: "org.example.A".into(),
-            parent_window: String::new(),
-            shortcuts: vec![
-                GlobalShortcut {
-                    id: "shell".into(),
-                    description: None,
-                    preferred_trigger: Some("Super+K".into()),
-                },
-                GlobalShortcut {
-                    id: "ok".into(),
-                    description: None,
-                    preferred_trigger: Some("Ctrl+Shift+K".into()),
-                },
-            ],
-        };
-        assert_eq!(service.install_approved(&request), vec!["ok"]);
-        let competing = GlobalShortcutBindingRequest {
-            handle: "/request/b".into(),
-            session: "/session/b".into(),
-            app_id: "org.example.B".into(),
-            parent_window: String::new(),
-            shortcuts: vec![GlobalShortcut {
-                id: "conflict".into(),
-                description: None,
-                preferred_trigger: Some("Ctrl+Shift+K".into()),
-            }],
-        };
-        assert!(service.install_approved(&competing).is_empty());
-        service.release_session("/session/a");
-        assert_eq!(service.install_approved(&competing), vec!["conflict"]);
-    }
-
     #[tokio::test]
     async fn shell_editor_assigns_a_shortcut_without_a_preferred_trigger() {
         let dialogs = PortalDialogQueue::default();
@@ -1784,6 +1793,7 @@ mod tests {
             state: Arc::new(Mutex::new(ShortcutState::default())),
             lifecycle: PortalLifecycle::new(),
             service: GlobalShortcutsServiceHandle::new(Arc::new(UnavailableGlobalShortcuts)),
+            wake: crate::idle_wake::IdleWake::default(),
         }
     }
 }

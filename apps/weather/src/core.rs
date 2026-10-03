@@ -19,7 +19,7 @@
 //! worker, and drive the shell.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
@@ -32,6 +32,7 @@ use ui::a11y::{AccessNode, AccessState, Role};
 use ui::charts::{BarGauge, GaugeStyle, TrendRange};
 use ui::color_compat::ColorCompat;
 use ui::icons::Icon;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -54,6 +55,7 @@ use crate::model::{
     WeatherSnapshot,
 };
 use crate::net::{Request, RequestKind, Response};
+use crate::presentation::SavedPlaceFace;
 use crate::units::{self, Units};
 use crate::wxcode::Sky;
 
@@ -810,7 +812,7 @@ impl Core {
         } else {
             self.search_results.clear();
         }
-        self.pending_query_at = Some(Instant::now());
+        self.pending_query_at = Some(ui::time::now());
         self.sync_search_view();
     }
 
@@ -904,9 +906,9 @@ impl Core {
         // panicking.
         if !self.search_query.trim().is_empty() {
             self.pending_query_at = Some(
-                Instant::now()
+                ui::time::now()
                     .checked_sub(GEOCODE_DEBOUNCE)
-                    .unwrap_or_else(Instant::now),
+                    .unwrap_or_else(ui::time::now),
             );
         }
         false
@@ -1015,6 +1017,7 @@ impl Core {
             .collect();
         let places = AccessNode::new(Role::List)
             .with_name("Saved places")
+            .with_hashed_key("weather.places")
             .with_description("Use Up and Down Arrow to change city, Enter to open its forecast, or slash to search for another city.")
             .with_bounds(rect)
             .with_children(items);
@@ -1103,10 +1106,14 @@ impl Core {
         // Solid surface — this is a content panel, not a floating drawer.
         scene.fill(Fill::NonZero, t, c.surfaces.base, None, &rect);
 
-        let left = rect.x0 + RP;
-        let width = (rect.width() - 2.0 * RP).max(80.0);
+        let (left, width) = overview_column(rect);
         let list_top = self.draw_overview_search(scene, t, tr, theme, left, width, &mut hot);
-        self.draw_overview_list(rect, scene, t, tr, theme, left, width, list_top, &mut hot);
+        self.draw_overview_list(
+            &mut PaintCtx::new(scene, t, tr, theme),
+            rect,
+            list_top,
+            &mut hot,
+        );
         self.over_hotspots = hot;
     }
 
@@ -1114,10 +1121,6 @@ impl Core {
     /// self-drawn app-name header — the compositor owns window chrome, so
     /// this panel opens straight into its content. Returns the y the saved-
     /// place list starts at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus left/width/hot identify where to paint and where to record hit regions — a context struct would ripple across every draw_* method here, out of scope for this split"
-    )]
     fn draw_overview_search(
         &mut self,
         scene: &mut Scene,
@@ -1192,22 +1195,15 @@ impl Core {
     /// delete drop zone while reordering, the scroll indicator, and finally
     /// the context menu + suggestion overlay (which must paint last so they
     /// sit above the chips).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/left/width/list_top/hot identify where to paint and where to record hit regions — a context struct would ripple across every draw_* method here, out of scope for this split"
-    )]
     fn draw_overview_list(
         &mut self,
+        ctx: &mut PaintCtx<'_>,
         rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        left: f64,
-        width: f64,
         list_top: f64,
         hot: &mut Vec<Hotspot>,
     ) {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let (left, width) = overview_column(rect);
         let c = &theme.tokens.colors;
 
         // The chip list scrolls within the region below the header. While a
@@ -1361,10 +1357,6 @@ impl Core {
 
     /// The scrolling city column: one slot per saved place (icon + temp),
     /// the selection/hover highlight, and the scroll indicator.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/list_top/hot identify where to paint and where to record hit regions — a context struct would ripple across every draw_* method here, out of scope for this split"
-    )]
     fn draw_rail_list(
         &mut self,
         scene: &mut Scene,
@@ -1376,7 +1368,6 @@ impl Core {
         hot: &mut Vec<Hotspot>,
     ) {
         let c = &theme.tokens.colors;
-        let cx = f64::midpoint(rect.x0, rect.x1);
         let list_bottom = rect.y1 - 10.0;
         let view_h = (list_bottom - list_top).max(0.0);
         let count = self.model.locations.len();
@@ -1390,13 +1381,14 @@ impl Core {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
         for (i, loc) in self.model.locations.iter().enumerate() {
             let sy = scrolled_top + i as f64 * RAIL_SLOT_H;
-            self.draw_rail_slot(scene, t, tr, theme, rect, cx, sy, i, loc, hot);
+            let band = Rect::new(rect.x0, sy, rect.x1, sy + RAIL_SLOT_H);
+            self.draw_rail_slot(&mut PaintCtx::new(scene, t, tr, theme), band, i, loc, hot);
         }
         scene.pop_layer();
 
-        if self.over_max_scroll > 1.0 {
+        if self.over_max_scroll > 1.0 && view_h >= 20.0 {
             let track_x = rect.x1 - 4.0;
-            let track_h = list_bottom - list_top;
+            let track_h = view_h;
             let thumb_h = (track_h * (view_h / content_h)).clamp(20.0, track_h);
             let thumb_y =
                 list_top + (self.over_scroll / self.over_max_scroll) * (track_h - thumb_h);
@@ -1410,33 +1402,21 @@ impl Core {
         }
     }
 
-    /// One rail slot: the selection/hover highlight, the condition icon
-    /// (or a dash before the first fetch), the rounded temperature, and its
-    /// hit region.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/cx/sy/i/loc/hot identify where and what to paint and where to record the hit region — a context struct would ripple across every draw_* method here, out of scope for this split"
-    )]
+    /// One rail slot in its `band` of the rail: the selection/hover
+    /// highlight, the condition icon (or a dash before the first fetch), the
+    /// rounded temperature, and its hit region.
     fn draw_rail_slot(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        cx: f64,
-        sy: f64,
+        ctx: &mut PaintCtx<'_>,
+        band: Rect,
         i: usize,
         loc: &SavedLocation,
         hot: &mut Vec<Hotspot>,
     ) {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let c = &theme.tokens.colors;
-        let slot = Rect::new(
-            rect.x0 + 6.0,
-            sy + 4.0,
-            rect.x1 - 6.0,
-            sy + RAIL_SLOT_H - 6.0,
-        );
+        let cx = f64::midpoint(band.x0, band.x1);
+        let slot = Rect::new(band.x0 + 6.0, band.y0 + 4.0, band.x1 - 6.0, band.y1 - 6.0);
         let selected = i == self.model.selected;
         let hov = slot.contains(self.last_mouse);
         if selected {
@@ -1503,10 +1483,6 @@ impl Core {
         });
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "saved-place chip painting combines paint context, list width/position and hotspot output while applying reorder geometry"
-    )]
     fn draw_chips(
         &self,
         scene: &mut Scene,
@@ -1517,7 +1493,6 @@ impl Core {
         w: f64,
         hot: &mut Vec<Hotspot>,
     ) {
-        let units = self.units;
         let metrics = self.list_metrics();
         let chip_m = self.chip_metrics();
         let dragging = self.reorder.from_index();
@@ -1551,7 +1526,7 @@ impl Core {
                 Self::draw_swipe_backing(scene, t, theme, chip);
             }
             let chip_t = t * Affine::translate((-swipe_dx, 0.0));
-            self.draw_chip(scene, chip_t, tr, theme, chip, loc, i, units);
+            self.draw_chip(&mut PaintCtx::new(scene, chip_t, tr, theme), chip, loc, i);
             hot.push(Hotspot {
                 rect: chip,
                 action: OverAction::PressChip(i),
@@ -1568,8 +1543,10 @@ impl Core {
         {
             let sh =
                 RoundedRect::from_rect(chip.inset(-2.0), f64::from(theme.tokens.radii.md) + 2.0);
-            scene.fill(Fill::NonZero, t, Color::from_rgba8(0, 0, 0, 60), None, &sh);
-            self.draw_chip(scene, t, tr, theme, chip, loc, i, units);
+            // The dragged chip's seat is an elevation shadow, so a light
+            // theme softens it and high contrast keeps the ladder's own hue.
+            scene.fill(Fill::NonZero, t, theme.tokens.elevation.e3.color, None, &sh);
+            self.draw_chip(&mut PaintCtx::new(scene, t, tr, theme), chip, loc, i);
         }
     }
 
@@ -1602,33 +1579,19 @@ impl Core {
 
     /// The rounded current temperature a saved-place chip shows, or `None`
     /// before the city's first snapshot has arrived.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "saved-place chips combine paint context and bounds with location identity, list index and temperature units"
-    )]
-    fn draw_chip(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        chip: Rect,
-        loc: &SavedLocation,
-        index: usize,
-        units: Units,
-    ) {
+    fn draw_chip(&self, ctx: &mut PaintCtx<'_>, chip: Rect, loc: &SavedLocation, index: usize) {
+        let accent = self.accent(ctx.theme);
         crate::presentation::draw_saved_place(
-            scene,
-            t,
-            tr,
-            theme,
-            chip,
-            loc,
-            self.model.snapshot_for(loc.id),
-            units,
-            index == self.model.selected,
-            chip.contains(self.last_mouse),
-            self.accent(theme),
+            ctx,
+            &SavedPlaceFace {
+                chip,
+                loc,
+                snapshot: self.model.snapshot_for(loc.id),
+                units: self.units,
+                selected: index == self.model.selected,
+                hovered: chip.contains(self.last_mouse),
+                accent,
+            },
         );
     }
 
@@ -1642,7 +1605,7 @@ impl Core {
             chip.x1 - 14.0,
             chip.y0 + 45.0,
         );
-        Icon::Trash.draw(scene, t, icon_r, Color::WHITE);
+        Icon::Trash.draw(scene, t, icon_r, c.on_surface(c.semantic.danger).ink);
     }
 
     fn draw_delete_dropzone(
@@ -1667,7 +1630,7 @@ impl Core {
         let dash = Stroke::new(2.0).with_dashes(0.0, [6.0, 5.0]);
         scene.stroke(&dash, t, c.semantic.danger, None, &shape);
         let icon_color = if armed {
-            Color::WHITE
+            c.on_surface(c.semantic.danger).ink
         } else {
             c.semantic.danger
         };
@@ -1679,7 +1642,7 @@ impl Core {
         );
         Icon::Trash.draw_with_stroke(scene, t, icon_r, icon_color, 2.0);
         let label_color = if armed {
-            Color::WHITE
+            c.on_surface(c.semantic.danger).ink
         } else {
             c.semantic.danger
         };
@@ -1719,7 +1682,7 @@ impl Core {
         scene.fill(
             Fill::NonZero,
             t,
-            Color::from_rgba8(0, 0, 0, 80),
+            theme.tokens.elevation.e4.color,
             None,
             &RoundedRect::from_rect(panel.inset(-3.0), f64::from(theme.tokens.radii.md) + 3.0),
         );
@@ -1839,10 +1802,6 @@ impl Core {
     }
 
     /// Handle an event routed to the overview pane. Returns true if consumed.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event across this crate's app.rs/panes.rs — bundling it into a context struct would ripple across every event-routing method here, out of scope for this split"
-    )]
     pub(crate) fn handle_overview_event(&mut self, mut ctx: OverviewEventCtx<'_>) -> bool {
         // Keep the shared field placed so its overlay hit-tests correctly.
         self.search.apply_layout_external(self.search_field_rect);
@@ -1861,10 +1820,6 @@ impl Core {
     /// `Some(consumed)` when the field fully handled the event (the caller
     /// should return immediately), or `None` to fall through to the list's
     /// own gesture handling.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event across this crate's app.rs/panes.rs — bundling it into a context struct would ripple across every event-routing method here, out of scope for this split"
-    )]
     fn route_overview_search_field(&mut self, ctx: &mut OverviewEventCtx<'_>) -> Option<bool> {
         use winit::event::{ElementState, MouseButton};
 
@@ -1889,14 +1844,16 @@ impl Core {
         let mut ac_handled = false;
         self.search.handle_event(
             ctx.event,
-            ctx.scale_factor,
-            &ctx.modifiers,
-            ctx.state,
-            ctx.path,
-            &mut ac_handled,
-            ctx.focus_target,
-            ctx.node_id,
-            ctx.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: &ctx.modifiers,
+                state: ctx.state,
+                path: ctx.path,
+                handled: &mut ac_handled,
+                focus_target: ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            },
         );
         self.finish_search_edit(&before, ac_handled)
     }
@@ -2237,24 +2194,20 @@ impl Core {
         let clip = Rect::new(rect.x0, body_top - 8.0, rect.x1, rect.y1);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
         let mut y = body_top - self.scroll;
-        y = self.draw_detail_hero(rect, scene, t, tr, theme, y, &snap, &layout);
-        y = self.draw_detail_tiles(rect, scene, t, tr, theme, y, &snap, &layout);
-        y = self.draw_detail_hourly(rect, scene, t, tr, theme, y, &snap, &layout);
-        y = self.draw_detail_days(rect, scene, t, tr, theme, y, &snap, &layout);
-        self.draw_detail_air_quality_section(rect, scene, t, tr, theme, y, &layout);
-        scene.pop_layer();
-
-        self.draw_detail_footer(
+        let body = DetailBody {
             rect,
-            scene,
-            t,
-            tr,
-            theme,
-            mx,
-            body_top,
-            view_h,
-            layout.body_h,
-        );
+            snap: &snap,
+            layout: &layout,
+        };
+        let ctx = &mut PaintCtx::new(scene, t, tr, theme);
+        y = self.draw_detail_hero(ctx, &body, y);
+        y = self.draw_detail_tiles(ctx, &body, y);
+        y = self.draw_detail_hourly(ctx, &body, y);
+        y = self.draw_detail_days(ctx, &body, y);
+        self.draw_detail_air_quality_section(ctx, &body, y);
+        ctx.scene.pop_layer();
+
+        self.draw_detail_footer(ctx, rect, body_top, layout.body_h);
     }
 
     /// Composed zero-state: a friendly weather glyph over an inviting
@@ -2320,10 +2273,6 @@ impl Core {
     /// Place name/subtitle, the refresh button, and (once a snapshot has
     /// landed) its fetch date/local time. Returns the y the divider under
     /// the header sits at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/loc/snap identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
-    )]
     /// The header's refresh button: a raised square with the refresh glyph,
     /// hover-lifted, and recorded as this frame's hit rect.
     fn draw_refresh_button(
@@ -2348,10 +2297,6 @@ impl Core {
         self.refresh_btn = refresh;
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "paint pass threads the shared scene, transform, renderer and theme"
-    )]
     fn draw_detail_header(
         &mut self,
         rect: Rect,
@@ -2459,21 +2404,9 @@ impl Core {
     /// The hero card: condition glyph, big temperature, condition label,
     /// "feels like", and the sunrise/sunset arc (or a compact fallback on a
     /// narrow pane). Returns the y cursor for the next section.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the weather hero combines paint context, detail bounds and vertical position with snapshot data and responsive metrics"
-    )]
-    fn draw_detail_hero(
-        &self,
-        rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        y: f64,
-        snap: &WeatherSnapshot,
-        layout: &DetailBodyLayout,
-    ) -> f64 {
+    fn draw_detail_hero(&self, ctx: &mut PaintCtx<'_>, body: &DetailBody<'_>, y: f64) -> f64 {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let DetailBody { rect, snap, layout } = *body;
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
         let mw = (rect.width() - 2.0 * PAD).max(140.0);
@@ -2544,7 +2477,13 @@ impl Core {
         );
 
         if let Some(today) = snap.daily.first() {
-            Self::draw_hero_sun(scene, t, tr, theme, hero, mw, cur, today);
+            Self::draw_hero_sun(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                hero,
+                mw,
+                cur,
+                today,
+            );
         }
 
         y + layout.hero_h + layout.gap
@@ -2552,41 +2491,31 @@ impl Core {
 
     /// The sunrise/sunset arc on a wide pane, or the compact Sunrise/Sunset
     /// label fallback on a narrow one.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus hero/mw/cur/today identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
-    )]
     fn draw_hero_sun(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         hero: Rect,
         mw: f64,
         cur: &CurrentConditions,
         today: &DayForecast,
     ) {
-        let c = &theme.tokens.colors;
         let sr = hhmm(&today.sunrise);
         let ss = hhmm(&today.sunset);
         if mw >= 560.0 {
             Self::draw_sun_arc(
-                scene,
-                t,
-                tr,
-                theme,
+                ctx,
                 Rect::new(
                     hero.x1 - 226.0,
                     hero.y0 + 22.0,
                     hero.x1 - 22.0,
                     hero.y1 - 22.0,
                 ),
-                &cur.time,
+                cur,
                 &sr,
                 &ss,
-                cur.is_day,
             );
         } else {
+            let (scene, tr, theme) = (&mut *ctx.scene, &mut *ctx.text, ctx.theme);
+            let c = &theme.tokens.colors;
             // Two label/value pairs stacked up from the card's `s3` bottom
             // inset on their measured lines: `s1` inside a pair, `s2`
             // between the pairs — nothing runs past the card.
@@ -2634,21 +2563,9 @@ impl Core {
 
     /// The metric-tile grid (wind/humidity/precip/pressure/UV). Returns the
     /// y cursor for the next section.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/y/snap/layout identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
-    )]
-    fn draw_detail_tiles(
-        &self,
-        rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        y: f64,
-        snap: &WeatherSnapshot,
-        layout: &DetailBodyLayout,
-    ) -> f64 {
+    fn draw_detail_tiles(&self, ctx: &mut PaintCtx<'_>, body: &DetailBody<'_>, y: f64) -> f64 {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let DetailBody { rect, snap, layout } = *body;
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
         let mw = (rect.width() - 2.0 * PAD).max(140.0);
@@ -2739,21 +2656,9 @@ impl Core {
 
     /// The 24-hour scrollable strip card. Returns the y cursor for the
     /// next section.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the hourly strip combines paint context, detail bounds and vertical position with forecast data and responsive metrics"
-    )]
-    fn draw_detail_hourly(
-        &mut self,
-        rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        y: f64,
-        snap: &WeatherSnapshot,
-        layout: &DetailBodyLayout,
-    ) -> f64 {
+    fn draw_detail_hourly(&mut self, ctx: &mut PaintCtx<'_>, body: &DetailBody<'_>, y: f64) -> f64 {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let DetailBody { rect, snap, layout } = *body;
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
         let mw = (rect.width() - 2.0 * PAD).max(140.0);
@@ -2818,18 +2723,14 @@ impl Core {
         self.hourly_max_scroll = (content_w - band.width()).max(0.0);
         self.hourly_scroll_x = self.hourly_scroll_x.clamp(0.0, self.hourly_max_scroll);
 
-        chart::draw_hourly_strip(
-            scene,
-            t,
-            band,
-            &cols,
+        chart::HourlyStrip {
+            cols: &cols,
             col_w,
-            self.hourly_scroll_x,
+            scroll_x: self.hourly_scroll_x,
             accent,
-            theme,
-            tr,
-            "°",
-        );
+            temp_suffix: "°",
+        }
+        .draw(&mut PaintCtx::new(scene, t, tr, theme), band);
 
         self.draw_hourly_scrollbar(scene, t, theme, band, content_w);
 
@@ -2881,21 +2782,9 @@ impl Core {
 
     /// The 7-day forecast card: header + one row per day. Returns the y
     /// cursor for the next section.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/y/snap/layout identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
-    )]
-    fn draw_detail_days(
-        &self,
-        rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        y: f64,
-        snap: &WeatherSnapshot,
-        layout: &DetailBodyLayout,
-    ) -> f64 {
+    fn draw_detail_days(&self, ctx: &mut PaintCtx<'_>, body: &DetailBody<'_>, y: f64) -> f64 {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let DetailBody { rect, snap, layout } = *body;
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
         let mw = (rect.width() - 2.0 * PAD).max(140.0);
@@ -2941,283 +2830,41 @@ impl Core {
             .map(|(label, weight)| f64::from(tr.measure_weighted(&label, 14.0, None, weight).0))
             .fold(0.0_f64, f64::max)
             .ceil();
-        let geo = DayRowGeometry::new(dcard, &theme.tokens.spacing, temp_w);
+        let rows = ForecastRows {
+            geo: DayRowGeometry::new(dcard, &theme.tokens.spacing, temp_w),
+            snap,
+            units,
+            week: TrendRange { lo: wmin, hi: wmax },
+        };
         let rows_top = dcard.y0 + layout.days_header_h;
+        let ctx = &mut PaintCtx::new(scene, t, tr, theme);
         for (i, d) in snap.daily.iter().enumerate() {
             let ry = rows_top + i as f64 * layout.day_row_h;
-            Self::draw_day_row(
-                scene,
-                t,
-                tr,
-                theme,
-                &geo,
+            rows.draw_row(
+                ctx,
                 i,
                 d,
-                Rect::new(geo.inner_l, ry, geo.inner_r, ry + layout.day_row_h),
-                snap,
-                units,
-                wmin,
-                wmax,
+                Rect::new(
+                    rows.geo.inner_l,
+                    ry,
+                    rows.geo.inner_r,
+                    ry + layout.day_row_h,
+                ),
             );
         }
 
         y + layout.days_block_h + layout.gap
     }
 
-    /// One row of the 7-day forecast: day label, condition icon (+ label
-    /// when there's room), UV/wind extras (when there's room), precip
-    /// probability (when there's room), and the lo/hi temperature bar.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one drawing pass over a single day row, needing scene/t/theme/tr (the universal draw-context) plus geo/i/d/ry/snap/units/wmin/wmax — splitting further would just thread the same values through more calls"
-    )]
-    fn draw_day_row(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        geo: &DayRowGeometry,
-        i: usize,
-        d: &DayForecast,
-        row: Rect,
-        snap: &WeatherSnapshot,
-        units: Units,
-        wmin: f64,
-        wmax: f64,
-    ) {
-        // The row rect comes from the shared body layout, so its height is
-        // the authored 42px grown by the scaled label line; everything in
-        // the row centres on that rect, not on a fixed constant.
-        let ry = row.y0;
-        let cy = row.center().y;
-        Self::draw_day_row_label(scene, t, tr, theme, geo, i, d, ry, cy);
-        if geo.show_extras {
-            Self::draw_day_row_extras(scene, t, tr, theme, geo, d, snap, units, cy);
-        }
-        Self::draw_day_row_temps(scene, t, tr, theme, geo, d, snap, units, cy, wmin, wmax);
-    }
-
-    /// The row divider, the "Today"/"Tomorrow"/weekday label, the condition
-    /// icon, and (when there's room) the condition text.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one drawing pass over a single day row's leading label cluster, needing scene/t/theme/tr (the universal draw-context) plus geo/i/d/ry/cy — splitting further would just thread the same values through more calls"
-    )]
-    fn draw_day_row_label(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        geo: &DayRowGeometry,
-        i: usize,
-        d: &DayForecast,
-        ry: f64,
-        cy: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        if i > 0 {
-            // Row rules derive against the card they sit on.
-            ui::surface::separator(
-                scene,
-                t,
-                geo.inner_l,
-                geo.inner_r,
-                ry + 0.5,
-                0.0,
-                c.surfaces.raised,
-            );
-        }
-        let day_label = match i {
-            0 => "Today".to_string(),
-            1 => "Tomorrow".to_string(),
-            _ => weekday(&d.date),
-        };
-        text_left(
-            scene,
-            tr,
-            &day_label,
-            geo.inner_l,
-            cy - 8.0,
-            14.0,
-            TextWeight::Medium,
-            c.text_primary,
-        );
-        let dsky = Sky::from_code(d.weather_code);
-        icon::draw_icon(
-            scene,
-            t,
-            dsky,
-            true,
-            Rect::new(geo.icon_x0, cy - 14.0, geo.icon_x1, cy + 14.0),
-            theme,
-        );
-        if geo.show_cond {
-            text_left(
-                scene,
-                tr,
-                Sky::label(d.weather_code),
-                geo.cond_x,
-                cy - 7.0,
-                13.0,
-                TextWeight::Regular,
-                c.text_dim,
-            );
-        }
-    }
-
-    /// The UV-index and wind-max extras column, shown only when the row is
-    /// wide enough to fit them without crowding the condition text.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one drawing pass over a single day row's extras column, needing scene/t/theme/tr (the universal draw-context) plus geo/d/snap/units/cy — splitting further would just thread the same values through more calls"
-    )]
-    fn draw_day_row_extras(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        geo: &DayRowGeometry,
-        d: &DayForecast,
-        snap: &WeatherSnapshot,
-        units: Units,
-        cy: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        let (uv_label, wind_label) = day_extra_labels(d, snap, units);
-        // UV dot tinted by severity so the number reads at a glance.
-        let uv_dot = if d.uv_index_max < 3.0 {
-            c.semantic.info
-        } else if d.uv_index_max < 8.0 {
-            c.semantic.warning
-        } else {
-            c.semantic.danger
-        };
-        scene.fill(
-            Fill::NonZero,
-            t,
-            uv_dot,
-            None,
-            &Circle::new(Point::new(geo.extras_x + geo.dot_r + 1.0, cy), geo.dot_r),
-        );
-        text_left(
-            scene,
-            tr,
-            &uv_label,
-            geo.extras_x + 12.0,
-            cy - 7.0,
-            12.0,
-            TextWeight::Medium,
-            c.text_dim,
-        );
-        text_right(
-            scene,
-            tr,
-            &wind_label,
-            geo.extras_right,
-            cy - 7.0,
-            12.0,
-            TextWeight::Regular,
-            c.text_dim,
-        );
-    }
-
-    /// The precip-probability read-out (when there's room) and the lo/hi
-    /// temperature bar.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one drawing pass over a single day row's precip + temperature bar, needing scene/t/theme/tr (the universal draw-context) plus geo/d/snap/units/cy/wmin/wmax — splitting further would just thread the same values through more calls"
-    )]
-    fn draw_day_row_temps(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        geo: &DayRowGeometry,
-        d: &DayForecast,
-        snap: &WeatherSnapshot,
-        units: Units,
-        cy: f64,
-        wmin: f64,
-        wmax: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        if geo.show_precip {
-            scene.fill(
-                Fill::NonZero,
-                t,
-                c.semantic.info,
-                None,
-                &Circle::new(Point::new(geo.precip_left, cy), geo.dot_r),
-            );
-            text_left(
-                scene,
-                tr,
-                &format!("{}%", d.precip_probability.round() as i64),
-                geo.precip_left + 8.0,
-                cy - 7.0,
-                12.0,
-                TextWeight::Medium,
-                c.semantic.info,
-            );
-        }
-        let lo = snap.temp_in(d.temp_min, units).round() as i64;
-        let hi = snap.temp_in(d.temp_max, units).round() as i64;
-        text_right(
-            scene,
-            tr,
-            &format!("{lo}°"),
-            geo.lo_x,
-            cy - 8.0,
-            14.0,
-            TextWeight::Medium,
-            c.text_dim,
-        );
-        // The day's low–high on the week's range. The track runs at track
-        // strength, so an empty stretch of range still reads as a bar on both
-        // themes; one cool→warm wash spans the whole track and each day shows
-        // its slice of it.
-        let range = TrendRange { lo: wmin, hi: wmax };
-        let grad = Gradient::new_linear(Point::new(geo.bar_x0, cy), Point::new(geo.bar_x1, cy))
-            .with_stops([(0.0_f32, c.semantic.info), (1.0_f32, c.semantic.warning)]);
-        BarGauge::draw_span(
-            scene,
-            t,
-            Rect::new(geo.bar_x0, cy - 3.0, geo.bar_x1, cy + 3.0),
-            theme,
-            (
-                range.fraction(d.temp_min) as f32,
-                range.fraction(d.temp_max) as f32,
-            ),
-            &Brush::Gradient(grad),
-            &GaugeStyle::default().with_track_alpha(TRACK_ALPHA),
-        );
-        text_left(
-            scene,
-            tr,
-            &format!("{hi}°"),
-            geo.bar_x1 + f64::from(theme.tokens.spacing.s2),
-            cy - 8.0,
-            14.0,
-            TextWeight::Semibold,
-            c.text_primary,
-        );
-    }
-
     /// The air-quality card: header + the AQI hero and pollutant tiles.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/y/layout identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
-    )]
     fn draw_detail_air_quality_section(
         &self,
-        rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
+        body: &DetailBody<'_>,
         y: f64,
-        layout: &DetailBodyLayout,
     ) {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let DetailBody { rect, layout, .. } = *body;
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
         let mw = (rect.width() - 2.0 * PAD).max(140.0);
@@ -3242,22 +2889,10 @@ impl Core {
     }
 
     /// The status line + the body's vertical scroll indicator.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/mx/body_top/view_h/body_h identify the scroll geometry — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
-    )]
-    fn draw_detail_footer(
-        &self,
-        rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        mx: f64,
-        body_top: f64,
-        view_h: f64,
-        body_h: f64,
-    ) {
+    fn draw_detail_footer(&self, ctx: &mut PaintCtx<'_>, rect: Rect, body_top: f64, body_h: f64) {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let mx = rect.x0 + PAD;
+        let view_h = (rect.y1 - PAD) - body_top;
         let c = &theme.tokens.colors;
         // Connection/update problems are called out beside the city name,
         // where they remain visible even when the forecast body scrolls.
@@ -3317,22 +2952,18 @@ impl Core {
         scene.fill(Fill::NonZero, t, &Brush::Gradient(grad), None, &rect);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the sun arc combines paint context and bounds with observation, sunrise and sunset times plus day/night state"
-    )]
+    /// The sun's arc across `area`, its dot placed by `cur`'s observation
+    /// time between `sunrise` and `sunset`, with both times labelled.
     fn draw_sun_arc(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         area: Rect,
-        // Current observation time ("YYYY-MM-DDTHH:MM"); positions the sun dot.
-        now_iso: &str,
+        cur: &CurrentConditions,
         sunrise: &str,
         sunset: &str,
-        is_day: bool,
     ) {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        // Current observation time ("YYYY-MM-DDTHH:MM"); positions the sun dot.
+        let (now_iso, is_day) = (cur.time.as_str(), cur.is_day);
         let c = &theme.tokens.colors;
         let sp = &theme.tokens.spacing;
         let scale = tr.text_scale();
@@ -3443,10 +3074,6 @@ impl Core {
     /// pollutant tiles, or an honest loading / unavailable message when there
     /// is no reading yet. Real data only — a missing value shows an em-dash,
     /// never a fabricated zero.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "air-quality painting combines paint context and bounds with optional readings and measured detail layout"
-    )]
     fn draw_air_quality(
         &self,
         scene: &mut Scene,
@@ -3485,7 +3112,13 @@ impl Core {
         // word, and a caption naming the scale.
         let hero = Rect::new(ix, hero_top, area.x1 - 16.0, hero_top + layout.aq_hero_h);
         Self::draw_aqi_hero(scene, t, tr, theme, hero, aq);
-        Self::draw_aq_tiles(scene, t, tr, theme, ix, iw, hero, aq, layout);
+        Self::draw_aq_tiles(
+            &mut PaintCtx::new(scene, t, tr, theme),
+            hero,
+            iw,
+            aq,
+            layout,
+        );
     }
 
     /// The AQI hero: a severity-tinted chip with the big index number, the
@@ -3570,22 +3203,17 @@ impl Core {
         }
     }
 
-    /// The key pollutant tiles (µg/m³) below the AQI hero.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus ix/iw/hero/aq/cols/gap identify what's being painted — a context struct would ripple across every draw_* method here, out of scope for this split"
-    )]
+    /// The key pollutant tiles (µg/m³) below the AQI hero, spread across
+    /// `iw` from its left edge.
     fn draw_aq_tiles(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        ix: f64,
-        iw: f64,
+        ctx: &mut PaintCtx<'_>,
         hero: Rect,
+        iw: f64,
         aq: &AirQuality,
         layout: &DetailBodyLayout,
     ) {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let ix = hero.x0;
         let c = &theme.tokens.colors;
         let (cols, gap) = (layout.aq_cols, layout.gap);
         let tiles: [(&str, Option<f64>); 4] = [
@@ -3975,6 +3603,15 @@ impl Core {
 /// (see [`authored_h`]), and the inner text offsets shift by the growth of
 /// the lines above them, so at 1× the design is reproduced exactly and at 2×
 /// no line runs into its neighbour or out of its card.
+/// What one detail-body pass paints: the pane, the selected city's
+/// forecast, and the body layout solved for it.
+#[derive(Clone, Copy)]
+struct DetailBody<'a> {
+    rect: Rect,
+    snap: &'a WeatherSnapshot,
+    layout: &'a DetailBodyLayout,
+}
+
 struct DetailBodyLayout {
     /// Gap between sections and between tiles — the theme's `s3`.
     gap: f64,
@@ -4257,6 +3894,202 @@ struct DayRowGeometry {
     dot_r: f64,
 }
 
+/// The 7-day card's row painter: the shared column geometry, the forecast
+/// and units its labels read, and the week's temperature range each day's
+/// bar spans.
+struct ForecastRows<'a> {
+    geo: DayRowGeometry,
+    snap: &'a WeatherSnapshot,
+    units: Units,
+    week: TrendRange,
+}
+
+impl ForecastRows<'_> {
+    /// One row of the 7-day forecast: day label, condition icon (+ label
+    /// when there's room), UV/wind extras (when there's room), precip
+    /// probability (when there's room), and the lo/hi temperature bar.
+    fn draw_row(&self, ctx: &mut PaintCtx<'_>, i: usize, d: &DayForecast, row: Rect) {
+        // The row rect comes from the shared body layout, so its height is
+        // the authored 42px grown by the scaled label line; everything in
+        // the row centres on that rect, not on a fixed constant.
+        let cy = row.center().y;
+        self.draw_label(ctx, i, d, row);
+        if self.geo.show_extras {
+            self.draw_extras(ctx, d, cy);
+        }
+        self.draw_temps(ctx, d, cy);
+    }
+
+    /// The row divider, the "Today"/"Tomorrow"/weekday label, the condition
+    /// icon, and (when there's room) the condition text.
+    fn draw_label(&self, ctx: &mut PaintCtx<'_>, i: usize, d: &DayForecast, row: Rect) {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let geo = &self.geo;
+        let (ry, cy) = (row.y0, row.center().y);
+        let c = &theme.tokens.colors;
+        if i > 0 {
+            // Row rules derive against the card they sit on.
+            ui::surface::separator(
+                scene,
+                t,
+                geo.inner_l,
+                geo.inner_r,
+                ry + 0.5,
+                0.0,
+                c.surfaces.raised,
+            );
+        }
+        let day_label = match i {
+            0 => "Today".to_string(),
+            1 => "Tomorrow".to_string(),
+            _ => weekday(&d.date),
+        };
+        text_left(
+            scene,
+            tr,
+            &day_label,
+            geo.inner_l,
+            cy - 8.0,
+            14.0,
+            TextWeight::Medium,
+            c.text_primary,
+        );
+        let dsky = Sky::from_code(d.weather_code);
+        icon::draw_icon(
+            scene,
+            t,
+            dsky,
+            true,
+            Rect::new(geo.icon_x0, cy - 14.0, geo.icon_x1, cy + 14.0),
+            theme,
+        );
+        if geo.show_cond {
+            text_left(
+                scene,
+                tr,
+                Sky::label(d.weather_code),
+                geo.cond_x,
+                cy - 7.0,
+                13.0,
+                TextWeight::Regular,
+                c.text_dim,
+            );
+        }
+    }
+
+    /// The UV-index and wind-max extras column, shown only when the row is
+    /// wide enough to fit them without crowding the condition text.
+    fn draw_extras(&self, ctx: &mut PaintCtx<'_>, d: &DayForecast, cy: f64) {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let (geo, snap, units) = (&self.geo, self.snap, self.units);
+        let c = &theme.tokens.colors;
+        let (uv_label, wind_label) = day_extra_labels(d, snap, units);
+        // UV dot tinted by severity so the number reads at a glance.
+        let uv_dot = if d.uv_index_max < 3.0 {
+            c.semantic.info
+        } else if d.uv_index_max < 8.0 {
+            c.semantic.warning
+        } else {
+            c.semantic.danger
+        };
+        scene.fill(
+            Fill::NonZero,
+            t,
+            uv_dot,
+            None,
+            &Circle::new(Point::new(geo.extras_x + geo.dot_r + 1.0, cy), geo.dot_r),
+        );
+        text_left(
+            scene,
+            tr,
+            &uv_label,
+            geo.extras_x + 12.0,
+            cy - 7.0,
+            12.0,
+            TextWeight::Medium,
+            c.text_dim,
+        );
+        text_right(
+            scene,
+            tr,
+            &wind_label,
+            geo.extras_right,
+            cy - 7.0,
+            12.0,
+            TextWeight::Regular,
+            c.text_dim,
+        );
+    }
+
+    /// The precip-probability read-out (when there's room) and the lo/hi
+    /// temperature bar.
+    fn draw_temps(&self, ctx: &mut PaintCtx<'_>, d: &DayForecast, cy: f64) {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let (geo, snap, units) = (&self.geo, self.snap, self.units);
+        let c = &theme.tokens.colors;
+        if geo.show_precip {
+            scene.fill(
+                Fill::NonZero,
+                t,
+                c.semantic.info,
+                None,
+                &Circle::new(Point::new(geo.precip_left, cy), geo.dot_r),
+            );
+            text_left(
+                scene,
+                tr,
+                &format!("{}%", d.precip_probability.round() as i64),
+                geo.precip_left + 8.0,
+                cy - 7.0,
+                12.0,
+                TextWeight::Medium,
+                c.semantic.info,
+            );
+        }
+        let lo = snap.temp_in(d.temp_min, units).round() as i64;
+        let hi = snap.temp_in(d.temp_max, units).round() as i64;
+        text_right(
+            scene,
+            tr,
+            &format!("{lo}°"),
+            geo.lo_x,
+            cy - 8.0,
+            14.0,
+            TextWeight::Medium,
+            c.text_dim,
+        );
+        // The day's low–high on the week's range. The track runs at track
+        // strength, so an empty stretch of range still reads as a bar on both
+        // themes; one cool→warm wash spans the whole track and each day shows
+        // its slice of it.
+        let range = self.week;
+        let grad = Gradient::new_linear(Point::new(geo.bar_x0, cy), Point::new(geo.bar_x1, cy))
+            .with_stops([(0.0_f32, c.semantic.info), (1.0_f32, c.semantic.warning)]);
+        BarGauge::draw_span(
+            scene,
+            t,
+            Rect::new(geo.bar_x0, cy - 3.0, geo.bar_x1, cy + 3.0),
+            theme,
+            (
+                range.fraction(d.temp_min) as f32,
+                range.fraction(d.temp_max) as f32,
+            ),
+            &Brush::Gradient(grad),
+            &GaugeStyle::default().with_track_alpha(TRACK_ALPHA),
+        );
+        text_left(
+            scene,
+            tr,
+            &format!("{hi}°"),
+            geo.bar_x1 + f64::from(theme.tokens.spacing.s2),
+            cy - 8.0,
+            14.0,
+            TextWeight::Semibold,
+            c.text_primary,
+        );
+    }
+}
+
 impl DayRowGeometry {
     /// One column grid for every row, laid out from the card's `s4` gutters
     /// with the theme's steps between neighbours: `s3` between siblings
@@ -4378,10 +4211,12 @@ fn track_fill(ground: Color) -> Color {
     ui::tokens::colors::Colors::hairline_on(ground, TRACK_ALPHA)
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "left-aligned text forwards scene resources, string, origin, size, weight and color to the text renderer"
-)]
+/// The saved-place column inside the overview panel `rect`: its left edge
+/// and width.
+fn overview_column(rect: Rect) -> (f64, f64) {
+    (rect.x0 + RP, (rect.width() - 2.0 * RP).max(80.0))
+}
+
 pub(crate) fn text_left(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -4403,10 +4238,6 @@ pub(crate) fn text_left(
     );
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "right-aligned text needs scene resources, string, right edge, top position, size, weight and color for measured alignment"
-)]
 pub(crate) fn text_right(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -4429,10 +4260,6 @@ pub(crate) fn text_right(
     );
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "centered text needs scene resources, string, center/top position, size, weight and color for measured alignment"
-)]
 fn text_center(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -4590,71 +4417,73 @@ mod day_row_geometry_tests {
     use ui::tokens::spacing::Spacing;
     use vello::kurbo::Rect;
 
-    /// Every neighbouring pair in a 7-day row keeps a token-step gap at
-    /// every card width the app lays out (HIG §7 "nothing touches"): the
-    /// precip dot clears the condition glyph by `s3`, the extras column
-    /// clears the precip cluster, the lo label clears its bar by `s2`.
     #[test]
-    fn day_row_columns_keep_token_gaps_at_every_width() {
-        let sp = Spacing::default();
-        let (s2, s3) = (f64::from(sp.s2), f64::from(sp.s3));
-        // Two-digit and three-digit / negative readings ("-12°", "104°").
-        for (card_w, temp_w) in [
-            (372.0_f64, 30.0_f64),
-            (440.0, 30.0),
-            (520.0, 30.0),
-            (604.0, 30.0),
-            (700.0, 30.0),
-            (884.0, 30.0),
-            (1200.0, 30.0),
-            (372.0, 38.0),
-            (604.0, 38.0),
-            (884.0, 42.0),
-        ] {
-            let geo = DayRowGeometry::new(Rect::new(0.0, 0.0, card_w, 42.0), &sp, temp_w);
-            assert!(
-                geo.icon_x0 - geo.inner_l >= s3,
-                "{card_w}: glyph touches the label column"
-            );
-            assert!(
-                geo.bar_x0 - geo.lo_x >= s2 - 1e-9,
-                "{card_w}: lo label touches its bar"
-            );
-            assert!(
-                geo.inner_r - (geo.bar_x1 + s2) >= temp_w - 1e-9,
-                "{card_w}: a {temp_w}px hi label runs past the card gutter"
-            );
-            if geo.show_precip {
+    fn day_row_columns_keep_token_gaps_and_clear_the_glyph() {
+        // Case `day_row_columns_keep_token_gaps_at_every_width`:
+        // Every neighbouring pair in a 7-day row keeps a token-step gap at
+        // every card width the app lays out (HIG §7 "nothing touches"): the
+        // precip dot clears the condition glyph by `s3`, the extras column
+        // clears the precip cluster, the lo label clears its bar by `s2`.
+        {
+            let sp = Spacing::default();
+            let (s2, s3) = (f64::from(sp.s2), f64::from(sp.s3));
+            // Two-digit and three-digit / negative readings ("-12°", "104°").
+            for (card_w, temp_w) in [
+                (372.0_f64, 30.0_f64),
+                (440.0, 30.0),
+                (520.0, 30.0),
+                (604.0, 30.0),
+                (700.0, 30.0),
+                (884.0, 30.0),
+                (1200.0, 30.0),
+                (372.0, 38.0),
+                (604.0, 38.0),
+                (884.0, 42.0),
+            ] {
+                let geo = DayRowGeometry::new(Rect::new(0.0, 0.0, card_w, 42.0), &sp, temp_w);
                 assert!(
-                    geo.precip_left - geo.dot_r - geo.icon_x1 >= s3 - 1e-9,
-                    "{card_w}: precip dot {} lands on the glyph ending at {}",
-                    geo.precip_left,
-                    geo.icon_x1
+                    geo.icon_x0 - geo.inner_l >= s3,
+                    "{card_w}: glyph touches the label column"
                 );
-            }
-            if geo.show_extras {
-                let next = if geo.show_precip {
-                    geo.precip_left - geo.dot_r
-                } else {
-                    geo.lo_x - temp_w
-                };
                 assert!(
-                    next - geo.extras_right >= s3 - 1e-9,
-                    "{card_w}: extras run into the next column"
+                    geo.bar_x0 - geo.lo_x >= s2 - 1e-9,
+                    "{card_w}: lo label touches its bar"
                 );
-                assert!(geo.extras_x - geo.cond_x >= s3);
+                assert!(
+                    geo.inner_r - (geo.bar_x1 + s2) >= temp_w - 1e-9,
+                    "{card_w}: a {temp_w}px hi label runs past the card gutter"
+                );
+                if geo.show_precip {
+                    assert!(
+                        geo.precip_left - geo.dot_r - geo.icon_x1 >= s3 - 1e-9,
+                        "{card_w}: precip dot {} lands on the glyph ending at {}",
+                        geo.precip_left,
+                        geo.icon_x1
+                    );
+                }
+                if geo.show_extras {
+                    let next = if geo.show_precip {
+                        geo.precip_left - geo.dot_r
+                    } else {
+                        geo.lo_x - temp_w
+                    };
+                    assert!(
+                        next - geo.extras_right >= s3 - 1e-9,
+                        "{card_w}: extras run into the next column"
+                    );
+                    assert!(geo.extras_x - geo.cond_x >= s3);
+                }
             }
         }
-    }
-
-    /// The tablet-width card (768 px window) keeps the precipitation column
-    /// instead of dropping it, and keeps it clear of the glyph.
-    #[test]
-    fn tablet_width_keeps_precipitation_clear_of_the_glyph() {
-        let sp = Spacing::default();
-        let geo = DayRowGeometry::new(Rect::new(0.0, 0.0, 372.0, 42.0), &sp, 30.0);
-        assert!(geo.show_precip);
-        assert!(geo.precip_left - geo.dot_r - geo.icon_x1 >= f64::from(sp.s3));
+        // Case `tablet_width_keeps_precipitation_clear_of_the_glyph`:
+        // The tablet-width card (768 px window) keeps the precipitation column
+        // instead of dropping it, and keeps it clear of the glyph.
+        {
+            let sp = Spacing::default();
+            let geo = DayRowGeometry::new(Rect::new(0.0, 0.0, 372.0, 42.0), &sp, 30.0);
+            assert!(geo.show_precip);
+            assert!(geo.precip_left - geo.dot_r - geo.icon_x1 >= f64::from(sp.s3));
+        }
     }
 }
 
@@ -4668,125 +4497,124 @@ mod chip_metrics_tests {
     use ui::tokens::spacing::Spacing;
 
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "1x chips must equal the authored constants exactly"
-    )]
-    fn one_x_rows_keep_the_authored_chip() {
-        let sp = Spacing::default();
-        let m = ChipMetrics::new(&sp, 1.0);
-        assert_eq!(m.chip_h, CHIP_H);
-        assert_eq!(m.icon, CHIP_ICON);
-        assert_eq!(m.pitch(), CHIP_H + f64::from(sp.s2));
-    }
-
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "whole-pixel snapping is exact by construction (`ceil`)"
-    )]
-    fn scaled_rows_land_on_whole_pixels() {
-        let sp = Spacing::default();
-        let m = ChipMetrics::new(&sp, 2.0);
-        assert_eq!(m.chip_h.fract(), 0.0);
-        // Both scaled lines plus the `s3` the painter leaves above and below.
-        assert_eq!(
-            m.chip_h,
-            (m.name_h + m.sub_h + 2.0 * f64::from(sp.s3)).ceil()
-        );
-    }
-
-    /// The detail header is the authored 74px at 1× — not the 76.75 that
-    /// stacking measured lines plus token gaps produced — and a whole pixel
-    /// that holds both scaled lines and their gaps at 2×.
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "1x header must equal the authored constant and 2x must be a whole pixel"
-    )]
-    fn detail_header_is_authored_at_one_x() {
-        let sp = Spacing::default();
-        assert_eq!(detail_header_h(&sp, 1.0), DETAIL_HEADER_H);
-        let two = detail_header_h(&sp, 2.0);
-        assert_eq!(two.fract(), 0.0);
-        assert!(
-            two >= line_h(DETAIL_TITLE_TEXT, 2.0)
-                + f64::from(sp.s1)
-                + line_h(DETAIL_SUBTITLE_TEXT, 2.0)
-                + f64::from(sp.s4)
-        );
-    }
-
-    /// The scrollable body reproduces every authored section height at 1×
-    /// and, at 2×, grows each card on whole pixels with the inner stacks
-    /// still inside their cards; token-sized rows hold their line plus the
-    /// same theme pad the painter leaves.
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "1x sections must equal the authored heights and 2x ones whole pixels exactly"
-    )]
-    fn detail_body_layout_is_authored_at_one_x_and_grows_whole() {
-        let model = crate::sample::sample_model();
-        let snap = model
-            .selected_snapshot()
-            .cloned()
-            .expect("the sample model selects a place with a forecast");
-        let (sp, mx) = (Spacing::default(), Metrics::BASE);
-        let (s2, s3) = (f64::from(sp.s2), f64::from(sp.s3));
-        let one = DetailBodyLayout::measure(800.0, &snap, &sp, &mx, 1.0);
-        assert_eq!(one.hero_h, BODY.hero_h);
-        assert_eq!(one.tile_h, BODY.tile_h);
-        assert_eq!(one.hourly_h, BODY.hourly_h);
-        assert_eq!(one.day_row_h, BODY.day_row_h);
-        assert_eq!(one.days_header_h, f64::from(mx.bar_height));
-        assert_eq!(one.aq_header_h, f64::from(mx.bar_height));
-        assert_eq!(one.aq_hero_h, f64::from(sp.s16));
-        assert_eq!(one.aq_tile_h, BODY.aq_tile_h);
-        assert_eq!(one.hero_cond_dy, BODY.hero_cond_dy);
-        assert_eq!(one.hero_feels_dy, BODY.hero_feels_dy);
-        assert_eq!(one.tile_value_dy, BODY.tile_value_dy);
-        assert_eq!(one.hourly_band_top, f64::from(sp.s8));
-        assert_eq!(one.gap, s3);
-
-        let two = DetailBodyLayout::measure(800.0, &snap, &sp, &mx, 2.0);
-        assert!(two.days_header_h >= line_h(text_base(), 2.0) + s3 + s2);
-        assert!(two.day_row_h >= line_h(BODY.day_label_text, 2.0) + 2.0 * s3);
-        for value in [
-            two.hero_h,
-            two.tile_h,
-            two.hourly_h,
-            two.day_row_h,
-            two.days_header_h,
-            two.aq_header_h,
-            two.aq_hero_h,
-            two.aq_tile_h,
-        ] {
-            assert_eq!(value.fract(), 0.0, "{value} is not a whole pixel");
+    fn rows_and_detail_are_authored_at_1x_and_scale_to_whole_pixels() {
+        // Case `one_x_rows_keep_the_authored_chip`.
+        #[expect(
+            clippy::float_cmp,
+            reason = "1x chips must equal the authored constants exactly"
+        )]
+        {
+            let sp = Spacing::default();
+            let m = ChipMetrics::new(&sp, 1.0);
+            assert_eq!(m.chip_h, CHIP_H);
+            assert_eq!(m.icon, CHIP_ICON);
+            assert_eq!(m.pitch(), CHIP_H + f64::from(sp.s2));
         }
-        assert!(two.hero_h > one.hero_h && two.tile_h > one.tile_h);
-        assert!(two.hourly_h > one.hourly_h && two.day_row_h > one.day_row_h);
-        assert!(two.aq_tile_h > one.aq_tile_h && two.aq_hero_h > one.aq_hero_h);
-        assert!(two.body_h > one.body_h);
-        // The stacked hero lines keep their authored relation and the last
-        // one still ends inside the card.
-        assert!(two.hero_cond_dy > one.hero_cond_dy);
-        assert!(two.hero_feels_dy > two.hero_cond_dy);
-        assert!(two.hero_feels_dy + line_h(BODY.hero_feels_text, 2.0) <= two.hero_h);
-        assert!(two.hourly_band_top > one.hourly_band_top);
-        assert!(two.tile_value_dy > one.tile_value_dy);
-    }
+        // Case `scaled_rows_land_on_whole_pixels`.
+        #[expect(
+            clippy::float_cmp,
+            reason = "whole-pixel snapping is exact by construction (`ceil`)"
+        )]
+        {
+            let sp = Spacing::default();
+            let m = ChipMetrics::new(&sp, 2.0);
+            assert_eq!(m.chip_h.fract(), 0.0);
+            // Both scaled lines plus the `s3` the painter leaves above and below.
+            assert_eq!(
+                m.chip_h,
+                (m.name_h + m.sub_h + 2.0 * f64::from(sp.s3)).ceil()
+            );
+        }
+        // Case `detail_header_is_authored_at_one_x`:
+        // The detail header is the authored 74px at 1× — not the 76.75 that
+        // stacking measured lines plus token gaps produced — and a whole pixel
+        // that holds both scaled lines and their gaps at 2×.
+        #[expect(
+            clippy::float_cmp,
+            reason = "1x header must equal the authored constant and 2x must be a whole pixel"
+        )]
+        {
+            let sp = Spacing::default();
+            assert_eq!(detail_header_h(&sp, 1.0), DETAIL_HEADER_H);
+            let two = detail_header_h(&sp, 2.0);
+            assert_eq!(two.fract(), 0.0);
+            assert!(
+                two >= line_h(DETAIL_TITLE_TEXT, 2.0)
+                    + f64::from(sp.s1)
+                    + line_h(DETAIL_SUBTITLE_TEXT, 2.0)
+                    + f64::from(sp.s4)
+            );
+        }
+        // Case `detail_body_layout_is_authored_at_one_x_and_grows_whole`:
+        // The scrollable body reproduces every authored section height at 1×
+        // and, at 2×, grows each card on whole pixels with the inner stacks
+        // still inside their cards; token-sized rows hold their line plus the
+        // same theme pad the painter leaves.
+        #[expect(
+            clippy::float_cmp,
+            reason = "1x sections must equal the authored heights and 2x ones whole pixels exactly"
+        )]
+        {
+            let model = crate::sample::sample_model();
+            let snap = model
+                .selected_snapshot()
+                .cloned()
+                .expect("the sample model selects a place with a forecast");
+            let (sp, mx) = (Spacing::default(), Metrics::BASE);
+            let (s2, s3) = (f64::from(sp.s2), f64::from(sp.s3));
+            let one = DetailBodyLayout::measure(800.0, &snap, &sp, &mx, 1.0);
+            assert_eq!(one.hero_h, BODY.hero_h);
+            assert_eq!(one.tile_h, BODY.tile_h);
+            assert_eq!(one.hourly_h, BODY.hourly_h);
+            assert_eq!(one.day_row_h, BODY.day_row_h);
+            assert_eq!(one.days_header_h, f64::from(mx.bar_height));
+            assert_eq!(one.aq_header_h, f64::from(mx.bar_height));
+            assert_eq!(one.aq_hero_h, f64::from(sp.s16));
+            assert_eq!(one.aq_tile_h, BODY.aq_tile_h);
+            assert_eq!(one.hero_cond_dy, BODY.hero_cond_dy);
+            assert_eq!(one.hero_feels_dy, BODY.hero_feels_dy);
+            assert_eq!(one.tile_value_dy, BODY.tile_value_dy);
+            assert_eq!(one.hourly_band_top, f64::from(sp.s8));
+            assert_eq!(one.gap, s3);
 
-    #[test]
-    fn scaled_rows_hold_the_name_and_condition_lines() {
-        let sp = Spacing::default();
-        let m = ChipMetrics::new(&sp, 2.0);
-        // Both text lines plus the row padding must fit, and the glyph must
-        // not outgrow the text block it sits beside.
-        assert!(m.chip_h >= m.name_h + m.sub_h + 2.0 * f64::from(sp.s3));
-        assert!(m.chip_h > CHIP_H);
-        assert!(m.icon >= CHIP_ICON && m.icon <= m.chip_h);
-        assert!(m.temp_h <= m.chip_h);
+            let two = DetailBodyLayout::measure(800.0, &snap, &sp, &mx, 2.0);
+            assert!(two.days_header_h >= line_h(text_base(), 2.0) + s3 + s2);
+            assert!(two.day_row_h >= line_h(BODY.day_label_text, 2.0) + 2.0 * s3);
+            for value in [
+                two.hero_h,
+                two.tile_h,
+                two.hourly_h,
+                two.day_row_h,
+                two.days_header_h,
+                two.aq_header_h,
+                two.aq_hero_h,
+                two.aq_tile_h,
+            ] {
+                assert_eq!(value.fract(), 0.0, "{value} is not a whole pixel");
+            }
+            assert!(two.hero_h > one.hero_h && two.tile_h > one.tile_h);
+            assert!(two.hourly_h > one.hourly_h && two.day_row_h > one.day_row_h);
+            assert!(two.aq_tile_h > one.aq_tile_h && two.aq_hero_h > one.aq_hero_h);
+            assert!(two.body_h > one.body_h);
+            // The stacked hero lines keep their authored relation and the last
+            // one still ends inside the card.
+            assert!(two.hero_cond_dy > one.hero_cond_dy);
+            assert!(two.hero_feels_dy > two.hero_cond_dy);
+            assert!(two.hero_feels_dy + line_h(BODY.hero_feels_text, 2.0) <= two.hero_h);
+            assert!(two.hourly_band_top > one.hourly_band_top);
+            assert!(two.tile_value_dy > one.tile_value_dy);
+        }
+        // Case `scaled_rows_hold_the_name_and_condition_lines`.
+        {
+            let sp = Spacing::default();
+            let m = ChipMetrics::new(&sp, 2.0);
+            // Both text lines plus the row padding must fit, and the glyph must
+            // not outgrow the text block it sits beside.
+            assert!(m.chip_h >= m.name_h + m.sub_h + 2.0 * f64::from(sp.s3));
+            assert!(m.chip_h > CHIP_H);
+            assert!(m.icon >= CHIP_ICON && m.icon <= m.chip_h);
+            assert!(m.temp_h <= m.chip_h);
+        }
     }
 }
 
@@ -4797,136 +4625,143 @@ mod helper_tests {
     use crate::units::Units;
 
     #[test]
-    fn sun_arc_fraction_maps_time_to_arc_position() {
-        // The dot the hero renders is driven by this: sunrise → 0 (left
-        // horizon), solar noon → 0.5 (apex), sunset → 1 (right horizon).
-        assert_eq!(sun_arc_fraction("06:00", "06:00", "18:00"), Some(0.0));
-        assert_eq!(sun_arc_fraction("12:00", "06:00", "18:00"), Some(0.5));
-        assert_eq!(sun_arc_fraction("18:00", "06:00", "18:00"), Some(1.0));
-        assert_eq!(sun_arc_fraction("09:00", "06:00", "18:00"), Some(0.25));
+    fn sun_arc_and_day_extras_map_real_values() {
+        // Case `sun_arc_fraction_maps_time_to_arc_position`.
+        {
+            // The dot the hero renders is driven by this: sunrise → 0 (left
+            // horizon), solar noon → 0.5 (apex), sunset → 1 (right horizon).
+            assert_eq!(sun_arc_fraction("06:00", "06:00", "18:00"), Some(0.0));
+            assert_eq!(sun_arc_fraction("12:00", "06:00", "18:00"), Some(0.5));
+            assert_eq!(sun_arc_fraction("18:00", "06:00", "18:00"), Some(1.0));
+            assert_eq!(sun_arc_fraction("09:00", "06:00", "18:00"), Some(0.25));
+        }
+        // Case `sun_arc_fraction_clamps_outside_daylight`.
+        {
+            // Before sunrise pins to the left horizon, after sunset to the right.
+            assert_eq!(sun_arc_fraction("03:00", "06:00", "18:00"), Some(0.0));
+            assert_eq!(sun_arc_fraction("23:30", "06:00", "18:00"), Some(1.0));
+        }
+        // Case `sun_arc_fraction_rejects_unusable_input`.
+        {
+            assert_eq!(sun_arc_fraction("--:--", "06:00", "18:00"), None);
+            assert_eq!(
+                sun_arc_fraction("12:00", "18:00", "06:00"),
+                None,
+                "sunset before sunrise"
+            );
+            assert_eq!(
+                sun_arc_fraction("12:00", "12:00", "12:00"),
+                None,
+                "zero-length day"
+            );
+            assert_eq!(hhmm_to_minutes("25:00"), None);
+            assert_eq!(hhmm_to_minutes("07:30"), Some(450));
+        }
+        // Case `day_extra_labels_render_real_uv_and_wind_in_display_units`.
+        {
+            // The values the 7-day rows now surface come straight from the parsed
+            // per-day fields (previously stored but never rendered).
+            let m = crate::sample::sample_model();
+            let snap = m.selected_snapshot().unwrap(); // San Francisco, metric source
+            let day0 = &snap.daily[0];
+            assert!(day0.wind_max > 0.0 && day0.uv_index_max > 0.0);
+            let (uv, wind) = day_extra_labels(day0, snap, Units::METRIC);
+            assert_eq!(uv, "UV 6");
+            assert_eq!(wind, "24 km/h");
+            // Imperial converts the wind (24 km/h ≈ 15 mph); the UV index is unitless.
+            let (uv_i, wind_i) = day_extra_labels(day0, snap, Units::IMPERIAL);
+            assert_eq!(uv_i, "UV 6");
+            assert_eq!(wind_i, "15 mph");
+        }
     }
 
     #[test]
-    fn sun_arc_fraction_clamps_outside_daylight() {
-        // Before sunrise pins to the left horizon, after sunset to the right.
-        assert_eq!(sun_arc_fraction("03:00", "06:00", "18:00"), Some(0.0));
-        assert_eq!(sun_arc_fraction("23:30", "06:00", "18:00"), Some(1.0));
-    }
-
-    #[test]
-    fn sun_arc_fraction_rejects_unusable_input() {
-        assert_eq!(sun_arc_fraction("--:--", "06:00", "18:00"), None);
-        assert_eq!(
-            sun_arc_fraction("12:00", "18:00", "06:00"),
-            None,
-            "sunset before sunrise"
-        );
-        assert_eq!(
-            sun_arc_fraction("12:00", "12:00", "12:00"),
-            None,
-            "zero-length day"
-        );
-        assert_eq!(hhmm_to_minutes("25:00"), None);
-        assert_eq!(hhmm_to_minutes("07:30"), Some(450));
-    }
-
-    #[test]
-    fn day_extra_labels_render_real_uv_and_wind_in_display_units() {
-        // The values the 7-day rows now surface come straight from the parsed
-        // per-day fields (previously stored but never rendered).
-        let m = crate::sample::sample_model();
-        let snap = m.selected_snapshot().unwrap(); // San Francisco, metric source
-        let day0 = &snap.daily[0];
-        assert!(day0.wind_max > 0.0 && day0.uv_index_max > 0.0);
-        let (uv, wind) = day_extra_labels(day0, snap, Units::METRIC);
-        assert_eq!(uv, "UV 6");
-        assert_eq!(wind, "24 km/h");
-        // Imperial converts the wind (24 km/h ≈ 15 mph); the UV index is unitless.
-        let (uv_i, wind_i) = day_extra_labels(day0, snap, Units::IMPERIAL);
-        assert_eq!(uv_i, "UV 6");
-        assert_eq!(wind_i, "15 mph");
-    }
-
-    #[test]
-    fn geocode_failure_does_not_complete_a_forecast_refresh() {
-        let model = crate::sample::sample_model();
-        let mut core = Core::new(model, Units::METRIC);
-        core.refresh_all();
-        let before = core.inflight;
-        core.apply_response(Response::Error {
-            kind: RequestKind::Geocode,
-            message: "network unreachable".into(),
-        });
-        assert_eq!(
-            core.inflight, before,
-            "a geocode error must not settle a separate forecast request"
-        );
-        assert!(
-            !core.status.starts_with("Couldn't"),
-            "the forecast status stays intact while only search failed"
-        );
-    }
-
-    #[test]
-    fn accessible_city_search_selects_a_result_and_queues_its_forecast() {
-        use super::*;
-        use std::{cell::RefCell, rc::Rc};
-        use ui::a11y::Action;
-        let mut core = Core::new(WeatherModel::default(), Units::METRIC);
-        let results = crate::sample::sample_model().locations;
-        let chosen = results[1].clone();
-        core.geocode_cache.insert("city".into(), results);
-        let core = Rc::new(RefCell::new(core));
-        let mut pane = crate::panes::OverviewPane::new(core.clone());
-        let mut state = AutoCommit::new();
-        let search = pane.accessibility().unwrap().children.remove(0);
-        assert!(pane.perform_semantic_action(
-            search.action_target.as_deref().unwrap(),
-            &Action::SetValue("city".into()),
-            &mut state,
-            &automerge::ROOT,
-        ));
-        assert_eq!(core.borrow().search_query, "city");
-        assert!(core.borrow().pending_query_at.is_some());
-        let deadline = core.borrow().search_deadline().unwrap();
-        assert_eq!(core.borrow().search_deadline(), Some(deadline));
-        let search = pane.accessibility().unwrap().children.remove(0);
-        let row = &search.children[1];
-        assert_eq!(row.name.as_deref(), Some(result_label(&chosen).as_str()));
-        assert!(pane.perform_semantic_action(
-            row.action_target.as_deref().unwrap(),
-            &Action::Activate,
-            &mut state,
-            &automerge::ROOT,
-        ));
-        let mut core = core.borrow_mut();
-        assert_eq!(core.model.selected_location().unwrap().id, chosen.id);
-        assert!(
-            core.take_outbox()
-                .iter()
-                .any(|request| matches!(request, Request::Forecast { .. }))
-        );
-        assert!(!core.search.is_editing());
-        assert!(core.search_query.is_empty());
-        assert!(core.search_deadline().is_none());
-    }
-
-    #[test]
-    fn weather_accessibility_summarises_saved_places_and_forecast() {
-        let model = crate::sample::sample_model();
-        let core = Core::new(model, Units::METRIC);
-        let overview = core.overview_accessibility(vello::kurbo::Rect::new(0.0, 0.0, 300.0, 700.0));
-        assert_eq!(overview.role, ui::a11y::Role::Group);
-        assert_eq!(overview.children[0].role, ui::a11y::Role::TextInput);
-        assert_eq!(overview.children[0].name.as_deref(), Some("Search city…"));
-        let places = &overview.children[1];
-        assert_eq!(places.role, ui::a11y::Role::List);
-        assert_eq!(places.children.len(), 4);
-        assert!(places.children[0].state.selected);
-        assert!(places.children.iter().all(|item| item.state.focusable));
-        let detail = core.detail_accessibility(vello::kurbo::Rect::new(300.0, 0.0, 1200.0, 700.0));
-        assert_eq!(detail.name.as_deref(), Some("San Francisco forecast"));
-        assert!(detail.description.unwrap().contains("hourly readings"));
+    fn core_search_and_accessibility_drive_real_fetches() {
+        // Case `geocode_failure_does_not_complete_a_forecast_refresh`.
+        {
+            let model = crate::sample::sample_model();
+            let mut core = Core::new(model, Units::METRIC);
+            core.refresh_all();
+            let before = core.inflight;
+            core.apply_response(Response::Error {
+                kind: RequestKind::Geocode,
+                message: "network unreachable".into(),
+            });
+            assert_eq!(
+                core.inflight, before,
+                "a geocode error must not settle a separate forecast request"
+            );
+            assert!(
+                !core.status.starts_with("Couldn't"),
+                "the forecast status stays intact while only search failed"
+            );
+        }
+        // Case `accessible_city_search_selects_a_result_and_queues_its_forecast`.
+        {
+            use super::*;
+            use std::{cell::RefCell, rc::Rc};
+            use ui::a11y::Action;
+            let mut core = Core::new(WeatherModel::default(), Units::METRIC);
+            let results = crate::sample::sample_model().locations;
+            let chosen = results[1].clone();
+            core.geocode_cache.insert("city".into(), results);
+            let core = Rc::new(RefCell::new(core));
+            let mut pane = crate::panes::OverviewPane::new(core.clone());
+            let mut state = AutoCommit::new();
+            let search = pane.accessibility().unwrap().children.remove(0);
+            assert!(pane.perform_semantic_action(
+                search.action_target.as_deref().unwrap(),
+                &Action::SetValue("city".into()),
+                &mut state,
+                &automerge::ROOT,
+            ));
+            assert_eq!(core.borrow().search_query, "city");
+            assert!(core.borrow().pending_query_at.is_some());
+            let deadline = core.borrow().search_deadline().unwrap();
+            assert_eq!(core.borrow().search_deadline(), Some(deadline));
+            let search = pane.accessibility().unwrap().children.remove(0);
+            let row = &search.children[1];
+            assert_eq!(row.name.as_deref(), Some(result_label(&chosen).as_str()));
+            assert!(pane.perform_semantic_action(
+                row.action_target.as_deref().unwrap(),
+                &Action::Activate,
+                &mut state,
+                &automerge::ROOT,
+            ));
+            let mut core = core.borrow_mut();
+            assert_eq!(core.model.selected_location().unwrap().id, chosen.id);
+            assert!(
+                core.take_outbox()
+                    .iter()
+                    .any(|request| matches!(request, Request::Forecast { .. }))
+            );
+            assert!(!core.search.is_editing());
+            assert!(core.search_query.is_empty());
+            assert!(core.search_deadline().is_none());
+        }
+        // Case `weather_accessibility_summarises_saved_places_and_forecast`.
+        {
+            let model = crate::sample::sample_model();
+            let core = Core::new(model, Units::METRIC);
+            let overview =
+                core.overview_accessibility(vello::kurbo::Rect::new(0.0, 0.0, 300.0, 700.0));
+            assert_eq!(overview.role, ui::a11y::Role::Group);
+            assert_eq!(overview.children[0].role, ui::a11y::Role::TextInput);
+            assert_eq!(overview.children[0].name.as_deref(), Some("Search city…"));
+            let places = &overview.children[1];
+            assert_eq!(places.role, ui::a11y::Role::List);
+            assert_eq!(places.children.len(), 4);
+            assert!(places.children[0].state.selected);
+            assert!(places.children.iter().all(|item| item.state.focusable));
+            assert!(
+                overview.children.iter().all(|child| child.key.is_some()),
+                "search and places are siblings, so both carry stable keys"
+            );
+            let detail =
+                core.detail_accessibility(vello::kurbo::Rect::new(300.0, 0.0, 1200.0, 700.0));
+            assert_eq!(detail.name.as_deref(), Some("San Francisco forecast"));
+            assert!(detail.description.unwrap().contains("hourly readings"));
+        }
     }
 }
 
@@ -4935,101 +4770,103 @@ mod history_regressions {
     use super::*;
 
     #[test]
-    fn history_restore_fences_gestures_queue_search_and_changed_coordinate_responses() {
-        let mut core = Core::new(crate::sample::sample_model(), Units::IMPERIAL);
-        let loc = core.model.locations[0].clone();
-        let old_snapshot = core.model.snapshots.get(&loc.id).unwrap().clone();
-        core.refresh_all();
-        let requests = core.take_tracked_outbox();
-        let (ticket, generation) = match &requests[0] {
-            Request::Tracked {
-                ticket, generation, ..
-            } => (*ticket, *generation),
-            _ => panic!("tracked"),
-        };
-        core.refresh_all();
-        core.seed_drag();
-        core.seed_search_highlighted("unsaved query", crate::sample::sample_geocode_results());
-        let seq = core.search_seq;
-        core.queue_durable_action(WeatherAction::SetLocationOrder {
-            ids: vec![loc.id.to_string()],
-        });
-        let dispatched_count = core.inflight - core.outbox.len();
-        let mut restored = core.model.clone();
-        restored.locations[0].latitude += 1.;
-        restored.snapshots.clear();
-        restored.air_quality.clear();
-        core.adopt_saved_places(&mut restored);
-        assert_eq!(core.search_query(), "unsaved query");
-        assert!(core.search_results.is_empty());
-        assert!(core.search_seq > seq);
-        assert!(core.press.is_none() && core.menu.is_none());
-        assert!(!core.reorder.is_active());
-        assert!(core.take_durable_actions().is_empty());
-        assert!(core.take_outbox().is_empty());
-        assert_eq!(core.inflight, dispatched_count);
-        assert_eq!(core.units, Units::IMPERIAL);
-        assert!(!core.model.snapshots.contains_key(&loc.id));
-        core.apply_response(Response::Tracked {
-            ticket,
-            generation,
-            response: Box::new(Response::Forecast(old_snapshot.clone())),
-        });
-        assert!(!core.model.snapshots.contains_key(&loc.id));
-        assert_eq!(core.inflight, dispatched_count - 1);
-        core.apply_response(Response::Tracked {
-            ticket,
-            generation,
-            response: Box::new(Response::Forecast(old_snapshot.clone())),
-        });
-        assert_eq!(
-            core.inflight,
-            dispatched_count - 1,
-            "duplicate settlement ignored"
-        );
-        let mut empty = WeatherModel::default();
-        core.adopt_saved_places(&mut empty);
-        let mut recreated = WeatherModel::default();
-        recreated.locations.push(loc.clone());
-        core.adopt_saved_places(&mut recreated);
-        let (ticket, generation) = match &requests[2] {
-            Request::Tracked {
-                ticket, generation, ..
-            } => (*ticket, *generation),
-            _ => panic!("tracked"),
-        };
-        core.apply_response(Response::Tracked {
-            ticket,
-            generation,
-            response: Box::new(Response::Forecast(old_snapshot)),
-        });
-        assert!(core.model.snapshots.is_empty());
-        let next = SavedLocation::new("Next", "", "Country", "CC", 1., 2., "auto");
-        core.seed_search_highlighted("Next", vec![next.clone()]);
-        assert!(core.commit_search_pick(&result_value(&next)));
-        assert!(core.open_location(loc.id));
-        assert!(!core.take_durable_actions().is_empty());
-        assert!(!core.take_outbox().is_empty());
-    }
-
-    #[test]
-    fn history_stale_autocomplete_acceptance_cannot_select_new_unrelated_results() {
-        let mut core = Core::new(WeatherModel::default(), Units::METRIC);
-        let old = SavedLocation::new("Old", "", "", "", 1., 2., "auto");
-        let new = SavedLocation::new("New", "", "", "", 3., 4., "auto");
-        core.seed_search_highlighted("New", vec![new]);
-        assert!(!core.commit_search_pick(&result_value(&old)));
-        assert!(core.take_durable_actions().is_empty());
-    }
-    #[test]
-    fn history_deleted_location_rejects_delayed_provider_snapshot() {
-        let mut model = crate::sample::sample_model();
-        let snapshot = model.snapshots.values().next().unwrap().clone();
-        model.locations.clear();
-        model.snapshots.clear();
-        let mut core = Core::new(model, Units::METRIC);
-        core.apply_response(Response::Forecast(snapshot));
-        assert!(core.model.snapshots.is_empty());
+    fn history_restore_fences_stale_gestures_searches_and_snapshots() {
+        // Case `history_restore_fences_gestures_queue_search_and_changed_coordinate_responses`.
+        {
+            let mut core = Core::new(crate::sample::sample_model(), Units::IMPERIAL);
+            let loc = core.model.locations[0].clone();
+            let old_snapshot = core.model.snapshots.get(&loc.id).unwrap().clone();
+            core.refresh_all();
+            let requests = core.take_tracked_outbox();
+            let (ticket, generation) = match &requests[0] {
+                Request::Tracked {
+                    ticket, generation, ..
+                } => (*ticket, *generation),
+                _ => panic!("tracked"),
+            };
+            core.refresh_all();
+            core.seed_drag();
+            core.seed_search_highlighted("unsaved query", crate::sample::sample_geocode_results());
+            let seq = core.search_seq;
+            core.queue_durable_action(WeatherAction::SetLocationOrder {
+                ids: vec![loc.id.to_string()],
+            });
+            let dispatched_count = core.inflight - core.outbox.len();
+            let mut restored = core.model.clone();
+            restored.locations[0].latitude += 1.;
+            restored.snapshots.clear();
+            restored.air_quality.clear();
+            core.adopt_saved_places(&mut restored);
+            assert_eq!(core.search_query(), "unsaved query");
+            assert!(core.search_results.is_empty());
+            assert!(core.search_seq > seq);
+            assert!(core.press.is_none() && core.menu.is_none());
+            assert!(!core.reorder.is_active());
+            assert!(core.take_durable_actions().is_empty());
+            assert!(core.take_outbox().is_empty());
+            assert_eq!(core.inflight, dispatched_count);
+            assert_eq!(core.units, Units::IMPERIAL);
+            assert!(!core.model.snapshots.contains_key(&loc.id));
+            core.apply_response(Response::Tracked {
+                ticket,
+                generation,
+                response: Box::new(Response::Forecast(old_snapshot.clone())),
+            });
+            assert!(!core.model.snapshots.contains_key(&loc.id));
+            assert_eq!(core.inflight, dispatched_count - 1);
+            core.apply_response(Response::Tracked {
+                ticket,
+                generation,
+                response: Box::new(Response::Forecast(old_snapshot.clone())),
+            });
+            assert_eq!(
+                core.inflight,
+                dispatched_count - 1,
+                "duplicate settlement ignored"
+            );
+            let mut empty = WeatherModel::default();
+            core.adopt_saved_places(&mut empty);
+            let mut recreated = WeatherModel::default();
+            recreated.locations.push(loc.clone());
+            core.adopt_saved_places(&mut recreated);
+            let (ticket, generation) = match &requests[2] {
+                Request::Tracked {
+                    ticket, generation, ..
+                } => (*ticket, *generation),
+                _ => panic!("tracked"),
+            };
+            core.apply_response(Response::Tracked {
+                ticket,
+                generation,
+                response: Box::new(Response::Forecast(old_snapshot)),
+            });
+            assert!(core.model.snapshots.is_empty());
+            let next = SavedLocation::new("Next", "", "Country", "CC", 1., 2., "auto");
+            core.seed_search_highlighted("Next", vec![next.clone()]);
+            assert!(core.commit_search_pick(&result_value(&next)));
+            assert!(core.open_location(loc.id));
+            assert!(!core.take_durable_actions().is_empty());
+            assert!(!core.take_outbox().is_empty());
+        }
+        // Case `history_stale_autocomplete_acceptance_cannot_select_new_unrelated_results`.
+        {
+            let mut core = Core::new(WeatherModel::default(), Units::METRIC);
+            let old = SavedLocation::new("Old", "", "", "", 1., 2., "auto");
+            let new = SavedLocation::new("New", "", "", "", 3., 4., "auto");
+            core.seed_search_highlighted("New", vec![new]);
+            assert!(!core.commit_search_pick(&result_value(&old)));
+            assert!(core.take_durable_actions().is_empty());
+        }
+        // Case `history_deleted_location_rejects_delayed_provider_snapshot`.
+        {
+            let mut model = crate::sample::sample_model();
+            let snapshot = model.snapshots.values().next().unwrap().clone();
+            model.locations.clear();
+            model.snapshots.clear();
+            let mut core = Core::new(model, Units::METRIC);
+            core.apply_response(Response::Forecast(snapshot));
+            assert!(core.model.snapshots.is_empty());
+        }
     }
 }
 

@@ -11,17 +11,37 @@
 //! only — a `--shots` render must produce the same pixels everywhere,
 //! so with no poller the readings stay `None`, rendered as *nothing*.
 
+use std::io::{BufRead, BufReader};
+use std::os::unix::process::CommandExt as _;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
+
+use crate::shell::i18n::{t, t_args};
 
 use os_actions::{LinkKind, LinkStatus, VolumeState};
 use tilo_power_mgmt::{BatterySnapshot, BatteryState};
 
-/// Fast enough that plugging in a charger shows up while the user is
-/// still thinking about it, slow enough that two `nmcli` calls a
-/// minute is the whole cost.
-const POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// When `nmcli monitor` is silent, still refresh battery, volume and
+/// missed events. Thirty seconds is slow enough that idle does not fork
+/// `nmcli`/`wpctl` twice a second, and fast enough that a charger still
+/// shows up while the user is looking at the tray.
+const FALLBACK_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Change monitors that may wake the status poller.
+///
+/// `pw-dump --monitor` is not one of them. `PipeWire` reprints the graph on
+/// client and parameter churn, so a line-oriented watch never goes quiet:
+/// each line forked `wpctl`, and that client kept the dump, `WirePlumber` and
+/// `PipeWire` awake. The shell's reader burned CPU on that stream while the
+/// frame loop stayed asleep. Volume still arrives on the media-key path and
+/// on [`FALLBACK_INTERVAL`]. The privacy worker owns the only `pw-dump
+/// --monitor`, and it exits once the device graph is unchanged.
+pub(crate) fn status_change_monitors() -> &'static [&'static [&'static str]] {
+    &[&["nmcli", "monitor"]]
+}
 
 /// Every field is `Option` because "not read yet" and "this machine
 /// has none" are both real and both drawn as absence, not a zero.
@@ -32,9 +52,9 @@ pub struct SystemStatus {
     pub link: Option<LinkStatus>,
     pub volume: Option<VolumeState>,
     /// Active capture streams, attributed from `PipeWire`'s server security
-    /// PID to the kernel executable. Polled independently at one-second
-    /// cadence so a privacy indicator appears promptly without running
-    /// `NetworkManager` queries every second.
+    /// PID to the kernel executable. The monitor runs only while the device
+    /// graph is still changing; an idle desktop does not keep `pw-dump`
+    /// running, and it is not restarted until a frame is requested.
     pub media: Vec<os_actions::ActiveMediaUse>,
 }
 
@@ -83,35 +103,36 @@ impl SystemStatus {
     pub fn summary(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         match &self.link {
-            Some(l) if l.kind == LinkKind::Wired => parts.push(
-                l.name
-                    .clone()
-                    .map_or_else(|| "Wired".to_string(), |n| format!("Wired: {n}")),
-            ),
-            Some(l) if l.kind == LinkKind::Wifi => parts.push(
-                l.name
-                    .clone()
-                    .map_or_else(|| "Wi-Fi".to_string(), |n| format!("Wi-Fi: {n}")),
-            ),
-            Some(_) => parts.push("Offline".to_string()),
+            Some(l) if l.kind == LinkKind::Wired => parts.push(l.name.clone().map_or_else(
+                || t("status-wired"),
+                |n| t_args("status-wired-named", &[("name", n.into())]),
+            )),
+            Some(l) if l.kind == LinkKind::Wifi => parts.push(l.name.clone().map_or_else(
+                || t("status-wifi"),
+                |n| t_args("status-wifi-named", &[("name", n.into())]),
+            )),
+            Some(_) => parts.push(t("status-offline")),
             None => {}
         }
         if let Some(v) = self.volume {
             parts.push(if v.muted {
-                "Muted".to_string()
+                t("status-muted")
             } else {
-                format!("Volume {}%", volume_percent(v.level))
+                t_args(
+                    "status-volume",
+                    &[("percent", volume_percent(v.level).into())],
+                )
             });
         }
         if let Some(pct) = self.battery_percent() {
             parts.push(if self.battery_is_charging() {
-                format!("Battery {pct}%, charging")
+                t_args("status-battery-charging", &[("percent", pct.into())])
             } else {
-                format!("Battery {pct}%")
+                t_args("status-battery", &[("percent", pct.into())])
             });
         }
         if parts.is_empty() {
-            "System status".to_string()
+            t("status-summary-empty")
         } else {
             parts.join(" · ")
         }
@@ -126,6 +147,16 @@ pub struct StatusBridge {
     inner: Arc<Mutex<SystemStatus>>,
     /// So a second `spawn` is a no-op, not a second thread racing the first.
     polling: Arc<AtomicBool>,
+    /// Set on the rising edge of a requested frame. The privacy worker
+    /// parks on it instead of arming its own timer.
+    frame_interest: Arc<FrameInterest>,
+}
+
+#[derive(Debug, Default)]
+struct FrameInterest {
+    requested: AtomicBool,
+    lock: Mutex<()>,
+    cv: Condvar,
 }
 
 impl StatusBridge {
@@ -169,13 +200,20 @@ impl StatusBridge {
         if self.polling.swap(true, Ordering::SeqCst) {
             return;
         }
+        let (wake_tx, wake_rx) = mpsc::channel();
+        for argv in status_change_monitors() {
+            spawn_change_monitor("tilo-nm-watch", argv, wake_tx.clone());
+        }
+        drop(wake_tx);
         let bridge = self.clone();
         let spawned = std::thread::Builder::new()
             .name("tilo-status".to_string())
             .spawn(move || {
                 loop {
                     bridge.set(read_once());
-                    std::thread::sleep(POLL_INTERVAL);
+                    if wake_rx.recv_timeout(FALLBACK_INTERVAL).is_ok() {
+                        while wake_rx.recv_timeout(Duration::from_millis(50)).is_ok() {}
+                    }
                 }
             });
         if let Err(e) = spawned {
@@ -189,13 +227,120 @@ impl StatusBridge {
             .spawn(move || {
                 loop {
                     let bridge = media_bridge.clone();
+                    // Returns when the device graph is unchanged (the
+                    // `pw-dump --monitor` process is gone) or when PipeWire
+                    // exits. Frames requested while that watch was running
+                    // already had a chance to publish; they must not restart
+                    // the monitor by themselves.
                     let _ = os_actions::monitor_media_usage(|media| bridge.set_media(media));
-                    // PipeWire may restart during login or an update. Rebind
-                    // without spinning and without ending the shell session.
-                    std::thread::sleep(Duration::from_secs(2));
+                    bridge.acknowledge_frame_requests();
+                    let frame_requested = bridge.frame_is_requested();
+                    if privacy_watch_followup(frame_requested) == PrivacyWatchFollowup::Park {
+                        bridge.wait_for_frame_request();
+                    }
                 }
             });
     }
+
+    /// The compositor calls this on the edge from an idle loop to a
+    /// requested frame. It does not start a timer.
+    pub fn notify_frame_requested(&self) {
+        self.frame_interest.requested.store(true, Ordering::Release);
+        self.frame_interest.cv.notify_one();
+    }
+
+    fn frame_is_requested(&self) -> bool {
+        self.frame_interest.requested.load(Ordering::Acquire)
+    }
+
+    fn acknowledge_frame_requests(&self) {
+        self.frame_interest
+            .requested
+            .store(false, Ordering::Release);
+    }
+
+    fn wait_for_frame_request(&self) {
+        let mut guard = self
+            .frame_interest
+            .lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !self.frame_interest.requested.swap(false, Ordering::AcqRel) {
+            guard = self
+                .frame_interest
+                .cv
+                .wait(guard)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        drop(guard);
+    }
+}
+
+/// What the privacy worker does after `pw-dump --monitor` has stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PrivacyWatchFollowup {
+    /// A frame was requested after the graph settled. Look once more.
+    Watch,
+    /// No frame is requested. Park. Do not arm a timer.
+    Park,
+}
+
+/// Recurring privacy work is scheduled only when a frame is requested.
+/// An idle compositor has nothing to draw the indicator onto, and a timer
+/// here is what kept `pw-dump` in the session after the device graph was still.
+pub(crate) fn privacy_watch_followup(frame_requested: bool) -> PrivacyWatchFollowup {
+    if frame_requested {
+        PrivacyWatchFollowup::Watch
+    } else {
+        PrivacyWatchFollowup::Park
+    }
+}
+
+/// Rising edge of "a frame is requested". Holding the request across later
+/// frames must not schedule another watch per frame.
+pub(crate) fn privacy_frame_interest(was_requested: bool, frame_requested: bool) -> (bool, bool) {
+    (frame_requested, frame_requested && !was_requested)
+}
+
+fn spawn_change_monitor(name: &'static str, argv: &'static [&'static str], tx: Sender<()>) {
+    let Some((program, rest)) = argv.split_first() else {
+        return;
+    };
+    let _ = std::thread::Builder::new()
+        .name(name.to_string())
+        .spawn(move || {
+            loop {
+                if monitor_until_exit(program, rest, &tx).is_err() {
+                    std::thread::sleep(FALLBACK_INTERVAL);
+                }
+            }
+        });
+}
+
+fn monitor_until_exit(program: &str, args: &[&str], tx: &Sender<()>) -> Result<(), ()> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|_| ())?;
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        return Err(());
+    };
+    for line in BufReader::new(stdout).lines() {
+        if line.is_err() {
+            break;
+        }
+        if tx.send(()).is_err() {
+            break;
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    Err(())
 }
 
 /// Public so a diagnostic or a test can take a reading without owning a poller.
@@ -234,140 +379,205 @@ mod tests {
     }
 
     #[test]
-    fn an_unread_status_reports_nothing_rather_than_a_default() {
-        let s = SystemStatus::default();
-        assert_eq!(s.battery_percent(), None);
-        assert!(!s.battery_is_low());
-        assert!(!s.audio_is_silent(), "unknown volume is not silence");
-        assert_eq!(s.summary(), "System status");
+    fn battery_status_reports_only_real_low_or_critical_charge() {
+        // Phase `an_unread_status_reports_nothing_rather_than_a_default`.
+        {
+            let s = SystemStatus::default();
+            assert_eq!(s.battery_percent(), None);
+            assert!(!s.battery_is_low());
+            assert!(!s.audio_is_silent(), "unknown volume is not silence");
+            assert_eq!(s.summary(), "System status");
+        }
+
+        // Phase `a_machine_with_no_battery_draws_no_battery`.
+        {
+            let s = SystemStatus {
+                battery: Some(BatterySnapshot::absent()),
+                ..Default::default()
+            };
+            assert_eq!(
+                s.battery_percent(),
+                None,
+                "absent is not 100% — a desktop shows no gauge at all"
+            );
+        }
+
+        // Phase `low_is_only_low_while_discharging`.
+        {
+            let draining = SystemStatus {
+                battery: Some(battery(12, BatteryState::Discharging)),
+                ..Default::default()
+            };
+            assert!(draining.battery_is_low());
+            assert!(!draining.battery_is_critical());
+
+            let filling = SystemStatus {
+                battery: Some(battery(12, BatteryState::Charging)),
+                ..Default::default()
+            };
+            assert!(
+                !filling.battery_is_low(),
+                "a battery that is filling is not a warning, however empty"
+            );
+            assert!(filling.battery_is_charging());
+        }
+
+        // Phase `critical_is_also_low`.
+        {
+            let s = SystemStatus {
+                battery: Some(battery(3, BatteryState::Discharging)),
+                ..Default::default()
+            };
+            assert!(s.battery_is_critical());
+            assert!(s.battery_is_low(), "critical never skips the low styling");
+        }
     }
 
     #[test]
-    fn a_machine_with_no_battery_draws_no_battery() {
-        let s = SystemStatus {
-            battery: Some(BatterySnapshot::absent()),
-            ..Default::default()
-        };
-        assert_eq!(
-            s.battery_percent(),
-            None,
-            "absent is not 100% — a desktop shows no gauge at all"
-        );
-    }
+    fn volume_and_network_summaries_read_truthfully() {
+        // Phase `zero_volume_reads_as_silent_just_like_mute`.
+        {
+            let muted = SystemStatus {
+                volume: Some(VolumeState {
+                    level: 0.6,
+                    muted: true,
+                }),
+                ..Default::default()
+            };
+            let zeroed = SystemStatus {
+                volume: Some(VolumeState {
+                    level: 0.0,
+                    muted: false,
+                }),
+                ..Default::default()
+            };
+            assert!(muted.audio_is_silent());
+            assert!(zeroed.audio_is_silent());
+        }
 
-    #[test]
-    fn low_is_only_low_while_discharging() {
-        let draining = SystemStatus {
-            battery: Some(battery(12, BatteryState::Discharging)),
-            ..Default::default()
-        };
-        assert!(draining.battery_is_low());
-        assert!(!draining.battery_is_critical());
+        // Phase `summary_names_the_connection_and_the_charge`.
+        {
+            let s = SystemStatus {
+                battery: Some(battery(64, BatteryState::Charging)),
+                link: Some(LinkStatus {
+                    kind: LinkKind::Wifi,
+                    name: Some("Cafe WiFi".into()),
+                    signal: 3,
+                }),
+                volume: Some(VolumeState {
+                    level: 0.35,
+                    muted: false,
+                }),
+                media: Vec::new(),
+            };
+            assert_eq!(
+                s.summary(),
+                "Wi-Fi: Cafe WiFi · Volume 35% · Battery 64%, charging"
+            );
+        }
 
-        let filling = SystemStatus {
-            battery: Some(battery(12, BatteryState::Charging)),
-            ..Default::default()
-        };
-        assert!(
-            !filling.battery_is_low(),
-            "a battery that is filling is not a warning, however empty"
-        );
-        assert!(filling.battery_is_charging());
-    }
+        // Phase `a_wired_link_has_no_bars`.
+        {
+            let wired = LinkStatus {
+                kind: LinkKind::Wired,
+                name: Some("eth0".into()),
+                signal: 4,
+            };
+            assert_eq!(link_bars(&wired), 0);
+            assert_eq!(link_bars(&LinkStatus::offline()), 0);
+        }
 
-    #[test]
-    fn critical_is_also_low() {
-        let s = SystemStatus {
-            battery: Some(battery(3, BatteryState::Discharging)),
-            ..Default::default()
-        };
-        assert!(s.battery_is_critical());
-        assert!(s.battery_is_low(), "critical never skips the low styling");
-    }
-
-    #[test]
-    fn zero_volume_reads_as_silent_just_like_mute() {
-        let muted = SystemStatus {
-            volume: Some(VolumeState {
-                level: 0.6,
-                muted: true,
-            }),
-            ..Default::default()
-        };
-        let zeroed = SystemStatus {
-            volume: Some(VolumeState {
-                level: 0.0,
-                muted: false,
-            }),
-            ..Default::default()
-        };
-        assert!(muted.audio_is_silent());
-        assert!(zeroed.audio_is_silent());
-    }
-
-    #[test]
-    fn summary_names_the_connection_and_the_charge() {
-        let s = SystemStatus {
-            battery: Some(battery(64, BatteryState::Charging)),
-            link: Some(LinkStatus {
+        // Phase `a_connected_radio_always_shows_at_least_one_bar`.
+        {
+            let weak = LinkStatus {
                 kind: LinkKind::Wifi,
-                name: Some("Cafe WiFi".into()),
-                signal: 3,
-            }),
-            volume: Some(VolumeState {
-                level: 0.35,
+                name: Some("Far".into()),
+                signal: 0,
+            };
+            assert_eq!(
+                link_bars(&weak),
+                1,
+                "connected-but-weak must not render identically to offline"
+            );
+        }
+    }
+
+    #[test]
+    fn status_bridge_publishes_volume_immediately_and_polls_only_when_asked() {
+        // Phase `the_bridge_publishes_a_volume_without_waiting_for_a_poll`.
+        {
+            let b = StatusBridge::new();
+            assert_eq!(b.snapshot().volume, None);
+            b.set_volume(VolumeState {
+                level: 0.8,
                 muted: false,
-            }),
-            media: Vec::new(),
-        };
-        assert_eq!(
-            s.summary(),
-            "Wi-Fi: Cafe WiFi · Volume 35% · Battery 64%, charging"
-        );
+            });
+            assert!((b.snapshot().volume.unwrap().level - 0.8).abs() < f32::EPSILON);
+        }
+
+        // Phase `a_bridge_starts_no_poller_until_asked`.
+        {
+            let b = StatusBridge::new();
+            assert!(
+                !b.is_polling(),
+                "a screenshot render must not depend on the host's hardware"
+            );
+        }
     }
 
     #[test]
-    fn a_wired_link_has_no_bars() {
-        let wired = LinkStatus {
-            kind: LinkKind::Wired,
-            name: Some("eth0".into()),
-            signal: 4,
-        };
-        assert_eq!(link_bars(&wired), 0);
-        assert_eq!(link_bars(&LinkStatus::offline()), 0);
-    }
-
-    #[test]
-    fn a_connected_radio_always_shows_at_least_one_bar() {
-        let weak = LinkStatus {
-            kind: LinkKind::Wifi,
-            name: Some("Far".into()),
-            signal: 0,
-        };
-        assert_eq!(
-            link_bars(&weak),
-            1,
-            "connected-but-weak must not render identically to offline"
-        );
-    }
-
-    #[test]
-    fn the_bridge_publishes_a_volume_without_waiting_for_a_poll() {
-        let b = StatusBridge::new();
-        assert_eq!(b.snapshot().volume, None);
-        b.set_volume(VolumeState {
-            level: 0.8,
-            muted: false,
+    fn idle_status_thread_sleeps_between_reads() {
+        let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
+        let (_bridge, tid) = crate::idle_thread_probe::spawned_thread("tilo-stat-wait", || {
+            let bridge = StatusBridge::new();
+            let poller = bridge.clone();
+            std::thread::Builder::new()
+                .name("tilo-stat-wait".into())
+                .spawn(move || {
+                    poller.set(SystemStatus::default());
+                    let _ = wake_rx.recv_timeout(FALLBACK_INTERVAL);
+                })
+                .expect("status idle thread");
+            bridge
         });
-        assert!((b.snapshot().volume.unwrap().level - 0.8).abs() < f32::EPSILON);
+        crate::idle_thread_probe::assert_stays_asleep(&tid, "status fallback wait");
+        drop(wake_tx);
     }
 
     #[test]
-    fn a_bridge_starts_no_poller_until_asked() {
-        let b = StatusBridge::new();
+    fn idle_graph_stops_the_pw_dump_monitor_without_scheduling_work() {
+        let graph = r#"[{"id":1,"type":"PipeWire:Interface:Device","info":{"props":{"device.name":"alsa_card.pci"}}},{"id":2,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"alsa_output.pci.analog-stereo"}}}]"#;
+        let mut watch = os_actions::DeviceGraphWatch::default();
+        assert_eq!(
+            watch.observe_document(graph),
+            os_actions::MonitorDisposition::Keep
+        );
+        let dump_stream = r#"[{"id":99,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Stream/Output/Audio","node.name":"pw-dump","application.name":"pw-dump"}}}]"#;
+        assert_eq!(
+            watch.observe_document(dump_stream),
+            os_actions::MonitorDisposition::Stop,
+            "the shell must not keep a pw-dump monitor running once the device graph is unchanged"
+        );
         assert!(
-            !b.is_polling(),
-            "a screenshot render must not depend on the host's hardware"
+            status_change_monitors()
+                .iter()
+                .all(|argv| !argv.contains(&"pw-dump")),
+            "the status poller must not keep pw-dump --monitor; a quiet graph still emits client lines, and waking wpctl on each one held WirePlumber and PipeWire in the idle budget"
+        );
+        assert_eq!(
+            privacy_watch_followup(false),
+            PrivacyWatchFollowup::Park,
+            "the shell must not schedule recurring work while no frame is requested"
+        );
+        assert_eq!(privacy_watch_followup(true), PrivacyWatchFollowup::Watch);
+        let (open, notify) = privacy_frame_interest(false, false);
+        assert!(!open && !notify);
+        let (open, notify) = privacy_frame_interest(false, true);
+        assert!(open && notify);
+        let (_open, notify) = privacy_frame_interest(true, true);
+        assert!(
+            !notify,
+            "frames that are already requested must not schedule another watch"
         );
     }
 }

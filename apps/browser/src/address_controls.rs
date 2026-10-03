@@ -366,69 +366,74 @@ fn line(text: &str) -> Box<dyn Widget> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Address editor opt-in, cross-tab disable and private-mode isolation.
     #[test]
-    fn editor_requires_opt_in_saves_edits_and_confirms_deletion() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("addresses.json");
-        let mut editor = AddressControls::new(false, Some(path));
-        editor.refresh();
-        assert!(editor.profiles.is_empty());
-        editor.act(Action::New);
-        assert!(editor.editing.is_none());
-        editor.act(Action::Enable(true));
-        editor.act(Action::New);
-        editor.fields[0].set("Home".into());
-        editor.fields[1].set("Test Person".into());
-        editor.fields[2].set("Test".into());
-        editor.fields[3].set("Person".into());
-        editor.act(Action::Save);
-        let id = editor.profiles[0].id.clone();
-        editor.act(Action::Select(id.clone()));
-        let profile = editor.selected_fields().unwrap();
-        assert_eq!(profile.given_name, "Test");
-        assert_eq!(profile.family_name, "Person");
-        editor.act(Action::Edit(id.clone()));
-        editor.fields[5].set("Changed City".into());
-        editor.act(Action::Save);
-        assert_eq!(editor.selected_fields().unwrap().city, "Changed City");
-        editor.act(Action::Delete(id));
-        assert_eq!(editor.profiles.len(), 1);
-        editor.act(Action::ConfirmDelete);
-        assert!(editor.profiles.is_empty());
-        editor.refresh();
-        assert!(editor.profiles.is_empty());
-    }
-    #[test]
-    fn another_tab_disabling_profiles_prevents_fill_from_cached_selection() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("addresses.json");
-        let mut editor = AddressControls::new(false, Some(path.clone()));
-        editor.act(Action::Enable(true));
-        editor.act(Action::New);
-        editor.fields[0].set("Home".into());
-        editor.act(Action::Save);
-        assert!(editor.selected_fields().is_some());
-        AutofillStore::open(BrowsingMode::Normal, &path)
-            .unwrap()
-            .set_enabled(false)
-            .unwrap();
-        assert!(editor.selected_fields().is_none());
-    }
+    fn address_editor_requires_opt_in_and_isolates_tabs_and_private_mode() {
+        // Phase `editor_requires_opt_in_saves_edits_and_confirms_deletion`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("addresses.json");
+            let mut editor = AddressControls::new(false, Some(path));
+            editor.refresh();
+            assert!(editor.profiles.is_empty());
+            editor.act(Action::New);
+            assert!(editor.editing.is_none());
+            editor.act(Action::Enable(true));
+            editor.act(Action::New);
+            editor.fields[0].set("Home".into());
+            editor.fields[1].set("Test Person".into());
+            editor.fields[2].set("Test".into());
+            editor.fields[3].set("Person".into());
+            editor.act(Action::Save);
+            let id = editor.profiles[0].id.clone();
+            editor.act(Action::Select(id.clone()));
+            let profile = editor.selected_fields().unwrap();
+            assert_eq!(profile.given_name, "Test");
+            assert_eq!(profile.family_name, "Person");
+            editor.act(Action::Edit(id.clone()));
+            editor.fields[5].set("Changed City".into());
+            editor.act(Action::Save);
+            assert_eq!(editor.selected_fields().unwrap().city, "Changed City");
+            editor.act(Action::Delete(id));
+            assert_eq!(editor.profiles.len(), 1);
+            editor.act(Action::ConfirmDelete);
+            assert!(editor.profiles.is_empty());
+            editor.refresh();
+            assert!(editor.profiles.is_empty());
+        }
 
-    #[test]
-    fn private_editor_never_reads_or_writes_profile_path() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("addresses.json");
-        std::fs::write(&path, "invalid normal data").unwrap();
-        let mut editor = AddressControls::new(true, Some(path.clone()));
-        editor.refresh();
-        editor.act(Action::Enable(true));
-        editor.act(Action::New);
-        assert!(editor.profiles.is_empty());
-        assert!(editor.editing.is_none());
-        assert_eq!(
-            std::fs::read_to_string(path).unwrap(),
-            "invalid normal data"
-        );
+        // Phase `another_tab_disabling_profiles_prevents_fill_from_cached_selection`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("addresses.json");
+            let mut editor = AddressControls::new(false, Some(path.clone()));
+            editor.act(Action::Enable(true));
+            editor.act(Action::New);
+            editor.fields[0].set("Home".into());
+            editor.act(Action::Save);
+            assert!(editor.selected_fields().is_some());
+            AutofillStore::open(BrowsingMode::Normal, &path)
+                .unwrap()
+                .set_enabled(false)
+                .unwrap();
+            assert!(editor.selected_fields().is_none());
+        }
+
+        // Phase `private_editor_never_reads_or_writes_profile_path`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("addresses.json");
+            std::fs::write(&path, "invalid normal data").unwrap();
+            let mut editor = AddressControls::new(true, Some(path.clone()));
+            editor.refresh();
+            editor.act(Action::Enable(true));
+            editor.act(Action::New);
+            assert!(editor.profiles.is_empty());
+            assert!(editor.editing.is_none());
+            assert_eq!(
+                std::fs::read_to_string(path).unwrap(),
+                "invalid normal data"
+            );
+        }
     }
 }

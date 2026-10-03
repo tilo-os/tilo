@@ -281,9 +281,7 @@ mod tests {
     /// stuck worker fails the test instead of hanging). The injected
     /// verifiers here resolve in microseconds, so this returns immediately.
     fn poll_to_completion(c: &mut LockController) -> UnlockOutcome {
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(5))
-            .unwrap_or_else(Instant::now);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Some(o) = c.poll_verification() {
                 return o;
@@ -308,121 +306,119 @@ mod tests {
     }
 
     #[test]
-    fn wrong_password_stays_locked_and_records_error() {
-        let mut c = controller("hunter2");
-        c.push_str("wrong");
-        assert_eq!(c.buffer_len(), 5);
-        assert_eq!(submit_and_wait(&mut c), UnlockOutcome::StillLocked);
-        // Buffer cleared, error shown, still locked.
-        assert_eq!(c.buffer_len(), 0);
-        assert_eq!(c.error(), Some("Incorrect username or password"));
+    fn password_submission_unlocks_only_on_the_right_password() {
+        // Phase `wrong_password_stays_locked_and_records_error`.
+        {
+            let mut c = controller("hunter2");
+            c.push_str("wrong");
+            assert_eq!(c.buffer_len(), 5);
+            assert_eq!(submit_and_wait(&mut c), UnlockOutcome::StillLocked);
+            // Buffer cleared, error shown, still locked.
+            assert_eq!(c.buffer_len(), 0);
+            assert_eq!(c.error(), Some("Incorrect username or password"));
+        }
+        // Phase `correct_password_unlocks`.
+        {
+            let mut c = controller("hunter2");
+            c.push_str("hunter2");
+            assert_eq!(submit_and_wait(&mut c), UnlockOutcome::Unlocked);
+            // Reset after a successful unlock.
+            assert_eq!(c.buffer_len(), 0);
+            assert_eq!(c.error(), None);
+            assert!(!c.is_verifying());
+        }
+        // Phase `empty_submit_is_a_noop_and_never_unlocks`.
+        {
+            let mut c = controller("hunter2");
+            assert_eq!(c.submit(), UnlockOutcome::StillLocked);
+            // No verify was started, so nothing to poll.
+            assert!(!c.is_verifying());
+            assert_eq!(c.poll_verification(), None);
+            assert_eq!(c.error(), None);
+        }
+        // Phase `typing_after_a_failure_clears_the_error`.
+        {
+            let mut c = controller("hunter2");
+            c.push_str("bad");
+            assert_eq!(submit_and_wait(&mut c), UnlockOutcome::StillLocked);
+            assert!(c.error().is_some());
+            c.push_char('h');
+            assert_eq!(c.error(), None);
+            assert_eq!(c.buffer_len(), 1);
+        }
     }
 
     #[test]
-    fn correct_password_unlocks() {
-        let mut c = controller("hunter2");
-        c.push_str("hunter2");
-        assert_eq!(submit_and_wait(&mut c), UnlockOutcome::Unlocked);
-        // Reset after a successful unlock.
-        assert_eq!(c.buffer_len(), 0);
-        assert_eq!(c.error(), None);
-        assert!(!c.is_verifying());
-    }
-
-    #[test]
-    fn empty_submit_is_a_noop_and_never_unlocks() {
-        let mut c = controller("hunter2");
-        assert_eq!(c.submit(), UnlockOutcome::StillLocked);
-        // No verify was started, so nothing to poll.
-        assert!(!c.is_verifying());
-        assert_eq!(c.poll_verification(), None);
-        assert_eq!(c.error(), None);
-    }
-
-    #[test]
-    fn typing_after_a_failure_clears_the_error() {
-        let mut c = controller("hunter2");
-        c.push_str("bad");
-        assert_eq!(submit_and_wait(&mut c), UnlockOutcome::StillLocked);
-        assert!(c.error().is_some());
-        c.push_char('h');
-        assert_eq!(c.error(), None);
-        assert_eq!(c.buffer_len(), 1);
-    }
-
-    #[test]
-    fn backspace_and_cancel_edit_the_ascii_buffer() {
-        let mut c = controller("hunter2");
-        c.push_str("hunt");
-        c.backspace();
-        assert_eq!(c.buffer_len(), 3);
-        c.clear_input();
-        assert_eq!(c.buffer_len(), 0);
-    }
-
-    #[test]
-    fn backspace_removes_a_whole_composed_grapheme() {
-        let mut c = controller("unused");
-        c.push_str("e\u{301}");
-        assert_eq!(
-            c.buffer_len(),
-            2,
-            "the fixture contains two Unicode scalars"
-        );
-        c.backspace();
-        assert_eq!(c.buffer_len(), 0);
-    }
-
-    #[test]
-    fn backspace_removes_a_whole_zwj_emoji() {
-        let mut c = controller("unused");
-        c.push_str("👩‍💻");
-        assert_eq!(
-            c.buffer_len(),
-            3,
-            "the fixture contains three Unicode scalars"
-        );
-        c.backspace();
-        assert_eq!(c.buffer_len(), 0);
-    }
-
-    #[test]
-    fn control_characters_are_not_buffered() {
-        let mut c = controller("hunter2");
-        c.push_str("a\nb\tc");
-        // Only the three printable chars are kept.
-        assert_eq!(c.buffer_len(), 3);
-    }
-
-    #[test]
-    fn handle_key_routes_text_backspace_submit() {
-        let mut c = controller("pw");
-        assert_eq!(
-            c.handle_key(LockKey::Text("p".into())),
-            UnlockOutcome::StillLocked
-        );
-        assert_eq!(
-            c.handle_key(LockKey::Text("x".into())),
-            UnlockOutcome::StillLocked
-        );
-        assert_eq!(c.handle_key(LockKey::Backspace), UnlockOutcome::StillLocked);
-        assert_eq!(c.buffer_len(), 1);
-        // "p" + submit is wrong ("pw" expected): submit is async, so it
-        // returns StillLocked; the failed result arrives via the poll.
-        assert_eq!(c.handle_key(LockKey::Submit), UnlockOutcome::StillLocked);
-        assert_eq!(poll_to_completion(&mut c), UnlockOutcome::StillLocked);
-        // Now type the correct password and submit → unlock via the poll.
-        c.handle_key(LockKey::Text("pw".into()));
-        assert_eq!(c.handle_key(LockKey::Submit), UnlockOutcome::StillLocked);
-        assert_eq!(poll_to_completion(&mut c), UnlockOutcome::Unlocked);
-    }
-
-    #[test]
-    fn ignored_key_is_swallowed_without_effect() {
-        let mut c = controller("pw");
-        c.push_str("ab");
-        assert_eq!(c.handle_key(LockKey::Ignored), UnlockOutcome::StillLocked);
-        assert_eq!(c.buffer_len(), 2);
+    fn password_editing_works_on_graphemes_and_ignores_controls() {
+        // Phase `backspace_and_cancel_edit_the_ascii_buffer`.
+        {
+            let mut c = controller("hunter2");
+            c.push_str("hunt");
+            c.backspace();
+            assert_eq!(c.buffer_len(), 3);
+            c.clear_input();
+            assert_eq!(c.buffer_len(), 0);
+        }
+        // Phase `backspace_removes_a_whole_composed_grapheme`.
+        {
+            let mut c = controller("unused");
+            c.push_str("e\u{301}");
+            assert_eq!(
+                c.buffer_len(),
+                2,
+                "the fixture contains two Unicode scalars"
+            );
+            c.backspace();
+            assert_eq!(c.buffer_len(), 0);
+        }
+        // Phase `backspace_removes_a_whole_zwj_emoji`.
+        {
+            let mut c = controller("unused");
+            c.push_str("👩‍💻");
+            assert_eq!(
+                c.buffer_len(),
+                3,
+                "the fixture contains three Unicode scalars"
+            );
+            c.backspace();
+            assert_eq!(c.buffer_len(), 0);
+        }
+        // Phase `control_characters_are_not_buffered`.
+        {
+            let mut c = controller("hunter2");
+            c.push_str("a\nb\tc");
+            // Only the three printable chars are kept.
+            assert_eq!(c.buffer_len(), 3);
+        }
+        // Phase `handle_key_routes_text_backspace_submit`.
+        {
+            let mut c = controller("pw");
+            assert_eq!(
+                c.handle_key(LockKey::Text("p".into())),
+                UnlockOutcome::StillLocked
+            );
+            assert_eq!(
+                c.handle_key(LockKey::Text("x".into())),
+                UnlockOutcome::StillLocked
+            );
+            assert_eq!(c.handle_key(LockKey::Backspace), UnlockOutcome::StillLocked);
+            assert_eq!(c.buffer_len(), 1);
+            // "p" + submit is wrong ("pw" expected): submit is async, so it
+            // returns StillLocked; the failed result arrives via the poll.
+            assert_eq!(c.handle_key(LockKey::Submit), UnlockOutcome::StillLocked);
+            assert_eq!(poll_to_completion(&mut c), UnlockOutcome::StillLocked);
+            // Now type the correct password and submit → unlock via the poll.
+            c.handle_key(LockKey::Text("pw".into()));
+            assert_eq!(c.handle_key(LockKey::Submit), UnlockOutcome::StillLocked);
+            assert_eq!(poll_to_completion(&mut c), UnlockOutcome::Unlocked);
+        }
+        // Phase `ignored_key_is_swallowed_without_effect`.
+        {
+            let mut c = controller("pw");
+            c.push_str("ab");
+            assert_eq!(c.handle_key(LockKey::Ignored), UnlockOutcome::StillLocked);
+            assert_eq!(c.buffer_len(), 2);
+        }
     }
 
     // ---- async verification --------------------------------------------
@@ -469,80 +465,80 @@ mod tests {
     }
 
     #[test]
-    fn submit_does_not_block_and_only_unlocks_after_worker_success() {
-        let (v, gate) = GateVerifier::new(Ok(()));
-        let mut c = LockController::new(Arc::new(v), "alice");
-        c.push_str("pw");
-        // Submit returns immediately even though the verifier is parked — the
-        // compositor run loop would not be blocked here.
-        let t0 = Instant::now();
-        assert_eq!(c.submit(), UnlockOutcome::StillLocked);
-        assert!(
-            t0.elapsed() < Duration::from_secs(1),
-            "submit must return without blocking on the (parked) verifier"
-        );
-        // The verify is in flight; polling never unlocks while it is parked.
-        assert!(c.is_verifying());
-        assert_eq!(c.poll_verification(), None);
-        assert_eq!(c.poll_verification(), None);
-        assert!(c.is_verifying(), "still locked + verifying while parked");
-        // Release the worker: only now does a poll observe success and unlock.
-        release(&gate);
-        assert_eq!(poll_to_completion(&mut c), UnlockOutcome::Unlocked);
-        assert!(!c.is_verifying());
-    }
-
-    #[test]
-    fn async_wrong_password_stays_locked_with_nonleaky_error() {
-        let (v, gate) = GateVerifier::new(Err("Incorrect username or password".to_string()));
-        let mut c = LockController::new(Arc::new(v), "alice");
-        c.push_str("wrong");
-        assert_eq!(c.submit(), UnlockOutcome::StillLocked);
-        assert_eq!(c.poll_verification(), None, "no result while parked");
-        release(&gate);
-        assert_eq!(poll_to_completion(&mut c), UnlockOutcome::StillLocked);
-        assert_eq!(c.error(), Some("Incorrect username or password"));
-        assert!(!c.is_verifying());
-        assert_eq!(c.buffer_len(), 0);
-    }
-
-    #[test]
-    fn keys_are_swallowed_while_verifying() {
-        let (v, gate) = GateVerifier::new(Ok(()));
-        let mut c = LockController::new(Arc::new(v), "alice");
-        c.push_str("pw");
-        assert_eq!(c.submit(), UnlockOutcome::StillLocked);
-        assert!(c.is_verifying());
-        // Keystrokes during a verify must not edit the field or start a
-        // second attempt.
-        assert_eq!(
-            c.handle_key(LockKey::Text("x".into())),
-            UnlockOutcome::StillLocked
-        );
-        assert_eq!(c.buffer_len(), 0, "text is swallowed while verifying");
-        assert_eq!(c.handle_key(LockKey::Submit), UnlockOutcome::StillLocked);
-        assert!(
-            c.is_verifying(),
-            "a second submit does not replace the verify"
-        );
-        release(&gate);
-        assert_eq!(poll_to_completion(&mut c), UnlockOutcome::Unlocked);
-    }
-
-    #[test]
-    fn reset_cancels_an_in_flight_verify() {
-        let (v, gate) = GateVerifier::new(Ok(()));
-        let mut c = LockController::new(Arc::new(v), "alice");
-        c.push_str("pw");
-        assert_eq!(c.submit(), UnlockOutcome::StillLocked);
-        assert!(c.is_verifying());
-        // A fresh lock resets: the in-flight verify is abandoned and can no
-        // longer unlock the session.
-        c.reset();
-        assert!(!c.is_verifying());
-        release(&gate);
-        // Even after the worker finishes, a poll never unlocks — interest was
-        // dropped, so there is nothing to observe.
-        assert_eq!(c.poll_verification(), None);
+    fn async_verification_never_blocks_and_can_be_cancelled() {
+        // Phase `submit_does_not_block_and_only_unlocks_after_worker_success`.
+        {
+            let (v, gate) = GateVerifier::new(Ok(()));
+            let mut c = LockController::new(Arc::new(v), "alice");
+            c.push_str("pw");
+            // Submit returns immediately even though the verifier is parked — the
+            // compositor run loop would not be blocked here.
+            let t0 = Instant::now();
+            assert_eq!(c.submit(), UnlockOutcome::StillLocked);
+            assert!(
+                t0.elapsed() < Duration::from_secs(1),
+                "submit must return without blocking on the (parked) verifier"
+            );
+            // The verify is in flight; polling never unlocks while it is parked.
+            assert!(c.is_verifying());
+            assert_eq!(c.poll_verification(), None);
+            assert_eq!(c.poll_verification(), None);
+            assert!(c.is_verifying(), "still locked + verifying while parked");
+            // Release the worker: only now does a poll observe success and unlock.
+            release(&gate);
+            assert_eq!(poll_to_completion(&mut c), UnlockOutcome::Unlocked);
+            assert!(!c.is_verifying());
+        }
+        // Phase `async_wrong_password_stays_locked_with_nonleaky_error`.
+        {
+            let (v, gate) = GateVerifier::new(Err("Incorrect username or password".to_string()));
+            let mut c = LockController::new(Arc::new(v), "alice");
+            c.push_str("wrong");
+            assert_eq!(c.submit(), UnlockOutcome::StillLocked);
+            assert_eq!(c.poll_verification(), None, "no result while parked");
+            release(&gate);
+            assert_eq!(poll_to_completion(&mut c), UnlockOutcome::StillLocked);
+            assert_eq!(c.error(), Some("Incorrect username or password"));
+            assert!(!c.is_verifying());
+            assert_eq!(c.buffer_len(), 0);
+        }
+        // Phase `keys_are_swallowed_while_verifying`.
+        {
+            let (v, gate) = GateVerifier::new(Ok(()));
+            let mut c = LockController::new(Arc::new(v), "alice");
+            c.push_str("pw");
+            assert_eq!(c.submit(), UnlockOutcome::StillLocked);
+            assert!(c.is_verifying());
+            // Keystrokes during a verify must not edit the field or start a
+            // second attempt.
+            assert_eq!(
+                c.handle_key(LockKey::Text("x".into())),
+                UnlockOutcome::StillLocked
+            );
+            assert_eq!(c.buffer_len(), 0, "text is swallowed while verifying");
+            assert_eq!(c.handle_key(LockKey::Submit), UnlockOutcome::StillLocked);
+            assert!(
+                c.is_verifying(),
+                "a second submit does not replace the verify"
+            );
+            release(&gate);
+            assert_eq!(poll_to_completion(&mut c), UnlockOutcome::Unlocked);
+        }
+        // Phase `reset_cancels_an_in_flight_verify`.
+        {
+            let (v, gate) = GateVerifier::new(Ok(()));
+            let mut c = LockController::new(Arc::new(v), "alice");
+            c.push_str("pw");
+            assert_eq!(c.submit(), UnlockOutcome::StillLocked);
+            assert!(c.is_verifying());
+            // A fresh lock resets: the in-flight verify is abandoned and can no
+            // longer unlock the session.
+            c.reset();
+            assert!(!c.is_verifying());
+            release(&gate);
+            // Even after the worker finishes, a poll never unlocks — interest was
+            // dropped, so there is nothing to observe.
+            assert_eq!(c.poll_verification(), None);
+        }
     }
 }

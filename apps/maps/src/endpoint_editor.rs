@@ -1,6 +1,6 @@
 //! Self-contained From/To editor for the Directions panel.
 
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -8,6 +8,7 @@ use winit::event::WindowEvent;
 use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -127,8 +128,14 @@ impl EndpointEditor {
         self.focused.is_some()
     }
 
+    #[cfg(test)]
     pub(super) fn has_pending_query(&self) -> bool {
         self.deadline.is_some()
+    }
+
+    /// When the focused endpoint's typed query settles into a live geocode.
+    pub(super) const fn query_deadline(&self) -> Option<Instant> {
+        self.deadline
     }
 
     #[cfg(test)]
@@ -194,7 +201,7 @@ impl EndpointEditor {
         self.deadline = if text.trim().is_empty() {
             None
         } else {
-            Some(Instant::now() + SEARCH_DEBOUNCE)
+            Some(ui::time::now() + SEARCH_DEBOUNCE)
         };
         Some(EndpointEffect::Changed { endpoint, text })
     }
@@ -448,7 +455,7 @@ impl EndpointEditor {
                 return;
             }
             let card = Rect::new(field.x0, top, field.x1, top + 34.0);
-            draw::card(scene, transform, card, 12.0, colors.surfaces.raised);
+            draw::card(scene, transform, theme, card, 12.0, colors.surfaces.raised);
             self.hits.push((card, EndpointHit::Consume));
             draw::text(
                 scene,
@@ -474,7 +481,7 @@ impl EndpointEditor {
             field.x1,
             top + pad * 2.0 + count as f64 * row_pitch - row_gap,
         );
-        draw::card(scene, transform, card, 12.0, colors.surfaces.raised);
+        draw::card(scene, transform, theme, card, 12.0, colors.surfaces.raised);
         self.hits.push((card, EndpointHit::Consume));
         let scale = text.text_scale();
         let name_h = ui::text_metrics::line_height_px(13.0, scale);
@@ -494,23 +501,17 @@ impl EndpointEditor {
             let distance = geo::fmt_distance(geo::haversine_m(place.pos, distance_anchor));
             let distance_w = draw::measure_w(text, &distance, 11.0) + 8.0;
             draw::text_clip(
-                scene,
-                text,
-                transform,
+                &mut PaintCtx::new(scene, transform, text, theme),
                 &place.name,
-                text_x,
-                name_y,
+                Point::new(text_x, name_y),
                 13.0,
                 theme.text_primary,
                 rect.x1 - text_x - distance_w,
             );
             draw::text_clip(
-                scene,
-                text,
-                transform,
+                &mut PaintCtx::new(scene, transform, text, theme),
                 &place.address,
-                text_x,
-                name_y + name_h,
+                Point::new(text_x, name_y + name_h),
                 11.0,
                 theme.text_dim,
                 rect.x1 - text_x - distance_w,
@@ -573,45 +574,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn external_queries_replace_the_component_draft_without_drift() {
-        let mut editor = EndpointEditor::new();
-        editor.sync_queries("Old origin", "Old destination");
-        editor.sync_queries("Peer origin", "Peer destination");
-        assert_eq!(editor.query(Endpoint::Origin), "Peer origin");
-        assert_eq!(editor.query(Endpoint::Destination), "Peer destination");
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn endpoint_editor_owns_its_draft_debounce_dismiss_and_spellcheck() {
+        // Phase `external_queries_replace_the_component_draft_without_drift`.
+        {
+            let mut editor = EndpointEditor::new();
+            editor.sync_queries("Old origin", "Old destination");
+            editor.sync_queries("Peer origin", "Peer destination");
+            assert_eq!(editor.query(Endpoint::Origin), "Peer origin");
+            assert_eq!(editor.query(Endpoint::Destination), "Peer destination");
+        }
 
-    #[test]
-    fn debounce_emits_one_typed_search_for_the_focused_endpoint() {
-        let mut editor = EndpointEditor::new();
-        editor.focus(Endpoint::Origin);
-        editor.origin_query = "station".to_string();
-        let now = Instant::now();
-        editor.deadline = Some(now);
-        assert_eq!(
-            editor.take_due_search(now),
-            Some(EndpointEffect::Search {
-                endpoint: Endpoint::Origin,
-                query: "station".to_string(),
-            })
-        );
-        assert!(editor.take_due_search(now).is_none());
-    }
+        // Phase `debounce_emits_one_typed_search_for_the_focused_endpoint`.
+        {
+            let mut editor = EndpointEditor::new();
+            editor.focus(Endpoint::Origin);
+            editor.origin_query = "station".to_string();
+            let now = ui::time::now();
+            editor.deadline = Some(now);
+            assert_eq!(
+                editor.take_due_search(now),
+                Some(EndpointEffect::Search {
+                    endpoint: Endpoint::Origin,
+                    query: "station".to_string(),
+                })
+            );
+            assert!(editor.take_due_search(now).is_none());
+        }
 
-    #[test]
-    fn dismiss_clears_focus_and_pending_search() {
-        let mut editor = EndpointEditor::new();
-        editor.focus(Endpoint::Destination);
-        editor.deadline = Some(Instant::now());
-        editor.dismiss();
-        assert!(!editor.is_focused());
-        assert!(!editor.has_pending_query());
-    }
+        // Phase `dismiss_clears_focus_and_pending_search`.
+        {
+            let mut editor = EndpointEditor::new();
+            editor.focus(Endpoint::Destination);
+            editor.deadline = Some(ui::time::now());
+            editor.dismiss();
+            assert!(!editor.is_focused());
+            assert!(!editor.has_pending_query());
+        }
 
-    #[test]
-    fn route_endpoints_are_not_spellchecked_as_prose() {
-        let editor = EndpointEditor::new();
-        assert!(!editor.origin_input.spellcheck_enabled());
-        assert!(!editor.destination_input.spellcheck_enabled());
+        // Phase `route_endpoints_are_not_spellchecked_as_prose`.
+        {
+            let editor = EndpointEditor::new();
+            assert!(!editor.origin_input.spellcheck_enabled());
+            assert!(!editor.destination_input.spellcheck_enabled());
+        }
     }
 }

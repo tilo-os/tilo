@@ -109,13 +109,14 @@ fn fetch_rules(
         let _private_write = crate::storage::private_root_write_guard(directory)?;
         std::fs::create_dir_all(directory).map_err(|_| "Cannot save filter cache")?;
         for (path, text) in &downloads {
-            atomic_file::write(path, text.as_bytes()).map_err(|_| "Cannot save filter cache")?;
+            tilo_files::native::atomic::write(path, text.as_bytes())
+                .map_err(|_| "Cannot save filter cache")?;
         }
-        let updated = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let updated = ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
             .ok()
             .map(|duration| duration.as_secs());
-        let _ = atomic_file::write(
+        let _ = tilo_files::native::atomic::write(
             &directory.join("native-filter-updated.json"),
             &serde_json::to_vec(&updated).unwrap_or_default(),
         );
@@ -195,8 +196,8 @@ pub(crate) fn refresh(engine: &SharedEngine, force: bool) {
                         });
                     }
                     if downloaded {
-                        status.updated = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
+                        status.updated = ui::time::wall()
+                            .duration_since(ui::time::UNIX_EPOCH)
                             .ok()
                             .map(|d| d.as_secs());
                     }
@@ -294,7 +295,7 @@ mod tests {
                 if index == 0 {
                     accepted_tx.send(()).unwrap();
                     release_rx
-                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .recv_timeout(tilo_test_env::hang_bound())
                         .unwrap();
                 }
                 let body = b"||private-refresh.fixture^\n";
@@ -310,17 +311,17 @@ mod tests {
 
         refresh(&engine, true);
         accepted_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(tilo_test_env::hang_bound())
             .unwrap();
         std::fs::write(&trigger, b"exit").unwrap();
-        let removal_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while root.exists() && std::time::Instant::now() < removal_deadline {
+        let removal_deadline = tilo_test_env::hang_deadline();
+        while root.exists() && ui::time::now() < removal_deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(!root.exists(), "helper exit must remove the private root");
         release_tx.send(()).unwrap();
-        let worker_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while status().busy && std::time::Instant::now() < worker_deadline {
+        let worker_deadline = tilo_test_env::hang_deadline();
+        while status().busy && ui::time::now() < worker_deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(!status().busy, "delayed refresh worker did not finish");
@@ -332,76 +333,108 @@ mod tests {
         drop(engine);
     }
 
+    /// Baseline protection, cached lists, refresh failures, concurrency and private root cleanup.
     #[test]
-    #[cfg(unix)]
-    fn private_refresh_does_not_recreate_root_after_helper_exit() {
-        let root = crate::storage::allocate_private_root().unwrap();
-        let result = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "native_blocker::tests::private_refresh_does_not_recreate_root_after_helper_exit_child",
-                "--ignored",
-                "--nocapture",
-            ])
-            .env("TILO_TEST_PRIVATE_ROOT", &root)
-            .status()
-            .unwrap();
-        let remained = root.exists();
-        if remained {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
-        assert!(result.success());
-        assert!(!remained, "child left or recreated its private root");
-    }
-
-    #[test]
-    fn baseline_protection_exists_without_network_or_cache() {
-        let dir = tempfile::tempdir().unwrap();
-        let rules = cached_rules(dir.path());
-        assert!(rules.contains("||doubleclick.net^"));
-        assert!(rules.contains("||googlesyndication.com^"));
-    }
-
-    #[test]
-    fn reads_known_cached_lists_and_ignores_other_files() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("easylist.txt"), "||ads.fixture.test^").unwrap();
-        std::fs::write(dir.path().join("unrelated.txt"), "must-not-load").unwrap();
-        let rules = cached_rules(dir.path());
-        assert!(rules.contains("||ads.fixture.test^"));
-        assert!(!rules.contains("must-not-load"));
-    }
-    #[test]
-    fn refresh_cache_failure_and_retry_preserve_valid_rules() {
-        let directory = tempfile::tempdir().unwrap();
-        std::fs::write(directory.path().join("fixture.txt"), "||cached.test^").unwrap();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}/list", listener.local_addr().unwrap());
-        let lists = vec![("fixture.txt".into(), url)];
-        let cached = fetch_rules(directory.path(), &lists, false).unwrap();
-        assert!(!cached.1);
-        assert!(cached.0.contains("cached.test"));
-        let server = std::thread::spawn(move || {
-            for response in [
-                "HTTP/1.1 503 Failed\r\nContent-Length: 0\r\n\r\n",
-                "HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\n||fresh.test^",
-            ] {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut bytes = [0; 4096];
-                let _ = stream.read(&mut bytes);
-                stream.write_all(response.as_bytes()).unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn native_rules_survive_cache_failures_and_admit_one_refresh() {
+        // Phase `private_refresh_does_not_recreate_root_after_helper_exit`.
+        #[cfg(unix)]
+        {
+            let root = crate::storage::allocate_private_root().unwrap();
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "native_blocker::tests::private_refresh_does_not_recreate_root_after_helper_exit_child",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("TILO_TEST_PRIVATE_ROOT", &root)
+                .status()
+                .unwrap();
+            let remained = root.exists();
+            if remained {
+                std::fs::remove_dir_all(&root).unwrap();
             }
-        });
-        assert!(fetch_rules(directory.path(), &lists, true).is_err());
-        assert_eq!(
-            std::fs::read_to_string(directory.path().join("fixture.txt")).unwrap(),
-            "||cached.test^"
-        );
-        let refreshed = fetch_rules(directory.path(), &lists, true).unwrap();
-        assert!(refreshed.1);
-        assert!(refreshed.0.contains("fresh.test"));
-        server.join().unwrap();
+            assert!(result.success());
+            assert!(!remained, "child left or recreated its private root");
+        }
+
+        // Phase `baseline_protection_exists_without_network_or_cache`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let rules = cached_rules(dir.path());
+            assert!(rules.contains("||doubleclick.net^"));
+            assert!(rules.contains("||googlesyndication.com^"));
+        }
+
+        // Phase `reads_known_cached_lists_and_ignores_other_files`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("easylist.txt"), "||ads.fixture.test^").unwrap();
+            std::fs::write(dir.path().join("unrelated.txt"), "must-not-load").unwrap();
+            let rules = cached_rules(dir.path());
+            assert!(rules.contains("||ads.fixture.test^"));
+            assert!(!rules.contains("must-not-load"));
+        }
+
+        // Phase `refresh_cache_failure_and_retry_preserve_valid_rules`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            std::fs::write(directory.path().join("fixture.txt"), "||cached.test^").unwrap();
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/list", listener.local_addr().unwrap());
+            let lists = vec![("fixture.txt".into(), url)];
+            let cached = fetch_rules(directory.path(), &lists, false).unwrap();
+            assert!(!cached.1);
+            assert!(cached.0.contains("cached.test"));
+            let server = std::thread::spawn(move || {
+                for response in [
+                    "HTTP/1.1 503 Failed\r\nContent-Length: 0\r\n\r\n",
+                    "HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\n||fresh.test^",
+                ] {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut bytes = [0; 4096];
+                    let _ = stream.read(&mut bytes);
+                    stream.write_all(response.as_bytes()).unwrap();
+                }
+            });
+            assert!(fetch_rules(directory.path(), &lists, true).is_err());
+            assert_eq!(
+                std::fs::read_to_string(directory.path().join("fixture.txt")).unwrap(),
+                "||cached.test^"
+            );
+            let refreshed = fetch_rules(directory.path(), &lists, true).unwrap();
+            assert!(refreshed.1);
+            assert!(refreshed.0.contains("fresh.test"));
+            server.join().unwrap();
+        }
+
+        // Phase `concurrent_refresh_requests_admit_only_one_worker`.
+        {
+            let state = Arc::new(std::sync::Mutex::new(Status::default()));
+            #[allow(
+                clippy::needless_collect,
+                reason = "spawn all workers before joining any, preserving the concurrent admission race"
+            )]
+            let threads = (0..16)
+                .map(|_| {
+                    let state = state.clone();
+                    std::thread::spawn(move || begin_refresh(&state))
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                threads
+                    .into_iter()
+                    .map(|t| usize::from(t.join().unwrap()))
+                    .sum::<usize>(),
+                1
+            );
+        }
     }
+
     #[test]
     fn offline_restart_restores_last_successful_update() {
         const LAST_SUCCESS: u64 = 1_700_000_123;
@@ -409,8 +442,8 @@ mod tests {
             crate::storage::configure(None).unwrap();
             let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
             start(engine.clone());
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while status().busy && std::time::Instant::now() < deadline {
+            let deadline = tilo_test_env::hang_deadline();
+            while status().busy && ui::time::now() < deadline {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             let result = status();
@@ -435,7 +468,7 @@ mod tests {
                 .write(true)
                 .open(path)
                 .unwrap()
-                .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+                .set_times(std::fs::FileTimes::new().set_modified(ui::time::UNIX_EPOCH))
                 .unwrap();
         }
         std::fs::write(
@@ -471,27 +504,11 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-    }
-
-    #[test]
-    fn concurrent_refresh_requests_admit_only_one_worker() {
-        let state = Arc::new(std::sync::Mutex::new(Status::default()));
-        #[allow(
-            clippy::needless_collect,
-            reason = "spawn all workers before joining any, preserving the concurrent admission race"
-        )]
-        let threads = (0..16)
-            .map(|_| {
-                let state = state.clone();
-                std::thread::spawn(move || begin_refresh(&state))
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            threads
-                .into_iter()
-                .map(|t| usize::from(t.join().unwrap()))
-                .sum::<usize>(),
-            1
+        // libtest exits 0 when `--exact` selects nothing; require the child ran.
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("test result: ok. 1 passed"),
+            "the child ran no test: {}",
+            String::from_utf8_lossy(&output.stdout)
         );
     }
 }

@@ -127,7 +127,7 @@ pub fn request_phone_tethering(
     if !crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
         .permits(crate::shell::continuity_policy::ContinuityCapability::WifiSettings)
     {
-        return Err("Wi-Fi Continuity is disabled on this device".into());
+        return Err(crate::shell::i18n::t("tethering-error-continuity-off"));
     }
     let snapshot = network
         .device_fabric()
@@ -135,11 +135,11 @@ pub fn request_phone_tethering(
         .get(provider)
         .cloned()
         .filter(|snapshot| snapshot.presence.online && snapshot.presence.kind == DeviceKind::Phone)
-        .ok_or_else(|| "choose an online certified phone".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("tethering-error-choose-phone"))?;
     let request_id = random_id();
     let mut state = shell_state()
         .lock()
-        .map_err(|_| "tethering coordinator is unavailable".to_string())?;
+        .map_err(|_| crate::shell::i18n::t("tethering-error-unavailable"))?;
     if state
         .statuses
         .values()
@@ -147,7 +147,7 @@ pub fn request_phone_tethering(
         .count()
         >= 16
     {
-        return Err("too many tethering requests are already active".into());
+        return Err(crate::shell::i18n::t("tethering-error-too-many"));
     }
     while state.statuses.len() >= 32 {
         let Some(terminal) = state
@@ -156,7 +156,7 @@ pub fn request_phone_tethering(
             .find(|(_, status)| !status.can_disconnect())
             .map(|(id, _)| *id)
         else {
-            return Err("tethering history is temporarily full".into());
+            return Err(crate::shell::i18n::t("tethering-error-history-full"));
         };
         state.statuses.remove(&terminal);
     }
@@ -188,13 +188,13 @@ pub fn request_phone_tethering(
 pub fn disconnect_phone_tethering(request_id: TetheringId) -> Result<(), String> {
     let mut state = shell_state()
         .lock()
-        .map_err(|_| "tethering coordinator is unavailable".to_string())?;
+        .map_err(|_| crate::shell::i18n::t("tethering-error-unavailable"))?;
     if !state
         .statuses
         .get(&request_id)
         .is_some_and(TetheringStatusView::can_disconnect)
     {
-        return Err("that tethering session is no longer active".into());
+        return Err(crate::shell::i18n::t("tethering-error-session-inactive"));
     }
     state.commands.push_back(Command::Disconnect { request_id });
     drop(state);
@@ -210,9 +210,9 @@ pub fn disconnect_phone_tethering(request_id: TetheringId) -> Result<(), String>
 pub fn authorize_phone_tethering(request_id: TetheringId, approved: bool) -> Result<(), String> {
     let mut state = shell_state()
         .lock()
-        .map_err(|_| "tethering coordinator is unavailable".to_string())?;
+        .map_err(|_| crate::shell::i18n::t("tethering-error-unavailable"))?;
     if !state.consents.contains_key(&request_id) {
-        return Err("that tethering request is no longer pending".into());
+        return Err(crate::shell::i18n::t("tethering-error-request-gone"));
     }
     state.commands.push_back(Command::Decide {
         request_id,
@@ -254,7 +254,7 @@ impl TetheringHost for ProductionHost<'_> {
         let (_, label) = self
             .network
             .local_device_fabric_identity()
-            .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+            .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
         let suffix = label
             .chars()
             .filter(|c| !c.is_control())
@@ -829,207 +829,219 @@ mod tests {
     }
 
     #[test]
-    fn explicit_consent_starts_owned_hotspot_and_policy_revocation_stops_it() {
-        let _guard = test_lock();
-        reset_shell_state();
-        let requester = device(3);
-        let provider = device(4);
-        let request_id = [7; 16];
-        let request = TetheringSignal::Request {
-            protocol_version: crate::shell::personal_tethering::TETHERING_PROTOCOL_VERSION,
-            request_id,
-            requester: requester.clone(),
-            provider: provider.clone(),
-            requester_label: "Laptop".into(),
-            issued_unix_ms: 1_000,
-            expires_unix_ms: 31_000,
-        };
-        let mut runtime = PersonalTetheringRuntime::default();
-        let mut host = host(&requester, &provider);
-        runtime.handle_signal(&mut host, &provider, &requester, &request, 1_000);
-        assert_eq!(pending_tethering_consents().len(), 1);
-        authorize_phone_tethering(request_id, true).unwrap();
-        runtime.pump_with(&mut host, &provider, "Phone", true, 1_001);
-        assert_eq!(host.hotspot_starts, 1);
-        assert_eq!(host.sent.len(), 2);
-        assert_eq!(host.hotspot_stops, 0);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn tethering_runtime_starts_hotspot_only_on_consent_and_fails_closed_visibly() {
+        fn explicit_consent_starts_owned_hotspot_and_policy_revocation_stops_it() {
+            let _guard = test_lock();
+            reset_shell_state();
+            let requester = device(3);
+            let provider = device(4);
+            let request_id = [7; 16];
+            let request = TetheringSignal::Request {
+                protocol_version: crate::shell::personal_tethering::TETHERING_PROTOCOL_VERSION,
+                request_id,
+                requester: requester.clone(),
+                provider: provider.clone(),
+                requester_label: "Laptop".into(),
+                issued_unix_ms: 1_000,
+                expires_unix_ms: 31_000,
+            };
+            let mut runtime = PersonalTetheringRuntime::default();
+            let mut host = host(&requester, &provider);
+            runtime.handle_signal(&mut host, &provider, &requester, &request, 1_000);
+            assert_eq!(pending_tethering_consents().len(), 1);
+            authorize_phone_tethering(request_id, true).unwrap();
+            runtime.pump_with(&mut host, &provider, "Phone", true, 1_001);
+            assert_eq!(host.hotspot_starts, 1);
+            assert_eq!(host.sent.len(), 2);
+            assert_eq!(host.hotspot_stops, 0);
 
-        runtime.pump_with(&mut host, &provider, "Phone", false, 1_002);
-        assert_eq!(host.hotspot_stops, 1);
-        assert!(matches!(
-            host.sent.last().unwrap().1,
-            TetheringSignal::Stop { .. }
-        ));
-        assert!(pending_tethering_consents().is_empty());
-        assert_eq!(
-            tethering_statuses()[0].phase,
-            TetheringPhase::PolicyDisabled
-        );
-    }
+            runtime.pump_with(&mut host, &provider, "Phone", false, 1_002);
+            assert_eq!(host.hotspot_stops, 1);
+            assert!(matches!(
+                host.sent.last().unwrap().1,
+                TetheringSignal::Stop { .. }
+            ));
+            assert!(pending_tethering_consents().is_empty());
+            assert_eq!(
+                tethering_statuses()[0].phase,
+                TetheringPhase::PolicyDisabled
+            );
+        }
 
-    #[test]
-    fn failed_grant_delivery_tears_down_the_owned_hotspot() {
-        let _guard = test_lock();
-        reset_shell_state();
-        let requester = device(5);
-        let provider = device(6);
-        let request_id = [8; 16];
-        let request = TetheringSignal::Request {
-            protocol_version: crate::shell::personal_tethering::TETHERING_PROTOCOL_VERSION,
-            request_id,
-            requester: requester.clone(),
-            provider: provider.clone(),
-            requester_label: "Tablet".into(),
-            issued_unix_ms: 2_000,
-            expires_unix_ms: 32_000,
-        };
-        let mut runtime = PersonalTetheringRuntime::default();
-        let mut host = host(&requester, &provider);
-        runtime.handle_signal(&mut host, &provider, &requester, &request, 2_000);
-        authorize_phone_tethering(request_id, true).unwrap();
-        host.fail_send_after = Some(0);
-        runtime.pump_with(&mut host, &provider, "Phone", true, 2_001);
-        assert_eq!(host.hotspot_starts, 1);
-        assert_eq!(host.hotspot_stops, 1);
-        assert!(runtime.provider_leases.is_empty());
-        assert_eq!(tethering_statuses()[0].phase, TetheringPhase::Failed);
-    }
+        fn failed_grant_delivery_tears_down_the_owned_hotspot() {
+            let _guard = test_lock();
+            reset_shell_state();
+            let requester = device(5);
+            let provider = device(6);
+            let request_id = [8; 16];
+            let request = TetheringSignal::Request {
+                protocol_version: crate::shell::personal_tethering::TETHERING_PROTOCOL_VERSION,
+                request_id,
+                requester: requester.clone(),
+                provider: provider.clone(),
+                requester_label: "Tablet".into(),
+                issued_unix_ms: 2_000,
+                expires_unix_ms: 32_000,
+            };
+            let mut runtime = PersonalTetheringRuntime::default();
+            let mut host = host(&requester, &provider);
+            runtime.handle_signal(&mut host, &provider, &requester, &request, 2_000);
+            authorize_phone_tethering(request_id, true).unwrap();
+            host.fail_send_after = Some(0);
+            runtime.pump_with(&mut host, &provider, "Phone", true, 2_001);
+            assert_eq!(host.hotspot_starts, 1);
+            assert_eq!(host.hotspot_stops, 1);
+            assert!(runtime.provider_leases.is_empty());
+            assert_eq!(tethering_statuses()[0].phase, TetheringPhase::Failed);
+        }
 
-    #[test]
-    fn deny_expiry_spoof_and_networkmanager_failure_are_visible_and_fail_closed() {
-        let _guard = test_lock();
-        reset_shell_state();
-        let requester = device(7);
-        let provider = device(8);
-        let mut runtime = PersonalTetheringRuntime::default();
-        let mut host = host(&requester, &provider);
+        fn deny_expiry_spoof_and_networkmanager_failure_are_visible_and_fail_closed() {
+            let _guard = test_lock();
+            reset_shell_state();
+            let requester = device(7);
+            let provider = device(8);
+            let mut runtime = PersonalTetheringRuntime::default();
+            let mut host = host(&requester, &provider);
 
-        let request = |id, claimed: DeviceId, expires| TetheringSignal::Request {
-            protocol_version: crate::shell::personal_tethering::TETHERING_PROTOCOL_VERSION,
-            request_id: id,
-            requester: claimed,
-            provider: provider.clone(),
-            requester_label: "Laptop".into(),
-            issued_unix_ms: 1_000,
-            expires_unix_ms: expires,
-        };
+            let request = |id, claimed: DeviceId, expires| TetheringSignal::Request {
+                protocol_version: crate::shell::personal_tethering::TETHERING_PROTOCOL_VERSION,
+                request_id: id,
+                requester: claimed,
+                provider: provider.clone(),
+                requester_label: "Laptop".into(),
+                issued_unix_ms: 1_000,
+                expires_unix_ms: expires,
+            };
 
-        runtime.handle_signal(
-            &mut host,
-            &provider,
-            &requester,
-            &request([9; 16], device(9), 31_000),
-            1_000,
-        );
-        assert!(pending_tethering_consents().is_empty(), "spoofed requester");
-
-        runtime.handle_signal(
-            &mut host,
-            &provider,
-            &requester,
-            &request([10; 16], requester.clone(), 31_000),
-            1_000,
-        );
-        authorize_phone_tethering([10; 16], false).unwrap();
-        runtime.pump_with(&mut host, &provider, "Phone", true, 1_001);
-        assert_eq!(tethering_statuses()[0].phase, TetheringPhase::Denied);
-        assert_eq!(host.hotspot_starts, 0);
-
-        runtime.handle_signal(
-            &mut host,
-            &provider,
-            &requester,
-            &request([11; 16], requester.clone(), 2_000),
-            1_000,
-        );
-        runtime.pump_with(&mut host, &provider, "Phone", true, 2_001);
-        assert!(tethering_statuses().iter().any(|status| {
-            status.request_id == [11; 16] && status.phase == TetheringPhase::Expired
-        }));
-
-        runtime.handle_signal(
-            &mut host,
-            &provider,
-            &requester,
-            &request([12; 16], requester.clone(), 31_000),
-            1_000,
-        );
-        authorize_phone_tethering([12; 16], true).unwrap();
-        host.fail_hotspot = true;
-        runtime.pump_with(&mut host, &provider, "Phone", true, 1_001);
-        assert!(tethering_statuses().iter().any(|status| {
-            status.request_id == [12; 16] && status.phase == TetheringPhase::Failed
-        }));
-        assert!(runtime.provider_leases.is_empty());
-    }
-
-    #[test]
-    fn explicit_disconnect_notifies_peer_and_neutralizes_provider() {
-        let _guard = test_lock();
-        reset_shell_state();
-        let requester = device(10);
-        let provider = device(11);
-        let request_id = [13; 16];
-        let request = TetheringSignal::Request {
-            protocol_version: crate::shell::personal_tethering::TETHERING_PROTOCOL_VERSION,
-            request_id,
-            requester: requester.clone(),
-            provider: provider.clone(),
-            requester_label: "Laptop".into(),
-            issued_unix_ms: 1_000,
-            expires_unix_ms: 31_000,
-        };
-        let mut runtime = PersonalTetheringRuntime::default();
-        let mut host = host(&requester, &provider);
-        runtime.handle_signal(&mut host, &provider, &requester, &request, 1_000);
-        authorize_phone_tethering(request_id, true).unwrap();
-        runtime.pump_with(&mut host, &provider, "Phone", true, 1_001);
-        disconnect_phone_tethering(request_id).unwrap();
-        runtime.pump_with(&mut host, &provider, "Phone", true, 1_002);
-        assert_eq!(host.hotspot_stops, 1);
-        assert!(matches!(
-            host.sent.last().unwrap().1,
-            TetheringSignal::Stop { .. }
-        ));
-        assert_eq!(tethering_statuses()[0].phase, TetheringPhase::Disconnected);
-    }
-
-    #[test]
-    fn peer_loss_disconnects_networkmanager_and_reports_offline() {
-        let _guard = test_lock();
-        reset_shell_state();
-        let requester = device(12);
-        let provider = device(13);
-        let request_id = [15; 16];
-        let mut runtime = PersonalTetheringRuntime::default();
-        let mut host = host(&requester, &provider);
-        let request = runtime
-            .protocol
-            .request(
-                TetheringRoute::CertifiedPhone(provider.clone()),
+            runtime.handle_signal(
+                &mut host,
+                &provider,
                 &requester,
-                "Laptop",
-                request_id,
+                &request([9; 16], device(9), 31_000),
                 1_000,
-            )
-            .unwrap();
-        shell_state().lock().unwrap().statuses.insert(
-            request_id,
-            TetheringStatusView {
-                request_id,
-                peer: provider.clone(),
-                peer_label: "Phone".into(),
-                direction: TetheringDirection::Requester,
-                phase: TetheringPhase::Active,
-                expires_unix_ms: signal_expiry(&request),
-            },
-        );
-        runtime
-            .requester_connections
-            .insert(request_id, (provider.clone(), "Phone hotspot".into()));
+            );
+            assert!(pending_tethering_consents().is_empty(), "spoofed requester");
 
-        runtime.peer_unavailable(&mut host, &requester, &provider);
-        assert_eq!(host.disconnected, vec!["Phone hotspot"]);
-        assert_eq!(tethering_statuses()[0].phase, TetheringPhase::Offline);
+            runtime.handle_signal(
+                &mut host,
+                &provider,
+                &requester,
+                &request([10; 16], requester.clone(), 31_000),
+                1_000,
+            );
+            authorize_phone_tethering([10; 16], false).unwrap();
+            runtime.pump_with(&mut host, &provider, "Phone", true, 1_001);
+            assert_eq!(tethering_statuses()[0].phase, TetheringPhase::Denied);
+            assert_eq!(host.hotspot_starts, 0);
+
+            runtime.handle_signal(
+                &mut host,
+                &provider,
+                &requester,
+                &request([11; 16], requester.clone(), 2_000),
+                1_000,
+            );
+            runtime.pump_with(&mut host, &provider, "Phone", true, 2_001);
+            assert!(tethering_statuses().iter().any(|status| {
+                status.request_id == [11; 16] && status.phase == TetheringPhase::Expired
+            }));
+
+            runtime.handle_signal(
+                &mut host,
+                &provider,
+                &requester,
+                &request([12; 16], requester.clone(), 31_000),
+                1_000,
+            );
+            authorize_phone_tethering([12; 16], true).unwrap();
+            host.fail_hotspot = true;
+            runtime.pump_with(&mut host, &provider, "Phone", true, 1_001);
+            assert!(tethering_statuses().iter().any(|status| {
+                status.request_id == [12; 16] && status.phase == TetheringPhase::Failed
+            }));
+            assert!(runtime.provider_leases.is_empty());
+        }
+
+        explicit_consent_starts_owned_hotspot_and_policy_revocation_stops_it();
+        failed_grant_delivery_tears_down_the_owned_hotspot();
+        deny_expiry_spoof_and_networkmanager_failure_are_visible_and_fail_closed();
+    }
+
+    #[test]
+    fn tethering_runtime_disconnects_notify_and_neutralize_the_provider() {
+        fn explicit_disconnect_notifies_peer_and_neutralizes_provider() {
+            let _guard = test_lock();
+            reset_shell_state();
+            let requester = device(10);
+            let provider = device(11);
+            let request_id = [13; 16];
+            let request = TetheringSignal::Request {
+                protocol_version: crate::shell::personal_tethering::TETHERING_PROTOCOL_VERSION,
+                request_id,
+                requester: requester.clone(),
+                provider: provider.clone(),
+                requester_label: "Laptop".into(),
+                issued_unix_ms: 1_000,
+                expires_unix_ms: 31_000,
+            };
+            let mut runtime = PersonalTetheringRuntime::default();
+            let mut host = host(&requester, &provider);
+            runtime.handle_signal(&mut host, &provider, &requester, &request, 1_000);
+            authorize_phone_tethering(request_id, true).unwrap();
+            runtime.pump_with(&mut host, &provider, "Phone", true, 1_001);
+            disconnect_phone_tethering(request_id).unwrap();
+            runtime.pump_with(&mut host, &provider, "Phone", true, 1_002);
+            assert_eq!(host.hotspot_stops, 1);
+            assert!(matches!(
+                host.sent.last().unwrap().1,
+                TetheringSignal::Stop { .. }
+            ));
+            assert_eq!(tethering_statuses()[0].phase, TetheringPhase::Disconnected);
+        }
+
+        fn peer_loss_disconnects_networkmanager_and_reports_offline() {
+            let _guard = test_lock();
+            reset_shell_state();
+            let requester = device(12);
+            let provider = device(13);
+            let request_id = [15; 16];
+            let mut runtime = PersonalTetheringRuntime::default();
+            let mut host = host(&requester, &provider);
+            let request = runtime
+                .protocol
+                .request(
+                    TetheringRoute::CertifiedPhone(provider.clone()),
+                    &requester,
+                    "Laptop",
+                    request_id,
+                    1_000,
+                )
+                .unwrap();
+            shell_state().lock().unwrap().statuses.insert(
+                request_id,
+                TetheringStatusView {
+                    request_id,
+                    peer: provider.clone(),
+                    peer_label: "Phone".into(),
+                    direction: TetheringDirection::Requester,
+                    phase: TetheringPhase::Active,
+                    expires_unix_ms: signal_expiry(&request),
+                },
+            );
+            runtime
+                .requester_connections
+                .insert(request_id, (provider.clone(), "Phone hotspot".into()));
+
+            runtime.peer_unavailable(&mut host, &requester, &provider);
+            assert_eq!(host.disconnected, vec!["Phone hotspot"]);
+            assert_eq!(tethering_statuses()[0].phase, TetheringPhase::Offline);
+        }
+
+        explicit_disconnect_notifies_peer_and_neutralizes_provider();
+        peer_loss_disconnects_networkmanager_and_reports_offline();
     }
 }

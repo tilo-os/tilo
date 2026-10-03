@@ -346,214 +346,227 @@ mod tests {
     use super::*;
 
     #[test]
-    fn summary_strip_stays_one_row_so_table_keeps_height() {
-        // The strip is a single row at EVERY width — its height is constant, so
-        // narrowing the window can never steal vertical space from the process
-        // table below it. All four cells sit on that one row; the strip adapts
-        // horizontally (cells share the width), not vertically.
-        let base_h = summary_strip_h(summary_grid(1200.0));
-        for &w in &[300.0_f64, 460.0, 520.0, 680.0, 772.0, 1200.0] {
-            let g = summary_grid(w);
-            assert_eq!(g.rows, 1, "w={w}: the strip must stay a single row");
-            assert_eq!(g.cols, STRIP_CELLS, "w={w}: all four cells on the one row");
-            assert_eq!(
-                g.cols * g.rows,
-                STRIP_CELLS,
-                "w={w}: holds exactly every cell"
-            );
-            assert!(
-                (summary_strip_h(g) - base_h).abs() < f64::EPSILON,
-                "w={w}: strip height must be constant across widths"
-            );
-        }
-    }
-
-    #[test]
-    fn dashboard_reflows_columns_with_width() {
-        // Wide: overview three abreast, charts two-up.
-        assert_eq!(overview_cols(1200.0), 3);
-        assert_eq!(charts_cols(1200.0), 2);
-        // Medium (an 800px window's content band): still the roomy dashboard.
-        assert_eq!(overview_cols(772.0), 3);
-        assert_eq!(charts_cols(772.0), 2);
-        // Narrow: everything stacks to a single column so nothing is squeezed.
-        assert_eq!(overview_cols(532.0), 1);
-        assert_eq!(charts_cols(532.0), 1);
-        // Stacking the overview makes it taller than the abreast row, and the
-        // chart grid gains rows — both feed the page-scroll height.
-        assert!(overview_h(532.0) > overview_h(1200.0));
-        assert_eq!(charts_rows(1200.0), 2);
-        assert_eq!(charts_rows(532.0), 4);
-    }
-
-    #[test]
-    fn per_core_grid_cell_count_equals_core_count_for_every_size() {
-        // Whatever the core count and width, every core gets exactly one
-        // cell — the grid wraps to enough rows, it never clips the tail.
-        for &n in &[1usize, 2, 4, 6, 8, 12, 16, 24, 32, 64, 128] {
-            for &w in &[200.0_f64, 420.0, 640.0, 900.0, 1400.0] {
-                let g = per_core_grid(n, w);
-                assert!(g.cols >= 1 && g.cols <= n, "cols in range for n={n} w={w}");
-                assert!(
-                    g.cells() >= n,
-                    "grid must have a cell for every core: n={n} w={w} cells={}",
-                    g.cells()
-                );
-                // And no more than one wasted row.
-                assert!(
-                    g.cells() < n + g.cols,
-                    "grid must not waste a whole row: n={n} w={w}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn per_core_grid_balances_rows_instead_of_orphaning_the_last_core() {
-        // A 1172px card (the 1200px window's Resources band) fits seven
-        // 150px cells, so eight threads used to paint as 7 + 1. The width
-        // still forces two rows; the cores are then split 4 + 4.
-        let g = per_core_grid(8, 1172.0);
-        assert_eq!((g.cols, g.rows), (4, 2), "8 cores: {g:?}");
-        // 24 threads: 7 columns would need 4 rows (7/7/7/3); 6 columns fill
-        // the same 4 rows exactly.
-        let g = per_core_grid(24, 1172.0);
-        assert_eq!((g.cols, g.rows), (6, 4), "24 cores: {g:?}");
-        // Balancing never adds a row or exceeds the width-derived column cap,
-        // and it uses the fewest columns that still seat every core in those
-        // rows — so the trailing row is as full as a fixed-column grid allows.
-        for &n in &[2usize, 3, 5, 6, 7, 9, 12, 13, 16, 32, 33, 64] {
-            for &w in &[300.0_f64, 640.0, 900.0, 1172.0, 1600.0] {
-                let g = per_core_grid(n, w);
-                let cap = (((w + CORE_GAP) / (150.0 + CORE_GAP)).floor() as usize)
-                    .clamp(1, 8)
-                    .min(n);
-                assert!(g.cols <= cap, "n={n} w={w}: {g:?} exceeds width cap {cap}");
+    fn summary_strip_and_dashboard_reflow_with_width() {
+        // Phase `summary_strip_stays_one_row_so_table_keeps_height`.
+        {
+            // The strip is a single row at EVERY width — its height is constant, so
+            // narrowing the window can never steal vertical space from the process
+            // table below it. All four cells sit on that one row; the strip adapts
+            // horizontally (cells share the width), not vertically.
+            let base_h = summary_strip_h(summary_grid(1200.0));
+            for &w in &[300.0_f64, 460.0, 520.0, 680.0, 772.0, 1200.0] {
+                let g = summary_grid(w);
+                assert_eq!(g.rows, 1, "w={w}: the strip must stay a single row");
+                assert_eq!(g.cols, STRIP_CELLS, "w={w}: all four cells on the one row");
                 assert_eq!(
-                    g.rows,
-                    n.div_ceil(cap),
-                    "n={n} w={w}: row count is width-derived"
+                    g.cols * g.rows,
+                    STRIP_CELLS,
+                    "w={w}: holds exactly every cell"
                 );
-                assert!(g.cells() >= n, "n={n} w={w}: {g:?} seats every core");
                 assert!(
-                    (g.cols - 1) * g.rows < n,
-                    "n={n} w={w}: {g:?} uses more columns than the rows need"
+                    (summary_strip_h(g) - base_h).abs() < f64::EPSILON,
+                    "w={w}: strip height must be constant across widths"
                 );
             }
         }
-    }
 
-    #[test]
-    fn per_core_card_grows_with_core_count() {
-        let g4 = per_core_grid(4, 420.0);
-        let g32 = per_core_grid(32, 420.0);
-        assert!(
-            per_core_card_h(g32) > per_core_card_h(g4),
-            "32 cores must need a taller card than 4"
-        );
-        // The card holds exactly `rows` strides of gauges: the last row's
-        // bottom must sit inside the card.
-        let g = per_core_grid(33, 420.0);
-        let card_h = per_core_card_h(g);
-        let last_row_bottom = CORE_TITLE_H + g.rows as f64 * CORE_ROW_STRIDE;
-        assert!(
-            last_row_bottom <= card_h + 0.001,
-            "last core row bottom {last_row_bottom} must fit card {card_h}"
-        );
-    }
-
-    #[test]
-    fn process_columns_never_overlap_within_their_width() {
-        // Wide: all six columns, NAME flexes, every column right edge ≤ next
-        // column left edge, and the total fits the available width.
-        let cols = process_columns(900.0);
-        assert_eq!(cols.len(), 6, "wide table shows every column");
-        for w in cols.windows(2) {
-            assert!(
-                w[0].x1() <= w[1].x0 + 0.001,
-                "column {} overruns {}",
-                w[0].header,
-                w[1].header
-            );
-        }
-        assert!(
-            process_columns_total_w(&cols) <= 900.0 + 0.001,
-            "wide table must fit without scrolling"
-        );
-    }
-
-    #[test]
-    fn narrow_hides_user_so_threads_reads_without_hscroll() {
-        // Between the five-essential minimum and the all-six minimum the table
-        // hides USER (the droppable text column) so PID / NAME / CPU% / MEM /
-        // THR all fit WITHOUT a horizontal scroll. THR is a core numeric
-        // column and must never be the one pushed off the right edge — the
-        // "THR clipped to 'T' at 560px" defect.
-        for &avail in &[
-            ESSENTIAL_COLUMNS_MIN_W,
-            460.0,
-            500.0, // ≈ a 552px window's table band (window − 52px chrome)
-            508.0, // ≈ a 560px window's table band
-            ALL_COLUMNS_MIN_W - 1.0,
-        ] {
-            let cols = process_columns(avail);
-            assert!(
-                !cols.iter().any(|c| c.key == SortKey::User),
-                "USER hidden at avail={avail} (too narrow for all six)"
-            );
-            let thr = cols
-                .iter()
-                .find(|c| c.key == SortKey::Threads)
-                .expect("THR is always shown");
-            assert_eq!(
-                thr.w, COL_THR_W,
-                "THR keeps its full width at avail={avail}"
-            );
-            // The whole table fits: THR's right edge is inside the viewport, so
-            // its header reads in full with no horizontal scroll.
-            assert!(
-                process_columns_total_w(&cols) <= avail + 0.001,
-                "table fits without h-scroll at avail={avail}: total={} thr.x1={}",
-                process_columns_total_w(&cols),
-                thr.x1()
-            );
+        // Phase `dashboard_reflows_columns_with_width`.
+        {
+            // Wide: overview three abreast, charts two-up.
+            assert_eq!(overview_cols(1200.0), 3);
+            assert_eq!(charts_cols(1200.0), 2);
+            // Medium (an 800px window's content band): still the roomy dashboard.
+            assert_eq!(overview_cols(772.0), 3);
+            assert_eq!(charts_cols(772.0), 2);
+            // Narrow: everything stacks to a single column so nothing is squeezed.
+            assert_eq!(overview_cols(532.0), 1);
+            assert_eq!(charts_cols(532.0), 1);
+            // Stacking the overview makes it taller than the abreast row, and the
+            // chart grid gains rows — both feed the page-scroll height.
+            assert!(overview_h(532.0) > overview_h(1200.0));
+            assert_eq!(charts_rows(1200.0), 2);
+            assert_eq!(charts_rows(532.0), 4);
         }
     }
 
     #[test]
-    fn wide_shows_user_column() {
-        for &avail in &[ALL_COLUMNS_MIN_W, 720.0, 1200.0] {
-            let cols = process_columns(avail);
+    fn per_core_grid_seats_every_core_in_balanced_rows() {
+        // Phase `per_core_grid_cell_count_equals_core_count_for_every_size`.
+        {
+            // Whatever the core count and width, every core gets exactly one
+            // cell — the grid wraps to enough rows, it never clips the tail.
+            for &n in &[1usize, 2, 4, 6, 8, 12, 16, 24, 32, 64, 128] {
+                for &w in &[200.0_f64, 420.0, 640.0, 900.0, 1400.0] {
+                    let g = per_core_grid(n, w);
+                    assert!(g.cols >= 1 && g.cols <= n, "cols in range for n={n} w={w}");
+                    assert!(
+                        g.cells() >= n,
+                        "grid must have a cell for every core: n={n} w={w} cells={}",
+                        g.cells()
+                    );
+                    // And no more than one wasted row.
+                    assert!(
+                        g.cells() < n + g.cols,
+                        "grid must not waste a whole row: n={n} w={w}"
+                    );
+                }
+            }
+        }
+
+        // Phase `per_core_grid_balances_rows_instead_of_orphaning_the_last_core`.
+        {
+            // A 1172px card (the 1200px window's Resources band) fits seven
+            // 150px cells, so eight threads used to paint as 7 + 1. The width
+            // still forces two rows; the cores are then split 4 + 4.
+            let g = per_core_grid(8, 1172.0);
+            assert_eq!((g.cols, g.rows), (4, 2), "8 cores: {g:?}");
+            // 24 threads: 7 columns would need 4 rows (7/7/7/3); 6 columns fill
+            // the same 4 rows exactly.
+            let g = per_core_grid(24, 1172.0);
+            assert_eq!((g.cols, g.rows), (6, 4), "24 cores: {g:?}");
+            // Balancing never adds a row or exceeds the width-derived column cap,
+            // and it uses the fewest columns that still seat every core in those
+            // rows — so the trailing row is as full as a fixed-column grid allows.
+            for &n in &[2usize, 3, 5, 6, 7, 9, 12, 13, 16, 32, 33, 64] {
+                for &w in &[300.0_f64, 640.0, 900.0, 1172.0, 1600.0] {
+                    let g = per_core_grid(n, w);
+                    let cap = (((w + CORE_GAP) / (150.0 + CORE_GAP)).floor() as usize)
+                        .clamp(1, 8)
+                        .min(n);
+                    assert!(g.cols <= cap, "n={n} w={w}: {g:?} exceeds width cap {cap}");
+                    assert_eq!(
+                        g.rows,
+                        n.div_ceil(cap),
+                        "n={n} w={w}: row count is width-derived"
+                    );
+                    assert!(g.cells() >= n, "n={n} w={w}: {g:?} seats every core");
+                    assert!(
+                        (g.cols - 1) * g.rows < n,
+                        "n={n} w={w}: {g:?} uses more columns than the rows need"
+                    );
+                }
+            }
+        }
+
+        // Phase `per_core_card_grows_with_core_count`.
+        {
+            let g4 = per_core_grid(4, 420.0);
+            let g32 = per_core_grid(32, 420.0);
             assert!(
-                cols.iter().any(|c| c.key == SortKey::User),
-                "USER shown when the table is wide enough (avail={avail})"
+                per_core_card_h(g32) > per_core_card_h(g4),
+                "32 cores must need a taller card than 4"
             );
-            assert_eq!(cols.len(), 6, "all six columns at avail={avail}");
+            // The card holds exactly `rows` strides of gauges: the last row's
+            // bottom must sit inside the card.
+            let g = per_core_grid(33, 420.0);
+            let card_h = per_core_card_h(g);
+            let last_row_bottom = CORE_TITLE_H + g.rows as f64 * CORE_ROW_STRIDE;
+            assert!(
+                last_row_bottom <= card_h + 0.001,
+                "last core row bottom {last_row_bottom} must fit card {card_h}"
+            );
         }
     }
 
     #[test]
-    fn compact_table_keeps_primary_signals_without_horizontal_scroll() {
-        // Below the full five-column table, the renderer becomes a compact
-        // process list instead of requiring a sideways gesture before the
-        // user can see which process is consuming CPU or memory.
-        for &(avail, expected) in &[
-            (
-                COMPACT_COLUMNS_MIN_W,
-                &[SortKey::Name, SortKey::Cpu, SortKey::Mem][..],
-            ),
-            (300.0, &[SortKey::Name, SortKey::Cpu, SortKey::Mem][..]),
-            (MICRO_COLUMNS_MIN_W, &[SortKey::Name, SortKey::Cpu][..]),
-            (220.0, &[SortKey::Name, SortKey::Cpu][..]),
-            (100.0, &[SortKey::Name][..]),
-        ] {
-            let cols = process_columns(avail);
-            let keys: Vec<_> = cols.iter().map(|col| col.key).collect();
-            assert_eq!(keys, expected, "compact column order at avail={avail}");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn process_columns_fit_without_horizontal_scroll_at_every_width() {
+        // Phase `process_columns_never_overlap_within_their_width`.
+        {
+            // Wide: all six columns, NAME flexes, every column right edge ≤ next
+            // column left edge, and the total fits the available width.
+            let cols = process_columns(900.0);
+            assert_eq!(cols.len(), 6, "wide table shows every column");
+            for w in cols.windows(2) {
+                assert!(
+                    w[0].x1() <= w[1].x0 + 0.001,
+                    "column {} overruns {}",
+                    w[0].header,
+                    w[1].header
+                );
+            }
             assert!(
-                process_columns_total_w(&cols) <= avail + 0.001,
-                "primary compact table fits at avail={avail}"
+                process_columns_total_w(&cols) <= 900.0 + 0.001,
+                "wide table must fit without scrolling"
             );
+        }
+
+        // Phase `narrow_hides_user_so_threads_reads_without_hscroll`.
+        {
+            // Between the five-essential minimum and the all-six minimum the table
+            // hides USER (the droppable text column) so PID / NAME / CPU% / MEM /
+            // THR all fit WITHOUT a horizontal scroll. THR is a core numeric
+            // column and must never be the one pushed off the right edge — the
+            // "THR clipped to 'T' at 560px" defect.
+            for &avail in &[
+                ESSENTIAL_COLUMNS_MIN_W,
+                460.0,
+                500.0, // ≈ a 552px window's table band (window − 52px chrome)
+                508.0, // ≈ a 560px window's table band
+                ALL_COLUMNS_MIN_W - 1.0,
+            ] {
+                let cols = process_columns(avail);
+                assert!(
+                    !cols.iter().any(|c| c.key == SortKey::User),
+                    "USER hidden at avail={avail} (too narrow for all six)"
+                );
+                let thr = cols
+                    .iter()
+                    .find(|c| c.key == SortKey::Threads)
+                    .expect("THR is always shown");
+                assert_eq!(
+                    thr.w, COL_THR_W,
+                    "THR keeps its full width at avail={avail}"
+                );
+                // The whole table fits: THR's right edge is inside the viewport, so
+                // its header reads in full with no horizontal scroll.
+                assert!(
+                    process_columns_total_w(&cols) <= avail + 0.001,
+                    "table fits without h-scroll at avail={avail}: total={} thr.x1={}",
+                    process_columns_total_w(&cols),
+                    thr.x1()
+                );
+            }
+        }
+
+        // Phase `wide_shows_user_column`.
+        {
+            for &avail in &[ALL_COLUMNS_MIN_W, 720.0, 1200.0] {
+                let cols = process_columns(avail);
+                assert!(
+                    cols.iter().any(|c| c.key == SortKey::User),
+                    "USER shown when the table is wide enough (avail={avail})"
+                );
+                assert_eq!(cols.len(), 6, "all six columns at avail={avail}");
+            }
+        }
+
+        // Phase `compact_table_keeps_primary_signals_without_horizontal_scroll`.
+        {
+            // Below the full five-column table, the renderer becomes a compact
+            // process list instead of requiring a sideways gesture before the
+            // user can see which process is consuming CPU or memory.
+            for &(avail, expected) in &[
+                (
+                    COMPACT_COLUMNS_MIN_W,
+                    &[SortKey::Name, SortKey::Cpu, SortKey::Mem][..],
+                ),
+                (300.0, &[SortKey::Name, SortKey::Cpu, SortKey::Mem][..]),
+                (MICRO_COLUMNS_MIN_W, &[SortKey::Name, SortKey::Cpu][..]),
+                (220.0, &[SortKey::Name, SortKey::Cpu][..]),
+                (100.0, &[SortKey::Name][..]),
+            ] {
+                let cols = process_columns(avail);
+                let keys: Vec<_> = cols.iter().map(|col| col.key).collect();
+                assert_eq!(keys, expected, "compact column order at avail={avail}");
+                assert!(
+                    process_columns_total_w(&cols) <= avail + 0.001,
+                    "primary compact table fits at avail={avail}"
+                );
+            }
         }
     }
 }

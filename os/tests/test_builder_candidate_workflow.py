@@ -13,7 +13,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-BUILD = (ROOT / '.forgejo/workflows/build-builder-image.yml').read_text()
+BUILD = (ROOT / '.forgejo/workflows/build-ci-builder.yml').read_text()
 CHECK = (ROOT / '.forgejo/workflows/check.yml').read_text()
 SPEC = importlib.util.spec_from_file_location('builder_canary', ROOT / 'os/dev/builder-canary-inputs.py')
 CANARY = importlib.util.module_from_spec(SPEC)
@@ -60,68 +60,155 @@ def action_inputs(block):
 
 
 class BuilderCandidates(unittest.TestCase):
-    def test_native_registry_writers_are_serialized(self):
-        build_job = BUILD.split('\n  build:\n', 1)[1].split('\n  images:\n', 1)[0]
-        self.assertEqual(build_job.count('\n      max-parallel: 1\n'), 1)
+    def test_registry_write_ordering(self):
+        with self.subTest(phase="native_registry_writers_are_serialized"):
+            build_job = BUILD.split('\n  build:\n', 1)[1].split('\n  images:\n', 1)[0]
+            self.assertEqual(build_job.count('\n      max-parallel: 1\n'), 1)
+        with self.subTest(phase="image_push_finishes_before_the_same_graph_exports_cache"):
+            image = step_block(BUILD, 'Build and push')
+            cache = step_block(BUILD, 'Export build cache')
+            signing = step_block(BUILD, 'Sign and describe the native builder')
 
-    def test_image_push_finishes_before_the_same_graph_exports_cache(self):
-        image = step_block(BUILD, 'Build and push')
-        cache = step_block(BUILD, 'Export build cache')
-        signing = step_block(BUILD, 'Sign and describe the native builder')
+            self.assertIn('id: build', image)
+            self.assertEqual(action_input(image, 'push'), 'true')
+            self.assertNotIn('cache-to:', image)
+            self.assertEqual(action_input(cache, 'push'), 'false')
+            self.assertIn('cache-to:', cache)
+            self.assertLess(BUILD.index('- name: Build and push'),
+                            BUILD.index('- name: Export build cache'))
+            self.assertLess(BUILD.index('- name: Export build cache'),
+                            BUILD.index('- name: Sign and describe the native builder'))
 
-        self.assertIn('id: build', image)
-        self.assertEqual(action_input(image, 'push'), 'true')
-        self.assertNotIn('cache-to:', image)
-        self.assertEqual(action_input(cache, 'push'), 'false')
-        self.assertIn('cache-to:', cache)
-        self.assertLess(BUILD.index('- name: Build and push'),
-                        BUILD.index('- name: Export build cache'))
-        self.assertLess(BUILD.index('- name: Export build cache'),
-                        BUILD.index('- name: Sign and describe the native builder'))
+            # The second invocation resolves entirely from the BuildKit state made
+            # by the first. Compare every action input so a future graph option
+            # cannot drift between the two exporters unnoticed.
+            image_inputs = action_inputs(image)
+            cache_inputs = action_inputs(cache)
+            self.assertEqual(set(cache_inputs) - set(image_inputs), {'cache-to'})
+            self.assertEqual(set(image_inputs) - set(cache_inputs), set())
+            for name in sorted(set(image_inputs) - {'push'}):
+                self.assertEqual(cache_inputs[name], image_inputs[name], name)
 
-        # The second invocation resolves entirely from the BuildKit state made
-        # by the first. Compare every action input so a future graph option
-        # cannot drift between the two exporters unnoticed.
-        image_inputs = action_inputs(image)
-        cache_inputs = action_inputs(cache)
-        self.assertEqual(set(cache_inputs) - set(image_inputs), {'cache-to'})
-        self.assertEqual(set(image_inputs) - set(cache_inputs), set())
-        for name in sorted(set(image_inputs) - {'push'}):
-            self.assertEqual(cache_inputs[name], image_inputs[name], name)
+            # Signing remains bound to the pushed image, never to cache metadata.
+            self.assertIn('CHILD_DIGEST: ${{ steps.build.outputs.digest }}', signing)
+        with self.subTest(phase="candidate_buildcache_requires_a_full_revision"):
+            for revision in ['', 'a' * 40, 'latest', 'a' * 39, 'a' * 40 + '\ninjected=value']:
+                with self.subTest(revision=revision), tempfile.TemporaryDirectory() as directory:
+                    output = Path(directory) / 'env'
+                    result = subprocess.run(
+                        ['bash', '-c', step_script(BUILD, 'Select an optional candidate buildcache')],
+                        env={**os.environ, 'REQUESTED_CACHE_REVISION': revision,
+                             'GITHUB_SHA': 'b' * 40, 'GITHUB_ENV': str(output)},
+                        text=True, capture_output=True,
+                    )
+                    if revision in ('', 'a' * 40):
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(output.read_text(), f'BUILDER_CACHE_REVISION={revision or "b" * 40}\n')
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertFalse(output.exists())
 
-        # Signing remains bound to the pushed image, never to cache metadata.
-        self.assertIn('CHILD_DIGEST: ${{ steps.build.outputs.digest }}', signing)
-
-    def test_legacy_subjects_are_installed_only_for_e2e_and_cannot_be_skipped(self):
-        subjects = ['gnome-text-editor', 'qt6-qtbase-examples', 'libreoffice-writer']
-        # The builder installs the shared script's `fedora test` profile, so the
-        # image's test subjects are the recipe plus that script.
-        builder = (ROOT / 'os/Containerfile.builder').read_text()
-        self.assertIn('install-build-deps.sh fedora test', builder)
-        recipe = builder + (ROOT / 'dist/ci/install-build-deps.sh').read_text()
-        for subject in subjects[1:]:
-            self.assertNotIn(subject, recipe)
-        self.assertIn("gnome-text-editor", recipe)
-        legacy = (ROOT / '.forgejo/workflows/legacy-app-e2e.yml').read_text()
-        script = step_script(legacy, 'Install and verify real app subjects')
-        # Execute the workflow script with package installation and subject
-        # discovery intercepted. Missing subjects must still fail after dnf.
-        stubs = r'''dnf() { printf '%s\n' "$@" > dnf-args; test "$FAIL_AT" != dnf; }
+    def test_ref_override_and_gate_policy(self):
+        with self.subTest(phase="legacy_subjects_are_installed_only_for_e2e_and_cannot_be_skipped"):
+            subjects = ['gnome-text-editor', 'qt6-qtbase-examples', 'libreoffice-writer']
+            # The builder installs the shared script's `fedora test` profile, so the
+            # image's test subjects are the recipe plus that script.
+            builder = (ROOT / 'os/Containerfile.builder').read_text()
+            self.assertIn('install-build-deps.sh fedora test', builder)
+            recipe = builder + (ROOT / 'dist/ci/install-build-deps.sh').read_text()
+            for subject in subjects[1:]:
+                self.assertNotIn(subject, recipe)
+            self.assertIn("gnome-text-editor", recipe)
+            legacy = (ROOT / '.forgejo/workflows/ci-legacy-apps.yml').read_text()
+            script = step_script(legacy, 'Install and verify real app subjects')
+            # Execute the workflow script with package installation and subject
+            # discovery intercepted. Missing subjects must still fail after dnf.
+            stubs = r'''dnf() { printf '%s\n' "$@" > dnf-args; test "$FAIL_AT" != dnf; }
         rpm() { printf '%s\n' "$@" > rpm-args; test "$FAIL_AT" != rpm; }
         command() { test "$2" != "$FAIL_AT"; }
         find() { test "$FAIL_AT" != qt || return 1; echo /qt/widgets/lineedits/lineedits/lineedits; }
         '''
-        for failure in ('none', 'dnf', 'rpm', 'gnome-text-editor', 'libreoffice', 'qt'):
-            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
-                work = Path(directory)
-                result = subprocess.run(['bash', '-e', '-c', stubs + script], cwd=work,
-                                        env={**os.environ, 'FAIL_AT': failure},
-                                        capture_output=True, text=True)
-                self.assertEqual(result.returncode == 0, failure == 'none', result.stderr)
-                self.assertEqual((work / 'dnf-args').read_text().splitlines(),
-                                 ['install', '-y', '--setopt=install_weak_deps=False', *subjects])
-                if failure == 'none':
-                    self.assertEqual((work / 'rpm-args').read_text().splitlines(), ['-q', *subjects])
+            for failure in ('none', 'dnf', 'rpm', 'gnome-text-editor', 'libreoffice', 'qt'):
+                with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                    work = Path(directory)
+                    result = subprocess.run(['bash', '-e', '-c', stubs + script], cwd=work,
+                                            env={**os.environ, 'FAIL_AT': failure},
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode == 0, failure == 'none', result.stderr)
+                    self.assertEqual((work / 'dnf-args').read_text().splitlines(),
+                                     ['install', '-y', '--setopt=install_weak_deps=False', *subjects])
+                    if failure == 'none':
+                        self.assertEqual((work / 'rpm-args').read_text().splitlines(), ['-q', *subjects])
+        with self.subTest(phase="only_immutable_same_repository_override_is_accepted"):
+            image = 'registry.tilo.so/tilo/tilo-builder@sha256:' + 'a' * 64
+            result, output = self.resolve(image)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(output, f'image={image}\n')
+            for invalid in [image[:-1], image.replace('tilo-builder', 'other'),
+                            'registry.tilo.so/tilo/tilo-builder:latest', image + '\ninjected=value',
+                            '$(touch /tmp/should-not-run)']:
+                with self.subTest(invalid=invalid):
+                    result, output = self.resolve(invalid)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(output, '')
+        with self.subTest(phase="ordinary_checks_resolve_the_builder_anonymously"):
+            # The builder is public on registry.tilo.so; no credential reaches
+            # the resolver.
+            block = CHECK.split('- name: Resolve the CI builder before starting job containers\n', 1)[1]
+            block = block.split('\n      - ', 1)[0]
+            self.assertIn('run: python3 tools/ci/resolve_builder.py', block)
+            self.assertNotIn('REGISTRY_TOKEN', block)
+        with self.subTest(phase="feature_refs_never_publish_shared_aliases"):
+            for ref in ['refs/heads/codex/arm64-tilo-integration', 'refs/tags/test-builder', 'refs/pull/1/head']:
+                with self.subTest(ref=ref):
+                    self.assertEqual(self.publication_tags(ref), ['candidate-' + 'b' * 40 + '-42-2'])
+            self.assertIn("github.ref == 'refs/heads/main' && format('tilo-builder-{0}', matrix.arch) || format('tilo-builder-candidate-{0}-{1}'", BUILD)
+        with self.subTest(phase="main_keeps_existing_promotion_policy"):
+            self.assertEqual(self.publication_tags('refs/heads/main'), ['b' * 40, '1.97.1', 'latest'])
+        with self.subTest(phase="both_architectures_and_builder_consumers_keep_acceptance_gates"):
+            self.assertIn('needs: [plan, build, images, accept-builder]', BUILD)
+            self.assertIn('runner: runner-arm64', BUILD)
+            self.assertIn('name: builder-index-${{ github.sha }}', BUILD)
+            # Native acceptance consumers must honor the resolved builder override.
+            # Selection only reads Cargo metadata and uses the qualified lean image.
+            security_job = CHECK.split('  security:\n', 1)[1].split('\n  native-dependencies:\n', 1)[0]
+            select_job = CHECK.split('  select:\n', 1)[1].split('\n  security:\n', 1)[0]
+            self.assertIn('image: ${{ needs.builder.outputs.image }}', security_job)
+            self.assertRegex(select_job, r'image: registry\.tilo\.so/tilo/ci-fast@sha256:[0-9a-f]{64}\n')
+            qualified_image = next(line.strip() for line in
+                                   (ROOT / '.forgejo/workflows/lint.yml').read_text().splitlines()
+                                   if line.strip().startswith('image: '))
+            self.assertIn(qualified_image, select_job)
+            self.assertIn('runs-on: runner-quality', select_job)
+            self.assertIn('run: ./scripts/check-workspace-complete.sh', select_job)
+            self.assertIn('run: python3 tools/policy/check_repository_layout.py', select_job)
+            self.assertIn('run: bash tools/ci/select.sh', select_job)
+            self.assertIn('python3 tools/ci/affected_packages.py --base "$base" --shards 2',
+                          (ROOT / 'tools/ci/select.sh').read_text())
+            self.assertNotRegex(select_job, r'(?m)^    needs:')
+            self.assertNotIn('needs.', select_job)
+            self.assertIn("if: needs.select.outputs.security_required == 'true'", security_job)
+            self.assertIn('needs: [builder, select]', security_job)
+            self.assertNotIn('needs.builder.outputs.image', select_job)
+            shard_jobs = {}
+            for name, following in (('test', 'check'), ('check', 'clippy'), ('clippy', 'pins')):
+                self.assertEqual(CHECK.count(f'\n  {name}:\n'), 1)
+                shard_jobs[name] = CHECK.split(f'\n  {name}:\n', 1)[1].split(f'\n  {following}:\n', 1)[0]
+            for name, job in shard_jobs.items():
+                with self.subTest(job=name):
+                    self.assertIn('    needs: [builder, select]', job)
+                    self.assertIn('image: ${{ needs.builder.outputs.image }}', job)
+                    self.assertIn('      - name: Checkout exact change', job)
+                    self.assertIn('          fetch-depth: 1', job)
+                    self.assertNotIn('          fetch-depth: 0', job)
+            clippy_job = shard_jobs['clippy']
+            self.assertIn('tools/ci/clippy-check.sh ${{ matrix.packages }}', clippy_job)
+            self.assertNotIn('needs.select.outputs.base', clippy_job)
+            builder_job = CHECK.split('  builder:\n', 1)[1].split('  select:\n', 1)[0]
+            self.assertIn('image: registry.tilo.so/tilo/ci-control@sha256:', builder_job)
+            self.assertNotIn('needs.builder.outputs.image', builder_job)
+            self.assertIn('DOCKER_BUILDKIT: "1"', builder_job)
+            self.assertIn('run: bash os/tests/named_public_trust_context.sh docker', builder_job)
 
     def resolve(self, requested):
         with tempfile.TemporaryDirectory() as directory:
@@ -133,27 +220,6 @@ class BuilderCandidates(unittest.TestCase):
                 text=True, capture_output=True,
             )
             return result, output.read_text() if output.exists() else ''
-
-    def test_only_immutable_same_repository_override_is_accepted(self):
-        image = 'registry.tilo.so/tilo/tilo-builder@sha256:' + 'a' * 64
-        result, output = self.resolve(image)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output, f'image={image}\n')
-        for invalid in [image[:-1], image.replace('tilo-builder', 'other'),
-                        'registry.tilo.so/tilo/tilo-builder:latest', image + '\ninjected=value',
-                        '$(touch /tmp/should-not-run)']:
-            with self.subTest(invalid=invalid):
-                result, output = self.resolve(invalid)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(output, '')
-
-    def test_ordinary_checks_resolve_the_builder_anonymously(self):
-        # The builder is public on registry.tilo.so; no credential reaches
-        # the resolver.
-        block = CHECK.split('- name: Resolve the CI builder before starting job containers\n', 1)[1]
-        block = block.split('\n      - ', 1)[0]
-        self.assertIn('run: python3 tools/ci/resolve_builder.py', block)
-        self.assertNotIn('REGISTRY_TOKEN', block)
 
     def publication_tags(self, ref):
         with tempfile.TemporaryDirectory() as directory:
@@ -187,74 +253,17 @@ class BuilderCandidates(unittest.TestCase):
             arguments = (work / 'arguments').read_text().splitlines()
             return [arguments[i + 1] for i, argument in enumerate(arguments) if argument == '--tag']
 
-    def test_feature_refs_never_publish_shared_aliases(self):
-        for ref in ['refs/heads/codex/arm64-tilo-integration', 'refs/tags/test-builder', 'refs/pull/1/head']:
-            with self.subTest(ref=ref):
-                self.assertEqual(self.publication_tags(ref), ['candidate-' + 'b' * 40 + '-42-2'])
-        self.assertIn("github.ref == 'refs/heads/main' && matrix.arch || format('candidate-{0}-{1}'", BUILD)
 
-    def test_main_keeps_existing_promotion_policy(self):
-        self.assertEqual(self.publication_tags('refs/heads/main'), ['b' * 40, '1.97.1', 'latest'])
-
-    def test_candidate_buildcache_requires_a_full_revision(self):
-        for revision in ['', 'a' * 40, 'latest', 'a' * 39, 'a' * 40 + '\ninjected=value']:
-            with self.subTest(revision=revision), tempfile.TemporaryDirectory() as directory:
-                output = Path(directory) / 'env'
-                result = subprocess.run(
-                    ['bash', '-c', step_script(BUILD, 'Select an optional candidate buildcache')],
-                    env={**os.environ, 'REQUESTED_CACHE_REVISION': revision,
-                         'GITHUB_SHA': 'b' * 40, 'GITHUB_ENV': str(output)},
-                    text=True, capture_output=True,
-                )
-                if revision in ('', 'a' * 40):
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(output.read_text(), f'BUILDER_CACHE_REVISION={revision or "b" * 40}\n')
-                else:
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertFalse(output.exists())
-
-    def test_both_architectures_and_builder_consumers_keep_acceptance_gates(self):
-        self.assertIn('needs: [plan, build, images, accept-builder]', BUILD)
-        self.assertIn('runner: runner-arm64', BUILD)
-        self.assertIn('name: builder-index-${{ github.sha }}', BUILD)
-        # Native acceptance consumers must honor the resolved builder override.
-        # Selection only reads Cargo metadata and uses the qualified lean image.
-        security_job = CHECK.split('  security:\n', 1)[1].split('\n  native-dependencies:\n', 1)[0]
-        select_job = CHECK.split('  select:\n', 1)[1].split('\n  security:\n', 1)[0]
-        self.assertIn('image: ${{ needs.builder.outputs.image }}', security_job)
-        self.assertRegex(select_job, r'image: registry\.tilo\.so/tilo/ci-fast@sha256:[0-9a-f]{64}\n')
-        qualified_image = next(line.strip() for line in
-                               (ROOT / '.forgejo/workflows/lint.yml').read_text().splitlines()
-                               if line.strip().startswith('image: '))
-        self.assertIn(qualified_image, select_job)
-        self.assertIn('runs-on: runner-quality', select_job)
-        self.assertIn('run: ./scripts/check-workspace-complete.sh', select_job)
-        self.assertIn('run: python3 tools/policy/check_repository_layout.py', select_job)
-        self.assertIn('python3 tools/ci/affected_packages.py --base "$base" --shards 2', select_job)
-        self.assertNotRegex(select_job, r'(?m)^    needs:')
-        self.assertNotIn('needs.', select_job)
-        self.assertIn("if: needs.select.outputs.security_required == 'true'", security_job)
-        self.assertIn('needs: [builder, select]', security_job)
-        self.assertNotIn('needs.builder.outputs.image', select_job)
-        shard_jobs = {}
-        for name, following in (('test', 'check'), ('check', 'clippy'), ('clippy', 'pins')):
-            self.assertEqual(CHECK.count(f'\n  {name}:\n'), 1)
-            shard_jobs[name] = CHECK.split(f'\n  {name}:\n', 1)[1].split(f'\n  {following}:\n', 1)[0]
-        for name, job in shard_jobs.items():
-            with self.subTest(job=name):
-                self.assertIn('    needs: [builder, select]', job)
-                self.assertIn('image: ${{ needs.builder.outputs.image }}', job)
-                self.assertIn('      - name: Checkout exact change', job)
-                self.assertIn('          fetch-depth: 1', job)
-                self.assertNotIn('          fetch-depth: 0', job)
-        clippy_job = shard_jobs['clippy']
-        self.assertIn('tools/ci/clippy-check.sh ${{ matrix.packages }}', clippy_job)
-        self.assertNotIn('needs.select.outputs.base', clippy_job)
-        builder_job = CHECK.split('  builder:\n', 1)[1].split('  select:\n', 1)[0]
-        self.assertIn('image: registry.tilo.so/tilo/ci-control@sha256:', builder_job)
-        self.assertNotIn('needs.builder.outputs.image', builder_job)
-        self.assertIn('DOCKER_BUILDKIT: "1"', builder_job)
-        self.assertIn('run: bash os/tests/named_public_trust_context.sh docker', builder_job)
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
 
 
 class CanaryIdentity(unittest.TestCase):
@@ -284,130 +293,131 @@ class CanaryIdentity(unittest.TestCase):
         return self.save(f'builder-cache-warm-{arch}-{attempt}', 'warm.json',
                          dict(schema=1, warmAttempt=attempt, cold=cold))
 
-    def test_native_retries_select_actual_latest_digest_per_architecture(self):
-        for arch, image in self.images.items():
-            self.save(f'builder-native-{arch}-1', 'child.json', dict(
-                architecture=arch, digest=image.split('@')[1], sourceRevision=self.revision))
-        current = self.save('builder-native-x86_64-3', 'child.json', dict(
-            architecture='x86_64', digest='sha256:' + 'd' * 64, sourceRevision=self.revision))
-        resolved = CANARY.matrix(self.root, self.revision)
-        self.assertEqual(next(x['image'] for x in resolved['include'] if x['arch'] == 'x86_64'),
-                         CANARY.REPOSITORY + '@sha256:' + 'd' * 64)
-        CANARY.write_descriptors(self.root / 'selected', resolved, self.revision)
-        self.assertEqual(CANARY.native.load_children(self.root / 'selected', self.revision)['x86_64'],
-                         'sha256:' + 'd' * 64)
-        self.save('duplicate/builder-native-x86_64-3', 'child.json', json.loads(current.read_text()))
-        with self.assertRaisesRegex(ValueError, 'duplicate native'):
-            CANARY.matrix(self.root, self.revision)
-
-    def test_missing_native_architecture_fails(self):
-        with self.assertRaisesRegex(ValueError, 'missing successful native'):
-            CANARY.matrix(self.root, self.revision)
-
-    def test_cold_retries_are_fresh_and_latest_success_is_selected(self):
-        first = self.cold('x86_64', 1)
-        latest = self.cold('x86_64', 3)
-        self.assertNotEqual(first['namespace'], latest['namespace'])
-        actual = CANARY.select_receipt(self.root, 'x86_64', self.images['x86_64'], self.revision, '42')
-        self.assertEqual(actual, latest)
-        self.save('duplicate/builder-cache-cold-x86_64-3', 'receipt.json', latest)
-        with self.assertRaisesRegex(ValueError, 'duplicate successful cold'):
-            CANARY.select_receipt(self.root, 'x86_64', self.images['x86_64'], self.revision, '42')
-
-    def test_wrong_run_image_revision_and_architecture_fail_closed(self):
-        original = self.cold('x86_64', 1)
-        for field, bad in [('runId', '43'), ('revision', 'd' * 40),
-                           ('image', self.images['aarch64']), ('architecture', 'aarch64')]:
-            self.save('builder-cache-cold-x86_64-1', 'receipt.json', dict(original, **{field: bad}))
-            with self.subTest(field=field), self.assertRaises(ValueError):
+    def test_retry_digest_selection(self):
+        with self.subTest(phase="native_retries_select_actual_latest_digest_per_architecture"):
+            for arch, image in self.images.items():
+                self.save(f'builder-native-{arch}-1', 'child.json', dict(
+                    architecture=arch, digest=image.split('@')[1], sourceRevision=self.revision))
+            current = self.save('builder-native-x86_64-3', 'child.json', dict(
+                architecture='x86_64', digest='sha256:' + 'd' * 64, sourceRevision=self.revision))
+            resolved = CANARY.matrix(self.root, self.revision)
+            self.assertEqual(next(x['image'] for x in resolved['include'] if x['arch'] == 'x86_64'),
+                             CANARY.REPOSITORY + '@sha256:' + 'd' * 64)
+            CANARY.write_descriptors(self.root / 'selected', resolved, self.revision)
+            self.assertEqual(CANARY.native.load_children(self.root / 'selected', self.revision)['x86_64'],
+                             'sha256:' + 'd' * 64)
+            self.save('duplicate/builder-native-x86_64-3', 'child.json', json.loads(current.read_text()))
+            with self.assertRaisesRegex(ValueError, 'duplicate native'):
+                CANARY.matrix(self.root, self.revision)
+        restart_fixture(self)
+        with self.subTest(phase="missing_native_architecture_fails"):
+            with self.assertRaisesRegex(ValueError, 'missing successful native'):
+                CANARY.matrix(self.root, self.revision)
+        restart_fixture(self)
+        with self.subTest(phase="cold_retries_are_fresh_and_latest_success_is_selected"):
+            first = self.cold('x86_64', 1)
+            latest = self.cold('x86_64', 3)
+            self.assertNotEqual(first['namespace'], latest['namespace'])
+            actual = CANARY.select_receipt(self.root, 'x86_64', self.images['x86_64'], self.revision, '42')
+            self.assertEqual(actual, latest)
+            self.save('duplicate/builder-cache-cold-x86_64-3', 'receipt.json', latest)
+            with self.assertRaisesRegex(ValueError, 'duplicate successful cold'):
                 CANARY.select_receipt(self.root, 'x86_64', self.images['x86_64'], self.revision, '42')
+        restart_fixture(self)
+        with self.subTest(phase="wrong_run_image_revision_and_architecture_fail_closed"):
+            original = self.cold('x86_64', 1)
+            for field, bad in [('runId', '43'), ('revision', 'd' * 40),
+                               ('image', self.images['aarch64']), ('architecture', 'aarch64')]:
+                self.save('builder-cache-cold-x86_64-1', 'receipt.json', dict(original, **{field: bad}))
+                with self.subTest(field=field), self.assertRaises(ValueError):
+                    CANARY.select_receipt(self.root, 'x86_64', self.images['x86_64'], self.revision, '42')
+        restart_fixture(self)
+        with self.subTest(phase="native_rebuild_can_supersede_old_cold_image_receipt"):
+            self.cold('x86_64', 1)
+            self.images['x86_64'] = CANARY.REPOSITORY + '@sha256:' + 'e' * 64
+            with self.assertRaisesRegex(ValueError, 'latest cold receipt used a different'):
+                CANARY.select_receipt(self.root, 'x86_64', self.images['x86_64'], self.revision, '42')
+            current = self.cold('x86_64', 2)
+            self.assertEqual(CANARY.select_receipt(self.root, 'x86_64', self.images['x86_64'],
+                                                 self.revision, '42'), current)
 
-    def test_native_rebuild_can_supersede_old_cold_image_receipt(self):
-        self.cold('x86_64', 1)
-        self.images['x86_64'] = CANARY.REPOSITORY + '@sha256:' + 'e' * 64
-        with self.assertRaisesRegex(ValueError, 'latest cold receipt used a different'):
-            CANARY.select_receipt(self.root, 'x86_64', self.images['x86_64'], self.revision, '42')
-        current = self.cold('x86_64', 2)
-        self.assertEqual(CANARY.select_receipt(self.root, 'x86_64', self.images['x86_64'],
-                                             self.revision, '42'), current)
-
-    def test_promotion_rejects_stale_green_warm_after_cold_retry(self):
-        for arch in self.images:
-            self.warm(arch, 1, self.cold(arch, 1))
-        CANARY.verify_acceptance(self.root, self.selected, self.revision, '42')
-        latest = self.cold('x86_64', 2)
-        with self.assertRaisesRegex(ValueError, 'warm acceptance does not match'):
+    def test_promotion_receipts_and_reuse(self):
+        with self.subTest(phase="promotion_rejects_stale_green_warm_after_cold_retry"):
+            for arch in self.images:
+                self.warm(arch, 1, self.cold(arch, 1))
             CANARY.verify_acceptance(self.root, self.selected, self.revision, '42')
-        self.warm('x86_64', 7, latest)
-        CANARY.verify_acceptance(self.root, self.selected, self.revision, '42')
-
-    def test_missing_warm_receipt_cannot_satisfy_promotion(self):
-        for arch in self.images:
-            self.cold(arch, 1)
-        with self.assertRaisesRegex(ValueError, 'warm acceptance does not match'):
+            latest = self.cold('x86_64', 2)
+            with self.assertRaisesRegex(ValueError, 'warm acceptance does not match'):
+                CANARY.verify_acceptance(self.root, self.selected, self.revision, '42')
+            self.warm('x86_64', 7, latest)
             CANARY.verify_acceptance(self.root, self.selected, self.revision, '42')
+        restart_fixture(self)
+        with self.subTest(phase="missing_warm_receipt_cannot_satisfy_promotion"):
+            for arch in self.images:
+                self.cold(arch, 1)
+            with self.assertRaisesRegex(ValueError, 'warm acceptance does not match'):
+                CANARY.verify_acceptance(self.root, self.selected, self.revision, '42')
+        restart_fixture(self)
+        with self.subTest(phase="workflow_carries_digests_and_all_acceptance_dependencies"):
+            self.assertEqual(BUILD.count('image: ${{ matrix.image }}'), 2)
+            self.assertEqual(BUILD.count('matrix: ${{ fromJSON(needs.images.outputs.matrix) }}'), 2)
+            self.assertIn('needs: [images, cache-cold]', BUILD)
+            self.assertIn('  accept-builder:', BUILD)
+            self.assertIn('needs: [plan, build, images, cache-cold, cache-warm]', BUILD)
+            self.assertIn('needs: [plan, build, images, accept-builder]', BUILD)
+            self.assertIn('builder-canary-inputs.py verify acceptance-receipts', BUILD)
+            self.assertLess(BUILD.index('bash tools/ci/sccache-canary.sh cold'),
+                            BUILD.index('name: Retain only successful cold acceptance'))
+            self.assertLess(BUILD.index('bash tools/ci/sccache-canary.sh warm'),
+                            BUILD.index('name: Retain only successful warm acceptance'))
+            # The CI hosts pull the builder from registry.tilo.so through their
+            # node cache; nothing mirrors it into a cloud registry.
+            self.assertNotIn('dkr.ecr.', BUILD)
+        restart_fixture(self)
+        with self.subTest(phase="reuse_never_reaches_signing_or_promotion"):
+            signing = BUILD.split('  signing-preflight:', 1)[1].split('\n  build:', 1)[0]
+            build = BUILD.split('  build:', 1)[1].split('\n  images:', 1)[0]
+            promotion = BUILD.split('  promote-builder:', 1)[1]
+            acceptance = BUILD.split('  accept-builder:', 1)[1].split('\n  promote-builder:', 1)[0]
+            self.assertIn("if: needs.plan.outputs.mode == 'build'", signing)
+            self.assertIn("needs.plan.outputs.mode == 'build'", build)
+            self.assertIn("needs.plan.outputs.mode == 'build'", promotion)
+            self.assertNotIn('COSIGN_KEY_REF', acceptance)
+            self.assertNotIn('enable-openid-connect', acceptance)
+            self.assertNotIn('promote-native-index.py', acceptance)
+            self.assertIn("needs.plan.outputs.mode == 'reuse'", acceptance)
 
-    def test_workflow_carries_digests_and_all_acceptance_dependencies(self):
-        self.assertEqual(BUILD.count('image: ${{ matrix.image }}'), 2)
-        self.assertEqual(BUILD.count('matrix: ${{ fromJSON(needs.images.outputs.matrix) }}'), 2)
-        self.assertIn('needs: [images, cache-cold]', BUILD)
-        self.assertIn('  accept-builder:', BUILD)
-        self.assertIn('needs: [plan, build, images, cache-cold, cache-warm]', BUILD)
-        self.assertIn('needs: [plan, build, images, accept-builder]', BUILD)
-        self.assertIn('builder-canary-inputs.py verify acceptance-receipts', BUILD)
-        self.assertLess(BUILD.index('bash tools/ci/sccache-canary.sh cold'),
-                        BUILD.index('name: Retain only successful cold acceptance'))
-        self.assertLess(BUILD.index('bash tools/ci/sccache-canary.sh warm'),
-                        BUILD.index('name: Retain only successful warm acceptance'))
-        replication = BUILD.split('name: Replicate the promoted builder beside Oregon runners', 1)[1]
-        self.assertIn("if: github.ref == 'refs/heads/main'", replication)
-        self.assertIn('replicate-builder-index.py', replication)
-        self.assertIn('125650147312.dkr.ecr.us-west-2.amazonaws.com/tilo/tilo-builder', replication)
-        self.assertIn('podesta-burst-usw2-tilo-builder-replication', replication)
-
-    def test_main_promotion_installs_pinned_aws_cli_without_distro_package(self):
-        tools = step_block(BUILD, 'Install publication tools')
-        self.assertIn('curl unzip podman skopeo', tools)
-        self.assertNotRegex(tools, r'install .*\bawscli\b')
-        self.assertIn('bash ./os/dev/install-aws-cli.sh', tools)
-
-    def test_aws_cli_rejects_corrupt_download_before_extraction(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            bin_dir = root / 'bin'
-            bin_dir.mkdir()
-            # A successful transfer containing invalid bytes must never execute.
-            scripts = {
-                'curl': '#!/bin/sh\nwhile [ "$1" != "-o" ]; do shift; done\nprintf corrupt > "$2"\n',
-                'unzip': '#!/bin/sh\ntouch "$RUNNER_TEMP/extracted"\nexit 99\n',
-            }
-            for name, body in scripts.items():
-                path = bin_dir / name
-                path.write_text(body)
-                path.chmod(0o755)
-            result = subprocess.run(
-                ['bash', str(ROOT / 'os/dev/install-aws-cli.sh')],
-                env={**os.environ, 'PATH': str(bin_dir) + ':' + os.environ['PATH'],
-                     'RUNNER_TEMP': directory, 'GITHUB_PATH': str(root / 'path')},
-                capture_output=True, text=True,
-            )
-            self.assertNotEqual(result.returncode, 0)
-            self.assertFalse((root / 'extracted').exists())
-            self.assertFalse((root / 'path').exists())
-            self.assertEqual(list(root.glob('aws-cli-download.*')), [])
-
-    def test_reuse_never_reaches_signing_or_promotion(self):
-        signing = BUILD.split('  signing-preflight:', 1)[1].split('\n  build:', 1)[0]
-        build = BUILD.split('  build:', 1)[1].split('\n  images:', 1)[0]
-        promotion = BUILD.split('  promote-builder:', 1)[1]
-        acceptance = BUILD.split('  accept-builder:', 1)[1].split('\n  promote-builder:', 1)[0]
-        self.assertIn("if: needs.plan.outputs.mode == 'build'", signing)
-        self.assertIn("needs.plan.outputs.mode == 'build'", build)
-        self.assertIn("needs.plan.outputs.mode == 'build'", promotion)
-        self.assertNotIn('COSIGN_KEY_REF', acceptance)
-        self.assertNotIn('enable-openid-connect', acceptance)
-        self.assertNotIn('promote-native-index.py', acceptance)
-        self.assertIn("needs.plan.outputs.mode == 'reuse'", acceptance)
+    def test_aws_cli_pinning(self):
+        with self.subTest(phase="main_promotion_installs_pinned_aws_cli_without_distro_package"):
+            tools = step_block(BUILD, 'Install publication tools')
+            self.assertIn('curl unzip podman skopeo', tools)
+            self.assertNotRegex(tools, r'install .*\bawscli\b')
+            self.assertIn('bash ./os/dev/install-aws-cli.sh', tools)
+        restart_fixture(self)
+        with self.subTest(phase="aws_cli_rejects_corrupt_download_before_extraction"):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                bin_dir = root / 'bin'
+                bin_dir.mkdir()
+                # A successful transfer containing invalid bytes must never execute.
+                scripts = {
+                    'curl': '#!/bin/sh\nwhile [ "$1" != "-o" ]; do shift; done\nprintf corrupt > "$2"\n',
+                    'unzip': '#!/bin/sh\ntouch "$RUNNER_TEMP/extracted"\nexit 99\n',
+                }
+                for name, body in scripts.items():
+                    path = bin_dir / name
+                    path.write_text(body)
+                    path.chmod(0o755)
+                result = subprocess.run(
+                    ['bash', str(ROOT / 'os/dev/install-aws-cli.sh')],
+                    env={**os.environ, 'PATH': str(bin_dir) + ':' + os.environ['PATH'],
+                         'RUNNER_TEMP': directory, 'GITHUB_PATH': str(root / 'path')},
+                    capture_output=True, text=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((root / 'extracted').exists())
+                self.assertFalse((root / 'path').exists())
+                self.assertEqual(list(root.glob('aws-cli-download.*')), [])
 
 
 if __name__ == '__main__':

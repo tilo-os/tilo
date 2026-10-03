@@ -447,7 +447,7 @@ impl Catalog {
             },
             Source {
                 id: "workspace".into(),
-                path: "/var/workspace".into(),
+                path: tilo_paths::WORKSPACE_MOUNT.into(),
                 kind: SourceKind::Workspace,
                 cadence: Cadence::Hourly,
                 enabled: true,
@@ -861,7 +861,14 @@ impl Catalog {
 mod tests {
     use super::*;
 
+    /// The demo catalog is populated and internally consistent.
     #[test]
+    fn sample_catalog_is_populated_with_unique_known_references() {
+        sample_is_populated();
+        sample_snapshots_reference_unique_known_entities();
+    }
+
+    /// Case of `sample_catalog_is_populated_with_unique_known_references`.
     fn sample_is_populated() {
         let c = Catalog::sample();
         assert_eq!(c.sources.len(), 3);
@@ -869,7 +876,7 @@ mod tests {
         assert!(c.snapshots.len() >= 15);
     }
 
-    #[test]
+    /// Case of `sample_catalog_is_populated_with_unique_known_references`.
     fn sample_snapshots_reference_unique_known_entities() {
         use std::collections::HashSet;
 
@@ -898,7 +905,18 @@ mod tests {
         }
     }
 
+    /// Per-source timelines sort newest first, the unfiltered timeline covers
+    /// every snapshot, per-source totals count and weigh, and sizes render in
+    /// IEC units.
     #[test]
+    fn timelines_and_totals_filter_by_source_and_render_iec_sizes() {
+        timeline_filters_and_sorts();
+        all_timeline_is_superset();
+        count_and_protected();
+        snapshot_sizes_render_with_iec_binary_units();
+    }
+
+    /// Case of `timelines_and_totals_filter_by_source_and_render_iec_sizes`.
     fn timeline_filters_and_sorts() {
         let c = Catalog::sample();
         let home = c.timeline(Some("home"));
@@ -911,13 +929,13 @@ mod tests {
         }
     }
 
-    #[test]
+    /// Case of `timelines_and_totals_filter_by_source_and_render_iec_sizes`.
     fn all_timeline_is_superset() {
         let c = Catalog::sample();
         assert_eq!(c.timeline(None).len(), c.snapshots.len());
     }
 
-    #[test]
+    /// Case of `timelines_and_totals_filter_by_source_and_render_iec_sizes`.
     fn snapshot_sizes_render_with_iec_binary_units() {
         // Base-1024, so labels must be IEC (KiB/MiB/GiB/TiB), not base-1000.
         assert_eq!(ui::format::bytes(4 * MB), "4.0 MiB");
@@ -926,7 +944,7 @@ mod tests {
         assert_eq!(ui::format::bytes(9 * GB), "9.0 GiB");
     }
 
-    #[test]
+    /// Case of `timelines_and_totals_filter_by_source_and_render_iec_sizes`.
     fn count_and_protected() {
         let c = Catalog::sample();
         assert!(c.count_for("home") > 0);

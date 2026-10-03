@@ -9,7 +9,7 @@ use std::os::unix::ffi::OsStringExt;
 use std::{
     collections::BTreeMap,
     ffi::OsString,
-    io::{Read, Write},
+    io::Read,
     sync::{Arc, Mutex},
 };
 
@@ -135,9 +135,12 @@ struct Store {
 }
 
 /// The trusted host retains this owner. Opening takes an already-authorized
-/// directory and an exclusive writer lock; no ambient directory is consulted.
+/// private directory and an exclusive writer lock; no ambient directory is consulted.
+/// The host must provision a supported private journal root and maintain its
+/// permissions and cooperative child namespace. Granted user files have their
+/// own policies; admission never relocates a journal to another filesystem.
 pub struct OperationOwner {
-    directory: Dir,
+    storage: tilo_files::native::atomic::StorageDirectory,
     _writer: advisory_lock::FileLock,
     owner: FsOwner,
     metadata_limit: usize,
@@ -155,11 +158,21 @@ impl OperationId {
 impl OperationOwner {
     /// # Errors
     /// Returns `Busy` for a second writer, and `StoreUnavailable` for invalid
-    /// or oversized receipts, failed journal I/O, or owner mismatch.
+    /// or oversized receipts or owner mismatch. Privacy denial returns `Denied`;
+    /// unsupported native permission profiles remain explicit I/O errors.
+    /// Reconciliation publication failures retain their typed phase and source.
     pub fn open(opened_storage: std::fs::File, owner: FsOwner) -> Result<Arc<Self>, FsError> {
         if !opened_storage.metadata().map_err(io_error)?.is_dir() {
             return Err(FsError::StoreUnavailable);
         }
+        // Duplicate only the incoming directory, never the lock-bearing writer.
+        let storage = tilo_files::native::atomic::StorageDirectory::from_file(
+            opened_storage.try_clone().map_err(io_error)?,
+        )
+        .map_err(io_error)?;
+        storage
+            .validate_privacy(tilo_files::native::atomic::Privacy::OwnerOnly)
+            .map_err(io_error)?;
         let directory = Dir::from_std_file(opened_storage);
         let writer = rustix::fs::openat(
             &directory,
@@ -221,7 +234,7 @@ impl OperationOwner {
             store.receipts.insert(receipt.id, receipt);
         }
         let result = Arc::new(Self {
-            directory,
+            storage,
             _writer: writer,
             owner,
             metadata_limit: MAX_REPORT_BYTES,
@@ -260,30 +273,17 @@ impl OperationOwner {
         if bytes.len() > self.report_byte_limit() {
             return Err(FsError::LimitExceeded);
         }
-        let temp = format!("{}.pending", receipt.id);
         let final_name = format!("{}.receipt", receipt.id);
-        // The writer lock owns this exact metadata namespace. Do not follow a
-        // substituted pending symlink and never truncate staged user bytes.
-        let fd = rustix::fs::openat(
-            &self.directory,
-            &temp,
-            rustix::fs::OFlags::WRONLY
-                | rustix::fs::OFlags::CREATE
-                | rustix::fs::OFlags::TRUNC
-                | rustix::fs::OFlags::NOFOLLOW
-                | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
-        )
-        .map_err(|_| FsError::StoreUnavailable)?;
-        let mut file = std::fs::File::from(fd);
-        file.write_all(&bytes)
-            .map_err(|_| FsError::StoreUnavailable)?;
-        file.sync_all().map_err(|_| FsError::StoreUnavailable)?;
-        rustix::fs::renameat(&self.directory, &temp, &self.directory, &final_name)
-            .map_err(|_| FsError::StoreUnavailable)?;
-        rustix::fs::fsync(&self.directory).map_err(|_| FsError::StoreUnavailable)?;
-        Ok(())
+        self.storage
+            .publish(
+                std::ffi::OsStr::new(&final_name),
+                &bytes,
+                tilo_files::native::atomic::PublishMode::Replace,
+                tilo_files::native::atomic::Privacy::OwnerOnly,
+            )
+            .map_err(FsError::Publication)
     }
+
     fn reserve_terminal_metadata(
         &self,
         receipt: &Receipt,
@@ -357,7 +357,20 @@ impl OperationOwner {
         if lock(&self.hooks)?.fail_checkpoint == Some(checkpoint) {
             return Err(FsError::StoreUnavailable);
         }
-        if let Err(error) = self.write(&receipt) {
+        #[cfg(test)]
+        let publication_failure = lock(&self.hooks)?.publication_failure;
+        #[cfg(test)]
+        let written = match publication_failure {
+            Some((phase, fault)) if phase == checkpoint => {
+                tilo_files::native::atomic::test_support::with_failure(fault, || {
+                    self.write(&receipt)
+                })
+            }
+            _ => self.write(&receipt),
+        };
+        #[cfg(not(test))]
+        let written = self.write(&receipt);
+        if let Err(error) = written {
             store.poisoned = true;
             return Err(error);
         }
@@ -408,7 +421,13 @@ impl OperationOwner {
             acknowledged: false,
         };
         self.reserve_terminal_metadata(&receipt, "Admitted")?;
-        self.write(&receipt)?;
+        if let Err(error) = self.write(&receipt) {
+            if matches!(&error, FsError::Publication(publication) if publication.state() != tilo_files::native::atomic::PublicationState::NotPublished)
+            {
+                store.poisoned = true;
+            }
+            return Err(error);
+        }
         store.receipts.insert(id, receipt);
         drop(store);
         Ok(OperationId(id))
@@ -717,6 +736,7 @@ fn bounded(message: &str, max: usize) -> String {
 }
 fn error_code(error: &FsError) -> String {
     match error {
+        FsError::Publication(_) => "StoreUnavailable".into(),
         FsError::Io(_) => "Io".into(),
         FsError::Unsupported(_) => "Unsupported".into(),
         FsError::Transport(_) => "Transport".into(),
@@ -825,4 +845,275 @@ fn mark_interrupted(receipt: &mut Receipt) -> Result<(), FsError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+    fn fixture() -> Receipt {
+        let identity = crate::native::NativeIdentity {
+            device: 0x1234,
+            inode: 0x00ab_cdef,
+        };
+        Receipt {
+            version: 1,
+            id: uuid::Uuid::from_u128(0x1234),
+            workspace: "fixture-room".into(),
+            app_id: "fixture-app".into(),
+            mount: uuid::Uuid::from_u128(0x5678),
+            state: OperationState::RecoveryRequired,
+            item_count: 1,
+            items: vec![StoredItem {
+                item: 0,
+                state: ItemState::CopiedSourceRetained,
+                recoveries: vec![uuid::Uuid::from_u128(0x9876)],
+                error_code: Some("StoreUnavailable".into()),
+                message: Some("retained".into()),
+            }],
+            steps: vec![Step {
+                item: 0,
+                phase: "Published".into(),
+                stage: None,
+                source: Some(NativeLocator {
+                    root: identity,
+                    parents: vec![b"parent".to_vec()],
+                    name: vec![0x66, 0x80],
+                    identity: Some(identity),
+                }),
+                destination: None,
+                fingerprint: Some(Fingerprint {
+                    identity,
+                    length: 3,
+                    digest: [0x42; 32],
+                }),
+                recovery: Some(RecoveryRecord {
+                    id: uuid::Uuid::from_u128(0x9876),
+                    kind: RecoveryKind::PublishedSourceRetained,
+                    original_name: vec![0x66, 0x80],
+                    acknowledged: false,
+                    note: None,
+                }),
+            }],
+            checkpoints: vec!["Admitted".into(), "Published".into()],
+            acknowledged: false,
+        }
+    }
+    fn private_root() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .permissions(
+                <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+            )
+            .tempdir()
+            .unwrap()
+    }
+    fn open(root: &tempfile::TempDir) -> Arc<OperationOwner> {
+        OperationOwner::open(
+            std::fs::File::open(root.path()).unwrap(),
+            FsOwner {
+                workspace: "fixture-room".into(),
+                app_id: "fixture-app".into(),
+            },
+        )
+        .unwrap()
+    }
+    #[test]
+    fn receipt_publication_admission_memory_disk_and_poisoning() {
+        use tilo_files::native::atomic::{
+            PublicationState as State,
+            test_support::{Checkpoint, with_failure},
+        };
+        for (fault, state, has_target) in [
+            (Checkpoint::BeforeDataFlush, State::NotPublished, false),
+            (Checkpoint::BeforePublish, State::NotPublished, false),
+            (
+                Checkpoint::PublishSubmitted,
+                State::PublicationUnknown,
+                false,
+            ),
+            (Checkpoint::AfterPublish, State::PublicationUnknown, true),
+            (
+                Checkpoint::BeforeCommit,
+                State::PublishedDurabilityUnknown,
+                true,
+            ),
+        ] {
+            let root = private_root();
+            let owner = open(&root);
+            let error =
+                with_failure(fault, || owner.admit(uuid::Uuid::from_u128(9), 1)).unwrap_err();
+            let FsError::Publication(publication) = &error else {
+                panic!("typed phase missing: {error}")
+            };
+            assert_eq!(publication.state(), state);
+            assert_eq!(error_code(&error), "StoreUnavailable");
+            let store = owner.state.lock().unwrap();
+            assert!(store.receipts.is_empty());
+            assert_eq!(store.poisoned, state != State::NotPublished);
+            drop(store);
+            let targets: Vec<_> = std::fs::read_dir(root.path())
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .filter(|p| p.extension().is_some_and(|e| e == "receipt"))
+                .collect();
+            assert_eq!(targets.len(), usize::from(has_target));
+            if has_target {
+                let bytes = std::fs::read(&targets[0]).unwrap();
+                let receipt: Receipt = postcard::from_bytes(&bytes).unwrap();
+                assert_eq!(receipt.version, 1);
+                assert_eq!(receipt.mount, uuid::Uuid::from_u128(9));
+                assert_eq!(receipt.checkpoints, ["Admitted"]);
+            }
+            if state == State::NotPublished {
+                owner.admit(uuid::Uuid::nil(), 1).unwrap();
+            } else {
+                assert!(matches!(
+                    owner.admit(uuid::Uuid::nil(), 1),
+                    Err(FsError::StoreUnavailable)
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn receipt_publication_commit_guard_never_owns_writer_exclusion_or_repairs_memory() {
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
+        let root = private_root();
+        let owner = open(&root);
+        let error = with_failure(Checkpoint::BeforeCommit, || {
+            owner.admit(uuid::Uuid::nil(), 1)
+        })
+        .unwrap_err();
+        let FsError::Publication(publication) = error else {
+            panic!("publication source")
+        };
+        assert!(matches!(
+            OperationOwner::open(
+                std::fs::File::open(root.path()).unwrap(),
+                owner.owner.clone()
+            ),
+            Err(FsError::Busy)
+        ));
+        publication.retry_commit().unwrap();
+        assert!(owner.state.lock().unwrap().receipts.is_empty());
+        assert!(matches!(
+            owner.admit(uuid::Uuid::nil(), 1),
+            Err(FsError::StoreUnavailable)
+        ));
+        drop(owner);
+        let owner = open(&root);
+        assert_eq!(owner.state.lock().unwrap().receipts.len(), 1);
+        drop(owner);
+        let owner = open(&root);
+        let error = with_failure(Checkpoint::BeforeCommit, || {
+            owner.admit(uuid::Uuid::nil(), 1)
+        })
+        .unwrap_err();
+        drop(owner);
+        // Retaining the error retains publication handles, not the writer lock.
+        let reopened = open(&root);
+        assert_eq!(reopened.state.lock().unwrap().receipts.len(), 2);
+        drop(error);
+        assert_eq!(
+            std::fs::read_dir(root.path())
+                .unwrap()
+                .filter(|e| e
+                    .as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|e| e == "receipt"))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn receipt_publication_reconciliation_failure_retains_original_phase_and_disk() {
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
+        let root = private_root();
+        let owner = open(&root);
+        let id = owner.admit(uuid::Uuid::nil(), 1).unwrap();
+        drop(owner);
+        let error = with_failure(Checkpoint::BeforeCommit, || {
+            OperationOwner::open(
+                std::fs::File::open(root.path()).unwrap(),
+                FsOwner {
+                    workspace: "fixture-room".into(),
+                    app_id: "fixture-app".into(),
+                },
+            )
+        })
+        .err()
+        .unwrap();
+        let FsError::Publication(publication) = &error else {
+            panic!("phase lost")
+        };
+        assert_eq!(
+            publication.state(),
+            tilo_files::native::atomic::PublicationState::PublishedDurabilityUnknown
+        );
+        drop(error);
+        let reopened = open(&root);
+        assert_eq!(
+            reopened.report(&id).unwrap().items[0].error_code.as_deref(),
+            Some("Interrupted")
+        );
+        assert_eq!(
+            reopened.report(&id).unwrap().state,
+            OperationState::Finished
+        );
+    }
+
+    #[test]
+    fn receipt_v1_fixed_writer_bytes() {
+        // Captured from the pre-migration production writer, 2026-09-18.
+        const V1: &[u8] = &[
+            1, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 18, 52, 12, 102, 105, 120, 116, 117,
+            114, 101, 45, 114, 111, 111, 109, 11, 102, 105, 120, 116, 117, 114, 101, 45, 97, 112,
+            112, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 86, 120, 2, 1, 1, 0, 3, 1, 16, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 152, 118, 1, 16, 83, 116, 111, 114, 101, 85, 110,
+            97, 118, 97, 105, 108, 97, 98, 108, 101, 1, 8, 114, 101, 116, 97, 105, 110, 101, 100,
+            1, 0, 9, 80, 117, 98, 108, 105, 115, 104, 101, 100, 0, 0, 1, 180, 36, 239, 155, 175, 5,
+            1, 6, 112, 97, 114, 101, 110, 116, 2, 102, 128, 1, 180, 36, 239, 155, 175, 5, 1, 180,
+            36, 239, 155, 175, 5, 3, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66,
+            66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 1, 16, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 152, 118, 3, 2, 102, 128, 0, 0, 2, 8, 65, 100, 109, 105,
+            116, 116, 101, 100, 9, 80, 117, 98, 108, 105, 115, 104, 101, 100, 0,
+        ];
+        let root = tempfile::Builder::new()
+            .permissions(
+                <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+            )
+            .tempdir()
+            .unwrap();
+        let owner = OperationOwner::open(
+            std::fs::File::open(root.path()).unwrap(),
+            FsOwner {
+                workspace: "fixture-room".into(),
+                app_id: "fixture-app".into(),
+            },
+        )
+        .unwrap();
+        let receipt = fixture();
+        let historical_pending = root.path().join(format!("{}.pending", receipt.id));
+        std::fs::write(&historical_pending, b"historical pending evidence").unwrap();
+        owner.write(&receipt).unwrap();
+        assert_eq!(
+            std::fs::read(&historical_pending).unwrap(),
+            b"historical pending evidence"
+        );
+        let bytes = std::fs::read(root.path().join(format!("{}.receipt", receipt.id))).unwrap();
+        assert_eq!(bytes, V1);
+        let decoded: Receipt = postcard::from_bytes(V1).unwrap();
+        assert_eq!(postcard::to_stdvec(&decoded).unwrap(), V1);
+        assert_eq!(decoded.steps[0].source.as_ref().unwrap().name, [0x66, 0x80]);
+        assert_eq!(
+            decoded.steps[0].source.as_ref().unwrap().root.device,
+            0x1234
+        );
+        assert_eq!(
+            decoded.steps[0].source.as_ref().unwrap().root.inode,
+            0x00ab_cdef
+        );
+    }
 }

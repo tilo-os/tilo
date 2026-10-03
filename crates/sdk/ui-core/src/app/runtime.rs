@@ -18,6 +18,13 @@ use taffy::{NodeId, TaffyTree};
 use winit::window::CursorIcon;
 
 /// Retained layout and widget lookup state.
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "the safe area and content origin are read only by the native event-loop runner"
+    )
+)]
 pub(super) struct LayoutRuntime {
     pub(super) taffy: TaffyTree<()>,
     pub(super) root_node: Option<NodeId>,
@@ -29,8 +36,13 @@ pub(super) struct LayoutRuntime {
     pub(super) structure_dirty: bool,
     /// Diffed against `inner_size()` to catch a resize without a `Resized` event.
     pub(super) last_frame_size: Option<winit::dpi::PhysicalSize<u32>>,
-    /// Last settled logical viewport; scale changes also require a solve.
+    /// Last settled logical content size (the window inside `safe_area`);
+    /// scale changes also require a solve.
     pub(super) last_layout_logical: Option<(f64, f64)>,
+    /// System chrome drawn over the window, which content stays clear of.
+    pub(super) safe_area: crate::scale::SafeArea,
+    /// Where the root is placed: the safe area's top-left corner.
+    pub(super) content_origin: vello::kurbo::Point,
 }
 
 impl LayoutRuntime {
@@ -43,6 +55,8 @@ impl LayoutRuntime {
             structure_dirty: false,
             last_frame_size: None,
             last_layout_logical: None,
+            safe_area: crate::scale::SafeArea::default(),
+            content_origin: vello::kurbo::Point::ORIGIN,
         }
     }
 }
@@ -83,9 +97,16 @@ impl InputRuntime {
 /// centralizes their lifecycle rather than separating them from UI
 /// capabilities.
 pub(super) struct ActionRuntime {
+    pub(super) published_invocations: crate::invocation_scope::PublishedInvocationRuntime,
     pub(super) action_palette: Option<crate::action_palette::ActionPalette>,
     pub(super) action_registry: tilo_actions::ActionRegistry,
+    // Independent from scheduling invalidation: mutable unbound decoder access.
+    pub(super) action_registry_generation: u64,
     pub(super) action_transport: Box<dyn tilo_actions::ActionTransport>,
+    /// The local transport is usable only until an authoritative host transport
+    /// has been installed. Legacy document controls use this to avoid treating
+    /// a host-backed action as a process-local fallback.
+    pub(super) legacy_local_transport: bool,
     pub(super) resource_cache: RefCell<Option<ResourceCache>>,
     pub(super) bound_resource_cache: crate::bound_dispatch::BoundResourceCache,
     pub(super) bound_record_sync: Option<super::bound_record_sync::BoundRecordSync>,
@@ -93,10 +114,12 @@ pub(super) struct ActionRuntime {
     pub(super) last_published_bound_route: Option<crate::collaboration::PrimaryRouteWitness>,
     #[cfg(test)]
     pub(super) bound_broker_route_for_test: Option<crate::collaboration::PrimaryRouteWitness>,
-    pub(super) action_directory_stamp:
-        Option<(super::action_directory_snapshot::DirectoryWitness, String)>,
+    pub(super) action_directory_stamp: Option<(
+        std::rc::Rc<super::action_directory_snapshot::DirectoryWitness>,
+        String,
+    )>,
     pub(super) action_directory_snapshot:
-        Option<super::action_directory_snapshot::ActionDirectorySnapshot>,
+        Option<std::rc::Rc<super::action_directory_snapshot::ActionDirectorySnapshot>>,
     pub(super) bound_invocations: std::collections::HashMap<
         tilo_actions::InvocationId,
         crate::bound_dispatch::BoundActionTarget,
@@ -126,6 +149,9 @@ pub(super) struct ActionRuntime {
     pub(super) broker_requests: std::collections::HashMap<BrokerReply, u64>,
     /// `None` means this process exhausted the complete request-id namespace.
     pub(super) next_broker_request_id: Option<u64>,
+    /// Dirty tracking for the hosted worker pump (no window event loop).
+    pub(super) hosted: super::model_lifecycle::HostedPumpState,
+    pub(super) history_previews: super::history_actions::HistoryPreviews,
 }
 
 /// Which answer from the session action host a request is waiting for.
@@ -140,9 +166,12 @@ pub(super) enum BrokerReply {
 impl ActionRuntime {
     pub(super) fn new() -> Self {
         Self {
+            published_invocations: Default::default(),
             action_palette: None,
             action_registry: tilo_actions::ActionRegistry::new(),
+            action_registry_generation: 0,
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
+            legacy_local_transport: true,
             resource_cache: RefCell::new(None),
             bound_resource_cache: crate::bound_dispatch::BoundResourceCache::default(),
             bound_record_sync: None,
@@ -167,6 +196,8 @@ impl ActionRuntime {
             pending_application_launches: std::collections::HashMap::new(),
             broker_requests: std::collections::HashMap::new(),
             next_broker_request_id: Some(0),
+            hosted: super::model_lifecycle::HostedPumpState::default(),
+            history_previews: super::history_actions::HistoryPreviews::default(),
         }
     }
 }
@@ -231,6 +262,12 @@ pub(super) struct ContinuationRuntime {
     pub(super) pending_restore: Option<crate::collaboration::ContinuationMetadata>,
     /// Generic view restoration waits until layout has built the focus order.
     pub(super) pending_view: Option<crate::view::View>,
+    /// Route epoch for private continuity. A new acknowledged route must
+    /// republish unchanged metadata and playback through that route only.
+    pub(super) last_private_route: Option<crate::collaboration::PrimaryRouteWitness>,
+    /// The document this window shows has left its workspace, and the
+    /// window knows: it stopped editing and told its desktop once.
+    pub(super) retired: bool,
 }
 
 impl ContinuationRuntime {
@@ -239,6 +276,8 @@ impl ContinuationRuntime {
             last_published: None,
             pending_restore,
             pending_view: None,
+            last_private_route: None,
+            retired: false,
         }
     }
 }

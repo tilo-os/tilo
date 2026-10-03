@@ -46,6 +46,34 @@ impl ActionCx {
         }
     }
 
+    /// A context for ids minted part-way through an action that has already
+    /// written: seeded like [`Self::for_apply`] but from the heads the action
+    /// started from, so reading them does not commit its writes so far as a
+    /// separate change.
+    #[must_use]
+    pub fn for_write(doc: &Doc, payload: &[u8]) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"tilo-resource/write-seed/v1");
+        if let Some((group, position)) = crate::group::current_member() {
+            hasher.update(b"member");
+            hasher.update(&group);
+            hasher.update(&position.to_le_bytes());
+        } else {
+            hasher.update(doc.get_actor().to_bytes());
+            let mut heads = automerge::transaction::Transactable::base_heads(doc);
+            heads.sort();
+            for head in heads {
+                hasher.update(&head.0);
+            }
+        }
+        hasher.update(payload);
+        Self {
+            seed: *hasher.finalize().as_bytes(),
+            minted: 0,
+            now_ms: 0,
+        }
+    }
+
     /// A fresh id, unique to this action and stable under replay.
     pub fn id(&mut self) -> Id {
         let mut hasher = blake3::Hasher::new();
@@ -67,7 +95,8 @@ impl ActionCx {
 /// A deterministic seed for applying `payload` to `doc`: the document's
 /// actor and heads (both pinned by the executor), or, inside a group member,
 /// the group's seed and the member's position.
-pub(crate) fn seed(doc: &mut Doc, domain: &[u8], payload: &[u8]) -> [u8; 32] {
+pub(crate) fn seed(doc: &Doc, domain: &[u8], payload: &[u8]) -> [u8; 32] {
+    use automerge::transaction::Transactable as _;
     let mut hasher = blake3::Hasher::new();
     hasher.update(domain);
     if let Some((group, position)) = crate::group::current_member() {
@@ -76,10 +105,19 @@ pub(crate) fn seed(doc: &mut Doc, domain: &[u8], payload: &[u8]) -> [u8; 32] {
         hasher.update(&position.to_le_bytes());
     } else {
         hasher.update(doc.get_actor().to_bytes());
-        let mut heads = doc.get_heads();
+        // The committed heads, and how far an open transaction has got past
+        // them: reading the heads must not commit a transaction someone else
+        // (a host stamping typing as one change) owns. With nothing pending
+        // this is exactly the document's heads.
+        let mut heads = doc.base_heads();
         heads.sort();
         for head in heads {
             hasher.update(&head.0);
+        }
+        let pending = doc.pending_ops();
+        if pending > 0 {
+            hasher.update(b"pending");
+            hasher.update(&u64::try_from(pending).unwrap_or(u64::MAX).to_le_bytes());
         }
     }
     hasher.update(payload);
@@ -150,6 +188,12 @@ pub trait Operation: Serialize + DeserializeOwned + Clone + std::fmt::Debug + 's
     fn risk(&self) -> RiskLevel {
         RiskLevel::Low
     }
+
+    /// Whether the operation changes the record's content or is housekeeping
+    /// about it. `#[resource]` generates it from `#[action(housekeeping)]`.
+    fn change_kind(&self) -> tilo_actions::ChangeKind {
+        tilo_actions::ChangeKind::Content
+    }
 }
 
 /// A record operation with the origin's time attached: the replayable action
@@ -182,6 +226,10 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
 
     fn risk(&self) -> RiskLevel {
         self.operation.risk()
+    }
+
+    fn change_kind(&self) -> tilo_actions::ChangeKind {
+        self.operation.change_kind()
     }
 }
 
@@ -388,5 +436,29 @@ impl<R: Resource> Invoke<R> {
     /// Returns why the arguments do not bind.
     pub fn build(&self, now_ms: i64) -> Result<R::Action, String> {
         crate::resource::build_action::<R>(self.id, &self.arguments, now_ms)
+    }
+}
+
+#[cfg(test)]
+mod seed_tests {
+    use super::*;
+    use automerge::transaction::Transactable as _;
+
+    #[test]
+    fn a_seed_read_mid_transaction_leaves_it_open_and_moves_with_it() {
+        let mut doc = Doc::new();
+        doc.put(ROOT, "a", 1).unwrap();
+        doc.commit();
+        let committed = seed(&doc, b"test", b"payload");
+        doc.put(ROOT, "b", 2).unwrap();
+        let base = doc.base_heads();
+        let open = seed(&doc, b"test", b"payload");
+        assert!(doc.pending_ops() > 0, "reading the seed commits nothing");
+        assert_eq!(doc.base_heads(), base);
+        assert_ne!(open, committed, "an open transaction moves the seed");
+        doc.put(ROOT, "c", 3).unwrap();
+        assert_ne!(seed(&doc, b"test", b"payload"), open);
+        doc.commit();
+        assert_ne!(seed(&doc, b"test", b"payload"), committed);
     }
 }

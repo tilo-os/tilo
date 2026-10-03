@@ -173,8 +173,32 @@ impl MlsGovernanceFrameV1 {
         action: MlsGovernanceAction,
         signer: &SigningKey,
     ) -> Result<Self, CanonicalError> {
-        let signed_by = Ed25519PublicKey::from_bytes(signer.verifying_key().to_bytes());
-        let mut frame = Self {
+        let mut frame = Self::unsigned(
+            channel,
+            transaction_id,
+            membership_revision,
+            previous_frame_digest,
+            epoch,
+            action,
+            Ed25519PublicKey::from_bytes(signer.verifying_key().to_bytes()),
+        );
+        frame.signature = sign_event(&frame.signing_view(), signer)?;
+        Ok(frame)
+    }
+
+    /// A V1 frame whose signature is still to be made by `signed_by`, see
+    /// [`MlsAccessRequestV1::unsigned`]: sign [`Self::signing_bytes`] and
+    /// store it in `signature`.
+    pub fn unsigned(
+        channel: ChannelId,
+        transaction_id: [u8; 32],
+        membership_revision: u64,
+        previous_frame_digest: [u8; 32],
+        epoch: u64,
+        action: MlsGovernanceAction,
+        signed_by: Ed25519PublicKey,
+    ) -> Self {
+        Self {
             version: MLS_GOVERNANCE_VERSION,
             transaction_id,
             channel,
@@ -184,9 +208,16 @@ impl MlsGovernanceFrameV1 {
             action,
             signed_by,
             signature: Signature::from_bytes([0; 64]),
-        };
-        frame.signature = sign_event(&frame.signing_view(), signer)?;
-        Ok(frame)
+        }
+    }
+
+    /// The bytes `signed_by` signs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CanonicalError`] if the signing view cannot be encoded.
+    pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
+        canonical_bytes(&self.signing_view())
     }
 
     fn signing_view(&self) -> SigningView<'_> {
@@ -243,7 +274,7 @@ impl MlsGovernanceFrameV1 {
         if !context.governors.contains(&self.signed_by) {
             return Err(MlsGovernanceError::Unauthorized);
         }
-        verify_event(&self.signing_view(), &self.signature, &self.signed_by)
+        self.verify_signature()
             .map_err(|error: VerifyError| MlsGovernanceError::Signature(error.to_string()))?;
         match &self.action {
             action @ (MlsGovernanceAction::Add { .. }
@@ -360,6 +391,34 @@ impl MlsAccessRequestV1 {
         Ok(request)
     }
 
+    /// A request for `device` whose signature is still to be made by a
+    /// key this process cannot hold (a browser's non-extractable `WebCrypto`
+    /// key): sign [`Self::signing_bytes`] and store it in `signature`.
+    pub fn unsigned(
+        channel: ChannelId,
+        device: Ed25519PublicKey,
+        key_package: Vec<u8>,
+        issued_at: u64,
+    ) -> Self {
+        Self {
+            version: MLS_ACCESS_VERSION,
+            channel,
+            device,
+            key_package,
+            issued_at,
+            signature: Signature::from_bytes([0; 64]),
+        }
+    }
+
+    /// The bytes the device key signs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CanonicalError`] if the signing view cannot be encoded.
+    pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
+        canonical_bytes(&self.signing_view())
+    }
+
     fn signing_view(&self) -> AccessRequestView<'_> {
         AccessRequestView {
             domain: b"tilo.mls-access-request.v1",
@@ -436,6 +495,31 @@ impl MlsGovernanceAckV1 {
         Ok(ack)
     }
 
+    /// An acknowledgement whose signature is still to be made, see
+    /// [`MlsAccessRequestV1::unsigned`].
+    pub fn unsigned(
+        channel: ChannelId,
+        device: Ed25519PublicKey,
+        through_digest: [u8; 32],
+    ) -> Self {
+        Self {
+            version: MLS_ACCESS_VERSION,
+            channel,
+            device,
+            through_digest,
+            signature: Signature::from_bytes([0; 64]),
+        }
+    }
+
+    /// The bytes the device key signs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CanonicalError`] if the signing view cannot be encoded.
+    pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
+        canonical_bytes(&self.signing_view())
+    }
+
     fn signing_view(&self) -> AckView {
         AckView {
             domain: b"tilo.mls-governance-ack.v1",
@@ -498,6 +582,37 @@ mod tests {
         let mut forged = ack;
         forged.through_digest = [5; 32];
         assert!(forged.verify().is_err());
+    }
+
+    #[test]
+    fn a_frame_signed_elsewhere_matches_one_signed_here() {
+        let (steward, steward_pk) = generate_keypair();
+        let channel = ChannelId::new();
+        let signed = MlsGovernanceFrameV1::signed(
+            channel,
+            [2; 32],
+            1,
+            [0; 32],
+            0,
+            MlsGovernanceAction::Genesis,
+            &steward,
+        )
+        .unwrap();
+        let mut unsigned = MlsGovernanceFrameV1::unsigned(
+            channel,
+            [2; 32],
+            1,
+            [0; 32],
+            0,
+            MlsGovernanceAction::Genesis,
+            steward_pk,
+        );
+        assert!(unsigned.verify_signature().is_err());
+        let message = unsigned.signing_bytes().unwrap();
+        unsigned.signature =
+            Signature::from_bytes(ed25519_dalek::Signer::sign(&steward, &message).to_bytes());
+        unsigned.verify_signature().unwrap();
+        assert_eq!(unsigned, signed);
     }
 
     #[test]

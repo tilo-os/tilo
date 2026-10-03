@@ -213,7 +213,7 @@ pub fn verify_enrollment_token(
 /// Crockford base32: upper-case output without padding; decoding is
 /// case-insensitive, reads `O` as `0` and `I`/`L` as `1`, and ignores unused
 /// bits in the last symbol.
-const CROCKFORD: data_encoding::Encoding = data_encoding_macro::new_encoding! {
+pub(crate) const CROCKFORD: data_encoding::Encoding = data_encoding_macro::new_encoding! {
     symbols: "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
     translate_from: "abcdefghjkmnpqrstvwxyzOoIiLl",
     translate_to: "ABCDEFGHJKMNPQRSTVWXYZ001111",
@@ -301,206 +301,219 @@ mod tests {
         sk
     }
 
+    /// Tokens mint and verify, expiry and issuance/maximum lifetime are enforced, tampered
+    /// capabilities fail, and a different issuer fails.
     #[test]
-    fn mint_and_verify_round_trip() {
-        let (_root, user) = UserIdentity::generate("Alice", 1);
-        let issuer_sk = issuer(user.public_key);
-        let token = mint_enrollment_token(
-            user.public_key,
-            DeviceCapabilities::member(),
-            5_000,
-            10_000,
-            [7u8; 16],
-            &issuer_sk,
-        )
-        .unwrap();
-        verify_enrollment_token(&token, 5_000).unwrap();
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn enrollment_tokens_verify_only_untampered_live_and_from_their_issuer() {
+        // Phase: mint_and_verify_round_trip.
+        {
+            let (_root, user) = UserIdentity::generate("Alice", 1);
+            let issuer_sk = issuer(user.public_key);
+            let token = mint_enrollment_token(
+                user.public_key,
+                DeviceCapabilities::member(),
+                5_000,
+                10_000,
+                [7u8; 16],
+                &issuer_sk,
+            )
+            .unwrap();
+            verify_enrollment_token(&token, 5_000).unwrap();
+        }
 
-    #[test]
-    fn expiry_enforced() {
-        let (_root, user) = UserIdentity::generate("Alice", 1);
-        let issuer_sk = issuer(user.public_key);
-        let token = mint_enrollment_token(
-            user.public_key,
-            DeviceCapabilities::member(),
-            5_000,
-            10_000,
-            [7u8; 16],
-            &issuer_sk,
-        )
-        .unwrap();
-        assert_eq!(
-            verify_enrollment_token(&token, 10_000).unwrap_err(),
-            EnrollmentError::Expired
-        );
-        assert_eq!(
-            verify_enrollment_token(&token, 11_000).unwrap_err(),
-            EnrollmentError::Expired
-        );
-    }
+        // Phase: expiry_enforced.
+        {
+            let (_root, user) = UserIdentity::generate("Alice", 1);
+            let issuer_sk = issuer(user.public_key);
+            let token = mint_enrollment_token(
+                user.public_key,
+                DeviceCapabilities::member(),
+                5_000,
+                10_000,
+                [7u8; 16],
+                &issuer_sk,
+            )
+            .unwrap();
+            assert_eq!(
+                verify_enrollment_token(&token, 10_000).unwrap_err(),
+                EnrollmentError::Expired
+            );
+            assert_eq!(
+                verify_enrollment_token(&token, 11_000).unwrap_err(),
+                EnrollmentError::Expired
+            );
+        }
 
-    #[test]
-    fn issuance_and_maximum_lifetime_are_enforced() {
-        let (_root, user) = UserIdentity::generate("Alice", 1);
-        let issuer_sk = issuer(user.public_key);
-        assert_eq!(
-            mint_enrollment_token(
+        // Phase: issuance_and_maximum_lifetime_are_enforced.
+        {
+            let (_root, user) = UserIdentity::generate("Alice", 1);
+            let issuer_sk = issuer(user.public_key);
+            assert_eq!(
+                mint_enrollment_token(
+                    user.public_key,
+                    DeviceCapabilities::member(),
+                    10,
+                    10 + MAX_ENROLLMENT_TOKEN_LIFETIME_NS + 1,
+                    [8; 16],
+                    &issuer_sk,
+                ),
+                Err(EnrollmentError::InvalidValidity)
+            );
+            let token = mint_enrollment_token(
                 user.public_key,
                 DeviceCapabilities::member(),
                 10,
-                10 + MAX_ENROLLMENT_TOKEN_LIFETIME_NS + 1,
-                [8; 16],
+                20,
+                [9; 16],
                 &issuer_sk,
-            ),
-            Err(EnrollmentError::InvalidValidity)
-        );
-        let token = mint_enrollment_token(
-            user.public_key,
-            DeviceCapabilities::member(),
-            10,
-            20,
-            [9; 16],
-            &issuer_sk,
-        )
-        .unwrap();
-        assert_eq!(
-            verify_enrollment_token(&token, 9),
-            Err(EnrollmentError::NotYetValid)
-        );
-
-        // Verification independently rejects an overlong token even when its
-        // contents carry a valid issuer signature.
-        let mut overlong = token;
-        overlong.expires_at_ns = overlong.issued_at_ns + MAX_ENROLLMENT_TOKEN_LIFETIME_NS + 1;
-        let digest = signing_digest(ENROLLMENT_PREIMAGE_TAG, &overlong.view()).unwrap();
-        overlong.signature = issuer_sk.sign(&digest).to_bytes();
-        assert_eq!(
-            verify_enrollment_token(&overlong, overlong.issued_at_ns),
-            Err(EnrollmentError::InvalidValidity)
-        );
-    }
-
-    #[test]
-    fn tampered_capabilities_fails() {
-        let (_root, user) = UserIdentity::generate("Alice", 1);
-        let issuer_sk = issuer(user.public_key);
-        let mut token = mint_enrollment_token(
-            user.public_key,
-            DeviceCapabilities::member(),
-            5_000,
-            10_000,
-            [7u8; 16],
-            &issuer_sk,
-        )
-        .unwrap();
-        token.capabilities.can_admit_devices = true;
-        assert_eq!(
-            verify_enrollment_token(&token, 5_000).unwrap_err(),
-            EnrollmentError::BadSignature
-        );
-    }
-
-    #[test]
-    fn base32_round_trip() {
-        let (_root, user) = UserIdentity::generate("Alice", 1);
-        let issuer_sk = issuer(user.public_key);
-        let token = mint_enrollment_token(
-            user.public_key,
-            DeviceCapabilities::host(),
-            5_000,
-            10_000,
-            [42u8; 16],
-            &issuer_sk,
-        )
-        .unwrap();
-        let encoded = encode_enrollment_token(&token).unwrap();
-        // Should be printable ASCII, decidedly short enough for a
-        // QR code (base32 makes it ~1.6x the raw byte count; the
-        // raw payload here is ~180 bytes → ~290 chars).
-        assert!(encoded.is_ascii());
-        assert!(encoded.len() < 400);
-        // No lowercase (Crockford is upper-case output).
-        assert!(
-            encoded
-                .chars()
-                .all(|c| !c.is_ascii_lowercase() || c == '=' || c.is_ascii_digit())
-        );
-
-        let back = decode_enrollment_token(&encoded).unwrap();
-        assert_eq!(token, back);
-        verify_enrollment_token(&back, 5_000).unwrap();
-    }
-
-    #[test]
-    fn malformed_base32_rejected() {
-        // Contains characters not in the Crockford alphabet (`!`).
-        assert_eq!(
-            decode_enrollment_token("!!!!!!!!").unwrap_err(),
-            EnrollmentError::MalformedBase32
-        );
-        // Valid base32 but not a token → payload decode fails.
-        let bytes = CROCKFORD.encode(&[0u8, 1, 2, 3]);
-        assert!(matches!(
-            decode_enrollment_token(&bytes).unwrap_err(),
-            EnrollmentError::Payload(_)
-        ));
-    }
-
-    /// Crockford vectors: the encoding is fixed on the wire, and decoding
-    /// keeps accepting the read-aloud spellings and stray symbols it always
-    /// accepted.
-    #[test]
-    fn crockford_wire_form_is_stable() {
-        assert_eq!(CROCKFORD.encode(b""), "");
-        assert_eq!(CROCKFORD.encode(b"f"), "CR");
-        assert_eq!(CROCKFORD.encode(b"foobar"), "CSQPYRK1E8");
-        assert_eq!(CROCKFORD.encode(&[0xff; 5]), "ZZZZZZZZ");
-        assert_eq!(CROCKFORD.encode(&[0, 1, 2, 3]), "000G40R");
-        for spelling in [
-            "CSQPYRK1E8",
-            "csqpyrk1e8",
-            "CSQPYRKIE8",
-            "CSQPYRKlE8",
-            "CSQPYRK1E8Z",
-        ] {
+            )
+            .unwrap();
             assert_eq!(
-                decode_crockford(spelling).as_deref(),
-                Some(&b"foobar"[..]),
-                "{spelling}"
+                verify_enrollment_token(&token, 9),
+                Err(EnrollmentError::NotYetValid)
+            );
+
+            // Verification independently rejects an overlong token even when its
+            // contents carry a valid issuer signature.
+            let mut overlong = token;
+            overlong.expires_at_ns = overlong.issued_at_ns + MAX_ENROLLMENT_TOKEN_LIFETIME_NS + 1;
+            let digest = signing_digest(ENROLLMENT_PREIMAGE_TAG, &overlong.view()).unwrap();
+            overlong.signature = issuer_sk.sign(&digest).to_bytes();
+            assert_eq!(
+                verify_enrollment_token(&overlong, overlong.issued_at_ns),
+                Err(EnrollmentError::InvalidValidity)
             );
         }
-        assert_eq!(
-            decode_crockford("OOOG4OR").as_deref(),
-            Some(&[0u8, 1, 2, 3][..])
-        );
-        assert_eq!(decode_crockford("CS").as_deref(), Some(&b"f"[..]));
-        for invalid in ["CSQPYRKUE8", "CSQPYRK1E8!", "CSQPYRK1E=", "!!!!!!!!"] {
-            assert_eq!(decode_crockford(invalid), None, "{invalid}");
+
+        // Phase: tampered_capabilities_fails.
+        {
+            let (_root, user) = UserIdentity::generate("Alice", 1);
+            let issuer_sk = issuer(user.public_key);
+            let mut token = mint_enrollment_token(
+                user.public_key,
+                DeviceCapabilities::member(),
+                5_000,
+                10_000,
+                [7u8; 16],
+                &issuer_sk,
+            )
+            .unwrap();
+            token.capabilities.can_admit_devices = true;
+            assert_eq!(
+                verify_enrollment_token(&token, 5_000).unwrap_err(),
+                EnrollmentError::BadSignature
+            );
+        }
+
+        // Phase: signed_by_different_issuer_verify_fails.
+        {
+            let (_root, user) = UserIdentity::generate("Alice", 1);
+            let issuer_sk = issuer(user.public_key);
+            let attacker = issuer(user.public_key);
+            let mut token = mint_enrollment_token(
+                user.public_key,
+                DeviceCapabilities::member(),
+                5_000,
+                10_000,
+                [7u8; 16],
+                &issuer_sk,
+            )
+            .unwrap();
+            // Replace the recorded issuer pubkey with the attacker's;
+            // the signature was made under the issuer's key so it
+            // won't verify under the attacker's.
+            token.issuer_device_public_key = attacker.verifying_key().to_bytes();
+            assert_eq!(
+                verify_enrollment_token(&token, 5_000).unwrap_err(),
+                EnrollmentError::BadSignature
+            );
         }
     }
 
+    /// Base32 round-trips, malformed base32 is rejected, and the Crockford wire form is stable.
     #[test]
-    fn signed_by_different_issuer_verify_fails() {
-        let (_root, user) = UserIdentity::generate("Alice", 1);
-        let issuer_sk = issuer(user.public_key);
-        let attacker = issuer(user.public_key);
-        let mut token = mint_enrollment_token(
-            user.public_key,
-            DeviceCapabilities::member(),
-            5_000,
-            10_000,
-            [7u8; 16],
-            &issuer_sk,
-        )
-        .unwrap();
-        // Replace the recorded issuer pubkey with the attacker's;
-        // the signature was made under the issuer's key so it
-        // won't verify under the attacker's.
-        token.issuer_device_public_key = attacker.verifying_key().to_bytes();
-        assert_eq!(
-            verify_enrollment_token(&token, 5_000).unwrap_err(),
-            EnrollmentError::BadSignature
-        );
+    fn enrollment_tokens_travel_as_stable_crockford_base32() {
+        // Phase: base32_round_trip.
+        {
+            let (_root, user) = UserIdentity::generate("Alice", 1);
+            let issuer_sk = issuer(user.public_key);
+            let token = mint_enrollment_token(
+                user.public_key,
+                DeviceCapabilities::host(),
+                5_000,
+                10_000,
+                [42u8; 16],
+                &issuer_sk,
+            )
+            .unwrap();
+            let encoded = encode_enrollment_token(&token).unwrap();
+            // Should be printable ASCII, decidedly short enough for a
+            // QR code (base32 makes it ~1.6x the raw byte count; the
+            // raw payload here is ~180 bytes → ~290 chars).
+            assert!(encoded.is_ascii());
+            assert!(encoded.len() < 400);
+            // No lowercase (Crockford is upper-case output).
+            assert!(
+                encoded
+                    .chars()
+                    .all(|c| !c.is_ascii_lowercase() || c == '=' || c.is_ascii_digit())
+            );
+
+            let back = decode_enrollment_token(&encoded).unwrap();
+            assert_eq!(token, back);
+            verify_enrollment_token(&back, 5_000).unwrap();
+        }
+
+        // Phase: malformed_base32_rejected.
+        {
+            // Contains characters not in the Crockford alphabet (`!`).
+            assert_eq!(
+                decode_enrollment_token("!!!!!!!!").unwrap_err(),
+                EnrollmentError::MalformedBase32
+            );
+            // Valid base32 but not a token → payload decode fails.
+            let bytes = CROCKFORD.encode(&[0u8, 1, 2, 3]);
+            assert!(matches!(
+                decode_enrollment_token(&bytes).unwrap_err(),
+                EnrollmentError::Payload(_)
+            ));
+        }
+
+        // Phase: crockford_wire_form_is_stable.
+        // Crockford vectors: the encoding is fixed on the wire, and decoding
+        // keeps accepting the read-aloud spellings and stray symbols it always
+        // accepted.
+        {
+            assert_eq!(CROCKFORD.encode(b""), "");
+            assert_eq!(CROCKFORD.encode(b"f"), "CR");
+            assert_eq!(CROCKFORD.encode(b"foobar"), "CSQPYRK1E8");
+            assert_eq!(CROCKFORD.encode(&[0xff; 5]), "ZZZZZZZZ");
+            assert_eq!(CROCKFORD.encode(&[0, 1, 2, 3]), "000G40R");
+            for spelling in [
+                "CSQPYRK1E8",
+                "csqpyrk1e8",
+                "CSQPYRKIE8",
+                "CSQPYRKlE8",
+                "CSQPYRK1E8Z",
+            ] {
+                assert_eq!(
+                    decode_crockford(spelling).as_deref(),
+                    Some(&b"foobar"[..]),
+                    "{spelling}"
+                );
+            }
+            assert_eq!(
+                decode_crockford("OOOG4OR").as_deref(),
+                Some(&[0u8, 1, 2, 3][..])
+            );
+            assert_eq!(decode_crockford("CS").as_deref(), Some(&b"f"[..]));
+            for invalid in ["CSQPYRKUE8", "CSQPYRK1E8!", "CSQPYRK1E=", "!!!!!!!!"] {
+                assert_eq!(decode_crockford(invalid), None, "{invalid}");
+            }
+        }
     }
 }

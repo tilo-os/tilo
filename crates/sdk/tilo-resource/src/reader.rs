@@ -86,6 +86,8 @@ pub struct Reader<R: Resource> {
     revision: u64,
     /// The last refresh failed part-way; the next sync reads everything.
     stale: bool,
+    /// The open transaction last read: its base heads and length.
+    uncommitted: Option<(Vec<ChangeHash>, usize)>,
 }
 
 impl<R: Resource> Reader<R> {
@@ -105,6 +107,7 @@ impl<R: Resource> Reader<R> {
             demand,
             revision: 0,
             stale: false,
+            uncommitted: None,
         })
     }
 
@@ -129,6 +132,7 @@ impl<R: Resource> Reader<R> {
             demand: Demand::none(),
             revision: 0,
             stale: false,
+            uncommitted: None,
         }
     }
 
@@ -166,7 +170,29 @@ impl<R: Resource> Reader<R> {
     /// resource; the state is left as it was last read successfully and the
     /// next sync reads it whole.
     pub fn sync(&mut self, doc: &mut Doc) -> Result<bool, ModelError> {
-        let delta = self.tracker.delta(doc);
+        // An open transaction belongs to whoever opened it, and closing it
+        // here would move their commit boundary. It has no version to diff
+        // from, so its state is read whole — once per change of the
+        // transaction — and the next sync after it closes diffs as usual.
+        if doc.pending_ops() > 0 {
+            let open = (doc.base_heads(), doc.pending_ops());
+            if self.uncommitted.as_ref() == Some(&open) {
+                return Ok(false);
+            }
+            self.uncommitted = Some(open);
+            self.apply(doc, &Delta::everything())?;
+            return Ok(true);
+        }
+        let state = &self.state;
+        let delta = self
+            .tracker
+            .delta_located(doc, &|obj| R::locate(state, obj));
+        let delta = if self.uncommitted.take().is_some() && delta.is_empty() {
+            // The transaction was rolled back: read what is left.
+            Delta::everything()
+        } else {
+            delta
+        };
         let delta = if self.stale {
             Delta::everything()
         } else {

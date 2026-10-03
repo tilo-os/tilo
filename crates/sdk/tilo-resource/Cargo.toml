@@ -1,16 +1,21 @@
 [package]
+autotests = false
 name = "tilo-resource"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The Tilo resource layer: typed, hierarchical app resources."
 
 # The resource layer: typed resource state stored in a CRDT, typed replayable
 # actions over it, deterministic ids and order, history and replay. It knows
-# nothing about rendering, widgets or windows; the UI toolkit knows nothing
-# about it. `tilo-app` binds the two.
+# nothing about rendering, widgets or windows. The UI toolkit uses its
+# document-generic history; `tilo-app` binds resources to views.
 
 [dependencies]
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 automerge.workspace = true
 blake3.workspace = true
 serde.workspace = true
@@ -18,8 +23,16 @@ serde_json.workspace = true
 thiserror.workspace = true
 tilo-automerge.workspace = true
 uuid.workspace = true
-tilo-actions = { path = "../../collab/actions" }
-tilo-resource-macros = { path = "../tilo-resource-macros" }
+tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-resource-macros = { version = "0.1.0", path = "../tilo-resource-macros" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

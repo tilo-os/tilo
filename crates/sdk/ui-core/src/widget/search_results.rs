@@ -12,9 +12,9 @@
 //! [`SearchResultsView::set_rect`] for a free-floating overlay — and it lays
 //! its own headers and rows top-down from the current groups.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -41,8 +41,11 @@ const ROW_TEXT_X: f64 = 12.0; // text/icon inset within a row
 const ICON_D: f64 = 18.0;
 const ICON_COL: f64 = 30.0; // icon box + gap when a row has an icon
 const EMPTY_H: f64 = 92.0;
-const PREVIEW_H: f64 = 68.0;
+/// A lifted row (selection, hover) is inset this much top and bottom, so a
+/// selected row and its hovered neighbour keep one `s1` between them instead
+/// of fusing into one block (HIG §7 "nothing touches").
 const ROW_LIFT_INSET: f64 = crate::tokens::Spacing::BASE.s1 as f64 / 2.0;
+const PREVIEW_H: f64 = 68.0;
 
 /// Composes two affine transforms. `Affine`'s `Mul` impl is pure `f64` matrix
 /// multiply-add with no overflow trap, so it cannot panic regardless of
@@ -213,6 +216,18 @@ impl SearchResultsView {
         }
     }
 
+    /// Preserve one exact control across an asynchronous result replacement.
+    /// A missing identity leaves no actionable selection; it never falls back
+    /// to the row that inherited the old index.
+    pub(crate) fn restore_action_selection(&mut self, id: &str) -> bool {
+        let index = self
+            .flat
+            .iter()
+            .position(|&(group, row)| self.groups[group].results[row].action_id == id);
+        self.cursor = index.unwrap_or(usize::MAX);
+        index.is_some()
+    }
+
     pub fn selected(&self) -> Option<&SearchResult> {
         let (gi, ri) = *self.flat.get(self.cursor)?;
         self.groups.get(gi)?.results.get(ri)
@@ -246,6 +261,10 @@ impl SearchResultsView {
         if self.flat.is_empty() {
             return;
         }
+        if self.selected().is_none() {
+            self.cursor = 0;
+            return;
+        }
         self.cursor = self
             .cursor
             .saturating_add(1)
@@ -256,6 +275,10 @@ impl SearchResultsView {
     /// Move the highlight up one row, wrapping to the bottom past the top.
     pub fn move_up(&mut self) {
         if self.flat.is_empty() {
+            return;
+        }
+        if self.selected().is_none() {
+            self.cursor = self.flat.len() - 1;
             return;
         }
         self.cursor = self
@@ -551,8 +574,6 @@ impl Default for SearchResultsView {
 }
 
 impl Widget for SearchResultsView {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -666,21 +687,11 @@ impl Widget for SearchResultsView {
         self.draw_preview(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.hover = self.row_at(self.last_cursor);
             }
             WindowEvent::MouseInput {
@@ -691,7 +702,7 @@ impl Widget for SearchResultsView {
                 if let Some(flat) = self.row_at(self.last_cursor) {
                     self.cursor = flat;
                     self.activate_selected();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -709,15 +720,15 @@ impl Widget for SearchResultsView {
                 match logical_key {
                     Key::Named(NamedKey::ArrowDown) => {
                         self.move_down();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::ArrowUp) => {
                         self.move_up();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::Enter) => {
                         self.activate_selected();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     _ => {}
                 }
@@ -738,33 +749,68 @@ impl Widget for SearchResultsView {
         self.rect
     }
 
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _: &mut AppModel,
+        _: &ModelPath,
+    ) -> bool {
+        if !matches!(
+            action,
+            crate::a11y::Action::Focus | crate::a11y::Action::Activate
+        ) {
+            return false;
+        }
+        let Some(index) = self
+            .flat
+            .iter()
+            .position(|&(group, row)| self.groups[group].results[row].action_id == target)
+        else {
+            return false;
+        };
+        self.cursor = index;
+        if matches!(action, crate::a11y::Action::Activate) {
+            self.activate_selected();
+        }
+        true
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let total = self.flat.len();
-        let children = self
-            .plan()
-            .rows
-            .into_iter()
-            .filter_map(|row| {
-                let result = self.groups.get(row.gi)?.results.get(row.ri)?;
-                let description = result
-                    .subtitle
-                    .iter()
-                    .chain(result.preview.iter())
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(". ");
-                let mut node = AccessNode::new(Role::ListItem)
-                    .with_name(result.title.clone())
-                    .with_bounds(row.rect)
-                    .with_position(row.flat.saturating_add(1), total)
-                    .with_state(AccessState::new().selected(row.flat == self.cursor));
-                if !description.is_empty() {
-                    node = node.with_description(description);
-                }
-                Some(node)
-            })
-            .collect();
+        let children = if self.flat.is_empty() {
+            vec![
+                AccessNode::new(Role::StaticText)
+                    .with_name(&self.empty_text)
+                    .with_live(crate::a11y::Politeness::Polite),
+            ]
+        } else {
+            self.plan()
+                .rows
+                .into_iter()
+                .filter_map(|row| {
+                    let result = self.groups.get(row.gi)?.results.get(row.ri)?;
+                    let description = result
+                        .subtitle
+                        .iter()
+                        .chain(result.preview.iter())
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(". ");
+                    let mut node = AccessNode::new(Role::ListItem)
+                        .with_name(result.title.clone())
+                        .with_action_target(&result.action_id)
+                        .with_bounds(row.rect)
+                        .with_position(row.flat.saturating_add(1), total)
+                        .with_state(AccessState::new().selected(row.flat == self.cursor));
+                    if !description.is_empty() {
+                        node = node.with_description(description);
+                    }
+                    Some(node)
+                })
+                .collect()
+        };
         Some(
             AccessNode::new(Role::List)
                 .with_name("Search results")
@@ -777,6 +823,7 @@ impl Widget for SearchResultsView {
 mod tests {
     use super::*;
     use crate::search::SearchRegistry;
+    use automerge::AutoCommit;
 
     /// Relative luminance of the composited pixel at (`x`, `y`).
     #[allow(
@@ -921,200 +968,225 @@ mod tests {
     }
 
     #[test]
-    fn set_groups_builds_flat_index_and_clamps_cursor() {
-        let mut v = view_from("");
-        assert_eq!(v.len(), 3, "two contacts + one app");
-        v.set_cursor(99);
-        assert_eq!(v.cursor(), v.len() - 1, "cursor clamps into range");
-        // Shrinking the list re-clamps.
-        v.set_groups(vec![SearchGroup {
-            kind: "Apps".into(),
-            results: vec![SearchResult::new("Apps", "Calculator", "app:calc")],
-        }]);
-        assert_eq!(v.cursor(), 0);
-    }
+    fn result_groups_index_preview_and_size_the_panel() {
+        // Case `set_groups_builds_flat_index_and_clamps_cursor`.
+        {
+            let mut v = view_from("");
+            assert_eq!(v.len(), 3, "two contacts + one app");
+            v.set_cursor(99);
+            assert_eq!(v.cursor(), v.len() - 1, "cursor clamps into range");
+            // Shrinking the list re-clamps.
+            v.set_groups(vec![SearchGroup {
+                kind: "Apps".into(),
+                results: vec![SearchResult::new("Apps", "Calculator", "app:calc")],
+            }]);
+            assert_eq!(v.cursor(), 0);
+        }
 
-    #[test]
-    fn preview_reserves_fixed_space_and_is_announced() {
-        let mut view = SearchResultsView::new();
-        view.set_results(vec![
-            SearchResult::new("Notes", "Design notes", "open")
-                .with_subtitle("Edited today")
-                .with_preview("A bounded note excerpt"),
-            SearchResult::new("Notes", "Plain note", "plain"),
-        ]);
-        let with_preview = view.desired_height();
-        view.set_cursor(1);
-        assert_eq!(
-            view.desired_height(),
-            with_preview,
-            "selection never changes result geometry"
-        );
-        let access = Widget::accessibility(&view).expect("result list semantics");
-        assert!(
-            access.children[0]
-                .description
-                .as_deref()
-                .is_some_and(|description| description.contains("bounded note excerpt"))
-        );
-    }
-
-    #[test]
-    fn keyboard_navigation_wraps_and_enter_activates() {
-        let mut v = view_from("");
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let taffy = TaffyTree::<()>::new();
-        let mods = winit::event::Modifiers::default();
-        let mut handled = false;
-        let mut ft = None;
-        let node = NodeId::new(0);
-
-        let key = |k: NamedKey| {
-            // SAFETY: all pub fields of `KeyEvent` tolerate the all-zero bit
-            // pattern; `handle_event` only inspects `logical_key` + `state`.
-            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = Key::Named(k);
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
+        // Case `preview_reserves_fixed_space_and_is_announced`.
+        {
+            let mut view = SearchResultsView::new();
+            view.set_results(vec![
+                SearchResult::new("Notes", "Design notes", "open")
+                    .with_subtitle("Edited today")
+                    .with_preview("A bounded note excerpt"),
+                SearchResult::new("Notes", "Plain note", "plain"),
+            ]);
+            let with_preview = view.desired_height();
+            view.set_cursor(1);
+            assert_eq!(
+                view.desired_height(),
+                with_preview,
+                "selection never changes result geometry"
             );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = None;
-            WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
-                event: ev,
-                is_synthetic: false,
-            }
-        };
+            let access = Widget::accessibility(&view).expect("result list semantics");
+            assert!(
+                access.children[0]
+                    .description
+                    .as_deref()
+                    .is_some_and(|description| description.contains("bounded note excerpt"))
+            );
+        }
 
-        assert_eq!(v.cursor(), 0);
-        v.handle_event(
-            &key(NamedKey::ArrowDown),
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut ft,
-            node,
-            &taffy,
-        );
-        assert!(handled, "arrow-down consumed");
-        assert_eq!(v.cursor(), 1);
-        // Wrap: up from the top lands on the last row.
-        v.set_cursor(0);
-        v.handle_event(
-            &key(NamedKey::ArrowUp),
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut ft,
-            node,
-            &taffy,
-        );
-        assert_eq!(v.cursor(), v.len() - 1, "up wraps to the bottom");
+        // Case `empty_results_show_empty_state_and_no_activation`.
+        {
+            let mut v = SearchResultsView::new().with_empty_text("Nothing here");
+            v.set_groups(vec![]);
+            v.set_rect(Rect::new(0.0, 0.0, 360.0, v.desired_height()));
+            assert!(v.is_empty());
+            assert_eq!(v.selected(), None);
+            let access = Widget::accessibility(&v).expect("empty result list semantics");
+            assert_eq!(access.children.len(), 1);
+            assert_eq!(access.children[0].role, crate::a11y::Role::StaticText);
+            assert_eq!(access.children[0].name.as_deref(), Some("Nothing here"));
+            assert_eq!(
+                access.children[0].live,
+                Some(crate::a11y::Politeness::Polite),
+                "empty results remain a polite live announcement"
+            );
+            v.activate_selected();
+            assert_eq!(v.take_activated(), None, "no row ⇒ nothing to activate");
+        }
 
-        // Enter activates the highlighted row and drains once.
-        v.set_cursor(0);
-        v.handle_event(
-            &key(NamedKey::Enter),
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut ft,
-            node,
-            &taffy,
-        );
-        assert_eq!(
-            v.take_activated().as_deref(),
-            Some("c:alice"),
-            "enter fires the selected action-id"
-        );
-        assert_eq!(v.take_activated(), None, "activation drains after one read");
+        // Case `desired_height_grows_with_content`.
+        {
+            let empty = SearchResultsView::new().desired_height();
+            let full = view_from("").desired_height();
+            assert!(
+                full > empty,
+                "populated overlay is taller than the empty state"
+            );
+        }
     }
 
     #[test]
-    fn clicking_a_row_selects_and_activates_it() {
-        let mut v = view_from("");
-        // The plan is the same geometry draw uses; target the third row (the App).
-        let plan = v.plan();
-        assert_eq!(plan.rows.len(), 3);
-        let target = plan.rows[2].rect.center();
+    fn results_activate_from_keyboard_and_pointer() {
+        // Case `keyboard_navigation_wraps_and_enter_activates`.
+        {
+            let mut v = view_from("");
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let taffy = TaffyTree::<()>::new();
+            let mods = winit::event::Modifiers::default();
+            let mut handled = false;
+            let mut ft = None;
+            let node = NodeId::new(0);
 
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let taffy = TaffyTree::<()>::new();
-        let mods = winit::event::Modifiers::default();
-        let mut handled = false;
-        let mut ft = None;
-        let node = NodeId::new(0);
+            let key = |k: NamedKey| {
+                // SAFETY: all pub fields of `KeyEvent` tolerate the all-zero bit
+                // pattern; `handle_event` only inspects `logical_key` + `state`.
+                let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+                ev.logical_key = Key::Named(k);
+                ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+                    winit::keyboard::NativeKeyCode::Unidentified,
+                );
+                ev.location = winit::keyboard::KeyLocation::Standard;
+                ev.state = ElementState::Pressed;
+                ev.repeat = false;
+                ev.text = None;
+                WindowEvent::KeyboardInput {
+                    device_id: unsafe { std::mem::zeroed() },
+                    event: ev,
+                    is_synthetic: false,
+                }
+            };
 
-        v.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(target.x, target.y),
-            },
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut ft,
-            node,
-            &taffy,
-        );
-        v.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut ft,
-            node,
-            &taffy,
-        );
-        assert!(handled, "row click consumed");
-        assert_eq!(
-            v.cursor(),
-            2,
-            "click moves the highlight to the clicked row"
-        );
-        assert_eq!(
-            v.take_activated().as_deref(),
-            Some("app:calc"),
-            "click fires that row's action-id"
-        );
-    }
+            assert_eq!(v.cursor(), 0);
+            v.handle_event(
+                &key(NamedKey::ArrowDown),
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+            assert!(handled, "arrow-down consumed");
+            assert_eq!(v.cursor(), 1);
+            // Wrap: up from the top lands on the last row.
+            v.set_cursor(0);
+            v.handle_event(
+                &key(NamedKey::ArrowUp),
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+            assert_eq!(v.cursor(), v.len() - 1, "up wraps to the bottom");
 
-    #[test]
-    fn empty_results_show_empty_state_and_no_activation() {
-        let mut v = SearchResultsView::new().with_empty_text("Nothing here");
-        v.set_groups(vec![]);
-        v.set_rect(Rect::new(0.0, 0.0, 360.0, v.desired_height()));
-        assert!(v.is_empty());
-        assert_eq!(v.selected(), None);
-        v.activate_selected();
-        assert_eq!(v.take_activated(), None, "no row ⇒ nothing to activate");
-    }
+            // Enter activates the highlighted row and drains once.
+            v.set_cursor(0);
+            v.handle_event(
+                &key(NamedKey::Enter),
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+            assert_eq!(
+                v.take_activated().as_deref(),
+                Some("c:alice"),
+                "enter fires the selected action-id"
+            );
+            assert_eq!(v.take_activated(), None, "activation drains after one read");
+        }
 
-    #[test]
-    fn desired_height_grows_with_content() {
-        let empty = SearchResultsView::new().desired_height();
-        let full = view_from("").desired_height();
-        assert!(
-            full > empty,
-            "populated overlay is taller than the empty state"
-        );
+        // Case `clicking_a_row_selects_and_activates_it`.
+        {
+            let mut v = view_from("");
+            // The plan is the same geometry draw uses; target the third row (the App).
+            let plan = v.plan();
+            assert_eq!(plan.rows.len(), 3);
+            let target = plan.rows[2].rect.center();
+
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let taffy = TaffyTree::<()>::new();
+            let mods = winit::event::Modifiers::default();
+            let mut handled = false;
+            let mut ft = None;
+            let node = NodeId::new(0);
+
+            v.handle_event(
+                &WindowEvent::CursorMoved {
+                    device_id: unsafe { std::mem::zeroed() },
+                    position: winit::dpi::PhysicalPosition::new(target.x, target.y),
+                },
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+            v.handle_event(
+                &WindowEvent::MouseInput {
+                    device_id: unsafe { std::mem::zeroed() },
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+            assert!(handled, "row click consumed");
+            assert_eq!(
+                v.cursor(),
+                2,
+                "click moves the highlight to the clicked row"
+            );
+            assert_eq!(
+                v.take_activated().as_deref(),
+                Some("app:calc"),
+                "click fires that row's action-id"
+            );
+        }
     }
 }

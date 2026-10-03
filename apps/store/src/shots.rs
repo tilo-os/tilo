@@ -66,7 +66,7 @@ fn configure_settled_capture_renderer() {
             reason = "Rust 2024 marks process-environment mutation unsafe; this one-shot headless renderer preference is installed before constructing any Store shot renderer"
         )]
         unsafe {
-            std::env::set_var("QUICK_UI_VELLO_CPU", "1");
+            std::env::set_var("TILO_UI_VELLO_CPU", "1");
         }
     });
 }
@@ -76,7 +76,7 @@ fn configure_settled_capture_renderer() {
 #[cfg(test)]
 fn settled_capture_renderer_scope() -> tilo_test_env::ScopedEnv {
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("QUICK_UI_VELLO_CPU", "1");
+    env.set("TILO_UI_VELLO_CPU", "1");
     env
 }
 
@@ -452,71 +452,75 @@ mod tests {
             .count()
     }
 
+    /// The fixture catalog covers every action; viewport, text scale and theme inputs parse; the seeded app lists items.
     #[test]
-    fn fixture_catalog_covers_every_action_variant() {
-        use crate::model::ActionKind;
-        let cat = fixture_catalog();
-        let mut saw_open = false;
-        let mut saw_update = false;
-        let mut saw_fp_install = false;
-        let mut saw_fp_open = false;
-        let mut saw_fp_remove = false;
-        let mut saw_pin_toggle = false;
-        for item in &cat {
-            match item.action_kind(true) {
-                ActionKind::Open => saw_open = true,
-                ActionKind::Update => saw_update = true,
-                ActionKind::FlatpakInstall => saw_fp_install = true,
-                ActionKind::FlatpakOpen => saw_fp_open = true,
-                _ => {}
+    fn shot_inputs_parse_cover_every_action_and_seed_items() {
+        // Case `fixture_catalog_covers_every_action_variant`.
+        {
+            use crate::model::ActionKind;
+            let cat = fixture_catalog();
+            let mut saw_open = false;
+            let mut saw_update = false;
+            let mut saw_fp_install = false;
+            let mut saw_fp_open = false;
+            let mut saw_fp_remove = false;
+            let mut saw_pin_toggle = false;
+            for item in &cat {
+                match item.action_kind(true) {
+                    ActionKind::Open => saw_open = true,
+                    ActionKind::Update => saw_update = true,
+                    ActionKind::FlatpakInstall => saw_fp_install = true,
+                    ActionKind::FlatpakOpen => saw_fp_open = true,
+                    _ => {}
+                }
+                if item.pin_action().is_some() {
+                    saw_pin_toggle = true;
+                }
+                // Flatpak removal is a *secondary* action — the primary on
+                // an installed app is to open it — so it is covered where
+                // it now lives rather than dropped from the fixture.
+                if item.remove_action() == Some(ActionKind::FlatpakRemove) {
+                    saw_fp_remove = true;
+                }
             }
-            if item.pin_action().is_some() {
-                saw_pin_toggle = true;
-            }
-            // Flatpak removal is a *secondary* action — the primary on
-            // an installed app is to open it — so it is covered where
-            // it now lives rather than dropped from the fixture.
-            if item.remove_action() == Some(ActionKind::FlatpakRemove) {
-                saw_fp_remove = true;
-            }
-        }
-        assert!(
-            saw_open
-                && saw_update
-                && saw_fp_install
-                && saw_fp_open
-                && saw_fp_remove
-                && saw_pin_toggle,
-            "fixture must exercise Open, Update, Flatpak install/open/remove, \
+            assert!(
+                saw_open
+                    && saw_update
+                    && saw_fp_install
+                    && saw_fp_open
+                    && saw_fp_remove
+                    && saw_pin_toggle,
+                "fixture must exercise Open, Update, Flatpak install/open/remove, \
              and the pin toggle (open={saw_fp_open}, remove={saw_fp_remove})"
-        );
-    }
+            );
+        }
 
-    #[test]
-    fn viewport_parses_expected_shape() {
-        assert_eq!(parse_viewport("1200x760"), Some((1200, 760)));
-        assert_eq!(parse_viewport("bad"), None);
-    }
+        // Case `viewport_parses_expected_shape`.
+        {
+            assert_eq!(parse_viewport("1200x760"), Some((1200, 760)));
+            assert_eq!(parse_viewport("bad"), None);
+        }
 
-    #[test]
-    fn screenshot_text_scale_is_bounded_and_forgiving() {
-        // The variable is process-global; this test only validates the safe
-        // default in the normal test process.  Rendering callers exercise a
-        // valid multiplier through the documented environment seam.
-        assert!((1.0..=2.0).contains(&shot_text_scale()));
-    }
+        // Case `screenshot_text_scale_is_bounded_and_forgiving`.
+        {
+            // The variable is process-global; this test only validates the safe
+            // default in the normal test process.  Rendering callers exercise a
+            // valid multiplier through the documented environment seam.
+            assert!((1.0..=2.0).contains(&shot_text_scale()));
+        }
 
-    #[test]
-    fn explicit_launch_preferences_reach_the_shot_theme() {
-        let theme = configured_shot_theme(Some(2.0), true);
-        assert!((theme.text_scale - 2.0).abs() < f32::EPSILON);
-        assert!(theme.reduce_motion);
-    }
+        // Case `explicit_launch_preferences_reach_the_shot_theme`.
+        {
+            let theme = configured_shot_theme(Some(2.0), true);
+            assert!((theme.text_scale - 2.0).abs() < f32::EPSILON);
+            assert!(theme.reduce_motion);
+        }
 
-    #[test]
-    fn seeded_app_lists_items() {
-        let app = seeded_app();
-        assert_eq!(app.items().len(), fixture_catalog().len());
+        // Case `seeded_app_lists_items`.
+        {
+            let app = seeded_app();
+            assert_eq!(app.items().len(), fixture_catalog().len());
+        }
     }
 
     #[test]

@@ -25,7 +25,7 @@ impl WorkspaceId {
 /// room. Unlike [`WorkspaceId`] (a local counter) it is minted once as a
 /// random v4 uuid and carried rather than recomputed, so machines that
 /// have never met still agree on it. [`Self::nil`] is the unminted
-/// sentinel a pre-room state file loads as.
+/// sentinel.
 #[derive(
     Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
 )]
@@ -196,6 +196,26 @@ impl IdMinter {
     /// Advance past `id` if it was minted under this minter's salt, so a
     /// reloaded tree never re-mints an id it already holds. Ids under
     /// another salt belong to another peer and leave the counter alone.
+    /// [`Self::mint`] for a durable owner, which must never reuse or wrap
+    /// an id: refuses salt `0` (no namespace), a counter of `0`, and a
+    /// counter beyond the 48 bits an id carries. The owner persists
+    /// [`Self::next_counter`] before publishing what it minted.
+    ///
+    /// # Errors
+    ///
+    /// A description when the namespace is invalid or exhausted.
+    pub fn mint_in_namespace(&mut self) -> Result<u64, String> {
+        if self.salt == 0 || self.counter == 0 || self.counter > PEER_ID_COUNTER_MASK {
+            return Err("invalid or exhausted desktop identity namespace".into());
+        }
+        let id = compose_id(self.salt, self.counter);
+        self.counter = self
+            .counter
+            .checked_add(1)
+            .ok_or("desktop identity namespace exhausted")?;
+        Ok(id)
+    }
+
     pub fn observe(&mut self, id: u64) {
         if peer_salt_of(id) == self.salt {
             self.counter = self.counter.max(counter_of(id).saturating_add(1));
@@ -215,41 +235,68 @@ impl MintIds for IdMinter {
     }
 }
 
+/// [`IdMinter::mint_in_namespace`] for an owner that keeps its counter as a
+/// plain value (read from and written back to its room document): mints
+/// under `salt` from `*counter` and advances it.
+///
+/// # Errors
+///
+/// A description when the namespace is invalid or exhausted; `*counter` is
+/// then unchanged.
+pub fn mint_in_namespace(salt: u16, counter: &mut u64) -> Result<u64, String> {
+    let mut minter = IdMinter::resume(salt, *counter);
+    let id = minter.mint_in_namespace()?;
+    *counter = minter.next_counter();
+    Ok(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn minted_ids_carry_salt_and_count_up() {
-        let mut minter = IdMinter::new(0x1234);
-        let a = minter.mint();
-        let b = minter.mint();
-        assert_eq!(peer_salt_of(a), 0x1234);
-        assert_eq!(counter_of(a), 1);
-        assert_eq!(counter_of(b), 2);
+    fn id_minter_salts_counts_and_observes_within_its_bits() {
+        // Phase `minted_ids_carry_salt_and_count_up`.
+        {
+            let mut minter = IdMinter::new(0x1234);
+            let a = minter.mint();
+            let b = minter.mint();
+            assert_eq!(peer_salt_of(a), 0x1234);
+            assert_eq!(counter_of(a), 1);
+            assert_eq!(counter_of(b), 2);
+        }
+        // Phase `unsalted_minter_yields_small_literals`.
+        {
+            let mut minter = IdMinter::default();
+            assert_eq!(minter.mint(), 1);
+            assert_eq!(minter.mint(), 2);
+        }
+        // Phase `observe_skips_only_ids_under_own_salt`.
+        {
+            let mut minter = IdMinter::new(0x1111);
+            minter.observe(compose_id(0x1111, 5));
+            minter.observe(compose_id(0x2222, 1000));
+            assert_eq!(minter.next_counter(), 6);
+            minter.observe(compose_id(0x1111, 2));
+            assert_eq!(minter.next_counter(), 6, "observing never moves backwards");
+        }
+        // Phase `counter_overflow_stays_inside_its_bits`.
+        {
+            let id = compose_id(0xFFFF, u64::MAX);
+            assert_eq!(peer_salt_of(id), 0xFFFF);
+            assert_eq!(counter_of(id), PEER_ID_COUNTER_MASK);
+        }
     }
 
     #[test]
-    fn unsalted_minter_yields_small_literals() {
-        let mut minter = IdMinter::default();
-        assert_eq!(minter.mint(), 1);
-        assert_eq!(minter.mint(), 2);
-    }
-
-    #[test]
-    fn observe_skips_only_ids_under_own_salt() {
-        let mut minter = IdMinter::new(0x1111);
-        minter.observe(compose_id(0x1111, 5));
-        minter.observe(compose_id(0x2222, 1000));
-        assert_eq!(minter.next_counter(), 6);
-        minter.observe(compose_id(0x1111, 2));
-        assert_eq!(minter.next_counter(), 6, "observing never moves backwards");
-    }
-
-    #[test]
-    fn counter_overflow_stays_inside_its_bits() {
-        let id = compose_id(0xFFFF, u64::MAX);
-        assert_eq!(peer_salt_of(id), 0xFFFF);
-        assert_eq!(counter_of(id), PEER_ID_COUNTER_MASK);
+    fn a_durable_namespace_refuses_to_wrap_or_run_unsalted() {
+        let mut minter = IdMinter::resume(0x0a, PEER_ID_COUNTER_MASK);
+        assert_eq!(
+            minter.mint_in_namespace(),
+            Ok(compose_id(0x0a, PEER_ID_COUNTER_MASK))
+        );
+        assert!(minter.mint_in_namespace().is_err());
+        assert!(IdMinter::new(0).mint_in_namespace().is_err());
+        assert!(IdMinter::resume(0x0a, 0).mint_in_namespace().is_err());
     }
 }

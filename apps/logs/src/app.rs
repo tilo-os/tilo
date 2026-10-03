@@ -3,9 +3,10 @@
 //! A graphical systemd-journal viewer. It is a single self-rendering
 //! [`Widget`] (the data is read-only and the visuals — severity dots,
 //! coloured rows, a detail pane, and a filter bar — are drawn directly into
-//! the Vello scene. Selection, filters, and search are local view state. Live tail is a local effect that
-//! controls this process's journal poller; journal entries themselves are an
-//! external render cache.
+//! the Vello scene. Shared filter and selection preferences sync through
+//! [`crate::resource::Logs`]. Live tail is a local Effect that controls this
+//! process's journal poller; journal entries themselves are an external
+//! render cache.
 //!
 //! Layout (top → bottom):
 //! ```text
@@ -34,7 +35,8 @@
 )]
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -47,16 +49,16 @@ use winit::keyboard::{Key, NamedKey};
 use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role};
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tilo_actions::{ActionAddress, ControlInvocation, OperationKind, Resource};
 use ui::widget::{TextInput, Widget};
 
 use crate::actions::{self, LogsOperation};
-use crate::doc::LogsDoc;
 use crate::model::{Filter, LogEntry, Priority};
+use crate::resource::LogsAction;
 use crate::theme_ext::{ThemeColors, tint};
-use ui::paint::{fill_rect, fill_round, stroke_round};
+use ui::paint::{PaintCtx, fill_rect, fill_round, stroke_round};
 use ui::widget::{PushNav, PushPane};
 
 const PAD: f64 = 16.0;
@@ -79,7 +81,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// has less than `POLL_INTERVAL` of history — that only delays the forced
 /// poll by at most `POLL_INTERVAL`, never panics.
 fn force_immediate_poll_at() -> Instant {
-    let now = Instant::now();
+    let now = ui::time::now();
     now.checked_sub(POLL_INTERVAL).unwrap_or(now)
 }
 
@@ -198,6 +200,9 @@ pub struct LogsApp {
     // ---- live-tail plumbing (never runs under --shots) ----
     allow_live: bool,
     last_poll: Instant,
+
+    /// Document actions: local host standalone; framework dispatcher when hosted.
+    actions: crate::resource::ActionSink,
 }
 
 impl LogsApp {
@@ -237,7 +242,8 @@ impl LogsApp {
             m: Metrics::ONE,
             push: PushNav::default(),
             allow_live,
-            last_poll: Instant::now(),
+            last_poll: ui::time::now(),
+            actions: crate::resource::ActionSink::default(),
         };
         app.rebuild_facets();
         app
@@ -405,56 +411,125 @@ impl LogsApp {
         self.clamp_scroll();
     }
 
-    /// Apply one local view operation. Filters and selection intentionally
-    /// never cross the Automerge boundary: they describe one person's current
-    /// investigation, not a collaborative journal annotation.
-    fn apply_view_operation(&mut self, operation: LogsOperation) {
-        match operation {
-            LogsOperation::SetPriority { value } => self.filter.min_priority = value.clamp(0, 7),
-            LogsOperation::SetUnit { value } => self.filter.unit = value,
-            LogsOperation::SetBoot { value } => self.filter.boot = value,
-            LogsOperation::SetSearch { value } => {
-                self.filter.search = value;
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Logs>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark the surface hosted without a real framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    /// Adopt collaborative view prefs; never clear the local journal cache.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::LogsState) {
+        self.filter = state.filter.clone();
+        if self.search_input.value() != self.filter.search {
+            self.search_input.set_text(&self.filter.search);
+        }
+        self.selected_entry.clone_from(&state.selected_entry);
+        self.sel_raw = self
+            .selected_entry
+            .as_ref()
+            .and_then(|entry_id| {
+                self.entries
+                    .iter()
+                    .position(|entry| actions::entry_resource_id(entry) == *entry_id)
+            })
+            .and_then(|index| i64::try_from(index).ok())
+            .unwrap_or(-1);
+        self.recompute_filtered();
+        self.clamp_scroll();
+        self.dirty = true;
+    }
+
+    pub(crate) fn commit_view(&mut self, doc: &mut AutoCommit, action: &LogsAction) {
+        self.apply_logs_action_locally(action);
+        self.actions.dispatch(doc, action);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_document_action(&self) -> Option<&ui::tilo_actions::EncodedAction> {
+        self.actions.last_dispatched()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Apply a document action to the widget caches without writing the doc.
+    fn apply_logs_action_locally(&mut self, action: &LogsAction) {
+        match action {
+            LogsAction::SetPriority { value } => self.filter.min_priority = (*value).clamp(0, 7),
+            LogsAction::SetUnit { value } => self.filter.unit.clone_from(value),
+            LogsAction::SetBoot { value } => self.filter.boot.clone_from(value),
+            LogsAction::SetSearch { value } => {
+                self.filter.search.clone_from(value);
                 self.search_input.set_text(&self.filter.search);
             }
-            LogsOperation::ClearFilters => {
+            LogsAction::ClearFilters => {
                 self.filter = Filter::default();
                 self.search_input.set_text("");
             }
-            LogsOperation::SelectEntry { entry_id } => {
+            LogsAction::SelectEntry { entry_id } => {
                 self.selected_entry = Some(entry_id.clone());
                 self.sel_raw = self
                     .entries
                     .iter()
-                    .position(|entry| actions::entry_resource_id(entry) == entry_id)
+                    .position(|entry| actions::entry_resource_id(entry) == *entry_id)
                     .and_then(|index| i64::try_from(index).ok())
                     .unwrap_or(-1);
             }
-            LogsOperation::Refresh
-            | LogsOperation::SetLiveTail { .. }
-            | LogsOperation::ExportFiltered => return,
         }
         self.recompute_filtered();
         self.clamp_scroll();
         self.dirty = true;
     }
 
-    /// Local journal operations. They intentionally do not enter the shared
-    /// document: polling a machine's journal is a device-local capability and
-    /// one peer's live-tail preference must not start work on every peer.
+    /// Standalone / `--shots` / unit tests: one tree from [`tilo_resource::publish`]
+    /// with live journal entry children overlaid.
+    pub(crate) fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        use ui::tilo_resource::Resource as _;
+        let state = crate::resource::Logs::read(doc).unwrap_or_default();
+        actions::standalone_resources(
+            &self.entries,
+            &self.filter,
+            self.live_tail,
+            self.allow_live,
+            &state,
+        )
+    }
+
+    /// Live journal entry rows without a `logs.journal` root.
+    pub(crate) fn live_entry_extras(&self) -> Vec<Resource> {
+        actions::live_entry_resources(&self.entries, &self.filter)
+    }
+
+    /// Local journal Effects. Polling and live-tail are device-local and must
+    /// not start work on every peer. Entry select Views also commit the shared
+    /// selection into the document.
     #[allow(
         clippy::needless_pass_by_value,
         reason = "Decoded operations are consumed exactly once at the app boundary."
     )]
-    fn perform_effect(&mut self, operation: actions::LogsOperation) -> Result<(), String> {
+    fn perform_effect(
+        &mut self,
+        operation: actions::LogsOperation,
+        doc: &mut AutoCommit,
+    ) -> Result<(), String> {
         match operation {
-            operation @ (LogsOperation::SetPriority { .. }
-            | LogsOperation::SetUnit { .. }
-            | LogsOperation::SetBoot { .. }
-            | LogsOperation::SetSearch { .. }
-            | LogsOperation::ClearFilters
-            | LogsOperation::SelectEntry { .. }) => self.apply_view_operation(operation),
-            actions::LogsOperation::Refresh => {
+            LogsOperation::SelectEntry { entry_id } => {
+                self.commit_view(doc, &LogsAction::SelectEntry { entry_id });
+            }
+            LogsOperation::Refresh => {
                 self.source_loading = false;
                 if self.allow_live {
                     match crate::journal::load_live(2000) {
@@ -467,11 +542,11 @@ impl LogsApp {
                     }
                 }
             }
-            actions::LogsOperation::SetLiveTail { enabled } => {
+            LogsOperation::SetLiveTail { enabled } => {
                 self.live_tail = enabled;
                 self.last_poll = force_immediate_poll_at();
             }
-            actions::LogsOperation::ExportFiltered => self.request_export()?,
+            LogsOperation::ExportFiltered => self.request_export()?,
         }
         self.dirty = true;
         Ok(())
@@ -552,8 +627,8 @@ impl LogsApp {
         self.dirty = true;
     }
 
-    /// Move the local selection by `delta` filtered positions.
-    fn move_selection(&mut self, delta: isize) {
+    /// Move the shared selection by `delta` filtered positions.
+    fn move_selection(&mut self, doc: &mut AutoCommit, delta: isize) {
         if self.filtered.is_empty() {
             return;
         }
@@ -567,17 +642,17 @@ impl LogsApp {
             return;
         };
         let id = actions::entry_resource_id(entry);
-        self.apply_view_operation(LogsOperation::SelectEntry { entry_id: id });
+        self.commit_view(doc, &LogsAction::SelectEntry { entry_id: id });
         self.scroll_into_view(new_pos);
         self.dirty = true;
     }
 
-    fn select_abs(&mut self, abs: usize) {
+    fn select_abs(&mut self, doc: &mut AutoCommit, abs: usize) {
         let Some(entry) = self.entries.get(abs) else {
             return;
         };
         let id = actions::entry_resource_id(entry);
-        self.apply_view_operation(LogsOperation::SelectEntry { entry_id: id });
+        self.commit_view(doc, &LogsAction::SelectEntry { entry_id: id });
         if let Some(pos) = self.filtered_pos(abs) {
             self.scroll_into_view(pos);
         }
@@ -771,12 +846,6 @@ impl LogsApp {
     /// `regions()`'s responsive split: side-by-side when wide, single-pane
     /// push when narrow. The choice is driven purely from the allocated
     /// width. Returns `(list_header, list_body, detail, back_btn, narrow)`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one regions() section threading the shared content-area \
-                  geometry (width + the four content corners + pane gap) \
-                  through the list/detail split"
-    )]
     fn content_split(
         &self,
         w: f64,
@@ -892,39 +961,9 @@ fn leaf_node(taffy: &mut TaffyTree<()>, style: Style) -> NodeId {
     taffy.new_leaf(style).unwrap()
 }
 
-/// Baseline-free top-left text at `(x,y)`, no wrapping.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Log text painting needs scene/transform, content, font size/weight/family, color, and top-left coordinates."
-)]
-fn text_at(
-    tr: &mut TextRenderer,
-    scene: &mut Scene,
-    transform: Affine,
-    text: &str,
-    size: f32,
-    color: Color,
-    x: f64,
-    y: f64,
-    weight: TextWeight,
-    mono: bool,
-) {
-    tr.draw_text_styled(
-        scene,
-        text,
-        size,
-        color,
-        transform * Affine::translate((x, y)),
-        None,
-        weight,
-        false,
-        mono,
-    );
-}
-
 /// Theme type sizes (`theme.tokens.typography.scale.*`) already carry the
 /// accessibility text scale, and the size-based renderer APIs (`measure`,
-/// `draw_text_styled`) apply that scale once more. Every token this app paints
+/// `draw_style`) apply that scale once more. Every token this app paints
 /// goes through here so the multiplier lands exactly once — 2× glyphs at
 /// 200 %, not 4×. Identity at 1×.
 fn ts(tr: &TextRenderer, resolved: f32) -> f32 {
@@ -1064,36 +1103,33 @@ impl LogsApp {
         theme: &Theme,
         reg: &Regions,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         if !self.filter.is_clear() && reg.clear_btn.width() > 0.0 {
-            fill_round(
-                scene,
-                t,
+            ctx.fill_round(
                 reg.clear_btn,
                 f64::from(theme.tokens.radii.md),
                 tint(theme.accent_primary, 40),
             );
-            stroke_round(
-                scene,
-                t,
+            ctx.stroke_round(
                 reg.clear_btn,
                 f64::from(theme.tokens.radii.md),
                 theme.accent_primary,
                 1.0,
             );
-            let bsz = ts(tr, theme.tokens.typography.scale.sm);
+            let bsz = ts(ctx.text, theme.tokens.typography.scale.sm);
             let label = "Clear filters";
-            let (bw, _) = tr.measure_weighted(label, bsz, None, TextWeight::Semibold);
-            text_at(
-                tr,
-                scene,
-                t,
+            let (bw, _) = ctx
+                .text
+                .measure_weighted(label, bsz, None, TextWeight::Semibold);
+            ctx.text(
                 label,
-                bsz,
+                &TextStyle::new(bsz).with_weight(TextWeight::Semibold),
                 theme.accent_primary,
-                reg.clear_btn.center().x - f64::from(bw) / 2.0,
-                self.m.vcenter(reg.clear_btn, bsz),
-                TextWeight::Semibold,
-                false,
+                Point::new(
+                    reg.clear_btn.center().x - f64::from(bw) / 2.0,
+                    self.m.vcenter(reg.clear_btn, bsz),
+                ),
+                None,
             );
         }
     }
@@ -1108,25 +1144,29 @@ impl LogsApp {
         theme: &Theme,
         reg: &Regions,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let counts = format!(
             "{} shown · {} total",
             self.filtered.len(),
             self.entries.len()
         );
-        let (cw, _) = tr.measure(&counts, ts(tr, theme.tokens.typography.scale.sm), None);
+        let (cw, _) = ctx.text.measure(
+            &counts,
+            ts(ctx.text, theme.tokens.typography.scale.sm),
+            None,
+        );
         if reg.overflow_trigger.width() > 0.0 {
-            text_at(
-                tr,
-                scene,
-                t,
+            ctx.text(
                 &counts,
-                ts(tr, theme.tokens.typography.scale.sm),
+                &TextStyle::new(ts(ctx.text, theme.tokens.typography.scale.sm))
+                    .with_weight(TextWeight::Medium),
                 theme.text_dim,
-                reg.header.x0 + PAD,
-                self.m
-                    .vcenter(reg.header, ts(tr, theme.tokens.typography.scale.sm)),
-                TextWeight::Medium,
-                false,
+                Point::new(
+                    reg.header.x0 + PAD,
+                    self.m
+                        .vcenter(reg.header, ts(ctx.text, theme.tokens.typography.scale.sm)),
+                ),
+                None,
             );
             return;
         }
@@ -1135,18 +1175,17 @@ impl LogsApp {
         } else {
             reg.refresh_btn.x0
         };
-        text_at(
-            tr,
-            scene,
-            t,
+        ctx.text(
             &counts,
-            ts(tr, theme.tokens.typography.scale.sm),
+            &TextStyle::new(ts(ctx.text, theme.tokens.typography.scale.sm))
+                .with_weight(TextWeight::Medium),
             theme.text_dim,
-            counts_anchor - 14.0 - f64::from(cw),
-            self.m
-                .vcenter(reg.header, ts(tr, theme.tokens.typography.scale.sm)),
-            TextWeight::Medium,
-            false,
+            Point::new(
+                counts_anchor - 14.0 - f64::from(cw),
+                self.m
+                    .vcenter(reg.header, ts(ctx.text, theme.tokens.typography.scale.sm)),
+            ),
+            None,
         );
     }
 
@@ -1161,32 +1200,33 @@ impl LogsApp {
         theme: &Theme,
         reg: &Regions,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         if reg.refresh_btn.width() <= 0.0 {
             return;
         }
         let c = &theme.tokens.colors;
         let hovered = reg.refresh_btn.contains(self.cursor);
         ui::surface::card(
-            scene,
+            ctx.scene,
             t,
             reg.refresh_btn,
             f64::from(theme.tokens.radii.full),
             if hovered { c.lift(0.72) } else { c.lift(0.35) },
         );
         let label = "↻";
-        let sz = ts(tr, theme.tokens.typography.scale.base);
-        let (w, _) = tr.measure_weighted(label, sz, None, TextWeight::Semibold);
-        text_at(
-            tr,
-            scene,
-            t,
+        let sz = ts(ctx.text, theme.tokens.typography.scale.base);
+        let (w, _) = ctx
+            .text
+            .measure_weighted(label, sz, None, TextWeight::Semibold);
+        ctx.text(
             label,
-            sz,
+            &TextStyle::new(sz).with_weight(TextWeight::Semibold),
             theme.text_primary,
-            reg.refresh_btn.center().x - f64::from(w) / 2.0,
-            self.m.vcenter(reg.refresh_btn, sz) - 1.0,
-            TextWeight::Semibold,
-            false,
+            Point::new(
+                reg.refresh_btn.center().x - f64::from(w) / 2.0,
+                self.m.vcenter(reg.refresh_btn, sz) - 1.0,
+            ),
+            None,
         );
     }
 
@@ -1199,6 +1239,7 @@ impl LogsApp {
         theme: &Theme,
         reg: &Regions,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         if reg.live_pill.width() <= 0.0 {
             return;
         }
@@ -1210,16 +1251,10 @@ impl LogsApp {
             c.lift(0.35)
         };
         if on {
-            fill_round(
-                scene,
-                t,
-                reg.live_pill,
-                f64::from(theme.tokens.radii.full),
-                pill_bg,
-            );
+            ctx.fill_round(reg.live_pill, f64::from(theme.tokens.radii.full), pill_bg);
         } else {
             ui::surface::card(
-                scene,
+                ctx.scene,
                 t,
                 reg.live_pill,
                 f64::from(theme.tokens.radii.full),
@@ -1229,7 +1264,7 @@ impl LogsApp {
         let on_accent = c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
         let dot_c = if on { on_accent } else { theme.text_dim };
         fill_circle(
-            scene,
+            ctx.scene,
             t,
             Point::new(reg.live_pill.x0 + 16.0, reg.live_pill.center().y),
             4.0,
@@ -1237,18 +1272,19 @@ impl LogsApp {
         );
         let label = "Live tail";
         let lc = if on { on_accent } else { theme.text_dim };
-        text_at(
-            tr,
-            scene,
-            t,
+        ctx.text(
             label,
-            ts(tr, theme.tokens.typography.scale.sm),
+            &TextStyle::new(ts(ctx.text, theme.tokens.typography.scale.sm))
+                .with_weight(TextWeight::Semibold),
             lc,
-            reg.live_pill.x0 + 28.0,
-            self.m
-                .vcenter(reg.live_pill, ts(tr, theme.tokens.typography.scale.sm)),
-            TextWeight::Semibold,
-            false,
+            Point::new(
+                reg.live_pill.x0 + 28.0,
+                self.m.vcenter(
+                    reg.live_pill,
+                    ts(ctx.text, theme.tokens.typography.scale.sm),
+                ),
+            ),
+            None,
         );
     }
 
@@ -1263,6 +1299,7 @@ impl LogsApp {
         theme: &Theme,
         reg: &Regions,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         if reg.overflow_trigger.width() <= 0.0 {
             return;
         }
@@ -1274,16 +1311,14 @@ impl LogsApp {
             c.lift(0.35)
         };
         ui::surface::card(
-            scene,
+            ctx.scene,
             t,
             reg.overflow_trigger,
             f64::from(theme.tokens.radii.full),
             trigger_bg,
         );
         if open {
-            stroke_round(
-                scene,
-                t,
+            ctx.stroke_round(
                 reg.overflow_trigger,
                 f64::from(theme.tokens.radii.full),
                 c.border_focus,
@@ -1291,23 +1326,21 @@ impl LogsApp {
             );
         }
         let label = "Actions";
-        let sz = ts(tr, theme.tokens.typography.scale.sm);
-        text_at(
-            tr,
-            scene,
-            t,
+        let sz = ts(ctx.text, theme.tokens.typography.scale.sm);
+        ctx.text(
             label,
-            sz,
+            &TextStyle::new(sz).with_weight(TextWeight::Semibold),
             theme.text_primary,
-            reg.overflow_trigger.x0 + 12.0,
-            self.m.vcenter(reg.overflow_trigger, sz),
-            TextWeight::Semibold,
-            false,
+            Point::new(
+                reg.overflow_trigger.x0 + 12.0,
+                self.m.vcenter(reg.overflow_trigger, sz),
+            ),
+            None,
         );
         let cx = reg.overflow_trigger.x1 - 16.0;
         let cy = reg.overflow_trigger.center().y + 1.0;
         line(
-            scene,
+            ctx.scene,
             t,
             cx - 4.0,
             cy - 2.0,
@@ -1317,7 +1350,7 @@ impl LogsApp {
             1.4,
         );
         line(
-            scene,
+            ctx.scene,
             t,
             cx + 4.0,
             cy - 2.0,
@@ -1433,16 +1466,11 @@ impl LogsApp {
         } else {
             self.filter.unit.clone()
         };
-        Self::draw_dropdown_trigger(
-            scene,
-            t,
-            tr,
-            theme,
-            self.m,
+        self.draw_dropdown_trigger(
+            &mut PaintCtx::new(scene, t, tr, theme),
             reg.unit_trigger,
-            "Unit",
-            &unit_label,
-            self.popup == Some(Popup::Unit),
+            Popup::Unit,
+            ("Unit", &unit_label),
             !self.filter.unit.is_empty(),
         );
 
@@ -1457,16 +1485,11 @@ impl LogsApp {
                     |(_, l)| l.clone(),
                 )
         };
-        Self::draw_dropdown_trigger(
-            scene,
-            t,
-            tr,
-            theme,
-            self.m,
+        self.draw_dropdown_trigger(
+            &mut PaintCtx::new(scene, t, tr, theme),
             reg.boot_trigger,
-            "Boot",
-            &boot_label,
-            self.popup == Some(Popup::Boot),
+            Popup::Boot,
+            ("Boot", &boot_label),
             !self.filter.boot.is_empty(),
         );
     }
@@ -1480,6 +1503,7 @@ impl LogsApp {
         theme: &Theme,
         reg: &Regions,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         let tc = Self::theme_colors(theme);
         for (i, chip) in reg.chips.iter().enumerate() {
@@ -1489,29 +1513,10 @@ impl LogsApp {
             let active = p.level() <= self.filter.min_priority;
             let col = p.color(&tc);
             if active {
-                fill_round(
-                    scene,
-                    t,
-                    *chip,
-                    f64::from(theme.tokens.radii.md),
-                    tint(col, 235),
-                );
+                ctx.fill_round(*chip, f64::from(theme.tokens.radii.md), tint(col, 235));
             } else {
-                fill_round(
-                    scene,
-                    t,
-                    *chip,
-                    f64::from(theme.tokens.radii.md),
-                    c.lift(0.35),
-                );
-                stroke_round(
-                    scene,
-                    t,
-                    *chip,
-                    f64::from(theme.tokens.radii.md),
-                    tint(col, 90),
-                    1.0,
-                );
+                ctx.fill_round(*chip, f64::from(theme.tokens.radii.md), c.lift(0.35));
+                ctx.stroke_round(*chip, f64::from(theme.tokens.radii.md), tint(col, 90), 1.0);
             }
             let tag = p.tag();
             let label_c = if active {
@@ -1521,51 +1526,43 @@ impl LogsApp {
             } else {
                 theme.text_dim
             };
-            let sz = ts(tr, theme.tokens.typography.scale.xs);
-            let (lw, _) = tr.measure_weighted(tag, sz, None, TextWeight::Bold);
-            text_at(
-                tr,
-                scene,
-                t,
+            let sz = ts(ctx.text, theme.tokens.typography.scale.xs);
+            let (lw, _) = ctx.text.measure_weighted(tag, sz, None, TextWeight::Bold);
+            ctx.text(
                 tag,
-                sz,
+                &TextStyle::new(sz).with_weight(TextWeight::Bold),
                 label_c,
-                chip.center().x - f64::from(lw) / 2.0,
-                self.m.vcenter(*chip, sz),
-                TextWeight::Bold,
-                false,
+                Point::new(
+                    chip.center().x - f64::from(lw) / 2.0,
+                    self.m.vcenter(*chip, sz),
+                ),
+                None,
             );
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Filter trigger painting combines render context, measured text metrics, bounds, caption/value, and open/active states."
-    )]
+    /// The trigger that opens `popup`, captioned `kind` over the current
+    /// `label`; `active` marks a filter that narrows the list.
     fn draw_dropdown_trigger(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        m: Metrics,
+        &self,
+        ctx: &mut PaintCtx<'_>,
         rect: Rect,
-        kind: &str,
-        label: &str,
-        open: bool,
+        popup: Popup,
+        (kind, label): (&str, &str),
         active: bool,
     ) {
+        let (t, theme, m) = (ctx.transform, ctx.theme, self.m);
+        let open = self.popup == Some(popup);
         let c = &theme.tokens.colors;
         ui::surface::card(
-            scene,
+            ctx.scene,
             t,
             rect,
             f64::from(theme.tokens.radii.md),
             c.surfaces.raised,
         );
         if open || active {
-            stroke_round(
-                scene,
-                t,
+            ctx.stroke_round(
                 rect,
                 f64::from(theme.tokens.radii.md),
                 if open {
@@ -1576,40 +1573,34 @@ impl LogsApp {
                 1.5,
             );
         }
-        let sz = ts(tr, theme.tokens.typography.scale.sm);
+        let sz = ts(ctx.text, theme.tokens.typography.scale.sm);
         // kind caption
-        text_at(
-            tr,
-            scene,
-            t,
+        ctx.text(
             kind,
-            ts(tr, theme.tokens.typography.scale.xs),
+            &TextStyle::new(ts(ctx.text, theme.tokens.typography.scale.xs))
+                .with_weight(TextWeight::Semibold),
             theme.text_dim,
-            rect.x0 + 12.0,
-            rect.y0 + 4.0,
-            TextWeight::Semibold,
-            false,
+            Point::new(rect.x0 + 12.0, rect.y0 + 4.0),
+            None,
         );
         // The value stacks on the caption's measured line (16 px at 1×).
-        let value_top = rect.y0 + 4.0 + m.line_h(ts(tr, theme.tokens.typography.scale.xs)) - 0.5;
-        let val = tr.elide_to_width(label, sz, ui::num::f32_of_f64(rect.width() - 38.0));
-        text_at(
-            tr,
-            scene,
-            t,
+        let value_top =
+            rect.y0 + 4.0 + m.line_h(ts(ctx.text, theme.tokens.typography.scale.xs)) - 0.5;
+        let val = ctx
+            .text
+            .elide_to_width(label, sz, ui::num::f32_of_f64(rect.width() - 38.0));
+        ctx.text(
             &val,
-            sz,
+            &TextStyle::new(sz).with_weight(TextWeight::Medium),
             theme.text_primary,
-            rect.x0 + 12.0,
-            value_top,
-            TextWeight::Medium,
-            false,
+            Point::new(rect.x0 + 12.0, value_top),
+            None,
         );
         // chevron
         let cxp = rect.x1 - 16.0;
         let cyp = rect.center().y + 2.0;
         line(
-            scene,
+            ctx.scene,
             t,
             cxp - 4.0,
             cyp - 3.0,
@@ -1619,7 +1610,7 @@ impl LogsApp {
             1.4,
         );
         line(
-            scene,
+            ctx.scene,
             t,
             cxp + 4.0,
             cyp - 3.0,
@@ -1656,6 +1647,7 @@ impl LogsApp {
         m: Metrics,
         reg: &Regions,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
 
         // List frame (header + body) as one card.
@@ -1666,7 +1658,7 @@ impl LogsApp {
             reg.list_body.y1,
         );
         ui::surface::card(
-            scene,
+            ctx.scene,
             t,
             card,
             f64::from(theme.tokens.radii.lg),
@@ -1674,9 +1666,7 @@ impl LogsApp {
         );
 
         // Column header.
-        fill_round(
-            scene,
-            t,
+        ctx.fill_round(
             Rect::new(
                 reg.list_header.x0,
                 reg.list_header.y0,
@@ -1687,60 +1677,40 @@ impl LogsApp {
             c.surfaces.base,
         );
         let cols = column_x(reg.list_header, m.k);
-        let hsz = ts(tr, theme.tokens.typography.scale.xs);
+        let hsz = ts(ctx.text, theme.tokens.typography.scale.xs);
         let hy = m.vcenter(reg.list_header, hsz);
-        text_at(
-            tr,
-            scene,
-            t,
+        ctx.text(
             "TIME",
-            hsz,
+            &TextStyle::new(hsz).with_weight(TextWeight::Semibold),
             theme.text_dim,
-            cols.time_x,
-            hy,
-            TextWeight::Semibold,
-            false,
+            Point::new(cols.time_x, hy),
+            None,
         );
-        text_at(
-            tr,
-            scene,
-            t,
+        ctx.text(
             "LEVEL",
-            hsz,
+            &TextStyle::new(hsz).with_weight(TextWeight::Semibold),
             theme.text_dim,
-            cols.tag_x,
-            hy,
-            TextWeight::Semibold,
-            false,
+            Point::new(cols.tag_x, hy),
+            None,
         );
         if !cols.compact {
-            text_at(
-                tr,
-                scene,
-                t,
+            ctx.text(
                 "UNIT",
-                hsz,
+                &TextStyle::new(hsz).with_weight(TextWeight::Semibold),
                 theme.text_dim,
-                cols.unit_x,
-                hy,
-                TextWeight::Semibold,
-                false,
+                Point::new(cols.unit_x, hy),
+                None,
             );
         }
-        text_at(
-            tr,
-            scene,
-            t,
+        ctx.text(
             "MESSAGE",
-            hsz,
+            &TextStyle::new(hsz).with_weight(TextWeight::Semibold),
             theme.text_dim,
-            cols.msg_x,
-            hy,
-            TextWeight::Semibold,
-            false,
+            Point::new(cols.msg_x, hy),
+            None,
         );
         line(
-            scene,
+            ctx.scene,
             t,
             reg.list_header.x0 + 8.0,
             reg.list_header.y1,
@@ -1762,6 +1732,7 @@ impl LogsApp {
         theme: &Theme,
         reg: &Regions,
     ) -> bool {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         if !self.filtered.is_empty() {
             return false;
@@ -1793,68 +1764,51 @@ impl LogsApp {
             // The three lines stack on their measured boxes around `cy`: title
             // above (ending 4 px over centre), subtitle 2 px below, retry 9 px
             // under the subtitle — the 1× offsets (−24 / +2 / +26), scale-proof.
-            let tsz = ts(tr, theme.tokens.typography.scale.lg);
-            let ssz = ts(tr, theme.tokens.typography.scale.sm);
+            let tsz = ts(ctx.text, theme.tokens.typography.scale.lg);
+            let ssz = ts(ctx.text, theme.tokens.typography.scale.sm);
             let title_top = cy - 4.0 - self.m.line_h(tsz);
             let sub_top = cy + 2.0;
             let retry_top = sub_top + self.m.line_h(ssz) + 9.0;
-            let (tw, _) = tr.measure(title, tsz, None);
-            text_at(
-                tr,
-                scene,
-                t,
+            let (tw, _) = ctx.text.measure(title, tsz, None);
+            ctx.text(
                 title,
-                tsz,
+                &TextStyle::new(tsz).with_weight(TextWeight::Semibold),
                 c.text_primary,
-                cx - f64::from(tw) / 2.0,
-                title_top,
-                TextWeight::Semibold,
-                false,
+                Point::new(cx - f64::from(tw) / 2.0, title_top),
+                None,
             );
-            let (sw, _) = tr.measure(subtitle, ssz, None);
-            text_at(
-                tr,
-                scene,
-                t,
+            let (sw, _) = ctx.text.measure(subtitle, ssz, None);
+            ctx.text(
                 subtitle,
-                ssz,
+                &TextStyle::new(ssz),
                 theme.text_dim,
-                cx - f64::from(sw) / 2.0,
-                sub_top,
-                TextWeight::Regular,
-                false,
+                Point::new(cx - f64::from(sw) / 2.0, sub_top),
+                None,
             );
             if self.source_error.is_some() && self.allow_live {
                 let retry = "Use Refresh to try again.";
-                let (rw, _) = tr.measure(retry, ssz, None);
-                text_at(
-                    tr,
-                    scene,
-                    t,
+                let (rw, _) = ctx.text.measure(retry, ssz, None);
+                ctx.text(
                     retry,
-                    ssz,
+                    &TextStyle::new(ssz).with_weight(TextWeight::Medium),
                     theme.accent_primary,
-                    cx - f64::from(rw) / 2.0,
-                    retry_top,
-                    TextWeight::Medium,
-                    false,
+                    Point::new(cx - f64::from(rw) / 2.0, retry_top),
+                    None,
                 );
             }
         } else {
             let msg = "No entries match the current filters.";
-            let sz = ts(tr, theme.tokens.typography.scale.base);
-            let (mw, _) = tr.measure(msg, sz, None);
-            text_at(
-                tr,
-                scene,
-                t,
+            let sz = ts(ctx.text, theme.tokens.typography.scale.base);
+            let (mw, _) = ctx.text.measure(msg, sz, None);
+            ctx.text(
                 msg,
-                sz,
+                &TextStyle::new(sz),
                 theme.text_dim,
-                cx - f64::from(mw) / 2.0,
-                cy - self.m.line_h(sz) / 2.0 - 1.25,
-                TextWeight::Regular,
-                false,
+                Point::new(
+                    cx - f64::from(mw) / 2.0,
+                    cy - self.m.line_h(sz) / 2.0 - 1.25,
+                ),
+                None,
             );
         }
         true
@@ -1873,11 +1827,13 @@ impl LogsApp {
         theme: &Theme,
         reg: &Regions,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         let tc = Self::theme_colors(theme);
         let sel = self.effective_selected();
 
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &reg.list_body);
+        ctx.scene
+            .push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &reg.list_body);
         let body = reg.list_body;
         let first = (f64::from(self.scroll) / self.m.row_h).floor().max(0.0) as usize;
         let visible = (body.height() / self.m.row_h).ceil() as usize + 2;
@@ -1902,99 +1858,88 @@ impl LogsApp {
             let g = f64::from(theme.tokens.spacing.s1) / 2.0;
             let band = Rect::new(row.x0, row.y0 + g, row.x1, row.y1 - g);
             if is_sel {
-                fill_rect(scene, t, band, tint(theme.accent_primary, 46));
-                fill_rect(
-                    scene,
-                    t,
+                ctx.fill_rect(band, tint(theme.accent_primary, 46));
+                ctx.fill_rect(
                     Rect::new(band.x0, band.y0, band.x0 + 3.0, band.y1),
                     theme.accent_primary,
                 );
             } else if is_hover {
-                fill_rect(scene, t, band, c.lift(0.35));
+                ctx.fill_rect(band, c.lift(0.35));
             } else if pos % 2 == 1 {
-                fill_rect(
-                    scene,
-                    t,
-                    band,
-                    ui::tokens::Colors::hairline_on(c.surfaces.raised, 6),
-                );
+                ctx.fill_rect(band, ui::tokens::Colors::hairline_on(c.surfaces.raised, 6));
             }
 
             let cols = column_x(row, self.m.k);
             // severity dot
-            fill_circle(scene, t, Point::new(cols.dot_cx, row.center().y), 4.5, col);
+            fill_circle(
+                ctx.scene,
+                t,
+                Point::new(cols.dot_cx, row.center().y),
+                4.5,
+                col,
+            );
             // time (mono, dim)
-            let tsz = ts(tr, theme.tokens.typography.scale.sm);
+            let tsz = ts(ctx.text, theme.tokens.typography.scale.sm);
             let timestamp = if cols.compact {
                 e.time_hms()
             } else {
                 e.timestamp()
             };
-            text_at(
-                tr,
-                scene,
-                t,
+            ctx.text(
                 &timestamp,
-                tsz,
+                &TextStyle::new(tsz).with_family(FontChoice::Monospace),
                 theme.text_dim,
-                cols.time_x,
-                self.m.vcenter(row, tsz),
-                TextWeight::Regular,
-                true,
+                Point::new(cols.time_x, self.m.vcenter(row, tsz)),
+                None,
             );
             // level tag (colored)
-            text_at(
-                tr,
-                scene,
-                t,
+            ctx.text(
                 e.priority.tag(),
-                ts(tr, theme.tokens.typography.scale.xs),
+                &TextStyle::new(ts(ctx.text, theme.tokens.typography.scale.xs))
+                    .with_weight(TextWeight::Bold)
+                    .with_family(FontChoice::Monospace),
                 col,
-                cols.tag_x,
-                self.m
-                    .vcenter(row, ts(tr, theme.tokens.typography.scale.xs)),
-                TextWeight::Bold,
-                true,
+                Point::new(
+                    cols.tag_x,
+                    self.m
+                        .vcenter(row, ts(ctx.text, theme.tokens.typography.scale.xs)),
+                ),
+                None,
             );
             if !cols.compact {
                 // Unit is promoted on desktop; compact rows reserve that
                 // width for the message and expose the unit in detail/a11y.
-                let unit_shown =
-                    tr.elide_to_width(e.unit_short(), tsz, ui::num::f32_of_f64(cols.unit_w - 6.0));
-                text_at(
-                    tr,
-                    scene,
-                    t,
-                    &unit_shown,
+                let unit_shown = ctx.text.elide_to_width(
+                    e.unit_short(),
                     tsz,
+                    ui::num::f32_of_f64(cols.unit_w - 6.0),
+                );
+                ctx.text(
+                    &unit_shown,
+                    &TextStyle::new(tsz).with_weight(TextWeight::Medium),
                     theme.text_primary,
-                    cols.unit_x,
-                    self.m.vcenter(row, tsz),
-                    TextWeight::Medium,
-                    false,
+                    Point::new(cols.unit_x, self.m.vcenter(row, tsz)),
+                    None,
                 );
             }
             // message
-            let msg_shown = tr.elide_to_width(&e.message, tsz, ui::num::f32_of_f64(cols.msg_w));
+            let msg_shown =
+                ctx.text
+                    .elide_to_width(&e.message, tsz, ui::num::f32_of_f64(cols.msg_w));
             let msg_c = if is_sel {
                 theme.text_primary
             } else {
                 tint(theme.text_primary, 220)
             };
-            text_at(
-                tr,
-                scene,
-                t,
+            ctx.text(
                 &msg_shown,
-                tsz,
+                &TextStyle::new(tsz),
                 msg_c,
-                cols.msg_x,
-                self.m.vcenter(row, tsz),
-                TextWeight::Regular,
-                false,
+                Point::new(cols.msg_x, self.m.vcenter(row, tsz)),
+                None,
             );
         }
-        scene.pop_layer();
+        ctx.scene.pop_layer();
     }
 
     /// The list body's vertical scrollbar thumb, when the content overflows.
@@ -2025,17 +1970,19 @@ impl LogsApp {
         theme: &Theme,
         reg: &Regions,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         let d = reg.detail;
         ui::surface::card(
-            scene,
+            ctx.scene,
             t,
             d,
             f64::from(theme.tokens.radii.lg),
             c.surfaces.raised,
         );
 
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &d);
+        ctx.scene
+            .push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &d);
         let mut layout = DetailLayout {
             inner_x: d.x0 + 18.0,
             inner_w: d.width() - 36.0,
@@ -2046,37 +1993,32 @@ impl LogsApp {
         // On narrow windows the detail is a pushed pane; draw a Back
         // affordance at the top and inset the field content beneath it.
         if reg.narrow && reg.back_btn.width() > 0.0 {
-            self.draw_back_button(scene, t, tr, theme, reg.back_btn);
+            self.draw_back_button(ctx.scene, t, ctx.text, theme, reg.back_btn);
             layout.y = reg.back_btn.y1 + 14.0;
         }
 
         let Some(abs) = self.effective_selected() else {
             let msg = "Select an entry to inspect its fields.";
-            let sz = ts(tr, theme.tokens.typography.scale.base);
-            text_at(
-                tr,
-                scene,
-                t,
+            let sz = ts(ctx.text, theme.tokens.typography.scale.base);
+            ctx.text(
                 msg,
-                sz,
+                &TextStyle::new(sz),
                 theme.text_dim,
-                layout.inner_x,
-                layout.y.max(d.center().y),
-                TextWeight::Regular,
-                false,
+                Point::new(layout.inner_x, layout.y.max(d.center().y)),
+                None,
             );
-            scene.pop_layer();
+            ctx.scene.pop_layer();
             return;
         };
         let Some(e) = self.entries.get(abs) else {
-            scene.pop_layer();
+            ctx.scene.pop_layer();
             return;
         };
 
-        Self::draw_detail_header(scene, t, tr, theme, self.m, &mut layout, e);
-        Self::draw_detail_fields(scene, t, tr, theme, self.m, &mut layout, e);
+        Self::draw_detail_header(ctx.scene, t, ctx.text, theme, self.m, &mut layout, e);
+        Self::draw_detail_fields(ctx.scene, t, ctx.text, theme, self.m, &mut layout, e);
 
-        scene.pop_layer();
+        ctx.scene.pop_layer();
     }
 
     /// Badge, transport tag, title, timestamp, message and the divider that
@@ -2090,6 +2032,7 @@ impl LogsApp {
         layout: &mut DetailLayout,
         e: &LogEntry,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         let tc = Self::theme_colors(theme);
         let inner_x = layout.inner_x;
@@ -2098,88 +2041,68 @@ impl LogsApp {
 
         // Priority badge pill.
         let badge_label = e.priority.long().to_uppercase();
-        let bsz = ts(tr, theme.tokens.typography.scale.xs);
-        let (blw, _) = tr.measure_weighted(&badge_label, bsz, None, TextWeight::Bold);
+        let bsz = ts(ctx.text, theme.tokens.typography.scale.xs);
+        let (blw, _) = ctx
+            .text
+            .measure_weighted(&badge_label, bsz, None, TextWeight::Bold);
         let badge = Rect::new(
             inner_x,
             layout.y,
             inner_x + f64::from(blw) + 24.0,
             layout.y + 22.0,
         );
-        fill_round(
-            scene,
-            t,
-            badge,
-            f64::from(theme.tokens.radii.full),
-            tint(col, 235),
-        );
-        text_at(
-            tr,
-            scene,
-            t,
+        ctx.fill_round(badge, f64::from(theme.tokens.radii.full), tint(col, 235));
+        ctx.text(
             &badge_label,
-            bsz,
+            &TextStyle::new(bsz).with_weight(TextWeight::Bold),
             theme.tokens.colors.on_surface(col).ink,
-            badge.x0 + 12.0,
-            m.vcenter(badge, bsz),
-            TextWeight::Bold,
-            false,
+            Point::new(badge.x0 + 12.0, m.vcenter(badge, bsz)),
+            None,
         );
         // transport tag to the right of the badge
         if !e.transport.is_empty() {
-            text_at(
-                tr,
-                scene,
-                t,
+            ctx.text(
                 &e.transport,
-                bsz,
+                &TextStyle::new(bsz)
+                    .with_weight(TextWeight::Medium)
+                    .with_family(FontChoice::Monospace),
                 theme.text_dim,
-                badge.x1 + 10.0,
-                m.vcenter(badge, bsz),
-                TextWeight::Medium,
-                true,
+                Point::new(badge.x1 + 10.0, m.vcenter(badge, bsz)),
+                None,
             );
         }
         layout.y = badge.y1 + 14.0;
 
         // Unit title.
-        let title_sz = ts(tr, theme.tokens.typography.scale.lg);
-        let title = tr.elide_to_width(&e.unit, title_sz, ui::num::f32_of_f64(inner_w));
-        text_at(
-            tr,
-            scene,
-            t,
+        let title_sz = ts(ctx.text, theme.tokens.typography.scale.lg);
+        let title = ctx
+            .text
+            .elide_to_width(&e.unit, title_sz, ui::num::f32_of_f64(inner_w));
+        ctx.text(
             &title,
-            title_sz,
+            &TextStyle::new(title_sz).with_weight(TextWeight::Semibold),
             theme.text_primary,
-            inner_x,
-            layout.y,
-            TextWeight::Semibold,
-            false,
+            Point::new(inner_x, layout.y),
+            None,
         );
         layout.y += m.line_h(title_sz) * 1.2;
 
         // Timestamp.
-        let tssz = ts(tr, theme.tokens.typography.scale.sm);
-        text_at(
-            tr,
-            scene,
-            t,
+        let tssz = ts(ctx.text, theme.tokens.typography.scale.sm);
+        ctx.text(
             &e.timestamp_full(),
-            tssz,
+            &TextStyle::new(tssz).with_family(FontChoice::Monospace),
             theme.text_dim,
-            inner_x,
-            layout.y,
-            TextWeight::Regular,
-            true,
+            Point::new(inner_x, layout.y),
+            None,
         );
         layout.y += m.line_h(tssz) * 1.28 + 6.0;
 
         // Message (wrapped).
-        let msz = ts(tr, theme.tokens.typography.scale.base);
-        let (_, mh) = tr.measure(&e.message, msz, Some(inner_w as f32));
-        tr.draw_text(
-            scene,
+        let msz = ts(ctx.text, theme.tokens.typography.scale.base);
+        let (_, mh) = ctx.text.measure(&e.message, msz, Some(inner_w as f32));
+        ctx.text.draw_text(
+            ctx.scene,
             &e.message,
             msz,
             theme.text_primary,
@@ -2190,7 +2113,7 @@ impl LogsApp {
 
         // Divider.
         line(
-            scene,
+            ctx.scene,
             t,
             inner_x,
             layout.y,
@@ -2213,6 +2136,7 @@ impl LogsApp {
         layout: &mut DetailLayout,
         e: &LogEntry,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let inner_x = layout.inner_x;
         let inner_w = layout.inner_w;
 
@@ -2238,8 +2162,8 @@ impl LogsApp {
         // The key column is a glyph budget (118 px at 1×) scaled with the text,
         // but never more than 45 % of the pane so the values keep their room.
         let key_w = (118.0_f64 * m.k).min(inner_w * 0.45);
-        let ksz = ts(tr, theme.tokens.typography.scale.xs);
-        let vsz = ts(tr, theme.tokens.typography.scale.sm);
+        let ksz = ts(ctx.text, theme.tokens.typography.scale.xs);
+        let vsz = ts(ctx.text, theme.tokens.typography.scale.sm);
         for (k, v) in fields {
             if layout.y > layout.bottom - 14.0 {
                 break;
@@ -2247,30 +2171,24 @@ impl LogsApp {
             if v.trim().is_empty() {
                 continue;
             }
-            text_at(
-                tr,
-                scene,
-                t,
+            ctx.text(
                 &k,
-                ksz,
+                &TextStyle::new(ksz)
+                    .with_weight(TextWeight::Semibold)
+                    .with_family(FontChoice::Monospace),
                 theme.text_dim,
-                inner_x,
-                layout.y + 1.0,
-                TextWeight::Semibold,
-                true,
+                Point::new(inner_x, layout.y + 1.0),
+                None,
             );
-            let val = tr.elide_to_width(&v, vsz, ui::num::f32_of_f64(inner_w - key_w - 8.0));
-            text_at(
-                tr,
-                scene,
-                t,
+            let val = ctx
+                .text
+                .elide_to_width(&v, vsz, ui::num::f32_of_f64(inner_w - key_w - 8.0));
+            ctx.text(
                 &val,
-                vsz,
+                &TextStyle::new(vsz),
                 theme.text_primary,
-                inner_x + key_w,
-                layout.y,
-                TextWeight::Regular,
-                false,
+                Point::new(inner_x + key_w, layout.y),
+                None,
             );
             // Rows step by the value line's measured box (22 px at 1×).
             layout.y += m.line_h(vsz) + 7.0;
@@ -2288,15 +2206,16 @@ impl LogsApp {
         theme: &Theme,
         rect: Rect,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         let hovered = rect.contains(self.cursor);
         let bg = if hovered { c.lift(0.72) } else { c.lift(0.35) };
-        ui::surface::card(scene, t, rect, f64::from(theme.tokens.radii.full), bg);
+        ui::surface::card(ctx.scene, t, rect, f64::from(theme.tokens.radii.full), bg);
         // Left chevron.
         let cyp = rect.center().y;
         let cxp = rect.x0 + 18.0;
         line(
-            scene,
+            ctx.scene,
             t,
             cxp + 4.0,
             cyp - 5.0,
@@ -2306,7 +2225,7 @@ impl LogsApp {
             1.6,
         );
         line(
-            scene,
+            ctx.scene,
             t,
             cxp - 1.0,
             cyp,
@@ -2315,18 +2234,13 @@ impl LogsApp {
             theme.text_primary,
             1.6,
         );
-        let sz = ts(tr, theme.tokens.typography.scale.sm);
-        text_at(
-            tr,
-            scene,
-            t,
+        let sz = ts(ctx.text, theme.tokens.typography.scale.sm);
+        ctx.text(
             "Back",
-            sz,
+            &TextStyle::new(sz).with_weight(TextWeight::Semibold),
             theme.text_primary,
-            rect.x0 + 30.0,
-            self.m.vcenter(rect, sz),
-            TextWeight::Semibold,
-            false,
+            Point::new(rect.x0 + 30.0, self.m.vcenter(rect, sz)),
+            None,
         );
     }
 
@@ -2579,10 +2493,6 @@ fn column_x(row: Rect, k: f64) -> Cols {
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Line painting passes the scene transform, both endpoint coordinates, stroke color, and stroke width."
-)]
 fn line(scene: &mut Scene, t: Affine, x0: f64, y0: f64, x1: f64, y1: f64, c: Color, w: f64) {
     scene.stroke(
         &Stroke::new(w),
@@ -2597,10 +2507,44 @@ fn line(scene: &mut Scene, t: Affine, x0: f64, y0: f64, x1: f64, y1: f64, c: Col
 // Widget impl
 // ===================================================================
 
-impl Widget for LogsApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
+impl LogsApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if !matches!(kind, OperationKind::Effect | OperationKind::View) {
+            return Ok(false);
+        }
+        let Some(operation) = actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        if kind == OperationKind::Effect && !self.allow_live {
+            return Err("live journal access is disabled".into());
+        }
+        // A resource-level entry selection is navigation, not merely a row
+        // highlight. Reveal the selected detail slab for an agent or palette
+        // invocation just as a pointer selection does on a narrow viewport.
+        let reveals_entry = matches!(operation, LogsOperation::SelectEntry { .. });
+        self.perform_effect(operation, doc)?;
+        if reveals_entry && self.narrow_at(self.rect.width()) {
+            self.push.show_detail();
+            self.dirty = true;
+        }
+        Ok(true)
     }
+}
+
+impl Widget for LogsApp {
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources,
+        dyn ui::undo::UndoPoints
+    );
 
     fn measure(
         &mut self,
@@ -2619,50 +2563,29 @@ impl Widget for LogsApp {
         &[actions::LOGS_OPERATION_TYPE]
     }
 
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.pending_control_invocation
-            .take()
-            .or_else(|| self.search_input.take_control_invocation())
-    }
-
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        actions::resources(&self.entries, &self.filter, self.live_tail, self.allow_live)
-    }
-
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if !matches!(kind, OperationKind::Effect | OperationKind::View) {
-            return Ok(false);
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let Some(operation) = actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
         };
-        if kind == OperationKind::Effect && !self.allow_live {
-            return Err("live journal access is disabled".into());
-        }
-        // A resource-level entry selection is navigation, not merely a row
-        // highlight. Reveal the selected detail slab for an agent or palette
-        // invocation just as a pointer selection does on a narrow viewport.
-        let reveals_entry = matches!(operation, LogsOperation::SelectEntry { .. });
-        self.perform_effect(operation)?;
-        if reveals_entry && self.narrow_at(self.rect.width()) {
-            self.push.show_detail();
-            self.dirty = true;
-        }
-        Ok(true)
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
-    fn sync(&mut self, doc: &mut AutoCommit, root: &ObjId) {
-        // Upgrade old shared documents by removing the transient keys written
-        // by previous Logs versions. Nothing below reads or writes view state
-        // in the document.
-        LogsDoc::prune_legacy_view_state(doc, root);
+    fn sync(&mut self, doc: &mut AppModel, root: &ModelPath) {
+        let (doc, root) = ui::doc::document(doc, root);
         self.drain_export_portal();
         if let Some(filter) = self.shot_filter.take() {
             self.filter = filter;
@@ -2673,7 +2596,7 @@ impl Widget for LogsApp {
 
         // Optional live tail: throttled re-poll, never under --shots.
         if self.allow_live && self.live_tail && self.last_poll.elapsed() >= POLL_INTERVAL {
-            self.last_poll = Instant::now();
+            self.last_poll = ui::time::now();
             match crate::journal::load_live(2000) {
                 Ok(fresh) => {
                     self.entries = fresh;
@@ -2818,29 +2741,8 @@ impl Widget for LogsApp {
         // windows share one result; do not paint a second copy here.
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if self.route_search_field(
-            event,
-            scale_factor,
-            *modifiers,
-            doc,
-            root,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self.route_search_field(event, ctx) {
             return;
         }
 
@@ -2865,7 +2767,7 @@ impl Widget for LogsApp {
                     self.scroll += dy;
                     self.clamp_scroll();
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -2874,12 +2776,14 @@ impl Widget for LogsApp {
                 ..
             } => {
                 self.focused = true;
-                self.on_click(self.cursor, handled);
+                let (doc, _) = ui::doc::document(ctx.state, ctx.path);
+                self.on_click(self.cursor, doc, ctx.handled);
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                self.on_key(key_event, *modifiers, handled);
+                let (doc, _) = ui::doc::document(ctx.state, ctx.path);
+                self.on_key(key_event, *ctx.modifiers, doc, ctx.handled);
             }
             _ => {}
         }
@@ -2921,12 +2825,16 @@ impl Widget for LogsApp {
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.search_input.cursor_shape(point)
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one semantic target table for every painted a11y control"
+    )]
     fn perform_semantic_action(
         &mut self,
         target: &str,
         action: &AccessAction,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         if target == "logs.search" {
             return self.search_input.perform_action(action, state, path);
@@ -2945,8 +2853,9 @@ impl Widget for LogsApp {
             self.request_journal_operation("set-live-tail");
             return true;
         }
+        let (doc, _) = ui::doc::document(state, path);
         if target == "logs.clear-filters" && activate {
-            self.apply_view_operation(LogsOperation::ClearFilters);
+            self.commit_view(doc, &LogsAction::ClearFilters);
             self.scroll = 0.0;
             self.dirty = true;
             return true;
@@ -2970,7 +2879,7 @@ impl Widget for LogsApp {
             && activate
             && let Ok(value) = value.parse::<i64>()
         {
-            self.apply_view_operation(LogsOperation::SetPriority { value });
+            self.commit_view(doc, &LogsAction::SetPriority { value });
             self.scroll = 0.0;
             self.dirty = true;
             return true;
@@ -2978,9 +2887,12 @@ impl Widget for LogsApp {
         if let Some(value) = target.strip_prefix("logs.unit-choice:")
             && activate
         {
-            self.apply_view_operation(LogsOperation::SetUnit {
-                value: value.to_owned(),
-            });
+            self.commit_view(
+                doc,
+                &LogsAction::SetUnit {
+                    value: value.to_owned(),
+                },
+            );
             self.popup = None;
             self.scroll = 0.0;
             self.dirty = true;
@@ -2989,9 +2901,12 @@ impl Widget for LogsApp {
         if let Some(value) = target.strip_prefix("logs.boot-choice:")
             && activate
         {
-            self.apply_view_operation(LogsOperation::SetBoot {
-                value: value.to_owned(),
-            });
+            self.commit_view(
+                doc,
+                &LogsAction::SetBoot {
+                    value: value.to_owned(),
+                },
+            );
             self.popup = None;
             self.scroll = 0.0;
             self.dirty = true;
@@ -3015,19 +2930,13 @@ impl Widget for LogsApp {
                 .iter()
                 .position(|entry| actions::entry_resource_id(entry) == id)
         {
-            self.select_abs(abs);
+            self.select_abs(doc, abs);
             if self.narrow_at(self.rect.width()) {
                 self.push.show_detail();
             }
             return true;
         }
         false
-    }
-    fn needs_commit(&self) -> bool {
-        self.search_input.needs_commit()
-    }
-    fn on_commit(&mut self) {
-        self.search_input.on_commit();
     }
     fn needs_redraw(&self) -> bool {
         self.dirty
@@ -3045,6 +2954,59 @@ impl Widget for LogsApp {
         // Keep pumping frames while the push slide eases into place, or
         // while live tail is on.
         self.push.is_animating() || (self.allow_live && self.live_tail) || self.export_rx.is_some()
+    }
+}
+
+impl ui::undo::UndoPoints for LogsApp {
+    fn needs_commit(&self) -> bool {
+        self.search_input.needs_commit()
+    }
+    fn on_commit(&mut self) {
+        self.search_input.on_commit();
+    }
+}
+
+impl ui::resources::PublishesResources for LogsApp {
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the journal door — keep only live journal entry rows.
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        if self.is_hosted() && id == crate::actions::JOURNAL_RESOURCE_ID {
+            return None;
+        }
+        find(&self.publish_resources(doc), id)
+    }
+}
+
+impl ui::widget::controls::ActionControls for LogsApp {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.pending_control_invocation
+            .take()
+            .or_else(|| self.search_input.take_control_invocation())
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for LogsApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 }
 
@@ -3076,21 +3038,10 @@ impl LogsApp {
     /// whether the caller should return immediately — either because
     /// Escape cleared the search here, or because the field consumed the
     /// event.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own signature, which it routes"
-    )]
     fn route_search_field(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let search_rect = self.regions().search;
         self.search_input.apply_layout_external(Rect::new(
@@ -3126,8 +3077,8 @@ impl LogsApp {
             event,
             WindowEvent::KeyboardInput { event: key, .. }
                 if key.state == ElementState::Pressed
-                    && !modifiers.state().control_key()
-                    && !modifiers.state().super_key()
+                    && !ctx.modifiers.state().control_key()
+                    && !ctx.modifiers.state().super_key()
                     && (matches!(key.logical_key, Key::Character(_))
                         || matches!(key.logical_key, Key::Named(NamedKey::Backspace)))
         );
@@ -3145,12 +3096,16 @@ impl LogsApp {
                         && matches!(key.logical_key, Key::Named(NamedKey::Escape))
             )
         {
-            self.apply_view_operation(LogsOperation::SetSearch {
-                value: String::new(),
-            });
+            let (doc, _) = ui::doc::document(ctx.state, ctx.path);
+            self.commit_view(
+                doc,
+                &LogsAction::SetSearch {
+                    value: String::new(),
+                },
+            );
             self.scroll = 0.0;
             self.dirty = true;
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
 
@@ -3161,24 +3116,21 @@ impl LogsApp {
             let mut input_handled = false;
             self.search_input.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                doc,
-                root,
-                &mut input_handled,
-                focus_target,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    handled: &mut input_handled,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
             );
             if self.search_input.take_dirty().is_some() {
-                self.filter.search = self.search_input.value().to_owned();
-                self.recompute_filtered();
+                let (doc, _) = ui::doc::document(ctx.state, ctx.path);
+                let query = self.search_input.value().to_owned();
+                self.commit_view(doc, &LogsAction::SetSearch { value: query });
                 self.scroll = 0.0;
                 self.dirty = true;
                 input_handled = true;
             }
             if input_handled && !matches!(event, WindowEvent::CursorMoved { .. }) {
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
         }
@@ -3222,48 +3174,46 @@ impl LogsApp {
         theme: &Theme,
         reg: &Regions,
     ) {
+        let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         let c = &theme.tokens.colors;
         let active_val = match self.popup {
             Some(Popup::Unit) => self.filter.unit.clone(),
             Some(Popup::Boot) => self.filter.boot.clone(),
             Some(Popup::Actions) | None => String::new(),
         };
-        let sz = ts(tr, theme.tokens.typography.scale.sm);
+        let sz = ts(ctx.text, theme.tokens.typography.scale.sm);
         for (irect, val, label) in &reg.dropdown {
             let is_hover = irect.contains(self.cursor);
             let is_active = &active_val == val;
             if is_hover {
-                fill_rect(scene, transform, *irect, c.lift(0.72));
+                ctx.fill_rect(*irect, c.lift(0.72));
             } else if is_active {
-                fill_rect(scene, transform, *irect, tint(theme.accent_primary, 40));
+                ctx.fill_rect(*irect, tint(theme.accent_primary, 40));
             }
             let lc = if is_active {
                 theme.accent_primary
             } else {
                 theme.text_primary
             };
-            let shown = tr.elide_to_width(label, sz, ui::num::f32_of_f64(irect.width() - 30.0));
-            text_at(
-                tr,
-                scene,
-                transform,
+            let shown =
+                ctx.text
+                    .elide_to_width(label, sz, ui::num::f32_of_f64(irect.width() - 30.0));
+            ctx.text(
                 &shown,
-                sz,
-                lc,
-                irect.x0 + 12.0,
-                self.m.vcenter(*irect, sz),
-                if is_active {
+                &TextStyle::new(sz).with_weight(if is_active {
                     TextWeight::Semibold
                 } else {
                     TextWeight::Regular
-                },
-                false,
+                }),
+                lc,
+                Point::new(irect.x0 + 12.0, self.m.vcenter(*irect, sz)),
+                None,
             );
             if is_active {
                 // check mark
                 let cy = irect.center().y;
                 line(
-                    scene,
+                    ctx.scene,
                     transform,
                     irect.x1 - 18.0,
                     cy,
@@ -3273,7 +3223,7 @@ impl LogsApp {
                     1.6,
                 );
                 line(
-                    scene,
+                    ctx.scene,
                     transform,
                     irect.x1 - 14.0,
                     cy + 4.0,
@@ -3307,7 +3257,7 @@ impl LogsApp {
         clippy::too_many_lines,
         reason = "one ordered hit-test preserves the popup-to-row interaction priority"
     )]
-    fn on_click(&mut self, pt: Point, handled: &mut bool) {
+    fn on_click(&mut self, pt: Point, doc: &mut AutoCommit, handled: &mut bool) {
         // 1. An open dropdown captures the click first.
         if self.popup.is_some() {
             let reg = self.regions();
@@ -3315,14 +3265,10 @@ impl LogsApp {
                 if irect.contains(pt) {
                     match self.popup {
                         Some(Popup::Unit) => {
-                            self.apply_view_operation(LogsOperation::SetUnit {
-                                value: val.clone(),
-                            });
+                            self.commit_view(doc, &LogsAction::SetUnit { value: val.clone() });
                         }
                         Some(Popup::Boot) => {
-                            self.apply_view_operation(LogsOperation::SetBoot {
-                                value: val.clone(),
-                            });
+                            self.commit_view(doc, &LogsAction::SetBoot { value: val.clone() });
                         }
                         Some(Popup::Actions) => self.request_journal_operation(val),
                         None => {}
@@ -3418,9 +3364,12 @@ impl LogsApp {
                 let Some(priority) = Priority::ALL.get(i) else {
                     continue;
                 };
-                self.apply_view_operation(LogsOperation::SetPriority {
-                    value: priority.level(),
-                });
+                self.commit_view(
+                    doc,
+                    &LogsAction::SetPriority {
+                        value: priority.level(),
+                    },
+                );
                 self.scroll = 0.0;
                 self.dirty = true;
                 *handled = true;
@@ -3430,7 +3379,7 @@ impl LogsApp {
 
         // 6. Clear-filters button.
         if !self.filter.is_clear() && reg.clear_btn.contains(pt) {
-            self.apply_view_operation(LogsOperation::ClearFilters);
+            self.commit_view(doc, &LogsAction::ClearFilters);
             self.scroll = 0.0;
             self.dirty = true;
             *handled = true;
@@ -3440,7 +3389,7 @@ impl LogsApp {
         // 7. List rows → select. On a narrow window this also pushes the
         // detail pane in (single-pane master-detail navigation).
         if let Some(abs) = self.row_at(&reg, pt) {
-            self.select_abs(abs);
+            self.select_abs(doc, abs);
             if reg.narrow {
                 self.push.show_detail();
             }
@@ -3452,32 +3401,33 @@ impl LogsApp {
         &mut self,
         key_event: &winit::event::KeyEvent,
         modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
         handled: &mut bool,
     ) {
         let ctrl = modifiers.state().control_key();
         match &key_event.logical_key {
             Key::Named(NamedKey::ArrowDown) => {
-                self.move_selection(1);
+                self.move_selection(doc, 1);
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowUp) => {
-                self.move_selection(-1);
+                self.move_selection(doc, -1);
                 *handled = true;
             }
             Key::Named(NamedKey::PageDown) => {
-                self.move_selection(10);
+                self.move_selection(doc, 10);
                 *handled = true;
             }
             Key::Named(NamedKey::PageUp) => {
-                self.move_selection(-10);
+                self.move_selection(doc, -10);
                 *handled = true;
             }
             Key::Named(NamedKey::Home) => {
-                self.move_selection(isize::MIN / 2);
+                self.move_selection(doc, isize::MIN / 2);
                 *handled = true;
             }
             Key::Named(NamedKey::End) => {
-                self.move_selection(isize::MAX / 2);
+                self.move_selection(doc, isize::MAX / 2);
                 *handled = true;
             }
             Key::Named(NamedKey::Escape) => {
@@ -3489,9 +3439,12 @@ impl LogsApp {
                     // Back out of the pushed detail pane to the list.
                     self.push.show_master();
                 } else if !self.filter.search.is_empty() {
-                    self.apply_view_operation(LogsOperation::SetSearch {
-                        value: String::new(),
-                    });
+                    self.commit_view(
+                        doc,
+                        &LogsAction::SetSearch {
+                            value: String::new(),
+                        },
+                    );
                     self.scroll = 0.0;
                 }
                 self.dirty = true;
@@ -3505,7 +3458,7 @@ impl LogsApp {
                             *handled = true;
                         }
                         "r" | "R" => {
-                            self.apply_view_operation(LogsOperation::ClearFilters);
+                            self.commit_view(doc, &LogsAction::ClearFilters);
                             self.scroll = 0.0;
                             *handled = true;
                         }
@@ -3541,69 +3494,115 @@ mod tests {
         }
     }
 
+    /// Facets and shared filter actions narrow the entry list and write the
+    /// collaborative view document.
     #[test]
-    fn facets_collect_units_and_two_boots() {
+    fn shared_filters_narrow_entries_and_write_the_document() {
+        // Facets collect units and two boots.
         let app = LogsApp::new(sample_entries(), false);
         assert!(app.units.contains(&"shell.service".to_string()));
         assert_eq!(app.boots.len(), 2);
-    }
 
-    #[test]
-    fn priority_threshold_filters_entries() {
-        let (mut app, _doc) = synced_app();
-        let total = app.filtered.len();
-        app.apply_view_operation(LogsOperation::SetPriority {
-            value: Priority::Err.level(),
-        });
-        let errs = app.filtered.len();
-        assert!(errs < total, "errors-only must show fewer than all");
-        assert!(errs > 0);
-        for &i in &app.filtered {
-            assert!(app.entries[i].priority.level() <= 3);
+        // The priority threshold filters entries.
+        {
+            let (mut app, mut doc) = synced_app();
+            let total = app.filtered.len();
+            app.commit_view(
+                &mut doc,
+                &LogsAction::SetPriority {
+                    value: Priority::Err.level(),
+                },
+            );
+            let errs = app.filtered.len();
+            assert!(errs < total, "errors-only must show fewer than all");
+            assert!(errs > 0);
+            for &i in &app.filtered {
+                assert!(app.entries[i].priority.level() <= 3);
+            }
+            assert_eq!(crate::doc::ViewDoc::filter(&doc).min_priority, 3);
+        }
+        // Search narrows results.
+        {
+            let (mut app, mut doc) = synced_app();
+            app.commit_view(
+                &mut doc,
+                &LogsAction::SetSearch {
+                    value: "iroh".to_string(),
+                },
+            );
+            assert_eq!(app.search_input.value(), "iroh");
+            assert!(!app.filtered.is_empty());
+            for &i in &app.filtered {
+                let e = &app.entries[i];
+                let hit = e.message.to_lowercase().contains("iroh")
+                    || e.unit.to_lowercase().contains("iroh");
+                assert!(hit);
+            }
+            assert_eq!(crate::doc::ViewDoc::filter(&doc).search, "iroh");
+        }
+        // The unit filter restricts to one unit.
+        {
+            let (mut app, mut doc) = synced_app();
+            app.commit_view(
+                &mut doc,
+                &LogsAction::SetUnit {
+                    value: "kernel".to_string(),
+                },
+            );
+            assert!(
+                app.filtered
+                    .iter()
+                    .all(|&i| app.entries[i].unit == "kernel")
+            );
+            assert_eq!(crate::doc::ViewDoc::filter(&doc).unit, "kernel");
+        }
+        // The boot filter syncs.
+        {
+            let (mut app, mut doc) = synced_app();
+            let boot = app.boots[1].0.clone();
+            app.commit_view(
+                &mut doc,
+                &LogsAction::SetBoot {
+                    value: boot.clone(),
+                },
+            );
+            assert!(app.filtered.iter().all(|&i| app.entries[i].boot_id == boot));
+            assert_eq!(crate::doc::ViewDoc::filter(&doc).boot, boot);
+        }
+        // A document filter action updates the widget through the ActionSink.
+        {
+            let (mut app, mut doc) = synced_app();
+            app.commit_view(
+                &mut doc,
+                &LogsAction::SetUnit {
+                    value: "kernel".to_string(),
+                },
+            );
+            assert_eq!(app.filter.unit, "kernel");
+            assert!(
+                app.filtered
+                    .iter()
+                    .all(|&index| app.entries[index].unit == "kernel")
+            );
+            assert!(
+                doc.keys(&ROOT).next().is_some(),
+                "document filter actions must write shared state"
+            );
         }
     }
 
+    /// Selection auto-lands on an error or worse and arrow keys move the
+    /// shared selection.
     #[test]
-    fn search_narrows_results() {
-        let (mut app, _doc) = synced_app();
-        app.apply_view_operation(LogsOperation::SetSearch {
-            value: "iroh".to_string(),
-        });
-        assert_eq!(app.search_input.value(), "iroh");
-        assert!(!app.filtered.is_empty());
-        for &i in &app.filtered {
-            let e = &app.entries[i];
-            let hit =
-                e.message.to_lowercase().contains("iroh") || e.unit.to_lowercase().contains("iroh");
-            assert!(hit);
-        }
-    }
-
-    #[test]
-    fn unit_filter_restricts_to_one_unit() {
-        let (mut app, _doc) = synced_app();
-        app.apply_view_operation(LogsOperation::SetUnit {
-            value: "kernel".to_string(),
-        });
-        assert!(
-            app.filtered
-                .iter()
-                .all(|&i| app.entries[i].unit == "kernel")
-        );
-    }
-
-    #[test]
-    fn auto_selection_lands_on_error_or_worse() {
-        let (app, _doc) = synced_app();
+    fn selection_auto_lands_on_errors_and_moves_through_the_document() {
+        let (mut app, mut doc) = synced_app();
+        // Auto-selection lands on an error or worse.
         let sel = app.effective_selected().expect("an entry is auto-selected");
         assert!(app.entries[sel].priority.level() <= Priority::Err.level());
-    }
 
-    #[test]
-    fn arrow_navigation_moves_only_local_selection() {
-        let (mut app, doc) = synced_app();
+        // Arrow navigation commits the shared selection.
         let before = app.effective_selected().unwrap();
-        app.move_selection(1);
+        app.move_selection(&mut doc, 1);
         let after = app.effective_selected().unwrap();
         assert_ne!(before, after);
         assert_eq!(
@@ -3613,267 +3612,238 @@ mod tests {
                 .map(actions::entry_resource_id)
                 .as_deref()
         );
-        assert!(
-            doc.keys(&ROOT).next().is_none(),
-            "selection must not touch the shared doc"
-        );
-    }
-
-    #[test]
-    fn boot_filter_is_local() {
-        let (mut app, _doc) = synced_app();
-        let boot = app.boots[1].0.clone();
-        app.apply_view_operation(LogsOperation::SetBoot {
-            value: boot.clone(),
-        });
-        assert!(app.filtered.iter().all(|&i| app.entries[i].boot_id == boot));
-    }
-
-    #[test]
-    fn agent_filter_view_operation_never_changes_the_shared_document() {
-        let (mut app, doc) = synced_app();
-        let encoded = tilo_actions::EncodedAction::encode_operation(
-            actions::LOGS_OPERATION_TYPE,
-            &LogsOperation::SetUnit {
-                value: "kernel".to_string(),
-            },
-        )
-        .unwrap();
-
-        assert!(
-            app.invoke_resource_operation(
-                OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &doc,
-                &ROOT,
-            )
-            .unwrap()
-        );
-        assert_eq!(app.filter.unit, "kernel");
-        assert!(
-            app.filtered
-                .iter()
-                .all(|&index| app.entries[index].unit == "kernel")
-        );
-        assert!(
-            doc.keys(&ROOT).next().is_none(),
-            "agent view actions must not write shared state"
-        );
-    }
-
-    #[test]
-    fn content_spans_to_window_bottom() {
-        // With the bottom legend strip gone, the list/detail content must
-        // reach the window's bottom edge (minus the usual content padding),
-        // not stop short to reserve a legend band.
-        let (app, _doc) = synced_app();
-        let reg = app.regions();
-        assert!(
-            reg.list_body.y1 >= app.rect.y1 - PAD - 1.0,
-            "list body {} should reach near the window bottom {}",
-            reg.list_body.y1,
-            app.rect.y1
-        );
-        assert!(reg.detail.y1 >= app.rect.y1 - PAD - 1.0);
-    }
-
-    #[test]
-    fn medium_width_filter_controls_wrap_without_clipping() {
-        let (mut app, _doc) = synced_app();
-        app.rect = Rect::new(0.0, 0.0, 1024.0, 720.0);
-        let reg = app.regions();
-
-        assert!(
-            (reg.filter.height() - 128.0).abs() < f64::EPSILON,
-            "medium-width filters should use the compact three-row height"
-        );
-        assert_eq!(reg.chips.len(), 8);
-        assert!(
-            reg.chips.iter().all(|chip| chip.x1 <= app.rect.x1 - PAD),
-            "every severity choice must stay inside the viewport"
-        );
-        assert!(
-            reg.chips.iter().all(|chip| chip.y0 > reg.unit_trigger.y1),
-            "severity choices belong on their own compact row"
-        );
-    }
-
-    #[test]
-    fn phone_rows_prioritize_time_level_and_message() {
-        let row = Rect::new(0.0, 0.0, 358.0, ROW_H);
-        let cols = column_x(row, 1.0);
-        assert!(cols.compact, "phone rows use compact column geometry");
-        assert!(
-            cols.unit_w.abs() < f64::EPSILON,
-            "unit yields space to the message"
-        );
-        assert!(cols.msg_w >= 200.0, "message remains meaningfully readable");
-        assert!(cols.msg_x < row.x1);
-    }
-
-    #[test]
-    fn refresh_control_queues_the_exported_root_operation() {
-        let mut app = LogsApp::new(sample_entries(), true);
-        app.request_journal_operation("refresh");
-        let invocation = app
-            .take_control_invocation()
-            .expect("refresh queues an inert control invocation");
-        assert_eq!(invocation.address.resource, actions::JOURNAL_RESOURCE_ID);
-        assert_eq!(invocation.address.action, "refresh");
-        assert!(app.source_loading);
-    }
-
-    #[test]
-    fn phone_actions_menu_exposes_refresh_follow_and_export() {
-        let (mut app, _doc) = synced_app();
-        app.allow_live = true;
-        app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
-        app.shots_show_actions();
-        let reg = app.regions();
-        assert!(reg.overflow_trigger.width() > 0.0);
-        assert_eq!(reg.dropdown.len(), 3);
-        let tree = app.accessibility_tree();
-        assert!(
-            tree.children
-                .iter()
-                .any(|node| node.name.as_deref() == Some("Journal actions"))
-        );
-        let filters = tree
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Journal filters"))
-            .unwrap();
-        assert!(filters.children.iter().any(|node| {
-            node.action_target.as_deref() == Some("logs.action-choice:export-filtered-jsonl")
-        }));
-    }
-
-    #[test]
-    fn portal_export_writes_the_snapshot_selected_before_the_picker() {
-        let mut app = LogsApp::new(sample_entries().into_iter().take(2).collect(), true);
-        let path = std::env::temp_dir().join(format!(
-            "tilo-logs-portal-export-{}-{}.jsonl",
-            std::process::id(),
-            app.entries[0].realtime_us
-        ));
-        let _ = std::fs::remove_file(&path);
-        let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
-        ui::host::scoped(&services, || {
-            app.perform_effect(LogsOperation::ExportFiltered).unwrap();
-        });
         assert_eq!(
-            recorder.pick_requests()[0].suggested_name(),
-            Some("journal-filtered.jsonl")
-        );
-        // Entries arriving after the picker opened are not part of the export.
-        app.entries.extend(sample_entries().into_iter().skip(2));
-        app.drain_export_portal();
-        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
-        assert_eq!(
-            app.export_status.as_deref(),
-            Some("Exported 2 log entries.")
-        );
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn portal_export_write_failure_is_announced_without_path_details() {
-        let mut app = LogsApp::new(sample_entries().into_iter().take(1).collect(), true);
-        let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_pick(PortalOutcome::Opened(std::env::temp_dir()));
-        ui::host::scoped(&services, || {
-            app.perform_effect(LogsOperation::ExportFiltered).unwrap();
-        });
-        app.drain_export_portal();
-        assert_eq!(app.export_status.as_deref(), Some("Export failed."));
-        let tree = app.accessibility_tree();
-        assert!(tree.children.iter().any(|node| {
-            node.name.as_deref() == Some("Export failed.") && node.live == Some(Politeness::Polite)
-        }));
-    }
-
-    #[test]
-    fn clear_filters_control_lives_in_header_and_resets() {
-        let (mut app, mut doc) = synced_app();
-        // A clear filter set means no Clear-filters control is laid out.
-        assert!(app.filter.is_clear());
-        assert_eq!(app.regions().clear_btn, Rect::ZERO);
-
-        // Activate a filter (errors-or-worse threshold).
-        app.apply_view_operation(LogsOperation::SetPriority {
-            value: Priority::Err.level(),
-        });
-        assert!(!app.filter.is_clear());
-
-        // The Clear-filters control now sits in the header, just left of the
-        // live-tail pill — not in any bottom strip.
-        let reg = app.regions();
-        assert!(reg.clear_btn.width() > 0.0, "clear button must be laid out");
-        assert!(
-            reg.header.contains(reg.clear_btn.center()),
-            "clear button center {:?} must be inside the header {:?}",
-            reg.clear_btn.center(),
-            reg.header
-        );
-        assert!(reg.clear_btn.x1 <= reg.live_pill.x0);
-
-        // Clicking it clears the filter through the production on_click path.
-        let mut handled = false;
-        app.on_click(reg.clear_btn.center(), &mut handled);
-        assert!(
-            handled,
-            "the header Clear-filters button must be hit-tested"
-        );
-        app.sync(&mut doc, &ROOT);
-        assert!(
-            app.filter.is_clear(),
-            "clicking Clear filters must reset the filter"
+            crate::doc::ViewDoc::selected_entry(&doc).as_deref(),
+            app.selected_entry.as_deref()
         );
     }
 
+    /// Region geometry adapts from desktop to medium to phone widths.
     #[test]
-    fn accessibility_exposes_hand_painted_controls_and_rejects_unknown_targets() {
-        let (mut app, mut doc) = synced_app();
-        let tree = app.accessibility_tree();
-        assert!(tree.children.iter().any(|node| node.role == Role::Switch));
-        let filters = tree
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Journal filters"))
-            .expect("filter group is exposed");
-        assert!(
-            filters
+    fn regions_adapt_from_desktop_to_medium_to_phone_width() {
+        // Content spans to the window bottom.
+        {
+            // With the bottom legend strip gone, the list/detail content must
+            // reach the window's bottom edge (minus the usual content padding),
+            // not stop short to reserve a legend band.
+            let (app, _doc) = synced_app();
+            let reg = app.regions();
+            assert!(
+                reg.list_body.y1 >= app.rect.y1 - PAD - 1.0,
+                "list body {} should reach near the window bottom {}",
+                reg.list_body.y1,
+                app.rect.y1
+            );
+            assert!(reg.detail.y1 >= app.rect.y1 - PAD - 1.0);
+        }
+        // Medium-width filter controls wrap without clipping.
+        {
+            let (mut app, _doc) = synced_app();
+            app.rect = Rect::new(0.0, 0.0, 1024.0, 720.0);
+            let reg = app.regions();
+
+            assert!(
+                (reg.filter.height() - 128.0).abs() < f64::EPSILON,
+                "medium-width filters should use the compact three-row height"
+            );
+            assert_eq!(reg.chips.len(), 8);
+            assert!(
+                reg.chips.iter().all(|chip| chip.x1 <= app.rect.x1 - PAD),
+                "every severity choice must stay inside the viewport"
+            );
+            assert!(
+                reg.chips.iter().all(|chip| chip.y0 > reg.unit_trigger.y1),
+                "severity choices belong on their own compact row"
+            );
+        }
+        // Phone rows prioritize time, level and message.
+        {
+            let row = Rect::new(0.0, 0.0, 358.0, ROW_H);
+            let cols = column_x(row, 1.0);
+            assert!(cols.compact, "phone rows use compact column geometry");
+            assert!(
+                cols.unit_w.abs() < f64::EPSILON,
+                "unit yields space to the message"
+            );
+            assert!(cols.msg_w >= 200.0, "message remains meaningfully readable");
+            assert!(cols.msg_x < row.x1);
+        }
+        // The phone actions menu exposes refresh, follow and export.
+        {
+            let (mut app, _doc) = synced_app();
+            app.allow_live = true;
+            app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+            app.shots_show_actions();
+            let reg = app.regions();
+            assert!(reg.overflow_trigger.width() > 0.0);
+            assert_eq!(reg.dropdown.len(), 3);
+            let tree = app.accessibility_tree();
+            assert!(
+                tree.children
+                    .iter()
+                    .any(|node| node.name.as_deref() == Some("Journal actions"))
+            );
+            let filters = tree
                 .children
                 .iter()
-                .any(|node| node.role == Role::ToggleButton)
-        );
-        let list = tree
-            .children
-            .iter()
-            .find(|node| node.role == Role::List)
-            .expect("entry list is exposed");
-        assert!(list.children.iter().all(|node| node.state.focusable));
-        assert!(
-            !Widget::perform_semantic_action(
-                &mut app,
-                "logs.unknown",
-                &AccessAction::Focus,
+                .find(|node| node.name.as_deref() == Some("Journal filters"))
+                .unwrap();
+            assert!(filters.children.iter().any(|node| {
+                node.action_target.as_deref() == Some("logs.action-choice:export-filtered-jsonl")
+            }));
+        }
+    }
+
+    /// Portal export writes the snapshot chosen before the picker opened and
+    /// announces a write failure without path details.
+    #[test]
+    fn portal_export_writes_the_frozen_snapshot_or_announces_failure() {
+        // Success: the snapshot selected before the picker is written.
+        {
+            let mut app = LogsApp::new(sample_entries().into_iter().take(2).collect(), true);
+            let path = std::env::temp_dir().join(format!(
+                "tilo-logs-portal-export-{}-{}.jsonl",
+                std::process::id(),
+                app.entries[0].realtime_us
+            ));
+            let _ = std::fs::remove_file(&path);
+            let (services, recorder) = ui::host::HostServices::recording();
+            recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+            ui::host::scoped(&services, || {
+                app.perform_effect(LogsOperation::ExportFiltered, &mut AutoCommit::new())
+                    .unwrap();
+            });
+            assert_eq!(
+                recorder.pick_requests()[0].suggested_name(),
+                Some("journal-filtered.jsonl")
+            );
+            // Entries arriving after the picker opened are not part of the export.
+            app.entries.extend(sample_entries().into_iter().skip(2));
+            app.drain_export_portal();
+            assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
+            assert_eq!(
+                app.export_status.as_deref(),
+                Some("Exported 2 log entries.")
+            );
+            std::fs::remove_file(path).unwrap();
+        }
+        // Failure: announced without path details.
+        {
+            let mut app = LogsApp::new(sample_entries().into_iter().take(1).collect(), true);
+            let (services, recorder) = ui::host::HostServices::recording();
+            recorder.respond_to_pick(PortalOutcome::Opened(std::env::temp_dir()));
+            ui::host::scoped(&services, || {
+                app.perform_effect(LogsOperation::ExportFiltered, &mut AutoCommit::new())
+                    .unwrap();
+            });
+            app.drain_export_portal();
+            assert_eq!(app.export_status.as_deref(), Some("Export failed."));
+            let tree = app.accessibility_tree();
+            assert!(tree.children.iter().any(|node| {
+                node.name.as_deref() == Some("Export failed.")
+                    && node.live == Some(Politeness::Polite)
+            }));
+        }
+    }
+
+    /// Hand-painted header controls do real work and are exposed to
+    /// accessibility: refresh queues the root operation, Clear filters resets,
+    /// and unknown targets are rejected.
+    #[test]
+    fn header_controls_act_through_production_paths_and_accessibility() {
+        // Refresh queues the exported root operation.
+        {
+            let mut app = LogsApp::new(sample_entries(), true);
+            app.request_journal_operation("refresh");
+            let invocation = ui::widget::controls::take_control_invocation(&mut app)
+                .expect("refresh queues an inert control invocation");
+            assert_eq!(invocation.address.resource, actions::JOURNAL_RESOURCE_ID);
+            assert_eq!(invocation.address.action, "refresh");
+            assert!(app.source_loading);
+        }
+        // Clear filters lives in the header and resets.
+        {
+            let (mut app, mut doc) = synced_app();
+            // A clear filter set means no Clear-filters control is laid out.
+            assert!(app.filter.is_clear());
+            assert_eq!(app.regions().clear_btn, Rect::ZERO);
+
+            // Activate a filter (errors-or-worse threshold).
+            app.commit_view(
                 &mut doc,
-                &ROOT,
-            ),
-            "unknown targets must not claim an accessibility action"
-        );
-        assert!(
-            !Widget::perform_semantic_action(
-                &mut app,
-                "logs.live-tail",
-                &AccessAction::Activate,
-                &mut doc,
-                &ROOT,
-            ),
-            "unavailable local journal access must reject live-tail activation"
-        );
+                &LogsAction::SetPriority {
+                    value: Priority::Err.level(),
+                },
+            );
+            assert!(!app.filter.is_clear());
+
+            // The Clear-filters control now sits in the header, just left of the
+            // live-tail pill — not in any bottom strip.
+            let reg = app.regions();
+            assert!(reg.clear_btn.width() > 0.0, "clear button must be laid out");
+            assert!(
+                reg.header.contains(reg.clear_btn.center()),
+                "clear button center {:?} must be inside the header {:?}",
+                reg.clear_btn.center(),
+                reg.header
+            );
+            assert!(reg.clear_btn.x1 <= reg.live_pill.x0);
+
+            // Clicking it clears the filter through the production on_click path.
+            let mut handled = false;
+            app.on_click(reg.clear_btn.center(), &mut doc, &mut handled);
+            assert!(
+                handled,
+                "the header Clear-filters button must be hit-tested"
+            );
+            app.sync(&mut doc, &ROOT);
+            assert!(
+                app.filter.is_clear(),
+                "clicking Clear filters must reset the filter"
+            );
+        }
+        // Accessibility exposes hand-painted controls and rejects unknown targets.
+        {
+            let (mut app, mut doc) = synced_app();
+            let tree = app.accessibility_tree();
+            assert!(tree.children.iter().any(|node| node.role == Role::Switch));
+            let filters = tree
+                .children
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Journal filters"))
+                .expect("filter group is exposed");
+            assert!(
+                filters
+                    .children
+                    .iter()
+                    .any(|node| node.role == Role::ToggleButton)
+            );
+            let list = tree
+                .children
+                .iter()
+                .find(|node| node.role == Role::List)
+                .expect("entry list is exposed");
+            assert!(list.children.iter().all(|node| node.state.focusable));
+            assert!(
+                !Widget::perform_semantic_action(
+                    &mut app,
+                    "logs.unknown",
+                    &AccessAction::Focus,
+                    &mut doc,
+                    &ROOT,
+                ),
+                "unknown targets must not claim an accessibility action"
+            );
+            assert!(
+                !Widget::perform_semantic_action(
+                    &mut app,
+                    "logs.live-tail",
+                    &AccessAction::Activate,
+                    &mut doc,
+                    &ROOT,
+                ),
+                "unavailable local journal access must reject live-tail activation"
+            );
+        }
     }
 }

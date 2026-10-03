@@ -154,11 +154,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_store_lays_out_the_documented_paths() {
+    fn ensure_lays_out_a_private_store_idempotently() {
+        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let store = Store::at(dir.path().join("ush"));
         store.ensure().unwrap();
 
+        // The documented paths.
         assert!(store.persistent_dir().ends_with("layers/persistent"));
         assert!(store.ephemeral_dir().ends_with("layers/ephemeral"));
         assert!(store.sessions_dir().ends_with("sessions"));
@@ -168,16 +170,9 @@ mod tests {
         assert!(store.ephemeral_dir().is_dir());
         assert!(store.sessions_dir().is_dir());
         assert!(store.audit_dir().is_dir());
-    }
 
-    /// The store holds the user's permission decisions and the audit log. A
-    /// mode that let another account read them would make both worthless.
-    #[test]
-    fn the_store_is_not_world_readable() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::at(dir.path().join("ush"));
-        store.ensure().unwrap();
+        // The store holds the user's permission decisions and the audit log. A
+        // mode that let another account read them would make both worthless.
         let mode = std::fs::metadata(store.root())
             .unwrap()
             .permissions()
@@ -187,21 +182,8 @@ mod tests {
             0,
             "store root is group/world accessible: {mode:o}"
         );
-    }
 
-    #[test]
-    fn ensure_is_idempotent() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::at(dir.path().join("ush"));
-        store.ensure().unwrap();
-        store.ensure().unwrap();
-    }
-
-    #[test]
-    fn ephemeral_layers_are_listed_from_disk() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::at(dir.path().join("ush"));
-        store.ensure().unwrap();
+        // Ephemeral layers are listed from disk.
         assert!(store.ephemeral_layers().is_empty());
         std::fs::create_dir_all(store.ephemeral_dir().join("aaa")).unwrap();
         std::fs::create_dir_all(store.ephemeral_dir().join("bbb")).unwrap();
@@ -211,5 +193,11 @@ mod tests {
             .map(|l| l.path().file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(found, vec!["aaa".to_string(), "bbb".to_string()]);
+
+        // Ensure is idempotent (on a fresh store and on this populated one).
+        let fresh = Store::at(dir.path().join("ush-fresh"));
+        fresh.ensure().unwrap();
+        fresh.ensure().unwrap();
+        store.ensure().unwrap();
     }
 }

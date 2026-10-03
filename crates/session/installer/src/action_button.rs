@@ -18,6 +18,7 @@
 //! Every colour is read from the [`Theme`]; nothing is hard-coded.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::style_helpers::length;
@@ -160,14 +161,16 @@ mod tests {
         let mut focus_target = None;
         button.handle_event(
             &press(key),
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         assert!(handled);
         assert_eq!(
@@ -180,46 +183,49 @@ mod tests {
     }
 
     #[test]
-    fn enter_and_space_fire_the_focused_action() {
-        assert_key_fires(NamedKey::Enter);
-        assert_key_fires(NamedKey::Space);
-    }
+    fn action_buttons_are_named_activatable_native_controls() {
+        // Phase `enter_and_space_fire_the_focused_action`.
+        {
+            assert_key_fires(NamedKey::Enter);
+            assert_key_fires(NamedKey::Space);
+        }
+        // Phase `button_semantics_are_named_focusable_and_activatable`.
+        {
+            let mut button =
+                ActionButton::new("Reboot now", "installer.reboot").with_test_id("reboot");
+            button.set_focus(true);
+            let node = button.accessibility().expect("button semantics");
+            assert_eq!(node.role, ui::a11y::Role::Button);
+            assert_eq!(node.name.as_deref(), Some("Reboot now"));
+            assert!(node.state.focusable);
+            assert!(node.state.focused);
 
-    #[test]
-    fn button_semantics_are_named_focusable_and_activatable() {
-        let mut button = ActionButton::new("Reboot now", "installer.reboot").with_test_id("reboot");
-        button.set_focus(true);
-        let node = button.accessibility().expect("button semantics");
-        assert_eq!(node.role, ui::a11y::Role::Button);
-        assert_eq!(node.name.as_deref(), Some("Reboot now"));
-        assert!(node.state.focusable);
-        assert!(node.state.focused);
-
-        let mut doc = AutoCommit::new();
-        assert!(button.perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT));
-        assert_eq!(
-            doc.get(&ROOT, "installer.reboot")
-                .unwrap()
-                .and_then(|(value, _)| value.as_bool()),
-            Some(true)
-        );
-        assert!(button.is_focused(), "AT activation must not steal focus");
-    }
-
-    #[test]
-    fn recovery_ack_is_a_cleanly_named_native_checkbox() {
-        let button = ActionButton::new("[x] I will save my recovery key", "installer.recovery_ack")
-            .with_test_id("recovery_ack")
-            .checkbox(true);
-        let node = button.accessibility().expect("checkbox semantics");
-        assert_eq!(node.role, ui::a11y::Role::Checkbox);
-        assert_eq!(node.name.as_deref(), Some("I will save my recovery key"));
-        assert_eq!(node.state.checked, Some(true));
+            let mut doc = AutoCommit::new();
+            assert!(button.perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT));
+            assert_eq!(
+                doc.get(&ROOT, "installer.reboot")
+                    .unwrap()
+                    .and_then(|(value, _)| value.as_bool()),
+                Some(true)
+            );
+            assert!(button.is_focused(), "AT activation must not steal focus");
+        }
+        // Phase `recovery_ack_is_a_cleanly_named_native_checkbox`.
+        {
+            let button =
+                ActionButton::new("[x] I will save my recovery key", "installer.recovery_ack")
+                    .with_test_id("recovery_ack")
+                    .checkbox(true);
+            let node = button.accessibility().expect("checkbox semantics");
+            assert_eq!(node.role, ui::a11y::Role::Checkbox);
+            assert_eq!(node.name.as_deref(), Some("I will save my recovery key"));
+            assert_eq!(node.state.checked, Some(true));
+        }
     }
 }
 
 impl Widget for ActionButton {
-    fn sync(&mut self, _state: &mut AutoCommit, _root: &ObjId) {}
+    ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn build_layout(
         &mut self,
@@ -379,28 +385,18 @@ impl Widget for ActionButton {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.disabled {
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let logical =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let hover = self.rect.contains(logical);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -412,17 +408,17 @@ impl Widget for ActionButton {
                     let pressed = *element_state == ElementState::Pressed;
                     if pressed != self.is_pressed {
                         self.is_pressed = pressed;
-                        *handled = true;
+                        *ctx.handled = true;
                         if pressed {
-                            *focus_target = Some(node_id);
+                            *ctx.focus_target = Some(ctx.node_id);
                         } else {
                             // Fire on release (matches ui::Button).
-                            self.fire(state, root);
+                            self.fire(ctx.state, ctx.path);
                         }
                     }
                 } else if self.is_pressed {
                     self.is_pressed = false;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -434,8 +430,8 @@ impl Widget for ActionButton {
                     },
                 ..
             } if self.is_focused => {
-                self.fire(state, root);
-                *handled = true;
+                self.fire(ctx.state, ctx.path);
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -467,22 +463,13 @@ impl Widget for ActionButton {
         !self.disabled
     }
 
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        vec![ui::widget::ControlBindingMetadata {
-            control_id: self
-                .test_id()
-                .unwrap_or(self.click_path.as_str())
-                .to_string(),
-            kind: ui::widget::ControlBindingKind::CollaborativeDocument(self.click_path.clone()),
-        }]
-    }
-
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        state: &mut AppModel,
+        root: &ModelPath,
     ) -> bool {
+        let (state, root) = ui::doc::document(state, root);
         let accepted = matches!(action, ui::a11y::Action::Activate)
             || (self.checked.is_some() && matches!(action, ui::a11y::Action::ToggleCheck));
         if self.disabled || !accepted {
@@ -515,5 +502,17 @@ impl Widget for ActionButton {
                 })
                 .with_action_target(control_id),
         )
+    }
+}
+
+impl ui::widget::controls::ActionControls for ActionButton {
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        vec![ui::widget::ControlBindingMetadata {
+            control_id: self
+                .test_id()
+                .unwrap_or(self.click_path.as_str())
+                .to_string(),
+            kind: ui::widget::ControlBindingKind::CollaborativeDocument(self.click_path.clone()),
+        }]
     }
 }

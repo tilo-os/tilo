@@ -299,7 +299,22 @@ impl<T> Future for Pending<T> {
 mod tests {
     use super::*;
 
+    /// A pending answer is polled, awaited or continued; dropping a mapped answer abandons the
+    /// original; waiting across threads sees the answer or times out; a ready answer resolves as a
+    /// future without a runtime.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn a_pending_answer_resolves_however_it_is_waited_on() {
+        a_pending_answer_is_polled_awaited_or_continued();
+        dropping_a_mapped_answer_abandons_the_original();
+        waiting_across_threads_sees_the_answer_or_times_out();
+        a_ready_answer_resolves_as_a_future_without_a_runtime();
+    }
+
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test phase: arithmetic on small fixed test values cannot overflow"
+    )]
     fn a_pending_answer_is_polled_awaited_or_continued() {
         let (completer, mut answer) = pending::<u32>();
         assert_eq!(answer.poll_ready(), PendingPoll::Waiting);
@@ -317,7 +332,10 @@ mod tests {
         assert_eq!(answer.poll_ready(), PendingPoll::Abandoned);
     }
 
-    #[test]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test phase: arithmetic on small fixed test values cannot overflow"
+    )]
     fn dropping_a_mapped_answer_abandons_the_original() {
         let (completer, answer) = pending::<u32>();
         let mapped = answer.map(|value| value + 1);
@@ -333,7 +351,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn waiting_across_threads_sees_the_answer_or_times_out() {
         let (completer, answer) = pending::<&'static str>();
         let answer = answer
@@ -341,13 +358,12 @@ mod tests {
             .expect_err("nothing has answered yet");
         let producer = std::thread::spawn(move || completer.complete("done"));
         assert_eq!(
-            answer.wait_timeout(Duration::from_secs(5)).ok(),
+            answer.wait_timeout(tilo_test_env::hang_bound()).ok(),
             Some(Some("done"))
         );
         producer.join().expect("producer thread");
     }
 
-    #[test]
     fn a_ready_answer_resolves_as_a_future_without_a_runtime() {
         let waker = Waker::noop();
         let mut context = Context::from_waker(waker);

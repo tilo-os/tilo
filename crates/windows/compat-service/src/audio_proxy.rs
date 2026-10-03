@@ -303,51 +303,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn playback_graph_has_a_sink_but_no_source() {
-        let config = pipewire_dropin_contents("unix:/run/user/1000/pulse/native", false);
-        assert!(config.contains("tunnel.mode = sink"));
-        assert!(!config.contains("tunnel.mode = source"));
-        assert!(config.contains("no WirePlumber or device-discovery"));
-    }
-
-    #[test]
-    fn microphone_grant_is_the_only_way_to_materialize_source_tunnel() {
-        let config = pipewire_dropin_contents("unix:/run/user/1000/pulse/native", true);
-        assert!(config.contains("tunnel.mode = sink"));
-        assert!(config.contains("tunnel.mode = source"));
-        assert!(config.contains("tilo.windows.compat.microphone"));
-    }
-
-    #[test]
-    fn pulse_clients_cannot_load_a_host_facing_module() {
-        assert!(pulse_dropin_contents().contains("pulse.allow-module-loading = false"));
-    }
-
-    #[test]
-    fn host_socket_is_never_a_capsule_socket_path() {
-        let root = Path::new("/run/tilo/windows-compat/leases/123-4");
-        let proxy = root.join("audio/pulse/native");
-        assert_ne!(proxy, Path::new("/run/user/1000/pulse/native"));
-        assert!(proxy.starts_with(root));
-    }
-
-    #[test]
-    fn installed_pipewire_accepts_the_generated_private_graph() {
-        if !Path::new(PIPEWIRE_BIN).is_file() || !Path::new(PIPEWIRE_PULSE_BIN).is_file() {
-            return;
+    fn the_private_audio_graph_exposes_sources_only_by_grant() {
+        // Phase `installed_pipewire_accepts_the_generated_private_graph`.
+        fn installed_pipewire_accepts_the_generated_private_graph() {
+            if !Path::new(PIPEWIRE_BIN).is_file() || !Path::new(PIPEWIRE_PULSE_BIN).is_file() {
+                return;
+            }
+            let directory = tempfile::tempdir().unwrap();
+            // SAFETY: `geteuid` has no preconditions and does not mutate memory.
+            let uid = unsafe { libc::geteuid() };
+            let lease = AudioProxyLease::start(directory.path().join("lease"), uid, false).unwrap();
+            assert!(
+                fs::symlink_metadata(lease.pipewire_socket())
+                    .is_ok_and(|metadata| metadata.file_type().is_socket())
+            );
+            assert!(
+                fs::symlink_metadata(lease.pulse_socket())
+                    .is_ok_and(|metadata| metadata.file_type().is_socket())
+            );
+            lease.revoke();
         }
-        let directory = tempfile::tempdir().unwrap();
-        // SAFETY: `geteuid` has no preconditions and does not mutate memory.
-        let uid = unsafe { libc::geteuid() };
-        let lease = AudioProxyLease::start(directory.path().join("lease"), uid, false).unwrap();
-        assert!(
-            fs::symlink_metadata(lease.pipewire_socket())
-                .is_ok_and(|metadata| metadata.file_type().is_socket())
-        );
-        assert!(
-            fs::symlink_metadata(lease.pulse_socket())
-                .is_ok_and(|metadata| metadata.file_type().is_socket())
-        );
-        lease.revoke();
+        // Phase `playback_graph_has_a_sink_but_no_source`.
+        {
+            let config = pipewire_dropin_contents("unix:/run/user/1000/pulse/native", false);
+            assert!(config.contains("tunnel.mode = sink"));
+            assert!(!config.contains("tunnel.mode = source"));
+            assert!(config.contains("no WirePlumber or device-discovery"));
+        }
+        // Phase `microphone_grant_is_the_only_way_to_materialize_source_tunnel`.
+        {
+            let config = pipewire_dropin_contents("unix:/run/user/1000/pulse/native", true);
+            assert!(config.contains("tunnel.mode = sink"));
+            assert!(config.contains("tunnel.mode = source"));
+            assert!(config.contains("tilo.windows.compat.microphone"));
+        }
+        // Phase `pulse_clients_cannot_load_a_host_facing_module`.
+        {
+            assert!(pulse_dropin_contents().contains("pulse.allow-module-loading = false"));
+        }
+        // Phase `host_socket_is_never_a_capsule_socket_path`.
+        {
+            let root = Path::new("/run/tilo/windows-compat/leases/123-4");
+            let proxy = root.join("audio/pulse/native");
+            assert_ne!(proxy, Path::new("/run/user/1000/pulse/native"));
+            assert!(proxy.starts_with(root));
+        }
+        // Phase `installed_pipewire_accepts_the_generated_private_graph` (defined above).
+        installed_pipewire_accepts_the_generated_private_graph();
     }
 }

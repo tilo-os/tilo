@@ -340,526 +340,556 @@ mod tests {
     }
 
     #[test]
-    fn provider_finds_a_message_by_subject_or_sender() {
-        let mb = sample();
-        let provider = MailSearchProvider::new(&mb);
-        // Take a real subject word from the seeded corpus and prove it surfaces.
-        let some = mb
-            .messages
-            .values()
-            .next()
-            .expect("sample mailbox is populated")
-            .clone();
-        let word = some
-            .subject
-            .split_whitespace()
-            .next()
-            .unwrap_or(&some.subject);
-        let hits = provider.search(word);
-        assert!(
-            !hits.is_empty(),
-            "a real subject word surfaces at least its message"
-        );
-        assert!(hits.iter().all(|r| r.kind == MAIL_KIND));
-        assert!(
-            hits.iter().all(|r| r.subtitle.is_some()),
-            "every row shows a sender"
-        );
-    }
-
-    #[test]
-    fn blank_query_returns_nothing() {
-        let provider = MailSearchProvider::new(&sample());
-        assert!(
-            provider.search("   ").is_empty(),
-            "opening Ctrl+K is not an implicit whole-inbox browse"
-        );
-    }
-
-    #[test]
-    fn unicode_case_folded_infixes_remain_searchable() {
-        let mut mailbox = sample();
-        let mut message = mailbox
-            .messages
-            .values()
-            .next()
-            .expect("seeded message")
-            .clone();
-        message.id = uuid::Uuid::new_v4();
-        message.folder = Folder::Inbox;
-        message.subject = "Málaga release notes".into();
-        message.body.clear();
-        message.attachments.clear();
-        mailbox.insert(message.clone());
-        let provider = MailSearchProvider::new(&mailbox);
-        assert!(
-            provider
-                .search("ÁLA")
-                .iter()
-                .any(|hit| hit.title == message.subject),
-            "Unicode case folding keeps a mixed-case substring discoverable"
-        );
-    }
-
-    #[test]
-    fn an_absent_query_gram_short_circuits_before_body_inspection() {
-        let provider = MailSearchProvider::new(&sample());
-        let page = provider.search_page("\0\0", None, 8, 8);
-        assert!(page.results.is_empty());
-        assert_eq!(page.inspected, 0, "missing grams must avoid body work");
-    }
-
-    #[test]
-    fn limited_search_honours_the_materialisation_budget() {
-        let mailbox = sample();
-        let query = mailbox
-            .messages
-            .values()
-            .next()
-            .and_then(|message| message.subject.split_whitespace().next())
-            .unwrap_or("mail");
-        let provider = MailSearchProvider::new(&mailbox);
-        assert!(provider.search_limited(query, 1).len() <= 1);
-        assert!(provider.search_limited(query, 0).is_empty());
-    }
-
-    #[test]
-    fn paged_search_clamps_an_untrusted_result_limit() {
-        let mut mailbox = Mailbox::default();
-        let template = sample().messages.values().next().unwrap().clone();
-        for index in 0..300_u128 {
-            let mut message = template.clone();
-            message.id = uuid::Uuid::from_u128(index + 1);
-            message.subject = format!("Bounded result message {index}");
-            message.body.clear();
-            message.attachments.clear();
-            mailbox.insert(message);
-        }
-        let provider = MailSearchProvider::new(&mailbox);
-        assert_eq!(
-            provider
-                .search_page("bounded", None, usize::MAX, usize::MAX)
-                .results
-                .len(),
-            DEFAULT_SEARCH_RESULT_LIMIT,
-            "a caller cannot materialize an unbounded palette page"
-        );
-    }
-
-    #[test]
-    fn paged_search_clamps_an_untrusted_work_budget() {
-        assert_eq!(
-            MailSearchProvider::page_limits(usize::MAX, usize::MAX),
-            (DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT),
-            "both untrusted page bounds are clamped before the catalogue sees them"
-        );
-        let mut mailbox = Mailbox::default();
-        let template = sample().messages.values().next().unwrap().clone();
-        for index in 0..300_u128 {
-            let mut message = template.clone();
-            message.id = uuid::Uuid::from_u128(index + 1);
-            message.subject = format!("Bounded work message {index}");
-            message.body.clear();
-            message.attachments.clear();
-            mailbox.insert(message);
-        }
-        let provider = MailSearchProvider::new(&mailbox);
-        let page = provider.search_page("bounded", None, usize::MAX, 1);
-        assert!(
-            page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT,
-            "a caller cannot force unbounded candidate inspection"
-        );
-    }
-
-    #[test]
-    fn late_message_remains_exactly_reachable_in_a_large_catalogue() {
-        let (provider, hit) = assert_late_hit_reachable(
-            |corpus| {
-                let mut mailbox = Mailbox::default();
-                let template = sample().messages.values().next().unwrap().clone();
-                for row in corpus {
-                    let mut message = template.clone();
-                    message.id = uuid::Uuid::from_u128(row.index as u128 + 1);
-                    message.subject = row.text;
-                    message.body.clear();
-                    message.labels.clear();
-                    message.attachments.clear();
-                    mailbox.insert(message);
-                }
-                let provider = MailSearchProvider::new(&mailbox);
-                assert_eq!(
-                    provider.materialized_resource_count(),
-                    0,
-                    "retained search rows hold compact MessageRow metadata, not prebuilt Resource/ActionSpec trees"
-                );
-                provider
-            },
-            3_000,
-        );
-        assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
-        let address = hit.action_address().expect("canonical address");
-        let resource = provider
-            .resolve_action_resource(&address)
-            .expect("provider resolves the late exact message resource");
-        assert!(resource.actions.iter().any(|action| action.id == "open"));
-        assert_eq!(
-            provider.materialized_resource_count(),
-            1,
-            "only the exact activated hit materializes its action tree"
-        );
-    }
-
-    #[test]
-    fn complete_catalogue_finds_an_old_substring_past_the_former_snapshot_cap() {
-        let mut mailbox = sample();
-        let mut target = mailbox
-            .messages
-            .values()
-            .next()
-            .expect("seeded message")
-            .clone();
-        target.id = uuid::Uuid::new_v4();
-        target.folder = Folder::Inbox;
-        target.subject = "SearchIndexBoundaryFragment".into();
-        target.body.clear();
-        target.attachments.clear();
-        // Insert the target first, then enough later records that the old
-        // newest-4,096 snapshot would have silently hidden it. The query is an
-        // infix, not a whole-token lookup.
-        mailbox.insert(target.clone());
-        for timestamp in 0..4_200_i64 {
-            let mut filler = target.clone();
-            filler.id = uuid::Uuid::new_v4();
-            filler.subject = format!("Routine status {timestamp}");
-            filler.timestamp_min = timestamp;
-            mailbox.insert(filler);
-        }
-        let provider = MailSearchProvider::new(&mailbox);
-        assert_eq!(
-            provider.catalog.stats().records,
-            mailbox
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn provider_matches_subject_sender_and_folded_infixes() {
+        // Phase `provider_finds_a_message_by_subject_or_sender`.
+        {
+            let mb = sample();
+            let provider = MailSearchProvider::new(&mb);
+            // Take a real subject word from the seeded corpus and prove it surfaces.
+            let some = mb
                 .messages
                 .values()
-                .filter(|message| message.folder != Folder::Trash)
-                .count()
-                + Folder::ALL.len()
-        );
-        let hits = provider.search("aryfrag");
-        assert!(hits.iter().any(|hit| hit.title == target.subject));
-    }
-
-    #[test]
-    fn paged_search_bounds_inspection_and_reaches_every_broad_match() {
-        let mut mailbox = Mailbox::default();
-        let template = sample().messages.values().next().unwrap().clone();
-        for index in 0..257_i64 {
-            let mut message = template.clone();
-            message.id = uuid::Uuid::new_v4();
-            message.subject = format!("Common catalogue message {index}");
-            message.folder = Folder::Inbox;
-            mailbox.insert(message);
-        }
-        let provider = MailSearchProvider::new(&mailbox);
-        let mut cursor = None;
-        let mut seen = 0;
-        loop {
-            let page = provider.search_page("common", cursor.as_ref(), 17, 5);
-            assert!(page.inspected <= 17, "each page has a hard work budget");
-            assert!(page.results.len() <= 5, "rows are materialised per page");
-            seen += page.results.len();
-            let Some(next) = page.next else { break };
-            cursor = Some(next);
-        }
-        assert_eq!(seen, 257, "pagination must not lose broad matches");
-    }
-
-    #[test]
-    fn retained_catalogue_refuses_a_stale_message_address() {
-        let mut mailbox = sample();
-        let provider = MailSearchProvider::new(&mailbox);
-        let message = mailbox
-            .messages
-            .values()
-            .find(|message| message.folder != Folder::Trash)
-            .unwrap()
-            .clone();
-        let address = MailSearchProvider::message_address(message.id);
-        assert!(provider.resolve_action_resource(&address).is_some());
-
-        mailbox.delete(message.id);
-        provider.refresh(&mailbox).unwrap();
-        assert!(
-            provider.resolve_action_resource(&address).is_none(),
-            "a palette row from an earlier revision cannot revive trashed mail"
-        );
-    }
-
-    #[test]
-    fn exact_message_resolution_waits_for_a_snapshot_publication_boundary() {
-        use std::sync::mpsc;
-
-        let mailbox = sample();
-        let provider = MailSearchProvider::new(&mailbox);
-        let message = mailbox
-            .messages
-            .values()
-            .find(|message| message.folder != Folder::Trash)
-            .expect("sample message");
-        let address = MailSearchProvider::message_address(message.id);
-        // `replace_snapshot` holds this same state mutex while it swaps the
-        // search catalogue and its matching lazy rows. An activation therefore
-        // cannot see the new catalogue with the old row map in between.
-        let publication = provider.state.lock().unwrap();
-        let (started_tx, started_rx) = mpsc::channel();
-        let (finished_tx, finished_rx) = mpsc::channel();
-        let provider_clone = provider.clone();
-        let worker = std::thread::spawn(move || {
-            started_tx.send(()).unwrap();
-            let resolved_resource = provider_clone.resolve_action_resource(&address);
-            finished_tx.send(resolved_resource.is_some()).unwrap();
-        });
-        started_rx.recv().unwrap();
-        assert!(
-            matches!(finished_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
-            "resolution cannot pass the publication boundary early"
-        );
-        drop(publication);
-        assert!(finished_rx.recv().unwrap());
-        worker.join().unwrap();
-    }
-
-    #[test]
-    fn refresh_invalidates_old_continuation_cursors() {
-        let mut mailbox = Mailbox::default();
-        let template = sample().messages.values().next().unwrap().clone();
-        for index in 0..4_u128 {
-            let mut message = template.clone();
-            message.id = uuid::Uuid::from_u128(index + 1);
-            message.subject = format!("Cursor mail {index}");
-            mailbox.insert(message);
-        }
-        let provider = MailSearchProvider::new(&mailbox);
-        let cursor = provider
-            .search_page("cursor", None, 1, 1)
-            .next
-            .expect("the broad result set is paged");
-        let mut changed = template;
-        changed.id = uuid::Uuid::from_u128(99);
-        changed.subject = "Cursor mail changed".into();
-        mailbox.insert(changed);
-        provider.refresh(&mailbox).unwrap();
-        assert!(!provider.action_directory_cursor_is_current(&cursor));
-    }
-
-    #[test]
-    fn canonical_message_resolution_keeps_all_meaningful_actions() {
-        let mailbox = sample();
-        let provider = MailSearchProvider::new(&mailbox);
-        let message = mailbox.messages.values().next().unwrap();
-        let query = message
-            .subject
-            .split_whitespace()
-            .next()
-            .unwrap_or(&message.subject);
-        let hit = provider
-            .search(query)
-            .into_iter()
-            .find(|hit| hit.title == message.subject)
-            .expect("canonical message result");
-        let resource = provider
-            .resolve_action_resource(&hit.action_address().unwrap())
-            .expect("provider-path exact resource");
-        for action in [
-            "open",
-            "inspect",
-            "read",
-            "star",
-            "archive",
-            "delete",
-            "add-label",
-        ] {
+                .next()
+                .expect("sample mailbox is populated")
+                .clone();
+            let word = some
+                .subject
+                .split_whitespace()
+                .next()
+                .unwrap_or(&some.subject);
+            let hits = provider.search(word);
             assert!(
-                resource
-                    .actions
-                    .iter()
-                    .any(|published| published.id == action),
-                "canonical resolution retains {action}"
+                !hits.is_empty(),
+                "a real subject word surfaces at least its message"
+            );
+            assert!(hits.iter().all(|r| r.kind == MAIL_KIND));
+            assert!(
+                hits.iter().all(|r| r.subtitle.is_some()),
+                "every row shows a sender"
             );
         }
+
+        // Phase `blank_query_returns_nothing`.
+        {
+            let provider = MailSearchProvider::new(&sample());
+            assert!(
+                provider.search("   ").is_empty(),
+                "opening Ctrl+K is not an implicit whole-inbox browse"
+            );
+        }
+
+        // Phase `unicode_case_folded_infixes_remain_searchable`.
+        {
+            let mut mailbox = sample();
+            let mut message = mailbox
+                .messages
+                .values()
+                .next()
+                .expect("seeded message")
+                .clone();
+            message.id = uuid::Uuid::new_v4();
+            message.folder = Folder::Inbox;
+            message.subject = "Málaga release notes".into();
+            message.body.clear();
+            message.attachments.clear();
+            mailbox.insert(message.clone());
+            let provider = MailSearchProvider::new(&mailbox);
+            assert!(
+                provider
+                    .search("ÁLA")
+                    .iter()
+                    .any(|hit| hit.title == message.subject),
+                "Unicode case folding keeps a mixed-case substring discoverable"
+            );
+        }
+
+        // Phase `an_absent_query_gram_short_circuits_before_body_inspection`.
+        {
+            let provider = MailSearchProvider::new(&sample());
+            let page = provider.search_page("\0\0", None, 8, 8);
+            assert!(page.results.is_empty());
+            assert_eq!(page.inspected, 0, "missing grams must avoid body work");
+        }
     }
 
     #[test]
-    fn failed_snapshot_replacement_is_reported_without_discarding_the_last_catalogue() {
-        let mailbox = sample();
-        let provider = MailSearchProvider::new(&mailbox);
-        let existing = mailbox.messages.values().next().unwrap();
-        let error = provider.replace_snapshot(
-            mailbox.search_revision() + 1,
-            vec![
-                SearchRecord::new(
-                    "mail.message:not-the-address",
-                    SearchResult::for_action(
-                        MAIL_KIND,
-                        "Invalid row",
-                        MailSearchProvider::message_address(existing.id),
-                    ),
-                )
-                .field("invalid row", FieldWeight::TITLE),
-            ],
-            HashMap::new(),
-        );
-        assert!(
-            error.is_err(),
-            "the shared catalogue rejects an invalid row"
-        );
-        assert!(
-            provider.last_error().is_some(),
-            "the provider retains a surfaced availability error"
-        );
-        assert!(
-            provider
-                .search(&existing.subject)
-                .iter()
-                .any(|hit| hit.title == existing.subject),
-            "a rejected replacement leaves the previous valid snapshot available"
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn search_budgets_clamp_untrusted_limits_and_still_reach_every_match() {
+        // Phase `limited_search_honours_the_materialisation_budget`.
+        {
+            let mailbox = sample();
+            let query = mailbox
+                .messages
+                .values()
+                .next()
+                .and_then(|message| message.subject.split_whitespace().next())
+                .unwrap_or("mail");
+            let provider = MailSearchProvider::new(&mailbox);
+            assert!(provider.search_limited(query, 1).len() <= 1);
+            assert!(provider.search_limited(query, 0).is_empty());
+        }
+
+        // Phase `paged_search_clamps_an_untrusted_result_limit`.
+        {
+            let mut mailbox = Mailbox::default();
+            let template = sample().messages.values().next().unwrap().clone();
+            for index in 0..300_u128 {
+                let mut message = template.clone();
+                message.id = uuid::Uuid::from_u128(index + 1);
+                message.subject = format!("Bounded result message {index}");
+                message.body.clear();
+                message.attachments.clear();
+                mailbox.insert(message);
+            }
+            let provider = MailSearchProvider::new(&mailbox);
+            assert_eq!(
+                provider
+                    .search_page("bounded", None, usize::MAX, usize::MAX)
+                    .results
+                    .len(),
+                DEFAULT_SEARCH_RESULT_LIMIT,
+                "a caller cannot materialize an unbounded palette page"
+            );
+        }
+
+        // Phase `paged_search_clamps_an_untrusted_work_budget`.
+        {
+            assert_eq!(
+                MailSearchProvider::page_limits(usize::MAX, usize::MAX),
+                (DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT),
+                "both untrusted page bounds are clamped before the catalogue sees them"
+            );
+            let mut mailbox = Mailbox::default();
+            let template = sample().messages.values().next().unwrap().clone();
+            for index in 0..300_u128 {
+                let mut message = template.clone();
+                message.id = uuid::Uuid::from_u128(index + 1);
+                message.subject = format!("Bounded work message {index}");
+                message.body.clear();
+                message.attachments.clear();
+                mailbox.insert(message);
+            }
+            let provider = MailSearchProvider::new(&mailbox);
+            let page = provider.search_page("bounded", None, usize::MAX, 1);
+            assert!(
+                page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT,
+                "a caller cannot force unbounded candidate inspection"
+            );
+        }
+
+        // Phase `paged_search_bounds_inspection_and_reaches_every_broad_match`.
+        {
+            let mut mailbox = Mailbox::default();
+            let template = sample().messages.values().next().unwrap().clone();
+            for index in 0..257_i64 {
+                let mut message = template.clone();
+                message.id = uuid::Uuid::new_v4();
+                message.subject = format!("Common catalogue message {index}");
+                message.folder = Folder::Inbox;
+                mailbox.insert(message);
+            }
+            let provider = MailSearchProvider::new(&mailbox);
+            let mut cursor = None;
+            let mut seen = 0;
+            loop {
+                let page = provider.search_page("common", cursor.as_ref(), 17, 5);
+                assert!(page.inspected <= 17, "each page has a hard work budget");
+                assert!(page.results.len() <= 5, "rows are materialised per page");
+                seen += page.results.len();
+                let Some(next) = page.next else { break };
+                cursor = Some(next);
+            }
+            assert_eq!(seen, 257, "pagination must not lose broad matches");
+        }
+
+        // Phase `late_message_remains_exactly_reachable_in_a_large_catalogue`.
+        {
+            let (provider, hit) = assert_late_hit_reachable(
+                |corpus| {
+                    let mut mailbox = Mailbox::default();
+                    let template = sample().messages.values().next().unwrap().clone();
+                    for row in corpus {
+                        let mut message = template.clone();
+                        message.id = uuid::Uuid::from_u128(row.index as u128 + 1);
+                        message.subject = row.text;
+                        message.body.clear();
+                        message.labels.clear();
+                        message.attachments.clear();
+                        mailbox.insert(message);
+                    }
+                    let provider = MailSearchProvider::new(&mailbox);
+                    assert_eq!(
+                        provider.materialized_resource_count(),
+                        0,
+                        "retained search rows hold compact MessageRow metadata, not prebuilt Resource/ActionSpec trees"
+                    );
+                    provider
+                },
+                3_000,
+            );
+            assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+            let address = hit.action_address().expect("canonical address");
+            let resource = provider
+                .resolve_action_resource(&address)
+                .expect("provider resolves the late exact message resource");
+            assert!(resource.actions.iter().any(|action| action.id == "open"));
+            assert_eq!(
+                provider.materialized_resource_count(),
+                1,
+                "only the exact activated hit materializes its action tree"
+            );
+        }
+
+        // Phase `complete_catalogue_finds_an_old_substring_past_the_former_snapshot_cap`.
+        {
+            let mut mailbox = sample();
+            let mut target = mailbox
+                .messages
+                .values()
+                .next()
+                .expect("seeded message")
+                .clone();
+            target.id = uuid::Uuid::new_v4();
+            target.folder = Folder::Inbox;
+            target.subject = "SearchIndexBoundaryFragment".into();
+            target.body.clear();
+            target.attachments.clear();
+            // Insert the target first, then enough later records that the old
+            // newest-4,096 snapshot would have silently hidden it. The query is an
+            // infix, not a whole-token lookup.
+            mailbox.insert(target.clone());
+            for timestamp in 0..4_200_i64 {
+                let mut filler = target.clone();
+                filler.id = uuid::Uuid::new_v4();
+                filler.subject = format!("Routine status {timestamp}");
+                filler.timestamp_min = timestamp;
+                mailbox.insert(filler);
+            }
+            let provider = MailSearchProvider::new(&mailbox);
+            assert_eq!(
+                provider.catalog.stats().records,
+                mailbox
+                    .messages
+                    .values()
+                    .filter(|message| message.folder != Folder::Trash)
+                    .count()
+                    + Folder::ALL.len()
+            );
+            let hits = provider.search("aryfrag");
+            assert!(hits.iter().any(|hit| hit.title == target.subject));
+        }
     }
 
     #[test]
-    fn refresh_without_a_new_revision_keeps_the_catalogue_generation() {
-        let mailbox = sample();
-        let provider = MailSearchProvider::new(&mailbox);
-        let generation = provider.catalog.stats().generation;
-        provider.refresh(&mailbox).unwrap();
-        assert_eq!(provider.catalog.stats().generation, generation);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn catalogue_snapshots_publish_generations_and_refuse_stale_addresses() {
+        // Phase `retained_catalogue_refuses_a_stale_message_address`.
+        {
+            let mut mailbox = sample();
+            let provider = MailSearchProvider::new(&mailbox);
+            let message = mailbox
+                .messages
+                .values()
+                .find(|message| message.folder != Folder::Trash)
+                .unwrap()
+                .clone();
+            let address = MailSearchProvider::message_address(message.id);
+            assert!(provider.resolve_action_resource(&address).is_some());
+
+            mailbox.delete(message.id);
+            provider.refresh(&mailbox).unwrap();
+            assert!(
+                provider.resolve_action_resource(&address).is_none(),
+                "a palette row from an earlier revision cannot revive trashed mail"
+            );
+        }
+
+        // Phase `exact_message_resolution_waits_for_a_snapshot_publication_boundary`.
+        {
+            use std::sync::mpsc;
+
+            let mailbox = sample();
+            let provider = MailSearchProvider::new(&mailbox);
+            let message = mailbox
+                .messages
+                .values()
+                .find(|message| message.folder != Folder::Trash)
+                .expect("sample message");
+            let address = MailSearchProvider::message_address(message.id);
+            // `replace_snapshot` holds this same state mutex while it swaps the
+            // search catalogue and its matching lazy rows. An activation therefore
+            // cannot see the new catalogue with the old row map in between.
+            let publication = provider.state.lock().unwrap();
+            let (started_tx, started_rx) = mpsc::channel();
+            let (finished_tx, finished_rx) = mpsc::channel();
+            let provider_clone = provider.clone();
+            let worker = std::thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                let resolved_resource = provider_clone.resolve_action_resource(&address);
+                finished_tx.send(resolved_resource.is_some()).unwrap();
+            });
+            started_rx.recv().unwrap();
+            assert!(
+                matches!(finished_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+                "resolution cannot pass the publication boundary early"
+            );
+            drop(publication);
+            assert!(finished_rx.recv().unwrap());
+            worker.join().unwrap();
+        }
+
+        // Phase `refresh_invalidates_old_continuation_cursors`.
+        {
+            let mut mailbox = Mailbox::default();
+            let template = sample().messages.values().next().unwrap().clone();
+            for index in 0..4_u128 {
+                let mut message = template.clone();
+                message.id = uuid::Uuid::from_u128(index + 1);
+                message.subject = format!("Cursor mail {index}");
+                mailbox.insert(message);
+            }
+            let provider = MailSearchProvider::new(&mailbox);
+            let cursor = provider
+                .search_page("cursor", None, 1, 1)
+                .next
+                .expect("the broad result set is paged");
+            let mut changed = template;
+            changed.id = uuid::Uuid::from_u128(99);
+            changed.subject = "Cursor mail changed".into();
+            mailbox.insert(changed);
+            provider.refresh(&mailbox).unwrap();
+            assert!(!provider.action_directory_cursor_is_current(&cursor));
+        }
+
+        // Phase `failed_snapshot_replacement_is_reported_without_discarding_the_last_catalogue`.
+        {
+            let mailbox = sample();
+            let provider = MailSearchProvider::new(&mailbox);
+            let existing = mailbox.messages.values().next().unwrap();
+            let error = provider.replace_snapshot(
+                mailbox.search_revision() + 1,
+                vec![
+                    SearchRecord::new(
+                        "mail.message:not-the-address",
+                        SearchResult::for_action(
+                            MAIL_KIND,
+                            "Invalid row",
+                            MailSearchProvider::message_address(existing.id),
+                        ),
+                    )
+                    .field("invalid row", FieldWeight::TITLE),
+                ],
+                HashMap::new(),
+            );
+            assert!(
+                error.is_err(),
+                "the shared catalogue rejects an invalid row"
+            );
+            assert!(
+                provider.last_error().is_some(),
+                "the provider retains a surfaced availability error"
+            );
+            assert!(
+                provider
+                    .search(&existing.subject)
+                    .iter()
+                    .any(|hit| hit.title == existing.subject),
+                "a rejected replacement leaves the previous valid snapshot available"
+            );
+        }
+
+        // Phase `refresh_without_a_new_revision_keeps_the_catalogue_generation`.
+        {
+            let mailbox = sample();
+            let provider = MailSearchProvider::new(&mailbox);
+            let generation = provider.catalog.stats().generation;
+            provider.refresh(&mailbox).unwrap();
+            assert_eq!(provider.catalog.stats().generation, generation);
+        }
     }
 
     #[test]
-    fn every_hit_uses_a_canonical_resource_action() {
-        let mb = sample();
-        let mut registry = SearchRegistry::new();
-        registry.register(Box::new(MailSearchProvider::new(&mb)));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn search_hits_resolve_to_canonical_resource_actions() {
+        // Phase `canonical_message_resolution_keeps_all_meaningful_actions`.
+        {
+            let mailbox = sample();
+            let provider = MailSearchProvider::new(&mailbox);
+            let message = mailbox.messages.values().next().unwrap();
+            let query = message
+                .subject
+                .split_whitespace()
+                .next()
+                .unwrap_or(&message.subject);
+            let hit = provider
+                .search(query)
+                .into_iter()
+                .find(|hit| hit.title == message.subject)
+                .expect("canonical message result");
+            let resource = provider
+                .resolve_action_resource(&hit.action_address().unwrap())
+                .expect("provider-path exact resource");
+            for action in [
+                "open",
+                "inspect",
+                "read",
+                "star",
+                "archive",
+                "delete",
+                "add-label",
+            ] {
+                assert!(
+                    resource
+                        .actions
+                        .iter()
+                        .any(|published| published.id == action),
+                    "canonical resolution retains {action}"
+                );
+            }
+        }
 
-        let some = mb.messages.values().next().unwrap().clone();
-        let word = some
-            .subject
-            .split_whitespace()
-            .next()
-            .unwrap_or(&some.subject);
-        let results = registry.query(word);
-        let hit = results.first().expect("a result for a real subject word");
-        assert!(hit.action_address().is_some());
-        assert!(
-            MailSearchProvider::new(&mb)
-                .search("Inbox")
-                .iter()
-                .any(|hit| { hit.kind == FOLDER_KIND && hit.action_address().is_some() })
-        );
-    }
+        // Phase `every_hit_uses_a_canonical_resource_action`.
+        {
+            let mb = sample();
+            let mut registry = SearchRegistry::new();
+            registry.register(Box::new(MailSearchProvider::new(&mb)));
 
-    #[test]
-    fn folder_hits_materialize_their_own_canonical_open_resource() {
-        let provider = MailSearchProvider::new(&sample());
-        let hit = provider
-            .search("Archive")
-            .into_iter()
-            .find(|hit| hit.kind == FOLDER_KIND)
-            .expect("Archive folder is searchable");
-        let address = hit.action_address().expect("canonical folder address");
-        let resource = provider
-            .resolve_action_resource(&address)
-            .expect("a folder search hit resolves without requiring the full tree");
-        assert_eq!(resource.id.as_str(), address.resource);
-        assert!(resource.actions.iter().any(|action| action.id == "open"));
-    }
-
-    #[test]
-    fn search_address_resolves_and_navigates_exactly() {
-        use automerge::{AutoCommit, ROOT};
-        use ui::widget::Widget;
-
-        let mut app = crate::app::MailApp::new_sample();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
-
-        // Find a real message through the app's own provider.
-        let (address, id) = {
-            let providers = app.search_providers();
-            assert!(!providers.is_empty(), "mail publishes a search provider");
-            // Query a subject word that exists in the sample corpus.
-            let mb = crate::sample::sample_mailbox();
             let some = mb.messages.values().next().unwrap().clone();
             let word = some
                 .subject
                 .split_whitespace()
                 .next()
-                .unwrap_or(&some.subject)
-                .to_string();
-            let hits = providers[0].search(&word);
-            let hit = hits.into_iter().next().expect("a seeded message is a hit");
-            let address = hit.action_address().expect("canonical address");
-            let id = address
-                .resource
-                .strip_prefix("mail.message:")
-                .expect("message resource id")
-                .parse()
-                .expect("valid message id");
-            (address, id)
-        };
+                .unwrap_or(&some.subject);
+            let results = registry.query(word);
+            let hit = results.first().expect("a result for a real subject word");
+            assert!(hit.action_address().is_some());
+            assert!(
+                MailSearchProvider::new(&mb)
+                    .search("Inbox")
+                    .iter()
+                    .any(|hit| { hit.kind == FOLDER_KIND && hit.action_address().is_some() })
+            );
+        }
 
-        let resource = <crate::app::MailApp as tilo_actions::ResourceProvider>::resource(
-            &app,
-            &doc,
-            &address.resource,
-        )
-        .expect("search address resolves lazily");
-        let encoded = tilo_actions::door::encode(&[resource], &address, None).unwrap();
-        assert!(matches!(
-            app.start_resource_operation_with_document(
-                tilo_actions::InvocationId::default(),
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &mut doc,
-                &ROOT,
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
-        assert_eq!(
-            app.selected_message(),
-            Some(id),
-            "activation opened the chosen message"
-        );
-        assert_eq!(
-            crate::doc::MailDoc::get_read(&doc, &id.to_string()),
-            Some(true),
-            "search activation follows the same explicit Open → SetRead action"
-        );
+        // Phase `folder_hits_materialize_their_own_canonical_open_resource`.
+        {
+            let provider = MailSearchProvider::new(&sample());
+            let hit = provider
+                .search("Archive")
+                .into_iter()
+                .find(|hit| hit.kind == FOLDER_KIND)
+                .expect("Archive folder is searchable");
+            let address = hit.action_address().expect("canonical folder address");
+            let resource = provider
+                .resolve_action_resource(&address)
+                .expect("a folder search hit resolves without requiring the full tree");
+            assert_eq!(resource.id.as_str(), address.resource);
+            assert!(resource.actions.iter().any(|action| action.id == "open"));
+        }
 
-        let folder_hit = app.search_providers()[0]
-            .search("Archive")
-            .into_iter()
-            .find(|hit| hit.kind == FOLDER_KIND)
-            .expect("Archive folder is searchable");
-        let folder_address = folder_hit
-            .action_address()
-            .expect("canonical folder address");
-        let resources = app.resources(&doc);
-        let encoded = tilo_actions::door::encode(&resources, &folder_address, None)
-            .expect("folder address resolves against Mail's exported tree");
-        let heads_before_folder_navigation = doc.get_heads();
-        assert!(
-            app.invoke_resource_operation(
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &doc,
-                &ROOT,
-            )
-            .unwrap()
-        );
-        assert_eq!(app.mail_resource_ctx(&doc).current_folder, Folder::Archive);
-        assert_eq!(doc.get_heads(), heads_before_folder_navigation);
+        // Phase `search_address_resolves_and_navigates_exactly`.
+        {
+            use automerge::{AutoCommit, ROOT};
+            use ui::widget::Widget;
+
+            let mut app = crate::app::MailApp::new_sample();
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &ROOT);
+
+            // Find a real message through the app's own provider.
+            let (address, id) = {
+                let providers = ui::search::capability::search_providers(&app);
+                assert!(!providers.is_empty(), "mail publishes a search provider");
+                // Query a subject word that exists in the sample corpus.
+                let mb = crate::sample::sample_mailbox();
+                let some = mb.messages.values().next().unwrap().clone();
+                let word = some
+                    .subject
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(&some.subject)
+                    .to_string();
+                let hits = providers[0].search(&word);
+                let hit = hits.into_iter().next().expect("a seeded message is a hit");
+                let address = hit.action_address().expect("canonical address");
+                let id = address
+                    .resource
+                    .strip_prefix("mail.message:")
+                    .expect("message resource id")
+                    .parse()
+                    .expect("valid message id");
+                (address, id)
+            };
+
+            let resource = crate::app::MailApp::publish_resource(&app, &doc, &address.resource)
+                .expect("search address resolves lazily");
+            let encoded = tilo_actions::door::encode(&[resource], &address, None).unwrap();
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::default(),
+                        tilo_actions::OperationKind::View,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
+                    &ROOT
+                )
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
+            assert_eq!(
+                app.selected_message(),
+                Some(id),
+                "activation opened the chosen message"
+            );
+            assert_eq!(
+                crate::doc::MailDoc::get_read(&doc, &id.to_string()),
+                Some(true),
+                "search activation follows the same explicit Open → SetRead action"
+            );
+
+            let folder_hit = ui::search::capability::search_providers(&app)[0]
+                .search("Archive")
+                .into_iter()
+                .find(|hit| hit.kind == FOLDER_KIND)
+                .expect("Archive folder is searchable");
+            let folder_address = folder_hit
+                .action_address()
+                .expect("canonical folder address");
+            let resources = ui::resources::resources(&app, &doc);
+            let encoded = tilo_actions::door::encode(&resources, &folder_address, None)
+                .expect("folder address resolves against Mail's exported tree");
+            let heads_before_folder_navigation = doc.get_heads();
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
+                    &ROOT
+                )
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
+            assert_eq!(app.mail_resource_ctx(&doc).current_folder, Folder::Archive);
+            assert_eq!(doc.get_heads(), heads_before_folder_navigation);
+        }
     }
 }

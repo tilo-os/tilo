@@ -311,8 +311,16 @@ where
 /// The session bus, connected once on the session runtime and shared by
 /// every MPRIS conversation. `None` when there is no session bus; the next
 /// call tries again.
+///
+/// This crate's unit tests have no bus at all: a media command or pause sent
+/// by one of them must never reach a player of whoever runs the tests. The
+/// integration tests hand the process a scratch bus address instead
+/// (`tests/dbus_runtime_context.rs`).
 async fn session_bus() -> Option<zbus::Connection> {
     static BUS: tokio::sync::OnceCell<zbus::Connection> = tokio::sync::OnceCell::const_new();
+    if cfg!(test) {
+        return None;
+    }
     BUS.get_or_try_init(zbus::Connection::session)
         .await
         .map_err(|error| {
@@ -598,23 +606,10 @@ fn resume_uri(source: &ResumeSource) -> Option<String> {
             if path.chars().any(char::is_control) {
                 return None;
             }
-            Some(format!("file://{}", percent_encode_path(path)))
+            url::Url::from_file_path(path).ok().map(String::from)
         }
         ResumeSource::LocalFile(_) => None,
     }
-}
-
-fn percent_encode_path(path: &str) -> String {
-    let mut encoded = String::with_capacity(path.len());
-    for byte in path.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'.' | b'_' | b'~') {
-            encoded.push(char::from(byte));
-        } else {
-            use std::fmt::Write as _;
-            let _ = write!(encoded, "%{byte:02X}");
-        }
-    }
-    encoded
 }
 
 async fn discover_handoff_reports() -> Vec<PlaybackReport> {
@@ -844,34 +839,10 @@ fn safe_remote_locator(locator: &str) -> bool {
 }
 
 fn percent_decode(value: &str) -> Option<String> {
-    let bytes = value.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        let byte = *bytes.get(index)?;
-        if byte == b'%' {
-            let high_index = index.checked_add(1)?;
-            let low_index = index.checked_add(2)?;
-            let high = hex_nibble(*bytes.get(high_index)?)?;
-            let low = hex_nibble(*bytes.get(low_index)?)?;
-            decoded.push(high.checked_shl(4)?.checked_add(low)?);
-            index = index.saturating_add(3);
-        } else {
-            decoded.push(byte);
-            index = index.saturating_add(1);
-        }
-    }
-    let decoded = String::from_utf8(decoded).ok()?;
-    (!decoded.chars().any(char::is_control)).then_some(decoded)
-}
-
-fn hex_nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => byte.checked_sub(b'0'),
-        b'a'..=b'f' => byte.checked_sub(b'a')?.checked_add(10),
-        b'A'..=b'F' => byte.checked_sub(b'A')?.checked_add(10),
-        _ => None,
-    }
+    let decoded = percent_encoding::percent_decode_str(value)
+        .decode_utf8()
+        .ok()?;
+    (!decoded.chars().any(char::is_control)).then(|| decoded.into_owned())
 }
 
 fn locator_has_video(locator: &str) -> bool {
@@ -962,6 +933,39 @@ pub fn pause_named(bus_name: &str) -> bool {
     })
 }
 
+/// Pause every player that is playing right now — the private output it was
+/// playing to has gone. Only `Playing` players are touched, and nothing
+/// records them for a later resume: plugging the output back in must never
+/// start sound on its own. Returns whether the pause was dispatched.
+pub fn pause_playing_players() -> bool {
+    spawn_on_session(async {
+        let Some(connection) = session_bus().await else {
+            return;
+        };
+        let Some(dbus) = dbus_proxy(&connection).await else {
+            return;
+        };
+        let Ok(names) = dbus.list_names().await else {
+            return;
+        };
+        for name in names {
+            let bus_name = name.as_str();
+            if !bus_name.starts_with(MPRIS_PREFIX) {
+                continue;
+            }
+            let Some(proxy) = player_proxy(&connection, bus_name, PLAYER_IFACE).await else {
+                continue;
+            };
+            if matches!(playback_status(&proxy).await.as_deref(), Some("Playing"))
+                && let Err(error) = proxy.call_method("Pause", &()).await
+            {
+                tracing::debug!(target: "tilo::mpris", %error, "player did not pause on unplug");
+            }
+        }
+        expire_now_playing();
+    })
+}
+
 /// Pause one exact player only while it still owns the URI that this handoff
 /// opened. This prevents compensation for a failed acknowledgement from
 /// pausing unrelated playback that started immediately afterwards. Returns
@@ -989,6 +993,373 @@ pub(crate) fn pause_named_if_uri(bus_name: &str, expected_uri: &str) -> bool {
         {
             tracing::debug!(target: "tilo::mpris", %error, "compensating pause failed");
         }
+    })
+}
+
+/// The shell's projection of every player on the session bus, for the
+/// now-playing card. Refreshed off the compositor thread; readers only copy
+/// the last snapshot.
+#[derive(Default)]
+struct NowPlayingState {
+    players: Vec<crate::shell::now_playing::PlayerSnapshot>,
+    running: bool,
+    last_started: Option<Instant>,
+    /// Decoded artwork by `mpris:artUrl`, so a track's cover is read once and
+    /// not every second. Pruned to the current players when it grows.
+    artwork: HashMap<String, Option<crate::shell::now_playing::Artwork>>,
+}
+
+static NOW_PLAYING: LazyLock<Mutex<NowPlayingState>> =
+    LazyLock::new(|| Mutex::new(NowPlayingState::default()));
+
+/// Largest cover file the card will decode, and the edge it is scaled to.
+const MAX_ARTWORK_BYTES: u64 = 8 * 1024 * 1024;
+const ARTWORK_EDGE: u32 = 192;
+const MAX_NOW_PLAYING_PLAYERS: usize = 16;
+
+/// The players last observed. Empty until the first refresh completes.
+pub fn now_playing_players() -> Vec<crate::shell::now_playing::PlayerSnapshot> {
+    NOW_PLAYING
+        .lock()
+        .map_or_else(|_| Vec::new(), |state| state.players.clone())
+}
+
+/// Start a fresh observation of every player unless one is running or the
+/// last started under a second ago. Never waits on the bus.
+pub fn refresh_now_playing() {
+    let Ok(mut state) = NOW_PLAYING.lock() else {
+        return;
+    };
+    if state.running
+        || state
+            .last_started
+            .is_some_and(|started| started.elapsed() < DISCOVERY_INTERVAL)
+    {
+        return;
+    }
+    state.running = true;
+    state.last_started = Some(Instant::now());
+    drop(state);
+    let spawned = spawn_on_session(async {
+        let _finished = NowPlayingRefreshFinished;
+        let players = discover_now_playing().await;
+        if let Ok(mut state) = NOW_PLAYING.lock() {
+            state.players = players;
+        }
+    });
+    if !spawned && let Ok(mut state) = NOW_PLAYING.lock() {
+        state.running = false;
+    }
+}
+
+struct NowPlayingRefreshFinished;
+
+impl Drop for NowPlayingRefreshFinished {
+    fn drop(&mut self) {
+        if let Ok(mut state) = NOW_PLAYING.lock() {
+            state.running = false;
+        }
+    }
+}
+
+/// Forget the refresh throttle so the next [`refresh_now_playing`] observes
+/// at once — after a command, the card should show its effect promptly.
+fn expire_now_playing() {
+    if let Ok(mut state) = NOW_PLAYING.lock() {
+        state.last_started = None;
+    }
+}
+
+/// Send `command` to exactly the player at `bus_name`, never to whichever
+/// other player happens to be active. Returns whether it was dispatched; the
+/// call itself happens on the session runtime.
+pub fn control(bus_name: &str, command: crate::shell::now_playing::PlayerCommand) -> bool {
+    use crate::shell::now_playing::{PlaybackStatus, PlayerCommand};
+    if !bus_name.starts_with(MPRIS_PREFIX) || bus_name.len() > 256 {
+        return false;
+    }
+    // Show the toggle at once; the next observation confirms or corrects it.
+    if matches!(command, PlayerCommand::PlayPause | PlayerCommand::Pause)
+        && let Ok(mut state) = NOW_PLAYING.lock()
+        && let Some(player) = state
+            .players
+            .iter_mut()
+            .find(|player| player.bus_name == bus_name)
+    {
+        let now = Instant::now();
+        player.position_us = player.position_at(now);
+        player.observed_at = now;
+        player.status = if player.status == PlaybackStatus::Playing {
+            PlaybackStatus::Paused
+        } else if command == PlayerCommand::Pause {
+            player.status
+        } else {
+            PlaybackStatus::Playing
+        };
+    }
+    let owned = bus_name.to_string();
+    spawn_on_session(async move {
+        let Some(connection) = session_bus().await else {
+            return;
+        };
+        let Some(proxy) = player_proxy(&connection, &owned, PLAYER_IFACE).await else {
+            return;
+        };
+        let result = match &command {
+            PlayerCommand::PlayPause => proxy.call_method("PlayPause", &()).await,
+            PlayerCommand::Pause => proxy.call_method("Pause", &()).await,
+            PlayerCommand::Next => proxy.call_method("Next", &()).await,
+            PlayerCommand::Previous => proxy.call_method("Previous", &()).await,
+            PlayerCommand::SetPosition {
+                track_id,
+                position_us,
+            } => {
+                let Ok(track) = zbus::zvariant::ObjectPath::try_from(track_id.as_str()) else {
+                    return;
+                };
+                proxy
+                    .call_method("SetPosition", &(track, *position_us))
+                    .await
+            }
+        };
+        if let Err(error) = result {
+            tracing::debug!(target: "tilo::mpris", %error, ?command, "player rejected the command");
+        }
+        expire_now_playing();
+    })
+}
+
+async fn discover_now_playing() -> Vec<crate::shell::now_playing::PlayerSnapshot> {
+    let Some(connection) = session_bus().await else {
+        return Vec::new();
+    };
+    let Some(dbus) = dbus_proxy(&connection).await else {
+        return Vec::new();
+    };
+    let Ok(names) = dbus.list_names().await else {
+        return Vec::new();
+    };
+    let mut observed = Vec::new();
+    for name in names {
+        if observed.len() >= MAX_NOW_PLAYING_PLAYERS {
+            break;
+        }
+        let bus_name = name.as_str();
+        if !bus_name.starts_with(MPRIS_PREFIX) {
+            continue;
+        }
+        if let Some(player) = observe_now_playing(&connection, bus_name).await {
+            observed.push(player);
+        }
+    }
+    let wanted = observed
+        .iter()
+        .filter_map(|(_, url)| url.clone())
+        .collect::<BTreeSet<_>>();
+    let mut players = Vec::with_capacity(observed.len());
+    for (mut player, art_url) in observed {
+        if let Some(url) = art_url {
+            player.artwork = artwork_for(&url).await;
+        }
+        players.push(player);
+    }
+    if let Ok(mut state) = NOW_PLAYING.lock()
+        && state.artwork.len() > MAX_NOW_PLAYING_PLAYERS
+    {
+        state.artwork.retain(|url, _| wanted.contains(url));
+    }
+    players
+}
+
+/// One player's snapshot plus the artwork URL still to resolve.
+async fn observe_now_playing(
+    connection: &zbus::Connection,
+    bus_name: &str,
+) -> Option<(crate::shell::now_playing::PlayerSnapshot, Option<String>)> {
+    let player = player_proxy(connection, bus_name, PLAYER_IFACE).await?;
+    let root = player_proxy(connection, bus_name, ROOT_IFACE).await?;
+    let status = player.get_property::<String>("PlaybackStatus").await.ok()?;
+    let metadata = player
+        .get_property::<HashMap<String, OwnedValue>>("Metadata")
+        .await
+        .unwrap_or_default();
+    let properties = NowPlayingProperties {
+        identity: root.get_property::<String>("Identity").await.ok(),
+        status,
+        position_us: player.get_property::<i64>("Position").await.unwrap_or(0),
+        can_play: player
+            .get_property::<bool>("CanPlay")
+            .await
+            .unwrap_or(false),
+        can_pause: player
+            .get_property::<bool>("CanPause")
+            .await
+            .unwrap_or(false),
+        can_seek: player
+            .get_property::<bool>("CanSeek")
+            .await
+            .unwrap_or(false),
+        can_go_next: player
+            .get_property::<bool>("CanGoNext")
+            .await
+            .unwrap_or(false),
+        can_go_previous: player
+            .get_property::<bool>("CanGoPrevious")
+            .await
+            .unwrap_or(false),
+    };
+    now_playing_from_properties(bus_name, &properties, &metadata, Instant::now())
+}
+
+/// The scalar properties of one player, read before parsing.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each MPRIS capability is an independent property the player reports"
+)]
+struct NowPlayingProperties {
+    identity: Option<String>,
+    status: String,
+    position_us: i64,
+    can_play: bool,
+    can_pause: bool,
+    can_seek: bool,
+    can_go_next: bool,
+    can_go_previous: bool,
+}
+
+fn clean_text(value: &str) -> Option<String> {
+    let value = value.trim().to_string();
+    (!value.is_empty() && !value.chars().any(char::is_control)).then_some(value)
+}
+
+/// Parse a player's properties into a snapshot, plus the local artwork file
+/// it names (`file://` only). `None` for a player with no transport state.
+fn now_playing_from_properties(
+    bus_name: &str,
+    properties: &NowPlayingProperties,
+    metadata: &HashMap<String, OwnedValue>,
+    observed_at: Instant,
+) -> Option<(crate::shell::now_playing::PlayerSnapshot, Option<String>)> {
+    let status = crate::shell::now_playing::PlaybackStatus::from_mpris(&properties.status)?;
+    let identity = properties
+        .identity
+        .clone()
+        .as_deref()
+        .and_then(clean_text)
+        .unwrap_or_else(|| {
+            bus_name
+                .trim_start_matches(MPRIS_PREFIX)
+                .split('.')
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        });
+    let artist = metadata
+        .get("xesam:artist")
+        .and_then(|value| value.try_clone().ok())
+        .and_then(|value| Vec::<String>::try_from(value).ok())
+        .map(|artists| {
+            artists
+                .iter()
+                .filter_map(|artist| clean_text(artist))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|artists| !artists.is_empty());
+    let track_id = metadata
+        .get("mpris:trackid")
+        .and_then(|value| value.try_clone().ok())
+        .and_then(|value| {
+            let fallback = value.try_clone().ok();
+            zbus::zvariant::OwnedObjectPath::try_from(value)
+                .map(|path| path.as_str().to_string())
+                .ok()
+                .or_else(|| fallback.and_then(|value| String::try_from(value).ok()))
+        })
+        .filter(|track| track != "/org/mpris/MediaPlayer2/TrackList/NoTrack");
+    let art_url = metadata_string(metadata, "mpris:artUrl")
+        .filter(|url| url.starts_with("file://") && url.len() <= 4096);
+    let length_us = metadata_i64(metadata, "mpris:length")
+        .or_else(|| {
+            metadata
+                .get("mpris:length")
+                .and_then(|value| value.try_clone().ok())
+                .and_then(|value| u64::try_from(value).ok())
+                .and_then(|value| i64::try_from(value).ok())
+        })
+        .filter(|length| *length > 0);
+    Some((
+        crate::shell::now_playing::PlayerSnapshot {
+            bus_name: bus_name.to_string(),
+            identity,
+            status,
+            title: metadata_string(metadata, "xesam:title").and_then(|title| clean_text(&title)),
+            artist,
+            artwork: None,
+            track_id,
+            length_us,
+            position_us: properties.position_us.max(0),
+            can_play: properties.can_play,
+            can_pause: properties.can_pause,
+            can_seek: properties.can_seek,
+            can_go_next: properties.can_go_next,
+            can_go_previous: properties.can_go_previous,
+            observed_at,
+        },
+        art_url,
+    ))
+}
+
+/// The decoded artwork for a `file://` URL, from the cache or decoded once on
+/// the I/O pool. A missing, oversized or undecodable file is remembered as
+/// having no artwork so it is not retried every second.
+async fn artwork_for(url: &str) -> Option<crate::shell::now_playing::Artwork> {
+    if let Ok(state) = NOW_PLAYING.lock()
+        && let Some(cached) = state.artwork.get(url)
+    {
+        return cached.clone();
+    }
+    let path = url
+        .strip_prefix("file://")
+        .and_then(|path| percent_decode(path.split(['?', '#']).next().unwrap_or(path)))
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute());
+    let decoded = match path {
+        Some(path) => tilo_rt::io::run(move || Ok(decode_artwork(&path)))
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    if let Ok(mut state) = NOW_PLAYING.lock() {
+        state.artwork.insert(url.to_string(), decoded.clone());
+    }
+    decoded
+}
+
+fn decode_artwork(path: &std::path::Path) -> Option<crate::shell::now_playing::Artwork> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_ARTWORK_BYTES {
+        return None;
+    }
+    let mut reader = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    reader.limits(limits);
+    let image = reader
+        .decode()
+        .ok()?
+        .thumbnail(ARTWORK_EDGE, ARTWORK_EDGE)
+        .to_rgba8();
+    Some(crate::shell::now_playing::Artwork {
+        width: image.width(),
+        height: image.height(),
+        rgba: Arc::new(image.into_raw()),
     })
 }
 
@@ -1068,6 +1439,102 @@ mod tests {
         OwnedValue::try_from(Value::from(value)).unwrap()
     }
 
+    fn now_playing_properties(status: &str) -> NowPlayingProperties {
+        NowPlayingProperties {
+            identity: Some(" Music ".into()),
+            status: status.into(),
+            position_us: 12_000_000,
+            can_play: true,
+            can_pause: true,
+            can_seek: true,
+            can_go_next: false,
+            can_go_previous: true,
+        }
+    }
+
+    #[test]
+    fn now_playing_reads_metadata_and_only_local_artwork() {
+        let metadata = HashMap::from([
+            ("xesam:title".to_string(), text("Song")),
+            (
+                "xesam:artist".to_string(),
+                OwnedValue::try_from(Value::from(vec!["One".to_string(), "Two".to_string()]))
+                    .unwrap(),
+            ),
+            ("mpris:length".to_string(), number(180_000_000)),
+            (
+                "mpris:trackid".to_string(),
+                OwnedValue::try_from(Value::from(
+                    zbus::zvariant::ObjectPath::try_from("/org/tilo/track/7").unwrap(),
+                ))
+                .unwrap(),
+            ),
+            (
+                "mpris:artUrl".to_string(),
+                text("file:///home/me/Music/cover%20art.png"),
+            ),
+        ]);
+        let (player, art) = now_playing_from_properties(
+            "org.mpris.MediaPlayer2.music",
+            &now_playing_properties("Playing"),
+            &metadata,
+            Instant::now(),
+        )
+        .expect("a playing player");
+        assert_eq!(player.identity, "Music");
+        assert_eq!(player.title.as_deref(), Some("Song"));
+        assert_eq!(player.artist.as_deref(), Some("One, Two"));
+        assert_eq!(player.length_us, Some(180_000_000));
+        assert_eq!(player.track_id.as_deref(), Some("/org/tilo/track/7"));
+        assert_eq!(
+            player.status,
+            crate::shell::now_playing::PlaybackStatus::Playing
+        );
+        assert!(player.seekable());
+        assert!(!player.can_go_next);
+        assert_eq!(
+            art.as_deref(),
+            Some("file:///home/me/Music/cover%20art.png")
+        );
+
+        let remote = HashMap::from([(
+            "mpris:artUrl".to_string(),
+            text("https://tracker.example/cover.jpg"),
+        )]);
+        let (player, art) = now_playing_from_properties(
+            "org.mpris.MediaPlayer2.web",
+            &NowPlayingProperties {
+                identity: None,
+                ..now_playing_properties("Paused")
+            },
+            &remote,
+            Instant::now(),
+        )
+        .expect("a paused player");
+        assert_eq!(art, None, "the shell never fetches remote artwork");
+        assert_eq!(player.identity, "web");
+        assert!(!player.seekable(), "no length, no seek bar");
+        assert!(
+            now_playing_from_properties(
+                "org.mpris.MediaPlayer2.odd",
+                &now_playing_properties("Buffering"),
+                &HashMap::new(),
+                Instant::now(),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn control_refuses_names_that_are_not_players() {
+        use crate::shell::now_playing::PlayerCommand;
+        assert!(!control("org.freedesktop.DBus", PlayerCommand::Pause));
+        assert!(!control(
+            &format!("{MPRIS_PREFIX}{}", "x".repeat(300)),
+            PlayerCommand::Pause
+        ));
+    }
+
     fn observation(locator: &str) -> PlayerObservation {
         PlayerObservation {
             bus_name: "org.mpris.MediaPlayer2.browser".into(),
@@ -1092,247 +1559,266 @@ mod tests {
     }
 
     #[test]
-    fn commands_map_to_the_spec_method_names() {
-        // Wire names in the MPRIS spec, not ours to rename.
-        assert_eq!(Command::PlayPause.method(), "PlayPause");
-        assert_eq!(Command::Pause.method(), "Pause");
-        assert_eq!(Command::Next.method(), "Next");
-        assert_eq!(Command::Previous.method(), "Previous");
-        assert_eq!(Command::Stop.method(), "Stop");
-    }
-
-    #[test]
-    fn the_well_known_names_match_the_spec() {
-        assert_eq!(MPRIS_PREFIX, "org.mpris.MediaPlayer2.");
-        assert_eq!(MPRIS_PATH, "/org/mpris/MediaPlayer2");
-        assert_eq!(PLAYER_IFACE, "org.mpris.MediaPlayer2.Player");
-    }
-
-    #[test]
-    fn generic_player_becomes_a_portable_signed_app_report() {
-        let observed = observation("https://media.example/film.mp4");
-        let first = report_from_observation(&observed, &[browser()]).unwrap();
-        let second = report_from_observation(&observed, &[browser()]).unwrap();
-
-        assert_eq!(first, second, "session identity must be stable");
-        assert_eq!(first.session.app_id, "so.tilo.browser");
-        assert_eq!(first.session.position_ms, 4_000);
-        assert_eq!(first.session.duration_ms, Some(9_000));
-        assert!(first.session.has_video);
-        assert!(matches!(
-            first.source,
-            HandoffSource::RemoteStream { ref url }
-                if url == "https://media.example/film.mp4"
-        ));
-        assert_eq!(
-            first.controller_bus_name.as_deref(),
-            Some("org.mpris.MediaPlayer2.browser")
-        );
-    }
-
-    #[test]
-    fn local_paths_stay_in_the_private_transfer_source() {
-        let report = report_from_observation(
-            &observation("file:///home/alice/Videos/My%20Film.mp4"),
-            &[browser()],
-        )
-        .unwrap();
-
-        assert!(matches!(
-            report.source,
-            HandoffSource::LocalFile { ref path }
-                if path == &PathBuf::from("/home/alice/Videos/My Film.mp4")
-        ));
-        assert!(!format!("{:?}", report.session).contains("/home/alice"));
-    }
-
-    #[test]
-    fn unsafe_or_nonportable_urls_are_rejected() {
-        assert!(
-            report_from_observation(
-                &observation("https://alice:secret@media.example/film.mp4"),
-                &[browser()]
-            )
-            .is_none()
-        );
-        assert!(
-            report_from_observation(
-                &observation("https://media.example/film.mp4?access_token=secret"),
-                &[browser()]
-            )
-            .is_none()
-        );
-        assert!(
-            report_from_observation(
-                &observation("blob:https://media.example/ephemeral"),
-                &[browser()]
-            )
-            .is_none()
-        );
-        assert!(
-            report_from_observation(&observation("file://server/share/film.mp4"), &[browser()])
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn destination_resume_sources_are_canonical_and_bearer_free() {
-        assert_eq!(
-            resume_uri(&ResumeSource::LocalFile(PathBuf::from(
-                "/home/alice/My Film.mp4"
-            ))),
-            Some("file:///home/alice/My%20Film.mp4".into())
-        );
-        assert_eq!(
-            resume_uri(&ResumeSource::Uri(
-                "https://media.example/film.mp4?v=42".into()
-            )),
-            Some("https://media.example/film.mp4?v=42".into())
-        );
-        assert!(
-            resume_uri(&ResumeSource::Uri(
-                "https://media.example/film.mp4?%61ccess_token=secret".into()
-            ))
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn destination_only_accepts_an_observed_or_seekable_exact_playhead() {
-        assert_eq!(
-            required_seek(4_100_000, 4_000_000, false),
-            SeekDecision::Satisfied
-        );
-        assert_eq!(
-            required_seek(1_000_000, 4_000_000, true),
-            SeekDecision::Offset(3_000_000)
-        );
-        assert_eq!(
-            required_seek(1_000_000, 4_000_000, false),
-            SeekDecision::Impossible
-        );
-        assert_eq!(required_seek(-1, 4_000_000, true), SeekDecision::Impossible);
-    }
-
-    #[test]
-    fn cancelled_resume_cannot_start_or_publish_a_late_acceptance() {
-        let request_id = [21; 16];
-        let now = Instant::now();
-        let mut resumes = ResumeState::default();
-
-        assert!(!resumes.cancel(request_id, now));
-        assert!(resumes.begin(request_id, now).is_none());
-        assert!(resumes.take_accepted().is_empty());
-    }
-
-    #[test]
-    fn cancellation_after_worker_launch_blocks_every_later_mutation() {
-        let request_id = [22; 16];
-        let now = Instant::now();
-        let mut resumes = ResumeState::default();
-        let authority = resumes.begin(request_id, now).unwrap();
-        let mut mutations = Vec::new();
-
-        assert_eq!(
-            mutate_now(&authority, || mutations.push("open-uri")),
-            Some(())
-        );
-        assert!(resumes.cancel(request_id, now));
-        assert_eq!(mutate_now(&authority, || mutations.push("seek")), None);
-        assert_eq!(mutate_now(&authority, || mutations.push("play")), None);
-        resumes.finish(&authority, true);
-
-        assert_eq!(mutations, ["open-uri"]);
-        assert!(resumes.take_accepted().is_empty());
-    }
-
-    #[test]
-    fn cancellation_is_linearized_after_an_in_flight_mutation() {
-        let request_id = [24; 16];
-        let now = Instant::now();
-        let resumes = Arc::new(Mutex::new(ResumeState::default()));
-        let authority = resumes.lock().unwrap().begin(request_id, now).unwrap();
-        let mutation_authority = authority.clone();
-        let (mutation_started_tx, mutation_started_rx) = mpsc::channel();
-        let (release_mutation_tx, release_mutation_rx) = mpsc::channel();
-        let mutation = std::thread::spawn(move || {
-            mutate_now(&mutation_authority, || {
-                mutation_started_tx.send(()).unwrap();
-                release_mutation_rx.recv().unwrap();
-            })
-        });
-        mutation_started_rx.recv().unwrap();
-
-        let cancel_resumes = Arc::clone(&resumes);
-        let (cancel_started_tx, cancel_started_rx) = mpsc::channel();
-        let (cancelled_tx, cancelled_rx) = mpsc::channel();
-        let cancellation = std::thread::spawn(move || {
-            cancel_started_tx.send(()).unwrap();
-            let cancelled = cancel_resumes.lock().unwrap().cancel(request_id, now);
-            cancelled_tx.send(cancelled).unwrap();
-        });
-        cancel_started_rx.recv().unwrap();
-        assert!(
-            cancelled_rx
-                .recv_timeout(Duration::from_millis(20))
-                .is_err(),
-            "cancel must wait for the already-started mutation to leave its gate"
-        );
-
-        release_mutation_tx.send(()).unwrap();
-        assert_eq!(mutation.join().unwrap(), Some(()));
-        assert!(cancelled_rx.recv_timeout(Duration::from_secs(1)).unwrap());
-        cancellation.join().unwrap();
-        assert_eq!(mutate_now(&authority, || panic!("late mutation ran")), None);
-        resumes.lock().unwrap().finish(&authority, true);
-        assert!(resumes.lock().unwrap().take_accepted().is_empty());
-    }
-
-    #[test]
-    fn cancellation_retracts_completion_and_tombstones_are_bounded() {
-        let request_id = [23; 16];
-        let now = Instant::now();
-        let mut resumes = ResumeState::default();
-        let authority = resumes.begin(request_id, now).unwrap();
-        resumes.finish(&authority, true);
-        assert!(resumes.cancel(request_id, now));
-        assert!(resumes.take_accepted().is_empty());
-
-        for index in 0..=MAX_CANCELLED_RESUMES {
-            let mut id = [0; 16];
-            id[..8].copy_from_slice(&u64::try_from(index).unwrap().to_be_bytes());
-            id[15] = 1;
-            let _ = resumes.cancel(id, now);
+    fn mpris_names_commands_and_dispatch_follow_the_spec_without_blocking() {
+        fn commands_map_to_the_spec_method_names() {
+            // Wire names in the MPRIS spec, not ours to rename.
+            assert_eq!(Command::PlayPause.method(), "PlayPause");
+            assert_eq!(Command::Pause.method(), "Pause");
+            assert_eq!(Command::Next.method(), "Next");
+            assert_eq!(Command::Previous.method(), "Previous");
+            assert_eq!(Command::Stop.method(), "Stop");
         }
-        assert_eq!(resumes.cancelled.len(), MAX_CANCELLED_RESUMES);
+
+        fn the_well_known_names_match_the_spec() {
+            assert_eq!(MPRIS_PREFIX, "org.mpris.MediaPlayer2.");
+            assert_eq!(MPRIS_PATH, "/org/mpris/MediaPlayer2");
+            assert_eq!(PLAYER_IFACE, "org.mpris.MediaPlayer2.Player");
+        }
+
+        fn ambiguous_or_stopped_players_are_not_advertised() {
+            let observed = observation("https://media.example/film.mp4");
+            assert!(report_from_observation(&observed, &[browser(), browser()]).is_none());
+
+            let mut stopped = observed;
+            stopped.status = "Stopped".into();
+            assert!(report_from_observation(&stopped, &[browser()]).is_none());
+        }
+
+        /// Must survive a machine with no session bus and no player. Unit
+        /// tests have no bus (see `session_bus`), so the command reaches no
+        /// player.
+        fn send_dispatches_without_waiting_on_the_bus() {
+            let started = std::time::Instant::now();
+            let (tx, _outcomes) = mpsc::channel();
+            let dispatched = send(Command::PlayPause, move |outcome| {
+                let _ = tx.send(outcome);
+            });
+            let elapsed = started.elapsed();
+            assert!(dispatched, "the session runtime takes the command");
+            // Any bus round trip happens on the session runtime, never here.
+            assert!(
+                elapsed < DEADLINE,
+                "the input path must not wait on the bus: took {elapsed:?}"
+            );
+        }
+
+        commands_map_to_the_spec_method_names();
+        the_well_known_names_match_the_spec();
+        ambiguous_or_stopped_players_are_not_advertised();
+        send_dispatches_without_waiting_on_the_bus();
     }
 
     #[test]
-    fn ambiguous_or_stopped_players_are_not_advertised() {
-        let observed = observation("https://media.example/film.mp4");
-        assert!(report_from_observation(&observed, &[browser(), browser()]).is_none());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn player_reports_are_portable_signed_and_reject_unsafe_sources() {
+        fn generic_player_becomes_a_portable_signed_app_report() {
+            let observed = observation("https://media.example/film.mp4");
+            let first = report_from_observation(&observed, &[browser()]).unwrap();
+            let second = report_from_observation(&observed, &[browser()]).unwrap();
 
-        let mut stopped = observed;
-        stopped.status = "Stopped".into();
-        assert!(report_from_observation(&stopped, &[browser()]).is_none());
+            assert_eq!(first, second, "session identity must be stable");
+            assert_eq!(first.session.app_id, "so.tilo.browser");
+            assert_eq!(first.session.position_ms, 4_000);
+            assert_eq!(first.session.duration_ms, Some(9_000));
+            assert!(first.session.has_video);
+            assert!(matches!(
+                first.source,
+                HandoffSource::RemoteStream { ref url }
+                    if url == "https://media.example/film.mp4"
+            ));
+            assert_eq!(
+                first.controller_bus_name.as_deref(),
+                Some("org.mpris.MediaPlayer2.browser")
+            );
+        }
+
+        fn local_paths_stay_in_the_private_transfer_source() {
+            let report = report_from_observation(
+                &observation("file:///home/alice/Videos/My%20Film.mp4"),
+                &[browser()],
+            )
+            .unwrap();
+
+            assert!(matches!(
+                report.source,
+                HandoffSource::LocalFile { ref path }
+                    if path == &PathBuf::from("/home/alice/Videos/My Film.mp4")
+            ));
+            assert!(!format!("{:?}", report.session).contains("/home/alice"));
+        }
+
+        fn unsafe_or_nonportable_urls_are_rejected() {
+            assert!(
+                report_from_observation(
+                    &observation("https://alice:secret@media.example/film.mp4"),
+                    &[browser()]
+                )
+                .is_none()
+            );
+            assert!(
+                report_from_observation(
+                    &observation("https://media.example/film.mp4?access_token=secret"),
+                    &[browser()]
+                )
+                .is_none()
+            );
+            assert!(
+                report_from_observation(
+                    &observation("blob:https://media.example/ephemeral"),
+                    &[browser()]
+                )
+                .is_none()
+            );
+            assert!(
+                report_from_observation(&observation("file://server/share/film.mp4"), &[browser()])
+                    .is_none()
+            );
+        }
+
+        fn destination_resume_sources_are_canonical_and_bearer_free() {
+            assert_eq!(
+                resume_uri(&ResumeSource::LocalFile(PathBuf::from(
+                    "/home/alice/My Film.mp4"
+                ))),
+                Some("file:///home/alice/My%20Film.mp4".into())
+            );
+            assert_eq!(
+                resume_uri(&ResumeSource::Uri(
+                    "https://media.example/film.mp4?v=42".into()
+                )),
+                Some("https://media.example/film.mp4?v=42".into())
+            );
+            assert!(
+                resume_uri(&ResumeSource::Uri(
+                    "https://media.example/film.mp4?%61ccess_token=secret".into()
+                ))
+                .is_none()
+            );
+        }
+
+        fn destination_only_accepts_an_observed_or_seekable_exact_playhead() {
+            assert_eq!(
+                required_seek(4_100_000, 4_000_000, false),
+                SeekDecision::Satisfied
+            );
+            assert_eq!(
+                required_seek(1_000_000, 4_000_000, true),
+                SeekDecision::Offset(3_000_000)
+            );
+            assert_eq!(
+                required_seek(1_000_000, 4_000_000, false),
+                SeekDecision::Impossible
+            );
+            assert_eq!(required_seek(-1, 4_000_000, true), SeekDecision::Impossible);
+        }
+
+        generic_player_becomes_a_portable_signed_app_report();
+        local_paths_stay_in_the_private_transfer_source();
+        unsafe_or_nonportable_urls_are_rejected();
+        destination_resume_sources_are_canonical_and_bearer_free();
+        destination_only_accepts_an_observed_or_seekable_exact_playhead();
     }
 
-    /// Must survive a machine with no session bus and no player — which
-    /// is exactly what CI is.
     #[test]
-    fn send_dispatches_without_waiting_on_the_bus() {
-        let started = std::time::Instant::now();
-        let (tx, _outcomes) = mpsc::channel();
-        let dispatched = send(Command::PlayPause, move |outcome| {
-            let _ = tx.send(outcome);
-        });
-        let elapsed = started.elapsed();
-        assert!(dispatched, "the session runtime takes the command");
-        // The bus round trip happens on the session runtime; a dev machine
-        // with a player delivers an outcome later, CI (no bus) never does.
-        assert!(
-            elapsed < DEADLINE,
-            "the input path must not wait on the bus: took {elapsed:?}"
-        );
+    fn resume_cancellation_is_linearized_and_blocks_late_effects() {
+        fn cancelled_resume_cannot_start_or_publish_a_late_acceptance() {
+            let request_id = [21; 16];
+            let now = Instant::now();
+            let mut resumes = ResumeState::default();
+
+            assert!(!resumes.cancel(request_id, now));
+            assert!(resumes.begin(request_id, now).is_none());
+            assert!(resumes.take_accepted().is_empty());
+        }
+
+        fn cancellation_after_worker_launch_blocks_every_later_mutation() {
+            let request_id = [22; 16];
+            let now = Instant::now();
+            let mut resumes = ResumeState::default();
+            let authority = resumes.begin(request_id, now).unwrap();
+            let mut mutations = Vec::new();
+
+            assert_eq!(
+                mutate_now(&authority, || mutations.push("open-uri")),
+                Some(())
+            );
+            assert!(resumes.cancel(request_id, now));
+            assert_eq!(mutate_now(&authority, || mutations.push("seek")), None);
+            assert_eq!(mutate_now(&authority, || mutations.push("play")), None);
+            resumes.finish(&authority, true);
+
+            assert_eq!(mutations, ["open-uri"]);
+            assert!(resumes.take_accepted().is_empty());
+        }
+
+        fn cancellation_is_linearized_after_an_in_flight_mutation() {
+            let request_id = [24; 16];
+            let now = Instant::now();
+            let resumes = Arc::new(Mutex::new(ResumeState::default()));
+            let authority = resumes.lock().unwrap().begin(request_id, now).unwrap();
+            let mutation_authority = authority.clone();
+            let (mutation_started_tx, mutation_started_rx) = mpsc::channel();
+            let (release_mutation_tx, release_mutation_rx) = mpsc::channel();
+            let mutation = std::thread::spawn(move || {
+                mutate_now(&mutation_authority, || {
+                    mutation_started_tx.send(()).unwrap();
+                    release_mutation_rx.recv().unwrap();
+                })
+            });
+            mutation_started_rx.recv().unwrap();
+
+            let cancel_resumes = Arc::clone(&resumes);
+            let (cancel_started_tx, cancel_started_rx) = mpsc::channel();
+            let (cancelled_tx, cancelled_rx) = mpsc::channel();
+            let cancellation = std::thread::spawn(move || {
+                cancel_started_tx.send(()).unwrap();
+                let cancelled = cancel_resumes.lock().unwrap().cancel(request_id, now);
+                cancelled_tx.send(cancelled).unwrap();
+            });
+            cancel_started_rx.recv().unwrap();
+            assert!(
+                cancelled_rx
+                    .recv_timeout(Duration::from_millis(20))
+                    .is_err(),
+                "cancel must wait for the already-started mutation to leave its gate"
+            );
+
+            release_mutation_tx.send(()).unwrap();
+            assert_eq!(mutation.join().unwrap(), Some(()));
+            assert!(tilo_test_env::recv(
+                "a message on cancelled_rx",
+                &cancelled_rx
+            ));
+            cancellation.join().unwrap();
+            assert_eq!(mutate_now(&authority, || panic!("late mutation ran")), None);
+            resumes.lock().unwrap().finish(&authority, true);
+            assert!(resumes.lock().unwrap().take_accepted().is_empty());
+        }
+
+        fn cancellation_retracts_completion_and_tombstones_are_bounded() {
+            let request_id = [23; 16];
+            let now = Instant::now();
+            let mut resumes = ResumeState::default();
+            let authority = resumes.begin(request_id, now).unwrap();
+            resumes.finish(&authority, true);
+            assert!(resumes.cancel(request_id, now));
+            assert!(resumes.take_accepted().is_empty());
+
+            for index in 0..=MAX_CANCELLED_RESUMES {
+                let mut id = [0; 16];
+                id[..8].copy_from_slice(&u64::try_from(index).unwrap().to_be_bytes());
+                id[15] = 1;
+                let _ = resumes.cancel(id, now);
+            }
+            assert_eq!(resumes.cancelled.len(), MAX_CANCELLED_RESUMES);
+        }
+
+        cancelled_resume_cannot_start_or_publish_a_late_acceptance();
+        cancellation_after_worker_launch_blocks_every_later_mutation();
+        cancellation_is_linearized_after_an_in_flight_mutation();
+        cancellation_retracts_completion_and_tombstones_are_bounded();
     }
 }

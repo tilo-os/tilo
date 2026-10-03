@@ -19,7 +19,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 PUBLIC_COPY_FILES = (
     "crates/session/shell/src/compositor/native.rs",
-    "crates/session/shell/src/shell/collaborators_overlay.rs",
+    "crates/session/desktop/src/collaborators.rs",
+    "crates/session/desktop/src/workspace_settings.rs",
+    "crates/session/desktop/src/workspace_settings/overlay.rs",
     "crates/session/shell/src/shell/overlay_host/mod.rs",
     "crates/session/shell/src/shell/overview.rs",
     "crates/session/shell/src/shell/peer_sync_overlay.rs",
@@ -27,7 +29,6 @@ PUBLIC_COPY_FILES = (
     "crates/session/shell/src/shell/room_activity.rs",
     "crates/session/shell/src/shell/search/providers/actions.rs",
     "crates/session/shell/src/shell/search/providers/records.rs",
-    "crates/session/shell/src/shell/workspace_settings.rs",
 )
 
 FORBIDDEN = re.compile(

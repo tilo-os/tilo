@@ -24,7 +24,19 @@ fn fixed_rng() -> ChaCha20Rng {
     ChaCha20Rng::from_seed([7u8; 32])
 }
 
+/// A bootstrapped identity is 1-of-1, distinct per seed, signs standard Ed25519 that both
+/// verifiers accept and a tampered payload fails, and refuses the threshold signing rounds.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn a_bootstrapped_single_device_identity_is_a_fresh_1_of_1_standard_ed25519_signer() {
+    bootstrap_initialises_in_single_device_mode();
+    bootstrap_produces_distinct_keys_per_run();
+    single_device_signs_and_verifies_via_tilo_collab_types();
+    single_device_sig_also_passes_frost_verifier();
+    tampered_payload_fails_verification();
+    threshold_signing_calls_error_in_single_device_mode();
+}
+
 fn bootstrap_initialises_in_single_device_mode() {
     let mut rng = fixed_rng();
     let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
@@ -34,7 +46,6 @@ fn bootstrap_initialises_in_single_device_mode() {
     assert!(id.is_single_device());
 }
 
-#[test]
 fn bootstrap_produces_distinct_keys_per_run() {
     // Two independent ChaCha seeds → two different group keys.
     let mut rng_a = ChaCha20Rng::from_seed([1u8; 32]);
@@ -44,7 +55,6 @@ fn bootstrap_produces_distinct_keys_per_run() {
     assert_ne!(a.group_public_key, b.group_public_key);
 }
 
-#[test]
 fn single_device_signs_and_verifies_via_tilo_collab_types() {
     let mut rng = fixed_rng();
     let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
@@ -55,7 +65,6 @@ fn single_device_signs_and_verifies_via_tilo_collab_types() {
     verify_event(&payload, &sig, &id.group_public_key).expect("threshold sig must verify");
 }
 
-#[test]
 fn single_device_sig_also_passes_frost_verifier() {
     // Sanity: FROST's own verifier accepts the same signature bytes,
     // confirming FROST produces standard Ed25519 sigs, not a private variant.
@@ -67,7 +76,6 @@ fn single_device_sig_also_passes_frost_verifier() {
     verify_threshold_signature(&id.group_public_key, &canon, &sig).unwrap();
 }
 
-#[test]
 fn tampered_payload_fails_verification() {
     let mut rng = fixed_rng();
     let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
@@ -77,7 +85,17 @@ fn tampered_payload_fails_verification() {
     assert!(verify_event(&tampered, &sig, &id.group_public_key).is_err());
 }
 
+/// The exported seed is a dalek seed that rebuilds the same signing identity; a threshold
+/// identity exports none.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn the_single_device_seed_is_the_dalek_seed_that_rebuilds_the_identity() {
+    bootstrap_single_device_seed_round_trips_via_dalek();
+    single_device_seed_reconstructs_the_same_identity();
+    single_device_seed_is_the_dalek_seed_the_disk_record_stores();
+    threshold_mode_exports_no_single_device_seed();
+}
+
 fn bootstrap_single_device_seed_round_trips_via_dalek() {
     // The seed variant produces a dalek-shaped keypair: rebuilding a
     // `SigningKey` from the returned seed derives the same group public
@@ -99,7 +117,6 @@ fn bootstrap_single_device_seed_round_trips_via_dalek() {
     vk.verify(msg, &sig).expect("dalek verify must succeed");
 }
 
-#[test]
 fn single_device_seed_reconstructs_the_same_identity() {
     // The persistence round-trip the on-disk record depends on: export
     // the seed, rebuild from it, and the rebuilt identity must carry the
@@ -120,7 +137,6 @@ fn single_device_seed_reconstructs_the_same_identity() {
         .expect("a rebuilt identity must sign under the original public key");
 }
 
-#[test]
 fn single_device_seed_is_the_dalek_seed_the_disk_record_stores() {
     use ed25519_dalek::Signer;
 
@@ -155,7 +171,6 @@ fn single_device_seed_is_the_dalek_seed_the_disk_record_stores() {
     clippy::similar_names,
     reason = "_a/_b device-pair naming is deliberate and used throughout this crate's multi-device tests"
 )]
-#[test]
 fn threshold_mode_exports_no_single_device_seed() {
     // A threshold identity has no whole secret to hand out — the
     // accessor must say so rather than inventing bytes.
@@ -178,7 +193,6 @@ fn threshold_mode_exports_no_single_device_seed() {
     assert_eq!(b.single_device_seed(), None);
 }
 
-#[test]
 fn threshold_signing_calls_error_in_single_device_mode() {
     // The round-1/round-2 API doesn't apply in single-device mode (no
     // second signer) — calling it should error clearly, not return a

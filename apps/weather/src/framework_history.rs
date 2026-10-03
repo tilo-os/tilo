@@ -10,7 +10,7 @@ use ui::history_mode::{
     HistoryDefinition, HistoryPresentation, HistoryPreview, HistoryScopeDefinition,
     PreviewAccessibility, PreviewInput, PreviewNavigation, PreviewView,
 };
-use ui::{TextRenderer, Theme};
+use ui::{TextRenderer, Theme, paint::PaintCtx};
 use vello::{
     Scene,
     kurbo::{Affine, Rect},
@@ -45,14 +45,9 @@ pub static SCHEMA: HistoryRestoreSchema = HistoryRestoreSchema {
             required: false,
             expected_type: RestoreValueType::Object(ObjType::Map),
         },
-        HistoryRestoreRoot {
-            key: "locations",
-            required: false,
-            expected_type: RestoreValueType::Object(ObjType::List),
-        },
     ],
     selectors: &[],
-    preserved_roots: &["selected_location", "selected"],
+    preserved_roots: &["selected_location"],
     preserved: &[],
     validate,
     validate_result: validate,
@@ -94,9 +89,9 @@ fn string(d: &AutoCommit, o: &ObjId, p: impl Into<Prop>) -> Result<String, Strin
 fn uuid(s: &str) -> Result<LocationId, String> {
     s.parse().map_err(|_| "Invalid saved-place UUID".into())
 }
-fn place(d: &AutoCommit, o: &ObjId, key: Option<&str>) -> Result<LocationId, String> {
+fn place(d: &AutoCommit, o: &ObjId, key: &str) -> Result<LocationId, String> {
     let id = uuid(&string(d, o, "id")?)?;
-    if key.is_some_and(|k| uuid(k).ok() != Some(id)) {
+    if uuid(key).ok() != Some(id) {
         return Err("Saved-place UUID disagrees with its map key".into());
     }
     for f in ["name", "region", "country", "country_code", "tz"] {
@@ -163,7 +158,6 @@ pub(crate) fn validate(d: &AutoCommit) -> Result<(), String> {
         ("saved_locations", ObjType::Map),
         ("location_order", ObjType::List),
         ("location_tombstones", ObjType::Map),
-        ("locations", ObjType::List),
     ] {
         if let Some(o) = object(d, &ROOT, key, kind)? {
             tree(d, &o, 0, &mut budget)?;
@@ -173,17 +167,8 @@ pub(crate) fn validate(d: &AutoCommit) -> Result<(), String> {
         let mut ids = std::collections::HashSet::new();
         for key in d.keys(&o) {
             let row = object(d, &o, key.as_str(), ObjType::Map)?.ok_or("Missing place")?;
-            if !ids.insert(place(d, &row, Some(&key))?) {
+            if !ids.insert(place(d, &row, &key)?) {
                 return Err("Duplicate saved-place UUID".into());
-            }
-        }
-    }
-    if let Some(o) = object(d, &ROOT, "locations", ObjType::List)? {
-        let mut ids = std::collections::HashSet::new();
-        for i in 0..d.length(&o) {
-            let row = object(d, &o, i, ObjType::Map)?.ok_or("Missing legacy place")?;
-            if !ids.insert(place(d, &row, None)?) {
-                return Err("Duplicate legacy saved-place UUID".into());
             }
         }
     }
@@ -302,17 +287,16 @@ impl HistoryPreview for PlacesPreview {
         let mut content = Scene::new();
         for (l, r) in self.places.iter().zip(&self.row_rects) {
             crate::presentation::draw_saved_place(
-                &mut content,
-                Affine::IDENTITY,
-                tr,
-                theme,
-                *r,
-                l,
-                None,
-                self.units,
-                self.view.page.as_ref() == Some(&l.id.to_string()),
-                false,
-                theme.tokens.colors.accent[5],
+                &mut PaintCtx::new(&mut content, Affine::IDENTITY, tr, theme),
+                &crate::presentation::SavedPlaceFace {
+                    chip: *r,
+                    loc: l,
+                    snapshot: None,
+                    units: self.units,
+                    selected: self.view.page.as_ref() == Some(&l.id.to_string()),
+                    hovered: false,
+                    accent: theme.tokens.colors.accent[5],
+                },
             );
         }
         let mut y = self.detail.y0 + 20.;

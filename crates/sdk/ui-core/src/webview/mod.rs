@@ -22,6 +22,8 @@ pub use credentials::{
     AddressFields, CredentialAccount, CredentialAction, CredentialForm, CredentialReply,
     CredentialRequest,
 };
+pub mod page;
+pub use page::{PageFailure, PageKey, PageReply, PageRequest};
 pub mod profile;
 pub mod test_engine;
 
@@ -271,6 +273,13 @@ pub enum WebViewCommand {
         request_id: u64,
         element_id: String,
     },
+    /// Read or operate the current page's content. Exactly one
+    /// [`WebViewEvent::PageResult`] with the same id answers it; engines
+    /// without page automation answer [`PageFailure::unavailable`].
+    Page {
+        request_id: u32,
+        request: PageRequest,
+    },
     /// Clear all persistent website data (cookies, caches, storage,
     /// service workers). Backends without a data store ignore this.
     ClearWebsiteData,
@@ -421,6 +430,10 @@ pub enum WebViewEvent {
     MediaElementUnavailable {
         request_id: u64,
     },
+    PageResult {
+        request_id: u32,
+        result: Result<PageReply, PageFailure>,
+    },
     /// `WebKit` received response metadata and is waiting for the host's file
     /// portal to grant an explicit destination.
     DownloadRequested {
@@ -562,30 +575,11 @@ pub fn normalise_url(input: &str) -> String {
     if looks_like_host {
         format!("https://{trimmed}")
     } else {
-        format!("https://duckduckgo.com/?q={}", urlencode(trimmed))
+        format!(
+            "https://duckduckgo.com/?q={}",
+            form_urlencoded::byte_serialize(trimmed.as_bytes()).collect::<String>()
+        )
     }
-}
-
-/// Minimal percent-encoding for search queries (RFC 3986 unreserved set
-/// stays literal, space becomes `+`).
-fn urlencode(s: &str) -> String {
-    use std::fmt::Write as _;
-
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            b' ' => out.push('+'),
-            // `write!` to a `String` is infallible; there is nothing
-            // useful to do with the `Result`.
-            _ => {
-                let _ = write!(out, "%{b:02X}");
-            }
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -593,30 +587,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalise_passes_through_schemes() {
-        assert_eq!(
-            normalise_url("https://example.org/a"),
-            "https://example.org/a"
-        );
-        assert_eq!(normalise_url("http://example.org"), "http://example.org");
-        assert_eq!(normalise_url("about:blank"), "about:blank");
-    }
-
-    #[test]
-    fn normalise_prepends_https_for_hosts() {
-        assert_eq!(normalise_url("example.org"), "https://example.org");
-        assert_eq!(normalise_url("localhost:8080"), "https://localhost:8080");
-    }
-
-    #[test]
-    fn normalise_searches_for_queries() {
-        assert_eq!(
-            normalise_url("rust webview"),
-            "https://duckduckgo.com/?q=rust+webview"
-        );
-        assert_eq!(
-            normalise_url("what is Tilo?"),
-            "https://duckduckgo.com/?q=what+is+Tilo%3F"
-        );
+    fn normalise_keeps_schemes_prepends_https_and_searches_queries() {
+        // phase: normalise_passes_through_schemes
+        {
+            assert_eq!(
+                normalise_url("https://example.org/a"),
+                "https://example.org/a"
+            );
+            assert_eq!(normalise_url("http://example.org"), "http://example.org");
+            assert_eq!(normalise_url("about:blank"), "about:blank");
+        }
+        // phase: normalise_prepends_https_for_hosts
+        {
+            assert_eq!(normalise_url("example.org"), "https://example.org");
+            assert_eq!(normalise_url("localhost:8080"), "https://localhost:8080");
+        }
+        // phase: normalise_searches_for_queries
+        {
+            assert_eq!(
+                normalise_url("rust webview"),
+                "https://duckduckgo.com/?q=rust+webview"
+            );
+            assert_eq!(
+                normalise_url("what is Tilo?"),
+                "https://duckduckgo.com/?q=what+is+Tilo%3F"
+            );
+        }
     }
 }

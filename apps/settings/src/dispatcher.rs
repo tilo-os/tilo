@@ -69,6 +69,10 @@ pub mod testing {
             self.push(format!("set_brightness({pct:.2})"));
             Ok(())
         }
+        fn set_display_brightness(&self, connector: &str, pct: f32) -> Result<(), String> {
+            self.push(format!("set_display_brightness({connector}, {pct:.2})"));
+            Ok(())
+        }
         fn set_volume(&self, pct: f32) -> Result<(), String> {
             self.push(format!("set_volume({pct:.2})"));
             Ok(())

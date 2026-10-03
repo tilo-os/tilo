@@ -35,8 +35,6 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
-#[cfg(unix)]
-use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
@@ -521,7 +519,6 @@ pub fn path_to_uri(path: &Path) -> String {
 /// rust-analyzer lowercases them; normalize both directions so diagnostics
 /// and definition locations use the same keys as the editor's documents.
 fn normalize_document_uri(uri: &str) -> String {
-    #[cfg(windows)]
     if let Some(path) = uri.strip_prefix("file:///") {
         let bytes = path.as_bytes();
         if let (Some(drive), Some(b':'), Some(b'/')) = (bytes.first(), bytes.get(1), bytes.get(2))
@@ -584,12 +581,8 @@ impl LspClient {
         let root_uri = path_to_uri(root);
 
         let mut command = Command::new(&prog);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            // Language servers communicate over pipes, not a console window.
-            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
+        // Language servers communicate over pipes, not a console window.
+        bounded_command::without_console_window(&mut command);
         command
             .args(&args)
             // Run the server *in* the project, so anything it resolves
@@ -602,8 +595,7 @@ impl LspClient {
         // Language servers routinely start indexers and compiler helpers.
         // Own the complete tree so closing a project cannot strand those
         // descendants in the user's session.
-        #[cfg(unix)]
-        command.process_group(0);
+        bounded_command::own_process_tree(&mut command);
         let mut child = command.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 format!("{prog} not found on PATH — install it for live diagnostics")
@@ -934,17 +926,8 @@ fn send_initialize_handshake(client: &mut LspClient, root: &Path, root_uri: &str
 
 impl Drop for LspClient {
     fn drop(&mut self) {
-        #[cfg(unix)]
-        if let Ok(pid) = i32::try_from(self.child.id())
-            && let Some(group) = pid.checked_neg()
-        {
-            // SAFETY: `start` placed the child in its own pid-named process
-            // group, so the negative pid targets only this LSP process tree.
-            unsafe { libc::kill(group, libc::SIGKILL) };
-        }
-        // Also kill the direct child for non-Unix platforms and as a fallback
-        // if process-group signalling failed, then always reap it.
-        let _ = self.child.kill();
+        // `start` made the server the owner of its process tree.
+        bounded_command::kill_tree(&mut self.child);
         let _ = self.child.wait();
     }
 }
@@ -1038,6 +1021,14 @@ mod tests {
     }
 
     #[test]
+    fn route_message_answers_requests_but_not_notifications_and_resolves_responses() {
+        // Each phase routes against its own pending table.
+        a_workspace_configuration_request_is_answered_per_item();
+        every_server_request_gets_some_reply();
+        a_notification_is_not_answered();
+        route_message_resolves_response_ids_to_kinds();
+    }
+
     fn a_workspace_configuration_request_is_answered_per_item() {
         // rust-analyzer asks this during startup and waits for the answer. One
         // result per requested item, `null` meaning "defaults are fine".
@@ -1057,7 +1048,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn every_server_request_gets_some_reply() {
         // The rule is protocol-level: a message with both `method` and `id` is a
         // request, and leaving any of them unanswered blocks the server.
@@ -1078,7 +1068,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn a_notification_is_not_answered() {
         // Notifications carry no id and must NOT get a response — replying to
         // one is a protocol error.
@@ -1093,6 +1082,13 @@ mod tests {
     }
 
     #[test]
+    fn progress_keeps_titles_across_reports_and_shows_the_busiest_task() {
+        // Each phase builds its own fake client.
+        progress_notifications_parse_into_an_indexing_state();
+        a_report_without_a_title_inherits_the_one_begin_carried();
+        the_busiest_task_is_the_one_shown();
+    }
+
     fn progress_notifications_parse_into_an_indexing_state() {
         let begin = json!({
             "jsonrpc": "2.0",
@@ -1115,7 +1111,6 @@ mod tests {
         ));
     }
 
-    #[test]
     fn a_report_without_a_title_inherits_the_one_begin_carried() {
         // The server names the task once and then updates against the token, so
         // a UI reading raw notifications would blank the label at the first
@@ -1156,7 +1151,6 @@ mod tests {
         assert!(client.busy_task().is_none());
     }
 
-    #[test]
     fn the_busiest_task_is_the_one_shown() {
         // A quick sub-task at 90% must not hide the index at 5%.
         let mut client = fake_client();
@@ -1173,6 +1167,15 @@ mod tests {
     }
 
     #[test]
+    fn client_roots_request_ids_and_server_exit_fail_safe() {
+        // Each phase builds its own client or root.
+        a_project_path_becomes_a_correctly_encoded_uri();
+        a_server_cannot_be_rooted_at_a_path_that_is_not_a_directory();
+        missing_server_binary_degrades_gracefully();
+        request_identity_exhaustion_never_reuses_an_old_response_id();
+        a_disconnected_bounded_reader_still_reports_server_exit();
+    }
+
     fn a_project_path_becomes_a_correctly_encoded_uri() {
         #[cfg(windows)]
         let (prefix, uri_prefix) = ("C:", "file:///c:");
@@ -1200,7 +1203,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_server_cannot_be_rooted_at_a_path_that_is_not_a_directory() {
         // The bug this replaced: a synthetic `file:///project-name` root meant
         // rust-analyzer found no Cargo.toml and reported nothing, forever,
@@ -1241,6 +1243,13 @@ mod tests {
     }
 
     #[test]
+    fn framing_round_trips_back_to_back_messages_and_refuses_oversized_bodies() {
+        // Each phase reads its own buffer.
+        framing_round_trips();
+        framing_reads_two_back_to_back_messages();
+        framing_refuses_an_oversized_advertised_body_before_allocating_it();
+    }
+
     fn framing_round_trips() {
         let payload = json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" });
         let bytes = encode(&payload);
@@ -1255,7 +1264,6 @@ mod tests {
         assert!(reader.next_message().unwrap().is_none());
     }
 
-    #[test]
     fn framing_reads_two_back_to_back_messages() {
         let mut buf = encode(&json!({ "a": 1 }));
         buf.extend(encode(&json!({ "b": 2 })));
@@ -1265,7 +1273,6 @@ mod tests {
         assert!(reader.next_message().unwrap().is_none());
     }
 
-    #[test]
     fn framing_refuses_an_oversized_advertised_body_before_allocating_it() {
         let bytes = format!("Content-Length: {}\r\n\r\n", MAX_LSP_MESSAGE_BYTES + 1);
         let mut reader = MessageReader::new(Cursor::new(bytes));
@@ -1276,7 +1283,6 @@ mod tests {
         assert!(error.to_string().contains("exceeds"));
     }
 
-    #[test]
     fn request_identity_exhaustion_never_reuses_an_old_response_id() {
         let mut client = fake_client();
         client.next_id = Some(i64::MAX);
@@ -1284,7 +1290,6 @@ mod tests {
         assert_eq!(client.take_request_id(), None);
     }
 
-    #[test]
     fn a_disconnected_bounded_reader_still_reports_server_exit() {
         let mut client = fake_client();
         let (sender, receiver) = mpsc::sync_channel(1);
@@ -1294,6 +1299,16 @@ mod tests {
     }
 
     #[test]
+    fn server_payloads_parse_into_diagnostics_completions_hover_and_definitions() {
+        // Each phase parses its own canned message.
+        parses_publish_diagnostics_into_model();
+        absent_severity_defaults_to_error();
+        parses_completion_list_and_array_shapes();
+        completion_prefers_text_edit_new_text();
+        parses_hover_markup_marked_string_and_array();
+        parses_definition_location_shapes();
+    }
+
     fn parses_publish_diagnostics_into_model() {
         // A canned rust-analyzer-shaped diagnostics notification.
         let msg = json!({
@@ -1345,7 +1360,6 @@ mod tests {
         assert_eq!(diags[1].to_panel().severity, Severity::Warning);
     }
 
-    #[test]
     fn absent_severity_defaults_to_error() {
         let msg = json!({
             "params": {
@@ -1361,7 +1375,6 @@ mod tests {
         assert_eq!(diags[0].to_panel().severity, Severity::Error);
     }
 
-    #[test]
     fn parses_completion_list_and_array_shapes() {
         // CompletionList shape with an insertText override.
         let list = json!({
@@ -1391,7 +1404,6 @@ mod tests {
         assert_eq!(items[0].insert_text, "foo");
     }
 
-    #[test]
     fn completion_prefers_text_edit_new_text() {
         let msg = json!({ "result": [
             { "label": "greet", "textEdit": { "newText": "greet(${1})" } }
@@ -1400,7 +1412,6 @@ mod tests {
         assert_eq!(items[0].insert_text, "greet(${1})");
     }
 
-    #[test]
     fn parses_hover_markup_marked_string_and_array() {
         // MarkupContent { kind, value }.
         let markup =
@@ -1419,7 +1430,6 @@ mod tests {
         assert_eq!(parse_hover(&json!({ "result": null })), None);
     }
 
-    #[test]
     fn parses_definition_location_shapes() {
         // Single Location.
         let single = json!({ "result": {
@@ -1451,7 +1461,6 @@ mod tests {
         assert!(parse_definition(&json!({ "result": null })).is_empty());
     }
 
-    #[test]
     fn route_message_resolves_response_ids_to_kinds() {
         let pending: Arc<Mutex<HashMap<i64, Pending>>> = Arc::new(Mutex::new(HashMap::new()));
         pending.lock().unwrap().insert(7, Pending::Completion);
@@ -1477,7 +1486,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn missing_server_binary_degrades_gracefully() {
         // A language with a mapping but a binary that doesn't exist: `start`
         // returns a clear error rather than panicking. We can't assert on

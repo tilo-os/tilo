@@ -1,0 +1,82 @@
+[package]
+name = "tilo-browser-peer"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+description = "The browser as a Tilo peer: relay-mediated device certification, the certified relay session with its commit outbox and reconnect replay, the live presence plane, SessionHealth v1, and a CollabTransport for the toolkit."
+repository.workspace = true
+homepage.workspace = true
+
+# Portable: the same code runs natively (tests, headless peers) and in the
+# page. The page supplies the device signer (WebCrypto) and persistence
+# (IndexedDB) through the `DeviceSigner` and `PeerStore` seams.
+[dependencies]
+tilo-relay-client = { version = "0.1.0", path = "../../hosting/tilo-relay-client", default-features = false }
+tilo-relay-protocol = { version = "0.1.0", path = "../../hosting/tilo-relay-protocol" }
+tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
+# Signed document envelopes, exactly as native peers exchange them.
+collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
+iroh = { workspace = true, optional = true }
+iroh-base = { workspace = true, optional = true }
+n0-future = "0.3"
+web-time = "1"
+tokio = { workspace = true, features = ["sync", "macros"] }
+serde.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+hex.workspace = true
+thiserror.workspace = true
+rand.workspace = true
+blake3.workspace = true
+# The toolkit adapter: `CollabTransport` for `CollaborationManager::with_transport`.
+ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false, optional = true }
+# The browser is a channel member device, as native peers are.
+channel-crypto = { version = "0.1.0", path = "../../collab/channel-crypto" }
+# The HTTPS carrier on the platform HTTP stack (`NetHttp`).
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", optional = true, features = ["http"] }
+
+[features]
+default = ["iroh"]
+# Reach the host over iroh as well as HTTPS (native peers). The page builds
+# without it, so the wasm bundle links no iroh.
+iroh = ["dep:iroh", "dep:iroh-base", "tilo-relay-client/iroh"]
+toolkit = ["dep:ui"]
+# `NetHttp`: `HttpClient` over `tilo_net::Client`, on every target.
+net = ["dep:tilo-net"]
+
+[dev-dependencies]
+tilo-automerge-isolate.workspace = true
+automerge.workspace = true
+tilo-automerge.workspace = true
+test-http = { path = "../../dev/test-http" }
+tilo-relay = { path = "../../hosting/tilo-relay", features = ["web"] }
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+# The native side of a call: the shell's joined-room owner and participation.
+tilo-joined-room = { path = "../../collab/tilo-joined-room" }
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+tilo-desktop-model = { path = "../../session/desktop-model" }
+tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
+iroh.workspace = true
+url.workspace = true
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+tokio-rustls.workspace = true
+rustls.workspace = true
+sha2.workspace = true
+bytes.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tempfile.workspace = true
+ed25519-dalek.workspace = true
+getrandom.workspace = true
+tilo-clock = { path = "../../platform/tilo-clock" }
+serde_json.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

@@ -40,11 +40,95 @@ session. If compilation fails (for example, an XKB data package was removed),
 hot reload keeps the previous working keymap; failure never leaves a running
 session without keyboard input.
 
-Alt+Shift uses the standard `grp:alt_shift_toggle` option when more than one
-source is configured. Super+Space is deliberately not claimed because it is the
-Tilo global-search shortcut. Compose-key selections map to standard XKB options.
-The saved active source is the session-start preference; shortcut cycling is
-temporary and does not rewrite settings on every chord.
+Switching sources is the compositor's rebindable **Next keyboard layout**
+shortcut, Super+Alt+Space by default (Super+Space is global search). It writes
+the new active source to the settings document, switches the Wayland seat and
+the DRM keyboard at once — keeping held modifiers — and shows the layout's XKB
+name in the on-screen readout. A settings reload that changes only the active
+source switches groups rather than recompiling the keymap. No XKB group toggle
+option is compiled in: `grp:alt_shift_toggle` switched silently, was forgotten
+on reload and collided with Alt+Shift+Tab.
+
+Compose-key selections and the Caps Lock remaps (Control `ctrl:nocaps`, Escape
+`caps:escape`, Backspace `caps:backspace`) map to standard XKB options; Compose
+on Caps Lock wins over a Caps Lock remap.
+
+## Input methods (Chinese, Japanese, Korean)
+
+Composing input methods are input sources in the same ordered list, with ids
+`ime/rime`, `ime/anthy` and `ime/hangul` (`/` never occurs in an XKB name).
+They are not XKB groups: the four-group bound counts layouts only, and an
+engine types on the primary (first) layout, so the XKB group index is the
+active layout's position among layouts, or 0 while an engine is active
+(`RichInputConfig::active_layout_index`). Settings offers an engine only when
+the image ships it.
+
+Fcitx5 provides the engines: Rime (Simplified Chinese through its
+`luna_pinyin_simp` schema, set in the image's
+`/usr/share/rime-data/default.custom.yaml`), Anthy and Hangul, none of which
+links a UI toolkit. The compositor starts it — never XDG autostart —
+as `/usr/bin/fcitx5` on its own private Wayland display, exactly as the
+on-screen keyboard gets its own: the display admits only the process group the
+compositor started, running as the same user, and for Fcitx5 only a process
+whose `/proc/<pid>/exe` is that executable. Connections on each private display
+carry an immutable `TrustedInputMethod` credential; public app sockets never
+see `zwp_input_method_manager_v2` or `zwp_virtual_keyboard_manager_v1`. Its
+configuration is regenerated in the runtime directory on every start (the
+engine as its default, `ActiveByDefault`, every enumerate chord cleared so it
+cannot take Super+Space or Ctrl+Space, and the unused addons disabled); user dictionaries stay in its ordinary data directory.
+
+`input-method-v2` admits one input method per seat, so `compositor::input_method`
+arbitrates:
+
+| active source | OSK preference | owner |
+|---|---|---|
+| engine (installed) | any | Fcitx5 with that engine; OSK stopped |
+| layout, or engine not installed | on | on-screen keyboard |
+| layout, or engine not installed | off | nobody |
+
+The on-screen keyboard steps aside rather than feeding Fcitx5: its keys are
+committed text, not key events a composer could compose, and splitting one
+field between two input methods would leave preedit owned by neither. The
+decision is enforced on the wire — the globals are visible only to the current
+owner's kind, and moving the seat disconnects the previous owner's
+connections before its process group is terminated. Switching engines restarts
+Fcitx5 with the new configuration.
+
+Text the shell inserts on the user's behalf — a pick from the emoji picker
+(Super+.) — takes the same road, never synthesised key events
+(`compositor::text_commit`). When the OSK or Fcitx5 owns the seat, the commit
+is delivered inside that owner's session: on the text input its activation
+enabled, with the session's serial, and the owner keeps the seat. When nobody
+owns it, the arbiter lends the idle seat to the compositor for one commit: an
+in-process connection with its own credential binds the input method, waits
+for the field to activate it, commits, and destroys the input method again.
+The picker holds the keyboard while it is open, so the commit waits (two
+seconds at most) for the field to get the keyboard back and re-enable. A field
+that declares a password, PIN or hidden/sensitive content still receives the
+emoji, but it is not added to the picker's recents.
+
+The picker opens at the field's caret the way candidate windows do: below
+the cursor rectangle the field last committed with `set_cursor_rectangle`,
+flipped above it at the bottom of the output, and kept on that output. A
+field reports its caret only while its text input is enabled, which happens
+only while an input method owns the seat; without one, or when the field
+reports no caret, the picker is centred on the display with focus.
+
+Apps receive composed text through `zwp_text_input_v3` (GTK, Qt, Chromium and
+Tilo apps through winit's IME). Candidate windows are `zwp_input_popup_surface_v2`
+surfaces placed directly below the field's caret rectangle, flipped above it
+at the bottom of an output, and kept on that output.
+
+X11 apps compose through XIM on their workspace's own X display. X11 host
+launches get `XMODIFIERS=@im=fcitx`. Once a workspace's X server has run for
+a real client for a second, the compositor asks the running Fcitx5 over the
+session bus (`org.fcitx.Fcitx.Controller1.OpenX11Connection`) to serve that
+display. First it refreshes the composer's `XAUTHORITY` file with every
+workspace display's cookie. Each server and composer pair is asked once. The
+composer's connection never keeps a server alive: the 60-second idle stop
+counts clients by their peer socket inode (`sock_diag`) and excludes inodes
+held by the composer's process group. When the server stops, the connection
+dies with it.
 
 Hosted development mode receives already-translated physical key events from
 the host compositor, so Tilo cannot override that host keyboard. Its embedded

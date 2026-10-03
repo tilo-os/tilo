@@ -66,12 +66,39 @@ const SCENARIOS: &[&str] = &[
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
+fn wants_standalone(args: impl Iterator<Item = String>) -> bool {
+    let mut args = args;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--data-dir" | "--path" => {
+                let _ = args.next();
+                if arg == "--path" {
+                    return true;
+                }
+            }
+            "--shots"
+            | "--responsive-matrix"
+            | "--native-audit"
+            | "--headless"
+            | "--sidebar-open" => return true,
+            flag if flag.starts_with('-') => {}
+            // A positional path opens a project on the standalone widget path.
+            _ => return true,
+        }
+    }
+    false
+}
+
 /// # Errors
 ///
 /// Returns an error when `--shots` fails to lay out or render the offscreen
 /// frame (see [`render_scenario_to_png`]); an unknown `--scenario` name exits
 /// the process directly rather than returning an error.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if !wants_standalone(std::env::args().skip(1)) {
+        ui::framework::run::<code_editor::CodeEditorShell>();
+        return Ok(());
+    }
     ui::launch::run(
         &LaunchSpec::new("so.tilo.code-editor", code_editor::app_root)
             .live_root_with_args(live_root)
@@ -268,10 +295,6 @@ fn draw_frame(
 /// Stage the requested `--scenario` after the first layout pass: select
 /// words, open the find bar, drive the live terminal's PTY, and so on. A
 /// `None` scenario (the default cold-start frame) stages nothing.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "threads the same handful of already-built shots context (app, state, renderer, theme, presence, permission) to whichever scenario arm needs it; grouping them into a struct would not make the call clearer"
-)]
 fn stage_scenario(
     app: &mut code_editor::CodeApp,
     scenario: Option<&str>,
@@ -286,12 +309,7 @@ fn stage_scenario(
             // One draw settles the terminal's cell metrics + placement, then we
             // drive the real shell and pump `sync` to collect its output.
             let _ = draw_frame(app, text_renderer, theme, presence, permission);
-            #[cfg(windows)]
-            let command = "echo Tilo embedded terminal (live PTY)\recho shell: %COMSPEC%\recho demo output:\recho primes below 20: 2 3 5 7 11 13 17 19\recho done\r";
-            #[cfg(not(windows))]
-            let command = "echo 'Tilo embedded terminal (live PTY)'; echo \"shell: $SHELL\"; \
-                           echo 'demo output:'; echo '  primes below 20: 2 3 5 7 11 13 17 19'; echo done\n";
-            app.shots_terminal_input(command);
+            app.shots_terminal_input(terminal::demo_session_input());
             for _ in 0..24 {
                 app.sync(&mut state.doc, &state.root);
                 std::thread::sleep(std::time::Duration::from_millis(60));

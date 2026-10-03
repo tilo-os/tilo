@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 /// config dir can be resolved (headless/no-HOME environments) — callers then
 /// fall back to in-memory defaults and simply don't persist.
 pub fn config_dir() -> Option<PathBuf> {
-    xdg_paths::AppDirs::new("tilo-files").config()
+    tilo_paths::AppDirs::new("tilo-files").config()
 }
 
 /// Smallest / largest zoom step. Level `0` is the default (scale `1.0`); each
@@ -55,25 +55,29 @@ pub fn save_zoom(dir: &Path, level: i32) {
 mod tests {
     use super::*;
 
+    /// Zoom is 1x at level zero, grows with level and round-trips through disk.
     #[test]
-    fn zoom_scale_is_one_at_level_zero_and_grows_with_level() {
-        assert!((zoom_scale(0) - 1.0).abs() < 1e-9);
-        assert!(zoom_scale(1) > zoom_scale(0));
-        assert!(zoom_scale(-1) < zoom_scale(0));
-        // Clamped at the extremes.
-        assert_eq!(zoom_scale(999), zoom_scale(ZOOM_MAX));
-        assert_eq!(zoom_scale(-999), zoom_scale(ZOOM_MIN));
-    }
+    fn zoom_scale_grows_with_level_and_round_trips_through_disk() {
+        // --- phase: zoom_scale_is_one_at_level_zero_and_grows_with_level ---
+        {
+            assert!((zoom_scale(0) - 1.0).abs() < 1e-9);
+            assert!(zoom_scale(1) > zoom_scale(0));
+            assert!(zoom_scale(-1) < zoom_scale(0));
+            // Clamped at the extremes.
+            assert_eq!(zoom_scale(999), zoom_scale(ZOOM_MAX));
+            assert_eq!(zoom_scale(-999), zoom_scale(ZOOM_MIN));
+        }
 
-    #[test]
-    fn zoom_round_trips_through_disk() {
-        let d = tempfile::tempdir().unwrap();
-        // Missing file → default.
-        assert_eq!(load_zoom(d.path()), 0);
-        save_zoom(d.path(), 3);
-        assert_eq!(load_zoom(d.path()), 3, "saved level is read back");
-        // Out-of-range saves are clamped.
-        save_zoom(d.path(), 99);
-        assert_eq!(load_zoom(d.path()), ZOOM_MAX);
+        // --- phase: zoom_round_trips_through_disk ---
+        {
+            let d = tempfile::tempdir().unwrap();
+            // Missing file → default.
+            assert_eq!(load_zoom(d.path()), 0);
+            save_zoom(d.path(), 3);
+            assert_eq!(load_zoom(d.path()), 3, "saved level is read back");
+            // Out-of-range saves are clamped.
+            save_zoom(d.path(), 99);
+            assert_eq!(load_zoom(d.path()), ZOOM_MAX);
+        }
     }
 }

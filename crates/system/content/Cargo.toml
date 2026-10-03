@@ -2,29 +2,44 @@
 name = "tilo-content"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
 description = "Content-addressed binary storage for apps: the explicit, secondary alternative to versioned resources"
+repository.workspace = true
+homepage.workspace = true
 
 [features]
 # Content in a local directory (`DirBackend`, `ContentStore::in_dir`, `ContentStore::for_app`).
 # Code that only names content (documents, codecs) turns it off and needs no file system.
-default = ["dir", "device"]
-dir = ["dep:advisory-lock", "dep:xdg-paths"]
+# `device` is not a default: it is a Tilo service client, which the native
+# runner (`tilo-ui/native`) and apps enable; on the web it adds nothing.
+default = ["dir"]
+dir = ["dep:tilo-advisory-lock", "dep:tilo-xdg-paths", "dep:tilo-files", "dep:tilo-paths"]
 # The device content store through the launcher's capability (`ContentStore::device`), which
 # `ContentStore::for_app` prefers when the process was handed one. Unix only.
 device = ["dir", "dep:runtime-fs"]
 
 [dependencies]
-advisory-lock = { path = "../advisory-lock", optional = true }
+tilo-advisory-lock = { version = "0.1.0", path = "../advisory-lock", optional = true }
 blake3.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-xdg-paths = { path = "../xdg-paths", optional = true }
-runtime-fs = { path = "../../runtime/runtime-fs", optional = true }
+tilo-xdg-paths = { version = "0.1.0", path = "../xdg-paths", optional = true }
+# Where files have no native path (a browser page), content in the profile's app files.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
+tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths", optional = true }
+
+# The device store's client exists only where the launcher hands one over, so
+# an app selecting `device` still builds for the web, where it adds nothing.
+[target.'cfg(unix)'.dependencies]
+runtime-fs = { version = "0.1.0", path = "../../runtime/runtime-fs", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

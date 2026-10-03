@@ -5,12 +5,13 @@
 //! read of the whole document. A [`Delta`] names the parts of the document a
 //! set of changes touched, so a resource re-reads only those
 //! ([`Resource::refresh`](crate::Resource::refresh)). A [`Tracker`] produces
-//! deltas for one live document from Automerge's patch log, at a cost
-//! proportional to the change rather than to the document.
+//! deltas for one live document from the operations of the changes that
+//! arrived, at a cost proportional to the change rather than to the
+//! document.
 
 use std::collections::{BTreeSet, HashMap};
 
-use automerge::{ChangeHash, ObjId, Patch, PatchAction, Prop};
+use automerge::{ChangeHash, ObjId, Patch, PatchAction, Prop, ReadDoc};
 
 use crate::model::Doc;
 
@@ -195,18 +196,134 @@ impl Delta {
     }
 }
 
-/// Produces the [`Delta`] of one live document between successive reads.
-///
-/// It owns the document's diff cursor: Automerge then logs each applied
-/// operation, and the delta since the last read costs as much as the change,
-/// however large the document. Should anything else move or reset that cursor
-/// (an empty stamped commit does), the next delta is
-/// [`Delta::everything`] — correct, just not incremental.
+/// Where an object sits: the path from the root to it, as `(parent, prop)`
+/// pairs, root first — what a state already knowing an object answers
+/// without asking the document (see [`Resource::locate`](crate::Resource::locate)).
+pub type Path = Vec<(ObjId, Prop)>;
+
+/// Above this many new changes, or operations in them, a delta is
+/// [`Delta::everything`]: reading the change would cost about as much as
+/// reading the resource.
+const MAX_CHANGES: usize = 4_096;
+const MAX_OPS: u64 = 200_000;
+
+fn exid(doc: &Doc, obj: &automerge::legacy::ObjectId) -> Option<ObjId> {
+    match obj {
+        automerge::legacy::ObjectId::Root => Some(automerge::ROOT),
+        automerge::legacy::ObjectId::Id(id) => doc.import(&id.to_string()).ok().map(|(id, _)| id),
+    }
+}
+
+impl Delta {
+    /// The delta `changes` make to `doc` (which already holds them), read from
+    /// their operations: each touched object, and the path to it. Paths come
+    /// from `locate` when it knows the object, from the changes themselves
+    /// for objects they create, and otherwise from the document.
+    pub fn from_changes(
+        doc: &Doc,
+        changes: &[automerge::Change],
+        locate: &dyn Fn(&ObjId) -> Option<Path>,
+    ) -> Self {
+        let mut index: HashMap<ObjId, Touched> = HashMap::new();
+        let mut created: HashMap<ObjId, (ObjId, Option<String>)> = HashMap::new();
+        let mut located: std::collections::HashSet<ObjId> = std::collections::HashSet::new();
+        let mut touched = Vec::new();
+        for change in changes {
+            let actor = change.actor_id().to_hex_string();
+            let start = change.start_op().get();
+            for (offset, op) in change.decode().operations.iter().enumerate() {
+                let Some(obj) = exid(doc, &op.obj) else {
+                    continue;
+                };
+                let key = match &op.key {
+                    automerge::legacy::Key::Map(key) => Some(key.to_string()),
+                    automerge::legacy::Key::Seq(_) => None,
+                };
+                let entry = index.entry(obj.clone()).or_default();
+                match &key {
+                    Some(key) => {
+                        entry.written.insert(key.clone());
+                    }
+                    None => entry.all = true,
+                }
+                if matches!(op.action, automerge::legacy::OpType::Make(_)) {
+                    let counter = start.saturating_add(u64::try_from(offset).unwrap_or(u64::MAX));
+                    if let Ok((made, _)) = doc.import(&format!("{counter}@{actor}")) {
+                        created.insert(made, (obj.clone(), key));
+                    }
+                }
+                touched.push(obj);
+            }
+        }
+        for obj in touched {
+            mark_path(doc, &obj, &created, locate, &mut located, &mut index);
+        }
+        Self {
+            kind: Kind::Indexed(index),
+        }
+    }
+}
+
+/// Mark everything above `obj` as touched below the prop leading to it.
+fn mark_path(
+    doc: &Doc,
+    obj: &ObjId,
+    created: &HashMap<ObjId, (ObjId, Option<String>)>,
+    locate: &dyn Fn(&ObjId) -> Option<Path>,
+    located: &mut std::collections::HashSet<ObjId>,
+    index: &mut HashMap<ObjId, Touched>,
+) {
+    let mut current = obj.clone();
+    loop {
+        if current == automerge::ROOT || !located.insert(current.clone()) {
+            return;
+        }
+        // An object these changes made hangs off an object they touched.
+        if let Some((parent, key)) = created.get(&current) {
+            let entry = index.entry(parent.clone()).or_default();
+            match key {
+                Some(key) => {
+                    entry.below.insert(key.clone());
+                }
+                None => entry.all = true,
+            }
+            current = parent.clone();
+            continue;
+        }
+        let path: Option<Path> = locate(&current).or_else(|| {
+            let parents: Vec<automerge::Parent> = doc.parents(&current).ok()?.collect();
+            // An object no longer reachable changes nothing anyone reads.
+            if parents.iter().any(|parent| !parent.visible) {
+                return None;
+            }
+            Some(
+                parents
+                    .into_iter()
+                    .rev()
+                    .map(|parent| (parent.obj, parent.prop))
+                    .collect(),
+            )
+        });
+        for (parent, prop) in path.unwrap_or_default() {
+            let entry = index.entry(parent.clone()).or_default();
+            match prop {
+                Prop::Map(key) => {
+                    entry.below.insert(key);
+                }
+                Prop::Seq(_) => entry.all = true,
+            }
+            located.insert(parent);
+        }
+        return;
+    }
+}
+
+/// Produces the [`Delta`] of one live document between successive reads,
+/// from the operations of the changes that arrived in between: its cost
+/// follows the change, however large the document.
 #[derive(Debug, Default)]
 pub struct Tracker {
     heads: Option<Vec<ChangeHash>>,
-    /// The document's diff cursor was set at `heads` by this tracker.
-    armed: bool,
 }
 
 impl Tracker {
@@ -218,22 +335,13 @@ impl Tracker {
     /// Start tracking from the document as it stands, for a state that was
     /// just read from it.
     pub fn start(&mut self, doc: &mut Doc) {
-        let heads = doc.get_heads();
-        doc.update_diff_cursor();
-        self.heads = Some(heads);
-        self.armed = true;
+        self.heads = Some(doc.get_heads());
     }
 
-    /// Track a document from `heads`, the version a state was read at by
-    /// someone who could only read the document. The first delta arms the
-    /// cursor; a document that moved in between reads as
-    /// [`Delta::everything`].
+    /// Track a document from `heads`, the version a state was read at.
     #[must_use]
     pub fn at(heads: Vec<ChangeHash>) -> Self {
-        Self {
-            heads: Some(heads),
-            armed: false,
-        }
+        Self { heads: Some(heads) }
     }
 
     /// The heads the last delta ended at.
@@ -244,25 +352,47 @@ impl Tracker {
     /// What changed since the previous call (or [`Self::start`]). The first
     /// call of a tracker that was not started is [`Delta::everything`].
     pub fn delta(&mut self, doc: &mut Doc) -> Delta {
+        self.delta_located(doc, &|_| None)
+    }
+
+    /// [`Self::delta`], with `locate` answering where objects the state
+    /// already knows sit, so the document is not asked.
+    pub fn delta_located(
+        &mut self,
+        doc: &mut Doc,
+        locate: &dyn Fn(&ObjId) -> Option<Path>,
+    ) -> Delta {
         let heads = doc.get_heads();
-        let delta = match self.heads.as_ref() {
-            Some(previous) if *previous == heads => {
-                if !self.armed {
-                    doc.update_diff_cursor();
-                    self.armed = true;
-                }
-                return Delta::nothing();
-            }
-            Some(previous) if self.armed && doc.diff_cursor() == *previous => {
-                Delta::from_patches(&doc.diff(previous, &heads))
-            }
-            // Never read, or the cursor moved under us.
-            _ => Delta::everything(),
+        let Some(previous) = self.heads.replace(heads.clone()) else {
+            return Delta::everything();
         };
-        doc.update_diff_cursor();
-        self.armed = true;
-        self.heads = Some(heads);
-        delta
+        if previous == heads {
+            return Delta::nothing();
+        }
+        // A version this document does not have: it was replaced wholesale.
+        if previous
+            .iter()
+            .any(|hash| doc.get_change_meta_by_hash(hash).is_none())
+        {
+            return Delta::everything();
+        }
+        let metas = doc.get_changes_meta(&previous);
+        let ops: u64 = metas
+            .iter()
+            .map(|meta| meta.max_op.saturating_add(1).saturating_sub(meta.start_op))
+            .sum();
+        if metas.len() > MAX_CHANGES || ops > MAX_OPS {
+            return Delta::everything();
+        }
+        let hashes: Vec<ChangeHash> = metas.iter().map(|meta| meta.hash).collect();
+        let mut changes = Vec::with_capacity(hashes.len());
+        for hash in &hashes {
+            match doc.get_change_by_hash(hash) {
+                Some(change) => changes.push(change),
+                None => return Delta::everything(),
+            }
+        }
+        Delta::from_changes(doc, &changes, locate)
     }
 }
 
@@ -270,7 +400,7 @@ impl Tracker {
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
-    use automerge::{ObjType, ROOT, ReadDoc};
+    use automerge::{ObjType, ROOT};
 
     #[test]
     fn a_splice_touches_the_path_to_its_text_and_nothing_else() {
@@ -304,18 +434,52 @@ mod tests {
     }
 
     #[test]
-    fn a_moved_cursor_degrades_to_everything() {
+    fn a_replaced_document_reads_as_everything_and_new_objects_locate_themselves() {
         let mut doc = Doc::new();
         doc.put(ROOT, "x", 1).unwrap();
         doc.commit();
         let mut tracker = Tracker::new();
         tracker.start(&mut doc);
-        doc.put(ROOT, "x", 2).unwrap();
+        let blocks = doc.put_object(ROOT, "blocks", ObjType::Map).unwrap();
+        let block = doc.put_object(&blocks, "new", ObjType::Map).unwrap();
+        let text = doc.put_object(&block, "text", ObjType::Text).unwrap();
+        doc.splice_text(&text, 0, 0, "fresh").unwrap();
         doc.commit();
-        doc.reset_diff_cursor();
-        assert!(tracker.delta(&mut doc).is_everything());
-        doc.put(ROOT, "x", 3).unwrap();
-        let delta = tracker.delta(&mut doc);
-        assert_eq!(delta.key(&ROOT, "x"), Touch::Written);
+        let delta = tracker.delta_located(&mut doc, &|_| panic!("created objects need no lookup"));
+        assert_eq!(delta.key(&ROOT, "blocks"), Touch::Written);
+        assert_eq!(delta.under(&blocks).key("new"), Touch::Written);
+        assert!(delta.under(&text).is_all());
+
+        let mut other = Doc::new();
+        other.put(ROOT, "x", 9).unwrap();
+        other.commit();
+        let delta = tracker.delta(&mut other);
+        assert!(delta.is_everything());
+    }
+
+    #[test]
+    fn an_edit_located_by_the_state_asks_the_document_nothing() {
+        let mut doc = Doc::new();
+        let blocks = doc.put_object(ROOT, "blocks", ObjType::Map).unwrap();
+        let block = doc.put_object(&blocks, "b", ObjType::Map).unwrap();
+        let text = doc.put_object(&block, "text", ObjType::Text).unwrap();
+        doc.commit();
+        let mut tracker = Tracker::new();
+        tracker.start(&mut doc);
+        doc.splice_text(&text, 0, 0, "k").unwrap();
+        doc.commit();
+        let path = vec![
+            (ROOT, Prop::Map("blocks".into())),
+            (blocks.clone(), Prop::Map("b".into())),
+            (block.clone(), Prop::Map("text".into())),
+        ];
+        let asked = std::cell::Cell::new(0);
+        let delta = tracker.delta_located(&mut doc, &|obj| {
+            asked.set(asked.get() + 1);
+            (*obj == text).then(|| path.clone())
+        });
+        assert_eq!(asked.get(), 1);
+        assert_eq!(delta.under(&blocks).key("b"), Touch::Below);
+        assert_eq!(delta.under(&block).key("text"), Touch::Below);
     }
 }

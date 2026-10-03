@@ -141,59 +141,172 @@ fn assert_rects_aligned(label: &str, rects: &[(&'static str, Rect)]) {
 }
 
 #[test]
-fn mixed_controls_in_one_row_share_a_centre_line_in_every_theme() {
-    for (name, theme) in [
-        ("dark", Theme::dark()),
-        ("light", Theme::light()),
-        ("high-contrast", Theme::high_contrast()),
-    ] {
-        let harness = FrameHarness::new_with_theme(State::new(), fixture_row(), (1000, 200), theme);
-        assert_row_is_aligned(name, &harness);
+fn mixed_controls_share_one_centre_line_across_themes_scales_and_resize() {
+    // Case `mixed_controls_in_one_row_share_a_centre_line_in_every_theme`.
+    {
+        for (name, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high-contrast", Theme::high_contrast()),
+        ] {
+            let harness =
+                FrameHarness::new_with_theme(State::new(), fixture_row(), (1000, 200), theme);
+            assert_row_is_aligned(name, &harness);
+        }
+    }
+
+    // Case `mixed_controls_keep_one_centre_line_at_two_x_text`.
+    {
+        let harness = FrameHarness::new_with_theme(
+            State::new(),
+            fixture_row(),
+            (1200, 240),
+            Theme::dark().with_text_scale(2.0),
+        );
+        assert_row_is_aligned("dark @ 2× text", &harness);
+    }
+
+    // Case `every_control_kind_in_one_row_shares_the_centre_line_at_one_and_two_x`.
+    {
+        for (name, theme, viewport) in [
+            ("dark", Theme::dark(), (1200, 200)),
+            ("light", Theme::light(), (1200, 200)),
+            (
+                "dark @ 2× text",
+                Theme::dark().with_text_scale(2.0),
+                (1800, 260),
+            ),
+        ] {
+            let harness = FrameHarness::new_with_theme(State::new(), dense_row(), viewport, theme);
+            let rects = rects_for(&DENSE_IDS, &harness.targets());
+            let centre = rects[0].1.center().y;
+            for (id, rect) in &rects {
+                assert!(
+                    rect.width() > 0.0 && rect.height() > 0.0,
+                    "{name}: {id} has no geometry: {rect:?}"
+                );
+                assert!(
+                    (rect.center().y - centre).abs() <= CENTRE_TOLERANCE,
+                    "{name}: {id} centre-y {} drifts from the row's {centre} (rect {rect:?})",
+                    rect.center().y
+                );
+                if *id != "Row[0]/Chip" {
+                    assert!(
+                        rect.height() + 1e-6 >= MINIMUM_TARGET
+                            && rect.width() + 1e-6 >= MINIMUM_TARGET,
+                        "{name}: {id} {}×{} is under the {MINIMUM_TARGET} px target",
+                        rect.width(),
+                        rect.height()
+                    );
+                }
+            }
+            for pair in rects.windows(2) {
+                let (left, right) = (pair[0], pair[1]);
+                assert!(
+                    left.1.x1 <= right.1.x0 + 1e-6,
+                    "{name}: {} (x1 {}) overlaps {} (x0 {})",
+                    left.0,
+                    left.1.x1,
+                    right.0,
+                    right.1.x0
+                );
+            }
+            let (_, field) = rects[6];
+            assert!(
+                field.x1 <= f64::from(viewport.0) + 1e-6,
+                "{name}: the fluid field must end inside the viewport, got x1 {}",
+                field.x1
+            );
+        }
+    }
+
+    // Case `mixed_controls_keep_one_centre_line_after_a_resize`.
+    {
+        let mut harness = FrameHarness::new(State::new(), fixture_row(), (1000, 200));
+        harness.resize((1400, 320)).expect("resize settles");
+        assert_row_is_aligned("dark after resize", &harness);
     }
 }
 
 #[test]
-fn mixed_controls_keep_one_centre_line_at_two_x_text() {
-    let harness = FrameHarness::new_with_theme(
-        State::new(),
-        fixture_row(),
-        (1200, 240),
-        Theme::dark().with_text_scale(2.0),
-    );
-    assert_row_is_aligned("dark @ 2× text", &harness);
-}
+fn fixed_controls_keep_their_size_and_labels_beside_fluid_fields() {
+    // Case `fixed_controls_keep_their_size_beside_a_fluid_field`.
+    // Fixed controls beside a fluid field laid directly in the row: the field
+    // takes the remaining width and every fixed control keeps its target size
+    // and the shared centre line. Fails before the Toggle pinned `flex_shrink: 0`
+    // (its rect came back `x0 == x1`).
+    {
+        for (name, theme) in [
+            ("dark", Theme::dark()),
+            ("dark @ 2× text", Theme::dark().with_text_scale(2.0)),
+        ] {
+            let viewport = (900, 200);
+            let harness =
+                FrameHarness::new_with_theme(State::new(), toolbar_row(), viewport, theme);
+            let rects = rects_for(&TOOLBAR_IDS, &harness.targets());
+            assert_rects_aligned(name, &rects);
+            let (_, toggle) = rects[1];
+            assert!(
+                (toggle.width() - 44.0).abs() < 1e-6,
+                "{name}: the toggle must keep its 44 px pill width, got {}",
+                toggle.width()
+            );
+            let (_, field) = rects[3];
+            assert!(
+                field.x1 <= f64::from(viewport.0) + 1e-6,
+                "{name}: the fluid field must end inside the viewport, got x1 {}",
+                field.x1
+            );
+            assert!(
+                field.width() > 200.0,
+                "{name}: the fluid field should take the remaining width, got {}",
+                field.width()
+            );
+        }
+    }
 
-/// Fixed controls beside a fluid field laid directly in the row: the field
-/// takes the remaining width and every fixed control keeps its target size
-/// and the shared centre line. Fails before the Toggle pinned `flex_shrink: 0`
-/// (its rect came back `x0 == x1`).
-#[test]
-fn fixed_controls_keep_their_size_beside_a_fluid_field() {
-    for (name, theme) in [
-        ("dark", Theme::dark()),
-        ("dark @ 2× text", Theme::dark().with_text_scale(2.0)),
-    ] {
-        let viewport = (900, 200);
-        let harness = FrameHarness::new_with_theme(State::new(), toolbar_row(), viewport, theme);
-        let rects = rects_for(&TOOLBAR_IDS, &harness.targets());
-        assert_rects_aligned(name, &rects);
-        let (_, toggle) = rects[1];
-        assert!(
-            (toggle.width() - 44.0).abs() < 1e-6,
-            "{name}: the toggle must keep its 44 px pill width, got {}",
-            toggle.width()
+    // Case `default_buttons_hold_their_label_at_two_x_and_stay_120_by_40_at_one_x`.
+    // The default `Button::new` face is exactly 120×40 at 1× and grows — not
+    // clips — at 2× text: the 28 px label's 35 px line no longer fits a 40 px
+    // face, so the face follows the line, and both default buttons in the row
+    // agree on the new height. This is the settings "Add account" defect,
+    // measured on the production layout path.
+    {
+        let at = |scale: f32| {
+            let harness = FrameHarness::new_with_theme(
+                State::new(),
+                dense_row(),
+                (1800, 260),
+                Theme::dark().with_text_scale(scale),
+            );
+            let rects = rects_for(&["save", "delete"], &harness.targets());
+            (rects[0].1, rects[1].1)
+        };
+        let (save, delete) = at(1.0);
+        assert_eq!(
+            (save.width(), save.height()),
+            (120.0, 40.0),
+            "1× default: {save:?}"
         );
-        let (_, field) = rects[3];
-        assert!(
-            field.x1 <= f64::from(viewport.0) + 1e-6,
-            "{name}: the fluid field must end inside the viewport, got x1 {}",
-            field.x1
+        assert_eq!(
+            (delete.width(), delete.height()),
+            (120.0, 40.0),
+            "1× outlined: {delete:?}"
         );
+
+        let (save, delete) = at(2.0);
+        let scaled_line = 14.0 * 2.0 * 1.25;
         assert!(
-            field.width() > 200.0,
-            "{name}: the fluid field should take the remaining width, got {}",
-            field.width()
+            save.height() > scaled_line && save.height() > 40.0,
+            "2× default height {} must exceed the {scaled_line} px label line",
+            save.height()
         );
+        assert_eq!(
+            save.height(),
+            delete.height(),
+            "both default buttons share one height"
+        );
+        assert!(save.width() >= 120.0 && delete.width() >= 120.0);
     }
 }
 
@@ -232,108 +345,4 @@ fn dense_row() -> Box<dyn Widget> {
                 "query".into(),
             )]))),
     )
-}
-
-#[test]
-fn every_control_kind_in_one_row_shares_the_centre_line_at_one_and_two_x() {
-    for (name, theme, viewport) in [
-        ("dark", Theme::dark(), (1200, 200)),
-        ("light", Theme::light(), (1200, 200)),
-        (
-            "dark @ 2× text",
-            Theme::dark().with_text_scale(2.0),
-            (1800, 260),
-        ),
-    ] {
-        let harness = FrameHarness::new_with_theme(State::new(), dense_row(), viewport, theme);
-        let rects = rects_for(&DENSE_IDS, &harness.targets());
-        let centre = rects[0].1.center().y;
-        for (id, rect) in &rects {
-            assert!(
-                rect.width() > 0.0 && rect.height() > 0.0,
-                "{name}: {id} has no geometry: {rect:?}"
-            );
-            assert!(
-                (rect.center().y - centre).abs() <= CENTRE_TOLERANCE,
-                "{name}: {id} centre-y {} drifts from the row's {centre} (rect {rect:?})",
-                rect.center().y
-            );
-            if *id != "Row[0]/Chip" {
-                assert!(
-                    rect.height() + 1e-6 >= MINIMUM_TARGET && rect.width() + 1e-6 >= MINIMUM_TARGET,
-                    "{name}: {id} {}×{} is under the {MINIMUM_TARGET} px target",
-                    rect.width(),
-                    rect.height()
-                );
-            }
-        }
-        for pair in rects.windows(2) {
-            let (left, right) = (pair[0], pair[1]);
-            assert!(
-                left.1.x1 <= right.1.x0 + 1e-6,
-                "{name}: {} (x1 {}) overlaps {} (x0 {})",
-                left.0,
-                left.1.x1,
-                right.0,
-                right.1.x0
-            );
-        }
-        let (_, field) = rects[6];
-        assert!(
-            field.x1 <= f64::from(viewport.0) + 1e-6,
-            "{name}: the fluid field must end inside the viewport, got x1 {}",
-            field.x1
-        );
-    }
-}
-
-/// The default `Button::new` face is exactly 120×40 at 1× and grows — not
-/// clips — at 2× text: the 28 px label's 35 px line no longer fits a 40 px
-/// face, so the face follows the line, and both default buttons in the row
-/// agree on the new height. This is the settings "Add account" defect,
-/// measured on the production layout path.
-#[test]
-fn default_buttons_hold_their_label_at_two_x_and_stay_120_by_40_at_one_x() {
-    let at = |scale: f32| {
-        let harness = FrameHarness::new_with_theme(
-            State::new(),
-            dense_row(),
-            (1800, 260),
-            Theme::dark().with_text_scale(scale),
-        );
-        let rects = rects_for(&["save", "delete"], &harness.targets());
-        (rects[0].1, rects[1].1)
-    };
-    let (save, delete) = at(1.0);
-    assert_eq!(
-        (save.width(), save.height()),
-        (120.0, 40.0),
-        "1× default: {save:?}"
-    );
-    assert_eq!(
-        (delete.width(), delete.height()),
-        (120.0, 40.0),
-        "1× outlined: {delete:?}"
-    );
-
-    let (save, delete) = at(2.0);
-    let scaled_line = 14.0 * 2.0 * 1.25;
-    assert!(
-        save.height() > scaled_line && save.height() > 40.0,
-        "2× default height {} must exceed the {scaled_line} px label line",
-        save.height()
-    );
-    assert_eq!(
-        save.height(),
-        delete.height(),
-        "both default buttons share one height"
-    );
-    assert!(save.width() >= 120.0 && delete.width() >= 120.0);
-}
-
-#[test]
-fn mixed_controls_keep_one_centre_line_after_a_resize() {
-    let mut harness = FrameHarness::new(State::new(), fixture_row(), (1000, 200));
-    harness.resize((1400, 320)).expect("resize settles");
-    assert_row_is_aligned("dark after resize", &harness);
 }

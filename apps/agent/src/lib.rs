@@ -11,14 +11,24 @@
 //! actor, so every change is attributed to it in the history strip and its
 //! caret shows up in the other participants' windows while it works.
 //!
-//! *Which* action answers an instruction is decided by a model (`model`),
-//! from the catalogue of things the app exports (`plan::CATALOGUE`) and
-//! nothing else: the model names one entry, that name is checked against the
-//! exported set, and the app's own action carries it out. It never proposes a
-//! document mutation of its own, and an answer outside the catalogue is
-//! refused rather than acted on. When no key is present, or a call is slow or
-//! fails, a keyword vocabulary decides instead — the run continues, and which
-//! path ran is recorded and logged rather than left indistinguishable.
+//! With `app_id = "so.tilo.chat"` and no record, the same Session reads the
+//! canonical package-primary Chat document. Structured mentions target the
+//! stable admitted `agent_id`; name addressing uses the display name. Replies
+//! and `AgentWork` live in that document and conservatively prevent repeats
+//! after restart, including an unfinished dispatch. This bounded mode only
+//! executes broker-published document actions. External effects, pause/resume,
+//! authenticated agent roster projection, and durable delegated effect
+//! admission remain separate integrations.
+//!
+//! *Which* published operations answer a request is decided by a model
+//! (`model`) that discovers, invokes and observes the live, permission-filtered
+//! catalogue the applications publish — the same one a person reaches from
+//! the palette — through a handful of generic tools (`tools`). There are no
+//! agent-only recipes: every id it names is checked against what a tool
+//! showed it and against the catalogue again at dispatch, and the broker
+//! authorizes each step. Enrolled tasks run that as a step-by-step loop
+//! (`session::agent_loop`). Without a model, a deterministic word match over
+//! the same live catalogue decides, and which path ran is recorded.
 //!
 //! The point is the shape, not the vocabulary: anything that can speak an
 //! app's actions can drive that app, in the background, without competing
@@ -43,6 +53,7 @@
         clippy::indexing_slicing,
         clippy::string_slice,
         clippy::panic,
+        clippy::panic_in_result_fn,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -54,13 +65,17 @@ extern crate self as tilo_agent;
 
 pub mod apply;
 pub mod listen;
+pub mod live;
+pub mod memory;
 pub mod model;
 pub mod plan;
 pub mod providers;
+pub mod resource;
 pub mod session;
 pub mod surface;
 pub mod tools;
 pub mod transform;
 pub mod wire;
 
+pub use resource::{Agent, AgentShell};
 pub use session::{Config, Session};

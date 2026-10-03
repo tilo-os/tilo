@@ -4,7 +4,7 @@
 //! navigation calls [`History::record`], which de-duplicates by URL
 //! (bumping the visit count and refreshing the title + timestamp) so the
 //! list stays one-row-per-page. It persists as a JSON array under
-//! `xdg_paths::data_dir()/tilo-browser/history.json`.
+//! `tilo_paths::data_dir()/tilo-browser/history.json`.
 //!
 //! [`History::suggest`] powers the address-bar overlay. It fuzzy-matches
 //! the query as a case-insensitive *subsequence* of each entry's title
@@ -31,8 +31,9 @@
 //! partial rows.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use tilo_clock::unix_now;
-use ui::search::{FieldWeight, RankField};
+use ui::search::{FieldWeight, ListIndex, MAX_FIELD_RANK};
 
 /// Keep history useful without letting a long-lived profile turn every
 /// address-bar query, resource snapshot, or persisted JSON write into an
@@ -66,6 +67,8 @@ pub struct History {
     /// Changes only when the durable corpus changes.  Consumers such as the
     /// global-search index can therefore make an unchanged sync O(1).
     revision: u64,
+    /// Titles and URLs, indexed while they stay the same.
+    search: Arc<ListIndex>,
 }
 
 // The revision is an in-memory cache token rather than part of history's
@@ -95,6 +98,7 @@ impl History {
         Self {
             entries: Vec::new(),
             revision: 0,
+            search: Arc::default(),
         }
     }
 
@@ -187,17 +191,24 @@ impl History {
     pub fn suggest_at(&self, query: &str, limit: usize, now: u64) -> Vec<HistoryEntry> {
         let needle = query.trim();
         let mut scored: Vec<(f64, &HistoryEntry)> = Vec::new();
-
-        for entry in &self.entries {
-            let match_score = if needle.is_empty() {
-                // No text signal — rank purely on recency + frequency.
-                0.0
-            } else {
-                match match_score(needle, entry) {
-                    Some(s) => s,
-                    None => continue, // matches neither field — drop it
-                }
+        // Title and URL are both things a person types from memory, so they
+        // weigh the same. An empty needle ranks every entry 0: purely on
+        // recency and frequency.
+        let ranks = self.search.ranks(
+            needle,
+            self.entries.iter().map(|entry| {
+                [
+                    (entry.title.as_str(), FieldWeight::TITLE),
+                    (entry.url.as_str(), FieldWeight::TITLE),
+                ]
+            }),
+        );
+        for (entry, rank) in self.entries.iter().zip(ranks) {
+            // An entry matching neither field is dropped.
+            let Some(rank) = rank else {
+                continue;
             };
+            let match_score = f64::from(rank) / f64::from(MAX_FIELD_RANK);
 
             let score = W_MATCH * match_score
                 + W_RECENCY * recency_score(entry.last_visit, now)
@@ -323,7 +334,7 @@ impl History {
         }
         let mut history = History {
             entries,
-            revision: 0,
+            ..History::new()
         };
         history.trim_to_limit();
         history
@@ -360,7 +371,7 @@ fn bounded_text(value: &str, limit: usize) -> String {
 }
 
 /// Absolute path to the history file:
-/// `xdg_paths::data_dir()/tilo-browser/history.json`. `None` when the platform
+/// `tilo_paths::data_dir()/tilo-browser/history.json`. `None` when the platform
 /// exposes no data directory. The legacy directory remains the canonical
 /// default until storage migration is explicit and crash-safe.
 pub fn history_path() -> Option<PathBuf> {
@@ -383,19 +394,6 @@ fn frequency_score(visit_count: u32) -> f64 {
     1.0 - 1.0 / (1.0 + n)
 }
 
-/// The shared search ranker's relevance of `entry` to `needle` in `[0, 1]`,
-/// or `None` when neither its title nor its URL matches. Title and URL are
-/// both things a person types from memory, so they weigh the same.
-fn match_score(needle: &str, entry: &HistoryEntry) -> Option<f64> {
-    ui::search::relevance_fraction(
-        needle,
-        &[
-            RankField::new(&entry.title, FieldWeight::TITLE),
-            RankField::new(&entry.url, FieldWeight::TITLE),
-        ],
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,181 +407,189 @@ mod tests {
         }
     }
 
+    /// Recording visits.
     #[test]
-    fn record_dedups_by_url_and_bumps_count() {
-        let mut h = History::new();
-        h.record_at("https://a.test", "First", 100);
-        h.record_at("https://a.test", "Second", 200);
-        assert_eq!(h.len(), 1, "same URL collapses to one entry");
-        let e = &h.entries()[0];
-        assert_eq!(e.visit_count, 2, "revisit bumps the count");
-        assert_eq!(e.last_visit, 200, "revisit refreshes the timestamp");
-        assert_eq!(e.title, "Second", "revisit refreshes the title");
-    }
+    fn record_dedups_keeps_titles_and_evicts_at_the_bound() {
+        // Phase `record_dedups_by_url_and_bumps_count`.
+        {
+            let mut h = History::new();
+            h.record_at("https://a.test", "First", 100);
+            h.record_at("https://a.test", "Second", 200);
+            assert_eq!(h.len(), 1, "same URL collapses to one entry");
+            let e = &h.entries()[0];
+            assert_eq!(e.visit_count, 2, "revisit bumps the count");
+            assert_eq!(e.last_visit, 200, "revisit refreshes the timestamp");
+            assert_eq!(e.title, "Second", "revisit refreshes the title");
+        }
 
-    #[test]
-    fn record_keeps_old_title_when_new_is_blank() {
-        let mut h = History::new();
-        h.record_at("https://a.test", "Real Title", 100);
-        h.record_at("https://a.test", "   ", 200);
-        assert_eq!(
-            h.entries()[0].title,
-            "Real Title",
-            "a blank title must not overwrite a good one"
-        );
-    }
-
-    #[test]
-    fn record_ignores_blank_url() {
-        let mut h = History::new();
-        h.record_at("   ", "nope", 100);
-        assert!(h.is_empty(), "a blank URL is not recorded");
-    }
-
-    #[test]
-    fn record_keeps_distinct_urls_separate() {
-        let mut h = History::new();
-        h.record_at("https://a.test", "A", 100);
-        h.record_at("https://b.test", "B", 100);
-        assert_eq!(h.len(), 2);
-    }
-
-    #[test]
-    fn history_evicts_oldest_rows_at_the_resource_bound() {
-        let mut h = History::new();
-        for index in 0..=MAX_HISTORY_ENTRIES {
-            h.record_at(
-                &format!("https://{index}.example.test"),
-                "Page",
-                u64::try_from(index).unwrap_or(u64::MAX),
+        // Phase `record_keeps_old_title_when_new_is_blank`.
+        {
+            let mut h = History::new();
+            h.record_at("https://a.test", "Real Title", 100);
+            h.record_at("https://a.test", "   ", 200);
+            assert_eq!(
+                h.entries()[0].title,
+                "Real Title",
+                "a blank title must not overwrite a good one"
             );
         }
-        assert_eq!(h.len(), MAX_HISTORY_ENTRIES);
-        assert!(
-            !h.entries()
-                .iter()
-                .any(|entry| entry.url == "https://0.example.test"),
-            "the least recent row is evicted first"
-        );
+
+        // Phase `record_ignores_blank_url`.
+        {
+            let mut h = History::new();
+            h.record_at("   ", "nope", 100);
+            assert!(h.is_empty(), "a blank URL is not recorded");
+        }
+
+        // Phase `record_keeps_distinct_urls_separate`.
+        {
+            let mut h = History::new();
+            h.record_at("https://a.test", "A", 100);
+            h.record_at("https://b.test", "B", 100);
+            assert_eq!(h.len(), 2);
+        }
+
+        // Phase `history_evicts_oldest_rows_at_the_resource_bound`.
+        {
+            let mut h = History::new();
+            for index in 0..=MAX_HISTORY_ENTRIES {
+                h.record_at(
+                    &format!("https://{index}.example.test"),
+                    "Page",
+                    u64::try_from(index).unwrap_or(u64::MAX),
+                );
+            }
+            assert_eq!(h.len(), MAX_HISTORY_ENTRIES);
+            assert!(
+                !h.entries()
+                    .iter()
+                    .any(|entry| entry.url == "https://0.example.test"),
+                "the least recent row is evicted first"
+            );
+        }
     }
 
+    /// Matching: substrings and typos match, others do not, prefixes score higher.
     #[test]
-    fn subsequences_of_a_title_or_url_match() {
-        let row = entry("https://github.com", "Code hosting", 1_000, 1);
-        assert!(
-            match_score("ghcm", &row).is_some(),
-            "a URL subsequence matches"
-        );
-        assert!(
-            match_score("hosting", &row).is_some(),
-            "a title substring matches"
-        );
+    fn matching_is_case_insensitive_and_tolerates_typos() {
+        let matches = |needle: &str, row: HistoryEntry| {
+            let mut history = History::new();
+            history.entries.push(row);
+            !history.suggest_at(needle, 1, 1_000).is_empty()
+        };
+        let github = || entry("https://github.com", "Code hosting", 1_000, 1);
+        assert!(matches("githbu", github()), "a typo in the URL matches");
+        assert!(matches("HOSTING", github()), "a title substring matches");
+        assert!(!matches("zzz", entry("https://example.com", "", 1, 1)));
+        assert!(!matches("acb", entry("abc", "", 1, 1)));
+
+        let mut history = History::new();
+        history.entries.push(entry("legit", "", 1, 1));
+        history.entries.push(entry("github", "", 1, 1));
+        let urls: Vec<_> = history
+            .suggest_at("git", 2, 1)
+            .into_iter()
+            .map(|row| row.url)
+            .collect();
+        assert_eq!(urls, ["github", "legit"], "a prefix beats an infix");
     }
 
+    /// Suggestion filtering, ranking signals and tie-breaks.
     #[test]
-    fn suggest_is_case_insensitive() {
-        // `suggest` folds case for the whole pipeline, so an uppercase
-        // query still matches a mixed-case title/URL.
-        let mut h = History::new();
-        h.entries
-            .push(entry("https://GitHub.com", "GitHub", 1_000, 1));
-        let out = h.suggest_at("GIT", 10, 2_000);
-        assert_eq!(out.len(), 1, "'GIT' matches 'GitHub' case-insensitively");
-    }
+    fn suggestions_rank_by_match_recency_frequency_and_limit() {
+        struct Case {
+            name: &'static str,
+            rows: &'static [(&'static str, &'static str, u64, u32)],
+            query: &'static str,
+            now: u64,
+            len: Option<usize>,
+            first: Option<&'static str>,
+        }
+        let cases = [
+            // `suggest` folds case for the whole pipeline, so an uppercase
+            // query still matches a mixed-case title/URL.
+            Case {
+                name: "'GIT' matches 'GitHub' case-insensitively",
+                rows: &[("https://GitHub.com", "GitHub", 1_000, 1)],
+                query: "GIT",
+                now: 2_000,
+                len: Some(1),
+                first: None,
+            },
+            // Equal recency + frequency isolates the match-quality signal;
+            // both hold 'git'.
+            Case {
+                name: "the prefix match ranks first",
+                rows: &[
+                    ("https://legit.example", "Legit", 1_000, 1),
+                    ("https://github.com", "GitHub", 1_000, 1),
+                ],
+                query: "git",
+                now: 2_000,
+                len: Some(2),
+                first: Some("https://github.com"),
+            },
+            Case {
+                name: "only the entry matching 'git' survives",
+                rows: &[
+                    ("https://github.com", "GitHub", 1_000, 1),
+                    ("https://example.org", "Example", 1_000, 1),
+                ],
+                query: "git",
+                now: 2_000,
+                len: Some(1),
+                first: Some("https://github.com"),
+            },
+            // Equal visit counts isolate the recency signal.
+            Case {
+                name: "with no query and equal visits, the most-recent page leads",
+                rows: &[
+                    ("https://old.test", "Old", 100, 1),
+                    ("https://recent.test", "Recent", 5_000, 1),
+                ],
+                query: "",
+                now: 5_000,
+                len: None,
+                first: Some("https://recent.test"),
+            },
+            Case {
+                name: "equal recency → the more-visited page leads",
+                rows: &[
+                    ("https://rare.test", "Rare", 1_000, 1),
+                    ("https://popular.test", "Popular", 1_000, 25),
+                ],
+                query: "",
+                now: 1_000,
+                len: None,
+                first: Some("https://popular.test"),
+            },
+            // Same URL shape so 'test' matches identically; recency decides.
+            Case {
+                name: "equal match quality → the more-recent page leads",
+                rows: &[
+                    ("https://a-test.com", "test", 100, 1),
+                    ("https://b-test.com", "test", 9_000, 1),
+                ],
+                query: "test",
+                now: 9_000,
+                len: None,
+                first: Some("https://b-test.com"),
+            },
+        ];
+        for case in cases {
+            let mut h = History::new();
+            for &(url, title, last_visit, visit_count) in case.rows {
+                h.entries.push(entry(url, title, last_visit, visit_count));
+            }
+            let out = h.suggest_at(case.query, 10, case.now);
+            if let Some(len) = case.len {
+                assert_eq!(out.len(), len, "{}", case.name);
+            }
+            if let Some(first) = case.first {
+                assert_eq!(out[0].url, first, "{}", case.name);
+            }
+        }
 
-    #[test]
-    fn non_subsequences_do_not_match() {
-        assert!(
-            match_score("zzz", &entry("https://example.com", "", 1, 1)).is_none(),
-            "characters absent from the haystack do not match"
-        );
-        assert!(
-            match_score("acb", &entry("abc", "", 1, 1)).is_none(),
-            "out-of-order characters are not a subsequence"
-        );
-    }
-
-    #[test]
-    fn prefix_scores_above_scattered() {
-        let prefix = match_score("git", &entry("github", "", 1, 1)).unwrap();
-        let scattered = match_score("git", &entry("goldieturtle", "", 1, 1)).unwrap();
-        assert!(
-            prefix > scattered,
-            "contiguous prefix ({prefix}) must beat a scattered match ({scattered})"
-        );
-    }
-
-    #[test]
-    fn suggest_ranks_better_text_match_first() {
-        // Equal recency + frequency isolates the match-quality signal.
-        let mut h = History::new();
-        h.entries
-            .push(entry("https://github.com", "GitHub", 1_000, 1));
-        h.entries
-            .push(entry("https://goldieturtle.example", "Goldie", 1_000, 1));
-        let out = h.suggest_at("git", 10, 2_000);
-        assert_eq!(out.len(), 2, "both are subsequence matches for 'git'");
-        assert_eq!(
-            out[0].url, "https://github.com",
-            "the contiguous prefix match ranks first"
-        );
-    }
-
-    #[test]
-    fn suggest_filters_out_non_matches() {
-        let mut h = History::new();
-        h.entries
-            .push(entry("https://github.com", "GitHub", 1_000, 1));
-        h.entries
-            .push(entry("https://example.org", "Example", 1_000, 1));
-        let out = h.suggest_at("git", 10, 2_000);
-        assert_eq!(out.len(), 1, "only the entry matching 'git' survives");
-        assert_eq!(out[0].url, "https://github.com");
-    }
-
-    #[test]
-    fn empty_query_ranks_recent_first() {
-        // Equal visit counts isolate the recency signal.
-        let mut h = History::new();
-        h.entries.push(entry("https://old.test", "Old", 100, 1));
-        h.entries
-            .push(entry("https://recent.test", "Recent", 5_000, 1));
-        let out = h.suggest_at("", 10, 5_000);
-        assert_eq!(
-            out[0].url, "https://recent.test",
-            "with no query and equal visits, the most-recent page leads"
-        );
-    }
-
-    #[test]
-    fn empty_query_breaks_recency_tie_by_frequency() {
-        let mut h = History::new();
-        h.entries.push(entry("https://rare.test", "Rare", 1_000, 1));
-        h.entries
-            .push(entry("https://popular.test", "Popular", 1_000, 25));
-        let out = h.suggest_at("", 10, 1_000);
-        assert_eq!(
-            out[0].url, "https://popular.test",
-            "equal recency → the more-visited page leads"
-        );
-    }
-
-    #[test]
-    fn recency_breaks_match_quality_tie() {
-        // Same URL shape so 'test' matches identically; recency decides.
-        let mut h = History::new();
-        h.entries.push(entry("https://a-test.com", "test", 100, 1));
-        h.entries
-            .push(entry("https://b-test.com", "test", 9_000, 1));
-        let out = h.suggest_at("test", 10, 9_000);
-        assert_eq!(
-            out[0].url, "https://b-test.com",
-            "equal match quality → the more-recent page leads"
-        );
-    }
-
-    #[test]
-    fn suggest_respects_limit() {
         let mut h = History::new();
         for i in 0..10 {
             h.record_at(&format!("https://site{i}.test"), "Site", 1_000 + i as u64);
@@ -592,65 +598,70 @@ mod tests {
         assert_eq!(out.len(), 3, "the result is capped at the limit");
     }
 
+    /// JSON persistence, garbage tolerance, bounds and data root.
     #[test]
-    fn json_round_trips() {
-        let mut h = History::new();
-        h.record_at("https://a.test", "Alpha", 111);
-        h.record_at("https://b.test", "Beta", 222);
-        h.record_at("https://a.test", "Alpha", 333); // count=2
-        let text = h.to_json_string();
-        let back = History::from_json_str(&text);
-        assert_eq!(back, h, "history survives a JSON round-trip intact");
-    }
+    fn history_persistence_round_trips_and_bounds_hostile_rows() {
+        // Phase `json_round_trips`.
+        {
+            let mut h = History::new();
+            h.record_at("https://a.test", "Alpha", 111);
+            h.record_at("https://b.test", "Beta", 222);
+            h.record_at("https://a.test", "Alpha", 333); // count=2
+            let text = h.to_json_string();
+            let back = History::from_json_str(&text);
+            assert_eq!(back, h, "history survives a JSON round-trip intact");
+        }
 
-    #[test]
-    fn from_json_skips_rows_without_url_and_tolerates_garbage() {
-        let json = r#"[
-            {"url":"https://ok.test","title":"OK","last_visit":5,"visit_count":2},
-            {"title":"no url"},
-            {"url":"https://partial.test"}
-        ]"#;
-        let h = History::from_json_str(json);
-        assert_eq!(h.len(), 2, "the URL-less row is skipped, partials default");
-        let partial = h
-            .entries()
-            .iter()
-            .find(|e| e.url == "https://partial.test")
-            .unwrap();
-        assert_eq!(
-            partial.visit_count, 0,
-            "missing numeric fields default to 0"
-        );
-        assert_eq!(partial.title, "", "missing title defaults to empty");
-    }
+        // Phase `from_json_skips_rows_without_url_and_tolerates_garbage`.
+        {
+            let json = r#"[
+                {"url":"https://ok.test","title":"OK","last_visit":5,"visit_count":2},
+                {"title":"no url"},
+                {"url":"https://partial.test"}
+            ]"#;
+            let h = History::from_json_str(json);
+            assert_eq!(h.len(), 2, "the URL-less row is skipped, partials default");
+            let partial = h
+                .entries()
+                .iter()
+                .find(|e| e.url == "https://partial.test")
+                .unwrap();
+            assert_eq!(
+                partial.visit_count, 0,
+                "missing numeric fields default to 0"
+            );
+            assert_eq!(partial.title, "", "missing title defaults to empty");
+        }
 
-    #[test]
-    fn from_json_garbage_is_empty() {
-        assert!(History::from_json_str("not json at all").is_empty());
-        assert!(History::from_json_str("{\"not\":\"an array\"}").is_empty());
-    }
+        // Phase `from_json_garbage_is_empty`.
+        {
+            assert!(History::from_json_str("not json at all").is_empty());
+            assert!(History::from_json_str("{\"not\":\"an array\"}").is_empty());
+        }
 
-    #[test]
-    fn hostile_history_rows_are_bounded_before_search_can_materialize_them() {
-        let too_long_url = format!("https://example.test/{}", "x".repeat(MAX_HISTORY_URL_BYTES));
-        let json = serde_json::json!([
-            { "url": too_long_url, "title": "ignored" },
-            {
-                "url": "https://kept.example.test",
-                "title": "t".repeat(MAX_HISTORY_TITLE_BYTES + 64),
+        // Phase `hostile_history_rows_are_bounded_before_search_can_materialize_them`.
+        {
+            let too_long_url =
+                format!("https://example.test/{}", "x".repeat(MAX_HISTORY_URL_BYTES));
+            let json = serde_json::json!([
+                { "url": too_long_url, "title": "ignored" },
+                {
+                    "url": "https://kept.example.test",
+                    "title": "t".repeat(MAX_HISTORY_TITLE_BYTES + 64),
+                }
+            ]);
+            let history = History::from_json_str(&json.to_string());
+            assert_eq!(history.len(), 1);
+            assert_eq!(history.entries()[0].title.len(), MAX_HISTORY_TITLE_BYTES);
+            assert!(History::from_json_str(&" ".repeat(MAX_HISTORY_FILE_BYTES + 1)).is_empty());
+        }
+
+        // Phase `history_path_preserves_the_existing_browser_data_root`.
+        {
+            // Only assert the tail so the test is host-agnostic.
+            if let Some(p) = history_path() {
+                assert!(p.ends_with("tilo-browser/history.json"), "path was {p:?}");
             }
-        ]);
-        let history = History::from_json_str(&json.to_string());
-        assert_eq!(history.len(), 1);
-        assert_eq!(history.entries()[0].title.len(), MAX_HISTORY_TITLE_BYTES);
-        assert!(History::from_json_str(&" ".repeat(MAX_HISTORY_FILE_BYTES + 1)).is_empty());
-    }
-
-    #[test]
-    fn history_path_preserves_the_existing_browser_data_root() {
-        // Only assert the tail so the test is host-agnostic.
-        if let Some(p) = history_path() {
-            assert!(p.ends_with("tilo-browser/history.json"), "path was {p:?}");
         }
     }
 }

@@ -1,0 +1,47 @@
+# Everyday, chat and technical words SCOWL 2020.12.07 lacks (at the sizes
+# generate.py reads), added to the English vocabulary. Each is still ranked
+# by its wordfreq frequency, so this list only decides membership. One
+# lower-case a-z word per line; '#' starts a comment.
+admin
+api
+app
+autocorrect
+bluetooth
+bot
+brb
+btw
+chatbot
+crypto
+dev
+devs
+ebook
+ebooks
+gameplay
+gif
+gifs
+github
+gps
+haha
+hotspot
+idk
+livestream
+lmao
+lol
+offline
+omg
+pdf
+pdfs
+pls
+signup
+tbh
+thx
+unfollow
+url
+urls
+usb
+vlog
+vlogger
+wifi
+wishlist
+wishlists
+youtuber

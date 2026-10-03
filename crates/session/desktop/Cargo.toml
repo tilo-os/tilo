@@ -1,0 +1,45 @@
+[package]
+name = "tilo-desktop"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+fnv.workspace = true
+automerge.workspace = true
+blake3.workspace = true
+hex.workspace = true
+taffy.workspace = true
+vello.workspace = true
+winit.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+collab-types = { path = "../../collab/collab-types" }
+tilo-actions = { path = "../../collab/actions" }
+tilo-desktop-model = { path = "../desktop-model" }
+tilo-desktop-surface = { path = "../desktop-surface" }
+desktop-policy = { path = "../../system/desktop-policy", default-features = false }
+tilo-clock = { path = "../../platform/tilo-clock" }
+# The emoji picker's catalogue, search, skin tones and recents.
+emoji = { path = "../../text/emoji" }
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+tilo-copy-lint = { path = "../../dev/copy-lint" }
+word-processor = { path = "../../../apps/word-processor" }
+chat = { path = "../../../apps/chat", default-features = false }
+notes = { path = "../../../apps/notes" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+# The browser runtime builds the desktop in wasm32 on the portable toolkit.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }

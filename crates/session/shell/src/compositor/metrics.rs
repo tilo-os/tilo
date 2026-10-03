@@ -50,7 +50,14 @@ pub struct FrameSample {
     pub backpressured: bool,
     /// Microseconds after the target deadline when this frame was submitted.
     pub deadline_late_us: u32,
+    /// What ended the park that closed this tick: the name of the deadline
+    /// that expired, or [`WAKE_IO`] when a registered fd became readable
+    /// first. An idle desktop that keeps waking is named here.
+    pub wake: &'static str,
 }
+
+/// [`FrameSample::wake`] for a park ended by a readable fd (input, a client, the control socket, a worker ping) rather than by a deadline.
+pub const WAKE_IO: &str = "io";
 
 impl FrameSample {
     /// Non-parked time in the interval this sample's `period_us` spans. `period_us` runs from the
@@ -64,7 +71,7 @@ impl FrameSample {
     fn write_csv_row(&self, out: &mut impl Write) -> std::io::Result<()> {
         writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             self.seq,
             self.start_us,
             self.period_us,
@@ -86,6 +93,7 @@ impl FrameSample {
                 .unwrap_or_default(),
             u8::from(self.backpressured),
             self.deadline_late_us,
+            self.wake,
         )
     }
 }
@@ -93,7 +101,7 @@ impl FrameSample {
 /// Header line for the `TILO_FRAME_TRACE` CSV, kept next to `FrameSample::write_csv_row` so the two cannot drift.
 pub const CSV_HEADER: &str = "seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,\
 submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,\
-input_retirement_latency_us,backpressured,deadline_late_us";
+input_retirement_latency_us,backpressured,deadline_late_us,wake";
 
 /// Percentile bundle for one measured quantity, in microseconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -168,6 +176,8 @@ pub struct FrameSummary {
     pub on_cadence_ratio: f64,
     /// The refresh interval the loop was aiming at, microseconds.
     pub target_period_us: u32,
+    /// Ticks per [`FrameSample::wake`] reason.
+    pub wakes: std::collections::BTreeMap<&'static str, u64>,
 }
 
 /// How far a painted frame's period may stray from the target refresh interval and still count
@@ -290,6 +300,14 @@ pub fn summarize(samples: &[FrameSample], target_period_us: u32) -> FrameSummary
         ),
         on_cadence_ratio,
         target_period_us,
+        wakes: samples.iter().filter(|s| !s.wake.is_empty()).fold(
+            std::collections::BTreeMap::new(),
+            |mut wakes, s| {
+                let n = wakes.entry(s.wake).or_insert(0_u64);
+                *n = n.saturating_add(1);
+                wakes
+            },
+        ),
     }
 }
 
@@ -500,6 +518,9 @@ impl FrameRecorder {
     }
     pub fn mark_sleep(&mut self, d: Duration) {
         self.cur.sleep_us = us(d);
+    }
+    pub fn mark_wake(&mut self, reason: &'static str) {
+        self.cur.wake = reason;
     }
 
     pub fn mark_backpressured(&mut self) {
@@ -725,322 +746,326 @@ mod tests {
     }
 
     #[test]
-    fn percentiles_of_empty_series_are_zero_with_zero_count() {
-        let p = percentiles(&[]);
-        assert_eq!(p.count, 0, "empty series must report zero samples");
-        assert_eq!(p.max, 0);
-    }
-
-    #[test]
-    fn percentiles_use_nearest_rank_not_interpolation() {
-        // 1..=100. Nearest-rank p50 is the 50th value = 50; p95 = 95; p99 = 99 — an interpolating implementation would give 50.5 etc., so this pins the definition.
-        let v: Vec<u32> = (1..=100).collect();
-        let p = percentiles(&v);
-        assert_eq!(p.count, 100);
-        assert_eq!(p.min, 1);
-        assert_eq!(p.p50, 50, "p50 must be the 50th of 100 sorted values");
-        assert_eq!(p.p95, 95);
-        assert_eq!(p.p99, 99);
-        assert_eq!(p.max, 100);
-        assert_eq!(p.mean, 50, "integer mean of 1..=100 is 5050/100 = 50");
-    }
-
-    #[test]
-    fn percentiles_handle_single_sample() {
-        let p = percentiles(&[42]);
-        assert_eq!(
-            (p.count, p.min, p.p50, p.p99, p.max),
-            (1, 42, 42, 42, 42),
-            "a one-element series is its own every percentile"
-        );
-    }
-
-    #[test]
-    fn summarize_drops_the_first_sample_from_the_cadence_series() {
-        // The first tick has no predecessor, so its period is 0 — letting it into the series would report a bogus min of 0 and drag the p50 down.
-        let s = vec![
-            sample(0, 0, 0, true),
-            sample(1, 16_000, 16_000, true),
-            sample(2, 32_000, 16_000, true),
-        ];
-        let sum = summarize(&s, 16_667);
-        assert_eq!(
-            sum.tick_period.count, 2,
-            "the zero-period first sample must not enter the cadence series"
-        );
-        assert_eq!(sum.tick_period.min, 16_000);
-    }
-
-    #[test]
-    fn summarize_paint_period_measures_gaps_between_painted_frames_only() {
-        // Ticks at 0/8/16/24 ms, painting only on the even ones. The paint period is 16 ms even though the tick period is 8 ms — the distinction redraw gating relies on.
-        let s = vec![
-            sample(0, 0, 0, true),
-            sample(1, 8_000, 8_000, false),
-            sample(2, 16_000, 8_000, true),
-            sample(3, 24_000, 8_000, false),
-            sample(4, 32_000, 8_000, true),
-        ];
-        let sum = summarize(&s, 0);
-        assert_eq!(sum.painted, 3);
-        assert_eq!(sum.tick_period.p50, 8_000);
-        assert_eq!(
-            sum.paint_period.count, 2,
-            "three painted frames give two inter-paint intervals"
-        );
-        assert_eq!(
-            sum.paint_period.p50, 16_000,
-            "paint period must measure painted-to-painted, not tick-to-tick"
-        );
-    }
-
-    #[test]
-    fn summarize_on_cadence_ratio_rejects_a_loop_pacing_to_the_wrong_rate() {
-        // A loop pinned at 60 Hz (16.6 ms) driving a 144 Hz panel (6.94 ms) must score 0.0: every frame is ~10 ms late.
-        let mut s = Vec::new();
-        for i in 0..50u64 {
-            s.push(sample(i, i * 16_667, 16_667, true));
+    fn percentiles_use_nearest_rank_and_handle_tiny_series() {
+        // Phase `percentiles_of_empty_series_are_zero_with_zero_count`.
+        {
+            let p = percentiles(&[]);
+            assert_eq!(p.count, 0, "empty series must report zero samples");
+            assert_eq!(p.max, 0);
         }
-        let sum144 = summarize(&s, 6_944);
-        assert_eq!(
-            sum144.on_cadence_ratio, 0.0,
-            "a 60 Hz loop must not count as on-cadence for a 144 Hz target"
-        );
-        // Same samples against a 60 Hz target: every frame is on cadence.
-        let sum60 = summarize(&s, 16_667);
-        assert!(
-            sum60.on_cadence_ratio > 0.99,
-            "a 60 Hz loop against a 60 Hz target must be ~100% on cadence, got {}",
-            sum60.on_cadence_ratio
-        );
-    }
-
-    #[test]
-    fn summarize_reports_backpressure_and_painted_deadline_lateness() {
-        let mut idle = sample(0, 0, 0, false);
-        idle.backpressured = true;
-        idle.deadline_late_us = 99_000;
-        let mut first = sample(1, 7_000, 7_000, true);
-        first.deadline_late_us = 300;
-        let mut second = sample(2, 14_000, 7_000, true);
-        second.backpressured = true;
-        second.deadline_late_us = 1_200;
-
-        let summary = summarize(&[idle, first, second], 6_944);
-        assert_eq!(summary.backpressured_ticks, 2);
-        assert_eq!(summary.deadline_lateness.count, 2);
-        assert_eq!(summary.deadline_lateness.p50, 300);
-        assert_eq!(summary.deadline_lateness.max, 1_200);
-    }
-
-    #[test]
-    fn summarize_fps_is_painted_frames_over_the_measured_span() {
-        // 61 painted ticks spanning exactly 1 s → 61 painted / 1 s. Span is last.start - first.start, so 61 samples 16.667 ms apart span 1.0 s.
-        let mut s = Vec::new();
-        for i in 0..61u64 {
-            s.push(sample(i, i * 16_667, 16_667, true));
+        // Phase `percentiles_use_nearest_rank_not_interpolation`.
+        {
+            // 1..=100. Nearest-rank p50 is the 50th value = 50; p95 = 95; p99 = 99 — an interpolating implementation would give 50.5 etc., so this pins the definition.
+            let v: Vec<u32> = (1..=100).collect();
+            let p = percentiles(&v);
+            assert_eq!(p.count, 100);
+            assert_eq!(p.min, 1);
+            assert_eq!(p.p50, 50, "p50 must be the 50th of 100 sorted values");
+            assert_eq!(p.p95, 95);
+            assert_eq!(p.p99, 99);
+            assert_eq!(p.max, 100);
+            assert_eq!(p.mean, 50, "integer mean of 1..=100 is 5050/100 = 50");
         }
-        let sum = summarize(&s, 16_667);
-        assert_eq!(sum.span_us, 60 * 16_667);
-        assert!(
-            (sum.fps - 61.0 * 1_000_000.0 / (60.0 * 16_667.0)).abs() < 0.01,
-            "fps must be painted/span, got {}",
-            sum.fps
-        );
+        // Phase `percentiles_handle_single_sample`.
+        {
+            let p = percentiles(&[42]);
+            assert_eq!(
+                (p.count, p.min, p.p50, p.p99, p.max),
+                (1, 42, 42, 42, 42),
+                "a one-element series is its own every percentile"
+            );
+        }
     }
 
     #[test]
-    fn summarize_work_subtracts_the_park_that_actually_happened_in_the_period() {
-        // `period_us` spans the previous tick's start to this one's, so the park inside it belongs to
-        // the *previous* sample: tick 0 works 4 ms then parks 12 ms, tick 1 starts 16 ms later and its period contains tick 0's park; subtracting the sample's *own* sleep instead goes negative when a tick parks longer than its predecessor.
-        let mut a = sample(0, 0, 0, true);
-        a.sleep_us = 12_000;
-        let mut b = sample(1, 16_000, 16_000, true);
-        b.sleep_us = 2_000;
-        let sum = summarize(&[a, b], 0);
-        assert_eq!(
-            sum.work.count, 1,
-            "work needs a predecessor, so N samples give N-1 work values"
-        );
-        assert_eq!(
-            sum.work.max, 4_000,
-            "work must subtract the park that happened inside the period \
-             (the previous tick's), not the park this tick went on to do"
-        );
+    fn summary_cadence_counts_only_painted_frames() {
+        // Phase `summarize_drops_the_first_sample_from_the_cadence_series`.
+        {
+            // The first tick has no predecessor, so its period is 0 — letting it into the series would report a bogus min of 0 and drag the p50 down.
+            let s = vec![
+                sample(0, 0, 0, true),
+                sample(1, 16_000, 16_000, true),
+                sample(2, 32_000, 16_000, true),
+            ];
+            let sum = summarize(&s, 16_667);
+            assert_eq!(
+                sum.tick_period.count, 2,
+                "the zero-period first sample must not enter the cadence series"
+            );
+            assert_eq!(sum.tick_period.min, 16_000);
+        }
+        // Phase `summarize_paint_period_measures_gaps_between_painted_frames_only`.
+        {
+            // Ticks at 0/8/16/24 ms, painting only on the even ones. The paint period is 16 ms even though the tick period is 8 ms — the distinction redraw gating relies on.
+            let s = vec![
+                sample(0, 0, 0, true),
+                sample(1, 8_000, 8_000, false),
+                sample(2, 16_000, 8_000, true),
+                sample(3, 24_000, 8_000, false),
+                sample(4, 32_000, 8_000, true),
+            ];
+            let sum = summarize(&s, 0);
+            assert_eq!(sum.painted, 3);
+            assert_eq!(sum.tick_period.p50, 8_000);
+            assert_eq!(
+                sum.paint_period.count, 2,
+                "three painted frames give two inter-paint intervals"
+            );
+            assert_eq!(
+                sum.paint_period.p50, 16_000,
+                "paint period must measure painted-to-painted, not tick-to-tick"
+            );
+        }
+        // Phase `summarize_on_cadence_ratio_rejects_a_loop_pacing_to_the_wrong_rate`.
+        {
+            // A loop pinned at 60 Hz (16.6 ms) driving a 144 Hz panel (6.94 ms) must score 0.0: every frame is ~10 ms late.
+            let mut s = Vec::new();
+            for i in 0..50u64 {
+                s.push(sample(i, i * 16_667, 16_667, true));
+            }
+            let sum144 = summarize(&s, 6_944);
+            assert_eq!(
+                sum144.on_cadence_ratio, 0.0,
+                "a 60 Hz loop must not count as on-cadence for a 144 Hz target"
+            );
+            // Same samples against a 60 Hz target: every frame is on cadence.
+            let sum60 = summarize(&s, 16_667);
+            assert!(
+                sum60.on_cadence_ratio > 0.99,
+                "a 60 Hz loop against a 60 Hz target must be ~100% on cadence, got {}",
+                sum60.on_cadence_ratio
+            );
+        }
+        // Phase `summarize_fps_is_painted_frames_over_the_measured_span`.
+        {
+            // 61 painted ticks spanning exactly 1 s → 61 painted / 1 s. Span is last.start - first.start, so 61 samples 16.667 ms apart span 1.0 s.
+            let mut s = Vec::new();
+            for i in 0..61u64 {
+                s.push(sample(i, i * 16_667, 16_667, true));
+            }
+            let sum = summarize(&s, 16_667);
+            assert_eq!(sum.span_us, 60 * 16_667);
+            assert!(
+                (sum.fps - 61.0 * 1_000_000.0 / (60.0 * 16_667.0)).abs() < 0.01,
+                "fps must be painted/span, got {}",
+                sum.fps
+            );
+        }
+        // Phase `summarize_empty_input_is_all_zero`.
+        {
+            let sum = summarize(&[], 16_667);
+            assert_eq!(sum.ticks, 0);
+            assert_eq!(sum.fps, 0.0);
+        }
     }
 
     #[test]
-    fn work_never_goes_negative_when_a_tick_parks_longer_than_its_predecessor() {
-        // A tick parked 16 ms following one that parked 2 ms: `saturating_sub` on the wrong operand would report a nonsense-but-positive number.
-        let mut a = sample(0, 0, 0, true);
-        a.sleep_us = 2_000;
-        let mut b = sample(1, 5_000, 5_000, true);
-        b.sleep_us = 16_000;
-        let sum = summarize(&[a, b], 0);
-        assert_eq!(
-            sum.work.max, 3_000,
-            "5ms period containing a 2ms park is 3ms of work"
-        );
+    fn summary_work_and_backpressure_subtract_real_parks() {
+        // Phase `summarize_reports_backpressure_and_painted_deadline_lateness`.
+        {
+            let mut idle = sample(0, 0, 0, false);
+            idle.backpressured = true;
+            idle.deadline_late_us = 99_000;
+            let mut first = sample(1, 7_000, 7_000, true);
+            first.deadline_late_us = 300;
+            let mut second = sample(2, 14_000, 7_000, true);
+            second.backpressured = true;
+            second.deadline_late_us = 1_200;
+
+            let summary = summarize(&[idle, first, second], 6_944);
+            assert_eq!(summary.backpressured_ticks, 2);
+            assert_eq!(summary.deadline_lateness.count, 2);
+            assert_eq!(summary.deadline_lateness.p50, 300);
+            assert_eq!(summary.deadline_lateness.max, 1_200);
+        }
+        // Phase `summarize_work_subtracts_the_park_that_actually_happened_in_the_period`.
+        {
+            // `period_us` spans the previous tick's start to this one's, so the park inside it belongs to
+            // the *previous* sample: tick 0 works 4 ms then parks 12 ms, tick 1 starts 16 ms later and its period contains tick 0's park; subtracting the sample's *own* sleep instead goes negative when a tick parks longer than its predecessor.
+            let mut a = sample(0, 0, 0, true);
+            a.sleep_us = 12_000;
+            let mut b = sample(1, 16_000, 16_000, true);
+            b.sleep_us = 2_000;
+            let sum = summarize(&[a, b], 0);
+            assert_eq!(
+                sum.work.count, 1,
+                "work needs a predecessor, so N samples give N-1 work values"
+            );
+            assert_eq!(
+                sum.work.max, 4_000,
+                "work must subtract the park that happened inside the period \
+                 (the previous tick's), not the park this tick went on to do"
+            );
+        }
+        // Phase `work_never_goes_negative_when_a_tick_parks_longer_than_its_predecessor`.
+        {
+            // A tick parked 16 ms following one that parked 2 ms: `saturating_sub` on the wrong operand would report a nonsense-but-positive number.
+            let mut a = sample(0, 0, 0, true);
+            a.sleep_us = 2_000;
+            let mut b = sample(1, 5_000, 5_000, true);
+            b.sleep_us = 16_000;
+            let sum = summarize(&[a, b], 0);
+            assert_eq!(
+                sum.work.max, 3_000,
+                "5ms period containing a 2ms park is 3ms of work"
+            );
+        }
+        // Phase `summarize_layout_and_scene_ignore_ticks_that_did_not_paint`.
+        {
+            // An idle tick contributes layout=0/scene=0; folding those into the percentiles would make a busy loop look cheap.
+            let mut painted = sample(0, 0, 0, true);
+            painted.layout_us = 3_000;
+            painted.scene_us = 5_000;
+            let idle = sample(1, 16_000, 16_000, false);
+            let sum = summarize(&[painted, idle], 0);
+            assert_eq!(sum.layout.count, 1, "only painted ticks ran layout");
+            assert_eq!(sum.layout.p50, 3_000);
+            assert_eq!(sum.scene.p50, 5_000);
+        }
     }
 
     #[test]
-    fn summarize_layout_and_scene_ignore_ticks_that_did_not_paint() {
-        // An idle tick contributes layout=0/scene=0; folding those into the percentiles would make a busy loop look cheap.
-        let mut painted = sample(0, 0, 0, true);
-        painted.layout_us = 3_000;
-        painted.scene_us = 5_000;
-        let idle = sample(1, 16_000, 16_000, false);
-        let sum = summarize(&[painted, idle], 0);
-        assert_eq!(sum.layout.count, 1, "only painted ticks ran layout");
-        assert_eq!(sum.layout.p50, 3_000);
-        assert_eq!(sum.scene.p50, 5_000);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn recorder_measures_input_latency_to_the_exact_presented_frame() {
+        // Phase `disabled_recorder_retains_nothing`.
+        {
+            let mut r = FrameRecorder::disabled();
+            let t = Instant::now();
+            r.begin_tick(t);
+            r.mark_scene(Duration::from_millis(5));
+            r.mark_submit(Duration::from_millis(3), false, Instant::now(), None);
+            r.end_tick();
+            assert!(
+                r.samples().is_empty(),
+                "a disabled recorder must not allocate or retain samples"
+            );
+            assert!(!r.is_enabled());
+        }
+        // Phase `recorder_measures_input_latency_from_input_to_submit_completion`.
+        {
+            // Drive the real recorder (not the summariser) so the note_input → mark_submit handshake is what's under test.
+            let mut r = FrameRecorder::disabled();
+            r.enabled = true;
+            let base = Instant::now();
+            r.begin_tick(base);
+            r.note_input(base);
+            // Submit finishes 7 ms after the input was consumed.
+            r.mark_submit(
+                Duration::from_millis(2),
+                false,
+                base + Duration::from_millis(7),
+                None,
+            );
+            r.end_tick();
+            let s = r.samples();
+            assert_eq!(s.len(), 1);
+            let latency = s[0]
+                .input_latency_us
+                .expect("a painted tick following an input must carry a latency sample");
+            assert_eq!(
+                latency, 7_000,
+                "latency must span input-consumed to submit-returned"
+            );
+            assert!(
+                !s[0].present_async,
+                "a synchronous submit must not be flagged async"
+            );
+        }
+        // Phase `recorder_keeps_the_earliest_pending_input_across_idle_ticks`.
+        {
+            // Input arrives, then two ticks pass without painting; latency must be measured from the *original* input, not the tick that happened to paint.
+            let mut r = FrameRecorder::disabled();
+            r.enabled = true;
+            let base = Instant::now();
+            r.begin_tick(base);
+            r.note_input(base);
+            r.end_tick();
+            r.begin_tick(base + Duration::from_millis(10));
+            r.note_input(base + Duration::from_millis(10));
+            r.end_tick();
+            r.begin_tick(base + Duration::from_millis(20));
+            r.mark_submit(
+                Duration::from_millis(1),
+                true,
+                base + Duration::from_millis(25),
+                Some(7),
+            );
+            r.end_tick();
+            let s = r.samples();
+            assert_eq!(s.len(), 3);
+            assert_eq!(
+                s[0].input_latency_us, None,
+                "unpainted ticks carry no latency"
+            );
+            assert_eq!(s[1].input_latency_us, None);
+            assert_eq!(
+                s[2].input_latency_us,
+                Some(25_000),
+                "latency must run from the earliest un-presented input, not the latest"
+            );
+            assert!(
+                s[2].present_async,
+                "a queued (threaded) submit must be flagged so readers don't mistake it for photons"
+            );
+        }
+        // Phase `pending_input_age_exposes_the_oldest_unpresented_input`.
+        {
+            let mut r = FrameRecorder::disabled();
+            r.enabled = true;
+            let base = Instant::now();
+            r.note_input(base);
+            r.note_input(base + Duration::from_millis(4));
+            assert_eq!(
+                r.pending_input_age(base + Duration::from_millis(9)),
+                Some(Duration::from_millis(9)),
+                "a newer input must not hide the oldest outstanding latency"
+            );
+        }
+        // Phase `async_input_latency_waits_for_the_exact_retired_serial`.
+        {
+            let mut r = FrameRecorder::disabled();
+            r.enabled = true;
+            let base = Instant::now();
+            r.begin_tick(base);
+            r.note_input(base);
+            r.mark_submit(
+                Duration::from_micros(20),
+                true,
+                base + Duration::from_millis(1),
+                Some(42),
+            );
+            r.end_tick();
+
+            r.begin_tick(base + Duration::from_millis(2));
+            r.note_retirement(41, base + Duration::from_millis(2));
+            r.end_tick();
+            assert!(
+                r.samples()
+                    .iter()
+                    .all(|s| s.input_retirement_latency_us.is_none()),
+                "an older frame must not acknowledge the input-bearing frame"
+            );
+
+            r.begin_tick(base + Duration::from_millis(8));
+            r.note_retirement(42, base + Duration::from_millis(8));
+            r.end_tick();
+            r.begin_tick(base + Duration::from_millis(9));
+            r.end_tick();
+            assert_eq!(
+                r.samples()
+                    .last()
+                    .and_then(|s| s.input_retirement_latency_us),
+                Some(8_000)
+            );
+        }
     }
 
     #[test]
-    fn summarize_empty_input_is_all_zero() {
-        let sum = summarize(&[], 16_667);
-        assert_eq!(sum.ticks, 0);
-        assert_eq!(sum.fps, 0.0);
-    }
-
-    #[test]
-    fn disabled_recorder_retains_nothing() {
-        let mut r = FrameRecorder::disabled();
-        let t = Instant::now();
-        r.begin_tick(t);
-        r.mark_scene(Duration::from_millis(5));
-        r.mark_submit(Duration::from_millis(3), false, Instant::now(), None);
-        r.end_tick();
-        assert!(
-            r.samples().is_empty(),
-            "a disabled recorder must not allocate or retain samples"
-        );
-        assert!(!r.is_enabled());
-    }
-
-    #[test]
-    fn recorder_measures_input_latency_from_input_to_submit_completion() {
-        // Drive the real recorder (not the summariser) so the note_input → mark_submit handshake is what's under test.
-        let mut r = FrameRecorder::disabled();
-        r.enabled = true;
-        let base = Instant::now();
-        r.begin_tick(base);
-        r.note_input(base);
-        // Submit finishes 7 ms after the input was consumed.
-        r.mark_submit(
-            Duration::from_millis(2),
-            false,
-            base + Duration::from_millis(7),
-            None,
-        );
-        r.end_tick();
-        let s = r.samples();
-        assert_eq!(s.len(), 1);
-        let latency = s[0]
-            .input_latency_us
-            .expect("a painted tick following an input must carry a latency sample");
-        assert_eq!(
-            latency, 7_000,
-            "latency must span input-consumed to submit-returned"
-        );
-        assert!(
-            !s[0].present_async,
-            "a synchronous submit must not be flagged async"
-        );
-    }
-
-    #[test]
-    fn recorder_keeps_the_earliest_pending_input_across_idle_ticks() {
-        // Input arrives, then two ticks pass without painting; latency must be measured from the *original* input, not the tick that happened to paint.
-        let mut r = FrameRecorder::disabled();
-        r.enabled = true;
-        let base = Instant::now();
-        r.begin_tick(base);
-        r.note_input(base);
-        r.end_tick();
-        r.begin_tick(base + Duration::from_millis(10));
-        r.note_input(base + Duration::from_millis(10));
-        r.end_tick();
-        r.begin_tick(base + Duration::from_millis(20));
-        r.mark_submit(
-            Duration::from_millis(1),
-            true,
-            base + Duration::from_millis(25),
-            Some(7),
-        );
-        r.end_tick();
-        let s = r.samples();
-        assert_eq!(s.len(), 3);
-        assert_eq!(
-            s[0].input_latency_us, None,
-            "unpainted ticks carry no latency"
-        );
-        assert_eq!(s[1].input_latency_us, None);
-        assert_eq!(
-            s[2].input_latency_us,
-            Some(25_000),
-            "latency must run from the earliest un-presented input, not the latest"
-        );
-        assert!(
-            s[2].present_async,
-            "a queued (threaded) submit must be flagged so readers don't mistake it for photons"
-        );
-    }
-
-    #[test]
-    fn pending_input_age_exposes_the_oldest_unpresented_input() {
-        let mut r = FrameRecorder::disabled();
-        r.enabled = true;
-        let base = Instant::now();
-        r.note_input(base);
-        r.note_input(base + Duration::from_millis(4));
-        assert_eq!(
-            r.pending_input_age(base + Duration::from_millis(9)),
-            Some(Duration::from_millis(9)),
-            "a newer input must not hide the oldest outstanding latency"
-        );
-    }
-
-    #[test]
-    fn async_input_latency_waits_for_the_exact_retired_serial() {
-        let mut r = FrameRecorder::disabled();
-        r.enabled = true;
-        let base = Instant::now();
-        r.begin_tick(base);
-        r.note_input(base);
-        r.mark_submit(
-            Duration::from_micros(20),
-            true,
-            base + Duration::from_millis(1),
-            Some(42),
-        );
-        r.end_tick();
-
-        r.begin_tick(base + Duration::from_millis(2));
-        r.note_retirement(41, base + Duration::from_millis(2));
-        r.end_tick();
-        assert!(
-            r.samples()
-                .iter()
-                .all(|s| s.input_retirement_latency_us.is_none()),
-            "an older frame must not acknowledge the input-bearing frame"
-        );
-
-        r.begin_tick(base + Duration::from_millis(8));
-        r.note_retirement(42, base + Duration::from_millis(8));
-        r.end_tick();
-        r.begin_tick(base + Duration::from_millis(9));
-        r.end_tick();
-        assert_eq!(
-            r.samples()
-                .last()
-                .and_then(|s| s.input_retirement_latency_us),
-            Some(8_000)
-        );
-    }
-
-    #[test]
-    fn parse_run_seconds_accepts_positive_values_only() {
+    fn metrics_cli_and_trace_output_are_well_formed() {
+        // Phase `parse_run_seconds_accepts_positive_values_only`.
         assert_eq!(
             super::parse_run_seconds(Some("2.5")),
             Some(Duration::from_millis(2500))
@@ -1065,60 +1090,59 @@ mod tests {
                 "{bad:?} must mean run-forever, not exit-immediately"
             );
         }
-    }
-
-    #[test]
-    fn csv_row_column_count_matches_the_header() {
-        let mut buf = Vec::new();
-        FrameSample {
-            seq: 1,
-            start_us: 2,
-            period_us: 3,
-            input_us: 4,
-            pump_us: 5,
-            layout_us: 6,
-            scene_us: 7,
-            submit_us: 8,
-            testctl_us: 9,
-            clients_us: 10,
-            sleep_us: 11,
-            painted: true,
-            present_async: false,
-            input_latency_us: Some(12),
-            input_retirement_latency_us: Some(13),
-            backpressured: true,
-            deadline_late_us: 14,
+        // Phase `csv_row_column_count_matches_the_header`.
+        {
+            let mut buf = Vec::new();
+            FrameSample {
+                seq: 1,
+                start_us: 2,
+                period_us: 3,
+                input_us: 4,
+                pump_us: 5,
+                layout_us: 6,
+                scene_us: 7,
+                submit_us: 8,
+                testctl_us: 9,
+                clients_us: 10,
+                sleep_us: 11,
+                painted: true,
+                present_async: false,
+                input_latency_us: Some(12),
+                input_retirement_latency_us: Some(13),
+                backpressured: true,
+                deadline_late_us: 14,
+                wake: "cadence",
+            }
+            .write_csv_row(&mut buf)
+            .expect("write csv row into a Vec");
+            let row = String::from_utf8(buf).expect("csv row is utf8");
+            assert_eq!(
+                row.trim_end().split(',').count(),
+                CSV_HEADER.split(',').count(),
+                "trace rows must have exactly as many columns as the header:\n  header: {CSV_HEADER}\n  row:    {}",
+                row.trim_end()
+            );
         }
-        .write_csv_row(&mut buf)
-        .expect("write csv row into a Vec");
-        let row = String::from_utf8(buf).expect("csv row is utf8");
-        assert_eq!(
-            row.trim_end().split(',').count(),
-            CSV_HEADER.split(',').count(),
-            "trace rows must have exactly as many columns as the header:\n  header: {CSV_HEADER}\n  row:    {}",
-            row.trim_end()
-        );
-    }
+        // Phase `production_trace_flushes_periodically_without_waiting_for_clean_exit`.
+        {
+            let dir = tempfile::tempdir().expect("trace tempdir");
+            let path = dir.path().join("frame.csv");
+            let file = std::fs::File::create(&path).expect("create trace");
+            let mut file = file;
+            writeln!(file, "{CSV_HEADER}").expect("write trace header");
+            let mut recorder = FrameRecorder::disabled();
+            recorder.enabled = true;
+            recorder.trace = Some(std::io::BufWriter::new(file));
+            recorder.trace_path = Some(path.clone());
+            let base = Instant::now();
+            recorder.begin_tick(base + Duration::from_secs(1));
+            recorder.end_tick();
 
-    #[test]
-    fn production_trace_flushes_periodically_without_waiting_for_clean_exit() {
-        let dir = tempfile::tempdir().expect("trace tempdir");
-        let path = dir.path().join("frame.csv");
-        let file = std::fs::File::create(&path).expect("create trace");
-        let mut file = file;
-        writeln!(file, "{CSV_HEADER}").expect("write trace header");
-        let mut recorder = FrameRecorder::disabled();
-        recorder.enabled = true;
-        recorder.trace = Some(std::io::BufWriter::new(file));
-        recorder.trace_path = Some(path.clone());
-        let base = Instant::now();
-        recorder.begin_tick(base + Duration::from_secs(1));
-        recorder.end_tick();
-
-        let bytes = std::fs::read(&path).expect("read flushed trace");
-        assert!(
-            !bytes.is_empty(),
-            "one-second trace must reach disk before Drop"
-        );
+            let bytes = std::fs::read(&path).expect("read flushed trace");
+            assert!(
+                !bytes.is_empty(),
+                "one-second trace must reach disk before Drop"
+            );
+        }
     }
 }

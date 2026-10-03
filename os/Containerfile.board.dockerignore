@@ -1,0 +1,18 @@
+# Only what os/Containerfile.board copies. Without this BuildKit received the
+# whole repository, 1.6 GB, for each of a board's three builds. The firmware
+# comes in its own per-board context (os/dev/build-board-image.sh).
+*
+!os/dev/prepare-hardware-profile.py
+!os/dev/hardware_profile.py
+!os/scripts/build-initramfs.sh
+!os/hardware/profiles
+!os/dev/uki.sh
+!os/dev/uki-hardware-profile.py
+!os/dev/make-boot-splash.py
+!os/dev/install-board-layer.sh
+!os/usr/lib/systemd/system/sshd.service.d/20-tilo-board.conf
+!os/etc/NetworkManager/conf.d/10-tilo-brcmfmac.conf
+!os/usr/lib/systemd/system/tilo-board-headless-session@.service
+!os/usr/libexec/tilo-board-session-prepare
+!os/usr/libexec/tilo-seat-session
+!os/usr/libexec/tilo-display-present

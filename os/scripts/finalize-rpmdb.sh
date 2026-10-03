@@ -58,3 +58,23 @@ esac
 # Remove the derived sidecars only after the last rpm process has exited so the
 # next container layer receives the verified main database and nothing else.
 rm -f -- "$db_dir/rpmdb.sqlite-wal" "$db_dir/rpmdb.sqlite-shm"
+# rpm opens its database in WAL mode, and SQLite records that in the file
+# itself: a WAL database cannot be opened where it cannot create its -shm
+# sidecar, so on the booted read-only /usr every rpm query failed ("unable to
+# open database file"). Store it in rollback-journal mode, which reads fine
+# from a read-only filesystem.
+python3 - "$db_dir/rpmdb.sqlite" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+mode = db.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+db.close()
+if mode != "delete":
+    sys.exit(f"rpmdb journal mode is {mode}, not delete")
+PY
+rm -f -- "$db_dir/rpmdb.sqlite-wal" "$db_dir/rpmdb.sqlite-shm"
+
+# DNF's transaction history and log contain transaction diagnostics, including
+# timestamps and process-dependent details. They are diagnostic build
+# state, not package state, and must disappear in the same RUN as each DNF call:
+# removing them only at the end of the image cannot undo earlier OCI layers.
+/usr/libexec/tilo/clean-dnf-layer-state

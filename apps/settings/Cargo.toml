@@ -20,7 +20,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 hex.workspace = true
-tilo-clock = { path = "../../crates/system/tilo-clock" }
+tilo-clock = { path = "../../crates/platform/tilo-clock" }
 bounded-command = { path = "../../crates/system/bounded-command" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # One owner for ~/.config/tilo/settings.json.
@@ -40,9 +40,9 @@ collab-types = { path = "../../crates/collab/collab-types" }
 # The Tilo action model: every setting mutation is a serializable, replayable
 # `SettingsAction` the on-screen controls and the Ctrl+K palette both dispatch.
 tilo-actions = { path = "../../crates/collab/actions" }
-# `portal`: the CA-certificate chooser and captive-portal sign-in go through
-# the desktop portals, never a host tool.
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+# The CA-certificate chooser and captive-portal sign-in go through
+# `ui::portal`, never a host tool.
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Shared shell-out helpers for the interactive panes (display, audio,
 # network, bluetooth). The crate lives at the workspace root so both
 # `shell` and the Settings app drive the same hardware bindings without
@@ -61,6 +61,10 @@ tilo-bluez = { path = "../../crates/system/tilo-bluez" }
 # writes email + CalDAV accounts through this one canonical store, so it and
 # the Mail / Calendar apps can no longer disagree on the on-disk shape.
 accounts = { path = "../../crates/system/accounts" }
+# Credential custody for cloud accounts: the shared OAuth client, Nextcloud
+# Login Flow v2, iCloud sessions and the short-lived handoff to the storage
+# daemon.
+account-custody = { path = "../../crates/system/account-custody" }
 # Provider metadata is shared with the headless agent runner. This dependency
 # contains no HTTP client and no secret values.
 agent-provider-config = { path = "../../crates/agent/provider-config" }
@@ -70,7 +74,7 @@ tilo-model-gateway = { path = "../../crates/agent/model-gateway" }
 # The audio graph client: enumerate the PipeWire/WirePlumber node graph and
 # route per-application streams. The Sound pane drives audio routing
 # through it (default features only — no gstreamer decode stack pulled in).
-media = { path = "../../crates/media/core" }
+media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
 # Trait passes (`sync`, `build_layout`, `handle_event`) mention these crates
 # in their signatures; we re-export them at the same versions the sibling
 # native apps pin so a shared `target/` cache hits across crates.
@@ -80,7 +84,7 @@ winit.workspace = true
 taffy.workspace = true
 tracing.workspace = true
 rustls = { workspace = true, features = ["std", "tls12"] }
-tilo-net = { path = "../../crates/system/tilo-net" }
+tilo-net = { path = "../../crates/platform/tilo-net" }
 # Account probes speak DAV through the shared bounded client and IMAP through
 # async-imap, the client Mail uses, on a per-probe current-thread runtime.
 tilo-dav = { path = "../../crates/system/tilo-dav" }
@@ -94,10 +98,11 @@ zeroize.workspace = true
 # per-user config root; uuid mints stable account ids.
 serde.workspace = true
 serde_json.workspace = true
-atomic-file = { path = "../../crates/system/atomic-file" }
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 quick-xml.workspace = true
 uuid.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
@@ -114,21 +119,27 @@ accounts = { path = "../../crates/system/accounts" }
 # account back through Mail's own reader to verify Mail consumes what
 # Settings persisted across the shared store.
 mail = { path = "../mail" }
+# A fake authorization server and browser for the sign-in flow tests.
+tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
+# The cloud storage end-to-end test: Settings signs in, the storage
+# daemon's cloud service mounts the account against each provider's fake.
+tilo-fs = { path = "../../crates/system/fs" }
+cloud-source = { path = "../../crates/system/cloud-source" }
+cloud-source-gdrive = { path = "../../crates/system/cloud-source-gdrive", features = ["fake-server"] }
+cloud-source-onedrive = { path = "../../crates/system/cloud-source-onedrive", features = ["fake-server"] }
+cloud-source-dropbox = { path = "../../crates/system/cloud-source-dropbox", features = ["fake-server"] }
+cloud-source-icloud = { path = "../../crates/system/cloud-source-icloud", features = ["fake-server"] }
 
 [[test]]
 name = "it"
 path = "tests/it.rs"
 
 # These suites deliberately redirect the process-global XDG config root.
-# Keep each in its own test process instead of cohabiting the UI interaction
-# suite, whose parallel tests may legitimately construct settings panes.
+# Keep them out of `it` so they never share a process with the UI interaction
+# suite; one binary is enough — nextest isolates each test in its own process.
 [[test]]
-name = "prefs_persistence"
-path = "tests/prefs_persistence.rs"
-
-[[test]]
-name = "accounts_mail_loop"
-path = "tests/accounts_mail_loop.rs"
+name = "xdg"
+path = "tests/xdg.rs"
 
 [lints]
 workspace = true

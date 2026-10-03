@@ -8,7 +8,7 @@ toolchain, and it is unsealed. Two ways that could leak into production:
 1. The dev image is published or tagged as a production image. So:
    * os/Containerfile.dev must label and mark itself as the dev flavour, unseal
      its base and never build a UKI of its own;
-   * its RPM snapshot default must be the production one (os/rpms-snapshot.env),
+   * its RPM snapshot default must come from resolve-rpm-snapshot.sh,
      and its toolchain list (os/scripts/builder-packages.txt) must be exactly
      what os/Containerfile's builder stage installs but for Fedora's Rust
      compiler, so it links against what the production builder of the same
@@ -147,9 +147,9 @@ def check_dev_containerfile(repo: Path) -> list[Finding]:
     default = next(((n, m.group(1)) for n, t in lines if (m := re.fullmatch(r"ARG RPMS_REF=(\S+)", t))), None)
     if default is not None:
         findings.append(Finding(f"{shown}:{default[0]}", f"RPMS_REF has a default ({default[1]})",
-                                "os/rpms-snapshot.env is the one pin: CI rewrites it when the package set "
+                                "RPMS_REF is resolved by fingerprint: CI publishes set-<fingerprint> when the package set "
                                 "changes, and a second copy here would silently drift from it",
-                                "declare a bare `ARG RPMS_REF`; the builders pass it from os/rpms-snapshot.env."))
+                                "declare a bare `ARG RPMS_REF`; the builders pass it from resolve-rpm-snapshot.sh."))
     elif not any(re.fullmatch(r"ARG RPMS_REF", t) for _, t in lines):
         findings.append(Finding(shown, "declares no `ARG RPMS_REF`",
                                 "the toolchain must come from the frozen snapshot the production builder used",
@@ -172,10 +172,10 @@ def check_dev_containerfile(repo: Path) -> list[Finding]:
     path = repo / builder
     if path.is_file():
         body = path.read_text(encoding="utf-8")
-        if not ("rpms-snapshot.env" in body and "RPMS_REF=$rpms_ref" in body):
-            findings.append(Finding(builder, "builds os/Containerfile.dev without RPMS_REF from os/rpms-snapshot.env",
+        if not ("resolve-rpm-snapshot.sh" in body and "RPMS_REF=$rpms_ref" in body):
+            findings.append(Finding(builder, "builds os/Containerfile.dev without fingerprint-resolved RPMS_REF",
                                     "without it the dev image has no frozen snapshot to install its toolchain from",
-                                    'read `rpms_ref` from os/rpms-snapshot.env and pass `--build-arg "RPMS_REF=$rpms_ref"`.'))
+                                    'resolve `rpms_ref` via resolve-rpm-snapshot.sh and pass `--build-arg "RPMS_REF=$rpms_ref"`.'))
     # CI builds dev images with the same script developers run, so a CI dev
     # image cannot drift from a local one.
     for workflow in DEV_IMAGE_WORKFLOWS:
@@ -208,7 +208,7 @@ def check_builder_packages(repo: Path) -> list[Finding]:
         committed = []
     findings = []
     for arch in ("x86_64", "aarch64"):
-        wanted = module.builder_packages(repo / "os/Containerfile", "builder", arch)
+        wanted = module.builder_packages(repo / "os/Containerfile", "builder-base", arch)
         if committed != wanted:
             added = sorted(set(wanted) - set(committed))
             removed = sorted(set(committed) - set(wanted))

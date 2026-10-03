@@ -470,6 +470,27 @@ impl WorkspaceDirectory {
         Ok(update)
     }
 
+    /// Sign a complete dependency-closed snapshot for a newly enrolled empty peer.
+    /// Unlike `sync_incremental`, this does not depend on the previous publication cursor.
+    ///
+    /// # Errors
+    /// Returns `DirectoryError::Canonical` if signing serialization fails.
+    pub fn signed_snapshot(
+        &mut self,
+        device_signing_key: &ed25519_dalek::SigningKey,
+        now_ns: u64,
+    ) -> Result<DirectoryUpdate, DirectoryError> {
+        let mut update = DirectoryUpdate {
+            author_device_public_key: device_signing_key.verifying_key().to_bytes(),
+            authored_at_ns: now_ns,
+            delta: self.doc.clone().save(),
+            signature: [0; 64],
+        };
+        let digest = crate::canonical::signing_digest(DIR_DELTA_PREIMAGE_TAG, &update.view())?;
+        update.signature = device_signing_key.sign(&digest).to_bytes();
+        Ok(update)
+    }
+
     /// Apply a peer's incremental delta after verifying signatures
     /// + cert chain + revocation status.
     ///
@@ -612,278 +633,292 @@ mod tests {
         (dev_sk, dev.public_key, cert)
     }
 
+    /// Workspaces are added and listed, member hosts pin and unpin, concurrent adds merge, and the
+    /// directory saves and loads.
     #[test]
-    fn add_and_list_workspaces() {
-        let f = fresh_user();
-        let (_dev_sk, dev_pk, _cert) = enrol_device(
-            &f.user_sk,
-            f.user_pk,
-            "laptop",
-            DeviceCapabilities::primary(),
-        );
-        let mut dir = WorkspaceDirectory::new(f.user_pk, dev_pk);
-        dir.add_workspace(1, "Personal").unwrap();
-        dir.add_workspace(2, "Work").unwrap();
-        let ws = dir.list_workspaces();
-        assert_eq!(ws.len(), 2);
-        assert_eq!(ws[0].name, "Personal");
-        assert_eq!(ws[1].name, "Work");
-    }
-
-    #[test]
-    fn set_member_hosts_pin_unpin() {
-        let f = fresh_user();
-        let (_a_sk, a_pk, _) = enrol_device(
-            &f.user_sk,
-            f.user_pk,
-            "laptop",
-            DeviceCapabilities::primary(),
-        );
-        let (_b_sk, b_pk, _) =
-            enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
-        let (_h_sk, h_pk, _) =
-            enrol_device(&f.user_sk, f.user_pk, "server", DeviceCapabilities::host());
-
-        let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
-        dir.add_workspace(9, "Notes").unwrap();
-        dir.set_member_devices(9, &[a_pk, b_pk]).unwrap();
-        dir.assign_host(9, h_pk).unwrap();
-        dir.pin(9, a_pk).unwrap();
-        dir.pin(9, a_pk).unwrap(); // idempotent
-
-        let ws = dir.list_workspaces();
-        assert_eq!(ws.len(), 1);
-        assert_eq!(ws[0].member_devices, vec![a_pk, b_pk]);
-        assert_eq!(ws[0].host_devices, vec![h_pk]);
-        assert_eq!(ws[0].pinned_devices, vec![a_pk]);
-
-        dir.unpin(9, a_pk).unwrap();
-        assert!(dir.list_workspaces()[0].pinned_devices.is_empty());
-    }
-
-    #[test]
-    fn concurrent_add_merges() {
-        let f = fresh_user();
-        let (a_sk, a_pk, a_cert) = enrol_device(
-            &f.user_sk,
-            f.user_pk,
-            "laptop",
-            DeviceCapabilities::primary(),
-        );
-        let (b_sk, b_pk, b_cert) =
-            enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
-
-        let mut dev_a = WorkspaceDirectory::new(f.user_pk, a_pk);
-        let mut dev_b = WorkspaceDirectory::new(f.user_pk, b_pk);
-
-        dev_a.add_workspace(1, "Personal").unwrap();
-        dev_b.add_workspace(2, "Work").unwrap();
-
-        // Both push a delta; both apply the other's.
-        let delta_a = dev_a.sync_incremental(&a_sk, 1_000).unwrap();
-        let delta_b = dev_b.sync_incremental(&b_sk, 1_000).unwrap();
-
-        let revs = RevocationList::new();
-        dev_a
-            .apply_incremental(&delta_b, &b_cert, &revs, 1_100)
-            .unwrap();
-        dev_b
-            .apply_incremental(&delta_a, &a_cert, &revs, 1_100)
-            .unwrap();
-
-        let ids_a: Vec<u64> = dev_a.list_workspaces().into_iter().map(|w| w.id).collect();
-        let ids_b: Vec<u64> = dev_b.list_workspaces().into_iter().map(|w| w.id).collect();
-        assert_eq!(ids_a, vec![1, 2]);
-        assert_eq!(ids_b, vec![1, 2]);
-    }
-
-    #[test]
-    fn author_of_change_is_provable_via_signature() {
-        let f = fresh_user();
-        let (a_sk, a_pk, a_cert) = enrol_device(
-            &f.user_sk,
-            f.user_pk,
-            "laptop",
-            DeviceCapabilities::primary(),
-        );
-
-        let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
-        dir.add_workspace(1, "Personal").unwrap();
-        let mut delta = dir.sync_incremental(&a_sk, 500).unwrap();
-
-        // Baseline: apply cleanly on a fresh replica.
-        let mut peer = WorkspaceDirectory::new(f.user_pk, [7u8; 32]);
-        peer.apply_incremental(&delta, &a_cert, &RevocationList::new(), 600)
-            .unwrap();
-
-        // Now flip a byte in the delta payload — signature should
-        // reject.
-        peer = WorkspaceDirectory::new(f.user_pk, [7u8; 32]);
-        if let Some(b) = delta.delta.get_mut(0) {
-            *b ^= 0x01;
+    fn the_workspace_directory_merges_and_persists_membership() {
+        // Phase: add_and_list_workspaces.
+        {
+            let f = fresh_user();
+            let (_dev_sk, dev_pk, _cert) = enrol_device(
+                &f.user_sk,
+                f.user_pk,
+                "laptop",
+                DeviceCapabilities::primary(),
+            );
+            let mut dir = WorkspaceDirectory::new(f.user_pk, dev_pk);
+            dir.add_workspace(1, "Personal").unwrap();
+            dir.add_workspace(2, "Work").unwrap();
+            let ws = dir.list_workspaces();
+            assert_eq!(ws.len(), 2);
+            assert_eq!(ws[0].name, "Personal");
+            assert_eq!(ws[1].name, "Work");
         }
-        assert!(matches!(
+
+        // Phase: set_member_hosts_pin_unpin.
+        {
+            let f = fresh_user();
+            let (_a_sk, a_pk, _) = enrol_device(
+                &f.user_sk,
+                f.user_pk,
+                "laptop",
+                DeviceCapabilities::primary(),
+            );
+            let (_b_sk, b_pk, _) =
+                enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
+            let (_h_sk, h_pk, _) =
+                enrol_device(&f.user_sk, f.user_pk, "server", DeviceCapabilities::host());
+
+            let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
+            dir.add_workspace(9, "Notes").unwrap();
+            dir.set_member_devices(9, &[a_pk, b_pk]).unwrap();
+            dir.assign_host(9, h_pk).unwrap();
+            dir.pin(9, a_pk).unwrap();
+            dir.pin(9, a_pk).unwrap(); // idempotent
+
+            let ws = dir.list_workspaces();
+            assert_eq!(ws.len(), 1);
+            assert_eq!(ws[0].member_devices, vec![a_pk, b_pk]);
+            assert_eq!(ws[0].host_devices, vec![h_pk]);
+            assert_eq!(ws[0].pinned_devices, vec![a_pk]);
+
+            dir.unpin(9, a_pk).unwrap();
+            assert!(dir.list_workspaces()[0].pinned_devices.is_empty());
+        }
+
+        // Phase: concurrent_add_merges.
+        {
+            let f = fresh_user();
+            let (a_sk, a_pk, a_cert) = enrol_device(
+                &f.user_sk,
+                f.user_pk,
+                "laptop",
+                DeviceCapabilities::primary(),
+            );
+            let (b_sk, b_pk, b_cert) =
+                enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
+
+            let mut dev_a = WorkspaceDirectory::new(f.user_pk, a_pk);
+            let mut dev_b = WorkspaceDirectory::new(f.user_pk, b_pk);
+
+            dev_a.add_workspace(1, "Personal").unwrap();
+            dev_b.add_workspace(2, "Work").unwrap();
+
+            // Both push a delta; both apply the other's.
+            let delta_a = dev_a.sync_incremental(&a_sk, 1_000).unwrap();
+            let delta_b = dev_b.sync_incremental(&b_sk, 1_000).unwrap();
+
+            let revs = RevocationList::new();
+            dev_a
+                .apply_incremental(&delta_b, &b_cert, &revs, 1_100)
+                .unwrap();
+            dev_b
+                .apply_incremental(&delta_a, &a_cert, &revs, 1_100)
+                .unwrap();
+
+            let ids_a: Vec<u64> = dev_a.list_workspaces().into_iter().map(|w| w.id).collect();
+            let ids_b: Vec<u64> = dev_b.list_workspaces().into_iter().map(|w| w.id).collect();
+            assert_eq!(ids_a, vec![1, 2]);
+            assert_eq!(ids_b, vec![1, 2]);
+        }
+
+        // Phase: save_and_load_round_trip.
+        {
+            let f = fresh_user();
+            let (a_sk, a_pk, _) = enrol_device(
+                &f.user_sk,
+                f.user_pk,
+                "laptop",
+                DeviceCapabilities::primary(),
+            );
+
+            let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
+            dir.add_workspace(42, "Answer").unwrap();
+            dir.pin(42, a_pk).unwrap();
+            let snapshot = dir.save();
+            let reloaded = WorkspaceDirectory::load(f.user_pk, a_pk, &snapshot).unwrap();
+            let ws = reloaded.list_workspaces();
+            assert_eq!(ws.len(), 1);
+            assert_eq!(ws[0].id, 42);
+            assert_eq!(ws[0].name, "Answer");
+            assert_eq!(ws[0].pinned_devices, vec![a_pk]);
+            let _ = a_sk;
+        }
+    }
+
+    /// A change's author is provable via its signature; deltas from a revoked device, the wrong
+    /// device or another user are rejected.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn directory_deltas_are_accepted_only_from_the_users_live_devices() {
+        // Phase: author_of_change_is_provable_via_signature.
+        {
+            let f = fresh_user();
+            let (a_sk, a_pk, a_cert) = enrol_device(
+                &f.user_sk,
+                f.user_pk,
+                "laptop",
+                DeviceCapabilities::primary(),
+            );
+
+            let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
+            dir.add_workspace(1, "Personal").unwrap();
+            let mut delta = dir.sync_incremental(&a_sk, 500).unwrap();
+
+            // Baseline: apply cleanly on a fresh replica.
+            let mut peer = WorkspaceDirectory::new(f.user_pk, [7u8; 32]);
             peer.apply_incremental(&delta, &a_cert, &RevocationList::new(), 600)
-                .unwrap_err(),
-            DirectoryError::BadSignature
-        ));
-    }
+                .unwrap();
 
-    #[test]
-    fn revoked_device_delta_rejected() {
-        let f = fresh_user();
-        let (a_sk, a_pk, a_cert) = enrol_device(
-            &f.user_sk,
-            f.user_pk,
-            "laptop",
-            DeviceCapabilities::primary(),
-        );
-        let (b_sk, b_pk, b_cert) =
-            enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
+            // Now flip a byte in the delta payload — signature should
+            // reject.
+            peer = WorkspaceDirectory::new(f.user_pk, [7u8; 32]);
+            if let Some(b) = delta.delta.get_mut(0) {
+                *b ^= 0x01;
+            }
+            assert!(matches!(
+                peer.apply_incremental(&delta, &a_cert, &RevocationList::new(), 600)
+                    .unwrap_err(),
+                DirectoryError::BadSignature
+            ));
+        }
 
-        // The user revokes phone at t=500.
-        let mut rev = RevocationEntry {
-            user_public_key: f.user_pk,
-            revoked_device_public_key: b_pk,
-            revoked_at_ns: 500,
-            reason: RevocationReason::Lost,
-            signature: [0u8; 64],
-        };
-        sign_revocation_entry(&mut rev, &f.user_sk).unwrap();
-        let mut revs = RevocationList::new();
-        revs.insert(rev).unwrap();
+        // Phase: revoked_device_delta_rejected.
+        {
+            let f = fresh_user();
+            let (a_sk, a_pk, a_cert) = enrol_device(
+                &f.user_sk,
+                f.user_pk,
+                "laptop",
+                DeviceCapabilities::primary(),
+            );
+            let (b_sk, b_pk, b_cert) =
+                enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
 
-        // Laptop's directory.
-        let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
-        dir.add_workspace(1, "Personal").unwrap();
-        let a_delta = dir.sync_incremental(&a_sk, 400).unwrap();
+            // The user revokes phone at t=500.
+            let mut rev = RevocationEntry {
+                user_public_key: f.user_pk,
+                revoked_device_public_key: b_pk,
+                revoked_at_ns: 500,
+                reason: RevocationReason::Lost,
+                signature: [0u8; 64],
+            };
+            sign_revocation_entry(&mut rev, &f.user_sk).unwrap();
+            let mut revs = RevocationList::new();
+            revs.insert(rev).unwrap();
 
-        // Phone tries to publish an addition at t=600 (after
-        // revocation). Even though the phone still has its old
-        // cert, the apply-side rejects because the *update*
-        // timestamp postdates the revocation.
-        let mut phone_dir = WorkspaceDirectory::new(f.user_pk, b_pk);
-        phone_dir
-            .apply_incremental(&a_delta, &a_cert, &revs, 700)
-            .unwrap();
-        phone_dir.add_workspace(2, "Work").unwrap();
-        let b_delta = phone_dir.sync_incremental(&b_sk, 600).unwrap();
+            // Laptop's directory.
+            let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
+            dir.add_workspace(1, "Personal").unwrap();
+            let a_delta = dir.sync_incremental(&a_sk, 400).unwrap();
 
-        assert!(matches!(
-            dir.apply_incremental(&b_delta, &b_cert, &revs, 700)
-                .unwrap_err(),
-            DirectoryError::Revoked
-        ));
+            // Phone tries to publish an addition at t=600 (after
+            // revocation). Even though the phone still has its old
+            // cert, the apply-side rejects because the *update*
+            // timestamp postdates the revocation.
+            let mut phone_dir = WorkspaceDirectory::new(f.user_pk, b_pk);
+            phone_dir
+                .apply_incremental(&a_delta, &a_cert, &revs, 700)
+                .unwrap();
+            phone_dir.add_workspace(2, "Work").unwrap();
+            let b_delta = phone_dir.sync_incremental(&b_sk, 600).unwrap();
 
-        // But a delta authored *before* the revocation cut-off is
-        // still accepted (grace: the change was legitimately made
-        // by a trusted device at the time).
-        let mut phone_dir = WorkspaceDirectory::new(f.user_pk, b_pk);
-        phone_dir.add_workspace(3, "PreRevoke").unwrap();
-        let pre_delta = phone_dir.sync_incremental(&b_sk, 400).unwrap();
-        dir.apply_incremental(&pre_delta, &b_cert, &revs, 700)
-            .unwrap();
-        assert!(dir.list_workspaces().iter().any(|w| w.id == 3));
-    }
+            assert!(matches!(
+                dir.apply_incremental(&b_delta, &b_cert, &revs, 700)
+                    .unwrap_err(),
+                DirectoryError::Revoked
+            ));
 
-    #[test]
-    fn delta_signed_by_wrong_device_rejected() {
-        let f = fresh_user();
-        let (_a_sk, a_pk, a_cert) = enrol_device(
-            &f.user_sk,
-            f.user_pk,
-            "laptop",
-            DeviceCapabilities::primary(),
-        );
-        let (b_sk, _b_pk, _b_cert) =
-            enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
+            // But a delta authored *before* the revocation cut-off is
+            // still accepted (grace: the change was legitimately made
+            // by a trusted device at the time).
+            let mut phone_dir = WorkspaceDirectory::new(f.user_pk, b_pk);
+            phone_dir.add_workspace(3, "PreRevoke").unwrap();
+            let pre_delta = phone_dir.sync_incremental(&b_sk, 400).unwrap();
+            dir.apply_incremental(&pre_delta, &b_cert, &revs, 700)
+                .unwrap();
+            assert!(dir.list_workspaces().iter().any(|w| w.id == 3));
+        }
 
-        let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
-        dir.add_workspace(1, "Personal").unwrap();
-        // Sign with B's key but pass A's cert — the apply-side
-        // catches the identity mismatch.
-        let mut delta = dir.sync_incremental(&b_sk, 400).unwrap();
-        // Rewrite the author to A so the cert-vs-author check
-        // passes; the signature check then fails because the delta
-        // was signed with B's key.
-        delta.author_device_public_key = a_pk;
-        assert!(matches!(
-            dir.apply_incremental(&delta, &a_cert, &RevocationList::new(), 600)
-                .unwrap_err(),
-            DirectoryError::BadSignature
-        ));
-    }
+        // Phase: delta_signed_by_wrong_device_rejected.
+        {
+            let f = fresh_user();
+            let (_a_sk, a_pk, a_cert) = enrol_device(
+                &f.user_sk,
+                f.user_pk,
+                "laptop",
+                DeviceCapabilities::primary(),
+            );
+            let (b_sk, _b_pk, _b_cert) =
+                enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
 
-    #[test]
-    fn cross_user_delta_rejected() {
-        let f_alice = fresh_user();
-        let f_bob = fresh_user();
-        let (_a_sk, a_pk, a_cert_alice) = enrol_device(
-            &f_alice.user_sk,
-            f_alice.user_pk,
-            "laptop",
-            DeviceCapabilities::primary(),
-        );
-        // Alice's directory. Bob attempts to apply a delta with a
-        // cert issued under Bob's identity — rejected as WrongIdentity.
-        let (b_sk, b_pk, _) = enrol_device(
-            &f_bob.user_sk,
-            f_bob.user_pk,
-            "phone",
-            DeviceCapabilities::primary(),
-        );
-        let mut alice_dir = WorkspaceDirectory::new(f_alice.user_pk, a_pk);
-        alice_dir.add_workspace(1, "AlicePersonal").unwrap();
-        let delta = alice_dir.sync_incremental(&b_sk, 100).unwrap();
-        // Pass Alice's own cert but the delta's author is Bob's
-        // device key — the cert-vs-author guard rejects.
-        assert!(matches!(
-            alice_dir
-                .apply_incremental(&delta, &a_cert_alice, &RevocationList::new(), 200)
-                .unwrap_err(),
-            DirectoryError::WrongIdentity
-        ));
-        // And a delta whose author matches Bob's cert, but the
-        // cert's user identity is Bob's — again WrongIdentity, but
-        // triggered by the different guard.
-        let (b_sk2, b_pk2, b_cert_bob) = enrol_device(
-            &f_bob.user_sk,
-            f_bob.user_pk,
-            "laptop",
-            DeviceCapabilities::primary(),
-        );
-        let mut bob_dir = WorkspaceDirectory::new(f_bob.user_pk, b_pk2);
-        bob_dir.add_workspace(1, "BobPersonal").unwrap();
-        let bob_delta = bob_dir.sync_incremental(&b_sk2, 100).unwrap();
-        assert!(matches!(
-            alice_dir
-                .apply_incremental(&bob_delta, &b_cert_bob, &RevocationList::new(), 200)
-                .unwrap_err(),
-            DirectoryError::WrongIdentity
-        ));
-        let _ = b_pk;
-    }
+            let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
+            dir.add_workspace(1, "Personal").unwrap();
+            // Sign with B's key but pass A's cert — the apply-side
+            // catches the identity mismatch.
+            let mut delta = dir.sync_incremental(&b_sk, 400).unwrap();
+            // Rewrite the author to A so the cert-vs-author check
+            // passes; the signature check then fails because the delta
+            // was signed with B's key.
+            delta.author_device_public_key = a_pk;
+            assert!(matches!(
+                dir.apply_incremental(&delta, &a_cert, &RevocationList::new(), 600)
+                    .unwrap_err(),
+                DirectoryError::BadSignature
+            ));
+        }
 
-    #[test]
-    fn save_and_load_round_trip() {
-        let f = fresh_user();
-        let (a_sk, a_pk, _) = enrol_device(
-            &f.user_sk,
-            f.user_pk,
-            "laptop",
-            DeviceCapabilities::primary(),
-        );
-
-        let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
-        dir.add_workspace(42, "Answer").unwrap();
-        dir.pin(42, a_pk).unwrap();
-        let snapshot = dir.save();
-        let reloaded = WorkspaceDirectory::load(f.user_pk, a_pk, &snapshot).unwrap();
-        let ws = reloaded.list_workspaces();
-        assert_eq!(ws.len(), 1);
-        assert_eq!(ws[0].id, 42);
-        assert_eq!(ws[0].name, "Answer");
-        assert_eq!(ws[0].pinned_devices, vec![a_pk]);
-        let _ = a_sk;
+        // Phase: cross_user_delta_rejected.
+        {
+            let f_alice = fresh_user();
+            let f_bob = fresh_user();
+            let (_a_sk, a_pk, a_cert_alice) = enrol_device(
+                &f_alice.user_sk,
+                f_alice.user_pk,
+                "laptop",
+                DeviceCapabilities::primary(),
+            );
+            // Alice's directory. Bob attempts to apply a delta with a
+            // cert issued under Bob's identity — rejected as WrongIdentity.
+            let (b_sk, b_pk, _) = enrol_device(
+                &f_bob.user_sk,
+                f_bob.user_pk,
+                "phone",
+                DeviceCapabilities::primary(),
+            );
+            let mut alice_dir = WorkspaceDirectory::new(f_alice.user_pk, a_pk);
+            alice_dir.add_workspace(1, "AlicePersonal").unwrap();
+            let delta = alice_dir.sync_incremental(&b_sk, 100).unwrap();
+            // Pass Alice's own cert but the delta's author is Bob's
+            // device key — the cert-vs-author guard rejects.
+            assert!(matches!(
+                alice_dir
+                    .apply_incremental(&delta, &a_cert_alice, &RevocationList::new(), 200)
+                    .unwrap_err(),
+                DirectoryError::WrongIdentity
+            ));
+            // And a delta whose author matches Bob's cert, but the
+            // cert's user identity is Bob's — again WrongIdentity, but
+            // triggered by the different guard.
+            let (b_sk2, b_pk2, b_cert_bob) = enrol_device(
+                &f_bob.user_sk,
+                f_bob.user_pk,
+                "laptop",
+                DeviceCapabilities::primary(),
+            );
+            let mut bob_dir = WorkspaceDirectory::new(f_bob.user_pk, b_pk2);
+            bob_dir.add_workspace(1, "BobPersonal").unwrap();
+            let bob_delta = bob_dir.sync_incremental(&b_sk2, 100).unwrap();
+            assert!(matches!(
+                alice_dir
+                    .apply_incremental(&bob_delta, &b_cert_bob, &RevocationList::new(), 200)
+                    .unwrap_err(),
+                DirectoryError::WrongIdentity
+            ));
+            let _ = b_pk;
+        }
     }
 }

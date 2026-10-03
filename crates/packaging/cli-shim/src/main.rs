@@ -161,51 +161,28 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    fn sidecar_path_suffixes_the_exe_name() {
-        let p = sidecar_path_for(Path::new("/home/x/.local/share/tilo-apps/bin/notes"));
+    fn sidecars_sit_beside_the_shim_and_default_to_the_rpm_launcher() {
+        const PLAIN: &str = "package_id = \"so.tilo.notes-cli\"\ncommand    = \"notes\"\n";
         assert_eq!(
-            p,
+            sidecar_path_for(Path::new("/home/x/.local/share/tilo-apps/bin/notes")),
             PathBuf::from("/home/x/.local/share/tilo-apps/bin/notes.tilo-shim")
         );
-    }
 
-    #[test]
-    fn sidecar_deserialises() {
-        let text = r#"
-package_id = "so.tilo.notes-cli"
-command    = "notes"
-"#;
-        let s: Sidecar = toml::from_str(text).expect("decode");
+        let s: Sidecar = toml::from_str(PLAIN).expect("decode");
         assert_eq!(s.package_id, "so.tilo.notes-cli");
         assert_eq!(s.command, "notes");
         assert!(s.launcher.is_none());
-    }
+        // A user-installed shim with no override uses the RPM's launcher path.
+        let launcher = s
+            .launcher
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_LAUNCHER_PATH));
+        assert_eq!(launcher, PathBuf::from("/usr/bin/tilo-launcher"));
 
-    #[test]
-    fn sidecar_launcher_override_deserialises() {
-        let text = r#"
-package_id = "so.tilo.notes-cli"
-command    = "notes"
-launcher   = "/tmp/target/debug/tilo-launcher"
-"#;
-        let s: Sidecar = toml::from_str(text).expect("decode");
+        let text = format!("{PLAIN}launcher   = \"/tmp/target/debug/tilo-launcher\"\n");
+        let s: Sidecar = toml::from_str(&text).expect("decode");
         assert_eq!(
             s.launcher.as_deref(),
             Some(Path::new("/tmp/target/debug/tilo-launcher"))
         );
-    }
-
-    #[test]
-    fn user_installed_shim_defaults_to_rpm_launcher_path() {
-        let text = r#"
-package_id = "so.tilo.notes-cli"
-command    = "notes"
-"#;
-        let sidecar: Sidecar = toml::from_str(text).expect("decode");
-        let launcher = sidecar
-            .launcher
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_LAUNCHER_PATH));
-
-        assert_eq!(launcher, PathBuf::from("/usr/bin/tilo-launcher"));
     }
 }

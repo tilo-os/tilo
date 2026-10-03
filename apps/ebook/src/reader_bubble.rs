@@ -4,14 +4,13 @@
 //! and hit-testing. The app remains responsible only for applying the emitted
 //! previous/next-page command to its document-backed reading position.
 
-use std::time::Instant;
+use ui::time::Instant;
 
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
+use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
-use ui::theme::Theme;
 
 const TEXT_SIZE: f32 = 12.5;
 const CHEVRON_SLOT: f64 = 26.0;
@@ -56,7 +55,7 @@ impl ReaderBubble {
     /// Keep the otherwise transient bubble visible in deterministic screenshots.
     pub(crate) fn arm_for_shots(&mut self) {
         self.force_open = true;
-        self.animation.poke(Instant::now());
+        self.animation.poke(ui::time::now());
     }
 
     pub(crate) fn needs_frame(&self, now: Instant) -> bool {
@@ -84,28 +83,21 @@ impl ReaderBubble {
         (rect != Rect::ZERO).then(|| rect.center())
     }
 
-    /// Draw the bubble and refresh the geometry consumed by [`Self::hit_test`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The page bubble needs render context, viewport, cursor, reading-column edges, and chapter/page position for placement and hits."
-    )]
+    /// Draw the bubble centred under the reading `column`, whose bottom edge
+    /// it floats above, and refresh the geometry consumed by
+    /// [`Self::hit_test`].
     pub(crate) fn draw(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        viewport: Rect,
+        ctx: &mut PaintCtx<'_>,
+        column: Rect,
         cursor: Point,
-        center_x0: f64,
-        center_x1: f64,
         position: ReaderPosition,
     ) {
         self.rect = Rect::ZERO;
         self.previous_rect = Rect::ZERO;
         self.next_rect = Rect::ZERO;
 
-        let now = Instant::now();
+        let now = ui::time::now();
         let current = (position.chapter, position.page);
         if self
             .shown_position
@@ -115,17 +107,18 @@ impl ReaderBubble {
         }
         self.shown_position = Some(current);
 
-        let label = label(text, center_x0, center_x1, position);
-        let (pill_w, pill_h) = ui::status_bubble::pill_size(&label, text, TEXT_SIZE, CHEVRON_SLOT);
-        let cx = f64::midpoint(center_x0, center_x1);
-        let by = viewport.y1 - 16.0 - pill_h;
+        let label = label(ctx.text, column.x0, column.x1, position);
+        let (pill_w, pill_h) =
+            ui::status_bubble::pill_size(&label, ctx.text, TEXT_SIZE, CHEVRON_SLOT);
+        let cx = f64::midpoint(column.x0, column.x1);
+        let by = column.y1 - 16.0 - pill_h;
         let rect = Rect::new(cx - pill_w / 2.0, by, cx + pill_w / 2.0, by + pill_h);
 
         let reveal_zone = Rect::new(
             rect.x0 - 40.0,
-            viewport.y1 - (pill_h + 32.0),
+            column.y1 - (pill_h + 32.0),
             rect.x1 + 40.0,
-            viewport.y1,
+            column.y1,
         );
         self.animation.set_hover(
             self.force_open || reveal_zone.contains(cursor) || rect.contains(cursor),
@@ -140,23 +133,12 @@ impl ReaderBubble {
         self.rect = rect;
         self.previous_rect = Rect::new(rect.x0, rect.y0, rect.x0 + CHEVRON_SLOT + 8.0, rect.y1);
         self.next_rect = Rect::new(rect.x1 - CHEVRON_SLOT - 8.0, rect.y0, rect.x1, rect.y1);
-        self.draw_pill(scene, transform, text, theme, &label, alpha, cursor);
+        self.draw_pill(ctx, &label, alpha, cursor);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The page pill painter combines render context with its label, animation opacity, and cursor for navigation hover states."
-    )]
-    fn draw_pill(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        label: &str,
-        alpha: f32,
-        cursor: Point,
-    ) {
+    fn draw_pill(&self, ctx: &mut PaintCtx<'_>, label: &str, alpha: f32, cursor: Point) {
+        let (transform, theme) = (ctx.transform, ctx.theme);
+        let PaintCtx { scene, text, .. } = ctx;
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -220,28 +202,32 @@ fn label(
 mod tests {
     use super::*;
 
+    /// A hidden bubble has no navigation target; visible chevrons emit the matching navigation action.
     #[test]
-    fn hidden_bubble_has_no_navigation_target() {
-        let bubble = ReaderBubble::default();
-        assert_eq!(bubble.hit_test(Point::ZERO), None);
-        assert_eq!(bubble.action_center(ReaderBubbleAction::NextPage), None);
-    }
+    fn reader_bubble_navigation_targets_follow_visibility() {
+        // --- phase: hidden_bubble_has_no_navigation_target ---
+        {
+            let bubble = ReaderBubble::default();
+            assert_eq!(bubble.hit_test(Point::ZERO), None);
+            assert_eq!(bubble.action_center(ReaderBubbleAction::NextPage), None);
+        }
 
-    #[test]
-    fn visible_chevrons_emit_the_matching_navigation_action() {
-        let bubble = ReaderBubble {
-            previous_rect: Rect::new(10.0, 10.0, 30.0, 30.0),
-            next_rect: Rect::new(50.0, 10.0, 70.0, 30.0),
-            ..ReaderBubble::default()
-        };
-        assert_eq!(
-            bubble.hit_test(Point::new(20.0, 20.0)),
-            Some(ReaderBubbleAction::PreviousPage)
-        );
-        assert_eq!(
-            bubble.hit_test(Point::new(60.0, 20.0)),
-            Some(ReaderBubbleAction::NextPage)
-        );
-        assert_eq!(bubble.hit_test(Point::new(40.0, 20.0)), None);
+        // --- phase: visible_chevrons_emit_the_matching_navigation_action ---
+        {
+            let bubble = ReaderBubble {
+                previous_rect: Rect::new(10.0, 10.0, 30.0, 30.0),
+                next_rect: Rect::new(50.0, 10.0, 70.0, 30.0),
+                ..ReaderBubble::default()
+            };
+            assert_eq!(
+                bubble.hit_test(Point::new(20.0, 20.0)),
+                Some(ReaderBubbleAction::PreviousPage)
+            );
+            assert_eq!(
+                bubble.hit_test(Point::new(60.0, 20.0)),
+                Some(ReaderBubbleAction::NextPage)
+            );
+            assert_eq!(bubble.hit_test(Point::new(40.0, 20.0)), None);
+        }
     }
 }

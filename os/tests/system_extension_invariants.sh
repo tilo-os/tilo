@@ -5,7 +5,7 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 containerfile="$repo/os/Containerfile"
 tmpfiles="$repo/os/usr/lib/tmpfiles.d/tilo.conf"
-user_tmpfiles="$repo/os/usr/lib/user-tmpfiles.d/tilo-model-manager.conf"
+user_tmpfiles="$repo/os/usr/share/user-tmpfiles.d/tilo-model-manager.conf"
 helper="$repo/os/usr/libexec/tilo-system-extension-activate"
 userspace="$repo/os/usr/lib/systemd/system/tilo-system-extension-userspace.service"
 boot="$repo/os/usr/lib/systemd/system/tilo-system-extension-boot-stage.service"
@@ -42,7 +42,7 @@ for source in \
     'os/usr/lib/systemd/system/tilo-system-extension-boot-stage.service /usr/lib/systemd/system/tilo-system-extension-boot-stage.service' \
     'os/usr/lib/systemd/system/tilo-local-model.service /usr/lib/systemd/system/tilo-local-model.service' \
     'os/usr/lib/systemd/user/tilo-models.service /usr/lib/systemd/user/tilo-models.service' \
-    'os/usr/lib/user-tmpfiles.d/tilo-model-manager.conf /usr/lib/user-tmpfiles.d/tilo-model-manager.conf' \
+    'os/usr/share/user-tmpfiles.d/tilo-model-manager.conf /usr/share/user-tmpfiles.d/tilo-model-manager.conf' \
     'os/usr/lib/systemd/system/tilo-system-extension-dispatcher.socket /usr/lib/systemd/system/tilo-system-extension-dispatcher.socket' \
     'os/usr/lib/systemd/system/tilo-system-extension-dispatcher@.service /usr/lib/systemd/system/tilo-system-extension-dispatcher@.service' \
     'os/usr/libexec/tilo-system-extension-dispatch /usr/libexec/tilo-system-extension-dispatch' \
@@ -105,6 +105,10 @@ need "$user_model" 'ExecStart=/usr/bin/tilo-model-manager serve --socket %t/tilo
 need "$user_model" 'ProtectSystem=strict' 'per-user model manager can write the immutable root'
 need "$user_model" 'ProtectHome=read-only' 'per-user model manager has broad home access'
 need "$user_model" 'ReadWritePaths=%h/.local/share/tilo %h/.local/share/containers %t/tilo' 'per-user model manager lacks narrowly writable model/runtime state'
+# A dev image runs the production sandbox: no drop-in may loosen user units.
+if [ -e "$repo/os/dev-image/usr/lib/systemd/user" ]; then
+    bad 'the dev image ships user-unit drop-ins that change the production sandbox'
+fi
 need "$user_model" 'RuntimeDirectory=tilo' 'per-user model manager does not create its runtime parent'
 need "$user_model" 'StateDirectory=tilo containers' 'model manager does not provision its persistent roots without a helper process'
 need "$gateway" 'ConfigurationDirectory=tilo' 'model gateway does not provision its private configuration root'
@@ -233,7 +237,7 @@ need "$manager_source" 'HARDWARE_CATALOG_PATH' 'manager has no separate signed P
 need "$manager_source" 'HARDWARE_TRUST_PATH' 'manager has no separate PCI hardware trust key'
 need "$manager_source" 'recommended_boot_packs' 'manager does not authorize packs from observed hardware'
 need "$manager_source" 'PCI_DEVICES_PATH' 'manager accepts caller-supplied PCI identity'
-need "$manager_source" 'subsystem_rule_wins_over_generic_pci_rule' 'PCI matching has no deterministic specificity test'
+need "$manager_source" 'fn boot_packs_and_catalogues_are_digest_pinned_signed_and_matched' 'PCI matching has no deterministic specificity test'
 need "$manager_source" 'verify(&keyring)' 'manager does not verify catalog signatures'
 need "$manager_source" 'preflight(&host)' 'manager does not revalidate deployment image/ABI'
 need "$manager_source" 'bootc://' 'manager accepts non-BootPack artifact sources'

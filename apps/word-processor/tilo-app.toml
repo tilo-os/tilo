@@ -16,9 +16,16 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
 
+[package.names]
+de = "Textverarbeitung"
+
 [package.isa]
 x86_64 = "v3"
 aarch64 = "aarch64"
+
+# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+[capabilities]
+optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "spellcheck"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -69,7 +76,7 @@ mime = [
 # Every extension qdoc has a rich-text codec for. An extension the
 # format registry calls a document but no installed package claims is a
 # reportable dead end ("nothing here opens .html") rather than an open,
-# so the list is kept in step with `qdoc_codecs::DOCUMENT_EXTENSIONS`.
+# so the list is kept in step with `tilo_doc_codecs::DOCUMENT_EXTENSIONS`.
 # `html`/`htm` and `rtf` are import-only there; opening them still works,
 # saving back to the same format does not yet.
 ext  = [

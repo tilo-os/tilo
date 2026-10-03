@@ -59,6 +59,19 @@ ls -la $TILO_TEST_CONTROL
 
 The compositor prints `tilo compositor test_control listening on "<path>"` to stderr once the socket is ready to accept.
 
+### A headless session never touches the host's power
+
+A headless (or nested winit) session runs beside the desktop that owns the
+machine, and it reaches the same system logind. So only a `--backend drm`
+session starts the power service: headless and winit sessions do not take
+logind's lid/power-key delegation, never request suspend on idle whatever
+`power.auto_suspend` says, and neither offer nor admit Suspend, Restart,
+Shut down or Switch user from the power menu, the palette or
+`session.*` actions (`tilo::power` logs `session does not own the seat` at
+startup). Lock stays: it locks only the compositor's own scene. Test idle
+suspend through `SessionManager` and `TILO_IDLE_SUSPEND_SECS`, which exercise
+the state machine without an actuator.
+
 ### Put `TMPDIR` somewhere with room
 
 `/tmp` is a 16 GB tmpfs shared with everything else on the box, and a
@@ -262,6 +275,12 @@ TILO_HEADLESS_OUTPUTS=2560x1600@2,1920x1080@1+2560+0 cargo run --bin shell -- --
 Each output gets its own `wl_output`; snapshots cover the combined extent.
 `shots --outputs <fixture|spec>` renders the shell chrome across the same
 arrangement, and `tests/multi_output.rs` reads what clients see of it.
+
+Nobody looks at a headless session's frames by default, so it lays them out
+and answers clients' frame callbacks but does not rasterize them; `snapshot`
+renders on demand. A viewer that streams frames attaches with
+`{"op":"watch","watching":true}` (`tilo-control watch on`), or starts the
+session with `TILO_HEADLESS_WATCH=1`.
 
 ## End-to-end recipe — "click, snapshot, look"
 

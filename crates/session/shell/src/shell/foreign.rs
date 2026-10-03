@@ -21,7 +21,8 @@
 //! Hosted as a [`ui::widget::AppWidget`] (not a post-pass blit), sharing
 //! placement/clipping/masking/fades/active-tab-only-paints with every
 //! other tile; [`ForeignSurfaceWidget::needs_animation_frame`] is `true`
-//! only when the store holds an undrawn frame, so an idle client costs one lock + lookup per tick and zero paints.
+//! only until the first buffer is presented. A later client commit is
+//! `needs_redraw` (one shot), so an idle hosted app costs zero cadence.
 //!
 //! dmabuf capture is coalesced per surface and runs outside the compositor
 //! thread. A Smithay commit [`Barrier`] keeps each submitted buffer owned by
@@ -35,7 +36,6 @@
 
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
-#[cfg(target_os = "linux")]
 use std::sync::Arc;
 
 use std::collections::HashMap;
@@ -65,12 +65,10 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Blob, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
-use winit::event::{Modifiers, WindowEvent};
 
 #[cfg(target_os = "linux")]
 use crate::compositor::surface_readback::{
@@ -184,6 +182,240 @@ impl PixelOrder {
     }
 }
 
+/// How the CPU import reads one advertised buffer format.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[cfg(any(test, target_os = "linux"))]
+enum CpuLayout {
+    /// 8-bit RGBA family, swizzled byte for byte.
+    Rgba8(PixelOrder),
+    /// 10-bit RGB in one little-endian word: `XB30`/`AB30` keep red in the
+    /// low bits, `XR30`/`AR30` blue.
+    Rgb10 { red_low: bool, opaque: bool },
+    /// Half-float RGBA, red first (`AB4H`/`XB4H`).
+    Half { opaque: bool },
+    /// 10-bit 4:2:0 YUV in two planes (`P010`).
+    P010,
+}
+
+#[cfg(any(test, target_os = "linux"))]
+impl CpuLayout {
+    #[cfg(target_os = "linux")]
+    fn for_fourcc(code: Fourcc) -> Option<Self> {
+        if let Some(order) = PixelOrder::for_fourcc(code) {
+            return Some(Self::Rgba8(order));
+        }
+        match code {
+            Fourcc::Xbgr2101010 => Some(Self::Rgb10 {
+                red_low: true,
+                opaque: true,
+            }),
+            Fourcc::Abgr2101010 => Some(Self::Rgb10 {
+                red_low: true,
+                opaque: false,
+            }),
+            Fourcc::Xrgb2101010 => Some(Self::Rgb10 {
+                red_low: false,
+                opaque: true,
+            }),
+            Fourcc::Argb2101010 => Some(Self::Rgb10 {
+                red_low: false,
+                opaque: false,
+            }),
+            Fourcc::Xbgr16161616f => Some(Self::Half { opaque: true }),
+            Fourcc::Abgr16161616f => Some(Self::Half { opaque: false }),
+            Fourcc::P010 => Some(Self::P010),
+            _ => None,
+        }
+    }
+
+    fn planes(self) -> usize {
+        if matches!(self, Self::P010) { 2 } else { 1 }
+    }
+
+    /// Bytes per pixel of the first plane.
+    fn bytes_per_pixel(self) -> u32 {
+        match self {
+            Self::Rgba8(_) | Self::Rgb10 { .. } => 4,
+            Self::Half { .. } => 8,
+            Self::P010 => 2,
+        }
+    }
+}
+
+#[cfg(any(test, target_os = "linux"))]
+use crate::shell::hdr_surface::half_to_f32;
+
+/// Append one row of a 10-bit or half-float buffer to `texels` as the
+/// matching [`crate::shell::hdr_surface::HdrTexelFormat`]: 10-bit words with
+/// red in the low bits, half floats red first, padding alpha made opaque.
+/// Other layouts carry no HDR plane and append nothing.
+#[cfg(any(test, target_os = "linux"))]
+fn append_hdr_texels(layout: CpuLayout, src: &[u8], texels: &mut Vec<u8>) {
+    match layout {
+        CpuLayout::Rgb10 { red_low, opaque } => {
+            for px in src.chunks_exact(4) {
+                let mut word = px.try_into().map(u32::from_le_bytes).unwrap_or_default();
+                if !red_low {
+                    let red = word.wrapping_shr(20) & 0x3FF;
+                    let blue = word & 0x3FF;
+                    word = (word & !0x3FF0_03FF) | red | blue.wrapping_shl(20);
+                }
+                if opaque {
+                    word |= 0xC000_0000;
+                }
+                texels.extend_from_slice(&word.to_le_bytes());
+            }
+        }
+        CpuLayout::Half { opaque } => {
+            for px in src.chunks_exact(8) {
+                texels.extend_from_slice(px.get(..6).unwrap_or_default());
+                if opaque {
+                    texels.extend_from_slice(&0x3C00_u16.to_le_bytes());
+                } else {
+                    texels.extend_from_slice(px.get(6..8).unwrap_or_default());
+                }
+            }
+        }
+        CpuLayout::Rgba8(_) | CpuLayout::P010 => {}
+    }
+}
+
+/// The texel format [`append_hdr_texels`] writes for `layout`, when it
+/// writes any.
+#[cfg(any(test, target_os = "linux"))]
+fn hdr_texel_format(layout: CpuLayout) -> Option<crate::shell::hdr_surface::HdrTexelFormat> {
+    match layout {
+        CpuLayout::Rgb10 { .. } => Some(crate::shell::hdr_surface::HdrTexelFormat::Rgb10a2),
+        CpuLayout::Half { .. } => Some(crate::shell::hdr_surface::HdrTexelFormat::Rgba16Float),
+        CpuLayout::Rgba8(_) | CpuLayout::P010 => None,
+    }
+}
+
+/// The HDR signal a buffer in `layout` described by `colorimetry` carries,
+/// when it carries one worth compositing at full precision.
+#[cfg(any(test, target_os = "linux"))]
+fn hdr_signal(
+    layout: CpuLayout,
+    colorimetry: crate::collab::colorimetry::Colorimetry,
+) -> Option<crate::shell::hdr_surface::SurfaceSignal> {
+    if matches!(layout, CpuLayout::Rgba8(_)) {
+        return None;
+    }
+    crate::shell::hdr_surface::SurfaceSignal::for_colorimetry(
+        colorimetry,
+        crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
+    )
+}
+
+/// Convert tight rows of a 10-bit or half-float buffer: RGBA8 for the SDR
+/// desktop into `out`, and the HDR plane when the description is HDR.
+#[cfg(any(test, target_os = "linux"))]
+fn convert_rows<'a>(
+    layout: CpuLayout,
+    rows: impl Iterator<Item = &'a [u8]>,
+    (width, height): (u32, u32),
+    colorimetry: crate::collab::colorimetry::Colorimetry,
+    out: &mut Vec<u8>,
+) -> Option<crate::shell::hdr_surface::HdrPlane> {
+    let signal = hdr_signal(layout, colorimetry);
+    let format = hdr_texel_format(layout).filter(|_| signal.is_some());
+    let mut texels = Vec::new();
+    if let Some(format) = format {
+        texels.reserve(
+            (width as usize)
+                .saturating_mul(height as usize)
+                .saturating_mul(format.bytes_per_pixel()),
+        );
+    }
+    out.clear();
+    out.reserve(
+        (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(4),
+    );
+    for row in rows {
+        convert_row(layout, row, colorimetry, out);
+        if format.is_some() {
+            append_hdr_texels(layout, row, &mut texels);
+        }
+    }
+    crate::shell::hdr_surface::HdrPlane::new(width, height, format?, texels, signal?)
+}
+
+/// Convert one row of a 10-bit or half-float buffer to RGBA8: SDR signals
+/// quantise to 8 bits, HDR ones (PQ/HLG per the surface's description) are
+/// tone-mapped for the SDR desktop.
+#[cfg(any(test, target_os = "linux"))]
+fn convert_row(
+    layout: CpuLayout,
+    src: &[u8],
+    colorimetry: crate::collab::colorimetry::Colorimetry,
+    out: &mut Vec<u8>,
+) {
+    let tonemap = crate::shell::hdr_tonemap::HdrTonemapConfig::default();
+    let mut push = |rgb: [f32; 3], alpha: u8| {
+        let [r, g, b] =
+            crate::shell::hdr_tonemap::tonemap_rgb_signal_to_srgb8(rgb, colorimetry, tonemap);
+        out.extend_from_slice(&[r, g, b, alpha]);
+    };
+    match layout {
+        CpuLayout::Rgba8(order) => swizzle_row(order, src, src.len() / 4, out),
+        CpuLayout::Rgb10 { red_low, opaque } => {
+            for px in src.chunks_exact(4) {
+                let word = u32::from_le_bytes([
+                    px.first().copied().unwrap_or(0),
+                    px.get(1).copied().unwrap_or(0),
+                    px.get(2).copied().unwrap_or(0),
+                    px.get(3).copied().unwrap_or(0),
+                ]);
+                let channel = |shift: u32| {
+                    #[allow(
+                        clippy::cast_precision_loss,
+                        reason = "a 10-bit code is exactly representable in f32"
+                    )]
+                    let code = (word.wrapping_shr(shift) & 0x3FF) as f32;
+                    code / 1023.0
+                };
+                let (low, mid, high) = (channel(0), channel(10), channel(20));
+                let rgb = if red_low {
+                    [low, mid, high]
+                } else {
+                    [high, mid, low]
+                };
+                let alpha_bits = u8::try_from(word.wrapping_shr(30) & 0b11).unwrap_or(3);
+                push(
+                    rgb,
+                    if opaque {
+                        0xFF
+                    } else {
+                        alpha_bits.saturating_mul(85)
+                    },
+                );
+            }
+        }
+        CpuLayout::Half { opaque } => {
+            for px in src.chunks_exact(8) {
+                let half = |index: usize| {
+                    half_to_f32(u16::from_le_bytes([
+                        px.get(index).copied().unwrap_or(0),
+                        px.get(index.saturating_add(1)).copied().unwrap_or(0),
+                    ]))
+                };
+                let rgb = [half(0), half(2), half(4)].map(|c| if c.is_finite() { c } else { 0.0 });
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "alpha is clamped to 0..=255 before the cast"
+                )]
+                let alpha = (half(6).clamp(0.0, 1.0) * 255.0).round() as u8;
+                push(rgb, if opaque { 0xFF } else { alpha });
+            }
+        }
+        // Two planes; converted by `convert_p010` instead.
+        CpuLayout::P010 => {}
+    }
+}
+
 /// Convert one row of `width` pixels laid out per `order` into RGBA,
 /// appending to `out` — a free function so unit tests can pin the channel mapping without a GPU or wayland connection.
 #[cfg(any(test, target_os = "linux"))]
@@ -238,11 +470,12 @@ pub fn validate_importable(dmabuf: &Dmabuf) -> Result<(), DmabufImportError> {
             format.modifier,
         )));
     }
+    let layout = CpuLayout::for_fourcc(format.code)
+        .ok_or(DmabufImportError::UnsupportedFormat(format.code))?;
     let planes = dmabuf.num_planes();
-    if planes != 1 {
+    if planes != layout.planes() {
         return Err(DmabufImportError::MultiPlanar(planes));
     }
-    PixelOrder::for_fourcc(format.code).ok_or(DmabufImportError::UnsupportedFormat(format.code))?;
     Ok(())
 }
 
@@ -257,17 +490,26 @@ pub fn validate_importable(dmabuf: &Dmabuf) -> Result<(), DmabufImportError> {
 pub fn import_dmabuf_rgba(
     dmabuf: &Dmabuf,
     out: &mut Vec<u8>,
+    colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
+    hdr: &mut Option<crate::shell::hdr_surface::HdrPlane>,
 ) -> Result<(u32, u32), DmabufImportError> {
     validate_importable(dmabuf)?;
     let format = dmabuf.format();
-    let order = PixelOrder::for_fourcc(format.code)
+    let layout = CpuLayout::for_fourcc(format.code)
         .ok_or(DmabufImportError::UnsupportedFormat(format.code))?;
+    let colorimetry =
+        colorimetry.unwrap_or_else(crate::collab::colorimetry::Colorimetry::sdr_bt709);
+    *hdr = None;
+    if layout == CpuLayout::P010 {
+        return import_p010(dmabuf, out, colorimetry, hdr);
+    }
 
     let width = dmabuf.width();
     let height = dmabuf.height();
     let stride = dmabuf.strides().next().unwrap_or(0);
     let offset = dmabuf.offsets().next().unwrap_or(0);
-    if width == 0 || height == 0 || stride < width.saturating_mul(4) {
+    let row_bytes = (width as usize).saturating_mul(layout.bytes_per_pixel() as usize);
+    if width == 0 || height == 0 || (stride as usize) < row_bytes {
         return Err(DmabufImportError::InvalidDimensions {
             width,
             height,
@@ -310,28 +552,18 @@ pub fn import_dmabuf_rgba(
     // Bracket the CPU read with DMA_BUF_IOCTL_SYNC; a driver without the ioctl returns an error we ignore (mapping stays readable, no cache hint).
     sync_dmabuf(raw_fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ);
 
-    out.clear();
-    out.reserve(
-        (width as usize)
-            .saturating_mul(height as usize)
-            .saturating_mul(4),
-    );
-    let row_bytes = (width as usize).saturating_mul(4);
     // SAFETY: the mapping covers `[0, map_len)`; every row slice below is
     // inside `[offset, offset + stride*height) ⊆ [0, map_len)`, checked
     // above. The slice is dropped before `munmap`.
     let mapped: &[u8] = unsafe { std::slice::from_raw_parts(ptr as *const u8, map_len) };
-    for row in 0..height as usize {
+    // Proven in range by the `stride >= width*4` and `offset +
+    // stride*height == map_len` checks above; `.get()` and a skip keep this
+    // panic-free if that invariant is ever broken instead.
+    let rows = (0..height as usize).filter_map(|row| {
         let start = (offset as usize).saturating_add(row.saturating_mul(stride as usize));
-        let end = start.saturating_add(row_bytes);
-        // Proven in range by the `stride >= width*4` and `offset +
-        // stride*height == map_len` checks above; `.get()` and a skip
-        // keep this panic-free if that invariant is ever broken instead.
-        let Some(row_slice) = mapped.get(start..end) else {
-            continue;
-        };
-        swizzle_row(order, row_slice, width as usize, out);
-    }
+        mapped.get(start..start.saturating_add(row_bytes))
+    });
+    *hdr = convert_rows(layout, rows, (width, height), colorimetry, out);
 
     sync_dmabuf(raw_fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ);
     // SAFETY: `ptr`/`map_len` are exactly what `mmap` returned above and
@@ -339,6 +571,105 @@ pub fn import_dmabuf_rgba(
     unsafe {
         libc::munmap(ptr, map_len);
     }
+    Ok((width, height))
+}
+
+/// CPU-import a linear two-plane `P010` buffer (luma, then interleaved
+/// chroma, 10 bits in the top of each `u16`) into RGBA8: BT.2020 YCbCr,
+/// tone-mapped when the surface describes a PQ or HLG signal.
+#[cfg(target_os = "linux")]
+fn import_p010(
+    dmabuf: &Dmabuf,
+    out: &mut Vec<u8>,
+    colorimetry: crate::collab::colorimetry::Colorimetry,
+    hdr: &mut Option<crate::shell::hdr_surface::HdrPlane>,
+) -> Result<(u32, u32), DmabufImportError> {
+    let width = dmabuf.width();
+    let height = dmabuf.height();
+    let invalid = |stride: u32| DmabufImportError::InvalidDimensions {
+        width,
+        height,
+        stride,
+    };
+    let strides: Vec<u32> = dmabuf.strides().collect();
+    let offsets: Vec<u32> = dmabuf.offsets().collect();
+    let fds: Vec<i32> = dmabuf.handles().map(|fd| fd.as_raw_fd()).collect();
+    let (Some(&y_stride), Some(&uv_stride)) = (strides.first(), strides.get(1)) else {
+        return Err(DmabufImportError::MultiPlanar(strides.len()));
+    };
+    if width == 0 || height == 0 || y_stride < width.saturating_mul(2) || uv_stride < width {
+        return Err(invalid(y_stride));
+    }
+    let chroma_rows = height.div_ceil(2);
+    let plane = |index: usize, stride: u32, rows: u32| -> Result<Vec<u16>, DmabufImportError> {
+        let fd = *fds
+            .get(index)
+            .or_else(|| fds.first())
+            .ok_or(DmabufImportError::MultiPlanar(0))?;
+        let offset = offsets.get(index).copied().unwrap_or(0) as usize;
+        let len = (stride as usize).saturating_mul(rows as usize);
+        let map_len = offset.checked_add(len).ok_or_else(|| invalid(stride))?;
+        // SAFETY: as in `import_dmabuf_rgba`: a read-only shared mapping of
+        // a live dma-buf fd owned by `dmabuf`, unmapped before returning.
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                map_len,
+                libc::PROT_READ,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            return Err(DmabufImportError::MapFailed(errno));
+        }
+        sync_dmabuf(fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ);
+        // SAFETY: the mapping covers `[0, map_len)` and the slice is dropped
+        // before `munmap`.
+        let mapped: &[u8] = unsafe { std::slice::from_raw_parts(ptr as *const u8, map_len) };
+        let samples = mapped
+            .get(offset..map_len)
+            .unwrap_or_default()
+            .chunks_exact(2)
+            .map(|pair| {
+                u16::from_le_bytes([
+                    pair.first().copied().unwrap_or(0),
+                    pair.get(1).copied().unwrap_or(0),
+                ])
+            })
+            .collect();
+        sync_dmabuf(fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ);
+        // SAFETY: exactly the pointer and length `mmap` returned.
+        unsafe {
+            libc::munmap(ptr, map_len);
+        }
+        Ok(samples)
+    };
+    let luma = plane(0, y_stride, height)?;
+    let chroma = plane(1, uv_stride, chroma_rows)?;
+    let rgba = crate::shell::hdr_tonemap::tonemap_p010_to_rgba8(
+        &luma,
+        &chroma,
+        y_stride / 2,
+        uv_stride / 2,
+        width,
+        height,
+        colorimetry,
+        crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
+    );
+    out.clear();
+    out.extend_from_slice(&rgba);
+    *hdr = hdr_signal(CpuLayout::P010, colorimetry).and_then(|signal| {
+        crate::shell::hdr_surface::HdrPlane::p010(
+            &luma,
+            &chroma,
+            (y_stride / 2, uv_stride / 2),
+            (width, height),
+            signal,
+        )
+    });
     Ok((width, height))
 }
 
@@ -370,6 +701,11 @@ struct ForeignEntry {
     last_error: Option<String>,
     /// The tab's rectangle in the logical desktop, published by `apply_layout`; `None` until laid out.
     placement: Option<Rect>,
+    /// A compositor-imposed rectangle that outranks the tab's own while it
+    /// is set — the presenter view moved onto its own screen. The tab keeps
+    /// publishing into `placement`, so clearing this falls straight back to
+    /// the tab size.
+    pinned: Option<Rect>,
     /// Size most recently sent to the client in an `xdg_toplevel` configure, in surface-local (logical) pixels.
     configured: Option<(i32, i32)>,
     /// That configure in the tab's (logical) units — smaller than the tab when the client's maximum size clamped it, which is what centres the window in its tab.
@@ -400,6 +736,12 @@ struct ForeignEntry {
     /// is applied. Publishing earlier would expose pending state as current.
     #[cfg(any(test, target_os = "linux"))]
     ready_captures: HashMap<u64, ReadyCapture>,
+    /// The image description the client attached (`wp_color_management`),
+    /// read when a 10-bit or YUV buffer is converted for display.
+    colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
+    /// The current frame at full precision when it carries an HDR signal;
+    /// `rgba` is then its tone-mapped SDR rendition.
+    hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
 }
 
 impl ForeignEntry {
@@ -411,6 +753,7 @@ impl ForeignEntry {
             seq: 0,
             last_error: None,
             placement: None,
+            pinned: None,
             configured: None,
             configured_extent: None,
             min_size: (0, 0),
@@ -419,6 +762,8 @@ impl ForeignEntry {
             first_seen: Instant::now(),
             mapped: false,
             presented: false,
+            colorimetry: None,
+            hdr: None,
             #[cfg(any(test, target_os = "linux"))]
             capture_tokens: VecDeque::new(),
             #[cfg(any(test, target_os = "linux"))]
@@ -540,6 +885,9 @@ pub struct FrameSnapshot {
     pub width: u32,
     pub height: u32,
     pub seq: u64,
+    /// The frame at full precision, the same size as `rgba`, when it
+    /// carries an HDR signal and nothing is composited over it.
+    pub hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
 }
 
 fn composite_child_rgba(root: &mut FrameSnapshot, child: &ForeignEntry, x: i32, y: i32) {
@@ -629,6 +977,21 @@ pub struct ForeignFrameStore {
     imports: AtomicU64,
     #[cfg(target_os = "linux")]
     next_capture: AtomicU64,
+    /// Which surfaces a capture must draw as a placeholder — see
+    /// [`crate::shell::capture_protection`].
+    capture_protection: Mutex<CaptureProtection>,
+}
+
+/// Capture-protection requests, kept beside the frames they withhold.
+#[derive(Default)]
+struct CaptureProtection {
+    /// Authenticated shell-ui connections that asked for their app's windows
+    /// to be protected, with the app id the launcher vouched for. Keyed by
+    /// connection so one instance closing does not expose another's windows.
+    apps: HashMap<u64, String>,
+    /// Surfaces the compositor protects on their own account, such as the
+    /// popups of a protected window.
+    surfaces: std::collections::HashSet<SurfaceId>,
 }
 
 static STORE: OnceLock<ForeignFrameStore> = OnceLock::new();
@@ -688,6 +1051,8 @@ struct ShmJob {
 #[cfg(any(test, target_os = "linux"))]
 struct ReadyCapture {
     rgba: Vec<u8>,
+    /// The frame at full precision, when it carries an HDR signal.
+    hdr: Option<crate::shell::hdr_surface::HdrPlane>,
     result: Result<(u32, u32, CaptureRoute), String>,
 }
 
@@ -805,12 +1170,13 @@ impl AsyncDmabufCapture {
                         {
                             *rgba = previous;
                         }
-                        let result =
-                            decode_dmabuf(&job.payload, rgba).map(|(width, height, route)| {
-                                (width, height, CaptureRoute::Dmabuf(route))
-                            });
+                        let colorimetry = store().colorimetry(job.surface);
+                        let mut hdr = None;
+                        let result = decode_dmabuf(&job.payload, rgba, colorimetry, &mut hdr).map(
+                            |(width, height, route)| (width, height, CaptureRoute::Dmabuf(route)),
+                        );
                         let accepted =
-                            store().stage_dmabuf_capture(job.surface, job.token, result, rgba);
+                            store().stage_dmabuf_capture(job.surface, job.token, result, rgba, hdr);
                         if !accepted {
                             // The toplevel was destroyed while this import was
                             // in flight. Do not retain a full framebuffer in
@@ -927,6 +1293,7 @@ impl AsyncShmCapture {
                                 store().note_failure(job.surface, error.to_string());
                             }
                         }
+                        SHM_FRAMES_PUBLISHED.store(true, std::sync::atomic::Ordering::Release);
                         if let Some(ping) = worker_completion_ping
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -961,6 +1328,19 @@ static ASYNC_DMABUF_CAPTURE: OnceLock<Result<AsyncDmabufCapture, String>> = Once
 
 #[cfg(target_os = "linux")]
 static ASYNC_SHM_CAPTURE: OnceLock<Result<AsyncShmCapture, String>> = OnceLock::new();
+
+/// Set by the SHM worker after it publishes (or fails) a frame. Unlike a
+/// dmabuf, an SHM commit holds no transaction barrier, so nothing else tells
+/// the loop a client frame landed.
+#[cfg(target_os = "linux")]
+static SHM_FRAMES_PUBLISHED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the SHM worker published a frame since the last call.
+#[cfg(target_os = "linux")]
+pub fn take_published_shm_frames() -> bool {
+    SHM_FRAMES_PUBLISHED.swap(false, std::sync::atomic::Ordering::AcqRel)
+}
 
 #[cfg(target_os = "linux")]
 pub fn install_completion_ping(ping: &smithay::reexports::calloop::ping::Ping) {
@@ -1012,19 +1392,73 @@ fn recycle_dmabuf_pixels(surface: SurfaceId, rgba: Vec<u8>) {
 /// Read one dmabuf outside Wayland dispatch and outside the frame-store lock.
 /// GPU import is required for device-local Vulkan buffers; CPU mmap remains
 /// the fallback for linear system-memory buffers and machines without EGL.
+///
+/// A 10-bit or half-float buffer is read back at its own precision and
+/// converted like the CPU import, so an HDR description yields its
+/// [`crate::shell::hdr_surface::HdrPlane`] on either route. P010 cannot be
+/// read back through GL, so it goes to the CPU first.
 #[cfg(target_os = "linux")]
-fn decode_dmabuf(dmabuf: &Dmabuf, rgba: &mut Vec<u8>) -> Result<(u32, u32, DmabufRoute), String> {
+fn decode_dmabuf(
+    dmabuf: &Dmabuf,
+    rgba: &mut Vec<u8>,
+    colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
+    hdr: &mut Option<crate::shell::hdr_surface::HdrPlane>,
+) -> Result<(u32, u32, DmabufRoute), String> {
+    *hdr = None;
+    let layout = CpuLayout::for_fourcc(dmabuf.format().code);
+    let description =
+        colorimetry.unwrap_or_else(crate::collab::colorimetry::Colorimetry::sdr_bt709);
+    if layout == Some(CpuLayout::P010)
+        && let Ok((width, height)) = import_dmabuf_rgba(dmabuf, rgba, colorimetry, hdr)
+    {
+        return Ok((width, height, DmabufRoute::CpuMmap));
+    }
+    // What the GPU reads back, and how those bytes are laid out.
+    let precise = match layout {
+        Some(CpuLayout::Rgb10 { opaque, .. }) => Some((
+            Fourcc::Abgr2101010,
+            CpuLayout::Rgb10 {
+                red_low: true,
+                opaque,
+            },
+        )),
+        Some(CpuLayout::Half { opaque }) => {
+            Some((Fourcc::Abgr16161616f, CpuLayout::Half { opaque }))
+        }
+        _ => None,
+    };
     let gpu_error = match crate::compositor::render_node::advertised() {
-        Some(node) => match crate::compositor::gpu_import::with_importer(node, |importer| {
-            importer.import(dmabuf, rgba)
-        }) {
-            Ok(Ok((width, height))) => return Ok((width, height, DmabufRoute::Gpu)),
-            Ok(Err(error)) | Err(error) => Some(error.to_string()),
-        },
+        Some(node) => {
+            match crate::compositor::gpu_import::with_importer(node, |importer| match precise {
+                Some((readback, _)) => {
+                    let mut raw = Vec::new();
+                    importer
+                        .import_as(dmabuf, &mut raw, readback)
+                        .map(|size| (size, Some(raw)))
+                }
+                None => importer.import(dmabuf, rgba).map(|size| (size, None)),
+            }) {
+                Ok(Ok(((width, height), raw))) => {
+                    if let (Some(raw), Some((_, read_layout))) = (raw, precise) {
+                        let row_bytes =
+                            (width as usize).saturating_mul(read_layout.bytes_per_pixel() as usize);
+                        *hdr = convert_rows(
+                            read_layout,
+                            raw.chunks_exact(row_bytes.max(1)),
+                            (width, height),
+                            description,
+                            rgba,
+                        );
+                    }
+                    return Ok((width, height, DmabufRoute::Gpu));
+                }
+                Ok(Err(error)) | Err(error) => Some(error.to_string()),
+            }
+        }
         None => Some("no dmabuf main device was advertised".to_string()),
     };
 
-    match import_dmabuf_rgba(dmabuf, rgba) {
+    match import_dmabuf_rgba(dmabuf, rgba, colorimetry, hdr) {
         Ok((width, height)) => Ok((width, height, DmabufRoute::CpuMmap)),
         Err(cpu_error) => Err(match gpu_error {
             Some(gpu_error) => format!("{cpu_error}; GPU import also failed: {gpu_error}"),
@@ -1034,6 +1468,16 @@ fn decode_dmabuf(dmabuf: &Dmabuf, rgba: &mut Vec<u8>) -> Result<(u32, u32, Dmabu
 }
 
 impl ForeignFrameStore {
+    /// The image description the surface's client last attached.
+    #[cfg(target_os = "linux")]
+    fn colorimetry(&self, id: SurfaceId) -> Option<crate::collab::colorimetry::Colorimetry> {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&id)
+            .and_then(|entry| entry.colorimetry)
+    }
+
     fn with_entry<R>(&self, id: SurfaceId, f: impl FnOnce(&mut ForeignEntry) -> R) -> R {
         let mut guard = self
             .entries
@@ -1069,6 +1513,7 @@ impl ForeignFrameStore {
         buffer: &WlBuffer,
         capture_token: Option<u64>,
     ) -> CaptureOutcome {
+        note_client_pump();
         if let Some(token) = capture_token {
             self.with_entry(id, |entry| entry.mapped = true);
             return self
@@ -1084,6 +1529,7 @@ impl ForeignFrameStore {
             let r = buffer_to_rgba(buffer, &mut e.rgba);
             match r {
                 Ok((w, h)) => {
+                    e.hdr = None;
                     e.width = w;
                     e.height = h;
                     e.seq = e.seq.wrapping_add(1);
@@ -1131,6 +1577,7 @@ impl ForeignFrameStore {
         id: SurfaceId,
         client: Client,
         dmabuf: Dmabuf,
+        colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
     ) -> Option<(u64, Barrier)> {
         let token = self
             .next_capture
@@ -1138,6 +1585,7 @@ impl ForeignFrameStore {
             .wrapping_add(1);
         self.with_entry(id, |entry| {
             entry.capture_tokens.push_back(token);
+            entry.colorimetry = colorimetry;
         });
         let worker = ASYNC_DMABUF_CAPTURE.get_or_init(AsyncDmabufCapture::spawn);
         match worker {
@@ -1191,6 +1639,7 @@ impl ForeignFrameStore {
         token: u64,
         result: Result<(u32, u32, CaptureRoute), String>,
         rgba: &mut Vec<u8>,
+        hdr: Option<crate::shell::hdr_surface::HdrPlane>,
     ) -> bool {
         let mut guard = self
             .entries
@@ -1208,6 +1657,7 @@ impl ForeignFrameStore {
             token,
             ReadyCapture {
                 rgba: captured,
+                hdr,
                 result,
             },
         );
@@ -1235,6 +1685,7 @@ impl ForeignFrameStore {
         let (outcome, imported, recycled) = match ready.result {
             Ok((width, height, route)) => {
                 let previous = std::mem::replace(&mut entry.rgba, ready.rgba);
+                entry.hdr = ready.hdr.map(Arc::new);
                 entry.width = width;
                 entry.height = height;
                 entry.seq = entry.seq.wrapping_add(1);
@@ -1250,6 +1701,7 @@ impl ForeignFrameStore {
             }
             Err(reason) => {
                 entry.rgba.clear();
+                entry.hdr = None;
                 entry.width = 0;
                 entry.height = 0;
                 entry.seq = entry.seq.wrapping_add(1);
@@ -1273,8 +1725,32 @@ impl ForeignFrameStore {
 
     /// Publish an RGBA frame directly — used by callers that already hold decoded pixels (tests, future non-`wl_buffer` capture routes).
     pub fn publish_rgba(&self, id: SurfaceId, rgba: &[u8], width: u32, height: u32) {
+        self.publish_frame(id, rgba, width, height, None);
+    }
+
+    /// Publish a frame with its full-precision HDR plane: `rgba` is the
+    /// tone-mapped rendition of `hdr`, at the same size.
+    pub fn publish_hdr_frame(
+        &self,
+        id: SurfaceId,
+        rgba: &[u8],
+        hdr: crate::shell::hdr_surface::HdrPlane,
+    ) {
+        let (width, height) = (hdr.width(), hdr.height());
+        self.publish_frame(id, rgba, width, height, Some(Arc::new(hdr)));
+    }
+
+    fn publish_frame(
+        &self,
+        id: SurfaceId,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
+    ) {
         self.with_entry(id, |e| {
             e.mapped = true;
+            e.hdr = hdr;
             e.rgba.clear();
             e.rgba.extend_from_slice(rgba);
             e.width = width;
@@ -1292,6 +1768,7 @@ impl ForeignFrameStore {
         self.with_entry(id, |e| {
             e.rgba.clear();
             e.rgba.shrink_to_fit();
+            e.hdr = None;
             e.width = 0;
             e.height = 0;
             e.seq = e.seq.wrapping_add(1);
@@ -1303,10 +1780,12 @@ impl ForeignFrameStore {
     /// frame, while keeping placement bookkeeping until the toplevel is
     /// destroyed.
     pub fn clear_frame(&self, id: SurfaceId) {
+        note_client_pump();
         self.with_entry(id, |e| {
             e.mapped = false;
             e.rgba.clear();
             e.rgba.shrink_to_fit();
+            e.hdr = None;
             e.width = 0;
             e.height = 0;
             e.seq = e.seq.wrapping_add(1);
@@ -1314,8 +1793,62 @@ impl ForeignFrameStore {
         });
     }
 
+    /// Record that the app behind authenticated shell-ui `connection` does
+    /// (or no longer does) want its windows withheld from captures. Covers
+    /// windows it maps later too, so a new window is never briefly exposed.
+    pub fn request_app_capture_protection(&self, connection: u64, app_id: &str, protected: bool) {
+        let mut guard = self
+            .capture_protection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if protected {
+            guard.apps.insert(connection, app_id.to_string());
+        } else {
+            guard.apps.remove(&connection);
+        }
+    }
+
+    /// The connection closed: its request goes with it.
+    pub fn release_capture_protection(&self, connection: u64) {
+        self.capture_protection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .apps
+            .remove(&connection);
+    }
+
+    /// Protect (or stop protecting) one surface regardless of its app.
+    pub fn set_surface_capture_protected(&self, id: SurfaceId, protected: bool) {
+        let mut guard = self
+            .capture_protection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if protected {
+            guard.surfaces.insert(id);
+        } else {
+            guard.surfaces.remove(&id);
+        }
+    }
+
+    /// Whether a capture must draw surface `id`, owned by `app_id`, as a
+    /// placeholder.
+    pub fn is_capture_protected(&self, id: SurfaceId, app_id: &str) -> bool {
+        let guard = self
+            .capture_protection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.surfaces.contains(&id)
+            || guard.apps.values().any(|app| app == app_id)
+            || crate::shell::capture_protection::holds_secrets(app_id)
+    }
+
     /// Drop everything tracked for `id` on toplevel destroy — without this the frame `Vec` (a full framebuffer) would outlive the client.
     pub fn forget(&self, id: SurfaceId) {
+        self.capture_protection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .surfaces
+            .remove(&id);
         let mut guard = self
             .entries
             .lock()
@@ -1391,6 +1924,7 @@ impl ForeignFrameStore {
                 width: e.width,
                 height: e.height,
                 seq: e.seq,
+                hdr: e.hdr.clone(),
             })
         };
         drop(guard);
@@ -1412,12 +1946,21 @@ impl ForeignFrameStore {
             };
             composite_child_rgba(&mut snapshot, frame, child.x, child.y);
             snapshot.seq = snapshot.seq.wrapping_add(frame.seq);
+            // Subsurfaces live only in the SDR rendition; a window with any
+            // is shown through it.
+            if !frame.rgba.is_empty() {
+                snapshot.hdr = None;
+            }
         }
         drop(guard);
         // Subsurfaces are positioned against the whole buffer, so the window
         // is cut out only after they are composited onto it.
         if content != (0, 0, snapshot.width, snapshot.height) {
             snapshot.rgba = crop_rgba(&snapshot.rgba, snapshot.width, content);
+            snapshot.hdr = snapshot
+                .hdr
+                .and_then(|plane| plane.crop(content))
+                .map(Arc::new);
             snapshot.width = content.2;
             snapshot.height = content.3;
         }
@@ -1590,13 +2133,32 @@ impl ForeignFrameStore {
         });
     }
 
-    /// The tab rectangle last published by [`Self::note_placement`].
+    /// Impose `rect` over the tab's own placement until cleared with `None`:
+    /// the client is configured to it and input and popups resolve against
+    /// it, however the strip lays the tab out meanwhile.
+    pub fn pin_placement(&self, id: SurfaceId, rect: Option<Rect>) {
+        self.with_entry(id, |e| {
+            e.pinned = rect;
+        });
+    }
+
+    /// Whether [`Self::pin_placement`] currently holds this surface.
+    pub fn is_pinned(&self, id: SurfaceId) -> bool {
+        let guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.get(&id).is_some_and(|e| e.pinned.is_some())
+    }
+
+    /// Where the surface is: a pinned rectangle, else the tab rectangle last
+    /// published by [`Self::note_placement`].
     pub fn placement(&self, id: SurfaceId) -> Option<Rect> {
         let guard = self
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.get(&id).and_then(|e| e.placement)
+        guard.get(&id).and_then(|e| e.pinned.or(e.placement))
     }
 
     /// Size of the tab rectangle in physical pixels.
@@ -1627,7 +2189,7 @@ impl ForeignFrameStore {
     )]
     pub fn take_pending_configure(&self, id: SurfaceId) -> Option<(i32, i32)> {
         self.with_entry(id, |e| {
-            let rect = e.placement?;
+            let rect = e.pinned.or(e.placement)?;
             let logical = (
                 rect.width().round().clamp(0.0, f64::from(i32::MAX)) as i32,
                 rect.height().round().clamp(0.0, f64::from(i32::MAX)) as i32,
@@ -1646,6 +2208,13 @@ impl ForeignFrameStore {
             e.configured = Some(logical);
             Some(logical)
         })
+    }
+
+    /// Forget the size last sent, so the next [`Self::take_pending_configure`]
+    /// sends the tab size again even though the layout did not change: the
+    /// client was configured to something else in between.
+    pub fn resend_configure(&self, id: SurfaceId) {
+        self.with_entry(id, |e| e.configured = None);
     }
 
     /// Whether this surface has something worth putting on screen, and
@@ -1770,6 +2339,8 @@ pub struct ForeignSurfaceWidget {
     rect: Rect,
     /// GPU-uploadable copy of the last frame we drew, plus the store sequence it came from.
     cached: Option<ImageData>,
+    /// The cached frame at full precision, when it carries an HDR signal.
+    cached_hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
     cached_seq: u64,
     /// Drawn transient sheets on this tile, bottom to top, refreshed with `cached`.
     sheet_images: Vec<(SheetLink, ImageData)>,
@@ -1785,6 +2356,7 @@ pub struct ForeignSurfaceWidget {
     /// never showed a usable frame. The lookup consults launches then installed manifests, so it's not repeated on every rebuild.
     name: std::cell::OnceCell<String>,
     preserve_transparency: bool,
+    last_draw: Option<std::time::Instant>,
 }
 
 impl ForeignSurfaceWidget {
@@ -1794,12 +2366,14 @@ impl ForeignSurfaceWidget {
             app_id,
             rect: Rect::ZERO,
             cached: None,
+            cached_hdr: None,
             cached_seq: 0,
             sheet_images: Vec::new(),
             placement_dirty: true,
             test_id: format!("foreign-surface-{surface_id}"),
             name: std::cell::OnceCell::new(),
             preserve_transparency: false,
+            last_draw: None,
         }
     }
 
@@ -1826,10 +2400,10 @@ impl ForeignSurfaceWidget {
     /// *buffer* couldn't be shown stays in [`ForeignFrameStore::last_error`] for whoever is debugging, not on this card.
     fn unshowable_text(&self) -> (String, String) {
         let detail = match store().last_error(self.surface_id) {
-            Some(_) => "This window can't be shown.",
-            None => "This app isn't responding.",
+            Some(_) => crate::shell::i18n::t("foreign-window-unshowable"),
+            None => crate::shell::i18n::t("foreign-window-not-responding"),
         };
-        (self.display_name().to_string(), detail.to_string())
+        (self.display_name().to_string(), detail)
     }
 
     fn draw_collaboration_overlay(
@@ -1855,12 +2429,23 @@ impl ForeignSurfaceWidget {
         self.surface_id
     }
 
+    /// Where this surface is drawn, when a capture must replace it with the
+    /// placeholder; `None` when it is not protected or not laid out.
+    pub fn capture_protected_rect(&self) -> Option<Rect> {
+        (self.rect.width() > 0.0
+            && self.rect.height() > 0.0
+            && store().is_capture_protected(self.surface_id, &self.app_id))
+        .then_some(self.rect)
+    }
+
     /// Place a compositor-owned floating surface without putting it through
     /// the workspace's Taffy tree. The same placement store still drives the
     /// xdg configure handshake, so the client renders at this exact size.
     pub fn place_floating(&mut self, rect: Rect) {
         self.rect = rect;
-        if rect.width() > 0.0 && rect.height() > 0.0 {
+        // A pinned surface's size is the pin's business; recording the
+        // overlay rect as its tab rect would outlive the pin.
+        if rect.width() > 0.0 && rect.height() > 0.0 && !store().is_pinned(self.surface_id) {
             store().note_placement(self.surface_id, rect);
         }
     }
@@ -1871,6 +2456,18 @@ impl ForeignSurfaceWidget {
     /// unmapped.
     pub fn is_mapped(&self) -> bool {
         store().frame_size(self.surface_id).is_some()
+    }
+
+    /// Why this tile is asking for frames, for the paint-stats diagnostic.
+    pub(crate) fn animation_detail(&self) -> String {
+        format!(
+            "seq={} cached_seq={} cached={} presented={} drawn_ms_ago={:?}",
+            store().frame_seq(self.surface_id),
+            self.cached_seq,
+            self.cached.is_some(),
+            store().is_presented(self.surface_id),
+            self.last_draw.map(|at| at.elapsed().as_millis()),
+        )
     }
 
     /// Pull a fresh frame out of the store if one has landed since the last call; returns `true` when the cache changed.
@@ -1885,7 +2482,9 @@ impl ForeignSurfaceWidget {
             return false;
         }
         self.cached_seq = seq;
-        self.cached = store().snapshot(self.surface_id).map(frame_image);
+        let snapshot = store().snapshot(self.surface_id);
+        self.cached_hdr = snapshot.as_ref().and_then(|frame| frame.hdr.clone());
+        self.cached = snapshot.map(frame_image);
         self.sheet_images = store()
             .sheets_over(self.surface_id)
             .into_iter()
@@ -1935,6 +2534,31 @@ impl ForeignSurfaceWidget {
                 &Rect::new(0.0, 0.0, f64::from(sheet.width), f64::from(sheet.height)),
             );
         }
+    }
+
+    /// Register the frame's full-precision plane, when it has one, for the
+    /// image about to be drawn at `brush_transform` into `dst`.
+    fn record_hdr_layer(
+        &self,
+        image: &ImageData,
+        brush_transform: Affine,
+        transform: Affine,
+        dst: Rect,
+    ) {
+        let Some(plane) = &self.cached_hdr else {
+            return;
+        };
+        let visible = if self.preserve_transparency {
+            dst
+        } else {
+            dst.intersect(self.rect)
+        };
+        crate::shell::hdr_surface::record(
+            plane,
+            image,
+            brush_transform,
+            transform.transform_rect_bbox(visible),
+        );
     }
 
     /// Whether this surface's window is still being held back, and so the
@@ -2060,8 +2684,6 @@ pub fn paint_output_presentation_surface(
 }
 
 impl Widget for ForeignSurfaceWidget {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -2114,11 +2736,20 @@ impl Widget for ForeignSurfaceWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.last_draw = Some(std::time::Instant::now());
         self.refresh_cache();
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
         let radius = f64::from(theme.tokens.radii.xl);
+        if crate::shell::capture_protection::painting_for_capture()
+            && self.capture_protected_rect().is_some()
+        {
+            crate::shell::capture_protection::paint_placeholder(
+                scene, transform, self.rect, radius, theme,
+            );
+            return;
+        }
         let clip = RoundedRect::from_rect(self.rect, radius);
 
         if let Some(image) = self.cached.clone()
@@ -2128,6 +2759,7 @@ impl Widget for ForeignSurfaceWidget {
             let sy = dst.height() / f64::from(image.height);
             let brush_transform = translated_and_scaled(transform, dst.x0, dst.y0, sx, sy);
             let brush = ImageBrush::new(image.clone()).with_extend(Extend::Pad);
+            self.record_hdr_layer(&image, brush_transform, transform, dst);
             if self.preserve_transparency {
                 // The app buffer already carries the shared floating chrome's
                 // soft silhouette. Drawing it directly preserves transparent
@@ -2207,21 +2839,6 @@ impl Widget for ForeignSurfaceWidget {
         self.draw_collaboration_overlay(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        // Input routing to client surfaces goes through the seat, not the widget tree.
-    }
-
     fn name(&self) -> &'static str {
         "ForeignSurfaceWidget"
     }
@@ -2241,15 +2858,21 @@ impl Widget for ForeignSurfaceWidget {
         Some(&self.test_id)
     }
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
 
-    /// A pending client frame keeps animation cadence alive. A placement-only
-    /// change is edge-triggered through `needs_redraw` instead, so resizing a
-    /// static client repaints once without creating an idle frame loop.
+    /// Only an unpresented window holds animation cadence: nothing else
+    /// wakes the loop for its first paint. A later client commit is
+    /// `needs_redraw` (one shot). Treating a pending sequence as cadence
+    /// kept off-screen tiles — never drawn, so never cached — asking for
+    /// frames at the refresh rate after the app itself had gone idle.
     fn needs_animation_frame(&self) -> bool {
-        self.awaiting_first_paint() || store().frame_seq(self.surface_id) != self.cached_seq
+        self.awaiting_first_paint()
     }
 
     fn needs_redraw(&self) -> bool {
@@ -2498,6 +3121,13 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
     let fallback = opening_fallback_size(state);
     // `toplevel_surfaces` borrows the shell state; a cheap clone releases the borrow before the configure calls below, which don't touch `State`.
     let toplevels: Vec<_> = state.xdg_shell_state.toplevel_surfaces().to_vec();
+    // A fullscreen client is sized to its output by the fullscreen overlay;
+    // its promoted tile still lays out underneath and must not resize it.
+    let fullscreen = state
+        .fullscreen_target
+        .as_ref()
+        .filter(|target| target.pinned_output.is_none())
+        .map(|target| target.surface_id);
     let mut sent: usize = 0;
     for toplevel in toplevels {
         let id = crate::compositor::state::surface_id(toplevel.wl_surface());
@@ -2524,6 +3154,9 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
             });
         store().note_size_limits(id, min, max);
         let tiled = !state.is_floating_toplevel(id);
+        if fullscreen == Some(id) && toplevel.is_initial_configure_sent() {
+            continue;
+        }
         if let Some((w, h)) = store().take_pending_configure(id) {
             configure_to(&toplevel, w, h, tiled);
             sent = sent.saturating_add(1);
@@ -2600,7 +3233,7 @@ fn opening_fallback_size(state: &crate::compositor::state::State) -> (i32, i32) 
                   truncates a fraction or wraps out of range"
     )]
     let logical = |px: f64| px.round().clamp(1.0, f64::from(i32::MAX)) as i32;
-    let chrome_w = f64::from(crate::shell::sidebar_wheel_disc::SIDEBAR_RESERVE_PX);
+    let chrome_w = f64::from(tilo_desktop::sidebar_wheel_disc::SIDEBAR_RESERVE_PX);
     let chrome_h =
         f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX) + ui::widget::tabs::TAB_BAR_HEIGHT;
     (
@@ -2613,39 +3246,96 @@ fn opening_fallback_size(state: &crate::compositor::state::State) -> (i32, i32) 
 ///
 /// Wayland clients that draw on demand wait for `wl_surface.frame` before
 /// their next buffer; without this pass a client renders one frame and
-/// freezes forever. Callbacks fire only for the *visible* tab of each group, also keeping a background client from burning CPU unseen.
+/// freezes forever. Callbacks fire only for the *visible* tab of each group, also keeping a background client from burning CPU unseen,
+/// and for a window the compositor asked to close, whose tab is already gone.
 ///
 /// Returns the number of surfaces signalled.
 #[cfg(target_os = "linux")]
 pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> usize {
-    let time_ms = u32::try_from(state.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
     let toplevels: Vec<_> = state.xdg_shell_state.toplevel_surfaces().to_vec();
     let mut signalled: usize = 0;
     for toplevel in toplevels {
         let surface = toplevel.wl_surface();
-        let id = crate::compositor::state::surface_id(surface);
-        let visible_tab = {
-            let tree = state.workspace_tree.read();
-            is_visible_tab(&tree, store().sheet_root(id))
-        };
-        if !visible_tab && state.osk_surface != Some(id) && !state.is_floating_toplevel(id) {
+        if !frame_throttle_releases(state, surface) {
             continue;
         }
-        let mut fired = false;
-        smithay::wayland::compositor::with_states(surface, |states| {
-            let mut attrs = states
-                .cached_state
-                .get::<smithay::wayland::compositor::SurfaceAttributes>();
-            for callback in attrs.current().frame_callbacks.drain(..) {
-                callback.done(time_ms);
-                fired = true;
-            }
-        });
-        if fired {
+        if state.release_frame_callbacks(surface) {
             signalled = signalled.saturating_add(1);
         }
     }
     signalled
+}
+
+/// Whether a surface [`release_frame_throttle`] serves is waiting for
+/// `wl_surface.frame`. A callback can arrive on a commit without a new
+/// buffer (a configure ack, a title). Nothing on screen changes, so the
+/// loop must not build a frame for it; [`release_idle_frame_callbacks`]
+/// fires it instead. A FIFO client draws nothing until the callback fires.
+#[cfg(target_os = "linux")]
+pub fn frame_callbacks_waiting(state: &crate::compositor::state::State) -> bool {
+    state
+        .xdg_shell_state
+        .toplevel_surfaces()
+        .iter()
+        .map(ToplevelSurface::wl_surface)
+        .filter(|surface| frame_throttle_releases(state, surface))
+        .any(|surface| {
+            smithay::wayland::compositor::with_states(surface, |states| {
+                !states
+                    .cached_state
+                    .get::<smithay::wayland::compositor::SurfaceAttributes>()
+                    .current()
+                    .frame_callbacks
+                    .is_empty()
+            })
+        })
+}
+
+/// Fire frame callbacks when this tick will not present.
+///
+/// The callback still has to run, or a FIFO swapchain waits forever and
+/// takes every later sync with it. Building a scene only to release it
+/// kept the shell busy while the apps sat still: the tree, the layout
+/// and any animation had not changed.
+///
+/// Returns whether any callback was released.
+#[cfg(target_os = "linux")]
+pub fn release_idle_frame_callbacks(state: &mut crate::compositor::state::State) -> bool {
+    if !frame_callbacks_waiting(state) {
+        return false;
+    }
+    release_frame_throttle(state) > 0
+}
+
+/// Bumped when a client commit changes something the frame pump must see
+/// (a buffer, a title, a new toplevel). A `wl_surface.frame` on its own does
+/// not: answering it must not schedule another shell tick.
+static CLIENT_PUMP_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+pub fn note_client_pump() {
+    CLIENT_PUMP_EPOCH.fetch_add(1, Ordering::Release);
+}
+
+pub fn client_pump_epoch() -> u64 {
+    CLIENT_PUMP_EPOCH.load(Ordering::Acquire)
+}
+
+/// Callbacks fire only for the visible tab of each group, the on-screen
+/// keyboard, floating windows and windows asked to close.
+#[cfg(target_os = "linux")]
+fn frame_throttle_releases(
+    state: &crate::compositor::state::State,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+) -> bool {
+    let id = crate::compositor::state::surface_id(surface);
+    let visible_tab = {
+        let tree = state.workspace_tree.read();
+        is_visible_tab(&tree, store().sheet_root(id))
+    };
+    visible_tab
+        || state.osk_surface == Some(id)
+        || state.is_floating_toplevel(id)
+        || state.is_closing_toplevel(id)
 }
 
 #[cfg(test)]
@@ -2663,470 +3353,682 @@ mod tests {
     }
 
     #[test]
-    fn pending_capture_queue_keeps_only_the_latest_frame_per_surface() {
-        let mut pending = LatestJobs::default();
-        assert_eq!(pending.push(10, "old"), None);
-        assert_eq!(pending.push(20, "other surface"), None);
-        assert_eq!(pending.push(10, "new"), Some("old"));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn capture_commits_publish_only_their_own_latest_frame() {
+        fn pending_capture_queue_keeps_only_the_latest_frame_per_surface() {
+            let mut pending = LatestJobs::default();
+            assert_eq!(pending.push(10, "old"), None);
+            assert_eq!(pending.push(20, "other surface"), None);
+            assert_eq!(pending.push(10, "new"), Some("old"));
 
-        assert_eq!(pending.jobs.len(), 2, "a burst is bounded by surface count");
-        assert_eq!(pending.jobs.get(&10), Some(&"new"));
-        assert_eq!(pending.remove(10), Some("new"));
-        assert_eq!(pending.jobs.len(), 1);
-        let drained: Vec<_> = std::iter::from_fn(|| pending.pop()).collect();
-        assert_eq!(drained.len(), 1);
-        assert!(drained.contains(&"other surface"));
+            assert_eq!(pending.jobs.len(), 2, "a burst is bounded by surface count");
+            assert_eq!(pending.jobs.get(&10), Some(&"new"));
+            assert_eq!(pending.remove(10), Some("new"));
+            assert_eq!(pending.jobs.len(), 1);
+            let drained: Vec<_> = std::iter::from_fn(|| pending.pop()).collect();
+            assert_eq!(drained.len(), 1);
+            assert!(drained.contains(&"other surface"));
+        }
+
+        #[cfg(target_os = "linux")]
+        fn capture_barrier_release_is_visible_across_clones() {
+            let barrier = Barrier::new(false);
+            signal_capture_barrier(&barrier);
+            assert!(barrier.is_signaled());
+        }
+
+        fn worker_result_is_published_only_when_its_blocked_commit_applies() {
+            let frames = ForeignFrameStore::default();
+            let id = sid(100);
+            frames.with_entry(id, |entry| {
+                entry.capture_tokens.push_back(2);
+            });
+
+            let mut stale = vec![1, 2, 3, 4];
+            frames.stage_dmabuf_capture(
+                id,
+                1,
+                Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+                &mut stale,
+                None,
+            );
+            assert!(frames.snapshot(id).is_none());
+
+            let mut latest = vec![5, 6, 7, 8];
+            frames.stage_dmabuf_capture(
+                id,
+                2,
+                Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+                &mut latest,
+                None,
+            );
+            assert!(
+                frames.snapshot(id).is_none(),
+                "pending pixels must not become current before commit application"
+            );
+            assert!(matches!(
+                frames.activate_dmabuf_capture(id),
+                Some(CaptureOutcome::Dmabuf { .. })
+            ));
+            assert_eq!(
+                frames.snapshot(id).expect("latest frame").rgba,
+                vec![5, 6, 7, 8]
+            );
+            assert_eq!(
+                frames.import_count(),
+                1,
+                "only published work counts as an import"
+            );
+        }
+
+        fn superseded_commit_applies_without_stealing_the_newer_capture() {
+            let frames = ForeignFrameStore::default();
+            let id = sid(102);
+            frames.with_entry(id, |entry| {
+                entry.capture_tokens.extend([3, 4]);
+            });
+            let mut newest = vec![9, 8, 7, 6];
+            frames.stage_dmabuf_capture(
+                id,
+                4,
+                Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+                &mut newest,
+                None,
+            );
+
+            assert!(
+                frames.activate_dmabuf_capture(id).is_none(),
+                "the superseded earlier commit has no pixels"
+            );
+            assert!(matches!(
+                frames.activate_dmabuf_capture(id),
+                Some(CaptureOutcome::Dmabuf { .. })
+            ));
+            assert_eq!(
+                frames.snapshot(id).expect("newest frame").rgba,
+                vec![9, 8, 7, 6]
+            );
+        }
+
+        fn commit_token_mismatch_cannot_consume_a_later_capture() {
+            let frames = ForeignFrameStore::default();
+            let id = sid(103);
+            frames.with_entry(id, |entry| entry.capture_tokens.push_back(42));
+            let mut pixels = vec![7, 7, 7, 7];
+            assert!(frames.stage_dmabuf_capture(
+                id,
+                42,
+                Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+                &mut pixels,
+                None,
+            ));
+
+            assert!(
+                frames.activate_dmabuf_capture_token(id, 41).is_none(),
+                "an unrelated commit must not pop the next buffer's token"
+            );
+            assert!(matches!(
+                frames.activate_dmabuf_capture_token(id, 42),
+                Some(CaptureOutcome::Dmabuf { .. })
+            ));
+        }
+
+        fn late_worker_completion_cannot_resurrect_a_destroyed_surface() {
+            let frames = ForeignFrameStore::default();
+            let id = sid(101);
+            frames.with_entry(id, |entry| {
+                entry.capture_tokens.push_back(7);
+            });
+            frames.forget(id);
+
+            let mut pixels = vec![1, 2, 3, 4];
+            frames.stage_dmabuf_capture(
+                id,
+                7,
+                Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+                &mut pixels,
+                None,
+            );
+            assert!(frames.snapshot(id).is_none());
+            assert_eq!(frames.frame_seq(id), 0);
+        }
+
+        pending_capture_queue_keeps_only_the_latest_frame_per_surface();
+        #[cfg(target_os = "linux")]
+        capture_barrier_release_is_visible_across_clones();
+        worker_result_is_published_only_when_its_blocked_commit_applies();
+        superseded_commit_applies_without_stealing_the_newer_capture();
+        commit_token_mismatch_cannot_consume_a_later_capture();
+        late_worker_completion_cannot_resurrect_a_destroyed_surface();
     }
 
     #[test]
-    fn snapshot_composites_positioned_children_with_alpha_and_clipping() {
-        let frames = ForeignFrameStore::default();
-        let root = sid(70);
-        let child = sid(71);
-        frames.publish_rgba(root, &[10, 20, 30, 255].repeat(9), 3, 3);
-        frames.publish_rgba(
-            child,
-            &[
-                250, 0, 0, 255, 0, 250, 0, 128, 0, 0, 250, 255, 250, 250, 0, 255,
-            ],
-            2,
-            2,
-        );
-        frames.set_children(
-            root,
-            vec![ChildFrame {
-                surface: child,
-                x: 2,
-                y: 1,
-            }],
-        );
+    fn snapshots_composite_children_and_convert_pixel_orders() {
+        fn snapshot_composites_positioned_children_with_alpha_and_clipping() {
+            let frames = ForeignFrameStore::default();
+            let root = sid(70);
+            let child = sid(71);
+            frames.publish_rgba(root, &[10, 20, 30, 255].repeat(9), 3, 3);
+            frames.publish_rgba(
+                child,
+                &[
+                    250, 0, 0, 255, 0, 250, 0, 128, 0, 0, 250, 255, 250, 250, 0, 255,
+                ],
+                2,
+                2,
+            );
+            frames.set_children(
+                root,
+                vec![ChildFrame {
+                    surface: child,
+                    x: 2,
+                    y: 1,
+                }],
+            );
 
-        let snapshot = frames.snapshot(root).expect("composited root frame");
-        let pixel = |x: usize, y: usize| &snapshot.rgba[(y * 3 + x) * 4..][..4];
-        assert_eq!(pixel(0, 0), &[10, 20, 30, 255]);
-        assert_eq!(pixel(2, 1), &[250, 0, 0, 255]);
-        assert_eq!(pixel(2, 2), &[0, 0, 250, 255]);
-        assert_eq!(snapshot.rgba.len(), 3 * 3 * 4, "child is clipped to root");
-        let first_seq = frames.frame_seq(root);
-        frames.publish_rgba(child, &[1, 2, 3, 255].repeat(4), 2, 2);
-        assert_ne!(
-            frames.frame_seq(root),
-            first_seq,
-            "child damage repaints root"
-        );
-        assert_eq!(frames.child_at(root, 2.25, 1.5), Some((child, 0.25, 0.5)));
-        assert_eq!(frames.child_at(root, 0.5, 0.5), None);
+            let snapshot = frames.snapshot(root).expect("composited root frame");
+            let pixel = |x: usize, y: usize| &snapshot.rgba[(y * 3 + x) * 4..][..4];
+            assert_eq!(pixel(0, 0), &[10, 20, 30, 255]);
+            assert_eq!(pixel(2, 1), &[250, 0, 0, 255]);
+            assert_eq!(pixel(2, 2), &[0, 0, 250, 255]);
+            assert_eq!(snapshot.rgba.len(), 3 * 3 * 4, "child is clipped to root");
+            let first_seq = frames.frame_seq(root);
+            frames.publish_rgba(child, &[1, 2, 3, 255].repeat(4), 2, 2);
+            assert_ne!(
+                frames.frame_seq(root),
+                first_seq,
+                "child damage repaints root"
+            );
+            assert_eq!(frames.child_at(root, 2.25, 1.5), Some((child, 0.25, 0.5)));
+            assert_eq!(frames.child_at(root, 0.5, 0.5), None);
+        }
+
+        #[cfg(any(test, target_os = "linux"))]
+        fn swizzle_row_bgra_swaps_red_and_blue() {
+            // Memory bytes for DRM_FORMAT_ARGB8888 are [B, G, R, A].
+            let src = [10u8, 20, 30, 200, 1, 2, 3, 4];
+            let mut out = Vec::new();
+            swizzle_row(PixelOrder::Bgra { opaque: false }, &src, 2, &mut out);
+            assert_eq!(out, vec![30, 20, 10, 200, 3, 2, 1, 4]);
+        }
+
+        #[cfg(any(test, target_os = "linux"))]
+        fn swizzle_row_opaque_variant_forces_alpha() {
+            let src = [10u8, 20, 30, 0x00];
+            let mut out = Vec::new();
+            swizzle_row(PixelOrder::Bgra { opaque: true }, &src, 1, &mut out);
+            assert_eq!(out, vec![30, 20, 10, 0xFF]);
+        }
+
+        #[cfg(any(test, target_os = "linux"))]
+        fn swizzle_row_rgba_passes_channels_through() {
+            // DRM_FORMAT_ABGR8888 is already [R, G, B, A] in memory.
+            let src = [10u8, 20, 30, 40];
+            let mut out = Vec::new();
+            swizzle_row(PixelOrder::Rgba { opaque: false }, &src, 1, &mut out);
+            assert_eq!(out, vec![10, 20, 30, 40]);
+        }
+
+        #[cfg(target_os = "linux")]
+        fn pixel_order_rejects_non_rgba_fourcc() {
+            assert!(PixelOrder::for_fourcc(Fourcc::Nv12).is_none());
+            assert!(PixelOrder::for_fourcc(Fourcc::Argb8888).is_some());
+        }
+
+        snapshot_composites_positioned_children_with_alpha_and_clipping();
+        #[cfg(any(test, target_os = "linux"))]
+        swizzle_row_bgra_swaps_red_and_blue();
+        #[cfg(any(test, target_os = "linux"))]
+        swizzle_row_opaque_variant_forces_alpha();
+        #[cfg(any(test, target_os = "linux"))]
+        swizzle_row_rgba_passes_channels_through();
+        #[cfg(target_os = "linux")]
+        pixel_order_rejects_non_rgba_fourcc();
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
-    fn capture_barrier_release_is_visible_across_clones() {
-        let barrier = Barrier::new(false);
-        signal_capture_barrier(&barrier);
-        assert!(barrier.is_signaled());
-    }
-
-    #[test]
-    fn worker_result_is_published_only_when_its_blocked_commit_applies() {
-        let frames = ForeignFrameStore::default();
-        let id = sid(100);
-        frames.with_entry(id, |entry| {
-            entry.capture_tokens.push_back(2);
-        });
-
-        let mut stale = vec![1, 2, 3, 4];
-        frames.stage_dmabuf_capture(
-            id,
-            1,
-            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
-            &mut stale,
-        );
-        assert!(frames.snapshot(id).is_none());
-
-        let mut latest = vec![5, 6, 7, 8];
-        frames.stage_dmabuf_capture(
-            id,
-            2,
-            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
-            &mut latest,
-        );
-        assert!(
-            frames.snapshot(id).is_none(),
-            "pending pixels must not become current before commit application"
-        );
-        assert!(matches!(
-            frames.activate_dmabuf_capture(id),
-            Some(CaptureOutcome::Dmabuf { .. })
-        ));
-        assert_eq!(
-            frames.snapshot(id).expect("latest frame").rgba,
-            vec![5, 6, 7, 8]
-        );
-        assert_eq!(
-            frames.import_count(),
-            1,
-            "only published work counts as an import"
-        );
-    }
-
-    #[test]
-    fn superseded_commit_applies_without_stealing_the_newer_capture() {
-        let frames = ForeignFrameStore::default();
-        let id = sid(102);
-        frames.with_entry(id, |entry| {
-            entry.capture_tokens.extend([3, 4]);
-        });
-        let mut newest = vec![9, 8, 7, 6];
-        frames.stage_dmabuf_capture(
-            id,
-            4,
-            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
-            &mut newest,
-        );
-
-        assert!(
-            frames.activate_dmabuf_capture(id).is_none(),
-            "the superseded earlier commit has no pixels"
-        );
-        assert!(matches!(
-            frames.activate_dmabuf_capture(id),
-            Some(CaptureOutcome::Dmabuf { .. })
-        ));
-        assert_eq!(
-            frames.snapshot(id).expect("newest frame").rgba,
-            vec![9, 8, 7, 6]
-        );
-    }
-
-    #[test]
-    fn commit_token_mismatch_cannot_consume_a_later_capture() {
-        let frames = ForeignFrameStore::default();
-        let id = sid(103);
-        frames.with_entry(id, |entry| entry.capture_tokens.push_back(42));
-        let mut pixels = vec![7, 7, 7, 7];
-        assert!(frames.stage_dmabuf_capture(
-            id,
-            42,
-            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
-            &mut pixels,
-        ));
-
-        assert!(
-            frames.activate_dmabuf_capture_token(id, 41).is_none(),
-            "an unrelated commit must not pop the next buffer's token"
-        );
-        assert!(matches!(
-            frames.activate_dmabuf_capture_token(id, 42),
-            Some(CaptureOutcome::Dmabuf { .. })
-        ));
-    }
-
-    #[test]
-    fn late_worker_completion_cannot_resurrect_a_destroyed_surface() {
-        let frames = ForeignFrameStore::default();
-        let id = sid(101);
-        frames.with_entry(id, |entry| {
-            entry.capture_tokens.push_back(7);
-        });
-        frames.forget(id);
-
-        let mut pixels = vec![1, 2, 3, 4];
-        frames.stage_dmabuf_capture(
-            id,
-            7,
-            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
-            &mut pixels,
-        );
-        assert!(frames.snapshot(id).is_none());
-        assert_eq!(frames.frame_seq(id), 0);
-    }
-
-    #[test]
-    #[cfg(any(test, target_os = "linux"))]
-    fn swizzle_row_bgra_swaps_red_and_blue() {
-        // Memory bytes for DRM_FORMAT_ARGB8888 are [B, G, R, A].
-        let src = [10u8, 20, 30, 200, 1, 2, 3, 4];
+    fn ten_bit_and_half_float_rows_convert_for_the_sdr_desktop() {
+        let sdr = crate::collab::colorimetry::Colorimetry::sdr_bt709();
+        // XB30: red in the low bits. Full red, half green, zero blue.
+        let word: u32 = 0xC008_03FF; // red 1023, green 512, padding set
         let mut out = Vec::new();
-        swizzle_row(PixelOrder::Bgra { opaque: false }, &src, 2, &mut out);
-        assert_eq!(out, vec![30, 20, 10, 200, 3, 2, 1, 4]);
-    }
-
-    #[test]
-    #[cfg(any(test, target_os = "linux"))]
-    fn swizzle_row_opaque_variant_forces_alpha() {
-        let src = [10u8, 20, 30, 0x00];
+        convert_row(
+            CpuLayout::Rgb10 {
+                red_low: true,
+                opaque: true,
+            },
+            &word.to_le_bytes(),
+            sdr,
+            &mut out,
+        );
+        assert_eq!(out, vec![255, 128, 0, 255]);
+        // XR30 swaps red and blue.
         let mut out = Vec::new();
-        swizzle_row(PixelOrder::Bgra { opaque: true }, &src, 1, &mut out);
-        assert_eq!(out, vec![30, 20, 10, 0xFF]);
-    }
-
-    #[test]
-    #[cfg(any(test, target_os = "linux"))]
-    fn swizzle_row_rgba_passes_channels_through() {
-        // DRM_FORMAT_ABGR8888 is already [R, G, B, A] in memory.
-        let src = [10u8, 20, 30, 40];
+        convert_row(
+            CpuLayout::Rgb10 {
+                red_low: false,
+                opaque: false,
+            },
+            &word.to_le_bytes(),
+            sdr,
+            &mut out,
+        );
+        assert_eq!(out, vec![0, 128, 255, 255]);
+        // Half float: 1.0 = 0x3C00, 0.5 = 0x3800, alpha 0.5.
+        let px: Vec<u8> = [0x3C00_u16, 0x3800, 0x0000, 0x3800]
+            .iter()
+            .flat_map(|h| h.to_le_bytes())
+            .collect();
         let mut out = Vec::new();
-        swizzle_row(PixelOrder::Rgba { opaque: false }, &src, 1, &mut out);
-        assert_eq!(out, vec![10, 20, 30, 40]);
+        convert_row(CpuLayout::Half { opaque: false }, &px, sdr, &mut out);
+        assert_eq!(out, vec![255, 128, 0, 128]);
+        assert!((half_to_f32(0x3C00) - 1.0).abs() < f32::EPSILON);
+        assert!((half_to_f32(0xC000) + 2.0).abs() < f32::EPSILON);
+        assert!(half_to_f32(0x0001) > 0.0, "subnormals decode");
+        // A PQ signal is tone-mapped rather than shown raw: PQ 0.58
+        // (~200 cd/m² of a 1000 cd/m² master) lands darker than the
+        // 148/255 an SDR reading of the same code would give.
+        let pq = crate::collab::hdr_metadata::HdrConfig::pq_reference().colorimetry();
+        let mid: u32 = 0x2529_4A52; // 594 in every channel
+        let mut out = Vec::new();
+        convert_row(
+            CpuLayout::Rgb10 {
+                red_low: true,
+                opaque: true,
+            },
+            &mid.to_le_bytes(),
+            pq,
+            &mut out,
+        );
+        let red = out.first().copied().unwrap_or(0);
+        assert!(
+            (1..148).contains(&red),
+            "tone-mapped below the raw 148, got {out:?}"
+        );
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
-    fn pixel_order_rejects_non_rgba_fourcc() {
-        assert!(PixelOrder::for_fourcc(Fourcc::Nv12).is_none());
-        assert!(PixelOrder::for_fourcc(Fourcc::Argb8888).is_some());
+    fn hdr_frames_keep_a_full_precision_plane() {
+        use crate::shell::hdr_surface::{HdrTexelFormat, SignalTransfer};
+        let pq = crate::collab::colorimetry::Colorimetry::hdr10();
+        let sdr = crate::collab::colorimetry::Colorimetry::sdr_bt709();
+
+        // Phase `ten_bit_pq_rows_keep_their_codes_red_low`.
+        {
+            // XR30: blue in the low bits; blue 100, green 512, red 900.
+            let word: u32 = 0x064 | (0x200 << 10) | (0x384 << 20);
+            let row = [word.to_le_bytes(), word.to_le_bytes()].concat();
+            let layout = CpuLayout::Rgb10 {
+                red_low: false,
+                opaque: true,
+            };
+            let mut rgba = Vec::new();
+            let plane = convert_rows(layout, [row.as_slice()].into_iter(), (2, 1), pq, &mut rgba)
+                .expect("a PQ description keeps its plane");
+            assert_eq!(rgba.len(), 8, "the SDR rendition is still produced");
+            assert_eq!(plane.format(), HdrTexelFormat::Rgb10a2);
+            assert_eq!(plane.signal().transfer, SignalTransfer::Pq);
+            let [r, g, b] = plane.signal_at(1, 0);
+            assert!((r - 900.0 / 1023.0).abs() < 1e-6, "red {r}");
+            assert!((g - 512.0 / 1023.0).abs() < 1e-6, "green {g}");
+            assert!((b - 100.0 / 1023.0).abs() < 1e-6, "blue {b}");
+            let first = u32::from_le_bytes(plane.bytes()[..4].try_into().expect("a word"));
+            assert_eq!(first >> 30, 3, "padding reads as opaque alpha");
+            let mut rgba = Vec::new();
+            assert!(
+                convert_rows(layout, [row.as_slice()].into_iter(), (2, 1), sdr, &mut rgba)
+                    .is_none(),
+                "an SDR description needs no plane"
+            );
+        }
+
+        // Phase `half_float_rows_keep_their_values`.
+        {
+            let px: Vec<u8> = [0x4400_u16, 0x3C00, 0x3800, 0x0000]
+                .iter()
+                .flat_map(|h| h.to_le_bytes())
+                .collect();
+            let scrgb = scrgb();
+            let mut rgba = Vec::new();
+            let plane = convert_rows(
+                CpuLayout::Half { opaque: true },
+                [px.as_slice()].into_iter(),
+                (1, 1),
+                scrgb,
+                &mut rgba,
+            )
+            .expect("scRGB keeps its plane");
+            assert_eq!(plane.format(), HdrTexelFormat::Rgba16Float);
+            assert_eq!(plane.signal_at(0, 0), [4.0, 1.0, 0.5]);
+            assert_eq!(&plane.bytes()[6..8], &0x3C00_u16.to_le_bytes());
+            assert_eq!(
+                &rgba[..3],
+                &[255, 255, 188],
+                "linear light clips at SDR white"
+            );
+        }
+
+        // Phase `snapshots_carry_the_plane_cropped_and_drop_it_under_subsurfaces`.
+        {
+            let frames = ForeignFrameStore::default();
+            let root = sid(80);
+            let signal = crate::shell::hdr_surface::SurfaceSignal::for_colorimetry(
+                pq,
+                crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
+            )
+            .expect("PQ");
+            let plane = crate::shell::hdr_surface::HdrPlane::from_signal_rgb(
+                4,
+                4,
+                (0..16_u8).map(|i| [f32::from(i) / 16.0; 3]),
+                signal,
+            )
+            .expect("plane");
+            frames.publish_hdr_frame(root, &[9; 64], plane);
+            let snapshot = frames.snapshot(root).expect("frame");
+            let hdr = snapshot.hdr.expect("the plane travels with the frame");
+            assert_eq!((hdr.width(), hdr.height()), (4, 4));
+
+            frames.note_window_geometry(root, Some(geometry(1, 1, 2, 2)));
+            let snapshot = frames.snapshot(root).expect("frame");
+            let hdr = snapshot.hdr.expect("a cropped window keeps its plane");
+            assert_eq!((hdr.width(), hdr.height()), (2, 2));
+            assert_eq!((snapshot.width, snapshot.height), (2, 2));
+            assert_eq!(hdr.signal_at(0, 0)[0], 5.0 / 16.0, "cut at the window");
+
+            let child = sid(81);
+            frames.publish_rgba(child, &[1, 2, 3, 255], 1, 1);
+            frames.set_children(
+                root,
+                vec![ChildFrame {
+                    surface: child,
+                    x: 0,
+                    y: 0,
+                }],
+            );
+            assert!(
+                frames.snapshot(root).expect("frame").hdr.is_none(),
+                "subsurfaces exist only in the SDR rendition"
+            );
+            frames.set_children(root, Vec::new());
+            frames.publish_rgba(root, &[9; 64], 4, 4);
+            assert!(frames.snapshot(root).expect("frame").hdr.is_none());
+        }
+    }
+
+    fn scrgb() -> crate::collab::colorimetry::Colorimetry {
+        crate::collab::colorimetry::Colorimetry {
+            primaries: crate::collab::colorimetry::ColorPrimaries::Bt709,
+            transfer: crate::collab::colorimetry::TransferCharacteristics::Linear,
+            matrix: crate::collab::colorimetry::MatrixCoefficients::Identity,
+            range: crate::collab::colorimetry::ColorRange::Full,
+        }
     }
 
     /// A tab is 1200x800. These are the sizes a client hands us.
     const TILE: Rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
 
-    /// An app already on this machine can be on screen almost at once, so saying "on its way" that fast would flicker before anyone reads it.
     #[test]
-    fn a_surface_just_heard_of_is_not_yet_worth_saying_anything_about() {
-        let id = sid(50);
-        store().forget(id);
-        store().note_placement(id, TILE);
-        assert!(
-            !store().is_opening(id),
-            "an app that may still open in a blink must not flash an \
-             indicator on its way past",
-        );
-        store().forget(id);
-    }
-
-    /// Past the delay the wait is a wait, and an empty space where a window was asked for reads as nothing having happened.
-    #[test]
-    fn a_surface_still_starting_after_the_delay_says_so() {
-        let id = sid(51);
-        store().forget(id);
-        store().backdate_first_seen(id, OPENING_DELAY + Duration::from_millis(50));
-        assert!(
-            store().is_opening(id),
-            "the person is watching an empty desktop for a window they \
-             asked for, and nothing on screen accounts for it",
-        );
-        store().forget(id);
-    }
-
-    /// And it stops the instant there is a window, without coming back —
-    /// a placeholder someone has watched go away must not return, worse to see than the wait it was covering.
-    #[test]
-    fn a_surface_that_has_been_shown_is_never_opening_again() {
-        let id = sid(52);
-        store().forget(id);
-        store().backdate_first_seen(id, OPENING_DELAY + Duration::from_millis(50));
-        assert!(
-            store().is_opening(id),
-            "precondition: it was still starting"
-        );
-        store().publish_rgba(id, &vec![0; 1200 * 800 * 4], 1200, 800);
-        assert!(
-            store().mark_presented(id, TILE),
-            "precondition: it presented"
-        );
-        assert!(
-            !store().is_opening(id),
-            "the window is on screen; nothing may still be saying it is on \
-             its way",
-        );
-        store().forget(id);
-    }
-
-    /// What a person reads on a window's own card is the app's name, never the wayland app-id — a machine identifier the user never chose.
-    #[test]
-    fn a_card_in_a_windows_place_names_the_app_not_its_id() {
-        let w = ForeignSurfaceWidget::new(sid(53), "so.tilo.never-launched-fixture".into());
-        let name = w.display_name();
-        assert_eq!(
-            name, "Never Launched Fixture",
-            "a window's card must carry the app's name; got {name:?}",
-        );
-        assert!(
-            !name.contains("so.tilo."),
-            "a reverse-DNS package id reached a card somebody is reading",
-        );
-    }
-
-    /// A window that has gone up with nothing in it says so, in words a
-    /// person would use.
-    ///
-    /// This is the last thing between somebody and a window that will
-    /// never fill in, so it names the app and says what happened —
-    /// without the vocabulary of what went wrong. "waiting for first frame" over a package id taught nobody which app it was, or whether to keep waiting.
-    #[test]
-    fn a_window_that_cannot_be_shown_says_so_in_plain_words() {
-        let id = sid(54);
-        store().forget(id);
-        let w = ForeignSurfaceWidget::new(id, "so.tilo.never-launched-fixture".into());
-
-        let (headline, detail) = w.unshowable_text();
-        assert_eq!(headline, "Never Launched Fixture", "the app's own name");
-        assert_eq!(detail, "This app isn't responding.");
-
-        // A capture that failed is a different thing to say, and the reason it failed is still not the person's problem to read.
-        store().note_failure(id, "unsupported dmabuf modifier 0x0100000000000001".into());
-        let (headline, detail) = w.unshowable_text();
-        assert_eq!(headline, "Never Launched Fixture");
-        assert_eq!(detail, "This window can't be shown.");
-
-        for (field, text) in [("headline", &headline), ("detail", &detail)] {
-            let lower = text.to_lowercase();
-            for jargon in [
-                "frame", "buffer", "surface", "dmabuf", "modifier", "wayland", "toplevel",
-                "so.tilo", "install",
-            ] {
-                assert!(
-                    !lower.contains(jargon),
-                    "the {field} on a window somebody is reading says {jargon:?}: \
-                     {text:?}",
-                );
-            }
-        }
-        store().forget(id);
-    }
-
-    /// The window does not go up until there is a window to look at.
-    #[test]
-    fn a_surface_that_has_not_drawn_is_not_shown() {
-        let id = sid(40);
-        store().forget(id);
-        store().note_placement(id, TILE);
-        assert!(
-            !store().mark_presented(id, TILE),
-            "nothing has been committed, so there is nothing to show",
-        );
-        store().forget(id);
-    }
-
-    /// The frame the compositor's opening configure produces: the client picked its own size, so painting it means scaling to fit until the right-sized buffer lands and snaps.
-    #[test]
-    fn a_frame_that_does_not_fit_the_tab_is_not_shown() {
-        let id = sid(41);
-        store().forget(id);
-        // 4:3 into a 3:2 tab — fitted, it leaves a band down one side.
-        store().publish_rgba(id, &vec![0; 800 * 600 * 4], 800, 600);
-        assert!(
-            !store().mark_presented(id, TILE),
-            "an 800x600 buffer in a 1200x800 tab is drawn magnified, then \
-             snaps down when the real one arrives — which is the resize",
-        );
-        store().forget(id);
-    }
-
-    /// Any buffer whose aspect matches is drawn at exactly the tab, so the one that follows it changes nothing the user can see.
-    #[test]
-    fn a_frame_that_fits_the_tab_is_shown() {
-        for (w, h) in [(1200u32, 800u32), (2400, 1600), (600, 400)] {
-            let id = sid(42);
+    fn foreign_window_status_copy_names_the_app_in_plain_words() {
+        /// An app already on this machine can be on screen almost at once, so saying "on its way" that fast would flicker before anyone reads it.
+        fn a_surface_just_heard_of_is_not_yet_worth_saying_anything_about() {
+            let id = sid(50);
             store().forget(id);
-            store().publish_rgba(id, &vec![0; (w * h * 4) as usize], w, h);
+            store().note_placement(id, TILE);
             assert!(
-                store().mark_presented(id, TILE),
-                "{w}x{h} has the tab's aspect, so it fills it",
+                !store().is_opening(id),
+                "an app that may still open in a blink must not flash an \
+                 indicator on its way past",
             );
             store().forget(id);
         }
+
+        /// Past the delay the wait is a wait, and an empty space where a window was asked for reads as nothing having happened.
+        fn a_surface_still_starting_after_the_delay_says_so() {
+            let id = sid(51);
+            store().forget(id);
+            store().backdate_first_seen(id, OPENING_DELAY + Duration::from_millis(50));
+            assert!(
+                store().is_opening(id),
+                "the person is watching an empty desktop for a window they \
+                 asked for, and nothing on screen accounts for it",
+            );
+            store().forget(id);
+        }
+
+        /// And it stops the instant there is a window, without coming back —
+        /// a placeholder someone has watched go away must not return, worse to see than the wait it was covering.
+        fn a_surface_that_has_been_shown_is_never_opening_again() {
+            let id = sid(52);
+            store().forget(id);
+            store().backdate_first_seen(id, OPENING_DELAY + Duration::from_millis(50));
+            assert!(
+                store().is_opening(id),
+                "precondition: it was still starting"
+            );
+            store().publish_rgba(id, &vec![0; 1200 * 800 * 4], 1200, 800);
+            assert!(
+                store().mark_presented(id, TILE),
+                "precondition: it presented"
+            );
+            assert!(
+                !store().is_opening(id),
+                "the window is on screen; nothing may still be saying it is on \
+                 its way",
+            );
+            store().forget(id);
+        }
+
+        /// What a person reads on a window's own card is the app's name, never the wayland app-id — a machine identifier the user never chose.
+        fn a_card_in_a_windows_place_names_the_app_not_its_id() {
+            let w = ForeignSurfaceWidget::new(sid(53), "so.tilo.never-launched-fixture".into());
+            let name = w.display_name();
+            assert_eq!(
+                name, "Never Launched Fixture",
+                "a window's card must carry the app's name; got {name:?}",
+            );
+            assert!(
+                !name.contains("so.tilo."),
+                "a reverse-DNS package id reached a card somebody is reading",
+            );
+        }
+
+        /// A window that has gone up with nothing in it says so, in words a
+        /// person would use.
+        ///
+        /// This is the last thing between somebody and a window that will
+        /// never fill in, so it names the app and says what happened —
+        /// without the vocabulary of what went wrong. "waiting for first frame" over a package id taught nobody which app it was, or whether to keep waiting.
+        fn a_window_that_cannot_be_shown_says_so_in_plain_words() {
+            let id = sid(54);
+            store().forget(id);
+            let w = ForeignSurfaceWidget::new(id, "so.tilo.never-launched-fixture".into());
+
+            let (headline, detail) = w.unshowable_text();
+            assert_eq!(headline, "Never Launched Fixture", "the app's own name");
+            assert_eq!(detail, "This app isn't responding.");
+
+            // A capture that failed is a different thing to say, and the reason it failed is still not the person's problem to read.
+            store().note_failure(id, "unsupported dmabuf modifier 0x0100000000000001".into());
+            let (headline, detail) = w.unshowable_text();
+            assert_eq!(headline, "Never Launched Fixture");
+            assert_eq!(detail, "This window can't be shown.");
+
+            for (field, text) in [("headline", &headline), ("detail", &detail)] {
+                let lower = text.to_lowercase();
+                for jargon in [
+                    "frame", "buffer", "surface", "dmabuf", "modifier", "wayland", "toplevel",
+                    "so.tilo", "install",
+                ] {
+                    assert!(
+                        !lower.contains(jargon),
+                        "the {field} on a window somebody is reading says {jargon:?}: \
+                         {text:?}",
+                    );
+                }
+            }
+            store().forget(id);
+        }
+
+        /// The window itself has to answer with the same name its tab does.
+        ///
+        /// The tab title was fixed once already; the widget kept handing back
+        /// the raw wayland app-id from `app_title()`, so asking the tile directly (not the tab's stored title) got `so.tilo.chat`, an address nobody chose.
+        fn a_foreign_window_answers_with_its_name_not_its_app_id() {
+            let w = ForeignSurfaceWidget::new(3, "so.tilo.chat".into());
+            assert_eq!(
+                w.app_title(),
+                "Chat",
+                "a window says what it is called, not how it is addressed",
+            );
+
+            // A dotted id with a multi-word tail humanises the same way the package registry does, so an app reaches one name by either route.
+            let w = ForeignSurfaceWidget::new(4, "so.tilo.word-processor".into());
+            assert_eq!(w.app_title(), "Word Processor");
+        }
+
+        a_surface_just_heard_of_is_not_yet_worth_saying_anything_about();
+        a_surface_still_starting_after_the_delay_says_so();
+        a_surface_that_has_been_shown_is_never_opening_again();
+        a_card_in_a_windows_place_names_the_app_not_its_id();
+        a_window_that_cannot_be_shown_says_so_in_plain_words();
+        a_foreign_window_answers_with_its_name_not_its_app_id();
     }
 
-    /// Resizing a group makes the current frame stop fitting for a frame or two — disappearing in response would be worse than the defect this gate fixes.
     #[test]
-    fn a_shown_window_stays_shown_when_its_frame_stops_fitting() {
-        let id = sid(43);
-        store().forget(id);
-        store().publish_rgba(id, &vec![0; 1200 * 800 * 4], 1200, 800);
-        assert!(store().mark_presented(id, TILE));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn a_foreign_frame_is_shown_only_once_it_fits_or_must_explain_itself() {
+        /// The window does not go up until there is a window to look at.
+        fn a_surface_that_has_not_drawn_is_not_shown() {
+            let id = sid(40);
+            store().forget(id);
+            store().note_placement(id, TILE);
+            assert!(
+                !store().mark_presented(id, TILE),
+                "nothing has been committed, so there is nothing to show",
+            );
+            store().forget(id);
+        }
 
-        let dragged = Rect::new(0.0, 0.0, 400.0, 800.0);
-        assert!(
-            store().mark_presented(id, dragged),
-            "the window is on screen; a resize does not take it away",
-        );
-        store().forget(id);
-    }
+        /// The frame the compositor's opening configure produces: the client picked its own size, so painting it means scaling to fit until the right-sized buffer lands and snaps.
+        fn a_frame_that_does_not_fit_the_tab_is_not_shown() {
+            let id = sid(41);
+            store().forget(id);
+            // 4:3 into a 3:2 tab — fitted, it leaves a band down one side.
+            store().publish_rgba(id, &vec![0; 800 * 600 * 4], 800, 600);
+            assert!(
+                !store().mark_presented(id, TILE),
+                "an 800x600 buffer in a 1200x800 tab is drawn magnified, then \
+                 snaps down when the real one arrives — which is the resize",
+            );
+            store().forget(id);
+        }
 
-    #[test]
-    fn moving_a_static_foreign_surface_requests_one_repaint() {
-        use std::collections::HashMap;
-        use taffy::prelude::TaffyMaxContent;
-        use ui::widget::TaffyTreeExt;
+        /// Any buffer whose aspect matches is drawn at exactly the tab, so the one that follows it changes nothing the user can see.
+        fn a_frame_that_fits_the_tab_is_shown() {
+            for (w, h) in [(1200u32, 800u32), (2400, 1600), (600, 400)] {
+                let id = sid(42);
+                store().forget(id);
+                store().publish_rgba(id, &vec![0; (w * h * 4) as usize], w, h);
+                assert!(
+                    store().mark_presented(id, TILE),
+                    "{w}x{h} has the tab's aspect, so it fills it",
+                );
+                store().forget(id);
+            }
+        }
 
-        let id = sid(430);
-        store().forget(id);
-        store().publish_rgba(id, &vec![0; 1200 * 800 * 4], 1200, 800);
-        let mut widget = ForeignSurfaceWidget::new(id, "dev.tilo.static".into());
+        /// Resizing a group makes the current frame stop fitting for a frame or two — disappearing in response would be worse than the defect this gate fixes.
+        fn a_shown_window_stays_shown_when_its_frame_stops_fitting() {
+            let id = sid(43);
+            store().forget(id);
+            store().publish_rgba(id, &vec![0; 1200 * 800 * 4], 1200, 800);
+            assert!(store().mark_presented(id, TILE));
 
-        let mut taffy = TaffyTree::<()>::new();
-        let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = widget.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
-        let root = taffy.parent_node(
-            taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::length(1200.0),
-                    height: taffy::Dimension::length(800.0),
-                },
-                ..Default::default()
-            },
-            &[node],
-        );
-        taffy
-            .compute_layout(root, taffy::Size::MAX_CONTENT)
-            .unwrap();
-        widget.apply_layout(&taffy, node, Point::ZERO);
-        assert!(widget.needs_redraw(), "first placement must paint");
-        assert!(
-            widget.refresh_cache(),
-            "the first draw consumes the staged client frame",
-        );
-        widget.mark_drawn();
-        assert!(!widget.needs_redraw(), "an unchanged static client idles");
+            let dragged = Rect::new(0.0, 0.0, 400.0, 800.0);
+            assert!(
+                store().mark_presented(id, dragged),
+                "the window is on screen; a resize does not take it away",
+            );
+            store().forget(id);
+        }
 
-        widget.apply_layout(&taffy, node, Point::new(248.0, 136.0));
-        assert!(
-            widget.needs_redraw(),
-            "moving cached client pixels must invalidate the retained scene",
-        );
-        assert!(
-            !widget.needs_animation_frame(),
-            "a placement edge repaints once rather than starting an animation loop",
-        );
-        widget.mark_drawn();
-        assert!(!widget.needs_redraw());
-        store().forget(id);
-    }
+        /// An app that cannot be shown must say so rather than be an invisible hole in the strip.
+        fn a_surface_whose_capture_failed_is_shown_so_it_can_say_why() {
+            let id = sid(44);
+            store().forget(id);
+            store().note_failure(id, "unsupported buffer".into());
+            assert!(store().mark_presented(id, TILE));
+            store().forget(id);
+        }
 
-    /// An app that cannot be shown must say so rather than be an invisible hole in the strip.
-    #[test]
-    fn a_surface_whose_capture_failed_is_shown_so_it_can_say_why() {
-        let id = sid(44);
-        store().forget(id);
-        store().note_failure(id, "unsupported buffer".into());
-        assert!(store().mark_presented(id, TILE));
-        store().forget(id);
-    }
+        /// A client that answered the size it was configured to, less the
+        /// strip its own toolkit kept for decorations, has arrived.
+        ///
+        /// Not hypothetical: before `zxdg_decoration_manager_v1`, every winit
+        /// client reserved a title bar out of its size — configured 670x668,
+        /// committed 670x633, forever. Judged on aspect alone that never fits, so the window waited out [`PRESENT_GRACE`] over an app that had painted in two seconds.
+        ///
+        /// A client that never binds the global, or decorates itself regardless, still produces exactly this buffer and must still be shown.
+        fn a_frame_short_by_the_clients_own_decorations_is_shown() {
+            let id = sid(45);
+            store().forget(id);
+            store().note_placement(id, TILE);
+            // The tab less a title bar the client kept for itself.
+            let (w, h) = (1200u32, 765u32);
+            store().publish_rgba(id, &vec![0; (w * h * 4) as usize], w, h);
+            assert!(
+                store().mark_presented(id, TILE),
+                "{w}x{h} is the tab's width and answers its height as closely \
+                 as a client that draws its own frame ever will — waiting for \
+                 it to give that strip back is waiting for the grace period",
+            );
+            store().forget(id);
+        }
 
-    /// A client that answered the size it was configured to, less the
-    /// strip its own toolkit kept for decorations, has arrived.
-    ///
-    /// Not hypothetical: before `zxdg_decoration_manager_v1`, every winit
-    /// client reserved a title bar out of its size — configured 670x668,
-    /// committed 670x633, forever. Judged on aspect alone that never fits, so the window waited out [`PRESENT_GRACE`] over an app that had painted in two seconds.
-    ///
-    /// A client that never binds the global, or decorates itself regardless, still produces exactly this buffer and must still be shown.
-    #[test]
-    fn a_frame_short_by_the_clients_own_decorations_is_shown() {
-        let id = sid(45);
-        store().forget(id);
-        store().note_placement(id, TILE);
-        // The tab less a title bar the client kept for itself.
-        let (w, h) = (1200u32, 765u32);
-        store().publish_rgba(id, &vec![0; (w * h * 4) as usize], w, h);
-        assert!(
-            store().mark_presented(id, TILE),
-            "{w}x{h} is the tab's width and answers its height as closely \
-             as a client that draws its own frame ever will — waiting for \
-             it to give that strip back is waiting for the grace period",
-        );
-        store().forget(id);
+        /// `fills` is what the gate is made of; the grace period is what
+        /// stops it stranding a window — both asserted directly since the ten-second wait isn't something a test can sit through.
+        fn fills_accepts_a_buffer_sized_to_the_tab_and_nothing_else() {
+            assert!(fills(1200, 800, TILE));
+            assert!(fills(300, 200, TILE), "same aspect, quarter size");
+            assert!(!fills(800, 600, TILE));
+            assert!(!fills(1200, 900, TILE));
+            assert!(!fills(0, 800, TILE), "no buffer is not a fitting buffer");
+            assert!(
+                !fills(1200, 800, Rect::ZERO),
+                "a tab with no area cannot be judged against",
+            );
+
+            // A client that kept a title bar out of the size it was given: one axis answered exactly, the other short, nothing overflowing.
+            assert!(
+                fills(1200, 765, TILE),
+                "short by a title bar it drew itself"
+            );
+            assert!(fills(1160, 800, TILE), "short by a frame down one side");
+            assert!(
+                !fills(1210, 765, TILE),
+                "wider than the tab is not an answer to it, however close",
+            );
+            assert!(
+                !fills(600, 500, TILE),
+                "inside the tab but answering neither axis is the client's own \
+                 idea of its size, which is the frame this gate keeps back",
+            );
+        }
+
+        a_surface_that_has_not_drawn_is_not_shown();
+        a_frame_that_does_not_fit_the_tab_is_not_shown();
+        a_frame_that_fits_the_tab_is_shown();
+        a_shown_window_stays_shown_when_its_frame_stops_fitting();
+        a_surface_whose_capture_failed_is_shown_so_it_can_say_why();
+        a_frame_short_by_the_clients_own_decorations_is_shown();
+        fills_accepts_a_buffer_sized_to_the_tab_and_nothing_else();
     }
 
     /// A `w`x`h` opaque RGBA frame whose neighbouring pixels differ.
@@ -3280,931 +4182,1111 @@ mod tests {
         store().forget(id);
     }
 
-    /// `fills` is what the gate is made of; the grace period is what
-    /// stops it stranding a window — both asserted directly since the ten-second wait isn't something a test can sit through.
     #[test]
-    fn fills_accepts_a_buffer_sized_to_the_tab_and_nothing_else() {
-        assert!(fills(1200, 800, TILE));
-        assert!(fills(300, 200, TILE), "same aspect, quarter size");
-        assert!(!fills(800, 600, TILE));
-        assert!(!fills(1200, 900, TILE));
-        assert!(!fills(0, 800, TILE), "no buffer is not a fitting buffer");
-        assert!(
-            !fills(1200, 800, Rect::ZERO),
-            "a tab with no area cannot be judged against",
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn foreign_widget_configures_requests_frames_and_maps_geometry() {
+        fn pending_configure_fires_once_per_size_change() {
+            let id = sid(4);
+            store().forget(id);
+            assert_eq!(store().take_pending_configure(id), None);
 
-        // A client that kept a title bar out of the size it was given: one axis answered exactly, the other short, nothing overflowing.
-        assert!(
-            fills(1200, 765, TILE),
-            "short by a title bar it drew itself"
-        );
-        assert!(fills(1160, 800, TILE), "short by a frame down one side");
-        assert!(
-            !fills(1210, 765, TILE),
-            "wider than the tab is not an answer to it, however close",
-        );
-        assert!(
-            !fills(600, 500, TILE),
-            "inside the tab but answering neither axis is the client's own \
-             idea of its size, which is the frame this gate keeps back",
-        );
+            store().note_placement(id, Rect::new(0.0, 0.0, 1200.0, 800.0));
+            assert_eq!(store().take_pending_configure(id), Some((1200, 800)));
+            assert_eq!(
+                store().take_pending_configure(id),
+                None,
+                "an unchanged layout must not re-send a configure every frame"
+            );
+
+            store().note_placement(id, Rect::new(0.0, 0.0, 600.0, 400.0));
+            assert_eq!(store().take_pending_configure(id), Some((600, 400)));
+            store().forget(id);
+        }
+
+        /// A surface asks for frames until it has drawn, and after that only when
+        /// a newer one is waiting. The first half matters because an
+        /// undrawn-first-buffer client is the one case nothing else wakes the
+        /// paint loop for; the second: an app with nothing newer must not hold the loop awake.
+        fn widget_asks_for_frames_until_it_has_drawn_then_only_for_a_pending_one() {
+            let id = sid(7);
+            store().forget(id);
+            let mut w = ForeignSurfaceWidget::new(id, "org.example.app".into());
+            // A 1×1 tab, so the 1×1 frame below *fits* it — what being presented waits for, not merely a frame having landed.
+            w.rect = Rect::new(0.0, 0.0, 1.0, 1.0);
+            assert!(
+                w.needs_animation_frame(),
+                "nothing presented yet: a widget that stopped asking here would \
+                 never be woken to paint the window's first frame"
+            );
+            store().publish_rgba(id, &[255, 0, 0, 255], 1, 1);
+            assert!(
+                !w.awaiting_first_paint(),
+                "the paint gate itself must settle a fitting first frame; native asks it before draw"
+            );
+            assert!(
+                !w.needs_animation_frame(),
+                "an idle hosted app must not keep requesting frames after its first buffer landed"
+            );
+            assert!(
+                w.needs_redraw(),
+                "the undrawn first buffer still requests one paint"
+            );
+            assert!(w.refresh_cache(), "cache picks up the new frame");
+            assert!(
+                !w.needs_animation_frame(),
+                "once drawn, an idle client must not keep the paint loop awake"
+            );
+            store().forget(id);
+        }
+
+        fn widget_fit_rect_letterboxes_preserving_aspect() {
+            let mut w = ForeignSurfaceWidget::new(sid(8), "x".into());
+            w.rect = Rect::new(0.0, 0.0, 400.0, 200.0);
+            // A square image inside a 2:1 tile: height-limited, anchored at the tile's top-left with the spare width to the right.
+            let fit = w.fit_rect(100, 100).expect("fit");
+            assert_eq!((fit.width(), fit.height()), (200.0, 200.0));
+            assert_eq!(fit.x0, 0.0);
+            assert_eq!(fit.y0, 0.0);
+            // An exactly-matching client fills the tile with no letterbox.
+            let exact = w.fit_rect(400, 200).expect("fit");
+            assert_eq!(exact, w.rect);
+        }
+
+        /// A press has to land on what the user can see, so client pixels and pointer input must share one origin — including mid-resize, before the client's frame catches up.
+        fn painted_frame_origin_matches_the_origin_input_is_mapped_with() {
+            let tile = Rect::new(288.0, 124.0, 288.0 + 856.0, 124.0 + 868.0);
+            let mut w = ForeignSurfaceWidget::new(sid(9), "x".into());
+            w.rect = tile;
+
+            // Every size a lagging client might still be presenting: exactly right, short, tall, narrow and wide.
+            for (iw, ih) in [(856, 868), (856, 834), (856, 900), (800, 868), (900, 868)] {
+                let dst = w.fit_rect(iw, ih).expect("fit");
+                let (local_x, local_y) =
+                    crate::shell::input_policy::surface_local((dst.x0, dst.y0), tile);
+                assert_eq!(
+                    (local_x, local_y),
+                    (0.0, 0.0),
+                    "a {iw}x{ih} frame in an {}x{} tile paints from {:?}, but input maps that \
+                     point to ({local_x}, {local_y}) — a press would miss by that much",
+                    tile.width(),
+                    tile.height(),
+                    (dst.x0, dst.y0),
+                );
+            }
+        }
+
+        fn moving_a_static_foreign_surface_requests_one_repaint() {
+            use std::collections::HashMap;
+            use taffy::prelude::TaffyMaxContent;
+            use ui::widget::TaffyTreeExt;
+
+            let id = sid(430);
+            store().forget(id);
+            store().publish_rgba(id, &vec![0; 1200 * 800 * 4], 1200, 800);
+            let mut widget = ForeignSurfaceWidget::new(id, "dev.tilo.static".into());
+
+            let mut taffy = TaffyTree::<()>::new();
+            let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = widget.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
+            let root = taffy.parent_node(
+                taffy::Style {
+                    size: taffy::Size {
+                        width: taffy::Dimension::length(1200.0),
+                        height: taffy::Dimension::length(800.0),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            );
+            taffy
+                .compute_layout(root, taffy::Size::MAX_CONTENT)
+                .unwrap();
+            widget.apply_layout(&taffy, node, Point::ZERO);
+            assert!(widget.needs_redraw(), "first placement must paint");
+            assert!(
+                widget.refresh_cache(),
+                "the first draw consumes the staged client frame",
+            );
+            widget.mark_drawn();
+            assert!(!widget.needs_redraw(), "an unchanged static client idles");
+
+            widget.apply_layout(&taffy, node, Point::new(248.0, 136.0));
+            assert!(
+                widget.needs_redraw(),
+                "moving cached client pixels must invalidate the retained scene",
+            );
+            assert!(
+                !widget.needs_animation_frame(),
+                "a placement edge repaints once rather than starting an animation loop",
+            );
+            widget.mark_drawn();
+            assert!(!widget.needs_redraw());
+            store().forget(id);
+        }
+
+        pending_configure_fires_once_per_size_change();
+        widget_asks_for_frames_until_it_has_drawn_then_only_for_a_pending_one();
+        widget_fit_rect_letterboxes_preserving_aspect();
+        painted_frame_origin_matches_the_origin_input_is_mapped_with();
+        moving_a_static_foreign_surface_requests_one_repaint();
     }
 
+    /// Off-screen tiles never `draw()`, so `cached_seq` stays stale. A
+    /// pending client sequence used to keep `needs_animation_frame` true
+    /// forever and pin the host at the refresh rate. Fail if an idle
+    /// hosted app still requests frames after its first buffer landed.
     #[test]
-    fn publish_then_snapshot_round_trips_and_bumps_seq() {
-        let id = sid(1);
-        store().forget(id);
-        assert_eq!(store().frame_seq(id), 0);
-        assert!(store().snapshot(id).is_none());
-
-        store().publish_rgba(id, &[1, 2, 3, 4, 5, 6, 7, 8], 2, 1);
-        let seq = store().frame_seq(id);
-        assert_eq!(seq, 1, "first publish bumps the sequence to 1");
-        let snap = store().snapshot(id).expect("frame present");
-        assert_eq!(snap.rgba, vec![1, 2, 3, 4, 5, 6, 7, 8]);
-        assert_eq!((snap.width, snap.height), (2, 1));
-
-        // A non-draining read: a second snapshot still sees the frame.
-        assert!(store().snapshot(id).is_some());
-        store().forget(id);
-    }
-
-    #[test]
-    fn an_empty_widget_cache_retries_the_current_nonzero_sequence() {
-        let id = sid(23);
-        store().forget(id);
-        store().publish_rgba(id, &[0xE0, 0x18, 0xA0, 0xFF], 1, 1);
-
-        let mut widget = ForeignSurfaceWidget::new(id, "org.example.retry".into());
-        // Model the interrupted observation that previously pinned the
-        // fallback card: the sequence was recorded but no image survived.
-        widget.cached_seq = store().frame_seq(id);
-        widget.cached = None;
-        assert!(widget.refresh_cache(), "the empty cache must retry");
-        assert!(
-            widget.cached.is_some(),
-            "the current frame must be restored"
-        );
-
-        store().forget(id);
-    }
-
-    #[test]
-    fn note_failure_drops_the_stale_frame_and_records_the_reason() {
-        let id = sid(2);
-        store().forget(id);
-        store().publish_rgba(id, &[9; 16], 2, 2);
-        assert!(store().snapshot(id).is_some());
-
-        store().note_failure(id, "test failure".into());
-        assert!(
-            store().snapshot(id).is_none(),
-            "a failed capture must not leave the previous frame visible"
-        );
-        assert_eq!(store().last_error(id).as_deref(), Some("test failure"));
-        assert!(
-            store().is_mapped(id),
-            "a capture failure does not unmap the client or revoke its input eligibility"
-        );
-        store().forget(id);
-    }
-
-    #[test]
-    fn clear_frame_unmaps_without_forgetting_placement() {
-        let id = sid(3);
-        store().forget(id);
-        store().note_placement(id, Rect::new(0.0, 0.0, 800.0, 600.0));
-        store().publish_rgba(id, &[7; 16], 2, 2);
-        store().clear_frame(id);
-        assert!(store().snapshot(id).is_none());
-        assert!(
-            !store().is_mapped(id),
-            "attach(NULL) must revoke the same map-based input eligibility it created"
-        );
-        assert_eq!(
-            store().viewport(id),
-            Some((800, 600)),
-            "unmap keeps the tab's placement; only destroy forgets it"
-        );
-        store().forget(id);
-        assert_eq!(store().viewport(id), None);
-    }
-
-    #[test]
-    fn pending_configure_fires_once_per_size_change() {
-        let id = sid(4);
-        store().forget(id);
-        assert_eq!(store().take_pending_configure(id), None);
-
-        store().note_placement(id, Rect::new(0.0, 0.0, 1200.0, 800.0));
-        assert_eq!(store().take_pending_configure(id), Some((1200, 800)));
-        assert_eq!(
-            store().take_pending_configure(id),
-            None,
-            "an unchanged layout must not re-send a configure every frame"
-        );
-
-        store().note_placement(id, Rect::new(0.0, 0.0, 600.0, 400.0));
-        assert_eq!(store().take_pending_configure(id), Some((600, 400)));
-        store().forget(id);
-    }
-
-    #[test]
-    fn frame_seq_forget_resets_to_zero() {
-        let id = sid(6);
-        store().forget(id);
-        store().publish_rgba(id, &[0; 4], 1, 1);
-        assert_ne!(store().frame_seq(id), 0);
-        store().forget(id);
-        assert_eq!(
-            store().frame_seq(id),
-            0,
-            "destroying a toplevel must release its cached frame"
-        );
-    }
-
-    /// A surface asks for frames until it has drawn, and after that only when
-    /// a newer one is waiting. The first half matters because an
-    /// undrawn-first-buffer client is the one case nothing else wakes the
-    /// paint loop for; the second: an app with nothing newer must not hold the loop awake.
-    #[test]
-    fn widget_asks_for_frames_until_it_has_drawn_then_only_for_a_pending_one() {
-        let id = sid(7);
+    fn idle_hosted_app_does_not_keep_requesting_frames() {
+        let id = sid(71);
         store().forget(id);
         let mut w = ForeignSurfaceWidget::new(id, "org.example.app".into());
-        // A 1×1 tab, so the 1×1 frame below *fits* it — what being presented waits for, not merely a frame having landed.
         w.rect = Rect::new(0.0, 0.0, 1.0, 1.0);
-        assert!(
-            w.needs_animation_frame(),
-            "nothing presented yet: a widget that stopped asking here would \
-             never be woken to paint the window's first frame"
-        );
         store().publish_rgba(id, &[255, 0, 0, 255], 1, 1);
         assert!(
             !w.awaiting_first_paint(),
-            "the paint gate itself must settle a fitting first frame; native asks it before draw"
+            "the first fitting buffer has already settled the paint gate"
         );
-        assert!(
-            w.needs_animation_frame(),
-            "a fresh frame requests a repaint"
-        );
-        assert!(w.refresh_cache(), "cache picks up the new frame");
         assert!(
             !w.needs_animation_frame(),
-            "once drawn, an idle client must not keep the paint loop awake"
+            "an idle hosted app must not keep requesting frames"
         );
         store().forget(id);
     }
 
+    /// An idle desktop paints only when the loop sees a change, and frame
+    /// callbacks are released only after a paint. An SHM frame the worker
+    /// published without reporting it left the client waiting for
+    /// `wl_surface.frame` forever: headless guests froze every app.
+    #[cfg(target_os = "linux")]
     #[test]
-    fn widget_fit_rect_letterboxes_preserving_aspect() {
-        let mut w = ForeignSurfaceWidget::new(sid(8), "x".into());
-        w.rect = Rect::new(0.0, 0.0, 400.0, 200.0);
-        // A square image inside a 2:1 tile: height-limited, anchored at the tile's top-left with the spare width to the right.
-        let fit = w.fit_rect(100, 100).expect("fit");
-        assert_eq!((fit.width(), fit.height()), (200.0, 200.0));
-        assert_eq!(fit.x0, 0.0);
-        assert_eq!(fit.y0, 0.0);
-        // An exactly-matching client fills the tile with no letterbox.
-        let exact = w.fit_rect(400, 200).expect("fit");
-        assert_eq!(exact, w.rect);
+    fn a_published_shm_frame_is_reported_to_the_loop() {
+        let id = sid(72);
+        store().forget(id);
+        let _ = take_published_shm_frames();
+        assert!(
+            store().prepare_shm_capture(id, OwnedShmFrame::argb8888(vec![0, 0, 255, 255], 1, 1))
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !take_published_shm_frames() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the loop must learn a client frame landed, or it never paints nor releases frame callbacks"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_ne!(store().frame_seq(id), 0, "reported only once published");
+        assert!(!take_published_shm_frames(), "reported once");
+        store().forget(id);
     }
 
-    /// A press has to land on what the user can see, so client pixels and pointer input must share one origin — including mid-resize, before the client's frame catches up.
     #[test]
-    fn painted_frame_origin_matches_the_origin_input_is_mapped_with() {
-        let tile = Rect::new(288.0, 124.0, 288.0 + 856.0, 124.0 + 868.0);
-        let mut w = ForeignSurfaceWidget::new(sid(9), "x".into());
-        w.rect = tile;
+    fn frame_store_publishes_retries_fails_and_forgets_by_sequence() {
+        fn publish_then_snapshot_round_trips_and_bumps_seq() {
+            let id = sid(1);
+            store().forget(id);
+            assert_eq!(store().frame_seq(id), 0);
+            assert!(store().snapshot(id).is_none());
 
-        // Every size a lagging client might still be presenting: exactly right, short, tall, narrow and wide.
-        for (iw, ih) in [(856, 868), (856, 834), (856, 900), (800, 868), (900, 868)] {
-            let dst = w.fit_rect(iw, ih).expect("fit");
-            let (local_x, local_y) =
-                crate::shell::input_policy::surface_local((dst.x0, dst.y0), tile);
+            store().publish_rgba(id, &[1, 2, 3, 4, 5, 6, 7, 8], 2, 1);
+            let seq = store().frame_seq(id);
+            assert_eq!(seq, 1, "first publish bumps the sequence to 1");
+            let snap = store().snapshot(id).expect("frame present");
+            assert_eq!(snap.rgba, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+            assert_eq!((snap.width, snap.height), (2, 1));
+
+            // A non-draining read: a second snapshot still sees the frame.
+            assert!(store().snapshot(id).is_some());
+            store().forget(id);
+        }
+
+        fn an_empty_widget_cache_retries_the_current_nonzero_sequence() {
+            let id = sid(23);
+            store().forget(id);
+            store().publish_rgba(id, &[0xE0, 0x18, 0xA0, 0xFF], 1, 1);
+
+            let mut widget = ForeignSurfaceWidget::new(id, "org.example.retry".into());
+            // Model the interrupted observation that previously pinned the
+            // fallback card: the sequence was recorded but no image survived.
+            widget.cached_seq = store().frame_seq(id);
+            widget.cached = None;
+            assert!(widget.refresh_cache(), "the empty cache must retry");
+            assert!(
+                widget.cached.is_some(),
+                "the current frame must be restored"
+            );
+
+            store().forget(id);
+        }
+
+        fn note_failure_drops_the_stale_frame_and_records_the_reason() {
+            let id = sid(2);
+            store().forget(id);
+            store().publish_rgba(id, &[9; 16], 2, 2);
+            assert!(store().snapshot(id).is_some());
+
+            store().note_failure(id, "test failure".into());
+            assert!(
+                store().snapshot(id).is_none(),
+                "a failed capture must not leave the previous frame visible"
+            );
+            assert_eq!(store().last_error(id).as_deref(), Some("test failure"));
+            assert!(
+                store().is_mapped(id),
+                "a capture failure does not unmap the client or revoke its input eligibility"
+            );
+            store().forget(id);
+        }
+
+        fn clear_frame_unmaps_without_forgetting_placement() {
+            let id = sid(3);
+            store().forget(id);
+            store().note_placement(id, Rect::new(0.0, 0.0, 800.0, 600.0));
+            store().publish_rgba(id, &[7; 16], 2, 2);
+            store().clear_frame(id);
+            assert!(store().snapshot(id).is_none());
+            assert!(
+                !store().is_mapped(id),
+                "attach(NULL) must revoke the same map-based input eligibility it created"
+            );
             assert_eq!(
-                (local_x, local_y),
-                (0.0, 0.0),
-                "a {iw}x{ih} frame in an {}x{} tile paints from {:?}, but input maps that \
-                 point to ({local_x}, {local_y}) — a press would miss by that much",
-                tile.width(),
-                tile.height(),
-                (dst.x0, dst.y0),
+                store().viewport(id),
+                Some((800, 600)),
+                "unmap keeps the tab's placement; only destroy forgets it"
+            );
+            store().forget(id);
+            assert_eq!(store().viewport(id), None);
+        }
+
+        fn frame_seq_forget_resets_to_zero() {
+            let id = sid(6);
+            store().forget(id);
+            store().publish_rgba(id, &[0; 4], 1, 1);
+            assert_ne!(store().frame_seq(id), 0);
+            store().forget(id);
+            assert_eq!(
+                store().frame_seq(id),
+                0,
+                "destroying a toplevel must release its cached frame"
             );
         }
+
+        publish_then_snapshot_round_trips_and_bumps_seq();
+        an_empty_widget_cache_retries_the_current_nonzero_sequence();
+        note_failure_drops_the_stale_frame_and_records_the_reason();
+        clear_frame_unmaps_without_forgetting_placement();
+        frame_seq_forget_resets_to_zero();
     }
 
-    #[test]
-    fn reconcile_copies_adoptions_and_teardowns_across_trees() {
-        let mut source = WorkspaceTree::bootstrap_demo();
-        let mut rendered = WorkspaceTree::bootstrap_demo();
-        assert!(
-            !reconcile_foreign_tabs(&source, &mut rendered),
-            "two pristine trees need no mirroring"
-        );
-
-        crate::shell::tab_binding::adopt_toplevel(
-            &mut source,
-            4242,
-            Some("org.example.client".into()),
-        );
-        assert!(reconcile_foreign_tabs(&source, &mut rendered));
-        let mirrored = foreign_tabs(&rendered);
-        assert_eq!(mirrored.len(), 1);
-        assert_eq!(mirrored[0].surface_id, 4242);
-        assert_eq!(mirrored[0].app_id, "org.example.client");
-        assert!(
-            !reconcile_foreign_tabs(&source, &mut rendered),
-            "mirroring is idempotent"
-        );
-
-        crate::shell::tab_binding::close_tab_for_destroyed_surface(&mut source, 4242);
-        assert!(reconcile_foreign_tabs(&source, &mut rendered));
-        assert!(foreign_tabs(&rendered).is_empty());
-    }
-
-    /// The rendered mirror must follow a late app-id re-home as well as the
-    /// protocol tree.  This is the two-tree version of the Electron/GTK race:
-    /// the first anonymous adoption is visible for one tick, then the launch
-    /// note is claimed when the client finally identifies itself.
     #[test]
     #[serial_test::serial(process_env)]
-    fn reconcile_mirrors_late_app_id_launch_placement() {
-        crate::shell::launcher::clear_pending_placements();
-        let mut source = WorkspaceTree::bootstrap_demo();
-        let mut rendered = source.clone();
-        let target = source.desktop.workspaces[0].strips[0].window_groups[0].id;
-        crate::shell::launcher::set_pending_placement(
-            "org.example.electron",
-            crate::shell::tab_binding::Placement::TabIn(target),
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn reconcile_carries_adoptions_teardowns_and_late_app_ids_across_trees() {
+        fn reconcile_copies_adoptions_and_teardowns_across_trees() {
+            let mut source = WorkspaceTree::bootstrap_demo();
+            let mut rendered = WorkspaceTree::bootstrap_demo();
+            assert!(
+                !reconcile_foreign_tabs(&source, &mut rendered),
+                "two pristine trees need no mirroring"
+            );
 
-        crate::shell::tab_binding::adopt_toplevel(&mut source, 0x501, None);
-        assert!(reconcile_foreign_tabs(&source, &mut rendered));
-        assert_eq!(foreign_tabs_anywhere(&rendered).len(), 1);
+            crate::shell::tab_binding::adopt_toplevel(
+                &mut source,
+                4242,
+                Some("org.example.client".into()),
+            );
+            assert!(reconcile_foreign_tabs(&source, &mut rendered));
+            let mirrored = foreign_tabs(&rendered);
+            assert_eq!(mirrored.len(), 1);
+            assert_eq!(mirrored[0].surface_id, 4242);
+            assert_eq!(mirrored[0].app_id, "org.example.client");
+            assert!(
+                !reconcile_foreign_tabs(&source, &mut rendered),
+                "mirroring is idempotent"
+            );
 
-        assert!(crate::shell::tab_binding::rebind_toplevel_for_app_id(
-            &mut source,
-            0x501,
-            "org.example.electron",
-            None,
-        ));
-        assert!(reconcile_foreign_tabs(&source, &mut rendered));
-        let mirrored = foreign_tabs_anywhere(&rendered);
-        assert_eq!(mirrored.len(), 1);
-        let mirrored_group = rendered
-            .desktop
-            .workspaces
-            .iter()
-            .flat_map(|workspace| workspace.strips.iter())
-            .flat_map(|strip| strip.window_groups.iter())
-            .find(|group| group.tabs.iter().any(|tab| tab.id == mirrored[0].tab_id))
-            .expect("mirrored surface group");
-        assert_eq!(mirrored_group.id, target);
-        crate::shell::launcher::clear_pending_placements();
+            crate::shell::tab_binding::close_tab_for_destroyed_surface(&mut source, 4242);
+            assert!(reconcile_foreign_tabs(&source, &mut rendered));
+            assert!(foreign_tabs(&rendered).is_empty());
+        }
+
+        /// The rendered mirror must follow a late app-id re-home as well as the
+        /// protocol tree.  This is the two-tree version of the Electron/GTK race:
+        /// the first anonymous adoption is visible for one tick, then the launch
+        /// note is claimed when the client finally identifies itself.
+        fn reconcile_mirrors_late_app_id_launch_placement() {
+            crate::shell::launcher::clear_pending_placements();
+            let mut source = WorkspaceTree::bootstrap_demo();
+            let mut rendered = source.clone();
+            let target = source.desktop.workspaces[0].strips[0].window_groups[0].id;
+            crate::shell::launcher::set_pending_placement(
+                "org.example.electron",
+                crate::shell::tab_binding::Placement::TabIn(target),
+            );
+
+            crate::shell::tab_binding::adopt_toplevel(&mut source, 0x501, None);
+            assert!(reconcile_foreign_tabs(&source, &mut rendered));
+            assert_eq!(foreign_tabs_anywhere(&rendered).len(), 1);
+
+            assert!(crate::shell::tab_binding::rebind_toplevel_for_app_id(
+                &mut source,
+                0x501,
+                "org.example.electron",
+                None,
+            ));
+            assert!(reconcile_foreign_tabs(&source, &mut rendered));
+            let mirrored = foreign_tabs_anywhere(&rendered);
+            assert_eq!(mirrored.len(), 1);
+            let mirrored_group = rendered
+                .desktop
+                .workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .flat_map(|strip| strip.window_groups.iter())
+                .find(|group| group.tabs.iter().any(|tab| tab.id == mirrored[0].tab_id))
+                .expect("mirrored surface group");
+            assert_eq!(mirrored_group.id, target);
+            crate::shell::launcher::clear_pending_placements();
+        }
+
+        /// Satellite can give the rendered mirror a provisional non-anonymous
+        /// class before the protocol tree receives the final `WM_CLASS`. The
+        /// mirror must re-home on that identity transition too; restricting this
+        /// path to `anon-*` leaves protocol and chrome in different groups.
+        fn reconcile_rehomes_provisional_x11_identity_to_final_launch_placement() {
+            crate::shell::launcher::clear_pending_placements();
+            let mut source = WorkspaceTree::bootstrap_demo();
+            let mut rendered = source.clone();
+            let target = source.desktop.workspaces[0].strips[0].window_groups[0].id;
+            let surface = 0x502;
+            crate::shell::launcher::set_pending_placement_for_identities(
+                "chatgpt",
+                &["chatgpt".to_string()],
+                crate::shell::tab_binding::Placement::NewGroup,
+            );
+
+            crate::shell::tab_binding::adopt_toplevel_at(
+                &mut source,
+                surface,
+                Some("electron".into()),
+                crate::shell::tab_binding::Placement::TabIn(target),
+            );
+            assert!(reconcile_foreign_tabs(&source, &mut rendered));
+            assert!(crate::shell::tab_binding::rebind_toplevel_for_app_id(
+                &mut source,
+                surface,
+                "Chatgpt",
+                Some("ChatGPT"),
+            ));
+            assert!(reconcile_foreign_tabs(&source, &mut rendered));
+
+            let mirrored = foreign_tabs_anywhere(&rendered);
+            assert_eq!(mirrored.len(), 1);
+            assert_eq!(mirrored[0].app_id, "Chatgpt");
+            assert_eq!(mirrored[0].title, "ChatGPT");
+            let mirrored_group = rendered.desktop.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .find(|group| group.tabs.iter().any(|tab| tab.id == mirrored[0].tab_id))
+                .expect("mirrored provisional surface group");
+            assert_ne!(mirrored_group.id, target);
+            crate::shell::launcher::clear_pending_placements();
+        }
+
+        fn reconcile_propagates_a_late_set_app_id() {
+            let mut source = WorkspaceTree::bootstrap_demo();
+            let mut rendered = WorkspaceTree::bootstrap_demo();
+            crate::shell::tab_binding::adopt_toplevel(&mut source, 77, None);
+            assert!(reconcile_foreign_tabs(&source, &mut rendered));
+            assert_eq!(foreign_tabs(&rendered)[0].app_id, "anon-77");
+
+            crate::shell::tab_binding::rename_tab_for_app_id(&mut source, 77, "io.example.late");
+            assert!(reconcile_foreign_tabs(&source, &mut rendered));
+            let t = &foreign_tabs(&rendered)[0];
+            assert_eq!(t.app_id, "io.example.late");
+            // The identifier propagates; the *title* is humanised from it rather than shown as a machine identifier nobody chose.
+            assert_eq!(
+                t.title, "Late",
+                "a tab wears a name, not the last segment of an app id"
+            );
+        }
+
+        reconcile_copies_adoptions_and_teardowns_across_trees();
+        reconcile_mirrors_late_app_id_launch_placement();
+        reconcile_rehomes_provisional_x11_identity_to_final_launch_placement();
+        reconcile_propagates_a_late_set_app_id();
     }
 
-    /// Satellite can give the rendered mirror a provisional non-anonymous
-    /// class before the protocol tree receives the final `WM_CLASS`. The
-    /// mirror must re-home on that identity transition too; restricting this
-    /// path to `anon-*` leaves protocol and chrome in different groups.
     #[test]
-    #[serial_test::serial(process_env)]
-    fn reconcile_rehomes_provisional_x11_identity_to_final_launch_placement() {
-        crate::shell::launcher::clear_pending_placements();
-        let mut source = WorkspaceTree::bootstrap_demo();
-        let mut rendered = source.clone();
-        let target = source.desktop.workspaces[0].strips[0].window_groups[0].id;
-        let surface = 0x502;
-        crate::shell::launcher::set_pending_placement_for_identities(
-            "chatgpt",
-            &["chatgpt".to_string()],
-            crate::shell::tab_binding::Placement::NewGroup,
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn a_foreign_window_is_adopted_exactly_once() {
+        /// Consuming a user close removes the exact surface from the protocol
+        /// tree before reconciliation. The Wayland toplevel itself can still be
+        /// alive while processing `xdg_toplevel.close`; it must not be mirrored
+        /// back, and another window from the same application must be untouched.
+        fn a_still_live_closing_surface_is_not_readopted_or_confused_with_its_sibling() {
+            let mut source = WorkspaceTree::bootstrap_demo();
+            let mut rendered = WorkspaceTree::bootstrap_demo();
+            for surface in [51, 52] {
+                crate::shell::tab_binding::adopt_toplevel(
+                    &mut source,
+                    surface,
+                    Some("com.openai.chatgpt".into()),
+                );
+            }
+            assert!(reconcile_foreign_tabs(&source, &mut rendered));
+            assert_eq!(tabs_for_surface(&rendered, 51), 1);
+            assert_eq!(tabs_for_surface(&rendered, 52), 1);
 
-        crate::shell::tab_binding::adopt_toplevel_at(
-            &mut source,
-            surface,
-            Some("electron".into()),
-            crate::shell::tab_binding::Placement::TabIn(target),
-        );
-        assert!(reconcile_foreign_tabs(&source, &mut rendered));
-        assert!(crate::shell::tab_binding::rebind_toplevel_for_app_id(
-            &mut source,
-            surface,
-            "Chatgpt",
-            Some("ChatGPT"),
-        ));
-        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+            // This is the frame-loop ordering for a queued close: remove from
+            // both tree authorities, send close to the still-live toplevel, then
+            // reconcile. The application's process and app-id are irrelevant.
+            assert!(crate::shell::tab_binding::close_tab_for_destroyed_surface(
+                &mut rendered,
+                51,
+            ));
+            assert!(crate::shell::tab_binding::close_tab_for_destroyed_surface(
+                &mut source,
+                51,
+            ));
+            assert!(
+                !reconcile_foreign_tabs(&source, &mut rendered),
+                "the consumed close leaves nothing for reconciliation to undo"
+            );
+            assert_eq!(
+                tabs_for_surface(&rendered, 51),
+                0,
+                "the still-live closing surface must not be adopted back"
+            );
+            assert_eq!(
+                tabs_for_surface(&rendered, 52),
+                1,
+                "surface identity keeps the same-app sibling exactly once"
+            );
+        }
 
-        let mirrored = foreign_tabs_anywhere(&rendered);
-        assert_eq!(mirrored.len(), 1);
-        assert_eq!(mirrored[0].app_id, "Chatgpt");
-        assert_eq!(mirrored[0].title, "ChatGPT");
-        let mirrored_group = rendered.desktop.workspaces[0].strips[0]
-            .window_groups
-            .iter()
-            .find(|group| group.tabs.iter().any(|tab| tab.id == mirrored[0].tab_id))
-            .expect("mirrored provisional surface group");
-        assert_ne!(mirrored_group.id, target);
-        crate::shell::launcher::clear_pending_placements();
-    }
+        /// One window, one tab — wherever in the tree that tab sits, including a workspace other than the one the user is looking at.
+        fn a_window_in_another_workspace_is_not_adopted_a_second_time() {
+            let mut source = WorkspaceTree::bootstrap_demo();
+            let mut rendered = WorkspaceTree::bootstrap_demo();
+            let surface = 31;
 
-    /// Consuming a user close removes the exact surface from the protocol
-    /// tree before reconciliation. The Wayland toplevel itself can still be
-    /// alive while processing `xdg_toplevel.close`; it must not be mirrored
-    /// back, and another window from the same application must be untouched.
-    #[test]
-    fn a_still_live_closing_surface_is_not_readopted_or_confused_with_its_sibling() {
-        let mut source = WorkspaceTree::bootstrap_demo();
-        let mut rendered = WorkspaceTree::bootstrap_demo();
-        for surface in [51, 52] {
             crate::shell::tab_binding::adopt_toplevel(
                 &mut source,
                 surface,
-                Some("com.openai.chatgpt".into()),
+                Some("so.tilo.word-processor".into()),
+            );
+            assert!(reconcile_foreign_tabs(&source, &mut rendered));
+            assert_eq!(
+                tabs_for_surface(&rendered, surface),
+                1,
+                "the mirror should adopt the window exactly once",
+            );
+
+            // The user goes to another workspace — nothing about the window changed, it's simply no longer the one on screen.
+            let elsewhere = rendered
+                .desktop
+                .workspaces
+                .iter()
+                .map(|w| w.id)
+                .find(|id| *id != rendered.desktop.active)
+                .expect("the demo tree has more than one workspace");
+            rendered.desktop.active = elsewhere;
+
+            reconcile_foreign_tabs(&source, &mut rendered);
+            assert_eq!(
+                tabs_for_surface(&rendered, surface),
+                1,
+                "switching workspaces opened a second window onto the same surface",
+            );
+
+            // And back again, which is the sequence a person actually performs.
+            rendered.desktop.active = source.desktop.active;
+            reconcile_foreign_tabs(&source, &mut rendered);
+            assert_eq!(
+                tabs_for_surface(&rendered, surface),
+                1,
+                "returning to the window's own workspace duplicated it",
             );
         }
-        assert!(reconcile_foreign_tabs(&source, &mut rendered));
-        assert_eq!(tabs_for_surface(&rendered, 51), 1);
-        assert_eq!(tabs_for_surface(&rendered, 52), 1);
 
-        // This is the frame-loop ordering for a queued close: remove from
-        // both tree authorities, send close to the still-live toplevel, then
-        // reconcile. The application's process and app-id are irrelevant.
-        assert!(crate::shell::tab_binding::close_tab_for_destroyed_surface(
-            &mut rendered,
-            51,
-        ));
-        assert!(crate::shell::tab_binding::close_tab_for_destroyed_surface(
-            &mut source,
-            51,
-        ));
-        assert!(
-            !reconcile_foreign_tabs(&source, &mut rendered),
-            "the consumed close leaves nothing for reconciliation to undo"
-        );
-        assert_eq!(
-            tabs_for_surface(&rendered, 51),
-            0,
-            "the still-live closing surface must not be adopted back"
-        );
-        assert_eq!(
-            tabs_for_surface(&rendered, 52),
-            1,
-            "surface identity keeps the same-app sibling exactly once"
-        );
+        /// A window the launcher placed in a workspace other than the active one
+        /// is already adopted, must not be adopted again — the launch path, not the switch path: a launch records where asked, and the toplevel can map later.
+        fn a_window_placed_outside_the_active_workspace_is_adopted_once() {
+            let mut source = WorkspaceTree::bootstrap_demo();
+            let mut rendered = WorkspaceTree::bootstrap_demo();
+            let surface = 32;
+
+            crate::shell::tab_binding::adopt_toplevel(
+                &mut source,
+                surface,
+                Some("so.tilo.photos".into()),
+            );
+            assert!(reconcile_foreign_tabs(&source, &mut rendered));
+
+            // Move the adopted tab into a workspace that isn't the active one, the way a recorded placement or a peer's room does.
+            let elsewhere = rendered
+                .desktop
+                .workspaces
+                .iter()
+                .map(|w| w.id)
+                .find(|id| *id != rendered.desktop.active)
+                .expect("the demo tree has more than one workspace");
+            let moved = take_foreign_tab(&mut rendered, surface).expect("the adopted tab");
+            let ws = rendered
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|w| w.id == elsewhere)
+                .expect("the other workspace");
+            let strip = ws.strips.first_mut().expect("the other workspace's strip");
+            strip.window_groups.push(crate::shell::state::WindowGroup {
+                id: crate::shell::state::next_id(),
+                active_tab: moved.id,
+                tabs: vec![moved],
+                width: crate::shell::state::WindowWidth::Normal,
+                maximized: false,
+            });
+
+            reconcile_foreign_tabs(&source, &mut rendered);
+            assert_eq!(
+                tabs_for_surface(&rendered, surface),
+                1,
+                "the window was adopted again because its tab was in another workspace",
+            );
+        }
+
+        a_still_live_closing_surface_is_not_readopted_or_confused_with_its_sibling();
+        a_window_in_another_workspace_is_not_adopted_a_second_time();
+        a_window_placed_outside_the_active_workspace_is_adopted_once();
     }
 
-    /// One window, one tab — wherever in the tree that tab sits, including a workspace other than the one the user is looking at.
     #[test]
-    fn a_window_in_another_workspace_is_not_adopted_a_second_time() {
-        let mut source = WorkspaceTree::bootstrap_demo();
-        let mut rendered = WorkspaceTree::bootstrap_demo();
-        let surface = 31;
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn duplicate_foreign_entries_collapse_and_stay_collapsed() {
+        /// A desktop that already has the duplicate (a session saved before the mirror compared whole trees) comes back with one window, not two.
+        fn a_duplicate_already_in_the_tree_is_collapsed() {
+            let mut source = WorkspaceTree::bootstrap_demo();
+            let mut rendered = WorkspaceTree::bootstrap_demo();
+            let surface = 33;
 
-        crate::shell::tab_binding::adopt_toplevel(
-            &mut source,
-            surface,
-            Some("so.tilo.word-processor".into()),
-        );
-        assert!(reconcile_foreign_tabs(&source, &mut rendered));
-        assert_eq!(
-            tabs_for_surface(&rendered, surface),
-            1,
-            "the mirror should adopt the window exactly once",
-        );
+            crate::shell::tab_binding::adopt_toplevel(
+                &mut source,
+                surface,
+                Some("so.tilo.photos".into()),
+            );
+            assert!(reconcile_foreign_tabs(&source, &mut rendered));
 
-        // The user goes to another workspace — nothing about the window changed, it's simply no longer the one on screen.
-        let elsewhere = rendered
-            .desktop
-            .workspaces
-            .iter()
-            .map(|w| w.id)
-            .find(|id| *id != rendered.desktop.active)
-            .expect("the demo tree has more than one workspace");
-        rendered.desktop.active = elsewhere;
+            // Stage the state a pre-fix session left behind: a second tab onto the same surface, in the same tab bar, showing the same name.
+            let twin = {
+                let one = foreign_tabs_anywhere(&rendered)
+                    .into_iter()
+                    .find(|t| t.surface_id == surface)
+                    .expect("the adopted tab");
+                crate::shell::state::Tab {
+                    id: one.tab_id + 1_000_000,
+                    title: one.title.clone(),
+                    tile: ShellTile::Foreign {
+                        app_id: one.app_id,
+                        surface_id: surface,
+                    },
+                }
+            };
+            let group = rendered
+                .desktop
+                .active_workspace_mut()
+                .and_then(|w| w.strips.first_mut())
+                .and_then(|s| s.window_groups.first_mut())
+                .expect("the group the window was adopted into");
+            group.tabs.push(twin);
+            assert_eq!(
+                tabs_for_surface(&rendered, surface),
+                2,
+                "the fixture is staged"
+            );
 
-        reconcile_foreign_tabs(&source, &mut rendered);
-        assert_eq!(
-            tabs_for_surface(&rendered, surface),
-            1,
-            "switching workspaces opened a second window onto the same surface",
-        );
+            assert!(
+                reconcile_foreign_tabs(&source, &mut rendered),
+                "collapsing the duplicate is a change the chrome has to be told about",
+            );
+            assert_eq!(
+                tabs_for_surface(&rendered, surface),
+                1,
+                "the restored desktop still shows the application twice",
+            );
 
-        // And back again, which is the sequence a person actually performs.
-        rendered.desktop.active = source.desktop.active;
-        reconcile_foreign_tabs(&source, &mut rendered);
-        assert_eq!(
-            tabs_for_surface(&rendered, surface),
-            1,
-            "returning to the window's own workspace duplicated it",
-        );
-    }
+            // And the group is still showing something that exists.
+            let group = rendered
+                .desktop
+                .active_workspace()
+                .and_then(|w| w.strips.first())
+                .and_then(|s| s.window_groups.first())
+                .expect("the group");
+            assert!(
+                group.tabs.iter().any(|t| t.id == group.active_tab),
+                "the group is pointing at a tab that is no longer there",
+            );
+        }
 
-    /// A window the launcher placed in a workspace other than the active one
-    /// is already adopted, must not be adopted again — the launch path, not the switch path: a launch records where asked, and the toplevel can map later.
-    #[test]
-    fn a_window_placed_outside_the_active_workspace_is_adopted_once() {
-        let mut source = WorkspaceTree::bootstrap_demo();
-        let mut rendered = WorkspaceTree::bootstrap_demo();
-        let surface = 32;
+        /// Duplicate cleanup is a document mutation, not a cosmetic `retain` on
+        /// the current frame.  A later document update previously put the second
+        /// app card back because it was never removed from the replicated list.
+        fn duplicate_cleanup_replicates_and_does_not_reappear_after_resync() {
+            let surface = 34;
+            let mut source = WorkspaceTree::bootstrap_demo();
+            crate::shell::tab_binding::adopt_toplevel(
+                &mut source,
+                surface,
+                Some("so.tilo.photos".into()),
+            );
+            source.seed_doc_from_cache();
+            let mut rendered = source.clone();
 
-        crate::shell::tab_binding::adopt_toplevel(
-            &mut source,
-            surface,
-            Some("so.tilo.photos".into()),
-        );
-        assert!(reconcile_foreign_tabs(&source, &mut rendered));
-
-        // Move the adopted tab into a workspace that isn't the active one, the way a recorded placement or a peer's room does.
-        let elsewhere = rendered
-            .desktop
-            .workspaces
-            .iter()
-            .map(|w| w.id)
-            .find(|id| *id != rendered.desktop.active)
-            .expect("the demo tree has more than one workspace");
-        let moved = take_foreign_tab(&mut rendered, surface).expect("the adopted tab");
-        let ws = rendered
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|w| w.id == elsewhere)
-            .expect("the other workspace");
-        let strip = ws.strips.first_mut().expect("the other workspace's strip");
-        strip.window_groups.push(crate::shell::state::WindowGroup {
-            id: crate::shell::state::next_id(),
-            active_tab: moved.id,
-            tabs: vec![moved],
-            width: crate::shell::state::WindowWidth::Normal,
-            maximized: false,
-        });
-
-        reconcile_foreign_tabs(&source, &mut rendered);
-        assert_eq!(
-            tabs_for_surface(&rendered, surface),
-            1,
-            "the window was adopted again because its tab was in another workspace",
-        );
-    }
-
-    /// A desktop that already has the duplicate (a session saved before the mirror compared whole trees) comes back with one window, not two.
-    #[test]
-    fn a_duplicate_already_in_the_tree_is_collapsed() {
-        let mut source = WorkspaceTree::bootstrap_demo();
-        let mut rendered = WorkspaceTree::bootstrap_demo();
-        let surface = 33;
-
-        crate::shell::tab_binding::adopt_toplevel(
-            &mut source,
-            surface,
-            Some("so.tilo.photos".into()),
-        );
-        assert!(reconcile_foreign_tabs(&source, &mut rendered));
-
-        // Stage the state a pre-fix session left behind: a second tab onto the same surface, in the same tab bar, showing the same name.
-        let twin = {
-            let one = foreign_tabs_anywhere(&rendered)
+            let twin = foreign_tabs_anywhere(&rendered)
                 .into_iter()
-                .find(|t| t.surface_id == surface)
-                .expect("the adopted tab");
-            crate::shell::state::Tab {
-                id: one.tab_id + 1_000_000,
-                title: one.title.clone(),
+                .find(|tab| tab.surface_id == surface)
+                .expect("the source foreign tab");
+            let group = rendered
+                .desktop
+                .active_workspace_mut()
+                .and_then(|workspace| workspace.strips.first_mut())
+                .and_then(|strip| strip.window_groups.first_mut())
+                .expect("the group the tab was adopted into");
+            group.tabs.push(crate::shell::state::Tab {
+                id: twin.tab_id + 2_000_000,
+                title: twin.title,
                 tile: ShellTile::Foreign {
-                    app_id: one.app_id,
+                    app_id: twin.app_id,
+                    surface_id: twin.surface_id,
+                },
+            });
+            rendered.seed_doc_from_cache();
+            let mut stale_replica = rendered.clone();
+            let before_cleanup = rendered.current_heads();
+
+            assert!(reconcile_foreign_tabs(&source, &mut rendered));
+            assert_eq!(tabs_for_surface(&rendered, surface), 1);
+
+            let deletion = rendered.export_changes_since(&before_cleanup);
+            stale_replica
+                .apply_changes(&deletion)
+                .expect("the document deletion applies to a stale replica");
+            assert_eq!(
+                tabs_for_surface(&stale_replica, surface),
+                1,
+                "a later resync must not restore the duplicate application"
+            );
+        }
+
+        /// A real session can receive a room revision while a local external app
+        /// is mapping.  The revision may have been authored from before a close,
+        /// so this covers the complete ordering rather than each operation in
+        /// isolation: pointer/keyboard routes close and reorder the durable
+        /// topology; the protocol side maps one foreign surface; then a stale
+        /// peer revision and a normal restart run.
+        fn stale_revision_after_close_reorder_and_foreign_launch_keeps_one_live_app() {
+            use crate::shell::state::AppKind;
+            use crate::shell::tab_binding::{Placement, open_hosted_app, remove_tab};
+
+            let state_dir = tempfile::tempdir().expect("state directory");
+            let state_path = state_dir.path().join("state.json");
+            let mut source = WorkspaceTree::bootstrap_demo();
+            let strip_id = source.desktop.workspaces[0].strips[0].id;
+
+            // Build a three-window shared baseline. The app that is closed is a
+            // symbolic hosted app, so its deletion is an actual room-document
+            // mutation. The app launched later is deliberately a foreign
+            // Wayland surface and therefore remains process-local.
+            let closed_tab = open_hosted_app(
+                &mut source,
+                AppKind::Other("Close fixture".into()),
+                "Close fixture",
+                Placement::NewGroup,
+            );
+            let reorder_tab = open_hosted_app(
+                &mut source,
+                AppKind::Other("Reorder fixture".into()),
+                "Reorder fixture",
+                Placement::NewGroup,
+            );
+            let closed_group = group_for_tab(&source, closed_tab);
+            let reordered_group = group_for_tab(&source, reorder_tab);
+            source.seed_doc_from_cache();
+            let base_heads = source.current_heads();
+            let bootstrap = source.export_changes_since(&[]);
+
+            let mut rendered = WorkspaceTree::default();
+            rendered
+                .apply_changes(&bootstrap)
+                .expect("rendered tree accepts its shared baseline");
+            rendered.persist_path = Some(state_path.clone());
+            rendered.flush_to_disk();
+
+            // This is the durable close route used by both the close button and
+            // Super+W after their event handlers resolve the exact tab.
+            assert!(
+                remove_tab(&mut rendered, closed_tab),
+                "the closed app must leave the rendered document"
+            );
+            assert!(
+                rendered.desktop.workspaces[0].strips[0]
+                    .window_groups
+                    .iter()
+                    .all(|group| group.id != closed_group),
+                "closing the only tab removes the whole group"
+            );
+
+            // Meanwhile a peer still based on the old document reorders another
+            // group. Its change contains the now-closed group in its old list,
+            // which is the regression that used to resurrect windows.
+            assert!(source.reorder_group_for_tests(strip_id, reordered_group, 0));
+            let stale_revision = source.export_changes_since(&base_heads);
+            rendered
+                .apply_changes(&stale_revision)
+                .expect("a later peer revision applies");
+            assert!(
+                rendered.desktop.workspaces[0].strips[0]
+                    .window_groups
+                    .iter()
+                    .all(|group| group.id != closed_group),
+                "a stale reorder must not bring the closed group back"
+            );
+
+            // A conventional host application maps after that room revision.
+            // It belongs to the protocol tree, then reconciliation makes exactly
+            // one chrome tab for its surface.
+            let surface = 0x51_000;
+            crate::shell::tab_binding::adopt_toplevel(
+                &mut source,
+                surface,
+                Some("org.example.ExternalEditor".into()),
+            );
+            assert!(reconcile_foreign_tabs(&source, &mut rendered));
+            assert_eq!(
+                tabs_for_surface(&rendered, surface),
+                1,
+                "one mapped external surface must produce exactly one tab"
+            );
+            assert!(
+                !reconcile_foreign_tabs(&source, &mut rendered),
+                "reconciliation is idempotent once the external app is present"
+            );
+
+            // A state round-trip may not revive the closed group; live Wayland
+            // surfaces intentionally do not survive a compositor restart because
+            // their surface ids belong to the old process.
+            rendered.flush_to_disk();
+            let restarted = crate::shell::persist::load_tree_from(&state_path)
+                .expect("the post-revision layout restarts cleanly");
+            assert!(
+                restarted.desktop.workspaces[0].strips[0]
+                    .window_groups
+                    .iter()
+                    .all(|group| group.id != closed_group),
+                "restart must not revive the closed group"
+            );
+            assert_eq!(
+                tabs_for_surface(&restarted, surface),
+                0,
+                "a dead process-local surface must not be restored after restart"
+            );
+            assert_active_groups_are_valid(&restarted);
+        }
+
+        a_duplicate_already_in_the_tree_is_collapsed();
+        duplicate_cleanup_replicates_and_does_not_reappear_after_resync();
+        stale_revision_after_close_reorder_and_foreign_launch_keeps_one_live_app();
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn foreign_layout_lifecycle_and_visibility_follow_the_tree() {
+        /// Exercise the layout as one deterministic state machine rather than a
+        /// collection of isolated mutations.  This is deliberately shaped like
+        /// a busy desktop: hosted and external apps coexist, a legacy duplicate
+        /// is discovered, tabs and groups move, focus crosses workspaces, an old
+        /// peer revision lands, a newer revision follows it, and the compositor
+        /// restarts after the external process exits.
+        ///
+        /// Pointer and keyboard close both resolve to `remove_tab` before this
+        /// layer, so using that primitive here covers their shared durable
+        /// transaction while `strip_navigation` checks both actual event routes.
+        fn deterministic_layout_lifecycle_survives_interleaved_mutations() {
+            use crate::shell::state::AppKind;
+            use crate::shell::tab_binding::{
+                Placement, close_tab_for_destroyed_surface, open_hosted_app, remove_tab,
+            };
+
+            crate::shell::launcher::clear_pending_placements();
+            let state_dir = tempfile::tempdir().expect("state directory");
+            let state_path = state_dir.path().join("state.json");
+            let mut rendered = WorkspaceTree::bootstrap_demo();
+            rendered.persist_path = Some(state_path.clone());
+
+            let strip = rendered
+                .desktop
+                .active_workspace()
+                .and_then(|workspace| workspace.strips.first())
+                .expect("demo workspace strip")
+                .id;
+            let anchor = rendered
+                .desktop
+                .active_group_for(strip)
+                .expect("demo workspace active group");
+            let local_tab = open_hosted_app(
+                &mut rendered,
+                AppKind::Other("Native fixture".into()),
+                "Native fixture",
+                Placement::TabIn(anchor),
+            );
+            let reorder_tab = open_hosted_app(
+                &mut rendered,
+                AppKind::Other("Reorder fixture".into()),
+                "Reorder fixture",
+                Placement::NewGroup,
+            );
+            let reorder_group = group_for_tab(&rendered, reorder_tab);
+            let close_tab = open_hosted_app(
+                &mut rendered,
+                AppKind::Other("Close fixture".into()),
+                "Close fixture",
+                Placement::NewGroup,
+            );
+            let close_group = group_for_tab(&rendered, close_tab);
+            rendered.seed_doc_from_cache();
+
+            // Protocol and chrome start from the same layout.  A pending launch
+            // is queried independently by both trees in production; the same
+            // surface id must get the same answer rather than minting two tabs.
+            let mut source = rendered.clone();
+            crate::shell::launcher::set_pending_placement(
+                "org.example.ExternalEditor",
+                Placement::TabIn(anchor),
+            );
+            let surface = 0x00C0_FFEE;
+            crate::shell::tab_binding::adopt_toplevel(
+                &mut source,
+                surface,
+                Some("org.example.ExternalEditor".into()),
+            );
+            assert!(reconcile_foreign_tabs(&source, &mut rendered));
+            assert_eq!(tabs_for_surface(&rendered, surface), 1);
+            assert!(
+                !reconcile_foreign_tabs(&source, &mut rendered),
+                "a second frame cannot duplicate one mapped toplevel"
+            );
+
+            // Model the bad on-disk state produced by an older build.  Make the
+            // duplicate active as well, so cleanup has to repair selection, not
+            // merely shorten a background vector.
+            let original = foreign_tabs_anywhere(&rendered)
+                .into_iter()
+                .find(|tab| tab.surface_id == surface)
+                .expect("mirrored foreign tab");
+            let duplicate_id = original.tab_id.saturating_add(9_000_000);
+            let owner = group_for_tab(&rendered, original.tab_id);
+            let group = rendered
+                .desktop
+                .workspaces
+                .iter_mut()
+                .flat_map(|workspace| workspace.strips.iter_mut())
+                .flat_map(|strip| strip.window_groups.iter_mut())
+                .find(|group| group.id == owner)
+                .expect("foreign tab owner");
+            group.tabs.push(crate::shell::state::Tab {
+                id: duplicate_id,
+                title: original.title,
+                tile: ShellTile::Foreign {
+                    app_id: original.app_id,
                     surface_id: surface,
                 },
+            });
+            group.active_tab = duplicate_id;
+            rendered.seed_doc_from_cache();
+            let stale_seed = rendered.export_changes_since(&[]);
+            let mut stale_peer = WorkspaceTree::default();
+            stale_peer
+                .apply_changes(&stale_seed)
+                .expect("stale peer accepts the shared baseline");
+            let stale_base = stale_peer.current_heads();
+
+            assert!(reconcile_foreign_tabs(&source, &mut rendered));
+            assert_eq!(tabs_for_surface(&rendered, surface), 1);
+            assert!(remove_tab(&mut rendered, close_tab));
+            assert!(
+                rendered
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| workspace.strips.iter())
+                    .flat_map(|strip| strip.window_groups.iter())
+                    .all(|group| group.id != close_group),
+                "closing a group's only tab removes the group immediately"
+            );
+
+            let moved_group = rendered
+                .desktop
+                .active_workspace()
+                .and_then(|workspace| workspace.strips.first())
+                .and_then(|strip| strip.window_groups.last())
+                .expect("another group remains")
+                .id;
+            let _ = rendered.reorder_group_for_tests(strip, moved_group, 0);
+
+            // The old peer only reorders an unrelated surviving group.  Its
+            // change was authored while both the duplicate and closed group
+            // still existed; neither may be revived when that revision arrives.
+            assert!(stale_peer.reorder_group_for_tests(strip, reorder_group, 0));
+            let stale_changes = stale_peer.export_changes_since(&stale_base);
+            rendered
+                .apply_changes(&stale_changes)
+                .expect("old revision applies");
+            assert_eq!(tabs_for_surface(&rendered, surface), 1);
+            assert!(
+                rendered
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| workspace.strips.iter())
+                    .flat_map(|strip| strip.window_groups.iter())
+                    .all(|group| group.id != close_group),
+                "an old reorder must not revive a closed window group"
+            );
+
+            // Travel away and back, then accept a genuinely newer tab-order
+            // revision.  Focus is local state; neither activity can recreate a
+            // tab that the document has already deleted.
+            assert!(rendered.switch_down());
+            assert!(rendered.switch_up());
+            let future_seed = rendered.export_changes_since(&[]);
+            let mut future_peer = WorkspaceTree::default();
+            future_peer
+                .apply_changes(&future_seed)
+                .expect("future peer accepts the merged baseline");
+            let future_base = future_peer.current_heads();
+            let local_group = group_for_tab(&future_peer, local_tab);
+            let group = future_peer
+                .desktop
+                .workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .flat_map(|strip| strip.window_groups.iter())
+                .find(|group| group.id == local_group)
+                .expect("local tab group");
+            let from = group
+                .tabs
+                .iter()
+                .position(|tab| tab.id == local_tab)
+                .expect("local tab index");
+            let to = usize::from(from == 0);
+            assert!(future_peer.reorder_tab_for_tests(local_group, from, to));
+            let future_changes = future_peer.export_changes_since(&future_base);
+            rendered
+                .apply_changes(&future_changes)
+                .expect("newer revision applies");
+            assert_eq!(tabs_for_surface(&rendered, surface), 1);
+            assert_active_groups_are_valid(&rendered);
+
+            // A clean external exit is a protocol teardown, not a layout reset.
+            assert!(close_tab_for_destroyed_surface(&mut source, surface));
+            assert!(reconcile_foreign_tabs(&source, &mut rendered));
+            assert_eq!(tabs_for_surface(&rendered, surface), 0);
+            assert!(
+                rendered
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| workspace.strips.iter())
+                    .flat_map(|strip| strip.window_groups.iter())
+                    .flat_map(|group| group.tabs.iter())
+                    .any(|tab| tab.id == local_tab),
+                "closing an external client must not remove the hosted sibling"
+            );
+
+            rendered.flush_to_disk();
+            let restarted = crate::shell::persist::load_tree_from(&state_path)
+                .expect("interleaved layout remains restartable");
+            assert_eq!(tabs_for_surface(&restarted, surface), 0);
+            assert!(
+                restarted
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| workspace.strips.iter())
+                    .flat_map(|strip| strip.window_groups.iter())
+                    .all(|group| group.id != close_group),
+                "restart must retain the close after both old and new revisions"
+            );
+            assert_active_groups_are_valid(&restarted);
+            crate::shell::launcher::clear_pending_placements();
+        }
+
+        fn visibility_tracks_the_groups_active_tab() {
+            use crate::shell::tab_binding::{Placement, adopt_toplevel, adopt_toplevel_at};
+            crate::shell::launcher::clear_pending_placements();
+            let mut tree = WorkspaceTree::bootstrap_demo();
+            // A lone selected window, so each adoption opens its own column rather than joining a tabbed group — the arrangement this test is about.
+            {
+                let strip_id = tree.desktop.workspaces[0].strips[0].id;
+                let g = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
+                g.tabs.truncate(1);
+                g.active_tab = g.tabs[0].id;
+                let gid = g.id;
+                tree.desktop
+                    .active_strip
+                    .insert(tree.desktop.active, strip_id);
+                tree.desktop.set_active_group(strip_id, gid);
             }
-        };
-        let group = rendered
-            .desktop
-            .active_workspace_mut()
-            .and_then(|w| w.strips.first_mut())
-            .and_then(|s| s.window_groups.first_mut())
-            .expect("the group the window was adopted into");
-        group.tabs.push(twin);
-        assert_eq!(
-            tabs_for_surface(&rendered, surface),
-            2,
-            "the fixture is staged"
-        );
+            let first = adopt_toplevel(&mut tree, 11, None);
+            assert!(is_visible_tab(&tree, 11), "a fresh adoption becomes active");
 
-        assert!(
-            reconcile_foreign_tabs(&source, &mut rendered),
-            "collapsing the duplicate is a change the chrome has to be told about",
-        );
-        assert_eq!(
-            tabs_for_surface(&rendered, surface),
-            1,
-            "the restored desktop still shows the application twice",
-        );
+            // A second launch opens its own group beside the first, so both windows are on screen — that is the point of the strip.
+            let _second = adopt_toplevel(&mut tree, 12, None);
+            assert!(
+                is_visible_tab(&tree, 11),
+                "a launch into its own group must not hide the previous window"
+            );
+            assert!(is_visible_tab(&tree, 12));
 
-        // And the group is still showing something that exists.
-        let group = rendered
-            .desktop
-            .active_workspace()
-            .and_then(|w| w.strips.first())
-            .and_then(|s| s.window_groups.first())
-            .expect("the group");
-        assert!(
-            group.tabs.iter().any(|t| t.id == group.active_tab),
-            "the group is pointing at a tab that is no longer there",
-        );
-    }
-
-    /// Duplicate cleanup is a document mutation, not a cosmetic `retain` on
-    /// the current frame.  A later document update previously put the second
-    /// app card back because it was never removed from the replicated list.
-    #[test]
-    fn duplicate_cleanup_replicates_and_does_not_reappear_after_resync() {
-        let surface = 34;
-        let mut source = WorkspaceTree::bootstrap_demo();
-        crate::shell::tab_binding::adopt_toplevel(
-            &mut source,
-            surface,
-            Some("so.tilo.photos".into()),
-        );
-        source.seed_doc_from_cache();
-        let mut rendered = source.clone();
-
-        let twin = foreign_tabs_anywhere(&rendered)
-            .into_iter()
-            .find(|tab| tab.surface_id == surface)
-            .expect("the source foreign tab");
-        let group = rendered
-            .desktop
-            .active_workspace_mut()
-            .and_then(|workspace| workspace.strips.first_mut())
-            .and_then(|strip| strip.window_groups.first_mut())
-            .expect("the group the tab was adopted into");
-        group.tabs.push(crate::shell::state::Tab {
-            id: twin.tab_id + 2_000_000,
-            title: twin.title,
-            tile: ShellTile::Foreign {
-                app_id: twin.app_id,
-                surface_id: twin.surface_id,
-            },
-        });
-        rendered.seed_doc_from_cache();
-        let mut stale_replica = rendered.clone();
-        let before_cleanup = rendered.current_heads();
-
-        assert!(reconcile_foreign_tabs(&source, &mut rendered));
-        assert_eq!(tabs_for_surface(&rendered, surface), 1);
-
-        let deletion = rendered.export_changes_since(&before_cleanup);
-        stale_replica
-            .apply_changes(&deletion)
-            .expect("the document deletion applies to a stale replica");
-        assert_eq!(
-            tabs_for_surface(&stale_replica, surface),
-            1,
-            "a later resync must not restore the duplicate application"
-        );
-    }
-
-    /// A real session can receive a room revision while a local external app
-    /// is mapping.  The revision may have been authored from before a close,
-    /// so this covers the complete ordering rather than each operation in
-    /// isolation: pointer/keyboard routes close and reorder the durable
-    /// topology; the protocol side maps one foreign surface; then a stale
-    /// peer revision and a normal restart run.
-    #[test]
-    fn stale_revision_after_close_reorder_and_foreign_launch_keeps_one_live_app() {
-        use crate::shell::state::AppKind;
-        use crate::shell::tab_binding::{Placement, open_hosted_app, remove_tab};
-
-        let state_dir = tempfile::tempdir().expect("state directory");
-        let state_path = state_dir.path().join("state.json");
-        let mut source = WorkspaceTree::bootstrap_demo();
-        let strip_id = source.desktop.workspaces[0].strips[0].id;
-
-        // Build a three-window shared baseline. The app that is closed is a
-        // symbolic hosted app, so its deletion is an actual room-document
-        // mutation. The app launched later is deliberately a foreign
-        // Wayland surface and therefore remains process-local.
-        let closed_tab = open_hosted_app(
-            &mut source,
-            AppKind::Other("Close fixture".into()),
-            "Close fixture",
-            Placement::NewGroup,
-        );
-        let reorder_tab = open_hosted_app(
-            &mut source,
-            AppKind::Other("Reorder fixture".into()),
-            "Reorder fixture",
-            Placement::NewGroup,
-        );
-        let closed_group = group_for_tab(&source, closed_tab);
-        let reordered_group = group_for_tab(&source, reorder_tab);
-        source.seed_doc_from_cache();
-        let base_heads = source.current_heads();
-        let bootstrap = source.export_changes_since(&[]);
-
-        let mut rendered = WorkspaceTree::default();
-        rendered
-            .apply_changes(&bootstrap)
-            .expect("rendered tree accepts its shared baseline");
-        rendered.persist_path = Some(state_path.clone());
-        rendered.flush_to_disk();
-
-        // This is the durable close route used by both the close button and
-        // Super+W after their event handlers resolve the exact tab.
-        assert!(
-            remove_tab(&mut rendered, closed_tab),
-            "the closed app must leave the rendered document"
-        );
-        assert!(
-            rendered.desktop.workspaces[0].strips[0]
-                .window_groups
-                .iter()
-                .all(|group| group.id != closed_group),
-            "closing the only tab removes the whole group"
-        );
-
-        // Meanwhile a peer still based on the old document reorders another
-        // group. Its change contains the now-closed group in its old list,
-        // which is the regression that used to resurrect windows.
-        assert!(source.reorder_group_within_strip(strip_id, reordered_group, 0));
-        let stale_revision = source.export_changes_since(&base_heads);
-        rendered
-            .apply_changes(&stale_revision)
-            .expect("a later peer revision applies");
-        assert!(
-            rendered.desktop.workspaces[0].strips[0]
-                .window_groups
-                .iter()
-                .all(|group| group.id != closed_group),
-            "a stale reorder must not bring the closed group back"
-        );
-
-        // A conventional host application maps after that room revision.
-        // It belongs to the protocol tree, then reconciliation makes exactly
-        // one chrome tab for its surface.
-        let surface = 0x51_000;
-        crate::shell::tab_binding::adopt_toplevel(
-            &mut source,
-            surface,
-            Some("org.example.ExternalEditor".into()),
-        );
-        assert!(reconcile_foreign_tabs(&source, &mut rendered));
-        assert_eq!(
-            tabs_for_surface(&rendered, surface),
-            1,
-            "one mapped external surface must produce exactly one tab"
-        );
-        assert!(
-            !reconcile_foreign_tabs(&source, &mut rendered),
-            "reconciliation is idempotent once the external app is present"
-        );
-
-        // A state round-trip may not revive the closed group; live Wayland
-        // surfaces intentionally do not survive a compositor restart because
-        // their surface ids belong to the old process.
-        rendered.flush_to_disk();
-        let restarted = crate::shell::persist::load_tree_from(&state_path)
-            .expect("the post-revision layout restarts cleanly");
-        assert!(
-            restarted.desktop.workspaces[0].strips[0]
-                .window_groups
-                .iter()
-                .all(|group| group.id != closed_group),
-            "restart must not revive the closed group"
-        );
-        assert_eq!(
-            tabs_for_surface(&restarted, surface),
-            0,
-            "a dead process-local surface must not be restored after restart"
-        );
-        assert_active_groups_are_valid(&restarted);
-    }
-
-    /// Exercise the layout as one deterministic state machine rather than a
-    /// collection of isolated mutations.  This is deliberately shaped like
-    /// a busy desktop: hosted and external apps coexist, a legacy duplicate
-    /// is discovered, tabs and groups move, focus crosses workspaces, an old
-    /// peer revision lands, a newer revision follows it, and the compositor
-    /// restarts after the external process exits.
-    ///
-    /// Pointer and keyboard close both resolve to `remove_tab` before this
-    /// layer, so using that primitive here covers their shared durable
-    /// transaction while `strip_navigation` checks both actual event routes.
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one lifecycle, interleaved step by step, is the property under test"
-    )]
-    fn deterministic_layout_lifecycle_survives_interleaved_mutations() {
-        use crate::shell::state::AppKind;
-        use crate::shell::tab_binding::{
-            Placement, close_tab_for_destroyed_surface, open_hosted_app, remove_tab,
-        };
-
-        crate::shell::launcher::clear_pending_placements();
-        let state_dir = tempfile::tempdir().expect("state directory");
-        let state_path = state_dir.path().join("state.json");
-        let mut rendered = WorkspaceTree::bootstrap_demo();
-        rendered.persist_path = Some(state_path.clone());
-
-        let strip = rendered
-            .desktop
-            .active_workspace()
-            .and_then(|workspace| workspace.strips.first())
-            .expect("demo workspace strip")
-            .id;
-        let anchor = rendered
-            .desktop
-            .active_group_for(strip)
-            .expect("demo workspace active group");
-        let local_tab = open_hosted_app(
-            &mut rendered,
-            AppKind::Other("Native fixture".into()),
-            "Native fixture",
-            Placement::TabIn(anchor),
-        );
-        let reorder_tab = open_hosted_app(
-            &mut rendered,
-            AppKind::Other("Reorder fixture".into()),
-            "Reorder fixture",
-            Placement::NewGroup,
-        );
-        let reorder_group = group_for_tab(&rendered, reorder_tab);
-        let close_tab = open_hosted_app(
-            &mut rendered,
-            AppKind::Other("Close fixture".into()),
-            "Close fixture",
-            Placement::NewGroup,
-        );
-        let close_group = group_for_tab(&rendered, close_tab);
-        rendered.seed_doc_from_cache();
-
-        // Protocol and chrome start from the same layout.  A pending launch
-        // is queried independently by both trees in production; the same
-        // surface id must get the same answer rather than minting two tabs.
-        let mut source = rendered.clone();
-        crate::shell::launcher::set_pending_placement(
-            "org.example.ExternalEditor",
-            Placement::TabIn(anchor),
-        );
-        let surface = 0x00C0_FFEE;
-        crate::shell::tab_binding::adopt_toplevel(
-            &mut source,
-            surface,
-            Some("org.example.ExternalEditor".into()),
-        );
-        assert!(reconcile_foreign_tabs(&source, &mut rendered));
-        assert_eq!(tabs_for_surface(&rendered, surface), 1);
-        assert!(
-            !reconcile_foreign_tabs(&source, &mut rendered),
-            "a second frame cannot duplicate one mapped toplevel"
-        );
-
-        // Model the bad on-disk state produced by an older build.  Make the
-        // duplicate active as well, so cleanup has to repair selection, not
-        // merely shorten a background vector.
-        let original = foreign_tabs_anywhere(&rendered)
-            .into_iter()
-            .find(|tab| tab.surface_id == surface)
-            .expect("mirrored foreign tab");
-        let duplicate_id = original.tab_id.saturating_add(9_000_000);
-        let owner = group_for_tab(&rendered, original.tab_id);
-        let group = rendered
-            .desktop
-            .workspaces
-            .iter_mut()
-            .flat_map(|workspace| workspace.strips.iter_mut())
-            .flat_map(|strip| strip.window_groups.iter_mut())
-            .find(|group| group.id == owner)
-            .expect("foreign tab owner");
-        group.tabs.push(crate::shell::state::Tab {
-            id: duplicate_id,
-            title: original.title,
-            tile: ShellTile::Foreign {
-                app_id: original.app_id,
-                surface_id: surface,
-            },
-        });
-        group.active_tab = duplicate_id;
-        rendered.seed_doc_from_cache();
-        let stale_seed = rendered.export_changes_since(&[]);
-        let mut stale_peer = WorkspaceTree::default();
-        stale_peer
-            .apply_changes(&stale_seed)
-            .expect("stale peer accepts the shared baseline");
-        let stale_base = stale_peer.current_heads();
-
-        assert!(reconcile_foreign_tabs(&source, &mut rendered));
-        assert_eq!(tabs_for_surface(&rendered, surface), 1);
-        assert!(remove_tab(&mut rendered, close_tab));
-        assert!(
-            rendered
+            // Stacking into the *same* group is what puts a window behind another — the tab dimension, not the strip one.
+            let owner = tree
                 .desktop
-                .workspaces
+                .active_workspace()
+                .unwrap()
+                .strips
                 .iter()
-                .flat_map(|workspace| workspace.strips.iter())
-                .flat_map(|strip| strip.window_groups.iter())
-                .all(|group| group.id != close_group),
-            "closing a group's only tab removes the group immediately"
-        );
+                .flat_map(|s| s.window_groups.iter())
+                .find(|g| g.tabs.iter().any(|t| t.id == first))
+                .expect("the first window's group")
+                .id;
+            let _third = adopt_toplevel_at(&mut tree, 13, None, Placement::TabIn(owner));
+            assert!(
+                !is_visible_tab(&tree, 11),
+                "a tab added to the same group covers the one that was showing"
+            );
+            assert!(is_visible_tab(&tree, 13));
+            assert!(
+                !is_visible_tab(&tree, 999),
+                "unknown surfaces are not visible"
+            );
+        }
 
-        let moved_group = rendered
-            .desktop
-            .active_workspace()
-            .and_then(|workspace| workspace.strips.first())
-            .and_then(|strip| strip.window_groups.last())
-            .expect("another group remains")
-            .id;
-        let _ = rendered.reorder_group_within_strip(strip, moved_group, 0);
-
-        // The old peer only reorders an unrelated surviving group.  Its
-        // change was authored while both the duplicate and closed group
-        // still existed; neither may be revived when that revision arrives.
-        assert!(stale_peer.reorder_group_within_strip(strip, reorder_group, 0));
-        let stale_changes = stale_peer.export_changes_since(&stale_base);
-        rendered
-            .apply_changes(&stale_changes)
-            .expect("old revision applies");
-        assert_eq!(tabs_for_surface(&rendered, surface), 1);
-        assert!(
-            rendered
-                .desktop
-                .workspaces
-                .iter()
-                .flat_map(|workspace| workspace.strips.iter())
-                .flat_map(|strip| strip.window_groups.iter())
-                .all(|group| group.id != close_group),
-            "an old reorder must not revive a closed window group"
-        );
-
-        // Travel away and back, then accept a genuinely newer tab-order
-        // revision.  Focus is local state; neither activity can recreate a
-        // tab that the document has already deleted.
-        assert!(rendered.switch_down());
-        assert!(rendered.switch_up());
-        let future_seed = rendered.export_changes_since(&[]);
-        let mut future_peer = WorkspaceTree::default();
-        future_peer
-            .apply_changes(&future_seed)
-            .expect("future peer accepts the merged baseline");
-        let future_base = future_peer.current_heads();
-        let local_group = group_for_tab(&future_peer, local_tab);
-        let group = future_peer
-            .desktop
-            .workspaces
-            .iter()
-            .flat_map(|workspace| workspace.strips.iter())
-            .flat_map(|strip| strip.window_groups.iter())
-            .find(|group| group.id == local_group)
-            .expect("local tab group");
-        let from = group
-            .tabs
-            .iter()
-            .position(|tab| tab.id == local_tab)
-            .expect("local tab index");
-        let to = usize::from(from == 0);
-        assert!(future_peer.reorder_tab_within_group(local_group, from, to));
-        let future_changes = future_peer.export_changes_since(&future_base);
-        rendered
-            .apply_changes(&future_changes)
-            .expect("newer revision applies");
-        assert_eq!(tabs_for_surface(&rendered, surface), 1);
-        assert_active_groups_are_valid(&rendered);
-
-        // A clean external exit is a protocol teardown, not a layout reset.
-        assert!(close_tab_for_destroyed_surface(&mut source, surface));
-        assert!(reconcile_foreign_tabs(&source, &mut rendered));
-        assert_eq!(tabs_for_surface(&rendered, surface), 0);
-        assert!(
-            rendered
-                .desktop
-                .workspaces
-                .iter()
-                .flat_map(|workspace| workspace.strips.iter())
-                .flat_map(|strip| strip.window_groups.iter())
-                .flat_map(|group| group.tabs.iter())
-                .any(|tab| tab.id == local_tab),
-            "closing an external client must not remove the hosted sibling"
-        );
-
-        rendered.flush_to_disk();
-        let restarted = crate::shell::persist::load_tree_from(&state_path)
-            .expect("interleaved layout remains restartable");
-        assert_eq!(tabs_for_surface(&restarted, surface), 0);
-        assert!(
-            restarted
-                .desktop
-                .workspaces
-                .iter()
-                .flat_map(|workspace| workspace.strips.iter())
-                .flat_map(|strip| strip.window_groups.iter())
-                .all(|group| group.id != close_group),
-            "restart must retain the close after both old and new revisions"
-        );
-        assert_active_groups_are_valid(&restarted);
-        crate::shell::launcher::clear_pending_placements();
+        deterministic_layout_lifecycle_survives_interleaved_mutations();
+        visibility_tracks_the_groups_active_tab();
     }
 
     /// How many tabs anywhere in `tree` show `surface` — walks the tree the chrome renders from, so a duplicate is counted where it'd draw.
@@ -4271,93 +5353,5 @@ mod tests {
             }
         }
         None
-    }
-
-    #[test]
-    fn reconcile_propagates_a_late_set_app_id() {
-        let mut source = WorkspaceTree::bootstrap_demo();
-        let mut rendered = WorkspaceTree::bootstrap_demo();
-        crate::shell::tab_binding::adopt_toplevel(&mut source, 77, None);
-        assert!(reconcile_foreign_tabs(&source, &mut rendered));
-        assert_eq!(foreign_tabs(&rendered)[0].app_id, "anon-77");
-
-        crate::shell::tab_binding::rename_tab_for_app_id(&mut source, 77, "io.example.late");
-        assert!(reconcile_foreign_tabs(&source, &mut rendered));
-        let t = &foreign_tabs(&rendered)[0];
-        assert_eq!(t.app_id, "io.example.late");
-        // The identifier propagates; the *title* is humanised from it rather than shown as a machine identifier nobody chose.
-        assert_eq!(
-            t.title, "Late",
-            "a tab wears a name, not the last segment of an app id"
-        );
-    }
-
-    /// The window itself has to answer with the same name its tab does.
-    ///
-    /// The tab title was fixed once already; the widget kept handing back
-    /// the raw wayland app-id from `app_title()`, so asking the tile directly (not the tab's stored title) got `so.tilo.chat`, an address nobody chose.
-    #[test]
-    fn a_foreign_window_answers_with_its_name_not_its_app_id() {
-        let w = ForeignSurfaceWidget::new(3, "so.tilo.chat".into());
-        assert_eq!(
-            w.app_title(),
-            "Chat",
-            "a window says what it is called, not how it is addressed",
-        );
-
-        // A dotted id with a multi-word tail humanises the same way the package registry does, so an app reaches one name by either route.
-        let w = ForeignSurfaceWidget::new(4, "so.tilo.word-processor".into());
-        assert_eq!(w.app_title(), "Word Processor");
-    }
-
-    #[test]
-    fn visibility_tracks_the_groups_active_tab() {
-        use crate::shell::tab_binding::{Placement, adopt_toplevel, adopt_toplevel_at};
-        crate::shell::launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        // A lone selected window, so each adoption opens its own column rather than joining a tabbed group — the arrangement this test is about.
-        {
-            let strip_id = tree.desktop.workspaces[0].strips[0].id;
-            let g = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
-            g.tabs.truncate(1);
-            g.active_tab = g.tabs[0].id;
-            let gid = g.id;
-            tree.desktop
-                .active_strip
-                .insert(tree.desktop.active, strip_id);
-            tree.desktop.set_active_group(strip_id, gid);
-        }
-        let first = adopt_toplevel(&mut tree, 11, None);
-        assert!(is_visible_tab(&tree, 11), "a fresh adoption becomes active");
-
-        // A second launch opens its own group beside the first, so both windows are on screen — that is the point of the strip.
-        let _second = adopt_toplevel(&mut tree, 12, None);
-        assert!(
-            is_visible_tab(&tree, 11),
-            "a launch into its own group must not hide the previous window"
-        );
-        assert!(is_visible_tab(&tree, 12));
-
-        // Stacking into the *same* group is what puts a window behind another — the tab dimension, not the strip one.
-        let owner = tree
-            .desktop
-            .active_workspace()
-            .unwrap()
-            .strips
-            .iter()
-            .flat_map(|s| s.window_groups.iter())
-            .find(|g| g.tabs.iter().any(|t| t.id == first))
-            .expect("the first window's group")
-            .id;
-        let _third = adopt_toplevel_at(&mut tree, 13, None, Placement::TabIn(owner));
-        assert!(
-            !is_visible_tab(&tree, 11),
-            "a tab added to the same group covers the one that was showing"
-        );
-        assert!(is_visible_tab(&tree, 13));
-        assert!(
-            !is_visible_tab(&tree, 999),
-            "unknown surfaces are not visible"
-        );
     }
 }

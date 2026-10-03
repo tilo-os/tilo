@@ -497,21 +497,6 @@ impl RecordReplica {
         self.apply_verified(envelope)
     }
 
-    /// Restore one envelope that was previously admitted and durably stored
-    /// by the record repository. Cryptographic, scope, replay and immutable
-    /// collision checks still run; only the historical live grant decision is
-    /// not repeated during restart.
-    pub(crate) fn restore_envelope(
-        &mut self,
-        envelope: &RecordEnvelopeV1,
-    ) -> Result<(), RecordReplicationError> {
-        envelope.verify()?;
-        if envelope.record_id != self.record_id {
-            return Err(RecordReplicationError::WrongRecord);
-        }
-        self.apply_verified(envelope)
-    }
-
     /// [`Self::merge`] for an envelope this process just signed with the
     /// actor's own device key: the signature is not checked again (it is
     /// in debug builds); certification, grant and state checks all run.
@@ -1060,649 +1045,662 @@ mod tests {
     }
 
     #[test]
-    fn transaction_prepare_is_invisible_and_commit_requires_prepare() {
-        let (key, actor, record, auth) = fixture();
-        let signed = transaction(&key, actor, record, FileRecordId::new());
-        let id = signed.manifest.transaction_id;
-        let mut replica = RecordReplica::new(record);
-        let commit = RecordEnvelopeV1::signed(
-            record,
-            actor,
-            1,
-            RecordOperationV1::CommitTransaction { transaction_id: id },
-            &key,
-        )
-        .unwrap();
-        assert!(matches!(
-            replica.merge(&commit, &auth),
-            Err(RecordReplicationError::TransactionNotPrepared(value)) if value == id
-        ));
-        let prepare = RecordEnvelopeV1::signed(
-            record,
-            actor,
-            1,
-            RecordOperationV1::PrepareTransaction(signed.clone()),
-            &key,
-        )
-        .unwrap();
-        replica.merge(&prepare, &auth).unwrap();
-        let snapshot = replica.restored_snapshot();
-        assert!(snapshot.binding.is_none());
-        assert!(snapshot.versions.is_empty());
-        assert_eq!(replica.transaction_state(id), Some((&signed, false)));
-        let commit = RecordEnvelopeV1::signed(
-            record,
-            actor,
-            2,
-            RecordOperationV1::CommitTransaction { transaction_id: id },
-            &key,
-        )
-        .unwrap();
-        replica.merge(&commit, &auth).unwrap();
-        assert_eq!(replica.transaction_state(id), Some((&signed, true)));
-    }
-
-    #[test]
-    fn canonical_signed_bytes_are_deterministic_and_domain_separated() {
-        let (key, actor, record, _) = fixture();
-        let first = envelope(&key, actor, record, 1);
-        let second = envelope(&key, actor, record, 1);
-        assert_eq!(
-            first.signing_bytes().unwrap(),
-            second.signing_bytes().unwrap()
-        );
-        assert_eq!(first.signature, second.signature);
-        let wire = first.canonical_bytes().unwrap();
-        assert_eq!(RecordEnvelopeV1::decode_and_verify(&wire).unwrap(), first);
-        let mut trailing = wire;
-        trailing.push(0);
-        assert!(matches!(
-            RecordEnvelopeV1::decode_and_verify(&trailing),
-            Err(RecordReplicationError::Canonical(_))
-        ));
-        assert!(
-            first
-                .signing_bytes()
-                .unwrap()
-                .windows(RECORD_OPERATION_SIGNATURE_DOMAIN.len())
-                .any(|window| window == RECORD_OPERATION_SIGNATURE_DOMAIN.as_bytes())
-        );
-    }
-
-    #[test]
-    fn signed_binding_is_record_local_and_converges_by_observation_stamp() {
-        let (key, actor, record, auth) = fixture();
-        let parent = FileRecordId::new();
-        let binding = |name: &str, observed_at_ms: u64| FileBindingV1 {
-            schema_version: collab_types::FILE_BINDING_VERSION,
-            record_id: record,
-            parent: Some(parent),
-            name: name.into(),
-            kind: collab_types::FileNodeKind::File,
-            tombstoned: false,
-            actor,
-            observed_at_ms,
-        };
-        let newer = RecordEnvelopeV1::signed(
-            record,
-            actor,
-            1,
-            RecordOperationV1::SetBinding(binding("new.txt", 10)),
-            &key,
-        )
-        .unwrap();
-        let late_stale = RecordEnvelopeV1::signed(
-            record,
-            actor,
-            2,
-            RecordOperationV1::SetBinding(binding("old.txt", 5)),
-            &key,
-        )
-        .unwrap();
-        let mut replica = RecordReplica::new(record);
-        replica.merge(&newer, &auth).unwrap();
-        replica.merge(&late_stale, &auth).unwrap();
-        assert_eq!(
-            replica.snapshot(&actor, &auth).unwrap().binding,
-            Some(binding("new.txt", 10))
-        );
-
-        let mut wrong = binding("wrong.txt", 11);
-        wrong.record_id = FileRecordId::new();
-        let wrong =
-            RecordEnvelopeV1::signed(record, actor, 3, RecordOperationV1::SetBinding(wrong), &key)
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn signed_transactions_revisions_and_conflicts_replicate_exactly() {
+        // Phase `transactions_revisions_and_conflicts_replicate_exactly`.
+        {
+            // Phase `transaction_prepare_is_invisible_and_commit_requires_prepare`.
+            {
+                let (key, actor, record, auth) = fixture();
+                let signed = transaction(&key, actor, record, FileRecordId::new());
+                let id = signed.manifest.transaction_id;
+                let mut replica = RecordReplica::new(record);
+                let commit = RecordEnvelopeV1::signed(
+                    record,
+                    actor,
+                    1,
+                    RecordOperationV1::CommitTransaction { transaction_id: id },
+                    &key,
+                )
                 .unwrap();
-        assert!(matches!(
-            replica.merge(&wrong, &auth),
-            Err(RecordReplicationError::PayloadRecordMismatch)
-        ));
-    }
+                assert!(matches!(
+                    replica.merge(&commit, &auth),
+                    Err(RecordReplicationError::TransactionNotPrepared(value)) if value == id
+                ));
+                let prepare = RecordEnvelopeV1::signed(
+                    record,
+                    actor,
+                    1,
+                    RecordOperationV1::PrepareTransaction(signed.clone()),
+                    &key,
+                )
+                .unwrap();
+                replica.merge(&prepare, &auth).unwrap();
+                let snapshot = replica.restored_snapshot();
+                assert!(snapshot.binding.is_none());
+                assert!(snapshot.versions.is_empty());
+                assert_eq!(replica.transaction_state(id), Some((&signed, false)));
+                let commit = RecordEnvelopeV1::signed(
+                    record,
+                    actor,
+                    2,
+                    RecordOperationV1::CommitTransaction { transaction_id: id },
+                    &key,
+                )
+                .unwrap();
+                replica.merge(&commit, &auth).unwrap();
+                assert_eq!(replica.transaction_state(id), Some((&signed, true)));
+            }
+            // Phase `signed_content_revision_requires_and_exactly_matches_immutable_version`.
+            {
+                let (key, actor, record, auth) = fixture();
+                let version = FileVersionV1 {
+                    id: FileVersionId::new(),
+                    record_id: record,
+                    parents: vec![],
+                    actor,
+                    timestamp_ms: 8,
+                    content_hash: Some(ContentHash([8; 32])),
+                    metadata_hash: ContentHash([9; 32]),
+                    provenance: FileProvenance::Create,
+                };
+                let revision = ContentRevisionV1 {
+                    schema_version: collab_types::CONTENT_REVISION_VERSION,
+                    record_id: record,
+                    version_id: version.id,
+                    content_hash: version.content_hash,
+                    byte_len: 123,
+                    metadata_hash: version.metadata_hash,
+                };
+                let mut replica = RecordReplica::new(record);
+                let early = RecordEnvelopeV1::signed(
+                    record,
+                    actor,
+                    1,
+                    RecordOperationV1::SetContentRevision(revision),
+                    &key,
+                )
+                .unwrap();
+                assert!(matches!(
+                    replica.merge(&early, &auth),
+                    Err(RecordReplicationError::UnknownContentRevisionVersion)
+                ));
 
-    #[test]
-    fn tampering_with_signed_payload_is_rejected_without_mutation() {
-        let (key, actor, record, auth) = fixture();
-        let mut op = envelope(&key, actor, record, 1);
-        let RecordOperationV1::SetMetadata(value) = &mut op.operation else {
-            unreachable!();
-        };
-        value.byte_len += 1;
-        let mut replica = RecordReplica::new(record);
-        assert!(matches!(
-            replica.merge(&op, &auth),
-            Err(RecordReplicationError::Signature(VerifyError::BadSignature))
-        ));
-        assert!(replica.metadata.is_none());
-        assert!(replica.highest_sequence.is_empty());
-    }
-
-    #[test]
-    fn wrong_record_is_rejected_and_cannot_disclose_siblings() {
-        let (key, actor, record, mut auth) = fixture();
-        let sibling = FileRecordId::new();
-        auth.readers.insert((sibling, actor));
-        auth.writers.insert((sibling, actor));
-        let sibling_op = envelope(&key, actor, sibling, 1);
-        let mut replica = RecordReplica::new(record);
-        assert!(matches!(
-            replica.merge(&sibling_op, &auth),
-            Err(RecordReplicationError::WrongRecord)
-        ));
-        auth.readers.remove(&(record, actor));
-        assert!(matches!(
-            replica.snapshot(&actor, &auth),
-            Err(RecordReplicationError::ReadDenied)
-        ));
-    }
-
-    #[test]
-    fn read_only_actor_cannot_merge() {
-        let (key, actor, record, mut auth) = fixture();
-        auth.writers.clear();
-        let op = envelope(&key, actor, record, 1);
-        let mut replica = RecordReplica::new(record);
-        assert!(matches!(
-            replica.merge(&op, &auth),
-            Err(RecordReplicationError::WriteDenied)
-        ));
-        assert!(replica.metadata.is_none());
-    }
-
-    #[test]
-    fn replay_and_stale_sequences_are_rejected() {
-        let (key, actor, record, auth) = fixture();
-        let first = envelope(&key, actor, record, 1);
-        let second = envelope(&key, actor, record, 2);
-        let mut replica = RecordReplica::new(record);
-        replica.merge(&first, &auth).unwrap();
-        replica.merge(&second, &auth).unwrap();
-        assert!(matches!(
-            replica.merge(&first, &auth),
-            Err(RecordReplicationError::Replay { sequence: 1 })
-        ));
-    }
-
-    #[test]
-    fn actor_device_must_be_certified_even_with_a_valid_signature() {
-        let (key, actor, record, mut auth) = fixture();
-        auth.certified.clear();
-        let op = envelope(&key, actor, record, 1);
-        let mut replica = RecordReplica::new(record);
-        assert!(matches!(
-            replica.merge(&op, &auth),
-            Err(RecordReplicationError::UncertifiedActor)
-        ));
-    }
-
-    #[test]
-    fn append_version_checks_embedded_actor_and_is_record_local() {
-        let (key, actor, record, auth) = fixture();
-        let version = FileVersionV1 {
-            id: FileVersionId::new(),
-            record_id: record,
-            parents: vec![],
-            actor,
-            timestamp_ms: 8,
-            content_hash: Some(ContentHash([8; 32])),
-            metadata_hash: ContentHash([9; 32]),
-            provenance: FileProvenance::Create,
-        };
-        let op = RecordEnvelopeV1::signed(
-            record,
-            actor,
-            1,
-            RecordOperationV1::AppendVersion(version.clone()),
-            &key,
-        )
-        .unwrap();
-        let mut replica = RecordReplica::new(record);
-        replica.merge(&op, &auth).unwrap();
-        assert_eq!(
-            replica.snapshot(&actor, &auth).unwrap().versions,
-            vec![version]
-        );
-    }
-
-    #[test]
-    fn signed_content_revision_requires_and_exactly_matches_immutable_version() {
-        let (key, actor, record, auth) = fixture();
-        let version = FileVersionV1 {
-            id: FileVersionId::new(),
-            record_id: record,
-            parents: vec![],
-            actor,
-            timestamp_ms: 8,
-            content_hash: Some(ContentHash([8; 32])),
-            metadata_hash: ContentHash([9; 32]),
-            provenance: FileProvenance::Create,
-        };
-        let revision = ContentRevisionV1 {
-            schema_version: collab_types::CONTENT_REVISION_VERSION,
-            record_id: record,
-            version_id: version.id,
-            content_hash: version.content_hash,
-            byte_len: 123,
-            metadata_hash: version.metadata_hash,
-        };
-        let mut replica = RecordReplica::new(record);
-        let early = RecordEnvelopeV1::signed(
-            record,
-            actor,
-            1,
-            RecordOperationV1::SetContentRevision(revision),
-            &key,
-        )
-        .unwrap();
-        assert!(matches!(
-            replica.merge(&early, &auth),
-            Err(RecordReplicationError::UnknownContentRevisionVersion)
-        ));
-
-        let append = RecordEnvelopeV1::signed(
-            record,
-            actor,
-            1,
-            RecordOperationV1::AppendVersion(version),
-            &key,
-        )
-        .unwrap();
-        replica.merge(&append, &auth).unwrap();
-        let mut mismatched = revision;
-        mismatched.content_hash = Some(ContentHash([7; 32]));
-        let bad = RecordEnvelopeV1::signed(
-            record,
-            actor,
-            2,
-            RecordOperationV1::SetContentRevision(mismatched),
-            &key,
-        )
-        .unwrap();
-        assert!(matches!(
-            replica.merge(&bad, &auth),
-            Err(RecordReplicationError::ContentRevisionMismatch)
-        ));
-        let accepted = RecordEnvelopeV1::signed(
-            record,
-            actor,
-            2,
-            RecordOperationV1::SetContentRevision(revision),
-            &key,
-        )
-        .unwrap();
-        replica.merge(&accepted, &auth).unwrap();
-        assert_eq!(
-            replica.snapshot(&actor, &auth).unwrap().content_revision,
-            Some(revision)
-        );
-    }
-
-    #[test]
-    fn signing_with_wrong_device_key_does_not_certify_the_claimed_device() {
-        let (_, actor, record, auth) = fixture();
-        let (wrong_key, _wrong_public) = generate_keypair();
-        let op = envelope(&wrong_key, actor, record, 1);
-        let mut replica = RecordReplica::new(record);
-        assert!(matches!(
-            replica.merge(&op, &auth),
-            Err(RecordReplicationError::Signature(VerifyError::BadSignature))
-        ));
-    }
-
-    #[test]
-    fn payload_record_and_actor_are_bound_to_envelope() {
-        let (key, actor, record, _auth) = fixture();
-        let other_record = FileRecordId::new();
-        let op = RecordEnvelopeV1::signed(
-            record,
-            actor,
-            1,
-            RecordOperationV1::SetMetadata(metadata(other_record, actor, 1)),
-            &key,
-        )
-        .unwrap();
-        assert!(matches!(
-            op.verify(),
-            Err(RecordReplicationError::PayloadRecordMismatch)
-        ));
-    }
-
-    #[test]
-    fn conflict_lifecycle_is_signed_record_local_and_convergent() {
-        let (key, actor, record, auth) = fixture();
-        let first = FileVersionV1 {
-            id: FileVersionId::new(),
-            record_id: record,
-            parents: vec![],
-            actor,
-            timestamp_ms: 1,
-            content_hash: Some(ContentHash([1; 32])),
-            metadata_hash: ContentHash([11; 32]),
-            provenance: FileProvenance::Edit,
-        };
-        let second = FileVersionV1 {
-            id: FileVersionId::new(),
-            parents: vec![first.id],
-            content_hash: Some(ContentHash([2; 32])),
-            metadata_hash: ContentHash([12; 32]),
-            timestamp_ms: 2,
-            ..first.clone()
-        };
-        let result = FileVersionV1 {
-            id: FileVersionId::new(),
-            record_id: first.record_id,
-            parents: vec![first.id, second.id],
-            actor: first.actor,
-            content_hash: Some(ContentHash([3; 32])),
-            metadata_hash: ContentHash([13; 32]),
-            timestamp_ms: 3,
-            provenance: FileProvenance::ConflictResolution,
-        };
-        let conflict = FileConflictV1 {
-            id: uuid::Uuid::new_v4(),
-            record_id: record,
-            versions: vec![first.id, second.id],
-            status: ConflictStatus::Open,
-            resolution: None,
-        };
-        let resolution = ConflictResolution {
-            strategy: ConflictStrategy::Merge,
-            result: result.id,
-            actor,
-            timestamp_ms: 3,
-        };
-        let operations = [
-            RecordOperationV1::AppendVersion(first),
-            RecordOperationV1::AppendVersion(second),
-            RecordOperationV1::AppendConflict(conflict.clone()),
-            RecordOperationV1::AppendVersion(result),
-            RecordOperationV1::ResolveConflict {
-                conflict_id: conflict.id,
-                resolution: resolution.clone(),
-            },
-        ];
-        let mut replica = RecordReplica::new(record);
-        for (index, operation) in operations.into_iter().enumerate() {
-            let envelope =
-                RecordEnvelopeV1::signed(record, actor, index as u64 + 1, operation, &key).unwrap();
-            replica.merge(&envelope, &auth).unwrap();
+                let append = RecordEnvelopeV1::signed(
+                    record,
+                    actor,
+                    1,
+                    RecordOperationV1::AppendVersion(version),
+                    &key,
+                )
+                .unwrap();
+                replica.merge(&append, &auth).unwrap();
+                let mut mismatched = revision;
+                mismatched.content_hash = Some(ContentHash([7; 32]));
+                let bad = RecordEnvelopeV1::signed(
+                    record,
+                    actor,
+                    2,
+                    RecordOperationV1::SetContentRevision(mismatched),
+                    &key,
+                )
+                .unwrap();
+                assert!(matches!(
+                    replica.merge(&bad, &auth),
+                    Err(RecordReplicationError::ContentRevisionMismatch)
+                ));
+                let accepted = RecordEnvelopeV1::signed(
+                    record,
+                    actor,
+                    2,
+                    RecordOperationV1::SetContentRevision(revision),
+                    &key,
+                )
+                .unwrap();
+                replica.merge(&accepted, &auth).unwrap();
+                assert_eq!(
+                    replica.snapshot(&actor, &auth).unwrap().content_revision,
+                    Some(revision)
+                );
+            }
+            // Phase `conflict_lifecycle_is_signed_record_local_and_convergent`.
+            {
+                let (key, actor, record, auth) = fixture();
+                let first = FileVersionV1 {
+                    id: FileVersionId::new(),
+                    record_id: record,
+                    parents: vec![],
+                    actor,
+                    timestamp_ms: 1,
+                    content_hash: Some(ContentHash([1; 32])),
+                    metadata_hash: ContentHash([11; 32]),
+                    provenance: FileProvenance::Edit,
+                };
+                let second = FileVersionV1 {
+                    id: FileVersionId::new(),
+                    parents: vec![first.id],
+                    content_hash: Some(ContentHash([2; 32])),
+                    metadata_hash: ContentHash([12; 32]),
+                    timestamp_ms: 2,
+                    ..first.clone()
+                };
+                let result = FileVersionV1 {
+                    id: FileVersionId::new(),
+                    record_id: first.record_id,
+                    parents: vec![first.id, second.id],
+                    actor: first.actor,
+                    content_hash: Some(ContentHash([3; 32])),
+                    metadata_hash: ContentHash([13; 32]),
+                    timestamp_ms: 3,
+                    provenance: FileProvenance::ConflictResolution,
+                };
+                let conflict = FileConflictV1 {
+                    id: uuid::Uuid::new_v4(),
+                    record_id: record,
+                    versions: vec![first.id, second.id],
+                    status: ConflictStatus::Open,
+                    resolution: None,
+                };
+                let resolution = ConflictResolution {
+                    strategy: ConflictStrategy::Merge,
+                    result: result.id,
+                    actor,
+                    timestamp_ms: 3,
+                };
+                let operations = [
+                    RecordOperationV1::AppendVersion(first),
+                    RecordOperationV1::AppendVersion(second),
+                    RecordOperationV1::AppendConflict(conflict.clone()),
+                    RecordOperationV1::AppendVersion(result),
+                    RecordOperationV1::ResolveConflict {
+                        conflict_id: conflict.id,
+                        resolution: resolution.clone(),
+                    },
+                ];
+                let mut replica = RecordReplica::new(record);
+                for (index, operation) in operations.into_iter().enumerate() {
+                    let envelope =
+                        RecordEnvelopeV1::signed(record, actor, index as u64 + 1, operation, &key)
+                            .unwrap();
+                    replica.merge(&envelope, &auth).unwrap();
+                }
+                let snapshot = replica.snapshot(&actor, &auth).unwrap();
+                assert_eq!(snapshot.conflicts.len(), 1);
+                assert_eq!(snapshot.conflicts[0].status, ConflictStatus::Resolved);
+                assert_eq!(snapshot.conflicts[0].resolution, Some(resolution));
+            }
         }
-        let snapshot = replica.snapshot(&actor, &auth).unwrap();
-        assert_eq!(snapshot.conflicts.len(), 1);
-        assert_eq!(snapshot.conflicts[0].status, ConflictStatus::Resolved);
-        assert_eq!(snapshot.conflicts[0].resolution, Some(resolution));
-    }
+        // Phase `concurrent_resolution_proposals_converge_independent_of_arrival_order`.
+        {
+            let (first_key, first_actor, record, mut auth) = fixture();
+            let (second_key, second_device) = generate_keypair();
+            let (_, second_person) = generate_keypair();
+            let second_actor = FileActor {
+                person: second_person,
+                device: second_device,
+            };
+            auth.certified.insert(second_actor);
+            auth.readers.insert((record, second_actor));
+            auth.writers.insert((record, second_actor));
 
-    #[test]
-    fn legacy_envelopes_accept_legacy_operations_but_not_conflicts() {
-        let (key, actor, record, _) = fixture();
-        let mut legacy = envelope(&key, actor, record, 1);
-        legacy.protocol_version = LEGACY_RECORD_ENVELOPE_VERSION;
-        legacy.signature = sign_event(&legacy.signing_view(), &key).unwrap();
-        legacy.verify().unwrap();
-
-        let first = FileVersionId::new();
-        let second = FileVersionId::new();
-        legacy.operation = RecordOperationV1::AppendConflict(FileConflictV1 {
-            id: uuid::Uuid::new_v4(),
-            record_id: record,
-            versions: vec![first, second],
-            status: ConflictStatus::Open,
-            resolution: None,
-        });
-        legacy.signature = sign_event(&legacy.signing_view(), &key).unwrap();
-        assert!(matches!(
-            legacy.verify(),
-            Err(RecordReplicationError::OperationRequiresV2)
-        ));
-    }
-
-    #[test]
-    fn version_three_binding_signatures_remain_valid_but_transactions_require_four() {
-        let (key, actor, record, _) = fixture();
-        let parent = FileRecordId::new();
-        let binding = FileBindingV1 {
-            schema_version: collab_types::FILE_BINDING_VERSION,
-            record_id: record,
-            parent: Some(parent),
-            name: "bound.txt".into(),
-            kind: collab_types::FileNodeKind::File,
-            tombstoned: false,
-            actor,
-            observed_at_ms: 1,
-        };
-        let mut v3 = RecordEnvelopeV1::signed(
-            record,
-            actor,
-            1,
-            RecordOperationV1::SetBinding(binding),
-            &key,
-        )
-        .unwrap();
-        v3.protocol_version = RECORD_ENVELOPE_V3;
-        v3.signature = sign_event(&v3.signing_view(), &key).unwrap();
-        v3.verify().unwrap();
-
-        v3.operation = RecordOperationV1::PrepareTransaction(transaction(
-            &key,
-            actor,
-            record,
-            FileRecordId::new(),
-        ));
-        v3.signature = sign_event(&v3.signing_view(), &key).unwrap();
-        assert!(matches!(
-            v3.verify(),
-            Err(RecordReplicationError::OperationRequiresV4)
-        ));
+            let root = FileVersionV1 {
+                id: FileVersionId::new(),
+                record_id: record,
+                parents: vec![],
+                actor: first_actor,
+                timestamp_ms: 1,
+                content_hash: Some(ContentHash([1; 32])),
+                metadata_hash: ContentHash([11; 32]),
+                provenance: FileProvenance::Create,
+            };
+            let branch = FileVersionV1 {
+                id: FileVersionId::new(),
+                record_id: root.record_id,
+                parents: vec![root.id],
+                actor: root.actor,
+                timestamp_ms: 2,
+                content_hash: Some(ContentHash([2; 32])),
+                metadata_hash: ContentHash([12; 32]),
+                provenance: FileProvenance::Edit,
+            };
+            let conflict = FileConflictV1 {
+                id: uuid::Uuid::new_v4(),
+                record_id: record,
+                versions: vec![root.id, branch.id],
+                status: ConflictStatus::Open,
+                resolution: None,
+            };
+            let first_result = FileVersionV1 {
+                id: FileVersionId::new(),
+                record_id: root.record_id,
+                parents: conflict.versions.clone(),
+                actor: root.actor,
+                timestamp_ms: 5,
+                content_hash: root.content_hash,
+                metadata_hash: ContentHash([13; 32]),
+                provenance: FileProvenance::ConflictResolution,
+            };
+            let second_result = FileVersionV1 {
+                id: FileVersionId::new(),
+                record_id: record,
+                parents: conflict.versions.clone(),
+                actor: second_actor,
+                timestamp_ms: 6,
+                content_hash: branch.content_hash,
+                metadata_hash: ContentHash([14; 32]),
+                provenance: FileProvenance::ConflictResolution,
+            };
+            let common = [
+                RecordEnvelopeV1::signed(
+                    record,
+                    first_actor,
+                    1,
+                    RecordOperationV1::AppendVersion(root),
+                    &first_key,
+                )
+                .unwrap(),
+                RecordEnvelopeV1::signed(
+                    record,
+                    first_actor,
+                    2,
+                    RecordOperationV1::AppendVersion(branch),
+                    &first_key,
+                )
+                .unwrap(),
+                RecordEnvelopeV1::signed(
+                    record,
+                    first_actor,
+                    3,
+                    RecordOperationV1::AppendConflict(conflict.clone()),
+                    &first_key,
+                )
+                .unwrap(),
+                RecordEnvelopeV1::signed(
+                    record,
+                    first_actor,
+                    4,
+                    RecordOperationV1::AppendVersion(first_result.clone()),
+                    &first_key,
+                )
+                .unwrap(),
+                RecordEnvelopeV1::signed(
+                    record,
+                    first_actor,
+                    5,
+                    RecordOperationV1::SetContentRevision(ContentRevisionV1 {
+                        schema_version: collab_types::CONTENT_REVISION_VERSION,
+                        record_id: record,
+                        version_id: first_result.id,
+                        content_hash: first_result.content_hash,
+                        byte_len: 10,
+                        metadata_hash: first_result.metadata_hash,
+                    }),
+                    &first_key,
+                )
+                .unwrap(),
+                RecordEnvelopeV1::signed(
+                    record,
+                    second_actor,
+                    1,
+                    RecordOperationV1::AppendVersion(second_result.clone()),
+                    &second_key,
+                )
+                .unwrap(),
+                RecordEnvelopeV1::signed(
+                    record,
+                    second_actor,
+                    2,
+                    RecordOperationV1::SetContentRevision(ContentRevisionV1 {
+                        schema_version: collab_types::CONTENT_REVISION_VERSION,
+                        record_id: record,
+                        version_id: second_result.id,
+                        content_hash: second_result.content_hash,
+                        byte_len: 20,
+                        metadata_hash: second_result.metadata_hash,
+                    }),
+                    &second_key,
+                )
+                .unwrap(),
+            ];
+            let first_resolution = ConflictResolution {
+                strategy: ConflictStrategy::KeepCurrent,
+                result: first_result.id,
+                actor: first_actor,
+                timestamp_ms: 5,
+            };
+            let second_resolution = ConflictResolution {
+                strategy: ConflictStrategy::UseOther,
+                result: second_result.id,
+                actor: second_actor,
+                timestamp_ms: 6,
+            };
+            let proposals = [
+                RecordEnvelopeV1::signed(
+                    record,
+                    first_actor,
+                    6,
+                    RecordOperationV1::ResolveConflict {
+                        conflict_id: conflict.id,
+                        resolution: first_resolution,
+                    },
+                    &first_key,
+                )
+                .unwrap(),
+                RecordEnvelopeV1::signed(
+                    record,
+                    second_actor,
+                    3,
+                    RecordOperationV1::ResolveConflict {
+                        conflict_id: conflict.id,
+                        resolution: second_resolution.clone(),
+                    },
+                    &second_key,
+                )
+                .unwrap(),
+            ];
+            let mut left = RecordReplica::new(record);
+            for envelope in &common {
+                left.merge(envelope, &auth).unwrap();
+            }
+            let mut right = left.clone();
+            left.merge(&proposals[0], &auth).unwrap();
+            left.merge(&proposals[1], &auth).unwrap();
+            right.merge(&proposals[1], &auth).unwrap();
+            right.merge(&proposals[0], &auth).unwrap();
+            let left = left.snapshot(&first_actor, &auth).unwrap();
+            let right = right.snapshot(&first_actor, &auth).unwrap();
+            assert_eq!(left, right);
+            assert_eq!(left.conflicts[0].resolution, Some(second_resolution));
+            assert_eq!(
+                left.content_revision.unwrap().version_id,
+                second_result.id,
+                "resolution decision and visible content choose the same proposal"
+            );
+        }
     }
 
     #[test]
     #[allow(
         clippy::too_many_lines,
-        reason = "one fixture compares both signed resolution arrival orders and checks that conflict and visible content converge"
-    )] // Convergence matrix is intentionally one scenario.
-    fn concurrent_resolution_proposals_converge_independent_of_arrival_order() {
-        let (first_key, first_actor, record, mut auth) = fixture();
-        let (second_key, second_device) = generate_keypair();
-        let (_, second_person) = generate_keypair();
-        let second_actor = FileActor {
-            person: second_person,
-            device: second_device,
-        };
-        auth.certified.insert(second_actor);
-        auth.readers.insert((record, second_actor));
-        auth.writers.insert((record, second_actor));
-
-        let root = FileVersionV1 {
-            id: FileVersionId::new(),
-            record_id: record,
-            parents: vec![],
-            actor: first_actor,
-            timestamp_ms: 1,
-            content_hash: Some(ContentHash([1; 32])),
-            metadata_hash: ContentHash([11; 32]),
-            provenance: FileProvenance::Create,
-        };
-        let branch = FileVersionV1 {
-            id: FileVersionId::new(),
-            record_id: root.record_id,
-            parents: vec![root.id],
-            actor: root.actor,
-            timestamp_ms: 2,
-            content_hash: Some(ContentHash([2; 32])),
-            metadata_hash: ContentHash([12; 32]),
-            provenance: FileProvenance::Edit,
-        };
-        let conflict = FileConflictV1 {
-            id: uuid::Uuid::new_v4(),
-            record_id: record,
-            versions: vec![root.id, branch.id],
-            status: ConflictStatus::Open,
-            resolution: None,
-        };
-        let first_result = FileVersionV1 {
-            id: FileVersionId::new(),
-            record_id: root.record_id,
-            parents: conflict.versions.clone(),
-            actor: root.actor,
-            timestamp_ms: 5,
-            content_hash: root.content_hash,
-            metadata_hash: ContentHash([13; 32]),
-            provenance: FileProvenance::ConflictResolution,
-        };
-        let second_result = FileVersionV1 {
-            id: FileVersionId::new(),
-            record_id: record,
-            parents: conflict.versions.clone(),
-            actor: second_actor,
-            timestamp_ms: 6,
-            content_hash: branch.content_hash,
-            metadata_hash: ContentHash([14; 32]),
-            provenance: FileProvenance::ConflictResolution,
-        };
-        let common = [
-            RecordEnvelopeV1::signed(
-                record,
-                first_actor,
-                1,
-                RecordOperationV1::AppendVersion(root),
-                &first_key,
-            )
-            .unwrap(),
-            RecordEnvelopeV1::signed(
-                record,
-                first_actor,
-                2,
-                RecordOperationV1::AppendVersion(branch),
-                &first_key,
-            )
-            .unwrap(),
-            RecordEnvelopeV1::signed(
-                record,
-                first_actor,
-                3,
-                RecordOperationV1::AppendConflict(conflict.clone()),
-                &first_key,
-            )
-            .unwrap(),
-            RecordEnvelopeV1::signed(
-                record,
-                first_actor,
-                4,
-                RecordOperationV1::AppendVersion(first_result.clone()),
-                &first_key,
-            )
-            .unwrap(),
-            RecordEnvelopeV1::signed(
-                record,
-                first_actor,
-                5,
-                RecordOperationV1::SetContentRevision(ContentRevisionV1 {
-                    schema_version: collab_types::CONTENT_REVISION_VERSION,
-                    record_id: record,
-                    version_id: first_result.id,
-                    content_hash: first_result.content_hash,
-                    byte_len: 10,
-                    metadata_hash: first_result.metadata_hash,
-                }),
-                &first_key,
-            )
-            .unwrap(),
-            RecordEnvelopeV1::signed(
-                record,
-                second_actor,
-                1,
-                RecordOperationV1::AppendVersion(second_result.clone()),
-                &second_key,
-            )
-            .unwrap(),
-            RecordEnvelopeV1::signed(
-                record,
-                second_actor,
-                2,
-                RecordOperationV1::SetContentRevision(ContentRevisionV1 {
-                    schema_version: collab_types::CONTENT_REVISION_VERSION,
-                    record_id: record,
-                    version_id: second_result.id,
-                    content_hash: second_result.content_hash,
-                    byte_len: 20,
-                    metadata_hash: second_result.metadata_hash,
-                }),
-                &second_key,
-            )
-            .unwrap(),
-        ];
-        let first_resolution = ConflictResolution {
-            strategy: ConflictStrategy::KeepCurrent,
-            result: first_result.id,
-            actor: first_actor,
-            timestamp_ms: 5,
-        };
-        let second_resolution = ConflictResolution {
-            strategy: ConflictStrategy::UseOther,
-            result: second_result.id,
-            actor: second_actor,
-            timestamp_ms: 6,
-        };
-        let proposals = [
-            RecordEnvelopeV1::signed(
-                record,
-                first_actor,
-                6,
-                RecordOperationV1::ResolveConflict {
-                    conflict_id: conflict.id,
-                    resolution: first_resolution,
-                },
-                &first_key,
-            )
-            .unwrap(),
-            RecordEnvelopeV1::signed(
-                record,
-                second_actor,
-                3,
-                RecordOperationV1::ResolveConflict {
-                    conflict_id: conflict.id,
-                    resolution: second_resolution.clone(),
-                },
-                &second_key,
-            )
-            .unwrap(),
-        ];
-        let mut left = RecordReplica::new(record);
-        for envelope in &common {
-            left.merge(envelope, &auth).unwrap();
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn envelope_signatures_bind_payload_record_actor_and_certified_device() {
+        // Phase `canonical_signed_bytes_are_deterministic_and_domain_separated`.
+        {
+            let (key, actor, record, _) = fixture();
+            let first = envelope(&key, actor, record, 1);
+            let second = envelope(&key, actor, record, 1);
+            assert_eq!(
+                first.signing_bytes().unwrap(),
+                second.signing_bytes().unwrap()
+            );
+            assert_eq!(first.signature, second.signature);
+            let wire = first.canonical_bytes().unwrap();
+            assert_eq!(RecordEnvelopeV1::decode_and_verify(&wire).unwrap(), first);
+            let mut trailing = wire;
+            trailing.push(0);
+            assert!(matches!(
+                RecordEnvelopeV1::decode_and_verify(&trailing),
+                Err(RecordReplicationError::Canonical(_))
+            ));
+            assert!(
+                first
+                    .signing_bytes()
+                    .unwrap()
+                    .windows(RECORD_OPERATION_SIGNATURE_DOMAIN.len())
+                    .any(|window| window == RECORD_OPERATION_SIGNATURE_DOMAIN.as_bytes())
+            );
         }
-        let mut right = left.clone();
-        left.merge(&proposals[0], &auth).unwrap();
-        left.merge(&proposals[1], &auth).unwrap();
-        right.merge(&proposals[1], &auth).unwrap();
-        right.merge(&proposals[0], &auth).unwrap();
-        let left = left.snapshot(&first_actor, &auth).unwrap();
-        let right = right.snapshot(&first_actor, &auth).unwrap();
-        assert_eq!(left, right);
-        assert_eq!(left.conflicts[0].resolution, Some(second_resolution));
-        assert_eq!(
-            left.content_revision.unwrap().version_id,
-            second_result.id,
-            "resolution decision and visible content choose the same proposal"
-        );
+        // Phase `tampering_with_signed_payload_is_rejected_without_mutation`.
+        {
+            let (key, actor, record, auth) = fixture();
+            let mut op = envelope(&key, actor, record, 1);
+            let RecordOperationV1::SetMetadata(value) = &mut op.operation else {
+                unreachable!();
+            };
+            value.byte_len += 1;
+            let mut replica = RecordReplica::new(record);
+            assert!(matches!(
+                replica.merge(&op, &auth),
+                Err(RecordReplicationError::Signature(VerifyError::BadSignature))
+            ));
+            assert!(replica.metadata.is_none());
+            assert!(replica.highest_sequence.is_empty());
+        }
+        // Phase `actor_device_must_be_certified_even_with_a_valid_signature`.
+        {
+            let (key, actor, record, mut auth) = fixture();
+            auth.certified.clear();
+            let op = envelope(&key, actor, record, 1);
+            let mut replica = RecordReplica::new(record);
+            assert!(matches!(
+                replica.merge(&op, &auth),
+                Err(RecordReplicationError::UncertifiedActor)
+            ));
+        }
+        // Phase `signing_with_wrong_device_key_does_not_certify_the_claimed_device`.
+        {
+            let (_, actor, record, auth) = fixture();
+            let (wrong_key, _wrong_public) = generate_keypair();
+            let op = envelope(&wrong_key, actor, record, 1);
+            let mut replica = RecordReplica::new(record);
+            assert!(matches!(
+                replica.merge(&op, &auth),
+                Err(RecordReplicationError::Signature(VerifyError::BadSignature))
+            ));
+        }
+        // Phase `payload_record_and_actor_are_bound_to_envelope`.
+        {
+            let (key, actor, record, _auth) = fixture();
+            let other_record = FileRecordId::new();
+            let op = RecordEnvelopeV1::signed(
+                record,
+                actor,
+                1,
+                RecordOperationV1::SetMetadata(metadata(other_record, actor, 1)),
+                &key,
+            )
+            .unwrap();
+            assert!(matches!(
+                op.verify(),
+                Err(RecordReplicationError::PayloadRecordMismatch)
+            ));
+        }
+        // Phase `legacy_envelopes_accept_legacy_operations_but_not_conflicts`.
+        {
+            let (key, actor, record, _) = fixture();
+            let mut legacy = envelope(&key, actor, record, 1);
+            legacy.protocol_version = LEGACY_RECORD_ENVELOPE_VERSION;
+            legacy.signature = sign_event(&legacy.signing_view(), &key).unwrap();
+            legacy.verify().unwrap();
+
+            let first = FileVersionId::new();
+            let second = FileVersionId::new();
+            legacy.operation = RecordOperationV1::AppendConflict(FileConflictV1 {
+                id: uuid::Uuid::new_v4(),
+                record_id: record,
+                versions: vec![first, second],
+                status: ConflictStatus::Open,
+                resolution: None,
+            });
+            legacy.signature = sign_event(&legacy.signing_view(), &key).unwrap();
+            assert!(matches!(
+                legacy.verify(),
+                Err(RecordReplicationError::OperationRequiresV2)
+            ));
+        }
+        // Phase `version_three_binding_signatures_remain_valid_but_transactions_require_four`.
+        {
+            let (key, actor, record, _) = fixture();
+            let parent = FileRecordId::new();
+            let binding = FileBindingV1 {
+                schema_version: collab_types::FILE_BINDING_VERSION,
+                record_id: record,
+                parent: Some(parent),
+                name: "bound.txt".into(),
+                kind: collab_types::FileNodeKind::File,
+                tombstoned: false,
+                actor,
+                observed_at_ms: 1,
+            };
+            let mut v3 = RecordEnvelopeV1::signed(
+                record,
+                actor,
+                1,
+                RecordOperationV1::SetBinding(binding),
+                &key,
+            )
+            .unwrap();
+            v3.protocol_version = RECORD_ENVELOPE_V3;
+            v3.signature = sign_event(&v3.signing_view(), &key).unwrap();
+            v3.verify().unwrap();
+
+            v3.operation = RecordOperationV1::PrepareTransaction(transaction(
+                &key,
+                actor,
+                record,
+                FileRecordId::new(),
+            ));
+            v3.signature = sign_event(&v3.signing_view(), &key).unwrap();
+            assert!(matches!(
+                v3.verify(),
+                Err(RecordReplicationError::OperationRequiresV4)
+            ));
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn replication_is_record_local_role_checked_and_replay_safe() {
+        // Phase `signed_binding_is_record_local_and_converges_by_observation_stamp`.
+        {
+            let (key, actor, record, auth) = fixture();
+            let parent = FileRecordId::new();
+            let binding = |name: &str, observed_at_ms: u64| FileBindingV1 {
+                schema_version: collab_types::FILE_BINDING_VERSION,
+                record_id: record,
+                parent: Some(parent),
+                name: name.into(),
+                kind: collab_types::FileNodeKind::File,
+                tombstoned: false,
+                actor,
+                observed_at_ms,
+            };
+            let newer = RecordEnvelopeV1::signed(
+                record,
+                actor,
+                1,
+                RecordOperationV1::SetBinding(binding("new.txt", 10)),
+                &key,
+            )
+            .unwrap();
+            let late_stale = RecordEnvelopeV1::signed(
+                record,
+                actor,
+                2,
+                RecordOperationV1::SetBinding(binding("old.txt", 5)),
+                &key,
+            )
+            .unwrap();
+            let mut replica = RecordReplica::new(record);
+            replica.merge(&newer, &auth).unwrap();
+            replica.merge(&late_stale, &auth).unwrap();
+            assert_eq!(
+                replica.snapshot(&actor, &auth).unwrap().binding,
+                Some(binding("new.txt", 10))
+            );
+
+            let mut wrong = binding("wrong.txt", 11);
+            wrong.record_id = FileRecordId::new();
+            let wrong = RecordEnvelopeV1::signed(
+                record,
+                actor,
+                3,
+                RecordOperationV1::SetBinding(wrong),
+                &key,
+            )
+            .unwrap();
+            assert!(matches!(
+                replica.merge(&wrong, &auth),
+                Err(RecordReplicationError::PayloadRecordMismatch)
+            ));
+        }
+        // Phase `wrong_record_is_rejected_and_cannot_disclose_siblings`.
+        {
+            let (key, actor, record, mut auth) = fixture();
+            let sibling = FileRecordId::new();
+            auth.readers.insert((sibling, actor));
+            auth.writers.insert((sibling, actor));
+            let sibling_op = envelope(&key, actor, sibling, 1);
+            let mut replica = RecordReplica::new(record);
+            assert!(matches!(
+                replica.merge(&sibling_op, &auth),
+                Err(RecordReplicationError::WrongRecord)
+            ));
+            auth.readers.remove(&(record, actor));
+            assert!(matches!(
+                replica.snapshot(&actor, &auth),
+                Err(RecordReplicationError::ReadDenied)
+            ));
+        }
+        // Phase `read_only_actor_cannot_merge`.
+        {
+            let (key, actor, record, mut auth) = fixture();
+            auth.writers.clear();
+            let op = envelope(&key, actor, record, 1);
+            let mut replica = RecordReplica::new(record);
+            assert!(matches!(
+                replica.merge(&op, &auth),
+                Err(RecordReplicationError::WriteDenied)
+            ));
+            assert!(replica.metadata.is_none());
+        }
+        // Phase `replay_and_stale_sequences_are_rejected`.
+        {
+            let (key, actor, record, auth) = fixture();
+            let first = envelope(&key, actor, record, 1);
+            let second = envelope(&key, actor, record, 2);
+            let mut replica = RecordReplica::new(record);
+            replica.merge(&first, &auth).unwrap();
+            replica.merge(&second, &auth).unwrap();
+            assert!(matches!(
+                replica.merge(&first, &auth),
+                Err(RecordReplicationError::Replay { sequence: 1 })
+            ));
+        }
+        // Phase `append_version_checks_embedded_actor_and_is_record_local`.
+        {
+            let (key, actor, record, auth) = fixture();
+            let version = FileVersionV1 {
+                id: FileVersionId::new(),
+                record_id: record,
+                parents: vec![],
+                actor,
+                timestamp_ms: 8,
+                content_hash: Some(ContentHash([8; 32])),
+                metadata_hash: ContentHash([9; 32]),
+                provenance: FileProvenance::Create,
+            };
+            let op = RecordEnvelopeV1::signed(
+                record,
+                actor,
+                1,
+                RecordOperationV1::AppendVersion(version.clone()),
+                &key,
+            )
+            .unwrap();
+            let mut replica = RecordReplica::new(record);
+            replica.merge(&op, &auth).unwrap();
+            assert_eq!(
+                replica.snapshot(&actor, &auth).unwrap().versions,
+                vec![version]
+            );
+        }
     }
 }

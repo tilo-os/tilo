@@ -69,14 +69,7 @@ fn nonneg_at(buf: &[u8], at: usize) -> ParseResult<u64> {
 /// Format a little-endian (in-memory `GUID` / on-disk GPT) GUID as the
 /// lowercase hyphenated form the staging contract uses.
 pub fn guid_from_le(raw: [u8; 16]) -> String {
-    let [a0, a1, a2, a3, b0, b1, c0, c1, d @ ..] = raw;
-    let [d0, d1, d2, d3, d4, d5, d6, d7] = d;
-    format!(
-        "{:08x}-{:04x}-{:04x}-{d0:02x}{d1:02x}-{d2:02x}{d3:02x}{d4:02x}{d5:02x}{d6:02x}{d7:02x}",
-        u32::from_le_bytes([a0, a1, a2, a3]),
-        u16::from_le_bytes([b0, b1]),
-        u16::from_le_bytes([c0, c1]),
-    )
+    uuid::Uuid::from_bytes_le(raw).to_string()
 }
 
 fn guid_at(buf: &[u8], at: usize) -> ParseResult<String> {
@@ -348,19 +341,6 @@ pub fn disk_from_layout(
     })
 }
 
-/// IEEE CRC-32 as used by the GPT header and entry array.
-pub fn crc32(data: &[u8]) -> u32 {
-    let mut crc = !0u32;
-    for &byte in data {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            let mask = (crc & 1).wrapping_neg();
-            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
-        }
-    }
-    !crc
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GptHeader {
     pub disk_guid: String,
@@ -402,7 +382,7 @@ pub fn parse_gpt_header(sector_buf: &[u8]) -> ParseResult<GptHeader> {
     if let Some(field) = header.get_mut(16..20) {
         field.fill(0);
     }
-    if crc32(&header) != stored_crc {
+    if crc32fast::hash(&header) != stored_crc {
         return Err("GPT header checksum mismatch".into());
     }
     if u64_at(sector_buf, 24)? != 1 {
@@ -449,7 +429,7 @@ pub fn parse_gpt_entries(buf: &[u8], header: &GptHeader) -> ParseResult<Vec<GptE
     let array = buf
         .get(..total)
         .ok_or_else(|| "GPT entry array truncated".to_string())?;
-    if crc32(array) != header.entries_crc {
+    if crc32fast::hash(array) != header.entries_crc {
         return Err("GPT entry array checksum mismatch".into());
     }
     let mut entries = Vec::new();

@@ -5,6 +5,7 @@
 //! under. The sidebar renders sections in [`Section::ALL`] order, and
 //! within each section the categories in [`Category::ALL`] order.
 
+use crate::i18n::t;
 use ui::icons::Icon;
 
 /// A labelled group of categories in the sidebar. Sections give the long
@@ -36,14 +37,14 @@ impl Section {
     ];
 
     /// The section header label.
-    pub fn label(self) -> &'static str {
-        match self {
-            Section::Connectivity => "Connectivity",
-            Section::Devices => "Devices",
-            Section::System => "System",
-            Section::Hubs => "Accounts & Permissions",
-            Section::Maintenance => "Maintenance",
-        }
+    pub fn label(self) -> String {
+        t(match self {
+            Section::Connectivity => "settings-section-connectivity",
+            Section::Devices => "settings-section-devices",
+            Section::System => "settings-section-system",
+            Section::Hubs => "settings-section-accounts-permissions",
+            Section::Maintenance => "settings-section-maintenance",
+        })
     }
 }
 
@@ -54,6 +55,7 @@ pub enum Category {
     Bluetooth,
     DeviceMesh,
     Sound,
+    Speakers,
     Displays,
     MouseKeyboard,
     KeyboardShortcuts,
@@ -87,6 +89,19 @@ const NETWORK_KEYWORDS: &[&str] = &[
     "proxy",
     "internet",
     "connection",
+];
+const SPEAKERS_KEYWORDS: &[&str] = &[
+    "speakers",
+    "stereo",
+    "stereo pair",
+    "surround",
+    "5.1",
+    "subwoofer",
+    "room",
+    "multiroom",
+    "calibrate",
+    "calibration",
+    "speaker group",
 ];
 const BLUETOOTH_KEYWORDS: &[&str] = &[
     "pair",
@@ -185,7 +200,11 @@ const APPEARANCE_KEYWORDS: &[&str] = &[
     "text size",
     "font",
     "wallpaper",
+    "background picture",
     "color",
+    "automatic theme",
+    "sunset",
+    "sunrise",
 ];
 const ACCESSIBILITY_KEYWORDS: &[&str] = &[
     "a11y",
@@ -337,6 +356,7 @@ impl Category {
         Category::DeviceMesh,
         // Devices
         Category::Sound,
+        Category::Speakers,
         Category::Displays,
         Category::MouseKeyboard,
         Category::KeyboardShortcuts,
@@ -369,6 +389,7 @@ impl Category {
             Category::Network | Category::Bluetooth => Section::Connectivity,
             Category::DeviceMesh
             | Category::Sound
+            | Category::Speakers
             | Category::Displays
             | Category::MouseKeyboard
             | Category::KeyboardShortcuts
@@ -399,61 +420,61 @@ impl Category {
 
     /// User-facing label, rendered in the sidebar and reused as the pane
     /// header.
-    pub fn label(self) -> &'static str {
-        match self {
-            Category::Network => "Network",
-            Category::Bluetooth => "Bluetooth",
-            Category::DeviceMesh => "Devices & Sync",
-            Category::Sound => "Sound",
-            Category::Displays => "Displays",
-            Category::MouseKeyboard => "Mouse & Keyboard",
-            Category::KeyboardShortcuts => "Keyboard Shortcuts",
-            Category::TimeDate => "Time & Date",
-            Category::Users => "Users",
-            Category::Printers => "Printers",
-            Category::Power => "Power",
-            Category::Appearance => "Appearance",
-            Category::Accessibility => "Accessibility",
-            Category::Notifications => "Notifications",
-            Category::DefaultApps => "Apps & Files",
-            Category::Storage => "Storage",
-            Category::ExternalAccounts => "External Accounts",
-            Category::AgentModels => "Agent Models",
-            Category::RegionFormats => "Region & Formats",
-            Category::Permissions => "Device Privacy & Security",
-            Category::Updates => "Updates",
-            Category::About => "About",
-        }
+    pub fn label(self) -> String {
+        t(match self {
+            Category::Network => "settings-category-network",
+            Category::Bluetooth => "settings-category-bluetooth",
+            Category::DeviceMesh => "settings-category-devices-sync",
+            Category::Sound => "settings-category-sound",
+            Category::Speakers => "settings-category-speakers",
+            Category::Displays => "settings-category-displays",
+            Category::MouseKeyboard => "settings-category-mouse-keyboard",
+            Category::KeyboardShortcuts => "settings-category-keyboard-shortcuts",
+            Category::TimeDate => "settings-category-time-date",
+            Category::Users => "settings-category-users",
+            Category::Printers => "settings-category-printers",
+            Category::Power => "settings-category-power",
+            Category::Appearance => "settings-category-appearance",
+            Category::Accessibility => "settings-category-accessibility",
+            Category::Notifications => "settings-category-notifications",
+            Category::DefaultApps => "settings-category-default-apps",
+            Category::Storage => "settings-category-storage",
+            Category::ExternalAccounts => "settings-category-external-accounts",
+            Category::AgentModels => "settings-category-agent-models",
+            Category::RegionFormats => "settings-category-region-formats",
+            Category::Permissions => "settings-category-permissions",
+            Category::Updates => "settings-category-updates",
+            Category::About => "settings-category-about",
+        })
     }
 
     /// A one-line summary shown under the label in the content header.
-    pub fn subtitle(self) -> &'static str {
-        match self {
-            Category::Network => "Wi-Fi, wired connections, and VPN",
-            Category::Bluetooth => "Pair and manage Bluetooth devices",
-            Category::DeviceMesh => "Copies, remote access, and server roles",
-            Category::Sound => "Output, input, volume, and system sounds",
-            Category::Displays => "Resolution, scale, arrangement, and brightness",
-            Category::MouseKeyboard => "Typing, spelling, input sources, and pointer behaviour",
-            Category::KeyboardShortcuts => "System and workspace keyboard shortcuts",
-            Category::TimeDate => "Clock, time zone, and how dates display",
-            Category::Users => "Accounts on this device and their roles",
-            Category::Printers => "Printers, queues, and recent jobs",
-            Category::Power => "Battery, power profile, and automatic suspend",
-            Category::Appearance => "Theme, contrast, motion, and text size",
-            Category::Accessibility => "Vision, pointer, typing, and hearing assists",
-            Category::Notifications => "Banners, previews, sounds, and Do Not Disturb",
-            Category::DefaultApps => "Your preferred apps for links and file types",
-            Category::Storage => "Apps, data, cache, and synced files",
-            Category::ExternalAccounts => "Accounts shared with compatible installed apps",
-            Category::AgentModels => "Providers, local models, and the model agents use",
-            Category::RegionFormats => "Currency, date, time, and measurement units",
-            Category::Permissions => {
-                "This device's privacy and security; workspace access is managed per workspace"
-            }
-            Category::Updates => "Operating-system and firmware updates",
-            Category::About => "Device identity and transfer",
-        }
+    pub fn subtitle(self) -> String {
+        t(match self {
+            Category::Network => "settings-category-network-subtitle",
+            Category::Bluetooth => "settings-category-bluetooth-subtitle",
+            Category::DeviceMesh => "settings-category-devices-sync-subtitle",
+            Category::Sound => "settings-category-sound-subtitle",
+            Category::Speakers => "settings-category-speakers-subtitle",
+            Category::Displays => "settings-category-displays-subtitle",
+            Category::MouseKeyboard => "settings-category-mouse-keyboard-subtitle",
+            Category::KeyboardShortcuts => "settings-category-keyboard-shortcuts-subtitle",
+            Category::TimeDate => "settings-category-time-date-subtitle",
+            Category::Users => "settings-category-users-subtitle",
+            Category::Printers => "settings-category-printers-subtitle",
+            Category::Power => "settings-category-power-subtitle",
+            Category::Appearance => "settings-category-appearance-subtitle",
+            Category::Accessibility => "settings-category-accessibility-subtitle",
+            Category::Notifications => "settings-category-notifications-subtitle",
+            Category::DefaultApps => "settings-category-default-apps-subtitle",
+            Category::Storage => "settings-category-storage-subtitle",
+            Category::ExternalAccounts => "settings-category-external-accounts-subtitle",
+            Category::AgentModels => "settings-category-agent-models-subtitle",
+            Category::RegionFormats => "settings-category-region-formats-subtitle",
+            Category::Permissions => "settings-category-permissions-subtitle",
+            Category::Updates => "settings-category-updates-subtitle",
+            Category::About => "settings-category-about-subtitle",
+        })
     }
 
     /// Toolkit-owned vector icon rendered before the label in the sidebar.
@@ -465,7 +486,7 @@ impl Category {
             Category::Bluetooth => Icon::Bluetooth,
             Category::DeviceMesh | Category::ExternalAccounts => Icon::CloudDownload,
             Category::AgentModels | Category::Appearance => Icon::Sparkles,
-            Category::Sound => Icon::Volume2,
+            Category::Sound | Category::Speakers => Icon::Volume2,
             Category::Displays => Icon::Monitor,
             Category::MouseKeyboard => Icon::Mouse,
             Category::KeyboardShortcuts => Icon::Keyboard,
@@ -495,6 +516,7 @@ impl Category {
             Category::Bluetooth => BLUETOOTH_KEYWORDS,
             Category::DeviceMesh => DEVICE_MESH_KEYWORDS,
             Category::Sound => SOUND_KEYWORDS,
+            Category::Speakers => SPEAKERS_KEYWORDS,
             Category::Displays => DISPLAYS_KEYWORDS,
             Category::MouseKeyboard => MOUSE_KEYBOARD_KEYWORDS,
             Category::TimeDate => TIME_DATE_KEYWORDS,
@@ -521,18 +543,20 @@ impl Category {
     /// [`Category::keywords`]. An all-whitespace query matches everything (the
     /// caller treats that as "no search").
     pub fn matches(self, query: &str) -> bool {
-        let q = query.trim().to_ascii_lowercase();
+        let q = query.trim().to_lowercase();
         if q.is_empty() {
             return true;
         }
-        if self.label().to_ascii_lowercase().contains(&q)
-            || self.subtitle().to_ascii_lowercase().contains(&q)
-        {
+        if self.label().to_lowercase().contains(&q) || self.subtitle().to_lowercase().contains(&q) {
             return true;
         }
+        // A keyword matches a query it contains, or one that contains it as
+        // whole words: "turn on vpn" finds Network, but "wallpaper" must not
+        // find Printers through "paper".
+        let padded = format!(" {q} ");
         self.keywords()
             .iter()
-            .any(|k| k.contains(&q) || q.contains(*k))
+            .any(|k| k.contains(&q) || padded.contains(&format!(" {k} ")))
     }
 
     /// Stable identifier suffix used to compose `test_id`s and CRDT keys.
@@ -542,6 +566,7 @@ impl Category {
             Category::Bluetooth => "bluetooth",
             Category::DeviceMesh => "devices_sync",
             Category::Sound => "sound",
+            Category::Speakers => "speakers",
             Category::Displays => "displays",
             Category::MouseKeyboard => "mouse_keyboard",
             Category::KeyboardShortcuts => "keyboard_shortcuts",
@@ -568,17 +593,35 @@ impl Category {
 mod tests {
     use super::*;
 
+    /// Every category is unique, fully described, keyworded and sits in exactly
+    /// one listed section; slugs are unique too.
     #[test]
-    fn all_categories_are_unique() {
-        let mut seen = std::collections::HashSet::new();
+    fn category_catalogue_is_complete_unique_and_partitioned() {
+        let mut categories = std::collections::HashSet::new();
+        let mut slugs = std::collections::HashSet::new();
         for c in Category::ALL {
-            assert!(seen.insert(*c), "duplicate category {c:?}");
+            assert!(categories.insert(*c), "duplicate category {c:?}");
+            assert!(!c.label().is_empty(), "{c:?} missing label");
+            assert!(!c.subtitle().is_empty(), "{c:?} missing subtitle");
+            assert!(!c.slug().is_empty(), "{c:?} missing slug");
+            let _ = c.icon();
+            assert!(slugs.insert(c.slug()), "duplicate slug {}", c.slug());
+            assert!(
+                Section::ALL.contains(&c.section()),
+                "{c:?} section not in Section::ALL"
+            );
+            assert!(!c.keywords().is_empty(), "{c:?} must carry search keywords");
         }
-        assert_eq!(seen.len(), Category::ALL.len());
-    }
+        assert_eq!(categories.len(), Category::ALL.len());
 
-    #[test]
-    fn device_privacy_category_does_not_claim_workspace_authority() {
+        // Every category appears exactly once when we walk section by section.
+        let count: usize = Section::ALL
+            .iter()
+            .map(|s| Category::in_section(*s).count())
+            .sum();
+        assert_eq!(count, Category::ALL.len());
+
+        // The device privacy destination does not claim workspace authority.
         assert_eq!(
             Category::Permissions.label(),
             "Device Privacy & Security",
@@ -591,99 +634,66 @@ mod tests {
     }
 
     #[test]
-    fn every_category_has_label_subtitle_slug_and_icon() {
-        for c in Category::ALL {
-            assert!(!c.label().is_empty(), "{c:?} missing label");
-            assert!(!c.subtitle().is_empty(), "{c:?} missing subtitle");
-            assert!(!c.slug().is_empty(), "{c:?} missing slug");
-            let _ = c.icon();
-        }
-    }
-
-    #[test]
-    fn slugs_are_unique() {
-        let mut seen = std::collections::HashSet::new();
-        for c in Category::ALL {
-            assert!(seen.insert(c.slug()), "duplicate slug {}", c.slug());
-        }
-    }
-
-    #[test]
-    fn every_category_belongs_to_a_listed_section() {
-        for c in Category::ALL {
-            assert!(
-                Section::ALL.contains(&c.section()),
-                "{c:?} section not in Section::ALL"
-            );
-        }
-    }
-
-    #[test]
-    fn sections_partition_all_categories() {
-        // Every category appears exactly once when we walk section by section.
-        let mut count = 0;
-        for s in Section::ALL {
-            count += Category::in_section(*s).count();
-        }
-        assert_eq!(count, Category::ALL.len());
-    }
-
-    #[test]
-    fn empty_or_whitespace_query_matches_everything() {
+    fn category_queries_match_label_subtitle_and_keyword() {
         for c in Category::ALL {
             assert!(c.matches(""), "{c:?} should match an empty query");
             assert!(c.matches("   "), "{c:?} should match a whitespace query");
         }
-    }
-
-    #[test]
-    fn matches_by_label_subtitle_and_keyword() {
-        // Label substring.
-        assert!(Category::Network.matches("net"));
-        // Case-insensitive.
-        assert!(Category::Bluetooth.matches("BLUE"));
-        // Subtitle substring ("Pair and manage Bluetooth devices").
-        assert!(Category::Bluetooth.matches("pair"));
-        // Keyword-only terms land on the owning pane.
-        assert!(
-            Category::Displays.matches("night light"),
-            "night light → Displays"
-        );
-        assert!(Category::Network.matches("vpn"), "vpn → Network");
-        assert!(Category::Power.matches("battery"), "battery → Power");
-        assert!(
-            Category::Appearance.matches("dark mode"),
-            "dark mode → Appearance"
-        );
-        assert!(
-            Category::ExternalAccounts.matches("imap"),
-            "imap → External Accounts"
-        );
-        assert!(
-            Category::KeyboardShortcuts.matches("hotkeys"),
-            "hotkeys → Keyboard Shortcuts"
-        );
-        assert!(
-            Category::DeviceMesh.matches("file transfer"),
-            "file transfer → Devices & Sync"
-        );
-        assert!(
-            Category::DeviceMesh.matches("typed gamepad"),
-            "typed gamepad → Devices & Sync"
-        );
-    }
-
-    #[test]
-    fn non_matching_query_is_rejected() {
-        assert!(!Category::Network.matches("battery"));
-        assert!(!Category::About.matches("wifi"));
-        assert!(!Category::Sound.matches("zzzznope"));
-    }
-
-    #[test]
-    fn every_category_has_nonempty_keywords() {
-        for c in Category::ALL {
-            assert!(!c.keywords().is_empty(), "{c:?} must carry search keywords");
+        // (category, query, should match, why)
+        let cases = [
+            (Category::Network, "net", true, "label substring"),
+            (Category::Bluetooth, "BLUE", true, "case-insensitive"),
+            // Subtitle "Pair and manage Bluetooth devices".
+            (Category::Bluetooth, "pair", true, "subtitle substring"),
+            // Keyword-only terms land on the owning pane.
+            (
+                Category::Displays,
+                "night light",
+                true,
+                "night light → Displays",
+            ),
+            (Category::Network, "vpn", true, "vpn → Network"),
+            (Category::Power, "battery", true, "battery → Power"),
+            (
+                Category::Appearance,
+                "dark mode",
+                true,
+                "dark mode → Appearance",
+            ),
+            (
+                Category::ExternalAccounts,
+                "imap",
+                true,
+                "imap → External Accounts",
+            ),
+            (
+                Category::KeyboardShortcuts,
+                "hotkeys",
+                true,
+                "hotkeys → Keyboard Shortcuts",
+            ),
+            (
+                Category::DeviceMesh,
+                "file transfer",
+                true,
+                "file transfer → Devices & Sync",
+            ),
+            (
+                Category::DeviceMesh,
+                "typed gamepad",
+                true,
+                "typed gamepad → Devices & Sync",
+            ),
+            (Category::Network, "battery", false, "non-matching keyword"),
+            (Category::About, "wifi", false, "non-matching keyword"),
+            (Category::Sound, "zzzznope", false, "nonsense query"),
+        ];
+        for (category, query, want, why) in cases {
+            assert_eq!(
+                category.matches(query),
+                want,
+                "{category:?} matches {query:?}: {why}"
+            );
         }
     }
 }

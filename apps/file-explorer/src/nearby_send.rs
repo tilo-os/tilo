@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use ui::collaboration::{
     CollabEvent, CollabRequest, NearbyDestinationHandle, NearbyTargetHandle, NearbyTransferCommand,
@@ -59,7 +59,7 @@ impl Default for NearbySendState {
             pending: BTreeMap::new(),
             requests: VecDeque::new(),
             snapshot: NearbyTransferSnapshot::default(),
-            next_poll: Instant::now(),
+            next_poll: ui::time::now(),
             shown_offer: None,
             observed_phases: BTreeMap::new(),
             history: VecDeque::new(),
@@ -90,27 +90,20 @@ impl NearbySendState {
     /// Queue an exact Unix path for the shell-owned transfer service.
     ///
     /// # Errors
-    /// Other hosts cannot represent local paths in this Unix service protocol.
-    #[cfg(unix)]
+    /// Hosts whose paths are not Unix byte strings cannot represent local
+    /// paths in this service protocol; nothing is queued.
     pub fn send(&mut self, path: &Path, target: NearbyTargetHandle) -> Result<(), String> {
-        use std::os::unix::ffi::OsStrExt as _;
+        let Some(source_path) = host_fs::names::unix_path_bytes(path) else {
+            return Err(crate::i18n::t("files-share-not-available"));
+        };
         self.queue(
             NearbyTransferCommand::Send {
                 target,
-                source_path: path.as_os_str().as_bytes().to_vec(),
+                source_path: source_path.to_vec(),
             },
             Pending::Send,
         );
         Ok(())
-    }
-
-    /// Native Windows paths cannot be sent to the Unix-only file authority.
-    ///
-    /// # Errors
-    /// Returns the host's unavailable-service error without queuing a request.
-    #[cfg(not(unix))]
-    pub fn send(&mut self, _path: &Path, _target: NearbyTargetHandle) -> Result<(), String> {
-        Err(crate::i18n::t("files-share-not-available"))
     }
 
     pub fn decide(
@@ -250,6 +243,11 @@ impl NearbySendState {
         snapshot: NearbyTransferSnapshot,
         open_picker: bool,
     ) -> Vec<NearbyUiEffect> {
+        // Background Snapshot polls keep the 2s wake. An identical roster
+        // must not look like a frame: the runner used to commit every reply.
+        if !open_picker && snapshot == self.snapshot {
+            return Vec::new();
+        }
         self.snapshot = snapshot;
         self.observed_phases.retain(|handle, _| {
             self.snapshot
@@ -345,50 +343,109 @@ mod tests {
     use super::*;
     use ui::collaboration::{NearbyTransferDirection, NearbyTransferPhase, NearbyTransferReply};
 
+    /// Picker and receiver consent follow typed broker results and the receiver decision uses only opaque destination authority.
     #[test]
-    fn picker_and_receiver_consent_are_driven_by_typed_broker_results() {
+    fn nearby_send_consent_is_driven_by_typed_opaque_broker_results() {
+        // --- phase: picker_and_receiver_consent_are_driven_by_typed_broker_results ---
+        {
+            let mut state = NearbySendState::default();
+            state.open_picker();
+            let request = state.take_requests().pop().expect("snapshot request");
+            let CollabRequest::NearbyTransferCommand { request_id, .. } = request else {
+                panic!("wrong request");
+            };
+            let offer = NearbyTransferStatus {
+                handle: NearbyTransferHandle::from_issued_bytes([8; 16]),
+                name: "Photos".into(),
+                device_label: "Travel laptop".into(),
+                direction: NearbyTransferDirection::Receiving,
+                phase: NearbyTransferPhase::AwaitingConsent,
+                transferred_bytes: 0,
+                total_bytes: 42,
+            };
+            let destination = NearbyTransferDestination {
+                handle: NearbyDestinationHandle::from_issued_bytes([6; 16]),
+                label: "Workspace files".into(),
+                remembered_for_session: false,
+            };
+            let effects = state.handle_event(&CollabEvent::NearbyTransferCommandResult {
+                request_id,
+                result: Ok(NearbyTransferReply::Snapshot {
+                    snapshot: NearbyTransferSnapshot {
+                        targets: vec![NearbyTransferTarget {
+                            handle: NearbyTargetHandle::from_issued_bytes([4; 16]),
+                            label: "Desk".into(),
+                            online: true,
+                        }],
+                        destinations: vec![destination.clone()],
+                        transfers: vec![offer.clone()],
+                    },
+                }),
+            });
+            assert!(matches!(
+                effects.first(),
+                Some(NearbyUiEffect::OpenPicker(_))
+            ));
+            assert!(effects.contains(&NearbyUiEffect::Offer {
+                transfer: offer,
+                destinations: vec![destination],
+            }));
+        }
+
+        // --- phase: receiver_decision_uses_only_opaque_destination_authority ---
+        {
+            let mut state = NearbySendState::default();
+            let transfer = NearbyTransferHandle::from_issued_bytes([8; 16]);
+            let destination = NearbyDestinationHandle::from_issued_bytes([9; 16]);
+            state.decide(transfer, Some(destination), true);
+            let request = state.take_requests().pop().expect("decision request");
+            let CollabRequest::NearbyTransferCommand { command, .. } = request else {
+                panic!("wrong request");
+            };
+            assert_eq!(
+                command,
+                NearbyTransferCommand::Decide {
+                    handle: transfer,
+                    accept: true,
+                    destination: Some(destination),
+                    remember_for_session: true,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn identical_background_snapshot_is_not_a_ui_effect() {
         let mut state = NearbySendState::default();
-        state.open_picker();
+        state.poll_if_due(ui::time::now());
         let request = state.take_requests().pop().expect("snapshot request");
         let CollabRequest::NearbyTransferCommand { request_id, .. } = request else {
             panic!("wrong request");
         };
-        let offer = NearbyTransferStatus {
-            handle: NearbyTransferHandle::from_issued_bytes([8; 16]),
-            name: "Photos".into(),
-            device_label: "Travel laptop".into(),
-            direction: NearbyTransferDirection::Receiving,
-            phase: NearbyTransferPhase::AwaitingConsent,
-            transferred_bytes: 0,
-            total_bytes: 42,
-        };
-        let destination = NearbyTransferDestination {
-            handle: NearbyDestinationHandle::from_issued_bytes([6; 16]),
-            label: "Workspace files".into(),
-            remembered_for_session: false,
-        };
-        let effects = state.handle_event(&CollabEvent::NearbyTransferCommandResult {
+        let idle = NearbyTransferSnapshot::default();
+        let first = state.handle_event(&CollabEvent::NearbyTransferCommandResult {
             request_id,
             result: Ok(NearbyTransferReply::Snapshot {
-                snapshot: NearbyTransferSnapshot {
-                    targets: vec![NearbyTransferTarget {
-                        handle: NearbyTargetHandle::from_issued_bytes([4; 16]),
-                        label: "Desk".into(),
-                        online: true,
-                    }],
-                    destinations: vec![destination.clone()],
-                    transfers: vec![offer.clone()],
-                },
+                snapshot: idle.clone(),
             }),
         });
-        assert!(matches!(
-            effects.first(),
-            Some(NearbyUiEffect::OpenPicker(_))
-        ));
-        assert!(effects.contains(&NearbyUiEffect::Offer {
-            transfer: offer,
-            destinations: vec![destination],
-        }));
+        assert!(
+            first.is_empty(),
+            "an empty idle roster must not open chrome"
+        );
+        state.poll_if_due(ui::time::now() + super::POLL_INTERVAL);
+        let request = state.take_requests().pop().expect("second snapshot");
+        let CollabRequest::NearbyTransferCommand { request_id, .. } = request else {
+            panic!("wrong request");
+        };
+        let second = state.handle_event(&CollabEvent::NearbyTransferCommandResult {
+            request_id,
+            result: Ok(NearbyTransferReply::Snapshot { snapshot: idle }),
+        });
+        assert!(
+            second.is_empty(),
+            "an unchanged Nearby poll must not keep requesting frames"
+        );
     }
 
     #[test]
@@ -426,26 +483,5 @@ mod tests {
         );
         assert!(state.take_requests().is_empty());
         assert!(state.pending.is_empty());
-    }
-
-    #[test]
-    fn receiver_decision_uses_only_opaque_destination_authority() {
-        let mut state = NearbySendState::default();
-        let transfer = NearbyTransferHandle::from_issued_bytes([8; 16]);
-        let destination = NearbyDestinationHandle::from_issued_bytes([9; 16]);
-        state.decide(transfer, Some(destination), true);
-        let request = state.take_requests().pop().expect("decision request");
-        let CollabRequest::NearbyTransferCommand { command, .. } = request else {
-            panic!("wrong request");
-        };
-        assert_eq!(
-            command,
-            NearbyTransferCommand::Decide {
-                handle: transfer,
-                accept: true,
-                destination: Some(destination),
-                remember_for_session: true,
-            }
-        );
     }
 }

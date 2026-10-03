@@ -219,57 +219,53 @@ YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t500\t250
 ";
 
     #[test]
-    fn wg_transfer_sums_all_peers() {
-        let t = parse_wg_transfer(WG_TRANSFER).expect("parses");
-        assert_eq!(t.rx, 1024 + 500);
-        assert_eq!(t.tx, 2048 + 250);
-    }
-
-    #[test]
-    fn wg_transfer_single_peer() {
-        let t = parse_wg_transfer("abc=\t9999\t1\n").expect("parses");
-        assert_eq!(t, Transfer { rx: 9999, tx: 1 });
-    }
-
-    #[test]
-    fn wg_transfer_empty_is_none() {
-        assert!(parse_wg_transfer("").is_none());
-        assert!(parse_wg_transfer("\n\n").is_none());
-    }
-
-    #[test]
-    fn ip_link_up_true_for_up_flag() {
-        // Real `ip link show wg0` when the tunnel is up.
-        let s = "42: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\n    link/none";
-        assert_eq!(parse_ip_link_up(s), Some(true));
-    }
-
-    #[test]
-    fn ip_link_up_false_when_down() {
-        let s = "3: eth1: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN mode DEFAULT";
-        assert_eq!(parse_ip_link_up(s), Some(false));
-    }
-
-    #[test]
-    fn ip_link_up_none_when_no_flags() {
-        assert_eq!(parse_ip_link_up("Device \"wg0\" does not exist."), None);
-    }
-
-    #[test]
-    fn stat_parses_number() {
-        assert_eq!(parse_stat("162300528\n"), Some(162_300_528));
-        assert_eq!(parse_stat("  42 "), Some(42));
-        assert!(parse_stat("not-a-number").is_none());
-    }
-
-    #[test]
-    fn iface_validation_rejects_traversal() {
-        assert!(is_valid_iface("wg0"));
-        assert!(is_valid_iface("home"));
-        assert!(!is_valid_iface("../../etc/passwd"));
-        assert!(!is_valid_iface("a/b"));
-        assert!(!is_valid_iface(""));
-        assert!(!is_valid_iface("waaaaaaaaaaaaaaaay-too-long"));
+    fn wireguard_and_ip_link_output_parses() {
+        // Case `wg_transfer_sums_all_peers`.
+        {
+            let t = parse_wg_transfer(WG_TRANSFER).expect("parses");
+            assert_eq!(t.rx, 1024 + 500);
+            assert_eq!(t.tx, 2048 + 250);
+        }
+        // Case `wg_transfer_single_peer`.
+        {
+            let t = parse_wg_transfer("abc=\t9999\t1\n").expect("parses");
+            assert_eq!(t, Transfer { rx: 9999, tx: 1 });
+        }
+        // Case `wg_transfer_empty_is_none`.
+        {
+            assert!(parse_wg_transfer("").is_none());
+            assert!(parse_wg_transfer("\n\n").is_none());
+        }
+        // Case `ip_link_up_true_for_up_flag`.
+        {
+            // Real `ip link show wg0` when the tunnel is up.
+            let s = "42: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\n    link/none";
+            assert_eq!(parse_ip_link_up(s), Some(true));
+        }
+        // Case `ip_link_up_false_when_down`.
+        {
+            let s = "3: eth1: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN mode DEFAULT";
+            assert_eq!(parse_ip_link_up(s), Some(false));
+        }
+        // Case `ip_link_up_none_when_no_flags`.
+        {
+            assert_eq!(parse_ip_link_up("Device \"wg0\" does not exist."), None);
+        }
+        // Case `stat_parses_number`.
+        {
+            assert_eq!(parse_stat("162300528\n"), Some(162_300_528));
+            assert_eq!(parse_stat("  42 "), Some(42));
+            assert!(parse_stat("not-a-number").is_none());
+        }
+        // Case `iface_validation_rejects_traversal`.
+        {
+            assert!(is_valid_iface("wg0"));
+            assert!(is_valid_iface("home"));
+            assert!(!is_valid_iface("../../etc/passwd"));
+            assert!(!is_valid_iface("a/b"));
+            assert!(!is_valid_iface(""));
+            assert!(!is_valid_iface("waaaaaaaaaaaaaaaay-too-long"));
+        }
     }
 
     // ---- Real reads against the always-present loopback interface -------
@@ -277,6 +273,74 @@ YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t500\t250
     // These hit the real kernel (sysfs + `ip`). They need no root and no
     // exec-gate because they are read-only. On a box without `ip` the state
     // probe honestly returns None and the test asserts exactly that.
+
+    #[test]
+    #[serial_test::serial(vpn_env)]
+    fn real_loopback_interface_is_readable_up_and_gated() {
+        // Case `real_loopback_is_up`.
+        {
+            // The loopback is always administratively up. If `ip` is unavailable
+            // the probe returns None — assert the real result either way rather
+            // than fabricate one.
+            if let Some(up) = probe_interface_up("lo") {
+                assert!(up, "loopback must report UP");
+            } else { /* `ip` binary unavailable on this box — honestly unknown */
+            }
+        }
+        // Case `bring_up_is_real_or_honestly_gated`.
+        {
+            use crate::config::{self, Backend};
+            use crate::model::ConnKind;
+
+            // A legacy WireGuard plan resolves the local interface hint `qtest0`.
+            // Production activation uses NetworkManager's UUID instead.
+            let conn = Connection::new("qtest0", ConnKind::WireGuard);
+            assert_eq!(config::iface_name(&conn), "qtest0");
+            let plan = config::connect_plan(&conn, Backend::WgQuick);
+            assert_eq!(plan.program, "wg-quick");
+            assert_eq!(plan.args, vec!["up", "qtest0"]);
+
+            // REAL end-to-end, but only when the operator has opted in AND the box
+            // can create a network interface (root + iproute2). We stand up a real
+            // dummy interface named like the tunnel, then assert the status and
+            // byte-counter probes read the real kernel state — no fabrication. On
+            // a box without those privileges this branch is honestly skipped; the
+            // gated-refusal assertion below still proves the safety boundary.
+            if config::exec_allowed() && ip(&["link", "add", "qtest0", "type", "dummy"]) {
+                assert!(
+                    ip(&["link", "set", "qtest0", "up"]),
+                    "bring the dummy iface up"
+                );
+                // The status probe now sees a real, UP interface via netlink — this
+                // is the true "status reflects the interface state" path, exercised
+                // end-to-end against a live kernel device. (Real byte-counter reads
+                // from sysfs are proven separately by the loopback test, which
+                // targets an interface always visible in `/sys/class/net`.)
+                assert_eq!(
+                    probe_status(&conn),
+                    Some(true),
+                    "a real up interface must probe as connected"
+                );
+                // Tear it down and confirm the probe flips to Disconnected.
+                assert!(ip(&["link", "del", "qtest0"]), "delete the dummy iface");
+                assert_eq!(
+                    probe_status(&conn),
+                    Some(false),
+                    "a deleted interface must probe as disconnected"
+                );
+            }
+
+            // Gated-refusal: with execution disabled, the mutating command must be
+            // refused — the UI can never claim connected without a real success.
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.remove("TILO_VPN_ALLOW_EXEC");
+            let refused = config::execute(&plan);
+            assert!(
+                refused.is_err() && refused.unwrap_err().contains("execution disabled"),
+                "bring-up must be refused while execution is gated off"
+            );
+        }
+    }
 
     #[test]
     fn real_loopback_sys_bytes_are_readable_and_monotonic() {
@@ -297,17 +361,6 @@ YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t500\t250
         );
     }
 
-    #[test]
-    fn real_loopback_is_up() {
-        // The loopback is always administratively up. If `ip` is unavailable
-        // the probe returns None — assert the real result either way rather
-        // than fabricate one.
-        if let Some(up) = probe_interface_up("lo") {
-            assert!(up, "loopback must report UP");
-        } else { /* `ip` binary unavailable on this box — honestly unknown */
-        }
-    }
-
     /// Run `ip <args>` and report whether it succeeded (used to bring a real
     /// dummy interface up/down for the end-to-end probe test).
     fn ip(args: &[&str]) -> bool {
@@ -315,60 +368,5 @@ YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t500\t250
             .args(args)
             .output()
             .is_ok_and(|o| o.status.success())
-    }
-
-    #[test]
-    #[serial_test::serial(vpn_env)]
-    fn bring_up_is_real_or_honestly_gated() {
-        use crate::config::{self, Backend};
-        use crate::model::ConnKind;
-
-        // A legacy WireGuard plan resolves the local interface hint `qtest0`.
-        // Production activation uses NetworkManager's UUID instead.
-        let conn = Connection::new("qtest0", ConnKind::WireGuard);
-        assert_eq!(config::iface_name(&conn), "qtest0");
-        let plan = config::connect_plan(&conn, Backend::WgQuick);
-        assert_eq!(plan.program, "wg-quick");
-        assert_eq!(plan.args, vec!["up", "qtest0"]);
-
-        // REAL end-to-end, but only when the operator has opted in AND the box
-        // can create a network interface (root + iproute2). We stand up a real
-        // dummy interface named like the tunnel, then assert the status and
-        // byte-counter probes read the real kernel state — no fabrication. On
-        // a box without those privileges this branch is honestly skipped; the
-        // gated-refusal assertion below still proves the safety boundary.
-        if config::exec_allowed() && ip(&["link", "add", "qtest0", "type", "dummy"]) {
-            assert!(
-                ip(&["link", "set", "qtest0", "up"]),
-                "bring the dummy iface up"
-            );
-            // The status probe now sees a real, UP interface via netlink — this
-            // is the true "status reflects the interface state" path, exercised
-            // end-to-end against a live kernel device. (Real byte-counter reads
-            // from sysfs are proven separately by the loopback test, which
-            // targets an interface always visible in `/sys/class/net`.)
-            assert_eq!(
-                probe_status(&conn),
-                Some(true),
-                "a real up interface must probe as connected"
-            );
-            // Tear it down and confirm the probe flips to Disconnected.
-            assert!(ip(&["link", "del", "qtest0"]), "delete the dummy iface");
-            assert_eq!(
-                probe_status(&conn),
-                Some(false),
-                "a deleted interface must probe as disconnected"
-            );
-        }
-
-        // Gated-refusal: with execution disabled, the mutating command must be
-        // refused — the UI can never claim connected without a real success.
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove("TILO_VPN_ALLOW_EXEC");
-        let refused = config::execute(&plan);
-        assert!(
-            refused.is_err() && refused.unwrap_err().contains("execution disabled"),
-            "bring-up must be refused while execution is gated off"
-        );
     }
 }

@@ -12,8 +12,8 @@
 //! populated, highlightable lyrics view with zero network. The **live** fetch
 //! from [LRCLIB](https://lrclib.net) (`GET https://lrclib.net/api/get` keyed
 //! on track + artist + album + duration, returning `syncedLyrics` /
-//! `plainLyrics`) is gated behind the `lyrics` cargo feature and runs on an
-//! async worker so the UI never blocks. The pure LRC parser below is always
+//! `plainLyrics`) is gated behind the `lyrics` cargo feature and runs as a
+//! task on the app runtime (`tilo_net`), so the UI never blocks. The pure LRC parser below is always
 //! compiled and unit-tested, so the contract is exercised even offline.
 
 /// One line of lyrics. `at_ms` is the line's start time for synced lyrics, or
@@ -133,21 +133,22 @@ pub struct TrackMeta {
 /// present for the seed tracks + offline), then the live source when the
 /// `lyrics` feature is enabled. Returns `None` when nothing is available.
 ///
-/// This is the synchronous resolution seam used by the async worker
-/// ([`LyricsWorker`]); the bundled path makes it usable offline / in `--shots`
-/// with no network.
-pub fn resolve(meta: &TrackMeta) -> Option<Lyrics> {
+/// This is the resolution seam the worker ([`LyricsWorker`]) runs on the app
+/// runtime; the bundled path makes it usable offline / in `--shots` with no
+/// network.
+pub async fn resolve(meta: &TrackMeta) -> Option<Lyrics> {
     if let Some(l) = bundled::for_track(&meta.track_id) {
         return Some(l);
     }
-    live_fetch(meta)
+    live_fetch(meta).await
 }
 
 /// The live LRCLIB fetch. Without an HTTP stack (`lyrics` or `live` feature —
-/// both pull `reqwest`) this is a stub that documents the request it *would*
+/// both pull `tilo-net`) this is a stub that documents the request it *would*
 /// make and returns `None` (the worker treats this as "no lyrics right now").
 #[cfg(not(any(feature = "lyrics", feature = "live")))]
-fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
+#[allow(clippy::unused_async, reason = "the same signature as the live fetch")]
+async fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
     let _ = lrclib_url(meta);
     None
 }
@@ -169,33 +170,44 @@ fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
 /// - **fallback** — an exact `/api/get` miss (`YouTube` durations rarely match
 ///   to the second) falls back to `/api/search`.
 #[cfg(any(feature = "lyrics", feature = "live"))]
-fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
+async fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
     let key = cache_key(meta);
     match cache_get(&key) {
         CacheEntry::Hit(l) => return Some(l),
         CacheEntry::Miss => return None,
         CacheEntry::Absent => {}
     }
-    let result = live_fetch_uncached(meta);
+    let result = live_fetch_uncached(meta).await;
     cache_put(key, result.clone());
     result
 }
 
+/// The shared LRCLIB client.
 #[cfg(any(feature = "lyrics", feature = "live"))]
-fn live_fetch_uncached(meta: &TrackMeta) -> Option<Lyrics> {
-    let client = tilo_net::http::blocking_client()
-        .timeout(std::time::Duration::from_secs(8))
-        .user_agent("Tilo-Music (https://tilo)")
-        .build()
-        .ok()?;
+fn lrclib_client() -> Option<&'static tilo_net::Client> {
+    static CLIENT: std::sync::OnceLock<Option<tilo_net::Client>> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            tilo_net::Client::builder()
+                .timeout(std::time::Duration::from_secs(8))
+                .user_agent("Tilo-Music (https://tilo)")
+                .build()
+                .ok()
+        })
+        .as_ref()
+}
+
+#[cfg(any(feature = "lyrics", feature = "live"))]
+async fn live_fetch_uncached(meta: &TrackMeta) -> Option<Lyrics> {
+    let client = lrclib_client()?;
     // 1. Exact match by (normalised) track/artist/album/duration.
-    if let Some(l) = lrclib_from_object(&client, &lrclib_url(meta)) {
+    if let Some(l) = lrclib_from_object(client, &lrclib_url(meta)).await {
         return Some(l);
     }
     // 2. Fuzzy search fallback — YouTube durations rarely match LRCLIB's to the
     //    second, so `/api/get` frequently 404s. `/api/search` returns candidates
     //    (best first); take the first with real synced (then plain) lyrics.
-    lrclib_from_search(&client, meta)
+    lrclib_from_search(client, meta).await
 }
 
 /// GET `url` as text, retrying a couple of times with linear backoff on a
@@ -203,43 +215,31 @@ fn live_fetch_uncached(meta: &TrackMeta) -> Option<Lyrics> {
 /// any other definitive non-success returns `None` immediately so the caller
 /// moves on to the next strategy rather than burning retries on a real miss.
 #[cfg(any(feature = "lyrics", feature = "live"))]
-fn get_text_retry(client: &reqwest::blocking::Client, url: &str) -> Option<String> {
-    use std::io::Read;
-    const MAX_LYRICS_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
-    for attempt in 0..3u64 {
-        match client.get(url).send() {
+async fn get_text_retry(client: &tilo_net::Client, url: &str) -> Option<String> {
+    use tilo_net::StatusCode;
+    const MAX_LYRICS_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+    for attempt in 0..3u32 {
+        let backoff = std::time::Duration::from_millis(300 * u64::from(attempt + 1));
+        match client.get(url).send().await {
             Ok(resp) => {
                 let status = resp.status();
-                if status == reqwest::StatusCode::NOT_FOUND {
+                if status == StatusCode::NOT_FOUND {
                     return None; // a real miss — don't retry, let the fallback run
                 }
-                if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                    std::thread::sleep(std::time::Duration::from_millis(300 * (attempt + 1)));
+                if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+                    ui::rt::sleep(backoff).await;
                     continue; // transient — back off and retry
                 }
                 if !status.is_success() {
                     return None;
                 }
-                if resp
-                    .content_length()
-                    .is_some_and(|len| len > MAX_LYRICS_RESPONSE_BYTES)
-                {
-                    return None;
+                match resp.bytes_limited(MAX_LYRICS_RESPONSE_BYTES).await {
+                    Ok(body) => return Some(String::from_utf8_lossy(&body).into_owned()),
+                    Err(tilo_net::NetError::TooLarge { .. }) => return None,
+                    Err(_) => ui::rt::sleep(backoff).await,
                 }
-                let mut body = String::new();
-                if resp
-                    .take(MAX_LYRICS_RESPONSE_BYTES + 1)
-                    .read_to_string(&mut body)
-                    .is_ok()
-                    && body.len() <= MAX_LYRICS_RESPONSE_BYTES as usize
-                {
-                    return Some(body);
-                }
-                std::thread::sleep(std::time::Duration::from_millis(300 * (attempt + 1)));
             }
-            Err(_) => {
-                std::thread::sleep(std::time::Duration::from_millis(300 * (attempt + 1)));
-            }
+            Err(_) => ui::rt::sleep(backoff).await,
         }
     }
     None
@@ -248,17 +248,17 @@ fn get_text_retry(client: &reqwest::blocking::Client, url: &str) -> Option<Strin
 /// Parse a single LRCLIB record (from `/api/get`) into [`Lyrics`], preferring
 /// synced over plain. `None` on a 404 / empty record.
 #[cfg(any(feature = "lyrics", feature = "live"))]
-fn lrclib_from_object(client: &reqwest::blocking::Client, url: &str) -> Option<Lyrics> {
-    let body = get_text_retry(client, url)?;
+async fn lrclib_from_object(client: &tilo_net::Client, url: &str) -> Option<Lyrics> {
+    let body = get_text_retry(client, url).await?;
     let json: serde_json::Value = serde_json::from_str(&body).ok()?;
     lyrics_from_record(&json)
 }
 
 /// Search LRCLIB by track + artist and return the best candidate's lyrics.
 #[cfg(any(feature = "lyrics", feature = "live"))]
-fn lrclib_from_search(client: &reqwest::blocking::Client, meta: &TrackMeta) -> Option<Lyrics> {
+async fn lrclib_from_search(client: &tilo_net::Client, meta: &TrackMeta) -> Option<Lyrics> {
     let url = lrclib_search_url(meta);
-    let body = get_text_retry(client, &url)?;
+    let body = get_text_retry(client, &url).await?;
     let arr: serde_json::Value = serde_json::from_str(&body).ok()?;
     let list = arr.as_array()?;
     // Prefer the first candidate carrying synced lyrics; else the first plain.
@@ -293,24 +293,6 @@ fn lyrics_from_record(json: &serde_json::Value) -> Option<Lyrics> {
         return Some(plain(p));
     }
     None
-}
-
-/// Percent-encode a query-string value (RFC 3986 unreserved bytes pass through).
-fn enc(s: &str) -> String {
-    use std::fmt::Write;
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            b' ' => out.push_str("%20"),
-            _ => {
-                let _ = write!(out, "%{b:02X}");
-            }
-        }
-    }
-    out
 }
 
 /// Collapse internal runs of whitespace to a single space and trim the ends.
@@ -417,8 +399,8 @@ pub fn normalize_artist(raw: &str) -> String {
 fn lrclib_search_url(meta: &TrackMeta) -> String {
     format!(
         "https://lrclib.net/api/search?track_name={}&artist_name={}",
-        enc(&normalize_title(&meta.title)),
-        enc(&normalize_artist(&meta.artist)),
+        ui::uri::encode_component(&normalize_title(&meta.title)),
+        ui::uri::encode_component(&normalize_artist(&meta.artist)),
     )
 }
 
@@ -428,9 +410,9 @@ fn lrclib_search_url(meta: &TrackMeta) -> String {
 pub fn lrclib_url(meta: &TrackMeta) -> String {
     format!(
         "https://lrclib.net/api/get?track_name={}&artist_name={}&album_name={}&duration={}",
-        enc(&normalize_title(&meta.title)),
-        enc(&normalize_artist(&meta.artist)),
-        enc(&normalize_title(&meta.album)),
+        ui::uri::encode_component(&normalize_title(&meta.title)),
+        ui::uri::encode_component(&normalize_artist(&meta.artist)),
+        ui::uri::encode_component(&normalize_title(&meta.album)),
         meta.duration_s
     )
 }
@@ -484,42 +466,38 @@ fn cache_put(key: String, value: Option<Lyrics>) {
     }
 }
 
-/// An async lyrics worker: a background thread that resolves lyrics off the UI
-/// thread and delivers them over a channel. The default live build can fetch
-/// network lyrics; builds without `live` and `lyrics` resolve bundled lyrics
-/// through the same worker interface.
+/// The lyrics worker: each request resolves as a task on the app runtime and
+/// delivers over a channel. The default live build can fetch network lyrics;
+/// builds without `live` and `lyrics` resolve bundled lyrics through the same
+/// interface.
 pub struct LyricsWorker {
-    tx: std::sync::mpsc::Sender<TrackMeta>,
+    tx: std::sync::mpsc::Sender<(String, Lyrics)>,
     rx: std::sync::mpsc::Receiver<(String, Lyrics)>,
 }
 
 impl LyricsWorker {
     pub fn new() -> Self {
-        let (req_tx, req_rx) = std::sync::mpsc::channel::<TrackMeta>();
-        let (res_tx, res_rx) = std::sync::mpsc::channel::<(String, Lyrics)>();
-        std::thread::Builder::new()
-            .name("music-lyrics".into())
-            .spawn(move || {
-                while let Ok(meta) = req_rx.recv() {
-                    // ALWAYS deliver a result for the requested track — an empty
-                    // `Lyrics` on a miss — so the UI clears its "Finding lyrics…"
-                    // pending state and shows "No lyrics found" instead of
-                    // hanging forever when a lookup misses or a fetch fails.
-                    let lyrics = resolve(&meta).unwrap_or_default();
-                    let _ = res_tx.send((meta.track_id.clone(), lyrics));
-                }
-            })
-            .ok();
-        Self {
-            tx: req_tx,
-            rx: res_rx,
-        }
+        let (tx, rx) = std::sync::mpsc::channel::<(String, Lyrics)>();
+        Self { tx, rx }
     }
 
     /// Request lyrics for a track. Non-blocking; the result arrives via
     /// [`Self::poll`].
     pub fn request(&self, meta: TrackMeta) {
-        let _ = self.tx.send(meta);
+        let tx = self.tx.clone();
+        // ALWAYS deliver a result for the requested track — an empty `Lyrics`
+        // on a miss — so the UI clears its "Finding lyrics…" pending state and
+        // shows "No lyrics found" instead of hanging forever when a lookup
+        // misses or a fetch fails.
+        match ui::rt::try_app() {
+            Ok(runtime) => drop(runtime.spawn(async move {
+                let lyrics = resolve(&meta).await.unwrap_or_default();
+                let _ = tx.send((meta.track_id, lyrics));
+            })),
+            Err(_) => {
+                let _ = tx.send((meta.track_id, Lyrics::default()));
+            }
+        }
     }
 
     /// Drain any resolved lyrics that have arrived (track id + lyrics).
@@ -603,196 +581,220 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_lrc_extracts_timestamps() {
-        let lr = parse_lrc("[00:08.50] hello\n[01:00.00] world");
-        assert!(lr.synced);
-        assert_eq!(lr.lines.len(), 2);
-        assert_eq!(lr.lines[0].at_ms, Some(8_500));
-        assert_eq!(lr.lines[0].text, "hello");
-        assert_eq!(lr.lines[1].at_ms, Some(60_000));
-    }
-
-    #[test]
-    fn parse_lrc_skips_metadata_tags() {
-        let lr = parse_lrc("[ar:Aurora]\n[ti:Glasslight]\n[00:01.00] first line");
-        assert_eq!(lr.lines.len(), 1);
-        assert_eq!(lr.lines[0].text, "first line");
-    }
-
-    #[test]
-    fn current_line_tracks_playhead() {
-        let lr = parse_lrc("[00:00.00] a\n[00:10.00] b\n[00:20.00] c");
-        assert_eq!(lr.current_line(0), Some(0));
-        assert_eq!(lr.current_line(9_999), Some(0));
-        assert_eq!(lr.current_line(10_000), Some(1));
-        assert_eq!(lr.current_line(25_000), Some(2));
-    }
-
-    #[test]
-    fn plain_lyrics_have_no_current_line() {
-        let lr = plain("just\nsome\nwords");
-        assert!(!lr.synced);
-        assert_eq!(lr.lines.len(), 3);
-        assert_eq!(lr.current_line(5_000), None);
-    }
-
-    #[test]
-    fn bundled_glasslight_is_synced() {
-        let lr = bundled::for_track("tk_g1").expect("bundled lyrics for tk_g1");
-        assert!(lr.synced);
-        assert!(lr.lines.len() >= 6);
-        // A later playhead lands on a later line.
-        assert!(lr.current_line(60_000).unwrap() > lr.current_line(10_000).unwrap());
-    }
-
-    #[test]
-    fn bundled_pulsewidth_is_plain() {
-        let lr = bundled::for_track("tk_u1").expect("bundled lyrics for tk_u1");
-        assert!(!lr.synced);
-        assert!(!lr.is_empty());
-    }
-
-    #[test]
-    fn unknown_track_has_no_bundled_lyrics() {
-        assert!(bundled::for_track("tk_does_not_exist").is_none());
-    }
-
-    #[test]
-    fn lrclib_url_encodes_query() {
-        let meta = TrackMeta {
-            track_id: "x".into(),
-            title: "Neon Mileage".into(),
-            artist: "Midnight Transit".into(),
-            album: "After Hours Drive".into(),
-            duration_s: 252,
-        };
-        let url = lrclib_url(&meta);
-        assert!(url.starts_with("https://lrclib.net/api/get?"));
-        assert!(url.contains("track_name=Neon%20Mileage"));
-        assert!(url.contains("artist_name=Midnight%20Transit"));
-        assert!(url.contains("duration=252"));
-    }
-
-    #[test]
-    fn normalize_title_strips_youtube_tags_but_keeps_real_parentheticals() {
-        assert_eq!(
-            normalize_title("Californication (Official Music Video)"),
-            "Californication"
-        );
-        assert_eq!(normalize_title("Otherside [Remastered 2011]"), "Otherside");
-        assert_eq!(
-            normalize_title("Scar Tissue (Official Audio)"),
-            "Scar Tissue"
-        );
-        assert_eq!(
-            normalize_title("Say It Right feat. Nelly Furtado"),
-            "Say It Right"
-        );
-        assert_eq!(
-            normalize_title("Under the Bridge (feat. Someone)"),
-            "Under the Bridge"
-        );
-        // A genuine version parenthetical is preserved.
-        assert_eq!(
-            normalize_title("Californication (Acoustic)"),
-            "Californication (Acoustic)"
-        );
-        // Already clean → unchanged (idempotent).
-        assert_eq!(normalize_title("Neon Mileage"), "Neon Mileage");
-    }
-
-    #[test]
-    fn normalize_artist_strips_topic_suffix() {
-        assert_eq!(
-            normalize_artist("Red Hot Chili Peppers - Topic"),
-            "Red Hot Chili Peppers"
-        );
-        assert_eq!(
-            normalize_artist("Red Hot Chili Peppers"),
-            "Red Hot Chili Peppers"
-        );
-        assert_eq!(
-            normalize_artist("  Midnight   Transit  "),
-            "Midnight Transit"
-        );
-    }
-
-    /// A YouTube-flavoured title + a `… - Topic` artist must produce a
-    /// well-formed, normalised LRCLIB query, not one that carries the raw
-    /// noise through and misses on `/api/get`.
-    #[test]
-    fn lrclib_query_normalizes_youtube_metadata() {
-        let meta = TrackMeta {
-            track_id: "yt:abc".into(),
-            title: "Californication (Official Music Video)".into(),
-            artist: "Red Hot Chili Peppers - Topic".into(),
-            album: "Californication (Remastered)".into(),
-            duration_s: 329,
-        };
-        let url = lrclib_url(&meta);
-        assert!(url.starts_with("https://lrclib.net/api/get?"));
-        assert!(
-            url.contains("track_name=Californication&"),
-            "title tag stripped: {url}"
-        );
-        assert!(
-            url.contains("artist_name=Red%20Hot%20Chili%20Peppers&"),
-            "topic suffix stripped: {url}"
-        );
-        assert!(
-            url.contains("album_name=Californication&"),
-            "album tag stripped: {url}"
-        );
-        assert!(url.ends_with("duration=329"), "{url}");
-    }
-
-    #[cfg(any(feature = "lyrics", feature = "live"))]
-    #[test]
-    fn lrclib_search_url_uses_normalized_metadata() {
-        let meta = TrackMeta {
-            track_id: "yt:abc".into(),
-            title: "Californication (Official Music Video)".into(),
-            artist: "Red Hot Chili Peppers - Topic".into(),
-            album: String::new(),
-            duration_s: 329,
-        };
-        let url = lrclib_search_url(&meta);
-        assert!(url.starts_with("https://lrclib.net/api/search?"));
-        assert!(url.contains("track_name=Californication"), "{url}");
-        assert!(
-            url.contains("artist_name=Red%20Hot%20Chili%20Peppers"),
-            "{url}"
-        );
-    }
-
-    #[test]
-    fn resolve_prefers_bundled() {
-        let meta = TrackMeta {
-            track_id: "tk_g1".into(),
-            ..Default::default()
-        };
-        let lr = resolve(&meta).expect("bundled resolves offline");
-        assert!(lr.synced);
-    }
-
-    #[test]
-    fn worker_delivers_bundled_lyrics() {
-        let w = LyricsWorker::new();
-        w.request(TrackMeta {
-            track_id: "tk_g1".into(),
-            ..Default::default()
-        });
-        // Poll briefly for the worker thread to resolve + deliver.
-        let mut got = None;
-        for _ in 0..200 {
-            if let Some(r) = w.poll() {
-                got = Some(r);
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn lrc_parsing_and_current_line_tracking() {
+        // Phase `parse_lrc_extracts_timestamps`.
+        {
+            let lr = parse_lrc("[00:08.50] hello\n[01:00.00] world");
+            assert!(lr.synced);
+            assert_eq!(lr.lines.len(), 2);
+            assert_eq!(lr.lines[0].at_ms, Some(8_500));
+            assert_eq!(lr.lines[0].text, "hello");
+            assert_eq!(lr.lines[1].at_ms, Some(60_000));
         }
-        let (id, lyrics) = got.expect("worker delivered lyrics");
-        assert_eq!(id, "tk_g1");
-        assert!(lyrics.synced);
+
+        // Phase `parse_lrc_skips_metadata_tags`.
+        {
+            let lr = parse_lrc("[ar:Aurora]\n[ti:Glasslight]\n[00:01.00] first line");
+            assert_eq!(lr.lines.len(), 1);
+            assert_eq!(lr.lines[0].text, "first line");
+        }
+
+        // Phase `current_line_tracks_playhead`.
+        {
+            let lr = parse_lrc("[00:00.00] a\n[00:10.00] b\n[00:20.00] c");
+            assert_eq!(lr.current_line(0), Some(0));
+            assert_eq!(lr.current_line(9_999), Some(0));
+            assert_eq!(lr.current_line(10_000), Some(1));
+            assert_eq!(lr.current_line(25_000), Some(2));
+        }
+
+        // Phase `plain_lyrics_have_no_current_line`.
+        {
+            let lr = plain("just\nsome\nwords");
+            assert!(!lr.synced);
+            assert_eq!(lr.lines.len(), 3);
+            assert_eq!(lr.current_line(5_000), None);
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn bundled_lyrics_resolve_first_and_reach_the_worker() {
+        // Phase `bundled_glasslight_is_synced`.
+        {
+            let lr = bundled::for_track("tk_g1").expect("bundled lyrics for tk_g1");
+            assert!(lr.synced);
+            assert!(lr.lines.len() >= 6);
+            // A later playhead lands on a later line.
+            assert!(lr.current_line(60_000).unwrap() > lr.current_line(10_000).unwrap());
+        }
+
+        // Phase `bundled_pulsewidth_is_plain`.
+        {
+            let lr = bundled::for_track("tk_u1").expect("bundled lyrics for tk_u1");
+            assert!(!lr.synced);
+            assert!(!lr.is_empty());
+        }
+
+        // Phase `unknown_track_has_no_bundled_lyrics`.
+        {
+            assert!(bundled::for_track("tk_does_not_exist").is_none());
+        }
+
+        // Phase `resolve_prefers_bundled`.
+        {
+            let meta = TrackMeta {
+                track_id: "tk_g1".into(),
+                ..Default::default()
+            };
+            let lr = ui::rt::app()
+                .block_on(resolve(&meta))
+                .expect("the app runtime runs")
+                .expect("bundled resolves offline");
+            assert!(lr.synced);
+        }
+
+        // Phase `worker_delivers_bundled_lyrics`.
+        {
+            let w = LyricsWorker::new();
+            w.request(TrackMeta {
+                track_id: "tk_g1".into(),
+                ..Default::default()
+            });
+            // Poll briefly for the worker thread to resolve + deliver.
+            let mut got = None;
+            for _ in 0..200 {
+                if let Some(r) = w.poll() {
+                    got = Some(r);
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let (id, lyrics) = got.expect("worker delivered lyrics");
+            assert_eq!(id, "tk_g1");
+            assert!(lyrics.synced);
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn lrclib_queries_normalise_youtube_metadata_and_encode() {
+        // Phase `lrclib_url_encodes_query`.
+        {
+            let meta = TrackMeta {
+                track_id: "x".into(),
+                title: "Neon Mileage".into(),
+                artist: "Midnight Transit".into(),
+                album: "After Hours Drive".into(),
+                duration_s: 252,
+            };
+            let url = lrclib_url(&meta);
+            assert!(url.starts_with("https://lrclib.net/api/get?"));
+            assert!(url.contains("track_name=Neon%20Mileage"));
+            assert!(url.contains("artist_name=Midnight%20Transit"));
+            assert!(url.contains("duration=252"));
+        }
+
+        // Phase `normalize_title_strips_youtube_tags_but_keeps_real_parentheticals`.
+        {
+            assert_eq!(
+                normalize_title("Californication (Official Music Video)"),
+                "Californication"
+            );
+            assert_eq!(normalize_title("Otherside [Remastered 2011]"), "Otherside");
+            assert_eq!(
+                normalize_title("Scar Tissue (Official Audio)"),
+                "Scar Tissue"
+            );
+            assert_eq!(
+                normalize_title("Say It Right feat. Nelly Furtado"),
+                "Say It Right"
+            );
+            assert_eq!(
+                normalize_title("Under the Bridge (feat. Someone)"),
+                "Under the Bridge"
+            );
+            // A genuine version parenthetical is preserved.
+            assert_eq!(
+                normalize_title("Californication (Acoustic)"),
+                "Californication (Acoustic)"
+            );
+            // Already clean → unchanged (idempotent).
+            assert_eq!(normalize_title("Neon Mileage"), "Neon Mileage");
+        }
+
+        // Phase `normalize_artist_strips_topic_suffix`.
+        {
+            assert_eq!(
+                normalize_artist("Red Hot Chili Peppers - Topic"),
+                "Red Hot Chili Peppers"
+            );
+            assert_eq!(
+                normalize_artist("Red Hot Chili Peppers"),
+                "Red Hot Chili Peppers"
+            );
+            assert_eq!(
+                normalize_artist("  Midnight   Transit  "),
+                "Midnight Transit"
+            );
+        }
+
+        // Phase `lrclib_query_normalizes_youtube_metadata`.
+        // A YouTube-flavoured title + a `… - Topic` artist must produce a
+        // well-formed, normalised LRCLIB query, not one that carries the raw
+        // noise through and misses on `/api/get`.
+        {
+            let meta = TrackMeta {
+                track_id: "yt:abc".into(),
+                title: "Californication (Official Music Video)".into(),
+                artist: "Red Hot Chili Peppers - Topic".into(),
+                album: "Californication (Remastered)".into(),
+                duration_s: 329,
+            };
+            let url = lrclib_url(&meta);
+            assert!(url.starts_with("https://lrclib.net/api/get?"));
+            assert!(
+                url.contains("track_name=Californication&"),
+                "title tag stripped: {url}"
+            );
+            assert!(
+                url.contains("artist_name=Red%20Hot%20Chili%20Peppers&"),
+                "topic suffix stripped: {url}"
+            );
+            assert!(
+                url.contains("album_name=Californication&"),
+                "album tag stripped: {url}"
+            );
+            assert!(url.ends_with("duration=329"), "{url}");
+        }
+
+        // Phase `lrclib_search_url_uses_normalized_metadata`.
+        #[cfg(any(feature = "lyrics", feature = "live"))]
+        {
+            let meta = TrackMeta {
+                track_id: "yt:abc".into(),
+                title: "Californication (Official Music Video)".into(),
+                artist: "Red Hot Chili Peppers - Topic".into(),
+                album: String::new(),
+                duration_s: 329,
+            };
+            let url = lrclib_search_url(&meta);
+            assert!(url.starts_with("https://lrclib.net/api/search?"));
+            assert!(url.contains("track_name=Californication"), "{url}");
+            assert!(
+                url.contains("artist_name=Red%20Hot%20Chili%20Peppers"),
+                "{url}"
+            );
+        }
     }
 }

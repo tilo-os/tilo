@@ -1,5 +1,6 @@
 //! What kind of app a tile shows, and the id grants are keyed by.
 
+use collab_types::first_party_app_ids::package_id_for_builtin_label;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -24,25 +25,30 @@ impl AppKind {
 
     /// The key into the per-workspace `Workspace::grants` map — distinct
     /// from [`Self::as_str`]'s display label. Foreign clients carry their
-    /// real `xdg_toplevel::set_app_id` (`org.gimp.GIMP`, …) straight in;
-    /// built-ins get namespaced under the compositor's reverse-DNS prefix
-    /// so every grant key lives in one namespace.
+    /// real `xdg_toplevel::set_app_id` (`org.gimp.GIMP`, …) straight in.
+    /// Built-ins are the same apps as their packages, so they answer to the
+    /// package id (`so.tilo.terminal`); a built-in label no package answers
+    /// to keeps its `UNPACKAGED_BUILTIN_PREFIX` id.
     pub fn app_id(&self) -> AppId {
         match self {
-            AppKind::Terminal => format!("{APP_ID_PREFIX}.Terminal"),
-            AppKind::FileExplorer => format!("{APP_ID_PREFIX}.Files"),
-            AppKind::Browser => format!("{APP_ID_PREFIX}.Browser"),
-            AppKind::Settings => format!("{APP_ID_PREFIX}.Settings"),
+            AppKind::Terminal => format!("{APP_ID_PREFIX}.terminal"),
+            AppKind::FileExplorer => format!("{APP_ID_PREFIX}.file-explorer"),
+            AppKind::Browser => format!("{APP_ID_PREFIX}.browser"),
+            AppKind::Settings => format!("{APP_ID_PREFIX}.settings"),
             AppKind::Other(s) if s.contains('.') => s.clone(),
-            AppKind::Other(s) => format!("{APP_ID_PREFIX}.{s}"),
+            AppKind::Other(s) => package_id_for_builtin_label(s)
+                .map_or_else(|| format!("{UNPACKAGED_BUILTIN_PREFIX}.{s}"), str::to_owned),
         }
     }
 }
 
-/// Reverse-DNS prefix the compositor stamps on built-in apps' ids,
-/// matching its own portal backend name
-/// (`org.freedesktop.impl.portal.desktop.tilo`).
-pub const APP_ID_PREFIX: &str = "org.tilo";
+/// Reverse-DNS namespace of first-party packages, which the built-in kinds
+/// are.
+pub const APP_ID_PREFIX: &str = collab_types::first_party_app_ids::FIRST_PARTY_PREFIX;
+
+/// Namespace of a built-in label that no package answers to (the shell's own
+/// `Editor`, fixtures) — the id such a tile has always been granted under.
+pub const UNPACKAGED_BUILTIN_PREFIX: &str = "org.tilo";
 
 /// Identifier for an installed app — opaque to the state layer; the
 /// portal layer fills it in with the caller's wayland app-id.

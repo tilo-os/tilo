@@ -62,7 +62,7 @@ pub mod transport;
     reason = "generated Cap'n Proto bindings do not follow repository lint policy"
 )]
 pub mod app_host_capnp {
-    include!(concat!(env!("OUT_DIR"), "/app_host_capnp.rs"));
+    include!("generated/app_host_capnp.rs");
 }
 
 pub use package_store::{Catalog, InstalledPackage, PackageStore, Pinning};
@@ -70,6 +70,6 @@ pub use tilo_app_package::PackageId;
 
 /// Default socket path: `$XDG_RUNTIME_DIR/tilo/services/app-host.sock`.
 pub fn default_socket_path() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
+    let base = xdg_paths::xdg::runtime_dir().unwrap_or_else(std::env::temp_dir);
     base.join("tilo").join("services").join("app-host.sock")
 }

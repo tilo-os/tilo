@@ -111,24 +111,24 @@ mod tests {
     const ROOM: &str = "3f2a0f5e-7c1b-4d4e-9a55-0d6f1c2b3a4e";
 
     #[test]
-    fn path_bearing_ids_are_sealed_stably_and_per_room() {
-        let local = "file:/home/alice/Secret Plans/merger.odt";
-        let wire = wire_record_id(ROOM, "so.tilo.writer", local);
-        assert!(is_sealed(&wire));
-        assert!(!wire.contains("alice") && !wire.contains('/'));
-        assert_eq!(wire, wire_record_id(ROOM, "so.tilo.writer", local));
-        assert_ne!(
-            wire,
-            wire_record_id("another-room", "so.tilo.writer", local),
-            "the same file is not linkable across rooms"
-        );
-        assert_ne!(wire, wire_record_id(ROOM, "so.tilo.notes", local));
-        let derived = "derived:annotations@file:/home/alice/book.pdf";
-        assert!(is_sealed(&wire_record_id(ROOM, "so.tilo.pdf", derived)));
-    }
-
-    #[test]
-    fn ids_without_paths_travel_unchanged() {
+    fn wire_ids_are_sealed_per_room_and_routes_are_bounded() {
+        // Phase `path_bearing_ids_are_sealed_stably_and_per_room`.
+        {
+            let local = "file:/home/alice/Secret Plans/merger.odt";
+            let wire = wire_record_id(ROOM, "so.tilo.writer", local);
+            assert!(is_sealed(&wire));
+            assert!(!wire.contains("alice") && !wire.contains('/'));
+            assert_eq!(wire, wire_record_id(ROOM, "so.tilo.writer", local));
+            assert_ne!(
+                wire,
+                wire_record_id("another-room", "so.tilo.writer", local),
+                "the same file is not linkable across rooms"
+            );
+            assert_ne!(wire, wire_record_id(ROOM, "so.tilo.notes", local));
+            let derived = "derived:annotations@file:/home/alice/book.pdf";
+            assert!(is_sealed(&wire_record_id(ROOM, "so.tilo.pdf", derived)));
+        }
+        // Phase `ids_without_paths_travel_unchanged`.
         for id in [
             "",
             "uuid:1c2f",
@@ -137,32 +137,30 @@ mod tests {
         ] {
             assert_eq!(wire_record_id(ROOM, "app", id), id);
         }
-    }
-
-    #[test]
-    fn a_registered_route_resolves_and_an_unknown_sealed_id_does_not() {
-        let mut ids = WireRecordIds::default();
-        let local = "file:/work/report.odt";
-        let wire = ids.register(ROOM, "app", local);
-        assert_eq!(ids.resolve(ROOM, "app", &wire).as_deref(), Some(local));
-        assert_eq!(ids.resolve("other-room", "app", &wire), None);
-        assert_eq!(ids.resolve(ROOM, "other-app", &wire), None);
-        assert_eq!(
-            ids.resolve(ROOM, "app", "uuid:7").as_deref(),
-            Some("uuid:7")
-        );
-        let unknown = wire_record_id(ROOM, "app", "file:/elsewhere");
-        assert_eq!(ids.resolve(ROOM, "app", &unknown), None);
-    }
-
-    #[test]
-    fn remembered_routes_are_bounded() {
-        let mut ids = WireRecordIds::default();
-        let first = ids.register(ROOM, "app", "file:/0");
-        for index in 1..=MAX_REMEMBERED_RECORDS {
-            ids.register(ROOM, "app", &format!("file:/{index}"));
+        // Phase `a_registered_route_resolves_and_an_unknown_sealed_id_does_not`.
+        {
+            let mut ids = WireRecordIds::default();
+            let local = "file:/work/report.odt";
+            let wire = ids.register(ROOM, "app", local);
+            assert_eq!(ids.resolve(ROOM, "app", &wire).as_deref(), Some(local));
+            assert_eq!(ids.resolve("other-room", "app", &wire), None);
+            assert_eq!(ids.resolve(ROOM, "other-app", &wire), None);
+            assert_eq!(
+                ids.resolve(ROOM, "app", "uuid:7").as_deref(),
+                Some("uuid:7")
+            );
+            let unknown = wire_record_id(ROOM, "app", "file:/elsewhere");
+            assert_eq!(ids.resolve(ROOM, "app", &unknown), None);
         }
-        assert_eq!(ids.by_wire.len(), MAX_REMEMBERED_RECORDS);
-        assert_eq!(ids.resolve(ROOM, "app", &first), None, "oldest forgotten");
+        // Phase `remembered_routes_are_bounded`.
+        {
+            let mut ids = WireRecordIds::default();
+            let first = ids.register(ROOM, "app", "file:/0");
+            for index in 1..=MAX_REMEMBERED_RECORDS {
+                ids.register(ROOM, "app", &format!("file:/{index}"));
+            }
+            assert_eq!(ids.by_wire.len(), MAX_REMEMBERED_RECORDS);
+            assert_eq!(ids.resolve(ROOM, "app", &first), None, "oldest forgotten");
+        }
     }
 }

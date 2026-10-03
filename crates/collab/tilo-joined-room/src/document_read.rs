@@ -1,0 +1,121 @@
+//! Bounded reads of an admitted document in an owner-hosted room.
+//!
+//! The committed view's live [`tilo_peer_state::StatePeer`] is never cloned
+//! or saved for a reader. A new or changed document restores the room's
+//! durable bytes into a [`tilo_peer_state::BoundedStatePeer`] under explicit
+//! limits, rechecks the reader's current membership and document Read
+//! permission there, and refuses a document that is encrypted, causally
+//! incomplete or larger than the caller can hold. A reader that already
+//! holds the admitted revision is answered from those heads, without
+//! restoring the room again.
+use crate::NativeCommittedView;
+use std::time::SystemTime;
+use tilo_peer_state::{BoundedStatePeer, PeerDocumentReadError, PeerLimits};
+use tilo_user_identity::RevocationList;
+
+#[cfg(test)]
+thread_local! {
+    static ROOM_RESTORES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times a document read restored the room. Tests use this to prove
+/// an unchanged revision does not pay that cost.
+#[cfg(test)]
+pub(crate) fn room_restores() -> usize {
+    ROOM_RESTORES.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_room_restores() {
+    ROOM_RESTORES.with(|count| count.set(0));
+}
+
+/// A document as the room last admitted it.
+pub struct CommittedDocument {
+    /// Names exactly these heads; equal revisions are equal documents.
+    pub revision: [u8; 32],
+    pub bytes: Vec<u8>,
+}
+
+/// What a bounded read found.
+pub enum DocumentRead {
+    /// The reader already holds this revision.
+    Unchanged([u8; 32]),
+    Captured(CommittedDocument),
+}
+
+fn revision_of(heads: &[automerge::ChangeHash]) -> [u8; 32] {
+    let mut heads = heads.iter().map(|head| head.0).collect::<Vec<_>>();
+    heads.sort_unstable();
+    let mut hasher = blake3::Hasher::new_derive_key("tilo committed document revision v1");
+    for head in heads {
+        hasher.update(&head);
+    }
+    *hasher.finalize().as_bytes()
+}
+
+impl NativeCommittedView {
+    /// Read `app`'s `record` for the device `reader`.
+    ///
+    /// # Errors
+    /// The reader may not read it now, the room does not hold it as a
+    /// complete plaintext document, or it is larger than `maximum` bytes.
+    pub fn read_document(
+        &self,
+        reader: [u8; 32],
+        app: &str,
+        record: &str,
+        known_revision: Option<[u8; 32]>,
+        maximum: usize,
+        now: SystemTime,
+    ) -> Result<DocumentRead, String> {
+        // Idle apps re-read the revision they already hold. Answer that from
+        // the admitted heads. Restoring the room is only for a document this
+        // caller does not yet have, or for a route those heads cannot vouch
+        // for (encrypted, incomplete, or absent).
+        if let Some(known) = known_revision
+            && let Some(heads) = self.peer.plaintext_complete_heads(app, record)
+        {
+            let revision = revision_of(&heads);
+            if revision == known {
+                self.peer.check_document_read(reader, app, record, now)?;
+                return Ok(DocumentRead::Unchanged(revision));
+            }
+        }
+        let limits = PeerLimits::default();
+        #[cfg(test)]
+        ROOM_RESTORES.with(|count| count.set(count.get().saturating_add(1)));
+        let restored = BoundedStatePeer::restore(
+            &self.record.peer,
+            &self.record.room.to_string(),
+            &self.record.governor,
+            std::slice::from_ref(&self.record.device),
+            &RevocationList::new(),
+            now,
+            &limits,
+        )
+        .map_err(|error| error.to_string())?;
+        let read = restored.read();
+        let document =
+            read.document_read(reader, app, record, now)
+                .map_err(|error| match error {
+                    PeerDocumentReadError::Denied => "the reader may not read that document".into(),
+                    PeerDocumentReadError::Missing => {
+                        format!("the room does not hold {app} record {record:?}")
+                    }
+                    other => other.to_string(),
+                })?;
+        let revision = revision_of(document.heads());
+        if known_revision == Some(revision) {
+            return Ok(DocumentRead::Unchanged(revision));
+        }
+        let bytes = document.document().clone().save();
+        if bytes.len() > maximum {
+            return Err("the document is larger than the reader can hold".into());
+        }
+        Ok(DocumentRead::Captured(CommittedDocument {
+            revision,
+            bytes,
+        }))
+    }
+}

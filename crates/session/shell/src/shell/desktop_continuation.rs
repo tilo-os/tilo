@@ -196,73 +196,78 @@ mod tests {
     use std::os::unix::net::UnixStream;
 
     #[test]
-    fn continuation_request_resolves_the_installed_desktop_entry() {
-        let temp = tempfile::tempdir().unwrap();
-        let executable = temp.path().join("tilo-import-folders");
-        fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
-        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::write(
-            temp.path().join("tilo-import-folders.desktop"),
-            format!(
-                "[Desktop Entry]\nType=Application\nName=Add folders to Tilo\n\
-                 Exec={} --import-folders\nTryExec={}\n",
-                executable.display(),
-                executable.display(),
-            ),
-        )
-        .unwrap();
+    fn desktop_continuations_resolve_launch_once_and_verify_readiness() {
+        fn continuation_request_resolves_the_installed_desktop_entry() {
+            let temp = tempfile::tempdir().unwrap();
+            let executable = temp.path().join("tilo-import-folders");
+            fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::write(
+                temp.path().join("tilo-import-folders.desktop"),
+                format!(
+                    "[Desktop Entry]\nType=Application\nName=Add folders to Tilo\n\
+                     Exec={} --import-folders\nTryExec={}\n",
+                    executable.display(),
+                    executable.display(),
+                ),
+            )
+            .unwrap();
 
-        let scan = desktop_entry::scan_dirs(
-            &[temp.path().to_path_buf()],
-            &[desktop_entry::scan::CURRENT_DESKTOP.to_string()],
-        );
-        let request_id = LAUNCH_DESKTOP_ID;
+            let scan = desktop_entry::scan_dirs(
+                &[temp.path().to_path_buf()],
+                &[desktop_entry::scan::CURRENT_DESKTOP.to_string()],
+            );
+            let request_id = LAUNCH_DESKTOP_ID;
 
-        assert_eq!(scan.stats.files_seen, 1);
-        assert!(
-            scan.find(request_id).is_some(),
-            "continuation launch id {:?} must resolve against registry ids {:?}",
-            request_id,
-            scan.entries
-                .iter()
-                .map(|entry| entry.id.as_str())
-                .collect::<Vec<_>>()
-        );
-    }
+            assert_eq!(scan.stats.files_seen, 1);
+            assert!(
+                scan.find(request_id).is_some(),
+                "continuation launch id {:?} must resolve against registry ids {:?}",
+                request_id,
+                scan.entries
+                    .iter()
+                    .map(|entry| entry.id.as_str())
+                    .collect::<Vec<_>>()
+            );
+        }
 
-    #[test]
-    fn trusted_completion_launches_once_and_never_acks_durable_state() {
-        let mut latch = LaunchLatch::default();
-        assert!(!latch.should_queue(true, true));
-        assert!(!latch.should_queue(false, false));
-        assert!(latch.should_queue(false, true));
-        assert!(!latch.should_queue(false, true));
-        assert!(LaunchLatch::default().should_queue(false, true));
-    }
+        fn trusted_completion_launches_once_and_never_acks_durable_state() {
+            let mut latch = LaunchLatch::default();
+            assert!(!latch.should_queue(true, true));
+            assert!(!latch.should_queue(false, false));
+            assert!(latch.should_queue(false, true));
+            assert!(!latch.should_queue(false, true));
+            assert!(LaunchLatch::default().should_queue(false, true));
+        }
 
-    #[test]
-    fn readiness_socket_reports_wait_then_ready_and_refuses_duplicate_or_substituted_runtime() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
-        fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
-        let uid = fs::metadata(root).unwrap().uid();
-        let _wayland = UnixListener::bind(root.join("wayland-1")).unwrap();
-        let mut gate = SessionContinuation::bind(root, OsStr::new("wayland-1"), uid, true).unwrap();
-        assert!(SessionContinuation::bind(root, OsStr::new("wayland-1"), uid, true).is_err());
-        let mut client = UnixStream::connect(&gate.socket_path).unwrap();
-        assert!(!gate.pump(true));
-        let mut bytes = [0; 21];
-        client.read_exact(&mut bytes).unwrap();
-        assert_eq!(&bytes, b"tilo-import-wait--v1\n");
-        let mut client = UnixStream::connect(&gate.socket_path).unwrap();
-        assert!(gate.pump(false));
-        client.read_exact(&mut bytes).unwrap();
-        assert_eq!(&bytes, b"tilo-import-ready-v1\n");
-        assert!(!gate.pump(false));
-        assert!(SessionContinuation::bind(root, OsStr::new("../escape"), uid, true).is_err());
-        fs::set_permissions(root, fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(!gate.pump(false));
-        assert!(SessionContinuation::bind(root, OsStr::new("wayland-1"), uid, true).is_err());
-        fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
+        fn readiness_socket_reports_wait_then_ready_and_refuses_duplicate_or_substituted_runtime() {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
+            let uid = fs::metadata(root).unwrap().uid();
+            let _wayland = UnixListener::bind(root.join("wayland-1")).unwrap();
+            let mut gate =
+                SessionContinuation::bind(root, OsStr::new("wayland-1"), uid, true).unwrap();
+            assert!(SessionContinuation::bind(root, OsStr::new("wayland-1"), uid, true).is_err());
+            let mut client = UnixStream::connect(&gate.socket_path).unwrap();
+            assert!(!gate.pump(true));
+            let mut bytes = [0; 21];
+            client.read_exact(&mut bytes).unwrap();
+            assert_eq!(&bytes, b"tilo-import-wait--v1\n");
+            let mut client = UnixStream::connect(&gate.socket_path).unwrap();
+            assert!(gate.pump(false));
+            client.read_exact(&mut bytes).unwrap();
+            assert_eq!(&bytes, b"tilo-import-ready-v1\n");
+            assert!(!gate.pump(false));
+            assert!(SessionContinuation::bind(root, OsStr::new("../escape"), uid, true).is_err());
+            fs::set_permissions(root, fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(!gate.pump(false));
+            assert!(SessionContinuation::bind(root, OsStr::new("wayland-1"), uid, true).is_err());
+            fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+
+        continuation_request_resolves_the_installed_desktop_entry();
+        trusted_completion_launches_once_and_never_acks_durable_state();
+        readiness_socket_reports_wait_then_ready_and_refuses_duplicate_or_substituted_runtime();
     }
 }

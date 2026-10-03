@@ -23,7 +23,7 @@ pub fn diff_pair() -> (Sample, Sample) {
     let left = Sample::new(
         "rate_limiter.rs · HEAD",
         "\
-use std::time::Instant;
+use ui::time::Instant;
 
 /// Token-bucket rate limiter.
 pub struct RateLimiter {
@@ -37,7 +37,7 @@ impl RateLimiter {
         Self {
             capacity,
             tokens: capacity,
-            last: Instant::now(),
+            last: ui::time::now(),
         }
     }
 
@@ -56,7 +56,7 @@ impl RateLimiter {
     let right = Sample::new(
         "rate_limiter.rs · working tree",
         "\
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 /// Token-bucket rate limiter with time-based refill.
 pub struct RateLimiter {
@@ -72,7 +72,7 @@ impl RateLimiter {
             capacity,
             tokens: capacity as f64,
             refill_per_sec,
-            last: Instant::now(),
+            last: ui::time::now(),
         }
     }
 
@@ -80,7 +80,7 @@ impl RateLimiter {
         let elapsed = self.last.elapsed().as_secs_f64();
         self.tokens = (self.tokens + elapsed * self.refill_per_sec)
             .min(self.capacity as f64);
-        self.last = Instant::now();
+        self.last = ui::time::now();
     }
 
     pub fn try_acquire(&mut self) -> bool {

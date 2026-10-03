@@ -9,13 +9,11 @@
 //! Defaults to [`Theme::text_primary`] and the lucide 1.5px stroke; see
 //! [`IconWidget::with_color`], [`IconWidget::dim`], [`IconWidget::with_stroke`].
 
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
-use winit::event::WindowEvent;
 
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX};
 use crate::presence::PresenceCtx;
@@ -99,8 +97,6 @@ impl IconWidget {
 }
 
 impl Widget for IconWidget {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -145,20 +141,6 @@ impl Widget for IconWidget {
             .draw_with_stroke(scene, transform, self.rect, color, self.stroke_px);
     }
 
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "IconWidget"
     }
@@ -189,45 +171,49 @@ mod tests {
         scene
     }
 
-    /// A laid-out icon widget must emit at least one stroke into the scene.
     #[test]
-    fn icon_widget_paints_glyph() {
-        let mut w = IconWidget::new(Icon::Home, 24.0);
-        let scene = paint(&mut w);
-        let color_tags = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::COLOR)
-            .count();
-        assert!(color_tags >= 1, "icon widget must paint its glyph");
-    }
+    fn icon_widget_paints_resolved_glyph_or_nothing() {
+        /// A laid-out icon widget must emit at least one stroke into the scene.
+        fn icon_widget_paints_glyph() {
+            let mut w = IconWidget::new(Icon::Home, 24.0);
+            let scene = paint(&mut w);
+            let color_tags = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::COLOR)
+                .count();
+            assert!(color_tags >= 1, "icon widget must paint its glyph");
+        }
 
-    /// A zero-size rect is a no-op (no panic, no draw).
-    #[test]
-    fn icon_widget_zero_rect_is_noop() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let mut scene = Scene::new();
-        let mut w = IconWidget::new(Icon::Home, 24.0);
-        // rect stays ZERO
-        w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        let tags = scene.encoding().draw_tags.len();
-        assert_eq!(tags, 0, "no draw work for a zero-size icon");
-    }
+        /// A zero-size rect is a no-op (no panic, no draw).
+        fn icon_widget_zero_rect_is_noop() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            let mut w = IconWidget::new(Icon::Home, 24.0);
+            // rect stays ZERO
+            w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            let tags = scene.encoding().draw_tags.len();
+            assert_eq!(tags, 0, "no draw work for a zero-size icon");
+        }
 
-    /// The colour builders pick the documented theme slots.
-    #[test]
-    fn icon_widget_color_resolution() {
-        let theme = Theme::dark();
-        let primary = IconWidget::new(Icon::Star, 16.0);
-        assert_eq!(primary.resolve_color(&theme), theme.text_primary);
+        /// The colour builders pick the documented theme slots.
+        fn icon_widget_color_resolution() {
+            let theme = Theme::dark();
+            let primary = IconWidget::new(Icon::Star, 16.0);
+            assert_eq!(primary.resolve_color(&theme), theme.text_primary);
 
-        let dim = IconWidget::new(Icon::Star, 16.0).dim();
-        assert_eq!(dim.resolve_color(&theme), theme.text_dim);
+            let dim = IconWidget::new(Icon::Star, 16.0).dim();
+            assert_eq!(dim.resolve_color(&theme), theme.text_dim);
 
-        let fixed = IconWidget::new(Icon::Star, 16.0).with_color(Color::from_rgb8(1, 2, 3));
-        assert_eq!(fixed.resolve_color(&theme), Color::from_rgb8(1, 2, 3));
+            let fixed = IconWidget::new(Icon::Star, 16.0).with_color(Color::from_rgb8(1, 2, 3));
+            assert_eq!(fixed.resolve_color(&theme), Color::from_rgb8(1, 2, 3));
+        }
+
+        icon_widget_paints_glyph();
+        icon_widget_zero_rect_is_noop();
+        icon_widget_color_resolution();
     }
 }

@@ -419,7 +419,7 @@ impl MigrationJournal {
         }
         let document = Document {
             version: 2,
-            operation: format!("{}-{:?}", std::process::id(), SystemTime::now()),
+            operation: format!("{}-{:?}", std::process::id(), ui::time::wall()),
             source: NativeName::encode(source_path.as_os_str()),
             destination: NativeName::encode(destination_path.as_os_str()),
             source_identity: directory_identity(&source)?,
@@ -1261,107 +1261,309 @@ mod tests {
         serde_json::from_value(serde_json::to_value(document).unwrap()).unwrap()
     }
 
+    /// Torn tails, recovery failure, legacy upgrades and malformed journals.
     #[test]
-    fn torn_tail_is_repaired_but_complete_corruption_is_refused() {
-        let (_temp, _source, output, journal) = completed_fixture();
-        let clean = fs::read(&journal).unwrap();
-        for tail in [vec![1, 2, 3], {
-            let mut bytes = 100_u32.to_le_bytes().to_vec();
-            let sequence = MigrationJournal::open(&journal).unwrap().sequence;
-            bytes.extend_from_slice(&sequence.to_le_bytes());
-            bytes.extend_from_slice(&[0; 32]);
-            bytes.extend_from_slice(b"incomplete");
-            bytes
-        }] {
-            let mut torn = clean.clone();
-            torn.extend(tail);
-            fs::write(&journal, torn).unwrap();
-            let reopened = MigrationJournal::open(&journal).unwrap();
-            assert_eq!(fs::read(&journal).unwrap(), clean);
-            drop(reopened);
-        }
-        let mut corrupt = clean;
-        corrupt[60] ^= 1;
-        fs::write(&journal, &corrupt).unwrap();
-        assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
-        assert_eq!(fs::read(&journal).unwrap(), corrupt);
-        assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn journal_recovery_repairs_torn_tails_and_refuses_corruption() {
+        isolated(
+            "torn_tail_is_repaired_but_complete_corruption_is_refused",
+            || {
+                let (_temp, _source, output, journal) = completed_fixture();
+                let clean = fs::read(&journal).unwrap();
+                for tail in [vec![1, 2, 3], {
+                    let mut bytes = 100_u32.to_le_bytes().to_vec();
+                    let sequence = MigrationJournal::open(&journal).unwrap().sequence;
+                    bytes.extend_from_slice(&sequence.to_le_bytes());
+                    bytes.extend_from_slice(&[0; 32]);
+                    bytes.extend_from_slice(b"incomplete");
+                    bytes
+                }] {
+                    let mut torn = clean.clone();
+                    torn.extend(tail);
+                    fs::write(&journal, torn).unwrap();
+                    let reopened = MigrationJournal::open(&journal).unwrap();
+                    assert_eq!(fs::read(&journal).unwrap(), clean);
+                    drop(reopened);
+                }
+                let mut corrupt = clean;
+                corrupt[60] ^= 1;
+                fs::write(&journal, &corrupt).unwrap();
+                assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
+                assert_eq!(fs::read(&journal).unwrap(), corrupt);
+                assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+            },
+        );
+
+        isolated("recovery_failure_never_traverses_or_publishes", || {
+            let (_temp, source, output, journal) = fixture();
+            let cancelled = AtomicBool::new(false);
+            copy_folder_with_journal(&source, &output, &journal, &cancelled, |p| {
+                if p.verified_files == 1 {
+                    cancelled.store(true, Ordering::Relaxed);
+                }
+            })
+            .unwrap();
+            let mut bytes = fs::read(&journal).unwrap();
+            bytes.extend_from_slice(b"torn");
+            fs::write(&journal, &bytes).unwrap();
+            let failure = persistence_injection::Failure::at("before_recover_tail", 1);
+            assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
+            assert_eq!(fs::read(&journal).unwrap(), bytes);
+            assert!(!output.join("b").exists());
+            drop(failure);
+            assert!(
+                resume_folder(&journal, &AtomicBool::new(false), |_| {})
+                    .unwrap()
+                    .complete()
+            );
+        });
+
+        isolated(
+            "legacy_upgrade_failure_preserves_original_and_native_conflict",
+            || {
+                let (_temp, _source, output, journal) = completed_fixture();
+                let legacy: Document = decoded_document(&journal);
+                let bytes = serde_json::to_vec(&legacy).unwrap();
+                fs::write(&journal, &bytes).unwrap();
+                let failure = persistence_injection::Failure::at("legacy_before_replace", 1);
+                assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
+                assert_eq!(fs::read(&journal).unwrap(), bytes);
+                assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+                drop(failure);
+                fs::write(output.join("a"), b"other").unwrap();
+                let report = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
+                assert!(!report.complete());
+                assert_eq!(fs::read(output.join("a")).unwrap(), b"other");
+                assert!(fs::read(&journal).unwrap().starts_with(MAGIC));
+            },
+        );
+
+        // Phase `legacy_journal_moved_into_output_is_refused_without_conversion`.
+        // Even migration/repair of the journal must not mutate a copied tree.
+        isolated(
+            "legacy_journal_moved_into_output_is_refused_without_conversion",
+            || {
+                let (_temp, _source, output, journal) = completed_fixture();
+                let legacy: Document = decoded_document(&journal);
+                let bytes = serde_json::to_vec(&legacy).unwrap();
+                let moved = output.join("moved.journal");
+                fs::write(&journal, &bytes).unwrap();
+                fs::rename(&journal, &moved).unwrap();
+                assert!(resume_folder(&moved, &AtomicBool::new(false), |_| {}).is_err());
+                assert_eq!(fs::read(&moved).unwrap(), bytes);
+            },
+        );
+
+        isolated(
+            "malformed_schema_and_traversal_are_refused_before_writes",
+            || {
+                let (_temp, _source, output, journal) = completed_fixture();
+                let original: serde_json::Value = decoded_document(&journal);
+                let mut cases = vec![b"not json".to_vec()];
+                let mut unknown = original.clone();
+                unknown["unknown"] = true.into();
+                cases.push(serde_json::to_vec(&unknown).unwrap());
+                let mut version = original.clone();
+                version["version"] = 99.into();
+                cases.push(serde_json::to_vec(&version).unwrap());
+                for units in [
+                    vec![46, 46],
+                    vec![47],
+                    vec![97, 47, 98],
+                    vec![0],
+                    vec![97; 256],
+                ] {
+                    let mut bad = original.clone();
+                    bad["receipts"][1]["path"]["components"][0] =
+                        serde_json::json!({"platform":"Unix","units":units});
+                    cases.push(serde_json::to_vec(&bad).unwrap());
+                }
+                for bytes in cases {
+                    fs::write(&journal, bytes).unwrap();
+                    assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
+                    assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+                }
+            },
+        );
     }
 
+    /// Receipt checkpoints, restart, names, directories and timestamps.
     #[test]
-    fn recovery_failure_never_traverses_or_publishes() {
-        let (_temp, source, output, journal) = fixture();
-        let cancelled = AtomicBool::new(false);
-        copy_folder_with_journal(&source, &output, &journal, &cancelled, |p| {
-            if p.verified_files == 1 {
-                cancelled.store(true, Ordering::Relaxed);
-            }
-        })
-        .unwrap();
-        let mut bytes = fs::read(&journal).unwrap();
-        bytes.extend_from_slice(b"torn");
-        fs::write(&journal, &bytes).unwrap();
-        let failure = persistence_injection::Failure::at("before_recover_tail", 1);
-        assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
-        assert_eq!(fs::read(&journal).unwrap(), bytes);
-        assert!(!output.join("b").exists());
-        drop(failure);
-        assert!(
-            resume_folder(&journal, &AtomicBool::new(false), |_| {})
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn journal_restart_resumes_from_the_durable_prefix_losslessly() {
+        // Phase `receipt_checkpoint_preserves_the_durable_prefix`.
+        // A receipt must append bounded bytes, not rewrite all prior checkpoints.
+        isolated("receipt_checkpoint_preserves_the_durable_prefix", || {
+            let (_temp, source, output, journal) = fixture();
+            let cancel = AtomicBool::new(false);
+            let mut prefix = Vec::new();
+            copy_folder_with_journal(&source, &output, &journal, &cancel, |p| {
+                if p.verified_files == 1 && prefix.is_empty() {
+                    prefix = fs::read(&journal).unwrap();
+                }
+            })
+            .unwrap();
+            let finished = fs::read(&journal).unwrap();
+            assert!(
+                finished.starts_with(&prefix),
+                "checkpoint rewrote earlier durable receipts"
+            );
+            assert!(resume_folder(&journal, &cancel, |_| {}).unwrap().complete());
+        });
+
+        // Phase `restarts_after_one_durable_file_and_preserves_originals`.
+        // Removing durable receipts or skipping output revalidation breaks restart.
+        isolated(
+            "restarts_after_one_durable_file_and_preserves_originals",
+            || {
+                let (_temp, source, output, journal) = fixture();
+                let cancelled = AtomicBool::new(false);
+                let report =
+                    copy_folder_with_journal(&source, &output, &journal, &cancelled, |p| {
+                        if p.verified_files == 1 {
+                            cancelled.store(true, Ordering::Relaxed);
+                        }
+                    })
+                    .unwrap();
+                assert!(report.cancelled);
+                assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+                assert!(!output.join("b").exists());
+                let resumed = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
+                assert!(resumed.complete(), "{resumed:?}");
+                assert_eq!(resumed.verified_files.len(), 2);
+                for base in [&source, &output] {
+                    assert_eq!(fs::read(base.join("a")).unwrap(), b"hello");
+                    assert_eq!(fs::read(base.join("b")).unwrap(), b"world");
+                }
+            },
+        );
+
+        // Phase `unix_non_utf8_names_survive_restart_losslessly`.
+        #[cfg(target_os = "linux")]
+        isolated("unix_non_utf8_names_survive_restart_losslessly", || {
+            use std::os::unix::ffi::OsStringExt;
+            let (_temp, source, output, journal) = fixture();
+            let name = std::ffi::OsString::from_vec(vec![b'n', 255]);
+            fs::write(source.join(&name), b"native").unwrap();
+            assert!(
+                copy_folder_with_journal(
+                    &source,
+                    &output,
+                    &journal,
+                    &AtomicBool::new(false),
+                    |_| {}
+                )
                 .unwrap()
                 .complete()
+            );
+            assert!(
+                resume_folder(&journal, &AtomicBool::new(false), |_| {})
+                    .unwrap()
+                    .complete()
+            );
+            assert_eq!(fs::read(output.join(&name)).unwrap(), b"native");
+        });
+
+        // Phase `resumed_files_and_directories_retain_original_timestamps`.
+        // Revalidation reads must not destroy the timestamp preservation contract.
+        isolated(
+            "resumed_files_and_directories_retain_original_timestamps",
+            || {
+                let (_temp, source, output, journal) = fixture();
+                fs::create_dir(source.join("empty")).unwrap();
+                let time = ui::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+                for p in [&source, &source.join("a"), &source.join("empty")] {
+                    File::open(p)
+                        .unwrap()
+                        .set_times(fs::FileTimes::new().set_accessed(time).set_modified(time))
+                        .unwrap();
+                }
+                assert!(
+                    copy_folder_with_journal(
+                        &source,
+                        &output,
+                        &journal,
+                        &AtomicBool::new(false),
+                        |_| {}
+                    )
+                    .unwrap()
+                    .complete()
+                );
+                // Simulate atime advancement caused by enumeration/content rereads on
+                // mounts where access-time updates are enabled (APFS may suppress it).
+                for p in [&source, &source.join("empty"), &output.join("a")] {
+                    File::open(p)
+                        .unwrap()
+                        .set_times(
+                            fs::FileTimes::new()
+                                .set_accessed(time + std::time::Duration::from_secs(60)),
+                        )
+                        .unwrap();
+                }
+                assert!(
+                    resume_folder(&journal, &AtomicBool::new(false), |_| {})
+                        .unwrap()
+                        .complete()
+                );
+                for p in [&output, &output.join("a"), &output.join("empty")] {
+                    let m = fs::metadata(p).unwrap();
+                    assert_eq!(m.modified().unwrap(), time);
+                    assert_eq!(m.accessed().unwrap(), time);
+                }
+            },
         );
-    }
 
-    #[test]
-    fn legacy_upgrade_failure_preserves_original_and_native_conflict() {
-        let (_temp, _source, output, journal) = completed_fixture();
-        let legacy: Document = decoded_document(&journal);
-        let bytes = serde_json::to_vec(&legacy).unwrap();
-        fs::write(&journal, &bytes).unwrap();
-        let failure = persistence_injection::Failure::at("legacy_before_replace", 1);
-        assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
-        assert_eq!(fs::read(&journal).unwrap(), bytes);
-        assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
-        drop(failure);
-        fs::write(output.join("a"), b"other").unwrap();
-        let report = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
-        assert!(!report.complete());
-        assert_eq!(fs::read(output.join("a")).unwrap(), b"other");
-        assert!(fs::read(&journal).unwrap().starts_with(MAGIC));
-    }
-
-    // Even migration/repair of the journal must not mutate a copied tree.
-    #[test]
-    fn legacy_journal_moved_into_output_is_refused_without_conversion() {
-        let (_temp, _source, output, journal) = completed_fixture();
-        let legacy: Document = decoded_document(&journal);
-        let bytes = serde_json::to_vec(&legacy).unwrap();
-        let moved = output.join("moved.journal");
-        fs::write(&journal, &bytes).unwrap();
-        fs::rename(&journal, &moved).unwrap();
-        assert!(resume_folder(&moved, &AtomicBool::new(false), |_| {}).is_err());
-        assert_eq!(fs::read(&moved).unwrap(), bytes);
-    }
-
-    // A receipt must append bounded bytes, not rewrite all prior checkpoints.
-    #[test]
-    fn receipt_checkpoint_preserves_the_durable_prefix() {
-        let (_temp, source, output, journal) = fixture();
-        let cancel = AtomicBool::new(false);
-        let mut prefix = Vec::new();
-        copy_folder_with_journal(&source, &output, &journal, &cancel, |p| {
-            if p.verified_files == 1 && prefix.is_empty() {
-                prefix = fs::read(&journal).unwrap();
-            }
-        })
-        .unwrap();
-        let finished = fs::read(&journal).unwrap();
-        assert!(
-            finished.starts_with(&prefix),
-            "checkpoint rewrote earlier durable receipts"
+        isolated(
+            "nested_empty_directory_and_outcomes_survive_restart",
+            || {
+                let (_temp, source, output, journal) = fixture();
+                fs::create_dir_all(source.join("nested/empty")).unwrap();
+                fs::write(source.join("nested/content"), b"nested").unwrap();
+                let cancel = AtomicBool::new(false);
+                let report = copy_folder_with_journal(&source, &output, &journal, &cancel, |p| {
+                    if p.verified_files == 3 {
+                        cancel.store(true, Ordering::Relaxed);
+                    }
+                })
+                .unwrap();
+                assert!(report.cancelled);
+                let report = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
+                assert!(report.complete(), "{report:?}");
+                assert!(output.join("nested/empty").is_dir());
+                let document: serde_json::Value = decoded_document(&journal);
+                assert_eq!(document["outcome"]["scan_completed"], true);
+                assert_eq!(
+                    document["receipts"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter(|r| r["kind"] == "File")
+                        .count(),
+                    3
+                );
+                assert!(
+                    !document["outcome"]["metadata_limitations"]
+                        .as_array()
+                        .unwrap()
+                        .is_empty()
+                );
+                assert_eq!(
+                    document["receipts"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter(|r| r["kind"] == "Directory" && r["completed"] == true)
+                        .count(),
+                    3
+                );
+            },
         );
-        assert!(resume_folder(&journal, &cancel, |_| {}).unwrap().complete());
     }
 
     fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
@@ -1386,29 +1588,6 @@ mod tests {
         )
     }
 
-    // Removing durable receipts or skipping output revalidation breaks restart.
-    #[test]
-    fn restarts_after_one_durable_file_and_preserves_originals() {
-        let (_temp, source, output, journal) = fixture();
-        let cancelled = AtomicBool::new(false);
-        let report = copy_folder_with_journal(&source, &output, &journal, &cancelled, |p| {
-            if p.verified_files == 1 {
-                cancelled.store(true, Ordering::Relaxed);
-            }
-        })
-        .unwrap();
-        assert!(report.cancelled);
-        assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
-        assert!(!output.join("b").exists());
-        let resumed = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
-        assert!(resumed.complete(), "{resumed:?}");
-        assert_eq!(resumed.verified_files.len(), 2);
-        for base in [&source, &output] {
-            assert_eq!(fs::read(base.join("a")).unwrap(), b"hello");
-            assert_eq!(fs::read(base.join("b")).unwrap(), b"world");
-        }
-    }
-
     fn completed_fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
         let f = fixture();
         assert!(
@@ -1418,143 +1597,118 @@ mod tests {
         );
         f
     }
-    // A receipt must not conceal an edit or replacement of either version.
+    /// Modified sources/destinations, missing sources and replaced roots or journals.
     #[test]
-    fn modified_destination_remains_a_conflict() {
-        let (_temp, source, output, journal) = completed_fixture();
-        fs::write(output.join("a"), b"other").unwrap();
-        let report = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
-        assert!(!report.complete());
-        assert_eq!(fs::read(output.join("a")).unwrap(), b"other");
-        assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
-        assert!(!report.verified_files.contains(&PathBuf::from("a")));
-    }
-    #[test]
-    fn modified_source_requires_choice_and_preserves_both_versions() {
-        let (_temp, source, output, journal) = completed_fixture();
-        fs::write(source.join("a"), b"newer").unwrap();
-        let report = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
-        assert!(!report.complete());
-        assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
-        assert_eq!(fs::read(source.join("a")).unwrap(), b"newer");
-    }
-    #[test]
-    fn missing_source_never_authorizes_removal_of_output() {
-        let (_temp, source, output, journal) = completed_fixture();
-        fs::remove_file(source.join("a")).unwrap();
-        let result = resume_folder(&journal, &AtomicBool::new(false), |_| {});
-        assert!(result.is_err() || !result.unwrap().complete());
-        assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
-    }
-    #[test]
-    fn replaces_neither_existing_journal_nor_replaced_roots() {
-        let (_temp, source, output, journal) = completed_fixture();
-        let original_journal = fs::read(&journal).unwrap();
-        assert!(
-            copy_folder_with_journal(
-                &source,
-                &output.with_extension("new"),
-                &journal,
-                &AtomicBool::new(false),
-                |_| {}
-            )
-            .is_err()
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn journal_conflicts_and_replacements_never_authorize_overwrite() {
+        // Phase `modified_destination_remains_a_conflict`.
+        // A receipt must not conceal an edit or replacement of either version.
+        isolated("modified_destination_remains_a_conflict", || {
+            let (_temp, source, output, journal) = completed_fixture();
+            fs::write(output.join("a"), b"other").unwrap();
+            let report = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
+            assert!(!report.complete());
+            assert_eq!(fs::read(output.join("a")).unwrap(), b"other");
+            assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
+            assert!(!report.verified_files.contains(&PathBuf::from("a")));
+        });
+
+        isolated(
+            "modified_source_requires_choice_and_preserves_both_versions",
+            || {
+                let (_temp, source, output, journal) = completed_fixture();
+                fs::write(source.join("a"), b"newer").unwrap();
+                let report = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
+                assert!(!report.complete());
+                assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+                assert_eq!(fs::read(source.join("a")).unwrap(), b"newer");
+            },
         );
-        assert_eq!(fs::read(&journal).unwrap(), original_journal);
-        fs::rename(&output, output.with_extension("old")).unwrap();
-        fs::create_dir(&output).unwrap();
-        fs::write(output.join("sentinel"), b"keep").unwrap();
-        assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
-        assert_eq!(fs::read(output.join("sentinel")).unwrap(), b"keep");
-        assert!(!output.join("a").exists());
-    }
-    #[test]
-    fn malformed_schema_and_traversal_are_refused_before_writes() {
-        let (_temp, _source, output, journal) = completed_fixture();
-        let original: serde_json::Value = decoded_document(&journal);
-        let mut cases = vec![b"not json".to_vec()];
-        let mut unknown = original.clone();
-        unknown["unknown"] = true.into();
-        cases.push(serde_json::to_vec(&unknown).unwrap());
-        let mut version = original.clone();
-        version["version"] = 99.into();
-        cases.push(serde_json::to_vec(&version).unwrap());
-        for units in [
-            vec![46, 46],
-            vec![47],
-            vec![97, 47, 98],
-            vec![0],
-            vec![97; 256],
-        ] {
-            let mut bad = original.clone();
-            bad["receipts"][1]["path"]["components"][0] =
-                serde_json::json!({"platform":"Unix","units":units});
-            cases.push(serde_json::to_vec(&bad).unwrap());
-        }
-        for bytes in cases {
-            fs::write(&journal, bytes).unwrap();
+
+        isolated("missing_source_never_authorizes_removal_of_output", || {
+            let (_temp, source, output, journal) = completed_fixture();
+            fs::remove_file(source.join("a")).unwrap();
+            let result = resume_folder(&journal, &AtomicBool::new(false), |_| {});
+            assert!(result.is_err() || !result.unwrap().complete());
+            assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+        });
+
+        isolated(
+            "replaces_neither_existing_journal_nor_replaced_roots",
+            || {
+                let (_temp, source, output, journal) = completed_fixture();
+                let original_journal = fs::read(&journal).unwrap();
+                assert!(
+                    copy_folder_with_journal(
+                        &source,
+                        &output.with_extension("new"),
+                        &journal,
+                        &AtomicBool::new(false),
+                        |_| {}
+                    )
+                    .is_err()
+                );
+                assert_eq!(fs::read(&journal).unwrap(), original_journal);
+                fs::rename(&output, output.with_extension("old")).unwrap();
+                fs::create_dir(&output).unwrap();
+                fs::write(output.join("sentinel"), b"keep").unwrap();
+                assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
+                assert_eq!(fs::read(output.join("sentinel")).unwrap(), b"keep");
+                assert!(!output.join("a").exists());
+            },
+        );
+
+        isolated(
+            "replaced_journal_is_never_overwritten_by_a_running_copy",
+            || {
+                let (_temp, source, output, journal) = fixture();
+                let mut replaced = false;
+                let result = copy_folder_with_journal(
+                    &source,
+                    &output,
+                    &journal,
+                    &AtomicBool::new(false),
+                    |p| {
+                        if p.verified_files == 1 && !replaced {
+                            replaced = true;
+                            fs::rename(&journal, journal.with_extension("old")).unwrap();
+                            fs::write(&journal, b"replacement").unwrap();
+                        }
+                    },
+                );
+                let report = result.expect("persistence failures retain the incomplete report");
+                assert!(!report.complete());
+                assert_eq!(report.verified_files, [PathBuf::from("a")]);
+                assert!(
+                    report
+                        .failed
+                        .iter()
+                        .any(|(_, message)| message.contains("journal replaced"))
+                );
+                assert!(
+                    !report.failed.iter().any(
+                        |(_, message)| message.contains("previous journal checkpoint retained")
+                    )
+                );
+                assert!(replaced);
+                assert_eq!(fs::read(&journal).unwrap(), b"replacement");
+                assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+                assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
+            },
+        );
+
+        isolated("replaced_source_root_is_rejected", || {
+            let (_temp, source, output, journal) = completed_fixture();
+            fs::rename(&source, source.with_extension("old")).unwrap();
+            fs::create_dir(&source).unwrap();
+            fs::write(source.join("a"), b"other").unwrap();
             assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
             assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
-        }
+        });
     }
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn unix_non_utf8_names_survive_restart_losslessly() {
-        use std::os::unix::ffi::OsStringExt;
-        let (_temp, source, output, journal) = fixture();
-        let name = std::ffi::OsString::from_vec(vec![b'n', 255]);
-        fs::write(source.join(&name), b"native").unwrap();
-        assert!(
-            copy_folder_with_journal(&source, &output, &journal, &AtomicBool::new(false), |_| {})
-                .unwrap()
-                .complete()
-        );
-        assert!(
-            resume_folder(&journal, &AtomicBool::new(false), |_| {})
-                .unwrap()
-                .complete()
-        );
-        assert_eq!(fs::read(output.join(&name)).unwrap(), b"native");
-    }
-    // Revalidation reads must not destroy the timestamp preservation contract.
-    #[test]
-    fn resumed_files_and_directories_retain_original_timestamps() {
-        let (_temp, source, output, journal) = fixture();
-        fs::create_dir(source.join("empty")).unwrap();
-        let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
-        for p in [&source, &source.join("a"), &source.join("empty")] {
-            File::open(p)
-                .unwrap()
-                .set_times(fs::FileTimes::new().set_accessed(time).set_modified(time))
-                .unwrap();
-        }
-        assert!(
-            copy_folder_with_journal(&source, &output, &journal, &AtomicBool::new(false), |_| {})
-                .unwrap()
-                .complete()
-        );
-        // Simulate atime advancement caused by enumeration/content rereads on
-        // mounts where access-time updates are enabled (APFS may suppress it).
-        for p in [&source, &source.join("empty"), &output.join("a")] {
-            File::open(p)
-                .unwrap()
-                .set_times(
-                    fs::FileTimes::new().set_accessed(time + std::time::Duration::from_secs(60)),
-                )
-                .unwrap();
-        }
-        assert!(
-            resume_folder(&journal, &AtomicBool::new(false), |_| {})
-                .unwrap()
-                .complete()
-        );
-        for p in [&output, &output.join("a"), &output.join("empty")] {
-            let m = fs::metadata(p).unwrap();
-            assert_eq!(m.modified().unwrap(), time);
-            assert_eq!(m.accessed().unwrap(), time);
-        }
-    }
-
     #[test]
     fn interruption_worker() {
         let Some(base) = std::env::var_os("TILO_JOURNAL_FIXTURE") else {
@@ -1594,193 +1748,170 @@ mod tests {
         );
         f
     }
+    /// Crashes around publication and receipt replacement, cancelled start.
     #[test]
-    fn crash_after_publication_before_receipt_preserves_unjournaled_conflict() {
-        let (_temp, source, output, journal) = interrupted("file_published", "1");
-        let report = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
-        assert!(!report.complete());
-        assert!(!report.verified_files.contains(&PathBuf::from("a")));
-        assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
-        assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
-        assert_eq!(fs::read(output.join("b")).unwrap(), b"world");
-    }
-    #[test]
-    fn crash_before_receipt_replace_keeps_old_valid_journal_and_output() {
-        let (_temp, source, output, journal) = interrupted("journal_before_replace", "2");
-        let report = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
-        assert!(!report.complete());
-        assert!(!report.verified_files.contains(&PathBuf::from("a")));
-        assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
-        assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
-    }
-    #[test]
-    fn crash_after_receipt_replace_revalidates_published_output() {
-        let (_temp, source, output, journal) = interrupted("journal_after_replace", "2");
-        let report = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
-        assert!(report.complete(), "{report:?}");
-        assert_eq!(report.verified_files.len(), 2);
-        assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
-        assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
-    }
-    #[test]
-    fn crash_after_root_publication_requires_review_of_unrecorded_root() {
-        let (_temp, source, output, journal) = interrupted("root_published", "1");
-        assert!(output.is_dir());
-        fs::write(output.join("sentinel"), b"keep").unwrap();
-        assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
-        assert_eq!(fs::read(output.join("sentinel")).unwrap(), b"keep");
-        assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
-    }
-    #[test]
-    fn cancelled_start_does_not_create_receipts_or_output() {
-        let (_temp, source, output, journal) = fixture();
-        let report =
-            copy_folder_with_journal(&source, &output, &journal, &AtomicBool::new(true), |_| {})
-                .unwrap();
-        assert!(report.cancelled);
-        assert!(!journal.exists());
-        assert!(!output.exists());
-    }
-    #[test]
-    fn replaced_journal_is_never_overwritten_by_a_running_copy() {
-        let (_temp, source, output, journal) = fixture();
-        let mut replaced = false;
-        let result =
-            copy_folder_with_journal(&source, &output, &journal, &AtomicBool::new(false), |p| {
-                if p.verified_files == 1 && !replaced {
-                    replaced = true;
-                    fs::rename(&journal, journal.with_extension("old")).unwrap();
-                    fs::write(&journal, b"replacement").unwrap();
-                }
-            });
-        let report = result.expect("persistence failures retain the incomplete report");
-        assert!(!report.complete());
-        assert_eq!(report.verified_files, [PathBuf::from("a")]);
-        assert!(
-            report
-                .failed
-                .iter()
-                .any(|(_, message)| message.contains("journal replaced"))
+    fn crash_boundaries_keep_valid_journals_and_revalidate_output() {
+        isolated(
+            "crash_after_publication_before_receipt_preserves_unjournaled_conflict",
+            || {
+                let (_temp, source, output, journal) = interrupted("file_published", "1");
+                let report = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
+                assert!(!report.complete());
+                assert!(!report.verified_files.contains(&PathBuf::from("a")));
+                assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+                assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
+                assert_eq!(fs::read(output.join("b")).unwrap(), b"world");
+            },
         );
-        assert!(
-            !report
-                .failed
-                .iter()
-                .any(|(_, message)| message.contains("previous journal checkpoint retained"))
-        );
-        assert!(replaced);
-        assert_eq!(fs::read(&journal).unwrap(), b"replacement");
-        assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
-        assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
-    }
-    #[test]
-    fn replaced_source_root_is_rejected() {
-        let (_temp, source, output, journal) = completed_fixture();
-        fs::rename(&source, source.with_extension("old")).unwrap();
-        fs::create_dir(&source).unwrap();
-        fs::write(source.join("a"), b"other").unwrap();
-        assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
-        assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
-    }
-    #[cfg(unix)]
-    #[test]
-    fn private_journal_permissions_and_nofollow_are_enforced() {
-        use std::os::unix::fs::PermissionsExt;
-        let (_temp, _source, output, journal) = completed_fixture();
-        assert_eq!(
-            fs::metadata(&journal).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        fs::set_permissions(&journal, fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
-        fs::rename(&journal, journal.with_extension("old")).unwrap();
-        std::os::unix::fs::symlink(journal.with_extension("old"), &journal).unwrap();
-        assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
-        assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
-    }
-    #[test]
-    fn nested_empty_directory_and_outcomes_survive_restart() {
-        let (_temp, source, output, journal) = fixture();
-        fs::create_dir_all(source.join("nested/empty")).unwrap();
-        fs::write(source.join("nested/content"), b"nested").unwrap();
-        let cancel = AtomicBool::new(false);
-        let report = copy_folder_with_journal(&source, &output, &journal, &cancel, |p| {
-            if p.verified_files == 3 {
-                cancel.store(true, Ordering::Relaxed);
-            }
-        })
-        .unwrap();
-        assert!(report.cancelled);
-        let report = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
-        assert!(report.complete(), "{report:?}");
-        assert!(output.join("nested/empty").is_dir());
-        let document: serde_json::Value = decoded_document(&journal);
-        assert_eq!(document["outcome"]["scan_completed"], true);
-        assert_eq!(
-            document["receipts"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter(|r| r["kind"] == "File")
-                .count(),
-            3
-        );
-        assert!(
-            !document["outcome"]["metadata_limitations"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
-        assert_eq!(
-            document["receipts"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter(|r| r["kind"] == "Directory" && r["completed"] == true)
-                .count(),
-            3
-        );
-    }
-    #[test]
-    fn platform_and_boot_identity_mismatch_require_reselection() {
-        let (_temp, _source, output, journal) = completed_fixture();
-        let original: serde_json::Value = decoded_document(&journal);
-        let mut foreign = original.clone();
-        foreign["source"]["platform"] = "Windows".into();
-        fs::write(&journal, serde_json::to_vec(&foreign).unwrap()).unwrap();
-        assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
-        let mut changed = original;
-        changed["source_identity"]["volume"] = serde_json::json!([2, 0, 0, 0]);
-        fs::write(&journal, serde_json::to_vec(&changed).unwrap()).unwrap();
-        assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
-        assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
-    }
-    #[test]
-    fn resume_refuses_a_journal_moved_into_a_copied_tree() {
-        let (_temp, _source, output, journal) = completed_fixture();
-        let moved = output.join("receipt.json");
-        fs::rename(&journal, &moved).unwrap();
-        let bytes = fs::read(&moved).unwrap();
-        assert!(resume_folder(&moved, &AtomicBool::new(false), |_| {}).is_err());
-        assert_eq!(fs::read(&moved).unwrap(), bytes);
-        assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
-    }
-    #[test]
-    fn revalidation_checks_digest_even_with_matching_size_and_mtime() {
-        let (_temp, _source, output, journal) = completed_fixture();
-        let path = output.join("a");
-        let modified = fs::metadata(&path).unwrap().modified().unwrap();
-        fs::write(&path, b"other").unwrap();
-        File::open(&path)
-            .unwrap()
-            .set_times(fs::FileTimes::new().set_modified(modified))
-            .unwrap();
-        let report = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
-        assert!(!report.complete());
-        assert!(!report.verified_files.contains(&PathBuf::from("a")));
-        assert_eq!(fs::read(&path).unwrap(), b"other");
-    }
 
+        isolated(
+            "crash_before_receipt_replace_keeps_old_valid_journal_and_output",
+            || {
+                let (_temp, source, output, journal) = interrupted("journal_before_replace", "2");
+                let report = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
+                assert!(!report.complete());
+                assert!(!report.verified_files.contains(&PathBuf::from("a")));
+                assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+                assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
+            },
+        );
+
+        isolated(
+            "crash_after_receipt_replace_revalidates_published_output",
+            || {
+                let (_temp, source, output, journal) = interrupted("journal_after_replace", "2");
+                let report = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
+                assert!(report.complete(), "{report:?}");
+                assert_eq!(report.verified_files.len(), 2);
+                assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+                assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
+            },
+        );
+
+        isolated(
+            "crash_after_root_publication_requires_review_of_unrecorded_root",
+            || {
+                let (_temp, source, output, journal) = interrupted("root_published", "1");
+                assert!(output.is_dir());
+                fs::write(output.join("sentinel"), b"keep").unwrap();
+                assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
+                assert_eq!(fs::read(output.join("sentinel")).unwrap(), b"keep");
+                assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
+            },
+        );
+
+        isolated("cancelled_start_does_not_create_receipts_or_output", || {
+            let (_temp, source, output, journal) = fixture();
+            let report = copy_folder_with_journal(
+                &source,
+                &output,
+                &journal,
+                &AtomicBool::new(true),
+                |_| {},
+            )
+            .unwrap();
+            assert!(report.cancelled);
+            assert!(!journal.exists());
+            assert!(!output.exists());
+        });
+    }
+    /// Journal permissions, identity mismatch, moved journals, digests and FIFO swaps.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn resume_revalidates_journal_identity_and_source_content() {
+        // Phase `private_journal_permissions_and_nofollow_are_enforced`.
+        #[cfg(unix)]
+        isolated(
+            "private_journal_permissions_and_nofollow_are_enforced",
+            || {
+                use std::os::unix::fs::PermissionsExt;
+                let (_temp, _source, output, journal) = completed_fixture();
+                assert_eq!(
+                    fs::metadata(&journal).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+                fs::set_permissions(&journal, fs::Permissions::from_mode(0o644)).unwrap();
+                assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
+                fs::rename(&journal, journal.with_extension("old")).unwrap();
+                std::os::unix::fs::symlink(journal.with_extension("old"), &journal).unwrap();
+                assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
+                assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+            },
+        );
+
+        isolated(
+            "platform_and_boot_identity_mismatch_require_reselection",
+            || {
+                let (_temp, _source, output, journal) = completed_fixture();
+                let original: serde_json::Value = decoded_document(&journal);
+                let mut foreign = original.clone();
+                foreign["source"]["platform"] = "Windows".into();
+                fs::write(&journal, serde_json::to_vec(&foreign).unwrap()).unwrap();
+                assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
+                let mut changed = original;
+                changed["source_identity"]["volume"] = serde_json::json!([2, 0, 0, 0]);
+                fs::write(&journal, serde_json::to_vec(&changed).unwrap()).unwrap();
+                assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
+                assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+            },
+        );
+
+        isolated("resume_refuses_a_journal_moved_into_a_copied_tree", || {
+            let (_temp, _source, output, journal) = completed_fixture();
+            let moved = output.join("receipt.json");
+            fs::rename(&journal, &moved).unwrap();
+            let bytes = fs::read(&moved).unwrap();
+            assert!(resume_folder(&moved, &AtomicBool::new(false), |_| {}).is_err());
+            assert_eq!(fs::read(&moved).unwrap(), bytes);
+            assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+        });
+
+        isolated(
+            "revalidation_checks_digest_even_with_matching_size_and_mtime",
+            || {
+                let (_temp, _source, output, journal) = completed_fixture();
+                let path = output.join("a");
+                let modified = fs::metadata(&path).unwrap().modified().unwrap();
+                fs::write(&path, b"other").unwrap();
+                File::open(&path)
+                    .unwrap()
+                    .set_times(fs::FileTimes::new().set_modified(modified))
+                    .unwrap();
+                let report = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
+                assert!(!report.complete());
+                assert!(!report.verified_files.contains(&PathBuf::from("a")));
+                assert_eq!(fs::read(&path).unwrap(), b"other");
+            },
+        );
+
+        isolated("source_swapped_to_fifo_during_resume_never_blocks", || {
+            let (_temp, source, _output, _journal) = fixture();
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &worker_name("fifo_race_worker")])
+                .env("TILO_FIFO_RACE_WORKER", source.parent().unwrap())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            let deadline = tilo_test_env::hang_deadline();
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(status.success());
+                    assert!(source.parent().unwrap().join("fifo-rejected").is_file());
+                    break;
+                }
+                if ui::time::now() >= deadline {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("resume blocked opening a swapped FIFO");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        });
+    }
     #[test]
     fn fifo_race_worker() {
         if std::env::var_os("TILO_FIFO_RACE_WORKER").is_none() {
@@ -1809,227 +1940,239 @@ mod tests {
         assert!(!report.complete());
         fs::write(base.join("fifo-rejected"), b"checked").unwrap();
     }
+    /// File, directory, outcome, root and post-publication receipt failures.
     #[test]
-    fn source_swapped_to_fifo_during_resume_never_blocks() {
-        let (_temp, source, _output, _journal) = fixture();
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", &worker_name("fifo_race_worker")])
-            .env("TILO_FIFO_RACE_WORKER", source.parent().unwrap())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        loop {
-            if let Some(status) = child.try_wait().unwrap() {
-                assert!(status.success());
-                assert!(source.parent().unwrap().join("fifo-rejected").is_file());
-                break;
-            }
-            if std::time::Instant::now() >= deadline {
-                child.kill().unwrap();
-                child.wait().unwrap();
-                panic!("resume blocked opening a swapped FIFO");
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn failed_receipts_stop_traversal_and_retain_the_prior_checkpoint() {
+        isolated(
+            "failed_file_receipt_stops_before_later_files_or_directories",
+            || {
+                for boundary in ["before_encode", "before_replace", "after_replace"] {
+                    let (_temp, source, output, journal) = fixture();
+                    fs::create_dir(source.join("later-directory")).unwrap();
+                    let failure = persistence_injection::Failure::at(boundary, 2);
+                    let result = copy_folder_with_journal(
+                        &source,
+                        &output,
+                        &journal,
+                        &AtomicBool::new(false),
+                        |_| {},
+                    );
+                    assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+                    assert!(
+                        !output.join("b").exists(),
+                        "later file published after {boundary} failure"
+                    );
+                    assert!(!output.join("later-directory").exists());
+                    let report =
+                        result.expect("post-publication failure must retain the incomplete report");
+                    assert!(!report.complete());
+                    assert!(!report.scan_completed);
+                    assert!(
+                        report.verified_files.is_empty(),
+                        "unsaved receipt counted as persisted"
+                    );
+                    assert!(report.failed.iter().any(|(p, _)| p == Path::new("a")));
+                    let diagnostic = &report
+                        .failed
+                        .iter()
+                        .find(|(p, _)| p == Path::new("a"))
+                        .unwrap()
+                        .1;
+                    assert!(diagnostic.contains(if boundary == "after_replace" {
+                        "replacement is visible but its persistence is uncertain"
+                    } else {
+                        "previous journal checkpoint retained"
+                    }));
+                    assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
+                    assert_eq!(fs::read(source.join("b")).unwrap(), b"world");
+                    drop(failure);
+                    let checkpoint: Document = decoded_document(&journal);
+                    if boundary != "after_replace" {
+                        assert_eq!(
+                            checkpoint.receipts.len(),
+                            1,
+                            "checkpoint advanced after persistence failed"
+                        );
+                    }
+                    let resumed = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
+                    if boundary == "after_replace" {
+                        assert!(resumed.complete(), "{resumed:?}");
+                    } else {
+                        assert!(!resumed.complete());
+                        assert!(!resumed.verified_files.contains(&PathBuf::from("a")));
+                    }
+                    assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+                }
+            },
+        );
+
+        isolated(
+            "failed_directory_receipt_or_completion_stops_parent_traversal",
+            || {
+                for (boundary, save) in [
+                    ("before_replace", 2),
+                    ("before_replace", 3),
+                    ("directory_publication_flush", 1),
+                    ("directory_completion_flush", 1),
+                ] {
+                    let (_temp, source, output, journal) = fixture();
+                    fs::create_dir(source.join("0-directory")).unwrap();
+                    let failure = persistence_injection::Failure::at(boundary, save);
+                    let result = copy_folder_with_journal(
+                        &source,
+                        &output,
+                        &journal,
+                        &AtomicBool::new(false),
+                        |_| {},
+                    );
+                    assert!(output.join("0-directory").is_dir());
+                    assert!(
+                        !output.join("a").exists(),
+                        "parent traversal continued after directory checkpoint failure"
+                    );
+                    assert!(!output.join("b").exists());
+                    let report = result.expect("directory persistence failure must retain report");
+                    assert!(!report.complete());
+                    assert!(!report.scan_completed);
+                    assert!(
+                        report
+                            .failed
+                            .iter()
+                            .any(|(p, _)| p == Path::new("0-directory"))
+                    );
+                    drop(failure);
+                    assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
+                    let resumed = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
+                    if (boundary == "before_replace" && save == 2)
+                        || boundary == "directory_publication_flush"
+                    {
+                        assert!(!resumed.complete());
+                    } else {
+                        assert!(resumed.complete(), "{resumed:?}");
+                    }
+                    assert!(output.join("0-directory").is_dir());
+                }
+            },
+        );
+
+        isolated(
+            "failed_final_outcome_save_retains_verified_report_and_prior_checkpoint",
+            || {
+                for boundary in ["before_encode", "before_replace", "after_replace"] {
+                    let (_temp, source, output, journal) = fixture();
+                    let failure = persistence_injection::Failure::at(boundary, 5);
+                    let report = copy_folder_with_journal(
+                        &source,
+                        &output,
+                        &journal,
+                        &AtomicBool::new(false),
+                        |_| {},
+                    )
+                    .expect("final persistence failure must retain accumulated results");
+                    assert!(!report.complete());
+                    assert_eq!(report.verified_files.len(), 2);
+                    assert_eq!(report.verified_bytes, 10);
+                    assert_eq!(report.failed.len(), 1);
+                    assert!(report.failed[0].1.contains(if boundary == "after_replace" {
+                        "replacement is visible but its persistence is uncertain"
+                    } else {
+                        "previous journal checkpoint retained"
+                    }));
+                    let checkpoint: Document = decoded_document(&journal);
+                    if boundary != "after_replace" {
+                        assert!(checkpoint.outcome.is_none());
+                    }
+                    drop(failure);
+                    assert!(
+                        resume_folder(&journal, &AtomicBool::new(false), |_| {})
+                            .unwrap()
+                            .complete()
+                    );
+                    for base in [&source, &output] {
+                        assert_eq!(fs::read(base.join("a")).unwrap(), b"hello");
+                        assert_eq!(fs::read(base.join("b")).unwrap(), b"world");
+                    }
+                }
+            },
+        );
+
+        isolated(
+            "failed_initial_root_receipt_returns_incomplete_report_without_traversal",
+            || {
+                for boundary in ["root_publication_flush", "before_replace"] {
+                    let (_temp, source, output, journal) = fixture();
+                    let failure = persistence_injection::Failure::at(boundary, 1);
+                    let report = copy_folder_with_journal(
+                        &source,
+                        &output,
+                        &journal,
+                        &AtomicBool::new(false),
+                        |_| {},
+                    )
+                    .expect("root receipt failed after mkdir; retain report");
+                    assert!(!report.complete());
+                    assert!(output.is_dir());
+                    assert!(!output.join("a").exists());
+                    assert!(!report.failed.is_empty());
+                    drop(failure);
+                    assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
+                    assert!(output.is_dir());
+                    assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
+                }
+            },
+        );
+
+        isolated(
+            "failed_post_publication_flush_or_receipt_construction_stops_later_entries",
+            || {
+                for boundary in ["file_publication_flush", "file_receipt_construct"] {
+                    let (_temp, source, output, journal) = fixture();
+                    let failure = persistence_injection::Failure::at(boundary, 1);
+                    let report = copy_folder_with_journal(
+                        &source,
+                        &output,
+                        &journal,
+                        &AtomicBool::new(false),
+                        |_| {},
+                    )
+                    .unwrap();
+                    assert!(!report.complete());
+                    assert!(!report.scan_completed);
+                    assert!(report.verified_files.is_empty());
+                    assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+                    assert!(!output.join("b").exists());
+                    assert!(report.failed.iter().any(|(path, _)| path == Path::new("a")));
+                    let checkpoint: Document = decoded_document(&journal);
+                    assert_eq!(checkpoint.receipts.len(), 1);
+                    drop(failure);
+                    let resumed = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
+                    assert!(!resumed.complete());
+                    assert!(!resumed.verified_files.contains(&PathBuf::from("a")));
+                    assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+                    assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
+                    assert_eq!(fs::read(source.join("b")).unwrap(), b"world");
+                }
+            },
+        );
     }
-    #[test]
-    fn failed_file_receipt_stops_before_later_files_or_directories() {
-        for boundary in ["before_encode", "before_replace", "after_replace"] {
-            let (_temp, source, output, journal) = fixture();
-            fs::create_dir(source.join("later-directory")).unwrap();
-            let failure = persistence_injection::Failure::at(boundary, 2);
-            let result = copy_folder_with_journal(
-                &source,
-                &output,
-                &journal,
-                &AtomicBool::new(false),
-                |_| {},
-            );
-            assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
-            assert!(
-                !output.join("b").exists(),
-                "later file published after {boundary} failure"
-            );
-            assert!(!output.join("later-directory").exists());
-            let report =
-                result.expect("post-publication failure must retain the incomplete report");
-            assert!(!report.complete());
-            assert!(!report.scan_completed);
-            assert!(
-                report.verified_files.is_empty(),
-                "unsaved receipt counted as persisted"
-            );
-            assert!(report.failed.iter().any(|(p, _)| p == Path::new("a")));
-            let diagnostic = &report
-                .failed
-                .iter()
-                .find(|(p, _)| p == Path::new("a"))
-                .unwrap()
-                .1;
-            assert!(diagnostic.contains(if boundary == "after_replace" {
-                "replacement is visible but its persistence is uncertain"
-            } else {
-                "previous journal checkpoint retained"
-            }));
-            assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
-            assert_eq!(fs::read(source.join("b")).unwrap(), b"world");
-            drop(failure);
-            let checkpoint: Document = decoded_document(&journal);
-            if boundary != "after_replace" {
-                assert_eq!(
-                    checkpoint.receipts.len(),
-                    1,
-                    "checkpoint advanced after persistence failed"
-                );
+
+    /// Runs one merged phase on a fresh thread so the thread-local race and
+    /// persistence injection hooks start clean, exactly as when the phase was
+    /// its own test; a failing phase re-raises its original panic payload.
+    fn isolated(phase: &str, body: impl FnOnce() + Send) {
+        std::thread::scope(|scope| {
+            let handle = std::thread::Builder::new()
+                .name(phase.to_owned())
+                .spawn_scoped(scope, body)
+                .expect("spawn isolated test phase");
+            if let Err(panic) = handle.join() {
+                std::panic::resume_unwind(panic);
             }
-            let resumed = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
-            if boundary == "after_replace" {
-                assert!(resumed.complete(), "{resumed:?}");
-            } else {
-                assert!(!resumed.complete());
-                assert!(!resumed.verified_files.contains(&PathBuf::from("a")));
-            }
-            assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
-        }
-    }
-    #[test]
-    fn failed_directory_receipt_or_completion_stops_parent_traversal() {
-        for (boundary, save) in [
-            ("before_replace", 2),
-            ("before_replace", 3),
-            ("directory_publication_flush", 1),
-            ("directory_completion_flush", 1),
-        ] {
-            let (_temp, source, output, journal) = fixture();
-            fs::create_dir(source.join("0-directory")).unwrap();
-            let failure = persistence_injection::Failure::at(boundary, save);
-            let result = copy_folder_with_journal(
-                &source,
-                &output,
-                &journal,
-                &AtomicBool::new(false),
-                |_| {},
-            );
-            assert!(output.join("0-directory").is_dir());
-            assert!(
-                !output.join("a").exists(),
-                "parent traversal continued after directory checkpoint failure"
-            );
-            assert!(!output.join("b").exists());
-            let report = result.expect("directory persistence failure must retain report");
-            assert!(!report.complete());
-            assert!(!report.scan_completed);
-            assert!(
-                report
-                    .failed
-                    .iter()
-                    .any(|(p, _)| p == Path::new("0-directory"))
-            );
-            drop(failure);
-            assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
-            let resumed = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
-            if (boundary == "before_replace" && save == 2)
-                || boundary == "directory_publication_flush"
-            {
-                assert!(!resumed.complete());
-            } else {
-                assert!(resumed.complete(), "{resumed:?}");
-            }
-            assert!(output.join("0-directory").is_dir());
-        }
-    }
-    #[test]
-    fn failed_final_outcome_save_retains_verified_report_and_prior_checkpoint() {
-        for boundary in ["before_encode", "before_replace", "after_replace"] {
-            let (_temp, source, output, journal) = fixture();
-            let failure = persistence_injection::Failure::at(boundary, 5);
-            let report = copy_folder_with_journal(
-                &source,
-                &output,
-                &journal,
-                &AtomicBool::new(false),
-                |_| {},
-            )
-            .expect("final persistence failure must retain accumulated results");
-            assert!(!report.complete());
-            assert_eq!(report.verified_files.len(), 2);
-            assert_eq!(report.verified_bytes, 10);
-            assert_eq!(report.failed.len(), 1);
-            assert!(report.failed[0].1.contains(if boundary == "after_replace" {
-                "replacement is visible but its persistence is uncertain"
-            } else {
-                "previous journal checkpoint retained"
-            }));
-            let checkpoint: Document = decoded_document(&journal);
-            if boundary != "after_replace" {
-                assert!(checkpoint.outcome.is_none());
-            }
-            drop(failure);
-            assert!(
-                resume_folder(&journal, &AtomicBool::new(false), |_| {})
-                    .unwrap()
-                    .complete()
-            );
-            for base in [&source, &output] {
-                assert_eq!(fs::read(base.join("a")).unwrap(), b"hello");
-                assert_eq!(fs::read(base.join("b")).unwrap(), b"world");
-            }
-        }
-    }
-    #[test]
-    fn failed_initial_root_receipt_returns_incomplete_report_without_traversal() {
-        for boundary in ["root_publication_flush", "before_replace"] {
-            let (_temp, source, output, journal) = fixture();
-            let failure = persistence_injection::Failure::at(boundary, 1);
-            let report = copy_folder_with_journal(
-                &source,
-                &output,
-                &journal,
-                &AtomicBool::new(false),
-                |_| {},
-            )
-            .expect("root receipt failed after mkdir; retain report");
-            assert!(!report.complete());
-            assert!(output.is_dir());
-            assert!(!output.join("a").exists());
-            assert!(!report.failed.is_empty());
-            drop(failure);
-            assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
-            assert!(output.is_dir());
-            assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
-        }
-    }
-    #[test]
-    fn failed_post_publication_flush_or_receipt_construction_stops_later_entries() {
-        for boundary in ["file_publication_flush", "file_receipt_construct"] {
-            let (_temp, source, output, journal) = fixture();
-            let failure = persistence_injection::Failure::at(boundary, 1);
-            let report = copy_folder_with_journal(
-                &source,
-                &output,
-                &journal,
-                &AtomicBool::new(false),
-                |_| {},
-            )
-            .unwrap();
-            assert!(!report.complete());
-            assert!(!report.scan_completed);
-            assert!(report.verified_files.is_empty());
-            assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
-            assert!(!output.join("b").exists());
-            assert!(report.failed.iter().any(|(path, _)| path == Path::new("a")));
-            let checkpoint: Document = decoded_document(&journal);
-            assert_eq!(checkpoint.receipts.len(), 1);
-            drop(failure);
-            let resumed = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
-            assert!(!resumed.complete());
-            assert!(!resumed.verified_files.contains(&PathBuf::from("a")));
-            assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
-            assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
-            assert_eq!(fs::read(source.join("b")).unwrap(), b"world");
-        }
+        });
     }
 }
 

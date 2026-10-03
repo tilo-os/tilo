@@ -10,9 +10,9 @@
 //!
 //! Every colour, radius, and gap is read from the [`Theme`].
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{flex, fr, length, minmax, percent, repeat};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -133,11 +133,9 @@ fn surface(title: Option<String>, action: Option<Element>, body: Element) -> Ele
 }
 
 impl Widget for Card {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.inner.sync(state, path);
-    }
+    crate::provides!(dyn crate::undo::UndoPoints);
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.inner.update(state, path)
     }
 
@@ -242,33 +240,18 @@ impl Widget for Card {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
-        let Some(child_node) = taffy
-            .children(node_id)
+        let Some(child_node) = ctx
+            .taffy
+            .children(ctx.node_id)
             .ok()
             .and_then(|nodes| nodes.first().copied())
         else {
             return;
         };
-        self.inner.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            child_node,
-            taffy,
-        );
+        self.inner
+            .handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -295,20 +278,21 @@ impl Widget for Card {
         "Card"
     }
 
-    fn needs_commit(&self) -> bool {
-        self.inner.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.inner.on_commit();
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         self.inner.take_structure_dirty()
     }
 
     fn wants_pointer_capture(&self) -> bool {
         self.inner.wants_pointer_capture()
+    }
+}
+
+impl crate::undo::UndoPoints for Card {
+    fn needs_commit(&self) -> bool {
+        crate::undo::needs_commit(self.inner.as_ref())
+    }
+    fn on_commit(&mut self) {
+        crate::undo::on_commit(self.inner.as_mut());
     }
 }
 
@@ -437,13 +421,9 @@ impl CardGrid {
 }
 
 impl Widget for CardGrid {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        for card in &mut self.cards {
-            card.sync(state, path);
-        }
-    }
+    crate::provides!(dyn crate::undo::UndoPoints);
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
         for card in &mut self.cards {
             changed |= card.update(state, path);
@@ -535,28 +515,11 @@ impl Widget for CardGrid {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
         for (card, &node) in self.cards.iter_mut().zip(self.child_nodes.iter()) {
-            card.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node,
-                taffy,
-            );
-            if *handled {
+            card.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled {
                 break;
             }
         }
@@ -593,22 +556,25 @@ impl Widget for CardGrid {
         "CardGrid"
     }
 
-    fn needs_commit(&self) -> bool {
-        self.cards.iter().any(|c| c.needs_commit())
-    }
-
-    fn on_commit(&mut self) {
-        for card in &mut self.cards {
-            card.on_commit();
-        }
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         let mut dirty = false;
         for card in &mut self.cards {
             dirty |= card.take_structure_dirty();
         }
         dirty
+    }
+}
+
+impl crate::undo::UndoPoints for CardGrid {
+    fn needs_commit(&self) -> bool {
+        self.cards
+            .iter()
+            .any(|c| crate::undo::needs_commit(c.as_ref()))
+    }
+    fn on_commit(&mut self) {
+        for card in &mut self.cards {
+            crate::undo::on_commit(card.as_mut());
+        }
     }
 }
 
@@ -620,37 +586,41 @@ mod tests {
     // ---- pure reflow geometry ----
 
     #[test]
-    fn columns_reflow_by_width() {
-        assert_eq!(card_columns(200.0, 260.0, 16.0), 1, "too narrow → 1 col");
-        assert_eq!(card_columns(260.0, 260.0, 16.0), 1);
-        // 2 cols need 260+16+260 = 536; +16 slack in the formula.
-        assert_eq!(card_columns(536.0, 260.0, 16.0), 2);
-        assert_eq!(card_columns(820.0, 260.0, 16.0), 3);
-    }
+    fn card_columns_reflow_fill_and_align_by_width() {
+        fn columns_reflow_by_width() {
+            assert_eq!(card_columns(200.0, 260.0, 16.0), 1, "too narrow → 1 col");
+            assert_eq!(card_columns(260.0, 260.0, 16.0), 1);
+            // 2 cols need 260+16+260 = 536; +16 slack in the formula.
+            assert_eq!(card_columns(536.0, 260.0, 16.0), 2);
+            assert_eq!(card_columns(820.0, 260.0, 16.0), 3);
+        }
 
-    #[test]
-    fn columns_never_zero() {
-        assert_eq!(card_columns(0.0, 260.0, 16.0), 1);
-        assert_eq!(card_columns(-50.0, 260.0, 16.0), 1);
-        assert_eq!(card_columns(10.0, 260.0, 16.0), 1);
-    }
+        fn columns_never_zero() {
+            assert_eq!(card_columns(0.0, 260.0, 16.0), 1);
+            assert_eq!(card_columns(-50.0, 260.0, 16.0), 1);
+            assert_eq!(card_columns(10.0, 260.0, 16.0), 1);
+        }
 
-    #[test]
-    fn column_width_fills_and_aligns() {
-        // 3 columns in 820 with 16 gaps: (820 - 2*16) / 3 = 262.67.
-        let w = card_column_width(820.0, 3, 16.0);
-        assert!((w - 262.6667).abs() < 0.01, "got {w}");
-        // The columns + gaps exactly refill the width (they line up edge-to-edge).
-        let total = 3.0 * w + 2.0 * 16.0;
-        assert!(
-            (total - 820.0).abs() < 0.01,
-            "columns must refill width, got {total}"
-        );
-    }
+        fn column_width_fills_and_aligns() {
+            // 3 columns in 820 with 16 gaps: (820 - 2*16) / 3 = 262.67.
+            let w = card_column_width(820.0, 3, 16.0);
+            assert!((w - 262.6667).abs() < 0.01, "got {w}");
+            // The columns + gaps exactly refill the width (they line up edge-to-edge).
+            let total = 3.0 * w + 2.0 * 16.0;
+            assert!(
+                (total - 820.0).abs() < 0.01,
+                "columns must refill width, got {total}"
+            );
+        }
 
-    #[test]
-    fn column_width_single_column_is_full_width() {
-        assert!((card_column_width(500.0, 1, 16.0) - 500.0).abs() < 0.01);
+        fn column_width_single_column_is_full_width() {
+            assert!((card_column_width(500.0, 1, 16.0) - 500.0).abs() < 0.01);
+        }
+
+        columns_reflow_by_width();
+        columns_never_zero();
+        column_width_fills_and_aligns();
+        column_width_single_column_is_full_width();
     }
 
     // ---- CardGrid layout ----
@@ -698,142 +668,146 @@ mod tests {
     }
 
     #[test]
-    fn grid_resolves_columns_from_allocated_width() {
-        let g = lay_out_grid(
-            CardGrid::new(dummy_cards(6))
-                .with_min_card_width(260.0)
-                .with_gap(16.0),
-            900.0,
-            2000.0,
-        );
-        // 900px → 3 columns of ~(900-32)/3 = 289.3px each.
-        assert_eq!(
-            g.cards
-                .iter()
-                .filter(|card| card.get_rect().y0 == g.rect.y0)
-                .count(),
-            3,
-            "900px / 260-min → 3 columns"
-        );
-        assert!(
-            (g.cards[0].get_rect().width() - 289.333).abs() < 1.0,
-            "equal column width, got {}",
-            g.cards[0].get_rect().width()
-        );
-    }
-
-    #[test]
-    fn grid_cells_align_to_shared_columns() {
-        let g = lay_out_grid(
-            CardGrid::new(dummy_cards(6))
-                .with_min_card_width(260.0)
-                .with_gap(16.0),
-            900.0,
-            2000.0,
-        );
-        // Card 0 and card 3 are in the same (first) column → identical x0.
-        assert!(
-            (g.cards[0].get_rect().x0 - g.cards[3].get_rect().x0).abs() < 0.01,
-            "column 0 x aligns across rows"
-        );
-        // Card 0 and card 1 are in adjacent columns → x1 vs x2 separated by one gap.
-        let gap_between = g.cards[1].get_rect().x0 - g.cards[0].get_rect().x1;
-        assert!(
-            (gap_between - 16.0).abs() < 0.5,
-            "adjacent cards separated by one gap, got {gap_between}"
-        );
-        // Every cell has the same width → they line up.
-        for i in 0..6 {
+    fn card_grid_resolves_columns_rows_and_height() {
+        fn grid_resolves_columns_from_allocated_width() {
+            let g = lay_out_grid(
+                CardGrid::new(dummy_cards(6))
+                    .with_min_card_width(260.0)
+                    .with_gap(16.0),
+                900.0,
+                2000.0,
+            );
+            // 900px → 3 columns of ~(900-32)/3 = 289.3px each.
+            assert_eq!(
+                g.cards
+                    .iter()
+                    .filter(|card| card.get_rect().y0 == g.rect.y0)
+                    .count(),
+                3,
+                "900px / 260-min → 3 columns"
+            );
             assert!(
-                (g.cards[i].get_rect().width() - 289.333).abs() < 1.0,
-                "cell {i} width matches column"
+                (g.cards[0].get_rect().width() - 289.333).abs() < 1.0,
+                "equal column width, got {}",
+                g.cards[0].get_rect().width()
             );
         }
-    }
 
-    #[test]
-    fn grid_content_height_grows_with_rows() {
-        // 6 cards, 3 cols → 2 rows; height = 2*card_h + 1*gap.
-        let g = lay_out_grid(
-            CardGrid::new(dummy_cards(6))
-                .with_min_card_width(260.0)
-                .with_card_height(150.0)
-                .with_gap(16.0),
-            900.0,
-            2000.0,
-        );
-        assert_eq!(g.get_rect().height(), 316.0);
-    }
+        fn grid_cells_align_to_shared_columns() {
+            let g = lay_out_grid(
+                CardGrid::new(dummy_cards(6))
+                    .with_min_card_width(260.0)
+                    .with_gap(16.0),
+                900.0,
+                2000.0,
+            );
+            // Card 0 and card 3 are in the same (first) column → identical x0.
+            assert!(
+                (g.cards[0].get_rect().x0 - g.cards[3].get_rect().x0).abs() < 0.01,
+                "column 0 x aligns across rows"
+            );
+            // Card 0 and card 1 are in adjacent columns → x1 vs x2 separated by one gap.
+            let gap_between = g.cards[1].get_rect().x0 - g.cards[0].get_rect().x1;
+            assert!(
+                (gap_between - 16.0).abs() < 0.5,
+                "adjacent cards separated by one gap, got {gap_between}"
+            );
+            // Every cell has the same width → they line up.
+            for i in 0..6 {
+                assert!(
+                    (g.cards[i].get_rect().width() - 289.333).abs() < 1.0,
+                    "cell {i} width matches column"
+                );
+            }
+        }
 
-    #[test]
-    fn grid_narrow_falls_to_single_column() {
-        let g = lay_out_grid(
-            CardGrid::new(dummy_cards(4))
-                .with_min_card_width(260.0)
-                .with_gap(16.0),
-            300.0,
-            2000.0,
-        );
-        assert_eq!(
-            g.cards
-                .iter()
-                .filter(|card| card.get_rect().y0 == g.rect.y0)
-                .count(),
-            1,
-            "300px < 2-col stride → single column"
-        );
-        assert!(
-            (g.cards[0].get_rect().width() - 300.0).abs() < 0.5,
-            "single column spans full width"
-        );
-    }
+        fn grid_content_height_grows_with_rows() {
+            // 6 cards, 3 cols → 2 rows; height = 2*card_h + 1*gap.
+            let g = lay_out_grid(
+                CardGrid::new(dummy_cards(6))
+                    .with_min_card_width(260.0)
+                    .with_card_height(150.0)
+                    .with_gap(16.0),
+                900.0,
+                2000.0,
+            );
+            assert_eq!(g.get_rect().height(), 316.0);
+        }
 
-    #[test]
-    fn a_single_card_uses_the_full_grid_width() {
-        let g = lay_out_grid(
-            CardGrid::new(dummy_cards(1))
-                .with_min_card_width(260.0)
-                .with_gap(16.0),
-            900.0,
-            500.0,
-        );
-        assert_eq!(g.columns_for_width(900.0), 1);
-        assert!((g.cards[0].get_rect().width() - 900.0).abs() < 0.5);
-    }
+        fn grid_narrow_falls_to_single_column() {
+            let g = lay_out_grid(
+                CardGrid::new(dummy_cards(4))
+                    .with_min_card_width(260.0)
+                    .with_gap(16.0),
+                300.0,
+                2000.0,
+            );
+            assert_eq!(
+                g.cards
+                    .iter()
+                    .filter(|card| card.get_rect().y0 == g.rect.y0)
+                    .count(),
+                1,
+                "300px < 2-col stride → single column"
+            );
+            assert!(
+                (g.cards[0].get_rect().width() - 300.0).abs() < 0.5,
+                "single column spans full width"
+            );
+        }
 
-    #[test]
-    fn content_rows_use_each_rows_largest_natural_card() {
-        let cards = || {
-            vec![
-                Box::new(Card::new(Box::new(Text::new("Short")))) as Element,
-                Box::new(Card::new(Box::new(Text::new(
+        fn a_single_card_uses_the_full_grid_width() {
+            let g = lay_out_grid(
+                CardGrid::new(dummy_cards(1))
+                    .with_min_card_width(260.0)
+                    .with_gap(16.0),
+                900.0,
+                500.0,
+            );
+            assert_eq!(g.columns_for_width(900.0), 1);
+            assert!((g.cards[0].get_rect().width() - 900.0).abs() < 0.5);
+        }
+
+        fn content_rows_use_each_rows_largest_natural_card() {
+            let cards = || {
+                vec![
+                    Box::new(Card::new(Box::new(Text::new("Short")))) as Element,
+                    Box::new(Card::new(Box::new(Text::new(
+                        &"Long description with useful details. ".repeat(20),
+                    )))) as Element,
+                    Box::new(Card::new(Box::new(Text::new("Last row")))) as Element,
+                ]
+            };
+            let wide = lay_out_grid(CardGrid::content_sized(cards()), 600.0, 2000.0);
+            assert!(wide.cards[0].get_rect().height() > 160.0);
+            assert_eq!(
+                wide.cards[0].get_rect().height(),
+                wide.cards[1].get_rect().height()
+            );
+            assert!(wide.cards[2].get_rect().height() < wide.cards[0].get_rect().height());
+            let one = lay_out_grid(
+                CardGrid::content_sized(vec![Box::new(Card::new(Box::new(Text::new(
                     &"Long description with useful details. ".repeat(20),
-                )))) as Element,
-                Box::new(Card::new(Box::new(Text::new("Last row")))) as Element,
-            ]
-        };
-        let wide = lay_out_grid(CardGrid::content_sized(cards()), 600.0, 2000.0);
-        assert!(wide.cards[0].get_rect().height() > 160.0);
-        assert_eq!(
-            wide.cards[0].get_rect().height(),
-            wide.cards[1].get_rect().height()
-        );
-        assert!(wide.cards[2].get_rect().height() < wide.cards[0].get_rect().height());
-        let one = lay_out_grid(
-            CardGrid::content_sized(vec![Box::new(Card::new(Box::new(Text::new(
-                &"Long description with useful details. ".repeat(20),
-            ))))]),
-            wide.cards[0].get_rect().width(),
-            2000.0,
-        );
-        assert!(
-            (one.cards[0].get_rect().height() - wide.cards[0].get_rect().height()).abs() < 1.0,
-            "single {:?}, wide {:?}",
-            one.cards[0].get_rect(),
-            wide.cards[0].get_rect()
-        );
-        let empty = lay_out_grid(CardGrid::content_sized(vec![]), 600.0, 2000.0);
-        assert_eq!(empty.rect.height(), 0.0);
+                ))))]),
+                wide.cards[0].get_rect().width(),
+                2000.0,
+            );
+            assert!(
+                (one.cards[0].get_rect().height() - wide.cards[0].get_rect().height()).abs() < 1.0,
+                "single {:?}, wide {:?}",
+                one.cards[0].get_rect(),
+                wide.cards[0].get_rect()
+            );
+            let empty = lay_out_grid(CardGrid::content_sized(vec![]), 600.0, 2000.0);
+            assert_eq!(empty.rect.height(), 0.0);
+        }
+
+        grid_resolves_columns_from_allocated_width();
+        grid_cells_align_to_shared_columns();
+        grid_content_height_grows_with_rows();
+        grid_narrow_falls_to_single_column();
+        a_single_card_uses_the_full_grid_width();
+        content_rows_use_each_rows_largest_natural_card();
     }
 
     // ---- Card surface ----
@@ -857,108 +831,116 @@ mod tests {
     }
 
     #[test]
-    fn card_stretches_to_column_width() {
-        // A card with no pinned width fills its column so a stack lines up.
-        let rect = lay_out_card(Card::new(Box::new(Text::new("hi"))));
-        assert!(
-            (rect.width() - 600.0).abs() < 0.5,
-            "card fills width, got {}",
-            rect.width()
-        );
-    }
-
-    #[test]
-    fn card_keeps_intrinsic_height_in_a_short_flex_parent() {
-        let mut parent = Column::new()
-            .with_no_padding()
-            .push(Box::new(Card::new(Box::new(
-                Container::new().with_no_padding().with_height(80.0),
-            ))));
-        let mut tree = TaffyTree::new();
-        let mut map = HashMap::new();
-        let node = parent.build_layout(&mut tree, &Theme::dark(), &mut map);
-        tree.compute_layout(
-            node,
-            Size {
-                width: taffy::AvailableSpace::Definite(300.0),
-                height: taffy::AvailableSpace::Definite(40.0),
-            },
-        )
-        .unwrap();
-        parent.apply_layout(&tree, node, Point::ZERO);
-        assert!(
-            parent.children()[0].get_rect().height() >= 80.0,
-            "a manual Card retains its non-shrinking content height"
-        );
-    }
-
-    #[test]
-    fn card_draws_a_themed_surface() {
-        use vello::peniko::Fill;
-        let mut c = Card::titled("Group", Box::new(Text::new("body")));
-        let _ = lay_out_card_mut(&mut c);
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let mut scene = Scene::new();
-        c.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        // The card must emit at least one fill — the surface tint.
-        let fills = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == vello_encoding::DrawTag::COLOR)
-            .count();
-        assert!(fills >= 1, "a card must paint a themed surface fill");
-        let _ = Fill::NonZero;
-    }
-
-    #[test]
-    fn titled_card_keeps_title_gap_after_intrinsic_column_gap_fix() {
-        let mut c = Card::titled(
-            "Group",
-            Box::new(Container::new().with_no_padding().with_height(10.0)),
-        );
-        let _ = lay_out_card_mut(&mut c);
-
-        let surface = c.children()[0];
-        let section = surface.children()[0];
-        let column = section.children()[0];
-        let title = column.children()[0].get_rect();
-        let body = column.children()[2].get_rect();
-        assert_eq!(body.y0 - title.y1, f64::from(CARD_TITLE_GAP));
-    }
-
-    #[test]
-    fn titled_card_title_is_a_title_role_heading_that_follows_the_text_scale() {
-        fn first_text(node: &crate::headless::InspectionNode) -> Option<[f64; 4]> {
-            if node.widget == "Text" {
-                return Some(node.rect);
-            }
-            node.children.iter().find_map(first_text)
-        }
-        let title_height = |scale: f32| {
-            let harness = crate::headless::FrameHarness::new_with_theme(
-                crate::State::new(),
-                Box::new(Card::titled("Group", Box::new(Text::new("body")))),
-                (400, 200),
-                Theme::dark().with_text_scale(scale),
+    fn card_sizes_to_its_column_and_draws_a_themed_surface() {
+        fn card_stretches_to_column_width() {
+            // A card with no pinned width fills its column so a stack lines up.
+            let rect = lay_out_card(Card::new(Box::new(Text::new("hi"))));
+            assert!(
+                (rect.width() - 600.0).abs() < 0.5,
+                "card fills width, got {}",
+                rect.width()
             );
-            first_text(&harness.inspection().root).expect("card title text")[3]
-        };
-        let theme = Theme::dark();
-        let typography = &theme.tokens.typography;
-        let expected = f64::from(typography.scale.lg * typography.line_height_tight);
-        let base = title_height(1.0);
-        assert!(
-            (base - expected).abs() < 1.0,
-            "title line box {base} must come from the Title role ({expected})"
-        );
-        let large = title_height(2.0);
-        assert!(
-            (large - base * 2.0).abs() < 1.5,
-            "title {base} -> {large} must follow the theme text scale"
-        );
+        }
+
+        fn card_keeps_intrinsic_height_in_a_short_flex_parent() {
+            let mut parent = Column::new()
+                .with_no_padding()
+                .push(Box::new(Card::new(Box::new(
+                    Container::new().with_no_padding().with_height(80.0),
+                ))));
+            let mut tree = TaffyTree::new();
+            let mut map = HashMap::new();
+            let node = parent.build_layout(&mut tree, &Theme::dark(), &mut map);
+            tree.compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(300.0),
+                    height: taffy::AvailableSpace::Definite(40.0),
+                },
+            )
+            .unwrap();
+            parent.apply_layout(&tree, node, Point::ZERO);
+            assert!(
+                parent.children()[0].get_rect().height() >= 80.0,
+                "a manual Card retains its non-shrinking content height"
+            );
+        }
+
+        fn card_draws_a_themed_surface() {
+            use vello::peniko::Fill;
+            let mut c = Card::titled("Group", Box::new(Text::new("body")));
+            let _ = lay_out_card_mut(&mut c);
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            c.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            // The card must emit at least one fill — the surface tint.
+            let fills = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == vello_encoding::DrawTag::COLOR)
+                .count();
+            assert!(fills >= 1, "a card must paint a themed surface fill");
+            let _ = Fill::NonZero;
+        }
+
+        card_stretches_to_column_width();
+        card_keeps_intrinsic_height_in_a_short_flex_parent();
+        card_draws_a_themed_surface();
+    }
+
+    #[test]
+    fn titled_card_title_is_a_scaled_heading_with_its_gap() {
+        fn titled_card_keeps_title_gap_after_intrinsic_column_gap_fix() {
+            let mut c = Card::titled(
+                "Group",
+                Box::new(Container::new().with_no_padding().with_height(10.0)),
+            );
+            let _ = lay_out_card_mut(&mut c);
+
+            let surface = c.children()[0];
+            let section = surface.children()[0];
+            let column = section.children()[0];
+            let title = column.children()[0].get_rect();
+            let body = column.children()[2].get_rect();
+            assert_eq!(body.y0 - title.y1, f64::from(CARD_TITLE_GAP));
+        }
+
+        fn titled_card_title_is_a_title_role_heading_that_follows_the_text_scale() {
+            fn first_text(node: &crate::headless::InspectionNode) -> Option<[f64; 4]> {
+                if node.widget == "Text" {
+                    return Some(node.rect);
+                }
+                node.children.iter().find_map(first_text)
+            }
+            let title_height = |scale: f32| {
+                let harness = crate::headless::FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    Box::new(Card::titled("Group", Box::new(Text::new("body")))),
+                    (400, 200),
+                    Theme::dark().with_text_scale(scale),
+                );
+                first_text(&harness.inspection().root).expect("card title text")[3]
+            };
+            let theme = Theme::dark();
+            let typography = &theme.tokens.typography;
+            let expected = f64::from(typography.scale.lg * typography.line_height_tight);
+            let base = title_height(1.0);
+            assert!(
+                (base - expected).abs() < 1.0,
+                "title line box {base} must come from the Title role ({expected})"
+            );
+            let large = title_height(2.0);
+            assert!(
+                (large - base * 2.0).abs() < 1.5,
+                "title {base} -> {large} must follow the theme text scale"
+            );
+        }
+
+        titled_card_keeps_title_gap_after_intrinsic_column_gap_fix();
+        titled_card_title_is_a_title_role_heading_that_follows_the_text_scale();
     }
 
     fn lay_out_card_mut(c: &mut Card) -> Rect {

@@ -1,0 +1,47 @@
+# The one privileged step behind the units that maintain the read-only ESP.
+# The instance names the caller; the helper reads only that caller's plan
+# (/var/lib/tilo/esp-plan/%i, the caller unit's StateDirectory=) and allows
+# only that caller's operations. It remounts /boot read-write in this unit's
+# private mount namespace; the global mount stays read-only.
+[Unit]
+Description=Apply %i's staged changes to the ESP
+# No conflict with shutdown.target: the signer re-signs boot artefacts on the
+# way down (tilo-secureboot-sign-shutdown.service) and starts this then.
+DefaultDependencies=no
+RequiresMountsFor=/boot /var/lib/tilo
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo-esp-write %i
+UMask=0077
+NoNewPrivileges=yes
+PrivateMounts=yes
+ProtectSystem=strict
+ReadWritePaths=/boot /var/lib/tilo/esp-plan/%i
+ProtectHome=yes
+PrivateDevices=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+PrivateIPC=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+# The remount needs CAP_SYS_ADMIN; nothing else here does.
+CapabilityBoundingSet=CAP_SYS_ADMIN
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service @mount
+SystemCallFilter=~@resources
+SystemCallErrorNumber=EPERM

@@ -171,71 +171,72 @@ mod tests {
     }
 
     #[test]
-    fn every_path_leaves_the_document_it_would_have_without_the_wrapper() {
-        let mut remote = remote_with(20);
-        let bytes = remote.save();
-        let changes = remote.get_changes(&[]);
+    fn incoming_wrappers_leave_the_document_raw_automerge_would() {
+        // Phase `every_path_leaves_the_document_it_would_have_without_the_wrapper`.
+        {
+            let mut remote = remote_with(20);
+            let bytes = remote.save();
+            let changes = remote.get_changes(&[]);
 
-        let mut merged = AutoCommit::new();
-        merged.merge_incoming(&mut remote).unwrap();
-        let mut loaded = AutoCommit::new();
-        assert_eq!(loaded.load_incoming(&bytes).unwrap(), 20);
-        let mut applied = AutoCommit::new();
-        applied.apply_incoming(changes.clone()).unwrap();
-        let mut batched = AutoCommit::new();
-        batched.apply_incoming_batch(changes).unwrap();
+            let mut merged = AutoCommit::new();
+            merged.merge_incoming(&mut remote).unwrap();
+            let mut loaded = AutoCommit::new();
+            assert_eq!(loaded.load_incoming(&bytes).unwrap(), 20);
+            let mut applied = AutoCommit::new();
+            applied.apply_incoming(changes.clone()).unwrap();
+            let mut batched = AutoCommit::new();
+            batched.apply_incoming_batch(changes).unwrap();
 
-        let heads = remote.get_heads();
-        for doc in [&mut merged, &mut loaded, &mut applied, &mut batched] {
-            assert_eq!(doc.get_heads(), heads);
-            assert_eq!(doc.keys(ROOT).count(), 7);
-        }
-    }
-
-    #[test]
-    fn sync_reaches_the_peer() {
-        let mut remote = remote_with(5);
-        let mut local = AutoCommit::new();
-        let (mut ours, mut theirs) = (automerge::sync::State::new(), automerge::sync::State::new());
-        for _ in 0..8 {
-            let to_local =
-                automerge::sync::SyncDoc::generate_sync_message(&remote.sync(), &mut theirs);
-            if let Some(message) = to_local {
-                local.receive_incoming_sync(&mut ours, message).unwrap();
-            }
-            let to_remote =
-                automerge::sync::SyncDoc::generate_sync_message(&local.sync(), &mut ours);
-            if let Some(message) = to_remote {
-                remote.receive_incoming_sync(&mut theirs, message).unwrap();
+            let heads = remote.get_heads();
+            for doc in [&mut merged, &mut loaded, &mut applied, &mut batched] {
+                assert_eq!(doc.get_heads(), heads);
+                assert_eq!(doc.keys(ROOT).count(), 7);
             }
         }
-        assert_eq!(local.get_heads(), remote.get_heads());
-    }
+        // Phase `sync_reaches_the_peer`.
+        {
+            let mut remote = remote_with(5);
+            let mut local = AutoCommit::new();
+            let (mut ours, mut theirs) =
+                (automerge::sync::State::new(), automerge::sync::State::new());
+            for _ in 0..8 {
+                let to_local =
+                    automerge::sync::SyncDoc::generate_sync_message(&remote.sync(), &mut theirs);
+                if let Some(message) = to_local {
+                    local.receive_incoming_sync(&mut ours, message).unwrap();
+                }
+                let to_remote =
+                    automerge::sync::SyncDoc::generate_sync_message(&local.sync(), &mut ours);
+                if let Some(message) = to_remote {
+                    remote.receive_incoming_sync(&mut theirs, message).unwrap();
+                }
+            }
+            assert_eq!(local.get_heads(), remote.get_heads());
+        }
+        // Phase `an_armed_diff_cursor_still_sees_the_incoming_changes`.
+        {
+            let mut local = AutoCommit::new();
+            local.put(ROOT, "seed", 1).unwrap();
+            local.update_diff_cursor();
+            let mut remote = local.fork();
+            remote.put(ROOT, "from_remote", 2).unwrap();
+            remote.commit();
 
-    #[test]
-    fn an_armed_diff_cursor_still_sees_the_incoming_changes() {
-        let mut local = AutoCommit::new();
-        local.put(ROOT, "seed", 1).unwrap();
-        local.update_diff_cursor();
-        let mut remote = local.fork();
-        remote.put(ROOT, "from_remote", 2).unwrap();
-        remote.commit();
+            local.merge_incoming(&mut remote).unwrap();
 
-        local.merge_incoming(&mut remote).unwrap();
-
-        let patches = local.diff_incremental();
-        assert_eq!(patches.len(), 1, "{patches:?}");
-    }
-
-    #[test]
-    fn isolating_and_integrating_keep_their_views() {
-        let mut doc = remote_with(3);
-        let early = doc.get_heads();
-        doc.put(ROOT, "late", 1).unwrap();
-        doc.commit();
-        doc.isolate_at(&early);
-        assert!(doc.get(ROOT, "late").unwrap().is_none());
-        doc.integrate_all();
-        assert!(doc.get(ROOT, "late").unwrap().is_some());
+            let patches = local.diff_incremental();
+            assert_eq!(patches.len(), 1, "{patches:?}");
+        }
+        // Phase `isolating_and_integrating_keep_their_views`.
+        {
+            let mut doc = remote_with(3);
+            let early = doc.get_heads();
+            doc.put(ROOT, "late", 1).unwrap();
+            doc.commit();
+            doc.isolate_at(&early);
+            assert!(doc.get(ROOT, "late").unwrap().is_none());
+            doc.integrate_all();
+            assert!(doc.get(ROOT, "late").unwrap().is_some());
+        }
     }
 }

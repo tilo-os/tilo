@@ -14,6 +14,9 @@ ConditionKernelCommandLine=!tilo.mode=repair
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# Above the longest wait tilo-boot-health allows itself (an always-on board's
+# session), so the verdict is the script's and not this timeout's.
+TimeoutStartSec=720
 ExecStart=/usr/libexec/tilo-boot-health
 # The verdict has to be readable from the serial console of a machine whose
 # session never came up, which is precisely the machine this is about.

@@ -53,8 +53,6 @@ impl ExportConfigBody {
 }
 
 impl Widget for ExportConfigBody {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -151,20 +149,6 @@ impl Widget for ExportConfigBody {
             None,
             TextWeight::Regular,
         );
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {
@@ -321,96 +305,104 @@ mod tests {
         }
     }
 
+    /// Export dialog layout, dismissal and read-only accessibility.
     #[test]
-    fn responsive_layout_matches_the_existing_export_card() {
-        let mut dialog = ExportDialog::new();
-        dialog.show("[install]\nhostname = tilo".into());
-        dialog.layout_in(
-            Rect::new(0.0, 0.0, 1280.0, 800.0),
-            &Theme::dark(),
-            &mut TextRenderer::new(),
-        );
-        let rect = dialog.dialog_rect();
-        assert_eq!(rect.width(), 640.0);
-        assert_eq!(rect.height(), 620.0);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn export_dialog_layout_input_and_accessibility() {
+        // Phase `responsive_layout_matches_the_existing_export_card`.
+        {
+            let mut dialog = ExportDialog::new();
+            dialog.show("[install]\nhostname = tilo".into());
+            dialog.layout_in(
+                Rect::new(0.0, 0.0, 1280.0, 800.0),
+                &Theme::dark(),
+                &mut TextRenderer::new(),
+            );
+            let rect = dialog.dialog_rect();
+            assert_eq!(rect.width(), 640.0);
+            assert_eq!(rect.height(), 620.0);
 
-        dialog.layout_in(
-            Rect::new(0.0, 0.0, 800.0, 600.0),
-            &Theme::dark(),
-            &mut TextRenderer::new(),
-        );
-        let narrow = dialog.dialog_rect();
-        assert_eq!(narrow.width(), 800.0 * WIDTH_FRACTION);
-        assert_eq!(narrow.height(), 600.0 * HEIGHT_FRACTION);
+            dialog.layout_in(
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+                &Theme::dark(),
+                &mut TextRenderer::new(),
+            );
+            let narrow = dialog.dialog_rect();
+            assert_eq!(narrow.width(), 800.0 * WIDTH_FRACTION);
+            assert_eq!(narrow.height(), 600.0 * HEIGHT_FRACTION);
 
-        dialog.layout_in(
-            Rect::new(0.0, 0.0, 320.0, 640.0),
-            &Theme::dark(),
-            &mut TextRenderer::new(),
-        );
-        let compact = dialog.dialog_rect();
-        assert_eq!(compact.width(), 320.0 * COMPACT_WIDTH_FRACTION);
-        assert_eq!(compact.height(), 640.0 * HEIGHT_FRACTION);
-    }
+            dialog.layout_in(
+                Rect::new(0.0, 0.0, 320.0, 640.0),
+                &Theme::dark(),
+                &mut TextRenderer::new(),
+            );
+            let compact = dialog.dialog_rect();
+            assert_eq!(compact.width(), 320.0 * COMPACT_WIDTH_FRACTION);
+            assert_eq!(compact.height(), 640.0 * HEIGHT_FRACTION);
+        }
 
-    #[test]
-    fn escape_and_any_left_click_are_captured_and_dismiss() {
-        let mut dialog = ExportDialog::new();
-        let mut doc = AutoCommit::new();
-        dialog.show("# config".into());
-        assert!(dialog.handle_detached(
-            &cursor_move(),
-            1.0,
-            Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert!(
-            dialog.is_open(),
-            "pointer motion is captured, not dismissed"
-        );
-        assert!(dialog.handle_detached(
-            &escape_event(),
-            1.0,
-            Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert!(!dialog.is_open());
+        // Phase `escape_and_any_left_click_are_captured_and_dismiss`.
+        {
+            let mut dialog = ExportDialog::new();
+            let mut doc = AutoCommit::new();
+            dialog.show("# config".into());
+            assert!(dialog.handle_detached(
+                &cursor_move(),
+                1.0,
+                Modifiers::default(),
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert!(
+                dialog.is_open(),
+                "pointer motion is captured, not dismissed"
+            );
+            assert!(dialog.handle_detached(
+                &escape_event(),
+                1.0,
+                Modifiers::default(),
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert!(!dialog.is_open());
 
-        dialog.show("# config".into());
-        assert!(dialog.handle_detached(
-            &left_click(),
-            1.0,
-            Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert!(!dialog.is_open());
-    }
+            dialog.show("# config".into());
+            assert!(dialog.handle_detached(
+                &left_click(),
+                1.0,
+                Modifiers::default(),
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert!(!dialog.is_open());
+        }
 
-    #[test]
-    fn syntax_roles_and_accessibility_preserve_the_read_only_document() {
-        let theme = Theme::dark();
-        assert_eq!(
-            ExportConfigBody::line_color(&theme, "# heading"),
-            theme.tokens.colors.neutral[6]
-        );
-        assert_eq!(
-            ExportConfigBody::line_color(&theme, "[install]"),
-            theme.tokens.colors.accent[6]
-        );
-        assert_eq!(
-            ExportConfigBody::line_color(&theme, "hostname = tilo"),
-            theme.tokens.colors.text_primary
-        );
+        // Phase `syntax_roles_and_accessibility_preserve_the_read_only_document`.
+        {
+            let theme = Theme::dark();
+            assert_eq!(
+                ExportConfigBody::line_color(&theme, "# heading"),
+                theme.tokens.colors.neutral[6]
+            );
+            assert_eq!(
+                ExportConfigBody::line_color(&theme, "[install]"),
+                theme.tokens.colors.accent[6]
+            );
+            assert_eq!(
+                ExportConfigBody::line_color(&theme, "hostname = tilo"),
+                theme.tokens.colors.text_primary
+            );
 
-        let mut dialog = ExportDialog::new();
-        dialog.show("[install]\nhostname = tilo".into());
-        let modal = dialog.accessibility().expect("dialog accessibility");
-        assert_eq!(modal.role, ui::a11y::Role::Dialog);
-        assert!(modal.state.modal);
-        assert!(!modal.state.hidden);
-        assert_eq!(modal.value.as_deref(), Some("[install]\nhostname = tilo"));
+            let mut dialog = ExportDialog::new();
+            dialog.show("[install]\nhostname = tilo".into());
+            let modal = dialog.accessibility().expect("dialog accessibility");
+            assert_eq!(modal.role, ui::a11y::Role::Dialog);
+            assert!(modal.state.modal);
+            assert!(!modal.state.hidden);
+            assert_eq!(modal.value.as_deref(), Some("[install]\nhostname = tilo"));
+        }
     }
 }

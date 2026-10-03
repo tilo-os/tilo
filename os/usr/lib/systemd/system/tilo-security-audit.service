@@ -7,16 +7,21 @@ Wants=fs.service
 
 [Service]
 Type=oneshot
+# What the unprivileged audit cannot read itself, handed over by a privileged
+# snapshot: net.core.bpf_jit_harden reads back only with CAP_SYS_ADMIN, and
+# rpm cannot run under NoNewPrivileges= (SELinux refuses its rpm_t transition).
+ExecStartPre=+/usr/bin/sh -c 'umask 077 && sysctl -n net.core.bpf_jit_harden > /run/tilo-security-audit.net.core.bpf_jit_harden && rpm -qa --qf "%%{NAME}\n" > /run/tilo-security-audit.packages'
+ExecStopPost=+/usr/bin/rm -f /run/tilo-security-audit.net.core.bpf_jit_harden /run/tilo-security-audit.packages
 ExecStart=/usr/libexec/tilo-security-audit
 TimeoutStartSec=2min
 # The audit is important but not latency-sensitive; its result remains loud
 # in the journal and failed-unit state while recurring successful runs return
 # inactive so the timer can activate them again. Scans yield to the session.
-Nice=10
+Nice=19
+CPUSchedulingPolicy=idle
 CPUWeight=20
 IOWeight=20
-IOSchedulingClass=best-effort
-IOSchedulingPriority=7
+IOSchedulingClass=idle
 # This process observes security state; it never repairs it. Keep the host
 # filesystem immutable and expose only TPM devices needed by the verified-boot
 # preflight it invokes. Kernel diagnostics come from the journal and daemon
@@ -26,10 +31,15 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-PrivateNetwork=yes
+# No PrivateNetwork=: the audit checks the host's network sysctls, and a
+# private namespace has its own defaults (and no net.core.bpf_jit_harden).
+# RestrictAddressFamilies=AF_UNIX keeps it off the network.
 PrivateIPC=yes
 ProtectKernelTunables=yes
-ProtectKernelModules=yes
+# No ProtectKernelModules=: it hides /usr/lib/modules, and with it the running
+# kernel's config, so every compiled-option check failed. Loading a module
+# stays impossible: the capability bounding set is empty and @module is
+# filtered below.
 ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes

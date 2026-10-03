@@ -107,92 +107,25 @@ pub(super) fn load_or_create_key(
         advisory_lock::FileLock::exclusive(private_fs::lock_file(&dir.join("vault-key.lock"))?)?;
     let protected_path = dir.join("vault.key.dpapi");
     match read_private(&protected_path) {
-        Ok(bytes) => {
-            let key = decode_key(format.dpapi_entropy, &bytes)?;
-            finish_legacy_migration(format, dir, &key)?;
-            return Ok(key);
-        }
+        Ok(bytes) => return decode_key(format.dpapi_entropy, &bytes),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
 
-    let legacy_path = dir.join("vault.key");
-    let mut key = Zeroizing::new([0u8; KEY_LEN]);
-    let migrating = match read_private(&legacy_path) {
-        Ok(bytes) => {
-            if bytes.len() != KEY_LEN {
-                return Err(io::Error::other("legacy vault key has the wrong length"));
-            }
-            key.copy_from_slice(&bytes);
-            true
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            // An existing ciphertext without its key is a recovery problem,
-            // never permission to mint a replacement and overwrite it.
-            if dir.join("vault.enc").try_exists()? {
-                return Err(io::Error::other("existing vault key is missing"));
-            }
-            SysRng
-                .try_fill_bytes(key.as_mut_slice())
-                .map_err(|error| io::Error::other(error.to_string()))?;
-            false
-        }
-        Err(error) => return Err(error),
-    };
-    if migrating && dir.join("vault.enc").try_exists()? {
-        let encrypted = std::fs::read(dir.join("vault.enc"))?;
-        let vault_key = super::key_from_bytes(key.as_slice())
-            .ok_or_else(|| io::Error::other("legacy vault key has the wrong length"))?;
-        if format.open(&vault_key, &encrypted).is_none() {
-            return Err(io::Error::other(
-                "legacy key does not unlock the existing vault",
-            ));
-        }
+    // An existing ciphertext without its key is a recovery problem, never
+    // permission to mint a replacement and overwrite it.
+    if dir.join("vault.enc").try_exists()? {
+        return Err(io::Error::other("existing vault key is missing"));
     }
+    let mut key = Zeroizing::new([0u8; KEY_LEN]);
+    SysRng
+        .try_fill_bytes(key.as_mut_slice())
+        .map_err(|error| io::Error::other(error.to_string()))?;
     let protected = transform(format.dpapi_entropy, key.as_slice(), true)?;
     private_fs::create_atomic(&protected_path, &protected)?;
     let restored = decode_key(format.dpapi_entropy, &read_private(&protected_path)?)?;
     if restored.as_slice() != key.as_slice() {
         return Err(io::Error::other("published key differs from the original"));
     }
-    if migrating {
-        finish_legacy_migration(format, dir, &restored)?;
-    }
     Ok(restored)
-}
-
-/// Publication and plaintext removal are separate durable steps. Reopening
-/// must finish an interrupted migration, but never discard conflicting material
-/// that may be needed for recovery. The caller holds the vault-key lock.
-fn finish_legacy_migration(
-    format: &VaultFormat,
-    dir: &Path,
-    key: &[u8; KEY_LEN],
-) -> io::Result<()> {
-    let legacy_path = dir.join("vault.key");
-    let legacy = match read_private(&legacy_path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    if legacy.as_slice() != key {
-        return Err(io::Error::other(
-            "legacy vault key differs from the protected key",
-        ));
-    }
-    match std::fs::read(dir.join("vault.enc")) {
-        Ok(encrypted)
-            if super::key_from_bytes(key)
-                .is_none_or(|vault_key| format.open(&vault_key, &encrypted).is_none()) =>
-        {
-            return Err(io::Error::other(
-                "protected key does not unlock the existing vault",
-            ));
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    std::fs::remove_file(legacy_path)?;
-    private_fs::sync_directory(dir)
 }

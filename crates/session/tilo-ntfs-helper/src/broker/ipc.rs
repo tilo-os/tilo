@@ -3,7 +3,6 @@ use super::{
     refusal,
     session::{ExclusiveReadSession, random},
 };
-use tilo_ntfs_protocol::{Operation, Reply, Request, Response, SCHEMA, Sequence, socket};
 use sha2::{Digest, Sha256};
 use std::{
     ffi::CString,
@@ -16,6 +15,7 @@ use std::{
     },
     time::Instant,
 };
+use tilo_ntfs_protocol::{Operation, Reply, Request, Response, SCHEMA, Sequence, socket};
 struct Runtime {
     parent: File,
     name: CString,

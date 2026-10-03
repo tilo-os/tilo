@@ -83,20 +83,63 @@ impl App {
 
     pub fn record_tick(&mut self) -> bool {
         let _entry = self.enter_wake_scope();
+        let native = self.collaboration.manager.has_native_committed_primary();
+        let initial = if native {
+            let Some(want) = crate::record::capability::record_intent(self.root_widget.as_ref())
+            else {
+                return false;
+            };
+            if self
+                .persistence
+                .records
+                .as_ref()
+                .is_some_and(|records| records.active() == Some(&want.id))
+            {
+                return false;
+            }
+            let Some(read) = self.collaboration.manager.prepare_native_record(&want) else {
+                return false;
+            };
+            Some((want, read))
+        } else {
+            None
+        };
         let Some(set) = self.persistence.records.as_mut() else {
             return false;
         };
-        let switched = crate::record::tick(
-            set,
-            &mut self.state,
-            self.persistence
-                .room_index
-                .as_mut()
-                .map(crate::state::DocumentReplica::document_mut),
-            &*self.root_widget,
-        );
+        let switched = if let Some((want, read)) = &initial {
+            let accepted = read
+                .with_mutation(|mutation| {
+                    set.checkout_with_initial(
+                        &mut self.state,
+                        self.persistence
+                            .room_index
+                            .as_mut()
+                            .map(crate::state::DocumentReplica::document_mut),
+                        want,
+                        mutation,
+                    )
+                })
+                .unwrap_or(false);
+            if accepted {
+                read.applied();
+                Some(want.clone())
+            } else {
+                None
+            }
+        } else {
+            crate::record::tick(
+                set,
+                &mut self.state,
+                self.persistence
+                    .room_index
+                    .as_mut()
+                    .map(crate::state::DocumentReplica::document_mut),
+                &*self.root_widget,
+            )
+        };
         match switched {
-            Some(id) => {
+            Some(checkout) => {
                 self.advance_autosave_generation();
                 if let Some(history) = &mut self.history {
                     self.layout.node_map.clear();
@@ -110,19 +153,31 @@ impl App {
                 // index before moving the editable document to its record
                 // route. The two Automerge graphs never share a channel or
                 // an apply target.
-                if self.collaboration.room_manager.is_none() {
+                if native {
+                    if self.native_room_route.is_none() {
+                        self.native_room_route = self
+                            .collaboration
+                            .manager
+                            .primary_route()
+                            .map(|witness| witness.route.clone());
+                    }
+                    if let Err(error) = self.collaboration.manager.switch_native_record(&checkout) {
+                        tracing::warn!(%error,"native document route switch remains unavailable");
+                        return false;
+                    }
+                } else if self.collaboration.room_manager.is_none() {
                     let room = std::mem::replace(
                         &mut self.collaboration.manager,
-                        CollaborationManager::for_record(&id),
+                        CollaborationManager::for_record(&checkout),
                     );
                     self.collaboration.room_manager = Some(room);
                 } else {
-                    self.collaboration.manager = CollaborationManager::for_record(&id);
+                    self.collaboration.manager = CollaborationManager::for_record(&checkout);
                 }
                 tracing::debug!(
                     target: "tilo.state",
                     event = "record_checkout",
-                    record = id.as_str(),
+                    record = checkout.id.as_str(),
                     connected = self.collaboration.manager.is_connected(),
                     "switched document collaboration route"
                 );

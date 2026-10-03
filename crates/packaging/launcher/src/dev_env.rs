@@ -116,46 +116,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_gate_tracks_the_build_profile_and_feature() {
-        assert_eq!(
-            DEV_ENV_OVERRIDES,
-            cfg!(any(debug_assertions, feature = "dev-overrides"))
-        );
-    }
-
-    #[test]
-    fn an_open_gate_passes_the_value_through() {
-        assert_eq!(
-            dev_override_from(true, APPS_SYSTEM_DIR_ENV, Some("/dev/store".into())),
-            Some(OsString::from("/dev/store"))
-        );
-        assert_eq!(dev_override_from(true, APPS_SYSTEM_DIR_ENV, None), None);
-    }
-
-    #[test]
-    fn a_closed_gate_ignores_every_listed_override() {
-        for name in DEV_OVERRIDE_VARS {
+    fn dev_overrides_pass_only_through_an_open_gate_and_warn_once() {
+        // Phase `the_gate_tracks_the_build_profile_and_feature`.
+        {
             assert_eq!(
-                dev_override_from(false, name, Some("/attacker/controlled".into())),
-                None,
-                "{name} must be ignored when developer overrides are off"
+                DEV_ENV_OVERRIDES,
+                cfg!(any(debug_assertions, feature = "dev-overrides"))
             );
         }
-    }
-
-    #[test]
-    fn the_warning_names_the_variable_and_how_to_enable_it() {
-        let warning = ignored_warning(TRUSTED_PUBLISHERS_FILE_ENV);
-        assert!(warning.contains(TRUSTED_PUBLISHERS_FILE_ENV));
-        assert!(warning.contains("--features dev-overrides"));
-        assert!(warning.contains("debug build"));
-        assert!(warning.contains("dev VM image"));
-    }
-
-    #[test]
-    fn each_variable_warns_only_once() {
-        const NAME: &str = "TILO_DEV_ENV_WARN_ONCE_TEST";
-        assert!(first_ignore(NAME));
-        assert!(!first_ignore(NAME));
+        // Phase `an_open_gate_passes_the_value_through`.
+        {
+            assert_eq!(
+                dev_override_from(true, APPS_SYSTEM_DIR_ENV, Some("/dev/store".into())),
+                Some(OsString::from("/dev/store"))
+            );
+            assert_eq!(dev_override_from(true, APPS_SYSTEM_DIR_ENV, None), None);
+        }
+        // Phase `a_closed_gate_ignores_every_listed_override`.
+        {
+            for name in DEV_OVERRIDE_VARS {
+                assert_eq!(
+                    dev_override_from(false, name, Some("/attacker/controlled".into())),
+                    None,
+                    "{name} must be ignored when developer overrides are off"
+                );
+            }
+        }
+        // Phase `the_warning_names_the_variable_and_how_to_enable_it`.
+        {
+            let warning = ignored_warning(TRUSTED_PUBLISHERS_FILE_ENV);
+            assert!(warning.contains(TRUSTED_PUBLISHERS_FILE_ENV));
+            assert!(warning.contains("--features dev-overrides"));
+            assert!(warning.contains("debug build"));
+            assert!(warning.contains("dev VM image"));
+        }
+        // Phase `each_variable_warns_only_once`.
+        {
+            const NAME: &str = "TILO_DEV_ENV_WARN_ONCE_TEST";
+            assert!(first_ignore(NAME));
+            assert!(!first_ignore(NAME));
+        }
     }
 }

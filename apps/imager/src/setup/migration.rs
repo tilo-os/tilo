@@ -250,8 +250,8 @@ fn preserve_directory_times(directory: &PinnedDirectory, original: &Metadata) ->
 
 pub(super) fn preserve_directory_times_values(
     directory: &PinnedDirectory,
-    accessed: std::time::SystemTime,
-    modified: std::time::SystemTime,
+    accessed: ui::time::SystemTime,
+    modified: ui::time::SystemTime,
 ) -> io::Result<()> {
     use cap_fs_ext::OpenOptionsMaybeDirExt;
     directory.validate_destination()?;
@@ -279,8 +279,8 @@ pub(super) fn preserve_directory_times_values(
 
 pub(super) fn preserve_time_values(
     file: &File,
-    accessed: std::time::SystemTime,
-    modified: std::time::SystemTime,
+    accessed: ui::time::SystemTime,
+    modified: ui::time::SystemTime,
 ) -> io::Result<()> {
     file.set_times(
         fs::FileTimes::new()
@@ -812,247 +812,440 @@ mod tests {
         (temp, source, base.join("destination"))
     }
 
-    // A native-like reader must get a second real pass and postflight before linking.
+    /// Sealed sources, staged corruption, changed sources and conflicting destinations.
     #[test]
-    fn sealed_source_requires_independent_bytes_and_late_attestation() {
-        use super::super::migration_source::{CopyFileSource, CopyPass, CopyTimes, sealed};
-        struct Source {
-            pass: usize,
-            offset: usize,
-            mutate: bool,
-            cancel: Arc<AtomicBool>,
-        }
-        impl sealed::Sealed for Source {}
-        impl CopyFileSource for Source {
-            type Receipt = (u64, [u8; 32]);
-            fn expected_len(&self) -> u64 {
-                3
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn publication_requires_verified_unchanged_bytes_and_preserves_conflicts() {
+        // Phase `sealed_source_requires_independent_bytes_and_late_attestation`.
+        // A native-like reader must get a second real pass and postflight before linking.
+        {
+            use super::super::migration_source::{CopyFileSource, CopyPass, CopyTimes, sealed};
+            struct Source {
+                pass: usize,
+                offset: usize,
+                mutate: bool,
+                cancel: Arc<AtomicBool>,
             }
-            fn times(&self) -> io::Result<CopyTimes> {
-                Ok(CopyTimes {
-                    accessed: std::time::UNIX_EPOCH,
-                    modified: std::time::UNIX_EPOCH,
-                })
-            }
-            fn begin_pass(&mut self, _: CopyPass) -> io::Result<()> {
-                self.pass += 1;
-                self.offset = 0;
-                Ok(())
-            }
-            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-                if self.offset == 3 {
-                    return Ok(0);
+            impl sealed::Sealed for Source {}
+            impl CopyFileSource for Source {
+                type Receipt = (u64, [u8; 32]);
+                fn expected_len(&self) -> u64 {
+                    3
                 }
-                let data = if self.mutate && self.pass == 2 {
-                    b"bad"
-                } else {
-                    b"abc"
+                fn times(&self) -> io::Result<CopyTimes> {
+                    Ok(CopyTimes {
+                        accessed: ui::time::UNIX_EPOCH,
+                        modified: ui::time::UNIX_EPOCH,
+                    })
+                }
+                fn begin_pass(&mut self, _: CopyPass) -> io::Result<()> {
+                    self.pass += 1;
+                    self.offset = 0;
+                    Ok(())
+                }
+                fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                    if self.offset == 3 {
+                        return Ok(0);
+                    }
+                    let data = if self.mutate && self.pass == 2 {
+                        b"bad"
+                    } else {
+                        b"abc"
+                    };
+                    let n = out.len().min(3 - self.offset);
+                    out[..n].copy_from_slice(&data[self.offset..self.offset + n]);
+                    self.offset += n;
+                    Ok(n)
+                }
+                fn attest(&mut self, _: u64, _: [u8; 32], _: &AtomicBool) -> io::Result<()> {
+                    if self.pass != 2 {
+                        return Err(changed("test source missing independent pass"));
+                    }
+                    self.cancel.store(true, Ordering::Relaxed);
+                    Ok(())
+                }
+                fn receipt(
+                    &self,
+                    _: &File,
+                    bytes: u64,
+                    digest: [u8; 32],
+                    _: bool,
+                ) -> io::Result<Self::Receipt> {
+                    Ok((bytes, digest))
+                }
+            }
+            let (_temp, source, _) = fixture();
+            let parent = PinnedDirectory::open_absolute(&source).unwrap();
+            let destination = parent.create_child(OsStr::new("private")).unwrap();
+            let source = source.join("private");
+            for mutate in [true, false] {
+                let cancel = Arc::new(AtomicBool::new(false));
+                let reader = Source {
+                    pass: 0,
+                    offset: 0,
+                    mutate,
+                    cancel: cancel.clone(),
                 };
-                let n = out.len().min(3 - self.offset);
-                out[..n].copy_from_slice(&data[self.offset..self.offset + n]);
-                self.offset += n;
-                Ok(n)
-            }
-            fn attest(&mut self, _: u64, _: [u8; 32], _: &AtomicBool) -> io::Result<()> {
-                if self.pass != 2 {
-                    return Err(changed("test source missing independent pass"));
-                }
-                self.cancel.store(true, Ordering::Relaxed);
-                Ok(())
-            }
-            fn receipt(
-                &self,
-                _: &File,
-                bytes: u64,
-                digest: [u8; 32],
-                _: bool,
-            ) -> io::Result<Self::Receipt> {
-                Ok((bytes, digest))
+                let staged =
+                    StagedFile::copy_source(reader, &destination, OsStr::new("native"), &cancel)
+                        .unwrap();
+                assert!(staged.publish(&cancel, true).is_err());
+                assert!(!source.join("native").exists());
             }
         }
-        let (_temp, source, _) = fixture();
-        let parent = PinnedDirectory::open_absolute(&source).unwrap();
-        let destination = parent.create_child(OsStr::new("private")).unwrap();
-        let source = source.join("private");
-        for mutate in [true, false] {
-            let cancel = Arc::new(AtomicBool::new(false));
-            let reader = Source {
-                pass: 0,
-                offset: 0,
-                mutate,
-                cancel: cancel.clone(),
-            };
-            let staged =
-                StagedFile::copy_source(reader, &destination, OsStr::new("native"), &cancel)
-                    .unwrap();
-            assert!(staged.publish(&cancel, true).is_err());
-            assert!(!source.join("native").exists());
+
+        // Phase `corruption_of_staged_bytes_is_not_published`.
+        // Catches publication without destination digest verification.
+        {
+            let (_temp, source, destination) = fixture();
+            fs::write(source.join("hello"), b"hello").unwrap();
+            fs::create_dir(&destination).unwrap();
+            let mut staged = stage_fixture(&source, &destination);
+            staged.temporary.file.seek(SeekFrom::Start(0)).unwrap();
+            staged.temporary.file.write_all(b"wrong").unwrap();
+            assert!(staged.verify_and_publish(&AtomicBool::new(false)).is_err());
+            assert!(!destination.join("hello").exists());
+            assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+            assert_eq!(fs::read(source.join("hello")).unwrap(), b"hello");
         }
-    }
 
-    // Catches missing/corrupted copies and dropped empty directories.
-    #[test]
-    fn copies_nested_files_and_empty_directories_without_changing_originals() {
-        let (_temp, source, destination) = fixture();
-        fs::create_dir(source.join("nested")).unwrap();
-        fs::create_dir(source.join("empty")).unwrap();
-        fs::write(source.join("nested/hello.txt"), b"hello").unwrap();
-        let mut progress = Vec::new();
-        let report = copy_folder(&source, &destination, &AtomicBool::new(false), |p| {
-            progress.push(p);
-        })
-        .unwrap();
-        assert!(report.complete(), "{report:?}");
-        assert_eq!(
-            fs::read(destination.join("nested/hello.txt")).unwrap(),
-            b"hello"
-        );
-        assert!(destination.join("empty").is_dir());
-        assert_eq!(fs::read(source.join("nested/hello.txt")).unwrap(), b"hello");
-        assert_eq!(report.verified_bytes, 5);
-        assert_eq!(report.verified_files, [PathBuf::from("nested/hello.txt")]);
-        assert_eq!(progress.last().unwrap().verified_bytes, 5);
-    }
-
-    // Catches overwrite/merge or recursive self-copy.
-    #[test]
-    fn refuses_existing_destination_and_overlapping_grants() {
-        let (_temp, source, destination) = fixture();
-        fs::create_dir(&destination).unwrap();
-        fs::write(destination.join("sentinel"), b"keep").unwrap();
-        for target in [&destination, &source, &source.join("inside")] {
-            assert!(copy_folder(&source, target, &AtomicBool::new(false), |_| {}).is_err());
-        }
-        assert_eq!(fs::read(destination.join("sentinel")).unwrap(), b"keep");
-        assert!(!source.join("inside").exists());
-    }
-
-    // Catches work performed despite an already-cancelled grant.
-    #[test]
-    fn cancellation_creates_no_destination_and_reports_incomplete() {
-        let (_temp, source, destination) = fixture();
-        fs::write(source.join("sentinel"), b"keep").unwrap();
-        let report = copy_folder(&source, &destination, &AtomicBool::new(true), |_| {}).unwrap();
-        assert!(report.cancelled);
-        assert!(!report.complete());
-        assert!(!destination.exists());
-        assert_eq!(fs::read(source.join("sentinel")).unwrap(), b"keep");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn refuses_symbolic_link_source() {
-        let (temp, source, destination) = fixture();
-        fs::write(source.join("sentinel"), b"keep").unwrap();
-        let link = temp.path().canonicalize().unwrap().join("link");
-        std::os::unix::fs::symlink(&source, &link).unwrap();
-        assert!(copy_folder(&link, &destination, &AtomicBool::new(false), |_| {}).is_err());
-        assert!(!destination.exists());
-        assert_eq!(fs::read(source.join("sentinel")).unwrap(), b"keep");
-    }
-    // Catches a check-then-open destination parent redirect.
-    #[cfg(unix)]
-    #[test]
-    fn refuses_a_destination_parent_replaced_after_pinning() {
-        let (temp, source, _) = fixture();
-        let base = temp.path().canonicalize().unwrap();
-        let parent = base.join("parent");
-        fs::create_dir(&parent).unwrap();
-        fs::write(source.join("hello"), b"hello").unwrap();
-        let mut replaced = false;
-        let result = copy_folder(
-            &source,
-            &parent.join("copy"),
-            &AtomicBool::new(false),
-            |_| {
-                if !replaced {
-                    replaced = true;
-                    fs::rename(&parent, base.join("old-parent")).unwrap();
-                    fs::create_dir(&parent).unwrap();
-                    fs::write(parent.join("sentinel"), b"keep").unwrap();
-                }
-            },
-        );
-        assert!(replaced);
-        assert!(result.is_err() || !result.unwrap().complete());
-        assert!(!parent.join("copy").exists());
-        assert!(!base.join("old-parent/copy").exists());
-        assert_eq!(fs::read(parent.join("sentinel")).unwrap(), b"keep");
-    }
-
-    // Catches silently following links or claiming a partial copy complete.
-    #[cfg(unix)]
-    #[test]
-    fn unsupported_entries_are_explicit_and_never_followed() {
-        let (temp, source, destination) = fixture();
-        let outside = temp.path().canonicalize().unwrap().join("outside");
-        fs::create_dir(&outside).unwrap();
-        fs::write(outside.join("sentinel"), b"keep").unwrap();
-        std::os::unix::fs::symlink(&outside, source.join("link")).unwrap();
-        let _socket = std::os::unix::net::UnixListener::bind(source.join("socket")).unwrap();
-        let report = copy_folder(&source, &destination, &AtomicBool::new(false), |_| {}).unwrap();
-        assert!(!report.complete());
-        assert_eq!(report.skipped.len(), 2);
-        assert!(
-            report
-                .skipped
-                .iter()
-                .any(|(path, _)| path == Path::new("link"))
-        );
-        assert!(
-            report
-                .skipped
-                .iter()
-                .any(|(path, _)| path == Path::new("socket"))
-        );
-        assert!(!destination.join("link").exists());
-        assert_eq!(fs::read(outside.join("sentinel")).unwrap(), b"keep");
-    }
-
-    // Catches loss of timestamps and accidentally copying permissive modes.
-    #[test]
-    fn preserves_supported_timestamps_and_discloses_other_metadata_limits() {
-        let (_temp, source, destination) = fixture();
-        fs::write(source.join("hello"), b"hello").unwrap();
-        let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
-        fs::File::options()
-            .write(true)
-            .open(source.join("hello"))
-            .unwrap()
-            .set_times(fs::FileTimes::new().set_accessed(time).set_modified(time))
-            .unwrap();
-        let report = copy_folder(&source, &destination, &AtomicBool::new(false), |_| {}).unwrap();
-        assert!(report.complete(), "{report:?}");
-        assert_eq!(
-            fs::metadata(destination.join("hello"))
+        // Phase `source_content_changed_with_restored_mtime_is_not_published`.
+        // Catches trusting size/mtime without a second source content read.
+        {
+            let (_temp, source, destination) = fixture();
+            fs::write(source.join("hello"), b"hello").unwrap();
+            fs::create_dir(&destination).unwrap();
+            let staged = stage_fixture(&source, &destination);
+            let time = fs::metadata(source.join("hello"))
                 .unwrap()
                 .modified()
-                .unwrap(),
-            time
-        );
-        assert_eq!(
-            fs::metadata(destination.join("hello"))
+                .unwrap();
+            fs::write(source.join("hello"), b"world").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(source.join("hello"))
                 .unwrap()
-                .accessed()
-                .unwrap(),
-            time
-        );
-        assert!(!report.metadata_limitations.is_empty());
+                .set_times(fs::FileTimes::new().set_modified(time))
+                .unwrap();
+            assert!(staged.verify_and_publish(&AtomicBool::new(false)).is_err());
+            assert!(!destination.join("hello").exists());
+            assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+            assert_eq!(fs::read(source.join("hello")).unwrap(), b"world");
+        }
+
+        // Phase `publication_preserves_conflicting_destination`.
+        // Catches overwriting a conflict created after exclusive staging.
+        {
+            let (_temp, source, destination) = fixture();
+            fs::write(source.join("hello"), b"hello").unwrap();
+            fs::create_dir(&destination).unwrap();
+            let staged = stage_fixture(&source, &destination);
+            fs::write(destination.join("hello"), b"sentinel").unwrap();
+            assert!(staged.verify_and_publish(&AtomicBool::new(false)).is_err());
+            assert_eq!(fs::read(destination.join("hello")).unwrap(), b"sentinel");
+            assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+        }
+
+        // Phase `replacing_a_temporary_file_preserves_the_replacement`.
+        // Catches unlinking an entry we no longer own during error cleanup.
+        {
+            let (_temp, source, destination) = fixture();
+            fs::write(source.join("hello"), b"hello").unwrap();
+            fs::create_dir(&destination).unwrap();
+            let staged = stage_fixture(&source, &destination);
+            let temporary = destination.join(&staged.temporary.name);
+            fs::remove_file(&temporary).unwrap();
+            fs::write(&temporary, b"sentinel").unwrap();
+            assert!(staged.verify_and_publish(&AtomicBool::new(false)).is_err());
+            assert_eq!(fs::read(temporary).unwrap(), b"sentinel");
+            assert!(!destination.join("hello").exists());
+        }
+    }
+
+    /// Copying trees, refusing existing destinations, links and unsupported entries, metadata limits.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn copy_reproduces_supported_trees_and_refuses_unsupported_entries() {
+        // Phase `copies_nested_files_and_empty_directories_without_changing_originals`.
+        // Catches missing/corrupted copies and dropped empty directories.
+        {
+            let (_temp, source, destination) = fixture();
+            fs::create_dir(source.join("nested")).unwrap();
+            fs::create_dir(source.join("empty")).unwrap();
+            fs::write(source.join("nested/hello.txt"), b"hello").unwrap();
+            let mut progress = Vec::new();
+            let report = copy_folder(&source, &destination, &AtomicBool::new(false), |p| {
+                progress.push(p);
+            })
+            .unwrap();
+            assert!(report.complete(), "{report:?}");
+            assert_eq!(
+                fs::read(destination.join("nested/hello.txt")).unwrap(),
+                b"hello"
+            );
+            assert!(destination.join("empty").is_dir());
+            assert_eq!(fs::read(source.join("nested/hello.txt")).unwrap(), b"hello");
+            assert_eq!(report.verified_bytes, 5);
+            assert_eq!(report.verified_files, [PathBuf::from("nested/hello.txt")]);
+            assert_eq!(progress.last().unwrap().verified_bytes, 5);
+        }
+
+        // Phase `refuses_existing_destination_and_overlapping_grants`.
+        // Catches overwrite/merge or recursive self-copy.
+        {
+            let (_temp, source, destination) = fixture();
+            fs::create_dir(&destination).unwrap();
+            fs::write(destination.join("sentinel"), b"keep").unwrap();
+            for target in [&destination, &source, &source.join("inside")] {
+                assert!(copy_folder(&source, target, &AtomicBool::new(false), |_| {}).is_err());
+            }
+            assert_eq!(fs::read(destination.join("sentinel")).unwrap(), b"keep");
+            assert!(!source.join("inside").exists());
+        }
+
+        // Phase `refuses_symbolic_link_source`.
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+            let (temp, source, destination) = fixture();
+            fs::write(source.join("sentinel"), b"keep").unwrap();
+            let link = temp.path().canonicalize().unwrap().join("link");
+            std::os::unix::fs::symlink(&source, &link).unwrap();
+            assert!(copy_folder(&link, &destination, &AtomicBool::new(false), |_| {}).is_err());
+            assert!(!destination.exists());
+            assert_eq!(fs::read(source.join("sentinel")).unwrap(), b"keep");
+        }
+
+        // Phase `unsupported_entries_are_explicit_and_never_followed`.
+        // Catches silently following links or claiming a partial copy complete.
+        #[cfg(unix)]
+        {
+            let (temp, source, destination) = fixture();
+            let outside = temp.path().canonicalize().unwrap().join("outside");
+            fs::create_dir(&outside).unwrap();
+            fs::write(outside.join("sentinel"), b"keep").unwrap();
+            std::os::unix::fs::symlink(&outside, source.join("link")).unwrap();
+            let _socket = std::os::unix::net::UnixListener::bind(source.join("socket")).unwrap();
+            let report =
+                copy_folder(&source, &destination, &AtomicBool::new(false), |_| {}).unwrap();
+            assert!(!report.complete());
+            assert_eq!(report.skipped.len(), 2);
+            assert!(
+                report
+                    .skipped
+                    .iter()
+                    .any(|(path, _)| path == Path::new("link"))
+            );
+            assert!(
+                report
+                    .skipped
+                    .iter()
+                    .any(|(path, _)| path == Path::new("socket"))
+            );
+            assert!(!destination.join("link").exists());
+            assert_eq!(fs::read(outside.join("sentinel")).unwrap(), b"keep");
+        }
+
+        // Phase `large_file_and_non_ascii_name_cross_chunk_boundaries`.
+        {
+            let (_temp, source, destination) = fixture();
+            let bytes = vec![43; 200_003];
+            fs::write(source.join("café 📁.txt"), &bytes).unwrap();
+            let report =
+                copy_folder(&source, &destination, &AtomicBool::new(false), |_| {}).unwrap();
+            assert!(report.complete(), "{report:?}");
+            assert_eq!(report.verified_bytes, 200_003);
+            assert_eq!(fs::read(destination.join("café 📁.txt")).unwrap(), bytes);
+        }
+
+        // Phase `preserves_supported_timestamps_and_discloses_other_metadata_limits`.
+        // Catches loss of timestamps and accidentally copying permissive modes.
+        {
+            let (_temp, source, destination) = fixture();
+            fs::write(source.join("hello"), b"hello").unwrap();
+            let time = ui::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+            fs::File::options()
+                .write(true)
+                .open(source.join("hello"))
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_accessed(time).set_modified(time))
+                .unwrap();
+            let report =
+                copy_folder(&source, &destination, &AtomicBool::new(false), |_| {}).unwrap();
+            assert!(report.complete(), "{report:?}");
             assert_eq!(
-                fs::metadata(&destination).unwrap().permissions().mode() & 0o077,
-                0
+                fs::metadata(destination.join("hello"))
+                    .unwrap()
+                    .modified()
+                    .unwrap(),
+                time
             );
             assert_eq!(
                 fs::metadata(destination.join("hello"))
                     .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o077,
-                0
+                    .accessed()
+                    .unwrap(),
+                time
             );
+            assert!(!report.metadata_limitations.is_empty());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    fs::metadata(&destination).unwrap().permissions().mode() & 0o077,
+                    0
+                );
+                assert_eq!(
+                    fs::metadata(destination.join("hello"))
+                        .unwrap()
+                        .permissions()
+                        .mode()
+                        & 0o077,
+                    0
+                );
+            }
+        }
+    }
+
+    /// Cancellation before, during and after staging.
+    #[test]
+    fn migration_cancellation_keeps_verified_files_and_cleans_only_temps() {
+        // Phase `cancellation_creates_no_destination_and_reports_incomplete`.
+        // Catches work performed despite an already-cancelled grant.
+        {
+            let (_temp, source, destination) = fixture();
+            fs::write(source.join("sentinel"), b"keep").unwrap();
+            let report =
+                copy_folder(&source, &destination, &AtomicBool::new(true), |_| {}).unwrap();
+            assert!(report.cancelled);
+            assert!(!report.complete());
+            assert!(!destination.exists());
+            assert_eq!(fs::read(source.join("sentinel")).unwrap(), b"keep");
+        }
+
+        // Phase `cancellation_retains_verified_files_and_stops_before_next_entry`.
+        // Catches completing a cancelled operation or deleting verified work.
+        {
+            let (_temp, source, destination) = fixture();
+            fs::write(source.join("a"), b"hello").unwrap();
+            fs::write(source.join("b"), b"world").unwrap();
+            let cancelled = AtomicBool::new(false);
+            let report = copy_folder(&source, &destination, &cancelled, |p| {
+                if p.verified_files == 1 {
+                    cancelled.store(true, Ordering::Relaxed);
+                }
+            })
+            .unwrap();
+            assert!(report.cancelled);
+            assert!(!report.complete());
+            assert_eq!(report.verified_files, [PathBuf::from("a")]);
+            assert_eq!(report.verified_bytes, 5);
+            assert_eq!(fs::read(destination.join("a")).unwrap(), b"hello");
+            assert!(!destination.join("b").exists());
+            assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+        }
+
+        // Phase `cancellation_after_staging_cleans_only_the_unpublished_temp`.
+        {
+            let (_temp, source, destination) = fixture();
+            fs::write(source.join("hello"), b"hello").unwrap();
+            fs::create_dir(&destination).unwrap();
+            let staged = stage_fixture(&source, &destination);
+            assert!(staged.verify_and_publish(&AtomicBool::new(true)).is_err());
+            assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+        }
+    }
+
+    /// Destination parent replacement, descendant swaps and Windows pinning.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn pinned_paths_resist_parent_and_descendant_swaps() {
+        // Phase `refuses_a_destination_parent_replaced_after_pinning`.
+        // Catches a check-then-open destination parent redirect.
+        #[cfg(unix)]
+        {
+            let (temp, source, _) = fixture();
+            let base = temp.path().canonicalize().unwrap();
+            let parent = base.join("parent");
+            fs::create_dir(&parent).unwrap();
+            fs::write(source.join("hello"), b"hello").unwrap();
+            let mut replaced = false;
+            let result = copy_folder(
+                &source,
+                &parent.join("copy"),
+                &AtomicBool::new(false),
+                |_| {
+                    if !replaced {
+                        replaced = true;
+                        fs::rename(&parent, base.join("old-parent")).unwrap();
+                        fs::create_dir(&parent).unwrap();
+                        fs::write(parent.join("sentinel"), b"keep").unwrap();
+                    }
+                },
+            );
+            assert!(replaced);
+            assert!(result.is_err() || !result.unwrap().complete());
+            assert!(!parent.join("copy").exists());
+            assert!(!base.join("old-parent/copy").exists());
+            assert_eq!(fs::read(parent.join("sentinel")).unwrap(), b"keep");
+        }
+
+        // Phase `swapped_descendant_is_never_followed_outside_grant`.
+        #[cfg(unix)]
+        {
+            let (temp, source, destination) = fixture();
+            fs::create_dir(source.join("child")).unwrap();
+            fs::write(source.join("child/hello"), b"hello").unwrap();
+            let outside = temp.path().canonicalize().unwrap().join("outside");
+            fs::create_dir(&outside).unwrap();
+            fs::write(outside.join("sentinel"), b"keep").unwrap();
+            let mut swapped = false;
+            let report = copy_folder(&source, &destination, &AtomicBool::new(false), |p| {
+                if p.current_relative_path == Path::new("child") && !swapped {
+                    swapped = true;
+                    fs::rename(source.join("child"), source.join("old-child")).unwrap();
+                    std::os::unix::fs::symlink(&outside, source.join("child")).unwrap();
+                }
+            })
+            .unwrap();
+            assert!(swapped);
+            assert!(!report.complete());
+            assert!(!destination.join("child").exists());
+            assert_eq!(fs::read(outside.join("sentinel")).unwrap(), b"keep");
+        }
+
+        // Phase `pinned_destination_parent_cannot_be_renamed_on_windows`.
+        #[cfg(windows)]
+        {
+            let (temp, source, _) = fixture();
+            let base = temp.path().canonicalize().unwrap();
+            let parent = base.join("parent");
+            fs::create_dir(&parent).unwrap();
+            fs::write(source.join("hello"), b"hello").unwrap();
+            let mut attempted = false;
+            let report = copy_folder(
+                &source,
+                &parent.join("copy"),
+                &AtomicBool::new(false),
+                |_| {
+                    if !attempted {
+                        attempted = true;
+                        assert!(fs::rename(&parent, base.join("renamed")).is_err());
+                    }
+                },
+            )
+            .unwrap();
+            assert!(attempted);
+            assert!(report.complete(), "{report:?}");
+            assert_eq!(fs::read(parent.join("copy/hello")).unwrap(), b"hello");
         }
     }
 
@@ -1085,331 +1278,185 @@ mod tests {
         .unwrap()
     }
 
-    // Catches publication without destination digest verification.
+    /// Writable parents, ancestor rights, sticky temporaries and changed permissions.
     #[test]
-    fn corruption_of_staged_bytes_is_not_published() {
-        let (_temp, source, destination) = fixture();
-        fs::write(source.join("hello"), b"hello").unwrap();
-        fs::create_dir(&destination).unwrap();
-        let mut staged = stage_fixture(&source, &destination);
-        staged.temporary.file.seek(SeekFrom::Start(0)).unwrap();
-        staged.temporary.file.write_all(b"wrong").unwrap();
-        assert!(staged.verify_and_publish(&AtomicBool::new(false)).is_err());
-        assert!(!destination.join("hello").exists());
-        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
-        assert_eq!(fs::read(source.join("hello")).unwrap(), b"hello");
-    }
-
-    // Catches trusting size/mtime without a second source content read.
-    #[test]
-    fn source_content_changed_with_restored_mtime_is_not_published() {
-        let (_temp, source, destination) = fixture();
-        fs::write(source.join("hello"), b"hello").unwrap();
-        fs::create_dir(&destination).unwrap();
-        let staged = stage_fixture(&source, &destination);
-        let time = fs::metadata(source.join("hello"))
-            .unwrap()
-            .modified()
-            .unwrap();
-        fs::write(source.join("hello"), b"world").unwrap();
-        fs::File::options()
-            .write(true)
-            .open(source.join("hello"))
-            .unwrap()
-            .set_times(fs::FileTimes::new().set_modified(time))
-            .unwrap();
-        assert!(staged.verify_and_publish(&AtomicBool::new(false)).is_err());
-        assert!(!destination.join("hello").exists());
-        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
-        assert_eq!(fs::read(source.join("hello")).unwrap(), b"world");
-    }
-
-    // Catches overwriting a conflict created after exclusive staging.
-    #[test]
-    fn publication_preserves_conflicting_destination() {
-        let (_temp, source, destination) = fixture();
-        fs::write(source.join("hello"), b"hello").unwrap();
-        fs::create_dir(&destination).unwrap();
-        let staged = stage_fixture(&source, &destination);
-        fs::write(destination.join("hello"), b"sentinel").unwrap();
-        assert!(staged.verify_and_publish(&AtomicBool::new(false)).is_err());
-        assert_eq!(fs::read(destination.join("hello")).unwrap(), b"sentinel");
-        assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
-    }
-
-    // Catches unlinking an entry we no longer own during error cleanup.
-    #[test]
-    fn replacing_a_temporary_file_preserves_the_replacement() {
-        let (_temp, source, destination) = fixture();
-        fs::write(source.join("hello"), b"hello").unwrap();
-        fs::create_dir(&destination).unwrap();
-        let staged = stage_fixture(&source, &destination);
-        let temporary = destination.join(&staged.temporary.name);
-        fs::remove_file(&temporary).unwrap();
-        fs::write(&temporary, b"sentinel").unwrap();
-        assert!(staged.verify_and_publish(&AtomicBool::new(false)).is_err());
-        assert_eq!(fs::read(temporary).unwrap(), b"sentinel");
-        assert!(!destination.join("hello").exists());
-    }
-
-    // Catches completing a cancelled operation or deleting verified work.
-    #[test]
-    fn cancellation_retains_verified_files_and_stops_before_next_entry() {
-        let (_temp, source, destination) = fixture();
-        fs::write(source.join("a"), b"hello").unwrap();
-        fs::write(source.join("b"), b"world").unwrap();
-        let cancelled = AtomicBool::new(false);
-        let report = copy_folder(&source, &destination, &cancelled, |p| {
-            if p.verified_files == 1 {
-                cancelled.store(true, Ordering::Relaxed);
-            }
-        })
-        .unwrap();
-        assert!(report.cancelled);
-        assert!(!report.complete());
-        assert_eq!(report.verified_files, [PathBuf::from("a")]);
-        assert_eq!(report.verified_bytes, 5);
-        assert_eq!(fs::read(destination.join("a")).unwrap(), b"hello");
-        assert!(!destination.join("b").exists());
-        assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn cancellation_after_staging_cleans_only_the_unpublished_temp() {
-        let (_temp, source, destination) = fixture();
-        fs::write(source.join("hello"), b"hello").unwrap();
-        fs::create_dir(&destination).unwrap();
-        let staged = stage_fixture(&source, &destination);
-        assert!(staged.verify_and_publish(&AtomicBool::new(true)).is_err());
-        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn large_file_and_non_ascii_name_cross_chunk_boundaries() {
-        let (_temp, source, destination) = fixture();
-        let bytes = vec![43; 200_003];
-        fs::write(source.join("café 📁.txt"), &bytes).unwrap();
-        let report = copy_folder(&source, &destination, &AtomicBool::new(false), |_| {}).unwrap();
-        assert!(report.complete(), "{report:?}");
-        assert_eq!(report.verified_bytes, 200_003);
-        assert_eq!(fs::read(destination.join("café 📁.txt")).unwrap(), bytes);
-    }
-
     #[cfg(unix)]
-    #[test]
-    fn swapped_descendant_is_never_followed_outside_grant() {
-        let (temp, source, destination) = fixture();
-        fs::create_dir(source.join("child")).unwrap();
-        fs::write(source.join("child/hello"), b"hello").unwrap();
-        let outside = temp.path().canonicalize().unwrap().join("outside");
-        fs::create_dir(&outside).unwrap();
-        fs::write(outside.join("sentinel"), b"keep").unwrap();
-        let mut swapped = false;
-        let report = copy_folder(&source, &destination, &AtomicBool::new(false), |p| {
-            if p.current_relative_path == Path::new("child") && !swapped {
-                swapped = true;
-                fs::rename(source.join("child"), source.join("old-child")).unwrap();
-                std::os::unix::fs::symlink(&outside, source.join("child")).unwrap();
-            }
-        })
-        .unwrap();
-        assert!(swapped);
-        assert!(!report.complete());
-        assert!(!destination.join("child").exists());
-        assert_eq!(fs::read(outside.join("sentinel")).unwrap(), b"keep");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn pinned_destination_parent_cannot_be_renamed_on_windows() {
-        let (temp, source, _) = fixture();
-        let base = temp.path().canonicalize().unwrap();
-        let parent = base.join("parent");
-        fs::create_dir(&parent).unwrap();
-        fs::write(source.join("hello"), b"hello").unwrap();
-        let mut attempted = false;
-        let report = copy_folder(
-            &source,
-            &parent.join("copy"),
-            &AtomicBool::new(false),
-            |_| {
-                if !attempted {
-                    attempted = true;
-                    assert!(fs::rename(&parent, base.join("renamed")).is_err());
-                }
-            },
-        )
-        .unwrap();
-        assert!(attempted);
-        assert!(report.complete(), "{report:?}");
-        assert_eq!(fs::read(parent.join("copy/hello")).unwrap(), b"hello");
-    }
-    // A private child does not prevent another account replacing it through
-    // an unsafe parent. Refusal must happen before mkdir, not after adoption.
-    #[cfg(unix)]
-    #[test]
-    fn namespace_refuses_other_writable_parent_before_creating_anything() {
-        use std::os::unix::fs::PermissionsExt;
-        let (temp, source, _) = fixture();
-        let parent = temp.path().canonicalize().unwrap().join("public");
-        fs::create_dir(&parent).unwrap();
-        fs::set_permissions(&parent, fs::Permissions::from_mode(0o777)).unwrap();
-        fs::write(parent.join("sentinel"), b"keep").unwrap();
-        let result = copy_folder(
-            &source,
-            &parent.join("copy"),
-            &AtomicBool::new(false),
-            |_| {},
-        );
-        assert!(result.is_err());
-        assert!(!parent.join("copy").exists());
-        assert_eq!(fs::read(parent.join("sentinel")).unwrap(), b"keep");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn namespace_checks_ancestor_replacement_rights() {
-        use std::os::unix::fs::PermissionsExt;
-        let (temp, source, _) = fixture();
-        let ancestor = temp.path().canonicalize().unwrap().join("public");
-        fs::create_dir(&ancestor).unwrap();
-        fs::create_dir(ancestor.join("private")).unwrap();
-        fs::set_permissions(&ancestor, fs::Permissions::from_mode(0o777)).unwrap();
-        fs::set_permissions(ancestor.join("private"), fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(
-            copy_folder(
-                &source,
-                &ancestor.join("private/copy"),
-                &AtomicBool::new(false),
-                |_| {}
-            )
-            .is_err()
-        );
-        assert!(!ancestor.join("private/copy").exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn namespace_preserves_safe_sticky_temporary_paths() {
-        use std::os::unix::fs::PermissionsExt;
-        let (temp, source, _) = fixture();
-        let parent = temp.path().canonicalize().unwrap().join("sticky");
-        fs::create_dir(&parent).unwrap();
-        fs::set_permissions(&parent, fs::Permissions::from_mode(0o1777)).unwrap();
-        fs::write(source.join("hello"), b"hello").unwrap();
-        let report = copy_folder(
-            &source,
-            &parent.join("copy"),
-            &AtomicBool::new(false),
-            |_| {},
-        )
-        .unwrap();
-        assert!(report.complete(), "{report:?}");
-        assert_eq!(fs::read(parent.join("copy/hello")).unwrap(), b"hello");
-        assert_eq!(
-            fs::metadata(parent.join("copy"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o700
-        );
-    }
-
-    // Once the private namespace is opened to other writers, neither publish
-    // nor cleanup is allowed to perform its name-based mutation.
-    #[cfg(unix)]
-    #[test]
-    fn namespace_changed_permissions_stop_publication_and_cleanup() {
-        use std::os::unix::fs::PermissionsExt;
-        let (_temp, source, destination) = fixture();
-        fs::create_dir(&destination).unwrap();
-        fs::set_permissions(&destination, fs::Permissions::from_mode(0o700)).unwrap();
-        fs::write(source.join("hello"), b"hello").unwrap();
-        let staged = stage_fixture(&source, &destination);
-        let temporary = destination.join(&staged.temporary.name);
-        fs::set_permissions(&destination, fs::Permissions::from_mode(0o777)).unwrap();
-        assert!(staged.verify_and_publish(&AtomicBool::new(false)).is_err());
-        assert!(!destination.join("hello").exists());
-        assert_eq!(fs::read(&temporary).unwrap(), b"hello");
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn namespace_macos_acl_write_grant_is_not_hidden_by_private_mode() {
-        use std::os::unix::fs::PermissionsExt;
-        let (temp, source, _) = fixture();
-        let parent = temp.path().canonicalize().unwrap().join("acl-parent");
-        fs::create_dir(&parent).unwrap();
-        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(
-            std::process::Command::new("chmod")
-                .args([
-                    "+a",
-                    "everyone allow add_file,add_subdirectory,delete_child"
-                ])
-                .arg(&parent)
-                .status()
-                .unwrap()
-                .success()
-        );
-        let result = copy_folder(
-            &source,
-            &parent.join("copy"),
-            &AtomicBool::new(false),
-            |_| {},
-        );
-        assert!(result.is_err());
-        assert!(!parent.join("copy").exists());
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn namespace_macos_inherit_only_write_acl_is_refused_before_mkdir() {
-        let (temp, source, _) = fixture();
-        let parent = temp.path().canonicalize().unwrap().join("acl-parent");
-        fs::create_dir(&parent).unwrap();
-        assert!(std::process::Command::new("chmod").args(["+a", "everyone allow write,append,delete_child,file_inherit,directory_inherit,only_inherit"]).arg(&parent).status().unwrap().success());
-        assert!(
-            copy_folder(
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn namespace_permissions_gate_creation_and_publication() {
+        // Phase `namespace_refuses_other_writable_parent_before_creating_anything`.
+        // A private child does not prevent another account replacing it through
+        // an unsafe parent. Refusal must happen before mkdir, not after adoption.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let (temp, source, _) = fixture();
+            let parent = temp.path().canonicalize().unwrap().join("public");
+            fs::create_dir(&parent).unwrap();
+            fs::set_permissions(&parent, fs::Permissions::from_mode(0o777)).unwrap();
+            fs::write(parent.join("sentinel"), b"keep").unwrap();
+            let result = copy_folder(
                 &source,
                 &parent.join("copy"),
                 &AtomicBool::new(false),
-                |_| {}
+                |_| {},
+            );
+            assert!(result.is_err());
+            assert!(!parent.join("copy").exists());
+            assert_eq!(fs::read(parent.join("sentinel")).unwrap(), b"keep");
+        }
+
+        // Phase `namespace_checks_ancestor_replacement_rights`.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let (temp, source, _) = fixture();
+            let ancestor = temp.path().canonicalize().unwrap().join("public");
+            fs::create_dir(&ancestor).unwrap();
+            fs::create_dir(ancestor.join("private")).unwrap();
+            fs::set_permissions(&ancestor, fs::Permissions::from_mode(0o777)).unwrap();
+            fs::set_permissions(ancestor.join("private"), fs::Permissions::from_mode(0o700))
+                .unwrap();
+            assert!(
+                copy_folder(
+                    &source,
+                    &ancestor.join("private/copy"),
+                    &AtomicBool::new(false),
+                    |_| {}
+                )
+                .is_err()
+            );
+            assert!(!ancestor.join("private/copy").exists());
+        }
+
+        // Phase `namespace_preserves_safe_sticky_temporary_paths`.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let (temp, source, _) = fixture();
+            let parent = temp.path().canonicalize().unwrap().join("sticky");
+            fs::create_dir(&parent).unwrap();
+            fs::set_permissions(&parent, fs::Permissions::from_mode(0o1777)).unwrap();
+            fs::write(source.join("hello"), b"hello").unwrap();
+            let report = copy_folder(
+                &source,
+                &parent.join("copy"),
+                &AtomicBool::new(false),
+                |_| {},
             )
-            .is_err()
-        );
-        assert!(!parent.join("copy").exists());
+            .unwrap();
+            assert!(report.complete(), "{report:?}");
+            assert_eq!(fs::read(parent.join("copy/hello")).unwrap(), b"hello");
+            assert_eq!(
+                fs::metadata(parent.join("copy"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
+
+        // Phase `namespace_changed_permissions_stop_publication_and_cleanup`.
+        // Once the private namespace is opened to other writers, neither publish
+        // nor cleanup is allowed to perform its name-based mutation.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let (_temp, source, destination) = fixture();
+            fs::create_dir(&destination).unwrap();
+            fs::set_permissions(&destination, fs::Permissions::from_mode(0o700)).unwrap();
+            fs::write(source.join("hello"), b"hello").unwrap();
+            let staged = stage_fixture(&source, &destination);
+            let temporary = destination.join(&staged.temporary.name);
+            fs::set_permissions(&destination, fs::Permissions::from_mode(0o777)).unwrap();
+            assert!(staged.verify_and_publish(&AtomicBool::new(false)).is_err());
+            assert!(!destination.join("hello").exists());
+            assert_eq!(fs::read(&temporary).unwrap(), b"hello");
+        }
     }
 
-    #[cfg(target_os = "macos")]
+    /// macOS ACL write grants, inherit-only ACLs and read-only ACLs.
     #[test]
-    fn namespace_macos_read_only_acl_does_not_block_safe_copy() {
-        let (temp, source, _) = fixture();
-        let parent = temp.path().canonicalize().unwrap().join("acl-parent");
-        fs::create_dir(&parent).unwrap();
-        fs::write(source.join("hello"), b"hello").unwrap();
-        assert!(
-            std::process::Command::new("chmod")
-                .args([
-                    "+a",
-                    "everyone allow read,readattr,readextattr,readsecurity"
-                ])
-                .arg(&parent)
-                .status()
-                .unwrap()
-                .success()
-        );
-        let report = copy_folder(
-            &source,
-            &parent.join("copy"),
-            &AtomicBool::new(false),
-            |_| {},
-        )
-        .unwrap();
-        assert!(report.complete(), "{report:?}");
-        assert_eq!(fs::read(parent.join("copy/hello")).unwrap(), b"hello");
+    #[cfg(target_os = "macos")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn namespace_macos_acls_are_honoured_before_copy() {
+        // Phase `namespace_macos_acl_write_grant_is_not_hidden_by_private_mode`.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let (temp, source, _) = fixture();
+            let parent = temp.path().canonicalize().unwrap().join("acl-parent");
+            fs::create_dir(&parent).unwrap();
+            fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(
+                std::process::Command::new("chmod")
+                    .args([
+                        "+a",
+                        "everyone allow add_file,add_subdirectory,delete_child"
+                    ])
+                    .arg(&parent)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            let result = copy_folder(
+                &source,
+                &parent.join("copy"),
+                &AtomicBool::new(false),
+                |_| {},
+            );
+            assert!(result.is_err());
+            assert!(!parent.join("copy").exists());
+        }
+
+        // Phase `namespace_macos_inherit_only_write_acl_is_refused_before_mkdir`.
+        {
+            let (temp, source, _) = fixture();
+            let parent = temp.path().canonicalize().unwrap().join("acl-parent");
+            fs::create_dir(&parent).unwrap();
+            assert!(std::process::Command::new("chmod").args(["+a", "everyone allow write,append,delete_child,file_inherit,directory_inherit,only_inherit"]).arg(&parent).status().unwrap().success());
+            assert!(
+                copy_folder(
+                    &source,
+                    &parent.join("copy"),
+                    &AtomicBool::new(false),
+                    |_| {}
+                )
+                .is_err()
+            );
+            assert!(!parent.join("copy").exists());
+        }
+
+        // Phase `namespace_macos_read_only_acl_does_not_block_safe_copy`.
+        {
+            let (temp, source, _) = fixture();
+            let parent = temp.path().canonicalize().unwrap().join("acl-parent");
+            fs::create_dir(&parent).unwrap();
+            fs::write(source.join("hello"), b"hello").unwrap();
+            assert!(
+                std::process::Command::new("chmod")
+                    .args([
+                        "+a",
+                        "everyone allow read,readattr,readextattr,readsecurity"
+                    ])
+                    .arg(&parent)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            let report = copy_folder(
+                &source,
+                &parent.join("copy"),
+                &AtomicBool::new(false),
+                |_| {},
+            )
+            .unwrap();
+            assert!(report.complete(), "{report:?}");
+            assert_eq!(fs::read(parent.join("copy/hello")).unwrap(), b"hello");
+        }
     }
+
     #[cfg(unix)]
     #[test]
     #[ignore = "requires root only to create a disposable foreign-owned child"]

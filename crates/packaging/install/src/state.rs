@@ -143,12 +143,9 @@ fn sanitise(raw: &str) -> String {
 
 /// The same FNV-1a the launcher uses for the same purpose.
 fn fnv1a(raw: &str) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in raw.as_bytes() {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{h:016x}")
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, raw.as_bytes());
+    format!("{:016x}", std::hash::Hasher::finish(&hasher))
 }
 
 fn measure(dir: &Path) -> (u64, usize) {
@@ -189,71 +186,73 @@ mod tests {
     }
 
     #[test]
-    fn every_room_holding_state_for_a_package_is_found() {
-        let tmp = tempfile::tempdir().unwrap();
-        seed(tmp.path(), "personal", "so.tilo.notes", b"aaaa");
-        seed(tmp.path(), "e3f1-room-uuid", "so.tilo.notes", b"bbbbbbbb");
-        // Another package in the same room must not be swept in.
-        seed(tmp.path(), "personal", "so.tilo.other", b"cccc");
+    fn package_state_is_found_per_room_measured_and_removed_in_isolation() {
+        // Phase `every_room_holding_state_for_a_package_is_found`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            seed(tmp.path(), "personal", "so.tilo.notes", b"aaaa");
+            seed(tmp.path(), "e3f1-room-uuid", "so.tilo.notes", b"bbbbbbbb");
+            // Another package in the same room must not be swept in.
+            seed(tmp.path(), "personal", "so.tilo.other", b"cccc");
 
-        let found = find(tmp.path(), "so.tilo.notes");
-        let rooms: Vec<&str> = found.iter().map(|s| s.room.as_str()).collect();
-        assert_eq!(rooms, vec!["e3f1-room-uuid", "personal"]);
-        assert_eq!(total_bytes(&found), 12);
-        assert!(found.iter().all(|s| s.files == 1));
+            let found = find(tmp.path(), "so.tilo.notes");
+            let rooms: Vec<&str> = found.iter().map(|s| s.room.as_str()).collect();
+            assert_eq!(rooms, vec!["e3f1-room-uuid", "personal"]);
+            assert_eq!(total_bytes(&found), 12);
+            assert!(found.iter().all(|s| s.files == 1));
+        }
+        // Phase `a_package_that_was_never_launched_has_no_state`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            assert!(find(tmp.path(), "so.tilo.never-run").is_empty());
+        }
+        // Phase `removing_state_leaves_the_other_packages_alone`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            seed(tmp.path(), "personal", "so.tilo.notes", b"aaaa");
+            let other = seed(tmp.path(), "personal", "so.tilo.other", b"cccc");
+            let found = find(tmp.path(), "so.tilo.notes");
+            let (removed, failures) = remove(&found);
+            assert_eq!(removed, 1);
+            assert!(failures.is_empty());
+            assert!(find(tmp.path(), "so.tilo.notes").is_empty());
+            assert!(other.exists(), "another package's state must survive");
+        }
+        // Phase `a_symlinked_subtree_is_measured_but_not_followed`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = seed(tmp.path(), "personal", "so.tilo.notes", b"aaaa");
+            let elsewhere = tmp.path().join("big");
+            std::fs::create_dir_all(&elsewhere).unwrap();
+            std::fs::write(elsewhere.join("huge.bin"), vec![0u8; 100_000]).unwrap();
+            std::os::unix::fs::symlink(&elsewhere, dir.join("link")).unwrap();
+
+            let found = find(tmp.path(), "so.tilo.notes");
+            assert_eq!(found.len(), 1);
+            assert!(
+                found[0].bytes < 1000,
+                "a symlink must not drag an unrelated tree into the total: {}",
+                found[0].bytes
+            );
+        }
     }
 
     #[test]
-    fn a_package_that_was_never_launched_has_no_state() {
-        let tmp = tempfile::tempdir().unwrap();
-        assert!(find(tmp.path(), "so.tilo.never-run").is_empty());
-    }
-
-    #[test]
-    fn removing_state_leaves_the_other_packages_alone() {
-        let tmp = tempfile::tempdir().unwrap();
-        seed(tmp.path(), "personal", "so.tilo.notes", b"aaaa");
-        let other = seed(tmp.path(), "personal", "so.tilo.other", b"cccc");
-        let found = find(tmp.path(), "so.tilo.notes");
-        let (removed, failures) = remove(&found);
-        assert_eq!(removed, 1);
-        assert!(failures.is_empty());
-        assert!(find(tmp.path(), "so.tilo.notes").is_empty());
-        assert!(other.exists(), "another package's state must survive");
-    }
-
-    /// The installer and the launcher have to agree on the directory
-    /// name, or "remove this app's state" would silently miss it.
-    #[test]
-    fn the_package_component_matches_the_launchers_sanitiser() {
-        assert_eq!(sanitise("so.tilo.notes"), "so.tilo.notes");
-        assert_eq!(sanitise("dev/tilo/notes"), "dev_tilo_notes");
-        assert_eq!(sanitise(".."), format!("pkg_{}", fnv1a("..")));
-    }
-
-    #[test]
-    fn a_symlinked_subtree_is_measured_but_not_followed() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = seed(tmp.path(), "personal", "so.tilo.notes", b"aaaa");
-        let elsewhere = tmp.path().join("big");
-        std::fs::create_dir_all(&elsewhere).unwrap();
-        std::fs::write(elsewhere.join("huge.bin"), vec![0u8; 100_000]).unwrap();
-        std::os::unix::fs::symlink(&elsewhere, dir.join("link")).unwrap();
-
-        let found = find(tmp.path(), "so.tilo.notes");
-        assert_eq!(found.len(), 1);
-        assert!(
-            found[0].bytes < 1000,
-            "a symlink must not drag an unrelated tree into the total: {}",
-            found[0].bytes
-        );
-    }
-
-    #[test]
-    fn human_bytes_reads_like_a_size() {
-        assert_eq!(human_bytes(0), "0 B");
-        assert_eq!(human_bytes(512), "512 B");
-        assert_eq!(human_bytes(1_500), "1.5 kB");
-        assert_eq!(human_bytes(2_400_000), "2.4 MB");
+    fn state_paths_and_sizes_read_like_the_launchers() {
+        // Phase `the_package_component_matches_the_launchers_sanitiser`.
+        // The installer and the launcher have to agree on the directory
+        // name, or "remove this app's state" would silently miss it.
+        {
+            assert_eq!(sanitise("so.tilo.notes"), "so.tilo.notes");
+            assert_eq!(sanitise("dev/tilo/notes"), "dev_tilo_notes");
+            assert_eq!(sanitise(".."), format!("pkg_{}", fnv1a("..")));
+        }
+        // Phase `human_bytes_reads_like_a_size`.
+        {
+            assert_eq!(human_bytes(0), "0 B");
+            assert_eq!(human_bytes(512), "512 B");
+            assert_eq!(human_bytes(1_500), "1.5 kB");
+            assert_eq!(human_bytes(2_400_000), "2.4 MB");
+        }
     }
 }

@@ -246,6 +246,18 @@ impl Passthrough {
     }
 }
 
+/// Where a version's content comes from.
+pub(crate) enum VersionSource<'a> {
+    /// Bytes in memory (a FUSE write, a merge, a restore).
+    Bytes(&'a [u8]),
+    /// A file that does not change while it is stored (a capture snapshot),
+    /// with the manifest a capture already computed for it.
+    File {
+        path: &'a std::path::Path,
+        manifest: Option<Arc<crate::content::Manifest>>,
+    },
+}
+
 /// What a caller of [`QuickFS::persist_buffer`] needs from it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PersistIntent {
@@ -350,7 +362,7 @@ pub struct QuickFS {
     pub hydrator: Arc<Hydrator>,
     pub heuristics: Arc<Heuristics>,
     /// Codecs for recognized rich-text formats (odt/docx/md).
-    registry: Arc<qdoc_codecs::Registry>,
+    registry: Arc<tilo_doc_codecs::Registry>,
     /// Binary content (images, binary package parts) that documents projected as files refer to.
     document_content: tilo_content::ContentStore,
     /// Broadcasts local CRDT deltas to peers (None when running standalone).
@@ -448,7 +460,7 @@ impl QuickFS {
             namespace,
             hydrator,
             heuristics,
-            Arc::new(qdoc_codecs::builtin_registry()),
+            Arc::new(tilo_doc_codecs::builtin_registry()),
         )
     }
 
@@ -456,7 +468,7 @@ impl QuickFS {
         namespace: Arc<Mutex<Namespace>>,
         hydrator: Arc<Hydrator>,
         heuristics: Arc<Heuristics>,
-        registry: Arc<qdoc_codecs::Registry>,
+        registry: Arc<tilo_doc_codecs::Registry>,
     ) -> Self {
         Self {
             namespace,
@@ -1030,6 +1042,14 @@ impl QuickFS {
             return None;
         }
         let hash = self.ns().hash_for(ino)?;
+        // Complete file-backed content is its own backing file.
+        let files = self.hydrator.store.files();
+        if files
+            .entry(hash.as_bytes())
+            .is_some_and(|entry| entry.complete())
+        {
+            return std::fs::File::open(files.path_of(hash.as_bytes())).ok();
+        }
         let path = passthrough.dir.join(hash.to_hex());
         if !path.exists() {
             let hydrator = Arc::clone(&self.hydrator);
@@ -2224,7 +2244,7 @@ impl QuickFS {
             }
             None => Vec::new(),
         };
-        if qdoc::Document::load(&data).is_ok() {
+        if tilo_doc::Document::load(&data).is_ok() {
             return Err(libc::ENOTSUP);
         }
         let current_hash = self.ns().hash_for(ino);
@@ -2236,7 +2256,7 @@ impl QuickFS {
             let current =
                 tokio::task::block_in_place(|| runtime.block_on(hydrator.read(hash, 0, u64::MAX)))
                     .map_err(|_| EIO)?;
-            if qdoc::Document::load(&current).is_ok() {
+            if tilo_doc::Document::load(&current).is_ok() {
                 return Err(libc::ENOTSUP);
             }
         }
@@ -2354,7 +2374,7 @@ impl QuickFS {
                     .map(|(_, ext)| ext.to_ascii_lowercase())
             })
             .ok_or(libc::ENOTSUP)?;
-        if !matches!(extension.as_str(), "txt" | "qdoc") {
+        if !matches!(extension.as_str(), "txt" | "tilo-doc" | "qdoc") {
             return Err(libc::ENOTSUP);
         }
         let state = history.snapshot(record_id).ok_or(EINVAL)?;
@@ -2400,7 +2420,7 @@ impl QuickFS {
             version_id: second_id,
             bytes: load(second_id)?,
         };
-        let preflight = if extension == "qdoc" {
+        let preflight = if extension == "tilo-doc" {
             crate::conflict_merge::preflight_exact(first, second, None)
         } else {
             let base_id =
@@ -2669,7 +2689,7 @@ impl QuickFS {
                     .map(|(_, ext)| ext.to_ascii_lowercase())
             })
             .ok_or(libc::ENOTSUP)?;
-        if !matches!(extension.as_str(), "txt" | "qdoc") {
+        if !matches!(extension.as_str(), "txt" | "tilo-doc" | "qdoc") {
             return Err(libc::ENOTSUP);
         }
         let state = history.snapshot(record_id).ok_or(EINVAL)?;
@@ -2734,7 +2754,7 @@ impl QuickFS {
             version_id: second_id,
             bytes: load(second_id)?,
         };
-        let merged = if extension == "qdoc" {
+        let merged = if matches!(extension.as_str(), "tilo-doc" | "qdoc") {
             let preflight = crate::conflict_merge::preflight_exact(first, second, None);
             let crate::conflict_merge::MergePreflight::Safe { result, .. } = preflight else {
                 // A failed preflight is deliberately indistinguishable from
@@ -3324,22 +3344,28 @@ impl QuickFS {
             });
             let mut last_persisted = 0_u64;
             match hydrator
-                .prefetch_with_progress(hash, size, |completed_bytes, total_bytes| {
-                    if completed_bytes != total_bytes
-                        && completed_bytes.saturating_sub(last_persisted)
-                            < HYDRATION_PROGRESS_PERSIST_BYTES
-                    {
-                        return;
-                    }
-                    last_persisted = completed_bytes;
-                    update_retry_state(&registry, record_id, |record| {
-                        record.transfer.phase = TransferPhase::Downloading;
-                        record.transfer.progress = Some(crate::availability::TransferProgress {
-                            completed_bytes,
-                            total_bytes: Some(total_bytes),
+                .prefetch_with_progress(
+                    hash,
+                    size,
+                    crate::hydration::Priority::Pinned,
+                    |completed_bytes, total_bytes| {
+                        if completed_bytes != total_bytes
+                            && completed_bytes.saturating_sub(last_persisted)
+                                < HYDRATION_PROGRESS_PERSIST_BYTES
+                        {
+                            return;
+                        }
+                        last_persisted = completed_bytes;
+                        update_retry_state(&registry, record_id, |record| {
+                            record.transfer.phase = TransferPhase::Downloading;
+                            record.transfer.progress =
+                                Some(crate::availability::TransferProgress {
+                                    completed_bytes,
+                                    total_bytes: Some(total_bytes),
+                                });
                         });
-                    });
-                })
+                    },
+                )
                 .await
             {
                 Ok(true) => update_retry_state(&registry, record_id, |record| {
@@ -3918,11 +3944,37 @@ impl QuickFS {
     /// hash. `Ok(None)` for empty data; `Err` if ingest fails, so callers
     /// never persist a non-empty file with a missing hash.
     fn write_content_blocking(&self, data: &[u8]) -> io::Result<Option<Hash>> {
+        self.store_version_blocking(VersionSource::Bytes(data), None)
+            .map(|stored| stored.map(|(hash, _)| hash))
+    }
+
+    /// Stores one version's content and returns its content id and length
+    /// (`None` when empty). `previous` is the file's current content, whose
+    /// chunk tier the new version keeps.
+    fn store_version_blocking(
+        &self,
+        source: VersionSource<'_>,
+        previous: Option<Hash>,
+    ) -> io::Result<Option<(Hash, u64)>> {
         let store = self.hydrator.store.clone();
         let rt = self.hydrator.runtime_handle.clone();
-        let data = data.to_vec();
-        tokio::task::block_in_place(|| rt.block_on(async move { store.write_content(&data).await }))
-            .map_err(|e| io::Error::other(e.to_string()))
+        let stored = match source {
+            VersionSource::Bytes(data) => {
+                let len = data.len() as u64;
+                let data = data.to_vec();
+                tokio::task::block_in_place(|| {
+                    rt.block_on(async move { store.write_content_after(&data, previous).await })
+                })
+                .map(|hash| hash.map(|hash| (hash, len)))
+            }
+            VersionSource::File { path, manifest } => {
+                let path = path.to_path_buf();
+                tokio::task::block_in_place(|| {
+                    rt.block_on(async move { store.publish_file(&path, manifest, previous).await })
+                })
+            }
+        };
+        stored.map_err(|e| io::Error::other(e.to_string()))
     }
 
     /// Current full content of an inode: the in-flight buffer if any, else
@@ -3963,20 +4015,20 @@ impl QuickFS {
     /// the caller: the native data plane publishes the time the file was
     /// written, which peers then materialise.
     fn commit_content_at(&self, ino: u64, data: &[u8], mtime_ms: u64) -> io::Result<()> {
-        self.commit_content_fenced(ino, data, mtime_ms, None)
+        self.commit_version_at(ino, VersionSource::Bytes(data), mtime_ms, None)
     }
 
-    /// [`Self::commit_content_at`] for a version written under a write
-    /// lease: `fence` names the tenancy, and is published in the same
-    /// namespace change as the content it tags.
+    /// [`Self::commit_content_at`] with the version's content from
+    /// `source`, and for a version written under a write lease its tenancy
+    /// (`fence`), published in the same namespace change as the content.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "content publication and namespace replacement must preserve the previous committed revision on failure"
     )]
-    fn commit_content_fenced(
+    fn commit_version_at(
         &self,
         ino: u64,
-        data: &[u8],
+        source: VersionSource<'_>,
         mtime_ms: u64,
         fence: Option<crate::namespace::VersionFence>,
     ) -> io::Result<()> {
@@ -3989,8 +4041,11 @@ impl QuickFS {
         {
             return Err(io::Error::from_raw_os_error(errno));
         }
-        let hash = self.write_content_blocking(data)?;
-        let byte_len = data.len() as u64;
+        let previous = self.ns().hash_for(ino);
+        let (hash, byte_len) = match self.store_version_blocking(source, previous)? {
+            Some((hash, len)) => (Some(hash), len),
+            None => (None, 0),
+        };
         let (expected_hash, expected_len, stamp) = {
             let ns = self.ns();
             let expected_hash = ns.hash_for(ino);
@@ -4044,12 +4099,7 @@ impl QuickFS {
             }
             if let Some(fence) = fence
                 && let Some(record) = ns.record_id_for(ino)
-                && !ns.put_version_fence(
-                    record,
-                    hash.map(|h| *h.as_bytes()),
-                    data.len() as u64,
-                    fence,
-                )
+                && !ns.put_version_fence(record, hash.map(|h| *h.as_bytes()), byte_len, fence)
             {
                 return Err(io::Error::other("could not tag the version with its lease"));
             }
@@ -4060,7 +4110,7 @@ impl QuickFS {
                     ));
                 }
             } else {
-                ns.set_content(ino, hash.as_ref(), data.len() as u64, stamp);
+                ns.set_content(ino, hash.as_ref(), byte_len, stamp);
             }
             ns.save_incremental()
         };
@@ -4356,7 +4406,6 @@ impl QuickFS {
     // one atomic signed replacement transaction.
     #[allow(
         clippy::significant_drop_tightening,
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "the explicit authenticated rename facts feed one atomic signed replacement transaction"
     )]
@@ -5040,21 +5089,26 @@ async fn hydrate_pinned_candidate(
         record.transfer.phase = TransferPhase::Downloading;
     });
     let mut last_persisted = 0_u64;
-    let hydration = hydrator.prefetch_with_progress(hash, candidate.size, |completed, total| {
-        if completed != total
-            && completed.saturating_sub(last_persisted) < HYDRATION_PROGRESS_PERSIST_BYTES
-        {
-            return;
-        }
-        last_persisted = completed;
-        update_candidate_state(&registry, &candidate, |record| {
-            record.transfer.phase = TransferPhase::Downloading;
-            record.transfer.progress = Some(crate::availability::TransferProgress {
-                completed_bytes: completed,
-                total_bytes: Some(total),
+    let hydration = hydrator.prefetch_with_progress(
+        hash,
+        candidate.size,
+        crate::hydration::Priority::Pinned,
+        |completed, total| {
+            if completed != total
+                && completed.saturating_sub(last_persisted) < HYDRATION_PROGRESS_PERSIST_BYTES
+            {
+                return;
+            }
+            last_persisted = completed;
+            update_candidate_state(&registry, &candidate, |record| {
+                record.transfer.phase = TransferPhase::Downloading;
+                record.transfer.progress = Some(crate::availability::TransferProgress {
+                    completed_bytes: completed,
+                    total_bytes: Some(total),
+                });
             });
-        });
-    });
+        },
+    );
     let result =
         await_current_pinned_hydration(hydration, &candidate, &namespace, &registry, &mut wakes)
             .await;

@@ -229,59 +229,59 @@ mod tests {
     // pure logic (rate mapping, voice arg construction) and tolerate absence.
 
     #[test]
-    fn rate_maps_to_clamped_wpm() {
-        // Construct a speaker by hand (bypassing the PATH probe) to test pure
-        // state transitions without needing the binary.
-        let mut s = EspeakSpeaker {
-            bin: ESPEAK_BIN,
-            wpm: ESPEAK_DEFAULT_WPM,
-            voice: None,
-            current: None,
-        };
-        s.set_rate(1.0);
-        assert_eq!(s.wpm, ESPEAK_DEFAULT_WPM);
-        s.set_rate(2.0);
-        assert_eq!(s.wpm, (ESPEAK_DEFAULT_WPM * 2).min(ESPEAK_MAX_WPM));
-        s.set_rate(100.0); // saturates high
-        assert_eq!(s.wpm, ESPEAK_MAX_WPM);
-        s.set_rate(0.01); // saturates low
-        assert_eq!(s.wpm, ESPEAK_MIN_WPM);
-        s.set_rate(f32::NAN); // guarded
-        assert_eq!(s.wpm, ESPEAK_DEFAULT_WPM);
-    }
-
-    #[test]
-    fn voice_setter_stores_value() {
-        let mut s = EspeakSpeaker {
-            bin: ESPEAK_BIN,
-            wpm: ESPEAK_DEFAULT_WPM,
-            voice: None,
-            current: None,
-        };
-        assert_eq!(s.voice, None);
-        s.set_voice("en-us");
-        assert_eq!(s.voice.as_deref(), Some("en-us"));
-    }
-
-    #[test]
-    fn backend_name() {
-        let s = EspeakSpeaker {
-            bin: ESPEAK_BIN,
-            wpm: ESPEAK_DEFAULT_WPM,
-            voice: None,
-            current: None,
-        };
-        assert_eq!(s.backend_name(), "espeak-ng");
-    }
-
-    #[test]
-    fn not_speaking_when_no_child() {
-        let s = EspeakSpeaker {
-            bin: ESPEAK_BIN,
-            wpm: ESPEAK_DEFAULT_WPM,
-            voice: None,
-            current: None,
-        };
-        assert!(!s.is_speaking());
+    fn espeak_maps_rate_voice_name_and_idle_state() {
+        // Phase `rate_maps_to_clamped_wpm`.
+        {
+            // Construct a speaker by hand (bypassing the PATH probe) to test pure
+            // state transitions without needing the binary.
+            let mut s = EspeakSpeaker {
+                bin: ESPEAK_BIN,
+                wpm: ESPEAK_DEFAULT_WPM,
+                voice: None,
+                current: None,
+            };
+            s.set_rate(1.0);
+            assert_eq!(s.wpm, ESPEAK_DEFAULT_WPM);
+            s.set_rate(2.0);
+            assert_eq!(s.wpm, (ESPEAK_DEFAULT_WPM * 2).min(ESPEAK_MAX_WPM));
+            s.set_rate(100.0); // saturates high
+            assert_eq!(s.wpm, ESPEAK_MAX_WPM);
+            s.set_rate(0.01); // saturates low
+            assert_eq!(s.wpm, ESPEAK_MIN_WPM);
+            s.set_rate(f32::NAN); // guarded
+            assert_eq!(s.wpm, ESPEAK_DEFAULT_WPM);
+        }
+        // Phase `voice_setter_stores_value`.
+        {
+            let mut s = EspeakSpeaker {
+                bin: ESPEAK_BIN,
+                wpm: ESPEAK_DEFAULT_WPM,
+                voice: None,
+                current: None,
+            };
+            assert_eq!(s.voice, None);
+            s.set_voice("en-us");
+            assert_eq!(s.voice.as_deref(), Some("en-us"));
+        }
+        // Phase `backend_name`.
+        {
+            let s = EspeakSpeaker {
+                bin: ESPEAK_BIN,
+                wpm: ESPEAK_DEFAULT_WPM,
+                voice: None,
+                current: None,
+            };
+            assert_eq!(s.backend_name(), "espeak-ng");
+        }
+        // Phase `not_speaking_when_no_child`.
+        {
+            let s = EspeakSpeaker {
+                bin: ESPEAK_BIN,
+                wpm: ESPEAK_DEFAULT_WPM,
+                voice: None,
+                current: None,
+            };
+            assert!(!s.is_speaking());
+        }
     }
 }

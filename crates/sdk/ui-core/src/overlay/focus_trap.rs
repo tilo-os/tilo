@@ -54,35 +54,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn next_wraps_at_the_end() {
+    fn tab_and_shift_tab_wrap_inside_the_trap() {
         let t = FocusTrap::new(vec![1, 2, 3]);
-        assert_eq!(t.next_from(1), Some(2));
-        assert_eq!(
-            t.next_from(3),
-            Some(1),
-            "Tab from last member returns to first"
-        );
-    }
+        // (case, got, want)
+        let cases = [
+            ("next inside", t.next_from(1), Some(2)),
+            // Tab from last member returns to first.
+            ("next wraps at the end", t.next_from(3), Some(1)),
+            ("prev inside", t.prev_from(2), Some(1)),
+            // Shift+Tab from first wraps to last.
+            ("prev wraps at the start", t.prev_from(1), Some(3)),
+            // An unknown id starts from the first member.
+            (
+                "unknown id",
+                FocusTrap::new(vec![10, 20]).next_from(999),
+                Some(20),
+            ),
+        ];
+        for (case, got, want) in cases {
+            assert_eq!(got, want, "case {case}");
+        }
 
-    #[test]
-    fn prev_wraps_at_the_start() {
-        let t = FocusTrap::new(vec![1, 2, 3]);
-        assert_eq!(t.prev_from(2), Some(1));
-        assert_eq!(
-            t.prev_from(1),
-            Some(3),
-            "Shift+Tab from first wraps to last"
-        );
-    }
-
-    #[test]
-    fn unknown_id_starts_from_the_first_member() {
-        let t = FocusTrap::new(vec![10, 20]);
-        assert_eq!(t.next_from(999), Some(20));
-    }
-
-    #[test]
-    fn empty_trap_yields_none_not_panic() {
+        // An empty trap yields None rather than panicking.
         let t = FocusTrap::new(vec![]);
         assert!(t.is_empty());
         assert_eq!(t.next_from(1), None);

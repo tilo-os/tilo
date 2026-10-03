@@ -1,0 +1,59 @@
+[package]
+name = "tilo-moq"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+description = "Tilo live plane over MoQ: the moq-lite live relay, its WebTransport admission carrier and the HTTPS fallback, plus the tilo-voice/1 object profile."
+license.workspace = true
+
+[features]
+default = []
+relay = ["dep:moq-net", "dep:web-transport-quinn", "dep:quinn", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:hex", "dep:bytes", "dep:tokio", "dep:url", "dep:serde", "dep:serde_json"]
+
+[dependencies]
+tilo-clock = { path = "../../platform/tilo-clock" }
+thiserror.workspace = true
+bytes = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+url = { workspace = true, optional = true }
+serde = { workspace = true, optional = true, features = ["derive"] }
+serde_json = { workspace = true, optional = true }
+moq-net = { workspace = true, optional = true }
+web-transport-quinn = { version = "0.12.1", default-features = false, features = ["ring"], optional = true }
+quinn = { version = "0.11.9", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
+rustls = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+# Only for examples/wt_stream_signal_repro.rs (Chromium WebTransport crash reproducer).
+web-transport-quinn = { version = "0.12.1", default-features = false, features = ["ring"] }
+rustls.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tilo-test-env = { path = "../../dev/test-env" }
+
+[[bin]]
+name = "moq-proof"
+path = "src/bin/moq-proof.rs"
+required-features = ["relay"]
+
+[[example]]
+name = "wt_stream_signal_repro"
+path = "examples/wt_stream_signal_repro.rs"
+
+[[test]]
+name = "relay"
+required-features = ["relay"]
+
+[[test]]
+name = "client_admission"
+required-features = ["relay"]
+
+[[test]]
+name = "relay_goaway"
+required-features = ["relay"]
+
+[lints]
+workspace = true

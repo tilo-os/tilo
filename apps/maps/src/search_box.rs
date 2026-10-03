@@ -4,7 +4,7 @@
 //! timer, and every hot region it paints. `MapsApp` remains responsible for
 //! map-domain effects (selecting/recentring a place and starting network work).
 
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use automerge::AutoCommit;
 use taffy::{NodeId, Style, TaffyTree};
@@ -13,6 +13,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 use winit::keyboard::{Key, NamedKey};
 
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -90,8 +91,9 @@ impl SearchBox {
         self.focused = focused;
     }
 
-    pub(crate) fn has_pending_query(&self) -> bool {
-        self.debounce.is_some()
+    /// When the typed query settles into a live geocode.
+    pub(crate) const fn query_deadline(&self) -> Option<Instant> {
+        self.debounce
     }
 
     /// Stable identity for a visible suggestion. The canvas uses this to give
@@ -248,6 +250,7 @@ impl SearchBox {
             draw::card_ring(
                 scene,
                 transform,
+                theme,
                 rect,
                 12.0,
                 colors.surfaces.raised,
@@ -255,7 +258,7 @@ impl SearchBox {
                 2.0,
             );
         } else {
-            draw::card(scene, transform, rect, 12.0, colors.surfaces.raised);
+            draw::card(scene, transform, theme, rect, 12.0, colors.surfaces.raised);
         }
         let glyph = Point::new(rect.x0 + 22.0, rect.center().y);
         draw::stroke_circle(
@@ -344,7 +347,7 @@ impl SearchBox {
             x + w,
             top + pad * 2.0 + n as f64 * row_pitch - row_gap,
         );
-        draw::card(scene, transform, card, 12.0, c.surfaces.raised);
+        draw::card(scene, transform, theme, card, 12.0, c.surfaces.raised);
         self.targets.push((card, SearchHit::Consume));
 
         // Name and address stack on their measured lines, the block centred
@@ -382,23 +385,17 @@ impl SearchBox {
             let distance = geo::fmt_distance(geo::haversine_m(place.pos, overlay.anchor));
             let distance_w = draw::measure_w(text_renderer, &distance, 11.0) + 8.0;
             draw::text_clip(
-                scene,
-                text_renderer,
-                transform,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 &place.name,
-                text_x,
-                name_y,
+                Point::new(text_x, name_y),
                 13.0,
                 theme.text_primary,
                 r.x1 - text_x - distance_w,
             );
             draw::text_clip(
-                scene,
-                text_renderer,
-                transform,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 &place.address,
-                text_x,
-                name_y + name_h,
+                Point::new(text_x, name_y + name_h),
                 11.0,
                 theme.text_dim,
                 r.x1 - text_x - distance_w,
@@ -436,14 +433,16 @@ pub(crate) fn drive_text_input(
     let mut focus_target: Option<NodeId> = None;
     input.handle_event(
         event,
-        scale,
-        &modifiers,
-        &mut doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus_target,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: scale,
+            modifiers: &modifiers,
+            state: &mut doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -457,51 +456,58 @@ mod tests {
     }
 
     #[test]
-    fn debounce_replaces_results_and_fires_once() {
-        let mut search = SearchBox::new();
-        let now = Instant::now();
-        search.query_changed("caf", vec![place("local")], now);
-        assert_eq!(search.results()[0].id, "local");
-        assert!(search.take_due_query(now, "caf").is_none());
-        assert_eq!(
-            search.take_due_query(now + DEBOUNCE, " caf "),
-            Some("caf".into())
-        );
-        assert!(search.take_due_query(now + DEBOUNCE, "caf").is_none());
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn search_box_debounces_picks_dismisses_and_skips_spellcheck() {
+        // Phase `debounce_replaces_results_and_fires_once`.
+        {
+            let mut search = SearchBox::new();
+            let now = ui::time::now();
+            search.query_changed("caf", vec![place("local")], now);
+            assert_eq!(search.results()[0].id, "local");
+            assert!(search.take_due_query(now, "caf").is_none());
+            assert_eq!(
+                search.take_due_query(now + DEBOUNCE, " caf "),
+                Some("caf".into())
+            );
+            assert!(search.take_due_query(now + DEBOUNCE, "caf").is_none());
+        }
 
-    #[test]
-    fn picking_is_an_owned_event_effect() {
-        let mut search = SearchBox::new();
-        search.set_focused(true);
-        search.replace_results(vec![place("first")]);
-        let SearchEffect::Pick(picked) = search.handle_hit(&SearchHit::Result(0)) else {
-            panic!("result hit must produce a pick effect");
-        };
-        assert_eq!(picked.id, "first");
-        assert!(!search.is_focused());
-        assert!(search.results().is_empty());
-    }
+        // Phase `picking_is_an_owned_event_effect`.
+        {
+            let mut search = SearchBox::new();
+            search.set_focused(true);
+            search.replace_results(vec![place("first")]);
+            let SearchEffect::Pick(picked) = search.handle_hit(&SearchHit::Result(0)) else {
+                panic!("result hit must produce a pick effect");
+            };
+            assert_eq!(picked.id, "first");
+            assert!(!search.is_focused());
+            assert!(search.results().is_empty());
+        }
 
-    #[test]
-    fn dismiss_keeps_the_query_but_drops_transient_suggestions() {
-        let mut search = SearchBox::new();
-        let now = Instant::now();
-        search.set_focused(true);
-        search.query_changed("museum", vec![place("local")], now);
+        // Phase `dismiss_keeps_the_query_but_drops_transient_suggestions`.
+        {
+            let mut search = SearchBox::new();
+            let now = ui::time::now();
+            search.set_focused(true);
+            search.query_changed("museum", vec![place("local")], now);
 
-        search.dismiss();
+            search.dismiss();
 
-        assert!(!search.is_focused());
-        assert!(search.results().is_empty());
-        assert!(search.take_due_query(now + DEBOUNCE, "museum").is_none());
-    }
+            assert!(!search.is_focused());
+            assert!(search.results().is_empty());
+            assert!(search.take_due_query(now + DEBOUNCE, "museum").is_none());
+        }
 
-    #[test]
-    fn place_search_is_not_spellchecked_as_prose() {
-        assert!(
-            !SearchBox::new().input.spellcheck_enabled(),
-            "place and address terms must not gain spelling-error decoration"
-        );
+        // Phase `place_search_is_not_spellchecked_as_prose`.
+        {
+            assert!(
+                !SearchBox::new().input.spellcheck_enabled(),
+                "place and address terms must not gain spelling-error decoration"
+            );
+        }
     }
 }

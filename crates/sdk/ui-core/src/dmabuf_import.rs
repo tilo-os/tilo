@@ -43,8 +43,9 @@ use vello::wgpu::hal::Device as _;
 use vello::wgpu::hal::vulkan;
 
 use media::dmabuf::{
-    Colorimetry, DRM_FORMAT_ABGR8888, DRM_FORMAT_ARGB8888, DRM_FORMAT_MOD_INVALID,
-    DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_NV12, DRM_FORMAT_P010, DRM_FORMAT_XBGR8888,
+    Colorimetry, DRM_FORMAT_ABGR8888, DRM_FORMAT_ABGR2101010, DRM_FORMAT_ABGR16161616F,
+    DRM_FORMAT_ARGB8888, DRM_FORMAT_MOD_INVALID, DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_NV12,
+    DRM_FORMAT_P010, DRM_FORMAT_XBGR8888, DRM_FORMAT_XBGR2101010, DRM_FORMAT_XBGR16161616F,
     DRM_FORMAT_XRGB8888, DRM_FORMAT_YUYV, fourcc_str,
 };
 
@@ -208,7 +209,7 @@ pub struct ImportedPlanes {
     pub height: u32,
 }
 
-/// One compositor-owned XRGB dma-buf imported as a writable render target.
+/// One compositor-owned scanout dma-buf imported as a writable render target.
 ///
 /// This is intentionally separate from [`ImportedPlanes`].  Video and WebView
 /// imports are sampled by the compositor; this texture is the final GPU
@@ -218,13 +219,45 @@ pub struct ImportedPlanes {
 pub struct ImportedRenderTarget {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
+    /// `Bgra8Unorm` for an SDR `XRGB8888` target; `Rgb10a2Unorm` or
+    /// `Rgba16Float` for an HDR one.
+    pub format: wgpu::TextureFormat,
     pub width: u32,
     pub height: u32,
     pub stride: u32,
 }
 
-/// Import the one linear XRGB plane of a compositor-owned scanout buffer as a
-/// BGRA render attachment on `device`.
+/// The scanout formats the compositor renders into, with the Vulkan and wgpu
+/// formats that describe the same bytes and the bytes per pixel.
+///
+/// DRM names formats by little-endian word order: `XR24` is B,G,R,X in
+/// memory (Vulkan `B8G8R8A8`), `XB30` packs red into the low ten bits of a
+/// word (Vulkan `A2B10G10R10_PACK32`, wgpu `Rgb10a2Unorm`), and `AB4H` stores
+/// half-float red first (Vulkan `R16G16B16A16_SFLOAT`).
+pub fn render_target_format(fourcc: u32) -> Option<(vk::Format, wgpu::TextureFormat, u32)> {
+    match fourcc {
+        DRM_FORMAT_XRGB8888 => Some((
+            vk::Format::B8G8R8A8_UNORM,
+            wgpu::TextureFormat::Bgra8Unorm,
+            4,
+        )),
+        DRM_FORMAT_XBGR2101010 => Some((
+            vk::Format::A2B10G10R10_UNORM_PACK32,
+            wgpu::TextureFormat::Rgb10a2Unorm,
+            4,
+        )),
+        DRM_FORMAT_ABGR16161616F => Some((
+            vk::Format::R16G16B16A16_SFLOAT,
+            wgpu::TextureFormat::Rgba16Float,
+            8,
+        )),
+        _ => None,
+    }
+}
+
+/// Import the one linear plane of a compositor-owned scanout buffer
+/// (`XRGB8888`, `XBGR2101010` or `ABGR16161616F`) as a render attachment on
+/// `device`.
 ///
 /// The allocation remains owned by the caller (normally a GBM buffer object).
 /// The returned Vulkan image and memory import are aliases and must be dropped
@@ -233,45 +266,38 @@ pub struct ImportedRenderTarget {
 /// # Errors
 ///
 /// Fails closed for every layout which cannot be described exactly without
-/// `VK_EXT_image_drm_format_modifier`: non-XRGB formats, more than one plane,
+/// `VK_EXT_image_drm_format_modifier`: other formats, more than one plane,
 /// non-zero plane offsets, tiled/compressed modifiers, or a driver-selected
 /// row pitch that differs from the producer's stride.
 pub fn import_render_target(
     device: &wgpu::Device,
     image: &DmabufRef<'_>,
 ) -> Result<ImportedRenderTarget, ImportError> {
-    validate_render_target(image)?;
+    let (format, wgpu_format, texel_bytes) = validate_render_target(image)?;
 
     let plane = image.planes[0];
     let spec = PlaneSpec {
-        format: vk::Format::B8G8R8A8_UNORM,
-        wgpu_format: wgpu::TextureFormat::Bgra8Unorm,
+        format,
+        wgpu_format,
         width: image.width,
         height: image.height,
-        texel_bytes: 4,
+        texel_bytes,
     };
     let hal = {
         // Safety: the guard only lends this device's Vulkan handles.  The raw
         // texture is wrapped by the same wgpu device immediately afterward.
         let guard = unsafe { device.as_hal::<vulkan::Api>() }.ok_or(ImportError::NotVulkan)?;
         let hal_device: &vulkan::Device = &guard;
-        let dev = hal_device.raw_device();
-        let phys = hal_device.raw_physical_device();
-        let instance = hal_device.shared_instance().raw_instance();
-        let ext_fd = ash::khr::external_memory_fd::Device::new(instance, dev);
         unsafe {
-            import_plane_with_usage(
-                dev,
-                phys,
-                instance,
-                &ext_fd,
-                hal_device,
+            VulkanImporter::new(hal_device).import_plane_with_usage(
                 &plane,
                 &spec,
                 0,
-                vk::ImageUsageFlags::COLOR_ATTACHMENT,
-                vello::wgpu::wgt::TextureUses::COLOR_TARGET,
-                "dmabuf-scanout-target",
+                PlaneUsage {
+                    vk: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                    hal: vello::wgpu::wgt::TextureUses::COLOR_TARGET,
+                    label: "dmabuf-scanout-target",
+                },
             )
         }?
     };
@@ -285,7 +311,7 @@ pub fn import_render_target(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Bgra8Unorm,
+        format: wgpu_format,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     };
@@ -296,18 +322,21 @@ pub fn import_render_target(
     Ok(ImportedRenderTarget {
         texture,
         view,
+        format: wgpu_format,
         width: image.width,
         height: image.height,
         stride: plane.stride,
     })
 }
 
-fn validate_render_target(image: &DmabufRef<'_>) -> Result<(), ImportError> {
-    if image.fourcc != DRM_FORMAT_XRGB8888 {
+fn validate_render_target(
+    image: &DmabufRef<'_>,
+) -> Result<(vk::Format, wgpu::TextureFormat, u32), ImportError> {
+    let Some((format, wgpu_format, texel_bytes)) = render_target_format(image.fourcc) else {
         return Err(ImportError::UnsupportedFormat {
             fourcc: image.fourcc,
         });
-    }
+    };
     if !is_linear(image.modifier) {
         return Err(ImportError::UnsupportedModifier {
             modifier: image.modifier,
@@ -335,7 +364,7 @@ fn validate_render_target(image: &DmabufRef<'_>) -> Result<(), ImportError> {
     }
     let minimum_stride = image
         .width
-        .checked_mul(4)
+        .checked_mul(texel_bytes)
         .ok_or_else(|| ImportError::Vulkan("scanout row size overflows u32".to_owned()))?;
     if plane.stride < minimum_stride {
         return Err(ImportError::StrideMismatch {
@@ -345,7 +374,7 @@ fn validate_render_target(image: &DmabufRef<'_>) -> Result<(), ImportError> {
         });
     }
 
-    Ok(())
+    Ok((format, wgpu_format, texel_bytes))
 }
 
 /// The Vulkan format and extent one plane of `fourcc` is imported as.
@@ -441,6 +470,27 @@ fn plane_specs(fourcc: u32, width: u32, height: u32) -> Option<(PlaneLayout, Vec
                 texel_bytes: 4,
             }],
         )),
+        // 10-bit RGB, red in the low bits of a little-endian word.
+        DRM_FORMAT_ABGR2101010 | DRM_FORMAT_XBGR2101010 => Some((
+            PlaneLayout::Packed,
+            vec![PlaneSpec {
+                format: vk::Format::A2B10G10R10_UNORM_PACK32,
+                wgpu_format: wgpu::TextureFormat::Rgb10a2Unorm,
+                width,
+                height,
+                texel_bytes: 4,
+            }],
+        )),
+        DRM_FORMAT_ABGR16161616F | DRM_FORMAT_XBGR16161616F => Some((
+            PlaneLayout::Packed,
+            vec![PlaneSpec {
+                format: vk::Format::R16G16B16A16_SFLOAT,
+                wgpu_format: wgpu::TextureFormat::Rgba16Float,
+                width,
+                height,
+                texel_bytes: 8,
+            }],
+        )),
         _ => None,
     }
 }
@@ -492,18 +542,14 @@ pub fn import(device: &wgpu::Device, image: &DmabufRef<'_>) -> Result<ImportedPl
         // dropped before any wgpu texture is created from them.
         let guard = unsafe { device.as_hal::<vulkan::Api>() }.ok_or(ImportError::NotVulkan)?;
         let hal_device: &vulkan::Device = &guard;
-        let dev = hal_device.raw_device();
-        let phys = hal_device.raw_physical_device();
-        let instance = hal_device.shared_instance().raw_instance();
-        let ext_fd = ash::khr::external_memory_fd::Device::new(instance, dev);
+        let importer = VulkanImporter::new(hal_device);
 
         let mut built = Vec::with_capacity(specs.len());
         for (i, (plane, spec)) in image.planes.iter().zip(&specs).enumerate() {
             // On failure, hal textures already built are dropped here without
             // ever reaching wgpu. Their drop callbacks are not run by `Drop`
             // (a hal texture is a plain handle), so free them explicitly.
-            let made =
-                unsafe { import_plane(dev, phys, instance, &ext_fd, hal_device, plane, spec, i) };
+            let made = unsafe { importer.import_plane(plane, spec, i) };
             match made {
                 Ok(t) => built.push(t),
                 Err(e) => {
@@ -550,225 +596,239 @@ pub fn import(device: &wgpu::Device, image: &DmabufRef<'_>) -> Result<ImportedPl
     })
 }
 
-/// Import one plane as a `wgpu::Texture`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the Vulkan import contract is explicit at one ownership-transfer boundary"
-)]
-// Keeping acquisition and cleanup together makes the ownership transfer to
-// Vulkan auditable; splitting this sequence would obscure its early returns.
-#[allow(
-    clippy::too_many_lines,
-    reason = "keeping acquisition and cleanup together makes every imported-fd early return auditable"
-)]
-unsafe fn import_plane(
-    dev: &ash::Device,
-    phys: vk::PhysicalDevice,
-    instance: &ash::Instance,
-    ext_fd: &ash::khr::external_memory_fd::Device,
-    hal_device: &vulkan::Device,
-    plane: &PlaneRef<'_>,
-    spec: &PlaneSpec,
-    index: usize,
-) -> Result<<vulkan::Api as vello::wgpu::hal::Api>::Texture, ImportError> {
-    unsafe {
-        import_plane_with_usage(
-            dev,
-            phys,
-            instance,
-            ext_fd,
-            hal_device,
-            plane,
-            spec,
-            index,
-            vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC,
-            vello::wgpu::wgt::TextureUses::RESOURCE | vello::wgpu::wgt::TextureUses::COPY_SRC,
-            "dmabuf-plane",
-        )
-    }
+/// The Vulkan device a dma-buf is imported into, with the external-memory
+/// extension loaded for it. Every handle derives from one live device.
+struct VulkanImporter<'a> {
+    hal_device: &'a vulkan::Device,
+    ext_fd: ash::khr::external_memory_fd::Device,
 }
 
-/// Import one dma-buf plane with an explicit Vulkan/HAL use contract.
-///
-/// # Safety
-///
-/// `dev`, `phys`, `instance`, `ext_fd`, and `hal_device` must all belong to
-/// the same live Vulkan device. `hal_usage` must describe `vk_usage`, because
-/// wgpu uses it for synchronization and layout transitions after taking the
-/// raw image.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "all Vulkan and wgpu usage inputs must be validated together before ownership transfer"
-)]
-unsafe fn import_plane_with_usage(
-    dev: &ash::Device,
-    phys: vk::PhysicalDevice,
-    instance: &ash::Instance,
-    ext_fd: &ash::khr::external_memory_fd::Device,
-    hal_device: &vulkan::Device,
-    plane: &PlaneRef<'_>,
-    spec: &PlaneSpec,
-    index: usize,
-    vk_usage: vk::ImageUsageFlags,
-    hal_usage: vello::wgpu::wgt::TextureUses,
+/// How an imported image will be used: Vulkan usage, the wgpu HAL uses that
+/// describe it, and the debug label.
+struct PlaneUsage {
+    vk: vk::ImageUsageFlags,
+    hal: vello::wgpu::wgt::TextureUses,
     label: &'static str,
-) -> Result<<vulkan::Api as vello::wgpu::hal::Api>::Texture, ImportError> {
-    // Vulkan takes ownership of an imported fd on success, so hand it a
-    // duplicate and leave the caller's original alone.
-    let dup = plane
-        .fd
-        .try_clone_to_owned()
-        .map_err(|e| ImportError::Vulkan(format!("dup dmabuf fd: {e}")))?;
+}
 
-    let mut ext_ci = vk::ExternalMemoryImageCreateInfo::default()
-        .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
-    let image_ci = vk::ImageCreateInfo::default()
-        .image_type(vk::ImageType::TYPE_2D)
-        .format(spec.format)
-        .extent(vk::Extent3D {
+impl<'a> VulkanImporter<'a> {
+    fn new(hal_device: &'a vulkan::Device) -> Self {
+        let ext_fd = ash::khr::external_memory_fd::Device::new(
+            hal_device.shared_instance().raw_instance(),
+            hal_device.raw_device(),
+        );
+        Self { hal_device, ext_fd }
+    }
+
+    /// Import one plane as a `wgpu::Texture`.
+    // Keeping acquisition and cleanup together makes the ownership transfer to
+    // Vulkan auditable; splitting this sequence would obscure its early returns.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keeping acquisition and cleanup together makes every imported-fd early return auditable"
+    )]
+    unsafe fn import_plane(
+        &self,
+        plane: &PlaneRef<'_>,
+        spec: &PlaneSpec,
+        index: usize,
+    ) -> Result<<vulkan::Api as vello::wgpu::hal::Api>::Texture, ImportError> {
+        unsafe {
+            self.import_plane_with_usage(
+                plane,
+                spec,
+                index,
+                PlaneUsage {
+                    vk: vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC,
+                    hal: vello::wgpu::wgt::TextureUses::RESOURCE
+                        | vello::wgpu::wgt::TextureUses::COPY_SRC,
+                    label: "dmabuf-plane",
+                },
+            )
+        }
+    }
+
+    /// Import one dma-buf plane with an explicit Vulkan/HAL use contract.
+    ///
+    /// # Safety
+    ///
+    /// `usage.hal` must describe `usage.vk`, because wgpu uses it for
+    /// synchronization and layout transitions after taking the raw image.
+    unsafe fn import_plane_with_usage(
+        &self,
+        plane: &PlaneRef<'_>,
+        spec: &PlaneSpec,
+        index: usize,
+        usage: PlaneUsage,
+    ) -> Result<<vulkan::Api as vello::wgpu::hal::Api>::Texture, ImportError> {
+        let hal_device = self.hal_device;
+        let dev = hal_device.raw_device();
+        let phys = hal_device.raw_physical_device();
+        let instance = hal_device.shared_instance().raw_instance();
+        let ext_fd = &self.ext_fd;
+        let PlaneUsage {
+            vk: vk_usage,
+            hal: hal_usage,
+            label,
+        } = usage;
+        // Vulkan takes ownership of an imported fd on success, so hand it a
+        // duplicate and leave the caller's original alone.
+        let dup = plane
+            .fd
+            .try_clone_to_owned()
+            .map_err(|e| ImportError::Vulkan(format!("dup dmabuf fd: {e}")))?;
+
+        let mut ext_ci = vk::ExternalMemoryImageCreateInfo::default()
+            .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+        let image_ci = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(spec.format)
+            .extent(vk::Extent3D {
+                width: spec.width,
+                height: spec.height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            // The only tiling describable without VK_EXT_image_drm_format_modifier.
+            .tiling(vk::ImageTiling::LINEAR)
+            .usage(vk_usage)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .push_next(&mut ext_ci);
+
+        let vk_image = unsafe { dev.create_image(&image_ci, None) }
+            .map_err(|e| ImportError::Vulkan(format!("vkCreateImage: {e:?}")))?;
+
+        // Guard so every early return frees the image.
+        let cleanup_image = |dev: &ash::Device| unsafe { dev.destroy_image(vk_image, None) };
+
+        // A LINEAR image's row pitch is the driver's choice; there is no way to
+        // impose the producer's without the modifier extension. If they disagree
+        // the sampled picture shears, so refuse rather than render garbage.
+        let sub = vk::ImageSubresource {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            mip_level: 0,
+            array_layer: 0,
+        };
+        let sub_layout = unsafe { dev.get_image_subresource_layout(vk_image, sub) };
+        if sub_layout.row_pitch != u64::from(plane.stride) {
+            // A stride that is merely *larger* is still unusable: the sampler
+            // steps by the driver's pitch, so rows would drift.
+            cleanup_image(dev);
+            return Err(ImportError::StrideMismatch {
+                plane: index,
+                producer: plane.stride,
+                driver: sub_layout.row_pitch,
+            });
+        }
+        debug_assert!(spec.texel_bytes > 0);
+
+        let reqs = unsafe { dev.get_image_memory_requirements(vk_image) };
+
+        // Which memory types the *imported fd* is compatible with. Intersecting
+        // this with the image's requirements is the correct way to choose; picking
+        // the first bit of the image's mask alone can select a type the imported
+        // allocation does not support.
+        let fd_props = {
+            let mut props = vk::MemoryFdPropertiesKHR::default();
+            match unsafe {
+                ext_fd.get_memory_fd_properties(
+                    vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT,
+                    dup.as_raw_fd(),
+                    &mut props,
+                )
+            } {
+                Ok(()) => props.memory_type_bits,
+                // Not fatal: fall back to the image's own mask.
+                Err(_) => u32::MAX,
+            }
+        };
+        let allowed = reqs.memory_type_bits & fd_props;
+        let Some(mem_type) = find_memory_type(instance, phys, allowed) else {
+            cleanup_image(dev);
+            return Err(ImportError::Vulkan(format!(
+                "no memory type accepts the imported dmabuf (image mask {:#x}, fd mask {fd_props:#x})",
+                reqs.memory_type_bits
+            )));
+        };
+
+        let mut import_info = vk::ImportMemoryFdInfoKHR::default()
+            .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
+            .fd(dup.as_raw_fd());
+        // A dedicated allocation binds at offset 0 only. Planes that live at an
+        // offset inside a shared buffer need a plain allocation instead.
+        let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(vk_image);
+        let use_dedicated = plane.offset == 0;
+        // The allocation must cover the plane's offset as well as its size.
+        let Some(size) = reqs.size.checked_add(u64::from(plane.offset)) else {
+            cleanup_image(dev);
+            return Err(ImportError::Vulkan(format!(
+                "dmabuf allocation size overflows (image size {}, plane offset {})",
+                reqs.size, plane.offset
+            )));
+        };
+
+        let mut alloc_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(size)
+            .memory_type_index(mem_type)
+            .push_next(&mut import_info);
+        if use_dedicated {
+            alloc_info = alloc_info.push_next(&mut dedicated);
+        }
+
+        let memory = match unsafe { dev.allocate_memory(&alloc_info, None) } {
+            Ok(m) => {
+                // vkAllocateMemory consumed the fd; don't let `dup` close it.
+                let _ = dup.into_raw_fd();
+                m
+            }
+            Err(e) => {
+                cleanup_image(dev);
+                // `dup` drops here and closes the fd.
+                return Err(ImportError::Vulkan(format!("vkAllocateMemory: {e:?}")));
+            }
+        };
+
+        if let Err(e) = unsafe { dev.bind_image_memory(vk_image, memory, u64::from(plane.offset)) }
+        {
+            unsafe { dev.free_memory(memory, None) };
+            cleanup_image(dev);
+            return Err(ImportError::Vulkan(format!("vkBindImageMemory: {e:?}")));
+        }
+
+        // Free the image + imported memory when the wgpu texture drops.
+        let dev_owned = dev.clone();
+        let drop_cb: vello::wgpu::hal::DropCallback = Box::new(move || unsafe {
+            dev_owned.destroy_image(vk_image, None);
+            dev_owned.free_memory(memory, None);
+        });
+        let size3d = wgpu::Extent3d {
             width: spec.width,
             height: spec.height,
-            depth: 1,
-        })
-        .mip_levels(1)
-        .array_layers(1)
-        .samples(vk::SampleCountFlags::TYPE_1)
-        // The only tiling describable without VK_EXT_image_drm_format_modifier.
-        .tiling(vk::ImageTiling::LINEAR)
-        .usage(vk_usage)
-        .sharing_mode(vk::SharingMode::EXCLUSIVE)
-        .initial_layout(vk::ImageLayout::UNDEFINED)
-        .push_next(&mut ext_ci);
-
-    let vk_image = unsafe { dev.create_image(&image_ci, None) }
-        .map_err(|e| ImportError::Vulkan(format!("vkCreateImage: {e:?}")))?;
-
-    // Guard so every early return frees the image.
-    let cleanup_image = |dev: &ash::Device| unsafe { dev.destroy_image(vk_image, None) };
-
-    // A LINEAR image's row pitch is the driver's choice; there is no way to
-    // impose the producer's without the modifier extension. If they disagree
-    // the sampled picture shears, so refuse rather than render garbage.
-    let sub = vk::ImageSubresource {
-        aspect_mask: vk::ImageAspectFlags::COLOR,
-        mip_level: 0,
-        array_layer: 0,
-    };
-    let sub_layout = unsafe { dev.get_image_subresource_layout(vk_image, sub) };
-    if sub_layout.row_pitch != u64::from(plane.stride) {
-        // A stride that is merely *larger* is still unusable: the sampler
-        // steps by the driver's pitch, so rows would drift.
-        cleanup_image(dev);
-        return Err(ImportError::StrideMismatch {
-            plane: index,
-            producer: plane.stride,
-            driver: sub_layout.row_pitch,
-        });
-    }
-    debug_assert!(spec.texel_bytes > 0);
-
-    let reqs = unsafe { dev.get_image_memory_requirements(vk_image) };
-
-    // Which memory types the *imported fd* is compatible with. Intersecting
-    // this with the image's requirements is the correct way to choose; picking
-    // the first bit of the image's mask alone can select a type the imported
-    // allocation does not support.
-    let fd_props = {
-        let mut props = vk::MemoryFdPropertiesKHR::default();
-        match unsafe {
-            ext_fd.get_memory_fd_properties(
-                vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT,
-                dup.as_raw_fd(),
-                &mut props,
+            depth_or_array_layers: 1,
+        };
+        let hal_desc = vello::wgpu::hal::TextureDescriptor {
+            label: Some(label),
+            size: size3d,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: spec.wgpu_format,
+            usage: hal_usage,
+            memory_flags: vello::wgpu::hal::MemoryFlags::empty(),
+            view_formats: vec![],
+        };
+        Ok(unsafe {
+            hal_device.texture_from_raw(
+                vk_image,
+                &hal_desc,
+                Some(drop_cb),
+                vulkan::TextureMemory::External,
             )
-        } {
-            Ok(()) => props.memory_type_bits,
-            // Not fatal: fall back to the image's own mask.
-            Err(_) => u32::MAX,
-        }
-    };
-    let allowed = reqs.memory_type_bits & fd_props;
-    let Some(mem_type) = find_memory_type(instance, phys, allowed) else {
-        cleanup_image(dev);
-        return Err(ImportError::Vulkan(format!(
-            "no memory type accepts the imported dmabuf (image mask {:#x}, fd mask {fd_props:#x})",
-            reqs.memory_type_bits
-        )));
-    };
-
-    let mut import_info = vk::ImportMemoryFdInfoKHR::default()
-        .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
-        .fd(dup.as_raw_fd());
-    // A dedicated allocation binds at offset 0 only. Planes that live at an
-    // offset inside a shared buffer need a plain allocation instead.
-    let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(vk_image);
-    let use_dedicated = plane.offset == 0;
-    // The allocation must cover the plane's offset as well as its size.
-    let Some(size) = reqs.size.checked_add(u64::from(plane.offset)) else {
-        cleanup_image(dev);
-        return Err(ImportError::Vulkan(format!(
-            "dmabuf allocation size overflows (image size {}, plane offset {})",
-            reqs.size, plane.offset
-        )));
-    };
-
-    let mut alloc_info = vk::MemoryAllocateInfo::default()
-        .allocation_size(size)
-        .memory_type_index(mem_type)
-        .push_next(&mut import_info);
-    if use_dedicated {
-        alloc_info = alloc_info.push_next(&mut dedicated);
+        })
     }
-
-    let memory = match unsafe { dev.allocate_memory(&alloc_info, None) } {
-        Ok(m) => {
-            // vkAllocateMemory consumed the fd; don't let `dup` close it.
-            let _ = dup.into_raw_fd();
-            m
-        }
-        Err(e) => {
-            cleanup_image(dev);
-            // `dup` drops here and closes the fd.
-            return Err(ImportError::Vulkan(format!("vkAllocateMemory: {e:?}")));
-        }
-    };
-
-    if let Err(e) = unsafe { dev.bind_image_memory(vk_image, memory, u64::from(plane.offset)) } {
-        unsafe { dev.free_memory(memory, None) };
-        cleanup_image(dev);
-        return Err(ImportError::Vulkan(format!("vkBindImageMemory: {e:?}")));
-    }
-
-    // Free the image + imported memory when the wgpu texture drops.
-    let dev_owned = dev.clone();
-    let drop_cb: vello::wgpu::hal::DropCallback = Box::new(move || unsafe {
-        dev_owned.destroy_image(vk_image, None);
-        dev_owned.free_memory(memory, None);
-    });
-    let size3d = wgpu::Extent3d {
-        width: spec.width,
-        height: spec.height,
-        depth_or_array_layers: 1,
-    };
-    let hal_desc = vello::wgpu::hal::TextureDescriptor {
-        label: Some(label),
-        size: size3d,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: spec.wgpu_format,
-        usage: hal_usage,
-        memory_flags: vello::wgpu::hal::MemoryFlags::empty(),
-        view_formats: vec![],
-    };
-    Ok(unsafe {
-        hal_device.texture_from_raw(
-            vk_image,
-            &hal_desc,
-            Some(drop_cb),
-            vulkan::TextureMemory::External,
-        )
-    })
 }
 
 /// First memory type allowed by `type_bits`. Imported dmabuf memory carries no
@@ -799,151 +859,221 @@ mod tests {
     }
 
     #[test]
-    fn a_tiled_modifier_is_refused_rather_than_sampled_as_pixels() {
-        // The AMD GFX9 tiled modifier a VA-API decoder exports. Importing it
-        // as linear would read the tiling pattern as picture content.
-        assert!(!is_linear(0x0200_0000_1040_1b04));
-        assert!(is_linear(DRM_FORMAT_MOD_LINEAR));
-        assert!(
-            is_linear(DRM_FORMAT_MOD_INVALID),
-            "unstated is treated as linear"
-        );
+    fn render_target_contract_accepts_only_exact_linear_scanout_formats() {
+        // Case `a_tiled_modifier_is_refused_rather_than_sampled_as_pixels`.
+        {
+            // The AMD GFX9 tiled modifier a VA-API decoder exports. Importing it
+            // as linear would read the tiling pattern as picture content.
+            assert!(!is_linear(0x0200_0000_1040_1b04));
+            assert!(is_linear(DRM_FORMAT_MOD_LINEAR));
+            assert!(
+                is_linear(DRM_FORMAT_MOD_INVALID),
+                "unstated is treated as linear"
+            );
+        }
+
+        // Case `scanout_target_contract_accepts_only_exact_linear_xrgb`.
+        {
+            let file = tempfile::tempfile().expect("temporary descriptor");
+            let planes = one_plane(&file, 0, 256);
+            let valid = DmabufRef {
+                planes: &planes,
+                fourcc: DRM_FORMAT_XRGB8888,
+                modifier: DRM_FORMAT_MOD_LINEAR,
+                width: 64,
+                height: 32,
+                colorimetry: Colorimetry::default(),
+            };
+            assert_eq!(
+                validate_render_target(&valid),
+                Ok((
+                    vk::Format::B8G8R8A8_UNORM,
+                    wgpu::TextureFormat::Bgra8Unorm,
+                    4
+                ))
+            );
+
+            let wrong_format = DmabufRef {
+                fourcc: DRM_FORMAT_XBGR8888,
+                ..valid
+            };
+            assert_eq!(
+                validate_render_target(&wrong_format),
+                Err(ImportError::UnsupportedFormat {
+                    fourcc: DRM_FORMAT_XBGR8888
+                })
+            );
+
+            let tiled = DmabufRef {
+                modifier: 0x0200_0000_1040_1b04,
+                ..valid
+            };
+            assert!(matches!(
+                validate_render_target(&tiled),
+                Err(ImportError::UnsupportedModifier { .. })
+            ));
+        }
+
+        // Case `hdr_scanout_formats_map_to_their_ten_bit_and_half_float_views`.
+        {
+            let file = tempfile::tempfile().expect("temporary descriptor");
+            let planes = one_plane(&file, 0, 256);
+            let ten_bit = DmabufRef {
+                planes: &planes,
+                fourcc: DRM_FORMAT_XBGR2101010,
+                modifier: DRM_FORMAT_MOD_LINEAR,
+                width: 64,
+                height: 32,
+                colorimetry: Colorimetry::default(),
+            };
+            assert_eq!(
+                validate_render_target(&ten_bit),
+                Ok((
+                    vk::Format::A2B10G10R10_UNORM_PACK32,
+                    wgpu::TextureFormat::Rgb10a2Unorm,
+                    4
+                ))
+            );
+            // Half float needs eight bytes a pixel: 64 wide is 512 bytes.
+            let half_float = DmabufRef {
+                fourcc: DRM_FORMAT_ABGR16161616F,
+                ..ten_bit
+            };
+            assert_eq!(
+                validate_render_target(&half_float),
+                Err(ImportError::StrideMismatch {
+                    plane: 0,
+                    producer: 256,
+                    driver: 512,
+                })
+            );
+            let wide_planes = one_plane(&file, 0, 512);
+            let half_float = DmabufRef {
+                planes: &wide_planes,
+                fourcc: DRM_FORMAT_ABGR16161616F,
+                ..ten_bit
+            };
+            assert_eq!(
+                validate_render_target(&half_float),
+                Ok((
+                    vk::Format::R16G16B16A16_SFLOAT,
+                    wgpu::TextureFormat::Rgba16Float,
+                    8
+                ))
+            );
+        }
+
+        // Case `scanout_target_contract_rejects_offset_and_short_stride`.
+        {
+            let file = tempfile::tempfile().expect("temporary descriptor");
+            let offset_planes = one_plane(&file, 4, 256);
+            let offset = DmabufRef {
+                planes: &offset_planes,
+                fourcc: DRM_FORMAT_XRGB8888,
+                modifier: DRM_FORMAT_MOD_LINEAR,
+                width: 64,
+                height: 32,
+                colorimetry: Colorimetry::default(),
+            };
+            assert!(matches!(
+                validate_render_target(&offset),
+                Err(ImportError::Vulkan(message)) if message.contains("offset must be zero")
+            ));
+
+            let short_planes = one_plane(&file, 0, 64 * 4 - 1);
+            let short = DmabufRef {
+                planes: &short_planes,
+                ..offset
+            };
+            assert_eq!(
+                validate_render_target(&short),
+                Err(ImportError::StrideMismatch {
+                    plane: 0,
+                    producer: 255,
+                    driver: 256,
+                })
+            );
+        }
     }
 
     #[test]
-    fn scanout_target_contract_accepts_only_exact_linear_xrgb() {
-        let file = tempfile::tempfile().expect("temporary descriptor");
-        let planes = one_plane(&file, 0, 256);
-        let valid = DmabufRef {
-            planes: &planes,
-            fourcc: DRM_FORMAT_XRGB8888,
-            modifier: DRM_FORMAT_MOD_LINEAR,
-            width: 64,
-            height: 32,
-            colorimetry: Colorimetry::default(),
-        };
-        assert_eq!(validate_render_target(&valid), Ok(()));
+    fn plane_specs_map_each_fourcc_to_its_texture_layout_or_refuse_it() {
+        // Case `nv12_maps_to_a_luma_and_a_half_resolution_chroma_plane`.
+        {
+            let (layout, specs) = plane_specs(DRM_FORMAT_NV12, 1920, 1080).unwrap();
+            assert_eq!(layout, PlaneLayout::BiPlanarYuv);
+            assert_eq!(specs.len(), 2);
+            assert_eq!((specs[0].width, specs[0].height), (1920, 1080));
+            assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::R8Unorm);
+            assert_eq!(
+                (specs[1].width, specs[1].height),
+                (960, 540),
+                "chroma is half in both axes"
+            );
+            assert_eq!(
+                specs[1].wgpu_format,
+                wgpu::TextureFormat::Rg8Unorm,
+                "NV12 chroma is interleaved Cb,Cr — two components in one plane"
+            );
+        }
 
-        let wrong_format = DmabufRef {
-            fourcc: DRM_FORMAT_XBGR8888,
-            ..valid
-        };
-        assert_eq!(
-            validate_render_target(&wrong_format),
-            Err(ImportError::UnsupportedFormat {
-                fourcc: DRM_FORMAT_XBGR8888
-            })
-        );
+        // Case `p010_uses_sixteen_bit_planes_for_its_ten_bit_samples`.
+        {
+            let (layout, specs) = plane_specs(DRM_FORMAT_P010, 3840, 2160).unwrap();
+            assert_eq!(layout, PlaneLayout::BiPlanarYuv);
+            assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::R16Unorm);
+            assert_eq!(specs[1].wgpu_format, wgpu::TextureFormat::Rg16Unorm);
+            assert_eq!(specs[0].texel_bytes, 2);
+            assert_eq!(specs[1].texel_bytes, 4);
+        }
 
-        let tiled = DmabufRef {
-            modifier: 0x0200_0000_1040_1b04,
-            ..valid
-        };
-        assert!(matches!(
-            validate_render_target(&tiled),
-            Err(ImportError::UnsupportedModifier { .. })
-        ));
-    }
+        // Case `odd_dimensions_keep_a_whole_chroma_sample_for_the_last_row_and_column`.
+        {
+            // Rounding down would drop the right column and bottom row of chroma,
+            // tinting the edges of an odd-sized picture.
+            let (_, specs) = plane_specs(DRM_FORMAT_NV12, 1919, 1079).unwrap();
+            assert_eq!((specs[1].width, specs[1].height), (960, 540));
+        }
 
-    #[test]
-    fn scanout_target_contract_rejects_offset_and_short_stride() {
-        let file = tempfile::tempfile().expect("temporary descriptor");
-        let offset_planes = one_plane(&file, 4, 256);
-        let offset = DmabufRef {
-            planes: &offset_planes,
-            fourcc: DRM_FORMAT_XRGB8888,
-            modifier: DRM_FORMAT_MOD_LINEAR,
-            width: 64,
-            height: 32,
-            colorimetry: Colorimetry::default(),
-        };
-        assert!(matches!(
-            validate_render_target(&offset),
-            Err(ImportError::Vulkan(message)) if message.contains("offset must be zero")
-        ));
+        // Case `yuyv_is_imported_at_half_width_because_one_texel_holds_two_pixels`.
+        {
+            let (layout, specs) = plane_specs(DRM_FORMAT_YUYV, 1920, 1080).unwrap();
+            assert_eq!(layout, PlaneLayout::PackedYuv422);
+            assert_eq!(specs.len(), 1);
+            assert_eq!((specs[0].width, specs[0].height), (960, 1080));
+            assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::Rgba8Unorm);
+        }
 
-        let short_planes = one_plane(&file, 0, 64 * 4 - 1);
-        let short = DmabufRef {
-            planes: &short_planes,
-            ..offset
-        };
-        assert_eq!(
-            validate_render_target(&short),
-            Err(ImportError::StrideMismatch {
-                plane: 0,
-                producer: 255,
-                driver: 256,
-            })
-        );
-    }
+        // Case `drm_rgb_names_map_to_the_matching_vulkan_byte_order`.
+        {
+            // Getting this backwards swaps red and blue — the classic dmabuf bug.
+            // DRM names by little-endian word order, so AR24 (ARGB8888) is
+            // B,G,R,A in memory.
+            let (layout, specs) = plane_specs(DRM_FORMAT_ARGB8888, 64, 64).unwrap();
+            assert_eq!(layout, PlaneLayout::Packed);
+            assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::Bgra8Unorm);
+            assert_eq!(specs[0].format, vk::Format::B8G8R8A8_UNORM);
 
-    #[test]
-    fn nv12_maps_to_a_luma_and_a_half_resolution_chroma_plane() {
-        let (layout, specs) = plane_specs(DRM_FORMAT_NV12, 1920, 1080).unwrap();
-        assert_eq!(layout, PlaneLayout::BiPlanarYuv);
-        assert_eq!(specs.len(), 2);
-        assert_eq!((specs[0].width, specs[0].height), (1920, 1080));
-        assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::R8Unorm);
-        assert_eq!(
-            (specs[1].width, specs[1].height),
-            (960, 540),
-            "chroma is half in both axes"
-        );
-        assert_eq!(
-            specs[1].wgpu_format,
-            wgpu::TextureFormat::Rg8Unorm,
-            "NV12 chroma is interleaved Cb,Cr — two components in one plane"
-        );
-    }
+            let (_, specs) = plane_specs(DRM_FORMAT_ABGR8888, 64, 64).unwrap();
+            assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::Rgba8Unorm);
 
-    #[test]
-    fn p010_uses_sixteen_bit_planes_for_its_ten_bit_samples() {
-        let (layout, specs) = plane_specs(DRM_FORMAT_P010, 3840, 2160).unwrap();
-        assert_eq!(layout, PlaneLayout::BiPlanarYuv);
-        assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::R16Unorm);
-        assert_eq!(specs[1].wgpu_format, wgpu::TextureFormat::Rg16Unorm);
-        assert_eq!(specs[0].texel_bytes, 2);
-        assert_eq!(specs[1].texel_bytes, 4);
-    }
+            // The X variants share the layout; alpha is simply ignored.
+            let (_, x) = plane_specs(DRM_FORMAT_XRGB8888, 64, 64).unwrap();
+            assert_eq!(x[0].wgpu_format, wgpu::TextureFormat::Bgra8Unorm);
 
-    #[test]
-    fn odd_dimensions_keep_a_whole_chroma_sample_for_the_last_row_and_column() {
-        // Rounding down would drop the right column and bottom row of chroma,
-        // tinting the edges of an odd-sized picture.
-        let (_, specs) = plane_specs(DRM_FORMAT_NV12, 1919, 1079).unwrap();
-        assert_eq!((specs[1].width, specs[1].height), (960, 540));
-    }
+            // Ten-bit and half-float client buffers keep their precision.
+            let (_, ten) = plane_specs(DRM_FORMAT_XBGR2101010, 64, 64).unwrap();
+            assert_eq!(ten[0].wgpu_format, wgpu::TextureFormat::Rgb10a2Unorm);
+            assert_eq!(ten[0].format, vk::Format::A2B10G10R10_UNORM_PACK32);
+            let (_, half) = plane_specs(DRM_FORMAT_ABGR16161616F, 64, 64).unwrap();
+            assert_eq!(half[0].wgpu_format, wgpu::TextureFormat::Rgba16Float);
+            assert_eq!(half[0].texel_bytes, 8);
+        }
 
-    #[test]
-    fn yuyv_is_imported_at_half_width_because_one_texel_holds_two_pixels() {
-        let (layout, specs) = plane_specs(DRM_FORMAT_YUYV, 1920, 1080).unwrap();
-        assert_eq!(layout, PlaneLayout::PackedYuv422);
-        assert_eq!(specs.len(), 1);
-        assert_eq!((specs[0].width, specs[0].height), (960, 1080));
-        assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::Rgba8Unorm);
-    }
-
-    #[test]
-    fn drm_rgb_names_map_to_the_matching_vulkan_byte_order() {
-        // Getting this backwards swaps red and blue — the classic dmabuf bug.
-        // DRM names by little-endian word order, so AR24 (ARGB8888) is
-        // B,G,R,A in memory.
-        let (layout, specs) = plane_specs(DRM_FORMAT_ARGB8888, 64, 64).unwrap();
-        assert_eq!(layout, PlaneLayout::Packed);
-        assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::Bgra8Unorm);
-        assert_eq!(specs[0].format, vk::Format::B8G8R8A8_UNORM);
-
-        let (_, specs) = plane_specs(DRM_FORMAT_ABGR8888, 64, 64).unwrap();
-        assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::Rgba8Unorm);
-
-        // The X variants share the layout; alpha is simply ignored.
-        let (_, x) = plane_specs(DRM_FORMAT_XRGB8888, 64, 64).unwrap();
-        assert_eq!(x[0].wgpu_format, wgpu::TextureFormat::Bgra8Unorm);
-    }
-
-    #[test]
-    fn an_unknown_fourcc_is_rejected_rather_than_guessed_at() {
-        assert!(plane_specs(media::dmabuf::fourcc(b'Z', b'Z', b'Z', b'Z'), 64, 64).is_none());
+        // Case `an_unknown_fourcc_is_rejected_rather_than_guessed_at`.
+        {
+            assert!(plane_specs(media::dmabuf::fourcc(b'Z', b'Z', b'Z', b'Z'), 64, 64).is_none());
+        }
     }
 
     #[test]

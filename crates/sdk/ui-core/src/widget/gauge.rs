@@ -11,13 +11,12 @@
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Arc, Cap, Circle, Join, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Brush, Color, Fill};
-use winit::event::WindowEvent;
 
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
@@ -68,6 +67,19 @@ impl GaugeStyle {
         self.compact_labels = true;
         self
     }
+}
+
+/// What an immediate-mode gauge paints: how full it is, in which colour,
+/// and the text around it. Either string may be empty.
+#[derive(Clone, Copy, Debug)]
+pub struct GaugeReading<'a> {
+    /// Fill fraction, clamped to `0..1` when painted.
+    pub frac: f32,
+    pub color: Color,
+    /// What is measured — a ring's dim caption, a bar's top-left label.
+    pub label: &'a str,
+    /// The readout — a ring's prominent centre text, a bar's right-aligned value.
+    pub value: &'a str,
 }
 
 /// Rounds a `0..=1` fraction to a whole percentage for the accessibility
@@ -209,76 +221,54 @@ impl RingGauge {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "ring painting combines scene resources and theme with center/radius/thickness, fraction, color and value/caption text"
-    )]
+    /// Paint a ring of `thickness` along `ring`, filled to `reading.frac`,
+    /// with `reading.value` over `reading.label` at its centre.
     pub fn draw_at(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        center: Point,
-        radius: f64,
+        ctx: &mut PaintCtx<'_>,
+        ring: Circle,
         thickness: f64,
-        frac: f32,
-        color: Color,
-        theme: &Theme,
-        big: &str,
-        small: &str,
+        reading: &GaugeReading<'_>,
     ) {
-        Self::draw_styled(
-            scene,
-            transform,
-            text_renderer,
-            center,
-            radius,
-            thickness,
-            frac,
-            color,
-            theme,
-            big,
-            small,
-            &GaugeStyle::default(),
-        );
+        Self::draw_styled(ctx, ring, thickness, reading, &GaugeStyle::default());
     }
 
     /// [`Self::draw_at`] with an explicit [`GaugeStyle`].
     pub fn draw_styled(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        center: Point,
-        radius: f64,
+        ctx: &mut PaintCtx<'_>,
+        ring: Circle,
         thickness: f64,
-        frac: f32,
-        color: Color,
-        theme: &Theme,
-        big: &str,
-        small: &str,
+        reading: &GaugeReading<'_>,
         style: &GaugeStyle,
     ) {
-        if radius <= 0.0 {
+        if ring.radius <= 0.0 {
             return;
         }
-        let track = Circle::new(center, radius);
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let (center, radius) = (ring.center, ring.radius);
         scene.stroke(
             &Stroke::new(thickness),
             transform,
             track_color(theme, style.track_alpha),
             None,
-            &track,
+            &ring,
         );
 
-        let frac = f64::from(frac.clamp(0.0, 1.0));
+        let frac = f64::from(reading.frac.clamp(0.0, 1.0));
         if frac > 0.0 {
             let arc = Arc::new(center, (radius, radius), -FRAC_PI_2, frac * TAU, 0.0);
             let stroke = Stroke::new(thickness)
                 .with_caps(Cap::Round)
                 .with_join(Join::Round);
-            scene.stroke(&stroke, transform, color, None, &arc);
+            scene.stroke(&stroke, transform, reading.color, None, &arc);
         }
 
         let tokens = &theme.tokens;
+        let (big, small) = (reading.value, reading.label);
         if !big.is_empty() {
             let size = renderer_type_size(text_renderer, tokens.typography.scale.xl);
             let (bw, bh) = text_renderer.measure_weighted(big, size, None, TextWeight::Bold);
@@ -312,8 +302,6 @@ impl RingGauge {
 }
 
 impl Widget for RingGauge {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -362,35 +350,19 @@ impl Widget for RingGauge {
         // Inset the arc radius by half the thickness so the round caps stay
         // inside the box.
         let radius = (radius_box - thickness / 2.0).max(0.0);
-        let color = self.resolve_color(theme);
+        let reading = GaugeReading {
+            frac: self.frac,
+            color: self.resolve_color(theme),
+            label: &self.small,
+            value: &self.big,
+        };
         RingGauge::draw_styled(
-            scene,
-            transform,
-            text_renderer,
-            self.rect.center(),
-            radius,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            Circle::new(self.rect.center(), radius),
             thickness,
-            self.frac,
-            color,
-            theme,
-            &self.big,
-            &self.small,
+            &reading,
             &self.style,
         );
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {
@@ -505,51 +477,34 @@ impl BarGauge {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "bar painting combines scene resources and theme with bounds, fraction, color, label and formatted value"
-    )]
-    pub fn draw_at(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        rect: Rect,
-        theme: &Theme,
-        frac: f32,
-        color: Color,
-        label: &str,
-        value: &str,
-    ) {
-        Self::draw_styled(
-            scene,
-            transform,
-            text_renderer,
-            rect,
-            theme,
-            frac,
-            color,
-            label,
-            value,
-            &GaugeStyle::default(),
-        );
+    /// Paint `reading.label` top-left and `reading.value` top-right of
+    /// `rect`, over a track along its bottom filled to `reading.frac`.
+    pub fn draw_at(ctx: &mut PaintCtx<'_>, rect: Rect, reading: &GaugeReading<'_>) {
+        Self::draw_styled(ctx, rect, reading, &GaugeStyle::default());
     }
 
     /// [`Self::draw_at`] with an explicit [`GaugeStyle`].
     pub fn draw_styled(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
+        ctx: &mut PaintCtx<'_>,
         rect: Rect,
-        theme: &Theme,
-        frac: f32,
-        color: Color,
-        label: &str,
-        value: &str,
+        reading: &GaugeReading<'_>,
         style: &GaugeStyle,
     ) {
         if rect.width() <= 0.0 {
             return;
         }
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let GaugeReading {
+            frac,
+            color,
+            label,
+            value,
+        } = *reading;
         let tokens = &theme.tokens;
         let text_size = renderer_type_size(
             text_renderer,
@@ -656,8 +611,6 @@ impl BarGauge {
 }
 
 impl Widget for BarGauge {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -693,33 +646,18 @@ impl Widget for BarGauge {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let color = self.resolve_color(theme);
+        let reading = GaugeReading {
+            frac: self.frac,
+            color: self.resolve_color(theme),
+            label: &self.label,
+            value: &self.value,
+        };
         BarGauge::draw_styled(
-            scene,
-            transform,
-            text_renderer,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             self.rect,
-            theme,
-            self.frac,
-            color,
-            &self.label,
-            &self.value,
+            &reading,
             &self.style,
         );
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {
@@ -768,167 +706,162 @@ mod tests {
             .count()
     }
 
-    /// Threshold colour resolution: below `warning` → success, in the
-    /// `[warning, danger)` band → warning, at/above `danger` → danger.
     #[test]
-    fn thresholds_pick_semantic_bands() {
-        let theme = Theme::dark();
-        let t = GaugeThresholds::default(); // warning 0.6, danger 0.85
-        let s = &theme.tokens.colors.semantic;
-        assert_eq!(t.color(&theme, 0.10), s.success);
-        assert_eq!(t.color(&theme, 0.59), s.success);
-        assert_eq!(t.color(&theme, 0.60), s.warning, "boundary is inclusive");
-        assert_eq!(t.color(&theme, 0.84), s.warning);
-        assert_eq!(t.color(&theme, 0.85), s.danger, "boundary is inclusive");
-        assert_eq!(t.color(&theme, 1.0), s.danger);
-    }
+    fn gauge_ring_and_bar_paint_tracks_labels_and_threshold_bands() {
+        /// Threshold colour resolution: below `warning` → success, in the
+        /// `[warning, danger)` band → warning, at/above `danger` → danger.
+        fn thresholds_pick_semantic_bands() {
+            let theme = Theme::dark();
+            let t = GaugeThresholds::default(); // warning 0.6, danger 0.85
+            let s = &theme.tokens.colors.semantic;
+            assert_eq!(t.color(&theme, 0.10), s.success);
+            assert_eq!(t.color(&theme, 0.59), s.success);
+            assert_eq!(t.color(&theme, 0.60), s.warning, "boundary is inclusive");
+            assert_eq!(t.color(&theme, 0.84), s.warning);
+            assert_eq!(t.color(&theme, 0.85), s.danger, "boundary is inclusive");
+            assert_eq!(t.color(&theme, 1.0), s.danger);
+        }
 
-    /// A ring at fraction 0 paints only the track; a non-zero fraction
-    /// paints the track *and* the arc (one more stroke).
-    #[test]
-    fn ring_zero_paints_track_only() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
+        /// A ring at fraction 0 paints only the track; a non-zero fraction
+        /// paints the track *and* the arc (one more stroke).
+        fn ring_zero_paints_track_only() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
 
-        let mut zero = Scene::new();
-        RingGauge::draw_at(
-            &mut zero,
-            Affine::IDENTITY,
-            &mut tr,
-            Point::new(50.0, 50.0),
-            40.0,
-            6.0,
-            0.0,
-            theme.accent_primary,
-            &theme,
-            "",
-            "",
-        );
-        let mut half = Scene::new();
-        RingGauge::draw_at(
-            &mut half,
-            Affine::IDENTITY,
-            &mut tr,
-            Point::new(50.0, 50.0),
-            40.0,
-            6.0,
-            0.5,
-            theme.accent_primary,
-            &theme,
-            "",
-            "",
-        );
-        assert!(
-            count_color_tags(&half) > count_color_tags(&zero),
-            "non-zero fraction must paint the arc on top of the track",
-        );
-    }
+            let mut zero = Scene::new();
+            RingGauge::draw_at(
+                &mut PaintCtx::new(&mut zero, Affine::IDENTITY, &mut tr, &theme),
+                Circle::new(Point::new(50.0, 50.0), 40.0),
+                6.0,
+                &GaugeReading {
+                    frac: 0.0,
+                    color: theme.accent_primary,
+                    label: "",
+                    value: "",
+                },
+            );
+            let mut half = Scene::new();
+            RingGauge::draw_at(
+                &mut PaintCtx::new(&mut half, Affine::IDENTITY, &mut tr, &theme),
+                Circle::new(Point::new(50.0, 50.0), 40.0),
+                6.0,
+                &GaugeReading {
+                    frac: 0.5,
+                    color: theme.accent_primary,
+                    label: "",
+                    value: "",
+                },
+            );
+            assert!(
+                count_color_tags(&half) > count_color_tags(&zero),
+                "non-zero fraction must paint the arc on top of the track",
+            );
+        }
 
-    /// The ring's centred label paints a glyph run when supplied.
-    #[test]
-    fn ring_label_paints_glyphs() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        RingGauge::draw_at(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            Point::new(50.0, 50.0),
-            40.0,
-            6.0,
-            0.7,
-            theme.accent_primary,
-            &theme,
-            "70%",
-            "cpu",
-        );
-        assert!(
-            !scene.encoding().resources.glyph_runs.is_empty(),
-            "ring with a label must paint glyph runs",
-        );
-    }
+        /// The ring's centred label paints a glyph run when supplied.
+        fn ring_label_paints_glyphs() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            RingGauge::draw_at(
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
+                Circle::new(Point::new(50.0, 50.0), 40.0),
+                6.0,
+                &GaugeReading {
+                    frac: 0.7,
+                    color: theme.accent_primary,
+                    label: "cpu",
+                    value: "70%",
+                },
+            );
+            assert!(
+                !scene.encoding().resources.glyph_runs.is_empty(),
+                "ring with a label must paint glyph runs",
+            );
+        }
 
-    /// A ring gauge widget resolves its fill via thresholds: a 0.9 value
-    /// is danger, a 0.3 value is success.
-    #[test]
-    fn ring_widget_uses_thresholds() {
-        let theme = Theme::dark();
-        let hot = RingGauge::new(0.9);
-        assert_eq!(
-            hot.resolve_color(&theme),
-            theme.tokens.colors.semantic.danger
-        );
-        let cool = RingGauge::new(0.3);
-        assert_eq!(
-            cool.resolve_color(&theme),
-            theme.tokens.colors.semantic.success
-        );
-        // Fixed colour overrides thresholds.
-        let fixed = RingGauge::new(0.9).with_color(Color::from_rgb8(1, 2, 3));
-        assert_eq!(fixed.resolve_color(&theme), Color::from_rgb8(1, 2, 3));
-    }
+        /// A ring gauge widget resolves its fill via thresholds: a 0.9 value
+        /// is danger, a 0.3 value is success.
+        fn ring_widget_uses_thresholds() {
+            let theme = Theme::dark();
+            let hot = RingGauge::new(0.9);
+            assert_eq!(
+                hot.resolve_color(&theme),
+                theme.tokens.colors.semantic.danger
+            );
+            let cool = RingGauge::new(0.3);
+            assert_eq!(
+                cool.resolve_color(&theme),
+                theme.tokens.colors.semantic.success
+            );
+            // Fixed colour overrides thresholds.
+            let fixed = RingGauge::new(0.9).with_color(Color::from_rgb8(1, 2, 3));
+            assert_eq!(fixed.resolve_color(&theme), Color::from_rgb8(1, 2, 3));
+        }
 
-    /// The bar gauge fills proportionally: a 0-fraction bar paints just the
-    /// track, a non-zero fraction adds the fill rect.
-    #[test]
-    fn bar_zero_paints_track_only() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let rect = Rect::new(0.0, 0.0, 200.0, 32.0);
+        /// The bar gauge fills proportionally: a 0-fraction bar paints just the
+        /// track, a non-zero fraction adds the fill rect.
+        fn bar_zero_paints_track_only() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let rect = Rect::new(0.0, 0.0, 200.0, 32.0);
 
-        let mut zero = Scene::new();
-        BarGauge::draw_at(
-            &mut zero,
-            Affine::IDENTITY,
-            &mut tr,
-            rect,
-            &theme,
-            0.0,
-            theme.accent_primary,
-            "",
-            "",
-        );
-        let mut filled = Scene::new();
-        BarGauge::draw_at(
-            &mut filled,
-            Affine::IDENTITY,
-            &mut tr,
-            rect,
-            &theme,
-            0.5,
-            theme.accent_primary,
-            "",
-            "",
-        );
-        assert_eq!(count_color_tags(&zero), 1, "track only at frac 0");
-        assert!(
-            count_color_tags(&filled) > count_color_tags(&zero),
-            "fill adds a rect"
-        );
-    }
+            let mut zero = Scene::new();
+            BarGauge::draw_at(
+                &mut PaintCtx::new(&mut zero, Affine::IDENTITY, &mut tr, &theme),
+                rect,
+                &GaugeReading {
+                    frac: 0.0,
+                    color: theme.accent_primary,
+                    label: "",
+                    value: "",
+                },
+            );
+            let mut filled = Scene::new();
+            BarGauge::draw_at(
+                &mut PaintCtx::new(&mut filled, Affine::IDENTITY, &mut tr, &theme),
+                rect,
+                &GaugeReading {
+                    frac: 0.5,
+                    color: theme.accent_primary,
+                    label: "",
+                    value: "",
+                },
+            );
+            assert_eq!(count_color_tags(&zero), 1, "track only at frac 0");
+            assert!(
+                count_color_tags(&filled) > count_color_tags(&zero),
+                "fill adds a rect"
+            );
+        }
 
-    /// A bar gauge with a label + value paints two glyph runs.
-    #[test]
-    fn bar_label_and_value_paint() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        BarGauge::draw_at(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            Rect::new(0.0, 0.0, 200.0, 32.0),
-            &theme,
-            0.4,
-            theme.accent_primary,
-            "Memory",
-            "4.2 GB",
-        );
-        assert!(
-            !scene.encoding().resources.glyph_runs.is_empty(),
-            "label/value must paint glyph runs",
-        );
+        /// A bar gauge with a label + value paints two glyph runs.
+        fn bar_label_and_value_paint() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            BarGauge::draw_at(
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
+                Rect::new(0.0, 0.0, 200.0, 32.0),
+                &GaugeReading {
+                    frac: 0.4,
+                    color: theme.accent_primary,
+                    label: "Memory",
+                    value: "4.2 GB",
+                },
+            );
+            assert!(
+                !scene.encoding().resources.glyph_runs.is_empty(),
+                "label/value must paint glyph runs",
+            );
+        }
+
+        thresholds_pick_semantic_bands();
+        ring_zero_paints_track_only();
+        ring_label_paints_glyphs();
+        ring_widget_uses_thresholds();
+        bar_zero_paints_track_only();
+        bar_label_and_value_paint();
     }
 
     /// A span paints its track and its fill even when empty (a dot), and

@@ -599,414 +599,446 @@ pub(crate) mod tests {
         }
     }
 
+    /// Linux extent selection, exact fit, alignment and empty disks.
     #[test]
-    fn linux_uses_the_largest_free_extent_at_its_start() {
-        let s = 512;
-        let mib = MIB / s;
-        let parts = vec![
-            part(
-                1,
-                "a0000000-0000-4000-8000-000000000001",
-                mib,
-                601 * mib - 1,
-            ),
-            // 50 GiB gap, then a partition, then a ~140 GiB tail.
-            part(
-                2,
-                "a0000000-0000-4000-8000-000000000002",
-                601 * mib + 50 * GIB / s,
-                601 * mib + 60 * GIB / s - 1,
-            ),
-        ];
-        let basis = linux_basis(s, 200 * GIB, parts);
-        let r = req(64 * GIB);
-        let plan = compute(&basis, r).unwrap();
-        assert_layout(&plan, r);
-        assert!(plan.shrink.is_none());
-        assert_eq!(
-            plan.target_extent.first_lba,
-            601 * mib + 60 * GIB / s + mib,
-            "starts exactly 1 MiB after the last partition"
-        );
-        assert!(plan.staging_esp.partition_guid.is_some());
-        assert!(plan.staging_root.partition_guid.is_some());
-        assert_ne!(
-            plan.staging_esp.partition_guid,
-            plan.staging_root.partition_guid
-        );
-    }
-
-    #[test]
-    fn linux_refuses_when_no_single_extent_fits_even_if_the_sum_would() {
-        let s = 512;
-        let mib = MIB / s;
-        let gap = 70 * GIB / s;
-        let parts = vec![
-            part(1, "a0000000-0000-4000-8000-000000000001", mib, 2 * mib - 1),
-            part(
-                2,
-                "a0000000-0000-4000-8000-000000000002",
-                2 * mib + gap,
-                3 * mib + gap - 1,
-            ),
-            part(
-                3,
-                "a0000000-0000-4000-8000-000000000003",
-                3 * mib + 2 * gap,
-                4 * mib + 2 * gap - 1,
-            ),
-        ];
-        let end = 4 * mib + 2 * gap;
-        let basis = linux_basis(s, (end + 34 + mib / 2) * s, parts);
-        let err = compute(&basis, req(64 * GIB)).unwrap_err();
-        let PlanError::InsufficientSpace {
-            needed_bytes,
-            available_bytes,
-        } = err
-        else {
-            panic!("{err:?}")
-        };
-        assert_eq!(needed_bytes, 64 * GIB + 600 * MIB + 40 * GIB);
-        assert_eq!(
-            available_bytes,
-            70 * GIB - 2 * MIB,
-            "clearance on both sides"
-        );
-    }
-
-    #[test]
-    fn linux_exact_fit_uses_every_aligned_lba_and_one_more_mib_fails() {
-        let s = 512;
-        let mib = MIB / s;
-        let r = req(64 * GIB);
-        let need = (64 * GIB + 600 * MIB + 40 * GIB) / s;
-        // Partition 1 at [1 MiB, 2 MiB); 1 MiB clearance; the layout; 1 MiB
-        // clearance; partition 2.
-        let make = |short: u64| {
-            let second = 3 * mib + need + mib - short;
-            linux_basis(
-                s,
-                (second + 2 * mib) * s,
-                vec![
-                    part(1, "a0000000-0000-4000-8000-000000000001", mib, 2 * mib - 1),
-                    part(
-                        2,
-                        "a0000000-0000-4000-8000-000000000002",
-                        second,
-                        second + mib - 1,
-                    ),
-                ],
-            )
-        };
-        let plan = compute(&make(0), r).unwrap();
-        assert_layout(&plan, r);
-        assert_eq!(plan.target_extent.first_lba, 3 * mib);
-        assert_eq!(plan.staging_root.last_lba + 1, 3 * mib + need);
-        // One sector short is already a whole MiB short after alignment.
-        assert!(matches!(
-            compute(&make(1), r),
-            Err(PlanError::InsufficientSpace { .. })
-        ));
-    }
-
-    #[test]
-    fn linux_unaligned_neighbours_round_inward() {
-        let s = 512;
-        let mib = MIB / s;
-        let parts = vec![
-            part(1, "a0000000-0000-4000-8000-000000000001", 34, 1_000_003),
-            part(
-                2,
-                "a0000000-0000-4000-8000-000000000002",
-                300 * GIB / s + 17,
-                300 * GIB / s + 5000,
-            ),
-        ];
-        let basis = linux_basis(s, 400 * GIB, parts);
-        let r = req(64 * GIB);
-        let plan = compute(&basis, r).unwrap();
-        assert_layout(&plan, r);
-        // The largest span is the one between the partitions; it starts
-        // 1 MiB after partition 1, rounded up.
-        let expected = (1_000_003 + 1 + mib).div_ceil(mib) * mib;
-        assert_eq!(plan.target_extent.first_lba, expected);
-    }
-
-    #[test]
-    fn linux_4kn_sectors_align_to_256_lbas() {
-        let s = 4096;
-        let lbas_per_mib = MIB / s;
-        assert_eq!(lbas_per_mib, 256);
-        let parts = vec![part(
-            1,
-            "a0000000-0000-4000-8000-000000000001",
-            256,
-            256 * 601 - 1,
-        )];
-        let basis = linux_basis(s, 256 * GIB, parts);
-        let r = req(64 * GIB);
-        let plan = compute(&basis, r).unwrap();
-        assert_layout(&plan, r);
-        assert_eq!(plan.target_extent.first_lba, 256 * 602);
-        assert_eq!(plan.target_extent.lbas(), 64 * GIB / s);
-        assert_eq!(plan.staging_esp.extent().lbas(), 600 * 256);
-    }
-
-    #[test]
-    fn empty_linux_disk_starts_at_the_first_aligned_mib() {
-        let basis = linux_basis(512, 128 * GIB, Vec::new());
-        let r = req(64 * GIB);
-        let plan = compute(&basis, r).unwrap();
-        assert_layout(&plan, r);
-        assert_eq!(plan.target_extent.first_lba, 2048);
-    }
-
-    #[test]
-    fn staging_sizes_round_up_to_whole_mib() {
-        let basis = linux_basis(512, 128 * GIB, Vec::new());
-        let r = Requirements {
-            staging_esp_bytes: 600 * MIB + 512,
-            staging_root_bytes: 40 * GIB + 1,
-            target_bytes: 35 * GIB + 3,
-        };
-        let plan = compute(&basis, r).unwrap();
-        assert_layout(&plan, r);
-        assert_eq!(plan.staging_esp.extent().lbas() * 512, 601 * MIB);
-        assert_eq!(plan.staging_root.extent().lbas() * 512, 40 * GIB + MIB);
-        assert_eq!(plan.target_extent.lbas() * 512, 35 * GIB + MIB);
-    }
-
-    #[test]
-    fn target_below_installer_minimum_is_refused() {
-        let basis = linux_basis(512, 256 * GIB, Vec::new());
-        assert!(matches!(
-            compute(&basis, req(35 * GIB - MIB)),
-            Err(PlanError::Unsupported(_))
-        ));
-    }
-
-    #[test]
-    fn inconsistent_partition_maps_are_unsupported() {
-        let s = 512;
-        let overlap = linux_basis(
-            s,
-            64 * GIB,
-            vec![
-                part(1, "a0000000-0000-4000-8000-000000000001", 2048, 10_000),
-                part(2, "a0000000-0000-4000-8000-000000000002", 10_000, 20_000),
-            ],
-        );
-        assert!(matches!(
-            compute(&overlap, req(35 * GIB)),
-            Err(PlanError::Unsupported(_))
-        ));
-        let mut odd = linux_basis(512, 64 * GIB, Vec::new());
-        odd.disk.sector_bytes = 520;
-        assert!(matches!(
-            compute(&odd, req(35 * GIB)),
-            Err(PlanError::Unsupported(_))
-        ));
-        let mut outside = linux_basis(s, 64 * GIB, Vec::new());
-        outside.disk.partitions = vec![part(1, "a0000000-0000-4000-8000-000000000001", 1, 100)];
-        assert!(matches!(
-            compute(&outside, req(35 * GIB)),
-            Err(PlanError::Unsupported(_))
-        ));
-        let mut duplicate = linux_basis(s, 64 * GIB, Vec::new());
-        duplicate.disk.partitions = vec![
-            part(1, "a0000000-0000-4000-8000-000000000001", 2048, 4095),
-            part(2, "A0000000-0000-4000-8000-000000000001", 8192, 9000),
-        ];
-        assert!(matches!(
-            compute(&duplicate, req(35 * GIB)),
-            Err(PlanError::Unsupported(_))
-        ));
-    }
-
-    #[test]
-    fn windows_shrinks_c_by_exactly_the_shortfall_before_winre() {
-        // 512 GiB disk, C: ends at 400 GiB, WinRE right after; tail free.
-        let basis = windows_basis(512, 400, 100, true);
-        let r = req(64 * GIB);
-        let plan = compute(&basis, r).unwrap();
-        assert_layout(&plan, r);
-        let shrink = plan
-            .shrink
-            .clone()
-            .expect("C: must shrink: WinRE blocks the tail");
-        let volume = basis.system_volume.as_ref().unwrap();
-        assert_eq!(shrink.from_bytes, volume.size_bytes);
-        let need = 64 * GIB + 600 * MIB + 40 * GIB;
-        // Nothing usable after C: before WinRE, so C: gives up need + 2 MiB
-        // clearance (one each side of the layout).
-        assert_eq!(shrink.from_bytes - shrink.to_bytes, need + 2 * MIB);
-        assert_eq!(shrink.to_bytes % MIB, 0);
-        let winre = &basis.disk.partitions[3];
-        assert_eq!(plan.staging_root.last_lba + 1 + MIB / 512, winre.first_lba);
-        assert!(
-            plan.staging_esp.partition_guid.is_none(),
-            "Windows cannot set GUIDs"
-        );
-        assert!(plan.staging_root.partition_guid.is_none());
-        assert_eq!(plan.basis.host_os(), "windows");
-    }
-
-    #[test]
-    fn windows_uses_unallocated_space_after_c_before_shrinking() {
-        // C: ends at 400 GiB; no WinRE; a 112 GiB free tail covers everything.
-        let basis = windows_basis(512, 400, 100, false);
-        let r = req(64 * GIB);
-        let plan = compute(&basis, r).unwrap();
-        assert_layout(&plan, r);
-        assert!(plan.shrink.is_none());
-        assert_eq!(
-            plan.staging_root.last_lba,
-            (basis.disk.last_usable_lba + 1) / 2048 * 2048 - 1
-        );
-    }
-
-    #[test]
-    fn windows_shrinks_only_the_part_not_already_free() {
-        // 20 GiB free after C:, WinRE after that.
-        let s = 512;
-        let mib = MIB / s;
-        let mut basis = windows_basis(512, 400, 100, false);
-        let winre_first = 420 * GIB / s;
-        basis.disk.partitions.push(part(
-            4,
-            "e0000000-0000-4000-8000-000000000004",
-            winre_first,
-            winre_first + 700 * mib - 1,
-        ));
-        let r = req(64 * GIB);
-        let plan = compute(&basis, r).unwrap();
-        assert_layout(&plan, r);
-        let shrink = plan.shrink.unwrap();
-        let need = 64 * GIB + 600 * MIB + 40 * GIB;
-        assert_eq!(
-            shrink.from_bytes - shrink.to_bytes,
-            need + 2 * MIB - 20 * GIB
-        );
-    }
-
-    #[test]
-    fn windows_refuses_a_shrink_that_leaves_c_too_full() {
-        // C: ~400 GiB with 300 GiB used: reserve 45 GiB, so C: keeps 345 GiB
-        // and only ~55 GiB can be carved: less than the ~104.6 GiB needed.
-        let basis = windows_basis(512, 400, 300, true);
-        let err = compute(&basis, req(64 * GIB)).unwrap_err();
-        let PlanError::InsufficientSpace {
-            available_bytes, ..
-        } = err
-        else {
-            panic!("{err:?}")
-        };
-        let volume = basis.system_volume.as_ref().unwrap();
-        assert_eq!(minimum_system_volume_bytes(volume), 345 * GIB);
-        assert!(available_bytes < 64 * GIB + 600 * MIB + 40 * GIB);
-        assert!(available_bytes > 50 * GIB);
-    }
-
-    #[test]
-    fn windows_refuses_below_supported_minimum() {
-        let mut basis = windows_basis(512, 400, 50, true);
-        // Unmovable files: the supported minimum dominates the free rule.
-        basis.system_volume.as_mut().unwrap().supported_min_bytes = 350 * GIB;
-        assert!(matches!(
-            compute(&basis, req(64 * GIB)),
-            Err(PlanError::InsufficientSpace { .. })
-        ));
-        let bounds = target_bounds(&basis, req(0));
-        assert!(matches!(bounds, Err(PlanError::InsufficientSpace { .. })));
-    }
-
-    #[test]
-    fn reserve_is_the_larger_of_20_gib_and_15_percent_of_used() {
-        assert_eq!(system_volume_reserve(10 * GIB), 20 * GIB);
-        assert_eq!(system_volume_reserve(200 * GIB), 30 * GIB);
-        assert_eq!(system_volume_reserve(0), 20 * GIB);
-    }
-
-    #[test]
-    fn target_bounds_max_is_exactly_what_compute_accepts() {
-        for basis in [
-            windows_basis(512, 400, 100, true),
-            windows_basis(512, 400, 100, false),
-            linux_basis(512, 300 * GIB, Vec::new()),
-            linux_basis(4096, 300 * GIB, Vec::new()),
-        ] {
-            let bounds = target_bounds(&basis, req(0)).unwrap();
-            assert_eq!(bounds.min_bytes, MIN_TARGET_BYTES);
-            assert_eq!(bounds.max_bytes % MIB, 0);
-            let r = req(bounds.max_bytes);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn linux_plan_uses_one_aligned_free_extent() {
+        // Phase `linux_uses_the_largest_free_extent_at_its_start`.
+        {
+            let s = 512;
+            let mib = MIB / s;
+            let parts = vec![
+                part(
+                    1,
+                    "a0000000-0000-4000-8000-000000000001",
+                    mib,
+                    601 * mib - 1,
+                ),
+                // 50 GiB gap, then a partition, then a ~140 GiB tail.
+                part(
+                    2,
+                    "a0000000-0000-4000-8000-000000000002",
+                    601 * mib + 50 * GIB / s,
+                    601 * mib + 60 * GIB / s - 1,
+                ),
+            ];
+            let basis = linux_basis(s, 200 * GIB, parts);
+            let r = req(64 * GIB);
             let plan = compute(&basis, r).unwrap();
             assert_layout(&plan, r);
+            assert!(plan.shrink.is_none());
+            assert_eq!(
+                plan.target_extent.first_lba,
+                601 * mib + 60 * GIB / s + mib,
+                "starts exactly 1 MiB after the last partition"
+            );
+            assert!(plan.staging_esp.partition_guid.is_some());
+            assert!(plan.staging_root.partition_guid.is_some());
+            assert_ne!(
+                plan.staging_esp.partition_guid,
+                plan.staging_root.partition_guid
+            );
+        }
+
+        // Phase `linux_refuses_when_no_single_extent_fits_even_if_the_sum_would`.
+        {
+            let s = 512;
+            let mib = MIB / s;
+            let gap = 70 * GIB / s;
+            let parts = vec![
+                part(1, "a0000000-0000-4000-8000-000000000001", mib, 2 * mib - 1),
+                part(
+                    2,
+                    "a0000000-0000-4000-8000-000000000002",
+                    2 * mib + gap,
+                    3 * mib + gap - 1,
+                ),
+                part(
+                    3,
+                    "a0000000-0000-4000-8000-000000000003",
+                    3 * mib + 2 * gap,
+                    4 * mib + 2 * gap - 1,
+                ),
+            ];
+            let end = 4 * mib + 2 * gap;
+            let basis = linux_basis(s, (end + 34 + mib / 2) * s, parts);
+            let err = compute(&basis, req(64 * GIB)).unwrap_err();
+            let PlanError::InsufficientSpace {
+                needed_bytes,
+                available_bytes,
+            } = err
+            else {
+                panic!("{err:?}")
+            };
+            assert_eq!(needed_bytes, 64 * GIB + 600 * MIB + 40 * GIB);
+            assert_eq!(
+                available_bytes,
+                70 * GIB - 2 * MIB,
+                "clearance on both sides"
+            );
+        }
+
+        // Phase `linux_exact_fit_uses_every_aligned_lba_and_one_more_mib_fails`.
+        {
+            let s = 512;
+            let mib = MIB / s;
+            let r = req(64 * GIB);
+            let need = (64 * GIB + 600 * MIB + 40 * GIB) / s;
+            // Partition 1 at [1 MiB, 2 MiB); 1 MiB clearance; the layout; 1 MiB
+            // clearance; partition 2.
+            let make = |short: u64| {
+                let second = 3 * mib + need + mib - short;
+                linux_basis(
+                    s,
+                    (second + 2 * mib) * s,
+                    vec![
+                        part(1, "a0000000-0000-4000-8000-000000000001", mib, 2 * mib - 1),
+                        part(
+                            2,
+                            "a0000000-0000-4000-8000-000000000002",
+                            second,
+                            second + mib - 1,
+                        ),
+                    ],
+                )
+            };
+            let plan = compute(&make(0), r).unwrap();
+            assert_layout(&plan, r);
+            assert_eq!(plan.target_extent.first_lba, 3 * mib);
+            assert_eq!(plan.staging_root.last_lba + 1, 3 * mib + need);
+            // One sector short is already a whole MiB short after alignment.
             assert!(matches!(
-                compute(&basis, req(bounds.max_bytes + MIB)),
+                compute(&make(1), r),
                 Err(PlanError::InsufficientSpace { .. })
             ));
-            assert!(compute(&basis, req(bounds.min_bytes)).is_ok());
+        }
+
+        // Phase `linux_unaligned_neighbours_round_inward`.
+        {
+            let s = 512;
+            let mib = MIB / s;
+            let parts = vec![
+                part(1, "a0000000-0000-4000-8000-000000000001", 34, 1_000_003),
+                part(
+                    2,
+                    "a0000000-0000-4000-8000-000000000002",
+                    300 * GIB / s + 17,
+                    300 * GIB / s + 5000,
+                ),
+            ];
+            let basis = linux_basis(s, 400 * GIB, parts);
+            let r = req(64 * GIB);
+            let plan = compute(&basis, r).unwrap();
+            assert_layout(&plan, r);
+            // The largest span is the one between the partitions; it starts
+            // 1 MiB after partition 1, rounded up.
+            let expected = (1_000_003 + 1 + mib).div_ceil(mib) * mib;
+            assert_eq!(plan.target_extent.first_lba, expected);
+        }
+
+        // Phase `linux_4kn_sectors_align_to_256_lbas`.
+        {
+            let s = 4096;
+            let lbas_per_mib = MIB / s;
+            assert_eq!(lbas_per_mib, 256);
+            let parts = vec![part(
+                1,
+                "a0000000-0000-4000-8000-000000000001",
+                256,
+                256 * 601 - 1,
+            )];
+            let basis = linux_basis(s, 256 * GIB, parts);
+            let r = req(64 * GIB);
+            let plan = compute(&basis, r).unwrap();
+            assert_layout(&plan, r);
+            assert_eq!(plan.target_extent.first_lba, 256 * 602);
+            assert_eq!(plan.target_extent.lbas(), 64 * GIB / s);
+            assert_eq!(plan.staging_esp.extent().lbas(), 600 * 256);
+        }
+
+        // Phase `empty_linux_disk_starts_at_the_first_aligned_mib`.
+        {
+            let basis = linux_basis(512, 128 * GIB, Vec::new());
+            let r = req(64 * GIB);
+            let plan = compute(&basis, r).unwrap();
+            assert_layout(&plan, r);
+            assert_eq!(plan.target_extent.first_lba, 2048);
         }
     }
 
+    /// Size rounding, minimums, reserve, bounds and full disks.
     #[test]
-    fn system_volume_must_match_the_partition_map() {
-        let mut basis = windows_basis(512, 400, 100, true);
-        basis.system_volume.as_mut().unwrap().size_bytes += MIB;
-        assert!(matches!(
-            compute(&basis, req(64 * GIB)),
-            Err(PlanError::Unsupported(_))
-        ));
-        basis.system_volume.as_mut().unwrap().partition_guid =
-            "dddddddd-dddd-4ddd-8ddd-dddddddddddd".into();
-        assert!(matches!(
-            compute(&basis, req(64 * GIB)),
-            Err(PlanError::Unsupported(_))
-        ));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn plan_sizes_reserves_and_bounds_are_exact() {
+        // Phase `staging_sizes_round_up_to_whole_mib`.
+        {
+            let basis = linux_basis(512, 128 * GIB, Vec::new());
+            let r = Requirements {
+                staging_esp_bytes: 600 * MIB + 512,
+                staging_root_bytes: 40 * GIB + 1,
+                target_bytes: 35 * GIB + 3,
+            };
+            let plan = compute(&basis, r).unwrap();
+            assert_layout(&plan, r);
+            assert_eq!(plan.staging_esp.extent().lbas() * 512, 601 * MIB);
+            assert_eq!(plan.staging_root.extent().lbas() * 512, 40 * GIB + MIB);
+            assert_eq!(plan.target_extent.lbas() * 512, 35 * GIB + MIB);
+        }
+
+        // Phase `target_below_installer_minimum_is_refused`.
+        {
+            let basis = linux_basis(512, 256 * GIB, Vec::new());
+            assert!(matches!(
+                compute(&basis, req(35 * GIB - MIB)),
+                Err(PlanError::Unsupported(_))
+            ));
+        }
+
+        // Phase `reserve_is_the_larger_of_20_gib_and_15_percent_of_used`.
+        {
+            assert_eq!(system_volume_reserve(10 * GIB), 20 * GIB);
+            assert_eq!(system_volume_reserve(200 * GIB), 30 * GIB);
+            assert_eq!(system_volume_reserve(0), 20 * GIB);
+        }
+
+        // Phase `target_bounds_max_is_exactly_what_compute_accepts`.
+        {
+            for basis in [
+                windows_basis(512, 400, 100, true),
+                windows_basis(512, 400, 100, false),
+                linux_basis(512, 300 * GIB, Vec::new()),
+                linux_basis(4096, 300 * GIB, Vec::new()),
+            ] {
+                let bounds = target_bounds(&basis, req(0)).unwrap();
+                assert_eq!(bounds.min_bytes, MIN_TARGET_BYTES);
+                assert_eq!(bounds.max_bytes % MIB, 0);
+                let r = req(bounds.max_bytes);
+                let plan = compute(&basis, r).unwrap();
+                assert_layout(&plan, r);
+                assert!(matches!(
+                    compute(&basis, req(bounds.max_bytes + MIB)),
+                    Err(PlanError::InsufficientSpace { .. })
+                ));
+                assert!(compute(&basis, req(bounds.min_bytes)).is_ok());
+            }
+        }
+
+        // Phase `no_space_on_a_full_disk`.
+        {
+            let s = 512;
+            let basis = linux_basis(
+                s,
+                128 * GIB,
+                vec![part(
+                    1,
+                    "a0000000-0000-4000-8000-000000000001",
+                    2048,
+                    128 * GIB / s - 2048,
+                )],
+            );
+            assert!(matches!(
+                compute(&basis, req(35 * GIB)),
+                Err(PlanError::InsufficientSpace {
+                    available_bytes: 0,
+                    ..
+                })
+            ));
+        }
     }
 
+    /// Partition map consistency, system volume, digest and loader path.
     #[test]
-    fn no_space_on_a_full_disk() {
-        let s = 512;
-        let basis = linux_basis(
-            s,
-            128 * GIB,
-            vec![part(
-                1,
-                "a0000000-0000-4000-8000-000000000001",
-                2048,
-                128 * GIB / s - 2048,
-            )],
-        );
-        assert!(matches!(
-            compute(&basis, req(35 * GIB)),
-            Err(PlanError::InsufficientSpace {
-                available_bytes: 0,
-                ..
-            })
-        ));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn plans_require_consistent_maps_and_bind_digest_and_loader() {
+        // Phase `inconsistent_partition_maps_are_unsupported`.
+        {
+            let s = 512;
+            let overlap = linux_basis(
+                s,
+                64 * GIB,
+                vec![
+                    part(1, "a0000000-0000-4000-8000-000000000001", 2048, 10_000),
+                    part(2, "a0000000-0000-4000-8000-000000000002", 10_000, 20_000),
+                ],
+            );
+            assert!(matches!(
+                compute(&overlap, req(35 * GIB)),
+                Err(PlanError::Unsupported(_))
+            ));
+            let mut odd = linux_basis(512, 64 * GIB, Vec::new());
+            odd.disk.sector_bytes = 520;
+            assert!(matches!(
+                compute(&odd, req(35 * GIB)),
+                Err(PlanError::Unsupported(_))
+            ));
+            let mut outside = linux_basis(s, 64 * GIB, Vec::new());
+            outside.disk.partitions = vec![part(1, "a0000000-0000-4000-8000-000000000001", 1, 100)];
+            assert!(matches!(
+                compute(&outside, req(35 * GIB)),
+                Err(PlanError::Unsupported(_))
+            ));
+            let mut duplicate = linux_basis(s, 64 * GIB, Vec::new());
+            duplicate.disk.partitions = vec![
+                part(1, "a0000000-0000-4000-8000-000000000001", 2048, 4095),
+                part(2, "A0000000-0000-4000-8000-000000000001", 8192, 9000),
+            ];
+            assert!(matches!(
+                compute(&duplicate, req(35 * GIB)),
+                Err(PlanError::Unsupported(_))
+            ));
+        }
+
+        // Phase `system_volume_must_match_the_partition_map`.
+        {
+            let mut basis = windows_basis(512, 400, 100, true);
+            basis.system_volume.as_mut().unwrap().size_bytes += MIB;
+            assert!(matches!(
+                compute(&basis, req(64 * GIB)),
+                Err(PlanError::Unsupported(_))
+            ));
+            basis.system_volume.as_mut().unwrap().partition_guid =
+                "dddddddd-dddd-4ddd-8ddd-dddddddddddd".into();
+            assert!(matches!(
+                compute(&basis, req(64 * GIB)),
+                Err(PlanError::Unsupported(_))
+            ));
+        }
+
+        // Phase `plan_digest_is_stable_and_sensitive`.
+        {
+            let basis = windows_basis(512, 400, 100, true);
+            let plan = compute(&basis, req(64 * GIB)).unwrap();
+            let mut other = plan.clone();
+            other.target_extent.last_lba -= 1;
+            assert_ne!(plan.digest(), other.digest());
+            let round: Plan = serde_json::from_slice(&serde_json::to_vec(&plan).unwrap()).unwrap();
+            assert_eq!(round.digest(), plan.digest());
+        }
+
+        // Phase `loader_path_comes_from_the_bundle_binding`.
+        {
+            let basis = linux_basis(512, 128 * GIB, Vec::new());
+            let plan = with_loader_path(
+                compute(&basis, req(35 * GIB)).unwrap(),
+                "/EFI/BOOT/BOOTX64.EFI",
+            );
+            assert_eq!(plan.boot_entry.loader_path, "\\EFI\\BOOT\\BOOTX64.EFI");
+            assert_eq!(plan.boot_entry.description, "Tilo installer");
+            assert_eq!(plan.basis.host_os(), "linux");
+        }
     }
 
+    /// Windows shrink planning.
     #[test]
-    fn plan_digest_is_stable_and_sensitive() {
-        let basis = windows_basis(512, 400, 100, true);
-        let plan = compute(&basis, req(64 * GIB)).unwrap();
-        let mut other = plan.clone();
-        other.target_extent.last_lba -= 1;
-        assert_ne!(plan.digest(), other.digest());
-        let round: Plan = serde_json::from_slice(&serde_json::to_vec(&plan).unwrap()).unwrap();
-        assert_eq!(round.digest(), plan.digest());
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn windows_plan_shrinks_c_only_by_the_safe_shortfall() {
+        // Phase `windows_shrinks_c_by_exactly_the_shortfall_before_winre`.
+        {
+            // 512 GiB disk, C: ends at 400 GiB, WinRE right after; tail free.
+            let basis = windows_basis(512, 400, 100, true);
+            let r = req(64 * GIB);
+            let plan = compute(&basis, r).unwrap();
+            assert_layout(&plan, r);
+            let shrink = plan
+                .shrink
+                .clone()
+                .expect("C: must shrink: WinRE blocks the tail");
+            let volume = basis.system_volume.as_ref().unwrap();
+            assert_eq!(shrink.from_bytes, volume.size_bytes);
+            let need = 64 * GIB + 600 * MIB + 40 * GIB;
+            // Nothing usable after C: before WinRE, so C: gives up need + 2 MiB
+            // clearance (one each side of the layout).
+            assert_eq!(shrink.from_bytes - shrink.to_bytes, need + 2 * MIB);
+            assert_eq!(shrink.to_bytes % MIB, 0);
+            let winre = &basis.disk.partitions[3];
+            assert_eq!(plan.staging_root.last_lba + 1 + MIB / 512, winre.first_lba);
+            assert!(
+                plan.staging_esp.partition_guid.is_none(),
+                "Windows cannot set GUIDs"
+            );
+            assert!(plan.staging_root.partition_guid.is_none());
+            assert_eq!(plan.basis.host_os(), "windows");
+        }
 
-    #[test]
-    fn loader_path_comes_from_the_bundle_binding() {
-        let basis = linux_basis(512, 128 * GIB, Vec::new());
-        let plan = with_loader_path(
-            compute(&basis, req(35 * GIB)).unwrap(),
-            "/EFI/BOOT/BOOTX64.EFI",
-        );
-        assert_eq!(plan.boot_entry.loader_path, "\\EFI\\BOOT\\BOOTX64.EFI");
-        assert_eq!(plan.boot_entry.description, "Tilo installer");
-        assert_eq!(plan.basis.host_os(), "linux");
+        // Phase `windows_uses_unallocated_space_after_c_before_shrinking`.
+        {
+            // C: ends at 400 GiB; no WinRE; a 112 GiB free tail covers everything.
+            let basis = windows_basis(512, 400, 100, false);
+            let r = req(64 * GIB);
+            let plan = compute(&basis, r).unwrap();
+            assert_layout(&plan, r);
+            assert!(plan.shrink.is_none());
+            assert_eq!(
+                plan.staging_root.last_lba,
+                (basis.disk.last_usable_lba + 1) / 2048 * 2048 - 1
+            );
+        }
+
+        // Phase `windows_shrinks_only_the_part_not_already_free`.
+        {
+            // 20 GiB free after C:, WinRE after that.
+            let s = 512;
+            let mib = MIB / s;
+            let mut basis = windows_basis(512, 400, 100, false);
+            let winre_first = 420 * GIB / s;
+            basis.disk.partitions.push(part(
+                4,
+                "e0000000-0000-4000-8000-000000000004",
+                winre_first,
+                winre_first + 700 * mib - 1,
+            ));
+            let r = req(64 * GIB);
+            let plan = compute(&basis, r).unwrap();
+            assert_layout(&plan, r);
+            let shrink = plan.shrink.unwrap();
+            let need = 64 * GIB + 600 * MIB + 40 * GIB;
+            assert_eq!(
+                shrink.from_bytes - shrink.to_bytes,
+                need + 2 * MIB - 20 * GIB
+            );
+        }
+
+        // Phase `windows_refuses_a_shrink_that_leaves_c_too_full`.
+        {
+            // C: ~400 GiB with 300 GiB used: reserve 45 GiB, so C: keeps 345 GiB
+            // and only ~55 GiB can be carved: less than the ~104.6 GiB needed.
+            let basis = windows_basis(512, 400, 300, true);
+            let err = compute(&basis, req(64 * GIB)).unwrap_err();
+            let PlanError::InsufficientSpace {
+                available_bytes, ..
+            } = err
+            else {
+                panic!("{err:?}")
+            };
+            let volume = basis.system_volume.as_ref().unwrap();
+            assert_eq!(minimum_system_volume_bytes(volume), 345 * GIB);
+            assert!(available_bytes < 64 * GIB + 600 * MIB + 40 * GIB);
+            assert!(available_bytes > 50 * GIB);
+        }
+
+        // Phase `windows_refuses_below_supported_minimum`.
+        {
+            let mut basis = windows_basis(512, 400, 50, true);
+            // Unmovable files: the supported minimum dominates the free rule.
+            basis.system_volume.as_mut().unwrap().supported_min_bytes = 350 * GIB;
+            assert!(matches!(
+                compute(&basis, req(64 * GIB)),
+                Err(PlanError::InsufficientSpace { .. })
+            ));
+            let bounds = target_bounds(&basis, req(0));
+            assert!(matches!(bounds, Err(PlanError::InsufficientSpace { .. })));
+        }
     }
 }

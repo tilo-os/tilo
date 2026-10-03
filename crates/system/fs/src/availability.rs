@@ -17,7 +17,6 @@ use thiserror::Error;
 
 /// On-disk schema written by [`AvailabilityRegistry`].
 pub const AVAILABILITY_SCHEMA_VERSION: u16 = 2;
-const LEGACY_AVAILABILITY_SCHEMA_VERSION: u16 = 1;
 pub const MAX_REPLICA_OBSERVATIONS_PER_RECORD: usize = 64;
 
 /// One cryptographically verified receipt from a distinct certified device.
@@ -200,9 +199,7 @@ pub struct RecordAvailability {
     pub transfer: TransferState,
     pub policy: AvailabilityPolicy,
     pub replicas: ReplicaEvidence,
-    /// Verified receipts keyed semantically by certified device. Legacy files
-    /// deserialize empty and therefore cannot authorize eviction.
-    #[serde(default)]
+    /// Verified receipts keyed semantically by certified device.
     pub replica_observations: Vec<ReplicaObservation>,
     pub freshness: Freshness,
     /// Historical versions intentionally retained only on this device. IDs,
@@ -348,10 +345,7 @@ impl AvailabilityRegistry {
         }
 
         let document: RegistryDocument = serde_json::from_slice(&fs::read(&path)?)?;
-        if !matches!(
-            document.schema_version,
-            LEGACY_AVAILABILITY_SCHEMA_VERSION | AVAILABILITY_SCHEMA_VERSION
-        ) {
+        if document.schema_version != AVAILABILITY_SCHEMA_VERSION {
             return Err(AvailabilityError::UnsupportedVersion(
                 document.schema_version,
             ));
@@ -697,7 +691,7 @@ impl AvailabilityRegistry {
             records: self.records.values().cloned().collect(),
         };
         let bytes = serde_json::to_vec_pretty(&document)?;
-        atomic_file::write_creating_parent(&self.path, &bytes)?;
+        tilo_files::native::atomic::write_creating_parent(&self.path, &bytes)?;
         Ok(())
     }
 }
@@ -840,304 +834,291 @@ mod tests {
     }
 
     #[test]
-    fn registry_survives_restart_and_is_keyed_by_stable_record_id() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join("availability/state.json");
-        let id = FileRecordId::new();
-        let version = FileVersionId::new();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn availability_registry_persists_by_stable_record_id_and_rejects_tampering() {
+        // Phase `registry_survives_restart_and_is_keyed_by_stable_record_id`.
+        {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join("availability/state.json");
+            let id = FileRecordId::new();
+            let version = FileVersionId::new();
 
-        let mut first = AvailabilityRegistry::open(&path).unwrap();
-        let mut record = file(id, version);
-        record.policy = AvailabilityPolicy::Pinned;
-        record.freshness.metadata_observed_at_ms = Some(41);
-        first.put(record.clone()).unwrap();
-        drop(first);
+            let mut first = AvailabilityRegistry::open(&path).unwrap();
+            let mut record = file(id, version);
+            record.policy = AvailabilityPolicy::Pinned;
+            record.freshness.metadata_observed_at_ms = Some(41);
+            first.put(record.clone()).unwrap();
+            drop(first);
 
-        let reopened = AvailabilityRegistry::open(&path).unwrap();
-        assert_eq!(reopened.get(id), Some(&record));
-        assert_eq!(reopened.records().count(), 1);
-    }
-
-    #[test]
-    fn legacy_aggregate_migrates_but_never_becomes_eviction_proof() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join("availability.json");
-        let id = FileRecordId::new();
-        let version = FileVersionId::new();
-        let mut record = file(id, version);
-        record.replicas = ReplicaEvidence {
-            reachable: 9,
-            durable: 9,
-            acknowledged_version: Some(version),
-        };
-        record.freshness.replicas_observed_at_ms = Some(10);
-        let mut value = serde_json::to_value(&record).unwrap();
-        value
-            .as_object_mut()
-            .unwrap()
-            .remove("replica_observations");
-        atomic_file::write_creating_parent(
-            &path,
-            &serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
-                "records": [value]
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        let mut registry = AvailabilityRegistry::open(&path).unwrap();
-        assert_eq!(
-            registry.eviction_decision(id, 10, EvictionRequirements::default(), false),
-            EvictionDecision::Denied(EvictionBlocker::ReplicaAcknowledgementMissing)
-        );
-        registry.put(registry.get(id).unwrap().clone()).unwrap();
-        let persisted: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        assert_eq!(
-            persisted["schema_version"],
-            serde_json::json!(AVAILABILITY_SCHEMA_VERSION)
-        );
-    }
-
-    #[test]
-    fn tampered_persisted_receipt_fails_registry_open() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join("availability.json");
-        let id = FileRecordId::new();
-        let version = FileVersionId::new();
-        let mut record = file(id, version);
-        safe_evidence(&mut record, version, 10);
-        let mut registry = AvailabilityRegistry::open(&path).unwrap();
-        registry.put(record).unwrap();
-        drop(registry);
-        let mut value: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        value["records"][0]["replica_observations"][0]["byte_len"] = serde_json::json!(11);
-        atomic_file::write(&path, &serde_json::to_vec(&value).unwrap()).unwrap();
-        assert!(matches!(
-            AvailabilityRegistry::open(path),
-            Err(AvailabilityError::StaleReplicaObservation)
-        ));
-    }
-
-    #[test]
-    fn a_rename_cannot_change_availability_identity() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join("availability.json");
-        let id = FileRecordId::new();
-        let version = FileVersionId::new();
-        let old_name = "draft.png";
-
-        let mut registry = AvailabilityRegistry::open(&path).unwrap();
-        let mut record = file(id, version);
-        record.policy = AvailabilityPolicy::Pinned;
-        registry.put(record).unwrap();
-
-        // A namespace rename changes only presentation metadata. There is no
-        // path/name key in this registry to migrate or accidentally duplicate.
-        let new_name = "approved.png";
-        assert_ne!(old_name, new_name);
-        assert_eq!(
-            registry.effective_policy(id).unwrap(),
-            Some(AvailabilityPolicy::Pinned)
-        );
-        assert_eq!(registry.records().count(), 1);
-    }
-
-    #[test]
-    fn directory_pin_applies_to_future_descendants_and_survives_move() {
-        let temp = TempDir::new().unwrap();
-        let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
-        let pinned_dir = FileRecordId::new();
-        let other_dir = FileRecordId::new();
-        let child = FileRecordId::new();
-
-        let mut directory = RecordAvailability::new(pinned_dir, RecordKind::Directory);
-        directory.policy = AvailabilityPolicy::Pinned;
-        registry.put(directory).unwrap();
-        registry
-            .put(RecordAvailability::new(other_dir, RecordKind::Directory))
+            let reopened = AvailabilityRegistry::open(&path).unwrap();
+            assert_eq!(reopened.get(id), Some(&record));
+            assert_eq!(reopened.records().count(), 1);
+        }
+        // Phase `other_schema_versions_fail_registry_open`.
+        {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join("availability.json");
+            tilo_files::native::atomic::write_creating_parent(
+                &path,
+                &serde_json::to_vec(&serde_json::json!({
+                    "schema_version": AVAILABILITY_SCHEMA_VERSION - 1,
+                    "records": []
+                }))
+                .unwrap(),
+            )
             .unwrap();
+            assert!(matches!(
+                AvailabilityRegistry::open(path),
+                Err(AvailabilityError::UnsupportedVersion(1))
+            ));
+        }
+        // Phase `tampered_persisted_receipt_fails_registry_open`.
+        {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join("availability.json");
+            let id = FileRecordId::new();
+            let version = FileVersionId::new();
+            let mut record = file(id, version);
+            safe_evidence(&mut record, version, 10);
+            let mut registry = AvailabilityRegistry::open(&path).unwrap();
+            registry.put(record).unwrap();
+            drop(registry);
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            value["records"][0]["replica_observations"][0]["byte_len"] = serde_json::json!(11);
+            tilo_files::native::atomic::write(&path, &serde_json::to_vec(&value).unwrap()).unwrap();
+            assert!(matches!(
+                AvailabilityRegistry::open(path),
+                Err(AvailabilityError::StaleReplicaObservation)
+            ));
+        }
+        // Phase `a_rename_cannot_change_availability_identity`.
+        {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join("availability.json");
+            let id = FileRecordId::new();
+            let version = FileVersionId::new();
+            let old_name = "draft.png";
 
-        // The child is created only after the directory was pinned.
-        let mut child_record = file(child, FileVersionId::new());
-        child_record.parent = Some(pinned_dir);
-        registry.put(child_record.clone()).unwrap();
-        assert_eq!(
-            registry.effective_policy(child).unwrap(),
-            Some(AvailabilityPolicy::Pinned)
-        );
+            let mut registry = AvailabilityRegistry::open(&path).unwrap();
+            let mut record = file(id, version);
+            record.policy = AvailabilityPolicy::Pinned;
+            registry.put(record).unwrap();
 
-        // Stable ancestry, rather than a path prefix, controls inherited pin.
-        child_record.parent = Some(other_dir);
-        registry.put(child_record).unwrap();
-        assert_eq!(
-            registry.effective_policy(child).unwrap(),
-            Some(AvailabilityPolicy::Automatic)
-        );
+            // A namespace rename changes only presentation metadata. There is no
+            // path/name key in this registry to migrate or accidentally duplicate.
+            let new_name = "approved.png";
+            assert_ne!(old_name, new_name);
+            assert_eq!(
+                registry.effective_policy(id).unwrap(),
+                Some(AvailabilityPolicy::Pinned)
+            );
+            assert_eq!(registry.records().count(), 1);
+        }
+        // Phase `malformed_ancestry_and_progress_are_rejected_without_mutation`.
+        {
+            let temp = TempDir::new().unwrap();
+            let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
+            let id = FileRecordId::new();
+            let mut record = file(id, FileVersionId::new());
+            record.parent = Some(FileRecordId::new());
+            assert!(matches!(
+                registry.put(record),
+                Err(AvailabilityError::MissingParent { .. })
+            ));
+            assert!(registry.get(id).is_none());
+
+            let mut record = file(id, FileVersionId::new());
+            record.transfer.progress = Some(TransferProgress {
+                completed_bytes: 2,
+                total_bytes: Some(1),
+            });
+            assert!(matches!(
+                registry.put(record),
+                Err(AvailabilityError::InvalidTransferProgress)
+            ));
+            assert!(registry.get(id).is_none());
+        }
     }
 
     #[test]
-    fn safe_eviction_requires_fresh_ack_for_the_exact_current_version() {
-        let temp = TempDir::new().unwrap();
-        let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
-        let id = FileRecordId::new();
-        let old_version = FileVersionId::new();
-        let current_version = FileVersionId::new();
-        let now = 50_000;
-        let requirements = EvictionRequirements {
-            minimum_reachable: 1,
-            minimum_durable: 1,
-            maximum_replica_age_ms: 1_000,
-        };
+    fn pins_follow_descendants_moves_and_namespace_reconciliation() {
+        // Phase `directory_pin_applies_to_future_descendants_and_survives_move`.
+        {
+            let temp = TempDir::new().unwrap();
+            let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
+            let pinned_dir = FileRecordId::new();
+            let other_dir = FileRecordId::new();
+            let child = FileRecordId::new();
 
-        let mut record = file(id, current_version);
-        safe_evidence(&mut record, old_version, now);
-        registry.put(record.clone()).unwrap();
-        assert_eq!(
-            registry.eviction_decision(id, now, requirements, false),
-            EvictionDecision::Denied(EvictionBlocker::ReplicaVersionMismatch)
-        );
+            let mut directory = RecordAvailability::new(pinned_dir, RecordKind::Directory);
+            directory.policy = AvailabilityPolicy::Pinned;
+            registry.put(directory).unwrap();
+            registry
+                .put(RecordAvailability::new(other_dir, RecordKind::Directory))
+                .unwrap();
 
-        safe_evidence(&mut record, current_version, now - 1_001);
-        registry.put(record.clone()).unwrap();
-        assert_eq!(
-            registry.eviction_decision(id, now, requirements, false),
-            EvictionDecision::Denied(EvictionBlocker::ReplicaAcknowledgementStale)
-        );
+            // The child is created only after the directory was pinned.
+            let mut child_record = file(child, FileVersionId::new());
+            child_record.parent = Some(pinned_dir);
+            registry.put(child_record.clone()).unwrap();
+            assert_eq!(
+                registry.effective_policy(child).unwrap(),
+                Some(AvailabilityPolicy::Pinned)
+            );
 
-        safe_evidence(&mut record, current_version, now);
-        registry.put(record).unwrap();
-        assert_eq!(
-            registry.eviction_decision(id, now, requirements, false),
-            EvictionDecision::Allowed
-        );
+            // Stable ancestry, rather than a path prefix, controls inherited pin.
+            child_record.parent = Some(other_dir);
+            registry.put(child_record).unwrap();
+            assert_eq!(
+                registry.effective_policy(child).unwrap(),
+                Some(AvailabilityPolicy::Automatic)
+            );
+        }
+        // Phase `explicit_pin_presence_drives_periodic_namespace_reconciliation`.
+        {
+            let temp = TempDir::new().unwrap();
+            let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
+            assert!(!registry.has_pinned_policy());
+
+            let id = FileRecordId::new();
+            let mut record = file(id, FileVersionId::new());
+            registry.put(record.clone()).unwrap();
+            assert!(!registry.has_pinned_policy());
+
+            record.policy = AvailabilityPolicy::Pinned;
+            registry.put(record.clone()).unwrap();
+            assert!(registry.has_pinned_policy());
+
+            record.policy = AvailabilityPolicy::Automatic;
+            registry.put(record).unwrap();
+            assert!(!registry.has_pinned_policy());
+        }
     }
 
     #[test]
-    fn every_local_retention_reason_blocks_normal_eviction() {
-        let temp = TempDir::new().unwrap();
-        let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
-        let id = FileRecordId::new();
-        let version = FileVersionId::new();
-        let now = 100;
-        let requirements = EvictionRequirements::default();
-        let mut record = file(id, version);
-        safe_evidence(&mut record, version, now);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn eviction_requires_a_fresh_exact_ack_unless_explicitly_overridden() {
+        // Phase `safe_eviction_requires_fresh_ack_for_the_exact_current_version`.
+        {
+            let temp = TempDir::new().unwrap();
+            let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
+            let id = FileRecordId::new();
+            let old_version = FileVersionId::new();
+            let current_version = FileVersionId::new();
+            let now = 50_000;
+            let requirements = EvictionRequirements {
+                minimum_reachable: 1,
+                minimum_durable: 1,
+                maximum_replica_age_ms: 1_000,
+            };
 
-        record.transfer.phase = TransferPhase::Downloading;
-        registry.put(record.clone()).unwrap();
-        assert_eq!(
-            registry.eviction_decision(id, now, requirements, false),
-            EvictionDecision::Denied(EvictionBlocker::ActiveTransfer)
-        );
+            let mut record = file(id, current_version);
+            safe_evidence(&mut record, old_version, now);
+            registry.put(record.clone()).unwrap();
+            assert_eq!(
+                registry.eviction_decision(id, now, requirements, false),
+                EvictionDecision::Denied(EvictionBlocker::ReplicaVersionMismatch)
+            );
 
-        record.transfer.phase = TransferPhase::Idle;
-        record.policy = AvailabilityPolicy::Pinned;
-        registry.put(record.clone()).unwrap();
-        assert_eq!(
-            registry.eviction_decision(id, now, requirements, false),
-            EvictionDecision::Denied(EvictionBlocker::Pinned)
-        );
+            safe_evidence(&mut record, current_version, now - 1_001);
+            registry.put(record.clone()).unwrap();
+            assert_eq!(
+                registry.eviction_decision(id, now, requirements, false),
+                EvictionDecision::Denied(EvictionBlocker::ReplicaAcknowledgementStale)
+            );
 
-        record.policy = AvailabilityPolicy::Automatic;
-        record.retained_versions = vec![FileVersionId::new(), FileVersionId::new()];
-        registry.put(record).unwrap();
-        assert_eq!(
-            registry.eviction_decision(id, now, requirements, false),
-            EvictionDecision::Denied(EvictionBlocker::RetainedVersions)
-        );
-    }
+            safe_evidence(&mut record, current_version, now);
+            registry.put(record).unwrap();
+            assert_eq!(
+                registry.eviction_decision(id, now, requirements, false),
+                EvictionDecision::Allowed
+            );
+        }
+        // Phase `every_local_retention_reason_blocks_normal_eviction`.
+        {
+            let temp = TempDir::new().unwrap();
+            let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
+            let id = FileRecordId::new();
+            let version = FileVersionId::new();
+            let now = 100;
+            let requirements = EvictionRequirements::default();
+            let mut record = file(id, version);
+            safe_evidence(&mut record, version, now);
 
-    #[test]
-    fn normal_eviction_fails_closed_without_an_acceptable_replica_ack() {
-        let temp = TempDir::new().unwrap();
-        let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
-        let id = FileRecordId::new();
-        let version = FileVersionId::new();
-        let now = 10_000;
-        let requirements = EvictionRequirements {
-            minimum_reachable: 1,
-            minimum_durable: 1,
-            maximum_replica_age_ms: 1_000,
-        };
-        let mut record = file(id, version);
-        record.replicas.acknowledged_version = Some(version);
-        registry.put(record.clone()).unwrap();
-        assert_eq!(
-            registry.eviction_decision(id, now, requirements, false),
-            EvictionDecision::Denied(EvictionBlocker::ReplicaAcknowledgementMissing)
-        );
+            record.transfer.phase = TransferPhase::Downloading;
+            registry.put(record.clone()).unwrap();
+            assert_eq!(
+                registry.eviction_decision(id, now, requirements, false),
+                EvictionDecision::Denied(EvictionBlocker::ActiveTransfer)
+            );
 
-        // Prototype-era aggregate counters, even if internally consistent,
-        // are not proof without a retained signed per-device receipt.
-        record.freshness.replicas_observed_at_ms = Some(now);
-        record.replicas.reachable = 1;
-        record.replicas.durable = 1;
-        registry.put(record).unwrap();
-        assert_eq!(
-            registry.eviction_decision(id, now, requirements, false),
-            EvictionDecision::Denied(EvictionBlocker::ReplicaAcknowledgementMissing)
-        );
-    }
+            record.transfer.phase = TransferPhase::Idle;
+            record.policy = AvailabilityPolicy::Pinned;
+            registry.put(record.clone()).unwrap();
+            assert_eq!(
+                registry.eviction_decision(id, now, requirements, false),
+                EvictionDecision::Denied(EvictionBlocker::Pinned)
+            );
 
-    #[test]
-    fn destructive_override_is_explicit_and_bypasses_safety_blocks() {
-        let temp = TempDir::new().unwrap();
-        let registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
-        assert_eq!(
-            registry.eviction_decision(
-                FileRecordId::new(),
-                0,
-                EvictionRequirements::default(),
-                true
-            ),
-            EvictionDecision::AllowedDestructiveOverride
-        );
-    }
+            record.policy = AvailabilityPolicy::Automatic;
+            record.retained_versions = vec![FileVersionId::new(), FileVersionId::new()];
+            registry.put(record).unwrap();
+            assert_eq!(
+                registry.eviction_decision(id, now, requirements, false),
+                EvictionDecision::Denied(EvictionBlocker::RetainedVersions)
+            );
+        }
+        // Phase `normal_eviction_fails_closed_without_an_acceptable_replica_ack`.
+        {
+            let temp = TempDir::new().unwrap();
+            let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
+            let id = FileRecordId::new();
+            let version = FileVersionId::new();
+            let now = 10_000;
+            let requirements = EvictionRequirements {
+                minimum_reachable: 1,
+                minimum_durable: 1,
+                maximum_replica_age_ms: 1_000,
+            };
+            let mut record = file(id, version);
+            record.replicas.acknowledged_version = Some(version);
+            registry.put(record.clone()).unwrap();
+            assert_eq!(
+                registry.eviction_decision(id, now, requirements, false),
+                EvictionDecision::Denied(EvictionBlocker::ReplicaAcknowledgementMissing)
+            );
 
-    #[test]
-    fn explicit_pin_presence_drives_periodic_namespace_reconciliation() {
-        let temp = TempDir::new().unwrap();
-        let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
-        assert!(!registry.has_pinned_policy());
-
-        let id = FileRecordId::new();
-        let mut record = file(id, FileVersionId::new());
-        registry.put(record.clone()).unwrap();
-        assert!(!registry.has_pinned_policy());
-
-        record.policy = AvailabilityPolicy::Pinned;
-        registry.put(record.clone()).unwrap();
-        assert!(registry.has_pinned_policy());
-
-        record.policy = AvailabilityPolicy::Automatic;
-        registry.put(record).unwrap();
-        assert!(!registry.has_pinned_policy());
-    }
-
-    #[test]
-    fn malformed_ancestry_and_progress_are_rejected_without_mutation() {
-        let temp = TempDir::new().unwrap();
-        let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
-        let id = FileRecordId::new();
-        let mut record = file(id, FileVersionId::new());
-        record.parent = Some(FileRecordId::new());
-        assert!(matches!(
-            registry.put(record),
-            Err(AvailabilityError::MissingParent { .. })
-        ));
-        assert!(registry.get(id).is_none());
-
-        let mut record = file(id, FileVersionId::new());
-        record.transfer.progress = Some(TransferProgress {
-            completed_bytes: 2,
-            total_bytes: Some(1),
-        });
-        assert!(matches!(
-            registry.put(record),
-            Err(AvailabilityError::InvalidTransferProgress)
-        ));
-        assert!(registry.get(id).is_none());
+            // Prototype-era aggregate counters, even if internally consistent,
+            // are not proof without a retained signed per-device receipt.
+            record.freshness.replicas_observed_at_ms = Some(now);
+            record.replicas.reachable = 1;
+            record.replicas.durable = 1;
+            registry.put(record).unwrap();
+            assert_eq!(
+                registry.eviction_decision(id, now, requirements, false),
+                EvictionDecision::Denied(EvictionBlocker::ReplicaAcknowledgementMissing)
+            );
+        }
+        // Phase `destructive_override_is_explicit_and_bypasses_safety_blocks`.
+        {
+            let temp = TempDir::new().unwrap();
+            let registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
+            assert_eq!(
+                registry.eviction_decision(
+                    FileRecordId::new(),
+                    0,
+                    EvictionRequirements::default(),
+                    true
+                ),
+                EvictionDecision::AllowedDestructiveOverride
+            );
+        }
     }
 }

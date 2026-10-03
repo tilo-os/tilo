@@ -71,6 +71,13 @@ pub const PROGRAMMATIC_TAG: &str = "surface:programmatic";
 /// requiring confirmation (see [`ActionContract::advertised_confirmation`]).
 pub const ARGUMENT_RISK_TAG: &str = "confirmation:by-argument";
 
+/// [`ActionContract::tags`] entry of the read-only action that answers, when
+/// invoked with no arguments, the first page of the document an app has
+/// open (a word processor's text, a sheet's used cells, a deck's outline).
+/// A caller that just opened a file reads it through this action without
+/// knowing the app.
+pub const DOCUMENT_READ_TAG: &str = "read:document";
+
 /// Minimum authority required to see and invoke an action. Capability-denied
 /// actions remain absent; this value lets every allowed catalogue use the same
 /// gate instead of inferring authority inconsistently from `OperationKind`.
@@ -170,13 +177,13 @@ impl ResultSpec {
                 Ok(())
             }
             Self::None => Err("action declared no result but returned one".into()),
-            Self::Json { schema } => {
-                let value = output
-                    .value
-                    .as_ref()
-                    .ok_or_else(|| "action did not return its declared JSON result".to_string())?;
-                crate::params::validate_schema(value, schema)
-            }
+            // An absent value is `null`: a result its schema lets be null may be
+            // left out by an executor with nothing to report.
+            Self::Json { schema } => match output.value.as_ref() {
+                Some(value) => crate::params::validate_schema(value, schema),
+                None => crate::params::validate_schema(&serde_json::Value::Null, schema)
+                    .map_err(|_| "action did not return its declared JSON result".to_string()),
+            },
             Self::Resource { resource_kind }
                 if !output.resources.is_empty()
                     && output.resources.iter().all(|address| {
@@ -256,6 +263,12 @@ impl ActionContract {
     /// [`PROGRAMMATIC_TAG`].
     pub fn is_programmatic(&self) -> bool {
         self.tags.iter().any(|tag| tag == PROGRAMMATIC_TAG)
+    }
+
+    /// Whether the action reads the open document's first page. See
+    /// [`DOCUMENT_READ_TAG`].
+    pub fn reads_document(&self) -> bool {
+        self.tags.iter().any(|tag| tag == DOCUMENT_READ_TAG)
     }
 
     /// Whether confirmation depends on the invocation's arguments. See
@@ -339,7 +352,15 @@ impl ActionContract {
 mod tests {
     use super::*;
 
+    /// Risk levels keep their compact wire discriminants and a broker-owned job identity is not a
+    /// second application result.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn the_contract_keeps_wire_discriminants_and_one_job_identity() {
+        risk_level_keeps_existing_compact_wire_discriminants();
+        broker_owned_job_identity_is_not_a_second_application_result();
+    }
+
     fn risk_level_keeps_existing_compact_wire_discriminants() {
         // `RiskLevel` appears in recorded action contracts. Postcard encodes
         // enum variants by ordinal, so the old values are a compatibility
@@ -364,7 +385,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn broker_owned_job_identity_is_not_a_second_application_result() {
         assert!(
             ResultSpec::Job
@@ -379,5 +399,24 @@ mod tests {
                 })
                 .is_err()
         );
+    }
+
+    #[test]
+    fn only_a_nullable_json_result_may_be_left_out() {
+        let nullable = ResultSpec::Json {
+            schema: serde_json::json!({"type": ["string", "null"]}),
+        };
+        let required = ResultSpec::Json {
+            schema: serde_json::json!({"type": "string"}),
+        };
+        let none = crate::ActionOutput::default();
+        assert!(nullable.validate(&none).is_ok());
+        assert!(required.validate(&none).is_err());
+        let text = crate::ActionOutput {
+            value: Some(serde_json::json!("changed")),
+            resources: Vec::new(),
+        };
+        assert!(nullable.validate(&text).is_ok());
+        assert!(required.validate(&text).is_ok());
     }
 }

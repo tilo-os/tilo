@@ -1007,10 +1007,6 @@ fn layout_sqrt(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "a delimited row carries its delimiters, its place in the edit path and the shared text renderer and size, like the other layout_* helpers"
-)]
 fn layout_delimited(
     body: &Row,
     open: Option<char>,
@@ -1132,234 +1128,244 @@ mod layout_tests {
         }
     }
 
-    /// The 3D default surface `sin(√(x²+y²))` used to render its `sin` at the
-    /// frag top — floating above the argument and reading as an oversized,
-    /// misaligned glyph. The name and its parenthesised argument must be the
-    /// same font size AND share the row baseline.
     #[test]
-    fn func_name_and_argument_share_size_and_baseline() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let expr = parse("sin(sqrt(x^2+y^2))");
-        let lay = layout(&expr.root, &mut tr, 20.0);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn functions_operators_scripts_and_delimiters_get_math_spacing_and_baselines() {
+        // phase: func_name_and_argument_share_size_and_baseline
+        // The 3D default surface `sin(√(x²+y²))` used to render its `sin` at the
+        // frag top — floating above the argument and reading as an oversized,
+        // misaligned glyph. The name and its parenthesised argument must be the
+        // same font size AND share the row baseline.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let expr = parse("sin(sqrt(x^2+y^2))");
+            let lay = layout(&expr.root, &mut tr, 20.0);
 
-        let name = lay
-            .boxes
-            .iter()
-            .find(|b| matches!(b.kind, BoxKind::Name { .. }))
-            .expect("a function-name box");
-        let paren = lay
-            .boxes
-            .iter()
-            .find(|b| matches!(b.kind, BoxKind::Paren { .. }))
-            .expect("the call's opening paren box");
-
-        assert_eq!(
-            box_size(&name.kind),
-            box_size(&paren.kind),
-            "the function name must be the SAME type size as its argument's parens"
-        );
-        let name_baseline = name.y + name.baseline;
-        let paren_baseline = paren.y + paren.baseline;
-        assert!(
-            (name_baseline - paren_baseline).abs() < 0.6,
-            "the function name must sit on the row baseline, not float above it \
-             (name {name_baseline:.2} vs paren {paren_baseline:.2})"
-        );
-    }
-
-    #[test]
-    fn binary_and_relation_operators_receive_math_spacing() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let compact = parse("xy");
-        let binary = parse("x+y");
-        let relation = parse("x=y");
-        let compact_layout = layout(&compact.root, &mut tr, 20.0);
-        let binary_layout = layout(&binary.root, &mut tr, 20.0);
-        let relation_layout = layout(&relation.root, &mut tr, 20.0);
-        let plus_glyph = measure_glyph(&mut tr, '+', 20.0);
-        let equals_glyph = measure_glyph(&mut tr, '=', 20.0);
-        assert!(binary_layout.width > compact_layout.width + plus_glyph);
-        assert!(relation_layout.width > compact_layout.width + equals_glyph);
-        assert!(
-            relation_layout.width - compact_layout.width - equals_glyph
-                > binary_layout.width - compact_layout.width - plus_glyph,
-            "relations receive wider TeX-style spacing than binary operators"
-        );
-    }
-
-    #[test]
-    fn paired_scripts_share_a_column_above_and_below_the_baseline() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let row = vec![
-            Node::Char('∑'),
-            Node::SubSup {
-                sub: vec![Node::Char('i')],
-                sup: vec![Node::Char('n')],
-            },
-        ];
-        let laid = layout(&row, &mut tr, 24.0);
-        assert!(laid.height > 24.0 * 1.25);
-        let script_gaps: Vec<_> = laid
-            .gaps
-            .iter()
-            .filter(|gap| !gap.steps.is_empty())
-            .collect();
-        assert!(script_gaps.iter().any(|gap| gap.top < laid.baseline));
-        assert!(script_gaps.iter().any(|gap| gap.bottom > laid.baseline));
-    }
-
-    #[test]
-    fn matrix_cells_align_to_shared_rows_and_columns() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let row = vec![Node::Paren {
-            body: vec![Node::Table {
-                rows: vec![
-                    vec![vec![Node::Char('1')], vec![Node::Char('x')]],
-                    vec![
-                        vec![Node::Char('y')],
-                        vec![Node::Frac {
-                            num: vec![Node::Char('1')],
-                            den: vec![Node::Char('2')],
-                        }],
-                    ],
-                ],
-            }],
-        }];
-        let laid = layout(&row, &mut tr, 22.0);
-        assert!(laid.height > 22.0 * 2.0);
-        assert!(laid.width > 22.0 * 3.0);
-        assert!(
-            laid.boxes
+            let name = lay
+                .boxes
                 .iter()
-                .any(|math_box| matches!(math_box.kind, BoxKind::FracBar))
-        );
-        let cells = laid
-            .gaps
-            .iter()
-            .filter(|gap| {
-                gap.steps
-                    .iter()
-                    .any(|(_, slot)| matches!(slot, Slot::Cell(_, _)))
-            })
-            .count();
-        assert!(cells >= 8, "each matrix cell exposes insertion geometry");
+                .find(|b| matches!(b.kind, BoxKind::Name { .. }))
+                .expect("a function-name box");
+            let paren = lay
+                .boxes
+                .iter()
+                .find(|b| matches!(b.kind, BoxKind::Paren { .. }))
+                .expect("the call's opening paren box");
 
-        let delimiters: Vec<_> = laid
-            .boxes
-            .iter()
-            .filter(|math_box| matches!(math_box.kind, BoxKind::Paren { .. }))
-            .collect();
-        assert_eq!(delimiters.len(), 2);
-        assert!((delimiters[0].y - delimiters[1].y).abs() < 0.01);
-        assert!((delimiters[0].h - delimiters[1].h).abs() < 0.01);
-
-        let content_top = laid
-            .boxes
-            .iter()
-            .filter(|math_box| !matches!(math_box.kind, BoxKind::Paren { .. }))
-            .map(|math_box| math_box.y)
-            .fold(f64::INFINITY, f64::min);
-        let content_bottom = laid
-            .boxes
-            .iter()
-            .filter(|math_box| !matches!(math_box.kind, BoxKind::Paren { .. }))
-            .map(|math_box| math_box.y + math_box.h)
-            .fold(f64::NEG_INFINITY, f64::max);
-        assert!(delimiters[0].y < content_top);
-        assert!(delimiters[0].y + delimiters[0].h > content_bottom);
-    }
-
-    #[test]
-    fn matrix_rows_share_baselines_and_remain_in_source_order() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let row = vec![Node::Paren {
-            body: vec![Node::Table {
-                rows: vec![
-                    vec![vec![Node::Char('a')], vec![Node::Char('b')]],
-                    vec![vec![Node::Char('c')], vec![Node::Char('d')]],
-                    vec![vec![Node::Char('e')], vec![Node::Char('f')]],
-                ],
-            }],
-        }];
-        let laid = layout(&row, &mut tr, 22.0);
-        let baselines: Vec<_> = laid
-            .boxes
-            .iter()
-            .filter_map(|math_box| match math_box.kind {
-                BoxKind::Glyph { ch, .. } if ch.is_alphabetic() => {
-                    Some(math_box.y + math_box.baseline)
-                }
-                _ => None,
-            })
-            .collect();
-        assert_eq!(baselines.len(), 6);
-        for pair in baselines.chunks_exact(2) {
-            assert!((pair[0] - pair[1]).abs() < 0.01);
+            assert_eq!(
+                box_size(&name.kind),
+                box_size(&paren.kind),
+                "the function name must be the SAME type size as its argument's parens"
+            );
+            let name_baseline = name.y + name.baseline;
+            let paren_baseline = paren.y + paren.baseline;
+            assert!(
+                (name_baseline - paren_baseline).abs() < 0.6,
+                "the function name must sit on the row baseline, not float above it \
+             (name {name_baseline:.2} vs paren {paren_baseline:.2})"
+            );
         }
-        assert!(baselines[0] < baselines[2]);
-        assert!(baselines[2] < baselines[4]);
+        // phase: binary_and_relation_operators_receive_math_spacing
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let compact = parse("xy");
+            let binary = parse("x+y");
+            let relation = parse("x=y");
+            let compact_layout = layout(&compact.root, &mut tr, 20.0);
+            let binary_layout = layout(&binary.root, &mut tr, 20.0);
+            let relation_layout = layout(&relation.root, &mut tr, 20.0);
+            let plus_glyph = measure_glyph(&mut tr, '+', 20.0);
+            let equals_glyph = measure_glyph(&mut tr, '=', 20.0);
+            assert!(binary_layout.width > compact_layout.width + plus_glyph);
+            assert!(relation_layout.width > compact_layout.width + equals_glyph);
+            assert!(
+                relation_layout.width - compact_layout.width - equals_glyph
+                    > binary_layout.width - compact_layout.width - plus_glyph,
+                "relations receive wider TeX-style spacing than binary operators"
+            );
+        }
+        // phase: paired_scripts_share_a_column_above_and_below_the_baseline
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let row = vec![
+                Node::Char('∑'),
+                Node::SubSup {
+                    sub: vec![Node::Char('i')],
+                    sup: vec![Node::Char('n')],
+                },
+            ];
+            let laid = layout(&row, &mut tr, 24.0);
+            assert!(laid.height > 24.0 * 1.25);
+            let script_gaps: Vec<_> = laid
+                .gaps
+                .iter()
+                .filter(|gap| !gap.steps.is_empty())
+                .collect();
+            assert!(script_gaps.iter().any(|gap| gap.top < laid.baseline));
+            assert!(script_gaps.iter().any(|gap| gap.bottom > laid.baseline));
+        }
+        // phase: tex_delimiters_enclose_tall_content_and_accents_fit_their_base
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let parsed = parse_tex(r"\left[\frac{\hat{x}}{y}\right]");
+            let laid = layout(&parsed.expr.root, &mut tr, 22.0);
+            let delimiters: Vec<_> = laid
+                .boxes
+                .iter()
+                .filter(|math_box| matches!(math_box.kind, BoxKind::Delimiter { .. }))
+                .collect();
+            assert_eq!(delimiters.len(), 2);
+            assert!((delimiters[0].y - delimiters[1].y).abs() < 0.01);
+            assert!((delimiters[0].h - delimiters[1].h).abs() < 0.01);
 
-        let parens: Vec<_> = laid
-            .boxes
-            .iter()
-            .filter(|math_box| matches!(math_box.kind, BoxKind::Paren { .. }))
-            .collect();
-        assert_eq!(parens.len(), 2);
-        let delimiter_center = parens[0].y + parens[0].h * 0.5;
-        let matrix_top = laid
-            .boxes
-            .iter()
-            .filter(|math_box| !matches!(math_box.kind, BoxKind::Paren { .. }))
-            .map(|math_box| math_box.y)
-            .fold(f64::INFINITY, f64::min);
-        let matrix_bottom = laid
-            .boxes
-            .iter()
-            .filter(|math_box| !matches!(math_box.kind, BoxKind::Paren { .. }))
-            .map(|math_box| math_box.y + math_box.h)
-            .fold(f64::NEG_INFINITY, f64::max);
-        let matrix_center = (matrix_top + matrix_bottom) * 0.5;
-        assert!(
-            (delimiter_center - matrix_center).abs() < 22.0 * 0.2,
-            "delimiter and matrix must share an optical centre"
-        );
+            let accent = laid
+                .boxes
+                .iter()
+                .find(|math_box| matches!(math_box.kind, BoxKind::Accent { .. }))
+                .expect("hat geometry");
+            let base = laid
+                .boxes
+                .iter()
+                .filter(|math_box| matches!(math_box.kind, BoxKind::Glyph { .. }))
+                .filter(|math_box| {
+                    math_box.y >= accent.y + accent.h
+                        && math_box.x < accent.x + accent.w
+                        && math_box.x + math_box.w > accent.x
+                })
+                .min_by(|left, right| left.y.total_cmp(&right.y))
+                .expect("accented base glyph");
+            assert!(
+                accent.y + accent.h <= base.y,
+                "the hat stays above its base"
+            );
+            assert!(accent.x <= base.x + base.w * 0.25);
+            assert!(accent.x + accent.w >= base.x + base.w * 0.75);
+        }
     }
 
     #[test]
-    fn tex_delimiters_enclose_tall_content_and_accents_fit_their_base() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let parsed = parse_tex(r"\left[\frac{\hat{x}}{y}\right]");
-        let laid = layout(&parsed.expr.root, &mut tr, 22.0);
-        let delimiters: Vec<_> = laid
-            .boxes
-            .iter()
-            .filter(|math_box| matches!(math_box.kind, BoxKind::Delimiter { .. }))
-            .collect();
-        assert_eq!(delimiters.len(), 2);
-        assert!((delimiters[0].y - delimiters[1].y).abs() < 0.01);
-        assert!((delimiters[0].h - delimiters[1].h).abs() < 0.01);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn matrix_cells_align_to_shared_rows_columns_and_baselines() {
+        // phase: matrix_cells_align_to_shared_rows_and_columns
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let row = vec![Node::Paren {
+                body: vec![Node::Table {
+                    rows: vec![
+                        vec![vec![Node::Char('1')], vec![Node::Char('x')]],
+                        vec![
+                            vec![Node::Char('y')],
+                            vec![Node::Frac {
+                                num: vec![Node::Char('1')],
+                                den: vec![Node::Char('2')],
+                            }],
+                        ],
+                    ],
+                }],
+            }];
+            let laid = layout(&row, &mut tr, 22.0);
+            assert!(laid.height > 22.0 * 2.0);
+            assert!(laid.width > 22.0 * 3.0);
+            assert!(
+                laid.boxes
+                    .iter()
+                    .any(|math_box| matches!(math_box.kind, BoxKind::FracBar))
+            );
+            let cells = laid
+                .gaps
+                .iter()
+                .filter(|gap| {
+                    gap.steps
+                        .iter()
+                        .any(|(_, slot)| matches!(slot, Slot::Cell(_, _)))
+                })
+                .count();
+            assert!(cells >= 8, "each matrix cell exposes insertion geometry");
 
-        let accent = laid
-            .boxes
-            .iter()
-            .find(|math_box| matches!(math_box.kind, BoxKind::Accent { .. }))
-            .expect("hat geometry");
-        let base = laid
-            .boxes
-            .iter()
-            .filter(|math_box| matches!(math_box.kind, BoxKind::Glyph { .. }))
-            .filter(|math_box| {
-                math_box.y >= accent.y + accent.h
-                    && math_box.x < accent.x + accent.w
-                    && math_box.x + math_box.w > accent.x
-            })
-            .min_by(|left, right| left.y.total_cmp(&right.y))
-            .expect("accented base glyph");
-        assert!(
-            accent.y + accent.h <= base.y,
-            "the hat stays above its base"
-        );
-        assert!(accent.x <= base.x + base.w * 0.25);
-        assert!(accent.x + accent.w >= base.x + base.w * 0.75);
+            let delimiters: Vec<_> = laid
+                .boxes
+                .iter()
+                .filter(|math_box| matches!(math_box.kind, BoxKind::Paren { .. }))
+                .collect();
+            assert_eq!(delimiters.len(), 2);
+            assert!((delimiters[0].y - delimiters[1].y).abs() < 0.01);
+            assert!((delimiters[0].h - delimiters[1].h).abs() < 0.01);
+
+            let content_top = laid
+                .boxes
+                .iter()
+                .filter(|math_box| !matches!(math_box.kind, BoxKind::Paren { .. }))
+                .map(|math_box| math_box.y)
+                .fold(f64::INFINITY, f64::min);
+            let content_bottom = laid
+                .boxes
+                .iter()
+                .filter(|math_box| !matches!(math_box.kind, BoxKind::Paren { .. }))
+                .map(|math_box| math_box.y + math_box.h)
+                .fold(f64::NEG_INFINITY, f64::max);
+            assert!(delimiters[0].y < content_top);
+            assert!(delimiters[0].y + delimiters[0].h > content_bottom);
+        }
+        // phase: matrix_rows_share_baselines_and_remain_in_source_order
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let row = vec![Node::Paren {
+                body: vec![Node::Table {
+                    rows: vec![
+                        vec![vec![Node::Char('a')], vec![Node::Char('b')]],
+                        vec![vec![Node::Char('c')], vec![Node::Char('d')]],
+                        vec![vec![Node::Char('e')], vec![Node::Char('f')]],
+                    ],
+                }],
+            }];
+            let laid = layout(&row, &mut tr, 22.0);
+            let baselines: Vec<_> = laid
+                .boxes
+                .iter()
+                .filter_map(|math_box| match math_box.kind {
+                    BoxKind::Glyph { ch, .. } if ch.is_alphabetic() => {
+                        Some(math_box.y + math_box.baseline)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(baselines.len(), 6);
+            for pair in baselines.chunks_exact(2) {
+                assert!((pair[0] - pair[1]).abs() < 0.01);
+            }
+            assert!(baselines[0] < baselines[2]);
+            assert!(baselines[2] < baselines[4]);
+
+            let parens: Vec<_> = laid
+                .boxes
+                .iter()
+                .filter(|math_box| matches!(math_box.kind, BoxKind::Paren { .. }))
+                .collect();
+            assert_eq!(parens.len(), 2);
+            let delimiter_center = parens[0].y + parens[0].h * 0.5;
+            let matrix_top = laid
+                .boxes
+                .iter()
+                .filter(|math_box| !matches!(math_box.kind, BoxKind::Paren { .. }))
+                .map(|math_box| math_box.y)
+                .fold(f64::INFINITY, f64::min);
+            let matrix_bottom = laid
+                .boxes
+                .iter()
+                .filter(|math_box| !matches!(math_box.kind, BoxKind::Paren { .. }))
+                .map(|math_box| math_box.y + math_box.h)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let matrix_center = (matrix_top + matrix_bottom) * 0.5;
+            assert!(
+                (delimiter_center - matrix_center).abs() < 22.0 * 0.2,
+                "delimiter and matrix must share an optical centre"
+            );
+        }
     }
 }

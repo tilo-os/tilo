@@ -347,7 +347,32 @@ fn slide_xml(slide: &Slide, pictures: &[&Picture]) -> String {
                     TextAlign::Justify => "just",
                     TextAlign::Left => "l",
                 };
-                let runs = el.text.split('\n').map(|line| format!(r#"<a:p><a:pPr algn="{align}"/><a:r><a:rPr lang="en-US" sz="{}" b="{}" i="{}">{}</a:rPr><a:t>{}</a:t></a:r></a:p>"#, (el.font_size*100.0).round() as i64, u8::from(el.bold), u8::from(el.italic), drawing_color(&el.fill), xml(line))).collect::<String>();
+                let size = (el.font_size * 100.0).round() as i64;
+                let color = drawing_color(&el.fill);
+                let run = |text: &str, bold: bool, italic: bool| {
+                    format!(
+                        r#"<a:r><a:rPr lang="en-US" sz="{size}" b="{}" i="{}">{color}</a:rPr><a:t>{}</a:t></a:r>"#,
+                        u8::from(bold),
+                        u8::from(italic),
+                        quick_xml::escape::partial_escape(text)
+                    )
+                };
+                // A paragraph per block, a run per stretch of one weight and slant.
+                let runs = el
+                    .rich_blocks()
+                    .iter()
+                    .map(|block| {
+                        let runs = crate::model::runs_of(block);
+                        let body = if runs.is_empty() {
+                            run("", false, false)
+                        } else {
+                            runs.into_iter()
+                                .map(|(text, bold, italic)| run(text, bold, italic))
+                                .collect()
+                        };
+                        format!(r#"<a:p><a:pPr algn="{align}"/>{body}</a:p>"#)
+                    })
+                    .collect::<String>();
                 s.push_str(&format!(r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="Text {id}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{w}" cy="{h}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/>{runs}</p:txBody></p:sp>"#));
             }
             kind => {
@@ -380,6 +405,9 @@ struct Pending {
     fill: String,
     stroke: String,
     stroke_width: f64,
+    /// The text as written: a paragraph per `a:p`, a mark per bold or
+    /// italic run.
+    blocks: Vec<ui::widget::BlockContent>,
 }
 impl Default for Pending {
     fn default() -> Self {
@@ -399,6 +427,7 @@ impl Default for Pending {
             fill: "accent".into(),
             stroke: "none".into(),
             stroke_width: 0.0,
+            blocks: Vec::new(),
         }
     }
 }
@@ -502,10 +531,11 @@ fn parse_slide(
                         }
                     }
                     b"p" => {
-                        if paragraph {
-                            if let Some(c) = cur.as_mut() {
-                                c.text.push('\n')
+                        if let Some(c) = cur.as_mut() {
+                            if paragraph {
+                                c.text.push('\n');
                             }
+                            c.blocks.push(ui::widget::BlockContent::paragraph("", ""));
                         }
                         paragraph = true
                     }
@@ -553,15 +583,25 @@ fn parse_slide(
             Ok(Event::Text(t)) if in_text => {
                 if let Some(c) = cur.as_mut() {
                     if let Ok(v) = t.xml10_content() {
-                        c.text.push_str(&v)
+                        c.text.push_str(&v);
+                        let (bold, italic) = (c.bold, c.italic);
+                        if let Some(block) = c.blocks.last_mut() {
+                            crate::model::push_run(block, &v, bold, italic);
+                        }
                     }
                 }
             }
             // quick-xml reports `&amp;`/`&#x2019;` as events of their own between
             // the text around them.
             Ok(Event::GeneralRef(r)) if in_text => {
-                if let Some(c) = cur.as_mut() {
-                    c.text.extend(qdoc_codecs::resolve_general_ref(&r));
+                if let Some(c) = cur.as_mut()
+                    && let Some(ch) = tilo_doc_codecs::resolve_general_ref(&r)
+                {
+                    c.text.push(ch);
+                    let (bold, italic) = (c.bold, c.italic);
+                    if let Some(block) = c.blocks.last_mut() {
+                        crate::model::push_run(block, ch.encode_utf8(&mut [0; 4]), bold, italic);
+                    }
                 }
             }
             Ok(Event::End(e)) => match local(e.name().as_ref()) {
@@ -614,9 +654,13 @@ fn push_pending(
             h,
             if c.size > 0.0 { c.size } else { 24.0 },
         );
-        e.bold = c.bold;
-        e.italic = c.italic;
         e.align = c.align;
+        if crate::model::plain_text_of(&c.blocks) == c.text {
+            e.set_blocks(c.blocks);
+        } else {
+            e.bold = c.bold;
+            e.italic = c.italic;
+        }
         e
     } else {
         Element::shape(
@@ -649,7 +693,7 @@ fn notes_slide_xml(notes: &str) -> String {
         .map(|line| {
             format!(
                 r#"<a:p><a:r><a:rPr lang="en-US"/><a:t>{}</a:t></a:r></a:p>"#,
-                xml(line)
+                quick_xml::escape::partial_escape(line)
             )
         })
         .collect::<String>();
@@ -700,7 +744,7 @@ fn parse_notes(xml: &str) -> String {
                 }
             }
             Ok(Event::GeneralRef(r)) if in_text => {
-                notes.extend(qdoc_codecs::resolve_general_ref(&r));
+                notes.extend(tilo_doc_codecs::resolve_general_ref(&r));
             }
             Ok(Event::End(e)) => match local(e.name().as_ref()) {
                 b"t" => in_text = false,
@@ -750,7 +794,7 @@ fn first_text(xml: &str, wanted: &[u8]) -> Option<String> {
             }
             (Ok(Event::Text(t)), Some(text)) => text.push_str(&t.xml10_content().ok()?),
             (Ok(Event::GeneralRef(g)), Some(text)) => {
-                text.extend(qdoc_codecs::resolve_general_ref(&g));
+                text.extend(tilo_doc_codecs::resolve_general_ref(&g));
             }
             (Ok(Event::End(_)), Some(_)) => return text,
             (Ok(Event::Eof) | Err(_), _) => return None,
@@ -762,7 +806,7 @@ fn attr(e: &BytesStart<'_>, wanted: &[u8]) -> String {
     e.attributes()
         .flatten()
         .find(|a| local(a.key.as_ref()) == wanted)
-        .and_then(|a| qdoc_codecs::unescape_attr(&a))
+        .and_then(|a| tilo_doc_codecs::unescape_attr(&a))
         .unwrap_or_default()
 }
 fn attr_num(e: &BytesStart<'_>, wanted: &[u8]) -> f64 {
@@ -780,11 +824,6 @@ fn slide_number(n: &str) -> usize {
 }
 fn emu(v: f64) -> i64 {
     (v * EMU).round() as i64
-}
-fn xml(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 fn image_ext(b: &[u8]) -> Option<&'static str> {
     if b.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -871,7 +910,7 @@ const RELS_HEAD: &str = r#"<?xml version="1.0" encoding="UTF-8"?><Relationships 
 fn core_xml(title: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>{}</dc:title></cp:coreProperties>"#,
-        xml(title)
+        quick_xml::escape::partial_escape(title)
     )
 }
 const ROOT_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/></Relationships>"#;
@@ -887,139 +926,252 @@ const THEME: &str = r#"<?xml version="1.0" encoding="UTF-8"?><a:theme xmlns:a="h
 mod tests {
     use super::*;
     #[test]
-    fn round_trips_core_content() {
+    fn a_bold_word_in_a_text_box_survives_the_round_trip() {
+        use ui::widget::marks::{Mark, MarkSpan};
         let content = ContentStore::memory();
-        let mut s = Slide::new(Layout::Blank);
-        s.add(
-            Element::text("Hello\nPowerPoint", 10.0, 20.0, 500.0, 100.0, 36.0)
-                .with(|e| e.bold = true),
-        );
-        s.add(Element::shape(
-            ElementKind::Ellipse,
-            100.0,
-            200.0,
-            220.0,
-            90.0,
-        ));
-        let d = Deck {
-            title: "Talk".into(),
-            palette: PaletteKind::Indigo,
-            slides: vec![s],
-        };
-        let b = write_pptx(&d, &content).unwrap();
-        assert!(b.starts_with(b"PK"));
-        let got = read_pptx(&b, &content).unwrap();
-        assert_eq!(got.title, "Talk");
-        assert_eq!(got.slides.len(), 1);
-        assert_eq!(got.slides[0].elements[0].text, "Hello\nPowerPoint");
-        assert!(
-            got.slides[0]
-                .elements
-                .iter()
-                .any(|e| e.kind == ElementKind::Ellipse)
-        );
-    }
-
-    #[test]
-    fn round_trips_native_shape_and_text_styling() {
-        let content = ContentStore::memory();
-        let mut slide = Slide::new(Layout::Blank);
-        let mut shape = Element::shape(ElementKind::Rect, 10.0, 20.0, 100.0, 80.0);
-        shape.fill = "#12A4EF".into();
-        shape.stroke = "danger".into();
-        shape.stroke_width = 3.5;
-        slide.add(shape);
-        let mut text = Element::text("Ink", 20.0, 120.0, 200.0, 40.0, 18.0);
-        text.fill = "success".into();
-        slide.add(text);
-        let deck = Deck {
-            title: "Style fidelity".into(),
-            palette: PaletteKind::Indigo,
-            slides: vec![slide],
-        };
-
-        let bytes = write_pptx(&deck, &content).expect("pptx export");
-        let got = read_pptx(&bytes, &content).expect("pptx import");
-        let shape = &got.slides[0].elements[0];
-        assert_eq!(shape.fill, "#12A4EF");
-        assert_eq!(shape.stroke, "danger");
-        assert!((shape.stroke_width - 3.5).abs() < 0.01);
-        assert_eq!(got.slides[0].elements[1].fill, "success");
-    }
-
-    #[test]
-    fn round_trips_theme_relative_slide_backgrounds() {
-        let content = ContentStore::memory();
-        let mut accent = Slide::new(Layout::Blank);
-        accent.background = Background::Accent;
-        let mut deep = Slide::new(Layout::Blank);
-        deep.background = Background::Deep;
-        let deck = Deck {
-            title: "Background fidelity".into(),
-            palette: PaletteKind::Indigo,
-            slides: vec![accent, deep],
-        };
-
-        let bytes = write_pptx(&deck, &content).expect("pptx export");
-        let mut archive = crate::odp::open_package(&bytes).expect("pptx zip");
-        let accent_xml = read_zip_text(&mut archive, "ppt/slides/slide1.xml").expect("slide xml");
-        let deep_xml = read_zip_text(&mut archive, "ppt/slides/slide2.xml").expect("slide xml");
-        assert!(
-            accent_xml.contains("<p:bg><p:bgPr><a:solidFill><a:schemeClr val=\"accent1\""),
-            "accent is a native theme background"
-        );
-        assert!(
-            deep_xml.contains("<p:bg><p:bgPr><a:solidFill><a:schemeClr val=\"dk1\""),
-            "deep is a native theme background"
-        );
-
-        let got = read_pptx(&bytes, &content).expect("pptx import");
-        assert_eq!(got.slides[0].background, Background::Accent);
-        assert_eq!(got.slides[1].background, Background::Deep);
-    }
-
-    #[test]
-    fn round_trips_speaker_notes_as_native_notes_slides() {
-        let content = ContentStore::memory();
-        let mut with_notes = Slide::new(Layout::Blank);
-        with_notes.notes = "Open with the decision.\nPause for questions.".into();
-        let without_notes = Slide::new(Layout::Blank);
-        let deck = Deck {
-            title: "Notes fidelity".into(),
-            palette: PaletteKind::Indigo,
-            slides: vec![with_notes, without_notes],
-        };
-
-        let bytes = write_pptx(&deck, &content).expect("pptx export");
-        let mut archive = crate::odp::open_package(&bytes).expect("pptx zip");
-        let types = read_zip_text(&mut archive, "[Content_Types].xml").expect("content types");
-        let notes =
-            read_zip_text(&mut archive, "ppt/notesSlides/notesSlide1.xml").expect("notes slide");
-        assert!(types.contains("presentationml.notesSlide+xml"));
-        assert!(notes.contains(r#"<p:ph type="body" idx="1"/>"#));
-        assert!(notes.contains("Open with the decision."));
-        assert!(
-            !archive
-                .file_names()
-                .any(|name| name == "ppt/notesSlides/notesSlide2.xml"),
-            "slides without notes do not gain empty note pages"
-        );
-        drop(archive);
-
-        let got = read_pptx(&bytes, &content).expect("pptx import");
+        let mut deck = crate::model::seed_deck();
+        let mut first = ui::widget::BlockContent::paragraph("", "plain bold");
+        first.marks = vec![MarkSpan::new(6..10, Mark::Bold)];
+        let mut second = ui::widget::BlockContent::paragraph("", "slanted");
+        second.marks = vec![MarkSpan::new(0..7, Mark::Italic)];
+        let element = deck.slides[0]
+            .elements
+            .iter_mut()
+            .find(|element| element.kind == crate::model::ElementKind::Text)
+            .unwrap();
+        element.set_blocks(vec![first, second]);
+        let id = element.id.clone();
+        let written = element.clone();
+        let bytes = write_pptx(&deck, &content).expect("write");
+        let back = read_pptx(&bytes, &content).expect("read");
+        let read = back.slides[0]
+            .elements
+            .iter()
+            .find(|element| element.id == id || element.text == written.text)
+            .expect("the text box comes back");
+        assert_eq!(read.text, "plain bold\nslanted");
         assert_eq!(
-            got.slides[0].notes,
-            "Open with the decision.\nPause for questions."
+            read.rich_blocks(),
+            written.rich_blocks(),
+            "runs keep their marks"
         );
-        assert!(got.slides[1].notes.is_empty());
     }
 
+    /// PPTX round-trips core content, shape/text styling, theme backgrounds and pictures.
     #[test]
-    fn notes_import_ignores_non_body_placeholders() {
-        let notes = parse_notes(
-            r#"<p:notes xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="dt"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>2026-01-01</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Keep this</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>"#,
-        );
-        assert_eq!(notes, "Keep this");
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn pptx_round_trips_content_styles_backgrounds_and_pictures() {
+        // Case `round_trips_core_content`.
+        {
+            let content = ContentStore::memory();
+            let mut s = Slide::new(Layout::Blank);
+            s.add(
+                Element::text("Hello\nPowerPoint", 10.0, 20.0, 500.0, 100.0, 36.0)
+                    .with(|e| e.bold = true),
+            );
+            s.add(Element::shape(
+                ElementKind::Ellipse,
+                100.0,
+                200.0,
+                220.0,
+                90.0,
+            ));
+            let d = Deck {
+                title: "Talk".into(),
+                palette: PaletteKind::Indigo,
+                slides: vec![s],
+            };
+            let b = write_pptx(&d, &content).unwrap();
+            assert!(b.starts_with(b"PK"));
+            let got = read_pptx(&b, &content).unwrap();
+            assert_eq!(got.title, "Talk");
+            assert_eq!(got.slides.len(), 1);
+            assert_eq!(got.slides[0].elements[0].text, "Hello\nPowerPoint");
+            assert!(
+                got.slides[0]
+                    .elements
+                    .iter()
+                    .any(|e| e.kind == ElementKind::Ellipse)
+            );
+        }
+
+        // Case `round_trips_native_shape_and_text_styling`.
+        {
+            let content = ContentStore::memory();
+            let mut slide = Slide::new(Layout::Blank);
+            let mut shape = Element::shape(ElementKind::Rect, 10.0, 20.0, 100.0, 80.0);
+            shape.fill = "#12A4EF".into();
+            shape.stroke = "danger".into();
+            shape.stroke_width = 3.5;
+            slide.add(shape);
+            let mut text = Element::text("Ink", 20.0, 120.0, 200.0, 40.0, 18.0);
+            text.fill = "success".into();
+            slide.add(text);
+            let deck = Deck {
+                title: "Style fidelity".into(),
+                palette: PaletteKind::Indigo,
+                slides: vec![slide],
+            };
+
+            let bytes = write_pptx(&deck, &content).expect("pptx export");
+            let got = read_pptx(&bytes, &content).expect("pptx import");
+            let shape = &got.slides[0].elements[0];
+            assert_eq!(shape.fill, "#12A4EF");
+            assert_eq!(shape.stroke, "danger");
+            assert!((shape.stroke_width - 3.5).abs() < 0.01);
+            assert_eq!(got.slides[0].elements[1].fill, "success");
+        }
+
+        // Case `round_trips_theme_relative_slide_backgrounds`.
+        {
+            let content = ContentStore::memory();
+            let mut accent = Slide::new(Layout::Blank);
+            accent.background = Background::Accent;
+            let mut deep = Slide::new(Layout::Blank);
+            deep.background = Background::Deep;
+            let deck = Deck {
+                title: "Background fidelity".into(),
+                palette: PaletteKind::Indigo,
+                slides: vec![accent, deep],
+            };
+
+            let bytes = write_pptx(&deck, &content).expect("pptx export");
+            let mut archive = crate::odp::open_package(&bytes).expect("pptx zip");
+            let accent_xml =
+                read_zip_text(&mut archive, "ppt/slides/slide1.xml").expect("slide xml");
+            let deep_xml = read_zip_text(&mut archive, "ppt/slides/slide2.xml").expect("slide xml");
+            assert!(
+                accent_xml.contains("<p:bg><p:bgPr><a:solidFill><a:schemeClr val=\"accent1\""),
+                "accent is a native theme background"
+            );
+            assert!(
+                deep_xml.contains("<p:bg><p:bgPr><a:solidFill><a:schemeClr val=\"dk1\""),
+                "deep is a native theme background"
+            );
+
+            let got = read_pptx(&bytes, &content).expect("pptx import");
+            assert_eq!(got.slides[0].background, Background::Accent);
+            assert_eq!(got.slides[1].background, Background::Deep);
+        }
+
+        // Case `bundles_local_picture`.
+        {
+            let content = ContentStore::memory();
+            let p = std::env::temp_dir().join(format!("slides-pptx-{}.png", std::process::id()));
+            std::fs::write(&p, b"\x89PNG\r\n\x1a\nbytes").unwrap();
+            let asset = crate::assets::import_asset_file(&content, &p).unwrap();
+            let mut s = Slide::new(Layout::Blank);
+            s.add(Element::image(&asset, 1.0, 2.0, 30.0, 40.0));
+            let d = Deck {
+                title: "Pictures".into(),
+                palette: PaletteKind::Indigo,
+                slides: vec![s],
+            };
+            let b = write_pptx(&d, &content).unwrap();
+            let got = read_pptx(&b, &content).unwrap();
+            assert_eq!(got.slides[0].elements[0].kind, ElementKind::Image);
+            assert!(
+                crate::assets::read_asset(&content, &got.slides[0].elements[0].src)
+                    .unwrap()
+                    .starts_with(b"\x89PNG")
+            );
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    /// Speaker notes, placeholder filtering, reserved characters and entity references.
+    #[test]
+    fn pptx_notes_and_text_escaping_round_trip() {
+        // Case `round_trips_speaker_notes_as_native_notes_slides`.
+        {
+            let content = ContentStore::memory();
+            let mut with_notes = Slide::new(Layout::Blank);
+            with_notes.notes = "Open with the decision.\nPause for questions.".into();
+            let without_notes = Slide::new(Layout::Blank);
+            let deck = Deck {
+                title: "Notes fidelity".into(),
+                palette: PaletteKind::Indigo,
+                slides: vec![with_notes, without_notes],
+            };
+
+            let bytes = write_pptx(&deck, &content).expect("pptx export");
+            let mut archive = crate::odp::open_package(&bytes).expect("pptx zip");
+            let types = read_zip_text(&mut archive, "[Content_Types].xml").expect("content types");
+            let notes = read_zip_text(&mut archive, "ppt/notesSlides/notesSlide1.xml")
+                .expect("notes slide");
+            assert!(types.contains("presentationml.notesSlide+xml"));
+            assert!(notes.contains(r#"<p:ph type="body" idx="1"/>"#));
+            assert!(notes.contains("Open with the decision."));
+            assert!(
+                !archive
+                    .file_names()
+                    .any(|name| name == "ppt/notesSlides/notesSlide2.xml"),
+                "slides without notes do not gain empty note pages"
+            );
+            drop(archive);
+
+            let got = read_pptx(&bytes, &content).expect("pptx import");
+            assert_eq!(
+                got.slides[0].notes,
+                "Open with the decision.\nPause for questions."
+            );
+            assert!(got.slides[1].notes.is_empty());
+        }
+
+        // Case `notes_import_ignores_non_body_placeholders`.
+        {
+            let notes = parse_notes(
+                r#"<p:notes xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="dt"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>2026-01-01</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Keep this</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>"#,
+            );
+            assert_eq!(notes, "Keep this");
+        }
+
+        // Case `round_trips_reserved_characters_in_title_text_and_notes`.
+        {
+            let content = ContentStore::memory();
+            let mut slide = Slide::new(Layout::Blank);
+            slide.add(Element::text(
+                "R&D <b> & \u{1F600}",
+                10.0,
+                20.0,
+                500.0,
+                100.0,
+                36.0,
+            ));
+            slide.notes = "a < b && c > d".into();
+            let deck = Deck {
+                title: "Q&A <live>".into(),
+                palette: PaletteKind::Indigo,
+                slides: vec![slide],
+            };
+            let got = read_pptx(&write_pptx(&deck, &content).unwrap(), &content).unwrap();
+            assert_eq!(got.title, "Q&A <live>");
+            assert_eq!(got.slides[0].elements[0].text, "R&D <b> & \u{1F600}");
+            assert_eq!(got.slides[0].notes, "a < b && c > d");
+        }
+
+        // Case `entity_and_character_references_resolve_in_notes_title_and_attributes`.
+        {
+            let notes = parse_notes(&format!(
+                r#"<p:notes xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>{RAW_REFS}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>"#
+            ));
+            assert_eq!(notes, REFS_TEXT);
+            let title = first_text(
+                &format!("<cp:coreProperties><dc:title>{RAW_REFS}</dc:title></cp:coreProperties>"),
+                b"dc:title",
+            );
+            assert_eq!(title.as_deref(), Some(REFS_TEXT));
+            let rels = parse_rels(
+                r#"<Relationships><Relationship Id="rId1" Target="../media/R&amp;D&#x20;chart.png"/></Relationships>"#,
+            );
+            assert_eq!(
+                rels.get("rId1").map(String::as_str),
+                Some("../media/R&D chart.png")
+            );
+        }
     }
 
     /// Every predefined entity and decimal/hex character references (one
@@ -1027,72 +1179,4 @@ mod tests {
     const RAW_REFS: &str =
         "R&amp;D &lt;b&gt; &quot;q&quot; &apos;s&apos; &#8217;&#x2019;&#x1F600;&#65;&amp;&amp;";
     const REFS_TEXT: &str = "R&D <b> \"q\" 's' \u{2019}\u{2019}\u{1F600}A&&";
-
-    #[test]
-    fn round_trips_reserved_characters_in_title_text_and_notes() {
-        let content = ContentStore::memory();
-        let mut slide = Slide::new(Layout::Blank);
-        slide.add(Element::text(
-            "R&D <b> & \u{1F600}",
-            10.0,
-            20.0,
-            500.0,
-            100.0,
-            36.0,
-        ));
-        slide.notes = "a < b && c > d".into();
-        let deck = Deck {
-            title: "Q&A <live>".into(),
-            palette: PaletteKind::Indigo,
-            slides: vec![slide],
-        };
-        let got = read_pptx(&write_pptx(&deck, &content).unwrap(), &content).unwrap();
-        assert_eq!(got.title, "Q&A <live>");
-        assert_eq!(got.slides[0].elements[0].text, "R&D <b> & \u{1F600}");
-        assert_eq!(got.slides[0].notes, "a < b && c > d");
-    }
-
-    #[test]
-    fn entity_and_character_references_resolve_in_notes_title_and_attributes() {
-        let notes = parse_notes(&format!(
-            r#"<p:notes xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>{RAW_REFS}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>"#
-        ));
-        assert_eq!(notes, REFS_TEXT);
-        let title = first_text(
-            &format!("<cp:coreProperties><dc:title>{RAW_REFS}</dc:title></cp:coreProperties>"),
-            b"dc:title",
-        );
-        assert_eq!(title.as_deref(), Some(REFS_TEXT));
-        let rels = parse_rels(
-            r#"<Relationships><Relationship Id="rId1" Target="../media/R&amp;D&#x20;chart.png"/></Relationships>"#,
-        );
-        assert_eq!(
-            rels.get("rId1").map(String::as_str),
-            Some("../media/R&D chart.png")
-        );
-    }
-
-    #[test]
-    fn bundles_local_picture() {
-        let content = ContentStore::memory();
-        let p = std::env::temp_dir().join(format!("slides-pptx-{}.png", std::process::id()));
-        std::fs::write(&p, b"\x89PNG\r\n\x1a\nbytes").unwrap();
-        let asset = crate::assets::import_asset_file(&content, &p).unwrap();
-        let mut s = Slide::new(Layout::Blank);
-        s.add(Element::image(&asset, 1.0, 2.0, 30.0, 40.0));
-        let d = Deck {
-            title: "Pictures".into(),
-            palette: PaletteKind::Indigo,
-            slides: vec![s],
-        };
-        let b = write_pptx(&d, &content).unwrap();
-        let got = read_pptx(&b, &content).unwrap();
-        assert_eq!(got.slides[0].elements[0].kind, ElementKind::Image);
-        assert!(
-            crate::assets::read_asset(&content, &got.slides[0].elements[0].src)
-                .unwrap()
-                .starts_with(b"\x89PNG")
-        );
-        let _ = std::fs::remove_file(p);
-    }
 }

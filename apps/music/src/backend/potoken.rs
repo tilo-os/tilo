@@ -91,18 +91,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn null_provider_mints_nothing_and_cannot_stream() {
-        let p = NullPoToken;
-        let ctx = PoTokenContext {
-            video_id: "abc".into(),
-            visitor_data: None,
-        };
-        assert!(p.mint(PoTokenKind::Streaming, &ctx).is_none());
-        assert!(!p.can_stream());
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn default_null_provider_mints_nothing_and_cannot_stream() {
+        // Phase `null_provider_mints_nothing_and_cannot_stream`.
+        {
+            let p = NullPoToken;
+            let ctx = PoTokenContext {
+                video_id: "abc".into(),
+                visitor_data: None,
+            };
+            assert!(p.mint(PoTokenKind::Streaming, &ctx).is_none());
+            assert!(!p.can_stream());
+        }
 
-    #[test]
-    fn default_provider_is_null() {
-        assert_eq!(default_provider().name(), "null (iOS/TV clients, no token)");
+        // Phase `default_provider_is_null`.
+        {
+            assert_eq!(default_provider().name(), "null (iOS/TV clients, no token)");
+        }
     }
 }

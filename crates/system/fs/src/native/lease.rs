@@ -1,9 +1,11 @@
 //! Single-writer leases for files modified in place (`storage.md` §11.2).
 //!
 //! A file becomes lease-class the first time it is modified in place: its
-//! inode survives the change and the new version still shares extents with
-//! the previous one (a write inside the file, not a truncate-and-rewrite or
-//! a replace-by-rename). Detection is behavioural and knows no file types.
+//! inode survives the change and the new version keeps some of the previous
+//! one's bytes where they were, in shared extents or, for a small file whose
+//! every block was rewritten, in identical sectors ([`kept_bytes_in_place`]):
+//! a write inside the file, not a truncate-and-rewrite or a
+//! replace-by-rename. Detection is behavioural and knows no file types.
 //!
 //! The lease itself lives in the namespace (`crate::namespace::WriteLease`),
 //! so every device sees who holds it in causal order with the file's
@@ -37,6 +39,67 @@ use fs_native::hydrate::{Hydrator as Placeholders, WriteGate, WritePolicy};
 use crate::fs::QuickFS;
 use crate::fs::native_ops::LeaseSource;
 use crate::namespace::{VersionFence, WriteLease};
+
+/// Sector size of the byte comparison in [`kept_bytes_in_place`].
+const SECTOR: usize = 512;
+
+/// Whether `new`, which kept the inode of `old`, overwrote some of `old`'s
+/// bytes and left others where they were: the observable result of a write
+/// inside the file. `changed` is the extent diff of the two (every range
+/// `new` may have rewritten).
+///
+/// Shared extents prove this without reading anything, and are the whole
+/// answer for most files. A small file whose every block was rewritten in
+/// place shares none: an update of a two-page `SQLite` database rewrites its
+/// header page (the change counter) and its one table page. For such a file
+/// the rewritten ranges inside the previous size are compared sector by
+/// sector: a sector that holds the same non-zero bytes at the same offset
+/// was kept, and at least one other sector must differ (a rewrite with the
+/// same bytes wrote nothing new). A sector of zeros proves nothing.
+pub fn kept_bytes_in_place(
+    old: &std::fs::File,
+    new: &std::fs::File,
+    changed: &[std::ops::Range<u64>],
+    old_len: u64,
+    new_len: u64,
+) -> std::io::Result<bool> {
+    use std::os::unix::fs::FileExt as _;
+    let changed_bytes: u64 = changed.iter().map(|r| r.end.saturating_sub(r.start)).sum();
+    if changed_bytes < new_len {
+        return Ok(true);
+    }
+    // Bytes past the previous end are new, not rewritten.
+    let end = old_len.min(new_len);
+    let (mut a, mut b) = (vec![0u8; 64 * SECTOR], vec![0u8; 64 * SECTOR]);
+    let (mut kept, mut rewritten) = (false, false);
+    for range in changed {
+        let mut at = range.start.min(end);
+        let stop = range.end.min(end);
+        while at < stop {
+            let left = usize::try_from(stop.saturating_sub(at)).unwrap_or(usize::MAX);
+            let (Some(a), Some(b)) = (
+                a.get_mut(..left.min(64 * SECTOR)),
+                b.get_mut(..left.min(64 * SECTOR)),
+            ) else {
+                break;
+            };
+            old.read_exact_at(a, at)?;
+            new.read_exact_at(b, at)?;
+            for (x, y) in a.chunks(SECTOR).zip(b.chunks(SECTOR)) {
+                if x != y {
+                    rewritten = true;
+                } else if x.iter().any(|&byte| byte != 0) {
+                    kept = true;
+                }
+                if kept && rewritten {
+                    return Ok(true);
+                }
+            }
+            at = at.saturating_add(u64::try_from(a.len()).unwrap_or(u64::MAX));
+        }
+    }
+    Ok(false)
+}
 
 /// Lease lifetime and renewal cadence.
 #[derive(Clone, Copy, Debug)]
@@ -485,5 +548,86 @@ impl LeaseKeeper {
                 self.fs.release_write_lease(&rel, self.me, now_ms);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        reason = "test fixtures"
+    )]
+
+    use std::io::Write as _;
+
+    use super::kept_bytes_in_place;
+
+    /// The one changed range `start..end`, as the extent diff reports it.
+    fn span(start: u64, end: u64) -> Vec<std::ops::Range<u64>> {
+        std::iter::once(start..end).collect()
+    }
+
+    fn file(bytes: &[u8]) -> std::fs::File {
+        let mut f = tempfile::tempfile().unwrap();
+        f.write_all(bytes).unwrap();
+        f
+    }
+
+    /// Two 4 KiB pages: a header page with a counter and a schema at its
+    /// end, and a table page with rows at its end.
+    fn database(counter: u8, rows: &[u8]) -> Vec<u8> {
+        let mut db = vec![0u8; 8192];
+        db[..16].copy_from_slice(b"SQLite format 3\0");
+        db[24] = counter;
+        db[4000..4025].copy_from_slice(b"CREATE TABLE t(v INTEGER)");
+        db[8192 - rows.len()..].copy_from_slice(rows);
+        db
+    }
+
+    #[test]
+    fn shared_extents_alone_prove_a_write_inside_the_file() {
+        let (old, new) = (file(&[1; 8192]), file(&[2; 8192]));
+        assert!(kept_bytes_in_place(&old, &new, &span(4096, 8192), 8192, 8192).unwrap());
+    }
+
+    #[test]
+    fn a_small_database_whose_every_page_was_rewritten_kept_its_other_bytes() {
+        let old = file(&database(1, b"\x01\x02\x03"));
+        let new = file(&database(2, b"\x0b\x0c\x0d"));
+        assert!(kept_bytes_in_place(&old, &new, &span(0, 8192), 8192, 8192).unwrap());
+    }
+
+    #[test]
+    fn different_bytes_everywhere_are_a_rewrite() {
+        let (old, new) = (file(&[1; 8192]), file(&[2; 8192]));
+        assert!(!kept_bytes_in_place(&old, &new, &span(0, 8192), 8192, 8192).unwrap());
+    }
+
+    #[test]
+    fn the_same_bytes_written_again_change_nothing_in_place() {
+        let db = database(1, b"\x01");
+        let (old, new) = (file(&db), file(&db));
+        assert!(!kept_bytes_in_place(&old, &new, &span(0, 8192), 8192, 8192).unwrap());
+    }
+
+    #[test]
+    fn zeros_at_the_same_offsets_are_not_kept_bytes() {
+        let mut a = vec![0u8; 8192];
+        let mut b = vec![0u8; 8192];
+        a[0] = 1;
+        b[0] = 2;
+        let (old, new) = (file(&a), file(&b));
+        assert!(!kept_bytes_in_place(&old, &new, &span(0, 8192), 8192, 8192).unwrap());
+    }
+
+    #[test]
+    fn bytes_appended_past_the_previous_end_are_not_kept_bytes() {
+        let old = file(&[1; 4096]);
+        let mut grown = vec![2u8; 4096];
+        grown.extend_from_slice(&[1; 4096]);
+        let new = file(&grown);
+        assert!(!kept_bytes_in_place(&old, &new, &span(0, 8192), 4096, 8192).unwrap());
     }
 }

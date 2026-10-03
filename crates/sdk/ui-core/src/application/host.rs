@@ -2,10 +2,10 @@
 //! Apps supply their definition and migration; this owner supplies storage,
 //! identity, authority and local presentation. No ambient profile discovery.
 use super::{
-    ApplicationDefinition, ApplicationLocalView, ComponentRunnerInputs, HostContext, InstanceId,
-    InstanceViewStore, LaunchError, LaunchTarget, PermissionContext, PreparedComponentInputs,
-    RecordCheckout, RecordId, RecordOpenError, RecordStore, RestoreInput, SavedInstanceView,
-    UserId, View, validate_identity,
+    ApplicationDefinition, ApplicationLocalView, ComponentRunnerInputs, HostContext,
+    HostContextInputs, InstanceId, InstanceViewStore, LaunchError, LaunchTarget, PermissionContext,
+    PreparedComponentInputs, RecordCheckout, RecordId, RecordOpenError, RecordStore, RestoreInput,
+    SavedInstanceView, UserId, View, validate_identity,
 };
 use crate::record::RecordOwners;
 use std::cell::RefCell;
@@ -50,7 +50,7 @@ impl NativeProcessHost {
         author: UserId,
     ) -> Result<Self, LaunchError> {
         let resolved = environment.resolve(definition.app_id, &author)?;
-        let host = ApplicationHost::with_store(
+        let mut host = ApplicationHost::with_store(
             Rc::new(app_state::FsStore::new(resolved.profile_root)),
             resolved.device_id,
             &resolved.workspace_id,
@@ -58,6 +58,7 @@ impl NativeProcessHost {
             Rc::new(RefCell::new(resolved.permissions)),
             tilo_actions::ActionContext::default(),
         )?;
+        host.package_id = Some(resolved.package_id);
         Ok(Self {
             host,
             instance_id: resolved.instance_id,
@@ -93,6 +94,7 @@ struct NativeProcessEnvironment {
 }
 
 struct ResolvedNativeProcessHost {
+    package_id: String,
     profile_root: PathBuf,
     device_id: String,
     workspace_id: String,
@@ -133,12 +135,12 @@ impl NativeProcessEnvironment {
         app_id: &str,
         author: &UserId,
     ) -> Result<ResolvedNativeProcessHost, LaunchError> {
-        if self
+        let package_id = self
             .package_id
             .as_deref()
             .or(self.quick_app_id.as_deref())
-            .is_some_and(|actual| actual != app_id)
-        {
+            .map_or_else(|| app_id.to_owned(), str::to_owned);
+        if package_id != app_id {
             return Err(LaunchError::BindingMismatch);
         }
         let profile_root = self.persistent_profile_root()?;
@@ -147,19 +149,11 @@ impl NativeProcessEnvironment {
             .workspace_id
             .as_deref()
             .or(self.quick_workspace_id.as_deref());
-        let (workspace_id, workspace_scoped) = match workspace {
-            Some(value) => {
-                let id = uuid::Uuid::parse_str(value).map_err(|_| {
-                    LaunchError::Operation("invalid launcher workspace identity".into())
-                })?;
-                (id.to_string(), true)
-            }
-            None => (PERSONAL_WORKSPACE.to_owned(), false),
-        };
+        let (workspace_id, workspace_scoped) = launcher_workspace(workspace)?;
         let permissions =
             permissions_for_participation(author, workspace_scoped, self.participation.as_deref())?;
         let instance_id = self.continuity_instance.map_or_else(
-            || Ok(stable_instance_id(app_id)),
+            || Ok(stable_instance_id(&package_id)),
             |value| {
                 value.parse::<u64>().map_err(|_| {
                     LaunchError::Operation("invalid launcher continuation identity".into())
@@ -167,6 +161,7 @@ impl NativeProcessEnvironment {
             },
         )?;
         Ok(ResolvedNativeProcessHost {
+            package_id,
             profile_root,
             device_id,
             workspace_id,
@@ -203,6 +198,120 @@ impl NativeProcessEnvironment {
     }
 }
 
+/// The storage workspace a launcher-supplied room names: its canonical uuid,
+/// or the personal workspace when the launch has none.
+fn launcher_workspace(room: Option<&str>) -> Result<(String, bool), LaunchError> {
+    match room {
+        Some(value) => {
+            let id = uuid::Uuid::parse_str(value).map_err(|_| {
+                LaunchError::Operation("invalid launcher workspace identity".into())
+            })?;
+            Ok((id.to_string(), true))
+        }
+        None => Ok((PERSONAL_WORKSPACE.to_owned(), false)),
+    }
+}
+
+/// One app's launcher-owned profile in one room, opened by the trusted
+/// host from outside the app's sandbox: the same store, device identity and
+/// storage workspace [`NativeProcessHost`] resolves inside it. The shell
+/// uses it to carry a window's record and presentation to another room
+/// ([`crate::record::transfer`]); it grants nothing the app itself lacks.
+pub struct NativeProfile {
+    store: Rc<dyn durable_store::DurableStore>,
+    views: InstanceViewStore,
+    device_id: String,
+    workspace_id: String,
+}
+
+impl NativeProfile {
+    /// `profile_root` is the directory the launcher points the app's
+    /// `XDG_DATA_HOME` at; `room` is its launcher workspace id.
+    ///
+    /// # Errors
+    /// A relative root, a malformed room or corrupt device identity.
+    pub fn open(profile_root: &Path, room: Option<&str>) -> Result<Self, LaunchError> {
+        if !profile_root.is_absolute() {
+            return Err(LaunchError::Operation(
+                "application data directory must be absolute".into(),
+            ));
+        }
+        let (workspace_id, _) = launcher_workspace(room)?;
+        let device_id = persistent_device_id(profile_root)?;
+        let store: Rc<dyn durable_store::DurableStore> =
+            Rc::new(app_state::FsStore::new(profile_root.to_path_buf()));
+        let views = InstanceViewStore::with_store(Rc::clone(&store), &device_id, &workspace_id)
+            .map_err(LaunchError::Restore)?;
+        Ok(Self {
+            store,
+            views,
+            device_id,
+            workspace_id,
+        })
+    }
+
+    /// This process's own profile and continuity instance, when the trusted
+    /// launcher started it as an instance of a room's app.
+    pub(crate) fn of_launch() -> Option<(Self, InstanceId)> {
+        let environment = NativeProcessEnvironment::capture();
+        let instance = environment.continuity_instance.as_deref()?.parse().ok()?;
+        let root = environment.persistent_profile_root().ok()?;
+        let room = environment
+            .workspace_id
+            .as_deref()
+            .or(environment.quick_workspace_id.as_deref());
+        Self::open(&root, room)
+            .ok()
+            .map(|profile| (profile, instance))
+    }
+
+    pub fn store(&self) -> &Rc<dyn durable_store::DurableStore> {
+        &self.store
+    }
+
+    pub fn device_id(&self) -> &str {
+        &self.device_id
+    }
+
+    /// The storage workspace the app's records are scoped to.
+    pub fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
+
+    /// The presentation one instance last saved here, naming the record it shows.
+    ///
+    /// # Errors
+    /// Unreadable, malformed or foreign presentation.
+    pub fn saved_view(
+        &self,
+        instance: InstanceId,
+    ) -> Result<Option<SavedInstanceView>, LaunchError> {
+        self.views.load(instance).map_err(LaunchError::Restore)
+    }
+
+    /// Give `instance` in this profile the presentation `view` had elsewhere,
+    /// now showing `record`: what a window carried into this room reopens to.
+    ///
+    /// # Errors
+    /// An invalid record identity or a store that refused the write.
+    pub fn adopt_view(
+        &self,
+        view: &SavedInstanceView,
+        instance: InstanceId,
+        record: &RecordCheckout,
+    ) -> Result<(), LaunchError> {
+        let adopted = SavedInstanceView {
+            device_id: self.device_id.clone(),
+            workspace_id: self.workspace_id.clone(),
+            instance_id: instance,
+            record_id: record.id.as_str().to_owned(),
+            record_kind: record.kind.as_str().to_owned(),
+            ..view.clone()
+        };
+        self.views.save(&adopted).map_err(LaunchError::Restore)
+    }
+}
+
 fn permissions_for_participation(
     author: &UserId,
     workspace_scoped: bool,
@@ -229,12 +338,9 @@ fn stable_instance_id(app_id: &str) -> InstanceId {
     // FNV-1a is deliberately fixed rather than DefaultHasher, whose output is
     // not a persistence contract. The app id makes standalone view keys unique
     // even though InstanceViewStore itself is shared below the profile root.
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in app_id.bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, app_id.as_bytes());
+    std::hash::Hasher::finish(&hasher)
 }
 
 fn persistent_device_id(profile_root: &Path) -> Result<String, LaunchError> {
@@ -261,7 +367,7 @@ fn persistent_device_id(profile_root: &Path) -> Result<String, LaunchError> {
                 .write_all(generated.as_bytes())
                 .and_then(|()| file.write_all(b"\n"))
                 .and_then(|()| file.sync_all())
-                .and_then(|()| atomic_file::sync_directory(profile_root))
+                .and_then(|()| tilo_files::native::atomic::sync_directory(profile_root))
             {
                 drop(file);
                 let _ = std::fs::remove_file(&path);
@@ -299,6 +405,10 @@ fn validate_device_id(value: &str) -> Result<String, LaunchError> {
 }
 
 pub struct ApplicationHost {
+    /// The launcher-bound package id of a native process; only that app's
+    /// definition may open records through this host. Explicit/capture hosts
+    /// take the app id from the definition passed to `records_for`.
+    package_id: Option<String>,
     owners: RecordOwners,
     views: Rc<InstanceViewStore>,
     device_id: String,
@@ -379,6 +489,7 @@ impl ApplicationHost {
                 .map_err(LaunchError::Restore)?,
         );
         Ok(Self {
+            package_id: None,
             owners: RecordOwners::with_store(store),
             views,
             device_id,
@@ -401,8 +512,12 @@ impl ApplicationHost {
                 return Err(LaunchError::CapabilityDenied(required.clone()));
             }
         }
+        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
+        if package_id != definition.app_id {
+            return Err(LaunchError::BindingMismatch);
+        }
         self.owners
-            .open(definition.app_id, self.views.workspace_id())
+            .open(package_id, self.views.workspace_id())
             .map_err(LaunchError::Record)
     }
 
@@ -421,19 +536,52 @@ impl ApplicationHost {
             return Err(LaunchError::BindingMismatch);
         }
         let saved = self.views.load(instance_id).map_err(LaunchError::Restore)?;
-        if saved.as_ref().is_some_and(|saved| {
-            saved.app_id != definition.app_id
-                || saved.record_id != checkout.id.as_str()
-                || saved.record_kind != checkout.kind.as_str()
-        }) {
+        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
+        if package_id != definition.app_id
+            || saved.as_ref().is_some_and(|saved| {
+                saved.app_id != package_id
+                    || saved.record_id != checkout.id.as_str()
+                    || !checkout.kind.names(&saved.record_kind)
+            })
+        {
             return Err(LaunchError::BindingMismatch);
         }
         Ok(saved)
     }
 
-    /// Open the host's stable default record, or reserve it for the definition's
-    /// New factory. Restore presentation from this exact device/workspace/instance.
+    /// The record this instance's saved presentation names, when it names
+    /// one of `definition`'s kind: a window carried in from another room
+    /// arrives showing its own record rather than the room's default.
+    /// # Errors
+    /// Unreadable or foreign presentation.
+    pub fn saved_record(
+        &self,
+        definition: &ApplicationDefinition,
+        instance_id: InstanceId,
+    ) -> Result<Option<RecordCheckout>, LaunchError> {
+        let Some(saved) = self.views.load(instance_id).map_err(LaunchError::Restore)? else {
+            return Ok(None);
+        };
+        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
+        let id = RecordId::parse(&saved.record_id).ok_or(LaunchError::BindingMismatch)?;
+        if saved.app_id != package_id
+            || !definition.record_kind.names(&saved.record_kind)
+            || id.is_package_primary()
+        {
+            return Err(LaunchError::BindingMismatch);
+        }
+        Ok(Some(RecordCheckout::new(
+            id,
+            definition.record_kind.clone(),
+        )))
+    }
+
+    /// Open the record this instance's saved presentation names, else the
+    /// host's stable default record, or reserve that for the definition's New
+    /// factory. Restore presentation from this exact device/workspace/instance.
     /// A saved view pointing at a missing record is an error, never a blank replacement.
+    /// A record moved out of this room is never reopened: a view still naming
+    /// it is dropped, and a retired record gives way to its successor.
     /// `initial_view` is used only when this instance has no saved presentation.
     /// # Errors
     /// Rejects invalid/foreign views, contested writers, corrupt records and denied authority.
@@ -441,42 +589,90 @@ impl ApplicationHost {
         &mut self,
         definition: &ApplicationDefinition,
         instance_id: InstanceId,
-        checkout: RecordCheckout,
+        default: RecordCheckout,
         initial_view: Option<ApplicationLocalView>,
         runner_inputs: ComponentRunnerInputs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
-        let saved = self.saved_view_for(definition, instance_id, &checkout)?;
+        /// Retired records followed before giving up: each move out of a room
+        /// retires one, so this only bounds a pathological history.
+        const MAX_SUCCESSORS: usize = 64;
         let records = self.records_for(definition)?;
-        let target = match records.try_open_record(&checkout) {
-            Ok(_) => LaunchTarget::Record {
-                checkout: checkout.clone(),
-                reveal: None,
-            },
-            Err(RecordOpenError::MissingRecord) if saved.is_none() => LaunchTarget::New,
-            Err(error) => return Err(LaunchError::Record(error)),
+        if definition.keeps_room_record() {
+            let target = definition.unsaved_target(&records);
+            let context = HostContext::prepare(
+                definition,
+                HostContextInputs {
+                    records,
+                    views: self.views.clone(),
+                    device_id: self.device_id.clone(),
+                    instance_id,
+                    permissions: self.permissions.clone(),
+                    author: self.author.clone(),
+                    action_context: self.action_context.clone(),
+                },
+                &target,
+            )?;
+            let restore = initial_view.map_or(RestoreInput::None, |application| {
+                RestoreInput::Local(context.envelope(View::default(), Some(application)))
+            });
+            return Ok(PreparedComponentInputs {
+                context,
+                target,
+                restore,
+                runner_inputs,
+            });
+        }
+        let mut checkout = self
+            .saved_record(definition, instance_id)?
+            .unwrap_or(default);
+        let mut saved = self.saved_view_for(definition, instance_id, &checkout)?;
+        let mut successors = 0;
+        let target = loop {
+            match records.try_open_record(&checkout) {
+                Ok(_) => {
+                    break LaunchTarget::Record {
+                        checkout: checkout.clone(),
+                        reveal: None,
+                    };
+                }
+                Err(RecordOpenError::MissingRecord) if saved.is_none() => break LaunchTarget::New,
+                Err(RecordOpenError::Retired) if successors < MAX_SUCCESSORS => {
+                    successors += 1;
+                    saved = None;
+                    checkout = RecordCheckout::new(
+                        RecordId::derived("successor", &checkout.id),
+                        checkout.kind.clone(),
+                    );
+                }
+                Err(error) => return Err(LaunchError::Record(error)),
+            }
         };
         let context = if matches!(target, LaunchTarget::New) {
             HostContext::prepare_new_record(
                 definition,
-                records,
-                self.views.clone(),
-                self.device_id.clone(),
-                instance_id,
-                self.permissions.clone(),
-                self.author.clone(),
-                self.action_context.clone(),
+                HostContextInputs {
+                    records,
+                    views: self.views.clone(),
+                    device_id: self.device_id.clone(),
+                    instance_id,
+                    permissions: self.permissions.clone(),
+                    author: self.author.clone(),
+                    action_context: self.action_context.clone(),
+                },
                 checkout.id,
             )?
         } else {
             HostContext::prepare(
                 definition,
-                records,
-                self.views.clone(),
-                self.device_id.clone(),
-                instance_id,
-                self.permissions.clone(),
-                self.author.clone(),
-                self.action_context.clone(),
+                HostContextInputs {
+                    records,
+                    views: self.views.clone(),
+                    device_id: self.device_id.clone(),
+                    instance_id,
+                    permissions: self.permissions.clone(),
+                    author: self.author.clone(),
+                    action_context: self.action_context.clone(),
+                },
                 &target,
             )?
         };
@@ -515,6 +711,7 @@ mod native_process_tests {
             record_kind: crate::record::RecordKind::new("host.probe"),
             required: vec![],
             optional: vec![],
+            opens: &[],
             create: rejected_factory,
         }
     }
@@ -527,114 +724,218 @@ mod native_process_tests {
     }
 
     #[test]
-    fn standalone_native_host_has_durable_device_and_app_unique_view_identity() {
-        let temp = tempfile::tempdir().unwrap();
-        let author = UserId("person-a".into());
-        let first = NativeProcessHost::open_with(
-            &definition("so.tilo.one"),
-            environment(temp.path()),
-            author.clone(),
-        )
-        .unwrap();
-        let device = first.host.device_id.clone();
-        assert!(!first.workspace_scoped());
-        assert_eq!(first.host.views.workspace_id(), PERSONAL_WORKSPACE);
-        assert_eq!(
-            first.host.permissions.borrow().role(),
-            Some(crate::permissions::Role::Owner)
-        );
-        assert_eq!(first.host.permissions.borrow().user(), &author);
-        drop(first);
+    fn native_host_identity_authority_and_inputs_are_explicit() {
+        // Case `standalone_native_host_has_durable_device_and_app_unique_view_identity`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let author = UserId("person-a".into());
+            let first = NativeProcessHost::open_with(
+                &definition("so.tilo.one"),
+                environment(temp.path()),
+                author.clone(),
+            )
+            .unwrap();
+            let device = first.host.device_id.clone();
+            assert!(!first.workspace_scoped());
+            assert_eq!(first.host.views.workspace_id(), PERSONAL_WORKSPACE);
+            assert_eq!(
+                first.host.permissions.borrow().role(),
+                Some(crate::permissions::Role::Owner)
+            );
+            assert_eq!(first.host.permissions.borrow().user(), &author);
+            drop(first);
 
-        let reopened = NativeProcessHost::open_with(
-            &definition("so.tilo.one"),
-            environment(temp.path()),
-            author.clone(),
-        )
-        .unwrap();
-        let other = NativeProcessHost::open_with(
-            &definition("so.tilo.two"),
-            environment(temp.path()),
-            author,
-        )
-        .unwrap();
-        assert_eq!(reopened.host.device_id, device);
-        assert_eq!(other.host.device_id, device);
-        assert_eq!(reopened.instance_id(), stable_instance_id("so.tilo.one"));
-        assert_ne!(reopened.instance_id(), other.instance_id());
-    }
+            let reopened = NativeProcessHost::open_with(
+                &definition("so.tilo.one"),
+                environment(temp.path()),
+                author.clone(),
+            )
+            .unwrap();
+            let other = NativeProcessHost::open_with(
+                &definition("so.tilo.two"),
+                environment(temp.path()),
+                author,
+            )
+            .unwrap();
+            assert_eq!(reopened.host.device_id, device);
+            assert_eq!(other.host.device_id, device);
+            assert_eq!(reopened.instance_id(), stable_instance_id("so.tilo.one"));
+            assert_ne!(reopened.instance_id(), other.instance_id());
+        }
 
-    #[test]
-    fn workspace_participation_is_host_authority_and_missing_policy_is_viewer() {
-        let temp = tempfile::tempdir().unwrap();
-        let room = "3f2b1c00-0000-4000-8000-000000000001";
-        let make = |participation: Option<&str>| NativeProcessEnvironment {
-            workspace_id: Some(room.into()),
-            participation: participation.map(str::to_owned),
-            continuity_instance: Some("42".into()),
-            xdg_data_home: Some(temp.path().to_owned()),
-            ..NativeProcessEnvironment::default()
-        };
-        for (mode, role) in [
-            (Some("read-only"), crate::permissions::Role::Viewer),
-            (Some("author"), crate::permissions::Role::Editor),
-            (None, crate::permissions::Role::Viewer),
-        ] {
-            let resolved = make(mode)
-                .resolve("so.tilo.notes", &UserId("person-a".into()))
-                .unwrap();
-            assert!(resolved.workspace_scoped);
-            assert_eq!(resolved.workspace_id, room);
-            assert_eq!(resolved.instance_id, 42);
-            assert_eq!(resolved.permissions.role(), Some(role));
+        // Case `workspace_participation_is_host_authority_and_missing_policy_is_viewer`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let room = "3f2b1c00-0000-4000-8000-000000000001";
+            let make = |participation: Option<&str>| NativeProcessEnvironment {
+                workspace_id: Some(room.into()),
+                participation: participation.map(str::to_owned),
+                continuity_instance: Some("42".into()),
+                xdg_data_home: Some(temp.path().to_owned()),
+                ..NativeProcessEnvironment::default()
+            };
+            for (mode, role) in [
+                (Some("read-only"), crate::permissions::Role::Viewer),
+                (Some("author"), crate::permissions::Role::Editor),
+                (None, crate::permissions::Role::Viewer),
+            ] {
+                let resolved = make(mode)
+                    .resolve("so.tilo.notes", &UserId("person-a".into()))
+                    .unwrap();
+                assert!(resolved.workspace_scoped);
+                assert_eq!(resolved.workspace_id, room);
+                assert_eq!(resolved.instance_id, 42);
+                assert_eq!(resolved.permissions.role(), Some(role));
+            }
+        }
+
+        // Case `malformed_native_host_inputs_are_refused_without_fallback_storage`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let author = UserId("person-a".into());
+            let mut mismatched = environment(temp.path());
+            mismatched.package_id = Some("so.tilo.other".into());
+            assert!(matches!(
+                mismatched.resolve("so.tilo.notes", &author),
+                Err(LaunchError::BindingMismatch)
+            ));
+            let relative = NativeProcessEnvironment {
+                xdg_data_home: Some(PathBuf::from("relative")),
+                ..NativeProcessEnvironment::default()
+            };
+            assert!(relative.resolve("so.tilo.notes", &author).is_err());
+            assert!(
+                NativeProcessEnvironment::default()
+                    .resolve("so.tilo.notes", &author)
+                    .is_err()
+            );
+            for invalid in [
+                NativeProcessEnvironment {
+                    workspace_id: Some("not-a-room".into()),
+                    ..environment(temp.path())
+                },
+                NativeProcessEnvironment {
+                    participation: Some("owner".into()),
+                    ..environment(temp.path())
+                },
+                NativeProcessEnvironment {
+                    continuity_instance: Some("window".into()),
+                    ..environment(temp.path())
+                },
+            ] {
+                assert!(invalid.resolve("so.tilo.notes", &author).is_err());
+            }
+            std::fs::write(temp.path().join(DEVICE_ID_FILE), b"damaged\n").unwrap();
+            assert!(
+                environment(temp.path())
+                    .resolve("so.tilo.notes", &author)
+                    .is_err()
+            );
+            assert_eq!(
+                std::fs::read(temp.path().join(DEVICE_ID_FILE)).unwrap(),
+                b"damaged\n"
+            );
         }
     }
 
     #[test]
-    fn malformed_native_host_inputs_are_refused_without_fallback_storage() {
+    fn a_saved_view_names_the_record_and_a_retired_one_gives_way() {
+        use crate::application_test_support as probe;
+        use automerge::transaction::Transactable as _;
+        let temp = tempfile::tempdir().unwrap();
+        let room = "3f2b1c00-0000-4000-8000-0000000000c1";
+        let definition = definition(probe::APP);
+        let default = RecordCheckout::new(
+            RecordId::derived("default", &RecordId::for_tab(0)),
+            definition.record_kind.clone(),
+        );
+        let carried = RecordCheckout::new(RecordId::minted(), definition.record_kind.clone());
+        {
+            let mut owners = RecordOwners::new(temp.path().to_owned());
+            let records = owners.open(probe::APP, room).unwrap();
+            records.create_record(&carried).unwrap();
+            records
+                .with(&carried.id, |doc| {
+                    doc.put(automerge::ROOT, "body", "arrived").unwrap();
+                })
+                .unwrap();
+            records.try_flush().unwrap();
+        }
+        let profile = NativeProfile::open(temp.path(), Some(room)).unwrap();
+        let view = SavedInstanceView {
+            version: 2,
+            app_id: probe::APP.into(),
+            device_id: "elsewhere".into(),
+            workspace_id: "elsewhere".into(),
+            instance_id: 7,
+            record_id: default.id.as_str().into(),
+            record_kind: default.kind.as_str().into(),
+            view: View::default(),
+            application: None,
+        };
+        profile.adopt_view(&view, 7, &carried).unwrap();
+        let host = |temp: &Path| {
+            ApplicationHost::new(
+                temp.to_owned(),
+                profile.device_id().to_owned(),
+                room,
+                probe::author(),
+                probe::runner_permissions(),
+                probe::provenance(),
+            )
+            .unwrap()
+        };
+
+        let prepared = host(temp.path())
+            .prepare_default(
+                &definition,
+                7,
+                default.clone(),
+                None,
+                probe::runner_inputs(),
+            )
+            .unwrap();
+        assert!(
+            matches!(&prepared.target, LaunchTarget::Record { checkout, .. } if checkout == &carried),
+            "the instance reopens the record its view names, not the room default"
+        );
+        assert!(matches!(prepared.restore, RestoreInput::Local(_)));
+        drop(prepared);
+
+        crate::record::transfer::retire(
+            profile.store(),
+            probe::APP,
+            room,
+            &crate::record::transfer::Origin::Record(carried.clone()),
+            &crate::record::transfer::Retirement::Moved(None),
+        )
+        .unwrap();
+        let prepared = host(temp.path())
+            .prepare_default(&definition, 7, default, None, probe::runner_inputs())
+            .unwrap();
+        assert!(
+            matches!(prepared.target, LaunchTarget::New),
+            "a record that left the room is never reopened; its successor starts fresh"
+        );
+        assert!(matches!(prepared.restore, RestoreInput::None));
+        assert_ne!(prepared.context.record().id, carried.id);
+    }
+
+    #[test]
+    fn signed_package_id_must_name_the_launched_definition() {
         let temp = tempfile::tempdir().unwrap();
         let author = UserId("person-a".into());
-        let mut mismatched = environment(temp.path());
-        mismatched.package_id = Some("so.tilo.other".into());
+        let mut exact = environment(temp.path());
+        exact.package_id = Some("so.tilo.notes".into());
+        let resolved = exact.resolve("so.tilo.notes", &author).unwrap();
+        assert_eq!(resolved.package_id, "so.tilo.notes");
+        assert_eq!(resolved.instance_id, stable_instance_id("so.tilo.notes"));
+
+        let mut foreign_package = environment(temp.path());
+        foreign_package.package_id = Some("so.tilo.photos".into());
         assert!(matches!(
-            mismatched.resolve("so.tilo.notes", &author),
+            foreign_package.resolve("so.tilo.notes", &author),
             Err(LaunchError::BindingMismatch)
         ));
-        let relative = NativeProcessEnvironment {
-            xdg_data_home: Some(PathBuf::from("relative")),
-            ..NativeProcessEnvironment::default()
-        };
-        assert!(relative.resolve("so.tilo.notes", &author).is_err());
-        assert!(
-            NativeProcessEnvironment::default()
-                .resolve("so.tilo.notes", &author)
-                .is_err()
-        );
-        for invalid in [
-            NativeProcessEnvironment {
-                workspace_id: Some("not-a-room".into()),
-                ..environment(temp.path())
-            },
-            NativeProcessEnvironment {
-                participation: Some("owner".into()),
-                ..environment(temp.path())
-            },
-            NativeProcessEnvironment {
-                continuity_instance: Some("window".into()),
-                ..environment(temp.path())
-            },
-        ] {
-            assert!(invalid.resolve("so.tilo.notes", &author).is_err());
-        }
-        std::fs::write(temp.path().join(DEVICE_ID_FILE), b"damaged\n").unwrap();
-        assert!(
-            environment(temp.path())
-                .resolve("so.tilo.notes", &author)
-                .is_err()
-        );
-        assert_eq!(
-            std::fs::read(temp.path().join(DEVICE_ID_FILE)).unwrap(),
-            b"damaged\n"
-        );
     }
 }

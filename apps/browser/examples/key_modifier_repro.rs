@@ -12,7 +12,7 @@
 //!   cargo run -p browser --example key_modifier_repro --features wpe --release
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use ui::webview::wpe::WpeEngine;
 use ui::webview::{KeyInput, KeyModifiers, NamedKey, SharedEngine, WebViewCommand, WebViewEngine};
@@ -81,8 +81,8 @@ fn main() {
     engine.send(WebViewCommand::SetFocused(true));
 
     // Wait for the textarea (white) to render.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
+    let deadline = ui::time::now() + Duration::from_secs(10);
+    while ui::time::now() < deadline {
         if let Some((r, _, _)) = latest(&*engine) {
             let (_, [_, _, white]) = dominant(&r);
             if white > 1000 {

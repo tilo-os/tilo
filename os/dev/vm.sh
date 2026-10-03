@@ -24,7 +24,7 @@
 # enrolling keys in the guest (`/usr/libexec/tilo-secureboot enroll`) sticks —
 # enrolment is an explicit step, never something the template arrives with.
 # TILO_SECBOOT_KEYS=microsoft boots the vendor-key store on purpose.
-#   ./os/dev/vm.sh wait                        block until the greeter is up
+#   ./os/dev/vm.sh wait                        block until the greeter accepts input
 #   ./os/dev/vm.sh firmware [--tpm] [--secboot]  which OVMF/varstore/format, and
 #                                              whether it can measure
 #   ./os/dev/vm.sh login [USER PASS]           type both greeter fields
@@ -133,14 +133,16 @@ cmd_boot() {
   fi
   if [ -n "$validation" ]; then
     [ -f "$validation" ] || die "validation extension not found: $validation"
-    attach_arg="$attach_arg -drive file=$validation,format=raw,if=virtio,readonly=on,serial=tilo-validation"
+    # QEMU's raw block backend does not accept serial= on -drive. The serial
+    # belongs to the virtio block device, which supplies the guest's by-id path.
+    attach_arg="$attach_arg -drive file=$validation,format=raw,if=none,id=tilo-validation,readonly=on -device virtio-blk-pci,drive=tilo-validation,serial=tilo-validation"
     msg "attaching the validation extension $validation (serial tilo-validation)"
   fi
 
   local varstore display
   firmware_setup
   varstore="$(firmware_varstore)"
-  rm -f "$TILO_SERIAL" "$TILO_MON" "$TILO_PIDFILE"
+  rm -f "$TILO_SERIAL" "$TILO_MON" "$TILO_PIDFILE" "$TILO_CONSOLE"
   display="$(display_qemu_args "$mode")"
   msg "boot ($mode, $TILO_VM_ARCH, ${TILO_XRES}x${TILO_YRES}) disk=$disk"
 
@@ -148,6 +150,7 @@ cmd_boot() {
     $(pflash_args "$varstore") \
     -drive file=$disk,format=qcow2,if=virtio$serial_arg $attach_arg \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
+    $(console_qemu_args) \
     -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
     -pidfile $TILO_PIDFILE -name tilo"
   swtpm_start
@@ -242,12 +245,48 @@ cmd_boot_target() {
   msg "target up. monitor=$TILO_MON serial=$TILO_SERIAL"
 }
 
+# greetd starting is not the greeter being usable: greetd then starts cage,
+# cage the greeter, and only once the greeter's window is mapped and focused do
+# typed keys reach it. Keys sent earlier are dropped, so the barrier is the
+# greeter's own report over its console that sign-in accepts input.
+greeter_accepts_input() {
+  python3 "$TILO_OS_DIR/dev/installer-console.py" --socket "$TILO_CONSOLE" \
+    check greeter /accepts_input --timeout 5 2>/dev/null
+}
+
+# The live installer medium's greetd runs the installer instead, which is
+# driven through its console actions.
+installer_answers() {
+  python3 "$TILO_OS_DIR/dev/installer-console.py" --socket "$TILO_CONSOLE" \
+    check installer --timeout 5 2>/dev/null
+}
+
 cmd_wait() {
   msg "waiting for greeter (greetd) ..."
-  local i
+  local i early_reported=0 greetd=0 start=$SECONDS
   for i in $(seq 1 "$TILO_BOOT_WAIT_ATTEMPTS"); do
-    if tr -d '\000' < "$TILO_SERIAL" 2>/dev/null | grep -aq 'Started.*greetd.service\|session-c1.scope'; then
-      msg "greeter up (~$((i*2))s)"; return 0
+    if [ "$greetd" = 1 ]; then
+      if greeter_accepts_input; then
+        msg "greeter accepts input (~$((SECONDS - start))s)"; return 0
+      elif installer_answers; then
+        msg "installer up (~$((SECONDS - start))s)"; return 0
+      fi
+    elif tr -d '\000' < "$TILO_SERIAL" 2>/dev/null | grep -aq 'Started.*greetd.service\|session-c1.scope'; then
+      msg "greetd up (~$((SECONDS - start))s); waiting for the greeter to accept input"; greetd=1; continue
+    # A guest may reach greetd without writing kernel/userspace status to the
+    # selected serial port. The installed validation disk supplies SSH access;
+    # use it as an independent readiness signal when available.
+    elif (( i % 5 == 0 )) && command -v sshpass >/dev/null 2>&1 \
+       && [ -n "${TILO_USER:-}" ] && [ -n "${TILO_PASS:-}" ] \
+       && gssh 'systemctl is-active --quiet greetd.service' >/dev/null 2>&1; then
+      msg "greetd up via SSH (~$((SECONDS - start))s); waiting for the greeter to accept input"; greetd=1; continue
+    fi
+    if [ "$early_reported" = 0 ] && grep -aq 'TILO_VALIDATION_DIAGNOSTICS_END early' "$TILO_SERIAL" 2>/dev/null; then
+      warn "validation-only guest service diagnostics:"
+      tr -d '\000' < "$TILO_SERIAL" \
+        | sed -n '/TILO_VALIDATION_DIAGNOSTICS early/,/TILO_VALIDATION_DIAGNOSTICS_END early/p' \
+        | tail -n 160 >&2
+      early_reported=1
     fi
     vm_running || { boot_diagnose "$TILO_SERIAL" || true
       # A qemu that exits this early usually said why on stderr, which is
@@ -258,7 +297,32 @@ cmd_wait() {
       die "qemu exited during boot; see $TILO_QEMU_LOG / $TILO_SERIAL"; }
     sleep 2
   done
+  if command -v sshpass >/dev/null 2>&1 \
+     && [ -n "${TILO_USER:-}" ] && [ -n "${TILO_PASS:-}" ]; then
+    local ssh_diagnostic
+    ssh_diagnostic="$(gssh 'systemctl status greetd.service tilo-validation-ssh.service --no-pager --lines=20; systemctl --failed --no-pager' 2>&1)" \
+      || warn "validation SSH diagnostic probe failed"
+    if [ -n "$ssh_diagnostic" ]; then
+      warn "validation SSH diagnostic output:"
+      printf '%s\n' "$ssh_diagnostic" | tail -n 100 >&2
+    fi
+  fi
+  if [ "$greetd" = 1 ]; then
+    warn "greetd is up, but the greeter never reported that sign-in accepts input; its console says:"
+    python3 "$TILO_OS_DIR/dev/installer-console.py" --socket "$TILO_CONSOLE" \
+      check greeter /accepts_input --timeout 5 >&2 || true
+  fi
   boot_diagnose "$TILO_SERIAL" || true
+  if [ -s "$TILO_SERIAL" ]; then
+    warn "last lines of $TILO_SERIAL:"
+    tr -d '\000' < "$TILO_SERIAL" | tail -n 120 >&2
+  else
+    warn "the serial log is empty: $TILO_SERIAL"
+  fi
+  if [ -s "$TILO_QEMU_LOG" ]; then
+    warn "last lines of $TILO_QEMU_LOG:"
+    tail -n 40 "$TILO_QEMU_LOG" >&2
+  fi
   die "timed out waiting for greeter (see $TILO_SERIAL)"
 }
 
@@ -344,10 +408,44 @@ cmd_click() {
   hmp "mouse_button 0" >/dev/null
 }
 
+# The greeter answers its console once its event loop runs; typed keys still
+# only reach the form once the compositor maps and focuses the window. Prefer
+# the greeter's own accepts_input report over a blank-screen heuristic.
+greeter_console() {
+  python3 "$(dirname "${BASH_SOURCE[0]}")/installer-console.py" --socket "$TILO_CONSOLE" "$@"
+}
+
+wait_greeter_input() {
+  greeter_console wait greeter --timeout 180 \
+    || die "tilo-greeter never answered on its console ($TILO_CONSOLE)"
+  local attempts="${TILO_GREETER_INPUT_ATTEMPTS:-120}" i
+  for i in $(seq 1 "$attempts"); do
+    greeter_accepts_input && return 0
+    vm_running || die "qemu exited before the greeter accepted input"
+    sleep 1
+  done
+  greeter_console check greeter /accepts_input --timeout 5 >&2 || true
+  die "the greeter did not accept input; nothing was typed"
+}
+
+# After Enter the greeter either leaves sign-in or exits into the session.
+check_login_submitted() {
+  local i phase
+  for i in $(seq 1 30); do
+    phase="$(greeter_console state 2>/dev/null \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin).get("phase", ""))' 2>/dev/null)" \
+      || phase=""
+    [ "$phase" = sign-in ] || return 0
+    sleep 1
+  done
+  die "tilo-greeter is still at sign-in 30 s after the credentials were sent"
+}
+
 cmd_login() {
   local passcode_only=0
   if [ "${1:-}" = "--passcode-only" ]; then passcode_only=1; shift; fi
   local u="${1:-$TILO_USER}" p="${2:-$TILO_PASS}"
+  wait_greeter_input
   if [ "$passcode_only" -eq 1 ]; then
     p="${1:-$TILO_PASS}"
     msg "logging in with the installed user's passcode"
@@ -356,6 +454,7 @@ cmd_login() {
     cmd_type "$p"
     cmd_keys ret
     msg "passcode sent"
+    check_login_submitted
     return
   fi
   msg "logging in as $u"
@@ -371,6 +470,7 @@ cmd_login() {
   cmd_type "$p"
   cmd_keys ret
   msg "credentials sent"
+  check_login_submitted
 }
 
 cmd_serial() {
@@ -389,7 +489,9 @@ cmd_wait_greeter_return() {
   local attempts="${TILO_GREETER_RETURN_ATTEMPTS:-120}" i
   msg "waiting for Tilo logout to return to the greeter ..."
   for i in $(seq 1 "$attempts"); do
-    if gssh "! pgrep -f '^/usr/bin/shell --backend drm( |$)' >/dev/null && systemctl is-active --quiet greetd.service" >/dev/null 2>&1; then
+    # The compositor's portal backend name, not its /proc entry, which turns
+    # non-dumpable once it holds identity keys.
+    if gssh "! busctl --user status org.freedesktop.impl.portal.desktop.tilo >/dev/null 2>&1 && systemctl is-active --quiet greetd.service" >/dev/null 2>&1; then
       msg "greeter returned after logout (~$i s)"
       return 0
     fi

@@ -331,7 +331,7 @@ The normal component gallery includes a `Typography & Scripts` card in both
 light and dark offscreen renders. It is the visual review corpus for semantic
 hierarchy, Latin ligatures/diacritics, Arabic, Hebrew, Devanagari, Bengali,
 Thai, CJK, mixed BiDi, and multi-codepoint emoji. Run
-`cargo run -p ui --example ui-shots -- gallery_shots` through the repository build wrapper
+`cargo run -p ui-examples --example ui-shots -- gallery_shots` through the repository build wrapper
 to regenerate it.
 
 That same card is also a committed visual regression corpus. The integration
@@ -346,7 +346,7 @@ dimensions without a GPU, so a card that changed size fails every test run.
 
 After visually approving an intentional change, regenerate the references with
 the "Render visual baseline candidates" workflow
-(`.forgejo/workflows/refresh-visual-baselines.yml`), which pins the builder
+(`.forgejo/workflows/dev-visual-baselines.yml`), which pins the builder
 image and llvmpipe, and review its candidates. Inside that image the
 equivalent command is:
 

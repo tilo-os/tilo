@@ -113,83 +113,89 @@ mod tests {
     use super::*;
 
     #[test]
-    fn renderer_type_size_divides_by_the_renderer_scale_exactly_once() {
-        let mut tr = TextRenderer::new();
-        assert_eq!(renderer_type_size(&tr, 14.0), 14.0, "1× is the identity");
-        tr.set_text_scale(2.0);
-        assert_eq!(renderer_type_size(&tr, 28.0), 14.0);
-        // The renderer multiplies back: the painted line matches a 1× line
-        // of the resolved size, not a 4× one.
-        let (_, scaled) = tr.measure("Ag", renderer_type_size(&tr, 28.0), None);
-        let mut base = TextRenderer::new();
-        let (_, resolved) = base.measure("Ag", 28.0, None);
-        assert!(
-            (scaled - resolved).abs() < 0.01,
-            "2× renderer at the divided size ({scaled}) must equal a 1× renderer at the resolved size ({resolved})"
-        );
-    }
-
-    #[test]
-    fn renderer_type_size_applies_no_floor() {
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        // A token that resolves below the old modal floor stays the token.
-        assert_eq!(renderer_type_size(&tr, 10.0), 5.0);
-    }
-
-    #[test]
-    fn line_height_px_matches_what_the_renderer_measures() {
-        for scale in [1.0_f32, 2.0, 0.75] {
+    fn type_metrics_divide_by_the_renderer_scale_once_and_match_measurement() {
+        // Case `renderer_type_size_divides_by_the_renderer_scale_exactly_once`.
+        {
             let mut tr = TextRenderer::new();
-            tr.set_text_scale(scale);
-            let (_, measured) = tr.measure("Ag", 14.0, None);
+            assert_eq!(renderer_type_size(&tr, 14.0), 14.0, "1× is the identity");
+            tr.set_text_scale(2.0);
+            assert_eq!(renderer_type_size(&tr, 28.0), 14.0);
+            // The renderer multiplies back: the painted line matches a 1× line
+            // of the resolved size, not a 4× one.
+            let (_, scaled) = tr.measure("Ag", renderer_type_size(&tr, 28.0), None);
+            let mut base = TextRenderer::new();
+            let (_, resolved) = base.measure("Ag", 28.0, None);
             assert!(
-                (line_height_px(14.0, scale) - f64::from(measured)).abs() < 1e-4,
-                "at {scale}x the renderer-less line ({}) must equal the measured one ({measured})",
-                line_height_px(14.0, scale)
+                (scaled - resolved).abs() < 0.01,
+                "2× renderer at the divided size ({scaled}) must equal a 1× renderer at the resolved size ({resolved})"
             );
         }
-        // Sanitised like the renderer: out-of-range and non-finite scales.
-        assert_eq!(line_height_px(14.0, 9.0), line_height_px(14.0, 4.0));
-        assert_eq!(line_height_px(14.0, f32::NAN), line_height_px(14.0, 1.0));
-    }
 
-    #[test]
-    fn growth_and_authored_heights_keep_the_one_x_design_exact() {
-        assert_eq!(line_growth(14.0, 1.0), 0.0);
-        assert_eq!(
-            line_growth(14.0, 0.75),
-            0.0,
-            "smaller text never shrinks a design"
-        );
-        assert!(line_growth(14.0, 2.0) > 17.0);
-        assert_eq!(authored_h(28.0, &[13.0], 1.0), 28.0);
-        assert_eq!(authored_h(74.0, &[26.0, 13.0], 1.0), 74.0);
-        assert!(authored_h(28.0, &[13.0], 2.0) >= 28.0 + line_growth(13.0, 2.0));
-        assert_eq!(at_least_whole(16.0, 13.75), 16.0);
-        assert_eq!(at_least_whole(16.0, 17.75), 18.0);
-    }
-
-    #[test]
-    fn centered_text_top_centres_the_measured_box_and_never_clamps() {
-        assert_eq!(centered_text_top(10.0, 28.0, 17.5), 10.0 + 5.25);
-        // Line taller than the band: equal overhang above and below.
-        assert_eq!(centered_text_top(0.0, 20.0, 35.0), -7.5);
-    }
-
-    #[test]
-    fn centered_text_top_agrees_with_the_renderers_measured_line_box() {
-        // Centring the `.1` of `measure` puts the line's centre on the band's
-        // centre at every renderer scale — the rule every migrated site uses.
-        for scale in [1.0_f32, 2.0] {
+        // Case `renderer_type_size_applies_no_floor`.
+        {
             let mut tr = TextRenderer::new();
-            tr.set_text_scale(scale);
-            let (_, line_h) = tr.measure("Ag", 14.0, None);
-            let top = centered_text_top(100.0, 40.0, f64::from(line_h));
-            assert!(
-                ((top + f64::from(line_h) / 2.0) - 120.0).abs() < 1e-9,
-                "at {scale}x the measured line ({line_h}) must centre on the band"
+            tr.set_text_scale(2.0);
+            // A token that resolves below the old modal floor stays the token.
+            assert_eq!(renderer_type_size(&tr, 10.0), 5.0);
+        }
+
+        // Case `line_height_px_matches_what_the_renderer_measures`.
+        {
+            for scale in [1.0_f32, 2.0, 0.75] {
+                let mut tr = TextRenderer::new();
+                tr.set_text_scale(scale);
+                let (_, measured) = tr.measure("Ag", 14.0, None);
+                assert!(
+                    (line_height_px(14.0, scale) - f64::from(measured)).abs() < 1e-4,
+                    "at {scale}x the renderer-less line ({}) must equal the measured one ({measured})",
+                    line_height_px(14.0, scale)
+                );
+            }
+            // Sanitised like the renderer: out-of-range and non-finite scales.
+            assert_eq!(line_height_px(14.0, 9.0), line_height_px(14.0, 4.0));
+            assert_eq!(line_height_px(14.0, f32::NAN), line_height_px(14.0, 1.0));
+        }
+
+        // Case `growth_and_authored_heights_keep_the_one_x_design_exact`.
+        {
+            assert_eq!(line_growth(14.0, 1.0), 0.0);
+            assert_eq!(
+                line_growth(14.0, 0.75),
+                0.0,
+                "smaller text never shrinks a design"
             );
+            assert!(line_growth(14.0, 2.0) > 17.0);
+            assert_eq!(authored_h(28.0, &[13.0], 1.0), 28.0);
+            assert_eq!(authored_h(74.0, &[26.0, 13.0], 1.0), 74.0);
+            assert!(authored_h(28.0, &[13.0], 2.0) >= 28.0 + line_growth(13.0, 2.0));
+            assert_eq!(at_least_whole(16.0, 13.75), 16.0);
+            assert_eq!(at_least_whole(16.0, 17.75), 18.0);
+        }
+    }
+
+    #[test]
+    fn centered_text_top_centres_the_measured_line_box() {
+        // Case `centered_text_top_centres_the_measured_box_and_never_clamps`.
+        {
+            assert_eq!(centered_text_top(10.0, 28.0, 17.5), 10.0 + 5.25);
+            // Line taller than the band: equal overhang above and below.
+            assert_eq!(centered_text_top(0.0, 20.0, 35.0), -7.5);
+        }
+
+        // Case `centered_text_top_agrees_with_the_renderers_measured_line_box`.
+        {
+            // Centring the `.1` of `measure` puts the line's centre on the band's
+            // centre at every renderer scale — the rule every migrated site uses.
+            for scale in [1.0_f32, 2.0] {
+                let mut tr = TextRenderer::new();
+                tr.set_text_scale(scale);
+                let (_, line_h) = tr.measure("Ag", 14.0, None);
+                let top = centered_text_top(100.0, 40.0, f64::from(line_h));
+                assert!(
+                    ((top + f64::from(line_h) / 2.0) - 120.0).abs() < 1e-9,
+                    "at {scale}x the measured line ({line_h}) must centre on the band"
+                );
+            }
         }
     }
 }

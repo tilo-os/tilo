@@ -1,0 +1,5 @@
+[
+  {"perform": {"target": "qr-input", "action": "set_value", "value": "你好 Rust GUI"}},
+  {"expect": {"target": "qr-input", "role": "text_input", "value": "你好 Rust GUI"}},
+  {"expect": {"target": "qr-output", "role": "image", "name_contains": "你好 Rust GUI"}}
+]

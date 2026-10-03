@@ -73,32 +73,16 @@ pub fn build_launcher(dir: &Path, stem: &str, command: &str) -> std::io::Result<
     let script =
         format!("#!/bin/sh\nexport SHELL_FALLBACK=\"${{SHELL_FALLBACK:-/bin/bash}}\"\n{command}\n");
     std::fs::write(&path, script)?;
-    set_executable(&path)?;
+    bounded_command::make_executable(&path)?;
     Ok(path)
-}
-
-#[cfg(unix)]
-fn set_executable(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = std::fs::metadata(path)?.permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(path, perms)
-}
-
-#[cfg(not(unix))]
-fn set_executable(_path: &Path) -> std::io::Result<()> {
-    Ok(())
 }
 
 /// Per-user runtime dir for launcher scripts: `$XDG_RUNTIME_DIR/tilo-containers`
 /// or a temp fallback.
 pub fn runtime_dir() -> PathBuf {
-    if let Ok(rt) = std::env::var("XDG_RUNTIME_DIR")
-        && !rt.is_empty()
-    {
-        return PathBuf::from(rt).join("tilo-containers");
-    }
-    std::env::temp_dir().join("tilo-containers")
+    xdg_paths::xdg::runtime_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("tilo-containers")
 }
 
 /// Build (but do not spawn) the `Command` that launches the Tilo terminal
@@ -163,81 +147,85 @@ fn sanitize_stem(s: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Distrobox enter and exec attach commands are built and quoted safely, and the launcher is executable, sets the shell and has a safe stem.
     #[test]
-    fn enter_command_runs_distrobox_enter_then_shell() {
-        let cmd = distrobox_enter_command("my-distrobox");
-        assert!(cmd.contains("distrobox enter 'my-distrobox'"), "{cmd}");
-        // Falls back to an interactive shell so the window stays usable.
-        assert!(cmd.contains("exec"), "{cmd}");
-    }
-
-    #[test]
-    fn enter_command_quotes_hostile_box_name() {
-        let cmd = distrobox_enter_command("a'; rm -rf ~ #");
-        // The injected quote is escaped, not left to break out of the string.
-        assert!(
-            cmd.contains(r"'\''"),
-            "hostile name must be single-quote-escaped: {cmd}"
-        );
-        assert!(
-            !cmd.contains("rm -rf ~ #;"),
-            "no unescaped command break: {cmd}"
-        );
-    }
-
-    #[test]
-    fn exec_attach_targets_the_container_and_shell() {
-        let cmd = exec_attach_command("9f3c1a7be4d2", "/bin/sh");
-        assert!(
-            cmd.contains("podman exec -it '9f3c1a7be4d2' '/bin/sh'"),
-            "{cmd}"
-        );
-    }
-
-    #[test]
-    fn launcher_is_written_executable_and_runs_command() {
-        let dir = std::env::temp_dir().join("tilo-containers-test-launcher");
-        let _ = std::fs::remove_dir_all(&dir);
-        let path =
-            build_launcher(&dir, "unit", "echo hi; exec \"$SHELL_FALLBACK\"").expect("write");
-        assert!(path.exists());
-        let body = std::fs::read_to_string(&path).unwrap();
-        assert!(body.starts_with("#!/bin/sh"), "launcher is a sh script");
-        assert!(body.contains("echo hi"), "launcher embeds the command");
-        #[cfg(unix)]
+    fn terminal_commands_quote_and_launch_safely() {
+        // --- phase: enter_command_runs_distrobox_enter_then_shell ---
         {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-            assert_eq!(mode & 0o111, 0o111, "launcher is executable");
+            let cmd = distrobox_enter_command("my-distrobox");
+            assert!(cmd.contains("distrobox enter 'my-distrobox'"), "{cmd}");
+            // Falls back to an interactive shell so the window stays usable.
+            assert!(cmd.contains("exec"), "{cmd}");
         }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 
-    #[test]
-    fn terminal_command_sets_shell_to_launcher() {
-        let cmd = terminal_command("echo test", "unit-tc").expect("build");
-        let envs: Vec<_> = cmd.get_envs().collect();
-        let shell = envs
-            .iter()
-            .find(|(k, _)| *k == std::ffi::OsStr::new("SHELL"))
-            .and_then(|(_, v)| *v)
-            .expect("SHELL env set");
-        let shell = shell.to_string_lossy();
-        assert!(
-            shell.contains("tilo-term-unit-tc.sh"),
-            "SHELL points at the launcher: {shell}"
-        );
-        // The real shell is preserved as the fallback.
-        assert!(
-            envs.iter()
-                .any(|(k, _)| *k == std::ffi::OsStr::new("SHELL_FALLBACK")),
-            "SHELL_FALLBACK preserved"
-        );
-    }
+        // --- phase: enter_command_quotes_hostile_box_name ---
+        {
+            let cmd = distrobox_enter_command("a'; rm -rf ~ #");
+            // The injected quote is escaped, not left to break out of the string.
+            assert!(
+                cmd.contains(r"'\''"),
+                "hostile name must be single-quote-escaped: {cmd}"
+            );
+            assert!(
+                !cmd.contains("rm -rf ~ #;"),
+                "no unescaped command break: {cmd}"
+            );
+        }
 
-    #[test]
-    fn sanitize_stem_is_filename_safe() {
-        assert_eq!(sanitize_stem("my/box:1.0"), "my-box-1-0");
-        assert_eq!(sanitize_stem("---a---"), "a");
+        // --- phase: exec_attach_targets_the_container_and_shell ---
+        {
+            let cmd = exec_attach_command("9f3c1a7be4d2", "/bin/sh");
+            assert!(
+                cmd.contains("podman exec -it '9f3c1a7be4d2' '/bin/sh'"),
+                "{cmd}"
+            );
+        }
+
+        // --- phase: launcher_is_written_executable_and_runs_command ---
+        {
+            let dir = std::env::temp_dir().join("tilo-containers-test-launcher");
+            let _ = std::fs::remove_dir_all(&dir);
+            let path =
+                build_launcher(&dir, "unit", "echo hi; exec \"$SHELL_FALLBACK\"").expect("write");
+            assert!(path.exists());
+            let body = std::fs::read_to_string(&path).unwrap();
+            assert!(body.starts_with("#!/bin/sh"), "launcher is a sh script");
+            assert!(body.contains("echo hi"), "launcher embeds the command");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+                assert_eq!(mode & 0o111, 0o111, "launcher is executable");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        // --- phase: terminal_command_sets_shell_to_launcher ---
+        {
+            let cmd = terminal_command("echo test", "unit-tc").expect("build");
+            let envs: Vec<_> = cmd.get_envs().collect();
+            let shell = envs
+                .iter()
+                .find(|(k, _)| *k == std::ffi::OsStr::new("SHELL"))
+                .and_then(|(_, v)| *v)
+                .expect("SHELL env set");
+            let shell = shell.to_string_lossy();
+            assert!(
+                shell.contains("tilo-term-unit-tc.sh"),
+                "SHELL points at the launcher: {shell}"
+            );
+            // The real shell is preserved as the fallback.
+            assert!(
+                envs.iter()
+                    .any(|(k, _)| *k == std::ffi::OsStr::new("SHELL_FALLBACK")),
+                "SHELL_FALLBACK preserved"
+            );
+        }
+
+        // --- phase: sanitize_stem_is_filename_safe ---
+        {
+            assert_eq!(sanitize_stem("my/box:1.0"), "my-box-1-0");
+            assert_eq!(sanitize_stem("---a---"), "a");
+        }
     }
 }

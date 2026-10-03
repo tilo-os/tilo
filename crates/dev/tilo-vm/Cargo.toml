@@ -14,10 +14,12 @@ name = "tilo-vm"
 path = "src/main.rs"
 
 [dependencies]
+quick-xml.workspace = true
 base64.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }
 clap.workspace = true
-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-files = { path = "../../platform/tilo-files" }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
 hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -7,9 +7,7 @@
 
 use crate::input_context::InputContext;
 use chrono::{NaiveDate, Timelike};
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use vello::Scene;
+use ui::paint::PaintCtx;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -48,6 +46,17 @@ pub(crate) struct PopoverAnchors {
     pub start_time: Rect,
     pub end_time: Rect,
     pub calendar: Rect,
+    /// The panel every popover is kept inside; a click on it outside the
+    /// open popover dismisses it.
+    pub panel: Rect,
+}
+
+/// The calendars the calendar popover offers, and the id of the one the
+/// edited event belongs to (`None` for the local calendar).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CalendarChoices<'a> {
+    pub options: &'a [(CalTarget, String)],
+    pub current: Option<&'a str>,
 }
 
 #[derive(Clone, Debug)]
@@ -201,14 +210,16 @@ impl EventPopovers {
                 let before = self.date_picker.selected();
                 self.date_picker.handle_event(
                     input.event,
-                    input.scale_factor,
-                    &input.modifiers,
-                    input.state,
-                    input.path,
-                    input.handled,
-                    input.focus_target,
-                    input.node_id,
-                    input.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: input.scale_factor,
+                        modifiers: &input.modifiers,
+                        state: input.state,
+                        path: input.path,
+                        handled: input.handled,
+                        focus_target: input.focus_target,
+                        node_id: input.node_id,
+                        taffy: input.taffy,
+                    },
                 );
                 let after = self.date_picker.selected();
                 if after != before {
@@ -228,14 +239,16 @@ impl EventPopovers {
                 let before = (picker.hours(), picker.minutes());
                 picker.handle_event(
                     input.event,
-                    input.scale_factor,
-                    &input.modifiers,
-                    input.state,
-                    input.path,
-                    input.handled,
-                    input.focus_target,
-                    input.node_id,
-                    input.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: input.scale_factor,
+                        modifiers: &input.modifiers,
+                        state: input.state,
+                        path: input.path,
+                        handled: input.handled,
+                        focus_target: input.focus_target,
+                        node_id: input.node_id,
+                        taffy: input.taffy,
+                    },
                 );
                 let after = (picker.hours(), picker.minutes());
                 if after != before {
@@ -275,23 +288,17 @@ impl EventPopovers {
         *handled = true;
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "popover painting combines the shared render context with panel anchors, pointer state and calendar choices"
-    )]
     pub fn draw(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         presence: &PresenceCtx,
-        panel: Rect,
         anchors: PopoverAnchors,
         pointer: Point,
-        calendar_options: &[(CalTarget, String)],
-        current_calendar: Option<&str>,
+        calendars: CalendarChoices<'_>,
     ) {
+        let (scene, transform, text, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let panel = anchors.panel;
         self.hits.clear();
         let kind = self.active;
         let anchor = match kind {
@@ -303,7 +310,6 @@ impl EventPopovers {
             PopoverKind::Calendar => anchors.calendar,
         };
         self.hits.push((panel, Hit::Dismiss));
-        let colors = &theme.tokens.colors;
         let panel_radius = f64::from(theme.tokens.radii.lg);
 
         match kind {
@@ -339,61 +345,77 @@ impl EventPopovers {
             }
             PopoverKind::Calendar => {
                 let row_h = 34.0;
-                let height = row_h * calendar_options.len() as f64 + 8.0;
+                let height = row_h * calendars.options.len() as f64 + 8.0;
                 let y = (anchor.y1 + 6.0).min(panel.y1 - height - 8.0);
                 let rect = Rect::new(anchor.x0, y, anchor.x1, y + height);
                 paint_panel(scene, transform, theme, rect, panel_radius);
                 self.hits.push((rect, Hit::Guard));
-                // Rows keep the `s1` inset from the panel edge; the painted
-                // pill is inset half of that top and bottom so two neighbours
-                // (a hovered row beside the chosen one) keep an `s1` gap.
-                let row_inset = f64::from(theme.tokens.spacing.s1);
-                for (index, (target, label)) in calendar_options.iter().enumerate() {
-                    let row_y = rect.y0 + row_inset + index as f64 * row_h;
-                    let row = Rect::new(
-                        rect.x0 + row_inset,
-                        row_y,
-                        rect.x1 - row_inset,
-                        row_y + row_h,
-                    );
-                    let selected = match target {
-                        CalTarget::Local => current_calendar.is_none(),
-                        CalTarget::Remote(id) => current_calendar == Some(id.as_str()),
-                    };
-                    selected_row(
-                        scene,
-                        transform,
-                        theme,
-                        ui::chrome::panel_ground(theme),
-                        row.inflate(0.0, -row_inset / 2.0),
-                        f64::from(theme.tokens.radii.md),
-                        selected,
-                        row.contains(pointer),
-                    );
-                    text.draw_text(
-                        scene,
-                        label,
-                        13.0,
-                        colors.text_primary,
-                        transform * Affine::translate((row.x0 + 12.0, row.center().y - 7.0)),
-                        Some((row.width() - 40.0) as f32),
-                    );
-                    if selected {
-                        draw_check(
-                            scene,
-                            transform,
-                            colors.accent[5],
-                            Rect::new(
-                                row.x1 - 24.0,
-                                row.center().y - 7.0,
-                                row.x1 - 10.0,
-                                row.center().y + 7.0,
-                            ),
-                        );
-                    }
-                    self.hits.push((row, Hit::Calendar(target.clone())));
-                }
+                self.draw_calendar_rows(ctx, rect, row_h, pointer, calendars);
             }
+        }
+    }
+
+    /// The calendar menu's `row_h`-tall rows inside `menu`, the chosen one
+    /// checked.
+    fn draw_calendar_rows(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        menu: Rect,
+        row_h: f64,
+        pointer: Point,
+        calendars: CalendarChoices<'_>,
+    ) {
+        let (scene, transform, text, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let colors = &theme.tokens.colors;
+        // Rows keep the `s1` inset from the panel edge; the painted
+        // pill is inset half of that top and bottom so two neighbours
+        // (a hovered row beside the chosen one) keep an `s1` gap.
+        let row_inset = f64::from(theme.tokens.spacing.s1);
+        for (index, (target, label)) in calendars.options.iter().enumerate() {
+            let row_y = menu.y0 + row_inset + index as f64 * row_h;
+            let row = Rect::new(
+                menu.x0 + row_inset,
+                row_y,
+                menu.x1 - row_inset,
+                row_y + row_h,
+            );
+            let selected = match target {
+                CalTarget::Local => calendars.current.is_none(),
+                CalTarget::Remote(id) => calendars.current == Some(id.as_str()),
+            };
+            selected_row(
+                scene,
+                transform,
+                theme,
+                ui::chrome::panel_ground(theme),
+                row.inflate(0.0, -row_inset / 2.0),
+                f64::from(theme.tokens.radii.md),
+                selected,
+                row.contains(pointer),
+            );
+            text.draw_text(
+                scene,
+                label,
+                13.0,
+                colors.text_primary,
+                transform * Affine::translate((row.x0 + 12.0, row.center().y - 7.0)),
+                Some((row.width() - 40.0) as f32),
+            );
+            if selected {
+                draw_check(
+                    scene,
+                    transform,
+                    colors.accent[5],
+                    Rect::new(
+                        row.x1 - 24.0,
+                        row.center().y - 7.0,
+                        row.x1 - 10.0,
+                        row.center().y + 7.0,
+                    ),
+                );
+            }
+            self.hits.push((row, Hit::Calendar(target.clone())));
         }
     }
 }
@@ -435,34 +457,36 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_picker_replaces_the_previous_one_and_close_clears_state() {
-        let mut popovers = EventPopovers::new(NaiveDate::from_ymd_opt(2026, 8, 31).unwrap());
-        popovers.open(PopoverKind::StartDate, &event());
-        assert_eq!(popovers.active(), PopoverKind::StartDate);
-        popovers.open(PopoverKind::EndTime, &event());
-        assert_eq!(popovers.active(), PopoverKind::EndTime);
-        popovers.close();
-        assert!(!popovers.is_open());
-        assert!(popovers.hits.is_empty());
-    }
-
-    #[test]
-    fn calendar_rows_win_over_the_backing_guard() {
-        let target = CalTarget::Remote("work".into());
-        let mut popovers = EventPopovers::new(NaiveDate::from_ymd_opt(2026, 8, 31).unwrap());
-        popovers
-            .hits
-            .push((Rect::new(0.0, 0.0, 100.0, 100.0), Hit::Guard));
-        popovers.hits.push((
-            Rect::new(4.0, 4.0, 96.0, 38.0),
-            Hit::Calendar(target.clone()),
-        ));
-        let hit = popovers
-            .hits
-            .iter()
-            .rev()
-            .find(|(r, _)| r.contains(Point::new(20.0, 20.0)))
-            .map(|(_, h)| h);
-        assert!(matches!(hit, Some(Hit::Calendar(found)) if found == &target));
+    fn picker_lifecycle_replaces_and_clears_and_calendar_rows_win_hits() {
+        // Case `opening_a_picker_replaces_the_previous_one_and_close_clears_state`.
+        {
+            let mut popovers = EventPopovers::new(NaiveDate::from_ymd_opt(2026, 8, 31).unwrap());
+            popovers.open(PopoverKind::StartDate, &event());
+            assert_eq!(popovers.active(), PopoverKind::StartDate);
+            popovers.open(PopoverKind::EndTime, &event());
+            assert_eq!(popovers.active(), PopoverKind::EndTime);
+            popovers.close();
+            assert!(!popovers.is_open());
+            assert!(popovers.hits.is_empty());
+        }
+        // Case `calendar_rows_win_over_the_backing_guard`.
+        {
+            let target = CalTarget::Remote("work".into());
+            let mut popovers = EventPopovers::new(NaiveDate::from_ymd_opt(2026, 8, 31).unwrap());
+            popovers
+                .hits
+                .push((Rect::new(0.0, 0.0, 100.0, 100.0), Hit::Guard));
+            popovers.hits.push((
+                Rect::new(4.0, 4.0, 96.0, 38.0),
+                Hit::Calendar(target.clone()),
+            ));
+            let hit = popovers
+                .hits
+                .iter()
+                .rev()
+                .find(|(r, _)| r.contains(Point::new(20.0, 20.0)))
+                .map(|(_, h)| h);
+            assert!(matches!(hit, Some(Hit::Calendar(found)) if found == &target));
+        }
     }
 }

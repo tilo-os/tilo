@@ -16,17 +16,24 @@
 //! by redelivering [`ChannelSteward::outbox`] until each device's cumulative
 //! acknowledgement covers it. The sequence per change is:
 //!
-//! 1. stage the MLS commit;
-//! 2. write the group with the staged commit;
-//! 3. append the frame and its deliveries to the journal;
-//! 4. merge the commit and write the group again.
+//! 1. stage the MLS commit and write the group with it;
+//! 2. sign the frame with the device key, which may take a while (a
+//!    browser's key signs through a promise);
+//! 3. write the ledger: which request the device is admitted with;
+//! 4. append the frame and its deliveries to the journal;
+//! 5. merge the commit and write the group again.
 //!
-//! A crash after 3 is finished on the next open (the journal is ahead of
-//! the group, so the staged commit is merged); a crash before 3 discards the
-//! staged commit.
+//! A crash after 4 is finished on the next open (the journal is ahead of
+//! the group, so the staged commit is merged); a crash before 4 discards the
+//! staged commit. A ledger ahead of the journal is harmless: a device it
+//! names as admitted that is not a member is admitted when it asks, and one
+//! whose entry was dropped for a removal that did not happen is removed
+//! again or admitted anew. The records live in a [`StewardStore`]: files on a native
+//! device, or memory exported to a browser's `IndexedDB`; [`crate::store`]
+//! describes what a store must guarantee for this to hold.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use collab_types::{
     ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceAction,
@@ -37,6 +44,8 @@ use openmls::prelude::BasicCredential;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use crate::signer::{StewardSigner, complete_now};
+use crate::store::{FileStewardStore, StewardRecord, StewardStore};
 use crate::{
     ChannelContentKeys, ChannelGroup, Error, GovernanceJournal, KeyPackage, MemberKey, Result,
     VaultKey,
@@ -79,38 +88,60 @@ pub struct Outgoing {
     pub frames: Vec<MlsGovernanceFrameV1>,
 }
 
-/// A steward's group, journal and ledger for one channel.
-pub struct ChannelSteward {
+/// A steward's group, journal and ledger for one channel, kept in `S`.
+pub struct ChannelSteward<S: StewardStore = FileStewardStore> {
     channel: ChannelId,
-    device_key: SigningKey,
+    signer: Box<dyn StewardSigner>,
     group: ChannelGroup,
     journal: GovernanceJournal,
     ledger: StewardLedger,
-    group_path: PathBuf,
-    ledger_path: PathBuf,
+    store: S,
 }
 
 impl ChannelSteward {
-    /// Open the steward state for `channel` under `dir`, creating the group
-    /// and its genesis frame when absent, and finishing or discarding a
-    /// change interrupted by a crash.
+    /// Open the steward state for `channel` under `dir`, as [`Self::open`]
+    /// does, signing with `device_key`.
     ///
     /// # Errors
     ///
-    /// Returns an error for corrupt or undecryptable state, or when a fresh
-    /// group cannot be written.
+    /// As [`Self::open`].
     pub fn open_or_create(
         dir: &Path,
         channel: ChannelId,
         device_key: SigningKey,
         vault: &VaultKey,
     ) -> Result<Self> {
-        let group_path = dir.join(format!("{}.group", channel.0));
-        let ledger_path = dir.join(format!("{}.steward", channel.0));
-        let journal = GovernanceJournal::open(dir.join(format!("{}.governance", channel.0)))?;
-        let device = Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes());
-        let group = if group_path.exists() {
-            ChannelGroup::load_sealed(&group_path, vault)?
+        complete_now(Self::open(
+            FileStewardStore::new(dir, channel),
+            channel,
+            Box::new(device_key),
+            vault,
+        ))
+    }
+}
+
+impl<S: StewardStore> ChannelSteward<S> {
+    /// Open the steward state for `channel` in `store`, creating the group
+    /// and its genesis frame when absent, and finishing or discarding a
+    /// change interrupted by a crash.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for corrupt or undecryptable state, when a fresh
+    /// group cannot be written, or when the signer fails.
+    pub async fn open(
+        mut store: S,
+        channel: ChannelId,
+        signer: Box<dyn StewardSigner>,
+        vault: &VaultKey,
+    ) -> Result<Self> {
+        let device = signer.device();
+        let journal = match store.read(StewardRecord::Journal)? {
+            Some(bytes) => GovernanceJournal::from_bytes(&bytes)?,
+            None => GovernanceJournal::in_memory(),
+        };
+        let group = if let Some(sealed) = store.read(StewardRecord::Group)? {
+            ChannelGroup::open_sealed(&sealed, vault)?
         } else {
             if !journal.frames().is_empty() {
                 return Err(Error::InvalidState(
@@ -118,7 +149,7 @@ impl ChannelSteward {
                 ));
             }
             let group = ChannelGroup::create(channel, MemberKey::for_device(&device)?)?;
-            group.save_sealed(&group_path, vault)?;
+            store.write(StewardRecord::Group, &group.seal(vault)?)?;
             group
         };
         if group.channel_id() != channel || group.member().name() != device.as_bytes() {
@@ -126,28 +157,34 @@ impl ChannelSteward {
                 "steward group belongs to another channel or device".into(),
             ));
         }
-        let ledger = if ledger_path.exists() {
-            postcard::from_bytes(&std::fs::read(&ledger_path)?)
-                .map_err(|error| Error::Serialization(error.to_string()))?
-        } else {
-            StewardLedger::default()
+        let ledger = match store.read(StewardRecord::Ledger)? {
+            Some(bytes) => postcard::from_bytes(&bytes)
+                .map_err(|error| Error::Serialization(error.to_string()))?,
+            None => StewardLedger::default(),
         };
         let mut steward = Self {
             channel,
-            device_key,
+            signer,
             group,
             journal,
             ledger,
-            group_path,
-            ledger_path,
+            store,
         };
         steward.recover(vault)?;
         if steward.journal.frames().is_empty() {
-            steward.genesis()?;
+            steward.genesis().await?;
         }
         Ok(steward)
     }
 
+    /// The store holding this steward's records.
+    pub fn store(&self) -> &S {
+        &self.store
+    }
+
+    /// Finish a change whose frame is in the journal, or drop one whose frame
+    /// is not: after a crash, or after a change was abandoned while it
+    /// awaited its signature.
     fn recover(&mut self, vault: &VaultKey) -> Result<()> {
         let head_epoch = self.journal.head_epoch().unwrap_or(0);
         if head_epoch > self.group.epoch() {
@@ -156,27 +193,28 @@ impl ChannelSteward {
                     "journal is ahead of the steward group with no staged change".into(),
                 ));
             }
-            self.group.save_sealed(&self.group_path, vault)?;
+            self.save_group(vault)?;
         } else if self.group.discard_pending_transaction()? {
-            self.group.save_sealed(&self.group_path, vault)?;
+            self.save_group(vault)?;
         }
         Ok(())
     }
 
-    fn genesis(&mut self) -> Result<()> {
+    async fn genesis(&mut self) -> Result<()> {
         let members = self.members();
         let governors = BTreeSet::from([self.device()]);
         let revision = self.next_revision();
-        let frame = MlsGovernanceFrameV1::signed(
-            self.channel,
-            self.transaction_id(revision),
-            revision,
-            self.journal.head_digest(),
-            self.group.epoch(),
-            MlsGovernanceAction::Genesis,
-            &self.device_key,
-        )
-        .map_err(|error| Error::Serialization(error.to_string()))?;
+        let frame = self
+            .sign(MlsGovernanceFrameV1::unsigned(
+                self.channel,
+                self.transaction_id(revision),
+                revision,
+                self.journal.head_digest(),
+                self.group.epoch(),
+                MlsGovernanceAction::Genesis,
+                self.device(),
+            ))
+            .await?;
         let context = MlsGovernanceContext {
             channel: self.channel,
             membership_revision: revision,
@@ -187,8 +225,7 @@ impl ChannelSteward {
             current_mls_members: &members,
             durable_snapshot_ack: None,
         };
-        self.journal.enqueue(frame, &context)?;
-        Ok(())
+        self.append(frame, &context)
     }
 
     /// The channel.
@@ -198,7 +235,7 @@ impl ChannelSteward {
 
     /// The steward's device key.
     pub fn device(&self) -> Ed25519PublicKey {
-        Ed25519PublicKey::from_bytes(self.device_key.verifying_key().to_bytes())
+        self.signer.device()
     }
 
     /// The governance journal (the channel's plaintext gate and head epoch).
@@ -238,21 +275,40 @@ impl ChannelSteward {
     /// request in `requests` and is not a member, or is a member asking again
     /// with a newer request because it lost its state.
     ///
+    /// This waits for nothing, so it needs a signer that answers at once;
+    /// [`Self::reconcile_async`] takes any signer.
+    ///
     /// # Errors
     ///
-    /// Returns an error when an MLS change or its durable record fails; the
-    /// changes made before it stay committed.
+    /// As [`Self::reconcile_async`], or when the signer would have to be
+    /// awaited.
     pub fn reconcile(
         &mut self,
         allowed: &BTreeSet<Ed25519PublicKey>,
         requests: &BTreeMap<Ed25519PublicKey, MlsAccessRequestV1>,
         vault: &VaultKey,
     ) -> Result<Reconciled> {
+        complete_now(self.reconcile_async(allowed, requests, vault))
+    }
+
+    /// [`Self::reconcile`], awaiting each frame's signature.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an MLS change, its signature or its durable
+    /// record fails; the changes made before it stay committed.
+    pub async fn reconcile_async(
+        &mut self,
+        allowed: &BTreeSet<Ed25519PublicKey>,
+        requests: &BTreeMap<Ed25519PublicKey, MlsAccessRequestV1>,
+        vault: &VaultKey,
+    ) -> Result<Reconciled> {
+        self.recover(vault)?;
         let steward = self.device();
         let mut outcome = Reconciled::default();
         for member in self.members() {
             if member != steward && !allowed.contains(&member) {
-                self.remove(member, vault)?;
+                self.remove(member, vault).await?;
                 outcome.removed.push(member);
             }
         }
@@ -278,16 +334,17 @@ impl ChannelSteward {
                 continue;
             };
             if member {
-                self.remove(*device, vault)?;
+                self.remove(*device, vault).await?;
                 outcome.removed.push(*device);
             }
-            self.admit(*device, package, request.issued_at, vault)?;
+            self.admit(*device, package, request.issued_at, vault)
+                .await?;
             outcome.admitted.push(*device);
         }
         Ok(outcome)
     }
 
-    fn admit(
+    async fn admit(
         &mut self,
         device: Ed25519PublicKey,
         package: KeyPackage,
@@ -301,13 +358,12 @@ impl ChannelSteward {
         let revision = self.next_revision();
         let transaction = self.transaction_id(revision);
         let head = self.journal.head_digest();
-        let (channel, group_path) = (self.channel, self.group_path.clone());
-        let (journal, signer) = (&mut self.journal, &self.device_key);
-        self.group
-            .add_member_transactional(package, |group, addition| {
-                group.save_sealed(&group_path, vault)?;
-                let frame = MlsGovernanceFrameV1::signed(
-                    channel,
+        let addition = self.group.stage_add(package)?;
+        let recorded = async {
+            self.save_group(vault)?;
+            let frame = self
+                .sign(MlsGovernanceFrameV1::unsigned(
+                    self.channel,
                     transaction,
                     revision,
                     head,
@@ -318,31 +374,31 @@ impl ChannelSteward {
                         existing_member_commit: addition.commit.clone(),
                         key_history: addition.key_history.clone(),
                     },
-                    signer,
-                )
-                .map_err(|error| Error::Serialization(error.to_string()))?;
-                journal.enqueue(
-                    frame,
-                    &MlsGovernanceContext {
-                        channel,
-                        membership_revision: revision,
-                        previous_frame_digest: head,
-                        expected_epoch: addition.epoch,
-                        governors: &governors,
-                        desired_members: &desired,
-                        current_mls_members: &current,
-                        durable_snapshot_ack: None,
-                    },
-                )?;
-                Ok(())
-            })?;
-        self.group.save_sealed(&self.group_path, vault)?;
-        self.ledger.admitted.insert(device, issued_at);
-        self.ledger.acknowledged.remove(&device);
-        self.save_ledger()
+                    self.device(),
+                ))
+                .await?;
+            self.ledger.admitted.insert(device, issued_at);
+            self.ledger.acknowledged.remove(&device);
+            self.save_ledger()?;
+            self.append(
+                frame,
+                &MlsGovernanceContext {
+                    channel: self.channel,
+                    membership_revision: revision,
+                    previous_frame_digest: head,
+                    expected_epoch: addition.epoch,
+                    governors: &governors,
+                    desired_members: &desired,
+                    current_mls_members: &current,
+                    durable_snapshot_ack: None,
+                },
+            )
+        }
+        .await;
+        self.finish(recorded, vault)
     }
 
-    fn remove(&mut self, device: Ed25519PublicKey, vault: &VaultKey) -> Result<()> {
+    async fn remove(&mut self, device: Ed25519PublicKey, vault: &VaultKey) -> Result<()> {
         let leaf = self
             .group
             .leaf_index_of(device.as_bytes())
@@ -354,42 +410,55 @@ impl ChannelSteward {
         let revision = self.next_revision();
         let transaction = self.transaction_id(revision);
         let head = self.journal.head_digest();
-        let (channel, group_path) = (self.channel, self.group_path.clone());
-        let (journal, signer) = (&mut self.journal, &self.device_key);
-        self.group
-            .remove_member_transactional(leaf, |group, commit, epoch| {
-                group.save_sealed(&group_path, vault)?;
-                let frame = MlsGovernanceFrameV1::signed(
-                    channel,
+        let (commit, epoch) = self.group.stage_remove(leaf)?;
+        let recorded = async {
+            self.save_group(vault)?;
+            let frame = self
+                .sign(MlsGovernanceFrameV1::unsigned(
+                    self.channel,
                     transaction,
                     revision,
                     head,
                     epoch,
                     MlsGovernanceAction::Remove {
                         removed: device,
-                        commit: commit.to_vec(),
+                        commit,
                     },
-                    signer,
-                )
-                .map_err(|error| Error::Serialization(error.to_string()))?;
-                journal.enqueue(
-                    frame,
-                    &MlsGovernanceContext {
-                        channel,
-                        membership_revision: revision,
-                        previous_frame_digest: head,
-                        expected_epoch: epoch,
-                        governors: &governors,
-                        desired_members: &desired,
-                        current_mls_members: &current,
-                        durable_snapshot_ack: None,
-                    },
-                )?;
-                Ok(())
-            })?;
-        self.group.save_sealed(&self.group_path, vault)?;
-        self.ledger.admitted.remove(&device);
-        self.save_ledger()
+                    self.device(),
+                ))
+                .await?;
+            self.ledger.admitted.remove(&device);
+            self.save_ledger()?;
+            self.append(
+                frame,
+                &MlsGovernanceContext {
+                    channel: self.channel,
+                    membership_revision: revision,
+                    previous_frame_digest: head,
+                    expected_epoch: epoch,
+                    governors: &governors,
+                    desired_members: &desired,
+                    current_mls_members: &current,
+                    durable_snapshot_ack: None,
+                },
+            )
+        }
+        .await;
+        self.finish(recorded, vault)
+    }
+
+    /// Merge the staged commit once its frame is recorded, or drop it.
+    fn finish(&mut self, recorded: Result<()>, vault: &VaultKey) -> Result<()> {
+        if let Err(error) = recorded {
+            // A staged group that was already written is dropped on the next
+            // open or change either way, so only the original error matters.
+            if self.group.discard_pending_transaction().unwrap_or(false) {
+                self.save_group(vault).ok();
+            }
+            return Err(error);
+        }
+        self.group.merge_pending_transaction()?;
+        self.save_group(vault)
     }
 
     /// Record a device's cumulative acknowledgement. Returns how many
@@ -411,9 +480,13 @@ impl ChannelSteward {
         if !self.journal.contains(ack.through_digest) {
             return Ok(0);
         }
-        let completed = self
-            .journal
-            .acknowledge_through(ack.device, ack.through_digest)?;
+        let mut journal = self.journal.clone();
+        let completed = journal.acknowledge_through(ack.device, ack.through_digest)?;
+        if completed > 0 {
+            self.store
+                .write(StewardRecord::Journal, &journal.to_bytes()?)?;
+            self.journal = journal;
+        }
         let position = |digest: &[u8; 32]| {
             self.journal
                 .frames()
@@ -472,10 +545,40 @@ impl ChannelSteward {
         hash.finalize().into()
     }
 
-    fn save_ledger(&self) -> Result<()> {
+    async fn sign(&self, mut frame: MlsGovernanceFrameV1) -> Result<MlsGovernanceFrameV1> {
+        let message = frame
+            .signing_bytes()
+            .map_err(|error| Error::Serialization(error.to_string()))?;
+        frame.signature = collab_types::Signature::from_bytes(self.signer.sign(message).await?);
+        frame
+            .verify_signature()
+            .map_err(|error| Error::Signer(error.to_string()))?;
+        Ok(frame)
+    }
+
+    /// Append `frame` to the journal once the journal holding it is stored.
+    fn append(
+        &mut self,
+        frame: MlsGovernanceFrameV1,
+        context: &MlsGovernanceContext<'_>,
+    ) -> Result<()> {
+        let mut journal = self.journal.clone();
+        journal.enqueue(frame, context)?;
+        self.store
+            .write(StewardRecord::Journal, &journal.to_bytes()?)?;
+        self.journal = journal;
+        Ok(())
+    }
+
+    fn save_group(&mut self, vault: &VaultKey) -> Result<()> {
+        let sealed = self.group.seal(vault)?;
+        self.store.write(StewardRecord::Group, &sealed)
+    }
+
+    fn save_ledger(&mut self) -> Result<()> {
         let bytes = postcard::to_allocvec(&self.ledger)
             .map_err(|error| Error::Serialization(error.to_string()))?;
-        atomic_file::write_private(&self.ledger_path, &bytes).map_err(Error::Io)
+        self.store.write(StewardRecord::Ledger, &bytes)
     }
 }
 
@@ -493,7 +596,7 @@ fn device_key_package(request: &MlsAccessRequestV1) -> Result<KeyPackage> {
     Ok(package)
 }
 
-impl std::fmt::Debug for ChannelSteward {
+impl<S: StewardStore> std::fmt::Debug for ChannelSteward<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChannelSteward")
             .field("channel", &self.channel)

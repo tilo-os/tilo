@@ -265,7 +265,7 @@ Nix can build or substitute the package declaratively.
 
 ## CI and publishing
 
-`.forgejo/workflows/package-desktop.yml` is the release gate. Pull requests
+`.forgejo/workflows/release-desktop.yml` is the release gate. Pull requests
 that touch packaging or the packaged binaries execute the current x86-64 matrix.
 `desktop-v*` tags execute it regardless of changed paths, wait for every enabled
 native-architecture install test, download the artifacts, require the complete

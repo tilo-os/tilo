@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "pdf-viewer"
 version = "0.1.0"
 edition = "2024"
@@ -17,13 +18,19 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+fnv.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 automerge.workspace = true
 tilo-automerge.workspace = true
+blake3.workspace = true
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 # The Tilo ACTION model: the reader's `actions` module exports its markup-store
 # operations as replayable actions the host's Ctrl+K palette dispatches.
 tilo-actions = { path = "../../crates/collab/actions" }
+# Comment and reply text is rich text, written in the SDK editor.
+tilo-document = { path = "../../crates/doc/tilo-document" }
+tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 tilo-content = { path = "../../crates/system/content" }
 serde.workspace = true
 serde_json.workspace = true
@@ -34,9 +41,11 @@ winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
 # Rendering, text layer, forms and export through Tilo's sandboxed PDF engine.
-tilo-pdf = { path = "../../crates/doc/pdf" }
+tilo-pdf = { path = "../../crates/platform/tilo-pdf" }
 image = { workspace = true, features = ["png", "jpeg"] }
 tempfile.workspace = true
+# Documents the user opens and saves.
+tilo-files = { path = "../../crates/platform/tilo-files" }
 # Host-native file open/save through the XDG Desktop Portal; calls run off the
 # UI thread and return through `ui::portal`.
 
@@ -44,7 +53,17 @@ tempfile.workspace = true
 # Serialise tests that touch the shared system clipboard.
 serial_test.workspace = true
 # Two distinct files for the multi-document test.
+tempfile.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tilo-test-env = { path = "../../crates/dev/test-env" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

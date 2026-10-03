@@ -24,15 +24,16 @@
               counter bounded by a short-lived test run, not real user data"
 )]
 
-use std::time::{Duration, Instant};
 use tilo_automerge::ApplyIncoming;
+use ui::time::Duration;
 
 use automerge::AutoCommit;
+use tilo_actions::ActionAddress;
 use tilo_agent::{Config, Session};
 use tilo_content::ContentStore;
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
 
-mod typed_peer;
+use crate::typed_peer;
 use typed_peer::{TypedPeer, document_mutation};
 
 const APP: &str = "so.tilo.word-processor";
@@ -44,10 +45,10 @@ const TYPED: &str = "!";
 fn seed_document() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from("quinten".as_bytes()));
-    let c = qdoc::model::init(&mut doc, &automerge::ROOT);
-    let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+    let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+    let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
     {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -69,9 +70,9 @@ fn seed_document() -> AutoCommit {
     doc
 }
 
-fn blocks(doc: &AutoCommit) -> Vec<qdoc::BlockView> {
-    let c = qdoc::model::open(doc, &automerge::ROOT).expect("schema");
-    qdoc::model::materialize(doc, &c).blocks
+fn blocks(doc: &AutoCommit) -> Vec<tilo_doc::BlockView> {
+    let c = tilo_doc::model::open(doc, &automerge::ROOT).expect("schema");
+    tilo_doc::model::materialize(doc, &c).blocks
 }
 
 fn heading_id(doc: &AutoCommit) -> String {
@@ -87,13 +88,13 @@ fn heading_id(doc: &AutoCommit) -> String {
 fn type_one(doc: &mut AutoCommit, block: &str, ch: &str) -> Vec<u8> {
     let before = doc.get_heads();
     {
-        let c = qdoc::model::open(doc, &automerge::ROOT).expect("schema");
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).expect("schema");
         let at = blocks(doc)
             .into_iter()
             .find(|b| b.id == block)
             .map_or(0, |b| b.text.chars().count());
-        let mut ids = qdoc::model::seeded_id_gen(doc, &c);
-        let mut dm = qdoc::DocMut {
+        let mut ids = tilo_doc::model::seeded_id_gen(doc, &c);
+        let mut dm = tilo_doc::DocMut {
             doc,
             c: &c,
             ids: &mut ids,
@@ -172,11 +173,11 @@ fn drive_peer_and_type(
     head: &str,
 ) -> (usize, bool, String) {
     peer.set_read_timeout(Some(Duration::from_millis(200)));
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     let mut typed = 0usize;
     let mut table_done = false;
     let mut invocation_actor = None;
-    while Instant::now() < deadline && !(table_done && typed == TYPED.chars().count()) {
+    while ui::time::now() < deadline && !(table_done && typed == TYPED.chars().count()) {
         let Some(event) = peer.recv().unwrap() else {
             continue;
         };
@@ -191,6 +192,7 @@ fn drive_peer_and_type(
                 action,
                 argument,
                 actor,
+                context,
                 ..
             } => {
                 invocation_actor = Some(actor.clone());
@@ -200,11 +202,13 @@ fn drive_peer_and_type(
                     replica,
                     &resources,
                     word_processor::actions::register,
-                    id,
-                    resource,
-                    action,
-                    argument.as_deref(),
-                    &actor,
+                    typed_peer::DocumentInvocation {
+                        id,
+                        address: ActionAddress::new(resource, action),
+                        argument: argument.as_deref(),
+                        actor: &actor,
+                        context: context.as_deref(),
+                    },
                 );
 
                 // Land a human edit while the broker invocation is still in
@@ -265,7 +269,7 @@ fn assert_agent_table(replica: &AutoCommit, table_done: bool) -> Vec<(String, St
         .filter(|x| x.kind == "cell")
         .map(|x| {
             let n = |k: &str| match x.attrs.get(k) {
-                Some(qdoc::AttrVal::Int(v)) => *v,
+                Some(tilo_doc::AttrVal::Int(v)) => *v,
                 _ => -1,
             };
             (n("row"), n("col"), x.text.clone())
@@ -318,9 +322,9 @@ fn assert_person_typed(replica: &AutoCommit, typed: usize, shown: &[(String, Str
 fn assert_attribution(replica: &mut AutoCommit, typed: usize, invocation_actor: &str) {
     // Both authors are in the history, so the strip attributes each edit
     // to whoever made it rather than folding them into one.
-    let versions = qdoc::history::versions(replica);
+    let versions = tilo_resource::history::versions(replica);
     let actors: std::collections::HashSet<String> =
-        versions.iter().map(|v| v.actor_hex.clone()).collect();
+        versions.iter().map(|v| v.actor.clone()).collect();
     let action_actor = hex::encode(invocation_actor);
     assert!(
         actors.contains(&action_actor),
@@ -342,13 +346,10 @@ fn assert_attribution(replica: &mut AutoCommit, typed: usize, invocation_actor: 
     // that made it, the peer recovered all of them by applying the raw
     // incremental bytes, and no frame here was signed — so a receiver can
     // attribute an edit from what it already has.
-    let scribe = versions
-        .iter()
-        .filter(|v| v.actor_hex == action_actor)
-        .count();
+    let scribe = versions.iter().filter(|v| v.actor == action_actor).count();
     let human = versions
         .iter()
-        .filter(|v| v.actor_hex == hex::encode("quinten"))
+        .filter(|v| v.actor == hex::encode("quinten"))
         .count();
     assert!(
         scribe >= 1 && human >= typed,
@@ -357,7 +358,9 @@ fn assert_attribution(replica: &mut AutoCommit, typed: usize, invocation_actor: 
         versions.len()
     );
     assert!(
-        versions.iter().all(|v| !v.change_hash.is_empty()),
+        versions
+            .iter()
+            .all(|v| v.hash.as_ref().iter().any(|byte| *byte != 0)),
         "a change with no hash cannot be joined to what it touched"
     );
 }
@@ -367,14 +370,7 @@ fn a_person_typing_and_the_agent_working_both_land() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
     let _broker = typed_peer::spawn_with_agent_actions(&sock, &[(APP, "insert-table")]);
-    let started = Instant::now();
-    while !sock.exists() {
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "relay never bound"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    tilo_test_env::wait_until("the relay to bind its socket", || sock.exists());
 
     let room = typed_peer::room();
 
@@ -383,6 +379,7 @@ fn a_person_typing_and_the_agent_working_both_land() {
         app_id: APP.into(),
         cluster_id: room,
         record: Some(RECORD.into()),
+        record_kind: None,
         handle: Some("quinten".into()),
     };
     peer.announce(&sock, &hello).unwrap();
@@ -399,6 +396,7 @@ fn a_person_typing_and_the_agent_working_both_land() {
         app_id: APP.into(),
         cluster: room,
         record: Some(RECORD.into()),
+        agent_id: "Scribe".into(),
         name: "Scribe".into(),
         // Slow enough that the person's keystrokes genuinely arrive
         // between the agent's actions rather than after all of them.
@@ -416,7 +414,7 @@ fn a_person_typing_and_the_agent_working_both_land() {
     };
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");
-        s.run_until(Instant::now() + Duration::from_secs(20))
+        s.run_until(tilo_test_env::hang_deadline())
             .expect("agent session")
     });
 

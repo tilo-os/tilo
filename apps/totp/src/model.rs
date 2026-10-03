@@ -487,85 +487,93 @@ pub fn demo_accounts() -> Vec<Account> {
 mod tests {
     use super::*;
 
+    /// otpauth URI parsing.
     #[test]
-    fn parse_full_otpauth_uri() {
-        let uri = "otpauth://totp/GitHub:ada%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=GitHub&algorithm=SHA256&digits=8&period=60";
-        let acc = parse_otpauth_uri(uri, Uuid::new_v4()).unwrap();
-        assert_eq!(acc.issuer, "GitHub");
-        assert_eq!(acc.label, "ada@example.com");
-        assert_eq!(acc.secret, "JBSWY3DPEHPK3PXP");
-        assert_eq!(acc.algorithm, Algorithm::Sha256);
-        assert_eq!(acc.digits, 8);
-        assert_eq!(acc.period, 60);
-    }
-
-    #[test]
-    fn parse_uri_issuer_from_label_prefix() {
-        let uri = "otpauth://totp/ACME%20Co:bob?secret=JBSWY3DPEHPK3PXP";
-        let acc = parse_otpauth_uri(uri, Uuid::new_v4()).unwrap();
-        assert_eq!(acc.issuer, "ACME Co");
-        assert_eq!(acc.label, "bob");
-        // spec defaults
-        assert_eq!(acc.algorithm, Algorithm::Sha1);
-        assert_eq!(acc.digits, 6);
-        assert_eq!(acc.period, 30);
-    }
-
-    #[test]
-    fn a_plus_in_a_label_or_issuer_stays_a_plus() {
-        // `otpauth://` is a URI, so RFC 3986 governs both the label path
-        // segment and the query values: `+` is a literal plus, not a space.
-        // A space is spelled `%20`, as `parse_uri_issuer_from_label_prefix`
-        // shows. Reading `+` as a space renamed `Google+` to `Google `.
-        let uri =
-            "otpauth://totp/Google+:a%2B1%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Notion+";
-        let acc = parse_otpauth_uri(uri, Uuid::new_v4()).unwrap();
-        assert_eq!(
-            acc.issuer, "Notion+",
-            "an explicit issuer param keeps its plus"
-        );
-        assert_eq!(
-            acc.label, "a+1@example.com",
-            "%2B decodes, the bare + stays"
-        );
-
-        // And with no issuer param, the label prefix supplies it — also intact.
-        let uri = "otpauth://totp/Google+:ada?secret=JBSWY3DPEHPK3PXP";
-        let acc = parse_otpauth_uri(uri, Uuid::new_v4()).unwrap();
-        assert_eq!(acc.issuer, "Google+");
-        assert_eq!(acc.label, "ada");
-    }
-
-    #[test]
-    fn parse_rejects_hotp_and_missing_secret() {
-        assert!(parse_otpauth_uri("otpauth://hotp/x?secret=AAAA", Uuid::new_v4()).is_err());
-        assert!(parse_otpauth_uri("otpauth://totp/x?issuer=y", Uuid::new_v4()).is_err());
-        assert!(parse_otpauth_uri("https://example.com", Uuid::new_v4()).is_err());
-    }
-
-    #[test]
-    fn vault_reorder_renumbers() {
-        let mut v = Vault::new();
-        for a in demo_accounts() {
-            v.upsert(a);
+    fn otpauth_uri_parsing_keeps_issuer_labels_and_rejects_invalid() {
+        // Case `parse_full_otpauth_uri`.
+        {
+            let uri = "otpauth://totp/GitHub:ada%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=GitHub&algorithm=SHA256&digits=8&period=60";
+            let acc = parse_otpauth_uri(uri, Uuid::new_v4()).unwrap();
+            assert_eq!(acc.issuer, "GitHub");
+            assert_eq!(acc.label, "ada@example.com");
+            assert_eq!(acc.secret, "JBSWY3DPEHPK3PXP");
+            assert_eq!(acc.algorithm, Algorithm::Sha256);
+            assert_eq!(acc.digits, 8);
+            assert_eq!(acc.period, 60);
         }
-        let first = v.ordered()[0].id;
-        let second = v.ordered()[1].id;
-        assert!(v.move_down(first));
-        assert_eq!(v.ordered()[0].id, second);
-        assert_eq!(v.ordered()[1].id, first);
-        // orders stay contiguous
-        for (i, a) in v.ordered().iter().enumerate() {
-            assert_eq!(a.order, i as u32);
+
+        // Case `parse_uri_issuer_from_label_prefix`.
+        {
+            let uri = "otpauth://totp/ACME%20Co:bob?secret=JBSWY3DPEHPK3PXP";
+            let acc = parse_otpauth_uri(uri, Uuid::new_v4()).unwrap();
+            assert_eq!(acc.issuer, "ACME Co");
+            assert_eq!(acc.label, "bob");
+            // spec defaults
+            assert_eq!(acc.algorithm, Algorithm::Sha1);
+            assert_eq!(acc.digits, 6);
+            assert_eq!(acc.period, 30);
+        }
+
+        // Case `a_plus_in_a_label_or_issuer_stays_a_plus`.
+        {
+            // `otpauth://` is a URI, so RFC 3986 governs both the label path
+            // segment and the query values: `+` is a literal plus, not a space.
+            // A space is spelled `%20`, as `parse_uri_issuer_from_label_prefix`
+            // shows. Reading `+` as a space renamed `Google+` to `Google `.
+            let uri =
+                "otpauth://totp/Google+:a%2B1%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Notion+";
+            let acc = parse_otpauth_uri(uri, Uuid::new_v4()).unwrap();
+            assert_eq!(
+                acc.issuer, "Notion+",
+                "an explicit issuer param keeps its plus"
+            );
+            assert_eq!(
+                acc.label, "a+1@example.com",
+                "%2B decodes, the bare + stays"
+            );
+
+            // And with no issuer param, the label prefix supplies it — also intact.
+            let uri = "otpauth://totp/Google+:ada?secret=JBSWY3DPEHPK3PXP";
+            let acc = parse_otpauth_uri(uri, Uuid::new_v4()).unwrap();
+            assert_eq!(acc.issuer, "Google+");
+            assert_eq!(acc.label, "ada");
+        }
+
+        // Case `parse_rejects_hotp_and_missing_secret`.
+        {
+            assert!(parse_otpauth_uri("otpauth://hotp/x?secret=AAAA", Uuid::new_v4()).is_err());
+            assert!(parse_otpauth_uri("otpauth://totp/x?issuer=y", Uuid::new_v4()).is_err());
+            assert!(parse_otpauth_uri("https://example.com", Uuid::new_v4()).is_err());
         }
     }
 
+    /// Vault renumbering on reorder and two-letter initials.
     #[test]
-    fn initials_are_two_upper_chars() {
-        let mut a = Account::blank(Uuid::new_v4());
-        a.issuer = "GitHub".into();
-        assert_eq!(a.initials(), "GI");
-        a.issuer = "Amazon Web".into();
-        assert_eq!(a.initials(), "AW");
+    fn vault_reorder_and_initials() {
+        // Case `vault_reorder_renumbers`.
+        {
+            let mut v = Vault::new();
+            for a in demo_accounts() {
+                v.upsert(a);
+            }
+            let first = v.ordered()[0].id;
+            let second = v.ordered()[1].id;
+            assert!(v.move_down(first));
+            assert_eq!(v.ordered()[0].id, second);
+            assert_eq!(v.ordered()[1].id, first);
+            // orders stay contiguous
+            for (i, a) in v.ordered().iter().enumerate() {
+                assert_eq!(a.order, i as u32);
+            }
+        }
+
+        // Case `initials_are_two_upper_chars`.
+        {
+            let mut a = Account::blank(Uuid::new_v4());
+            a.issuer = "GitHub".into();
+            assert_eq!(a.initials(), "GI");
+            a.issuer = "Amazon Web".into();
+            assert_eq!(a.initials(), "AW");
+        }
     }
 }

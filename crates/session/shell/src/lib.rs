@@ -12,19 +12,24 @@
     )
 )]
 
+pub mod app_icons;
 pub mod bluetooth;
 pub mod bluetooth_prompt;
 pub mod collab;
 pub mod compositor;
 pub mod config;
-pub mod device_fleet;
+pub use tilo_identity_host::device_fleet;
 pub mod diagnostics;
 pub mod firstboot;
 pub mod identity_broker;
+#[cfg(all(test, target_os = "linux"))]
+mod idle_thread_probe;
+mod idle_wake;
 pub mod runtime_host;
 
-pub mod identity_registry;
+pub use tilo_identity_host::registry as identity_registry;
 pub mod network;
+pub mod network_secrets;
 pub mod notifications;
 pub mod onboarding;
 pub mod onboarding_view;
@@ -37,6 +42,10 @@ mod runtime_host_tests;
 pub mod security;
 pub mod session_runtime;
 pub mod shell;
+// Room and workspace admission decodes peer bytes in automerge worker
+// processes started from this test binary; this serves them.
+#[cfg(test)]
+tilo_automerge_isolate::test_worker!();
 pub mod tray;
 pub mod wayland;
 pub mod workspace;

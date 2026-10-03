@@ -12,7 +12,8 @@ use std::sync::{Mutex, OnceLock};
 
 use os_actions::codec_pack::{CodecPackStatus, MesaState, PackState};
 
-use crate::shell::notification::{Notification, NotificationSeverity};
+use crate::shell::i18n::{t, t_args};
+use tilo_desktop::notifications::{Notification, NotificationSeverity};
 
 /// One notification to show.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,18 +33,18 @@ pub fn notice_for(before: &CodecPackStatus, after: &CodecPackStatus) -> Option<C
             // A background refresh found the Mesa build matching the image.
             (before.mesa != MesaState::Enabled && after.mesa == MesaState::Enabled).then(|| {
                 CodecNotice {
-                    title: "Hardware H.264/HEVC is ready".into(),
+                    title: t("codec-hardware-ready"),
                     body: applies(),
                     severity: NotificationSeverity::Info,
                 }
             })
         }
         (_, PackState::Installed) => Some(CodecNotice {
-            title: "Media codecs installed".into(),
+            title: t("codec-installed"),
             body: if after.mesa == MesaState::Waiting {
-                format!(
-                    "{} Hardware H.264/HEVC follows once RPM Fusion publishes a Mesa build matching this system.",
-                    applies()
+                t_args(
+                    "codec-installed-mesa-waiting",
+                    &[("applies", applies().into())],
                 )
             } else {
                 applies()
@@ -52,11 +53,14 @@ pub fn notice_for(before: &CodecPackStatus, after: &CodecPackStatus) -> Option<C
         }),
         (PackState::Installing | PackState::WaitingForNetwork, PackState::Failed) => {
             Some(CodecNotice {
-                title: "Media codecs could not be installed".into(),
+                title: t("codec-failed"),
                 body: if after.last_error.is_empty() {
-                    "Open Settings, Updates, to try again.".into()
+                    t("codec-failed-retry")
                 } else {
-                    format!("{} Open Settings, Updates, to try again.", after.last_error)
+                    t_args(
+                        "codec-failed-with-error",
+                        &[("error", after.last_error.as_str().into())],
+                    )
                 },
                 severity: NotificationSeverity::Error,
             })
@@ -119,7 +123,7 @@ pub fn drain() -> Vec<Notification> {
         .map(|notice| {
             Notification::new(notice.title, notice.body)
                 .with_severity(notice.severity)
-                .with_app_name("Media codecs")
+                .with_app_name(t("codec-app-name"))
         })
         .collect()
 }

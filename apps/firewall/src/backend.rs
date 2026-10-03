@@ -480,91 +480,105 @@ mod tests {
     use super::*;
     use crate::model::{Proto, Target, ZoneKind};
 
+    /// Planned changes become the right firewall-cmd invocations (fast paths, rich rules as one argument), and detection defaults to dry-run.
     #[test]
-    fn plan_sets_default_zone_and_reloads() {
-        let cfg = crate::sample::sample_config();
-        let plan = plan_commands(&cfg);
-        assert_eq!(plan.first().unwrap(), "systemctl start firewalld");
-        assert!(
-            plan.iter()
-                .any(|line| line == "firewall-cmd --set-default-zone=public")
-        );
-        assert_eq!(plan.last().unwrap(), "firewall-cmd --reload");
-    }
+    fn plan_translates_changes_into_firewall_cmd_invocations() {
+        // --- phase: plan_sets_default_zone_and_reloads ---
+        {
+            let cfg = crate::sample::sample_config();
+            let plan = plan_commands(&cfg);
+            assert_eq!(plan.first().unwrap(), "systemctl start firewalld");
+            assert!(
+                plan.iter()
+                    .any(|line| line == "firewall-cmd --set-default-zone=public")
+            );
+            assert_eq!(plan.last().unwrap(), "firewall-cmd --reload");
+        }
 
-    #[test]
-    fn allow_port_anywhere_uses_add_port_fastpath() {
-        let s = rich_rule(
-            "public",
-            &Matcher::Port {
-                port: "51820".into(),
-                proto: Proto::Udp,
-            },
-            Action::Allow,
-            "",
-        );
-        assert_eq!(
-            s,
-            "firewall-cmd --permanent --zone=public --add-port=51820/udp"
-        );
-    }
+        // --- phase: allow_port_anywhere_uses_add_port_fastpath ---
+        {
+            let s = rich_rule(
+                "public",
+                &Matcher::Port {
+                    port: "51820".into(),
+                    proto: Proto::Udp,
+                },
+                Action::Allow,
+                "",
+            );
+            assert_eq!(
+                s,
+                "firewall-cmd --permanent --zone=public --add-port=51820/udp"
+            );
+        }
 
-    #[test]
-    fn deny_with_source_uses_rich_rule() {
-        let s = rich_rule(
-            "public",
-            &Matcher::Port {
-                port: "3389".into(),
-                proto: Proto::Tcp,
-            },
-            Action::Deny,
-            "0.0.0.0/0",
-        );
-        assert!(s.contains("--add-rich-rule="));
-        assert!(s.contains("source address=\"0.0.0.0/0\""));
-        assert!(s.contains("port port=\"3389\" protocol=\"tcp\""));
-        assert!(s.contains("reject"));
-    }
+        // --- phase: deny_with_source_uses_rich_rule ---
+        {
+            let s = rich_rule(
+                "public",
+                &Matcher::Port {
+                    port: "3389".into(),
+                    proto: Proto::Tcp,
+                },
+                Action::Deny,
+                "0.0.0.0/0",
+            );
+            assert!(s.contains("--add-rich-rule="));
+            assert!(s.contains("source address=\"0.0.0.0/0\""));
+            assert!(s.contains("port port=\"3389\" protocol=\"tcp\""));
+            assert!(s.contains("reject"));
+        }
 
-    #[test]
-    fn service_allow_with_source_is_rich_rule() {
-        let s = rich_rule(
-            "work",
-            &Matcher::Service("ipp".into()),
-            Action::Allow,
-            "192.168.0.0/16",
-        );
-        assert!(s.contains("service name=\"ipp\""));
-        assert!(s.contains("accept"));
-        assert!(s.contains("192.168.0.0/16"));
-    }
+        // --- phase: service_allow_with_source_is_rich_rule ---
+        {
+            let s = rich_rule(
+                "work",
+                &Matcher::Service("ipp".into()),
+                Action::Allow,
+                "192.168.0.0/16",
+            );
+            assert!(s.contains("service name=\"ipp\""));
+            assert!(s.contains("accept"));
+            assert!(s.contains("192.168.0.0/16"));
+        }
 
-    #[test]
-    fn masquerade_zone_emits_add_masquerade() {
-        let mut z = Zone::new(ZoneKind::External, Target::Default);
-        z.masquerade = true;
-        let mut out = Vec::new();
-        plan_zone_args(&z, &mut out);
-        assert!(
-            out.iter()
-                .any(|invocation| invocation.args.iter().any(|arg| arg == "--add-masquerade"))
-        );
-    }
+        // --- phase: masquerade_zone_emits_add_masquerade ---
+        {
+            let mut z = Zone::new(ZoneKind::External, Target::Default);
+            z.masquerade = true;
+            let mut out = Vec::new();
+            plan_zone_args(&z, &mut out);
+            assert!(
+                out.iter()
+                    .any(|invocation| invocation.args.iter().any(|arg| arg == "--add-masquerade"))
+            );
+        }
 
-    #[test]
-    fn rich_rule_is_one_argument_at_execution_time() {
-        let invocation = rule_invocation(
-            "public",
-            &Matcher::Port {
-                port: "3389".into(),
-                proto: Proto::Tcp,
-            },
-            Action::Deny,
-            "10.0.0.0/8",
-        );
-        assert_eq!(invocation.program, "firewall-cmd");
-        assert_eq!(invocation.args.len(), 3);
-        assert!(invocation.args[2].starts_with("--add-rich-rule=rule family="));
+        // --- phase: rich_rule_is_one_argument_at_execution_time ---
+        {
+            let invocation = rule_invocation(
+                "public",
+                &Matcher::Port {
+                    port: "3389".into(),
+                    proto: Proto::Tcp,
+                },
+                Action::Deny,
+                "10.0.0.0/8",
+            );
+            assert_eq!(invocation.program, "firewall-cmd");
+            assert_eq!(invocation.args.len(), 3);
+            assert!(invocation.args[2].starts_with("--add-rich-rule=rule family="));
+        }
+
+        // --- phase: detect_defaults_to_dry_run_without_env ---
+        {
+            // Without TILO_FIREWALL_APPLY=1 we must never be Live, regardless of
+            // whether firewall-cmd happens to exist on this host.
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.remove("TILO_FIREWALL_APPLY");
+            let b = Backend::detect();
+            assert_eq!(b.mode(), Mode::DryRun);
+        }
     }
 
     const LIST_ALL: &str = "\
@@ -585,76 +599,70 @@ public (active)
 \trule family=\"ipv4\" port port=\"23\" protocol=\"tcp\" reject
 ";
 
+    /// firewalld list-all output, rich rules and targets parse faithfully, skipping what cannot be represented.
     #[test]
-    fn parse_list_all_reads_real_zone_fields() {
-        let z = parse_list_all(ZoneKind::Public, LIST_ALL);
-        assert_eq!(z.target, Target::Default);
-        assert_eq!(z.interfaces, vec!["wlan0", "eth0"]);
-        assert_eq!(z.services, vec!["dhcpv6-client", "mdns", "ssh"]);
-        assert!(!z.masquerade);
-        // Two simple ports become allow-from-anywhere rules...
-        assert!(z.rules.iter().any(|r| r.matcher
-            == Matcher::Port {
-                port: "8080".into(),
-                proto: Proto::Tcp
-            }
-            && r.action == Action::Allow
-            && r.source.is_empty()));
-        assert!(z.rules.iter().any(|r| r.matcher
-            == Matcher::Port {
-                port: "51820".into(),
-                proto: Proto::Udp
-            }));
-        // ...plus the two rich rules.
-        assert!(
-            z.rules
-                .iter()
-                .any(|r| r.matcher == Matcher::Service("https".into())
-                    && r.action == Action::Allow
-                    && r.source == "192.168.1.0/24")
-        );
-        assert!(z.rules.iter().any(|r| r.matcher
-            == Matcher::Port {
-                port: "23".into(),
-                proto: Proto::Tcp
-            }
-            && r.action == Action::Deny));
-    }
+    fn parse_reads_firewalld_output_faithfully() {
+        // --- phase: parse_list_all_reads_real_zone_fields ---
+        {
+            let z = parse_list_all(ZoneKind::Public, LIST_ALL);
+            assert_eq!(z.target, Target::Default);
+            assert_eq!(z.interfaces, vec!["wlan0", "eth0"]);
+            assert_eq!(z.services, vec!["dhcpv6-client", "mdns", "ssh"]);
+            assert!(!z.masquerade);
+            // Two simple ports become allow-from-anywhere rules...
+            assert!(z.rules.iter().any(|r| r.matcher
+                == Matcher::Port {
+                    port: "8080".into(),
+                    proto: Proto::Tcp
+                }
+                && r.action == Action::Allow
+                && r.source.is_empty()));
+            assert!(z.rules.iter().any(|r| r.matcher
+                == Matcher::Port {
+                    port: "51820".into(),
+                    proto: Proto::Udp
+                }));
+            // ...plus the two rich rules.
+            assert!(
+                z.rules
+                    .iter()
+                    .any(|r| r.matcher == Matcher::Service("https".into())
+                        && r.action == Action::Allow
+                        && r.source == "192.168.1.0/24")
+            );
+            assert!(z.rules.iter().any(|r| r.matcher
+                == Matcher::Port {
+                    port: "23".into(),
+                    proto: Proto::Tcp
+                }
+                && r.action == Action::Deny));
+        }
 
-    #[test]
-    fn parse_rich_rule_service_accept_with_source() {
-        let r = parse_rich_rule(
+        // --- phase: parse_rich_rule_service_accept_with_source ---
+        {
+            let r = parse_rich_rule(
             "rule family=\"ipv4\" source address=\"10.8.0.0/24\" service name=\"cockpit\" accept",
         )
         .unwrap();
-        assert_eq!(r.matcher, Matcher::Service("cockpit".into()));
-        assert_eq!(r.action, Action::Allow);
-        assert_eq!(r.source, "10.8.0.0/24");
-    }
+            assert_eq!(r.matcher, Matcher::Service("cockpit".into()));
+            assert_eq!(r.action, Action::Allow);
+            assert_eq!(r.source, "10.8.0.0/24");
+        }
 
-    #[test]
-    fn parse_rich_rule_skips_unrepresentable() {
-        // A masquerade rich rule has no accept/reject verb we model.
-        assert!(parse_rich_rule("rule family=\"ipv4\" masquerade").is_none());
-        // Non-rule lines are ignored.
-        assert!(parse_rich_rule("  services: ssh").is_none());
-    }
+        // --- phase: parse_rich_rule_skips_unrepresentable ---
+        {
+            // A masquerade rich rule has no accept/reject verb we model.
+            assert!(parse_rich_rule("rule family=\"ipv4\" masquerade").is_none());
+            // Non-rule lines are ignored.
+            assert!(parse_rich_rule("  services: ssh").is_none());
+        }
 
-    #[test]
-    fn parse_target_maps_firewalld_strings() {
-        assert_eq!(parse_target("ACCEPT"), Target::Accept);
-        assert_eq!(parse_target("DROP"), Target::Drop);
-        assert_eq!(parse_target("%%REJECT%%"), Target::Reject);
-        assert_eq!(parse_target("default"), Target::Default);
-    }
-
-    #[test]
-    fn detect_defaults_to_dry_run_without_env() {
-        // Without TILO_FIREWALL_APPLY=1 we must never be Live, regardless of
-        // whether firewall-cmd happens to exist on this host.
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove("TILO_FIREWALL_APPLY");
-        let b = Backend::detect();
-        assert_eq!(b.mode(), Mode::DryRun);
+        // --- phase: parse_target_maps_firewalld_strings ---
+        {
+            assert_eq!(parse_target("ACCEPT"), Target::Accept);
+            assert_eq!(parse_target("DROP"), Target::Drop);
+            assert_eq!(parse_target("%%REJECT%%"), Target::Reject);
+            assert_eq!(parse_target("default"), Target::Default);
+        }
     }
 }

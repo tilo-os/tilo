@@ -30,25 +30,22 @@ class BoundedTransport(unittest.TestCase):
             self.assertTrue(spawned[0].stdout.closed, 'reader must close its pipe')
             self.assertLess(time.monotonic() - started, 5)
 
-    def test_exact_limit_and_empty_success(self):
-        self.assertEqual(self.capture("import sys; sys.stdout.buffer.write(b'x'*32)"), b'x'*32)
-        self.assertEqual(self.capture('pass', maximum=0), b'')
-
-    def test_oversized_stream_is_stopped_before_producer_finishes(self):
-        with self.assertRaisesRegex(ValueError, 'exceeds byte bound'):
-            self.capture("import os,time; os.write(1,b'x'*33); time.sleep(60)")
-
-    def test_timeout_kills_and_reaps_silent_child(self):
-        with self.assertRaisesRegex(TimeoutError, 'timed out'):
-            self.capture('import time; time.sleep(60)')
-
-    def test_eof_does_not_allow_child_to_escape_deadline(self):
-        with self.assertRaisesRegex(TimeoutError, 'timed out'):
-            self.capture('import os,time; os.close(1); time.sleep(60)')
-
-    def test_failed_command_does_not_expose_stderr(self):
-        with self.assertRaisesRegex(ValueError, '^plan API request failed$'):
-            self.capture("import sys; sys.stderr.write('credential sentinel'); sys.exit(2)")
+    def test_bounded_transport_stops_oversize_silent_or_failing_children(self):
+        with self.subTest(phase='exact limit and empty success'):
+            self.assertEqual(self.capture("import sys; sys.stdout.buffer.write(b'x'*32)"), b'x'*32)
+            self.assertEqual(self.capture('pass', maximum=0), b'')
+        with self.subTest(phase='oversized stream is stopped before producer finishes'):
+            with self.assertRaisesRegex(ValueError, 'exceeds byte bound'):
+                self.capture("import os,time; os.write(1,b'x'*33); time.sleep(60)")
+        with self.subTest(phase='timeout kills and reaps silent child'):
+            with self.assertRaisesRegex(TimeoutError, 'timed out'):
+                self.capture('import time; time.sleep(60)')
+        with self.subTest(phase='eof does not allow child to escape deadline'):
+            with self.assertRaisesRegex(TimeoutError, 'timed out'):
+                self.capture('import os,time; os.close(1); time.sleep(60)')
+        with self.subTest(phase='failed command does not expose stderr'):
+            with self.assertRaisesRegex(ValueError, '^plan API request failed$'):
+                self.capture("import sys; sys.stderr.write('credential sentinel'); sys.exit(2)")
 
 
 if __name__ == '__main__':

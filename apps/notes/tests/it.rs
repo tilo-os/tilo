@@ -18,6 +18,8 @@ mod e2e_smoke;
 mod interaction_event_path;
 #[path = "launch_cli.rs"]
 mod launch_cli;
+#[path = "live_block_anchor.rs"]
+mod live_block_anchor;
 #[path = "main_panel_scroll.rs"]
 mod main_panel_scroll;
 #[path = "markdown_marks_roundtrip.rs"]
@@ -58,6 +60,8 @@ mod canonical_import;
 
 #[path = "canonical_component.rs"]
 mod canonical_component;
+#[path = "support/captures.rs"]
+mod captures;
 #[path = "support/component.rs"]
 mod component_support;
 
@@ -72,6 +76,8 @@ mod canonical_views;
 
 #[path = "note_context_menu.rs"]
 mod note_context_menu;
+#[path = "semantic_input.rs"]
+mod semantic_input;
 
 #[path = "vertical_editing.rs"]
 mod vertical_editing;
@@ -99,3 +105,6 @@ mod hosting;
 
 #[path = "capture_runtime.rs"]
 mod capture_runtime;
+
+#[path = "continuation_discovery.rs"]
+mod continuation_discovery;

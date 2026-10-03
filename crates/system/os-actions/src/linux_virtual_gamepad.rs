@@ -480,59 +480,60 @@ mod tests {
     }
 
     #[test]
-    fn accepts_only_fixed_profile_and_typed_events() {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let factory = mock_factory(&calls);
-        assert!(
-            factory
-                .create(VirtualGamepadPlan {
-                    axes: 6,
-                    buttons: 12,
-                    hats: 1,
-                })
-                .is_err()
-        );
-        assert!(calls.lock().unwrap().is_empty());
-
-        let mut device = factory.create(VirtualGamepadPlan::default()).unwrap();
-        let event = ForwardedGamepadEvent::Axis {
-            axis: GamepadAxis::LeftX,
-            value: 123,
-        };
-        device.apply(event).unwrap();
-        assert_eq!(
-            calls.lock().unwrap().as_slice(),
-            &[Call::Open, Call::Emit(event)]
-        );
-    }
-
-    #[test]
-    fn explicit_release_and_drop_always_neutralize_then_destroy() {
-        let calls = Arc::new(Mutex::new(Vec::new()));
+    fn virtual_gamepads_accept_only_typed_events_and_always_neutralize() {
+        // Phase `accepts_only_fixed_profile_and_typed_events`.
         {
+            let calls = Arc::new(Mutex::new(Vec::new()));
             let factory = mock_factory(&calls);
-            let mut device = factory.create(VirtualGamepadPlan::default()).unwrap();
-            device.release_all().unwrap();
-        }
-        assert_eq!(
-            calls.lock().unwrap().as_slice(),
-            &[
-                Call::Open,
-                Call::ReleaseAll,
-                Call::ReleaseAll,
-                Call::Destroy,
-            ]
-        );
-    }
+            assert!(
+                factory
+                    .create(VirtualGamepadPlan {
+                        axes: 6,
+                        buttons: 12,
+                        hats: 1,
+                    })
+                    .is_err()
+            );
+            assert!(calls.lock().unwrap().is_empty());
 
-    #[test]
-    fn setup_failure_does_not_produce_a_partially_managed_device() {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let factory = LinuxVirtualGamepadFactory::new(MockProvider {
-            calls: Arc::clone(&calls),
-            fail_open: true,
-        });
-        assert!(factory.create(VirtualGamepadPlan::default()).is_err());
-        assert_eq!(calls.lock().unwrap().as_slice(), &[Call::Open]);
+            let mut device = factory.create(VirtualGamepadPlan::default()).unwrap();
+            let event = ForwardedGamepadEvent::Axis {
+                axis: GamepadAxis::LeftX,
+                value: 123,
+            };
+            device.apply(event).unwrap();
+            assert_eq!(
+                calls.lock().unwrap().as_slice(),
+                &[Call::Open, Call::Emit(event)]
+            );
+        }
+        // Phase `explicit_release_and_drop_always_neutralize_then_destroy`.
+        {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            {
+                let factory = mock_factory(&calls);
+                let mut device = factory.create(VirtualGamepadPlan::default()).unwrap();
+                device.release_all().unwrap();
+            }
+            assert_eq!(
+                calls.lock().unwrap().as_slice(),
+                &[
+                    Call::Open,
+                    Call::ReleaseAll,
+                    Call::ReleaseAll,
+                    Call::Destroy,
+                ]
+            );
+        }
+        // Phase `setup_failure_does_not_produce_a_partially_managed_device`.
+        {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let factory = LinuxVirtualGamepadFactory::new(MockProvider {
+                calls: Arc::clone(&calls),
+                fail_open: true,
+            });
+            assert!(factory.create(VirtualGamepadPlan::default()).is_err());
+            assert_eq!(calls.lock().unwrap().as_slice(), &[Call::Open]);
+        }
     }
 }

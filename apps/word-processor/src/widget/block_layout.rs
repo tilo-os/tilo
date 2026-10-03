@@ -1,6 +1,6 @@
 //! Pure block-attribute decoding used by pagination and toolbar state.
 
-use qdoc::snapshot::{AttrVal, BlockView};
+use tilo_doc::snapshot::{AttrVal, BlockView};
 use ui::richtext::{FontFamily, TextAlign};
 
 use crate::num;
@@ -148,38 +148,42 @@ mod tests {
         }
     }
 
+    /// Imported values resolve into UI layout types, and malformed numeric attributes use safe defaults.
     #[test]
-    fn malformed_numeric_attributes_use_safe_layout_defaults() {
-        let block = block([
-            ("line_spacing", AttrVal::Float(f64::NAN)),
-            ("level", AttrVal::Int(-4)),
-            ("row", AttrVal::Int(-1)),
-            ("col", AttrVal::Str("three".into())),
-        ]);
+    fn block_layout_attributes_resolve_or_fall_back_safely() {
+        // Phase: imported_values_resolve_into_ui_layout_types.
+        {
+            let block = block([
+                ("page_break_before", AttrVal::Bool(true)),
+                ("line_spacing", AttrVal::Float(1.5)),
+                ("indent", AttrVal::Int(24)),
+                ("align", AttrVal::Str("right".into())),
+                ("table", AttrVal::Str("table-1".into())),
+                ("row", AttrVal::Int(2)),
+                ("col", AttrVal::Int(3)),
+            ]);
 
-        assert_eq!(line_spacing(&block), 1.0);
-        assert_eq!(list_level(&block), 0);
-        assert_eq!(cell_rc(&block), (0, 0));
-        assert_eq!(next_line_spacing(f64::NAN), 1.15);
-    }
+            assert!(page_break_before(&block));
+            assert_eq!(line_spacing(&block), 1.5);
+            assert_eq!(indent(&block), 24.0);
+            assert_eq!(align(&block, TextAlign::Left), TextAlign::Right);
+            assert_eq!(cell_table(&block).as_deref(), Some("table-1"));
+            assert_eq!(cell_rc(&block), (2, 3));
+        }
 
-    #[test]
-    fn imported_values_resolve_into_ui_layout_types() {
-        let block = block([
-            ("page_break_before", AttrVal::Bool(true)),
-            ("line_spacing", AttrVal::Float(1.5)),
-            ("indent", AttrVal::Int(24)),
-            ("align", AttrVal::Str("right".into())),
-            ("table", AttrVal::Str("table-1".into())),
-            ("row", AttrVal::Int(2)),
-            ("col", AttrVal::Int(3)),
-        ]);
+        // Phase: malformed_numeric_attributes_use_safe_layout_defaults.
+        {
+            let block = block([
+                ("line_spacing", AttrVal::Float(f64::NAN)),
+                ("level", AttrVal::Int(-4)),
+                ("row", AttrVal::Int(-1)),
+                ("col", AttrVal::Str("three".into())),
+            ]);
 
-        assert!(page_break_before(&block));
-        assert_eq!(line_spacing(&block), 1.5);
-        assert_eq!(indent(&block), 24.0);
-        assert_eq!(align(&block, TextAlign::Left), TextAlign::Right);
-        assert_eq!(cell_table(&block).as_deref(), Some("table-1"));
-        assert_eq!(cell_rc(&block), (2, 3));
+            assert_eq!(line_spacing(&block), 1.0);
+            assert_eq!(list_level(&block), 0);
+            assert_eq!(cell_rc(&block), (0, 0));
+            assert_eq!(next_line_spacing(f64::NAN), 1.15);
+        }
     }
 }

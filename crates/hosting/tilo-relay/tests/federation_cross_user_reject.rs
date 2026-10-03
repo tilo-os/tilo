@@ -19,13 +19,15 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
-
-use std::time::Duration;
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay, wait_for};
+use crate::common::{TestUser, client_endpoint, spawn_relay, wait_until};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cross_user_peer_relay_is_rejected() {
@@ -39,8 +41,14 @@ async fn cross_user_peer_relay_is_rejected() {
     // Same workspace id on both — id collision on its own is not a
     // vulnerability because auth is per-user; this is the setup a
     // malicious operator would use to try to smuggle state across.
-    let a_relay = spawn_relay(&alice, a_relay_dev, &[42], &[a_client_dev.device_pubkey()]).await;
-    let b_relay = spawn_relay(&bob, b_relay_dev, &[42], &[]).await;
+    let a_relay = Box::pin(spawn_relay(
+        &alice,
+        a_relay_dev,
+        &[42],
+        &[a_client_dev.device_pubkey()],
+    ))
+    .await;
+    let b_relay = Box::pin(spawn_relay(&bob, b_relay_dev, &[42], &[])).await;
 
     // Alice's relay is told to federate with Bob's — the dial task
     // will run, but the mutual-auth check on the returning HelloAck
@@ -52,10 +60,10 @@ async fn cross_user_peer_relay_is_rejected() {
 
     // Bob's relay has seen the federation attempt and refused it.
     let bob_metrics = b_relay.relay.handle().metrics;
-    assert!(
-        wait_for(|| bob_metrics.snapshot().auth_rejected > 0, 1000).await,
-        "Bob's relay never refused Alice's peer-relay handshake"
-    );
+    wait_until("Bob's relay to refuse Alice's peer-relay handshake", || {
+        bob_metrics.snapshot().auth_rejected > 0
+    })
+    .await;
 
     // Alice's client publishes a delta on Alice's relay. If auth
     // had been bypassed, it would flow to Bob's relay and end up
@@ -72,7 +80,7 @@ async fn cross_user_peer_relay_is_rejected() {
     .await
     .unwrap();
     a.send(Envelope::Subscribe { workspace_id: 42 }).unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(3), a.recv()).await;
+    let _ = tokio::time::timeout(tilo_test_env::hang_bound(), a.recv()).await;
     a.send(Envelope::Delta {
         workspace_id: 42,
         author_device_public_key: a_client_dev.device_pubkey(),
@@ -81,7 +89,18 @@ async fn cross_user_peer_relay_is_rejected() {
         signature: [1u8; 64],
     })
     .unwrap();
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Alice's host must have committed the delta before we judge that Bob
+    // never saw it — otherwise a slow disk makes the isolation check a
+    // race against the writer's own latency.
+    let alice_log = a_relay
+        .state_root
+        .join("workspaces")
+        .join("42")
+        .join("log.jsonl");
+    wait_until("Alice's relay persisted the published delta", || {
+        std::fs::read(&alice_log).is_ok_and(|b| !b.is_empty())
+    })
+    .await;
 
     // Bob's relay must have received NO deltas — the log file
     // either doesn't exist or is empty.

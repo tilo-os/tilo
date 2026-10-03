@@ -723,38 +723,7 @@ struct DeviceContinuationSnapshotWire {
     stamp: ContinuityStamp,
     focus: Option<DeviceFocus>,
     workspaces: Vec<WorkspaceContinuation>,
-    #[serde(default)]
     tombstones: Vec<AppTombstone>,
-}
-
-/// Exact pre-tombstone wire shape, retained only for one-way checkpoint
-/// migration. Postcard structs have no self-described trailing fields, so a
-/// serde default alone cannot reliably decode an older sequence.
-#[derive(Deserialize)]
-pub(crate) struct DeviceContinuationSnapshotV1 {
-    schema_version: u16,
-    device: DeviceId,
-    stamp: ContinuityStamp,
-    focus: Option<DeviceFocus>,
-    workspaces: Vec<WorkspaceContinuation>,
-}
-
-impl DeviceContinuationSnapshotV1 {
-    fn upgrade(self) -> Result<DeviceContinuationSnapshot, ContinuityError> {
-        if self.schema_version != 1 {
-            return Err(ContinuityError::UnsupportedSchema(self.schema_version));
-        }
-        let value = DeviceContinuationSnapshot {
-            schema_version: CONTINUITY_SCHEMA_VERSION,
-            device: self.device,
-            stamp: self.stamp,
-            focus: self.focus,
-            workspaces: self.workspaces,
-            tombstones: Vec::new(),
-        };
-        value.validate()?;
-        Ok(value)
-    }
 }
 
 impl Serialize for DeviceContinuationSnapshot {
@@ -775,12 +744,8 @@ impl Serialize for DeviceContinuationSnapshot {
 impl<'de> Deserialize<'de> for DeviceContinuationSnapshot {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let wire = DeviceContinuationSnapshotWire::deserialize(deserializer)?;
-        let schema_version = match wire.schema_version {
-            1 if wire.tombstones.is_empty() => CONTINUITY_SCHEMA_VERSION,
-            version => version,
-        };
         let value = Self {
-            schema_version,
+            schema_version: wire.schema_version,
             device: wire.device,
             stamp: wire.stamp,
             focus: wire.focus,
@@ -970,34 +935,15 @@ struct PersonalContinuityWire {
     snapshots: Vec<DeviceContinuationSnapshot>,
 }
 
-#[derive(Deserialize)]
-pub(crate) struct PersonalContinuityWireV1 {
-    snapshots: Vec<DeviceContinuationSnapshotV1>,
-}
-
-impl PersonalContinuityWireV1 {
-    pub(crate) fn upgrade(self) -> Result<PersonalContinuity, ContinuityError> {
-        let mut value = PersonalContinuity::default();
-        for snapshot in self.snapshots {
-            value.upsert(snapshot.upgrade()?)?;
-        }
-        Ok(value)
-    }
-}
-
-/// Decode the current checkpoint or migrate the exact v1 Postcard shape.
+/// Decode a Postcard checkpoint.
 ///
 /// # Errors
 ///
-/// Returns [`ContinuityError::InvalidCheckpoint`] when neither supported wire
-/// format can be decoded.
+/// Returns [`ContinuityError::InvalidCheckpoint`] when the bytes are not a
+/// valid checkpoint.
 pub fn decode_checkpoint(bytes: &[u8]) -> Result<PersonalContinuity, ContinuityError> {
-    if let Ok(current) = postcard::from_bytes::<PersonalContinuity>(bytes) {
-        return Ok(current);
-    }
-    postcard::from_bytes::<PersonalContinuityWireV1>(bytes)
-        .map_err(|_| ContinuityError::InvalidCheckpoint)?
-        .upgrade()
+    postcard::from_bytes::<PersonalContinuity>(bytes)
+        .map_err(|_| ContinuityError::InvalidCheckpoint)
 }
 
 impl Serialize for PersonalContinuity {
@@ -1184,514 +1130,497 @@ mod tests {
     }
 
     #[test]
-    fn two_devices_keep_their_own_focus() {
-        let laptop = device("laptop-01");
-        let desktop = device("desktop-01");
-        let room = room(ROOM_A);
-        let laptop_state = DeviceContinuationSnapshot::new(
-            laptop.clone(),
-            2,
-            Some(DeviceFocus {
-                room,
-                app: Some(AppInstanceId(11)),
-            }),
-            vec![WorkspaceContinuation {
-                room,
-                apps: vec![safe_app(11, &laptop, 2)],
-            }],
-        )
-        .unwrap();
-        let desktop_state = DeviceContinuationSnapshot::new(
-            desktop.clone(),
-            7,
-            Some(DeviceFocus {
-                room,
-                app: Some(AppInstanceId(22)),
-            }),
-            vec![WorkspaceContinuation {
-                room,
-                apps: vec![safe_app(22, &desktop, 7)],
-            }],
-        )
-        .unwrap();
-        let mut continuity = PersonalContinuity::default();
-        continuity.upsert(laptop_state).unwrap();
-        continuity.upsert(desktop_state).unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn continuity_snapshots_keep_per_device_focus_and_deterministic_winners() {
+        fn two_devices_keep_their_own_focus() {
+            let laptop = device("laptop-01");
+            let desktop = device("desktop-01");
+            let room = room(ROOM_A);
+            let laptop_state = DeviceContinuationSnapshot::new(
+                laptop.clone(),
+                2,
+                Some(DeviceFocus {
+                    room,
+                    app: Some(AppInstanceId(11)),
+                }),
+                vec![WorkspaceContinuation {
+                    room,
+                    apps: vec![safe_app(11, &laptop, 2)],
+                }],
+            )
+            .unwrap();
+            let desktop_state = DeviceContinuationSnapshot::new(
+                desktop.clone(),
+                7,
+                Some(DeviceFocus {
+                    room,
+                    app: Some(AppInstanceId(22)),
+                }),
+                vec![WorkspaceContinuation {
+                    room,
+                    apps: vec![safe_app(22, &desktop, 7)],
+                }],
+            )
+            .unwrap();
+            let mut continuity = PersonalContinuity::default();
+            continuity.upsert(laptop_state).unwrap();
+            continuity.upsert(desktop_state).unwrap();
 
-        assert_eq!(
-            continuity.focus_for(&laptop).unwrap().app,
-            Some(AppInstanceId(11))
-        );
-        assert_eq!(
-            continuity.focus_for(&desktop).unwrap().app,
-            Some(AppInstanceId(22))
-        );
+            assert_eq!(
+                continuity.focus_for(&laptop).unwrap().app,
+                Some(AppInstanceId(11))
+            );
+            assert_eq!(
+                continuity.focus_for(&desktop).unwrap().app,
+                Some(AppInstanceId(22))
+            );
+        }
+
+        fn newest_same_app_checkpoint_has_a_deterministic_winner() {
+            let alpha = device("alpha-device");
+            let beta = device("beta-device");
+            let room = room(ROOM_A);
+            let snapshot = |device: DeviceId| {
+                DeviceContinuationSnapshot::new(
+                    device.clone(),
+                    9,
+                    None,
+                    vec![WorkspaceContinuation {
+                        room,
+                        apps: vec![safe_app(77, &device, 9)],
+                    }],
+                )
+                .unwrap()
+            };
+            let mut continuity = PersonalContinuity::default();
+            continuity.upsert(snapshot(beta.clone())).unwrap();
+            continuity.upsert(snapshot(alpha)).unwrap();
+
+            assert_eq!(
+                continuity
+                    .newest_app_state(AppInstanceId(77))
+                    .unwrap()
+                    .stamp
+                    .device,
+                beta,
+                "equal counters break by device id, not message order"
+            );
+        }
+
+        fn personal_continuity_round_trips_as_json_and_postcard() {
+            let laptop = device("laptop-01");
+            let room = room(ROOM_A);
+            let snapshot = DeviceContinuationSnapshot::new(
+                laptop.clone(),
+                12,
+                Some(DeviceFocus {
+                    room,
+                    app: Some(AppInstanceId(13)),
+                }),
+                vec![WorkspaceContinuation {
+                    room,
+                    apps: vec![safe_app(13, &laptop, 12)],
+                }],
+            )
+            .unwrap();
+            let mut original = PersonalContinuity::default();
+            original.upsert(snapshot).unwrap();
+            assert_eq!(original.len(), 1);
+            assert_eq!(original.snapshots().len(), 1);
+
+            let json = serde_json::to_vec(&original).unwrap();
+            let from_json: PersonalContinuity = serde_json::from_slice(&json).unwrap();
+            assert_eq!(from_json, original);
+
+            let postcard = postcard::to_allocvec(&original).unwrap();
+            let from_postcard: PersonalContinuity = postcard::from_bytes(&postcard).unwrap();
+            assert_eq!(from_postcard, original);
+        }
+
+        two_devices_keep_their_own_focus();
+        newest_same_app_checkpoint_has_a_deterministic_winner();
+        personal_continuity_round_trips_as_json_and_postcard();
     }
 
     #[test]
-    fn newest_same_app_checkpoint_has_a_deterministic_winner() {
-        let alpha = device("alpha-device");
-        let beta = device("beta-device");
-        let room = room(ROOM_A);
-        let snapshot = |device: DeviceId| {
-            DeviceContinuationSnapshot::new(
-                device.clone(),
-                9,
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn continuity_capture_redacts_paths_ids_and_sensitive_resume_metadata() {
+        fn rejects_sensitive_invalid_and_pathful_resume_metadata() {
+            assert_eq!(
+                ResumeMetadata::new(1, ResumeSensitivity::Sensitive, vec![]),
+                Err(ContinuityError::SensitiveResumeState)
+            );
+            assert_eq!(
+                ResumeMetadata::new(0, ResumeSensitivity::Syncable, vec![]),
+                Err(ContinuityError::InvalidResumeSchema)
+            );
+            assert_eq!(
+                ResumeMetadata::new(
+                    1,
+                    ResumeSensitivity::Syncable,
+                    b"{\"path\":\"/home/ada/secret\"}".to_vec(),
+                ),
+                Err(ContinuityError::LocalPathInResumeState)
+            );
+            assert!(LaunchIntent::app("/usr/bin/browser").is_err());
+            assert!(LaunchIntent::file_reference("/home/ada/book.epub", None, None).is_err());
+            assert!(
+                serde_json::to_string(&LaunchIntent::App {
+                    app_id: "/home/ada/browser".into(),
+                })
+                .is_err(),
+                "even a manually-built bad enum must be rejected at serialization"
+            );
+        }
+
+        fn file_launch_is_reference_and_thumbnail_hash_only() {
+            let intent =
+                LaunchIntent::file_reference("record:book-42", Some([3; 32]), Some([4; 32]))
+                    .unwrap();
+            let encoded = serde_json::to_string(&intent).unwrap();
+            assert!(encoded.contains("record:book-42"));
+            assert!(encoded.contains("thumbnail_hash"));
+            assert!(!encoded.contains("/home/"));
+            assert!(!encoded.contains("manifest"));
+            assert!(!encoded.contains("thumbnail_bytes"));
+        }
+
+        fn captures_safe_tabs_and_redacts_foreign_surface_ids() {
+            let workspace_id = WorkspaceId(8);
+            let strip_id = StripId(9);
+            let group_id = 10;
+            let room = room(ROOM_A);
+            let mut workspace = Workspace::new(workspace_id, "Reading");
+            workspace.room = room;
+            workspace.strips = vec![Strip {
+                id: strip_id,
+                name: "Main".into(),
+                window_groups: vec![WindowGroup {
+                    id: group_id,
+                    tabs: vec![
+                        Tab {
+                            id: 11,
+                            title: "Reader".into(),
+                            tile: TileContent::AppPlaceholder {
+                                kind: AppKind::Other("org.example.Reader".into()),
+                                label: "Reader".into(),
+                            },
+                        },
+                        Tab {
+                            id: 12,
+                            title: "/home/ada/private.pdf".into(),
+                            tile: TileContent::Foreign {
+                                app_id: "org.example.Foreign".into(),
+                                surface_id: 0xfeed_beef,
+                            },
+                        },
+                    ],
+                    active_tab: 11,
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                }],
+            }];
+            let mut active_strip = HashMap::new();
+            active_strip.insert(workspace_id, strip_id);
+            let mut active_group = HashMap::new();
+            active_group.insert(strip_id, group_id);
+            let tree = WorkspaceTree {
+                desktop: crate::shell::state::DesktopTree {
+                    workspaces: vec![workspace],
+                    active: workspace_id,
+                    active_strip,
+                    active_group,
+                    ..Default::default()
+                },
+                ..WorkspaceTree::default()
+            };
+
+            let report = DeviceContinuationSnapshot::capture(&tree, device("laptop-01"), 5);
+            assert_eq!(report.redacted_foreign_tabs, 0);
+            assert_eq!(report.snapshot.workspaces[0].apps.len(), 2);
+            assert_eq!(
+                report.snapshot.workspaces[0].apps[1].launch,
+                LaunchIntent::App {
+                    app_id: "org.example.Foreign".into()
+                }
+            );
+            assert!(
+                !postcard::to_allocvec(&report.snapshot)
+                    .unwrap()
+                    .windows(std::mem::size_of::<u64>())
+                    .any(|bytes| bytes == 0xfeed_beef_u64.to_le_bytes()),
+                "the compositor-local surface id must not enter continuation"
+            );
+            assert_eq!(
+                report.snapshot.focus.as_ref().unwrap().app,
+                Some(AppInstanceId(11))
+            );
+            let encoded = serde_json::to_string(&report.snapshot).unwrap();
+            assert!(!encoded.contains("feed_beef"));
+            assert!(!encoded.contains("/home/ada"));
+        }
+
+        fn does_not_echo_a_remote_file_placeholder_after_its_source_closes() {
+            let workspace_id = WorkspaceId(8);
+            let strip_id = StripId(9);
+            let room = room(ROOM_A);
+            let mut workspace = Workspace::new(workspace_id, "From another device");
+            workspace.room = room;
+            workspace.strips = vec![Strip {
+                id: strip_id,
+                name: "Available elsewhere".into(),
+                window_groups: vec![WindowGroup {
+                    id: 10,
+                    tabs: vec![Tab {
+                        id: 81,
+                        title: "File".into(),
+                        tile: TileContent::Stub {
+                            kind: AppKind::FileExplorer,
+                            label: "Available on another device".into(),
+                        },
+                    }],
+                    active_tab: 81,
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                }],
+            }];
+            let mut continuation_tabs = BTreeSet::new();
+            continuation_tabs.insert(81);
+            let mut continuation_file_references = HashMap::new();
+            continuation_file_references.insert(
+                81,
+                LaunchIntent::file_reference("record:remote-file", Some([7; 32]), None).unwrap(),
+            );
+            let tree = WorkspaceTree {
+                desktop: crate::shell::state::DesktopTree {
+                    workspaces: vec![workspace],
+                    active: workspace_id,
+                    ..Default::default()
+                },
+                continuation_tabs,
+                continuation_file_references,
+                ..WorkspaceTree::default()
+            };
+
+            let recaptured = DeviceContinuationSnapshot::capture(&tree, device("desktop-01"), 2);
+            assert!(recaptured.snapshot.workspaces[0].apps.is_empty());
+        }
+
+        rejects_sensitive_invalid_and_pathful_resume_metadata();
+        file_launch_is_reference_and_thumbnail_hash_only();
+        captures_safe_tabs_and_redacts_foreign_surface_ids();
+        does_not_echo_a_remote_file_placeholder_after_its_source_closes();
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn continuity_tombstones_and_size_limits_defeat_stale_offers_without_restamping() {
+        fn takeover_advances_observed_clock_and_tombstone_defeats_old_source_offer() {
+            let room = room(ROOM_A);
+            let laptop = device("laptop");
+            let desktop = device("desktop");
+            let source = DeviceContinuationSnapshot::new(
+                laptop.clone(),
+                100,
                 None,
                 vec![WorkspaceContinuation {
                     room,
-                    apps: vec![safe_app(77, &device, 9)],
+                    apps: vec![safe_app(77, &laptop, 100)],
                 }],
             )
-            .unwrap()
-        };
-        let mut continuity = PersonalContinuity::default();
-        continuity.upsert(snapshot(beta.clone())).unwrap();
-        continuity.upsert(snapshot(alpha)).unwrap();
+            .unwrap();
 
-        assert_eq!(
-            continuity
-                .newest_app_state(AppInstanceId(77))
-                .unwrap()
-                .stamp
-                .device,
-            beta,
-            "equal counters break by device id, not message order"
-        );
-    }
-
-    #[test]
-    fn personal_continuity_round_trips_as_json_and_postcard() {
-        let laptop = device("laptop-01");
-        let room = room(ROOM_A);
-        let snapshot = DeviceContinuationSnapshot::new(
-            laptop.clone(),
-            12,
-            Some(DeviceFocus {
-                room,
-                app: Some(AppInstanceId(13)),
-            }),
-            vec![WorkspaceContinuation {
-                room,
-                apps: vec![safe_app(13, &laptop, 12)],
-            }],
-        )
-        .unwrap();
-        let mut original = PersonalContinuity::default();
-        original.upsert(snapshot).unwrap();
-        assert_eq!(original.len(), 1);
-        assert_eq!(original.snapshots().len(), 1);
-
-        let json = serde_json::to_vec(&original).unwrap();
-        let from_json: PersonalContinuity = serde_json::from_slice(&json).unwrap();
-        assert_eq!(from_json, original);
-
-        let postcard = postcard::to_allocvec(&original).unwrap();
-        let from_postcard: PersonalContinuity = postcard::from_bytes(&postcard).unwrap();
-        assert_eq!(from_postcard, original);
-    }
-
-    #[test]
-    fn rejects_sensitive_invalid_and_pathful_resume_metadata() {
-        assert_eq!(
-            ResumeMetadata::new(1, ResumeSensitivity::Sensitive, vec![]),
-            Err(ContinuityError::SensitiveResumeState)
-        );
-        assert_eq!(
-            ResumeMetadata::new(0, ResumeSensitivity::Syncable, vec![]),
-            Err(ContinuityError::InvalidResumeSchema)
-        );
-        assert_eq!(
-            ResumeMetadata::new(
-                1,
-                ResumeSensitivity::Syncable,
-                b"{\"path\":\"/home/ada/secret\"}".to_vec(),
-            ),
-            Err(ContinuityError::LocalPathInResumeState)
-        );
-        assert!(LaunchIntent::app("/usr/bin/browser").is_err());
-        assert!(LaunchIntent::file_reference("/home/ada/book.epub", None, None).is_err());
-        assert!(
-            serde_json::to_string(&LaunchIntent::App {
-                app_id: "/home/ada/browser".into(),
-            })
-            .is_err(),
-            "even a manually-built bad enum must be rejected at serialization"
-        );
-    }
-
-    #[test]
-    fn file_launch_is_reference_and_thumbnail_hash_only() {
-        let intent =
-            LaunchIntent::file_reference("record:book-42", Some([3; 32]), Some([4; 32])).unwrap();
-        let encoded = serde_json::to_string(&intent).unwrap();
-        assert!(encoded.contains("record:book-42"));
-        assert!(encoded.contains("thumbnail_hash"));
-        assert!(!encoded.contains("/home/"));
-        assert!(!encoded.contains("manifest"));
-        assert!(!encoded.contains("thumbnail_bytes"));
-    }
-
-    #[test]
-    fn captures_safe_tabs_and_redacts_foreign_surface_ids() {
-        let workspace_id = WorkspaceId(8);
-        let strip_id = StripId(9);
-        let group_id = 10;
-        let room = room(ROOM_A);
-        let mut workspace = Workspace::new(workspace_id, "Reading");
-        workspace.room = room;
-        workspace.strips = vec![Strip {
-            id: strip_id,
-            name: "Main".into(),
-            window_groups: vec![WindowGroup {
-                id: group_id,
-                tabs: vec![
-                    Tab {
-                        id: 11,
-                        title: "Reader".into(),
-                        tile: TileContent::AppPlaceholder {
-                            kind: AppKind::Other("org.example.Reader".into()),
-                            label: "Reader".into(),
-                        },
-                    },
-                    Tab {
-                        id: 12,
-                        title: "/home/ada/private.pdf".into(),
-                        tile: TileContent::Foreign {
-                            app_id: "org.example.Foreign".into(),
-                            surface_id: 0xfeed_beef,
-                        },
-                    },
-                ],
-                active_tab: 11,
-                width: WindowWidth::Normal,
-                maximized: false,
-            }],
-        }];
-        let mut active_strip = HashMap::new();
-        active_strip.insert(workspace_id, strip_id);
-        let mut active_group = HashMap::new();
-        active_group.insert(strip_id, group_id);
-        let tree = WorkspaceTree {
-            desktop: crate::shell::state::DesktopTree {
-                workspaces: vec![workspace],
-                active: workspace_id,
-                active_strip,
-                active_group,
-                ..Default::default()
-            },
-            ..WorkspaceTree::default()
-        };
-
-        let report = DeviceContinuationSnapshot::capture(&tree, device("laptop-01"), 5);
-        assert_eq!(report.redacted_foreign_tabs, 0);
-        assert_eq!(report.snapshot.workspaces[0].apps.len(), 2);
-        assert_eq!(
-            report.snapshot.workspaces[0].apps[1].launch,
-            LaunchIntent::App {
-                app_id: "org.example.Foreign".into()
-            }
-        );
-        assert!(
-            !postcard::to_allocvec(&report.snapshot)
-                .unwrap()
-                .windows(std::mem::size_of::<u64>())
-                .any(|bytes| bytes == 0xfeed_beef_u64.to_le_bytes()),
-            "the compositor-local surface id must not enter continuation"
-        );
-        assert_eq!(
-            report.snapshot.focus.as_ref().unwrap().app,
-            Some(AppInstanceId(11))
-        );
-        let encoded = serde_json::to_string(&report.snapshot).unwrap();
-        assert!(!encoded.contains("feed_beef"));
-        assert!(!encoded.contains("/home/ada"));
-    }
-
-    #[test]
-    fn does_not_echo_a_remote_file_placeholder_after_its_source_closes() {
-        let workspace_id = WorkspaceId(8);
-        let strip_id = StripId(9);
-        let room = room(ROOM_A);
-        let mut workspace = Workspace::new(workspace_id, "From another device");
-        workspace.room = room;
-        workspace.strips = vec![Strip {
-            id: strip_id,
-            name: "Available elsewhere".into(),
-            window_groups: vec![WindowGroup {
-                id: 10,
-                tabs: vec![Tab {
-                    id: 81,
-                    title: "File".into(),
-                    tile: TileContent::Stub {
-                        kind: AppKind::FileExplorer,
-                        label: "Available on another device".into(),
-                    },
+            let mut desktop_clock = 2;
+            source.stamp.advance_clock(&mut desktop_clock);
+            assert_eq!(desktop_clock, 101);
+            let claimed = DeviceContinuationSnapshot::new(
+                desktop.clone(),
+                desktop_clock,
+                None,
+                vec![WorkspaceContinuation {
+                    room,
+                    apps: vec![safe_app(77, &desktop, desktop_clock)],
                 }],
-                active_tab: 81,
-                width: WindowWidth::Normal,
-                maximized: false,
-            }],
-        }];
-        let mut continuation_tabs = BTreeSet::new();
-        continuation_tabs.insert(81);
-        let mut continuation_file_references = HashMap::new();
-        continuation_file_references.insert(
-            81,
-            LaunchIntent::file_reference("record:remote-file", Some([7; 32]), None).unwrap(),
-        );
-        let tree = WorkspaceTree {
-            desktop: crate::shell::state::DesktopTree {
-                workspaces: vec![workspace],
-                active: workspace_id,
-                ..Default::default()
-            },
-            continuation_tabs,
-            continuation_file_references,
-            ..WorkspaceTree::default()
-        };
+            )
+            .unwrap();
+            let mut closed = DeviceContinuationSnapshot::new(
+                desktop,
+                102,
+                None,
+                vec![WorkspaceContinuation {
+                    room,
+                    apps: Vec::new(),
+                }],
+            )
+            .unwrap();
+            closed.record_closures_from(&claimed).unwrap();
 
-        let recaptured = DeviceContinuationSnapshot::capture(&tree, device("desktop-01"), 2);
-        assert!(recaptured.snapshot.workspaces[0].apps.is_empty());
-    }
-
-    #[test]
-    fn takeover_advances_observed_clock_and_tombstone_defeats_old_source_offer() {
-        let room = room(ROOM_A);
-        let laptop = device("laptop");
-        let desktop = device("desktop");
-        let source = DeviceContinuationSnapshot::new(
-            laptop.clone(),
-            100,
-            None,
-            vec![WorkspaceContinuation {
-                room,
-                apps: vec![safe_app(77, &laptop, 100)],
-            }],
-        )
-        .unwrap();
-
-        let mut desktop_clock = 2;
-        source.stamp.advance_clock(&mut desktop_clock);
-        assert_eq!(desktop_clock, 101);
-        let claimed = DeviceContinuationSnapshot::new(
-            desktop.clone(),
-            desktop_clock,
-            None,
-            vec![WorkspaceContinuation {
-                room,
-                apps: vec![safe_app(77, &desktop, desktop_clock)],
-            }],
-        )
-        .unwrap();
-        let mut closed = DeviceContinuationSnapshot::new(
-            desktop,
-            102,
-            None,
-            vec![WorkspaceContinuation {
-                room,
-                apps: Vec::new(),
-            }],
-        )
-        .unwrap();
-        closed.record_closures_from(&claimed).unwrap();
-
-        let mut merged = PersonalContinuity::default();
-        merged.upsert(source).unwrap();
-        merged.upsert(closed).unwrap();
-        assert!(merged.newest_app_state(AppInstanceId(77)).is_none());
-        assert_eq!(merged.observed_counter(), 102);
-        assert_eq!(merged.recover_counter(1), 102);
-    }
-
-    #[test]
-    fn rejects_oversized_cumulative_resume_state_before_mutating_collection() {
-        let device = device("oversized-device");
-        let mut apps = Vec::new();
-        for id in 0..100 {
-            let mut app = safe_app(id, &device, 1);
-            let url = format!(
-                "https://example.test/?q={}",
-                "x".repeat(MAX_RESUME_BYTES - 64)
-            );
-            app.resume = Some(
-                ResumeMetadata::new(
-                    1,
-                    ResumeSensitivity::Syncable,
-                    serde_json::to_vec(&serde_json::json!({ "url": url })).unwrap(),
-                )
-                .unwrap(),
-            );
-            apps.push(app);
+            let mut merged = PersonalContinuity::default();
+            merged.upsert(source).unwrap();
+            merged.upsert(closed).unwrap();
+            assert!(merged.newest_app_state(AppInstanceId(77)).is_none());
+            assert_eq!(merged.observed_counter(), 102);
+            assert_eq!(merged.recover_counter(1), 102);
         }
-        let snapshot = DeviceContinuationSnapshot::new(
-            device,
-            1,
-            None,
-            vec![WorkspaceContinuation {
-                room: room(ROOM_A),
-                apps,
-            }],
-        )
-        .unwrap();
-        let mut continuity = PersonalContinuity::default();
-        assert_eq!(
-            continuity.upsert(snapshot),
-            Err(ContinuityError::SnapshotTooLarge)
-        );
-        assert!(continuity.is_empty());
-    }
 
-    #[test]
-    fn near_limit_live_snapshot_can_be_replaced_by_closure_tombstones() {
-        let device = device("near-limit-device");
-        let mut apps = Vec::new();
-        for id in 0..90 {
-            let mut app = safe_app(id, &device, 1);
-            let url = format!(
-                "https://example.test/?q={}",
-                "x".repeat(MAX_RESUME_BYTES - 64)
+        fn rejects_oversized_cumulative_resume_state_before_mutating_collection() {
+            let device = device("oversized-device");
+            let mut apps = Vec::new();
+            for id in 0..100 {
+                let mut app = safe_app(id, &device, 1);
+                let url = format!(
+                    "https://example.test/?q={}",
+                    "x".repeat(MAX_RESUME_BYTES - 64)
+                );
+                app.resume = Some(
+                    ResumeMetadata::new(
+                        1,
+                        ResumeSensitivity::Syncable,
+                        serde_json::to_vec(&serde_json::json!({ "url": url })).unwrap(),
+                    )
+                    .unwrap(),
+                );
+                apps.push(app);
+            }
+            let snapshot = DeviceContinuationSnapshot::new(
+                device,
+                1,
+                None,
+                vec![WorkspaceContinuation {
+                    room: room(ROOM_A),
+                    apps,
+                }],
+            )
+            .unwrap();
+            let mut continuity = PersonalContinuity::default();
+            assert_eq!(
+                continuity.upsert(snapshot),
+                Err(ContinuityError::SnapshotTooLarge)
             );
-            app.resume = Some(
-                ResumeMetadata::new(
-                    1,
-                    ResumeSensitivity::Syncable,
-                    serde_json::to_vec(&serde_json::json!({ "url": url })).unwrap(),
-                )
-                .unwrap(),
+            assert!(continuity.is_empty());
+        }
+
+        fn near_limit_live_snapshot_can_be_replaced_by_closure_tombstones() {
+            let device = device("near-limit-device");
+            let mut apps = Vec::new();
+            for id in 0..90 {
+                let mut app = safe_app(id, &device, 1);
+                let url = format!(
+                    "https://example.test/?q={}",
+                    "x".repeat(MAX_RESUME_BYTES - 64)
+                );
+                app.resume = Some(
+                    ResumeMetadata::new(
+                        1,
+                        ResumeSensitivity::Syncable,
+                        serde_json::to_vec(&serde_json::json!({ "url": url })).unwrap(),
+                    )
+                    .unwrap(),
+                );
+                apps.push(app);
+            }
+            let live = DeviceContinuationSnapshot::new(
+                device.clone(),
+                1,
+                None,
+                vec![WorkspaceContinuation {
+                    room: room(ROOM_A),
+                    apps,
+                }],
+            )
+            .unwrap();
+            let mut continuity = PersonalContinuity::default();
+            continuity.upsert(live.clone()).unwrap();
+
+            let mut closed = DeviceContinuationSnapshot::new(
+                device,
+                2,
+                None,
+                vec![WorkspaceContinuation {
+                    room: room(ROOM_A),
+                    apps: Vec::new(),
+                }],
+            )
+            .unwrap();
+            closed.record_closures_from(&live).unwrap();
+            continuity.upsert(closed).unwrap();
+            assert!(continuity.newest_app_state(AppInstanceId(0)).is_none());
+            assert!(
+                postcard::to_allocvec(&continuity).unwrap().len() < MAX_ENCODED_CHECKPOINT_BYTES
             );
-            apps.push(app);
         }
-        let live = DeviceContinuationSnapshot::new(
-            device.clone(),
-            1,
-            None,
-            vec![WorkspaceContinuation {
-                room: room(ROOM_A),
-                apps,
-            }],
-        )
-        .unwrap();
-        let mut continuity = PersonalContinuity::default();
-        continuity.upsert(live.clone()).unwrap();
 
-        let mut closed = DeviceContinuationSnapshot::new(
-            device,
-            2,
-            None,
-            vec![WorkspaceContinuation {
-                room: room(ROOM_A),
-                apps: Vec::new(),
-            }],
-        )
-        .unwrap();
-        closed.record_closures_from(&live).unwrap();
-        continuity.upsert(closed).unwrap();
-        assert!(continuity.newest_app_state(AppInstanceId(0)).is_none());
-        assert!(postcard::to_allocvec(&continuity).unwrap().len() < MAX_ENCODED_CHECKPOINT_BYTES);
-    }
+        fn unrelated_local_change_does_not_restamp_a_tombstone_past_remote_reopen() {
+            let room = room(ROOM_A);
+            let desktop = device("desktop");
+            let laptop = device("laptop");
+            let claimed = DeviceContinuationSnapshot::new(
+                desktop.clone(),
+                10,
+                None,
+                vec![WorkspaceContinuation {
+                    room,
+                    apps: vec![safe_app(77, &desktop, 10)],
+                }],
+            )
+            .unwrap();
+            let mut closed = DeviceContinuationSnapshot::new(
+                desktop.clone(),
+                11,
+                None,
+                vec![WorkspaceContinuation {
+                    room,
+                    apps: Vec::new(),
+                }],
+            )
+            .unwrap();
+            closed.record_closures_from(&claimed).unwrap();
+            let reopened = DeviceContinuationSnapshot::new(
+                laptop.clone(),
+                12,
+                None,
+                vec![WorkspaceContinuation {
+                    room,
+                    apps: vec![safe_app(77, &laptop, 12)],
+                }],
+            )
+            .unwrap();
+            let mut unrelated = DeviceContinuationSnapshot::new(
+                desktop,
+                13,
+                None,
+                vec![WorkspaceContinuation {
+                    room,
+                    apps: vec![safe_app(88, &device("desktop"), 13)],
+                }],
+            )
+            .unwrap();
+            unrelated.record_closures_from(&closed).unwrap();
+            assert_eq!(unrelated.tombstones[0].stamp.counter, 11);
 
-    #[test]
-    fn unrelated_local_change_does_not_restamp_a_tombstone_past_remote_reopen() {
-        let room = room(ROOM_A);
-        let desktop = device("desktop");
-        let laptop = device("laptop");
-        let claimed = DeviceContinuationSnapshot::new(
-            desktop.clone(),
-            10,
-            None,
-            vec![WorkspaceContinuation {
-                room,
-                apps: vec![safe_app(77, &desktop, 10)],
-            }],
-        )
-        .unwrap();
-        let mut closed = DeviceContinuationSnapshot::new(
-            desktop.clone(),
-            11,
-            None,
-            vec![WorkspaceContinuation {
-                room,
-                apps: Vec::new(),
-            }],
-        )
-        .unwrap();
-        closed.record_closures_from(&claimed).unwrap();
-        let reopened = DeviceContinuationSnapshot::new(
-            laptop.clone(),
-            12,
-            None,
-            vec![WorkspaceContinuation {
-                room,
-                apps: vec![safe_app(77, &laptop, 12)],
-            }],
-        )
-        .unwrap();
-        let mut unrelated = DeviceContinuationSnapshot::new(
-            desktop,
-            13,
-            None,
-            vec![WorkspaceContinuation {
-                room,
-                apps: vec![safe_app(88, &device("desktop"), 13)],
-            }],
-        )
-        .unwrap();
-        unrelated.record_closures_from(&closed).unwrap();
-        assert_eq!(unrelated.tombstones[0].stamp.counter, 11);
-
-        let mut continuity = PersonalContinuity::default();
-        continuity.upsert(reopened).unwrap();
-        continuity.upsert(unrelated).unwrap();
-        assert_eq!(
-            continuity
-                .newest_app_state_in_room(room, AppInstanceId(77))
-                .map(|app| app.stamp.counter),
-            Some(12)
-        );
-    }
-
-    #[allow(
-        clippy::items_after_statements,
-        reason = "the legacy wire fixture is defined next to the only migration scenario that uses it"
-    )]
-    #[test]
-    fn migrates_v1_snapshot_without_losing_its_counter_or_apps() {
-        #[derive(Serialize)]
-        struct V1Snapshot {
-            schema_version: u16,
-            device: DeviceId,
-            stamp: ContinuityStamp,
-            focus: Option<DeviceFocus>,
-            workspaces: Vec<WorkspaceContinuation>,
+            let mut continuity = PersonalContinuity::default();
+            continuity.upsert(reopened).unwrap();
+            continuity.upsert(unrelated).unwrap();
+            assert_eq!(
+                continuity
+                    .newest_app_state_in_room(room, AppInstanceId(77))
+                    .map(|app| app.stamp.counter),
+                Some(12)
+            );
         }
-        let device = device("legacy-laptop");
-        let legacy = V1Snapshot {
-            schema_version: 1,
-            device: device.clone(),
-            stamp: ContinuityStamp {
-                counter: 987,
-                device: device.clone(),
-            },
-            focus: None,
-            workspaces: vec![WorkspaceContinuation {
-                room: room(ROOM_A),
-                apps: vec![safe_app(42, &device, 987)],
-            }],
-        };
-        #[derive(Serialize)]
-        struct V1Collection {
-            snapshots: Vec<V1Snapshot>,
-        }
-        let bytes = postcard::to_allocvec(&V1Collection {
-            snapshots: vec![legacy],
-        })
-        .unwrap();
-        let collection = decode_checkpoint(&bytes).unwrap();
-        let upgraded = collection.snapshot_for(&device).unwrap();
-        assert_eq!(upgraded.schema_version, CONTINUITY_SCHEMA_VERSION);
-        assert_eq!(upgraded.stamp.counter, 987);
-        assert_eq!(upgraded.workspaces[0].apps[0].id, AppInstanceId(42));
-        assert!(upgraded.tombstones.is_empty());
+
+        takeover_advances_observed_clock_and_tombstone_defeats_old_source_offer();
+        rejects_oversized_cumulative_resume_state_before_mutating_collection();
+        near_limit_live_snapshot_can_be_replaced_by_closure_tombstones();
+        unrelated_local_change_does_not_restamp_a_tombstone_past_remote_reopen();
     }
 }

@@ -81,7 +81,7 @@ pub fn save_state(path: &Path, state: &State) -> Result<()> {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
     let json = serde_json::to_string_pretty(state)?;
-    atomic_file::write_with_mode(path, json.as_bytes(), 0o600)
+    tilo_files::native::atomic::write_with_mode(path, json.as_bytes(), 0o600)
         .with_context(|| format!("atomically writing {}", path.display()))
 }
 
@@ -165,22 +165,19 @@ pub fn plan(
 ///
 /// # Errors
 ///
-/// Returns an error if `proof` does not open `device` (refusing to raise the floor past the
+/// Returns an error if `proof` does not open `req.device` (refusing to raise the floor past the
 /// only proven-working secret), if `plan.floor.target_floor` exceeds `plan.generation`, or if
 /// the underlying counter advance fails.
-#[allow(clippy::too_many_arguments)]
 pub fn advance_floor(
     runner: &dyn Runner,
     ws: &Workspace,
-    device: &Path,
-    cfg: &crate::Config,
+    req: &Request<'_>,
     plan: &Plan,
     floor: FloorState,
-    authority_key_name: &[u8],
-    approvals: &[crate::approval::Approval],
+    approvals: &counter::FloorApprovals<'_>,
     proof: &[u8],
-    scratch: &Path,
 ) -> Result<counter::AdvanceOutcome> {
+    let device = req.device;
     if !plan.floor.advances() {
         return Ok(counter::AdvanceOutcome {
             floor,
@@ -208,40 +205,43 @@ pub fn advance_floor(
     counter::advance(
         runner,
         ws,
-        cfg.nv_index,
-        scratch,
+        req.cfg.nv_index,
+        req.scratch,
         floor,
         plan.floor.target_floor,
-        counter::MAX_INCREMENTS_PER_ADVANCE,
-        Path::new(&cfg.floor_authority_key),
-        authority_key_name,
         approvals,
-        Some(Path::new(&cfg.approval_dir)),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::Prediction;
+    use crate::policy::{GenerationPolicy, NvConstraint, Prediction};
+    use crate::token::SealedObject;
 
     fn tok(gen_num: u64, base: i64) -> (u32, RollbackToken) {
         (
             u32::try_from(gen_num).unwrap(),
             RollbackToken::new(
                 1,
-                gen_num,
-                0x01D9_1100,
-                crate::counter::operand(base, gen_num).unwrap(),
+                &GenerationPolicy {
+                    generation: gen_num,
+                    key_name: b"n",
+                    pcr_bank: "sha256",
+                    pcrs: &[11],
+                    platform_pcrs: &[7],
+                    nv: NvConstraint {
+                        index: 0x01D9_1100,
+                        operand: crate::counter::operand(base, gen_num).unwrap(),
+                    },
+                    pin: false,
+                },
                 base,
-                "sha256",
-                &[11],
-                &[7],
-                false,
-                b"p",
-                b"q",
-                b"n",
-                b"d",
+                &SealedObject {
+                    public: b"p",
+                    private: b"q",
+                    policy_digest: b"d",
+                },
                 &[Prediction {
                     approved_policy: b"a".to_vec(),
                     signature: b"s".to_vec(),
@@ -252,84 +252,85 @@ mod tests {
     }
 
     #[test]
-    fn base_comes_from_agreeing_sources() {
-        let s = State {
-            nv_index: 1,
-            nv_base: 100,
-            last_confirmed: Some(7),
-            foreign_keyslots: vec![0],
-        };
-        let toks = vec![tok(7, 100), tok(6, 100)];
-        assert_eq!(load_base(Some(&s), &toks).unwrap(), Some(100));
+    fn confirmation_bases_come_only_from_agreeing_sources() {
+        // Phase `base_comes_from_agreeing_sources`.
+        {
+            let s = State {
+                nv_index: 1,
+                nv_base: 100,
+                last_confirmed: Some(7),
+                foreign_keyslots: vec![0],
+            };
+            let toks = vec![tok(7, 100), tok(6, 100)];
+            assert_eq!(load_base(Some(&s), &toks).unwrap(), Some(100));
+        }
+        // Phase `a_disagreeing_base_is_refused`.
+        {
+            let s = State {
+                nv_index: 1,
+                nv_base: 100,
+                last_confirmed: Some(7),
+                foreign_keyslots: vec![0],
+            };
+            let toks = vec![tok(7, 999)];
+            let e = load_base(Some(&s), &toks).unwrap_err().to_string();
+            assert!(e.contains("disagrees between sources"), "{e}");
+        }
+        // Phase `no_source_means_no_base_yet`.
+        {
+            assert_eq!(load_base(None, &[]).unwrap(), None);
+        }
+        // Phase `a_base_from_tokens_alone_is_usable`.
+        {
+            assert_eq!(load_base(None, &[tok(7, 42)]).unwrap(), Some(42));
+        }
     }
 
     #[test]
-    fn a_disagreeing_base_is_refused() {
-        let s = State {
-            nv_index: 1,
-            nv_base: 100,
-            last_confirmed: Some(7),
-            foreign_keyslots: vec![0],
-        };
-        let toks = vec![tok(7, 999)];
-        let e = load_base(Some(&s), &toks).unwrap_err().to_string();
-        assert!(e.contains("disagrees between sources"), "{e}");
-    }
+    fn confirmation_plans_window_prune_floor_and_round_trip_state() {
+        // Phase `planning_confirms_the_window_and_the_prune`.
+        {
+            let floor = FloorState {
+                counter: 100,
+                base: 100,
+            }; // floor generation 0
+            let p = plan(10, floor, &[7, 8, 9, 10], 3, None).unwrap();
+            assert_eq!(p.floor.target_floor, 8);
+            assert_eq!(p.keep, vec![10, 9, 8]);
+            assert_eq!(p.drop, vec![7]);
+        }
+        // Phase `planning_honours_a_declared_floor`.
+        {
+            let floor = FloorState {
+                counter: 100,
+                base: 100,
+            };
+            let p = plan(10, floor, &[8, 9, 10], 3, Some(10)).unwrap();
+            assert_eq!(p.floor.target_floor, 10);
+            // The keyslots are still retained even though the floor closed the window — the floor
+            // enforces, and keeping slots means a later re-enrollment doesn't rebuild from nothing.
+            assert_eq!(p.keep, vec![10, 9, 8]);
+        }
+        // Phase `state_round_trips`.
+        {
+            use std::os::unix::fs::PermissionsExt;
 
-    #[test]
-    fn no_source_means_no_base_yet() {
-        assert_eq!(load_base(None, &[]).unwrap(), None);
-    }
-
-    #[test]
-    fn a_base_from_tokens_alone_is_usable() {
-        assert_eq!(load_base(None, &[tok(7, 42)]).unwrap(), Some(42));
-    }
-
-    #[test]
-    fn planning_confirms_the_window_and_the_prune() {
-        let floor = FloorState {
-            counter: 100,
-            base: 100,
-        }; // floor generation 0
-        let p = plan(10, floor, &[7, 8, 9, 10], 3, None).unwrap();
-        assert_eq!(p.floor.target_floor, 8);
-        assert_eq!(p.keep, vec![10, 9, 8]);
-        assert_eq!(p.drop, vec![7]);
-    }
-
-    #[test]
-    fn planning_honours_a_declared_floor() {
-        let floor = FloorState {
-            counter: 100,
-            base: 100,
-        };
-        let p = plan(10, floor, &[8, 9, 10], 3, Some(10)).unwrap();
-        assert_eq!(p.floor.target_floor, 10);
-        // The keyslots are still retained even though the floor closed the window — the floor
-        // enforces, and keeping slots means a later re-enrollment doesn't rebuild from nothing.
-        assert_eq!(p.keep, vec![10, 9, 8]);
-    }
-
-    #[test]
-    fn state_round_trips() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("s.json");
-        let s = State {
-            nv_index: 0x01D9_1100,
-            nv_base: 5,
-            last_confirmed: None,
-            foreign_keyslots: vec![0, 1],
-        };
-        assert_eq!(load_state(&p).unwrap(), None);
-        save_state(&p, &s).unwrap();
-        assert_eq!(load_state(&p).unwrap(), Some(s));
-        assert_eq!(
-            std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
+            let d = tempfile::tempdir().unwrap();
+            let p = d.path().join("s.json");
+            let s = State {
+                nv_index: 0x01D9_1100,
+                nv_base: 5,
+                last_confirmed: None,
+                foreign_keyslots: vec![0, 1],
+            };
+            assert_eq!(load_state(&p).unwrap(), None);
+            save_state(&p, &s).unwrap();
+            assert_eq!(load_state(&p).unwrap(), Some(s));
+            assert_eq!(
+                std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
     }
 }
 
@@ -386,10 +387,6 @@ type EnrolledTokens = (Vec<(u32, RollbackToken)>, Option<(u32, u32)>);
 ///
 /// Returns the token list (refreshed if enrollment happened) and, if enrollment happened,
 /// its `(keyslot, token id)`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "mirrors the original inline confirmation step exactly; each parameter is a distinct piece of that step's context (runner/workspace/device/config/request/floor/authorising-secret/tokens)"
-)]
 fn ensure_generation_enrolled(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -421,11 +418,13 @@ fn ensure_generation_enrolled(
         ws,
         device,
         cfg,
-        req.generation,
-        floor,
-        &predictions,
+        &keyslots::Enrollment {
+            generation: req.generation,
+            floor,
+            predictions: &predictions,
+            pin: req.pin,
+        },
         authorising,
-        req.pin,
     )?);
     let tokens = keyslots::list_tokens(runner, device)?;
     Ok((tokens, enrolled))
@@ -571,14 +570,16 @@ pub fn run(runner: &dyn Runner, ws: &Workspace, req: &Request<'_>) -> Result<Out
     let advanced = advance_floor(
         runner,
         ws,
-        device,
-        cfg,
+        req,
         &plan,
         floor,
-        &authority_key_name,
-        &approvals,
+        &counter::FloorApprovals {
+            authority_public_key: Path::new(&cfg.floor_authority_key),
+            authority_key_name: &authority_key_name,
+            approvals: &approvals,
+            dir: Some(Path::new(&cfg.approval_dir)),
+        },
         &proof,
-        req.scratch,
     )?;
     floor = advanced.floor;
 

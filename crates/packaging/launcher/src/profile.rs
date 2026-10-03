@@ -140,6 +140,23 @@ pub fn landlock_rw_device_paths() -> Vec<PathBuf> {
     SYSTEM_DEVICE_PATHS.iter().map(PathBuf::from).collect()
 }
 
+/// Landlock read-write rules for an engine that builds its own sandbox
+/// inside ours, keyed on the seccomp profile the launch was granted.
+///
+/// Chromium's zygote writes `setgroups`, `uid_map` and `gid_map` through
+/// `/proc/self` from each child it has just forked into a new user
+/// namespace. Those children have fresh PIDs, so no rule narrower than the
+/// sandbox's own `/proc` — mounted for its private PID namespace, listing
+/// only its own processes — reaches them. Without it the engine refuses to
+/// start rather than run its renderers unsandboxed.
+pub fn landlock_rw_nested_sandbox_paths(profile: crate::seccomp::SeccompProfile) -> Vec<PathBuf> {
+    if profile.allows_nested_sandbox() {
+        vec![PathBuf::from("/proc")]
+    } else {
+        Vec::new()
+    }
+}
+
 /// Whether `path` is covered by the read profile — used to explain a
 /// refusal ("this is already yours") rather than to grant anything.
 pub fn covers(path: &Path) -> bool {
@@ -160,84 +177,106 @@ fn push(argv: &mut Vec<String>, kind: &str, src: &str, dst: &str) {
 mod tests {
     use super::*;
 
-    /// The profile is a *system* list. If a user path ever appears in it,
-    /// every app on the machine silently gained access — checked
-    /// mechanically rather than by review.
     #[test]
-    fn the_profile_names_no_user_path() {
-        for p in SYSTEM_READ_PATHS
-            .iter()
-            .chain(NETWORK_READ_PATHS.iter())
-            .chain(SYSTEM_DEVICE_PATHS.iter())
+    fn the_system_profile_is_read_only_and_names_no_user_path() {
+        // Phase `the_profile_names_no_user_path`.
+        // The profile is a *system* list. If a user path ever appears in it,
+        // every app on the machine silently gained access — checked
+        // mechanically rather than by review.
         {
+            for p in SYSTEM_READ_PATHS
+                .iter()
+                .chain(NETWORK_READ_PATHS.iter())
+                .chain(SYSTEM_DEVICE_PATHS.iter())
+            {
+                assert!(
+                    p.starts_with('/'),
+                    "{p} is not absolute; a relative entry resolves against \
+                     whatever cwd the launcher inherited"
+                );
+                assert!(
+                    !p.contains('~') && !p.contains('$'),
+                    "{p} contains a placeholder; the profile is expanded by \
+                     nobody and must be literal"
+                );
+                assert!(
+                    !p.starts_with("/home") && !p.starts_with("/root"),
+                    "{p} is a home directory: the profile must carry no user content"
+                );
+                assert!(
+                    !p.contains(".."),
+                    "{p} contains `..`; profile entries are literal paths"
+                );
+            }
+        }
+        // Phase `the_profile_does_not_contain_the_root`.
+        // `/` (or any prefix of every path) in the profile would hand the
+        // whole host to every app — the bug this file exists to remove. Cheap
+        // to assert, catastrophic to miss.
+        {
+            for p in SYSTEM_READ_PATHS
+                .iter()
+                .chain(NETWORK_READ_PATHS.iter())
+                .chain(SYSTEM_DEVICE_PATHS.iter())
+            {
+                assert_ne!(*p, "/", "the root filesystem is not a profile entry");
+                assert!(
+                    Path::new(p).components().count() >= 2,
+                    "{p} is a top-level directory; the profile names specific \
+                     subtrees, not whole filesystems"
+                );
+            }
+        }
+        // Phase `the_profile_binds_read_only_and_devices_as_devices`.
+        {
+            let mut argv = Vec::new();
+            push_system_profile(&mut argv, false);
             assert!(
-                p.starts_with('/'),
-                "{p} is not absolute; a relative entry resolves against \
-                 whatever cwd the launcher inherited"
+                argv.windows(3).any(|w| w[0] == "--ro-bind-try"
+                    && w[1] == "/usr/share/fonts"
+                    && w[2] == "/usr/share/fonts"),
+                "fonts must be read-only: {argv:?}"
+            );
+            // Without it every sandboxed Wayland app panics on `XKBNotFound`
+            // before it paints.
+            assert!(
+                argv.windows(3).any(|w| w[0] == "--ro-bind-try"
+                    && w[1] == "/usr/share/X11/xkb"
+                    && w[2] == "/usr/share/X11/xkb"),
+                "the xkb keymap data must be read-only in the sandbox: {argv:?}"
             );
             assert!(
-                !p.contains('~') && !p.contains('$'),
-                "{p} contains a placeholder; the profile is expanded by \
-                 nobody and must be literal"
+                argv.windows(3)
+                    .any(|w| w[0] == "--dev-bind-try" && w[1] == "/dev/dri"),
+                "the GPU node needs a device bind: {argv:?}"
             );
+            // Nothing in the profile may be writable. A `--bind` here would
+            // be a system directory an app can rewrite.
             assert!(
-                !p.starts_with("/home") && !p.starts_with("/root"),
-                "{p} is a home directory: the profile must carry no user content"
-            );
-            assert!(
-                !p.contains(".."),
-                "{p} contains `..`; profile entries are literal paths"
+                !argv.iter().any(|a| a == "--bind" || a == "--bind-try"),
+                "no profile entry may be read-write: {argv:?}"
             );
         }
     }
+}
 
-    /// `/` (or any prefix of every path) in the profile would hand the
-    /// whole host to every app — the bug this file exists to remove. Cheap
-    /// to assert, catastrophic to miss.
+#[cfg(test)]
+mod nested_sandbox_tests {
+    use super::*;
+    use crate::seccomp::SeccompProfile;
+
     #[test]
-    fn the_profile_does_not_contain_the_root() {
-        for p in SYSTEM_READ_PATHS
-            .iter()
-            .chain(NETWORK_READ_PATHS.iter())
-            .chain(SYSTEM_DEVICE_PATHS.iter())
-        {
-            assert_ne!(*p, "/", "the root filesystem is not a profile entry");
+    fn only_the_web_engine_profile_may_write_proc() {
+        for profile in [SeccompProfile::TiloDefault, SeccompProfile::TiloJit] {
             assert!(
-                Path::new(p).components().count() >= 2,
-                "{p} is a top-level directory; the profile names specific \
-                 subtrees, not whole filesystems"
+                landlock_rw_nested_sandbox_paths(profile).is_empty(),
+                "{} must not reach /proc",
+                profile.as_str()
             );
         }
-    }
-
-    #[test]
-    fn the_profile_binds_read_only_and_devices_as_devices() {
-        let mut argv = Vec::new();
-        push_system_profile(&mut argv, false);
-        assert!(
-            argv.windows(3).any(|w| w[0] == "--ro-bind-try"
-                && w[1] == "/usr/share/fonts"
-                && w[2] == "/usr/share/fonts"),
-            "fonts must be read-only: {argv:?}"
-        );
-        // Without it every sandboxed Wayland app panics on `XKBNotFound`
-        // before it paints.
-        assert!(
-            argv.windows(3).any(|w| w[0] == "--ro-bind-try"
-                && w[1] == "/usr/share/X11/xkb"
-                && w[2] == "/usr/share/X11/xkb"),
-            "the xkb keymap data must be read-only in the sandbox: {argv:?}"
-        );
-        assert!(
-            argv.windows(3)
-                .any(|w| w[0] == "--dev-bind-try" && w[1] == "/dev/dri"),
-            "the GPU node needs a device bind: {argv:?}"
-        );
-        // Nothing in the profile may be writable. A `--bind` here would
-        // be a system directory an app can rewrite.
-        assert!(
-            !argv.iter().any(|a| a == "--bind" || a == "--bind-try"),
-            "no profile entry may be read-write: {argv:?}"
+        assert_eq!(
+            landlock_rw_nested_sandbox_paths(SeccompProfile::TiloWebEngine),
+            vec![PathBuf::from("/proc")]
         );
     }
 }
@@ -246,45 +285,47 @@ mod tests {
 mod network_profile_tests {
     use super::*;
 
-    /// The machine's resolver configuration is not part of what every app
-    /// gets: an app with no network has nothing to resolve, and one under
-    /// a host-scoped grant resolves through the gate — either way, handing
-    /// out the resolver list gives no functional gain.
     #[test]
-    fn the_resolver_files_appear_only_for_an_unrestricted_network() {
-        let mut without = Vec::new();
-        push_system_profile(&mut without, false);
-        for path in NETWORK_READ_PATHS {
-            assert!(
-                !without.iter().any(|a| a == path),
-                "{path} must not be bound for a launch with no host network: {without:?}"
-            );
-        }
-
-        let mut with = Vec::new();
-        push_system_profile(&mut with, true);
-        for path in NETWORK_READ_PATHS {
-            assert!(
-                with.windows(3)
-                    .any(|w| w[0] == "--ro-bind-try" && w[1] == *path && w[2] == *path),
-                "{path} must be bound for a launch that shares the host network: {with:?}"
-            );
-        }
-    }
-
-    /// The bind list and the Landlock ruleset are derived from the same
-    /// two constants, so they cannot disagree about what is readable.
-    #[test]
-    fn the_landlock_rules_match_the_binds() {
-        for shares in [false, true] {
-            let mut argv = Vec::new();
-            push_system_profile(&mut argv, shares);
-            for rule in landlock_ro_paths(shares) {
-                let s = rule.display().to_string();
+    fn network_profile_resolver_files_and_landlock_rules_match_the_binds() {
+        // Phase `the_resolver_files_appear_only_for_an_unrestricted_network`.
+        // The machine's resolver configuration is not part of what every app
+        // gets: an app with no network has nothing to resolve, and one under
+        // a host-scoped grant resolves through the gate — either way, handing
+        // out the resolver list gives no functional gain.
+        {
+            let mut without = Vec::new();
+            push_system_profile(&mut without, false);
+            for path in NETWORK_READ_PATHS {
                 assert!(
-                    argv.contains(&s),
-                    "landlock names {s} but nothing binds it (shares={shares})"
+                    !without.iter().any(|a| a == path),
+                    "{path} must not be bound for a launch with no host network: {without:?}"
                 );
+            }
+
+            let mut with = Vec::new();
+            push_system_profile(&mut with, true);
+            for path in NETWORK_READ_PATHS {
+                assert!(
+                    with.windows(3)
+                        .any(|w| w[0] == "--ro-bind-try" && w[1] == *path && w[2] == *path),
+                    "{path} must be bound for a launch that shares the host network: {with:?}"
+                );
+            }
+        }
+        // Phase `the_landlock_rules_match_the_binds`.
+        // The bind list and the Landlock ruleset are derived from the same
+        // two constants, so they cannot disagree about what is readable.
+        {
+            for shares in [false, true] {
+                let mut argv = Vec::new();
+                push_system_profile(&mut argv, shares);
+                for rule in landlock_ro_paths(shares) {
+                    let s = rule.display().to_string();
+                    assert!(
+                        argv.contains(&s),
+                        "landlock names {s} but nothing binds it (shares={shares})"
+                    );
+                }
             }
         }
     }

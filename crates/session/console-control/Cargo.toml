@@ -13,12 +13,15 @@ path = "src/lib.rs"
 # Pure transport + door logic: no ui, winit or rendering dependencies. The
 # owning app delivers queued requests to its UI thread itself.
 [dependencies]
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
 tilo-actions = { path = "../../collab/actions" }
 serde_json.workspace = true
 rustix = { workspace = true, features = ["process"] }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

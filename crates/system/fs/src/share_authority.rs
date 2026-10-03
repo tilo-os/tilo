@@ -597,7 +597,7 @@ fn persist(path: &Path, state: &AuthorityState) -> Result<(), ShareAuthorityErro
     if bytes.len() as u64 > MAX_SHARE_AUTHORITY_FILE_BYTES {
         return Err(ShareAuthorityError::StateTooLarge);
     }
-    atomic_file::write_creating_parent(path, &bytes)?;
+    tilo_files::native::atomic::write_creating_parent(path, &bytes)?;
     Ok(())
 }
 
@@ -724,242 +724,264 @@ mod tests {
     }
 
     #[test]
-    fn one_use_link_survives_restart_same_actor_reconnects_and_another_is_denied() {
-        let (dir, issuer, invite) = limited_invite();
-        let path = dir.path().join("shares.json");
-        let authority = ShareAuthority::open(&path).unwrap();
-        let trusted = [issuer];
-        authority.register(&invite.token, &trusted, 1).unwrap();
-        authority
-            .redeem(&invite.token, &invite.secret, actor(10), 2)
-            .unwrap();
-        drop(authority);
+    fn one_use_and_named_grants_are_exact_race_free_and_revocable() {
+        // Phase `one_use_link_survives_restart_same_actor_reconnects_and_another_is_denied`.
+        {
+            let (dir, issuer, invite) = limited_invite();
+            let path = dir.path().join("shares.json");
+            let authority = ShareAuthority::open(&path).unwrap();
+            let trusted = [issuer];
+            authority.register(&invite.token, &trusted, 1).unwrap();
+            authority
+                .redeem(&invite.token, &invite.secret, actor(10), 2)
+                .unwrap();
+            drop(authority);
 
-        let reopened = ShareAuthority::open(path).unwrap();
-        assert_eq!(
-            reopened
-                .redeem(&invite.token, &invite.secret, actor(10), 3)
-                .unwrap()
-                .redemption_number,
-            1
-        );
-        assert!(matches!(
-            reopened.redeem(&invite.token, &invite.secret, actor(20), 3),
-            Err(ShareAuthorityError::Exhausted)
-        ));
-    }
-
-    #[test]
-    fn release_evidence_forward_clock_skew_expires_grants_fail_closed() {
-        let (dir, issuer, invite) = limited_invite();
-        let authority = ShareAuthority::open(dir.path().join("shares.json")).unwrap();
-        authority.register(&invite.token, &[issuer], 9_999).unwrap();
-        assert!(matches!(
-            authority.redeem(&invite.token, &invite.secret, actor(10), 10_000),
-            Err(ShareAuthorityError::Invite(_))
-        ));
-        let projection = authority.projection(invite.token.record_id, 10_000);
-        assert_eq!(projection.grants.len(), 1);
-        assert_eq!(projection.grants[0].status, ShareGrantStatus::Expired);
-    }
-
-    #[test]
-    fn concurrent_one_use_race_has_exactly_one_winner() {
-        let (dir, issuer, invite) = limited_invite();
-        let authority = Arc::new(ShareAuthority::open(dir.path().join("shares.json")).unwrap());
-        authority.register(&invite.token, &[issuer], 1).unwrap();
-        let invite = Arc::new(invite);
-        let barrier = Arc::new(Barrier::new(3));
-        let mut threads = Vec::new();
-        for seed in [30, 40] {
-            let authority = authority.clone();
-            let invite = invite.clone();
-            let barrier = barrier.clone();
-            threads.push(std::thread::spawn(move || {
-                barrier.wait();
-                authority.redeem(&invite.token, &invite.secret, actor(seed), 2)
-            }));
+            let reopened = ShareAuthority::open(path).unwrap();
+            assert_eq!(
+                reopened
+                    .redeem(&invite.token, &invite.secret, actor(10), 3)
+                    .unwrap()
+                    .redemption_number,
+                1
+            );
+            assert!(matches!(
+                reopened.redeem(&invite.token, &invite.secret, actor(20), 3),
+                Err(ShareAuthorityError::Exhausted)
+            ));
         }
-        barrier.wait();
-        let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
-        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
-        assert_eq!(
-            results
-                .iter()
-                .filter(|r| matches!(r, Err(ShareAuthorityError::Exhausted)))
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn revocation_and_untrusted_issuers_fail_closed() {
-        let (dir, issuer, invite) = limited_invite();
-        let authority = ShareAuthority::open(dir.path().join("shares.json")).unwrap();
-        assert!(matches!(
-            authority.register(&invite.token, &[], 1),
-            Err(ShareAuthorityError::UntrustedIssuer)
-        ));
-        authority.register(&invite.token, &[issuer], 1).unwrap();
-        assert!(authority.revoke(invite.token.id).unwrap());
-        assert!(matches!(
-            authority.redeem(&invite.token, &invite.secret, actor(50), 2),
-            Err(ShareAuthorityError::Revoked)
-        ));
-    }
-
-    #[test]
-    fn named_grants_bind_human_record_permission_and_live_revocation() {
-        let dir = tempfile::tempdir().unwrap();
-        let (issuer_sk, issuer) = collab_types::generate_keypair();
-        let (_, person) = collab_types::generate_keypair();
-        let (_, stranger) = collab_types::generate_keypair();
-        let token = collab_types::mint_file_invite(
-            FileInviteSpec {
-                workspace_id: Uuid::new_v4(),
-                record_id: FileRecordId::new(),
-                subject: FileInviteSubject::Person(person),
-                permission: FilePermission::View,
-                expires_at_ms: Some(10_000),
-                max_redemptions: None,
-            },
-            &issuer_sk,
-        )
-        .unwrap();
-        let authority = ShareAuthority::open(dir.path().join("shares.json")).unwrap();
-        authority.register(&token, &[issuer], 1).unwrap();
-        authority
-            .authorize_named(&token, person, FilePermission::View, 2)
-            .unwrap();
-        assert!(matches!(
-            authority.authorize_named(&token, stranger, FilePermission::View, 2),
-            Err(ShareAuthorityError::WrongRecipient)
-        ));
-        assert!(matches!(
-            authority.authorize_named(&token, person, FilePermission::Edit, 2),
-            Err(ShareAuthorityError::InsufficientPermission)
-        ));
-        authority.revoke(token.id).unwrap();
-        assert!(matches!(
-            authority.authorize_named(&token, person, FilePermission::View, 3),
-            Err(ShareAuthorityError::Revoked)
-        ));
-    }
-
-    #[test]
-    fn redacted_projection_survives_restart_and_tracks_live_state() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("shares.json");
-        let (issuer_sk, issuer) = collab_types::generate_keypair();
-        let (_, person) = collab_types::generate_keypair();
-        let workspace_id = Uuid::new_v4();
-        let record_id = FileRecordId::new();
-        let named = mint_file_invite(
-            FileInviteSpec {
-                workspace_id,
-                record_id,
-                subject: FileInviteSubject::Person(person),
-                permission: FilePermission::Edit,
-                expires_at_ms: Some(500),
-                max_redemptions: None,
-            },
-            &issuer_sk,
-        )
-        .unwrap();
-        let mut rng = UnwrapErr(SysRng);
-        let bearer = mint_bearer_file_invite(
-            FileInviteSpec {
-                workspace_id,
-                record_id,
-                subject: FileInviteSubject::Bearer {
-                    secret_hash: [0; 32],
+        // Phase `concurrent_one_use_race_has_exactly_one_winner`.
+        {
+            let (dir, issuer, invite) = limited_invite();
+            let authority = Arc::new(ShareAuthority::open(dir.path().join("shares.json")).unwrap());
+            authority.register(&invite.token, &[issuer], 1).unwrap();
+            let invite = Arc::new(invite);
+            let barrier = Arc::new(Barrier::new(3));
+            let mut threads = Vec::new();
+            for seed in [30, 40] {
+                let authority = authority.clone();
+                let invite = invite.clone();
+                let barrier = barrier.clone();
+                threads.push(std::thread::spawn(move || {
+                    barrier.wait();
+                    authority.redeem(&invite.token, &invite.secret, actor(seed), 2)
+                }));
+            }
+            barrier.wait();
+            let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+            assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+            assert_eq!(
+                results
+                    .iter()
+                    .filter(|r| matches!(r, Err(ShareAuthorityError::Exhausted)))
+                    .count(),
+                1
+            );
+        }
+        // Phase `named_grants_bind_human_record_permission_and_live_revocation`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let (issuer_sk, issuer) = collab_types::generate_keypair();
+            let (_, person) = collab_types::generate_keypair();
+            let (_, stranger) = collab_types::generate_keypair();
+            let token = collab_types::mint_file_invite(
+                FileInviteSpec {
+                    workspace_id: Uuid::new_v4(),
+                    record_id: FileRecordId::new(),
+                    subject: FileInviteSubject::Person(person),
+                    permission: FilePermission::View,
+                    expires_at_ms: Some(10_000),
+                    max_redemptions: None,
                 },
-                permission: FilePermission::View,
-                expires_at_ms: Some(300),
-                max_redemptions: Some(1),
-            },
-            &issuer_sk,
-            &mut rng,
-        )
-        .unwrap();
-
-        let authority = ShareAuthority::open(&path).unwrap();
-        authority.register(&named, &[issuer], 1).unwrap();
-        authority.register(&bearer.token, &[issuer], 1).unwrap();
-        let initial = authority.projection(record_id, 10);
-        assert_eq!(initial.grants.len(), 2);
-        let named_projection = initial
-            .grants
-            .iter()
-            .find(|grant| grant.grant_id == named.id)
+                &issuer_sk,
+            )
             .unwrap();
-        assert_eq!(
-            named_projection.subject,
-            ShareSubjectProjection::Person { person }
-        );
-        assert_eq!(named_projection.permission, FilePermission::Edit);
-        assert_eq!(named_projection.status, ShareGrantStatus::Active);
-        assert!(!named_projection.revoked);
-        assert!(!named_projection.expired);
-        assert!(!named_projection.used);
+            let authority = ShareAuthority::open(dir.path().join("shares.json")).unwrap();
+            authority.register(&token, &[issuer], 1).unwrap();
+            authority
+                .authorize_named(&token, person, FilePermission::View, 2)
+                .unwrap();
+            assert!(matches!(
+                authority.authorize_named(&token, stranger, FilePermission::View, 2),
+                Err(ShareAuthorityError::WrongRecipient)
+            ));
+            assert!(matches!(
+                authority.authorize_named(&token, person, FilePermission::Edit, 2),
+                Err(ShareAuthorityError::InsufficientPermission)
+            ));
+            authority.revoke(token.id).unwrap();
+            assert!(matches!(
+                authority.authorize_named(&token, person, FilePermission::View, 3),
+                Err(ShareAuthorityError::Revoked)
+            ));
+        }
+    }
 
-        let bytes = initial.to_xattr_bytes().unwrap();
-        let json = String::from_utf8(bytes.clone()).unwrap();
-        assert!(!json.contains("secret"));
-        assert!(!json.contains(&hex::encode(bearer.secret)));
-        assert_eq!(ShareProjectionV1::parse_xattr(&bytes).unwrap(), initial);
+    #[test]
+    fn untrusted_skewed_or_revoked_authority_fails_closed() {
+        // Phase `release_evidence_forward_clock_skew_expires_grants_fail_closed`.
+        {
+            let (dir, issuer, invite) = limited_invite();
+            let authority = ShareAuthority::open(dir.path().join("shares.json")).unwrap();
+            authority.register(&invite.token, &[issuer], 9_999).unwrap();
+            assert!(matches!(
+                authority.redeem(&invite.token, &invite.secret, actor(10), 10_000),
+                Err(ShareAuthorityError::Invite(_))
+            ));
+            let projection = authority.projection(invite.token.record_id, 10_000);
+            assert_eq!(projection.grants.len(), 1);
+            assert_eq!(projection.grants[0].status, ShareGrantStatus::Expired);
+        }
+        // Phase `revocation_and_untrusted_issuers_fail_closed`.
+        {
+            let (dir, issuer, invite) = limited_invite();
+            let authority = ShareAuthority::open(dir.path().join("shares.json")).unwrap();
+            assert!(matches!(
+                authority.register(&invite.token, &[], 1),
+                Err(ShareAuthorityError::UntrustedIssuer)
+            ));
+            authority.register(&invite.token, &[issuer], 1).unwrap();
+            assert!(authority.revoke(invite.token.id).unwrap());
+            assert!(matches!(
+                authority.redeem(&invite.token, &invite.secret, actor(50), 2),
+                Err(ShareAuthorityError::Revoked)
+            ));
+        }
+    }
 
-        authority
-            .redeem(&bearer.token, &bearer.secret, actor(60), 20)
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn authority_projection_is_redacted_bounded_and_validated_on_restart() {
+        // Phase `redacted_projection_survives_restart_and_tracks_live_state`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("shares.json");
+            let (issuer_sk, issuer) = collab_types::generate_keypair();
+            let (_, person) = collab_types::generate_keypair();
+            let workspace_id = Uuid::new_v4();
+            let record_id = FileRecordId::new();
+            let named = mint_file_invite(
+                FileInviteSpec {
+                    workspace_id,
+                    record_id,
+                    subject: FileInviteSubject::Person(person),
+                    permission: FilePermission::Edit,
+                    expires_at_ms: Some(500),
+                    max_redemptions: None,
+                },
+                &issuer_sk,
+            )
             .unwrap();
-        authority.revoke(named.id).unwrap();
-        drop(authority);
+            let mut rng = UnwrapErr(SysRng);
+            let bearer = mint_bearer_file_invite(
+                FileInviteSpec {
+                    workspace_id,
+                    record_id,
+                    subject: FileInviteSubject::Bearer {
+                        secret_hash: [0; 32],
+                    },
+                    permission: FilePermission::View,
+                    expires_at_ms: Some(300),
+                    max_redemptions: Some(1),
+                },
+                &issuer_sk,
+                &mut rng,
+            )
+            .unwrap();
 
-        let reopened = ShareAuthority::open(path).unwrap();
-        let live = reopened.projection(record_id, 25);
-        assert_eq!(live.grants.len(), 2);
-        assert_eq!(
-            live.grants
+            let authority = ShareAuthority::open(&path).unwrap();
+            authority.register(&named, &[issuer], 1).unwrap();
+            authority.register(&bearer.token, &[issuer], 1).unwrap();
+            let initial = authority.projection(record_id, 10);
+            assert_eq!(initial.grants.len(), 2);
+            let named_projection = initial
+                .grants
                 .iter()
                 .find(|grant| grant.grant_id == named.id)
-                .unwrap()
-                .status,
-            ShareGrantStatus::Revoked
-        );
-        let link = live
-            .grants
-            .iter()
-            .find(|grant| grant.grant_id == bearer.token.id)
-            .unwrap();
-        assert_eq!(link.subject, ShareSubjectProjection::BearerLink);
-        assert_eq!(link.redemptions, 1);
-        assert_eq!(link.max_redemptions, Some(1));
-        assert!(link.used);
-        assert!(link.exhausted);
-        assert_eq!(link.status, ShareGrantStatus::Exhausted);
+                .unwrap();
+            assert_eq!(
+                named_projection.subject,
+                ShareSubjectProjection::Person { person }
+            );
+            assert_eq!(named_projection.permission, FilePermission::Edit);
+            assert_eq!(named_projection.status, ShareGrantStatus::Active);
+            assert!(!named_projection.revoked);
+            assert!(!named_projection.expired);
+            assert!(!named_projection.used);
 
-        let expired = reopened.projection(record_id, 300);
-        assert_eq!(
-            expired
+            let bytes = initial.to_xattr_bytes().unwrap();
+            let json = String::from_utf8(bytes.clone()).unwrap();
+            assert!(!json.contains("secret"));
+            assert!(!json.contains(&hex::encode(bearer.secret)));
+            assert_eq!(ShareProjectionV1::parse_xattr(&bytes).unwrap(), initial);
+
+            authority
+                .redeem(&bearer.token, &bearer.secret, actor(60), 20)
+                .unwrap();
+            authority.revoke(named.id).unwrap();
+            drop(authority);
+
+            let reopened = ShareAuthority::open(path).unwrap();
+            let live = reopened.projection(record_id, 25);
+            assert_eq!(live.grants.len(), 2);
+            assert_eq!(
+                live.grants
+                    .iter()
+                    .find(|grant| grant.grant_id == named.id)
+                    .unwrap()
+                    .status,
+                ShareGrantStatus::Revoked
+            );
+            let link = live
                 .grants
                 .iter()
                 .find(|grant| grant.grant_id == bearer.token.id)
-                .unwrap()
-                .status,
-            ShareGrantStatus::Expired
-        );
-    }
+                .unwrap();
+            assert_eq!(link.subject, ShareSubjectProjection::BearerLink);
+            assert_eq!(link.redemptions, 1);
+            assert_eq!(link.max_redemptions, Some(1));
+            assert!(link.used);
+            assert!(link.exhausted);
+            assert_eq!(link.status, ShareGrantStatus::Exhausted);
 
-    #[test]
-    fn authority_enforces_projection_cardinality_bound() {
-        let dir = tempfile::tempdir().unwrap();
-        let (issuer_sk, issuer) = collab_types::generate_keypair();
-        let (_, person) = collab_types::generate_keypair();
-        let workspace_id = Uuid::new_v4();
-        let record_id = FileRecordId::new();
-        let authority = ShareAuthority::open(dir.path().join("shares.json")).unwrap();
-        for _ in 0..MAX_SHARES_PER_RECORD {
-            let token = mint_file_invite(
+            let expired = reopened.projection(record_id, 300);
+            assert_eq!(
+                expired
+                    .grants
+                    .iter()
+                    .find(|grant| grant.grant_id == bearer.token.id)
+                    .unwrap()
+                    .status,
+                ShareGrantStatus::Expired
+            );
+        }
+        // Phase `authority_enforces_projection_cardinality_bound`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let (issuer_sk, issuer) = collab_types::generate_keypair();
+            let (_, person) = collab_types::generate_keypair();
+            let workspace_id = Uuid::new_v4();
+            let record_id = FileRecordId::new();
+            let authority = ShareAuthority::open(dir.path().join("shares.json")).unwrap();
+            for _ in 0..MAX_SHARES_PER_RECORD {
+                let token = mint_file_invite(
+                    FileInviteSpec {
+                        workspace_id,
+                        record_id,
+                        subject: FileInviteSubject::Person(person),
+                        permission: FilePermission::View,
+                        expires_at_ms: None,
+                        max_redemptions: None,
+                    },
+                    &issuer_sk,
+                )
+                .unwrap();
+                authority.register(&token, &[issuer], 1).unwrap();
+            }
+            let overflow = mint_file_invite(
                 FileInviteSpec {
                     workspace_id,
                     record_id,
@@ -971,62 +993,48 @@ mod tests {
                 &issuer_sk,
             )
             .unwrap();
-            authority.register(&token, &[issuer], 1).unwrap();
+            assert!(matches!(
+                authority.register(&overflow, &[issuer], 1),
+                Err(ShareAuthorityError::TooManyRecordGrants)
+            ));
+            let projection = authority.projection(record_id, 2);
+            assert_eq!(projection.grants.len(), MAX_SHARES_PER_RECORD);
+            assert!(projection.to_xattr_bytes().unwrap().len() <= MAX_SHARE_PROJECTION_BYTES);
         }
-        let overflow = mint_file_invite(
-            FileInviteSpec {
-                workspace_id,
-                record_id,
-                subject: FileInviteSubject::Person(person),
-                permission: FilePermission::View,
-                expires_at_ms: None,
-                max_redemptions: None,
-            },
-            &issuer_sk,
-        )
-        .unwrap();
-        assert!(matches!(
-            authority.register(&overflow, &[issuer], 1),
-            Err(ShareAuthorityError::TooManyRecordGrants)
-        ));
-        let projection = authority.projection(record_id, 2);
-        assert_eq!(projection.grants.len(), MAX_SHARES_PER_RECORD);
-        assert!(projection.to_xattr_bytes().unwrap().len() <= MAX_SHARE_PROJECTION_BYTES);
-    }
+        // Phase `restart_rejects_inconsistent_and_oversized_authority_state`.
+        {
+            let (dir, issuer, invite) = limited_invite();
+            let path = dir.path().join("shares.json");
+            let authority = ShareAuthority::open(&path).unwrap();
+            authority.register(&invite.token, &[issuer], 1).unwrap();
+            authority
+                .redeem(&invite.token, &invite.secret, actor(70), 2)
+                .unwrap();
+            drop(authority);
 
-    #[test]
-    fn restart_rejects_inconsistent_and_oversized_authority_state() {
-        let (dir, issuer, invite) = limited_invite();
-        let path = dir.path().join("shares.json");
-        let authority = ShareAuthority::open(&path).unwrap();
-        authority.register(&invite.token, &[issuer], 1).unwrap();
-        authority
-            .redeem(&invite.token, &invite.secret, actor(70), 2)
-            .unwrap();
-        drop(authority);
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let row = value["grants"]
+                .get_mut(invite.token.id.to_string())
+                .unwrap();
+            let duplicate = row["redemption_actors"][0].clone();
+            row["redemption_actors"]
+                .as_array_mut()
+                .unwrap()
+                .push(duplicate);
+            std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+            assert!(matches!(
+                ShareAuthority::open(&path),
+                Err(ShareAuthorityError::InvalidState)
+            ));
 
-        let mut value: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        let row = value["grants"]
-            .get_mut(invite.token.id.to_string())
-            .unwrap();
-        let duplicate = row["redemption_actors"][0].clone();
-        row["redemption_actors"]
-            .as_array_mut()
-            .unwrap()
-            .push(duplicate);
-        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-        assert!(matches!(
-            ShareAuthority::open(&path),
-            Err(ShareAuthorityError::InvalidState)
-        ));
-
-        let oversized = dir.path().join("oversized.json");
-        let file = std::fs::File::create(&oversized).unwrap();
-        file.set_len(MAX_SHARE_AUTHORITY_FILE_BYTES + 1).unwrap();
-        assert!(matches!(
-            ShareAuthority::open(oversized),
-            Err(ShareAuthorityError::StateTooLarge)
-        ));
+            let oversized = dir.path().join("oversized.json");
+            let file = std::fs::File::create(&oversized).unwrap();
+            file.set_len(MAX_SHARE_AUTHORITY_FILE_BYTES + 1).unwrap();
+            assert!(matches!(
+                ShareAuthority::open(oversized),
+                Err(ShareAuthorityError::StateTooLarge)
+            ));
+        }
     }
 }

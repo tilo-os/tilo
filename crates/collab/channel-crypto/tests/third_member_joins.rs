@@ -35,7 +35,18 @@ fn two_member_group_plus_carol() -> (ChannelId, ChannelGroup, ChannelGroup, Memb
     (cid, alice_g, bob_g, carol)
 }
 
+/// Carol joins via welcome after a two-member setup, can encrypt for Alice and Bob, Alice can
+/// still encrypt, the epoch increments once per add, and a multi-party add cannot drop the commit.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn a_third_member_joins_and_everyone_can_talk() {
+    carol_joins_via_welcome_after_two_member_setup();
+    carol_can_encrypt_for_alice_and_bob();
+    alice_can_encrypt_after_third_member_joins();
+    epoch_increments_once_per_add();
+    multi_party_add_cannot_drop_the_commit();
+}
+
 fn carol_joins_via_welcome_after_two_member_setup() {
     let (cid, mut alice_g, mut bob_g, carol) = two_member_group_plus_carol();
     let carol_kp = carol.fresh_key_package().unwrap();
@@ -52,7 +63,6 @@ fn carol_joins_via_welcome_after_two_member_setup() {
     assert_eq!(bob_g.epoch(), carol_g.epoch());
 }
 
-#[test]
 fn carol_can_encrypt_for_alice_and_bob() {
     let (cid, mut alice_g, mut bob_g, carol) = two_member_group_plus_carol();
     let carol_kp = carol.fresh_key_package().unwrap();
@@ -71,7 +81,6 @@ fn carol_can_encrypt_for_alice_and_bob() {
     assert_eq!(pt_b, b"hi from carol");
 }
 
-#[test]
 fn alice_can_encrypt_after_third_member_joins() {
     // Verifies the key schedule advances cleanly: alice keeps her
     // group state usable after the commit-merge.
@@ -90,7 +99,15 @@ fn alice_can_encrypt_after_third_member_joins() {
     assert_eq!(pt_c, b"alice for carol");
 }
 
+/// Bob, who missed the commit, cannot decrypt post-join ciphertexts; a removal commit advances
+/// survivors and excludes the removed member.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn members_who_miss_or_are_removed_by_a_commit_cannot_decrypt_after_it() {
+    bob_who_missed_the_commit_cannot_decrypt_post_join_ciphertexts();
+    removal_commit_advances_survivors_and_excludes_removed_member();
+}
+
 fn bob_who_missed_the_commit_cannot_decrypt_post_join_ciphertexts() {
     // The failure mode: if a peer misses the commit (e.g. broker offline
     // at the wrong moment), it stays at the old epoch and reading
@@ -113,7 +130,6 @@ fn bob_who_missed_the_commit_cannot_decrypt_post_join_ciphertexts() {
     );
 }
 
-#[test]
 fn epoch_increments_once_per_add() {
     let (_cid, mut alice_g, _bob_g, carol) = two_member_group_plus_carol();
     let epoch_after_bob = alice_g.epoch();
@@ -122,7 +138,6 @@ fn epoch_increments_once_per_add() {
     assert_eq!(alice_g.epoch(), epoch_after_bob + 1);
 }
 
-#[test]
 fn multi_party_add_cannot_drop_the_commit() {
     let (_cid, mut alice_g, _bob_g, carol) = two_member_group_plus_carol();
     let error = alice_g
@@ -135,7 +150,6 @@ fn multi_party_add_cannot_drop_the_commit() {
     assert_eq!(alice_g.member_count(), 2);
 }
 
-#[test]
 fn removal_commit_advances_survivors_and_excludes_removed_member() {
     let (cid, mut alice_g, mut bob_g, carol) = two_member_group_plus_carol();
     let (welcome, add_commit) = alice_g

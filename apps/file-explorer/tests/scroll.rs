@@ -22,16 +22,13 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::collections::HashMap;
-
 use file_explorer::FileExplorerWidget;
 use file_explorer::files_app::STATUS_BUBBLE_SAFE_INSET_PX;
 use file_explorer::model::ViewMode;
-use taffy::prelude::*;
-use ui::text_render::TextRenderer;
+use ui::headless::Framed;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::Rect;
 use winit::event::{
     ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
 };
@@ -46,17 +43,10 @@ fn dir_with_files(n: usize) -> tempfile::TempDir {
     d
 }
 
-/// The five-pass host: build the widget tree, lay it out at `w`×`h`, and hand
-/// back the taffy tree + the widget's own node so the caller can drive events
-/// and re-run `apply_layout` after a scroll.
+/// The production host: mount the widget tree at `w`×`h` and run its frames,
+/// so the caller can drive events and re-run the frame after a scroll.
 struct Harness {
-    widget: FileExplorerWidget,
-    taffy: TaffyTree<()>,
-    self_node: NodeId,
-    tr: TextRenderer,
-    state: ui::State,
-    w: f32,
-    h: f32,
+    widget: Framed<FileExplorerWidget>,
 }
 
 impl Harness {
@@ -69,116 +59,32 @@ impl Harness {
             "test needs a long directory; got {}",
             widget.entries_snapshot().len()
         );
-
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let mut tr = TextRenderer::new();
-        let mut state = ui::State::new();
-        widget.sync(&mut state.doc, &state.root);
-
-        let self_node = widget.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(w),
-                        height: Dimension::length(h),
-                    },
-                    ..Default::default()
-                },
-                &[self_node],
-            )
-            .unwrap();
-        {
-            let measure_map = node_map.clone();
-            let trm = &mut tr;
-            taffy
-                .compute_layout_with_measure(
-                    root,
-                    Size {
-                        width: AvailableSpace::Definite(w),
-                        height: AvailableSpace::Definite(h),
-                    },
-                    |known, available, node_id, _, _| {
-                        if let Some(&ptr) = measure_map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, available, trm) }
-                        } else {
-                            Size::ZERO
-                        }
-                    },
-                )
-                .unwrap();
-        }
-        widget.apply_layout(&taffy, self_node, Point::ORIGIN);
         Self {
-            widget,
-            taffy,
-            self_node,
-            tr,
-            state,
-            w,
-            h,
+            widget: Framed::new(
+                ui::State::new(),
+                widget,
+                ui::headless::viewport((w, h)),
+                Theme::dark(),
+            ),
         }
     }
 
-    /// Re-run only `apply_layout` — the scroll offset lives in the Scrollable
-    /// and is applied to descendants there, so this is the exact pass the App
-    /// re-runs after a wheel/drag flags the layout dirty.
+    /// Run the next frame. The scroll offset lives in the Scrollable and is
+    /// applied to descendants there; with no structural change the host only
+    /// re-applies the retained layout, the exact pass the App re-runs after a
+    /// wheel/drag flags the layout dirty.
     fn relayout(&mut self) {
-        self.widget
-            .apply_layout(&self.taffy, self.self_node, Point::ORIGIN);
+        Framed::harness_mut(&mut self.widget).relayout();
     }
 
-    /// Render the current laid-out frame to a PNG — the same offscreen path
-    /// `--shots` uses, so the image is what a live window would show.
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "self.w/self.h are small positive test-viewport literals set by `new`, never hostile input"
-    )]
-    fn shot(&mut self, out: &std::path::Path) {
-        use ui::offscreen::OffscreenRenderer;
-        use ui::permissions::PermissionContext;
-        use ui::presence::PresenceCtx;
-        let theme = Theme::dark();
-        let presence = PresenceCtx::empty();
-        let permission = PermissionContext::permissive();
-        let mut scene = vello::Scene::new();
-        self.widget.draw_with_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut self.tr,
-            &theme,
-            &presence,
-            &permission,
-        );
-        self.widget.draw_overlay(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut self.tr,
-            &theme,
-            &presence,
-        );
-        let mut renderer = OffscreenRenderer::new(self.w as u32, self.h as u32);
-        renderer.render_png(&scene, vello::peniko::Color::from_rgb8(18, 18, 22), out);
+    /// Render the current frame to a PNG — the same offscreen path `--shots`
+    /// uses, so the image is what a live window would show.
+    fn shot(&self, out: &std::path::Path) {
+        Framed::harness(&self.widget).render_png(out);
     }
 
     fn dispatch(&mut self, event: &WindowEvent, modifiers: Modifiers) -> bool {
-        let mut handled = false;
-        let mut focus_target = None;
-        self.widget.handle_event(
-            event,
-            1.0,
-            &modifiers,
-            &mut self.state.doc,
-            &self.state.root,
-            &mut handled,
-            &mut focus_target,
-            self.self_node,
-            &self.taffy,
-        );
-        handled
+        Framed::harness_mut(&mut self.widget).dispatch_to_root_with(event, &modifiers)
     }
 
     fn wheel(&mut self, notches_down: f32) {
@@ -223,7 +129,7 @@ impl Harness {
             }
             None
         }
-        find(&self.widget, name).unwrap_or_else(|| panic!("no `{name}` widget in the tree"))
+        find(&*self.widget, name).unwrap_or_else(|| panic!("no `{name}` widget in the tree"))
     }
 }
 
@@ -300,12 +206,20 @@ fn assert_scrolls_via_wheel(mode: ViewMode) {
     );
 }
 
+/// List and grid wheel scrolling, the list thumb drag, and the opt-in
+/// (`SCROLL_SHOT_DIR`) before/after renders — each phase on a fresh directory.
 #[test]
+fn long_directories_scroll_by_wheel_and_thumb_with_optional_shots() {
+    list_scrolls_with_the_mouse_wheel();
+    grid_scrolls_with_the_mouse_wheel();
+    list_scrolls_by_dragging_the_scrollbar_thumb();
+    scroll_before_after_shots();
+}
+
 fn list_scrolls_with_the_mouse_wheel() {
     assert_scrolls_via_wheel(ViewMode::List);
 }
 
-#[test]
 fn grid_scrolls_with_the_mouse_wheel() {
     assert_scrolls_via_wheel(ViewMode::Grid);
 }
@@ -314,7 +228,6 @@ fn grid_scrolls_with_the_mouse_wheel() {
 /// scrolled to the bottom, into two PNGs. Opt-in via `SCROLL_SHOT_DIR` (needs
 /// a GPU/software-wgpu path) so the standard `cargo test` run stays fast and
 /// display-free; the driven-scroll asserts above are the always-on proof.
-#[test]
 fn scroll_before_after_shots() {
     let Ok(dir_out) = std::env::var("SCROLL_SHOT_DIR") else {
         return;
@@ -339,7 +252,6 @@ fn scroll_before_after_shots() {
     }
 }
 
-#[test]
 fn list_scrolls_by_dragging_the_scrollbar_thumb() {
     let dir = dir_with_files(160);
     let mut h = Harness::new(dir.path(), ViewMode::List, 1000.0, 600.0);

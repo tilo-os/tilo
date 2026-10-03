@@ -52,40 +52,32 @@
 /// worker to finish, so repeated load/stop never creates parallel initializers.
 struct Initialization<T> {
     result: Option<std::sync::mpsc::Receiver<Result<T, String>>>,
+    #[cfg_attr(
+        not(feature = "audio"),
+        allow(
+            dead_code,
+            reason = "only the GStreamer backend initializes on a worker"
+        )
+    )]
     finished: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
-impl<T: Send + 'static> Initialization<T> {
-    fn spawn(initialize: impl FnOnce() -> Result<T, String> + Send + 'static) -> Self {
+impl<T> Initialization<T> {
+    /// A job that already finished on the caller's thread: a backend that
+    /// needs no native initialization (the page's media element).
+    #[cfg_attr(
+        feature = "audio",
+        allow(
+            dead_code,
+            reason = "the GStreamer build always initializes on a worker"
+        )
+    )]
+    fn ready(result: Result<T, String>) -> Self {
         let (sender, receiver) = std::sync::mpsc::channel();
-        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let worker_finished = finished.clone();
-        let spawned = std::thread::Builder::new()
-            .name("music-audio-init".into())
-            .spawn(move || {
-                // Ensure completion is visible even if a native wrapper panics.
-                struct Finish(std::sync::Arc<std::sync::atomic::AtomicBool>);
-                impl Drop for Finish {
-                    fn drop(&mut self) {
-                        self.0.store(true, std::sync::atomic::Ordering::Release);
-                    }
-                }
-                let _finish = Finish(worker_finished);
-                // A canceled receiver disposes the backend here, on this worker.
-                drop(sender.send(initialize()));
-            });
-        if let Err(error) = spawned {
-            let (sender, receiver) = std::sync::mpsc::channel();
-            let _ = sender.send(Err(format!("cannot start audio initialization: {error}")));
-            finished.store(true, std::sync::atomic::Ordering::Release);
-            return Self {
-                result: Some(receiver),
-                finished,
-            };
-        }
+        let _ = sender.send(result);
         Self {
             result: Some(receiver),
-            finished,
+            finished: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 
@@ -103,8 +95,55 @@ impl<T: Send + 'static> Initialization<T> {
         self.result = None;
     }
 
+    #[cfg_attr(
+        not(feature = "audio"),
+        allow(
+            dead_code,
+            reason = "only the GStreamer backend initializes on a worker"
+        )
+    )]
     fn canceled_and_finished(&self) -> bool {
         self.result.is_none() && self.finished.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+impl<T: Send + 'static> Initialization<T> {
+    #[cfg_attr(
+        not(feature = "audio"),
+        allow(
+            dead_code,
+            reason = "only the GStreamer backend initializes on a worker"
+        )
+    )]
+    fn spawn(initialize: impl FnOnce() -> Result<T, String> + Send + 'static) -> Self {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_finished = finished.clone();
+        let spawned = ui::rt::spawn_thread("music-audio-init", move || {
+            // Ensure completion is visible even if a native wrapper panics.
+            struct Finish(std::sync::Arc<std::sync::atomic::AtomicBool>);
+            impl Drop for Finish {
+                fn drop(&mut self) {
+                    self.0.store(true, std::sync::atomic::Ordering::Release);
+                }
+            }
+            let _finish = Finish(worker_finished);
+            // A canceled receiver disposes the backend here, on this worker.
+            drop(sender.send(initialize()));
+        });
+        if let Err(error) = spawned {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let _ = sender.send(Err(format!("cannot start audio initialization: {error}")));
+            finished.store(true, std::sync::atomic::Ordering::Release);
+            return Self {
+                result: Some(receiver),
+                finished,
+            };
+        }
+        Self {
+            result: Some(receiver),
+            finished,
+        }
     }
 }
 
@@ -221,8 +260,8 @@ pub struct AudioEngine {
     volume: f32,
     want_play: bool,
     pending_seek: Option<u64>,
-    seek_started: Option<std::time::Instant>,
-    preroll_started: Option<std::time::Instant>,
+    seek_started: Option<ui::time::Instant>,
+    preroll_started: Option<ui::time::Instant>,
     initialization_failed: bool,
     initialization_error: std::sync::Mutex<Option<String>>,
     #[cfg(feature = "audio")]
@@ -323,6 +362,10 @@ impl AudioEngine {
                 }));
             }
         }
+        #[cfg(not(feature = "audio"))]
+        if self.initialization.is_none() && !self.initialization_failed && element_playback() {
+            self.initialization = Some(Initialization::ready(AudioBackend::try_new()));
+        }
     }
 
     /// Poll only while a source needs initialization or a deferred seek. Stop
@@ -395,9 +438,7 @@ impl AudioEngine {
             {
                 return;
             }
-            let started = self
-                .seek_started
-                .get_or_insert_with(std::time::Instant::now);
+            let started = self.seek_started.get_or_insert_with(ui::time::now);
             let outcome = backend.try_seek_ms(ms).or_else(|| {
                 (started.elapsed() >= std::time::Duration::from_secs(5))
                     .then(|| Err("audio source did not become seekable within five seconds".into()))
@@ -441,7 +482,7 @@ impl AudioEngine {
         Self::is_live() && self.current_uri.is_some()
     }
     pub fn is_live() -> bool {
-        cfg!(feature = "audio")
+        cfg!(feature = "audio") || element_playback()
     }
     pub fn is_playing_real(&self) -> bool {
         self.backend
@@ -450,6 +491,10 @@ impl AudioEngine {
     }
 
     /// A settled PLAYING state, excluding a pipeline merely transitioning there.
+    #[cfg_attr(
+        not(feature = "audio"),
+        allow(dead_code, reason = "only the GStreamer backend confirms playback")
+    )]
     pub(crate) fn is_playing_confirmed(&self) -> bool {
         self.want_play
             && self.current_uri.is_some()
@@ -504,9 +549,7 @@ impl AudioEngine {
                 }) {
                     return self.initialization_failed;
                 }
-                let started = self
-                    .preroll_started
-                    .get_or_insert_with(std::time::Instant::now);
+                let started = self.preroll_started.get_or_insert_with(ui::time::now);
                 if started.elapsed() >= std::time::Duration::from_secs(5) {
                     self.initialization_failed = true;
                     if let Ok(message) = self.initialization_error.get_mut() {
@@ -557,10 +600,36 @@ impl AudioEngine {
         self.backend.as_ref()?.audio_sink_is_real()
     }
 
+    /// Where a source stands on its way to audio, for a test's failure message.
+    #[cfg(all(test, feature = "audio"))]
+    pub fn diagnostics(&self) -> String {
+        use gstreamer::prelude::*;
+        let pipeline = self.backend.as_ref().map(|backend| {
+            let (result, current, pending) =
+                backend.inner.playbin.state(gstreamer::ClockTime::ZERO);
+            format!(
+                "{result:?} {current:?}->{pending:?}, sink {:?}",
+                backend.inner.sink.as_ref().map(GstObjectExt::name)
+            )
+        });
+        format!(
+            "uri {:?}, initializing {}, pipeline {pipeline:?}, frames {}, want_play {}, \
+             pending_seek {:?}, preroll {:?}, failed {}, capture {:?}",
+            self.current_uri,
+            self.initialization.is_some(),
+            self.frames_rendered(),
+            self.want_play,
+            self.pending_seek,
+            self.preroll_started.map(|started| started.elapsed()),
+            self.initialization_failed,
+            self.capture().map(PcmCapture::snapshot),
+        )
+    }
+
     /// Bounded test/probe helper; production frames call `pump` instead.
     #[cfg(feature = "audio")]
     pub fn wait_until_playing(&mut self, timeout: std::time::Duration) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
+        let deadline = ui::time::now() + timeout;
         loop {
             if self.pump() {
                 return false;
@@ -571,10 +640,12 @@ impl AudioEngine {
             }) {
                 return true;
             }
-            if std::time::Instant::now() >= deadline {
+            if ui::time::now() >= deadline {
                 return false;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            if ui::rt::sleep_thread(std::time::Duration::from_millis(5)).is_err() {
+                return false;
+            }
         }
     }
 }
@@ -625,65 +696,61 @@ impl OfflineDownload {
             let parent = partial
                 .parent()
                 .ok_or_else(|| "offline cache path has no parent".to_string())?;
-            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            crate::files::create_dir_all(parent).map_err(|error| error.to_string())?;
             let cancel_thread = cancel.clone();
             let fetched_thread = fetched.clone();
             let expected_thread = expected.clone();
-            std::thread::Builder::new()
-                .name("tilo-music-offline-dl".into())
-                .spawn(move || {
-                    use std::sync::atomic::Ordering::Relaxed;
-                    let outcome = (|| -> Result<(), String> {
-                        let mut file =
-                            std::fs::File::create(&partial).map_err(|error| error.to_string())?;
-                        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                        let mut wrote = download_into(
-                            &uri,
+            ui::rt::spawn_thread("tilo-music-offline-dl", move || {
+                use std::sync::atomic::Ordering::Relaxed;
+                let outcome = (|| -> Result<(), String> {
+                    let mut file = crate::files::Growing::create(&partial)
+                        .map_err(|error| error.to_string())?;
+                    let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let mut wrote = download_into(
+                        &uri,
+                        &mut file,
+                        &ready,
+                        &fetched_thread,
+                        &expected_thread,
+                        &cancel_thread,
+                    );
+                    if wrote == 0
+                        && let Some(fallback) = fallback
+                    {
+                        fetched_thread.store(0, Relaxed);
+                        expected_thread.store(0, Relaxed);
+                        file.reset().map_err(|error| error.to_string())?;
+                        wrote = download_into(
+                            &fallback,
                             &mut file,
                             &ready,
                             &fetched_thread,
                             &expected_thread,
                             &cancel_thread,
                         );
-                        if wrote == 0
-                            && let Some(fallback) = fallback
-                        {
-                            fetched_thread.store(0, Relaxed);
-                            expected_thread.store(0, Relaxed);
-                            file.set_len(0).map_err(|error| error.to_string())?;
-                            std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(0))
-                                .map_err(|error| error.to_string())?;
-                            wrote = download_into(
-                                &fallback,
-                                &mut file,
-                                &ready,
-                                &fetched_thread,
-                                &expected_thread,
-                                &cancel_thread,
-                            );
-                        }
-                        let declared = expected_thread.load(Relaxed);
-                        if cancel_thread.load(Relaxed) {
-                            return Err("offline download cancelled".into());
-                        }
-                        if wrote == 0 || (declared > 0 && wrote < declared) {
-                            return Err("source did not deliver a complete audio file".into());
-                        }
-                        std::io::Write::flush(&mut file).map_err(|error| error.to_string())?;
-                        crate::storage::install_completed_media_file(
-                            &root,
-                            &track_id,
-                            &partial,
-                            crate::storage::media_cache_quota(),
-                        )
-                        .map_err(|error| error.to_string())
-                    })();
-                    if outcome.is_err() {
-                        let _ = std::fs::remove_file(&partial);
                     }
-                    let _ = tx.send(outcome);
-                })
-                .map_err(|error| error.to_string())?;
+                    let declared = expected_thread.load(Relaxed);
+                    if cancel_thread.load(Relaxed) {
+                        return Err("offline download cancelled".into());
+                    }
+                    if wrote == 0 || (declared > 0 && wrote < declared) {
+                        return Err("source did not deliver a complete audio file".into());
+                    }
+                    std::io::Write::flush(&mut file).map_err(|error| error.to_string())?;
+                    crate::storage::install_completed_media_file(
+                        &root,
+                        &track_id,
+                        &partial,
+                        crate::storage::media_cache_quota(),
+                    )
+                    .map_err(|error| error.to_string())
+                })();
+                if outcome.is_err() {
+                    crate::files::remove(&partial);
+                }
+                let _ = tx.send(outcome);
+            })
+            .map_err(|error| error.to_string())?;
             Ok(Self {
                 cancel,
                 fetched,
@@ -779,17 +846,31 @@ struct Pending {
     started: bool,
 }
 
+/// Without `GStreamer`, the platform's own player where it has one (the page's
+/// media element, through `media::MediaEngine`); elsewhere a silent stub.
 #[cfg(not(feature = "audio"))]
 struct Inner {
-    /// Stub bookkeeping: whether the (silent) transport is "playing".
-    playing: bool,
+    engine: Option<media::MediaEngine>,
+    duration_known: bool,
+    eos: bool,
+    error: std::sync::Mutex<Option<String>>,
+}
+
+/// Whether the platform plays media without `GStreamer` (the web).
+fn element_playback() -> bool {
+    !cfg!(feature = "audio")
+        && media::availability(media::Feature::Playback) == media::Availability::Available
 }
 
 impl AudioBackend {
     /// Construct the actual pipeline on the initialization worker.
     #[cfg_attr(
         not(feature = "audio"),
-        allow(dead_code, reason = "the silent build never starts a backend")
+        allow(
+            dead_code,
+            clippy::unnecessary_wraps,
+            reason = "the silent build never starts a backend"
+        )
     )]
     fn try_new(#[cfg(feature = "audio")] output: &AudioOutput) -> Result<Self, String> {
         #[cfg(feature = "audio")]
@@ -823,7 +904,12 @@ impl AudioBackend {
             }
         };
         #[cfg(not(feature = "audio"))]
-        let inner = Inner { playing: false };
+        let inner = Inner {
+            engine: element_playback().then(media::MediaEngine::new),
+            duration_known: false,
+            eos: false,
+            error: std::sync::Mutex::new(None),
+        };
         Ok(Self {
             inner,
             current_uri: None,
@@ -876,6 +962,15 @@ impl AudioBackend {
                 .playbin
                 .set_property("volume", f64::from(self.volume));
         }
+        #[cfg(not(feature = "audio"))]
+        if let Some(engine) = &mut self.inner.engine {
+            self.inner.duration_known = false;
+            self.inner.eos = false;
+            engine.open(media::Source::Remote {
+                url: uri.to_owned(),
+            });
+            engine.set_volume(self.volume);
+        }
     }
 
     pub fn play(&mut self) {
@@ -894,8 +989,8 @@ impl AudioBackend {
             let _ = self.inner.playbin.set_state(gstreamer::State::Playing);
         }
         #[cfg(not(feature = "audio"))]
-        {
-            self.inner.playing = true;
+        if let Some(engine) = &mut self.inner.engine {
+            engine.play();
         }
     }
 
@@ -913,8 +1008,8 @@ impl AudioBackend {
             let _ = self.inner.playbin.set_state(gstreamer::State::Paused);
         }
         #[cfg(not(feature = "audio"))]
-        {
-            self.inner.playing = false;
+        if let Some(engine) = &mut self.inner.engine {
+            engine.pause();
         }
     }
 
@@ -935,8 +1030,9 @@ impl AudioBackend {
             self.clear_pending();
         }
         #[cfg(not(feature = "audio"))]
-        {
-            self.inner.playing = false;
+        if let Some(engine) = &mut self.inner.engine {
+            engine.pause();
+            self.inner.eos = false;
         }
     }
 
@@ -950,7 +1046,14 @@ impl AudioBackend {
     /// off the end of the file, the pipeline hit EOS, and the transport snapped
     /// to the end / advanced. With a fully-rangeable source and this clamp, a
     /// seek repositions the pipeline instead of ending the track.
-    fn try_seek_ms(&self, ms: u64) -> Option<Result<(), String>> {
+    #[cfg_attr(
+        feature = "audio",
+        allow(
+            clippy::needless_pass_by_ref_mut,
+            reason = "the element backend seeks through its engine"
+        )
+    )]
+    fn try_seek_ms(&mut self, ms: u64) -> Option<Result<(), String>> {
         #[cfg(feature = "audio")]
         {
             use gstreamer::prelude::*;
@@ -982,7 +1085,14 @@ impl AudioBackend {
         }
         #[cfg(not(feature = "audio"))]
         {
-            let _ = ms;
+            let engine = self.inner.engine.as_mut()?;
+            let target = engine
+                .duration_ms()
+                .filter(|d| *d > 0)
+                .map_or(ms, |d| ms.min(d.saturating_sub(250)));
+            // The element seeks asynchronously; accepting the request is the
+            // answer.
+            engine.seek_ms(target);
             Some(Ok(()))
         }
     }
@@ -996,6 +1106,10 @@ impl AudioBackend {
             self.inner
                 .playbin
                 .set_property("volume", f64::from(self.volume));
+        }
+        #[cfg(not(feature = "audio"))]
+        if let Some(engine) = &mut self.inner.engine {
+            engine.set_volume(self.volume);
         }
     }
 
@@ -1014,7 +1128,11 @@ impl AudioBackend {
         }
         #[cfg(not(feature = "audio"))]
         {
-            None
+            self.inner
+                .engine
+                .as_ref()
+                .filter(|_| self.current_uri.is_some())
+                .map(media::MediaEngine::position_ms)
         }
     }
 
@@ -1030,7 +1148,11 @@ impl AudioBackend {
         }
         #[cfg(not(feature = "audio"))]
         {
-            None
+            self.inner
+                .engine
+                .as_ref()
+                .filter(|_| self.inner.duration_known)
+                .and_then(media::MediaEngine::duration_ms)
         }
     }
 
@@ -1059,10 +1181,19 @@ impl AudioBackend {
         }
         #[cfg(not(feature = "audio"))]
         {
-            false
+            self.current_uri.is_some()
+                && self
+                    .inner
+                    .engine
+                    .as_ref()
+                    .is_some_and(media::MediaEngine::is_playing)
         }
     }
 
+    #[cfg_attr(
+        not(feature = "audio"),
+        allow(dead_code, reason = "only the GStreamer backend confirms playback")
+    )]
     fn is_playing_confirmed(&self) -> bool {
         #[cfg(feature = "audio")]
         {
@@ -1078,7 +1209,7 @@ impl AudioBackend {
         }
         #[cfg(not(feature = "audio"))]
         {
-            false
+            self.is_playing_real() && !self.inner.eos
         }
     }
 
@@ -1086,6 +1217,10 @@ impl AudioBackend {
     /// don't accumulate, and latch a fatal error so the transport stops
     /// pretending to play. Called once per frame from the app's tick. Also
     /// returns whether an error is currently latched, for diagnostics.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one pass over every backend event, in order"
+    )]
     pub fn pump(&mut self) -> bool {
         #[cfg(feature = "audio")]
         {
@@ -1098,7 +1233,7 @@ impl AudioBackend {
                         .then(|| (p.path.clone(), p.want_play))
                 });
                 if let Some((path, want)) = staged {
-                    let has_bytes = std::fs::metadata(&path).is_ok_and(|m| m.len() > 0);
+                    let has_bytes = crate::files::metadata(&path).is_ok_and(|m| m.len > 0);
                     if has_bytes {
                         let uri = match media::source::path_to_file_uri(&path) {
                             Ok(uri) => uri,
@@ -1115,7 +1250,7 @@ impl AudioBackend {
                                 return true;
                             }
                         };
-                        let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
+                        let bytes = crate::files::metadata(&path).map_or(0, |m| m.len);
                         tracing::info!(target: "music::audio", %uri, bytes, want_play = want, "staged file ready — switching playbin to local file and rolling");
                         let _ = self.inner.playbin.set_state(gstreamer::State::Null);
                         self.inner.playbin.set_property("uri", &uri);
@@ -1183,7 +1318,24 @@ impl AudioBackend {
         }
         #[cfg(not(feature = "audio"))]
         {
-            false
+            let Some(engine) = &mut self.inner.engine else {
+                return false;
+            };
+            let mut failed = false;
+            for event in engine.poll() {
+                match event {
+                    media::MediaEvent::DurationKnown { .. } => self.inner.duration_known = true,
+                    media::MediaEvent::Ended => self.inner.eos = true,
+                    media::MediaEvent::Error(message) => {
+                        failed = true;
+                        if let Ok(mut error) = self.inner.error.lock() {
+                            *error = Some(message);
+                        }
+                    }
+                    media::MediaEvent::Position { .. } | media::MediaEvent::Buffering { .. } => {}
+                }
+            }
+            failed
         }
     }
 
@@ -1198,7 +1350,7 @@ impl AudioBackend {
         }
         #[cfg(not(feature = "audio"))]
         {
-            None
+            self.inner.error.lock().ok().and_then(|mut e| e.take())
         }
     }
 
@@ -1214,7 +1366,7 @@ impl AudioBackend {
         }
         #[cfg(not(feature = "audio"))]
         {
-            false
+            self.inner.eos
         }
     }
 
@@ -1232,6 +1384,13 @@ impl AudioBackend {
     ///
     /// A source that declares no length cannot be checked this way; there,
     /// "the fetch ran to its end" is the best available answer.
+    #[cfg_attr(
+        not(all(feature = "audio", feature = "live")),
+        allow(
+            clippy::unused_self,
+            reason = "only the streaming backend stages files"
+        )
+    )]
     pub fn staging_complete(&self) -> bool {
         #[cfg(all(feature = "audio", feature = "live"))]
         {
@@ -1257,6 +1416,13 @@ impl AudioBackend {
     /// the whole file landed, or the source refused a range. Pair it with
     /// [`Self::staging_complete`] to tell a finished download from a complete
     /// one; on its own it only says the bytes will not grow any further.
+    #[cfg_attr(
+        not(all(feature = "audio", feature = "live")),
+        allow(
+            clippy::unused_self,
+            reason = "only the streaming backend stages files"
+        )
+    )]
     pub fn staging_finished(&self) -> bool {
         #[cfg(all(feature = "audio", feature = "live"))]
         {
@@ -1275,6 +1441,13 @@ impl AudioBackend {
     /// declared (`None` when it declared none, or when nothing is staging).
     /// Reported so a caller can say *how far short* a refused fetch fell rather
     /// than only that it did.
+    #[cfg_attr(
+        not(all(feature = "audio", feature = "live")),
+        allow(
+            clippy::unused_self,
+            reason = "only the streaming backend stages files"
+        )
+    )]
     pub fn staged_progress(&self) -> Option<(u64, Option<u64>)> {
         #[cfg(all(feature = "audio", feature = "live"))]
         {
@@ -1299,7 +1472,9 @@ impl AudioBackend {
         }
         #[cfg(not(feature = "audio"))]
         {
-            0
+            // The element reports no buffers; its metadata having loaded is
+            // what proves the source decodes.
+            u64::from(self.inner.duration_known)
         }
     }
 
@@ -1309,6 +1484,10 @@ impl AudioBackend {
     /// explicit sink chain was built. Used to prove the live path renders to a
     /// **real** sink and never a `fakesink` — and to diagnose silence (a
     /// `fakesink` here means no real sink plugin is installed).
+    #[cfg_attr(
+        not(feature = "audio"),
+        allow(clippy::unused_self, reason = "only `GStreamer` builds a sink chain")
+    )]
     pub fn actual_audio_sink_name(&self) -> Option<String> {
         #[cfg(feature = "audio")]
         {
@@ -1345,9 +1524,9 @@ impl AudioBackend {
     #[cfg(all(test, feature = "audio"))]
     pub fn wait_until_playing(&self, timeout: std::time::Duration) -> bool {
         use gstreamer::prelude::*;
-        let deadline = std::time::Instant::now() + timeout;
+        let deadline = ui::time::now() + timeout;
         loop {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let remaining = deadline.saturating_duration_since(ui::time::now());
             if remaining.is_zero() {
                 return self.inner.playbin.current_state() == gstreamer::State::Playing;
             }
@@ -1372,7 +1551,9 @@ impl AudioBackend {
     #[cfg(all(feature = "audio", feature = "live"))]
     fn begin_stream_download(&mut self, uri: &str, fallback: Option<String>) {
         self.clear_pending();
-        let path = std::env::temp_dir().join(format!(
+        // Without a native temp dir the relative path fails to open, and the
+        // staging reports the stream finished with nothing fetched.
+        let path = tilo_paths::temp_dir().unwrap_or_default().join(format!(
             "tilo-music-stream-{}-{}.bin",
             std::process::id(),
             next_stream_id()
@@ -1405,7 +1586,7 @@ impl AudioBackend {
     #[cfg(all(feature = "audio", feature = "live"))]
     fn clear_pending(&mut self) {
         if let Some(p) = self.inner.pending.take() {
-            let _ = std::fs::remove_file(&p.path);
+            crate::files::remove(&p.path);
         }
     }
 }
@@ -1481,65 +1662,48 @@ fn spawn_stream_download(
     expected: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) {
     use std::sync::atomic::Ordering::Relaxed;
-    let _ = std::thread::Builder::new()
-        .name("tilo-music-stream-dl".into())
-        .spawn(move || {
-            let finish = || {
-                ready.store(true, Relaxed);
-                done.store(true, Relaxed);
-            };
-            let Ok(mut file) = std::fs::File::create(&path) else {
-                return finish();
-            };
-            // Primary source (the rangeable proxy). If it yields no bytes at all
-            // — a broken/rate-limited public proxy — fall back to the direct
-            // googlevideo URL so playback still works (at least its first
-            // segment). Both stream progressively: `ready` flips after the first
-            // staged chunk so audio starts without waiting for the full download.
-            tracing::info!(target: "music::audio", %uri, has_fallback = fallback.is_some(), "stream staging: begin (primary source)");
-            let never_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let mut wrote = download_into(
-                &uri,
-                &mut file,
-                &ready,
-                &fetched,
-                &expected,
-                &never_cancel,
+    let _ = ui::rt::spawn_thread("tilo-music-stream-dl", move || {
+        let finish = || {
+            ready.store(true, Relaxed);
+            done.store(true, Relaxed);
+        };
+        let Ok(mut file) = crate::files::Growing::create(&path) else {
+            return finish();
+        };
+        // Primary source (the rangeable proxy). If it yields no bytes at all
+        // — a broken/rate-limited public proxy — fall back to the direct
+        // googlevideo URL so playback still works (at least its first
+        // segment). Both stream progressively: `ready` flips after the first
+        // staged chunk so audio starts without waiting for the full download.
+        tracing::info!(target: "music::audio", %uri, has_fallback = fallback.is_some(), "stream staging: begin (primary source)");
+        let never_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut wrote = download_into(&uri, &mut file, &ready, &fetched, &expected, &never_cancel);
+        if wrote == 0
+            && let Some(fb) = fallback
+        {
+            tracing::info!(target: "music::audio", fallback = %fb, "stream staging: primary yielded no media, trying fallback (direct)");
+            // The primary wrote nothing, so the file restarts from zero and
+            // the fallback's own declared length replaces the primary's —
+            // otherwise a completeness check would compare the fallback's
+            // bytes against the wrong total.
+            fetched.store(0, Relaxed);
+            expected.store(0, Relaxed);
+            let _ = file.reset();
+            wrote = download_into(&fb, &mut file, &ready, &fetched, &expected, &never_cancel);
+        }
+        let want = expected.load(Relaxed);
+        if want > 0 && wrote < want {
+            tracing::warn!(
+                target: "music::audio",
+                bytes = wrote,
+                declared = want,
+                "stream staging: source stopped short of the declared length — the staged file is a partial track"
             );
-            if wrote == 0
-                && let Some(fb) = fallback
-            {
-                tracing::info!(target: "music::audio", fallback = %fb, "stream staging: primary yielded no media, trying fallback (direct)");
-                // The primary wrote nothing, so the file restarts from zero and
-                // the fallback's own declared length replaces the primary's —
-                // otherwise a completeness check would compare the fallback's
-                // bytes against the wrong total.
-                fetched.store(0, Relaxed);
-                expected.store(0, Relaxed);
-                let _ = file.set_len(0);
-                let _ = std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(0));
-                wrote = download_into(
-                    &fb,
-                    &mut file,
-                    &ready,
-                    &fetched,
-                    &expected,
-                    &never_cancel,
-                );
-            }
-            let want = expected.load(Relaxed);
-            if want > 0 && wrote < want {
-                tracing::warn!(
-                    target: "music::audio",
-                    bytes = wrote,
-                    declared = want,
-                    "stream staging: source stopped short of the declared length — the staged file is a partial track"
-                );
-            }
-            tracing::info!(target: "music::audio", bytes = wrote, declared = want, "stream staging: finished");
-            let _ = std::io::Write::flush(&mut file);
-            finish();
-        });
+        }
+        tracing::info!(target: "music::audio", bytes = wrote, declared = want, "stream staging: finished");
+        let _ = std::io::Write::flush(&mut file);
+        finish();
+    });
 }
 
 /// Download `uri` into `file` using **bounded** `Range` requests (the only form
@@ -1553,7 +1717,7 @@ fn spawn_stream_download(
 )]
 fn download_into(
     uri: &str,
-    file: &mut std::fs::File,
+    file: &mut crate::files::Growing,
     ready: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     fetched: &std::sync::Arc<std::sync::atomic::AtomicU64>,
     expected: &std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -1769,7 +1933,7 @@ impl Drop for AudioBackend {
         let _ = self.inner.playbin.set_state(gstreamer::State::Null);
         #[cfg(feature = "live")]
         if let Some(p) = self.inner.pending.take() {
-            let _ = std::fs::remove_file(&p.path);
+            crate::files::remove(&p.path);
         }
     }
 }
@@ -1779,12 +1943,9 @@ mod tests {
     use super::*;
 
     fn wait_for(mut condition: impl FnMut() -> bool) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         while !condition() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "audio lifecycle did not settle"
-            );
+            assert!(ui::time::now() < deadline, "audio lifecycle did not settle");
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
@@ -1841,317 +2002,433 @@ mod tests {
 
     #[test]
     #[cfg(feature = "audio")]
-    fn initialization_failure_reaches_transport_without_fake_playback() {
-        let (release, wait) = std::sync::mpsc::channel();
-        let mut engine = AudioEngine::new();
-        engine.initialization = Some(Initialization::spawn(move || {
-            wait.recv().unwrap();
-            Err("missing playback plugin".into())
-        }));
-        engine.load("file:///unavailable.wav");
-        engine.play();
-        assert!(!engine.pump());
-        assert!(engine.needs_poll());
-        assert!(!engine.is_playing_real());
-        assert_eq!(engine.frames_rendered(), 0);
-        release.send(()).unwrap();
-        wait_for(|| engine.pump());
-        assert_eq!(
-            engine.take_error().as_deref(),
-            Some("missing playback plugin")
-        );
-        assert!(engine.take_error().is_none());
-        assert!(
-            engine.pump(),
-            "failure remains latched until stopped or reloaded"
-        );
-        engine.stop();
-        assert!(!engine.needs_poll());
-        assert!(!engine.pump());
-    }
-
-    #[test]
-    fn canceled_initializer_disposes_result_without_joining_or_polling() {
-        struct Owned(std::sync::mpsc::Sender<()>);
-        impl Drop for Owned {
-            fn drop(&mut self) {
-                let _ = self.0.send(());
-            }
-        }
-        for drop_job in [false, true] {
+    #[serial_test::serial(audio_backend)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn real_backend_applies_deferred_state_renders_and_reports_failures() {
+        // Phase `initialization_failure_reaches_transport_without_fake_playback`.
+        {
             let (release, wait) = std::sync::mpsc::channel();
-            let (disposed, disposal) = std::sync::mpsc::channel();
-            let mut job = Initialization::spawn(move || {
+            let mut engine = AudioEngine::new();
+            engine.initialization = Some(Initialization::spawn(move || {
                 wait.recv().unwrap();
-                Ok(Owned(disposed))
-            });
-            job.cancel();
-            assert!(!job.canceled_and_finished());
-            if drop_job {
-                drop(job);
-            }
-            release.send(()).unwrap();
-            disposal
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap();
-        }
-    }
-
-    #[test]
-    fn stopped_initialization_does_not_poll_or_start_parallel_replacement() {
-        let (release, wait) = std::sync::mpsc::channel();
-        let mut engine = AudioEngine::new();
-        engine.initialization = Some(Initialization::spawn(move || {
-            wait.recv().unwrap();
-            Err("canceled initializer".into())
-        }));
-        let old_finished = engine.initialization.as_ref().unwrap().finished.clone();
-        engine.load("file:///first.wav");
-        engine.stop();
-        assert!(!engine.needs_poll());
-        assert!(!engine.pump());
-        engine.load("file:///replacement.wav");
-        assert!(!engine.pump());
-        assert!(std::sync::Arc::ptr_eq(
-            &old_finished,
-            &engine.initialization.as_ref().unwrap().finished
-        ));
-        engine.stop();
-        release.send(()).unwrap();
-        wait_for(|| old_finished.load(std::sync::atomic::Ordering::Acquire));
-        assert!(!engine.pump());
-        assert!(engine.current_uri().is_none());
-        assert!(engine.take_error().is_none());
-    }
-
-    #[test]
-    #[cfg(feature = "audio")]
-    #[serial_test::serial(audio_backend)]
-    fn delayed_backend_applies_latest_source_volume_seek_and_pause() {
-        use gstreamer::prelude::*;
-        let scratch = tempfile::tempdir().unwrap();
-        let path = scratch.path().join("latest.wav");
-        std::fs::write(&path, sine_wav(3, 44_100)).unwrap();
-        let uri = media::source::path_to_file_uri(&path).unwrap();
-        let (release, wait) = std::sync::mpsc::channel();
-        let mut engine = AudioEngine::new();
-        let output = engine.output.clone();
-        engine.initialization = Some(Initialization::spawn(move || {
-            wait.recv().unwrap();
-            AudioBackend::try_new(&output)
-        }));
-        engine.load("file:///obsolete-must-never-open.wav");
-        engine.play();
-        engine.load(&uri);
-        engine.set_volume(0.05);
-        engine.seek_ms(1000);
-        engine.play();
-        engine.pause();
-        assert!(!engine.pump());
-        assert!(!engine.is_playing_real());
-        assert!(engine.position_ms().is_none());
-        assert!(
-            engine.needs_poll(),
-            "paused initialization still needs completion"
-        );
-        release.send(()).unwrap();
-        wait_for(|| {
-            assert!(!engine.pump(), "{:?}", engine.take_error());
-            engine.backend.is_some()
-                && engine.pending_seek.is_none()
-                && engine.position_ms().is_some_and(|position| position >= 900)
-        });
-        let backend = engine.backend.as_ref().unwrap();
-        assert_eq!(backend.current_uri.as_deref(), Some(uri.as_str()));
-        assert!(
-            (backend.inner.playbin.property::<f64>("volume") - f64::from(0.05f32)).abs() < 0.000_01,
-            "GStreamer preserves the requested volume within its normalization precision"
-        );
-        assert!(!engine.is_playing_real());
-        engine.play();
-        assert!(engine.wait_until_playing(std::time::Duration::from_secs(5)));
-        wait_for(|| {
+                Err("missing playback plugin".into())
+            }));
+            engine.load("file:///unavailable.wav");
+            engine.play();
             assert!(!engine.pump());
-            engine.frames_rendered() > 0
-        });
-        let pcm = engine
-            .capture()
-            .unwrap()
-            .wait_for_more(std::time::Duration::from_secs(5));
-        assert!(pcm.peak > 0, "the decoded tone reached the sink: {pcm:?}");
-        engine.stop();
-    }
-
-    #[test]
-    #[cfg(feature = "audio")]
-    fn deferred_seek_timeout_reports_error_and_stops_polling() {
-        let mut engine = AudioEngine::new();
-        engine.backend = Some(AudioBackend::try_new(&engine.output).unwrap());
-        // A source that has not prerolled cannot accept a seek. Exercise the
-        // production timeout with the actual native backend still in NULL.
-        engine.current_uri = Some("file:///not-yet-prerolled.wav".into());
-        engine.pending_seek = Some(1000);
-        engine.seek_started = Some(
-            std::time::Instant::now()
-                .checked_sub(std::time::Duration::from_secs(6))
-                .unwrap(),
-        );
-        assert!(engine.pump());
-        assert!(
-            engine
-                .take_error()
-                .unwrap()
-                .contains("did not become seekable")
-        );
-        assert!(!engine.needs_poll());
-        assert!(!engine.is_playing_real());
-        engine.stop();
-        assert!(!engine.pump());
-    }
-
-    #[cfg(all(feature = "audio", feature = "live"))]
-    #[test]
-    fn bounded_download_observes_cancel_before_connecting() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
-        listener
-            .set_nonblocking(true)
-            .expect("nonblocking listener");
-        let address = listener.local_addr().expect("address");
-        let path =
-            std::env::temp_dir().join(format!("tilo-music-cancel-{}.part", std::process::id()));
-        let mut file = std::fs::File::create(&path).expect("partial");
-        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let fetched = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let expected = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        assert_eq!(
-            download_into(
-                &format!("http://{address}/never-contacted"),
-                &mut file,
-                &ready,
-                &fetched,
-                &expected,
-                &cancel,
-            ),
-            0
-        );
-        assert!(matches!(
-            listener.accept(),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
-        ));
-        drop(file);
-        std::fs::remove_file(path).expect("release download fixture");
-    }
-
-    #[cfg(all(feature = "audio", feature = "live"))]
-    #[test]
-    fn bounded_download_rejects_server_ignoring_range() {
-        use std::io::{Read, Write};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
-        let address = listener.local_addr().expect("address");
-        let body = vec![0x55; 1_048_577];
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept");
-            let mut request = [0u8; 1024];
-            let _ = stream.read(&mut request);
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            )
-            .expect("headers");
-            stream.write_all(&body).expect("body");
-        });
-        let path =
-            std::env::temp_dir().join(format!("tilo-music-oversize-{}.part", std::process::id()));
-        let mut file = std::fs::File::create(&path).expect("partial");
-        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let fetched = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let expected = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        assert_eq!(
-            download_into(
-                &format!("http://{address}/media"),
-                &mut file,
-                &ready,
-                &fetched,
-                &expected,
-                &cancel,
-            ),
-            0
-        );
-        server.join().expect("server");
-        assert!(std::fs::metadata(&path).expect("partial metadata").len() <= 1_048_576);
-        drop(file);
-        std::fs::remove_file(path).expect("release download fixture");
-    }
-
-    #[cfg(all(feature = "audio", feature = "live"))]
-    #[test]
-    #[serial_test::serial(audio_backend)]
-    fn staged_file_pump_uses_native_uri_and_renders_audio() {
-        use gstreamer::prelude::*;
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, AtomicU64};
-
-        let path = std::env::temp_dir().join(format!(
-            "tilo-music-staged-音 # %-{}.wav",
-            std::process::id()
-        ));
-        let wav = sine_wav(1, 44_100);
-        std::fs::write(&path, &wav).expect("staged audio bytes");
-        let capture = PcmCapture::default();
-        let mut engine =
-            AudioBackend::try_new(&AudioOutput::Capture(capture.clone())).expect("native backend");
-        engine.set_volume(0.05);
-        // The transfer has completed; drive the same pending-file transition
-        // that the download worker exposes to the production pump.
-        engine.inner.pending = Some(Pending {
-            path: path.clone(),
-            ready: Arc::new(AtomicBool::new(true)),
-            done: Arc::new(AtomicBool::new(true)),
-            fetched: Arc::new(AtomicU64::new(wav.len() as u64)),
-            expected: Arc::new(AtomicU64::new(wav.len() as u64)),
-            want_play: true,
-            started: false,
-        });
-        assert!(!engine.pump(), "staged audio did not report an error");
-        assert!(engine.wait_until_playing(std::time::Duration::from_secs(5)));
-        let uri = engine
-            .inner
-            .playbin
-            .property::<Option<String>>("current-uri")
-            .expect("playbin committed the staged URI after entering PLAYING");
-        assert_eq!(url::Url::parse(&uri).unwrap().to_file_path().unwrap(), path);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let mut pcm = capture.snapshot();
-        while pcm.peak == 0 && std::time::Instant::now() < deadline {
-            pcm = capture.wait_for_more(std::time::Duration::from_millis(100));
+            assert!(engine.needs_poll());
+            assert!(!engine.is_playing_real());
+            assert_eq!(engine.frames_rendered(), 0);
+            release.send(()).unwrap();
+            wait_for(|| engine.pump());
+            assert_eq!(
+                engine.take_error().as_deref(),
+                Some("missing playback plugin")
+            );
+            assert!(engine.take_error().is_none());
+            assert!(
+                engine.pump(),
+                "failure remains latched until stopped or reloaded"
+            );
+            engine.stop();
+            assert!(!engine.needs_poll());
+            assert!(!engine.pump());
         }
-        assert!(
-            engine.frames_rendered() > 0 && pcm.peak > 0,
-            "staged PCM reached the sink: {pcm:?}"
-        );
-        engine.stop();
-        engine.clear_pending();
-        assert!(
-            !path.exists(),
-            "stopped staged audio releases its temporary file"
-        );
+
+        // Phase `deferred_seek_timeout_reports_error_and_stops_polling`.
+        {
+            let mut engine = AudioEngine::new();
+            engine.backend = Some(AudioBackend::try_new(&engine.output).unwrap());
+            // A source that has not prerolled cannot accept a seek. Exercise the
+            // production timeout with the actual native backend still in NULL.
+            engine.current_uri = Some("file:///not-yet-prerolled.wav".into());
+            engine.pending_seek = Some(1000);
+            engine.seek_started = Some(
+                ui::time::now()
+                    .checked_sub(std::time::Duration::from_secs(6))
+                    .unwrap(),
+            );
+            assert!(engine.pump());
+            assert!(
+                engine
+                    .take_error()
+                    .unwrap()
+                    .contains("did not become seekable")
+            );
+            assert!(!engine.needs_poll());
+            assert!(!engine.is_playing_real());
+            engine.stop();
+            assert!(!engine.pump());
+        }
+
+        // Phase `delayed_backend_applies_latest_source_volume_seek_and_pause`.
+        {
+            use gstreamer::prelude::*;
+            let scratch = tempfile::tempdir().unwrap();
+            let path = scratch.path().join("latest.wav");
+            std::fs::write(&path, sine_wav(3, 44_100)).unwrap();
+            let uri = media::source::path_to_file_uri(&path).unwrap();
+            let (release, wait) = std::sync::mpsc::channel();
+            let mut engine = AudioEngine::new();
+            let output = engine.output.clone();
+            engine.initialization = Some(Initialization::spawn(move || {
+                wait.recv().unwrap();
+                AudioBackend::try_new(&output)
+            }));
+            engine.load("file:///obsolete-must-never-open.wav");
+            engine.play();
+            engine.load(&uri);
+            engine.set_volume(0.05);
+            engine.seek_ms(1000);
+            engine.play();
+            engine.pause();
+            assert!(!engine.pump());
+            assert!(!engine.is_playing_real());
+            assert!(engine.position_ms().is_none());
+            assert!(
+                engine.needs_poll(),
+                "paused initialization still needs completion"
+            );
+            release.send(()).unwrap();
+            wait_for(|| {
+                assert!(!engine.pump(), "{:?}", engine.take_error());
+                engine.backend.is_some()
+                    && engine.pending_seek.is_none()
+                    && engine.position_ms().is_some_and(|position| position >= 900)
+            });
+            let backend = engine.backend.as_ref().unwrap();
+            assert_eq!(backend.current_uri.as_deref(), Some(uri.as_str()));
+            assert!(
+                (backend.inner.playbin.property::<f64>("volume") - f64::from(0.05f32)).abs()
+                    < 0.000_01,
+                "GStreamer preserves the requested volume within its normalization precision"
+            );
+            assert!(!engine.is_playing_real());
+            engine.play();
+            assert!(engine.wait_until_playing(tilo_test_env::hang_bound()));
+            wait_for(|| {
+                assert!(!engine.pump());
+                engine.frames_rendered() > 0
+            });
+            let pcm = engine
+                .capture()
+                .unwrap()
+                .wait_for_more(std::time::Duration::from_secs(5));
+            assert!(pcm.peak > 0, "the decoded tone reached the sink: {pcm:?}");
+            engine.stop();
+        }
+
+        // Phase `seek_while_playing_repositions_and_keeps_playing`.
+        // **Seek-while-playing proof** (`--features audio`): a real decoded WAV is
+        // playing, then a seek to ~50% must reposition the transport (position lands
+        // near 50%) and playback must *continue* — not snap to the end / EOS, which
+        // was the reported "can't seek while playing" bug. Uses a fully-seekable
+        // local file so this exercises the real `seek_simple` path.
+        //
+        // Requires the decode plugins; the audio is captured, not played aloud.
+        {
+            assert!(gstreamer::init().is_ok(), "gstreamer initialises");
+            let need = [
+                "filesrc",
+                "wavparse",
+                "audioconvert",
+                "audioresample",
+                "appsink",
+            ];
+            assert!(
+                need.iter()
+                    .all(|name| gstreamer::ElementFactory::find(name).is_some()),
+                "real seek proof requires decode/sink plugins {need:?}"
+            );
+
+            // ~6 s of audio so a 50% seek lands at a clear ~3 s offset.
+            let path = std::env::temp_dir()
+                .join(format!("tilo-music-seek-音 # %-{}.wav", std::process::id()));
+            std::fs::write(&path, sine_wav(6, 44_100)).expect("write test wav");
+            let uri = media::source::path_to_file_uri(&path).expect("native audio file URI");
+
+            let mut engine = AudioEngine::new();
+            let capture = engine.capture().expect("tests capture by default").clone();
+            engine.set_volume(0.05);
+            engine.load(&uri);
+            engine.play();
+            assert!(
+                engine.wait_until_playing(tilo_test_env::hang_bound()),
+                "pipeline reached PLAYING"
+            );
+
+            // Duration should be known now (the WAV header carries it); the seek
+            // clamp reads it.
+            let dur = {
+                let mut d = None;
+                for _ in 0..40 {
+                    capture.wait_for_more(std::time::Duration::from_millis(25));
+                    d = engine.duration_ms();
+                    if d.is_some() {
+                        break;
+                    }
+                }
+                d.expect("duration resolved for a local WAV")
+            };
+            assert!(
+                dur >= 5_000,
+                "≈6 s WAV reports a multi-second duration ({dur} ms)"
+            );
+
+            // Seek to ~50% while playing.
+            let target = dur / 2;
+            engine.seek_ms(target);
+
+            // The position must settle near the target — NOT at the end — and the
+            // pipeline must still be playing (never EOS'd by the seek).
+            let mut pos = 0;
+            for _ in 0..60 {
+                capture.wait_for_more(std::time::Duration::from_millis(25));
+                if let Some(p) = engine.position_ms() {
+                    pos = p;
+                    if p >= target.saturating_sub(700) && p <= target + 1_500 {
+                        break;
+                    }
+                }
+            }
+            assert!(
+                pos >= target.saturating_sub(700) && pos < dur.saturating_sub(100),
+                "seek landed near 50% ({pos} ms) and not at the end ({dur} ms)"
+            );
+            assert!(
+                engine.is_playing_real(),
+                "playback continued after the seek (no EOS)"
+            );
+            // Frames keep flowing after the seek — genuinely audible, still decoding.
+            let before = engine.frames_rendered();
+            let mut after = before;
+            for _ in 0..40 {
+                capture.wait_for_more(std::time::Duration::from_millis(25));
+                after = engine.frames_rendered();
+                if after > before {
+                    break;
+                }
+            }
+            assert!(
+                after > before,
+                "decoded buffers keep reaching the sink after the seek"
+            );
+
+            engine.stop();
+            let _ = std::fs::remove_file(&path);
+        }
     }
 
     #[test]
-    fn stub_tracks_uri_and_volume() {
-        let mut e = AudioEngine::new();
-        e.load("https://example.test/audio.m4a");
-        e.set_volume(0.5);
-        assert_eq!(e.current_uri(), Some("https://example.test/audio.m4a"));
-        assert!((e.volume() - 0.5).abs() < 1e-6);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn initializer_cancel_stop_and_stub_state_are_honest() {
+        // Phase `canceled_initializer_disposes_result_without_joining_or_polling`.
+        {
+            struct Owned(std::sync::mpsc::Sender<()>);
+            impl Drop for Owned {
+                fn drop(&mut self) {
+                    let _ = self.0.send(());
+                }
+            }
+            for drop_job in [false, true] {
+                let (release, wait) = std::sync::mpsc::channel();
+                let (disposed, disposal) = std::sync::mpsc::channel();
+                let mut job = Initialization::spawn(move || {
+                    wait.recv().unwrap();
+                    Ok(Owned(disposed))
+                });
+                job.cancel();
+                assert!(!job.canceled_and_finished());
+                if drop_job {
+                    drop(job);
+                }
+                release.send(()).unwrap();
+                disposal.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+            }
+        }
+
+        // Phase `stopped_initialization_does_not_poll_or_start_parallel_replacement`.
+        {
+            let (release, wait) = std::sync::mpsc::channel();
+            let mut engine = AudioEngine::new();
+            engine.initialization = Some(Initialization::spawn(move || {
+                wait.recv().unwrap();
+                Err("canceled initializer".into())
+            }));
+            let old_finished = engine.initialization.as_ref().unwrap().finished.clone();
+            engine.load("file:///first.wav");
+            engine.stop();
+            assert!(!engine.needs_poll());
+            assert!(!engine.pump());
+            engine.load("file:///replacement.wav");
+            assert!(!engine.pump());
+            assert!(std::sync::Arc::ptr_eq(
+                &old_finished,
+                &engine.initialization.as_ref().unwrap().finished
+            ));
+            engine.stop();
+            release.send(()).unwrap();
+            wait_for(|| old_finished.load(std::sync::atomic::Ordering::Acquire));
+            assert!(!engine.pump());
+            assert!(engine.current_uri().is_none());
+            assert!(engine.take_error().is_none());
+        }
+
+        // Phase `stub_tracks_uri_and_volume`.
+        {
+            let mut e = AudioEngine::new();
+            e.load("https://example.test/audio.m4a");
+            e.set_volume(0.5);
+            assert_eq!(e.current_uri(), Some("https://example.test/audio.m4a"));
+            assert!((e.volume() - 0.5).abs() < 1e-6);
+        }
+
+        // Phase `is_live_matches_feature`.
+        {
+            assert_eq!(AudioEngine::is_live(), cfg!(feature = "audio"));
+        }
     }
 
     #[test]
-    fn is_live_matches_feature() {
-        assert_eq!(AudioEngine::is_live(), cfg!(feature = "audio"));
+    #[cfg(all(feature = "audio", feature = "live"))]
+    #[serial_test::serial(audio_backend)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn bounded_download_and_staged_pump_honour_cancel_range_and_native_uri() {
+        // Phase `bounded_download_observes_cancel_before_connecting`.
+        {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+            listener
+                .set_nonblocking(true)
+                .expect("nonblocking listener");
+            let address = listener.local_addr().expect("address");
+            let path =
+                std::env::temp_dir().join(format!("tilo-music-cancel-{}.part", std::process::id()));
+            let mut file = crate::files::Growing::create(&path).expect("partial");
+            let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let fetched = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let expected = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            assert_eq!(
+                download_into(
+                    &format!("http://{address}/never-contacted"),
+                    &mut file,
+                    &ready,
+                    &fetched,
+                    &expected,
+                    &cancel,
+                ),
+                0
+            );
+            assert!(matches!(
+                listener.accept(),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+            ));
+            drop(file);
+            std::fs::remove_file(path).expect("release download fixture");
+        }
+
+        // Phase `bounded_download_rejects_server_ignoring_range`.
+        {
+            use std::io::{Read, Write};
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+            let address = listener.local_addr().expect("address");
+            let body = vec![0x55; 1_048_577];
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut request = [0u8; 1024];
+                let _ = stream.read(&mut request);
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .expect("headers");
+                stream.write_all(&body).expect("body");
+            });
+            let path = std::env::temp_dir()
+                .join(format!("tilo-music-oversize-{}.part", std::process::id()));
+            let mut file = crate::files::Growing::create(&path).expect("partial");
+            let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let fetched = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let expected = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            assert_eq!(
+                download_into(
+                    &format!("http://{address}/media"),
+                    &mut file,
+                    &ready,
+                    &fetched,
+                    &expected,
+                    &cancel,
+                ),
+                0
+            );
+            server.join().expect("server");
+            assert!(std::fs::metadata(&path).expect("partial metadata").len() <= 1_048_576);
+            drop(file);
+            std::fs::remove_file(path).expect("release download fixture");
+        }
+
+        // Phase `staged_file_pump_uses_native_uri_and_renders_audio`.
+        {
+            use gstreamer::prelude::*;
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicBool, AtomicU64};
+
+            let path = std::env::temp_dir().join(format!(
+                "tilo-music-staged-音 # %-{}.wav",
+                std::process::id()
+            ));
+            let wav = sine_wav(1, 44_100);
+            std::fs::write(&path, &wav).expect("staged audio bytes");
+            let capture = PcmCapture::default();
+            let mut engine = AudioBackend::try_new(&AudioOutput::Capture(capture.clone()))
+                .expect("native backend");
+            engine.set_volume(0.05);
+            // The transfer has completed; drive the same pending-file transition
+            // that the download worker exposes to the production pump.
+            engine.inner.pending = Some(Pending {
+                path: path.clone(),
+                ready: Arc::new(AtomicBool::new(true)),
+                done: Arc::new(AtomicBool::new(true)),
+                fetched: Arc::new(AtomicU64::new(wav.len() as u64)),
+                expected: Arc::new(AtomicU64::new(wav.len() as u64)),
+                want_play: true,
+                started: false,
+            });
+            assert!(!engine.pump(), "staged audio did not report an error");
+            assert!(engine.wait_until_playing(tilo_test_env::hang_bound()));
+            let uri = engine
+                .inner
+                .playbin
+                .property::<Option<String>>("current-uri")
+                .expect("playbin committed the staged URI after entering PLAYING");
+            assert_eq!(url::Url::parse(&uri).unwrap().to_file_path().unwrap(), path);
+            let deadline = tilo_test_env::hang_deadline();
+            let mut pcm = capture.snapshot();
+            while pcm.peak == 0 && ui::time::now() < deadline {
+                pcm = capture.wait_for_more(std::time::Duration::from_millis(100));
+            }
+            assert!(
+                engine.frames_rendered() > 0 && pcm.peak > 0,
+                "staged PCM reached the sink: {pcm:?}"
+            );
+            engine.stop();
+            engine.clear_pending();
+            assert!(
+                !path.exists(),
+                "stopped staged audio releases its temporary file"
+            );
+        }
     }
 
     /// **Real audible-output proof** (under `--features audio`): a locally
@@ -2206,7 +2483,7 @@ mod tests {
         engine.load(&uri);
         engine.play();
 
-        let reached = engine.wait_until_playing(std::time::Duration::from_secs(5));
+        let reached = engine.wait_until_playing(tilo_test_env::hang_bound());
         assert!(
             reached,
             "real sink pipeline reached PLAYING for a decoded stream"
@@ -2243,108 +2520,6 @@ mod tests {
             "plugged sink {sink_name} is a real audio sink"
         );
         eprintln!("[audio test] rendered {frames} buffers to real sink `{sink_name}`");
-
-        engine.stop();
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// **Seek-while-playing proof** (`--features audio`): a real decoded WAV is
-    /// playing, then a seek to ~50% must reposition the transport (position lands
-    /// near 50%) and playback must *continue* — not snap to the end / EOS, which
-    /// was the reported "can't seek while playing" bug. Uses a fully-seekable
-    /// local file so this exercises the real `seek_simple` path.
-    ///
-    /// Requires the decode plugins; the audio is captured, not played aloud.
-    #[cfg(feature = "audio")]
-    #[test]
-    #[serial_test::serial(audio_backend)]
-    fn seek_while_playing_repositions_and_keeps_playing() {
-        assert!(gstreamer::init().is_ok(), "gstreamer initialises");
-        let need = [
-            "filesrc",
-            "wavparse",
-            "audioconvert",
-            "audioresample",
-            "appsink",
-        ];
-        assert!(
-            need.iter()
-                .all(|name| gstreamer::ElementFactory::find(name).is_some()),
-            "real seek proof requires decode/sink plugins {need:?}"
-        );
-
-        // ~6 s of audio so a 50% seek lands at a clear ~3 s offset.
-        let path =
-            std::env::temp_dir().join(format!("tilo-music-seek-音 # %-{}.wav", std::process::id()));
-        std::fs::write(&path, sine_wav(6, 44_100)).expect("write test wav");
-        let uri = media::source::path_to_file_uri(&path).expect("native audio file URI");
-
-        let mut engine = AudioEngine::new();
-        let capture = engine.capture().expect("tests capture by default").clone();
-        engine.set_volume(0.05);
-        engine.load(&uri);
-        engine.play();
-        assert!(
-            engine.wait_until_playing(std::time::Duration::from_secs(5)),
-            "pipeline reached PLAYING"
-        );
-
-        // Duration should be known now (the WAV header carries it); the seek
-        // clamp reads it.
-        let dur = {
-            let mut d = None;
-            for _ in 0..40 {
-                capture.wait_for_more(std::time::Duration::from_millis(25));
-                d = engine.duration_ms();
-                if d.is_some() {
-                    break;
-                }
-            }
-            d.expect("duration resolved for a local WAV")
-        };
-        assert!(
-            dur >= 5_000,
-            "≈6 s WAV reports a multi-second duration ({dur} ms)"
-        );
-
-        // Seek to ~50% while playing.
-        let target = dur / 2;
-        engine.seek_ms(target);
-
-        // The position must settle near the target — NOT at the end — and the
-        // pipeline must still be playing (never EOS'd by the seek).
-        let mut pos = 0;
-        for _ in 0..60 {
-            capture.wait_for_more(std::time::Duration::from_millis(25));
-            if let Some(p) = engine.position_ms() {
-                pos = p;
-                if p >= target.saturating_sub(700) && p <= target + 1_500 {
-                    break;
-                }
-            }
-        }
-        assert!(
-            pos >= target.saturating_sub(700) && pos < dur.saturating_sub(100),
-            "seek landed near 50% ({pos} ms) and not at the end ({dur} ms)"
-        );
-        assert!(
-            engine.is_playing_real(),
-            "playback continued after the seek (no EOS)"
-        );
-        // Frames keep flowing after the seek — genuinely audible, still decoding.
-        let before = engine.frames_rendered();
-        let mut after = before;
-        for _ in 0..40 {
-            capture.wait_for_more(std::time::Duration::from_millis(25));
-            after = engine.frames_rendered();
-            if after > before {
-                break;
-            }
-        }
-        assert!(
-            after > before,
-            "decoded buffers keep reaching the sink after the seek"
-        );
 
         engine.stop();
         let _ = std::fs::remove_file(&path);

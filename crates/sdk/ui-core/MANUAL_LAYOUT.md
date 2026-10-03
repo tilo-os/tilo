@@ -165,8 +165,8 @@ misclassified as an automatic policy.
 ## Complete examples and evidence
 
 ```sh
-QUICK_UI_VELLO_CPU=1 cargo run -p ui --example form-composition-shots -- /tmp/forms
-QUICK_UI_VELLO_CPU=1 cargo run -p ui --example manual-composition-shots -- /tmp/manual
+TILO_UI_VELLO_CPU=1 cargo run -p ui-examples --example form-composition-shots -- /tmp/forms
+TILO_UI_VELLO_CPU=1 cargo run -p ui-examples --example manual-composition-shots -- /tmp/manual
 ```
 
 The manual example recreates the same Account form with individual title,

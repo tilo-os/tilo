@@ -13,11 +13,11 @@
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::io::Read;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -48,7 +48,7 @@ use ui::tokens::typography::TypeScale;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     Avatar, Button, ButtonFace, ButtonStyle, Checkbox, CheckboxFace, Chip, ChipLead, ChipStyle,
-    EmptyState, Link, ModalDialog, Text, TextInput, Widget,
+    EmptyState, EmptyStateContent, Link, ModalDialog, Text, TextInput, Widget,
 };
 
 use crate::date;
@@ -59,6 +59,7 @@ use crate::model::{
     group_names_equal, normalize_text, sample_contacts,
 };
 use crate::vcard::{self, VCardVersion};
+use ui::paint::PaintCtx;
 use ui::widget::{PushNav, PushPane};
 
 /// Suggested file name for the export Save dialog.
@@ -97,7 +98,8 @@ fn contacts_export_request(current_name: &str) -> PickRequest {
 /// pointer target, both grown with these lines (see `toolbar_h`).
 const TOOLBAR_BUTTON_TEXT: f32 = 13.0;
 /// Authored 1× widths of the toolbar faces: the primary New button and the
-/// two file buttons (Import / Export). Grown by the measured label growth.
+/// two file buttons (Import / Export), and duplicate-review action. Grown by
+/// the measured label growth.
 const TOOLBAR_NEW_W: f64 = 104.0;
 const TOOLBAR_FILE_W: f64 = 86.0;
 const TOOLBAR_DUPLICATE_W: f64 = 142.0;
@@ -105,6 +107,7 @@ const TOOLBAR_DUPLICATE_W: f64 = 142.0;
 /// the face is always sized for the text it actually shows.
 const TOOLBAR_IMPORT_LABEL: &str = "Import";
 const TOOLBAR_EXPORT_LABEL: &str = "Export";
+const TOOLBAR_DUPLICATE_LABEL: &str = "Review duplicate";
 const TOOLBAR_NEW_LABEL: &str = "+ New";
 /// Authored 1× list row height; rows grow past it only when the measured
 /// name + subtitle lines need more (see [`ContactRowMetrics`]).
@@ -243,6 +246,7 @@ const FORM_CANCEL_LABEL: &str = "Cancel";
 struct LabelGrowth {
     import: f64,
     export: f64,
+    duplicate: f64,
     new: f64,
     add_phone: f64,
     add_email: f64,
@@ -276,6 +280,11 @@ impl LabelGrowth {
                 TOOLBAR_BUTTON_TEXT,
                 TextWeight::Medium,
             ),
+            duplicate: growth(
+                TOOLBAR_DUPLICATE_LABEL,
+                TOOLBAR_BUTTON_TEXT,
+                TextWeight::Medium,
+            ),
             new: growth(TOOLBAR_NEW_LABEL, TOOLBAR_BUTTON_TEXT, TextWeight::Medium),
             add_phone: growth(FORM_ADD_PHONE_LABEL, text_sm(), TextWeight::Medium),
             add_email: growth(FORM_ADD_EMAIL_LABEL, text_sm(), TextWeight::Medium),
@@ -292,6 +301,7 @@ impl LabelGrowth {
         let pairs = [
             (self.import, other.import),
             (self.export, other.export),
+            (self.duplicate, other.duplicate),
             (self.new, other.new),
             (self.add_phone, other.add_phone),
             (self.add_email, other.add_email),
@@ -1391,12 +1401,6 @@ pub struct ContactsApp {
     relayout: bool,
     seeded: bool,
 
-    /// Where the address book is persisted. `Some` for the live app (loaded
-    /// on first `sync`, rewritten after every mutation); `None` for the
-    /// hermetic `--shots` / test path so those never touch the user's disk.
-    /// Legacy address-book file to seed from. `None` in production — the
-    /// document arrives already loaded from the shared store.
-    legacy_book: Option<PathBuf>,
     /// When `true`, a first `sync` onto an empty book seeds the varied sample
     /// address book. Only the `--shots` and test constructors set this — the
     /// live app never fabricates content.
@@ -1424,7 +1428,7 @@ pub struct ContactsApp {
     /// brackets exactly one undo boundary, encodes under
     /// [`CONTACTS_ACTION_TYPE`](crate::actions::CONTACTS_ACTION_TYPE), and replays
     /// byte-identically on peers — the same path Ctrl+K takes.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
 
     /// The document heads the in-memory [`ContactStore`] was last derived from.
     /// When the document moves past this out of band — a Ctrl+K palette action,
@@ -1444,34 +1448,21 @@ impl ContactsApp {
     ///
     /// Nothing here touches the disk any more: the address book lives in the
     /// shared Automerge document, which `main` opens through `ui::persist`
-    /// and which is written back by `App::with_autosave`. The book this app
-    /// used to keep in its own file is imported once, on first launch after
-    /// the upgrade, by `ui::persist::open_migrating`.
+    /// and which is written back by `App::with_autosave`.
     pub fn new() -> Self {
-        Self::configured(None, false)
+        Self::configured(false)
     }
 
     /// The hermetic `--shots` / test app: seeds the varied sample address book
     /// and never touches the user's disk, so a headless frame is populated and
     /// tests are deterministic.
     pub fn sample() -> Self {
-        Self::configured(None, true)
+        Self::configured(true)
     }
 
-    /// An app that seeds itself from a legacy address-book file at `path`.
-    ///
-    /// Test-only. The legacy import in production runs one level up, in
-    /// `ui::persist::open_migrating`, against the whole document rather than
-    /// a projection of the contact list.
-    #[cfg(test)]
-    pub fn with_legacy_book(path: PathBuf) -> Self {
-        Self::configured(Some(path), false)
-    }
-
-    fn configured(legacy_book: Option<PathBuf>, seed_samples: bool) -> Self {
+    fn configured(seed_samples: bool) -> Self {
         let store = ContactStore::new();
         Self {
-            legacy_book,
             seed_samples,
             search_provider: crate::search_provider::ContactSearchProvider::new(&store),
             store,
@@ -1548,7 +1539,7 @@ impl ContactsApp {
             completed_resource_invocation: None,
             import_conflicts: Vec::new(),
             pending_conflict_resolution: None,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             model_heads: Vec::new(),
             local_projection_heads: None,
             pending_local_changes: Vec::new(),
@@ -1802,7 +1793,7 @@ impl ContactsApp {
     }
 
     fn show_toast(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), Instant::now()));
+        self.toast = Some((msg.into(), ui::time::now()));
         self.dirty = true;
     }
 
@@ -1960,6 +1951,47 @@ impl ContactsApp {
         outcome
     }
 
+    /// Show the address book the framework resource already holds.
+    /// An empty projection does not wipe contacts that have not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::ContactsState) {
+        if state.contacts.is_empty() {
+            return;
+        }
+        let keep: std::collections::HashSet<_> =
+            state.contacts.iter().map(|contact| contact.id).collect();
+        let stale_ids: Vec<_> = self
+            .store
+            .contacts
+            .iter()
+            .map(|contact| contact.id)
+            .filter(|id| !keep.contains(id))
+            .collect();
+        for id in stale_ids {
+            self.store.delete(id);
+        }
+        for contact in &state.contacts {
+            self.store.upsert(contact.clone());
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Contacts>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
     fn local_change_for(
         &self,
         action: &crate::actions::ContactsAction,
@@ -1973,8 +2005,11 @@ impl ContactsApp {
             | ContactsAction::SetFavorite { id, .. } => id.parse().ok()?,
             // A merge changes two projections. Let the next normal document
             // sync reconcile both together rather than risking a one-sided
-            // optimistic list update.
-            ContactsAction::MergeContacts { .. } => return None,
+            // optimistic list update. Repairing legacy row ids is the same:
+            // the next sync reads the repaired book.
+            ContactsAction::MergeContacts { .. } => {
+                return None;
+            }
         };
         let before = self.indexed_contact(id).cloned();
         if matches!(action, ContactsAction::CreateContact(_)) || before.is_some() {
@@ -2072,6 +2107,7 @@ impl ContactsApp {
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
     /// tests.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
@@ -2273,6 +2309,10 @@ impl ContactsApp {
     /// Exact resources read one validated contact/group from the authoritative
     /// store via stable-id indices. A stale position is refused instead of
     /// redirecting an action to whatever shifted into that vector slot.
+    pub(crate) fn export_is_busy(&self) -> bool {
+        self.export_dialog.is_open() || self.export_rx.is_some()
+    }
+
     pub(crate) fn exact_contacts_resource_ctx(
         &self,
         id: &str,
@@ -2701,11 +2741,11 @@ impl ContactsApp {
         }
         let mut total = 0_u64;
         for path in &paths {
-            let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
-            if !metadata.is_file() {
+            let metadata = file_metadata(path)?;
+            if metadata.kind != tilo_files::Kind::File {
                 return Err("selected path is not a regular file".into());
             }
-            total = total.saturating_add(metadata.len());
+            total = total.saturating_add(metadata.len);
             if total > MAX_IMPORT_TOTAL_BYTES {
                 return Err(format!(
                     "selected files exceed the {MAX_IMPORT_TOTAL_BYTES}-byte import limit"
@@ -2714,35 +2754,33 @@ impl ContactsApp {
         }
         let generation = self.advance_import_generation()?;
         let (sender, receiver) = mpsc::sync_channel(1);
-        std::thread::Builder::new()
-            .name("contacts-vcard-parser".into())
-            .spawn(move || {
-                let mut contacts = Vec::new();
-                let mut errors = 0;
-                for path in paths {
-                    match Self::read_import_file(&path) {
-                        Ok(text) => {
-                            let report = vcard::parse_vcards_report(&text);
-                            errors += report.skipped_cards + usize::from(report.limit_reached);
-                            for c in report.contacts {
-                                if contacts.len() < MAX_IMPORT_TOTAL_CARDS {
-                                    contacts.push(c);
-                                } else {
-                                    errors += 1;
-                                    break;
-                                }
+        ui::rt::spawn_thread("contacts-vcard-parser", move || {
+            let mut contacts = Vec::new();
+            let mut errors = 0;
+            for path in paths {
+                match Self::read_import_file(&path) {
+                    Ok(text) => {
+                        let report = vcard::parse_vcards_report(&text);
+                        errors += report.skipped_cards + usize::from(report.limit_reached);
+                        for c in report.contacts {
+                            if contacts.len() < MAX_IMPORT_TOTAL_CARDS {
+                                contacts.push(c);
+                            } else {
+                                errors += 1;
+                                break;
                             }
                         }
-                        Err(_) => errors += 1,
                     }
+                    Err(_) => errors += 1,
                 }
-                let _ = sender.send(ParsedImport {
-                    generation,
-                    contacts,
-                    errors,
-                });
-            })
-            .map_err(|error| error.to_string())?;
+            }
+            let _ = sender.send(ParsedImport {
+                generation,
+                contacts,
+                errors,
+            });
+        })
+        .map_err(|error| error.to_string())?;
         self.import_parse_rx = Some(receiver);
         Ok(())
     }
@@ -2760,19 +2798,17 @@ impl ContactsApp {
     }
 
     fn read_import_file(path: &std::path::Path) -> Result<String, String> {
-        let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
-        if !metadata.is_file() {
+        let metadata = file_metadata(path)?;
+        if metadata.kind != tilo_files::Kind::File {
             return Err("selected path is not a regular file".into());
         }
-        if metadata.len() > MAX_IMPORT_FILE_BYTES {
+        if metadata.len > MAX_IMPORT_FILE_BYTES {
             return Err(format!(
                 "file exceeds the {MAX_IMPORT_FILE_BYTES}-byte import limit"
             ));
         }
-        let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-        let mut bytes = Vec::with_capacity(metadata.len() as usize + 1);
-        file.take(MAX_IMPORT_FILE_BYTES + 1)
-            .read_to_end(&mut bytes)
+        let bytes = tilo_files::file_at(path)
+            .and_then(|(dir, name)| tilo_files::blocking::read(&dir, &name))
             .map_err(|error| error.to_string())?;
         if bytes.len() as u64 > MAX_IMPORT_FILE_BYTES {
             return Err(format!(
@@ -2996,7 +3032,7 @@ impl ContactsApp {
         let operation = crate::actions::export_contact_operation(id);
         let payload = serde_json::to_vec(&operation)
             .map_err(|error| format!("couldn't encode contact export: {error}"))?;
-        self.invoke_resource_operation(
+        self.answer_resource_operation(
             tilo_actions::OperationKind::Effect,
             crate::actions::CONTACTS_OPERATION_TYPE,
             &payload,
@@ -3018,7 +3054,7 @@ impl ContactsApp {
         let operation = crate::actions::open_duplicate_review_operation(candidate);
         let payload = serde_json::to_vec(&operation)
             .map_err(|error| format!("couldn't encode duplicate review: {error}"))?;
-        self.invoke_resource_operation(
+        self.answer_resource_operation(
             tilo_actions::OperationKind::View,
             crate::actions::CONTACTS_OPERATION_TYPE,
             &payload,
@@ -3041,10 +3077,11 @@ impl ContactsApp {
             return;
         }
         let body = vcard::to_vcards(&contacts, version);
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        match std::fs::write(path, body) {
+        let written = tilo_files::file_at(path).and_then(|(dir, name)| {
+            tilo_files::blocking::create_dir_all(&dir, &tilo_files::VPath::root())?;
+            tilo_files::blocking::save_document(&dir, &name, body.as_bytes())
+        });
+        match written {
             Ok(()) => self.show_toast(format!(
                 "Exported {} ({}) → {}",
                 contacts.len(),
@@ -3276,16 +3313,18 @@ impl ContactsApp {
         let new_w = face_w(TOOLBAR_NEW_W, g.new);
         self.hit.new = Rect::new(x - new_w, btn_y, x, btn_y + btn_h);
         x -= new_w + if compact_toolbar { 6.0 } else { 10.0 };
-        if self.has_duplicate_candidate() {
-            let duplicate_w = face_w(TOOLBAR_DUPLICATE_W, 0.0);
-            self.hit.duplicates = Rect::new(x - duplicate_w, btn_y, x, btn_y + btn_h);
-            x -= duplicate_w + if compact_toolbar { 6.0 } else { 10.0 };
-        } else {
-            self.hit.duplicates = Rect::ZERO;
-        }
         let exp_w = face_w(TOOLBAR_FILE_W, g.export);
         self.hit.export = Rect::new(x - exp_w, btn_y, x, btn_y + btn_h);
-        x -= exp_w + if compact_toolbar { 6.0 } else { 10.0 };
+        let gap = if compact_toolbar { 6.0 } else { 10.0 };
+        x -= exp_w + gap;
+        self.hit.duplicates = Rect::ZERO;
+        if self.has_duplicate_candidate() {
+            // This is the exact face drawn by `draw_toolbar`; its accessible
+            // and pointer targets therefore share one responsive rectangle.
+            let duplicate_w = face_w(TOOLBAR_DUPLICATE_W, g.duplicate);
+            self.hit.duplicates = Rect::new(x - duplicate_w, btn_y, x, btn_y + btn_h);
+            x -= duplicate_w + gap;
+        }
         let imp_w = face_w(TOOLBAR_FILE_W, g.import);
         self.hit.import = Rect::new(x - imp_w, btn_y, x, btn_y + btn_h);
     }
@@ -3804,10 +3843,7 @@ impl ContactsApp {
         }
         if self.export_dialog.is_open() {
             self.export_dialog.draw(
-                scene,
-                transform,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, transform, tr, theme),
                 self.rect,
                 &self.store,
                 self.sort,
@@ -3868,7 +3904,7 @@ impl ContactsApp {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                Color::BLACK.with_alpha_factor(0.72),
+                c.surfaces.scrim.with_alpha_factor(0.72),
                 None,
                 &self.rect,
             );
@@ -4240,10 +4276,7 @@ impl ContactsApp {
 
         let hov = |r: Rect| r.contains(self.last_mouse);
         toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             self.hit.import,
             if importing {
                 if compact { "…" } else { "Importing…" }
@@ -4261,10 +4294,7 @@ impl ContactsApp {
         // or offer an Export action that cannot succeed yet.
         if !self.store.is_empty() {
             toolbar_button(
-                scene,
-                t,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 self.hit.export,
                 if exporting {
                     if compact { "…" } else { "Exporting…" }
@@ -4279,22 +4309,20 @@ impl ContactsApp {
             );
             if self.has_duplicate_candidate() {
                 toolbar_button(
-                    scene,
-                    t,
-                    tr,
-                    theme,
+                    &mut PaintCtx::new(scene, t, tr, theme),
                     self.hit.duplicates,
-                    if compact { "2×" } else { "Review duplicate" },
+                    if compact {
+                        "2×"
+                    } else {
+                        TOOLBAR_DUPLICATE_LABEL
+                    },
                     false,
                     hov(self.hit.duplicates),
                     false,
                 );
             }
             toolbar_button(
-                scene,
-                t,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 self.hit.new,
                 if compact { "+" } else { TOOLBAR_NEW_LABEL },
                 true,
@@ -4320,15 +4348,14 @@ impl ContactsApp {
             self.rect.y1,
         );
         self.empty_action_rect = EmptyState::paint(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             area,
-            Some(Icon::FileText),
-            "No contacts yet",
-            Some("Create a contact, or import an existing vCard address book."),
-            Some("Create contact"),
+            &EmptyStateContent {
+                icon: Some(Icon::FileText),
+                title: "No contacts yet",
+                message: Some("Create a contact, or import an existing vCard address book."),
+                action_label: Some("Create contact"),
+            },
             self.last_mouse,
         )
         .unwrap_or(Rect::ZERO);
@@ -4401,10 +4428,7 @@ impl ContactsApp {
                 .get(index.saturating_add(1))
                 .is_some_and(|(next, _)| self.selected == Some(*next));
             Self::draw_list_row(
-                scene,
-                t,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 contact,
                 *rr,
                 selected,
@@ -4422,21 +4446,15 @@ impl ContactsApp {
     /// Draw one contact row: selection highlight, avatar, name/subtitle
     /// (elided to fit), favourite star, and — when `separator_below` — the
     /// rule under it (the caller drops it on either side of a selected row).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle plus the row's two state flags"
-    )]
     fn draw_list_row(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         contact: &Contact,
         rr: Rect,
         selected: bool,
         separator_below: bool,
         m: &ContactRowMetrics,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let sp = &theme.tokens.spacing;
         if selected {
@@ -4447,26 +4465,26 @@ impl ContactsApp {
             let pill = selection_pill(rr, sp);
             let radius = f64::from(theme.tokens.radii.md);
             let tier = row_tier_on(c.surfaces.base, SelectionState::active(true));
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
-                t,
+                ctx.transform,
                 tier.fill,
                 None,
                 &RoundedRect::from_rect(pill, radius),
             );
             if let Some(border) = tier.border {
-                scene.stroke(
+                ctx.scene.stroke(
                     &Stroke::new(1.0),
-                    t,
+                    ctx.transform,
                     border,
                     None,
                     &edge_outline(pill, radius),
                 );
             }
             if let Some(glow) = tier.inner_glow {
-                scene.stroke(
+                ctx.scene.stroke(
                     &Stroke::new(1.0),
-                    t,
+                    ctx.transform,
                     glow,
                     None,
                     &edge_outline(pill.inset(-1.0), (radius - 1.0).max(0.0)),
@@ -4477,7 +4495,14 @@ impl ContactsApp {
         // above the list, vertically centred in the row.
         let av_y = rr.y0 + (rr.height() - m.avatar) / 2.0;
         let av = Rect::new(rr.x0 + PAD, av_y, rr.x0 + PAD + m.avatar, av_y + m.avatar);
-        draw_avatar(scene, t, tr, theme, av, &contact.initials());
+        draw_avatar(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+            av,
+            &contact.initials(),
+        );
         let tx = av.x1 + f64::from(sp.s3);
         // Name and subtitle stack as one measured block centred in the row,
         // each elided to a single line so a narrow pane never wraps a row.
@@ -4485,30 +4510,30 @@ impl ContactsApp {
         let avail = (rr.x1 - tx - PAD - star_w).max(24.0) as f32;
         let block_h = m.name_h + m.sub_h;
         let name_y = rr.y0 + (rr.height() - block_h) / 2.0;
-        let name = tr.elide_to_width_weighted(
+        let name = ctx.text.elide_to_width_weighted(
             &contact.display_name(),
             ROW_NAME_TEXT,
             avail,
             TextWeight::Semibold,
         );
-        tr.draw_text_weighted(
-            scene,
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             &name,
             ROW_NAME_TEXT,
             c.text_primary,
-            t * Affine::translate((tx, name_y)),
+            ctx.transform * Affine::translate((tx, name_y)),
             None,
             TextWeight::Semibold,
         );
         let sub = contact.subtitle();
         if !sub.is_empty() {
-            let sub = tr.elide_to_width(&sub, text_sm(), avail);
-            tr.draw_text(
-                scene,
+            let sub = ctx.text.elide_to_width(&sub, text_sm(), avail);
+            ctx.text.draw_text(
+                ctx.scene,
                 &sub,
                 text_sm(),
                 c.text_dim,
-                t * Affine::translate((tx, name_y + m.name_h)),
+                ctx.transform * Affine::translate((tx, name_y + m.name_h)),
                 None,
             );
         }
@@ -4516,8 +4541,8 @@ impl ContactsApp {
             // A trailing indicator sits on the row's centre line (HIG §7),
             // like the avatar, inset like the avatar.
             draw_star(
-                scene,
-                t,
+                ctx.scene,
+                ctx.transform,
                 Point::new(rr.x1 - PAD - 6.0, rr.center().y),
                 6.0,
                 theme.accent_primary,
@@ -4528,7 +4553,15 @@ impl ContactsApp {
         // like a Panel separator (HIG §9.5); a selection pill's own edge
         // replaces it above and below that row.
         if separator_below {
-            separator(scene, t, rr.x0, rr.x1, rr.y1 - 0.5, PAD, c.surfaces.base);
+            separator(
+                ctx.scene,
+                ctx.transform,
+                rr.x0,
+                rr.x1,
+                rr.y1 - 0.5,
+                PAD,
+                c.surfaces.base,
+            );
         }
     }
 
@@ -4563,15 +4596,14 @@ impl ContactsApp {
             )
         };
         self.empty_action_rect = EmptyState::paint(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             self.list_body,
-            Some(Icon::FileText),
-            title,
-            Some(message),
-            action,
+            &EmptyStateContent {
+                icon: Some(Icon::FileText),
+                title,
+                message: Some(message),
+                action_label: action,
+            },
             self.last_mouse,
         )
         .unwrap_or(Rect::ZERO);
@@ -4646,13 +4678,20 @@ impl ContactsApp {
         // avatar. Keeping the name off the action band's row means even a long
         // name ("Katherine Johnson") uses the whole pane width and never
         // truncates at a moderate width.
-        let (name_top, y) = self.draw_detail_header(scene, t, tr, theme, &contact, x0, x1, y);
+        let (name_top, y) =
+            self.draw_detail_header(&mut PaintCtx::new(scene, t, tr, theme), &contact, x0, x1, y);
 
         // Record field value hit rects so a double-click can jump straight
         // into editing the clicked field (see `handle_detail_double_click`).
         self.detail_field_hits.clear();
-        let (mut hits, y) =
-            self.draw_detail_sections(scene, t, tr, theme, presence, &contact, x0, x1, y);
+        let (mut hits, y) = self.draw_detail_sections(
+            &mut PaintCtx::new(scene, t, tr, theme),
+            presence,
+            &contact,
+            x0,
+            x1,
+            y,
+        );
 
         // Header double-click: the name row edits the first/last name.
         hits.push((
@@ -4733,10 +4772,7 @@ impl ContactsApp {
             ),
         ] {
             toolbar_button(
-                scene,
-                t,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 rect,
                 label,
                 primary,
@@ -4746,59 +4782,64 @@ impl ContactsApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a draw helper's scene/transform/text-renderer/theme plus the geometry it paints are each independently meaningful, matching detail_field/toolbar_button/menu_item elsewhere in this file"
-    )]
     fn draw_detail_header(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         contact: &Contact,
         x0: f64,
         x1: f64,
         y: f64,
     ) -> (f64, f64) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let sp = &theme.tokens.spacing;
         // Every header row is stacked from its measured line: name, subtitle
         // and chips can no longer land on each other when the type scales.
-        let name_h = f64::from(tr.measure("Ag", 26.0, None).1);
-        let sub_h = f64::from(tr.measure("Ag", 14.0, None).1);
-        let chip_text_h = f64::from(tr.measure("Ag", 11.0, None).1);
+        let name_h = f64::from(ctx.text.measure("Ag", 26.0, None).1);
+        let sub_h = f64::from(ctx.text.measure("Ag", 14.0, None).1);
+        let chip_text_h = f64::from(ctx.text.measure("Ag", 11.0, None).1);
         let av_size = (name_h + sub_h).max(72.0);
         let av = Rect::new(x0, y, x0 + av_size, y + av_size);
-        draw_avatar(scene, t, tr, theme, av, &contact.initials());
+        draw_avatar(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+            av,
+            &contact.initials(),
+        );
 
         // Action buttons (favorite star, Edit, Delete) — top right.
-        self.draw_detail_actions(scene, t, tr, theme, contact);
+        self.draw_detail_actions(ctx.scene, ctx.transform, ctx.text, theme, contact);
 
         // Name + subtitle on their own full-width rows beneath the avatar.
         let head_w = (x1 - x0).max(40.0) as f32;
         let name_y = y + av_size + f64::from(sp.s4);
-        let name =
-            tr.elide_to_width_weighted(&contact.display_name(), 26.0, head_w, TextWeight::Bold);
-        tr.draw_text_weighted(
-            scene,
+        let name = ctx.text.elide_to_width_weighted(
+            &contact.display_name(),
+            26.0,
+            head_w,
+            TextWeight::Bold,
+        );
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             &name,
             26.0,
             c.text_primary,
-            t * Affine::translate((x0, name_y)),
+            ctx.transform * Affine::translate((x0, name_y)),
             None,
             TextWeight::Bold,
         );
         let mut hy = name_y + name_h + f64::from(sp.s1);
         let sub = contact.subtitle();
         if !sub.is_empty() {
-            let sub = tr.elide_to_width(&sub, 14.0, head_w);
-            tr.draw_text(
-                scene,
+            let sub = ctx.text.elide_to_width(&sub, 14.0, head_w);
+            ctx.text.draw_text(
+                ctx.scene,
                 &sub,
                 14.0,
                 c.text_dim,
-                t * Affine::translate((x0, hy)),
+                ctx.transform * Affine::translate((x0, hy)),
                 None,
             );
             hy += sub_h + f64::from(sp.s2);
@@ -4812,7 +4853,7 @@ impl ContactsApp {
             let mut bx = x0;
             let mut by = hy;
             for g in &contact.groups {
-                let tw = f64::from(tr.measure(&g.value, 11.0, None).0);
+                let tw = f64::from(ctx.text.measure(&g.value, 11.0, None).0);
                 let bw = tw + 2.0 * pad_x;
                 if bx > x0 && bx + bw > x1 {
                     bx = x0;
@@ -4820,20 +4861,23 @@ impl ContactsApp {
                 }
                 let br = Rect::new(bx, by, bx + bw, by + chip_h);
                 let shape = RoundedRect::from_rect(br, chip_h / 2.0);
-                scene.fill(
+                ctx.scene.fill(
                     Fill::NonZero,
-                    t,
+                    ctx.transform,
                     theme.accent_primary.with_alpha_factor(0.16),
                     None,
                     &shape,
                 );
-                let label = tr.elide_to_width(&g.value, 11.0, (bw - 2.0 * pad_x).max(12.0) as f32);
-                tr.draw_text(
-                    scene,
+                let label =
+                    ctx.text
+                        .elide_to_width(&g.value, 11.0, (bw - 2.0 * pad_x).max(12.0) as f32);
+                ctx.text.draw_text(
+                    ctx.scene,
                     &label,
                     11.0,
                     theme.accent_primary,
-                    t * Affine::translate((bx + pad_x, by + (chip_h - chip_text_h) / 2.0)),
+                    ctx.transform
+                        * Affine::translate((bx + pad_x, by + (chip_h - chip_text_h) / 2.0)),
                     None,
                 );
                 bx += bw + gap;
@@ -4848,71 +4892,65 @@ impl ContactsApp {
     /// Phone/email/address/birthday/website/notes sections, in order, each
     /// followed by its double-click hit rect. Returns the collected hits and
     /// the y cursor after the last section.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a draw helper's scene/transform/text-renderer/theme/presence plus the geometry it paints are each independently meaningful, matching detail_field/toolbar_button/menu_item elsewhere in this file"
-    )]
     fn draw_detail_sections(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         presence: &PresenceCtx,
         contact: &Contact,
         x0: f64,
         x1: f64,
         mut y: f64,
     ) -> (Vec<(Slot, Rect)>, f64) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
         let mut hits: Vec<(Slot, Rect)> = Vec::new();
 
         // Sections (free helpers avoid closures double-borrowing scene/tr).
         if !contact.phones.is_empty() {
-            detail_section(scene, t, tr, theme, x0, &mut y, "PHONE");
+            detail_section(ctx, x0, &mut y, "PHONE");
             for (i, p) in contact.phones.iter().enumerate() {
                 let y0 = y;
-                detail_field(scene, t, tr, theme, x0, x1, &mut y, &p.label, &p.value);
+                detail_field(ctx, x0, x1, &mut y, &p.label, &p.value);
                 hits.push((Slot::Phone(i), Rect::new(x0, y0 - 4.0, x1, y)));
             }
         }
         if !contact.emails.is_empty() {
-            detail_section(scene, t, tr, theme, x0, &mut y, "EMAIL");
+            detail_section(ctx, x0, &mut y, "EMAIL");
             for (i, e) in contact.emails.iter().enumerate() {
                 let y0 = y;
-                detail_field(scene, t, tr, theme, x0, x1, &mut y, &e.label, &e.value);
+                detail_field(ctx, x0, x1, &mut y, &e.label, &e.value);
                 hits.push((Slot::Email(i), Rect::new(x0, y0 - 4.0, x1, y)));
             }
         }
         if !contact.addresses.is_empty() {
-            detail_section(scene, t, tr, theme, x0, &mut y, "ADDRESS");
+            detail_section(ctx, x0, &mut y, "ADDRESS");
             for (i, a) in contact.addresses.iter().enumerate() {
                 let y0 = y;
-                detail_field(scene, t, tr, theme, x0, x1, &mut y, &a.label, &a.one_line());
+                detail_field(ctx, x0, x1, &mut y, &a.label, &a.one_line());
                 // The address is one logical block; double-clicking it edits
                 // its street line (the first address input).
                 hits.push((Slot::AddrStreet(i), Rect::new(x0, y0 - 4.0, x1, y)));
             }
         }
         if let Some(bday) = &contact.birthday {
-            detail_section(scene, t, tr, theme, x0, &mut y, "BIRTHDAY");
+            detail_section(ctx, x0, &mut y, "BIRTHDAY");
             let y0 = y;
             // Render the structured date, formatted; double-click still edits it.
-            detail_field(scene, t, tr, theme, x0, x1, &mut y, "date", &bday.pretty());
+            detail_field(ctx, x0, x1, &mut y, "date", &bday.pretty());
             hits.push((Slot::Birthday, Rect::new(x0, y0 - 4.0, x1, y)));
         }
         if contact.website.is_empty() {
             self.website_link = None;
         } else {
-            detail_section(scene, t, tr, theme, x0, &mut y, "WEBSITE");
+            detail_section(ctx, x0, &mut y, "WEBSITE");
             // "url" field label on the left, matching the other detail rows.
-            tr.draw_text(
-                scene,
+            ctx.text.draw_text(
+                ctx.scene,
                 "url",
                 12.0,
                 c.text_dim,
-                t * Affine::translate((x0, y + 2.0)),
+                ctx.transform * Affine::translate((x0, y + 2.0)),
                 Some(64.0),
             );
             // The website is a live hyperlink (ui `Link` widget), not plain
@@ -4931,26 +4969,30 @@ impl ContactsApp {
             if needs_new {
                 self.website_link = Some(Link::new(&contact.website).with_font_size(14.0));
             }
-            let (lw, lh) = tr.measure(&contact.website, 14.0, None);
+            let (lw, lh) = ctx.text.measure(&contact.website, 14.0, None);
             let lw = f64::from(lw).min(vw);
             let lh = f64::from(lh).max(20.0);
             let lrect = Rect::new(vx, y, vx + lw, y + lh);
             if let Some(link) = self.website_link.as_mut() {
                 link.apply_layout_external(lrect);
-                link.draw(scene, t, tr, theme, presence);
+                link.draw(ctx.scene, ctx.transform, ctx.text, theme, presence);
             }
             y += lh + 8.0 * scale;
         }
         if !contact.notes.is_empty() {
-            detail_section(scene, t, tr, theme, x0, &mut y, "NOTES");
+            detail_section(ctx, x0, &mut y, "NOTES");
             let y0 = y;
-            let h = f64::from(tr.measure(&contact.notes, 14.0, Some((x1 - x0) as f32)).1);
-            tr.draw_text(
-                scene,
+            let h = f64::from(
+                ctx.text
+                    .measure(&contact.notes, 14.0, Some((x1 - x0) as f32))
+                    .1,
+            );
+            ctx.text.draw_text(
+                ctx.scene,
                 &contact.notes,
                 14.0,
                 c.text_primary,
-                t * Affine::translate((x0, y)),
+                ctx.transform * Affine::translate((x0, y)),
                 Some((x1 - x0) as f32),
             );
             y += h + 8.0 * scale;
@@ -5109,10 +5151,7 @@ impl ContactsApp {
             );
         }
         toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             self.hit.save,
             "Save",
             true,
@@ -5120,10 +5159,7 @@ impl ContactsApp {
             false,
         );
         toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             self.hit.cancel,
             "Cancel",
             false,
@@ -5412,10 +5448,6 @@ impl ContactsApp {
     /// The birthday calendar popup: month/year header with prev/next
     /// chevrons, the weekday header row, and every day cell (hover +
     /// selected-day highlight).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the birthday popup combines paint context and anchor bounds with the displayed year and month"
-    )]
     fn draw_popup_calendar(
         &self,
         scene: &mut Scene,
@@ -5589,10 +5621,7 @@ impl ContactsApp {
         );
         let m = self.last_mouse;
         toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             g.cancel,
             "Cancel",
             false,
@@ -5600,10 +5629,7 @@ impl ContactsApp {
             false,
         );
         toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             g.discard,
             "Discard",
             false,
@@ -5611,10 +5637,7 @@ impl ContactsApp {
             false,
         );
         toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             g.save,
             "Save",
             true,
@@ -6025,71 +6048,58 @@ impl FieldInput {
 // Drawing helpers (free functions)
 // =====================================================================
 
-pub(crate) fn detail_section(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    x0: f64,
-    y: &mut f64,
-    title: &str,
-) {
+pub(crate) fn detail_section(ctx: &mut PaintCtx<'_>, x0: f64, y: &mut f64, title: &str) {
+    let theme = ctx.theme;
     let scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
     *y += 10.0 * scale;
-    tr.draw_text_weighted(
-        scene,
+    ctx.text.draw_text_weighted(
+        ctx.scene,
         title,
         11.0,
         theme.tokens.colors.text_dim,
-        t * Affine::translate((x0, *y)),
+        ctx.transform * Affine::translate((x0, *y)),
         None,
         TextWeight::Semibold,
     );
     *y += 22.0 * scale;
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "contact fields combine paint context, column bounds and a running vertical cursor with separate label and value text"
-)]
 pub(crate) fn detail_field(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
+    ctx: &mut PaintCtx<'_>,
     x0: f64,
     x1: f64,
     y: &mut f64,
     label: &str,
     value: &str,
 ) {
+    let theme = ctx.theme;
     let c = &theme.tokens.colors;
     let sp = &theme.tokens.spacing;
     // The label column is sized from the widest label the app can show, so
     // every value in a card starts on one edge and a scaled label never runs
     // under its value. At 1× the authored 78px column still wins.
-    let widest = f64::from(tr.measure(DETAIL_WIDEST_LABEL, text_sm(), None).0);
+    let widest = f64::from(ctx.text.measure(DETAIL_WIDEST_LABEL, text_sm(), None).0);
     let label_col = (widest + f64::from(sp.s4)).max(DETAIL_LABEL_COL);
-    let (_, label_h) = tr.measure(label, text_sm(), None);
-    let (_, value_line_h) = tr.measure("Ag", text_base(), None);
+    let (_, label_h) = ctx.text.measure(label, text_sm(), None);
+    let (_, value_line_h) = ctx.text.measure("Ag", text_base(), None);
     // Label and the value's first line share a centre.
     let label_y = *y + (f64::from(value_line_h) - f64::from(label_h)) / 2.0;
-    tr.draw_text(
-        scene,
+    ctx.text.draw_text(
+        ctx.scene,
         label,
         text_sm(),
         c.text_dim,
-        t * Affine::translate((x0, label_y)),
+        ctx.transform * Affine::translate((x0, label_y)),
         Some((label_col - f64::from(sp.s2)) as f32),
     );
     let vw = (x1 - x0 - label_col).max(40.0);
-    let h = f64::from(tr.measure(value, text_base(), Some(vw as f32)).1);
-    tr.draw_text(
-        scene,
+    let h = f64::from(ctx.text.measure(value, text_base(), Some(vw as f32)).1);
+    ctx.text.draw_text(
+        ctx.scene,
         value,
         text_base(),
         c.text_primary,
-        t * Affine::translate((x0 + label_col, *y)),
+        ctx.transform * Affine::translate((x0 + label_col, *y)),
         Some(vw as f32),
     );
     *y += h.max(20.0) + f64::from(sp.s2);
@@ -6120,21 +6130,15 @@ fn type_label(draft: &Contact, target: TypeTarget) -> &str {
 /// the caller's own hit-testing against the last pointer position; the rest
 /// look (radius, 13px medium label, accent-vs-raised fills) matches the chrome
 /// this app has always drawn.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "a draw helper's scene/transform/text-renderer/theme plus the geometry and state it paints are each independently meaningful, matching detail_field/menu_item elsewhere in this file"
-)]
 pub(crate) fn toolbar_button(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
+    ctx: &mut PaintCtx<'_>,
     rect: Rect,
     label: &str,
     primary: bool,
     hovered: bool,
     pressed: bool,
 ) {
+    let theme = ctx.theme;
     if rect.width() <= 0.0 {
         return;
     }
@@ -6161,7 +6165,7 @@ pub(crate) fn toolbar_button(
     if let Some(icon) = icon {
         face = face.icon(icon);
     }
-    Button::paint(scene, t, tr, theme, &face);
+    Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
 }
 
 fn add_button(
@@ -6290,10 +6294,6 @@ fn selection_pill(row: Rect, sp: &Spacing) -> Rect {
     )
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "menu items combine paint context and row bounds with their label, hover and selection state"
-)]
 fn menu_item(
     scene: &mut Scene,
     t: Affine,
@@ -6569,9 +6569,9 @@ impl ContactsApp {
         ];
         for input in &form.inputs {
             let (name, _) = form_field_metadata(input.slot);
-            let (anchor, focus) = input.ti.selection_range_public().unwrap_or_else(|| {
-                let end = input.ti.value().len();
-                (end, end)
+            let (anchor, focus) = input.ti.selection_anchor_focus_public().unwrap_or_else(|| {
+                let cursor = input.ti.cursor_pos();
+                (cursor, cursor)
             });
             let role = if input.slot == Slot::Notes {
                 Role::MultilineTextInput
@@ -6833,19 +6833,20 @@ impl ContactsApp {
 }
 
 impl Widget for ContactsApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource,
+        dyn ui::undo::UndoPoints
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::CONTACTS_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        // Legacy rows receive deterministic read identities, then this small
-        // canonical migration persists them before UI edits/actions can target
-        // a row. It only touches missing row ids and is idempotent.
-        ContactsDoc::migrate_legacy_rows(state);
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         if let Some((token, import_as_new)) = self.pending_conflict_resolution.take()
             && let Err(error) = self.resolve_import_conflict(state, &token, import_as_new)
         {
@@ -6870,13 +6871,6 @@ impl Widget for ContactsApp {
                     if prefer.is_none() {
                         prefer = Some(c.id);
                     }
-                    ContactsDoc::upsert_contact(state, &c);
-                    self.store.upsert(c);
-                }
-            } else if let Some(path) = self.legacy_book.clone() {
-                // Test-only: seed from a legacy address-book file. The live
-                // app arrives with its document already loaded by the store.
-                for c in crate::storage::load(&path) {
                     ContactsDoc::upsert_contact(state, &c);
                     self.store.upsert(c);
                 }
@@ -6931,7 +6925,6 @@ impl Widget for ContactsApp {
             }
         }
 
-        #[cfg(unix)]
         crate::priority_contacts::publish_if_changed(&self.store);
 
         if self.search_heads != self.model_heads {
@@ -7006,25 +6999,11 @@ impl Widget for ContactsApp {
     /// Route one window event. Split into per-concern helpers purely for
     /// length; the guard order (which layer consumes the event) is
     /// unchanged from one flat function.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Widget::handle_event's arity is fixed by the trait (ui::widget::Widget); every parameter is independently meaningful, as the trait's own allow in crates/sdk/ui-core/src/widget/mod.rs explains"
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Track logical cursor position.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_mouse =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             // Update the website hyperlink's hover so its underline thickens as
             // the pointer passes over it (view mode only).
             if self.mode == Mode::View {
@@ -7041,286 +7020,51 @@ impl Widget for ContactsApp {
         }
 
         // Modal layers consume input first.
-        if self.handle_event_modals(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            node_id,
-            taffy,
-        ) {
+        if self.handle_event_modals(event, ctx) {
             return;
         }
 
-        if self.handle_event_dispatch(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            node_id,
-            taffy,
-        ) {
+        if self.handle_event_dispatch(event, ctx) {
             return;
         }
 
         // Forward pointer-move to focused inputs so hover/drag-select tracks.
-        self.forward_event_to_inputs(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            node_id,
-            taffy,
-        );
+        self.forward_event_to_inputs(event, ctx);
     }
 
     fn name(&self) -> &'static str {
         "ContactsApp"
     }
 
-    /// Publish the open book + its contacts so the host's Ctrl+K action palette
-    /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    /// Resolve contacts outside the contextual palette page. This is the
-    /// other half of bounded discovery: a search hit for contact 65,000 still
-    /// reaches the exact current resource/action catalogue, while a deleted
-    /// contact has no resource for the broker to invoke.
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its contacts action, so it records one undo boundary for it (see
-    /// [`Self::perform_action`]). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.actions.take_committed()
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "all admitted Contacts view operations are centralized so resource routes cannot drift"
-    )]
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if type_id != crate::actions::CONTACTS_OPERATION_TYPE {
-            return Ok(false);
-        }
-        let operation: crate::actions::ContactsOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        match (kind, operation) {
-            (tilo_actions::OperationKind::View, crate::actions::ContactsOperation::Open { id }) => {
-                let id =
-                    uuid::Uuid::parse_str(&id).map_err(|_| "invalid contact id".to_string())?;
-                if self.store.get(id).is_none() {
-                    return Err("contact no longer exists".into());
-                }
-                self.reveal_contact(id);
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::ContactsOperation::OpenGroup { name },
-            ) => self.reveal_group(&name)?,
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::ContactsOperation::OpenFavorites,
-            ) => {
-                self.set_group_filter(Some(FAVORITES_FILTER.into()));
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::ContactsOperation::OpenDuplicateReview {
-                    survivor_id,
-                    source_id,
-                },
-            ) => {
-                let survivor = uuid::Uuid::parse_str(&survivor_id)
-                    .map_err(|_| "invalid surviving contact id".to_string())?;
-                let source = uuid::Uuid::parse_str(&source_id)
-                    .map_err(|_| "invalid source contact id".to_string())?;
-                self.open_duplicate_review(survivor, source)?;
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::ContactsOperation::ImportVcard { path },
-            ) => {
-                if path.is_some() {
-                    return Err(
-                        "direct filesystem paths are not accepted; use the system file picker"
-                            .into(),
-                    );
-                }
-                if self.import_rx.is_some() || self.import_parse_rx.is_some() {
-                    return Err("a contact import is already in progress".into());
-                }
-                self.request_import();
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::ContactsOperation::ExportAllVcard { path },
-            ) => {
-                if path.is_some() {
-                    return Err(
-                        "direct filesystem paths are not accepted; use the system file picker"
-                            .into(),
-                    );
-                }
-                if self.export_rx.is_some() {
-                    return Err("a contact export is already in progress".into());
-                }
-                let ids = self
-                    .store
-                    .contacts
-                    .iter()
-                    .map(|contact| contact.id)
-                    .collect();
-                if !self.request_export(ids, crate::vcard::VCardVersion::V4) {
-                    return Err("there are no contacts to export".into());
-                }
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::ContactsOperation::ExportContactVcard { id, path },
-            ) => {
-                if path.is_some() {
-                    return Err(
-                        "direct filesystem paths are not accepted; use the system file picker"
-                            .into(),
-                    );
-                }
-                let id =
-                    uuid::Uuid::parse_str(&id).map_err(|_| "invalid contact id".to_string())?;
-                self.open_contact_export(id)?;
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::ContactsOperation::KeepImportConflict { token },
-            ) => {
-                if !self
-                    .import_conflicts
-                    .iter()
-                    .any(|conflict| conflict.token.to_string() == token)
-                {
-                    return Err("import conflict no longer exists".into());
-                }
-                self.pending_conflict_resolution = Some((token, false));
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::ContactsOperation::ImportConflictAsNew { token },
-            ) => {
-                if !self
-                    .import_conflicts
-                    .iter()
-                    .any(|conflict| conflict.token.to_string() == token)
-                {
-                    return Err("import conflict no longer exists".into());
-                }
-                self.pending_conflict_resolution = Some((token, true));
-            }
-            _ => return Err("operation kind does not match Contacts operation".into()),
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if type_id != crate::actions::CONTACTS_OPERATION_TYPE {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let operation: crate::actions::ContactsOperation =
-            serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        match operation {
-            crate::actions::ContactsOperation::ImportVcard { path: file } => {
-                if self.resource_invocation.is_some()
-                    || self.import_rx.is_some()
-                    || self.import_parse_rx.is_some()
-                {
-                    return Err("another contact file operation is running".into());
-                }
-                if file.is_some() {
-                    return Err(
-                        "direct filesystem paths are not accepted; use the system file picker"
-                            .into(),
-                    );
-                }
-                self.resource_invocation = Some(invocation);
-                self.request_import();
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            crate::actions::ContactsOperation::ExportAllVcard { path: file } => {
-                if self.store.contacts.is_empty() {
-                    return Err("there are no contacts to export".into());
-                }
-                if self.resource_invocation.is_some() {
-                    return Err("another contact file operation is running".into());
-                }
-                if file.is_some() {
-                    return Err(
-                        "direct filesystem paths are not accepted; use the system file picker"
-                            .into(),
-                    );
-                }
-                self.resource_invocation = Some(invocation);
-                let ids = self.store.contacts.iter().map(|c| c.id).collect();
-                if !self.request_export(ids, crate::vcard::VCardVersion::V4) {
-                    self.resource_invocation = None;
-                    return Err("contact export could not be started".into());
-                }
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            crate::actions::ContactsOperation::ExportContactVcard { .. } => {
-                // Decode/validate and open the exact same export dialog as a
-                // context-menu activation. This operation completes once the
-                // flow is shown; a portal job begins only after the person
-                // chooses a vCard version and destination in that flow.
-                self.invoke_resource_operation(kind, type_id, payload, doc, path)
-                    .map(|handled| {
-                        handled.then(|| {
-                            ui::widget::ResourceOperationStart::Completed(
-                                tilo_actions::ActionOutput::default(),
-                            )
-                        })
-                    })
-            }
-            crate::actions::ContactsOperation::Open { .. }
-            | crate::actions::ContactsOperation::OpenGroup { .. }
-            | crate::actions::ContactsOperation::OpenFavorites
-            | crate::actions::ContactsOperation::OpenDuplicateReview { .. }
-            | crate::actions::ContactsOperation::KeepImportConflict { .. }
-            | crate::actions::ContactsOperation::ImportConflictAsNew { .. } => self
-                .invoke_resource_operation(kind, type_id, payload, doc, path)
-                .map(|handled| {
-                    handled.then(|| {
-                        ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )
-                    })
-                }),
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -7362,14 +7106,6 @@ impl Widget for ContactsApp {
             return self.completed_resource_invocation.take();
         }
         None
-    }
-
-    /// Fold the address book into the unified Ctrl+K palette: a snapshot
-    /// [`ContactSearchProvider`](crate::search_provider::ContactSearchProvider)
-    /// makes every contact findable there, alongside any actions the app
-    /// exports.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
     }
 
     fn get_rect(&self) -> Rect {
@@ -7839,10 +7575,11 @@ impl Widget for ContactsApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        let (state, _) = ui::doc::document(state, path);
 
         // List rows are hand-painted, but their standard AT-SPI context-menu
         // action opens precisely the same menu as a secondary pointer click.
@@ -8467,23 +8204,6 @@ impl Widget for ContactsApp {
         self.relayout
     }
 
-    fn needs_commit(&self) -> bool {
-        self.search.needs_commit()
-            || self
-                .form
-                .as_ref()
-                .is_some_and(|f| f.inputs.iter().any(|i| i.ti.needs_commit()))
-    }
-
-    fn on_commit(&mut self) {
-        self.search.on_commit();
-        if let Some(form) = &mut self.form {
-            for f in &mut form.inputs {
-                f.ti.on_commit();
-            }
-        }
-    }
-
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,
@@ -8497,57 +8217,338 @@ impl Widget for ContactsApp {
     }
 }
 
+impl ui::undo::UndoPoints for ContactsApp {
+    fn needs_commit(&self) -> bool {
+        self.search.needs_commit()
+            || self
+                .form
+                .as_ref()
+                .is_some_and(|f| f.inputs.iter().any(|i| i.ti.needs_commit()))
+    }
+    fn on_commit(&mut self) {
+        self.search.on_commit();
+        if let Some(form) = &mut self.form {
+            for f in &mut form.inputs {
+                f.ti.on_commit();
+            }
+        }
+    }
+}
+
+impl ui::search::capability::SearchSource for ContactsApp {
+    /// Fold the address book into the unified Ctrl+K palette: a snapshot
+    /// [`ContactSearchProvider`](crate::search_provider::ContactSearchProvider)
+    /// makes every contact findable there, alongside any actions the app
+    /// exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
+    }
+}
+
+impl ui::resources::PublishesResources for ContactsApp {
+    /// Publish the open book + its contacts so the host's Ctrl+K action palette
+    /// scopes to them. When the framework hosts the surface,
+    /// [`tilo_resource::publish`] already owns the address-book door; only
+    /// live extras (import conflicts, pending merges) remain here.
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        self.publish_resources(doc)
+    }
+    /// Resolve contacts outside the contextual palette page. This is the
+    /// other half of bounded discovery: a search hit for contact 65,000 still
+    /// reaches the exact current resource/action catalogue, while a deleted
+    /// contact has no resource for the broker to invoke.
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.is_hosted() && id == "contacts.book" {
+            return None;
+        }
+        self.publish_resource(doc, id)
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for ContactsApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+}
+
+impl ui::undo::CommittedActions for ContactsApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its contacts action, so it records one undo boundary for it (see
+    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl ContactsApp {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "all admitted Contacts view operations are centralized so resource routes cannot drift"
+    )]
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if type_id != crate::actions::CONTACTS_OPERATION_TYPE {
+            return Ok(false);
+        }
+        let operation: crate::actions::ContactsOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        match (kind, operation) {
+            (tilo_actions::OperationKind::View, crate::actions::ContactsOperation::Open { id }) => {
+                let id =
+                    uuid::Uuid::parse_str(&id).map_err(|_| "invalid contact id".to_string())?;
+                if self.store.get(id).is_none() {
+                    return Err("contact no longer exists".into());
+                }
+                self.reveal_contact(id);
+            }
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::ContactsOperation::OpenGroup { name },
+            ) => self.reveal_group(&name)?,
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::ContactsOperation::OpenFavorites,
+            ) => {
+                self.set_group_filter(Some(FAVORITES_FILTER.into()));
+            }
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::ContactsOperation::OpenDuplicateReview {
+                    survivor_id,
+                    source_id,
+                },
+            ) => {
+                let survivor = uuid::Uuid::parse_str(&survivor_id)
+                    .map_err(|_| "invalid surviving contact id".to_string())?;
+                let source = uuid::Uuid::parse_str(&source_id)
+                    .map_err(|_| "invalid source contact id".to_string())?;
+                self.open_duplicate_review(survivor, source)?;
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::ContactsOperation::ImportVcard { path },
+            ) => {
+                if path.is_some() {
+                    return Err(
+                        "direct filesystem paths are not accepted; use the system file picker"
+                            .into(),
+                    );
+                }
+                if self.import_rx.is_some() || self.import_parse_rx.is_some() {
+                    return Err("a contact import is already in progress".into());
+                }
+                self.request_import();
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::ContactsOperation::ExportAllVcard { path },
+            ) => {
+                if path.is_some() {
+                    return Err(
+                        "direct filesystem paths are not accepted; use the system file picker"
+                            .into(),
+                    );
+                }
+                if self.export_rx.is_some() {
+                    return Err("a contact export is already in progress".into());
+                }
+                let ids = self
+                    .store
+                    .contacts
+                    .iter()
+                    .map(|contact| contact.id)
+                    .collect();
+                if !self.request_export(ids, crate::vcard::VCardVersion::V4) {
+                    return Err("there are no contacts to export".into());
+                }
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::ContactsOperation::ExportContactVcard { id, path },
+            ) => {
+                if path.is_some() {
+                    return Err(
+                        "direct filesystem paths are not accepted; use the system file picker"
+                            .into(),
+                    );
+                }
+                let id =
+                    uuid::Uuid::parse_str(&id).map_err(|_| "invalid contact id".to_string())?;
+                self.open_contact_export(id)?;
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::ContactsOperation::KeepImportConflict { token },
+            ) => {
+                if !self
+                    .import_conflicts
+                    .iter()
+                    .any(|conflict| conflict.token.to_string() == token)
+                {
+                    return Err("import conflict no longer exists".into());
+                }
+                self.pending_conflict_resolution = Some((token, false));
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::ContactsOperation::ImportConflictAsNew { token },
+            ) => {
+                if !self
+                    .import_conflicts
+                    .iter()
+                    .any(|conflict| conflict.token.to_string() == token)
+                {
+                    return Err("import conflict no longer exists".into());
+                }
+                self.pending_conflict_resolution = Some((token, true));
+            }
+            _ => return Err("operation kind does not match Contacts operation".into()),
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if type_id != crate::actions::CONTACTS_OPERATION_TYPE {
+            return Ok(None);
+        }
+        let operation: crate::actions::ContactsOperation =
+            serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        match operation {
+            crate::actions::ContactsOperation::ImportVcard { path: file } => {
+                if self.resource_invocation.is_some()
+                    || self.import_rx.is_some()
+                    || self.import_parse_rx.is_some()
+                {
+                    return Err("another contact file operation is running".into());
+                }
+                if file.is_some() {
+                    return Err(
+                        "direct filesystem paths are not accepted; use the system file picker"
+                            .into(),
+                    );
+                }
+                self.resource_invocation = Some(invocation);
+                self.request_import();
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            crate::actions::ContactsOperation::ExportAllVcard { path: file } => {
+                if self.store.contacts.is_empty() {
+                    return Err("there are no contacts to export".into());
+                }
+                if self.resource_invocation.is_some() {
+                    return Err("another contact file operation is running".into());
+                }
+                if file.is_some() {
+                    return Err(
+                        "direct filesystem paths are not accepted; use the system file picker"
+                            .into(),
+                    );
+                }
+                self.resource_invocation = Some(invocation);
+                let ids = self.store.contacts.iter().map(|c| c.id).collect();
+                if !self.request_export(ids, crate::vcard::VCardVersion::V4) {
+                    self.resource_invocation = None;
+                    return Err("contact export could not be started".into());
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            crate::actions::ContactsOperation::ExportContactVcard { .. } => {
+                // Decode/validate and open the exact same export dialog as a
+                // context-menu activation. This operation completes once the
+                // flow is shown; a portal job begins only after the person
+                // chooses a vCard version and destination in that flow.
+                self.answer_resource_operation(kind, type_id, payload, doc, path)
+                    .map(|handled| {
+                        handled.then(|| {
+                            ui::widget::ResourceOperationStart::Completed(
+                                tilo_actions::ActionOutput::default(),
+                            )
+                        })
+                    })
+            }
+            crate::actions::ContactsOperation::Open { .. }
+            | crate::actions::ContactsOperation::OpenGroup { .. }
+            | crate::actions::ContactsOperation::OpenFavorites
+            | crate::actions::ContactsOperation::OpenDuplicateReview { .. }
+            | crate::actions::ContactsOperation::KeepImportConflict { .. }
+            | crate::actions::ContactsOperation::ImportConflictAsNew { .. } => self
+                .answer_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            tilo_actions::ActionOutput::default(),
+                        )
+                    })
+                }),
+        }
+    }
+}
+
 impl ContactsApp {
     /// Blocking layers route every keyboard and pointer event before the app
     /// underneath can see it. Each dialog owns its own keyboard model (rather
     /// than letting global shortcuts leak through the scrim). Returns `true`
     /// when this method has fully consumed the event.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors handle_event's own event-routing signature; splitting further would need a context struct for a one-call-site helper"
-    )]
     fn handle_event_modals(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         if self.duplicate_review.is_some() {
-            self.route_duplicate_review_event(event, state, handled);
+            self.route_duplicate_review_event(event, ctx.state, ctx.handled);
             return true;
         }
         if !self.import_conflicts.is_empty() {
             self.route_import_conflict_dialog_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.handled,
             );
             return true;
         }
         if self.export_dialog.is_open() {
-            self.handle_export(event, modifiers, handled);
+            self.handle_export(event, *ctx.modifiers, ctx.handled);
             return true;
         }
         if self.pending_switch.is_some() {
-            self.handle_unsaved(event, modifiers, state, handled);
+            self.handle_unsaved(event, *ctx.modifiers, ctx.state, ctx.handled);
             return true;
         }
         if self.confirm_delete.is_some() {
-            self.route_delete_dialog_event(event, scale_factor, modifiers, state, path, handled);
+            self.route_delete_dialog_event(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.handled,
+            );
             return true;
         }
         if self.popup.is_some() {
-            self.handle_popup(event, state, handled);
+            self.handle_popup(event, ctx.state, ctx.handled);
             // Popups consume clicks; let hover fall through harmlessly.
-            if *handled {
+            if *ctx.handled {
                 return true;
             }
         }
@@ -8710,20 +8711,10 @@ impl ContactsApp {
     /// `true` if `event` was consumed here (the caller then returns without
     /// forwarding to inputs); `false` for a variant this function doesn't
     /// own, so the caller still forwards it as a pointer-move.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors handle_event's own event-routing signature; splitting further would need a context struct for a one-call-site helper"
-    )]
     fn handle_event_dispatch(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         match event {
             WindowEvent::CursorMoved { .. } => {
@@ -8735,7 +8726,7 @@ impl ContactsApp {
                     self.split_pos = rel.clamp(0.18, 0.6);
                     self.relayout = true;
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                     return true;
                 }
             }
@@ -8746,10 +8737,17 @@ impl ContactsApp {
             } => {
                 if self.divider_hover {
                     self.divider_drag = true;
-                    *handled = true;
+                    *ctx.handled = true;
                     return true;
                 }
-                self.handle_click(state, handled, node_id, taffy, modifiers, path);
+                self.handle_click(
+                    ctx.state,
+                    ctx.handled,
+                    ctx.node_id,
+                    ctx.taffy,
+                    *ctx.modifiers,
+                    ctx.path,
+                );
                 return true;
             }
             WindowEvent::MouseInput {
@@ -8760,7 +8758,7 @@ impl ContactsApp {
                 // Right-click a contact row → per-contact context menu
                 // (Edit / Export / Delete). `MouseInput` carries no position,
                 // so we use the cursor cached on `CursorMoved`.
-                self.handle_right_click(self.last_mouse, handled);
+                self.handle_right_click(self.last_mouse, ctx.handled);
                 return true;
             }
             WindowEvent::MouseInput {
@@ -8770,7 +8768,7 @@ impl ContactsApp {
             } => {
                 if self.divider_drag {
                     self.divider_drag = false;
-                    *handled = true;
+                    *ctx.handled = true;
                     return true;
                 }
             }
@@ -8787,21 +8785,11 @@ impl ContactsApp {
                 }
                 self.relayout = true;
                 self.dirty = true;
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
             WindowEvent::KeyboardInput { event: ke, .. } => {
-                self.handle_key(
-                    ke,
-                    state,
-                    path,
-                    handled,
-                    node_id,
-                    taffy,
-                    modifiers,
-                    scale_factor,
-                    event,
-                );
+                self.handle_key(event, ctx, ke);
                 return true;
             }
             _ => {}
@@ -8829,56 +8817,30 @@ impl ContactsApp {
         self.search.is_focused() || self.form.as_ref().is_some_and(EditForm::any_focused)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "input forwarding preserves the widget event, scale, modifiers, CRDT location, handled flag and layout context"
-    )]
-    fn forward_event_to_inputs(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn forward_event_to_inputs(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let mut sink: Option<NodeId> = None;
         // Search box.
         self.search.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            handled,
-            &mut sink,
-            node_id,
-            taffy,
+            &mut ui::widget::EventCtx {
+                focus_target: &mut sink,
+                ..ctx.reborrow(ctx.path, ctx.node_id)
+            },
         );
         if let Some(form) = &mut self.form {
             for f in &mut form.inputs {
                 let mut s2: Option<NodeId> = None;
                 f.ti.handle_event(
                     event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    &mut s2,
-                    node_id,
-                    taffy,
+                    &mut ui::widget::EventCtx {
+                        focus_target: &mut s2,
+                        ..ctx.reborrow(ctx.path, ctx.node_id)
+                    },
                 );
             }
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "click routing keeps the CRDT location, modifiers, handled flag and layout context available to the selected affordance"
-    )]
     /// Route a click to whichever affordance is under the cursor. Split into
     /// per-region helpers purely for length; the guard order (and thus which
     /// affordance wins when rects overlap) is unchanged from one flat
@@ -9161,7 +9123,7 @@ impl ContactsApp {
     fn try_detail_double_click(&mut self, p: Point) -> bool {
         const DOUBLE_CLICK_MS: u128 = 400;
         const DOUBLE_CLICK_RADIUS: f64 = 6.0;
-        let now = Instant::now();
+        let now = ui::time::now();
         let is_double = self.last_detail_click.is_some_and(|(t0, p0)| {
             now.duration_since(t0).as_millis() <= DOUBLE_CLICK_MS
                 && p.distance(p0) <= DOUBLE_CLICK_RADIUS
@@ -9383,10 +9345,6 @@ impl ContactsApp {
         true
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "caret placement forwards the CRDT location, modifiers and layout context to the focused shared text input"
-    )]
     fn forward_press_to_focused_input(
         &mut self,
         state: &mut AutoCommit,
@@ -9406,7 +9364,17 @@ impl ContactsApp {
         let mut sink = None;
         if self.search.is_focused() {
             self.search.handle_event(
-                &press, 1.0, &modifiers, state, path, &mut h, &mut sink, node_id, taffy,
+                &press,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state,
+                    path,
+                    handled: &mut h,
+                    focus_target: &mut sink,
+                    node_id,
+                    taffy,
+                },
             );
         }
         if let Some(form) = &mut self.form {
@@ -9414,7 +9382,17 @@ impl ContactsApp {
                 if f.ti.is_focused() {
                     let mut s2 = None;
                     f.ti.handle_event(
-                        &press, 1.0, &modifiers, state, path, &mut h, &mut s2, node_id, taffy,
+                        &press,
+                        &mut ui::widget::EventCtx {
+                            scale_factor: 1.0,
+                            modifiers: &modifiers,
+                            state,
+                            path,
+                            handled: &mut h,
+                            focus_target: &mut s2,
+                            node_id,
+                            taffy,
+                        },
                     );
                 }
             }
@@ -9915,44 +9893,25 @@ impl ContactsApp {
     /// Route a keypress. Split into per-concern helpers purely for length;
     /// the guard order (which chord wins) is unchanged from one flat
     /// function.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "key routing needs the full widget event context to dispatch shortcuts and forward unconsumed events to text inputs"
-    )]
     fn handle_key(
         &mut self,
-        ke: &KeyEvent,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-        modifiers: winit::event::Modifiers,
-        scale_factor: f64,
         full_event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+        ke: &KeyEvent,
     ) {
         if ke.state != ElementState::Pressed {
             // Route key-release to inputs too (harmless) then return.
-            self.forward_event_to_inputs(
-                full_event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                node_id,
-                taffy,
-            );
+            self.forward_event_to_inputs(full_event, ctx);
             return;
         }
-        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+        let ctrl = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
 
         // Ctrl/Cmd+K and Ctrl/Cmd+/ focus the list's search field — the
         // familiar "jump to search" chord, wired to this app's real search box
         // (bare `/` does the same in the no-field-focused branch below).
         if is_focus_search_chord(ctrl, &ke.logical_key) {
             self.set_only_focus_search();
-            *handled = true;
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
@@ -9961,7 +9920,7 @@ impl ContactsApp {
         // narrow pushed detail to the list / clears search focus.
         if matches!(ke.logical_key, Key::Named(NamedKey::Escape)) {
             self.handle_key_escape();
-            *handled = true;
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
@@ -9972,8 +9931,8 @@ impl ContactsApp {
             && c.eq_ignore_ascii_case("s")
             && self.mode == Mode::Edit
         {
-            self.save_edit(state);
-            *handled = true;
+            self.save_edit(ctx.state);
+            *ctx.handled = true;
             return;
         }
 
@@ -9981,8 +9940,8 @@ impl ContactsApp {
         // are local presentation/draft controls, but keyboard selection must
         // reach the exact same handlers as pointer selection.  This comes
         // before form navigation so an open calendar owns its arrow keys.
-        if self.popup.is_some() && self.handle_key_popup(ke, state, modifiers) {
-            *handled = true;
+        if self.popup.is_some() && self.handle_key_popup(ke, ctx.state, *ctx.modifiers) {
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
@@ -9999,9 +9958,9 @@ impl ContactsApp {
         // the focused input moves its caret as usual.
         if self.mode == Mode::Edit
             && self.form.is_some()
-            && self.handle_key_edit_form_nav(ke, state, modifiers)
+            && self.handle_key_edit_form_nav(ke, ctx.state, *ctx.modifiers)
         {
-            *handled = true;
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
@@ -10011,16 +9970,7 @@ impl ContactsApp {
         // draft is folded into the store + CRDT solely by Save, so Cancel can
         // genuinely discard and the unsaved-changes guard can see real dirt.
         if self.any_text_focused() {
-            self.forward_event_to_inputs(
-                full_event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                node_id,
-                taffy,
-            );
+            self.forward_event_to_inputs(full_event, ctx);
             self.dirty = true;
             return;
         }
@@ -10034,7 +9984,7 @@ impl ContactsApp {
         if self.mode != Mode::View || self.popup.is_some() {
             return;
         }
-        self.handle_key_list_shortcuts(ke, modifiers.state(), handled);
+        self.handle_key_list_shortcuts(ke, ctx.modifiers.state(), ctx.handled);
     }
 
     /// The Escape-key state transition: closes whichever dialog/popup/edit is
@@ -10380,6 +10330,13 @@ impl ContactsApp {
 // =====================================================================
 // Tests
 // =====================================================================
+
+/// Size and kind of a file a chooser named.
+fn file_metadata(path: &std::path::Path) -> Result<tilo_files::Meta, String> {
+    tilo_files::file_at(path)
+        .and_then(|(dir, name)| tilo_files::blocking::metadata(&dir, &name))
+        .map_err(|error| error.to_string())
+}
 
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]

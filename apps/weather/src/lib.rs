@@ -11,7 +11,7 @@
 //! - [`region`] — read-only consumer of the shared Settings store, from which
 //!   the display units are derived (Settings owns the toggle, not this app).
 //! - [`api`] — Open-Meteo URL construction + JSON parsing (pure/testable).
-//! - [`net`] — the live background fetch worker (reqwest + tokio).
+//! - [`net`] — the live background fetches (`tilo_net` on the app runtime).
 //! - [`doc`] — the Automerge CRDT projection (saved places only; provider
 //!   cache data is device-local).
 //! - [`sample`] — bundled, fully-populated offline data.
@@ -81,6 +81,7 @@ pub mod net;
 pub mod panes;
 mod presentation;
 pub mod region;
+pub mod resource;
 pub mod sample;
 pub mod search_provider;
 pub mod units;
@@ -96,6 +97,13 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(WeatherApp::live())
 }
 
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.weather", app_root)
+        .component_actions(actions::register)
+        .as_definition("Weather")
+}
+
 /// Like [`app_root`] but seeded with a named interaction scenario for a
 /// headless screenshot (e.g. an in-progress drag, an open overlay flap).
 /// See [`WeatherApp::seed_shot_scenario`]. An empty/unknown name yields the
@@ -105,3 +113,4 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     app.seed_shot_scenario(scenario);
     Box::new(app)
 }
+pub use resource::{Weather, WeatherShell};
